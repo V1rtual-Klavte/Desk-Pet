@@ -1,14 +1,0 @@
-     Running BeforeDevCommand (`npm run dev`)
-     Running DevCommand (`cargo  run --no-default-features --color always --`)
-        Info Watching C:\Users\klavte\Documents\桌宠\src-tauri for changes...
-[1m[92m   Compiling[0m deskpet v0.1.0 (C:\Users\klavte\Documents\桌宠\src-tauri)
-[1m[96m    Building[0m [=======================> ] 362/365: deskpet…                                                            [1m[91merror[0m: failed to run custom build command for `deskpet v0.1.0 (C:\Users\klavte\Documents\桌宠\src-tauri)`
-
-Caused by:
-  process didn't exit successfully: `C:\Users\klavte\Documents\桌宠\target\debug\build\deskpet-4fa31ecbdbdf46ec\build-script-build` (exit code: 1)
-  --- stdout
-  cargo:rerun-if-env-changed=TAURI_CONFIG
-  cargo:rustc-check-cfg=cfg(desktop)
-  cargo:rustc-cfg=desktop
-  cargo:rustc-check-cfg=cfg(mobile)
-  unable to parse JSON Tauri config file at C:\Users\klavte\Documents\桌宠\src-tauri\tauri.conf.json because expected value at line 1 column 1
