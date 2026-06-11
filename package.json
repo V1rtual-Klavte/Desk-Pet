@@ -1,22 +1,21 @@
-{
-  "name": "deskpet",
-  "private": true,
-  "version": "0.0.7",
-  "type": "module",
-  "scripts": {
-    "dev": "vite",
-    "build": "vite build",
-    "tauri": "tauri"
-  },
-  "dependencies": {
-    "vue": "^3.5.32",
-    "@tauri-apps/api": "^2.10.1"
-  },
-  "devDependencies": {
-    "@tauri-apps/cli": "^2.10.1",
-    "@vitejs/plugin-vue": "^5.2.4",
-    "vite": "^6.4.2",
-    "typescript": "^5.9.3"
-  }
+﻿{
+    "name":  "deskpet",
+    "private":  true,
+    "version":  "0.0.8",
+    "type":  "module",
+    "scripts":  {
+                    "dev":  "vite",
+                    "build":  "vite build",
+                    "tauri":  "tauri"
+                },
+    "dependencies":  {
+                         "vue":  "^3.5.32",
+                         "@tauri-apps/api":  "^2.10.1"
+                     },
+    "devDependencies":  {
+                            "@tauri-apps/cli":  "^2.10.1",
+                            "@vitejs/plugin-vue":  "^5.2.4",
+                            "vite":  "^6.4.2",
+                            "typescript":  "^5.9.3"
+                        }
 }
-

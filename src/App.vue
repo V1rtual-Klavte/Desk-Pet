@@ -1,15 +1,37 @@
-<script setup lang="ts">
-import { ref, onMounted } from "vue";
+﻿<script setup lang="ts">
+// ==========================================
+// 样式：全局字体 & 布局
+// ==========================================
+import "./styles/fonts.css";
+import "./styles/global.css";
+
+// ==========================================
+// Vue 核心
+// ==========================================
+import { ref, onMounted, onUnmounted } from "vue";
+
+// ==========================================
+// Tauri API
+// ==========================================
 import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
-import { invoke } from "@tauri-apps/api/core";
+
+// ==========================================
+// 组件
+// ==========================================
 import TitleBar from "./components/TitleBar.vue";
 import StreamView from "./components/StreamView.vue";
 import ChatPanel from "./components/ChatPanel.vue";
 import WinSim from "./components/winsim/WinSim.vue";
-import { chatHistory } from "./services/chat";
-import { checkWindow } from "./services/window-monitor";
-import { listen } from "@tauri-apps/api/event";
 
+// ==========================================
+// 服务
+// ==========================================
+import { handleCommand } from "./services/command-handler";
+import { initWindowListener } from "./services/window-listener";
+
+// ==========================================
+// 状态
+// ==========================================
 const isWinSim = (() => {
   try { return getCurrentWebviewWindow().label === "windows-sim"; }
   catch { return false; }
@@ -19,39 +41,32 @@ const showChat = ref(true);
 const winSize = ref({ w: 0, h: 0 });
 const streamRef = ref<InstanceType<typeof StreamView> | null>(null);
 
+// ==========================================
+// 聊天发送 → 委托给命令处理器
+// ==========================================
 function onChatSend(text: string) {
-  const t = text.toLowerCase();
-  if (t.includes("smile")) streamRef.value?.setExpression("smile");
-  if (t.includes("sleep") || t.includes("困")) streamRef.value?.setExpression("sleepy");
-  if (t.includes("gaoo")) streamRef.value?.setExpression("gaoo");
-  if (t.includes("superchat")) streamRef.value?.setExpression("superchat");
-  if (t.includes("business")) streamRef.value?.setExpression("business");
-  if (t.includes("you")) streamRef.value?.setExpression("you");
-  if (t.includes("open win")) { invoke("open_windows_sim").catch(()=>{}); }
-  if (t.includes("close win")) { invoke("close_windows_sim").catch(()=>{}); }
+  handleCommand(text, streamRef.value);
 }
+
+// ==========================================
+// 生命周期：窗口监听 & 资源释放
+// ==========================================
+let cleanupListener: (() => void) | null = null;
 
 onMounted(async () => {
   if (isWinSim) return;
-  try {
-    await listen<string>("window-changed", (event) => {
-      const reply = checkWindow(event.payload);
-      if (reply) {
-        chatHistory.push({ role: "assistant", text: reply });
-        streamRef.value?.setExpression("smile");
-      }
-    });
-  } catch {}
-  new ResizeObserver(() => {
-    winSize.value = { w: window.innerWidth, h: window.innerHeight };
-  }).observe(document.body);
+  cleanupListener = await initWindowListener(streamRef, winSize);
+});
+
+onUnmounted(() => {
+  if (cleanupListener) cleanupListener();
 });
 </script>
 
 <template>
   <WinSim v-if="isWinSim" />
   <div v-else id="root">
-    <TitleBar :height="30" title="配信中" @toggle-chat="showChat = !showChat" />
+    <TitleBar :height="30" title="配信ちゃん" @toggle-chat="showChat = !showChat" />
     <div id="body">
       <div id="stream-col">
         <img id="bg" src="/assets/windows/operation_base.png" alt="" />
@@ -63,42 +78,3 @@ onMounted(async () => {
     </div>
   </div>
 </template>
-
-<style>
-@font-face { font-family: "zpix"; src: url("/assets/fonts/zpix.ttf") format("truetype"); }
-@font-face { font-family: "pixel-mplus"; src: url("/assets/fonts/PixelMplus10-Regular.ttf") format("truetype"); }
-@font-face { font-family: "pixel-mplus-bold"; src: url("/assets/fonts/PixelMplus10-Bold.ttf") format("truetype"); }
-* { margin: 0; padding: 0; box-sizing: border-box; }
-html, body, #app { width: 100%; height: 100%; overflow: hidden; font-family: "zpix", "pixel-mplus", sans-serif; }
-#root {
-  width: 100%; height: 100%;
-  display: flex; flex-direction: column;
-  overflow: hidden;
-  background: #fce4ec;
-  position: relative;
-  border-bottom: 3px solid #a01a5a;
-}
-#root::before {
-  content: "";
-  position: absolute;
-  top: 0; left: 0; bottom: 0;
-  width: 3px;
-  background: linear-gradient(180deg, #fccdd9, #f7a8c4, #c4276f, #a01a5a);
-  z-index: 100;
-  pointer-events: none;
-}
-#root::after {
-  content: "";
-  position: absolute;
-  top: 0; right: 0; bottom: 0;
-  width: 3px;
-  background: linear-gradient(180deg, #fccdd9 2px, #c4276f 2px, #a01a5a);
-  z-index: 100;
-  pointer-events: none;
-}
-#body { flex: 1; display: flex; overflow: hidden; }
-#stream-col { flex: 1; position: relative; display: flex; overflow: hidden; }
-#chat-slot { width: 220px; flex-shrink: 0; background: #fce4ec; transition: width 0.3s ease; overflow: hidden; }
-#chat-slot.closed { width: 0; }
-#bg { position: absolute; width: 100%; height: 100%; object-fit: fill; pointer-events: none; z-index: 0; }
-</style>
