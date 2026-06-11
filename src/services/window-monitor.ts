@@ -1,4 +1,4 @@
-// ==========================================
+﻿// ==========================================
 // 窗口反应规则库
 // 移植自 Monika After Story (MAS) 的 Window Reactions 系统
 // 检测前台窗口标题 → 匹配规则 → 随机反应对话
@@ -10,21 +10,21 @@ interface WindowRule {
 }
 
 // 窗口停留计时：同一窗口停留超过此时间才触发
-const STAY_SECONDS = 6;
+const STAY_SECONDS = 30;
 let currentWindowTitle = "";
 let stayStartTime = 0;
 let stayTriggered = false;
 
 // 标题需要稳定至少这个时间才算真正切换
-const SETTLE_MS = 3000;
+const SETTLE_MS = 2000;
 let pendingTitle = "";
 let pendingTime = 0;
 
 // 单个规则冷却时间（秒），同一规则触发后冷却
-const RULE_COOLDOWN_SECONDS = 60;
+const RULE_COOLDOWN_SECONDS = 1000;
 
 // 全局冷却时间（秒），任一规则触发后所有规则冷却
-const GLOBAL_COOLDOWN_SECONDS = 30;
+const GLOBAL_COOLDOWN_SECONDS = 500;
 
 const ruleCooldowns: Record<string, number> = {};
 let globalCooldownUntil = 0;
@@ -54,6 +54,15 @@ const rules: WindowRule[] = [
       "在看B站呀～有什么好玩的视频吗？",
       "又在刷B站啦！",
       "看到我的视频记得一键三连哦～",
+      "在看视频吗？我也想看～",
+      "看到了什么有趣的东西吗？",
+      "一起看吧～虽然我只能听声音啦",
+    ]},
+  { regex: /哔哩哔哩直播/i,
+    replies: [
+      "在看直播呀？",
+      "我也想看，能带上我吗？",
+      "在看谁直播呢？",
     ]},
   { regex: /Discord/i,
     replies: [
@@ -68,12 +77,19 @@ const rules: WindowRule[] = [
       "在跟谁聊天呢？我也要聊！",
       "又在刷朋友圈啦～",
       "回完消息记得来找我哦！",
+      "别光顾着和别人聊天忘了我哦～",
+     "在和朋友们聊天吗？",
     ]},
   { regex: /QQ/i,
     replies: [
       "QQ上在聊什么呢？",
       "又在和QQ好友聊天呀～",
       "别光顾着聊QQ忘了我哦！",
+      "在跟谁聊天呢？我也要聊！",
+      "又在刷朋友圈啦～",
+      "回完消息记得来找我哦！",
+      "别光顾着和别人聊天忘了我哦～",
+     "在和朋友们聊天吗？",
     ]},
 
   { regex: /Twitter|X\.com|X\s*\(旧Twitter\)/i,
@@ -100,7 +116,7 @@ const rules: WindowRule[] = [
   { regex: /Google Docs|LibreOffice Writer|Microsoft Word|WPS Office/i,
     replies: [
       "在写东西呀？情书吗？～",
-      "写诗吗？还是写故事呢？",
+      "写论文吗？还是写故事呢？",
       "在记笔记呀，好认真～",
     ]},
   { regex: /GitHub|GitLab/i,

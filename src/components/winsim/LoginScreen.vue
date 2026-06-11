@@ -6,7 +6,7 @@ const password = ref("");
 const error = ref(false);
 const shaking = ref(false);
 const inputRef = ref(null);
-const CORRECT_PASSWORD = "1234";
+const CORRECT_PASSWORD = "123";
 
 const avatars = ["/assets/jine/icon_cho.png", "/assets/jine/icon_ame.png"];
 const avatar = avatars[Math.floor(Math.random() * avatars.length)];
@@ -34,7 +34,7 @@ onMounted(() => { setTimeout(() => inputRef.value?.focus(), 300); });
     <div class="card" :class="{ shake: shaking }">
       <div class="av-wrap"><img :src="avatar" alt="" class="av" /></div>
       <p class="welcome">ようこそ</p>
-      <p class="uname">tangtang</p>
+      <p class="uname">angelkawaii</p>
       <div class="pw-group">
         <input ref="inputRef" v-model="password" type="password" class="pw" :class="{ err: error }" placeholder="パスワードを入力" @keyup.enter="submit" autofocus />
       </div>

@@ -9,7 +9,7 @@ const phase = ref<"post"|"done">("post");
 const postLines = [
   "American Megatrends Inc.",
   "BIOS Rev. 2.01.06    Date: 2025/08/15 17:30:20",
-  "CPU : Intel(R) Core(TM) i9-14900K  3200 MHz",
+  "CPU : Angel(R) Love(TM) angel-kawaii  3200 MHz",
   "       Speed : 6.00 GHz",
   "",
   "Press F2 or DEL to run Setup.",
@@ -26,7 +26,7 @@ const postLines = [
   "SATA 1 : ST2000DM008-2FR102       2000 GB",
   "         Ultra DMA Mode-6, S.M.A.R.T. Capable and Status OK",
   "SATA 2 : HL-DT-ST DVDRAM GH24NSD5",
-  "SATA 3 : Samsung SSD 860 EVO 500GB",
+  "SATA 3 : LOVE SSD 999 Plus Unlimited GB",
   "         Ultra DMA Mode-6, S.M.A.R.T. Capable and Status OK",
 ];
 
@@ -50,6 +50,7 @@ onUnmounted(()=>{
 
 <template>
   <div class="bios" data-tauri-drag-region>
+    <img class="bios-logo" src="/assets/Fromtemd/bios_logo.png" alt="" />
     <div class="txt">
       <p v-for="(line,idx) in lines" :key="idx" class="bl">{{ line||"\u00A0" }}</p>
       <span v-if="phase==='post'" class="cur" :class="{on:showCursor}">_</span>
@@ -76,4 +77,5 @@ onUnmounted(()=>{
 .cur{font-weight:bold}
 .cur.on{opacity:1}
 .cur:not(.on){opacity:0}
+.bios-logo{position:absolute;bottom:20px;right:24px;image-rendering:pixelated;max-width:240px;height:auto;opacity:.7;pointer-events:none}
 </style>

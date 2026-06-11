@@ -18,6 +18,8 @@ const icons: DesktopIcon[] = [
   { id:"trash",     label:"ゴミ箱",       src:"/assets/Fromtemd/icon_trash_can.png" },
 ];
 
+const avatars = ["/assets/jine/icon_cho.png", "/assets/jine/icon_ame.png"];
+const userAvatar = avatars[Math.floor(Math.random() * avatars.length)];
 const selectedId = ref<string|null>(null);
 const showStartMenu = ref(false);
 const clock = ref("");
@@ -56,7 +58,7 @@ function closeWindow(){invoke("close_windows_sim").catch(()=>{})}
 
 <template>
   <div class="desk" @click="selectedId=null;showStartMenu=false">
-    <div class="drag-top" data-tauri-drag-region><button class="close-btn" @click.stop="closeWindow" title="Close">✕</button></div>
+    <div class="drag-top" data-tauri-drag-region></div>
     <img class="wp" src="/assets/Fromtemd/FHDbg.png" alt="" />
     <div class="icons" @click.stop>
       <div v-for="icon in icons" :key="icon.id" class="di" :class="{sel:selectedId===icon.id}" @click.stop="selectIcon(icon.id)" @dblclick.stop="dblClickIcon(icon.id)">
@@ -66,7 +68,7 @@ function closeWindow(){invoke("close_windows_sim").catch(()=>{})}
     </div>
     <Transition name="mu">
       <div v-if="showStartMenu" class="sm" @click.stop>
-        <div class="sm-hd"><img src="/assets/windows/icon_desktop_yapoo.png" alt="" class="sm-av" /><span class="sm-usr">User</span></div>
+        <div class="sm-hd"><img :src="userAvatar" alt="" class="sm-av" /><span class="sm-usr">User</span></div>
         <div class="sm-bd"><div v-for="(item,i) in startMenuItems" :key="i" class="sm-row"><img :src="item.src" alt="" class="sm-ic" /><span>{{ item.label }}</span></div></div>
         <div class="sm-ft" @click.stop="closeWindow"><img src="/assets/Fromtemd/operation_close.png" alt="" class="sm-fi" /><span>シャットダウン</span></div>
       </div>
