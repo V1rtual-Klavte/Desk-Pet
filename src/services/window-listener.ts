@@ -1,22 +1,22 @@
 ﻿// ==========================================
-// 窗口监听器
-// 从 App.vue 抽离：窗口切换检测 + 窗口尺寸监听
-// 返回 cleanup 函数供 onUnmounted 释放资源
+// Window Listener
+// App.vue event listening: window focus + resize
+// Returns cleanup function for onUnmounted
 // ==========================================
 
 import { type Ref } from "vue";
 import { listen } from "@tauri-apps/api/event";
-import { chatHistory } from "./chat";
+import { pushAssistantMessage } from "@/features/chat";
 import { checkWindow } from "./window-monitor";
 import type { StreamViewRef } from "./command-handler";
 
 /**
- * 初始化窗口事件监听和 ResizeObserver。
- * 返回一个清理函数，调用后会释放所有资源。
+ * Initialize window event listeners and ResizeObserver.
+ * Returns a cleanup function for resource release.
  *
- * @param streamRef  StreamView 组件引用，用于切换表情
- * @param winSize    窗口尺寸响应式引用，由 ResizeObserver 更新
- * @returns          清理函数（在 onUnmounted 中调用）
+ * @param streamRef  StreamView component ref for expression switching
+ * @param winSize    Reactive window size ref, updated by ResizeObserver
+ * @returns          Cleanup function (call in onUnmounted)
  */
 export async function initWindowListener(
   streamRef: Ref<StreamViewRef | null>,
@@ -24,31 +24,31 @@ export async function initWindowListener(
 ): Promise<() => void> {
   const cleanups: (() => void)[] = [];
 
-  // 1) 窗口标题变化监听
+  // 1) Window focus change listener
   try {
     const unlisten = await listen<string>("window-changed", (event) => {
       const reply = checkWindow(event.payload);
       if (reply) {
-        chatHistory.push({ role: "assistant", text: reply });
+        pushAssistantMessage(reply);
         streamRef.value?.setExpression("smile");
       }
     });
     cleanups.push(unlisten);
   } catch {
-    // 监听失败不阻塞应用
+    // Listener failure does not block the app
   }
 
-  // 2) 窗口尺寸变化监听
+  // 2) Window resize observer
   const observer = new ResizeObserver(() => {
     winSize.value = { w: window.innerWidth, h: window.innerHeight };
   });
   observer.observe(document.body);
   cleanups.push(() => observer.disconnect());
 
-  // 返回清理函数
+  // Return cleanup function
   return () => {
     for (const cleanup of cleanups) {
-      try { cleanup(); } catch { /* 忽略清理异常 */ }
+      try { cleanup(); } catch { /* ignore cleanup errors */ }
     }
   };
 }

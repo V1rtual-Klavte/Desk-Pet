@@ -51,15 +51,15 @@ export const animations: Record<string, Animation> = {
   you: {
     frames: [
       { src: "/assets/ctj/stream_cho_dokuzetsu_superchat_000.png", duration: 150 },
-      { src: "/assets/ctj/stream_cho_dokuzetsu_superchat_001.png", duration: 150 },         
+      { src: "/assets/ctj/stream_cho_dokuzetsu_superchat_001.png", duration: 150 },
       { src: "/assets/ctj/stream_cho_dokuzetsu_superchat_002.png", duration: 150 },
       { src: "/assets/ctj/stream_cho_dokuzetsu_superchat_003.png", duration: 150 },
-      { src: "/assets/ctj/stream_cho_dokuzetsu_superchat_004.png", duration: 150 },         
+      { src: "/assets/ctj/stream_cho_dokuzetsu_superchat_004.png", duration: 150 },
       { src: "/assets/ctj/stream_cho_dokuzetsu_superchat_005.png", duration: 150 },
-      { src: "/assets/ctj/stream_cho_dokuzetsu_superchat_004.png", duration: 150 },         
+      { src: "/assets/ctj/stream_cho_dokuzetsu_superchat_004.png", duration: 150 },
       { src: "/assets/ctj/stream_cho_dokuzetsu_superchat_003.png", duration: 150 },
       { src: "/assets/ctj/stream_cho_dokuzetsu_superchat_002.png", duration: 150 },
-      { src: "/assets/ctj/stream_cho_dokuzetsu_superchat_001.png", duration: 150 },         
+      { src: "/assets/ctj/stream_cho_dokuzetsu_superchat_001.png", duration: 150 },
       { src: "/assets/ctj/stream_cho_dokuzetsu_superchat_000.png", duration: 600 },
     ],
     loop: false,
@@ -84,6 +84,15 @@ export const animations: Record<string, Animation> = {
   sleepy: {
     frames: [
       { src: "/assets/ctj/stream_cho_sleepy_000.png", duration: 3000 },
+    ],
+    loop: false,
+  },
+  chu: {
+    frames: [
+      { src: "/assets/ctj/stream_cho_h_superchat_000.png", duration: 120 },
+      { src: "/assets/ctj/stream_cho_h_superchat_001.png", duration: 120 },
+      { src: "/assets/ctj/stream_cho_h_superchat_002.png", duration: 120 },
+      { src: "/assets/ctj/stream_cho_h_superchat_003.png", duration: 300 },
     ],
     loop: false,
   },

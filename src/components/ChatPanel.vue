@@ -1,6 +1,6 @@
-<script setup lang="ts">
+﻿<script setup lang="ts">
 import { ref, nextTick, onMounted, watch } from "vue";
-import { chatHistory, sendMessage } from "../services/chat";
+import { chatHistory, sendMessage } from "@/features/chat";
 
 const emit = defineEmits<{ send: [text: string] }>();
 const input = ref("");
@@ -125,13 +125,13 @@ onMounted(() => {
 <template>
   <div id="chat">
     <img class="cbg" src="/assets/windows/tinder_match.png" alt="" />
-    <div id="ch-head">ライブチャット</div>
+    <div id="ch-head">Live Chat</div>
 
     <!-- 消息区 + 滚动条容器 -->
     <div id="ch-body">
       <div id="ch-msgs" ref="msgContainer" @scroll="checkBottom">
         <div v-for="(m, i) in chatHistory" :key="i" class="cm" :class="m.role">
-          <span class="cn">{{ m.role === "assistant" ? "糖糖" : "あなた" }}</span>
+          <span class="cn">{{ m.role === "assistant" ? "糖糖" : "你" }}</span>
           <span class="ct">{{ m.text }}</span>
         </div>
       </div>
@@ -162,8 +162,8 @@ onMounted(() => {
     </div>
 
     <div id="ch-foot">
-      <input v-model="input" placeholder="メッセージ..." @keydown="key" />
-      <button @click="send" :disabled="!input.trim()">送信</button>
+      <input v-model="input" placeholder="消息..." @keydown="key" />
+      <button @click="send" :disabled="!input.trim()">发送</button>
     </div>
   </div>
 </template>

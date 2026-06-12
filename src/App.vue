@@ -1,12 +1,12 @@
 ﻿<script setup lang="ts">
 // ==========================================
-// 样式：全局字体 & 布局
+// Styles: global fonts & layout
 // ==========================================
 import "./styles/fonts.css";
 import "./styles/global.css";
 
 // ==========================================
-// Vue 核心
+// Vue core
 // ==========================================
 import { ref, onMounted, onUnmounted } from "vue";
 
@@ -16,7 +16,7 @@ import { ref, onMounted, onUnmounted } from "vue";
 import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
 
 // ==========================================
-// 组件
+// Components
 // ==========================================
 import TitleBar from "./components/TitleBar.vue";
 import StreamView from "./components/StreamView.vue";
@@ -24,13 +24,14 @@ import ChatPanel from "./components/ChatPanel.vue";
 import WinSim from "./components/winsim/WinSim.vue";
 
 // ==========================================
-// 服务
+// Services
 // ==========================================
 import { handleCommand } from "./services/command-handler";
 import { initWindowListener } from "./services/window-listener";
+import { initChat } from "@/features/chat";
 
 // ==========================================
-// 状态
+// State
 // ==========================================
 const isWinSim = (() => {
   try { return getCurrentWebviewWindow().label === "windows-sim"; }
@@ -42,19 +43,20 @@ const winSize = ref({ w: 0, h: 0 });
 const streamRef = ref<InstanceType<typeof StreamView> | null>(null);
 
 // ==========================================
-// 聊天发送 → 委托给命令处理器
+// Chat send handler
 // ==========================================
 function onChatSend(text: string) {
   handleCommand(text, streamRef.value);
 }
 
 // ==========================================
-// 生命周期：窗口监听 & 资源释放
+// Lifecycle
 // ==========================================
 let cleanupListener: (() => void) | null = null;
 
 onMounted(async () => {
   if (isWinSim) return;
+  await initChat("你来啦～！今天也要一起加油哦～");
   cleanupListener = await initWindowListener(streamRef, winSize);
 });
 
@@ -66,7 +68,7 @@ onUnmounted(() => {
 <template>
   <WinSim v-if="isWinSim" />
   <div v-else id="root">
-    <TitleBar :height="30" title="配信ちゃん" @toggle-chat="showChat = !showChat" />
+    <TitleBar :height="30" title="配信中" @toggle-chat="showChat = !showChat" />
     <div id="body">
       <div id="stream-col">
         <img id="bg" src="/assets/windows/operation_base.png" alt="" />

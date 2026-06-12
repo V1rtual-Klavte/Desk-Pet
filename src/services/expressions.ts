@@ -1,4 +1,4 @@
-﻿// ==========================================
+// ==========================================
 // 表情关键词映射配置
 // 配置驱动：关键词 → 表情名称
 // ==========================================
@@ -22,6 +22,7 @@ export const expressionRules: ExpressionRule[] = [
   { keywords: ["superchat"],   expression: "superchat" },
   { keywords: ["business"],    expression: "business" },
   { keywords: ["you"],         expression: "you" },
+  { keywords: ["chu"],         expression: "chu" },
 ];
 
 /**

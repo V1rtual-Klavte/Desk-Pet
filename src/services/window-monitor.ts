@@ -10,7 +10,7 @@ interface WindowRule {
 }
 
 // 窗口停留计时：同一窗口停留超过此时间才触发
-const STAY_SECONDS = 30;
+const STAY_SECONDS = 60;
 let currentWindowTitle = "";
 let stayStartTime = 0;
 let stayTriggered = false;
@@ -21,10 +21,10 @@ let pendingTitle = "";
 let pendingTime = 0;
 
 // 单个规则冷却时间（秒），同一规则触发后冷却
-const RULE_COOLDOWN_SECONDS = 1000;
+const RULE_COOLDOWN_SECONDS = 1800;
 
 // 全局冷却时间（秒），任一规则触发后所有规则冷却
-const GLOBAL_COOLDOWN_SECONDS = 500;
+const GLOBAL_COOLDOWN_SECONDS = 7200;
 
 const ruleCooldowns: Record<string, number> = {};
 let globalCooldownUntil = 0;
