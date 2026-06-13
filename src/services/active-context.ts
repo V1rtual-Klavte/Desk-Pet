@@ -1,9 +1,11 @@
 ﻿// ==========================================
-// AI 主动消息引擎
+// AI 主动消息引擎（统一冷却）
 // ==========================================
 
 import { AIService, CharacterService, pushAssistantMessage, getSystemPrompt } from "@/features/chat";
 import { DeepSeekProvider } from "@/features/chat/providers/deepseek-provider";
+import { isCoolingDown, isAIGenerating, setAIGenerating } from "./cooldown";
+import { processTrigger, SAME_PAGE_COOLDOWN_SECONDS } from "./window-monitor";
 import type { Message } from "@/features/chat/types/message";
 
 interface PageContext {
@@ -12,9 +14,8 @@ interface PageContext {
   timestamp: number;
 }
 
-const ACTIVE_COOLDOWN = 120;
-let lastActiveTime = 0;
 let lastContentHash = "";
+let lastTriggerTime = 0;
 
 function hash(str: string): string {
   let h = 0;
@@ -26,57 +27,53 @@ function hash(str: string): string {
 }
 
 export async function generateActiveMessage(ctx: PageContext): Promise<string | null> {
-  const now = Date.now();
-  console.log("[Active] 收到:", ctx.title.substring(0, 40));
-
-  if (now - lastActiveTime < ACTIVE_COOLDOWN * 1000) {
-    console.log("[Active] 冷却中，剩余:", Math.ceil((ACTIVE_COOLDOWN * 1000 - (now - lastActiveTime)) / 1000) + "s");
-    return null;
-  }
+  if (isCoolingDown()) { console.log("[Active] 全局冷却中，跳过"); return null; }
 
   const contentHash = hash(ctx.title + ctx.content.substring(0, 200));
-  if (contentHash === lastContentHash) {
-    console.log("[Active] 内容未变化，跳过");
+
+  if (contentHash === lastContentHash && Date.now() - lastTriggerTime < SAME_PAGE_COOLDOWN_SECONDS * 1000) {
+    console.log("[Active] 同页面冷却中，剩余:", Math.ceil((SAME_PAGE_COOLDOWN_SECONDS * 1000 - (Date.now() - lastTriggerTime)) / 1000) + "s");
     return null;
   }
+
+  if (isAIGenerating()) {
+    console.log("[Active] 已有 AI 请求进行中，跳过并发调用");
+    return null;
+  }
+
+  setAIGenerating(true);
+  lastContentHash = contentHash;
+  lastTriggerTime = Date.now();
 
   try {
     console.log("[Active] 调用 AI...");
     const ai = new AIService(new DeepSeekProvider());
-    const persona = CharacterService.current();
-
-    // 使用完整人格文件作为 system prompt
     const fullPersona = getSystemPrompt();
-    const windowPrompt = `\n\n[当前窗口] 主人正在使用: ${ctx.title}\n请根据以上信息，以${persona.name}的身份说一句简短的话（20字以内），表达你的反应、好奇或关心。只输出对话内容，不要加引号、前缀或解释。`;
 
     const userMsg: Message = {
-      id: "active-" + now,
+      id: "active-" + Date.now(),
       role: "user",
-      text: windowPrompt,
-      timestamp: now,
+      text: `主人正在使用: ${ctx.title}`,
+      timestamp: Date.now(),
     };
 
     const reply = await ai.generateReply([userMsg], fullPersona, "");
-    console.log("[Active] AI 回复:", reply);
-    lastActiveTime = now;
-    lastContentHash = contentHash;
+    console.log("[Active] AI:", reply);
 
+    processTrigger({ source: "ai", message: reply });
     return reply.trim();
   } catch (e) {
     console.error("[Active] AI 失败:", e);
-    lastActiveTime = now;
     return null;
+  } finally {
+    setAIGenerating(false);
   }
 }
 
 if (typeof window !== "undefined") {
   (window as any).__testAI = async (title?: string) => {
-    const msg = await generateActiveMessage({
-      title: title || "哔哩哔哩 - 有趣视频",
-      content: title || "",
-      timestamp: Date.now(),
-    });
-    if (msg) { pushAssistantMessage(msg); }
+    const msg = await generateActiveMessage({ title: title || "哔哩哔哩", content: title || "", timestamp: Date.now() });
+    if (msg) pushAssistantMessage(msg);
     return msg;
   };
   console.log("[Active] __testAI('标题') 就绪");
