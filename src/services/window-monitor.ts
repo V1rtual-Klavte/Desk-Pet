@@ -21,10 +21,10 @@ let pendingTitle = "";
 let pendingTime = 0;
 
 // 单个规则冷却时间（秒），同一规则触发后冷却
-const RULE_COOLDOWN_SECONDS = 1800;
+const RULE_COOLDOWN_SECONDS = 5000;
 
 // 全局冷却时间（秒），任一规则触发后所有规则冷却
-const GLOBAL_COOLDOWN_SECONDS = 7200;
+const GLOBAL_COOLDOWN_SECONDS = 7800;
 
 const ruleCooldowns: Record<string, number> = {};
 let globalCooldownUntil = 0;

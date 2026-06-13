@@ -1,7 +1,5 @@
-// ==========================================
+﻿// ==========================================
 // Window Listener
-// App.vue event listening: window focus + resize
-// Returns cleanup function for onUnmounted
 // ==========================================
 
 import { type Ref } from "vue";
@@ -31,6 +29,18 @@ async function sendToastNotification(body: string): Promise<void> {
   } catch {}
 }
 
+async function areMonitorsDifferent(): Promise<boolean> {
+  try {
+    const { invoke } = await import("@tauri-apps/api/core");
+    return await invoke<boolean>("are_monitors_different");
+  } catch {
+    return false;
+  }
+}
+
+// ==========================================
+// 测试
+// ==========================================
 if (typeof window !== "undefined") {
   (window as any).__testToast = async (msg?: string) => {
     const { sendNotification, isPermissionGranted, requestPermission } = await import(
@@ -42,13 +52,27 @@ if (typeof window !== "undefined") {
       granted = result === "granted";
     }
     if (granted) {
-      sendNotification({ title: "糖糖", body: msg || "这是一条测试通知" });
+      sendNotification({ title: "糖糖", body: msg || "测试通知" });
       console.log("[测试] Toast 已发送");
-    } else {
-      console.log("[测试] 通知权限未授予");
     }
   };
-  console.log("[测试] __testToast('消息') 就绪");
+
+  // 跳过停留计时器，直接走匹配+通知链路
+  (window as any).__testWindow = async (title?: string, cross?: boolean) => {
+    const t = title || "Visual Studio Code";
+    // 用 checkWindow 如果已稳定过，否则直接用 known reply
+    const reply = checkWindow(t) || `检测到你在使用 ${t}，要一起吗？`;
+    console.log("[测试] 模拟窗口:", t, "reply:", reply);
+    pushAssistantMessage(reply);
+    const isCross = cross ?? await areMonitorsDifferent();
+    console.log("[测试] cross_monitor:", isCross);
+    if (isCross) {
+      await sendToastNotification(reply);
+      console.log("[测试] Toast 已发送");
+    }
+  };
+
+  console.log("[测试] __testWindow('微信', true) / __testToast('msg') 就绪");
 }
 
 export async function initWindowListener(
@@ -63,8 +87,6 @@ export async function initWindowListener(
       if (reply) {
         pushAssistantMessage(reply);
         streamRef.value?.setExpression("smile");
-
-        // 使用 Rust 侧同时采集的跨屏标志，消除竞态
         if (event.payload.cross_monitor) {
           sendToastNotification(reply);
         }
