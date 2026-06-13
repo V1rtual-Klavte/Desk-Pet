@@ -1,7 +1,7 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "糖糖桌宠",
-  "version": "0.7.0",
+  "version": "0.1.0",
   "identifier": "com.deskpet.tangtang",
   "build": {
     "beforeDevCommand": "npm run dev",
@@ -15,7 +15,7 @@
         "label": "main",
         "title": "配信中",
         "url": "http://localhost:1420",
-        "width": 460,
+        "width": 448,
         "height": 272,
         "minWidth": 300,
         "minHeight": 187,

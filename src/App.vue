@@ -1,38 +1,16 @@
-﻿<script setup lang="ts">
-// ==========================================
-// Styles: global fonts & layout
-// ==========================================
+<script setup lang="ts">
 import "./styles/fonts.css";
 import "./styles/global.css";
-
-// ==========================================
-// Vue core
-// ==========================================
 import { ref, onMounted, onUnmounted } from "vue";
-
-// ==========================================
-// Tauri API
-// ==========================================
 import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
-
-// ==========================================
-// Components
-// ==========================================
 import TitleBar from "./components/TitleBar.vue";
 import StreamView from "./components/StreamView.vue";
 import ChatPanel from "./components/ChatPanel.vue";
 import WinSim from "./components/winsim/WinSim.vue";
-
-// ==========================================
-// Services
-// ==========================================
 import { handleCommand } from "./services/command-handler";
 import { initWindowListener } from "./services/window-listener";
 import { initChat } from "@/features/chat";
 
-// ==========================================
-// State
-// ==========================================
 const isWinSim = (() => {
   try { return getCurrentWebviewWindow().label === "windows-sim"; }
   catch { return false; }
@@ -42,21 +20,15 @@ const showChat = ref(true);
 const winSize = ref({ w: 0, h: 0 });
 const streamRef = ref<InstanceType<typeof StreamView> | null>(null);
 
-// ==========================================
-// Chat send handler
-// ==========================================
 function onChatSend(text: string) {
   handleCommand(text, streamRef.value);
 }
 
-// ==========================================
-// Lifecycle
-// ==========================================
 let cleanupListener: (() => void) | null = null;
 
 onMounted(async () => {
   if (isWinSim) return;
-  await initChat("你来啦～！今天也要一起加油哦～");
+  await initChat("Pちゃん！你终于来了！今天也要一直在一起哦～♡");
   cleanupListener = await initWindowListener(streamRef, winSize);
 });
 

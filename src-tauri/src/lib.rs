@@ -1,4 +1,4 @@
-﻿#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 use std::sync::{Arc, Mutex, Condvar, atomic::{AtomicBool, Ordering}};
 use std::thread;
@@ -65,7 +65,7 @@ fn close_windows_sim(app: tauri::AppHandle) -> Result<String, String> {
 
 #[tauri::command]
 fn reset_size(win: WebviewWindow) {
-    let _ = win.set_size(LogicalSize::new(460.0, 272.0));
+    let _ = win.set_size(LogicalSize::new(448.0, 272.0));
 }
 
 #[tauri::command]
