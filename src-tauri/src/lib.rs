@@ -7,9 +7,6 @@ use std::path::PathBuf;
 use tauri::{Emitter, LogicalSize, Manager, WebviewWindow, WebviewWindowBuilder};
 use serde::Serialize;
 
-// ==========================================
-// 监控调度状态
-// ==========================================
 struct MonitorState {
     paused: AtomicBool,
     lock: Mutex<()>,
@@ -19,12 +16,10 @@ struct MonitorState {
 #[derive(Clone, Serialize)]
 struct WindowChangePayload {
     title: String,
+    content: String,
     cross_monitor: bool,
 }
 
-// ==========================================
-// 采集
-// ==========================================
 fn capture_window_title() -> String {
     #[cfg(target_os = "windows")]
     unsafe {
@@ -59,10 +54,6 @@ fn check_cross_monitor(app: &tauri::AppHandle) -> bool {
     #[cfg(not(target_os = "windows"))]
     false
 }
-
-// ==========================================
-// Commands
-// ==========================================
 
 #[tauri::command]
 fn close_windows_sim(app: tauri::AppHandle) -> Result<String, String> {
@@ -123,17 +114,12 @@ fn resume_monitor(state: tauri::State<'_, Arc<MonitorState>>) {
     state.cv.notify_one();
 }
 
-// ==========================================
-// 启动
-// ==========================================
-
 pub fn run() {
     let monitor_state = Arc::new(MonitorState {
         paused: AtomicBool::new(false),
         lock: Mutex::new(()),
         cv: Condvar::new(),
     });
-
     let monitor_state_clone = Arc::clone(&monitor_state);
 
     tauri::Builder::default()
@@ -141,34 +127,28 @@ pub fn run() {
         .manage(monitor_state)
         .setup(move |app| {
             let handle = app.handle().clone();
-
             thread::spawn(move || loop {
                 while monitor_state_clone.paused.load(Ordering::SeqCst) {
                     let guard = monitor_state_clone.lock.lock().unwrap();
                     let _ = monitor_state_clone.cv.wait_timeout(guard, Duration::from_secs(5)).unwrap();
                 }
-
                 thread::sleep(Duration::from_secs(3));
 
                 let title = capture_window_title();
                 if !title.is_empty() {
                     let cross = check_cross_monitor(&handle);
                     let _ = handle.emit("window-changed", WindowChangePayload {
-                        title,
+                        title: title.clone(),
+                        content: title,
                         cross_monitor: cross,
                     });
                 }
             });
-
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
-            reset_size,
-            close_windows_sim,
-            open_windows_sim,
-            are_monitors_different,
-            pause_monitor,
-            resume_monitor,
+            reset_size, close_windows_sim, open_windows_sim,
+            are_monitors_different, pause_monitor, resume_monitor,
         ])
         .run(tauri::generate_context!())
         .expect("startup failure");
