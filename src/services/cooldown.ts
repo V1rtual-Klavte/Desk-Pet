@@ -1,10 +1,14 @@
 ﻿// ==========================================
 // 统一全局冷却控制器
-// 所有触发源（regex / AI / future）共享同一冷却状态
 // ==========================================
 
+import { windowMonitorConfig, aiLockConfig } from "@/services/config";
+import { createLogger } from "@/services/logger";
+
+const log = createLogger("Cool");
+
 /** 冷却时长（毫秒），由外部配置 */
-let cooldownMs = 12000;
+let cooldownMs = windowMonitorConfig.defaultCooldownMs;
 
 /** 全局冷却截止时间戳 */
 let globalCooldownUntil = 0;
@@ -52,14 +56,14 @@ export function setAIGenerating(v: boolean): void {
   aiGenerating = v;
   if (aiSafetyTimer) { clearTimeout(aiSafetyTimer); aiSafetyTimer = null; }
   if (v) {
-    // 安全超时：30s 后强制解锁，防止因任何异常导致锁永远不释放
+    // 安全超时：超过配置时限后强制解锁
     aiSafetyTimer = setTimeout(() => {
       if (aiGenerating) {
-        console.warn("[Cooldown] AI 生成锁超时（30s），强制解锁");
+        log.warn("AI 生成锁超时（" + (aiLockConfig.safetyTimeoutMs / 1000) + "s），强制解锁");
         aiGenerating = false;
       }
       aiSafetyTimer = null;
-    }, 30000);
+    }, aiLockConfig.safetyTimeoutMs);
   }
 }
 
@@ -70,5 +74,5 @@ if (typeof window !== "undefined") {
     getCooldownSeconds, setCooldown,
     isAIGenerating, setAIGenerating,  // 调试锁状态
   };
-  console.log("[Cooldown] __cooldown 已就绪（含 AI 锁 30s 安全超时）");
+  log.info("__cooldown / AI 锁 已就绪");
 }

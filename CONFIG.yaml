@@ -1,0 +1,60 @@
+# ==========================================
+# 糖糖桌宠 全局配置
+# 修改此文件后重新 pnpm tauri dev 即可热更新
+# ==========================================
+
+# ── AI 接口 ──
+ai:
+  provider: deepseek           # deepseek | openai | ollama | custom
+  endpoint: https://api.deepseek.com
+  apiKey: ""                   # 留空则读环境变量 VITE_API_KEY
+  model: deepseek-chat
+  maxContextMessages: 20       # 发送给模型的最大上下文消息数
+
+  # 默认人格（无角色卡时的回退 system prompt）
+  defaultSystemPrompt: "你叫糖糖，是一个在直播的虚拟主播。性格活泼可爱、偶尔傲娇。请用简短的口语化中文回复，像在和朋友聊天一样。可以加表情，但不要用 markdown。"
+
+  # 离线 fallback 语录（未配置 API Key 时随机回复）
+  fallbackReplies:
+    - "嗯嗯，是这样的呢～"
+    - "诶？真的吗？好厉害！"
+    - "原来如此～"
+    - "我知道哦～！"
+    - "哈哈，谢谢你！"
+    - "原来是这个样子啊～"
+    - "不是吧！？这也太夸张了"
+    - "对对对！"
+    - "你这么说我好开心～"
+    - "欸——这样啊，好有趣！"
+
+# ── 窗口监控 ──
+windowMonitor:
+  enabled: true
+  staySeconds: 60              # 用户在同一窗口停留多久后触发（秒）
+  settleMs: 2000               # 窗口切换防抖（毫秒）
+  cooldownSeconds: 5000        # 全局冷却时长（秒）
+  samePageCooldownSeconds: 7800 # 同页面不重复触发冷却（秒）
+  defaultCooldownMs: 12000     # 默认冷却毫秒数
+  resumeExtraMs: 2000          # resume_monitor 额外延迟（毫秒）
+
+# ── AI 并发锁 ──
+aiLock:
+  safetyTimeoutMs: 30000       # 生成锁安全超时（30s 后强制解锁）
+
+# ── 长期记忆 ──
+memory:
+  maxEntries: 200              # 最大记忆条数
+
+# ── 通知弹窗 ──
+notification:
+  autoCloseMs: 8000            # 自动关闭延迟（毫秒）
+
+# ── 桌面后端（Rust 轮询）──
+desktop:
+  pollingIntervalMs: 3000      # 窗口标题轮询间隔（毫秒）
+  pauseExtraMs: 5000           # 暂停时额外安全时间（毫秒）
+  waitTimeoutMs: 5000          # 暂停等待超时（毫秒）
+
+# ── 日志 ──
+logging:
+  level: info                  # debug | info | warn | error

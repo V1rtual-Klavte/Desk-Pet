@@ -4,6 +4,9 @@ import BootBios from "./BootBios.vue";
 import BootLogo from "./BootLogo.vue";
 import LoginScreen from "./LoginScreen.vue";
 import DesktopScreen from "./DesktopScreen.vue";
+import { createLogger } from "@/services/logger";
+
+const log = createLogger("WinSim");
 
 type Phase = "bios" | "boot" | "login" | "desktop";
 const phase = ref<Phase>("bios");
@@ -11,7 +14,7 @@ const errorMsg = ref("");
 
 onErrorCaptured((err, _instance, _info) => {
   errorMsg.value = "[WinSim] " + String(err);
-  console.error(err, _info);
+  log.error("渲染错误", err instanceof Error ? err : String(err));
   return false;
 });
 </script>

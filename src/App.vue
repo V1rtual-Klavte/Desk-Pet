@@ -3,13 +3,15 @@ import "./styles/fonts.css";
 import "./styles/global.css";
 import { ref, onMounted, onUnmounted } from "vue";
 import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
+import { invoke } from "@tauri-apps/api/core";
 import TitleBar from "./components/TitleBar.vue";
 import StreamView from "./components/StreamView.vue";
 import ChatPanel from "./components/ChatPanel.vue";
 import WinSim from "./components/winsim/WinSim.vue";
 import { handleCommand } from "./services/command-handler";
-import { initWindowListener } from "./services/window-listener";
-import { initChat } from "@/features/chat";
+import { initWindowListener } from "./services/window";
+import { initChat } from "@/services/ai";
+import { desktopConfig } from "@/services/config";
 
 const isWinSim = (() => {
   try { return getCurrentWebviewWindow().label === "windows-sim"; }
@@ -28,6 +30,12 @@ let cleanupListener: (() => void) | null = null;
 
 onMounted(async () => {
   if (isWinSim) return;
+  // 将桌面端配置传给 Rust 后台线程
+  invoke("set_monitor_config", {
+    pollingIntervalMs: desktopConfig.pollingIntervalMs,
+    pauseExtraMs: desktopConfig.pauseExtraMs,
+    waitTimeoutMs: desktopConfig.waitTimeoutMs,
+  }).catch(() => {});
   await initChat("Pちゃん！你终于来了！今天也要一直在一起哦～♡");
   cleanupListener = await initWindowListener(streamRef, winSize);
 });

@@ -1,6 +1,6 @@
 ﻿<script setup lang="ts">
 import { ref, nextTick, onMounted, watch } from "vue";
-import { chatHistory, sendMessage } from "@/features/chat";
+import { chatHistory, sendMessage } from "@/services/ai";
 
 const emit = defineEmits<{ send: [text: string] }>();
 const input = ref("");

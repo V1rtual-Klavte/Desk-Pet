@@ -6,7 +6,8 @@
     "scripts": {
         "dev": "vite",
         "build": "vite build",
-        "tauri": "tauri"
+        "tauri-dev": "tauri dev",
+        "tauri-build": "tauri build"
     },
     "dependencies": {
         "@tauri-apps/api": "^2.10.1",
@@ -15,8 +16,10 @@
     },
     "devDependencies": {
         "@tauri-apps/cli": "^2.10.1",
+        "@types/js-yaml": "^4.0.9",
         "@types/node": "^26.0.0",
         "@vitejs/plugin-vue": "^5.2.4",
+        "js-yaml": "^4.2.0",
         "typescript": "^5.9.3",
         "vite": "^6.4.2"
     }

@@ -3,6 +3,10 @@
 // 不修改人格卡，不修改 AI 逻辑，独立模块
 // ==========================================
 
+import { createLogger } from "@/services/logger";
+
+const log = createLogger("Boundary");
+
 /** 界限等级：2=表层, 4=中层, 5+=深层 */
 let boundaryLevel = 2;
 
@@ -37,5 +41,5 @@ if (typeof window !== "undefined") {
     reset: resetBoundary,
     label: boundaryLabel,
   };
-  console.log("[Boundary] __boundary.set(n) / .inc() / .get() 就绪，当前:", boundaryLabel());
+  log.info("__boundary.set/.inc/.get 就绪 | 当前:", boundaryLabel());
 }
