@@ -37,8 +37,8 @@ defineExpose({ setExpression });
 <template>
   <div id="stream">
     <div id="stack">
-      <img id="char" :src="currentSrc" alt="" />
-      <img id="shield" src="/assets/windows/bg_stream_shield_gold.png" alt="" />
+      <img id="char" :src="currentSrc" alt="" draggable="false" />
+      <img id="shield" src="/assets/windows/bg_stream_shield_gold.png" alt="" draggable="false" />
     </div>
   </div>
 </template>

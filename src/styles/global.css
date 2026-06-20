@@ -1,5 +1,5 @@
 /* ========================================== */
-/* 闁稿繈鍔岄惇顒勬煂瀹ュ洨鏋傚☉鎾冲閻楀鏁崘銊ф拱闁哄秴鍢茬槐?                         */
+/* 全局样式                                  */
 /* ========================================== */
 
 * {
@@ -13,8 +13,10 @@ html, body, #app {
   height: 100%;
   overflow: hidden;
   font-family: "zpix", "pixel-mplus", sans-serif;
+  background: transparent;
 }
 
+/* 全局禁选/禁拖（聊天消息除外） */
 #root {
   width: 100%;
   height: 100%;
@@ -24,6 +26,16 @@ html, body, #app {
   background: #fce4ec;
   position: relative;
   border-bottom: 3px solid #a01a5a;
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+#root img {
+  -webkit-user-drag: none;
+  -khtml-user-drag: none;
+  -moz-user-drag: none;
+  -o-user-drag: none;
+  user-drag: none;
 }
 
 #root::before {

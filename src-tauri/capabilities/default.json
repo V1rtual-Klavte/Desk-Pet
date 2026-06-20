@@ -2,7 +2,7 @@
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
   "description": "permissions",
-  "windows": ["main", "windows-sim"],
+  "windows": ["main", "windows-sim", "settings"],
   "permissions": [
     "core:default",
     "core:webview:allow-create-webview-window",
@@ -17,6 +17,12 @@
     "core:window:allow-hide",
     "core:window:allow-inner-size",
     "core:window:allow-set-focus",
-    "notification:default"
+    "core:window:allow-set-position",
+    "core:window:allow-outer-position",
+    "core:window:allow-set-visible-on-all-workspaces",
+    "notification:default",
+    "global-shortcut:allow-register",
+    "global-shortcut:allow-unregister",
+    "global-shortcut:allow-is-registered"
   ]
 }

@@ -1,18 +1,16 @@
 <script setup lang="ts">
 import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
-import { invoke } from "@tauri-apps/api/core";
 
 defineProps<{ height: number; title: string }>();
-defineEmits<{ "toggle-chat": [] }>();
+const emit = defineEmits<{ "toggle-chat": []; "toggle-settings": [] }>();
 
 const win = getCurrentWebviewWindow();
-
 </script>
 
 <template>
   <div id="bar" :style="{ height: height + 'px' }" data-tauri-drag-region>
     <div class="left" data-tauri-drag-region>
-      <img class="win-icon" src="/assets/windows/icon_desktop_yapoo.png" alt="" data-tauri-drag-region />
+      <img class="win-icon" src="/assets/windows/icon_desktop_yapoo.png" alt="" data-tauri-drag-region draggable="false" />
       <span class="title" data-tauri-drag-region>{{ title }}</span>
       <span class="dots"><span class="d1"></span><span class="d2"></span><span class="d3"></span></span>
     </div>
@@ -21,13 +19,19 @@ const win = getCurrentWebviewWindow();
         <img class="ic-default" src="/assets/windows/icon_status_follower.png" alt="" />
         <img class="ic-hover" src="/assets/windows/icon_status_love.png" alt="" />
       </button>
-      <button class="btn" @click="win.minimize()" title="min">
-        <img src="/assets/windows/button_minimize.png" alt="" />
+      <button class="btn" @click="$emit('toggle-settings')" title="settings">
+        <svg class="pixel-gear" width="14" height="14" viewBox="0 0 7 7" shape-rendering="crispEdges">
+          <rect x="3" y="0" width="1" height="2" fill="#3355aa"/>
+          <rect x="3" y="5" width="1" height="2" fill="#3355aa"/>
+          <rect x="0" y="3" width="2" height="1" fill="#3355aa"/>
+          <rect x="5" y="3" width="2" height="1" fill="#3355aa"/>
+          <rect x="1" y="1" width="1" height="1" fill="#3355aa" opacity="0.5"/>
+          <rect x="5" y="1" width="1" height="1" fill="#3355aa" opacity="0.5"/>
+          <rect x="1" y="5" width="1" height="1" fill="#3355aa" opacity="0.5"/>
+          <rect x="5" y="5" width="1" height="1" fill="#3355aa" opacity="0.5"/>
+        </svg>
       </button>
-      <button class="btn" @click="invoke('reset_size')" title="reset">
-        <img src="/assets/windows/button_maximize.png" alt="" />
-      </button>
-      <button class="btn close" @click="win.close()" title="close">
+      <button class="btn close" @click="win.hide()" title="hide to tray">
         <img src="/assets/windows/button_close.png" alt="" />
       </button>
     </div>
@@ -45,7 +49,7 @@ const win = getCurrentWebviewWindow();
 }
 .left { display: flex; align-items: center; gap: 6px; padding-left: 8px; height: 100%; }
 .win-icon { height: 22px; image-rendering: pixelated; }
-.title { color: #fff; font-size: 14px; font-weight: bold; margin-left: 6px; text-shadow: 1px 1px 1px rgba(0,0,0,0.3); }
+.title { color: #fff; font-size: 14px; font-weight: bold; margin-left: 6px; text-shadow: 1px 1px 1px rgba(0,0,0,0.3); overflow: hidden; text-overflow: ellipsis; flex-shrink: 0; }
 .dots { display: inline-flex; gap: 3px; align-items: center; margin-top: 12px; margin-left: -4px; }
 .dots span {
   display: inline-block;
@@ -100,4 +104,8 @@ const win = getCurrentWebviewWindow();
 .btn img { width: 14px; height: 14px; image-rendering: pixelated; }
 .btn:hover { background: rgba(255,220,235,0.5); border-color: rgba(255,200,220,0.6); }
 .btn.close:hover { background: #c42b1c; border-color: #c42b1c; }
+.pixel-gear {
+  image-rendering: pixelated;
+  display: block;
+}
 </style>

@@ -1,11 +1,21 @@
 ﻿<script setup lang="ts">
 import { ref, nextTick, onMounted, watch } from "vue";
 import { chatHistory, sendMessage } from "@/services/ai";
+import { playEventSound } from "@/services/audio/registry";
 
 const emit = defineEmits<{ send: [text: string] }>();
 const input = ref("");
+const inputRef = ref<HTMLInputElement | null>(null);
 const msgContainer = ref<HTMLElement | null>(null);
 const thumb = ref<HTMLElement | null>(null);
+
+/** 供父组件调用：弹出时聚焦输入框 */
+function focusInput() {
+  nextTick(() => {
+    inputRef.value?.focus();
+  });
+}
+defineExpose({ focusInput });
 
 // 是否在底部、是否有新消息在下方
 const isAtBottom = ref(true);
@@ -34,8 +44,12 @@ function scrollToBottom() {
 // 监听 chatHistory 变化 → 新消息来了
 watch(
   () => chatHistory.length,
-  () => {
+  (newLen, oldLen) => {
     nextTick(() => {
+      // 有新 assistant 消息时播放回复音效
+      if (newLen > (oldLen ?? 0) && chatHistory[chatHistory.length - 1]?.role === "assistant") {
+        playEventSound("reply");
+      }
       if (isAtBottom.value) {
         scrollToBottom();
       } else {
@@ -109,6 +123,7 @@ async function send() {
   if (!t) return;
   input.value = "";
   emit("send", t);
+  playEventSound("send");
   await sendMessage(t);
   scrollToBottom();
 }
@@ -124,7 +139,7 @@ onMounted(() => {
 
 <template>
   <div id="chat">
-    <img class="cbg" src="/assets/windows/tinder_match.png" alt="" />
+    <img class="cbg" src="/assets/windows/tinder_match.png" alt="" draggable="false" />
     <div id="ch-head">Live Chat</div>
 
     <!-- 消息区 + 滚动条容器 -->
@@ -162,7 +177,7 @@ onMounted(() => {
     </div>
 
     <div id="ch-foot">
-      <input v-model="input" placeholder="消息..." @keydown="key" />
+      <input ref="inputRef" v-model="input" placeholder="消息..." @keydown="key" />
       <button @click="send" :disabled="!input.trim()">发送</button>
     </div>
   </div>
@@ -190,7 +205,7 @@ onMounted(() => {
   position: relative;
   z-index: 1;
   padding: 6px 8px;
-  font-size: 11px;
+  font-size: clamp(9px, 2.8vw, 14px);
   color: #f0a0c0;
   background: #4a2540;
   border-bottom: 1px solid #5a3050;
@@ -215,6 +230,8 @@ onMounted(() => {
   display: flex;
   flex-direction: column;
   gap: 6px;
+  user-select: text;
+  -webkit-user-select: text;
 }
 /* 隐藏原生滚动条 */
 #ch-msgs::-webkit-scrollbar { display: none; }
@@ -264,12 +281,12 @@ onMounted(() => {
 }
 
 /* --- 消息条目 --- */
-.cm { display: flex; flex-direction: column; gap: 1px; font-size: 10px; line-height: 1.4; }
+.cm { display: flex; flex-direction: column; gap: 1px; font-size: clamp(9px, 2.5vw, 15px); line-height: 1.4; }
 .cm.user { align-items: flex-end; }
 .cm.assistant { align-items: flex-start; }
-.cn { font-size: 9px; color: #f0a0c0; }
+.cn { font-size: clamp(8px, 2.2vw, 12px); color: #f0a0c0; }
 .cm.user .cn { color: #90d0ff; }
-.ct { color: #f0e0f0; word-break: break-word; padding: 4px 8px; border-radius: 12px; max-width: 95%; font-size: 10px; }
+.ct { color: #f0e0f0; word-break: break-word; padding: 4px 8px; border-radius: 12px; max-width: 95%; font-size: clamp(9px, 2.5vw, 15px); }
 .cm.user .ct { background: #6a3050; }
 .cm.assistant .ct { background: #4a2540; }
 
@@ -287,12 +304,13 @@ onMounted(() => {
 }
 #ch-foot input {
   flex: 1;
+  min-width: 0;
   background: #3e1a2e;
   border: 1px solid #6a4060;
   border-radius: 16px;
   padding: 5px 10px;
   color: #f0e0f0;
-  font-size: 10px;
+  font-size: clamp(9px, 2.2vw, 13px);
   font-family: inherit;
   outline: none;
 }
@@ -305,9 +323,10 @@ onMounted(() => {
   border: none;
   border-radius: 16px;
   cursor: pointer;
-  font-size: 10px;
+  font-size: clamp(9px, 2.2vw, 13px);
   font-family: inherit;
   flex-shrink: 0;
+  white-space: nowrap;
 }
 #ch-foot button:hover { background: #e84a8a; }
 #ch-foot button:disabled { background: #5a3050; color: #8a6080; cursor: default; }

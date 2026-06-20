@@ -7,7 +7,7 @@ import { listen } from "@tauri-apps/api/event";
 import { pushAssistantMessage, incrementUnanswered } from "@/services/ai";
 import { checkWindowTiming } from "./monitor";
 import { generateActiveMessage } from "./active-context";
-import { playNotificationByBoundary } from "@/services/audio/notificationSound";
+import { playNotificationByBoundary } from "@/services/audio/registry";
 import { windowMonitorConfig } from "@/services/config";
 import { createLogger } from "@/services/logger";
 import type { StreamViewRef } from "@/services/command-handler";

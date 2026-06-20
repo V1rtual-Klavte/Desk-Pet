@@ -10,24 +10,8 @@
     "frontendDist": "../dist"
   },
   "app": {
-    "windows": [
-      {
-        "label": "main",
-        "title": "配信中",
-        "url": "http://localhost:1420",
-        "width": 448,
-        "height": 272,
-        "minWidth": 300,
-        "minHeight": 187,
-        "resizable": true,
-        "transparent": true,
-        "decorations": false,
-        "alwaysOnTop": true,
-        "skipTaskbar": false,
-        "shadow": false,
-        "center": true
-      }
-    ],
+    "macOSPrivateApi": true,
+    "windows": [],
     "security": { "csp": null }
   },
   "bundle": {

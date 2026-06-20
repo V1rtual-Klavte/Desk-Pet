@@ -5,8 +5,8 @@ const emit = defineEmits<{ done: [] }>();
 const password = ref("");
 const error = ref(false);
 const shaking = ref(false);
-const inputRef = ref(null);
-const CORRECT_PASSWORD = "123";
+const inputRef = ref<HTMLInputElement | null>(null);
+const CORRECT_PASSWORD = "1234";
 
 const avatars = ["/assets/jine/icon_cho.png", "/assets/jine/icon_ame.png"];
 const avatar = avatars[Math.floor(Math.random() * avatars.length)];

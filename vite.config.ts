@@ -49,4 +49,13 @@ export default defineConfig({
     strictPort: true,
     watch: { ignored: ["**/src-tauri/**", "**/target/**"] },
   },
+  build: {
+    rollupOptions: {
+      input: {
+        main: resolve(__dirname, "index.html"),
+        notification: resolve(__dirname, "notification.html"),
+        settings: resolve(__dirname, "settings.html"),
+      },
+    },
+  },
 });
