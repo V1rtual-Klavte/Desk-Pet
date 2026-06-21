@@ -27,3 +27,7 @@ export {
   resetBoundary,
   getBoundaryInfo,
 } from "./boundary"
+
+// ── 人格中间件 ──
+export { PetPersonalityMiddleware } from "./middleware"
+export type { AgentStage, StageContext, PersonalityEffect } from "./middleware"

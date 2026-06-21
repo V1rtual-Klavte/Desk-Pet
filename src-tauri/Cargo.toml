@@ -16,6 +16,7 @@ tauri-plugin-notification = "2"
 tauri-plugin-global-shortcut = "2"
 serde = { version = "1", features = ["derive"] }
 tauri = { version = "2.11", features = ["macos-private-api", "image-png", "tray-icon"] }
+num_cpus = "1"
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.52", features = ["Win32_Foundation", "Win32_UI_WindowsAndMessaging", "Win32_Graphics_Gdi"] }

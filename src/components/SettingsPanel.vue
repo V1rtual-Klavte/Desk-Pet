@@ -5,8 +5,10 @@ import { LogicalSize } from "@tauri-apps/api/dpi";
 import {
   userConfig, aiConfig, windowMonitorConfig, aiLockConfig,
   memoryConfig, desktopConfig, loggingConfig, personalityConfig,
+  modeConfig, loopConfig,
   setOverrides, clearOverrides,
 } from "@/services/config";
+import { debug, refreshToolStats } from "@/services/debug";
 import {
   getSoundLibrary, getSoundAssignments, saveSoundAssignments,
   soundEvents,
@@ -47,11 +49,14 @@ function restoreSoundDefaults() {
   log.debug("音效已恢复默认");
 }
 
+// ── 模式 ──
+const assistantMode = ref(modeConfig.assistant);
+
 // ── AI 配置字段 ──
 const aiEndpoint = ref(aiConfig.endpoint);
 const aiApiKey = ref(aiConfig.apiKey);
 const aiModel = ref(aiConfig.model);
-const aiMaxContext = ref(aiConfig.maxContextMessages);
+const aiContextMaxTokens = ref(aiConfig.contextMaxTokens);
 const aiSystemPrompt = ref(aiConfig.defaultSystemPrompt);
 const showApiKey = ref(false);
 
@@ -67,6 +72,12 @@ const lockTimeout = ref(aiLockConfig.safetyTimeoutMs);
 
 // ── 记忆 ──
 const memMax = ref(memoryConfig.maxEntries);
+const candyInstructions = ref("");
+const memStatus = ref<{ count: number; lastConsolidation: string; mode: string; sessionTurns?: number; sessionId?: string; projectCount?: number }>({
+  count: 0,
+  lastConsolidation: "从未",
+  mode: modeConfig.assistant ? "助手(LLM)" : "轻量(去重)",
+});
 
 // ── 桌面 ──
 const deskPoll = ref(desktopConfig.pollingIntervalMs);
@@ -161,7 +172,7 @@ async function doSave() {
     "ai.endpoint": aiEndpoint.value,
     "ai.apiKey": aiApiKey.value,
     "ai.model": aiModel.value,
-    "ai.maxContextMessages": aiMaxContext.value,
+    "ai.contextMaxTokens": aiContextMaxTokens.value,
     "ai.defaultSystemPrompt": aiSystemPrompt.value,
     "personality.enabled": personalityEnabled.value,
     "personality.active": personalityActive.value,
@@ -176,11 +187,18 @@ async function doSave() {
     "desktop.pauseExtraMs": deskPause.value,
     "desktop.waitTimeoutMs": deskWait.value,
     "logging.level": logLevel.value,
+    "mode.assistant": assistantMode.value,
   });
 
   // 人格配置即时生效
   setPersonalityEnabled(personalityEnabled.value);
   switchPersonality(personalityEnabled.value ? personalityActive.value : null);
+
+  // 保存 CANDY.md 指令
+  if (candyInstructions.value.trim()) {
+    const { MemoryService } = await import("@/services/agent/memory");
+    await MemoryService.updateCandy(candyInstructions.value.trim());
+  }
 
   saved.value = true;
   log.info("设置已保存（所有配置即时生效）");
@@ -198,6 +216,25 @@ let cleanupMove: (() => void) | null = null;
 
 onMounted(async () => {
   document.addEventListener("keydown", onKeyDown, true);
+
+  // 加载记忆状态
+  try {
+    const { MemoryService } = await import("@/services/agent/memory");
+    await MemoryService.init();
+    const sm = MemoryService.session;
+    memStatus.value = {
+      count: MemoryService.count,
+      projectCount: MemoryService.projectCount,
+      lastConsolidation: sm?.compactionSummary ? "已压缩" : "运行中",
+      mode: assistantMode.value ? "助手(LLM)" : "轻量(去重)",
+      sessionTurns: sm?.turns.length ?? 0,
+      sessionId: sm?.sessionId ?? "",
+    };
+    const candy = MemoryService.getCandyInstructionsSync();
+    if (candy) {
+      candyInstructions.value = candy.replace(/^[\s\S]*?指令\]\n/, "").trim();
+    }
+  } catch { /* ignore */ }
 
   // 监听主窗口大小变化（跨窗口事件）→ 实时同步数值
   try {
@@ -250,12 +287,29 @@ onUnmounted(() => {
           <input class="s-input" v-model="aiModel" />
         </div>
         <div class="s-field">
-          <span class="s-fname">上下文数</span>
-          <input class="s-input s-input-num" type="number" v-model.number="aiMaxContext" />
+          <span class="s-fname">上下文上限</span>
+          <input class="s-input s-input-num" type="number" v-model.number="aiContextMaxTokens" style="width:80px" />
+          <span class="s-unit">tokens</span>
         </div>
         <div class="s-field-col">
           <span class="s-fname">默认人格</span>
           <textarea class="s-input s-textarea" v-model="aiSystemPrompt" rows="2"></textarea>
+        </div>
+      </div>
+
+      <!-- 模式 -->
+      <div class="s-section">
+        <div class="s-label">⚙️ 模式切换 <span class="s-tag">需重启</span></div>
+        <div class="s-field-inline" style="margin-bottom:6px">
+          <label class="radio-item">
+            <input type="checkbox" v-model="assistantMode" />
+            <span>助手模式</span>
+            <span class="s-hint" style="display:inline">— 开启后解锁写文件、全量命令、MCP、Skill 等高级能力</span>
+          </label>
+        </div>
+        <div class="s-hint" style="margin-left:22px">
+          当前模式: {{ assistantMode ? '🔓 助手模式 (完整工具集)' : '🔒 轻量模式 (基础工具)' }}
+          <br/>轻量模式包含: 读文件、列目录、搜索文件、系统信息、Bash白名单、网页获取
         </div>
       </div>
 
@@ -298,14 +352,47 @@ onUnmounted(() => {
         </div>
       </div>
 
-      <!-- AI 并发锁 + 记忆 -->
+      <!-- AI 并发锁 -->
       <div class="s-section">
-        <div class="s-label">🔒 AI 锁 / 记忆 <span class="s-tag">即时生效</span></div>
+        <div class="s-label">🔒 AI 并发锁 <span class="s-tag">即时生效</span></div>
         <div class="s-field-inline">
           <label>锁超时 <input class="s-input-num" type="number" v-model.number="lockTimeout" /> ms</label>
-          <label>记忆上限 <input class="s-input-num" type="number" v-model.number="memMax" /> 条</label>
         </div>
-        <!-- 系统通知: 已移除（macOS 无法实现，Tauri 未签名构建下 osascript 不可用） -->
+      </div>
+
+      <!-- 记忆系统 -->
+      <div class="s-section">
+        <div class="s-label">🧠 长期记忆 <span class="s-tag">即时生效</span></div>
+        <div class="s-field-inline">
+          <label>记忆上限 <input class="s-input-num" type="number" v-model.number="memMax" min="10" max="1000" /> 条</label>
+        </div>
+        <div class="s-field-row">
+          <span class="s-fname">存储结构</span>
+          <span class="s-mono">memory/MEMORY.md → 长期记忆文件 (CANDY/User/Outside)</span>
+        </div>
+        <div class="s-field-row">
+          <span class="s-fname">会话归档</span>
+          <span class="s-mono">sessions/ ← Project.md 指针索引</span>
+        </div>
+        <div class="s-field-row">
+          <span class="s-fname">当前条目</span>
+          <span>{{ memStatus.count }} 条 长期记忆</span>
+          <span class="s-unit">| 归档: {{ memStatus.projectCount ?? 0 }} 个 | 会话: {{ memStatus.sessionTurns ?? 0 }} 轮</span>
+        </div>
+        <div class="s-field-row">
+          <span class="s-fname">会话ID</span>
+          <span class="s-mono">{{ memStatus.sessionId?.substring(0, 30) || "—" }}…</span>
+          <span class="s-unit">| {{ memStatus.lastConsolidation }}</span>
+        </div>
+        <div class="s-field-col">
+          <span class="s-fname">用户指令 (CANDY.md)</span>
+          <textarea
+            class="s-input s-textarea s-mono"
+            v-model="candyInstructions"
+            rows="2"
+            placeholder="例如：叫我小明、用日语回复、喜欢简短回答..."
+          ></textarea>
+        </div>
       </div>
 
       <!-- 桌面后端 -->
@@ -404,6 +491,31 @@ onUnmounted(() => {
         </div>
       </div>
 
+      <!-- 工具 / MCP / Skill 预览 -->
+      <div class="s-section">
+        <div class="s-label">🔧 已注册工具 / MCP / Skill <span class="s-tag">只读</span></div>
+        <div class="s-hint" style="margin-bottom:4px">
+          轻量: {{ debug.registeredTools.filter(t => t.mode !== 'assistant').length }} 个 |
+          助手: {{ debug.registeredTools.filter(t => t.mode === 'assistant').length }} 个 |
+          MCP: {{ debug.registeredMcpCount }} | Skill: {{ debug.registeredSkillCount }}
+        </div>
+        <div class="tool-preview-list">
+          <div
+            v-for="t in debug.registeredTools"
+            :key="t.name"
+            class="tool-preview-item"
+            :class="'src-' + t.source"
+          >
+            <span class="tool-preview-src">{{ t.source }}</span>
+            <span class="tool-preview-name">{{ t.name }}</span>
+            <span class="tool-preview-mode">{{ t.mode === 'assistant' ? '🔓' : '🔒' }}</span>
+          </div>
+        </div>
+        <div class="s-field-inline" style="margin-top:4px">
+          <button class="s-btn-small" @click="refreshToolStats()">🔄 刷新</button>
+        </div>
+      </div>
+
     </div>
 
     <div id="s-foot">
@@ -472,6 +584,12 @@ onUnmounted(() => {
 }
 .s-input:focus { border-color: #c4276f; outline: none; }
 .s-textarea { resize: vertical; min-height: 36px; }
+.s-mono { font-family: "SF Mono", "Fira Code", "Cascadia Code", monospace; font-size: 10px; }
+.s-unit {
+  font-size: 10px;
+  color: #8a6a8a;
+  white-space: nowrap;
+}
 .s-input-num { width: 64px; text-align: center; }
 .s-btn-mini {
   padding: 1px 6px; font-size: 10px;
@@ -525,4 +643,22 @@ select.s-input { cursor: pointer; }
 .s-btn:hover { background: #6a4060; }
 .s-btn-primary { background: #c4276f; border-color: #c4276f; }
 .s-btn-primary:hover { background: #e84a8a; }
+
+/* ── 工具预览 ── */
+.tool-preview-list {
+  max-height: 200px; overflow-y: auto;
+  background: #2a1018; border-radius: 6px;
+  padding: 4px; font-size: 10px;
+}
+.tool-preview-item {
+  display: flex; align-items: center; gap: 6px;
+  padding: 2px 6px; color: #c0a0b0;
+}
+.tool-preview-item.src-mcp { color: #f0c060; }
+.tool-preview-item.src-skill { color: #60f0a0; }
+.tool-preview-src {
+  color: #705060; font-size: 9px; min-width: 28px;
+}
+.tool-preview-name { flex: 1; font-size: 10px; }
+.tool-preview-mode { font-size: 10px; }
 </style>

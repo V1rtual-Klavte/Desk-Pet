@@ -1,27 +1,29 @@
 // ==========================================
 // Agent 运行器 —— sendMessage / initChat
-// Agent 核心执行逻辑：接收用户消息 → 调用 AI → 返回回复
-// 人格模块只影响 Prompt 生成，不参与 Agent 执行
+// Phase 2: 接入 Agent Loop + 中间件 + 工具系统
 // ==========================================
 
-import { getSystemPrompt, getActiveCard } from "@/services/personality"
-import { AIService } from "./service"
-import { OpenAICompatibleProvider } from "./provider"
+import { getActiveCard } from "@/services/personality"
+import { runAgentLoop } from "@/services/engine/agent-loop"
+import { preProcess } from "@/services/engine/preprocessor"
+import { generateReply } from "@/services/reply/generator"
+import { transition, getState } from "@/services/engine/session"
 import {
   chatHistory, unansweredCount,
   pushUserMessage, pushAssistantMessage,
   getContextMessages, initWelcome, resetUnanswered,
+  initSessions, getActiveSessionId,
 } from "./chat"
 import { isAIGenerating, setAIGenerating } from "@/services/cooldown"
 import { createLogger } from "@/services/logger"
 
 const log = createLogger("Agent")
 
-let aiServiceInstance: AIService | null = null
-
-function getAIService(): AIService {
-  if (!aiServiceInstance) aiServiceInstance = new AIService(new OpenAICompatibleProvider())
-  return aiServiceInstance
+/** 工具调用历史（供 UI 展示人格化过程） */
+export const toolCallHistory = {
+  entries: [] as { toolName: string; status: string; personalityMsg?: string }[],
+  clear() { this.entries.splice(0, this.entries.length) },
+  push(e: { toolName: string; status: string; personalityMsg?: string }) { this.entries.push(e) },
 }
 
 /** 初始化聊天 */
@@ -33,6 +35,10 @@ export async function initChat(welcomeText?: string): Promise<void> {
     log.info("当前人格: 默认")
   }
 
+  // 初始化会话（从 localStorage 恢复）
+  const sessions = initSessions()
+  log.info("会话已恢复:", sessions.length, "个, 活跃:", getActiveSessionId())
+
   if (welcomeText) {
     initWelcome(welcomeText)
   } else if (card?.firstMessage) {
@@ -40,32 +46,115 @@ export async function initChat(welcomeText?: string): Promise<void> {
   }
 }
 
-/** 发送用户消息并获取 AI 回复 */
-export async function sendMessage(text: string): Promise<string> {
-  // 并发锁：避免与窗口监控的 generateActiveMessage 同时请求 AI
+/**
+ * 发送用户消息并获取 AI 回复。
+ * Phase 2: 使用 Agent Loop（支持工具调用多轮）。
+ */
+export async function sendMessage(text: string): Promise<{
+  reply: string
+  toolCallsMade: number
+  personalityEffect: { expression: string; soundEvent: string | null }
+}> {
+  // 并发锁
   if (isAIGenerating()) {
     log.warn("AI 生成中，拒绝用户消息并发请求")
-    return "（糖糖正在想事情，等一下再发哦～）"
+    return {
+      reply: "（糖糖正在想事情，等一下再发哦～）",
+      toolCallsMade: 0,
+      personalityEffect: { expression: "idle", soundEvent: null },
+    }
   }
 
-  pushUserMessage(text)
-  resetUnanswered()
   setAIGenerating(true)
 
   try {
-    const context = getContextMessages()
-    const systemPrompt = getSystemPrompt(unansweredCount.value)
-    const reply = await getAIService().generateReply(context, systemPrompt)
-    pushAssistantMessage(reply)
-    return reply
+    // ── Step 1: 预处理 ──
+    transition("PRE")
+    const preResult = await preProcess(text)
+
+    if (preResult.handled) {
+      if (preResult.response) {
+        pushAssistantMessage(preResult.response)
+        transition("WAITING")
+        return {
+          reply: preResult.response,
+          toolCallsMade: 0,
+          personalityEffect: { expression: "idle", soundEvent: null },
+        }
+      }
+      transition("WAITING")
+      return {
+        reply: "",
+        toolCallsMade: 0,
+        personalityEffect: { expression: "idle", soundEvent: null },
+      }
+    }
+
+    pushUserMessage(preResult.text)
+    resetUnanswered()
+
+    // ── Step 3: 进入 Generating 状态 ──
+    transition("GENERATING")
+
+    // ── Step 4: 运行 Agent Loop ──
+    toolCallHistory.clear()
+    const result = await runAgentLoop({
+      userText: preResult.text,
+      chatMessages: getContextMessages(),
+      unansweredCount: unansweredCount.value,
+      isActiveMessage: false,
+      isRetry: false,
+    })
+
+    // ── Step 5: 后处理 ──
+    const processed = generateReply(result.reply, { maxLength: 500 })
+
+    // ── Step 6: 提取人格效果（agent-loop 已收集）──
+    const lastEffect = result.effects.length > 0
+      ? result.effects[result.effects.length - 1]
+      : { expression: "smile", soundEvent: "reply" }
+
+    // 记录工具调用历史
+    if (result.toolCallHistory.length > 0) {
+      toolCallHistory.entries.push(...result.toolCallHistory)
+    }
+
+    pushAssistantMessage(processed)
+
+    transition("WAITING")
+    return {
+      reply: processed,
+      toolCallsMade: result.toolCallHistory.length,
+      personalityEffect: {
+        expression: lastEffect.expression,
+        soundEvent: lastEffect.soundEvent,
+      },
+    }
   } catch (e) {
     log.error("sendMessage 失败", e instanceof Error ? e : undefined)
     const fallback = "（唔…信号不太好，等会儿再试试？）"
     pushAssistantMessage(fallback)
-    return fallback
+    transition("WAITING")
+    return {
+      reply: fallback,
+      toolCallsMade: 0,
+      personalityEffect: { expression: "sleepy", soundEvent: null },
+    }
   } finally {
     setAIGenerating(false)
   }
+}
+
+// ── 为主动搭话提供便捷入口 ──
+
+export async function sendActiveMessage(userText: string): Promise<string> {
+  const result = await runAgentLoop({
+    userText,
+    chatMessages: getContextMessages(),
+    unansweredCount: unansweredCount.value,
+    isActiveMessage: true,
+  })
+  return result.reply
 }
 
 // ── HMR ──

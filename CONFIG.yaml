@@ -3,16 +3,25 @@
 # 修改此文件后重新 pnpm tauri dev 即可热更新
 # ==========================================
 
+# ── 模式 ──
+mode:
+  assistant: false              # 助手模式开关 (默认轻量模式)
+
 # ── AI 接口 ──
 ai:
   provider: deepseek           # deepseek | openai | ollama | custom
   endpoint: https://api.deepseek.com
   apiKey: ""                   # 留空则读环境变量 VITE_API_KEY
   model: deepseek-chat
-  maxContextMessages: 20       # 发送给模型的最大上下文消息数
+  contextMaxTokens: 16000     # 上下文窗口上限 (tokens)，用于利用率计算
+  thinkingEffort: "auto"       # auto | low | medium | high — 思考强度
+  thinkingBudget:
+    low: 1000                  # low 模式最大 thinking tokens
+    medium: 4000
+    high: 16000
 
   # 默认人格（无角色卡时的回退 system prompt）
-  defaultSystemPrompt: "你叫糖糖，是一个在直播的虚拟主播。性格活泼可爱、偶尔傲娇。请用简短的口语化中文回复，像在和朋友聊天一样。可以加表情，但不要用 markdown。"
+  defaultSystemPrompt: "你叫糖糖，是一个桌面虚拟主播助手。性格活泼可爱、偶尔傲娇。你会帮主人解决各种问题（技术、生活、闲聊），用你的风格表达。请用简短口语化中文回复，像在和朋友聊天一样。可以加表情，但不要用 markdown。"
 
   # 离线 fallback 语录（未配置 API Key 时随机回复）
   fallbackReplies:
@@ -92,3 +101,33 @@ user:
 # ── 日志 ──
 logging:
   level: info                  # debug | info | warn | error
+
+# ── 核心 Loop ──
+loop:
+  maxRetry: 3                  # 工具调用/验证失败最大重试次数
+  maxToolCallsPerTurn: 5       # 单轮最多工具调用链长度
+  toolTimeoutMs: 30000         # 单个工具执行超时（毫秒）
+  turnTimeoutMs: 120000        # 整轮总超时（毫秒）
+  streamEnabled: true          # 是否流式输出
+  contextCompactAt: 0.95       # 上下文利用率达95%触发摘要压缩
+
+# ── 工具系统 ──
+tools:
+  bash:
+    enabled: true
+    whitelist: ["ls", "cat", "head", "tail", "grep", "find", "which",
+                "echo", "pwd", "date", "whoami", "uname", "df", "du",
+                "ps", "tasklist", "system_profiler", "ifconfig"]
+  file:
+    enabled: true
+    writeEnabled: false        # 轻量模式强制 false
+  mcp:
+    enabled: false             # 助手模式才有效
+    servers: []
+  skill:
+    enabled: false             # 助手模式才有效
+
+# ── 安全 ──
+safety:
+  mode: "tell_me"              # just_do_it | tell_me | let_me_tk
+  sessionTrustEnabled: true

@@ -30,3 +30,13 @@ CONFIG-DEV.yaml
 要求.md
 DESIGN_ORIGIN.docx
 ~$SIGN_ORIGIN.docx
+~$架构设计文档.docx
+
+# Sessions (individual session files, keep .gitkeep)
+sessions/*.md
+
+# Memory (runtime-generated content, track templates only)
+memory/CANDY.md
+memory/User.md
+memory/Outside.md
+memory/SESSION_MEMORY.md

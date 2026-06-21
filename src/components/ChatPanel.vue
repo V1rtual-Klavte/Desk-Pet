@@ -1,9 +1,11 @@
 ﻿<script setup lang="ts">
-import { ref, nextTick, onMounted, watch } from "vue";
+import { ref, nextTick, onMounted, onUnmounted, watch } from "vue";
 import { chatHistory, sendMessage } from "@/services/agent";
 import { playEventSound } from "@/services/audio/registry";
 import { userConfig } from "@/services/config";
 import { createLogger } from "@/services/logger";
+import { listen } from "@tauri-apps/api/event";
+import DebugBar from "./DebugBar.vue";
 
 const log = createLogger("ChatPanel");
 
@@ -12,6 +14,11 @@ const input = ref("");
 const inputRef = ref<HTMLTextAreaElement | null>(null);
 const msgContainer = ref<HTMLElement | null>(null);
 const thumb = ref<HTMLElement | null>(null);
+
+/** 工具执行状态提示（agent-loop 事件驱动） */
+const toolStatus = ref<{ text: string; visible: boolean }>({ text: "", visible: false });
+let cleanupToolExec: (() => void) | null = null;
+let cleanupToolDone: (() => void) | null = null;
 
 /** 供父组件调用：弹出时聚焦输入框 */
 function focusInput() {
@@ -140,7 +147,12 @@ async function send() {
   input.value = "";
   emit("send", t);
   playEventSound("send");
-  await sendMessage(t);
+  const result = await sendMessage(t);
+  // 使用 agent-loop 返回的人格效果 (expression/sound)
+  // 注意：agent-loop 也会通过 deskpet-expression/deskpet-sound 事件驱动 UI
+  if (result.personalityEffect.soundEvent) {
+    playEventSound(result.personalityEffect.soundEvent as Parameters<typeof playEventSound>[0])
+  }
   scrollToBottom();
 }
 function key(e: KeyboardEvent) {
@@ -152,13 +164,28 @@ function key(e: KeyboardEvent) {
 onMounted(() => {
   scrollToBottom();
   checkBottom();
+
+  // ── 工具执行状态监听 ──
+  listen<{ toolName: string; personalityHint?: string }>("tool-executing", (event) => {
+    const hint = event.payload.personalityHint ?? `正在使用 ${event.payload.toolName}...`
+    toolStatus.value = { text: hint, visible: true }
+  }).then(fn => { cleanupToolExec = fn }).catch(() => {})
+  listen<{ toolName: string; success: boolean; personalityHint?: string }>("tool-completed", (event) => {
+    const hint = event.payload.personalityHint ?? (event.payload.success ? "完成啦～" : "出错了…")
+    toolStatus.value = { text: hint, visible: true }
+    setTimeout(() => { if (toolStatus.value.text === hint) toolStatus.value.visible = false }, 2500)
+  }).then(fn => { cleanupToolDone = fn }).catch(() => {})
+});
+
+onUnmounted(() => {
+  if (cleanupToolExec) cleanupToolExec()
+  if (cleanupToolDone) cleanupToolDone()
 });
 </script>
 
 <template>
   <div id="chat">
     <img class="cbg" src="/assets/windows/tinder_match.png" alt="" draggable="false" />
-    <div id="ch-head">Live Chat</div>
 
     <!-- 消息区 + 滚动条容器 -->
     <div id="ch-body">
@@ -194,10 +221,19 @@ onMounted(() => {
       </button>
     </div>
 
+    <!-- 工具执行状态提示 -->
+    <Transition name="tool-status-fade">
+      <div v-if="toolStatus.visible" id="ch-tool-status">
+        🔧 {{ toolStatus.text }}
+      </div>
+    </Transition>
+
     <div id="ch-foot">
       <textarea ref="inputRef" v-model="input" placeholder="消息..." @keydown="key" @compositionstart="onCompositionStart" @compositionend="onCompositionEnd" rows="1" />
       <button @click="send" :disabled="!input.trim()">发送</button>
     </div>
+
+    <DebugBar />
   </div>
 </template>
 
@@ -217,19 +253,6 @@ onMounted(() => {
   pointer-events: none;
   z-index: 0;
   opacity: 0.15;
-}
-#ch-head {
-  font-family: "pixel-mplus-bold", "zpix", "pixel-mplus", sans-serif;
-  position: relative;
-  z-index: 1;
-  padding: 6px 8px;
-  font-size: clamp(9px, 2.8vw, 14px);
-  color: #f0a0c0;
-  background: #4a2540;
-  border-bottom: 1px solid #5a3050;
-  flex-shrink: 0;
-  text-align: center;
-  letter-spacing: 2px;
 }
 
 /* --- 消息区 + 滚动条 --- */
@@ -349,4 +372,20 @@ onMounted(() => {
 }
 #ch-foot button:hover { background: #e84a8a; }
 #ch-foot button:disabled { background: #5a3050; color: #8a6080; cursor: default; }
+
+/* ── 工具执行状态提示 ── */
+#ch-tool-status {
+  position: relative;
+  z-index: 2;
+  padding: 3px 10px;
+  font-size: 11px;
+  color: #f0a0c0;
+  background: rgba(90, 30, 60, 0.85);
+  border-top: 1px solid #6a3a5a;
+  text-align: center;
+  flex-shrink: 0;
+}
+.tool-status-fade-enter-active { transition: opacity 0.2s ease; }
+.tool-status-fade-leave-active { transition: opacity 0.5s ease; }
+.tool-status-fade-enter-from, .tool-status-fade-leave-to { opacity: 0; }
 </style>

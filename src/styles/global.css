@@ -72,11 +72,13 @@ html, body, #app {
   flex: 1;
   position: relative;
   display: flex;
+  flex-direction: column;
   overflow: hidden;
 }
 
 #chat-slot {
-  width: 220px;
+  display: flex;
+  flex-direction: column;
   flex-shrink: 0;
   background: #fce4ec;
   transition: width 0.3s ease;
@@ -84,7 +86,36 @@ html, body, #app {
 }
 
 #chat-slot.closed {
-  width: 0;
+  width: 0 !important;
+}
+
+/* 可拖动分割线 */
+#divider {
+  width: 4px;
+  flex-shrink: 0;
+  background: transparent;
+  cursor: col-resize;
+  transition: background 0.15s;
+  position: relative;
+  z-index: 10;
+}
+
+#divider::after {
+  content: "";
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 50%;
+  transform: translateX(-50%);
+  width: 1px;
+  background: #e8a0b0;
+  transition: background 0.15s, width 0.15s;
+}
+
+#divider:hover::after,
+#divider.dragging::after {
+  background: #c4276f;
+  width: 2px;
 }
 
 #bg {
