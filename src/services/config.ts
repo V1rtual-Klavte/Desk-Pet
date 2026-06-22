@@ -1,4 +1,4 @@
-﻿// ==========================================
+// ==========================================
 // 全局配置 —— 从根目录 CONFIG.yaml 加载
 // 所有模块都应从此处读取配置，不自行定义常量
 // 运行时用户设置通过 localStorage 持久化覆盖 CONFIG 默认值
@@ -146,9 +146,9 @@ export function refreshUserCache(): void {
 
 /** 运行时用户设置（可读写，持久化 localStorage） */
 
-/** 获取 CONFIG.yaml 中的默认弹窗尺寸（不受用户运行时 localStorage 覆盖影响），快捷键弹窗统一使用此值 */
+/** 获取弹窗尺寸：优先返回用户手动调整后持久化的尺寸，未调整过则回退 CONFIG.yaml 默认值 */
 export function getDefaultSize(): { w: number; h: number } {
-  return cfg.user?.popupSize || { w: 448, h: 272 };
+  return userConfig.popupSize;
 }
 
 export const userConfig = {
