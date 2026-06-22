@@ -14,7 +14,8 @@ import SessionTabs from "./components/SessionTabs.vue";
 import WinSim from "./components/winsim/WinSim.vue";
 import { handleCommand } from "./services/command-handler";
 import { initWindowListener } from "./services/window";
-import { initChat, chatHistory, startMemoryConsolidationTimer, MemoryService, switchToSession, createNewSession, deleteSession, getSessions, getActiveSessionId, initWelcome } from "@/services/agent";
+import { initChat, chatHistory, startMemoryConsolidationTimer, MemoryService, switchToSession, createNewSession, addSession, removeSession, getSessions, getActiveSessionId, initWelcome, createUserMessage, createAssistantMessage } from "@/services/agent";
+import type { SessionFileMeta } from "@/services/agent/memory";
 import { initRegistry } from "@/services/personality";
 import { registerDefaultTools, registerAll } from "@/services/tool";
 import { desktopConfig, shortcutConfig, userConfig, refreshUserCache, modeConfig } from "@/services/config";
@@ -89,18 +90,81 @@ function onChatSend(text: string) {
 
 /** 切换会话 */
 async function onSessionSwitch(session: { id: string; name: string }) {
-  await switchToSession(session.id);
+  log.info("切换到会话:", session.id, session.name)
+  try {
+    await switchToSession(session.id);
+    log.info("会话已切换完成:", session.id)
+  } catch (e) {
+    log.error("切换会话失败:", session.id, e)
+  }
 }
 
 /** 新建会话 */
 async function onSessionNew() {
   await createNewSession();
+  tabsRef.value?.loadSessions();
   initWelcome("Pちゃん！你终于来了！今天也要一直在一起哦～♡");
 }
 
-/** 归档/删除会话 */
-async function onSessionArchive(sessionId: string) {
-  await deleteSession(sessionId);
+/** × 关闭标签（只从列表移除，不删文件） */
+async function onSessionClose(sessionId: string) {
+  removeSession(sessionId)
+  const remaining = getSessions()
+  if (remaining.length === 0) {
+    await createNewSession()
+    initWelcome("Pちゃん！你终于来了！今天也要一直在一起哦～♡")
+  } else if (getActiveSessionId() === sessionId || getActiveSessionId() === "") {
+    await switchToSession(remaining[0].id)
+  }
+  tabsRef.value?.loadSessions()
+}
+
+/** 🗑 历史面板删除文件 */
+async function onDeleteFile(filename: string) {
+  console.log("[App] onDeleteFile:", filename)
+  try {
+    await MemoryService.deleteSessionFile(filename)
+    // 清理 chat.ts 列表
+    let sid = ""
+    const m = filename.match(/^(session-\d{8}-\d{6})-.+\.md$/)
+    if (m) sid = m[1]
+    else {
+      const old = filename.match(/^(\d{8}\d{2}:\d{2}:\d{2})-.+\.md$/)
+      if (old) sid = `session-${old[1].replace(/:/g, "")}`
+    }
+    if (sid) removeSession(sid)
+    console.log("[App] onDeleteFile 完成:", filename, "sid:", sid)
+  } catch (e) {
+    log.error("删除会话文件失败:", filename, e)
+    console.error("[App] onDeleteFile 异常:", e)
+  } finally {
+    tabsRef.value?.loadSessions()
+  }
+}
+
+/** 📂 历史面板恢复会话 */
+async function onRestoreSession(sf: SessionFileMeta) {
+  console.log("[App] onRestoreSession:", sf.sessionId, sf.topic)
+  try {
+    // 添加到 chat.ts
+    addSession({ id: sf.sessionId, name: sf.topic || "已恢复", createdAt: sf.createdAt ? new Date(sf.createdAt).getTime() : Date.now(), messageCount: sf.rounds })
+    // 从文件加载消息
+    const turns = await MemoryService.loadSessionMessages(sf.sessionId)
+    if (turns && turns.length > 0) {
+      const msgs = turns.map(t => {
+        return t.role === "user" ? createUserMessage(t.text) : createAssistantMessage(t.text)
+      })
+      localStorage.setItem(`deskpet_chat_${sf.sessionId}`, JSON.stringify(msgs.slice(-200)))
+      console.log("[App] 恢复消息:", msgs.length, "条")
+    }
+    // ★ MemoryService.setActiveSession 由 switchToSession 内部调用，这里不重复
+    await switchToSession(sf.sessionId)
+    tabsRef.value?.loadSessions()
+    console.log("[App] onRestoreSession 完成:", sf.sessionId)
+  } catch (e) {
+    log.error("恢复会话失败:", sf.sessionId, e)
+    console.error("[App] onRestoreSession 异常:", e)
+  }
 }
 
 /** 收到新消息时自动弹出（如果已收回） */
@@ -466,6 +530,8 @@ onMounted(async () => {
   }).catch(() => {});
   await MemoryService.init();
   await initChat("Pちゃん！你终于来了！今天也要一直在一起哦～♡");
+  // ★ 同步 SessionTabs: initChat 完成后再刷新（SessionTabs mount 可能先于 initChat 完成）
+  tabsRef.value?.loadSessions();
   startMemoryConsolidationTimer();
   playEventSound("welcome");
   cleanupListener = await initWindowListener(streamRef, winSize);
@@ -609,7 +675,9 @@ onUnmounted(() => {
           ref="tabsRef"
           @switch="onSessionSwitch"
           @new="onSessionNew"
-          @archive="onSessionArchive"
+          @close-tab="onSessionClose"
+          @delete-file="onDeleteFile"
+          @restore-session="onRestoreSession"
         />
         <ChatPanel v-show="showChat" ref="chatRef" @send="onChatSend" @request-popup="onRequestPopup" />
       </div>

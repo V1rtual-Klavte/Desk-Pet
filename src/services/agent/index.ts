@@ -25,7 +25,7 @@ export {
   clearHistory, deleteMessage,
   initWelcome, incrementUnanswered, resetUnanswered,
   initSessions, getSessions, getActiveSessionId,
-  switchToSession, createNewSession, deleteSession,
+  switchToSession, createNewSession, deleteSession, closeSession, addSession, removeSession,
   updateSessionName, updateSessionMessageCount,
 } from "./chat"
 
@@ -36,7 +36,7 @@ export {
   stopMemoryConsolidationTimer,
   onSessionEnd,
 } from "./memory"
-export type { MemoryEntry, SessionMemory, CompactionSummary } from "./memory"
+export type { MemoryEntry, SessionMemory, CompactionSummary, SessionFileMeta } from "./memory"
 
 // ── Agent 运行器 ──
 export { sendMessage, initChat, sendActiveMessage, toolCallHistory } from "./runner"

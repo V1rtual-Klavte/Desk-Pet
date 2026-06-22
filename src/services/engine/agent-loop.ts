@@ -50,7 +50,7 @@ export async function runAgentLoop(input: AgentLoopInput): Promise<AgentLoopOutp
   resetToolCallCount()
   recordMessage()
 
-  // ── 记录用户轮次到 SESSION_MEMORY ──
+  // ── 记录用户轮次 → sessions/*.md ──
   MemoryService.recordTurn("user", userText)
 
   const thinkingEffort = decideThinkingEffort(userText, isActiveMessage ?? false, isRetry ?? false)
@@ -177,7 +177,7 @@ async function runLoopIteration(opts: {
       const compacted = compactMessages(loopMessages, ctx.systemPrompt)
       loopMessages.length = 0
       loopMessages.push(...compacted)
-      // ★ 生成结构化摘要写入 SESSION_MEMORY.md
+      // ★ 生成结构化摘要写入 sessions/*.md
       const userMsgs = compacted.filter(m => m.role === "user").map(m => m.text)
       MemoryService.writeCompactionSummary({
         mainRequest: userMsgs[userMsgs.length - 1]?.substring(0, 100) || userText.substring(0, 100),
@@ -185,6 +185,7 @@ async function runLoopIteration(opts: {
         files: extractFilePaths(compacted.map(m => m.text).join(" ")),
         problems: "",
         userMessages: userMsgs.slice(-3),
+        tasks: [userText.substring(0, 100)],
         currentWork: userText.substring(0, 100),
         nextSteps: "",
       })
