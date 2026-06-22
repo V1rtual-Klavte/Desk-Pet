@@ -1,4 +1,4 @@
-﻿<script setup lang="ts">
+<script setup lang="ts">
 import "./styles/fonts.css";
 import "./styles/global.css";
 import { ref, onMounted, onUnmounted } from "vue";
@@ -144,11 +144,11 @@ async function setWindowPos(x: number, y: number) {
 function getPopupSize(): { w: number; h: number } {
   const sz = userConfig.popupSize;
   // 校验：超过屏幕 2 倍或小于最小值视为污染数据，回退默认
-  const maxW = (window.screen.availWidth || 1920) * 2;
-  const maxH = (window.screen.availHeight || 1080) * 2;
+  const maxW = Math.round((window.screen.availWidth || 1920) * 0.6);
+  const maxH = Math.round((window.screen.availHeight || 1080) * 0.6);
   if (sz.w < 50 || sz.h < 50 || sz.w > maxW || sz.h > maxH) {
-    log.warn("弹窗尺寸数据异常，回退默认 448x272 | saved:", sz);
-    return { w: 448, h: 272 };
+    log.warn("弹窗尺寸数据异常，回退默认 730x450 | saved:", sz);
+    return { w: 730, h: 450 };
   }
   return sz;
 }
@@ -375,8 +375,15 @@ onMounted(async () => {
 
   // ── 从持久化配置恢复窗口尺寸和位置 ──
   const win = getCurrentWebviewWindow();
-  const savedSize = getDefaultSize();
+  let savedSize = getDefaultSize();
   log.info("从配置恢复: size=", savedSize, "mode=", userConfig.popupMode, "fixedPos=", userConfig.fixedPosition);
+  // 启动时清理 DPI 污染：保存尺寸若超过屏幕 50% 则重置默认
+  const maxStartupW = Math.round((window.screen.availWidth || 1920) * 0.5);
+  if (savedSize.w > maxStartupW || savedSize.h > maxStartupW) {
+    log.warn("启动检测到异常尺寸(>" + maxStartupW + ")，重置默认 | saved:", savedSize);
+    userConfig.popupSize = { w: 730, h: 450 };
+    savedSize = { w: 730, h: 450 };
+  }
 
   // 5秒保护窗口：启动期间所有 resize 事件都视为程序化，不保存到 popupSize
   expectedSize.value = { w: savedSize.w, h: savedSize.h };
@@ -462,7 +469,7 @@ onMounted(async () => {
   try {
     const win = getCurrentWebviewWindow();
     cleanupResized = await win.onResized(({ payload: size }) => {
-      const sz = toLogicalSize(size);
+      const sz = { w: window.innerWidth, h: window.innerHeight };
       const exp = expectedSize.value;
       // 程序化: 实际值与目标值接近（±5px）且仍在时间窗口内 → 忽略不保存
       const isProgrammatic = exp
@@ -474,7 +481,7 @@ onMounted(async () => {
         return;
       }
       // 用户手动拖边缩放：保存（但有上限安全校验）
-      if (!isRetracted.value && !isAnimating.value && sz.w <= 4000 && sz.h <= 4000) {
+      const maxSz = Math.round((window.screen.availWidth || 1920) * 0.6); if (!isRetracted.value && !isAnimating.value && sz.w <= maxSz && sz.h <= maxSz) {
         userConfig.popupSize = sz;
         emit("deskpet-resized", sz).catch(() => {});
         log.debug("窗口缩放已保存:", sz);

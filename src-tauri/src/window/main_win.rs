@@ -15,7 +15,8 @@ pub fn create_main_window(app: &tauri::AppHandle) -> tauri::Result<tauri::Webvie
         .always_on_top(true)
         .visible_on_all_workspaces(true)
         .shadow(true)
-        .inner_size(448.0, 272.0)
+        .inner_size(730.0, 450.0)
+        .min_inner_size(448.0, 272.0)
         .center()
         .build()?;
     enhance_to_iterm_style(&window);

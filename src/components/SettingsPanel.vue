@@ -97,7 +97,7 @@ const popupMode = ref(userConfig.popupMode);
 const autoPopup = ref(userConfig.autoPopupOnMessage);
 const popupW = ref(userConfig.popupSize.w);
 const popupH = ref(userConfig.popupSize.h);
-const popupDefaultSize = { w: 448, h: 272 };
+const popupDefaultSize = { w: 730, h: 450 };
 
 // ── 位置显示（仅固定模式，实时同步，不在此保存）──
 const displayPos = ref<{ x: number; y: number } | null>(userConfig.fixedPosition);

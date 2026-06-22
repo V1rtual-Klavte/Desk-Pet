@@ -1,4 +1,4 @@
-﻿// ==========================================
+// ==========================================
 // 光标位置 & 弹窗位置计算
 // 共享光标/屏幕检测辅助函数，消除 get_cursor_position 和 compute_popup_position 间的重复代码
 // ==========================================
@@ -148,8 +148,8 @@ pub struct PopupPosition {
 
 #[tauri::command]
 pub fn compute_popup_position(app: tauri::AppHandle, win_w: i32, win_h: i32) -> Result<PopupPosition, String> {
-    let win_w = if win_w > 0 { win_w } else { 448 };
-    let win_h = if win_h > 0 { win_h } else { 272 };
+    let win_w = if win_w > 0 { win_w } else { 730 };
+    let win_h = if win_h > 0 { win_h } else { 450 };
 
     // ── iTerm 风格增强 + 显示窗口 ──
     if let Some(win) = app.get_webview_window("main") {

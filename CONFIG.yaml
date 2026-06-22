@@ -92,7 +92,7 @@ shortcut:
 # ── 用户界面（运行时可通过设置面板修改，自动保存到本地存储）──
 user:
   popupMode: cursor            # cursor | fixed
-  popupSize: { w: 448, h: 272 }
+  popupSize: { w: 730, h: 450 }
   shortcutKey: "P"
   shortcutMacModifiers: ["Control", "Command"]
   shortcutWinModifiers: ["Control", "Alt"]

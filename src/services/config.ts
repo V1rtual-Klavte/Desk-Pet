@@ -107,7 +107,7 @@ const STORAGE_KEY = "deskpet_user_settings";
 const USER_DEFAULTS: UserSettings = {
   popupMode: cfg.user?.popupMode || "cursor",
   fixedPosition: null,
-  popupSize: cfg.user?.popupSize || { w: 448, h: 272 },
+  popupSize: cfg.user?.popupSize || { w: 730, h: 450 },
   shortcutKey: cfg.user?.shortcutKey || cfg.shortcut?.key || "P",
   shortcutMacModifiers: cfg.user?.shortcutMacModifiers || cfg.shortcut?.macModifiers || ["Control", "Command"],
   shortcutWinModifiers: cfg.user?.shortcutWinModifiers || cfg.shortcut?.winModifiers || ["Control", "Alt"],
@@ -156,7 +156,7 @@ export const userConfig = {
   set popupMode(v: "cursor" | "fixed") { const u = loadUserOverrides(); u.popupMode = v; _cache = u; saveUserOverrides(u); },
   get fixedPosition() { const p = getUser().fixedPosition; return (p && Math.abs(p.x) > 5000) ? null : (p && Math.abs(p.y) > 5000) ? null : p; },
   set fixedPosition(v: { x: number; y: number } | null) { const u = loadUserOverrides(); u.fixedPosition = v; _cache = u; saveUserOverrides(u); },
-  get popupSize() { const sz = getUser().popupSize; return (!sz || sz.w > 4000 || sz.h > 4000 || sz.w < 50 || sz.h < 50) ? { w: 448, h: 272 } : sz; },
+  get popupSize() { const sz = getUser().popupSize; return (!sz || sz.w > 2000 || sz.h > 2000 || sz.w < 50 || sz.h < 50) ? { w: 730, h: 450 } : sz; },
   set popupSize(v: { w: number; h: number }) { const u = loadUserOverrides(); u.popupSize = v; _cache = u; saveUserOverrides(u); },
   get shortcutKey() { return getUser().shortcutKey; },
   set shortcutKey(v: string) { const u = loadUserOverrides(); u.shortcutKey = v; _cache = u; saveUserOverrides(u); },
