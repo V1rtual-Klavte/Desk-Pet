@@ -14,10 +14,11 @@ import SessionTabs from "./components/SessionTabs.vue";
 import WinSim from "./components/winsim/WinSim.vue";
 import { handleCommand } from "./services/command-handler";
 import { initWindowListener } from "./services/window";
-import { initChat, chatHistory, startMemoryConsolidationTimer, MemoryService, switchToSession, createNewSession, deleteSession, getSessions, getActiveSessionId, initWelcome } from "@/services/agent";
+import { initChat, chatHistory, startMemoryConsolidationTimer, MemoryService, switchToSession, createNewSession, addSession, removeSession, getSessions, getActiveSessionId, initWelcome, createUserMessage, createAssistantMessage } from "@/services/agent";
+import type { SessionFileMeta } from "@/services/agent/memory";
 import { initRegistry } from "@/services/personality";
 import { registerDefaultTools, registerAll } from "@/services/tool";
-import { desktopConfig, shortcutConfig, userConfig, refreshUserCache, getDefaultSize, modeConfig } from "@/services/config";
+import { desktopConfig, shortcutConfig, userConfig, refreshUserCache, modeConfig } from "@/services/config";
 import { isMacOS } from "@/services/env";
 import { createLogger } from "@/services/logger";
 import { playEventSound } from "@/services/audio/registry";
@@ -38,6 +39,50 @@ const chatRef = ref<InstanceType<typeof ChatPanel> | null>(null);
 const tabsRef = ref<InstanceType<typeof SessionTabs> | null>(null);
 
 // ── 可拖动分割线 ──
+const DIVIDER_KEY = "deskpet_divider_pos";
+const DEFAULT_CHAT_WIDTH = 220;
+const MIN_CHAT_WIDTH = 120;
+const MAX_CHAT_RATIO = 0.55; // 聊天面板最大占窗口55%
+
+function loadDividerPos(): number {
+  try {
+    const v = localStorage.getItem(DIVIDER_KEY);
+    if (v) {
+      const n = parseInt(v, 10);
+      if (Number.isFinite(n) && n >= MIN_CHAT_WIDTH) return n;
+    }
+  } catch { /* ignore */ }
+  return DEFAULT_CHAT_WIDTH;
+}
+
+const chatWidth = ref(loadDividerPos());
+const isDraggingDivider = ref(false);
+
+function onDividerMousedown(e: MouseEvent) {
+  e.preventDefault();
+  isDraggingDivider.value = true;
+  const startX = e.clientX;
+  const startW = chatWidth.value;
+
+  function onMove(ev: MouseEvent) {
+    const delta = startX - ev.clientX;
+    const newW = Math.max(MIN_CHAT_WIDTH, Math.min(
+      Math.round(window.innerWidth * MAX_CHAT_RATIO),
+      startW + delta
+    ));
+    chatWidth.value = newW;
+  }
+
+  function onUp() {
+    isDraggingDivider.value = false;
+    document.removeEventListener("mousemove", onMove);
+    document.removeEventListener("mouseup", onUp);
+    try { localStorage.setItem(DIVIDER_KEY, String(chatWidth.value)); } catch { /* ignore */ }
+  }
+
+  document.addEventListener("mousemove", onMove);
+  document.addEventListener("mouseup", onUp);
+}
 
 function onChatSend(text: string) {
   handleCommand(text, streamRef.value);
@@ -45,18 +90,93 @@ function onChatSend(text: string) {
 
 /** 切换会话 */
 async function onSessionSwitch(session: { id: string; name: string }) {
-  await switchToSession(session.id);
+  log.info("切换到会话:", session.id, session.name)
+  try {
+    await switchToSession(session.id);
+    log.info("会话已切换完成:", session.id)
+  } catch (e) {
+    log.error("切换会话失败:", session.id, e)
+  }
 }
 
 /** 新建会话 */
 async function onSessionNew() {
   await createNewSession();
+  tabsRef.value?.loadSessions();
   initWelcome("Pちゃん！你终于来了！今天也要一直在一起哦～♡");
 }
 
-/** 归档/删除会话 */
-async function onSessionArchive(sessionId: string) {
-  await deleteSession(sessionId);
+/** × 关闭标签（只从列表移除，不删文件） */
+async function onSessionClose(sessionId: string) {
+  removeSession(sessionId)
+  const remaining = getSessions()
+  if (remaining.length === 0) {
+    await createNewSession()
+    initWelcome("Pちゃん！你终于来了！今天也要一直在一起哦～♡")
+  } else if (getActiveSessionId() === sessionId || getActiveSessionId() === "") {
+    await switchToSession(remaining[0].id)
+  }
+  tabsRef.value?.loadSessions()
+}
+
+/** 🗑 历史面板删除文件 */
+async function onDeleteFile(filename: string) {
+  console.log("[App] onDeleteFile:", filename)
+  try {
+    await MemoryService.deleteSessionFile(filename)
+    // 清理 chat.ts 列表
+    let sid = ""
+    const m = filename.match(/^(session-\d{8}-\d{6})-.+\.md$/)
+    if (m) sid = m[1]
+    else {
+      const old = filename.match(/^(\d{8}\d{2}:\d{2}:\d{2})-.+\.md$/)
+      if (old) sid = `session-${old[1].replace(/:/g, "")}`
+    }
+    if (sid) {
+      removeSession(sid)
+      // ★ 如果删除的是当前活跃会话，切换到第一个剩余会话
+      if (getActiveSessionId() === sid || getActiveSessionId() === "") {
+        const remaining = getSessions()
+        if (remaining.length > 0) {
+          await switchToSession(remaining[0].id)
+        } else {
+          await createNewSession()
+          initWelcome("Pちゃん！你终于来了！今天也要一直在一起哦～♡")
+        }
+      }
+    }
+    console.log("[App] onDeleteFile 完成:", filename, "sid:", sid)
+  } catch (e) {
+    log.error("删除会话文件失败:", filename, e)
+    console.error("[App] onDeleteFile 异常:", e)
+  } finally {
+    tabsRef.value?.loadSessions()
+  }
+}
+
+/** 📂 历史面板恢复会话 */
+async function onRestoreSession(sf: SessionFileMeta) {
+  console.log("[App] onRestoreSession:", sf.sessionId, sf.topic)
+  try {
+    // 添加到 chat.ts
+    addSession({ id: sf.sessionId, name: sf.topic || "已恢复", createdAt: sf.createdAt ? new Date(sf.createdAt).getTime() : Date.now(), messageCount: sf.rounds })
+    // 从文件加载消息
+    const turns = await MemoryService.loadSessionMessages(sf.sessionId)
+    if (turns && turns.length > 0) {
+      const msgs = turns.map(t => {
+        return t.role === "user" ? createUserMessage(t.text) : createAssistantMessage(t.text)
+      })
+      localStorage.setItem(`deskpet_chat_${sf.sessionId}`, JSON.stringify(msgs.slice(-200)))
+      console.log("[App] 恢复消息:", msgs.length, "条")
+    }
+    // ★ MemoryService.setActiveSession 由 switchToSession 内部调用，这里不重复
+    await switchToSession(sf.sessionId)
+    tabsRef.value?.loadSessions()
+    console.log("[App] onRestoreSession 完成:", sf.sessionId)
+  } catch (e) {
+    log.error("恢复会话失败:", sf.sessionId, e)
+    console.error("[App] onRestoreSession 异常:", e)
+  }
 }
 
 /** 收到新消息时自动弹出（如果已收回） */
@@ -143,7 +263,7 @@ async function setWindowPos(x: number, y: number) {
 /** 获取弹窗尺寸（用户设置优先，带合法性校验防止 DPI 污染数据扩散） */
 function getPopupSize(): { w: number; h: number } {
   const sz = userConfig.popupSize;
-  // 校验：超过屏幕 2 倍或小于最小值视为污染数据，回退默认
+  // 校验：超过屏幕 60% 或小于最小值视为污染数据，回退默认 730×450
   const maxW = Math.round((window.screen.availWidth || 1920) * 0.6);
   const maxH = Math.round((window.screen.availHeight || 1080) * 0.6);
   if (sz.w < 50 || sz.h < 50 || sz.w > maxW || sz.h > maxH) {
@@ -161,7 +281,7 @@ async function handleDockPopup() {
   try {
     const win = getCurrentWebviewWindow();
     const el = rootRef.value!;
-    const sz = getDefaultSize();
+    const sz = getPopupSize();
 
     // 提前设 expectedSize + 时间窗口，保护 win.show() 触发的 resize 事件
     expectedSize.value = { w: sz.w, h: sz.h };
@@ -248,7 +368,7 @@ async function handleShortcutToggle() {
       log.debug("已收回");
     } else {
       // ── 弹出（窗口隐藏 → 可见）──
-      const sz = getDefaultSize();
+      const sz = getPopupSize();
       // 提前设 expectedSize + 时间窗口，保护 win.show() 触发的 resize 事件
       expectedSize.value = { w: sz.w, h: sz.h };
       ignoreResizeUntil = Date.now() + 3000;
@@ -378,15 +498,8 @@ onMounted(async () => {
 
   // ── 从持久化配置恢复窗口尺寸和位置 ──
   const win = getCurrentWebviewWindow();
-  let savedSize = getDefaultSize();
+  const savedSize = getPopupSize();
   log.info("从配置恢复: size=", savedSize, "mode=", userConfig.popupMode, "fixedPos=", userConfig.fixedPosition);
-  // 启动时清理 DPI 污染：保存尺寸若超过屏幕 50% 则重置默认
-  const maxStartupW = Math.round((window.screen.availWidth || 1920) * 0.5);
-  if (savedSize.w > maxStartupW || savedSize.h > maxStartupW) {
-    log.warn("启动检测到异常尺寸(>" + maxStartupW + ")，重置默认 | saved:", savedSize);
-    userConfig.popupSize = { w: 730, h: 450 };
-    savedSize = { w: 730, h: 450 };
-  }
 
   // 5秒保护窗口：启动期间所有 resize 事件都视为程序化，不保存到 popupSize
   expectedSize.value = { w: savedSize.w, h: savedSize.h };
@@ -433,6 +546,8 @@ onMounted(async () => {
   }).catch(() => {});
   await MemoryService.init();
   await initChat("Pちゃん！你终于来了！今天也要一直在一起哦～♡");
+  // ★ 同步 SessionTabs: initChat 完成后再刷新（SessionTabs mount 可能先于 initChat 完成）
+  tabsRef.value?.loadSessions();
   startMemoryConsolidationTimer();
   playEventSound("welcome");
   cleanupListener = await initWindowListener(streamRef, winSize);
@@ -472,7 +587,7 @@ onMounted(async () => {
   try {
     const win = getCurrentWebviewWindow();
     cleanupResized = await win.onResized(({ payload: size }) => {
-      const sz = { w: window.innerWidth, h: window.innerHeight };
+      const sz = toLogicalSize(size);
       const exp = expectedSize.value;
       // 程序化: 实际值与目标值接近（±5px）且仍在时间窗口内 → 忽略不保存
       const isProgrammatic = exp
@@ -484,7 +599,7 @@ onMounted(async () => {
         return;
       }
       // 用户手动拖边缩放：保存（但有上限安全校验）
-      const maxSz = Math.round((window.screen.availWidth || 1920) * 0.6); if (!isRetracted.value && !isAnimating.value && sz.w <= maxSz && sz.h <= maxSz) {
+      if (!isRetracted.value && !isAnimating.value && sz.w <= 4000 && sz.h <= 4000) {
         userConfig.popupSize = sz;
         emit("deskpet-resized", sz).catch(() => {});
         log.debug("窗口缩放已保存:", sz);
@@ -564,13 +679,21 @@ onUnmounted(() => {
         <img id="bg" src="/assets/windows/operation_base.png" alt="" />
         <StreamView ref="streamRef" />
       </div>
-      <div id="chat-slot" :class="{ closed: !showChat }">
+      <!-- 可拖动分割线 -->
+      <div
+        id="divider"
+        :class="{ dragging: isDraggingDivider }"
+        @mousedown="onDividerMousedown"
+      ></div>
+      <div id="chat-slot" :class="{ closed: !showChat, dragging: isDraggingDivider }" :style="showChat ? { width: chatWidth + 'px' } : {}">
         <SessionTabs
           v-show="showChat"
           ref="tabsRef"
           @switch="onSessionSwitch"
           @new="onSessionNew"
-          @archive="onSessionArchive"
+          @close-tab="onSessionClose"
+          @delete-file="onDeleteFile"
+          @restore-session="onRestoreSession"
         />
         <ChatPanel v-show="showChat" ref="chatRef" @send="onChatSend" @request-popup="onRequestPopup" />
       </div>

@@ -1,30 +1,26 @@
 // ==========================================
-// Agent 记忆服务 —— 文件注册表 + 会话归档 + LLM 整理
+// 记忆系统 —— 文件注册表 + 会话管理 + 记忆整理
 // ==========================================
-// 存储模型（文件注册表）:
-//   memory/                        长存记忆目录（注册表在各 .md 内）
-//     MEMORY.md                   ★ 长期记忆注册表索引
-//       格式: - [YYYY-MM-DD] [category] [imp:N] 摘要 |file:XXX.md |id:UUID
-//       每个条目可独立或指向一个长期记忆文件
-//     CANDY.md                    用户手写系统指令（长期记忆文件）
-//     User.md                     用户画像（长期记忆文件，auto by imp≥7）
-//     Outside.md                  外部知识指针（长期记忆文件）
-//     Project.md                  ★ 会话归档指针索引 → sessions/
-//       格式: - [YYYY-MM-DD] session-xxx.md | N轮 | 主请求 | 关键技术
 //
-//   sessions/                     会话归档目录
-//     session-YYYY-MM-DD-HH-mm-ss.md   完整会话记录
+// 存储模型（文件系统为单一真相源）:
 //
-//   SESSION_MEMORY.md             当前活跃会话工作记忆（临时文件）
-//     > SessionID: session-xxx
-//     ## 对话摘要 (# 轮)
-//     ## 压缩摘要 (95% 触发时写入)
+//   memory/                        长期记忆目录
+//   ├── MEMORY.md                  ★ 结构化注册表
+//   │     ## 系统文件               4个系统指针（CANDY/User/Outside/Project）
+//   │     ## 长期记忆               用户记忆条目
+//   ├── CANDY.md                   用户手写系统指令
+//   ├── User.md                    用户画像（auto by imp≥7）
+//   ├── Outside.md                 外部知识指针
+//   └── Project.md                 ★ 会话归档指针 → sessions/
 //
-// 整理:
-//   .lock 文件 → 防并发写入冲突
-//   轻量模式 → 定时器触发本地去重
-//   助手模式 → LLM 分析合并
-//   每次 append / update → 即时写回 MEMORY.md
+//   sessions/                      会话目录（唯一真相源）
+//   └── session-YYYYMMDD-HHmmss-主题.md
+//         元信息 → 结构化摘要 → 完整对话记录
+//
+//   整理:
+//     轻量模式 → 本地去重裁剪
+//     助手模式 → LLM 分析合并 + 过期 + 矛盾
+//     每 5 轮对话自动触发（recordTurn 计数）
 // ==========================================
 
 import { invoke } from "@tauri-apps/api/core"
@@ -33,23 +29,36 @@ import { createLogger } from "@/services/logger"
 
 const log = createLogger("Memory")
 
-// ── 类型 ──
+// ═══════════════════════════════════════════════════
+// 类型定义
+// ═══════════════════════════════════════════════════
 
 export interface MemoryEntry {
   id: string
-  content: string          // 摘要内容
+  content: string
   timestamp: number
-  category: string         // "system" | "user" | "reference" | "general" | "project"
-  importance: number       // 1-10
-  file?: string            // 对应的长期记忆文件名（如 "CANDY.md"），undefined = 独立条目
+  category: "system" | "user" | "reference" | "general" | "project"
+  importance: number  // 1-10
+  file?: string       // 关联的系统文件名，如 "CANDY.md"
 }
 
 export interface ProjectEntry {
-  sessionFile: string      // "session-YYYY-MM-DD-HH-mm-ss.md"
-  date: string
+  sessionFile: string       // "session-20260622-143000-主题.md"
+  date: string              // YYYY-MM-DD
   rounds: number
   mainRequest: string
   keyTech: string[]
+}
+
+/** 会话文件元信息（从 sessions/ 目录扫描） */
+export interface SessionFileMeta {
+  filename: string          // 完整文件名
+  sessionId: string         // session-YYYYMMDD-HHmmss
+  topic: string             // 主题（从文件名提取）
+  createdAt: string         // ISO 时间
+  mode: string              // 助手/轻量
+  rounds: number
+  size: number              // 文件字节数
 }
 
 export interface SessionMemory {
@@ -59,36 +68,39 @@ export interface SessionMemory {
   compactionSummary?: CompactionSummary
 }
 
+/** 压缩摘要（对齐 DESIGN_ORIGIN.md 定义） */
 export interface CompactionSummary {
-  mainRequest: string
-  keyTech: string[]
-  files: string[]
-  problems: string
-  userMessages: string[]
-  currentWork: string
-  nextSteps: string
+  mainRequest: string       // 主请求
+  keyTech: string[]         // 关键技术
+  files: string[]           // 文件/代码
+  problems: string          // 问题及解决
+  userMessages: string[]    // 用户所有消息
+  tasks: string[]           // 提交的任务
+  currentWork: string       // 现在的工作
+  nextSteps: string         // 下一步
   generatedAt: number
 }
 
-// ── 内部状态 ──
+// ═══════════════════════════════════════════════════
+// 内部状态
+// ═══════════════════════════════════════════════════
 
 let memoryDir = ""
 let sessionsDir = ""
-/** MEMORY.md 解析出的长期记忆条目（内存缓存） */
 let entries: MemoryEntry[] = []
-/** Project.md 解析出的会话归档指针 */
 let projectEntries: ProjectEntry[] = []
-/** 当前会话工作记忆 */
 let sessionMemory: SessionMemory | null = null
 let initialized = false
-/** CANDY.md / User.md 内容缓存 */
 let cachedCandy = ""
 let cachedUser = ""
 
-// ── .lock 机制 ──
-
+// ── 文件锁 ──
 let lockHeld = false
 const LOCK_TIMEOUT = 5000
+
+/** ★ 轮次计数器：每 5 轮触发记忆整理 */
+let turnCounter = 0
+const CONSOLIDATE_INTERVAL = 5
 
 async function withLock<T>(fn: () => Promise<T>): Promise<T> {
   const start = Date.now()
@@ -100,24 +112,25 @@ async function withLock<T>(fn: () => Promise<T>): Promise<T> {
   finally { lockHeld = false }
 }
 
-// ── 文件 I/O ──
+// ═══════════════════════════════════════════════════
+// 文件 I/O 基础层
+// ═══════════════════════════════════════════════════
 
-async function readFile(filename: string): Promise<string> {
+async function readMemoryFile(filename: string): Promise<string> {
   try {
-    const fullPath = memoryDir ? `${memoryDir}/${filename}` : ""
-    if (!fullPath) return ""
-    const result = await invoke<{ content: string; size: number }>("file_read", { path: fullPath })
+    if (!memoryDir) return ""
+    const result = await invoke<{ content: string; size: number }>("file_read", { path: `${memoryDir}/${filename}` })
     return result.content
   } catch { return "" }
 }
 
-async function writeFile(filename: string, content: string): Promise<boolean> {
+async function writeMemoryFile(filename: string, content: string): Promise<boolean> {
   try {
-    const fullPath = memoryDir ? `${memoryDir}/${filename}` : ""
-    if (!fullPath) return false
-    await invoke("file_write", { path: fullPath, content })
+    if (!memoryDir) { log.warn("writeMemoryFile: memoryDir 未设置"); return false }
+    const path = `${memoryDir}/${filename}`
+    await invoke("file_write", { path, content })
     return true
-  } catch (e) { log.error(`写入 ${filename} 失败`, e instanceof Error ? e : undefined); return false }
+  } catch (e) { log.error(`写入 ${filename} 失败: ${memoryDir}/${filename}`, e instanceof Error ? e : undefined); return false }
 }
 
 async function readSessionFile(filename: string): Promise<string> {
@@ -130,100 +143,151 @@ async function readSessionFile(filename: string): Promise<string> {
 
 async function writeSessionFile(filename: string, content: string): Promise<boolean> {
   try {
-    if (!sessionsDir) return false
-    await invoke("file_write", { path: `${sessionsDir}/${filename}`, content })
+    if (!sessionsDir) { log.warn("writeSessionFile: sessionsDir 未设置"); return false }
+    const path = `${sessionsDir}/${filename}`
+    await invoke("file_write", { path, content })
+    log.debug("Session 文件已写入:", filename, `(${content.length} bytes)`)
     return true
-  } catch (e) { log.error(`写入 sessions/${filename} 失败`, e instanceof Error ? e : undefined); return false }
+  } catch (e) { log.error(`写入 sessions/${filename} 失败: ${sessionsDir}`, e instanceof Error ? e : undefined); return false }
 }
 
-// ── MEMORY.md 解析/序列化 ──
+// ═══════════════════════════════════════════════════
+// MEMORY.md 解析/序列化 —— 双块结构
+// ═══════════════════════════════════════════════════
+//
+// 新格式:
+//   ## 系统文件
+//   - [imp:10] CANDY.md — 用户系统指令
+//   - [imp:9]  User.md — 用户画像与偏好
+//   - [imp:6]  Outside.md — 外部知识指针
+//   - [imp:8]  Project.md — 会话归档指针
+//
+//   ## 长期记忆
+//   - [2026-06-22] [user] [imp:7] 用户喜欢用 Rust 写后端 |id:UUID
 
-/**
- * 解析格式:
- *   - [2024-06-21] [category] [imp:N] 内容摘要 |file:XXX.md |id:UUID
- * 非标准行的额外字段通过 key:value 解析。
- */
 function parseMEMORYmd(raw: string): MemoryEntry[] {
   const result: MemoryEntry[] = []
-  const headerEnd = raw.indexOf("## 记忆条目")
-  const body = headerEnd >= 0 ? raw.slice(headerEnd) : raw
+  if (!raw) return result
+
+  // 找到记忆块（## 长期记忆 或 旧格式 ## 记忆条目）
+  const memBlockMatch = raw.match(/##\s*(长期记忆|记忆条目)\s*\n([\s\S]*)/i)
+  const body = memBlockMatch ? memBlockMatch[2] : raw
 
   for (const line of body.split("\n")) {
     const trimmed = line.trim()
     if (!trimmed.startsWith("- [")) continue
 
-    // 解析核心字段: - [date] [category] [imp:N] content
-    const coreMatch = trimmed.match(/^-\s*\[(\d{4}-\d{2}-\d{2})\]\s*\[([^\]]+)\]\s*\[imp:(\d+)\]\s*(.+)/)
-    if (!coreMatch) continue
+    // 尝试新格式: - [YYYY-MM-DD] [category] [imp:N] content |id:UUID
+    const newMatch = trimmed.match(/^-\s*\[(\d{4}-\d{2}-\d{2})\]\s*\[([^\]]+)\]\s*\[imp:(\d+)\]\s*(.+)/)
+    if (newMatch) {
+      const date = newMatch[1]
+      const category = newMatch[2].trim()
+      const importance = parseInt(newMatch[3], 10) || 5
+      let content = newMatch[4].trim()
+      let file: string | undefined
+      let id = ""
 
-    const date = coreMatch[1]
-    const category = coreMatch[2].trim()
-    const importance = parseInt(coreMatch[3], 10) || 5
-    const rest = coreMatch[4].trim()
+      // 提取 file: 指针（系统块条目）
+      const fileMatch = content.match(/\|file:([^\s|]+)/)
+      if (fileMatch) {
+        file = fileMatch[1]
+        content = content.replace(/\s*\|file:[^\s|]+/, "").trim()
+      }
 
-    // 从内容尾部提取 key:value 字段
-    let content = rest
-    let file: string | undefined
-    let id = ""
+      // 提取 id:
+      const idMatch = content.match(/\|id:([a-f0-9-]{36})/)
+      if (idMatch) {
+        id = idMatch[1]
+        content = content.replace(/\s*\|id:[a-f0-9-]{36}/, "").trim()
+      }
 
-    // 提取 |file:XXX.md
-    const fileMatch = content.match(/\|file:([^\s|]+)/)
-    if (fileMatch) {
-      file = fileMatch[1]
-      content = content.replace(/\s*\|file:[^\s|]+/, "")
+      result.push({
+        id: id || generateId(),
+        content,
+        timestamp: new Date(date).getTime(),
+        category: category as MemoryEntry["category"],
+        importance,
+        file,
+      })
+      continue
     }
 
-    // 提取 |id:UUID
-    const idMatch = content.match(/\|id:([a-f0-9-]{36})/)
-    if (idMatch) {
-      id = idMatch[1]
-      content = content.replace(/\s*\|id:[a-f0-9-]{36}/, "")
+    // 兼容旧系统块格式: - [imp:N] filename — desc
+    const sysMatch = trimmed.match(/^-\s*\[imp:(\d+)\]\s*(\S+)\s*[-—]\s*(.+)/)
+    if (sysMatch) {
+      const filename = sysMatch[2].trim()
+      const content = `${filename} — ${sysMatch[3].trim()}`
+      result.push({
+        id: generateId(),
+        content,
+        timestamp: Date.now(),
+        category: filename === "CANDY.md" ? "system" : filename === "User.md" ? "user" : "reference",
+        importance: parseInt(sysMatch[1], 10) || 5,
+        file: filename.endsWith(".md") ? filename : undefined,
+      })
+      continue
     }
-
-    result.push({
-      id: id || (crypto.randomUUID?.() ?? `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`),
-      content: content.trim(),
-      timestamp: new Date(date).getTime(),
-      category,
-      importance,
-      file,
-    })
   }
 
   return result.sort((a, b) => b.timestamp - a.timestamp)
 }
 
 function serializeMEMORYmd(list: MemoryEntry[]): string {
-  const sorted = [...list].sort((a, b) => b.timestamp - a.timestamp)
-  const lines = sorted.map(e => {
+  // 分离系统条目和记忆条目
+  const sysEntries = list.filter(e => e.file && ["CANDY.md", "User.md", "Outside.md", "Project.md"].includes(e.file))
+  const memEntries = list.filter(e => !sysEntries.includes(e))
+  const sorted = [...memEntries].sort((a, b) => b.timestamp - a.timestamp)
+
+  // 确保四个系统文件指针存在
+  const sysDefaults = [
+    { file: "CANDY.md", category: "system" as const, imp: 10, desc: "用户系统指令" },
+    { file: "User.md", category: "user" as const, imp: 9, desc: "用户画像与偏好" },
+    { file: "Outside.md", category: "reference" as const, imp: 6, desc: "外部知识指针" },
+    { file: "Project.md", category: "project" as const, imp: 8, desc: "会话归档指针 → sessions/" },
+  ]
+
+  const sysLines = sysDefaults.map(d => {
+    const _existing = sysEntries.find(e => e.file === d.file)
+    return `- [imp:${d.imp}] ${d.file} — ${d.desc}`
+  })
+
+  const memLines = sorted.map(e => {
     const date = new Date(e.timestamp).toISOString().slice(0, 10)
     let line = `- [${date}] [${e.category}] [imp:${e.importance}] ${e.content}`
-    if (e.file) line += ` |file:${e.file}`
     line += ` |id:${e.id}`
     return line
   })
+
   return [
-    "# MEMORY.md — 长期记忆注册表索引",
+    "# MEMORY.md — 长期记忆注册表",
     "",
-    "> 每条记录指向一个长期记忆文件或独立事实。",
-    "> 格式: `- [日期] [分类] [imp:重要性] 摘要 |file:文件名 |id:UUID`",
-    "> MemoryService 启动时读取，运行时即时写回。",
+    "> **系统文件** — 4 个固定指针，指向 memory/ 下的系统 md 文件。",
+    "> **长期记忆** — 糖糖在对话中学习和记录的事实。",
+    "> 格式: `- [日期] [分类] [imp:重要性] 摘要 |id:UUID`",
     "",
     "---",
     "",
-    `## 记忆条目 (${lines.length})`,
+    "## 系统文件",
     "",
-    lines.join("\n"),
+    ...sysLines,
+    "",
+    "## 长期记忆",
+    "",
+    ...(memLines.length > 0 ? memLines : ["<!-- 暂无长期记忆条目 -->"]),
     "",
   ].join("\n")
 }
 
-// ── Project.md 解析/序列化 ──
+// ═══════════════════════════════════════════════════
+// Project.md 解析/序列化
+// ═══════════════════════════════════════════════════
 
 function parseProjectMd(raw: string): ProjectEntry[] {
   const result: ProjectEntry[] = []
+  if (!raw) return result
   for (const line of raw.split("\n")) {
-    const m = line.match(/^-\s*\[(\d{4}-\d{2}-\d{2})\]\s*(session-[^\s|.]+\.md)\s*\|\s*(\d+)\s*轮\s*\|\s*主请求:\s*(.+?)\s*(?:\|\s*关键技术:\s*(.+))?$/)
+    // 格式: - [YYYY-MM-DD] session-xxx-主题.md | N轮 | 主请求: xxx | 关键技术: xxx
+    const m = line.match(/^-\s*\[(\d{4}-\d{2}-\d{2})\]\s*(session-\d{8}-\d{6}-.+?\.md)\s*\|\s*(\d+)\s*轮\s*\|\s*主请求:\s*(.+?)\s*(?:\|\s*关键技术:\s*(.+))?$/)
     if (m) {
       result.push({
         date: m[1],
@@ -253,44 +317,41 @@ function serializeProjectMd(list: ProjectEntry[]): string {
     "",
     `## 归档会话 (${lines.length})`,
     "",
-    lines.join("\n"),
+    ...(lines.length > 0 ? lines : ["<!-- 暂无归档会话 -->"]),
     "",
   ].join("\n")
 }
 
-// ── SESSION_MEMORY.md 解析/序列化 ──
+// ═══════════════════════════════════════════════════
+// SessionMemory — 纯内存状态，sessions/*.md 为唯一文件源
+// ═══════════════════════════════════════════════════
 
 function newSessionMemory(): SessionMemory {
   const now = new Date()
   return {
-    sessionId: `session-${now.toISOString().slice(0, 19).replace(/[:T]/g, "-")}`,
+    sessionId: `session-${fmtCompact(now)}`,
     startedAt: now.getTime(),
     turns: [],
   }
 }
 
-function parseSessionMemory(raw: string): SessionMemory | null {
-  if (!raw || raw.length < 20) return null
-  const lines = raw.split("\n")
-  let sessionId = ""
-  let startedAt = Date.now()
-  const turns: SessionMemory["turns"] = []
-  let compactionSummary: CompactionSummary | undefined
+function fmtCompact(d: Date): string {
+  return d.toISOString().slice(0, 19).replace(/[-:T]/g, "").replace(/(\d{8})(\d{6})/, "$1-$2")
+}
 
-  let section: "none" | "turns" | "compact" = "none"
-  for (const line of lines) {
-    if (line.startsWith("> SessionID:")) {
-      sessionId = line.replace("> SessionID:", "").trim()
-    } else if (line.startsWith("> 开始:")) {
-      const d = Date.parse(line.replace("> 开始:", "").trim())
-      if (!isNaN(d)) startedAt = d
-    } else if (line.startsWith("## 对话摘要")) {
-      section = "turns"
-    } else if (line.startsWith("## 压缩摘要")) {
-      section = "compact"
-    } else if (line.startsWith("## ")) {
-      section = "none"
-    } else if (section === "turns") {
+/** 从 sessions/*.md 文件解析 SessionMemory（turns + summary） */
+function parseSessionFromFile(raw: string): { turns: SessionMemory["turns"]; summary?: CompactionSummary } | null {
+  if (!raw || raw.length < 20) return null
+  const turns: SessionMemory["turns"] = []
+  let summary: CompactionSummary | undefined
+  let section: "none" | "summary" | "turns" = "none"
+
+  for (const line of raw.split("\n")) {
+    if (line.startsWith("## 摘要")) { section = "summary"; continue }
+    else if (line.startsWith("## 对话记录")) { section = "turns"; continue }
+    else if (line.startsWith("## ")) { section = "none"; continue }
+
+    if (section === "turns") {
       const m = line.match(/^-\s*\[([^\]]+)\]\s*\*\*([^*]+)\*\*:\s*(.+)/)
       if (m) {
         const ts = Date.parse(m[1])
@@ -300,79 +361,196 @@ function parseSessionMemory(raw: string): SessionMemory | null {
           timestamp: isNaN(ts) ? Date.now() : ts,
         })
       }
-    } else if (section === "compact") {
-      if (!compactionSummary) {
-        compactionSummary = { mainRequest: "", keyTech: [], files: [], problems: "", userMessages: [], currentWork: "", nextSteps: "", generatedAt: Date.now() }
-      }
-      if (line.startsWith("- 主请求:")) compactionSummary.mainRequest = line.replace("- 主请求:", "").trim()
-      else if (line.startsWith("- 关键技术:")) compactionSummary.keyTech = line.replace("- 关键技术:", "").split(",").map(s => s.trim()).filter(Boolean)
-      else if (line.startsWith("- 文件:")) compactionSummary.files = line.replace("- 文件:", "").split(",").map(s => s.trim()).filter(Boolean)
-      else if (line.startsWith("- 问题:")) compactionSummary.problems = line.replace("- 问题:", "").trim()
-      else if (line.startsWith("- 当前工作:")) compactionSummary.currentWork = line.replace("- 当前工作:", "").trim()
-      else if (line.startsWith("- 下一步:")) compactionSummary.nextSteps = line.replace("- 下一步:", "").trim()
+    } else if (section === "summary") {
+      if (!summary) summary = emptyCompactionSummary()
+      if (line.startsWith("- 主请求:")) summary.mainRequest = line.replace("- 主请求:", "").trim()
+      else if (line.startsWith("- 关键技术:")) summary.keyTech = splitCsv(line.replace("- 关键技术:", ""))
+      else if (line.startsWith("- 文件")) summary.files = splitCsv(line.replace(/^- 文件\S*:\s*/, ""))
+      else if (line.startsWith("- 问题")) summary.problems = line.replace(/^- 问题\S*:\s*/, "").trim()
+      else if (line.startsWith("- 当前工作:")) summary.currentWork = line.replace("- 当前工作:", "").trim()
+      else if (line.startsWith("- 下一步:")) summary.nextSteps = line.replace("- 下一步:", "").trim()
+      else if (line.startsWith("- 提交的任务:")) summary.tasks = splitCsv(line.replace("- 提交的任务:", ""))
+      else if (line.startsWith("- 现在的工作:")) summary.currentWork = line.replace("- 现在的工作:", "").trim()
+      else if (line.startsWith("- 用户所有消息:")) summary.userMessages = splitCsv(line.replace("- 用户所有消息:", ""))
     }
   }
-
-  if (!sessionId) return null
-  return { sessionId, startedAt, turns, compactionSummary }
+  return { turns, summary }
 }
 
-function serializeSessionMemory(sm: SessionMemory): string {
-  const turnLines = sm.turns.map(t =>
-    `- [${new Date(t.timestamp).toISOString().slice(0, 19)}] **${t.role === "assistant" ? "糖糖" : "用户"}**: ${t.text.substring(0, 200)}`
-  )
-  let compactBlock = ""
+/** ★ 从原始 session 文件内容解析 turns（不解析摘要） */
+function parseTurnsFromRaw(raw: string): SessionMemory["turns"] {
+  const turns: SessionMemory["turns"] = []
+  let inConversation = false
+  for (const line of raw.split("\n")) {
+    if (line.startsWith("## 对话记录")) { inConversation = true; continue }
+    if (line.startsWith("## ")) { inConversation = false; continue }
+    if (!inConversation) continue
+    const m = line.match(/^-\s*\[([^\]]+)\]\s*\*\*([^*]+)\*\*:\s*(.+)/)
+    if (m) {
+      const ts = Date.parse(m[1])
+      turns.push({
+        role: m[2].trim() === "糖糖" ? "assistant" : "user",
+        text: m[3].trim(),
+        timestamp: isNaN(ts) ? Date.now() : ts,
+      })
+    }
+  }
+  return turns
+}
+
+/** ★ 将内存中的 SessionMemory 完整写回 sessions/*.md */
+async function syncSessionFile(): Promise<void> {
+  if (!sessionMemory || !sessionsDir) return
+  const topic = findTopic()
+  const filename = makeSessionFilename(sessionMemory.sessionId, topic)
+  const lines = buildSessionFileContent(sessionMemory)
+  await writeSessionFile(filename, lines.join("\n"))
+}
+
+/** 构建 sessions/*.md 完整内容 */
+function buildSessionFileContent(sm: SessionMemory): string[] {
+  const topic = findTopicFromTurns(sm.turns)
+  const lines = [
+    `# ${sm.sessionId}-${topic}`,
+    `> 开始: ${new Date(sm.startedAt).toISOString()}`,
+    `> 模式: ${modeConfig.assistant ? "助手" : "轻量"}`,
+    `> 轮数: ${sm.turns.length}`,
+    "",
+  ]
+
+  // 结构化摘要
   if (sm.compactionSummary) {
     const cs = sm.compactionSummary
-    compactBlock = [
-      "", "## 压缩摘要 (95% 触发)",
-      `- 主请求: ${cs.mainRequest}`,
+    lines.push(
+      "## 摘要",
+      `- 主请求: ${cs.mainRequest || "无"}`,
       `- 关键技术: ${cs.keyTech.join(", ") || "无"}`,
-      `- 文件: ${cs.files.join(", ") || "无"}`,
-      `- 问题: ${cs.problems || "无"}`,
-      `- 当前工作: ${cs.currentWork}`,
+      `- 文件/代码: ${cs.files.join(", ") || "无"}`,
+      `- 问题及解决: ${cs.problems || "无"}`,
+      `- 提交的任务: ${cs.tasks.join(", ") || "无"}`,
+      `- 现在的工作: ${cs.currentWork || "无"}`,
       `- 下一步: ${cs.nextSteps || "无"}`,
       "",
-    ].join("\n")
+    )
+  } else {
+    lines.push("## 摘要", "<!-- 归档时填充 -->", "")
   }
-  return [
-    "# SESSION_MEMORY.md — 会话工作记忆",
-    "",
-    `> SessionID: ${sm.sessionId}`,
-    `> 开始: ${new Date(sm.startedAt).toISOString()}`,
-    "",
-    `## 对话摘要 (${sm.turns.length} 轮)`,
-    ...turnLines,
-    compactBlock,
-    `## 记忆指针`,
-    "<!-- 本会话引用的长期记忆条目 ID，归档时从 agent-loop 上下文提取 -->",
-    "",
-  ].join("\n")
+
+  // 完整对话记录
+  lines.push(`## 对话记录 (${sm.turns.length} 轮)`)
+  for (const t of sm.turns) {
+    const timeStr = new Date(t.timestamp).toISOString().slice(0, 19).replace("T", " ")
+    lines.push(`- [${timeStr}] **${t.role === "assistant" ? "糖糖" : "用户"}**: ${t.text.substring(0, 300)}`)
+  }
+  lines.push("")
+
+  return lines
 }
 
-// ── 持久化辅助 ──
-
-let sessionSaveTimer: ReturnType<typeof setTimeout> | null = null
-
-function scheduleSessionSave(): void {
-  if (sessionSaveTimer) clearTimeout(sessionSaveTimer)
-  sessionSaveTimer = setTimeout(async () => {
-    if (!sessionMemory) return
-    await withLock(async () => {
-      await writeFile("SESSION_MEMORY.md", serializeSessionMemory(sessionMemory!))
-    })
-  }, 300)
+function findTopic(): string {
+  if (!sessionMemory) return "新会话"
+  return findTopicFromTurns(sessionMemory.turns)
 }
 
-/** 立即持久化 SESSION_MEMORY（用于 newSession / archive 后） */
-async function flushSessionMemory(): Promise<void> {
-  if (!sessionMemory) return
-  await withLock(async () => {
-    await writeFile("SESSION_MEMORY.md", serializeSessionMemory(sessionMemory!))
-  })
+function findTopicFromTurns(turns: SessionMemory["turns"]): string {
+  const firstUser = turns.find(t => t.role === "user")
+  return firstUser?.text.substring(0, 20).replace(/[\n\r/\\:*?"<>|]/g, "").trim() || "新会话"
 }
 
-// ── MEMORY.md 即时写回 ──
+/** ★ 从 sessions/*.md 恢复 SessionMemory（启动时或切换会话时调用） */
+async function restoreSessionFromFile(sessionId: string): Promise<void> {
+  if (!sessionsDir) return
+  try {
+    const files = await invoke<string[]>("list_session_files")
+    const match = files.find(f => f.startsWith(sessionId))
+    if (!match) return
+
+    const raw = await readSessionFile(match)
+    if (!raw) return
+
+    const parsed = parseSessionFromFile(raw)
+    if (!parsed) return
+
+    // 提取元信息
+    let startedAt = Date.now()
+    const startMatch = raw.match(/> 开始:\s*(.+)/)
+    if (startMatch) { const d = Date.parse(startMatch[1]); if (!isNaN(d)) startedAt = d }
+
+    sessionMemory = {
+      sessionId,
+      startedAt,
+      turns: parsed.turns,
+      compactionSummary: parsed.summary,
+    }
+    log.info(`从 sessions/ 恢复会话: ${sessionId} (${parsed.turns.length} 轮)`)
+  } catch (e) {
+    log.warn("从 sessions/ 恢复会话失败", e instanceof Error ? e : undefined)
+  }
+}
+
+// ═══════════════════════════════════════════════════
+// Sessions 会话文件结构（新格式）
+// ═══════════════════════════════════════════════════
+//
+// # session-20260622-143000-搭建记忆系统
+// > 开始: 2026-06-22T14:30:00+08:00
+// > 归档: 2026-06-22T15:20:00+08:00
+// > 模式: 助手
+// > 轮数: 12
+//
+// ## 摘要
+// - 主请求: xxx
+// - 关键技术: xxx
+// - 文件/代码: xxx
+// - 问题及解决: xxx
+// - 提交的任务: xxx
+// - 现在的工作: xxx
+// - 下一步: xxx
+//
+// ## 对话记录
+// - [timestamp] **用户**: xxx
+// - [timestamp] **糖糖**: xxx
+
+/** 生成会话文件名: session-YYYYMMDD-HHmmss-主题slug.md */
+function makeSessionFilename(sessionId: string, topic?: string): string {
+  const slug = topic
+    ? topic.replace(/[\n\r/\\:*?"<>|]/g, "").substring(0, 20).trim() || "新会话"
+    : "新会话"
+  return `${sessionId}-${slug}.md`
+}
+
+/** 从会话文件名解析 sessionId 和主题（兼容旧格式无 session- 前缀） */
+function parseSessionFilename(filename: string): { sessionId: string; topic: string } | null {
+  // 新格式: session-YYYYMMDD-HHmmss-主题.md
+  let m = filename.match(/^(session-\d{8}-\d{6})-(.+)\.md$/)
+  if (m) return { sessionId: m[1], topic: m[2] }
+  // 旧格式: YYYYMMDDHH:mm:ss-主题.md（含冒号）
+  m = filename.match(/^(\d{8}\d{2}:\d{2}:\d{2})-(.+)\.md$/)
+  if (m) return { sessionId: `session-${m[1].replace(/:/g, "")}`, topic: m[2] }
+  return null
+}
+
+/** 提取会话文件头部元信息 */
+function parseSessionFileMeta(raw: string): Partial<SessionFileMeta> {
+  const result: Partial<SessionFileMeta> = {}
+  for (const line of raw.split("\n")) {
+    if (line.startsWith("> 开始:")) result.createdAt = line.replace("> 开始:", "").trim()
+    else if (line.startsWith("> 模式:")) result.mode = line.replace("> 模式:", "").trim()
+    else if (line.startsWith("> 轮数:")) result.rounds = parseInt(line.replace("> 轮数:", ""), 10) || 0
+    else if (line.startsWith("# ")) {
+      const parsed = parseSessionFilename(line.replace("# ", "").trim())
+      if (parsed) {
+        result.sessionId = parsed.sessionId
+        result.topic = parsed.topic
+      }
+    }
+  }
+  return result
+}
+
+// ═══════════════════════════════════════════════════
+// 持久化调度
+// ═══════════════════════════════════════════════════
 
 let memorySaveTimer: ReturnType<typeof setTimeout> | null = null
 
@@ -380,28 +558,38 @@ function scheduleMemorySave(): void {
   if (memorySaveTimer) clearTimeout(memorySaveTimer)
   memorySaveTimer = setTimeout(async () => {
     await withLock(async () => {
-      await writeFile("MEMORY.md", serializeMEMORYmd(entries))
+      await writeMemoryFile("MEMORY.md", serializeMEMORYmd(entries))
     })
   }, 200)
 }
 
-/** 立即写回 MEMORY.md（用于 critical 操作后） */
 async function flushMemory(): Promise<void> {
   await withLock(async () => {
-    await writeFile("MEMORY.md", serializeMEMORYmd(entries))
+    await writeMemoryFile("MEMORY.md", serializeMEMORYmd(entries))
   })
 }
 
-/** 写回 Project.md */
-let projectSaveTimer: ReturnType<typeof setTimeout> | null = null
+/** 立即写回 Project.md（同步，不防抖——文件小、写频率低） */
+async function flushProjectSave(): Promise<void> {
+  await withLock(async () => {
+    await writeMemoryFile("Project.md", serializeProjectMd(projectEntries))
+  })
+}
 
-function scheduleProjectSave(): void {
-  if (projectSaveTimer) clearTimeout(projectSaveTimer)
-  projectSaveTimer = setTimeout(async () => {
-    await withLock(async () => {
-      await writeFile("Project.md", serializeProjectMd(projectEntries))
-    })
-  }, 200)
+// ═══════════════════════════════════════════════════
+// 工具函数
+// ═══════════════════════════════════════════════════
+
+function generateId(): string {
+  return crypto.randomUUID?.() ?? `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`
+}
+
+function splitCsv(s: string): string[] {
+  return s.split(",").map(x => x.trim()).filter(Boolean)
+}
+
+function emptyCompactionSummary(): CompactionSummary {
+  return { mainRequest: "", keyTech: [], files: [], problems: "", userMessages: [], tasks: [], currentWork: "", nextSteps: "", generatedAt: Date.now() }
 }
 
 // ═══════════════════════════════════════════════════
@@ -421,95 +609,131 @@ async function ensureInit(): Promise<void> {
 async function doInit(): Promise<void> {
   try {
     memoryDir = await invoke<string>("init_memory_files")
-    // sessions/ 路径
     const dataDir = memoryDir.replace(/\/memory$/, "")
     sessionsDir = `${dataDir}/sessions`
-    log.info("Memory 目录:", memoryDir, "| Sessions:", sessionsDir)
+    log.info("Memory:", memoryDir, "| Sessions:", sessionsDir)
 
-    // 1. 加载 MEMORY.md
-    const memRaw = await readFile("MEMORY.md")
+    // 1. 加载 MEMORY.md → 迁移旧格式
+    const memRaw = await readMemoryFile("MEMORY.md")
     if (memRaw) {
       entries = parseMEMORYmd(memRaw)
-      log.info(`MEMORY.md → ${entries.length} 条长期记忆`)
+      // 迁移：如果还是旧单块格式，立即写回新格式
+      if (!memRaw.includes("## 系统文件") || !memRaw.includes("## 长期记忆")) {
+        log.info("MEMORY.md 格式迁移 → 双块结构")
+        await flushMemory()
+      }
+      log.info(`MEMORY.md → ${entries.length} 条`)
     }
 
-    // 2. 缓存 CANDY.md
-    const candyRaw = await readFile("CANDY.md")
-    if (candyRaw) {
-      const m = candyRaw.match(/##\s*指令\s*\n([\s\S]*?)(?:\n_最后更新|\n##|---|$)/i)
-      cachedCandy = m ? m[1].split("\n").filter(l => { const t = l.trim(); return t && !t.startsWith("<!--") }).join("\n") : ""
-    }
+    // 2. 缓存系统文件
+    cachedCandy = extractSection(await readMemoryFile("CANDY.md"), "## 指令")
+    cachedUser = extractSection(await readMemoryFile("User.md"), "## 用户信息")
 
-    // 3. 缓存 User.md
-    const userRaw = await readFile("User.md")
-    if (userRaw) {
-      const m = userRaw.match(/##\s*用户信息\s*\n([\s\S]*?)(?:\n_最后更新|\n##|---|$)/i)
-      cachedUser = m ? m[1].split("\n").filter(l => { const t = l.trim(); return t && !t.startsWith("<!--") }).join("\n") : ""
-    }
-
-    // 4. 加载 Project.md
-    const projRaw = await readFile("Project.md")
+    // 3. 加载 Project.md
+    const projRaw = await readMemoryFile("Project.md")
     if (projRaw) {
       projectEntries = parseProjectMd(projRaw)
-      log.info(`Project.md → ${projectEntries.length} 个归档会话`)
+      log.info(`Project.md → ${projectEntries.length} 个归档`)
     }
 
-    // 5. ★ 加载或创建 SESSION_MEMORY.md
-    const sessRaw = await readFile("SESSION_MEMORY.md")
-    if (sessRaw && sessRaw.includes("## 对话摘要")) {
-      const parsed = parseSessionMemory(sessRaw)
-      if (parsed && parsed.turns.length >= 0) {
-        sessionMemory = parsed
-        log.info(`SESSION_MEMORY → ${sessionMemory!.sessionId} (${sessionMemory!.turns.length} 轮)`)
-      } else {
-        sessionMemory = newSessionMemory()
-        await flushSessionMemory()
-      }
-    } else {
-      sessionMemory = newSessionMemory()
-      await flushSessionMemory()
-    }
+    // 4. ★ sessionMemory 由 chat.ts 通过 setActiveSession() 设置，此处不创建
+    //    （若此处创建新 ID，会与 chat.ts 恢复的会话 ID 不一致，导致消息写入错误文件）
+    sessionMemory = null
 
-    // 6. 确保长期记忆文件在 MEMORY.md 中有对应条目
-    ensureSystemFilesIndexed()
+    // 5. 确保四个系统文件索引
+    ensureSystemIndex()
+
+    // 5.5 ★ 同步 Project.md: 扫描 sessions/ 补全缺失的归档条目
+    await syncProjectFromSessionsDir()
 
     initialized = true
-    log.info(`Memory 就绪: ${entries.length} 条长期记忆, ${projectEntries.length} 个归档, 当前会话 ${sessionMemory?.turns.length ?? 0} 轮`)
+    log.info(`Memory 就绪: ${entries.length} 记忆, ${projectEntries.length} 归档, ${(sessionMemory as SessionMemory | null)?.turns?.length ?? 0} 轮`)
   } catch (e) {
     log.error("Memory 初始化失败", e instanceof Error ? e : undefined)
-    // 降级：空状态也能工作
-    sessionMemory = newSessionMemory()
+    sessionMemory = null
     initialized = true
   }
 }
 
-/** 确保 CANDY.md / User.md / Outside.md 在 MEMORY.md 中有索引条目 */
-function ensureSystemFilesIndexed(): void {
-  const systemFiles = [
-    { file: "CANDY.md", category: "system", importance: 10, content: "CANDY.md — 用户系统指令" },
-    { file: "User.md", category: "user", importance: 9, content: "User.md — 用户画像与偏好" },
-    { file: "Outside.md", category: "reference", importance: 6, content: "Outside.md — 外部知识指针" },
+/** 从 markdown 文件中提取指定 section 内容 */
+function extractSection(raw: string, sectionHeader: string): string {
+  if (!raw) return ""
+  // 找到 ## sectionHeader 后的内容，到下一个 ## 或 --- 为止
+  const re = new RegExp(`${escapeRegex(sectionHeader)}\\s*\\n([\\s\\S]*?)(?:\\n_最后更新|\\n##|\\n---|$)`, "i")
+  const m = raw.match(re)
+  if (!m) return ""
+  return m[1].split("\n")
+    .filter(l => { const t = l.trim(); return t && !t.startsWith("<!--") })
+    .join("\n")
+}
+
+function escapeRegex(s: string): string {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
+}
+
+/** ★ 从 sessions/ 目录重建 Project.md（移除过期条目 + 补全新文件） */
+async function syncProjectFromSessionsDir(): Promise<void> {
+  if (!sessionsDir) return
+  try {
+    const files = await invoke<string[]>("list_session_files")
+    const rebuilt: ProjectEntry[] = []
+    for (const filename of files) {
+      const parsed = parseSessionFilename(filename)
+      if (!parsed) continue
+      // 读取文件获取实际轮数
+      const raw = await readSessionFile(filename)
+      const turnMatches = raw.match(/^\s*-\s*\[[^\]]+\]\s*\*\*[^*]+\*\*:/gm) || []
+      const rounds = turnMatches.length
+      // 提取主请求
+      let mainRequest = "无"
+      const reqMatch = raw.match(/- 主请求:\s*(.+)/)
+      if (reqMatch) mainRequest = reqMatch[1]
+      // 提取日期
+      let date = new Date().toISOString().slice(0, 10)
+      const startMatch = raw.match(/> 开始:\s*(.+)/)
+      if (startMatch) {
+        try { date = new Date(startMatch[1]).toISOString().slice(0, 10) } catch { /* use today */ }
+      }
+      rebuilt.push({ sessionFile: filename, date, rounds, mainRequest, keyTech: [] })
+    }
+    const diff = projectEntries.length - rebuilt.length
+    projectEntries = rebuilt
+    await flushProjectSave()
+    if (diff !== 0) {
+      log.info(`Project.md 同步: ${rebuilt.length} 条 (${diff > 0 ? "移除" : "新增"} ${Math.abs(diff)} 条)`)
+    }
+  } catch (e) {
+    log.warn("Project.md 同步失败", e instanceof Error ? e : undefined)
+  }
+}
+
+/** 确保 CANDY.md / User.md / Outside.md / Project.md 在 MEMORY.md 有索引 */
+function ensureSystemIndex(): void {
+  const sysFiles = [
+    { file: "CANDY.md", category: "system" as const, importance: 10, content: "CANDY.md — 用户系统指令" },
+    { file: "User.md", category: "user" as const, importance: 9, content: "User.md — 用户画像与偏好" },
+    { file: "Outside.md", category: "reference" as const, importance: 6, content: "Outside.md — 外部知识指针" },
+    { file: "Project.md", category: "project" as const, importance: 8, content: "Project.md — 会话归档指针 → sessions/" },
   ]
-  for (const sf of systemFiles) {
-    const exists = entries.find(e => e.file === sf.file)
-    if (!exists) {
+  let changed = false
+  for (const sf of sysFiles) {
+    if (!entries.find(e => e.file === sf.file)) {
       entries.push({
-        id: crypto.randomUUID?.() ?? `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`,
+        id: generateId(),
         content: sf.content,
         category: sf.category,
         importance: sf.importance,
         file: sf.file,
         timestamp: Date.now(),
       })
+      changed = true
     }
   }
-  if (systemFiles.some(sf => !entries.find(e => e.file === sf.file))) {
-    scheduleMemorySave()
-  }
+  if (changed) scheduleMemorySave()
 }
 
 // ═══════════════════════════════════════════════════
-// 导出服务
+// MemoryService —— 导出
 // ═══════════════════════════════════════════════════
 
 export const MemoryService = {
@@ -521,38 +745,23 @@ export const MemoryService = {
   listByCategory(cat: string): MemoryEntry[] { return entries.filter(e => e.category === cat) },
   get count(): number { return entries.length },
 
-  /**
-   * 添加一条长期记忆。
-   * 如果指定了 file，会同步更新对应长期记忆文件的内容，
-   * 并同时更新 MEMORY.md 索引条目。
-   */
   append(content: string, category = "general", importance = 5, file?: string): MemoryEntry {
     const entry: MemoryEntry = {
-      id: crypto.randomUUID?.() ?? `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`,
+      id: generateId(),
       content,
       timestamp: Date.now(),
-      category,
+      category: category as MemoryEntry["category"],
       importance,
       file,
     }
     entries.push(entry)
     this.trimToMax()
-
-    // 如果关联了长期记忆文件，更新该文件
-    if (file) {
-      this._syncEntryToFile(entry)
-    }
-
-    // importance ≥ 7 且 category=user → 同步到 User.md
-    if (importance >= 7 && category === "user") {
-      this.syncUserProfile()
-    }
-
+    if (file) this._syncEntryToFile(entry)
+    if (importance >= 7 && category === "user") this.syncUserProfile()
     scheduleMemorySave()
     return entry
   },
 
-  /** 搜索长期记忆（简单关键词匹配，按相关性+时间排序） */
   search(keyword: string, limit = 5): MemoryEntry[] {
     const kw = keyword.toLowerCase()
     return entries
@@ -571,18 +780,13 @@ export const MemoryService = {
 
   important(threshold = 8): MemoryEntry[] { return entries.filter(e => e.importance >= threshold) },
 
-  /** 更新一条长期记忆条目 */
   update(id: string, patch: Partial<Pick<MemoryEntry, "content" | "category" | "importance" | "file">>): boolean {
     const idx = entries.findIndex(e => e.id === id)
     if (idx === -1) return false
     const entry = entries[idx]
     Object.assign(entry, patch)
     entry.timestamp = Date.now()
-
-    // 如果关联了文件，同步更新
-    if (entry.file) {
-      this._syncEntryToFile(entry)
-    }
+    if (entry.file) this._syncEntryToFile(entry)
     if ((patch.importance ?? entry.importance) >= 7 && (patch.category ?? entry.category) === "user") {
       this.syncUserProfile()
     }
@@ -590,7 +794,6 @@ export const MemoryService = {
     return true
   },
 
-  /** 删除一条长期记忆条目 */
   remove(id: string): boolean {
     const idx = entries.findIndex(e => e.id === id)
     if (idx === -1) return false
@@ -599,7 +802,6 @@ export const MemoryService = {
     return true
   },
 
-  /** 清空所有长期记忆 */
   clear(): void {
     entries = []
     scheduleMemorySave()
@@ -608,89 +810,68 @@ export const MemoryService = {
   trimToMax(): void {
     const max = memoryConfig.maxEntries
     if (entries.length > max) {
-      // 保留 importance 高的，同 importance 保留新的
       entries.sort((a, b) => b.importance - a.importance || b.timestamp - a.timestamp)
       entries = entries.slice(0, max)
     }
   },
 
-  /** 内部: 将条目内容同步到关联的长期记忆文件 */
   async _syncEntryToFile(entry: MemoryEntry): Promise<void> {
     if (!entry.file) return
     try {
-      const current = await readFile(entry.file)
-      // 简单策略：如果文件只有模板标题，追加内容；否则在文件末尾添加
-      const appendBlock = `\n- [${new Date().toISOString().slice(0, 10)}] ${entry.content}`
-      const updated = current.includes(entry.content)
-        ? current // 已有相同内容，不重复写入
-        : current + appendBlock
-      await writeFile(entry.file, updated)
-    } catch { /* 静默 */ }
+      const current = await readMemoryFile(entry.file)
+      const appendLine = `\n- [${new Date().toISOString().slice(0, 10)}] ${entry.content}`
+      if (!current.includes(entry.content)) {
+        await writeMemoryFile(entry.file, current + appendLine)
+      }
+    } catch { /* silent */ }
   },
 
-  // ── 长期记忆文件管理 ──
+  // ── 系统文件管理 ──
 
-  /** 获取 CANDY.md 指令内容（注入 SystemPrompt） */
   getCandyInstructionsSync(): string {
     return cachedCandy ? `\n\n[用户自定义指令]\n${cachedCandy}` : ""
   },
 
-  /** 更新 CANDY.md 并同步 MEMORY.md 索引 */
   async updateCandy(instructions: string): Promise<boolean> {
-    const md = "# CANDY.md — 用户系统指令\n\n> 类似 CLAUDE.md，用户手写系统指令。\n\n---\n\n## 指令\n\n" + instructions.trim() + `\n\n_最后更新: ${new Date().toISOString().slice(0, 19).replace("T", " ")}_\n`
-    const ok = await writeFile("CANDY.md", md)
+    const md = `# CANDY.md — 用户系统指令\n\n> 类似 CLAUDE.md，用户手写系统指令。\n\n---\n\n## 指令\n\n${instructions.trim()}\n\n_最后更新: ${new Date().toISOString().slice(0, 19).replace("T", " ")}_\n`
+    const ok = await writeMemoryFile("CANDY.md", md)
     if (ok) {
       cachedCandy = instructions.trim()
-      // 更新 MEMORY.md 中 CANDY.md 对应条目
-      const candyEntry = entries.find(e => e.file === "CANDY.md")
-      if (candyEntry) {
-        candyEntry.content = `CANDY.md — 用户系统指令 (${instructions.length} chars)`
-        candyEntry.timestamp = Date.now()
-        scheduleMemorySave()
-      }
+      this._touchSystemEntry("CANDY.md")
     }
     return ok
   },
 
-  /** 获取 User.md 用户画像（注入 SystemPrompt） */
   getUserProfileSync(): string {
     return cachedUser ? `\n\n[关于用户]\n${cachedUser}` : ""
   },
 
-  /** 将 importance ≥ 7 的 user 条目同步到 User.md */
   async syncUserProfile(): Promise<void> {
     const facts = entries
       .filter(e => e.category === "user" && e.importance >= 7)
       .map(e => `- ${e.content}`)
     if (facts.length === 0) return
-    const md = "# User.md — 用户画像\n\n> 自动维护。importance ≥ 7 的 user 类条目自动同步。\n\n---\n\n## 用户信息\n\n" + facts.join("\n") + `\n\n_最后更新: ${new Date().toISOString().slice(0, 19).replace("T", " ")}_\n`
-    const ok = await writeFile("User.md", md)
+    const md = `# User.md — 用户画像\n\n> 自动维护。importance ≥ 7 的 user 类条目自动同步。\n\n---\n\n## 用户信息\n\n${facts.join("\n")}\n\n_最后更新: ${new Date().toISOString().slice(0, 19).replace("T", " ")}_\n`
+    const ok = await writeMemoryFile("User.md", md)
     if (ok) {
       cachedUser = facts.join("\n")
-      // 更新 MEMORY.md 中 User.md 对应条目
-      const userEntry = entries.find(e => e.file === "User.md")
-      if (userEntry) {
-        userEntry.content = `User.md — 用户画像 (${facts.length} 条)`
-        userEntry.timestamp = Date.now()
-        scheduleMemorySave()
-      }
+      this._touchSystemEntry("User.md")
     }
   },
 
-  /** 添加外部知识引用 */
   async addOutsideRef(url: string, description: string): Promise<void> {
-    const raw = await readFile("Outside.md")
+    const raw = await readMemoryFile("Outside.md")
     const entry = `- [${new Date().toISOString().slice(0, 10)}] ${description}: ${url}\n`
     const updated = raw
       ? raw.replace(/(##\s*外部知识\s*\n)/, `$1${entry}`)
       : `# Outside.md\n\n## 外部知识\n\n${entry}\n`
-    await writeFile("Outside.md", updated)
-    // 更新 MEMORY.md 索引
-    const outsideEntry = entries.find(e => e.file === "Outside.md")
-    if (outsideEntry) {
-      outsideEntry.timestamp = Date.now()
-      scheduleMemorySave()
-    }
+    await writeMemoryFile("Outside.md", updated)
+    this._touchSystemEntry("Outside.md")
+  },
+
+  _touchSystemEntry(filename: string): void {
+    const e = entries.find(x => x.file === filename)
+    if (e) { e.timestamp = Date.now(); scheduleMemorySave() }
   },
 
   // ── 会话工作记忆 ──
@@ -700,22 +881,184 @@ export const MemoryService = {
   get sessionTurnCount(): number { return sessionMemory?.turns.length ?? 0 },
   get projectCount(): number { return projectEntries.length },
 
+  /** 获取当前会话的文件名（用于 sessions/ 目录） */
+  getSessionFilename(topic?: string): string {
+    if (!sessionMemory) return ""
+    return makeSessionFilename(sessionMemory.sessionId, topic)
+  },
+
+  /** ★ 设置/恢复活跃会话（chat.ts 创建或切换会话时调用） */
+  async setActiveSession(sessionId: string): Promise<void> {
+    if (sessionMemory?.sessionId === sessionId) return
+    await ensureInit()
+
+    // ★ 尝试从已有 session 文件恢复 turns + startedAt
+    let startedAt = Date.now()
+    let existingTurns: SessionMemory["turns"] = []
+    try {
+      const files = await invoke<string[]>("list_session_files")
+      const match = files.find(f => f.startsWith(sessionId))
+      if (match) {
+        const raw = await readSessionFile(match)
+        if (raw) {
+          const startMatch = raw.match(/> 开始:\s*(.+)/)
+          if (startMatch) { const d = Date.parse(startMatch[1]); if (!isNaN(d)) startedAt = d }
+          // 解析已有 turns
+          existingTurns = parseTurnsFromRaw(raw)
+        }
+      }
+    } catch { /* 静默 */ }
+
+    sessionMemory = {
+      sessionId,
+      startedAt,
+      turns: existingTurns,
+    }
+    log.info("活跃会话已设置:", sessionId, `(${existingTurns.length} 轮已恢复)`)
+  },
+
+  setActiveSessionSync(sessionId: string): void {
+    if (sessionMemory?.sessionId === sessionId) return
+    sessionMemory = {
+      sessionId,
+      startedAt: Date.now(),
+      turns: [],
+    }
+    log.info("活跃会话已设置(sync):", sessionId)
+  },
+
+  /** ★ 创建会话文件在 sessions/ 目录（新建会话时立即调用） */
+  async createSessionFile(sessionId: string): Promise<void> {
+    await ensureInit()
+    this.setActiveSessionSync(sessionId)
+    const filename = makeSessionFilename(sessionId, "新会话")
+    const content = [
+      `# ${sessionId}-新会话`,
+      `> 开始: ${new Date().toISOString()}`,
+      `> 模式: ${modeConfig.assistant ? "助手" : "轻量"}`,
+      `> 轮数: 0`,
+      "",
+      "## 摘要",
+      "<!-- 归档时填充 -->",
+      "",
+      "## 对话记录 (0 轮)",
+      "",
+    ].join("\n")
+    const ok = await writeSessionFile(filename, content)
+    if (ok) {
+      log.info("Session 文件已创建:", `${sessionsDir}/${filename}`)
+      // ★ 同步 Project.md：新增会话指针
+      if (!projectEntries.find(e => e.sessionFile === filename)) {
+        projectEntries.push({
+          sessionFile: filename,
+          date: new Date().toISOString().slice(0, 10),
+          rounds: 0,
+          mainRequest: "新会话",
+          keyTech: [],
+        })
+        await flushProjectSave()
+      }
+    } else {
+      log.error("Session 文件创建失败:", filename, "sessionsDir=", sessionsDir)
+    }
+  },
+
+  /** ★ 从 sessions/ 目录加载指定会话的消息 */
+  async loadSessionMessages(sessionId: string): Promise<{ role: "user" | "assistant"; text: string; timestamp: number }[] | null> {
+    await ensureInit()
+    if (!sessionsDir) { log.warn("loadSessionMessages: sessionsDir 未设置"); return null }
+    try {
+      // 扫描 sessions/ 目录，找到匹配 sessionId 的文件
+      const files = await invoke<string[]>("list_session_files")
+      const match = files.find(f => f.startsWith(sessionId))
+      if (!match) { log.warn("loadSessionMessages: 未找到匹配文件", sessionId, "可用:", files.join(",")); return null }
+
+      const raw = await readSessionFile(match)
+      if (!raw || raw.length < 20) return null
+
+      // 解析对话记录
+      const turns: { role: "user" | "assistant"; text: string; timestamp: number }[] = []
+      let inConversation = false
+      for (const line of raw.split("\n")) {
+        if (line.startsWith("## 对话记录")) { inConversation = true; continue }
+        if (line.startsWith("## ")) { inConversation = false; continue }
+        if (!inConversation) continue
+        const m = line.match(/^-\s*\[([^\]]+)\]\s*\*\*([^*]+)\*\*:\s*(.+)/)
+        if (m) {
+          const ts = Date.parse(m[1])
+          turns.push({
+            role: m[2].trim() === "糖糖" ? "assistant" : "user",
+            text: m[3].trim(),
+            timestamp: isNaN(ts) ? Date.now() : ts,
+          })
+        }
+      }
+      log.info(`从 sessions/ 加载 ${turns.length} 轮对话:`, match)
+      return turns
+    } catch {
+      return null
+    }
+  },
+
+  /** 更新会话主题（首次用户消息后调用），重命名 session 文件 */
+  async updateSessionTopic(topic: string): Promise<void> {
+    if (!sessionMemory || !topic) return
+    const oldName = makeSessionFilename(sessionMemory.sessionId, "新会话")
+    const newName = makeSessionFilename(sessionMemory.sessionId, topic)
+    if (oldName === newName) return
+
+    // 检查旧文件是否存在，存在则重命名
+    try {
+      const oldContent = await readSessionFile(oldName)
+      if (oldContent) {
+        await writeSessionFile(newName, oldContent)
+        // 删除旧文件（通过写入空内容或 Rust 命令）
+        try { await invoke("file_delete", { path: `${sessionsDir}/${oldName}` }) } catch { /* ignore */ }
+      }
+    } catch { /* ignore */ }
+  },
+
   recordTurn(role: "user" | "assistant", text: string): void {
-    if (!sessionMemory) sessionMemory = newSessionMemory()
+    if (!sessionMemory) {
+      log.warn("recordTurn: sessionMemory 为空，创建新会话记忆")
+      sessionMemory = newSessionMemory()
+    }
     sessionMemory.turns.push({ role, text: text.substring(0, 200), timestamp: Date.now() })
-    scheduleSessionSave()
-    // ★ 实时追加到 sessions/<sessionId>.md（非阻塞，静默失败）
+
+    // ★ 轮次计数：每 CONSOLIDATE_INTERVAL 轮触发记忆整理
+    turnCounter++
+    if (turnCounter % CONSOLIDATE_INTERVAL === 0) {
+      log.info(`已达到 ${turnCounter} 轮，触发记忆整理`)
+      this.checkAndConsolidate()
+    }
+
     this.appendTurnToSessionFile(role, text).catch(() => {})
   },
 
-  /**
-   * ★ 实时追加一轮对话到 sessions/<sessionId>.md。
-   * 不依赖 archiveSession，每次 recordTurn 自动写入。
-   * 用户随时能在 sessions/ 目录看到实时增长的会话文件。
-   */
+  /** 实时追加一轮对话到 sessions/<sessionId>-主题.md */
   async appendTurnToSessionFile(role: "user" | "assistant", text: string): Promise<void> {
-    if (!sessionMemory || !sessionsDir) return
-    const filename = `${sessionMemory.sessionId}.md`
+    await ensureInit()
+    if (!sessionMemory) { log.warn("appendTurnToSessionFile: sessionMemory 为空"); return }
+    if (!sessionsDir) { log.warn("appendTurnToSessionFile: sessionsDir 未设置"); return }
+
+    // ★ 先用 sessionId 前缀匹配已有文件，避免 topic 变化导致文件分裂
+    let filename = ""
+    try {
+      const files = await invoke<string[]>("list_session_files")
+      const match = files.find(f => f.startsWith(sessionMemory!.sessionId))
+      if (match) {
+        filename = match
+      }
+    } catch { /* ignore */ }
+
+    // 无已有文件 → 从 turns 取 topic 创建新文件
+    if (!filename) {
+      const topic = sessionMemory.turns.length > 0
+        ? sessionMemory.turns.find(t => t.role === "user")?.text.substring(0, 20)?.replace(/[\n\r/\\:*?"<>|]/g, "").trim() || "新会话"
+        : "新会话"
+      filename = makeSessionFilename(sessionMemory.sessionId, topic)
+    }
+
     try {
       let current = await readSessionFile(filename)
       const timeStr = new Date().toISOString().slice(0, 19).replace("T", " ")
@@ -723,37 +1066,65 @@ export const MemoryService = {
       const turnLine = `- [${timeStr}] **${roleLabel}**: ${text.substring(0, 300)}`
 
       if (!current || current.length < 20) {
-        // 新建会话文件（首轮）
+        const topic = sessionMemory.turns.length > 0
+          ? sessionMemory.turns.find(t => t.role === "user")?.text.substring(0, 20)?.replace(/[\n\r/\\:*?"<>|]/g, "").trim() || "新会话"
+          : "新会话"
         current = [
-          `# ${sessionMemory.sessionId}`,
+          `# ${sessionMemory.sessionId}-${topic}`,
           `> 开始: ${new Date(sessionMemory.startedAt).toISOString()}`,
           `> 模式: ${modeConfig.assistant ? "助手" : "轻量"}`,
+          `> 轮数: 1`,
           "",
-          `## 对话记录`,
+          "## 摘要",
+          "<!-- 归档时填充 -->",
+          "",
+          "## 对话记录 (1 轮)",
           "",
           turnLine,
           "",
         ].join("\n")
       } else {
-        // 追加轮次
+        // ★ 更新元数据：轮数 + 标题（首次用户消息后更新topic）
+        const turnMatches = current.match(/^\s*-\s*\[[^\]]+\]\s*\*\*[^*]+\*\*:/gm) || []
+        const turnCount = turnMatches.length + 1
+        const newTopic = sessionMemory.turns.find(t => t.role === "user")?.text.substring(0, 20)?.replace(/[\n\r/\\:*?"<>|]/g, "").trim() || ""
+        current = current
+          .replace(/^> 轮数: \d+/m, `> 轮数: ${turnCount}`)
+          .replace(/^## 对话记录 \(\d+ 轮\)/m, `## 对话记录 (${turnCount} 轮)`)
+        // 文件名中的topic不更新，但标题行实时同步
+        if (newTopic && current.includes("-新会话")) {
+          current = current.replace(/^# session-\d{8}-\d{6}-新会话/m, `# ${sessionMemory.sessionId}-${newTopic}`)
+        }
         current = current.trimEnd() + "\n" + turnLine + "\n"
       }
       await writeSessionFile(filename, current)
+
+      // ★ 同步更新 Project.md 中的轮数
+      const pe = projectEntries.find(e => e.sessionFile === filename)
+      if (pe) {
+        const turnMatches = current.match(/^\s*-\s*\[[^\]]+\]\s*\*\*[^*]+\*\*:/gm) || []
+        pe.rounds = turnMatches.length
+        await flushProjectSave()
+      }
     } catch (e) {
       log.warn("实时写入 session 文件失败", e instanceof Error ? e : undefined)
     }
   },
 
   async writeCompactionSummary(opts: {
-    mainRequest: string; keyTech: string[]; files: string[]; problems: string
-    userMessages: string[]; currentWork: string; nextSteps: string
+    mainRequest: string; keyTech: string[]; files: string[]
+    problems: string; userMessages: string[]; tasks?: string[]
+    currentWork: string; nextSteps: string
   }): Promise<void> {
     if (!sessionMemory) sessionMemory = newSessionMemory()
-    sessionMemory.compactionSummary = { ...opts, generatedAt: Date.now() }
-    scheduleSessionSave()
-    // 压缩是重要事件，1秒后强制刷新
-    setTimeout(() => flushSessionMemory(), 1000)
-    log.info("压缩摘要已写入 SESSION_MEMORY.md")
+    sessionMemory.compactionSummary = {
+      ...opts,
+      tasks: opts.tasks ?? [],
+      generatedAt: Date.now(),
+    }
+    // ★ 立即同步到 sessions/*.md
+    await syncSessionFile()
+    log.info("压缩摘要已写入 sessions/")
   },
 
   getCompactionSummarySync(): string {
@@ -765,6 +1136,7 @@ export const MemoryService = {
       cs.keyTech.length > 0 ? `关键技术: ${cs.keyTech.join(", ")}` : "",
       cs.files.length > 0 ? `涉及文件: ${cs.files.join(", ")}` : "",
       cs.problems ? `已解决问题: ${cs.problems}` : "",
+      cs.tasks.length > 0 ? `已完成任务: ${cs.tasks.join(", ")}` : "",
       cs.currentWork ? `当前工作: ${cs.currentWork}` : "",
       cs.nextSteps ? `下一步: ${cs.nextSteps}` : "",
     ].filter(l => l.length > 0).join("\n")
@@ -772,47 +1144,22 @@ export const MemoryService = {
 
   // ── 会话归档 → sessions/ + Project.md ──
 
-  /**
-   * 将当前会话归档到 sessions/<sessionId>.md，
-   * 并在 Project.md 中添加指针。
-   */
+  /** 归档当前会话到 sessions/<filename>.md 并更新 Project.md */
   async archiveSession(): Promise<string | null> {
     if (!sessionMemory || sessionMemory.turns.length === 0) return null
     const sid = sessionMemory.sessionId
     const cs = sessionMemory.compactionSummary
+    const firstUser = sessionMemory.turns.find(t => t.role === "user")
+    const topic = findTopic()
+    const filename = makeSessionFilename(sid, topic)
 
-    // 构建完整会话文件
-    const turnLines = sessionMemory.turns.map(t =>
-      `- [${new Date(t.timestamp).toISOString().slice(0, 19)}] **${t.role === "assistant" ? "糖糖" : "用户"}**: ${t.text.substring(0, 200)}`
-    )
+    // ★ 使用 buildSessionFileContent 生成完整内容（含归档标记）
+    const lines = buildSessionFileContent(sessionMemory)
+    // 在元信息区插入归档时间
+    const archiveLine = `> 归档: ${new Date().toISOString()}`
+    lines.splice(3, 0, archiveLine)
 
-    let compactSection = ""
-    if (cs) {
-      compactSection = [
-        "", "## 压缩摘要",
-        `- 主请求: ${cs.mainRequest}`,
-        `- 关键技术: ${cs.keyTech.join(", ") || "无"}`,
-        `- 文件: ${cs.files.join(", ") || "无"}`,
-        `- 问题: ${cs.problems || "无"}`,
-        `- 当前工作: ${cs.currentWork}`,
-        `- 下一步: ${cs.nextSteps || "无"}`,
-      ].join("\n")
-    }
-
-    const fileContent = [
-      `# ${sid}`,
-      `> 开始: ${new Date(sessionMemory.startedAt).toISOString()}`,
-      `> 归档: ${new Date().toISOString()}`,
-      `> 轮数: ${sessionMemory.turns.length}`,
-      "",
-      `## 对话记录 (${sessionMemory.turns.length} 轮)`,
-      ...turnLines,
-      compactSection,
-      "",
-    ].join("\n")
-
-    const filename = `${sid}.md`
-    const ok = await writeSessionFile(filename, fileContent)
+    const ok = await writeSessionFile(filename, lines.join("\n"))
     if (!ok) {
       log.error("会话归档写入失败:", filename)
       return null
@@ -823,35 +1170,83 @@ export const MemoryService = {
       sessionFile: filename,
       date: new Date().toISOString().slice(0, 10),
       rounds: sessionMemory.turns.length,
-      mainRequest: cs?.mainRequest ?? sessionMemory.turns.find(t => t.role === "user")?.text.substring(0, 50) ?? "无",
+      mainRequest: cs?.mainRequest ?? firstUser?.text.substring(0, 50) ?? "无",
       keyTech: cs?.keyTech ?? [],
     })
-    scheduleProjectSave()
+    await flushProjectSave()
 
     log.info(`会话已归档: sessions/${filename} (${sessionMemory.turns.length} 轮) → Project.md`)
 
-    // 重置会话记忆
+    // 重置会话
     sessionMemory = newSessionMemory()
-    await flushSessionMemory()
+    log.info("会话已重置，等待新会话")
 
     return sid
   },
 
-  /** 获取 Project.md 中记录的归档会话列表 */
   getProjectEntries(): ProjectEntry[] { return [...projectEntries] },
 
-  /** 从 sessions/ 读取一个归档会话 */
-  async loadArchivedSession(sessionId: string): Promise<string | null> {
-    const filename = `${sessionId}.md`
+  /** 从 sessions/ 读取归档会话内容 */
+  async loadArchivedSession(filename: string): Promise<string | null> {
     const content = await readSessionFile(filename)
     return content || null
+  },
+
+  // ── Sessions 目录管理 ──
+
+  /** 扫描 sessions/ 目录，返回所有会话文件元信息 */
+  async listSessionFiles(): Promise<SessionFileMeta[]> {
+    await ensureInit()
+    try {
+      const files = await invoke<string[]>("list_session_files")
+      const result: SessionFileMeta[] = []
+      for (const filename of files) {
+        const parsed = parseSessionFilename(filename)
+        if (!parsed) continue
+        // 读取文件头部元信息
+        const raw = await readSessionFile(filename)
+        const meta = parseSessionFileMeta(raw)
+        result.push({
+          filename,
+          sessionId: parsed.sessionId,
+          topic: meta.topic || parsed.topic || "新会话",
+          createdAt: meta.createdAt ?? "",
+          mode: meta.mode ?? "",
+          rounds: meta.rounds ?? 0,
+          size: raw.length,
+        })
+      }
+      return result.sort((a, b) => b.filename.localeCompare(a.filename))
+    } catch (e) {
+      log.warn("列出会话文件失败", e instanceof Error ? e : undefined)
+      console.error("[Memory] listSessionFiles 失败:", e)
+      return []
+    }
+  },
+
+  /** 删除指定的会话文件 */
+  async deleteSessionFile(filename: string): Promise<boolean> {
+    await ensureInit()
+    // 不吞错误：让外层感知到并打印到 DevTools
+    console.log("[Memory] deleteSessionFile:", filename)
+    await invoke("delete_session_file", { filename })
+    projectEntries = projectEntries.filter(e => e.sessionFile !== filename)
+    await flushProjectSave()
+    log.info("会话文件已删除:", filename)
+    console.log("[Memory] 删除完成:", filename)
+    return true
+  },
+
+  /** 删除会话文件并移除 Project.md 指针 */
+  async deleteSessionAndPointer(filename: string): Promise<boolean> {
+    const ok = await this.deleteSessionFile(filename)
+    return ok
   },
 
   // ── 整理 ──
 
   consolidate(): { removed: number; kept: number } {
     const before = entries.length
-    // 简单去重：同内容前 80 字符相同视为重复
     const seen = new Set<string>()
     const unique: MemoryEntry[] = []
     for (const e of [...entries].sort((a, b) => b.importance - a.importance || b.timestamp - a.timestamp)) {
@@ -866,10 +1261,6 @@ export const MemoryService = {
     return { removed, kept: entries.length }
   },
 
-  /**
-   * LLM 驱动的记忆分析整理（助手模式下使用）。
-   * 分析矛盾、合并、过期、调整重要性。
-   */
   async consolidateWithLLM(): Promise<{ removed: number; kept: number; report: string }> {
     if (entries.length < 10) {
       const r = this.consolidate()
@@ -883,12 +1274,7 @@ export const MemoryService = {
     const prompt = [
       "分析以下长期记忆条目，识别问题并以 JSON 返回处理指令：",
       "{merge:[{keepId, removeIds[]}], conflicts:[{id1, id2, reason}], expired:[{id, reason}], adjust:[{id, newImportance, reason}], newFacts:[{content, category, importance}]}",
-      "规则：",
-      "- 内容几乎相同 → merge",
-      "- 互相矛盾 → conflicts",
-      "- 超过30天且importance≤3 → expired",
-      "- importance明显不合理 → adjust",
-      "- 从已有条目可推导的重要事实 → newFacts",
+      "规则：内容几乎相同→merge | 互相矛盾→conflicts | 超过30天且importance≤3→expired | importance明显不合理→adjust | 从已有条目可推导的重要事实→newFacts",
       "",
       dump,
     ].join("\n")
@@ -904,19 +1290,10 @@ export const MemoryService = {
       const json = JSON.parse(jsonText)
       const before = entries.length
 
-      // 执行指令
-      if (json.merge) for (const m of json.merge) {
-        if (m.removeIds) for (const id of m.removeIds) this.remove(id)
-      }
-      if (json.expired) for (const e of json.expired) {
-        if (e.id) this.remove(e.id)
-      }
-      if (json.adjust) for (const a of json.adjust) {
-        if (a.id) this.update(a.id, { importance: a.newImportance })
-      }
-      if (json.newFacts) for (const f of json.newFacts) {
-        if (f.content) this.append(f.content, f.category || "general", f.importance || 5)
-      }
+      if (json.merge) for (const m of json.merge) { if (m.removeIds) for (const id of m.removeIds) this.remove(id) }
+      if (json.expired) for (const e of json.expired) { if (e.id) this.remove(e.id) }
+      if (json.adjust) for (const a of json.adjust) { if (a.id) this.update(a.id, { importance: a.newImportance }) }
+      if (json.newFacts) for (const f of json.newFacts) { if (f.content) this.append(f.content, f.category || "general", f.importance || 5) }
 
       const removed = before - entries.length
       log.info(`LLM 整理完成: ${before} → ${entries.length} (${removed} removed)`)
@@ -936,12 +1313,8 @@ export const MemoryService = {
     return this.consolidate().removed > 0
   },
 
-  // ── Fork Subagent 补记忆 ──
+  // ── Fork 记忆补充 ──
 
-  /**
-   * 后台分析对话摘要，建议新的长期记忆条目。
-   * 只追加新条目，不修改已有条目。
-   */
   async forkMemorySupplement(dialogueSummary: string): Promise<void> {
     if (!modeConfig.assistant || entries.length >= memoryConfig.maxEntries) return
     try {
@@ -971,11 +1344,13 @@ export const MemoryService = {
         }
         log.info(`Fork 补充 ${facts.length} 条记忆 → MEMORY.md`)
       }
-    } catch { /* 静默失败 */ }
+    } catch { /* 静默 */ }
   },
 }
 
-// ── 会话计数（每2次触发整理）──
+// ═══════════════════════════════════════════════════
+// 会话计数 + 定时整理
+// ═══════════════════════════════════════════════════
 
 let sessionEndCounter = 0
 
@@ -987,8 +1362,6 @@ export function onSessionEnd(): void {
     MemoryService.checkAndConsolidate()
   }
 }
-
-// ── 定时整理 (60min) ──
 
 let consolidationTimer: ReturnType<typeof setInterval> | null = null
 
@@ -1005,5 +1378,5 @@ export function stopMemoryConsolidationTimer(): void {
 // ── F12 调试 ──
 if (typeof window !== "undefined") {
   (window as any).__memory = MemoryService
-  log.info("__memory 就绪 (MEMORY.md→文件索引, Project.md→sessions/ 指针)")
+  log.info("__memory 就绪 (MEMORY.md 双块, sessions/ topic文件名)")
 }

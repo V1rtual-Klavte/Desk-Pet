@@ -1,10 +1,12 @@
 <script setup lang="ts">
-import { reactive, ref, computed, onMounted } from "vue";
+import { reactive, ref, onMounted } from "vue";
+import { MemoryService } from "@/services/agent/memory";
+import type { SessionFileMeta } from "@/services/agent/memory";
 
 // ── Session meta ──
 export interface SessionMeta {
   id: string;
-  name: string;       // 自动取第一条用户消息前20字，或"新会话"
+  name: string;
   createdAt: number;
   messageCount: number;
 }
@@ -15,13 +17,20 @@ const ACTIVE_KEY = "deskpet_active_session";
 const sessions = reactive<SessionMeta[]>([]);
 const activeId = ref("");
 
+// ★ 会话历史面板
+const showHistory = ref(false);
+const historyFiles = ref<SessionFileMeta[]>([]);
+const historyLoading = ref(false);
+
 const emit = defineEmits<{
   "switch": [session: SessionMeta];
   "new": [];
-  "archive": [id: string];
+  "close-tab": [id: string];
+  "delete-file": [filename: string];
+  "restore-session": [sf: SessionFileMeta];
 }>();
 
-// ── 加载会话列表 ──
+// ── 加载会话列表（从 chat.ts 同步）──
 function loadSessions(): void {
   try {
     const raw = localStorage.getItem(SESSIONS_KEY);
@@ -31,12 +40,13 @@ function loadSessions(): void {
         sessions.splice(0, sessions.length, ...arr);
       }
     }
-  } catch { /* ignore */ }
-}
-
-function saveSessions(): void {
-  try {
-    localStorage.setItem(SESSIONS_KEY, JSON.stringify([...sessions]));
+    // ★ 同步当前活跃会话 ID
+    const lastId = localStorage.getItem(ACTIVE_KEY);
+    if (lastId && sessions.find(s => s.id === lastId)) {
+      activeId.value = lastId;
+    } else if (sessions.length > 0 && !sessions.find(s => s.id === activeId.value)) {
+      activeId.value = sessions[0].id;
+    }
   } catch { /* ignore */ }
 }
 
@@ -45,44 +55,13 @@ function getActiveId(): string {
   return activeId.value || (sessions.length > 0 ? sessions[0].id : "");
 }
 
-/** 确保至少有一个会话 */
 function ensureSession(): void {
   if (sessions.length === 0) {
-    createSession();
+    // 不在此创建，由父组件 initChat 负责
   }
   if (!activeId.value || !sessions.find(s => s.id === activeId.value)) {
     activeId.value = sessions[0]?.id ?? "";
     localStorage.setItem(ACTIVE_KEY, activeId.value);
-  }
-}
-
-function createSession(): SessionMeta {
-  const now = new Date();
-  const id = `session-${now.toISOString().slice(0, 19).replace(/[:T]/g, "-")}`;
-  const s: SessionMeta = {
-    id,
-    name: "新会话",
-    createdAt: now.getTime(),
-    messageCount: 0,
-  };
-  sessions.unshift(s);
-  saveSessions();
-  return s;
-}
-
-function updateSessionName(id: string, firstUserMsg: string): void {
-  const s = sessions.find(x => x.id === id);
-  if (s && s.name === "新会话" && firstUserMsg) {
-    s.name = firstUserMsg.replace(/\n/g, " ").substring(0, 20);
-    saveSessions();
-  }
-}
-
-function updateMessageCount(id: string, count: number): void {
-  const s = sessions.find(x => x.id === id);
-  if (s) {
-    s.messageCount = count;
-    saveSessions();
   }
 }
 
@@ -96,23 +75,20 @@ function switchTo(id: string): void {
   emit("switch", s);
 }
 
+/** ★ "+" 按钮: 只触发父组件创建，不在此创建 */
 function newSession(): void {
-  const s = createSession();
-  activeId.value = s.id;
-  localStorage.setItem(ACTIVE_KEY, s.id);
   emit("new");
 }
 
+/** 关闭会话标签 */
 function closeSession(id: string): void {
-  if (sessions.length <= 1) return; // 至少保留1个
+  if (sessions.length <= 1) return;
   const idx = sessions.findIndex(x => x.id === id);
   if (idx === -1) return;
 
   const removed = sessions.splice(idx, 1)[0];
-  saveSessions();
-  emit("archive", removed.id);
+  emit("close-tab", removed.id);
 
-  // 如果关闭的是当前活跃的，切换到第一个
   if (activeId.value === id) {
     activeId.value = sessions[0]?.id ?? "";
     localStorage.setItem(ACTIVE_KEY, activeId.value);
@@ -123,51 +99,129 @@ function closeSession(id: string): void {
   }
 }
 
+// ★ 会话历史
+async function toggleHistory() {
+  showHistory.value = !showHistory.value;
+  if (showHistory.value) {
+    await loadHistoryFiles();
+  }
+}
+
+async function loadHistoryFiles(): Promise<void> {
+  historyLoading.value = true;
+  try {
+    historyFiles.value = await MemoryService.listSessionFiles();
+  } catch {
+    historyFiles.value = [];
+  } finally {
+    historyLoading.value = false;
+  }
+}
+
+async function deleteHistoryFile(filename: string): Promise<void> {
+  console.log("[SessionTabs] deleteHistoryFile 点击:", filename)
+  emit("delete-file", filename)
+  // 即时从 UI 移除
+  historyFiles.value = historyFiles.value.filter(f => f.filename !== filename)
+  console.log("[SessionTabs] UI 已移除:", filename)
+}
+
+async function restoreHistorySession(sf: SessionFileMeta): Promise<void> {
+  emit("restore-session", sf)
+  // 即时刷新标签栏（父组件会同步）
+  setTimeout(() => loadSessions(), 300)
+}
+
+function formatDate(isoStr: string): string {
+  if (!isoStr) return ""
+  try {
+    const d = new Date(isoStr)
+    return d.toLocaleDateString("zh-CN", { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" })
+  } catch { return isoStr.substring(0, 10) }
+}
+
+// ★ 滚轮横向滚动（macOS 隐藏滚动条后滚轮不会自动转横向）
+function onWheel(e: WheelEvent) {
+  const row = e.currentTarget as HTMLElement
+  row.scrollLeft += e.deltaY
+}
+
 // ── 暴露给父组件 ──
 defineExpose({
-  createSession,
-  updateSessionName,
-  updateMessageCount,
+  loadSessions,       // 父组件在 createNewSession 后调用刷新
   getActiveId,
   ensureSession,
-  loadSessions,
 });
 
 onMounted(() => {
   loadSessions();
-  // 恢复上次活跃会话
   try {
     const lastId = localStorage.getItem(ACTIVE_KEY);
     if (lastId && sessions.find(s => s.id === lastId)) {
       activeId.value = lastId;
     }
   } catch { /* ignore */ }
-  ensureSession();
+  // 不再在此创建会话，由 chat.ts initSessions 负责
 });
 </script>
 
 <template>
   <div id="session-tabs">
     <div id="st-row">
-      <!-- 会话标签 -->
-      <div
-        v-for="s in sessions"
-        :key="s.id"
-        class="st-tab"
-        :class="{ active: s.id === activeId }"
-        @click="switchTo(s.id)"
-      >
-        <span class="st-name">{{ s.name }}</span>
-        <button
-          v-if="sessions.length > 1"
-          class="st-close"
-          @click.stop="closeSession(s.id)"
-          title="关闭会话"
-        >×</button>
+      <div id="st-tabs-wrap" @wheel.prevent="onWheel">
+        <!-- 会话标签 -->
+        <div
+          v-for="s in sessions"
+          :key="s.id"
+          class="st-tab"
+          :class="{ active: s.id === activeId }"
+          @click="switchTo(s.id)"
+        >
+          <span class="st-name">{{ s.name }}</span>
+          <button
+            v-if="sessions.length > 1"
+            class="st-close"
+            @click.stop="closeSession(s.id)"
+            title="关闭会话"
+          >×</button>
+        </div>
       </div>
 
-      <!-- 新建按钮 -->
-      <button id="st-new" @click="newSession" title="新建会话">+</button>
+      <!-- ★ 按钮区 —— 常驻右侧 -->
+      <div id="st-actions">
+        <button id="st-new" @click="newSession" title="新建会话">+</button>
+        <button id="st-history" @click="toggleHistory" title="会话历史" :class="{ active: showHistory }">
+          📋
+        </button>
+      </div>
+    </div>
+
+    <!-- ★ 会话历史下拉面板 -->
+    <div v-if="showHistory" id="history-panel">
+      <div id="history-header">
+        <span>会话历史 (sessions/)</span>
+        <button id="history-close" @click="showHistory = false">×</button>
+      </div>
+      <div id="history-list">
+        <div v-if="historyLoading" class="history-status">加载中...</div>
+        <div v-else-if="historyFiles.length === 0" class="history-status">暂无归档会话</div>
+        <div
+          v-for="f in historyFiles"
+          :key="f.filename"
+          class="history-item"
+          @click="restoreHistorySession(f)"
+        >
+          <div class="history-info">
+            <span class="history-topic">{{ f.topic }}</span>
+            <span class="history-meta">{{ formatDate(f.createdAt) }} · {{ f.rounds }}轮 · {{ f.mode }}</span>
+          </div>
+          <button
+            class="history-delete"
+            @click.stop="deleteHistoryFile(f.filename)"
+            title="删除此会话文件"
+          >🗑</button>
+        </div>
+      </div>
     </div>
   </div>
 </template>
@@ -178,16 +232,35 @@ onMounted(() => {
   background: #3e1a2e;
   border-bottom: 1px solid #5a3050;
   padding: 4px 4px 0 4px;
+  position: relative;
 }
 #st-row {
+  display: flex;
+  align-items: flex-end;
+  gap: 0;
+}
+#st-tabs-wrap {
   display: flex;
   align-items: flex-end;
   gap: 2px;
   overflow-x: auto;
   overflow-y: hidden;
   scrollbar-width: none;
+  flex: 1;
+  min-width: 0;
+  padding-bottom: 2px;
 }
-#st-row::-webkit-scrollbar { display: none; }
+#st-tabs-wrap::-webkit-scrollbar { display: none; }
+
+/* ★ 按钮区 —— 常驻右侧，不随tab滚动 */
+#st-actions {
+  display: flex;
+  align-items: flex-end;
+  gap: 2px;
+  flex-shrink: 0;
+  padding-left: 4px;
+  padding-bottom: 2px;
+}
 
 .st-tab {
   display: flex;
@@ -204,7 +277,6 @@ onMounted(() => {
   flex-shrink: 0;
   max-width: 100px;
   transition: background 0.15s, color 0.15s;
-  position: relative;
 }
 .st-tab:hover {
   background: #5a3050;
@@ -250,7 +322,6 @@ onMounted(() => {
   flex-shrink: 0;
   width: 22px; height: 22px;
   padding: 0;
-  margin: 0 2px 4px 4px;
   border: 1px solid #6a4060;
   border-radius: 50%;
   background: #4a2540;
@@ -264,5 +335,121 @@ onMounted(() => {
   background: #c4276f;
   color: #fff;
   border-color: #c4276f;
+}
+
+/* ★ 会话历史按钮 */
+#st-history {
+  flex-shrink: 0;
+  width: 22px; height: 22px;
+  padding: 0;
+  border: 1px solid #6a4060;
+  border-radius: 50%;
+  background: #4a2540;
+  color: #8a6080;
+  font-size: 11px;
+  line-height: 20px;
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s;
+}
+#st-history:hover, #st-history.active {
+  background: #c4276f;
+  color: #fff;
+  border-color: #c4276f;
+}
+
+/* ★ 会话历史下拉面板 */
+#history-panel {
+  position: absolute;
+  top: 100%;
+  left: 4px;
+  right: 4px;
+  max-height: 240px;
+  background: #2d1525;
+  border: 1px solid #5a3050;
+  border-top: none;
+  border-radius: 0 0 6px 6px;
+  z-index: 100;
+  display: flex;
+  flex-direction: column;
+  box-shadow: 0 4px 12px rgba(0,0,0,0.4);
+}
+
+#history-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 6px 10px;
+  font-size: 11px;
+  color: #8a6080;
+  border-bottom: 1px solid #4a2540;
+}
+
+#history-close {
+  background: none;
+  border: none;
+  color: #8a6080;
+  cursor: pointer;
+  font-size: 14px;
+  padding: 0 2px;
+}
+#history-close:hover { color: #c4276f; }
+
+#history-list {
+  overflow-y: auto;
+  flex: 1;
+}
+
+.history-status {
+  padding: 16px;
+  text-align: center;
+  color: #6a5060;
+  font-size: 11px;
+}
+
+.history-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 6px 10px;
+  border-bottom: 1px solid #3a1a2e;
+  cursor: pointer;
+  transition: background 0.1s;
+}
+.history-item:hover {
+  background: #3a1a2e;
+}
+
+.history-info {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  overflow: hidden;
+}
+
+.history-topic {
+  font-size: 11px;
+  color: #c0a0b0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.history-meta {
+  font-size: 9px;
+  color: #6a5060;
+}
+
+.history-delete {
+  flex-shrink: 0;
+  background: none;
+  border: none;
+  cursor: pointer;
+  font-size: 12px;
+  padding: 2px 4px;
+  opacity: 0.5;
+  transition: opacity 0.15s;
+}
+.history-delete:hover {
+  opacity: 1;
 }
 </style>

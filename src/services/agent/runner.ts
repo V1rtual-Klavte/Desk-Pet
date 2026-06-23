@@ -35,8 +35,8 @@ export async function initChat(welcomeText?: string): Promise<void> {
     log.info("当前人格: 默认")
   }
 
-  // 初始化会话（从 localStorage 恢复）
-  const sessions = initSessions()
+  // 初始化会话（扫描 sessions/ 目录 + localStorage 缓存）
+  const sessions = await initSessions()
   log.info("会话已恢复:", sessions.length, "个, 活跃:", getActiveSessionId())
 
   if (welcomeText) {

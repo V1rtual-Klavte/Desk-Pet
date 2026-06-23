@@ -48,6 +48,7 @@ function scrollToBottom() {
   const el = msgContainer.value;
   if (!el) return;
   el.scrollTop = el.scrollHeight;
+  isAtBottom.value = true;
   hasNewBelow.value = false;
   nextTick(updateThumb);
 }

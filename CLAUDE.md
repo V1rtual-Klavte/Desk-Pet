@@ -42,15 +42,14 @@ Desk-Pet/
 ├── package.json / pnpm-lock.yaml
 │
 ├── memory/                      # ★ 长期记忆（文件注册表）
-│   ├── MEMORY.md                # ★ 长期记忆索引 → 指向各 .md 文件或独立条目
-│   ├── SESSION_MEMORY.md        # 当前会话工作记忆
+│   ├── MEMORY.md                # ★ 结构化注册表（系统块 + 长期记忆块）
 │   ├── CANDY.md                 # 用户系统指令
 │   ├── User.md                  # 用户画像 (imp≥7 自动同步)
 │   ├── Outside.md               # 外部知识指针
 │   └── Project.md               # ★ 会话归档指针 → sessions/
 │
 ├── sessions/                    # ★ 历史会话归档
-│   └── session-YYYY-MM-DD-HH-mm-ss.md
+│   └── session-YYYYMMDD-HHmmss-主题.md   # 结构化会话文件（元信息→摘要→对话记录）
 │
 ├── skills/                      # ★ Skill 文件目录 (Phase 4)
 │
@@ -170,13 +169,23 @@ Rust 端用 `rust_info!` / `rust_debug!` / `rust_warn!` 宏，格式一致。
 
 ```
 ┌── 会话管理 ──────────────────────────────────────────────┐
-│ SessionTabs (右侧聊天面板顶部) ←→ chat.ts                 │
-│   ├── localStorage "deskpet_sessions"    会话列表          │
-│   ├── localStorage "deskpet_active_session" 活跃ID        │
-│   ├── localStorage "deskpet_chat_<id>"  每会话消息         │
-│   ├── localStorage "deskpet_divider_pos" 分割线位置        │
-│   ├── 每轮 recordTurn → appendTurnToSessionFile()         │
-│   │   └── 实时写入 sessions/<sessionId>.md                │
+│ 启动: sessions/ 扫描 → 重建列表 → localStorage 镜像        │
+│                                                           │
+│ SessionTabs (纯UI, 只emit事件) → App.vue (bridge)         │
+│   ├── emit("switch") → onSessionSwitch → chat.ts          │
+│   │     └── switchToSession + MemoryService.setActiveSession│
+│   ├── emit("new")    → onSessionNew → chat.ts             │
+│   │     └── createNewSession + createSessionFile          │
+│   ├── emit("close-tab") → onSessionClose → chat.ts        │
+│   ├── emit("delete-file") → onDeleteFile → MemoryService  │
+│   │     └── deleteSessionFile + flushProjectSave          │
+│   └── emit("restore-session") → onRestoreSession          │
+│                                                           │
+│ chat.ts (★ 唯一状态管理者)                                │
+│   ├── sessions[] 以 sessions/ 目录为真相源                 │
+│   ├── 切换/恢复时调用 MemoryService.setActiveSession()    │
+│   ├── agent-loop: recordTurn → appendTurnToSessionFile()  │
+│   │   └── 按 sessionId 匹配已有文件，更新 轮数 元数据       │
 │   └── /clear → MemoryService.archiveSession() → Project.md│
 └──────────────────────────────────────────────────────────┘
 
@@ -271,8 +280,9 @@ Dock点击 → onFocusChanged → handleDockPopup() → 屏幕中央淡入
 有配置项修改的地方一定统一写在相应配置文件，并同步CONFIG.yaml和CONFIG-DEV.yaml及其example，以及设置页面、README.md
 当我输入1时，默认从"要求.md"里获取需求
 一定要先给我思路，不要直接改代码，我同意后方可开始编码
-改动必须确认改动后调用链正常，同步更新test.ts测试脚本
+改动必须确认改动后调用链正常，自己测试一遍，确保目录下文件及其内容符合预期，日志正常
 
 ## 核心方针 ##
 轻量化，低内存占用，高性能，token消耗少，功能强
 我的架构设计的md只是大方向，仿照claude code及其他的东西来写的，最终还是要你写的时候自觉地不断补充，自觉完善逻辑来实现
+DESIGN_ORIGIN.md是我的原始草案，架构设计的md是根据这个生成的，并不完全覆盖，所以你参考DESIGN_ORIGIN的比重要大一点

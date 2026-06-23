@@ -22,6 +22,7 @@ use crate::commands::{
     system_info, app_open, clipboard_read, clipboard_write,
     mcp_spawn, mcp_send, mcp_kill,
     get_memory_dir, get_memory_file, get_session_file, init_memory_files,
+    list_session_files, delete_session_file, file_delete,
 };
 
 // ==========================================
@@ -124,6 +125,9 @@ pub fn run() {
             get_memory_file,
             get_session_file,
             init_memory_files,
+            list_session_files,
+            delete_session_file,
+            file_delete,
         ])
         .run(tauri::generate_context!())
         .expect("startup failure");
