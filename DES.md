@@ -1,4 +1,4 @@
-# DES.md — 糖糖桌宠 设计文档
+﻿# DES.md — 糖糖桌宠 设计文档
 
 > 糖糖桌宠 (Desk Pet) 的设计理念、玩法机制与交互说明
 
@@ -352,7 +352,7 @@ playNotificationByBoundary();
 
 | 配置段 | 控制内容 |
 |--------|---------|
-| `ai` | API 端点/Key/模型/上下文数/默认人格/fallback语录 |
+| `ai` | API 端点/Key/requireApiKey/模型/上下文数/默认人格/fallback语录 |
 | `personality` | 人格系统开关/激活人格ID/可用人格卡列表 |
 | `windowMonitor` | 停留秒数/防抖/冷却/同页冷却/额外延迟 |
 | `aiLock` | 生成锁安全超时 |

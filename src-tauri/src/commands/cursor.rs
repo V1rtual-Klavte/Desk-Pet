@@ -13,7 +13,7 @@ use crate::window::enhance_to_iterm_style;
 /// 获取光标位置和所在屏幕信息（返回原始平台坐标，不做 Y 轴翻转）
 /// Windows: (cx, cy, sx, sy, sw, sh) 全部 web 坐标系（左上原点）
 /// macOS:   (cx, cy, sx, sy, sw, sh) Cocoa 坐标系（原点左下），调用方需做 Y 轴翻转
-type CursorScreen = (i32, i32, i32, i32, i32, i32);
+type CursorScreen = (i32, i32, i32, i32, i32, i32, f64, f64);
 
 fn get_cursor_and_screen() -> Result<CursorScreen, String> {
     #[cfg(target_os = "windows")]
@@ -49,7 +49,7 @@ fn get_cursor_and_screen() -> Result<CursorScreen, String> {
         let lsh = (sh as f64 / scale_y).round() as i32;
         rust_debug!("光标(Win): 物({},{}) 逻({},{}) 屏:物({},{} {}x{}) 逻({},{} {}x{}) DPI:({},{})",
             pt.x, pt.y, lx, ly, sx, sy, sw, sh, lsx, lsy, lsw, lsh, dpi_x, dpi_y);
-        return Ok((lx, ly, lsx, lsy, lsw, lsh));
+        return Ok((lx, ly, lsx, lsy, lsw, lsh, scale_x, scale_y));
     }
 
     #[cfg(target_os = "macos")]
@@ -83,7 +83,7 @@ fn get_cursor_and_screen() -> Result<CursorScreen, String> {
             pt.x as i32, pt.y as i32,
             sf.origin.x as i32, sf.origin.y as i32,
             sf.size.width as i32, sf.size.height as i32,
-        ));
+            1.0, 1.0));
     }
 
     #[cfg(not(any(target_os = "windows", target_os = "macos")))]
@@ -114,7 +114,7 @@ pub struct CursorPosition {
 
 #[tauri::command]
 pub fn get_cursor_position() -> Result<CursorPosition, String> {
-    let (cx, cy, sx, sy, sw, sh) = get_cursor_and_screen()?;
+    let (cx, cy, sx, sy, sw, sh, _scale_x, _scale_y) = get_cursor_and_screen()?;
 
     // Windows 已是 web 坐标，macOS 需要 Y 轴翻转
     #[cfg(target_os = "macos")]
@@ -144,6 +144,8 @@ pub struct PopupPosition {
     pub win_y: i32,
     pub cursor_x: i32,
     pub cursor_y: i32,
+    pub scale_x: f64,
+    pub scale_y: f64,
 }
 
 #[tauri::command]
@@ -157,7 +159,7 @@ pub fn compute_popup_position(app: tauri::AppHandle, win_w: i32, win_h: i32) -> 
         let _ = win.set_focus();
     }
 
-    let (cx, cy, sx, sy, sw, sh) = get_cursor_and_screen()?;
+    let (cx, cy, sx, sy, sw, sh, scale_x, scale_y) = get_cursor_and_screen()?;
 
     // ── Cocoa → web 坐标转换（Y 轴翻转） ──
     #[cfg(target_os = "macos")]
@@ -175,5 +177,5 @@ pub fn compute_popup_position(app: tauri::AppHandle, win_w: i32, win_h: i32) -> 
     rust_debug!("弹窗位置 web: win({},{}) cursor({},{}) 屏:({},{} {}x{})",
         win_x, win_y, web_cx, web_cy, sx, sy, sw, sh);
 
-    Ok(PopupPosition { win_x, win_y, cursor_x: web_cx, cursor_y: web_cy })
+    Ok(PopupPosition { win_x, win_y, cursor_x: web_cx, cursor_y: web_cy, scale_x, scale_y })
 }

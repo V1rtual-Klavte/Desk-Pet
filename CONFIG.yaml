@@ -1,4 +1,4 @@
-# ==========================================
+﻿# ==========================================
 # 糖糖桌宠 全局配置
 # 修改此文件后重新 pnpm tauri dev 即可热更新
 # ==========================================
@@ -12,6 +12,7 @@ ai:
   provider: deepseek           # deepseek | openai | ollama | custom
   endpoint: https://api.deepseek.com
   apiKey: ""                   # 留空则读环境变量 VITE_API_KEY
+  requireApiKey: true          # 是否需要 API Key（本地 Ollama/LM Studio 可设为 false）
   model: deepseek-chat
   contextMaxTokens: 16000     # 上下文窗口上限 (tokens)，用于利用率计算
   thinkingEffort: "auto"       # auto | low | medium | high — 思考强度

@@ -1,4 +1,4 @@
-<script setup lang="ts">
+﻿<script setup lang="ts">
 import { ref, computed, onMounted, onUnmounted } from "vue";
 import { WebviewWindow, getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
 import { LogicalSize } from "@tauri-apps/api/dpi";
@@ -60,6 +60,7 @@ const aiContextMaxTokens = ref(aiConfig.contextMaxTokens);
 const aiSystemPrompt = ref(aiConfig.defaultSystemPrompt);
 const showApiKey = ref(false);
 
+const aiRequireApiKey = ref(aiConfig.requireApiKey);
 // ── 窗口监控 ──
 const wmEnabled = ref(windowMonitorConfig.enabled);
 const wmStaySeconds = ref(windowMonitorConfig.staySeconds);
@@ -171,6 +172,7 @@ async function doSave() {
   setOverrides({
     "ai.endpoint": aiEndpoint.value,
     "ai.apiKey": aiApiKey.value,
+    "ai.requireApiKey": aiRequireApiKey.value,
     "ai.model": aiModel.value,
     "ai.contextMaxTokens": aiContextMaxTokens.value,
     "ai.defaultSystemPrompt": aiSystemPrompt.value,
@@ -281,6 +283,13 @@ onUnmounted(() => {
           <span class="s-fname">密钥</span>
           <input class="s-input" :type="showApiKey ? 'text' : 'password'" v-model="aiApiKey" />
           <button class="s-btn-mini" @click="showApiKey = !showApiKey">{{ showApiKey ? '🙈' : '👁' }}</button>
+        </div>
+        <div class="s-field">
+          <span class="s-fname">需要密钥</span>
+          <label class="radio-item">
+            <input type="checkbox" v-model="aiRequireApiKey" />
+            <span>关闭后可在本地 Ollama 等无密钥环境使用</span>
+          </label>
         </div>
         <div class="s-field">
           <span class="s-fname">模型</span>

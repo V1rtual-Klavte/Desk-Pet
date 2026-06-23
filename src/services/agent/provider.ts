@@ -1,4 +1,4 @@
-// ==========================================
+﻿// ==========================================
 // Agent Provider —— 统一 OpenAI 兼容 Provider
 // 支持 DeepSeek / OpenAI / Ollama / LM Studio 等
 // Phase 2: 支持工具调用 (function_call) + 思考强度参数
@@ -65,7 +65,7 @@ export class OpenAICompatibleProvider implements AIProvider {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
-          Authorization: "Bearer " + config.apiKey,
+          ...(config.apiKey ? { Authorization: "Bearer " + config.apiKey } : {}),
         },
         body,
       })

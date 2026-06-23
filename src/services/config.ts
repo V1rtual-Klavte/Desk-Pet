@@ -1,4 +1,4 @@
-// ==========================================
+﻿// ==========================================
 // 全局配置 —— 从根目录 CONFIG.yaml 加载
 // 所有模块都应从此处读取配置，不自行定义常量
 // 运行时用户设置通过 localStorage 持久化覆盖 CONFIG 默认值
@@ -25,6 +25,7 @@ interface Config {
     provider: string;
     endpoint: string;
     apiKey: string;
+    requireApiKey: boolean;
     model: string;
     contextMaxTokens: number;
     thinkingEffort: string;
@@ -240,6 +241,8 @@ const _ai = {
   get model() { return overrideOr("ai.model", cfg.ai.model || import.meta.env.VITE_MODEL || "deepseek-chat"); },
   get contextMaxTokens() { return overrideOr("ai.contextMaxTokens", cfg.ai.contextMaxTokens ?? 16000); },
   get thinkingEffort() { return overrideOr("ai.thinkingEffort", cfg.ai.thinkingEffort || "auto") as import("@/services/agent/types").ThinkingEffort; },
+  /** 是否需要 API Key（本地 Ollama 等可关闭） */
+	  get requireApiKey() { return overrideOr("ai.requireApiKey", cfg.ai.requireApiKey ?? true); },
   get thinkingBudget() {
     return {
       low: overrideOr("ai.thinkingBudget.low", cfg.ai.thinkingBudget?.low ?? 1000),
@@ -250,7 +253,7 @@ const _ai = {
   get defaultSystemPrompt() { return overrideOr("ai.defaultSystemPrompt", cfg.ai.defaultSystemPrompt || "你叫糖糖，是一个在直播的虚拟主播。"); },
   get fallbackReplies() { return overrideOr("ai.fallbackReplies", cfg.ai.fallbackReplies || ["嗯嗯～"]); },
   /** 是否已配置 API */
-  get configured() { return Boolean(this.endpoint && this.apiKey); },
+  get configured() { if (!this.endpoint) return false; if (!this.requireApiKey) return true; return Boolean(this.apiKey); },
 };
 export const aiConfig = _ai;
 

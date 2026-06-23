@@ -1,4 +1,4 @@
-# ==========================================
+﻿# ==========================================
 # 本地开发配置（不入 git）模版 — 使用时去除 .example 后缀
 # enabled: true  → 使用此文件全部配置
 # enabled: false → 回退到 CONFIG.yaml
@@ -16,6 +16,7 @@ ai:
   provider: deepseek # deepseek | openai | ollama | custom
   endpoint:
   apiKey: "" # 留空则读环境变量 VITE_API_KEY
+  requireApiKey: true # 是否需要 API Key（本地 Ollama/LM Studio 可设为 false）
   model: deepseek-chat
   contextMaxTokens: 16000     # 上下文窗口上限 (tokens)
   thinkingEffort: "auto"       # auto | low | medium | high — 思考强度
