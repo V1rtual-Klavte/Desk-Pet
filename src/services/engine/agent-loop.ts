@@ -6,7 +6,7 @@
 
 import type { Message } from "@/services/agent/types"
 import { createMessageId, createToolMessage } from "@/services/agent/types"
-import { buildContext, shouldCompact, compactMessages } from "@/services/context/builder"
+import { buildContext } from "@/services/context/builder"
 import { executeTool } from "@/services/tool/router"
 import { getToolByName } from "@/services/tool/registry"
 import { checkSafety } from "@/services/safety/checker"
@@ -20,6 +20,7 @@ import { createLogger } from "@/services/logger"
 import { emit } from "@tauri-apps/api/event"
 import { updateRequestStats } from "@/services/debug"
 import { MemoryService } from "@/services/agent/memory"
+import { shouldCompact, compactMessages, estimateTokens, compactIncremental, compactOnHighUsage } from "./compactor"
 
 const log = createLogger("AgentLoop")
 
@@ -88,6 +89,8 @@ export async function runAgentLoop(input: AgentLoopInput): Promise<AgentLoopOutp
       transition("WAITING")
       // ── 记录助理轮次 + 后台补记忆 ──
       MemoryService.recordTurn("assistant", result.reply)
+      // ★ 轮次结束后检测是否需要压缩会话
+      compactOnHighUsage(chatMessages, userText)
       if (modeConfig.assistant) {
         MemoryService.forkMemorySupplement(
           `用户: ${userText.substring(0, 200)}\n糖糖: ${result.reply.substring(0, 200)}`
@@ -174,22 +177,20 @@ async function runLoopIteration(opts: {
     // ── 上下文压缩检测 ──
     if (shouldCompact(ctx.estimatedSystemTokens + convTokens, ctx.contextMaxTokens)) {
       const before = loopMessages.length
-      const compacted = compactMessages(loopMessages, ctx.systemPrompt)
+      const compacted = compactMessages(loopMessages)
       loopMessages.length = 0
       loopMessages.push(...compacted)
-      // ★ 生成结构化摘要写入 sessions/*.md
-      const userMsgs = compacted.filter(m => m.role === "user").map(m => m.text)
-      MemoryService.writeCompactionSummary({
-        mainRequest: userMsgs[userMsgs.length - 1]?.substring(0, 100) || userText.substring(0, 100),
-        keyTech: extractTechKeywords(compacted.map(m => m.text).join(" ")),
-        files: extractFilePaths(compacted.map(m => m.text).join(" ")),
-        problems: "",
-        userMessages: userMsgs.slice(-3),
-        tasks: [userText.substring(0, 100)],
-        currentWork: userText.substring(0, 100),
-        nextSteps: "",
-      })
-      log.info("上下文已压缩 + 结构摘要:", before, "→", compacted.length, "条消息")
+
+      // ★ 增量压缩：LLM 生成结构化摘要 → 异步写回 sessions/*.md
+      compactIncremental(
+        loopMessages,  // 压缩后的消息列表（含摘要占位 + 近40%原始消息）
+        MemoryService.getCompactionSummarySync() || null,
+        userText,
+      ).then(summary => {
+        if (summary) log.info("增量压缩完成:", summary.mainRequest.substring(0, 50))
+      }).catch(() => {})
+
+      log.info("上下文已压缩:", before, "→", compacted.length, "条消息")
     }
 
     if (toolCalls.length === 0) {
@@ -304,35 +305,6 @@ async function runLoopIteration(opts: {
   }
 
   return { reply: finalReply, toolCallHistory }
-}
-
-/** 估算消息列表的 token 数（简单按字符/2.5估算） */
-function estimateTokens(msgs: Message[]): number {
-  let total = 0
-  for (const m of msgs) {
-    total += m.text.length
-    if (m.toolCalls) total += JSON.stringify(m.toolCalls).length
-    if (m.thinking) total += m.thinking.length
-  }
-  return Math.ceil(total / 2.5)
-}
-
-/** 从文本中提取技术关键词 */
-function extractTechKeywords(text: string): string[] {
-  const techTerms = [
-    "MySQL", "PostgreSQL", "SQLite", "Redis", "Docker", "Kubernetes", "React", "Vue",
-    "TypeScript", "JavaScript", "Python", "Rust", "Go", "Java", "C++", "CSS", "HTML",
-    "API", "REST", "GraphQL", "JSON", "YAML", "Git", "Linux", "macOS", "Windows",
-    "索引", "查询优化", "B+树", "事务", "锁", "并发", "缓存", "消息队列",
-    "Nginx", "Apache", "Node.js", "Express", "Next.js", "Tauri", "Vite",
-    "数据库", "前端", "后端", "部署", "测试", "调试", "重构", "算法",
-  ]
-  return techTerms.filter(t => text.toLowerCase().includes(t.toLowerCase())).slice(0, 5)
-}
-
-function extractFilePaths(text: string): string[] {
-  const matches = text.match(/[\w/.\\-]+\.[\w]{1,6}/g)
-  return matches ? [...new Set(matches)].slice(0, 5) : []
 }
 
 /** 将人格效果收集到列表，并发射 expression 事件供 UI 响应 */

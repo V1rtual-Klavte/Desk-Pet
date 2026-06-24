@@ -499,7 +499,7 @@ async function testPlan() {
 
 async function testCompact() {
   section("上下文压缩")
-  const { shouldCompact, compactMessages } = await import("@/services/context/builder")
+  const { shouldCompact, compactMessages } = await import("@/services/engine/compactor")
 
   ok("95% 应压缩", shouldCompact(9500, 10000))
   ok("50% 不压缩", !shouldCompact(5000, 10000))
@@ -518,7 +518,7 @@ async function testCompact() {
     { id: "10", role: "assistant" as const, text: "不客气～", timestamp: 10 },
   ]
 
-  const compacted = compactMessages(msgs, "test system prompt")
+  const compacted = compactMessages(msgs)
   ok("压缩后更少", compacted.length < msgs.length, `${msgs.length} → ${compacted.length}`)
   ok("第一条是摘要", compacted[0]?.role === "tool", `role: ${compacted[0]?.role}`)
   ok("摘要含 '对话摘要'", compacted[0]?.text.includes("对话摘要") ?? false)

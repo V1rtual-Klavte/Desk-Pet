@@ -32,8 +32,6 @@ export interface BuildContextOutput {
   contextMaxTokens: number
 }
 
-const COMPACT_THRESHOLD = 0.95
-
 // ── 工具关键词（用于判断是否需要注入工具声明）──
 const TOOL_KEYWORDS = [
   "帮我", "查看", "打开", "搜索", "找", "整理", "分析", "检查",
@@ -120,41 +118,4 @@ function decideToolInject(userText: string, isActiveMessage: boolean): ToolDecla
 
 function hasToolKeyword(text: string): boolean {
   return TOOL_KEYWORDS.some(kw => text.includes(kw))
-}
-
-export function shouldCompact(estimatedUsage: number, totalBudget: number): boolean {
-  return estimatedUsage / totalBudget >= COMPACT_THRESHOLD
-}
-
-/**
- * 压缩消息列表：将旧消息替换为摘要，释放 token 预算。
- * 保留最近 40% 消息，其余压缩为一条摘要。
- */
-export function compactMessages(messages: Message[], systemPrompt: string): Message[] {
-  const keepCount = Math.max(1, Math.floor(messages.length * 0.4))
-  const toCompact = messages.slice(0, messages.length - keepCount)
-  const toKeep = messages.slice(messages.length - keepCount)
-
-  if (toCompact.length === 0) return messages
-
-  // 从旧消息中提取关键信息生成摘要
-  const summaryLines: string[] = []
-  for (const m of toCompact) {
-    if (m.role === "user") summaryLines.push(`用户: ${m.text.substring(0, 120)}`)
-    else if (m.role === "assistant") summaryLines.push(`糖糖: ${m.text.substring(0, 120)}`)
-    // tool 消息跳过
-  }
-
-  const compactedText = `[对话摘要] 之前的对话要点:\n${summaryLines.join("\n")}`
-
-  const summaryMsg: Message = {
-    id: `compact-${Date.now()}`,
-    role: "tool",
-    text: compactedText,
-    timestamp: Date.now(),
-    toolCallId: "context-compaction",
-  }
-
-  log.debug(`上下文压缩: ${messages.length} → ${keepCount + 1} (裁剪 ${toCompact.length} 条)`)
-  return [summaryMsg, ...toKeep]
 }

@@ -30,7 +30,7 @@ export {
 } from "./thinking"
 
 // ── Context ──
-export { buildContext, shouldCompact, compactMessages } from "@/services/context/builder"
+export { buildContext } from "@/services/context/builder"
 export type { BuildContextInput, BuildContextOutput } from "@/services/context/builder"
 
 // ── Plan ──
@@ -40,3 +40,6 @@ export type { PlanResult } from "./plan"
 // ── Slash ──
 export { initSlashCommands, search as searchSlashCommands, find as findSlashCommand, listAll as listAllSlashCommands } from "./slash"
 export type { SlashCommand, SlashMatch } from "./slash"
+
+// ── Compactor ──
+export { shouldCompact, compactMessages, estimateTokens, compactIncremental, compactFull, compactOnHighUsage } from "./compactor"
