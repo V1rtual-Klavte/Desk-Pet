@@ -74,7 +74,9 @@ export async function sendMessage(text: string): Promise<{
 
     if (preResult.handled) {
       if (preResult.response) {
-        pushAssistantMessage(preResult.response)
+        // slash 命令输出 → 以系统消息推送
+        const { pushSystemMessage } = await import("./chat");
+        pushSystemMessage(preResult.response)
         transition("WAITING")
         return {
           reply: preResult.response,

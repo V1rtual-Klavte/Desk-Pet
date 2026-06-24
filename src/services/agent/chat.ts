@@ -22,7 +22,7 @@
 
 import { reactive, ref } from "vue"
 import type { Message } from "./types"
-import { createUserMessage, createAssistantMessage } from "./types"
+import { createUserMessage, createAssistantMessage, createSystemMessage } from "./types"
 import { createLogger } from "@/services/logger"
 
 const log = createLogger("Chat")
@@ -515,6 +515,13 @@ export function pushUserMessage(text: string): Message {
   }
   if (activeSessionId) updateSessionMessageCount(activeSessionId)
 
+  return msg
+}
+
+export function pushSystemMessage(text: string): Message {
+  const msg = createSystemMessage(text)
+  chatHistory.push(msg)
+  saveHistory()
   return msg
 }
 

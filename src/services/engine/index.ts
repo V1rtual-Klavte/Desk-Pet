@@ -36,3 +36,7 @@ export type { BuildContextInput, BuildContextOutput } from "@/services/context/b
 // ── Plan ──
 export { planStep } from "./plan"
 export type { PlanResult } from "./plan"
+
+// ── Slash ──
+export { initSlashCommands, search as searchSlashCommands, find as findSlashCommand, listAll as listAllSlashCommands } from "./slash"
+export type { SlashCommand, SlashMatch } from "./slash"

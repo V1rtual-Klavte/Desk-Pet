@@ -1,9 +1,11 @@
 // ==========================================
 // 核心引擎 —— PreProcessor
 // Slash 命令处理 + 空消息/重复消息过滤
+// 所有命令统一通过 slash/registry 查找执行
 // ==========================================
 
 import { createLogger } from "@/services/logger"
+import { find } from "./slash/registry"
 
 const log = createLogger("PreProc")
 
@@ -21,7 +23,7 @@ let lastUserTime = 0
 
 /**
  * 预处理用户输入。
- * - slash 命令 → 直接处理返回
+ * - slash 命令 → 查找注册表并执行
  * - 空/纯空格 → 跳过
  * - 短时间重复 → 跳过（30s 内相同文本）
  */
@@ -35,8 +37,26 @@ export async function preProcess(rawText: string): Promise<PreProcessResult> {
 
   // ── Slash 命令 ──
   if (text.startsWith("/")) {
-    const result = await handleSlashCommand(text)
-    return { handled: true, response: result, text: "" }
+    const cmdText = text.slice(1) // 去掉开头的 /
+    const cmd = find(cmdText)
+
+    if (cmd) {
+      try {
+        const result = await cmd.execute()
+        if (result !== null) {
+          return { handled: true, response: result, text: "" }
+        }
+        // result === null → 命令已执行但不需要显示回复（如表情切换）
+        return { handled: true, text: "" }
+      } catch (e) {
+        log.error("命令执行失败:", cmdText, e)
+        return { handled: true, response: "命令执行出错…", text: "" }
+      }
+    }
+
+    // / 开头但未注册的命令 → 透传给 AI（用户可能在问 "/etc 是什么"）
+    log.debug("未注册的 slash 输入，透传 AI:", cmdText)
+    return { handled: false, text }
   }
 
   // ── 去重 ──
@@ -49,43 +69,4 @@ export async function preProcess(rawText: string): Promise<PreProcessResult> {
   lastUserTime = now
 
   return { handled: false, text }
-}
-
-// ── Slash 命令注册表 ──
-
-const commands: Record<string, () => Promise<string>> = {
-  "/help": async () =>
-    "可用命令:\n" +
-    "  /help — 显示帮助\n" +
-    "  /clear — 清空对话\n" +
-    "  /memory clean — 清理记忆",
-
-  "/clear": async () => {
-    const { clearHistory } = await import("@/services/agent/chat")
-    const { MemoryService, onSessionEnd } = await import("@/services/agent/memory")
-    // 归档当前会话到 sessions/<sessionId>.md + 更新 Project.md 指针
-    await MemoryService.archiveSession()
-    clearHistory()
-    onSessionEnd()
-    return "对话已清空，会话已归档到 sessions/ ～"
-  },
-
-  "/memory clean": async () => {
-    const { MemoryService } = await import("@/services/agent/memory")
-    MemoryService.clear()
-    return "记忆已清理～"
-  },
-}
-
-async function handleSlashCommand(text: string): Promise<string> {
-  const handler = commands[text]
-  if (handler) {
-    try {
-      return await handler()
-    } catch (e) {
-      log.error("命令执行失败:", text, e)
-      return "命令执行出错…"
-    }
-  }
-  return "未知命令。输入 /help 查看可用命令～"
 }

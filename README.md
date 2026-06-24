@@ -191,7 +191,7 @@ Desk-Pet/
 | 发送消息 | `Enter` |
 | 换行 | `Shift+Enter` |
 
-聊天命令：输入 `smile` `sleep` `gaoo` `chu` `superchat` `open win` `/help` `/clear` 等。
+聊天命令：输入 `/` 弹出下拉框查看所有命令（`/help` `/clear` `/smile` `/sleep` `/win open` 等）。
 
 ---
 

@@ -61,13 +61,16 @@ Desk-Pet/
 │   │   └── winsim/              # Windows 模拟器彩蛋
 │   ├── services/
 │   │   ├── engine/              # ★ 核心引擎 (Phase 2)
-│   │   │   ├── index.ts         # 统一导出
+│   │   │   ├── index.ts         # 统一导出 (含 Slash 命令)
 │   │   │   ├── agent-loop.ts    # ★ Agent Loop — 多轮工具调用核心循环 + 上下文压缩
 │   │   │   ├── preprocessor.ts  # Slash命令 + 空/重复消息过滤
 │   │   │   ├── parser.ts        # AI输出解析 (function_call/纯文本/思考)
 │   │   │   ├── session.ts       # 会话状态机 (WAITING→PRE→GENERATING→EXECUTING)
 │   │   │   ├── thinking.ts      # ★ 思考强度决策 (auto/low/medium/high)
-│   │   │   └── plan.ts          # ★ Plan 步骤 (助手模式复杂任务预判拆解)
+│   │   │   ├── plan.ts          # ★ Plan 步骤 (助手模式复杂任务预判拆解)
+│   │   │   └── slash/           # ★ Slash 命令系统
+│   │   │       ├── index.ts / types.ts / registry.ts
+│   │   │       └── commands/    # help/clear/memory/expression/win
 │   │   ├── personality/         # ★ 人格模块
 │   │   │   ├── index.ts
 │   │   │   ├── types.ts / loader.ts / registry.ts / boundary.ts

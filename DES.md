@@ -182,21 +182,35 @@ macOS 未签名构建下系统通知无法实现：tauri-plugin-notification 需
 - 收回使用 `cubic-bezier(0.36, 0, 0.66, -0.56)` 加速缩入
 - 动画期间设 `isAnimating` 锁，防止重复触发
 
-### 3.2 聊天命令
+### 3.2 聊天命令（统一 Slash 系统）
 
-在聊天框输入特定关键词会触发角色表情切换：
+在聊天框输入 `/` 会弹出下拉框，显示所有可用命令及简介。支持键盘导航（↑↓选择 + Enter确认 + Esc关闭）和鼠标点击。
 
-| 输入 | 效果 |
+所有命令统一通过 `src/services/engine/slash/` 系统注册和执行：
+
+| 命令 | 说明 |
 |------|------|
-| `smile` | 微笑表情 |
-| `sleep` / `困` | 困倦表情 |
-| `gaoo` | 生气咆哮 |
-| `superchat` | SC 感谢 |
-| `chu` | 飞吻 |
-| `you` | 毒舌 |
-| `business` | 业务洽谈 |
-| `open win` | 打开 Windows 模拟器 |
-| `close win` | 关闭模拟器 |
+| `/help` | 显示所有可用命令 |
+| `/clear` | 归档当前会话并清空对话 |
+| `/memory clean` | 清理所有长期记忆 |
+| `/smile` | 切换表情为 😊 微笑 |
+| `/sleep` | 切换表情为 😴 困倦 |
+| `/gaoo` | 切换表情为 😠 生气 |
+| `/chu` | 切换表情为 💋 飞吻 |
+| `/superchat` | 切换表情为 💰 SC感谢 |
+| `/business` | 切换表情为 💼 业务洽谈 |
+| `/you` | 切换表情为 😏 毒舌 |
+| `/win open` | 打开 Windows 模拟器彩蛋 |
+| `/win close` | 关闭 Windows 模拟器 |
+
+**命令执行流程**：
+```
+用户输入 / → ChatPanel 下拉框出现 → 继续输入过滤 → 选中确认
+  → SlashCommand.execute() → 表情切换(emit事件) / 文本回复(pushAssistantMessage)
+  → 不调 AI，纯本地执行
+```
+
+**未注册的 / 开头文本**（如 `/etc`）会透传给 AI 正常对话。
 
 ### 3.3 F12 控制台调试命令
 
@@ -458,7 +472,10 @@ src/services/
 │   ├── parser.ts          # AI输出解析 (function_call/纯文本/思考)
 │   ├── session.ts         # 会话状态机 (WAITING→PRE→GENERATING→EXECUTING)
 │   ├── thinking.ts        # ★ 思考强度决策 (auto/low/medium/high)
-│   └── plan.ts            # ★ Plan 步骤 (助手模式复杂任务预判拆解)【关键词桩】
+│   ├── plan.ts            # ★ Plan 步骤 (助手模式复杂任务预判拆解)【关键词桩】
+│   └── slash/             # ★ Slash 命令系统
+│       ├── index.ts / types.ts / registry.ts
+│       └── commands/      # help/clear/memory/expression/win
 │
 ├── personality/           # ★ 人格模块
 │   ├── middleware.ts      # ★ 人格中间件（包裹所有Agent阶段）

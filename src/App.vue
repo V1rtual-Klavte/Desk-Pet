@@ -12,7 +12,6 @@ import StreamView from "./components/StreamView.vue";
 import ChatPanel from "./components/ChatPanel.vue";
 import SessionTabs from "./components/SessionTabs.vue";
 import WinSim from "./components/winsim/WinSim.vue";
-import { handleCommand } from "./services/command-handler";
 import { initWindowListener } from "./services/window";
 import { initChat, chatHistory, startMemoryConsolidationTimer, MemoryService, switchToSession, createNewSession, addSession, removeSession, getSessions, getActiveSessionId, initWelcome, createUserMessage, createAssistantMessage } from "@/services/agent";
 import type { SessionFileMeta } from "@/services/agent/memory";
@@ -84,8 +83,8 @@ function onDividerMousedown(e: MouseEvent) {
   document.addEventListener("mouseup", onUp);
 }
 
-function onChatSend(text: string) {
-  handleCommand(text, streamRef.value);
+function onChatSend(_text: string) {
+  // Slash 命令和表情切换现在由 ChatPanel 内部处理 (slash/ 系统)
 }
 
 /** 切换会话 */
