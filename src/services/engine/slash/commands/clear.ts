@@ -9,7 +9,7 @@ export const clearCommand: SlashCommand = {
   description: "归档当前会话并清空对话",
   category: "session",
   async execute() {
-    const { clearHistory } = await import("@/services/agent/chat")
+    const { clearHistory } = await import("@/services/session/messages")
     const { MemoryService, onSessionEnd } = await import("@/services/agent/memory")
     await MemoryService.archiveSession()
     clearHistory()

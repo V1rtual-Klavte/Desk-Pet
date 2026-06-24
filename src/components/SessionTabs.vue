@@ -2,6 +2,7 @@
 import { reactive, ref, onMounted } from "vue";
 import { MemoryService } from "@/services/agent/memory";
 import type { SessionFileMeta } from "@/services/agent/memory";
+import { getSessions, getActiveSessionId, saveActiveId, loadActiveId } from "@/services/session";
 
 // ── Session meta ──
 export interface SessionMeta {
@@ -10,9 +11,6 @@ export interface SessionMeta {
   createdAt: number;
   messageCount: number;
 }
-
-const SESSIONS_KEY = "deskpet_sessions";
-const ACTIVE_KEY = "deskpet_active_session";
 
 const sessions = reactive<SessionMeta[]>([]);
 const activeId = ref("");
@@ -30,24 +28,11 @@ const emit = defineEmits<{
   "restore-session": [sf: SessionFileMeta];
 }>();
 
-// ── 加载会话列表（从 chat.ts 同步）──
+// ── 加载会话列表（从 session store 同步，不走 localStorage）──
 function loadSessions(): void {
-  try {
-    const raw = localStorage.getItem(SESSIONS_KEY);
-    if (raw) {
-      const arr = JSON.parse(raw);
-      if (Array.isArray(arr)) {
-        sessions.splice(0, sessions.length, ...arr);
-      }
-    }
-    // ★ 同步当前活跃会话 ID
-    const lastId = localStorage.getItem(ACTIVE_KEY);
-    if (lastId && sessions.find(s => s.id === lastId)) {
-      activeId.value = lastId;
-    } else if (sessions.length > 0 && !sessions.find(s => s.id === activeId.value)) {
-      activeId.value = sessions[0].id;
-    }
-  } catch { /* ignore */ }
+  const list = getSessions();
+  sessions.splice(0, sessions.length, ...list);
+  activeId.value = getActiveSessionId();
 }
 
 // ── 获取/创建 ──
@@ -61,7 +46,7 @@ function ensureSession(): void {
   }
   if (!activeId.value || !sessions.find(s => s.id === activeId.value)) {
     activeId.value = sessions[0]?.id ?? "";
-    localStorage.setItem(ACTIVE_KEY, activeId.value);
+    saveActiveId(activeId.value);
   }
 }
 
@@ -71,7 +56,7 @@ function switchTo(id: string): void {
   const s = sessions.find(x => x.id === id);
   if (!s) return;
   activeId.value = id;
-  localStorage.setItem(ACTIVE_KEY, id);
+  saveActiveId(id);
   emit("switch", s);
 }
 
@@ -91,7 +76,7 @@ function closeSession(id: string): void {
 
   if (activeId.value === id) {
     activeId.value = sessions[0]?.id ?? "";
-    localStorage.setItem(ACTIVE_KEY, activeId.value);
+    saveActiveId(activeId.value);
     if (activeId.value) {
       const s = sessions.find(x => x.id === activeId.value);
       if (s) emit("switch", s);
@@ -121,9 +106,14 @@ async function loadHistoryFiles(): Promise<void> {
 async function deleteHistoryFile(filename: string): Promise<void> {
   console.log("[SessionTabs] deleteHistoryFile 点击:", filename)
   emit("delete-file", filename)
-  // 即时从 UI 移除
-  historyFiles.value = historyFiles.value.filter(f => f.filename !== filename)
-  console.log("[SessionTabs] UI 已移除:", filename)
+  // ★ 不在此立即过滤 UI，由父组件 finally 中调用 refreshHistory 统一刷新
+}
+
+/** ★ 刷新历史面板（父组件在会话操作完成后调用） */
+async function refreshHistory(): Promise<void> {
+  if (showHistory.value) {
+    await loadHistoryFiles()
+  }
 }
 
 async function restoreHistorySession(sf: SessionFileMeta): Promise<void> {
@@ -151,17 +141,11 @@ defineExpose({
   loadSessions,       // 父组件在 createNewSession 后调用刷新
   getActiveId,
   ensureSession,
+  refreshHistory,     // ★ 父组件在会话操作完成后刷新历史面板
 });
 
 onMounted(() => {
   loadSessions();
-  try {
-    const lastId = localStorage.getItem(ACTIVE_KEY);
-    if (lastId && sessions.find(s => s.id === lastId)) {
-      activeId.value = lastId;
-    }
-  } catch { /* ignore */ }
-  // 不再在此创建会话，由 chat.ts initSessions 负责
 });
 </script>
 

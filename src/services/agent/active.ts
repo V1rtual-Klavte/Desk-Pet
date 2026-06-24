@@ -3,7 +3,7 @@
 // Phase 2: 使用新的 Agent Loop
 // ==========================================
 
-import { unansweredCount } from "./chat"
+import { unansweredCount } from "@/services/session"
 import { isCoolingDown, isAIGenerating, setAIGenerating } from "@/services/cooldown"
 import { windowMonitorConfig } from "@/services/config"
 import { createLogger } from "@/services/logger"
@@ -64,7 +64,7 @@ export async function generateActiveMessage(ctx: PageContext): Promise<string | 
 // ── F12 调试 ──
 if (typeof window !== "undefined") {
   (window as any).__testAI = async (title?: string) => {
-    const { pushAssistantMessage } = await import("./chat")
+    const { pushAssistantMessage } = await import("@/services/session/messages")
     const msg = await generateActiveMessage({ title: title || "哔哩哔哩", content: title || "", timestamp: Date.now() })
     if (msg) pushAssistantMessage(msg)
     return msg

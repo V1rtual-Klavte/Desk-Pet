@@ -1035,6 +1035,41 @@ export const MemoryService = {
     this.appendTurnToSessionFile(role, text).catch(() => {})
   },
 
+  /**
+   * ★ 向指定会话文件追加一轮对话（不依赖全局 sessionMemory）。
+   *   用于 sendMessage 异步回复时，会话可能已切换的场景。
+   */
+  async recordTurnToSession(sessionId: string, role: "user" | "assistant", text: string): Promise<void> {
+    await ensureInit()
+    if (!sessionsDir) { log.warn("recordTurnToSession: sessionsDir 未设置"); return }
+
+    try {
+      const files = await invoke<string[]>("list_session_files")
+      const match = files.find(f => f.startsWith(sessionId))
+      if (!match) { log.warn("recordTurnToSession: 未找到会话文件", sessionId); return }
+
+      let current = await readSessionFile(match)
+      if (!current || current.length < 20) { log.warn("recordTurnToSession: 文件内容为空", match); return }
+
+      const timeStr = new Date().toISOString().slice(0, 19).replace("T", " ")
+      const roleLabel = role === "assistant" ? "糖糖" : "用户"
+      const turnLine = `- [${timeStr}] **${roleLabel}**: ${text.substring(0, 300)}`
+
+      // 更新元数据：轮数
+      const turnMatches = current.match(/^\s*-\s*\[[^\]]+\]\s*\*\*[^*]+\*\*:/gm) || []
+      const turnCount = turnMatches.length + 1
+      current = current
+        .replace(/^> 轮数: \d+/m, `> 轮数: ${turnCount}`)
+        .replace(/^## 对话记录 \(\d+ 轮\)/m, `## 对话记录 (${turnCount} 轮)`)
+      current = current.trimEnd() + "\n" + turnLine + "\n"
+
+      await writeSessionFile(match, current)
+      log.debug(`recordTurnToSession: ${role} → ${match} (${turnCount} 轮)`)
+    } catch (e) {
+      log.warn("recordTurnToSession 失败", e instanceof Error ? e : undefined)
+    }
+  },
+
   /** 实时追加一轮对话到 sessions/<sessionId>-主题.md */
   async appendTurnToSessionFile(role: "user" | "assistant", text: string): Promise<void> {
     await ensureInit()
@@ -1227,8 +1262,16 @@ export const MemoryService = {
   /** 删除指定的会话文件 */
   async deleteSessionFile(filename: string): Promise<boolean> {
     await ensureInit()
-    // 不吞错误：让外层感知到并打印到 DevTools
     console.log("[Memory] deleteSessionFile:", filename)
+
+    // ★ 如果删除的是当前活跃的 session 文件，先清空 sessionMemory
+    //    防止后续 archiveSession() 重新写回磁盘
+    const parsedFilename = parseSessionFilename(filename)
+    if (parsedFilename && sessionMemory?.sessionId === parsedFilename.sessionId) {
+      log.info("deleteSessionFile: 重置 sessionMemory（当前活跃会话被删除）")
+      sessionMemory = null
+    }
+
     await invoke("delete_session_file", { filename })
     projectEntries = projectEntries.filter(e => e.sessionFile !== filename)
     await flushProjectSave()

@@ -224,7 +224,7 @@ async function send() {
       slashVisible.value = false;
       const result = await cmd.execute();
       if (result !== null) {
-        const { pushSystemMessage } = await import("@/services/agent/chat");
+        const { pushSystemMessage } = await import("@/services/session/messages");
         pushSystemMessage(result);
       }
       return;

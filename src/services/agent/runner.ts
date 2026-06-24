@@ -13,7 +13,10 @@ import {
   pushUserMessage, pushAssistantMessage,
   getContextMessages, initWelcome, resetUnanswered,
   initSessions, getActiveSessionId,
-} from "./chat"
+} from "@/services/session"
+import { loadMessages, saveMessages } from "@/services/session/persistence"
+import { updateSessionMessageCount } from "@/services/session/manager"
+import { createAssistantMessage } from "@/services/agent/types"
 import { isAIGenerating, setAIGenerating } from "@/services/cooldown"
 import { createLogger } from "@/services/logger"
 
@@ -49,12 +52,18 @@ export async function initChat(welcomeText?: string): Promise<void> {
 /**
  * 发送用户消息并获取 AI 回复。
  * Phase 2: 使用 Agent Loop（支持工具调用多轮）。
+ *
+ * ★ 绑定会话：入口捕获 sessionId，异步回复回来时校验。
+ *   若会话已切换，回复存入原会话 localStorage + session 文件，不污染当前 chatHistory。
  */
 export async function sendMessage(text: string): Promise<{
   reply: string
   toolCallsMade: number
   personalityEffect: { expression: string; soundEvent: string | null }
 }> {
+  // ★ 入口绑定会话 ID（防止异步回复错位到其他会话）
+  const originSessionId = getActiveSessionId()
+
   // 并发锁
   if (isAIGenerating()) {
     log.warn("AI 生成中，拒绝用户消息并发请求")
@@ -75,7 +84,7 @@ export async function sendMessage(text: string): Promise<{
     if (preResult.handled) {
       if (preResult.response) {
         // slash 命令输出 → 以系统消息推送
-        const { pushSystemMessage } = await import("./chat");
+        const { pushSystemMessage } = await import("@/services/session/messages");
         pushSystemMessage(preResult.response)
         transition("WAITING")
         return {
@@ -121,7 +130,20 @@ export async function sendMessage(text: string): Promise<{
       toolCallHistory.entries.push(...result.toolCallHistory)
     }
 
-    pushAssistantMessage(processed)
+    // ★ 会话校验：若等待 AI 回复期间用户切了会话，回复存入原会话
+    if (getActiveSessionId() !== originSessionId) {
+      log.warn("sendMessage: 会话已切换，回复存入原会话", originSessionId)
+      // 从 localStorage 加载原会话消息，追加 assistant 回复，写回
+      const originMsgs = loadMessages(originSessionId)
+      originMsgs.push(createAssistantMessage(processed))
+      saveMessages(originSessionId, originMsgs)
+      updateSessionMessageCount(originSessionId)
+      // 写入原会话的 sessions/*.md
+      const { MemoryService } = await import("@/services/agent/memory")
+      await MemoryService.recordTurnToSession(originSessionId, "assistant", processed)
+    } else {
+      pushAssistantMessage(processed)
+    }
 
     transition("WAITING")
     return {
@@ -135,7 +157,14 @@ export async function sendMessage(text: string): Promise<{
   } catch (e) {
     log.error("sendMessage 失败", e instanceof Error ? e : undefined)
     const fallback = "（唔…信号不太好，等会儿再试试？）"
-    pushAssistantMessage(fallback)
+    // ★ 同样校验会话
+    if (getActiveSessionId() !== originSessionId) {
+      const originMsgs = loadMessages(originSessionId)
+      originMsgs.push(createAssistantMessage(fallback))
+      saveMessages(originSessionId, originMsgs)
+    } else {
+      pushAssistantMessage(fallback)
+    }
     transition("WAITING")
     return {
       reply: fallback,

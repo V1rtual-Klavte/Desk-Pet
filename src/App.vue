@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import "./styles/fonts.css";
 import "./styles/global.css";
-import { ref, onMounted, onUnmounted } from "vue";
+import { ref, nextTick, onMounted, onUnmounted } from "vue";
 import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
 import { WebviewWindow } from "@tauri-apps/api/webviewWindow";
 import { LogicalPosition, LogicalSize } from "@tauri-apps/api/dpi";
@@ -13,16 +13,14 @@ import ChatPanel from "./components/ChatPanel.vue";
 import SessionTabs from "./components/SessionTabs.vue";
 import WinSim from "./components/winsim/WinSim.vue";
 import { initWindowListener } from "./services/window";
-import { initChat, chatHistory, startMemoryConsolidationTimer, MemoryService, switchToSession, createNewSession, addSession, removeSession, getSessions, getActiveSessionId, initWelcome, createUserMessage, createAssistantMessage } from "@/services/agent";
+import { MemoryService, switchToSession, createNewSession, addSession, removeSession, getSessions, getActiveSessionId, initWelcome, createUserMessage, createAssistantMessage } from "@/services/agent";
 import type { SessionFileMeta } from "@/services/agent/memory";
-import { initRegistry } from "@/services/personality";
-import { registerDefaultTools, registerAll } from "@/services/tool";
-import { desktopConfig, shortcutConfig, userConfig, refreshUserCache, modeConfig } from "@/services/config";
+import { initApp } from "@/services/init";
+import { desktopConfig, shortcutConfig, userConfig, refreshUserCache } from "@/services/config";
 import { isMacOS } from "@/services/env";
 import { createLogger } from "@/services/logger";
 import { playEventSound } from "@/services/audio/registry";
 import { emit, listen } from "@tauri-apps/api/event";
-import { initDebug } from "@/services/debug";
 
 const log = createLogger("Shortcut");
 
@@ -101,7 +99,10 @@ async function onSessionSwitch(session: { id: string; name: string }) {
 /** 新建会话 */
 async function onSessionNew() {
   await createNewSession();
+  // ★ 等待 Vue 处理完 chatHistory 清空，确保 UI 不会暂留旧数据
+  await nextTick();
   tabsRef.value?.loadSessions();
+  tabsRef.value?.refreshHistory();
   initWelcome("Pちゃん！你终于来了！今天也要一直在一起哦～♡");
 }
 
@@ -116,6 +117,7 @@ async function onSessionClose(sessionId: string) {
     await switchToSession(remaining[0].id)
   }
   tabsRef.value?.loadSessions()
+  tabsRef.value?.refreshHistory()
 }
 
 /** 🗑 历史面板删除文件 */
@@ -150,6 +152,7 @@ async function onDeleteFile(filename: string) {
     console.error("[App] onDeleteFile 异常:", e)
   } finally {
     tabsRef.value?.loadSessions()
+    tabsRef.value?.refreshHistory()
   }
 }
 
@@ -171,6 +174,7 @@ async function onRestoreSession(sf: SessionFileMeta) {
     // ★ MemoryService.setActiveSession 由 switchToSession 内部调用，这里不重复
     await switchToSession(sf.sessionId)
     tabsRef.value?.loadSessions()
+    tabsRef.value?.refreshHistory()
     console.log("[App] onRestoreSession 完成:", sf.sessionId)
   } catch (e) {
     log.error("恢复会话失败:", sf.sessionId, e)
@@ -508,25 +512,10 @@ onMounted(async () => {
     lastMovedPos.value = { x: fp.x, y: fp.y };
   }
 
-  // 初始化人格模块
-  initRegistry();
-
-  // 注册轻量模式工具（file/read/list/search, bash(白名单), system.info, http.get）
-  await registerDefaultTools();
-
-  // 加载 Skill + MCP Mock 工具
-  const { getSkillTools } = await import("@/services/tool/skill/loader")
-  const { initSkillRegistry } = await import("@/services/tool/skill/registry")
-  const { createMockMcpTools } = await import("@/services/tool/mcp/manager")
-  initSkillRegistry()
-  registerAll(getSkillTools())
-  registerAll(createMockMcpTools())
-  log.info("工具已就绪, 模式:", modeConfig.assistant ? "助手" : "轻量", "| 共", await import("@/services/tool/registry").then(m => m.toolCount()), "个")
-
-  // 初始化 debug 状态 + 刷新工具统计
-  await initDebug()
-
-  // 开发模式加载测试套件
+  // ── 统一初始化（Memory + 人格 + 工具 + 会话扫描恢复 + Debug）──
+  await initApp("Pちゃん！你终于来了！今天也要一直在一起哦～♡");
+  // ★ 同步 SessionTabs（SessionTabs mount 可能先于 init 完成）
+  tabsRef.value?.loadSessions();
 
   // 开发模式加载测试套件
   if (import.meta.env.DEV) {
@@ -540,11 +529,6 @@ onMounted(async () => {
     pauseExtraMs: desktopConfig.pauseExtraMs,
     waitTimeoutMs: desktopConfig.waitTimeoutMs,
   }).catch(() => {});
-  await MemoryService.init();
-  await initChat("Pちゃん！你终于来了！今天也要一直在一起哦～♡");
-  // ★ 同步 SessionTabs: initChat 完成后再刷新（SessionTabs mount 可能先于 initChat 完成）
-  tabsRef.value?.loadSessions();
-  startMemoryConsolidationTimer();
   playEventSound("welcome");
   cleanupListener = await initWindowListener(streamRef, winSize);
 
