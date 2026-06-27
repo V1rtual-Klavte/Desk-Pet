@@ -20,7 +20,7 @@ use crate::commands::{
     log_message, focus_main,
     bash_exec, file_read, file_write, file_list,
     system_info, app_open, clipboard_read, clipboard_write,
-    mcp_spawn, mcp_send, mcp_kill,
+    mcp_spawn, mcp_send, mcp_kill, McpPool,
     get_memory_dir, get_memory_file, get_session_file, init_memory_files,
     list_session_files, delete_session_file, file_delete,
 };
@@ -37,6 +37,7 @@ pub fn run() {
         .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_global_shortcut::Builder::new().build())
         .manage(monitor_state)
+        .manage(McpPool::default())
         .setup(move |app| {
             rust_info!("糖糖桌宠已启动");
 

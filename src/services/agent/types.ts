@@ -7,7 +7,7 @@ import type { ToolDeclaration } from "@/services/tool/types"
 /** 消息类型 —— 聊天记录的基本单元 */
 export interface Message {
   id: string
-  role: "user" | "assistant" | "tool"
+  role: "user" | "assistant" | "tool" | "system"
   text: string
   timestamp: number
   /** 工具调用（assistant 消息可能包含） */
@@ -97,6 +97,10 @@ export function createUserMessage(text: string): Message {
 
 export function createAssistantMessage(text: string, toolCalls?: ToolCallRequest[]): Message {
   return { id: createMessageId(), role: "assistant", text, toolCalls, timestamp: Date.now() }
+}
+
+export function createSystemMessage(text: string): Message {
+  return { id: createMessageId(), role: "system", text, timestamp: Date.now() }
 }
 
 export function createToolMessage(toolCallId: string, text: string): Message {

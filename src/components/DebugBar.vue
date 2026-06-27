@@ -1,6 +1,6 @@
 <script setup lang="ts">
-import { computed, ref } from "vue"
-import { debug } from "@/services/debug"
+import { computed, ref, watch } from "vue"
+import { debug, getEffectiveThinkingEffort, setSessionThinkingEffort, resetSessionThinkingEffort, getEffectiveSafetyMode, setSessionSafetyMode, resetSessionSafetyMode } from "@/services/debug"
 
 const showTools = ref(false)
 const showDetail = ref(false)
@@ -23,11 +23,52 @@ const lastTokens = computed(() =>
     ? `${(debug.lastPromptTokens / 1000).toFixed(1)}k`
     : "—"
 )
+
+// ── 会话思考强度 ──
+const sessionEffort = ref<string>(getEffectiveThinkingEffort() || "_default")
+watch(sessionEffort, (v) => {
+  if (v === "_default") {
+    resetSessionThinkingEffort()
+  } else {
+    setSessionThinkingEffort(v as any)
+  }
+})
+
+// ── 会话安全策略 ──
+const sessionSafety = ref<string>(getEffectiveSafetyMode() || "_default")
+watch(sessionSafety, (v) => {
+  if (v === "_default") {
+    resetSessionSafetyMode()
+  } else {
+    setSessionSafetyMode(v as any)
+  }
+})
 </script>
 
 <template>
   <div class="debug-bar">
     <div class="db-row">
+      <select
+        class="db-thinking-select"
+        v-model="sessionEffort"
+        title="会话思考强度（覆盖全局默认）"
+      >
+        <option value="_default">🗂 默认</option>
+        <option value="auto">🧠 auto</option>
+        <option value="low">🧠 low</option>
+        <option value="medium">🧠 medium</option>
+        <option value="high">🧠 high</option>
+      </select>
+      <select
+        class="db-thinking-select"
+        v-model="sessionSafety"
+        title="会话安全策略（覆盖全局默认）"
+      >
+        <option value="_default">🛡 默认</option>
+        <option value="just_do_it">⚡ 全放行</option>
+        <option value="tell_me">📋 告知</option>
+        <option value="let_me_tk">🔒 全确认</option>
+      </select>
       <span class="db-item" :style="{ color: ctxColor }">
         📐 {{ debug.lastContextUsage }}%
       </span>
@@ -135,4 +176,15 @@ const lastTokens = computed(() =>
   font-size: 8px;
   min-width: 24px;
 }
+.db-thinking-select {
+  background: #1a0810;
+  border: 1px solid #4a2540;
+  border-radius: 4px;
+  color: #c0a0b0;
+  font-size: 9px;
+  font-family: inherit;
+  padding: 1px 3px;
+  cursor: pointer;
+}
+.db-thinking-select:focus { outline: none; border-color: #c4276f; }
 </style>

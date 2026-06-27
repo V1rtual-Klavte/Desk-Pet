@@ -192,23 +192,27 @@ async function testContext() {
 
 async function testThinking() {
   section("思考强度")
-  const { decideThinkingEffort, getThinkingBudget, resetToolCallCount, incrementToolCallCount } = await import("@/services/engine/thinking")
-
-  ok("闲聊 → low", decideThinkingEffort("你好呀今天天气真好") === "low")
-  ok("工具请求 → medium", decideThinkingEffort("帮我看一下桌面文件") === "medium")
-  ok("复杂任务 → high", decideThinkingEffort("帮我分析这个项目的代码结构") === "high")
-  ok("主动搭话 → low", decideThinkingEffort("", true) === "low")
-  ok("错误重试 → high", decideThinkingEffort("", false, true) === "high")
+  const { getThinkingBudget } = await import("@/services/engine/thinking")
+  const { getEffectiveThinkingEffort, setSessionThinkingEffort, resetSessionThinkingEffort } = await import("@/services/debug")
 
   ok("low budget=1000", getThinkingBudget("low") === 1000)
   ok("medium budget=4000", getThinkingBudget("medium") === 4000)
   ok("high budget=16000", getThinkingBudget("high") === 16000)
 
-  resetToolCallCount()
-  incrementToolCallCount()
-  incrementToolCallCount()
-  ok("≥2轮 → high", decideThinkingEffort("随便说点什么") === "high")
-  resetToolCallCount()
+  // 默认使用全局配置
+  const initial = getEffectiveThinkingEffort()
+  ok("初始为全局默认", typeof initial === "string" && ["auto","low","medium","high"].includes(initial))
+
+  // 会话覆盖
+  setSessionThinkingEffort("low")
+  ok("会话覆盖 low", getEffectiveThinkingEffort() === "low")
+
+  setSessionThinkingEffort("high")
+  ok("会话覆盖 high", getEffectiveThinkingEffort() === "high")
+
+  // 重置
+  resetSessionThinkingEffort()
+  ok("重置后恢复全局默认", getEffectiveThinkingEffort() === initial)
 }
 
 // ── 7. 人格中间件 ──
@@ -438,27 +442,27 @@ async function testSkills() {
   ok("skill 工具已注册", toolCount() > 6)
 }
 
-// ── 14. MCP Mock ──
+// ── 14. MCP Manager ──
 
 async function testMcp() {
-  section("MCP Mock")
-  const { createMockMcpTools, getMockMcpToolNames } = await import("@/services/tool/mcp/manager")
+  section("MCP Manager")
+  const { getMcpServers, addMcpServer, removeMcpServer, setMcpServers } = await import("@/services/tool/mcp/manager")
 
-  const tools = createMockMcpTools()
-  ok("MCP mock 工具生成", tools.length > 0, `生成 ${tools.length} 个`)
-  ok("MCP 工具有名称", getMockMcpToolNames().length === tools.length)
+  // 清空并测试增删
+  setMcpServers([])
+  ok("MCP 清空服务器", getMcpServers().length === 0)
 
-  const { registerAll, toolCount, getToolByName } = await import("@/services/tool/registry")
-  const before = toolCount()
-  registerAll(tools)
-  ok("MCP 工具注册成功", toolCount() > before)
+  addMcpServer({ name: "test-server", transport: "stdio", command: "echo", args: ["hello"], enabled: true })
+  const servers = getMcpServers()
+  ok("MCP 添加服务器", servers.length === 1 && servers[0].name === "test-server")
 
-  // 测试执行 MCP mock 工具
-  const weatherTool = getToolByName("mcp_weather")
-  if (weatherTool) {
-    const result = await weatherTool.handler({ city: "北京" }, { mode: "assistant", sessionTrusted: false })
-    ok("MCP weather 执行", result.success, result.content.substring(0, 60))
-  }
+  ok("MCP 服务器已启用", servers[0].enabled === true)
+
+  removeMcpServer("test-server")
+  ok("MCP 删除服务器", getMcpServers().length === 0)
+
+  // 恢复空列表
+  setMcpServers([])
 }
 
 // ── 15. 危险模式库 ──
@@ -499,7 +503,7 @@ async function testPlan() {
 
 async function testCompact() {
   section("上下文压缩")
-  const { shouldCompact, compactMessages } = await import("@/services/context/builder")
+  const { shouldCompact, compactMessages } = await import("@/services/engine/compactor")
 
   ok("95% 应压缩", shouldCompact(9500, 10000))
   ok("50% 不压缩", !shouldCompact(5000, 10000))
@@ -518,7 +522,7 @@ async function testCompact() {
     { id: "10", role: "assistant" as const, text: "不客气～", timestamp: 10 },
   ]
 
-  const compacted = compactMessages(msgs, "test system prompt")
+  const compacted = compactMessages(msgs)
   ok("压缩后更少", compacted.length < msgs.length, `${msgs.length} → ${compacted.length}`)
   ok("第一条是摘要", compacted[0]?.role === "tool", `role: ${compacted[0]?.role}`)
   ok("摘要含 '对话摘要'", compacted[0]?.text.includes("对话摘要") ?? false)

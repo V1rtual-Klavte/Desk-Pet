@@ -1,169 +1,283 @@
 // ==========================================
 // MCP Manager —— 管理 MCP Server 连接
 // Phase 4: 完整 stdio/SSE 实现
-// 当前: Mock MCP 工具用于测试
 // ==========================================
 
-import type { ToolDef } from "@/services/tool/types"
+import { toolsConfig, setOverride } from "@/services/config"
 import { createLogger } from "@/services/logger"
 
 const log = createLogger("MCP")
 
-// ── Mock MCP 工具 ──
+// ── MCP Server 配置类型 ──
 
-const MOCK_MCP_TOOLS: ToolDef[] = [
-  {
-    id: "mcp-weather",
-    name: "mcp_weather",
-    description: "查询指定城市的天气信息。",
-    parameters: {
-      type: "object",
-      properties: {
-        city: { type: "string", description: "城市名称，如 '北京'、'上海'" },
-      },
-      required: ["city"],
-    },
-    safetyLevel: "NORMAL",
-    source: "mcp",
-    sourceId: "mock-weather-server",
-    mode: "assistant",
-    timeoutMs: 10000,
-    personalityHint: {
-      executing: "让我查一下天气...",
-      done: "查到了～",
-    },
-    async handler(params) {
-      const city = String(params.city ?? "未知")
-      const temps = ["☀️ 晴天 25°C", "⛅ 多云 22°C", "🌧️ 小雨 18°C", "❄️ 雪 -2°C"]
-      const idx = (city.charCodeAt(0) || 0) % temps.length
-      await new Promise(r => setTimeout(r, 100)) // 模拟网络延迟
-      return {
-        success: true,
-        content: `[MCP Weather] ${city}: ${temps[idx]} (Mock 数据)`,
-      }
-    },
-  },
-
-  {
-    id: "mcp-calculator",
-    name: "mcp_calculator",
-    description: "执行数学计算。支持加减乘除、幂、开方。",
-    parameters: {
-      type: "object",
-      properties: {
-        expression: { type: "string", description: "数学表达式，如 '2+3*4' 或 'sqrt(16)'" },
-      },
-      required: ["expression"],
-    },
-    safetyLevel: "SAFE",
-    source: "mcp",
-    sourceId: "mock-calc-server",
-    mode: "assistant",
-    timeoutMs: 5000,
-    personalityHint: {
-      executing: "让我算一下...",
-      done: "算好了～",
-    },
-    async handler(params) {
-      const expr = String(params.expression ?? "0")
-      try {
-        // 安全计算（简单数值运算，不涉及文件系统）
-        const sanitized = expr.replace(/[^0-9+\-*/().%\s]|Math\./g, "")
-        const result = Function(`"use strict"; return (${sanitized || "0"})`)()
-        return { success: true, content: `[MCP Calculator] ${expr} = ${result}` }
-      } catch {
-        // 尝试 sqrt 等函数
-        try {
-          const withMath = expr.replace(/sqrt\(([^)]+)\)/g, "Math.sqrt($1)")
-            .replace(/pow\(([^,]+),([^)]+)\)/g, "Math.pow($1,$2)")
-          const result = Function(`"use strict"; return (${withMath})`)()
-          return { success: true, content: `[MCP Calculator] ${expr} = ${result}` }
-        } catch {
-          return { success: false, content: "", error: `无法计算: ${expr}` }
-        }
-      }
-    },
-  },
-
-  {
-    id: "mcp-note",
-    name: "mcp_note",
-    description: "创建一条笔记。支持 Markdown 格式。",
-    parameters: {
-      type: "object",
-      properties: {
-        title: { type: "string", description: "笔记标题" },
-        content: { type: "string", description: "笔记内容 (Markdown)" },
-      },
-      required: ["title", "content"],
-    },
-    safetyLevel: "NORMAL",
-    source: "mcp",
-    sourceId: "mock-note-server",
-    mode: "assistant",
-    timeoutMs: 10000,
-    personalityHint: {
-      executing: "帮你记下来...",
-      done: "记好啦～",
-    },
-    async handler(params) {
-      const title = String(params.title ?? "")
-      const content = String(params.content ?? "")
-      // 存到 localStorage（模拟 MCP notes server）
-      const notes = JSON.parse(localStorage.getItem("deskpet_mcp_notes") || "[]") as { title: string; content: string; time: number }[]
-      notes.push({ title, content, time: Date.now() })
-      localStorage.setItem("deskpet_mcp_notes", JSON.stringify(notes.slice(-20)))
-      return { success: true, content: `[MCP Notes] 已记录: "${title}" (共 ${notes.length} 条笔记)` }
-    },
-  },
-
-  {
-    id: "mcp-translate",
-    name: "mcp_translate",
-    description: "简单翻译。将文本翻译为指定语言（Mock 版，返回模拟结果）。",
-    parameters: {
-      type: "object",
-      properties: {
-        text: { type: "string", description: "要翻译的文本" },
-        to: { type: "string", description: "目标语言，如 'en', 'ja', 'zh'", enum: ["en", "ja", "zh", "ko"] },
-      },
-      required: ["text", "to"],
-    },
-    safetyLevel: "SAFE",
-    source: "mcp",
-    sourceId: "mock-translate-server",
-    mode: "assistant",
-    timeoutMs: 10000,
-    personalityHint: {
-      executing: "帮你翻译一下...",
-      done: "翻译好啦～",
-    },
-    async handler(params) {
-      const text = String(params.text ?? "")
-      const to = String(params.to ?? "en")
-      const mock: Record<string, string> = {
-        en: `[English] ${text} (Mock translation)`,
-        ja: `[日本語] ${text} (モック翻訳)`,
-        zh: `[中文] ${text}`,
-        ko: `[한국어] ${text} (모의 번역)`,
-      }
-      return { success: true, content: `[MCP Translate → ${to}] ${mock[to] ?? text}` }
-    },
-  },
-]
-
-// ── 导出 ──
-
-export function createMockMcpTools(): ToolDef[] {
-  log.info("MCP Mock 工具已就绪:", MOCK_MCP_TOOLS.map(t => t.name).join(", "))
-  return [...MOCK_MCP_TOOLS]
+export interface McpServerConfig {
+  name: string
+  transport: "stdio" | "sse"
+  command?: string
+  args?: string[]
+  url?: string
+  env?: Record<string, string>
+  enabled: boolean
 }
 
-export function getMockMcpToolNames(): string[] {
-  return MOCK_MCP_TOOLS.map(t => t.name)
+// ── 服务器列表 ──
+
+let mcpServers: McpServerConfig[] = []
+let mcpServersLoaded = false
+
+function ensureServersLoaded(): void {
+  if (mcpServersLoaded) return
+  const fromConfig = toolsConfig.mcpServers
+  if (Array.isArray(fromConfig) && fromConfig.length > 0) {
+    mcpServers = fromConfig.map((s: any) => ({
+      name: String(s.name || ""),
+      transport: (s.transport === "sse" ? "sse" : "stdio") as "stdio" | "sse",
+      command: s.command ? String(s.command) : undefined,
+      args: s.args ? (Array.isArray(s.args) ? s.args.map(String) : [String(s.args)]) : undefined,
+      url: s.url ? String(s.url) : undefined,
+      enabled: s.enabled !== false,
+    }))
+    log.info("MCP 服务器列表已从 CONFIG 加载:", mcpServers.length, "个")
+  }
+  mcpServersLoaded = true
 }
 
-// ── MCP 状态（Phase 4 升级为真实连接管理）──
+// ── 内置 MCP 服务器 ──
+
+/** 获取内置 MCP 服务器列表（从 CONFIG 读取） */
+export function getBuiltinServers(): McpServerConfig[] {
+  const raw = toolsConfig.builtinMcpServers
+  if (!raw || typeof raw !== "object") return []
+  return Object.entries(raw).map(([name, def]) => ({
+    name,
+    transport: "stdio" as const,
+    command: def.command || "npx",
+    args: Array.isArray(def.args) ? def.args : [],
+    url: undefined,
+    enabled: def.enabled !== false,
+    env: def.env,
+  }))
+}
+
+/** 判断是否为内置 MCP 服务器 */
+export function isBuiltinMcp(name: string): boolean {
+  const raw = toolsConfig.builtinMcpServers
+  return !!(raw && typeof raw === "object" && name in raw)
+}
+
+/** 获取某个内置 MCP 的描述 */
+export function getBuiltinMcpDescription(name: string): string {
+  const raw = toolsConfig.builtinMcpServers
+  if (!raw || typeof raw !== "object") return ""
+  const def = (raw as any)[name]
+  return def?.description ?? ""
+}
+
+/** 同步内置 MCP 配置到 CONFIG 覆盖层 */
+export function setBuiltinMcpConfig(name: string, config: Partial<{ enabled: boolean; args: string[]; env: Record<string, string> }>): void {
+  const raw = toolsConfig.builtinMcpServers
+  if (!raw || typeof raw !== "object") return
+  const current = (raw as any)[name] as Record<string, unknown> | undefined
+  if (!current) return
+  const updated: Record<string, unknown> = {
+    enabled: config.enabled ?? current.enabled ?? false,
+    command: current.command || "npx",
+    args: config.args ?? current.args ?? [],
+    description: current.description || "",
+  }
+  if (config.env !== undefined || current.env) {
+    updated.env = config.env ?? current.env ?? {}
+  }
+  setOverride("tools.mcp.builtin", { ...raw, [name]: updated })
+}
+
+// ── MCP 服务器动态管理 ──
+
+/** 获取所有 MCP 服务器配置 */
+export function getMcpServers(): McpServerConfig[] {
+  ensureServersLoaded()
+  return [...mcpServers]
+}
+
+/** 设置 MCP 服务器列表（替换） */
+export function setMcpServers(servers: McpServerConfig[]): void {
+  // 注销旧服务器的工具
+  for (const s of mcpServers) {
+    unregisterMcpServerTools(s)
+  }
+  mcpServers = servers.map(s => ({ ...s }))
+  mcpServersLoaded = true
+  syncServersToConfig()
+  log.info("MCP 服务器列表已更新:", mcpServers.length, "个")
+}
+
+/** 添加 MCP 服务器 */
+export function addMcpServer(server: McpServerConfig): void {
+  ensureServersLoaded()
+  const existing = mcpServers.findIndex(s => s.name === server.name)
+  if (existing >= 0) {
+    unregisterMcpServerTools(mcpServers[existing])
+    mcpServers[existing] = { ...server }
+    log.info("MCP 服务器已覆盖:", server.name)
+  } else {
+    mcpServers.push({ ...server })
+    log.info("MCP 服务器已添加:", server.name)
+  }
+  syncServersToConfig()
+}
+
+/** 删除 MCP 服务器 */
+export function removeMcpServer(name: string): boolean {
+  ensureServersLoaded()
+  const idx = mcpServers.findIndex(s => s.name === name)
+  if (idx === -1) return false
+  const server = mcpServers[idx]
+  unregisterMcpServerTools(server)
+  mcpServers.splice(idx, 1)
+  syncServersToConfig()
+  log.info("MCP 服务器已删除:", name)
+  return true
+}
+
+/** 同步服务器列表到 CONFIG 覆盖层 */
+function syncServersToConfig(): void {
+  setOverride("tools.mcp.servers", mcpServers.map(s => ({
+    name: s.name,
+    transport: s.transport,
+    command: s.command,
+    args: s.args,
+    url: s.url,
+    enabled: s.enabled,
+  })))
+}
+
+/** 从 JSON 数组批量导入 MCP 服务器 */
+export function importMcpServersFromJson(json: string): { success: boolean; count: number; error?: string } {
+  try {
+    const arr = JSON.parse(json)
+    if (!Array.isArray(arr)) return { success: false, count: 0, error: "JSON 必须是数组格式" }
+    const servers = arr.map((item: any) => ({
+      name: String(item.name || ""),
+      transport: (item.transport === "sse" ? "sse" : "stdio") as "stdio" | "sse",
+      command: item.command ? String(item.command) : undefined,
+      args: item.args ? (Array.isArray(item.args) ? item.args.map(String) : [String(item.args)]) : undefined,
+      url: item.url ? String(item.url) : undefined,
+      enabled: item.enabled !== false,
+    })).filter((s: McpServerConfig) => s.name)
+    setMcpServers(servers)
+    return { success: true, count: servers.length }
+  } catch (e) {
+    return { success: false, count: 0, error: String(e) }
+  }
+}
+
+/** 导出 MCP 服务器列表为 JSON */
+export function exportMcpServersToJson(): string {
+  return JSON.stringify(mcpServers, null, 2)
+}
+
+function unregisterMcpServerTools(server: McpServerConfig): void {
+  // 服务器配置变更时清理旧工具（需动态 import，调用方确保 await）
+  import("@/services/tool/registry").then(({ listAll, unregister }) => {
+    const prefix = `mcp-${server.name}-`
+    for (const t of listAll()) {
+      if (t.id.startsWith(prefix)) {
+        unregister(t.id)
+      }
+    }
+  }).catch(() => {})
+}
+
+// ── 真实 MCP 连接 ──
+
+const connectedClients = new Map<string, import("./client").McpClient>()
+
+/** 连接并发现 MCP 服务器的工具 */
+export async function connectMcpServer(server: McpServerConfig): Promise<{ success: boolean; toolCount: number; error?: string }> {
+  try {
+    const { McpClient } = await import("./client")
+    const client = new McpClient(server.name)
+
+    if (server.transport === "stdio" && server.command) {
+      const ok = await client.connect(server.command, server.args ?? [])
+      if (!ok) return { success: false, toolCount: 0, error: "连接失败" }
+    } else {
+      // SSE 暂未实现
+      return { success: false, toolCount: 0, error: `不支持的传输方式: ${server.transport}` }
+    }
+
+    // 发现工具
+    const toolSchemas = await client.listTools()
+    if (toolSchemas.length === 0) {
+      await client.disconnect()
+      return { success: true, toolCount: 0 }
+    }
+
+    // 转换为 ToolDef 并注册
+    const toolDefs = client.toToolDefs(server.name, toolSchemas)
+    const { registerAll } = await import("@/services/tool/registry")
+    registerAll(toolDefs)
+
+    connectedClients.set(server.name, client)
+    setMcpConnected(true)
+    log.info("MCP 服务器已连接:", server.name, "| 工具:", toolDefs.length)
+
+    return { success: true, toolCount: toolDefs.length }
+  } catch (e) {
+    return { success: false, toolCount: 0, error: e instanceof Error ? e.message : String(e) }
+  }
+}
+
+/** 断开 MCP 服务器连接并注销工具 */
+export async function disconnectMcpServer(name: string): Promise<void> {
+  const client = connectedClients.get(name)
+  if (client) {
+    await client.disconnect()
+    connectedClients.delete(name)
+  }
+
+  // 注销该服务器的所有工具
+  const { listAll, unregister } = await import("@/services/tool/registry")
+  const prefix = `mcp-${name}-`
+  for (const t of listAll()) {
+    if (t.id.startsWith(prefix)) {
+      unregister(t.id)
+    }
+  }
+
+  if (connectedClients.size === 0) setMcpConnected(false)
+  log.info("MCP 服务器已断开:", name)
+}
+
+/** 连接所有已启用的 MCP 服务器（自定义 + 内置） */
+export async function connectAllMcpServers(): Promise<number> {
+  ensureServersLoaded()
+  let connected = 0
+
+  // 内置 MCP
+  for (const s of getBuiltinServers()) {
+    if (!s.enabled) continue
+    const result = await connectMcpServer(s)
+    if (result.success) connected++
+  }
+
+  // 自定义 MCP
+  for (const s of mcpServers) {
+    if (!s.enabled) continue
+    const result = await connectMcpServer(s)
+    if (result.success) connected++
+  }
+  return connected
+}
+
+/** 断开所有 MCP 服务器 */
+export async function disconnectAllMcpServers(): Promise<void> {
+  for (const [name] of connectedClients) {
+    await disconnectMcpServer(name)
+  }
+}
+
+// ── MCP 状态 ──
 
 let mcpConnected = false
 

@@ -705,6 +705,7 @@ dependencies = [
  "num_cpus",
  "objc",
  "serde",
+ "serde_json",
  "tauri",
  "tauri-build",
  "tauri-plugin-global-shortcut",

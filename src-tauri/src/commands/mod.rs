@@ -19,4 +19,5 @@ pub use tool_exec::{
     system_info, app_open, clipboard_read, clipboard_write,
 };
 pub use mcp_bridge::{mcp_spawn, mcp_send, mcp_kill};
+pub(crate) use mcp_bridge::McpPool;
 pub use memory_cmd::{get_memory_dir, get_memory_file, get_session_file, init_memory_files, list_session_files, delete_session_file, file_delete};

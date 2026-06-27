@@ -2,11 +2,14 @@
 // Skill Loader —— 加载 skills/ 目录下的 .md 文件
 // 使用 Vite import.meta.glob 编译时导入
 // 解析 YAML frontmatter + Markdown 体 → ToolDef
+// 用户动态上传的 Skill 持久化到 CONFIG 覆盖层
 // ==========================================
 
 import type { ToolDef, ToolResult } from "@/services/tool/types"
 import type { ToolDeclaration } from "@/services/agent/types"
 import { createLogger } from "@/services/logger"
+import { register, unregister } from "@/services/tool/registry"
+import { toolsConfig, setOverride } from "@/services/config"
 
 const log = createLogger("SkillLoader")
 
@@ -30,7 +33,7 @@ export interface SkillDef {
 
 // ── 解析 YAML frontmatter ──
 
-function parseFrontmatter(raw: string): { meta: SkillMeta; body: string } | null {
+export function parseFrontmatter(raw: string): { meta: SkillMeta; body: string } | null {
   const match = raw.match(/^---\n([\s\S]*?)\n---\n([\s\S]*)$/)
   if (!match) return null
 
@@ -57,66 +60,162 @@ function parseFrontmatter(raw: string): { meta: SkillMeta; body: string } | null
   }
 }
 
-// ── 内置 Skill 定义 ──
+// ── 编译时加载 skills/*.md ──
 
-const BUILTIN_SKILLS: string[] = [
-  // 编译时注入技能文档
-]
+const skillModules = import.meta.glob<string>("/skills/*.md", { query: "?raw", import: "default", eager: true })
 
-let loadedSkills: SkillDef[] = []
-
-// ── 加载 Skill ──
-
-/**
- * 加载所有内置 Skill。
- * Vite 编译时通过 ?raw 导入 skills/*.md，这里预留接口。
- * 当前使用硬编码的示例 Skill 以便测试。
- */
-export function loadAllSkills(): SkillDef[] {
-  if (loadedSkills.length > 0) return loadedSkills
-
-  // 逐个解析内置 skill
-  for (const raw of BUILTIN_SKILLS) {
+function loadBuiltinSkills(): SkillDef[] {
+  const skills: SkillDef[] = []
+  for (const [path, raw] of Object.entries(skillModules)) {
     const parsed = parseFrontmatter(raw)
     if (parsed) {
-      loadedSkills.push({
+      skills.push({
         meta: parsed.meta,
         systemPrompt: parsed.meta.description,
         steps: parsed.body,
       })
+      log.debug("加载内置 Skill:", parsed.meta.id, "←", path)
+    } else {
+      log.warn("Skill 解析失败:", path)
+    }
+  }
+  return skills
+}
+
+// ── 用户动态 Skill（from CONFIG 覆盖层）──
+
+function loadUserSkills(): SkillDef[] {
+  const rawSkills = toolsConfig.skillSkills
+  if (!Array.isArray(rawSkills)) return []
+  const skills: SkillDef[] = []
+  for (const item of rawSkills) {
+    if (typeof item.raw === "string") {
+      const parsed = parseFrontmatter(item.raw)
+      if (parsed) {
+        skills.push({
+          meta: parsed.meta,
+          systemPrompt: parsed.meta.description,
+          steps: parsed.body,
+        })
+      }
+    }
+  }
+  return skills
+}
+
+/** 同步用户 Skill 列表到 CONFIG 覆盖层 */
+function syncUserSkillsToConfig(userSkills: { raw: string }[]): void {
+  setOverride("tools.skill.skills", userSkills)
+}
+
+// ── 内存缓存 ──
+
+let _builtinCache: SkillDef[] | null = null
+let _allCache: SkillDef[] | null = null
+
+function getBuiltinSkills(): SkillDef[] {
+  if (!_builtinCache) _builtinCache = loadBuiltinSkills()
+  return _builtinCache
+}
+
+/** 使缓存失效（用于 HMR / 动态增删后刷新） */
+function invalidateCache(): void {
+  _allCache = null
+}
+
+// ── 公共 API ──
+
+/** 加载所有 Skill（内置 + 用户） */
+export function loadAllSkills(): SkillDef[] {
+  if (_allCache) return _allCache
+  const builtin = getBuiltinSkills()
+  const user = loadUserSkills()
+
+  // 去重：用户 Skill 覆盖同 id 的内置 Skill
+  const seen = new Set<string>()
+  const merged: SkillDef[] = []
+  for (const s of [...user, ...builtin]) {
+    if (!seen.has(s.meta.id)) {
+      seen.add(s.meta.id)
+      merged.push(s)
     }
   }
 
-  // ── 内置测试 Skill（不依赖 Vite glob）──
-  loadedSkills.push(
-    createBuiltinSkill("summarize-code", "代码摘要", [
-      "帮我看看代码", "分析这个项目", "这段代码做什么的",
-    ]),
-    createBuiltinSkill("organize-files", "文件整理", [
-      "整理文件", "归类", "帮我把文件移一下",
-    ]),
-    createBuiltinSkill("check-weather", "天气查询", [
-      "天气", "气温", "下雨",
-    ]),
-  )
-
-  log.info(`已加载 ${loadedSkills.length} 个 Skill`)
-  return loadedSkills
+  _allCache = merged
+  log.info(`已加载 ${merged.length} 个 Skill (内置 ${builtin.length} + 用户 ${user.length})`)
+  return merged
 }
 
-function createBuiltinSkill(id: string, name: string, keywords: string[]): SkillDef {
-  return {
-    meta: {
-      id, name,
-      description: `${name} Skill — 助手模式可用`,
-      trigger_keywords: keywords,
-      tools_needed: ["file_read", "file_list"],
-      mode: "assistant",
-      safety: "safe",
-    },
-    systemPrompt: `你正在使用 ${name} 技能。按照步骤执行并给出结果。`,
-    steps: `1. 理解用户需求\n2. 调用必要工具\n3. 组织结果回复`,
+/** 获取已加载的 Skill 列表（只读） */
+export function getLoadedSkills(): SkillDef[] {
+  return loadAllSkills()
+}
+
+/** 从 .md 文本动态添加 Skill → 内存 + CONFIG */
+export function addSkillFromMarkdown(raw: string): SkillDef | null {
+  const parsed = parseFrontmatter(raw)
+  if (!parsed) {
+    log.warn("Skill 解析失败: frontmatter 格式不正确")
+    return null
   }
+
+  const skill: SkillDef = {
+    meta: parsed.meta,
+    systemPrompt: parsed.meta.description,
+    steps: parsed.body,
+  }
+
+  // 注销旧版本（如果存在）
+  const oldId = `skill-${parsed.meta.id}`
+  unregister(oldId)
+
+  // 更新 CONFIG 覆盖层
+  const rawSkills = toolsConfig.skillSkills as { raw: string }[]
+  const updated = rawSkills.filter((s: any) => {
+    if (typeof s.raw !== "string") return false
+    const p = parseFrontmatter(s.raw)
+    return p && p.meta.id !== parsed.meta.id
+  })
+  updated.push({ raw })
+  syncUserSkillsToConfig(updated)
+
+  // 注册工具
+  const toolDef = skillToToolDef(skill)
+  register(toolDef)
+
+  invalidateCache()
+  log.info("Skill 已添加:", skill.meta.name, "| 工具:", toolDef.name)
+  return skill
+}
+
+/** 删除指定 Skill → 内存 + CONFIG */
+export function removeSkill(skillId: string): boolean {
+  // 更新 CONFIG
+  const rawSkills = toolsConfig.skillSkills as { raw: string }[]
+  const updated = rawSkills.filter((s: any) => {
+    if (typeof s.raw !== "string") return false
+    const p = parseFrontmatter(s.raw)
+    return p && p.meta.id !== skillId
+  })
+  syncUserSkillsToConfig(updated)
+
+  // 注销工具
+  const toolId = `skill-${skillId}`
+  unregister(toolId)
+
+  invalidateCache()
+  log.info("Skill 已删除:", skillId)
+  return true
+}
+
+/** 清空所有用户 Skill */
+export function clearAllSkills(): void {
+  const skills = loadAllSkills()
+  for (const s of skills) {
+    unregister(`skill-${s.meta.id}`)
+  }
+  syncUserSkillsToConfig([])
+  invalidateCache()
 }
 
 // ── 将 Skill 转换为 ToolDef ──
@@ -148,20 +247,16 @@ export function skillToToolDef(skill: SkillDef): ToolDef {
       done: `${skill.meta.name} 完成啦～`,
     },
     async handler(params) {
-      // Skill 执行：此阶段做简单透传，实际 skill 编排在 Phase 4 完善
-      const query = String(params.query ?? "")
-      return {
-        success: true,
-        content: `[Skill: ${skill.meta.name}]\n收到请求: ${query}\n\n此 Skill 将使用以下工具: ${(skill.meta.tools_needed ?? []).join(", ")}\n\n(完整 Skill 编排引擎 Phase 4 实现)`,
-      }
+      const { runSkill } = await import("./runner")
+      const result = await runSkill(skill, params)
+      return result
     },
   }
 }
 
 /** 获取当前所有 Skill 转换的 ToolDef 列表 */
 export function getSkillTools(): ToolDef[] {
-  loadAllSkills()
-  return loadedSkills.map(skillToToolDef)
+  return loadAllSkills().map(skillToToolDef)
 }
 
 function sanitizeName(id: string): string {
@@ -171,8 +266,8 @@ function sanitizeName(id: string): string {
 // ── HMR ──
 if (import.meta.hot) {
   import.meta.hot.accept(() => {
-    loadedSkills = []
-    loadAllSkills()
+    _builtinCache = null
+    _allCache = null
     log.info("Skill HMR 完成")
   })
 }

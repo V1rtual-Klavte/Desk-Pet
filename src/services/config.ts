@@ -17,6 +17,14 @@ interface UserSettings {
   autoPopupOnMessage: boolean;
 }
 
+export interface BuiltinMcpServer {
+  enabled: boolean
+  command: string
+  args: string[]
+  env?: Record<string, string>
+  description?: string
+}
+
 interface Config {
   mode: {
     assistant: boolean;
@@ -86,9 +94,11 @@ interface Config {
     mcp: {
       enabled: boolean;
       servers: Record<string, unknown>[];
+      builtin: Record<string, BuiltinMcpServer>;
     };
     skill: {
       enabled: boolean;
+      skills: { raw: string }[];
     };
   };
   safety: {
@@ -358,7 +368,9 @@ export const toolsConfig = {
   get fileWriteEnabled() { return modeConfig.assistant && (overrideOr("tools.file.writeEnabled", cfg.tools?.file?.writeEnabled ?? false)); },
   get mcpEnabled() { return modeConfig.assistant && (overrideOr("tools.mcp.enabled", cfg.tools?.mcp?.enabled ?? false)); },
   get mcpServers() { return overrideOr("tools.mcp.servers", cfg.tools?.mcp?.servers || []); },
+  get builtinMcpServers() { return overrideOr("tools.mcp.builtin", cfg.tools?.mcp?.builtin || {}) as Record<string, BuiltinMcpServer>; },
   get skillEnabled() { return modeConfig.assistant && (overrideOr("tools.skill.enabled", cfg.tools?.skill?.enabled ?? false)); },
+  get skillSkills() { return overrideOr("tools.skill.skills", cfg.tools?.skill?.skills || []) as { raw: string }[]; },
 };
 
 // ==========================================

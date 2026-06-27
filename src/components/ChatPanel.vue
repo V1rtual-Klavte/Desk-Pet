@@ -1,11 +1,17 @@
-﻿<script setup lang="ts">
+<script setup lang="ts">
 import { ref, nextTick, onMounted, onUnmounted, watch } from "vue";
 import { chatHistory, sendMessage } from "@/services/agent";
 import { playEventSound } from "@/services/audio/registry";
 import { userConfig } from "@/services/config";
 import { createLogger } from "@/services/logger";
 import { listen } from "@tauri-apps/api/event";
+import { searchSlashCommands, findSlashCommand, initSlashCommands } from "@/services/engine";
+import type { SlashMatch } from "@/services/engine";
 import DebugBar from "./DebugBar.vue";
+import { confirmState, resolveConfirm } from "@/services/safety/confirm";
+
+// ★ 同步初始化 Slash 命令注册表（模块加载时即完成，保证后续即时可用）
+initSlashCommands();
 
 const log = createLogger("ChatPanel");
 
@@ -19,6 +25,75 @@ const thumb = ref<HTMLElement | null>(null);
 const toolStatus = ref<{ text: string; visible: boolean }>({ text: "", visible: false });
 let cleanupToolExec: (() => void) | null = null;
 let cleanupToolDone: (() => void) | null = null;
+
+// ==========================================
+// Slash 命令下拉框
+// ==========================================
+const slashResults = ref<SlashMatch[]>([]);
+const slashSelectedIndex = ref(0);
+const slashVisible = ref(false);
+const slashDropdownRef = ref<HTMLElement | null>(null);
+const slashSuppress = ref(false);  // 补全后抑制一次下拉弹出
+
+// ★ 选中项变化时自动逐项滚动到可见区域
+watch(slashSelectedIndex, () => {
+  nextTick(() => {
+    const dropdown = slashDropdownRef.value;
+    if (!dropdown) return;
+    const activeItem = dropdown.querySelector("li.active") as HTMLElement | null;
+    if (!activeItem) return;
+    const listTop = dropdown.scrollTop;
+    const listBottom = listTop + dropdown.clientHeight;
+    const itemTop = activeItem.offsetTop;
+    const itemBottom = itemTop + activeItem.offsetHeight;
+    if (itemTop < listTop) {
+      dropdown.scrollTo({ top: itemTop, behavior: "smooth" });
+    } else if (itemBottom > listBottom) {
+      dropdown.scrollTo({ top: itemBottom - dropdown.clientHeight, behavior: "smooth" });
+    }
+  });
+});
+
+function updateSlashDropdown() {
+  const text = input.value;
+  // ★ 补全后抑制重新弹出，让用户能直接回车发送
+  if (slashSuppress.value) {
+    slashSuppress.value = false;
+    return;
+  }
+  if (text.startsWith("/")) {
+    const partial = text.slice(1);
+    slashResults.value = searchSlashCommands(partial);
+    slashVisible.value = slashResults.value.length > 0;
+    slashSelectedIndex.value = 0;
+    // ★ 重置滚动位置到顶部（默认选中第一项）
+    nextTick(() => {
+      const dropdown = slashDropdownRef.value;
+      if (dropdown) dropdown.scrollTop = 0;
+    });
+  } else {
+    slashVisible.value = false;
+    slashResults.value = [];
+  }
+}
+
+// ★ watch 监听输入变化（v-model 更新后触发，保证读到最新值）
+watch(input, updateSlashDropdown);
+
+/** 自动补全：将当前选中命令填入输入框（不执行，用户可再按 Enter 执行） */
+function autofillSlashCommand(match: SlashMatch) {
+  slashVisible.value = false;
+  slashSuppress.value = true;  // ★ 抑制 watch 重新弹出下拉
+  input.value = "/" + match.command.name;
+  // 光标移到末尾
+  nextTick(() => {
+    const el = inputRef.value;
+    if (el) {
+      el.focus();
+      el.setSelectionRange(el.value.length, el.value.length);
+    }
+  });
+}
 
 /** 供父组件调用：弹出时聚焦输入框 */
 function focusInput() {
@@ -38,7 +113,6 @@ const hasNewBelow = ref(false);
 function checkBottom() {
   const el = msgContainer.value;
   if (!el) return;
-  // 底部判断：允许 4px 误差
   isAtBottom.value = el.scrollTop + el.clientHeight >= el.scrollHeight - 4;
   if (isAtBottom.value) hasNewBelow.value = false;
   updateThumb();
@@ -58,13 +132,9 @@ watch(
   () => chatHistory.length,
   (newLen, oldLen) => {
     nextTick(() => {
-      // 有新 assistant 消息
       if (newLen > (oldLen ?? 0) && chatHistory[chatHistory.length - 1]?.role === "assistant") {
         const isFirst = (oldLen ?? 0) === 0;
-        // 启动欢迎消息不播放回复音（只放启动音）
         if (!isFirst) playEventSound("reply");
-        // 系统通知: 已禁用（macOS 无法实现，见 listener.ts 注释）
-        // 自动弹出窗口（收到新消息时）
         if (!isFirst && userConfig.autoPopupOnMessage) {
           emit("request-popup");
         }
@@ -145,24 +215,80 @@ function onCompositionEnd() { composing.value = false; }
 async function send() {
   const t = input.value.trim();
   if (!t) return;
+
+  // 如果以 / 开头，尝试作为 slash 命令执行
+  if (t.startsWith("/")) {
+    const cmdText = t.slice(1);
+    const cmd = findSlashCommand(cmdText);
+    if (cmd) {
+      input.value = "";
+      slashVisible.value = false;
+      const result = await cmd.execute();
+      if (result !== null) {
+        const { pushSystemMessage } = await import("@/services/session/messages");
+        pushSystemMessage(result);
+      }
+      return;
+    }
+    // 未注册的 / 开头的文本 → 透传给 AI
+  }
+
   input.value = "";
+  slashVisible.value = false;
   emit("send", t);
   playEventSound("send");
   const result = await sendMessage(t);
-  // 使用 agent-loop 返回的人格效果 (expression/sound)
-  // 注意：agent-loop 也会通过 deskpet-expression/deskpet-sound 事件驱动 UI
   if (result.personalityEffect.soundEvent) {
     playEventSound(result.personalityEffect.soundEvent as Parameters<typeof playEventSound>[0])
   }
   scrollToBottom();
 }
+
 function key(e: KeyboardEvent) {
-  // IME 输入中（composition）不触发发送
+  // IME 输入中不触发
   if (composing.value || e.isComposing || e.keyCode === 229) return;
-  if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(); }
+
+  // ── 下拉框键盘导航 ──
+  if (slashVisible.value && slashResults.value.length > 0) {
+    if (e.key === "ArrowDown") {
+      e.preventDefault();
+      slashSelectedIndex.value = (slashSelectedIndex.value + 1) % slashResults.value.length;
+      return;
+    }
+    if (e.key === "ArrowUp") {
+      e.preventDefault();
+      slashSelectedIndex.value = (slashSelectedIndex.value - 1 + slashResults.value.length) % slashResults.value.length;
+      return;
+    }
+    if (e.key === "Enter" && !e.shiftKey) {
+      e.preventDefault();
+      const selected = slashResults.value[slashSelectedIndex.value];
+      if (selected) autofillSlashCommand(selected);
+      return;
+    }
+    if (e.key === "Escape") {
+      e.preventDefault();
+      slashVisible.value = false;
+      return;
+    }
+    // Tab 键补全
+    if (e.key === "Tab") {
+      e.preventDefault();
+      const selected = slashResults.value[slashSelectedIndex.value];
+      if (selected) autofillSlashCommand(selected);
+      return;
+    }
+  }
+
+  // ── 普通发送 ──
+  if (e.key === "Enter" && !e.shiftKey) {
+    e.preventDefault();
+    // 如果下拉框正好打开但无结果，Enter 仍尝试作为 slash 命令执行
+    send();
+  }
 }
 
-onMounted(() => {
+onMounted(async () => {
   scrollToBottom();
   checkBottom();
 
@@ -192,7 +318,7 @@ onUnmounted(() => {
     <div id="ch-body">
       <div id="ch-msgs" ref="msgContainer" @scroll="checkBottom">
         <div v-for="(m, i) in chatHistory" :key="i" class="cm" :class="m.role">
-          <span class="cn">{{ m.role === "assistant" ? "糖糖" : "你" }}</span>
+          <span class="cn">{{ m.role === "system" ? "📋" : m.role === "assistant" ? "糖糖" : "你" }}</span>
           <span class="ct">{{ m.text }}</span>
         </div>
       </div>
@@ -230,9 +356,49 @@ onUnmounted(() => {
     </Transition>
 
     <div id="ch-foot">
-      <textarea ref="inputRef" v-model="input" placeholder="消息..." @keydown="key" @compositionstart="onCompositionStart" @compositionend="onCompositionEnd" rows="1" />
+      <!-- 输入框容器（相对定位，供下拉框定位） -->
+      <div id="ch-input-wrap">
+        <textarea
+          ref="inputRef"
+          v-model="input"
+          placeholder="消息... 输入 / 查看命令"
+          @keydown="key"
+          @compositionstart="onCompositionStart"
+          @compositionend="onCompositionEnd"
+          rows="1"
+        />
+
+        <!-- ★ Slash 命令下拉框 -->
+        <Transition name="slash-drop">
+          <ul v-if="slashVisible" ref="slashDropdownRef" id="slash-dropdown">
+            <li
+              v-for="(item, idx) in slashResults"
+              :key="item.command.name"
+              :class="{ active: idx === slashSelectedIndex }"
+              @mouseenter="slashSelectedIndex = idx"
+              @mousedown.prevent="autofillSlashCommand(item)"
+            >
+              <span class="slash-name">/{{ item.command.name }}</span>
+              <span class="slash-desc">{{ item.command.description }}</span>
+            </li>
+          </ul>
+        </Transition>
+      </div>
       <button @click="send" :disabled="!input.trim()">发送</button>
     </div>
+
+    <!-- 安全确认弹窗 -->
+    <Transition name="confirm-fade">
+      <div v-if="confirmState.pending" id="ch-confirm-overlay">
+        <div id="ch-confirm-box">
+          <div id="ch-confirm-msg">{{ confirmState.pending.message }}</div>
+          <div id="ch-confirm-btns">
+            <button class="ch-confirm-btn ch-confirm-deny" @click="resolveConfirm(false)">✕ 取消</button>
+            <button class="ch-confirm-btn ch-confirm-ok" @click="resolveConfirm(true)">✓ 确认执行</button>
+          </div>
+        </div>
+      </div>
+    </Transition>
 
     <DebugBar />
   </div>
@@ -275,11 +441,9 @@ onUnmounted(() => {
   user-select: text;
   -webkit-user-select: text;
 }
-/* 隐藏原生滚动条 */
 #ch-msgs::-webkit-scrollbar { display: none; }
 #ch-msgs { scrollbar-width: none; }
 
-/* 自定义滚动条轨道 */
 #ch-scrollbar {
   width: 6px;
   flex-shrink: 0;
@@ -287,7 +451,6 @@ onUnmounted(() => {
   position: relative;
   cursor: pointer;
 }
-/* 滚动条滑块 */
 #ch-thumb {
   position: absolute;
   width: 100%;
@@ -298,7 +461,6 @@ onUnmounted(() => {
 #ch-thumb:hover { background: rgba(240,160,192,0.55); }
 #ch-thumb.dragging { background: rgba(240,160,192,0.7); }
 
-/* 跳到底部按钮 */
 #ch-jump {
   position: absolute;
   bottom: 4px;
@@ -332,6 +494,19 @@ onUnmounted(() => {
 .cm.user .ct { background: #6a3050; }
 .cm.assistant .ct { background: #4a2540; }
 
+/* ── 系统消息（斜杠命令输出）── */
+.cm.system { align-items: stretch; }
+.cm.system .cn { color: #9080a0; font-size: clamp(10px, 2.5vw, 14px); }
+.cm.system .ct {
+  background: rgba(90, 60, 100, 0.35);
+  border: 1px solid rgba(140, 110, 160, 0.25);
+  font-family: "Courier New", monospace;
+  font-size: clamp(8px, 2vw, 12px);
+  white-space: pre-wrap;
+  line-height: 1.5;
+  max-width: 100%;
+}
+
 /* --- 输入区 --- */
 #ch-foot {
   position: relative;
@@ -344,8 +519,15 @@ onUnmounted(() => {
   border-top: 1px solid #5a3050;
   flex-shrink: 0;
 }
-#ch-foot textarea {
+
+#ch-input-wrap {
   flex: 1;
+  min-width: 0;
+  position: relative;
+}
+
+#ch-foot textarea {
+  width: 100%;
   min-width: 0;
   background: #3e1a2e;
   border: 1px solid #6a4060;
@@ -356,6 +538,7 @@ onUnmounted(() => {
   font-family: inherit;
   outline: none;
   resize: none;
+  box-sizing: border-box;
 }
 #ch-foot textarea:focus { border-color: #c4276f; }
 #ch-foot textarea::placeholder { color: #8a6080; }
@@ -389,4 +572,100 @@ onUnmounted(() => {
 .tool-status-fade-enter-active { transition: opacity 0.2s ease; }
 .tool-status-fade-leave-active { transition: opacity 0.5s ease; }
 .tool-status-fade-enter-from, .tool-status-fade-leave-to { opacity: 0; }
+
+/* ── Slash 命令下拉框 ── */
+#slash-dropdown {
+  position: absolute;
+  bottom: calc(100% + 4px);
+  left: 0;
+  right: 0;
+  z-index: 10;
+  max-height: 160px;
+  overflow-y: auto;
+  background: #3a1530;
+  border: 1px solid #6a4060;
+  border-radius: 8px;
+  padding: 4px 0;
+  margin: 0;
+  list-style: none;
+  box-shadow: 0 4px 12px rgba(0,0,0,0.4);
+  scroll-behavior: smooth;
+}
+
+#slash-dropdown li {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  padding: 5px 10px;
+  cursor: pointer;
+  transition: background 0.1s;
+}
+
+#slash-dropdown li.active,
+#slash-dropdown li:hover {
+  background: #5a2a4a;
+}
+
+.slash-name {
+  font-size: clamp(9px, 2.2vw, 13px);
+  color: #f0a0c0;
+  font-weight: bold;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+.slash-desc {
+  font-size: clamp(8px, 2vw, 11px);
+  color: #a080a0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* 下拉框过渡动画 */
+.slash-drop-enter-active { transition: opacity 0.12s ease, transform 0.12s ease; }
+.slash-drop-leave-active { transition: opacity 0.1s ease; }
+.slash-drop-enter-from { opacity: 0; transform: translateY(4px); }
+.slash-drop-leave-to { opacity: 0; }
+
+/* ── 安全确认弹窗 ── */
+#ch-confirm-overlay {
+  position: absolute;
+  inset: 0; z-index: 20;
+  display: flex; align-items: flex-end; justify-content: center;
+  padding-bottom: 12px;
+  background: rgba(30, 8, 16, 0.7);
+  backdrop-filter: blur(2px);
+}
+#ch-confirm-box {
+  background: #2a1020;
+  border: 1px solid #6a3050;
+  border-radius: 8px;
+  padding: 10px 14px;
+  max-width: 90%;
+}
+#ch-confirm-msg {
+  color: #f0c0d0;
+  font-size: 11px;
+  margin-bottom: 8px;
+  text-align: center;
+}
+#ch-confirm-btns {
+  display: flex; gap: 8px; justify-content: center;
+}
+.ch-confirm-btn {
+  padding: 4px 16px; font-size: 11px;
+  border-radius: 12px; border: 1px solid #6a4060;
+  background: #3e1a2e; color: #f0e0f0;
+  cursor: pointer; font-family: inherit;
+}
+.ch-confirm-btn:hover { background: #5a3050; }
+.ch-confirm-btn.ch-confirm-ok {
+  background: #c4276f; border-color: #c4276f; color: #fff;
+}
+.ch-confirm-btn.ch-confirm-ok:hover { background: #e84a8a; }
+
+.confirm-fade-enter-active { transition: opacity 0.15s ease; }
+.confirm-fade-leave-active { transition: opacity 0.1s ease; }
+.confirm-fade-enter-from, .confirm-fade-leave-to { opacity: 0; }
 </style>

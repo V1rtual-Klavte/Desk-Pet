@@ -98,6 +98,20 @@ let cachedUser = ""
 let lockHeld = false
 const LOCK_TIMEOUT = 5000
 
+// ── 本地时间格式化（显示给用户看，不用 UTC）──
+function pad(n: number): string { return String(n).padStart(2, "0") }
+function localTime(d: Date | number): string {
+  const dt = typeof d === "number" ? new Date(d) : d
+  return `${dt.getFullYear()}-${pad(dt.getMonth()+1)}-${pad(dt.getDate())} ${pad(dt.getHours())}:${pad(dt.getMinutes())}:${pad(dt.getSeconds())}`
+}
+function localDate(d?: Date | number): string {
+  const dt = d ? (typeof d === "number" ? new Date(d) : d) : new Date()
+  return `${dt.getFullYear()}-${pad(dt.getMonth()+1)}-${pad(dt.getDate())}`
+}
+function localCompact(d: Date): string {
+  return `${d.getFullYear()}${pad(d.getMonth()+1)}${pad(d.getDate())}-${pad(d.getHours())}${pad(d.getMinutes())}${pad(d.getSeconds())}`
+}
+
 /** ★ 轮次计数器：每 5 轮触发记忆整理 */
 let turnCounter = 0
 const CONSOLIDATE_INTERVAL = 5
@@ -252,7 +266,7 @@ function serializeMEMORYmd(list: MemoryEntry[]): string {
   })
 
   const memLines = sorted.map(e => {
-    const date = new Date(e.timestamp).toISOString().slice(0, 10)
+    const date = localDate(e.timestamp)
     let line = `- [${date}] [${e.category}] [imp:${e.importance}] ${e.content}`
     line += ` |id:${e.id}`
     return line
@@ -336,7 +350,7 @@ function newSessionMemory(): SessionMemory {
 }
 
 function fmtCompact(d: Date): string {
-  return d.toISOString().slice(0, 19).replace(/[-:T]/g, "").replace(/(\d{8})(\d{6})/, "$1-$2")
+  return localCompact(d)
 }
 
 /** 从 sessions/*.md 文件解析 SessionMemory（turns + summary） */
@@ -412,8 +426,7 @@ function buildSessionFileContent(sm: SessionMemory): string[] {
   const topic = findTopicFromTurns(sm.turns)
   const lines = [
     `# ${sm.sessionId}-${topic}`,
-    `> 开始: ${new Date(sm.startedAt).toISOString()}`,
-    `> 模式: ${modeConfig.assistant ? "助手" : "轻量"}`,
+    `> 开始: ${localTime(sm.startedAt)}`,
     `> 轮数: ${sm.turns.length}`,
     "",
   ]
@@ -439,7 +452,7 @@ function buildSessionFileContent(sm: SessionMemory): string[] {
   // 完整对话记录
   lines.push(`## 对话记录 (${sm.turns.length} 轮)`)
   for (const t of sm.turns) {
-    const timeStr = new Date(t.timestamp).toISOString().slice(0, 19).replace("T", " ")
+    const timeStr = localTime(t.timestamp)
     lines.push(`- [${timeStr}] **${t.role === "assistant" ? "糖糖" : "用户"}**: ${t.text.substring(0, 300)}`)
   }
   lines.push("")
@@ -689,10 +702,10 @@ async function syncProjectFromSessionsDir(): Promise<void> {
       const reqMatch = raw.match(/- 主请求:\s*(.+)/)
       if (reqMatch) mainRequest = reqMatch[1]
       // 提取日期
-      let date = new Date().toISOString().slice(0, 10)
+      let date = localDate()
       const startMatch = raw.match(/> 开始:\s*(.+)/)
       if (startMatch) {
-        try { date = new Date(startMatch[1]).toISOString().slice(0, 10) } catch { /* use today */ }
+        try { date = localDate(new Date(startMatch[1])) } catch { /* use today */ }
       }
       rebuilt.push({ sessionFile: filename, date, rounds, mainRequest, keyTech: [] })
     }
@@ -819,7 +832,7 @@ export const MemoryService = {
     if (!entry.file) return
     try {
       const current = await readMemoryFile(entry.file)
-      const appendLine = `\n- [${new Date().toISOString().slice(0, 10)}] ${entry.content}`
+      const appendLine = `\n- [${localDate()}] ${entry.content}`
       if (!current.includes(entry.content)) {
         await writeMemoryFile(entry.file, current + appendLine)
       }
@@ -833,7 +846,7 @@ export const MemoryService = {
   },
 
   async updateCandy(instructions: string): Promise<boolean> {
-    const md = `# CANDY.md — 用户系统指令\n\n> 类似 CLAUDE.md，用户手写系统指令。\n\n---\n\n## 指令\n\n${instructions.trim()}\n\n_最后更新: ${new Date().toISOString().slice(0, 19).replace("T", " ")}_\n`
+    const md = `# CANDY.md — 用户系统指令\n\n> 类似 CLAUDE.md，用户手写系统指令。\n\n---\n\n## 指令\n\n${instructions.trim()}\n\n_最后更新: ${localTime(new Date())}_\n`
     const ok = await writeMemoryFile("CANDY.md", md)
     if (ok) {
       cachedCandy = instructions.trim()
@@ -851,7 +864,7 @@ export const MemoryService = {
       .filter(e => e.category === "user" && e.importance >= 7)
       .map(e => `- ${e.content}`)
     if (facts.length === 0) return
-    const md = `# User.md — 用户画像\n\n> 自动维护。importance ≥ 7 的 user 类条目自动同步。\n\n---\n\n## 用户信息\n\n${facts.join("\n")}\n\n_最后更新: ${new Date().toISOString().slice(0, 19).replace("T", " ")}_\n`
+    const md = `# User.md — 用户画像\n\n> 自动维护。importance ≥ 7 的 user 类条目自动同步。\n\n---\n\n## 用户信息\n\n${facts.join("\n")}\n\n_最后更新: ${localTime(new Date())}_\n`
     const ok = await writeMemoryFile("User.md", md)
     if (ok) {
       cachedUser = facts.join("\n")
@@ -861,7 +874,7 @@ export const MemoryService = {
 
   async addOutsideRef(url: string, description: string): Promise<void> {
     const raw = await readMemoryFile("Outside.md")
-    const entry = `- [${new Date().toISOString().slice(0, 10)}] ${description}: ${url}\n`
+    const entry = `- [${localDate()}] ${description}: ${url}\n`
     const updated = raw
       ? raw.replace(/(##\s*外部知识\s*\n)/, `$1${entry}`)
       : `# Outside.md\n\n## 外部知识\n\n${entry}\n`
@@ -905,6 +918,16 @@ export const MemoryService = {
           if (startMatch) { const d = Date.parse(startMatch[1]); if (!isNaN(d)) startedAt = d }
           // 解析已有 turns
           existingTurns = parseTurnsFromRaw(raw)
+          // ★ 恢复持久化的 token 统计
+          const tokenMatch = raw.match(/> Token累计:\s*(\d+)\/(\d+)\s*\|\s*上下文:\s*(\d+)%/)
+          if (tokenMatch) {
+            const { restoreDebugStats } = await import("@/services/debug")
+            restoreDebugStats({
+              totalPrompt: parseInt(tokenMatch[1], 10),
+              totalCompletion: parseInt(tokenMatch[2], 10),
+              lastContextUsage: parseInt(tokenMatch[3], 10),
+            })
+          }
         }
       }
     } catch { /* 静默 */ }
@@ -934,8 +957,7 @@ export const MemoryService = {
     const filename = makeSessionFilename(sessionId, "新会话")
     const content = [
       `# ${sessionId}-新会话`,
-      `> 开始: ${new Date().toISOString()}`,
-      `> 模式: ${modeConfig.assistant ? "助手" : "轻量"}`,
+      `> 开始: ${localTime(new Date())}`,
       `> 轮数: 0`,
       "",
       "## 摘要",
@@ -951,7 +973,7 @@ export const MemoryService = {
       if (!projectEntries.find(e => e.sessionFile === filename)) {
         projectEntries.push({
           sessionFile: filename,
-          date: new Date().toISOString().slice(0, 10),
+          date: localDate(),
           rounds: 0,
           mainRequest: "新会话",
           keyTech: [],
@@ -1035,6 +1057,41 @@ export const MemoryService = {
     this.appendTurnToSessionFile(role, text).catch(() => {})
   },
 
+  /**
+   * ★ 向指定会话文件追加一轮对话（不依赖全局 sessionMemory）。
+   *   用于 sendMessage 异步回复时，会话可能已切换的场景。
+   */
+  async recordTurnToSession(sessionId: string, role: "user" | "assistant", text: string): Promise<void> {
+    await ensureInit()
+    if (!sessionsDir) { log.warn("recordTurnToSession: sessionsDir 未设置"); return }
+
+    try {
+      const files = await invoke<string[]>("list_session_files")
+      const match = files.find(f => f.startsWith(sessionId))
+      if (!match) { log.warn("recordTurnToSession: 未找到会话文件", sessionId); return }
+
+      let current = await readSessionFile(match)
+      if (!current || current.length < 20) { log.warn("recordTurnToSession: 文件内容为空", match); return }
+
+      const timeStr = localTime(new Date())
+      const roleLabel = role === "assistant" ? "糖糖" : "用户"
+      const turnLine = `- [${timeStr}] **${roleLabel}**: ${text.substring(0, 300)}`
+
+      // 更新元数据：轮数
+      const turnMatches = current.match(/^\s*-\s*\[[^\]]+\]\s*\*\*[^*]+\*\*:/gm) || []
+      const turnCount = turnMatches.length + 1
+      current = current
+        .replace(/^> 轮数: \d+/m, `> 轮数: ${turnCount}`)
+        .replace(/^## 对话记录 \(\d+ 轮\)/m, `## 对话记录 (${turnCount} 轮)`)
+      current = current.trimEnd() + "\n" + turnLine + "\n"
+
+      await writeSessionFile(match, current)
+      log.debug(`recordTurnToSession: ${role} → ${match} (${turnCount} 轮)`)
+    } catch (e) {
+      log.warn("recordTurnToSession 失败", e instanceof Error ? e : undefined)
+    }
+  },
+
   /** 实时追加一轮对话到 sessions/<sessionId>-主题.md */
   async appendTurnToSessionFile(role: "user" | "assistant", text: string): Promise<void> {
     await ensureInit()
@@ -1061,7 +1118,8 @@ export const MemoryService = {
 
     try {
       let current = await readSessionFile(filename)
-      const timeStr = new Date().toISOString().slice(0, 19).replace("T", " ")
+      let writeFilename = filename   // 可能会在内部标题更新后被替换
+      const timeStr = localTime(new Date())
       const roleLabel = role === "assistant" ? "糖糖" : "用户"
       const turnLine = `- [${timeStr}] **${roleLabel}**: ${text.substring(0, 300)}`
 
@@ -1071,9 +1129,9 @@ export const MemoryService = {
           : "新会话"
         current = [
           `# ${sessionMemory.sessionId}-${topic}`,
-          `> 开始: ${new Date(sessionMemory.startedAt).toISOString()}`,
-          `> 模式: ${modeConfig.assistant ? "助手" : "轻量"}`,
+          `> 开始: ${localTime(sessionMemory.startedAt)}`,
           `> 轮数: 1`,
+          `> Token累计: 0/0 | 上下文: 0%`,
           "",
           "## 摘要",
           "<!-- 归档时填充 -->",
@@ -1084,20 +1142,39 @@ export const MemoryService = {
           "",
         ].join("\n")
       } else {
-        // ★ 更新元数据：轮数 + 标题（首次用户消息后更新topic）
+        // ★ 更新元数据：轮数 + 标题 + token 统计
         const turnMatches = current.match(/^\s*-\s*\[[^\]]+\]\s*\*\*[^*]+\*\*:/gm) || []
         const turnCount = turnMatches.length + 1
         const newTopic = sessionMemory.turns.find(t => t.role === "user")?.text.substring(0, 20)?.replace(/[\n\r/\\:*?"<>|]/g, "").trim() || ""
+        // 持久化 token 累计
+        const { debug } = await import("@/services/debug")
+        const tokenLine = `> Token累计: ${debug.totalPromptTokens}/${debug.totalCompletionTokens} | 上下文: ${debug.lastContextUsage}%`
         current = current
           .replace(/^> 轮数: \d+/m, `> 轮数: ${turnCount}`)
+          .replace(/^> Token累计:.*/m, tokenLine)
           .replace(/^## 对话记录 \(\d+ 轮\)/m, `## 对话记录 (${turnCount} 轮)`)
-        // 文件名中的topic不更新，但标题行实时同步
-        if (newTopic && current.includes("-新会话")) {
+        // 如果还没有 Token 行，在轮数行后插入
+        if (!current.includes("Token累计:")) {
+          current = current.replace(/^(> 轮数: \d+)/m, `$1\n${tokenLine}`)
+        }
+        // ★ 首次用户消息后：同时更新内部标题 + 重命名文件
+        if (newTopic && filename.includes("-新会话")) {
           current = current.replace(/^# session-\d{8}-\d{6}-新会话/m, `# ${sessionMemory.sessionId}-${newTopic}`)
+          // 重命名文件：写新文件 → 删旧文件
+          const newFilename = makeSessionFilename(sessionMemory.sessionId, newTopic)
+          if (newFilename !== filename) {
+            writeFilename = newFilename
+          }
         }
         current = current.trimEnd() + "\n" + turnLine + "\n"
       }
-      await writeSessionFile(filename, current)
+      // 写入（可能是新文件名）
+      await writeSessionFile(writeFilename, current)
+      // 如果文件名变了，删除旧文件 + 更新 Project.md 引用
+      if (writeFilename !== filename) {
+        try { await invoke("file_delete", { path: `${sessionsDir}/${filename}` }) } catch { /* ignore */ }
+        filename = writeFilename
+      }
 
       // ★ 同步更新 Project.md 中的轮数
       const pe = projectEntries.find(e => e.sessionFile === filename)
@@ -1156,7 +1233,7 @@ export const MemoryService = {
     // ★ 使用 buildSessionFileContent 生成完整内容（含归档标记）
     const lines = buildSessionFileContent(sessionMemory)
     // 在元信息区插入归档时间
-    const archiveLine = `> 归档: ${new Date().toISOString()}`
+    const archiveLine = `> 归档: ${localTime(new Date())}`
     lines.splice(3, 0, archiveLine)
 
     const ok = await writeSessionFile(filename, lines.join("\n"))
@@ -1168,7 +1245,7 @@ export const MemoryService = {
     // 追加 Project.md 指针
     projectEntries.push({
       sessionFile: filename,
-      date: new Date().toISOString().slice(0, 10),
+      date: localDate(),
       rounds: sessionMemory.turns.length,
       mainRequest: cs?.mainRequest ?? firstUser?.text.substring(0, 50) ?? "无",
       keyTech: cs?.keyTech ?? [],
@@ -1227,8 +1304,16 @@ export const MemoryService = {
   /** 删除指定的会话文件 */
   async deleteSessionFile(filename: string): Promise<boolean> {
     await ensureInit()
-    // 不吞错误：让外层感知到并打印到 DevTools
     console.log("[Memory] deleteSessionFile:", filename)
+
+    // ★ 如果删除的是当前活跃的 session 文件，先清空 sessionMemory
+    //    防止后续 archiveSession() 重新写回磁盘
+    const parsedFilename = parseSessionFilename(filename)
+    if (parsedFilename && sessionMemory?.sessionId === parsedFilename.sessionId) {
+      log.info("deleteSessionFile: 重置 sessionMemory（当前活跃会话被删除）")
+      sessionMemory = null
+    }
+
     await invoke("delete_session_file", { filename })
     projectEntries = projectEntries.filter(e => e.sessionFile !== filename)
     await flushProjectSave()

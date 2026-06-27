@@ -36,6 +36,6 @@ DESIGN_ORIGIN.docx
 sessions/*.md
 
 # Memory (runtime-generated content, track templates only)
-# memory/CANDY.md
-# memory/User.md
-# memory/Outside.md
+memory/CANDY.md
+memory/User.md
+memory/Outside.md

@@ -127,9 +127,38 @@ tools:
     writeEnabled: false        # 轻量模式强制 false
   mcp:
     enabled: false             # 助手模式才有效
-    servers: []
+    servers: []                # 用户自定义 MCP 服务器
+    builtin:                   # 内置 MCP 服务器（可独立开关/配置）
+      filesystem:
+        enabled: true
+        command: npx
+        args: ["-y", "@modelcontextprotocol/server-filesystem", "/"]
+        description: "📁 文件系统操作"
+      brave-search:
+        enabled: false
+        command: npx
+        args: ["-y", "@anthropic/mcp-brave-search"]
+        env: { BRAVE_API_KEY: "" }
+        description: "🔍 Brave Search"
+      playwright:
+        enabled: true
+        command: npx
+        args: ["-y", "@anthropic/mcp-playwright"]
+        description: "🎭 Playwright"
+      git:
+        enabled: false
+        command: npx
+        args: ["-y", "@anthropic/mcp-git", "/"]
+        description: "📝 Git"
+      github:
+        enabled: false
+        command: npx
+        args: ["-y", "@anthropic/mcp-github"]
+        env: { GITHUB_PERSONAL_ACCESS_TOKEN: "" }
+        description: "🐙 GitHub"
   skill:
     enabled: false             # 助手模式才有效
+    skills: []                 # 用户动态添加的 Skill 列表（YAML frontmatter 原文）
 
 # ── 安全 ──
 safety:

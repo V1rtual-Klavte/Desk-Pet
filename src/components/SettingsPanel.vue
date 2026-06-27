@@ -5,10 +5,9 @@ import { LogicalSize } from "@tauri-apps/api/dpi";
 import {
   userConfig, aiConfig, windowMonitorConfig, aiLockConfig,
   memoryConfig, desktopConfig, loggingConfig, personalityConfig,
-  modeConfig, loopConfig,
-  setOverrides, clearOverrides,
+  modeConfig, loopConfig, toolsConfig, safetyConfig,
+  setOverrides, setOverride, clearOverrides, getAllOverrides,
 } from "@/services/config";
-import { debug, refreshToolStats } from "@/services/debug";
 import {
   getSoundLibrary, getSoundAssignments, saveSoundAssignments,
   soundEvents,
@@ -59,6 +58,11 @@ const aiModel = ref(aiConfig.model);
 const aiContextMaxTokens = ref(aiConfig.contextMaxTokens);
 const aiSystemPrompt = ref(aiConfig.defaultSystemPrompt);
 const showApiKey = ref(false);
+const aiThinkingEffort = ref(aiConfig.thinkingEffort);
+
+// ── 安全 ──
+const safetyMode = ref(safetyConfig.mode as string);
+const sessionTrustEnabled = ref(safetyConfig.sessionTrustEnabled);
 
 const aiRequireApiKey = ref(aiConfig.requireApiKey);
 // ── 窗口监控 ──
@@ -137,6 +141,248 @@ function onKeyDown(e: KeyboardEvent) {
   log.info(`快捷键已录制: ${shortcutDisplay.value}`);
 }
 
+// ── 工具配置 ──
+const bashWhitelist = ref(toolsConfig.bashWhitelist.join("\n"));
+const fileWriteEnabled = ref(toolsConfig.fileWriteEnabled);
+
+// ── MCP 配置 ──
+const mcpEnabled = ref(toolsConfig.mcpEnabled);
+const mcpServerList = ref<{ name: string; transport: string; command: string; args: string; url: string; enabled: boolean }[]>([]);
+const editingMcpIdx = ref(-1);
+const mcpForm = ref({ name: "", transport: "stdio", command: "", args: "", url: "", enabled: true });
+
+// ── 内置 MCP ──
+const builtinMcpList = ref<{ name: string; enabled: boolean; args: string; description: string; envStr: string }[]>([]);
+const editingBuiltinIdx = ref(-1);
+
+async function loadBuiltinMcpConfig() {
+  const raw = toolsConfig.builtinMcpServers as Record<string, any>
+  if (!raw || typeof raw !== "object") { builtinMcpList.value = []; return }
+  builtinMcpList.value = Object.entries(raw).map(([name, def]: [string, any]) => ({
+    name,
+    enabled: def.enabled !== false,
+    args: Array.isArray(def.args) ? def.args.join(" ") : (def.args ? String(def.args) : ""),
+    description: def.description ?? name,
+    envStr: def.env ? Object.entries(def.env).map(([k,v]) => `${k}=${v}`).join("\n") : "",
+  }))
+}
+function toggleBuiltinMcp(idx: number) {
+  builtinMcpList.value[idx].enabled = !builtinMcpList.value[idx].enabled
+}
+function startEditBuiltin(idx: number) {
+  editingBuiltinIdx.value = idx
+}
+function cancelEditBuiltin() {
+  editingBuiltinIdx.value = -1
+}
+
+async function loadMcpConfig() {
+  // ★ 直接从 CONFIG 读取（而非 Manager 内部缓存），确保跨窗口持久化
+  const servers = toolsConfig.mcpServers
+  if (Array.isArray(servers) && servers.length > 0) {
+    mcpServerList.value = servers.map((s: any) => ({
+      name: String(s.name || ""),
+      transport: s.transport === "sse" ? "sse" : "stdio",
+      command: s.command ? String(s.command) : "",
+      args: Array.isArray(s.args) ? s.args.join(" ") : (s.args ? String(s.args) : ""),
+      url: s.url ? String(s.url) : "",
+      enabled: s.enabled !== false,
+    }))
+  }
+}
+function addOrUpdateMcpServer() {
+  const s = mcpForm.value;
+  if (!s.name.trim()) return;
+  if (editingMcpIdx.value >= 0) {
+    mcpServerList.value[editingMcpIdx.value] = { ...s };
+  } else {
+    mcpServerList.value.push({ ...s });
+  }
+  mcpForm.value = { name: "", transport: "stdio", command: "", args: "", url: "", enabled: true };
+  editingMcpIdx.value = -1;
+}
+function editMcpServer(idx: number) {
+  editingMcpIdx.value = idx;
+  mcpForm.value = { ...mcpServerList.value[idx] };
+}
+function removeMcpServer(idx: number) {
+  mcpServerList.value.splice(idx, 1);
+  if (editingMcpIdx.value === idx) { editingMcpIdx.value = -1; mcpForm.value = { name: "", transport: "stdio", command: "", args: "", url: "", enabled: true }; }
+}
+function cancelMcpEdit() {
+  editingMcpIdx.value = -1;
+  mcpForm.value = { name: "", transport: "stdio", command: "", args: "", url: "", enabled: true };
+}
+async function importMcpJson() {
+  const input = document.createElement("input");
+  input.type = "file";
+  input.accept = ".json";
+  input.onchange = async () => {
+    const file = input.files?.[0];
+    if (!file) return;
+    const text = await file.text();
+    const { importMcpServersFromJson } = await import("@/services/tool/mcp/manager");
+    const result = importMcpServersFromJson(text);
+    if (result.success) {
+      await loadMcpConfig();
+      log.info("MCP 配置已导入:", result.count, "个服务器");
+    } else {
+      log.warn("MCP 导入失败:", result.error);
+    }
+  };
+  input.click();
+}
+async function exportMcpJson() {
+  const { exportMcpServersToJson } = await import("@/services/tool/mcp/manager");
+  const json = exportMcpServersToJson();
+  const blob = new Blob([json], { type: "application/json" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url; a.download = "mcp-servers.json"; a.click();
+  URL.revokeObjectURL(url);
+}
+
+// ── Skill 配置 ──
+const skillEnabled = ref(toolsConfig.skillEnabled);
+const skillList = ref<{ id: string; name: string; description: string; keywords: string }[]>([]);
+
+async function loadSkillConfig() {
+  const { getLoadedSkills } = await import("@/services/tool/skill/loader");
+  skillList.value = getLoadedSkills().map(s => ({
+    id: s.meta.id,
+    name: s.meta.name,
+    description: s.meta.description,
+    keywords: (s.meta.trigger_keywords ?? []).join(", "),
+  }));
+}
+
+// ── MCP 测试连接 ──
+const mcpTesting = ref(false)
+const mcpTestResult = ref("")
+async function testMcpConnection() {
+  const s = mcpForm.value
+  if (!s.name.trim() || !s.command.trim()) {
+    mcpTestResult.value = "❌ 请先填写名称和命令"
+    return
+  }
+  mcpTesting.value = true
+  mcpTestResult.value = "⏳ 连接中..."
+  try {
+    const { connectMcpServer } = await import("@/services/tool/mcp/manager")
+    const result = await connectMcpServer({
+      name: s.name.trim(),
+      transport: s.transport as "stdio" | "sse",
+      command: s.command.trim(),
+      args: s.args.trim() ? s.args.trim().split(/\s+/) : [],
+      url: s.url.trim() || undefined,
+      enabled: s.enabled,
+    })
+    if (result.success) {
+      mcpTestResult.value = `✅ 连接成功！发现 ${result.toolCount} 个工具`
+    } else {
+      mcpTestResult.value = `❌ 连接失败: ${result.error || "未知错误"}`
+    }
+  } catch (e) {
+    mcpTestResult.value = `❌ 异常: ${e instanceof Error ? e.message : String(e)}`
+  } finally {
+    mcpTesting.value = false
+  }
+}
+
+async function removeSkill(skillId: string) {
+  const { removeSkill: doRemove } = await import("@/services/tool/skill/loader");
+  doRemove(skillId);
+  await loadSkillConfig();
+}
+async function uploadSkillMd() {
+  const input = document.createElement("input");
+  input.type = "file";
+  input.accept = ".md";
+  input.onchange = async () => {
+    const file = input.files?.[0];
+    if (!file) return;
+    const text = await file.text();
+    const { addSkillFromMarkdown } = await import("@/services/tool/skill/loader");
+    const skill = addSkillFromMarkdown(text);
+    if (skill) {
+      await loadSkillConfig();
+      log.info("Skill 已上传:", skill.meta.name);
+    } else {
+      log.warn("Skill 上传失败: frontmatter 解析失败");
+    }
+  };
+  input.click();
+}
+
+// ── 重启应用 ──
+async function restartApp() {
+  try {
+    const { getAllWebviewWindows } = await import("@tauri-apps/api/webviewWindow")
+    const windows = await getAllWebviewWindows()
+    for (const w of windows) {
+      try { w.close() } catch { /* ignore */ }
+    }
+  } catch { /* fallback: just close current */ }
+  win.close().catch(() => {})
+}
+
+// ── CONFIG 导入导出 ──
+async function exportConfigYaml() {
+  try {
+    const jsYaml = await import("js-yaml");
+    const overrides = getAllOverrides();
+    const yamlStr = jsYaml.dump(overrides, { lineWidth: -1, noRefs: true });
+    const blob = new Blob([yamlStr], { type: "application/x-yaml" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = "deskpet-config-export.yaml";
+    a.click();
+    URL.revokeObjectURL(url);
+    log.info("CONFIG 已导出");
+  } catch (e) {
+    log.error("导出失败", e);
+  }
+}
+async function importConfigYaml() {
+  const input = document.createElement("input");
+  input.type = "file";
+  input.accept = ".yaml,.yml";
+  input.onchange = async () => {
+    const file = input.files?.[0];
+    if (!file) return;
+    try {
+      const text = await file.text();
+      const jsYaml = await import("js-yaml");
+      const parsed = jsYaml.load(text) as Record<string, any>;
+      if (!parsed || typeof parsed !== "object") {
+        log.warn("导入失败: 无效的 YAML 格式");
+        return;
+      }
+      // 扁平化 key → 应用为覆盖值
+      const flat: Record<string, any> = {};
+      function flatten(obj: any, prefix: string) {
+        for (const [k, v] of Object.entries(obj)) {
+          const key = prefix ? `${prefix}.${k}` : k;
+          if (v !== null && typeof v === "object" && !Array.isArray(v)) {
+            flatten(v, key);
+          } else {
+            flat[key] = v;
+          }
+        }
+      }
+      flatten(parsed, "");
+      setOverrides(flat);
+      log.info("CONFIG 已导入:", Object.keys(flat).length, "个设置项");
+      // 刷新页面以应用新配置
+      location.reload();
+    } catch (e) {
+      log.error("导入失败", e);
+    }
+  };
+  input.click();
+}
+
 // ── 弹窗大小预览 ──
 async function previewSize() {
   try {
@@ -175,6 +421,7 @@ async function doSave() {
     "ai.requireApiKey": aiRequireApiKey.value,
     "ai.model": aiModel.value,
     "ai.contextMaxTokens": aiContextMaxTokens.value,
+    "ai.thinkingEffort": aiThinkingEffort.value,
     "ai.defaultSystemPrompt": aiSystemPrompt.value,
     "personality.enabled": personalityEnabled.value,
     "personality.active": personalityActive.value,
@@ -190,7 +437,48 @@ async function doSave() {
     "desktop.waitTimeoutMs": deskWait.value,
     "logging.level": logLevel.value,
     "mode.assistant": assistantMode.value,
+    "safety.mode": safetyMode.value,
+    "safety.sessionTrustEnabled": sessionTrustEnabled.value,
+    "tools.bash.whitelist": bashWhitelist.value.split("\n").map(s => s.trim()).filter(Boolean),
+    "tools.file.writeEnabled": fileWriteEnabled.value,
+    "tools.mcp.enabled": mcpEnabled.value,
+    "tools.skill.enabled": skillEnabled.value,
   });
+
+  // 同步内置 MCP 配置
+  const builtinRaw = toolsConfig.builtinMcpServers as Record<string, any>
+  if (builtinRaw && typeof builtinRaw === "object") {
+    const updated: Record<string, any> = {}
+    for (const b of builtinMcpList.value) {
+      const original = builtinRaw[b.name] || {}
+      const env: Record<string, string> = {}
+      if (b.envStr.trim()) {
+        for (const line of b.envStr.trim().split("\n")) {
+          const eq = line.indexOf("=")
+          if (eq > 0) env[line.slice(0, eq).trim()] = line.slice(eq + 1).trim()
+        }
+      }
+      updated[b.name] = {
+        enabled: b.enabled,
+        command: original.command || "npx",
+        args: b.args.trim() ? b.args.trim().split(/\s+/).filter(Boolean) : (original.args || []),
+        description: original.description || "",
+        ...(Object.keys(env).length > 0 || (original.env && Object.keys(original.env).length > 0) ? { env } : {}),
+      }
+    }
+    setOverride("tools.mcp.builtin", updated)
+  }
+
+  // 同步 MCP 服务器列表到 Manager（Manager 会同步到 CONFIG 覆盖层）
+  const { setMcpServers } = await import("@/services/tool/mcp/manager");
+  setMcpServers(mcpServerList.value.map(s => ({
+    name: s.name,
+    transport: s.transport as "stdio" | "sse",
+    command: s.command || undefined,
+    args: s.args ? s.args.split(/\s+/).filter(Boolean) : undefined,
+    url: s.url || undefined,
+    enabled: s.enabled,
+  })));
 
   // 人格配置即时生效
   setPersonalityEnabled(personalityEnabled.value);
@@ -237,6 +525,11 @@ onMounted(async () => {
       candyInstructions.value = candy.replace(/^[\s\S]*?指令\]\n/, "").trim();
     }
   } catch { /* ignore */ }
+
+  // 加载 MCP/Skill 配置
+  await loadMcpConfig();
+  loadBuiltinMcpConfig();
+  await loadSkillConfig();
 
   // 监听主窗口大小变化（跨窗口事件）→ 实时同步数值
   try {
@@ -303,6 +596,39 @@ onUnmounted(() => {
         <div class="s-field-col">
           <span class="s-fname">默认人格</span>
           <textarea class="s-input s-textarea" v-model="aiSystemPrompt" rows="2"></textarea>
+        </div>
+        <div class="s-field-inline" style="margin-top:4px">
+          <span class="s-fname">默认思考强度</span>
+          <label v-for="lv in ['auto','low','medium','high']" :key="lv" class="radio-item">
+            <input type="radio" v-model="aiThinkingEffort" :value="lv" />
+            <span>{{ lv }}</span>
+          </label>
+        </div>
+        <div class="s-hint" style="font-size:9px">
+          新会话默认采用此强度。会话中可在底部仪表盘临时覆盖（仅当前会话生效）。
+        </div>
+      </div>
+
+      <!-- 安全模式 -->
+      <div class="s-section">
+        <div class="s-label">🛡 安全控制 <span class="s-tag-save">即时生效</span></div>
+        <div class="s-field-inline" style="margin-bottom:4px">
+          <span class="s-fname">安全策略</span>
+          <label v-for="m in [{v:'just_do_it',l:'全放行'},{v:'tell_me',l:'告知确认'},{v:'let_me_tk',l:'全部确认'}]" :key="m.v" class="radio-item">
+            <input type="radio" v-model="safetyMode" :value="m.v" />
+            <span>{{ m.l }}</span>
+          </label>
+        </div>
+        <div class="s-hint" style="font-size:9px; margin-bottom:4px">
+          <template v-if="safetyMode === 'just_do_it'">⚡ DANGER 工具直接放行，不弹确认窗（最宽松）</template>
+          <template v-else-if="safetyMode === 'tell_me'">📋 按规则弹确认窗：NORMAL 首次确认后会话信任，DANGER 每次确认（默认）</template>
+          <template v-else>🔒 所有非 SAFE 工具调用都需要确认（最严格）</template>
+        </div>
+        <div class="s-field-inline">
+          <label class="radio-item">
+            <input type="checkbox" v-model="sessionTrustEnabled" />
+            <span>会话内信任 NORMAL 工具（一次确认后本会话不再询问）</span>
+          </label>
         </div>
       </div>
 
@@ -500,35 +826,167 @@ onUnmounted(() => {
         </div>
       </div>
 
-      <!-- 工具 / MCP / Skill 预览 -->
+      <!-- 工具配置 -->
       <div class="s-section">
-        <div class="s-label">🔧 已注册工具 / MCP / Skill <span class="s-tag">只读</span></div>
-        <div class="s-hint" style="margin-bottom:4px">
-          轻量: {{ debug.registeredTools.filter(t => t.mode !== 'assistant').length }} 个 |
-          助手: {{ debug.registeredTools.filter(t => t.mode === 'assistant').length }} 个 |
-          MCP: {{ debug.registeredMcpCount }} | Skill: {{ debug.registeredSkillCount }}
-        </div>
-        <div class="tool-preview-list">
-          <div
-            v-for="t in debug.registeredTools"
-            :key="t.name"
-            class="tool-preview-item"
-            :class="'src-' + t.source"
-          >
-            <span class="tool-preview-src">{{ t.source }}</span>
-            <span class="tool-preview-name">{{ t.name }}</span>
-            <span class="tool-preview-mode">{{ t.mode === 'assistant' ? '🔓' : '🔒' }}</span>
-          </div>
+        <div class="s-label">🔧 工具配置 <span class="s-tag">即时生效</span></div>
+        <div class="s-field-col">
+          <span class="s-fname">Bash 白名单（每行一个命令）</span>
+          <textarea class="s-input s-textarea s-mono" v-model="bashWhitelist" rows="4" placeholder="ls&#10;cat&#10;head..."></textarea>
         </div>
         <div class="s-field-inline" style="margin-top:4px">
-          <button class="s-btn-small" @click="refreshToolStats()">🔄 刷新</button>
+          <label class="radio-item">
+            <input type="checkbox" v-model="fileWriteEnabled" :disabled="!assistantMode" />
+            <span>允许写文件（仅助手模式）</span>
+          </label>
+        </div>
+        <div class="s-hint" style="margin-top:4px">
+          Bash 白名单 {{ bashWhitelist.split('\n').filter(l => l.trim()).length }} 个命令
+          | 文件写: {{ fileWriteEnabled ? '✅' : '❌' }}
+        </div>
+      </div>
+
+      <!-- MCP 配置 -->
+      <div class="s-section">
+        <div class="s-label">🔌 MCP 配置 <span class="s-tag">需重启</span></div>
+        <div class="s-field-inline" style="margin-bottom:6px">
+          <label class="radio-item">
+            <input type="checkbox" v-model="mcpEnabled" :disabled="!assistantMode" />
+            <span>启用 MCP 服务（仅助手模式）</span>
+          </label>
+        </div>
+        <div class="s-hint">
+          内置 {{ builtinMcpList.length }} + 自定义 {{ mcpServerList.length }} 个服务器
+          <span v-if="!mcpEnabled"> | ⚠️ 未启用（需开启开关+重启）</span>
+        </div>
+
+        <!-- 内置 MCP -->
+        <div class="s-field-row" style="margin-top:6px; justify-content:space-between">
+          <span class="s-fname">📦 内置 MCP</span>
+          <button class="s-btn-small" @click="loadBuiltinMcpConfig()">🔄 刷新</button>
+        </div>
+        <div class="tool-preview-list" style="margin-bottom:6px">
+          <div v-for="(b, i) in builtinMcpList" :key="b.name" class="tool-preview-item" style="justify-content:space-between; align-items:center">
+            <span style="display:flex; gap:6px; align-items:center">
+              <span class="tool-preview-name">{{ b.description || b.name }}</span>
+              <span class="s-mono" style="font-size:9px; color:#8a6080">{{ b.name }}</span>
+            </span>
+            <span style="display:flex; gap:4px; align-items:center">
+              <button v-if="editingBuiltinIdx !== i" class="s-btn-small" :class="{ 's-btn-reset': !b.enabled }" @click="toggleBuiltinMcp(i)">
+                {{ b.enabled ? '✅ 开' : '❌ 关' }}
+              </button>
+              <button v-if="editingBuiltinIdx !== i" class="s-btn-small" @click="startEditBuiltin(i)" style="font-size:10px">✏</button>
+              <button v-if="editingBuiltinIdx === i" class="s-btn-small s-btn-reset" @click="cancelEditBuiltin()">取消</button>
+            </span>
+          </div>
+        </div>
+        <!-- 内置 MCP 编辑面板 -->
+        <div v-if="editingBuiltinIdx >= 0" class="s-field-col" style="gap:3px; background:#1a0a12; padding:6px; border-radius:4px; margin-bottom:4px">
+          <div class="s-field-inline">
+            <span class="s-fname" style="font-size:9px">{{ builtinMcpList[editingBuiltinIdx]?.name }}</span>
+          </div>
+          <div class="s-field-inline">
+            <label style="font-size:9px">参数</label>
+            <input class="s-input" v-model="builtinMcpList[editingBuiltinIdx].args" style="width:240px;font-size:10px" placeholder="npx -y @xxx" />
+          </div>
+          <div class="s-field-col" style="gap:2px">
+            <label style="font-size:9px">环境变量 (KEY=VALUE 每行一个)</label>
+            <textarea class="s-input s-textarea s-mono" v-model="builtinMcpList[editingBuiltinIdx].envStr" rows="2" style="font-size:9px" placeholder="API_KEY=xxx"></textarea>
+          </div>
+        </div>
+
+        <!-- 自定义 MCP -->
+        <div class="s-field-row" style="margin-top:4px; justify-content:space-between">
+          <span class="s-fname">🔧 自定义 MCP</span>
+          <span style="display:flex; gap:4px">
+            <button class="s-btn-small" @click="importMcpJson()">📥 导入JSON</button>
+            <button class="s-btn-small" @click="exportMcpJson()">📤 导出JSON</button>
+          </span>
+        </div>
+        <div class="tool-preview-list" style="margin-bottom:4px">
+          <div v-if="mcpServerList.length === 0" class="s-hint" style="padding:4px">暂无自定义 MCP 服务器</div>
+          <div v-for="(s, i) in mcpServerList" :key="i" class="tool-preview-item" style="justify-content:space-between">
+            <span>
+              <span class="tool-preview-name">{{ s.name }}</span>
+              <span class="tool-preview-src">[{{ s.transport }}]</span>
+              <span v-if="s.command" class="s-mono" style="font-size:9px; color:#8a6080">{{ s.command }}</span>
+            </span>
+            <span style="display:flex; gap:4px">
+              <button class="s-btn-small" @click="editMcpServer(i)">✏</button>
+              <button class="s-btn-small s-btn-reset" @click="removeMcpServer(i)">✕</button>
+            </span>
+          </div>
+        </div>
+        <!-- 添加/编辑表单 -->
+        <div class="s-field-col" style="gap:3px; background:#1a0a12; padding:6px; border-radius:4px">
+          <div class="s-field-inline">
+            <label style="font-size:9px">名称</label>
+            <input class="s-input" v-model="mcpForm.name" style="width:80px;font-size:10px" placeholder="server-name" />
+            <label style="font-size:9px">传输</label>
+            <select class="s-input sound-select" v-model="mcpForm.transport" style="font-size:10px;width:70px">
+              <option value="stdio">stdio</option>
+              <option value="sse">sse</option>
+            </select>
+          </div>
+          <div class="s-field-inline" v-if="mcpForm.transport === 'stdio'">
+            <label style="font-size:9px">命令</label>
+            <input class="s-input" v-model="mcpForm.command" style="width:100px;font-size:10px" placeholder="npx" />
+            <label style="font-size:9px">参数</label>
+            <input class="s-input" v-model="mcpForm.args" style="width:120px;font-size:10px" placeholder="-y @modelcontextprotocol/server-xxx" />
+          </div>
+          <div class="s-field-inline" v-if="mcpForm.transport === 'sse'">
+            <label style="font-size:9px">URL</label>
+            <input class="s-input" v-model="mcpForm.url" style="width:200px;font-size:10px" placeholder="http://localhost:8080/sse" />
+          </div>
+          <div class="s-field-inline" style="gap:4px">
+            <button class="s-btn-small" @click="addOrUpdateMcpServer()">{{ editingMcpIdx >= 0 ? '更新' : '添加' }}</button>
+            <button v-if="editingMcpIdx >= 0" class="s-btn-small s-btn-reset" @click="cancelMcpEdit()">取消</button>
+            <button class="s-btn-small" :disabled="mcpTesting" @click="testMcpConnection()">{{ mcpTesting ? '⏳' : '🔌' }} 测试</button>
+          </div>
+          <div v-if="mcpTestResult" class="s-hint" style="margin-top:2px">{{ mcpTestResult }}</div>
+        </div>
+      </div>
+
+      <!-- Skill 配置 -->
+      <div class="s-section">
+        <div class="s-label">📦 Skill 配置 <span class="s-tag">需重启</span></div>
+        <div class="s-field-inline" style="margin-bottom:6px">
+          <label class="radio-item">
+            <input type="checkbox" v-model="skillEnabled" :disabled="!assistantMode" />
+            <span>启用 Skill（仅助手模式）</span>
+          </label>
+        </div>
+        <div class="s-hint">
+          已配置 {{ skillList.length }} 个 Skill
+          <span v-if="!skillEnabled"> | ⚠️ 未启用（需开启开关+重启）</span>
+          <button class="s-btn-small" style="margin-left:6px" @click="uploadSkillMd()">📤 上传 .md</button>
+          <button class="s-btn-small" style="margin-left:4px" @click="loadSkillConfig()">🔄 刷新</button>
+        </div>
+        <div class="tool-preview-list">
+          <div v-if="skillList.length === 0" class="s-hint" style="padding:4px">暂无 Skill</div>
+          <div v-for="s in skillList" :key="s.id" class="tool-preview-item" style="justify-content:space-between">
+            <span>
+              <span class="tool-preview-name">{{ s.name }}</span>
+              <span class="tool-preview-src">{{ s.description }}</span>
+            </span>
+            <span style="display:flex; gap:4px; align-items:center">
+              <span class="s-hint" style="font-size:9px; margin:0">{{ s.keywords }}</span>
+              <button class="s-btn-small s-btn-reset" @click="removeSkill(s.id)">✕</button>
+            </span>
+          </div>
+        </div>
+        <div class="s-hint" style="margin-top:4px">
+          Skill .md 文件格式: 以 <code>---</code> 包裹 YAML frontmatter (id/name/description/trigger_keywords/tools_needed), 正文为执行步骤
         </div>
       </div>
 
     </div>
 
     <div id="s-foot">
-      <div v-if="saved" class="s-saved-msg">✅ 已保存！所有设置即时生效</div>
+      <span class="s-hint" style="margin-right:auto">⚠️ 标记"需重启"的设置在保存后需重启应用生效</span>
+      <button class="s-btn-small" style="margin-right:4px" @click="importConfigYaml()">📥 导入</button>
+      <button class="s-btn-small" style="margin-right:6px" @click="exportConfigYaml()">📤 导出</button>
+      <button class="s-btn s-btn-reset" style="margin-right:6px" @click="restartApp()">🔄 重启应用</button>
+      <div v-if="saved" class="s-saved-msg">✅ 已保存！</div>
       <button class="s-btn" @click="doCancel">取消</button>
       <button class="s-btn s-btn-primary" @click="doSave">💾 保存设置</button>
     </div>
