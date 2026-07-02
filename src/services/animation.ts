@@ -1,4 +1,7 @@
-import { chatHistory } from "./session";
+// ==========================================
+// 动画系统 v2 — 从 Profile 加载
+// ==========================================
+import { getActiveProfile } from "@/services/profile";
 
 // 动画类型定义
 export interface Frame {
@@ -11,234 +14,66 @@ export interface Animation {
   loop: boolean;
 }
 
-// 所有动画定�?
-// 添加新动画只需在这里加一�?
-export const animations: Record<string, Animation> = {
-  idle: {
-    frames: [
-      { src: "/assets/ctj/stream_cho_idle_000.png", duration: 5000 },
-      { src: "/assets/ctj/stream_cho_idle_001.png", duration: 250 },
-    ],
-    loop: true,
+/**
+ * 从当前激活的 Profile 获取所有动画定义。
+ * 路径已解析为完整 URL（相对于 public/）。
+ */
+export function getAnimations(): Record<string, Animation> {
+  const profile = getActiveProfile();
+  if (!profile || Object.keys(profile.animations).length === 0) {
+    return getFallbackAnimations();
+  }
+
+  const result: Record<string, Animation> = {};
+  for (const [name, def] of Object.entries(profile.animations)) {
+    result[name] = {
+      loop: def.loop,
+      frames: def.frames.map(f => ({
+        src: f.f,
+        duration: f.d,
+      })),
+    };
+  }
+  return result;
+}
+
+/**
+ * Profile 未加载时的最小 fallback — 使用当前激活 profile 的 body.png
+ */
+function getFallbackAnimations(): Record<string, Animation> {
+  const profile = getActiveProfile();
+  const bodyUrl = profile ? `${profile.basePath}/body.png` : "/profiles/sugar-pink/body.png";
+  return {
+    idle: {
+      frames: [{ src: bodyUrl, duration: 3000 }],
+      loop: true,
+    },
+  };
+}
+
+/**
+ * 获取单个动画定义
+ */
+export function getAnimation(name: string): Animation | null {
+  return getAnimations()[name] || null;
+}
+
+// ══════════════════════════════════════════
+// 向后兼容：复用旧 API，内部走 Profile
+// ══════════════════════════════════════════
+
+/** @deprecated 使用 getAnimations() 代替，由 Profile 驱动 */
+export const animations = new Proxy({} as Record<string, Animation>, {
+  get(_target, prop: string) {
+    if (prop === "then") return undefined; // Vue 响应式探测
+    return getAnimations()[prop] || null;
   },
-  smile: {
-    frames: [
-      { src: "/assets/ctj/stream_cho_smile_001.png", duration: 100 },
-      { src: "/assets/ctj/stream_cho_smile_002.png", duration: 100 },
-      { src: "/assets/ctj/stream_cho_smile_003.png", duration: 100 },
-      { src: "/assets/ctj/stream_cho_smile_004.png", duration: 100 },
-      { src: "/assets/ctj/stream_cho_smile_005.png", duration: 100 },
-      { src: "/assets/ctj/stream_cho_smile_006.png", duration: 100 },
-      { src: "/assets/ctj/stream_cho_smile_007.png", duration: 300 },
-    ],
-    loop: false,
+  ownKeys() {
+    return Reflect.ownKeys(getAnimations());
   },
-  superchat: {
-    frames: [
-      { src: "/assets/ctj/stream_cho_akaruku_superchat_000.png", duration: 120 },
-      { src: "/assets/ctj/stream_cho_akaruku_superchat_001.png", duration: 120 },
-      { src: "/assets/ctj/stream_cho_akaruku_superchat_002.png", duration: 120 },
-      { src: "/assets/ctj/stream_cho_akaruku_superchat_003.png", duration: 120 },
-      { src: "/assets/ctj/stream_cho_akaruku_superchat_000.png", duration: 120 },
-      { src: "/assets/ctj/stream_cho_akaruku_superchat_001.png", duration: 120 },
-      { src: "/assets/ctj/stream_cho_akaruku_superchat_002.png", duration: 120 },
-      { src: "/assets/ctj/stream_cho_akaruku_superchat_003.png", duration: 120 },
-      { src: "/assets/ctj/stream_cho_akaruku_superchat_000.png", duration: 120 },
-      { src: "/assets/ctj/stream_cho_akaruku_superchat_001.png", duration: 120 },
-      { src: "/assets/ctj/stream_cho_akaruku_superchat_002.png", duration: 120 },
-      { src: "/assets/ctj/stream_cho_akaruku_superchat_003.png", duration: 300 },
-    ],
-    loop: false,
+  getOwnPropertyDescriptor(_target, prop) {
+    const val = getAnimations()[prop as string];
+    if (val) return { enumerable: true, configurable: true, value: val };
+    return undefined;
   },
-  you: {
-    frames: [
-      { src: "/assets/ctj/stream_cho_dokuzetsu_superchat_000.png", duration: 150 },
-      { src: "/assets/ctj/stream_cho_dokuzetsu_superchat_001.png", duration: 150 },
-      { src: "/assets/ctj/stream_cho_dokuzetsu_superchat_002.png", duration: 150 },
-      { src: "/assets/ctj/stream_cho_dokuzetsu_superchat_003.png", duration: 150 },
-      { src: "/assets/ctj/stream_cho_dokuzetsu_superchat_004.png", duration: 150 },
-      { src: "/assets/ctj/stream_cho_dokuzetsu_superchat_005.png", duration: 150 },
-      { src: "/assets/ctj/stream_cho_dokuzetsu_superchat_004.png", duration: 150 },
-      { src: "/assets/ctj/stream_cho_dokuzetsu_superchat_003.png", duration: 150 },
-      { src: "/assets/ctj/stream_cho_dokuzetsu_superchat_002.png", duration: 150 },
-      { src: "/assets/ctj/stream_cho_dokuzetsu_superchat_001.png", duration: 150 },
-      { src: "/assets/ctj/stream_cho_dokuzetsu_superchat_000.png", duration: 600 },
-    ],
-    loop: false,
-  },
-  business1: {
-    frames: [
-      { src: "/assets/ctj/stream_cho_anken_business1_000.png", duration: 3000 },
-      { src: "/assets/ctj/stream_cho_anken_business1_001.png", duration: 250 },
-      { src: "/assets/ctj/stream_cho_anken_business1_000.png", duration: 3000 },
-    ],
-    loop: false,
-  },
-  gaoo: {
-    frames: [
-      { src: "/assets/ctj/stream_cho_gaoo_000.png", duration: 150 },
-      { src: "/assets/ctj/stream_cho_gaoo_001.png", duration: 150 },
-      { src: "/assets/ctj/stream_cho_gaoo_000.png", duration: 150 },
-      { src: "/assets/ctj/stream_cho_gaoo_001.png", duration: 300 },
-    ],
-    loop: false,
-  },
-  sleepy: {
-    frames: [
-      { src: "/assets/ctj/stream_cho_sleepy_000.png", duration: 3000 },
-    ],
-    loop: false,
-  },
-  chu: {
-    frames: [
-      { src: "/assets/ctj/stream_cho_h_chu_000.png", duration: 120 },
-      { src: "/assets/ctj/stream_cho_h_chu_001.png", duration: 120 },
-      { src: "/assets/ctj/stream_cho_h_chu_002.png", duration: 120 },
-      { src: "/assets/ctj/stream_cho_h_chu_003.png", duration: 800 },
-    ],
-    loop: false,
-  },
-  h: {
-    frames: [
-      { src: "/assets/ctj/stream_cho_h_000.png", duration: 200 },
-      { src: "/assets/ctj/stream_cho_h_001.png", duration: 200 },
-      { src: "/assets/ctj/stream_cho_h_002.png", duration: 200 },
-      { src: "/assets/ctj/stream_cho_h_003.png", duration: 200 },
-      { src: "/assets/ctj/stream_cho_h_004.png", duration: 200 },
-      { src: "/assets/ctj/stream_cho_h_005.png", duration: 200 },
-      { src: "/assets/ctj/stream_cho_h_000.png", duration: 200 },
-      { src: "/assets/ctj/stream_cho_h_001.png", duration: 200 },
-      { src: "/assets/ctj/stream_cho_h_002.png", duration: 200 },
-      { src: "/assets/ctj/stream_cho_h_003.png", duration: 500 },
-    ],
-    loop: false,
-  },
-  angry: {
-    frames: [
-      { src: "/assets/ctj/stream_cho_anken_business8_000.png", duration: 120 },
-      { src: "/assets/ctj/stream_cho_anken_business8_001.png", duration: 120 },
-      { src: "/assets/ctj/stream_cho_anken_business8_000.png", duration: 120 },
-      { src: "/assets/ctj/stream_cho_anken_business8_001.png", duration: 120 },
-      { src: "/assets/ctj/stream_cho_anken_business8_000.png", duration: 120 },
-    ],
-    loop: false,
-  },
-  hera1: {
-    frames: [
-      { src: "/assets/ctj/stream_cho_hera_000.png", duration: 150 },
-      { src: "/assets/ctj/stream_cho_hera_001.png", duration: 150 },
-      { src: "/assets/ctj/stream_cho_hera_002.png", duration: 250 },
-      { src: "/assets/ctj/stream_cho_hera_003.png", duration: 150 },
-      { src: "/assets/ctj/stream_cho_hera_004.png", duration: 150 },
-      { src: "/assets/ctj/stream_cho_hera_003.png", duration: 150 },
-      { src: "/assets/ctj/stream_cho_hera_004.png", duration: 150 },
-      { src: "/assets/ctj/stream_cho_hera_004.png", duration: 150 },
-    ],
-    loop: false,
-  },
-  hera2: {
-    frames: [
-      { src: "/assets/ctj/stream_cho_hera2_000.png", duration: 150 },
-      { src: "/assets/ctj/stream_cho_hera2_001.png", duration: 150 },
-      { src: "/assets/ctj/stream_cho_hera2_003.png", duration: 150 },
-      { src: "/assets/ctj/stream_cho_hera2_004.png", duration: 150 },
-      { src: "/assets/ctj/stream_cho_hera2_000.png", duration: 150 },
-      { src: "/assets/ctj/stream_cho_hera2_001.png", duration: 150 },
-      { src: "/assets/ctj/stream_cho_hera2_003.png", duration: 150 },
-      { src: "/assets/ctj/stream_cho_hera2_004.png", duration: 150 },
-    ],
-    loop: false,
-  },
-  hera3: {
-    frames: [
-      { src: "/assets/ctj/stream_cho_hera_superchat_000.png", duration: 150 },
-      { src: "/assets/ctj/stream_cho_hera_superchat_004.png", duration: 150 },
-      { src: "/assets/ctj/stream_cho_hera_superchat_005.png", duration: 150 },
-      { src: "/assets/ctj/stream_cho_hera_superchat_006.png", duration: 150 },
-      { src: "/assets/ctj/stream_cho_hera_superchat_007.png", duration: 150 },
-      { src: "/assets/ctj/stream_cho_hera_superchat_005.png", duration: 150 },
-      { src: "/assets/ctj/stream_cho_hera_superchat_006.png", duration: 150 },
-      { src: "/assets/ctj/stream_cho_hera_superchat_005.png", duration: 150 },
-      { src: "/assets/ctj/stream_cho_hera_superchat_006.png", duration: 150 },
-    ],
-    loop: false,
-  },
-  grgr1: {
-    frames: [
-      { src: "/assets/ctj/stream_cho_grgr_000.png", duration: 200 },
-      { src: "/assets/ctj/stream_cho_grgr_001.png", duration: 120 },
-      { src: "/assets/ctj/stream_cho_grgr_002.png", duration: 200 },
-      { src: "/assets/ctj/stream_cho_grgr_003.png", duration: 120 },
-      { src: "/assets/ctj/stream_cho_grgr_000.png", duration: 200 },
-      { src: "/assets/ctj/stream_cho_grgr_001.png", duration: 120 },
-      { src: "/assets/ctj/stream_cho_grgr_002.png", duration: 200 },
-      { src: "/assets/ctj/stream_cho_grgr_003.png", duration: 120 },
-      { src: "/assets/ctj/stream_cho_grgr_000.png", duration: 200 },
-    ],
-    loop: false,
-  },
-  grgr2: {
-    frames: [
-      { src: "/assets/ctj/stream_cho_grgr2_000.png", duration: 200 },
-      { src: "/assets/ctj/stream_cho_grgr2_001.png", duration: 120 },
-      { src: "/assets/ctj/stream_cho_grgr2_002.png", duration: 200 },
-      { src: "/assets/ctj/stream_cho_grgr2_003.png", duration: 120 },
-      { src: "/assets/ctj/stream_cho_grgr2_000.png", duration: 200 },
-      { src: "/assets/ctj/stream_cho_grgr2_001.png", duration: 120 },
-      { src: "/assets/ctj/stream_cho_grgr2_002.png", duration: 200 },
-      { src: "/assets/ctj/stream_cho_grgr2_003.png", duration: 120 },
-      { src: "/assets/ctj/stream_cho_grgr2_000.png", duration: 200 },
-    ],
-    loop: false,
-  },
-  grgr3: {
-    frames: [
-      { src: "/assets/ctj/stream_cho_grgr3_000.png", duration: 500 },
-      { src: "/assets/ctj/stream_cho_grgr3_001.png", duration: 200 },
-      { src: "/assets/ctj/stream_cho_grgr3_004.png", duration: 500 },
-      { src: "/assets/ctj/stream_cho_grgr3_005.png", duration: 200 },
-      { src: "/assets/ctj/stream_cho_grgr3_000.png", duration: 500 },
-    ],
-    loop: false,
-  },
-  grgr4: {
-    frames: [
-      { src: "/assets/ctj/stream_cho_grgr4_000.png", duration: 1000 },
-      { src: "/assets/ctj/stream_cho_grgr4_001.png", duration: 200 },
-      { src: "/assets/ctj/stream_cho_grgr4_000.png", duration: 1500 },
-    ],
-    loop: false,
-  },
-  come: {
-    frames: [
-      { src: "/assets/ctj/stream_cho_ide_invoke_000.png", duration: 150 },
-      { src: "/assets/ctj/stream_cho_ide_invoke_001.png", duration: 150 },
-      { src: "/assets/ctj/stream_cho_ide_invoke_002.png", duration: 150 },
-      { src: "/assets/ctj/stream_cho_ide_invoke_003.png", duration: 450 },
-      { src: "/assets/ctj/stream_cho_ide_invoke_004.png", duration: 120 },
-      { src: "/assets/ctj/stream_cho_ide_invoke_003.png", duration: 500 },
-    ],
-    loop: false,
-  },
-  kakoyoku: {
-    frames: [
-      { src: "/assets/ctj/stream_cho_kakkoyoku_000.png", duration: 700 },
-      { src: "/assets/ctj/stream_cho_kakkoyoku_001.png", duration: 120 },
-      { src: "/assets/ctj/stream_cho_kakkoyoku_000.png", duration: 700 },
-    ],
-    loop: false,
-  },
-  ha: {
-    frames: [
-      { src: "/assets/ctj/stream_cho_kakkoyoku_superchat_000.png", duration: 150 },
-      { src: "/assets/ctj/stream_cho_kakkoyoku_superchat_001.png", duration: 150 },
-      { src: "/assets/ctj/stream_cho_kakkoyoku_superchat_002.png", duration: 150 },
-      { src: "/assets/ctj/stream_cho_kakkoyoku_superchat_003.png", duration: 150 },
-      { src: "/assets/ctj/stream_cho_kakkoyoku_superchat_004.png", duration: 150 },
-      { src: "/assets/ctj/stream_cho_kakkoyoku_superchat_005.png", duration: 150 },
-      { src: "/assets/ctj/stream_cho_kakkoyoku_superchat_006.png", duration: 150 },
-      { src: "/assets/ctj/stream_cho_kakkoyoku_superchat_007.png", duration: 500 },
-    ],
-    loop: false,
-  },
-};
+});

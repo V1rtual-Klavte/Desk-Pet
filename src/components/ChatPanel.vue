@@ -3,6 +3,7 @@ import { ref, nextTick, onMounted, onUnmounted, watch } from "vue";
 import { chatHistory, sendMessage } from "@/services/agent";
 import { playEventSound } from "@/services/audio/registry";
 import { userConfig } from "@/services/config";
+import { getUiUrl } from "@/services/profile";
 import { createLogger } from "@/services/logger";
 import { listen } from "@tauri-apps/api/event";
 import { searchSlashCommands, findSlashCommand, initSlashCommands } from "@/services/engine";
@@ -312,7 +313,7 @@ onUnmounted(() => {
 
 <template>
   <div id="chat">
-    <img class="cbg" src="/assets/windows/tinder_match.png" alt="" draggable="false" />
+    <img class="cbg" :src="getUiUrl('windows/tinder_match.png')" alt="" draggable="false" />
 
     <!-- 消息区 + 滚动条容器 -->
     <div id="ch-body">
@@ -411,7 +412,7 @@ onUnmounted(() => {
   flex-direction: column;
   position: relative;
   overflow: hidden;
-  background: #3e1a2e;
+  background: var(--color-surface-darker);
 }
 .cbg {
   position: absolute;
@@ -447,7 +448,7 @@ onUnmounted(() => {
 #ch-scrollbar {
   width: 6px;
   flex-shrink: 0;
-  background: rgba(0,0,0,0.15);
+  background: var(--color-scrollbar-track);
   position: relative;
   cursor: pointer;
 }
@@ -455,11 +456,11 @@ onUnmounted(() => {
   position: absolute;
   width: 100%;
   border-radius: 3px;
-  background: rgba(240,160,192,0.3);
+  background: var(--color-scrollbar-thumb);
   transition: background 0.15s;
 }
-#ch-thumb:hover { background: rgba(240,160,192,0.55); }
-#ch-thumb.dragging { background: rgba(240,160,192,0.7); }
+#ch-thumb:hover { background: var(--color-scrollbar-thumb-hover); }
+#ch-thumb.dragging { background: var(--color-scrollbar-thumb-drag); }
 
 #ch-jump {
   position: absolute;
@@ -469,38 +470,38 @@ onUnmounted(() => {
   padding: 3px 10px;
   font-size: 10px;
   font-family: inherit;
-  color: #fff;
-  background: #c4276f;
+  color: var(--color-tab-active-text);
+  background: var(--color-accent);
   border: none;
   border-radius: 12px;
   cursor: pointer;
   opacity: 0.9;
   animation: pulse-jump 1.5s ease infinite;
 }
-#ch-jump:hover { background: #e84a8a; }
+#ch-jump:hover { background: var(--color-accent-hover); }
 
 @keyframes pulse-jump {
-  0%, 100% { box-shadow: 0 0 0 0 rgba(196,39,111,0.4); }
-  50% { box-shadow: 0 0 6px 4px rgba(196,39,111,0.2); }
+  0%, 100% { box-shadow: 0 0 0 0 var(--color-accent-light); }
+  50% { box-shadow: 0 0 6px 4px var(--color-accent-shadow); }
 }
 
 /* --- 消息条目 --- */
 .cm { display: flex; flex-direction: column; gap: 1px; font-size: clamp(9px, 2.5vw, 15px); line-height: 1.4; }
 .cm.user { align-items: flex-end; }
 .cm.assistant { align-items: flex-start; }
-.cn { font-size: clamp(8px, 2.2vw, 12px); color: #f0a0c0; }
+.cn { font-size: clamp(8px, 2.2vw, 12px); color: var(--color-text-pink); }
 .cm.user .cn { color: #90d0ff; }
-.ct { color: #f0e0f0; word-break: break-word; padding: 4px 8px; border-radius: 12px; max-width: 95%; font-size: clamp(9px, 2.5vw, 15px); }
-.cm.user .ct { background: #6a3050; }
-.cm.assistant .ct { background: #4a2540; }
+.ct { color: var(--color-text-bright); word-break: break-word; padding: 4px 8px; border-radius: 12px; max-width: 95%; font-size: clamp(9px, 2.5vw, 15px); }
+.cm.user .ct { background: var(--color-border-light); }
+.cm.assistant .ct { background: var(--color-surface-dark); }
 
 /* ── 系统消息（斜杠命令输出）── */
 .cm.system { align-items: stretch; }
 .cm.system .cn { color: #9080a0; font-size: clamp(10px, 2.5vw, 14px); }
 .cm.system .ct {
-  background: rgba(90, 60, 100, 0.35);
-  border: 1px solid rgba(140, 110, 160, 0.25);
-  font-family: "Courier New", monospace;
+  background: var(--color-system-msg-bg);
+  border: 1px solid var(--color-system-msg-border);
+  font-family: var(--font-mono);
   font-size: clamp(8px, 2vw, 12px);
   white-space: pre-wrap;
   line-height: 1.5;
@@ -515,8 +516,8 @@ onUnmounted(() => {
   align-items: center;
   gap: 4px;
   padding: 6px;
-  background: #4a2540;
-  border-top: 1px solid #5a3050;
+  background: var(--color-surface-dark);
+  border-top: 1px solid var(--color-border-light);
   flex-shrink: 0;
 }
 
@@ -529,23 +530,23 @@ onUnmounted(() => {
 #ch-foot textarea {
   width: 100%;
   min-width: 0;
-  background: #3e1a2e;
-  border: 1px solid #6a4060;
+  background: var(--color-surface-darker);
+  border: 1px solid var(--color-border-input);
   border-radius: 12px;
   padding: 5px 10px;
-  color: #f0e0f0;
+  color: var(--color-text-bright);
   font-size: clamp(9px, 2.2vw, 13px);
   font-family: inherit;
   outline: none;
   resize: none;
   box-sizing: border-box;
 }
-#ch-foot textarea:focus { border-color: #c4276f; }
-#ch-foot textarea::placeholder { color: #8a6080; }
+#ch-foot textarea:focus { border-color: var(--color-accent); }
+#ch-foot textarea::placeholder { color: var(--color-text-muted); }
 #ch-foot button {
   padding: 5px 12px;
-  background: #c4276f;
-  color: #fff;
+  background: var(--color-accent);
+  color: var(--color-tab-active-text);
   border: none;
   border-radius: 16px;
   cursor: pointer;
@@ -554,8 +555,8 @@ onUnmounted(() => {
   flex-shrink: 0;
   white-space: nowrap;
 }
-#ch-foot button:hover { background: #e84a8a; }
-#ch-foot button:disabled { background: #5a3050; color: #8a6080; cursor: default; }
+#ch-foot button:hover { background: var(--color-accent-hover); }
+#ch-foot button:disabled { background: var(--color-border-light); color: var(--color-text-muted); cursor: default; }
 
 /* ── 工具执行状态提示 ── */
 #ch-tool-status {
@@ -563,9 +564,9 @@ onUnmounted(() => {
   z-index: 2;
   padding: 3px 10px;
   font-size: 11px;
-  color: #f0a0c0;
-  background: rgba(90, 30, 60, 0.85);
-  border-top: 1px solid #6a3a5a;
+  color: var(--color-text-pink);
+  background: var(--color-tool-status-bg);
+  border-top: 1px solid var(--color-tool-status-border);
   text-align: center;
   flex-shrink: 0;
 }
@@ -582,13 +583,13 @@ onUnmounted(() => {
   z-index: 10;
   max-height: 160px;
   overflow-y: auto;
-  background: #3a1530;
-  border: 1px solid #6a4060;
+  background: var(--color-dropdown-bg);
+  border: 1px solid var(--color-dropdown-border);
   border-radius: 8px;
   padding: 4px 0;
   margin: 0;
   list-style: none;
-  box-shadow: 0 4px 12px rgba(0,0,0,0.4);
+  box-shadow: 0 4px 12px var(--color-dropdown-shadow);
   scroll-behavior: smooth;
 }
 
@@ -603,12 +604,12 @@ onUnmounted(() => {
 
 #slash-dropdown li.active,
 #slash-dropdown li:hover {
-  background: #5a2a4a;
+  background: var(--color-dropdown-hover-bg);
 }
 
 .slash-name {
   font-size: clamp(9px, 2.2vw, 13px);
-  color: #f0a0c0;
+  color: var(--color-text-pink);
   font-weight: bold;
   white-space: nowrap;
   flex-shrink: 0;
@@ -616,7 +617,7 @@ onUnmounted(() => {
 
 .slash-desc {
   font-size: clamp(8px, 2vw, 11px);
-  color: #a080a0;
+  color: var(--color-dropdown-desc);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -634,18 +635,18 @@ onUnmounted(() => {
   inset: 0; z-index: 20;
   display: flex; align-items: flex-end; justify-content: center;
   padding-bottom: 12px;
-  background: rgba(30, 8, 16, 0.7);
+  background: var(--color-overlay-bg);
   backdrop-filter: blur(2px);
 }
 #ch-confirm-box {
-  background: #2a1020;
-  border: 1px solid #6a3050;
+  background: var(--color-confirm-bg);
+  border: 1px solid var(--color-confirm-border);
   border-radius: 8px;
   padding: 10px 14px;
   max-width: 90%;
 }
 #ch-confirm-msg {
-  color: #f0c0d0;
+  color: var(--color-confirm-text);
   font-size: 11px;
   margin-bottom: 8px;
   text-align: center;
@@ -655,15 +656,15 @@ onUnmounted(() => {
 }
 .ch-confirm-btn {
   padding: 4px 16px; font-size: 11px;
-  border-radius: 12px; border: 1px solid #6a4060;
-  background: #3e1a2e; color: #f0e0f0;
+  border-radius: 12px; border: 1px solid var(--color-border-input);
+  background: var(--color-surface-darker); color: var(--color-text-bright);
   cursor: pointer; font-family: inherit;
 }
-.ch-confirm-btn:hover { background: #5a3050; }
+.ch-confirm-btn:hover { background: var(--color-border-light); }
 .ch-confirm-btn.ch-confirm-ok {
-  background: #c4276f; border-color: #c4276f; color: #fff;
+  background: var(--color-accent); border-color: var(--color-accent); color: var(--color-tab-active-text);
 }
-.ch-confirm-btn.ch-confirm-ok:hover { background: #e84a8a; }
+.ch-confirm-btn.ch-confirm-ok:hover { background: var(--color-accent-hover); }
 
 .confirm-fade-enter-active { transition: opacity 0.15s ease; }
 .confirm-fade-leave-active { transition: opacity 0.1s ease; }

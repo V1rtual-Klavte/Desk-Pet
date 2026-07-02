@@ -34,7 +34,7 @@ onErrorCaptured((err, _instance, _info) => {
 <style scoped>
 .root {
   width: 100vw; height: 100vh;
-  overflow: hidden; background: #000;
+  overflow: hidden; background: var(--color-winsim-bg, #000);
 }
 .err {
   width: 100%; height: 100%;

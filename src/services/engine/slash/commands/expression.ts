@@ -5,15 +5,19 @@
 
 import type { SlashCommand } from "../types"
 import { emit } from "@tauri-apps/api/event"
-import { expressionRules } from "@/services/expressions"
+import { getActiveProfile, type ExpressionRule } from "@/services/profile"
 
 /** 表情命令名称 → 表情id 的快速映射 */
 const EXPR_MAP: Record<string, { name: string; emoji: string }> = {}
-for (const rule of expressionRules) {
-  for (const kw of rule.keywords) {
-    // 只注册 ASCII 关键词为 slash 命令（中文词不适合作命令）
-    if (/^[a-z]+$/i.test(kw)) {
-      EXPR_MAP[kw] = { name: rule.expression, emoji: getEmoji(kw) }
+
+function buildExprMap(): void {
+  const profile = getActiveProfile()
+  const rules: ExpressionRule[] = profile?.expressions || []
+  for (const rule of rules) {
+    for (const kw of rule.kw) {
+      if (/^[a-z]+$/i.test(kw)) {
+        EXPR_MAP[kw] = { name: rule.anim, emoji: getEmoji(kw) }
+      }
     }
   }
 }

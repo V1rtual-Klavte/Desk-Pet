@@ -23,6 +23,7 @@ use crate::commands::{
     mcp_spawn, mcp_send, mcp_kill, McpPool,
     get_memory_dir, get_memory_file, get_session_file, init_memory_files,
     list_session_files, delete_session_file, file_delete,
+    get_profiles_dir, profile_file_write, profile_delete, list_user_profiles,
 };
 
 // ==========================================
@@ -129,6 +130,10 @@ pub fn run() {
             list_session_files,
             delete_session_file,
             file_delete,
+            get_profiles_dir,
+            profile_file_write,
+            profile_delete,
+            list_user_profiles,
         ])
         .run(tauri::generate_context!())
         .expect("startup failure");

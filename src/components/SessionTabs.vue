@@ -213,8 +213,8 @@ onMounted(() => {
 <style scoped>
 #session-tabs {
   flex-shrink: 0;
-  background: #3e1a2e;
-  border-bottom: 1px solid #5a3050;
+  background: var(--color-tab-bar-bg);
+  border-bottom: 1px solid var(--color-tab-bar-border);
   padding: 4px 4px 0 4px;
   position: relative;
 }
@@ -251,25 +251,25 @@ onMounted(() => {
   align-items: center;
   gap: 2px;
   padding: 3px 8px;
-  background: #4a2540;
-  border: 1px solid #5a3050;
+  background: var(--color-tab-inactive-bg);
+  border: 1px solid var(--color-tab-bar-border);
   border-bottom: none;
   border-radius: 6px 6px 0 0;
   cursor: pointer;
   font-size: clamp(8px, 2vw, 11px);
-  color: #8a6080;
+  color: var(--color-tab-inactive-text);
   flex-shrink: 0;
   max-width: 100px;
   transition: background 0.15s, color 0.15s;
 }
 .st-tab:hover {
-  background: #5a3050;
-  color: #c0a0b0;
+  background: var(--color-tab-hover-bg);
+  color: var(--color-tab-hover-text);
 }
 .st-tab.active {
-  background: #c4276f;
-  color: #fff;
-  border-color: #c4276f;
+  background: var(--color-tab-active-bg);
+  color: var(--color-tab-active-text);
+  border-color: var(--color-tab-active-bg);
 }
 
 .st-name {
@@ -306,19 +306,19 @@ onMounted(() => {
   flex-shrink: 0;
   width: 22px; height: 22px;
   padding: 0;
-  border: 1px solid #6a4060;
+  border: 1px solid var(--color-border-input);
   border-radius: 50%;
-  background: #4a2540;
-  color: #8a6080;
+  background: var(--color-tab-inactive-bg);
+  color: var(--color-tab-inactive-text);
   font-size: 14px;
   line-height: 20px;
   cursor: pointer;
   transition: background 0.15s, color 0.15s;
 }
 #st-new:hover {
-  background: #c4276f;
-  color: #fff;
-  border-color: #c4276f;
+  background: var(--color-tab-active-bg);
+  color: var(--color-tab-active-text);
+  border-color: var(--color-tab-active-bg);
 }
 
 /* ★ 会话历史按钮 */
@@ -326,19 +326,19 @@ onMounted(() => {
   flex-shrink: 0;
   width: 22px; height: 22px;
   padding: 0;
-  border: 1px solid #6a4060;
+  border: 1px solid var(--color-border-input);
   border-radius: 50%;
-  background: #4a2540;
-  color: #8a6080;
+  background: var(--color-tab-inactive-bg);
+  color: var(--color-tab-inactive-text);
   font-size: 11px;
   line-height: 20px;
   cursor: pointer;
   transition: background 0.15s, color 0.15s;
 }
 #st-history:hover, #st-history.active {
-  background: #c4276f;
-  color: #fff;
-  border-color: #c4276f;
+  background: var(--color-tab-active-bg);
+  color: var(--color-tab-active-text);
+  border-color: var(--color-tab-active-bg);
 }
 
 /* ★ 会话历史下拉面板 */
@@ -348,14 +348,14 @@ onMounted(() => {
   left: 4px;
   right: 4px;
   max-height: 240px;
-  background: #2d1525;
-  border: 1px solid #5a3050;
+  background: var(--color-history-bg);
+  border: 1px solid var(--color-tab-bar-border);
   border-top: none;
   border-radius: 0 0 6px 6px;
   z-index: 100;
   display: flex;
   flex-direction: column;
-  box-shadow: 0 4px 12px rgba(0,0,0,0.4);
+  box-shadow: 0 4px 12px var(--color-dropdown-shadow);
 }
 
 #history-header {
@@ -364,19 +364,19 @@ onMounted(() => {
   align-items: center;
   padding: 6px 10px;
   font-size: 11px;
-  color: #8a6080;
-  border-bottom: 1px solid #4a2540;
+  color: var(--color-tab-inactive-text);
+  border-bottom: 1px solid var(--color-tab-inactive-bg);
 }
 
 #history-close {
   background: none;
   border: none;
-  color: #8a6080;
+  color: var(--color-tab-inactive-text);
   cursor: pointer;
   font-size: 14px;
   padding: 0 2px;
 }
-#history-close:hover { color: #c4276f; }
+#history-close:hover { color: var(--color-accent); }
 
 #history-list {
   overflow-y: auto;
@@ -386,7 +386,7 @@ onMounted(() => {
 .history-status {
   padding: 16px;
   text-align: center;
-  color: #6a5060;
+  color: var(--color-history-meta-text);
   font-size: 11px;
 }
 
@@ -395,12 +395,12 @@ onMounted(() => {
   align-items: center;
   justify-content: space-between;
   padding: 6px 10px;
-  border-bottom: 1px solid #3a1a2e;
+  border-bottom: 1px solid var(--color-history-item-border);
   cursor: pointer;
   transition: background 0.1s;
 }
 .history-item:hover {
-  background: #3a1a2e;
+  background: var(--color-history-item-hover-bg);
 }
 
 .history-info {
@@ -412,7 +412,7 @@ onMounted(() => {
 
 .history-topic {
   font-size: 11px;
-  color: #c0a0b0;
+  color: var(--color-history-topic-text);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -420,7 +420,7 @@ onMounted(() => {
 
 .history-meta {
   font-size: 9px;
-  color: #6a5060;
+  color: var(--color-history-meta-text);
 }
 
 .history-delete {

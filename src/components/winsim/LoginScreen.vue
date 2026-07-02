@@ -1,5 +1,8 @@
 <script setup lang="ts">
 import { ref, onMounted, nextTick } from "vue";
+import { getUiUrl } from "@/services/profile";
+
+const u = (p: string) => getUiUrl(p);
 
 const emit = defineEmits<{ done: [] }>();
 const password = ref("");
@@ -8,14 +11,14 @@ const shaking = ref(false);
 const inputRef = ref<HTMLInputElement | null>(null);
 const CORRECT_PASSWORD = "1234";
 
-const avatars = ["/assets/jine/icon_cho.png", "/assets/jine/icon_ame.png"];
+const avatars = [u("jine/icon_cho.png"), u("jine/icon_ame.png")];
 const avatar = avatars[Math.floor(Math.random() * avatars.length)];
 
 const bgs = [
-  "/assets/Fromtemd/tweet_selfie_cho_happy_end.png",
-  "/assets/Fromtemd/tweet_selfie_cho_sleepy_001.png",
-  "/assets/Fromtemd/tweet_selfie_cho_sorrow_001.png",
-  "/assets/Fromtemd/tweet_selfie_cho_happy_001.png",
+  u("Fromtemd/tweet_selfie_cho_happy_end.png"),
+  u("Fromtemd/tweet_selfie_cho_sleepy_001.png"),
+  u("Fromtemd/tweet_selfie_cho_sorrow_001.png"),
+  u("Fromtemd/tweet_selfie_cho_happy_001.png"),
 ];
 const bgImage = bgs[Math.floor(Math.random() * bgs.length)];
 
@@ -41,7 +44,7 @@ onMounted(() => { setTimeout(() => inputRef.value?.focus(), 300); });
       <button class="btn" @click.stop="submit"><span class="btn-label">ログイン</span></button>
       <p v-if="error" class="err">パスワードが違います</p>
     </div>
-    <div class="ft"><div class="ft-btn"><img src="/assets/Fromtemd/operation_close.png" alt="" class="ft-ic" /><span>シャットダウン</span></div></div>
+    <div class="ft"><div class="ft-btn"><img :src="u('Fromtemd/operation_close.png')" alt="" class="ft-ic" /><span>シャットダウン</span></div></div>
   </div>
 </template>
 

@@ -1,0 +1,63 @@
+# ==========================================
+# Profile: 暗夜紫 (dark-purple)
+# 暗色主题预设
+# ==========================================
+
+meta:
+  name: "暗夜紫"
+  description: "暗色主题"
+  version: 3
+  builtin: true
+  preset: dark
+
+# ── 主题 ──
+theme:
+  colors:
+    # 背景
+    背景: "#1a1025"
+    卡片背景: "#251530"
+    聊天背景: "#1a1025"
+    # 边框
+    边框: "#7a3a6a"
+    分割线: "#5a3a6a"
+    输入边框: "#4a3055"
+    # 文字
+    主文字: "#e0d0e8"
+    亮文字: "#e8d8f0"
+    粉色文字: "#d0a0d8"
+    暗文字: "#8a7090"
+    # 强调
+    强调色: "#c06aaf"
+    强调悬浮: "#d08ac0"
+    # 标题栏
+    标题栏渐变起: "#5a3070"
+    标题栏渐变止: "#8a4a8a"
+    标题栏文字: "#e8d8f0"
+    # 表面
+    表面色: "#2a1835"
+    深表面色: "#1f1230"
+    # 弹窗
+    遮罩: "rgba(8,2,14,0.75)"
+    # 透明玻璃
+    透明背景: "rgba(26,16,37,0.35)"
+    模糊度: "0px"
+  fonts:
+    ui: "zpix"
+    chat: "zpix"
+    size: 14
+  shield:
+    enabled: false
+    image: ""
+
+# ── 音效 ──
+sound:
+  volume: 0.8
+  events:
+    welcome: "welcome_chord"
+    send: "send_short"
+    reply: "reply_ding"
+    popup: "popup_up"
+    retract: "retract_down"
+    surface: "surface_light"
+    middle: "middle_tremolo"
+    deep: "deep_noise"

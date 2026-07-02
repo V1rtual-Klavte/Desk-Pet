@@ -1,0 +1,63 @@
+# ==========================================
+# Profile: 糖糖粉 (sugar-pink)
+# 粉色主题预设
+# ==========================================
+
+meta:
+  name: "糖糖粉"
+  description: "默认粉色主题"
+  version: 3
+  builtin: true
+  preset: pink
+
+# ── 主题 ──
+theme:
+  colors:
+    # 背景
+    背景: "#fce4ec"
+    卡片背景: "#2a1020"
+    聊天背景: "#fce4ec"
+    # 边框
+    边框: "#a01a5a"
+    分割线: "#e8a0b0"
+    输入边框: "#6a4060"
+    # 文字
+    主文字: "#333333"
+    亮文字: "#f0e0f0"
+    粉色文字: "#f0a0c0"
+    暗文字: "#8a6080"
+    # 强调
+    强调色: "#c4276f"
+    强调悬浮: "#e84a8a"
+    # 标题栏
+    标题栏渐变起: "#f7a8c4"
+    标题栏渐变止: "#c4276f"
+    标题栏文字: "#ffffff"
+    # 表面
+    表面色: "#4a2540"
+    深表面色: "#3e1a2e"
+    # 弹窗
+    遮罩: "rgba(30,8,16,0.7)"
+    # 透明玻璃
+    透明背景: "rgba(252,228,236,0.35)"
+    模糊度: "0px"
+  fonts:
+    ui: "zpix"
+    chat: "zpix"
+    size: 14
+  shield:
+    enabled: false
+    image: ""
+
+# ── 音效 ──
+sound:
+  volume: 0.8
+  events:
+    welcome: "welcome_chord"
+    send: "send_short"
+    reply: "reply_ding"
+    popup: "popup_up"
+    retract: "retract_down"
+    surface: "surface_light"
+    middle: "middle_tremolo"
+    deep: "deep_noise"

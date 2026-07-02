@@ -1,0 +1,63 @@
+# ==========================================
+# Profile: 透明玻璃 (glass)
+# 毛玻璃透明主题预设
+# ==========================================
+
+meta:
+  name: "透明玻璃"
+  description: "半透明毛玻璃效果"
+  version: 3
+  builtin: true
+  preset: glass
+
+# ── 主题 ──
+theme:
+  colors:
+    # 背景
+    背景: "rgba(252,228,236,0.25)"
+    卡片背景: "rgba(30,8,16,0.55)"
+    聊天背景: "rgba(252,228,236,0.15)"
+    # 边框
+    边框: "rgba(160,26,90,0.5)"
+    分割线: "rgba(232,160,176,0.4)"
+    输入边框: "rgba(106,64,96,0.5)"
+    # 文字
+    主文字: "#333333"
+    亮文字: "#f0e0f0"
+    粉色文字: "#f0a0c0"
+    暗文字: "rgba(138,96,128,0.8)"
+    # 强调
+    强调色: "rgba(196,39,111,0.85)"
+    强调悬浮: "rgba(232,74,138,0.9)"
+    # 标题栏
+    标题栏渐变起: "rgba(247,168,196,0.6)"
+    标题栏渐变止: "rgba(196,39,111,0.7)"
+    标题栏文字: "#ffffff"
+    # 表面
+    表面色: "rgba(74,37,64,0.5)"
+    深表面色: "rgba(62,26,46,0.55)"
+    # 弹窗
+    遮罩: "rgba(30,8,16,0.6)"
+    # 透明玻璃
+    透明背景: "rgba(252,228,236,0.25)"
+    模糊度: "16px"
+  fonts:
+    ui: "zpix"
+    chat: "zpix"
+    size: 14
+  shield:
+    enabled: false
+    image: ""
+
+# ── 音效 ──
+sound:
+  volume: 0.8
+  events:
+    welcome: "welcome_chord"
+    send: "send_short"
+    reply: "reply_ding"
+    popup: "popup_up"
+    retract: "retract_down"
+    surface: "surface_light"
+    middle: "middle_tremolo"
+    deep: "deep_noise"

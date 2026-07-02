@@ -1,30 +1,48 @@
-﻿# ==========================================
-# 糖糖桌宠 全局配置
+# ==========================================
+# 糖糖桌宠 全局配置 v2
+# 功能域：general / ai / tools / appearance
+# 主题/角色/音效 → 由 Profile 管理 (public/profiles/)
 # 修改此文件后重新 pnpm tauri dev 即可热更新
 # ==========================================
 
-# ── 模式 ──
-mode:
-  assistant: false              # 助手模式开关 (默认轻量模式)
+# ══════════════════════════════════════════
+# 1. 通用设置 (General)
+# ══════════════════════════════════════════
+general:
+  mode:
+    assistant: false
 
-# ── AI 接口 ──
+  popup:
+    mode: cursor
+    autoPopupOnMessage: false
+    defaultSize: { w: 730, h: 450 }
+
+  shortcut:
+    key: "P"
+    macModifiers: ["Control", "Command"]
+    winModifiers: ["Control", "Alt"]
+
+  logging:
+    level: info
+
+  desktop:
+    pollingIntervalMs: 3000
+    pauseExtraMs: 5000
+    waitTimeoutMs: 5000
+
+# ══════════════════════════════════════════
+# 2. AI 设置 (AI)
+# ══════════════════════════════════════════
 ai:
-  provider: deepseek           # deepseek | openai | ollama | custom
+  provider: deepseek
   endpoint: https://api.deepseek.com
-  apiKey: ""                   # 留空则读环境变量 VITE_API_KEY
-  requireApiKey: true          # 是否需要 API Key（本地 Ollama/LM Studio 可设为 false）
+  apiKey: ""
+  requireApiKey: true
   model: deepseek-chat
-  contextMaxTokens: 16000     # 上下文窗口上限 (tokens)，用于利用率计算
-  thinkingEffort: "auto"       # auto | low | medium | high — 思考强度
-  thinkingBudget:
-    low: 1000                  # low 模式最大 thinking tokens
-    medium: 4000
-    high: 16000
+  contextMaxTokens: 16000
 
-  # 默认人格（无角色卡时的回退 system prompt）
   defaultSystemPrompt: "你叫糖糖，是一个桌面虚拟主播助手。性格活泼可爱、偶尔傲娇。你会帮主人解决各种问题（技术、生活、闲聊），用你的风格表达。请用简短口语化中文回复，像在和朋友聊天一样。可以加表情，但不要用 markdown。"
 
-  # 离线 fallback 语录（未配置 API Key 时随机回复）
   fallbackReplies:
     - "嗯嗯，是这样的呢～"
     - "诶？真的吗？好厉害！"
@@ -37,95 +55,66 @@ ai:
     - "你这么说我好开心～"
     - "欸——这样啊，好有趣！"
 
-# ── 人格系统 ──
-personality:
-  enabled: true                # 是否启用人格系统（false=使用默认人格）
-  active: "angelkawaii"        # 当前激活的人格 ID（空字符串=不使用任何人格卡）
-  cards:                       # 可用人格卡列表
-    - id: angelkawaii
-      name: KAngel
-      path: cards/angelkawaii.md
-      description: 甜蜜活泼女友 + 深层病娇
-    - id: ame
-      name: Ame
-      path: cards/ame.md
-      description: 冷静严肃管家型 AI
-    - id: pchan
-      name: P酱
-      path: cards/pchan.md
-      description: 慵懒电竞少女
+  thinking:
+    effort: auto
+    budget:
+      low: 1000
+      medium: 4000
+      high: 16000
 
-# ── 窗口监控 ──
-windowMonitor:
-  enabled: true
-  staySeconds: 60              # 用户在同一窗口停留多久后触发（秒）
-  settleMs: 2000               # 窗口切换防抖（毫秒）
-  cooldownSeconds: 5000        # 全局冷却时长（秒）
-  samePageCooldownSeconds: 7800 # 同页面不重复触发冷却（秒）
-  defaultCooldownMs: 12000     # 默认冷却毫秒数
-  resumeExtraMs: 2000          # resume_monitor 额外延迟（毫秒）
+  personality:
+    enabled: true
+    active: angelkawaii
+    cards:
+      - { id: angelkawaii, name: KAngel, path: cards/angelkawaii.md, description: "甜蜜活泼女友+病娇" }
+      - { id: ame, name: Ame, path: cards/ame.md, description: "冷静管家型" }
+      - { id: pchan, name: P酱, path: cards/pchan.md, description: "慵懒电竞少女" }
 
-# ── AI 并发锁 ──
-aiLock:
-  safetyTimeoutMs: 30000       # 生成锁安全超时（30s 后强制解锁）
+  loop:
+    maxRetry: 3
+    maxToolCallsPerTurn: 5
+    toolTimeoutMs: 30000
+    turnTimeoutMs: 120000
+    streamEnabled: false
+    contextCompactAt: 0.95
 
-# ── 长期记忆 ──
-memory:
-  maxEntries: 200              # 最大记忆条数
+  memory:
+    maxEntries: 200
 
-# ── 系统通知（已移除）──
-# macOS 未签名构建下无法实现，tauri-plugin 需代码签名，
-# osascript display notification 在 Tauri WebView 沙箱下不可用。
-# 代码中留有注释占位（listener.ts / commands/logging.rs），若后续有新方案可重新启用。
+  lock:
+    safetyTimeoutMs: 30000
 
-# ── 桌面后端（Rust 轮询）──
-desktop:
-  pollingIntervalMs: 3000      # 窗口标题轮询间隔（毫秒）
-  pauseExtraMs: 5000           # 暂停时额外安全时间（毫秒）
-  waitTimeoutMs: 5000          # 暂停等待超时（毫秒）
+  windowMonitor:
+    enabled: true
+    staySeconds: 60
+    settleMs: 2000
+    cooldownSeconds: 5000
+    samePageCooldownSeconds: 7800
+    defaultCooldownMs: 12000
+    resumeExtraMs: 2000
 
-# ── 快捷键 ──
-shortcut:
-  key: "P"                      # 快捷键字符
-  macModifiers: ["Control", "Command"]  # macOS 修饰键
-  winModifiers: ["Control", "Alt"]      # Windows 修饰键
+  safety:
+    mode: tell_me
+    sessionTrustEnabled: true
 
-# ── 用户界面（运行时可通过设置面板修改，自动保存到本地存储）──
-user:
-  popupMode: cursor            # cursor | fixed
-  popupSize: { w: 730, h: 450 }
-  shortcutKey: "P"
-  shortcutMacModifiers: ["Control", "Command"]
-  shortcutWinModifiers: ["Control", "Alt"]
-  autoPopupOnMessage: false      # 收到新消息时自动弹出窗口
-
-# ── 日志 ──
-logging:
-  level: info                  # debug | info | warn | error
-
-# ── 核心 Loop ──
-loop:
-  maxRetry: 3                  # 工具调用/验证失败最大重试次数
-  maxToolCallsPerTurn: 5       # 单轮最多工具调用链长度
-  toolTimeoutMs: 30000         # 单个工具执行超时（毫秒）
-  turnTimeoutMs: 120000        # 整轮总超时（毫秒）
-  streamEnabled: false          # 是否流式输出（默认关闭）
-  contextCompactAt: 0.95       # 上下文利用率达95%触发摘要压缩
-
-# ── 工具系统 ──
+# ══════════════════════════════════════════
+# 3. 工具配置 (Tools)
+# ══════════════════════════════════════════
 tools:
   bash:
     enabled: true
     whitelist: ["ls", "cat", "head", "tail", "grep", "find", "which",
                 "echo", "pwd", "date", "whoami", "uname", "df", "du",
                 "ps", "tasklist", "system_profiler", "ifconfig"]
+
   file:
     enabled: true
-    writeEnabled: false        # 轻量模式强制 false
+    writeEnabled: false
+
   mcp:
-    enabled: false             # 助手模式才有效
-    servers: []                # 用户自定义 MCP 服务器
-    builtin:                   # 内置 MCP 服务器（可独立开关/配置）
+    enabled: false
+    servers: []
+    builtin:
       filesystem:
         enabled: true
         command: npx
@@ -153,11 +142,15 @@ tools:
         args: ["-y", "@anthropic/mcp-github"]
         env: { GITHUB_PERSONAL_ACCESS_TOKEN: "" }
         description: "🐙 GitHub — 仓库/Issue/PR 管理（需 Token）"
-  skill:
-    enabled: false             # 助手模式才有效
-    skills: []                 # 用户动态添加的 Skill 列表（YAML frontmatter 原文）
 
-# ── 安全 ──
-safety:
-  mode: "tell_me"              # just_do_it | tell_me | let_me_tk
-  sessionTrustEnabled: true
+  skill:
+    enabled: false
+    skills: []
+
+# ══════════════════════════════════════════
+# 4. 外观 — Profile 系统
+# ══════════════════════════════════════════
+# 主题/角色/音效配置已移至 public/profiles/ 目录
+# 每个 profile 是一个自包含文件夹，拖入即用
+appearance:
+  activeProfile: "sugar-pink"     # 当前激活的 Profile ID

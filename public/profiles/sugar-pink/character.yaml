@@ -1,0 +1,239 @@
+# ==========================================
+# 糖糖 (CJO) 角色定义
+# 所有路径相对于本 Profile 文件夹
+# ==========================================
+
+character:
+  id: "cho"
+  name: "糖糖"
+  scale: 1.0
+  scaleMode: pixelated          # pixelated | smooth
+
+# ── 帧动画定义 ──
+animations:
+  idle:
+    loop: true
+    frames:
+      - { f: "frames/stream_cho_idle_000.png", d: 5000 }
+      - { f: "frames/stream_cho_idle_001.png", d: 250 }
+
+  smile:
+    loop: false
+    frames:
+      - { f: "frames/stream_cho_smile_001.png", d: 100 }
+      - { f: "frames/stream_cho_smile_002.png", d: 100 }
+      - { f: "frames/stream_cho_smile_003.png", d: 100 }
+      - { f: "frames/stream_cho_smile_004.png", d: 100 }
+      - { f: "frames/stream_cho_smile_005.png", d: 100 }
+      - { f: "frames/stream_cho_smile_006.png", d: 100 }
+      - { f: "frames/stream_cho_smile_007.png", d: 300 }
+
+  superchat:
+    loop: false
+    frames:
+      - { f: "frames/stream_cho_akaruku_superchat_000.png", d: 120 }
+      - { f: "frames/stream_cho_akaruku_superchat_001.png", d: 120 }
+      - { f: "frames/stream_cho_akaruku_superchat_002.png", d: 120 }
+      - { f: "frames/stream_cho_akaruku_superchat_003.png", d: 120 }
+      - { f: "frames/stream_cho_akaruku_superchat_000.png", d: 120 }
+      - { f: "frames/stream_cho_akaruku_superchat_001.png", d: 120 }
+      - { f: "frames/stream_cho_akaruku_superchat_002.png", d: 120 }
+      - { f: "frames/stream_cho_akaruku_superchat_003.png", d: 120 }
+      - { f: "frames/stream_cho_akaruku_superchat_000.png", d: 120 }
+      - { f: "frames/stream_cho_akaruku_superchat_001.png", d: 120 }
+      - { f: "frames/stream_cho_akaruku_superchat_002.png", d: 120 }
+      - { f: "frames/stream_cho_akaruku_superchat_003.png", d: 300 }
+
+  you:
+    loop: false
+    frames:
+      - { f: "frames/stream_cho_dokuzetsu_superchat_000.png", d: 150 }
+      - { f: "frames/stream_cho_dokuzetsu_superchat_001.png", d: 150 }
+      - { f: "frames/stream_cho_dokuzetsu_superchat_002.png", d: 150 }
+      - { f: "frames/stream_cho_dokuzetsu_superchat_003.png", d: 150 }
+      - { f: "frames/stream_cho_dokuzetsu_superchat_004.png", d: 150 }
+      - { f: "frames/stream_cho_dokuzetsu_superchat_005.png", d: 150 }
+      - { f: "frames/stream_cho_dokuzetsu_superchat_004.png", d: 150 }
+      - { f: "frames/stream_cho_dokuzetsu_superchat_003.png", d: 150 }
+      - { f: "frames/stream_cho_dokuzetsu_superchat_002.png", d: 150 }
+      - { f: "frames/stream_cho_dokuzetsu_superchat_001.png", d: 150 }
+      - { f: "frames/stream_cho_dokuzetsu_superchat_000.png", d: 600 }
+
+  business1:
+    loop: false
+    frames:
+      - { f: "frames/stream_cho_anken_business1_000.png", d: 3000 }
+      - { f: "frames/stream_cho_anken_business1_001.png", d: 250 }
+      - { f: "frames/stream_cho_anken_business1_000.png", d: 3000 }
+
+  gaoo:
+    loop: false
+    frames:
+      - { f: "frames/stream_cho_gaoo_000.png", d: 150 }
+      - { f: "frames/stream_cho_gaoo_001.png", d: 150 }
+      - { f: "frames/stream_cho_gaoo_000.png", d: 150 }
+      - { f: "frames/stream_cho_gaoo_001.png", d: 300 }
+
+  sleepy:
+    loop: false
+    frames:
+      - { f: "frames/stream_cho_sleepy_000.png", d: 3000 }
+
+  chu:
+    loop: false
+    frames:
+      - { f: "frames/stream_cho_h_chu_000.png", d: 120 }
+      - { f: "frames/stream_cho_h_chu_001.png", d: 120 }
+      - { f: "frames/stream_cho_h_chu_002.png", d: 120 }
+      - { f: "frames/stream_cho_h_chu_003.png", d: 800 }
+
+  h:
+    loop: false
+    frames:
+      - { f: "frames/stream_cho_h_000.png", d: 200 }
+      - { f: "frames/stream_cho_h_001.png", d: 200 }
+      - { f: "frames/stream_cho_h_002.png", d: 200 }
+      - { f: "frames/stream_cho_h_003.png", d: 200 }
+      - { f: "frames/stream_cho_h_004.png", d: 200 }
+      - { f: "frames/stream_cho_h_005.png", d: 200 }
+      - { f: "frames/stream_cho_h_000.png", d: 200 }
+      - { f: "frames/stream_cho_h_001.png", d: 200 }
+      - { f: "frames/stream_cho_h_002.png", d: 200 }
+      - { f: "frames/stream_cho_h_003.png", d: 500 }
+
+  angry:
+    loop: false
+    frames:
+      - { f: "frames/stream_cho_anken_business8_000.png", d: 120 }
+      - { f: "frames/stream_cho_anken_business8_001.png", d: 120 }
+      - { f: "frames/stream_cho_anken_business8_000.png", d: 120 }
+      - { f: "frames/stream_cho_anken_business8_001.png", d: 120 }
+      - { f: "frames/stream_cho_anken_business8_000.png", d: 120 }
+
+  hera1:
+    loop: false
+    frames:
+      - { f: "frames/stream_cho_hera_000.png", d: 150 }
+      - { f: "frames/stream_cho_hera_001.png", d: 150 }
+      - { f: "frames/stream_cho_hera_002.png", d: 250 }
+      - { f: "frames/stream_cho_hera_003.png", d: 150 }
+      - { f: "frames/stream_cho_hera_004.png", d: 150 }
+      - { f: "frames/stream_cho_hera_003.png", d: 150 }
+      - { f: "frames/stream_cho_hera_004.png", d: 150 }
+      - { f: "frames/stream_cho_hera_004.png", d: 150 }
+
+  hera2:
+    loop: false
+    frames:
+      - { f: "frames/stream_cho_hera2_000.png", d: 150 }
+      - { f: "frames/stream_cho_hera2_001.png", d: 150 }
+      - { f: "frames/stream_cho_hera2_003.png", d: 150 }
+      - { f: "frames/stream_cho_hera2_004.png", d: 150 }
+      - { f: "frames/stream_cho_hera2_000.png", d: 150 }
+      - { f: "frames/stream_cho_hera2_001.png", d: 150 }
+      - { f: "frames/stream_cho_hera2_003.png", d: 150 }
+      - { f: "frames/stream_cho_hera2_004.png", d: 150 }
+
+  hera3:
+    loop: false
+    frames:
+      - { f: "frames/stream_cho_hera_superchat_000.png", d: 150 }
+      - { f: "frames/stream_cho_hera_superchat_004.png", d: 150 }
+      - { f: "frames/stream_cho_hera_superchat_005.png", d: 150 }
+      - { f: "frames/stream_cho_hera_superchat_006.png", d: 150 }
+      - { f: "frames/stream_cho_hera_superchat_007.png", d: 150 }
+      - { f: "frames/stream_cho_hera_superchat_005.png", d: 150 }
+      - { f: "frames/stream_cho_hera_superchat_006.png", d: 150 }
+      - { f: "frames/stream_cho_hera_superchat_005.png", d: 150 }
+      - { f: "frames/stream_cho_hera_superchat_006.png", d: 150 }
+
+  grgr1:
+    loop: false
+    frames:
+      - { f: "frames/stream_cho_grgr_000.png", d: 200 }
+      - { f: "frames/stream_cho_grgr_001.png", d: 120 }
+      - { f: "frames/stream_cho_grgr_002.png", d: 200 }
+      - { f: "frames/stream_cho_grgr_003.png", d: 120 }
+      - { f: "frames/stream_cho_grgr_000.png", d: 200 }
+      - { f: "frames/stream_cho_grgr_001.png", d: 120 }
+      - { f: "frames/stream_cho_grgr_002.png", d: 200 }
+      - { f: "frames/stream_cho_grgr_003.png", d: 120 }
+      - { f: "frames/stream_cho_grgr_000.png", d: 200 }
+
+  grgr2:
+    loop: false
+    frames:
+      - { f: "frames/stream_cho_grgr2_000.png", d: 200 }
+      - { f: "frames/stream_cho_grgr2_001.png", d: 120 }
+      - { f: "frames/stream_cho_grgr2_002.png", d: 200 }
+      - { f: "frames/stream_cho_grgr2_003.png", d: 120 }
+      - { f: "frames/stream_cho_grgr2_000.png", d: 200 }
+      - { f: "frames/stream_cho_grgr2_001.png", d: 120 }
+      - { f: "frames/stream_cho_grgr2_002.png", d: 200 }
+      - { f: "frames/stream_cho_grgr2_003.png", d: 120 }
+      - { f: "frames/stream_cho_grgr2_000.png", d: 200 }
+
+  grgr3:
+    loop: false
+    frames:
+      - { f: "frames/stream_cho_grgr3_000.png", d: 500 }
+      - { f: "frames/stream_cho_grgr3_001.png", d: 200 }
+      - { f: "frames/stream_cho_grgr3_004.png", d: 500 }
+      - { f: "frames/stream_cho_grgr3_005.png", d: 200 }
+      - { f: "frames/stream_cho_grgr3_000.png", d: 500 }
+
+  grgr4:
+    loop: false
+    frames:
+      - { f: "frames/stream_cho_grgr4_000.png", d: 1000 }
+      - { f: "frames/stream_cho_grgr4_001.png", d: 200 }
+      - { f: "frames/stream_cho_grgr4_000.png", d: 1500 }
+
+  come:
+    loop: false
+    frames:
+      - { f: "frames/stream_cho_ide_invoke_000.png", d: 150 }
+      - { f: "frames/stream_cho_ide_invoke_001.png", d: 150 }
+      - { f: "frames/stream_cho_ide_invoke_002.png", d: 150 }
+      - { f: "frames/stream_cho_ide_invoke_003.png", d: 450 }
+      - { f: "frames/stream_cho_ide_invoke_004.png", d: 120 }
+      - { f: "frames/stream_cho_ide_invoke_003.png", d: 500 }
+
+  kakoyoku:
+    loop: false
+    frames:
+      - { f: "frames/stream_cho_kakkoyoku_000.png", d: 700 }
+      - { f: "frames/stream_cho_kakkoyoku_001.png", d: 120 }
+      - { f: "frames/stream_cho_kakkoyoku_000.png", d: 700 }
+
+  ha:
+    loop: false
+    frames:
+      - { f: "frames/stream_cho_kakkoyoku_superchat_000.png", d: 150 }
+      - { f: "frames/stream_cho_kakkoyoku_superchat_001.png", d: 150 }
+      - { f: "frames/stream_cho_kakkoyoku_superchat_002.png", d: 150 }
+      - { f: "frames/stream_cho_kakkoyoku_superchat_003.png", d: 150 }
+      - { f: "frames/stream_cho_kakkoyoku_superchat_004.png", d: 150 }
+      - { f: "frames/stream_cho_kakkoyoku_superchat_005.png", d: 150 }
+      - { f: "frames/stream_cho_kakkoyoku_superchat_006.png", d: 150 }
+      - { f: "frames/stream_cho_kakkoyoku_superchat_007.png", d: 500 }
+
+# ── 表情关键词映射 ──
+expressions:
+  - { kw: ["smile", "开心", "哈哈"], anim: "smile" }
+  - { kw: ["sleep", "困", "晚安"], anim: "sleepy" }
+  - { kw: ["angry", "生气", "滚"], anim: "angry" }
+  - { kw: ["love", "喜欢", "chu", "亲"], anim: "chu" }
+  - { kw: ["superchat", "sc"], anim: "superchat" }
+  - { kw: ["gaoo", "嗷呜"], anim: "gaoo" }
+  - { kw: ["business", "办公"], anim: "business1" }
+  - { kw: ["you", "你"], anim: "you" }
+
+# ── 内置动画（CSS驱动，无需素材）──
+builtinAnimations:
+  - breathing
+  - bounce
+  - shake
+  - wave
+  - float
+  - tilt

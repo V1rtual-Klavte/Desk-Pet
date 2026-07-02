@@ -1,10 +1,12 @@
-﻿// ==========================================
-// 全局配置 —— 从根目录 CONFIG.yaml 加载
+// ==========================================
+// 全局配置 —— 从根目录 CONFIG.yaml 加载 (v2 6域结构)
 // 所有模块都应从此处读取配置，不自行定义常量
 // 运行时用户设置通过 localStorage 持久化覆盖 CONFIG 默认值
 // ==========================================
 
 import rawConfig from "../../CONFIG.yaml";
+
+// ── 类型定义（v2 6域结构）──
 
 interface UserSettings {
   popupMode: "cursor" | "fixed";
@@ -13,7 +15,6 @@ interface UserSettings {
   shortcutKey: string;
   shortcutMacModifiers: string[];
   shortcutWinModifiers: string[];
-  /** 收到新消息时自动弹出窗口 */
   autoPopupOnMessage: boolean;
 }
 
@@ -26,103 +27,94 @@ export interface BuiltinMcpServer {
 }
 
 interface Config {
-  mode: {
-    assistant: boolean;
-  };
+  general: {
+    mode: { assistant: boolean }
+    popup: {
+      mode: "cursor" | "fixed"
+      autoPopupOnMessage: boolean
+      defaultSize: { w: number; h: number }
+    }
+    shortcut: {
+      key: string
+      macModifiers: string[]
+      winModifiers: string[]
+    }
+    logging: { level: "debug" | "info" | "warn" | "error" }
+    desktop: {
+      pollingIntervalMs: number
+      pauseExtraMs: number
+      waitTimeoutMs: number
+    }
+  }
   ai: {
-    provider: string;
-    endpoint: string;
-    apiKey: string;
-    requireApiKey: boolean;
-    model: string;
-    contextMaxTokens: number;
-    thinkingEffort: string;
-    thinkingBudget: { low: number; medium: number; high: number };
-    defaultSystemPrompt: string;
-    fallbackReplies: string[];
-  };
-  personality: {
-    enabled: boolean;
-    active: string;
-    cards: { id: string; name: string; path: string; description: string }[];
-  };
-  windowMonitor: {
-    enabled: boolean;
-    staySeconds: number;
-    settleMs: number;
-    cooldownSeconds: number;
-    samePageCooldownSeconds: number;
-    defaultCooldownMs: number;
-    resumeExtraMs: number;
-  };
-  aiLock: {
-    safetyTimeoutMs: number;
-  };
-  memory: {
-    maxEntries: number;
-  };
-  desktop: {
-    pollingIntervalMs: number;
-    pauseExtraMs: number;
-    waitTimeoutMs: number;
-  };
-  shortcut: {
-    key: string;
-    macModifiers: string[];
-    winModifiers: string[];
-  };
-  logging: {
-    level: "debug" | "info" | "warn" | "error";
-  };
-  loop: {
-    maxRetry: number;
-    maxToolCallsPerTurn: number;
-    toolTimeoutMs: number;
-    turnTimeoutMs: number;
-    streamEnabled: boolean;
-    contextCompactAt: number;
-  };
+    provider: string
+    endpoint: string
+    apiKey: string
+    requireApiKey: boolean
+    model: string
+    contextMaxTokens: number
+    defaultSystemPrompt: string
+    fallbackReplies: string[]
+    thinking: {
+      effort: string
+      budget: { low: number; medium: number; high: number }
+    }
+    personality: {
+      enabled: boolean
+      active: string
+      cards: { id: string; name: string; path: string; description: string }[]
+    }
+    loop: {
+      maxRetry: number
+      maxToolCallsPerTurn: number
+      toolTimeoutMs: number
+      turnTimeoutMs: number
+      streamEnabled: boolean
+      contextCompactAt: number
+    }
+    memory: { maxEntries: number }
+    lock: { safetyTimeoutMs: number }
+    windowMonitor: {
+      enabled: boolean
+      staySeconds: number
+      settleMs: number
+      cooldownSeconds: number
+      samePageCooldownSeconds: number
+      defaultCooldownMs: number
+      resumeExtraMs: number
+    }
+    safety: { mode: string; sessionTrustEnabled: boolean }
+  }
   tools: {
-    bash: {
-      enabled: boolean;
-      whitelist: string[];
-    };
-    file: {
-      enabled: boolean;
-      writeEnabled: boolean;
-    };
+    bash: { enabled: boolean; whitelist: string[] }
+    file: { enabled: boolean; writeEnabled: boolean }
     mcp: {
-      enabled: boolean;
-      servers: Record<string, unknown>[];
-      builtin: Record<string, BuiltinMcpServer>;
-    };
-    skill: {
-      enabled: boolean;
-      skills: { raw: string }[];
-    };
-  };
-  safety: {
-    mode: string;
-    sessionTrustEnabled: boolean;
-  };
-  user: UserSettings;
+      enabled: boolean
+      servers: Record<string, unknown>[]
+      builtin: Record<string, BuiltinMcpServer>
+    }
+    skill: { enabled: boolean; skills: { raw: string }[] }
+  }
+  appearance: {
+    activeProfile: string
+  }
 }
 
 const cfg = rawConfig as Config;
 
 // ==========================================
-// 运行时用户配置（localStorage 持久化，覆盖 CONFIG.user 默认值）
+// 运行时用户配置（localStorage 持久化）
 // ==========================================
 const STORAGE_KEY = "deskpet_user_settings";
 
 const USER_DEFAULTS: UserSettings = {
-  popupMode: cfg.user?.popupMode || "cursor",
+  popupMode: cfg.general?.popup?.mode || "cursor",
   fixedPosition: null,
-  popupSize: cfg.user?.popupSize || { w: 730, h: 450 },
-  shortcutKey: cfg.user?.shortcutKey || cfg.shortcut?.key || "P",
-  shortcutMacModifiers: cfg.user?.shortcutMacModifiers || cfg.shortcut?.macModifiers || ["Control", "Command"],
-  shortcutWinModifiers: cfg.user?.shortcutWinModifiers || cfg.shortcut?.winModifiers || ["Control", "Alt"],
-  autoPopupOnMessage: cfg.user?.autoPopupOnMessage ?? false,
+  popupSize: cfg.general?.popup?.defaultSize || { w: 730, h: 450 },
+  shortcutKey: cfg.general?.shortcut?.key || "P",
+  shortcutMacModifiers: cfg.general?.shortcut?.macModifiers || ["Control", "Command"],
+  shortcutWinModifiers: cfg.general?.shortcut?.winModifiers || ["Control", "Alt"],
+  autoPopupOnMessage: cfg.general?.popup?.autoPopupOnMessage ?? false,
 };
 
 function loadUserOverrides(): UserSettings {
@@ -149,15 +141,11 @@ function getUser(): UserSettings {
   return _cache;
 }
 
-/** 清除用户设置缓存，强制下次 get 重新从 localStorage 读取（跨窗口同步用） */
 export function refreshUserCache(): void {
   _cache = null;
   _overridesCache = null;
 }
 
-/** 运行时用户设置（可读写，持久化 localStorage） */
-
-/** 获取弹窗尺寸：优先返回用户手动调整后持久化的尺寸，未调整过则回退 CONFIG.yaml 默认值 */
 export function getDefaultSize(): { w: number; h: number } {
   return userConfig.popupSize;
 }
@@ -177,26 +165,60 @@ export const userConfig = {
   set shortcutWinModifiers(v: string[]) { const u = loadUserOverrides(); u.shortcutWinModifiers = v; _cache = u; saveUserOverrides(u); },
   get autoPopupOnMessage() { return getUser().autoPopupOnMessage; },
   set autoPopupOnMessage(v: boolean) { const u = loadUserOverrides(); u.autoPopupOnMessage = v; _cache = u; saveUserOverrides(u); },
-  /** 获取所有值 */
   getAll(): UserSettings { return { ...getUser() }; },
-  /** 批量保存 */
   setAll(s: Partial<UserSettings>) { const u = { ...loadUserOverrides(), ...s }; _cache = u; saveUserOverrides(u); },
-  /** 重置为 CONFIG 默认值 */
   resetAll() { try { localStorage.removeItem(STORAGE_KEY); } catch {} _cache = null; },
 };
 
 // ==========================================
-// 配置覆盖键（设置面板保存的全部覆盖 → localStorage）
-// 用于重启后生效的编译时配置项
+// 配置覆盖（设置面板保存的全部覆盖 → localStorage）
 // ==========================================
 const OVERRIDES_KEY = "deskpet_config_overrides";
 
+// ★ 旧→新 key 迁移映射（v1 扁平结构 → v2 6域结构）
+const KEY_MIGRATION: Record<string, string> = {
+  "mode.assistant":                    "general.mode.assistant",
+  "personality.enabled":               "ai.personality.enabled",
+  "personality.active":                "ai.personality.active",
+  "windowMonitor.enabled":             "ai.windowMonitor.enabled",
+  "windowMonitor.staySeconds":         "ai.windowMonitor.staySeconds",
+  "windowMonitor.settleMs":            "ai.windowMonitor.settleMs",
+  "windowMonitor.cooldownSeconds":     "ai.windowMonitor.cooldownSeconds",
+  "windowMonitor.samePageCooldownSeconds": "ai.windowMonitor.samePageCooldownSeconds",
+  "aiLock.safetyTimeoutMs":            "ai.lock.safetyTimeoutMs",
+  "memory.maxEntries":                 "ai.memory.maxEntries",
+  "desktop.pollingIntervalMs":         "general.desktop.pollingIntervalMs",
+  "desktop.pauseExtraMs":              "general.desktop.pauseExtraMs",
+  "desktop.waitTimeoutMs":             "general.desktop.waitTimeoutMs",
+  "logging.level":                     "general.logging.level",
+  "safety.mode":                       "ai.safety.mode",
+  "safety.sessionTrustEnabled":        "ai.safety.sessionTrustEnabled",
+  "loop.streamEnabled":                "ai.loop.streamEnabled",
+};
+
 let _overridesCache: Record<string, any> | null = null;
+let _migrationDone = false;
 
 function getOverrides(): Record<string, any> {
   if (!_overridesCache) {
     try {
-      _overridesCache = JSON.parse(localStorage.getItem(OVERRIDES_KEY) || "{}");
+      const raw = JSON.parse(localStorage.getItem(OVERRIDES_KEY) || "{}");
+      // ★ 自动迁移旧 key → 新 key
+      if (!_migrationDone) {
+        let migrated = false;
+        for (const [oldKey, newKey] of Object.entries(KEY_MIGRATION)) {
+          if (raw[oldKey] !== undefined && raw[newKey] === undefined) {
+            raw[newKey] = raw[oldKey];
+            delete raw[oldKey];
+            migrated = true;
+          }
+        }
+        if (migrated) {
+          localStorage.setItem(OVERRIDES_KEY, JSON.stringify(raw));
+        }
+        _migrationDone = true;
+      }
+      _overridesCache = raw;
     } catch {
       _overridesCache = {};
     }
@@ -204,173 +226,164 @@ function getOverrides(): Record<string, any> {
   return _overridesCache!;
 }
 
-/** 获取某个 key 的运行时覆盖值（如果存在），否则返回 undefined */
 export function getOverride<T>(key: string): T | undefined {
   const v = getOverrides()[key];
   return v !== undefined ? (v as T) : undefined;
 }
 
-/** 设置配置覆盖值 */
 export function setOverride(key: string, value: any): void {
   const ov = getOverrides();
   ov[key] = value;
   localStorage.setItem(OVERRIDES_KEY, JSON.stringify(ov));
 }
 
-/** 批量设置覆盖值 */
 export function setOverrides(map: Record<string, any>): void {
   const ov = getOverrides();
   Object.assign(ov, map);
   localStorage.setItem(OVERRIDES_KEY, JSON.stringify(ov));
 }
 
-/** 获取所有覆盖值 */
 export function getAllOverrides(): Record<string, any> {
   return { ...getOverrides() };
 }
 
-/** 清除所有覆盖 */
 export function clearOverrides(): void {
   localStorage.removeItem(OVERRIDES_KEY);
   _overridesCache = null;
+  _migrationDone = false;
 }
 
-// ── 辅助：从 override 或默认值获取 ──
 function overrideOr<T>(key: string, fallback: T): T {
   const ov = getOverrides()[key];
   return ov !== undefined ? (ov as T) : fallback;
 }
 
-// ==========================================
-// AI 配置
-// ==========================================
+// ══════════════════════════════════════════
+// 1. 通用配置 (General)
+// ══════════════════════════════════════════
+export const generalConfig = {
+  get assistantMode() { return overrideOr("general.mode.assistant", cfg.general?.mode?.assistant ?? false); },
+  get popupMode() { return overrideOr("general.popup.mode", cfg.general?.popup?.mode ?? "cursor") as "cursor" | "fixed"; },
+  get autoPopupOnMessage() { return overrideOr("general.popup.autoPopupOnMessage", cfg.general?.popup?.autoPopupOnMessage ?? false); },
+  get defaultPopupSize() { return overrideOr("general.popup.defaultSize", cfg.general?.popup?.defaultSize ?? { w: 730, h: 450 }); },
+  get shortcutKey() { return overrideOr("general.shortcut.key", cfg.general?.shortcut?.key ?? "P"); },
+  get shortcutMacModifiers() { return overrideOr("general.shortcut.macModifiers", cfg.general?.shortcut?.macModifiers ?? ["Control", "Command"]); },
+  get shortcutWinModifiers() { return overrideOr("general.shortcut.winModifiers", cfg.general?.shortcut?.winModifiers ?? ["Control", "Alt"]); },
+  get loggingLevel() { return overrideOr("general.logging.level", cfg.general?.logging?.level ?? (import.meta.env.DEV ? "debug" : "info")) as "debug" | "info" | "warn" | "error"; },
+  get pollingIntervalMs() { return overrideOr("general.desktop.pollingIntervalMs", cfg.general?.desktop?.pollingIntervalMs ?? 3000); },
+  get pauseExtraMs() { return overrideOr("general.desktop.pauseExtraMs", cfg.general?.desktop?.pauseExtraMs ?? 5000); },
+  get waitTimeoutMs() { return overrideOr("general.desktop.waitTimeoutMs", cfg.general?.desktop?.waitTimeoutMs ?? 5000); },
+};
+
+// 向后兼容别名
+export const modeConfig = {
+  get assistant() { return generalConfig.assistantMode; },
+};
+
+export const shortcutConfig = {
+  get key() { return generalConfig.shortcutKey; },
+  get macModifiers() { return generalConfig.shortcutMacModifiers; },
+  get winModifiers() { return generalConfig.shortcutWinModifiers; },
+};
+
+export const loggingConfig = {
+  get level() { return generalConfig.loggingLevel; },
+};
+
+export const desktopConfig = {
+  get pollingIntervalMs() { return generalConfig.pollingIntervalMs; },
+  get pauseExtraMs() { return generalConfig.pauseExtraMs; },
+  get waitTimeoutMs() { return generalConfig.waitTimeoutMs; },
+};
+
+// ══════════════════════════════════════════
+// 2. AI 配置
+// ══════════════════════════════════════════
 const _ai = {
-  get provider() { return overrideOr("ai.provider", cfg.ai.provider); },
-  get endpoint() { return overrideOr("ai.endpoint", cfg.ai.endpoint || import.meta.env.VITE_API_ENDPOINT || ""); },
-  get apiKey() { return overrideOr("ai.apiKey", cfg.ai.apiKey || import.meta.env.VITE_API_KEY || ""); },
-  get model() { return overrideOr("ai.model", cfg.ai.model || import.meta.env.VITE_MODEL || "deepseek-chat"); },
-  get contextMaxTokens() { return overrideOr("ai.contextMaxTokens", cfg.ai.contextMaxTokens ?? 16000); },
-  get thinkingEffort() { return overrideOr("ai.thinkingEffort", cfg.ai.thinkingEffort || "auto") as import("@/services/agent/types").ThinkingEffort; },
-  /** 是否需要 API Key（本地 Ollama 等可关闭） */
-	  get requireApiKey() { return overrideOr("ai.requireApiKey", cfg.ai.requireApiKey ?? true); },
+  get provider() { return overrideOr("ai.provider", cfg.ai?.provider ?? "deepseek"); },
+  get endpoint() { return overrideOr("ai.endpoint", cfg.ai?.endpoint || import.meta.env.VITE_API_ENDPOINT || ""); },
+  get apiKey() { return overrideOr("ai.apiKey", cfg.ai?.apiKey || import.meta.env.VITE_API_KEY || ""); },
+  get model() { return overrideOr("ai.model", cfg.ai?.model || import.meta.env.VITE_MODEL || "deepseek-chat"); },
+  get contextMaxTokens() { return overrideOr("ai.contextMaxTokens", cfg.ai?.contextMaxTokens ?? 16000); },
+  get thinkingEffort() { return overrideOr("ai.thinking.effort", cfg.ai?.thinking?.effort || "auto") as import("@/services/agent/types").ThinkingEffort; },
+  get requireApiKey() { return overrideOr("ai.requireApiKey", cfg.ai?.requireApiKey ?? true); },
   get thinkingBudget() {
     return {
-      low: overrideOr("ai.thinkingBudget.low", cfg.ai.thinkingBudget?.low ?? 1000),
-      medium: overrideOr("ai.thinkingBudget.medium", cfg.ai.thinkingBudget?.medium ?? 4000),
-      high: overrideOr("ai.thinkingBudget.high", cfg.ai.thinkingBudget?.high ?? 16000),
+      low: overrideOr("ai.thinking.budget.low", cfg.ai?.thinking?.budget?.low ?? 1000),
+      medium: overrideOr("ai.thinking.budget.medium", cfg.ai?.thinking?.budget?.medium ?? 4000),
+      high: overrideOr("ai.thinking.budget.high", cfg.ai?.thinking?.budget?.high ?? 16000),
     };
   },
-  get defaultSystemPrompt() { return overrideOr("ai.defaultSystemPrompt", cfg.ai.defaultSystemPrompt || "你叫糖糖，是一个在直播的虚拟主播。"); },
-  get fallbackReplies() { return overrideOr("ai.fallbackReplies", cfg.ai.fallbackReplies || ["嗯嗯～"]); },
-  /** 是否已配置 API */
+  get defaultSystemPrompt() { return overrideOr("ai.defaultSystemPrompt", cfg.ai?.defaultSystemPrompt || "你叫糖糖，是一个在直播的虚拟主播。"); },
+  get fallbackReplies() { return overrideOr("ai.fallbackReplies", cfg.ai?.fallbackReplies || ["嗯嗯～"]); },
   get configured() { if (!this.endpoint) return false; if (!this.requireApiKey) return true; return Boolean(this.apiKey); },
 };
 export const aiConfig = _ai;
 
-// ==========================================
-// 窗口监控配置
-// ==========================================
-export const windowMonitorConfig = {
-  get enabled() { return overrideOr("windowMonitor.enabled", cfg.windowMonitor.enabled ?? true); },
-  get staySeconds() { return overrideOr("windowMonitor.staySeconds", cfg.windowMonitor.staySeconds || 60); },
-  get settleMs() { return overrideOr("windowMonitor.settleMs", cfg.windowMonitor.settleMs || 2000); },
-  get cooldownSeconds() { return overrideOr("windowMonitor.cooldownSeconds", cfg.windowMonitor.cooldownSeconds || 5000); },
-  get samePageCooldownSeconds() { return overrideOr("windowMonitor.samePageCooldownSeconds", cfg.windowMonitor.samePageCooldownSeconds || 7800); },
-  get defaultCooldownMs() { return overrideOr("windowMonitor.defaultCooldownMs", cfg.windowMonitor.defaultCooldownMs || 12000); },
-  get resumeExtraMs() { return overrideOr("windowMonitor.resumeExtraMs", cfg.windowMonitor.resumeExtraMs || 2000); },
-};
-
-// ==========================================
-// AI 并发锁配置
-// ==========================================
-export const aiLockConfig = {
-  get safetyTimeoutMs() { return overrideOr("aiLock.safetyTimeoutMs", cfg.aiLock.safetyTimeoutMs || 30000); },
-};
-
-// ==========================================
-// 长期记忆配置
-// ==========================================
-export const memoryConfig = {
-  get maxEntries() { return overrideOr("memory.maxEntries", cfg.memory.maxEntries || 200); },
-};
-
-// ==========================================
-// 桌面后端配置（Rust 轮询参数）
-// ==========================================
-export const desktopConfig = {
-  get pollingIntervalMs() { return overrideOr("desktop.pollingIntervalMs", cfg.desktop.pollingIntervalMs || 3000); },
-  get pauseExtraMs() { return overrideOr("desktop.pauseExtraMs", cfg.desktop.pauseExtraMs || 5000); },
-  get waitTimeoutMs() { return overrideOr("desktop.waitTimeoutMs", cfg.desktop.waitTimeoutMs || 5000); },
-};
-
-// ==========================================
-// 快捷键配置
-// ==========================================
-export const shortcutConfig = {
-  get key() { return overrideOr("shortcut.key", cfg.shortcut?.key || "P"); },
-  get macModifiers() { return overrideOr("shortcut.macModifiers", cfg.shortcut?.macModifiers || ["Control", "Command"]); },
-  get winModifiers() { return overrideOr("shortcut.winModifiers", cfg.shortcut?.winModifiers || ["Control", "Alt"]); },
-};
-
-// ==========================================
-// 日志配置
-// ==========================================
-export const loggingConfig = {
-  get level(): "debug" | "info" | "warn" | "error" {
-    return overrideOr("logging.level", cfg.logging?.level || (import.meta.env.DEV ? "debug" : "info"));
-  },
-};
-
-// ==========================================
-// 人格配置
-// ==========================================
 export const personalityConfig = {
-  get enabled() { return overrideOr("personality.enabled", cfg.personality?.enabled ?? true); },
-  get active() { return overrideOr("personality.active", cfg.personality?.active || ""); },
-  get cards() { return overrideOr("personality.cards", cfg.personality?.cards || []); },
+  get enabled() { return overrideOr("ai.personality.enabled", cfg.ai?.personality?.enabled ?? true); },
+  get active() { return overrideOr("ai.personality.active", cfg.ai?.personality?.active || ""); },
+  get cards() { return overrideOr("ai.personality.cards", cfg.ai?.personality?.cards || []); },
 };
 
-// ==========================================
-// 模式配置
-// ==========================================
-export const modeConfig = {
-  get assistant() { return overrideOr("mode.assistant", cfg.mode?.assistant ?? false); },
+export const windowMonitorConfig = {
+  get enabled() { return overrideOr("ai.windowMonitor.enabled", cfg.ai?.windowMonitor?.enabled ?? true); },
+  get staySeconds() { return overrideOr("ai.windowMonitor.staySeconds", cfg.ai?.windowMonitor?.staySeconds || 60); },
+  get settleMs() { return overrideOr("ai.windowMonitor.settleMs", cfg.ai?.windowMonitor?.settleMs || 2000); },
+  get cooldownSeconds() { return overrideOr("ai.windowMonitor.cooldownSeconds", cfg.ai?.windowMonitor?.cooldownSeconds || 5000); },
+  get samePageCooldownSeconds() { return overrideOr("ai.windowMonitor.samePageCooldownSeconds", cfg.ai?.windowMonitor?.samePageCooldownSeconds || 7800); },
+  get defaultCooldownMs() { return overrideOr("ai.windowMonitor.defaultCooldownMs", cfg.ai?.windowMonitor?.defaultCooldownMs || 12000); },
+  get resumeExtraMs() { return overrideOr("ai.windowMonitor.resumeExtraMs", cfg.ai?.windowMonitor?.resumeExtraMs || 2000); },
 };
 
-// ==========================================
-// Loop 配置
-// ==========================================
+export const aiLockConfig = {
+  get safetyTimeoutMs() { return overrideOr("ai.lock.safetyTimeoutMs", cfg.ai?.lock?.safetyTimeoutMs || 30000); },
+};
+
+export const memoryConfig = {
+  get maxEntries() { return overrideOr("ai.memory.maxEntries", cfg.ai?.memory?.maxEntries || 200); },
+};
+
 export const loopConfig = {
-  get maxRetry() { return overrideOr("loop.maxRetry", cfg.loop?.maxRetry ?? 3); },
-  get maxToolCallsPerTurn() { return overrideOr("loop.maxToolCallsPerTurn", cfg.loop?.maxToolCallsPerTurn ?? 5); },
-  get toolTimeoutMs() { return overrideOr("loop.toolTimeoutMs", cfg.loop?.toolTimeoutMs ?? 30000); },
-  get turnTimeoutMs() { return overrideOr("loop.turnTimeoutMs", cfg.loop?.turnTimeoutMs ?? 120000); },
-  get streamEnabled() { return overrideOr("loop.streamEnabled", cfg.loop?.streamEnabled ?? true); },
-  get contextCompactAt() { return overrideOr("loop.contextCompactAt", cfg.loop?.contextCompactAt ?? 0.95); },
+  get maxRetry() { return overrideOr("ai.loop.maxRetry", cfg.ai?.loop?.maxRetry ?? 3); },
+  get maxToolCallsPerTurn() { return overrideOr("ai.loop.maxToolCallsPerTurn", cfg.ai?.loop?.maxToolCallsPerTurn ?? 5); },
+  get toolTimeoutMs() { return overrideOr("ai.loop.toolTimeoutMs", cfg.ai?.loop?.toolTimeoutMs ?? 30000); },
+  get turnTimeoutMs() { return overrideOr("ai.loop.turnTimeoutMs", cfg.ai?.loop?.turnTimeoutMs ?? 120000); },
+  get streamEnabled() { return overrideOr("ai.loop.streamEnabled", cfg.ai?.loop?.streamEnabled ?? true); },
+  get contextCompactAt() { return overrideOr("ai.loop.contextCompactAt", cfg.ai?.loop?.contextCompactAt ?? 0.95); },
 };
 
-// ==========================================
-// 工具系统配置
-// ==========================================
+export const safetyConfig = {
+  get mode() { return overrideOr("ai.safety.mode", cfg.ai?.safety?.mode || "tell_me"); },
+  get sessionTrustEnabled() { return overrideOr("ai.safety.sessionTrustEnabled", cfg.ai?.safety?.sessionTrustEnabled ?? true); },
+};
+
+// ══════════════════════════════════════════
+// 3. 工具配置
+// ══════════════════════════════════════════
 export const toolsConfig = {
   get bashEnabled() { return overrideOr("tools.bash.enabled", cfg.tools?.bash?.enabled ?? true); },
   get bashWhitelist() { return overrideOr("tools.bash.whitelist", cfg.tools?.bash?.whitelist || ["ls", "cat", "head", "tail", "grep", "find", "which", "echo", "pwd", "date", "whoami", "uname", "df", "du", "ps"]); },
   get fileEnabled() { return overrideOr("tools.file.enabled", cfg.tools?.file?.enabled ?? true); },
-  get fileWriteEnabled() { return modeConfig.assistant && (overrideOr("tools.file.writeEnabled", cfg.tools?.file?.writeEnabled ?? false)); },
-  get mcpEnabled() { return modeConfig.assistant && (overrideOr("tools.mcp.enabled", cfg.tools?.mcp?.enabled ?? false)); },
+  get fileWriteEnabled() { return generalConfig.assistantMode && (overrideOr("tools.file.writeEnabled", cfg.tools?.file?.writeEnabled ?? false)); },
+  get mcpEnabled() { return generalConfig.assistantMode && (overrideOr("tools.mcp.enabled", cfg.tools?.mcp?.enabled ?? false)); },
   get mcpServers() { return overrideOr("tools.mcp.servers", cfg.tools?.mcp?.servers || []); },
   get builtinMcpServers() { return overrideOr("tools.mcp.builtin", cfg.tools?.mcp?.builtin || {}) as Record<string, BuiltinMcpServer>; },
-  get skillEnabled() { return modeConfig.assistant && (overrideOr("tools.skill.enabled", cfg.tools?.skill?.enabled ?? false)); },
+  get skillEnabled() { return generalConfig.assistantMode && (overrideOr("tools.skill.enabled", cfg.tools?.skill?.enabled ?? false)); },
   get skillSkills() { return overrideOr("tools.skill.skills", cfg.tools?.skill?.skills || []) as { raw: string }[]; },
 };
 
+// ══════════════════════════════════════════
+// 4. 外观 — Profile 系统
+// 主题/角色/音效由 Profile 管理 (public/profiles/)
 // ==========================================
-// 安全配置
-// ==========================================
-export const safetyConfig = {
-  get mode() { return overrideOr("safety.mode", cfg.safety?.mode || "tell_me"); },
-  get sessionTrustEnabled() { return overrideOr("safety.sessionTrustEnabled", cfg.safety?.sessionTrustEnabled ?? true); },
+export const appearanceConfig = {
+  get activeProfile() { return overrideOr("appearance.activeProfile", cfg.appearance?.activeProfile || "sugar-pink"); },
 };
+
+// ══════════════════════════════════════════
+// 开发时日志
+// ══════════════════════════════════════════
 if (import.meta.env.DEV) {
-  console.log("[Config] 已加载 CONFIG.yaml | AI:", aiConfig.provider, "| endpoint:", aiConfig.endpoint);
+  console.log("[Config v2] 已加载 CONFIG.yaml | AI:", aiConfig.provider, "| endpoint:", aiConfig.endpoint);
 }

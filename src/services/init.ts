@@ -31,48 +31,49 @@ export async function initApp(welcomeText: string): Promise<void> {
 
   // ── 1. Memory 文件系统 ──
   await MemoryService.init()
-  log.info("1/6 Memory 文件系统就绪")
+  log.info("1/7 Memory 就绪")
 
-  // ── 2. 人格模块 ──
+  // ── 2. Profile 系统 ──
+  const { initProfiles, getActiveProfile } = await import("@/services/profile")
+  await initProfiles()
+  const p = getActiveProfile()
+  log.info(`2/7 Profile 就绪: "${p?.meta.name}" (${p?.character.name})`)
+
+  // ── 3. 人格模块 ──
   initRegistry()
-  log.info("2/6 人格模块就绪")
+  log.info("3/7 人格模块就绪")
 
-  // ── 3. 工具注册 ──
-  // 3a. 轻量模式基础工具（始终注册）
+  // ── 4. 工具注册 ──
   await registerDefaultTools()
-  log.info("3a/6 基础工具就绪")
+  log.info("4a/7 基础工具就绪")
 
-  // 3b. 助手模式工具（仅助手模式开启时注册）
   if (modeConfig.assistant) {
     await registerAssistantTools()
-    log.info("3b/6 助手工具就绪")
+    log.info("4b/7 助手工具就绪")
   }
 
-  // 3c. MCP 工具（仅助手模式 + MCP 开关开启）
   if (toolsConfig.mcpEnabled) {
     const { connectAllMcpServers } = await import("@/services/tool/mcp/manager")
     const connected = await connectAllMcpServers()
-    log.info(`3c/6 MCP 就绪 (${connected} 个服务器连接)`)
+    log.info(`4c/7 MCP 就绪 (${connected} 个服务器连接)`)
   }
 
-  // 3d. Skill 工具（仅助手模式 + Skill 开关开启）
   if (toolsConfig.skillEnabled) {
     const { getSkillTools } = await import("@/services/tool/skill/loader")
     const { initSkillRegistry } = await import("@/services/tool/skill/registry")
     initSkillRegistry()
     registerAll(getSkillTools())
-    log.info("3d/6 Skill 工具就绪")
+    log.info("4d/7 Skill 工具就绪")
   }
 
   const { toolCount } = await import("@/services/tool/registry")
-  log.info(`3/6 工具就绪 (${toolCount()} 个) | 助手:${modeConfig.assistant} MCP:${toolsConfig.mcpEnabled} Skill:${toolsConfig.skillEnabled}`)
+  log.info(`4/7 工具就绪 (${toolCount()} 个) | 助手:${modeConfig.assistant} MCP:${toolsConfig.mcpEnabled} Skill:${toolsConfig.skillEnabled}`)
 
-  // ── 4. 会话初始化 ──
+  // ── 5. 会话初始化 ──
   const sessions = await initSessions()
-  log.info(`4/6 会话就绪: ${sessions.length} 个, 活跃: ${sessions[0]?.id ?? "无"}, 消息: ${chatHistory.length} 条`)
+  log.info(`5/7 会话就绪: ${sessions.length} 个, 活跃: ${sessions[0]?.id ?? "无"}, 消息: ${chatHistory.length} 条`)
 
-  // ── 5. 欢迎语 ──
-  //    仅当 chatHistory 为空（没有从 sessions/ 恢复任何消息）时才写欢迎语
+  // ── 6. 欢迎语 ──
   const card = getActiveCard()
   if (chatHistory.length === 0) {
     if (welcomeText) {
@@ -80,14 +81,14 @@ export async function initApp(welcomeText: string): Promise<void> {
     } else if (card?.firstMessage) {
       initWelcome(card.firstMessage)
     }
-    log.info("5/6 欢迎语已写入")
+    log.info("6/7 欢迎语已写入")
   } else {
-    log.info("5/6 跳过欢迎语（已有历史消息）")
+    log.info("6/7 跳过欢迎语（已有历史消息）")
   }
 
-  // ── 6. Debug ──
+  // ── 7. Debug ──
   await initDebug()
-  log.info("6/6 Debug 就绪")
+  log.info("7/7 Debug 就绪")
 
   // ── 启动后台任务 ──
   startMemoryConsolidationTimer()

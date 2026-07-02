@@ -1,8 +1,12 @@
 <script setup lang="ts">
-import { ref, onMounted, onUnmounted } from "vue";
+import { ref, onMounted, onUnmounted, computed } from "vue";
 import { animations } from "../services/animation";
+import { getBodyUrl, getCharacterScaleMode, getUiUrl } from "@/services/profile";
 
-const currentSrc = ref("/assets/ctj/stream_cho_body.png");
+const bodyUrl = computed(() => getBodyUrl());
+const currentSrc = ref(bodyUrl.value);
+const scaleMode = computed(() => getCharacterScaleMode() === "smooth" ? "auto" : "pixelated");
+
 let timer: ReturnType<typeof setTimeout> | null = null;
 let currentAnim: any = null;
 let frameIndex = 0;
@@ -29,7 +33,10 @@ function showFrame() {
   }, frame.duration);
 }
 function setExpression(name: string) { playAnim(name); }
-onMounted(() => playAnim("idle"));
+onMounted(() => {
+  if (bodyUrl.value) currentSrc.value = bodyUrl.value;
+  playAnim("idle");
+});
 onUnmounted(() => { if (timer) clearTimeout(timer); });
 defineExpose({ setExpression });
 </script>
@@ -37,8 +44,8 @@ defineExpose({ setExpression });
 <template>
   <div id="stream">
     <div id="stack">
-      <img id="char" :src="currentSrc" alt="" draggable="false" />
-      <img id="shield" src="/assets/windows/bg_stream_shield_gold.png" alt="" draggable="false" />
+      <img id="char" :src="currentSrc" alt="" draggable="false" :style="{ imageRendering: scaleMode }" />
+      <img id="shield" :src="getUiUrl('windows/bg_stream_shield_gold.png')" alt="" draggable="false" />
     </div>
   </div>
 </template>

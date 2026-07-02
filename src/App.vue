@@ -18,6 +18,7 @@ import type { SessionFileMeta } from "@/services/agent/memory";
 import { initApp } from "@/services/init";
 import { desktopConfig, shortcutConfig, userConfig, refreshUserCache } from "@/services/config";
 import { isMacOS } from "@/services/env";
+import { getUiUrl } from "@/services/profile";
 import { createLogger } from "@/services/logger";
 import { playEventSound } from "@/services/audio/registry";
 import { emit, listen } from "@tauri-apps/api/event";
@@ -207,6 +208,7 @@ async function openSettings() {
     resizable: true,
     decorations: true,
     alwaysOnTop: true,
+    transparent: true,
   });
   // 延迟调用，等 Tauri 完成 alwaysOnTop 设置后再覆盖为更高层级
   setTimeout(() => {
@@ -673,7 +675,7 @@ onUnmounted(() => {
     <TitleBar :height="30" title="配信中" @toggle-chat="showChat = !showChat" @toggle-settings="openSettings" />
     <div id="body">
       <div id="stream-col">
-        <img id="bg" src="/assets/windows/operation_base.png" alt="" />
+        <img id="bg" :src="getUiUrl('windows/operation_base.png')" alt="" />
         <StreamView ref="streamRef" />
       </div>
       <!-- 可拖动分割线 -->
@@ -714,8 +716,8 @@ onUnmounted(() => {
 .ctx-menu {
   position: fixed;
   z-index: 9999;
-  background: #3e1a2e;
-  border: 1px solid #a01a5a;
+  background: var(--color-contextmenu-bg);
+  border: 1px solid var(--color-contextmenu-border);
   border-radius: 6px;
   box-shadow: 0 2px 10px rgba(0,0,0,0.5);
   padding: 4px;
@@ -727,7 +729,7 @@ onUnmounted(() => {
   padding: 4px 12px;
   font-size: 12px;
   font-family: inherit;
-  color: #f0e0f0;
+  color: var(--color-contextmenu-text);
   background: none;
   border: none;
   border-radius: 4px;
@@ -736,8 +738,8 @@ onUnmounted(() => {
   white-space: nowrap;
 }
 .ctx-item:hover {
-  background: #c4276f;
-  color: #fff;
+  background: var(--color-contextmenu-hover-bg);
+  color: var(--color-contextmenu-hover-text);
 }
 .ctx-fade-enter-active, .ctx-fade-leave-active {
   transition: opacity 0.1s ease;

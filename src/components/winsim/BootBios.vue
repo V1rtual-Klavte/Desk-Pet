@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { ref, onMounted, onUnmounted } from "vue";
+import { getUiUrl } from "@/services/profile";
 
 const emit = defineEmits<{ done: [] }>();
 const lines = ref<string[]>([]);
@@ -50,7 +51,7 @@ onUnmounted(()=>{
 
 <template>
   <div class="bios" data-tauri-drag-region>
-    <img class="bios-logo" src="/assets/Fromtemd/bios_logo.png" alt="" />
+    <img class="bios-logo" :src="getUiUrl('Fromtemd/bios_logo.png')" alt="" />
     <div class="txt">
       <p v-for="(line,idx) in lines" :key="idx" class="bl">{{ line||"\u00A0" }}</p>
       <span v-if="phase==='post'" class="cur" :class="{on:showCursor}">_</span>

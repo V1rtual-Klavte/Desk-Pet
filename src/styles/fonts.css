@@ -1,18 +1,4 @@
 /* ========================================== */
-/* 自定义字体声明                               */
+/* 字体声明 — 由 loader.ts 动态注入 @font-face  */
+/* 此文件仅作为编译时占位，运行时由 Profile 接管  */
 /* ========================================== */
-
-@font-face {
-  font-family: "zpix";
-  src: url("/assets/fonts/zpix.ttf") format("truetype");
-}
-
-@font-face {
-  font-family: "pixel-mplus";
-  src: url("/assets/fonts/PixelMplus10-Regular.ttf") format("truetype");
-}
-
-@font-face {
-  font-family: "pixel-mplus-bold";
-  src: url("/assets/fonts/PixelMplus10-Bold.ttf") format("truetype");
-}

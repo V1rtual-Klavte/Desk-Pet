@@ -37,12 +37,27 @@ Desk-Pet/
 │   ├── DESIGN_ORIGIN.md          # 原始草案
 │   ├── 架构方案.md                 # v2 架构方案
 │   └── PRD-可配置静态资源管理.md    # 静态资源 PRD
-├── CONFIG.yaml                  # 全局默认配置
+├── CONFIG.yaml                  # 全局默认配置 (general/ai/tools/appearance)
 ├── CONFIG-DEV.yaml              # 本地开发配置 (不入 git)
 ├── .gitignore
 ├── index.html / notification.html / settings.html
 ├── vite.config.ts               # Vite + YAML 插件 + @ 别名
 ├── package.json / pnpm-lock.yaml
+│
+├── public/profiles/             # ★ Profile 系统 (自包含主题/角色/音效)
+│   ├── sugar-pink/              # 内置: 糖糖粉 (粉色)
+│   │   ├── profile.yaml         # 主题色(18中文键) + 音效映射
+│   │   ├── character.yaml       # 角色动画帧 + 表情映射
+│   │   ├── body.png             # 角色立绘
+│   │   └── frames/              # 109 帧 PNG
+│   ├── dark-purple/             # 内置: 暗夜紫 (暗色)
+│   │   ├── profile.yaml
+│   │   ├── character.yaml
+│   │   ├── body.png
+│   │   └── frames/
+│   └── glass/                   # 内置: 透明玻璃 (毛玻璃效果)
+│       ├── profile.yaml
+│       └── character.yaml       # (复用 sugar-pink 的 body.png + frames)
 │
 ├── memory/                      # ★ 长期记忆（文件注册表）
 │   ├── MEMORY.md                # ★ 结构化注册表（系统块 + 长期记忆块）
@@ -63,6 +78,10 @@ Desk-Pet/
 │   │   ├── DebugBar.vue          # Debug 状态栏（嵌入 ChatPanel 底部）
 │   │   └── winsim/              # Windows 模拟器彩蛋
 │   ├── services/
+│   │   ├── profile/              # ★ Profile 系统 (主题/角色/音效)
+│   │   │   ├── index.ts          # 统一导出
+│   │   │   ├── loader.ts         # Profile 懒加载+激活+CSS变量注入(18色→50+变量)
+│   │   │   └── io.ts             # 导入/导出(Zip)/删除
 │   │   ├── engine/              # ★ 核心引擎 (Phase 2)
 │   │   │   ├── index.ts         # 统一导出 (含 Slash 命令)
 │   │   │   ├── agent-loop.ts    # ★ Agent Loop — 多轮工具调用核心循环 + 上下文压缩
@@ -114,9 +133,19 @@ Desk-Pet/
 │           ├── cursor.rs / monitor_ctl.rs / sim.rs / logging.rs
 │           ├── tool_exec.rs     # ★ Bash/文件/系统/剪贴板/应用 (三端完整)
 │           ├── memory_cmd.rs    # ★ 文件系统操作 (init/list/delete sessions)
-│           └── mcp_bridge.rs    # ★ MCP stdio 桥接 (spawn/send/kill)【已实现】
+│           ├── mcp_bridge.rs    # ★ MCP stdio 桥接 (spawn/send/kill)【已实现】
+│           └── profile_cmd.rs   # ★ Profile 文件系统 (list/write/delete, AppData)
 │
-└── public/assets/               # 静态资源
+└── public/assets/               # 静态资源 (v2 重组)
+    ├── characters/
+    │   ├── cho/                  # 糖糖素材 (109帧)
+    │   └── default/              # 默认角色
+    ├── fonts/                    # 3个像素字体
+    └── ui/                       # UI素材
+        ├── windows/              # 原 windows/ 移入
+        ├── Fromtemd/             # 原 Fromtemd/ 移入
+        ├── jine/                 # 原 jine/ 移入
+        └── photo/                # 原 photo/ 移入
 ```
 
 ---
@@ -234,6 +263,7 @@ Rust 后台线程 → emit("window-changed") → window/listener.ts
     └── 弹出: setPosition → 缩放动画 0→1 + 弹出音效 → focusInput()
 
 启动: ActivationPolicy::Accessory → create_main_window
+  → initProfiles() (★ 懒加载: 仅 CONFIG.activeProfile，设置页按需 discoverAllProfiles)
   → registerDefaultTools() + (助手模式: registerAssistantTools + MCP真实连接/Mock + Skill子循环)
   → initChat() + startMemoryConsolidationTimer() (每60min触发记忆整理)
   → initDebug()

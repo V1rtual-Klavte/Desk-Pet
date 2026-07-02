@@ -1,57 +1,62 @@
 # PRD — 可配置静态资源管理系统 v2
 
-> 状态: Draft | 日期: 2026-07-01
+> 状态: P1-P5 ✅ 全部完成 (2026-07-02) | 日期: 2026-07-01
 
 ---
 
 ## 零、核心原则
 
-> **统一配置，拆箱即用**
-> 1. 所有配置统一在 `CONFIG.yaml`，不分拆多个 manifest 文件
-> 2. 内置角色/主题/字体作为默认配置随包发布，用户开箱即用
-> 3. 设置页面按功能域分 Tab，与 CONFIG.yaml 结构一一对应
-> 4. 用户自定义角色/主题通过设置页导入，自动追加到 CONFIG 覆盖层
+> **Profile 即闭包，拖入即用**
+> 1. 主题、角色素材、音效映射**全部打包在 Profile 文件夹内**，零外部引用
+> 2. 每个 Profile 是一个自包含文件夹，结构统一，`profile.yaml` + `character.yaml` + `body.png` + `frames/`
+> 3. CONFIG.yaml 只保留**功能配置**（general / ai / tools），外观配置缩为一行 `activeProfile`
+> 4. 内置 Profile 随包发布于 `public/profiles/`，用户 Profile 存放于 `{AppData}/desk-pet/profiles/`
+> 5. 导入/导出 = 打包/解压整个 Profile 文件夹
 
 ---
 
-## 一、CONFIG.yaml 结构重组
+## 一、架构总览
 
-按 6 大功能域划分，现有字段归位，新增字段标注 `[NEW]`：
+```
+CONFIG.yaml (功能配置)            Profile 文件夹 (外观闭包)
+┌──────────────────────┐          ┌─────────────────────────┐
+│ general              │          │ sugar-pink/             │
+│   mode / popup       │          │ ├── profile.yaml        │ ← 主题色+音效+字体
+│   shortcut / logging │          │ ├── character.yaml      │ ← 角色动画+表情
+│   desktop            │          │ ├── body.png            │ ← 立绘
+│                       │          │ └── frames/             │ ← 109帧自包含
+│ ai                   │          │     ├── idle_000.png    │
+│   provider / model   │          │     └── ...             │
+│   thinking / loop    │          ├─────────────────────────┤
+│   personality        │          │ dark-purple/            │
+│   windowMonitor      │          │ └── ... (同上，配色不同) │
+│   safety             │          └─────────────────────────┘
+│                       │
+│ tools                │          设置页:
+│   bash / file        │          ┌──────────────────┐
+│   mcp / skill        │          │ 🏠 通用          │ → general.*
+│                       │          │ 🤖 AI            │ → ai.*
+│ appearance           │          │ 🔧 工具          │ → tools.*
+│   activeProfile ─────┼────────→ │ 🎨 外观 Profile  │ → 主题+角色+音效 合一
+└──────────────────────┘          └──────────────────┘
+```
+
+---
+
+## 二、CONFIG.yaml — 功能配置（极简）
+
+只保留 4 个功能域，主题/角色/音效全部移除：
 
 ```yaml
-# ==========================================
-# 糖糖桌宠 全局配置
-# ==========================================
-
 # ══════════════════════════════════════════
 # 1. 通用设置 (General)
 # ══════════════════════════════════════════
 general:
-  # 模式
-  mode:
-    assistant: false
-
-  # 弹窗行为
-  popup:
-    mode: cursor              # cursor | fixed
-    autoPopupOnMessage: false # 收到消息自动弹出
-    defaultSize: { w: 730, h: 450 }
-
-  # 快捷键
-  shortcut:
-    key: "P"
-    macModifiers: ["Control", "Command"]
-    winModifiers: ["Control", "Alt"]
-
-  # 日志
-  logging:
-    level: info               # debug | info | warn | error
-
-  # 桌面后端
-  desktop:
-    pollingIntervalMs: 3000
-    pauseExtraMs: 5000
-    waitTimeoutMs: 5000
+  mode: { assistant: false }
+  popup: { mode: cursor, autoPopupOnMessage: false, defaultSize: { w: 730, h: 450 } }
+  shortcut: { key: "P", macModifiers: ["Control", "Command"], winModifiers: ["Control", "Alt"] }
+  logging: { level: info }
+  desktop: { pollingIntervalMs: 3000, pauseExtraMs: 5000, waitTimeoutMs: 5000 }
 
 # ══════════════════════════════════════════
 # 2. AI 设置 (AI)
@@ -63,408 +68,337 @@ ai:
   requireApiKey: true
   model: deepseek-chat
   contextMaxTokens: 16000
-
-  # 默认人格
   defaultSystemPrompt: "你叫糖糖..."
-
-  # 思考强度
-  thinking:
-    effort: auto              # auto | low | medium | high
-    budget:
-      low: 1000
-      medium: 4000
-      high: 16000
-
-  # 人格系统 (原 personality section 迁移进来)
+  fallbackReplies: [...]
+  thinking: { effort: auto, budget: { low: 1000, medium: 4000, high: 16000 } }
   personality:
     enabled: true
     active: angelkawaii
-    cards:
-      - { id: angelkawaii, name: KAngel, path: cards/angelkawaii.md, description: "甜蜜活泼+病娇" }
-      - { id: ame, name: Ame, path: cards/ame.md, description: "冷静管家型" }
-      - { id: pchan, name: P酱, path: cards/pchan.md, description: "慵懒电竞少女" }
-
-  # 核心 Loop
-  loop:
-    maxRetry: 3
-    maxToolCallsPerTurn: 5
-    toolTimeoutMs: 30000
-    turnTimeoutMs: 120000
-    streamEnabled: true
-    contextCompactAt: 0.95
-
-  # 记忆
-  memory:
-    maxEntries: 200
-
-  # 并发锁
-  lock:
-    safetyTimeoutMs: 30000
-
-  # 窗口监控（主动搭话）
-  windowMonitor:
-    enabled: true
-    staySeconds: 60
-    settleMs: 2000
-    cooldownSeconds: 5000
-    samePageCooldownSeconds: 7800
-    defaultCooldownMs: 12000
-    resumeExtraMs: 2000
-
-  # 安全
-  safety:
-    mode: tell_me             # just_do_it | tell_me | let_me_tk
-    sessionTrustEnabled: true
+    cards: [...]
+  loop: { maxRetry: 3, maxToolCallsPerTurn: 5, toolTimeoutMs: 30000, turnTimeoutMs: 120000, streamEnabled: false, contextCompactAt: 0.95 }
+  memory: { maxEntries: 200 }
+  lock: { safetyTimeoutMs: 30000 }
+  windowMonitor: { enabled: true, staySeconds: 60, settleMs: 2000, ... }
+  safety: { mode: tell_me, sessionTrustEnabled: true }
 
 # ══════════════════════════════════════════
 # 3. 工具配置 (Tools)
 # ══════════════════════════════════════════
 tools:
-  bash:
-    enabled: true
-    whitelist: ["ls", "cat", "grep", "find", ...]
-
-  file:
-    enabled: true
-    writeEnabled: false
-
-  mcp:
-    enabled: false
-    servers: []
-    builtin:
-      filesystem:
-        enabled: true
-        command: npx
-        args: ["-y", "@modelcontextprotocol/server-filesystem", "/"]
-      brave-search:
-        enabled: false
-        command: npx
-        args: ["-y", "@anthropic/mcp-brave-search"]
-        env: { BRAVE_API_KEY: "" }
-      playwright: { enabled: true, command: npx, args: ["-y", "@anthropic/mcp-playwright"] }
-      git: { enabled: false, command: npx, args: ["-y", "@anthropic/mcp-git", "/"] }
-      github: { enabled: false, command: npx, args: ["-y", "@anthropic/mcp-github"], env: { GITHUB_PERSONAL_ACCESS_TOKEN: "" } }
-
-  skill:
-    enabled: false
-    skills: []
+  bash: { enabled: true, whitelist: [...] }
+  file: { enabled: true, writeEnabled: false }
+  mcp: { enabled: false, servers: [], builtin: { filesystem: {...}, playwright: {...}, ... } }
+  skill: { enabled: false, skills: [] }
 
 # ══════════════════════════════════════════
-# 4. 声音设置 (Sound) [NEW section]
-# ══════════════════════════════════════════
-sound:
-  enabled: true
-  volume: 0.8
-
-  # 事件→音效映射
-  events:
-    popin: "popin_default"        # 弹出
-    popout: "whistle"             # 收回
-    send: "send_default"          # 发送消息
-    receive: "receive_default"    # 收到回复
-    startup: "startup_jingle"     # 启动
-    expression_smile: ""          # 空=使用角色默认
-    expression_sleepy: ""
-    # ... 更多事件
-
-# ══════════════════════════════════════════
-# 5. 外观与主题 (Appearance) [NEW section]
+# 4. 外观 — Profile 系统
 # ══════════════════════════════════════════
 appearance:
-  activeCharacter: "cho"        # 当前角色 ID
-  activeTheme: "default"        # 当前主题 ID
-
-  # ── 主题定义 ──
-  themes:
-    default:
-      name: "糖糖粉"
-      colors:
-        bg: "#fce4ec"
-        border: "#a01a5a"
-        borderGradient: ["#fccdd9", "#f7a8c4", "#c4276f", "#a01a5a"]
-        text: "#333333"
-        accent: "#c4276f"
-        chatBg: "#fce4ec"
-        divider: "#e8a0b0"
-        settingsBg: "#3e1a2e"
-        settingsCard: "#2a1020"
-      fonts:
-        ui: "zpix"                # 界面字体
-        chat: "zpix"              # 聊天字体
-        size: 14
-        lineHeight: 1.6
-      shield:
-        enabled: false            # 台座开关
-        image: ""                 # 自定义台座图
-
-    dark:                         # [NEW] 内置暗色主题
-      name: "暗夜紫"
-      colors:
-        bg: "#1a1025"
-        border: "#7a3a6a"
-        borderGradient: ["#4a2050", "#5a3070", "#8a4a8a", "#7a3a6a"]
-        text: "#e0d0e8"
-        accent: "#c06aaf"
-        chatBg: "#1a1025"
-        divider: "#5a3a6a"
-        settingsBg: "#1a1025"
-        settingsCard: "#251530"
-      fonts:
-        ui: "zpix"
-        chat: "zpix"
-        size: 14
-        lineHeight: 1.6
-      shield:
-        enabled: false
-
-  # ── 角色定义 ──
-  characters:
-    # --- 内置角色：糖糖 (CTJ素材) ---
-    cho:
-      name: "糖糖"
-      builtin: true              # 内置标记，不可删除
-      scale: 1.0
-      scaleMode: pixelated       # pixelated | smooth
-      body: "/assets/characters/cho/body.png"
-
-      animations:                # 动画定义
-        idle:
-          loop: true
-          frames:
-            - { f: "frames/idle_000.png", d: 5000 }
-            - { f: "frames/idle_001.png", d: 250 }
-        smile:
-          loop: false
-          frames:
-            - { f: "frames/smile_001.png", d: 100 }
-            - { f: "frames/smile_002.png", d: 100 }
-            - { f: "frames/smile_003.png", d: 100 }
-            - { f: "frames/smile_004.png", d: 100 }
-            - { f: "frames/smile_005.png", d: 100 }
-            - { f: "frames/smile_006.png", d: 100 }
-            - { f: "frames/smile_007.png", d: 300 }
-        # ... 其余动画 (angry, sleepy, chu, h, superchat, gaoo, business1,
-        #     hera1, hera2, hera3, grgr1, grgr2, grgr3, grgr4, come, kakoyoku, ha, you)
-
-      # 表情关键词映射
-      expressions:
-        - { kw: ["smile", "开心", "哈哈"], anim: "smile" }
-        - { kw: ["sleep", "困", "晚安"], anim: "sleepy" }
-        - { kw: ["angry", "生气", "滚"], anim: "angry" }
-        - { kw: ["love", "喜欢", "chu", "亲"], anim: "chu" }
-        - { kw: ["superchat", "sc"], anim: "superchat" }
-        - { kw: ["gaoo", "嗷呜"], anim: "gaoo" }
-        - { kw: ["business", "办公"], anim: "business1" }
-        - { kw: ["you", "你"], anim: "you" }
-
-      # 内置动画（CSS驱动，不需要素材）
-      builtinAnimations:
-        - breathing
-        - bounce
-        - shake
-        - wave
-        - float
-        - tilt
-
-    # --- 默认角色（无素材 fallback）---
-    default:
-      name: "默认"
-      builtin: true
-      scaleMode: smooth
-      body: "/assets/characters/default/body.png"
-      animations:
-        idle:
-          loop: true
-          frames:
-            - { f: "body.png", d: 3000 }
-      expressions: []
-      builtinAnimations:
-        - breathing
-        - bounce
-        - shake
-        - wave
-        - blink
-        - float
-        - tilt
+  activeProfile: "sugar-pink"     # 当前激活的 Profile ID
 ```
 
 ---
 
-## 二、设置页面分 Tab 重构
+## 三、Profile 文件夹规范
 
-现有 SettingsPanel 拆为带侧边导航的 Tab 结构：
+### 3.1 目录结构
+
+```
+profile-folder/
+├── profile.yaml          # ★ 入口：元数据 + 主题色 + 音效映射 + 字体
+├── character.yaml        # ★ 角色：动画帧列表 + 表情关键词 + 内置动画
+├── preview.png           # [可选] 设置页预览图
+├── body.png              # 角色立绘
+├── frames/               # 序列帧 PNG（自包含，零外部引用）
+│   ├── idle_000.png
+│   ├── idle_001.png
+│   └── ...
+└── sounds/               # [可选] 自定义音效文件
+    └── my-sound.wav
+```
+
+### 3.2 profile.yaml — 主题+音效+字体
+
+```yaml
+meta:
+  name: "糖糖粉"
+  description: "默认粉色主题 + 糖糖角色"
+  version: 1
+  builtin: true
+
+theme:
+  colors:
+    bg: "#fce4ec"
+    border: "#a01a5a"
+    borderGradient: ["#fccdd9", "#f7a8c4", "#c4276f", "#a01a5a"]
+    text: "#333333"
+    accent: "#c4276f"
+    chatBg: "#fce4ec"
+    divider: "#e8a0b0"
+    settingsBg: "#3e1a2e"
+    settingsCard: "#2a1020"
+  fonts:
+    ui: "zpix"
+    chat: "zpix"
+    size: 14
+    lineHeight: 1.6
+  shield:
+    enabled: false
+    image: ""
+
+sound:
+  volume: 0.8
+  events:
+    welcome: "welcome_chord"
+    send: "send_short"
+    reply: "reply_ding"
+    popup: "popup_up"
+    retract: "retract_down"
+    surface: "surface_light"
+    middle: "middle_tremolo"
+    deep: "deep_noise"
+```
+
+### 3.3 character.yaml — 角色动画+表情
+
+```yaml
+character:
+  id: "cho"
+  name: "糖糖"
+  scale: 1.0
+  scaleMode: pixelated
+
+animations:
+  idle:
+    loop: true
+    frames:
+      - { f: "frames/stream_cho_idle_000.png", d: 5000 }
+      - { f: "frames/stream_cho_idle_001.png", d: 250 }
+  smile:
+    loop: false
+    frames:
+      - { f: "frames/stream_cho_smile_001.png", d: 100 }
+      # ...
+  # 共 20 个动画，128 帧引用
+
+expressions:
+  - { kw: ["smile", "开心", "哈哈"], anim: "smile" }
+  - { kw: ["sleep", "困", "晚安"], anim: "sleepy" }
+  - { kw: ["angry", "生气", "滚"], anim: "angry" }
+  - { kw: ["love", "喜欢", "chu", "亲"], anim: "chu" }
+  - { kw: ["superchat", "sc"], anim: "superchat" }
+  - { kw: ["gaoo", "嗷呜"], anim: "gaoo" }
+  - { kw: ["business", "办公"], anim: "business1" }
+  - { kw: ["you", "你"], anim: "you" }
+
+builtinAnimations:
+  - breathing
+  - bounce
+  - shake
+  - wave
+  - float
+  - tilt
+```
+
+---
+
+## 四、加载机制
+
+```
+启动 (init.ts)
+  │
+  ├─ 1. MemoryService.init()
+  ├─ 2. initProfiles()
+  │      ├── 扫描 public/profiles/ → 发现 ["sugar-pink", "dark-purple"]
+  │      ├── 逐个加载: fetch profile.yaml + character.yaml → 解析 → 注册
+  │      └── 激活 CONFIG.yaml appearance.activeProfile 指定的 profile
+  │
+  ├─ 3~7. 人格 / 工具 / 会话 / 欢迎语 / Debug
+  │
+  └─ 运行时:
+       animation.ts → Proxy → getActiveProfile().animations
+       expressions.ts → getActiveProfile().expressions
+       StreamView.vue → getBodyUrl() + scaleMode
+       CSS变量注入 → Active Profile → theme.colors
+```
+
+### 4.1 Profile 加载器
+
+`src/services/profile/loader.ts`：
+
+| API | 说明 |
+|-----|------|
+| `initProfiles()` | 发现 + 加载所有 profile，激活 CONFIG 指定项 |
+| `activateProfile(id)` | 运行时切换 profile |
+| `getActiveProfile()` | 获取当前激活的完整 ProfileData |
+| `listProfiles()` | 列出所有可用 profile 的 id + meta |
+| `getBodyUrl()` | 返回 `{basePath}/body.png` |
+| `getCharacterScale()` / `getCharacterScaleMode()` | 角色缩放参数 |
+
+### 4.2 动画/表情 — Proxy 动态读取
+
+`animation.ts` 和 `expressions.ts` 不再硬编码数据，改为从 `getActiveProfile()` 动态读取。`animations` 导出使用 ES Proxy，Vue 响应式访问自动路由到当前 profile。
+
+---
+
+## 五、设置页面 Tab 重构
 
 ### Tab 内容分配
 
-| Tab | 内容 | 对应 CONFIG 路径 |
-|-----|------|-----------------|
-| **🏠 通用** | 模式切换、弹窗位置、弹窗大小、快捷键、日志级别、桌面轮询 | `general.*` |
-| **🤖 AI** | 端点/密钥/模型、思考强度、人格选择、默认人格 prompt、记忆、窗口监控、并发锁、安全策略 | `ai.*` |
-| **🔧 工具** | Bash 白名单、文件写开关、MCP 开关/列表/内置、Skill 开关/列表 | `tools.*` |
-| **🔊 声音** | 音量、事件→音效映射表、试听按钮、导入音效文件 | `sound.*` |
-| **🎨 主题** | 主题选择、角色选择、**角色管理**（导入/预览/编辑）、主题颜色编辑、字体选择、台座开关 | `appearance.*` |
+| Tab | 内容 | 数据来源 |
+|-----|------|---------|
+| **🏠 通用** | 模式切换、弹窗位置/大小、快捷键、日志级别、桌面轮询 | `general.*` |
+| **🤖 AI** | 端点/密钥/模型、思考强度、人格选择、默认人格、记忆、窗口监控、锁、安全 | `ai.*` |
+| **🔧 工具** | Bash 白名单、文件写开关、MCP 开关/列表、Skill 开关/列表 | `tools.*` |
+| **🎨 外观 Profile** | Profile 选择/切换、主题色预览、音效映射预览、角色预览、**导入/导出/复制/删除** | Profile 系统 |
 
-### 🎨 主题 Tab 详情
+> 🔊 **声音 Tab 已合并入外观 Profile** — 音效事件映射是 Profile 的一部分，切换 Profile 同时切换主题+角色+音效。
+
+### 🎨 外观 Profile Tab 详情
 
 ```
-┌─ 主题 ──────────────────────────────────────┐
-│                                              │
-│  ┌─ 角色选择 ───────────────────────────┐   │
-│  │ 当前角色: [糖糖 ▼]                    │   │
-│  │                                       │   │
-│  │ 已安装角色:                            │   │
-│  │ ┌──────┐ ┌──────┐ ┌──────────────┐   │   │
-│  │ │ 🎭糖糖 │ │ 🎭默认 │ │ ＋ 导入角色  │   │   │
-│  │ │ 内置   │ │ 内置   │ │ (拖入图片)   │   │   │
-│  │ └──────┘ └──────┘ └──────────────┘   │   │
-│  │                                       │   │
-│  │ [角色预览区]  → 可在此预览idle动画     │   │
-│  └───────────────────────────────────────┘   │
-│                                              │
-│  ┌─ 主题选择 ───────────────────────────┐   │
-│  │ 当前主题: [糖糖粉 ▼]                  │   │
-│  │                                       │   │
-│  │ ┌──────────┐ ┌──────────┐            │   │
-│  │ │ 🎀 糖糖粉 │ │ 🌙 暗夜紫 │            │   │
-│  │ └──────────┘ └──────────┘            │   │
-│  └───────────────────────────────────────┘   │
-│                                              │
-│  ┌─ 主题编辑器 ─────────────────────────┐   │
-│  │ 背景色: [#fce4ec] [取色器]            │   │
-│  │ 边框色: [#a01a5a] [取色器]            │   │
-│  │ ... 其他颜色 ...                      │   │
-│  │                                       │   │
-│  │ 界面字体: [zpix ▼]                    │   │
-│  │ 聊天字体: [zpix ▼]                    │   │
-│  │ 字号: [14]                            │   │
-│  │                                       │   │
-│  │ 台座: ☐ 启用   图片: [选择文件]       │   │
-│  │                                       │   │
-│  │ [恢复默认] [导出主题] [导入主题]       │   │
-│  └───────────────────────────────────────┘   │
-└──────────────────────────────────────────────┘
+┌─ 🎨 外观 Profile ─────────────────────────────┐
+│                                                 │
+│  当前 Profile: [糖糖粉 ▼]                        │
+│                                                 │
+│  ┌─────────┐ ┌─────────┐ ┌──────────────┐      │
+│  │ 🎀 糖糖粉 │ │ 🌙 暗夜紫 │ │ ＋ 导入Profile │      │
+│  │  内置     │ │  内置     │ │  (拖入.zip)  │      │
+│  └─────────┘ └─────────┘ └──────────────┘      │
+│                                                 │
+│  选中 Profile 详情:                              │
+│  ┌─────────────────────────────────────────┐   │
+│  │ [preview.png]                           │   │
+│  │ 名称: 糖糖粉   角色: 糖糖 (cho)          │   │
+│  │ 字体: zpix 14px  缩放: pixelated 1.0×   │   │
+│  │                                          │   │
+│  │ ── 主题色 ──                             │   │
+│  │ ■ 背景  ■ 边框  ■ 文字  ■ 强调          │   │
+│  │ ■ 聊天  ■ 分割  ■ 设置  ■ 卡片          │   │
+│  │                                          │   │
+│  │ ── 音效映射 ──                           │   │
+│  │ 启动:welcome_chord  发送:send_short      │   │
+│  │ 弹窗:popup_up  收回:retract_down         │   │
+│  │ ... [展开全部]                           │   │
+│  │                                          │   │
+│  │ 素材: 109帧 (~1.7MB)                    │   │
+│  │                                          │   │
+│  │ [导出Profile] [复制并编辑] [删除]         │   │
+│  └─────────────────────────────────────────┘   │
+│                                                 │
+│  ⚠️ 内置Profile不可删除，可复制后编辑             │
+└─────────────────────────────────────────────────┘
 ```
 
 ---
 
-## 三、角色导入流水线
+## 六、Profile 导入/导出流水线
 
 ```
-流程：
+导出 Profile:
+  选中 Profile → "导出" → 打包文件夹为 .zip
+  sugar-pink.zip
+  ├── profile.yaml
+  ├── character.yaml
+  ├── body.png
+  ├── preview.png
+  └── frames/*.png
 
-  用户点击 "+ 导入角色"
+导入 Profile:
+  拖入 .zip 或文件夹
        │
        ▼
-  ┌─────────────────────┐
-  │ 弹出导入对话框       │
-  │                      │
-  │ ○ 单张图片           │ ← 拖入/选择 PNG
-  │    → 自动创建角色包   │   使用全部 7 个 builtin 动画
-  │                      │
-  │ ○ 多张序列帧         │ ← 拖入/选择 N 张 PNG
-  │    → 智能分组识别     │   按文件名模式拆分为动画
-  │                      │
-  │ ○ 角色包 (.zip)      │ ← 含 frames/ + 配置导出
-  │    → 解压导入         │   高级用户/社区分享
-  │                      │
-  │ [输入角色名称: ______] │
-  │ [预览区域]            │
-  │            [确认导入] │
-  └─────────────────────┘
+  验证结构（必须有 profile.yaml + body.png）
        │
        ▼
-  后台处理：
-    1. 图片复制到 {AppData}/desk-pet/characters/{name}/
-    2. 自动缩放到 512px（保持比例，透明边距裁剪）
-    3. 单图→注册 7 个 builtin 动画
-    4. 多图→智能分组（按文件名模式）+ 自动生成 frames
-    5. 追加到 CONFIG 覆盖层 appearance.characters.{name}
-    6. 刷新角色列表 → 即时可用
+  解压/复制到 {AppData}/desk-pet/profiles/{name}/
+       │
+       ▼
+  刷新 Profile 列表 → 即时可用
 ```
 
-### 智能帧识别（多图导入）
+### 角色导入（轻量模式）
+
+如果用户只有单张/多张图片而没有完整 profile：
 
 ```
-用户上传的文件名：
-  mychar_idle_000.png      → 自动识别 "idle" 动画 × 2帧
-  mychar_idle_001.png
-  mychar_happy_000.png     → 自动识别 "happy" 动画 × 2帧
-  mychar_happy_001.png
+单张图片 → 创建最小 profile 包
+  ├── profile.yaml  (默认糖糖粉主题)
+  ├── character.yaml (idle 单帧 + 7 个 builtin 动画)
+  ├── body.png ← 用户上传的图
+  └── frames/ (只有 body.png)
 
-识别规则：
-  1. 去掉共同前缀 → 得到 "前缀_表情_序号"
-  2. 按表情分组 → 每组内按序号排序
-  3. 默认每帧 duration=120ms → 用户可调整
+多张序列帧 → 智能分组识别
+  ├── mychar_idle_000.png → 识别为 idle 动画 × 2帧
+  ├── mychar_idle_001.png
+  ├── mychar_happy_000.png → 识别为 happy 动画 × 2帧
+  └── mychar_happy_001.png
+  → 自动写入 character.yaml
 ```
 
 ---
 
-## 四、资源目录分层
+## 七、资源目录分层
 
 ```
-# 内置资源（git 追踪，随安装包发布）
-public/assets/
-├── characters/
-│   ├── cho/                     ← 糖糖完整素材 (1.7MB, 109帧)
-│   └── default/                 ← 默认单图 (几KB)
-├── fonts/                       ← 3个字体现有位置不动
-│   ├── zpix.ttf
-│   ├── PixelMplus10-Regular.ttf
-│   └── PixelMplus10-Bold.ttf
-└── ui/                          ← UI素材（原windows/Fromtemd/jine/photo）
-    ├── windows/
-    ├── Fromtemd/
-    ├── jine/
-    └── photo/
-
-# 用户资源（Tauri AppData，非 git）
-{AppData}/desk-pet/
-├── characters/                  ← 用户导入的角色
-│   └── my-character/
+# ── 内置资源（git 追踪，随包发布）──
+public/
+├── profiles/                       # ★ Profile 系统（自包含）
+│   ├── sugar-pink/                 # 内置 Profile
+│   │   ├── profile.yaml
+│   │   ├── character.yaml
+│   │   ├── body.png
+│   │   └── frames/                 # 109 帧
+│   └── dark-purple/                # 内置 Profile
+│       ├── profile.yaml
+│       ├── character.yaml
 │       ├── body.png
-│       └── frames/
-└── user-overrides.yaml          ← CONFIG 覆盖持久化
+│       └── frames/                 # 109 帧
+│
+└── assets/
+    ├── fonts/                      # 全局字体
+    │   ├── zpix.ttf
+    │   ├── PixelMplus10-Regular.ttf
+    │   └── PixelMplus10-Bold.ttf
+    └── ui/                         # UI chrome
+        ├── windows/
+        ├── Fromtemd/
+        ├── jine/
+        └── photo/
+
+# ── 用户资源（Tauri AppData，非 git）──
+{AppData}/desk-pet/
+├── profiles/                       # 用户导入/创建的 Profile
+│   └── my-custom/
+│       ├── profile.yaml
+│       ├── character.yaml
+│       ├── body.png
+│       ├── frames/
+│       └── sounds/                 # [可选] 自定义音效
+└── user-overrides.yaml             # CONFIG 覆盖持久化
 ```
 
 ---
 
-## 五、加载机制
+## 八、内置动画引擎（7 种 CSS Transform）
 
-```
-启动流程：
+| 动画名 | CSS 实现 | 用途 |
+|--------|----------|------|
+| `breathing` | `scale(1) → scale(1.03) → scale(1)` | idle 微动 |
+| `bounce` | `translateY(0) → translateY(-8px) → translateY(0)` | 高兴 |
+| `shake` | `rotate(0) → rotate(3deg) → rotate(-3deg)` | 摇头 |
+| `wave` | `rotate` on pseudo-element | 挥手 |
+| `blink` | `clip-path`/opacity 切换 | 眨眼 |
+| `float` | `translateX+Y` 椭圆轨迹 | 悬浮 |
+| `tilt` | `rotate(-5deg)` 单次 | 歪头 |
 
-  CONFIG.yaml (默认值)
-       │
-       ├── CONFIG-DEV.yaml 存在 → 覆盖默认值
-       │
-       ├── user-overrides.yaml 存在 → 再覆盖一层
-       │                               (设置页保存的内容)
-       │
-       ▼
-  config.ts → 解析为类型化对象
-       │
-       ├── appearance.characters → CharacterLoader
-       │     ├── builtin: true → 从 public/assets/characters/ 加载
-       │     └── builtin: false → 从 {AppData}/desk-pet/characters/ 加载
-       │
-       ├── appearance.themes → ThemeEngine
-       │     └── 注入 CSS 变量到 #root
-       │
-       └── appearance.activeCharacter → AnimationPlayer
-             ├── 读取角色 animations 定义
-             ├── 懒加载帧（启动只加载 idle 首帧）
-             └── builtinAnimations → 注册 CSS Transform 动画
+内置动画**不需要任何素材**，在单张 body PNG 上直接生效。定义在 `character.yaml` 的 `builtinAnimations` 字段。
 
-懒加载策略：
-  - 启动只加载 idle 第一帧 + body.png（通常 <100KB）
-  - 首次播放某动画时才加载其帧
-  - 帧缓存上限 (256MB) → LRU 淘汰
-  - 切换动画时预加载下 2 个可能的动画
-```
+---
 
-### CSS 变量注入
+## 九、CSS 变量注入
 
-所有颜色/字体从 CONFIG 注入：
+所有颜色/字体从**当前激活的 Profile** 注入：
 
 ```css
 #root {
@@ -484,47 +418,32 @@ public/assets/
 }
 ```
 
-`global.css` 中所有硬编码颜色替换为 `var(--color-bg)` 等 CSS 变量引用。
+切换 Profile → CSS 变量更新 → 全局换肤即时生效。
 
 ---
 
-## 六、内置动画引擎（7种 CSS Transform 动画）
+## 十、实施分期
 
-| 动画名 | CSS 实现 | 用途 |
-|--------|----------|------|
-| `breathing` | `scale(1) → scale(1.03) → scale(1)` | idle 微动 |
-| `bounce` | `translateY(0) → translateY(-8px) → translateY(0)` | 高兴 |
-| `shake` | `rotate(0) → rotate(3deg) → rotate(-3deg)` | 摇头 |
-| `wave` | `rotate` on pseudo-element | 挥手 |
-| `blink` | `clip-path`/opacity 切换 | 眨眼 |
-| `float` | `translateX+Y` 椭圆轨迹 | 悬浮 |
-| `tilt` | `rotate(-5deg)` 单次 | 歪头 |
-
-内置动画**不需要任何素材**，在单张 body PNG 上直接生效。
+| Phase | 内容 | 状态 |
+|-------|------|------|
+| **P1** ✅ | CONFIG.yaml 结构重组 + config.ts 适配 + 资源目录分层 + 路径替换 | 2026-07-02 |
+| **P2** ✅ | 设置页 Tab 化重构（4 Tab：通用/AI/工具/外观Profile） | 2026-07-02 |
+| **P3** ✅ | Profile 架构落地：动画/表情/UI/字体全部从 profile 加载 | 2026-07-02 |
+| **P4** ✅ | CSS 变量主题系统 + global.css 重构 + 字体动态注入 | 2026-07-02 |
+| **P5** ✅ | Profile 导入/导出 .zip + 删除 + Rust 后端文件命令 | 2026-07-02 |
 
 ---
 
-## 七、实施分期
+## 十一、模块清单
 
-| Phase | 内容 | 改动文件 |
-|-------|------|----------|
-| **P1** | CONFIG.yaml 结构重组 + config.ts 适配 | `CONFIG.yaml`, `config.ts` |
-| **P2** | 设置页 Tab 化重构（不新增功能，只整理布局） | `SettingsPanel.vue` |
-| **P3** | 动画系统配置驱动重构 | `animation.ts` → `CharacterLoader`, `AnimationPlayer` |
-| **P4** | 内置动画引擎 + CSS变量主题系统 | 新建 `builtin-anim.ts`, `global.css` 重构 |
-| **P5** | 角色导入功能 + 主题编辑器 | 新建 `CharacterImport.vue`, `ThemeEditor.vue` |
-
----
-
-## 八、与现有架构的兼容
-
-| 现有文件 | 变化 |
-|----------|------|
-| `animation.ts` | 不再硬编码，改为从 `appearance.characters[active].animations` 读取 |
-| `expressions.ts` | 不再硬编码，改为从 `appearance.characters[active].expressions` 读取 |
-| `global.css` | 所有硬编码颜色替换为 `var(--color-*)` |
-| `fonts.css` | 不变，保持 `@font-face` 声明 |
-| `StreamView.vue` | 适配配置驱动，shield 改为可配置 |
-| `SettingsPanel.vue` | 拆分为 Tab 布局 + 新增角色/主题管理 UI |
-| `config.ts` | 新增 `appearance.*` 和 `sound.*` 配置项 |
-| 静态资源目录 | `ctj/` → `characters/cho/`，`windows/` → `ui/windows/` 等 |
+| 模块 | 文件 | 说明 |
+|------|------|------|
+| Profile 加载器 | `src/services/profile/loader.ts` | 发现/加载/激活 profile |
+| Profile 导出 | `src/services/profile/index.ts` | 统一导出 + 类型 |
+| 动画系统 | `src/services/animation.ts` | Proxy 动态读取 profile.animations |
+| 表情匹配 | `src/services/expressions.ts` | 动态读取 profile.expressions |
+| 配置 | `src/services/config.ts` | appearance 极简化，仅 activeProfile |
+| 角色显示 | `src/components/StreamView.vue` | 动态 bodyUrl + scaleMode |
+| 初始化 | `src/services/init.ts` | Step 2: Profile 初始化 |
+| 设置页 | `src/components/SettingsPanel.vue` | P2 重构为 4 Tab |
+| CSS 变量 | `src/styles/global.css` | P4 替换硬编码颜色为 var(--color-*) |

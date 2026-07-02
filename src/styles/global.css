@@ -1,5 +1,5 @@
 /* ========================================== */
-/* 全局样式                                  */
+/* 全局样式 — v2: CSS 变量由 Profile 注入      */
 /* ========================================== */
 
 * {
@@ -12,20 +12,19 @@ html, body, #app {
   width: 100%;
   height: 100%;
   overflow: hidden;
-  font-family: "zpix", "pixel-mplus", sans-serif;
+  font-family: var(--font-ui, "zpix"), "pixel-mplus", sans-serif;
   background: transparent;
 }
 
-/* 全局禁选/禁拖（聊天消息除外） */
 #root {
   width: 100%;
   height: 100%;
   display: flex;
   flex-direction: column;
   overflow: hidden;
-  background: #fce4ec;
+  background: var(--color-bg, #fce4ec);
   position: relative;
-  border-bottom: 3px solid #a01a5a;
+  border-bottom: 3px solid var(--color-border, #a01a5a);
   user-select: none;
   -webkit-user-select: none;
 }
@@ -45,7 +44,7 @@ html, body, #app {
   left: 0;
   bottom: 0;
   width: 3px;
-  background: linear-gradient(180deg, #fccdd9, #f7a8c4, #c4276f, #a01a5a);
+  background: linear-gradient(180deg, var(--color-border-gradient, #fccdd9, #f7a8c4, #c4276f, #a01a5a));
   z-index: 100;
   pointer-events: none;
 }
@@ -57,7 +56,7 @@ html, body, #app {
   right: 0;
   bottom: 0;
   width: 3px;
-  background: linear-gradient(180deg, #fccdd9 2px, #c4276f 2px, #a01a5a);
+  background: linear-gradient(180deg, var(--color-border-gradient, #fccdd9, #f7a8c4, #c4276f, #a01a5a));
   z-index: 100;
   pointer-events: none;
 }
@@ -80,7 +79,7 @@ html, body, #app {
   display: flex;
   flex-direction: column;
   flex-shrink: 0;
-  background: #fce4ec;
+  background: var(--color-chat-bg, #fce4ec);
   transition: width 0.3s ease;
   overflow: hidden;
 }
@@ -89,12 +88,10 @@ html, body, #app {
   width: 0 !important;
 }
 
-/* 拖拽时禁用过渡动画，确保跟手 */
 #chat-slot.dragging {
   transition: none !important;
 }
 
-/* 可拖动分割线 */
 #divider {
   width: 4px;
   flex-shrink: 0;
@@ -113,13 +110,13 @@ html, body, #app {
   left: 50%;
   transform: translateX(-50%);
   width: 1px;
-  background: #e8a0b0;
+  background: var(--color-divider, #e8a0b0);
   transition: background 0.15s, width 0.15s;
 }
 
 #divider:hover::after,
 #divider.dragging::after {
-  background: #c4276f;
+  background: var(--color-accent, #c4276f);
   width: 2px;
 }
 

@@ -27,7 +27,8 @@
 - **安全控制** — 四级安全（SAFE/NORMAL/DANGER/NOWAY）+ 三策略（全放行/告知确认/全部确认），确认弹窗 UI，全局默认+会话覆盖，统一危险模式库
 - **记忆系统** — MEMORY.md 双块结构化注册表 + sessions/ 实时写入 + 会话历史面板 + LLM 整理 + Fork 补记忆
 - **音效系统** — 29 个内置音效，Web Audio 合成无需外部文件
-- **设置面板** — 独立窗口，AI / 安全 / 监控 / 人格 / 模式 / 弹窗 / 快捷键 / 音效 / 工具 / MCP / Skill 可配置，支持 CONFIG 导入/导出
+- **Profile 主题** — 3套内置预设（🌸糖糖粉/🌙暗夜紫/🪟透明玻璃），18色中文键→50+CSS变量自动派生，懒加载启动快，一键切换实时生效，玻璃预设全窗口透明+毛玻璃模糊
+- **设置面板** — 独立窗口，外观（预设/配色/字体/音效/管理）/ AI / 安全 / 监控 / 人格 / 模式 / 弹窗 / 快捷键 / 音效 / 工具 / MCP / Skill 可配置，支持 CONFIG 导入/导出
 - **仪表盘** — 底部状态栏，实时显示上下文占比/token消耗/工具注册数，**会话级**思考强度+安全策略覆盖下拉
 - **MCP 支持** — 内置 5 个 MCP Server (Filesystem/BraveSearch/Playwright/Git/GitHub) + 自定义 MCP，stdio 传输，JSON-RPC 协议
 - **Windows 模拟器** — 彩蛋：像素风 Win7 桌面（输入 `open win` 触发）
@@ -126,6 +127,10 @@ Desk-Pet/
 ├── sessions/                # 历史会话归档
 │   └── session-xxx.md
 ├── skills/                  # Skill 文件 (3个内置Skill: summarize-code/organize-files/check-weather)
+├── public/profiles/         # ★ Profile 主题系统 (自包含闭包)
+│   ├── sugar-pink/          # 🌸 糖糖粉 (粉色调)
+│   ├── dark-purple/         # 🌙 暗夜紫 (暗色调)
+│   └── glass/               # 🪟 透明玻璃 (毛玻璃效果)
 ├── src/                     # Vue 3 + TypeScript 前端
 │   ├── App.vue              # 根组件（窗口生命周期/快捷键/托盘/会话管理）
 │   ├── components/          # UI 组件
@@ -173,7 +178,9 @@ Desk-Pet/
 │       ├── cooldown.ts      # 全局冷却+AI并发锁
 │       ├── debug.ts         # Debug 状态数据
 │       ├── animation.ts / expressions.ts / command-handler.ts
-│       └── ...
+│       └── profile/         # ★ Profile 系统 (主题/角色/音效)
+│           ├── loader.ts    # 懒加载+激活+CSS变量注入
+│           └── io.ts        # 导入/导出/删除
 │
 ├── src-tauri/               # Rust 后端
 │   └── src/
@@ -183,7 +190,8 @@ Desk-Pet/
 │           ├── cursor.rs / monitor_ctl.rs / sim.rs / logging.rs
 │           ├── tool_exec.rs  # ★ Bash/文件/系统/剪贴板/应用
 │           ├── memory_cmd.rs # ★ 文件系统操作 (init/list/delete sessions)
-│           └── mcp_bridge.rs # ★ MCP stdio 桥接 (Phase 4 桩)
+│           ├── mcp_bridge.rs # ★ MCP stdio 桥接
+│           └── profile_cmd.rs# ★ Profile 文件系统 (list/write/delete)
 │
 └── public/assets/
 ```
@@ -208,6 +216,7 @@ Desk-Pet/
 
 | 类别 | 配置项 | 生效 |
 |------|--------|------|
+| 外观 | 预设切换(粉/暗/玻璃) / Profile选择 / 18色配色 / 字体 / 音效 / 导入导出删除 | 即时 |
 | 模式切换 | 助手模式开关 | 重启后生效 |
 | AI 接口 | 端点/密钥/模型/上下文/默认人格 | 即时 |
 | 人格切换 | 启用人格系统 / 选择人格卡（热插拔） | 即时 |

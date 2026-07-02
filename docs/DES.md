@@ -407,26 +407,125 @@ playNotificationByBoundary();
 
 ## 8. 配置系统
 
-全部配置集中于 `CONFIG.yaml` / `CONFIG-DEV.yaml`，12 个配置段：
+> **v2 (2026-07-02)**: Profile 架构落地。主题/角色/音效从 CONFIG.yaml 移入自包含 Profile 文件夹。
 
-| 配置段 | 控制内容 |
+### 8.1 CONFIG.yaml — 功能配置（4域）
+
+| 配置域 | 控制内容 |
 |--------|---------|
-| `mode` | 助手模式开关 (assistant: true/false) |
-| `ai` | API 端点/Key/模型/上下文数/思考强度/thinkingBudget/默认人格/fallback语录 |
-| `personality` | 人格系统开关/激活人格ID/可用人格卡列表 |
-| `windowMonitor` | 停留秒数/防抖/冷却/同页冷却/额外延迟 |
-| `aiLock` | 生成锁安全超时 |
-| `memory` | 长期记忆最大条数 |
-| `desktop` | Rust 轮询间隔/暂停参数 |
-| `shortcut` | 全局快捷键键值 + macOS/Windows 分别的修饰键 |
-| `logging` | 日志级别 |
-| `loop` | maxRetry/maxToolCallsPerTurn/toolTimeoutMs/turnTimeoutMs/streamEnabled/contextCompactAt |
-| `tools` | bash白名单/file开关/mcp开关+servers/skill开关 |
-| `safety` | 安全模式(tell_me/just_do_it/let_me_tk)/sessionTrust |
+| `general` | `mode.assistant` / `popup` / `shortcut` / `logging` / `desktop` |
+| `ai` | provider / endpoint / apiKey / model / thinking / personality / loop / memory / lock / windowMonitor / safety |
+| `tools` | bash(whitelist) / file(writeEnabled) / mcp(servers+builtin) / skill |
+| `appearance` | **仅 `activeProfile: "sugar-pink"`** — 其余由 Profile 管理 |
 
-> `notification` 配置段已移除（macOS 系统通知无法实现，见 2.8 节）。
+### 8.2 Profile 系统 — 主题/角色/音效（自包含闭包）
 
-DEV 配置 `enabled: true` 时完全替换生产配置，本地调试无需改代码。
+每个 Profile 是一个独立文件夹，位于 `public/profiles/<id>/`，**拖入即用，零外部引用**。导出 = 打包整个文件夹为 Zip。
+
+#### 目录结构
+
+```
+sugar-pink/                  # Profile 示例（内置3个: sugar-pink / dark-purple / glass）
+├── profile.yaml             # 主题色(18中文键) + 预设类型 + 字体 + 音效映射
+├── character.yaml           # 角色动画帧定义 + 表情关键词规则
+├── body.png                 # 角色立绘
+├── frames/                  # 序列帧 PNG（自包含，无外部引用）
+├── fonts/                   # 像素字体文件（可选，缺失回退默认）
+└── ui/                      # UI素材（可选，缺失回退默认）
+```
+
+#### 内置 Profile
+
+| Profile ID | 名称 | 预设 | 特点 |
+|-----------|------|:---:|------|
+| `sugar-pink` | 糖糖粉 | pink | 粉色系，温暖甜美，默认主题 |
+| `dark-purple` | 暗夜紫 | dark | 暗紫色系，护眼低亮 |
+| `glass` | 透明玻璃 | glass | 半透明毛玻璃，全窗口透明+16px模糊 |
+
+#### 色彩系统
+
+**18个中文键** → 算法派生 → **50+ CSS 变量**。不再逐一定义每个变量，而是通过 `injectCssVars()` 智能推导：
+
+```yaml
+# profile.yaml → theme.colors (18键)
+背景: "#fce4ec"        卡片背景: "#2a1020"    聊天背景: "#fce4ec"
+边框: "#a01a5a"        分割线: "#e8a0b0"      输入边框: "#6a4060"
+主文字: "#333"         亮文字: "#f0e0f0"      粉色文字: "#f0a0c0"
+暗文字: "#8a6080"      强调色: "#c4276f"      强调悬浮: "#e84a8a"
+标题栏渐变起: "#f7a8c4"  标题栏渐变止: "#c4276f"  标题栏文字: "#fff"
+表面色: "#4a2540"      深表面色: "#3e1a2e"    遮罩: "rgba(30,8,16,0.7)"
+透明背景: "rgba(252,228,236,0.25)"  模糊度: "16px"  # ← 玻璃预设专用
+```
+
+**派生规则**：
+- 强调色 → `强调色.replace("rgb","rgba").半透明` = 浅强调色
+- 深表面色 → 通知卡片/下拉菜单/历史面板等半透明变体
+- 标题栏渐变色 → CSS gradient `linear-gradient(起,止)`
+- 粉色文字 → 滚动条滑块色 + hover/drag 不透明度渐变
+
+#### 加载流程（懒加载）
+
+```
+启动 → initProfiles()
+  ├── 读取 appearanceConfig.activeProfile（默认 "sugar-pink"）
+  ├── loadProfile(id) → fetch profile.yaml + character.yaml
+  │     ├── character.yaml 加载失败? → 回退到 DEFAULT_BUILTIN("sugar-pink")
+  │     └── 帧路径: 当前 profile 首选，缺失回退默认
+  └── activateProfile(id) → injectFonts() + injectCssVars()
+
+设置页打开 →
+  ├── discoverAllProfiles()   # 扫描内置 + 用户(AppData) profile 列表
+  └── ensureProfileLoaded(id) # 按需加载，切换时调用
+```
+
+**关键设计**：启动只加载 CONFIG 指定的 1 个 profile，不扫描全部。设置页才按需 `discoverAllProfiles()` + `ensureProfileLoaded()`。
+
+#### 玻璃透明效果
+
+玻璃预设 (`preset: glass`) 实现全窗口透明+毛玻璃模糊：
+
+1. **Tauri 层**：主窗 + 设置窗均 `transparent: true`（Rust 创建时已设置）
+2. **HTML 层**：`settings.html` → `html,body{background:transparent}`
+3. **CSS 层**：`injectCssVars()` 检测 `preset === "glass"` → 注入 `#root, #s-root { backdrop-filter: blur(模糊度); background: 透明背景 }`
+
+透明链路：`桌面壁纸 → Tauri透明窗 → CSS半透明背景 → backdrop-filter模糊 → 角色+UI可见`
+
+#### 素材回退
+
+Profile 缺失的素材自动回退到 `DEFAULT_BUILTIN`（sugar-pink）：
+
+| 缺失素材 | 回退来源 |
+|----------|---------|
+| `body.png` | `/profiles/sugar-pink/body.png` |
+| `character.yaml` | `/profiles/sugar-pink/character.yaml` |
+| `frames/` 中某帧 | `/profiles/sugar-pink/frames/xxx.png` |
+| `fonts/` 字体 | sugar-pink 的对应字体 |
+| `ui/` 资源 | `/profiles/sugar-pink/ui/xxx.png` |
+
+#### 用户 Profile 管理
+
+通过 `io.ts` + Rust `profile_cmd.rs` 实现：
+
+| 操作 | 实现 |
+|------|------|
+| **导出** | `exportProfileZip(id)` — 打包 profile 文件为 Zip 触发下载 |
+| **导入** | `importProfileZip(file)` — 解包 Zip → Tauri invoke `profile_file_write` → 写入 AppData |
+| **删除** | `deleteProfile(id)` — 仅限非内置 profile，调用 `profile_delete` 删除目录 |
+| **存储** | 内置 → `public/profiles/`；用户导入 → `{AppData}/desk-pet/profiles/` |
+
+#### 设置面板外观页
+
+单页扁平布局（无子标签）：
+
+```
+预设切换: [🌸粉色] [🌙暗夜] [🪟玻璃]  ← 一键切换
+Profile选择: 下拉框（内置+用户）
+预览: 色调预览色块
+配色: 18个颜色选择器（中文标签）
+字体: UI字体 / 聊天字体 下拉选择
+音效: 音量滑块 + 事件→音效映射
+管理: [导出] [导入] [删除] [另存为]
+```
 
 ---
 
@@ -862,6 +961,8 @@ sessions/                      会话目录（唯一真相源）
 | 记忆系统 (注册表+LLM整理+Fork) | ✅ | `agent/memory.ts` |
 | Rust 工具执行 | ✅ | `commands/tool_exec.rs` |
 | Debug 状态栏 | ✅ | `DebugBar.vue` + `debug.ts` |
+| **Profile 主题系统** | ✅ | `profile/loader.ts`(懒加载+18色→50+CSS变量) + `io.ts`(导入导出) + Rust `profile_cmd.rs` |
+| **玻璃透明效果** | ✅ | Tauri `transparent:true` + CSS `backdrop-filter` + 全窗口半透明 |
 
 ### Phase 3: 助手模式 ⚠️ 大部分完成
 

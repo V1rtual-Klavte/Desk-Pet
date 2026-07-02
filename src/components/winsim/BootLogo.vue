@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { ref, onMounted, onUnmounted } from "vue";
+import { getUiUrl } from "@/services/profile";
 
 const emit = defineEmits<{ done: [] }>();
 const progress = ref(0);
@@ -21,7 +22,7 @@ onUnmounted(()=>{if(timer)clearInterval(timer)});
 <template>
   <div class="boot" data-tauri-drag-region>
     <Transition name="fi">
-      <img v-if="showLogo" class="logo" src="/assets/Fromtemd/boot_logo.png" alt="" />
+      <img v-if="showLogo" class="logo" :src="getUiUrl('Fromtemd/boot_logo.png')" alt="" />
     </Transition>
     <div class="bar-wrap">
       <div class="bar-track">
@@ -63,8 +64,8 @@ onUnmounted(()=>{if(timer)clearInterval(timer)});
   height: 100%;
   background-image: repeating-linear-gradient(
     90deg,
-    #e07090 0px,
-    #e07090 14px,
+    var(--color-winsim-accent, #e07090) 0px,
+    var(--color-winsim-accent, #e07090) 14px,
     #111 14px,
     #111 16px
   );

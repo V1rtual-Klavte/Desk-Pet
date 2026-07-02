@@ -1,29 +1,15 @@
 // ==========================================
-// 表情关键词映射配置
-// 配置驱动：关键词 → 表情名称
+// 表情关键词映射配置 v2 — 从 Profile 驱动
 // ==========================================
-
-export interface ExpressionRule {
-  /** 触发关键词列表 */
-  keywords: string[];
-  /** 对应的表情动画名 */
-  expression: string;
-}
+import { getActiveProfile, type ExpressionRule } from "@/services/profile";
 
 /**
- * 表情规则列表，按优先级从高到低排列。
- * 匹配时取第一个命中，避免多个规则连续覆盖。
- * ASCII 关键词使用 \b 词边界匹配，避免 "youtube" 误触发 "you"。
+ * 获取当前 Profile 的表情规则列表
  */
-export const expressionRules: ExpressionRule[] = [
-  { keywords: ["smile"],       expression: "smile" },
-  { keywords: ["sleep", "困"], expression: "sleepy" },
-  { keywords: ["gaoo"],        expression: "gaoo" },
-  { keywords: ["superchat"],   expression: "superchat" },
-  { keywords: ["business"],    expression: "business" },
-  { keywords: ["you"],         expression: "you" },
-  { keywords: ["chu"],         expression: "chu" },
-];
+function getRules(): ExpressionRule[] {
+  const profile = getActiveProfile();
+  return profile?.expressions || [];
+}
 
 /**
  * 判断字符是否为 ASCII（用于区分词边界匹配策略）
@@ -48,7 +34,6 @@ function matchKeyword(text: string, keyword: string): boolean {
   const lowerText = text.toLowerCase();
   const lowerKw = keyword.toLowerCase();
   if (isAsciiWord(lowerKw)) {
-    // 转义正则特殊字符后加词边界
     const escaped = lowerKw.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
     return new RegExp(`\\b${escaped}\\b`).test(lowerText);
   }
@@ -60,12 +45,17 @@ function matchKeyword(text: string, keyword: string): boolean {
  * 无匹配时返回 null。
  */
 export function matchExpression(text: string): string | null {
-  for (const rule of expressionRules) {
-    for (const kw of rule.keywords) {
+  for (const rule of getRules()) {
+    for (const kw of rule.kw) {
       if (matchKeyword(text, kw)) {
-        return rule.expression;
+        return rule.anim;
       }
     }
   }
   return null;
 }
+
+// ══════════════════════════════════════════
+// 向后兼容：保留旧接口类型
+// ══════════════════════════════════════════
+export type { ExpressionRule };

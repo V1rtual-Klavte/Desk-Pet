@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { ref, onMounted } from "vue";
 import { invoke } from "@tauri-apps/api/core";
+import { getBodyUrl } from "@/services/profile";
 
 const AUTO_CLOSE_MS = 8000;
 
@@ -16,7 +17,7 @@ interface NotifData {
 const data = ref<NotifData>((window as any).__NOTIF_DATA__ || {});
 const name = ref(data.value.name || "糖糖");
 const body = ref(data.value.body || "");
-const avatar = ref(data.value.avatar || "/assets/ctj/stream_cho_idle_000.png");
+const avatar = ref(data.value.avatar || getBodyUrl());
 
 function close() {
   if (closing.value) return;
@@ -56,7 +57,7 @@ html, body {
   width: 100%; height: 100%;
   overflow: hidden;
   background: transparent !important;
-  font-family: "Microsoft YaHei", sans-serif;
+  font-family: var(--font-notification);
   user-select: none;
 }
 </style>
@@ -79,9 +80,9 @@ html, body {
   padding: 14px 18px;
   max-width: 380px;
   min-width: 280px;
-  background: rgba(18, 6, 16, 0.93);
+  background: var(--color-notif-bg);
   backdrop-filter: blur(18px);
-  border: 1px solid rgba(196, 39, 111, 0.22);
+  border: 1px solid var(--color-notif-border);
   border-radius: 16px;
   box-shadow: 0 8px 40px rgba(0, 0, 0, 0.55);
   cursor: pointer;
@@ -89,8 +90,8 @@ html, body {
   transition: border-color 0.2s;
 }
 .notif-card:hover {
-  border-color: rgba(196, 39, 111, 0.5);
-  background: rgba(22, 8, 20, 0.95);
+  border-color: var(--color-notif-hover-border);
+  background: var(--color-notif-hover-bg);
 }
 .notif-out {
   animation: notifOut 0.3s ease-in forwards;
@@ -111,13 +112,13 @@ html, body {
 }
 .notif-close:hover {
   color: #fff;
-  background: rgba(196, 39, 111, 0.4);
+  background: var(--color-notif-close-hover-bg);
 }
 .notif-avatar {
   width: 48px;
   height: 48px;
   border-radius: 50%;
-  border: 2px solid rgba(196, 39, 111, 0.35);
+  border: 2px solid var(--color-notif-hover-border);
   object-fit: cover;
   flex-shrink: 0;
 }
@@ -128,7 +129,7 @@ html, body {
 .notif-name {
   font-size: 13px;
   font-weight: 700;
-  color: #f0a0c0;
+  color: var(--color-text-pink);
   margin-bottom: 4px;
 }
 .notif-msg {

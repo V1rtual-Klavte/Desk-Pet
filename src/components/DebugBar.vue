@@ -112,12 +112,12 @@ watch(sessionSafety, (v) => {
 .debug-bar {
   position: relative;
   z-index: 10;
-  background: #2a1020;
-  border-top: 1px solid #4a2540;
+  background: var(--color-surface-deep);
+  border-top: 1px solid var(--color-surface-dark);
   padding: 2px 6px;
   font-size: 10px;
-  font-family: "pixel-mplus", "zpix", monospace;
-  color: #c0a0b0;
+  font-family: var(--font-ui), monospace;
+  color: var(--color-debug-text);
   user-select: none;
   flex-shrink: 0;
 }
@@ -137,54 +137,54 @@ watch(sessionSafety, (v) => {
 }
 .db-tools {
   cursor: pointer;
-  color: #a0c0f0;
+  color: var(--color-debug-tool-text);
 }
 .db-tools:hover {
-  color: #c0e0ff;
+  color: var(--color-debug-tool-hover-text);
   text-decoration: underline;
 }
 .db-dim {
-  color: #706070;
+  color: var(--color-debug-dim-text);
   cursor: pointer;
 }
 .db-dim:hover {
-  color: #908090;
+  color: var(--color-debug-dim-hover-text);
 }
 .db-tool-list {
   margin-top: 2px;
   padding: 2px 4px;
-  background: #1a0810;
+  background: var(--color-surface-deepest);
   border-radius: 4px;
   max-height: 120px;
   overflow-y: auto;
 }
 .db-tool-item {
   padding: 1px 4px;
-  color: #a0c0f0;
+  color: var(--color-debug-tool-text);
   font-size: 9px;
   display: flex;
   gap: 6px;
 }
-.db-tool-item.src-mcp { color: #f0c060; }
-.db-tool-item.src-skill { color: #60f0a0; }
+.db-tool-item.src-mcp { color: var(--color-debug-mcp); }
+.db-tool-item.src-skill { color: var(--color-debug-skill); }
 .db-tool-empty {
-  color: #605060;
+  color: var(--color-debug-empty);
   padding: 2px 4px;
 }
 .db-tool-src {
-  color: #706070;
+  color: var(--color-debug-dim-text);
   font-size: 8px;
   min-width: 24px;
 }
 .db-thinking-select {
-  background: #1a0810;
-  border: 1px solid #4a2540;
+  background: var(--color-surface-deepest);
+  border: 1px solid var(--color-surface-dark);
   border-radius: 4px;
-  color: #c0a0b0;
+  color: var(--color-debug-text);
   font-size: 9px;
   font-family: inherit;
   padding: 1px 3px;
   cursor: pointer;
 }
-.db-thinking-select:focus { outline: none; border-color: #c4276f; }
+.db-thinking-select:focus { outline: none; border-color: var(--color-accent); }
 </style>
