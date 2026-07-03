@@ -1,12 +1,15 @@
 // ==========================================
-// 光标位置 & 弹窗位置计算
-// 共享光标/屏幕检测辅助函数，消除 get_cursor_position 和 compute_popup_position 间的重复代码
+// 光标位置 & 弹窗位置计算 & 光标追踪
+// 共享光标/屏幕检测辅助函数
 // ==========================================
 
+use std::thread;
+use std::time::Duration;
 use serde::Serialize;
-use tauri::Manager;
+use tauri::{Emitter, Manager};
 
 use crate::rust_debug;
+use crate::rust_info;
 use crate::rust_log;
 use crate::window::enhance_to_iterm_style;
 
@@ -178,4 +181,35 @@ pub fn compute_popup_position(app: tauri::AppHandle, win_w: i32, win_h: i32) -> 
         win_x, win_y, web_cx, web_cy, sx, sy, sw, sh);
 
     Ok(PopupPosition { win_x, win_y, cursor_x: web_cx, cursor_y: web_cy, scale_x, scale_y })
+}
+
+// ==========================================
+// 光标追踪 — 后台线程 ~60fps 推送光标坐标
+// ==========================================
+
+/// 启动光标追踪线程，每 ~16ms emit "deskpet-cursor-move" 事件
+pub fn spawn_cursor_tracker(app: tauri::AppHandle) {
+    thread::spawn(move || {
+        rust_info!("光标追踪线程已启动 (~60fps)");
+        loop {
+            // 获取光标位置（复用已有逻辑）
+            let pos = get_cursor_and_screen();
+            if let Ok((cx, cy, _sx, _sy, _sw, _sh, _scx, _scy)) = pos {
+                #[cfg(target_os = "macos")]
+                let web_y = cocoa_to_web_y(cy, _sy, _sh);
+                #[cfg(target_os = "windows")]
+                let web_y = cy;
+
+                let _ = app.emit("deskpet-cursor-move", CursorPosition {
+                    x: cx,
+                    y: web_y,
+                    screen_x: _sx,
+                    screen_y: _sy,
+                    screen_w: _sw,
+                    screen_h: _sh,
+                });
+            }
+            thread::sleep(Duration::from_millis(16));
+        }
+    });
 }

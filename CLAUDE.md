@@ -40,7 +40,7 @@ Desk-Pet/
 ├── CONFIG.yaml                  # 全局默认配置 (general/ai/tools/appearance)
 ├── CONFIG-DEV.yaml              # 本地开发配置 (不入 git)
 ├── .gitignore
-├── index.html / notification.html / settings.html
+├── index.html / notification.html / settings.html / layer-editor.html
 ├── vite.config.ts               # Vite + YAML 插件 + @ 别名
 ├── package.json / pnpm-lock.yaml
 │
@@ -72,15 +72,18 @@ Desk-Pet/
 ├── skills/                      # ★ Skill 文件目录 (3个内置Skill)
 │
 ├── src/                         # Vue 前端
-│   ├── main.ts / notification-main.ts / settings-main.ts / App.vue
+│   ├── main.ts / notification-main.ts / settings-main.ts / layer-editor-main.ts / App.vue
 │   ├── components/              # UI 组件
 │   │   ├── TitleBar.vue / StreamView.vue / ChatPanel.vue / SessionTabs.vue / SettingsPanel.vue / NotificationCard.vue
+│   │   ├── LayerEditor.vue       # ★ 图层编辑器弹窗（五层交互式编辑）
 │   │   ├── DebugBar.vue          # Debug 状态栏（嵌入 ChatPanel 底部）
 │   │   └── winsim/              # Windows 模拟器彩蛋
+│   ├── composables/             # ★ Vue Composables
+│   │   └── useParallax.ts       # 灵动图层引擎 v2（computed 直接映射，零惯性，指哪打哪；07-03 修复三重Bug）
 │   ├── services/
 │   │   ├── profile/              # ★ Profile 系统 (主题/角色/音效)
 │   │   │   ├── index.ts          # 统一导出
-│   │   │   ├── loader.ts         # Profile 懒加载+激活+CSS变量注入(18色→50+变量)
+│   │   │   ├── loader.ts         # Profile 懒加载+激活+CSS变量注入(18色→50+变量)+dirty flag 通知 StreamView
 │   │   │   └── io.ts             # 导入/导出(Zip)/删除
 │   │   ├── engine/              # ★ 核心引擎 (Phase 2)
 │   │   │   ├── index.ts         # 统一导出 (含 Slash 命令)

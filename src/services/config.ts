@@ -5,6 +5,8 @@
 // ==========================================
 
 import rawConfig from "../../CONFIG.yaml";
+import type { ParallaxLayerCfg } from "@/composables/useParallax";
+import { DEFAULT_LAYERS } from "@/composables/useParallax";
 
 // ── 类型定义（v2 6域结构）──
 
@@ -16,6 +18,9 @@ interface UserSettings {
   shortcutMacModifiers: string[];
   shortcutWinModifiers: string[];
   autoPopupOnMessage: boolean;
+  parallaxEnabled: boolean;
+  parallaxIntensity: number;
+  parallaxLayers: ParallaxLayerCfg[];
 }
 
 export interface BuiltinMcpServer {
@@ -115,6 +120,9 @@ const USER_DEFAULTS: UserSettings = {
   shortcutMacModifiers: cfg.general?.shortcut?.macModifiers || ["Control", "Command"],
   shortcutWinModifiers: cfg.general?.shortcut?.winModifiers || ["Control", "Alt"],
   autoPopupOnMessage: cfg.general?.popup?.autoPopupOnMessage ?? false,
+  parallaxEnabled: false,
+  parallaxIntensity: 1.0,
+  parallaxLayers: DEFAULT_LAYERS.map(l => ({ ...l })),
 };
 
 function loadUserOverrides(): UserSettings {
@@ -165,6 +173,12 @@ export const userConfig = {
   set shortcutWinModifiers(v: string[]) { const u = loadUserOverrides(); u.shortcutWinModifiers = v; _cache = u; saveUserOverrides(u); },
   get autoPopupOnMessage() { return getUser().autoPopupOnMessage; },
   set autoPopupOnMessage(v: boolean) { const u = loadUserOverrides(); u.autoPopupOnMessage = v; _cache = u; saveUserOverrides(u); },
+  get parallaxEnabled() { return getUser().parallaxEnabled; },
+  set parallaxEnabled(v: boolean) { const u = loadUserOverrides(); u.parallaxEnabled = v; _cache = u; saveUserOverrides(u); },
+  get parallaxIntensity() { return getUser().parallaxIntensity; },
+  set parallaxIntensity(v: number) { const u = loadUserOverrides(); u.parallaxIntensity = v; _cache = u; saveUserOverrides(u); },
+  get parallaxLayers() { return getUser().parallaxLayers; },
+  set parallaxLayers(v: ParallaxLayerCfg[]) { const u = loadUserOverrides(); u.parallaxLayers = v; _cache = u; saveUserOverrides(u); },
   getAll(): UserSettings { return { ...getUser() }; },
   setAll(s: Partial<UserSettings>) { const u = { ...loadUserOverrides(), ...s }; _cache = u; saveUserOverrides(u); },
   resetAll() { try { localStorage.removeItem(STORAGE_KEY); } catch {} _cache = null; },

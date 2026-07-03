@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import "./styles/fonts.css";
 import "./styles/global.css";
-import { ref, nextTick, onMounted, onUnmounted } from "vue";
+import { ref, nextTick, onMounted, onUnmounted, provide } from "vue";
 import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
 import { WebviewWindow } from "@tauri-apps/api/webviewWindow";
 import { LogicalPosition, LogicalSize } from "@tauri-apps/api/dpi";
@@ -32,6 +32,18 @@ const isWinSim = (() => {
 
 const showChat = ref(true);
 const winSize = ref({ w: 0, h: 0 });
+const cursorInWindow = ref<{ x: number; y: number } | null>(null);
+const globalCursor = ref<{ x: number; y: number } | null>(null);
+/** onMoved 追踪的最后已知窗口位置 */
+const lastMovedPos = ref<{ x: number; y: number } | null>(null);
+const isRetracted = ref(false);
+const isAnimating = ref(false);
+
+// ── Provide 给子组件（StreamView 灵动图层）──
+provide("globalCursor", globalCursor);
+provide("windowPos", lastMovedPos);
+provide("windowSize", winSize);
+provide("isRetracted", isRetracted);
 const streamRef = ref<InstanceType<typeof StreamView> | null>(null);
 const chatRef = ref<InstanceType<typeof ChatPanel> | null>(null);
 const tabsRef = ref<InstanceType<typeof SessionTabs> | null>(null);
@@ -40,7 +52,7 @@ const tabsRef = ref<InstanceType<typeof SessionTabs> | null>(null);
 const DIVIDER_KEY = "deskpet_divider_pos";
 const DEFAULT_CHAT_WIDTH = 220;
 const MIN_CHAT_WIDTH = 120;
-const MAX_CHAT_RATIO = 0.55; // 聊天面板最大占窗口55%
+const MAX_CHAT_RATIO = 0.55;
 
 function loadDividerPos(): number {
   try {
@@ -83,10 +95,9 @@ function onDividerMousedown(e: MouseEvent) {
 }
 
 function onChatSend(_text: string) {
-  // Slash 命令和表情切换现在由 ChatPanel 内部处理 (slash/ 系统)
+  // Slash 命令和表情切换现在由 ChatPanel 内部处理
 }
 
-/** 切换会话 */
 async function onSessionSwitch(session: { id: string; name: string }) {
   log.info("切换到会话:", session.id, session.name)
   try {
@@ -97,17 +108,14 @@ async function onSessionSwitch(session: { id: string; name: string }) {
   }
 }
 
-/** 新建会话 */
 async function onSessionNew() {
   await createNewSession();
-  // ★ 等待 Vue 处理完 chatHistory 清空，确保 UI 不会暂留旧数据
   await nextTick();
   tabsRef.value?.loadSessions();
   tabsRef.value?.refreshHistory();
   initWelcome("Pちゃん！你终于来了！今天也要一直在一起哦～♡");
 }
 
-/** × 关闭标签（只从列表移除，不删文件） */
 async function onSessionClose(sessionId: string) {
   removeSession(sessionId)
   const remaining = getSessions()
@@ -121,12 +129,10 @@ async function onSessionClose(sessionId: string) {
   tabsRef.value?.refreshHistory()
 }
 
-/** 🗑 历史面板删除文件 */
 async function onDeleteFile(filename: string) {
   console.log("[App] onDeleteFile:", filename)
   try {
     await MemoryService.deleteSessionFile(filename)
-    // 清理 chat.ts 列表
     let sid = ""
     const m = filename.match(/^(session-\d{8}-\d{6})-.+\.md$/)
     if (m) sid = m[1]
@@ -136,7 +142,6 @@ async function onDeleteFile(filename: string) {
     }
     if (sid) {
       removeSession(sid)
-      // ★ 如果删除的是当前活跃会话，切换到第一个剩余会话
       if (getActiveSessionId() === sid || getActiveSessionId() === "") {
         const remaining = getSessions()
         if (remaining.length > 0) {
@@ -157,13 +162,10 @@ async function onDeleteFile(filename: string) {
   }
 }
 
-/** 📂 历史面板恢复会话 */
 async function onRestoreSession(sf: SessionFileMeta) {
   console.log("[App] onRestoreSession:", sf.sessionId, sf.topic)
   try {
-    // 添加到 chat.ts
     addSession({ id: sf.sessionId, name: sf.topic || "已恢复", createdAt: sf.createdAt ? new Date(sf.createdAt).getTime() : Date.now(), messageCount: sf.rounds })
-    // 从文件加载消息
     const turns = await MemoryService.loadSessionMessages(sf.sessionId)
     if (turns && turns.length > 0) {
       const msgs = turns.map(t => {
@@ -172,7 +174,6 @@ async function onRestoreSession(sf: SessionFileMeta) {
       localStorage.setItem(`deskpet_chat_${sf.sessionId}`, JSON.stringify(msgs.slice(-200)))
       console.log("[App] 恢复消息:", msgs.length, "条")
     }
-    // ★ MemoryService.setActiveSession 由 switchToSession 内部调用，这里不重复
     await switchToSession(sf.sessionId)
     tabsRef.value?.loadSessions()
     tabsRef.value?.refreshHistory()
@@ -183,14 +184,12 @@ async function onRestoreSession(sf: SessionFileMeta) {
   }
 }
 
-/** 收到新消息时自动弹出（如果已收回） */
 function onRequestPopup() {
   if (isRetracted.value && !isAnimating.value) {
     handleShortcutToggle();
   }
 }
 
-/** 打开/聚焦设置窗口 */
 async function openSettings() {
   try {
     const existing = await WebviewWindow.getByLabel("settings");
@@ -210,37 +209,30 @@ async function openSettings() {
     alwaysOnTop: true,
     transparent: true,
   });
-  // 延迟调用，等 Tauri 完成 alwaysOnTop 设置后再覆盖为更高层级
   setTimeout(() => {
     invoke("enhance_settings_window").catch(() => {});
   }, 300);
 }
 
 let cleanupListener: (() => void) | null = null;
+let cleanupCursorTracker: (() => void) | null = null;
 let cleanupFocus: (() => void) | null = null;
 let cleanupMoved: (() => void) | null = null;
 let cleanupResized: (() => void) | null = null;
 let cleanupPreview: (() => void) | null = null;
 let cleanupSettingsSaved: (() => void) | null = null;
 let cleanupRestart: (() => void) | null = null;
-let cleanupExpression: (() => void) | null = null;
 
 // ==========================================
 // 快捷键召唤/收回
 // ==========================================
-const isRetracted = ref(false);
-const isAnimating = ref(false);
 const savedPos = ref<{ x: number; y: number } | null>(null);
 const rootRef = ref<HTMLElement | null>(null);
 const isDraggingByUser = ref(false);
-/** onMoved 追踪的最后已知窗口位置（和 setPosition 同一坐标系，避免 outerPosition 物理/逻辑坐标不一致） */
-const lastMovedPos = ref<{ x: number; y: number } | null>(null);
-/** 程序化 setSize 的目标值，onResized 回调中用它与实际尺寸对比，防止 DPI 取整反馈循环 */
+/** 程序化 setSize 的目标值 */
 const expectedSize = ref<{ w: number; h: number } | null>(null);
-/** 时间戳：在此之前的所有 resize 事件视为程序化（不保存），防止 DPI 取整反馈循环 */
 let ignoreResizeUntil = 0;
 
-/** Tauri onResized/onMoved/outerPosition 返回物理像素，需转逻辑坐标 */
 function toLogicalSize(p: { width: number; height: number }) {
   const dpr = window.devicePixelRatio || 1;
   return { w: Math.round(p.width / dpr), h: Math.round(p.height / dpr) };
@@ -250,7 +242,6 @@ function toLogicalPos(p: { x: number; y: number }) {
   return { x: Math.round(p.x / dpr), y: Math.round(p.y / dpr) };
 }
 
-/** 程序化设置窗口大小（记录目标值，1秒内 resize 事件全部忽略） */
 async function setWindowSize(w: number, h: number) {
   expectedSize.value = { w, h };
   ignoreResizeUntil = Date.now() + 3000;
@@ -258,18 +249,15 @@ async function setWindowSize(w: number, h: number) {
   await win.setSize(new LogicalSize(w, h));
 }
 
-/** 程序化设置窗口位置（显式记录 lastMovedPos，避免依赖异步 onMoved 事件时序） */
 async function setWindowPos(x: number, y: number) {
   lastMovedPos.value = { x, y };
-  ignoreResizeUntil = Date.now() + 3000; // 覆盖 DPI 切换触发的 resize
+  ignoreResizeUntil = Date.now() + 3000;
   const win = getCurrentWebviewWindow();
   await win.setPosition(new LogicalPosition(x, y));
 }
 
-/** 获取弹窗尺寸（用户设置优先，带合法性校验防止 DPI 污染数据扩散） */
 function getPopupSize(): { w: number; h: number } {
   const sz = userConfig.popupSize;
-  // 校验：超过屏幕 60% 或小于最小值视为污染数据，回退默认 730×450
   const maxW = Math.round((window.screen.availWidth || 1920) * 0.6);
   const maxH = Math.round((window.screen.availHeight || 1080) * 0.6);
   if (sz.w < 50 || sz.h < 50 || sz.w > maxW || sz.h > maxH) {
@@ -279,7 +267,6 @@ function getPopupSize(): { w: number; h: number } {
   return sz;
 }
 
-/** dock 点击或外部激活时：在光标所在屏幕中央弹出 */
 async function handleDockPopup() {
   if (isAnimating.value) return;
   isAnimating.value = true;
@@ -289,11 +276,9 @@ async function handleDockPopup() {
     const el = rootRef.value!;
     const sz = getPopupSize();
 
-    // 提前设 expectedSize + 时间窗口，保护 win.show() 触发的 resize 事件
     expectedSize.value = { w: sz.w, h: sz.h };
     ignoreResizeUntil = Date.now() + 3000;
 
-    // 覆盖为屏幕中央
     const { screen: scr } = window;
     const cx = Math.round((scr.availWidth - sz.w) / 2);
     const cy = Math.round((scr.availHeight - sz.h) / 2);
@@ -322,7 +307,6 @@ async function handleDockPopup() {
   } catch (e) {
     log.error("dock弹出失败", e);
   } finally {
-    // 延迟清除锁，等 setSize 触发的 resize 事件消化完（防止 DPI 尺寸漂移）
     setTimeout(() => { isAnimating.value = false; }, 500);
   }
 }
@@ -336,9 +320,7 @@ async function handleShortcutToggle() {
     const el = rootRef.value!;
 
     if (!isRetracted.value) {
-      // ── 收回（窗口可见 → 隐藏）──
       try {
-        // 用 onMoved 追踪的位置（和 setPosition 同一坐标系，避免 outerPosition 的物理/逻辑坐标不一致）
         if (lastMovedPos.value) {
           savedPos.value = { ...lastMovedPos.value };
         } else {
@@ -349,7 +331,6 @@ async function handleShortcutToggle() {
       } catch { /* ignore */ }
 
       const cursor = await invoke<{ x: number; y: number; screen_x: number; screen_y: number; screen_w: number; screen_h: number }>("get_cursor_position");
-      // 用 onMoved 追踪的位置，和 cursor 同一坐标系
       const curPos = lastMovedPos.value ?? toLogicalPos(await win.outerPosition());
       el.style.transformOrigin = `${cursor.x - curPos.x}px ${cursor.y - curPos.y}px`;
 
@@ -373,9 +354,7 @@ async function handleShortcutToggle() {
       playEventSound("retract");
       log.debug("已收回");
     } else {
-      // ── 弹出（窗口隐藏 → 可见）──
       const sz = getPopupSize();
-      // 提前设 expectedSize + 时间窗口，保护 win.show() 触发的 resize 事件
       expectedSize.value = { w: sz.w, h: sz.h };
       ignoreResizeUntil = Date.now() + 3000;
 
@@ -428,13 +407,12 @@ async function handleShortcutToggle() {
   } catch (e) {
     log.error("快捷键切换失败", e);
   } finally {
-    // 延迟清除锁，等 setSize 触发的 resize 事件消化完（防止 DPI 尺寸漂移）
     setTimeout(() => { isAnimating.value = false; }, 500);
   }
 }
 
 // ==========================================
-// 快捷键注册/注销（支持录制时暂时禁用）
+// 快捷键注册/注销
 // ==========================================
 let currentShortcutStr = "";
 
@@ -469,18 +447,13 @@ async function unregisterShortcut() {
 }
 
 // ==========================================
-// 右键菜单（仅复制）
+// 右键菜单
 // ==========================================
 const ctxMenu = ref<{ x: number; y: number; visible: boolean }>({ x: 0, y: 0, visible: false });
 
 function onContextMenu(e: MouseEvent) {
-  const sel = window.getSelection();
-  if (sel && sel.toString().trim()) {
-    e.preventDefault();
-    ctxMenu.value = { x: e.clientX, y: e.clientY, visible: true };
-  } else {
-    e.preventDefault();
-  }
+  e.preventDefault();
+  ctxMenu.value = { x: e.clientX, y: e.clientY, visible: true };
 }
 
 function copySelection() {
@@ -495,18 +468,21 @@ function hideCtxMenu() {
   ctxMenu.value.visible = false;
 }
 
+async function openDevTools() {
+  ctxMenu.value.visible = false;
+  invoke("open_devtools").catch(() => {});
+}
+
 // ==========================================
 // 生命周期
 // ==========================================
 onMounted(async () => {
   if (isWinSim) return;
 
-  // ── 从持久化配置恢复窗口尺寸和位置 ──
   const win = getCurrentWebviewWindow();
   const savedSize = getPopupSize();
   log.info("从配置恢复: size=", savedSize, "mode=", userConfig.popupMode, "fixedPos=", userConfig.fixedPosition);
 
-  // 5秒保护窗口：启动期间所有 resize 事件都视为程序化，不保存到 popupSize
   expectedSize.value = { w: savedSize.w, h: savedSize.h };
   ignoreResizeUntil = Date.now() + 5000;
 
@@ -516,13 +492,16 @@ onMounted(async () => {
     await win.setPosition(new LogicalPosition(fp.x, fp.y));
     lastMovedPos.value = { x: fp.x, y: fp.y };
   }
+  // 灵动图层：确保 lastMovedPos 有值
+  if (!lastMovedPos.value) {
+    const raw = await win.outerPosition();
+    lastMovedPos.value = toLogicalPos({ x: raw.x, y: raw.y });
+    log.debug("初始化 lastMovedPos:", lastMovedPos.value);
+  }
 
-  // ── 统一初始化（Memory + 人格 + 工具 + 会话扫描恢复 + Debug）──
   await initApp("Pちゃん！你终于来了！今天也要一直在一起哦～♡");
-  // ★ 同步 SessionTabs（SessionTabs mount 可能先于 init 完成）
   tabsRef.value?.loadSessions();
 
-  // 开发模式加载测试套件
   if (import.meta.env.DEV) {
     import("@/services/test").then(() => {
       log.info("🧪 测试套件已就绪 — 输入 __test.all() 运行所有测试")
@@ -537,8 +516,22 @@ onMounted(async () => {
   playEventSound("welcome");
   cleanupListener = await initWindowListener(streamRef, winSize);
 
-  // 全局快捷键（使用用户配置）
   await registerShortcut();
+
+  // 灵动图层：监听 Rust 光标追踪
+  try {
+    let evtCount = 0;
+    cleanupCursorTracker = await listen<{ x: number; y: number; screen_x: number; screen_y: number; screen_w: number; screen_h: number }>("deskpet-cursor-move", (event) => {
+      evtCount++;
+      globalCursor.value = { x: event.payload.x, y: event.payload.y };
+      if (evtCount % 120 === 0) {
+        log.debug(`光标追踪 #${evtCount} | 全局(${event.payload.x},${event.payload.y})`);
+      }
+    });
+    log.info("灵动图层光标追踪已就绪");
+  } catch (e) {
+    log.warn("灵动图层光标追踪注册失败", e);
+  }
 
   // Dock 点击
   try {
@@ -553,12 +546,11 @@ onMounted(async () => {
     log.warn("窗口聚焦监听失败", e);
   }
 
-  // 窗口拖动 → 只在用户拖拽时更新 lastMovedPos（程序化移动由 setWindowPos 显式设置）
+  // 窗口拖动
   try {
-    const win = getCurrentWebviewWindow();
-    cleanupMoved = await win.onMoved(({ payload: pos }) => {
+    const win2 = getCurrentWebviewWindow();
+    cleanupMoved = await win2.onMoved(({ payload: pos }) => {
       const lp = toLogicalPos({ x: pos.x, y: pos.y });
-      // 首次初始化 or 用户手动拖拽时更新
       if (isDraggingByUser.value || !lastMovedPos.value) {
         lastMovedPos.value = lp;
       }
@@ -568,13 +560,12 @@ onMounted(async () => {
     });
   } catch { /* ignore */ }
 
-  // 窗口缩放 → 用 expectedSize + 时间窗口双重判断程序化/用户缩放
+  // 窗口缩放
   try {
-    const win = getCurrentWebviewWindow();
-    cleanupResized = await win.onResized(({ payload: size }) => {
+    const win3 = getCurrentWebviewWindow();
+    cleanupResized = await win3.onResized(({ payload: size }) => {
       const sz = toLogicalSize(size);
       const exp = expectedSize.value;
-      // 程序化: 实际值与目标值接近（±5px）且仍在时间窗口内 → 忽略不保存
       const isProgrammatic = exp
         && Math.abs(sz.w - exp.w) <= 5
         && Math.abs(sz.h - exp.h) <= 5
@@ -583,7 +574,6 @@ onMounted(async () => {
         emit("deskpet-resized", exp).catch(() => {});
         return;
       }
-      // 用户手动拖边缩放：保存（但有上限安全校验）
       if (!isRetracted.value && !isAnimating.value && sz.w <= 4000 && sz.h <= 4000) {
         userConfig.popupSize = sz;
         emit("deskpet-resized", sz).catch(() => {});
@@ -592,7 +582,7 @@ onMounted(async () => {
     });
   } catch { /* ignore */ }
 
-  // 设置面板预览 → 接收目标尺寸并设置窗口（防止 DPI 反馈循环）
+  // 设置面板预览
   try {
     cleanupPreview = await listen<{ w: number; h: number }>("deskpet-preview-size", (event) => {
       setWindowSize(event.payload.w, event.payload.h);
@@ -600,7 +590,7 @@ onMounted(async () => {
     });
   } catch { /* ignore */ }
 
-  // 设置面板保存 → 清除主窗口的配置缓存（跨窗口同步）
+  // 设置面板保存
   try {
     cleanupSettingsSaved = await listen("deskpet-settings-saved", async () => {
       refreshUserCache();
@@ -612,11 +602,10 @@ onMounted(async () => {
     });
   } catch { /* ignore */ }
 
-  // 设置面板 → 请求重启应用
+  // 重启
   try {
     cleanupRestart = await listen("deskpet-restart", async () => {
       log.info("收到重启请求，正在退出...")
-      // 关闭所有窗口让应用退出（用户需手动重启）
       const { getAllWebviewWindows } = await import("@tauri-apps/api/webviewWindow")
       const windows = await getAllWebviewWindows()
       for (const w of windows) {
@@ -625,17 +614,8 @@ onMounted(async () => {
     })
   } catch { /* ignore */ }
 
-  // ── 人格效果事件：expression → StreamView 表情（实时，贯穿 AgentLoop）──
-  try {
-    cleanupExpression = await listen<{ expression: string }>("deskpet-expression", (event) => {
-      streamRef.value?.setExpression(event.payload.expression)
-    })
-  } catch { /* ignore */ }
-
-  // 点击任意位置关闭右键菜单
   document.addEventListener("click", hideCtxMenu);
 
-  // ── 用户手动拖动检测：只有手动拖动才保存位置 ──
   const rootEl = rootRef.value!;
   rootEl.addEventListener("mousedown", (e: MouseEvent) => {
     const t = e.target as HTMLElement;
@@ -657,13 +637,13 @@ onMounted(async () => {
 
 onUnmounted(() => {
   if (cleanupListener) cleanupListener();
+  if (cleanupCursorTracker) cleanupCursorTracker();
   if (cleanupFocus) cleanupFocus();
   if (cleanupMoved) cleanupMoved();
   if (cleanupResized) cleanupResized();
   if (cleanupPreview) cleanupPreview();
   if (cleanupSettingsSaved) cleanupSettingsSaved();
   if (cleanupRestart) cleanupRestart();
-  if (cleanupExpression) cleanupExpression();
   document.removeEventListener("click", hideCtxMenu);
   unregisterShortcut();
 });
@@ -678,7 +658,6 @@ onUnmounted(() => {
         <img id="bg" :src="getUiUrl('windows/operation_base.png')" alt="" />
         <StreamView ref="streamRef" />
       </div>
-      <!-- 可拖动分割线 -->
       <div
         id="divider"
         :class="{ dragging: isDraggingDivider }"
@@ -698,7 +677,6 @@ onUnmounted(() => {
       </div>
     </div>
 
-    <!-- 自定义右键菜单（仅复制） -->
     <Transition name="ctx-fade">
       <div
         v-if="ctxMenu.visible"
@@ -707,6 +685,7 @@ onUnmounted(() => {
         @click.stop
       >
         <button class="ctx-item" @click="copySelection">📋 复制</button>
+        <button class="ctx-item" @click="openDevTools">🔧 控制台</button>
       </div>
     </Transition>
   </div>

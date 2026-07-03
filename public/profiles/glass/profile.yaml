@@ -48,6 +48,14 @@ theme:
   shield:
     enabled: false
     image: ""
+  parallax:
+    intensity: 1.0
+    layers:
+      - { enabled: true, image: "materials/bg_base.png", sensitivity: 0.2, shadow: 0.25, brightness: 0.93, contrast: 0.96, saturate: 0.92 }
+      - { enabled: false, image: "", sensitivity: 0.5, shadow: 0.18, brightness: 0.95, contrast: 0.98, saturate: 0.95 }
+      - { enabled: true, image: "materials/body.png", sensitivity: 0.8, shadow: 0.12, brightness: 1.00, contrast: 1.00, saturate: 1.00 }
+      - { enabled: false, image: "", sensitivity: 1.2, shadow: 0.06, brightness: 1.02, contrast: 1.02, saturate: 1.05 }
+      - { enabled: true, image: "materials/shield_gold.png", sensitivity: 1.6, shadow: 0.03, brightness: 1.03, contrast: 1.03, saturate: 1.08 }
 
 # ── 音效 ──
 sound:

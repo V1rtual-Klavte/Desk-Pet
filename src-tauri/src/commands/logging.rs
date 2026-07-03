@@ -31,3 +31,12 @@ pub fn focus_main(app: tauri::AppHandle) -> Result<(), String> {
 // 触发用户通知中心），均无法在 macOS 未签名开发构建中正常工作。
 // 保留此注释作为占位，未来若 Apple 放开限制或 Tauri 提供新方案再议。
 // ═══════════════════════════════════════════════════════════════
+
+/// 打开主窗口 DevTools（调试用）
+#[tauri::command]
+pub fn open_devtools(app: tauri::AppHandle) -> Result<(), String> {
+    if let Some(w) = app.get_webview_window("main") {
+        w.open_devtools();
+    }
+    Ok(())
+}

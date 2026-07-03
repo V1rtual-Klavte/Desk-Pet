@@ -29,6 +29,35 @@ import { emit } from "@tauri-apps/api/event";
 const log = createLogger("Settings");
 const win = getCurrentWebviewWindow();
 
+// ── 灵动图层 ──
+const parallaxEnabled = ref(userConfig.parallaxEnabled);
+const parallaxIntensity = ref(userConfig.parallaxIntensity);
+
+async function openLayerEditor() {
+  try {
+    const existing = await WebviewWindow.getByLabel("layer-editor");
+    if (existing) {
+      await existing.setFocus();
+      return;
+    }
+  } catch { /* ignore */ }
+  const win = new WebviewWindow("layer-editor", {
+    url: "layer-editor.html",
+    title: "图层编辑器 - 糖糖桌宠",
+    width: 820,
+    height: 580,
+    resizable: true,
+    decorations: true,
+    alwaysOnTop: true,
+  });
+  setTimeout(async () => {
+    try { await win.setAlwaysOnTop(true); } catch {}
+    try { await win.setFocus(); } catch {}
+    const { invoke } = await import("@tauri-apps/api/core");
+    invoke("enhance_layer_editor_window").catch(() => {});
+  }, 300);
+}
+
 // ── Tab 控制 ──
 const tabs = [
   { id: "general", label: "🏠 通用", icon: "G" },
@@ -443,6 +472,8 @@ async function doSave() {
   userConfig.shortcutKey = recKey.value;
   if (isMacOS) userConfig.shortcutMacModifiers = recMods.value;
   else userConfig.shortcutWinModifiers = recMods.value;
+  userConfig.parallaxEnabled = parallaxEnabled.value;
+  userConfig.parallaxIntensity = parallaxIntensity.value;
 
   // 音效分配持久化
   saveSoundAssignments(assignments.value);
@@ -793,6 +824,24 @@ onUnmounted(() => {
             <div class="s-hint">一键切换配色方案，应用即时生效</div>
           </div>
 
+          <!-- 灵动图层 -->
+          <div class="s-section">
+            <div class="s-label">✨ 灵动图层（五层景深视差）</div>
+            <label class="s-toggle-row">
+              <span class="fn">启用景深视差</span>
+              <input type="checkbox" class="s-check" v-model="parallaxEnabled" />
+            </label>
+            <div class="fld" v-if="parallaxEnabled">
+              <span class="fn">视差强度</span>
+              <input type="range" class="inp-range" min="0" max="2" step="0.1" v-model.number="parallaxIntensity" />
+              <span class="range-val">{{ parallaxIntensity.toFixed(1) }}</span>
+            </div>
+            <div class="row-gap" style="margin-top:6px">
+              <button class="btn-s" style="background:rgba(196,39,111,0.2);border-color:rgba(196,39,111,0.4);color:#f0a0c0" @click="openLayerEditor()">🎨 打开图层编辑器</button>
+            </div>
+            <div class="s-hint">逐层调整素材、灵敏度、偏移、滤镜。图层编辑器以独立弹窗打开，级别高于设置窗。</div>
+          </div>
+
           <!-- Profile + 预览 -->
           <div class="s-section">
             <div class="s-label">📦 Profile</div>
@@ -800,7 +849,7 @@ onUnmounted(() => {
               <option v-for="p in profileList" :key="p.id" :value="p.id">{{ p.meta.name }} {{ p.meta.builtin ? '[内置]' : '[用户]' }}</option>
             </select>
             <div v-if="profileDetail" class="profile-preview">
-              <img :src="profileDetail.basePath + '/body.png'" class="preview-body" @error="($event.target as HTMLImageElement).style.display='none'" />
+              <img :src="profileDetail.basePath + '/materials/body.png'" class="preview-body" @error="($event.target as HTMLImageElement).style.display='none'" />
               <div class="preview-info">
                 <div class="preview-name">{{ profileDetail.meta.name }}</div>
                 <div class="preview-meta">角色: {{ profileDetail.character.name }} · {{ Object.keys(profileDetail.animations).length }}动画</div>
@@ -957,6 +1006,10 @@ select.inp{cursor:pointer}
 
 /* ── 颜色编辑（精简）── */
 .color-grid-simple{display:grid;grid-template-columns:repeat(auto-fill,minmax(155px,1fr));gap:3px}
+
+/* ── 灵动图层 ── */
+.inp-range{flex:1;height:4px;accent-color:var(--color-accent,#c4276f)}
+.range-val{width:32px;text-align:right;font-size:12px;color:var(--color-text-muted,#8a6080)}
 .color-row{display:flex;align-items:center;gap:3px}
 .color-label{font-size:9px;opacity:0.55;min-width:48px;text-align:right;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .color-picker{width:22px;height:20px;border:none;border-radius:3px;cursor:pointer;padding:0;background:none;flex-shrink:0}

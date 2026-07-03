@@ -426,13 +426,38 @@ playNotificationByBoundary();
 
 ```
 sugar-pink/                  # Profile 示例（内置3个: sugar-pink / dark-purple / glass）
-├── profile.yaml             # 主题色(18中文键) + 预设类型 + 字体 + 音效映射
+├── profile.yaml             # 主题色(18中文键) + 预设类型 + 字体 + 音效映射 + 灵动图层
 ├── character.yaml           # 角色动画帧定义 + 表情关键词规则
-├── body.png                 # 角色立绘
+├── body.png                 # 角色立绘（Layer 2 核心层）
+├── bg_base.png              # L0: 场景底背景（可选，缺失跳过）
+├── char_bg.png              # L1: 人物背景（可选）
+├── overlay_1.png            # L3: 覆盖层1（可选）
+├── overlay_2.png            # L4: 覆盖层2（可选）
 ├── frames/                  # 序列帧 PNG（自包含，无外部引用）
 ├── fonts/                   # 像素字体文件（可选，缺失回退默认）
 └── ui/                      # UI素材（可选，缺失回退默认）
 ```
+
+#### 灵动图层系统
+
+五层景深视差效果，各层跟随鼠标以不同灵敏度偏移。**v2: 直接映射（computed 响应式），零惯性指哪打哪**，无弹簧/速度/RAF 累积。
+
+| 层 | 素材 | 灵敏度 | 说明 |
+|----|------|:---:|------|
+| L0 底背景 | `ui/windows/operation_base.png` | 0.2 | 最远，偏移最少，阴影最重 |
+| L1 人物背景 | 无 | 0.5 | 光环/特效底座 |
+| L2 角色本体 | 帧序列 PNG | 0.8 | 核心层，帧动画，始终启用+锁定 |
+| L3 覆盖层1 | 无 | 1.2 | 前景光效/粒子 |
+| L4 覆盖层2 | `ui/windows/bg_stream_shield_gold.png` | 1.6 | 最近，偏移最多 |
+
+- **直接映射**: Vue `computed` 直接响应 `globalCursor` ref 变化，无需 RAF 循环
+- **五层始终渲染**: DOM 中 5 个 `div.pl-layer` 始终存在，`display:none` 由 `layerStyles` computed 控制
+- **3D 增强**: CSS `drop-shadow` + `brightness/contrast/saturate` 按深度调整
+- **配置**: `profile.yaml` → `theme.parallax`；设置页 → 全局开关+强度；**图层编辑器弹窗** → 逐层交互式编辑（拖拽位置/属性调整/锁定/隐藏）
+- **持久化**: 图层编辑器保存到 `localStorage` → `userConfig.parallaxLayers`
+- **核心文件**: `src/composables/useParallax.ts` (引擎 v2) + `StreamView.vue` (五层渲染 v5) + `src/components/LayerEditor.vue` (编辑器弹窗 v2)
+- **Rust**: `cursor.rs` → `spawn_cursor_tracker` 后台线程 ~60fps emit
+- **稳定性**: 2026-07-03 修复三重连环 Bug（死Computed/数组索引不触发响应式/冷启动时序竞态），详见 `docs/superpowers/specs/2026-07-02-parallax-layers-design.md`
 
 #### 内置 Profile
 
@@ -472,6 +497,7 @@ sugar-pink/                  # Profile 示例（内置3个: sugar-pink / dark-pu
   │     ├── character.yaml 加载失败? → 回退到 DEFAULT_BUILTIN("sugar-pink")
   │     └── 帧路径: 当前 profile 首选，缺失回退默认
   └── activateProfile(id) → injectFonts() + injectCssVars()
+        └── ★ 设置 localStorage "deskpet_parallax_dirty"=1 通知 StreamView 重载图层
 
 设置页打开 →
   ├── discoverAllProfiles()   # 扫描内置 + 用户(AppData) profile 列表
@@ -963,6 +989,7 @@ sessions/                      会话目录（唯一真相源）
 | Debug 状态栏 | ✅ | `DebugBar.vue` + `debug.ts` |
 | **Profile 主题系统** | ✅ | `profile/loader.ts`(懒加载+18色→50+CSS变量) + `io.ts`(导入导出) + Rust `profile_cmd.rs` |
 | **玻璃透明效果** | ✅ | Tauri `transparent:true` + CSS `backdrop-filter` + 全窗口半透明 |
+| **灵动图层视差** | ✅ | 五层景深 + 直接映射（computed） + 全局鼠标追踪 + 3D CSS 增强 + 设置页逐层配置 |
 
 ### Phase 3: 助手模式 ⚠️ 大部分完成
 

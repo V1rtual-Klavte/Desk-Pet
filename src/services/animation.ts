@@ -42,7 +42,7 @@ export function getAnimations(): Record<string, Animation> {
  */
 function getFallbackAnimations(): Record<string, Animation> {
   const profile = getActiveProfile();
-  const bodyUrl = profile ? `${profile.basePath}/body.png` : "/profiles/sugar-pink/body.png";
+  const bodyUrl = profile ? `${profile.basePath}/materials/body.png` : "/profiles/sugar-pink/materials/body.png";
   return {
     idle: {
       frames: [{ src: bodyUrl, duration: 3000 }],

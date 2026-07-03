@@ -12,18 +12,19 @@ use tauri::tray::{TrayIconBuilder, MouseButton, MouseButtonState, TrayIconEvent}
 use tauri::menu::{MenuBuilder, MenuItemBuilder};
 
 use crate::monitor::MonitorState;
-use crate::window::{create_main_window, enhance_settings_window};
+use crate::window::{create_main_window, enhance_settings_window, enhance_layer_editor_window};
 use crate::commands::{
     get_cursor_position, compute_popup_position,
     pause_monitor, resume_monitor, set_monitor_config,
     open_windows_sim, close_windows_sim,
-    log_message, focus_main,
+    log_message, focus_main, open_devtools,
     bash_exec, file_read, file_write, file_list,
     system_info, app_open, clipboard_read, clipboard_write,
     mcp_spawn, mcp_send, mcp_kill, McpPool,
     get_memory_dir, get_memory_file, get_session_file, init_memory_files,
     list_session_files, delete_session_file, file_delete,
-    get_profiles_dir, profile_file_write, profile_delete, list_user_profiles,
+    get_profiles_dir, profile_file_write, profile_delete, list_user_profiles, list_profile_files,
+    spawn_cursor_tracker,
 };
 
 // ==========================================
@@ -99,6 +100,9 @@ pub fn run() {
             // 启动窗口监控后台线程
             monitor::spawn_monitor_thread(app.handle().clone(), monitor_state_clone);
 
+            // 启动光标追踪后台线程 (灵动图层 ~60fps)
+            spawn_cursor_tracker(app.handle().clone());
+
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -111,7 +115,9 @@ pub fn run() {
             close_windows_sim,
             log_message,
             focus_main,
+            open_devtools,
             enhance_settings_window,
+            enhance_layer_editor_window,
             bash_exec,
             file_read,
             file_write,
@@ -134,6 +140,7 @@ pub fn run() {
             profile_file_write,
             profile_delete,
             list_user_profiles,
+            list_profile_files,
         ])
         .run(tauri::generate_context!())
         .expect("startup failure");
