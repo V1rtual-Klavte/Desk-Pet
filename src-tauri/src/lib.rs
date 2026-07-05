@@ -23,7 +23,7 @@ use crate::commands::{
     mcp_spawn, mcp_send, mcp_kill, McpPool,
     get_memory_dir, get_memory_file, get_session_file, init_memory_files,
     list_session_files, delete_session_file, file_delete,
-    get_profiles_dir, profile_file_write, profile_delete, list_user_profiles, list_profile_files,
+    get_profiles_dir, profile_file_write, profile_file_read, profile_delete, list_user_profiles, list_profile_files,
     spawn_cursor_tracker,
 };
 
@@ -138,6 +138,7 @@ pub fn run() {
             file_delete,
             get_profiles_dir,
             profile_file_write,
+            profile_file_read,
             profile_delete,
             list_user_profiles,
             list_profile_files,

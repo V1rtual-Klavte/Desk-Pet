@@ -4,6 +4,7 @@
 // ==========================================
 
 import { computed, type Ref } from "vue";
+import { userConfig } from "@/services/config";
 
 // ── 类型 ──
 
@@ -29,11 +30,11 @@ export interface ParallaxState {
 
 /** 默认五层配置 (L0→L4) */
 export const DEFAULT_LAYERS: ParallaxLayerCfg[] = [
-  { enabled: true,  image: "materials/bg_base.png",    sensitivity: 0.2, shadow: 0.25, brightness: 0.93, contrast: 0.96, saturate: 0.92, scale: 1.0, offsetX: 0, offsetY: 0, locked: false },
+  { enabled: true,  image: "materials/L0/bg_base.png",    sensitivity: 0.2, shadow: 0.25, brightness: 0.93, contrast: 0.96, saturate: 0.92, scale: 1.0, offsetX: 0, offsetY: 0, locked: false },
   { enabled: false, image: "",                          sensitivity: 0.5, shadow: 0.18, brightness: 0.95, contrast: 0.98, saturate: 0.95, scale: 1.0, offsetX: 0, offsetY: 0, locked: false },
-  { enabled: true,  image: "materials/body.png",        sensitivity: 0.8, shadow: 0.12, brightness: 1.00, contrast: 1.00, saturate: 1.00, scale: 1.0, offsetX: 0, offsetY: 0, locked: false },
+  { enabled: true,  image: "materials/L2/body.png",        sensitivity: 0.8, shadow: 0.12, brightness: 1.00, contrast: 1.00, saturate: 1.00, scale: 1.0, offsetX: 0, offsetY: 0, locked: false },
   { enabled: false, image: "",                          sensitivity: 1.2, shadow: 0.06, brightness: 1.02, contrast: 1.02, saturate: 1.05, scale: 1.0, offsetX: 0, offsetY: 0, locked: false },
-  { enabled: true,  image: "materials/shield_gold.png", sensitivity: 1.6, shadow: 0.03, brightness: 1.03, contrast: 1.03, saturate: 1.08, scale: 1.0, offsetX: 0, offsetY: 0, locked: false },
+  { enabled: true,  image: "materials/L4/shield_gold.png", sensitivity: 1.6, shadow: 0.03, brightness: 1.03, contrast: 1.03, saturate: 1.08, scale: 1.0, offsetX: 0, offsetY: 0, locked: false },
 ];
 
 export const DEFAULT_PARALLAX_STATE: ParallaxState = {
@@ -53,6 +54,11 @@ function lerp(a: number, b: number, t: number): number {
 
 function clamp(v: number, lo: number, hi: number): number {
   return v < lo ? lo : v > hi ? hi : v;
+}
+
+/** 图层深度 (0-1)，基于 sensitivity × intensity，和编辑器共用 */
+export function layerDepth(sensitivity: number, intensity: number = 1.0): number {
+  return clamp((sensitivity * intensity) / 1.6, 0, 1);
 }
 
 // ==========================================
@@ -105,15 +111,20 @@ export function useParallax(
 
       // ── 位置：直接映射，无惯性 ──
       const s = layer.sensitivity * intensity;
-      const maxTravel = s * 40;
-      const tx = (hasCursor ? nx * maxTravel : 0) + layer.offsetX;
-      const ty = (hasCursor ? ny * maxTravel : 0) + layer.offsetY;
-
+      // ★ maxTravel 按窗口宽度等比缩放
+      const maxTravel = s * 40 * (win.w / (userConfig.popupSize.w || 730));
+      // ★ offset 兜底：整数=旧像素，当场转百分比（兼容所有未迁移数据）
+      let ox = layer.offsetX;
+      let oy = layer.offsetY;
+      if (ox !== 0 && Number.isInteger(ox)) ox = +(ox / (win.w || 730) * 100).toFixed(2);
+      if (oy !== 0 && Number.isInteger(oy)) oy = +(oy / (win.h || 450) * 100).toFixed(2);
+      const px = (hasCursor ? nx * maxTravel : 0);
+      const py = (hasCursor ? ny * maxTravel : 0);
       // scale：层自定义缩放 × 深度缩放（越外层越小）
-      const depth = clamp(s / 1.6, 0, 1);
+      const depth = layerDepth(layer.sensitivity, intensity);
       const depthScale = lerp(1.02, 0.98, depth);
       const finalScale = (layer.scale ?? 1.0) * depthScale;
-      style.transform = `translate(${tx.toFixed(1)}px, ${ty.toFixed(1)}px) scale(${finalScale.toFixed(3)})`;
+      style.transform = `translate(calc(${ox}% + ${px.toFixed(1)}px), calc(${oy}% + ${py.toFixed(1)}px)) scale(${finalScale.toFixed(3)})`;
 
       // ── 滤镜：drop-shadow + brightness + contrast + saturate ──
       const so = depth * 10;

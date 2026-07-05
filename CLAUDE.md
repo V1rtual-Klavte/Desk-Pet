@@ -48,12 +48,15 @@ Desk-Pet/
 │   ├── sugar-pink/              # 内置: 糖糖粉 (粉色)
 │   │   ├── profile.yaml         # 主题色(18中文键) + 音效映射
 │   │   ├── character.yaml       # 角色动画帧 + 表情映射
-│   │   ├── body.png             # 角色立绘
+│   │   ├── materials/           # ★ 素材按层分目录 (L0-L4)
+│   │   │   ├── L0/ bg_base.png  # 底背景
+│   │   │   ├── L2/ body.png     # 角色立绘
+│   │   │   └── L4/ shield_gold.png # 覆盖层
 │   │   └── frames/              # 109 帧 PNG
 │   ├── dark-purple/             # 内置: 暗夜紫 (暗色)
 │   │   ├── profile.yaml
 │   │   ├── character.yaml
-│   │   ├── body.png
+│   │   ├── materials/           # 同上 L0/L2/L4
 │   │   └── frames/
 │   └── glass/                   # 内置: 透明玻璃 (毛玻璃效果)
 │       ├── profile.yaml
@@ -75,11 +78,12 @@ Desk-Pet/
 │   ├── main.ts / notification-main.ts / settings-main.ts / layer-editor-main.ts / App.vue
 │   ├── components/              # UI 组件
 │   │   ├── TitleBar.vue / StreamView.vue / ChatPanel.vue / SessionTabs.vue / SettingsPanel.vue / NotificationCard.vue
-│   │   ├── LayerEditor.vue       # ★ 图层编辑器弹窗（五层交互式编辑）
+│   │   ├── LayerEditor.vue       # ★ 图层编辑器弹窗（独立 webview 窗口）
+│   │   ├── LayerEditor.vue       # ★ 图层编辑器弹窗 v3（L0-L4分目录 + 先预览后写入 + 亚像素拖拽）
 │   │   ├── DebugBar.vue          # Debug 状态栏（嵌入 ChatPanel 底部）
 │   │   └── winsim/              # Windows 模拟器彩蛋
 │   ├── composables/             # ★ Vue Composables
-│   │   └── useParallax.ts       # 灵动图层引擎 v2（computed 直接映射，零惯性，指哪打哪；07-03 修复三重Bug）
+│   │   └── useParallax.ts       # 灵动图层引擎 v3（百分比 offset + calc() 自适应 + 整数检测自动迁移旧数据）
 │   ├── services/
 │   │   ├── profile/              # ★ Profile 系统 (主题/角色/音效)
 │   │   │   ├── index.ts          # 统一导出
@@ -289,6 +293,7 @@ Dock点击 → onFocusChanged → handleDockPopup() → 屏幕中央淡入
 - **人格模块通过 `@/services/personality` 统一导入**
 - **工具模块通过 `@/services/tool` 统一导入**
 - **引擎模块通过 `@/services/engine` 统一导入**
+- **灵动图层通过 `@/composables/useParallax` 统一导入（含 `layerDepth`）**
 - 全局冷却/并发锁走 `cooldown.ts`
 - 平台检测走 `@/services/env`
 - **配置走 `@/services/config`**，不在模块里写死常量

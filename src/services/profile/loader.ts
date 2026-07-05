@@ -130,13 +130,14 @@ async function loadProfile(id: string): Promise<ProfileData> {
   const rawProfile = await fetchYaml<any>(`${basePath}/profile.yaml`);
 
   let rawChar: any;
+  let charBasePath = basePath; // ★ 帧素材实际所在 Profile（可能回退到默认）
   try {
     rawChar = await fetchYaml<any>(`${basePath}/character.yaml`);
   } catch {
-    rawChar = await fetchYaml<any>(`/profiles/${DEFAULT_BUILTIN}/character.yaml`);
+    charBasePath = `/profiles/${DEFAULT_BUILTIN}`;
+    rawChar = await fetchYaml<any>(`${charBasePath}/character.yaml`);
   }
-
-  const resolveFramePath = (f: string) => `${basePath}/${f}`;
+  const resolveFramePath = (f: string) => `${charBasePath}/${f}`;
 
   const animations: Record<string, AnimDef> = {};
   if (rawChar?.animations) {
@@ -169,7 +170,7 @@ async function loadProfile(id: string): Promise<ProfileData> {
         intensity: rawProfile?.theme?.parallax?.intensity ?? 1.0,
         layers: (rawProfile?.theme?.parallax?.layers || []).map((l: any, i: number) => ({
           enabled: l?.enabled ?? (i === 2),
-          image: l?.image ?? (i === 2 ? "materials/body.png" : ""),
+          image: l?.image ?? (i === 2 ? "materials/L2/body.png" : ""),
           sensitivity: l?.sensitivity ?? [0.2, 0.5, 0.8, 1.2, 1.6][i],
           shadow: l?.shadow ?? [0.25, 0.18, 0.12, 0.06, 0.03][i],
           brightness: l?.brightness ?? [0.93, 0.95, 1.00, 1.02, 1.03][i],
@@ -399,8 +400,8 @@ export function isProfilesLoaded(): boolean { return loaded; }
 
 export function getBodyUrl(profile?: ProfileData): string {
   const p = profile || getActiveProfile();
-  if (!p) return `/profiles/${DEFAULT_BUILTIN}/materials/body.png`;
-  return `${p.basePath}/materials/body.png`;
+  if (!p) return `/profiles/${DEFAULT_BUILTIN}/materials/L2/body.png`;
+  return `${p.basePath}/materials/L2/body.png`;
 }
 
 export function getCharacterScale(): number {

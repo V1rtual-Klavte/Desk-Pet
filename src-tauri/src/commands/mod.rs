@@ -22,4 +22,4 @@ pub use tool_exec::{
 pub use mcp_bridge::{mcp_spawn, mcp_send, mcp_kill};
 pub(crate) use mcp_bridge::McpPool;
 pub use memory_cmd::{get_memory_dir, get_memory_file, get_session_file, init_memory_files, list_session_files, delete_session_file, file_delete};
-pub use profile_cmd::{get_profiles_dir, profile_file_write, profile_delete, list_user_profiles, list_profile_files};
+pub use profile_cmd::{get_profiles_dir, profile_file_write, profile_file_read, profile_delete, list_user_profiles, list_profile_files};

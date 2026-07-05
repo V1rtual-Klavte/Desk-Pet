@@ -214,6 +214,26 @@ async function openSettings() {
   }, 300);
 }
 
+async function openLayerEditor() {
+  try {
+    const existing = await WebviewWindow.getByLabel("layer-editor");
+    if (existing) { await existing.setFocus(); return; }
+  } catch { /* ignore */ }
+  new WebviewWindow("layer-editor", {
+    url: "layer-editor.html",
+    title: "图层编辑器 - 糖糖桌宠",
+    width: 820,
+    height: 580,
+    resizable: true,
+    decorations: true,
+    alwaysOnTop: true,
+  });
+  setTimeout(async () => {
+    try { const w = await WebviewWindow.getByLabel("layer-editor"); await w.setAlwaysOnTop(true); await w.setFocus(); } catch {}
+    invoke("enhance_layer_editor_window").catch(() => {});
+  }, 300);
+}
+
 let cleanupListener: (() => void) | null = null;
 let cleanupCursorTracker: (() => void) | null = null;
 let cleanupFocus: (() => void) | null = null;
@@ -652,7 +672,7 @@ onUnmounted(() => {
 <template>
   <WinSim v-if="isWinSim" />
   <div v-else id="root" ref="rootRef" @contextmenu="onContextMenu">
-    <TitleBar :height="30" title="配信中" @toggle-chat="showChat = !showChat" @toggle-settings="openSettings" />
+    <TitleBar :height="30" title="配信中" @toggle-chat="showChat = !showChat" @toggle-settings="openSettings" @toggle-layer-editor="openLayerEditor" />
     <div id="body">
       <div id="stream-col">
         <img id="bg" :src="getUiUrl('windows/operation_base.png')" alt="" />

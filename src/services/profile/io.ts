@@ -17,7 +17,7 @@ const log = createLogger("ProfileIO");
 const PROFILE_FILES = [
   "profile.yaml",
   "character.yaml",
-  "materials/body.png",
+  "materials/L2/body.png",
   "preview.png",   // 可选
 ];
 
@@ -227,7 +227,7 @@ export async function importProfileZip(file: File): Promise<ImportResult> {
   try {
     const zip = await JSZip.loadAsync(file);
     const profileYaml = zip.file("profile.yaml");
-    const bodyPng = zip.file("materials/body.png");
+    const bodyPng = zip.file("materials/L2/body.png");
 
     if (!profileYaml) {
       return { success: false, error: "缺少 profile.yaml" };

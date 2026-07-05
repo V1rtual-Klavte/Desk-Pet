@@ -21,6 +21,7 @@ pub fn get_profiles_dir() -> Result<String, String> {
 }
 
 /// 写入 profile 文件（自动创建父目录）
+/// dev 模式下同时同步到 public/profiles 以形成闭包（Vite 开发服务器可加载）
 #[tauri::command]
 pub fn profile_file_write(
     profile_id: String,
@@ -41,7 +42,59 @@ pub fn profile_file_write(
         fs::create_dir_all(parent).map_err(|e| format!("创建目录失败: {e}"))?;
     }
     fs::write(&file_path, &content).map_err(|e| format!("写入文件失败: {e}"))?;
+
+    // ★ dev 模式：同步拷贝到 public/profiles/ 以形成闭包
+    //   生产模式下 Tauri 自定义协议自行处理路径解析，无需此步骤
+    if let Ok(cargo_manifest) = std::env::var("CARGO_MANIFEST_DIR") {
+        let public_dir = std::path::PathBuf::from(&cargo_manifest)
+            .parent()
+            .unwrap_or(&std::path::PathBuf::from(&cargo_manifest))
+            .join("public")
+            .join("profiles")
+            .join(&profile_id)
+            .join(&relative_path);
+        if let Some(parent) = public_dir.parent() {
+            fs::create_dir_all(parent).map_err(|e| format!("创建 public 目录失败: {e}"))?;
+        }
+        fs::write(&public_dir, &content).map_err(|e| format!("同步到 public/ 失败: {e}"))?;
+    }
+
     Ok(())
+}
+
+/// 读取 profile 文件（先查 AppData，再查内置/public/）
+#[tauri::command]
+pub fn profile_file_read(
+    profile_id: String,
+    relative_path: String,
+    app: tauri::AppHandle,
+) -> Result<Vec<u8>, String> {
+    // 1. 用户 profile (AppData)
+    let user_path = get_app_data_dir()?.join("profiles").join(&profile_id).join(&relative_path);
+    if user_path.exists() {
+        return fs::read(&user_path).map_err(|e| format!("读取失败: {e}"));
+    }
+    // 2. 内置 profile (资源目录)
+    if let Ok(resource_dir) = app.path().resource_dir() {
+        let builtin_path = resource_dir.join("profiles").join(&profile_id).join(&relative_path);
+        if builtin_path.exists() {
+            return fs::read(&builtin_path).map_err(|e| format!("读取失败: {e}"));
+        }
+    }
+    // 3. dev 模式: public/profiles/
+    if let Ok(cargo_manifest) = std::env::var("CARGO_MANIFEST_DIR") {
+        let dev_path = std::path::PathBuf::from(&cargo_manifest)
+            .parent()
+            .unwrap_or(&std::path::PathBuf::from(&cargo_manifest))
+            .join("public")
+            .join("profiles")
+            .join(&profile_id)
+            .join(&relative_path);
+        if dev_path.exists() {
+            return fs::read(&dev_path).map_err(|e| format!("读取失败: {e}"));
+        }
+    }
+    Err(format!("文件不存在: {}/{}", profile_id, relative_path))
 }
 
 /// 删除用户 profile 目录
@@ -75,6 +128,9 @@ pub fn list_user_profiles() -> Result<Vec<String>, String> {
 
 /// 递归列出目录中所有图片文件的相对路径
 fn list_image_files(dir: &PathBuf) -> Result<Vec<String>, String> {
+    if !dir.exists() {
+        return Ok(vec![]);
+    }
     let mut files = Vec::new();
     list_files_recursive(dir, dir, &mut files)?;
     files.sort();
@@ -102,29 +158,91 @@ fn list_files_recursive(base: &PathBuf, current: &PathBuf, files: &mut Vec<Strin
     Ok(())
 }
 
-/// 列出 profile 中所有图片素材（用户 profile / 内置 profile）
+/// 列出 profile 中所有图片素材（合并用户 + 内置来源）
+/// subdir: 可选子目录过滤（如 "materials/L2"）
 #[tauri::command]
-pub fn list_profile_files(profile_id: String, app: tauri::AppHandle) -> Result<Vec<String>, String> {
-    // 1. 用户 profile (AppData)
+pub fn list_profile_files(profile_id: String, subdir: Option<String>, app: tauri::AppHandle) -> Result<Vec<String>, String> {
+    let prefix = subdir.as_ref().map(|s| {
+        let trimmed = s.trim_matches('/');
+        if trimmed.is_empty() { None } else { Some(format!("{}/", trimmed)) }
+    }).flatten();
+
+    let mut all_files = Vec::new();
+
+    // 收集内置 profile 的素材
+    let builtin_files = list_builtin_profile_images(&profile_id, &app, &prefix);
+    if let Ok(ref files) = builtin_files {
+        all_files.extend(files.clone());
+    }
+
+    // 收集用户 profile (AppData) 的素材
     let user_dir = get_app_data_dir()?.join("profiles").join(&profile_id);
     if user_dir.exists() {
-        return list_image_files(&user_dir);
+        if let Ok(ref files) = list_image_files_filtered(&user_dir, &prefix) {
+            for f in files {
+                if !all_files.contains(f) {
+                    all_files.push(f.clone());
+                }
+            }
+        }
     }
-    // 2. 内置 profile (资源目录)
+
+    // 内置回退（如果没有用户目录）
+    if all_files.is_empty() {
+        if let Ok(ref files) = builtin_files {
+            all_files.extend(files.clone());
+        }
+    }
+
+    all_files.sort();
+    if all_files.is_empty() {
+        Err(format!("Profile '{}' 未找到素材", profile_id))
+    } else {
+        Ok(all_files)
+    }
+}
+
+fn list_builtin_profile_images(profile_id: &str, app: &tauri::AppHandle, prefix: &Option<String>) -> Result<Vec<String>, String> {
+    let mut files = Vec::new();
+
+    // 资源目录
     if let Ok(resource_dir) = app.path().resource_dir() {
-        let builtin_dir = resource_dir.join("profiles").join(&profile_id);
+        let builtin_dir = resource_dir.join("profiles").join(profile_id);
         if builtin_dir.exists() {
-            return list_image_files(&builtin_dir);
+            if let Ok(ref f) = list_image_files_filtered(&builtin_dir, prefix) {
+                files.extend(f.clone());
+            }
         }
     }
-    // 3. dev 模式: public/profiles/ (项目根)
+
+    // dev 模式: public/profiles/
     if let Ok(cargo_manifest) = std::env::var("CARGO_MANIFEST_DIR") {
-        let dev_dir = PathBuf::from(&cargo_manifest).parent().unwrap_or(&PathBuf::from(&cargo_manifest)).join("public").join("profiles").join(&profile_id);
+        let dev_dir = std::path::PathBuf::from(&cargo_manifest)
+            .parent()
+            .unwrap_or(&std::path::PathBuf::from(&cargo_manifest))
+            .join("public")
+            .join("profiles")
+            .join(profile_id);
         if dev_dir.exists() {
-            return list_image_files(&dev_dir);
+            if let Ok(ref f) = list_image_files_filtered(&dev_dir, prefix) {
+                for f_item in f {
+                    if !files.contains(f_item) {
+                        files.push(f_item.clone());
+                    }
+                }
+            }
         }
     }
-    Err(format!("Profile '{profile_id}' 未找到"))
+
+    Ok(files)
+}
+
+fn list_image_files_filtered(dir: &PathBuf, prefix: &Option<String>) -> Result<Vec<String>, String> {
+    let all = list_image_files(dir)?;
+    match prefix {
+        Some(p) => Ok(all.into_iter().filter(|f| f.starts_with(p.as_str())).collect()),
+        None => Ok(all),
+    }
 }
 
 fn dirs_next() -> Option<PathBuf> {

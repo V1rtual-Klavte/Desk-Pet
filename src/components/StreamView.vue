@@ -5,11 +5,9 @@
 // ==========================================
 
 import { ref, computed, onMounted, onUnmounted, inject, type Ref } from "vue";
-import { WebviewWindow } from "@tauri-apps/api/webviewWindow";
-import { invoke } from "@tauri-apps/api/core";
 import { getCharacterScaleMode, getActiveProfile } from "@/services/profile";
 import { useParallax, DEFAULT_PARALLAX_STATE, type ParallaxState } from "@/composables/useParallax";
-import { userConfig } from "@/services/config";
+import { userConfig, refreshUserCache } from "@/services/config";
 import { createLogger } from "@/services/logger";
 
 const log = createLogger("Stream");
@@ -76,15 +74,19 @@ function reloadParallax() {
     return;
   }
 
+  refreshUserCache();
   parallaxConfig.value.enabled = userConfig.parallaxEnabled;
   parallaxConfig.value.intensity = userConfig.parallaxIntensity;
 
   let uLayers: any[] | null = null;
-  try {
-    const raw = localStorage.getItem("deskpet_parallax_layers");
-    if (raw) uLayers = JSON.parse(raw);
-  } catch {}
-  if (!uLayers) uLayers = userConfig.parallaxLayers;
+  // ★ 优先读 userConfig（持久化在 deskpet_user_settings），旧 key 为兼容回退
+  uLayers = userConfig.parallaxLayers;
+  if (!uLayers || uLayers.length === 0) {
+    try {
+      const raw = localStorage.getItem("deskpet_parallax_layers");
+      if (raw) uLayers = JSON.parse(raw);
+    } catch {}
+  }
 
   const pLayers = p.theme.parallax.layers;
   const newLayers: typeof parallaxConfig.value.layers = [];
@@ -94,11 +96,21 @@ function reloadParallax() {
       ? { ...DEFAULT_PARALLAX_STATE.layers[i], ...pLayer }
       : { ...DEFAULT_PARALLAX_STATE.layers[i] };
     const uLayer = uLayers?.[i];
-    // 用户覆盖优先，但过滤旧路径
-    const merged = uLayer ? { ...base, ...uLayer } : { ...base };
-    if (merged.image && (merged.image.includes("ui/") || merged.image === "body.png")) {
-      merged.image = base.image;
-    }
+        // 用户覆盖优先，向后兼容旧扁平路径 → 新 L{i}/ 结构
+        const merged = uLayer ? { ...base, ...uLayer } : { ...base };
+        if (merged.image && !merged.image.includes("/L") && merged.image.startsWith("materials/")) {
+          const filename = merged.image.split("/").pop() || "";
+          const LAYER_MIGRATION: Record<string, string> = { "bg_base.png": "L0", "body.png": "L2", "shield_gold.png": "L4" };
+          if (filename && LAYER_MIGRATION[filename]) {
+            merged.image = `materials/${LAYER_MIGRATION[filename]}/${filename}`;
+          } else {
+            merged.image = base.image;
+          }
+        }
+        // ★ 向后兼容：整数=旧像素 → 百分比（拖拽产生小数，默认0不动）
+        if (merged.offsetX !== 0 && Number.isInteger(merged.offsetX)) { const oldOX = merged.offsetX; merged.offsetX = +(merged.offsetX / (userConfig.popupSize.w || 730) * 100).toFixed(2); console.log("[StreamView] offset迁移 L"+i+": "+oldOX+"px → "+merged.offsetX+"%"); }
+        if (merged.offsetY !== 0 && Number.isInteger(merged.offsetY)) { const oldOY = merged.offsetY; merged.offsetY = +(merged.offsetY / (userConfig.popupSize.h || 450) * 100).toFixed(2); console.log("[StreamView] offset迁移 L"+i+" Y: "+oldOY+"px → "+merged.offsetY+"%"); }
+
     newLayers.push(merged);
   }
   newLayers[2].enabled = true;
@@ -126,34 +138,10 @@ onUnmounted(() => {
   if (_reloadRetryId) clearTimeout(_reloadRetryId);
 });
 
-// ── 图层编辑器快速入口 ──
-async function openLayerEditor() {
-  try {
-    const existing = await WebviewWindow.getByLabel("layer-editor");
-    if (existing) { await existing.setFocus(); return; }
-  } catch { /* ignore */ }
-  const win = new WebviewWindow("layer-editor", {
-    url: "layer-editor.html",
-    title: "图层编辑器 - 糖糖桌宠",
-    width: 820,
-    height: 580,
-    resizable: true,
-    decorations: true,
-    alwaysOnTop: true,
-  });
-  // 确保层级 + 聚焦
-  setTimeout(async () => {
-    try { await win.setAlwaysOnTop(true); } catch {}
-    try { await win.setFocus(); } catch {}
-    invoke("enhance_layer_editor_window").catch(() => {});
-  }, 300);
-}
 </script>
 
 <template>
-  <div id="parallax-stage">
-    <button class="layer-edit-btn" @click="openLayerEditor" title="编辑五层图层">🎨</button>
-
+  <div id="parallax-stage" :style="{ aspectRatio: userConfig.popupSize.w + '/' + userConfig.popupSize.h }">
     <!-- 五层始终渲染，display 由 layerStyles 控制 -->
     <template v-for="i in 5" :key="i">
       <div
@@ -180,30 +168,13 @@ async function openLayerEditor() {
   display: flex;
   align-items: center;
   justify-content: center;
+  align-self: center;
   position: relative;
   overflow: hidden;
   z-index: 1;
 }
-.layer-edit-btn {
-  position: absolute;
-  top: 6px; right: 6px;
-  z-index: 100;
-  padding: 2px 7px;
-  font-size: 12px;
-  border-radius: 4px;
-  border: 1px solid rgba(255,255,255,0.15);
-  background: rgba(0,0,0,0.35);
-  color: rgba(255,255,255,0.5);
-  cursor: pointer;
-  font-family: inherit;
-  transition: all 0.15s;
-  line-height: 1;
-}
-.layer-edit-btn:hover {
-  background: rgba(196,39,111,0.25);
-  border-color: rgba(196,39,111,0.4);
-  color: #f0a0c0;
-}
+/* ★ aspect-ratio 由 JS 动态绑定 :style 注入，锁定与编辑器一致的宽高比 */
+
 .pl-layer {
   position: absolute;
   display: flex;

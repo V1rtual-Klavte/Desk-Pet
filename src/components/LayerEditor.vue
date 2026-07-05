@@ -10,7 +10,7 @@ import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
 import { invoke } from "@tauri-apps/api/core";
 import { initProfiles, getActiveProfile, type ProfileData } from "@/services/profile";
 import { userConfig } from "@/services/config";
-import { DEFAULT_LAYERS, LAYER_NAMES, type ParallaxLayerCfg } from "@/composables/useParallax";
+import { DEFAULT_LAYERS, LAYER_NAMES, layerDepth, type ParallaxLayerCfg } from "@/composables/useParallax";
 import { createLogger } from "@/services/logger";
 
 const log = createLogger("LayerEditor");
@@ -48,6 +48,7 @@ const showPicker = ref(false);
 const assetList = ref<string[]>([]);
 const assetLoading = ref(false);
 const pickerPreview = ref("");
+const fileInput = ref<HTMLInputElement | null>(null);
 
 const selectedLayer = computed(() => layers.value[selectedIndex.value]);
 const isL2 = computed(() => selectedIndex.value === 2);
@@ -87,15 +88,31 @@ async function initFromStorage() {
       return;
     }
     console.log(`[LayerEditor] Profile: ${p.id} basePath=${p.basePath}`);
-    console.log(`[LayerEditor] uLayers:`, userConfig.parallaxLayers);
+
+    // ★ 优先读 deskpet_parallax_layers（编辑器自己写的），回退到 userConfig.parallaxLayers
+    let uLayers = null;
+    try {
+      const raw = localStorage.getItem("deskpet_parallax_layers");
+      if (raw) uLayers = JSON.parse(raw);
+    } catch {}
+    if (!uLayers) uLayers = userConfig.parallaxLayers;
+    console.log(`[LayerEditor] uLayers:`, uLayers);
 
     for (let i = 0; i < 5; i++) {
       const pLayer = p.theme.parallax.layers?.[i];
       const base = pLayer
         ? { ...DEFAULT_LAYERS[i], ...pLayer }
         : { ...DEFAULT_LAYERS[i] };
-      const uLayer = userConfig.parallaxLayers?.[i];
+      const uLayer = uLayers?.[i];
       layers.value[i].config = uLayer ? { ...base, ...uLayer } : { ...base };
+      // ★ 版本迁移：整数=旧像素，小数=新百分比（拖拽产生小数）
+      const cfg = layers.value[i].config;
+      if (cfg.offsetX !== 0 && Number.isInteger(cfg.offsetX)) {
+        cfg.offsetX = +(cfg.offsetX / userConfig.popupSize.w * 100).toFixed(2);
+      }
+      if (cfg.offsetY !== 0 && Number.isInteger(cfg.offsetY)) {
+        cfg.offsetY = +(cfg.offsetY / userConfig.popupSize.h * 100).toFixed(2);
+      }
       refreshLayerUrl(i);
       console.log(`[LayerEditor] L${i}: url="${layers.value[i].url}" image="${layers.value[i].config.image}"`);
     }
@@ -129,7 +146,7 @@ function onImgError(i: number, e: Event) {
     const fb = "/profiles/sugar-pink";
     // 用当前层的 image 配置尝试回退
     const lImg = layers.value[i].config.image;
-    const fbUrl = lImg ? `${fb}/${lImg}` : `${fb}/materials/body.png`;
+    const fbUrl = lImg ? `${fb}/${lImg}` : `${fb}/materials/L2/body.png`;
     console.warn(`[LayerEditor] L${i} 尝试回退: ${fbUrl}`);
     img.src = fbUrl;
     img.style.display = "";
@@ -167,12 +184,13 @@ function onPointerDown(index: number, e: PointerEvent) {
 
 function onPointerMove(e: PointerEvent) {
   if (!dragActive) return;
-  const dx = Math.round(e.clientX - dragSX);
-  const dy = Math.round(e.clientY - dragSY);
+  const dx = e.clientX - dragSX;  // ★ 不取整，保留亚像素精度，消除摇杆手感
+  const dy = e.clientY - dragSY;
   const l = layers.value[dragLayerIdx];
-  l.config.offsetX = dragLX + dx;
-  l.config.offsetY = dragLY + dy;
-  dragHint.value = l.name + " → (" + l.config.offsetX + ", " + l.config.offsetY + ")";
+  // ★ canvas 拖拽增量 → 百分比（自适应任意窗口尺寸）
+  l.config.offsetX = dragLX + dx / canvasSize.value.w * 100;
+  l.config.offsetY = dragLY + dy / canvasSize.value.h * 100;
+  dragHint.value = l.name + " → (" + l.config.offsetX.toFixed(1) + "%, " + l.config.offsetY.toFixed(1) + "%)";
 }
 
 function onPointerUp(e: PointerEvent) {
@@ -217,35 +235,53 @@ function resetLayer() {
 }
 
 // ── 素材上传/移除 ──
+let _uploadTargetLayer = -1;
 function uploadImage() {
-  const i = selectedIndex.value;
-  const input = document.createElement("input");
-  input.type = "file";
-  input.accept = "image/png,image/jpg,image/jpeg,image/gif,image/webp";
-  input.onchange = async () => {
-    const file = input.files?.[0];
-    if (!file) return;
-    uploading.value = i;
-    try {
-      const buf = await file.arrayBuffer();
-      const bytes = Array.from(new Uint8Array(buf));
-      const fileName = `layer_${i}_${Date.now()}.png`;
-      const relativePath = `materials/${fileName}`;
-      await invoke("profile_file_write", {
-        profileId: profile.value!.id,
-        relativePath,
-        content: bytes,
-      });
-      layers.value[i].config.image = relativePath;
-      refreshLayerUrl(i);
-      log.info(`上传完成: ${relativePath}`);
-    } catch (e: any) {
-      log.error("上传失败:", e);
-    } finally {
-      uploading.value = null;
-    }
-  };
-  input.click();
+  _uploadTargetLayer = selectedIndex.value;
+  fileInput.value?.click();
+}
+function onFileSelected(e: Event) {
+  const i = _uploadTargetLayer;
+  if (i < 0) return;
+  const input = e.target as HTMLInputElement;
+  const file = input.files?.[0];
+  if (!file) return;
+  uploading.value = i;
+  const p = profile.value!;
+  console.log(`[LayerEditor] 📤 上传开始 — 层: L${i} "${LAYER_NAMES[i]}" | 文件: ${file.name} (${(file.size/1024).toFixed(1)}KB) | Profile: ${p.id}`);
+  // ★ 先设置预览（ObjectURL），不依赖任何后端
+  const ext = file.name.split(".").pop() || "png";
+  const fileName = `layer_${i}_${Date.now()}.${ext}`;
+  const relativePath = `materials/L${i}/${fileName}`;
+  layers.value[i].config.image = relativePath;
+  layers.value[i].url = URL.createObjectURL(file);
+  layers.value[i].loadFailed = false;
+  console.log(`[LayerEditor] 🖼 预览已设置 | ObjectURL | config.image="${relativePath}"`);
+  // ★ 后台异步写入 Profile（失败不影响预览）
+  uploadToProfile(i, file, relativePath);
+  // 清除 input 以便可重复选同一个文件
+  input.value = "";
+}
+async function uploadToProfile(i: number, file: File, relativePath: string) {
+  const p = profile.value!;
+  try {
+    const buf = await file.arrayBuffer();
+    const bytes = Array.from(new Uint8Array(buf));
+    const { invoke } = await import("@tauri-apps/api/core");
+    const targetDir = `profiles/${p.id}/materials/L${i}/`;
+    console.log(`[LayerEditor] 💾 写入目标: ${targetDir} | 文件: ${relativePath.split("/").pop()}`);
+    await invoke("profile_file_write", {
+      profileId: p.id,
+      relativePath,
+      content: bytes,
+    });
+    console.log(`[LayerEditor] ✅ 写入完成 | AppData/desk-pet/${targetDir}${relativePath.split("/").pop()}`);
+    console.log(`[LayerEditor] ✅ dev同步 | public/${targetDir}${relativePath.split("/").pop()}`);
+  } catch (e: any) {
+    console.error(`[LayerEditor] ❌ 后台写入失败 | 目录: profiles/${p.id}/materials/L${i}/ | 错误:`, e?.message || e);
+  } finally {
+    uploading.value = null;
+  }
 }
 
 function removeImage() {
@@ -257,21 +293,26 @@ function removeImage() {
 
 // ── ☆ 素材选择器 ──
 async function openPicker() {
+  const i = selectedIndex.value;
+  const subdir = `materials/L${i}`;
+  console.log(`[LayerEditor] 📂 打开素材选择器 | 层: L${i} "${LAYER_NAMES[i]}" | 查询目录: ${subdir}/`);
   showPicker.value = true;
   assetList.value = [];
   assetLoading.value = true;
   try {
     const { invoke } = await import("@tauri-apps/api/core");
-    const files: string[] = await invoke("list_profile_files", { profileId: profile.value!.id });
+    const files: string[] = await invoke("list_profile_files", { profileId: profile.value!.id, subdir });
     assetList.value = files;
+    console.log(`[LayerEditor] 📋 素材列表 | ${subdir}/ → ${files.length} 个文件:`, files);
   } catch (e: any) {
-    console.warn("[LayerEditor] 素材列表加载失败:", e);
-    // fallback: 手动列出常见路径
-    assetList.value = [
-      "materials/body.png",
-      "materials/bg_base.png",
-      "materials/shield_gold.png",
+    console.warn(`[LayerEditor] ⚠ 素材列表加载失败 | ${subdir}/ | 错误:`, e?.message || e);
+    // fallback: 按层过滤（新目录结构）
+    const defaults = [
+      "materials/L0/bg_base.png",
+      "materials/L2/body.png",
+      "materials/L4/shield_gold.png",
     ];
+    assetList.value = defaults.filter(f => f.startsWith(`materials/L${selectedIndex.value}/`));
   } finally {
     assetLoading.value = false;
   }
@@ -281,10 +322,46 @@ function previewAsset(path: string) {
   pickerPreview.value = `${profile.value!.basePath}/${path}`;
 }
 
-function selectAsset(path: string) {
+async function selectAsset(path: string) {
   const i = selectedIndex.value;
-  layers.value[i].config.image = path;
-  refreshLayerUrl(i);
+  const prefix = `materials/L${i}/`;
+  if (!path.startsWith(prefix)) {
+    // ★ 素材不在当前层目录 → 用 Rust 命令复制进来形成闭包
+    uploading.value = i;
+    console.log(`[LayerEditor] 📋 跨层复制 | 源: ${path} → 目标层: L${i}/${prefix}`);
+    try {
+      const { invoke } = await import("@tauri-apps/api/core");
+      const bytes: number[] = await invoke("profile_file_read", {
+        profileId: profile.value!.id,
+        relativePath: path,
+      });
+      console.log(`[LayerEditor] 📖 读取源文件 | ${path} | ${bytes.length} bytes`);
+      const ext = path.split('.').pop() || 'png';
+      const newPath = `${prefix}layer_${i}_${Date.now()}.${ext}`;
+      await invoke("profile_file_write", {
+        profileId: profile.value!.id,
+        relativePath: newPath,
+        content: bytes,
+      });
+      console.log(`[LayerEditor] ✅ 复制完成 | ${path} → ${newPath}`);
+      layers.value[i].config.image = newPath;
+      // ObjectURL 即时预览
+      const blob = new Blob([new Uint8Array(bytes)]);
+      layers.value[i].url = URL.createObjectURL(blob);
+      layers.value[i].loadFailed = false;
+    } catch (e: any) {
+      // 回退：直接引用原路径
+      console.error(`[LayerEditor] ❌ 跨层复制失败 | ${path} | 错误:`, e?.message || e);
+      layers.value[i].config.image = path;
+      refreshLayerUrl(i);
+    } finally {
+      uploading.value = null;
+    }
+  } else {
+    console.log(`[LayerEditor] 📌 同层引用 | L${i} ← ${path}`);
+    layers.value[i].config.image = path;
+    refreshLayerUrl(i);
+  }
   showPicker.value = false;
   pickerPreview.value = "";
 }
@@ -311,7 +388,11 @@ function save() {
       locked: l.config.locked,
     }))
   ));
-  localStorage.setItem("deskpet_parallax_layers", JSON.stringify(cfg));
+  // ★ 统一持久化到 userConfig（key: deskpet_user_settings），保证编辑器和 StreamView 一致
+  userConfig.parallaxLayers = cfg;
+  // 清除旧的独立 key，防止过期数据覆盖
+  localStorage.removeItem("deskpet_parallax_layers");
+  localStorage.removeItem("deskpet_parallax_offset_v2"); // ★ 旧版本标记，不再需要（改用整数检测）
   localStorage.setItem("deskpet_parallax_dirty", "1");
   saved.value = true;
   setTimeout(() => { saved.value = false; }, 2000);
@@ -319,10 +400,6 @@ function save() {
 function closeWindow() { win.close().catch(() => {}); }
 
 // ── 深度计算（和 useParallax 一致）──
-function layerDepth(l: ParallaxLayerCfg): number {
-  const s = l.sensitivity * userConfig.parallaxIntensity;
-  return Math.max(0, Math.min(1, s / 1.6));
-}
 
 onMounted(async () => {
   await initFromStorage();
@@ -341,6 +418,8 @@ onUnmounted(() => {
 
 <template>
   <div id="le-root">
+    <!-- 隐藏文件选择器（必须存在于DOM中，Tauri WebView 才能正常弹出）-->
+    <input ref="fileInput" type="file" accept="image/png,image/jpg,image/jpeg,image/gif,image/webp" style="display:none" @change="onFileSelected" />
     <!-- 工具栏 -->
     <div id="le-toolbar">
       <div class="le-tabs">
@@ -398,7 +477,7 @@ onUnmounted(() => {
               :class="{ selected: selectedIndex === i, locked: l.config.locked }"
               :style="{
                 zIndex: i,
-                transform: `translate(${l.config.offsetX}px, ${l.config.offsetY}px) scale(${(l.config.scale ?? 1).toFixed(2)})`,
+                transform: `translate(${(l.config.offsetX / 100 * canvasSize.w).toFixed(1)}px, ${(l.config.offsetY / 100 * canvasSize.h).toFixed(1)}px) scale(${((l.config.scale ?? 1) * (1.02 - layerDepth(l.config.sensitivity, userConfig.parallaxIntensity) * 0.04)).toFixed(3)})`,
                 opacity: selectedIndex === i ? 1 : l.config.enabled ? 0.6 : 0.15,
               }"
               @pointerdown.prevent="onPointerDown(i, $event)"
@@ -409,7 +488,7 @@ onUnmounted(() => {
                 alt="" draggable="false"
                 class="le-layer-img"
                 :style="{
-                  filter: `brightness(${l.config.brightness.toFixed(2)}) contrast(${l.config.contrast.toFixed(2)}) saturate(${l.config.saturate.toFixed(2)}) drop-shadow(0 ${(layerDepth(l.config) * 10).toFixed(1)}px ${(layerDepth(l.config) * 7).toFixed(1)}px rgba(0,0,0,${(0.12 + layerDepth(l.config) * 0.08).toFixed(2)}))`,
+                  filter: `brightness(${l.config.brightness.toFixed(2)}) contrast(${l.config.contrast.toFixed(2)}) saturate(${l.config.saturate.toFixed(2)}) drop-shadow(0 ${(layerDepth(l.config.sensitivity, userConfig.parallaxIntensity) * 10).toFixed(1)}px ${(layerDepth(l.config.sensitivity, userConfig.parallaxIntensity) * 7).toFixed(1)}px rgba(0,0,0,${(0.12 + layerDepth(l.config.sensitivity, userConfig.parallaxIntensity) * 0.08).toFixed(2)}))`,
                 }"
                 @load="onImgLoad(i)"
                 @error="(e: Event) => onImgError(i, e)"
@@ -476,10 +555,10 @@ onUnmounted(() => {
         </div>
 
         <div class="le-prop-row">
-          <span class="le-prop-label">偏移 X</span>
-          <input class="le-inp-num" type="number" v-model.number="selectedLayer.config.offsetX" :disabled="selectedLayer.config.locked" />
-          <span class="le-prop-label">Y</span>
-          <input class="le-inp-num" type="number" v-model.number="selectedLayer.config.offsetY" :disabled="selectedLayer.config.locked" />
+          <span class="le-prop-label">偏移 X%</span>
+          <input class="le-inp-num" type="number" step="0.01" v-model.number="selectedLayer.config.offsetX" :disabled="selectedLayer.config.locked" />
+          <span class="le-prop-label">Y%</span>
+          <input class="le-inp-num" type="number" step="0.01" v-model.number="selectedLayer.config.offsetY" :disabled="selectedLayer.config.locked" />
           <button class="le-btn le-btn-d le-btn-xs" @click="resetPosition()" :disabled="selectedLayer.config.locked">↺</button>
         </div>
 

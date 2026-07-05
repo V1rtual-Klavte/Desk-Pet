@@ -3,7 +3,7 @@ import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
 import { getUiUrl } from "@/services/profile";
 
 defineProps<{ height: number; title: string }>();
-const emit = defineEmits<{ "toggle-chat": []; "toggle-settings": [] }>();
+const emit = defineEmits<{ "toggle-chat": []; "toggle-settings": []; "toggle-layer-editor": [] }>();
 
 const win = getCurrentWebviewWindow();
 </script>
@@ -32,6 +32,7 @@ const win = getCurrentWebviewWindow();
           <rect x="5" y="5" width="1" height="1" fill="#3355aa" opacity="0.5"/>
         </svg>
       </button>
+      <button class="btn" @click="$emit('toggle-layer-editor')" title="图层编辑器">🎨</button>
       <button class="btn close" @click="win.hide()" title="hide to tray">
         <img :src="getUiUrl('windows/button_close.png')" alt="" />
       </button>

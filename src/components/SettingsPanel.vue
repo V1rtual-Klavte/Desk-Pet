@@ -849,7 +849,7 @@ onUnmounted(() => {
               <option v-for="p in profileList" :key="p.id" :value="p.id">{{ p.meta.name }} {{ p.meta.builtin ? '[内置]' : '[用户]' }}</option>
             </select>
             <div v-if="profileDetail" class="profile-preview">
-              <img :src="profileDetail.basePath + '/materials/body.png'" class="preview-body" @error="($event.target as HTMLImageElement).style.display='none'" />
+              <img :src="profileDetail.basePath + '/materials/L2/body.png'" class="preview-body" @error="($event.target as HTMLImageElement).style.display='none'" />
               <div class="preview-info">
                 <div class="preview-name">{{ profileDetail.meta.name }}</div>
                 <div class="preview-meta">角色: {{ profileDetail.character.name }} · {{ Object.keys(profileDetail.animations).length }}动画</div>
