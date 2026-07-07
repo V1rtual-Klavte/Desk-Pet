@@ -19,8 +19,6 @@ import { createLogger } from "@/services/logger"
 
 const log = createLogger("Compactor")
 
-const COMPACT_THRESHOLD = 0.95
-
 // ═══════════════════════════════════════════════════════════════
 // 阈值判断
 // ═══════════════════════════════════════════════════════════════
@@ -38,7 +36,7 @@ export function estimateTokens(msgs: Message[]): number {
 
 /** 检查是否需要触发增量压缩 */
 export function shouldCompact(estimatedUsage: number, totalBudget: number): boolean {
-  return estimatedUsage / totalBudget >= COMPACT_THRESHOLD
+  return estimatedUsage / totalBudget >= loopConfig.contextCompactAt
 }
 
 // ═══════════════════════════════════════════════════════════════

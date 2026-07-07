@@ -102,9 +102,11 @@ Desk-Pet/
 │   │   │       └── commands/    # help/clear/memory/expression/win
 │   │   ├── personality/         # ★ 人格模块
 │   │   │   ├── index.ts
-│   │   │   ├── types.ts / loader.ts / registry.ts / boundary.ts
+│   │   │   ├── types.ts / loader.ts / registry.ts
+│   │   │   ├── stages-cache.ts / variable-pool.ts / when-engine.ts
+│   │   │   ├── must-rules.ts / emotion.ts
 │   │   │   ├── middleware.ts    # ★ 人格中间件（包裹所有Agent阶段）
-│   │   │   └── cards/           # 人格卡 .md
+│   │   │   └── cards/           # 内置/用户人格卡 .md（统一在 src/services/personality/cards）
 │   │   ├── tool/                # ★ 工具系统 (Phase 2)
 │   │   │   ├── index.ts / types.ts / registry.ts / router.ts
 │   │   │   ├── local/           # 轻量模式工具 (file/bash/system/http)

@@ -141,10 +141,7 @@ export class McpClient {
         sourceId: serverId,
         mode: "assistant" as const,
         timeoutMs: 30000,
-        personalityHint: {
-          executing: `正在使用 MCP 工具 ${t.name}...`,
-          done: `${t.name} 完成`,
-        },
+        actionCategory: "_default",
         async handler(params: Record<string, unknown>) {
           try {
             const result = await client.callTool(t.name, params)

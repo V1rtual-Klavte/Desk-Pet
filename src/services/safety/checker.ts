@@ -162,8 +162,7 @@ export function checkSafety(
         return {
           allowed: false,
           reason: "轻量模式不支持 DANGER 级别工具",
-          personalityMessage: tool.personalityHint?.blocked
-            ?? "这个功能需要在助手模式下使用哦～",
+          personalityMessage: "这个功能需要在助手模式下使用哦～",
         }
       }
 

@@ -6,6 +6,7 @@
 
 import type { ToolDef } from "../types"
 import { register } from "../registry"
+import { loopConfig } from "@/services/config"
 import { createLogger } from "@/services/logger"
 
 const log = createLogger("ToolAgent")
@@ -31,11 +32,8 @@ const agentSpawnTool: ToolDef = {
   source: "local",
   sourceId: "",
   mode: "assistant",
-  timeoutMs: 120000, // 子代理可能跑多轮工具调用
-  personalityHint: {
-    executing: "让我派个小助手去处理...",
-    done: "小助手完成啦～",
-  },
+  timeoutMs: loopConfig.toolTimeoutMs * 4,
+  actionCategory: "agent.call",
   async handler(params) {
     const task = String(params.task ?? "")
     const mode = String(params.mode ?? "fork")

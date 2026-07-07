@@ -85,7 +85,7 @@ export const debug = reactive<DebugState>({
   lastToolCount: 0,
   lastToolNames: [],
   lastContextUsage: 0,
-  contextMaxTokens: 16000,
+  contextMaxTokens: aiConfig.contextMaxTokens,
   totalPromptTokens: 0,
   totalCompletionTokens: 0,
 
@@ -119,7 +119,7 @@ export function updateRequestStats(opts: {
   }
   // ★ 上下文占比 = (system + conversation) / max，用最后已知值
   const conv = opts.conversationTokens ?? 0
-  const max = debug.contextMaxTokens > 0 ? debug.contextMaxTokens : 16000
+  const max = debug.contextMaxTokens > 0 ? debug.contextMaxTokens : aiConfig.contextMaxTokens
   const total = debug.lastSystemTokens + conv
   debug.lastContextUsage = Math.round((total / max) * 100)
 }

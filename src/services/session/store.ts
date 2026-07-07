@@ -5,6 +5,7 @@
 
 import { reactive, ref } from "vue"
 import type { Message } from "@/services/agent/types"
+import { loopConfig, memoryConfig } from "@/services/config"
 
 // ═══════════════════════════════════════════════════
 // SessionMeta
@@ -61,8 +62,6 @@ export function getActiveSessionId(): string {
 // 消息操作
 // ═══════════════════════════════════════════════════
 
-const MAX_VISIBLE_MESSAGES = 200
-
 export function pushMessage(msg: Message): void {
   chatHistory.push(msg)
   trimIfNeeded()
@@ -80,8 +79,9 @@ export function deleteMessage(id: string): boolean {
 }
 
 function trimIfNeeded(): void {
-  if (chatHistory.length > MAX_VISIBLE_MESSAGES) {
-    const keep = chatHistory.slice(-MAX_VISIBLE_MESSAGES)
+  const max = loopConfig.maxVisibleMessages
+  if (chatHistory.length > max) {
+    const keep = chatHistory.slice(-max)
     chatHistory.splice(0, chatHistory.length, ...keep)
   }
 }
@@ -89,8 +89,6 @@ function trimIfNeeded(): void {
 // ═══════════════════════════════════════════════════
 // 会话列表操作
 // ═══════════════════════════════════════════════════
-
-const MAX_SESSIONS = 20
 
 export function addSessionMeta(meta: SessionMeta): void {
   if (sessions.find(s => s.id === meta.id)) return
@@ -105,7 +103,8 @@ export function removeSessionMeta(id: string): void {
 }
 
 function trimSessions(): void {
-  while (sessions.length > MAX_SESSIONS) {
+  const max = memoryConfig.maxSessions
+  while (sessions.length > max) {
     sessions.pop()
   }
 }

@@ -6,7 +6,7 @@
 import type { ToolDef } from "../types"
 import { register } from "../registry"
 import { invoke } from "@tauri-apps/api/core"
-import { toolsConfig } from "@/services/config"
+import { toolsConfig, loopConfig } from "@/services/config"
 import { BASH_DANGEROUS_PATTERNS, matchesAnyPattern } from "@/services/safety/checker"
 import { createLogger } from "@/services/logger"
 
@@ -28,12 +28,8 @@ const bashTool: ToolDef = {
   source: "local",
   sourceId: "",
   mode: "pet",
-  timeoutMs: 15000,
-  personalityHint: {
-    executing: "让我来处理...",
-    done: "搞定！",
-    blocked: "这个命令不能执行呢～",
-  },
+  timeoutMs: loopConfig.toolTimeoutMs,
+  actionCategory: "os.exec",
   async handler(params) {
     const command = String(params.command).trim()
     const cwd = params.cwd ? String(params.cwd) : undefined

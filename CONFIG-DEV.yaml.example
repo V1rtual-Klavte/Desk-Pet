@@ -18,7 +18,6 @@ ai:
   requireApiKey: true
   model: deepseek-chat
   contextMaxTokens: 16000
-  defaultSystemPrompt: "你叫糖糖，是一个桌面虚拟主播助手。性格活泼可爱、偶尔傲娇。请用简短的口语化中文回复，像在和朋友聊天一样。可以加表情，但不要用 markdown。"
   fallbackReplies:
     - "嗯嗯，是这样的呢～"
     - "诶？真的吗？好厉害！"
@@ -35,14 +34,19 @@ ai:
       - { id: angelkawaii, name: KAngel, path: cards/angelkawaii.md, description: "甜蜜活泼女友+病娇" }
       - { id: ame, name: Ame, path: cards/ame.md, description: "冷静管家型" }
       - { id: pchan, name: P酱, path: cards/pchan.md, description: "慵懒电竞少女" }
+  reply:
+    streamEnabled: false
+    phase2Retry: 1
+    phase2ThinkingEffort: low
   loop:
     maxRetry: 3
     maxToolCallsPerTurn: 5
     toolTimeoutMs: 30000
     turnTimeoutMs: 120000
-    streamEnabled: true
     contextCompactAt: 0.95
-  memory: { maxEntries: 200 }
+    dedupWindowMs: 30000
+    maxVisibleMessages: 200
+  memory: { maxEntries: 200, maxSessions: 20 }
   lock: { safetyTimeoutMs: 30000 }
   windowMonitor:
     enabled: true

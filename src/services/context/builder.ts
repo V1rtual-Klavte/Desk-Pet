@@ -1,21 +1,22 @@
 // ==========================================
-// 上下文引擎 —— 每次请求前动态组装 SystemPrompt
-// 组装顺序:
-//   1. 人格 Prompt (card + boundary)
-//   2. Memory 注入 (相关记忆 topK)
-//   3. 工具声明 (按模式 + 任务类型)
-//   4. 输出约束
-//   5. 思考强度提示 (low/high)
+// 上下文引擎 v4 — Phase1/Phase2 分离
 // ==========================================
 
 import type { Message, ToolDeclaration, ThinkingEffort } from "@/services/agent/types"
-import { PetPersonalityMiddleware } from "@/services/personality/middleware"
 import { getToolDeclarations } from "@/services/tool/registry"
 import { MemoryService } from "@/services/agent/memory"
 import { modeConfig, aiConfig } from "@/services/config"
+import { formatPoolForPrompt, getPoolSnapshot } from "@/services/personality/variable-pool"
+import { evaluateWhenEngine } from "@/services/personality/when-engine"
+import { formatToolRules, formatAllRules } from "@/services/personality/must-rules"
+import { formatEmotionForPrompt } from "@/services/personality/emotion"
+import type { PersonalityCard } from "@/services/personality/types"
+import type { VariablePool } from "@/services/personality/variable-pool"
 import { createLogger } from "@/services/logger"
 
 const log = createLogger("Context")
+
+// ── 类型 ──
 
 export interface BuildContextInput {
   recentMessages: Message[]
@@ -26,96 +27,108 @@ export interface BuildContextInput {
 }
 
 export interface BuildContextOutput {
-  systemPrompt: string
-  tools: ToolDeclaration[]
-  estimatedSystemTokens: number
-  contextMaxTokens: number
+  systemPrompt: string; tools: ToolDeclaration[]
+  estimatedSystemTokens: number; contextMaxTokens: number
 }
 
-// ── 工具关键词（用于判断是否需要注入工具声明）──
-const TOOL_KEYWORDS = [
-  "帮我", "查看", "打开", "搜索", "找", "整理", "分析", "检查",
-  "文件", "文件夹", "桌面", "下载", "代码", "项目", "系统",
-  "运行", "执行", "命令", "天气", "时间", "日期",
-]
-
-/**
- * 动态组装 SystemPrompt + 工具声明。
- * 轻量模式：始终携带 6 个工具 (~150 tokens)
- * 助手模式：L0/L1/L2 三级注入
- */
-export function buildContext(input: BuildContextInput): BuildContextOutput {
-  const { userText, unansweredCount, thinkingEffort, isActiveMessage } = input
-
-  // ── 1. 人格 Prompt (必须) ──
-  const personaPrompt = PetPersonalityMiddleware.getSystemPrompt(unansweredCount)
-
-  // ── 2. CANDY.md + User.md 注入 ──
-  const candyBlock = MemoryService.getCandyInstructionsSync()
-  const userBlock = MemoryService.getUserProfileSync()
-
-  // ── 3. 会话记忆注入（压缩摘要）──
-  const sessionBlock = MemoryService.getCompactionSummarySync()
-
-  // ── 4. Memory 搜索注入 ──
-  const memoryBlock = buildMemoryInjection(userText)
-
-  // ── 4. 工具声明 (按模式 + 任务类型) ──
-  const tools = decideToolInject(userText, isActiveMessage ?? false)
-
-  // ── 4. 输出约束 ──
-  const hasTools = tools.length > 0
-  const formatConstraint = (hasTools
-    ? "\n\n你可以使用上面列出的工具来完成任务。如果需要使用工具，请只输出工具调用，不要输出文本。完成所有工具调用后，基于结果给出简短友好的中文回复。可以加 kaomoji 表情，不要用 markdown。"
-    : "\n\n请用简短的口语化中文回复，像在和朋友聊天一样。可以加 kaomoji 表情，不要用 markdown。")
-    // ★ 覆盖人格卡的纯聊天倾向：你是助手，能回答任何问题，只是通过人设表达
-    + "\n\n[重要] 你是一个会帮主人解决问题的桌面助手。无论主人问什么（技术、生活、知识、闲聊），你都要认真回答、帮助解决，用你的个性和语气表达出来。如果不会或不确定，诚实说不知道但试着帮忙。你不是只会撒娇的宠物，你是会思考、会用工具的伙伴♡"
-
-  // ── 5. 思考强度提示 ──
-  const thinkingHint = thinkingEffort === "low"
-    ? "\n[请快速简要回答]"
-    : thinkingEffort === "high"
-      ? "\n[请仔细深入思考后回答]"
-      : ""
-
-  // ── 拼合 ──
-  const systemPrompt = personaPrompt + candyBlock + userBlock + sessionBlock + memoryBlock + formatConstraint + thinkingHint
-  const estimatedSystemTokens = Math.ceil(systemPrompt.length / 2.5)
-  const contextMaxTokens = aiConfig.contextMaxTokens
-
-  log.debug("上下文已构建 | systemPrompt:", estimatedSystemTokens, "tokens | tools:", tools.length, "| memory:", memoryBlock.length > 0 ? "yes" : "no")
-  return { systemPrompt, tools, estimatedSystemTokens, contextMaxTokens }
+export interface Phase1Output {
+  systemPrompt: string; tools: ToolDeclaration[]
+  estimatedSystemTokens: number; contextMaxTokens: number
 }
 
-// ── Memory 注入 ──
-
-function buildMemoryInjection(userText: string): string {
-  const relevant = MemoryService.search(userText, 3)
-  if (relevant.length === 0) return ""
-
-  const lines = relevant.map(e => `- ${e.content}`)
-  return `\n\n[相关记忆]\n${lines.join("\n")}`
+export interface Phase2Input {
+  card: PersonalityCard; rawReply: string; userText: string
+  pool: VariablePool; toolCallSummary: string
 }
 
-// ── 工具注入决策 ──
+export interface Phase2Output {
+  systemPrompt: string; userMessage: string; thinkingEffort: string
+}
 
-function decideToolInject(userText: string, isActiveMessage: boolean): ToolDeclaration[] {
-  // 主动搭话：无论哪个模式都不带工具
-  if (isActiveMessage) return []
+const TOOL_KEYWORDS = ["帮我","查看","打开","搜索","找","整理","分析","检查","文件","文件夹","桌面","下载","代码","项目","系统","运行","执行","命令","天气","时间","日期"]
 
-  const isAssistant = modeConfig.assistant
+// ── Phase1: 零身份能力层 ──
 
-  // 轻量模式：非主动搭话始终携带（只有 6 个）
-  if (!isAssistant) {
-    return getToolDeclarations("pet")
+export function buildCapabilityPrompt(
+  input: BuildContextInput, card: PersonalityCard | null, pool: VariablePool,
+): Phase1Output {
+  const { userText, thinkingEffort, isActiveMessage } = input
+
+  let systemPrompt = `你是一个桌面助手。准确、完整地回答用户问题。
+
+要求:
+- 使用 markdown 组织信息
+- 技术问题给出具体方案，不要模糊
+- 不会就说不知道，但尝试提供线索
+- 回复长度按问题复杂度自然调整
+- 不需要 kaomoji 或颜文字，不需要扮演角色
+- 不要自称，不要有名字`
+
+  // 变量池
+  systemPrompt += `\n\n${formatPoolForPrompt()}`
+
+  // 必须遵守 (工具相关)
+  if (card) systemPrompt += formatToolRules(card.sections.mustRules)
+
+  // 记忆
+  const candy = MemoryService.getCandyInstructionsSync()
+  const user = MemoryService.getUserProfileSync()
+  const sess = MemoryService.getCompactionSummarySync()
+  if (candy) systemPrompt += candy
+  if (user) systemPrompt += user
+  if (sess) systemPrompt += sess
+
+  // 工具
+  const tools = decideTools(userText, isActiveMessage ?? false)
+
+  systemPrompt += tools.length > 0
+    ? "\n\n你可以使用工具完成任务。需要工具时只输出工具调用。完成后基于结果简短回复。"
+    : "\n\n请简短口语化回复，不用 markdown。"
+
+  if (thinkingEffort === "low") systemPrompt += "\n[请快速简要回答]"
+  else if (thinkingEffort === "high") systemPrompt += "\n[请仔细深入思考]"
+
+  return {
+    systemPrompt, tools,
+    estimatedSystemTokens: Math.ceil(systemPrompt.length / 2.5),
+    contextMaxTokens: aiConfig.contextMaxTokens,
   }
-
-  // 助手模式：按需分级
-  if (!hasToolKeyword(userText)) return [] // L0: 闲聊
-  const allTools = getToolDeclarations()
-  return allTools // L1/L2: 有工具意图时全量
 }
 
-function hasToolKeyword(text: string): boolean {
-  return TOOL_KEYWORDS.some(kw => text.includes(kw))
+// ── Phase2: 角色风格层 ──
+
+export function buildStylePrompt(input: Phase2Input): Phase2Output {
+  const { card, rawReply, userText, pool, toolCallSummary } = input
+  const s = card.sections
+
+  let systemPrompt = `${s.roleSetting}\n\n${s.languageStyle}\n\n${s.outputRules}`
+
+  if (s.emotionMappings.length > 0) systemPrompt += `\n\n${formatEmotionForPrompt(s.emotionMappings)}`
+
+  const hitRule = evaluateWhenEngine(s.whenRules, pool)
+  if (hitRule) systemPrompt += `\n\n[当前状态]\n${hitRule.tone}`
+
+  if (s.mustRules.all.length > 0) systemPrompt += `\n\n${formatAllRules(s.mustRules)}`
+
+  systemPrompt += `\n\n${formatPoolForPrompt()}`
+
+  let userMessage = `用户问: ${userText}`
+  if (toolCallSummary) userMessage += `\n\n[执行过程]\n${toolCallSummary}`
+  userMessage += `\n\n请用你的风格重新表达以下回复。保持信息完整，不要丢失关键信息（代码、数字、链接、步骤顺序等）。回复开头必须携带情绪标签 [emo:key]。\n\n${rawReply}`
+
+  return { systemPrompt, userMessage, thinkingEffort: "low" }
+}
+
+export function summarizeToolCalls(history: { toolName: string; status: string }[]): string {
+  if (history.length === 0) return ""
+  return history.map(h => `- ${h.toolName}: ${h.status}`).join("\n")
+}
+
+// ── 工具决策 ──
+
+function decideTools(userText: string, isActive: boolean): ToolDeclaration[] {
+  if (isActive) return []
+  if (!modeConfig.assistant) return getToolDeclarations("pet")
+  if (!TOOL_KEYWORDS.some(kw => userText.includes(kw))) return []
+  return getToolDeclarations()
 }

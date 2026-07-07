@@ -7,6 +7,7 @@ import type { ToolDef } from "../types"
 import { register } from "../registry"
 import { invoke } from "@tauri-apps/api/core"
 import { BASH_NOWAY_PATTERNS, matchesAnyPattern } from "@/services/safety/checker"
+import { loopConfig } from "@/services/config"
 import { createLogger } from "@/services/logger"
 
 const log = createLogger("ToolBashF")
@@ -27,12 +28,8 @@ const bashFullTool: ToolDef = {
   source: "local",
   sourceId: "",
   mode: "assistant",
-  timeoutMs: 30000,
-  personalityHint: {
-    executing: "让我来处理...",
-    done: "搞定！",
-    blocked: "这个命令太危险了，不能执行哦～",
-  },
+  timeoutMs: loopConfig.toolTimeoutMs,
+  actionCategory: "os.exec",
   async handler(params) {
     const command = String(params.command).trim()
     const cwd = params.cwd ? String(params.cwd) : undefined

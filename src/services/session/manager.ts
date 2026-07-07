@@ -145,6 +145,12 @@ export async function initSessions(): Promise<SessionMeta[]> {
     saveActiveId(id)
     unansweredCount.value = loadUnanswered(id)
     await MemoryService.setActiveSession(id)
+    // 变量池对齐真实会话开始时间
+    const activeMeta = sessions.find(s => s.id === id)
+    if (activeMeta) {
+      const { setSessionStart } = await import("@/services/personality")
+      setSessionStart(activeMeta.createdAt)
+    }
     log.info(`Session: 已恢复: ${id} (${msgs.length} 条)`)
   } else if (sessions.length > 0) {
     activeSessionId.value = sessions[0].id
@@ -190,6 +196,10 @@ export async function switchToSession(sessionId: string): Promise<void> {
   const { MemoryService } = await import("@/services/agent/memory")
   await MemoryService.setActiveSession(sessionId)
 
+  // 对齐会话开始时间
+  const { setSessionStart } = await import("@/services/personality")
+  setSessionStart(target.createdAt)
+
   log.info(`Session: 已切换到 ${sessionId} (${msgs.length} 条)`)
 }
 
@@ -223,6 +233,10 @@ export async function createNewSession(): Promise<SessionMeta> {
 
   // 创建磁盘文件
   await createSessionFileOnDisk(id)
+
+  // 变量池对齐新会话开始时间
+  const { setSessionStart } = await import("@/services/personality")
+  setSessionStart(s.createdAt)
 
   log.info(`Session: 新会话已创建 ${id} (chatHistory: ${chatHistory.length} 条)`)
   return s

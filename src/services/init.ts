@@ -4,8 +4,9 @@
 // ==========================================
 
 import { MemoryService, startMemoryConsolidationTimer } from "@/services/agent/memory"
-import { initRegistry } from "@/services/personality"
+import { initRegistry, initCards } from "@/services/personality"
 import { registerDefaultTools, registerAll, registerAssistantTools } from "@/services/tool"
+import { registerVarTools } from "@/services/tool/local/var"
 import { initDebug } from "@/services/debug"
 import { initSessions, chatHistory, initWelcome } from "@/services/session"
 import { getActiveCard } from "@/services/personality"
@@ -40,11 +41,13 @@ export async function initApp(welcomeText: string): Promise<void> {
   log.info(`2/7 Profile 就绪: "${p?.meta.name}" (${p?.character.name})`)
 
   // ── 3. 人格模块 ──
-  initRegistry()
+  await initCards()
+  await initRegistry()
   log.info("3/7 人格模块就绪")
 
   // ── 4. 工具注册 ──
   await registerDefaultTools()
+  registerVarTools()  // 变量池工具（var_read/write/list/delete）— 所有模式可用
   log.info("4a/7 基础工具就绪")
 
   if (modeConfig.assistant) {
@@ -78,8 +81,10 @@ export async function initApp(welcomeText: string): Promise<void> {
   if (chatHistory.length === 0) {
     if (welcomeText) {
       initWelcome(welcomeText)
-    } else if (card?.firstMessage) {
-      initWelcome(card.firstMessage)
+    } else if (card) {
+      const { pickGreeting } = await import("@/services/personality")
+      const greeting = pickGreeting(card.sections.mustRules.greetings)
+      if (greeting) initWelcome(greeting)
     }
     log.info("6/7 欢迎语已写入")
   } else {

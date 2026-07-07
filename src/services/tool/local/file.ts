@@ -27,11 +27,7 @@ const fileReadTool: ToolDef = {
   source: "local",
   sourceId: "",
   mode: "pet",
-  personalityHint: {
-    executing: "让我读读这个文件...",
-    done: "读完啦～",
-    blocked: "唔…这个文件不能读呢～",
-  },
+  actionCategory: "fs.read",
   async handler(params) {
     try {
       const result = await invoke<{ content: string; size: number }>("file_read", {
@@ -65,11 +61,7 @@ const fileListTool: ToolDef = {
   source: "local",
   sourceId: "",
   mode: "pet",
-  personalityHint: {
-    executing: "让我看看这里面有什么...",
-    done: "看到了～",
-    blocked: "这个目录不能看哦～",
-  },
+  actionCategory: "fs.read",
   async handler(params) {
     try {
       const result = await invoke<{ entries: { name: string; kind: string; size: number }[] }>("file_list", {
@@ -104,10 +96,7 @@ const fileSearchTool: ToolDef = {
   source: "local",
   sourceId: "",
   mode: "pet",
-  personalityHint: {
-    executing: "帮你找找...",
-    done: "找到了！",
-  },
+  actionCategory: "fs.read",
   async handler(params) {
     try {
       const result = await invoke<{ entries: { name: string; kind: string; size: number }[] }>("file_list", {

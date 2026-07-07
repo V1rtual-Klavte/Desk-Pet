@@ -242,10 +242,7 @@ export function skillToToolDef(skill: SkillDef): ToolDef {
     sourceId: skill.meta.id,
     mode: "assistant" as const,
     timeoutMs: 60000,
-    personalityHint: {
-      executing: `让我用"${skill.meta.name}"技能帮你...`,
-      done: `${skill.meta.name} 完成啦～`,
-    },
+    actionCategory: "_default",
     async handler(params) {
       const { runSkill } = await import("./runner")
       const result = await runSkill(skill, params)

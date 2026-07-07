@@ -23,10 +23,7 @@ const systemTool: ToolDef = {
   source: "local",
   sourceId: "",
   mode: "pet",
-  personalityHint: {
-    executing: "检查一下电脑状态...",
-    done: "嗯嗯了解了～",
-  },
+  actionCategory: "os.info",
   async handler() {
     try {
       const info = await invoke<{

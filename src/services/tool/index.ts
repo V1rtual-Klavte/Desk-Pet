@@ -3,7 +3,7 @@
 // ==========================================
 
 // ── 类型 ──
-export type { ToolDef, ToolResult, SafetyLevel, ToolSource, ToolMode, ToolContext, PersonalityHint, ToolDeclaration } from "./types"
+export type { ToolDef, ToolResult, SafetyLevel, ToolSource, ToolMode, ToolContext, ActionCategory, ToolDeclaration } from "./types"
 export { toToolDeclaration } from "./types"
 
 // ── 注册表 ──

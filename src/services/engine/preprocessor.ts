@@ -5,6 +5,7 @@
 // ==========================================
 
 import { createLogger } from "@/services/logger"
+import { loopConfig } from "@/services/config"
 import { find } from "./slash/registry"
 
 const log = createLogger("PreProc")
@@ -61,7 +62,7 @@ export async function preProcess(rawText: string): Promise<PreProcessResult> {
 
   // ── 去重 ──
   const now = Date.now()
-  if (text === lastUserText && now - lastUserTime < 30000) {
+  if (text === lastUserText && now - lastUserTime < loopConfig.dedupWindowMs) {
     log.debug("重复消息过滤")
     return { handled: true, text: "" }
   }

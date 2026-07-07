@@ -20,10 +20,11 @@ import { desktopConfig, shortcutConfig, userConfig, refreshUserCache } from "@/s
 import { isMacOS } from "@/services/env";
 import { getUiUrl } from "@/services/profile";
 import { createLogger } from "@/services/logger";
+import type { StreamViewRef } from "@/services/command-handler";
 import { playEventSound } from "@/services/audio/registry";
 import { emit, listen } from "@tauri-apps/api/event";
 
-const log = createLogger("Shortcut");
+const log = createLogger("App");
 
 const isWinSim = (() => {
   try { return getCurrentWebviewWindow().label === "windows-sim"; }
@@ -44,7 +45,7 @@ provide("globalCursor", globalCursor);
 provide("windowPos", lastMovedPos);
 provide("windowSize", winSize);
 provide("isRetracted", isRetracted);
-const streamRef = ref<InstanceType<typeof StreamView> | null>(null);
+const streamRef = ref<StreamViewRef | null>(null);
 const chatRef = ref<InstanceType<typeof ChatPanel> | null>(null);
 const tabsRef = ref<InstanceType<typeof SessionTabs> | null>(null);
 
@@ -130,7 +131,7 @@ async function onSessionClose(sessionId: string) {
 }
 
 async function onDeleteFile(filename: string) {
-  console.log("[App] onDeleteFile:", filename)
+  log.info("onDeleteFile:", filename)
   try {
     await MemoryService.deleteSessionFile(filename)
     let sid = ""
@@ -152,10 +153,10 @@ async function onDeleteFile(filename: string) {
         }
       }
     }
-    console.log("[App] onDeleteFile 完成:", filename, "sid:", sid)
+    log.info("onDeleteFile 完成:", filename, "sid:", sid)
   } catch (e) {
     log.error("删除会话文件失败:", filename, e)
-    console.error("[App] onDeleteFile 异常:", e)
+    log.error("onDeleteFile 异常:", e)
   } finally {
     tabsRef.value?.loadSessions()
     tabsRef.value?.refreshHistory()
@@ -163,7 +164,7 @@ async function onDeleteFile(filename: string) {
 }
 
 async function onRestoreSession(sf: SessionFileMeta) {
-  console.log("[App] onRestoreSession:", sf.sessionId, sf.topic)
+  log.info("onRestoreSession:", sf.sessionId, sf.topic)
   try {
     addSession({ id: sf.sessionId, name: sf.topic || "已恢复", createdAt: sf.createdAt ? new Date(sf.createdAt).getTime() : Date.now(), messageCount: sf.rounds })
     const turns = await MemoryService.loadSessionMessages(sf.sessionId)
@@ -172,15 +173,15 @@ async function onRestoreSession(sf: SessionFileMeta) {
         return t.role === "user" ? createUserMessage(t.text) : createAssistantMessage(t.text)
       })
       localStorage.setItem(`deskpet_chat_${sf.sessionId}`, JSON.stringify(msgs.slice(-200)))
-      console.log("[App] 恢复消息:", msgs.length, "条")
+      log.info("恢复消息:", msgs.length, "条")
     }
     await switchToSession(sf.sessionId)
     tabsRef.value?.loadSessions()
     tabsRef.value?.refreshHistory()
-    console.log("[App] onRestoreSession 完成:", sf.sessionId)
+    log.info("onRestoreSession 完成:", sf.sessionId)
   } catch (e) {
     log.error("恢复会话失败:", sf.sessionId, e)
-    console.error("[App] onRestoreSession 异常:", e)
+    log.error("onRestoreSession 异常:", e)
   }
 }
 
@@ -229,7 +230,13 @@ async function openLayerEditor() {
     alwaysOnTop: true,
   });
   setTimeout(async () => {
-    try { const w = await WebviewWindow.getByLabel("layer-editor"); await w.setAlwaysOnTop(true); await w.setFocus(); } catch {}
+    try {
+      const w = await WebviewWindow.getByLabel("layer-editor");
+      if (w) {
+        await w.setAlwaysOnTop(true);
+        await w.setFocus();
+      }
+    } catch {}
     invoke("enhance_layer_editor_window").catch(() => {});
   }, 300);
 }

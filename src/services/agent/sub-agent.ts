@@ -6,6 +6,7 @@ import type { ToolDef } from "@/services/tool/types"
 import { getToolsForMode } from "@/services/tool/registry"
 import { runSubLoop } from "./sub-loop"
 import type { SubLoopOutput } from "./sub-loop"
+import { loopConfig } from "@/services/config"
 import { createLogger } from "@/services/logger"
 
 const log = createLogger("SubAgent")
@@ -39,7 +40,7 @@ export async function runForkAgent(input: ForkAgentInput): Promise<SubLoopOutput
     task,
     tools,
     systemPrompt,
-    maxRounds: 3,
+    maxRounds: loopConfig.maxRetry,
     timeoutMs: 90000,
   })
 }

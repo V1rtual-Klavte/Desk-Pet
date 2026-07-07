@@ -24,12 +24,8 @@ export type { AgentState, SessionState } from "./session"
 export { getThinkingBudget } from "./thinking"
 
 // ── Context ──
-export { buildContext } from "@/services/context/builder"
+export { buildCapabilityPrompt, buildStylePrompt, summarizeToolCalls } from "@/services/context/builder"
 export type { BuildContextInput, BuildContextOutput } from "@/services/context/builder"
-
-// ── Plan ──
-export { planStep } from "./plan"
-export type { PlanResult } from "./plan"
 
 // ── Slash ──
 export { initSlashCommands, search as searchSlashCommands, find as findSlashCommand, listAll as listAllSlashCommands } from "./slash"
