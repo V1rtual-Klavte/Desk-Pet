@@ -16,88 +16,149 @@ export class OpenAICompatibleProvider implements AIProvider {
 
   async generateReply(req: GenerateRequest): Promise<GenerateResponse> {
     const { messages, systemPrompt, tools, thinkingEffort } = req
+    const { url, body } = buildRequestBody(messages, systemPrompt, tools, thinkingEffort, false, req.maxTokens)
 
-    const config = {
-      endpoint: aiConfig.endpoint,
-      apiKey: aiConfig.apiKey,
-      model: aiConfig.model,
-    }
+    log.debug("请求 →", url, "| model:", aiConfig.model, "| tools:", tools?.length ?? 0)
 
-    let base = config.endpoint.replace(/\/+$/, "")
-    const url = base.endsWith("/v1") ? `${base}/chat/completions` : `${base}/v1/chat/completions`
-
-    const apiMessages: APIMessage[] = [
-      { role: "system", content: systemPrompt },
-      ...messages.map(toAPIMessage),
-    ]
-
-    const bodyObj: Record<string, unknown> = {
-      model: config.model,
-      messages: apiMessages,
-    }
-
-    if (tools && tools.length > 0) {
-      bodyObj.tools = tools
-      bodyObj.tool_choice = "auto"
-    }
-
-    // 思考强度 → 仅对支持 reasoning_effort 的模型传递参数
-    if (thinkingEffort && thinkingEffort !== "auto") {
-      if (config.model.includes("deepseek") || config.model.includes("o1") || config.model.includes("o3") || config.model.includes("o4")) {
-        bodyObj.reasoning_effort = thinkingEffort
-      }
-    }
-
-    // 非 reasoning 模型的 fallback：在 system prompt 中追加提示
-    if (thinkingEffort === "low" && !config.model.includes("deepseek") && !config.model.includes("o1") && !config.model.includes("o3")) {
-      const sysMsg = apiMessages[0]
-      if (sysMsg && sysMsg.role === "system" && typeof sysMsg.content === "string") {
-        sysMsg.content += "\n\n[请快速简要回答，不需要过多思考]"
-      }
-    }
-
-    const body = JSON.stringify(bodyObj)
-    log.debug("请求 →", url, "| model:", config.model, "| tools:", tools?.length ?? 0)
-
-    let res: Response
-    try {
-      res = await fetch(url, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          ...(config.apiKey ? { Authorization: "Bearer " + config.apiKey } : {}),
-        },
-        body,
-      })
-    } catch (e) {
-      const msg = e instanceof TypeError
-        ? `网络不可达 (${e.message})，请检查 endpoint: ${url}`
-        : String(e)
-      throw new Error(msg)
-    }
-
-    if (!res.ok) {
-      let detail = ""
-      try { const err = await res.json(); detail = JSON.stringify(err) } catch { /* ignore */ }
-      throw new Error(`HTTP ${res.status} ${res.statusText}${detail ? " " + detail : ""}`)
-    }
+    const res = await doFetch(url, body)
+    if (!res.ok) throw new Error(`HTTP ${res.status}`)
 
     const data = await res.json()
-
-    // 使用统一的解析器
     const parsed = parseAIResponse(data)
-    const usage = data.usage
+    if (!parsed.text && parsed.toolCalls.length === 0) {
+      log.warn("响应正文为空:", summarizeEmptyResponse(data))
+    }
 
     return {
       text: parsed.text,
       toolCalls: parsed.toolCalls,
       thinking: parsed.thinking,
-      usage: usage ? {
-        promptTokens: Number(usage.prompt_tokens ?? 0),
-        completionTokens: Number(usage.completion_tokens ?? 0),
+      usage: data.usage ? {
+        promptTokens: Number(data.usage.prompt_tokens ?? 0),
+        completionTokens: Number(data.usage.completion_tokens ?? 0),
       } : undefined,
     }
   }
+
+  /** Phase2 流式方法 */
+  async generateReplyStream(
+    req: GenerateRequest,
+    onToken: (t: string) => void,
+    onThinking?: (t: string) => void,
+  ): Promise<string> {
+    const { messages, systemPrompt, tools, thinkingEffort } = req
+    const { url, body } = buildRequestBody(messages, systemPrompt, tools, thinkingEffort, true, req.maxTokens)
+
+    log.debug("流式 →", url)
+    const res = await doFetch(url, body)
+    if (!res.ok) throw new Error(`HTTP ${res.status}`)
+
+    return parseSSEStream(res, onToken, onThinking)
+  }
+}
+
+// ── 请求构造 ──
+
+function buildRequestBody(
+  messages: Message[], systemPrompt: string,
+  tools: GenerateRequest["tools"], thinkingEffort: GenerateRequest["thinkingEffort"],
+  stream: boolean, maxTokens?: number,
+) {
+  let base = aiConfig.endpoint.replace(/\/+$/, "")
+  const url = base.endsWith("/v1") ? `${base}/chat/completions` : `${base}/v1/chat/completions`
+
+  const apiMessages: APIMessage[] = [
+    { role: "system", content: systemPrompt },
+    ...messages.map(toAPIMessage),
+  ]
+
+  const bodyObj: Record<string, unknown> = {
+    model: aiConfig.model, messages: apiMessages, stream,
+  }
+
+  if (maxTokens) { bodyObj.max_tokens = maxTokens }
+
+  if (tools && tools.length > 0) { bodyObj.tools = tools; bodyObj.tool_choice = "auto" }
+
+  if (thinkingEffort && thinkingEffort !== "auto") {
+    if (aiConfig.model.includes("deepseek") || aiConfig.model.includes("o1") || aiConfig.model.includes("o3") || aiConfig.model.includes("o4")) {
+      bodyObj.reasoning_effort = thinkingEffort
+    }
+  }
+
+  if (thinkingEffort === "low" && !aiConfig.model.includes("deepseek") && !aiConfig.model.includes("o1") && !aiConfig.model.includes("o3")) {
+    const sysMsg = apiMessages[0]
+    if (sysMsg && sysMsg.role === "system" && typeof sysMsg.content === "string") {
+      sysMsg.content += "\n\n[请快速简要回答，不需要过多思考]"
+    }
+  }
+
+  return { url, body: JSON.stringify(bodyObj) }
+}
+
+function summarizeEmptyResponse(data: unknown): string {
+  try {
+    const choice = (data as any)?.choices?.[0]
+    return JSON.stringify({
+      finish_reason: choice?.finish_reason,
+      message: choice?.message,
+      delta: choice?.delta,
+      usage: (data as any)?.usage,
+      error: (data as any)?.error,
+    }).slice(0, 1000)
+  } catch {
+    return "无法序列化响应"
+  }
+}
+
+async function doFetch(url: string, body: string): Promise<Response> {
+  try {
+    return await fetch(url, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        ...(aiConfig.apiKey ? { Authorization: "Bearer " + aiConfig.apiKey } : {}),
+      },
+      body,
+    })
+  } catch (e) {
+    throw new Error(e instanceof TypeError ? `网络不可达 (${e.message})` : String(e))
+  }
+}
+
+async function parseSSEStream(
+  res: Response, onToken: (t: string) => void, onThinking?: (t: string) => void,
+): Promise<string> {
+  const reader = res.body?.getReader()
+  if (!reader) throw new Error("无法读取响应流")
+
+  const decoder = new TextDecoder()
+  let fullText = "", buffer = ""
+
+  try {
+    while (true) {
+      const { done, value } = await reader.read()
+      if (done) break
+      buffer += decoder.decode(value, { stream: true })
+      const lines = buffer.split("\n")
+      buffer = lines.pop() ?? ""
+
+      for (const line of lines) {
+        if (!line.trim().startsWith("data:")) continue
+        const data = line.trim().slice(5).trim()
+        if (data === "[DONE]") continue
+        try {
+          const chunk = JSON.parse(data)
+          const delta = chunk.choices?.[0]?.delta
+          if (!delta) continue
+          if (delta.reasoning_content && onThinking) onThinking(delta.reasoning_content)
+          if (delta.content) { fullText += delta.content; onToken(delta.content) }
+        } catch { /* ignore */ }
+      }
+    }
+  } finally { reader.releaseLock() }
+
+  return fullText
 }
 
 function toAPIMessage(m: Message): APIMessage {

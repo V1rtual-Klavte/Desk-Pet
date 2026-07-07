@@ -80,7 +80,7 @@ async function testRegistry() {
   const mock: import("@/services/tool/types").ToolDef = {
     id: "test-mock", name: "test_mock", description: "Mock",
     parameters: { type: "object", properties: {}, required: [] },
-    safetyLevel: "SAFE", source: "local", sourceId: "", mode: "pet",
+    safetyLevel: "SAFE", source: "local", sourceId: "", mode: "pet", actionCategory: "_default",
     async handler() { return { success: true, content: "ok" } },
   }
   register(mock)
@@ -145,43 +145,45 @@ async function testSafety() {
 // ── 5. 上下文引擎 ──
 
 async function testContext() {
-  section("上下文引擎")
-  const { buildContext } = await import("@/services/context/builder")
+  section("上下文引擎 (v4)")
+  const { buildCapabilityPrompt } = await import("@/services/context/builder")
+  const { getPoolSnapshot } = await import("@/services/personality/variable-pool")
   const { MemoryService } = await import("@/services/agent/memory")
 
   // 添加记忆
   MemoryService.append("用户喜欢 Python 和 Rust", "user", 7)
   MemoryService.append("桌面在 ~/Desktop", "general", 5)
 
-  const result = buildContext({
+  const pool = getPoolSnapshot()
+  const result = buildCapabilityPrompt({
     recentMessages: [{ id: "1", role: "user", text: "帮我看看桌面有什么文件", timestamp: Date.now() }],
     userText: "帮我看看桌面有什么文件",
     unansweredCount: 0,
     thinkingEffort: "medium",
-  })
+  }, null, pool)
 
   ok("systemPrompt 非空", result.systemPrompt.length > 0)
-  ok("systemPrompt 含人格", result.systemPrompt.includes("糖糖") || result.systemPrompt.length > 50)
+  ok("systemPrompt 含能力提示", result.systemPrompt.includes("桌面助手") || result.systemPrompt.length > 50)
   ok("tools 有声明", result.tools.length > 0, `工具数: ${result.tools.length}`)
   ok("estimatedTokens > 0", result.estimatedSystemTokens > 0)
 
   // 测试无工具场景（闲聊）
-  const ctx2 = buildContext({
+  const ctx2 = buildCapabilityPrompt({
     recentMessages: [{ id: "2", role: "user", text: "你好呀", timestamp: Date.now() }],
     userText: "你好呀",
     unansweredCount: 0,
     thinkingEffort: "low",
-  })
+  }, null, pool)
   ok("闲聊有 systemPrompt", ctx2.systemPrompt.length > 0)
 
   // 主动搭话 → 无工具
-  const ctx3 = buildContext({
+  const ctx3 = buildCapabilityPrompt({
     recentMessages: [],
     userText: "主人打开了 VS Code",
     unansweredCount: 5,
     thinkingEffort: "low",
     isActiveMessage: true,
-  })
+  }, null, pool)
   ok("主动搭话 无工具", ctx3.tools.length === 0, `工具数: ${ctx3.tools.length}`)
 
   // 清理
@@ -417,8 +419,8 @@ async function testReply() {
   const r2 = generateReply(long, { maxLength: 500 })
   ok("过长截断", r2.length <= 520, `长度: ${r2.length}`)
 
-  const r3 = generateReply("你好", { autoKaomoji: false })
-  ok("不加 kaomoji", r3 === "你好", r3)
+  const r3 = generateReply("你好", { maxLength: 500 })
+  ok("基础消息不变", r3 === "你好", r3)
 }
 
 // ── 13. Skill 系统 ──
@@ -491,12 +493,8 @@ async function testSafetyPat() {
 // ── 16. Plan 步骤 ──
 
 async function testPlan() {
-  section("Plan 步骤")
-  const { planStep } = await import("@/services/engine/plan")
-
-  // planStep 现在是 async，仅接受 userText
-  const r1 = await planStep("帮我整理桌面文件")
-  ok("轻量模式不触发", !r1.triggered)
+  section("Plan 步骤 (v4: 已移除 planStep，Phase1 自己拆解任务)")
+  ok("v4 Plan 已合并到 Phase1", true)
 }
 
 // ── 17. 上下文压缩 ──

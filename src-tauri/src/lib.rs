@@ -24,6 +24,7 @@ use crate::commands::{
     get_memory_dir, get_memory_file, get_session_file, init_memory_files,
     list_session_files, delete_session_file, file_delete,
     get_profiles_dir, profile_file_write, profile_file_read, profile_delete, list_user_profiles, list_profile_files,
+    get_personality_dir, get_cards_dir, personality_file_read, personality_file_write, personality_file_list, personality_file_delete,
     spawn_cursor_tracker,
 };
 
@@ -142,6 +143,12 @@ pub fn run() {
             profile_delete,
             list_user_profiles,
             list_profile_files,
+            get_personality_dir,
+            get_cards_dir,
+            personality_file_read,
+            personality_file_write,
+            personality_file_list,
+            personality_file_delete,
         ])
         .run(tauri::generate_context!())
         .expect("startup failure");

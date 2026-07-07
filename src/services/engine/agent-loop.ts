@@ -1,25 +1,28 @@
 // ==========================================
-// 核心引擎 —— Agent Loop
-// 统一的 Agent 循环：请求 AI → 解析 → 中间件 → 安全 → 执行 → 回注 → 循环
-// 轻量和助手模式共用同一套 Loop
+// Agent Loop v4 — 变量池 + When + Phase1/2 + 情绪剥离
+// 每次用户消息: Phase1(能力) + Phase2(风格) 固定 2 次 LLM 调用
+// chatHistory: 用户消息 + Phase1工具链 + Phase2回复
 // ==========================================
 
 import type { Message } from "@/services/agent/types"
 import { createMessageId, createToolMessage } from "@/services/agent/types"
-import { buildContext } from "@/services/context/builder"
+import { buildCapabilityPrompt, buildStylePrompt, summarizeToolCalls } from "@/services/context/builder"
 import { executeTool } from "@/services/tool/router"
 import { getToolByName } from "@/services/tool/registry"
 import { checkSafety, trustToolInSession } from "@/services/safety/checker"
 import { requestConfirm } from "@/services/safety/confirm"
 import { PetPersonalityMiddleware } from "@/services/personality/middleware"
 import type { PersonalityEffect } from "@/services/personality/middleware"
-import { getEffectiveThinkingEffort } from "@/services/debug"
-import { planStep } from "./plan"
+import { getActiveCard } from "@/services/personality/registry"
+import { refreshVariablePool, getPoolSnapshot, savePoolToDisk } from "@/services/personality/variable-pool"
+import { evaluateWhenEngine } from "@/services/personality/when-engine"
+import { stripEmotionTag, resolveEmotion } from "@/services/personality/emotion"
+import { getEffectiveThinkingEffort, updateRequestStats } from "@/services/debug"
 import { transition, recordMessage, recordToolCall } from "./session"
-import { loopConfig, modeConfig } from "@/services/config"
+import { pushMessage, chatHistory } from "@/services/session/store"
+import { loopConfig, modeConfig, personalityConfig, replyConfig } from "@/services/config"
 import { createLogger } from "@/services/logger"
 import { emit } from "@tauri-apps/api/event"
-import { updateRequestStats } from "@/services/debug"
 import { MemoryService } from "@/services/agent/memory"
 import { shouldCompact, compactMessages, estimateTokens, compactIncremental, compactOnHighUsage } from "./compactor"
 
@@ -29,6 +32,7 @@ export interface AgentLoopInput {
   userText: string
   chatMessages: Message[]
   unansweredCount: number
+  messageCount: number
   isActiveMessage?: boolean
   isRetry?: boolean
 }
@@ -37,106 +41,176 @@ export interface AgentLoopOutput {
   reply: string
   toolCallHistory: { toolName: string; status: string; personalityMsg?: string }[]
   retriesUsed: number
-  /** 各阶段人格效果（表情+音效），供 UI 驱动 */
   effects: { expression: string; soundEvent: string | null }[]
 }
 
 export async function runAgentLoop(input: AgentLoopInput): Promise<AgentLoopOutput> {
-  const { userText, chatMessages, unansweredCount, isActiveMessage, isRetry } = input
+  const { userText, chatMessages, unansweredCount, messageCount, isActiveMessage } = input
   const toolCallHistory: AgentLoopOutput["toolCallHistory"] = []
   const effects: AgentLoopOutput["effects"] = []
   const startTime = Date.now()
   let retriesUsed = 0
-  let lastError: Error | null = null
 
   recordMessage()
-
-  // ── 记录用户轮次 → sessions/*.md ──
   MemoryService.recordTurn("user", userText)
 
-  const thinkingEffort = getEffectiveThinkingEffort()
-  const ctx = buildContext({ recentMessages: chatMessages, userText, unansweredCount, thinkingEffort, isActiveMessage })
+  // ═══ 0. 变量池 + When 引擎 ═══
+  const pool = refreshVariablePool({ unansweredCount, messageCount })
+  const card = getActiveCard()
 
-  // ── Plan 步骤（助手模式 + 复杂任务，LLM 驱动）──
-  const plan = await planStep(userText)
-  if (plan.triggered) {
-    ctx.systemPrompt += plan.hint
-    applyEffect(PetPersonalityMiddleware.wrap("planning"), effects)
+  let activeTone = ""
+  if (card) {
+    const hit = evaluateWhenEngine(card.sections.whenRules, pool)
+    activeTone = hit?.tone ?? "正常交流，保持角色设定"
   }
 
-  // ── 人格中间件: thinking ──
-  const thinkingEffect = PetPersonalityMiddleware.wrap("thinking")
-  applyEffect(thinkingEffect, effects)
+  const thinkingEffort = getEffectiveThinkingEffort()
+  const personalityEnabled = personalityConfig.enabled && card !== null
+
+  // ═══ 1. Phase1: 能力层 ═══
+  const capCtx = buildCapabilityPrompt(
+    { recentMessages: chatMessages, userText, unansweredCount, thinkingEffort, isActiveMessage },
+    card, getPoolSnapshot(),
+  )
+  applyEffect(PetPersonalityMiddleware.wrap("thinking"), effects)
 
   const { OpenAICompatibleProvider } = await import("@/services/agent/provider")
   const provider = new OpenAICompatibleProvider()
 
   const maxRounds = loopConfig.maxToolCallsPerTurn
-  const maxRetry = loopConfig.maxRetry + 1 // +1 = initial attempt + retries
+  const maxRetry = loopConfig.maxRetry + 1
   const turnTimeout = loopConfig.turnTimeoutMs
 
-  // ── 主循环（含 retry）──
-  for (let attempt = 0; attempt < maxRetry; attempt++) {
-    if (attempt > 0) {
-      retriesUsed = attempt
-      log.warn("重试", attempt, "/", loopConfig.maxRetry, lastError?.message ?? "")
-    }
+  let phase1Reply = ""
+  let emotionTag: string | null = null
 
+  // ── Phase1 工具循环 ──
+  for (let attempt = 0; attempt < maxRetry; attempt++) {
+    if (attempt > 0) retriesUsed = attempt
     try {
-      const result = await runLoopIteration({
-        provider, ctx, chatMessages, maxRounds, startTime, turnTimeout, toolCallHistory, thinkingEffort, effects, userText,
+      const result = await runPhase1Loop({
+        provider, systemPrompt: capCtx.systemPrompt, tools: capCtx.tools,
+        chatMessages, maxRounds, startTime, turnTimeout, toolCallHistory,
+        thinkingEffort, effects, userText,
       })
-      transition("WAITING")
-      // ── 记录助理轮次 + 后台补记忆 ──
-      MemoryService.recordTurn("assistant", result.reply)
-      // ★ 轮次结束后检测是否需要压缩会话
-      compactOnHighUsage(chatMessages, userText)
-      if (modeConfig.assistant) {
-        MemoryService.forkMemorySupplement(
-          `用户: ${userText.substring(0, 200)}\n糖糖: ${result.reply.substring(0, 200)}`
-        )
-      }
-      const doneEffect = PetPersonalityMiddleware.wrap("done", {
-        toolName: toolCallHistory.length > 0 ? toolCallHistory[toolCallHistory.length - 1]?.toolName : undefined,
-      })
-      applyEffect(doneEffect, effects)
-      return { ...result, retriesUsed, effects }
+      phase1Reply = result.reply
+      break
     } catch (e) {
-      lastError = e instanceof Error ? e : new Error(String(e))
+      const err = e instanceof Error ? e : new Error(String(e))
       if (attempt >= maxRetry - 1) {
-        log.error("所有重试耗尽")
+        log.error("Phase1 重试耗尽")
         transition("WAITING")
-        const errEffect = PetPersonalityMiddleware.wrap("error", { message: "啊...信号不太好，等会儿再试试？" })
+        const errEffect = PetPersonalityMiddleware.wrap("error", { message: "啊...信号不太好～" })
         applyEffect(errEffect, effects)
-        return {
-          reply: "（唔…试了好几次都失败了，等一下再找我哦～）",
-          toolCallHistory,
-          retriesUsed,
-          effects,
-        }
+        return { reply: "（唔…试了好几次都失败了…）", toolCallHistory, retriesUsed, effects }
       }
     }
   }
 
+  // ═══ 2. 无角色 = 直接返回 ═══
+  if (!personalityEnabled || !card) {
+    transition("WAITING")
+    savePoolToDisk()
+    MemoryService.recordTurn("assistant", phase1Reply)
+    compactOnHighUsage(chatMessages, userText)
+    const doneEffect = PetPersonalityMiddleware.wrap("done", { actionCategory: "_default" })
+    applyEffect(doneEffect, effects)
+    return { reply: phase1Reply, toolCallHistory, retriesUsed, effects }
+  }
+
+  // ═══ 3. Phase2: 风格化 ═══
+  const toolSummary = summarizeToolCalls(toolCallHistory)
+  const styleCtx = buildStylePrompt({
+    card, rawReply: phase1Reply, userText, pool: getPoolSnapshot(), toolCallSummary: toolSummary,
+  })
+
+  let finalReply = phase1Reply
+  let success = false
+
+  for (let attempt = 0; attempt <= replyConfig.phase2Retry; attempt++) {
+    try {
+      if (replyConfig.streamEnabled) {
+        // 流式 — 首个 token 立即剥离情绪标签
+        let firstTokenBuf = ""
+        let tagStripped = false
+        const raw = await provider.generateReplyStream(
+          {
+            messages: [
+              { id: createMessageId(), role: "user" as const, text: styleCtx.userMessage, timestamp: Date.now() },
+            ],
+            systemPrompt: styleCtx.systemPrompt,
+            thinkingEffort: replyConfig.phase2ThinkingEffort as any,
+          },
+          (token) => {
+            if (!tagStripped) {
+              firstTokenBuf += token
+              const parsed = stripEmotionTag(firstTokenBuf)
+              if (parsed.emotionKey !== null || firstTokenBuf.length > 25) {
+                tagStripped = true
+                if (parsed.emotionKey) emotionTag = parsed.emotionKey
+                if (parsed.text) emit("reply-token", { token: parsed.text })
+              }
+            } else {
+              emit("reply-token", { token })
+            }
+          },
+        )
+        // 流式完成后统一剥离（确保 emotionTag 有值）
+        if (!tagStripped) {
+          const parsed = stripEmotionTag(raw)
+          finalReply = parsed.text
+          emotionTag = parsed.emotionKey
+        } else {
+          const parsed = stripEmotionTag(raw)
+          finalReply = parsed.text
+          if (!emotionTag) emotionTag = parsed.emotionKey
+        }
+      } else {
+        const result = await provider.generateReply({
+          messages: [
+            { id: createMessageId(), role: "user" as const, text: styleCtx.userMessage, timestamp: Date.now() },
+          ],
+          systemPrompt: styleCtx.systemPrompt,
+          thinkingEffort: replyConfig.phase2ThinkingEffort as any,
+        })
+        const parsed = stripEmotionTag(result.text)
+        finalReply = parsed.text
+        emotionTag = parsed.emotionKey
+      }
+      success = true
+      break
+    } catch (e) {
+      if (attempt < replyConfig.phase2Retry) {
+        applyEffect(PetPersonalityMiddleware.wrap("retry"), effects)
+      }
+    }
+  }
+
+  // ═══ 4. 收尾 ═══
+  const emoMappings = card.sections.emotionMappings
+  const resolved = resolveEmotion(emotionTag, emoMappings)
+  effects.push({ expression: resolved.expression, soundEvent: resolved.sound })
+  emit("deskpet-expression", { expression: resolved.expression }).catch(() => {})
+  if (resolved.sound) emit("deskpet-sound", { event: resolved.sound }).catch(() => {})
+
   transition("WAITING")
-  return { reply: "（唔…出了点问题…）", toolCallHistory, retriesUsed, effects }
+  MemoryService.recordTurn("assistant", finalReply)
+  compactOnHighUsage(chatMessages, userText)
+
+  savePoolToDisk()
+
+  return { reply: finalReply, toolCallHistory, retriesUsed, effects }
 }
 
-// ── 单轮 Loop 执行 ──
+// ── Phase1 工具循环 ──
 
-async function runLoopIteration(opts: {
-  provider: any
-  ctx: any
-  chatMessages: Message[]
-  maxRounds: number
-  startTime: number
-  turnTimeout: number
-  toolCallHistory: { toolName: string; status: string; personalityMsg?: string }[]
-  thinkingEffort: string
-  effects: { expression: string; soundEvent: string | null }[]
-  userText: string
-}): Promise<{ reply: string; toolCallHistory: typeof opts.toolCallHistory }> {
-  const { provider, ctx, chatMessages, maxRounds, startTime, turnTimeout, toolCallHistory, thinkingEffort, effects, userText } = opts
+async function runPhase1Loop(opts: {
+  provider: any; systemPrompt: string; tools: any[]
+  chatMessages: Message[]; maxRounds: number; startTime: number
+  turnTimeout: number; toolCallHistory: any[]
+  thinkingEffort: string; effects: any[]; userText: string
+}): Promise<{ reply: string }> {
+  const { provider, systemPrompt, tools, chatMessages, maxRounds, startTime, turnTimeout, toolCallHistory, thinkingEffort, effects, userText } = opts
   const loopMessages: Message[] = [...chatMessages]
   let finalReply = ""
   let roundCount = 0
@@ -145,197 +219,118 @@ async function runLoopIteration(opts: {
 
   while (roundCount < maxRounds) {
     if (Date.now() - startTime > turnTimeout) {
-      log.warn("Agent Loop 总轮次超时")
-      finalReply = "（唔…处理时间太长了，等下再说哦～）"
+      finalReply = "（处理时间太长了…）"
       break
     }
-
     roundCount++
 
     const response = await provider.generateReply({
       messages: loopMessages,
-      systemPrompt: ctx.systemPrompt,
-      tools: ctx.tools,
+      systemPrompt,
+      tools,
       thinkingEffort,
-      streamEnabled: loopConfig.streamEnabled,
     })
 
     const { text, toolCalls, thinking } = response
-    const usage = (response as any).usage
-
-    // 更新 debug 状态（含会话 tokens 占比）
     const convTokens = estimateTokens(loopMessages)
     updateRequestStats({
-      promptTokens: usage?.promptTokens,
-      completionTokens: usage?.completionTokens,
-      systemTokens: ctx.estimatedSystemTokens,
+      promptTokens: response.usage?.promptTokens,
+      completionTokens: response.usage?.completionTokens,
+      systemTokens: Math.ceil(systemPrompt.length / 2.5),
       conversationTokens: convTokens,
-      toolCount: roundCount === 1 ? ctx.tools.length : 0,
-      toolNames: roundCount === 1 ? ctx.tools.map((t: any) => t.function.name) : [],
+      toolCount: roundCount === 1 ? tools.length : 0,
+      toolNames: roundCount === 1 ? tools.map((t: any) => t.function.name) : [],
     })
 
-    // ── 上下文压缩检测 ──
-    if (shouldCompact(ctx.estimatedSystemTokens + convTokens, ctx.contextMaxTokens)) {
-      const before = loopMessages.length
+    if (shouldCompact(Math.ceil(systemPrompt.length / 2.5) + convTokens, 16000)) {
       const compacted = compactMessages(loopMessages)
       loopMessages.length = 0
       loopMessages.push(...compacted)
-
-      // ★ 增量压缩：LLM 生成结构化摘要 → 异步写回 sessions/*.md
-      compactIncremental(
-        loopMessages,  // 压缩后的消息列表（含摘要占位 + 近40%原始消息）
-        MemoryService.getCompactionSummarySync() || null,
-        userText,
-      ).then(summary => {
-        if (summary) log.info("增量压缩完成:", summary.mainRequest.substring(0, 50))
-      }).catch(() => {})
-
-      log.info("上下文已压缩:", before, "→", compacted.length, "条消息")
+      compactIncremental(loopMessages, MemoryService.getCompactionSummarySync() || null, userText)
+        .then(() => {}).catch(() => {})
     }
 
     if (toolCalls.length === 0) {
       finalReply = text
-      log.info("AI 回复:", text.substring(0, 80))
       break
     }
-
-    log.info("AI 工具调用:", toolCalls.map((t: { name: string }) => t.name).join(", "))
 
     transition("EXECUTING")
 
     const assistantMsg: Message = {
-      id: createMessageId(),
-      role: "assistant",
-      text: text || "",
-      toolCalls,
-      thinking,
-      timestamp: Date.now(),
+      id: createMessageId(), role: "assistant", text: text || "",
+      toolCalls, thinking, timestamp: Date.now(),
     }
     loopMessages.push(assistantMsg)
+    pushMessage(assistantMsg) // 持久化到 chatHistory
 
-    let allAllowed = true
     for (const tc of toolCalls) {
       recordToolCall()
-
       const params = parseArgs(tc.arguments)
       const tool = getToolByName(tc.name)
 
-      // ── 人格中间件: executing ──
-      const execEffect = PetPersonalityMiddleware.wrap("executing", { toolName: tc.name })
-      applyEffect(execEffect, effects)
-      emitToolEvent("tool-executing", { toolId: tc.name, toolName: tc.name, personalityHint: tool?.personalityHint?.executing }).catch(() => {})
+      const cat = tool?.actionCategory ?? "_default"
+      applyEffect(PetPersonalityMiddleware.wrap("executing", { actionCategory: cat, toolName: tc.name }), effects)
+      emitToolEvent("tool-executing", { toolId: tc.name, toolName: tc.name })
 
       if (!tool) {
-        toolCallHistory.push({ toolName: tc.name, status: "error", personalityMsg: `不认识 ${tc.name} 呢…` })
+        toolCallHistory.push({ toolName: tc.name, status: "error" })
         loopMessages.push(createToolMessage(tc.id, JSON.stringify({ toolCallId: tc.id, content: "", error: `工具不存在: ${tc.name}` })))
-        emitToolEvent("tool-completed", { toolId: tc.name, toolName: tc.name, success: false }).catch(() => {})
         continue
       }
 
-      // ── 安全校验 ──
       const safetyResult = checkSafety(tool, params, {
         mode: modeConfig.assistant ? "assistant" : "pet",
         sessionTrusted: false,
       })
 
       if (!safetyResult.allowed) {
-        allAllowed = false
-        const blockedEffect = PetPersonalityMiddleware.wrap("blocked", { toolName: tc.name })
-        applyEffect(blockedEffect, effects)
-        toolCallHistory.push({
-          toolName: tc.name, status: "blocked",
-          personalityMsg: safetyResult.personalityMessage ?? blockedEffect.userMessage ?? undefined,
-        })
-        loopMessages.push(createToolMessage(tc.id, JSON.stringify({
-          toolCallId: tc.id, content: "",
-          error: safetyResult.personalityMessage ?? "被安全策略拦截",
-        })))
+        applyEffect(PetPersonalityMiddleware.wrap("blocked", { actionCategory: cat, toolName: tc.name }), effects)
+        toolCallHistory.push({ toolName: tc.name, status: "blocked" })
+        loopMessages.push(createToolMessage(tc.id, JSON.stringify({ toolCallId: tc.id, content: "", error: safetyResult.personalityMessage ?? "被拦截" })))
         continue
       }
 
-      // ── 安全确认弹窗（需要用户确认时）──
       if (safetyResult.needsConfirm && safetyResult.confirmMessage) {
         const approved = await requestConfirm(tc.name, safetyResult.confirmMessage)
         if (!approved) {
-          const blockedEffect = PetPersonalityMiddleware.wrap("blocked", { toolName: tc.name })
-          applyEffect(blockedEffect, effects)
-          toolCallHistory.push({
-            toolName: tc.name, status: "denied",
-            personalityMsg: "用户取消了操作",
-          })
-          loopMessages.push(createToolMessage(tc.id, JSON.stringify({
-            toolCallId: tc.id, content: "",
-            error: "用户取消了操作",
-          })))
+          toolCallHistory.push({ toolName: tc.name, status: "denied" })
+          loopMessages.push(createToolMessage(tc.id, JSON.stringify({ toolCallId: tc.id, content: "", error: "用户取消" })))
           continue
         }
-        // 用户确认 → NORMAL 级别加入会话信任
-        if (tool.safetyLevel === "NORMAL") {
-          trustToolInSession(tc.name)
-        }
+        if (tool.safetyLevel === "NORMAL") trustToolInSession(tc.name)
       }
 
-      // ── 执行工具 ──
       const result = await executeTool(tc.name, params, {
         mode: modeConfig.assistant ? "assistant" : "pet",
         sessionTrusted: false,
       })
 
       if (result.success) {
-        const doneEffect = PetPersonalityMiddleware.wrap("done", { toolName: tc.name })
-        applyEffect(doneEffect, effects)
-        toolCallHistory.push({
-          toolName: tc.name, status: "done",
-          personalityMsg: tool.personalityHint?.done ?? "完成啦～",
-        })
+        applyEffect(PetPersonalityMiddleware.wrap("done", { actionCategory: cat, toolName: tc.name }), effects)
+        toolCallHistory.push({ toolName: tc.name, status: "done" })
       } else {
-        const errEffect = PetPersonalityMiddleware.wrap("error", { toolName: tc.name, message: result.error })
-        applyEffect(errEffect, effects)
+        applyEffect(PetPersonalityMiddleware.wrap("error", { actionCategory: cat, toolName: tc.name, message: result.error }), effects)
         toolCallHistory.push({ toolName: tc.name, status: "error" })
       }
 
-      loopMessages.push(createToolMessage(tc.id,
-        result.success ? result.content : `Error: ${result.error}`))
-      emitToolEvent("tool-completed", {
-        toolId: tc.name, toolName: tc.name,
-        success: result.success,
-        personalityHint: result.success ? tool.personalityHint?.done : undefined,
-      }).catch(() => {})
-    }
-
-    if (!allAllowed && !text) {
-      finalReply = toolCallHistory
-        .filter(h => h.status === "blocked" && h.personalityMsg)
-        .map(h => h.personalityMsg)
-        .join("\n") || "唔…这些操作现在不能做呢～"
-      break
+      loopMessages.push(createToolMessage(tc.id, result.success ? result.content : `Error: ${result.error}`))
+      pushMessage(createToolMessage(tc.id, result.success ? result.content : `Error: ${result.error}`)) // 持久化
+      emitToolEvent("tool-completed", { toolId: tc.name, toolName: tc.name, success: result.success })
     }
   }
 
   if (!finalReply && roundCount >= maxRounds) {
-    try {
-      const summaryReq = await provider.generateReply({
-        messages: loopMessages,
-        systemPrompt: ctx.systemPrompt + "\n\n请基于以上工具执行结果，用简短口语化中文总结。",
-        thinkingEffort: "low",
-      })
-      finalReply = summaryReq.text || "搞定啦～"
-    } catch {
-      finalReply = "（处理完了…但结果有点复杂呢～）"
-    }
+    finalReply = "（处理完成，但结果太复杂了…）"
   }
 
-  return { reply: finalReply, toolCallHistory }
+  return { reply: finalReply }
 }
 
-/** 将人格效果收集到列表，并发射 expression 事件供 UI 响应 */
+// ── 辅助 ──
+
 function applyEffect(effect: PersonalityEffect, effects: { expression: string; soundEvent: string | null }[]): void {
   effects.push({ expression: effect.expression, soundEvent: effect.soundEvent })
-  // 发射 expression 事件给 StreamView
-  emit("deskpet-expression", { expression: effect.expression }).catch(() => {})
-  if (effect.soundEvent) {
-    emit("deskpet-sound", { event: effect.soundEvent }).catch(() => {})
-  }
 }
 
 function parseArgs(args: string): Record<string, unknown> {
@@ -343,9 +338,5 @@ function parseArgs(args: string): Record<string, unknown> {
 }
 
 async function emitToolEvent(event: string, payload: Record<string, unknown>): Promise<void> {
-  try {
-    await emit(event, payload)
-  } catch {
-    // 事件发送静默失败，不影响主流程
-  }
+  try { await emit(event, payload) } catch { /* 静默失败 */ }
 }

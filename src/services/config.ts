@@ -58,7 +58,6 @@ interface Config {
     requireApiKey: boolean
     model: string
     contextMaxTokens: number
-    defaultSystemPrompt: string
     fallbackReplies: string[]
     thinking: {
       effort: string
@@ -69,15 +68,21 @@ interface Config {
       active: string
       cards: { id: string; name: string; path: string; description: string }[]
     }
+    reply: {
+      streamEnabled: boolean
+      phase2Retry: number
+      phase2ThinkingEffort: string
+    }
     loop: {
       maxRetry: number
       maxToolCallsPerTurn: number
       toolTimeoutMs: number
       turnTimeoutMs: number
-      streamEnabled: boolean
       contextCompactAt: number
+      dedupWindowMs: number
+      maxVisibleMessages: number
     }
-    memory: { maxEntries: number }
+    memory: { maxEntries: number; maxSessions: number }
     lock: { safetyTimeoutMs: number }
     windowMonitor: {
       enabled: boolean
@@ -207,7 +212,7 @@ const KEY_MIGRATION: Record<string, string> = {
   "logging.level":                     "general.logging.level",
   "safety.mode":                       "ai.safety.mode",
   "safety.sessionTrustEnabled":        "ai.safety.sessionTrustEnabled",
-  "loop.streamEnabled":                "ai.loop.streamEnabled",
+  "loop.streamEnabled":                "ai.reply.streamEnabled",
 };
 
 let _overridesCache: Record<string, any> | null = null;
@@ -328,9 +333,14 @@ const _ai = {
       high: overrideOr("ai.thinking.budget.high", cfg.ai?.thinking?.budget?.high ?? 16000),
     };
   },
-  get defaultSystemPrompt() { return overrideOr("ai.defaultSystemPrompt", cfg.ai?.defaultSystemPrompt || "你叫糖糖，是一个在直播的虚拟主播。"); },
   get fallbackReplies() { return overrideOr("ai.fallbackReplies", cfg.ai?.fallbackReplies || ["嗯嗯～"]); },
   get configured() { if (!this.endpoint) return false; if (!this.requireApiKey) return true; return Boolean(this.apiKey); },
+};
+
+export const replyConfig = {
+  get streamEnabled() { return overrideOr("ai.reply.streamEnabled", cfg.ai?.reply?.streamEnabled ?? false); },
+  get phase2Retry() { return overrideOr("ai.reply.phase2Retry", cfg.ai?.reply?.phase2Retry ?? 1); },
+  get phase2ThinkingEffort() { return overrideOr("ai.reply.phase2ThinkingEffort", cfg.ai?.reply?.phase2ThinkingEffort ?? "low"); },
 };
 export const aiConfig = _ai;
 
@@ -356,6 +366,7 @@ export const aiLockConfig = {
 
 export const memoryConfig = {
   get maxEntries() { return overrideOr("ai.memory.maxEntries", cfg.ai?.memory?.maxEntries || 200); },
+  get maxSessions() { return overrideOr("ai.memory.maxSessions", cfg.ai?.memory?.maxSessions ?? 20); },
 };
 
 export const loopConfig = {
@@ -363,8 +374,9 @@ export const loopConfig = {
   get maxToolCallsPerTurn() { return overrideOr("ai.loop.maxToolCallsPerTurn", cfg.ai?.loop?.maxToolCallsPerTurn ?? 5); },
   get toolTimeoutMs() { return overrideOr("ai.loop.toolTimeoutMs", cfg.ai?.loop?.toolTimeoutMs ?? 30000); },
   get turnTimeoutMs() { return overrideOr("ai.loop.turnTimeoutMs", cfg.ai?.loop?.turnTimeoutMs ?? 120000); },
-  get streamEnabled() { return overrideOr("ai.loop.streamEnabled", cfg.ai?.loop?.streamEnabled ?? true); },
   get contextCompactAt() { return overrideOr("ai.loop.contextCompactAt", cfg.ai?.loop?.contextCompactAt ?? 0.95); },
+  get dedupWindowMs() { return overrideOr("ai.loop.dedupWindowMs", cfg.ai?.loop?.dedupWindowMs ?? 30000); },
+  get maxVisibleMessages() { return overrideOr("ai.loop.maxVisibleMessages", cfg.ai?.loop?.maxVisibleMessages ?? 200); },
 };
 
 export const safetyConfig = {

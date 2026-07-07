@@ -5,6 +5,7 @@
 import type { ToolDef } from "../types"
 import { register } from "../registry"
 import { invoke } from "@tauri-apps/api/core"
+import { loopConfig } from "@/services/config"
 import { createLogger } from "@/services/logger"
 
 const log = createLogger("ToolApp")
@@ -24,11 +25,8 @@ const appOpenTool: ToolDef = {
   source: "local",
   sourceId: "",
   mode: "assistant",
-  timeoutMs: 10000,
-  personalityHint: {
-    executing: "帮你打开...",
-    done: "打开了～",
-  },
+  timeoutMs: loopConfig.toolTimeoutMs,
+  actionCategory: "app.launch",
   async handler(params) {
     try {
       const result = await invoke<{ success: boolean }>("app_open", {

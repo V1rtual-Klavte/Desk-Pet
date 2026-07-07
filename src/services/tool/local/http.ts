@@ -5,6 +5,7 @@
 
 import type { ToolDef } from "../types"
 import { register } from "../registry"
+import { loopConfig } from "@/services/config"
 import { createLogger } from "@/services/logger"
 
 const log = createLogger("ToolHttp")
@@ -24,11 +25,8 @@ const httpTool: ToolDef = {
   source: "local",
   sourceId: "",
   mode: "pet",
-  timeoutMs: 20000,
-  personalityHint: {
-    executing: "帮你上网查查...",
-    done: "查到了～",
-  },
+  timeoutMs: loopConfig.toolTimeoutMs,
+  actionCategory: "net.fetch",
   async handler(params) {
     const url = String(params.url)
 

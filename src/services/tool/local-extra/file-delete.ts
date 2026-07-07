@@ -5,6 +5,7 @@
 
 import type { ToolDef } from "../types"
 import { register } from "../registry"
+import { loopConfig } from "@/services/config"
 import { createLogger } from "@/services/logger"
 
 const log = createLogger("ToolFDel")
@@ -24,12 +25,8 @@ const fileDeleteTool: ToolDef = {
   source: "local",
   sourceId: "",
   mode: "assistant",
-  timeoutMs: 5000,
-  personalityHint: {
-    executing: "让我删掉这个...",
-    done: "删掉了...",
-    blocked: "绝对不能删除文件！",
-  },
+  timeoutMs: loopConfig.toolTimeoutMs,
+  actionCategory: "fs.write",
   async handler() {
     return { success: false, content: "", error: "文件删除操作已被硬禁止" }
   },

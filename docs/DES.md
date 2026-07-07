@@ -27,47 +27,45 @@
 
 每个会话的对话轮次**实时写入** `sessions/session-YYYYMMDD-HHmmss-主题.md`，首次用户消息后自动提取主题并重命名文件。**累计 token 消耗、上下文占比同步持久化到 .md 元数据**，重启后自动恢复。随时可查看历史记录。
 
-#### Agent Loop 机制
-
-用户消息不是简单的"发→回"，而是经过完整的 **Agent Loop** 多轮工具调用循环：
+#### Agent Loop 机制 (v4 — 两阶段)
 
 ```
-用户消息 → PreProcessor(slash/去重) → 人格中间件(thinking)
-  → 思考强度决策(auto/low/medium/high)
-  → ContextEngine.build(人格+记忆+工具+约束)
-  → [Plan] 助手模式+复杂任务拆解
-  → AI Provider (HTTP, 含工具调用+thinking参数)
-  → 解析输出 → 有工具调用?
-    → 人格中间件(executing) → 安全检查 → 执行工具 → 结果回注 → 循环
-  → 上下文利用率>95% → 自动压缩
-  → 人格中间件(done) → ReplyGenerator 后处理 → UI 展示
+用户消息 → PreProcessor → 变量池刷新 + When引擎求值
+  → Phase1 (零身份能力层, 非流式)
+    → 工具循环: 安全检查→执行→回注 → rawReply + toolCallHistory
+  → Phase2 (角色风格层, 可选流式) [Card存在+人格启用]
+    → 角色设定+语言风格+情绪标签[emo:key] → 流式推UI并剥离标签
+  → 变量池异步持久化 → 上下文压缩
 ```
+
+- 固定 2 次 LLM: Phase1 + Phase2。人格禁用→跳过 Phase2
+- Phase1 零身份、无名字；Phase2 身份 100% 来自 Card sections
+- 变量池: 8 系统变量(只读) + LLM 管理角色变量(≤100)
+- When 引擎: `#行为进阶` 条件表达式实时语气切换
+- 情绪标签: `[emo:key]` 开头隐式携带，流式第一 token 剥离
+- chatHistory: 用户消息 + Phase1工具链 + Phase2回复
+- 已移除: plan.ts, boundary.ts, defaultSystemPrompt
 
 ### 2.3 人格系统（独立模块）
 
 人格系统已从 Agent 执行层分离为 `src/services/personality/` 独立模块，**只参与 Prompt 生成**，不影响 Agent 执行逻辑。
 
-- **人格卡**：统一 YAML frontmatter + Markdown 模板，位于 `personality/cards/`
-- **热插拔**：设置面板可随时启用/禁用某个人格，或关闭人格系统使用默认人格
-- **界限联动**：人格界限系统（boundary）根据 `unansweredCount` 影响 Prompt 语气，不改人格卡内容
-- **扩展性**：新人格只需在 `cards/` 目录添加 `.md` 文件并在 `loader.ts` 注册即可
+- **人格卡**：YAML frontmatter + 7 section Markdown；内置卡位于 `src/services/personality/cards/`，用户导入卡也持久化到 `src/services/personality/cards/`
+- **热插拔**：设置面板可随时切换/禁用 Card，切换为事务式阻塞流程：stages 加载/生成、变量池初始化/持久化任一失败则回滚旧 Card
+- **When 引擎**：Card `#行为进阶` 定义条件规则，根据变量池实时切换语气
+- **情绪表达**：Card `#情绪表达` 定义 `key → 表情,音效` 映射，Phase2 [emo:key] 驱动
+- **阶段文案**：per-card stages 由 LLM 生成并持久化到 `src/services/personality/stages/{cardId}.json`
+- **变量池**：`src/services/personality/vars.json` 单例，系统变量(8,只读) + 角色变量(LLM自由管理)，重启时 cardId 匹配则恢复角色变量
+- **扩展性**：内置 cards 由 `import.meta.glob` 自动扫描；用户 cards 通过 Tauri fs 导入/扫描
 
-#### 人格中间件（横切所有 Agent 阶段）
+#### 人格中间件 v4（stages 缓存驱动）
 
-人格不只是 Prompt 生成器，而是包裹整个 Agent 循环的横切中间件。8 个阶段各有不同的表情、音效、角色化文案：
-
-| 阶段 | 表情 | 用户看到 | 音效 |
-|------|------|----------|------|
-| thinking | smile | 无 (除非超长) | — |
-| planning | business | "嗯...让我想想怎么帮你～" | — |
-| generating | smile | 流式文本 | — |
-| executing | business | 工具→角色化文案映射 | — |
-| blocked | gaoo | "唔...这个我不能做呢～" | — |
-| error | sleepy | "啊...信号不太好～" | — |
-| done | chu | 工具完成文案 | reply |
-| idle | idle | 主动搭话(按boundary) | — |
-
-工具调用翻译为角色化语言（`TOOL_PERSONALITY_MAP`），例如 `file_read` → "让我读读这个文件..." → "读完啦～"。
+```ts
+PetPersonalityMiddleware.wrap(stage, { actionCategory })
+```
+- 阶段文案由 stages-cache 返回（per-card LLM 生成），无硬编码
+- executing/done/blocked 按 `actionCategory`（fs.read/os.exec/.../`_default`）匹配
+- 表情/音效使用默认值兜底，情绪标签驱动的表情在 Phase2 收尾阶段覆盖
 
 ### 2.4 窗口感知主动搭话 ★ 核心机制
 
@@ -76,13 +74,20 @@
 - 用户在看 B站 → 桌宠："Pちゃん又在刷视频？让我也看看嘛～"
 - 用户在写文档 → 桌宠："好认真哦…偶尔也理理我嘛"
 
-### 2.5 人格进化（界限系统）
+### 2.5 动态语气（When 引擎）
 
-角色的 **unansweredCount（未回复计数）** 和 **boundary（人格界限）** 决定语气和深度：
-- 刚刚回复过（unansweredCount=0）→ 甜蜜活泼
-- 长时间不理她 → 逐渐变得不安、焦虑、甚至病娇
+Card 的 `#行为进阶` section 定义条件规则，实时切换语气：
 
-不同人格卡对这几个层级有不同演绎（参见 angelkawaii.md）。
+```md
+## 规则: 深度病娇
+when: unansweredCount >= 3 OR 亲密度 >= 9
+语气: 黑暗占有欲爆发...
+```
+
+- **变量驱动**：条件表达式支持 `AND/OR/NOT/( )` + 全部系统/角色变量
+- **按序匹配**：规则从上到下求值，第一条命中生效。最后一条须为 `when: true` 兜底
+- **零冷却**：每轮 agent loop 重新求值，无状态记忆
+- **独立于 Phase1**：When 引擎只影响 Phase2 的 `[当前状态]` 段，不参与工具执行
 
 ### 2.6 快捷键召唤/收回 ★ 核心机制
 

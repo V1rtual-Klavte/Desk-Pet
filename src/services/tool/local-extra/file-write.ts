@@ -6,6 +6,7 @@
 import type { ToolDef } from "../types"
 import { register } from "../registry"
 import { invoke } from "@tauri-apps/api/core"
+import { loopConfig } from "@/services/config"
 import { createLogger } from "@/services/logger"
 
 const log = createLogger("ToolFWrite")
@@ -26,12 +27,8 @@ const fileWriteTool: ToolDef = {
   source: "local",
   sourceId: "",
   mode: "assistant",
-  timeoutMs: 15000,
-  personalityHint: {
-    executing: "帮你写下来...",
-    done: "写好啦～",
-    blocked: "唔…这个文件不能写呢～",
-  },
+  timeoutMs: loopConfig.toolTimeoutMs,
+  actionCategory: "fs.write",
   async handler(params) {
     try {
       const result = await invoke<{ success: boolean; error?: string }>("file_write", {

@@ -22,7 +22,7 @@
 - **人格中间件** — 横切所有 Agent 阶段的角色化表达（表情/音效/角色话术）
 - **窗口感知** — 监控前台窗口标题，停留一定时间后 AI 主动搭话
 - **快捷键召唤** — 全局快捷键弹出/收回，弹性缩放动画
-- **人格系统** — 独立人格模块，支持热插拔切换/开关，在设置面板配置
+- **人格系统** — Card 驱动的两阶段回复：内置 Card 自动扫描，用户 Card 持久化到 `src/services/personality/cards/`，切换时事务式阻塞加载/生成 `src/services/personality/stages/{cardId}.json` 并初始化 `src/services/personality/vars.json`，失败自动回滚
 - **人格进化** — 不理她太久会从甜蜜女友逐渐变成病娇（unansweredCount + boundary 系统）
 - **安全控制** — 四级安全（SAFE/NORMAL/DANGER/NOWAY）+ 三策略（全放行/告知确认/全部确认），确认弹窗 UI，全局默认+会话覆盖，统一危险模式库
 - **记忆系统** — MEMORY.md 双块结构化注册表 + sessions/ 实时写入 + 会话历史面板 + LLM 整理 + Fork 补记忆
@@ -149,9 +149,10 @@ Desk-Pet/
 │       │   ├── thinking.ts      # 思考强度决策
 │       │   └── plan.ts          # Plan 步骤 (助手模式)
 │       ├── personality/     # 人格模块
-│       │   ├── middleware.ts # ★ 人格中间件 (横切所有阶段)
-│       │   ├── registry.ts / loader.ts / boundary.ts
-│       │   └── cards/
+│       │   ├── registry.ts  # 事务式 Card 激活（stages/变量池阻塞加载，失败回滚）
+│       │   ├── loader.ts    # 内置 cards + src/services/personality/cards 扫描
+│       │   ├── stages-cache.ts / variable-pool.ts / when-engine.ts
+│       │   └── cards/       # 内置 Card .md
 │       ├── tool/            # ★ 工具系统
 │       │   ├── registry.ts  # 统一注册表 (按模式)
 │       │   ├── router.ts    # 工具路由

@@ -294,12 +294,12 @@ onMounted(async () => {
   checkBottom();
 
   // ── 工具执行状态监听 ──
-  listen<{ toolName: string; personalityHint?: string }>("tool-executing", (event) => {
-    const hint = event.payload.personalityHint ?? `正在使用 ${event.payload.toolName}...`
+  listen<{ toolName: string }>("tool-executing", (event) => {
+    const hint = `正在使用 ${event.payload.toolName}...`
     toolStatus.value = { text: hint, visible: true }
   }).then(fn => { cleanupToolExec = fn }).catch(() => {})
-  listen<{ toolName: string; success: boolean; personalityHint?: string }>("tool-completed", (event) => {
-    const hint = event.payload.personalityHint ?? (event.payload.success ? "完成啦～" : "出错了…")
+  listen<{ toolName: string; success: boolean }>("tool-completed", (event) => {
+    const hint = event.payload.success ? "完成啦～" : "出错了…"
     toolStatus.value = { text: hint, visible: true }
     setTimeout(() => { if (toolStatus.value.text === hint) toolStatus.value.visible = false }, 2500)
   }).then(fn => { cleanupToolDone = fn }).catch(() => {})

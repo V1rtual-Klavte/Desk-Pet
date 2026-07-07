@@ -44,8 +44,9 @@ export async function initChat(welcomeText?: string): Promise<void> {
 
   if (welcomeText) {
     initWelcome(welcomeText)
-  } else if (card?.firstMessage) {
-    initWelcome(card.firstMessage)
+  } else if (card) {
+    const greeting = (await import("@/services/personality")).pickGreeting(card.sections.mustRules.greetings)
+    if (greeting) initWelcome(greeting)
   }
 }
 
@@ -113,6 +114,7 @@ export async function sendMessage(text: string): Promise<{
       userText: preResult.text,
       chatMessages: getContextMessages(),
       unansweredCount: unansweredCount.value,
+      messageCount: getContextMessages().length,
       isActiveMessage: false,
       isRetry: false,
     })
@@ -183,6 +185,7 @@ export async function sendActiveMessage(userText: string): Promise<string> {
     userText,
     chatMessages: getContextMessages(),
     unansweredCount: unansweredCount.value,
+    messageCount: getContextMessages().length,
     isActiveMessage: true,
   })
   return result.reply

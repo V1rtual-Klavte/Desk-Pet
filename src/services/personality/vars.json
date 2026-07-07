@@ -1,0 +1,19 @@
+{
+  "cardId": "angelkawaii",
+  "system": {
+    "unansweredCount": 0,
+    "hour": 14,
+    "minute": 18,
+    "dayOfWeek": 2,
+    "isNightTime": false,
+    "isWeekend": false,
+    "sessionMinutes": 0,
+    "messageCount": 0
+  },
+  "character": {
+    "亲密度": 3,
+    "心情": "平静",
+    "用户今天是否夸过我": false
+  },
+  "updatedAt": 1783405132371
+}

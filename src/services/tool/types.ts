@@ -11,6 +11,17 @@ export type ToolSource = "local" | "mcp" | "skill"
 /** 模式限制 */
 export type ToolMode = "pet" | "assistant"
 
+/** 工具操作类别（用于阶段文案匹配） */
+export type ActionCategory =
+  | "fs.read" | "fs.write"
+  | "os.exec" | "os.info"
+  | "net.fetch"
+  | "app.launch"
+  | "clip.read" | "clip.write"
+  | "agent.call"
+  | "var.read" | "var.write"
+  | "_default"
+
 /** 工具执行上下文 */
 export interface ToolContext {
   /** 当前模式 */
@@ -24,13 +35,6 @@ export interface ToolResult {
   success: boolean
   content: string
   error?: string
-}
-
-/** 人格化文案 */
-export interface PersonalityHint {
-  executing?: string
-  done?: string
-  blocked?: string
 }
 
 /** 工具定义标准接口 */
@@ -55,12 +59,12 @@ export interface ToolDef {
   sourceId: string
   /** 哪个模式可用 */
   mode: ToolMode
+  /** 操作类别，用于阶段文案匹配（§7.1） */
+  actionCategory: ActionCategory
   /** 执行函数 */
   handler: (params: Record<string, unknown>, ctx: ToolContext) => Promise<ToolResult>
   /** 超时（ms），默认 loop.toolTimeoutMs */
   timeoutMs?: number
-  /** 人格化文案 */
-  personalityHint?: PersonalityHint
 }
 
 // ── 工具声明（给 AI 的 function schema）──

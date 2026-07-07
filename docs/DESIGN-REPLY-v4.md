@@ -61,19 +61,14 @@ Card 不附带任何配置文件。所有衍生数据（stages、vars）由系�
   src/services/personality/cards/*.md     ← 内置 Card，import.meta.glob 自动扫描
   src/services/personality/stages-prompt.md ← 阶段文案生成模板（通用）
 
-用户 AppData:
-  macOS:  ~/Library/Application Support/desk-pet/
-  Win:    %APPDATA%/desk-pet/
-
-  {AppData}/desk-pet/
-    ├── profiles/                         ← 现有，Profile 系统
-    ├── cards/                            ← 用户导入的 Card .md
-    └── personality/                      ← 运行时数据
-        ├── stages/
-        │   ├── angelkawaii.json          ← per-card 持久化
-        │   ├── ame.json
-        │   └── ...
-        └── vars.json                     ← 单例，对应当前 card
+项目目录:
+  Desk-Pet/src/services/personality/
+    ├── cards/                        ← 内置 + 用户导入 Card .md
+    ├── stages/
+    │   ├── angelkawaii.json          ← per-card 持久化
+    │   ├── ame.json
+    │   └── ...
+    └── vars.json                     ← 单例，对应当前 card
 ```
 
 ### 1.4 LLM 管理的变量池
@@ -328,7 +323,7 @@ cpuUsage: 0
 ```
 设置页打开 → 触发扫描:
   内置: import.meta.glob('./cards/*.md', { query: '?raw', eager: true })
-  用户: Tauri fs → 扫描 {AppData}/desk-pet/cards/*.md
+  用户: Tauri fs → 扫描 {project}/src/services/personality/cards/*.md
   → 解析 frontmatter + sections → 合并为 card 列表 → 展示
 
 不缓存，每次打开设置页重新扫描。
@@ -418,7 +413,7 @@ LLM 可通过 var_read 随时读取，var_write 写入。
 ### 4.5 存储与生命周期
 
 ```
-路径: {AppData}/desk-pet/personality/vars.json     ← 单例
+路径: {project}/src/services/personality/vars.json     ← 单例
 格式: { cardId, system, character, updatedAt }
 ```
 
@@ -596,14 +591,15 @@ var.write   → var_write, var_delete
 ### 7.3 生成流程
 
 ```
-设置页选 Card → 检查 {AppData}/desk-pet/personality/stages/{cardId}.json 是否存在
-  ├─ 存在 → 加载到内存缓存，直接激活
+设置页选 Card → 事务式阻塞切换（任一失败则保持旧 card + 旧 stages/变量池）
+  → 检查 {project}/src/services/personality/stages/{cardId}.json 是否存在
+  ├─ 存在 → 校验并加载到内存缓存，继续初始化变量池后激活
   └─ 不存在 → 阻塞生成:
        ├─ 读 stages-prompt.md → 填充 card sections
        ├─ LLM 调用（thinkingEffort="low"，超时 15s）
        ├─ 解析 JSON → 校验结构
-       ├─ 成功 → 写入 {cardId}.json → 加载到内存缓存 → 激活
-       └─ 失败 → Card 切换失败，保持旧 card，提示用户
+       ├─ 成功 → 写入 {cardId}.json → 加载到内存缓存 → 初始化/恢复变量池 → 激活
+       └─ 失败 → Card 切换失败，回滚旧 activeId/stages/变量池，提示用户
 ```
 
 **不自动检测重生成**。Card 变更后如需更新 stages，用户手动在设置页点击「重新生成」按钮。
@@ -640,7 +636,7 @@ var.write   → var_write, var_delete
 ### 7.5 存储与缓存
 
 ```
-路径: {AppData}/desk-pet/personality/stages/{cardId}.json   ← per-card 持久化
+路径: {project}/src/services/personality/stages/{cardId}.json   ← per-card 持久化
 
 加载: 启动 → 读当前 card 的 {cardId}.json → cardId+version 校验 → 注入内存缓存
 生成: 切换到此 card 时，文件不存在 → 阻塞 LLM 生成 → 写入文件
@@ -1051,7 +1047,7 @@ Phase1 思考强度、Phase2 流式开关、Phase2 思考强度（独立设置�
 ### 16.1 Card
 
 ```
-编写 → 放入 src/services/personality/cards/（内置）或导入 {AppData}/desk-pet/cards/（用户）
+编写 → 放入 src/services/personality/cards/（内置）或导入 {project}/src/services/personality/cards/（用户）
   → 设置页打开 → import.meta.glob / Tauri fs 实时扫描（不缓存）
   → 解析 frontmatter + sections → PersonalityCard 对象
   → 用户在设置页选择 → 检查 stages/{cardId}.json
@@ -1107,10 +1103,10 @@ Phase1 思考强度、Phase2 流式开关、Phase2 思考强度（独立设置�
 | `must-rules.ts` | 新建 — 必须遵守解析/问候提取/prompt注入 |
 | `emotion.ts` | 新建 — 情绪标签剥离（开头正则）+映射解析 |
 | `{appData}/desk-pet/cards/` | 新建 — 用户 Card 目录 |
-| `{appData}/desk-pet/personality/stages/` | 新建 — per-card 阶段文案持久化目录 |
-| `{appData}/desk-pet/personality/vars.json` | 新建 — 单例变量池 |
+| `{project}/src/services/personality/stages/` | 新建 — per-card 阶段文案持久化目录 |
+| `{project}/src/services/personality/vars.json` | 新建 — 单例变量池 |
 | **Rust** | |
-| `personality_fs_cmd.rs` | 新建 — 通用文件 IO（read/write/list/delete，基于 AppData） |
+| `personality_fs_cmd.rs` | 新建 — 通用文件 IO（read/write/list/delete，基于 `src/services/personality/`） |
 | **Personality** | |
 | `personality/loader.ts` | 重构 — glob+AppData扫描+section解析+computeHash |
 | `personality/types.ts` | 扩展 — CardSections / StagePrompts / VariablePool / WhenRule / EmotionMapping |

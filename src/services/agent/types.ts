@@ -70,6 +70,7 @@ export interface GenerateRequest {
   thinkingEffort?: ThinkingEffort
   streamEnabled?: boolean
   thinkingBudget?: number
+  maxTokens?: number
 }
 
 /** AI 生成响应 */
@@ -83,6 +84,7 @@ export interface GenerateResponse {
 export interface AIProvider {
   readonly name: string
   generateReply(req: GenerateRequest): Promise<GenerateResponse>
+  generateReplyStream?(req: GenerateRequest, onToken: (t: string) => void, onThinking?: (t: string) => void): Promise<string>
 }
 
 // ── 工具函数 ──

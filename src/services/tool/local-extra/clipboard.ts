@@ -5,6 +5,7 @@
 import type { ToolDef } from "../types"
 import { register } from "../registry"
 import { invoke } from "@tauri-apps/api/core"
+import { loopConfig } from "@/services/config"
 import { createLogger } from "@/services/logger"
 
 const log = createLogger("ToolClip")
@@ -22,7 +23,8 @@ const clipboardReadTool: ToolDef = {
   source: "local",
   sourceId: "",
   mode: "assistant",
-  timeoutMs: 5000,
+  timeoutMs: loopConfig.toolTimeoutMs,
+  actionCategory: "clip.read",
   async handler() {
     try {
       const result = await invoke<{ text: string }>("clipboard_read")
@@ -49,7 +51,8 @@ const clipboardWriteTool: ToolDef = {
   source: "local",
   sourceId: "",
   mode: "assistant",
-  timeoutMs: 5000,
+  timeoutMs: loopConfig.toolTimeoutMs,
+  actionCategory: "clip.write",
   async handler(params) {
     try {
       await invoke("clipboard_write", { text: params.text })
