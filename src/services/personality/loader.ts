@@ -4,7 +4,7 @@
 // 用户: Tauri fs → {project}/src/services/personality/cards/*.md
 // ==========================================
 
-import type { PersonalityCard, CardSections } from "./types"
+import type { PersonalityCard, CardSections, CardVariableDef, VariableScope, VariableType, VariableUpdateBy, VariableResetPolicy } from "./types"
 import { parseEmotionMappings } from "./emotion"
 import { parseMustRules } from "./must-rules"
 import { createLogger } from "@/services/logger"
@@ -49,6 +49,168 @@ function parseFrontmatter(raw: string): { meta: CardFrontmatter; body: string } 
   return { meta, body }
 }
 
+// ── 变量定义 v2 解析 ──
+
+interface ParsedVarSection {
+  defs: CardVariableDef[]
+  initialVars: Record<string, number | string | boolean>
+  subscribedSystemVars: string[]
+}
+
+function parseVariableSection(raw: string): ParsedVarSection {
+  // 优先尝试 v2 结构化格式（有 ## card 或 ## interaction 子标题）
+  if (/^##\s+(card|interaction)/m.test(raw)) {
+    return parseV2VariableDefs(raw)
+  }
+  // fallback: 旧 name: initial 格式
+  return parseOldFormatVars(raw)
+}
+
+function parseV2VariableDefs(raw: string): ParsedVarSection {
+  const defs: CardVariableDef[] = []
+  const initialVars: Record<string, number | string | boolean> = {}
+  const subscribedSystemVars: string[] = []
+
+  // 按 ## 子标题拆分
+  const parts = raw.split(/^##\s+/m)
+  for (const part of parts) {
+    const firstLine = part.match(/^(.+)$/m)
+    if (!firstLine) continue
+    const heading = firstLine[1]!.trim()
+    let scope: VariableScope | null = null
+    if (heading === "card" || heading.startsWith("card")) scope = "card"
+    else if (heading === "interaction" || heading.startsWith("interaction")) scope = "interaction"
+    if (!scope) continue
+
+    // 提取 fenced YAML block
+    const yamlContent = extractFencedBlock(part.slice(firstLine[0]!.length))
+    if (!yamlContent) continue
+
+    const parsed = parseSimpleYaml(yamlContent)
+    for (const [name, rawVar] of Object.entries(parsed)) {
+      const def = buildVarDef(name, rawVar, scope)
+      defs.push(def)
+      // 填充兼容字段
+      initialVars[name] = def.initial
+    }
+  }
+
+  return { defs, initialVars, subscribedSystemVars }
+}
+
+function parseOldFormatVars(raw: string): ParsedVarSection {
+  const initialVars: Record<string, number | string | boolean> = {}
+  const subscribedSystemVars: string[] = []
+
+  for (const line of raw.split("\n")) {
+    const sysMatch = line.match(/^#\s*@system\s+(\w+)/)
+    if (sysMatch) { subscribedSystemVars.push(sysMatch[1]!); continue }
+    // 跳过 HTML 注释和 markdown 注释
+    if (/^\s*<!--/.test(line) || /^\s*-->/.test(line)) continue
+    const kv = line.match(/^([\w一-鿿]+):\s*(.+)$/)
+    if (kv) {
+      const key = kv[1]!.trim()
+      if (key === "#") continue
+      initialVars[key] = parseLiteralVal(kv[2]!.trim())
+    }
+  }
+
+  // 从旧格式构建兼容 variableDefs（仅 name + initial，无完整 schema）
+  const defs: CardVariableDef[] = Object.entries(initialVars).map(([name, val]) => ({
+    scope: "card" as VariableScope,
+    name,
+    type: inferVarType(val),
+    initial: val,
+    description: "",
+    updateBy: "llm" as VariableUpdateBy,
+    persistent: true,
+    reset: "never" as VariableResetPolicy,
+  }))
+
+  return { defs, initialVars, subscribedSystemVars }
+}
+
+/** 从文本中提取 ```yaml ... ``` 或 ``` ... ``` fenced block */
+function extractFencedBlock(text: string): string | null {
+  const match = text.match(/```(?:yaml)?\s*\n([\s\S]*?)\n```/)
+  return match?.[1] ?? null
+}
+
+/** 简单 YAML 解析：name:\n  key: value 格式 */
+function parseSimpleYaml(yaml: string): Record<string, Record<string, unknown>> {
+  const result: Record<string, Record<string, unknown>> = {}
+  const lines = yaml.split("\n")
+  let currentKey: string | null = null
+  let currentObj: Record<string, unknown> = {}
+
+  for (const line of lines) {
+    const topMatch = line.match(/^(\S[^:]*):\s*$/)
+    if (topMatch) {
+      if (currentKey) result[currentKey] = currentObj
+      currentKey = topMatch[1]!.trim()
+      currentObj = {}
+      continue
+    }
+    const propMatch = line.match(/^\s{2,}(\S[^:]*):\s*(.*)$/)
+    if (propMatch && currentKey) {
+      const propName = propMatch[1]!.trim()
+      const rawVal = propMatch[2]!.trim()
+      currentObj[propName] = parseYamlValue(rawVal)
+    }
+  }
+  if (currentKey) result[currentKey] = currentObj
+  return result
+}
+
+function parseYamlValue(raw: string): unknown {
+  const t = raw.trim()
+  if (t === "true") return true
+  if (t === "false") return false
+  if (t === "null" || t === "~" || t === "") return null
+  // 方括号数组
+  if (t.startsWith("[") && t.endsWith("]")) {
+    return t.slice(1, -1).split(",").map(s => s.trim().replace(/^["']|["']$/g, ""))
+  }
+  // 带引号的字符串
+  if ((t.startsWith('"') && t.endsWith('"')) || (t.startsWith("'") && t.endsWith("'"))) {
+    return t.slice(1, -1)
+  }
+  const n = parseFloat(t)
+  if (!isNaN(n) && String(n) === t) return n
+  return t
+}
+
+function buildVarDef(name: string, raw: Record<string, unknown>, scope: VariableScope): CardVariableDef {
+  const initial = raw.initial !== undefined ? toPrimitive(raw.initial) : ""
+  const type = (raw.type as VariableType) || inferVarType(initial)
+  const defaults = scope === "interaction" ? { updateBy: "system" as const } : { updateBy: "llm" as const }
+
+  return {
+    scope,
+    name,
+    type,
+    initial,
+    description: String(raw.description ?? ""),
+    updateBy: (raw.updateBy as VariableUpdateBy) || defaults.updateBy,
+    persistent: raw.persistent !== undefined ? Boolean(raw.persistent) : true,
+    min: typeof raw.min === "number" ? raw.min : undefined,
+    max: typeof raw.max === "number" ? raw.max : undefined,
+    enum: Array.isArray(raw.enum) ? raw.enum.map(String) : undefined,
+    reset: (raw.reset as VariableResetPolicy) || "never",
+  }
+}
+
+function toPrimitive(v: unknown): number | string | boolean {
+  if (typeof v === "number" || typeof v === "boolean") return v
+  return String(v)
+}
+
+function inferVarType(v: unknown): VariableType {
+  if (typeof v === "number") return "number"
+  if (typeof v === "boolean") return "boolean"
+  return "string"
+}
+
 /** 按 # Section 解析 body */
 function parseSections(body: string): CardSections {
   const sections: Record<string, string> = {}
@@ -67,19 +229,9 @@ function parseSections(body: string): CardSections {
   }
   if (currentSection) sections[currentSection] = currentContent.join("\n").trim()
 
-  // 变量定义（含 @system 订阅）
-  const initialVars: Record<string, number | string | boolean> = {}
-  const subscribedSystemVars: string[] = []
-  for (const line of (sections["变量定义"] || "").split("\n")) {
-    const sysMatch = line.match(/^#\s*@system\s+(\w+)/)
-    if (sysMatch) { subscribedSystemVars.push(sysMatch[1]!); continue }
-    const kv = line.match(/^([\w一-鿿]+):\s*(.+)$/)
-    if (kv) {
-      const key = kv[1]!.trim()
-      if (key === "#") continue
-      initialVars[key] = parseLiteralVal(kv[2]!.trim())
-    }
-  }
+  // 变量定义 — v2 结构化 YAML 优先，fallback 旧 name: initial 格式
+  const varBlock = sections["变量定义"] || ""
+  const { defs: variableDefs, initialVars: compatVars, subscribedSystemVars } = parseVariableSection(varBlock)
 
   // 行为进阶规则
   const whenRaw = sections["行为进阶"] || ""
@@ -107,7 +259,7 @@ function parseSections(body: string): CardSections {
     languageStyle: sections["语言风格"] || "",
     outputRules: sections["输出规则"] || "",
     emotionRaw, emotionMappings, whenRules, mustRules,
-    initialVars, subscribedSystemVars,
+    initialVars: compatVars, subscribedSystemVars, variableDefs,
   }
 }
 

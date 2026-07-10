@@ -14,7 +14,7 @@ import { requestConfirm } from "@/services/safety/confirm"
 import { PetPersonalityMiddleware } from "@/services/personality/middleware"
 import type { PersonalityEffect } from "@/services/personality/middleware"
 import { getActiveCard } from "@/services/personality/registry"
-import { refreshVariablePool, getPoolSnapshot, savePoolToDisk } from "@/services/personality/variable-pool"
+import { refreshVariablePool, getPoolSnapshot, savePoolToDisk, updateInteractionVar, applyResetPolicies, getSessionStart } from "@/services/personality/variable-pool"
 import { evaluateWhenEngine } from "@/services/personality/when-engine"
 import { stripEmotionTag, resolveEmotion } from "@/services/personality/emotion"
 import { getEffectiveThinkingEffort, updateRequestStats } from "@/services/debug"
@@ -27,6 +27,9 @@ import { MemoryService } from "@/services/agent/memory"
 import { shouldCompact, compactMessages, estimateTokens, compactIncremental, compactOnHighUsage } from "./compactor"
 
 const log = createLogger("AgentLoop")
+
+/** 上次看到的会话开始时间，用于检测新会话（触发 reset=session） */
+let lastSeenSessionStart = getSessionStart()
 
 export interface AgentLoopInput {
   userText: string
@@ -55,7 +58,17 @@ export async function runAgentLoop(input: AgentLoopInput): Promise<AgentLoopOutp
   MemoryService.recordTurn("user", userText)
 
   // ═══ 0. 变量池 + When 引擎 ═══
-  const pool = refreshVariablePool({ unansweredCount, messageCount })
+  const pool = refreshVariablePool()
+
+  // 同步旧 session unansweredCount 到变量池 interaction 变量
+  updateInteractionVar("unansweredCount", unansweredCount)
+
+  // 应用 reset 策略：新会话触发 reset=session，日期变化触发 reset=daily
+  const currentSessionStart = getSessionStart()
+  const isNewSession = currentSessionStart !== lastSeenSessionStart
+  if (isNewSession) lastSeenSessionStart = currentSessionStart
+  applyResetPolicies(new Date(), isNewSession)
+
   const card = getActiveCard()
 
   let activeTone = ""

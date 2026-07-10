@@ -113,17 +113,22 @@ version: 1
   规则按定义顺序从上到下匹配，第一条命中即生效，后续跳过。
   无冷却期，每轮 agent loop 重新求值。
 
-  ── 可用系统变量（只读，8 个）──
-    unansweredCount  number   未回复计数（发消息→0, 每轮+1）
-    hour             number   当前小时 (0-23)
-    minute           number   当前分钟 (0-59)
-    dayOfWeek        number   周几 (0=周日, 1-6)
-    isNightTime      boolean  hour>=22 或 hour<=5
-    isWeekend        boolean  dayOfWeek=0 或 6
-    sessionMinutes   number   当前会话已进行分钟数
-    messageCount     number   当前会话消息轮次总数
+  ── 可用系统变量（全局只读，6 个）──
+    hour          number   当前小时 (0-23)
+    minute        number   当前分钟 (0-59)
+    dayOfWeek     number   周几 (0=周日, 1-6)
+    isNightTime   boolean  hour>=22 或 hour<=5
+    isWeekend     boolean  dayOfWeek=0 或 dayOfWeek=6
+    activeCardId  string   当前启用的 Card ID
 
-  你在"变量定义"中定义的角色变量也可在 when 中使用。
+  ── 可用 Card 变量（scope=card，LLM 可写）──
+    在"变量定义 > ## card"中声明的所有变量。
+
+  ── 可用互动变量（scope=interaction，系统维护，只读）──
+    在"变量定义 > ## interaction"中声明的所有变量。
+    如 unansweredCount: 未回复计数（发消息→0, 主动搭话未回复+1）
+
+  注意: 会话变量（topic/turnCount/tokenCount）第一版不进 When，只进 Prompt。
 
   ── 表达式语法 ──
     运算符:  >=  <=  !=  ==  >  <
@@ -169,20 +174,75 @@ when: true
 
 # 变量定义
 <!--
-  STATE — 角色变量初始值。LLM 运行时可自由读写（通过 var_read/write 工具）。
+  STATE — 结构化变量定义。分 ## card 和 ## interaction 两个作用域。
 
-  ⚠ 硬约束: 角色变量最多 100 个。
+  ═══════════════════════════════════════════════════════
+  变量类型速查
+  ═══════════════════════════════════════════════════════
 
-  格式: 变量名: 初始值
-  初始值类型: 数字、 "字符串"、 true / false
-  类型由初始值自动推断。
+  scope: card       → 角色长期状态，LLM 可读可写（需 updateBy=llm）
+  scope: interaction → 系统维护的互动状态，只读（updateBy=system）
 
-  如需订阅额外系统变量（8 个之外的），用 # @system 声明:
-    # @system cpuUsage
-    cpuUsage: 0
-  系统支持则自动更新，不支持就当普通角色变量。
+  ═══════════════════════════════════════════════════════
+  字段说明
+  ═══════════════════════════════════════════════════════
 
-  建议: 把 LLM 可能需要追踪的状态定义在这里。
-  如: 心情、亲密度、任务完成数、最后话题……
+  type:        "number" | "string" | "boolean"（必填）
+  initial:     初始值（必填）
+  description: 变量含义，LLM 据此判断何时更新（必填）
+  updateBy:    "llm" | "manual" | "system"（card 默认 llm，interaction 默认 system）
+  persistent:  true | false（默认 true，跨会话持久化）
+  min/max:     仅 number 类型可用
+  enum:        仅 string 类型可用，可选值列表
+  reset:       "never" | "daily" | "session"（默认 never）
+
+  ═══════════════════════════════════════════════════════
+  约束
+  ═══════════════════════════════════════════════════════
+
+  - LLM 只能写 scope=card 且 updateBy=llm 的变量
+  - 未在注册表中的变量不允许 LLM 创建（第一版不支持动态变量）
+  - interaction 变量由系统维护，LLM 只读不可写
+  - 变量值写入时严格校验 type/min/max/enum，不合法拒绝
+  - 命名建议: 避免与系统变量重名
+
+  ═══════════════════════════════════════════════════════
+  可用系统变量（全局只读，不需要在此定义）
+  ═══════════════════════════════════════════════════════
+
+  hour         number   当前小时 (0-23)
+  minute       number   当前分钟 (0-59)
+  dayOfWeek    number   周几 (0=周日)
+  isNightTime  boolean  hour>=22 或 hour<=5
+  isWeekend    boolean  dayOfWeek=0 或 dayOfWeek=6
+  activeCardId string   当前启用的 Card ID
+
+  系统变量和所有 card/interaction 变量都可在 When 表达式中直接使用。
+  会话变量（topic/turnCount/tokenCount）第一版只进 Prompt，不进 When。
 -->
-{变量名}: {初始值}
+
+## card
+
+```yaml
+{变量名}:
+  type: {number | string | boolean}
+  initial: {初始值}
+  description: {变量含义，LLM 据此判断何时更新}
+  # updateBy: llm       # 可选，card 默认 llm
+  # persistent: true     # 可选，默认 true
+  # min: {最小值}         # 可选，仅 number 类型
+  # max: {最大值}         # 可选，仅 number 类型
+  # enum: [{选项1}, {选项2}] # 可选，仅 string 类型
+  # reset: never         # 可选，never | daily | session
+```
+
+## interaction
+
+```yaml
+unansweredCount:
+  type: number
+  initial: 0
+  min: 0
+  updateBy: system
+  description: 用户连续未回应角色主动消息的次数；由系统自动维护，LLM 只读。
+```

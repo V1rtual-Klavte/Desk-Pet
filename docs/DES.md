@@ -30,17 +30,17 @@
 #### Agent Loop 机制 (v4 — 两阶段)
 
 ```
-用户消息 → PreProcessor → 变量池刷新 + When引擎求值
+用户消息 → PreProcessor → 变量上下文刷新 + When引擎求值
   → Phase1 (零身份能力层, 非流式)
     → 工具循环: 安全检查→执行→回注 → rawReply + toolCallHistory
   → Phase2 (角色风格层, 可选流式) [Card存在+人格启用]
     → 角色设定+语言风格+情绪标签[emo:key] → 流式推UI并剥离标签
-  → 变量池异步持久化 → 上下文压缩
+  → 变量快照/会话元数据持久化 → 上下文压缩
 ```
 
 - 固定 2 次 LLM: Phase1 + Phase2。人格禁用→跳过 Phase2
 - Phase1 零身份、无名字；Phase2 身份 100% 来自 Card sections
-- 变量池: 8 系统变量(只读) + LLM 管理角色变量(≤100)
+- 变量上下文: v2 四类变量 system/card/interaction/session；system 运行时派生（6 个），card 注册表驱动 LLM 可写，interaction 系统维护只读，session 归会话 markdown 管理
 - When 引擎: `#行为进阶` 条件表达式实时语气切换
 - 情绪标签: `[emo:key]` 开头隐式携带，流式第一 token 剥离
 - chatHistory: 用户消息 + Phase1工具链 + Phase2回复
@@ -55,7 +55,14 @@
 - **When 引擎**：Card `#行为进阶` 定义条件规则，根据变量池实时切换语气
 - **情绪表达**：Card `#情绪表达` 定义 `key → 表情,音效` 映射，Phase2 [emo:key] 驱动
 - **阶段文案**：per-card stages 由 LLM 生成并持久化到 `src/services/personality/stages/{cardId}.json`
-- **变量池**：`src/services/personality/vars.json` 单例，系统变量(8,只读) + 角色变量(LLM自由管理)，重启时 cardId 匹配则恢复角色变量
+- **变量池（v2）**：四类变量 system/card/interaction/session 完整实现
+  - **system**：6 个运行时派生变量（hour/minute/dayOfWeek/isNightTime/isWeekend/activeCardId），只读
+  - **card**：Card 注册表驱动，`var_write` 校验 type/min/max/enum/updateBy 后写入，`var_delete` 重置为 initial
+  - **interaction**：系统维护（如 `unansweredCount`），`updateInteractionVar` API 更新，LLM 只读
+  - **session**：`setSessionVars` 注入，仅进 Prompt 不进 When
+  - **持久化**：`vars.json` (system snapshot) + `stages/{cardId}.json:variables` (card+interaction)
+  - **注册表**：Card `#变量定义 > ## card / ## interaction` YAML block → `CardVariableDef[]`，loader 解析
+  - **更新闭环**：Agent Loop 开始 refresh → reset 策略 → var_write 即时落盘 → Loop 结束 dirty flush
 - **扩展性**：内置 cards 由 `import.meta.glob` 自动扫描；用户 cards 通过 Tauri fs 导入/扫描
 
 #### 人格中间件 v4（stages 缓存驱动）

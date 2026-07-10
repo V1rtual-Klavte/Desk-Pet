@@ -168,7 +168,7 @@ function evaluate(ast: AstNode | null, pool: VariablePool): boolean {
     case "literal": return ast.value
 
     case "compare": {
-      const varVal = pool.system[ast.variable] ?? pool.character[ast.variable]
+      const varVal = pool.system[ast.variable] ?? pool.card[ast.variable] ?? pool.interaction[ast.variable]
       if (varVal === undefined) return false
       return compareValues(varVal, ast.op, ast.value)
     }
