@@ -23,6 +23,16 @@ export interface StagePrompts {
   generatedAt: number
   isFallback: boolean
   stages: StageMap
+  /** v2: Card + interaction 变量运行时状态，持久化到 stages/{cardId}.json */
+  variables?: StageVariables
+}
+
+/** v2: 持久化在 stages/{cardId}.json 中的变量状态 */
+export interface StageVariables {
+  schemaVersion: number
+  updatedAt: number
+  card: Record<string, import("./types").VariableState>
+  interaction: Record<string, import("./types").VariableState>
 }
 
 export interface StageMap {

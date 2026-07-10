@@ -22,7 +22,7 @@
 - **人格中间件** — 横切所有 Agent 阶段的角色化表达（表情/音效/角色话术）
 - **窗口感知** — 监控前台窗口标题，停留一定时间后 AI 主动搭话
 - **快捷键召唤** — 全局快捷键弹出/收回，弹性缩放动画
-- **人格系统** — Card 驱动的两阶段回复：内置 Card 自动扫描，用户 Card 持久化到 `src/services/personality/cards/`，切换时事务式阻塞加载/生成 `src/services/personality/stages/{cardId}.json` 并初始化 `src/services/personality/vars.json`，失败自动回滚
+- **人格系统** — Card 驱动的两阶段回复：内置 Card 自动扫描，用户 Card 持久化到 `src/services/personality/cards/`，切换时事务式阻塞加载/生成 `src/services/personality/stages/{cardId}.json` 并初始化变量池，失败自动回滚；变量池 v2 规划已明确拆成 system/card/session 三类变量
 - **人格进化** — 不理她太久会从甜蜜女友逐渐变成病娇（unansweredCount + boundary 系统）
 - **安全控制** — 四级安全（SAFE/NORMAL/DANGER/NOWAY）+ 三策略（全放行/告知确认/全部确认），确认弹窗 UI，全局默认+会话覆盖，统一危险模式库
 - **记忆系统** — MEMORY.md 双块结构化注册表 + sessions/ 实时写入 + 会话历史面板 + LLM 整理 + Fork 补记忆
@@ -294,6 +294,7 @@ Desk-Pet/
 - [docs/架构方案.md](docs/架构方案.md) — v2 完整架构方案
 - [docs/DES.md](docs/DES.md) — 设计文档，完整玩法/机制说明
 - [docs/DESIGN_ORIGIN.md](docs/DESIGN_ORIGIN.md) — 原始设计草案
+- [docs/DESIGN-VARIABLE-POOL-v2.md](docs/DESIGN-VARIABLE-POOL-v2.md) — 变量池重构设计：三类变量边界（system/card/session）、Card 变量注册表与 stages 持久化、当前变量池缺少完整更新闭环的说明
 - [CLAUDE.md](CLAUDE.md) — AI 开发指引
 
 ---

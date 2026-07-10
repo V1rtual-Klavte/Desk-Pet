@@ -67,6 +67,19 @@ export function buildCapabilityPrompt(
   // 变量池
   systemPrompt += `\n\n${formatPoolForPrompt()}`
 
+  // 变量更新规则（有人格时注入）
+  if (card) {
+    systemPrompt += `\n\n[变量更新规则]
+- 系统变量只读，不可写。
+- 互动状态（interaction）只读，不可写。
+- 会话状态只读，不可写。
+- 只有 [Card变量] 中标注 updateBy=llm 的变量可以通过 var_write 工具更新。
+- 如果用户本轮消息明确影响了某个 Card 变量，请调用 var_write 更新。
+- 不要为了更新而更新；没有明确变化时不要写变量。
+- 写入值必须符合变量的类型（number/string/boolean）、范围（min/max）和可选值（enum）约束。
+- 不存在的变量不可创建，只能写 Card 中已注册的变量。`
+  }
+
   // 必须遵守 (工具相关)
   if (card) systemPrompt += formatToolRules(card.sections.mustRules)
 

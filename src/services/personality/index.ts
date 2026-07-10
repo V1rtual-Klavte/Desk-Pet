@@ -3,7 +3,7 @@
 // ==========================================
 
 // ── 类型 ──
-export type { PersonalityCard, PersonalityState, CardSections } from "./types"
+export type { PersonalityCard, PersonalityState, CardSections, CardVariableDef, VariableState, VariableScope, VariableType, VariableUpdateBy, VariableResetPolicy, VariablePrimitive } from "./types"
 
 // ── 加载器 ──
 export { getCards, getCard, initCards, importUserCard, saveUserCard, mergeUserCards } from "./loader"
@@ -21,7 +21,7 @@ export { PetPersonalityMiddleware } from "./middleware"
 export type { AgentStage, StageContext, PersonalityEffect } from "./middleware"
 
 // ── v4 新模块 ──
-export { initVariablePool, refreshVariablePool, getPoolSnapshot, formatPoolForPrompt, varRead, varWrite, varList, varDelete, saveVariablePoolAsync, savePoolToDisk, savePoolToDiskStrict, loadVariablePool, readPersistedCharacterVars, destroyPool, setSessionStart, getSessionStart } from "./variable-pool"
+export { initVariablePool, refreshVariablePool, getPoolSnapshot, formatPoolForPrompt, varRead, varWrite, varList, varDelete, saveVariablePoolAsync, savePoolToDisk, savePoolToDiskStrict, loadVariablePool, readPersistedCharacterVars, loadCardVars, readSystemVars, updateInteractionVar, setSessionVars, applyResetPolicies, computeSystemVariables, destroyPool, setSessionStart, getSessionStart, getVariableRegistry } from "./variable-pool"
 export type { VariablePool, VarDef, VariablePoolRuntimeState } from "./variable-pool"
 
 export { evaluateWhenEngine, evaluateWhen } from "./when-engine"

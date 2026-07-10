@@ -7,8 +7,9 @@ import type { PersonalityCard } from "./types"
 import { getCards, getCard } from "./loader"
 import { personalityConfig } from "@/services/config"
 import {
-  initVariablePool, destroyPool, readPersistedCharacterVars,
+  initVariablePool, destroyPool, loadCardVars,
   savePoolToDiskStrict, snapshotVariablePoolState, restoreVariablePoolState,
+  updateInteractionVar, readPersistedCharacterVars,
 } from "./variable-pool"
 import {
   generateStagesForCard, loadStagesFromDisk,
@@ -99,14 +100,34 @@ async function ensureStagesReady(card: PersonalityCard): Promise<void> {
 }
 
 async function prepareVariablePool(card: PersonalityCard): Promise<void> {
-  const previousCharVars = await readPersistedCharacterVars(card.id)
-  log.info(previousCharVars ? "变量池从持久化恢复:" : "变量池按 Card 初始化:", card.id)
+  let prevVars = await loadCardVars(card.id)
+
+  // 迁移路径：stages/{cardId}.json 不存在时尝试旧 vars.json.character
+  if (!prevVars || Object.keys(prevVars.card).length === 0) {
+    const oldCharVars = await readPersistedCharacterVars(card.id)
+    if (oldCharVars && Object.keys(oldCharVars).length > 0) {
+      log.info("从旧 vars.json.character 迁移 Card 变量:", card.id, Object.keys(oldCharVars).length, "个")
+      // 将旧值转为 VariableState
+      const cardStates: Record<string, import("./types").VariableState> = {}
+      for (const [name, value] of Object.entries(oldCharVars)) {
+        cardStates[name] = {
+          value, type: typeof value as "number" | "string" | "boolean",
+          updatedAt: Date.now(), updatedBy: "migration",
+        }
+      }
+      prevVars = { card: cardStates, interaction: {} }
+    }
+  }
+
+  log.info(prevVars && (Object.keys(prevVars.card).length > 0 || Object.keys(prevVars.interaction).length > 0)
+    ? "变量池从持久化恢复:" : "变量池按 Card 初始化:", card.id)
 
   initVariablePool({
     cardId: card.id,
+    variableDefs: card.sections.variableDefs,
     initialVars: card.sections.initialVars,
-    subscribedSystemVars: card.sections.subscribedSystemVars,
-    previousCharVars,
+    prevCardStates: prevVars?.card,
+    prevInteractionStates: prevVars?.interaction,
   })
   await savePoolToDiskStrict()
 }

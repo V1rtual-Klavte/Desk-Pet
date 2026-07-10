@@ -42,7 +42,7 @@ const varReadTool: ToolDef = {
 const varWriteTool: ToolDef = {
   id: "local-var-write",
   name: "var_write",
-  description: "写入/创建角色变量。系统变量只读不可写。值类型自动推断。",
+  description: "更新已注册的 Card 变量。只能写 Card 中定义且 updateBy=llm 的变量。系统变量和互动状态不可写。值必须符合变量类型和约束。",
   parameters: {
     type: "object",
     properties: {
@@ -83,7 +83,7 @@ const varListTool: ToolDef = {
 const varDeleteTool: ToolDef = {
   id: "local-var-delete",
   name: "var_delete",
-  description: "删除指定角色变量。系统变量不可删除。",
+  description: "重置一个 Card 变量到其初始值。系统变量和互动状态不可重置。",
   parameters: {
     type: "object",
     properties: {

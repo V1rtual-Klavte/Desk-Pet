@@ -32,129 +32,23 @@ cd src-tauri && cargo check   # Rust 编译检查
 
 ```
 Desk-Pet/
-├── docs/                         # ★ 文档目录
-│   ├── DES.md                    # 设计文档
-│   ├── DESIGN_ORIGIN.md          # 原始草案
-│   ├── 架构方案.md                 # v2 架构方案
-│   └── PRD-可配置静态资源管理.md    # 静态资源 PRD
-├── CONFIG.yaml                  # 全局默认配置 (general/ai/tools/appearance)
-├── CONFIG-DEV.yaml              # 本地开发配置 (不入 git)
-├── .gitignore
-├── index.html / notification.html / settings.html / layer-editor.html
-├── vite.config.ts               # Vite + YAML 插件 + @ 别名
-├── package.json / pnpm-lock.yaml
-│
-├── public/profiles/             # ★ Profile 系统 (自包含主题/角色/音效)
-│   ├── sugar-pink/              # 内置: 糖糖粉 (粉色)
-│   │   ├── profile.yaml         # 主题色(18中文键) + 音效映射
-│   │   ├── character.yaml       # 角色动画帧 + 表情映射
-│   │   ├── materials/           # ★ 素材按层分目录 (L0-L4)
-│   │   │   ├── L0/ bg_base.png  # 底背景
-│   │   │   ├── L2/ body.png     # 角色立绘
-│   │   │   └── L4/ shield_gold.png # 覆盖层
-│   │   └── frames/              # 109 帧 PNG
-│   ├── dark-purple/             # 内置: 暗夜紫 (暗色)
-│   │   ├── profile.yaml
-│   │   ├── character.yaml
-│   │   ├── materials/           # 同上 L0/L2/L4
-│   │   └── frames/
-│   └── glass/                   # 内置: 透明玻璃 (毛玻璃效果)
-│       ├── profile.yaml
-│       └── character.yaml       # (复用 sugar-pink 的 body.png + frames)
-│
-├── memory/                      # ★ 长期记忆（文件注册表）
-│   ├── MEMORY.md                # ★ 结构化注册表（系统块 + 长期记忆块）
-│   ├── CANDY.md                 # 用户系统指令
-│   ├── User.md                  # 用户画像 (imp≥7 自动同步)
-│   ├── Outside.md               # 外部知识指针
-│   └── Project.md               # ★ 会话归档指针 → sessions/
-│
-├── sessions/                    # ★ 历史会话归档
-│   └── session-YYYYMMDD-HHmmss-主题.md   # 结构化会话文件（元信息→摘要→对话记录）
-│
-├── skills/                      # ★ Skill 文件目录 (3个内置Skill)
-│
-├── src/                         # Vue 前端
-│   ├── main.ts / notification-main.ts / settings-main.ts / layer-editor-main.ts / App.vue
-│   ├── components/              # UI 组件
-│   │   ├── TitleBar.vue / StreamView.vue / ChatPanel.vue / SessionTabs.vue / SettingsPanel.vue / NotificationCard.vue
-│   │   ├── LayerEditor.vue       # ★ 图层编辑器弹窗（独立 webview 窗口）
-│   │   ├── LayerEditor.vue       # ★ 图层编辑器弹窗 v3（L0-L4分目录 + 先预览后写入 + 亚像素拖拽）
-│   │   ├── DebugBar.vue          # Debug 状态栏（嵌入 ChatPanel 底部）
-│   │   └── winsim/              # Windows 模拟器彩蛋
-│   ├── composables/             # ★ Vue Composables
-│   │   └── useParallax.ts       # 灵动图层引擎 v3（百分比 offset + calc() 自适应 + 整数检测自动迁移旧数据）
-│   ├── services/
-│   │   ├── profile/              # ★ Profile 系统 (主题/角色/音效)
-│   │   │   ├── index.ts          # 统一导出
-│   │   │   ├── loader.ts         # Profile 懒加载+激活+CSS变量注入(18色→50+变量)+dirty flag 通知 StreamView
-│   │   │   └── io.ts             # 导入/导出(Zip)/删除
-│   │   ├── engine/              # ★ 核心引擎 (Phase 2)
-│   │   │   ├── index.ts         # 统一导出 (含 Slash 命令)
-│   │   │   ├── agent-loop.ts    # ★ Agent Loop — 多轮工具调用核心循环 + 上下文压缩
-│   │   │   ├── preprocessor.ts  # Slash命令 + 空/重复消息过滤
-│   │   │   ├── parser.ts        # AI输出解析 (function_call/纯文本/思考)
-│   │   │   ├── session.ts       # 会话状态机 (WAITING→PRE→GENERATING→EXECUTING)
-│   │   │   ├── thinking.ts      # ★ 思考强度决策 (auto/low/medium/high)
-│   │   │   ├── plan.ts          # ★ Plan 步骤 (LLM驱动, 复杂任务拆解)
-│   │   │   └── slash/           # ★ Slash 命令系统
-│   │   │       ├── index.ts / types.ts / registry.ts
-│   │   │       └── commands/    # help/clear/memory/expression/win
-│   │   ├── personality/         # ★ 人格模块
-│   │   │   ├── index.ts
-│   │   │   ├── types.ts / loader.ts / registry.ts
-│   │   │   ├── stages-cache.ts / variable-pool.ts / when-engine.ts
-│   │   │   ├── must-rules.ts / emotion.ts
-│   │   │   ├── middleware.ts    # ★ 人格中间件（包裹所有Agent阶段）
-│   │   │   └── cards/           # 内置/用户人格卡 .md（统一在 src/services/personality/cards）
-│   │   ├── tool/                # ★ 工具系统 (Phase 2)
-│   │   │   ├── index.ts / types.ts / registry.ts / router.ts
-│   │   │   ├── local/           # 轻量模式工具 (file/bash/system/http)
-│   │   │   ├── local-extra/     # 助手模式工具 (file-write/bash-full/app/clipboard/agent/file-delete)
-│   │   │   ├── skill/           # Skill 系统 (loader/registry/runner)
-│   │   │   └── mcp/             # MCP 集成 (manager/client/stdio/sse)
-│   │   ├── safety/              # ★ 安全控制 (Phase 2 → 3 完成)
-│   │   │   ├── index.ts
-│   │   │   ├── checker.ts       # 四级安全 + 三策略 + 会话信任 + 危险模式库
-│   │   │   └── confirm.ts       # 确认弹窗 Promise 桥接 (AgentLoop↔ChatPanel)
-│   │   ├── context/             # ★ 上下文引擎 (Phase 2)
-│   │   │   └── builder.ts       # SystemPrompt 动态组装 + 消息压缩
-│   │   │   └── index.ts          # 统一导出
-│   │   ├── reply/               # ★ 回复生成器 (Phase 2)
-│   │   │   └── generator.ts     # 后处理: kaomoji/截断/HTML转义
-│   │   ├── agent/               # Agent 模块
-│   │   │   ├── index.ts
-│   │   │   ├── types.ts         # Message / ToolCall / GenerateRequest 类型
-│   │   │   ├── runner.ts        # sendMessage() — 接入 AgentLoop
-│   │   │   ├── provider.ts      # OpenAICompatibleProvider — 支持工具调用+思考强度
-│   │   │   ├── service.ts / chat.ts / memory.ts / active.ts
-│   │   ├── window/ / audio/ / config.ts / logger.ts / cooldown.ts / debug.ts
-│   │   ├── animation.ts / expressions.ts / command-handler.ts / env.ts / test.ts
-│   │   └── ...
-│   └── styles/
-│
-├── src-tauri/                   # Rust 后端
-│   ├── Cargo.toml               # windows-sys [Win], objc [Mac], num_cpus
-│   └── src/
-│       ├── lib.rs / main.rs
-│       ├── macros/ / monitor/ / window/
-│       └── commands/
-│           ├── cursor.rs / monitor_ctl.rs / sim.rs / logging.rs
-│           ├── tool_exec.rs     # ★ Bash/文件/系统/剪贴板/应用 (三端完整)
-│           ├── memory_cmd.rs    # ★ 文件系统操作 (init/list/delete sessions)
-│           ├── mcp_bridge.rs    # ★ MCP stdio 桥接 (spawn/send/kill)【已实现】
-│           └── profile_cmd.rs   # ★ Profile 文件系统 (list/write/delete, AppData)
-│
-└── public/assets/               # 静态资源 (v2 重组)
-    ├── characters/
-    │   ├── cho/                  # 糖糖素材 (109帧)
-    │   └── default/              # 默认角色
-    ├── fonts/                    # 3个像素字体
-    └── ui/                       # UI素材
-        ├── windows/              # 原 windows/ 移入
-        ├── Fromtemd/             # 原 Fromtemd/ 移入
-        ├── jine/                 # 原 jine/ 移入
-        └── photo/                # 原 photo/ 移入
+├── docs/                         # 设计文档
+├── CONFIG.yaml / CONFIG-DEV.yaml # 配置
+├── public/profiles/              # Profile 系统 (3个内置)
+├── memory/ / sessions/ / skills/ # 记忆/会话/技能
+├── src/
+│   ├── components/ / composables/ # UI组件 + 灵动图层
+│   └── services/
+│       ├── profile/    # Profile 加载/CSS注入/导入导出
+│       ├── engine/     # Agent Loop, 会话, Slash命令
+│       ├── personality/# ★ 人格模块 v5 (变量池v2)
+│       ├── tool/       # 工具系统 (local/local-extra/skill/mcp)
+│       ├── safety/     # 四级安全 + 会话信任
+│       ├── context/    # 上下文引擎 (Prompt组装+压缩)
+│       ├── reply/      # 回复后处理
+│       └── agent/      # AI Provider + Runner
+├── src-tauri/          # Rust 后端 (Tauri commands)
+└── public/assets/      # 静态资源 (角色/字体/UI)
 ```
 
 ---
@@ -162,35 +56,12 @@ Desk-Pet/
 ## 配置系统
 
 ```
-CONFIG.yaml                    ← 默认配置 (跟 git)
-    │
-    ├── CONFIG-DEV.yaml 存在 && enabled: true  → 完全替换，CONFIG 不加载
-    ├── CONFIG-DEV.yaml 存在 && enabled: false → 忽略 DEV，走 CONFIG
-    └── CONFIG-DEV.yaml 不存在                 → 走 CONFIG
-         │
-         ▼ Vite YAML Plugin (js-yaml 编译时转换)
-         │
-    src/services/config.ts     ← 类型化 getter + userConfig (localStorage 持久化覆盖)
-         │                         ★ MCP Server/ Skill 配置通过 setOverride 同步到覆盖层
-         │
-         ├── modeConfig           → 助手模式开关
-         ├── aiConfig             → services/agent/ (provider, runner)
-         ├── thinkingConfig       → services/engine/thinking.ts
-         ├── loopConfig           → services/engine/agent-loop.ts
-         ├── toolsConfig          → services/tool/ (bash白名单/文件/MCP/Skill)
-         ├── safetyConfig         → services/safety/
-         ├── personalityConfig    → services/personality/ (registry, loader)
-         ├── windowMonitorConfig  → services/window/ (monitor, listener)
-         ├── aiLockConfig         → services/cooldown.ts
-         ├── memoryConfig         → services/agent/memory.ts
-         ├── desktopConfig        → App.vue → invoke("set_monitor_config") → Rust
-         ├── shortcutConfig       → App.vue → 全局快捷键注册 (global-shortcut 插件)
-         ├── loggingConfig        → services/logger.ts (日志级别)
-         └── userConfig           → App.vue / SettingsPanel → 弹窗位置/大小/快捷键/音效分配 (localStorage)
+CONFIG.yaml (默认) → CONFIG-DEV.yaml 可覆盖/dev模式
+  → Vite YAML Plugin (编译时转换)
+  → src/services/config.ts (类型化 getter + localStorage userConfig 覆盖)
 ```
 
-**所有模块通过 `@/services/config` 读取配置，不在模块内定义常量。**
-本地调参只改 `CONFIG-DEV.yaml`，不用动代码。
+**所有模块通过 `@/services/config` 读取配置**，不在模块内定义常量。本地调参只改 `CONFIG-DEV.yaml`。
 
 ---
 
@@ -217,69 +88,45 @@ Rust 端用 `rust_info!` / `rust_debug!` / `rust_warn!` 宏，格式一致。
 ## 数据流
 
 ```
-┌── 会话管理 ──────────────────────────────────────────────┐
-│ 启动: sessions/ 扫描 → 重建列表 → localStorage 镜像        │
-│                                                           │
-│ SessionTabs (纯UI, 只emit事件) → App.vue (bridge)         │
-│   ├── emit("switch") → onSessionSwitch → chat.ts          │
-│   │     └── switchToSession + MemoryService.setActiveSession│
-│   ├── emit("new")    → onSessionNew → chat.ts             │
-│   │     └── createNewSession + createSessionFile          │
-│   ├── emit("close-tab") → onSessionClose → chat.ts        │
-│   ├── emit("delete-file") → onDeleteFile → MemoryService  │
-│   │     └── deleteSessionFile + flushProjectSave          │
-│   └── emit("restore-session") → onRestoreSession          │
-│                                                           │
-│ chat.ts (★ 唯一状态管理者)                                │
-│   ├── sessions[] 以 sessions/ 目录为真相源                 │
-│   ├── 切换/恢复时调用 MemoryService.setActiveSession()    │
-│   ├── agent-loop: recordTurn → appendTurnToSessionFile()  │
-│   │   └── 按 sessionId 匹配已有文件，更新轮数/token统计元数据 + 首次用户消息后自动重命名文件topic + 持久化累计token │
-│   └── /clear → MemoryService.archiveSession() → Project.md│
-└──────────────────────────────────────────────────────────┘
+启动 → sessions/ 扫描 → localStorage 镜像
+SessionTabs → App.vue bridge → chat.ts (★ 唯一状态管理)
 
-Rust 后台线程 → emit("window-changed") → window/listener.ts
-    Windows: GetForegroundWindow    macOS: osascript
-                                                      │
-                                          ┌───────────┴──────────┐
-                                    停留≥CONFIG秒?           关键词匹配?
-                                          │                       │
-                                    agent/active.ts         expressions.ts
-                                    → sendActiveMessage()   (切换角色表情)
-                                    → runAgentLoop()
-                                          │
-                                    → personality.getSystemPrompt()
-                                    → ContextEngine.build()
-                                    → [Plan] 助手+复杂任务预判拆解
-                                    → AgentLoop (多轮工具调用)
-                                         │
-                                         ├─ thinking 阶段 → 表情事件
-                                         ├─ executing 阶段 → 角色化文案
-                                         ├─ blocked 阶段 → 拒绝提示
-                                         ├─ done 阶段 → 音效事件
-                                         └─ 上下文利用率>95% → 自动压缩
-                                    → ReplyGenerator
-                                          │
-                                    pushAssistantMessage + incrementUnanswered
-                                    → ChatPanel 显示
+主动搭话: 窗口监控 → sendActiveMessage() → AgentLoop
+用户聊天: sendMessage() → PreProcessor → AgentLoop
 
-用户聊天 agent/runner.sendMessage() → PreProcessor → ContextEngine.build() → AgentLoop
-  → [循环] AI ↔ 安全校验(四级+三策略) → (需要确认→ChatPanel弹窗) → ToolExec → 人格中间件.wrap → ReplyGenerator
-  → pushAssistantMessage + expression/sound 事件驱动 UI
+AgentLoop (每轮):
+  → refreshVariablePool() + updateInteractionVar(unansweredCount→0)
+  → When 引擎求值
+  → Phase1 (能力层) → 工具循环(安全校验→执行)
+  → Phase2 (角色层, 可选) → 情绪标签剥离 → 流式输出
+  → var_write 即时落盘 stages/{cardId}.json
 
-全局快捷键 → handleShortcutToggle()
-    ├── 收回: 缩放动画 1→0 + 收回音效 → hide() → 恢复家位置
-    └── 弹出: setPosition → 缩放动画 0→1 + 弹出音效 → focusInput()
-
-启动: ActivationPolicy::Accessory → create_main_window
-  → initProfiles() (★ 懒加载: 仅 CONFIG.activeProfile，设置页按需 discoverAllProfiles)
-  → registerDefaultTools() + (助手模式: registerAssistantTools + MCP真实连接/Mock + Skill子循环)
-  → initChat() + startMemoryConsolidationTimer() (每60min触发记忆整理)
-  → initDebug()
-
-Dock点击 → onFocusChanged → handleDockPopup() → 屏幕中央淡入
-设置页 → SettingsPanel → AI/人格/监控/模式/弹窗/快捷键/音效 + 工具/MCP/Skill可编辑 + CONFIG导入导出
+全局快捷键 → 弹出/收回动画
+托盘 → 隐藏/恢复窗口
 ```
+
+详见 docs/DES.md 完整数据流架构。
+
+---
+
+## 变量池 v2
+
+四类变量 system/card/interaction/session：
+
+| 类型 | 真相源 | 可写？ | 持久化 |
+|------|--------|--------|--------|
+| `system` | 运行时计算（6 个） | 否 | `vars.json` (快照) |
+| `card` | Card 注册表 | LLM 可写（仅 updateBy=llm） | `stages/{cardId}.json:variables.card` |
+| `interaction` | 系统事件 | 否（LLM 只读） | `stages/{cardId}.json:variables.interaction` |
+| `session` | 会话 markdown | 否 | `sessions/*.md` frontmatter |
+
+**关键约束**：
+- `var_write` 只能写已注册且 `scope=card` + `updateBy=llm` 的变量，校 type/min/max/enum
+- `var_delete` = reset 到 initial，不真删
+- `updateInteractionVar()` 系统内部 API；`applyResetPolicies()` 每轮 daily/session reset
+- Card `# 变量定义 > ## card / ## interaction` → YAML block → `CardVariableDef[]`
+
+详见 `docs/DESIGN-VARIABLE-POOL-v2.md`。
 
 ---
 
@@ -304,28 +151,19 @@ Dock点击 → onFocusChanged → handleDockPopup() → 屏幕中央淡入
 
 ## macOS 兼容状态
 
-| 功能 | macOS | 实现 |
-|---|---|---|
-| AI 聊天 / Agent Loop / 工具调用 | ✅ | 全平台 |
-| 文件/系统/HTTP 工具 | ✅ | 全平台 |
-| Windows 模拟器 | ✅ | 全平台 |
-| 窗口标题监控 | ✅ | osascript (需辅助功能权限) |
-| AI 主动搭话 | ✅ | 依赖窗口监控 |
-| 系统通知 | ❌ 已移除 | macOS 未签名构建无法实现 |
-| 全局快捷键召唤 | ✅ | global-shortcut 插件 |
-| 所有桌面悬浮 | ✅ | NSScreenSaverWindowLevel(1000) + canJoinAllSpaces |
-| Dock 点击弹出 | ✅ | onFocusChanged → 屏幕中央淡入 |
-| 系统托盘 | ✅ | TrayIconBuilder |
-| 设置页面 | ✅ | SettingsPanel — 含模式切换 |
-| 剪贴板 | ✅ | pbpaste/pbcopy |
-| 内存信息 | ✅ | vm_stat 精确计算 |
+| 功能 | 状态 |
+|------|------|
+| AI 聊天 / Agent Loop / 工具调用 / 窗口监控 | ✅ 全平台 |
+| 全局快捷键 / 桌面悬浮 / 系统托盘 / Dock弹出 | ✅ |
+| 文件/系统/剪贴板 / 设置页 | ✅ |
+| 系统通知 | ❌ 未签名构建无法实现 |
 
 ---
 
 ## 要求 ##
 优先复用已有代码 不要过度设计和抽象
 不要乱加 任何操作一定同步做win和mac双端适配
-
+必须使用skill
 
 ## 必要操作 ##
 每次回复的最后加："宝"
@@ -337,5 +175,4 @@ Dock点击 → onFocusChanged → handleDockPopup() → 屏幕中央淡入
 
 ## 核心方针 ##
 轻量化，低内存占用，高性能，token消耗少，功能强
-我的架构设计的md只是大方向，仿照claude code及其他的东西来写的，最终还是要你写的时候自觉地不断补充，自觉完善逻辑来实现
-DESIGN_ORIGIN.md是我的原始草案，架构设计的md是根据这个生成的，并不完全覆盖，所以你参考DESIGN_ORIGIN的比重要大一点
+我的设计的md只是大方向，最终还是要你写的时候自觉地不断补充，自觉完善逻辑来实现

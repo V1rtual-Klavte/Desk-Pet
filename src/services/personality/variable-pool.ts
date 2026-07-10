@@ -1,9 +1,11 @@
 // ==========================================
-// 变量池系统 — LLM 管理的 KV 存储
-// §4: 变量池（刷新/持久化/工具注册/@system订阅）
+// 变量池系统 v2 — 四类变量（system/card/interaction/session）
+// §5: 注册表驱动 + 持久化拆分 + 更新闭环
 // ==========================================
 
 import { createLogger } from "@/services/logger"
+import type { CardVariableDef, VariableState, VariableType, VariablePrimitive } from "./types"
+import type { StageVariables } from "./stages-cache"
 
 const log = createLogger("VarPool")
 
@@ -14,7 +16,7 @@ export type VarType = "number" | "string" | "boolean"
 export interface VarDef {
   name: string
   value: number | string | boolean
-  source: "system" | "character"
+  source: "system" | "card" | "interaction" | "session"
   type: VarType
   updatedAt: number
   updatedBy?: "system" | "llm"
@@ -22,87 +24,69 @@ export interface VarDef {
 
 export interface VariablePool {
   system: Record<string, number | string | boolean>
-  character: Record<string, number | string | boolean>
+  card: Record<string, number | string | boolean>
+  interaction: Record<string, number | string | boolean>
+  session: Record<string, number | string | boolean>
 }
 
-/** 持久化格式 */
-interface PersistedVars {
-  cardId: string
+/** 持久化格式：vars.json (system-only) */
+interface PersistedSystemVars {
+  schemaVersion: number
   system: Record<string, number | string | boolean>
-  character: Record<string, number | string | boolean>
   updatedAt: number
 }
 
-// ── 系统变量定义（8 个）──
-
-interface SysVarDef {
-  name: string
-  type: VarType
-  compute: () => number | string | boolean
+/** 持久化格式：stages/{cardId}.json (card + interaction) */
+interface PersistedCardVars {
+  schemaVersion: number
+  updatedAt: number
+  card: Record<string, number | string | boolean>
+  interaction: Record<string, number | string | boolean>
 }
 
+// ── 系统变量定义（6 个）──
+
+const SYSTEM_VAR_DEFS: Array<{
+  name: string; type: VarType
+  compute: (now: Date) => number | string | boolean
+}> = [
+  { name: "hour", type: "number", compute: (n) => n.getHours() },
+  { name: "minute", type: "number", compute: (n) => n.getMinutes() },
+  { name: "dayOfWeek", type: "number", compute: (n) => n.getDay() },
+  { name: "isNightTime", type: "boolean", compute: (n) => n.getHours() >= 22 || n.getHours() <= 5 },
+  { name: "isWeekend", type: "boolean", compute: (n) => n.getDay() === 0 || n.getDay() === 6 },
+]
+
+// ── 内部状态 ──
+
+let registry: CardVariableDef[] = []
+let currentCardId: string | null = null
+let pool: VariablePool = { system: {}, card: {}, interaction: {}, session: {} }
+let savePending = false
+
+/** 会话开始时间（用于 reset=session 判断） */
 let sessionStartMs: number = Date.now()
 
-/** 设置会话开始时间（由 session 模块在恢复会话时调用） */
 export function setSessionStart(ts: number): void {
   sessionStartMs = ts
 }
 
-/** 获取当前会话开始时间 */
 export function getSessionStart(): number {
   return sessionStartMs
 }
 
-function buildSysVarDefs(
-  unansweredCount: number,
-  messageCount: number,
-): SysVarDef[] {
-  const now = new Date()
-  return [
-    { name: "unansweredCount", type: "number", compute: () => unansweredCount },
-    { name: "hour", type: "number", compute: () => now.getHours() },
-    { name: "minute", type: "number", compute: () => now.getMinutes() },
-    { name: "dayOfWeek", type: "number", compute: () => now.getDay() },
-    { name: "isNightTime", type: "boolean", compute: () => now.getHours() >= 22 || now.getHours() <= 5 },
-    { name: "isWeekend", type: "boolean", compute: () => now.getDay() === 0 || now.getDay() === 6 },
-    { name: "sessionMinutes", type: "number", compute: () => Math.floor((Date.now() - sessionStartMs) / 60000) },
-    { name: "messageCount", type: "number", compute: () => messageCount },
-  ]
-}
-
-/** Card 可通过 # @system varName 订阅的扩展系统变量 */
-const EXTENDED_SYS_VAR_DEFS: SysVarDef[] = [
-  // 预留扩展点
-]
-
-function resolveExtendedSysVar(name: string): SysVarDef | undefined {
-  return EXTENDED_SYS_VAR_DEFS.find(d => d.name === name)
-}
-
-// ── 内部状态 ──
-
-let currentCardId: string | null = null
-let pool: VariablePool = { system: {}, character: {} }
-/** Card 的 #变量定义 初始值 */
-let initialCharVars: Record<string, number | string | boolean> = {}
-/** Card 订阅的扩展系统变量名 */
-let subscribedSysVars: string[] = []
-let savePending = false
+// ── 快照/调试 ──
 
 export interface VariablePoolRuntimeState {
   currentCardId: string | null
   pool: VariablePool
-  initialCharVars: Record<string, number | string | boolean>
-  subscribedSysVars: string[]
   savePending: boolean
 }
 
 export function snapshotVariablePoolState(): VariablePoolRuntimeState {
   return {
     currentCardId,
-    pool: getPoolSnapshot(),
-    initialCharVars: { ...initialCharVars },
-    subscribedSysVars: [...subscribedSysVars],
+    pool: { system: { ...pool.system }, card: { ...pool.card }, interaction: { ...pool.interaction }, session: { ...pool.session } },
     savePending,
   }
 }
@@ -111,93 +95,160 @@ export function restoreVariablePoolState(state: VariablePoolRuntimeState): void 
   currentCardId = state.currentCardId
   pool = {
     system: { ...state.pool.system },
-    character: { ...state.pool.character },
+    card: { ...state.pool.card },
+    interaction: { ...state.pool.interaction },
+    session: { ...state.pool.session },
   }
-  initialCharVars = { ...state.initialCharVars }
-  subscribedSysVars = [...state.subscribedSysVars]
   savePending = state.savePending
+}
+
+// ── 辅助 ──
+
+function emptyPool(): VariablePool {
+  return { system: {}, card: {}, interaction: {}, session: {} }
 }
 
 // ── 初始化 ──
 
 export interface InitPoolInput {
   cardId: string
-  /** card.#变量定义 中解析的初始值 */
-  initialVars: Record<string, number | string | boolean>
-  /** card.#变量定义 中用 # @system 声明的扩展订阅 */
-  subscribedSystemVars: string[]
-  /** 当前未回复计数 */
-  unansweredCount?: number
-  /** 当前会话消息数 */
-  messageCount?: number
-  /** 之前持久化的角色变量（切换 = null） */
-  previousCharVars?: Record<string, number | string | boolean> | null
+  variableDefs: CardVariableDef[]
+  /** @deprecated 兼容旧格式，variableDefs 优先 */
+  initialVars?: Record<string, number | string | boolean>
+  /** 之前持久化的 card 变量状态（从 stages/{cardId}.json 恢复） */
+  prevCardStates?: Record<string, VariableState>
+  /** 之前持久化的 interaction 变量状态 */
+  prevInteractionStates?: Record<string, VariableState>
 }
 
 export function initVariablePool(input: InitPoolInput): VariablePool {
   currentCardId = input.cardId
-  initialCharVars = input.initialVars
-  subscribedSysVars = input.subscribedSystemVars
+  registry = input.variableDefs
 
-  // 刷新系统变量
-  const sysVars: Record<string, number | string | boolean> = {}
-  const allDefs = [...buildSysVarDefs(input.unansweredCount ?? 0, input.messageCount ?? 0)]
-  for (const name of subscribedSysVars) {
-    const def = resolveExtendedSysVar(name)
-    if (def && !allDefs.find(d => d.name === name)) {
-      allDefs.push(def)
+  // 系统变量
+  const sysVars = computeSystemVariables(new Date(), input.cardId)
+  pool.system = sysVars
+
+  // Card 变量 — 优先从持久化恢复，否则用 initial
+  const cardVars: Record<string, number | string | boolean> = {}
+  const cardDefs = registry.filter(d => d.scope === "card")
+  for (const def of cardDefs) {
+    const prev = input.prevCardStates?.[def.name]
+    if (prev && validateVarAgainstDef(prev, def)) {
+      cardVars[def.name] = prev.value
+    } else {
+      cardVars[def.name] = def.initial
     }
   }
-  for (const d of allDefs) {
-    sysVars[d.name] = d.compute()
+  // Fallback: 如果没有 variableDefs 但传入了 old-style initialVars
+  if (cardDefs.length === 0 && input.initialVars) {
+    Object.assign(cardVars, input.initialVars)
   }
+  pool.card = cardVars
 
-  // 角色变量
-  const charVars: Record<string, number | string | boolean> = {}
-  if (input.previousCharVars) {
-    Object.assign(charVars, input.previousCharVars)
-  } else {
-    for (const [k, v] of Object.entries(initialCharVars)) {
-      if (!subscribedSysVars.includes(k)) {
-        charVars[k] = v
-      }
+  // Interaction 变量
+  const interactionVars: Record<string, number | string | boolean> = {}
+  const interactionDefs = registry.filter(d => d.scope === "interaction")
+  for (const def of interactionDefs) {
+    const prev = input.prevInteractionStates?.[def.name]
+    if (prev && validateVarAgainstDef(prev, def)) {
+      interactionVars[def.name] = prev.value
+    } else {
+      interactionVars[def.name] = def.initial
     }
   }
+  pool.interaction = interactionVars
+  pool.session = {}
 
-  pool = { system: sysVars, character: charVars }
   savePending = true
-
-  log.info("变量池初始化:", currentCardId, "| 系统:", Object.keys(sysVars).length, "| 角色:", Object.keys(charVars).length)
-  return { ...pool }
+  log.info("变量池初始化:", currentCardId, "| system:", Object.keys(sysVars).length, "| card:", Object.keys(cardVars).length, "| interaction:", Object.keys(interactionVars).length)
+  return getPoolSnapshot()
 }
 
-// ── 刷新（每轮 agent loop 开始前）──
+/** 校验持久化值是否符合变量注册表定义 */
+function validateVarAgainstDef(state: VariableState, def: CardVariableDef): boolean {
+  if (state.type !== def.type) return false
+  switch (def.type) {
+    case "number": {
+      if (typeof state.value !== "number") return false
+      if (def.min !== undefined && state.value < def.min) return false
+      if (def.max !== undefined && state.value > def.max) return false
+      return true
+    }
+    case "string": {
+      if (typeof state.value !== "string") return false
+      if (def.enum && !def.enum.includes(state.value)) return false
+      return true
+    }
+    case "boolean":
+      return typeof state.value === "boolean"
+  }
+}
+
+// ── 系统变量计算 ──
+
+export function computeSystemVariables(now: Date, activeCardId: string): Record<string, number | string | boolean> {
+  const vars: Record<string, number | string | boolean> = {}
+  for (const def of SYSTEM_VAR_DEFS) {
+    vars[def.name] = def.compute(now)
+  }
+  vars.activeCardId = activeCardId
+  return vars
+}
+
+// ── 刷新（每轮 Agent Loop 开始）──
 
 export interface RefreshInput {
-  unansweredCount: number
-  messageCount: number
-  sessionStartTimestamp?: number
+  activeCardId?: string
 }
 
-export function refreshVariablePool(input: RefreshInput): VariablePool {
-  if (input.sessionStartTimestamp) {
-    sessionStartMs = input.sessionStartTimestamp
-  }
+export function refreshVariablePool(input: RefreshInput = {}): VariablePool {
+  const cardId = input.activeCardId ?? currentCardId ?? ""
+  pool.system = computeSystemVariables(new Date(), cardId)
+  return getPoolSnapshot()
+}
 
-  const sysVars: Record<string, number | string | boolean> = {}
-  const allDefs = [...buildSysVarDefs(input.unansweredCount, input.messageCount)]
-  for (const name of subscribedSysVars) {
-    const def = resolveExtendedSysVar(name)
-    if (def && !allDefs.find(d => d.name === name)) {
-      allDefs.push(def)
+// ── Reset 策略 ──
+
+/** 上次 daily reset 的日期键（用于 reset=daily 去重） */
+let lastDailyResetKey = getDateKey(new Date())
+
+function getDateKey(date: Date): string {
+  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`
+}
+
+/**
+ * 应用 reset 策略（每轮 Agent Loop 开始前调用）
+ * - reset=daily: 本地日期变化后重置为 initial
+ * - reset=session: 新会话开始时重置为 initial
+ */
+export function applyResetPolicies(now: Date, isNewSession: boolean): string[] {
+  const resetVars: string[] = []
+  const todayKey = getDateKey(now)
+
+  for (const def of registry) {
+    if (def.scope !== "card" || def.reset === "never") continue
+
+    let shouldReset = false
+    if (def.reset === "session" && isNewSession) shouldReset = true
+    if (def.reset === "daily" && todayKey !== lastDailyResetKey) shouldReset = true
+
+    if (shouldReset && def.name in pool.card) {
+      pool.card[def.name] = def.initial
+      savePending = true
+      resetVars.push(def.name)
     }
   }
-  for (const d of allDefs) {
-    sysVars[d.name] = d.compute()
+
+  // 更新 daily reset 追踪日期
+  if (todayKey !== lastDailyResetKey) {
+    lastDailyResetKey = todayKey
   }
 
-  pool.system = sysVars
-  return { ...pool }
+  if (resetVars.length > 0) {
+    log.info("reset 策略触发:", resetVars.join(", "))
+  }
+  return resetVars
 }
 
 // ── 快照（只读视图）──
@@ -205,33 +256,76 @@ export function refreshVariablePool(input: RefreshInput): VariablePool {
 export function getPoolSnapshot(): VariablePool {
   return {
     system: { ...pool.system },
-    character: { ...pool.character },
+    card: { ...pool.card },
+    interaction: { ...pool.interaction },
+    session: { ...pool.session },
   }
 }
 
-/** 生成注入 Prompt 的变量池文本 */
-export function formatPoolForPrompt(): string {
-  const sysParts = Object.entries(pool.system)
-    .map(([k, v]) => `${k}=${typeof v === "string" ? `"${v}"` : v}`)
-  const charParts = Object.entries(pool.character)
-    .map(([k, v]) => `${k}=${typeof v === "string" ? `"${v}"` : v}`)
+export function getVariableRegistry(): CardVariableDef[] {
+  return registry
+}
 
-  let text = "[变量池]\n"
-  text += `系统: ${sysParts.join(", ") || "(空)"}\n`
-  text += `角色: ${charParts.join(", ") || "(空)"}`
-  return text
+// ── Prompt 格式化 ──
+
+export function formatPoolForPrompt(): string {
+  const lines: string[] = []
+
+  // [系统变量 - 只读]
+  const sysParts = Object.entries(pool.system)
+    .map(([k, v]) => `${k}=${formatVal(v)}`)
+  lines.push(`[系统变量 - 只读]\n${sysParts.join(", ") || "(空)"}`)
+
+  // [Card变量 - 可通过 var_write 更新]
+  const cardDefMap = new Map(registry.filter(d => d.scope === "card").map(d => [d.name, d]))
+  const cardParts: string[] = []
+  for (const [name, value] of Object.entries(pool.card)) {
+    const def = cardDefMap.get(name)
+    const meta = def
+      ? ` (${def.type}${def.enum ? `, enum: ${def.enum.join("/")}` : ""}${def.min !== undefined ? `, ${def.min}..${def.max ?? ""}` : ""}, updateBy=${def.updateBy}): ${def.description}`
+      : ""
+    cardParts.push(`${name}=${formatVal(value)}${meta}`)
+  }
+  lines.push(`[Card变量 - 可通过 var_write 更新]\n${cardParts.join("\n") || "(空)"}`)
+
+  // [互动状态 - 系统维护，只读]
+  const intParts = Object.entries(pool.interaction)
+    .map(([k, v]) => {
+      const def = registry.find(d => d.scope === "interaction" && d.name === k)
+      return `${k}=${formatVal(v)}${def ? ` (${def.type}, updateBy=${def.updateBy}): ${def.description}` : ""}`
+    })
+  if (intParts.length > 0) {
+    lines.push(`[互动状态 - 系统维护，只读]\n${intParts.join("\n")}`)
+  }
+
+  // [会话状态 - 只读]
+  const sessParts = Object.entries(pool.session)
+    .map(([k, v]) => `${k}=${formatVal(v)}`)
+  if (sessParts.length > 0) {
+    lines.push(`[会话状态 - 只读]\n${sessParts.join(", ")}`)
+  }
+
+  return lines.join("\n\n")
+}
+
+function formatVal(v: unknown): string {
+  return typeof v === "string" ? `"${v}"` : String(v)
 }
 
 // ── LLM 工具操作 ──
 
 export function varRead(name: string): VarDef | null {
+  const now = Date.now()
   if (name in pool.system) {
-    const val = pool.system[name]
-    return { name, value: val, source: "system", type: inferType(val), updatedAt: Date.now() }
+    return { name, value: pool.system[name], source: "system", type: "string" as VarType, updatedAt: now }
   }
-  if (name in pool.character) {
-    const val = pool.character[name]
-    return { name, value: val, source: "character", type: inferType(val), updatedAt: Date.now() }
+  if (name in pool.card) {
+    const def = registry.find(d => d.scope === "card" && d.name === name)
+    return { name, value: pool.card[name], source: "card", type: def?.type ?? "string", updatedAt: now }
+  }
+  if (name in pool.interaction) {
+    const def = registry.find(d => d.scope === "interaction" && d.name === name)
+    return { name, value: pool.interaction[name], source: "interaction", type: def?.type ?? "string", updatedAt: now }
   }
   return null
 }
@@ -242,30 +336,50 @@ export function varList(): VarDef[] {
   for (const [name, value] of Object.entries(pool.system)) {
     result.push({ name, value, source: "system", type: inferType(value), updatedAt: now })
   }
-  for (const [name, value] of Object.entries(pool.character)) {
-    result.push({ name, value, source: "character", type: inferType(value), updatedAt: now })
+  for (const [name, value] of Object.entries(pool.card)) {
+    const def = registry.find(d => d.scope === "card" && d.name === name)
+    result.push({ name, value, source: "card", type: def?.type ?? inferType(value), updatedAt: now })
+  }
+  for (const [name, value] of Object.entries(pool.interaction)) {
+    const def = registry.find(d => d.scope === "interaction" && d.name === name)
+    result.push({ name, value, source: "interaction", type: def?.type ?? inferType(value), updatedAt: now })
   }
   return result
 }
 
 export function varWrite(name: string, rawValue: string): { success: boolean; error?: string } {
+  // 1. 禁止写系统变量
   if (name in pool.system) {
     return { success: false, error: `系统变量 ${name} 只读，不可写入` }
   }
-
-  const charCount = Object.keys(pool.character).length
-  if (!(name in pool.character) && charCount >= 100) {
-    return { success: false, error: "角色变量已达上限（100 个）" }
+  // 2. 禁止写 interaction 变量
+  if (name in pool.interaction) {
+    return { success: false, error: `互动状态 ${name} 由系统维护，LLM 不可写入` }
   }
-  const totalCount = Object.keys(pool.system).length + charCount
-  if (!(name in pool.character) && totalCount >= 200) {
-    return { success: false, error: "变量总数已达上限（200 个）" }
+  // 3. 必须已注册
+  const def = registry.find(d => d.scope === "card" && d.name === name)
+  if (!def) {
+    return { success: false, error: `变量 ${name} 未在 Card 中注册，不能动态创建` }
+  }
+  // 4. 必须是 llm 可写
+  if (def.updateBy !== "llm") {
+    return { success: false, error: `变量 ${name} 的 updateBy=${def.updateBy}，LLM 不可写入` }
+  }
+  // 5. 类型校验和转换
+  const typedValue = inferAndValidate(rawValue, def)
+  if (typedValue === undefined) {
+    const rangeHint = def.type === "number" && (def.min !== undefined || def.max !== undefined)
+      ? `, 范围: ${def.min ?? "-∞"}..${def.max ?? "∞"}`
+      : def.type === "string" && def.enum
+        ? `, 可选值: ${def.enum.join("/")}`
+        : ""
+    return { success: false, error: `变量 ${name} 值 "${rawValue}" 不符合 schema: 期望 ${def.type}${rangeHint}` }
   }
 
-  const typedValue = inferAndConvert(rawValue, pool.character[name])
-  pool.character[name] = typedValue
+  // 6. 写入
+  pool.card[name] = typedValue
   savePending = true
-
+  log.info("var_write:", name, "=", typedValue)
   return { success: true }
 }
 
@@ -273,114 +387,262 @@ export function varDelete(name: string): { success: boolean; error?: string } {
   if (name in pool.system) {
     return { success: false, error: `系统变量 ${name} 不可删除` }
   }
-  if (name in pool.character) {
-    delete pool.character[name]
-    savePending = true
+  if (name in pool.interaction) {
+    return { success: false, error: `互动状态 ${name} 由系统维护，不可删除` }
   }
+  // Card 变量：reset 到 initial
+  const def = registry.find(d => d.scope === "card" && d.name === name)
+  if (def) {
+    pool.card[name] = def.initial
+    savePending = true
+    log.info("var_delete(reset):", name, "→", def.initial)
+    return { success: true }
+  }
+  // 未注册但在内存中的变量（兼容旧数据）→ 删除
+  if (name in pool.card) {
+    delete pool.card[name]
+    savePending = true
+    log.info("var_delete(compat):", name)
+    return { success: true }
+  }
+  return { success: false, error: `变量 ${name} 不存在` }
+}
+
+// ── 系统更新 Interaction ──
+
+export function updateInteractionVar(name: string, value: VariablePrimitive): { success: boolean; error?: string } {
+  const def = registry.find(d => d.scope === "interaction" && d.name === name)
+  if (!def) {
+    return { success: false, error: `Interaction 变量 ${name} 未在 Card 中注册` }
+  }
+  if (def.updateBy !== "system") {
+    return { success: false, error: `Interaction 变量 ${name} 的 updateBy 不是 system` }
+  }
+  // 校验类型
+  if (typeof value !== def.type) {
+    if (def.type === "number" && typeof value === "string") {
+      const n = parseFloat(value)
+      if (isNaN(n)) return { success: false, error: `类型不匹配: 期望 ${def.type}` }
+      value = n
+    } else {
+      return { success: false, error: `类型不匹配: 期望 ${def.type}` }
+    }
+  }
+  // number 范围校验
+  if (def.type === "number" && typeof value === "number") {
+    if (def.min !== undefined && value < def.min) return { success: false, error: `${name} 不能低于 ${def.min}` }
+    if (def.max !== undefined && value > def.max) return { success: false, error: `${name} 不能超过 ${def.max}` }
+  }
+
+  pool.interaction[name] = value as number | string | boolean
+  savePending = true
+  log.debug("interaction update:", name, "=", value)
   return { success: true }
+}
+
+// ── Session 变量注入 ──
+
+export function setSessionVars(vars: Record<string, number | string | boolean>): void {
+  pool.session = { ...vars }
 }
 
 // ── 持久化 ──
 
-export async function saveVariablePoolAsync(
-  writeFile: (path: string, content: Uint8Array) => Promise<void>,
-): Promise<void> {
-  if (!savePending || !currentCardId) return
-
-  const data: PersistedVars = {
-    cardId: currentCardId,
-    system: { ...pool.system },
-    character: { ...pool.character },
-    updatedAt: Date.now(),
-  }
-
-  const json = JSON.stringify(data, null, 2)
-  const encoder = new TextEncoder()
-  try {
-    await writeFile("personality/vars.json", encoder.encode(json))
-    savePending = false
-    log.debug("变量池已持久化")
-  } catch (e) {
-    log.warn("变量池持久化失败:", e)
-  }
-}
-
-export async function saveVariablePoolStrict(
-  writeFile: (path: string, content: Uint8Array) => Promise<void>,
-): Promise<void> {
-  if (!savePending || !currentCardId) return
-
-  const data: PersistedVars = {
-    cardId: currentCardId,
-    system: { ...pool.system },
-    character: { ...pool.character },
-    updatedAt: Date.now(),
-  }
-
-  const encoder = new TextEncoder()
-  await writeFile("personality/vars.json", encoder.encode(JSON.stringify(data, null, 2)))
-  savePending = false
-  log.debug("变量池已持久化")
-}
-
-export function loadVariablePool(
-  jsonStr: string,
-  currentCardIdNow: string,
-): { restored: boolean; pool: VariablePool } {
-  try {
-    const data = JSON.parse(jsonStr) as PersistedVars
-    if (data.cardId === currentCardIdNow) {
-      pool.character = data.character || {}
-      currentCardId = currentCardIdNow
-      log.info("变量池恢复:", Object.keys(pool.character).length, "个角色变量")
-      return { restored: true, pool: { ...pool } }
-    }
-  } catch {
-    log.warn("vars.json 解析失败，将重新初始化")
-  }
-  return { restored: false, pool: { system: {}, character: {} } }
-}
-
-export async function readPersistedCharacterVars(
-  cardId: string,
-): Promise<Record<string, number | string | boolean> | null> {
+async function readFile(path: string): Promise<Uint8Array | null> {
   try {
     const { invoke } = await import("@tauri-apps/api/core")
-    const raw = await invoke<number[]>("personality_file_read", { path: "personality/vars.json" })
-    const json = new TextDecoder().decode(new Uint8Array(raw))
-    const data = JSON.parse(json) as PersistedVars
-    if (data.cardId !== cardId) return null
-    return data.character || {}
+    const raw = await invoke<number[]>("personality_file_read", { path })
+    return new Uint8Array(raw)
+  } catch { return null }
+}
+
+async function writeFile(path: string, content: Uint8Array): Promise<void> {
+  const { invoke } = await import("@tauri-apps/api/core")
+  await invoke("personality_file_write", { path, content: Array.from(content) })
+}
+
+/** 持久化 system → vars.json, card+interaction → stages/{cardId}.json */
+export async function saveVariablePoolAsync(
+  writeFileExternal: (path: string, content: Uint8Array) => Promise<void>,
+): Promise<void> {
+  if (!savePending || !currentCardId) return
+
+  const encoder = new TextEncoder()
+
+  // 1. 写 vars.json（system only）
+  const sysData: PersistedSystemVars = {
+    schemaVersion: 2,
+    system: { ...pool.system },
+    updatedAt: Date.now(),
+  }
+  try {
+    await writeFileExternal("personality/vars.json", encoder.encode(JSON.stringify(sysData, null, 2)))
+  } catch (e) {
+    log.warn("vars.json 持久化失败:", e)
+    // 继续尝试保存 stages 文件，不因 vars.json 失败而跳过
+  }
+
+  // 2. 写 stages/{cardId}.json（保留 stages，更新 variables）
+  try {
+    const path = `personality/stages/${currentCardId}.json`
+    const existingRaw = await readFile(path)
+    let existing: Record<string, unknown> = {}
+    if (existingRaw) {
+      try { existing = JSON.parse(new TextDecoder().decode(existingRaw)) } catch { /* new file */ }
+    }
+
+    const varData: PersistedCardVars = {
+      schemaVersion: 2,
+      updatedAt: Date.now(),
+      card: pool.card,
+      interaction: pool.interaction,
+    }
+    const merged = { ...existing, variables: varData }
+    await writeFileExternal(path, encoder.encode(JSON.stringify(merged, null, 2)))
+
+    savePending = false
+    log.debug("变量池已持久化:", path)
+  } catch (e) {
+    log.warn("stages 变量持久化失败:", e)
+  }
+}
+
+/** 严格持久化（失败抛错给事务回滚） */
+export async function saveVariablePoolStrict(
+  writeFileExternal: (path: string, content: Uint8Array) => Promise<void>,
+): Promise<void> {
+  if (!savePending || !currentCardId) return
+
+  const encoder = new TextEncoder()
+
+  const sysData: PersistedSystemVars = {
+    schemaVersion: 2,
+    system: { ...pool.system },
+    updatedAt: Date.now(),
+  }
+  await writeFileExternal("personality/vars.json", encoder.encode(JSON.stringify(sysData, null, 2)))
+
+  const path = `personality/stages/${currentCardId}.json`
+  const existingRaw = await readFile(path)
+  let existing: Record<string, unknown> = {}
+  if (existingRaw) {
+    try { existing = JSON.parse(new TextDecoder().decode(existingRaw)) } catch { /* new */ }
+  }
+
+  const varData: PersistedCardVars = {
+    schemaVersion: 2,
+    updatedAt: Date.now(),
+    card: pool.card,
+    interaction: pool.interaction,
+  }
+  const merged = { ...existing, variables: varData }
+  await writeFileExternal(path, encoder.encode(JSON.stringify(merged, null, 2)))
+
+  savePending = false
+  log.debug("变量池已持久化(strict):", path)
+}
+
+/** 便捷：通过 Tauri invoke 持久化 */
+export async function savePoolToDisk(): Promise<void> {
+  await saveVariablePoolAsync(writeFile)
+}
+
+/** 便捷：严格持久化 */
+export async function savePoolToDiskStrict(): Promise<void> {
+  await saveVariablePoolStrict(writeFile)
+}
+
+// ── 从磁盘读取 ──
+
+/** 读取 stages/{cardId}.json 中的变量状态 */
+export async function loadCardVars(
+  cardId: string,
+): Promise<{ card: Record<string, VariableState>; interaction: Record<string, VariableState> } | null> {
+  try {
+    const raw = await readFile(`personality/stages/${cardId}.json`)
+    if (!raw) return null
+    const data = JSON.parse(new TextDecoder().decode(raw))
+    const vars = data.variables as StageVariables | undefined
+    if (!vars || vars.schemaVersion < 1) return null
+    return { card: vars.card || {}, interaction: vars.interaction || {} }
   } catch {
     return null
   }
 }
 
+/** 读取 vars.json（system snapshot, 给设置页等使用） */
+export async function readSystemVars(): Promise<Record<string, number | string | boolean> | null> {
+  try {
+    const raw = await readFile("personality/vars.json")
+    if (!raw) return null
+    const data = JSON.parse(new TextDecoder().decode(raw)) as PersistedSystemVars
+    if (data.schemaVersion >= 1) return data.system
+    return null
+  } catch {
+    return null
+  }
+}
+
+/** @deprecated v2: 使用 loadCardVars 代替 */
+export async function readPersistedCharacterVars(
+  cardId: string,
+): Promise<Record<string, number | string | boolean> | null> {
+  // 先尝试新位置
+  const newVars = await loadCardVars(cardId)
+  if (newVars && Object.keys(newVars.card).length > 0) {
+    const flat: Record<string, number | string | boolean> = {}
+    for (const [name, state] of Object.entries(newVars.card)) {
+      flat[name] = state.value
+    }
+    return flat
+  }
+  // 回退旧 vars.json
+  try {
+    const raw = await readFile("personality/vars.json")
+    if (!raw) return null
+    const data = JSON.parse(new TextDecoder().decode(raw))
+    if (data.cardId === cardId && data.character) {
+      log.info("发现旧格式 character 数据，使用旧数据")
+      return data.character as Record<string, number | string | boolean>
+    }
+  } catch { /* fall through */ }
+  return null
+}
+
+/** @deprecated v2: 使用 savePoolToDisk 代替 */
+export function loadVariablePool(
+  jsonStr: string, currentCardIdNow: string,
+): { restored: boolean; pool: VariablePool } {
+  try {
+    const data = JSON.parse(jsonStr)
+    // 新版 vars.json: { schemaVersion, system, updatedAt }
+    if (data.schemaVersion && data.schemaVersion >= 2) {
+      pool.system = data.system || {}
+      currentCardId = currentCardIdNow
+      log.info("变量池恢复(v2 system):", Object.keys(pool.system).length, "个系统变量")
+      return { restored: true, pool: getPoolSnapshot() }
+    }
+    // 旧格式: { cardId, system, character, updatedAt }
+    if (data.cardId === currentCardIdNow) {
+      pool.card = data.character || {}
+      pool.system = data.system || {}
+      currentCardId = currentCardIdNow
+      log.info("变量池恢复(旧格式):", Object.keys(pool.card).length, "个角色变量")
+      return { restored: true, pool: getPoolSnapshot() }
+    }
+  } catch {
+    log.warn("vars.json 解析失败，将重新初始化")
+  }
+  return { restored: false, pool: emptyPool() }
+}
+
+// ── 销毁 ──
+
 export function destroyPool(): void {
   currentCardId = null
-  pool = { system: {}, character: {} }
-  initialCharVars = {}
-  subscribedSysVars = []
+  registry = []
+  pool = emptyPool()
   savePending = false
-}
-
-/** 便捷方法：通过 Tauri invoke 持久化变量池 */
-export async function savePoolToDisk(): Promise<void> {
-  await saveVariablePoolAsync(async (path, bytes) => {
-    try {
-      const { invoke } = await import("@tauri-apps/api/core")
-      await invoke("personality_file_write", { path, content: Array.from(bytes) })
-    } catch { /* 静默失败 */ }
-  })
-}
-
-/** 便捷方法：严格持久化变量池，失败时抛错给事务切换回滚 */
-export async function savePoolToDiskStrict(): Promise<void> {
-  await saveVariablePoolStrict(async (path, bytes) => {
-    const { invoke } = await import("@tauri-apps/api/core")
-    const absolutePath = await invoke<string>("personality_file_write", { path, content: Array.from(bytes) })
-    log.info("变量池已持久化:", absolutePath)
-  })
 }
 
 // ── 类型工具 ──
@@ -391,25 +653,31 @@ function inferType(value: unknown): VarType {
   return "string"
 }
 
-function inferAndConvert(raw: string, existing: unknown): number | string | boolean {
+function inferAndValidate(raw: string, def: CardVariableDef): number | string | boolean | undefined {
   const trimmed = raw.trim()
-  if (trimmed === "true") return true
-  if (trimmed === "false") return false
-  const num = parseFloat(trimmed)
-  if (!isNaN(num) && String(num) === trimmed) return num
-  if (existing !== undefined) {
-    if (typeof existing === "number") {
-      const n = parseFloat(trimmed)
-      if (!isNaN(n)) return n
-      return existing
-    }
-    if (typeof existing === "boolean") {
+
+  switch (def.type) {
+    case "boolean": {
       if (trimmed === "true") return true
       if (trimmed === "false") return false
-      return existing
+      return undefined
+    }
+    case "number": {
+      const num = parseFloat(trimmed)
+      if (isNaN(num)) return undefined
+      if (def.min !== undefined && num < def.min) return undefined
+      if (def.max !== undefined && num > def.max) return undefined
+      return num
+    }
+    case "string": {
+      // 去掉外层引号
+      const unquoted = ((trimmed.startsWith('"') && trimmed.endsWith('"')) || (trimmed.startsWith("'") && trimmed.endsWith("'")))
+        ? trimmed.slice(1, -1)
+        : trimmed
+      if (def.enum && !def.enum.includes(unquoted)) return undefined
+      return unquoted
     }
   }
-  return trimmed
 }
 
 // ── 工具 handler 构造器 ──
@@ -420,7 +688,7 @@ export function buildVarReadHandler(): (params: Record<string, unknown>) => Prom
     if (!name) return { success: false, content: "", error: "变量名不能为空" }
     const v = varRead(name)
     if (!v) return { success: false, content: "", error: `变量 ${name} 不存在` }
-    return { success: true, content: `${v.name} = ${v.value} (${v.source})` }
+    return { success: true, content: `${v.name} = ${typeof v.value === "string" ? `"${v.value}"` : v.value} (${v.source})` }
   }
 }
 
@@ -441,7 +709,7 @@ export function buildVarWriteHandler(): (params: Record<string, unknown>) => Pro
     if (!value) return { success: false, content: "", error: "变量值不能为空" }
     const result = varWrite(name, value)
     if (!result.success) return { success: false, content: "", error: result.error }
-    return { success: true, content: `${name} = ${pool.character[name]}` }
+    return { success: true, content: `${name} = ${typeof pool.card[name] === "string" ? `"${pool.card[name]}"` : pool.card[name]}` }
   }
 }
 
@@ -451,6 +719,8 @@ export function buildVarDeleteHandler(): (params: Record<string, unknown>) => Pr
     if (!name) return { success: false, content: "", error: "变量名不能为空" }
     const result = varDelete(name)
     if (!result.success) return { success: false, content: "", error: result.error }
-    return { success: true, content: `变量 ${name} 已删除` }
+    const currentVal = pool.card[name]
+    const valStr = currentVal !== undefined ? (typeof currentVal === "string" ? `"${currentVal}"` : String(currentVal)) : "(未定义)"
+    return { success: true, content: `变量 ${name} 已重置为初始值: ${valStr}` }
   }
 }

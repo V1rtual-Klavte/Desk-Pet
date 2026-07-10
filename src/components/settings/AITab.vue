@@ -161,7 +161,7 @@ async function hydrateRuntimePreview(cardId: string) {
     const raw = await invoke<number[]>("personality_file_read", { path: "personality/vars.json" });
     const json = new TextDecoder().decode(new Uint8Array(raw));
     loadVariablePool(json, card.id);
-    refreshVariablePool({ unansweredCount: 0, messageCount: 0 });
+    refreshVariablePool();
   } catch {
     // 设置页只做预览 hydrate，失败时保持当前内存快照。
   }
