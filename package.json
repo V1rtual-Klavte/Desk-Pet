@@ -7,7 +7,9 @@
         "dev": "vite",
         "build": "vite build",
         "tauri-dev": "tauri dev",
-        "tauri-build": "tauri build"
+        "tauri-build": "tauri build",
+        "test": "vitest run",
+        "test:live": "vitest run --config vitest.live.config.ts"
     },
     "dependencies": {
         "@tauri-apps/api": "^2.10.1",
@@ -25,6 +27,7 @@
         "js-yaml": "^4.2.0",
         "typescript": "^5.9.3",
         "vite": "^6.4.2",
+        "vitest": "^4.1.10",
         "vue-tsc": "^3.3.5"
     }
 }

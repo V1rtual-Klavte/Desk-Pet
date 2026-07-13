@@ -85,6 +85,8 @@ export async function runAgentLoop(input: AgentLoopInput): Promise<AgentLoopOutp
     { recentMessages: chatMessages, userText, unansweredCount, thinkingEffort, isActiveMessage },
     card, getPoolSnapshot(),
   )
+
+  log.info(`\n${"═".repeat(50)}\n  【Phase1 能力层 Prompt】Tools=${capCtx.tools.length} tokens≈${capCtx.estimatedSystemTokens}\n${"═".repeat(50)}\n${capCtx.systemPrompt}\n${"─".repeat(50)}`)
   applyEffect(PetPersonalityMiddleware.wrap("thinking"), effects)
 
   const { OpenAICompatibleProvider } = await import("@/services/agent/provider")
@@ -136,6 +138,8 @@ export async function runAgentLoop(input: AgentLoopInput): Promise<AgentLoopOutp
   const styleCtx = buildStylePrompt({
     card, rawReply: phase1Reply, userText, pool: getPoolSnapshot(), toolCallSummary: toolSummary,
   })
+
+  log.info(`\n${"═".repeat(50)}\n  【Phase2 风格层 Prompt】\n${"═".repeat(50)}\n${styleCtx.systemPrompt}\n${"─".repeat(50)}\n  【Phase2 User Message】\n${"─".repeat(50)}\n${styleCtx.userMessage}\n${"─".repeat(50)}`)
 
   let finalReply = phase1Reply
   let success = false
