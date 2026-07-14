@@ -13,8 +13,7 @@ fn get_app_data_dir() -> Result<PathBuf, String> {
 }
 
 /// 获取用户 profiles 目录路径
-#[tauri::command]
-pub fn get_profiles_dir() -> Result<String, String> {
+fn get_profiles_dir() -> Result<String, String> {
     let dir = get_app_data_dir()?.join("profiles");
     fs::create_dir_all(&dir).map_err(|e| format!("创建 profiles 目录失败: {e}"))?;
     Ok(dir.to_string_lossy().to_string())

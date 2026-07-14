@@ -35,8 +35,7 @@ fn find_project_root() -> Option<PathBuf> {
 
 /// 获取应用 memory/ 目录的绝对路径。
 /// ★ 优先使用项目根目录（dev 模式），回退到 app data dir。
-#[command]
-pub fn get_memory_dir(app: tauri::AppHandle) -> Result<String, String> {
+fn get_memory_dir(app: tauri::AppHandle) -> Result<String, String> {
     if let Some(proj_root) = find_project_root() {
         let proj_memory = proj_root.join("memory");
         if proj_memory.exists() && proj_memory.is_dir() {

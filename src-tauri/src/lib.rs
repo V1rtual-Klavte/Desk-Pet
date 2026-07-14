@@ -22,12 +22,48 @@ use crate::commands::{
     bash_exec, file_read, file_write, file_list,
     system_info, app_open, clipboard_read, clipboard_write,
     mcp_spawn, mcp_send, mcp_kill, McpPool,
-    get_memory_dir, get_memory_file, get_session_file, init_memory_files,
+    get_memory_file, get_session_file, init_memory_files,
     list_session_files, delete_session_file, file_delete,
-    get_profiles_dir, profile_file_write, profile_file_read, profile_delete, list_user_profiles, list_profile_files,
-    get_personality_dir, get_cards_dir, personality_file_read, personality_file_write, personality_file_list, personality_file_delete,
+    profile_file_write, profile_file_read, profile_delete, list_user_profiles, list_profile_files,
+    personality_file_read, personality_file_write, personality_file_list, personality_file_delete,
     spawn_cursor_tracker,
 };
+
+use crate::paths::AppPaths;
+
+// ==========================================
+// AppPaths 统一路径 commands
+// ==========================================
+
+#[tauri::command]
+fn get_data_dir(paths: tauri::State<AppPaths>) -> String {
+    paths.data_root.to_string_lossy().to_string()
+}
+
+#[tauri::command]
+fn get_memory_dir(paths: tauri::State<AppPaths>) -> String {
+    paths.memory.to_string_lossy().to_string()
+}
+
+#[tauri::command]
+fn get_sessions_dir(paths: tauri::State<AppPaths>) -> String {
+    paths.sessions.to_string_lossy().to_string()
+}
+
+#[tauri::command]
+fn get_personality_dir(paths: tauri::State<AppPaths>) -> String {
+    paths.personality.to_string_lossy().to_string()
+}
+
+#[tauri::command]
+fn get_profiles_dir(paths: tauri::State<AppPaths>) -> String {
+    paths.profiles.to_string_lossy().to_string()
+}
+
+#[tauri::command]
+fn get_cards_dir(paths: tauri::State<AppPaths>) -> String {
+    paths.personality.join("cards").to_string_lossy().to_string()
+}
 
 // ==========================================
 // 启动入口
@@ -105,6 +141,9 @@ pub fn run() {
             // 启动光标追踪后台线程 (灵动图层 ~60fps)
             spawn_cursor_tracker(app.handle().clone());
 
+            let paths = AppPaths::init(app.handle()).expect("路径初始化失败");
+            app.manage(paths);
+
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -131,7 +170,9 @@ pub fn run() {
             mcp_spawn,
             mcp_send,
             mcp_kill,
+            get_data_dir,
             get_memory_dir,
+            get_sessions_dir,
             get_memory_file,
             get_session_file,
             init_memory_files,

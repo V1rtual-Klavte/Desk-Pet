@@ -25,16 +25,14 @@ fn get_personality_base_dir() -> Result<PathBuf, String> {
 }
 
 /// 获取 personality/ 目录路径
-#[tauri::command]
-pub fn get_personality_dir() -> Result<String, String> {
+fn get_personality_dir() -> Result<String, String> {
     let dir = get_personality_base_dir()?;
     fs::create_dir_all(&dir).map_err(|e| format!("创建 personality 目录失败: {e}"))?;
     Ok(dir.to_string_lossy().to_string())
 }
 
 /// 获取 personality/cards/ 目录路径（用户导入的 Card）
-#[tauri::command]
-pub fn get_cards_dir() -> Result<String, String> {
+fn get_cards_dir() -> Result<String, String> {
     let dir = get_personality_base_dir()?.join("cards");
     fs::create_dir_all(&dir).map_err(|e| format!("创建 personality/cards 目录失败: {e}"))?;
     Ok(dir.to_string_lossy().to_string())
