@@ -630,13 +630,25 @@ src/services/
 │       ├── index.ts / types.ts / registry.ts
 │       └── commands/      # help/clear/memory/expression/win
 │
-├── personality/           # ★ 人格模块
-│   ├── middleware.ts      # ★ 人格中间件（包裹所有Agent阶段）
+├── personality/           # ★ 人格模块 v5
+│   ├── middleware.ts      # ★ 人格中间件（包裹所有Agent阶段, 8阶段无retry）
 │   ├── types.ts           # 人格类型定义
-│   ├── registry.ts        # 人格注册表 + getSystemPrompt
-│   ├── loader.ts          # 人格卡 YAML 加载
-│   ├── boundary.ts        # 界限系统 (unansweredCount驱动)
-│   └── cards/             # 人格卡 .md (angelkawaii/ame/pchan)
+│   ├── registry.ts        # 人格注册表 v5 (neutral兜底, 无enabled开关)
+│   ├── loader.ts          # 人格卡 YAML 加载 + glob 自动扫描
+│   ├── emotion.ts         # 情绪标签剥离 + 映射解析 + Prompt生成
+│   ├── must-rules.ts      # 必须遵守规则解析 + 问候提取
+│   ├── when-engine.ts     # AST 条件表达式求值引擎
+│   ├── stages-cache.ts    # 阶段文案缓存 + getFallbackReply() 兜底
+│   ├── stages-prompt.md   # 阶段文案生成模板 (v5: 含fallbacks字段)
+│   ├── variable-pool.ts   # 变量池 v2 (system/card/interaction/session)
+│   ├── vars.json          # 系统变量持久化快照
+│   ├── cards/             # 人格卡 .md (4张: neutral/angelkawaii/ame/pchan)
+│   └── stages/            # 阶段文案 JSON (LLM生成, per-card)
+│
+├── session/               # 会话持久化管理
+│   ├── store.ts           # reactive 状态 + localStorage 双向同步
+│   ├── manager.ts         # 多会话切换/新建/归档/恢复
+│   └── persistence.ts / messages.ts
 │
 ├── tool/                  # ★ 工具系统
 │   ├── index.ts           # 统一导出
@@ -996,10 +1008,10 @@ sessions/                      会话目录（唯一真相源）
 | 会话状态机 | ✅ | `engine/session.ts` |
 | AI 输出解析器 | ✅ | `engine/parser.ts` |
 | 思考强度 | ✅ | 全局默认+会话覆盖(仪表盘下拉)，移除自动选择 |
-| 人格中间件 (8阶段) | ✅ | `personality/middleware.ts` |
-| 人格注册表 + 热插拔 | ✅ | `personality/registry.ts` + `loader.ts` |
-| 界限系统 (boundary) | ✅ | `personality/boundary.ts` |
-| 3个人格卡 | ✅ | `personality/cards/` |
+| 人格中间件 (8阶段) | ✅ | `personality/middleware.ts` (v5: 移除 retry) |
+| 人格注册表 + 热插拔 | ✅ | `personality/registry.ts` + `loader.ts` (v5: neutral 兜底) |
+| 4个人格卡 + 模板 | ✅ | `personality/cards/` (neutral/angelkawaii/ame/pchan) |
+| 变量系统 v2 | ✅ | `personality/variable-pool.ts` (system/card/interaction/session, var_read/write/list/delete) |
 | 统一 ToolRegistry | ✅ | `tool/registry.ts` |
 | ToolRouter (路由+超时) | ✅ | `tool/router.ts` |
 | 轻量6工具 | ✅ | `tool/local/` (file/bas/system/http) |
@@ -1043,7 +1055,7 @@ sessions/                      会话目录（唯一真相源）
 | **Rust MCP Bridge** | ✅ 已实现 | spawn/kill 子进程 + JSON-RPC 桥接 |
 | **内置 5 个 MCP** | ✅ 已实现 | Filesystem/BraveSearch/Playwright/Git/GitHub |
 | **Plan (AI模型预判)** | ✅ LLM驱动 | 复杂度门禁 + 轻量LLM调用 → 步骤注入上下文 |
-| **流式输出** | ⚙️ 可配置 | 默认关闭，设置页可切换 |
+| **流式输出** | ❌ 已移除 v5 | 永远非流式，generateReplyStream 已删除 |
 
 ### 待实现目标
 
@@ -1052,7 +1064,7 @@ sessions/                      会话目录（唯一真相源）
 | ~~P0~~ | ~~助手模式完整安全~~ | ✅ 已实现: checker.ts + confirm.ts + ChatPanel 弹窗 |
 | P0 | ⚠️ 工具/Skill/安全 集成测试 | 功能已实现，全路径测试未覆盖 |
 | ~~P1~~ | ~~Plan AI模型预判~~ | ✅ 已实现: LLM驱动，复杂度门禁 + 轻量调用 |
-| ~~P2~~ | ~~流式输出 UI 接续~~ | ✅ 已实现: 可配置开关，默认关闭 |
+| ~~P2~~ | ~~流式输出~~ | ❌ 已移除 v5: 永远非流式 |
 | P2 | MCP SSE 传输 | EventSource 连接方式 |
 | P3 | Agent Loop 时间本地化 | ✅ 已实现: toISOString → localTime() 全局替换 |
 

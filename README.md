@@ -16,17 +16,17 @@
 - **桌面常驻** — 无边框透明窗口，角色在所有桌面/全屏 Space 悬浮
 - **会话管理** — 多会话标签页，可切换/新建/关闭，拖动分割线调整面板宽度，自动归档，启动恢复
 - **AI 聊天** — 人格卡驱动，Ageng Loop 多轮工具调用，兼容 OpenAI / DeepSeek / Ollama 等
-- **工具系统** — AI 可调用工具：读文件/列目录/搜索文件/系统信息/Bash/HTTP GET
+- **工具系统** — AI 可调用工具：读文件/列目录/搜索文件/系统信息/Bash/HTTP GET/变量读写(var_read,var_write)
 - **助手模式** — 解锁写文件/全量Bash/打开应用/剪贴板/MCP 服务器/Skill 编排/子代理
 - **Agent Loop** — 多轮工具调用循环，思考强度可选，上下文自动压缩，v5 单次 LLM 调用角色化回复
 - **人格中间件** — 横切所有 Agent 阶段的角色化表达（表情/音效/角色话术）
 - **窗口感知** — 监控前台窗口标题，停留一定时间后 AI 主动搭话
 - **快捷键召唤** — 全局快捷键弹出/收回，弹性缩放动画
 - **人格系统** — Card 驱动的单次 LLM 回复 (v5)：内置 Card 自动扫描，用户 Card 持久化，切换时事务式阻塞加载/生成 stages 并初始化变量池，失败自动回滚；neutral 默认卡替代旧人格开关
-- **人格进化** — 不理她太久会从甜蜜女友逐渐变成病娇（unansweredCount + boundary 系统）
+- **人格进化** — 不理她太久会从甜蜜女友逐渐变成病娇（unansweredCount + When 引擎条件规则）
 - **安全控制** — 四级安全（SAFE/NORMAL/DANGER/NOWAY）+ 三策略（全放行/告知确认/全部确认），确认弹窗 UI，全局默认+会话覆盖，统一危险模式库
 - **记忆系统** — MEMORY.md 双块结构化注册表 + sessions/ 实时写入 + 会话历史面板 + LLM 整理 + Fork 补记忆
-- **音效系统** — 29 个内置音效，Web Audio 合成无需外部文件
+- **音效系统** — 33 个内置音效（8 类：基础/表面/短音/中音/长音/恐怖/特殊/叮咚），Web Audio 合成无需外部文件
 - **Profile 主题** — 3套内置预设（🌸糖糖粉/🌙暗夜紫/🪟透明玻璃），18色中文键→50+CSS变量自动派生，懒加载启动快，一键切换实时生效，玻璃预设全窗口透明+毛玻璃模糊
 - **灵动图层** — 五层景深视差效果，直接映射（零惯性指哪打哪），全局追踪 60fps，CSS 3D 增强（drop-shadow + 色彩深度），设置页一键开关+逐层配置（灵敏度/滤镜/偏移）。**2026-07-05: offset 百分比自适应 + 素材按层分目录 L0-L4 + 上传即时预览 + 保存热重载 + 编辑器和实际窗口等比一致**
 - **设置面板** — 独立窗口，外观（预设/配色/字体/音效/管理）/ AI / 安全 / 监控 / 人格 / 模式 / 弹窗 / 快捷键 / 音效 / 工具 / MCP / Skill 可配置，支持 CONFIG 导入/导出
@@ -69,8 +69,8 @@
 | agent.spawn 子代理 | ✅ Phase 3 | fork/team 双模式 |
 | MCP 真实连接 | ✅ Phase 4 | stdio 传输 + JSON-RPC + Rust 桥接 + 内置5个MCP |
 | Skill 编排执行 | ✅ Phase 4 | Runner 子循环调用 Local/MCP 工具 |
-| Plan AI 模型预判 | ✅ Phase 4 | LLM 驱动任务拆解，复杂度门禁+轻量调用 |
-| 流式输出 | ⚙️ 可配置 | 默认关闭，设置页可开关 |
+| Plan AI 模型预判 | ❌ 未实现 | 无独立 plan.ts；子代理 (fork/team) 已实现 |
+| 流式输出 | ❌ 已移除 v5 | 永远非流式，generateReplyStream 已删除 |
 | 剪贴板操作 | ✅ 三端 | macOS(pbpaste/pbcopy) + Windows(PowerShell) + Linux(xclip) |
 | 内存信息 | ✅ 三端 | macOS(vm_stat) + Windows(GlobalMemoryStatusEx) + Linux(/proc/meminfo) |
 | MCP SSE 传输 | ❌ 未实现 | 仅 stdio，SSE 远程连接待实现 |
@@ -142,23 +142,29 @@ Desk-Pet/
 │   │   └── winsim/          # 模拟器彩蛋
 │   └── services/
 │       ├── engine/          # ★ 核心引擎
-│       │   ├── agent-loop.ts    # Agent Loop (多轮工具调用)
+│       │   ├── agent-loop.ts    # Agent Loop v5 (单次LLM调用+工具循环)
 │       │   ├── preprocessor.ts  # Slash命令+过滤
 │       │   ├── parser.ts        # AI输出解析
 │       │   ├── session.ts       # 会话状态机
 │       │   ├── thinking.ts      # 思考强度决策
-│       │   └── plan.ts          # Plan 步骤 (助手模式)
-│       ├── personality/     # 人格模块
+│       │   └── compactor.ts     # 上下文压缩
+│       ├── personality/     # ★ 人格模块 v5
 │       │   ├── registry.ts  # 事务式 Card 激活（stages/变量池阻塞加载，失败回滚）
-│       │   ├── loader.ts    # 内置 cards + src/services/personality/cards 扫描
+│       │   ├── loader.ts    # 内置 cards + 用户 Card 扫描
 │       │   ├── stages-cache.ts / variable-pool.ts / when-engine.ts
-│       │   └── cards/       # 内置 Card .md
+│       │   ├── emotion.ts / must-rules.ts / middleware.ts
+│       │   ├── cards/       # 内置 Card .md (4张: neutral/angelkawaii/ame/pchan)
+│       │   └── stages/      # 阶段文案 JSON (LLM 生成)
+│       ├── session/          # 会话持久化管理
+│       │   ├── store.ts      # reactive 状态 + localStorage
+│       │   ├── manager.ts    # 多会话切换/归档/恢复
+│       │   └── persistence.ts / messages.ts
 │       ├── tool/            # ★ 工具系统
 │       │   ├── registry.ts  # 统一注册表 (按模式)
 │       │   ├── router.ts    # 工具路由
-│       │   ├── local/       # 轻量6工具 (始终加载)
-│       │   ├── local-extra/ # 助手模式工具 (动态加载)
-│       │   ├── skill/       # Skill 系统
+│       │   ├── local/       # Pet模式工具 (10个: 含 var_read/write/list/delete)
+│       │   ├── local-extra/ # 助手模式工具 (7个: agent.spawn/clipboard/file-write等)
+│       │   ├── skill/       # Skill 系统 (3个内置)
 │       │   └── mcp/         # MCP 集成 (Mock)
 │       ├── safety/          # ★ 安全控制
 │       │   └── checker.ts   # 统一安全 + 危险模式库
