@@ -23,10 +23,10 @@ export class StdioTransport {
 
   get isConnected(): boolean { return this.connected }
 
-  async connect(): Promise<boolean> {
+  async connect(serverId: string): Promise<boolean> {
     try {
       const result = await invoke<{ success: boolean; server_id: string }>("mcp_spawn", {
-        name: this.config.command.replace(/[\/\\]/g, "_"),
+        name: `mcp-${serverId}`,
         command: this.config.command,
         args: this.config.args ?? [],
         transport: "stdio",

@@ -126,7 +126,7 @@ export async function runAgentLoop(input: AgentLoopInput): Promise<AgentLoopOutp
   MemoryService.recordTurn("assistant", processed.text)
   compactOnHighUsage(chatMessages, userText)
 
-  savePoolToDisk()
+  await savePoolToDisk()
 
   return { reply: processed.text, toolCallHistory, retriesUsed, effects }
 }

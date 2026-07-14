@@ -53,7 +53,7 @@ export class McpClient {
    */
   async connect(command: string, args: string[] = []): Promise<boolean> {
     this.transport = new StdioTransport({ command, args })
-    const ok = await this.transport.connect()
+    const ok = await this.transport.connect(this.serverId)
     if (!ok) return false
 
     // JSON-RPC initialize

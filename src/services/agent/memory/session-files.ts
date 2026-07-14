@@ -155,7 +155,7 @@ export function recordTurn(role: "user" | "assistant", text: string, checkConsol
     log.info(`已达到 ${turnCounter} 轮，触发记忆整理`)
     checkConsolidate()
   }
-  appendTurnToSessionFile(role, text).catch(() => {})
+  appendTurnToSessionFile(role, text).catch(e => log.warn("session 文件实时写入失败", e))
 }
 
 export async function recordTurnToSession(sessionId: string, role: "user" | "assistant", text: string): Promise<void> {

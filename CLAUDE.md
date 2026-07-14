@@ -1,181 +1,93 @@
 # CLAUDE.md
 
 > 糖糖桌宠 (Desk Pet) — Tauri v2 桌面虚拟主播助手
-
----
+> **v5: 单次 LLM 回复，Card 永远激活 (neutral 兜底)**
 
 ## 技术栈
 
-- **桌面框架**: Tauri v2 (Rust 后端 + WebView 前端)
-- **前端**: Vue 3 + TypeScript + Vite
-- **Rust 包管理**: Cargo
-- **前端包管理**: pnpm
-- **AI 后端**: 统一 OpenAI 兼容 Provider (DeepSeek / OpenAI / Ollama / LM Studio)
-- **YAML 解析**: js-yaml (devDependency, Vite 插件编译时转换)
-- **目标平台**: Windows + macOS
+Tauri v2 + Vue 3 + TypeScript + Vite | pnpm | Rust/Cargo | OpenAI 兼容 Provider | 双端 Win+Mac
 
----
-
-## 构建 & 运行
+## 构建
 
 ```bash
-pnpm install          # 安装前端依赖
-pnpm tauri dev        # 开发模式 (Vite + Rust 编译 + 桌面窗口)
-pnpm dev              # 仅前端 dev server (端口 1420)
-pnpm tauri build      # 生产构建
-cd src-tauri && cargo check   # Rust 编译检查
+pnpm install && pnpm tauri dev    # 开发
+pnpm tauri build                  # 生产
+cd src-tauri && cargo check       # Rust 检查
 ```
 
----
+## 文档
+在docs目录下，包含详细的设计文档。项目整体描述是DES.md
 
 ## 项目结构
 
 ```
-Desk-Pet/
-├── docs/                         # 设计文档
-├── CONFIG.yaml / CONFIG-DEV.yaml # 配置
-├── public/profiles/              # Profile 系统 (3个内置)
-├── memory/ / sessions/ / skills/ # 记忆/会话/技能
-├── src/
-│   ├── components/ / composables/ # UI组件 + 灵动图层
-│   └── services/
-│       ├── profile/    # Profile 加载/CSS注入/导入导出
-│       ├── engine/     # Agent Loop, 会话, Slash命令
-│       ├── personality/# ★ 人格模块 v5 (变量池v2)
-│       ├── tool/       # 工具系统 (local/local-extra/skill/mcp)
-│       ├── safety/     # 四级安全 + 会话信任
-│       ├── context/    # 上下文引擎 (Prompt组装+压缩)
-│       ├── reply/      # 回复后处理
-│       └── agent/      # AI Provider + Runner
-├── src-tauri/          # Rust 后端 (Tauri commands)
-└── public/assets/      # 静态资源 (角色/字体/UI)
+src/services/
+├── engine/      # Agent Loop v5, 会话状态机, Slash命令, 上下文压缩
+├── personality/ # 人格模块: cards(4张+neutral默认), stages(LLM生成), 变量池v2, When引擎
+├── tool/        # 工具: local(10个)/local-extra(7个,助手模式)/skill(3个)/mcp(5个)
+├── context/     # buildPrompt() — 统一system prompt构建(角色+变量+工具+记忆)
+├── reply/       # 回复后处理: generateReply() → ReplyResult {text,emotionKey,expression,sound}
+├── agent/       # Provider, Runner, Sub-agent(fork/team), Sub-loop, Memory, Active
+├── safety/      # 四级安全(SAFE/NORMAL/DANGER/NOWAY) + 三策略 + 确认弹窗
+├── session/     # 多会话管理(store/manager/persistence)
+├── audio/       # 33音效(8类), Web Audio合成
+├── profile/     # 3套内置预设(sugar-pink/dark-purple/glass)
+└── window/      # 窗口监控→主动搭话
 ```
 
----
+## 核心数据流 (v5)
+
+```
+用户消息 → PreProcessor → refreshVariablePool() + When引擎
+  → buildPrompt(card全量注入: 角色/风格/情绪/When语气/行为准则/变量池/记忆)
+  → 单次LLM(永远非流式) → runToolLoop(安全→执行)
+  → generateReply(raw, card) → 剥离[emo:key] + 表情/音效映射 + 截断
+  → ReplyResult {text, emotionKey, expression, sound}
+  → var_write即时落盘 stages/{cardId}.json
+```
 
 ## 配置系统
 
 ```
-CONFIG.yaml (默认) → CONFIG-DEV.yaml 可覆盖/dev模式
-  → Vite YAML Plugin (编译时转换)
-  → src/services/config.ts (类型化 getter + localStorage userConfig 覆盖)
+CONFIG.yaml → Vite YAML Plugin → config.ts (getter + localStorage overrides)
 ```
 
-**所有模块通过 `@/services/config` 读取配置**，不在模块内定义常量。本地调参只改 `CONFIG-DEV.yaml`。
+**所有配置通过 `@/services/config` 读取**，禁止模块内硬编码常量。本地调参只改 CONFIG-DEV.yaml。
 
----
+## 关键约束
 
-## 日志系统
-
-所有日志统一输出到 **运行 `pnpm tauri dev` 的终端**，同时保留 DevTools Console。
-
-```ts
-import { createLogger } from "@/services/logger";
-const log = createLogger("模块前缀");
-
-log.debug("调试信息...");
-log.info("重要节点");
-log.warn("警告");
-log.error("错误", err);
-```
-
-输出格式：`[HH:MM:SS.mmm] LEVEL [前缀] 消息`
-
-Rust 端用 `rust_info!` / `rust_debug!` / `rust_warn!` 宏，格式一致。
-
----
-
-## 数据流
-
-```
-启动 → sessions/ 扫描 → localStorage 镜像
-SessionTabs → App.vue bridge → chat.ts (★ 唯一状态管理)
-
-主动搭话: 窗口监控 → sendActiveMessage() → AgentLoop
-用户聊天: sendMessage() → PreProcessor → AgentLoop
-
-AgentLoop v5 (单次LLM调用):
-  → refreshVariablePool() + updateInteractionVar(unansweredCount→0)
-  → When 引擎求值
-  → buildPrompt(card注入: 角色设定/语言风格/输出规则/情绪表达/When语气/行为准则/变量池/工具/记忆)
-  → 单次LLM调用 (非流式) → runToolLoop (安全校验→执行)
-  → generateReply(raw, card) → 情绪标签剥离 + 表情/音效映射 + 截断
-  → ReplyResult { text, emotionKey, expression, sound }
-  → var_write 即时落盘 stages/{cardId}.json
-
-全局快捷键 → 弹出/收回动画
-托盘 → 隐藏/恢复窗口
-```
-
-详见 docs/DES.md 完整数据流架构。
-
----
-
-## 变量池 v2
-
-四类变量 system/card/interaction/session：
-
-| 类型 | 真相源 | 可写？ | 持久化 |
-|------|--------|--------|--------|
-| `system` | 运行时计算（6 个） | 否 | `vars.json` (快照) |
-| `card` | Card 注册表 | LLM 可写（仅 updateBy=llm） | `stages/{cardId}.json:variables.card` |
-| `interaction` | 系统事件 | 否（LLM 只读） | `stages/{cardId}.json:variables.interaction` |
-| `session` | 会话 markdown | 否 | `sessions/*.md` frontmatter |
-
-**关键约束**：
-- `var_write` 只能写已注册且 `scope=card` + `updateBy=llm` 的变量，校 type/min/max/enum
-- `var_delete` = reset 到 initial，不真删
-- `updateInteractionVar()` 系统内部 API；`applyResetPolicies()` 每轮 daily/session reset
-- Card `# 变量定义 > ## card / ## interaction` → YAML block → `CardVariableDef[]`
-
-详见 `docs/DESIGN-VARIABLE-POOL-v2.md`。
-
----
+- **Card 永远激活**: `getActiveCard()` 永不返回 null (neutral 兜底)
+- **硬编码兜底**: 一律用 `getFallbackReply(key)` — stages cache → FALLBACK_FALLBACKS 多级降级
+- **变量池 v2**: system(只读)/card(LLM可写,updateBy=llm)/interaction(系统,只读)/session(只读)
+- **emotionMappings**: `card.sections.emotionMappings` 已是 `EmotionMapping[]`，直接用，勿重复 parse
+- **stages**: 持久化到 `stages/{cardId}.json`，含变量状态和 fallbacks 字段
 
 ## 编码约定
 
-- **优先复用已有代码**，不过度设计、不过度抽象
-- **任何操作必须同步做 Windows + macOS 双端适配**
-- Rust 平台代码用 `#[cfg(target_os = "windows")]` / `#[cfg(target_os = "macos")]` 守卫
-- Windows 专有依赖用 `[target.'cfg(windows)'.dependencies]`
-- Vue 组件用 `<script setup lang="ts">` 语法
-- 新增表情在 `animation.ts` 加一条即可
-- **AI 模块通过 `@/services/agent` 统一导入**
-- **人格模块通过 `@/services/personality` 统一导入**
-- **工具模块通过 `@/services/tool` 统一导入**
-- **引擎模块通过 `@/services/engine` 统一导入**
-- **灵动图层通过 `@/composables/useParallax` 统一导入（含 `layerDepth`）**
-- 全局冷却/并发锁走 `cooldown.ts`
-- 平台检测走 `@/services/env`
+- **优先复用已有代码，不过度设计、不过度抽象**
+- **所有操作必须 Win+Mac 双端适配**
+- Vue 用 `<script setup lang="ts">`
+- **统一导入路径**: `@/services/engine` / `personality` / `tool` / `agent` / `context` / `reply`
 - **配置走 `@/services/config`**，不在模块里写死常量
-- **系统兜底回复始终用 `getFallbackReply()`** — 从 stages-cache 读取 Card 角色化文案，多级降级至极简中性兜底，禁止硬编码中文
+- 日志: `createLogger("前缀")` — 格式 `[HH:MM:SS.mmm] LEVEL [前缀] msg`
+
+## 日志
+
+统一输出到 `pnpm tauri dev` 终端 + DevTools Console。
+
+```ts
+import { createLogger } from "@/services/logger"
+const log = createLogger("模块名")
+log.debug/info/warn/error(...)
+```
 
 ---
 
-## macOS 兼容状态
+## 用户规则
 
-| 功能 | 状态 |
-|------|------|
-| AI 聊天 / Agent Loop / 工具调用 / 窗口监控 | ✅ 全平台 |
-| 全局快捷键 / 桌面悬浮 / 系统托盘 / Dock弹出 | ✅ |
-| 文件/系统/剪贴板 / 设置页 | ✅ |
-| 系统通知 | ❌ 未签名构建无法实现 |
-
----
-
-## 要求 ##
-优先复用已有代码 不要过度设计和抽象
-不要乱加 任何操作一定同步做win和mac双端适配
-必须使用skill
-
-## 必要操作 ##
-每次回复的最后加："宝"
-每轮修改结束必须同步更新：README.md（给用户看的）；CLAUDE.md；DES.md（给我看的，现有架构进度及各个实现）
-有配置项修改的地方一定统一写在相应配置文件，并同步CONFIG.yaml和CONFIG-DEV.yaml及其example，以及设置页面
-当我输入1时，默认从"要求.md"里获取需求
-一定要先给我思路，不要直接改代码，我同意后方可开始编码
-改动必须确认改动后调用链正常，自己测试一遍，确保目录下文件及其内容符合预期，日志正常
-
-## 核心方针 ##
-轻量化，低内存占用，高性能，token消耗少，功能强
-我的设计的md只是大方向，最终还是要你写的时候自觉地不断补充，自觉完善逻辑来实现
+- **每次回复最后加"宝"**
+- **任何修改必须**: 先给思路→用户同意→编码→自己测试调用链→确保日志正常
+- **修改完成后必须同步更新**: README.md / CLAUDE.md / DES.md
+- **配置项修改必须同步**: CONFIG.yaml + CONFIG-DEV.yaml + 设置页面
+- **有疑问先探索代码，基于事实不猜**
+- **不主动 git commit/push**（除非用户明确要求）

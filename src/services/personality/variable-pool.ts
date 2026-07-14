@@ -262,18 +262,19 @@ export function getVariableRegistry(): CardVariableDef[] {
 
 // ── Prompt 格式化 ──
 
-export function formatPoolForPrompt(): string {
+export function formatPoolForPrompt(snapshot?: VariablePool): string {
+  const p = snapshot ?? pool
   const lines: string[] = []
 
   // [系统变量 - 只读]
-  const sysParts = Object.entries(pool.system)
+  const sysParts = Object.entries(p.system)
     .map(([k, v]) => `${k}=${formatVal(v)}`)
   lines.push(`[系统变量 - 只读]\n${sysParts.join(", ") || "(空)"}`)
 
   // [Card变量 - 可通过 var_write 更新]
   const cardDefMap = new Map(registry.filter(d => d.scope === "card").map(d => [d.name, d]))
   const cardParts: string[] = []
-  for (const [name, value] of Object.entries(pool.card)) {
+  for (const [name, value] of Object.entries(p.card)) {
     const def = cardDefMap.get(name)
     const meta = def
       ? ` (${def.type}${def.enum ? `, enum: ${def.enum.join("/")}` : ""}${def.min !== undefined ? `, ${def.min}..${def.max ?? ""}` : ""}, updateBy=${def.updateBy}): ${def.description}`
@@ -283,7 +284,7 @@ export function formatPoolForPrompt(): string {
   lines.push(`[Card变量 - 可通过 var_write 更新]\n${cardParts.join("\n") || "(空)"}`)
 
   // [互动状态 - 系统维护，只读]
-  const intParts = Object.entries(pool.interaction)
+  const intParts = Object.entries(p.interaction)
     .map(([k, v]) => {
       const def = registry.find(d => d.scope === "interaction" && d.name === k)
       return `${k}=${formatVal(v)}${def ? ` (${def.type}, updateBy=${def.updateBy}): ${def.description}` : ""}`
@@ -293,7 +294,7 @@ export function formatPoolForPrompt(): string {
   }
 
   // [会话状态 - 只读]
-  const sessParts = Object.entries(pool.session)
+  const sessParts = Object.entries(p.session)
     .map(([k, v]) => `${k}=${formatVal(v)}`)
   if (sessParts.length > 0) {
     lines.push(`[会话状态 - 只读]\n${sessParts.join(", ")}`)
