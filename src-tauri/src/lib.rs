@@ -5,6 +5,7 @@ mod macros;
 mod monitor;
 mod window;
 mod commands;
+mod paths;
 
 use std::sync::Arc;
 use tauri::Manager;
