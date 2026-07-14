@@ -4,6 +4,7 @@
 
 import { invoke } from "@tauri-apps/api/core"
 import { createLogger } from "@/services/logger"
+import { BaseDirs } from "@/services/paths"
 
 const log = createLogger("MemoryIO")
 
@@ -13,6 +14,16 @@ export let sessionsDir = ""
 
 export function setMemoryDir(dir: string): void { memoryDir = dir }
 export function setSessionsDir(dir: string): void { sessionsDir = dir }
+
+/** 获取 memory 目录（优先已设置的值，fallback BaseDirs） */
+export function getMemoryDir(): string {
+  return memoryDir || BaseDirs.memory()
+}
+
+/** 获取 sessions 目录（优先已设置的值，fallback BaseDirs） */
+export function getSessionsDir(): string {
+  return sessionsDir || BaseDirs.sessions()
+}
 
 // ── 文件锁 ──
 let lockHeld = false

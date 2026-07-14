@@ -7,7 +7,6 @@ import { getActiveCard } from "@/services/personality"
 import { getFallbackReply } from "@/services/personality/stages-cache"
 import { runAgentLoop } from "@/services/engine/agent-loop"
 import { preProcess } from "@/services/engine/preprocessor"
-import { generateReply } from "@/services/reply/generator"
 import { transition, getState } from "@/services/engine/session"
 import {
   chatHistory, unansweredCount,
@@ -120,10 +119,7 @@ export async function sendMessage(text: string): Promise<{
       isRetry: false,
     })
 
-    // ── Step 5: 后处理 ──
-    const processed = generateReply(result.reply, getActiveCard(), { maxLength: 500 })
-
-    // ── Step 6: 提取人格效果（agent-loop 已收集）──
+    // ── Step 5: 提取人格效果（agent-loop 已通过 generateReply 处理）──
     const lastEffect = result.effects.length > 0
       ? result.effects[result.effects.length - 1]
       : { expression: "smile", soundEvent: "reply" }
@@ -138,19 +134,19 @@ export async function sendMessage(text: string): Promise<{
       log.warn("sendMessage: 会话已切换，回复存入原会话", originSessionId)
       // 从 localStorage 加载原会话消息，追加 assistant 回复，写回
       const originMsgs = loadMessages(originSessionId)
-      originMsgs.push(createAssistantMessage(processed.text))
+      originMsgs.push(createAssistantMessage(result.reply))
       saveMessages(originSessionId, originMsgs)
       updateSessionMessageCount(originSessionId)
       // 写入原会话的 sessions/*.md
       const { MemoryService } = await import("@/services/agent/memory")
-      await MemoryService.recordTurnToSession(originSessionId, "assistant", processed.text)
+      await MemoryService.recordTurnToSession(originSessionId, "assistant", result.reply)
     } else {
-      pushAssistantMessage(processed.text)
+      pushAssistantMessage(result.reply)
     }
 
     transition("WAITING")
     return {
-      reply: processed.text,
+      reply: result.reply,
       toolCallsMade: result.toolCallHistory.length,
       personalityEffect: {
         expression: lastEffect.expression,

@@ -54,7 +54,7 @@ export function getToolsForMode(mode?: ToolMode): ToolDef[] {
   const m = mode ?? (modeConfig.assistant ? "assistant" : "pet")
   const result: ToolDef[] = []
   for (const t of tools.values()) {
-    if (t.mode === m || t.mode === "pet") result.push(t)
+    if (t.mode === "pet" || t.mode === m) result.push(t)
   }
   return result
 }

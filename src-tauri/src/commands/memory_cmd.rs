@@ -2,7 +2,7 @@
 // 记忆系统命令 —— 文件注册表 + 会话文件管理
 // ==========================================
 // 目录结构:
-//   {appLocalData}/
+//   {data_root}/
 //     memory/               长期记忆注册表
 //       MEMORY.md           ★ 结构化注册表（系统块 + 记忆块）
 //       SESSION_MEMORY.md   ★ 当前会话工作记忆
@@ -17,55 +17,11 @@
 use std::path::PathBuf;
 use std::fs;
 use tauri::command;
-use tauri::Manager;
-
-/// ★ 从 cwd 向上查找包含 memory/ 目录的项目根（dev 模式）
-fn find_project_root() -> Option<PathBuf> {
-    let mut dir = std::env::current_dir().ok()?;
-    // 最多往上查 5 层
-    for _ in 0..5 {
-        let memory = dir.join("memory");
-        if memory.exists() && memory.is_dir() {
-            return Some(dir);
-        }
-        if !dir.pop() { break; }
-    }
-    None
-}
-
-/// 获取应用 memory/ 目录的绝对路径。
-/// ★ 优先使用项目根目录（dev 模式），回退到 app data dir。
-#[command]
-pub fn get_memory_dir(app: tauri::AppHandle) -> Result<String, String> {
-    if let Some(proj_root) = find_project_root() {
-        let proj_memory = proj_root.join("memory");
-        if proj_memory.exists() && proj_memory.is_dir() {
-            return Ok(proj_memory.to_string_lossy().to_string());
-        }
-    }
-
-    let data_dir = app
-        .path()
-        .app_local_data_dir()
-        .map_err(|e| format!("无法获取应用数据目录: {}", e))?;
-
-    let memory_dir = data_dir.join("memory");
-    fs::create_dir_all(&memory_dir)
-        .map_err(|e| format!("无法创建 memory 目录: {}", e))?;
-
-    Ok(memory_dir.to_string_lossy().to_string())
-}
+use crate::paths::AppPaths;
 
 /// 获取 memory/ 目录下指定文件的完整路径。
 #[command]
-pub fn get_memory_file(app: tauri::AppHandle, filename: String) -> Result<String, String> {
-    let data_dir = app
-        .path()
-        .app_local_data_dir()
-        .map_err(|e| format!("无法获取应用数据目录: {}", e))?;
-
-    let memory_dir = data_dir.join("memory");
-
+pub fn get_memory_file(paths: tauri::State<AppPaths>, filename: String) -> Result<String, String> {
     let safe_name = PathBuf::from(&filename)
         .file_name()
         .map(|n| n.to_string_lossy().to_string())
@@ -75,15 +31,13 @@ pub fn get_memory_file(app: tauri::AppHandle, filename: String) -> Result<String
         return Err(format!("非法文件名: {}", safe_name));
     }
 
-    let file_path = memory_dir.join(&safe_name);
+    let file_path = paths.memory.join(&safe_name);
     Ok(file_path.to_string_lossy().to_string())
 }
 
 /// 获取 sessions/ 目录下指定文件的完整路径。
 #[command]
-pub fn get_session_file(app: tauri::AppHandle, filename: String) -> Result<String, String> {
-    let sessions_dir = resolve_sessions_dir(&app)?;
-
+pub fn get_session_file(paths: tauri::State<AppPaths>, filename: String) -> Result<String, String> {
     let safe_name = PathBuf::from(&filename)
         .file_name()
         .map(|n| n.to_string_lossy().to_string())
@@ -93,35 +47,17 @@ pub fn get_session_file(app: tauri::AppHandle, filename: String) -> Result<Strin
         return Err(format!("非法文件名: {}", safe_name));
     }
 
-    let file_path = sessions_dir.join(&safe_name);
+    let file_path = paths.sessions.join(&safe_name);
     Ok(file_path.to_string_lossy().to_string())
-}
-
-/// 解析 sessions/ 目录路径
-fn resolve_sessions_dir(app: &tauri::AppHandle) -> Result<PathBuf, String> {
-    if let Some(proj_root) = find_project_root() {
-        let proj_sessions = proj_root.join("sessions");
-        fs::create_dir_all(&proj_sessions).ok();
-        return Ok(proj_sessions);
-    }
-
-    let data_dir = app
-        .path()
-        .app_local_data_dir()
-        .map_err(|e| format!("无法获取应用数据目录: {}", e))?;
-    let s = data_dir.join("sessions");
-    fs::create_dir_all(&s)
-        .map_err(|e| format!("无法创建 sessions 目录: {}", e))?;
-    Ok(s)
 }
 
 /// ★ 列出 sessions/ 目录下所有 .md 文件（按名称倒序）
 #[command]
-pub fn list_session_files(app: tauri::AppHandle) -> Result<Vec<String>, String> {
-    let sessions_dir = resolve_sessions_dir(&app)?;
+pub fn list_session_files(paths: tauri::State<AppPaths>) -> Result<Vec<String>, String> {
+    let sessions_dir = &paths.sessions;
 
     let mut files: Vec<String> = Vec::new();
-    if let Ok(entries) = fs::read_dir(&sessions_dir) {
+    if let Ok(entries) = fs::read_dir(sessions_dir) {
         for entry in entries.flatten() {
             let name = entry.file_name().to_string_lossy().to_string();
             if name.ends_with(".md") && name != ".gitkeep" {
@@ -137,9 +73,8 @@ pub fn list_session_files(app: tauri::AppHandle) -> Result<Vec<String>, String> 
 
 /// ★ 删除 sessions/ 目录下指定的文件
 #[command]
-pub fn delete_session_file(app: tauri::AppHandle, filename: String) -> Result<(), String> {
-    let sessions_dir = resolve_sessions_dir(&app)?;
-    println!("[Rust] delete_session_file: {} | dir: {}", filename, sessions_dir.display());
+pub fn delete_session_file(paths: tauri::State<AppPaths>, filename: String) -> Result<(), String> {
+    println!("[Rust] delete_session_file: {} | dir: {}", filename, paths.sessions.display());
 
     // 安全检查
     let safe_name = PathBuf::from(&filename)
@@ -155,7 +90,7 @@ pub fn delete_session_file(app: tauri::AppHandle, filename: String) -> Result<()
         return Err(format!("不是有效的会话文件: {}", safe_name));
     }
 
-    let file_path = sessions_dir.join(&safe_name);
+    let file_path = paths.sessions.join(&safe_name);
     if file_path.exists() {
         fs::remove_file(&file_path)
             .map_err(|e| format!("删除失败: {}", e))?;
@@ -166,45 +101,32 @@ pub fn delete_session_file(app: tauri::AppHandle, filename: String) -> Result<()
 
 /// ★ 删除任意文件（用于 file_delete 工具 + 重命名清理）
 #[command]
-pub fn file_delete(path: String) -> Result<(), String> {
+pub fn file_delete(paths: tauri::State<AppPaths>, path: String) -> Result<(), String> {
     let p = PathBuf::from(&path);
     if !p.exists() {
         return Ok(()); // 文件不存在不算错误
     }
-    // 安全检查：只允许在 memory/ 或 sessions/ 目录下删除
-    let path_str = p.to_string_lossy().to_string();
-    if !path_str.contains("/memory/") && !path_str.contains("/sessions/")
-        && !path_str.contains("\\memory\\") && !path_str.contains("\\sessions\\") {
-        return Err(format!("安全限制: 只能在 memory/ 或 sessions/ 目录下删除文件"));
+    // 路径穿越防护：校验在 memory/ 或 sessions/ 内
+    let resolved = p.canonicalize().map_err(|e| format!("路径解析失败: {e}"))?;
+    let in_memory = resolved.starts_with(&paths.memory);
+    let in_sessions = resolved.starts_with(&paths.sessions);
+    if !in_memory && !in_sessions {
+        return Err("安全限制: 只能在 memory/ 或 sessions/ 目录下删除文件".to_string());
     }
-    fs::remove_file(&p)
-        .map_err(|e| format!("删除失败: {}", e))
+    fs::remove_file(&p).map_err(|e| format!("删除失败: {}", e))
 }
 
 /// 初始化 memory/ 和 sessions/ 目录结构及模板文件。
-/// ★ 优先使用项目根目录（dev 模式），回退到 app data dir。
+/// ★ 使用 AppPaths 统一路径管理。
 /// 模板使用新的 MEMORY.md 双块结构。
 #[command]
-pub fn init_memory_files(app: tauri::AppHandle) -> Result<String, String> {
-    let memory_dir = if let Some(proj_root) = find_project_root() {
-        let m = proj_root.join("memory");
-        let s = proj_root.join("sessions");
-        fs::create_dir_all(&s)
-            .map_err(|e| format!("无法创建 sessions 目录: {}", e))?;
-        m
-    } else {
-        let data_dir = app
-            .path()
-            .app_local_data_dir()
-            .map_err(|e| format!("无法获取应用数据目录: {}", e))?;
-        let m = data_dir.join("memory");
-        let s = data_dir.join("sessions");
-        fs::create_dir_all(&m)
-            .map_err(|e| format!("无法创建 memory 目录: {}", e))?;
-        fs::create_dir_all(&s)
-            .map_err(|e| format!("无法创建 sessions 目录: {}", e))?;
-        m
-    };
+pub fn init_memory_files(paths: tauri::State<AppPaths>) -> Result<String, String> {
+    let memory_dir = &paths.memory;
+    let sessions_dir = &paths.sessions;
+
+    // 确保 sessions/ 目录存在
+    fs::create_dir_all(sessions_dir)
+        .map_err(|e| format!("无法创建 sessions 目录: {}", e))?;
 
     // ── 模板文件（新 MEMORY.md 双块结构，无 SESSION_MEMORY.md）──
     let templates: [(&str, &str); 5] = [
@@ -259,8 +181,8 @@ pub fn init_memory_files(app: tauri::AppHandle) -> Result<String, String> {
     }
 
     // 确保 sessions/ 下有 .gitkeep（dev 模式）
-    if let Some(proj_root) = find_project_root() {
-        let gitkeep = proj_root.join("sessions").join(".gitkeep");
+    if cfg!(debug_assertions) {
+        let gitkeep = sessions_dir.join(".gitkeep");
         if !gitkeep.exists() {
             let _ = fs::write(&gitkeep, "");
         }
