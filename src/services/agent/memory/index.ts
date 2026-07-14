@@ -10,6 +10,9 @@ import type { MemoryEntry, ProjectEntry, SessionFileMeta, SessionMemory, Compact
 // IO
 import { setMemoryDir, setSessionsDir, readSessionFile } from "./io"
 
+// Paths — unified path management
+import { initPaths, BaseDirs } from "@/services/paths"
+
 // Parsers
 import { parseSessionFilename } from "./parsers"
 
@@ -64,6 +67,9 @@ async function ensureInit(): Promise<void> {
 
 async function _doInit(): Promise<void> {
   try {
+    // 统一路径初始化（Phase G）
+    await initPaths()
+
     const memDir = await invoke<string>("init_memory_files")
     const dataDir = memDir.replace(/\/memory$/, "")
     const sessDir = `${dataDir}/sessions`
