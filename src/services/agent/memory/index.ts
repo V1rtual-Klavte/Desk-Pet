@@ -11,7 +11,7 @@ import type { MemoryEntry, ProjectEntry, SessionFileMeta, SessionMemory, Compact
 import { setMemoryDir, setSessionsDir, readSessionFile } from "./io"
 
 // Paths — unified path management
-import { initPaths, BaseDirs } from "@/services/paths"
+import { initPaths } from "@/services/paths"
 
 // Parsers
 import { parseSessionFilename } from "./parsers"

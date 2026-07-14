@@ -19,15 +19,15 @@ pub fn profile_file_write(
     let dir = paths.profiles.join(&profile_id);
     let file_path = dir.join(&relative_path);
 
-    // 安全检查：防止路径穿越
-    let canonical_dir = dir.canonicalize().unwrap_or(dir.clone());
-    let canonical_file = file_path.canonicalize().unwrap_or(file_path.clone());
-    if !canonical_file.starts_with(&canonical_dir) {
-        return Err("路径穿越禁止".into());
-    }
-
+    // 安全检查：防止路径穿越 — validate_path 在 canonicalize 失败时直接 Err
+    // 对不存在的文件，校验父目录是否存在且在 profiles/ 范围内
     if let Some(parent) = file_path.parent() {
+        if parent.exists() {
+            AppPaths::validate_path(parent, &paths.profiles)?;
+        }
         fs::create_dir_all(parent).map_err(|e| format!("创建目录失败: {e}"))?;
+    } else {
+        return Err("无效的文件路径".into());
     }
     fs::write(&file_path, &content).map_err(|e| format!("写入文件失败: {e}"))?;
 
