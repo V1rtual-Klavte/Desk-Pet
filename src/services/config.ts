@@ -58,20 +58,13 @@ interface Config {
     requireApiKey: boolean
     model: string
     contextMaxTokens: number
-    fallbackReplies: string[]
     thinking: {
       effort: string
       budget: { low: number; medium: number; high: number }
     }
     personality: {
-      enabled: boolean
       active: string
       cards: { id: string; name: string; path: string; description: string }[]
-    }
-    reply: {
-      streamEnabled: boolean
-      phase2Retry: number
-      phase2ThinkingEffort: string
     }
     loop: {
       maxRetry: number
@@ -197,7 +190,6 @@ const OVERRIDES_KEY = "deskpet_config_overrides";
 // ★ 旧→新 key 迁移映射（v1 扁平结构 → v2 6域结构）
 const KEY_MIGRATION: Record<string, string> = {
   "mode.assistant":                    "general.mode.assistant",
-  "personality.enabled":               "ai.personality.enabled",
   "personality.active":                "ai.personality.active",
   "windowMonitor.enabled":             "ai.windowMonitor.enabled",
   "windowMonitor.staySeconds":         "ai.windowMonitor.staySeconds",
@@ -212,7 +204,6 @@ const KEY_MIGRATION: Record<string, string> = {
   "logging.level":                     "general.logging.level",
   "safety.mode":                       "ai.safety.mode",
   "safety.sessionTrustEnabled":        "ai.safety.sessionTrustEnabled",
-  "loop.streamEnabled":                "ai.reply.streamEnabled",
 };
 
 let _overridesCache: Record<string, any> | null = null;
@@ -333,19 +324,12 @@ const _ai = {
       high: overrideOr("ai.thinking.budget.high", cfg.ai?.thinking?.budget?.high ?? 16000),
     };
   },
-  get fallbackReplies() { return overrideOr("ai.fallbackReplies", cfg.ai?.fallbackReplies || ["嗯嗯～"]); },
   get configured() { if (!this.endpoint) return false; if (!this.requireApiKey) return true; return Boolean(this.apiKey); },
 };
 
-export const replyConfig = {
-  get streamEnabled() { return overrideOr("ai.reply.streamEnabled", cfg.ai?.reply?.streamEnabled ?? false); },
-  get phase2Retry() { return overrideOr("ai.reply.phase2Retry", cfg.ai?.reply?.phase2Retry ?? 1); },
-  get phase2ThinkingEffort() { return overrideOr("ai.reply.phase2ThinkingEffort", cfg.ai?.reply?.phase2ThinkingEffort ?? "low"); },
-};
 export const aiConfig = _ai;
 
 export const personalityConfig = {
-  get enabled() { return overrideOr("ai.personality.enabled", cfg.ai?.personality?.enabled ?? true); },
   get active() { return overrideOr("ai.personality.active", cfg.ai?.personality?.active || ""); },
   get cards() { return overrideOr("ai.personality.cards", cfg.ai?.personality?.cards || []); },
 };

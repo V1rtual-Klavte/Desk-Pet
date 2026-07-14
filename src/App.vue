@@ -529,12 +529,6 @@ onMounted(async () => {
   await initApp("Pちゃん！你终于来了！今天也要一直在一起哦～♡");
   tabsRef.value?.loadSessions();
 
-  if (import.meta.env.DEV) {
-    import("@/services/test").then(() => {
-      log.info("🧪 测试套件已就绪 — 输入 __test.all() 运行所有测试")
-    })
-  }
-
   invoke("set_monitor_config", {
     pollingIntervalMs: desktopConfig.pollingIntervalMs,
     pauseExtraMs: desktopConfig.pauseExtraMs,

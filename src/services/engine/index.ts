@@ -24,7 +24,7 @@ export type { AgentState, SessionState } from "./session"
 export { getThinkingBudget } from "./thinking"
 
 // ── Context ──
-export { buildCapabilityPrompt, buildStylePrompt, summarizeToolCalls } from "@/services/context/builder"
+export { buildPrompt } from "@/services/context/builder"
 export type { BuildContextInput, BuildContextOutput } from "@/services/context/builder"
 
 // ── Slash ──

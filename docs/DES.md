@@ -27,34 +27,41 @@
 
 每个会话的对话轮次**实时写入** `sessions/session-YYYYMMDD-HHmmss-主题.md`，首次用户消息后自动提取主题并重命名文件。**累计 token 消耗、上下文占比同步持久化到 .md 元数据**，重启后自动恢复。随时可查看历史记录。
 
-#### Agent Loop 机制 (v4 — 两阶段)
+#### Agent Loop 机制 (v5 — 一步生成)
 
 ```
 用户消息 → PreProcessor → 变量上下文刷新 + When引擎求值
-  → Phase1 (零身份能力层, 非流式)
-    → 工具循环: 安全检查→执行→回注 → rawReply + toolCallHistory
-  → Phase2 (角色风格层, 可选流式) [Card存在+人格启用]
-    → 角色设定+语言风格+情绪标签[emo:key] → 流式推UI并剥离标签
+  → 单次 LLM 调用 (永远非流式)
+    SystemPrompt = Card 全量角色内容 (设定/风格/情绪/When语气/行为准则)
+                   + 变量池 + 工具声明 + 记忆注入
+    → 工具循环 (不变): 安全检查→执行→回注
+    → 直接输出 [emo:key] + 角色化回复
+  → Generator 后处理: 剥离标签 → Card 情绪映射 → trim → 截断
+  → ReplyResult { text, emotionKey, expression, sound }
   → 变量快照/会话元数据持久化 → 上下文压缩
 ```
 
-- 固定 2 次 LLM: Phase1 + Phase2。人格禁用→跳过 Phase2
-- Phase1 零身份、无名字；Phase2 身份 100% 来自 Card sections
-- 变量上下文: v2 四类变量 system/card/interaction/session；system 运行时派生（6 个），card 注册表驱动 LLM 可写，interaction 系统维护只读，session 归会话 markdown 管理
-- When 引擎: `#行为进阶` 条件表达式实时语气切换
-- 情绪标签: `[emo:key]` 开头隐式携带，流式第一 token 剥离
-- chatHistory: 用户消息 + Phase1工具链 + Phase2回复
-- 已移除: plan.ts, boundary.ts, defaultSystemPrompt
+- 固定 1 次 LLM (非流式)。Card 永远激活 (neutral 兜底，替代旧人格开关)
+- 统一 system prompt：Card 全量角色内容 + 工具声明 + 变量池 + 记忆，一次注入
+- 变量上下文: v2 四类变量 system/card/interaction/session (不变)
+- When 引擎: `#行为进阶` 条件表达式实时语气切换 (不变)
+- 情绪标签: `[emo:key]` 开头隐式携带，generator.ts 剥离 → 查 Card emotionMappings
+- ReplyResult: `{ text, emotionKey, expression, sound }` — 表情/音效由 generator 统一解析
+- chatHistory: 用户消息 + 工具链 + 角色化回复
+- 已移除: Phase2, buildStylePrompt, summarizeToolCalls, formatToolRules, generateReplyStream, isPersonalityEnabled, setPersonalityEnabled, replyConfig, personalityConfig.enabled, fallbackReplies
+- 新增: neutral Card (默认桌面助手), getFallbackReply / stages fallbacks (替代 18 处硬编码), ReplyResult 接口
 
 ### 2.3 人格系统（独立模块）
 
 人格系统已从 Agent 执行层分离为 `src/services/personality/` 独立模块，**只参与 Prompt 生成**，不影响 Agent 执行逻辑。
 
 - **人格卡**：YAML frontmatter + 7 section Markdown；内置卡位于 `src/services/personality/cards/`，用户导入卡也持久化到 `src/services/personality/cards/`
-- **热插拔**：设置面板可随时切换/禁用 Card，切换为事务式阻塞流程：stages 加载/生成、变量池初始化/持久化任一失败则回滚旧 Card
+- **热插拔**：设置面板可随时切换 Card（neutral 为默认兜底），切换为事务式阻塞流程：stages 加载/生成、变量池初始化/持久化任一失败则回滚旧 Card
 - **When 引擎**：Card `#行为进阶` 定义条件规则，根据变量池实时切换语气
-- **情绪表达**：Card `#情绪表达` 定义 `key → 表情,音效` 映射，Phase2 [emo:key] 驱动
+- **情绪表达**：Card `#情绪表达` 定义 `key → 表情,音效` 映射，generator.ts 剥离 [emo:key] 后解析
 - **阶段文案**：per-card stages 由 LLM 生成并持久化到 `src/services/personality/stages/{cardId}.json`
+- **fallbacks 兜底 (v5新增)**：stages JSON 新增 `fallbacks` 字段 (8 个 key)，`getFallbackReply(key)` 按 Card 返回角色化兜底；llmUnavailable 为数组随机选取；最终 FALLBACK_FALLBACKS 极简中性常数兜底
+- **neutral 默认卡 (v5新增)**：`cards/neutral.md` — 中性桌面助手，替代旧 `personality.enabled=false`
 - **变量池（v2）**：四类变量 system/card/interaction/session 完整实现
   - **system**：6 个运行时派生变量（hour/minute/dayOfWeek/isNightTime/isWeekend/activeCardId），只读
   - **card**：Card 注册表驱动，`var_write` 校验 type/min/max/enum/updateBy 后写入，`var_delete` 重置为 initial
@@ -65,14 +72,16 @@
   - **更新闭环**：Agent Loop 开始 refresh → reset 策略 → var_write 即时落盘 → Loop 结束 dirty flush
 - **扩展性**：内置 cards 由 `import.meta.glob` 自动扫描；用户 cards 通过 Tauri fs 导入/扫描
 
-#### 人格中间件 v4（stages 缓存驱动）
+#### 人格中间件 v5（stages 缓存驱动 + fallbacks）
 
 ```ts
 PetPersonalityMiddleware.wrap(stage, { actionCategory })
 ```
+- AgentStage: thinking | planning | generating | executing | blocked | error | done | idle (v5: 移除 retry)
 - 阶段文案由 stages-cache 返回（per-card LLM 生成），无硬编码
 - executing/done/blocked 按 `actionCategory`（fs.read/os.exec/.../`_default`）匹配
-- 表情/音效使用默认值兜底，情绪标签驱动的表情在 Phase2 收尾阶段覆盖
+- 情绪表情由 generator.ts 剥离 [emo:key] 后统一解析，不再依赖 Phase2 收尾阶段
+- fallbacks: `getFallbackReply(key)` → 替代所有硬编码中文兜底 (8 个 key)
 
 ### 2.4 窗口感知主动搭话 ★ 核心机制
 
@@ -94,7 +103,7 @@ when: unansweredCount >= 3 OR 亲密度 >= 9
 - **变量驱动**：条件表达式支持 `AND/OR/NOT/( )` + 全部系统/角色变量
 - **按序匹配**：规则从上到下求值，第一条命中生效。最后一条须为 `when: true` 兜底
 - **零冷却**：每轮 agent loop 重新求值，无状态记忆
-- **独立于 Phase1**：When 引擎只影响 Phase2 的 `[当前状态]` 段，不参与工具执行
+- **v5 统一注入**：When 引擎结果直接注入 `buildPrompt` 的 `[当前状态]` 段，与角色设定一并成为 system prompt 的一部分
 
 ### 2.6 快捷键召唤/收回 ★ 核心机制
 
@@ -666,8 +675,9 @@ src/services/
 │                          # 工具声明策略 (轻量始终带/助手L0-L2)
 │                          # compactMessages 上下文压缩
 │
-├── reply/                 # 回复生成器
-│   └── generator.ts       # 后处理: kaomoji/截断/HTML转义
+├── reply/                 # 回复生成器 v5
+│   └── generator.ts       # 一步后处理: 情绪标签剥离 + 表情/音效映射 + trim + 截断
+│                          #   generateReply(raw, card) → ReplyResult { text, emotionKey, expression, sound }
 │
 ├── agent/                 # Agent 模块
 │   ├── index.ts           # 统一导出
@@ -778,7 +788,6 @@ Rust monitor → emit("window-changed") → listener.ts
 | `maxToolCallsPerTurn` | 5 | 单轮最多工具调用链长度 |
 | `toolTimeoutMs` | 30000 | 单个工具执行超时 |
 | `turnTimeoutMs` | 120000 | 整轮总超时 |
-| `streamEnabled` | false | 是否流式输出（默认关闭） |
 | `contextCompactAt` | 0.95 | 上下文利用率达95%触发摘要压缩 |
 
 #### 状态机
@@ -997,7 +1006,7 @@ sessions/                      会话目录（唯一真相源）
 | 助手6额外工具 | ✅ | `tool/local-extra/` (write/full/app/clipboard/delete) |
 | 安全控制 (四级+三策略+确认UI) | ✅ | `safety/checker.ts` + `confirm.ts` |
 | 上下文引擎 | ✅ | `context/builder.ts` |
-| 回复生成器 | ✅ | `reply/generator.ts` |
+| 回复生成器 v5 | ✅ | `reply/generator.ts` — 一步后处理: stripEmotionTag → resolveEmotion → trim/截断 → ReplyResult |
 | OpenAI 兼容 Provider | ✅ | `agent/provider.ts` |
 | 记忆系统 (注册表+LLM整理+Fork) | ✅ | `agent/memory.ts` |
 | Rust 工具执行 | ✅ | `commands/tool_exec.rs` |

@@ -3,7 +3,7 @@ import { ref, onMounted, computed } from "vue";
 import {
   aiConfig, windowMonitorConfig, aiLockConfig,
   memoryConfig, personalityConfig, modeConfig,
-  replyConfig, safetyConfig,
+  safetyConfig,
 } from "@/services/config";
 import {
   listPersonalities, getActiveCard,
@@ -26,10 +26,8 @@ const aiContextMaxTokens = ref(aiConfig.contextMaxTokens);
 const showApiKey = ref(false);
 const aiRequireApiKey = ref(aiConfig.requireApiKey);
 
-// ── 思考 & 流式 ──
-const aiThinkingEffort = ref(aiConfig.thinkingEffort);           // Phase1
-const aiPhase2ThinkingEffort = ref(replyConfig.phase2ThinkingEffort); // Phase2
-const aiStreamEnabled = ref(replyConfig.streamEnabled);
+// ── 思考 ──
+const aiThinkingEffort = ref(aiConfig.thinkingEffort);
 
 // ── 安全 ──
 const safetyMode = ref(safetyConfig.mode as string);
@@ -65,7 +63,6 @@ const memStatus = ref<{
 // 🎭 Card 系统
 // ═══════════════════════════════════
 
-const personalityEnabled = ref(personalityConfig.enabled);
 const personalityActive = ref(personalityConfig.active);
 const cardList = ref<PersonalityCard[]>([]);
 const expandedCardId = ref<string | null>(null);
@@ -439,8 +436,6 @@ defineExpose({
   aiModel,
   aiContextMaxTokens,
   aiThinkingEffort,
-  aiPhase2ThinkingEffort,
-  aiStreamEnabled,
   aiRequireApiKey,
   safetyMode,
   sessionTrustEnabled,
@@ -451,7 +446,6 @@ defineExpose({
   wmSamePageCool,
   lockTimeout,
   memMax,
-  personalityEnabled,
   personalityActive,
   candyInstructions,
 });
@@ -473,32 +467,14 @@ defineExpose({
   <div class="s-section">
     <div class="s-label">🧠 思考强度</div>
 
-    <div class="s-subtitle">Phase1（能力层）</div>
+    <div class="s-subtitle">模型思考强度</div>
     <div class="radio-row">
       <label v-for="lv in ['auto','low','medium','high']" :key="'p1'+lv" class="chk"><input type="radio" v-model="aiThinkingEffort" :value="lv" /><span>{{ lv }}</span></label>
     </div>
 
-    <div class="s-subtitle" style="margin-top:6px">Phase2（风格层）</div>
-    <div class="radio-row">
-      <label v-for="lv in ['auto','low','medium','high']" :key="'p2'+lv" class="chk"><input type="radio" v-model="aiPhase2ThinkingEffort" :value="lv" /><span>{{ lv }}</span></label>
-    </div>
-    <label class="chk" style="margin-top:6px"><input type="checkbox" v-model="aiStreamEnabled" /><span>流式输出 (Phase2)</span></label>
-  </div>
+    <div class="s-subtitle" style="margin-top:6px">思考强度</div>
 
-  <!-- ═══ 🎭 角色选择 ═══ -->
-  <div class="s-section">
-    <div class="s-label">
-      🎭 角色选择
-      <span style="flex:1"></span>
-      <button class="btn-s" @click="importCard()" title="导入 .md Card">📥 导入</button>
-      <button class="btn-s" @click="refreshCards()" title="刷新列表">🔄</button>
-    </div>
-
-    <label class="chk" style="margin-bottom:6px"><input type="checkbox" v-model="personalityEnabled" /><span>启用人格系统</span></label>
-
-    <div v-if="!personalityEnabled" class="s-hint">已关闭 → 零身份模式，不注入任何角色 Prompt</div>
-
-    <div v-else class="card-grid">
+    <div class="card-grid">
       <div
         v-for="card in cardList"
         :key="card.id"
@@ -640,7 +616,7 @@ defineExpose({
           <span class="s-muted">{{ em.sound ? `🔊 ${em.sound}` : '🔇' }}</span>
         </div>
       </div>
-      <div class="s-hint">Phase2 回复开头 [emo:key] 驱动，系统自动剥离</div>
+      <div class="s-hint">回复开头 [emo:key] 驱动，系统自动剥离</div>
     </div>
   </div>
 

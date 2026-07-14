@@ -10,7 +10,7 @@ const log = createLogger("PersonaMW")
 
 export type AgentStage =
   | "thinking" | "planning" | "generating"
-  | "executing" | "blocked" | "error" | "retry" | "done" | "idle"
+  | "executing" | "blocked" | "error" | "done" | "idle"
 
 export interface StageContext {
   toolName?: string
@@ -29,7 +29,7 @@ export interface PersonalityEffect {
 const DEFAULT_EXPRESSIONS: Record<AgentStage, string> = {
   thinking: "smile", planning: "business", generating: "smile",
   executing: "business", blocked: "gaoo", error: "sleepy",
-  retry: "smile", done: "chu", idle: "idle",
+  done: "chu", idle: "idle",
 }
 
 const DEFAULT_SOUNDS: Partial<Record<AgentStage, string | null>> = {
@@ -64,9 +64,6 @@ export const PetPersonalityMiddleware = {
         break
       case "error":
         userMessage = ctx.message ?? getSimpleStage("error")
-        break
-      case "retry":
-        userMessage = getSimpleStage("retry")
         break
     }
 

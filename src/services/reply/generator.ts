@@ -1,11 +1,21 @@
 // ==========================================
-// 回复生成器 v4 — 轻量后处理
-// Phase2 已完成风格化 + 情绪标签剥离，此处仅做基本清理
+// 回复生成器 v5 — 一步生成后处理
+// 接管情绪标签剥离 + 表情/音效映射 + 截断
 // ==========================================
 
 import { createLogger } from "@/services/logger"
+import { stripEmotionTag, resolveEmotion } from "@/services/personality/emotion"
+import type { PersonalityCard } from "@/services/personality/types"
 
 const log = createLogger("ReplyGen")
+
+/** v5: 回复后处理结果 */
+export interface ReplyResult {
+  text: string
+  emotionKey: string | null
+  expression: string
+  sound: string | null
+}
 
 /** 后处理选项 */
 export interface ReplyOptions {
@@ -16,15 +26,27 @@ export interface ReplyOptions {
 const DEFAULT_MAX_LENGTH = 500
 
 /**
- * 生成最终回复文本。
- * v4: Phase2 已完成风格化，此处仅做长度截断 + trim。
- * 不再注入 kaomoji — 角色风格由 Phase2 全权负责。
+ * v5: 生成最终回复。
+ * 剥离 [emo:key] 标签 → 查映射表情/音效 → trim → 长度截断。
  */
-export function generateReply(raw: string, options: ReplyOptions = {}): string {
-  let text = raw.trim()
+export function generateReply(
+  raw: string,
+  card?: PersonalityCard | null,
+  options: ReplyOptions = {},
+): ReplyResult {
   const { maxLength = DEFAULT_MAX_LENGTH } = options
 
-  // ── 截断 ──
+  // 1. 剥离情绪标签
+  const { text: stripped, emotionKey } = stripEmotionTag(raw)
+
+  // 2. 使用 card 的情绪映射
+  const emotionMappings = card?.sections.emotionMappings ?? []
+
+  // 3. 查找表情 + 音效
+  const { expression, sound } = resolveEmotion(emotionKey, emotionMappings)
+
+  // 4. trim + 截断
+  let text = stripped.trim()
   if (text.length > maxLength) {
     const truncated = text.substring(0, maxLength)
     const lastPeriod = Math.max(
@@ -38,5 +60,5 @@ export function generateReply(raw: string, options: ReplyOptions = {}): string {
       : truncated + "…"
   }
 
-  return text
+  return { text, emotionKey, expression, sound }
 }

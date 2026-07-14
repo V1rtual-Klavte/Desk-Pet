@@ -2,7 +2,7 @@
 
 > 像素风桌面虚拟主播 — 常驻桌面，能聊天、能用工具、能看你窗口、能主动搭话。
 >
-> ⚠️ **当前状态：Phase 1-4 完成，Plan LLM 驱动已实现，剪贴板/内存三端真实实现，流式可配置**。
+>  **当前状态：Phase 1-5 完成，v5 单次 LLM 回复生成，人格永远激活（neutral 兜底），硬编码兜底全部卡片化**。
 
 [![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20macOS-blue)](https://github.com/Klavte/Desk-Pet)
 [![Tauri](https://img.shields.io/badge/Tauri-v2-ffc131)](https://tauri.app)
@@ -18,11 +18,11 @@
 - **AI 聊天** — 人格卡驱动，Ageng Loop 多轮工具调用，兼容 OpenAI / DeepSeek / Ollama 等
 - **工具系统** — AI 可调用工具：读文件/列目录/搜索文件/系统信息/Bash/HTTP GET
 - **助手模式** — 解锁写文件/全量Bash/打开应用/剪贴板/MCP 服务器/Skill 编排/子代理
-- **Agent Loop** — 多轮工具调用循环，思考强度可选，流式输出可开关（默认关闭），上下文自动压缩
+- **Agent Loop** — 多轮工具调用循环，思考强度可选，上下文自动压缩，v5 单次 LLM 调用角色化回复
 - **人格中间件** — 横切所有 Agent 阶段的角色化表达（表情/音效/角色话术）
 - **窗口感知** — 监控前台窗口标题，停留一定时间后 AI 主动搭话
 - **快捷键召唤** — 全局快捷键弹出/收回，弹性缩放动画
-- **人格系统** — Card 驱动的两阶段回复：内置 Card 自动扫描，用户 Card 持久化到 `src/services/personality/cards/`，切换时事务式阻塞加载/生成 `src/services/personality/stages/{cardId}.json` 并初始化变量池，失败自动回滚；变量池 v2 规划已明确拆成 system/card/session 三类变量
+- **人格系统** — Card 驱动的单次 LLM 回复 (v5)：内置 Card 自动扫描，用户 Card 持久化，切换时事务式阻塞加载/生成 stages 并初始化变量池，失败自动回滚；neutral 默认卡替代旧人格开关
 - **人格进化** — 不理她太久会从甜蜜女友逐渐变成病娇（unansweredCount + boundary 系统）
 - **安全控制** — 四级安全（SAFE/NORMAL/DANGER/NOWAY）+ 三策略（全放行/告知确认/全部确认），确认弹窗 UI，全局默认+会话覆盖，统一危险模式库
 - **记忆系统** — MEMORY.md 双块结构化注册表 + sessions/ 实时写入 + 会话历史面板 + LLM 整理 + Fork 补记忆

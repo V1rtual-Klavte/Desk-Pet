@@ -36,6 +36,8 @@ export function parseEmotionMappings(raw: string): EmotionMapping[] {
   const lines = raw.split("\n").map(l => l.trim()).filter(l => l.length > 0)
 
   for (const line of lines) {
+    // 跳过 markdown 列表标志行（说明文字，不是实际映射）
+    if (line.startsWith("- ") || line.startsWith("* ")) continue
     if (!line.includes("→")) continue
     const arrowIdx = line.indexOf("→")
     const key = line.slice(0, arrowIdx).trim()
@@ -82,7 +84,7 @@ export function resolveEmotion(
 }
 
 /**
- * 为 Phase2 prompt 生成情绪表达规则文本
+ * 为 Prompt 生成情绪表达规则文本
  */
 export function formatEmotionForPrompt(mappings: EmotionMapping[]): string {
   if (mappings.length === 0) return ""

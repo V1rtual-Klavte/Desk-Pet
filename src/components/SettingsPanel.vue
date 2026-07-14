@@ -8,7 +8,7 @@ import {
 import {
   saveSoundAssignments,
 } from "@/services/audio/registry";
-import { setPersonalityEnabled, switchPersonality, isPersonalityEnabled, getActivePersonalityId } from "@/services/personality";
+import { switchPersonality, getActivePersonalityId } from "@/services/personality";
 import { createLogger } from "@/services/logger";
 import { isMacOS } from "@/services/env";
 import { emit } from "@tauri-apps/api/event";
@@ -50,7 +50,6 @@ async function doSave() {
   const t = toolsTabRef.value!;
   const ap = appearanceTabRef.value!;
   saveError.value = "";
-  const previousPersonalityEnabled = isPersonalityEnabled();
   const previousPersonalityActive = getActivePersonalityId();
 
   userConfig.popupMode = g.popupMode;
@@ -72,7 +71,6 @@ async function doSave() {
     "ai.model": a.aiModel,
     "ai.contextMaxTokens": a.aiContextMaxTokens,
     "ai.thinking.effort": a.aiThinkingEffort,
-    "ai.personality.enabled": a.personalityEnabled,
     "ai.personality.active": a.personalityActive,
     "ai.windowMonitor.enabled": a.wmEnabled,
     "ai.windowMonitor.staySeconds": a.wmStaySeconds,
@@ -92,8 +90,6 @@ async function doSave() {
     "tools.file.writeEnabled": t.fileWriteEnabled,
     "tools.mcp.enabled": t.mcpEnabled,
     "tools.skill.enabled": t.skillEnabled,
-    "ai.reply.streamEnabled": a.aiStreamEnabled,
-    "ai.reply.phase2ThinkingEffort": a.aiPhase2ThinkingEffort,
   });
 
   // MCP 内置
@@ -132,13 +128,10 @@ async function doSave() {
     }))
   );
 
-  setPersonalityEnabled(a.personalityEnabled);
-  const switchResult = await switchPersonality(a.personalityEnabled ? a.personalityActive : null);
+  const switchResult = await switchPersonality(a.personalityActive);
   if (!switchResult.ok) {
     saveError.value = switchResult.error || "人格切换失败";
-    setOverride("ai.personality.enabled", previousPersonalityEnabled);
     setOverride("ai.personality.active", previousPersonalityActive);
-    setPersonalityEnabled(previousPersonalityEnabled);
     log.error("设置保存失败:", saveError.value);
     return;
   }

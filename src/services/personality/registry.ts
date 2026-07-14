@@ -1,6 +1,6 @@
 // ==========================================
-// 人格注册表 —— 事务式激活/切换/提示生成
-// 人格系统不参与 Agent 执行，只影响 Prompt 生成
+// 人格注册表 v5 — 事务式激活/切换，始终激活一个 Card
+// neutral 默认兜底，替代旧 personality.enabled 开关
 // ==========================================
 
 import type { PersonalityCard } from "./types"
@@ -9,7 +9,7 @@ import { personalityConfig } from "@/services/config"
 import {
   initVariablePool, destroyPool, loadCardVars,
   savePoolToDiskStrict, snapshotVariablePoolState, restoreVariablePoolState,
-  updateInteractionVar, readPersistedCharacterVars,
+  updateInteractionVar,
 } from "./variable-pool"
 import {
   generateStagesForCard, loadStagesFromDisk,
@@ -21,7 +21,6 @@ const log = createLogger("Registry")
 
 // ── 状态 ──
 let activeId: string | null = null
-let enabled = true
 let runtimeReady = false
 
 export interface SwitchResult {
@@ -32,32 +31,29 @@ export interface SwitchResult {
 
 /** 初始化：从配置恢复激活状态（由 App.vue onMounted 调用） */
 export async function initRegistry(): Promise<void> {
-  enabled = personalityConfig.enabled
   runtimeReady = false
   const configuredId = personalityConfig.active
 
-  if (!enabled) {
-    activeId = null
-    destroyPool()
-    clearStagesCache()
-    runtimeReady = true
-    log.info("人格系统已禁用，使用零身份模式")
-    return
-  }
+  log.info("人格系统初始化: configured=", configuredId ?? "(无)")
 
+  const allCards = getCards()
+  log.info("可用 Card:", allCards.map(c => c.id).join(", ") || "(无)")
+
+  // 优先用配置指定的 Card，否则第一张（neutral 兜底始终存在）
   const target = configuredId && getCard(configuredId)
     ? configuredId
-    : getCards()[0]?.id ?? null
+    : allCards[0]?.id ?? null
 
   if (!target) {
     activeId = null
     destroyPool()
     clearStagesCache()
     runtimeReady = true
-    log.warn("没有可用 Card，使用零身份模式")
+    log.warn("没有可用 Card（连 neutral 都找不到），系统降级运行")
     return
   }
 
+  log.info("准备激活 Card:", target)
   const result = await switchPersonality(target)
   if (!result.ok) {
     activeId = null
@@ -68,6 +64,7 @@ export async function initRegistry(): Promise<void> {
     return
   }
   runtimeReady = true
+  log.info("人格模块启动完毕: activeCard=", activeId)
 }
 
 /** 列出所有已注册人格 */
@@ -75,9 +72,9 @@ export function listPersonalities(): PersonalityCard[] {
   return getCards()
 }
 
-/** 获取当前激活的人格卡（null = 使用默认人格） */
+/** 获取当前激活的人格卡（v5: 永远非 null，neutral 兜底） */
 export function getActiveCard(): PersonalityCard | null {
-  if (!enabled || !activeId) return null
+  if (!activeId) return null
   return getCard(activeId) ?? null
 }
 
@@ -100,24 +97,9 @@ async function ensureStagesReady(card: PersonalityCard): Promise<void> {
 }
 
 async function prepareVariablePool(card: PersonalityCard): Promise<void> {
-  let prevVars = await loadCardVars(card.id)
+  log.info("准备变量池:", card.id, "| variableDefs:", card.sections.variableDefs.length, "个")
 
-  // 迁移路径：stages/{cardId}.json 不存在时尝试旧 vars.json.character
-  if (!prevVars || Object.keys(prevVars.card).length === 0) {
-    const oldCharVars = await readPersistedCharacterVars(card.id)
-    if (oldCharVars && Object.keys(oldCharVars).length > 0) {
-      log.info("从旧 vars.json.character 迁移 Card 变量:", card.id, Object.keys(oldCharVars).length, "个")
-      // 将旧值转为 VariableState
-      const cardStates: Record<string, import("./types").VariableState> = {}
-      for (const [name, value] of Object.entries(oldCharVars)) {
-        cardStates[name] = {
-          value, type: typeof value as "number" | "string" | "boolean",
-          updatedAt: Date.now(), updatedBy: "migration",
-        }
-      }
-      prevVars = { card: cardStates, interaction: {} }
-    }
-  }
+  const prevVars = await loadCardVars(card.id)
 
   log.info(prevVars && (Object.keys(prevVars.card).length > 0 || Object.keys(prevVars.interaction).length > 0)
     ? "变量池从持久化恢复:" : "变量池按 Card 初始化:", card.id)
@@ -125,7 +107,6 @@ async function prepareVariablePool(card: PersonalityCard): Promise<void> {
   initVariablePool({
     cardId: card.id,
     variableDefs: card.sections.variableDefs,
-    initialVars: card.sections.initialVars,
     prevCardStates: prevVars?.card,
     prevInteractionStates: prevVars?.interaction,
   })
@@ -139,18 +120,9 @@ export async function switchPersonality(id: string | null): Promise<SwitchResult
   const prevStages = snapshotStagesCache()
 
   if (id === null) {
-    try {
-      activeId = null
-      destroyPool()
-      clearStagesCache()
-      log.info("已关闭人格，使用零身份模式")
-      return { ok: true, card: null }
-    } catch (e) {
-      activeId = prevActiveId
-      restoreVariablePoolState(prevPool)
-      restoreStagesCache(prevStages)
-      return { ok: false, error: e instanceof Error ? e.message : String(e) }
-    }
+    // v5: 不允许切换到 null，应该切换到 neutral 而不是关掉
+    log.warn("不允许关闭人格（v5 始终有 Card），请切换到 neutral 或其他 Card")
+    return { ok: false, error: "不允许关闭人格，请切换到其他 Card（如 neutral）" }
   }
 
   const card = getCard(id)
@@ -176,25 +148,11 @@ export async function switchPersonality(id: string | null): Promise<SwitchResult
   }
 }
 
-/** 是否启用人格系统 */
-export function isPersonalityEnabled(): boolean {
-  return enabled
-}
-
-/** 启用/禁用人格系统 */
-export function setPersonalityEnabled(v: boolean): void {
-  enabled = v
-  log.info("人格系统:", v ? "已启用" : "已禁用（使用零身份模式）")
-}
-
 // ── Prompt 生成 ──
 
-/**
- * 获取当前 System Prompt
- * v4: 角色设定是 Phase2 专属，这里只返回当前 Card 的角色设定文本。
- */
+/** 获取当前 System Prompt（调试用） */
 export function getSystemPrompt(): string {
-  if (!enabled || !activeId) return ""
+  if (!activeId) return ""
   const card = getCard(activeId)
   return card?.sections.roleSetting ?? ""
 }
@@ -206,8 +164,6 @@ if (typeof window !== "undefined") {
     active: getActiveCard,
     activeId: getActivePersonalityId,
     switch: switchPersonality,
-    enabled: isPersonalityEnabled,
-    setEnabled: setPersonalityEnabled,
     ready: isPersonalityRuntimeReady,
     prompt: getSystemPrompt,
   }

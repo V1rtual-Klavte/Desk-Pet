@@ -68,7 +68,6 @@ export interface GenerateRequest {
   systemPrompt: string
   tools?: ToolDeclaration[]
   thinkingEffort?: ThinkingEffort
-  streamEnabled?: boolean
   thinkingBudget?: number
   maxTokens?: number
 }
@@ -84,7 +83,6 @@ export interface GenerateResponse {
 export interface AIProvider {
   readonly name: string
   generateReply(req: GenerateRequest): Promise<GenerateResponse>
-  generateReplyStream?(req: GenerateRequest, onToken: (t: string) => void, onThinking?: (t: string) => void): Promise<string>
 }
 
 // ── 工具函数 ──

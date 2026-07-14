@@ -45,6 +45,34 @@ export interface StageMap {
   error: string
   timeout: string
   retry: string
+  /** v5: 系统兜底回复，每个 Card 有自己的角色化版本 */
+  fallbacks: FallbackReplies
+}
+
+/** v5: 系统兜底回复类型 — 替代硬编码中文 */
+export interface FallbackReplies {
+  concurrentRejected: string
+  maxRetriesExhausted: string
+  turnTimeout: string
+  toolLoopMaxRounds: string
+  llmUnavailable: string[]        // 数组，运行时随机选一条
+  subAgentDone: string
+  subAgentFailed: string
+  subAgentNoResult: string
+  compactionFailed: string
+}
+
+/** v5: 极简中性兜底 — 只在 Card stages 完全不可用时使用 */
+const FALLBACK_FALLBACKS: FallbackReplies = {
+  concurrentRejected: "请稍后再试",
+  maxRetriesExhausted: "重试失败，请稍后再试",
+  turnTimeout: "处理超时",
+  toolLoopMaxRounds: "处理完成",
+  llmUnavailable: ["服务暂不可用"],
+  subAgentDone: "完成",
+  subAgentFailed: "执行失败",
+  subAgentNoResult: "无结果",
+  compactionFailed: "压缩失败",
 }
 
 export const FALLBACK_STAGES: StageMap = {
@@ -74,6 +102,7 @@ export const FALLBACK_STAGES: StageMap = {
   error: "出了点问题，请重试",
   timeout: "操作超时",
   retry: "正在重试...",
+  fallbacks: FALLBACK_FALLBACKS,
 }
 
 // ── 内存缓存 ──
@@ -109,6 +138,24 @@ export function getSimpleStage(stage: keyof StageMap): string | null {
   const val = cache?.stages[stage] ?? FALLBACK_STAGES[stage]
   if (typeof val === "string") return val || (FALLBACK_STAGES[stage] as string) || null
   return null
+}
+
+/** v5: 获取系统兜底回复，card 文案 → FALLBACK_FALLBACKS 多级降级 */
+export function getFallbackReply(key: keyof FallbackReplies): string {
+  const fallbacks = cache?.stages.fallbacks ?? FALLBACK_STAGES.fallbacks
+  const val: FallbackReplies[keyof FallbackReplies] = fallbacks[key]
+
+  // 数组（llmUnavailable）→ 随机取一条
+  if (Array.isArray(val)) {
+    if (val.length > 0) return val[Math.floor(Math.random() * val.length)]
+    return (FALLBACK_FALLBACKS[key] as string) ?? ""
+  }
+
+  // 字符串 → 直接用
+  if (typeof val === "string" && val.length > 0) return val
+
+  // 最后的最后：极简中性兜底
+  return (FALLBACK_FALLBACKS[key] as string) ?? ""
 }
 
 export function serializeStages(prompts: StagePrompts): string {
@@ -189,6 +236,23 @@ export function parseStagesResponse(jsonStr: string): StageMap | null {
   }
 }
 
+function normalizeFallbacks(raw: unknown): FallbackReplies {
+  const defaults = FALLBACK_FALLBACKS
+  if (!raw || typeof raw !== "object") return defaults
+  const r = raw as Record<string, unknown>
+  return {
+    concurrentRejected: typeof r.concurrentRejected === "string" && r.concurrentRejected ? r.concurrentRejected : defaults.concurrentRejected,
+    maxRetriesExhausted: typeof r.maxRetriesExhausted === "string" && r.maxRetriesExhausted ? r.maxRetriesExhausted : defaults.maxRetriesExhausted,
+    turnTimeout: typeof r.turnTimeout === "string" && r.turnTimeout ? r.turnTimeout : defaults.turnTimeout,
+    toolLoopMaxRounds: typeof r.toolLoopMaxRounds === "string" && r.toolLoopMaxRounds ? r.toolLoopMaxRounds : defaults.toolLoopMaxRounds,
+    llmUnavailable: Array.isArray(r.llmUnavailable) && r.llmUnavailable.length > 0 ? r.llmUnavailable : defaults.llmUnavailable,
+    subAgentDone: typeof r.subAgentDone === "string" && r.subAgentDone ? r.subAgentDone : defaults.subAgentDone,
+    subAgentFailed: typeof r.subAgentFailed === "string" && r.subAgentFailed ? r.subAgentFailed : defaults.subAgentFailed,
+    subAgentNoResult: typeof r.subAgentNoResult === "string" && r.subAgentNoResult ? r.subAgentNoResult : defaults.subAgentNoResult,
+    compactionFailed: typeof r.compactionFailed === "string" && r.compactionFailed ? r.compactionFailed : defaults.compactionFailed,
+  }
+}
+
 function normalizeStageMap(raw: Partial<StageMap>): StageMap {
   return {
     thinking: typeof raw.thinking === "string" ? raw.thinking : FALLBACK_STAGES.thinking,
@@ -200,6 +264,7 @@ function normalizeStageMap(raw: Partial<StageMap>): StageMap {
     error: typeof raw.error === "string" ? raw.error : FALLBACK_STAGES.error,
     timeout: typeof raw.timeout === "string" ? raw.timeout : FALLBACK_STAGES.timeout,
     retry: typeof raw.retry === "string" ? raw.retry : FALLBACK_STAGES.retry,
+    fallbacks: normalizeFallbacks(raw.fallbacks),
   }
 }
 
@@ -217,6 +282,7 @@ function parseLooseStagesResponse(raw: string): StageMap | null {
   result.executing = { ...result.executing, ...readLooseMap(text, "executing") }
   result.done = { ...result.done, ...readLooseMap(text, "done") }
   result.blocked = { ...result.blocked, ...readLooseMap(text, "blocked") }
+  result.fallbacks = readLooseFallbacks(text, result.fallbacks)
 
   const hasAny = Boolean(result.thinking || result.planning || Object.keys(result.executing).length > 1)
   if (hasAny) log.warn("stages 使用 reasoning_content 宽松解析结果")
@@ -253,6 +319,56 @@ function readLooseMap(text: string, section: "executing" | "done" | "blocked"): 
     const value = match?.[1]?.trim()
     if (value) result[key === "default" ? "_default" : key] = value
   }
+  return result
+}
+
+/** v5: 宽松解析 fallbacks 字段，从全文 scan fallback key 出现位置提取文案 */
+function readLooseFallbacks(text: string, defaults: FallbackReplies): FallbackReplies {
+  const result = { ...defaults }
+  const keySet = new Set(Object.keys(defaults) as (keyof FallbackReplies)[])
+
+  // 把全文按行分割，按顺序 scan 每个 fallback key 的位置
+  const lines = text.split("\n").map(l => l.trim()).filter(l => l.length > 0)
+
+  // scan 模式：遇到 fallback key → 收集直到下一个 fallback key 或结尾
+  const found: Partial<Record<keyof FallbackReplies, string[]>> = {}
+  let currentKey: keyof FallbackReplies | null = null
+
+  for (const line of lines) {
+    // 检查这行是否以某个 fallback key 开头
+    let matchedKey: keyof FallbackReplies | null = null
+    for (const k of keySet) {
+      if (line.startsWith(k)) {
+        matchedKey = k
+        break
+      }
+    }
+
+    if (matchedKey) {
+      currentKey = matchedKey
+      if (!found[currentKey]) found[currentKey] = []
+      // key 后面剩余部分（keyvalue → 取 value）
+      const value = line.slice(matchedKey.length).trim()
+      if (value) found[currentKey]!.push(value)
+    } else if (currentKey) {
+      // 续行：追加到当前 key
+      found[currentKey]!.push(line)
+    }
+  }
+
+  // 合并结果
+  for (const key of keySet) {
+    const vals = found[key]
+    if (!vals || vals.length === 0) continue
+    if (key === "llmUnavailable") {
+      // llmUnavailable 是多条随机选择
+      if (vals.length > 0) result.llmUnavailable = vals
+    } else {
+      // 单值 key：取第一条
+      if (vals[0]) result[key] = vals[0]
+    }
+  }
+
   return result
 }
 

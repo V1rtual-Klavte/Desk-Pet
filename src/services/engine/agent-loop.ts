@@ -1,12 +1,11 @@
 // ==========================================
-// Agent Loop v4 — 变量池 + When + Phase1/2 + 情绪剥离
-// 每次用户消息: Phase1(能力) + Phase2(风格) 固定 2 次 LLM 调用
-// chatHistory: 用户消息 + Phase1工具链 + Phase2回复
+// Agent Loop v5 — 单次 LLM 调用 + generator 后处理
+// 角色内容已内建到 system prompt，一步出角色化回复
 // ==========================================
 
 import type { Message } from "@/services/agent/types"
 import { createMessageId, createToolMessage } from "@/services/agent/types"
-import { buildCapabilityPrompt, buildStylePrompt, summarizeToolCalls } from "@/services/context/builder"
+import { buildPrompt } from "@/services/context/builder"
 import { executeTool } from "@/services/tool/router"
 import { getToolByName } from "@/services/tool/registry"
 import { checkSafety, trustToolInSession } from "@/services/safety/checker"
@@ -15,12 +14,12 @@ import { PetPersonalityMiddleware } from "@/services/personality/middleware"
 import type { PersonalityEffect } from "@/services/personality/middleware"
 import { getActiveCard } from "@/services/personality/registry"
 import { refreshVariablePool, getPoolSnapshot, savePoolToDisk, updateInteractionVar, applyResetPolicies, getSessionStart } from "@/services/personality/variable-pool"
-import { evaluateWhenEngine } from "@/services/personality/when-engine"
-import { stripEmotionTag, resolveEmotion } from "@/services/personality/emotion"
+import { getSimpleStage, getStagePrompt, getFallbackReply } from "@/services/personality/stages-cache"
 import { getEffectiveThinkingEffort, updateRequestStats } from "@/services/debug"
+import { generateReply } from "@/services/reply/generator"
 import { transition, recordMessage, recordToolCall } from "./session"
 import { pushMessage, chatHistory } from "@/services/session/store"
-import { loopConfig, modeConfig, personalityConfig, replyConfig } from "@/services/config"
+import { loopConfig, modeConfig } from "@/services/config"
 import { createLogger } from "@/services/logger"
 import { emit } from "@tauri-apps/api/event"
 import { MemoryService } from "@/services/agent/memory"
@@ -58,7 +57,7 @@ export async function runAgentLoop(input: AgentLoopInput): Promise<AgentLoopOutp
   MemoryService.recordTurn("user", userText)
 
   // ═══ 0. 变量池 + When 引擎 ═══
-  const pool = refreshVariablePool()
+  refreshVariablePool()
 
   // 同步旧 session unansweredCount 到变量池 interaction 变量
   updateInteractionVar("unansweredCount", unansweredCount)
@@ -69,24 +68,17 @@ export async function runAgentLoop(input: AgentLoopInput): Promise<AgentLoopOutp
   if (isNewSession) lastSeenSessionStart = currentSessionStart
   applyResetPolicies(new Date(), isNewSession)
 
-  const card = getActiveCard()
-
-  let activeTone = ""
-  if (card) {
-    const hit = evaluateWhenEngine(card.sections.whenRules, pool)
-    activeTone = hit?.tone ?? "正常交流，保持角色设定"
-  }
+  const card = getActiveCard() // v5: 永远非 null（neutral 兜底）
 
   const thinkingEffort = getEffectiveThinkingEffort()
-  const personalityEnabled = personalityConfig.enabled && card !== null
 
-  // ═══ 1. Phase1: 能力层 ═══
-  const capCtx = buildCapabilityPrompt(
+  // ═══ 1. 统一 Prompt 构建（角色已内建） ═══
+  const ctx = buildPrompt(
     { recentMessages: chatMessages, userText, unansweredCount, thinkingEffort, isActiveMessage },
     card, getPoolSnapshot(),
   )
 
-  log.info(`\n${"═".repeat(50)}\n  【Phase1 能力层 Prompt】Tools=${capCtx.tools.length} tokens≈${capCtx.estimatedSystemTokens}\n${"═".repeat(50)}\n${capCtx.systemPrompt}\n${"─".repeat(50)}`)
+  log.info(`\n${"═".repeat(50)}\n  【v5 System Prompt】Card=${card?.id ?? "neutral"} | Tools=${ctx.tools.length} tokens≈${ctx.estimatedSystemTokens}\n${"═".repeat(50)}\n${ctx.systemPrompt}\n${"─".repeat(50)}`)
   applyEffect(PetPersonalityMiddleware.wrap("thinking"), effects)
 
   const { OpenAICompatibleProvider } = await import("@/services/agent/provider")
@@ -96,132 +88,52 @@ export async function runAgentLoop(input: AgentLoopInput): Promise<AgentLoopOutp
   const maxRetry = loopConfig.maxRetry + 1
   const turnTimeout = loopConfig.turnTimeoutMs
 
-  let phase1Reply = ""
-  let emotionTag: string | null = null
+  let rawReply = ""
 
-  // ── Phase1 工具循环 ──
+  // ── 工具循环 ──
   for (let attempt = 0; attempt < maxRetry; attempt++) {
     if (attempt > 0) retriesUsed = attempt
     try {
-      const result = await runPhase1Loop({
-        provider, systemPrompt: capCtx.systemPrompt, tools: capCtx.tools,
+      const result = await runToolLoop({
+        provider, systemPrompt: ctx.systemPrompt, tools: ctx.tools,
         chatMessages, maxRounds, startTime, turnTimeout, toolCallHistory,
         thinkingEffort, effects, userText,
       })
-      phase1Reply = result.reply
+      rawReply = result.reply
+      log.info(`LLM 输出 (${rawReply.length} chars):\n${rawReply.slice(0, 300)}${rawReply.length > 300 ? "…" : ""}`)
       break
     } catch (e) {
       const err = e instanceof Error ? e : new Error(String(e))
       if (attempt >= maxRetry - 1) {
-        log.error("Phase1 重试耗尽")
+        log.error("重试耗尽:", err.message)
         transition("WAITING")
-        const errEffect = PetPersonalityMiddleware.wrap("error", { message: "啊...信号不太好～" })
+        const errEffect = PetPersonalityMiddleware.wrap("error", { message: getSimpleStage("error") ?? "出了点问题" })
         applyEffect(errEffect, effects)
-        return { reply: "（唔…试了好几次都失败了…）", toolCallHistory, retriesUsed, effects }
+        return { reply: getFallbackReply("maxRetriesExhausted"), toolCallHistory, retriesUsed, effects }
       }
     }
   }
 
-  // ═══ 2. 无角色 = 直接返回 ═══
-  if (!personalityEnabled || !card) {
-    transition("WAITING")
-    savePoolToDisk()
-    MemoryService.recordTurn("assistant", phase1Reply)
-    compactOnHighUsage(chatMessages, userText)
-    const doneEffect = PetPersonalityMiddleware.wrap("done", { actionCategory: "_default" })
-    applyEffect(doneEffect, effects)
-    return { reply: phase1Reply, toolCallHistory, retriesUsed, effects }
-  }
+  // ═══ 2. Generator 后处理 ═══
+  const processed = generateReply(rawReply, card)
+  log.info(`Generator 后处理: emotionKey=${processed.emotionKey ?? "无"} expression=${processed.expression} sound=${processed.sound ?? "无"} textLen=${processed.text.length}`)
 
-  // ═══ 3. Phase2: 风格化 ═══
-  const toolSummary = summarizeToolCalls(toolCallHistory)
-  const styleCtx = buildStylePrompt({
-    card, rawReply: phase1Reply, userText, pool: getPoolSnapshot(), toolCallSummary: toolSummary,
-  })
-
-  log.info(`\n${"═".repeat(50)}\n  【Phase2 风格层 Prompt】\n${"═".repeat(50)}\n${styleCtx.systemPrompt}\n${"─".repeat(50)}\n  【Phase2 User Message】\n${"─".repeat(50)}\n${styleCtx.userMessage}\n${"─".repeat(50)}`)
-
-  let finalReply = phase1Reply
-  let success = false
-
-  for (let attempt = 0; attempt <= replyConfig.phase2Retry; attempt++) {
-    try {
-      if (replyConfig.streamEnabled) {
-        // 流式 — 首个 token 立即剥离情绪标签
-        let firstTokenBuf = ""
-        let tagStripped = false
-        const raw = await provider.generateReplyStream(
-          {
-            messages: [
-              { id: createMessageId(), role: "user" as const, text: styleCtx.userMessage, timestamp: Date.now() },
-            ],
-            systemPrompt: styleCtx.systemPrompt,
-            thinkingEffort: replyConfig.phase2ThinkingEffort as any,
-          },
-          (token) => {
-            if (!tagStripped) {
-              firstTokenBuf += token
-              const parsed = stripEmotionTag(firstTokenBuf)
-              if (parsed.emotionKey !== null || firstTokenBuf.length > 25) {
-                tagStripped = true
-                if (parsed.emotionKey) emotionTag = parsed.emotionKey
-                if (parsed.text) emit("reply-token", { token: parsed.text })
-              }
-            } else {
-              emit("reply-token", { token })
-            }
-          },
-        )
-        // 流式完成后统一剥离（确保 emotionTag 有值）
-        if (!tagStripped) {
-          const parsed = stripEmotionTag(raw)
-          finalReply = parsed.text
-          emotionTag = parsed.emotionKey
-        } else {
-          const parsed = stripEmotionTag(raw)
-          finalReply = parsed.text
-          if (!emotionTag) emotionTag = parsed.emotionKey
-        }
-      } else {
-        const result = await provider.generateReply({
-          messages: [
-            { id: createMessageId(), role: "user" as const, text: styleCtx.userMessage, timestamp: Date.now() },
-          ],
-          systemPrompt: styleCtx.systemPrompt,
-          thinkingEffort: replyConfig.phase2ThinkingEffort as any,
-        })
-        const parsed = stripEmotionTag(result.text)
-        finalReply = parsed.text
-        emotionTag = parsed.emotionKey
-      }
-      success = true
-      break
-    } catch (e) {
-      if (attempt < replyConfig.phase2Retry) {
-        applyEffect(PetPersonalityMiddleware.wrap("retry"), effects)
-      }
-    }
-  }
-
-  // ═══ 4. 收尾 ═══
-  const emoMappings = card.sections.emotionMappings
-  const resolved = resolveEmotion(emotionTag, emoMappings)
-  effects.push({ expression: resolved.expression, soundEvent: resolved.sound })
-  emit("deskpet-expression", { expression: resolved.expression }).catch(() => {})
-  if (resolved.sound) emit("deskpet-sound", { event: resolved.sound }).catch(() => {})
+  effects.push({ expression: processed.expression, soundEvent: processed.sound })
+  emit("deskpet-expression", { expression: processed.expression }).catch(() => {})
+  if (processed.sound) emit("deskpet-sound", { event: processed.sound }).catch(() => {})
 
   transition("WAITING")
-  MemoryService.recordTurn("assistant", finalReply)
+  MemoryService.recordTurn("assistant", processed.text)
   compactOnHighUsage(chatMessages, userText)
 
   savePoolToDisk()
 
-  return { reply: finalReply, toolCallHistory, retriesUsed, effects }
+  return { reply: processed.text, toolCallHistory, retriesUsed, effects }
 }
 
-// ── Phase1 工具循环 ──
+// ── 工具循环 ──
 
-async function runPhase1Loop(opts: {
+async function runToolLoop(opts: {
   provider: any; systemPrompt: string; tools: any[]
   chatMessages: Message[]; maxRounds: number; startTime: number
   turnTimeout: number; toolCallHistory: any[]
@@ -236,7 +148,7 @@ async function runPhase1Loop(opts: {
 
   while (roundCount < maxRounds) {
     if (Date.now() - startTime > turnTimeout) {
-      finalReply = "（处理时间太长了…）"
+      finalReply = getFallbackReply("turnTimeout")
       break
     }
     roundCount++
@@ -284,6 +196,8 @@ async function runPhase1Loop(opts: {
     for (const tc of toolCalls) {
       recordToolCall()
       const params = parseArgs(tc.arguments)
+      log.info(`工具调用 [round ${roundCount}]: ${tc.name}(${JSON.stringify(params)})`)
+
       const tool = getToolByName(tc.name)
 
       const cat = tool?.actionCategory ?? "_default"
@@ -291,8 +205,10 @@ async function runPhase1Loop(opts: {
       emitToolEvent("tool-executing", { toolId: tc.name, toolName: tc.name })
 
       if (!tool) {
+        log.warn(`工具不存在: ${tc.name}`)
         toolCallHistory.push({ toolName: tc.name, status: "error" })
-        loopMessages.push(createToolMessage(tc.id, JSON.stringify({ toolCallId: tc.id, content: "", error: `工具不存在: ${tc.name}` })))
+        const errPrefix = getSimpleStage("error") ?? "Error"
+        loopMessages.push(createToolMessage(tc.id, JSON.stringify({ toolCallId: tc.id, content: "", error: `${errPrefix}: 工具 ${tc.name} 不可用` })))
         continue
       }
 
@@ -302,17 +218,21 @@ async function runPhase1Loop(opts: {
       })
 
       if (!safetyResult.allowed) {
+        log.warn(`工具被安全拦截: ${tc.name} reason=${safetyResult.personalityMessage ?? "未知"}`)
         applyEffect(PetPersonalityMiddleware.wrap("blocked", { actionCategory: cat, toolName: tc.name }), effects)
         toolCallHistory.push({ toolName: tc.name, status: "blocked" })
-        loopMessages.push(createToolMessage(tc.id, JSON.stringify({ toolCallId: tc.id, content: "", error: safetyResult.personalityMessage ?? "被拦截" })))
+        const blockedMsg = safetyResult.personalityMessage ?? getStagePrompt("blocked", cat) ?? "操作被拦截"
+        loopMessages.push(createToolMessage(tc.id, JSON.stringify({ toolCallId: tc.id, content: "", error: blockedMsg })))
         continue
       }
 
       if (safetyResult.needsConfirm && safetyResult.confirmMessage) {
         const approved = await requestConfirm(tc.name, safetyResult.confirmMessage)
         if (!approved) {
+          log.info(`工具被用户拒绝: ${tc.name}`)
           toolCallHistory.push({ toolName: tc.name, status: "denied" })
-          loopMessages.push(createToolMessage(tc.id, JSON.stringify({ toolCallId: tc.id, content: "", error: "用户取消" })))
+          const deniedMsg = getStagePrompt("blocked", cat) ?? "操作被拦截"
+          loopMessages.push(createToolMessage(tc.id, JSON.stringify({ toolCallId: tc.id, content: "", error: deniedMsg })))
           continue
         }
         if (tool.safetyLevel === "NORMAL") trustToolInSession(tc.name)
@@ -324,21 +244,24 @@ async function runPhase1Loop(opts: {
       })
 
       if (result.success) {
+        log.info(`工具成功: ${tc.name} ✓ ${result.content?.slice(0, 80) ?? ""}`)
         applyEffect(PetPersonalityMiddleware.wrap("done", { actionCategory: cat, toolName: tc.name }), effects)
         toolCallHistory.push({ toolName: tc.name, status: "done" })
       } else {
+        log.warn(`工具失败: ${tc.name} ✗ ${result.error ?? "未知错误"}`)
         applyEffect(PetPersonalityMiddleware.wrap("error", { actionCategory: cat, toolName: tc.name, message: result.error }), effects)
         toolCallHistory.push({ toolName: tc.name, status: "error" })
       }
 
-      loopMessages.push(createToolMessage(tc.id, result.success ? result.content : `Error: ${result.error}`))
-      pushMessage(createToolMessage(tc.id, result.success ? result.content : `Error: ${result.error}`)) // 持久化
+      const errPrefix = getSimpleStage("error") ?? "Error"
+      loopMessages.push(createToolMessage(tc.id, result.success ? result.content : `${errPrefix}: ${result.error}`))
+      pushMessage(createToolMessage(tc.id, result.success ? result.content : `${errPrefix}: ${result.error}`)) // 持久化
       emitToolEvent("tool-completed", { toolId: tc.name, toolName: tc.name, success: result.success })
     }
   }
 
   if (!finalReply && roundCount >= maxRounds) {
-    finalReply = "（处理完成，但结果太复杂了…）"
+    finalReply = getFallbackReply("toolLoopMaxRounds")
   }
 
   return { reply: finalReply }

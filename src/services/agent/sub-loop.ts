@@ -11,6 +11,7 @@ import { checkSafety } from "@/services/safety/checker"
 import { toToolDeclaration } from "@/services/tool/types"
 import type { ToolDef } from "@/services/tool/types"
 import { loopConfig } from "@/services/config"
+import { getSimpleStage, getStagePrompt, getFallbackReply } from "@/services/personality/stages-cache"
 import { createLogger } from "@/services/logger"
 
 const log = createLogger("SubLoop")
@@ -103,24 +104,28 @@ export async function runSubLoop(input: SubLoopInput): Promise<SubLoopOutput> {
         const tool = getToolByName(tc.name)
 
         if (!tool) {
+          const errPrefix = getSimpleStage("error") ?? "Error"
           messages.push(createToolMessage(tc.id,
-            JSON.stringify({ toolCallId: tc.id, content: "", error: `工具未注册: ${tc.name}` })))
+            JSON.stringify({ toolCallId: tc.id, content: "", error: `${errPrefix}: 工具 ${tc.name} 不可用` })))
           continue
         }
 
         // 安全检查
         const safety = checkSafety(tool, params, { mode: "pet", sessionTrusted: false })
         if (!safety.allowed) {
+          const cat = tool?.actionCategory ?? "_default"
+          const blockedMsg = safety.personalityMessage ?? getStagePrompt("blocked", cat) ?? "操作被拦截"
           messages.push(createToolMessage(tc.id,
-            JSON.stringify({ toolCallId: tc.id, content: "", error: safety.personalityMessage ?? "操作被拦截" })))
+            JSON.stringify({ toolCallId: tc.id, content: "", error: blockedMsg })))
           continue
         }
 
         // 执行工具
         const result = await executeTool(tc.name, params, { mode: "pet", sessionTrusted: false })
+        const errPrefix = getSimpleStage("error") ?? "Error"
         const toolResult = result.success
           ? result.content
-          : `Error: ${result.error}`
+          : `${errPrefix}: ${result.error}`
         messages.push(createToolMessage(tc.id, toolResult))
       }
     }
@@ -133,9 +138,9 @@ export async function runSubLoop(input: SubLoopInput): Promise<SubLoopOutput> {
           systemPrompt: systemPrompt + "\n\n请基于以上工具执行结果，用简短中文总结。",
           thinkingEffort: "low",
         })
-        finalReply = summaryResp.text || "（完成）"
+        finalReply = summaryResp.text || getFallbackReply("subAgentDone")
       } catch {
-        finalReply = "（工具执行完成，但生成总结失败）"
+        finalReply = getFallbackReply("subAgentFailed")
       }
     }
   } catch (e) {
@@ -144,7 +149,7 @@ export async function runSubLoop(input: SubLoopInput): Promise<SubLoopOutput> {
   }
 
   return {
-    reply: errorMsg ? `子代理出错: ${errorMsg}` : finalReply || "（无结果）",
+    reply: errorMsg ? `子代理出错: ${errorMsg}` : finalReply || getFallbackReply("subAgentNoResult"),
     toolCallsMade: roundCount,
     success: !errorMsg,
     error: errorMsg,

@@ -113,8 +113,6 @@ function emptyPool(): VariablePool {
 export interface InitPoolInput {
   cardId: string
   variableDefs: CardVariableDef[]
-  /** @deprecated 兼容旧格式，variableDefs 优先 */
-  initialVars?: Record<string, number | string | boolean>
   /** 之前持久化的 card 变量状态（从 stages/{cardId}.json 恢复） */
   prevCardStates?: Record<string, VariableState>
   /** 之前持久化的 interaction 变量状态 */
@@ -139,10 +137,6 @@ export function initVariablePool(input: InitPoolInput): VariablePool {
     } else {
       cardVars[def.name] = def.initial
     }
-  }
-  // Fallback: 如果没有 variableDefs 但传入了 old-style initialVars
-  if (cardDefs.length === 0 && input.initialVars) {
-    Object.assign(cardVars, input.initialVars)
   }
   pool.card = cardVars
 
@@ -583,11 +577,10 @@ export async function readSystemVars(): Promise<Record<string, number | string |
   }
 }
 
-/** @deprecated v2: 使用 loadCardVars 代替 */
+/** @deprecated v2: 使用 loadCardVars 代替，不再回退旧 vars.json */
 export async function readPersistedCharacterVars(
   cardId: string,
 ): Promise<Record<string, number | string | boolean> | null> {
-  // 先尝试新位置
   const newVars = await loadCardVars(cardId)
   if (newVars && Object.keys(newVars.card).length > 0) {
     const flat: Record<string, number | string | boolean> = {}
@@ -596,40 +589,22 @@ export async function readPersistedCharacterVars(
     }
     return flat
   }
-  // 回退旧 vars.json
-  try {
-    const raw = await readFile("personality/vars.json")
-    if (!raw) return null
-    const data = JSON.parse(new TextDecoder().decode(raw))
-    if (data.cardId === cardId && data.character) {
-      log.info("发现旧格式 character 数据，使用旧数据")
-      return data.character as Record<string, number | string | boolean>
-    }
-  } catch { /* fall through */ }
   return null
 }
 
-/** @deprecated v2: 使用 savePoolToDisk 代替 */
+/** @deprecated v2: 使用 savePoolToDisk 代替，仅支持 v2 格式 */
 export function loadVariablePool(
   jsonStr: string, currentCardIdNow: string,
 ): { restored: boolean; pool: VariablePool } {
   try {
     const data = JSON.parse(jsonStr)
-    // 新版 vars.json: { schemaVersion, system, updatedAt }
     if (data.schemaVersion && data.schemaVersion >= 2) {
       pool.system = data.system || {}
       currentCardId = currentCardIdNow
       log.info("变量池恢复(v2 system):", Object.keys(pool.system).length, "个系统变量")
       return { restored: true, pool: getPoolSnapshot() }
     }
-    // 旧格式: { cardId, system, character, updatedAt }
-    if (data.cardId === currentCardIdNow) {
-      pool.card = data.character || {}
-      pool.system = data.system || {}
-      currentCardId = currentCardIdNow
-      log.info("变量池恢复(旧格式):", Object.keys(pool.card).length, "个角色变量")
-      return { restored: true, pool: getPoolSnapshot() }
-    }
+    log.warn("vars.json 格式不兼容 (schemaVersion<2)，将重新初始化")
   } catch {
     log.warn("vars.json 解析失败，将重新初始化")
   }

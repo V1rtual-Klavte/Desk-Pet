@@ -16,7 +16,7 @@ export class OpenAICompatibleProvider implements AIProvider {
 
   async generateReply(req: GenerateRequest): Promise<GenerateResponse> {
     const { messages, systemPrompt, tools, thinkingEffort } = req
-    const { url, body } = buildRequestBody(messages, systemPrompt, tools, thinkingEffort, false, req.maxTokens)
+    const { url, body } = buildRequestBody(messages, systemPrompt, tools, thinkingEffort, req.maxTokens)
 
     log.debug("请求 →", url, "| model:", aiConfig.model, "| tools:", tools?.length ?? 0)
 
@@ -39,22 +39,6 @@ export class OpenAICompatibleProvider implements AIProvider {
       } : undefined,
     }
   }
-
-  /** Phase2 流式方法 */
-  async generateReplyStream(
-    req: GenerateRequest,
-    onToken: (t: string) => void,
-    onThinking?: (t: string) => void,
-  ): Promise<string> {
-    const { messages, systemPrompt, tools, thinkingEffort } = req
-    const { url, body } = buildRequestBody(messages, systemPrompt, tools, thinkingEffort, true, req.maxTokens)
-
-    log.debug("流式 →", url)
-    const res = await doFetch(url, body)
-    if (!res.ok) throw new Error(`HTTP ${res.status}`)
-
-    return parseSSEStream(res, onToken, onThinking)
-  }
 }
 
 // ── 请求构造 ──
@@ -62,7 +46,7 @@ export class OpenAICompatibleProvider implements AIProvider {
 function buildRequestBody(
   messages: Message[], systemPrompt: string,
   tools: GenerateRequest["tools"], thinkingEffort: GenerateRequest["thinkingEffort"],
-  stream: boolean, maxTokens?: number,
+  maxTokens?: number,
 ) {
   let base = aiConfig.endpoint.replace(/\/+$/, "")
   const url = base.endsWith("/v1") ? `${base}/chat/completions` : `${base}/v1/chat/completions`
@@ -73,7 +57,7 @@ function buildRequestBody(
   ]
 
   const bodyObj: Record<string, unknown> = {
-    model: aiConfig.model, messages: apiMessages, stream,
+    model: aiConfig.model, messages: apiMessages, stream: false,
   }
 
   if (maxTokens) { bodyObj.max_tokens = maxTokens }
@@ -86,7 +70,7 @@ function buildRequestBody(
     }
   }
 
-  if (thinkingEffort === "low" && !aiConfig.model.includes("deepseek") && !aiConfig.model.includes("o1") && !aiConfig.model.includes("o3")) {
+  if (thinkingEffort === "low" && !aiConfig.model.includes("deepseek") && !aiConfig.model.includes("o1") && !aiConfig.model.includes("o3") && !aiConfig.model.includes("o4")) {
     const sysMsg = apiMessages[0]
     if (sysMsg && sysMsg.role === "system" && typeof sysMsg.content === "string") {
       sysMsg.content += "\n\n[请快速简要回答，不需要过多思考]"
@@ -124,41 +108,6 @@ async function doFetch(url: string, body: string): Promise<Response> {
   } catch (e) {
     throw new Error(e instanceof TypeError ? `网络不可达 (${e.message})` : String(e))
   }
-}
-
-async function parseSSEStream(
-  res: Response, onToken: (t: string) => void, onThinking?: (t: string) => void,
-): Promise<string> {
-  const reader = res.body?.getReader()
-  if (!reader) throw new Error("无法读取响应流")
-
-  const decoder = new TextDecoder()
-  let fullText = "", buffer = ""
-
-  try {
-    while (true) {
-      const { done, value } = await reader.read()
-      if (done) break
-      buffer += decoder.decode(value, { stream: true })
-      const lines = buffer.split("\n")
-      buffer = lines.pop() ?? ""
-
-      for (const line of lines) {
-        if (!line.trim().startsWith("data:")) continue
-        const data = line.trim().slice(5).trim()
-        if (data === "[DONE]") continue
-        try {
-          const chunk = JSON.parse(data)
-          const delta = chunk.choices?.[0]?.delta
-          if (!delta) continue
-          if (delta.reasoning_content && onThinking) onThinking(delta.reasoning_content)
-          if (delta.content) { fullText += delta.content; onToken(delta.content) }
-        } catch { /* ignore */ }
-      }
-    }
-  } finally { reader.releaseLock() }
-
-  return fullText
 }
 
 function toAPIMessage(m: Message): APIMessage {

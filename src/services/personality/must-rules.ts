@@ -48,13 +48,7 @@ export function pickGreeting(greetings: string[] | null): string | null {
   return greetings[Math.floor(Math.random() * greetings.length)]
 }
 
-/** Phase1 prompt 注入 */
-export function formatToolRules(rules: MustRules): string {
-  if (rules.toolRelated.length === 0) return ""
-  return "\n[工具使用规则]\n" + rules.toolRelated.map((r, i) => `${i + 1}. ${r}`).join("\n")
-}
-
-/** Phase2 prompt 注入 */
+/** v5: 统一 Prompt 注入 — 行为准则全量 */
 export function formatAllRules(rules: MustRules): string {
   if (rules.all.length === 0) return ""
   return "[行为准则]\n" + rules.all.map((r, i) => `${i + 1}. ${r}`).join("\n")

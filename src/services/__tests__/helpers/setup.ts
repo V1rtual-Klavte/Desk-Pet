@@ -26,7 +26,6 @@ vi.mock("@/services/config", () => ({
     requireApiKey: true,
     model: "deepseek-v4-pro",
     contextMaxTokens: 16000,
-    fallbackReplies: ["嗯嗯～", "原来如此～"],
     thinking: { effort: "auto" as const, budget: { low: 1000, medium: 4000, high: 16000 } },
   },
   modeConfig: { assistant: false },
@@ -42,9 +41,8 @@ vi.mock("@/services/config", () => ({
     mcp: { enabled: false }, skill: { enabled: false },
   },
   safetyConfig: { mode: "tell_me" as const, sessionTrustEnabled: true },
-  replyConfig: { streamEnabled: false, phase2Retry: 1, phase2ThinkingEffort: "low" as const },
   personalityConfig: {
-    enabled: true, active: "angelkawaii",
+    active: "angelkawaii",
     cards: [
       { id: "angelkawaii", name: "KAngel", path: "cards/angelkawaii.md", description: "甜蜜活泼女友+病娇" },
       { id: "ame", name: "Ame", path: "cards/ame.md", description: "冷静管家型" },

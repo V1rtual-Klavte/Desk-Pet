@@ -94,11 +94,13 @@ SessionTabs → App.vue bridge → chat.ts (★ 唯一状态管理)
 主动搭话: 窗口监控 → sendActiveMessage() → AgentLoop
 用户聊天: sendMessage() → PreProcessor → AgentLoop
 
-AgentLoop (每轮):
+AgentLoop v5 (单次LLM调用):
   → refreshVariablePool() + updateInteractionVar(unansweredCount→0)
   → When 引擎求值
-  → Phase1 (能力层) → 工具循环(安全校验→执行)
-  → Phase2 (角色层, 可选) → 情绪标签剥离 → 流式输出
+  → buildPrompt(card注入: 角色设定/语言风格/输出规则/情绪表达/When语气/行为准则/变量池/工具/记忆)
+  → 单次LLM调用 (非流式) → runToolLoop (安全校验→执行)
+  → generateReply(raw, card) → 情绪标签剥离 + 表情/音效映射 + 截断
+  → ReplyResult { text, emotionKey, expression, sound }
   → var_write 即时落盘 stages/{cardId}.json
 
 全局快捷键 → 弹出/收回动画
@@ -146,6 +148,7 @@ AgentLoop (每轮):
 - 全局冷却/并发锁走 `cooldown.ts`
 - 平台检测走 `@/services/env`
 - **配置走 `@/services/config`**，不在模块里写死常量
+- **系统兜底回复始终用 `getFallbackReply()`** — 从 stages-cache 读取 Card 角色化文案，多级降级至极简中性兜底，禁止硬编码中文
 
 ---
 

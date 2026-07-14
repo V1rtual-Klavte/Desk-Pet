@@ -5,6 +5,7 @@
 import type { SlashCommand } from "../types"
 import { MemoryService } from "@/services/agent/memory"
 import { compactIncremental } from "@/services/engine/compactor"
+import { getFallbackReply } from "@/services/personality/stages-cache"
 
 export const compactCommand: SlashCommand = {
   name: "compact",
@@ -36,6 +37,6 @@ export const compactCommand: SlashCommand = {
     if (summary) {
       return `✅ 压缩完成\n主请求: ${summary.mainRequest.substring(0, 80)}\n关键技术: ${summary.keyTech.join(", ") || "无"}\n涉及文件: ${summary.files.join(", ") || "无"}\n当前工作: ${summary.currentWork.substring(0, 80)}`
     }
-    return "压缩失败，请稍后重试～"
+    return getFallbackReply("compactionFailed")
   },
 }

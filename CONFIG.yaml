@@ -41,18 +41,6 @@ ai:
   model: deepseek-chat
   contextMaxTokens: 16000
 
-  fallbackReplies:
-    - "嗯嗯，是这样的呢～"
-    - "诶？真的吗？好厉害！"
-    - "原来如此～"
-    - "我知道哦～！"
-    - "哈哈，谢谢你！"
-    - "原来是这个样子啊～"
-    - "不是吧！？这也太夸张了"
-    - "对对对！"
-    - "你这么说我好开心～"
-    - "欸——这样啊，好有趣！"
-
   thinking:
     effort: auto
     budget:
@@ -61,17 +49,12 @@ ai:
       high: 16000
 
   personality:
-    enabled: true
     active: angelkawaii
     cards:
+      - { id: neutral, name: 桌面助手, path: cards/neutral.md, description: "中性默认助手" }
       - { id: angelkawaii, name: KAngel, path: cards/angelkawaii.md, description: "甜蜜活泼女友+病娇" }
       - { id: ame, name: Ame, path: cards/ame.md, description: "冷静管家型" }
       - { id: pchan, name: P酱, path: cards/pchan.md, description: "慵懒电竞少女" }
-
-  reply:
-    streamEnabled: false
-    phase2Retry: 1
-    phase2ThinkingEffort: low
 
   loop:
     maxRetry: 3

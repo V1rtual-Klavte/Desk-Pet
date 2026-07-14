@@ -5,17 +5,16 @@
 
 import type { Message, AIProvider, GenerateRequest, GenerateResponse } from "./types"
 import { aiConfig } from "@/services/config"
+import { getFallbackReply } from "@/services/personality/stages-cache"
 import { createLogger } from "@/services/logger"
 
 const log = createLogger("AgentSvc")
 
 export class AIService {
   private provider: AIProvider
-  private fallbackReplies: string[]
 
-  constructor(provider: AIProvider, fallbackReplies?: string[]) {
+  constructor(provider: AIProvider) {
     this.provider = provider
-    this.fallbackReplies = fallbackReplies ?? aiConfig.fallbackReplies
   }
 
   setProvider(provider: AIProvider): void {
@@ -38,6 +37,6 @@ export class AIService {
   }
 
   randomFallback(): string {
-    return this.fallbackReplies[Math.floor(Math.random() * this.fallbackReplies.length)]
+    return getFallbackReply("llmUnavailable")
   }
 }
