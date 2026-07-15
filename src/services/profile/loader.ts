@@ -239,6 +239,14 @@ export async function discoverAllProfiles(): Promise<string[]> {
 
 export async function ensureProfileLoaded(id: string): Promise<ProfileData | null> {
   if (profiles.has(id)) return profiles.get(id)!;
+  const MAX_PROFILES = 20
+  if (profiles.size >= MAX_PROFILES) {
+    const oldest = profiles.keys().next().value
+    if (oldest) {
+      profiles.delete(oldest)
+      log.info("profile 已达上限，淘汰最旧:", oldest)
+    }
+  }
   try { const data = await loadProfile(id); profiles.set(id, data); return data; }
   catch (e) { log.error(`Profile "${id}" 加载失败:`, e); return null; }
 }

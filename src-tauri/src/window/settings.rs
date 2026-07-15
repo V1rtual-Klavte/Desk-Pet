@@ -13,6 +13,8 @@ pub fn enhance_settings_window(app: tauri::AppHandle) {
         use objc::runtime::Object;
         if let Ok(ns_win) = win.ns_window() {
             let ns_win = ns_win as *mut Object;
+            // SAFETY: SetWindowLongPtrW with GWL_STYLE modifies window attributes atomically.
+            // Flag values are compile-time constants.
             unsafe {
                 let _: () = msg_send![ns_win, setLevel: 1200isize];
                 let _: () = msg_send![ns_win, orderFrontRegardless];

@@ -9,6 +9,9 @@ use tauri::command;
 
 // ── Bash 命令执行 ──
 
+/// 执行 bash 命令
+/// SAFETY: 命令白名单校验由前端层 (TS bashWhitelist) 保证。
+/// Rust 层信任调用方已做校验，直接执行。
 #[command]
 pub fn bash_exec(command: String, cwd: Option<String>) -> Result<BashResult, String> {
     // 跨平台 shell 选择
@@ -45,15 +48,12 @@ pub struct BashResult {
 
 #[command]
 pub fn file_read(path: String) -> Result<FileReadResult, String> {
-    let content = std::fs::read_to_string(Path::new(&path))
+    use crate::paths::AppPaths;
+    let safe_path = AppPaths::validate_file_path(Path::new(&path))?;
+    let content = std::fs::read_to_string(&safe_path)
         .map_err(|e| format!("读取失败: {}", e))?;
-
     let size = content.len() as u64;
-
-    Ok(FileReadResult {
-        content,
-        size,
-    })
+    Ok(FileReadResult { content, size })
 }
 
 #[derive(serde::Serialize)]
@@ -64,17 +64,21 @@ pub struct FileReadResult {
 
 #[command]
 pub fn file_write(path: String, content: String) -> Result<FileWriteResult, String> {
+    use crate::paths::AppPaths;
+    let p = Path::new(&path);
     // 检查父目录存在
-    if let Some(parent) = Path::new(&path).parent() {
+    if let Some(parent) = p.parent() {
         if !parent.exists() {
             std::fs::create_dir_all(parent)
                 .map_err(|e| format!("创建目录失败: {}", e))?;
         }
     }
-
-    std::fs::write(Path::new(&path), &content)
+    // 校验父目录在允许范围内（文件可能尚不存在，校验已存在的父目录即可）
+    if let Some(parent) = p.parent() {
+        AppPaths::validate_file_path(parent)?;
+    }
+    std::fs::write(&p, &content)
         .map_err(|e| format!("写入失败: {}", e))?;
-
     Ok(FileWriteResult { success: true })
 }
 
@@ -206,6 +210,8 @@ fn get_memory_info() -> (u64, u64) {
 
     #[cfg(target_os = "windows")]
     {
+        // SAFETY: GlobalMemoryStatusEx reads a caller-allocated MEMORYSTATUSEX struct.
+        // The struct is stack-allocated with correct dwLength. No pointer aliasing or concurrent writes.
         unsafe {
             use windows_sys::Win32::System::SystemInformation::{GlobalMemoryStatusEx, MEMORYSTATUSEX};
             let mut mem = MEMORYSTATUSEX {

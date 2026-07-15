@@ -249,3 +249,13 @@ export async function loadMemoryFiles(): Promise<{ loadedCandy: string; loadedUs
   ensureSystemIndex()
   return { loadedCandy: cachedCandy, loadedUser: cachedUser }
 }
+
+// HMR 热更新时清理 pending timer
+if (import.meta.hot) {
+  import.meta.hot.dispose(() => {
+    if (memorySaveTimer) {
+      clearTimeout(memorySaveTimer)
+      memorySaveTimer = null
+    }
+  })
+}

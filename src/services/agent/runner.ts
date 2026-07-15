@@ -154,7 +154,7 @@ export async function sendMessage(text: string): Promise<{
       },
     }
   } catch (e) {
-    log.error("sendMessage 失败", e instanceof Error ? e : undefined)
+    log.error("sendMessage 失败", e instanceof Error ? e.message : String(e))
     const fallback = getFallbackReply("llmUnavailable")
     // ★ 同样校验会话
     if (getActiveSessionId() !== originSessionId) {

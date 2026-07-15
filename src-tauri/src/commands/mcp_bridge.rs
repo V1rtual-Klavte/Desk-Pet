@@ -61,13 +61,26 @@ pub fn mcp_spawn(
         });
     }
 
-    let child = Command::new(&command)
+    let mut child = Command::new(&command)
         .args(&args)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
         .map_err(|e| format!("启动 MCP 进程失败: {}", e))?;
+
+    // F1.1: 排空 stderr 管道，防止子进程死锁
+    if let Some(stderr) = child.stderr.take() {
+        let sid = format!("mcp-{}", name);
+        std::thread::spawn(move || {
+            let reader = std::io::BufReader::new(stderr);
+            for line in reader.lines() {
+                if let Ok(l) = line {
+                    eprintln!("[MCP stderr] {}: {}", sid, l);
+                }
+            }
+        });
+    }
 
     let server_id = format!("mcp-{}", name);
     let mut pool = state.0.lock().map_err(|e| format!("锁错误: {}", e))?;
@@ -91,7 +104,8 @@ pub fn mcp_spawn(
     })
 }
 
-/// 向 MCP 进程发送 JSON-RPC 请求并读取响应
+/// F3.1: 向 MCP 进程发送 JSON-RPC 请求并读取响应
+/// 先移出子进程 → 释放锁 → 执行 I/O → 放回池中，避免持锁期间阻塞
 #[tauri::command]
 pub fn mcp_send(
     state: State<'_, McpPool>,
@@ -99,13 +113,14 @@ pub fn mcp_send(
     method: String,
     params: Value,
 ) -> Result<McpResponseResult, String> {
-    let mut pool = state.0.lock().map_err(|e| format!("锁错误: {}", e))?;
+    // 1. 移出子进程（短暂持锁）
+    let mut proc = {
+        let mut pool = state.0.lock().map_err(|e| format!("锁错误: {}", e))?;
+        pool.remove(&server_id)
+            .ok_or_else(|| format!("MCP 服务器 {} 未连接", server_id))?
+    };
 
-    let proc = pool
-        .get_mut(&server_id)
-        .ok_or_else(|| format!("MCP 服务器 {} 未连接", server_id))?;
-
-    // 构建 JSON-RPC 请求
+    // 2. 构建 JSON-RPC 请求（无锁）
     let request = json!({
         "jsonrpc": "2.0",
         "id": 1,
@@ -113,7 +128,7 @@ pub fn mcp_send(
         "params": params,
     });
 
-    // 写入 stdin
+    // 3. 写入 stdin（无锁）
     {
         let stdin = proc
             .child
@@ -125,7 +140,7 @@ pub fn mcp_send(
         stdin.flush().map_err(|e| format!("flush stdin 失败: {}", e))?;
     }
 
-    // 读取 stdout（一行 JSON-RPC 响应）
+    // 4. 读取 stdout（无锁，read_line 阻塞等待响应）
     let stdout = proc
         .child
         .stdout
@@ -134,12 +149,10 @@ pub fn mcp_send(
     let mut reader = BufReader::new(stdout);
     let mut line = String::new();
 
-    // 带超时的读取：尝试最多 30 次，每次 sleep 100ms
-    for _ in 0..300 {
+    let result = loop {
         match reader.read_line(&mut line) {
             Ok(0) => {
-                // EOF — 进程可能已退出
-                return Ok(McpResponseResult {
+                break Ok(McpResponseResult {
                     success: false,
                     result: Value::Null,
                     error: Some("MCP 进程已退出".to_string()),
@@ -148,25 +161,26 @@ pub fn mcp_send(
             Ok(_) => {
                 let trimmed = line.trim().to_string();
                 if trimmed.is_empty() {
-                    continue; // 跳过空行
+                    line.clear();
+                    continue;
                 }
                 match serde_json::from_str::<Value>(&trimmed) {
                     Ok(response) => {
                         if let Some(err) = response.get("error") {
-                            return Ok(McpResponseResult {
+                            break Ok(McpResponseResult {
                                 success: false,
                                 result: Value::Null,
                                 error: Some(err.to_string()),
                             });
                         }
-                        return Ok(McpResponseResult {
+                        break Ok(McpResponseResult {
                             success: true,
                             result: response.get("result").cloned().unwrap_or(Value::Null),
                             error: None,
                         });
                     }
                     Err(_) => {
-                        return Ok(McpResponseResult {
+                        break Ok(McpResponseResult {
                             success: false,
                             result: Value::Null,
                             error: Some(format!("JSON 解析失败: {}", trimmed)),
@@ -175,27 +189,28 @@ pub fn mcp_send(
                 }
             }
             Err(e) => {
-                // WouldBlock / Interrupted → 重试
                 if e.kind() == std::io::ErrorKind::WouldBlock
                     || e.kind() == std::io::ErrorKind::Interrupted
                 {
                     std::thread::sleep(std::time::Duration::from_millis(100));
+                    line.clear();
                     continue;
                 }
-                return Ok(McpResponseResult {
+                break Ok(McpResponseResult {
                     success: false,
                     result: Value::Null,
                     error: Some(format!("读取 stdout 失败: {}", e)),
                 });
             }
         }
+    };
+
+    // 5. 放回子进程（短暂持锁）
+    if let Ok(mut pool) = state.0.lock() {
+        pool.insert(server_id, proc);
     }
 
-    Ok(McpResponseResult {
-        success: false,
-        result: Value::Null,
-        error: Some("MCP 响应超时 (30s)".to_string()),
-    })
+    result
 }
 
 /// 终止 MCP 子进程
@@ -221,8 +236,14 @@ pub fn mcp_kill(
     }
 }
 
-fn kill_child(mut child: Child) -> std::io::Result<()> {
+/// F1.2: kill_child 带 2s 超时，避免阻塞等待僵尸进程
+fn kill_child(mut child: Child) {
     let _ = child.kill();
-    let _ = child.wait();
-    Ok(())
+    for _ in 0..20 {
+        match child.try_wait() {
+            Ok(Some(_)) | Err(_) => return,
+            Ok(None) => std::thread::sleep(std::time::Duration::from_millis(100)),
+        }
+    }
+    eprintln!("[WARN] [Rust] MCP 进程未在 2s 内退出, 已放弃等待");
 }

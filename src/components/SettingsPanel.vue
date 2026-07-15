@@ -44,7 +44,12 @@ const assistantMode = ref(modeConfig.assistant);
 const saved = ref(false);
 const saveError = ref("");
 
+const saving = ref(false);
+
 async function doSave() {
+  if (saving.value) return
+  saving.value = true
+  try {
   const g = generalTabRef.value!;
   const a = aiTabRef.value!;
   const t = toolsTabRef.value!;
@@ -147,6 +152,9 @@ async function doSave() {
   setTimeout(() => {
     saved.value = false;
   }, 3000);
+  } finally {
+    saving.value = false
+  }
 }
 
 function doCancel() {

@@ -392,6 +392,7 @@ const stageRows = computed<StageRow[]>(() => {
 
 // ── 生命周期 ──
 onMounted(async () => {
+  try {
   await initCards();
   cardList.value = listPersonalities();
   personalityActive.value = getActivePersonalityId() ?? personalityActive.value;
@@ -428,6 +429,9 @@ onMounted(async () => {
     await hydrateRuntimePreview(personalityActive.value);
   }
   poolRefreshTick.value++;
+  } catch (e) {
+    console.warn("AITab initCards 失败", e instanceof Error ? e.message : String(e))
+  }
 });
 
 defineExpose({

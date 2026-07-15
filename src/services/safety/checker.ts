@@ -113,6 +113,11 @@ export function checkSafety(
   params: Record<string, unknown>,
   ctx: ToolContext,
 ): SafetyCheckResult {
+  // ★ 会话已信任 → 跳过所有检查
+  if (ctx.sessionTrusted && isToolTrusted(tool.name)) {
+    return { allowed: true, needsConfirm: false }
+  }
+
   const level = tool.safetyLevel
   const isAssistant = ctx.mode === "assistant"
   const safetyMode = getEffectiveSafetyMode()

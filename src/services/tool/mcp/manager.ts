@@ -100,10 +100,10 @@ export function getMcpServers(): McpServerConfig[] {
 }
 
 /** 设置 MCP 服务器列表（替换） */
-export function setMcpServers(servers: McpServerConfig[]): void {
+export async function setMcpServers(servers: McpServerConfig[]): Promise<void> {
   // 注销旧服务器的工具
   for (const s of mcpServers) {
-    unregisterMcpServerTools(s)
+    await unregisterMcpServerTools(s)
   }
   mcpServers = servers.map(s => ({ ...s }))
   mcpServersLoaded = true
@@ -112,11 +112,11 @@ export function setMcpServers(servers: McpServerConfig[]): void {
 }
 
 /** 添加 MCP 服务器 */
-export function addMcpServer(server: McpServerConfig): void {
+export async function addMcpServer(server: McpServerConfig): Promise<void> {
   ensureServersLoaded()
   const existing = mcpServers.findIndex(s => s.name === server.name)
   if (existing >= 0) {
-    unregisterMcpServerTools(mcpServers[existing])
+    await unregisterMcpServerTools(mcpServers[existing])
     mcpServers[existing] = { ...server }
     log.info("MCP 服务器已覆盖:", server.name)
   } else {
@@ -127,12 +127,12 @@ export function addMcpServer(server: McpServerConfig): void {
 }
 
 /** 删除 MCP 服务器 */
-export function removeMcpServer(name: string): boolean {
+export async function removeMcpServer(name: string): Promise<boolean> {
   ensureServersLoaded()
   const idx = mcpServers.findIndex(s => s.name === name)
   if (idx === -1) return false
   const server = mcpServers[idx]
-  unregisterMcpServerTools(server)
+  await unregisterMcpServerTools(server)
   mcpServers.splice(idx, 1)
   syncServersToConfig()
   log.info("MCP 服务器已删除:", name)
@@ -176,16 +176,14 @@ export function exportMcpServersToJson(): string {
   return JSON.stringify(mcpServers, null, 2)
 }
 
-function unregisterMcpServerTools(server: McpServerConfig): void {
-  // 服务器配置变更时清理旧工具（需动态 import，调用方确保 await）
-  import("@/services/tool/registry").then(({ listAll, unregister }) => {
-    const prefix = `mcp-${server.name}-`
-    for (const t of listAll()) {
-      if (t.id.startsWith(prefix)) {
-        unregister(t.id)
-      }
+async function unregisterMcpServerTools(server: McpServerConfig): Promise<void> {
+  const { listAll, unregister } = await import("@/services/tool/registry")
+  const prefix = `mcp-${server.name}-`
+  for (const t of listAll()) {
+    if (t.id.startsWith(prefix)) {
+      unregister(t.id)
     }
-  }).catch(() => {})
+  }
 }
 
 // ── 真实 MCP 连接 ──

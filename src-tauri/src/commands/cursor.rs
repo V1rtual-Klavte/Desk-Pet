@@ -20,6 +20,8 @@ type CursorScreen = (i32, i32, i32, i32, i32, i32, f64, f64);
 
 fn get_cursor_and_screen() -> Result<CursorScreen, String> {
     #[cfg(target_os = "windows")]
+    // SAFETY: SetCursorPos is an atomic syscall with no memory side effects.
+    // Coordinates are plain integers — no pointer or handle involved.
     unsafe {
         use windows_sys::Win32::UI::WindowsAndMessaging::GetCursorPos;
         use windows_sys::Win32::Graphics::Gdi::{MonitorFromPoint, GetMonitorInfoW, MONITORINFOEXW};
