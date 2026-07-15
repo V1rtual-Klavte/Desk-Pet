@@ -148,17 +148,21 @@ async function hydrateRuntimePreview(cardId: string) {
   const card = cardList.value.find(c => c.id === cardId);
   if (!card) return;
 
-  const { loadStagesFromDisk, loadVariablePool, refreshVariablePool } = await import("@/services/personality");
+  const { loadStagesFromDisk, loadCardVars, initVariablePool, refreshVariablePool } = await import("@/services/personality");
   const loadedStages = await loadStagesFromDisk(card.id, card.version);
   stagesData.value = loadedStages;
   stagesFileExists.value = Boolean(loadedStages) || await checkStagesExists(card.id);
 
   try {
-    const { invoke } = await import("@tauri-apps/api/core");
-    const raw = await invoke<number[]>("personality_file_read", { path: "personality/vars.json" });
-    const json = new TextDecoder().decode(new Uint8Array(raw));
-    loadVariablePool(json, card.id);
-    refreshVariablePool();
+    // 从 stages/{cardId}.json 加载 card + interaction 变量
+    const cardVars = await loadCardVars(card.id)
+    initVariablePool({
+      cardId: card.id,
+      variableDefs: card.sections.variableDefs,
+      prevCardStates: cardVars?.card,
+      prevInteractionStates: cardVars?.interaction,
+    })
+    refreshVariablePool()
   } catch {
     // 设置页只做预览 hydrate，失败时保持当前内存快照。
   }
@@ -516,7 +520,7 @@ defineExpose({
 
           <div class="card-stats">
             <span>{{ card.sections.whenRules.length }} 条行为规则</span>
-            <span>{{ Object.keys(card.sections.initialVars).length }} 个变量</span>
+            <span>{{ card.sections.variableDefs.length }} 个变量</span>
             <span>{{ card.sections.emotionMappings.length }} 个情绪</span>
             <span>v{{ card.version }}</span>
           </div>
