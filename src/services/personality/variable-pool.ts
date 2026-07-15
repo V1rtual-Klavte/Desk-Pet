@@ -23,8 +23,10 @@ export interface VarDef {
 
 export interface VariablePool {
   system: Record<string, number | string | boolean>
-  card: Record<string, number | string | boolean>
-  interaction: Record<string, number | string | boolean>
+  /** card 变量存储 VariableState 对象（与持久化同格式） */
+  card: Record<string, VariableState>
+  /** interaction 变量存储 VariableState 对象（与持久化同格式） */
+  interaction: Record<string, VariableState>
   session: Record<string, number | string | boolean>
 }
 
@@ -128,27 +130,27 @@ export function initVariablePool(input: InitPoolInput): VariablePool {
   pool.system = sysVars
 
   // Card 变量 — 优先从持久化恢复，否则用 initial
-  const cardVars: Record<string, number | string | boolean> = {}
+  const cardVars: Record<string, VariableState> = {}
   const cardDefs = registry.filter(d => d.scope === "card")
   for (const def of cardDefs) {
     const prev = input.prevCardStates?.[def.name]
     if (prev && validateVarAgainstDef(prev, def)) {
-      cardVars[def.name] = prev.value
+      cardVars[def.name] = prev
     } else {
-      cardVars[def.name] = def.initial
+      cardVars[def.name] = { value: def.initial, type: def.type, updatedAt: Date.now(), updatedBy: "system" }
     }
   }
   pool.card = cardVars
 
   // Interaction 变量
-  const interactionVars: Record<string, number | string | boolean> = {}
+  const interactionVars: Record<string, VariableState> = {}
   const interactionDefs = registry.filter(d => d.scope === "interaction")
   for (const def of interactionDefs) {
     const prev = input.prevInteractionStates?.[def.name]
     if (prev && validateVarAgainstDef(prev, def)) {
-      interactionVars[def.name] = prev.value
+      interactionVars[def.name] = prev
     } else {
-      interactionVars[def.name] = def.initial
+      interactionVars[def.name] = { value: def.initial, type: def.type, updatedAt: Date.now(), updatedBy: "system" }
     }
   }
   pool.interaction = interactionVars
@@ -228,7 +230,7 @@ export function applyResetPolicies(now: Date, isNewSession: boolean): string[] {
     if (def.reset === "daily" && todayKey !== lastDailyResetKey) shouldReset = true
 
     if (shouldReset && def.name in pool.card) {
-      pool.card[def.name] = def.initial
+      pool.card[def.name] = { value: def.initial, type: def.type, updatedAt: Date.now(), updatedBy: "system" }
       savePending = true
       resetVars.push(def.name)
     }
@@ -274,12 +276,12 @@ export function formatPoolForPrompt(snapshot?: VariablePool): string {
   // [Card变量 - 可通过 var_write 更新]
   const cardDefMap = new Map(registry.filter(d => d.scope === "card").map(d => [d.name, d]))
   const cardParts: string[] = []
-  for (const [name, value] of Object.entries(p.card)) {
+  for (const [name, state] of Object.entries(p.card)) {
     const def = cardDefMap.get(name)
     const meta = def
       ? ` (${def.type}${def.enum ? `, enum: ${def.enum.join("/")}` : ""}${def.min !== undefined ? `, ${def.min}..${def.max ?? ""}` : ""}, updateBy=${def.updateBy}): ${def.description}`
       : ""
-    cardParts.push(`${name}=${formatVal(value)}${meta}`)
+    cardParts.push(`${name}=${formatVal((state as VariableState).value)}${meta}`)
   }
   lines.push(`[Card变量 - 可通过 var_write 更新]\n${cardParts.join("\n") || "(空)"}`)
 
@@ -287,7 +289,7 @@ export function formatPoolForPrompt(snapshot?: VariablePool): string {
   const intParts = Object.entries(p.interaction)
     .map(([k, v]) => {
       const def = registry.find(d => d.scope === "interaction" && d.name === k)
-      return `${k}=${formatVal(v)}${def ? ` (${def.type}, updateBy=${def.updateBy}): ${def.description}` : ""}`
+      return `${k}=${formatVal((v as VariableState).value)}${def ? ` (${def.type}, updateBy=${def.updateBy}): ${def.description}` : ""}`
     })
   if (intParts.length > 0) {
     lines.push(`[互动状态 - 系统维护，只读]\n${intParts.join("\n")}`)
@@ -316,11 +318,13 @@ export function varRead(name: string): VarDef | null {
   }
   if (name in pool.card) {
     const def = registry.find(d => d.scope === "card" && d.name === name)
-    return { name, value: pool.card[name], source: "card", type: def?.type ?? "string", updatedAt: now }
+    const state = pool.card[name] as VariableState
+    return { name, value: state.value, source: "card", type: def?.type ?? state.type, updatedAt: state.updatedAt }
   }
   if (name in pool.interaction) {
     const def = registry.find(d => d.scope === "interaction" && d.name === name)
-    return { name, value: pool.interaction[name], source: "interaction", type: def?.type ?? "string", updatedAt: now }
+    const state = pool.interaction[name] as VariableState
+    return { name, value: state.value, source: "interaction", type: def?.type ?? state.type, updatedAt: state.updatedAt }
   }
   return null
 }
@@ -331,13 +335,15 @@ export function varList(): VarDef[] {
   for (const [name, value] of Object.entries(pool.system)) {
     result.push({ name, value, source: "system", type: inferType(value), updatedAt: now })
   }
-  for (const [name, value] of Object.entries(pool.card)) {
+  for (const [name, state] of Object.entries(pool.card)) {
     const def = registry.find(d => d.scope === "card" && d.name === name)
-    result.push({ name, value, source: "card", type: def?.type ?? inferType(value), updatedAt: now })
+    const s = state as VariableState
+    result.push({ name, value: s.value, source: "card", type: def?.type ?? s.type, updatedAt: s.updatedAt })
   }
-  for (const [name, value] of Object.entries(pool.interaction)) {
+  for (const [name, state] of Object.entries(pool.interaction)) {
     const def = registry.find(d => d.scope === "interaction" && d.name === name)
-    result.push({ name, value, source: "interaction", type: def?.type ?? inferType(value), updatedAt: now })
+    const s = state as VariableState
+    result.push({ name, value: s.value, source: "interaction", type: def?.type ?? s.type, updatedAt: s.updatedAt })
   }
   return result
 }
@@ -372,7 +378,7 @@ export function varWrite(name: string, rawValue: string): { success: boolean; er
   }
 
   // 6. 写入
-  pool.card[name] = typedValue
+  pool.card[name] = { value: typedValue, type: def.type, updatedAt: Date.now(), updatedBy: "llm" }
   savePending = true
   log.info("var_write:", name, "=", typedValue)
   return { success: true }
@@ -388,7 +394,7 @@ export function varDelete(name: string): { success: boolean; error?: string } {
   // Card 变量：reset 到 initial
   const def = registry.find(d => d.scope === "card" && d.name === name)
   if (def) {
-    pool.card[name] = def.initial
+    pool.card[name] = { value: def.initial, type: def.type, updatedAt: Date.now(), updatedBy: "system" }
     savePending = true
     log.info("var_delete(reset):", name, "→", def.initial)
     return { success: true }
@@ -429,7 +435,7 @@ export function updateInteractionVar(name: string, value: VariablePrimitive): { 
     if (def.max !== undefined && value > def.max) return { success: false, error: `${name} 不能超过 ${def.max}` }
   }
 
-  pool.interaction[name] = value as number | string | boolean
+  pool.interaction[name] = { value: value as VariablePrimitive, type: def.type, updatedAt: Date.now(), updatedBy: "system" }
   savePending = true
   log.debug("interaction update:", name, "=", value)
   return { success: true }
@@ -454,25 +460,6 @@ async function readFile(path: string): Promise<Uint8Array | null> {
 async function writeFile(path: string, content: Uint8Array): Promise<void> {
   const { invoke } = await import("@tauri-apps/api/core")
   await invoke("personality_file_write", { path, content: Array.from(content) })
-}
-
-/** 将 pool 的原始值转换为 VariableState 持久化格式 */
-function poolToVariableStates(
-  poolVars: Record<string, number | string | boolean>,
-  defs: CardVariableDef[],
-): Record<string, VariableState> {
-  const result: Record<string, VariableState> = {}
-  const now = Date.now()
-  for (const [name, value] of Object.entries(poolVars)) {
-    const def = defs.find(d => d.name === name)
-    result[name] = {
-      value: value as VariablePrimitive,
-      type: def?.type ?? inferType(value),
-      updatedAt: now,
-      updatedBy: def?.updateBy === "system" ? "system" : "llm",
-    }
-  }
-  return result
 }
 
 /** 持久化 system → vars.json, card+interaction → stages/{cardId}.json */
@@ -508,8 +495,8 @@ export async function saveVariablePoolAsync(
     const varData: PersistedCardVars = {
       schemaVersion: 2,
       updatedAt: Date.now(),
-      card: poolToVariableStates(pool.card, registry),
-      interaction: poolToVariableStates(pool.interaction, registry),
+      card: pool.card,
+      interaction: pool.interaction,
     }
     const merged = { ...existing, variables: varData }
     await writeFileExternal(path, encoder.encode(JSON.stringify(merged, null, 2)))
@@ -547,8 +534,8 @@ export async function saveVariablePoolStrict(
   const varData: PersistedCardVars = {
     schemaVersion: 2,
     updatedAt: Date.now(),
-    card: poolToVariableStates(pool.card, registry),
-    interaction: poolToVariableStates(pool.interaction, registry),
+    card: pool.card,
+    interaction: pool.interaction,
   }
   const merged = { ...existing, variables: varData }
   await writeFileExternal(path, encoder.encode(JSON.stringify(merged, null, 2)))
@@ -569,27 +556,7 @@ export async function savePoolToDiskStrict(): Promise<void> {
 
 // ── 从磁盘读取 ──
 
-/** 兼容迁移：将旧格式（原始值）转换为 VariableState 格式 */
-function migrateToVariableStates(raw: Record<string, unknown>): Record<string, VariableState> {
-  const result: Record<string, VariableState> = {}
-  for (const [name, val] of Object.entries(raw)) {
-    if (val && typeof val === "object" && "value" in val && "type" in val) {
-      // 已是 VariableState 格式
-      result[name] = val as VariableState
-    } else if (val !== null && val !== undefined) {
-      // 旧格式：原始值 → 迁移为 VariableState
-      result[name] = {
-        value: val as VariablePrimitive,
-        type: inferType(val),
-        updatedAt: Date.now(),
-        updatedBy: "migration",
-      }
-    }
-  }
-  return result
-}
-
-/** 读取 stages/{cardId}.json 中的变量状态（VariableState 格式） */
+/** 读取 stages/{cardId}.json 中的变量状态 */
 export async function loadCardVars(
   cardId: string,
 ): Promise<{ card: Record<string, VariableState>; interaction: Record<string, VariableState> } | null> {
@@ -600,8 +567,8 @@ export async function loadCardVars(
     const vars = data.variables as Record<string, unknown> | undefined
     if (!vars || (vars.schemaVersion as number) < 1) return null
     return {
-      card: migrateToVariableStates((vars.card || {}) as Record<string, unknown>),
-      interaction: migrateToVariableStates((vars.interaction || {}) as Record<string, unknown>),
+      card: (vars.card || {}) as Record<string, VariableState>,
+      interaction: (vars.interaction || {}) as Record<string, VariableState>,
     }
   } catch (e) {
     log.warn(`stages JSON 损坏, cardId=${cardId}`, e instanceof Error ? e.message : String(e))

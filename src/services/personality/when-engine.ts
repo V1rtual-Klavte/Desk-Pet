@@ -168,9 +168,11 @@ function evaluate(ast: AstNode | null, pool: VariablePool): boolean {
     case "literal": return ast.value
 
     case "compare": {
-      const varVal = pool.system[ast.variable] ?? pool.card[ast.variable] ?? pool.interaction[ast.variable]
-      if (varVal === undefined) return false
-      return compareValues(varVal, ast.op, ast.value)
+      const rawVal = pool.system[ast.variable] ?? pool.card[ast.variable] ?? pool.interaction[ast.variable]
+      if (rawVal === undefined) return false
+      // card/interaction 存 VariableState 对象，提取 .value；system 存原始值
+      const varVal = typeof rawVal === "object" && "value" in rawVal ? (rawVal as import("./types").VariableState).value : rawVal
+      return compareValues(varVal as number | string | boolean, ast.op, ast.value)
     }
 
     case "not": return !evaluate(ast.child, pool)
