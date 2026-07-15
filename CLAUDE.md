@@ -71,6 +71,64 @@ CONFIG.yaml → Vite YAML Plugin → config.ts (getter + localStorage overrides)
 - **emotionMappings**: `card.sections.emotionMappings` 已是 `EmotionMapping[]`，直接用，勿重复 parse
 - **stages**: 持久化到 `stages/{cardId}.json`，含变量状态和 fallbacks 字段
 
+## 变量池 & Stages 标准格式
+
+### 统一格式：VariableState
+
+运行时和持久化使用**同一种格式**，消除转换层。
+
+```typescript
+// ── VariablePool（运行时 = 持久化）──
+interface VariablePool {
+  system: Record<string, number | string | boolean>       // 原始值（只读，系统计算）
+  card: Record<string, VariableState>                     // VariableState 对象
+  interaction: Record<string, VariableState>              // VariableState 对象
+  session: Record<string, number | string | boolean>      // 原始值（临时）
+}
+
+// ── VariableState（唯一标准格式）──
+interface VariableState {
+  value: VariablePrimitive    // number | string | boolean
+  type: VariableType          // "number" | "string" | "boolean"
+  updatedAt: number
+  updatedBy: "llm" | "manual" | "system"
+  lastResetAt?: number
+}
+
+// ── stages/{cardId}.json 结构 ──
+{
+  cardId, cardVersion, cardHash, generatedAt, isFallback
+  stages: StageMap { thinking, planning, executing, done, blocked, error, timeout, retry, fallbacks }
+  variables: {
+    schemaVersion: 2
+    card: Record<string, VariableState>       // ← 与 pool.card 同格式
+    interaction: Record<string, VariableState> // ← 与 pool.interaction 同格式
+  }
+}
+```
+
+### 数据流
+
+```
+加载: loadCardVars(cardId) → initVariablePool({prevCardStates})
+      直接赋值 VariableState 对象，无需转换
+
+保存: savePoolToDiskStrict() → pool.card / pool.interaction
+      直接写入 VariableState 对象，无需转换
+
+写入: varWrite → pool.card[name] = { value, type, updatedAt, updatedBy: "llm" }
+读取: varRead  → pool.card[name].value  // 提取原始值给 LLM
+```
+
+### 关键规则
+
+- **card/interaction 变量必须存 VariableState 对象**，禁止存原始值
+- **system/session 存原始值**（无需 VariableState 元数据）
+- **禁止在 stages/{cardId}.json 中用原始值存变量**
+- **Card 变量定义** 统一用 `card.sections.variableDefs` (CardVariableDef[])
+- **stages 重新生成** 时 `parseStagesResponse` 接收 `text + thinking` 合并文本，兼容 reasoning 模型
+- **when-engine 访问变量** 需提取 `.value`（card/interaction 是 VariableState 对象）
+
 ## 路径管理 (Phase G)
 
 ### 统一 data_root
