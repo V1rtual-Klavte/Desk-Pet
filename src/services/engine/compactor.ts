@@ -118,7 +118,7 @@ export async function compactIncremental(
     log.info("增量压缩完成", "mainRequest:", summary.mainRequest.substring(0, 50))
     return summary
   } catch (e) {
-    log.warn("LLM 压缩失败，使用简单截断", e instanceof Error ? e.message : String(e))
+    log.warn("compactIncremental 失败, 回退规则提取", e instanceof Error ? e.message : String(e))
     return fallbackSummary(newMessages, existingSummary, userIntent)
   }
 }

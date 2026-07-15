@@ -23,6 +23,8 @@ import { createLogger } from "@/services/logger";
 import type { StreamViewRef } from "@/services/command-handler";
 import { playEventSound } from "@/services/audio/registry";
 import { emit, listen } from "@tauri-apps/api/event";
+import { stopMemoryConsolidationTimer } from "@/services/agent/memory/consolidate"
+import { disconnectAllMcpServers } from "@/services/tool/mcp/manager"
 
 const log = createLogger("App");
 
@@ -249,6 +251,7 @@ let cleanupResized: (() => void) | null = null;
 let cleanupPreview: (() => void) | null = null;
 let cleanupSettingsSaved: (() => void) | null = null;
 let cleanupRestart: (() => void) | null = null;
+let cleanupClick: (() => void) | null = null;
 
 // ==========================================
 // 快捷键召唤/收回
@@ -638,13 +641,13 @@ onMounted(async () => {
   document.addEventListener("click", hideCtxMenu);
 
   const rootEl = rootRef.value!;
-  rootEl.addEventListener("mousedown", (e: MouseEvent) => {
+  function onDragMouseDown(e: MouseEvent) {
     const t = e.target as HTMLElement;
     if (t.hasAttribute("data-tauri-drag-region") || t.closest("[data-tauri-drag-region]")) {
       isDraggingByUser.value = true;
     }
-  });
-  document.addEventListener("mouseup", async () => {
+  }
+  async function onDragMouseUp() {
     if (isDraggingByUser.value) {
       isDraggingByUser.value = false;
       if (lastMovedPos.value && !isRetracted.value && !isAnimating.value) {
@@ -653,10 +656,18 @@ onMounted(async () => {
         log.debug("拖动已保存位置:", lastMovedPos.value);
       }
     }
-  });
+  }
+  rootEl.addEventListener("mousedown", onDragMouseDown);
+  document.addEventListener("mouseup", onDragMouseUp);
+  cleanupClick = () => {
+    rootEl.removeEventListener("mousedown", onDragMouseDown);
+    document.removeEventListener("mouseup", onDragMouseUp);
+  };
 });
 
 onUnmounted(() => {
+  stopMemoryConsolidationTimer()
+  disconnectAllMcpServers()
   if (cleanupListener) cleanupListener();
   if (cleanupCursorTracker) cleanupCursorTracker();
   if (cleanupFocus) cleanupFocus();
@@ -665,6 +676,7 @@ onUnmounted(() => {
   if (cleanupPreview) cleanupPreview();
   if (cleanupSettingsSaved) cleanupSettingsSaved();
   if (cleanupRestart) cleanupRestart();
+  if (cleanupClick) cleanupClick();
   document.removeEventListener("click", hideCtxMenu);
   unregisterShortcut();
 });

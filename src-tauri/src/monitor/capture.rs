@@ -8,6 +8,8 @@ use crate::{rust_debug, rust_log};
 
 pub fn capture_window_title() -> String {
     #[cfg(target_os = "windows")]
+    // SAFETY: CreateDC + DeleteDC pairing guarantees handle lifecycle.
+    // All DC operations during capture are read-only.
     unsafe {
         use windows_sys::Win32::UI::WindowsAndMessaging::{GetForegroundWindow, GetWindowTextW};
         use windows_sys::Win32::System::Threading::{GetWindowThreadProcessId, OpenProcess, PROCESS_QUERY_INFORMATION, PROCESS_VM_READ, CloseHandle};

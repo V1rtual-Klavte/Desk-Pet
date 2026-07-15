@@ -130,7 +130,9 @@ function loadUserOverrides(): UserSettings {
       const parsed = JSON.parse(raw);
       return { ...USER_DEFAULTS, ...parsed };
     }
-  } catch {}
+  } catch (e) {
+    console.warn("[Config] localStorage 数据损坏，回退默认值", e instanceof Error ? e.message : String(e))
+  }
   return { ...USER_DEFAULTS };
 }
 
@@ -318,11 +320,16 @@ const _ai = {
   get thinkingEffort() { return overrideOr("ai.thinking.effort", cfg.ai?.thinking?.effort || "auto") as import("@/services/agent/types").ThinkingEffort; },
   get requireApiKey() { return overrideOr("ai.requireApiKey", cfg.ai?.requireApiKey ?? true); },
   get thinkingBudget() {
-    return {
-      low: overrideOr("ai.thinking.budget.low", cfg.ai?.thinking?.budget?.low ?? 1000),
-      medium: overrideOr("ai.thinking.budget.medium", cfg.ai?.thinking?.budget?.medium ?? 4000),
-      high: overrideOr("ai.thinking.budget.high", cfg.ai?.thinking?.budget?.high ?? 16000),
-    };
+    try {
+      return {
+        low: overrideOr("ai.thinking.budget.low", cfg.ai?.thinking?.budget?.low ?? 1000),
+        medium: overrideOr("ai.thinking.budget.medium", cfg.ai?.thinking?.budget?.medium ?? 4000),
+        high: overrideOr("ai.thinking.budget.high", cfg.ai?.thinking?.budget?.high ?? 16000),
+      }
+    } catch (e) {
+      console.warn("config 键缺失，回退默认值", e instanceof Error ? e.message : String(e))
+      return { low: 1000, medium: 4000, high: 16000 }
+    }
   },
   get configured() { if (!this.endpoint) return false; if (!this.requireApiKey) return true; return Boolean(this.apiKey); },
 };

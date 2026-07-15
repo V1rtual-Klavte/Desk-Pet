@@ -50,5 +50,5 @@ export async function initWindowListener(
   observer.observe(document.body)
   cleanups.push(() => observer.disconnect())
 
-  return () => { for (const c of cleanups) try { c(); } catch { /* ignore */ } }
+  return () => { for (const c of cleanups) try { c(); } catch (e) { log.debug("ResizeObserver cleanup", e) } }
 }

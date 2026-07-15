@@ -162,7 +162,7 @@ V1rtual  ← 开发分支，所有改动先上 V1rtual，验证通过后合入 m
 klavte   ← 备用分支
 ```
 
-- **严禁直接在 master 上 commit** — 所有改动在 V1rtual 分支进行
+- **严禁直接在 master 上 commit** — 所有改动在 V1rtual 分支进行，提交信息用中文
 - 流程: `V1rtual: commit → push → review通过 → merge到master → push master`
 - 合并用 `git merge V1rtual --no-ff`（保留分支历史）
 - `CLAUDE.md` 用户规则已明确：**不主动 commit/push**（除非用户明确要求）
@@ -196,7 +196,7 @@ npx vue-tsc --noEmit           # TS:   零新增 error（test 文件的 pre-exis
 |----------|-------------|
 | 任何代码修改 | `CLAUDE.md`（如影响规范） |
 | 架构/模块变更 | `README.md` + `DES.md` |
-| 配置项修改 | `CONFIG.yaml` + `CONFIG-DEV.yaml` + 设置页面 |
+| 配置项修改 | `CONFIG.yaml` + `CONFIG-DEV.yaml` 以及其template + 设置页面 |
 | 新增/删除模块 | `CLAUDE.md` 项目结构图 |
 
 ## 用户规则

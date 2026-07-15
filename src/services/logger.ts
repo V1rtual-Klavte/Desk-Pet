@@ -60,7 +60,9 @@ function fmtArgs(args: unknown[]): string {
 
 /** 发送一行日志到 Rust 终端 */
 function toRust(line: string): void {
-  invoke("log_message", { msg: line }).catch(() => {});
+  invoke("log_message", { msg: line }).catch((e) => {
+    console.warn("[Logger] toRust invoke 失败 (Tauri 未就绪?)", e instanceof Error ? e.message : String(e))
+  })
 }
 
 export interface Logger {

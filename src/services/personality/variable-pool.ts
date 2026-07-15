@@ -499,6 +499,7 @@ export async function saveVariablePoolAsync(
     log.debug("变量池已持久化:", path)
   } catch (e) {
     log.warn("stages 变量持久化失败:", e)
+    savePending = false  // ★ 关键：防止卡死
   }
 }
 
@@ -560,7 +561,8 @@ export async function loadCardVars(
     const vars = data.variables as StageVariables | undefined
     if (!vars || vars.schemaVersion < 1) return null
     return { card: vars.card || {}, interaction: vars.interaction || {} }
-  } catch {
+  } catch (e) {
+    log.warn(`stages JSON 损坏, cardId=${cardId}`, e instanceof Error ? e.message : String(e))
     return null
   }
 }
@@ -682,7 +684,7 @@ export function buildVarWriteHandler(): (params: Record<string, unknown>) => Pro
     const name = String(params.name ?? "")
     const value = String(params.value ?? "")
     if (!name) return { success: false, content: "", error: "变量名不能为空" }
-    if (!value) return { success: false, content: "", error: "变量值不能为空" }
+    if (value === null || value === undefined || value === "") return { success: false, content: "", error: "变量值不能为空" }
     const result = varWrite(name, value)
     if (!result.success) return { success: false, content: "", error: result.error }
     return { success: true, content: `${name} = ${typeof pool.card[name] === "string" ? `"${pool.card[name]}"` : pool.card[name]}` }

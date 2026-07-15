@@ -21,6 +21,7 @@ const isVisible = computed(() => !isRetracted.value);
 
 // ── Profile ──
 const scaleMode = computed(() => getCharacterScaleMode() === "smooth" ? "auto" : "pixelated");
+	const activeProfile = computed(() => getActiveProfile())
 
 // ── 灵动图层配置 ──
 const parallaxConfig = ref<ParallaxState>({
@@ -31,7 +32,7 @@ const parallaxConfig = ref<ParallaxState>({
 
 // ── 图层素材 URL（直接调 getActiveProfile()，不用 computed 包装避免死 computed）──
 const layerUrls = computed<(string | null)[]>(() => {
-  const p = getActiveProfile();
+  const p = activeProfile.value;
   log.info(`layerUrls 求值: profile=${p ? p.id : "null"}, layersLen=${parallaxConfig.value.layers.length}`);
   if (!p) return [null, null, null, null, null];
   const result = parallaxConfig.value.layers.map((l) => {
@@ -60,7 +61,7 @@ function onImgLoad(e: Event) {
 let _reloadRetryId: ReturnType<typeof setTimeout> | null = null;
 
 function reloadParallax() {
-  const p = getActiveProfile();
+  const p = activeProfile.value;
   if (!p) {
     // Profile 尚未加载（冷启动时序：StreamView onMounted 早于 App initProfiles）
     // 延迟重试，同时依赖 activateProfile 的 dirty flag 触发

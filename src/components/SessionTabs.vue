@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { reactive, ref, onMounted } from "vue";
+import { reactive, ref, onMounted, onUnmounted } from "vue";
 import { MemoryService } from "@/services/agent/memory";
 import type { SessionFileMeta } from "@/services/agent/memory";
 import { getSessions, getActiveSessionId, saveActiveId, loadActiveId } from "@/services/session";
@@ -19,6 +19,8 @@ const activeId = ref("");
 const showHistory = ref(false);
 const historyFiles = ref<SessionFileMeta[]>([]);
 const historyLoading = ref(false);
+
+const restoreTimer = ref<ReturnType<typeof setTimeout> | null>(null);
 
 const emit = defineEmits<{
   "switch": [session: SessionMeta];
@@ -119,7 +121,7 @@ async function refreshHistory(): Promise<void> {
 async function restoreHistorySession(sf: SessionFileMeta): Promise<void> {
   emit("restore-session", sf)
   // 即时刷新标签栏（父组件会同步）
-  setTimeout(() => loadSessions(), 300)
+  restoreTimer.value = setTimeout(() => loadSessions(), 300)
 }
 
 function formatDate(isoStr: string): string {
@@ -146,6 +148,10 @@ defineExpose({
 
 onMounted(() => {
   loadSessions();
+});
+
+onUnmounted(() => {
+  if (restoreTimer.value) clearTimeout(restoreTimer.value);
 });
 </script>
 

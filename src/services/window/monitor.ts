@@ -13,6 +13,7 @@ let currentWindowTitle = "";
 let stayStartTime = 0;
 let pendingTitle = "";
 let pendingTime = 0;
+let cooldownTimer: ReturnType<typeof setTimeout> | null = null;
 
 setCooldown(windowMonitorConfig.cooldownSeconds);
 
@@ -60,6 +61,14 @@ export function processTrigger(result: TriggerResult): void {
   const s = getCooldownSeconds();
   const resumeExtraMs = windowMonitorConfig.resumeExtraMs;
   invoke("pause_monitor", { durationMs: s * 1000 }).catch(() => {});
-  setTimeout(() => invoke("resume_monitor").catch(() => {}), s * 1000 + resumeExtraMs);
+  cooldownTimer = setTimeout(() => invoke("resume_monitor").catch(() => {}), s * 1000 + resumeExtraMs);
   log.info("source:", result.source, "→ 全局冷却:", s + "s");
+}
+
+/** 停止监控并清理定时器 */
+export function stopMonitor(): void {
+  if (cooldownTimer) {
+    clearTimeout(cooldownTimer)
+    cooldownTimer = null
+  }
 }

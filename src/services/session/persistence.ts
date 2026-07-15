@@ -30,7 +30,10 @@ export function loadMessages(sessionId: string): Message[] {
     const arr = JSON.parse(raw)
     if (!Array.isArray(arr)) return []
     return arr.length > MAX_CACHED_MESSAGES ? arr.slice(-MAX_CACHED_MESSAGES) : arr
-  } catch { return [] }
+  } catch (e) {
+    console.warn("[Persistence] localStorage 数据损坏，已重置为空", e instanceof Error ? e.message : String(e))
+    return []
+  }
 }
 
 export function saveMessages(sessionId: string, msgs: Message[]): void {

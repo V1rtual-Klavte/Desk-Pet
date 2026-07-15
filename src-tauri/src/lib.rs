@@ -90,9 +90,10 @@ pub fn run() {
             }
 
             // 手动创建主窗口（在 Accessory 之后），默认显示
-            let _main_window = create_main_window(app.handle())
-                .expect("创建主窗口失败");
-            rust_info!("主窗口已创建并显示");
+            let _main_window = match create_main_window(app.handle()) {
+                Ok(w) => { rust_info!("主窗口已创建并显示"); Some(w) }
+                Err(e) => { rust_warn!("创建主窗口失败: {e}"); None }
+            };
 
             // ── 系统托盘 ──
             let tray_menu = MenuBuilder::new(app.handle())

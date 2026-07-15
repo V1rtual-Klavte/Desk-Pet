@@ -26,6 +26,7 @@ const thumb = ref<HTMLElement | null>(null);
 const toolStatus = ref<{ text: string; visible: boolean }>({ text: "", visible: false });
 let cleanupToolExec: (() => void) | null = null;
 let cleanupToolDone: (() => void) | null = null;
+const toolCompletedTimer = ref<ReturnType<typeof setTimeout> | null>(null);
 
 // ==========================================
 // Slash 命令下拉框
@@ -301,13 +302,14 @@ onMounted(async () => {
   listen<{ toolName: string; success: boolean }>("tool-completed", (event) => {
     const hint = event.payload.success ? "完成啦～" : "出错了…"
     toolStatus.value = { text: hint, visible: true }
-    setTimeout(() => { if (toolStatus.value.text === hint) toolStatus.value.visible = false }, 2500)
+    toolCompletedTimer.value = setTimeout(() => { if (toolStatus.value.text === hint) toolStatus.value.visible = false }, 2500)
   }).then(fn => { cleanupToolDone = fn }).catch(() => {})
 });
 
 onUnmounted(() => {
   if (cleanupToolExec) cleanupToolExec()
   if (cleanupToolDone) cleanupToolDone()
+  if (toolCompletedTimer.value) clearTimeout(toolCompletedTimer.value)
 });
 </script>
 
@@ -318,7 +320,7 @@ onUnmounted(() => {
     <!-- 消息区 + 滚动条容器 -->
     <div id="ch-body">
       <div id="ch-msgs" ref="msgContainer" @scroll="checkBottom">
-        <div v-for="(m, i) in chatHistory" :key="i" class="cm" :class="m.role">
+        <div v-for="m in chatHistory" :key="m.id" class="cm" :class="m.role">
           <span class="cn">{{ m.role === "system" ? "📋" : m.role === "assistant" ? "糖糖" : "你" }}</span>
           <span class="ct">{{ m.text }}</span>
         </div>
