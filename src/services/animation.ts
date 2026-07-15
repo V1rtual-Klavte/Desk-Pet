@@ -58,22 +58,3 @@ export function getAnimation(name: string): Animation | null {
   return getAnimations()[name] || null;
 }
 
-// ══════════════════════════════════════════
-// 向后兼容：复用旧 API，内部走 Profile
-// ══════════════════════════════════════════
-
-/** @deprecated 使用 getAnimations() 代替，由 Profile 驱动 */
-export const animations = new Proxy({} as Record<string, Animation>, {
-  get(_target, prop: string) {
-    if (prop === "then") return undefined; // Vue 响应式探测
-    return getAnimations()[prop] || null;
-  },
-  ownKeys() {
-    return Reflect.ownKeys(getAnimations());
-  },
-  getOwnPropertyDescriptor(_target, prop) {
-    const val = getAnimations()[prop as string];
-    if (val) return { enumerable: true, configurable: true, value: val };
-    return undefined;
-  },
-});

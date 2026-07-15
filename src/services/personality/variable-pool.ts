@@ -5,7 +5,6 @@
 
 import { createLogger } from "@/services/logger"
 import type { CardVariableDef, VariableState, VariableType, VariablePrimitive } from "./types"
-import type { StageVariables } from "./stages-cache"
 
 const log = createLogger("VarPool")
 
@@ -36,12 +35,13 @@ interface PersistedSystemVars {
   updatedAt: number
 }
 
-/** 持久化格式：stages/{cardId}.json (card + interaction) */
+/** 持久化格式：stages/{cardId}.json (card + interaction)
+ *  标准格式：VariableState 对象 { value, type, updatedAt, updatedBy } */
 interface PersistedCardVars {
   schemaVersion: number
   updatedAt: number
-  card: Record<string, number | string | boolean>
-  interaction: Record<string, number | string | boolean>
+  card: Record<string, VariableState>
+  interaction: Record<string, VariableState>
 }
 
 // ── 系统变量定义（6 个）──
@@ -113,7 +113,7 @@ function emptyPool(): VariablePool {
 export interface InitPoolInput {
   cardId: string
   variableDefs: CardVariableDef[]
-  /** 之前持久化的 card 变量状态（从 stages/{cardId}.json 恢复） */
+  /** 之前持久化的 card 变量状态（从 stages/{cardId}.json 恢复，VariableState 格式） */
   prevCardStates?: Record<string, VariableState>
   /** 之前持久化的 interaction 变量状态 */
   prevInteractionStates?: Record<string, VariableState>
@@ -456,6 +456,25 @@ async function writeFile(path: string, content: Uint8Array): Promise<void> {
   await invoke("personality_file_write", { path, content: Array.from(content) })
 }
 
+/** 将 pool 的原始值转换为 VariableState 持久化格式 */
+function poolToVariableStates(
+  poolVars: Record<string, number | string | boolean>,
+  defs: CardVariableDef[],
+): Record<string, VariableState> {
+  const result: Record<string, VariableState> = {}
+  const now = Date.now()
+  for (const [name, value] of Object.entries(poolVars)) {
+    const def = defs.find(d => d.name === name)
+    result[name] = {
+      value: value as VariablePrimitive,
+      type: def?.type ?? inferType(value),
+      updatedAt: now,
+      updatedBy: def?.updateBy === "system" ? "system" : "llm",
+    }
+  }
+  return result
+}
+
 /** 持久化 system → vars.json, card+interaction → stages/{cardId}.json */
 export async function saveVariablePoolAsync(
   writeFileExternal: (path: string, content: Uint8Array) => Promise<void>,
@@ -489,8 +508,8 @@ export async function saveVariablePoolAsync(
     const varData: PersistedCardVars = {
       schemaVersion: 2,
       updatedAt: Date.now(),
-      card: pool.card,
-      interaction: pool.interaction,
+      card: poolToVariableStates(pool.card, registry),
+      interaction: poolToVariableStates(pool.interaction, registry),
     }
     const merged = { ...existing, variables: varData }
     await writeFileExternal(path, encoder.encode(JSON.stringify(merged, null, 2)))
@@ -528,8 +547,8 @@ export async function saveVariablePoolStrict(
   const varData: PersistedCardVars = {
     schemaVersion: 2,
     updatedAt: Date.now(),
-    card: pool.card,
-    interaction: pool.interaction,
+    card: poolToVariableStates(pool.card, registry),
+    interaction: poolToVariableStates(pool.interaction, registry),
   }
   const merged = { ...existing, variables: varData }
   await writeFileExternal(path, encoder.encode(JSON.stringify(merged, null, 2)))
@@ -550,7 +569,27 @@ export async function savePoolToDiskStrict(): Promise<void> {
 
 // ── 从磁盘读取 ──
 
-/** 读取 stages/{cardId}.json 中的变量状态 */
+/** 兼容迁移：将旧格式（原始值）转换为 VariableState 格式 */
+function migrateToVariableStates(raw: Record<string, unknown>): Record<string, VariableState> {
+  const result: Record<string, VariableState> = {}
+  for (const [name, val] of Object.entries(raw)) {
+    if (val && typeof val === "object" && "value" in val && "type" in val) {
+      // 已是 VariableState 格式
+      result[name] = val as VariableState
+    } else if (val !== null && val !== undefined) {
+      // 旧格式：原始值 → 迁移为 VariableState
+      result[name] = {
+        value: val as VariablePrimitive,
+        type: inferType(val),
+        updatedAt: Date.now(),
+        updatedBy: "migration",
+      }
+    }
+  }
+  return result
+}
+
+/** 读取 stages/{cardId}.json 中的变量状态（VariableState 格式） */
 export async function loadCardVars(
   cardId: string,
 ): Promise<{ card: Record<string, VariableState>; interaction: Record<string, VariableState> } | null> {
@@ -558,9 +597,12 @@ export async function loadCardVars(
     const raw = await readFile(`personality/stages/${cardId}.json`)
     if (!raw) return null
     const data = JSON.parse(new TextDecoder().decode(raw))
-    const vars = data.variables as StageVariables | undefined
-    if (!vars || vars.schemaVersion < 1) return null
-    return { card: vars.card || {}, interaction: vars.interaction || {} }
+    const vars = data.variables as Record<string, unknown> | undefined
+    if (!vars || (vars.schemaVersion as number) < 1) return null
+    return {
+      card: migrateToVariableStates((vars.card || {}) as Record<string, unknown>),
+      interaction: migrateToVariableStates((vars.interaction || {}) as Record<string, unknown>),
+    }
   } catch (e) {
     log.warn(`stages JSON 损坏, cardId=${cardId}`, e instanceof Error ? e.message : String(e))
     return null
@@ -578,40 +620,6 @@ export async function readSystemVars(): Promise<Record<string, number | string |
   } catch {
     return null
   }
-}
-
-/** @deprecated v2: 使用 loadCardVars 代替，不再回退旧 vars.json */
-export async function readPersistedCharacterVars(
-  cardId: string,
-): Promise<Record<string, number | string | boolean> | null> {
-  const newVars = await loadCardVars(cardId)
-  if (newVars && Object.keys(newVars.card).length > 0) {
-    const flat: Record<string, number | string | boolean> = {}
-    for (const [name, state] of Object.entries(newVars.card)) {
-      flat[name] = state.value
-    }
-    return flat
-  }
-  return null
-}
-
-/** @deprecated v2: 使用 savePoolToDisk 代替，仅支持 v2 格式 */
-export function loadVariablePool(
-  jsonStr: string, currentCardIdNow: string,
-): { restored: boolean; pool: VariablePool } {
-  try {
-    const data = JSON.parse(jsonStr)
-    if (data.schemaVersion && data.schemaVersion >= 2) {
-      pool.system = data.system || {}
-      currentCardId = currentCardIdNow
-      log.info("变量池恢复(v2 system):", Object.keys(pool.system).length, "个系统变量")
-      return { restored: true, pool: getPoolSnapshot() }
-    }
-    log.warn("vars.json 格式不兼容 (schemaVersion<2)，将重新初始化")
-  } catch {
-    log.warn("vars.json 解析失败，将重新初始化")
-  }
-  return { restored: false, pool: emptyPool() }
 }
 
 // ── 销毁 ──

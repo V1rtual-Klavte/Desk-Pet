@@ -423,11 +423,13 @@ export async function generateStagesForCard(
 
     const resp = await provider.generateReply({
       messages: [{ id: "stages-gen", role: "user", text: prompt, timestamp: Date.now() }],
-      systemPrompt: "你是一个角色扮演系统的文案生成器。只输出 JSON，不要其他内容。严格遵循格式。",
+      systemPrompt: "你是一个 JSON 生成器。你的唯一任务是根据模板输出 JSON 对象。不要输出角色对话、不要输出叙述文字、不要输出任何非 JSON 内容。只输出一个完整 JSON 对象。",
       maxTokens: 8192,
     })
 
-    const stageMap = parseStagesResponse(resp.text || resp.thinking || "")
+    // 将 text 和 thinking 合并后解析，兼容 reasoning 模型把 JSON 放在 reasoning_content 中的情况
+    const combinedText = [resp.text, resp.thinking].filter(Boolean).join("\n")
+    const stageMap = parseStagesResponse(combinedText || "")
     if (!stageMap) return null
 
     // 校验：确保 error/timeout/retry 是字符串（允许空串，空串走 FALLBACK）

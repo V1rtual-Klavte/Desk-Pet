@@ -47,10 +47,6 @@ export interface CardSections {
   emotionMappings: EmotionMapping[]
   whenRules: WhenRule[]
   mustRules: MustRules
-  /** @deprecated v2: 使用 variableDefs 代替，保留用于兼容旧格式 Card */
-  initialVars: Record<string, number | string | boolean>
-  /** @deprecated v2: 使用 variableDefs 代替 */
-  subscribedSystemVars: string[]
   /** v2: Card 注册表变量定义（结构化 schema） */
   variableDefs: CardVariableDef[]
 }

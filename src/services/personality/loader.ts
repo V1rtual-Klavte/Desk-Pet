@@ -53,8 +53,6 @@ function parseFrontmatter(raw: string): { meta: CardFrontmatter; body: string } 
 
 interface ParsedVarSection {
   defs: CardVariableDef[]
-  initialVars: Record<string, number | string | boolean>
-  subscribedSystemVars: string[]
 }
 
 function parseVariableSection(raw: string): ParsedVarSection {
@@ -68,8 +66,6 @@ function parseVariableSection(raw: string): ParsedVarSection {
 
 function parseV2VariableDefs(raw: string): ParsedVarSection {
   const defs: CardVariableDef[] = []
-  const initialVars: Record<string, number | string | boolean> = {}
-  const subscribedSystemVars: string[] = []
 
   // 按 ## 子标题拆分
   const parts = raw.split(/^##\s+/m)
@@ -88,23 +84,19 @@ function parseV2VariableDefs(raw: string): ParsedVarSection {
 
     const parsed = parseSimpleYaml(yamlContent)
     for (const [name, rawVar] of Object.entries(parsed)) {
-      const def = buildVarDef(name, rawVar, scope)
-      defs.push(def)
-      // 填充兼容字段
-      initialVars[name] = def.initial
+      defs.push(buildVarDef(name, rawVar, scope))
     }
   }
 
-  return { defs, initialVars, subscribedSystemVars }
+  return { defs }
 }
 
 function parseOldFormatVars(raw: string): ParsedVarSection {
   const initialVars: Record<string, number | string | boolean> = {}
-  const subscribedSystemVars: string[] = []
 
   for (const line of raw.split("\n")) {
     const sysMatch = line.match(/^#\s*@system\s+(\w+)/)
-    if (sysMatch) { subscribedSystemVars.push(sysMatch[1]!); continue }
+    if (sysMatch) continue  // 旧 @system 标记忽略，v2 不再支持
     // 跳过 HTML 注释和 markdown 注释
     if (/^\s*<!--/.test(line) || /^\s*-->/.test(line)) continue
     const kv = line.match(/^([\w一-鿿]+):\s*(.+)$/)
@@ -127,7 +119,7 @@ function parseOldFormatVars(raw: string): ParsedVarSection {
     reset: "never" as VariableResetPolicy,
   }))
 
-  return { defs, initialVars, subscribedSystemVars }
+  return { defs }
 }
 
 /** 从文本中提取 ```yaml ... ``` 或 ``` ... ``` fenced block */
@@ -231,7 +223,7 @@ function parseSections(body: string): CardSections {
 
   // 变量定义 — v2 结构化 YAML 优先，fallback 旧 name: initial 格式
   const varBlock = sections["变量定义"] || ""
-  const { defs: variableDefs, initialVars: compatVars, subscribedSystemVars } = parseVariableSection(varBlock)
+  const { defs: variableDefs } = parseVariableSection(varBlock)
 
   // 行为进阶规则
   const whenRaw = sections["行为进阶"] || ""
@@ -259,7 +251,7 @@ function parseSections(body: string): CardSections {
     languageStyle: sections["语言风格"] || "",
     outputRules: sections["输出规则"] || "",
     emotionRaw, emotionMappings, whenRules, mustRules,
-    initialVars: compatVars, subscribedSystemVars, variableDefs,
+    variableDefs,
   }
 }
 
