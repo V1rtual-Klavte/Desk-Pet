@@ -1,0 +1,92 @@
+# ==========================================
+# 本地开发配置（不入 git）
+# enabled: true  → 使用此文件全部配置
+# enabled: false → 回退到 CONFIG.yaml
+# ==========================================
+
+enabled: true
+
+general:
+  mode:
+    assistant: false
+  popup:
+    mode: cursor
+    autoPopupOnMessage: false
+    defaultSize: { w: 448, h: 272 }
+  shortcut:
+    key: "P"
+    macModifiers: ["Control", "Command"]
+    winModifiers: ["Control", "Alt"]
+  logging:
+    level: debug
+  desktop:
+    pollingIntervalMs: 3000
+    pauseExtraMs: 5000
+    waitTimeoutMs: 5000
+
+ai:
+  provider: deepseek
+  endpoint: http://ai.onetwo2023.com/v1
+  apiKey: "sk-45T40J3LZmkXbJAAg2NgXWLVAfWGCqdxXOWjAV68voYfHMTz"
+  requireApiKey: true
+  model: deepseek-v4-pro
+  contextMaxTokens: 16000
+  thinking:
+    effort: auto
+    budget: { low: 1000, medium: 4000, high: 16000 }
+  personality:
+    active: angelkawaii
+    cards:
+      - { id: neutral, name: 桌面助手, path: cards/neutral.md, description: "中性默认助手" }
+      - { id: angelkawaii, name: KAngel, path: cards/angelkawaii.md, description: "甜蜜活泼女友+病娇" }
+      - { id: ame, name: Ame, path: cards/ame.md, description: "冷静管家型" }
+      - { id: pchan, name: P酱, path: cards/pchan.md, description: "慵懒电竞少女" }
+  loop:
+    maxRetry: 3
+    maxToolCallsPerTurn: 5
+    toolTimeoutMs: 30000
+    turnTimeoutMs: 120000
+    contextCompactAt: 0.95
+    dedupWindowMs: 30000
+    maxVisibleMessages: 200
+  memory:
+    maxEntries: 200
+    maxSessions: 20
+  lock:
+    safetyTimeoutMs: 30000
+  windowMonitor:
+    enabled: true
+    staySeconds: 60
+    settleMs: 2000
+    cooldownSeconds: 5000
+    samePageCooldownSeconds: 7800
+    defaultCooldownMs: 12000
+    resumeExtraMs: 2000
+  safety:
+    mode: tell_me
+    sessionTrustEnabled: true
+
+tools:
+  bash:
+    enabled: true
+    whitelist: ["ls", "cat", "head", "tail", "grep", "find", "which",
+                "echo", "pwd", "date", "whoami", "uname", "df", "du",
+                "ps", "tasklist", "system_profiler", "ifconfig"]
+  file:
+    enabled: true
+    writeEnabled: false
+  mcp:
+    enabled: false
+    servers: []
+    builtin:
+      filesystem:  { enabled: true,  command: npx, args: ["-y", "@modelcontextprotocol/server-filesystem", "/"], description: "📁 文件系统操作" }
+      brave-search: { enabled: false, command: npx, args: ["-y", "@brave/brave-search-mcp-server"], env: { BRAVE_API_KEY: "" }, description: "🔍 Brave Search" }
+      playwright:   { enabled: true,  command: npx, args: ["-y", "@executeautomation/playwright-mcp-server"], description: "🎭 Playwright" }
+      git:          { enabled: false, command: npx, args: ["-y", "@anthropic/mcp-git", "/"], description: "📝 Git" }
+      github:       { enabled: false, command: npx, args: ["-y", "@anthropic/mcp-github"], env: { GITHUB_PERSONAL_ACCESS_TOKEN: "" }, description: "🐙 GitHub" }
+  skill:
+    enabled: false
+    skills: []
+
+appearance:
+  activeProfile: "sugar-pink"

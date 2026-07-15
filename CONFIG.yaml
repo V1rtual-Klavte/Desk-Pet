@@ -111,13 +111,13 @@ tools:
       brave-search:
         enabled: false
         command: npx
-        args: ["-y", "@anthropic/mcp-brave-search"]
+        args: ["-y", "@brave/brave-search-mcp-server"]
         env: { BRAVE_API_KEY: "" }
         description: "🔍 Brave Search — 网页搜索（需 API Key）"
       playwright:
         enabled: true
         command: npx
-        args: ["-y", "@anthropic/mcp-playwright"]
+        args: ["-y", "@executeautomation/playwright-mcp-server"]
         description: "🎭 Playwright — 无头浏览器自动化测试"
       git:
         enabled: false
