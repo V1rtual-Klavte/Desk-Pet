@@ -216,24 +216,47 @@ export function buildStagesPrompt(
 }
 
 export function parseStagesResponse(jsonStr: string): StageMap | null {
-  try {
-    let clean = jsonStr.trim()
-    if (clean.startsWith("```")) {
-      clean = clean.replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/i, "")
-    }
-    const jsonStart = clean.indexOf("{")
-    const jsonEnd = clean.lastIndexOf("}")
-    if (jsonStart >= 0 && jsonEnd > jsonStart) {
-      clean = clean.slice(jsonStart, jsonEnd + 1)
-    }
-    return normalizeStageMap(JSON.parse(clean) as Partial<StageMap>)
-  } catch (e) {
-    const loose = parseLooseStagesResponse(jsonStr)
-    if (loose) return loose
-    log.error("stages JSON 解析失败:", e)
-    log.error("stages 原始返回:", `len=${jsonStr.length}`, jsonStr.slice(-300))
-    return null
+  // 从文本中提取所有 JSON 对象 ({...})，从后往前尝试解析
+  // reasoning 模型可能在 CoT 中包含多个 JSON 示例，取最后一个有效对象
+  const candidates = extractJSONCandidates(jsonStr)
+  for (let i = candidates.length - 1; i >= 0; i--) {
+    try { return normalizeStageMap(JSON.parse(candidates[i]) as Partial<StageMap>) } catch {}
   }
+
+  // 候选都失败时尝试宽松解析
+  const loose = parseLooseStagesResponse(jsonStr)
+  if (loose) return loose
+
+  log.error("stages JSON 解析失败: 无有效 JSON 对象")
+  log.error("stages 原始返回:", `len=${jsonStr.length}`, jsonStr.slice(-300))
+  return null
+}
+
+/** 从文本中提取所有平衡括号包围的 JSON 对象 */
+function extractJSONCandidates(text: string): string[] {
+  const results: string[] = []
+  let i = 0
+  while (i < text.length) {
+    const start = text.indexOf("{", i)
+    if (start === -1) break
+    let depth = 0, j = start
+    let inString = false, escape = false
+    while (j < text.length) {
+      const ch = text[j]
+      if (inString) {
+        if (escape) { escape = false }
+        else if (ch === "\\") { escape = true }
+        else if (ch === "\"") { inString = false }
+      } else {
+        if (ch === "\"") { inString = true }
+        else if (ch === "{") { depth++ }
+        else if (ch === "}") { depth--; if (depth === 0) { results.push(text.slice(start, j + 1)); break } }
+      }
+      j++
+    }
+    i = start + 1
+  }
+  return results
 }
 
 function normalizeFallbacks(raw: unknown): FallbackReplies {

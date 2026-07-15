@@ -23,8 +23,12 @@ export function parseAIResponse(data: Record<string, unknown>): ParsedAIOutput {
 
   // 流式 vs 非流式
   const msg = message || delta || {}
-  const content = String(msg.content ?? "")
+  const rawContent = String(msg.content ?? "")
   const thinking = String(msg.reasoning_content ?? "")
+
+  // DeepSeek v4 等 reasoning 模型可能把回复放在 reasoning_content 里，
+  // content 为空。此时用 thinking 回退 content，让下游能正常处理。
+  const content = rawContent || thinking || ""
 
   // 解析 tool_calls
   const rawToolCalls = msg.tool_calls as Record<string, unknown>[] | undefined
