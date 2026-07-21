@@ -2,7 +2,7 @@
 import { ref, onMounted, onUnmounted } from "vue"
 import { listen } from "@tauri-apps/api/event"
 import type { PlanStep } from "@/services/engine"
-import { resolvePlanConfirm } from "@/services/engine"
+import { resolvePlanConfirm, resolvePlanStepDecision } from "@/services/engine"
 
 interface StepStatus {
   step: PlanStep
@@ -36,7 +36,15 @@ onMounted(async () => {
       s.status = e.payload.status as StepStatus["status"]
     },
   )
-  unlistens = [u1, u2]
+  const u3 = await listen<{ step: PlanStep; error: string }>(
+    "deskpet-plan-step-failed", (e) => {
+      const s = steps.value.find(x => x.step.id === e.payload.step.id)
+      if (s) s.status = "failed"
+      // Auto-continue to avoid blocking the loop indefinitely
+      resolvePlanStepDecision("continue")
+    },
+  )
+  unlistens = [u1, u2, u3]
 })
 
 onUnmounted(() => unlistens.forEach(fn => fn()))
@@ -63,6 +71,7 @@ function abortExecution() { resolvePlanConfirm({ confirmed: false, mode: "auto" 
         </span>
         <span class="step-desc">{{ s.step.description }}</span>
         <span v-if="s.step.parallel" class="badge">并行</span>
+        <span v-if="s.status === 'failed'" class="step-error-msg">失败</span>
       </div>
     </div>
 
@@ -107,6 +116,7 @@ function abortExecution() { resolvePlanConfirm({ confirmed: false, mode: "auto" 
 .step.failed { border-left: 3px solid #f38ba8; opacity: 0.7; }
 .step.done { opacity: 0.7; }
 .step-icon { font-size: 10px; font-family: var(--font-mono, monospace); min-width: 18px; color: var(--color-text-muted, #6c7086); }
+.step-error-msg { font-size: 9px; color: #f38ba8; margin-left: auto; }
 .step-desc { flex: 1; }
 .badge { font-size: 9px; color: var(--color-accent, #cba6f7); background: var(--color-accent-shadow, rgba(203,166,247,0.15)); padding: 0 4px; border-radius: 3px; }
 .actions { display: flex; gap: 6px; align-items: center; }

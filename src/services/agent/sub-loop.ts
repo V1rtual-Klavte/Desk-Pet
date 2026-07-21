@@ -3,7 +3,7 @@
 // 不依赖人格中间件/思考强度/会话管理，精简高效
 // ==========================================
 
-import type { Message, ToolDeclaration, ToolCallRequest } from "@/services/agent/types"
+import type { Message, ToolDeclaration, ToolCallRequest, ThinkingEffort } from "@/services/agent/types"
 import { createMessageId, createToolMessage } from "@/services/agent/types"
 import { executeTool } from "@/services/tool/router"
 import { getToolByName } from "@/services/tool/registry"
@@ -28,7 +28,7 @@ export interface SubLoopInput {
   /** 总超时 ms */
   timeoutMs?: number
   /** 思考强度，默认 "low" */
-  thinkingEffort?: import("@/services/agent/types").ThinkingEffort
+  thinkingEffort?: ThinkingEffort
 }
 
 export interface SubLoopOutput {

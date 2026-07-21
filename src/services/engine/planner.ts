@@ -6,6 +6,7 @@
 import type { ToolDef } from "@/services/tool/types"
 import type { SubLoopOutput } from "@/services/agent/sub-loop"
 import type { ThinkingEffort } from "@/services/agent/types"
+import { planConfig } from "@/services/config"
 import { createLogger } from "@/services/logger"
 
 const log = createLogger("Planner")
@@ -45,11 +46,6 @@ export interface PlanExecutionResult {
 
 // ── 复杂度检测 ──
 
-const PLAN_KEYWORDS = [
-  "分析", "整理", "重构", "修复", "审查",
-  "合并", "总结", "生成", "创建项目",
-]
-
 export async function evaluateComplexity(
   userText: string,
   keywords?: string[],
@@ -59,7 +55,7 @@ export async function evaluateComplexity(
     return { score: 5, reason: "用户强制触发 --plan", triggeredBy: "force" }
   }
 
-  const kw = keywords || PLAN_KEYWORDS
+  const kw = keywords || planConfig.keywords
 
   // 2. 关键词兜底
   const hitKeyword = kw.find(k => userText.includes(k))
@@ -211,6 +207,9 @@ export async function executePlan(
   const startTime = Date.now()
   const stepResults: PlanExecutionResult["stepResults"] = []
   let overallSuccess = true
+  if (plan.steps.length > config.maxSteps) {
+    log.warn(`计划步骤被截断: ${plan.steps.length} → ${config.maxSteps}`)
+  }
   const steps = plan.steps.slice(0, config.maxSteps)
 
   for (const step of steps) {
@@ -263,9 +262,14 @@ async function executeStep(
   if (step.allowedTools && step.allowedTools.length > 0) {
     for (const name of step.allowedTools) {
       const tool = getToolByName(name)
-      if (tool) tools.push(tool)
+      if (tool) {
+        tools.push(tool)
+      } else {
+        log.warn(`步骤 ${step.id} 指定的工具不存在: ${name}`)
+      }
     }
   } else {
+    log.warn(`步骤 ${step.id} 未指定 allowedTools，使用全部助手工具`)
     tools.push(...getToolsForMode("assistant"))
   }
 

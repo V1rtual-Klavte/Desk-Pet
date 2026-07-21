@@ -184,6 +184,10 @@ export async function runAgentLoop(input: AgentLoopInput): Promise<AgentLoopOutp
   }
 
   if (planStepContext) {
+    const maxPlanContextChars = 4000  // ~1000 tokens
+    if (planStepContext.length > maxPlanContextChars) {
+      planStepContext = planStepContext.slice(0, maxPlanContextChars) + "\n...(结果已截断)"
+    }
     ctx.systemPrompt += "\n\n" + planStepContext
   }
 
