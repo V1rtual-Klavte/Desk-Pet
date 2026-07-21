@@ -19,6 +19,7 @@
 - **工具系统** — AI 可调用：文件读写/搜索、Bash、系统信息、HTTP、剪贴板、变量读写、子代理
 - **助手模式** — 解锁写文件/全量Bash/打开应用/剪贴板/MCP/Skill/子代理(fork/team)
 - **Agent Loop v5** — 单次 LLM 调用 + 工具循环，思考强度可选，上下文自动压缩
+- **Plan 模块** — 助手模式自动检测复杂任务 → LLM 拆解步骤 → 子代理逐步执行，安全模式确认
 - **人格系统** — Card 驱动，内置 4 张（neutral/angelkawaii/ame/pchan），支持用户导入，事务式热切换
 - **变量池 v2** — 四类变量（system/card/interaction/session），运行时=持久化同格式（VariableState）
 - **When 引擎** — 条件规则驱动角色行为进化（不理她太久会从甜蜜变病娇）
@@ -44,6 +45,7 @@
 | 窗口感知主动搭话 | ✅ | ✅ |
 | 文件读/列/搜 + 系统信息 + Bash白名单 + HTTP | ✅ | ✅ |
 | 变量读写（var_read/write/list/delete） | ✅ | ✅ |
+| 助手模式 + Plan 模块（复杂任务编排） | ❌ | ✅ |
 | 文件写/删 + 全量Bash + 打开应用 + 剪贴板 | ❌ | ✅ |
 | MCP 服务器（内置5个+自定义） | ❌ | ✅ |
 | Skill 编排 | ❌ | ✅ |
@@ -117,7 +119,7 @@ Desk-Pet/
 │   │   ├── useParallax.ts            # 灵动图层 60fps 视差
 │   │   └── useLayerEditor.ts         # 图层编辑器状态
 │   └── services/
-│       ├── engine/                   # Agent Loop v5 + 会话 + compactor 压缩 + Slash命令
+│       ├── engine/                   # Agent Loop v5 + Plan编排 + 会话 + compactor 压缩 + Slash命令
 │       ├── personality/              # 人格模块（Card/Stages/变量池/When引擎/Middleware）
 │       │   ├── cards/                # 内置 Card .md（4张）
 │       │   └── stages/               # 内置 Stages JSON（LLM 生成）
@@ -159,6 +161,7 @@ Desk-Pet/
 
 ```
 用户消息 → PreProcessor → refreshVariablePool() + When引擎
+  → [Plan阶段: evaluateComplexity() → generatePlan() → executePlan()]
   → buildPrompt(card全量: 角色/风格/情绪/When语气/行为准则/变量池/记忆)
   → 单次LLM(永远非流式) → runToolLoop(安全→执行)
   → generateReply(raw, card) → 剥离[emo:key] + 表情/音效映射
@@ -175,7 +178,7 @@ Desk-Pet/
 | 类别 | 配置项 |
 |------|--------|
 | 外观 | Profile 选择 / 预设切换 / 18色配色 / 字体 / 灵动图层逐层配置 / 导入导出 |
-| AI | 端点 / 密钥 / 模型 / 上下文 tokens / 思考强度 |
+| AI | 端点 / 密钥 / 模型 / 上下文 tokens / 思考强度 / **Plan 设置** |
 | 人格 | 选择人格卡（热切换） / 查看变量池 / 编辑阶段文案 |
 | 监控 | 窗口监控开关 / 停留秒数 / 防抖 / 冷却 |
 | 安全 | 四级安全策略选择 |
@@ -232,6 +235,9 @@ Desk-Pet/
 - [docs/灵动图层设计.md](docs/灵动图层设计.md) — 灵动图层设计文档
 - [docs/阶段现状-2026.7.17.md](docs/阶段现状-2026.7.17.md) — 阶段现状记录
 - [docs/阶段现状-2026.7.21.md](docs/阶段现状-2026.7.21.md) — 阶段现状记录
+- [docs/2026-07-21-plan-module-design.md](docs/2026-07-21-plan-module-design.md) — Plan 模块设计规格
+- [docs/2026-07-21-plan-module-plan.md](docs/2026-07-21-plan-module-plan.md) — Plan 模块实施计划
+- [docs/深度现状分析-2026.7.21.md](docs/深度现状分析-2026.7.21.md) — Plan+Memory 深度分析
 - [docs/superpowers/](docs/superpowers/) — Superpowers 计划
 
 ---
