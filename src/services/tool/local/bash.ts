@@ -7,7 +7,7 @@ import type { ToolDef } from "../types"
 import { register } from "../registry"
 import { invoke } from "@tauri-apps/api/core"
 import { toolsConfig, loopConfig } from "@/services/config"
-import { BASH_DANGEROUS_PATTERNS, matchesAnyPattern } from "@/services/safety/checker"
+import { BASH_DANGEROUS_PATTERNS, matchesAnyPattern } from "@/services/safety"
 import { createLogger } from "@/services/logger"
 
 const log = createLogger("ToolBash")

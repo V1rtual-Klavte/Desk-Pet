@@ -14,7 +14,7 @@
 import type { Message } from "@/services/agent/types"
 import type { CompactionSummary } from "@/services/agent/memory"
 import { MemoryService } from "@/services/agent/memory"
-import { aiConfig, loopConfig, modeConfig } from "@/services/config"
+import { aiConfig, loopConfig } from "@/services/config"
 import { createLogger } from "@/services/logger"
 
 const log = createLogger("Compactor")

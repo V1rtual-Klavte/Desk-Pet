@@ -4,7 +4,7 @@
 
 import { describe, it, expect, beforeEach, vi } from "vitest"
 
-async function importSafety() { return await import("@/services/safety/checker") }
+async function importSafety() { return await import("@/services/safety") }
 
 describe("安全级别", () => {
   let safety: Awaited<ReturnType<typeof importSafety>>

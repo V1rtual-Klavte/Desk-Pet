@@ -2,7 +2,7 @@
 import { ref, onMounted, onUnmounted } from "vue";
 import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
 import {
-  userConfig, modeConfig, toolsConfig,
+  userConfig, generalConfig, toolsConfig,
   setOverrides, setOverride, getAllOverrides,
 } from "@/services/config";
 import {
@@ -36,7 +36,7 @@ const toolsTabRef = ref<InstanceType<typeof ToolsTab>>();
 const appearanceTabRef = ref<InstanceType<typeof AppearanceTab>>();
 
 // ── 助手模式（ToolsTab 需要）──
-const assistantMode = ref(modeConfig.assistant);
+const assistantMode = ref(generalConfig.assistantMode);
 
 // ═══════════════════════════════════
 // 保存/取消

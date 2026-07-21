@@ -28,7 +28,7 @@ vi.mock("@/services/config", () => ({
     contextMaxTokens: 16000,
     thinking: { effort: "auto" as const, budget: { low: 1000, medium: 4000, high: 16000 } },
   },
-  modeConfig: { assistant: false },
+  generalConfig: { assistantMode: false },
   loopConfig: {
     maxRetry: 3, maxToolCallsPerTurn: 5,
     toolTimeoutMs: 30000, turnTimeoutMs: 120000,

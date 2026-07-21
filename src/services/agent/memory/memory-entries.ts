@@ -4,7 +4,7 @@
 // ==========================================
 
 import { invoke } from "@tauri-apps/api/core"
-import { memoryConfig, modeConfig } from "@/services/config"
+import { memoryConfig } from "@/services/config"
 import type { MemoryEntry, ProjectEntry, SessionMemory, CompactionSummary } from "./types"
 import { readMemoryFile, writeMemoryFile, sessionsDir, memoryDir, withLock } from "./io"
 import { localDate, localTime, generateId, serializeMEMORYmd, serializeProjectMd, parseMEMORYmd, parseProjectMd } from "./parsers"

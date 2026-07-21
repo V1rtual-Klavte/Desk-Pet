@@ -9,7 +9,7 @@ import { listen } from "@tauri-apps/api/event";
 import { searchSlashCommands, findSlashCommand, initSlashCommands } from "@/services/engine";
 import type { SlashMatch } from "@/services/engine";
 import DebugBar from "./DebugBar.vue";
-import { confirmState, resolveConfirm } from "@/services/safety/confirm";
+import { confirmState, resolveConfirm } from "@/services/safety";
 
 // ★ 同步初始化 Slash 命令注册表（模块加载时即完成，保证后续即时可用）
 initSlashCommands();

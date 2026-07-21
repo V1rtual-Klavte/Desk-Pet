@@ -6,6 +6,7 @@
 import { StdioTransport } from "./stdio"
 import type { ToolDef } from "@/services/tool/types"
 import { createLogger } from "@/services/logger"
+import { loopConfig } from "@/services/config"
 
 const log = createLogger("MCPClient")
 
@@ -140,7 +141,7 @@ export class McpClient {
         source: "mcp" as const,
         sourceId: serverId,
         mode: "assistant" as const,
-        timeoutMs: 30000,
+        timeoutMs: loopConfig.toolTimeoutMs,
         actionCategory: "_default",
         async handler(params: Record<string, unknown>) {
           try {

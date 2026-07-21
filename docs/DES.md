@@ -217,6 +217,7 @@ macOS 未签名构建下系统通知无法实现：tauri-plugin-notification 需
 |------|------|
 | `/help` | 显示所有可用命令 |
 | `/clear` | 归档当前会话并清空对话 |
+| `/compact` | 手动触发上下文压缩 |
 | `/memory clean` | 清理所有长期记忆 |
 | `/smile` | 切换表情为 😊 微笑 |
 | `/sleep` | 切换表情为 😴 困倦 |
@@ -246,12 +247,7 @@ CharacterService.switchCharacter("pchan")  // 切换角色
 __cooldown.isCoolingDown()                 // 冷却状态
 __cooldown.setCooldown(sec)                // 设置冷却时长
 __cooldown.resetCooldown()                 // 重置冷却
-__boundary.get()                           // 人格界限等级
-__boundary.set(n)                          // 设置界限
-__boundary.inc()                           // 界限+1
 __testAI("哔哩哔哩")                        // 手动触发 AI 主动消息
-__thinking.decide("帮我看看桌面有什么")      // 思考强度决策
-__thinking.count()                         // 工具调用计数
 __memory.list()                            // 记忆列表
 __memory.search("关键词")                   // 搜索记忆
 __memory.consolidate()                     // 手动触发记忆整理
@@ -598,7 +594,6 @@ Profile选择: 下拉框（内置+用户）
 ├──────────────────────────────────────────────────────────┤
 │  核心引擎 (CoreEngine)                                     │
 │  PreProcessor → SessionEngine → AgentLoop                │
-│  + Plan(助手模式复杂任务) + Thinking(思考强度决策)          │
 ├──────────────────────────────────────────────────────────┤
 │  上下文引擎                    │  工具系统                  │
 │  SystemPrompt + Memory         │  Skill → MCP/Local       │
@@ -621,11 +616,10 @@ Profile选择: 下拉框（内置+用户）
 src/services/
 ├── engine/                # ★ 核心引擎
 │   ├── agent-loop.ts      # Agent Loop — 多轮工具调用核心循环 + 上下文压缩
+│   ├── compactor.ts       # 上下文压缩 (compactMessages + 摘要写入)
 │   ├── preprocessor.ts    # Slash命令 + 空/重复消息过滤
 │   ├── parser.ts          # AI输出解析 (function_call/纯文本/思考)
 │   ├── session.ts         # 会话状态机 (WAITING→PRE→GENERATING→EXECUTING)
-│   ├── thinking.ts        # ★ 思考强度决策 (auto/low/medium/high)
-│   ├── plan.ts            # ★ Plan 步骤 (LLM驱动, 复杂任务拆解)【已实现】
 │   └── slash/             # ★ Slash 命令系统
 │       ├── index.ts / types.ts / registry.ts
 │       └── commands/      # help/clear/memory/expression/win
@@ -696,10 +690,10 @@ src/services/
 │   ├── types.ts           # Message / ToolCall / GenerateRequest 类型
 │   ├── runner.ts          # sendMessage() — 接入 AgentLoop
 │   ├── provider.ts        # OpenAICompatibleProvider — 支持工具调用+思考强度
-│   ├── service.ts         # AI 调用封装
-│   ├── chat.ts            # 聊天记录 + 会话管理
-│   ├── memory.ts          # ★ 长期记忆（文件注册表 + LLM整理 + Fork补记忆）
-│   └── active.ts          # 窗口监控 → 主动搭话
+│   ├── sub-agent.ts       # 子代理 (fork/team 双模式)
+│   ├── sub-loop.ts        # 子循环执行引擎
+│   ├── active.ts          # 窗口监控 → 主动搭话
+│   └── memory/            # ★ 长期记忆 (7个文件: index/io/consolidate/memory-entries/parsers/session-files/types)
 │
 ├── window/                # 窗口监控
 │   ├── monitor.ts         # 前后台检测
@@ -707,8 +701,11 @@ src/services/
 │   └── active-context.ts  # 窗口上下文
 │
 ├── audio/                 # 音效系统
-│   ├── registry.ts        # Web Audio 合成 + 29音效 + 事件映射
-│   └── boundary.ts        # 人格界限 ↔ 音效联动
+│   ├── registry.ts        # Web Audio 合成 + 33音效 + 事件映射
+│   ├── context.ts          # AudioContext 管理
+│   ├── effects/            # 音效实现 (按类别拆分)
+│   ├── types.ts            # 音效类型定义
+│   └── index.ts            # 统一导出
 │
 ├── config.ts              # 配置加载 (YAML → 类型化getter)
 ├── cooldown.ts            # 全局冷却 + AI并发锁
@@ -718,7 +715,6 @@ src/services/
 ├── animation.ts           # 角色动画表情映射
 ├── expressions.ts         # 表情关键词匹配
 ├── command-handler.ts     # 角色表情命令处理
-└── test.ts                # AI 测试入口
 ```
 
 ### 9.3 完整数据流
@@ -743,7 +739,6 @@ src/services/
   │           │     ├── 6. 输出约束 + 助手能力提示
   │           │     └── 7. 思考强度提示 (low→快速 / high→深入)
   │           │
-  │           ├── [Plan] 助手模式+high强度+复杂关键词 → 步骤拆解注入
   │           ├── 人格中间件.wrap("thinking") → expression/sound event
   │           │
   │           ├── ★ Agent Loop 主循环 (最多 maxToolCallsPerTurn 轮)
@@ -774,7 +769,7 @@ src/services/
   │           └── 返回 { reply, toolCallHistory, effects[] }
   │
   ├── ReplyGenerator 后处理 (kaomoji/截断/HTML转义)
-  ├── pushAssistantMessage → chat.ts 状态更新
+  ├── pushAssistantMessage → session/store.ts 状态更新
   └── ChatPanel + StreamView + 音效 展示
 ```
 
@@ -845,7 +840,6 @@ ToolRegistry:                      ToolRegistry 额外:
                                    └── Skill 工具 (3个)
 
 Safety: SAFE放行/其余拒绝         Safety: 四级+三策略+确认弹窗
-Plan: 不启用                       Plan: 复杂任务启用【LLM驱动】
 MCP/Skill: 不加载                  MCP/Skill: 完整加载 (Mock + 真实)
 ```
 
@@ -868,7 +862,6 @@ MCP/Skill: 不加载                  MCP/Skill: 完整加载 (Mock + 真实)
 | MCP Server | ❌ | ✅ (Mock+真实) |
 | Skill (编排) | ❌ | ✅ (子循环执行) |
 | SubAgent (agent.spawn) | ❌ | ✅ (fork/team) |
-| Plan 步骤 | ❌ | ✅ (LLM驱动) |
 | 完整安全确认 UI | ❌ | ✅ (四级+三策略+确认弹窗) |
 
 ### 9.6 安全控制
@@ -928,7 +921,7 @@ FILE_DANGEROUS_PATTERNS: [/.ssh/, /etc/passwd, /etc/shadow, /System/, /Windows/,
 任务检测:
   闲聊/表情/打招呼/主动搭话 → low
   "帮我"/"查看"/"搜索"/"找" → medium
-  "分析"/"整理"/"重构" / 工具调用≥2轮 / Plan触发 / 错误重试 → high
+  "分析"/"整理"/"重构" / 工具调用≥2轮 / 错误重试 → high
 ```
 
 #### 实现方式
@@ -1020,7 +1013,7 @@ sessions/                      会话目录（唯一真相源）
 | 上下文引擎 | ✅ | `context/builder.ts` |
 | 回复生成器 v5 | ✅ | `reply/generator.ts` — 一步后处理: stripEmotionTag → resolveEmotion → trim/截断 → ReplyResult |
 | OpenAI 兼容 Provider | ✅ | `agent/provider.ts` |
-| 记忆系统 (注册表+LLM整理+Fork) | ✅ | `agent/memory.ts` |
+| 记忆系统 (注册表+LLM整理+Fork) | ✅ | `agent/memory/` (7个文件) |
 | Rust 工具执行 | ✅ | `commands/tool_exec.rs` |
 | Debug 状态栏 | ✅ | `DebugBar.vue` + `debug.ts` |
 | **Profile 主题系统** | ✅ | `profile/loader.ts`(懒加载+18色→50+CSS变量) + `io.ts`(导入导出) + Rust `profile_cmd.rs` |
@@ -1038,7 +1031,7 @@ sessions/                      会话目录（唯一真相源）
 | **助手完整安全 (四级+确认UI)** | ✅ 已实现 | checker.ts + confirm.ts + ChatPanel 弹窗 |
 | **安全策略会话覆盖** | ✅ 已实现 | 仪表盘下拉，getEffectiveSafetyMode() |
 
-### Phase 4: MCP + Skill + Plan ⚠️ 大部分完成
+### Phase 4: MCP + Skill ⚠️ 大部分完成
 
 | 模块 | 状态 | 说明 |
 |------|:---:|------|
@@ -1054,7 +1047,6 @@ sessions/                      会话目录（唯一真相源）
 | **MCP stdio 传输** | ✅ 已实现 | Tauri invoke 桥接 Rust 子进程 stdin/stdout |
 | **Rust MCP Bridge** | ✅ 已实现 | spawn/kill 子进程 + JSON-RPC 桥接 |
 | **内置 5 个 MCP** | ✅ 已实现 | Filesystem/BraveSearch/Playwright/Git/GitHub |
-| **Plan (AI模型预判)** | ✅ LLM驱动 | 复杂度门禁 + 轻量LLM调用 → 步骤注入上下文 |
 | **流式输出** | ❌ 已移除 v5 | 永远非流式，generateReplyStream 已删除 |
 
 ### 待实现目标
@@ -1063,7 +1055,6 @@ sessions/                      会话目录（唯一真相源）
 |:---:|------|------|
 | ~~P0~~ | ~~助手模式完整安全~~ | ✅ 已实现: checker.ts + confirm.ts + ChatPanel 弹窗 |
 | P0 | ⚠️ 工具/Skill/安全 集成测试 | 功能已实现，全路径测试未覆盖 |
-| ~~P1~~ | ~~Plan AI模型预判~~ | ✅ 已实现: LLM驱动，复杂度门禁 + 轻量调用 |
 | ~~P2~~ | ~~流式输出~~ | ❌ 已移除 v5: 永远非流式 |
 | P2 | MCP SSE 传输 | EventSource 连接方式 |
 | P3 | Agent Loop 时间本地化 | ✅ 已实现: toISOString → localTime() 全局替换 |

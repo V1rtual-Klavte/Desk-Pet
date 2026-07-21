@@ -5,21 +5,20 @@
 
 import type { Message } from "@/services/agent/types"
 import { createMessageId, createToolMessage } from "@/services/agent/types"
-import { buildPrompt } from "@/services/context/builder"
+import { buildPrompt } from "@/services/context"
 import { executeTool } from "@/services/tool/router"
 import { getToolByName } from "@/services/tool/registry"
-import { checkSafety, trustToolInSession } from "@/services/safety/checker"
-import { requestConfirm } from "@/services/safety/confirm"
+import { checkSafety, trustToolInSession, requestConfirm } from "@/services/safety"
 import { PetPersonalityMiddleware } from "@/services/personality/middleware"
 import type { PersonalityEffect } from "@/services/personality/middleware"
 import { getActiveCard } from "@/services/personality/registry"
 import { refreshVariablePool, getPoolSnapshot, savePoolToDisk, updateInteractionVar, applyResetPolicies, getSessionStart } from "@/services/personality/variable-pool"
 import { getSimpleStage, getStagePrompt, getFallbackReply } from "@/services/personality/stages-cache"
 import { getEffectiveThinkingEffort, updateRequestStats } from "@/services/debug"
-import { generateReply } from "@/services/reply/generator"
+import { generateReply } from "@/services/reply"
 import { transition, recordMessage, recordToolCall } from "./session"
 import { pushMessage, chatHistory } from "@/services/session/store"
-import { loopConfig, modeConfig } from "@/services/config"
+import { loopConfig, generalConfig, aiConfig } from "@/services/config"
 import { createLogger } from "@/services/logger"
 import { emit } from "@tauri-apps/api/event"
 import { MemoryService } from "@/services/agent/memory"
@@ -171,7 +170,7 @@ async function runToolLoop(opts: {
       toolNames: roundCount === 1 ? tools.map((t: any) => t.function.name) : [],
     })
 
-    if (shouldCompact(Math.ceil(systemPrompt.length / 2.5) + convTokens, 16000)) {
+    if (shouldCompact(Math.ceil(systemPrompt.length / 2.5) + convTokens, aiConfig.contextMaxTokens)) {
       const compacted = compactMessages(loopMessages)
       loopMessages.length = 0
       loopMessages.push(...compacted)
@@ -213,7 +212,7 @@ async function runToolLoop(opts: {
       }
 
       const safetyResult = checkSafety(tool, params, {
-        mode: modeConfig.assistant ? "assistant" : "pet",
+        mode: generalConfig.assistantMode ? "assistant" : "pet",
         sessionTrusted: false,
       })
 
@@ -239,7 +238,7 @@ async function runToolLoop(opts: {
       }
 
       const result = await executeTool(tc.name, params, {
-        mode: modeConfig.assistant ? "assistant" : "pet",
+        mode: generalConfig.assistantMode ? "assistant" : "pet",
         sessionTrusted: false,
       })
 

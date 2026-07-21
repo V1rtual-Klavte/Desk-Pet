@@ -6,7 +6,7 @@
 import type { ToolDef } from "../types"
 import { register } from "../registry"
 import { invoke } from "@tauri-apps/api/core"
-import { BASH_NOWAY_PATTERNS, matchesAnyPattern } from "@/services/safety/checker"
+import { BASH_NOWAY_PATTERNS, matchesAnyPattern } from "@/services/safety"
 import { loopConfig } from "@/services/config"
 import { createLogger } from "@/services/logger"
 

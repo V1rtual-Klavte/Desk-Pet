@@ -287,11 +287,6 @@ export const generalConfig = {
   get waitTimeoutMs() { return overrideOr("general.desktop.waitTimeoutMs", cfg.general?.desktop?.waitTimeoutMs ?? 5000); },
 };
 
-// 向后兼容别名
-export const modeConfig = {
-  get assistant() { return generalConfig.assistantMode; },
-};
-
 export const shortcutConfig = {
   get key() { return generalConfig.shortcutKey; },
   get macModifiers() { return generalConfig.shortcutMacModifiers; },

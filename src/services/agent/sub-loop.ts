@@ -7,7 +7,7 @@ import type { Message, ToolDeclaration, ToolCallRequest } from "@/services/agent
 import { createMessageId, createToolMessage } from "@/services/agent/types"
 import { executeTool } from "@/services/tool/router"
 import { getToolByName } from "@/services/tool/registry"
-import { checkSafety } from "@/services/safety/checker"
+import { checkSafety } from "@/services/safety"
 import { toToolDeclaration } from "@/services/tool/types"
 import type { ToolDef } from "@/services/tool/types"
 import { loopConfig } from "@/services/config"

@@ -36,12 +36,31 @@ src/services/
 └── window/      # 窗口监控→主动搭话
 
 src-tauri/src/
-├── paths.rs         # AppPaths: 统一 base dirs + validate_path() 路径穿越防护
+├── main.rs           # 入口
+├── lib.rs            # setup() 中 AppPaths::init() + app.manage() + 注册所有 commands
+├── paths.rs          # AppPaths: 统一 base dirs + validate_path() 路径穿越防护
+├── macros/
+│   └── mod.rs        # Rust 宏定义
 ├── commands/
-│   ├── memory_cmd.rs        # 记忆文件系统命令 → State<AppPaths>
-│   ├── personality_fs_cmd.rs # 人格文件系统命令 → State<AppPaths>
-│   └── profile_cmd.rs       # Profile 文件系统命令 → State<AppPaths>
-└── lib.rs           # setup() 中 AppPaths::init() + app.manage() + 6 个 path commands
+│   ├── mod.rs                   # 模块声明
+│   ├── cursor.rs                # 光标位置获取
+│   ├── logging.rs               # 日志管理
+│   ├── mcp_bridge.rs            # MCP 桥接
+│   ├── memory_cmd.rs            # 记忆文件系统命令 → State<AppPaths>
+│   ├── monitor_ctl.rs           # 监控控制
+│   ├── personality_fs_cmd.rs    # 人格文件系统命令 → State<AppPaths>
+│   ├── profile_cmd.rs           # Profile 文件系统命令 → State<AppPaths>
+│   ├── sim.rs                   # Windows 模拟器
+│   └── tool_exec.rs             # 工具执行
+├── monitor/
+│   ├── mod.rs        # 监控模块
+│   ├── capture.rs    # 窗口标题捕获
+│   ├── thread.rs     # 监控线程
+│   └── visibility.rs # 窗口可见性检测
+└── window/
+    ├── mod.rs        # 窗口模块
+    ├── main_win.rs   # 主窗口管理
+    └── settings.rs   # 设置窗口管理
 ```
 
 ## 核心数据流 (v5)

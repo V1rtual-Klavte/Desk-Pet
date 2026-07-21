@@ -20,12 +20,9 @@ export {
 } from "./session"
 export type { AgentState, SessionState } from "./session"
 
-// ── Thinking ──
-export { getThinkingBudget } from "./thinking"
-
 // ── Context ──
-export { buildPrompt } from "@/services/context/builder"
-export type { BuildContextInput, BuildContextOutput } from "@/services/context/builder"
+export { buildPrompt } from "@/services/context"
+export type { BuildContextInput, BuildContextOutput } from "@/services/context"
 
 // ── Slash ──
 export { initSlashCommands, search as searchSlashCommands, find as findSlashCommand, listAll as listAllSlashCommands } from "./slash"

@@ -10,7 +10,7 @@ import { registerVarTools } from "@/services/tool/local/var"
 import { initDebug } from "@/services/debug"
 import { initSessions, chatHistory, initWelcome } from "@/services/session"
 import { getActiveCard } from "@/services/personality"
-import { modeConfig, toolsConfig } from "@/services/config"
+import { generalConfig, toolsConfig } from "@/services/config"
 import { createLogger } from "@/services/logger"
 
 const log = createLogger("Init")
@@ -50,7 +50,7 @@ export async function initApp(welcomeText: string): Promise<void> {
   registerVarTools()  // 变量池工具（var_read/write/list/delete）— 所有模式可用
   log.info("4a/7 基础工具就绪")
 
-  if (modeConfig.assistant) {
+  if (generalConfig.assistantMode) {
     await registerAssistantTools()
     log.info("4b/7 助手工具就绪")
   }
@@ -70,7 +70,7 @@ export async function initApp(welcomeText: string): Promise<void> {
   }
 
   const { toolCount } = await import("@/services/tool/registry")
-  log.info(`4/7 工具就绪 (${toolCount()} 个) | 助手:${modeConfig.assistant} MCP:${toolsConfig.mcpEnabled} Skill:${toolsConfig.skillEnabled}`)
+  log.info(`4/7 工具就绪 (${toolCount()} 个) | 助手:${generalConfig.assistantMode} MCP:${toolsConfig.mcpEnabled} Skill:${toolsConfig.skillEnabled}`)
 
   // ── 5. 会话初始化 ──
   const sessions = await initSessions()

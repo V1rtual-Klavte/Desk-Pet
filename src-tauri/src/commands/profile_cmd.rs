@@ -31,20 +31,18 @@ pub fn profile_file_write(
     }
     fs::write(&file_path, &content).map_err(|e| format!("写入文件失败: {e}"))?;
 
-    // ★ dev 模式：同步拷贝到 public/profiles/ 以形成闭包
-    //   生产模式下 Tauri 自定义协议自行处理路径解析，无需此步骤
-    if let Ok(cargo_manifest) = std::env::var("CARGO_MANIFEST_DIR") {
-        let public_dir = std::path::PathBuf::from(&cargo_manifest)
-            .parent()
-            .unwrap_or(&std::path::PathBuf::from(&cargo_manifest))
-            .join("public")
-            .join("profiles")
-            .join(&profile_id)
-            .join(&relative_path);
-        if let Some(parent) = public_dir.parent() {
+    // ★ dev 模式：同步拷贝到 builtin_profiles（即 public/profiles/）以形成闭包
+    //   生产模式下 builtin_profiles 指向 Tauri resource_dir，不执行此同步
+    #[cfg(debug_assertions)]
+    {
+        let public_path = paths.builtin_profiles.join(&profile_id).join(&relative_path);
+        if let Some(parent) = public_path.parent() {
+            if parent.exists() {
+                AppPaths::validate_path(parent, &paths.builtin_profiles)?;
+            }
             fs::create_dir_all(parent).map_err(|e| format!("创建 public 目录失败: {e}"))?;
         }
-        fs::write(&public_dir, &content).map_err(|e| format!("同步到 public/ 失败: {e}"))?;
+        fs::write(&public_path, &content).map_err(|e| format!("同步到 public/ 失败: {e}"))?;
     }
 
     Ok(())

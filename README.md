@@ -91,9 +91,17 @@ Desk-Pet/
 ├── docs/                             # 设计文档
 │   ├── DES.md                        # 核心设计（玩法/机制）
 │   ├── 架构方案.md                     # v2 架构方案
+│   ├── 架构设计文档.docx               # 原始架构设计
+│   ├── DESIGN_ORIGIN.md              # 原始设计记录
+│   ├── DESIGN-REPLY-v4.md            # v4 回复生成设计
 │   ├── DESIGN-REPLY-v5.md            # v5 回复生成设计
 │   ├── DESIGN-VARIABLE-POOL-v2.md    # 变量池 v2 设计
-│   └── FIX-AGENTLOOP-v5.md           # Agent Loop v5 修复记录
+│   ├── FIX-AGENTLOOP-v5.md           # Agent Loop v5 修复记录
+│   ├── PRD-可配置静态资源管理.md        # 静态资源管理 PRD
+│   ├── 灵动图层设计.md                 # 灵动图层设计文档
+│   ├── 阶段现状-2026.7.17.md           # 阶段现状记录
+│   ├── 阶段现状-2026.7.21.md           # 阶段现状记录
+│   └── superpowers/                  # Superpowers 计划
 │
 ├── src/                              # Vue 3 + TypeScript 前端
 │   ├── App.vue                       # 根组件
@@ -105,12 +113,16 @@ Desk-Pet/
 │   │   ├── DebugBar.vue              # 底部状态栏
 │   │   ├── settings/                 # 设置页各 Tab（AI/外观/工具/通用）
 │   │   └── winsim/                   # Windows 模拟器彩蛋
+│   ├── composables/
+│   │   ├── useParallax.ts            # 灵动图层 60fps 视差
+│   │   └── useLayerEditor.ts         # 图层编辑器状态
 │   └── services/
-│       ├── engine/                   # Agent Loop v5 + 会话 + 压缩
+│       ├── engine/                   # Agent Loop v5 + 会话 + compactor 压缩 + Slash命令
 │       ├── personality/              # 人格模块（Card/Stages/变量池/When引擎/Middleware）
 │       │   ├── cards/                # 内置 Card .md（4张）
 │       │   └── stages/               # 内置 Stages JSON（LLM 生成）
-│       ├── agent/                    # Provider + Runner + Sub-agent + Active
+│       ├── agent/                    # Provider + Runner + Sub-agent(fork/team) + Sub-loop + Memory + Active
+│       │   └── memory/               # 记忆 IO + 整理 + 条目 + 解析 + 会话文件(7 files)
 │       ├── tool/                     # 工具注册表 + 路由（local/extra/skill/mcp）
 │       ├── safety/                   # 四级安全 + 确认弹窗
 │       ├── context/                  # System Prompt 构建
@@ -119,6 +131,7 @@ Desk-Pet/
 │       ├── profile/                  # Profile 主题系统
 │       ├── audio/                    # 33音效 Web Audio 合成
 │       ├── window/                   # 前台窗口监控
+│       ├── init.ts                   # 服务初始化入口
 │       └── paths.ts                  # 统一路径管理
 │
 ├── src-tauri/                        # Rust 后端
@@ -127,7 +140,7 @@ Desk-Pet/
 │       ├── paths.rs                  # AppPaths 路径管理
 │       ├── window/                   # 主窗口 + 设置窗口
 │       ├── monitor/                  # 窗口监控 + 光标追踪
-│       └── commands/                 # Tauri commands（工具执行/记忆/MCP/Profile）
+│       └── commands/                 # 10 Tauri commands（工具/记忆/人格/Profile/光标/日志/MCP桥/监控/模拟器）
 │
 ├── skills/                           # Skill 定义（3个内置 .md）
 ├── public/profiles/                  # Profile 主题素材
@@ -209,9 +222,17 @@ Desk-Pet/
 - [CLAUDE.md](CLAUDE.md) — AI 开发指引（规范/构建/调试/标准格式）
 - [docs/DES.md](docs/DES.md) — 设计文档（玩法/机制）
 - [docs/架构方案.md](docs/架构方案.md) — v2 完整架构方案
-- [docs/DESIGN-VARIABLE-POOL-v2.md](docs/DESIGN-VARIABLE-POOL-v2.md) — 变量池 v2 设计
+- [docs/架构设计文档.docx](docs/架构设计文档.docx) — 原始架构设计
+- [docs/DESIGN_ORIGIN.md](docs/DESIGN_ORIGIN.md) — 原始设计记录
+- [docs/DESIGN-REPLY-v4.md](docs/DESIGN-REPLY-v4.md) — v4 回复生成设计
 - [docs/DESIGN-REPLY-v5.md](docs/DESIGN-REPLY-v5.md) — v5 回复生成设计
+- [docs/DESIGN-VARIABLE-POOL-v2.md](docs/DESIGN-VARIABLE-POOL-v2.md) — 变量池 v2 设计
 - [docs/FIX-AGENTLOOP-v5.md](docs/FIX-AGENTLOOP-v5.md) — Agent Loop v5 修复记录
+- [docs/PRD-可配置静态资源管理.md](docs/PRD-可配置静态资源管理.md) — 静态资源管理 PRD
+- [docs/灵动图层设计.md](docs/灵动图层设计.md) — 灵动图层设计文档
+- [docs/阶段现状-2026.7.17.md](docs/阶段现状-2026.7.17.md) — 阶段现状记录
+- [docs/阶段现状-2026.7.21.md](docs/阶段现状-2026.7.21.md) — 阶段现状记录
+- [docs/superpowers/](docs/superpowers/) — Superpowers 计划
 
 ---
 

@@ -2,7 +2,7 @@
 import { ref, onMounted, computed } from "vue";
 import {
   aiConfig, windowMonitorConfig, aiLockConfig,
-  memoryConfig, personalityConfig, modeConfig,
+  memoryConfig, personalityConfig, generalConfig,
   safetyConfig,
 } from "@/services/config";
 import {
@@ -56,7 +56,7 @@ const memStatus = ref<{
 }>({
   count: 0,
   lastConsolidation: "从未",
-  mode: modeConfig.assistant ? "助手(LLM)" : "轻量(去重)",
+  mode: generalConfig.assistantMode ? "助手(LLM)" : "轻量(去重)",
 });
 
 // ═══════════════════════════════════
@@ -418,7 +418,7 @@ onMounted(async () => {
       count: MemoryService.count,
       projectCount: MemoryService.projectCount,
       lastConsolidation: sm?.compactionSummary ? "已压缩" : "运行中",
-      mode: modeConfig.assistant ? "助手(LLM)" : "轻量(去重)",
+      mode: generalConfig.assistantMode ? "助手(LLM)" : "轻量(去重)",
       sessionTurns: sm?.turns.length ?? 0,
       sessionId: sm?.sessionId ?? "",
     };

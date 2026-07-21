@@ -1,14 +1,14 @@
 <script setup lang="ts">
 import { ref, computed, onMounted, onUnmounted } from "vue";
 import { emit, listen } from "@tauri-apps/api/event";
-import { userConfig, modeConfig, loggingConfig, desktopConfig } from "@/services/config";
+import { userConfig, generalConfig, loggingConfig, desktopConfig } from "@/services/config";
 import { createLogger } from "@/services/logger";
 import { isMacOS } from "@/services/env";
 
 const log = createLogger("Settings");
 
 // ── 模式 ──
-const assistantMode = ref(modeConfig.assistant);
+const assistantMode = ref(generalConfig.assistantMode);
 
 // ── 弹窗 ──
 const popupMode = ref(userConfig.popupMode);

@@ -2,7 +2,7 @@
 // 记忆系统 — LLM 记忆整理 + Fork 补充 + 定时器
 // ==========================================
 
-import { modeConfig, memoryConfig } from "@/services/config"
+import { generalConfig, memoryConfig } from "@/services/config"
 import type { MemoryEntry } from "./types"
 import { appendMemory, removeMemory, updateMemory, consolidateLocal, getEntries } from "./memory-entries"
 import { createLogger } from "@/services/logger"
@@ -56,7 +56,7 @@ export async function consolidateWithLLM(): Promise<{ removed: number; kept: num
 }
 
 export function checkAndConsolidate(): boolean {
-  if (modeConfig.assistant) {
+  if (generalConfig.assistantMode) {
     consolidateWithLLM().then(r => log.info("LLM 记忆整理:", r.report)).catch(() => {})
     return true
   }
@@ -66,7 +66,7 @@ export function checkAndConsolidate(): boolean {
 // ── Fork 补充 ──
 
 export async function forkMemorySupplement(dialogueSummary: string): Promise<void> {
-  if (!modeConfig.assistant || getEntries().length >= memoryConfig.maxEntries) return
+  if (!generalConfig.assistantMode || getEntries().length >= memoryConfig.maxEntries) return
   try {
     const existingSummary = getEntries().slice(0, 20).map(e => e.content).join("; ")
     const prompt = [

@@ -5,7 +5,7 @@
 
 import type { ToolDef, ToolDeclaration, ToolMode } from "./types"
 import { toToolDeclaration } from "./types"
-import { modeConfig } from "@/services/config"
+import { generalConfig } from "@/services/config"
 import { createLogger } from "@/services/logger"
 
 const log = createLogger("ToolReg")
@@ -51,7 +51,7 @@ export function getToolByName(name: string): ToolDef | undefined {
 
 /** 获取当前模式下的所有工具 */
 export function getToolsForMode(mode?: ToolMode): ToolDef[] {
-  const m = mode ?? (modeConfig.assistant ? "assistant" : "pet")
+  const m = mode ?? (generalConfig.assistantMode ? "assistant" : "pet")
   const result: ToolDef[] = []
   for (const t of tools.values()) {
     if (t.mode === "pet" || t.mode === m) result.push(t)
