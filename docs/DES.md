@@ -618,6 +618,7 @@ src/services/
 │   ├── agent-loop.ts      # Agent Loop — 多轮工具调用核心循环 + 上下文压缩
 │   ├── compactor.ts       # 上下文压缩 (compactMessages + 摘要写入)
 │   ├── preprocessor.ts    # Slash命令 + 空/重复消息过滤
+│   ├── planner.ts         # Plan 编排 — 复杂度检测 + LLM 拆解 + 子代理逐步执行 ✅ 已实现
 │   ├── parser.ts          # AI输出解析 (function_call/纯文本/思考)
 │   ├── session.ts         # 会话状态机 (WAITING→PRE→GENERATING→EXECUTING)
 │   └── slash/             # ★ Slash 命令系统
@@ -1027,6 +1028,7 @@ sessions/                      会话目录（唯一真相源）
 | 助手模式开关 + 设置UI | ✅ | `CONFIG.yaml` mode.assistant |
 | 模式切换动态加载 | ✅ | registerAssistantTools/unregisterAssistantTools |
 | 助手专属工具 (5个+1个NOWAY) | ✅ | local-extra/ |
+| **Plan 模块 — 复杂任务编排** | ✅ 已实现 | `engine/planner.ts` — 复杂度检测(Type+LLM+force) + LLM拆解 + 逐步执行 |
 | **agent.spawn 子代理** | ✅ 已实现 | fork/team 双模式，子循环最多3轮，90s超时 |
 | **助手完整安全 (四级+确认UI)** | ✅ 已实现 | checker.ts + confirm.ts + ChatPanel 弹窗 |
 | **安全策略会话覆盖** | ✅ 已实现 | 仪表盘下拉，getEffectiveSafetyMode() |

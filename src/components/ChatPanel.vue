@@ -9,6 +9,7 @@ import { listen } from "@tauri-apps/api/event";
 import { searchSlashCommands, findSlashCommand, initSlashCommands } from "@/services/engine";
 import type { SlashMatch } from "@/services/engine";
 import DebugBar from "./DebugBar.vue";
+import PlanConfirm from "./PlanConfirm.vue";
 import { confirmState, resolveConfirm } from "@/services/safety";
 
 // ★ 同步初始化 Slash 命令注册表（模块加载时即完成，保证后续即时可用）
@@ -357,6 +358,9 @@ onUnmounted(() => {
         🔧 {{ toolStatus.text }}
       </div>
     </Transition>
+
+    <!-- 计划确认面板 -->
+    <PlanConfirm />
 
     <div id="ch-foot">
       <!-- 输入框容器（相对定位，供下拉框定位） -->

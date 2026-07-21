@@ -3,7 +3,7 @@ import { ref, onMounted, computed } from "vue";
 import {
   aiConfig, windowMonitorConfig, aiLockConfig,
   memoryConfig, personalityConfig, generalConfig,
-  safetyConfig,
+  safetyConfig, planConfig,
 } from "@/services/config";
 import {
   listPersonalities, getActiveCard,
@@ -46,6 +46,14 @@ const lockTimeout = ref(aiLockConfig.safetyTimeoutMs);
 // ── 记忆 ──
 const memMax = ref(memoryConfig.maxEntries);
 const candyInstructions = ref("");
+
+// ── Plan 设置 ──
+const planEnabled = ref(planConfig.enabled);
+const planComplexityThreshold = ref(planConfig.complexityThreshold);
+const planMaxSteps = ref(planConfig.maxSteps);
+const planThinkingEffort = ref(planConfig.thinkingEffort);
+const planStepThinkingEffort = ref(planConfig.stepThinkingEffort);
+const planOnStepFailure = ref(planConfig.onStepFailure);
 const memStatus = ref<{
   count: number;
   lastConsolidation: string;
@@ -456,6 +464,12 @@ defineExpose({
   memMax,
   personalityActive,
   candyInstructions,
+  planEnabled,
+  planComplexityThreshold,
+  planMaxSteps,
+  planThinkingEffort,
+  planStepThinkingEffort,
+  planOnStepFailure,
 });
 </script>
 
@@ -651,6 +665,26 @@ defineExpose({
     </div>
     <label class="chk"><input type="checkbox" v-model="sessionTrustEnabled" /><span>会话信任 NORMAL 工具</span></label>
     <div class="fld" style="margin-top:4px"><span class="fn">锁超时</span><input class="inp-num" type="number" v-model.number="lockTimeout" /> ms</div>
+  </div>
+
+  <!-- ═══ 📋 计划模式 ═══ -->
+  <div class="s-section">
+    <div class="s-label">📋 计划模式</div>
+    <label class="chk"><input type="checkbox" v-model="planEnabled" /><span>启用任务计划</span></label>
+    <div class="fld" style="margin-top:6px"><span class="fn">复杂度阈值</span><input class="inp-num" type="number" v-model.number="planComplexityThreshold" min="1" max="5" style="width:60px" /><span class="s-muted">(1-5, 越高越少触发)</span></div>
+    <div class="fld"><span class="fn">最大步骤</span><input class="inp-num" type="number" v-model.number="planMaxSteps" min="1" max="20" style="width:60px" /></div>
+    <div class="s-subtitle" style="margin-top:6px">计划思考强度</div>
+    <div class="radio-row">
+      <label v-for="lv in ['low','medium','high']" :key="'pt'+lv" class="chk"><input type="radio" v-model="planThinkingEffort" :value="lv" /><span>{{ lv }}</span></label>
+    </div>
+    <div class="s-subtitle" style="margin-top:4px">步骤思考强度</div>
+    <div class="radio-row">
+      <label v-for="lv in ['low','medium','high']" :key="'ps'+lv" class="chk"><input type="radio" v-model="planStepThinkingEffort" :value="lv" /><span>{{ lv }}</span></label>
+    </div>
+    <div class="s-subtitle" style="margin-top:4px">步骤失败时</div>
+    <div class="radio-row">
+      <label v-for="m in [{v:'continue',l:'继续执行'},{v:'abort',l:'终止计划'},{v:'ask',l:'询问用户'}]" :key="'pf'+m.v" class="chk"><input type="radio" v-model="planOnStepFailure" :value="m.v" /><span>{{ m.l }}</span></label>
+    </div>
   </div>
 
   <!-- ═══ 🧠 记忆 ═══ -->

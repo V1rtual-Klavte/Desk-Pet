@@ -69,6 +69,26 @@ ai:
     maxEntries: 200
     maxSessions: 20
 
+  plan:
+    enabled: true
+    complexityThreshold: 3
+    maxSteps: 8
+    stepTimeoutMs: 90000
+    stepMaxRounds: 5
+    thinkingEffort: medium
+    stepThinkingEffort: low
+    onStepFailure: continue
+    keywords:
+      - 分析
+      - 整理
+      - 重构
+      - 修复
+      - 审查
+      - 合并
+      - 总结
+      - 生成
+      - 创建项目
+
   lock:
     safetyTimeoutMs: 30000
 

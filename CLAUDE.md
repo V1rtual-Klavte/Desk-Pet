@@ -22,7 +22,7 @@ cd src-tauri && cargo check       # Rust 检查
 
 ```
 src/services/
-├── engine/      # Agent Loop v5, 会话状态机, Slash命令, 上下文压缩
+├── engine/      # Agent Loop v5, 会话状态机, Slash命令, 上下文压缩, Plan编排
 ├── personality/ # 人格模块: cards(4张+neutral默认), stages(LLM生成), 变量池v2, When引擎
 ├── tool/        # 工具: local(10个)/local-extra(7个,助手模式)/skill(3个)/mcp(5个)
 ├── context/     # buildPrompt() — 统一system prompt构建(角色+变量+工具+记忆)
@@ -67,6 +67,7 @@ src-tauri/src/
 
 ```
 用户消息 → PreProcessor → refreshVariablePool() + When引擎
+  → [Plan阶段: evaluateComplexity() → generatePlan() → executePlan()]
   → buildPrompt(card全量注入: 角色/风格/情绪/When语气/行为准则/变量池/记忆)
   → 单次LLM(永远非流式) → runToolLoop(安全→执行)
   → generateReply(raw, card) → 剥离[emo:key] + 表情/音效映射 + 截断
