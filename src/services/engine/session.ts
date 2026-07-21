@@ -1,6 +1,6 @@
 // ==========================================
 // 核心引擎 —— 会话引擎（状态机）
-// 管理 Agent 状态流转: WAITING → PRE → GENERATING → EXECUTING
+// 管理 Agent 状态流转: WAITING → PRE → PLANNING/GENERATING → EXECUTING
 // ==========================================
 
 import { createLogger } from "@/services/logger"
@@ -12,6 +12,7 @@ const log = createLogger("Session")
 export type AgentState =
   | "WAITING"     // 等待用户输入
   | "PRE"         // 预处理（slash命令/去重）
+  | "PLANNING"    // Plan 生成中（助手模式复杂任务）
   | "GENERATING"  // AI 生成中
   | "EXECUTING"   // 执行工具中
 

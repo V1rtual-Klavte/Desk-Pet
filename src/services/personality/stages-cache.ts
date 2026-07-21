@@ -76,7 +76,7 @@ const FALLBACK_FALLBACKS: FallbackReplies = {
 }
 
 export const FALLBACK_STAGES: StageMap = {
-  thinking: null, planning: null, idle: null,
+  thinking: null, planning: "让我想想怎么帮你规划～", idle: null,
   executing: { _default: "处理中..." },
   done: {
     "fs.read": "读取完成",

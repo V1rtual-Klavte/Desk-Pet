@@ -30,3 +30,10 @@ export type { SlashCommand, SlashMatch } from "./slash"
 
 // ── Compactor ──
 export { shouldCompact, compactMessages, estimateTokens, compactIncremental, compactFull, compactOnHighUsage } from "./compactor"
+
+// ── Planner ──
+export { evaluateComplexity, generatePlan, executePlan, formatStepResults } from "./planner"
+export type { PlanStep, PlanResult, ComplexityResult, PlanExecutionResult } from "./planner"
+
+// ── Plan 确认桥接 ──
+export { resolvePlanConfirm, resolvePlanStepDecision } from "./agent-loop"

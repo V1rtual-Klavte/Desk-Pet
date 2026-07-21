@@ -7,7 +7,7 @@ import type { Message } from "@/services/agent/types"
 import { createMessageId, createToolMessage } from "@/services/agent/types"
 import { buildPrompt } from "@/services/context"
 import { executeTool } from "@/services/tool/router"
-import { getToolByName } from "@/services/tool/registry"
+import { getToolByName, getToolsForMode } from "@/services/tool/registry"
 import { checkSafety, trustToolInSession, requestConfirm } from "@/services/safety"
 import { PetPersonalityMiddleware } from "@/services/personality/middleware"
 import type { PersonalityEffect } from "@/services/personality/middleware"
@@ -18,11 +18,48 @@ import { getEffectiveThinkingEffort, updateRequestStats } from "@/services/debug
 import { generateReply } from "@/services/reply"
 import { transition, recordMessage, recordToolCall } from "./session"
 import { pushMessage, chatHistory } from "@/services/session/store"
-import { loopConfig, generalConfig, aiConfig } from "@/services/config"
+import { loopConfig, generalConfig, aiConfig, safetyConfig, planConfig } from "@/services/config"
 import { createLogger } from "@/services/logger"
 import { emit } from "@tauri-apps/api/event"
 import { MemoryService } from "@/services/agent/memory"
 import { shouldCompact, compactMessages, estimateTokens, compactIncremental, compactOnHighUsage } from "./compactor"
+import { evaluateComplexity, generatePlan, executePlan, formatStepResults } from "./planner"
+import type { PlanStep, PlanResult } from "./planner"
+
+// ── Plan 确认桥接 ──
+
+let planConfirmResolve: ((result: { confirmed: boolean; mode: "auto" | "stepByStep" }) => void) | null = null
+let planStepDecisionResolve: ((d: "continue" | "abort") => void) | null = null
+
+export function resolvePlanConfirm(result: { confirmed: boolean; mode: "auto" | "stepByStep" }) {
+  planConfirmResolve?.(result)
+  planConfirmResolve = null
+}
+
+export function resolvePlanStepDecision(decision: "continue" | "abort") {
+  planStepDecisionResolve?.(decision)
+  planStepDecisionResolve = null
+}
+
+async function requestPlanConfirm(
+  plan: PlanResult,
+  opts?: { forceStepByStep?: boolean },
+): Promise<{ confirmed: boolean; mode: "auto" | "stepByStep" }> {
+  return new Promise((resolve) => {
+    planConfirmResolve = resolve
+    emit("deskpet-plan-start", { steps: plan.steps, complexity: plan.estimatedComplexity, forceStepByStep: opts?.forceStepByStep })
+  })
+}
+
+async function requestPlanStepDecision(
+  step: PlanStep,
+  error: string,
+): Promise<"continue" | "abort"> {
+  return new Promise((resolve) => {
+    planStepDecisionResolve = resolve
+    emit("deskpet-plan-step-failed", { step, error })
+  })
+}
 
 const log = createLogger("AgentLoop")
 
@@ -78,6 +115,78 @@ export async function runAgentLoop(input: AgentLoopInput): Promise<AgentLoopOutp
   )
 
   log.info(`\n${"═".repeat(50)}\n  【v5 System Prompt】Card=${card?.id ?? "neutral"} | Tools=${ctx.tools.length} tokens≈${ctx.estimatedSystemTokens}\n${"═".repeat(50)}\n${ctx.systemPrompt}\n${"─".repeat(50)}`)
+
+  // ═══ Plan 阶段 (助手模式) ═══
+  let planStepContext = ""
+  let rawUserText = userText
+  if (generalConfig.assistantMode && planConfig.enabled) {
+    const forcePlan = userText.startsWith("--plan")
+    if (forcePlan) rawUserText = userText.replace(/^--plan\s*/, "")
+
+    const complexity = await evaluateComplexity(rawUserText, planConfig.keywords)
+    log.info(`Plan 复杂度: score=${complexity.score} reason=${complexity.reason}`)
+
+    if (complexity.score >= planConfig.complexityThreshold) {
+      transition("PLANNING")
+      const planEffect = PetPersonalityMiddleware.wrap("planning")
+      applyEffect(planEffect, effects)
+
+      const plan = await generatePlan(rawUserText, {
+        cardId: card!.id,
+        cardRole: card!.sections.roleSetting ?? "",
+        availableTools: getToolsForMode("assistant"),
+        thinkingEffort: planConfig.thinkingEffort,
+      })
+
+      if (plan.steps.length > 0) {
+        const safetyMode = safetyConfig.mode
+        let confirmed = false
+        let stepMode: "auto" | "stepByStep" = "auto"
+
+        if (safetyMode === "just_do_it") {
+          confirmed = true
+        } else {
+          const confirmResult = await requestPlanConfirm(
+            plan,
+            safetyMode === "let_me_tk" ? { forceStepByStep: true } : undefined,
+          )
+          confirmed = confirmResult.confirmed
+          stepMode = confirmResult.mode
+        }
+
+        if (confirmed) {
+          const result = await executePlan(plan, {
+            stepTimeoutMs: planConfig.stepTimeoutMs,
+            stepMaxRounds: planConfig.stepMaxRounds,
+            stepThinkingEffort: planConfig.stepThinkingEffort,
+            maxSteps: planConfig.maxSteps,
+            onStepFailure: planConfig.onStepFailure,
+          }, {
+            onStepStart(s: PlanStep) {
+              emit("deskpet-plan-progress", { step: s.id, total: plan.steps.length, desc: s.description, status: "running" })
+            },
+            onStepDone(s: PlanStep, r) {
+              emit("deskpet-plan-progress", { step: s.id, total: plan.steps.length, desc: s.description, status: r.success ? "done" : "failed" })
+            },
+            async onStepFailed(s, err) {
+              log.warn(`Plan 步骤 ${s.id} 失败:`, err)
+              return requestPlanStepDecision(s, err)
+            },
+          })
+          planStepContext = formatStepResults(result)
+        } else {
+          transition("WAITING")
+          const cancelReply = getSimpleStage("planning") ?? "好的，已取消计划～"
+          return { reply: cancelReply, toolCallHistory, retriesUsed, effects: [] }
+        }
+      }
+    }
+  }
+
+  if (planStepContext) {
+    ctx.systemPrompt += "\n\n" + planStepContext
+  }
+
   applyEffect(PetPersonalityMiddleware.wrap("thinking"), effects)
 
   const { OpenAICompatibleProvider } = await import("@/services/agent/provider")

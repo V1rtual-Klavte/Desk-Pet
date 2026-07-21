@@ -27,6 +27,8 @@ export interface SubLoopInput {
   maxRounds?: number
   /** 总超时 ms */
   timeoutMs?: number
+  /** 思考强度，默认 "low" */
+  thinkingEffort?: import("@/services/agent/types").ThinkingEffort
 }
 
 export interface SubLoopOutput {
@@ -75,7 +77,7 @@ export async function runSubLoop(input: SubLoopInput): Promise<SubLoopOutput> {
         messages,
         systemPrompt,
         tools: toolDeclarations.length > 0 ? toolDeclarations : undefined,
-        thinkingEffort: "low", // 子代理用低强度省 token
+        thinkingEffort: input.thinkingEffort || "low", // 子代理用低强度省 token
       })
 
       const { text, toolCalls, thinking } = response
@@ -136,7 +138,7 @@ export async function runSubLoop(input: SubLoopInput): Promise<SubLoopOutput> {
         const summaryResp = await provider.generateReply({
           messages,
           systemPrompt: systemPrompt + "\n\n请基于以上工具执行结果，用简短中文总结。",
-          thinkingEffort: "low",
+          thinkingEffort: input.thinkingEffort || "low",
         })
         finalReply = summaryResp.text || getFallbackReply("subAgentDone")
       } catch {

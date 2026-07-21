@@ -46,7 +46,7 @@
 
 {
   "thinking": "",
-  "planning": "",
+  "planning": "正在分析你的任务，制定执行计划…",
   "idle": null,
   "executing": {
     "fs.read": "",
