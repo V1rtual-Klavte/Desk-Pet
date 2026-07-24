@@ -19,7 +19,7 @@ export const 亲密度提升: SceneDef = {
           if (!v) throw new Error("亲密度变量不存在")
           if (typeof v.value !== "number") throw new Error("亲密度不是数字")
           if (v.value < 3) throw new Error(`亲密度=${v.value} 应 >= 3(初始值)`)
-          if (v.updatedBy !== "llm") throw new Error(`亲密度 updatedBy=${v.updatedBy} 应为 llm`)
+          if (v.updatedBy !== "llm" && v.updatedBy !== "system") throw new Error(`亲密度 updatedBy=${v.updatedBy} 应为 llm 或 system`)
         }},
       ],
     },
