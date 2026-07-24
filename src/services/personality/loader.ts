@@ -225,18 +225,8 @@ function parseSections(body: string): CardSections {
   const varBlock = sections["变量定义"] || ""
   const { defs: variableDefs } = parseVariableSection(varBlock)
 
-  // 行为进阶规则
-  const whenRaw = sections["行为进阶"] || ""
-  const whenRules: import("./when-engine").WhenRule[] = []
-  const blocks = whenRaw.split(/^##\s*规则:\s*/m).filter(b => b.trim())
-  for (const block of blocks) {
-    const nm = block.match(/^(.+)$/m)
-    const wm = block.match(/^when:\s*(.+)$/m)
-    const tm = block.match(/^语气:\s*([\s\S]+?)(?=\n\w|$)/m)
-    if (nm && wm) {
-      whenRules.push({ name: nm[1]!.trim(), when: wm[1]!.trim(), tone: (tm?.[1] ?? "").trim() })
-    }
-  }
+  // 行为进阶 — 原文作为 LLM 语气指引
+  const whenText = (sections["行为进阶"] || "").trim()
 
   // 情绪表达
   const emotionRaw = sections["情绪表达"] || ""
@@ -250,7 +240,7 @@ function parseSections(body: string): CardSections {
     roleSetting: sections["角色设定"] || "",
     languageStyle: sections["语言风格"] || "",
     outputRules: sections["输出规则"] || "",
-    emotionRaw, emotionMappings, whenRules, mustRules,
+    emotionRaw, emotionMappings, whenText, mustRules,
     variableDefs,
   }
 }
