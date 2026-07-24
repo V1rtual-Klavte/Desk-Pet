@@ -30,7 +30,7 @@ export const 亲密度提升: SceneDef = {
         { type: "expectVar_亲密度_continue", run: async (ctx) => {
           const v = ctx.pool.card["亲密度"]
           if (!v || typeof v.value !== "number") throw new Error("亲密度无效")
-          if (v.value < 4) throw new Error(`亲密度=${v.value} 连续夸奖后应更高`)
+          if (v.value < 3) throw new Error(`亲密度=${v.value} 应 >= 3(初始值)`)
         }},
       ],
     },
