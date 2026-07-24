@@ -533,7 +533,7 @@ defineExpose({
           </div>
 
           <div class="card-stats">
-            <span>{{ card.sections.whenRules.length }} 条行为规则</span>
+            <span v-if="card.sections.whenText">有语气指引</span>
             <span>{{ card.sections.variableDefs.length }} 个变量</span>
             <span>{{ card.sections.emotionMappings.length }} 个情绪</span>
             <span>v{{ card.version }}</span>
