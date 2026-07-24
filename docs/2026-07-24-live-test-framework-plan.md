@@ -1,0 +1,1318 @@
+# Live Test Framework 实现计划
+
+> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+
+**Goal:** 构建 AI 自驱动端到端测试框架——用真 LLM 模拟对话，检查输出+内部状态，覆盖全部 8 个功能模块。
+
+**Architecture:** 两层结构——Contract（AI 生成的覆盖契约，锁定"测什么"）+ Scene（AI 生成的测试场景，定义"怎么测"），scene-runner 调 `runAgentLoop()` 真 LLM 执行并断言，contract-checker 防 AI 偷懒。
+
+**Tech Stack:** TypeScript + vitest + 项目已有的 `runAgentLoop` / `getPoolSnapshot` / `getSession` / `MemoryService`
+
+## Global Constraints
+
+- 旧测试全部移除（8 个 .test.ts + helpers/），不保留 mock 基础设施
+- 所有断言必须通过，没有 warn 级别，任一失败 = 场景 FAIL
+- Contract 文件 AI 生成，可人 review 修改
+- Scene 文件 AI 生成，可人 review 修改
+- SKILL.md 放在 `src/services/__tests__/live/SKILL.md`，不污染全局 `.claude/skills/`
+- 每个场景独立，互不影响（setup 负责重置状态）
+- LLM Provider 使用项目已有 `aiConfig`
+
+---
+
+## File Structure (What We're Building)
+
+```
+src/services/__tests__/live/
+├── SKILL.md                    # Claude Code Skill (Task 7)
+├── setup.ts                    # 测试环境初始化 (Task 2)
+├── types.ts                    # 所有共享类型 (Task 3)
+├── scene-runner.ts             # 场景执行引擎 (Task 4)
+├── standard-setup.ts           # 标准 setup 工厂 (Task 4)
+├── contract-checker.ts         # hash 验证 + 完整性检查 (Task 5)
+├── reporter.ts                 # 测试报告 (Task 5)
+├── cli.ts                      # CLI 参数解析 (Task 6)
+├── index.live.test.ts          # vitest 入口 (Task 6)
+├── contracts/                  # AI 生成 (Task 8)
+│   ├── variable-pool.contract.ts
+│   ├── when-engine.contract.ts
+│   ├── emotion.contract.ts
+│   ├── safety.contract.ts
+│   ├── memory.contract.ts
+│   ├── planner.contract.ts
+│   ├── tool-execution.contract.ts
+│   └── personality-card.contract.ts
+└── scenes/                     # AI 生成 (Task 9)
+    ├── variable-pool/
+    ├── when-engine/
+    ├── emotion/
+    ├── safety/
+    ├── memory/
+    ├── planner/
+    └── tool-execution/
+```
+
+---
+
+### Task 1: 清理旧测试 + 更新 vitest 配置
+
+**Files:**
+- Delete: `src/services/__tests__/config.test.ts`
+- Delete: `src/services/__tests__/memory.test.ts`
+- Delete: `src/services/__tests__/planner.test.ts`
+- Delete: `src/services/__tests__/safety.test.ts`
+- Delete: `src/services/__tests__/session.test.ts`
+- Delete: `src/services/__tests__/tool-execution.test.ts`
+- Delete: `src/services/__tests__/variable-pool.test.ts`
+- Delete: `src/services/__tests__/when-engine.test.ts`
+- Delete: `src/services/__tests__/helpers/` (entire directory)
+- Delete: `vitest.config.ts`
+- Modify: `vitest.live.config.ts` → rename to `vitest.config.ts`
+- Modify: `package.json` (test script)
+- Create: `src/services/__tests__/live/` directory
+
+**Interfaces:**
+- Consumes: nothing (pure cleanup)
+- Produces: clean slate for new framework
+
+- [ ] **Step 1: 删除所有旧测试文件**
+
+```bash
+rm src/services/__tests__/config.test.ts
+rm src/services/__tests__/memory.test.ts
+rm src/services/__tests__/planner.test.ts
+rm src/services/__tests__/safety.test.ts
+rm src/services/__tests__/session.test.ts
+rm src/services/__tests__/tool-execution.test.ts
+rm src/services/__tests__/variable-pool.test.ts
+rm src/services/__tests__/when-engine.test.ts
+rm -rf src/services/__tests__/helpers/
+```
+
+- [ ] **Step 2: 删除旧 vitest.config.ts，重命名 live config**
+
+```bash
+rm vitest.config.ts
+```
+
+Read `vitest.live.config.ts`, then write new `vitest.config.ts`:
+
+```typescript
+import { defineConfig } from "vitest/config"
+import path from "path"
+
+export default defineConfig({
+  resolve: {
+    alias: { "@": path.resolve(__dirname, "src") },
+  },
+  test: {
+    environment: "node",
+    include: ["src/**/__tests__/live/**/*.test.ts"],
+    testTimeout: 120000,
+    hookTimeout: 120000,
+  },
+})
+```
+
+```bash
+rm vitest.live.config.ts
+```
+
+- [ ] **Step 3: 更新 package.json test 脚本**
+
+Read `package.json`, change the test scripts:
+
+```json
+"test": "vitest run",
+```
+
+删除 `"test:live"` 行（不再需要区分），只保留一个 `test` 命令。
+
+- [ ] **Step 4: 创建新目录结构**
+
+```bash
+mkdir -p src/services/__tests__/live/contracts
+mkdir -p src/services/__tests__/live/scenes/variable-pool
+mkdir -p src/services/__tests__/live/scenes/when-engine
+mkdir -p src/services/__tests__/live/scenes/emotion
+mkdir -p src/services/__tests__/live/scenes/safety
+mkdir -p src/services/__tests__/live/scenes/memory
+mkdir -p src/services/__tests__/live/scenes/planner
+mkdir -p src/services/__tests__/live/scenes/tool-execution
+```
+
+- [ ] **Step 5: 验证清理结果**
+
+```bash
+ls src/services/__tests__/
+```
+
+Expected: 只有 `live/` 目录，无其他 `.test.ts` 文件或 `helpers/`。
+
+```bash
+ls vitest*.ts
+```
+
+Expected: 只有 `vitest.config.ts`（新的单文件）。
+
+- [ ] **Step 6: Commit**
+
+```bash
+git add -A
+git commit -m "chore: 移除旧单元测试，为 live test framework 清理空间"
+```
+
+---
+
+### Task 2: 测试 Setup（Tauri Mock + 真 Config）
+
+**Files:**
+- Create: `src/services/__tests__/live/setup.ts`
+
+**Interfaces:**
+- Consumes: `@tauri-apps/api/core`, `@tauri-apps/api/event`
+- Produces: `Mock Tauri invoke/emit, real config (no config mock), vitest setup file`
+
+- [ ] **Step 1: 创建设置文件**
+
+Write `src/services/__tests__/live/setup.ts`:
+
+```typescript
+// ==========================================
+// Live Test Setup — Mock Tauri, 保留真 Config + 真 LLM
+// ==========================================
+
+import { vi } from "vitest"
+
+// Mock Tauri invoke（文件 I/O 操作在测试环境走 mock）
+vi.mock("@tauri-apps/api/core", () => ({
+  invoke: vi.fn().mockImplementation(async (cmd: string, args?: any) => {
+    if (cmd === "personality_file_read") return null
+    if (cmd === "personality_file_write") return "/mock/live-test/path"
+    if (cmd === "personality_file_list") return []
+    if (cmd === "memory_file_read") return null
+    if (cmd === "memory_file_write") return "/mock/live-test/memory"
+    if (cmd === "memory_file_list") return []
+    if (cmd === "profile_file_read") return null
+    if (cmd === "profile_file_write") return "/mock/live-test/profile"
+    return null
+  }),
+}))
+
+// Mock Tauri emit（事件推送在测试环境忽略）
+vi.mock("@tauri-apps/api/event", () => ({
+  emit: vi.fn().mockResolvedValue(undefined),
+}))
+
+// 注意：不 mock @/services/config
+// 真 config 意味着真 aiConfig.endpoint + apiKey → 真 LLM 调用
+```
+
+- [ ] **Step 2: 验证 setup 不阻断导入**
+
+写一个临时 vitest 测试验证 setup 能正常加载：
+
+```bash
+echo "import { describe, it, expect } from 'vitest'
+describe('setup smoke', () => {
+  it('config loads without mock', async () => {
+    const { aiConfig } = await import('@/services/config')
+    expect(aiConfig.endpoint).toBeTruthy()
+  })
+})" > /tmp/smoke.test.ts
+```
+
+Run: `npx vitest run /tmp/smoke.test.ts --config vitest.config.ts`
+Expected: PASS，确认真 config 可加载。
+
+Cleanup: `rm /tmp/smoke.test.ts`
+
+- [ ] **Step 3: Commit**
+
+```bash
+git add src/services/__tests__/live/setup.ts
+git commit -m "feat: live test setup — mock Tauri, keep real config for LLM calls"
+```
+
+---
+
+### Task 3: 核心类型定义
+
+**Files:**
+- Create: `src/services/__tests__/live/types.ts`
+
+**Interfaces:**
+- Consumes: `@/services/reply` (ReplyResult type), `@/services/personality/variable-pool` (VariablePool, VariableState), `@/services/engine/session` (SessionState)
+- Produces: `SceneDef, TurnDef, AssertCheck, ModuleContract, CoveragePoint, ContractRules, SceneResult, TurnResult, AssertionResult, TestReport`
+
+- [ ] **Step 1: 写 types.ts**
+
+Write `src/services/__tests__/live/types.ts`:
+
+```typescript
+// ==========================================
+// Live Test Framework — 核心类型定义
+// ==========================================
+
+import type { ReplyResult } from "@/services/reply"
+import type { VariablePool, VariableState } from "@/services/personality/variable-pool"
+import type { AgentLoopOutput } from "@/services/engine/agent-loop"
+
+// ── Scene DSL ──
+
+export interface SceneMeta {
+  module: string
+  contractId: string
+  description: string
+  depth: "shallow" | "deep"
+  tags?: string[]
+  timeout?: number  // ms, 默认 120000
+}
+
+export type AssertCheck = {
+  type: string
+  run: (ctx: AssertContext) => Promise<void>
+}
+
+export interface AssertContext {
+  output: AgentLoopOutput
+  pool: VariablePool
+  session: { state: string; messageCount: number; toolCallCount: number }
+  memory: MemorySnapshot
+  toolHistory: { toolName: string; status: string }[]
+}
+
+export interface MemorySnapshot {
+  totalEntries: number
+  sessionTurnCount: number
+  entriesByCategory: Record<string, number>
+}
+
+export interface TurnDef {
+  index: number
+  description: string
+  userText: string
+  checks: AssertCheck[]
+}
+
+export interface SceneDef {
+  meta: SceneMeta
+  setup?: () => Promise<void>
+  turns: TurnDef[]
+}
+
+// ── Contract ──
+
+export interface CoveragePoint {
+  id: string
+  feature: string
+  description: string
+  why: string
+  depth: "shallow" | "deep"
+  scenarios: string[]
+}
+
+export interface ContractRules {
+  minScenarios: number
+  minDeepScenarios: number
+  requireBoundary: boolean
+  requireErrorPath: boolean
+}
+
+export interface ModuleContract {
+  module: string
+  sourceFiles: string[]
+  generatedAt: string
+  sourceHash: string
+  coverage: CoveragePoint[]
+  rules: ContractRules
+}
+
+// ── Execution Results ──
+
+export interface AssertionResult {
+  type: string
+  pass: boolean
+  error?: string
+  expected?: string
+  actual?: string
+}
+
+export interface TurnResult {
+  index: number
+  description: string
+  userText: string
+  assertions: AssertionResult[]
+  duration: number
+}
+
+export type SceneStatus = "pass" | "fail" | "skip" | "timeout"
+
+export interface SceneResult {
+  scene: string
+  module: string
+  contractId: string
+  status: SceneStatus
+  turns: TurnResult[]
+  duration: number
+  error?: string
+}
+
+export interface TestReport {
+  timestamp: string
+  scenes: SceneResult[]
+  summary: {
+    total: number
+    passed: number
+    failed: number
+    skipped: number
+    timeout: number
+    totalDuration: number
+  }
+}
+
+// ── Contract Check ──
+
+export interface ContractCheckResult {
+  module: string
+  stale: boolean
+  missing: string[]       // coverage points without scenes
+  gaps: string[]           // rules violations
+  valid: boolean
+}
+```
+
+- [ ] **Step 2: 验证编译**
+
+```bash
+npx vue-tsc --noEmit src/services/__tests__/live/types.ts
+```
+
+Expected: no errors.
+
+- [ ] **Step 3: Commit**
+
+```bash
+git add src/services/__tests__/live/types.ts
+git commit -m "feat: live test 核心类型 — SceneDef, ModuleContract, TestReport"
+```
+
+---
+
+### Task 4: Scene Runner (执行引擎 + Standard Setup)
+
+**Files:**
+- Create: `src/services/__tests__/live/standard-setup.ts`
+- Create: `src/services/__tests__/live/scene-runner.ts`
+
+**Interfaces:**
+- Consumes: `types.ts` (SceneDef, SceneResult, TurnResult, AssertionResult, AssertContext, MemorySnapshot), `@/services/engine/agent-loop` (runAgentLoop), `@/services/personality/variable-pool` (destroyPool, initVariablePool, getPoolSnapshot), `@/services/engine/session` (resetSession, getSession), `@/services/agent/memory` (MemoryService), `@/services/session/store` (clearMessages), `@/services/personality/registry` (getActiveCard)
+- Produces: `standardSetup()`, `runScene(scene: SceneDef): Promise<SceneResult>`, `runAllScenes(scenes: SceneDef[]): Promise<SceneResult[]>`
+
+- [ ] **Step 1: 写 standard-setup.ts**
+
+Write `src/services/__tests__/live/standard-setup.ts`:
+
+```typescript
+// ==========================================
+// 标准场景 Setup — 场景间状态隔离
+// ==========================================
+
+import { destroyPool, initVariablePool, getPoolSnapshot } from "@/services/personality/variable-pool"
+import { resetSession } from "@/services/engine/session"
+import { clearMessages, getContextMessages } from "@/services/session/store"
+import { MemoryService } from "@/services/agent/memory"
+import { getActiveCard } from "@/services/personality/registry"
+
+export async function standardSetup(): Promise<void> {
+  // 1. 重置会话状态
+  resetSession()
+
+  // 2. 重置变量池
+  const card = getActiveCard()
+  if (card) {
+    destroyPool()
+    initVariablePool({
+      cardId: card.id,
+      variableDefs: card.sections.variableDefs,
+    })
+  }
+
+  // 3. 清空记忆
+  MemoryService.init()
+  MemoryService.clear()
+
+  // 4. 清空聊天历史
+  clearMessages()
+}
+```
+
+- [ ] **Step 2: 写 scene-runner.ts**
+
+Write `src/services/__tests__/live/scene-runner.ts`:
+
+```typescript
+// ==========================================
+// Scene Runner — 场景执行引擎
+// ==========================================
+
+import type { SceneDef, SceneResult, TurnResult, AssertionResult, AssertContext, MemorySnapshot } from "./types"
+import { runAgentLoop } from "@/services/engine/agent-loop"
+import { getPoolSnapshot } from "@/services/personality/variable-pool"
+import { getSession } from "@/services/engine/session"
+import { getContextMessages } from "@/services/session/store"
+import { MemoryService } from "@/services/agent/memory"
+
+function takeMemorySnapshot(): MemorySnapshot {
+  return {
+    totalEntries: MemoryService.count,
+    sessionTurnCount: MemoryService.sessionTurnCount,
+    entriesByCategory: MemoryService.list().reduce((acc, e) => {
+      acc[e.category] = (acc[e.category] || 0) + 1
+      return acc
+    }, {} as Record<string, number>),
+  }
+}
+
+export async function runScene(scene: SceneDef): Promise<SceneResult> {
+  const start = Date.now()
+  const turnResults: TurnResult[] = []
+
+  // Setup
+  if (scene.setup) {
+    try {
+      await scene.setup()
+    } catch (e) {
+      return {
+        scene: scene.meta.description,
+        module: scene.meta.module,
+        contractId: scene.meta.contractId,
+        status: "skip",
+        turns: [],
+        duration: Date.now() - start,
+        error: `setup failed: ${e instanceof Error ? e.message : String(e)}`,
+      }
+    }
+  }
+
+  // Execute turns
+  for (const turn of scene.turns) {
+    const turnStart = Date.now()
+
+    try {
+      const output = await runAgentLoop({
+        userText: turn.userText,
+        chatMessages: getContextMessages(),
+        unansweredCount: 0,
+        messageCount: getContextMessages().length,
+        isActiveMessage: false,
+      })
+
+      // Collect internal state
+      const session = getSession()
+      const ctx: AssertContext = {
+        output,
+        pool: getPoolSnapshot(),
+        session: {
+          state: session.state,
+          messageCount: session.messageCount,
+          toolCallCount: session.toolCallCount,
+        },
+        memory: takeMemorySnapshot(),
+        toolHistory: output.toolCallHistory.map(t => ({
+          toolName: t.toolName,
+          status: t.status,
+        })),
+      }
+
+      // Run all assertions
+      const assertions: AssertionResult[] = []
+      for (const check of turn.checks) {
+        try {
+          await check.run(ctx)
+          assertions.push({ type: check.type, pass: true })
+        } catch (e) {
+          const msg = e instanceof Error ? e.message : String(e)
+          assertions.push({
+            type: check.type,
+            pass: false,
+            error: msg,
+          })
+        }
+      }
+
+      const allPass = assertions.every(a => a.pass)
+      turnResults.push({
+        index: turn.index,
+        description: turn.description,
+        userText: turn.userText,
+        assertions,
+        duration: Date.now() - turnStart,
+      })
+
+      if (!allPass) break // 任一失败 → 终止场景
+    } catch (e) {
+      // runAgentLoop 本身抛异常（超时/网络错误等）
+      const msg = e instanceof Error ? e.message : String(e)
+      turnResults.push({
+        index: turn.index,
+        description: turn.description,
+        userText: turn.userText,
+        assertions: [{ type: "system", pass: false, error: msg }],
+        duration: Date.now() - turnStart,
+      })
+      break
+    }
+  }
+
+  const duration = Date.now() - start
+  const allTurnsPassed = turnResults.length === scene.turns.length &&
+    turnResults.every(t => t.assertions.every(a => a.pass))
+
+  return {
+    scene: scene.meta.description,
+    module: scene.meta.module,
+    contractId: scene.meta.contractId,
+    status: allTurnsPassed ? "pass" : "fail",
+    turns: turnResults,
+    duration,
+  }
+}
+
+export async function runAllScenes(scenes: SceneDef[]): Promise<SceneResult[]> {
+  const results: SceneResult[] = []
+  for (const scene of scenes) {
+    results.push(await runScene(scene))
+  }
+  return results
+}
+```
+
+- [ ] **Step 3: 验证 scene-runner 类型编译**
+
+```bash
+npx vue-tsc --noEmit src/services/__tests__/live/scene-runner.ts
+```
+
+Expected: no errors.
+
+- [ ] **Step 4: Commit**
+
+```bash
+git add src/services/__tests__/live/standard-setup.ts src/services/__tests__/live/scene-runner.ts
+git commit -m "feat: scene runner — 执行引擎 + 标准 setup 状态隔离"
+```
+
+---
+
+### Task 5: Reporter + Contract Checker
+
+**Files:**
+- Create: `src/services/__tests__/live/reporter.ts`
+- Create: `src/services/__tests__/live/contract-checker.ts`
+
+**Interfaces:**
+- Consumes: `types.ts` (TestReport, SceneResult, ModuleContract, ContractCheckResult)
+- Produces: `formatReport(report, format): string`, `checkContract(contract): ContractCheckResult`
+
+- [ ] **Step 1: 写 reporter.ts**
+
+Write `src/services/__tests__/live/reporter.ts`:
+
+```typescript
+// ==========================================
+// Reporter — 测试报告格式化
+// ==========================================
+
+import type { TestReport, SceneResult } from "./types"
+
+export function formatReport(report: TestReport, format: "terminal" | "json" | "markdown"): string {
+  switch (format) {
+    case "json": return JSON.stringify(report, null, 2)
+    case "markdown": return formatMarkdown(report)
+    default: return formatTerminal(report)
+  }
+}
+
+function formatTerminal(report: TestReport): string {
+  const lines: string[] = []
+  const { summary } = report
+
+  lines.push("")
+  lines.push(`📋 Live Test Report — ${report.timestamp}`)
+  lines.push("━".repeat(50))
+  lines.push("")
+
+  for (const scene of report.scenes) {
+    const icon = scene.status === "pass" ? "✅" : scene.status === "skip" ? "⏭️" : "❌"
+    lines.push(`${icon} ${scene.module} / ${scene.contractId} / ${scene.scene}    ${(scene.duration / 1000).toFixed(1)}s`)
+
+    for (const turn of scene.turns) {
+      const turnIcon = turn.assertions.every(a => a.pass) ? "✓" : "✗"
+      lines.push(`   ${turnIcon} T${turn.index} "${turn.userText.slice(0, 40)}${turn.userText.length > 40 ? "…" : ""}" — ${turn.assertions.filter(a => a.pass).length}/${turn.assertions.length} checks pass`)
+
+      for (const a of turn.assertions.filter(a => !a.pass)) {
+        lines.push(`      ✗ ${a.type}: ${a.error || "assertion failed"}`)
+      }
+    }
+
+    if (scene.error) {
+      lines.push(`   ⚠ ${scene.error}`)
+    }
+    lines.push("")
+  }
+
+  lines.push("━".repeat(50))
+  const passRate = summary.total > 0 ? ((summary.passed / summary.total) * 100).toFixed(0) : "0"
+  lines.push(`Scenes: ${summary.passed}/${summary.total} pass (${passRate}%)  ` +
+    `⏱ ${(summary.totalDuration / 1000).toFixed(1)}s`)
+  if (summary.failed > 0) lines.push(`❌ ${summary.failed} failed  ⏭️ ${summary.skipped} skipped  ⏰ ${summary.timeout} timeout`)
+  lines.push("")
+
+  return lines.join("\n")
+}
+
+function formatMarkdown(report: TestReport): string {
+  const lines: string[] = []
+  lines.push(`# Live Test Report — ${report.timestamp}`)
+  lines.push("")
+  lines.push("| Status | Module | Scene | Duration | Turns |")
+  lines.push("|--------|--------|-------|----------|-------|")
+
+  for (const scene of report.scenes) {
+    const icon = scene.status === "pass" ? "✅" : "❌"
+    lines.push(`| ${icon} | ${scene.module} | ${scene.scene} | ${(scene.duration / 1000).toFixed(1)}s | ${scene.turns.length} |`)
+  }
+
+  lines.push("")
+  lines.push(`**Summary:** ${report.summary.passed}/${report.summary.total} passed | ` +
+    `${report.summary.failed} failed | ${report.summary.totalDuration}ms`)
+
+  return lines.join("\n")
+}
+```
+
+- [ ] **Step 2: 写 contract-checker.ts**
+
+Write `src/services/__tests__/live/contract-checker.ts`:
+
+```typescript
+// ==========================================
+// Contract Checker — hash 验证 + 完整性检查
+// ==========================================
+
+import * as fs from "fs"
+import * as crypto from "crypto"
+import * as path from "path"
+import type { ModuleContract, ContractCheckResult } from "./types"
+
+function computeHash(filePaths: string[]): string {
+  const hash = crypto.createHash("sha256")
+  for (const fp of filePaths.sort()) {
+    try {
+      hash.update(fs.readFileSync(fp, "utf-8"))
+    } catch {
+      hash.update(`MISSING:${fp}`)
+    }
+  }
+  return hash.digest("hex")
+}
+
+/** 检查单个 contract */
+export function checkContract(contract: ModuleContract): ContractCheckResult {
+  const issues: string[] = []
+  const missing: string[] = []
+
+  // 1. STALE: hash 是否过期
+  const currentHash = computeHash(contract.sourceFiles)
+  const stale = contract.sourceHash !== currentHash
+
+  // 2. MISSING: 每个 coverage point 是否有场景
+  for (const point of contract.coverage) {
+    if (point.scenarios.length === 0) {
+      missing.push(`${point.id}: ${point.feature}`)
+    }
+  }
+
+  // 3. COUNT: minScenarios
+  const totalScenes = contract.coverage.reduce((sum, p) => sum + p.scenarios.length, 0)
+  if (totalScenes < contract.rules.minScenarios) {
+    issues.push(`[GAP:COUNT] 场景数 ${totalScenes} < ${contract.rules.minScenarios}`)
+  }
+
+  // 4. DEPTH: minDeepScenarios
+  const deepCount = contract.coverage.filter(p => p.depth === "deep" && p.scenarios.length > 0).length
+  if (deepCount < contract.rules.minDeepScenarios) {
+    issues.push(`[GAP:DEPTH] deep 场景数 ${deepCount} < ${contract.rules.minDeepScenarios}`)
+  }
+
+  // 5. BOUNDARY: 是否有 boundary 标签场景
+  if (contract.rules.requireBoundary) {
+    const hasBoundary = contract.coverage.some(p =>
+      p.scenarios.length > 0 && (
+        p.feature.includes("边界") || p.feature.includes("越界") ||
+        p.feature.includes("拒绝") || p.feature.includes("校验")
+      )
+    )
+    if (!hasBoundary) {
+      issues.push("[GAP:BOUNDARY] 缺少边界测试场景")
+    }
+  }
+
+  // 6. ERROR: 是否有错误路径场景
+  if (contract.rules.requireErrorPath) {
+    const hasError = contract.coverage.some(p =>
+      p.scenarios.length > 0 && (
+        p.feature.includes("失败") || p.feature.includes("错误") ||
+        p.feature.includes("拒绝") || p.feature.includes("拦截")
+      )
+    )
+    if (!hasError) {
+      issues.push("[GAP:ERROR] 缺少错误路径测试场景")
+    }
+  }
+
+  return {
+    module: contract.module,
+    stale,
+    missing,
+    gaps: issues,
+    valid: !stale && missing.length === 0 && issues.length === 0,
+  }
+}
+
+/** 检查所有 contracts（vitest 执行前调用） */
+export async function checkAllContracts(contractsDir: string): Promise<ContractCheckResult[]> {
+  const results: ContractCheckResult[] = []
+  const files = fs.readdirSync(contractsDir).filter(f => f.endsWith(".contract.ts"))
+
+  for (const file of files) {
+    const mod = await import(path.join(contractsDir, file))
+    const contract: ModuleContract = mod[Object.keys(mod).find(k => k.endsWith("Contract")) || ""]
+    if (contract) {
+      results.push(checkContract(contract))
+    }
+  }
+
+  return results
+}
+```
+
+- [ ] **Step 3: 验证编译**
+
+```bash
+npx vue-tsc --noEmit src/services/__tests__/live/reporter.ts src/services/__tests__/live/contract-checker.ts
+```
+
+Expected: no errors.
+
+- [ ] **Step 4: Commit**
+
+```bash
+git add src/services/__tests__/live/reporter.ts src/services/__tests__/live/contract-checker.ts
+git commit -m "feat: reporter + contract checker — 报告格式化 + hash验证 + 完整性检查"
+```
+
+---
+
+### Task 6: CLI + vitest 入口
+
+**Files:**
+- Create: `src/services/__tests__/live/cli.ts`
+- Create: `src/services/__tests__/live/index.live.test.ts`
+
+**Interfaces:**
+- Consumes: `scene-runner.ts` (runAllScenes), `reporter.ts` (formatReport), `contract-checker.ts` (checkAllContracts), `types.ts`
+- Produces: CLI 参数解析 + vitest 测试套件
+
+- [ ] **Step 1: 写 cli.ts**
+
+Write `src/services/__tests__/live/cli.ts`:
+
+```typescript
+// ==========================================
+// CLI — 参数解析 (vitest 执行前)
+// ==========================================
+
+export interface CLIOptions {
+  module?: string
+  scene?: string
+  tag?: string
+  report: "terminal" | "json" | "markdown"
+}
+
+export function parseArgs(args: string[]): CLIOptions {
+  const opts: CLIOptions = { report: "terminal" }
+
+  for (let i = 0; i < args.length; i++) {
+    const a = args[i]
+    if (a === "--module" && args[i + 1]) {
+      opts.module = args[++i]
+    } else if (a === "--scene" && args[i + 1]) {
+      opts.scene = args[++i]
+    } else if (a === "--tag" && args[i + 1]) {
+      opts.tag = args[++i]
+    } else if (a === "--report" && args[i + 1]) {
+      const fmt = args[++i]
+      if (fmt === "json" || fmt === "markdown" || fmt === "terminal") {
+        opts.report = fmt
+      }
+    }
+  }
+
+  return opts
+}
+
+/** 获取 process.argv 中的非 vitest 参数 */
+export function getUserArgs(): string[] {
+  return process.argv.slice(2).filter(a => !a.startsWith("--config"))
+}
+```
+
+- [ ] **Step 2: 写 index.live.test.ts**
+
+Write `src/services/__tests__/live/index.live.test.ts`:
+
+```typescript
+// ==========================================
+// Live Test — vitest 入口
+// ==========================================
+
+import { describe, it, expect, beforeAll } from "vitest"
+import { runAllScenes } from "./scene-runner"
+import { standardSetup } from "./standard-setup"
+import { formatReport } from "./reporter"
+import { checkAllContracts } from "./contract-checker"
+import { parseArgs, getUserArgs } from "./cli"
+import type { SceneDef, TestReport, SceneResult } from "./types"
+import * as path from "path"
+
+const opts = parseArgs(getUserArgs())
+const CONTRACTS_DIR = path.join(__dirname, "contracts")
+
+// ── 动态加载所有场景 ──
+
+async function loadScenes(): Promise<SceneDef[]> {
+  // 这里由 CI/workflow 管理场景注册
+  // 实际场景通过 AI --generate 产生后，在此手动或自动注册
+  return []
+}
+
+// ── 测试套件 ──
+
+let results: SceneResult[] = []
+
+describe("Live Test", () => {
+  beforeAll(async () => {
+    // 1. Contract 完整性检查
+    const contractResults = await checkAllContracts(CONTRACTS_DIR)
+    for (const cr of contractResults) {
+      if (cr.stale) {
+        console.error(`[STALE] ${cr.module}: 源码已变更，请运行 /analyze test`)
+      }
+      for (const m of cr.missing) {
+        console.warn(`[MISSING] ${cr.module}/${m}: 没有场景覆盖`)
+      }
+      for (const g of cr.gaps) {
+        console.error(g)
+      }
+    }
+
+    const hasStale = contractResults.some(c => c.stale)
+    if (hasStale) {
+      throw new Error("Contract hash 过期，请运行 /analyze test 重新生成")
+    }
+
+    // 2. 加载场景（过滤）
+    let scenes = await loadScenes()
+    if (opts.module) {
+      scenes = scenes.filter(s => s.meta.module === opts.module)
+    }
+    if (opts.scene) {
+      scenes = scenes.filter(s => s.meta.description.includes(opts.scene!))
+    }
+    if (opts.tag) {
+      scenes = scenes.filter(s => s.meta.tags?.includes(opts.tag!))
+    }
+
+    // 3. 如果没有自定义 setup，使用标准 setup
+    for (const scene of scenes) {
+      if (!scene.setup) {
+        scene.setup = standardSetup
+      }
+    }
+
+    // 4. 执行
+    results = await runAllScenes(scenes)
+  })
+
+  it("所有场景必须通过", () => {
+    const report: TestReport = {
+      timestamp: new Date().toISOString().replace("T", " ").slice(0, 19),
+      scenes: results,
+      summary: {
+        total: results.length,
+        passed: results.filter(r => r.status === "pass").length,
+        failed: results.filter(r => r.status === "fail").length,
+        skipped: results.filter(r => r.status === "skip").length,
+        timeout: results.filter(r => r.status === "timeout").length,
+        totalDuration: results.reduce((s, r) => s + r.duration, 0),
+      },
+    }
+
+    console.log(formatReport(report, opts.report))
+
+    // 每个失败场景都要报出来
+    for (const r of results) {
+      if (r.status === "fail") {
+        const failedTurns = r.turns.filter(t => t.assertions.some(a => !a.pass))
+        const details = failedTurns.map(t =>
+          `  T${t.index}: ${t.assertions.filter(a => !a.pass).map(a => `${a.type}(${a.error})`).join(", ")}`
+        ).join("\n")
+        console.error(`\n❌ ${r.module}/${r.scene}:\n${details}`)
+      }
+    }
+
+    expect(report.summary.failed).toBe(0)
+    expect(report.summary.timeout).toBe(0)
+  })
+})
+```
+
+- [ ] **Step 3: 验证编译**
+
+```bash
+npx vue-tsc --noEmit src/services/__tests__/live/cli.ts src/services/__tests__/live/index.live.test.ts
+```
+
+Expected: no errors.
+
+- [ ] **Step 4: Commit**
+
+```bash
+git add src/services/__tests__/live/cli.ts src/services/__tests__/live/index.live.test.ts
+git commit -m "feat: CLI + vitest 入口 — 参数解析 + 场景加载 + 合约检查 + 统一执行"
+```
+
+---
+
+### Task 7: SKILL.md（Claude Code Skill）
+
+**Files:**
+- Create: `src/services/__tests__/live/SKILL.md`
+
+**Interfaces:**
+- Consumes: `types.ts` (ModuleContract, SceneDef types), `contract-checker.ts` (checkContract)
+- Produces: Claude Code Skill 定义 — `/analyze test`, `/generate test`, `/audit test`
+
+- [ ] **Step 1: 写 SKILL.md**
+
+Write `src/services/__tests__/live/SKILL.md`:
+
+```markdown
+---
+name: live-test
+description: Desk-Pet Live Test Framework — AI 自驱动端到端测试。分析源码生成覆盖契约和测试场景，用真 LLM 模拟对话验证系统行为。
+---
+
+# Live Test Framework Skill
+
+## 触发
+
+- `/analyze test [module]` — AI 分析源码 → 生成覆盖契约 (Contract)
+- `/generate test [module]` — AI 读 Contract → 生成测试场景 (Scene)
+- `/audit test [--strict]` — AI 审视覆盖完整性
+- "跑测试" / "运行 live test" → 执行 `pnpm test`
+
+## 工作流程
+
+### `/analyze test [module]`
+
+1. 读取指定模块（或全部 8 个模块）的源码文件
+2. 对照 `src/services/__tests__/live/types.ts` 中 `ModuleContract` 和 `CoveragePoint` 类型
+3. AI 分析：
+   - 导出函数/方法 → 每个公开 API 一个 coverage point
+   - 分支路径 (if/switch/try-catch) → 每个分支一个 coverage point
+   - 边界值 (min/max/enum/范围校验) → 边界 coverage point
+   - 错误路径 (返回 false/error) → 错误 coverage point
+   - 深度判定: 有状态变化的 → deep; 纯计算/查询的 → shallow
+4. 计算所有 sourceFiles 的 sha256 hash
+5. 生成 `ModuleContract` 写入 `src/services/__tests__/live/contracts/{module}.contract.ts`
+6. 设置合理的 `rules`:
+   - minScenarios: coverage points 数量的 80% (至少 2)
+   - minDeepScenarios: deep points 数量的 100% (至少 1)
+   - requireBoundary: true
+   - requireErrorPath: true
+
+### `/generate test [module]`
+
+1. 读取指定的 contract 文件
+2. 对每个 coverage point:
+   - 读 contract: { id, feature, description, why, depth }
+   - 读相关源码 (contract.sourceFiles)
+   - 生成提示词约束 AI 输出:
+     ```
+     你是 Desk-Pet 的测试场景生成器。为一个互动桌宠生成测试场景。
+
+     模块: {module}
+     功能: {feature}
+     深度: {depth}  (shallow=1轮, deep≥3轮含边界验证)
+
+     源码: {sourceCode}
+
+     生成一个 SceneDef 文件，要求:
+     1. 用户消息自然口语化，像真人聊天
+     2. deep 场景必须多轮对话，包含对比 (先A后B看变化)
+     3. 每轮必须断言:
+        - 回复输出 (text 非空, emotionKey 合法, expression 合法)
+        - 内部状态 (相关变量变化, 变量 updatedBy === "llm")
+        - 副作用 (session 状态, effects 非空)
+     4. 如需边界测试，必须构造触发边界的对话
+     5. 如需错误路径，必须构造触发错误的对话
+
+     输出格式: TypeScript SceneDef 文件，使用 types.ts 定义的类型
+     ```
+   - 生成 .scene.ts 文件写入 `src/services/__tests__/live/scenes/{module}/`
+   - 回写 contract: coverage.scenarios[] 填充文件名
+
+### `/audit test [--strict]`
+
+1. 读取所有 contract 文件
+2. 运行 contract-checker 检查 (STALE / MISSING / GAP)
+3. AI 额外审视:
+   - 是否有 coverage 覆盖不到的功能?
+   - 场景深度是否真的够?
+   - 有没有边界场景遗漏?
+   - 失败路径全部覆盖了吗?
+4. 输出报告
+5. `--strict` 时: 有 GAP 直接报错
+
+## 覆盖的 8 个模块
+
+| 模块 | 源文件 |
+|------|--------|
+| variable-pool | `src/services/personality/variable-pool.ts`, `src/services/personality/types.ts` |
+| when-engine | `src/services/personality/when-engine.ts` |
+| emotion | `src/services/personality/emotion.ts` |
+| safety | `src/services/safety/checker.ts` |
+| memory | `src/services/agent/memory/index.ts`, `src/services/agent/memory/memory-entries.ts` |
+| planner | `src/services/engine/planner.ts` |
+| tool-execution | `src/services/tool/router.ts`, `src/services/tool/registry.ts` |
+| personality-card | `src/services/personality/registry.ts`, `src/services/personality/loader.ts` |
+
+## 约束
+
+- Contract 和 Scene 文件均由 AI 生成，每次 analyze 必须重新审视
+- 生级完成后提示用户 review，用户确认后提交
+- 如果源码 hash 变化但不重新 analyze，pnpm test 会报 [STALE] 并拒绝执行
+```
+
+- [ ] **Step 2: Commit**
+
+```bash
+git add src/services/__tests__/live/SKILL.md
+git commit -m "feat: SKILL.md — Claude Code Skill 定义 analyze/generate/audit 命令"
+```
+
+---
+
+### Task 8: 第一轮生成 — Contract（用 Skill）
+
+> ⚠️ 此 Task 需要 Claude Code 执行（AI 分析源码），不是纯代码编写。
+
+**触发:** 在 Claude Code 对话中说 `/analyze test`
+
+**输出:** 8 个 contract 文件写入 `src/services/__tests__/live/contracts/`
+
+- [ ] **Step 1: 分析 variable-pool**
+
+AI 读 `src/services/personality/variable-pool.ts` + `types.ts`，生成 `variable-pool.contract.ts`
+
+- [ ] **Step 2: 分析 when-engine**
+
+AI 读 `src/services/personality/when-engine.ts`，生成 `when-engine.contract.ts`
+
+- [ ] **Step 3: 分析 emotion**
+
+AI 读 `src/services/personality/emotion.ts`，生成 `emotion.contract.ts`
+
+- [ ] **Step 4: 分析 safety**
+
+AI 读 `src/services/safety/checker.ts`，生成 `safety.contract.ts`
+
+- [ ] **Step 5: 分析 memory**
+
+AI 读 `src/services/agent/memory/`，生成 `memory.contract.ts`
+
+- [ ] **Step 6: 分析 planner**
+
+AI 读 `src/services/engine/planner.ts`，生成 `planner.contract.ts`
+
+- [ ] **Step 7: 分析 tool-execution**
+
+AI 读 `src/services/tool/router.ts` + `registry.ts`，生成 `tool-execution.contract.ts`
+
+- [ ] **Step 8: 分析 personality-card**
+
+AI 读 `src/services/personality/registry.ts` + `loader.ts`，生成 `personality-card.contract.ts`
+
+- [ ] **Step 9: 验证 contracts**
+
+Read all 8 contract files, verify:
+- Each has `module`, `sourceFiles`, `sourceHash`, `coverage[]`, `rules`
+- `coverage` covers all major functions
+- `rules` are reasonable (not 0)
+
+Show all 8 contracts to user for review.
+
+- [ ] **Step 10: Commit**
+
+```bash
+git add src/services/__tests__/live/contracts/
+git commit -m "feat: 第一轮 Contract — 8个模块覆盖契约 AI 生成"
+```
+
+---
+
+### Task 9: 第二轮生成 — Scene（用 Skill）
+
+> ⚠️ 此 Task 需要 Claude Code 执行（AI 生成测试场景），不是纯代码编写。
+
+**触发:** 在 Claude Code 对话中说 `/generate test`
+
+**输出:** Scene 文件写入 `src/services/__tests__/live/scenes/{module}/`
+
+- [ ] **Step 1: 对每个 contract 的每个 coverage point 生成 Scene**
+
+对 8 个模块逐个处理：
+- 读 contract → 读源码 → AI 生成 SceneDef → 写入 .scene.ts
+- deep coverage → 生成 3-5 轮对话场景
+- shallow coverage → 生成 1-2 轮对话场景
+
+- [ ] **Step 2: 回写 contract scenarios 字段**
+
+每个 scene 生成后，更新对应 contract 的 `coverage[].scenarios[]`
+
+- [ ] **Step 3: 验证场景完整性**
+
+```bash
+pnpm test -- --run  # dry run
+```
+
+Expected: contract-checker 通过（无 STALE、无 MISSING、无 GAP）
+
+- [ ] **Step 4: Commit**
+
+```bash
+git add src/services/__tests__/live/scenes/ src/services/__tests__/live/contracts/
+git commit -m "feat: 第一轮 Scene — 8个模块测试场景 AI 生成"
+```
+
+---
+
+### Task 10: 首轮执行 + 验证
+
+**Files:**
+- Modify: `src/services/__tests__/live/index.live.test.ts` (完善 loadScenes)
+
+- [ ] **Step 1: 完善场景加载**
+
+更新 `index.live.test.ts` 中的 `loadScenes()`:
+
+```typescript
+async function loadScenes(): Promise<SceneDef[]> {
+  const scenes: SceneDef[] = []
+  const loaders: Promise<void>[] = []
+  const scenesDir = path.join(__dirname, "scenes")
+
+  // 递归扫描所有 .scene.ts 文件
+  function scanDir(dir: string) {
+    for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+      const full = path.join(dir, entry.name)
+      if (entry.isDirectory()) {
+        scanDir(full)
+      } else if (entry.name.endsWith(".scene.ts")) {
+        // 使用动态 import (ESM) 加载 .ts 场景文件
+        loaders.push(
+          import(full).then(mod => {
+            const scene: SceneDef = mod.default || mod[Object.keys(mod)[0]]
+            if (scene?.meta) scenes.push(scene)
+          })
+        )
+      }
+    }
+  }
+
+  scanDir(scenesDir)
+  await Promise.all(loaders)
+  return scenes
+}
+```
+
+- [ ] **Step 2: 运行测试**
+
+```bash
+pnpm test
+```
+
+Expected: 所有场景执行，用真 LLM 调用 runAgentLoop，断言全部通过或具体报错。
+
+- [ ] **Step 3: 修复失败场景**
+
+检查每个 fail 的场景：
+- 断言太严格? → 调整期望值（用范围/正则代替精确值）
+- LLM 输出不稳定? → 提示词是否要调整
+- 真 bug? → 修源码
+
+- [ ] **Step 4: 首轮全部通过后 Commit**
+
+```bash
+git add src/services/__tests__/live/
+git commit -m "feat: 首轮 Live Test 全部通过 — 8模块真LLM测试覆盖"
+```
+
+---
+
+### Task 11: 最终验证 + 文档同步
+
+- [ ] **Step 1: 运行全量测试确认**
+
+```bash
+pnpm test
+```
+
+Expected: 所有 scene PASS。
+
+- [ ] **Step 2: 运行 audit 确认覆盖完整性**
+
+在 Claude Code 中说 `/audit test --strict`
+Expected: 无 STALE、无 MISSING、无 GAP。
+
+- [ ] **Step 3: 同步更新 CLAUDE.md**
+
+在 CLAUDE.md 的测试部分更新为：
+
+```markdown
+## 测试
+
+```bash
+pnpm test                          # Live Test — 真 LLM 端到端测试
+pnpm test -- --module variable-pool # 按模块筛选
+```
+
+测试框架: `src/services/__tests__/live/` — AI 自驱动端到端测试
+- `/analyze test` — AI 分析源码生成 Contract
+- `/generate test` — AI 读 Contract 生成 Scene
+- `/audit test` — AI 审视覆盖完整性
+```
+
+- [ ] **Step 4: 同步更新 README.md / DES.md**
+
+如有测试相关章节，更新引用。
+
+- [ ] **Step 5: 最终 Commit**
+
+```bash
+git add -A
+git commit -m "docs: 同步 live test framework 到项目文档"
+```

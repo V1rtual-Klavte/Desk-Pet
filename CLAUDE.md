@@ -15,6 +15,24 @@ pnpm tauri build                  # 生产
 cd src-tauri && cargo check       # Rust 检查
 ```
 
+## 测试
+
+```bash
+pnpm test                          # Live Test — 真 LLM 端到端测试
+pnpm test -- --module variable-pool # 按模块筛选
+```
+
+框架: `src/services/__tests__/live/` — AI 自驱动端到端测试
+
+| 命令 | 说明 |
+|------|------|
+| `/analyze test [module]` | AI 分析源码 → 生成覆盖契约 Contract |
+| `/generate test [module]` | AI 读 Contract → 生成测试场景 Scene |
+| `/audit test` | AI 审视覆盖完整性 |
+| `pnpm test` | 真 LLM 执行所有场景 + 断言内部状态 |
+
+**源码修改后必须 `/analyze test`** — Contract hash 过期会拒绝执行测试。
+
 ## 文档
 在docs目录下，包含详细的设计文档。项目整体描述是DES.md
 
@@ -22,6 +40,7 @@ cd src-tauri && cargo check       # Rust 检查
 
 ```
 src/services/
+├── __tests__/live/  # AI 自驱动端到端测试 (Contract+Scene+真LLM执行)
 ├── engine/      # Agent Loop v5, 会话状态机, Slash命令, 上下文压缩, Plan编排
 ├── personality/ # 人格模块: cards(4张+neutral默认), stages(LLM生成), 变量池v2, When引擎
 ├── tool/        # 工具: local(10个)/local-extra(7个,助手模式)/skill(3个)/mcp(5个)
@@ -267,6 +286,7 @@ npx vue-tsc --noEmit           # TS:   零新增 error（test 文件的 pre-exis
 - 分步实现，每步完成后 review，通过再继续
 - 推荐用 SDD (Subagent-Driven Development) 模式: implementer → reviewer → fix → re-review
 - 严禁假实现、漏实现
+- 必须用skill、subagent、mcp
 
 ### 修改后必须同步更新
 
