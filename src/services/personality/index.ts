@@ -21,11 +21,8 @@ export { PetPersonalityMiddleware } from "./middleware"
 export type { AgentStage, StageContext, PersonalityEffect } from "./middleware"
 
 // ── v4 新模块 ──
-export { initVariablePool, refreshVariablePool, getPoolSnapshot, formatPoolForPrompt, varRead, varWrite, varList, varDelete, saveVariablePoolAsync, savePoolToDisk, savePoolToDiskStrict, loadCardVars, readSystemVars, updateInteractionVar, setSessionVars, applyResetPolicies, computeSystemVariables, destroyPool, setSessionStart, getSessionStart, getVariableRegistry } from "./variable-pool"
-export type { VariablePool, VarDef, VariablePoolRuntimeState } from "./variable-pool"
-
-export { evaluateWhenEngine, evaluateWhen } from "./when-engine"
-export type { WhenRule } from "./when-engine"
+export { initVariablePool, refreshVariablePool, getPoolSnapshot, formatPoolForPrompt, batchWriteVars, saveVariablePoolAsync, savePoolToDisk, savePoolToDiskStrict, loadCardVars, readSystemVars, updateInteractionVar, setSessionVars, applyResetPolicies, computeSystemVariables, destroyPool, setSessionStart, getSessionStart, getVariableRegistry } from "./variable-pool"
+export type { VariablePool, VariablePoolRuntimeState } from "./variable-pool"
 
 export { parseMustRules, pickGreeting, formatAllRules } from "./must-rules"
 export type { MustRules } from "./must-rules"
