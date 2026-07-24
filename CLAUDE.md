@@ -267,6 +267,7 @@ npx vue-tsc --noEmit           # TS:   零新增 error（test 文件的 pre-exis
 - 分步实现，每步完成后 review，通过再继续
 - 推荐用 SDD (Subagent-Driven Development) 模式: implementer → reviewer → fix → re-review
 - 严禁假实现、漏实现
+- 必须用skill、subagent、mcp
 
 ### 修改后必须同步更新
 

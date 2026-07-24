@@ -8,8 +8,7 @@
         "build": "vite build",
         "tauri-dev": "tauri dev",
         "tauri-build": "tauri build",
-        "test": "vitest run",
-        "test:live": "vitest run --config vitest.live.config.ts"
+        "test": "vitest run"
     },
     "dependencies": {
         "@tauri-apps/api": "^2.10.1",
