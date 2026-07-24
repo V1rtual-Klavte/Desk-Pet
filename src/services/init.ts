@@ -6,7 +6,6 @@
 import { MemoryService, startMemoryConsolidationTimer } from "@/services/agent/memory"
 import { initRegistry, initCards } from "@/services/personality"
 import { registerDefaultTools, registerAll, registerAssistantTools } from "@/services/tool"
-import { registerVarTools } from "@/services/tool/local/var"
 import { initDebug } from "@/services/debug"
 import { initSessions, chatHistory, initWelcome } from "@/services/session"
 import { getActiveCard } from "@/services/personality"
@@ -47,7 +46,6 @@ export async function initApp(welcomeText: string): Promise<void> {
 
   // ── 4. 工具注册 ──
   await registerDefaultTools()
-  registerVarTools()  // 变量池工具（var_read/write/list/delete）— 所有模式可用
   log.info("4a/7 基础工具就绪")
 
   if (generalConfig.assistantMode) {
