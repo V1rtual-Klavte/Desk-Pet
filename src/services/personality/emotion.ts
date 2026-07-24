@@ -1,6 +1,6 @@
 // ==========================================
-// 情绪表达 — 标签剥离 + 映射解析
-// §8: 隐式情绪标签 [emo:key] 驱动表情/音效
+// 情绪表达 — 映射解析 + RUNTIME_DATA 格式
+// RUNTIME_DATA 格式: emotion 必填，变量选填
 // ==========================================
 
 import { createLogger } from "@/services/logger"
@@ -13,18 +13,6 @@ export interface EmotionMapping {
   key: string
   expression: string
   sound: string | null // null = 不触发音效
-}
-
-/** 匹配回复开头的 [emo:key] 标签 */
-const EMO_TAG_RE = /^\[emo:(\w+)\]\s*/
-
-/**
- * 剥离回复开头的情绪标签，返回纯文本 + 情绪 key
- */
-export function stripEmotionTag(raw: string): { text: string; emotionKey: string | null } {
-  const match = raw.match(EMO_TAG_RE)
-  if (!match) return { text: raw, emotionKey: null }
-  return { text: raw.slice(match[0].length), emotionKey: match[1] }
 }
 
 /**
@@ -84,7 +72,7 @@ export function resolveEmotion(
 }
 
 /**
- * 为 Prompt 生成情绪表达规则文本
+ * 为 Prompt 生成情绪表达规则文本（RUNTIME_DATA 格式）
  */
 export function formatEmotionForPrompt(mappings: EmotionMapping[]): string {
   if (mappings.length === 0) return ""
@@ -93,9 +81,15 @@ export function formatEmotionForPrompt(mappings: EmotionMapping[]): string {
     `${m.key}(${m.expression}${m.sound ? `,${m.sound}` : ""})`
   ).join(", ")
 
-  return `[情绪表达规则]
-你的回复开头必须携带一个情绪标签 [emo:key]，用来表达你此刻的情绪。
-可用标签: ${tags}
-示例: "[emo:chu] 最喜欢你了♡"
-注意: 标签会被系统自动剥离，不会显示给用户。`
+  return `[回复元数据]
+你的回复末尾必须附加一个 RUNTIME_DATA 区块，系统自动剥离，用户不可见。
+
+格式：
+<RUNTIME_DATA>
+emotion: <情绪标签>
+<变量名>: <值>
+</RUNTIME_DATA>
+
+- emotion 必填。可用标签: ${tags}
+- 其他行选填，只在 Card 变量有变化时写入（变量名: 新值）`
 }

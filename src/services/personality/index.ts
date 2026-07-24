@@ -30,7 +30,7 @@ export type { WhenRule } from "./when-engine"
 export { parseMustRules, pickGreeting, formatAllRules } from "./must-rules"
 export type { MustRules } from "./must-rules"
 
-export { stripEmotionTag, parseEmotionMappings, resolveEmotion, formatEmotionForPrompt } from "./emotion"
+export { parseEmotionMappings, resolveEmotion, formatEmotionForPrompt } from "./emotion"
 export type { EmotionMapping } from "./emotion"
 
 export { loadStages, getCachedStages, snapshotStagesCache, restoreStagesCache, clearStagesCache, getStagePrompt, getSimpleStage, getFallbackReply, FALLBACK_STAGES, generateStagesForCard, loadStagesFromDisk, buildStagesPrompt, parseStagesResponse, serializeStages, deserializeStages, validateStages, validateStagesForCard } from "./stages-cache"
