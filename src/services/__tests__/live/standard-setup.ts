@@ -6,9 +6,17 @@ import { destroyPool, initVariablePool } from "@/services/personality/variable-p
 import { resetSession } from "@/services/engine/session"
 import { clearMessages } from "@/services/session/store"
 import { MemoryService } from "@/services/agent/memory"
-import { getActiveCard } from "@/services/personality/registry"
+import { getActiveCard, initRegistry } from "@/services/personality/registry"
+
+let registryInitialized = false
 
 export async function standardSetup(): Promise<void> {
+  // 0. 确保 registry 已初始化（否则 getActiveCard 返回兜底 neutral）
+  if (!registryInitialized) {
+    await initRegistry()
+    registryInitialized = true
+  }
+
   // 1. 重置会话状态
   resetSession()
 

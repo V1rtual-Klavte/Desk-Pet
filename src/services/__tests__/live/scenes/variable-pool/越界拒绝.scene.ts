@@ -1,4 +1,4 @@
-import type { SceneDef } from "../types"
+import type { SceneDef } from "../../types"
 export const 越界拒绝: SceneDef = {
   meta: { module: "variable-pool", contractId: "vp-05", description: "LLM 尝试写入越界值被拒绝", depth: "shallow", tags: ["variable-pool","boundary"] },
   turns: [

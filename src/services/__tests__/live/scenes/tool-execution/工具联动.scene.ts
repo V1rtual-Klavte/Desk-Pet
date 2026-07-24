@@ -1,4 +1,4 @@
-import type { SceneDef } from "../types"
+import type { SceneDef } from "../../types"
 export const 工具联动: SceneDef = {
   meta: { module: "tool-execution", contractId: "te-08", description: "LLM 在对话中使用工具", depth: "deep", tags: ["tool-execution"] },
   turns: [

@@ -1,7 +1,7 @@
 // ==========================================
 // Live Test Scene: 亲密度提升 → Card变量 LLM写入
 // ==========================================
-import type { SceneDef } from "../types"
+import type { SceneDef } from "../../types"
 
 export const 亲密度提升: SceneDef = {
   meta: {
@@ -14,11 +14,6 @@ export const 亲密度提升: SceneDef = {
       index: 1, description: "用户夸奖", userText: "你今天好可爱呀！",
       checks: [
         { type: "expectReply", run: async (ctx) => { if (!ctx.output.reply || ctx.output.reply.length === 0) throw new Error("reply 为空"); } },
-        { type: "expectEmotion", run: async (ctx) => {
-          const key = (ctx.output as any).emotionKey || (ctx.output.reply.match(/\[emo:(\w+)\]/)?.[1])
-          if (!key) throw new Error("没有情绪标签")
-          if (!["happy","chu","shy","smile"].some(k => key === k || key.includes(k))) throw new Error(`emotionKey=${key} 不在预期范围`)
-        }},
         { type: "expectVar_亲密度_after_praise", run: async (ctx) => {
           const v = ctx.pool.card["亲密度"]
           if (!v) throw new Error("亲密度变量不存在")

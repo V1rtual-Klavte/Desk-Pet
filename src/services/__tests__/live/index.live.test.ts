@@ -10,6 +10,7 @@ import { checkAllContracts } from "./contract-checker"
 import { parseArgs, getUserArgs } from "./cli"
 import type { SceneDef, TestReport, SceneResult } from "./types"
 import * as path from "path"
+import * as fs from "fs"
 
 const opts = parseArgs(getUserArgs())
 const CONTRACTS_DIR = path.join(__dirname, "contracts")
@@ -17,9 +18,32 @@ const CONTRACTS_DIR = path.join(__dirname, "contracts")
 // ── 动态加载所有场景 ──
 
 async function loadScenes(): Promise<SceneDef[]> {
-  // 这里由 CI/workflow 管理场景注册
-  // 实际场景通过 AI --generate 产生后，在此手动或自动注册
-  return []
+  const scenes: SceneDef[] = []
+  const loaders: Promise<void>[] = []
+  const scenesDir = path.join(__dirname, "scenes")
+
+  function scanDir(dir: string) {
+    if (!fs.existsSync(dir)) return
+    for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+      const full = path.join(dir, entry.name)
+      if (entry.isDirectory()) {
+        scanDir(full)
+      } else if (entry.name.endsWith(".scene.ts")) {
+        loaders.push(
+          import(full).then(mod => {
+            const scene: SceneDef = mod.default || mod[Object.keys(mod).find(k => !k.startsWith("_")) || ""]
+            if (scene?.meta) scenes.push(scene)
+          }).catch(err => {
+            console.warn(`[WARN] 加载场景失败: ${full} — ${err.message}`)
+          })
+        )
+      }
+    }
+  }
+
+  scanDir(scenesDir)
+  await Promise.all(loaders)
+  return scenes
 }
 
 // ── 测试套件 ──

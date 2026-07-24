@@ -1,4 +1,4 @@
-import type { SceneDef } from "../types"
+import type { SceneDef } from "../../types"
 export const 多轮记忆: SceneDef = {
   meta: { module: "memory", contractId: "mm-08", description: "多轮对话后记忆正确存储", depth: "deep", tags: ["memory"] },
   turns: [

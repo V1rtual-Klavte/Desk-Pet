@@ -1,4 +1,4 @@
-import type { SceneDef } from "../types"
+import type { SceneDef } from "../../types"
 export const when联动: SceneDef = {
   meta: { module: "when-engine", contractId: "we-04", description: "变量变化后When引擎命中不同规则", depth: "deep", tags: ["when-engine","variable-pool"] },
   turns: [

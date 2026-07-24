@@ -1,4 +1,4 @@
-import type { SceneDef } from "../types"
+import type { SceneDef } from "../../types"
 export const 危险拦截: SceneDef = {
   meta: { module: "safety", contractId: "sf-09", description: "LLM 危险工具调用被拦截", depth: "deep", tags: ["safety"] },
   turns: [

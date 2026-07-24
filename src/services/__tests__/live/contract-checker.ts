@@ -24,9 +24,9 @@ export function checkContract(contract: ModuleContract): ContractCheckResult {
   const issues: string[] = []
   const missing: string[] = []
 
-  // 1. STALE: hash 是否过期
+  // 1. STALE: hash 是否过期（空 hash 跳过，首次生成）
   const currentHash = computeHash(contract.sourceFiles)
-  const stale = contract.sourceHash !== currentHash
+  const stale = contract.sourceHash !== "" && contract.sourceHash !== currentHash
 
   // 2. MISSING: 每个 coverage point 是否有场景
   for (const point of contract.coverage) {
