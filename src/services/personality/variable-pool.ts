@@ -8,19 +8,6 @@ import type { CardVariableDef, VariableState, VariableType, VariablePrimitive } 
 
 const log = createLogger("VarPool")
 
-// ── 类型 ──
-
-export type VarType = "number" | "string" | "boolean"
-
-export interface VarDef {
-  name: string
-  value: number | string | boolean
-  source: "system" | "card" | "interaction" | "session"
-  type: VarType
-  updatedAt: number
-  updatedBy?: "system" | "llm"
-}
-
 export interface VariablePool {
   system: Record<string, number | string | boolean>
   /** card 变量存储 VariableState 对象（与持久化同格式） */
@@ -49,7 +36,7 @@ interface PersistedCardVars {
 // ── 系统变量定义（6 个）──
 
 const SYSTEM_VAR_DEFS: Array<{
-  name: string; type: VarType
+  name: string; type: VariableType
   compute: (now: Date) => number | string | boolean
 }> = [
   { name: "hour", type: "number", compute: (n) => n.getHours() },
@@ -309,106 +296,6 @@ function formatVal(v: unknown): string {
   return typeof v === "string" ? `"${v}"` : String(v)
 }
 
-// ── LLM 工具操作 ──
-
-export function varRead(name: string): VarDef | null {
-  const now = Date.now()
-  if (name in pool.system) {
-    return { name, value: pool.system[name], source: "system", type: "string" as VarType, updatedAt: now }
-  }
-  if (name in pool.card) {
-    const def = registry.find(d => d.scope === "card" && d.name === name)
-    const state = pool.card[name] as VariableState
-    return { name, value: state.value, source: "card", type: def?.type ?? state.type, updatedAt: state.updatedAt }
-  }
-  if (name in pool.interaction) {
-    const def = registry.find(d => d.scope === "interaction" && d.name === name)
-    const state = pool.interaction[name] as VariableState
-    return { name, value: state.value, source: "interaction", type: def?.type ?? state.type, updatedAt: state.updatedAt }
-  }
-  return null
-}
-
-export function varList(): VarDef[] {
-  const result: VarDef[] = []
-  const now = Date.now()
-  for (const [name, value] of Object.entries(pool.system)) {
-    result.push({ name, value, source: "system", type: inferType(value), updatedAt: now })
-  }
-  for (const [name, state] of Object.entries(pool.card)) {
-    const def = registry.find(d => d.scope === "card" && d.name === name)
-    const s = state as VariableState
-    result.push({ name, value: s.value, source: "card", type: def?.type ?? s.type, updatedAt: s.updatedAt })
-  }
-  for (const [name, state] of Object.entries(pool.interaction)) {
-    const def = registry.find(d => d.scope === "interaction" && d.name === name)
-    const s = state as VariableState
-    result.push({ name, value: s.value, source: "interaction", type: def?.type ?? s.type, updatedAt: s.updatedAt })
-  }
-  return result
-}
-
-export function varWrite(name: string, rawValue: string): { success: boolean; error?: string } {
-  // 1. 禁止写系统变量
-  if (name in pool.system) {
-    return { success: false, error: `系统变量 ${name} 只读，不可写入` }
-  }
-  // 2. 禁止写 interaction 变量
-  if (name in pool.interaction) {
-    return { success: false, error: `互动状态 ${name} 由系统维护，LLM 不可写入` }
-  }
-  // 3. 必须已注册
-  const def = registry.find(d => d.scope === "card" && d.name === name)
-  if (!def) {
-    return { success: false, error: `变量 ${name} 未在 Card 中注册，不能动态创建` }
-  }
-  // 4. 必须是 llm 可写
-  if (def.updateBy !== "llm") {
-    return { success: false, error: `变量 ${name} 的 updateBy=${def.updateBy}，LLM 不可写入` }
-  }
-  // 5. 类型校验和转换
-  const typedValue = inferAndValidate(rawValue, def)
-  if (typedValue === undefined) {
-    const rangeHint = def.type === "number" && (def.min !== undefined || def.max !== undefined)
-      ? `, 范围: ${def.min ?? "-∞"}..${def.max ?? "∞"}`
-      : def.type === "string" && def.enum
-        ? `, 可选值: ${def.enum.join("/")}`
-        : ""
-    return { success: false, error: `变量 ${name} 值 "${rawValue}" 不符合 schema: 期望 ${def.type}${rangeHint}` }
-  }
-
-  // 6. 写入
-  pool.card[name] = { value: typedValue, type: def.type, updatedAt: Date.now(), updatedBy: "llm" }
-  savePending = true
-  log.info("var_write:", name, "=", typedValue)
-  return { success: true }
-}
-
-export function varDelete(name: string): { success: boolean; error?: string } {
-  if (name in pool.system) {
-    return { success: false, error: `系统变量 ${name} 不可删除` }
-  }
-  if (name in pool.interaction) {
-    return { success: false, error: `互动状态 ${name} 由系统维护，不可删除` }
-  }
-  // Card 变量：reset 到 initial
-  const def = registry.find(d => d.scope === "card" && d.name === name)
-  if (def) {
-    pool.card[name] = { value: def.initial, type: def.type, updatedAt: Date.now(), updatedBy: "system" }
-    savePending = true
-    log.info("var_delete(reset):", name, "→", def.initial)
-    return { success: true }
-  }
-  // 未注册但在内存中的变量（兼容旧数据）→ 删除
-  if (name in pool.card) {
-    delete pool.card[name]
-    savePending = true
-    log.info("var_delete(compat):", name)
-    return { success: true }
-  }
-  return { success: false, error: `变量 ${name} 不存在` }
-}
-
 // ── 系统更新 Interaction ──
 
 export function updateInteractionVar(name: string, value: VariablePrimitive): { success: boolean; error?: string } {
@@ -589,26 +476,10 @@ export async function readSystemVars(): Promise<Record<string, number | string |
   }
 }
 
-// ── 销毁 ──
+// ── 批量写入 (RUNTIME_DATA 解析后调用) ──
 
-export function destroyPool(): void {
-  currentCardId = null
-  registry = []
-  pool = emptyPool()
-  savePending = false
-}
-
-// ── 类型工具 ──
-
-function inferType(value: unknown): VarType {
-  if (typeof value === "number") return "number"
-  if (typeof value === "boolean") return "boolean"
-  return "string"
-}
-
-function inferAndValidate(raw: string, def: CardVariableDef): number | string | boolean | undefined {
+function coerceValue(raw: string, def: CardVariableDef): number | string | boolean | undefined {
   const trimmed = raw.trim()
-
   switch (def.type) {
     case "boolean": {
       if (trimmed === "true") return true
@@ -623,7 +494,6 @@ function inferAndValidate(raw: string, def: CardVariableDef): number | string | 
       return num
     }
     case "string": {
-      // 去掉外层引号
       const unquoted = ((trimmed.startsWith('"') && trimmed.endsWith('"')) || (trimmed.startsWith("'") && trimmed.endsWith("'")))
         ? trimmed.slice(1, -1)
         : trimmed
@@ -633,47 +503,34 @@ function inferAndValidate(raw: string, def: CardVariableDef): number | string | 
   }
 }
 
-// ── 工具 handler 构造器 ──
+export function batchWriteVars(updates: Record<string, string>): { written: string[]; errors: string[] } {
+  const written: string[] = []
+  const errors: string[] = []
 
-export function buildVarReadHandler(): (params: Record<string, unknown>) => Promise<{ success: boolean; content: string; error?: string }> {
-  return async (params) => {
-    const name = String(params.name ?? "")
-    if (!name) return { success: false, content: "", error: "变量名不能为空" }
-    const v = varRead(name)
-    if (!v) return { success: false, content: "", error: `变量 ${name} 不存在` }
-    return { success: true, content: `${v.name} = ${typeof v.value === "string" ? `"${v.value}"` : v.value} (${v.source})` }
+  for (const [name, rawValue] of Object.entries(updates)) {
+    const def = registry.find(d => d.scope === "card" && d.name === name)
+    if (!def) { errors.push(`${name}: 未注册`); continue }
+    if (def.updateBy !== "llm") { errors.push(`${name}: 不可写`); continue }
+
+    const value = coerceValue(rawValue.trim(), def)
+    if (value === undefined) { errors.push(`${name}: 类型/范围不符`); continue }
+
+    pool.card[name] = { value, type: def.type, updatedAt: Date.now(), updatedBy: "llm" }
+    savePending = true
+    written.push(name)
   }
+
+  if (written.length > 0) log.info("batchWrite:", written.join(", "))
+  if (errors.length > 0) log.warn("batchWrite errors:", errors.join("; "))
+  return { written, errors }
 }
 
-export function buildVarListHandler(): () => Promise<{ success: boolean; content: string }> {
-  return async () => {
-    const vars = varList()
-    if (vars.length === 0) return { success: true, content: "(变量池为空)" }
-    const lines = vars.map(v => `- ${v.name}: ${typeof v.value === "string" ? `"${v.value}"` : v.value} [${v.source}]`)
-    return { success: true, content: lines.join("\n") }
-  }
+// ── 销毁 ──
+
+export function destroyPool(): void {
+  currentCardId = null
+  registry = []
+  pool = emptyPool()
+  savePending = false
 }
 
-export function buildVarWriteHandler(): (params: Record<string, unknown>) => Promise<{ success: boolean; content: string; error?: string }> {
-  return async (params) => {
-    const name = String(params.name ?? "")
-    const value = String(params.value ?? "")
-    if (!name) return { success: false, content: "", error: "变量名不能为空" }
-    if (value === null || value === undefined || value === "") return { success: false, content: "", error: "变量值不能为空" }
-    const result = varWrite(name, value)
-    if (!result.success) return { success: false, content: "", error: result.error }
-    return { success: true, content: `${name} = ${typeof pool.card[name] === "string" ? `"${pool.card[name]}"` : pool.card[name]}` }
-  }
-}
-
-export function buildVarDeleteHandler(): (params: Record<string, unknown>) => Promise<{ success: boolean; content: string; error?: string }> {
-  return async (params) => {
-    const name = String(params.name ?? "")
-    if (!name) return { success: false, content: "", error: "变量名不能为空" }
-    const result = varDelete(name)
-    if (!result.success) return { success: false, content: "", error: result.error }
-    const currentVal = pool.card[name]
-    const valStr = currentVal !== undefined ? (typeof currentVal === "string" ? `"${currentVal}"` : String(currentVal)) : "(未定义)"
-    return { success: true, content: `变量 ${name} 已重置为初始值: ${valStr}` }
-  }
-}

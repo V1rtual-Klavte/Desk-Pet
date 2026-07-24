@@ -12,7 +12,7 @@ import { checkSafety, trustToolInSession, requestConfirm } from "@/services/safe
 import { PetPersonalityMiddleware } from "@/services/personality/middleware"
 import type { PersonalityEffect } from "@/services/personality/middleware"
 import { getActiveCard } from "@/services/personality/registry"
-import { refreshVariablePool, getPoolSnapshot, savePoolToDisk, updateInteractionVar, applyResetPolicies, getSessionStart } from "@/services/personality/variable-pool"
+import { refreshVariablePool, getPoolSnapshot, updateInteractionVar, applyResetPolicies, getSessionStart } from "@/services/personality/variable-pool"
 import { getSimpleStage, getStagePrompt, getFallbackReply } from "@/services/personality/stages-cache"
 import { getEffectiveThinkingEffort, updateRequestStats } from "@/services/debug"
 import { generateReply } from "@/services/reply"
@@ -227,7 +227,7 @@ export async function runAgentLoop(input: AgentLoopInput): Promise<AgentLoopOutp
   }
 
   // ═══ 2. Generator 后处理 ═══
-  const processed = generateReply(rawReply, card)
+  const processed = await generateReply(rawReply, card)
   log.info(`Generator 后处理: emotionKey=${processed.emotionKey ?? "无"} expression=${processed.expression} sound=${processed.sound ?? "无"} textLen=${processed.text.length}`)
 
   effects.push({ expression: processed.expression, soundEvent: processed.sound })
@@ -237,8 +237,6 @@ export async function runAgentLoop(input: AgentLoopInput): Promise<AgentLoopOutp
   transition("WAITING")
   MemoryService.recordTurn("assistant", processed.text)
   compactOnHighUsage(chatMessages, userText)
-
-  await savePoolToDisk()
 
   return { reply: processed.text, toolCallHistory, retriesUsed, effects }
 }

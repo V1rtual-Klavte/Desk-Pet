@@ -3,7 +3,7 @@
 // ==========================================
 
 import type { EmotionMapping } from "./emotion"
-import type { WhenRule } from "./when-engine"
+
 import type { MustRules } from "./must-rules"
 
 // ── 变量池 v2 类型 ──
@@ -45,7 +45,7 @@ export interface CardSections {
   outputRules: string
   emotionRaw: string
   emotionMappings: EmotionMapping[]
-  whenRules: WhenRule[]
+  whenText: string
   mustRules: MustRules
   /** v2: Card 注册表变量定义（结构化 schema） */
   variableDefs: CardVariableDef[]

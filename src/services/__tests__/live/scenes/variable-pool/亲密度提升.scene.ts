@@ -1,13 +1,13 @@
 // ==========================================
-// Live Test Scene: 亲密度提升 → Card变量 LLM写入
+// Live Test Scene: 亲密度提升 → RUNTIME_DATA 变量写入
 // ==========================================
 import type { SceneDef } from "../../types"
 
 export const 亲密度提升: SceneDef = {
   meta: {
     module: "variable-pool", contractId: "vp-04",
-    description: "用户夸奖 → LLM 更新亲密度和心情",
-    depth: "deep", tags: ["variable-pool", "card", "var_write"],
+    description: "用户夸奖 → LLM 回复含 RUNTIME_DATA → batchWriteVars 更新亲密度和心情",
+    depth: "deep", tags: ["variable-pool", "card", "runtime-data"],
   },
   turns: [
     {
