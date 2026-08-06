@@ -1,3 +1,9 @@
+---
+document_type: historical_design
+status: archived
+current_reference: ../../current/system-design.md
+---
+
 # 回复生成器 v5 — 一步生成 + 统一 Card + 兜底卡片化
 
 > 日期: 2026-07-14 | 状态: 已实现 (2026-07)

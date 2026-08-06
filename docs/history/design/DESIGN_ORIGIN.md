@@ -1,3 +1,9 @@
+---
+document_type: historical_design
+status: archived
+current_reference: ../../current/system-design.md
+---
+
 初版
 一、	架构
 原始消息OriginMessage->
