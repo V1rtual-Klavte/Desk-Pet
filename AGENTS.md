@@ -149,7 +149,7 @@ interface VariableState {
 - Card 变量必须来自 `card.sections.variableDefs` 注册表。
 - `batchWriteVars()` 拒绝未注册、不可写、类型错误或越界的变量。
 - Card 的 `whenText` 是自然语言语气指引，不是可执行 When DSL。
-- 主回复链路不再使用 `var_read`、`var_write`、`var_list`、`var_delete` 工具链；`planner.ts` 和少量历史测试契约仍有遗留引用，属于待清理技术债。新代码不得继续增加这些引用，变量更新统一走 RUNTIME_DATA。
+- 主回复链路不使用旧变量工具链，变量更新统一走 RUNTIME_DATA；旧接口只在历史归档中保留，不作为当前契约。
 
 ## 记忆边界
 
@@ -279,7 +279,6 @@ klavte   备用分支
 - 不自作主张扩大范围，疑问先探索代码并基于事实判断。
 - 配置项必须统一维护，不能只改某一个消费者。
 - 每轮修改结束同步 `README.md`、`AGENTS.md`、`docs/DES.md`；有影响时同步当前文档。
-- 回复最后加“喵~”。
 
 ## 核心方针
 

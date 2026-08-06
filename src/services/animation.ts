@@ -1,5 +1,5 @@
 // ==========================================
-// 动画系统 v2 — 从 Profile 加载
+// 动画系统 — 从 Profile 加载
 // ==========================================
 import { getActiveProfile } from "@/services/profile";
 
@@ -57,4 +57,3 @@ function getFallbackAnimations(): Record<string, Animation> {
 export function getAnimation(name: string): Animation | null {
   return getAnimations()[name] || null;
 }
-

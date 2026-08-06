@@ -1,5 +1,5 @@
 // ==========================================
-// Agent Loop v5 — 单次 LLM 调用 + generator 后处理
+// Agent Loop — 单次 LLM 调用 + generator 后处理
 // 角色内容已内建到 system prompt，一步出角色化回复
 // ==========================================
 
@@ -92,7 +92,7 @@ export async function runAgentLoop(input: AgentLoopInput): Promise<AgentLoopOutp
   recordMessage()
   MemoryService.recordTurn("user", userText)
 
-  // ═══ 0. 变量池 + When 引擎 ═══
+  // ═══ 0. 变量状态刷新与重置 ═══
   refreshVariablePool()
 
   // 同步旧 session unansweredCount 到变量池 interaction 变量
@@ -104,7 +104,7 @@ export async function runAgentLoop(input: AgentLoopInput): Promise<AgentLoopOutp
   if (isNewSession) lastSeenSessionStart = currentSessionStart
   applyResetPolicies(new Date(), isNewSession)
 
-  const card = getActiveCard() // v5: 永远非 null（neutral 兜底）
+  const card = getActiveCard() // neutral 兜底，正常情况下非 null
 
   const thinkingEffort = getEffectiveThinkingEffort()
 
@@ -114,9 +114,9 @@ export async function runAgentLoop(input: AgentLoopInput): Promise<AgentLoopOutp
     card, getPoolSnapshot(),
   )
 
-  log.info(`\n${"═".repeat(50)}\n  【v5 System Prompt】Card=${card?.id ?? "neutral"} | Tools=${ctx.tools.length} tokens≈${ctx.estimatedSystemTokens}\n${"═".repeat(50)}\n${ctx.systemPrompt}\n${"─".repeat(50)}`)
+  log.info(`\n${"═".repeat(50)}\n  【System Prompt】Card=${card?.id ?? "neutral"} | Tools=${ctx.tools.length} tokens≈${ctx.estimatedSystemTokens}\n${"═".repeat(50)}\n${ctx.systemPrompt}\n${"─".repeat(50)}`)
 
-  // ═══ Plan 阶段 (助手模式) ═══
+  // ═══ Plan 编排（助手模式）═══
   let planStepContext = ""
   let rawUserText = userText
   if (generalConfig.assistantMode && planConfig.enabled) {

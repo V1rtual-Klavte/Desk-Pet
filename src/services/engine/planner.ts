@@ -116,7 +116,6 @@ export async function generatePlan(
 
 ## 可用工具
 ${toolList}
-- var_read / var_write / var_list / var_delete: 变量读写（始终可用）
 
 ## 任务
 将用户请求拆解为 1-N 个步骤。
@@ -143,7 +142,6 @@ ${toolList}
 - 标注每步依赖（dependsOn: [前置步骤 id]）
 - 标注可并行步骤（parallel: true）
 - allowedTools 为空表示可用所有工具
-- 变量工具始终可用，无需包含在 allowedTools 中
 - 只输出 JSON，不要其他内容`
 
   const { OpenAICompatibleProvider } = await import("@/services/agent/provider")
@@ -254,7 +252,7 @@ async function executeStep(
   const stepPrompt = `你是糖糖桌宠的子代理，角色: ${step.role || "执行员"}。
 正在执行计划第 ${step.id} 步: ${step.description}
 
-可用工具由系统注入。变量工具始终可用 (var_read, var_write, var_list, var_delete)。
+可用工具由系统注入。Card 状态变量通过回复末尾的 RUNTIME_DATA 更新，不使用变量工具。
 
 请完成此步骤并返回结果。`
 
@@ -271,15 +269,6 @@ async function executeStep(
   } else {
     log.warn(`步骤 ${step.id} 未指定 allowedTools，使用全部助手工具`)
     tools.push(...getToolsForMode("assistant"))
-  }
-
-  // 确保变量工具始终可用（防御性，getToolsForMode 已包含 pet 模式工具）
-  const varToolNames = ["var_read", "var_write", "var_list", "var_delete"]
-  for (const name of varToolNames) {
-    if (!tools.find(t => t.name === name)) {
-      const vt = getToolByName(name)
-      if (vt) tools.push(vt)
-    }
   }
 
   return runSubLoop({

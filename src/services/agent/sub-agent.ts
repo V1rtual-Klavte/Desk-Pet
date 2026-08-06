@@ -73,7 +73,7 @@ export async function runTeamAgent(input: TeamAgentInput): Promise<string> {
 
   log.info("Team 启动:", roles.length, "个成员", "| task:", task.substring(0, 80))
 
-  // ── Phase 1: 所有成员并行运行 ──
+  // ── 所有成员并行运行 ──
   const memberResults = await Promise.allSettled(
     roles.map(role =>
       runForkAgent({
@@ -98,7 +98,7 @@ export async function runTeamAgent(input: TeamAgentInput): Promise<string> {
     return "Team 执行失败: 所有成员均未返回结果"
   }
 
-  // ── Phase 2: Lead 代理汇总 ──
+  // ── Lead 代理汇总 ──
   const leadPrompt = [
     "你是团队负责人，请基于以下成员报告，给出最终的综合结论。",
     `原始任务: ${task}`,

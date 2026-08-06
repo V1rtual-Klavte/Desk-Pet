@@ -1,6 +1,6 @@
 // ==========================================
 // useLayerEditor — WYSIWYG 五层编辑器状态 & 逻辑
-// LayerEditor v5 composable
+// LayerEditor composable
 // ==========================================
 
 import { ref, computed, onMounted, onUnmounted } from "vue";

@@ -1,5 +1,5 @@
 # ==========================================
-# 糖糖桌宠 全局配置 v2
+# 糖糖桌宠 全局配置
 # 功能域：general / ai / tools / appearance
 # 主题/角色/音效 → 由 Profile 管理 (public/profiles/)
 # 修改此文件后重新 pnpm tauri dev 即可热更新

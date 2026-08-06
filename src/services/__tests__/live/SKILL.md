@@ -55,12 +55,11 @@ description: Desk-Pet Live Test Framework — AI 自驱动端到端测试。分�
 4. 输出报告
 5. `--strict` 时: 有 GAP 直接报错
 
-## 覆盖的 8 个模块
+## 覆盖的 7 个模块
 
 | 模块 | 源文件 |
 |------|--------|
 | variable-pool | `src/services/personality/variable-pool.ts`, `src/services/personality/types.ts` |
-| when-engine | `src/services/personality/when-engine.ts` |
 | emotion | `src/services/personality/emotion.ts` |
 | safety | `src/services/safety/checker.ts` |
 | memory | `src/services/agent/memory/index.ts`, `src/services/agent/memory/memory-entries.ts` |

@@ -1,5 +1,5 @@
 // ==========================================
-// 变量池系统 v2 — 四类变量（system/card/interaction/session）
+// 变量状态系统 — 四类变量（system/card/interaction/session）
 // §5: 注册表驱动 + 持久化拆分 + 更新闭环
 // ==========================================
 
@@ -260,7 +260,7 @@ export function formatPoolForPrompt(snapshot?: VariablePool): string {
     .map(([k, v]) => `${k}=${formatVal(v)}`)
   lines.push(`[系统变量 - 只读]\n${sysParts.join(", ") || "(空)"}`)
 
-  // [Card变量 - 可通过 var_write 更新]
+  // [Card变量 - 仅允许通过 RUNTIME_DATA 更新]
   const cardDefMap = new Map(registry.filter(d => d.scope === "card").map(d => [d.name, d]))
   const cardParts: string[] = []
   for (const [name, state] of Object.entries(p.card)) {
@@ -270,7 +270,7 @@ export function formatPoolForPrompt(snapshot?: VariablePool): string {
       : ""
     cardParts.push(`${name}=${formatVal((state as VariableState).value)}${meta}`)
   }
-  lines.push(`[Card变量 - 可通过 var_write 更新]\n${cardParts.join("\n") || "(空)"}`)
+  lines.push(`[Card变量 - 仅允许通过 RUNTIME_DATA 更新]\n${cardParts.join("\n") || "(空)"}`)
 
   // [互动状态 - 系统维护，只读]
   const intParts = Object.entries(p.interaction)
@@ -533,4 +533,3 @@ export function destroyPool(): void {
   pool = emptyPool()
   savePending = false
 }
-

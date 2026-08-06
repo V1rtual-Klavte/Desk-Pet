@@ -1,5 +1,5 @@
 // ==========================================
-// 人格模块 v4 — 统一导出入口
+// 人格模块 — 统一导出入口
 // ==========================================
 
 // ── 类型 ──
@@ -20,7 +20,7 @@ export type { SwitchResult } from "./registry"
 export { PetPersonalityMiddleware } from "./middleware"
 export type { AgentStage, StageContext, PersonalityEffect } from "./middleware"
 
-// ── v4 新模块 ──
+// ── 人格运行时模块 ──
 export { initVariablePool, refreshVariablePool, getPoolSnapshot, formatPoolForPrompt, batchWriteVars, saveVariablePoolAsync, savePoolToDisk, savePoolToDiskStrict, loadCardVars, readSystemVars, updateInteractionVar, setSessionVars, applyResetPolicies, computeSystemVariables, destroyPool, setSessionStart, getSessionStart, getVariableRegistry } from "./variable-pool"
 export type { VariablePool, VariablePoolRuntimeState } from "./variable-pool"
 

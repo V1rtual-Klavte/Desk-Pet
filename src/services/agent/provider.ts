@@ -1,7 +1,7 @@
 ﻿// ==========================================
 // Agent Provider —— 统一 OpenAI 兼容 Provider
 // 支持 DeepSeek / OpenAI / Ollama / LM Studio 等
-// Phase 2: 支持工具调用 (function_call) + 思考强度参数
+// 支持工具调用 (function_call) + 思考强度参数
 // ==========================================
 
 import type { AIProvider, Message, GenerateRequest, GenerateResponse, APIMessage } from "./types"

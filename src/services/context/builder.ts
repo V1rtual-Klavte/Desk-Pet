@@ -1,5 +1,5 @@
 // ==========================================
-// 上下文引擎 v5 — 单次 Prompt 构建
+// 上下文引擎 — 单次 Prompt 构建
 // 角色内容上移到 system prompt，一步生成角色化回复
 // ==========================================
 
@@ -31,7 +31,7 @@ export interface BuildContextOutput {
   estimatedSystemTokens: number; contextMaxTokens: number
 }
 
-// ── v5: 统一 Prompt 构建 ──
+// ── 统一 Prompt 构建 ──
 
 export function buildPrompt(
   input: BuildContextInput, card: PersonalityCard | null, pool: VariablePool,

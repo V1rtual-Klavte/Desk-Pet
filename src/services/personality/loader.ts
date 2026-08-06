@@ -1,5 +1,5 @@
 // ==========================================
-// 人格卡加载器 v4 — glob 扫描 + Section 解析 + SHA256
+// 人格卡加载器 — glob 扫描 + Section 解析 + SHA256
 // 内置: import.meta.glob 自动发现
 // 用户: Tauri fs → {project}/src/services/personality/cards/*.md
 // ==========================================
@@ -49,14 +49,14 @@ function parseFrontmatter(raw: string): { meta: CardFrontmatter; body: string } 
   return { meta, body }
 }
 
-// ── 变量定义 v2 解析 ──
+// ── 变量定义解析 ──
 
 interface ParsedVarSection {
   defs: CardVariableDef[]
 }
 
 function parseVariableSection(raw: string): ParsedVarSection {
-  // 优先尝试 v2 结构化格式（有 ## card 或 ## interaction 子标题）
+  // 优先尝试结构化格式（有 ## card 或 ## interaction 子标题）
   if (/^##\s+(card|interaction)/m.test(raw)) {
     return parseV2VariableDefs(raw)
   }
@@ -96,7 +96,7 @@ function parseOldFormatVars(raw: string): ParsedVarSection {
 
   for (const line of raw.split("\n")) {
     const sysMatch = line.match(/^#\s*@system\s+(\w+)/)
-    if (sysMatch) continue  // 旧 @system 标记忽略，v2 不再支持
+    if (sysMatch) continue  // 旧 @system 标记不再支持
     // 跳过 HTML 注释和 markdown 注释
     if (/^\s*<!--/.test(line) || /^\s*-->/.test(line)) continue
     const kv = line.match(/^([\w一-鿿]+):\s*(.+)$/)
@@ -221,7 +221,7 @@ function parseSections(body: string): CardSections {
   }
   if (currentSection) sections[currentSection] = currentContent.join("\n").trim()
 
-  // 变量定义 — v2 结构化 YAML 优先，fallback 旧 name: initial 格式
+  // 变量定义 — 结构化 YAML 优先，回退旧 name: initial 格式
   const varBlock = sections["变量定义"] || ""
   const { defs: variableDefs } = parseVariableSection(varBlock)
 

@@ -1,12 +1,12 @@
 // ==========================================
-// 人格模块 —— 类型定义 (v4 → v5 变量池重构)
+// 人格模块 —— 类型定义
 // ==========================================
 
 import type { EmotionMapping } from "./emotion"
 
 import type { MustRules } from "./must-rules"
 
-// ── 变量池 v2 类型 ──
+// ── 变量状态类型 ──
 
 export type VariableScope = "card" | "interaction"
 export type VariableType = "number" | "string" | "boolean"
@@ -47,7 +47,7 @@ export interface CardSections {
   emotionMappings: EmotionMapping[]
   whenText: string
   mustRules: MustRules
-  /** v2: Card 注册表变量定义（结构化 schema） */
+  /** Card 注册表变量定义（结构化 schema） */
   variableDefs: CardVariableDef[]
 }
 

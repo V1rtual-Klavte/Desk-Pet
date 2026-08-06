@@ -51,7 +51,7 @@ impl AppPaths {
         Ok(paths)
     }
 
-    // ── Phase F 路径穿越防护 ──
+    // ── 路径穿越防护 ──
 
     /// 校验路径在 base 内（用于 personality/memory/profile 读写）
     pub fn validate_path(path: &Path, base: &Path) -> Result<PathBuf, String> {

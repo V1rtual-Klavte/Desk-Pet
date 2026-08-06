@@ -1,6 +1,6 @@
 // ==========================================
 // MCP Manager —— 管理 MCP Server 连接
-// Phase 4: 完整 stdio/SSE 实现
+// MCP stdio/SSE 管理
 // ==========================================
 
 import { toolsConfig, setOverride } from "@/services/config"

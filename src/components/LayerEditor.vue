@@ -1,6 +1,6 @@
 <script setup lang="ts">
 // ==========================================
-// LayerEditor v5 — WYSIWYG 五层编辑器
+// LayerEditor — WYSIWYG 五层编辑器
 // 逻辑已提取至 useLayerEditor composable
 // ==========================================
 

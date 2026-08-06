@@ -1,6 +1,6 @@
 <script setup lang="ts">
 // ==========================================
-// StreamView v5 — 五层灵动图层（直接映射）
+// StreamView — 五层灵动图层（直接映射）
 // Layer DOM 始终渲染，display 由 layerStyles 控制
 // ==========================================
 
@@ -42,7 +42,7 @@ const layerUrls = computed<(string | null)[]>(() => {
   return result;
 });
 
-// ── 引擎（v2: computed 直接响应光标变化）──
+// ── 引擎（computed 直接响应光标变化）──
 const { layerStyles } = useParallax(globalCursor, windowPos, windowSize, parallaxConfig, isVisible);
 
 // ── 图片加载调试 ──

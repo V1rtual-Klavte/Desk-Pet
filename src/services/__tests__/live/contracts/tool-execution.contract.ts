@@ -12,7 +12,7 @@ export const toolExecutionContract: ModuleContract = {
     { id: "te-04", feature: "工具执行失败路径", description: "无效路径/参数 → 返回失败", why: "错误路径覆盖", depth: "shallow", scenarios: [] },
     { id: "te-05", feature: "bash 白名单放行", description: "echo/ls/cat 等白名单命令执行", why: "安全白名单机制", depth: "shallow", scenarios: [] },
     { id: "te-06", feature: "bash 非白名单拦截", description: "curl/rm 等命令被拦截", why: "安全防护", depth: "shallow", scenarios: [] },
-    { id: "te-07", feature: "var_read/write 联动", description: "LLM 通过工具读写变量", why: "LLM 工具调用核心", depth: "deep", scenarios: [] },
+    { id: "te-07", feature: "RUNTIME_DATA 联动", description: "LLM 回复中的 RUNTIME_DATA 由回复生成器处理，工具链不负责变量写入", why: "明确工具与变量状态的边界", depth: "deep", scenarios: [] },
     { id: "te-08", feature: "真 LLM 多工具调用", description: "真实 LLM 对话中先后调用多个工具", why: "端到端工具链验证", depth: "deep", scenarios: [] },
   ],
   rules: { minScenarios: 6, minDeepScenarios: 2, requireBoundary: true, requireErrorPath: true },

@@ -1,5 +1,5 @@
 // ==========================================
-// 全局配置 —— 从根目录 CONFIG.yaml 加载 (v2 6域结构)
+// 全局配置 —— 从根目录 CONFIG.yaml 加载
 // 所有模块都应从此处读取配置，不自行定义常量
 // 运行时用户设置通过 localStorage 持久化覆盖 CONFIG 默认值
 // ==========================================
@@ -8,7 +8,7 @@ import rawConfig from "../../CONFIG.yaml";
 import type { ParallaxLayerCfg } from "@/composables/useParallax";
 import { DEFAULT_LAYERS } from "@/composables/useParallax";
 
-// ── 类型定义（v2 6域结构）──
+// ── 类型定义 ──
 
 interface UserSettings {
   popupMode: "cursor" | "fixed";
@@ -200,7 +200,7 @@ export const userConfig = {
 // ==========================================
 const OVERRIDES_KEY = "deskpet_config_overrides";
 
-// ★ 旧→新 key 迁移映射（v1 扁平结构 → v2 6域结构）
+// ★ 旧配置 key 迁移映射
 const KEY_MIGRATION: Record<string, string> = {
   "mode.assistant":                    "general.mode.assistant",
   "personality.active":                "ai.personality.active",
@@ -420,5 +420,5 @@ export const appearanceConfig = {
 // 开发时日志
 // ══════════════════════════════════════════
 if (import.meta.env.DEV) {
-  console.log("[Config v2] 已加载 CONFIG.yaml | AI:", aiConfig.provider, "| endpoint:", aiConfig.endpoint);
+  console.log("[Config] 已加载 CONFIG.yaml | AI:", aiConfig.provider, "| endpoint:", aiConfig.endpoint);
 }

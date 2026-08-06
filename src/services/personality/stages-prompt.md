@@ -16,8 +16,6 @@
 - clip.read: 读取剪贴板
 - clip.write: 写入剪贴板
 - agent.call: 子代理 / 多代理
-- var.read: 读取变量 / 列出变量
-- var.write: 写入变量 / 删除变量
 - _default: MCP、Skill 或其他未知工具
 
 [系统兜底提示语 (fallbacks)]
@@ -37,8 +35,8 @@
 - 所有字符串值必须符合角色语气，尽量 6-18 个中文字符。
 - idle 必须为 null。
 - executing 必须覆盖全部工具类别。
-- done 至少覆盖 fs.read、fs.write、os.exec、os.info、net.fetch、app.launch、clip.read、clip.write、agent.call、var.read、var.write、_default。
-- blocked 至少覆盖 fs.write、os.exec、clip.write、var.write、_default。
+- done 至少覆盖 fs.read、fs.write、os.exec、os.info、net.fetch、app.launch、clip.read、clip.write、agent.call、_default。
+- blocked 至少覆盖 fs.write、os.exec、clip.write、_default。
 - fallbacks 中 llmUnavailable 必须是字符串数组（2-3 条），其他 key 为字符串。
 - 不要省略字段，不要输出空字符串。
 
@@ -58,8 +56,6 @@
     "clip.read": "",
     "clip.write": "",
     "agent.call": "",
-    "var.read": "",
-    "var.write": "",
     "_default": ""
   },
   "done": {
@@ -72,15 +68,12 @@
     "clip.read": "",
     "clip.write": "",
     "agent.call": "",
-    "var.read": "",
-    "var.write": "",
     "_default": ""
   },
   "blocked": {
     "fs.write": "",
     "os.exec": "",
     "clip.write": "",
-    "var.write": "",
     "_default": ""
   },
   "error": "",
