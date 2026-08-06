@@ -1,6 +1,6 @@
 // ==========================================
 // Agent 主动消息引擎 —— 窗口监控触发 AI 主动搭话
-// Phase 2: 使用新的 Agent Loop
+// 使用统一 Agent Loop
 // ==========================================
 
 import { unansweredCount } from "@/services/session"

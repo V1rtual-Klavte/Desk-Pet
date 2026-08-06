@@ -41,7 +41,7 @@ LLM 可见回复文本 + <RUNTIME_DATA>
 
 `system`、`interaction` 和 `session` 状态由系统维护；LLM 不能借由 RUNTIME_DATA 创建任意变量。Card 的 `whenText` 是注入 Prompt 的语气指引，不是可执行条件 DSL。
 
-当前主 Agent Loop 已走 RUNTIME_DATA；Planner 提示和个别旧测试契约仍残留 `var_*` 文本，属于迁移后的技术债，不代表旧工具链仍是有效接口。
+当前主 Agent Loop、Planner 和 Live Test 契约都以 RUNTIME_DATA 为准；旧变量工具只在历史归档中出现，不代表当前接口仍有效。
 
 ## 配置与运行时数据
 

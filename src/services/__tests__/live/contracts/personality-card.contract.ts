@@ -7,7 +7,7 @@ export const personalityCardContract: ModuleContract = {
   sourceHash: "",
   coverage: [
     { id: "pc-01", feature: "Card 加载", description: "从 builtin/user 源加载 Card 并解析 sections", why: "人格卡系统基础", depth: "shallow", scenarios: [] },
-    { id: "pc-02", feature: "getActiveCard 永不 null", description: "getActiveCard() neutral 兜底", why: "v5 核心约束", depth: "shallow", scenarios: [] },
+    { id: "pc-02", feature: "getActiveCard 永不 null", description: "getActiveCard() neutral 兜底", why: "人格运行时核心约束", depth: "shallow", scenarios: [] },
     { id: "pc-03", feature: "Card 变量定义加载", description: "variableDefs 解析为 CardVariableDef[]", why: "变量池初始化依赖", depth: "shallow", scenarios: [] },
     { id: "pc-04", feature: "Card WhenRules 加载", description: "WhenRule[] 正确解析", why: "When 引擎依赖", depth: "shallow", scenarios: [] },
     { id: "pc-05", feature: "Card EmotionMappings 加载", description: "EmotionMapping[] 正确解析", why: "情绪标签依赖", depth: "shallow", scenarios: [] },

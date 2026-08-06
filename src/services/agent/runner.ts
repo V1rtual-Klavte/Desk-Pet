@@ -1,6 +1,6 @@
 // ==========================================
 // Agent 运行器 —— sendMessage / initChat
-// Phase 2: 接入 Agent Loop + 中间件 + 工具系统
+// 接入 Agent Loop + 中间件 + 工具系统
 // ==========================================
 
 import { getActiveCard } from "@/services/personality"
@@ -52,7 +52,7 @@ export async function initChat(welcomeText?: string): Promise<void> {
 
 /**
  * 发送用户消息并获取 AI 回复。
- * Phase 2: 使用 Agent Loop（支持工具调用多轮）。
+ * 使用 Agent Loop（支持工具调用多轮）。
  *
  * ★ 绑定会话：入口捕获 sessionId，异步回复回来时校验。
  *   若会话已切换，回复存入原会话 localStorage + session 文件，不污染当前 chatHistory。

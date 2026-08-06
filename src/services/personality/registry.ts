@@ -1,5 +1,5 @@
 // ==========================================
-// 人格注册表 v5 — 事务式激活/切换，始终激活一个 Card
+// 人格注册表 — 事务式激活/切换，始终激活一个 Card
 // neutral 默认兜底，替代旧 personality.enabled 开关
 // ==========================================
 
@@ -72,7 +72,7 @@ export function listPersonalities(): PersonalityCard[] {
   return getCards()
 }
 
-/** 获取当前激活的人格卡（v5: 永远非 null，neutral 兜底） */
+/** 获取当前激活的人格卡（neutral 兜底） */
 export function getActiveCard(): PersonalityCard | null {
   if (!activeId) return null
   return getCard(activeId) ?? null
@@ -120,8 +120,8 @@ export async function switchPersonality(id: string | null): Promise<SwitchResult
   const prevStages = snapshotStagesCache()
 
   if (id === null) {
-    // v5: 不允许切换到 null，应该切换到 neutral 而不是关掉
-    log.warn("不允许关闭人格（v5 始终有 Card），请切换到 neutral 或其他 Card")
+    // 不允许切换到 null，应该切换到 neutral 而不是关掉
+    log.warn("不允许关闭人格（始终有 Card），请切换到 neutral 或其他 Card")
     return { ok: false, error: "不允许关闭人格，请切换到其他 Card（如 neutral）" }
   }
 

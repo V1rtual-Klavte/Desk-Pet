@@ -23,11 +23,11 @@ export interface StagePrompts {
   generatedAt: number
   isFallback: boolean
   stages: StageMap
-  /** v2: Card + interaction 变量运行时状态，持久化到 stages/{cardId}.json */
+  /** Card + interaction 变量运行时状态，持久化到 stages/{cardId}.json */
   variables?: StageVariables
 }
 
-/** v2: 持久化在 stages/{cardId}.json 中的变量状态 */
+/** 持久化在 stages/{cardId}.json 中的变量状态 */
 export interface StageVariables {
   schemaVersion: number
   updatedAt: number
@@ -45,11 +45,11 @@ export interface StageMap {
   error: string
   timeout: string
   retry: string
-  /** v5: 系统兜底回复，每个 Card 有自己的角色化版本 */
+  /** 系统兜底回复，每个 Card 有自己的角色化版本 */
   fallbacks: FallbackReplies
 }
 
-/** v5: 系统兜底回复类型 — 替代硬编码中文 */
+/** 系统兜底回复类型 — 替代硬编码中文 */
 export interface FallbackReplies {
   concurrentRejected: string
   maxRetriesExhausted: string
@@ -62,7 +62,7 @@ export interface FallbackReplies {
   compactionFailed: string
 }
 
-/** v5: 极简中性兜底 — 只在 Card stages 完全不可用时使用 */
+/** 极简中性兜底 — 只在 Card stages 完全不可用时使用 */
 const FALLBACK_FALLBACKS: FallbackReplies = {
   concurrentRejected: "请稍后再试",
   maxRetriesExhausted: "重试失败，请稍后再试",
@@ -88,15 +88,12 @@ export const FALLBACK_STAGES: StageMap = {
     "clip.read": "剪贴板已读取",
     "clip.write": "剪贴板已写入",
     "agent.call": "子代理已完成",
-    "var.read": "变量已读取",
-    "var.write": "变量已更新",
     _default: "完成",
   },
   blocked: {
     "fs.write": "写入已拦截",
     "os.exec": "命令已拦截",
     "clip.write": "剪贴板写入已拦截",
-    "var.write": "变量写入已拦截",
     _default: "操作已拦截",
   },
   error: "出了点问题，请重试",
@@ -140,7 +137,7 @@ export function getSimpleStage(stage: keyof StageMap): string | null {
   return null
 }
 
-/** v5: 获取系统兜底回复，card 文案 → FALLBACK_FALLBACKS 多级降级 */
+/** 获取系统兜底回复，card 文案 → FALLBACK_FALLBACKS 多级降级 */
 export function getFallbackReply(key: keyof FallbackReplies): string {
   const fallbacks = cache?.stages.fallbacks ?? FALLBACK_STAGES.fallbacks
   const val: FallbackReplies[keyof FallbackReplies] = fallbacks[key]
@@ -334,7 +331,7 @@ function readLooseMap(text: string, section: "executing" | "done" | "blocked"): 
   if (!body) return {}
 
   const result: Record<string, string> = {}
-  const keys = ["fs.read", "fs.write", "os.exec", "os.info", "net.fetch", "app.launch", "clip.read", "clip.write", "agent.call", "var.read", "var.write", "_default", "default"]
+  const keys = ["fs.read", "fs.write", "os.exec", "os.info", "net.fetch", "app.launch", "clip.read", "clip.write", "agent.call", "_default", "default"]
   for (const key of keys) {
     const nextKeys = keys.filter(k => k !== key).map(k => k.replace(".", "\\.")).join("|")
     const re = new RegExp(`${key.replace(".", "\\.")}:\\s*([\\s\\S]*?)(?=,?\\s*(?:${nextKeys}):|$)`)
@@ -345,7 +342,7 @@ function readLooseMap(text: string, section: "executing" | "done" | "blocked"): 
   return result
 }
 
-/** v5: 宽松解析 fallbacks 字段，从全文 scan fallback key 出现位置提取文案 */
+/** 宽松解析 fallbacks 字段，从全文扫描 fallback key 出现位置提取文案 */
 function readLooseFallbacks(text: string, defaults: FallbackReplies): FallbackReplies {
   const result = { ...defaults }
   const keySet = new Set(Object.keys(defaults) as (keyof FallbackReplies)[])

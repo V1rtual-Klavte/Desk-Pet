@@ -1,5 +1,5 @@
 // ==========================================
-// 回复生成器 v5 — 一步生成后处理
+// 回复生成器 — 一步生成后处理
 // 解析 RUNTIME_DATA 块 → 情绪表情/音效映射 → 变量写入落盘 → 截断
 // ==========================================
 
@@ -10,7 +10,7 @@ import type { PersonalityCard } from "@/services/personality/types"
 
 const log = createLogger("ReplyGen")
 
-/** v5: 回复后处理结果 */
+/** 回复后处理结果 */
 export interface ReplyResult {
   text: string
   emotionKey: string | null
@@ -65,7 +65,7 @@ function parseRuntimeData(raw: string): ParsedRuntime {
 // ── 主入口 ──
 
 /**
- * v5: 生成最终回复。
+ * 生成最终回复。
  * 解析 RUNTIME_DATA 块 → 查映射表情/音效 → 变量批量写入落盘 → trim → 长度截断。
  */
 export async function generateReply(

@@ -1,5 +1,5 @@
 // ==========================================
-// 人格中间件 v5 — stages 缓存 + actionCategory 匹配
+// 人格中间件 — stages 缓存 + actionCategory 匹配
 // ==========================================
 
 import { getActiveCard } from "./registry"

@@ -145,7 +145,7 @@ Desk-Pet/
   → ChatPanel / StreamView 展示
 ```
 
-`RUNTIME_DATA` 是内部元数据，不显示给用户。主链路已经不依赖旧的变量工具和情绪前缀；Planner 中仍有少量旧引用，属于待清理技术债。
+`RUNTIME_DATA` 是内部元数据，不显示给用户。主链路和 Planner 都不依赖旧的变量工具或情绪前缀；旧接口仅保留在历史归档中。
 
 ---
 
@@ -216,6 +216,7 @@ Live Test 位于 `src/services/__tests__/live/`。当前部分 Contract 的 `sou
 - [当前系统设计](docs/current/system-design.md)
 - [当前记忆系统](docs/current/memory.md)
 - [当前测试说明](docs/current/testing.md)
+- [阶段现状（2026-08-06）](docs/history/analysis/阶段现状-2026.8.6.md)
 - [完整文档索引](docs/INDEX.md)
 - [开发约束](AGENTS.md)
 - [Claude 兼容入口](CLAUDE.md)

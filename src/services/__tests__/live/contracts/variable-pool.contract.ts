@@ -6,10 +6,10 @@ export const variablePoolContract: ModuleContract = {
   generatedAt: "2026-07-24T00:00:00Z",
   sourceHash: "",
   coverage: [
-    { id: "vp-01", feature: "系统变量计算", description: "computeSystemVariables 计算6个系统变量", why: "When规则和prompt注入基础", depth: "shallow", scenarios: [] },
+    { id: "vp-01", feature: "系统变量计算", description: "computeSystemVariables 计算6个系统变量", why: "Prompt 注入基础", depth: "shallow", scenarios: [] },
     { id: "vp-02", feature: "变量池初始化", description: "initVariablePool 从Card variableDefs初始化", why: "Card切换和重启时正确构建", depth: "deep", scenarios: [] },
     { id: "vp-03", feature: "变量池刷新", description: "refreshVariablePool 重新计算系统变量", why: "每轮对话前刷新", depth: "deep", scenarios: [] },
-    { id: "vp-04", feature: "batchWriteVars 写入注册变量", description: "RUNTIME_DATA 解析后调用 batchWriteVars 写入合法 card 变量", why: "替代 var_write 工具，批量写入变量", depth: "deep", scenarios: ["亲密度提升"] },
+    { id: "vp-04", feature: "batchWriteVars 写入注册变量", description: "RUNTIME_DATA 解析后调用 batchWriteVars 写入合法 card 变量", why: "回复生成器拥有变量写入边界", depth: "deep", scenarios: ["亲密度提升"] },
     { id: "vp-05", feature: "batchWriteVars 拒绝未注册变量", description: "写入未在 variableDefs 中定义的变量被拒绝", why: "防止 LLM 写入未定义变量", depth: "shallow", scenarios: [] },
     { id: "vp-06", feature: "batchWriteVars 类型/范围约束", description: "number/string/boolean 类型校验 + number min/max + string enum，非法值拒绝", why: "防护 LLM 幻觉", depth: "shallow", scenarios: ["越界拒绝"] },
     { id: "vp-07", feature: "batchWriteVars updateBy=system 只读", description: "updateBy 不是 llm 的 card 变量无法通过 batchWriteVars 写入", why: "保护系统变量", depth: "shallow", scenarios: [] },

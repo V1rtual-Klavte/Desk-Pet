@@ -19,7 +19,6 @@ export type ActionCategory =
   | "app.launch"
   | "clip.read" | "clip.write"
   | "agent.call"
-  | "var.read" | "var.write"
   | "_default"
 
 /** 工具执行上下文 */
