@@ -1,7 +1,7 @@
 # DES.md — 糖糖桌宠 设计文档
 
 > 糖糖桌宠 (Desk Pet) 的设计理念、玩法机制、交互说明与架构实现进度
-> 面向开发者：记录当前架构进度、各模块实现方式、待完成目标
+> 面向项目负责人和开发者：用于快速回顾项目全貌；具体当前契约以代码和 `docs/current/` 为准。
 
 ---
 
@@ -10,6 +10,21 @@
 **糖糖桌宠**是一个桌面虚拟主播宠物应用。像素风角色常驻桌面，**无边框透明窗口置顶显示**，像真正的桌面宠物一样陪伴用户。她能聊天、能察觉你正在看什么、能主动搭话、能用工具完成任务。
 
 **一句话**：把 VTuber 搬到桌面，让她真的注视你。
+
+### 快速代码回顾路径
+
+需要重新建立代码全貌时，按下面顺序阅读即可：
+
+1. `README.md`：安装、启动命令、能力边界和文档入口。
+2. `src/App.vue`、`src/services/agent/runner.ts`：应用启动后的 UI 入口与用户消息入口。
+3. `src/services/engine/agent-loop.ts`、`src/services/context/builder.ts`：主循环、Prompt 组装、工具循环和上下文压缩。
+4. `src/services/personality/`、`src/services/reply/generator.ts`：人格 Card、变量状态、`RUNTIME_DATA`、情绪和回复后处理。
+5. `src/services/tool/`、`src/services/safety/`：工具注册/路由、助手模式能力和安全确认。
+6. `src/services/agent/memory/`、`src/services/session/`：会话持久化、压缩摘要和当前尚未接通的长期记忆能力。
+7. `src-tauri/src/lib.rs`、`src-tauri/src/commands/`、`src-tauri/src/monitor/`：Rust 命令、路径边界、窗口和前台应用监控。
+8. `src/services/__tests__/live/`：先看 Contract，再看 Scene，最后运行 `pnpm test -- --module <module>` 验证实际链路。
+
+这份文档保留设计和玩法的历史细节；`docs/current/` 用来记录已经与代码核对过的当前契约，`docs/history/` 只用于查阅阶段决策。
 
 ---
 
@@ -27,28 +42,28 @@
 
 每个会话的对话轮次**实时写入** `sessions/session-YYYYMMDD-HHmmss-主题.md`，首次用户消息后自动提取主题并重命名文件。**累计 token 消耗、上下文占比同步持久化到 .md 元数据**，重启后自动恢复。随时可查看历史记录。
 
-#### Agent Loop 机制 (v5 — 一步生成)
+#### Agent Loop 机制
 
 ```
-用户消息 → PreProcessor → 变量上下文刷新 + When引擎求值
+用户消息 → PreProcessor → 变量状态刷新 + 人格语气指引组装
   → 单次 LLM 调用 (永远非流式)
-    SystemPrompt = Card 全量角色内容 (设定/风格/情绪/When语气/行为准则)
-                   + 变量池 + 工具声明 + 记忆注入
+    SystemPrompt = Card 全量角色内容 (设定/风格/情绪/语气指引/行为准则)
+                   + 变量状态 + 工具声明 + 会话摘要
     → 工具循环 (不变): 安全检查→执行→回注
-    → 直接输出 [emo:key] + 角色化回复
-  → Generator 后处理: 剥离标签 → Card 情绪映射 → trim → 截断
+    → 直接输出 <RUNTIME_DATA> + 角色化回复
+  → Generator 后处理: 解析/剥离 RUNTIME_DATA → Card 情绪映射 → trim → 截断
   → ReplyResult { text, emotionKey, expression, sound }
-  → 变量快照/会话元数据持久化 → 上下文压缩
+  → batchWriteVars() 校验变量更新并持久化 → 会话元数据/上下文压缩
 ```
 
 - 固定 1 次 LLM (非流式)。Card 永远激活 (neutral 兜底，替代旧人格开关)
-- 统一 system prompt：Card 全量角色内容 + 工具声明 + 变量池 + 记忆，一次注入
-- 变量上下文: v2 四类变量 system/card/interaction/session (不变)
-- When 引擎: `#行为进阶` 条件表达式实时语气切换 (不变)
-- 情绪标签: `[emo:key]` 开头隐式携带，generator.ts 剥离 → 查 Card emotionMappings
+- 统一 system prompt：Card 全量角色内容 + 工具声明 + 变量状态 + 会话摘要，一次注入
+- 变量上下文：四类变量 `system` / `card` / `interaction` / `session`
+- `#行为进阶` 的 `whenText` 是自然语言语气指引，随 Card 一起注入 Prompt，不再执行条件 DSL
+- 情绪和变量更新由 `<RUNTIME_DATA>` 内部元数据携带；`generator.ts` 解析、校验后映射 Card 的 `emotionMappings`
 - ReplyResult: `{ text, emotionKey, expression, sound }` — 表情/音效由 generator 统一解析
 - chatHistory: 用户消息 + 工具链 + 角色化回复
-- 已移除: Phase2, buildStylePrompt, summarizeToolCalls, formatToolRules, generateReplyStream, isPersonalityEnabled, setPersonalityEnabled, replyConfig, personalityConfig.enabled, fallbackReplies
+- 已移除: `buildStylePrompt`、`summarizeToolCalls`、`formatToolRules`、`generateReplyStream`、旧人格开关和旧兜底回复链路
 - 新增: neutral Card (默认桌面助手), getFallbackReply / stages fallbacks (替代 18 处硬编码), ReplyResult 接口
 
 ### 2.3 人格系统（独立模块）
@@ -57,30 +72,30 @@
 
 - **人格卡**：YAML frontmatter + 7 section Markdown；内置卡位于 `src/services/personality/cards/`，用户导入卡也持久化到 `src/services/personality/cards/`
 - **热插拔**：设置面板可随时切换 Card（neutral 为默认兜底），切换为事务式阻塞流程：stages 加载/生成、变量池初始化/持久化任一失败则回滚旧 Card
-- **When 引擎**：Card `#行为进阶` 定义条件规则，根据变量池实时切换语气
-- **情绪表达**：Card `#情绪表达` 定义 `key → 表情,音效` 映射，generator.ts 剥离 [emo:key] 后解析
+- **语气指引**：Card `#行为进阶` 的 `whenText` 以自然语言描述当前角色语气，作为 Prompt 的一部分，不在前端执行表达式
+- **情绪表达**：Card `#情绪表达` 定义 `key → 表情,音效` 映射，回复生成器从 `RUNTIME_DATA` 解析后统一处理
 - **阶段文案**：per-card stages 由 LLM 生成并持久化到 `src/services/personality/stages/{cardId}.json`
-- **fallbacks 兜底 (v5新增)**：stages JSON 新增 `fallbacks` 字段 (8 个 key)，`getFallbackReply(key)` 按 Card 返回角色化兜底；llmUnavailable 为数组随机选取；最终 FALLBACK_FALLBACKS 极简中性常数兜底
-- **neutral 默认卡 (v5新增)**：`cards/neutral.md` — 中性桌面助手，替代旧 `personality.enabled=false`
-- **变量池（v2）**：四类变量 system/card/interaction/session 完整实现
+- **fallbacks 兜底**：stages JSON 含 `fallbacks` 字段 (8 个 key)，`getFallbackReply(key)` 按 Card 返回角色化兜底；`llmUnavailable` 为数组随机选取；最终回退到极简中性常数
+- **neutral 默认卡**：`cards/neutral.md` — 中性桌面助手，替代旧 `personality.enabled=false`
+- **变量状态**：四类变量 `system` / `card` / `interaction` / `session`
   - **system**：6 个运行时派生变量（hour/minute/dayOfWeek/isNightTime/isWeekend/activeCardId），只读
-  - **card**：Card 注册表驱动，`var_write` 校验 type/min/max/enum/updateBy 后写入，`var_delete` 重置为 initial
+  - **card**：Card 注册表驱动，`RUNTIME_DATA` 中的更新经 `batchWriteVars()` 校验 type/min/max/enum/updateBy 后写入
   - **interaction**：系统维护（如 `unansweredCount`），`updateInteractionVar` API 更新，LLM 只读
-  - **session**：`setSessionVars` 注入，仅进 Prompt 不进 When
+  - **session**：`setSessionVars` 注入，仅进 Prompt，不参与 Card 持久化
   - **持久化**：`vars.json` (system snapshot) + `stages/{cardId}.json:variables` (card+interaction)
   - **注册表**：Card `#变量定义 > ## card / ## interaction` YAML block → `CardVariableDef[]`，loader 解析
-  - **更新闭环**：Agent Loop 开始 refresh → reset 策略 → var_write 即时落盘 → Loop 结束 dirty flush
+  - **更新闭环**：Agent Loop 开始 refresh → reset 策略 → 生成器批量校验/写入 → `savePoolToDisk()` 持久化
 - **扩展性**：内置 cards 由 `import.meta.glob` 自动扫描；用户 cards 通过 Tauri fs 导入/扫描
 
-#### 人格中间件 v5（stages 缓存驱动 + fallbacks）
+#### 人格中间件（stages 缓存驱动 + fallbacks）
 
 ```ts
 PetPersonalityMiddleware.wrap(stage, { actionCategory })
 ```
-- AgentStage: thinking | planning | generating | executing | blocked | error | done | idle (v5: 移除 retry)
+- AgentStage: thinking | planning | generating | executing | blocked | error | done | idle
 - 阶段文案由 stages-cache 返回（per-card LLM 生成），无硬编码
 - executing/done/blocked 按 `actionCategory`（fs.read/os.exec/.../`_default`）匹配
-- 情绪表情由 generator.ts 剥离 [emo:key] 后统一解析，不再依赖 Phase2 收尾阶段
+- 情绪表情由 `generator.ts` 解析 `RUNTIME_DATA` 后统一处理
 - fallbacks: `getFallbackReply(key)` → 替代所有硬编码中文兜底 (8 个 key)
 
 ### 2.4 窗口感知主动搭话 ★ 核心机制
@@ -90,20 +105,17 @@ PetPersonalityMiddleware.wrap(stage, { actionCategory })
 - 用户在看 B站 → 桌宠："Pちゃん又在刷视频？让我也看看嘛～"
 - 用户在写文档 → 桌宠："好认真哦…偶尔也理理我嘛"
 
-### 2.5 动态语气（When 引擎）
+### 2.5 动态语气（行为进阶）
 
-Card 的 `#行为进阶` section 定义条件规则，实时切换语气：
+Card 的 `#行为进阶` section 用 `whenText` 描述当前语气和互动倾向，随人格设定一起交给模型：
 
 ```md
-## 规则: 深度病娇
-when: unansweredCount >= 3 OR 亲密度 >= 9
-语气: 黑暗占有欲爆发...
+whenText: 当用户长时间未回复时，语气可以更在意对方，但不要替用户下判断或表现攻击性。
 ```
 
-- **变量驱动**：条件表达式支持 `AND/OR/NOT/( )` + 全部系统/角色变量
-- **按序匹配**：规则从上到下求值，第一条命中生效。最后一条须为 `when: true` 兜底
-- **零冷却**：每轮 agent loop 重新求值，无状态记忆
-- **v5 统一注入**：When 引擎结果直接注入 `buildPrompt` 的 `[当前状态]` 段，与角色设定一并成为 system prompt 的一部分
+- **人格驱动**：这段文本表达角色在不同互动状态下的语言边界与倾向，不是可执行逻辑
+- **变量配合**：当前变量状态仍会被注入 Prompt，模型结合它和 `whenText` 生成回复
+- **统一注入**：`whenText` 与角色设定、必须遵守规则和变量状态一起由 `buildPrompt` 组装
 
 ### 2.6 快捷键召唤/收回 ★ 核心机制
 
@@ -424,7 +436,7 @@ playNotificationByBoundary();
 
 ## 8. 配置系统
 
-> **v2 (2026-07-02)**: Profile 架构落地。主题/角色/音效从 CONFIG.yaml 移入自包含 Profile 文件夹。
+> Profile 架构已落地：主题、角色和音效从 `CONFIG.yaml` 移入自包含 Profile 文件夹。
 
 ### 8.1 CONFIG.yaml — 功能配置（4域）
 
@@ -457,7 +469,7 @@ sugar-pink/                  # Profile 示例（内置3个: sugar-pink / dark-pu
 
 #### 灵动图层系统
 
-五层景深视差效果，各层跟随鼠标以不同灵敏度偏移。**v2: 直接映射（computed 响应式），零惯性指哪打哪**，无弹簧/速度/RAF 累积。
+五层景深视差效果，各层跟随鼠标以不同灵敏度偏移。使用 **直接映射（computed 响应式）**，零惯性指哪打哪，无弹簧/速度/RAF 累积。
 
 | 层 | 目录 | 素材 | 灵敏度 | 说明 |
 |----|------|------|:---:|------|
@@ -475,7 +487,7 @@ sugar-pink/                  # Profile 示例（内置3个: sugar-pink / dark-pu
 - **3D 增强**: CSS `drop-shadow` + `brightness/contrast/saturate` 按深度调整
 - **配置**: `profile.yaml` → `theme.parallax`；设置页 → 全局开关+强度；**图层编辑器弹窗** → 逐层交互式编辑（拖拽位置/属性调整/锁定/隐藏）
 - **持久化**: 图层编辑器保存到 `userConfig.parallaxLayers`（key: `deskpet_user_settings`），`refreshUserCache()` 打破跨 WebView 缓存
-- **核心文件**: `src/composables/useParallax.ts` (引擎 v2 + 导出 `layerDepth()`) + `StreamView.vue` (五层渲染 v5) + `src/components/LayerEditor.vue` (编辑器弹窗 v3)
+- **核心文件**: `src/composables/useParallax.ts`（引擎，导出 `layerDepth()`）+ `StreamView.vue`（五层渲染）+ `src/components/LayerEditor.vue`（编辑器弹窗）
 - **Rust**: `cursor.rs` → `spawn_cursor_tracker` 后台线程 ~60fps emit；`profile_cmd.rs` → `profile_file_write` dev 模式同步 `public/profiles/` + `list_profile_files` 合并 AppData/builtin 来源
 - **稳定性**: 2026-07-03 修复三重连环 Bug；2026-07-05 大修：offset 百分比自适应 + 素材按层闭包 + 上传即时预览 + 保存热重载 + 跨 WebView 缓存刷新 + stage 等比容器 + 拖拽亚像素精度 + 整数检测自动迁移旧数据 + profile_file_read/write 双写 + list_profile_files 合并来源
 
@@ -625,17 +637,16 @@ src/services/
 │       ├── index.ts / types.ts / registry.ts
 │       └── commands/      # help/clear/memory/expression/win
 │
-├── personality/           # ★ 人格模块 v5
+├── personality/           # ★ 人格模块
 │   ├── middleware.ts      # ★ 人格中间件（包裹所有Agent阶段, 8阶段无retry）
 │   ├── types.ts           # 人格类型定义
-│   ├── registry.ts        # 人格注册表 v5 (neutral兜底, 无enabled开关)
+│   ├── registry.ts        # 人格注册表 (neutral兜底, 无enabled开关)
 │   ├── loader.ts          # 人格卡 YAML 加载 + glob 自动扫描
-│   ├── emotion.ts         # 情绪标签剥离 + 映射解析 + Prompt生成
+│   ├── emotion.ts         # 情绪映射解析 + Prompt生成
 │   ├── must-rules.ts      # 必须遵守规则解析 + 问候提取
-│   ├── when-engine.ts     # AST 条件表达式求值引擎
 │   ├── stages-cache.ts    # 阶段文案缓存 + getFallbackReply() 兜底
-│   ├── stages-prompt.md   # 阶段文案生成模板 (v5: 含fallbacks字段)
-│   ├── variable-pool.ts   # 变量池 v2 (system/card/interaction/session)
+│   ├── stages-prompt.md   # 阶段文案生成模板（含 fallbacks 字段）
+│   ├── variable-pool.ts   # 变量状态 (system/card/interaction/session)
 │   ├── vars.json          # 系统变量持久化快照
 │   ├── cards/             # 人格卡 .md (4张: neutral/angelkawaii/ame/pchan)
 │   └── stages/            # 阶段文案 JSON (LLM生成, per-card)
@@ -682,8 +693,8 @@ src/services/
 │                          # 工具声明策略 (轻量始终带/助手L0-L2)
 │                          # compactMessages 上下文压缩
 │
-├── reply/                 # 回复生成器 v5
-│   └── generator.ts       # 一步后处理: 情绪标签剥离 + 表情/音效映射 + trim + 截断
+├── reply/                 # 回复生成器
+│   └── generator.ts       # 一步后处理: RUNTIME_DATA 解析 + 表情/音效映射 + trim + 截断
 │                          #   generateReply(raw, card) → ReplyResult { text, emotionKey, expression, sound }
 │
 ├── agent/                 # Agent 模块
@@ -735,7 +746,7 @@ src/services/
   │           │     ├── 1. 人格 Prompt (card + boundary)
   │           │     ├── 2. CANDY.md + User.md 注入
   │           │     ├── 3. 会话记忆注入 (压缩摘要)
-  │           │     ├── 4. Memory 搜索注入 (topK=3)
+  │           │     ├── 4. 长期记忆检索（当前未自动注入）
   │           │     ├── 5. 工具声明 (轻量始终带 / 助手L0-L3)
   │           │     ├── 6. 输出约束 + 助手能力提示
   │           │     └── 7. 思考强度提示 (low→快速 / high→深入)
@@ -766,7 +777,7 @@ src/services/
   │           │
   │           ├── 人格中间件.wrap("done") → expression: "chu", sound: "reply"
   │           ├── MemoryService.recordTurn("assistant") → sessions/*.md
-  │           ├── [助手模式] MemoryService.forkMemorySupplement() → LLM补记忆
+  │           ├── [待接通] MemoryService.forkMemorySupplement()（当前不在正常对话链路）
   │           └── 返回 { reply, toolCallHistory, effects[] }
   │
   ├── ReplyGenerator 后处理 (kaomoji/截断/HTML转义)
@@ -941,7 +952,7 @@ FILE_DANGEROUS_PATTERNS: [/.ssh/, /etc/passwd, /etc/shadow, /System/, /Windows/,
 1. 人格 Prompt (card + boundary)              ~500-2000 tokens
 2. CANDY.md + User.md 注入                     ~50-200 tokens
 3. 会话记忆注入（压缩摘要）                     ~300-500 tokens
-4. Memory 搜索注入 (topK=3)                    ~200-800 tokens
+4. 长期记忆检索                                  当前未自动注入
 5. 工具声明（轻量始终带/助手按需L0-L2）         ~150-1500 tokens
 6. 输出约束 + 助手能力提示                     ~150 tokens
 7. 思考强度提示 (low/high)                     ~30 tokens
@@ -985,15 +996,15 @@ sessions/                      会话目录（唯一真相源）
 | 轻量模式 | `consolidate()` — 本地去重裁剪（按content前缀去重 + 按importance排序保留maxEntries） |
 | 助手模式 | `consolidateWithLLM()` — LLM 分析 merge/conflicts/expired/adjust/newFacts → 回退基础整理 |
 
-#### Fork 记忆补充（助手模式）
+#### Fork 记忆补充（助手模式，待接通）
 
-每轮对话结束后，后台调用 LLM 提取值得长期记住的信息（不重复已有记忆），自动写入 MEMORY.md。
+`forkMemorySupplement()` 已有实现，目标是在后台提取值得长期记住的信息并写入 `MEMORY.md`。当前它尚未接入正常对话结束链路，不能作为已具备的自动长期记忆能力。
 
 ---
 
-## 10. 实现进度总览
+## 10. 当前能力与已知限制
 
-### Phase 1+2: 核心引擎 + 轻量模式 ✅ 已完成
+### 核心引擎与轻量模式
 
 | 模块 | 状态 | 文件 |
 |------|:---:|------|
@@ -1002,26 +1013,26 @@ sessions/                      会话目录（唯一真相源）
 | 会话状态机 | ✅ | `engine/session.ts` |
 | AI 输出解析器 | ✅ | `engine/parser.ts` |
 | 思考强度 | ✅ | 全局默认+会话覆盖(仪表盘下拉)，移除自动选择 |
-| 人格中间件 (8阶段) | ✅ | `personality/middleware.ts` (v5: 移除 retry) |
-| 人格注册表 + 热插拔 | ✅ | `personality/registry.ts` + `loader.ts` (v5: neutral 兜底) |
+| 人格中间件 (8阶段) | ✅ | `personality/middleware.ts` |
+| 人格注册表 + 热插拔 | ✅ | `personality/registry.ts` + `loader.ts`（neutral 兜底） |
 | 4个人格卡 + 模板 | ✅ | `personality/cards/` (neutral/angelkawaii/ame/pchan) |
-| 变量系统 v2 | ✅ | `personality/variable-pool.ts` (system/card/interaction/session, var_read/write/list/delete) |
+| 变量状态系统 | ✅ | `personality/variable-pool.ts`（system/card/interaction/session，RUNTIME_DATA + batchWriteVars） |
 | 统一 ToolRegistry | ✅ | `tool/registry.ts` |
 | ToolRouter (路由+超时) | ✅ | `tool/router.ts` |
 | 轻量6工具 | ✅ | `tool/local/` (file/bas/system/http) |
 | 助手6额外工具 | ✅ | `tool/local-extra/` (write/full/app/clipboard/delete) |
 | 安全控制 (四级+三策略+确认UI) | ✅ | `safety/checker.ts` + `confirm.ts` |
 | 上下文引擎 | ✅ | `context/builder.ts` |
-| 回复生成器 v5 | ✅ | `reply/generator.ts` — 一步后处理: stripEmotionTag → resolveEmotion → trim/截断 → ReplyResult |
+| 回复生成器 | ✅ | `reply/generator.ts` — 一步后处理: 解析 RUNTIME_DATA → 情绪/变量校验 → trim/截断 → ReplyResult |
 | OpenAI 兼容 Provider | ✅ | `agent/provider.ts` |
-| 记忆系统 (注册表+LLM整理+Fork) | ✅ | `agent/memory/` (7个文件) |
+| 记忆系统（注册表/会话/压缩） | ⚠️ | `agent/memory/`；自动提取和 Prompt 检索尚未闭环 |
 | Rust 工具执行 | ✅ | `commands/tool_exec.rs` |
 | Debug 状态栏 | ✅ | `DebugBar.vue` + `debug.ts` |
 | **Profile 主题系统** | ✅ | `profile/loader.ts`(懒加载+18色→50+CSS变量) + `io.ts`(导入导出) + Rust `profile_cmd.rs` |
 | **玻璃透明效果** | ✅ | Tauri `transparent:true` + CSS `backdrop-filter` + 全窗口半透明 |
 | **灵动图层视差** | ✅ | 五层景深 + 直接映射（computed） + 全局鼠标追踪 + 3D CSS 增强 + 设置页逐层配置 |
 
-### Phase 3: 助手模式 ⚠️ 大部分完成
+### 助手模式
 
 | 模块 | 状态 | 说明 |
 |------|:---:|------|
@@ -1033,7 +1044,7 @@ sessions/                      会话目录（唯一真相源）
 | **助手完整安全 (四级+确认UI)** | ✅ 已实现 | checker.ts + confirm.ts + ChatPanel 弹窗 |
 | **安全策略会话覆盖** | ✅ 已实现 | 仪表盘下拉，getEffectiveSafetyMode() |
 
-### Phase 4: MCP + Skill ⚠️ 大部分完成
+### MCP 与 Skill
 
 | 模块 | 状态 | 说明 |
 |------|:---:|------|
@@ -1049,15 +1060,15 @@ sessions/                      会话目录（唯一真相源）
 | **MCP stdio 传输** | ✅ 已实现 | Tauri invoke 桥接 Rust 子进程 stdin/stdout |
 | **Rust MCP Bridge** | ✅ 已实现 | spawn/kill 子进程 + JSON-RPC 桥接 |
 | **内置 5 个 MCP** | ✅ 已实现 | Filesystem/BraveSearch/Playwright/Git/GitHub |
-| **流式输出** | ❌ 已移除 v5 | 永远非流式，generateReplyStream 已删除 |
+| **流式输出** | ❌ 已移除 | 永远非流式，`generateReplyStream` 已删除 |
 
-### 待实现目标
+### 后续目标
 
 | 优先级 | 任务 | 说明 |
 |:---:|------|------|
 | ~~P0~~ | ~~助手模式完整安全~~ | ✅ 已实现: checker.ts + confirm.ts + ChatPanel 弹窗 |
 | P0 | ⚠️ 工具/Skill/安全 集成测试 | 功能已实现，全路径测试未覆盖 |
-| ~~P2~~ | ~~流式输出~~ | ❌ 已移除 v5: 永远非流式 |
+| ~~P2~~ | ~~流式输出~~ | ❌ 已移除：永远非流式 |
 | P2 | MCP SSE 传输 | EventSource 连接方式 |
 | P3 | Agent Loop 时间本地化 | ✅ 已实现: toISOString → localTime() 全局替换 |
 

@@ -1,8 +1,8 @@
 # 🍬 糖糖桌宠 (Desk Pet)
 
-> 像素风桌面虚拟主播 — 常驻桌面，能聊天、能用工具、能看你窗口、能主动搭话。
+> 像素风桌面虚拟主播助手：常驻桌面，能聊天、能用工具、能看你窗口、能主动搭话。
 >
-> **v5: 单次 LLM 回复，Card 永远激活（neutral 兜底），变量池统一 VariableState 格式**
+> Card 负责角色表达，Profile 负责外观呈现，会话和运行时数据独立持久化。
 
 [![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20macOS-blue)](https://github.com/Klavte/Desk-Pet)
 [![Tauri](https://img.shields.io/badge/Tauri-v2-ffc131)](https://tauri.app)
@@ -13,26 +13,22 @@
 
 ## ✨ 功能
 
-- **桌面常驻** — 无边框透明窗口，角色在所有桌面/全屏 Space 悬浮
-- **AI 聊天** — 人格卡驱动，Agent Loop 多轮工具调用，兼容 OpenAI / DeepSeek / Ollama
-- **会话管理** — 多会话标签页，切换/新建/关闭，拖动调整面板，自动归档，启动恢复
-- **工具系统** — AI 可调用：文件读写/搜索、Bash、系统信息、HTTP、剪贴板、变量读写、子代理
-- **助手模式** — 解锁写文件/全量Bash/打开应用/剪贴板/MCP/Skill/子代理(fork/team)
-- **Agent Loop v5** — 单次 LLM 调用 + 工具循环，思考强度可选，上下文自动压缩
-- **Plan 模块** — 助手模式自动检测复杂任务 → LLM 拆解步骤 → 子代理逐步执行，安全模式确认
-- **人格系统** — Card 驱动，内置 4 张（neutral/angelkawaii/ame/pchan），支持用户导入，事务式热切换
-- **变量池 v2** — 四类变量（system/card/interaction/session），运行时=持久化同格式（VariableState）
-- **When 引擎** — 条件规则驱动角色行为进化（不理她太久会从甜蜜变病娇）
+- **桌面常驻** — 无边框透明窗口，角色在所有桌面和全屏 Space 悬浮
+- **AI 聊天** — Card 驱动人格，兼容 OpenAI、DeepSeek、Ollama 等 OpenAI 兼容接口
+- **会话管理** — 多会话切换、新建、关闭、归档、恢复和会话文件持久化
+- **工具系统** — 文件读写/搜索、Bash、系统信息、HTTP、剪贴板、子代理、Skill、MCP
+- **助手模式** — 解锁更完整的文件、命令、应用、剪贴板和任务编排能力，并经过安全策略控制
+- **Agent Loop** — 模型请求、工具循环、上下文压缩和可选的复杂任务计划
+- **人格系统** — Card 热切换，支持 neutral、angelkawaii、ame、pchan 和用户导入 Card
+- **Card 运行时状态** — 通过回复末尾的 `RUNTIME_DATA` 更新已注册的角色变量
 - **窗口感知** — 监控前台窗口，停留超时后 AI 主动搭话
-- **安全控制** — 四级安全（SAFE/NORMAL/DANGER/NOWAY）+ 三策略 + 确认弹窗
-- **记忆系统** — MEMORY.md 结构化注册表 + sessions/ 实时写入 + LLM 整理
-- **Profile 主题** — 3 套内置预设（糖糖粉/暗夜紫/透明玻璃），一键切换，CSS 变量自动派生
-- **灵动图层** — 五层景深视差，60fps 光标追踪，CSS 3D 增强，设置页逐层配置
-- **音效系统** — 33 个内置音效（8 类），Web Audio 合成无需外部文件
-- **设置面板** — 独立窗口，外观/AI/安全/监控/人格/工具/MCP/Skill/快捷键全可配
-- **MCP 支持** — 内置 MCP Server（Filesystem/BraveSearch/Playwright/Git/GitHub），stdio 传输
-- **Skill 编排** — 3 个内置 Skill（summarize-code/organize-files/check-weather），子循环执行
-- **系统托盘** — 关闭隐藏到托盘，单击恢复；Dock/任务栏点击屏幕中央弹出
+- **安全控制** — SAFE / NORMAL / DANGER / NOWAY 风险等级与确认策略
+- **记忆系统** — CANDY、User、MEMORY、sessions 和压缩摘要；长期记忆自动提取与召回仍在规划
+- **Profile 主题** — 糖糖粉、暗夜紫、透明玻璃等内置预设，支持导入导出
+- **灵动图层** — 五层景深视差、全局光标追踪、CSS 3D 增强和逐层设置
+- **音效系统** — Web Audio 合成音效与人格边界映射
+- **设置面板** — 独立窗口配置 AI、外观、人格、监控、安全、工具、MCP、Skill 和快捷键
+- **系统托盘** — 关闭后隐藏到托盘，单击恢复；Dock/任务栏点击可弹出
 - **Windows 模拟器** — 彩蛋：像素风 Win7 桌面（输入 `open win`）
 
 ---
@@ -42,15 +38,15 @@
 | 能力 | 轻量模式 | 助手模式 |
 |------|:---:|:---:|
 | AI 聊天 + 人格系统 | ✅ | ✅ |
+| Card 状态与 RUNTIME_DATA 处理 | ✅ | ✅ |
 | 窗口感知主动搭话 | ✅ | ✅ |
-| 文件读/列/搜 + 系统信息 + Bash白名单 + HTTP | ✅ | ✅ |
-| 变量读写（var_read/write/list/delete） | ✅ | ✅ |
-| 助手模式 + Plan 模块（复杂任务编排） | ❌ | ✅ |
-| 文件写/删 + 全量Bash + 打开应用 + 剪贴板 | ❌ | ✅ |
-| MCP 服务器（内置5个+自定义） | ❌ | ✅ |
+| 文件读/列/搜 + 系统信息 + Bash 白名单 + HTTP | ✅ | ✅ |
+| 计划编排与步骤进度 | ❌ | ✅ |
+| 文件写/删 + 全量 Bash + 打开应用 + 剪贴板 | ❌ | ✅ |
+| MCP 服务器 | ❌ | ✅ |
 | Skill 编排 | ❌ | ✅ |
 | 子代理 agent.spawn（fork/team） | ❌ | ✅ |
-| 安全确认弹窗 | ❌ | ✅ |
+| 安全确认策略 | 基础限制 | ✅ |
 
 ---
 
@@ -60,7 +56,7 @@
 
 - Node.js ≥ 18 + pnpm
 - Rust toolchain
-- macOS: Xcode Command Line Tools
+- macOS：Xcode Command Line Tools
 
 ### 安装
 
@@ -71,6 +67,12 @@ pnpm install
 pnpm tauri dev
 ```
 
+仅启动前端开发服务：
+
+```bash
+pnpm dev
+```
+
 ### 配置
 
 ```bash
@@ -78,96 +80,72 @@ cp CONFIG-DEV.yaml.example CONFIG-DEV.yaml
 # 编辑 CONFIG-DEV.yaml，填入 API Key
 ```
 
-`enabled: true` 时 DEV 配置完全替换 CONFIG.yaml。
-
-**macOS 窗口监控**需辅助功能权限：系统设置 → 隐私与安全性 → 辅助功能 → 允许终端/Tauri。
+当 `CONFIG-DEV.yaml` 的 `enabled: true` 时，它会完全替换默认配置。macOS 窗口监控需要在系统设置的“隐私与安全性 → 辅助功能”中允许终端或 Tauri。
 
 ---
 
 ## 🏗 架构
 
-```
+```text
 Desk-Pet/
-├── CONFIG.yaml / CONFIG-DEV.yaml     # 全局配置（YAML → Vite Plugin → config.ts）
-├── CLAUDE.md                         # AI 开发指引
-├── docs/                             # 设计文档
-│   ├── DES.md                        # 核心设计（玩法/机制）
-│   ├── 架构方案.md                     # v2 架构方案
-│   ├── 架构设计文档.docx               # 原始架构设计
-│   ├── DESIGN_ORIGIN.md              # 原始设计记录
-│   ├── DESIGN-REPLY-v4.md            # v4 回复生成设计
-│   ├── DESIGN-REPLY-v5.md            # v5 回复生成设计
-│   ├── DESIGN-VARIABLE-POOL-v2.md    # 变量池 v2 设计
-│   ├── FIX-AGENTLOOP-v5.md           # Agent Loop v5 修复记录
-│   ├── PRD-可配置静态资源管理.md        # 静态资源管理 PRD
-│   ├── 灵动图层设计.md                 # 灵动图层设计文档
-│   ├── 阶段现状-2026.7.17.md           # 阶段现状记录
-│   ├── 阶段现状-2026.7.21.md           # 阶段现状记录
-│   └── superpowers/                  # Superpowers 计划
-│
+├── CONFIG.yaml / CONFIG-DEV.yaml     # 全局配置
+├── AGENTS.md                         # Agent 开发约束
+├── CLAUDE.md                         # 兼容入口，规则指向 AGENTS.md
+├── docs/
+│   ├── DES.md                        # 项目总览、玩法和整体机制
+│   ├── current/                      # 当前实现说明
+│   ├── plans/active/                 # 待实施计划
+│   └── history/                      # 历史设计、计划、分析和原始文档
 ├── src/                              # Vue 3 + TypeScript 前端
 │   ├── App.vue                       # 根组件
-│   ├── components/
-│   │   ├── ChatPanel.vue             # 聊天面板
-│   │   ├── StreamView.vue            # 灵动图层渲染
-│   │   ├── SessionTabs.vue           # 会话标签页
-│   │   ├── SettingsPanel.vue         # 设置面板（独立窗口）
-│   │   ├── DebugBar.vue              # 底部状态栏
-│   │   ├── settings/                 # 设置页各 Tab（AI/外观/工具/通用）
-│   │   └── winsim/                   # Windows 模拟器彩蛋
-│   ├── composables/
-│   │   ├── useParallax.ts            # 灵动图层 60fps 视差
-│   │   └── useLayerEditor.ts         # 图层编辑器状态
+│   ├── components/                   # 聊天、角色、设置、会话和窗口 UI
+│   ├── composables/                  # 视差与编辑器状态
 │   └── services/
-│       ├── engine/                   # Agent Loop v5 + Plan编排 + 会话 + compactor 压缩 + Slash命令
-│       ├── personality/              # 人格模块（Card/Stages/变量池/When引擎/Middleware）
-│       │   ├── cards/                # 内置 Card .md（4张）
-│       │   └── stages/               # 内置 Stages JSON（LLM 生成）
-│       ├── agent/                    # Provider + Runner + Sub-agent(fork/team) + Sub-loop + Memory + Active
-│       │   └── memory/               # 记忆 IO + 整理 + 条目 + 解析 + 会话文件(7 files)
-│       ├── tool/                     # 工具注册表 + 路由（local/extra/skill/mcp）
-│       ├── safety/                   # 四级安全 + 确认弹窗
-│       ├── context/                  # System Prompt 构建
-│       ├── reply/                    # 回复后处理（emo标签+表情+音效）
+│       ├── engine/                   # 输入、Agent Loop、Plan、Slash、压缩
+│       ├── personality/              # Card、阶段文案、变量状态、情绪映射
+│       ├── reply/                    # RUNTIME_DATA 解析与回复后处理
+│       ├── agent/                    # Provider、Runner、子代理、Memory、Active
+│       ├── tool/                     # 工具注册、路由、Skill、MCP
+│       ├── safety/                   # 风险检查与确认
 │       ├── session/                  # 多会话持久化管理
-│       ├── profile/                  # Profile 主题系统
-│       ├── audio/                    # 33音效 Web Audio 合成
-│       ├── window/                   # 前台窗口监控
-│       ├── init.ts                   # 服务初始化入口
+│       ├── profile/                  # Profile 主题与导入导出
+│       ├── audio/                    # Web Audio 音效
+│       ├── context/                  # System Prompt 构建
 │       └── paths.ts                  # 统一路径管理
-│
 ├── src-tauri/                        # Rust 后端
 │   └── src/
-│       ├── lib.rs                    # 入口 + 注册所有 commands
-│       ├── paths.rs                  # AppPaths 路径管理
-│       ├── window/                   # 主窗口 + 设置窗口
-│       ├── monitor/                  # 窗口监控 + 光标追踪
-│       └── commands/                 # 10 Tauri commands（工具/记忆/人格/Profile/光标/日志/MCP桥/监控/模拟器）
-│
-├── skills/                           # Skill 定义（3个内置 .md）
-├── public/profiles/                  # Profile 主题素材
-│   ├── sugar-pink/ dark-purple/ glass/
-└── data/desk-pet/                    # 运行时数据（开发环境）
-    ├── memory/                       # 长期记忆文件
-    ├── sessions/                     # 会话归档
-    └── personality/
-        ├── stages/{cardId}.json      # 阶段文案 + 变量状态
-        └── vars.json                 # 系统变量快照
+│       ├── lib.rs                    # 应用入口和命令注册
+│       ├── paths.rs                  # AppPaths 路径管理与校验
+│       ├── window/                   # 主窗口与设置窗口
+│       ├── monitor/                  # 前台窗口监控
+│       └── commands/                 # 文件、记忆、Profile、系统命令
+├── skills/                           # 内置 Skill 定义
+├── public/profiles/                  # 内置 Profile 素材
+└── data/desk-pet/                    # 开发环境运行时数据
 ```
 
 ---
 
-## 📐 核心数据流 (v5)
+## 📐 核心数据流
 
+```text
+用户消息
+  → PreProcessor / Session 状态
+  → refreshVariablePool() + reset 策略
+  → buildPrompt(Card / 语气 / 规则 / 变量 / 记忆 / 工具)
+  → 助手模式可选 Plan：复杂度检测 → 拆解 → 步骤执行
+  → OpenAI 兼容 Provider + ToolRouter 工具循环
+  → Safety 检查与确认
+  → generateReply(raw, card)
+       ├─ 解析并移除 <RUNTIME_DATA>
+       ├─ emotion → expression / sound
+       ├─ 合法 Card 变量 → batchWriteVars → savePoolToDisk
+       └─ trim / 截断 → ReplyResult
+  → 写入 sessions/*.md 与上下文摘要
+  → ChatPanel / StreamView 展示
 ```
-用户消息 → PreProcessor → refreshVariablePool() + When引擎
-  → [Plan阶段: evaluateComplexity() → generatePlan() → executePlan()]
-  → buildPrompt(card全量: 角色/风格/情绪/When语气/行为准则/变量池/记忆)
-  → 单次LLM(永远非流式) → runToolLoop(安全→执行)
-  → generateReply(raw, card) → 剥离[emo:key] + 表情/音效映射
-  → ReplyResult {text, emotionKey, expression, sound}
-  → var_write即时落盘 stages/{cardId}.json
-```
+
+`RUNTIME_DATA` 是内部元数据，不显示给用户。主链路已经不依赖旧的变量工具和情绪前缀；Planner 中仍有少量旧引用，属于待清理技术债。
 
 ---
 
@@ -177,17 +155,17 @@ Desk-Pet/
 
 | 类别 | 配置项 |
 |------|--------|
-| 外观 | Profile 选择 / 预设切换 / 18色配色 / 字体 / 灵动图层逐层配置 / 导入导出 |
-| AI | 端点 / 密钥 / 模型 / 上下文 tokens / 思考强度 / **Plan 设置** |
-| 人格 | 选择人格卡（热切换） / 查看变量池 / 编辑阶段文案 |
-| 监控 | 窗口监控开关 / 停留秒数 / 防抖 / 冷却 |
-| 安全 | 四级安全策略选择 |
-| 弹窗 | 位置模式 / 大小 / 自动弹出 |
-| 快捷键 | 录制自定义组合键 |
-| 工具 | Bash 白名单 / 文件写开关 |
-| MCP | 服务器列表增删改 / JSON 导入导出 |
-| Skill | 已配置列表 / 上传 .md 添加 / 删除 |
-| CONFIG | 导入导出 YAML |
+| 外观 | Profile、预设、颜色、字体、灵动图层、导入导出 |
+| AI | Provider、端点、密钥、模型、上下文、思考强度、Plan |
+| 人格 | Card 选择、变量状态查看、阶段文案 |
+| 监控 | 开关、停留秒数、防抖、冷却 |
+| 安全 | 风险模式、确认策略 |
+| 弹窗 | 位置、大小、自动弹出 |
+| 快捷键 | 自定义组合键 |
+| 工具 | Bash 白名单、文件写入开关 |
+| MCP | 服务器增删改、JSON 导入导出 |
+| Skill | 上传、启用、删除 Skill |
+| 配置 | YAML 导入导出 |
 
 ---
 
@@ -197,10 +175,23 @@ Desk-Pet/
 |----|------|
 | 框架 | Tauri v2 |
 | 前端 | Vue 3 + TypeScript + Vite |
-| AI | OpenAI 兼容接口（支持 reasoning_effort / tool_calls） |
+| 后端 | Rust + Cargo |
+| AI | OpenAI 兼容接口（tool calls / reasoning effort） |
 | 配置 | YAML（js-yaml，Vite 编译时转换） |
 | 音效 | Web Audio API（OscillatorNode 合成） |
-| 包管理 | pnpm（前端）+ Cargo（Rust） |
+| 包管理 | pnpm（前端）+ Cargo（后端） |
+| 测试 | Live Test（Contract + Scene + 真实 Provider） |
+
+---
+
+## 🧪 测试
+
+```bash
+pnpm test
+pnpm test -- --module variable-pool
+```
+
+Live Test 位于 `src/services/__tests__/live/`。当前部分 Contract 的 `sourceHash` 为空，检查器会跳过源码变更过期保护；测试通过只代表已覆盖场景通过。
 
 ---
 
@@ -215,30 +206,21 @@ Desk-Pet/
 | 系统托盘 | ✅ | ✅ |
 | Dock/任务栏点击弹出 | ✅ | ✅ |
 | 剪贴板操作 | ✅ pbpaste/pbcopy | ✅ PowerShell |
-| 内存信息 | ✅ vm_stat | ✅ GlobalMemoryStatusEx |
-| 系统通知 | ❌ 未签名构建不支持 | — |
+| 系统通知 | ❌ 未签名构建不支持 | 依赖平台配置 |
 
 ---
 
 ## 📖 文档
 
-- [CLAUDE.md](CLAUDE.md) — AI 开发指引（规范/构建/调试/标准格式）
-- [docs/DES.md](docs/DES.md) — 设计文档（玩法/机制）
-- [docs/架构方案.md](docs/架构方案.md) — v2 完整架构方案
-- [docs/架构设计文档.docx](docs/架构设计文档.docx) — 原始架构设计
-- [docs/DESIGN_ORIGIN.md](docs/DESIGN_ORIGIN.md) — 原始设计记录
-- [docs/DESIGN-REPLY-v4.md](docs/DESIGN-REPLY-v4.md) — v4 回复生成设计
-- [docs/DESIGN-REPLY-v5.md](docs/DESIGN-REPLY-v5.md) — v5 回复生成设计
-- [docs/DESIGN-VARIABLE-POOL-v2.md](docs/DESIGN-VARIABLE-POOL-v2.md) — 变量池 v2 设计
-- [docs/FIX-AGENTLOOP-v5.md](docs/FIX-AGENTLOOP-v5.md) — Agent Loop v5 修复记录
-- [docs/PRD-可配置静态资源管理.md](docs/PRD-可配置静态资源管理.md) — 静态资源管理 PRD
-- [docs/灵动图层设计.md](docs/灵动图层设计.md) — 灵动图层设计文档
-- [docs/阶段现状-2026.7.17.md](docs/阶段现状-2026.7.17.md) — 阶段现状记录
-- [docs/阶段现状-2026.7.21.md](docs/阶段现状-2026.7.21.md) — 阶段现状记录
-- [docs/2026-07-21-plan-module-design.md](docs/2026-07-21-plan-module-design.md) — Plan 模块设计规格
-- [docs/2026-07-21-plan-module-plan.md](docs/2026-07-21-plan-module-plan.md) — Plan 模块实施计划
-- [docs/深度现状分析-2026.7.21.md](docs/深度现状分析-2026.7.21.md) — Plan+Memory 深度分析
-- [docs/superpowers/](docs/superpowers/) — Superpowers 计划
+- [项目总览与玩法](docs/DES.md)
+- [当前系统设计](docs/current/system-design.md)
+- [当前记忆系统](docs/current/memory.md)
+- [当前测试说明](docs/current/testing.md)
+- [完整文档索引](docs/INDEX.md)
+- [开发约束](AGENTS.md)
+- [Claude 兼容入口](CLAUDE.md)
+
+历史设计、实施计划和阶段分析保存在 [docs/history/](docs/history/)，正文仅增加归档元数据，不作为当前实现契约。
 
 ---
 

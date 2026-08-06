@@ -1,3 +1,9 @@
+---
+document_type: historical_design
+status: archived
+current_reference: ../../current/system-design.md
+---
+
 # PRD — 可配置静态资源管理系统 v2
 
 > 状态: P1-P5 ✅ 全部完成 (2026-07-02) | 日期: 2026-07-01

@@ -1,3 +1,9 @@
+---
+document_type: historical_design
+status: archived
+current_reference: ../../current/system-design.md
+---
+
 # 回复生成器重构 — Card 驱动的完整角色系统
 
 > 日期: 2026-07-06 | 状态: 设计定稿，可开工

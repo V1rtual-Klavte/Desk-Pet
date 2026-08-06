@@ -1,3 +1,9 @@
+---
+document_type: historical_design
+status: archived
+current_reference: ../../current/system-design.md
+---
+
 # Plan 模块设计规格
 
 > 日期: 2026-07-21 | 状态: 设计定稿

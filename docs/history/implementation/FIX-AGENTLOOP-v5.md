@@ -1,3 +1,9 @@
+---
+document_type: historical_implementation_record
+status: archived
+current_reference: ../../current/system-design.md
+---
+
 # AgentLoop v5 修复方案
 
 > 日期: 2026-07-14 | 分支: V1rtual | 关联: DESIGN-REPLY-v5.md

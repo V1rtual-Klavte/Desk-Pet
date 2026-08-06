@@ -1,3 +1,9 @@
+---
+document_type: historical_design
+status: archived
+current_reference: ../../current/system-design.md
+---
+
 # 变量池重构设计 v2
 
 > 日期: 2026-07-09 | 状态: 设计定案 | 范围: `src/services/personality/cards/_template.md`、内置 Card、`loader.ts`、`variable-pool.ts`、`stages-cache.ts`、`context/builder.ts`、`tool/local/var.ts`、会话 markdown frontmatter
