@@ -11,6 +11,8 @@
 
 ## 计划与历史
 
+- [愿景驱动整体重构方案](plans/active/愿景驱动整体重构方案.md)：当前总方案，覆盖可组合桌宠、Pi Runtime、纯 Markdown 记忆、安全、资源和全项目迁移。
+- [Pi Agent 内核迁移设计](plans/active/pi-agent-迁移设计.md)：待 PoC 决策的 Pi Core 迁移目标、边界、资源验证和 Coding 能力路线。
 - `plans/active/`：尚未实施的计划。计划完成后移入历史目录。
 - `history/design/`：过去的设计与 PRD，保留当时的取舍和细节。
 - `history/implementation/`：已完成的实施计划与修复记录，正文不再按当前代码维护。
