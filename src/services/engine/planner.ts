@@ -4,7 +4,7 @@
 // ==========================================
 
 import type { ToolDef } from "@/services/tool/types"
-import type { SubLoopOutput } from "@/services/agent/sub-loop"
+import type { PiSubAgentOutput } from "@/services/agent/pi"
 import type { ThinkingEffort } from "@/services/agent/types"
 import { planConfig } from "@/services/config"
 import { createLogger } from "@/services/logger"
@@ -37,7 +37,7 @@ export interface ComplexityResult {
 export interface PlanExecutionResult {
   stepResults: {
     step: PlanStep
-    output: SubLoopOutput
+    output: PiSubAgentOutput
     durationMs: number
   }[]
   overallSuccess: boolean
@@ -180,12 +180,11 @@ ${toolList}
 
 // ── 计划执行 ──
 
-import { runSubLoop } from "@/services/agent/sub-loop"
 import { getToolsForMode, getToolByName } from "@/services/tool/registry"
 
 export interface ExecutePlanCallbacks {
   onStepStart(step: PlanStep): void
-  onStepDone(step: PlanStep, result: SubLoopOutput): void
+  onStepDone(step: PlanStep, result: PiSubAgentOutput): void
   onStepFailed(step: PlanStep, error: string): Promise<"continue" | "abort">
 }
 
@@ -248,7 +247,7 @@ export async function executePlan(
 async function executeStep(
   step: PlanStep,
   config: ExecutePlanConfig,
-): Promise<SubLoopOutput> {
+): Promise<PiSubAgentOutput> {
   const stepPrompt = `你是糖糖桌宠的子代理，角色: ${step.role || "执行员"}。
 正在执行计划第 ${step.id} 步: ${step.description}
 
@@ -271,7 +270,8 @@ async function executeStep(
     tools.push(...getToolsForMode("assistant"))
   }
 
-  return runSubLoop({
+  const { runPiSubAgent } = await import("@/services/agent/pi")
+  return runPiSubAgent({
     task: step.description,
     tools,
     systemPrompt: stepPrompt,

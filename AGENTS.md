@@ -8,7 +8,7 @@
 - 桌面框架：Tauri v2（Rust 后端 + WebView 前端）
 - 前端：Vue 3 + TypeScript + Vite
 - 包管理：pnpm + Cargo
-- AI：OpenAI 兼容 Provider（DeepSeek / OpenAI / Ollama / LM Studio）
+- AI：Pi Agent Core + pi-ai OpenAI-compatible Adapter（DeepSeek / OpenAI / Ollama / LM Studio）
 - 目标平台：Windows + macOS
 
 ## 构建与运行
@@ -78,10 +78,10 @@ src/services/__tests__/live/
 src/
 ├── components/                 # Vue 界面、角色展示、聊天、设置、会话
 ├── services/
-│   ├── engine/                 # 输入预处理、Agent Loop、Plan、Slash、上下文压缩
+│   ├── engine/                 # 输入预处理、Plan、Slash、会话状态与上下文压缩工具
 │   ├── personality/            # Card、人格注册、阶段文案、变量状态、情绪映射
 │   ├── reply/                  # RUNTIME_DATA 解析与回复后处理
-│   ├── agent/                  # Provider、Runner、子代理、记忆与主动搭话
+│   ├── agent/                  # Pi Runtime、Provider、Runner、子代理、记忆与主动搭话
 │   ├── context/                # System Prompt 构建
 │   ├── tool/                   # 工具注册、路由、Local、Skill、MCP
 │   ├── safety/                 # 风险等级、策略和确认桥接
@@ -111,7 +111,7 @@ src-tauri/src/
   -> context/buildPrompt
        Card 角色 / 语气指引 / 必须遵守 / 变量 / 记忆 / 工具
   -> 助手模式下可选 planner
-  -> Provider + ToolRouter 工具循环 + Safety 检查
+  -> Pi Agent Core + pi-ai OpenAI-compatible 流 + ToolRouter 顺序工具循环 + Safety 检查
   -> reply/generator 解析 <RUNTIME_DATA>
        emotion -> 表情与音效
        合法 card 变量 -> batchWriteVars -> savePoolToDisk

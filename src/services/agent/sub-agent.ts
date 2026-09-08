@@ -4,8 +4,8 @@
 
 import type { ToolDef } from "@/services/tool/types"
 import { getToolsForMode } from "@/services/tool/registry"
-import { runSubLoop } from "./sub-loop"
-import type { SubLoopOutput } from "./sub-loop"
+import { runPiSubAgent } from "./pi"
+import type { PiSubAgentOutput } from "./pi"
 import { loopConfig } from "@/services/config"
 import { createLogger } from "@/services/logger"
 
@@ -26,7 +26,7 @@ export interface ForkAgentInput {
  * 子代理拥有精简的工具集（只读文件+系统信息+Bash白名单+HTTP），
  * 独立上下文，不干扰主 Agent 状态。
  */
-export async function runForkAgent(input: ForkAgentInput): Promise<SubLoopOutput> {
+export async function runForkAgent(input: ForkAgentInput): Promise<PiSubAgentOutput> {
   const { task, role } = input
 
   const tools = getSafeTools()
@@ -36,7 +36,7 @@ export async function runForkAgent(input: ForkAgentInput): Promise<SubLoopOutput
 
   log.info("Fork 启动:", role || "通用", "| task:", task.substring(0, 80))
 
-  return runSubLoop({
+  return runPiSubAgent({
     task,
     tools,
     systemPrompt,

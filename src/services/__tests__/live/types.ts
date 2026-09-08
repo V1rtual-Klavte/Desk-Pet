@@ -5,7 +5,7 @@
 import type { ReplyResult } from "@/services/reply"
 import type { VariablePool } from "@/services/personality/variable-pool"
 import type { VariableState } from "@/services/personality/types"
-import type { AgentLoopOutput } from "@/services/engine/agent-loop"
+import type { PiAgentTurnOutput } from "@/services/agent/pi"
 
 // ── Scene DSL ──
 
@@ -24,7 +24,7 @@ export type AssertCheck = {
 }
 
 export interface AssertContext {
-  output: AgentLoopOutput
+  output: PiAgentTurnOutput
   pool: VariablePool
   session: { state: string; messageCount: number; toolCallCount: number }
   memory: MemorySnapshot

@@ -2,7 +2,7 @@ import type { ModuleContract } from "../types"
 
 export const safetyContract: ModuleContract = {
   module: "safety",
-  sourceFiles: ["src/services/safety/checker.ts"],
+  sourceFiles: ["src/services/agent/pi/runtime.ts", "src/services/safety/checker.ts"],
   generatedAt: "2026-07-24T00:00:00Z",
   sourceHash: "",
   coverage: [

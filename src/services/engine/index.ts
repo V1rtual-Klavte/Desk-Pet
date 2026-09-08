@@ -2,16 +2,9 @@
 // 核心引擎 —— 统一导出
 // ==========================================
 
-// ── Agent Loop ──
-export { runAgentLoop } from "./agent-loop"
-export type { AgentLoopInput, AgentLoopOutput } from "./agent-loop"
-
 // ── PreProcessor ──
 export { preProcess } from "./preprocessor"
 export type { PreProcessResult } from "./preprocessor"
-
-// ── Parser ──
-export { parseAIResponse, mergeToolCalls } from "./parser"
 
 // ── Session ──
 export {
@@ -36,4 +29,4 @@ export { evaluateComplexity, generatePlan, executePlan, formatStepResults } from
 export type { PlanStep, PlanResult, ComplexityResult, PlanExecutionResult } from "./planner"
 
 // ── Plan 确认桥接 ──
-export { resolvePlanConfirm, resolvePlanStepDecision } from "./agent-loop"
+export { resolvePlanConfirm, resolvePlanStepDecision } from "./plan-confirmation"

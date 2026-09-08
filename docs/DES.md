@@ -17,7 +17,7 @@
 
 1. `README.md`：安装、启动命令、能力边界和文档入口。
 2. `src/App.vue`、`src/services/agent/runner.ts`：应用启动后的 UI 入口与用户消息入口。
-3. `src/services/engine/agent-loop.ts`、`src/services/context/builder.ts`：主循环、Prompt 组装、工具循环和上下文压缩。
+3. `src/services/agent/pi/runtime.ts`、`src/services/context/builder.ts`：Pi 主循环适配、Prompt 组装、工具循环和上下文边界。
 4. `src/services/personality/`、`src/services/reply/generator.ts`：人格 Card、变量状态、`RUNTIME_DATA`、情绪和回复后处理。
 5. `src/services/tool/`、`src/services/safety/`：工具注册/路由、助手模式能力和安全确认。
 6. `src/services/agent/memory/`、`src/services/session/`：会话持久化、压缩摘要和当前尚未接通的长期记忆能力。
@@ -48,10 +48,10 @@
 
 ```
 用户消息 → PreProcessor → 变量状态刷新 + 人格语气指引组装
-  → 单次 LLM 调用 (永远非流式)
+  → Pi Agent Core 驱动的 LLM 流（最终仍以完整回复统一处理）
     SystemPrompt = Card 全量角色内容 (设定/风格/情绪/语气指引/行为准则)
                    + 变量状态 + 工具声明 + 会话摘要
-    → 工具循环 (不变): 安全检查→执行→回注
+    → 顺序工具循环：安全检查→执行→回注
     → 直接输出 <RUNTIME_DATA> + 角色化回复
   → Generator 后处理: 解析/剥离 RUNTIME_DATA → Card 情绪映射 → trim → 截断
   → ReplyResult { text, emotionKey, expression, sound }
@@ -330,7 +330,7 @@ Rust 后台线程 ──(轮询间隔)──→ Win32/osascript 获取前台窗�
                     agent/active.ts           sprite 表情切换
                     sendActiveMessage()       (无冷却限制)
                           │
-                    → runAgentLoop(isActiveMessage: true)
+                    → runPiAgentTurn(isActiveMessage: true)
                     → 思考强度: auto→low (主动搭话无需深度推理)
                     → 上下文不带工具声明 (纯闲聊)
                     → AI 生成简短口语化回复
@@ -629,7 +629,7 @@ Profile选择: 下拉框（内置+用户）
 ```
 src/services/
 ├── engine/                # ★ 核心引擎
-│   ├── agent-loop.ts      # Agent Loop — 多轮工具调用核心循环 + 上下文压缩
+│   ├── plan-confirmation.ts # Plan 确认 Promise 桥接
 │   ├── compactor.ts       # 上下文压缩 (compactMessages + 摘要写入)
 │   ├── preprocessor.ts    # Slash命令 + 空/重复消息过滤
 │   ├── planner.ts         # Plan 编排 — 复杂度检测 + LLM 拆解 + 子代理逐步执行 ✅ 已实现
@@ -703,9 +703,9 @@ src/services/
 │   ├── index.ts           # 统一导出
 │   ├── types.ts           # Message / ToolCall / GenerateRequest 类型
 │   ├── runner.ts          # sendMessage() — 接入 AgentLoop
-│   ├── provider.ts        # OpenAICompatibleProvider — 支持工具调用+思考强度
+│   ├── pi/                # Pi Agent Core Runtime + OpenAI-compatible Model Adapter
+│   ├── provider.ts        # 旧一次性 OpenAICompatibleProvider（Plan/压缩等尚在使用）
 │   ├── sub-agent.ts       # 子代理 (fork/team 双模式)
-│   ├── sub-loop.ts        # 子循环执行引擎
 │   ├── active.ts          # 窗口监控 → 主动搭话
 │   └── memory/            # ★ 长期记忆 (7个文件: index/io/consolidate/memory-entries/parsers/session-files/types)
 │
@@ -741,7 +741,7 @@ src/services/
   │     ├── PreProcessor → /slash? → 直接返回
   │     ├── pushUserMessage + resetUnanswered
   │     │
-  │     └── runAgentLoop()
+  │     └── runPiAgentTurn()
   │           │
   │           ├── 思考强度决策 (auto: 闲聊→low / 工具关键词→medium / 复杂关键词→high)
   │           ├── ContextEngine.build()
@@ -755,11 +755,11 @@ src/services/
   │           │
   │           ├── 人格中间件.wrap("thinking") → expression/sound event
   │           │
-  │           ├── ★ Agent Loop 主循环 (最多 maxToolCallsPerTurn 轮)
+  │           ├── ★ Pi Agent Core 主循环（顺序工具执行，最多 maxToolCallsPerTurn 次）
   │           │     │
-  │           │     ├── OpenAICompatibleProvider.generateReply()
-  │           │     │     ├── POST { model, messages, tools?, tool_choice?, reasoning_effort? }
-  │           │     │     └── 解析 → { text, toolCalls[], thinking?, usage }
+  │           │     ├── pi-ai OpenAI-compatible stream
+  │           │     │     ├── POST { model, messages, tools?, reasoning_effort? }
+  │           │     │     └── Pi Agent 维护消息与工具回注
   │           │     │
   │           │     ├── 无工具调用 → 退出循环
   │           │     │
@@ -771,18 +771,15 @@ src/services/
   │           │     │     ├── 结果回注 → 下一轮循环
   │           │     │     └── 人格中间件.wrap("done"/"blocked"/"error")
   │           │     │
-  │           │     ├── 上下文压缩检测 (usage/contextMaxTokens ≥ 0.95)
-  │           │     │     ├── compactMessages (保留40% + 摘要)
-  │           │     │     └── writeCompactionSummary → sessions/*.md
-  │           │     │
-  │           │     └── 达上限 → 强制生成总结回复
+  │           │     └── 达上限或超时 → 终止当前 Pi turn
   │           │
   │           ├── 人格中间件.wrap("done") → expression: "chu", sound: "reply"
   │           ├── MemoryService.recordTurn("assistant") → sessions/*.md
+  │           ├── compactOnHighUsage() → 保持既有 sessions/*.md 异步摘要压缩
   │           ├── [待接通] MemoryService.forkMemorySupplement()（当前不在正常对话链路）
   │           └── 返回 { reply, toolCallHistory, effects[] }
   │
-  ├── ReplyGenerator 后处理 (kaomoji/截断/HTML转义)
+  ├── ReplyGenerator 后处理 (RUNTIME_DATA/表情/变量校验)
   ├── pushAssistantMessage → session/store.ts 状态更新
   └── ChatPanel + StreamView + 音效 展示
 ```
@@ -791,7 +788,7 @@ src/services/
 ```
 Rust monitor → emit("window-changed") → listener.ts
   → 冷却通过 → agent/active.sendActiveMessage()
-  → runAgentLoop(isActiveMessage: true)
+  → runPiAgentTurn(isActiveMessage: true)
     → 思考强度: auto→low
     → 上下文: 无工具声明
     → AI 生成简短口语化回复
@@ -799,7 +796,7 @@ Rust monitor → emit("window-changed") → listener.ts
   → audio.playNotificationByBoundary()
 ```
 
-### 9.4 Agent Loop 详细说明
+### 9.4 Pi Agent Core 详细说明
 
 #### 循环控制参数
 
@@ -823,13 +820,9 @@ WAITING ──(收到消息)──→ PRE ──→ GENERATING
    └────(完成)──────────────┴───────────────┘
 ```
 
-#### 上下文压缩策略
+#### 上下文与记忆边界
 
-当 `estimatedTokens / contextMaxTokens ≥ 0.95` 时触发：
-1. 保留最近 40% 消息
-2. 旧消息压缩为一条摘要（用户/助手轮次要点）
-3. 生成结构化摘要写入 `sessions/*.md`
-4. 日志记录压缩前后消息数
+Pi Runtime 当前从 Desk-Pet 会话记录重建本轮 transcript，并保留既有会话摘要注入。它不在 Pi 的 `transformContext` 中裁剪或写入长期记忆；最终回复后仍调用既有 `compactOnHighUsage()` 异步写入会话摘要。长期记忆索引、召回和压缩协议将在下一阶段按文件记忆协议独立重构，避免迁移 Loop 时改变记忆事实源。
 
 ### 9.5 工具系统详细说明
 
@@ -1010,7 +1003,7 @@ sessions/                      会话目录（唯一真相源）
 
 | 模块 | 状态 | 文件 |
 |------|:---:|------|
-| Agent Loop 多轮循环 | ✅ | `engine/agent-loop.ts` |
+| Pi Agent Core 多轮循环 | ✅ | `agent/pi/runtime.ts` |
 | PreProcessor (slash/去重) | ✅ | `engine/preprocessor.ts` |
 | 会话状态机 | ✅ | `engine/session.ts` |
 | AI 输出解析器 | ✅ | `engine/parser.ts` |

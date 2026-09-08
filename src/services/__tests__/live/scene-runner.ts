@@ -3,7 +3,7 @@
 // ==========================================
 
 import type { SceneDef, SceneResult, TurnResult, AssertionResult, AssertContext, MemorySnapshot } from "./types"
-import { runAgentLoop } from "@/services/engine/agent-loop"
+import { runPiAgentTurn } from "@/services/agent/pi"
 import { getPoolSnapshot } from "@/services/personality/variable-pool"
 import { getSession } from "@/services/engine/session"
 import { getContextMessages } from "@/services/session/store"
@@ -46,7 +46,7 @@ export async function runScene(scene: SceneDef): Promise<SceneResult> {
     const turnStart = Date.now()
 
     try {
-      const output = await runAgentLoop({
+      const output = await runPiAgentTurn({
         userText: turn.userText,
         chatMessages: getContextMessages(),
         unansweredCount: 0,
@@ -98,7 +98,7 @@ export async function runScene(scene: SceneDef): Promise<SceneResult> {
 
       if (!allPass) break // 任一失败 → 终止场景
     } catch (e) {
-      // runAgentLoop 本身抛异常（超时/网络错误等）
+      // Pi Runtime 本身抛异常（超时/网络错误等）
       const msg = e instanceof Error ? e.message : String(e)
       turnResults.push({
         index: turn.index,

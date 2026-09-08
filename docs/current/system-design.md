@@ -7,7 +7,7 @@
 | 层 | 职责 |
 |---|---|
 | Vue 界面 | 角色展示、聊天、会话、设置与确认交互。 |
-| 核心引擎 | 输入预处理、Agent Loop、Plan 编排、工具循环、上下文压缩。 |
+| 核心引擎 | 输入预处理、Plan 编排、Pi Agent Core 运行时适配、工具循环和压缩工具。 |
 | 人格与回复 | Card、阶段文案、变量状态、情绪映射与回复后处理。 |
 | 记忆与会话 | 当前会话、会话文件、摘要、长期记忆注册表。 |
 | 工具与安全 | ToolRegistry、路由、安全检查、确认交互、Skill 与 MCP。 |
@@ -21,9 +21,9 @@
   -> session 状态更新 + 变量状态刷新
   -> buildPrompt（Card、语气指引、规则、变量、当前可用记忆、工具）
   -> 可选 Plan 编排
-  -> Provider + 工具循环 + 安全检查
+  -> Pi Agent Core + pi-ai OpenAI-compatible 流 + 顺序工具循环 + 安全检查
   -> reply/generator 解析 RUNTIME_DATA
-  -> 表情与音效事件、Card 状态持久化、会话写入与上下文压缩
+  -> 表情与音效事件、Card 状态持久化、会话写入与既有的异步摘要压缩
   -> ChatPanel / StreamView 展示
 ```
 
@@ -41,7 +41,9 @@ LLM 可见回复文本 + <RUNTIME_DATA>
 
 `system`、`interaction` 和 `session` 状态由系统维护；LLM 不能借由 RUNTIME_DATA 创建任意变量。Card 的 `whenText` 是注入 Prompt 的语气指引，不是可执行条件 DSL。
 
-当前主 Agent Loop、Planner 和 Live Test 契约都以 RUNTIME_DATA 为准；旧变量工具只在历史归档中出现，不代表当前接口仍有效。
+`src/services/agent/pi/runtime.ts` 是唯一的多轮 Agent Runtime。它在调用 Pi 前刷新变量池、构建 Prompt，并把 Pi 的工具调用接回既有 Safety 和 ToolRouter；Pi 返回最终文本后才调用 `reply/generator.ts`。因此流式增量、工具中间消息都不会直接写入 Card 变量。
+
+当前主 Agent Runtime、Planner 和 Live Test 契约都以 RUNTIME_DATA 为准；旧变量工具只在历史归档中出现，不代表当前接口仍有效。当前记忆压缩与长期召回仍保持既有边界，后续会单独按 Claude Code 风格的文件记忆协议重构。
 
 ## 配置与运行时数据
 

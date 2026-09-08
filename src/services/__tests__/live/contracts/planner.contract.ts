@@ -2,7 +2,7 @@ import type { ModuleContract } from "../types"
 
 export const plannerContract: ModuleContract = {
   module: "planner",
-  sourceFiles: ["src/services/engine/planner.ts"],
+  sourceFiles: ["src/services/agent/pi/runtime.ts", "src/services/engine/planner.ts"],
   generatedAt: "2026-07-24T00:00:00Z",
   sourceHash: "",
   coverage: [

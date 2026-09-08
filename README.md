@@ -18,7 +18,7 @@
 - **会话管理** — 多会话切换、新建、关闭、归档、恢复和会话文件持久化
 - **工具系统** — 文件读写/搜索、Bash、系统信息、HTTP、剪贴板、子代理、Skill、MCP
 - **助手模式** — 解锁更完整的文件、命令、应用、剪贴板和任务编排能力，并经过安全策略控制
-- **Agent Loop** — 模型请求、工具循环、上下文压缩和可选的复杂任务计划
+- **Pi Agent Core** — 统一管理模型请求、顺序工具循环、超时和可选的复杂任务计划；产品状态仍由 Desk-Pet 管理
 - **人格系统** — Card 热切换，支持 neutral、angelkawaii、ame、pchan 和用户导入 Card
 - **Card 运行时状态** — 通过回复末尾的 `RUNTIME_DATA` 更新已注册的角色变量
 - **窗口感知** — 监控前台窗口，停留超时后 AI 主动搭话
@@ -101,10 +101,10 @@ Desk-Pet/
 │   ├── components/                   # 聊天、角色、设置、会话和窗口 UI
 │   ├── composables/                  # 视差与编辑器状态
 │   └── services/
-│       ├── engine/                   # 输入、Agent Loop、Plan、Slash、压缩
+│       ├── engine/                   # 输入预处理、Plan、Slash、会话状态和压缩工具
 │       ├── personality/              # Card、阶段文案、变量状态、情绪映射
 │       ├── reply/                    # RUNTIME_DATA 解析与回复后处理
-│       ├── agent/                    # Provider、Runner、子代理、Memory、Active
+│       ├── agent/                    # Pi Runtime、Provider、Runner、子代理、Memory、Active
 │       ├── tool/                     # 工具注册、路由、Skill、MCP
 │       ├── safety/                   # 风险检查与确认
 │       ├── session/                  # 多会话持久化管理
@@ -134,7 +134,7 @@ Desk-Pet/
   → refreshVariablePool() + reset 策略
   → buildPrompt(Card / 语气 / 规则 / 变量 / 记忆 / 工具)
   → 助手模式可选 Plan：复杂度检测 → 拆解 → 步骤执行
-  → OpenAI 兼容 Provider + ToolRouter 工具循环
+  → Pi Agent Core + pi-ai OpenAI-compatible 流 + ToolRouter 顺序工具循环
   → Safety 检查与确认
   → generateReply(raw, card)
        ├─ 解析并移除 <RUNTIME_DATA>
@@ -176,7 +176,7 @@ Desk-Pet/
 | 框架 | Tauri v2 |
 | 前端 | Vue 3 + TypeScript + Vite |
 | 后端 | Rust + Cargo |
-| AI | OpenAI 兼容接口（tool calls / reasoning effort） |
+| AI | Pi Agent Core + pi-ai OpenAI-compatible 接口（tool calls / reasoning effort） |
 | 配置 | YAML（js-yaml，Vite 编译时转换） |
 | 音效 | Web Audio API（OscillatorNode 合成） |
 | 包管理 | pnpm（前端）+ Cargo（后端） |

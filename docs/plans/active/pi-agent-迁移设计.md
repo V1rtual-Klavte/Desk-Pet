@@ -1,6 +1,6 @@
 ---
 document_type: active_plan
-status: draft_pending_poc
+status: implementation_in_progress
 created_at: 2026-09-07
 scope: agent_runtime
 parent_plan: 愿景驱动整体重构方案.md
@@ -18,9 +18,12 @@ parent_plan: 愿景驱动整体重构方案.md
 Coding Agent 的桌面壳，而是在不改变桌宠产品主体的前提下，用 Pi 的通用
 Agent Loop 替代现有的 Provider 请求和多轮工具循环。
 
-截至本文档，是否最终采用 Pi、是否让轻量和助手模式都使用 Pi Loop，均未
-决策。推荐先做一个独立 PoC，以实际打包与 Tauri 运行数据决定。当前唯一
-已确认的方向如下：
+截至 2026-09-08，`V1rtual_test_pi` 已完成严格的多轮 Loop 替换：主聊天、
+主动搭话、Plan 步骤、Skill 和 fork/team 子代理共用 Pi Core Runtime，旧
+`agent-loop.ts` 与 `sub-loop.ts` 已删除。生产构建与 TypeScript 检查通过；
+真实 Provider 行为、Tauri RSS/JS heap 和轻量模式长期资源仍须独立验证。记忆
+实现的首选已经收敛为 Claude Code 的文件记忆协议。OpenClaw 仅作为分层、
+来源标记和召回策略的参考，不作为 Desk-Pet 的运行时依赖。当前方向如下：
 
 1. Profile 与 Card 可自由组合，是产品的用户自定义能力，不属于 Agent
    框架的职责。
@@ -31,6 +34,9 @@ Agent Loop 替代现有的 Provider 请求和多轮工具循环。
    Node/Bun 侧车候选。
 4. Profile、Card、变量池、`RUNTIME_DATA`、工具安全、会话 Markdown
    持久化和 Rust 平台桥接继续由 Desk-Pet 负责。
+5. MemoryKernel 采用 Claude Code 风格的 `MEMORY.md` 入口、topic Markdown
+   和 frontmatter；轻量模式只做显式写入与按需读取，助手模式再启用自动
+   提取、事件层和后台整理。
 
 ## 2. 产品定位与不可变约束
 
@@ -60,10 +66,10 @@ Desk-Pet 已由最初的 VTuber 模拟演变为可自定义的桌面角色容器
 
 ## 3. 现状与迁移 Seam
 
-当前 `runAgentLoop()` 负责的事情过多：变量刷新、Prompt 构建、可选 Plan、
-Provider 调用、工具迭代、人格阶段事件、回复后处理、会话记录和压缩都在
-同一调用链上。代码图显示它有 5 个直接调用方、两层范围内 65 个被调用
-符号，因此不应整块替换。
+已删除的 `runAgentLoop()` 曾负责变量刷新、Prompt 构建、可选 Plan、Provider
+调用、工具迭代、人格阶段事件、回复后处理、会话记录和压缩。当前
+`agent/pi/runtime.ts` 保留产品编排职责，并把模型请求、消息 transcript、顺序
+工具迭代、超时和终止交给 Pi `Agent`；调用方不再直接依赖手写工具循环。
 
 迁移的 Seam 放在“已经完成 Desk-Pet 上下文构建，尚未进入最终回复处理”的
 执行区间。新建的 `AgentRuntime` Module 应是一个深 Module：调用方只提交
@@ -73,8 +79,8 @@ Provider 调用、工具迭代、人格阶段事件、回复后处理、会话�
 ```text
 runner / preprocessor / session state
   -> Card variables + ContextEngine.build() + optional Planner
-  -> AgentRuntime.execute()                         <- Seam
-       -> PiAgentAdapter
+  -> runPiAgentTurn() / runPiSubAgent()              <- 当前 Seam
+       -> Pi Agent adapter
           -> Pi model stream
           -> Pi tool loop
           -> Desk-Pet safety and ToolRouter adapters
@@ -83,8 +89,9 @@ runner / preprocessor / session state
   -> Card persistence + session persistence + UI
 ```
 
-建议的 Interface 如下。它刻意不暴露 Pi 的 `Agent`、`Model`、消息类型或工具
-类型，以保留替换和测试空间。
+当前 Runtime 仍将 Pi 类型封装在 `agent/pi/` 内部；公共调用方只使用
+`PiAgentTurnInput/Output` 或 `PiSubAgentInput/Output`。后续需要会话级 abort 和
+持久 Agent 时，再将其收敛为下列更窄的 Interface。
 
 ```ts
 interface AgentRuntime {
@@ -100,9 +107,9 @@ interface AgentRuntime {
 tool-end、blocked、error 和 final-text。`RuntimeOutcome` 返回原始最终文本、
 工具历史、usage 和可诊断错误。
 
-迁移早期同时存在 `LegacyRuntimeAdapter` 与 `PiAgentAdapter`，使这个 Seam 是
-真实的。最终若 Pi 同时通过轻量和助手 PoC，才移除 Legacy Adapter；不能在
-未验证前声称已经有“同一套 Loop”。
+手写的多轮 Legacy Loop 已移除。`agent/provider.ts` 和 `engine/parser.ts` 暂时
+保留为一次性请求工具，供 Plan 复杂度/JSON 生成及既有压缩链路使用；它们不再
+承担 Agent 的多轮工具循环，也不会读取或写入 Pi transcript。
 
 ## 4. Pi 可替代和不可替代的部分
 
@@ -115,7 +122,7 @@ Pi AI 24,311 行，Pi Coding Agent 69,951 行。代码量不等于发布包体�
 | `Agent` 多轮循环 | `runToolLoop` 的请求/工具回注循环 | `PiAgentAdapter` 管理每个会话的 Agent | Card、Profile、最终回复处理 |
 | 事件订阅 | 生成、工具执行状态通知 | 映射成 UI 与人格阶段事件 | 具体阶段文案和音效选择 |
 | `abort()`、steer、follow-up | 当前取消与排队能力不足 | 由 runner 转调 Runtime | Vue 会话切换的业务规则 |
-| `transformContext` | 上下文裁剪时机 | 调用既有 compactor，避免双重压缩 | Markdown 摘要和长期记忆策略 |
+| `transformContext` | 上下文变换边界 | 当前保持 transcript 原样，避免迁移时改写记忆 | Markdown 摘要和长期记忆策略 |
 | `beforeToolCall` / `afterToolCall` | 工具前后拦截 | 前者强制 Safety，后者审计/事件 | Safety 分级、确认和路径校验本身 |
 | `pi-ai` Provider 体系 | Provider/模型流调用 | 做独立 Model Adapter | Desk-Pet 配置、密钥与 Provider UX |
 
@@ -187,10 +194,39 @@ Coding 能力仍需项目读取、搜索、编辑、命令、Git、错误恢复�
 5. 不在首期维护 Pi 私有源码的删改 fork。只有 bundle 分析证明公开入口无法
    排除的依赖是主要成本时，才评估 fork 的长期维护代价。
 
+## 6.1 2026-09-08 记忆实现修订
+
+对本地 Claude Code `2.1.88` 还原源码和 OpenClaw `main` 的 Memory Core
+进行对照后，记忆方案做以下决策更新：
+
+- **首选 Claude Code 协议。** 事实源只保留 Markdown：`MEMORY.md` 作为短
+  入口，独立 topic 文件承载正文，frontmatter 使用 `user`、`feedback`、
+  `project`、`reference` 四类。它没有 SQLite、向量库或常驻 embedding，
+  更符合轻量桌宠和可迁移要求。
+- **两级写入。** 用户明确要求记住的内容可立即写入；普通对话先进入
+  `daily`/session 候选，由助手模式的后台提取和 consolidation 决定是否
+  晋升到长期文件。主回复路径不等待整理失败。
+- **两级召回。** 启动时只注入有预算的入口文件；普通消息使用内存中的词元、
+  标题和 trigger 倒排索引，只有强回忆意图或低置信度时才读取 daily/session
+  文件或启动一次受限深度检索。索引不落盘，避免形成第二个记忆事实源。
+- **吸收 OpenClaw 的安全边界。** 为 Markdown 条目增加可读注释元数据：来源
+  会话、`owner/agent/untrusted/system`、时间、状态和 supersession。来源判断、
+  自动晋升门槛、冲突检测、hash 校验和原子写入由 MemoryKernel 强制；不复制
+  OpenClaw 的 SQLite schema、sqlite-vec、multi-provider embedding 和完整
+  dreaming 子系统。
+- **与 Pi 解耦。** PiAgentAdapter 只接收 MemoryKernel 输出的 `MemoryContext`，
+  不直接读取或写入记忆文件；记忆捕获在 ResponseKernel 之后执行，避免 Pi
+  transcript、Card 状态和用户长期记忆混在一起。
+
+本修订替换此前“先自建倒排/BM25 再逐步扩展”的实现优先级：第一阶段先实现
+Claude Code 的文件协议和显式/按需流程，第二阶段再加入内存倒排和助手模式的
+后台提炼；只有真实数据表明文件扫描成为瓶颈时，才评估 FTS5，而不是默认引入
+数据库。
+
 ## 7. PoC 设计与通过门槛
 
-实验分支为 `experiment/pi-agent-runtime`，但在完成本设计稿时尚未向应用加入
-Pi 依赖或代码。PoC 分两个阶段，先得到数据，再决定是否进入迁移。
+当前实现分支为 `V1rtual_test_pi`，已锁定 `pi-agent-core` 与 `pi-ai` 版本
+`0.85.1`。P0/P1 仍用于验证该实现，不再是是否添加依赖的前置条件。
 
 ### 7.1 阶段 P0：依赖、打包和内存基准
 
@@ -230,22 +266,25 @@ P0 与 P1 都通过后，才可将“Pi Core 统一 Loop”写为正式决策。
 
 ## 8. 分阶段迁移
 
-### Phase 0：PoC
+### Phase 0：依赖、构建与资源 PoC
 
-- 在试验分支锁定 Pi 版本，构造独立 benchmark entry，不接入生产入口。
-- 完成 P0 与 P1 的报告，并由用户确认轻量资源预算和 Coding 能力优先级。
+- [x] 锁定 `pi-agent-core` / `pi-ai` `0.85.1`，并只使用 OpenAI-compatible 入口。
+- [x] 生产构建通过；Pi Runtime 输出 chunk 为 371,499 bytes（gzip 105.7 KB）。
+- [ ] 在真实 Tauri WebView 测量未聊天、首次轻量聊天、助手工具任务和模式切回的 RSS/JS heap。
+- [ ] 由用户确认轻量资源预算和 Coding 能力优先级。
 
-### Phase 1：建立 Runtime Seam
+### Phase 1：严格迁移多轮 Runtime
 
-- 从当前 `runAgentLoop()` 中抽出 `AgentRuntime` Module 和 `LegacyRuntimeAdapter`。
-- 调用方只经过 Interface；为 Interface 建立合同和场景测试。
-- 保持输出、会话格式、Profile/Card 与工具接口不变。
+- [x] 新建 Pi Model/Tool/Runtime Adapter，强制顺序工具执行。
+- [x] 主聊天、主动搭话、Plan 步骤、Skill 与 fork/team 子代理切至同一 Runtime。
+- [x] 保留变量刷新、Prompt 构建、`RUNTIME_DATA` 回复后处理、会话记录、安全确认和 ToolRouter。
+- [x] 删除 `engine/agent-loop.ts` 与 `agent/sub-loop.ts`。
 
-### Phase 2：Pi Core Adapter
+### Phase 2：行为合同与资源验证
 
-- 添加 `PiAgentAdapter`、Model Adapter 和 Tool Adapter，默认 feature flag 关闭。
-- 显式顺序工具执行；前置钩子接 Safety，事件订阅接人格阶段和 UI。
-- 先覆盖轻量聊天与六类轻量工具，再在同一 Loop 上开启助手工具集。
+- [ ] 更新受影响的 Live Test Contract/Scene，并以真实 Provider 覆盖变量、工具、安全、超时和会话切换。
+- [ ] 对轻量工具和助手工具分别验证 Safety/确认顺序与 Pi 事件映射。
+- [ ] 根据 P0 数据决定是否需要更细的懒加载或上游依赖瘦身。
 
 ### Phase 3：助手能力与 Coding PoC
 
@@ -256,8 +295,7 @@ P0 与 P1 都通过后，才可将“Pi Core 统一 Loop”写为正式决策。
 
 ### Phase 4：收敛
 
-- Pi Adapter 覆盖 P0/P1 指标且用户确认后，移除 Legacy Adapter。
-- 更新当前系统设计、README、DES 和测试契约；本计划移入历史目录。
+- Pi Runtime 覆盖 P0/P1 指标且用户确认后，完成测试契约并将本计划移入历史目录。
 
 ## 9. 风险与缓解
 
@@ -284,7 +322,7 @@ P0 与 P1 都通过后，才可将“Pi Core 统一 Loop”写为正式决策。
 
 ## 11. 本轮不做的事
 
-- 不安装 Pi 依赖，不修改生产入口，不替换现有 Loop。
 - 不把 Pi Coding Agent、Node Harness、CLI/TUI 或 Pi session storage 接入应用。
-- 不改变 Profile/Card 自由搭配、变量状态、`RUNTIME_DATA`、记忆格式和安全策略。
-- 不将历史的内存预算伪装成已经验证的当前指标。
+- 不修改 Profile/Card 自由搭配、变量状态、`RUNTIME_DATA`、记忆格式和安全策略。
+- 不重构当前自动记忆、长期检索或 Markdown 压缩；下一阶段单独接入 Claude Code 风格文件记忆协议。
+- 不将构建 chunk 大小伪装成真实 Tauri RSS 或 WebView heap 结论。

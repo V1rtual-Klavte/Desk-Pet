@@ -5,7 +5,7 @@
 
 import type { SkillDef } from "./loader"
 import type { ToolDef } from "@/services/tool/types"
-import { runSubLoop } from "@/services/agent/sub-loop"
+import { runPiSubAgent } from "@/services/agent/pi"
 import { createLogger } from "@/services/logger"
 
 const log = createLogger("SkillRunner")
@@ -54,7 +54,7 @@ export async function runSkill(
   }
 
   // ── 子循环执行 ──
-  const result = await runSubLoop({
+  const result = await runPiSubAgent({
     task: query,
     tools,
     systemPrompt,

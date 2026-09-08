@@ -5,7 +5,7 @@
 
 import { getActiveCard } from "@/services/personality"
 import { getFallbackReply } from "@/services/personality/stages-cache"
-import { runAgentLoop } from "@/services/engine/agent-loop"
+import { runPiAgentTurn } from "@/services/agent/pi"
 import { preProcess } from "@/services/engine/preprocessor"
 import { transition, getState } from "@/services/engine/session"
 import {
@@ -110,7 +110,7 @@ export async function sendMessage(text: string): Promise<{
 
     // ── Step 4: 运行 Agent Loop ──
     toolCallHistory.clear()
-    const result = await runAgentLoop({
+    const result = await runPiAgentTurn({
       userText: preResult.text,
       chatMessages: getContextMessages(),
       unansweredCount: unansweredCount.value,
@@ -119,7 +119,7 @@ export async function sendMessage(text: string): Promise<{
       isRetry: false,
     })
 
-    // ── Step 5: 提取人格效果（agent-loop 已通过 generateReply 处理）──
+    // ── Step 5: 提取人格效果（Pi Runtime 已通过 generateReply 处理）──
     const lastEffect = result.effects.length > 0
       ? result.effects[result.effects.length - 1]
       : { expression: "smile", soundEvent: "reply" }
@@ -178,7 +178,7 @@ export async function sendMessage(text: string): Promise<{
 // ── 为主动搭话提供便捷入口 ──
 
 export async function sendActiveMessage(userText: string): Promise<string> {
-  const result = await runAgentLoop({
+  const result = await runPiAgentTurn({
     userText,
     chatMessages: getContextMessages(),
     unansweredCount: unansweredCount.value,
