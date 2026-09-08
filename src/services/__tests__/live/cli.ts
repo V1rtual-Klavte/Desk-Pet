@@ -1,5 +1,5 @@
 // ==========================================
-// CLI — 参数解析 (vitest 执行前)
+// CLI — Live Test 参数解析
 // ==========================================
 
 export interface CLIOptions {
@@ -29,9 +29,4 @@ export function parseArgs(args: string[]): CLIOptions {
   }
 
   return opts
-}
-
-/** 获取 process.argv 中的非 vitest 参数 */
-export function getUserArgs(): string[] {
-  return process.argv.slice(2).filter(a => !a.startsWith("--config"))
 }

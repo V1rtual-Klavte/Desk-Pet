@@ -24,9 +24,13 @@ impl AppPaths {
 
         // 唯一环境判断：开发→项目下，生产→AppData
         let data_root = if cfg!(debug_assertions) {
-            // 开发: {project}/data/desk-pet/
-            let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-            manifest.parent().unwrap().join("data").join("desk-pet")
+            if let Ok(test_root) = std::env::var("DESKPET_LIVE_TEST_DATA_ROOT") {
+                PathBuf::from(test_root)
+            } else {
+                // 开发: {project}/data/desk-pet/
+                let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+                manifest.parent().unwrap().join("data").join("desk-pet")
+            }
         } else {
             // 生产: {AppData}/desk-pet/
             app.path().app_local_data_dir()

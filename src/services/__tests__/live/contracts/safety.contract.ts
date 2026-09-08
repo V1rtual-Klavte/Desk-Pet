@@ -4,7 +4,7 @@ export const safetyContract: ModuleContract = {
   module: "safety",
   sourceFiles: ["src/services/agent/pi/runtime.ts", "src/services/safety/checker.ts"],
   generatedAt: "2026-07-24T00:00:00Z",
-  sourceHash: "",
+  sourceHash: "1a928c2d9e51b815176b1130b8a5c85f40c2f60fe9691fd989f779b663c09be3",
   coverage: [
     { id: "sf-01", feature: "SAFE 级别放行", description: "safetyLevel=SAFE 工具被直接放行", why: "安全等级体系基础", depth: "shallow", scenarios: [] },
     { id: "sf-02", feature: "NORMAL 级别检查", description: "safetyLevel=NORMAL 工具执行前检查", why: "常规工具需要安全评估", depth: "shallow", scenarios: [] },

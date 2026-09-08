@@ -191,7 +191,7 @@ pnpm test
 pnpm test -- --module variable-pool
 ```
 
-Live Test 位于 `src/services/__tests__/live/`。当前部分 Contract 的 `sourceHash` 为空，检查器会跳过源码变更过期保护；测试通过只代表已覆盖场景通过。
+Live Test 位于 `src/services/__tests__/live/`，通过独立 Tauri WebView 使用真实 IPC、临时文件系统和真实 Provider 运行；测试完成后自动清理临时数据。Contract `sourceHash` 会在启动前校验，过期会直接阻断执行。测试通过只代表已覆盖场景通过。
 
 ---
 

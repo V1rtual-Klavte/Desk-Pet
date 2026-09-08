@@ -8,7 +8,7 @@
         "build": "vite build",
         "tauri-dev": "tauri dev",
         "tauri-build": "tauri build",
-        "test": "vitest run"
+        "test": "node scripts/live-test.mjs"
     },
     "dependencies": {
         "@earendil-works/pi-agent-core": "0.85.1",
@@ -29,7 +29,6 @@
         "js-yaml": "^4.2.0",
         "typescript": "^5.9.3",
         "vite": "^6.4.2",
-        "vitest": "^4.1.10",
         "vue-tsc": "^3.3.5"
     }
 }

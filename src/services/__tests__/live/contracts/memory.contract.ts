@@ -4,7 +4,7 @@ export const memoryContract: ModuleContract = {
   module: "memory",
   sourceFiles: ["src/services/agent/memory/index.ts", "src/services/agent/memory/memory-entries.ts"],
   generatedAt: "2026-07-24T00:00:00Z",
-  sourceHash: "",
+  sourceHash: "cd104265d7eeb3203524d66399b7775959e854097086ee1977af78feba35cede",
   coverage: [
     { id: "mm-01", feature: "Memory 添加条目", description: "MemoryService.append() 创建记忆", why: "记忆系统基础 CRUD", depth: "shallow", scenarios: [] },
     { id: "mm-02", feature: "Memory 搜索", description: "MemoryService.search(query, limit) 按内容搜索", why: "LLM 需检索相关记忆", depth: "shallow", scenarios: [] },

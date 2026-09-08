@@ -4,7 +4,7 @@ export const toolExecutionContract: ModuleContract = {
   module: "tool-execution",
   sourceFiles: ["src/services/agent/pi/runtime.ts", "src/services/tool/router.ts", "src/services/tool/registry.ts"],
   generatedAt: "2026-07-24T00:00:00Z",
-  sourceHash: "",
+  sourceHash: "07e41834e0e77ef49ef2f8d53e487ab38f3ca55808255595a76f7d5e93984798",
   coverage: [
     { id: "te-01", feature: "工具注册", description: "registerDefaultTools 注册所有默认工具", why: "工具系统基础", depth: "shallow", scenarios: [] },
     { id: "te-02", feature: "工具按模式获取", description: "getToolsForMode('pet') 返回 pet 工具集", why: "不同模式不同工具", depth: "shallow", scenarios: [] },

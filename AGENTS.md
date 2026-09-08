@@ -47,20 +47,21 @@ pnpm test -- --module variable-pool
 src/services/__tests__/live/
 ├── contracts/                 # 模块行为契约（输入、输出、持久化和边界）
 ├── scenes/                    # 多轮真实链路场景
-├── standard-setup.ts          # 标准 Provider、配置和运行时数据夹具
+├── standard-setup.ts          # 标准配置和运行时状态隔离
+├── live-test-main.ts          # Tauri WebView 内的真实 Live Test 入口
 ├── scene-runner.ts            # 场景执行与步骤编排
 ├── contract-checker.ts        # 契约断言和覆盖检查
 ├── reporter.ts                # 控制台/JSON 测试报告
-├── cli.ts                     # analyze、generate、audit、run 入口
-└── index.live.test.ts         # Vitest 集成入口
+├── cli.ts                     # analyze、generate、audit、run 参数入口
+└── live-test-main.ts          # Tauri WebView 集成入口
 ```
 
-测试分为两层：Contract 描述单模块的可验证行为，Scene 描述 Agent Loop、工具、安全、人格、变量和记忆之间的真实调用链。Live Test 可以调用真实 Provider；因此需要本地开发配置和可用的 API，不能把没有 Provider 的静态检查结果当作运行时通过。
+测试分为两层：Contract 描述单模块的可验证行为，Scene 描述 Agent Loop、工具、安全、人格、变量和记忆之间的真实调用链。Live Test 在独立 Tauri WebView 中调用真实 Provider 和 Rust IPC，使用临时数据根；因此需要本地开发配置和可用的 API，不能把没有 Provider 的静态检查结果当作运行时通过。
 
 - 代码或数据契约变更后，先运行 `/analyze test [module]`，再补充 `/generate test [module]` 生成的场景。
 - 使用 `pnpm test -- --module <module>` 做模块范围验证；跨模块修改再运行完整 `pnpm test`。
 - `npx vue-tsc --noEmit` 和 `cargo check` 只证明类型/编译，不替代 Live Test。
-- 契约中的 `sourceHash` 若为空会跳过过期保护，属于待补强项；执行报告必须注明这一验证限制。
+- Contract 的 `sourceHash` 不能为空；启动前发现空 hash 或源码变更会直接阻断 Live Test。
 
 ## 文档职责
 

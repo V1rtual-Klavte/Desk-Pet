@@ -8,7 +8,9 @@ mod commands;
 mod paths;
 
 use std::sync::Arc;
+use std::path::PathBuf;
 use tauri::Manager;
+use tauri::{WebviewUrl, WebviewWindowBuilder};
 use tauri::tray::{TrayIconBuilder, MouseButton, MouseButtonState, TrayIconEvent};
 use tauri::menu::{MenuBuilder, MenuItemBuilder};
 
@@ -65,6 +67,42 @@ fn get_cards_dir(paths: tauri::State<AppPaths>) -> String {
     paths.personality.join("cards").to_string_lossy().to_string()
 }
 
+#[derive(serde::Serialize)]
+struct LiveTestOptions {
+    module: Option<String>,
+    scene: Option<String>,
+    tag: Option<String>,
+    report: Option<String>,
+}
+
+#[tauri::command]
+fn get_live_test_options() -> LiveTestOptions {
+    if !cfg!(debug_assertions) {
+        return LiveTestOptions { module: None, scene: None, tag: None, report: None };
+    }
+    let env_value = |key: &str| std::env::var(key).ok().filter(|v| !v.is_empty());
+    LiveTestOptions {
+        module: env_value("DESKPET_LIVE_TEST_MODULE"),
+        scene: env_value("DESKPET_LIVE_TEST_SCENE"),
+        tag: env_value("DESKPET_LIVE_TEST_TAG"),
+        report: env_value("DESKPET_LIVE_TEST_REPORT"),
+    }
+}
+
+#[tauri::command]
+fn live_test_complete(app: tauri::AppHandle, paths: tauri::State<AppPaths>, passed: bool, report: String) -> Result<(), String> {
+    if !cfg!(debug_assertions) {
+        return Err("Live Test 仅允许 debug 构建".to_string());
+    }
+    println!("[LiveTest] completed passed={passed}\n{report}");
+    let result = format!("{}\n{}", if passed { "PASS" } else { "FAIL" }, report);
+    if let Err(error) = std::fs::write(paths.data_root.join("live-test-result.txt"), result) {
+        eprintln!("[LiveTest] 无法写入测试结果: {error}");
+    }
+    app.exit(0);
+    Ok(())
+}
+
 // ==========================================
 // 启动入口
 // ==========================================
@@ -89,11 +127,33 @@ pub fn run() {
                 rust_info!("macOS: ActivationPolicy::Accessory 已设置");
             }
 
-            // 手动创建主窗口（在 Accessory 之后），默认显示
-            let _main_window = match create_main_window(app.handle()) {
-                Ok(w) => { rust_info!("主窗口已创建并显示"); Some(w) }
-                Err(e) => { rust_warn!("创建主窗口失败: {e}"); None }
-            };
+            let live_test = cfg!(debug_assertions)
+                && std::env::var("DESKPET_LIVE_TEST").ok().as_deref() == Some("1");
+            let paths = AppPaths::init(app.handle()).expect("路径初始化失败");
+            app.manage(paths);
+
+            if live_test {
+                let window = WebviewWindowBuilder::new(
+                    app,
+                    "live-test",
+                    WebviewUrl::App(PathBuf::from("live-test.html")),
+                )
+                .title("Desk-Pet Live Test")
+                .inner_size(900.0, 700.0)
+                .visible(true)
+                .build();
+                match window {
+                    Ok(_) => { rust_info!("Live Test 窗口已创建"); }
+                    Err(e) => { rust_warn!("Live Test 窗口创建失败: {e}"); }
+                }
+                return Ok(());
+            } else {
+                // 手动创建主窗口（在 Accessory 之后），默认显示
+                let _main_window = match create_main_window(app.handle()) {
+                    Ok(w) => { rust_info!("主窗口已创建并显示"); Some(w) }
+                    Err(e) => { rust_warn!("创建主窗口失败: {e}"); None }
+                };
+            }
 
             // ── 系统托盘 ──
             let tray_menu = MenuBuilder::new(app.handle())
@@ -142,9 +202,6 @@ pub fn run() {
             // 启动光标追踪后台线程 (灵动图层 ~60fps)
             spawn_cursor_tracker(app.handle().clone());
 
-            let paths = AppPaths::init(app.handle()).expect("路径初始化失败");
-            app.manage(paths);
-
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -188,6 +245,8 @@ pub fn run() {
             list_profile_files,
             get_personality_dir,
             get_cards_dir,
+            get_live_test_options,
+            live_test_complete,
             personality_file_read,
             personality_file_write,
             personality_file_list,

@@ -7,12 +7,14 @@ import { resetSession } from "@/services/engine/session"
 import { clearMessages } from "@/services/session/store"
 import { MemoryService } from "@/services/agent/memory"
 import { getActiveCard, initRegistry } from "@/services/personality/registry"
+import { initCards } from "@/services/personality/loader"
 import { registerDefaultTools } from "@/services/tool/registry"
 
 let bootstrapped = false
 
 async function bootstrapOnce(): Promise<void> {
   if (bootstrapped) return
+  await initCards()
   await initRegistry()
   await registerDefaultTools()
   bootstrapped = true

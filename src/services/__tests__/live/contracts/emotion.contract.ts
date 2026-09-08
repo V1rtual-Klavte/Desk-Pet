@@ -4,7 +4,7 @@ export const emotionContract: ModuleContract = {
   module: "emotion",
   sourceFiles: ["src/services/personality/emotion.ts"],
   generatedAt: "2026-07-24T00:00:00Z",
-  sourceHash: "",
+  sourceHash: "70cd89a29ceb4d942b9de0bab1ac1e299c9ab05041b935209036767e1e8f9d9c",
   coverage: [
     { id: "em-01", feature: "resolveEmotion 映射解析", description: "根据 emotionKey 查找 expression+sound", why: "表情音效正确映射", depth: "shallow", scenarios: [] },
     { id: "em-02", feature: "resolveEmotion 未识别 key 兜底", description: "emotionKey 未匹配 → 回退系统默认映射", why: "LLM 可能输出未定义 key", depth: "shallow", scenarios: [] },
