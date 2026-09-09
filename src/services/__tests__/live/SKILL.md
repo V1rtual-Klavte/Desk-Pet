@@ -5,6 +5,8 @@ description: Desk-Pet Live Test Framework — AI 自驱动端到端测试。分�
 
 # Live Test Framework Skill
 
+运行命令、源码变更流程和 Scene 编写规范见同目录 `README.md`。本文件只定义代码代理负责的 Contract 分析、Scene 生成和覆盖审查工作流。
+
 ## 触发
 
 - `/analyze test [module]` — AI 分析源码 → 生成覆盖契约 (Contract)
@@ -16,7 +18,7 @@ description: Desk-Pet Live Test Framework — AI 自驱动端到端测试。分�
 
 ### `/analyze test [module]`
 
-1. 读取指定模块（或全部 8 个模块）的源码文件
+1. 读取指定模块（或全部 7 个模块）的源码文件
 2. 对照 `src/services/__tests__/live/types.ts` 中 `ModuleContract` 和 `CoveragePoint` 类型
 3. AI 分析：
    - 导出函数/方法 → 每个公开 API 一个 coverage point
