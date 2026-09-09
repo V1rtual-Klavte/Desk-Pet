@@ -2,9 +2,9 @@ import type { ModuleContract } from "../types"
 
 export const emotionContract: ModuleContract = {
   module: "emotion",
-  sourceFiles: ["src/services/personality/emotion.ts"],
-  generatedAt: "2026-07-24T00:00:00Z",
-  sourceHash: "70cd89a29ceb4d942b9de0bab1ac1e299c9ab05041b935209036767e1e8f9d9c",
+  sourceFiles: ["src/services/personality/emotion.ts", "src/services/reply/generator.ts"],
+  generatedAt: "2026-09-09",
+  sourceHash: "456e9ee1f9376b2be763dea4fd526e4431c7256fc1cf4bd0f921f5f01d4a85b2",
   coverage: [
     { id: "em-01", feature: "resolveEmotion 映射解析", description: "根据 emotionKey 查找 expression+sound", why: "表情音效正确映射", depth: "shallow", scenarios: [] },
     { id: "em-02", feature: "resolveEmotion 未识别 key 兜底", description: "emotionKey 未匹配 → 回退系统默认映射", why: "LLM 可能输出未定义 key", depth: "shallow", scenarios: [] },

@@ -8,15 +8,30 @@ import type { SessionMeta } from "./store"
 
 // ── 存储 key ──
 
-const SESSIONS_KEY = "deskpet_sessions"
-const ACTIVE_SESSION_KEY = "deskpet_active_session"
+let useLiveTestStorage = false
+
+function storageKey(name: string): string {
+  return useLiveTestStorage ? `deskpet_live_test_${name}` : `deskpet_${name}`
+}
+
+function sessionsKey(): string { return storageKey("sessions") }
+function activeSessionKey(): string { return storageKey("active_session") }
 
 function chatKey(sessionId: string): string {
-  return `deskpet_chat_${sessionId}`
+  return storageKey(`chat_${sessionId}`)
 }
 
 function unansweredKey(sessionId: string): string {
-  return `deskpet_unanswered_${sessionId}`
+  return storageKey(`unanswered_${sessionId}`)
+}
+
+/** Switches the Live Test host to its own browser-storage namespace. */
+export function enableLiveTestSessionPersistence(): void {
+  useLiveTestStorage = true
+}
+
+export function isUsingLiveTestSessionPersistence(): boolean {
+  return useLiveTestStorage
 }
 
 // ── 消息缓存 ──
@@ -71,7 +86,7 @@ export function deleteUnanswered(sessionId: string): void {
 
 export function loadSessionList(): SessionMeta[] {
   try {
-    const raw = localStorage.getItem(SESSIONS_KEY)
+    const raw = localStorage.getItem(sessionsKey())
     if (!raw) return []
     const arr = JSON.parse(raw)
     return Array.isArray(arr) ? arr : []
@@ -79,25 +94,26 @@ export function loadSessionList(): SessionMeta[] {
 }
 
 export function saveSessionList(list: SessionMeta[]): void {
-  try { localStorage.setItem(SESSIONS_KEY, JSON.stringify(list)) } catch { /* ignore */ }
+  try { localStorage.setItem(sessionsKey(), JSON.stringify(list)) } catch { /* ignore */ }
 }
 
 // ── 活跃会话 ID 缓存 ──
 
 export function loadActiveId(): string {
-  try { return localStorage.getItem(ACTIVE_SESSION_KEY) || "" } catch { return "" }
+  try { return localStorage.getItem(activeSessionKey()) || "" } catch { return "" }
 }
 
 export function saveActiveId(id: string): void {
-  try { localStorage.setItem(ACTIVE_SESSION_KEY, id) } catch { /* ignore */ }
+  try { localStorage.setItem(activeSessionKey(), id) } catch { /* ignore */ }
 }
 
-/** Removes only Desk-Pet session cache keys. Called by the isolated Live Test host. */
+/** Removes only the isolated Live Test session cache keys. */
 export function resetSessionPersistenceForTest(): void {
+  if (!useLiveTestStorage) throw new Error("Live Test storage namespace is not enabled")
   try {
     const keys = Array.from({ length: localStorage.length }, (_, index) => localStorage.key(index))
     for (const key of keys) {
-      if (key === SESSIONS_KEY || key === ACTIVE_SESSION_KEY || key === "deskpet_chat_history" || key?.startsWith("deskpet_chat_") || key?.startsWith("deskpet_unanswered_")) {
+      if (key?.startsWith("deskpet_live_test_")) {
         localStorage.removeItem(key)
       }
     }

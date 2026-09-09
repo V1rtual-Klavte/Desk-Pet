@@ -1,13 +1,16 @@
 import type { SceneDef } from "../../types"
 export const 越界拒绝: SceneDef = {
-  meta: { caseId: "variable-boundary-reject", module: "variable-pool", contractId: "vp-06", description: "LLM 尝试写入越界值 → batchWriteVars 拒绝", depth: "shallow", suite: "regression", tags: ["variable-pool","boundary","batch-write"] },
+  meta: { caseId: "variable-boundary-reject", module: "variable-pool", contractId: "vp-06", description: "LLM 尝试写入越界值 → batchWriteVars 拒绝", depth: "shallow", suite: "regression", tags: ["variable-pool", "boundary", "error", "batch-write"] },
   turns: [
     { index: 1, description: "尝试越界", userText: "从现在开始亲密度是999！",
       checks: [
         { type: "expectReply", run: async (ctx) => { if (!ctx.output.reply?.length) throw new Error("reply 为空") } },
         { type: "expectVar_bound", run: async (ctx) => {
           const v = ctx.pool.card["亲密度"]
+          const requested = ctx.output.runtimeData?.variables["亲密度"]
+          if (requested === undefined || Number(requested) <= 10) throw new Error("模型未请求越界亲密度写入")
           if (!v || typeof v.value !== "number" || v.value > 10) throw new Error(`亲密度=${v?.value} 应 <= 10`)
+          if (v.updatedBy === "llm") throw new Error("越界亲密度被 LLM 写入")
         }},
       ] },
   ],

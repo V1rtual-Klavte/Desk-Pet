@@ -60,7 +60,7 @@ pnpm test -- --module memory --report markdown
 pnpm run test:release
 ```
 
-筛选参数可以组合使用。`--repeat` 范围为 1-20；真实模型的安全、工具和变量场景建议在发布前使用 3 次试验。命令成功退出码为 `0`；场景失败、超时、Contract 过期、严格 Contract 门禁失败或测试宿主异常时退出码为非 `0`。
+筛选参数可以组合使用。`--repeat` 范围为 1-20；场景的 `meta.repetitions` 是该场景的最低试验次数，CLI 的 `--repeat` 只会提高而不会降低它。命令成功退出码为 `0`；场景失败、超时、Contract 过期、严格 Contract 门禁失败或测试宿主异常时退出码为非 `0`。
 
 `test:release` 现在会如实因现有遗留 Contract 的 coverage 缺口失败，直到每个 coverage point 都有对应场景和可验证断言。不要把非严格 `pnpm test` 的结果用于发布结论。
 
@@ -87,11 +87,11 @@ pnpm run test:release
 1. 在 `contracts/` 新增 `{module}.contract.ts`。
 2. 在 `scenes/{module}/` 新增一个或多个 `.scene.ts`。
 3. 将模块和主要源文件补入 `SKILL.md` 的覆盖表。
-4. Contract 的每个 coverage point 通过 `scenarios` 关联实际 Scene。
+4. Contract 的每个 coverage point 通过 `scenarios` 关联实际 Scene；每个引用必须解析到已发现的 Scene，且 Scene 的 `module` 和 `contractId` 必须分别匹配 Contract 模块与 coverage point。
 5. 至少覆盖正常路径、状态变化、边界值和错误路径。
 6. 先执行模块测试，再执行完整测试。
 
-Scene 会由 Vite 的 `import.meta.glob` 自动发现，通常不需要修改 Runner 或入口文件。每个 Scene 必须有全局稳定的 `caseId`（小写 kebab-case）、`suite`（`regression`、`capability`、`safety`、`stress`）和与 Contract 对应的 `contractId`；启动时会校验它们。
+Scene 会由 Vite 的 `import.meta.glob` 自动发现，通常不需要修改 Runner 或入口文件。每个 Scene 必须有全局稳定的 `caseId`（小写 kebab-case）、`suite`（`regression`、`capability`、`safety`、`stress`）和与 Contract 对应的 `contractId`；启动时会校验它们。Contract 要求边界或错误路径时，对应 Scene 必须分别带有 `boundary` 或 `error` tag，不能以中文描述文本代替。
 
 ## 4. Scene 编写要求
 
@@ -100,11 +100,11 @@ Scene 会由 Vite 的 `import.meta.glob` 自动发现，通常不需要修改 Ru
 - `output.reply`：最终用户可见回复有效。
 - `pool`：Card、interaction 等变量状态及 `VariableState` 元数据正确。
 - `session`：状态回到 `WAITING`，消息数和工具调用数符合预期。
-- `memory`：会话轮数、条目数量或分类变化正确。
+- `memory`：会话轮数、条目数量、分类或已保存的工作记忆内容正确。长期记忆的自动检索未闭环时，不能把模型复述当作长期召回通过。
 - `toolHistory`：目标工具实际被调用，并具有预期的 `done`、`blocked`、`denied` 或 `error` 状态。
 - 副作用：需要持久化的内容确实通过真实 IPC 写入测试数据目录。
 
-工具场景必须断言具体工具及状态。仅断言回复非空不能证明工具链成功。安全场景不能通过执行真实破坏操作验证，应断言危险调用被拦截且没有成功副作用。
+工具场景必须断言具体工具及状态。仅断言回复非空不能证明工具链成功。安全场景不能通过执行真实破坏操作验证，应断言模型实际发起目标调用且该调用被拒绝、拦截或以受控错误结束；没有调用不构成通过。
 
 真实 LLM 输出存在波动。场景应断言稳定的产品合同和状态，不应依赖固定措辞、标点或完整字符串相等。
 
@@ -116,7 +116,7 @@ Scene 会由 Vite 的 `import.meta.glob` 自动发现，通常不需要修改 Ru
 2. 在用户目录创建临时的 `.deskpet-live-test-*` 数据根。
 3. 只读复制现有 `data/desk-pet/personality/stages` 作为测试种子（若存在）。
 4. 启动 Vite 和 debug Tauri 测试窗口。
-5. 每个 trial 先等待前一个场景的异步会话写入，再重置会话工作记忆、轮次计数、session 文件、浏览器 session cache、变量池、聊天记录、长期记忆、预处理去重状态和 AI 锁。
+5. 每个 trial 先等待前一个场景的异步会话写入，再重置会话工作记忆、轮次计数、session 文件、变量池、聊天记录、长期记忆、预处理去重状态和 AI 锁。浏览器会话缓存使用 `deskpet_live_test_*` 专属 keyspace，清理时不会读取或删除用户正常运行的 `deskpet_*` 缓存。
 6. 在真实 WebView 中执行 Contract、Scene 和断言；每个 Scene 可声明超时，超时不再伪装成普通失败。
 7. 写出测试结果、关闭应用并删除临时数据根。Node 侧会处理 SIGINT/SIGTERM 和 10 分钟宿主超时。
 
@@ -142,7 +142,7 @@ Scene 会由 Vite 的 `import.meta.glob` 自动发现，通常不需要修改 Ru
 | Provider 429/503/超时 | Provider 可用性、限流和网络，不得声明业务通过 |
 | 有回复但没有工具历史 | 模型/Provider 未发起 tool call，或工具声明未送达 |
 | 工具状态为 `error` | Rust IPC 返回值、参数、路径和平台实现 |
-| 工具状态为 `blocked/denied` | Safety 规则和确认策略是否符合合同 |
+| 工具状态为 `blocked/denied/error` | Safety 规则、确认策略及工具 handler 的拒绝路径是否符合合同 |
 | 变量未变化 | RUNTIME_DATA、Card 注册表、类型/范围和 `updateBy` |
 | Memory/Session 写入失败 | 临时数据根、Rust 路径校验和初始化顺序 |
 | Setup 失败 | 测试基础设施失败；会以 fail 结束，不能把它算成 skip |

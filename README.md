@@ -191,7 +191,7 @@ pnpm test
 pnpm test -- --module variable-pool
 ```
 
-Live Test 位于 `src/services/__tests__/live/`，通过独立 Tauri WebView 使用真实 IPC、临时文件系统和真实 Provider 运行；测试完成后自动清理临时数据。Scene 带稳定 `caseId`、测试套件和 trial，`--repeat 3` 可检验真实模型的稳定性；`--strict` 将 Contract 缺口作为门禁。Contract `sourceHash` 会在启动前校验，过期会直接阻断执行。JSON 报告记录数据集版本、环境种子、指标、错误分类和 `pass@k`/`pass^k`。测试通过只代表已覆盖场景通过。
+Live Test 位于 `src/services/__tests__/live/`，通过独立 Tauri WebView 使用真实 IPC、临时文件系统和真实 Provider 运行；测试完成后自动清理临时数据，浏览器会话缓存使用测试专属 keyspace，不会清除正常用户缓存。Scene 带稳定 `caseId`、测试套件和最低 trial 数，`--repeat 3` 只会提高试验次数；`--strict` 将实际 Scene 关联、边界/错误 tag 与 Contract 缺口作为门禁。Contract `sourceHash` 会在启动前校验，过期会直接阻断执行。JSON 报告记录数据集版本、环境种子、指标、错误分类和 `pass@k`/`pass^k`。测试通过只代表已覆盖场景通过。
 
 ---
 

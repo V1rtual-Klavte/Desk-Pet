@@ -50,6 +50,7 @@ export interface PiAgentTurnOutput {
   toolCallHistory: { toolName: string; status: string; personalityMsg?: string }[]
   retriesUsed: number
   effects: { expression: string; soundEvent: string | null }[]
+  runtimeData?: { emotionKey: string | null; variables: Record<string, string> }
 }
 
 export interface PiSubAgentInput {
@@ -199,7 +200,7 @@ export async function runPiAgentTurn(input: PiAgentTurnInput): Promise<PiAgentTu
   transition("WAITING")
   MemoryService.recordTurn("assistant", processed.text)
   compactOnHighUsage(chatMessages, userText)
-  return { reply: processed.text, toolCallHistory, retriesUsed, effects }
+  return { reply: processed.text, toolCallHistory, retriesUsed, effects, runtimeData: processed.runtimeData }
 }
 
 /** Used by planning and fork/team agents. It shares the same Pi runtime, not a second loop. */

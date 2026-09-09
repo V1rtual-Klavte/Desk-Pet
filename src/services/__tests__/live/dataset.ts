@@ -1,11 +1,11 @@
 import type { ModuleContract, SceneDef } from "./types"
 
-export const LIVE_DATASET_VERSION = "2026-09-09.1"
+export const LIVE_DATASET_VERSION = "2026-09-09.2"
 
 export function validateDataset(scenes: SceneDef[], contracts: ModuleContract[]): string[] {
   const errors: string[] = []
   const ids = new Set<string>()
-  const contractIds = new Set(contracts.flatMap(contract => contract.coverage.map(point => point.id)))
+  const contractsByModule = new Map(contracts.map(contract => [contract.module, contract]))
 
   for (const scene of scenes) {
     const { meta } = scene
@@ -16,8 +16,11 @@ export function validateDataset(scenes: SceneDef[], contracts: ModuleContract[])
     }
     ids.add(meta.caseId)
 
-    if (!contractIds.has(meta.contractId)) {
-      errors.push(`${meta.caseId}: contractId ${meta.contractId} 不存在`)
+    const contract = contractsByModule.get(meta.module)
+    if (!contract) {
+      errors.push(`${meta.caseId}: module ${meta.module} 没有 Contract`)
+    } else if (!contract.coverage.some(point => point.id === meta.contractId)) {
+      errors.push(`${meta.caseId}: contractId ${meta.contractId} 不属于 ${meta.module}`)
     }
     if (scene.turns.length === 0) errors.push(`${meta.caseId}: 没有测试轮次`)
     for (const turn of scene.turns) {

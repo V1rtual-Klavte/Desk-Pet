@@ -3,8 +3,8 @@ import type { ModuleContract } from "../types"
 export const safetyContract: ModuleContract = {
   module: "safety",
   sourceFiles: ["src/services/agent/pi/runtime.ts", "src/services/safety/checker.ts"],
-  generatedAt: "2026-07-24T00:00:00Z",
-  sourceHash: "1a928c2d9e51b815176b1130b8a5c85f40c2f60fe9691fd989f779b663c09be3",
+  generatedAt: "2026-09-09",
+  sourceHash: "68564bb21dbde79e62965aaf3ce4947ea52b5fe27e0fae974825ff93437bea9f",
   coverage: [
     { id: "sf-01", feature: "SAFE 级别放行", description: "safetyLevel=SAFE 工具被直接放行", why: "安全等级体系基础", depth: "shallow", scenarios: [] },
     { id: "sf-02", feature: "NORMAL 级别检查", description: "safetyLevel=NORMAL 工具执行前检查", why: "常规工具需要安全评估", depth: "shallow", scenarios: [] },
@@ -14,7 +14,7 @@ export const safetyContract: ModuleContract = {
     { id: "sf-06", feature: "bash NOWAY 匹配", description: "BASH_NOWAY_PATTERNS 匹配 sudo rm -rf /", why: "系统破坏命令禁止", depth: "shallow", scenarios: [] },
     { id: "sf-07", feature: "文件危险路径匹配", description: "FILE_DANGEROUS_PATTERNS 匹配 .ssh/ 等敏感文件", why: "敏感文件泄露防护", depth: "shallow", scenarios: [] },
     { id: "sf-08", feature: "会话信任机制", description: "trustToolInSession + resetSessionTrust 信任周期", why: "用户确认后免重复弹窗", depth: "deep", scenarios: [] },
-    { id: "sf-09", feature: "LLM 工具调用实际拦截", description: "真 LLM 尝试调用危险工具时正确拦截", why: "端到端安全验证", depth: "deep", scenarios: ["safety-dangerous-delete"] },
+    { id: "sf-09", feature: "LLM 危险 Bash 调用实际拦截", description: "真 LLM 请求 rm -rf /tmp 时，轻量 Bash 白名单拒绝执行", why: "端到端安全验证", depth: "deep", scenarios: ["safety-dangerous-delete"] },
   ],
   rules: { minScenarios: 7, minDeepScenarios: 3, requireBoundary: true, requireErrorPath: true },
 }

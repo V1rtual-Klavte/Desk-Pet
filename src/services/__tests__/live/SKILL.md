@@ -42,10 +42,11 @@ description: Desk-Pet Live Test Framework — AI 自驱动端到端测试。分�
    - 读相关源码 (contract.sourceFiles)
    - AI 生成 SceneDef 文件要求:
      - 声明稳定的 `caseId` 和 `suite`；回归修复优先进入 `regression`，危险行为进入 `safety`
+     - `meta.module` 与 Contract 模块一致，`meta.contractId` 与回写该 Scene 的 coverage point 一致；边界/错误场景分别带 `boundary`/`error` tag
      - 需要覆盖实际 UI 聊天入口时声明 `entry: "production"`，不要只直调 runtime
      - 用户消息自然口语化，像真人聊天
      - deep 场景必须多轮对话，包含对比
-     - 每轮必须断言: 回复输出 + 内部状态 + 副作用
+     - 每轮必须断言: 回复输出 + 内部状态 + 副作用；不能仅以非空回复替代变量、工具或 RUNTIME_DATA 的实际观测
      - 边界测试构造触发边界的对话
      - 错误路径构造触发错误的对话
    - 生成 .scene.ts 文件写入 `src/services/__tests__/live/scenes/{module}/`
@@ -56,8 +57,9 @@ description: Desk-Pet Live Test Framework — AI 自驱动端到端测试。分�
 1. 读取所有 contract 文件
 2. 运行 contract-checker 检查 (STALE / MISSING / GAP)
 3. AI 额外审视: 覆盖完整性、深度、边界、错误路径
-4. 输出报告
-5. `--strict` 时: 有 GAP 直接报错
+4. 校验 `scenarios` 引用的 Scene 已被发现且 module/contractId 精确匹配；边界和错误规则只以 Scene tag 计数
+5. 输出报告
+6. `--strict` 时: 有 GAP 直接报错
 
 ## 覆盖模块
 

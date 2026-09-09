@@ -16,6 +16,8 @@ export interface ReplyResult {
   emotionKey: string | null
   expression: string
   sound: string | null
+  /** Parsed internal metadata. It has already been applied and is never user-visible. */
+  runtimeData: { emotionKey: string | null; variables: Record<string, string> }
 }
 
 /** 后处理选项 */
@@ -105,5 +107,11 @@ export async function generateReply(
       : truncated + "…"
   }
 
-  return { text, emotionKey: runtime.emotion, expression, sound }
+  return {
+    text,
+    emotionKey: runtime.emotion,
+    expression,
+    sound,
+    runtimeData: { emotionKey: runtime.emotion, variables: { ...runtime.vars } },
+  }
 }

@@ -42,6 +42,7 @@ export interface MemorySnapshot {
   totalEntries: number
   sessionTurnCount: number
   entriesByCategory: Record<string, number>
+  sessionTurns: { role: "user" | "assistant"; text: string }[]
 }
 
 export interface TurnDef {

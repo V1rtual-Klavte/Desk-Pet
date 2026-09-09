@@ -4,7 +4,7 @@ export const agentRuntimeContract: ModuleContract = {
   module: "agent-runtime",
   sourceFiles: ["src/services/agent/runner.ts", "src/services/agent/pi/runtime.ts"],
   generatedAt: "2026-09-09",
-  sourceHash: "6a80be50a7279a855acedc5f5ee05f8e4c1e771ff59db56b952fd842b1b5331b",
+  sourceHash: "b4bfbc356d1c0557bde37ba91743737c037b0590e62cffadf9603ddb9e8a6df9",
   coverage: [
     {
       id: "ar-01",

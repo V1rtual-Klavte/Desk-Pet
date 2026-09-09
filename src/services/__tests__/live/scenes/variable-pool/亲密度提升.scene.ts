@@ -17,10 +17,12 @@ export const 亲密度提升: SceneDef = {
         { type: "expectReply", run: async (ctx) => { if (!ctx.output.reply || ctx.output.reply.length === 0) throw new Error("reply 为空"); } },
         { type: "expectVar_亲密度_after_praise", run: async (ctx) => {
           const v = ctx.pool.card["亲密度"]
+          const requested = ctx.output.runtimeData?.variables["亲密度"]
           if (!v) throw new Error("亲密度变量不存在")
           if (typeof v.value !== "number") throw new Error("亲密度不是数字")
-          if (v.value < 3) throw new Error(`亲密度=${v.value} 应 >= 3(初始值)`)
-          if (v.updatedBy !== "llm" && v.updatedBy !== "system") throw new Error(`亲密度 updatedBy=${v.updatedBy} 应为 llm 或 system`)
+          if (requested === undefined) throw new Error("RUNTIME_DATA 未请求写入亲密度")
+          if (v.value !== Number(requested)) throw new Error(`亲密度=${v.value} 与请求值 ${requested} 不一致`)
+          if (v.updatedBy !== "llm") throw new Error(`亲密度 updatedBy=${v.updatedBy}，应为 llm`)
         }},
       ],
     },
@@ -30,8 +32,10 @@ export const 亲密度提升: SceneDef = {
         { type: "expectReply", run: async (ctx) => { if (!ctx.output.reply || ctx.output.reply.length === 0) throw new Error("reply 为空"); } },
         { type: "expectVar_亲密度_continue", run: async (ctx) => {
           const v = ctx.pool.card["亲密度"]
+          const requested = ctx.output.runtimeData?.variables["亲密度"]
           if (!v || typeof v.value !== "number") throw new Error("亲密度无效")
-          if (v.value < 3) throw new Error(`亲密度=${v.value} 应 >= 3(初始值)`)
+          if (requested === undefined) throw new Error("RUNTIME_DATA 未请求写入亲密度")
+          if (v.value !== Number(requested) || v.updatedBy !== "llm") throw new Error("亲密度未按 RUNTIME_DATA 写入")
         }},
       ],
     },
@@ -41,8 +45,11 @@ export const 亲密度提升: SceneDef = {
         { type: "expectReply", run: async (ctx) => { if (!ctx.output.reply || ctx.output.reply.length === 0) throw new Error("reply 为空"); } },
         { type: "expectVar_心情_change", run: async (ctx) => {
           const v = ctx.pool.card["心情"]
+          const requested = ctx.output.runtimeData?.variables["心情"]
           if (!v) throw new Error("心情变量不存在")
           if (typeof v.value !== "string" || v.value.length === 0) throw new Error("心情无效")
+          if (requested === undefined) throw new Error("RUNTIME_DATA 未请求写入心情")
+          if (v.value !== requested || v.updatedBy !== "llm") throw new Error("心情未按 RUNTIME_DATA 写入")
         }},
       ],
     },

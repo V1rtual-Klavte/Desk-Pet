@@ -17,7 +17,7 @@ import {
   loadMessages, saveMessages, deleteMessages,
   loadUnanswered, saveUnanswered, deleteUnanswered,
   loadSessionList, saveSessionList,
-  loadActiveId, saveActiveId,
+  loadActiveId, saveActiveId, isUsingLiveTestSessionPersistence,
 } from "./persistence"
 import { createLogger } from "@/services/logger"
 
@@ -90,7 +90,7 @@ export async function initSessions(): Promise<SessionMeta[]> {
   }
 
   // 2. sessions/ 为空时回退 localStorage
-  if (rebuilt.length === 0) {
+  if (rebuilt.length === 0 && !isUsingLiveTestSessionPersistence()) {
     rebuilt = loadSessionList()
   }
 

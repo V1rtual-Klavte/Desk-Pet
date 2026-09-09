@@ -34,6 +34,7 @@ function takeMemorySnapshot(): MemorySnapshot {
       acc[entry.category] = (acc[entry.category] || 0) + 1
       return acc
     }, {} as Record<string, number>),
+    sessionTurns: MemoryService.session?.turns.map(({ role, text }) => ({ role, text })) ?? [],
   }
 }
 
@@ -55,6 +56,8 @@ function classifyError(error: unknown): ErrorKind {
 
 async function executeTurn(userText: string, entry: SceneEntry): Promise<PiAgentTurnOutput> {
   if (entry === "production") {
+    // sendMessage clears this after preprocessing; clear here so handled requests cannot leak a prior turn.
+    productionToolHistory.clear()
     const result = await sendMessage(userText)
     return {
       reply: result.reply,
@@ -231,7 +234,8 @@ export async function runScene(scene: SceneDef, trial = 1): Promise<SceneResult>
 export async function runAllScenes(scenes: SceneDef[], repeat = 1): Promise<SceneResult[]> {
   const results: SceneResult[] = []
   for (const scene of scenes) {
-    for (let trial = 1; trial <= repeat; trial++) {
+    const trialCount = Math.max(repeat, scene.meta.repetitions ?? 1)
+    for (let trial = 1; trial <= trialCount; trial++) {
       const result = await runScene(scene, trial)
       results.push(result)
       // The Provider API cannot cancel an in-flight request, so stop the run after a timeout.

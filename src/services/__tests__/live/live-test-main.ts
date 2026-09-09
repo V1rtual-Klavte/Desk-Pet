@@ -89,20 +89,21 @@ async function main(): Promise<void> {
   ])
 
   const contracts = collectContracts()
-  const contractResults = checkAllContracts(contracts)
+  const allScenes = collectScenes()
+  const contractResults = checkAllContracts(contracts, allScenes)
   for (const result of contractResults) {
     for (const missing of result.missing) console.warn(`[MISSING] ${result.module}/${missing}: ${missing}`)
     for (const gap of result.gaps) console.error(gap)
   }
 
-  let scenes = collectScenes()
+  let scenes = allScenes
   if (opts.module) scenes = scenes.filter(scene => scene.meta.module === opts.module)
   if (opts.scene) scenes = scenes.filter(scene => scene.meta.description.includes(opts.scene!))
   if (opts.caseId) scenes = scenes.filter(scene => scene.meta.caseId === opts.caseId)
   if (opts.tag) scenes = scenes.filter(scene => scene.meta.tags?.includes(opts.tag!))
   if (opts.suite) scenes = scenes.filter(scene => scene.meta.suite === opts.suite)
 
-  const datasetErrors = validateDataset(scenes, contracts)
+  const datasetErrors = validateDataset(allScenes, contracts)
   const selectedContracts = opts.module
     ? contractResults.filter(result => result.module === opts.module)
     : contractResults
