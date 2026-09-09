@@ -13,7 +13,7 @@ export const memoryContract: ModuleContract = {
     { id: "mm-05", feature: "对话轮次记录", description: "MemoryService.recordTurn(role, text) 记录轮次", why: "session turn count 递增", depth: "deep", scenarios: [] },
     { id: "mm-06", feature: "整理 Consolidate", description: "MemoryService.checkAndConsolidate() 定期整理", why: "防止记忆膨胀", depth: "shallow", scenarios: [] },
     { id: "mm-07", feature: "Candy/User 指令", description: "getCandyInstructionsSync/getUserProfileSync 返回指令", why: "prompt 注入的记忆内容", depth: "shallow", scenarios: [] },
-    { id: "mm-08", feature: "多轮对话记忆持久化", description: "真实多轮对话后记忆正确存储和检索", why: "端到端验证", depth: "deep", scenarios: [] },
+    { id: "mm-08", feature: "多轮对话记忆持久化", description: "真实多轮对话后记忆正确存储和检索", why: "端到端验证", depth: "deep", scenarios: ["memory-multi-turn"] },
   ],
   rules: { minScenarios: 6, minDeepScenarios: 2, requireBoundary: true, requireErrorPath: true },
 }

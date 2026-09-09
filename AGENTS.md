@@ -30,6 +30,9 @@ Live Test 框架位于 `src/services/__tests__/live/`，由 Contract、Scene、R
 ```bash
 pnpm test
 pnpm test -- --module variable-pool
+pnpm run test:types
+pnpm run test:smoke
+pnpm run test:release
 ```
 
 | 命令 | 作用 |
@@ -38,6 +41,9 @@ pnpm test -- --module variable-pool
 | `/generate test [module]` | 根据契约生成场景 |
 | `/audit test` | 检查覆盖完整性 |
 | `pnpm test` | 执行场景并断言运行时状态 |
+| `pnpm run test:types` | Vue 类型与 Rust 编译门禁，不替代 Live Test |
+| `pnpm run test:smoke` | `sendMessage()` 真实入口的严格双 trial smoke |
+| `pnpm run test:release` | 编译 + 严格 Contract + 三次真实 trial 的发布门禁 |
 
 源码修改后，受影响模块的 Contract 需要重新分析；Contract hash 过期时不得把旧测试结果当作当前验证。
 
@@ -56,10 +62,10 @@ src/services/__tests__/live/
 └── live-test-main.ts          # Tauri WebView 集成入口
 ```
 
-测试分为两层：Contract 描述单模块的可验证行为，Scene 描述 Agent Loop、工具、安全、人格、变量和记忆之间的真实调用链。Live Test 在独立 Tauri WebView 中调用真实 Provider 和 Rust IPC，使用临时数据根；因此需要本地开发配置和可用的 API，不能把没有 Provider 的静态检查结果当作运行时通过。
+测试分为两层：Contract 描述单模块的可验证行为，Scene 描述 Agent Loop、工具、安全、人格、变量和记忆之间的真实调用链。Scene 具有稳定 `caseId` 和 `regression`/`capability`/`safety`/`stress` 套件归属；`entry: "production"` 必须经过 `sendMessage()`。Live Test 在独立 Tauri WebView 中调用真实 Provider 和 Rust IPC，使用临时数据根；每个 trial 都重置会话、变量、记忆和 AI 锁。JSON 报告记录数据集版本、环境种子、轨迹指标、错误分类与 `pass@k`/`pass^k`；因此需要本地开发配置和可用的 API，不能把没有 Provider 的静态检查结果当作运行时通过。
 
 - 代码或数据契约变更后，先运行 `/analyze test [module]`，再补充 `/generate test [module]` 生成的场景。
-- 使用 `pnpm test -- --module <module>` 做模块范围验证；跨模块修改再运行完整 `pnpm test`。
+- 使用 `pnpm test -- --module <module>` 做模块范围验证；跨模块修改再运行完整 `pnpm test`。发布前运行 `pnpm test -- --strict --repeat 3 --report json`，严格 Contract 缺口和不稳定 trial 不能作为通过结论。
 - `npx vue-tsc --noEmit` 和 `cargo check` 只证明类型/编译，不替代 Live Test。
 - Contract 的 `sourceHash` 不能为空；启动前发现空 hash 或源码变更会直接阻断 Live Test。
 

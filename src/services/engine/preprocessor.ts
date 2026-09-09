@@ -22,6 +22,12 @@ export interface PreProcessResult {
 let lastUserText = ""
 let lastUserTime = 0
 
+/** Clears module-local deduplication state for the isolated Live Test host. */
+export function resetPreprocessorForTest(): void {
+  lastUserText = ""
+  lastUserTime = 0
+}
+
 /**
  * 预处理用户输入。
  * - slash 命令 → 查找注册表并执行

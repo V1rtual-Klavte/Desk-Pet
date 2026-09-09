@@ -91,3 +91,15 @@ export function loadActiveId(): string {
 export function saveActiveId(id: string): void {
   try { localStorage.setItem(ACTIVE_SESSION_KEY, id) } catch { /* ignore */ }
 }
+
+/** Removes only Desk-Pet session cache keys. Called by the isolated Live Test host. */
+export function resetSessionPersistenceForTest(): void {
+  try {
+    const keys = Array.from({ length: localStorage.length }, (_, index) => localStorage.key(index))
+    for (const key of keys) {
+      if (key === SESSIONS_KEY || key === ACTIVE_SESSION_KEY || key === "deskpet_chat_history" || key?.startsWith("deskpet_chat_") || key?.startsWith("deskpet_unanswered_")) {
+        localStorage.removeItem(key)
+      }
+    }
+  } catch { /* test isolation is best-effort when storage is unavailable */ }
+}

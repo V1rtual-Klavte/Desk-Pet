@@ -1,8 +1,4 @@
-// ==========================================
-// Reporter — 测试报告格式化
-// ==========================================
-
-import type { TestReport, SceneResult } from "./types"
+import type { SceneResult, TestReport } from "./types"
 
 export function formatReport(report: TestReport, format: "terminal" | "json" | "markdown"): string {
   switch (format) {
@@ -12,59 +8,73 @@ export function formatReport(report: TestReport, format: "terminal" | "json" | "
   }
 }
 
+function statusIcon(status: SceneResult["status"]): string {
+  if (status === "pass") return "PASS"
+  if (status === "skip") return "SKIP"
+  if (status === "timeout") return "TIMEOUT"
+  return "FAIL"
+}
+
+function percent(value: number): string {
+  return `${(value * 100).toFixed(1)}%`
+}
+
 function formatTerminal(report: TestReport): string {
-  const lines: string[] = []
-  const { summary } = report
+  const lines: string[] = [
+    "",
+    `Live Test ${report.schemaVersion} | dataset ${report.datasetVersion}`,
+    `run=${report.runId} | ${report.timestamp}`,
+    `trials=${report.summary.totalTrials}, strictContracts=${report.options.strictContracts}, repeat=${report.options.repeat}`,
+    "-".repeat(72),
+  ]
 
-  lines.push("")
-  lines.push(`📋 Live Test Report — ${report.timestamp}`)
-  lines.push("━".repeat(50))
-  lines.push("")
-
-  for (const scene of report.scenes) {
-    const icon = scene.status === "pass" ? "✅" : scene.status === "skip" ? "⏭️" : "❌"
-    lines.push(`${icon} ${scene.module} / ${scene.contractId} / ${scene.scene}    ${(scene.duration / 1000).toFixed(1)}s`)
-
-    for (const turn of scene.turns) {
-      const turnIcon = turn.assertions.every(a => a.pass) ? "✓" : "✗"
-      lines.push(`   ${turnIcon} T${turn.index} "${turn.userText.slice(0, 40)}${turn.userText.length > 40 ? "…" : ""}" — ${turn.assertions.filter(a => a.pass).length}/${turn.assertions.length} checks pass`)
-
-      for (const a of turn.assertions.filter(a => !a.pass)) {
-        lines.push(`      ✗ ${a.type}: ${a.error || "assertion failed"}`)
-      }
-    }
-
-    if (scene.error) {
-      lines.push(`   ⚠ ${scene.error}`)
-    }
-    lines.push("")
+  for (const error of report.datasetErrors) lines.push(`DATASET ERROR: ${error}`)
+  for (const contract of report.contracts.filter(contract => !contract.valid)) {
+    lines.push(`CONTRACT GAP: ${contract.module}: ${[...contract.missing, ...contract.gaps].join("; ")}`)
   }
 
-  lines.push("━".repeat(50))
-  const passRate = summary.total > 0 ? ((summary.passed / summary.total) * 100).toFixed(0) : "0"
-  lines.push(`Scenes: ${summary.passed}/${summary.total} pass (${passRate}%)  ` +
-    `⏱ ${(summary.totalDuration / 1000).toFixed(1)}s`)
-  if (summary.failed > 0) lines.push(`❌ ${summary.failed} failed  ⏭️ ${summary.skipped} skipped  ⏰ ${summary.timeout} timeout`)
-  lines.push("")
+  for (const scene of report.scenes) {
+    lines.push(`${statusIcon(scene.status)} ${scene.caseId}#${scene.trial} [${scene.suite}/${scene.entry}] ${(scene.duration / 1000).toFixed(1)}s`)
+    for (const turn of scene.turns) {
+      const passed = turn.assertions.filter(assertion => assertion.pass).length
+      lines.push(`  T${turn.index} ${passed}/${turn.assertions.length} assertions | ${turn.metrics.replyChars} chars | ${turn.metrics.toolCalls} tools | ${turn.metrics.duration}ms`)
+      for (const assertion of turn.assertions.filter(assertion => !assertion.pass)) {
+        lines.push(`    ${assertion.type}: ${assertion.error || "assertion failed"}`)
+      }
+    }
+    if (scene.error) lines.push(`  ${scene.errorKind ?? "unknown"}: ${scene.error}`)
+  }
 
+  lines.push("-".repeat(72))
+  lines.push(
+    `pass=${report.summary.passed}/${report.summary.total} (${percent(report.summary.passRate)}) | ` +
+    `pass@k=${percent(report.summary.passAtK)} | pass^k=${percent(report.summary.passPowerK)} | ` +
+    `duration=${(report.summary.totalDuration / 1000).toFixed(1)}s`,
+  )
+  lines.push(`fail=${report.summary.failed}, timeout=${report.summary.timeout}, skip=${report.summary.skipped}`)
   return lines.join("\n")
 }
 
 function formatMarkdown(report: TestReport): string {
-  const lines: string[] = []
-  lines.push(`# Live Test Report — ${report.timestamp}`)
-  lines.push("")
-  lines.push("| Status | Module | Scene | Duration | Turns |")
-  lines.push("|--------|--------|-------|----------|-------|")
-
+  const lines: string[] = [
+    "# Live Test Report",
+    "",
+    `- Dataset: \`${report.datasetVersion}\``,
+    `- Run: \`${report.runId}\``,
+    `- Trials: ${report.summary.totalTrials}`,
+    `- Pass rate: ${percent(report.summary.passRate)}`,
+    `- pass@k: ${percent(report.summary.passAtK)}`,
+    `- pass^k: ${percent(report.summary.passPowerK)}`,
+    "",
+    "| Status | Case | Trial | Suite | Entry | Duration |",
+    "|---|---|---:|---|---|---:|",
+  ]
   for (const scene of report.scenes) {
-    const icon = scene.status === "pass" ? "✅" : "❌"
-    lines.push(`| ${icon} | ${scene.module} | ${scene.scene} | ${(scene.duration / 1000).toFixed(1)}s | ${scene.turns.length} |`)
+    lines.push(`| ${statusIcon(scene.status)} | ${scene.caseId} | ${scene.trial} | ${scene.suite} | ${scene.entry} | ${(scene.duration / 1000).toFixed(1)}s |`)
   }
-
-  lines.push("")
-  lines.push(`**Summary:** ${report.summary.passed}/${report.summary.total} passed | ` +
-    `${report.summary.failed} failed | ${report.summary.totalDuration}ms`)
-
+  if (report.datasetErrors.length > 0) {
+    lines.push("", "## Dataset errors", "")
+    for (const error of report.datasetErrors) lines.push(`- ${error}`)
+  }
   return lines.join("\n")
 }

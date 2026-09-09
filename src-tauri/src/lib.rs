@@ -68,24 +68,41 @@ fn get_cards_dir(paths: tauri::State<AppPaths>) -> String {
 }
 
 #[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
 struct LiveTestOptions {
     module: Option<String>,
     scene: Option<String>,
+    #[serde(rename = "case")]
+    case_id: Option<String>,
     tag: Option<String>,
+    suite: Option<String>,
+    repeat: Option<String>,
+    strict: Option<String>,
     report: Option<String>,
+    seed_hash: Option<String>,
+    commit: Option<String>,
 }
 
 #[tauri::command]
 fn get_live_test_options() -> LiveTestOptions {
     if !cfg!(debug_assertions) {
-        return LiveTestOptions { module: None, scene: None, tag: None, report: None };
+        return LiveTestOptions {
+            module: None, scene: None, case_id: None, tag: None, suite: None,
+            repeat: None, strict: None, report: None, seed_hash: None, commit: None,
+        };
     }
     let env_value = |key: &str| std::env::var(key).ok().filter(|v| !v.is_empty());
     LiveTestOptions {
         module: env_value("DESKPET_LIVE_TEST_MODULE"),
         scene: env_value("DESKPET_LIVE_TEST_SCENE"),
+        case_id: env_value("DESKPET_LIVE_TEST_CASE"),
         tag: env_value("DESKPET_LIVE_TEST_TAG"),
+        suite: env_value("DESKPET_LIVE_TEST_SUITE"),
+        repeat: env_value("DESKPET_LIVE_TEST_REPEAT"),
+        strict: env_value("DESKPET_LIVE_TEST_STRICT"),
         report: env_value("DESKPET_LIVE_TEST_REPORT"),
+        seed_hash: env_value("DESKPET_LIVE_TEST_SEED_HASH"),
+        commit: env_value("DESKPET_LIVE_TEST_COMMIT"),
     }
 }
 

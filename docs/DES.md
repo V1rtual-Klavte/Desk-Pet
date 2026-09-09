@@ -22,7 +22,7 @@
 5. `src/services/tool/`、`src/services/safety/`：工具注册/路由、助手模式能力和安全确认。
 6. `src/services/agent/memory/`、`src/services/session/`：会话持久化、压缩摘要和当前尚未接通的长期记忆能力。
 7. `src-tauri/src/lib.rs`、`src-tauri/src/commands/`、`src-tauri/src/monitor/`：Rust 命令、路径边界、窗口和前台应用监控。
-8. `src/services/__tests__/live/`：先看 Contract，再看 Scene，最后运行 `pnpm test -- --module <module>` 在真实 Tauri WebView 中验证实际链路。
+8. `src/services/__tests__/live/`：先看 Contract 和带稳定 `caseId` 的 Scene 数据集，最后运行 `pnpm test -- --module <module>` 在真实 Tauri WebView 中验证实际链路；发布前以 `--strict --repeat 3 --report json` 留存多 trial 的结果、轨迹指标和环境种子。
 
 这份文档保留设计和玩法的历史细节；`docs/current/` 用来记录已经与代码核对过的当前契约，`docs/history/` 只用于查阅阶段决策。
 

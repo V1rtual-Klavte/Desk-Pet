@@ -5,9 +5,10 @@ import type { SceneDef } from "../../types"
 
 export const 亲密度提升: SceneDef = {
   meta: {
+    caseId: "variable-affection-praise",
     module: "variable-pool", contractId: "vp-04",
     description: "用户夸奖 → LLM 回复含 RUNTIME_DATA → batchWriteVars 更新亲密度和心情",
-    depth: "deep", tags: ["variable-pool", "card", "runtime-data"],
+    depth: "deep", suite: "capability", repetitions: 3, tags: ["variable-pool", "card", "runtime-data"],
   },
   turns: [
     {

@@ -1,26 +1,50 @@
-import { cpSync, existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, readdirSync } from "node:fs"
+import { cpSync, existsSync, mkdtempSync, mkdirSync, readFileSync, readdirSync, rmSync } from "node:fs"
 import { createHash } from "node:crypto"
+import { execFileSync, spawn } from "node:child_process"
 import { homedir } from "node:os"
-import { join } from "node:path"
-import { spawn } from "node:child_process"
+import { join, relative } from "node:path"
 
 const args = process.argv.slice(2)
-const allowed = new Set(["--module", "--scene", "--tag", "--report"])
+const valueOptions = new Set(["--module", "--scene", "--case", "--tag", "--suite", "--repeat", "--report"])
+const flagOptions = new Set(["--strict"])
 const env = { ...process.env, DESKPET_LIVE_TEST: "1" }
 
+function sha256(parts) {
+  const hash = createHash("sha256")
+  for (const part of parts) hash.update(part)
+  return hash.digest("hex")
+}
+
+function hashDirectory(root) {
+  if (!existsSync(root)) return "missing"
+  const files = []
+  const walk = current => {
+    for (const entry of readdirSync(current, { withFileTypes: true })) {
+      const path = join(current, entry.name)
+      if (entry.isDirectory()) walk(path)
+      else if (entry.isFile()) files.push(path)
+    }
+  }
+  walk(root)
+  return sha256(files.sort().flatMap(path => [relative(root, path), readFileSync(path)]))
+}
+
+function currentCommit() {
+  try { return execFileSync("git", ["rev-parse", "HEAD"], { cwd: process.cwd(), encoding: "utf8" }).trim() }
+  catch { return "unknown" }
+}
+
 function checkContractHashes() {
-  const dir = join(process.cwd(), "src/services/__tests__/live/contracts")
-  for (const file of readdirSync(dir).filter(name => name.endsWith(".contract.ts"))) {
-    const content = readFileSync(join(dir, file), "utf8")
+  const directory = join(process.cwd(), "src/services/__tests__/live/contracts")
+  for (const file of readdirSync(directory).filter(name => name.endsWith(".contract.ts"))) {
+    const content = readFileSync(join(directory, file), "utf8")
     const hashMatch = content.match(/sourceHash:\s*"([0-9a-f]*)"/)
     const filesMatch = content.match(/sourceFiles:\s*\[([\s\S]*?)\]/)
-    const files = [...(filesMatch?.[1] ?? "").matchAll(/"([^"]+)"/g)].map(m => m[1])
-    const actual = createHash("sha256")
-    for (const source of [...files].sort()) actual.update(readFileSync(join(process.cwd(), source), "utf8"))
+    const files = [...(filesMatch?.[1] ?? "").matchAll(/"([^"]+)"/g)].map(match => match[1])
+    const actual = sha256([...files].sort().map(source => readFileSync(join(process.cwd(), source), "utf8")))
     const expected = hashMatch?.[1] ?? ""
-    const current = actual.digest("hex")
-    if (!expected || expected !== current) {
-      throw new Error(`[STALE] ${file}: sourceHash=${expected || "<empty>"}, current=${current}; 请重新运行 /analyze test`)
+    if (!expected || expected !== actual) {
+      throw new Error(`[STALE] ${file}: sourceHash=${expected || "<empty>"}, current=${actual}; 请重新运行 /analyze test`)
     }
   }
 }
@@ -29,39 +53,65 @@ try { checkContractHashes() } catch (error) {
   console.error(`[LiveTest] Contract 校验失败: ${error instanceof Error ? error.message : String(error)}`)
   process.exit(1)
 }
-for (let i = 0; i < args.length; i++) {
-  if (!allowed.has(args[i]) || !args[i + 1]) continue
-  const key = args[i].slice(2).toUpperCase().replace(/-/g, "_")
-  env[`DESKPET_LIVE_TEST_${key}`] = args[++i]
+
+for (let index = 0; index < args.length; index++) {
+  const option = args[index]
+  if (flagOptions.has(option)) {
+    env[`DESKPET_LIVE_TEST_${option.slice(2).toUpperCase()}`] = "1"
+    continue
+  }
+  if (!valueOptions.has(option) || !args[index + 1]) continue
+  env[`DESKPET_LIVE_TEST_${option.slice(2).toUpperCase().replace(/-/g, "_")}`] = args[++index]
 }
 
 const dataRoot = mkdtempSync(join(homedir(), ".deskpet-live-test-"))
-env.DESKPET_LIVE_TEST_DATA_ROOT = dataRoot
 const resultPath = join(dataRoot, "live-test-result.txt")
 const seedStages = join(process.cwd(), "data", "desk-pet", "personality", "stages")
+env.DESKPET_LIVE_TEST_DATA_ROOT = dataRoot
+env.DESKPET_LIVE_TEST_SEED_HASH = hashDirectory(seedStages)
+env.DESKPET_LIVE_TEST_COMMIT = currentCommit()
 if (existsSync(seedStages)) {
   mkdirSync(join(dataRoot, "personality"), { recursive: true })
   cpSync(seedStages, join(dataRoot, "personality", "stages"), { recursive: true })
 }
 
-const child = spawn("pnpm", ["exec", "tauri", "dev", "--no-watch"], {
+let child
+let finalized = false
+let timeout
+
+function stopChild(signal = "SIGTERM") {
+  if (child && child.exitCode === null && child.signalCode === null) child.kill(signal)
+}
+
+function finalize(exitCode, reason) {
+  if (finalized) return
+  finalized = true
+  if (timeout) clearTimeout(timeout)
+  if (reason) console.error(`[LiveTest] ${reason}`)
+  rmSync(dataRoot, { recursive: true, force: true })
+  process.exit(exitCode)
+}
+
+process.once("SIGINT", () => { stopChild("SIGTERM"); finalize(130, "收到 SIGINT，已清理隔离数据目录") })
+process.once("SIGTERM", () => { stopChild("SIGTERM"); finalize(143, "收到 SIGTERM，已清理隔离数据目录") })
+
+child = spawn("pnpm", ["exec", "tauri", "dev", "--no-watch"], {
   cwd: process.cwd(),
   env,
   stdio: "inherit",
 })
-const timeout = setTimeout(() => {
-  console.error("[LiveTest] 超过 10 分钟未结束，终止测试进程")
-  child.kill("SIGTERM")
+timeout = setTimeout(() => {
+  stopChild("SIGTERM")
+  finalize(1, "超过 10 分钟未结束，终止测试进程")
 }, 10 * 60 * 1000)
 
+child.on("error", error => finalize(1, `无法启动 Tauri: ${error.message}`))
 child.on("exit", (code, signal) => {
-  clearTimeout(timeout)
-  let passed = false
-  if (existsSync(resultPath)) {
-    passed = readFileSync(resultPath, "utf-8").startsWith("PASS\n")
-  } else {
-    console.error(`[LiveTest] 测试进程未生成结果文件 (exit=${code}, signal=${signal ?? "none"})`)
+  const passed = existsSync(resultPath) && readFileSync(resultPath, "utf8").startsWith("PASS\n")
+  if (!passed && !finalized) {
+    const suffix = existsSync(resultPath) ? "测试报告标记为失败" : `测试进程未生成结果文件 (exit=${code}, signal=${signal ?? "none"})`
+    finalize(1, suffix)
+    return
   }
-  rmSync(dataRoot, { recursive: true, force: true })
-  process.exit(passed ? 0 : 1)
+  finalize(0)
 })

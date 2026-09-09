@@ -1,6 +1,6 @@
 import type { SceneDef } from "../../types"
 export const 情绪标签: SceneDef = {
-  meta: { module: "emotion", contractId: "em-07", description: "LLM 回复含正确的情绪标签", depth: "deep", tags: ["emotion"] },
+  meta: { caseId: "emotion-runtime-tags", module: "emotion", contractId: "em-05", description: "LLM 回复含正确的情绪标签", depth: "deep", suite: "capability", tags: ["emotion"] },
   turns: [
     { index: 1, description: "开心", userText: "今天太开心了！",
       checks: [

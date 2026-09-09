@@ -8,7 +8,11 @@
         "build": "vite build",
         "tauri-dev": "tauri dev",
         "tauri-build": "tauri build",
-        "test": "node scripts/live-test.mjs"
+        "test": "pnpm run test:live",
+        "test:types": "vue-tsc --noEmit && cargo check --manifest-path src-tauri/Cargo.toml",
+        "test:live": "node scripts/live-test.mjs",
+        "test:smoke": "pnpm run test:live -- --module agent-runtime --case production-chat-entry --strict --repeat 2",
+        "test:release": "pnpm run test:types && pnpm run test:live -- --strict --repeat 3 --report json"
     },
     "dependencies": {
         "@earendil-works/pi-agent-core": "0.85.1",

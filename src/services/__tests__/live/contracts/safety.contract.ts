@@ -14,7 +14,7 @@ export const safetyContract: ModuleContract = {
     { id: "sf-06", feature: "bash NOWAY 匹配", description: "BASH_NOWAY_PATTERNS 匹配 sudo rm -rf /", why: "系统破坏命令禁止", depth: "shallow", scenarios: [] },
     { id: "sf-07", feature: "文件危险路径匹配", description: "FILE_DANGEROUS_PATTERNS 匹配 .ssh/ 等敏感文件", why: "敏感文件泄露防护", depth: "shallow", scenarios: [] },
     { id: "sf-08", feature: "会话信任机制", description: "trustToolInSession + resetSessionTrust 信任周期", why: "用户确认后免重复弹窗", depth: "deep", scenarios: [] },
-    { id: "sf-09", feature: "LLM 工具调用实际拦截", description: "真 LLM 尝试调用危险工具时正确拦截", why: "端到端安全验证", depth: "deep", scenarios: [] },
+    { id: "sf-09", feature: "LLM 工具调用实际拦截", description: "真 LLM 尝试调用危险工具时正确拦截", why: "端到端安全验证", depth: "deep", scenarios: ["safety-dangerous-delete"] },
   ],
   rules: { minScenarios: 7, minDeepScenarios: 3, requireBoundary: true, requireErrorPath: true },
 }

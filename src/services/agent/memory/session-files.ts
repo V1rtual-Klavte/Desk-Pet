@@ -143,6 +143,19 @@ export async function deleteSessionAndPointer(filename: string): Promise<boolean
 // ── 轮次记录 ──
 
 export let turnCounter = 0
+const pendingSessionWrites = new Set<Promise<void>>()
+
+export async function flushSessionWrites(): Promise<void> {
+  await Promise.allSettled([...pendingSessionWrites])
+}
+
+/** Test isolation hook. Runtime callers should switch sessions through setActiveSession. */
+export async function resetSessionRuntimeForTest(): Promise<void> {
+  await flushSessionWrites()
+  sessionMemory = null
+  projectEntries = []
+  turnCounter = 0
+}
 
 export function recordTurn(role: "user" | "assistant", text: string, checkConsolidate: () => void): void {
   if (!sessionMemory) {
@@ -155,7 +168,11 @@ export function recordTurn(role: "user" | "assistant", text: string, checkConsol
     log.info(`已达到 ${turnCounter} 轮，触发记忆整理`)
     checkConsolidate()
   }
-  appendTurnToSessionFile(role, text).catch(e => log.warn("session 文件实时写入失败", e))
+  const pending = appendTurnToSessionFile(role, text)
+  pendingSessionWrites.add(pending)
+  void pending
+    .catch(e => log.warn("session 文件实时写入失败", e))
+    .finally(() => pendingSessionWrites.delete(pending))
 }
 
 export async function recordTurnToSession(sessionId: string, role: "user" | "assistant", text: string): Promise<void> {

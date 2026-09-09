@@ -2,20 +2,26 @@
 // Live Test Framework — 核心类型定义
 // ==========================================
 
-import type { ReplyResult } from "@/services/reply"
 import type { VariablePool } from "@/services/personality/variable-pool"
-import type { VariableState } from "@/services/personality/types"
 import type { PiAgentTurnOutput } from "@/services/agent/pi"
 
 // ── Scene DSL ──
 
+export type TestSuite = "regression" | "capability" | "safety" | "stress"
+export type SceneEntry = "runtime" | "production"
+
 export interface SceneMeta {
+  /** Stable dataset identifier. The human description is allowed to change. */
+  caseId: string
   module: string
   contractId: string
   description: string
   depth: "shallow" | "deep"
+  suite: TestSuite
+  entry?: SceneEntry
   tags?: string[]
   timeout?: number  // ms, 默认 120000
+  repetitions?: number
 }
 
 export type AssertCheck = {
@@ -29,6 +35,7 @@ export interface AssertContext {
   session: { state: string; messageCount: number; toolCallCount: number }
   memory: MemorySnapshot
   toolHistory: { toolName: string; status: string }[]
+  trial: number
 }
 
 export interface MemorySnapshot {
@@ -87,28 +94,75 @@ export interface AssertionResult {
   actual?: string
 }
 
+export interface TurnMetrics {
+  duration: number
+  replyChars: number
+  toolCalls: number
+  retries: number
+  heapUsedBytes?: number
+}
+
 export interface TurnResult {
   index: number
   description: string
   userText: string
   assertions: AssertionResult[]
   duration: number
+  metrics: TurnMetrics
+  errorKind?: ErrorKind
 }
 
 export type SceneStatus = "pass" | "fail" | "skip" | "timeout"
 
+export type ErrorKind =
+  | "assertion"
+  | "timeout"
+  | "auth"
+  | "rate_limit"
+  | "provider"
+  | "network"
+  | "configuration"
+  | "infrastructure"
+  | "unknown"
+
 export interface SceneResult {
+  caseId: string
   scene: string
   module: string
   contractId: string
+  suite: TestSuite
+  trial: number
+  entry: SceneEntry
   status: SceneStatus
   turns: TurnResult[]
   duration: number
   error?: string
+  errorKind?: ErrorKind
 }
 
 export interface TestReport {
+  schemaVersion: "desk-pet-live/v2"
+  datasetVersion: string
+  runId: string
   timestamp: string
+  options: {
+    module?: string
+    scene?: string
+    caseId?: string
+    tag?: string
+    suite?: TestSuite
+    repeat: number
+    strictContracts: boolean
+    report: "terminal" | "json" | "markdown"
+  }
+  environment: {
+    userAgent?: string
+    platform?: string
+    seedHash?: string
+    commit?: string
+  }
+  datasetErrors: string[]
+  contracts: ContractCheckResult[]
   scenes: SceneResult[]
   summary: {
     total: number
@@ -117,6 +171,11 @@ export interface TestReport {
     skipped: number
     timeout: number
     totalDuration: number
+    totalCases: number
+    totalTrials: number
+    passRate: number
+    passAtK: number
+    passPowerK: number
   }
 }
 

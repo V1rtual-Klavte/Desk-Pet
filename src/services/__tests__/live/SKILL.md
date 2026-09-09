@@ -41,6 +41,8 @@ description: Desk-Pet Live Test Framework — AI 自驱动端到端测试。分�
    - 读 contract: { id, feature, description, why, depth }
    - 读相关源码 (contract.sourceFiles)
    - AI 生成 SceneDef 文件要求:
+     - 声明稳定的 `caseId` 和 `suite`；回归修复优先进入 `regression`，危险行为进入 `safety`
+     - 需要覆盖实际 UI 聊天入口时声明 `entry: "production"`，不要只直调 runtime
      - 用户消息自然口语化，像真人聊天
      - deep 场景必须多轮对话，包含对比
      - 每轮必须断言: 回复输出 + 内部状态 + 副作用
@@ -57,7 +59,7 @@ description: Desk-Pet Live Test Framework — AI 自驱动端到端测试。分�
 4. 输出报告
 5. `--strict` 时: 有 GAP 直接报错
 
-## 覆盖的 7 个模块
+## 覆盖模块
 
 | 模块 | 源文件 |
 |------|--------|
@@ -68,6 +70,7 @@ description: Desk-Pet Live Test Framework — AI 自驱动端到端测试。分�
 | planner | `src/services/engine/planner.ts` |
 | tool-execution | `src/services/tool/router.ts`, `src/services/tool/registry.ts` |
 | personality-card | `src/services/personality/registry.ts`, `src/services/personality/loader.ts` |
+| agent-runtime | `src/services/agent/runner.ts`, `src/services/agent/pi/runtime.ts` |
 
 ## 约束
 

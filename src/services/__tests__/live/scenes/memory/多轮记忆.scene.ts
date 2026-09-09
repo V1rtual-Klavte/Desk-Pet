@@ -1,6 +1,6 @@
 import type { SceneDef } from "../../types"
 export const 多轮记忆: SceneDef = {
-  meta: { module: "memory", contractId: "mm-08", description: "多轮对话后记忆正确存储", depth: "deep", tags: ["memory"] },
+  meta: { caseId: "memory-multi-turn", module: "memory", contractId: "mm-08", description: "多轮对话后记忆正确存储", depth: "deep", suite: "regression", tags: ["memory"] },
   turns: [
     { index: 1, description: "自我介绍", userText: "我叫小明，是个程序员",
       checks: [
