@@ -35,8 +35,8 @@ Agent Loop 替代现有的 Provider 请求和多轮工具循环。
 4. Profile、Card、变量池、`RUNTIME_DATA`、工具安全、会话 Markdown
    持久化和 Rust 平台桥接继续由 Desk-Pet 负责。
 5. MemoryKernel 采用 Claude Code 风格的 `MEMORY.md` 入口、topic Markdown
-   和 frontmatter；轻量模式只做显式写入与按需读取，助手模式再启用自动
-   提取、事件层和后台整理。
+   和 frontmatter；记忆自动提取仍按后续 MemoryKernel 阶段接入，不与本轮
+   Agent Core/工具迁移绑定。
 
 ## 2. 产品定位与不可变约束
 
@@ -155,12 +155,13 @@ Pi Harness、Node execution environment 和 JSONL session 体系不在首期依�
 | 方案 | 轻量模式 | 助手模式 | 优点 | 主要问题 |
 |---|---|---|---|---|
 | A. 保留现有 Loop | Legacy | Pi Core | 初期资源风险最低 | 长期存在两套真实 Loop，不符合目标 |
-| B. Pi Core 统一 Loop | Pi Core + 轻量工具集 | Pi Core + 完整工具集 | 统一事件、取消和工具语义，符合原始双模式原则 | Pi Core 成为轻量聊天路径常驻依赖，资源须实测 |
+| B. Pi Core 统一 Loop | Pi Core + 受限工具策略 | Pi Core + 扩展工具策略 | 统一事件、取消和工具语义，轻量仍具备完整基础工作流 | Pi Core 成为轻量聊天路径常驻依赖，资源须实测 |
 | C. 直接嵌入 Pi Coding Agent | Coding Agent | Coding Agent | 获得完整编码体验 | Node/TUI/原生依赖和产品职责过重，不适合 WebView |
 | D. Coding Agent 侧车 | Pi Core 或 Legacy | Pi Core + 按任务启动侧车 | 编码能力隔离，可回收进程 | IPC、安全、会话映射和资源管理复杂 |
 
 方案 B 是待验证的主方案。它不等于“启动时加载完整 Pi”：可以在用户第一次
-聊天时动态导入 Pi Core 和所选 Provider，且轻量模式始终只暴露轻量工具集。
+聊天时动态导入 Pi Core 和所选 Provider；轻量与助手均暴露 `read`、`write`、
+`edit`、`bash` 基础工具，差异由路径、命令、确认和资源策略表达。
 但一旦首次加载，浏览器的 ES Module 缓存通常不能保证切回轻量模式后立即
 回收代码和所有依赖；动态导入只能降低冷启动负担，不能作为严格内存回收的
 证明。
@@ -176,7 +177,8 @@ Coding 能力仍需项目读取、搜索、编辑、命令、Git、错误恢复�
 
 第一选择是“Pi Core + Desk-Pet ToolRegistry”：
 
-- Assistant 模式继续注册现有 file、bash、MCP、Skill 和子代理工具。
+- 两种模式共用 `read`、`write`、`edit`、`bash` 基础工具；Assistant 再按策略
+  注册 MCP、Skill、剪贴板、应用启动和子代理等扩展能力。
 - 先修复并验证现有工具的路径、会话信任和删除安全问题，再扩大 coding 工具
   的可用范围。
 - Planner 是 Pi Runtime 之外的 Desk-Pet 编排 Module；首期不把 Plan 的依赖、
@@ -239,7 +241,7 @@ Claude Code 的文件协议和显式/按需流程，第二阶段再加入内存�
 | 前端产物 | 初始主 chunk、Pi lazy chunk、gzip 后大小 | `vite build` 的产物清单 |
 | 冷启动资源 | 启动后 30 秒、未发送消息 | Tauri/Rust 和 WebView 进程 RSS，JS heap |
 | 首次聊天成本 | 第一次轻量闲聊后峰值和稳定值 | 同上，记录动态导入耗时 |
-| 工具任务成本 | 轻量只读工具、助手写入/MCP 各一轮 | RSS、heap、耗时、工具轮数 |
+| 工具任务成本 | 轻量 read/write/edit/受限 bash、助手扩展 Bash/MCP 各一轮 | RSS、heap、耗时、工具轮数 |
 | 模式切换 | 助手回轻量后 60 秒 | 资源是否回落；不以 GC 假设代替数据 |
 | token 成本 | 闲聊、读文件、三步编码任务 | system prompt token、请求数、完成轮数 |
 
@@ -254,8 +256,9 @@ P1 用相同 Provider 固定夹具和 Live Test 场景覆盖以下合同：
 1. 纯聊天、Card 切换、主动搭话都产生相同的最终 `ReplyResult` 结构。
 2. `RUNTIME_DATA` 不能展示给用户，非法变量不能写入，Card 与交互变量的重置
    策略不变。
-3. 轻量模式拒绝 NORMAL/DANGER/NOWAY；助手模式的 SAFE/NORMAL/DANGER/NOWAY
-   以及确认 UI 顺序不变。
+3. 轻量模式的 `read` 默认可用，`write`/`edit` 和修改型 `bash` 经过范围与确认
+   策略仍可用；助手模式在用户授权后扩大范围。两种模式的硬禁止操作都拒绝，
+   确认 UI 顺序保持一致。
 4. Pi 的 tool-start/tool-end 事件只能驱动人格阶段文案，不能绕过 ToolRouter。
 5. 取消、超时、Provider 失败、工具失败、会话切换和重试后都恢复到正确状态。
 6. 重启和历史会话重建后，不出现重复消息、遗失 summary 或工具结果污染。
