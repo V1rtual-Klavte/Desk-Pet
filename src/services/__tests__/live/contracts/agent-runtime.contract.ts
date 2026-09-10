@@ -3,8 +3,8 @@ import type { ModuleContract } from "../types"
 export const agentRuntimeContract: ModuleContract = {
   module: "agent-runtime",
   sourceFiles: ["src/services/agent/runner.ts", "src/services/agent/pi/runtime.ts"],
-  generatedAt: "2026-09-09",
-  sourceHash: "b4bfbc356d1c0557bde37ba91743737c037b0590e62cffadf9603ddb9e8a6df9",
+  generatedAt: "2026-09-10",
+  sourceHash: "8dae6caaee280972cbaa88aa6d7524ad1f66a4a2f12b6ce1c15325410c597619",
   coverage: [
     {
       id: "ar-01",

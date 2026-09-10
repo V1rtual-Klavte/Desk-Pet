@@ -6,6 +6,7 @@
 
 - [DES.md](DES.md)：项目总览、玩法、交互与平台能力，面向项目负责人阅读。
 - [当前系统设计](current/system-design.md)：当前模块边界、主链路和运行时数据契约。
+- [当前工具系统](current/tool-system.md)：Pi 基础工具、双模式策略、Tauri 执行环境与验证边界。
 - [当前记忆系统](current/memory.md)：记忆系统已接通的能力、已知缺口和后续路线。
 - [当前测试说明](current/testing.md)：Live Test 的执行方式、覆盖范围与验证边界。
 

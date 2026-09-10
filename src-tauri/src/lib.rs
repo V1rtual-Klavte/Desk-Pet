@@ -21,9 +21,10 @@ use crate::commands::{
     pause_monitor, resume_monitor, set_monitor_config,
     open_windows_sim, close_windows_sim,
     log_message, focus_main, open_devtools,
-    bash_exec, file_read, file_write, file_list,
+    bash_exec, bash_cancel, file_read, file_read_binary, file_write, file_list,
+    file_info, file_exists, file_canonical_path,
     system_info, app_open, clipboard_read, clipboard_write,
-    mcp_spawn, mcp_send, mcp_kill, McpPool,
+    mcp_spawn, mcp_send, mcp_kill, McpPool, BashPool,
     get_memory_file, get_session_file, init_memory_files,
     list_session_files, delete_session_file, file_delete,
     profile_file_write, profile_file_read, profile_delete, list_user_profiles, list_profile_files,
@@ -133,6 +134,7 @@ pub fn run() {
         .plugin(tauri_plugin_global_shortcut::Builder::new().build())
         .manage(monitor_state)
         .manage(McpPool::default())
+        .manage(BashPool::default())
         .setup(move |app| {
             rust_info!("糖糖桌宠已启动");
 
@@ -235,9 +237,14 @@ pub fn run() {
             enhance_settings_window,
             enhance_layer_editor_window,
             bash_exec,
+            bash_cancel,
             file_read,
+            file_read_binary,
             file_write,
             file_list,
+            file_info,
+            file_exists,
+            file_canonical_path,
             system_info,
             app_open,
             clipboard_read,

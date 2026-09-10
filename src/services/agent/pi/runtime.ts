@@ -20,7 +20,7 @@ import { PetPersonalityMiddleware } from "@/services/personality/middleware"
 import type { PersonalityEffect } from "@/services/personality/middleware"
 import { getFallbackReply, getSimpleStage, getStagePrompt } from "@/services/personality/stages-cache"
 import { generateReply } from "@/services/reply"
-import { checkSafety, requestConfirm, trustToolInSession } from "@/services/safety"
+import { checkSafety, isToolTrusted, requestConfirm, trustToolInSession } from "@/services/safety"
 import { pushMessage } from "@/services/session/store"
 import { getToolByName, getToolsForMode } from "@/services/tool/registry"
 import { executeTool } from "@/services/tool/router"
@@ -262,7 +262,7 @@ async function runPiLoop(input: PiLoopInput): Promise<PiLoopOutput> {
       if (effects) applyEffect(PetPersonalityMiddleware.wrap("executing", { actionCategory: category, toolName: tool.name }), effects)
       emitToolEvent("tool-executing", { toolId: tool.name, toolName: tool.name })
 
-      const safety = checkSafety(tool, args as Record<string, unknown>, { mode: input.mode, sessionTrusted: false })
+      const safety = checkSafety(tool, args as Record<string, unknown>, { mode: input.mode, sessionTrusted: isToolTrusted(tool.name) })
       if (!safety.allowed) {
         const message = safety.personalityMessage ?? getStagePrompt("blocked", category) ?? "操作被拦截"
         if (effects) applyEffect(PetPersonalityMiddleware.wrap("blocked", { actionCategory: category, toolName: tool.name }), effects)
@@ -352,16 +352,29 @@ function toPiTool(
     description: tool.description,
     // Pi validates plain JSON Schema too; Desk-Pet's schemas are already that subset.
     parameters: tool.parameters as any,
+    prepareArguments: tool.prepareArguments,
     executionMode: "sequential",
-    async execute(_toolCallId, params) {
+    async execute(toolCallId, params, signal, onUpdate) {
       const current = toolsByName.get(tool.name)
       if (!current) throw new Error(`工具未注册: ${tool.name}`)
-      const result = await executeTool(tool.name, params as Record<string, unknown>, { mode: input.mode, sessionTrusted: false })
+      const result = await executeTool(tool.name, params as Record<string, unknown>, {
+        mode: input.mode,
+        sessionTrusted: isToolTrusted(tool.name),
+        toolCallId,
+        signal,
+        onUpdate: partial => onUpdate?.({
+          content: partial.contentParts ?? [{ type: "text", text: partial.content }],
+          details: partial.details,
+        }),
+      })
       const category = current.actionCategory ?? "_default"
       if (result.success) {
         if (effects) applyEffect(PetPersonalityMiddleware.wrap("done", { actionCategory: category, toolName: tool.name }), effects)
         history.push({ toolName: tool.name, status: "done" })
-        return { content: [{ type: "text", text: result.content }], details: result }
+        return {
+          content: result.contentParts ?? [{ type: "text", text: result.content }],
+          details: result.details ?? result,
+        }
       }
       if (effects) applyEffect(PetPersonalityMiddleware.wrap("error", { actionCategory: category, toolName: tool.name, message: result.error }), effects)
       history.push({ toolName: tool.name, status: "error" })

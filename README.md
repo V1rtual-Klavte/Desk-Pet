@@ -42,11 +42,12 @@
 | 窗口感知主动搭话 | ✅ | ✅ |
 | 文件读/列/搜 + 系统信息 + Bash 白名单 + HTTP | ✅ | ✅ |
 | 计划编排与步骤进度 | ❌ | ✅ |
-| 文件写/删 + 全量 Bash + 打开应用 + 剪贴板 | ❌ | ✅ |
+| 文件写/编辑 + Bash（白名单/扩展命令按风险确认） | ✅（确认） | ✅（按安全策略） |
+| 文件删除 | ❌（无模型工具） | ❌（硬禁止） |
 | MCP 服务器 | ❌ | ✅ |
 | Skill 编排 | ❌ | ✅ |
 | 子代理 agent.spawn（fork/team） | ❌ | ✅ |
-| 安全确认策略 | 基础限制 | ✅ |
+| 安全确认策略 | SAFE/NORMAL 自动；写入和扩展 Bash 可确认 | 四级风险 + 三策略 + 会话信任 |
 
 ---
 
@@ -214,6 +215,7 @@ Live Test 位于 `src/services/__tests__/live/`，通过独立 Tauri WebView 使
 
 - [项目总览与玩法](docs/DES.md)
 - [当前系统设计](docs/current/system-design.md)
+- [当前工具系统](docs/current/tool-system.md)
 - [当前记忆系统](docs/current/memory.md)
 - [当前测试说明](docs/current/testing.md)
 - [阶段现状（2026-08-06）](docs/history/analysis/阶段现状-2026.8.6.md)

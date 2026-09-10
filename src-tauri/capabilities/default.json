@@ -2,7 +2,7 @@
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
   "description": "permissions",
-  "windows": ["main", "windows-sim", "settings", "layer-editor"],
+  "windows": ["main", "windows-sim", "settings", "layer-editor", "live-test"],
   "permissions": [
     "core:default",
     "core:webview:allow-create-webview-window",

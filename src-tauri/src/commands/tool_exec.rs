@@ -3,17 +3,38 @@
 // 所有系统级工具调用通过此模块桥接到 OS
 // ==========================================
 
-use std::process::Command;
+use std::collections::HashMap;
+use std::fs::File;
 use std::path::Path;
-use tauri::command;
+use std::process::{Child, Command, Stdio};
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
+use tauri::{command, State};
+
+#[derive(Default)]
+pub struct BashPool(Mutex<HashMap<String, Arc<Mutex<Child>>>>);
 
 // ── Bash 命令执行 ──
 
 /// 执行 bash 命令
-/// SAFETY: 命令白名单校验由前端层 (TS bashWhitelist) 保证。
-/// Rust 层信任调用方已做校验，直接执行。
 #[command]
-pub fn bash_exec(command: String, cwd: Option<String>) -> Result<BashResult, String> {
+pub fn bash_exec(
+    pool: State<BashPool>,
+    command: String,
+    cwd: Option<String>,
+    execution_id: Option<String>,
+    timeout_ms: Option<u64>,
+    restricted: Option<bool>,
+    whitelist: Option<Vec<String>>,
+    max_bytes: Option<usize>,
+    max_lines: Option<usize>,
+) -> Result<BashResult, String> {
+    enforce_bash_policy(&command, restricted.unwrap_or(true), whitelist.as_deref().unwrap_or(&[]))?;
+    let execution_id = execution_id.unwrap_or_else(|| format!("legacy-{}", std::process::id()));
+    if !execution_id.chars().all(|c| c.is_ascii_alphanumeric() || c == '-') {
+        return Err("无效的执行 ID".to_string());
+    }
+
     // 跨平台 shell 选择
     #[cfg(target_os = "windows")]
     let (shell, shell_arg) = ("cmd", "/C");
@@ -25,31 +46,166 @@ pub fn bash_exec(command: String, cwd: Option<String>) -> Result<BashResult, Str
     cmd.arg(shell_arg).arg(&command);
 
     if let Some(dir) = &cwd {
-        cmd.current_dir(Path::new(dir));
+        let safe_cwd = crate::paths::AppPaths::validate_file_path(Path::new(dir))?;
+        if !safe_cwd.is_dir() {
+            return Err("工作目录不是目录".to_string());
+        }
+        cmd.current_dir(safe_cwd);
     }
 
-    let output = cmd.output().map_err(|e| format!("执行失败: {}", e))?;
+    let stdout_path = std::env::temp_dir().join(format!("deskpet-{execution_id}.stdout"));
+    let stderr_path = std::env::temp_dir().join(format!("deskpet-{execution_id}.stderr"));
+    cmd.stdout(Stdio::from(File::create(&stdout_path).map_err(|e| format!("创建输出文件失败: {e}"))?));
+    cmd.stderr(Stdio::from(File::create(&stderr_path).map_err(|e| format!("创建错误文件失败: {e}"))?));
+    let child = Arc::new(Mutex::new(cmd.spawn().map_err(|e| format!("执行失败: {e}"))?));
+    pool.0.lock().map_err(|_| "Bash 状态锁损坏")?.insert(execution_id.clone(), Arc::clone(&child));
+
+    let started = Instant::now();
+    let status = loop {
+        let status = child.lock().map_err(|_| "Bash 进程锁损坏")?
+            .try_wait().map_err(|e| format!("等待命令失败: {e}"))?;
+        if let Some(status) = status {
+            break status;
+        }
+        if timeout_ms.is_some_and(|limit| started.elapsed() >= Duration::from_millis(limit)) {
+            let _ = child.lock().map_err(|_| "Bash 进程锁损坏")?.kill();
+            pool.0.lock().map_err(|_| "Bash 状态锁损坏")?.remove(&execution_id);
+            cleanup_temp_outputs(&stdout_path, &stderr_path);
+            return Err("命令执行超时".to_string());
+        }
+        std::thread::sleep(Duration::from_millis(25));
+    };
+    pool.0.lock().map_err(|_| "Bash 状态锁损坏")?.remove(&execution_id);
+
+    let stdout = std::fs::read_to_string(&stdout_path).unwrap_or_default();
+    let stderr = std::fs::read_to_string(&stderr_path).unwrap_or_default();
+    cleanup_temp_outputs(&stdout_path, &stderr_path);
+    let combined = if stderr.is_empty() { stdout.clone() } else if stdout.is_empty() {
+        stderr.clone()
+    } else {
+        format!("{stdout}\n{stderr}")
+    };
+    let captured = truncate_output(&combined, max_bytes.unwrap_or(50 * 1024), max_lines.unwrap_or(2000));
 
     Ok(BashResult {
-        stdout: String::from_utf8_lossy(&output.stdout).to_string(),
-        stderr: String::from_utf8_lossy(&output.stderr).to_string(),
-        exit_code: output.status.code().unwrap_or(-1),
+        stdout,
+        stderr,
+        exit_code: status.code().unwrap_or(-1),
+        output: captured.output,
+        total_bytes: captured.total_bytes,
+        total_lines: captured.total_lines,
+        output_bytes: captured.output_bytes,
+        output_lines: captured.output_lines,
+        truncated: captured.truncated,
+        truncated_by: captured.truncated_by,
+        last_line_partial: captured.last_line_partial,
     })
 }
 
+fn enforce_bash_policy(command: &str, restricted: bool, whitelist: &[String]) -> Result<(), String> {
+    let lower = command.to_lowercase();
+    let hard_patterns = [
+        "rm -rf /", "sudo rm", "mkfs", "dd if=", "curl | sh", "curl | bash", "> /etc/",
+    ];
+    if hard_patterns.iter().any(|pattern| lower.contains(pattern)) {
+        return Err("命令包含硬禁止操作".to_string());
+    }
+    if restricted {
+        if command.chars().any(|c| matches!(c, ';' | '&' | '|' | '>' | '<' | '`' | '\n'))
+            || command.contains("$(")
+            || command.contains("${")
+        {
+            return Err("轻量模式不允许 Shell 组合语法".to_string());
+        }
+        let base = command.split_whitespace().next().unwrap_or("");
+        if !whitelist.iter().any(|allowed| allowed == base) {
+            return Err(format!("命令不在白名单中: {base}"));
+        }
+    }
+    Ok(())
+}
+
+#[command]
+pub fn bash_cancel(pool: State<BashPool>, execution_id: String) -> Result<(), String> {
+    let child = pool.0.lock().map_err(|_| "Bash 状态锁损坏")?.get(&execution_id).cloned();
+    if let Some(child) = child {
+        child.lock().map_err(|_| "Bash 进程锁损坏")?.kill()
+            .map_err(|e| format!("取消命令失败: {e}"))?;
+    }
+    Ok(())
+}
+
+fn cleanup_temp_outputs(stdout: &Path, stderr: &Path) {
+    let _ = std::fs::remove_file(stdout);
+    let _ = std::fs::remove_file(stderr);
+}
+
+struct CapturedOutput {
+    output: String,
+    total_bytes: usize,
+    total_lines: usize,
+    output_bytes: usize,
+    output_lines: usize,
+    truncated: bool,
+    truncated_by: Option<String>,
+    last_line_partial: bool,
+}
+
+fn truncate_output(text: &str, max_bytes: usize, max_lines: usize) -> CapturedOutput {
+    let total_bytes = text.len();
+    let total_lines = if text.is_empty() { 0 } else { text.lines().count() };
+    let mut start = 0;
+    let mut truncated_by = None;
+    if total_lines > max_lines {
+        start = text.match_indices('\n').rev().nth(max_lines.saturating_sub(1))
+            .map(|(index, _)| index + 1).unwrap_or(0);
+        truncated_by = Some("lines".to_string());
+    }
+    if text.len().saturating_sub(start) > max_bytes {
+        start = text.len().saturating_sub(max_bytes);
+        while start < text.len() && !text.is_char_boundary(start) { start += 1; }
+        truncated_by = Some("bytes".to_string());
+    }
+    let output = text[start..].to_string();
+    let last_line_partial = start > 0 && text.as_bytes().get(start.saturating_sub(1)) != Some(&b'\n');
+    CapturedOutput {
+        output_bytes: output.len(),
+        output_lines: if output.is_empty() { 0 } else { output.lines().count() },
+        truncated: start > 0,
+        output,
+        total_bytes,
+        total_lines,
+        truncated_by,
+        last_line_partial,
+    }
+}
+
 #[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct BashResult {
     stdout: String,
     stderr: String,
     exit_code: i32,
+    output: String,
+    total_bytes: usize,
+    total_lines: usize,
+    output_bytes: usize,
+    output_lines: usize,
+    truncated: bool,
+    truncated_by: Option<String>,
+    last_line_partial: bool,
 }
 
 // ── 文件操作 ──
 
 #[command]
-pub fn file_read(path: String) -> Result<FileReadResult, String> {
+pub fn file_read(path: String, max_bytes: Option<usize>) -> Result<FileReadResult, String> {
     use crate::paths::AppPaths;
     let safe_path = AppPaths::validate_file_path(Path::new(&path))?;
+    let metadata = std::fs::metadata(&safe_path).map_err(|e| format!("读取元数据失败: {e}"))?;
+    if max_bytes.is_some_and(|limit| metadata.len() as usize > limit) {
+        return Err(format!("文件过大，最多读取 {} bytes", max_bytes.unwrap_or(0)));
+    }
     let content = std::fs::read_to_string(&safe_path)
         .map_err(|e| format!("读取失败: {}", e))?;
     let size = content.len() as u64;
@@ -63,21 +219,15 @@ pub struct FileReadResult {
 }
 
 #[command]
-pub fn file_write(path: String, content: String) -> Result<FileWriteResult, String> {
+pub fn file_write(path: String, content: String, max_bytes: Option<usize>) -> Result<FileWriteResult, String> {
     use crate::paths::AppPaths;
-    let p = Path::new(&path);
-    // 检查父目录存在
-    if let Some(parent) = p.parent() {
-        if !parent.exists() {
-            std::fs::create_dir_all(parent)
-                .map_err(|e| format!("创建目录失败: {}", e))?;
-        }
+    if max_bytes.is_some_and(|limit| content.len() > limit) {
+        return Err(format!("写入内容过大，最多 {} bytes", max_bytes.unwrap_or(0)));
     }
-    // 校验父目录在允许范围内（文件可能尚不存在，校验已存在的父目录即可）
-    if let Some(parent) = p.parent() {
-        AppPaths::validate_file_path(parent)?;
-    }
-    std::fs::write(&p, &content)
+    let safe_path = AppPaths::validate_new_file_path(Path::new(&path))?;
+    let parent = safe_path.parent().ok_or("无效的文件路径")?;
+    std::fs::create_dir_all(parent).map_err(|e| format!("创建目录失败: {e}"))?;
+    std::fs::write(&safe_path, &content)
         .map_err(|e| format!("写入失败: {}", e))?;
     Ok(FileWriteResult { success: true })
 }
@@ -89,7 +239,9 @@ pub struct FileWriteResult {
 
 #[command]
 pub fn file_list(path: String) -> Result<FileListResult, String> {
-    let entries = std::fs::read_dir(Path::new(&path))
+    use crate::paths::AppPaths;
+    let safe_path = AppPaths::validate_file_path(Path::new(&path))?;
+    let entries = std::fs::read_dir(&safe_path)
         .map_err(|e| format!("读取目录失败: {}", e))?;
 
     let mut file_entries: Vec<FileEntry> = Vec::new();
@@ -115,6 +267,72 @@ pub fn file_list(path: String) -> Result<FileListResult, String> {
     });
 
     Ok(FileListResult { entries: file_entries })
+}
+
+#[command]
+pub fn file_read_binary(path: String, max_bytes: Option<usize>) -> Result<Vec<u8>, String> {
+    use crate::paths::AppPaths;
+    let safe_path = AppPaths::validate_file_path(Path::new(&path))?;
+    let metadata = std::fs::metadata(&safe_path).map_err(|e| format!("读取元数据失败: {e}"))?;
+    let limit = max_bytes.unwrap_or(5 * 1024 * 1024);
+    if metadata.len() as usize > limit {
+        return Err(format!("文件过大，最多读取 {} bytes", limit));
+    }
+    std::fs::read(&safe_path).map_err(|e| format!("读取失败: {e}"))
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FileInfoResult {
+    name: String,
+    path: String,
+    kind: String,
+    size: u64,
+    mtime_ms: u64,
+}
+
+#[command]
+pub fn file_info(path: String) -> Result<FileInfoResult, String> {
+    use crate::paths::AppPaths;
+    let safe_path = AppPaths::validate_file_path(Path::new(&path))?;
+    let metadata = std::fs::symlink_metadata(&safe_path).map_err(|e| format!("读取元数据失败: {e}"))?;
+    let kind = if metadata.file_type().is_symlink() {
+        "symlink"
+    } else if metadata.is_dir() {
+        "directory"
+    } else {
+        "file"
+    };
+    let mtime_ms = metadata.modified().ok()
+        .and_then(|time| time.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|duration| duration.as_millis() as u64)
+        .unwrap_or(0);
+    Ok(FileInfoResult {
+        name: safe_path.file_name().map(|v| v.to_string_lossy().to_string()).unwrap_or_default(),
+        path: safe_path.to_string_lossy().to_string(),
+        kind: kind.to_string(),
+        size: metadata.len(),
+        mtime_ms,
+    })
+}
+
+#[command]
+pub fn file_exists(path: String) -> Result<bool, String> {
+    use crate::paths::AppPaths;
+    let p = Path::new(&path);
+    if p.exists() {
+        AppPaths::validate_file_path(p)?;
+        return Ok(true);
+    }
+    AppPaths::validate_new_file_path(p)?;
+    Ok(false)
+}
+
+#[command]
+pub fn file_canonical_path(path: String) -> Result<String, String> {
+    use crate::paths::AppPaths;
+    let safe_path = AppPaths::validate_file_path(Path::new(&path))?;
+    Ok(safe_path.to_string_lossy().to_string())
 }
 
 #[derive(serde::Serialize)]

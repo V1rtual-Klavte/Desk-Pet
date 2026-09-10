@@ -11,6 +11,8 @@ export type ToolSource = "local" | "mcp" | "skill"
 /** 模式限制 */
 export type ToolMode = "pet" | "assistant"
 
+export type LightweightPolicy = "allow" | "confirm" | "deny"
+
 /** 工具操作类别（用于阶段文案匹配） */
 export type ActionCategory =
   | "fs.read" | "fs.write"
@@ -27,6 +29,12 @@ export interface ToolContext {
   mode: "pet" | "assistant"
   /** 会话已信任（助手模式安全） */
   sessionTrusted: boolean
+  /** 当前 Pi 工具调用 ID */
+  toolCallId?: string
+  /** Agent 取消/超时信号 */
+  signal?: AbortSignal
+  /** 工具执行中的完整快照更新 */
+  onUpdate?: (partial: ToolResult) => void
 }
 
 /** 工具执行结果 */
@@ -34,6 +42,19 @@ export interface ToolResult {
   success: boolean
   content: string
   error?: string
+  /** Pi 原生文本/图片结果；未提供时由 content 生成文本结果。 */
+  contentParts?: Array<
+    | { type: "text"; text: string }
+    | { type: "image"; data: string; mimeType: string }
+  >
+  details?: unknown
+}
+
+export type ToolParameters = {
+  type: "object"
+  properties: Record<string, unknown>
+  required?: string[]
+  [key: string]: unknown
 }
 
 /** 工具定义标准接口 */
@@ -45,13 +66,15 @@ export interface ToolDef {
   /** 模型看的描述 */
   description: string
   /** JSON Schema 参数 */
-  parameters: {
-    type: "object"
-    properties: Record<string, { type: string; description: string; enum?: string[] }>
-    required: string[]
-  }
+  parameters: ToolParameters
+  /** 在 Schema 校验前兼容模型生成的旧参数形态。 */
+  prepareArguments?: (args: unknown) => Record<string, unknown>
   /** 安全级别 */
   safetyLevel: SafetyLevel
+  /** 根据本次参数动态提升/降低风险，主要用于统一 Bash。 */
+  resolveSafetyLevel?: (params: Record<string, unknown>, ctx: ToolContext) => SafetyLevel
+  /** 轻量模式对 DANGER 能力的策略；未设置时保持拒绝。 */
+  lightweightPolicy?: LightweightPolicy
   /** 来源 */
   source: ToolSource
   /** 来源 ID（local → 空, mcp/skill → server/skill ID） */
@@ -76,7 +99,7 @@ export interface ToolDeclaration {
     parameters: {
       type: "object"
       properties: Record<string, unknown>
-      required: string[]
+      required?: string[]
     }
   }
 }

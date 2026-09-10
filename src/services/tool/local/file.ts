@@ -1,5 +1,5 @@
 // ==========================================
-// 本地工具：文件读取/列表/搜索 (SAFE)
+// 本地工具：文件列表/搜索 (SAFE)
 // 轻量 + 助手模式均可用
 // ==========================================
 
@@ -9,40 +9,6 @@ import { invoke } from "@tauri-apps/api/core"
 import { createLogger } from "@/services/logger"
 
 const log = createLogger("ToolFile")
-
-// ── file.read ──
-
-const fileReadTool: ToolDef = {
-  id: "local-file-read",
-  name: "file_read",
-  description: "读取指定路径的文本文件内容。用于查看文件。",
-  parameters: {
-    type: "object",
-    properties: {
-      path: { type: "string", description: "文件的绝对路径" },
-    },
-    required: ["path"],
-  },
-  safetyLevel: "SAFE",
-  source: "local",
-  sourceId: "",
-  mode: "pet",
-  actionCategory: "fs.read",
-  async handler(params) {
-    try {
-      const result = await invoke<{ content: string; size: number }>("file_read", {
-        path: params.path,
-      })
-      const preview = result.content.length > 3000
-        ? result.content.substring(0, 3000) + "\n...(内容已截断)"
-        : result.content
-      return { success: true, content: preview }
-    } catch (e) {
-      const msg = e instanceof Error ? e.message : String(e)
-      return { success: false, content: "", error: msg }
-    }
-  },
-}
 
 // ── file.list ──
 
@@ -126,8 +92,7 @@ function formatSize(bytes: number): string {
 // ── 注册 ──
 
 export function registerFileTools(): void {
-  register(fileReadTool)
   register(fileListTool)
   register(fileSearchTool)
-  log.info("文件工具已注册 (file.read/list/search)")
+  log.info("文件工具已注册 (file.list/search)")
 }

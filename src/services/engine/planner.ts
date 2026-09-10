@@ -127,7 +127,7 @@ ${toolList}
       "id": 1,
       "description": "步骤描述",
       "role": "子代理角色名（如 文件分析员、代码搜索员）",
-      "allowedTools": ["file_read", "file_search"],
+      "allowedTools": ["read", "file_search"],
       "dependsOn": [],
       "parallel": false
     }

@@ -17,6 +17,10 @@ const tools = new Map<string, ToolDef>()
 
 /** 注册工具 */
 export function register(tool: ToolDef): void {
+  const conflicting = getToolByName(tool.name)
+  if (conflicting && conflicting.id !== tool.id) {
+    throw new Error(`工具名称冲突: ${tool.name} (${conflicting.id} / ${tool.id})`)
+  }
   if (tools.has(tool.id)) {
     log.warn("工具已存在，覆盖:", tool.id)
   }
@@ -54,7 +58,10 @@ export function getToolsForMode(mode?: ToolMode): ToolDef[] {
   const m = mode ?? (generalConfig.assistantMode ? "assistant" : "pet")
   const result: ToolDef[] = []
   for (const t of tools.values()) {
-    if (t.mode === "pet" || t.mode === m) result.push(t)
+    if (t.mode === "pet" || t.mode === m) {
+      if (m === "pet" && t.lightweightPolicy === "deny") continue
+      result.push(t)
+    }
   }
   return result
 }
@@ -90,12 +97,12 @@ export async function registerDefaultTools(): Promise<void> {
 
   // 动态导入避免循环依赖
   const { registerFileTools } = await import("./local/file")
-  const { registerBashTool } = await import("./local/bash")
+  const { registerPiBaseTools } = await import("./local/pi-tools")
   const { registerSystemTool } = await import("./local/system")
   const { registerHttpTool } = await import("./local/http")
 
   registerFileTools()
-  registerBashTool()
+  await registerPiBaseTools()
   registerSystemTool()
   registerHttpTool()
 
@@ -105,21 +112,13 @@ export async function registerDefaultTools(): Promise<void> {
 
 /** 注册助手模式工具（动态懒加载） */
 export async function registerAssistantTools(): Promise<void> {
-  const { registerFileWriteTool } = await import("./local-extra/file-write")
-  const { registerBashFullTool } = await import("./local-extra/bash-full")
   const { registerAppOpenTool } = await import("./local-extra/app")
   const { registerClipboardTools } = await import("./local-extra/clipboard")
   const { registerAgentSpawnTool } = await import("./local-extra/agent-tool")
 
-  const { registerFileDeleteTool } = await import("./local-extra/file-delete")
-
-  registerFileWriteTool()
-  registerBashFullTool()
   registerAppOpenTool()
   registerClipboardTools()
   registerAgentSpawnTool()
-  registerFileDeleteTool()
-
   log.info("助手模式工具已注册, 总计:", toolCount(), "个")
 }
 

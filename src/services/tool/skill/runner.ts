@@ -47,10 +47,9 @@ export async function runSkill(
     }
   }
 
-  // 如果没有声明工具，给只读工具集
+  // 如果没有声明工具，不静默扩大到全部工具；这是 Skill 配置错误。
   if (tools.length === 0) {
-    const allPet = (await import("@/services/tool/registry")).getToolsForMode("pet")
-    tools.push(...allPet)
+    return { success: false, content: `Skill ${skill.meta.id} 没有可用的已声明工具` }
   }
 
   // ── 子循环执行 ──

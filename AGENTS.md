@@ -90,7 +90,7 @@ src/
 │   ├── reply/                  # RUNTIME_DATA 解析与回复后处理
 │   ├── agent/                  # Pi Runtime、Provider、Runner、子代理、记忆与主动搭话
 │   ├── context/                # System Prompt 构建
-│   ├── tool/                   # 工具注册、路由、Local、Skill、MCP
+│   ├── tool/                   # 工具注册、路由、Pi 基础工具、Skill、MCP
 │   ├── safety/                 # 风险等级、策略和确认桥接
 │   ├── session/                # 会话响应式状态与切换归档
 │   ├── profile/                # Profile 选择、加载、导入导出
@@ -118,7 +118,7 @@ src-tauri/src/
   -> context/buildPrompt
        Card 角色 / 语气指引 / 必须遵守 / 变量 / 记忆 / 工具
   -> 助手模式下可选 planner
-  -> Pi Agent Core + pi-ai OpenAI-compatible 流 + ToolRouter 顺序工具循环 + Safety 检查
+  -> Pi Agent Core + pi-ai 流 + ToolRouter（read/write/edit/bash）+ Safety 检查
   -> reply/generator 解析 <RUNTIME_DATA>
        emotion -> 表情与音效
        合法 card 变量 -> batchWriteVars -> savePoolToDisk

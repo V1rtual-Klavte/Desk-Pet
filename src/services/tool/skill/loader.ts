@@ -5,11 +5,12 @@
 // 用户动态上传的 Skill 持久化到 CONFIG 覆盖层
 // ==========================================
 
-import type { ToolDef, ToolResult } from "@/services/tool/types"
+import type { ToolDef } from "@/services/tool/types"
 import type { ToolDeclaration } from "@/services/agent/types"
 import { createLogger } from "@/services/logger"
 import { register, unregister } from "@/services/tool/registry"
 import { toolsConfig, setOverride } from "@/services/config"
+import yaml from "js-yaml"
 
 const log = createLogger("SkillLoader")
 
@@ -37,25 +38,24 @@ export function parseFrontmatter(raw: string): { meta: SkillMeta; body: string }
   const match = raw.match(/^---\n([\s\S]*?)\n---\n([\s\S]*)$/)
   if (!match) return null
 
-  const yamlBlock = match[1]
   const body = match[2].trim()
-  const meta: Record<string, unknown> = {}
-
-  for (const line of yamlBlock.split("\n")) {
-    const kv = line.match(/^(\w+):\s*(.+)$/)
-    if (kv) {
-      const key = kv[1].trim()
-      const val = kv[2].trim().replace(/^["']|["']$/g, "")
-      if (key === "trigger_keywords" || key === "tools_needed") {
-        meta[key] = val.replace(/^\[|\]$/g, "").split(",").map(s => s.trim().replace(/^["']|["']$/g, ""))
-      } else {
-        meta[key] = val
-      }
-    }
-  }
+  const parsed = yaml.load(match[1])
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return null
+  const meta = parsed as Record<string, unknown>
+  const safety = meta.safety === "safe" || meta.safety === "normal" || meta.safety === "danger"
+    ? meta.safety
+    : "safe"
 
   return {
-    meta: meta as unknown as SkillMeta,
+    meta: {
+      id: String(meta.id ?? ""),
+      name: String(meta.name ?? meta.id ?? "Skill"),
+      description: String(meta.description ?? ""),
+      trigger_keywords: Array.isArray(meta.trigger_keywords) ? meta.trigger_keywords.map(String) : [],
+      tools_needed: Array.isArray(meta.tools_needed) ? meta.tools_needed.map(String) : [],
+      mode: "assistant",
+      safety,
+    },
     body,
   }
 }
@@ -221,9 +221,10 @@ export function clearAllSkills(): void {
 // ── 将 Skill 转换为 ToolDef ──
 
 export function skillToToolDef(skill: SkillDef): ToolDef {
-  const safetyMap: Record<string, "SAFE" | "NORMAL"> = {
+  const safetyMap: Record<string, "SAFE" | "NORMAL" | "DANGER"> = {
     safe: "SAFE",
     normal: "NORMAL",
+    danger: "DANGER",
   }
 
   return {

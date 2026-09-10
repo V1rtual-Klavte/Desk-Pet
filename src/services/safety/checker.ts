@@ -118,7 +118,7 @@ export function checkSafety(
     return { allowed: true, needsConfirm: false }
   }
 
-  const level = tool.safetyLevel
+  const level = tool.resolveSafetyLevel?.(params, ctx) ?? tool.safetyLevel
   const isAssistant = ctx.mode === "assistant"
   const safetyMode = getEffectiveSafetyMode()
   const trustEnabled = safetyConfig.sessionTrustEnabled
@@ -162,7 +162,14 @@ export function checkSafety(
 
     case "DANGER": {
       if (!isAssistant) {
-        // 轻量模式：DANGER 直接拒绝
+        if (tool.lightweightPolicy === "confirm") {
+          log.info("轻量模式 DANGER 需要确认:", tool.name)
+          return {
+            allowed: true,
+            needsConfirm: true,
+            confirmMessage: `工具 "${tool.name}" 将修改文件或执行扩展命令，确认执行？`,
+          }
+        }
         log.info("轻量模式拒绝 DANGER:", tool.name)
         return {
           allowed: false,

@@ -3,7 +3,7 @@
 // 统一路径管理 — base dirs + 路径校验
 // ==========================================
 
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 use std::fs;
 use tauri::Manager;
 
@@ -71,15 +71,68 @@ impl AppPaths {
     pub fn validate_file_path(path: &Path) -> Result<PathBuf, String> {
         let resolved = path.canonicalize()
             .map_err(|_| "路径不存在".to_string())?;
-
-        let home = home_dir().ok_or("无法获取 home 目录")?;
-        let temp = std::env::temp_dir();
-
-        if !resolved.starts_with(&home) && !resolved.starts_with(&temp) {
+        if !is_allowed_file_path(&resolved)? {
             return Err("路径不在允许范围".to_string());
         }
         Ok(resolved)
     }
+
+    /// 校验尚不存在的文件路径。返回规范化绝对路径，不创建任何目录。
+    pub fn validate_new_file_path(path: &Path) -> Result<PathBuf, String> {
+        let normalized = normalize_absolute(path)?;
+        if !is_allowed_file_path(&normalized)? {
+            return Err("路径不在允许范围".to_string());
+        }
+
+        let mut ancestor = normalized.parent().ok_or("无效的文件路径")?.to_path_buf();
+        while !ancestor.exists() {
+            ancestor = ancestor.parent().ok_or("路径没有可校验的父目录")?.to_path_buf();
+        }
+        let canonical_ancestor = ancestor.canonicalize().map_err(|_| "父目录不存在".to_string())?;
+        if !is_allowed_file_path(&canonical_ancestor)? {
+            return Err("路径父目录越权".to_string());
+        }
+        Ok(normalized)
+    }
+}
+
+fn allowed_file_roots() -> Result<Vec<PathBuf>, String> {
+    let home = home_dir().ok_or("无法获取 home 目录")?;
+    let temp = std::env::temp_dir();
+    let mut roots = vec![normalize_absolute(&home)?, normalize_absolute(&temp)?];
+    for root in [home, temp] {
+        if let Ok(canonical) = root.canonicalize() {
+            if !roots.contains(&canonical) {
+                roots.push(canonical);
+            }
+        }
+    }
+    Ok(roots)
+}
+
+fn is_allowed_file_path(path: &Path) -> Result<bool, String> {
+    Ok(allowed_file_roots()?.iter().any(|root| path.starts_with(root)))
+}
+
+fn normalize_absolute(path: &Path) -> Result<PathBuf, String> {
+    if !path.is_absolute() {
+        return Err("工具路径必须是绝对路径".to_string());
+    }
+    let mut normalized = PathBuf::new();
+    for component in path.components() {
+        match component {
+            Component::Prefix(_) | Component::RootDir | Component::Normal(_) => {
+                normalized.push(component.as_os_str());
+            }
+            Component::CurDir => {}
+            Component::ParentDir => {
+                if !normalized.pop() {
+                    return Err("路径越权".to_string());
+                }
+            }
+        }
+    }
+    Ok(normalized)
 }
 
 fn resolve_resource_dir(app: &tauri::AppHandle) -> Result<PathBuf, String> {

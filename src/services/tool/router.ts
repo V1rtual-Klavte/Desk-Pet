@@ -26,11 +26,29 @@ export async function executeTool(
   try {
     log.debug("执行工具:", toolName, "| params:", JSON.stringify(params).substring(0, 100))
 
-    const result = await withTimeout(
-      tool.handler(params, ctx),
-      timeout,
-      `工具执行超时 (${timeout}ms): ${toolName}`,
-    )
+    const controller = new AbortController()
+    const abort = () => controller.abort(ctx.signal?.reason)
+    ctx.signal?.addEventListener("abort", abort, { once: true })
+    const timer = setTimeout(() => controller.abort(new Error(`工具执行超时 (${timeout}ms): ${toolName}`)), timeout)
+    let result: ToolResult
+    try {
+      const handler = tool.handler(params, { ...ctx, signal: controller.signal })
+      let timeoutHandle: ReturnType<typeof setTimeout> | undefined
+      const timeoutPromise = new Promise<never>((_, reject) => {
+        timeoutHandle = setTimeout(() => {
+          controller.abort(new Error(`工具执行超时 (${timeout}ms): ${toolName}`))
+          reject(new Error(`工具执行超时 (${timeout}ms): ${toolName}`))
+        }, timeout)
+      })
+      try {
+        result = await Promise.race([handler, timeoutPromise])
+      } finally {
+        if (timeoutHandle) clearTimeout(timeoutHandle)
+      }
+    } finally {
+      clearTimeout(timer)
+      ctx.signal?.removeEventListener("abort", abort)
+    }
 
     if (result.success) {
       // 截断过长结果
@@ -48,15 +66,4 @@ export async function executeTool(
     log.error("工具异常:", toolName, "|", errMsg)
     return { success: false, content: "", error: errMsg }
   }
-}
-
-/** 带超时的 Promise */
-function withTimeout<T>(promise: Promise<T>, ms: number, msg: string): Promise<T> {
-  return new Promise<T>((resolve, reject) => {
-    const timer = setTimeout(() => reject(new Error(msg)), ms)
-    promise.then(
-      (v) => { clearTimeout(timer); resolve(v) },
-      (e) => { clearTimeout(timer); reject(e) },
-    )
-  })
 }

@@ -619,7 +619,7 @@ Profile选择: 下拉框（内置+用户）
 │  全局默认(设置页) + 会话覆盖(仪表盘)  【✅ 已实现】           │
 ├──────────────────────────────────────────────────────────┤
 │  平台桥接 (Rust) —— 窗口/系统调用/后台轮询                  │
-│  bash_exec / file_read / file_write / file_list            │
+│  Pi read/write/edit/bash → Tauri ExecutionEnv              │
 │  system_info / app_open / clipboard / mcp_bridge【已实现】   │
 └──────────────────────────────────────────────────────────┘
 ```
@@ -663,18 +663,18 @@ src/services/
 │   ├── types.ts           # ToolDef / ToolResult / SafetyLevel
 │   ├── registry.ts        # ★ 统一注册表 (按mode注册/查询/注销)
 │   ├── router.ts          # 工具路由 + 超时控制 + 结果截断
-│   ├── local/             # 轻量模式工具 (始终加载, mode: "pet")
-│   │   ├── file.ts        # file.read / file.list / file.search
-│   │   ├── bash.ts        # bash_exec (白名单)
+│   ├── local/             # 双模式基础工具 (Pi Agent Core 适配)
+│   │   ├── file.ts        # file_list / file_search
+│   │   ├── pi-tools.ts    # Pi read / write / edit / bash
 │   │   ├── system.ts      # system_info
 │   │   └── http.ts        # http_get
+│   ├── pi/                # Pi Harness 与 Tauri 执行环境
+│   │   ├── harness-adapter.ts
+│   │   └── tauri-execution-env.ts
 │   ├── local-extra/       # 助手模式工具 (动态加载, mode: "assistant")
-│   │   ├── file-write.ts  # file_write (DANGER)
-│   │   ├── bash-full.ts   # bash_exec_full (DANGER)
 │   │   ├── app.ts         # app_open (NORMAL)
 │   │   ├── clipboard.ts   # clipboard_read/write (NORMAL/DANGER)
 │   │   ├── agent-tool.ts  # agent_spawn (NORMAL)【已实现 fork/team】
-│   │   └── file-delete.ts # file_delete (NOWAY)
 │   ├── skill/             # Skill 系统 (助手模式)
 │   │   ├── loader.ts      # YAML frontmatter解析 + ToolDef转换 + 动态增删 + 上传.md注册
 │   │   ├── registry.ts    # Skill 注册/查询/关键词匹配
@@ -767,7 +767,7 @@ src/services/
   │           │     │     ├── 人格中间件.wrap("executing") → 角色化文案
   │           │     │     ├── SafetyControl.check(tool, params)
   │           │     │     │     SAFE→放行 / NORMAL+DANGER→拒绝(轻量)
-  │           │     │     ├── ToolRouter.execute() → invoke("bash_exec"/"file_read"/..)
+  │           │     │     ├── Pi Tool → Harness Adapter → TauriExecutionEnv → Rust IPC
   │           │     │     ├── 结果回注 → 下一轮循环
   │           │     │     └── 人格中间件.wrap("done"/"blocked"/"error")
   │           │     │
@@ -836,18 +836,17 @@ Pi Runtime 当前从 Desk-Pet 会话记录重建本轮 transcript，并保留既
 轻量模式 (默认)                   助手模式 (设置中开启)
   │                                   │
 ToolRegistry:                      ToolRegistry 额外:
-├── file_read (SAFE)               ├── file_write (DANGER)
-├── file_list (SAFE)               ├── bash_exec_full (DANGER)
-├── file_search (SAFE)             ├── app_open (NORMAL)
-├── system_info (SAFE)             ├── clipboard_read (NORMAL)
-├── bash_exec (NORMAL, 白名单)     ├── clipboard_write (DANGER)
-└── http_get (NORMAL)              ├── file_delete (NOWAY, 硬禁止)
-                                   ├── agent_spawn (NORMAL)【已实现 fork/team】
-                                   ├── MCP Mock工具 (4个)
-                                   └── Skill 工具 (3个)
+├── pi-read (SAFE)                 ├── app_open (NORMAL)
+├── pi-write (DANGER, 确认)        ├── clipboard_read (NORMAL)
+├── pi-edit (DANGER, 确认)         ├── clipboard_write (DANGER)
+├── pi-bash (白名单/NORMAL)        ├── agent_spawn (NORMAL)【已实现 fork/team】
+├── file_list (SAFE)               ├── MCP Mock工具 (4个)
+├── file_search (SAFE)             └── Skill 工具 (按声明加载)
+├── system_info (SAFE)
+└── http_get (NORMAL)
 
-Safety: SAFE放行/其余拒绝         Safety: 四级+三策略+确认弹窗
-MCP/Skill: 不加载                  MCP/Skill: 完整加载 (Mock + 真实)
+Safety: SAFE/NORMAL自动；写入与扩展Bash确认   MCP/Skill: 完整加载 (Mock + 真实)
+MCP/Skill: 不加载
 ```
 
 #### 能力对比
@@ -862,14 +861,14 @@ MCP/Skill: 不加载                  MCP/Skill: 完整加载 (Mock + 真实)
 | 系统信息 | ✅ | ✅ |
 | Bash 白名单命令 | ✅ | ✅ |
 | HTTP GET | ✅ | ✅ |
-| 写文件 | ❌ | ✅ |
-| 全量 Bash | ❌ | ✅ |
+| 写/编辑文件 | ✅（执行时确认） | ✅（按安全策略确认） |
+| Bash | ✅（白名单自动，其余按风险确认） | ✅（按安全策略确认） |
 | 打开应用 | ❌ | ✅ |
 | 剪贴板操作 | ❌ | ✅ (三端: macOS/Win/Linux) |
 | MCP Server | ❌ | ✅ (Mock+真实) |
 | Skill (编排) | ❌ | ✅ (子循环执行) |
 | SubAgent (agent.spawn) | ❌ | ✅ (fork/team) |
-| 完整安全确认 UI | ❌ | ✅ (四级+三策略+确认弹窗) |
+| 完整安全确认 UI | ✅（写入/扩展命令） | ✅ (四级+三策略+确认弹窗) |
 
 ### 9.6 安全控制
 
@@ -879,7 +878,7 @@ MCP/Skill: 不加载                  MCP/Skill: 完整加载 (Mock + 真实)
 |------|:---:|------|------|
 | SAFE | 🟢 | 自动放行 | 自动放行 |
 | NORMAL | 🟡 | 放行(handler二次校验) | 首次确认→会话内信任 |
-| DANGER | 🟠 | 拒绝 | 每次确认 (just_do_it 跳过) |
+| DANGER | 🟠 | 写入/编辑与扩展 Bash 需确认 | 每次确认 (just_do_it 跳过) |
 | NOWAY | 🔴 | 硬拒绝 | 硬拒绝 |
 
 #### 三策略 (safety.mode)
@@ -955,7 +954,7 @@ FILE_DANGEROUS_PATTERNS: [/.ssh/, /etc/passwd, /etc/shadow, /System/, /Windows/,
 
 #### 工具声明策略
 
-- **轻量模式**：始终携带 6 个工具声明（~150 tokens），省去决策逻辑
+- **轻量模式**：始终携带 8 个基础工具声明（含 Pi read/write/edit/bash；~200 tokens），省去动态加载决策
 - **助手模式**：L0(闲聊 无工具) / L1+L2(有工具意图 全量)
 
 ### 9.9 记忆系统

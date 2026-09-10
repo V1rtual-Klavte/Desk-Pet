@@ -5,7 +5,7 @@ import { createLogger } from "@/services/logger";
 
 const log = createLogger("Settings");
 
-// Props: 父组件传入的 assistantMode，用于禁用助手专属功能
+// Props: 父组件传入的 assistantMode，用于显示扩展能力状态
 const props = defineProps<{ assistantMode: boolean }>();
 
 // ── Bash ──
@@ -219,8 +219,8 @@ defineExpose({
   </div>
 
   <div class="s-section">
-    <div class="s-label">📁 文件</div>
-    <label class="chk"><input type="checkbox" v-model="fileWriteEnabled" :disabled="!assistantMode" /><span>允许写文件（仅助手模式）</span></label>
+    <div class="s-label">📁 文件工作流</div>
+    <label class="chk"><input type="checkbox" v-model="fileWriteEnabled" /><span>允许写入/编辑文件（两个模式均可用，执行时按策略确认）</span></label>
   </div>
 
   <div class="s-section">

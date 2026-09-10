@@ -17,9 +17,11 @@ pub use monitor_ctl::{pause_monitor, resume_monitor, set_monitor_config};
 pub use sim::{open_windows_sim, close_windows_sim};
 pub use logging::{log_message, focus_main, open_devtools};
 pub use tool_exec::{
-    bash_exec, file_read, file_write, file_list,
+    bash_exec, bash_cancel, file_read, file_read_binary, file_write, file_list,
+    file_info, file_exists, file_canonical_path,
     system_info, app_open, clipboard_read, clipboard_write,
 };
+pub(crate) use tool_exec::BashPool;
 pub use mcp_bridge::{mcp_spawn, mcp_send, mcp_kill};
 pub(crate) use mcp_bridge::McpPool;
 pub use memory_cmd::{get_memory_file, get_session_file, init_memory_files, list_session_files, delete_session_file, file_delete};
