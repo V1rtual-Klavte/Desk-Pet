@@ -37,9 +37,6 @@ pnpm run test:release
 
 | 命令 | 作用 |
 |---|---|
-| `/analyze test [module]` | 根据源码生成或更新覆盖契约 |
-| `/generate test [module]` | 根据契约生成场景 |
-| `/audit test` | 检查覆盖完整性 |
 | `pnpm test` | 执行场景并断言运行时状态 |
 | `pnpm run test:types` | Vue 类型与 Rust 编译门禁，不替代 Live Test |
 | `pnpm run test:smoke` | `sendMessage()` 真实入口的严格双 trial smoke |
@@ -53,18 +50,21 @@ pnpm run test:release
 src/services/__tests__/live/
 ├── contracts/                 # 模块行为契约（输入、输出、持久化和边界）
 ├── scenes/                    # 多轮真实链路场景
-├── standard-setup.ts          # 标准配置和运行时状态隔离
-├── live-test-main.ts          # Tauri WebView 内的真实 Live Test 入口
-├── scene-runner.ts            # 场景执行与步骤编排
+├── cli.ts                     # 命令行参数解析（--module/--scene/--repeat/--strict 等）
 ├── contract-checker.ts        # 契约断言和覆盖检查
+├── dataset.ts                 # 数据集版本与场景/契约校验
+├── live-test-main.ts          # Tauri WebView 内的真实 Live Test 入口
 ├── reporter.ts                # 控制台/JSON 测试报告
-├── cli.ts                     # analyze、generate、audit、run 参数入口
-└── live-test-main.ts          # Tauri WebView 集成入口
+├── scene-runner.ts            # 场景执行与步骤编排
+├── standard-setup.ts          # 标准配置和运行时状态隔离
+├── types.ts                   # 框架核心类型定义
+├── SKILL.md                   # Contract 分析、Scene 生成与覆盖审查工作流
+└── README.md                  # Live Test 使用说明
 ```
 
 测试分为两层：Contract 描述单模块的可验证行为，Scene 描述 Agent Loop、工具、安全、人格、变量和记忆之间的真实调用链。Contract 的 `scenarios` 必须解析到已发现、同模块且同 `contractId` 的 Scene；边界和错误规则只统计带 `boundary`/`error` tag 的实际场景。Scene 具有稳定 `caseId` 和 `regression`/`capability`/`safety`/`stress` 套件归属；`entry: "production"` 必须经过 `sendMessage()`。Live Test 在独立 Tauri WebView 中调用真实 Provider 和 Rust IPC，使用临时数据根和 `deskpet_live_test_*` 浏览器缓存 keyspace；每个 trial 都重置测试状态而不删除正常用户缓存，`meta.repetitions` 是最低试验次数。JSON 报告记录数据集版本、环境种子、轨迹指标、错误分类与 `pass@k`/`pass^k`；因此需要本地开发配置和可用的 API，不能把没有 Provider 的静态检查结果当作运行时通过。
 
-- 代码或数据契约变更后，先运行 `/analyze test [module]`，再补充 `/generate test [module]` 生成的场景。
+- 代码或数据契约变更后，按 `live/SKILL.md` 的 analyze → generate 工作流重新分析源码生成覆盖契约，再补充对应场景；这三个触发词是 AI 工作流约定，不是 shell 命令。
 - 使用 `pnpm test -- --module <module>` 做模块范围验证；跨模块修改再运行完整 `pnpm test`。发布前运行 `pnpm test -- --strict --repeat 3 --report json`，严格 Contract 缺口和不稳定 trial 不能作为通过结论。
 - `npx vue-tsc --noEmit` 和 `cargo check` 只证明类型/编译，不替代 Live Test。
 - Contract 的 `sourceHash` 不能为空；启动前发现空 hash 或源码变更会直接阻断 Live Test。
@@ -83,7 +83,15 @@ src/services/__tests__/live/
 
 ```text
 src/
+├── main.ts                     # 主窗口入口
+├── settings-main.ts            # 设置窗口入口
+├── layer-editor-main.ts        # 图层编辑窗口入口
+├── notification-main.ts        # 通知窗口入口
+├── App.vue                     # 主窗口根组件
+├── vite-env.d.ts               # Vite 环境与 *.vue / *.yaml 模块声明
 ├── components/                 # Vue 界面、角色展示、聊天、设置、会话
+│   └── winsim/                 # WinSim 开机模拟（BIOS、Logo、登录、桌面）
+├── composables/                # useParallax、useLayerEditor 组合式逻辑
 ├── services/
 │   ├── engine/                 # Pi Runtime、输入预处理、Plan、Slash、会话状态与上下文压缩工具
 │   ├── personality/            # Card、人格注册、阶段文案、变量状态、情绪映射
@@ -94,10 +102,17 @@ src/
 │   ├── safety/                 # 风险等级、策略和确认桥接
 │   ├── session/                # 会话响应式状态与切换归档
 │   ├── profile/                # Profile 选择、加载、导入导出
-│   ├── paths/                  # 前端 BaseDirs 与统一路径初始化
+│   ├── window/                 # 前台窗口监控与主动搭话
+│   ├── audio/                  # 音效注册与播放
+│   ├── animation.ts            # 从 Profile 加载的动画系统
+│   ├── command-handler.ts      # 聊天文本中的表情切换与窗口命令
+│   ├── cooldown.ts             # 统一全局冷却控制器
 │   ├── config.ts               # YAML 运行时配置与类型化 getter
+│   ├── debug.ts                # token 消耗、上下文利用率与工具注册数追踪
+│   ├── env.ts                  # 平台检测与运行时环境
+│   ├── init.ts                 # 统一启动初始化
 │   ├── logger.ts               # 统一日志
-│   └── window/                 # 前台窗口监控与主动搭话
+│   └── paths.ts                # 前端 BaseDirs 与统一路径初始化
 └── styles/                     # 全局样式与字体
 
 src-tauri/src/
@@ -105,6 +120,7 @@ src-tauri/src/
 ├── lib.rs                      # AppPaths、命令注册和应用启动
 ├── paths.rs                    # data_root、内置资源和路径校验
 ├── commands/                   # 窗口、文件、工具、记忆、Profile 等命令
+├── macros/                     # Rust 端日志宏
 ├── monitor/                    # Windows/macOS 前台窗口监控
 └── window/                     # 主窗口和设置窗口
 ```
@@ -162,6 +178,7 @@ interface VariableState {
 
 - `CANDY.md`：用户手写的系统指令。
 - `User.md`：重要用户事实的系统文件视图。
+- `Outside.md`：外部知识指针。
 - `MEMORY.md`：长期记忆注册表。
 - `sessions/*.md`：会话正文和压缩摘要的唯一真相源。
 - `sessions/index.json`：仅保存打开标签、活跃标签和未回复数等可丢弃 UI 状态。
@@ -171,17 +188,19 @@ interface VariableState {
 
 ## 配置规则
 
-配置链路：
+用哪份配置由**构建模式**决定（Rust `cfg!(debug_assertions)`），不由配置文件里的字段控制：
 
 ```text
-开发：工作区 CONFIG-DEV.yaml（存在时）或 CONFIG.yaml
-生产：data_root/settings/CONFIG.yaml（首次由内置 CONFIG.yaml 初始化）
+开发（cargo tauri dev）：工作区 CONFIG-DEV.yaml（存在时）或 CONFIG.yaml
+生产（cargo tauri build）：data_root/settings/CONFIG.yaml（首次由内置 CONFIG.yaml 初始化）
   -> services/config.ts 类型化 getter
   -> 设置页回写同一份运行时 CONFIG
 ```
 
+- 生产构建完全忽略工作区的 `CONFIG-DEV.yaml`；该文件在 `.gitignore` 中，首次使用需 `cp CONFIG-DEV.yaml.example CONFIG-DEV.yaml`。
 - 所有模块通过 `@/services/config` 读取配置，不在模块内复制常量。
 - 开发环境本地调参只改 `CONFIG-DEV.yaml`；它必须是完整配置文件，不是增量覆盖层。
+- 设置页回写经 `serializeConfig()` 保留运行时 CONFIG 的文件头部注释块，正文由 `js-yaml` dump 重排。
 - `localStorage` 不保存配置、会话正文或 Profile 编辑状态；启动时会清理历史缓存 key。
 - 新增配置项必须同步默认配置、开发配置、配置类型 getter、设置页面和相关说明。
 - 不主动修改 `.gitignore`、真实配置或用户运行时数据，除非用户明确要求。
@@ -255,19 +274,6 @@ log.error("错误", error)
 
 Rust 使用现有日志宏。格式为 `[HH:MM:SS.mmm] LEVEL [前缀] 消息`，级别由配置控制。
 
-## Git 与开发流程
-
-```text
-master   稳定分支，只接受合并
-V1rtual  开发分支，改动先在这里完成和验证
-klavte   备用分支
-```
-
-- 不直接在 `master` 上开发或提交。
-- 不主动 commit 或 push，除非用户明确要求。
-- 先读代码和相关当前文档，再给出思路；用户同意后再编码。
-- 按调用链验证，不把静态检查当作完整运行时验证。
-- 发现已有未提交改动时保留它们，不能擅自回退。
 
 ## 修改后的同步规则
 
@@ -283,7 +289,6 @@ klavte   备用分支
 
 ## 用户规则
 
-- 用户输入 `1` 时，默认从 `要求.md` 获取需求。
 - 任何修改必须先给思路，用户同意后才能编码。
 - 不自作主张扩大范围，疑问先探索代码并基于事实判断。
 - 配置项必须统一维护，不能只改某一个消费者。
