@@ -1,0 +1,64 @@
+# ==========================================
+# Profile: 结城理 / yuki
+# 内置蓝色透明玻璃主题；运行时只读，用户副本写入 data_root/profiles/yuki
+# ==========================================
+
+meta:
+  name: "yuki"
+  description: "结城理 · 雨夜蓝色透明玻璃"
+  version: 1
+  builtin: true
+  preset: glass
+
+theme:
+  colors:
+    背景: "rgba(18, 55, 98, 0.22)"
+    卡片背景: "rgba(8, 28, 58, 0.58)"
+    聊天背景: "rgba(18, 65, 110, 0.18)"
+    边框: "rgba(128, 205, 255, 0.55)"
+    分割线: "rgba(150, 215, 255, 0.35)"
+    输入边框: "rgba(102, 174, 230, 0.55)"
+    主文字: "#e8f6ff"
+    亮文字: "#ffffff"
+    粉色文字: "#a8ddff"
+    暗文字: "rgba(181, 218, 242, 0.78)"
+    强调色: "rgba(71, 171, 239, 0.9)"
+    强调悬浮: "rgba(111, 205, 255, 0.95)"
+    标题栏渐变起: "rgba(72, 166, 235, 0.72)"
+    标题栏渐变止: "rgba(20, 77, 145, 0.82)"
+    标题栏文字: "#ffffff"
+    表面色: "rgba(42, 112, 169, 0.44)"
+    深表面色: "rgba(8, 38, 82, 0.56)"
+    遮罩: "rgba(3, 15, 35, 0.62)"
+    透明背景: "rgba(74, 164, 226, 0.19)"
+    模糊度: "18px"
+  fonts:
+    ui: "zpix"
+    chat: "zpix"
+    size: 14
+  shield:
+    enabled: false
+    image: ""
+  parallax:
+    intensity: 1.0
+    # 五层均使用同一张原图切出的透明 PNG；位置保持 0 偏移。
+    # 素材契约遵循现有 Profile：materials/L{n}/<asset>.png。
+    layers:
+      - { enabled: true, image: "materials/L0/bg_base.png", sensitivity: 0.1, shadow: 0.25, brightness: 0.93, contrast: 0.96, saturate: 0.92, scale: 1.0, offsetX: 0, offsetY: 0 }
+      - { enabled: true, image: "materials/L1/rain_mid.png", sensitivity: 0.25, shadow: 0.18, brightness: 0.95, contrast: 0.98, saturate: 0.95, scale: 1.0, offsetX: 0, offsetY: 0 }
+      - { enabled: true, image: "materials/L2/body.png", sensitivity: 0.45, shadow: 0.12, brightness: 1.00, contrast: 1.00, saturate: 1.00, scale: 1.0, offsetX: 0, offsetY: 0 }
+      - { enabled: true, image: "materials/L3/highlights.png", sensitivity: 0.6, shadow: 0.06, brightness: 1.02, contrast: 1.02, saturate: 1.05, scale: 1.0, offsetX: 0, offsetY: 0 }
+      - { enabled: true, image: "materials/L4/rain_front.png", sensitivity: 0.75, shadow: 0.03, brightness: 1.03, contrast: 1.03, saturate: 1.08, scale: 1.0, offsetX: 0, offsetY: 0 }
+
+# 沿用当前内置音效配置，不为 yuki 引入新音频文件。
+sound:
+  volume: 0.8
+  events:
+    welcome: "welcome_chord"
+    send: "send_short"
+    reply: "reply_ding"
+    popup: "popup_up"
+    retract: "retract_down"
+    surface: "surface_light"
+    middle: "middle_tremolo"
+    deep: "deep_noise"

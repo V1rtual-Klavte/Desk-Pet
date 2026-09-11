@@ -36,6 +36,11 @@ data_root/
 作为 Tauri bundle resource 提供给后端复制。它们是只读资源，设置页不可直接保存
 内置 Profile 的颜色或上传素材；Rust 命令层也拒绝对内置 ID 的写入、删除和同名导入。
 
+当前内置 Profile 包括 `sugar-pink`、`dark-purple`、`glass` 和 `yuki`；`yuki` 的五层
+透明 PNG 契约为 `public/profiles/yuki/materials/L0/bg_base.png`、`L1/rain_mid.png`、
+`L2/body.png`、`L3/highlights.png` 与 `L4/rain_front.png`；五张图应保持同一画布尺寸与
+主体位置。
+
 用户导入的 Profile 以及“复制为用户 Profile”生成的完整副本都写入
 `profiles/{profileId}/`。复制时会将完整内置资源复制到该目录，并将 `profile.yaml`
 标记为用户 Profile；之后颜色、素材等修改只写这个目录。Profile 选择会保存到

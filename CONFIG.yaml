@@ -64,6 +64,7 @@ ai:
       - { id: angelkawaii, name: KAngel, path: cards/angelkawaii.md, description: "甜蜜活泼女友+病娇" }
       - { id: ame, name: Ame, path: cards/ame.md, description: "冷静管家型" }
       - { id: pchan, name: P酱, path: cards/pchan.md, description: "慵懒电竞少女" }
+      - { id: yuki, name: 结城理, path: cards/yuki.md, description: "冷静克制、温和可靠的蓝发少年" }
 
   loop:
     maxRetry: 3
