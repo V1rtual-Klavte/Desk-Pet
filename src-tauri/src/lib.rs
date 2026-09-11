@@ -253,8 +253,7 @@ pub fn run() {
                 rust_info!("macOS: ActivationPolicy::Accessory 已设置");
             }
 
-            let live_test = cfg!(debug_assertions)
-                && std::env::var("DESKPET_LIVE_TEST").ok().as_deref() == Some("1");
+            let live_test = cfg!(debug_assertions) && crate::paths::is_live_test();
             let paths = match AppPaths::init(app.handle()) {
                 Ok(p) => p,
                 Err(e) => {

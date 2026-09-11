@@ -535,7 +535,7 @@ sugar-pink/                  # Profile 示例（内置3个: sugar-pink / dark-pu
 图层编辑器保存 → 回写运行时 CONFIG → emit("deskpet-parallax-saved") → StreamView 重载
 
 设置页打开 →
-  ├── discoverAllProfiles()   # 扫描内置 + 用户(AppData) profile 列表
+  ├── discoverAllProfiles()   # 扫描内置 + 用户 data_root/profiles 列表
   └── ensureProfileLoaded(id) # 按需加载，切换时调用
 ```
 
@@ -570,7 +570,7 @@ Profile 缺失的素材自动回退到 `DEFAULT_BUILTIN`（sugar-pink）：
 | 操作 | 实现 |
 |------|------|
 | **导出** | `exportProfileZip(id)` — 打包 profile 文件为 Zip 触发下载 |
-| **导入** | `importProfileZip(file)` — 解包 Zip → Tauri invoke `profile_file_write` → 写入 AppData |
+| **导入** | `importProfileZip(file)` — 解包 Zip → Tauri invoke `profile_file_write` → 写入 `{data_root}/profiles/` |
 | **删除** | `deleteProfile(id)` — 仅限非内置 profile，调用 `profile_delete` 删除目录 |
 | **存储** | 内置 → `public/profiles/` 并随安装包发布；用户导入/复制 → `{data_root}/profiles/` |
 

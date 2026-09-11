@@ -30,10 +30,13 @@ impl AppPaths {
 
         // 唯一环境判断：开发→项目工作区，生产→Tauri 应用专属数据目录。
         let data_root = if cfg!(debug_assertions) {
-            if let Ok(test_root) = std::env::var("DESKPET_LIVE_TEST_DATA_ROOT") {
-                PathBuf::from(test_root)
+            // 临时根只允许由 Live Test runner 启用，普通 `tauri dev` 不受遗留环境变量影响。
+            if is_live_test() {
+                std::env::var("DESKPET_LIVE_TEST_DATA_ROOT")
+                    .map(PathBuf::from)
+                    .unwrap_or_else(|_| development_data_root())
             } else {
-                project_root().join("data").join("desk-pet")
+                development_data_root()
             }
         } else {
             // app_local_data_dir 已包含 bundle identifier，不能再次拼 desk-pet。
@@ -65,6 +68,10 @@ impl AppPaths {
 
         for dir in [&paths.memory, &paths.sessions, &paths.personality, &paths.profiles, &paths.settings, &paths.logs] {
             fs::create_dir_all(dir).map_err(|e| AppError::Io(format!("创建目录失败: {dir:?}: {e}")))?;
+        }
+
+        if cfg!(debug_assertions) && is_live_test() {
+            seed_live_test_stages(&paths)?;
         }
 
         if !cfg!(debug_assertions) && !paths.config_file.exists() {
@@ -175,6 +182,41 @@ fn project_root() -> PathBuf {
     let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     // 不 panic：拿不到父目录就退回 manifest 自身（仅构建期异常路径）
     manifest.parent().map(Path::to_path_buf).unwrap_or(manifest)
+}
+
+fn development_data_root() -> PathBuf {
+    project_root().join("data").join("desk-pet")
+}
+
+pub(crate) fn is_live_test() -> bool {
+    std::env::var("DESKPET_LIVE_TEST").ok().as_deref() == Some("1")
+}
+
+/// Live Test 只从由 AppPaths 定义的开发根复制阶段种子，避免测试脚本另行维护路径布局。
+fn seed_live_test_stages(paths: &AppPaths) -> AppResult<()> {
+    let source = development_data_root().join("personality").join("stages");
+    let target = paths.personality.join("stages");
+    if !source.is_dir() || source == target {
+        return Ok(());
+    }
+    copy_directory(&source, &target)
+}
+
+fn copy_directory(source: &Path, target: &Path) -> AppResult<()> {
+    fs::create_dir_all(target).map_err(|e| AppError::Io(format!("创建测试种子目录失败: {e}")))?;
+    for entry in fs::read_dir(source).map_err(|e| AppError::Io(format!("读取测试种子目录失败: {e}")))? {
+        let entry = entry.map_err(|e| AppError::Io(format!("读取测试种子条目失败: {e}")))?;
+        let source_path = entry.path();
+        let target_path = target.join(entry.file_name());
+        let file_type = entry.file_type().map_err(|e| AppError::Io(format!("读取测试种子类型失败: {e}")))?;
+        if file_type.is_dir() {
+            copy_directory(&source_path, &target_path)?;
+        } else if file_type.is_file() {
+            fs::copy(&source_path, &target_path)
+                .map_err(|e| AppError::Io(format!("复制测试阶段种子失败: {e}")))?;
+        }
+    }
+    Ok(())
 }
 
 fn home_dir() -> Option<PathBuf> {

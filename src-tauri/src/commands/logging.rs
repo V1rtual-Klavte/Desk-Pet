@@ -58,8 +58,15 @@ pub fn focus_main(app: tauri::AppHandle) -> AppResult<()> {
 /// 打开主窗口 DevTools（调试用）
 #[tauri::command]
 pub fn open_devtools(app: tauri::AppHandle) -> AppResult<()> {
-    if let Some(w) = app.get_webview_window("main") {
-        w.open_devtools();
+    #[cfg(debug_assertions)]
+    {
+        if let Some(w) = app.get_webview_window("main") {
+            w.open_devtools();
+        }
+    }
+    #[cfg(not(debug_assertions))]
+    {
+        let _ = app;
     }
     Ok(())
 }

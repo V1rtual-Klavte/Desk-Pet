@@ -12,7 +12,7 @@
 // ==========================================
 
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Component, Path, PathBuf};
 use crate::paths::AppPaths;
 use crate::error::{err, AppError, AppResult};
 
@@ -103,11 +103,9 @@ fn resolve_personality_path(relative: &str, mode: &str, paths: &AppPaths) -> App
         ));
     }
 
-    // 安全检查：过滤 ParentDir 组件防止路径穿越
-    let safe: PathBuf = PathBuf::from(relative)
-        .components()
-        .filter(|c| !matches!(c, std::path::Component::ParentDir))
-        .collect();
+    // 只接受域内的普通路径段。不能通过过滤 `..` 修正非法输入：绝对路径在
+    // PathBuf::join 时会替换 base，必须整体拒绝。
+    let safe = safe_relative_path(relative)?;
 
     match mode {
         "read" => {
@@ -121,21 +119,51 @@ fn resolve_personality_path(relative: &str, mode: &str, paths: &AppPaths) -> App
         "write" => {
             let target = paths.personality.join(&safe);
 
-            // 自动创建父目录
-            if let Some(parent) = target.parent() {
-                fs::create_dir_all(parent)
-                    .map_err(|e| format!("创建目录失败: {e}"))?;
-            }
-
-            // 路径穿越防护：校验父目录在 personality 内
-            if let Some(parent) = target.parent() {
-                if parent.exists() {
-                    AppPaths::validate_path(parent, &paths.personality)?;
-                }
-            }
+            prepare_personality_write_path(&target, &paths.personality)?;
 
             Ok(target)
         }
         _ => err("未知路径解析模式"),
+    }
+}
+
+fn safe_relative_path(relative: &str) -> AppResult<PathBuf> {
+    let path = Path::new(relative);
+    if path.components().any(|part| !matches!(part, Component::Normal(_))) {
+        return Err(AppError::PathEscape);
+    }
+    Ok(path.to_path_buf())
+}
+
+/// 在创建目录前先校验最近的已存在祖先，避免已有符号链接把创建操作导向 data_root 外。
+fn prepare_personality_write_path(target: &Path, base: &Path) -> AppResult<()> {
+    if target.exists() {
+        AppPaths::validate_path(target, base)?;
+        return Ok(());
+    }
+
+    let parent = target.parent().ok_or(AppError::PathEscape)?;
+    let mut ancestor = parent;
+    while !ancestor.exists() {
+        ancestor = ancestor.parent().ok_or(AppError::PathEscape)?;
+    }
+    AppPaths::validate_path(ancestor, base)?;
+
+    fs::create_dir_all(parent).map_err(|e| AppError::Io(format!("创建目录失败: {e}")))?;
+    AppPaths::validate_path(parent, base)?;
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use std::path::PathBuf;
+    use super::safe_relative_path;
+
+    #[test]
+    fn accepts_only_normal_relative_components() {
+        assert_eq!(safe_relative_path("stages/card.json").unwrap(), PathBuf::from("stages").join("card.json"));
+        assert!(safe_relative_path("../outside.json").is_err());
+        assert!(safe_relative_path("./stages/card.json").is_err());
+        assert!(safe_relative_path("/tmp/outside.json").is_err());
     }
 }

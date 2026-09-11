@@ -246,7 +246,7 @@ export async function importProfileZip(file: File): Promise<ImportResult> {
 
     log.info(`导入 Profile: "${profileId}" (${Object.keys(zip.files).length} 文件)`);
 
-    // 通过 Tauri 命令写入 AppData
+    // 通过 Tauri 命令写入运行时 data_root/profiles
     let count = 0;
     for (const [path, zipEntry] of Object.entries(zip.files)) {
       if (zipEntry.dir) continue;

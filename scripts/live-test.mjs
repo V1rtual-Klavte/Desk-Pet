@@ -1,8 +1,8 @@
-import { cpSync, existsSync, mkdtempSync, mkdirSync, readFileSync, readdirSync, rmSync } from "node:fs"
+import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync } from "node:fs"
 import { createHash } from "node:crypto"
 import { execFileSync, spawn } from "node:child_process"
 import { homedir } from "node:os"
-import { join, relative } from "node:path"
+import { join } from "node:path"
 
 const args = process.argv.slice(2)
 const valueOptions = new Set(["--module", "--scene", "--case", "--tag", "--suite", "--repeat", "--report"])
@@ -13,20 +13,6 @@ function sha256(parts) {
   const hash = createHash("sha256")
   for (const part of parts) hash.update(part)
   return hash.digest("hex")
-}
-
-function hashDirectory(root) {
-  if (!existsSync(root)) return "missing"
-  const files = []
-  const walk = current => {
-    for (const entry of readdirSync(current, { withFileTypes: true })) {
-      const path = join(current, entry.name)
-      if (entry.isDirectory()) walk(path)
-      else if (entry.isFile()) files.push(path)
-    }
-  }
-  walk(root)
-  return sha256(files.sort().flatMap(path => [relative(root, path), readFileSync(path)]))
 }
 
 function currentCommit() {
@@ -66,14 +52,8 @@ for (let index = 0; index < args.length; index++) {
 
 const dataRoot = mkdtempSync(join(homedir(), ".deskpet-live-test-"))
 const resultPath = join(dataRoot, "live-test-result.txt")
-const seedStages = join(process.cwd(), "data", "desk-pet", "personality", "stages")
 env.DESKPET_LIVE_TEST_DATA_ROOT = dataRoot
-env.DESKPET_LIVE_TEST_SEED_HASH = hashDirectory(seedStages)
 env.DESKPET_LIVE_TEST_COMMIT = currentCommit()
-if (existsSync(seedStages)) {
-  mkdirSync(join(dataRoot, "personality"), { recursive: true })
-  cpSync(seedStages, join(dataRoot, "personality", "stages"), { recursive: true })
-}
 
 let child
 let finalized = false
