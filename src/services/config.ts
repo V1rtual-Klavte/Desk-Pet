@@ -172,7 +172,6 @@ export async function initConfig(): Promise<void> {
 
 export async function reloadConfig(): Promise<void> {
   configInitialized = false
-  _cache = null
   await initConfig()
   // 配置可能改了日志级别，立刻作用到前端与 Rust，不必等重启
   applyLogLevel()
@@ -269,15 +268,10 @@ function saveUserOverrides(s: UserSettings): void {
   queueConfigSave()
 }
 
-let _cache: UserSettings | null = null;
-
+// 不再缓存 UserSettings：cfg 是唯一真相源，loadUserOverrides() 只是读它几个字段。
+// 派生出第二份状态就得处处同步，正是过去不一致的来源。
 function getUser(): UserSettings {
-  if (!_cache) _cache = loadUserOverrides();
-  return _cache;
-}
-
-export function refreshUserCache(): void {
-  _cache = null;
+  return loadUserOverrides();
 }
 
 export function getDefaultSize(): { w: number; h: number } {
@@ -286,35 +280,34 @@ export function getDefaultSize(): { w: number; h: number } {
 
 export const userConfig = {
   get popupMode() { return getUser().popupMode; },
-  set popupMode(v: "cursor" | "fixed") { const u = loadUserOverrides(); u.popupMode = v; _cache = u; saveUserOverrides(u); },
+  set popupMode(v: "cursor" | "fixed") { const u = loadUserOverrides(); u.popupMode = v; saveUserOverrides(u); },
   get fixedPosition() { const p = getUser().fixedPosition; return (p && Math.abs(p.x) > 5000) ? null : (p && Math.abs(p.y) > 5000) ? null : p; },
-  set fixedPosition(v: { x: number; y: number } | null) { const u = loadUserOverrides(); u.fixedPosition = v; _cache = u; saveUserOverrides(u); },
+  set fixedPosition(v: { x: number; y: number } | null) { const u = loadUserOverrides(); u.fixedPosition = v; saveUserOverrides(u); },
   get popupSize() { const sz = getUser().popupSize; return (!sz || sz.w > 2000 || sz.h > 2000 || sz.w < 50 || sz.h < 50) ? { w: 730, h: 450 } : sz; },
-  set popupSize(v: { w: number; h: number }) { const u = loadUserOverrides(); u.popupSize = v; _cache = u; saveUserOverrides(u); },
+  set popupSize(v: { w: number; h: number }) { const u = loadUserOverrides(); u.popupSize = v; saveUserOverrides(u); },
   get chatWidth() { return getUser().chatWidth; },
-  set chatWidth(v: number) { const u = loadUserOverrides(); u.chatWidth = v; _cache = u; saveUserOverrides(u); },
+  set chatWidth(v: number) { const u = loadUserOverrides(); u.chatWidth = v; saveUserOverrides(u); },
   get shortcutKey() { return getUser().shortcutKey; },
-  set shortcutKey(v: string) { const u = loadUserOverrides(); u.shortcutKey = v; _cache = u; saveUserOverrides(u); },
+  set shortcutKey(v: string) { const u = loadUserOverrides(); u.shortcutKey = v; saveUserOverrides(u); },
   get shortcutMacModifiers() { return getUser().shortcutMacModifiers; },
-  set shortcutMacModifiers(v: string[]) { const u = loadUserOverrides(); u.shortcutMacModifiers = v; _cache = u; saveUserOverrides(u); },
+  set shortcutMacModifiers(v: string[]) { const u = loadUserOverrides(); u.shortcutMacModifiers = v; saveUserOverrides(u); },
   get shortcutWinModifiers() { return getUser().shortcutWinModifiers; },
-  set shortcutWinModifiers(v: string[]) { const u = loadUserOverrides(); u.shortcutWinModifiers = v; _cache = u; saveUserOverrides(u); },
+  set shortcutWinModifiers(v: string[]) { const u = loadUserOverrides(); u.shortcutWinModifiers = v; saveUserOverrides(u); },
   get autoPopupOnMessage() { return getUser().autoPopupOnMessage; },
-  set autoPopupOnMessage(v: boolean) { const u = loadUserOverrides(); u.autoPopupOnMessage = v; _cache = u; saveUserOverrides(u); },
+  set autoPopupOnMessage(v: boolean) { const u = loadUserOverrides(); u.autoPopupOnMessage = v; saveUserOverrides(u); },
   get parallaxEnabled() { return getUser().parallaxEnabled; },
-  set parallaxEnabled(v: boolean) { const u = loadUserOverrides(); u.parallaxEnabled = v; _cache = u; saveUserOverrides(u); },
+  set parallaxEnabled(v: boolean) { const u = loadUserOverrides(); u.parallaxEnabled = v; saveUserOverrides(u); },
   get parallaxIntensity() { return getUser().parallaxIntensity; },
-  set parallaxIntensity(v: number) { const u = loadUserOverrides(); u.parallaxIntensity = v; _cache = u; saveUserOverrides(u); },
+  set parallaxIntensity(v: number) { const u = loadUserOverrides(); u.parallaxIntensity = v; saveUserOverrides(u); },
   get parallaxLayers() { return getUser().parallaxLayers; },
-  set parallaxLayers(v: ParallaxLayerCfg[]) { const u = loadUserOverrides(); u.parallaxLayers = v; _cache = u; saveUserOverrides(u); },
+  set parallaxLayers(v: ParallaxLayerCfg[]) { const u = loadUserOverrides(); u.parallaxLayers = v; saveUserOverrides(u); },
   getAll(): UserSettings { return { ...getUser() }; },
-  setAll(s: Partial<UserSettings>) { const u = { ...loadUserOverrides(), ...s }; _cache = u; saveUserOverrides(u); },
+  setAll(s: Partial<UserSettings>) { const u = { ...loadUserOverrides(), ...s }; saveUserOverrides(u); },
   resetAll() {
     const defaults = structuredClone(rawConfig) as Config
     cfg.general.popup = defaults.general.popup
     cfg.general.shortcut = defaults.general.shortcut
     cfg.appearance.parallax = defaults.appearance.parallax
-    _cache = null
     queueConfigSave()
   },
 };
@@ -357,7 +350,6 @@ export function getAllOverrides(): Record<string, any> {
 
 export function clearOverrides(): void {
   cfg = structuredClone(rawConfig) as Config
-  _cache = null
   queueConfigSave()
 }
 
