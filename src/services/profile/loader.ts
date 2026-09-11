@@ -177,11 +177,29 @@ export async function getProfileAssetUrl(profileId: string, relativePath: string
 
 // ── Profile 加载 ──
 
+// ── 内置身份 ──
+// 唯一依据：Rust 的 list_builtin_profiles（即打包资源目录 builtin_profiles/ 下是否存在该 id）。
+// 不要改为读 profile.yaml 的 meta.builtin（那是自述，导入的包可以伪造），
+// 也不要改为「用户目录里没有就是内置」——用户目录遮蔽内置 id 时那会和命令层分歧。
+let _builtinIds: Set<string> | null = null;
+
+async function getBuiltinIds(): Promise<Set<string>> {
+  if (!_builtinIds) {
+    try {
+      _builtinIds = new Set(await invoke<string[]>("list_builtin_profiles"));
+    } catch (e) {
+      log.warn("列举内置 Profile 失败，本次会话按「非内置」处理", formatError(e));
+      _builtinIds = new Set();
+    }
+  }
+  return _builtinIds;
+}
+
 async function loadProfile(id: string): Promise<ProfileData> {
-  const [basePath, overlay, userProfilePath] = await Promise.all([
+  const [basePath, overlay, builtinIds] = await Promise.all([
     resolveProfileBaseUrl(id),
     loadUserAssetOverlay(id),
-    invoke<string>("profile_asset_base", { profileId: id }),
+    getBuiltinIds(),
   ]);
 
   const rawProfile = await fetchYaml<any>(`${basePath}/profile.yaml`);
@@ -216,8 +234,8 @@ async function loadProfile(id: string): Promise<ProfileData> {
       name: rawProfile?.meta?.name || id,
       description: rawProfile?.meta?.description || "",
       version: rawProfile?.meta?.version || 1,
-      // 内置身份由实际加载来源决定，不能信任导入 YAML 中的 meta.builtin。
-      builtin: !userProfilePath,
+      // 内置身份由内置资源目录决定，见 getBuiltinIds()
+      builtin: builtinIds.has(id),
       preset: rawProfile?.meta?.preset,
     },
     theme: {
@@ -286,11 +304,8 @@ export async function initProfiles(): Promise<void> {
 
 export async function discoverAllProfiles(): Promise<string[]> {
   const found = new Set<string>();
-  for (const id of ["sugar-pink", "dark-purple", "glass"]) {
-    // 探测内置 profile 时 404 属正常路径，降级到 debug 留痕即可
-    try { await resolveProfileBaseUrl(id); found.add(id); }
-    catch (e) { log.debug(`内置 profile 探测跳过: ${id}`, formatError(e)); }
-  }
+  // 内置清单来自 Rust 的目录扫描，不再硬编码 —— 加/删内置 Profile 无需改前端
+  for (const id of await getBuiltinIds()) found.add(id);
   try {
     const userProfiles: string[] = await invoke("list_user_profiles");
     for (const id of userProfiles) found.add(id);

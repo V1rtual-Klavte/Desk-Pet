@@ -25,5 +25,5 @@ pub(crate) use tool_exec::BashPool;
 pub use mcp_bridge::{mcp_spawn, mcp_send, mcp_kill};
 pub(crate) use mcp_bridge::McpPool;
 pub use memory_cmd::{get_memory_file, get_session_file, init_memory_files, list_session_files, delete_session_file, file_delete};
-pub use profile_cmd::{profile_file_write, profile_file_read, profile_delete, profile_clone, export_profile_zip, profile_asset_base, profile_user_asset_base, list_user_profiles, list_profile_files};
+pub use profile_cmd::{profile_file_write, profile_file_read, profile_delete, profile_clone, export_profile_zip, profile_asset_base, profile_user_asset_base, list_user_profiles, list_profile_files, list_builtin_profiles};
 pub use personality_fs_cmd::{personality_file_read, personality_file_write, personality_file_list, personality_file_delete};

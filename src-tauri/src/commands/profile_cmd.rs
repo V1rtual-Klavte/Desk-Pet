@@ -177,6 +177,31 @@ fn safe_profile_path(base: &Path, profile_id: &str, relative_path: &str) -> AppR
     Ok(base.join(profile_id).join(relative))
 }
 
+/// 列出内置 profiles（AppPaths.builtin_profiles 下）。
+///
+/// 这是**判定「是否内置」的唯一依据**：只看打包资源目录里是否存在该 id。
+/// 前端不得依据 profile.yaml 的 `meta.builtin`（那是自述，不可信），
+/// 也不得依据「用户目录里没有」——后者在用户目录遮蔽内置 id 时会与这里分歧，
+/// 导致界面允许编辑但命令层拒绝写入。
+#[tauri::command]
+pub fn list_builtin_profiles(paths: tauri::State<AppPaths>) -> AppResult<Vec<String>> {
+    let dir = &paths.builtin_profiles;
+    if !dir.exists() {
+        return Ok(vec![]);
+    }
+    let mut profiles = Vec::new();
+    for entry in fs::read_dir(dir).map_err(|e| AppError::Io(format!("读取内置 Profile 目录失败: {e}")))? {
+        let entry = entry.map_err(|e| AppError::Io(format!("读取条目失败: {e}")))?;
+        if entry.file_type().map(|t| t.is_dir()).unwrap_or(false) {
+            if let Some(name) = entry.file_name().to_str() {
+                profiles.push(name.to_string());
+            }
+        }
+    }
+    profiles.sort();
+    Ok(profiles)
+}
+
 /// 列出用户 profiles（AppPaths.profiles 下）
 #[tauri::command]
 pub fn list_user_profiles(paths: tauri::State<AppPaths>) -> AppResult<Vec<String>> {
