@@ -16,10 +16,14 @@ import {
   exportProfileZip,
   importProfileZip,
   deleteProfile,
+  cloneProfile,
   invalidateProfileCache,
+  type ProfileOpResult,
   type ProfileData,
   type ProfileThemeColors,
 } from "@/services/profile";
+import { showSuccess, showFailure, confirmDialog } from "@/services/dialog";
+import { BaseDirs } from "@/services/paths";
 import { createLogger } from "@/services/logger";
 
 const log = createLogger("Settings");
@@ -113,49 +117,52 @@ async function switchProfile(id: string) {
   }
 }
 
-async function doExportProfile() {
-  if (!activeProfileId.value) return;
-  try {
-    await exportProfileZip(activeProfileId.value);
-  } catch (e: any) {
-    log.error("导出失败:", e);
+/**
+ * 统一把操作结果转成用户可见的提示。
+ * 服务层不弹窗，只返回 ProfileOpResult；这里负责「让用户看见」。
+ */
+async function reportResult(r: ProfileOpResult, successTitle: string): Promise<void> {
+  if (r.cancelled) return; // 用户主动取消，静默
+  if (r.ok) {
+    await refreshProfileList();
+    await showSuccess(r.message, { title: successTitle, detail: r.detail });
+  } else {
+    await showFailure(r.message);
   }
 }
 
-async function doImportProfile() {
+async function doExportProfile(profileId: string): Promise<void> {
+  await reportResult(await exportProfileZip(profileId), "导出成功");
+}
+
+async function doCloneProfile(profileId: string): Promise<void> {
+  const existing = profileList.value.map((p) => p.id);
+  const r = await cloneProfile(profileId, existing);
+  await reportResult(r, "复制成功");
+  // 复制出来的副本通常就是为了编辑它，直接切过去
+  if (r.ok && r.newId) await switchProfile(r.newId);
+}
+
+async function doImportProfile(): Promise<void> {
   const input = document.createElement("input");
   input.type = "file";
   input.accept = ".zip";
   input.onchange = async () => {
     const file = input.files?.[0];
     if (!file) return;
-    try {
-      const result = await importProfileZip(file);
-      if (result.success) {
-        await refreshProfileList();
-      } else {
-        log.warn("导入失败:", result.error);
-      }
-    } catch (e: any) {
-      log.error("导入异常:", e);
-    }
+    await reportResult(await importProfileZip(file), "导入成功");
   };
   input.click();
 }
 
-async function doDeleteProfile() {
-  if (!activeProfileId.value) return;
-  const p = getActiveProfile();
-  if (p?.meta.builtin) {
-    log.warn("内置 Profile 不可删除");
-    return;
-  }
-  try {
-    await deleteProfile(activeProfileId.value);
-    refreshProfileList();
-  } catch (e: any) {
-    log.error("删除失败:", e);
-  }
+async function doDeleteProfile(profileId: string): Promise<void> {
+  const accepted = await confirmDialog(`确定删除「${profileId}」吗？该操作不可撤销。`, {
+    title: "删除 Profile",
+    okLabel: "删除",
+    detail: `${BaseDirs.profiles()}/${profileId}`,
+  });
+  if (!accepted) return;
+  await reportResult(await deleteProfile(profileId), "删除成功");
 }
 
 // ── 预设切换 ──
@@ -296,39 +303,6 @@ function initFontEditor() {
   };
 }
 
-// ── 克隆 ──
-async function doCloneProfile() {
-  const src = getActiveProfile();
-  if (!src) return;
-  const newId = `${src.id}-clone-${Date.now()}`;
-  try {
-    const { invoke } = await import("@tauri-apps/api/core");
-    await invoke("profile_clone", {
-      sourceProfileId: src.id,
-      targetProfileId: newId,
-    });
-    const copied = await invoke<number[]>("profile_file_read", {
-      profileId: newId,
-      relativePath: "profile.yaml",
-    });
-    const jsYaml = await import("js-yaml");
-    const doc = jsYaml.load(new TextDecoder().decode(new Uint8Array(copied))) as any;
-    doc.meta = { ...(doc.meta || {}), builtin: false, name: `${src.meta.name} (副本)` };
-    delete doc.meta.preset;
-    await invoke("profile_file_write", {
-      profileId: newId,
-      relativePath: "profile.yaml",
-      content: Array.from(new TextEncoder().encode(jsYaml.dump(doc, { lineWidth: -1, noRefs: true }))),
-    });
-    invalidateProfileCache(newId);
-    log.info(`已克隆: "${newId}"`);
-    await refreshProfileList();
-    await switchProfile(newId);
-  } catch (e: any) {
-    log.error("克隆失败:", e);
-  }
-}
-
 // ── 生命周期 ──
 onMounted(async () => {
   await initProfiles();
@@ -381,10 +355,37 @@ defineExpose({
 
   <!-- Profile + 预览 -->
   <div class="s-section">
-    <div class="s-label">📦 Profile</div>
-    <select class="inp" style="width:100%;margin-bottom:6px" v-model="activeProfileId" @change="switchProfile(($event.target as HTMLSelectElement).value)">
-      <option v-for="p in profileList" :key="p.id" :value="p.id">{{ p.meta.name }} {{ p.meta.builtin ? '[内置]' : '[用户]' }}</option>
-    </select>
+    <div class="pf-head">
+      <span class="s-label" style="margin:0">📦 Profile</span>
+      <span class="pf-head-actions">
+        <button class="btn-s" @click="refreshProfileList()">🔄 刷新</button>
+        <button class="btn-s" @click="doImportProfile()">📥 导入</button>
+      </span>
+    </div>
+
+    <div class="pf-list">
+      <div
+        v-for="p in profileList"
+        :key="p.id"
+        class="pf-row"
+        :class="{ active: p.id === activeProfileId }"
+        @click="switchProfile(p.id)"
+      >
+        <div class="pf-row-main">
+          <span class="pf-row-name">{{ p.meta.name }}</span>
+          <span class="pf-row-tag">{{ p.meta.builtin ? '内置' : '用户' }}</span>
+          <span class="pf-row-id">{{ p.id }}</span>
+          <span v-if="p.id === activeProfileId" class="pf-row-current">●当前</span>
+        </div>
+        <div class="pf-row-actions" @click.stop>
+          <button class="btn-s" @click="doCloneProfile(p.id)">复制</button>
+          <button class="btn-s" @click="doExportProfile(p.id)">导出</button>
+          <button v-if="!p.meta.builtin" class="btn-s btn-d" @click="doDeleteProfile(p.id)">🗑</button>
+        </div>
+      </div>
+      <div v-if="!profileList.length" class="s-hint">未发现任何 Profile</div>
+    </div>
+
     <div v-if="profileDetail" class="profile-preview">
       <img :src="getBodyUrl(profileDetail)" class="preview-body" @error="($event.target as HTMLImageElement).style.display='none'" />
       <div class="preview-info">
@@ -450,17 +451,6 @@ defineExpose({
     </div>
   </div>
 
-  <!-- 管理 -->
-  <div class="s-section">
-    <div class="s-label">📦 管理</div>
-    <div class="row-gap">
-      <button class="btn-s" @click="refreshProfileList()">🔄 刷新</button>
-      <button class="btn-s" @click="doCloneProfile()">📋 复制为用户 Profile</button>
-      <button class="btn-s" @click="doExportProfile()">📤 导出</button>
-      <button class="btn-s" @click="doImportProfile()">📥 导入</button>
-      <button class="btn-s btn-d" @click="doDeleteProfile()" :disabled="profileDetail?.meta.builtin">🗑 删除</button>
-    </div>
-  </div>
 </div>
 </template>
 
@@ -490,6 +480,39 @@ defineExpose({
 .range-val { width: 32px; text-align: right; font-size: 12px; color: var(--color-text-muted,#8a6080); }
 
 /* ── Profile 预览 ── */
+/* ── Profile 列表 ── */
+.pf-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 6px; }
+.pf-head-actions { display: flex; gap: 6px; }
+
+.pf-list { display: flex; flex-direction: column; gap: 4px; margin-bottom: 6px; }
+.pf-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 5px 8px;
+  border-radius: 6px;
+  border: 1px solid transparent;
+  background: rgba(0, 0, 0, 0.15);
+  cursor: pointer;
+  transition: background 0.15s, border-color 0.15s;
+}
+.pf-row:hover { background: rgba(255, 255, 255, 0.06); }
+.pf-row.active { border-color: var(--color-accent, #c4276f); }
+.pf-row-main { display: flex; align-items: baseline; gap: 6px; min-width: 0; }
+.pf-row-name { font-weight: 700; }
+.pf-row-tag {
+  font-size: 9px;
+  padding: 1px 5px;
+  border-radius: 4px;
+  background: rgba(255, 255, 255, 0.12);
+  opacity: 0.8;
+}
+/* 副本沿用原名（显示名不改），靠 ID 区分 */
+.pf-row-id { font-family: var(--font-mono, monospace); font-size: 9px; opacity: 0.5; }
+.pf-row-current { font-size: 10px; color: var(--color-accent, #c4276f); }
+.pf-row-actions { display: flex; gap: 4px; flex-shrink: 0; }
+
 .profile-preview { display: flex; gap: 8px; padding: 6px; background: rgba(0,0,0,0.15); border-radius: 8px; align-items: flex-start; }
 .preview-body { width: 48px; height: 48px; object-fit: contain; image-rendering: pixelated; border-radius: 4px; border: 2px solid rgba(255,255,255,0.1); flex-shrink: 0; background: rgba(0,0,0,0.2); }
 .preview-info { flex: 1; min-width: 0; }

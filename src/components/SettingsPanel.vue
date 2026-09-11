@@ -16,6 +16,7 @@ import GeneralTab from "@/components/settings/GeneralTab.vue";
 import AITab from "@/components/settings/AITab.vue";
 import ToolsTab from "@/components/settings/ToolsTab.vue";
 import AppearanceTab from "@/components/settings/AppearanceTab.vue";
+import AppDialog from "@/components/AppDialog.vue";
 
 const log = createLogger("Settings");
 const win = getCurrentWebviewWindow();
@@ -271,6 +272,8 @@ onUnmounted(() => {
       <button class="btn" @click="doCancel">取消</button>
       <button class="btn btn-primary" @click="doSave">💾 保存</button>
     </div>
+
+    <AppDialog />
   </div>
 </template>
 

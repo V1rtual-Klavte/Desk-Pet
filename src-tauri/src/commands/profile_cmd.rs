@@ -5,6 +5,7 @@
 
 use std::fs;
 use std::path::{Component, Path, PathBuf};
+use tauri_plugin_dialog::DialogExt;
 use crate::paths::AppPaths;
 use crate::error::{err, AppError, AppResult};
 
@@ -265,5 +266,141 @@ fn list_image_files_filtered(dir: &PathBuf, prefix: &Option<String>) -> AppResul
     match prefix {
         Some(p) => Ok(all.into_iter().filter(|f| f.starts_with(p.as_str())).collect()),
         None => Ok(all),
+    }
+}
+
+// ==========================================
+// 导出 Profile（原生「另存为」 + Rust 侧打包）
+// ==========================================
+
+/// 把 Profile 目录打包为 zip，写入用户选定的位置。
+///
+/// 为什么在 Rust 侧打包而不是前端 JSZip：Profile 实测 28MB / 229 个文件，
+/// 经 Tauri IPC 传字节会序列化成上百 MB 的 JSON 数组；而且目录遍历天然不需要
+/// 前端维护一份文件清单（那种清单一定会随素材变动而漂移）。
+///
+/// 返回 `Ok(None)` 表示用户取消了保存 —— 那是正常操作，不是错误。
+#[tauri::command]
+pub async fn export_profile_zip(
+    app: tauri::AppHandle,
+    profile_id: String,
+    paths: tauri::State<'_, AppPaths>,
+) -> AppResult<Option<String>> {
+    validate_profile_id(&profile_id)?;
+
+    // 与读取语义保持一致：用户目录优先，其次内置资源
+    let user_source = paths.profiles.join(&profile_id);
+    let builtin_source = paths.builtin_profiles.join(&profile_id);
+    let source = if user_source.is_dir() {
+        user_source
+    } else if builtin_source.is_dir() {
+        builtin_source
+    } else {
+        return err(format!("Profile 不存在: {profile_id}"));
+    };
+
+    let picked = app
+        .dialog()
+        .file()
+        .set_file_name(format!("{profile_id}.zip"))
+        .add_filter("Zip 压缩包", &["zip"])
+        .blocking_save_file();
+    let Some(file_path) = picked else {
+        return Ok(None); // 用户取消
+    };
+    let target = file_path
+        .into_path()
+        .map_err(|e| AppError::Io(format!("无效的保存路径: {e}")))?;
+
+    if let Err(e) = write_profile_zip(&source, &target) {
+        // 不留半截压缩包
+        let _ = fs::remove_file(&target);
+        return Err(e);
+    }
+    Ok(Some(target.to_string_lossy().to_string()))
+}
+
+fn write_profile_zip(source: &Path, target: &Path) -> AppResult<()> {
+    let file = fs::File::create(target).map_err(|e| AppError::Io(format!("创建压缩包失败: {e}")))?;
+    let mut writer = zip::ZipWriter::new(file);
+    let options = zip::write::SimpleFileOptions::default()
+        .compression_method(zip::CompressionMethod::Deflated);
+
+    add_tree_to_zip(&mut writer, source, source, options)?;
+    writer
+        .finish()
+        .map_err(|e| AppError::Io(format!("完成压缩包失败: {e}")))?;
+    Ok(())
+}
+
+fn add_tree_to_zip(
+    writer: &mut zip::ZipWriter<fs::File>,
+    root: &Path,
+    current: &Path,
+    options: zip::write::SimpleFileOptions,
+) -> AppResult<()> {
+    let entries = fs::read_dir(current).map_err(|e| AppError::Io(format!("读取目录失败: {e}")))?;
+    for entry in entries {
+        let entry = entry.map_err(|e| AppError::Io(format!("读取目录项失败: {e}")))?;
+        let path = entry.path();
+        if path.is_dir() {
+            add_tree_to_zip(writer, root, &path, options)?;
+            continue;
+        }
+        // zip 内路径统一用正斜杠，Windows 的反斜杠要在归档前归一化
+        let name = path
+            .strip_prefix(root)
+            .map_err(|_| AppError::PathEscape)?
+            .to_string_lossy()
+            .replace('\\', "/");
+        writer
+            .start_file(name, options)
+            .map_err(|e| AppError::Io(format!("写入压缩包条目失败: {e}")))?;
+        let mut input =
+            fs::File::open(&path).map_err(|e| AppError::Io(format!("打开 {path:?} 失败: {e}")))?;
+        std::io::copy(&mut input, writer)
+            .map_err(|e| AppError::Io(format!("写入压缩包失败: {e}")))?;
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// 递归打包应保留相对路径，且能被打包器自己读回。
+    /// 原生「另存为」对话框无法自动化，但打包这一步是导出的全部实质逻辑。
+    #[test]
+    fn zips_directory_tree_preserving_relative_paths() {
+        let tmp = std::env::temp_dir().join(format!("deskpet-zip-test-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&tmp);
+
+        let src = tmp.join("src");
+        let nested = src.join("materials").join("L2");
+        fs::create_dir_all(&nested).unwrap();
+        fs::write(src.join("profile.yaml"), b"meta: {}").unwrap();
+        fs::write(nested.join("body.png"), b"fake-png-bytes").unwrap();
+
+        let out = tmp.join("out.zip");
+        write_profile_zip(&src, &out).unwrap();
+
+        let mut archive = zip::ZipArchive::new(fs::File::open(&out).unwrap()).unwrap();
+        let mut names: Vec<String> = (0..archive.len())
+            .map(|i| archive.by_index(i).unwrap().name().to_string())
+            .collect();
+        names.sort();
+        assert_eq!(names, vec!["materials/L2/body.png", "profile.yaml"]);
+
+        // 内容也要能原样读回
+        let mut body = String::new();
+        use std::io::Read;
+        archive
+            .by_name("materials/L2/body.png")
+            .unwrap()
+            .read_to_string(&mut body)
+            .unwrap();
+        assert_eq!(body, "fake-png-bytes");
+
+        let _ = fs::remove_dir_all(&tmp);
     }
 }

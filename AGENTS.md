@@ -115,6 +115,7 @@ src/
 │   ├── profile/                # Profile 选择、加载、导入导出
 │   ├── window/                 # 前台窗口监控与主动搭话
 │   ├── audio/                  # 音效注册与播放
+│   ├── dialog/                 # 通用提示 Dialog（服务层单例 + 确认模式）
 │   ├── error/                  # 异常体系（归一化、全局拦截、DOM 覆盖层）
 │   ├── logger/                 # 统一日志（级别、批量转发、落盘）
 │   ├── animation.ts            # 从 Profile 加载的动画系统

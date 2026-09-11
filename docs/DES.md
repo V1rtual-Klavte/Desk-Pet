@@ -569,10 +569,15 @@ Profile 缺失的素材自动回退到 `DEFAULT_BUILTIN`（sugar-pink）：
 
 | 操作 | 实现 |
 |------|------|
-| **导出** | `exportProfileZip(id)` — 打包 profile 文件为 Zip 触发下载 |
-| **导入** | `importProfileZip(file)` — 解包 Zip → Tauri invoke `profile_file_write` → 写入 `{data_root}/profiles/` |
+| **导出** | `exportProfileZip(id)` — 前端只传 profileId；Rust 遍历目录打包（`zip` crate）→ 原生「另存为」对话框（`tauri-plugin-dialog`）→ 写盘并回传完整路径。**不在 Rust 侧收前端字节**：Profile 约 28MB / 229 文件，经 IPC 会序列化成上百 MB 的 JSON。用户取消返回 `Ok(None)`，不算失败 |
+| **导入** | `importProfileZip(file)` — 前端 JSZip 解包 → Tauri invoke `profile_file_write` → 写入 `{data_root}/profiles/` |
+| **复制** | `cloneProfile(sourceId, existingIds)` — Rust `profile_clone` 复制目录树，副本 ID 取最小未占用的 `copy{n}`，并改写 `meta.builtin = false` / 删除 `meta.preset` |
 | **删除** | `deleteProfile(id)` — 仅限非内置 profile，调用 `profile_delete` 删除目录 |
 | **存储** | 内置 → `public/profiles/` 并随安装包发布；用户导入/复制 → `{data_root}/profiles/` |
+
+所有操作返回统一的 `ProfileOpResult { ok, message, detail?, cancelled? }`，
+Service 层不弹窗；由 `AppearanceTab` 经 `services/dialog` 的 `showSuccess` / `showFailure`
+提示用户 —— 成功带完整路径且可一键复制。
 
 #### 设置面板外观页
 
@@ -580,12 +585,14 @@ Profile 缺失的素材自动回退到 `DEFAULT_BUILTIN`（sugar-pink）：
 
 ```
 预设切换: [🌸粉色] [🌙暗夜] [🪟玻璃]  ← 一键切换
-Profile选择: 下拉框（内置+用户）
-预览: 色调预览色块
+📦 Profile                          [🔄 刷新] [📥 导入]
+  ├ 每行一个 Profile，点整行切换为当前
+  ├ 内置行: [复制] [导出]
+  └ 用户行: [复制] [导出] [🗑 删除]（删除前二次确认）
+预览: 当前 Profile 的立绘 + 角色名 + 动画数
 配色: 18个颜色选择器（中文标签）
 字体: UI字体 / 聊天字体 下拉选择
 音效: 音量滑块 + 事件→音效映射
-管理: [导出] [导入] [删除] [另存为]
 ```
 
 ---

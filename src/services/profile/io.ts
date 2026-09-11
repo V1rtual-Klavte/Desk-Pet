@@ -1,283 +1,173 @@
 // ==========================================
-// Profile IO — 导入/导出/删除
+// Profile IO — 导入 / 导出 / 复制 / 删除
+//
 // 内置 profile 从只读资源目录读取，用户 profile 写入 AppPaths.profiles。
+// 所有操作返回 ProfileOpResult，由调用方决定怎么提示用户 —— 不在这里弹窗，
+// 保持服务层与 UI 解耦。
 // ==========================================
 
 import JSZip from "jszip";
 import { invoke } from "@tauri-apps/api/core";
-import { listProfiles, getProfile, getActiveProfile, invalidateProfileCache, type ProfileData } from "./loader";
+import { getProfile, invalidateProfileCache } from "./loader";
+import { BaseDirs } from "@/services/paths";
 import { createLogger } from "@/services/logger";
+import { formatError } from "@/services/error";
 
 const log = createLogger("ProfileIO");
 
-// ── 导出 Profile 为 Zip ──
+/** 所有 Profile 操作的统一返回 */
+export interface ProfileOpResult {
+  ok: boolean
+  /** 给用户看的一句话结论 */
+  message: string
+  /** 补充详情，如完整路径 */
+  detail?: string
+  /** 用户主动取消 —— 不是失败，调用方应直接静默返回 */
+  cancelled?: boolean
+}
 
-/** 需要导出的 profile 目录中的文件列表 */
-const PROFILE_FILES = [
-  "profile.yaml",
-  "character.yaml",
-  "materials/L2/body.png",
-  "preview.png",   // 可选
-];
+function ok(message: string, detail?: string): ProfileOpResult {
+  return { ok: true, message, detail }
+}
+function fail(message: string, detail?: string): ProfileOpResult {
+  return { ok: false, message, detail }
+}
+const CANCELLED: ProfileOpResult = { ok: false, cancelled: true, message: "" }
 
-/** 递归列出 profile 目录中所有文件 */
-async function listProfileFiles(profileId: string): Promise<string[]> {
-  const files: string[] = [];
-  const profile = getProfile(profileId)
-  if (!profile) return files
-  const basePath = profile.basePath
+/** 用户 profile 的展示用路径（相对 data_root） */
+function profileLabel(profileId: string): string {
+  return `profiles/${profileId}`
+}
 
-  // 基础文件
-  for (const f of PROFILE_FILES) {
-    const resp = await fetch(`${basePath}/${f}`);
-    if (resp.ok) files.push(f);
-  }
+// ── 导出 ──
 
-  // frames/ 目录 — 通过 character.yaml 知道有哪些帧
+/**
+ * 导出 Profile 为 zip。
+ *
+ * 打包与写盘都在 Rust 侧完成：Profile 实测 28MB / 229 个文件，经 IPC 传字节会
+ * 序列化成上百 MB 的 JSON 数组；而且 Rust 直接遍历目录，不需要前端维护文件清单。
+ * Rust 会弹原生「另存为」对话框，用户取消时返回 Ok(None)。
+ */
+export async function exportProfileZip(profileId: string): Promise<ProfileOpResult> {
   try {
-    const charResp = await fetch(`${basePath}/character.yaml`);
-    if (charResp.ok) {
-      const text = await charResp.text();
-      // 从 YAML 文本中提取帧路径（简单解析，避免加载 js-yaml）
-      const framePattern = /f:\s*"([^"]+)"|f:\s*'([^']+)'|f:\s*(\S+)/g;
-      let match;
-      while ((match = framePattern.exec(text)) !== null) {
-        const f = match[1] || match[2] || match[3];
-        if (f && f.startsWith("frames/")) files.push(f);
-      }
-    }
-  } catch { /* ignore */ }
+    const savedPath = await invoke<string | null>("export_profile_zip", { profileId });
+    if (!savedPath) return CANCELLED;
+    log.info(`已导出 ${profileId} → ${savedPath}`);
+    return ok(`${profileId}.zip 已导出`, savedPath);
+  } catch (e) {
+    log.error("导出失败", formatError(e));
+    return fail(formatError(e));
+  }
+}
 
-  // fonts/ 目录
+// ── 复制 ──
+
+/** 取最小的未占用副本名：copy1、copy2…… */
+export function nextCloneId(existingIds: string[]): string {
+  const taken = new Set(existingIds)
+  for (let i = 1; ; i++) {
+    const candidate = `copy${i}`
+    if (!taken.has(candidate)) return candidate
+  }
+}
+
+/**
+ * 复制 Profile（内置或用户都可以作为源）。
+ *
+ * 副本必须改写 `meta.builtin = false` —— 否则会被当成只读内置资源；
+ * 同时删掉 `meta.preset`，否则会混进设置页的预设按钮里。
+ */
+export async function cloneProfile(
+  sourceId: string,
+  existingIds: string[],
+): Promise<ProfileOpResult & { newId?: string }> {
+  const newId = nextCloneId(existingIds)
   try {
-    const resp = await fetch(`${basePath}/fonts/zpix.ttf`);
-    if (resp.ok) {
-      for (const font of ["zpix.ttf", "PixelMplus10-Regular.ttf", "PixelMplus10-Bold.ttf"]) {
-        files.push(`fonts/${font}`);
-      }
-    }
-  } catch { /* ignore */ }
+    await invoke("profile_clone", {
+      sourceProfileId: sourceId,
+      targetProfileId: newId,
+    })
 
-  // sounds/ 目录 — 扫描已知音效文件
-  const knownSounds = [
-    "welcome_chord.wav", "send_short.wav", "reply_ding.wav",
-    "popup_up.wav", "retract_down.wav", "surface_light.wav",
-    "middle_tremolo.wav", "deep_noise.wav",
-  ];
-  for (const s of knownSounds) {
-    try {
-      const resp = await fetch(`${basePath}/sounds/${s}`);
-      if (resp.ok) files.push(`sounds/${s}`);
-    } catch { /* skip */ }
-  }
+    const raw = await invoke<number[]>("profile_file_read", {
+      profileId: newId,
+      relativePath: "profile.yaml",
+    })
+    const jsYaml = await import("js-yaml")
+    const doc = jsYaml.load(new TextDecoder().decode(new Uint8Array(raw))) as Record<string, any>
+    doc.meta = { ...(doc.meta || {}), builtin: false }
+    delete doc.meta.preset
+    await invoke("profile_file_write", {
+      profileId: newId,
+      relativePath: "profile.yaml",
+      content: Array.from(new TextEncoder().encode(jsYaml.dump(doc))),
+    })
 
-  // ui/ 目录 — 扫描子目录
-  for (const sub of ["windows", "Fromtemd", "jine", "photo"]) {
-    try {
-      // 尝试几个已知文件来检测目录是否存在
-      const testPaths: Record<string, string[]> = {
-        windows: ["operation_base.png", "button_close.png", "icon_desktop_yapoo.png"],
-        Fromtemd: ["FHDbg.png", "button_start.png", "bios_logo.png"],
-        jine: ["icon_cho.png", "icon_ame.png"],
-        photo: [], // photo 目录可能为空或没有关键文件，跳过
-      };
-      for (const testFile of testPaths[sub] || []) {
-        const resp = await fetch(`${basePath}/ui/${sub}/${testFile}`);
-        if (resp.ok) {
-          // 目录存在，使用已知文件列表
-          await listUiDir(basePath, sub, files);
-          break;
-        }
-      }
-    } catch { /* ignore */ }
-  }
-
-  return files;
-}
-
-/** 列出 ui 子目录中的文件（完整已知文件表） */
-async function listUiDir(basePath: string, subDir: string, files: string[]): Promise<void> {
-  // ★ 完整文件表 — 基于实际磁盘扫描，覆盖所有现有素材
-  const knownFiles: Record<string, string[]> = {
-    windows: [
-      "BaseButton.png", "BaseButtonDisabled.png", "BaseButtonHovered.png",
-      "BaseButtonPressed.png", "bg_side_bar.png", "bg_stream_no_chair.png",
-      "bg_stream_shield_gold.png", "button_close.png", "button_day.png",
-      "button_maximize.png", "button_minimize.png", "button_start.png",
-      "button_hidden.png", "haisin.png", "icon_desktop_yapoo.png",
-      "icon_status_follower.png", "icon_status_love.png",
-      "icon_status_love #40971.png", "icon_status_stress.png",
-      "icon_status_yami.png", "operation_base.png", "operation_close.png",
-      "operation_frame.png", "operation_line.png", "operation_live.png",
-      "operation_pink.png", "settings_bg.png", "status_follow.png",
-      "status_love.png", "status_retweet.png", "status_yami.png",
-      "tinder_match.png", "title_brand.png",
-      "windowbase_active.png", "windowbase_inactive.png",
-    ],
-    Fromtemd: [
-      "BaseButton.png", "BaseButtonDisabled.png", "BaseButtonHovered.png",
-      "BaseButtonPressed.png", "Bios_nso.png", "FHDbg.png", "Footer.png",
-      "bios_logo.png", "boot_bios.png", "boot_logo.png", "button_day.png",
-      "button_start.png", "icon_desktop_egosearch.png",
-      "icon_desktop_folder_open1.png", "icon_desktop_folder_open2.png",
-      "icon_desktop_folder_zip.png", "icon_desktop_internet.png",
-      "icon_desktop_jine2.png", "icon_desktop_movie.png",
-      "icon_desktop_text.png", "icon_desktop_twitter.png",
-      "icon_desktop_youtube2.png", "icon_heart.png",
-      "icon_status_follower.png", "icon_status_love #40971.png",
-      "icon_status_love.png", "icon_status_stress.png",
-      "icon_status_yami.png", "icon_taskbar_jine.png",
-      "icon_taskbar_poketter.png", "icon_taskbar_taskmanager.png",
-      "icon_trash_can.png", "login #22606.png", "login_bg.png",
-      "operation_close.png", "operation_desktop.png", "operation_live.png",
-      "operation_login.png", "pop_bubble.png",
-      "tweet_selfie_cho_happy_001.png", "tweet_selfie_cho_happy_end.png",
-      "tweet_selfie_cho_sleepy_001.png", "tweet_selfie_cho_sorrow_001.png",
-    ],
-    jine: [
-      "Background.png", "CommentIcon.png", "InputFieldBackground.png",
-      "JINEBG.png", "JINE_amechan.png", "JINE_button_tobottom.png",
-      "JINE_date.png", "LineDateBG.png", "amechan.png", "bg_line_call.png",
-      "bg_side_bar.png", "icon_ame.png", "icon_cho.png",
-      "icon_internet.png", "icon_jine.png", "icon_jine_ame.png",
-      "icon_menu.png", "icon_poketter.png", "icon_portfolio.png",
-      "icon_settings.png", "icon_shadow.png", "icon_tautan.png",
-      "icon_virtual.png", "icon_wiki.png", "logo.png",
-      "menu_bg.png", "menu_user.png", "menu_user2.png",
-      "netaChoose.png", "yomuCommentBox.png",
-    ],
-    photo: [
-      "bank_126.png", "bank_129.png", "bank_134.png",
-      "futaba.png", "futaba2.png", "insta.png", "news.png",
-      "stream_cho_end.png",
-      "tweet_selfie_cho_cosplay_001.png", "tweet_selfie_cho_cosplay_002.png",
-      "tweet_selfie_cho_cosplay_003.png",
-      "tweet_selfie_cho_grand_end_001.png", "tweet_selfie_cho_grand_end_003.png",
-      "tweet_selfie_cho_grand_end_004.png",
-      "tweet_selfie_cho_happa_001.png",
-      "tweet_selfie_cho_happy_001.png", "tweet_selfie_cho_happy_002.png",
-      "tweet_selfie_cho_happy_003.png", "tweet_selfie_cho_happy_005.png",
-      "tweet_selfie_cho_happy_end.png",
-      "tweet_selfie_cho_nuigurumi_001.png",
-      "tweet_selfie_cho_otikomu_001.png",
-      "tweet_selfie_cho_pray_001.png",
-      "tweet_selfie_cho_sleepy_001.png",
-      "tweet_selfie_cho_sorrow_001.png",
-      "tweet_selfie_cho_start_001.png",
-      "tweet_selfie_cho_yami_001.png", "tweet_selfie_cho_yami_002.png",
-      "DSC_0150.png", "DSC_0180.png", "DSC_0187.png", "DSC_0248.png",
-      "DSC_0303.png", "DSC_0306.png", "DSC_0316.png", "DSC_0356.png",
-      "DSC_2152.png", "DSC_2180.png", "DSC_2184.png", "DSC_2191.png",
-      "DSC_2193.png", "DSC_2205.png", "DSC_2208.png", "DSC_2216.png",
-      "DSC_2222.png", "DSC_2225.png", "DSC_2231.png", "DSC_2242.png",
-      "DSC_2247.png", "DSC_2311.png", "DSC_2357.png", "DSC_2360.png",
-      "DSC_2366.png", "DSC_2375.png", "DSC_2387.png", "DSC_2396.png",
-    ],
-  };
-
-  const list = knownFiles[subDir] || [];
-  for (const f of list) {
-    const resp = await fetch(`${basePath}/ui/${subDir}/${f}`);
-    if (resp.ok) files.push(`ui/${subDir}/${f}`);
+    invalidateProfileCache(newId)
+    log.info(`已复制 Profile: ${sourceId} → ${newId}`)
+    return { ...ok(`已复制为 ${newId}`, `${BaseDirs.profiles()}/${newId}`), newId }
+  } catch (e) {
+    log.error("复制失败", formatError(e))
+    return fail(formatError(e))
   }
 }
 
-/** 导出 profile 为 zip 并触发下载 */
-export async function exportProfileZip(profileId: string): Promise<void> {
-  const profile = getProfile(profileId);
-  if (!profile) {
-    log.error(`Profile "${profileId}" 不存在`);
-    throw new Error(`Profile "${profileId}" 不存在`);
-  }
-
-  log.info(`导出 Profile: "${profileId}"`);
-  const zip = new JSZip();
-  const files = await listProfileFiles(profileId);
-
-  for (const f of files) {
-    try {
-      const resp = await fetch(`${profile.basePath}/${f}`);
-      if (resp.ok) {
-        const blob = await resp.blob();
-        zip.file(f, blob);
-      }
-    } catch (e) {
-      log.warn(`跳过文件: ${f}`, e);
-    }
-  }
-
-  const zipBlob = await zip.generateAsync({ type: "blob" });
-  const url = URL.createObjectURL(zipBlob);
-  const a = document.createElement("a");
-  a.href = url;
-  a.download = `${profileId}.zip`;
-  a.click();
-  URL.revokeObjectURL(url);
-  log.info(`Profile "${profileId}" 导出完成 (${files.length} 文件)`);
-}
-
-// ── 导入 Profile ──
-
-export interface ImportResult {
-  success: boolean
-  profileId?: string
-  error?: string
-}
+// ── 导入 ──
 
 /** 从 zip 文件导入 profile */
-export async function importProfileZip(file: File): Promise<ImportResult> {
+export async function importProfileZip(file: File): Promise<ProfileOpResult & { profileId?: string }> {
   try {
-    const zip = await JSZip.loadAsync(file);
-    const profileYaml = zip.file("profile.yaml");
-    const bodyPng = zip.file("materials/L2/body.png");
-
-    if (!profileYaml) {
-      return { success: false, error: "缺少 profile.yaml" };
-    }
-    if (!bodyPng) {
-      return { success: false, error: "缺少 body.png" };
+    const zip = await JSZip.loadAsync(file)
+    if (!zip.file("profile.yaml")) {
+      return fail("压缩包缺少 profile.yaml，不是有效的 Profile 导出文件")
     }
 
-    // 从文件名提取 profile ID
-    const profileId = file.name.replace(/\.zip$/i, "").replace(/[^a-zA-Z0-9_-]/g, "-").toLowerCase();
-    if (!profileId) {
-      return { success: false, error: "无效的文件名" };
+    const profileId = file.name
+      .replace(/\.zip$/i, "")
+      .replace(/[^a-zA-Z0-9_-]/g, "-")
+      .toLowerCase()
+    if (!profileId) return fail("无法从文件名推导出合法的 Profile ID")
+
+    if (getProfile(profileId)?.meta.builtin) {
+      return fail(`"${profileId}" 与内置 Profile 同名，请重命名压缩包后再导入`)
     }
 
-    log.info(`导入 Profile: "${profileId}" (${Object.keys(zip.files).length} 文件)`);
-
-    // 通过 Tauri 命令写入运行时 data_root/profiles
-    let count = 0;
-    for (const [path, zipEntry] of Object.entries(zip.files)) {
-      if (zipEntry.dir) continue;
-      // 跳过 macOS 隐藏文件
-      if (path.startsWith("__MACOSX") || path.includes("/._")) continue;
-
-      const data = await zipEntry.async("uint8array");
+    let count = 0
+    for (const [path, entry] of Object.entries(zip.files)) {
+      if (entry.dir) continue
+      // 跳过 macOS 打包产生的隐藏文件
+      if (path.startsWith("__MACOSX") || path.includes("/._")) continue
+      const data = await entry.async("uint8array")
       await invoke("profile_file_write", {
         profileId,
         relativePath: path,
         content: Array.from(data as Uint8Array),
-      });
-      count++;
+      })
+      count++
     }
 
-    log.info(`Profile "${profileId}" 导入完成 (${count} 文件)`);
     invalidateProfileCache(profileId)
-    return { success: true, profileId };
-  } catch (e: any) {
-    log.error("导入失败:", e);
-    return { success: false, error: e.message || String(e) };
+    log.info(`已导入 ${profileId}（${count} 个文件）`)
+    return { ...ok(`已导入 ${count} 个文件`, `${BaseDirs.profiles()}/${profileId}`), profileId }
+  } catch (e) {
+    log.error("导入失败", formatError(e))
+    return fail(formatError(e))
   }
 }
 
-/** 删除用户 profile */
-export async function deleteProfile(profileId: string): Promise<void> {
-  const profile = getProfile(profileId);
-  if (!profile) return;
-  if (profile.meta.builtin) {
-    throw new Error("内置 Profile 不可删除");
+// ── 删除 ──
+
+export async function deleteProfile(profileId: string): Promise<ProfileOpResult> {
+  const profile = getProfile(profileId)
+  if (profile?.meta.builtin) {
+    return fail(`"${profileId}" 是内置 Profile，不可删除`)
   }
-  await invoke("profile_delete", { profileId });
-  log.info(`Profile "${profileId}" 已删除`);
+  try {
+    await invoke("profile_delete", { profileId })
+    invalidateProfileCache(profileId)
+    log.info(`已删除 Profile: ${profileId}`)
+    return ok(`已删除 ${profileId}`, profileLabel(profileId))
+  } catch (e) {
+    log.error("删除失败", formatError(e))
+    return fail(formatError(e))
+  }
 }

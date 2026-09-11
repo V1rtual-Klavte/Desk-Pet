@@ -25,7 +25,11 @@ export {
   exportProfileZip,
   importProfileZip,
   deleteProfile,
+  cloneProfile,
+  nextCloneId,
 } from "./io";
+
+export type { ProfileOpResult } from "./io";
 
 export type {
   ProfileData,

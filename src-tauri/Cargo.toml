@@ -14,6 +14,8 @@ tauri-build = { version = "2", features = [] }
 [dependencies]
 tauri-plugin-notification = "2"
 tauri-plugin-global-shortcut = "2"
+# 原生「另存为」对话框 —— 仅 Rust 侧使用，前端经自有命令调用
+tauri-plugin-dialog = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tauri = { version = "2.11", features = ["macos-private-api", "image-png", "tray-icon", "protocol-asset"] }
@@ -22,6 +24,10 @@ num_cpus = "1"
 chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
 # 结构化错误类型
 thiserror = "1"
+# Profile 导出打包。只留 zlib-rs 的 deflate：
+# 默认特性会拉入 zstd/bzip2/lzma/aes/sha2/ppmd 等一大串，而 `deflate` 本身还额外捆绑
+# 了编译极慢的 zopfli。Profile 里绝大多数是已压缩的 PNG/WAV，多算法收益极低。
+zip = { version = "8", default-features = false, features = ["deflate-flate2-zlib-rs"] }
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.52", features = ["Win32_Foundation", "Win32_UI_WindowsAndMessaging", "Win32_Graphics_Gdi", "Win32_UI_HiDpi"] }
