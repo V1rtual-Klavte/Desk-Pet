@@ -21,6 +21,12 @@ const OVERLAY_Z = "2147483647"
 export interface ReportOptions {
   kind?: string
   fatal?: boolean
+  /**
+   * 是否允许弹覆盖层，默认允许。
+   * 传 false 用于**预期内**的失败（如精简 Profile 缺少可选素材的 404）——
+   * 这类情况只该记 warn 留痕，不该拿全屏异常去吓用户。
+   */
+  overlay?: boolean
 }
 
 interface Entry {
@@ -57,8 +63,13 @@ export function reportError(source: string, value: unknown, options: ReportOptio
     const kind = options.kind ?? "error"
     const message = formatError(value)
     const detail = errorDetail(value)
+    const allowOverlay = options.overlay !== false
 
-    log.error(`[${source}] ${kind}${options.fatal ? " (fatal)" : ""}:`, detail)
+    if (allowOverlay) {
+      log.error(`[${source}] ${kind}${options.fatal ? " (fatal)" : ""}:`, detail)
+    } else {
+      log.warn(`[${source}] ${kind}:`, detail)
+    }
 
     // Rust 侧再记一份：即使界面全挂，终端与日志文件里也有完整记录
     invoke("report_frontend_error", {
@@ -69,7 +80,7 @@ export function reportError(source: string, value: unknown, options: ReportOptio
       // Tauri 未注入（例如纯浏览器调试）时忽略，console 已有记录
     })
 
-    if (shouldShowOverlay()) pushEntry({ time: hms(), source, kind, message, detail })
+    if (allowOverlay && shouldShowOverlay()) pushEntry({ time: hms(), source, kind, message, detail })
   } catch {
     // 上报自身失败不能再抛，否则递归
   }
@@ -90,8 +101,11 @@ export function installGlobalHandlers(
       if (target && target !== (window as unknown as EventTarget) && !event.error) {
         const el = target as HTMLElement
         const url = (el as HTMLImageElement).src || (el as HTMLScriptElement).src || ""
+        // 不弹覆盖层：精简 Profile 缺少可选素材（背景图/音效/预览图）是预期行为，
+        // 每个 Profile 的素材完备度不同，404 属于常态而非故障。
         reportError(source, new Error(`资源加载失败: <${el.tagName.toLowerCase()}> ${url}`), {
           kind: "resource",
+          overlay: false,
         })
         return
       }
