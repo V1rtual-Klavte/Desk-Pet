@@ -96,15 +96,11 @@ export async function registerDefaultTools(): Promise<void> {
   if (defaultToolsRegistered) return
 
   // 动态导入避免循环依赖
-  const { registerFileTools } = await import("./local/file")
   const { registerPiBaseTools } = await import("./local/pi-tools")
   const { registerSystemTool } = await import("./local/system")
-  const { registerHttpTool } = await import("./local/http")
 
-  registerFileTools()
   await registerPiBaseTools()
   registerSystemTool()
-  registerHttpTool()
 
   defaultToolsRegistered = true
   log.info("轻量模式工具已注册:", toolCount(), "个")

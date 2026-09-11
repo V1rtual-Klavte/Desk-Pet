@@ -130,11 +130,8 @@ export async function runTeamAgent(input: TeamAgentInput): Promise<string> {
 /** 子代理可用工具 ID 白名单（只读 + 安全） */
 const SUB_AGENT_TOOL_IDS = new Set([
   "pi-read",
-  "local-file-list",
-  "local-file-search",
   "local-system-info",
   "pi-bash",
-  "local-http-get",
 ])
 
 /** 获取子代理的可用工具 */
