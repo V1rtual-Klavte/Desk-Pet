@@ -120,7 +120,6 @@ export function useLayerEditor() {
         refreshLayerUrl(i);
         log.info(`L${i}: url="${layers.value[i].url}" image="${layers.value[i].config.image}"`);
       }
-      layers.value[2].config.enabled = true;
       ready.value = true;
       log.info("就绪");
     } catch (err) {
@@ -203,6 +202,11 @@ export function useLayerEditor() {
     if (!dragActive) return;
     dragActive = false;
     dragHint.value = "";
+    // 拖动同样会随 save() 持久化，且移动过程无日志，这里在收尾时留一条
+    const l = layers.value[dragLayerIdx];
+    log.debug(
+      `拖动结束 ${l.name} → (${l.config.offsetX.toFixed(2)}%, ${l.config.offsetY.toFixed(2)}%)`,
+    );
     const el = canvasEl.value;
     if (el && el.hasPointerCapture(e.pointerId)) {
       el.releasePointerCapture(e.pointerId);
@@ -210,10 +214,15 @@ export function useLayerEditor() {
   }
 
   // ── 滚轮调整选中层大小 ──
+  // 事件绑定在 #le-canvas 上且已 .prevent，所以只有指针在画布上滚动才会触发。
   function onWheel(e: WheelEvent) {
     const l = layers.value[selectedIndex.value];
     const s = (l.config.scale ?? 1) - e.deltaY * 0.001;
-    l.config.scale = Math.max(0.2, Math.min(3, Math.round(s * 100) / 100));
+    const next = Math.max(0.2, Math.min(3, Math.round(s * 100) / 100));
+    if (next === l.config.scale) return;
+    l.config.scale = next;
+    // 缩放会随 save() 直接持久化进 CONFIG，留痕便于回溯「这层怎么被放大了」
+    log.debug(`滚轮缩放 ${l.name} → ${next}`);
   }
 
   // ── 锁定/启用 ──
@@ -221,7 +230,6 @@ export function useLayerEditor() {
     layers.value[selectedIndex.value].config.locked = !selectedLayer.value.config.locked;
   }
   function toggleEnabled() {
-    if (isL2.value) return;
     selectedLayer.value.config.enabled = !selectedLayer.value.config.enabled;
   }
   function resetPosition() {
@@ -236,7 +244,6 @@ export function useLayerEditor() {
       ? { ...DEFAULT_LAYERS[i], ...pLayer }
       : { ...DEFAULT_LAYERS[i] };
     layers.value[i].config = { ...base };
-    if (i === 2) layers.value[i].config.enabled = true;
     refreshLayerUrl(i);
   }
 

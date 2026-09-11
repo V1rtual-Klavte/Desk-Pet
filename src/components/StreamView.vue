@@ -105,7 +105,7 @@ function reloadParallax() {
 
     newLayers.push(merged);
   }
-  newLayers[2].enabled = true;
+  // 不再强制开启 L2：所有图层都由用户配置决定显隐（图层编辑器已解除 L2 限制）
   // ★ 替换整个数组引用，强制触发 Vue computed 重新求值
   parallaxConfig.value.layers = newLayers;
 

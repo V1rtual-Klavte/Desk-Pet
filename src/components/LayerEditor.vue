@@ -71,7 +71,7 @@ const {
         <button class="le-btn" @click="toggleLock()" :title="selectedLayer.config.locked?'解锁':'锁定'">
           {{ selectedLayer.config.locked ? '🔒 已锁' : '🔓 解锁' }}
         </button>
-        <button class="le-btn" @click="toggleEnabled()" :disabled="isL2">
+        <button class="le-btn" @click="toggleEnabled()">
           {{ selectedLayer.config.enabled ? '👁 可见' : '🚫 隐藏' }}
         </button>
         <button class="le-btn le-btn-d" @click="resetLayer()">↺ 重置</button>
