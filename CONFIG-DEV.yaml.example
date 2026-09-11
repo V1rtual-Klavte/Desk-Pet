@@ -2,8 +2,6 @@
 # 本地开发配置模版 — 使用时去除 .example 后缀
 # ==========================================
 
-enabled: true
-
 general:
   mode: { assistant: false }
   popup: { mode: cursor, autoPopupOnMessage: false, defaultSize: { w: 448, h: 272 } }

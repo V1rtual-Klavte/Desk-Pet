@@ -35,7 +35,6 @@ export interface BuiltinMcpServer {
 }
 
 interface Config {
-  enabled?: boolean
   general: {
     mode: { assistant: boolean }
     popup: {
@@ -130,6 +129,24 @@ let cfg = structuredClone(rawConfig) as Config;
 let configInitialized = false
 let writeQueue: Promise<void> = Promise.resolve()
 let saveQueued = false
+let leadingComments = ""  // 首次读取时保留的头部注释块
+
+// 提取文件顶部注释块（含空行），写回时原样拼回，避免设置页保存抹掉配置说明
+function extractLeadingComments(text: string): string {
+  const head: string[] = []
+  for (const line of text.split("\n")) {
+    const trimmed = line.trim()
+    if (trimmed === "" || trimmed.startsWith("#")) head.push(line)
+    else break
+  }
+  while (head.length && head[head.length - 1].trim() === "") head.pop()
+  return head.length ? head.join("\n") + "\n\n" : ""
+}
+
+// 序列化配置：头部注释 + YAML 正文
+function serializeConfig(): string {
+  return leadingComments + dumpYaml(cfg, { lineWidth: -1, noRefs: true })
+}
 
 function isConfig(value: unknown): value is Config {
   if (!value || typeof value !== "object") return false
@@ -143,6 +160,7 @@ export async function initConfig(): Promise<void> {
   const parsed = loadYaml(text)
   if (!isConfig(parsed)) throw new Error("CONFIG 缺少 general/ai/tools/appearance 根节点")
   cfg = parsed
+  leadingComments = extractLeadingComments(text)
   configInitialized = true
   clearLegacyConfigCache()
 }
@@ -175,7 +193,7 @@ function queueConfigSave(): void {
   saveQueued = true
   queueMicrotask(() => {
     saveQueued = false
-    const content = dumpYaml(cfg, { lineWidth: -1, noRefs: true })
+    const content = serializeConfig()
     writeQueue = writeQueue.then(() => invoke<void>("write_runtime_config", { content }))
     void writeQueue
   })
@@ -184,7 +202,7 @@ function queueConfigSave(): void {
 export async function flushConfig(): Promise<void> {
   if (saveQueued) {
     saveQueued = false
-    const content = dumpYaml(cfg, { lineWidth: -1, noRefs: true })
+    const content = serializeConfig()
     writeQueue = writeQueue.then(() => invoke<void>("write_runtime_config", { content }))
   }
   await writeQueue
