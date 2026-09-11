@@ -415,6 +415,46 @@ Rust 侧默认值随构建模式：debug 构建全量、release 默认 info；`D
 历史文档只保存当时的设计细节，不为了追踪当前代码而改写正文。
 每轮修改结束都要同步 `README.md`、`AGENTS.md`、`docs/DES.md`；有影响时同步 `docs/current/`。
 
+## 提交规范
+
+使用 **Conventional Commits**：
+
+```text
+<type>(<scope>): <描述>
+
+[可选正文：说明「为什么」，不是复述 diff]
+```
+
+**type**（必填）：`feat` 新功能 / `fix` 修 bug / `refactor` 重构 / `perf` 性能 /
+`docs` 只改文档 / `test` 只改测试 / `build` 构建与依赖 / `chore` 杂项 / `revert` 回滚。
+
+**scope**（建议填）：取**模块名**，与结构树保持一致，便于检索——
+`config`、`paths`、`log`、`error`、`agent`、`tool`、`memory`、`personality`、`profile`、
+`session`、`reply`、`safety`、`window`、`ui`、`livetest`、`tauri`、`deps`、`docs`。
+跨模块改动可省略 scope。
+
+规则：
+
+- 描述用**中文**、不加句号、不以大写开头，说清**做了什么**而不是改了哪个文件。
+- 破坏性变更在 type 后加 `!`（如 `feat(config)!: ...`），并在正文写 `BREAKING CHANGE: 具体影响`。
+- **一次提交只做一件事**；顺手带的格式化、重命名、无关修复拆成独立提交。
+- 正文只在需要解释**动机或取舍**时写，用 `-` 列表。
+
+```text
+feat(profile): 内置 Profile 改为只读，新增复制为用户 Profile
+
+- 内置 ID 在命令层拒绝写入与删除
+- 复制时打包完整资源到 data_root/profiles/{id}
+
+fix(paths): personality 命令拒绝带域前缀的入参
+
+容忍 "personality/xxx" 会拼成 personality/personality/xxx，写入时静默建出错误的嵌套目录。
+
+refactor(log): 时间戳由 UTC 改为本地时间
+docs: 补充路径拼接规则
+chore(deps): 引入 chrono 与 thiserror
+```
+
 ## 用户规则
 
 - 任何修改必须先给思路，用户同意后才能编码。
