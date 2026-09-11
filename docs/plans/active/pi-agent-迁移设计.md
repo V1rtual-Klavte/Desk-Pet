@@ -68,7 +68,7 @@ Desk-Pet 已由最初的 VTuber 模拟演变为可自定义的桌面角色容器
 
 已删除的 `runAgentLoop()` 曾负责变量刷新、Prompt 构建、可选 Plan、Provider
 调用、工具迭代、人格阶段事件、回复后处理、会话记录和压缩。当前
-`agent/pi/runtime.ts` 保留产品编排职责，并把模型请求、消息 transcript、顺序
+`engine/pi/runtime.ts` 保留产品编排职责，并把模型请求、消息 transcript、顺序
 工具迭代、超时和终止交给 Pi `Agent`；调用方不再直接依赖手写工具循环。
 
 迁移的 Seam 放在“已经完成 Desk-Pet 上下文构建，尚未进入最终回复处理”的
@@ -89,7 +89,7 @@ runner / preprocessor / session state
   -> Card persistence + session persistence + UI
 ```
 
-当前 Runtime 仍将 Pi 类型封装在 `agent/pi/` 内部；公共调用方只使用
+当前 Runtime 将 Pi 类型封装在 `engine/pi/` 内部；公共调用方只使用
 `PiAgentTurnInput/Output` 或 `PiSubAgentInput/Output`。后续需要会话级 abort 和
 持久 Agent 时，再将其收敛为下列更窄的 Interface。
 

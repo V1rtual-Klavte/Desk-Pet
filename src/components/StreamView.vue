@@ -5,9 +5,10 @@
 // ==========================================
 
 import { ref, computed, onMounted, onUnmounted, inject, type Ref } from "vue";
-import { getCharacterScaleMode, getActiveProfile } from "@/services/profile";
+import { listen, type UnlistenFn } from "@tauri-apps/api/event";
+import { getCharacterScaleMode, getActiveProfile, refreshProfileAssets, resolveProfileAssetUrl } from "@/services/profile";
 import { useParallax, DEFAULT_PARALLAX_STATE, type ParallaxState } from "@/composables/useParallax";
-import { userConfig, refreshUserCache } from "@/services/config";
+import { userConfig, reloadConfig } from "@/services/config";
 import { createLogger } from "@/services/logger";
 
 const log = createLogger("Stream");
@@ -36,7 +37,7 @@ const layerUrls = computed<(string | null)[]>(() => {
   if (!p) return [null, null, null, null, null];
   const result = parallaxConfig.value.layers.map((l) => {
     if (!l.image) return null;
-    return `${p.basePath}/${l.image}`;
+    return resolveProfileAssetUrl(p, l.image);
   });
   log.info(`  → ${result.map((u, i) => `L${i}:${u ? u.split("/").pop() : "null"}`).join(" | ")}`);
   return result;
@@ -74,19 +75,10 @@ function reloadParallax() {
     return;
   }
 
-  refreshUserCache();
   parallaxConfig.value.enabled = userConfig.parallaxEnabled;
   parallaxConfig.value.intensity = userConfig.parallaxIntensity;
 
-  let uLayers: any[] | null = null;
-  // ★ 优先读 userConfig（持久化在 deskpet_user_settings），旧 key 为兼容回退
-  uLayers = userConfig.parallaxLayers;
-  if (!uLayers || uLayers.length === 0) {
-    try {
-      const raw = localStorage.getItem("deskpet_parallax_layers");
-      if (raw) uLayers = JSON.parse(raw);
-    } catch {}
-  }
+  const uLayers = userConfig.parallaxLayers;
 
   const pLayers = p.theme.parallax.layers;
   const newLayers: typeof parallaxConfig.value.layers = [];
@@ -122,19 +114,19 @@ function reloadParallax() {
     `L${i}: ${l.enabled ? l.image : '(disabled)'}`).join(" | "));
 }
 
-let pollId: ReturnType<typeof setInterval> | null = null;
+let unlistenParallax: UnlistenFn | null = null;
 
-onMounted(() => {
+onMounted(async () => {
   reloadParallax();
-  pollId = setInterval(() => {
-    if (localStorage.getItem("deskpet_parallax_dirty") === "1") {
-      localStorage.removeItem("deskpet_parallax_dirty");
-      reloadParallax();
-    }
-  }, 200);
+  unlistenParallax = await listen("deskpet-parallax-saved", async () => {
+    await reloadConfig()
+    const profile = getActiveProfile()
+    if (profile) await refreshProfileAssets(profile.id)
+    reloadParallax()
+  })
 });
 onUnmounted(() => {
-  if (pollId) clearInterval(pollId);
+  unlistenParallax?.();
   if (_reloadRetryId) clearTimeout(_reloadRetryId);
 });
 

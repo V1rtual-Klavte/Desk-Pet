@@ -1,4 +1,12 @@
-import { createApp } from "vue";
-import App from "./App.vue";
+import { createApp } from "vue"
+import { initPaths } from "@/services/paths"
+import { initConfig } from "@/services/config"
 
-createApp(App).mount("#app");
+async function bootstrap(): Promise<void> {
+  await initPaths()
+  await initConfig()
+  const { default: App } = await import("./App.vue")
+  createApp(App).mount("#app")
+}
+
+void bootstrap()

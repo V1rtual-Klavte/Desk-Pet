@@ -4,11 +4,10 @@
 // ==========================================
 
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Component, Path, PathBuf};
 use crate::paths::AppPaths;
 
 /// 写入 profile 文件（自动创建父目录）
-/// dev 模式下同时同步到 public/profiles 以形成闭包（Vite 开发服务器可加载）
 #[tauri::command]
 pub fn profile_file_write(
     profile_id: String,
@@ -16,8 +15,7 @@ pub fn profile_file_write(
     content: Vec<u8>,
     paths: tauri::State<AppPaths>,
 ) -> Result<(), String> {
-    let dir = paths.profiles.join(&profile_id);
-    let file_path = dir.join(&relative_path);
+    let file_path = safe_profile_path(&paths.profiles, &profile_id, &relative_path)?;
 
     // 安全检查：防止路径穿越 — validate_path 在 canonicalize 失败时直接 Err
     // 对不存在的文件，校验父目录是否存在且在 profiles/ 范围内
@@ -31,20 +29,6 @@ pub fn profile_file_write(
     }
     fs::write(&file_path, &content).map_err(|e| format!("写入文件失败: {e}"))?;
 
-    // ★ dev 模式：同步拷贝到 builtin_profiles（即 public/profiles/）以形成闭包
-    //   生产模式下 builtin_profiles 指向 Tauri resource_dir，不执行此同步
-    #[cfg(debug_assertions)]
-    {
-        let public_path = paths.builtin_profiles.join(&profile_id).join(&relative_path);
-        if let Some(parent) = public_path.parent() {
-            if parent.exists() {
-                AppPaths::validate_path(parent, &paths.builtin_profiles)?;
-            }
-            fs::create_dir_all(parent).map_err(|e| format!("创建 public 目录失败: {e}"))?;
-        }
-        fs::write(&public_path, &content).map_err(|e| format!("同步到 public/ 失败: {e}"))?;
-    }
-
     Ok(())
 }
 
@@ -56,12 +40,12 @@ pub fn profile_file_read(
     paths: tauri::State<AppPaths>,
 ) -> Result<Vec<u8>, String> {
     // 1. 用户 profile (AppPaths.profiles)
-    let user_path = paths.profiles.join(&profile_id).join(&relative_path);
+    let user_path = safe_profile_path(&paths.profiles, &profile_id, &relative_path)?;
     if user_path.exists() {
         return fs::read(&user_path).map_err(|e| format!("读取失败: {e}"));
     }
     // 2. 内置 profile (AppPaths.builtin_profiles)
-    let builtin_path = paths.builtin_profiles.join(&profile_id).join(&relative_path);
+    let builtin_path = safe_profile_path(&paths.builtin_profiles, &profile_id, &relative_path)?;
     if builtin_path.exists() {
         return fs::read(&builtin_path).map_err(|e| format!("读取失败: {e}"));
     }
@@ -71,11 +55,52 @@ pub fn profile_file_read(
 /// 删除用户 profile 目录
 #[tauri::command]
 pub fn profile_delete(profile_id: String, paths: tauri::State<AppPaths>) -> Result<(), String> {
-    let dir = paths.profiles.join(&profile_id);
+    let dir = safe_profile_path(&paths.profiles, &profile_id, "profile.yaml")?
+        .parent().ok_or("无效 Profile 目录")?.to_path_buf();
     if dir.exists() {
         fs::remove_dir_all(&dir).map_err(|e| format!("删除失败: {e}"))?;
     }
     Ok(())
+}
+
+/// 返回用户 Profile 素材目录；内置 Profile 由前端打包资源 URL 提供。
+#[tauri::command]
+pub fn profile_asset_base(profile_id: String, paths: tauri::State<AppPaths>) -> Result<String, String> {
+    validate_profile_id(&profile_id)?;
+    let user = paths.profiles.join(&profile_id);
+    Ok(if user.join("profile.yaml").is_file() {
+        user.to_string_lossy().to_string()
+    } else {
+        String::new()
+    })
+}
+
+/// 返回 Profile 的可写用户覆盖目录。目录不存在时返回空字符串。
+#[tauri::command]
+pub fn profile_user_asset_base(profile_id: String, paths: tauri::State<AppPaths>) -> Result<String, String> {
+    validate_profile_id(&profile_id)?;
+    let user = paths.profiles.join(&profile_id);
+    Ok(if user.is_dir() {
+        user.to_string_lossy().to_string()
+    } else {
+        String::new()
+    })
+}
+
+fn validate_profile_id(profile_id: &str) -> Result<(), String> {
+    if profile_id.is_empty() || !profile_id.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_') {
+        return Err("Profile ID 只能包含字母、数字、连字符和下划线".to_string());
+    }
+    Ok(())
+}
+
+fn safe_profile_path(base: &Path, profile_id: &str, relative_path: &str) -> Result<PathBuf, String> {
+    validate_profile_id(profile_id)?;
+    let relative = Path::new(relative_path);
+    if relative.is_absolute() || relative.components().any(|part| !matches!(part, Component::Normal(_))) {
+        return Err("Profile 相对路径非法".to_string());
+    }
+    Ok(base.join(profile_id).join(relative))
 }
 
 /// 列出用户 profiles（AppPaths.profiles 下）
@@ -133,6 +158,7 @@ fn list_files_recursive(base: &PathBuf, current: &PathBuf, files: &mut Vec<Strin
 /// subdir: 可选子目录过滤（如 "materials/L2"）
 #[tauri::command]
 pub fn list_profile_files(profile_id: String, subdir: Option<String>, paths: tauri::State<AppPaths>) -> Result<Vec<String>, String> {
+    validate_profile_id(&profile_id)?;
     let prefix = subdir.as_ref().map(|s| {
         let trimmed = s.trim_matches('/');
         if trimmed.is_empty() { None } else { Some(format!("{}/", trimmed)) }
@@ -140,13 +166,7 @@ pub fn list_profile_files(profile_id: String, subdir: Option<String>, paths: tau
 
     let mut all_files = Vec::new();
 
-    // 收集内置 profile 的素材
-    let builtin_files = list_builtin_profile_images(&profile_id, &paths.builtin_profiles, &prefix);
-    if let Ok(ref files) = builtin_files {
-        all_files.extend(files.clone());
-    }
-
-    // 收集用户 profile (AppPaths.profiles) 的素材
+    // 只扫描可写的用户 Profile。内置素材来自前端打包资源，不能依赖生产文件系统。
     let user_dir = paths.profiles.join(&profile_id);
     if user_dir.exists() {
         if let Ok(ref files) = list_image_files_filtered(&user_dir, &prefix) {
@@ -158,33 +178,8 @@ pub fn list_profile_files(profile_id: String, subdir: Option<String>, paths: tau
         }
     }
 
-    // 内置回退（如果没有用户目录）
-    if all_files.is_empty() {
-        if let Ok(ref files) = builtin_files {
-            all_files.extend(files.clone());
-        }
-    }
-
     all_files.sort();
-    if all_files.is_empty() {
-        Err(format!("Profile '{}' 未找到素材", profile_id))
-    } else {
-        Ok(all_files)
-    }
-}
-
-fn list_builtin_profile_images(profile_id: &str, builtin_profiles: &PathBuf, prefix: &Option<String>) -> Result<Vec<String>, String> {
-    let mut files = Vec::new();
-
-    // builtin_profiles 已由 AppPaths::resolve_resource_dir 处理 dev/prod 差异
-    let builtin_dir = builtin_profiles.join(profile_id);
-    if builtin_dir.exists() {
-        if let Ok(ref f) = list_image_files_filtered(&builtin_dir, prefix) {
-            files.extend(f.clone());
-        }
-    }
-
-    Ok(files)
+    Ok(all_files)
 }
 
 fn list_image_files_filtered(dir: &PathBuf, prefix: &Option<String>) -> Result<Vec<String>, String> {

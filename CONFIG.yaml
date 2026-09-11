@@ -2,7 +2,7 @@
 # 糖糖桌宠 全局配置
 # 功能域：general / ai / tools / appearance
 # 主题/角色/音效 → 由 Profile 管理 (public/profiles/)
-# 修改此文件后重新 pnpm tauri dev 即可热更新
+# 开发环境无 CONFIG-DEV.yaml 时使用本文件；修改后重启桌宠使运行时配置重新加载
 # ==========================================
 
 # ══════════════════════════════════════════
@@ -16,6 +16,8 @@ general:
     mode: cursor
     autoPopupOnMessage: false
     defaultSize: { w: 730, h: 450 }
+    fixedPosition: null
+    chatWidth: 220
 
   shortcut:
     key: "P"
@@ -162,3 +164,13 @@ tools:
 # 每个 profile 是一个自包含文件夹，拖入即用
 appearance:
   activeProfile: "sugar-pink"     # 当前激活的 Profile ID
+  soundAssignments: {}
+  parallax:
+    enabled: false
+    intensity: 1.0
+    layers:
+      - { enabled: true, image: "materials/L0/bg_base.png", sensitivity: 0.2, shadow: 0.25, brightness: 0.93, contrast: 0.96, saturate: 0.92, scale: 1.0, offsetX: 0, offsetY: 0, locked: false }
+      - { enabled: false, image: "", sensitivity: 0.5, shadow: 0.18, brightness: 0.95, contrast: 0.98, saturate: 0.95, scale: 1.0, offsetX: 0, offsetY: 0, locked: false }
+      - { enabled: true, image: "materials/L2/body.png", sensitivity: 0.8, shadow: 0.12, brightness: 1.0, contrast: 1.0, saturate: 1.0, scale: 1.0, offsetX: 0, offsetY: 0, locked: false }
+      - { enabled: false, image: "", sensitivity: 1.2, shadow: 0.06, brightness: 1.02, contrast: 1.02, saturate: 1.05, scale: 1.0, offsetX: 0, offsetY: 0, locked: false }
+      - { enabled: true, image: "materials/L4/shield_gold.png", sensitivity: 1.6, shadow: 0.03, brightness: 1.03, contrast: 1.03, saturate: 1.08, scale: 1.0, offsetX: 0, offsetY: 0, locked: false }

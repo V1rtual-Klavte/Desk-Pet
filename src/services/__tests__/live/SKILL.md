@@ -72,7 +72,7 @@ description: Desk-Pet Live Test Framework — AI 自驱动端到端测试。分�
 | planner | `src/services/engine/planner.ts` |
 | tool-execution | `src/services/tool/router.ts`, `src/services/tool/registry.ts` |
 | personality-card | `src/services/personality/registry.ts`, `src/services/personality/loader.ts` |
-| agent-runtime | `src/services/agent/runner.ts`, `src/services/agent/pi/runtime.ts` |
+| agent-runtime | `src/services/agent/runner.ts`, `src/services/engine/pi/runtime.ts` |
 
 ## 约束
 

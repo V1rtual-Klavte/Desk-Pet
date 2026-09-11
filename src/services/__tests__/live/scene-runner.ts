@@ -8,8 +8,8 @@ import type {
   SceneResult,
   TurnResult,
 } from "./types"
-import type { PiAgentTurnOutput } from "@/services/agent/pi"
-import { runPiAgentTurn } from "@/services/agent/pi"
+import type { PiAgentTurnOutput } from "@/services/engine/pi"
+import { runPiAgentTurn } from "@/services/engine/pi"
 import { sendMessage, toolCallHistory as productionToolHistory } from "@/services/agent/runner"
 import { getPoolSnapshot } from "@/services/personality/variable-pool"
 import { getSession } from "@/services/engine/session"

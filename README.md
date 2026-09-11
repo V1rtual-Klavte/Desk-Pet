@@ -81,7 +81,9 @@ cp CONFIG-DEV.yaml.example CONFIG-DEV.yaml
 # 编辑 CONFIG-DEV.yaml，填入 API Key
 ```
 
-当 `CONFIG-DEV.yaml` 的 `enabled: true` 时，它会完全替换默认配置。macOS 窗口监控需要在系统设置的“隐私与安全性 → 辅助功能”中允许终端或 Tauri。
+开发构建直接使用工作区的完整 `CONFIG-DEV.yaml`；文件不存在时使用 `CONFIG.yaml`。生产构建首次启动会把默认 `CONFIG.yaml` 写入应用数据目录的 `settings/CONFIG.yaml`，之后设置页和导入导出都回写该文件。macOS 窗口监控需要在系统设置的“隐私与安全性 → 辅助功能”中允许终端或 Tauri。
+
+运行时数据路径、会话恢复和 Profile 覆盖规则见 [运行时数据](docs/current/runtime-data.md)。
 
 ---
 
@@ -102,10 +104,10 @@ Desk-Pet/
 │   ├── components/                   # 聊天、角色、设置、会话和窗口 UI
 │   ├── composables/                  # 视差与编辑器状态
 │   └── services/
-│       ├── engine/                   # 输入预处理、Plan、Slash、会话状态和压缩工具
+│       ├── engine/                   # Pi Runtime、输入预处理、Plan、Slash、会话状态和压缩工具
 │       ├── personality/              # Card、阶段文案、变量状态、情绪映射
 │       ├── reply/                    # RUNTIME_DATA 解析与回复后处理
-│       ├── agent/                    # Pi Runtime、Provider、Runner、子代理、Memory、Active
+│       ├── agent/                    # Provider、Runner、子代理、Memory、Active
 │       ├── tool/                     # 工具注册、路由、Skill、MCP
 │       ├── safety/                   # 风险检查与确认
 │       ├── session/                  # 多会话持久化管理
@@ -122,7 +124,7 @@ Desk-Pet/
 │       └── commands/                 # 文件、记忆、Profile、系统命令
 ├── skills/                           # 内置 Skill 定义
 ├── public/profiles/                  # 内置 Profile 素材
-└── data/desk-pet/                    # 开发环境运行时数据
+└── data/desk-pet/                    # 开发环境运行时数据（生产使用应用专属目录）
 ```
 
 ---
@@ -142,7 +144,7 @@ Desk-Pet/
        ├─ emotion → expression / sound
        ├─ 合法 Card 变量 → batchWriteVars → savePoolToDisk
        └─ trim / 截断 → ReplyResult
-  → 写入 sessions/*.md 与上下文摘要
+  → 写入 sessions/*.md（完整正文）与上下文摘要；sessions/index.json 仅保存 UI 状态
   → ChatPanel / StreamView 展示
 ```
 
@@ -178,7 +180,7 @@ Desk-Pet/
 | 前端 | Vue 3 + TypeScript + Vite |
 | 后端 | Rust + Cargo |
 | AI | Pi Agent Core + pi-ai OpenAI-compatible 接口（tool calls / reasoning effort） |
-| 配置 | YAML（js-yaml，Vite 编译时转换） |
+| 配置 | YAML（js-yaml + Rust 运行时配置文件） |
 | 音效 | Web Audio API（OscillatorNode 合成） |
 | 包管理 | pnpm（前端）+ Cargo（后端） |
 | 测试 | Live Test（Contract + Scene + 真实 Provider） |
@@ -192,7 +194,7 @@ pnpm test
 pnpm test -- --module variable-pool
 ```
 
-Live Test 位于 `src/services/__tests__/live/`，通过独立 Tauri WebView 使用真实 IPC、临时文件系统和真实 Provider 运行；测试完成后自动清理临时数据，浏览器会话缓存使用测试专属 keyspace，不会清除正常用户缓存。Scene 带稳定 `caseId`、测试套件和最低 trial 数，`--repeat 3` 只会提高试验次数；`--strict` 将实际 Scene 关联、边界/错误 tag 与 Contract 缺口作为门禁。Contract `sourceHash` 会在启动前校验，过期会直接阻断执行。JSON 报告记录数据集版本、环境种子、指标、错误分类和 `pass@k`/`pass^k`。测试通过只代表已覆盖场景通过。
+Live Test 位于 `src/services/__tests__/live/`，通过独立 Tauri WebView 使用真实 IPC、临时文件系统和真实 Provider 运行；测试完成后自动清理临时数据。Scene 带稳定 `caseId`、测试套件和最低 trial 数，`--repeat 3` 只会提高试验次数；`--strict` 将实际 Scene 关联、边界/错误 tag 与 Contract 缺口作为门禁。Contract `sourceHash` 会在启动前校验，过期会直接阻断执行。JSON 报告记录数据集版本、环境种子、指标、错误分类和 `pass@k`/`pass^k`。测试通过只代表已覆盖场景通过。
 
 ---
 

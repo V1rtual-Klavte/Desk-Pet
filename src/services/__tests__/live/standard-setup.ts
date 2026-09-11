@@ -6,7 +6,7 @@ import { destroyPool, initVariablePool } from "@/services/personality/variable-p
 import { resetSession } from "@/services/engine/session"
 import { clearMessages } from "@/services/session/store"
 import { activeSessionId, sessions, unansweredCount } from "@/services/session/store"
-import { enableLiveTestSessionPersistence, resetSessionPersistenceForTest } from "@/services/session/persistence"
+import { resetSessionPersistenceForTest } from "@/services/session/persistence"
 import { MemoryService } from "@/services/agent/memory"
 import { flushMemory } from "@/services/agent/memory/memory-entries"
 import { resetSessionRuntimeForTest } from "@/services/agent/memory/session-files"
@@ -27,7 +27,6 @@ async function bootstrapOnce(): Promise<void> {
 }
 
 export async function standardSetup(): Promise<void> {
-  enableLiveTestSessionPersistence()
   await bootstrapOnce()
 
   // 上一场景的异步 session 写入必须先完成，之后才能清空模块状态。
@@ -63,5 +62,5 @@ export async function standardSetup(): Promise<void> {
   resetCooldown()
   setAIGenerating(false)
   resetPreprocessorForTest()
-  resetSessionPersistenceForTest()
+  await resetSessionPersistenceForTest()
 }

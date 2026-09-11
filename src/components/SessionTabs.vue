@@ -2,7 +2,7 @@
 import { reactive, ref, onMounted, onUnmounted } from "vue";
 import { MemoryService } from "@/services/agent/memory";
 import type { SessionFileMeta } from "@/services/agent/memory";
-import { getSessions, getActiveSessionId, saveActiveId, loadActiveId } from "@/services/session";
+import { getSessions, getActiveSessionId } from "@/services/session";
 
 // ── Session meta ──
 export interface SessionMeta {
@@ -48,7 +48,6 @@ function ensureSession(): void {
   }
   if (!activeId.value || !sessions.find(s => s.id === activeId.value)) {
     activeId.value = sessions[0]?.id ?? "";
-    saveActiveId(activeId.value);
   }
 }
 
@@ -58,7 +57,6 @@ function switchTo(id: string): void {
   const s = sessions.find(x => x.id === id);
   if (!s) return;
   activeId.value = id;
-  saveActiveId(id);
   emit("switch", s);
 }
 
@@ -78,7 +76,6 @@ function closeSession(id: string): void {
 
   if (activeId.value === id) {
     activeId.value = sessions[0]?.id ?? "";
-    saveActiveId(activeId.value);
     if (activeId.value) {
       const s = sessions.find(x => x.id === activeId.value);
       if (s) emit("switch", s);

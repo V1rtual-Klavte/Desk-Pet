@@ -14,10 +14,8 @@ import {
   getSessions, getActiveSessionId,
 } from "./store"
 import {
-  loadMessages, saveMessages, deleteMessages,
-  loadUnanswered, saveUnanswered, deleteUnanswered,
-  loadSessionList, saveSessionList,
-  loadActiveId, saveActiveId, isUsingLiveTestSessionPersistence,
+  initSessionPersistence, loadUnanswered, saveUnanswered, deleteUnanswered,
+  loadSessionList, saveSessionList, loadActiveId, saveActiveId,
 } from "./persistence"
 import { createLogger } from "@/services/logger"
 
@@ -64,11 +62,12 @@ async function createSessionFileOnDisk(id: string): Promise<void> {
 // ═══════════════════════════════════════════════════════════════
 
 /**
- * 初始化：扫描 sessions/ 目录 + localStorage 缓存，重建会话列表。
+ * 初始化：扫描 sessions/*.md 重建会话，再读取 sessions/index.json 的 UI 状态。
  * 应用启动时调用一次。
  */
 export async function initSessions(): Promise<SessionMeta[]> {
   const { MemoryService } = await import("@/services/agent/memory")
+  await initSessionPersistence()
 
   // 1. 从 sessions/ 目录扫描（真相源）
   let rebuilt: SessionMeta[] = []
@@ -86,39 +85,17 @@ export async function initSessions(): Promise<SessionMeta[]> {
     }
     rebuilt.sort((a, b) => b.createdAt - a.createdAt)
   } catch (e) {
-    log.warn("Session: sessions/ 扫描失败，回退 localStorage", e instanceof Error ? e.message : undefined)
+    log.warn("Session: sessions/ 扫描失败", e instanceof Error ? e.message : undefined)
   }
 
-  // 2. sessions/ 为空时回退 localStorage
-  if (rebuilt.length === 0 && !isUsingLiveTestSessionPersistence()) {
-    rebuilt = loadSessionList()
+  // 2. 首次升级前没有 index.json 时，打开全部历史；之后只恢复上次打开的标签。
+  const rememberedIds = loadSessionList()
+  if (rememberedIds.length > 0) {
+    const byId = new Map(rebuilt.map(item => [item.id, item]))
+    rebuilt = rememberedIds.map(id => byId.get(id)).filter((item): item is SessionMeta => Boolean(item))
   }
 
-  // 3. 数据库迁移：旧格式 "deskpet_chat_history" → 新格式
-  if (rebuilt.length === 0) {
-    const oldRaw = localStorage.getItem("deskpet_chat_history")
-    if (oldRaw) {
-      try {
-        const oldMsgs = JSON.parse(oldRaw)
-        if (Array.isArray(oldMsgs) && oldMsgs.length > 0) {
-          const id = generateSessionId()
-          const firstUser = oldMsgs.find((m: any) => m.role === "user")
-          const s: SessionMeta = {
-            id,
-            name: firstUser?.text?.substring(0, 20) || "已恢复的会话",
-            createdAt: Date.now(),
-            messageCount: oldMsgs.length,
-          }
-          rebuilt.push(s)
-          saveMessages(id, oldMsgs)
-          localStorage.removeItem("deskpet_chat_history")
-          log.info("Session: 已迁移旧聊天记录 →", id)
-        }
-      } catch { /* ignore */ }
-    }
-  }
-
-  // 4. 确保至少一个会话
+  // 3. 确保至少一个会话
   if (rebuilt.length === 0) {
     const s: SessionMeta = {
       id: generateSessionId(),
@@ -130,16 +107,15 @@ export async function initSessions(): Promise<SessionMeta[]> {
     await createSessionFileOnDisk(s.id)
   }
 
-  // 5. 覆盖内部状态
+  // 4. 覆盖内部状态
   sessions.splice(0, sessions.length, ...rebuilt)
   saveSessionList(rebuilt)
   log.info(`Session: 重建完成 ${sessions.length} 个`, sessions.map(s => s.id))
 
-  // 6. 恢复活跃会话
+  // 5. 恢复活跃会话。消息只从 Markdown 读取。
   const id = activeSessionId.value || loadActiveId()
   if (id && sessions.find(s => s.id === id)) {
-    let msgs = loadMessages(id)
-    if (msgs.length === 0) msgs = await loadMessagesFromFile(id)
+    const msgs = await loadMessagesFromFile(id)
     chatHistory.splice(0, chatHistory.length, ...msgs)
     activeSessionId.value = id
     saveActiveId(id)
@@ -155,6 +131,9 @@ export async function initSessions(): Promise<SessionMeta[]> {
   } else if (sessions.length > 0) {
     activeSessionId.value = sessions[0].id
     saveActiveId(sessions[0].id)
+    const msgs = await loadMessagesFromFile(sessions[0].id)
+    chatHistory.splice(0, chatHistory.length, ...msgs)
+    await MemoryService.setActiveSession(sessions[0].id)
   }
 
   return [...sessions]
@@ -178,9 +157,8 @@ export async function switchToSession(sessionId: string): Promise<void> {
     return
   }
 
-  // 保存当前
+  // 保存当前 UI 状态；对话正文已由 MemoryService 实时写入 Markdown。
   if (activeSessionId.value) {
-    saveMessages(activeSessionId.value, [...chatHistory])
     saveUnanswered(activeSessionId.value, unansweredCount.value)
   }
 
@@ -188,8 +166,7 @@ export async function switchToSession(sessionId: string): Promise<void> {
   activeSessionId.value = sessionId
   saveActiveId(sessionId)
 
-  let msgs = loadMessages(sessionId)
-  if (msgs.length === 0) msgs = await loadMessagesFromFile(sessionId)
+  const msgs = await loadMessagesFromFile(sessionId)
   chatHistory.splice(0, chatHistory.length, ...msgs)
   unansweredCount.value = loadUnanswered(sessionId)
 
@@ -211,7 +188,6 @@ export async function createNewSession(): Promise<SessionMeta> {
   // 保存并归档当前
   const oldId = activeSessionId.value
   if (oldId) {
-    saveMessages(oldId, [...chatHistory])
     saveUnanswered(oldId, unansweredCount.value)
     try {
       const { MemoryService } = await import("@/services/agent/memory")
@@ -247,15 +223,19 @@ export function closeSession(sessionId: string): void {
   const idx = sessions.findIndex(s => s.id === sessionId)
   if (idx === -1) return
 
-  // 保存当前消息
+  // 仅保存 UI 状态，关闭不删除会话 Markdown。
   if (sessionId === activeSessionId.value) {
-    saveMessages(sessionId, [...chatHistory])
     saveUnanswered(sessionId, unansweredCount.value)
   }
 
   removeSessionMeta(sessionId)
-  deleteMessages(sessionId)
   deleteUnanswered(sessionId)
+  saveSessionList([...sessions])
+}
+
+/** 从历史面板重新打开一个已有的 Markdown 会话。 */
+export function openSession(meta: SessionMeta): void {
+  addSessionMeta(meta)
   saveSessionList([...sessions])
 }
 
@@ -266,7 +246,6 @@ export async function deleteSession(sessionId: string): Promise<void> {
 
   // 从内存列表移除
   removeSessionMeta(sessionId)
-  deleteMessages(sessionId)
   deleteUnanswered(sessionId)
   saveSessionList([...sessions])
 
@@ -294,4 +273,11 @@ export function updateSessionMessageCount(sessionId: string): void {
   const s = sessions.find(x => x.id === sessionId)
   if (!s) return
   s.messageCount = chatHistory.length
+}
+
+/** 异步回复返回时目标会话可能已不活跃，此时不能用当前 chatHistory 覆盖其计数。 */
+export function incrementSessionMessageCount(sessionId: string): void {
+  const s = sessions.find(x => x.id === sessionId)
+  if (!s) return
+  s.messageCount++
 }

@@ -13,10 +13,10 @@ import ChatPanel from "./components/ChatPanel.vue";
 import SessionTabs from "./components/SessionTabs.vue";
 import WinSim from "./components/winsim/WinSim.vue";
 import { initWindowListener } from "./services/window";
-import { MemoryService, switchToSession, createNewSession, addSession, removeSession, getSessions, getActiveSessionId, initWelcome, createUserMessage, createAssistantMessage } from "@/services/agent";
+import { MemoryService, switchToSession, createNewSession, closeSession, openSession, getSessions, getActiveSessionId, initWelcome } from "@/services/agent";
 import type { SessionFileMeta } from "@/services/agent/memory";
 import { initApp } from "@/services/init";
-import { desktopConfig, shortcutConfig, userConfig, refreshUserCache } from "@/services/config";
+import { desktopConfig, shortcutConfig, userConfig, reloadConfig } from "@/services/config";
 import { isMacOS } from "@/services/env";
 import { getUiUrl } from "@/services/profile";
 import { createLogger } from "@/services/logger";
@@ -52,20 +52,13 @@ const chatRef = ref<InstanceType<typeof ChatPanel> | null>(null);
 const tabsRef = ref<InstanceType<typeof SessionTabs> | null>(null);
 
 // ── 可拖动分割线 ──
-const DIVIDER_KEY = "deskpet_divider_pos";
 const DEFAULT_CHAT_WIDTH = 220;
 const MIN_CHAT_WIDTH = 120;
 const MAX_CHAT_RATIO = 0.55;
 
 function loadDividerPos(): number {
-  try {
-    const v = localStorage.getItem(DIVIDER_KEY);
-    if (v) {
-      const n = parseInt(v, 10);
-      if (Number.isFinite(n) && n >= MIN_CHAT_WIDTH) return n;
-    }
-  } catch { /* ignore */ }
-  return DEFAULT_CHAT_WIDTH;
+  const value = userConfig.chatWidth
+  return Number.isFinite(value) && value >= MIN_CHAT_WIDTH ? value : DEFAULT_CHAT_WIDTH
 }
 
 const chatWidth = ref(loadDividerPos());
@@ -90,7 +83,7 @@ function onDividerMousedown(e: MouseEvent) {
     isDraggingDivider.value = false;
     document.removeEventListener("mousemove", onMove);
     document.removeEventListener("mouseup", onUp);
-    try { localStorage.setItem(DIVIDER_KEY, String(chatWidth.value)); } catch { /* ignore */ }
+    userConfig.chatWidth = chatWidth.value
   }
 
   document.addEventListener("mousemove", onMove);
@@ -120,7 +113,7 @@ async function onSessionNew() {
 }
 
 async function onSessionClose(sessionId: string) {
-  removeSession(sessionId)
+  closeSession(sessionId)
   const remaining = getSessions()
   if (remaining.length === 0) {
     await createNewSession()
@@ -144,7 +137,7 @@ async function onDeleteFile(filename: string) {
       if (old) sid = `session-${old[1].replace(/:/g, "")}`
     }
     if (sid) {
-      removeSession(sid)
+      closeSession(sid)
       if (getActiveSessionId() === sid || getActiveSessionId() === "") {
         const remaining = getSessions()
         if (remaining.length > 0) {
@@ -168,15 +161,7 @@ async function onDeleteFile(filename: string) {
 async function onRestoreSession(sf: SessionFileMeta) {
   log.info("onRestoreSession:", sf.sessionId, sf.topic)
   try {
-    addSession({ id: sf.sessionId, name: sf.topic || "已恢复", createdAt: sf.createdAt ? new Date(sf.createdAt).getTime() : Date.now(), messageCount: sf.rounds })
-    const turns = await MemoryService.loadSessionMessages(sf.sessionId)
-    if (turns && turns.length > 0) {
-      const msgs = turns.map(t => {
-        return t.role === "user" ? createUserMessage(t.text) : createAssistantMessage(t.text)
-      })
-      localStorage.setItem(`deskpet_chat_${sf.sessionId}`, JSON.stringify(msgs.slice(-200)))
-      log.info("恢复消息:", msgs.length, "条")
-    }
+    openSession({ id: sf.sessionId, name: sf.topic || "已恢复", createdAt: sf.createdAt ? new Date(sf.createdAt).getTime() : Date.now(), messageCount: sf.rounds })
     await switchToSession(sf.sessionId)
     tabsRef.value?.loadSessions()
     tabsRef.value?.refreshHistory()
@@ -617,7 +602,7 @@ onMounted(async () => {
   // 设置面板保存
   try {
     cleanupSettingsSaved = await listen("deskpet-settings-saved", async () => {
-      refreshUserCache();
+      await reloadConfig();
       const { initDebug } = await import("@/services/debug");
       await initDebug();
       await unregisterShortcut();

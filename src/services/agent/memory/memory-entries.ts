@@ -7,7 +7,7 @@ import { invoke } from "@tauri-apps/api/core"
 import { memoryConfig } from "@/services/config"
 import type { MemoryEntry, ProjectEntry, SessionMemory, CompactionSummary } from "./types"
 import { readMemoryFile, writeMemoryFile, sessionsDir, memoryDir, withLock } from "./io"
-import { localDate, localTime, generateId, serializeMEMORYmd, serializeProjectMd, parseMEMORYmd, parseProjectMd } from "./parsers"
+import { localDate, localTime, generateId, serializeMEMORYmd, serializeProjectMd, parseMEMORYmd, parseProjectMd, extractSection } from "./parsers"
 import { createLogger } from "@/services/logger"
 
 const log = createLogger("MemoryEntries")
@@ -236,7 +236,6 @@ export async function loadMemoryFiles(): Promise<{ loadedCandy: string; loadedUs
     log.info(`MEMORY.md → ${entries.length} 条`)
   }
 
-  const { extractSection } = await import("./parsers")
   cachedCandy = extractSection(await readMemoryFile("CANDY.md"), "## 指令")
   cachedUser = extractSection(await readMemoryFile("User.md"), "## 用户信息")
 

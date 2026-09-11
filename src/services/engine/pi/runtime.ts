@@ -37,6 +37,7 @@ const EMPTY_USAGE = {
 let lastSeenSessionStart = getSessionStart()
 
 export interface PiAgentTurnInput {
+  sessionId?: string
   userText: string
   chatMessages: Message[]
   unansweredCount: number
@@ -97,7 +98,8 @@ export async function runPiAgentTurn(input: PiAgentTurnInput): Promise<PiAgentTu
   const effects: PiAgentTurnOutput["effects"] = []
 
   recordMessage()
-  MemoryService.recordTurn("user", userText)
+  const turnSessionId = input.sessionId || MemoryService.sessionId
+  await persistTurn(turnSessionId, "user", userText)
 
   refreshVariablePool()
   updateInteractionVar("unansweredCount", unansweredCount)
@@ -142,7 +144,9 @@ export async function runPiAgentTurn(input: PiAgentTurnInput): Promise<PiAgentTu
         }
         if (!confirmed) {
           transition("WAITING")
-          return { reply: getSimpleStage("planning") ?? "好的，已取消计划～", toolCallHistory, retriesUsed: 0, effects: [] }
+          const reply = getSimpleStage("planning") ?? "好的，已取消计划～"
+          await persistTurn(turnSessionId, "assistant", reply)
+          return { reply, toolCallHistory, retriesUsed: 0, effects: [] }
         }
         const result = await executePlan(plan, {
           stepTimeoutMs: planConfig.stepTimeoutMs,
@@ -189,7 +193,9 @@ export async function runPiAgentTurn(input: PiAgentTurnInput): Promise<PiAgentTu
     if (result.toolCallsMade > 0 || attempt >= loopConfig.maxRetry) {
       transition("WAITING")
       applyEffect(PetPersonalityMiddleware.wrap("error", { message: result.error }), effects)
-      return { reply: getFallbackReply("maxRetriesExhausted"), toolCallHistory, retriesUsed: attempt, effects }
+      const reply = getFallbackReply("maxRetriesExhausted")
+      await persistTurn(turnSessionId, "assistant", reply)
+      return { reply, toolCallHistory, retriesUsed: attempt, effects }
     }
   }
 
@@ -198,9 +204,17 @@ export async function runPiAgentTurn(input: PiAgentTurnInput): Promise<PiAgentTu
   emit("deskpet-expression", { expression: processed.expression }).catch(() => {})
   if (processed.sound) emit("deskpet-sound", { event: processed.sound }).catch(() => {})
   transition("WAITING")
-  MemoryService.recordTurn("assistant", processed.text)
+  await persistTurn(turnSessionId, "assistant", processed.text)
   compactOnHighUsage(chatMessages, userText)
   return { reply: processed.text, toolCallHistory, retriesUsed, effects, runtimeData: processed.runtimeData }
+}
+
+async function persistTurn(sessionId: string, role: "user" | "assistant", text: string): Promise<void> {
+  if (!sessionId || MemoryService.sessionId === sessionId) {
+    MemoryService.recordTurn(role, text)
+    return
+  }
+  await MemoryService.recordTurnToSession(sessionId, role, text)
 }
 
 /** Used by planning and fork/team agents. It shares the same Pi runtime, not a second loop. */

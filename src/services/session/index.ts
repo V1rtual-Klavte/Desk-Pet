@@ -25,16 +25,15 @@ export {
   switchToSession,
   createNewSession,
   closeSession,
+  openSession,
   deleteSession,
   updateSessionName,
   updateSessionMessageCount,
+  incrementSessionMessageCount,
 } from "./manager"
 
 // ── Persistence ──
 export {
-  loadMessages,
-  saveMessages,
-  deleteMessages as deleteCachedMessages,
   loadUnanswered,
   saveUnanswered,
   loadSessionList,

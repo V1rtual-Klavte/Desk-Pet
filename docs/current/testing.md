@@ -15,11 +15,11 @@ pnpm run test:release
 
 ## 验证边界
 
-- `pnpm test` 会启动独立的 Live Test Tauri 窗口，并把数据根放入临时目录；测试结束自动删除，不污染 `data/desk-pet`。浏览器会话缓存也使用 `deskpet_live_test_*` 专属 keyspace，重置不会删除用户正常运行的 `deskpet_*` 缓存。
+- `pnpm test` 会启动独立的 Live Test Tauri 窗口，并把数据根放入临时目录；测试结束自动删除，不污染 `data/desk-pet`。测试重置会清理该临时根中的 Markdown 会话与 `sessions/index.json`，正常运行不依赖浏览器会话缓存。
 - 支持 `--module`、`--scene`、`--case`、`--tag`、`--suite`、`--repeat`、`--strict`、`--report` 筛选。每个 Scene 必须声明稳定的 `caseId`、`suite` 和关联的 `contractId`；数据集校验会拒绝重复、无模块或不属于本模块 Contract 的 case。
 - Contract 的 `sourceHash` 在启动前由 Node 预检，过期会直接阻断测试。`--strict` 会再将 coverage/rule 缺口作为运行门禁；coverage 引用必须指向实际发现、module 与 `contractId` 都匹配的 Scene，`boundary`/`error` 规则只统计同名 tag。
 - Live Test 覆盖真实 Provider、人格、工具、变量和记忆等跨模块链路时具有价值，但依赖模型、配置和外部环境。
-- 每个 trial 在执行前都会等待上次会话文件写入完成，并清理 session 文件、测试专用浏览器 session cache、工作记忆、长期记忆、变量池、聊天状态、预处理去重状态和 AI 锁。`meta.repetitions` 是该场景最低 trial 数，CLI `--repeat` 只能提高它。超时、初始化失败和 Provider/网络/认证类错误以单独状态记录，不能记为 skip 或 pass。
+- 每个 trial 在执行前都会等待上次会话文件写入完成，并清理 session 文件、UI index、工作记忆、长期记忆、变量池、聊天状态、预处理去重状态和 AI 锁。`meta.repetitions` 是该场景最低 trial 数，CLI `--repeat` 只能提高它。超时、初始化失败和 Provider/网络/认证类错误以单独状态记录，不能记为 skip 或 pass。
 - 报告使用 `desk-pet-live/v2` schema，记录数据集版本、commit、Card 种子 hash、每轮耗时/工具数/重试数/回复长度/可用的浏览器堆指标、错误分类和 `pass@k`、`pass^k`。`pass@k` 仅说明至少一个 trial 成功；发布门禁要求所有 trial 都成立。
 - `entry: "production"` 场景经过 `sendMessage()`；`entry: "runtime"` 验证 Pi runtime 适配层。`production-chat-entry` 是当前严格双 trial smoke。
 - 静态检查与 `cargo check` 不能替代真实交互验证。

@@ -116,7 +116,7 @@ Scene 会由 Vite 的 `import.meta.glob` 自动发现，通常不需要修改 Ru
 2. 在用户目录创建临时的 `.deskpet-live-test-*` 数据根。
 3. 只读复制现有 `data/desk-pet/personality/stages` 作为测试种子（若存在）。
 4. 启动 Vite 和 debug Tauri 测试窗口。
-5. 每个 trial 先等待前一个场景的异步会话写入，再重置会话工作记忆、轮次计数、session 文件、变量池、聊天记录、长期记忆、预处理去重状态和 AI 锁。浏览器会话缓存使用 `deskpet_live_test_*` 专属 keyspace，清理时不会读取或删除用户正常运行的 `deskpet_*` 缓存。
+5. 每个 trial 先等待前一个场景的异步会话写入，再重置会话工作记忆、轮次计数、session 文件与 UI index、变量池、聊天记录、长期记忆、预处理去重状态和 AI 锁。
 6. 在真实 WebView 中执行 Contract、Scene 和断言；每个 Scene 可声明超时，超时不再伪装成普通失败。
 7. 写出测试结果、关闭应用并删除临时数据根。Node 侧会处理 SIGINT/SIGTERM 和 10 分钟宿主超时。
 

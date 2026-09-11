@@ -2,9 +2,9 @@ import type { ModuleContract } from "../types"
 
 export const safetyContract: ModuleContract = {
   module: "safety",
-  sourceFiles: ["src/services/agent/pi/runtime.ts", "src/services/safety/checker.ts"],
+  sourceFiles: ["src/services/engine/pi/runtime.ts", "src/services/safety/checker.ts"],
   generatedAt: "2026-09-10",
-  sourceHash: "f04591c77c9a7424b19bece973c03d2b77f0a3857fc73da0c7448c32456d1105",
+  sourceHash: "2954e994fd4349debaf5a46f859a600b3e10c650fa5f283f76a7bd7dbe509fa3",
   coverage: [
     { id: "sf-01", feature: "SAFE 级别放行", description: "safetyLevel=SAFE 工具被直接放行", why: "安全等级体系基础", depth: "shallow", scenarios: [] },
     { id: "sf-02", feature: "NORMAL 级别检查", description: "safetyLevel=NORMAL 工具执行前检查", why: "常规工具需要安全评估", depth: "shallow", scenarios: [] },

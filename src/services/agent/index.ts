@@ -25,8 +25,7 @@ export {
   getSessions, getActiveSessionId,
   initSessions, switchToSession, createNewSession,
   closeSession, deleteSession,
-  addSessionMeta as addSession,
-  removeSessionMeta as removeSession,
+  openSession,
   updateSessionName, updateSessionMessageCount,
 } from "@/services/session"
 // 消息操作

@@ -30,3 +30,7 @@ export type { PlanStep, PlanResult, ComplexityResult, PlanExecutionResult } from
 
 // ── Plan 确认桥接 ──
 export { resolvePlanConfirm, resolvePlanStepDecision } from "./plan-confirmation"
+
+// ── Pi Agent Core Runtime ──
+export { runPiAgentTurn, runPiSubAgent } from "./pi"
+export type { PiAgentTurnOutput, PiSubAgentOutput } from "./pi"

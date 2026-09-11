@@ -6,8 +6,12 @@
 import { ref, computed, onMounted, onUnmounted } from "vue";
 import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
 import { invoke } from "@tauri-apps/api/core";
-import { initProfiles, getActiveProfile, type ProfileData } from "@/services/profile";
-import { userConfig } from "@/services/config";
+import { emit } from "@tauri-apps/api/event";
+import {
+  initProfiles, getActiveProfile, getProfileAssetUrl,
+  refreshProfileAssets, resolveProfileAssetUrl, type ProfileData,
+} from "@/services/profile";
+import { flushConfig, userConfig } from "@/services/config";
 import { DEFAULT_LAYERS, LAYER_NAMES, layerDepth, type ParallaxLayerCfg } from "@/composables/useParallax";
 import { createLogger } from "@/services/logger";
 
@@ -88,13 +92,7 @@ export function useLayerEditor() {
       }
       log.info(`Profile: ${p.id} basePath=${p.basePath}`);
 
-      // 优先读 deskpet_parallax_layers（编辑器自己写的），回退到 userConfig.parallaxLayers
-      let uLayers = null;
-      try {
-        const raw = localStorage.getItem("deskpet_parallax_layers");
-        if (raw) uLayers = JSON.parse(raw);
-      } catch {}
-      if (!uLayers) uLayers = userConfig.parallaxLayers;
+      const uLayers = userConfig.parallaxLayers;
       log.info("uLayers:", uLayers);
 
       for (let i = 0; i < 5; i++) {
@@ -130,7 +128,7 @@ export function useLayerEditor() {
       return;
     }
     if (layers.value[i].config.image) {
-      layers.value[i].url = `${p.basePath}/${layers.value[i].config.image}`;
+      layers.value[i].url = resolveProfileAssetUrl(p, layers.value[i].config.image);
     } else {
       layers.value[i].url = null;
     }
@@ -139,15 +137,14 @@ export function useLayerEditor() {
 
   // ── 素材回调 ──
   function onImgLoad(_i: number) {}
-  function onImgError(i: number, e: Event) {
+  async function onImgError(i: number, e: Event) {
     const img = e.target as HTMLImageElement;
     const p = profile.value;
     img.style.display = "none";
     log.warn(`L${i} 加载失败: ${img.src}`);
     if (p && p.id !== "sugar-pink") {
-      const fb = "/profiles/sugar-pink";
       const lImg = layers.value[i].config.image;
-      const fbUrl = lImg ? `${fb}/${lImg}` : `${fb}/materials/L2/body.png`;
+      const fbUrl = await getProfileAssetUrl("sugar-pink", lImg || "materials/L2/body.png");
       log.warn(`L${i} 尝试回退: ${fbUrl}`);
       img.src = fbUrl;
       img.style.display = "";
@@ -277,8 +274,9 @@ export function useLayerEditor() {
         relativePath,
         content: bytes,
       });
-      log.info(`写入完成 | AppData/desk-pet/${targetDir}${relativePath.split("/").pop()}`);
-      log.info(`dev同步 | public/${targetDir}${relativePath.split("/").pop()}`);
+      await refreshProfileAssets(p.id)
+      refreshLayerUrl(i)
+      log.info(`写入完成 | runtime/${targetDir}${relativePath.split("/").pop()}`);
     } catch (e: any) {
       log.error(`后台写入失败 | 目录: profiles/${p.id}/materials/L${i}/ | 错误:`, e?.message || e);
     } finally {
@@ -307,7 +305,10 @@ export function useLayerEditor() {
         profileId: profile.value!.id,
         subdir,
       });
-      assetList.value = files;
+      const configured = profile.value!.theme.parallax.layers
+        .map(layer => layer.image)
+        .filter(path => path?.startsWith(`${subdir}/`))
+      assetList.value = [...new Set([...files, ...configured])];
       log.info(`素材列表 | ${subdir}/ → ${files.length} 个文件:`, files);
     } catch (e: any) {
       log.warn(`素材列表加载失败 | ${subdir}/ | 错误:`, e?.message || e);
@@ -325,7 +326,7 @@ export function useLayerEditor() {
   }
 
   function previewAsset(path: string) {
-    pickerPreview.value = `${profile.value!.basePath}/${path}`;
+    pickerPreview.value = resolveProfileAssetUrl(profile.value!, path);
   }
 
   async function selectAsset(path: string) {
@@ -335,11 +336,9 @@ export function useLayerEditor() {
       uploading.value = i;
       log.info(`跨层复制 | 源: ${path} → 目标层: L${i}/${prefix}`);
       try {
-        const { invoke } = await import("@tauri-apps/api/core");
-        const bytes: number[] = await invoke("profile_file_read", {
-          profileId: profile.value!.id,
-          relativePath: path,
-        });
+        const response = await fetch(resolveProfileAssetUrl(profile.value!, path))
+        if (!response.ok) throw new Error(`读取源素材失败: ${response.status}`)
+        const bytes = Array.from(new Uint8Array(await response.arrayBuffer()))
         log.info(`读取源文件 | ${path} | ${bytes.length} bytes`);
         const ext = path.split(".").pop() || "png";
         const newPath = `${prefix}layer_${i}_${Date.now()}.${ext}`;
@@ -348,6 +347,7 @@ export function useLayerEditor() {
           relativePath: newPath,
           content: bytes,
         });
+        await refreshProfileAssets(profile.value!.id)
         log.info(`复制完成 | ${path} → ${newPath}`);
         layers.value[i].config.image = newPath;
         const blob = new Blob([new Uint8Array(bytes)]);
@@ -375,7 +375,7 @@ export function useLayerEditor() {
   }
 
   // ── 保存 ──
-  function save() {
+  async function save() {
     const cfg = JSON.parse(
       JSON.stringify(
         layers.value.map((l) => ({
@@ -394,9 +394,8 @@ export function useLayerEditor() {
       )
     );
     userConfig.parallaxLayers = cfg;
-    localStorage.removeItem("deskpet_parallax_layers");
-    localStorage.removeItem("deskpet_parallax_offset_v2");
-    localStorage.setItem("deskpet_parallax_dirty", "1");
+    await flushConfig()
+    await emit("deskpet-parallax-saved")
     saved.value = true;
     setTimeout(() => {
       saved.value = false;

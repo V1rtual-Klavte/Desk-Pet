@@ -3,7 +3,7 @@ import { ref, onMounted, onUnmounted } from "vue";
 import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
 import {
   userConfig, generalConfig, toolsConfig,
-  setOverrides, setOverride, getAllOverrides,
+  setOverrides, setOverride, getAllOverrides, flushConfig,
 } from "@/services/config";
 import {
   saveSoundAssignments,
@@ -145,6 +145,8 @@ async function doSave() {
     const { MemoryService } = await import("@/services/agent/memory");
     await MemoryService.updateCandy(a.candyInstructions.trim());
   }
+
+  await flushConfig()
 
   saved.value = true;
   log.info("设置已保存");

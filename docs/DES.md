@@ -17,7 +17,7 @@
 
 1. `README.md`：安装、启动命令、能力边界和文档入口。
 2. `src/App.vue`、`src/services/agent/runner.ts`：应用启动后的 UI 入口与用户消息入口。
-3. `src/services/agent/pi/runtime.ts`、`src/services/context/builder.ts`：Pi 主循环适配、Prompt 组装、工具循环和上下文边界。
+3. `src/services/engine/pi/runtime.ts`、`src/services/context/builder.ts`：Pi 主循环适配、Prompt 组装、工具循环和上下文边界。
 4. `src/services/personality/`、`src/services/reply/generator.ts`：人格 Card、变量状态、`RUNTIME_DATA`、情绪和回复后处理。
 5. `src/services/tool/`、`src/services/safety/`：工具注册/路由、助手模式能力和安全确认。
 6. `src/services/agent/memory/`、`src/services/session/`：会话持久化、压缩摘要和当前尚未接通的长期记忆能力。
@@ -40,7 +40,7 @@
 
 左侧可展开聊天面板，顶部为会话标签页，可切换/新建/关闭会话。用户输入文字与角色对话。回复由 AI 大模型生成，**人格卡驱动**。支持多人格切换，可在设置面板热插拔。
 
-**聊天面板与角色区域之间**有可拖动的竖线分割，拖动位置自动记忆（localStorage），无需在设置页配置。
+**聊天面板与角色区域之间**有可拖动的竖线分割，拖动位置写入运行时 CONFIG，无需在设置页配置。
 
 每个会话的对话轮次**实时写入** `sessions/session-YYYYMMDD-HHmmss-主题.md`，首次用户消息后自动提取主题并重命名文件。**累计 token 消耗、上下文占比同步持久化到 .md 元数据**，重启后自动恢复。随时可查看历史记录。
 
@@ -168,7 +168,7 @@ macOS 未签名构建下系统通知无法实现：tauri-plugin-notification 需
 | **新建会话** | `+` 按钮 | 归档当前会话到 sessions/，创建新会话 |
 | **关闭会话** | 标签页 `×` 按钮 | 归档并删除会话（至少保留1个） |
 | **会话恢复** | 启动时 | 自动恢复上次活跃会话的所有消息 |
-| **调整面板宽度** | 拖动角色/聊天之间的分割线 | 自动记忆位置（localStorage） |
+| **调整面板宽度** | 拖动角色/聊天之间的分割线 | 自动写入运行时 CONFIG |
 | 打开/关闭聊天 | 标题栏 💬 按钮 | 聊天面板展开/收起 |
 | 设置 | 标题栏 深蓝像素齿轮按钮 | 独立窗口：AI接口/窗口监控/弹窗/音效/快捷键/工具/MCP/Skill等全部CONFIG可编辑 + 导入导出 |
 | 输入聊天 | 聊天面板底部输入框 + Enter | 发送消息给角色 |
@@ -421,7 +421,7 @@ playNotificationByBoundary();
 
 ### 6.3 音效自定义
 
-用户可在设置面板为每个事件独立选择音效库中的音效（或"关闭"），分配保存在 `localStorage` → `deskpet_sound_assignments`。人格界限（表层/中层/深层）也可更换音效，触发机制保持系统联动。
+用户可在设置面板为每个事件独立选择音效库中的音效（或"关闭"），分配保存在运行时 CONFIG 的 `appearance.soundAssignments`。人格界限（表层/中层/深层）也可更换音效，触发机制保持系统联动。
 
 ---
 
@@ -447,7 +447,7 @@ playNotificationByBoundary();
 | `general` | `mode.assistant` / `popup` / `shortcut` / `logging` / `desktop` |
 | `ai` | provider / endpoint / apiKey / model / thinking / personality / loop / memory / lock / windowMonitor / safety |
 | `tools` | bash(whitelist) / file(writeEnabled) / mcp(servers+builtin) / skill |
-| `appearance` | **仅 `activeProfile: "sugar-pink"`** — 其余由 Profile 管理 |
+| `appearance` | `activeProfile`、全局视差开关/强度/图层覆盖和音效分配；Profile 继续提供默认主题、角色和素材 |
 
 ### 8.2 Profile 系统 — 主题/角色/音效（自包含闭包）
 
@@ -488,10 +488,10 @@ sugar-pink/                  # Profile 示例（内置3个: sugar-pink / dark-pu
 - **五层始终渲染**: DOM 中 5 个 `div.pl-layer` 始终存在，`display:none` 由 `layerStyles` computed 控制
 - **3D 增强**: CSS `drop-shadow` + `brightness/contrast/saturate` 按深度调整
 - **配置**: `profile.yaml` → `theme.parallax`；设置页 → 全局开关+强度；**图层编辑器弹窗** → 逐层交互式编辑（拖拽位置/属性调整/锁定/隐藏）
-- **持久化**: 图层编辑器保存到 `userConfig.parallaxLayers`（key: `deskpet_user_settings`），`refreshUserCache()` 打破跨 WebView 缓存
+- **持久化**: 图层编辑器保存到运行时 CONFIG 的 `appearance.parallax.layers`，通过 Tauri 事件通知主窗口重载
 - **核心文件**: `src/composables/useParallax.ts`（引擎，导出 `layerDepth()`）+ `StreamView.vue`（五层渲染）+ `src/components/LayerEditor.vue`（编辑器弹窗）
-- **Rust**: `cursor.rs` → `spawn_cursor_tracker` 后台线程 ~60fps emit；`profile_cmd.rs` → `profile_file_write` dev 模式同步 `public/profiles/` + `list_profile_files` 合并 AppData/builtin 来源
-- **稳定性**: 2026-07-03 修复三重连环 Bug；2026-07-05 大修：offset 百分比自适应 + 素材按层闭包 + 上传即时预览 + 保存热重载 + 跨 WebView 缓存刷新 + stage 等比容器 + 拖拽亚像素精度 + 整数检测自动迁移旧数据 + profile_file_read/write 双写 + list_profile_files 合并来源
+- **Rust**: `cursor.rs` → `spawn_cursor_tracker` 后台线程 ~60fps emit；`profile_cmd.rs` → `profile_file_write` 写入用户覆盖目录，`list_profile_files` 只扫描该可写目录
+- **素材来源**: 内置 Profile 由打包资源只读提供；用户写入同 ID、同相对路径的图片时优先覆盖内置素材，无需复制整套 Profile
 
 #### 内置 Profile
 
@@ -531,7 +531,8 @@ sugar-pink/                  # Profile 示例（内置3个: sugar-pink / dark-pu
   │     ├── character.yaml 加载失败? → 回退到 DEFAULT_BUILTIN("sugar-pink")
   │     └── 帧路径: 当前 profile 首选，缺失回退默认
   └── activateProfile(id) → injectFonts() + injectCssVars()
-        └── ★ 设置 localStorage "deskpet_parallax_dirty"=1 通知 StreamView 重载图层
+
+图层编辑器保存 → 回写运行时 CONFIG → emit("deskpet-parallax-saved") → StreamView 重载
 
 设置页打开 →
   ├── discoverAllProfiles()   # 扫描内置 + 用户(AppData) profile 列表
@@ -654,7 +655,7 @@ src/services/
 │   └── stages/            # 阶段文案 JSON (LLM生成, per-card)
 │
 ├── session/               # 会话持久化管理
-│   ├── store.ts           # reactive 状态 + localStorage 双向同步
+│   ├── store.ts           # reactive 状态
 │   ├── manager.ts         # 多会话切换/新建/归档/恢复
 │   └── persistence.ts / messages.ts
 │
@@ -972,6 +973,7 @@ memory/                        长期记忆目录
 └── Project.md                 ★ 会话归档指针 → sessions/
 
 sessions/                      会话目录（唯一真相源）
+├── index.json                 UI 标签/活跃状态（可丢弃）
 └── session-YYYYMMDD-HHmmss-主题.md
        元信息 → 结构化摘要 → 完整对话记录
 ```
@@ -1002,7 +1004,7 @@ sessions/                      会话目录（唯一真相源）
 
 | 模块 | 状态 | 文件 |
 |------|:---:|------|
-| Pi Agent Core 多轮循环 | ✅ | `agent/pi/runtime.ts` |
+| Pi Agent Core 多轮循环 | ✅ | `engine/pi/runtime.ts` |
 | PreProcessor (slash/去重) | ✅ | `engine/preprocessor.ts` |
 | 会话状态机 | ✅ | `engine/session.ts` |
 | AI 输出解析器 | ✅ | `engine/parser.ts` |

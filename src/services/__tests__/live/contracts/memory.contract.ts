@@ -2,9 +2,14 @@ import type { ModuleContract } from "../types"
 
 export const memoryContract: ModuleContract = {
   module: "memory",
-  sourceFiles: ["src/services/agent/memory/index.ts", "src/services/agent/memory/memory-entries.ts"],
-  generatedAt: "2026-07-24T00:00:00Z",
-  sourceHash: "cd104265d7eeb3203524d66399b7775959e854097086ee1977af78feba35cede",
+  sourceFiles: [
+    "src/services/agent/memory/index.ts",
+    "src/services/agent/memory/memory-entries.ts",
+    "src/services/agent/memory/session-files.ts",
+    "src/services/agent/memory/parsers.ts",
+  ],
+  generatedAt: "2026-09-10",
+  sourceHash: "711836c65f5efb131c165fd273974e8d0fd70653e5c4f81f0e69ffcd80b2de7f",
   coverage: [
     { id: "mm-01", feature: "Memory 添加条目", description: "MemoryService.append() 创建记忆", why: "记忆系统基础 CRUD", depth: "shallow", scenarios: [] },
     { id: "mm-02", feature: "Memory 搜索", description: "MemoryService.search(query, limit) 按内容搜索", why: "LLM 需检索相关记忆", depth: "shallow", scenarios: [] },
@@ -13,7 +18,7 @@ export const memoryContract: ModuleContract = {
     { id: "mm-05", feature: "对话轮次记录", description: "MemoryService.recordTurn(role, text) 记录轮次", why: "session turn count 递增", depth: "deep", scenarios: [] },
     { id: "mm-06", feature: "整理 Consolidate", description: "MemoryService.checkAndConsolidate() 定期整理", why: "防止记忆膨胀", depth: "shallow", scenarios: [] },
     { id: "mm-07", feature: "Candy/User 指令", description: "getCandyInstructionsSync/getUserProfileSync 返回指令", why: "prompt 注入的记忆内容", depth: "shallow", scenarios: [] },
-    { id: "mm-08", feature: "多轮对话记忆持久化", description: "真实多轮对话后记忆正确存储和检索", why: "端到端验证", depth: "deep", scenarios: ["memory-multi-turn"] },
+    { id: "mm-08", feature: "多轮会话 Markdown 持久化", description: "真实多轮对话后可从 sessions/*.md 重新读取完整原始正文", why: "文件是会话真相源，预览行不能替代原文", depth: "deep", scenarios: ["memory-multi-turn"] },
   ],
   rules: { minScenarios: 6, minDeepScenarios: 2, requireBoundary: true, requireErrorPath: true },
 }

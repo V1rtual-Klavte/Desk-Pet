@@ -5,7 +5,7 @@
 
 import type { SkillDef } from "./loader"
 import type { ToolDef } from "@/services/tool/types"
-import { runPiSubAgent } from "@/services/agent/pi"
+import { runPiSubAgent } from "@/services/engine/pi"
 import { createLogger } from "@/services/logger"
 
 const log = createLogger("SkillRunner")

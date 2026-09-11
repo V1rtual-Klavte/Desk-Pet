@@ -1,7 +1,7 @@
 // ==========================================
 // 动画系统 — 从 Profile 加载
 // ==========================================
-import { getActiveProfile } from "@/services/profile";
+import { getActiveProfile, getBodyUrl } from "@/services/profile";
 
 // 动画类型定义
 export interface Frame {
@@ -41,8 +41,7 @@ export function getAnimations(): Record<string, Animation> {
  * Profile 未加载时的最小 fallback — 使用当前激活 profile 的 body.png
  */
 function getFallbackAnimations(): Record<string, Animation> {
-  const profile = getActiveProfile();
-  const bodyUrl = profile ? `${profile.basePath}/materials/L2/body.png` : "/profiles/sugar-pink/materials/L2/body.png";
+  const bodyUrl = getBodyUrl(getActiveProfile() || undefined);
   return {
     idle: {
       frames: [{ src: bodyUrl, duration: 3000 }],

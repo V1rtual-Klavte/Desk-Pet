@@ -8,13 +8,13 @@ import { createLogger } from "@/services/logger"
 import type { MemoryEntry, ProjectEntry, SessionFileMeta, SessionMemory, CompactionSummary } from "./types"
 
 // IO
-import { setMemoryDir, setSessionsDir, readSessionFile } from "./io"
+import { setMemoryDir, setSessionsDir, readSessionFile, sessionsDir } from "./io"
 
 // Paths — unified path management
-import { initPaths } from "@/services/paths"
+import { BaseDirs, initPaths } from "@/services/paths"
 
 // Parsers
-import { parseSessionFilename } from "./parsers"
+import { parseSessionFilename, parseTurnsFromRaw } from "./parsers"
 
 // Session files
 import {
@@ -61,8 +61,8 @@ async function ensureInit(): Promise<void> {
   if (initialized) return
   if (initPromise) { await initPromise; return }
   initPromise = _doInit()
-  await initPromise
-  initPromise = null
+  try { await initPromise }
+  finally { initPromise = null }
 }
 
 async function _doInit(): Promise<void> {
@@ -71,8 +71,7 @@ async function _doInit(): Promise<void> {
     await initPaths()
 
     const memDir = await invoke<string>("init_memory_files")
-    const dataDir = memDir.replace(/\/memory$/, "")
-    const sessDir = `${dataDir}/sessions`
+    const sessDir = BaseDirs.sessions()
     setMemoryDir(memDir)
     setSessionsDir(sessDir)
     log.info("Memory:", memDir, "| Sessions:", sessDir)
@@ -87,12 +86,11 @@ async function _doInit(): Promise<void> {
   } catch (e) {
     log.error("Memory 初始化失败", e instanceof Error ? e : undefined)
     setSessionMemory(null)
-    initialized = true
+    throw e
   }
 }
 
 async function _syncProjectFromSessionsDir(): Promise<void> {
-  const { sessionsDir } = await import("./io")
   if (!sessionsDir) return
   try {
     const files = await invoke<string[]>("list_session_files")
@@ -101,14 +99,14 @@ async function _syncProjectFromSessionsDir(): Promise<void> {
       const parsed = parseSessionFilename(filename)
       if (!parsed) continue
       const raw = await readSessionFile(filename)
-      const turnMatches = raw.match(/^\s*-\s*\[[^\]]+\]\s*\*\*[^*]+\*\*:/gm) || []
+      const turnCount = parseTurnsFromRaw(raw).length
       let mainRequest = "无"
       const reqMatch = raw.match(/- 主请求:\s*(.+)/)
       if (reqMatch) mainRequest = reqMatch[1]
       let date = new Date().toISOString().slice(0, 10)
       const startMatch = raw.match(/> 开始:\s*(.+)/)
       if (startMatch) { try { date = new Date(startMatch[1]).toISOString().slice(0, 10) } catch {} }
-      rebuilt.push({ sessionFile: filename, date, rounds: turnMatches.length, mainRequest, keyTech: [] })
+      rebuilt.push({ sessionFile: filename, date, rounds: turnCount, mainRequest, keyTech: [] })
     }
     const old = getProjectEntriesRef()
     const diff = old.length - rebuilt.length

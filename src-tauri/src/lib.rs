@@ -27,7 +27,7 @@ use crate::commands::{
     mcp_spawn, mcp_send, mcp_kill, McpPool, BashPool,
     get_memory_file, get_session_file, init_memory_files,
     list_session_files, delete_session_file, file_delete,
-    profile_file_write, profile_file_read, profile_delete, list_user_profiles, list_profile_files,
+    profile_file_write, profile_file_read, profile_delete, profile_asset_base, profile_user_asset_base, list_user_profiles, list_profile_files,
     personality_file_read, personality_file_write, personality_file_list, personality_file_delete,
     spawn_cursor_tracker,
 };
@@ -61,6 +61,87 @@ fn get_personality_dir(paths: tauri::State<AppPaths>) -> String {
 #[tauri::command]
 fn get_profiles_dir(paths: tauri::State<AppPaths>) -> String {
     paths.profiles.to_string_lossy().to_string()
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct RuntimePathsPayload {
+    data: String,
+    memory: String,
+    sessions: String,
+    personality: String,
+    profiles: String,
+    settings: String,
+    config_file: String,
+    runtime_mode: String,
+}
+
+#[tauri::command]
+fn get_runtime_paths(paths: tauri::State<AppPaths>) -> RuntimePathsPayload {
+    let display = |path: &std::path::Path| path.to_string_lossy().to_string();
+    RuntimePathsPayload {
+        data: display(&paths.data_root),
+        memory: display(&paths.memory),
+        sessions: display(&paths.sessions),
+        personality: display(&paths.personality),
+        profiles: display(&paths.profiles),
+        settings: display(&paths.settings),
+        config_file: display(&paths.config_file),
+        runtime_mode: paths.runtime_mode.to_string(),
+    }
+}
+
+#[tauri::command]
+fn resolve_runtime_path(
+    paths: tauri::State<AppPaths>,
+    scope: String,
+    segments: Vec<String>,
+) -> Result<String, String> {
+    let mut path = match scope.as_str() {
+        "data" => paths.data_root.clone(),
+        "memory" => paths.memory.clone(),
+        "sessions" => paths.sessions.clone(),
+        "personality" => paths.personality.clone(),
+        "profiles" => paths.profiles.clone(),
+        "settings" => paths.settings.clone(),
+        _ => return Err(format!("未知运行时路径域: {scope}")),
+    };
+    for segment in segments {
+        let candidate = std::path::Path::new(&segment);
+        if candidate.is_absolute()
+            || candidate.components().any(|part| !matches!(part, std::path::Component::Normal(_)))
+        {
+            return Err("运行时路径片段非法".to_string());
+        }
+        path.push(candidate);
+    }
+    Ok(path.to_string_lossy().to_string())
+}
+
+#[tauri::command]
+fn read_runtime_config(paths: tauri::State<AppPaths>) -> Result<String, String> {
+    std::fs::read_to_string(&paths.config_file)
+        .map_err(|e| format!("读取配置失败 {:?}: {e}", paths.config_file))
+}
+
+#[tauri::command]
+fn write_runtime_config(paths: tauri::State<AppPaths>, content: String) -> Result<(), String> {
+    let parent = paths.config_file.parent().ok_or("配置文件路径没有父目录")?;
+    std::fs::create_dir_all(parent).map_err(|e| format!("创建配置目录失败: {e}"))?;
+    std::fs::write(&paths.config_file, content).map_err(|e| format!("写入配置失败: {e}"))
+}
+
+#[tauri::command]
+fn read_session_ui_state(paths: tauri::State<AppPaths>) -> Result<Option<String>, String> {
+    let file = paths.sessions.join("index.json");
+    if !file.exists() { return Ok(None); }
+    std::fs::read_to_string(file).map(Some).map_err(|e| format!("读取会话 UI 状态失败: {e}"))
+}
+
+#[tauri::command]
+fn write_session_ui_state(paths: tauri::State<AppPaths>, content: String) -> Result<(), String> {
+    let file = paths.sessions.join("index.json");
+    std::fs::write(file, content).map_err(|e| format!("写入会话 UI 状态失败: {e}"))
 }
 
 #[tauri::command]
@@ -149,6 +230,7 @@ pub fn run() {
             let live_test = cfg!(debug_assertions)
                 && std::env::var("DESKPET_LIVE_TEST").ok().as_deref() == Some("1");
             let paths = AppPaths::init(app.handle()).expect("路径初始化失败");
+            app.asset_protocol_scope().allow_directory(&paths.profiles, true)?;
             app.manage(paths);
 
             if live_test {
@@ -262,9 +344,17 @@ pub fn run() {
             delete_session_file,
             file_delete,
             get_profiles_dir,
+            get_runtime_paths,
+            resolve_runtime_path,
+            read_runtime_config,
+            write_runtime_config,
+            read_session_ui_state,
+            write_session_ui_state,
             profile_file_write,
             profile_file_read,
             profile_delete,
+            profile_asset_base,
+            profile_user_asset_base,
             list_user_profiles,
             list_profile_files,
             get_personality_dir,

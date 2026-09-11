@@ -3,8 +3,8 @@
 // 统一路径管理 — base dirs + 路径校验
 // ==========================================
 
-use std::path::{Component, Path, PathBuf};
 use std::fs;
+use std::path::{Component, Path, PathBuf};
 use tauri::Manager;
 
 pub struct AppPaths {
@@ -13,6 +13,9 @@ pub struct AppPaths {
     pub sessions:     PathBuf,  // {data_root}/sessions/
     pub personality:  PathBuf,  // {data_root}/personality/
     pub profiles:     PathBuf,  // {data_root}/profiles/
+    pub settings:     PathBuf,  // {data_root}/settings/
+    pub config_file:  PathBuf,  // 开发 CONFIG-DEV.yaml / 生产 settings/CONFIG.yaml
+    pub runtime_mode: &'static str,
 
     pub builtin_personality: PathBuf,  // {resource}/personality/  (只读)
     pub builtin_profiles:    PathBuf,  // {resource}/profiles/     (只读)
@@ -22,20 +25,25 @@ impl AppPaths {
     pub fn init(app: &tauri::AppHandle) -> Result<Self, String> {
         let resource = resolve_resource_dir(app)?;
 
-        // 唯一环境判断：开发→项目下，生产→AppData
+        // 唯一环境判断：开发→项目工作区，生产→Tauri 应用专属数据目录。
         let data_root = if cfg!(debug_assertions) {
             if let Ok(test_root) = std::env::var("DESKPET_LIVE_TEST_DATA_ROOT") {
                 PathBuf::from(test_root)
             } else {
-                // 开发: {project}/data/desk-pet/
-                let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-                manifest.parent().unwrap().join("data").join("desk-pet")
+                project_root().join("data").join("desk-pet")
             }
         } else {
-            // 生产: {AppData}/desk-pet/
+            // app_local_data_dir 已包含 bundle identifier，不能再次拼 desk-pet。
             app.path().app_local_data_dir()
                 .map_err(|e| format!("app_local_data_dir: {e}"))?
-                .join("desk-pet")
+        };
+
+        let settings = data_root.join("settings");
+        let config_file = if cfg!(debug_assertions) {
+            let dev = project_root().join("CONFIG-DEV.yaml");
+            if dev.exists() { dev } else { project_root().join("CONFIG.yaml") }
+        } else {
+            settings.join("CONFIG.yaml")
         };
 
         let paths = Self {
@@ -43,13 +51,21 @@ impl AppPaths {
             sessions:     data_root.join("sessions"),
             personality:  data_root.join("personality"),
             profiles:     data_root.join("profiles"),
+            settings,
+            config_file,
+            runtime_mode: if cfg!(debug_assertions) { "development" } else { "production" },
             builtin_personality: resource.join("personality"),
             builtin_profiles:    resource.join("profiles"),
             data_root,
         };
 
-        for dir in [&paths.memory, &paths.sessions, &paths.personality, &paths.profiles] {
+        for dir in [&paths.memory, &paths.sessions, &paths.personality, &paths.profiles, &paths.settings] {
             fs::create_dir_all(dir).map_err(|e| format!("创建目录失败: {dir:?}: {e}"))?;
+        }
+
+        if !cfg!(debug_assertions) && !paths.config_file.exists() {
+            fs::write(&paths.config_file, include_str!("../../CONFIG.yaml"))
+                .map_err(|e| format!("初始化生产配置失败: {:?}: {e}", paths.config_file))?;
         }
 
         Ok(paths)
@@ -136,14 +152,21 @@ fn normalize_absolute(path: &Path) -> Result<PathBuf, String> {
 }
 
 fn resolve_resource_dir(app: &tauri::AppHandle) -> Result<PathBuf, String> {
-    if let Ok(manifest) = std::env::var("CARGO_MANIFEST_DIR") {
-        let p = PathBuf::from(&manifest).parent().unwrap().join("public");
+    if cfg!(debug_assertions) {
+        let p = project_root().join("public");
         if p.exists() {
             return Ok(p);
         }
     }
     app.path().resource_dir()
         .map_err(|e| format!("resource_dir: {e}"))
+}
+
+fn project_root() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .expect("src-tauri 必须位于项目根目录下")
+        .to_path_buf()
 }
 
 fn home_dir() -> Option<PathBuf> {

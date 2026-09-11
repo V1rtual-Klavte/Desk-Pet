@@ -1,6 +1,13 @@
-import { createApp } from "vue";
-import SettingsPanel from "./components/SettingsPanel.vue";
-import "./styles/fonts.css";
+import { createApp } from "vue"
+import { initPaths } from "@/services/paths"
+import { initConfig } from "@/services/config"
+import "./styles/fonts.css"
 
-const app = createApp(SettingsPanel);
-app.mount("#app");
+async function bootstrap(): Promise<void> {
+  await initPaths()
+  await initConfig()
+  const { default: SettingsPanel } = await import("./components/SettingsPanel.vue")
+  createApp(SettingsPanel).mount("#app")
+}
+
+void bootstrap()

@@ -6,7 +6,7 @@
 import { invoke } from "@tauri-apps/api/core"
 import type { SessionMemory, ProjectEntry, SessionFileMeta, MemoryEntry, CompactionSummary } from "./types"
 import { readSessionFile, writeSessionFile, sessionsDir, withLock } from "./io"
-import { localTime, localDate, localCompact, parseSessionFilename, parseSessionFileMeta, parseSessionFromFile, parseTurnsFromRaw, buildSessionFileContent, makeSessionFilename, findTopicFromTurns } from "./parsers"
+import { localTime, localDate, localCompact, parseSessionFilename, parseSessionFileMeta, parseSessionFromFile, parseTurnsFromRaw, buildSessionFileContent, makeSessionFilename, findTopicFromTurns, serializeSessionTurn } from "./parsers"
 import { createLogger } from "@/services/logger"
 
 const log = createLogger("MemorySessions")
@@ -75,7 +75,7 @@ export async function createSessionFile(sessionId: string): Promise<void> {
   ].join("\n")
   const ok = await writeSessionFile(filename, content)
   if (ok) {
-    log.info("Session 文件已创建:", `${sessionsDir}/${filename}`)
+    log.info("Session 文件已创建:", filename)
     if (!projectEntries.find(e => e.sessionFile === filename)) {
       projectEntries.push({ sessionFile: filename, date: localDate(), rounds: 0, mainRequest: "新会话", keyTech: [] })
     }
@@ -92,18 +92,7 @@ export async function loadSessionMessages(sessionId: string): Promise<{ role: "u
     if (!match) { log.warn("loadSessionMessages: 未找到匹配文件", sessionId); return null }
     const raw = await readSessionFile(match)
     if (!raw || raw.length < 20) return null
-    const turns: { role: "user" | "assistant"; text: string; timestamp: number }[] = []
-    let inConversation = false
-    for (const line of raw.split("\n")) {
-      if (line.startsWith("## 对话记录")) { inConversation = true; continue }
-      if (line.startsWith("## ")) { inConversation = false; continue }
-      if (!inConversation) continue
-      const m = line.match(/^-\s*\[([^\]]+)\]\s*\*\*([^*]+)\*\*:\s*(.+)/)
-      if (m) {
-        const ts = Date.parse(m[1])
-        turns.push({ role: m[2].trim() === "糖糖" ? "assistant" : "user", text: m[3].trim(), timestamp: isNaN(ts) ? Date.now() : ts })
-      }
-    }
+    const turns = parseTurnsFromRaw(raw)
     log.info(`从 sessions/ 加载 ${turns.length} 轮对话:`, match)
     return turns
   } catch { return null }
@@ -118,7 +107,7 @@ export async function updateSessionTopic(topic: string): Promise<void> {
     const oldContent = await readSessionFile(oldName)
     if (oldContent) {
       await writeSessionFile(newName, oldContent)
-      try { await invoke("file_delete", { path: `${sessionsDir}/${oldName}` }) } catch { /* ignore */ }
+      try { await invoke("delete_session_file", { filename: oldName }) } catch { /* ignore */ }
     }
   } catch { /* ignore */ }
 }
@@ -162,7 +151,7 @@ export function recordTurn(role: "user" | "assistant", text: string, checkConsol
     log.warn("recordTurn: sessionMemory 为空，创建新会话记忆")
     sessionMemory = newSessionMemory()
   }
-  sessionMemory.turns.push({ role, text: text.substring(0, 200), timestamp: Date.now() })
+  sessionMemory.turns.push({ role, text, timestamp: Date.now() })
   turnCounter++
   if (turnCounter % 5 === 0) {
     log.info(`已达到 ${turnCounter} 轮，触发记忆整理`)
@@ -183,14 +172,11 @@ export async function recordTurnToSession(sessionId: string, role: "user" | "ass
     if (!match) { log.warn("recordTurnToSession: 未找到会话文件", sessionId); return }
     let current = await readSessionFile(match)
     if (!current || current.length < 20) { log.warn("recordTurnToSession: 文件内容为空", match); return }
-    const timeStr = localTime(new Date())
-    const roleLabel = role === "assistant" ? "糖糖" : "用户"
-    const turnLine = `- [${timeStr}] **${roleLabel}**: ${text.substring(0, 300)}`
-    const turnMatches = current.match(/^\s*-\s*\[[^\]]+\]\s*\*\*[^*]+\*\*:/gm) || []
+    const turnMatches = parseTurnsFromRaw(current)
     current = current
       .replace(/^> 轮数: \d+/m, `> 轮数: ${turnMatches.length + 1}`)
       .replace(/^## 对话记录 \(\d+ 轮\)/m, `## 对话记录 (${turnMatches.length + 1} 轮)`)
-    current = current.trimEnd() + "\n" + turnLine + "\n"
+    current = current.trimEnd() + "\n" + serializeSessionTurn({ role, text, timestamp: Date.now() }).join("\n") + "\n"
     await writeSessionFile(match, current)
     log.debug(`recordTurnToSession: ${role} → ${match} (${turnMatches.length + 1} 轮)`)
   } catch (e) { log.warn("recordTurnToSession 失败", e instanceof Error ? e : undefined) }
@@ -214,19 +200,17 @@ export async function appendTurnToSessionFile(role: "user" | "assistant", text: 
   try {
     let current = await readSessionFile(filename)
     let writeFilename = filename
-    const timeStr = localTime(new Date())
-    const roleLabel = role === "assistant" ? "糖糖" : "用户"
-    const turnLine = `- [${timeStr}] **${roleLabel}**: ${text.substring(0, 300)}`
+    const turnBlock = serializeSessionTurn({ role, text, timestamp: Date.now() }).join("\n")
     if (!current || current.length < 20) {
       const topic = sessionMemory.turns.length > 0
         ? sessionMemory.turns.find(t => t.role === "user")?.text.substring(0, 20)?.replace(/[\n\r/\\:*?"<>|]/g, "").trim() || "新会话"
         : "新会话"
       current = [
         `# ${sessionMemory.sessionId}-${topic}`, `> 开始: ${localTime(sessionMemory.startedAt)}`, `> 轮数: 1`,
-        `> Token累计: 0/0 | 上下文: 0%`, "", "## 摘要", "<!-- 归档时填充 -->", "", "## 对话记录 (1 轮)", "", turnLine, "",
+        `> Token累计: 0/0 | 上下文: 0%`, "", "## 摘要", "<!-- 归档时填充 -->", "", "## 对话记录 (1 轮)", "", turnBlock, "",
       ].join("\n")
     } else {
-      const turnMatches = current.match(/^\s*-\s*\[[^\]]+\]\s*\*\*[^*]+\*\*:/gm) || []
+      const turnMatches = parseTurnsFromRaw(current)
       const turnCount = turnMatches.length + 1
       const newTopic = sessionMemory.turns.find(t => t.role === "user")?.text.substring(0, 20)?.replace(/[\n\r/\\:*?"<>|]/g, "").trim() || ""
       const { debug } = await import("@/services/debug")
@@ -243,16 +227,16 @@ export async function appendTurnToSessionFile(role: "user" | "assistant", text: 
         const newFilename = makeSessionFilename(sessionMemory.sessionId, newTopic)
         if (newFilename !== filename) writeFilename = newFilename
       }
-      current = current.trimEnd() + "\n" + turnLine + "\n"
+      current = current.trimEnd() + "\n" + turnBlock + "\n"
     }
     await writeSessionFile(writeFilename, current)
     if (writeFilename !== filename) {
-      try { await invoke("file_delete", { path: `${sessionsDir}/${filename}` }) } catch { /* ignore */ }
+      try { await invoke("delete_session_file", { filename }) } catch { /* ignore */ }
       filename = writeFilename
     }
     const pe = projectEntries.find(e => e.sessionFile === filename)
     if (pe) {
-      const turnMatches = current.match(/^\s*-\s*\[[^\]]+\]\s*\*\*[^*]+\*\*:/gm) || []
+      const turnMatches = parseTurnsFromRaw(current)
       pe.rounds = turnMatches.length
     }
   } catch (e) { log.warn("实时写入 session 文件失败", e instanceof Error ? e : undefined) }

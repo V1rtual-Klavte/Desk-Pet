@@ -1,10 +1,12 @@
 // ==========================================
-// 全局配置 —— 从根目录 CONFIG.yaml 加载
+// 全局配置 —— 启动时从 AppPaths.config_file 加载
 // 所有模块都应从此处读取配置，不自行定义常量
-// 运行时用户设置通过 localStorage 持久化覆盖 CONFIG 默认值
+// 设置修改直接回写该 CONFIG 文件，不再使用 localStorage 作为配置层
 // ==========================================
 
 import rawConfig from "../../CONFIG.yaml";
+import { invoke } from "@tauri-apps/api/core";
+import { dump as dumpYaml, load as loadYaml } from "js-yaml";
 import type { ParallaxLayerCfg } from "@/composables/useParallax";
 import { DEFAULT_LAYERS } from "@/composables/useParallax";
 
@@ -14,6 +16,7 @@ interface UserSettings {
   popupMode: "cursor" | "fixed";
   fixedPosition: { x: number; y: number } | null;
   popupSize: { w: number; h: number };
+  chatWidth: number;
   shortcutKey: string;
   shortcutMacModifiers: string[];
   shortcutWinModifiers: string[];
@@ -32,12 +35,15 @@ export interface BuiltinMcpServer {
 }
 
 interface Config {
+  enabled?: boolean
   general: {
     mode: { assistant: boolean }
     popup: {
       mode: "cursor" | "fixed"
       autoPopupOnMessage: boolean
       defaultSize: { w: number; h: number }
+      fixedPosition?: { x: number; y: number } | null
+      chatWidth?: number
     }
     shortcut: {
       key: string
@@ -111,46 +117,131 @@ interface Config {
   }
   appearance: {
     activeProfile: string
+    parallax?: {
+      enabled: boolean
+      intensity: number
+      layers: ParallaxLayerCfg[]
+    }
+    soundAssignments?: Record<string, string>
   }
 }
 
-const cfg = rawConfig as Config;
+let cfg = structuredClone(rawConfig) as Config;
+let configInitialized = false
+let writeQueue: Promise<void> = Promise.resolve()
+let saveQueued = false
+
+function isConfig(value: unknown): value is Config {
+  if (!value || typeof value !== "object") return false
+  const candidate = value as Partial<Config>
+  return Boolean(candidate.general && candidate.ai && candidate.tools && candidate.appearance)
+}
+
+export async function initConfig(): Promise<void> {
+  if (configInitialized) return
+  const text = await invoke<string>("read_runtime_config")
+  const parsed = loadYaml(text)
+  if (!isConfig(parsed)) throw new Error("CONFIG 缺少 general/ai/tools/appearance 根节点")
+  cfg = parsed
+  configInitialized = true
+  clearLegacyConfigCache()
+}
+
+export async function reloadConfig(): Promise<void> {
+  configInitialized = false
+  _cache = null
+  await initConfig()
+}
+
+function clearLegacyConfigCache(): void {
+  try {
+    const exact = new Set([
+      "deskpet_user_settings", "deskpet_config_overrides", "deskpet_chat_history",
+      "deskpet_sessions", "deskpet_active_session", "deskpet_parallax_layers",
+      "deskpet_parallax_offset_v2", "deskpet_parallax_dirty", "deskpet_divider_pos",
+      "deskpet_sound_assignments",
+    ])
+    const keys = Array.from({ length: localStorage.length }, (_, index) => localStorage.key(index))
+    for (const key of keys) {
+      if (key && (exact.has(key) || key.startsWith("deskpet_chat_") || key.startsWith("deskpet_unanswered_") || key.startsWith("deskpet_live_test_"))) {
+        localStorage.removeItem(key)
+      }
+    }
+  } catch { /* WebView storage may be unavailable in tests. */ }
+}
+
+function queueConfigSave(): void {
+  if (saveQueued) return
+  saveQueued = true
+  queueMicrotask(() => {
+    saveQueued = false
+    const content = dumpYaml(cfg, { lineWidth: -1, noRefs: true })
+    writeQueue = writeQueue.then(() => invoke<void>("write_runtime_config", { content }))
+    void writeQueue
+  })
+}
+
+export async function flushConfig(): Promise<void> {
+  if (saveQueued) {
+    saveQueued = false
+    const content = dumpYaml(cfg, { lineWidth: -1, noRefs: true })
+    writeQueue = writeQueue.then(() => invoke<void>("write_runtime_config", { content }))
+  }
+  await writeQueue
+}
+
+function cloneConfig(): Config {
+  return structuredClone(cfg)
+}
 
 // ==========================================
-// 运行时用户配置（localStorage 持久化）
+// 运行时用户配置（CONFIG 中的便捷视图）
 // ==========================================
-const STORAGE_KEY = "deskpet_user_settings";
-
 const USER_DEFAULTS: UserSettings = {
   popupMode: cfg.general?.popup?.mode || "cursor",
-  fixedPosition: null,
+  fixedPosition: cfg.general?.popup?.fixedPosition ?? null,
   popupSize: cfg.general?.popup?.defaultSize || { w: 730, h: 450 },
+  chatWidth: cfg.general?.popup?.chatWidth ?? 220,
   shortcutKey: cfg.general?.shortcut?.key || "P",
   shortcutMacModifiers: cfg.general?.shortcut?.macModifiers || ["Control", "Command"],
   shortcutWinModifiers: cfg.general?.shortcut?.winModifiers || ["Control", "Alt"],
   autoPopupOnMessage: cfg.general?.popup?.autoPopupOnMessage ?? false,
-  parallaxEnabled: false,
-  parallaxIntensity: 1.0,
-  parallaxLayers: DEFAULT_LAYERS.map(l => ({ ...l })),
+  parallaxEnabled: cfg.appearance?.parallax?.enabled ?? false,
+  parallaxIntensity: cfg.appearance?.parallax?.intensity ?? 1.0,
+  parallaxLayers: cfg.appearance?.parallax?.layers ?? DEFAULT_LAYERS.map(l => ({ ...l })),
 };
 
 function loadUserOverrides(): UserSettings {
-  try {
-    const raw = localStorage.getItem(STORAGE_KEY);
-    if (raw) {
-      const parsed = JSON.parse(raw);
-      return { ...USER_DEFAULTS, ...parsed };
-    }
-  } catch (e) {
-    console.warn("[Config] localStorage 数据损坏，回退默认值", e instanceof Error ? e.message : String(e))
+  return {
+    popupMode: cfg.general?.popup?.mode ?? USER_DEFAULTS.popupMode,
+    fixedPosition: cfg.general?.popup?.fixedPosition ?? null,
+    popupSize: cfg.general?.popup?.defaultSize ?? USER_DEFAULTS.popupSize,
+    chatWidth: cfg.general?.popup?.chatWidth ?? USER_DEFAULTS.chatWidth,
+    shortcutKey: cfg.general?.shortcut?.key ?? USER_DEFAULTS.shortcutKey,
+    shortcutMacModifiers: cfg.general?.shortcut?.macModifiers ?? USER_DEFAULTS.shortcutMacModifiers,
+    shortcutWinModifiers: cfg.general?.shortcut?.winModifiers ?? USER_DEFAULTS.shortcutWinModifiers,
+    autoPopupOnMessage: cfg.general?.popup?.autoPopupOnMessage ?? USER_DEFAULTS.autoPopupOnMessage,
+    parallaxEnabled: cfg.appearance?.parallax?.enabled ?? USER_DEFAULTS.parallaxEnabled,
+    parallaxIntensity: cfg.appearance?.parallax?.intensity ?? USER_DEFAULTS.parallaxIntensity,
+    parallaxLayers: cfg.appearance?.parallax?.layers ?? USER_DEFAULTS.parallaxLayers,
   }
-  return { ...USER_DEFAULTS };
 }
 
 function saveUserOverrides(s: UserSettings): void {
-  try {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(s));
-  } catch {}
+  cfg.general.popup.mode = s.popupMode
+  cfg.general.popup.fixedPosition = s.fixedPosition
+  cfg.general.popup.defaultSize = s.popupSize
+  cfg.general.popup.chatWidth = s.chatWidth
+  cfg.general.popup.autoPopupOnMessage = s.autoPopupOnMessage
+  cfg.general.shortcut.key = s.shortcutKey
+  cfg.general.shortcut.macModifiers = s.shortcutMacModifiers
+  cfg.general.shortcut.winModifiers = s.shortcutWinModifiers
+  cfg.appearance.parallax = {
+    enabled: s.parallaxEnabled,
+    intensity: s.parallaxIntensity,
+    layers: s.parallaxLayers,
+  }
+  queueConfigSave()
 }
 
 let _cache: UserSettings | null = null;
@@ -162,7 +253,6 @@ function getUser(): UserSettings {
 
 export function refreshUserCache(): void {
   _cache = null;
-  _overridesCache = null;
 }
 
 export function getDefaultSize(): { w: number; h: number } {
@@ -176,6 +266,8 @@ export const userConfig = {
   set fixedPosition(v: { x: number; y: number } | null) { const u = loadUserOverrides(); u.fixedPosition = v; _cache = u; saveUserOverrides(u); },
   get popupSize() { const sz = getUser().popupSize; return (!sz || sz.w > 2000 || sz.h > 2000 || sz.w < 50 || sz.h < 50) ? { w: 730, h: 450 } : sz; },
   set popupSize(v: { w: number; h: number }) { const u = loadUserOverrides(); u.popupSize = v; _cache = u; saveUserOverrides(u); },
+  get chatWidth() { return getUser().chatWidth; },
+  set chatWidth(v: number) { const u = loadUserOverrides(); u.chatWidth = v; _cache = u; saveUserOverrides(u); },
   get shortcutKey() { return getUser().shortcutKey; },
   set shortcutKey(v: string) { const u = loadUserOverrides(); u.shortcutKey = v; _cache = u; saveUserOverrides(u); },
   get shortcutMacModifiers() { return getUser().shortcutMacModifiers; },
@@ -192,92 +284,60 @@ export const userConfig = {
   set parallaxLayers(v: ParallaxLayerCfg[]) { const u = loadUserOverrides(); u.parallaxLayers = v; _cache = u; saveUserOverrides(u); },
   getAll(): UserSettings { return { ...getUser() }; },
   setAll(s: Partial<UserSettings>) { const u = { ...loadUserOverrides(), ...s }; _cache = u; saveUserOverrides(u); },
-  resetAll() { try { localStorage.removeItem(STORAGE_KEY); } catch {} _cache = null; },
+  resetAll() {
+    const defaults = structuredClone(rawConfig) as Config
+    cfg.general.popup = defaults.general.popup
+    cfg.general.shortcut = defaults.general.shortcut
+    cfg.appearance.parallax = defaults.appearance.parallax
+    _cache = null
+    queueConfigSave()
+  },
 };
 
 // ==========================================
-// 配置覆盖（设置面板保存的全部覆盖 → localStorage）
+// 点路径配置 API（保留调用接口，实际直接修改 cfg）
 // ==========================================
-const OVERRIDES_KEY = "deskpet_config_overrides";
+function getAtPath(key: string): any {
+  return key.split(".").reduce<any>((value, part) => value?.[part], cfg)
+}
 
-// ★ 旧配置 key 迁移映射
-const KEY_MIGRATION: Record<string, string> = {
-  "mode.assistant":                    "general.mode.assistant",
-  "personality.active":                "ai.personality.active",
-  "windowMonitor.enabled":             "ai.windowMonitor.enabled",
-  "windowMonitor.staySeconds":         "ai.windowMonitor.staySeconds",
-  "windowMonitor.settleMs":            "ai.windowMonitor.settleMs",
-  "windowMonitor.cooldownSeconds":     "ai.windowMonitor.cooldownSeconds",
-  "windowMonitor.samePageCooldownSeconds": "ai.windowMonitor.samePageCooldownSeconds",
-  "aiLock.safetyTimeoutMs":            "ai.lock.safetyTimeoutMs",
-  "memory.maxEntries":                 "ai.memory.maxEntries",
-  "desktop.pollingIntervalMs":         "general.desktop.pollingIntervalMs",
-  "desktop.pauseExtraMs":              "general.desktop.pauseExtraMs",
-  "desktop.waitTimeoutMs":             "general.desktop.waitTimeoutMs",
-  "logging.level":                     "general.logging.level",
-  "safety.mode":                       "ai.safety.mode",
-  "safety.sessionTrustEnabled":        "ai.safety.sessionTrustEnabled",
-};
-
-let _overridesCache: Record<string, any> | null = null;
-let _migrationDone = false;
-
-function getOverrides(): Record<string, any> {
-  if (!_overridesCache) {
-    try {
-      const raw = JSON.parse(localStorage.getItem(OVERRIDES_KEY) || "{}");
-      // ★ 自动迁移旧 key → 新 key
-      if (!_migrationDone) {
-        let migrated = false;
-        for (const [oldKey, newKey] of Object.entries(KEY_MIGRATION)) {
-          if (raw[oldKey] !== undefined && raw[newKey] === undefined) {
-            raw[newKey] = raw[oldKey];
-            delete raw[oldKey];
-            migrated = true;
-          }
-        }
-        if (migrated) {
-          localStorage.setItem(OVERRIDES_KEY, JSON.stringify(raw));
-        }
-        _migrationDone = true;
-      }
-      _overridesCache = raw;
-    } catch {
-      _overridesCache = {};
-    }
+function setAtPath(key: string, value: any): void {
+  const parts = key.split(".")
+  let cursor: Record<string, any> = cfg as unknown as Record<string, any>
+  for (const part of parts.slice(0, -1)) {
+    if (!cursor[part] || typeof cursor[part] !== "object") cursor[part] = {}
+    cursor = cursor[part]
   }
-  return _overridesCache!;
+  cursor[parts[parts.length - 1]] = value
 }
 
 export function getOverride<T>(key: string): T | undefined {
-  const v = getOverrides()[key];
+  const v = getAtPath(key);
   return v !== undefined ? (v as T) : undefined;
 }
 
 export function setOverride(key: string, value: any): void {
-  const ov = getOverrides();
-  ov[key] = value;
-  localStorage.setItem(OVERRIDES_KEY, JSON.stringify(ov));
+  setAtPath(key, value)
+  queueConfigSave()
 }
 
 export function setOverrides(map: Record<string, any>): void {
-  const ov = getOverrides();
-  Object.assign(ov, map);
-  localStorage.setItem(OVERRIDES_KEY, JSON.stringify(ov));
+  for (const [key, value] of Object.entries(map)) setAtPath(key, value)
+  queueConfigSave()
 }
 
 export function getAllOverrides(): Record<string, any> {
-  return { ...getOverrides() };
+  return cloneConfig() as unknown as Record<string, any>
 }
 
 export function clearOverrides(): void {
-  localStorage.removeItem(OVERRIDES_KEY);
-  _overridesCache = null;
-  _migrationDone = false;
+  cfg = structuredClone(rawConfig) as Config
+  _cache = null
+  queueConfigSave()
 }
 
 function overrideOr<T>(key: string, fallback: T): T {
-  const ov = getOverrides()[key];
+  const ov = getAtPath(key);
   return ov !== undefined ? (ov as T) : fallback;
 }
 
@@ -420,5 +480,5 @@ export const appearanceConfig = {
 // 开发时日志
 // ══════════════════════════════════════════
 if (import.meta.env.DEV) {
-  console.log("[Config] 已加载 CONFIG.yaml | AI:", aiConfig.provider, "| endpoint:", aiConfig.endpoint);
+  console.log("[Config] 已加载运行时 CONFIG | AI:", aiConfig.provider, "| endpoint:", aiConfig.endpoint);
 }

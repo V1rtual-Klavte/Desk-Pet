@@ -4,8 +4,8 @@
 
 import type { ToolDef } from "@/services/tool/types"
 import { getToolsForMode } from "@/services/tool/registry"
-import { runPiSubAgent } from "./pi"
-import type { PiSubAgentOutput } from "./pi"
+import { runPiSubAgent } from "@/services/engine/pi"
+import type { PiSubAgentOutput } from "@/services/engine/pi"
 import { loopConfig } from "@/services/config"
 import { createLogger } from "@/services/logger"
 

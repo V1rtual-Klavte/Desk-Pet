@@ -6,6 +6,8 @@ import { formatReport } from "./reporter"
 import { checkAllContracts } from "./contract-checker"
 import { parseArgs } from "./cli"
 import type { ModuleContract, SceneDef, TestReport } from "./types"
+import { initPaths } from "@/services/paths"
+import { initConfig } from "@/services/config"
 
 interface RuntimeOptions {
   module?: string
@@ -76,6 +78,8 @@ function makeSummary(results: TestReport["scenes"]): TestReport["summary"] {
 }
 
 async function main(): Promise<void> {
+  await initPaths()
+  await initConfig()
   const raw = await invoke<RuntimeOptions>("get_live_test_options")
   const opts = parseArgs([
     ...(raw.module ? ["--module", raw.module] : []),

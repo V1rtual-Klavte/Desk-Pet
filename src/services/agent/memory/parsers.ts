@@ -196,7 +196,7 @@ export function serializeProjectMd(list: ProjectEntry[]): string {
 
 export function parseSessionFromFile(raw: string): { turns: SessionMemory["turns"]; summary?: CompactionSummary } | null {
   if (!raw || raw.length < 20) return null
-  const turns: SessionMemory["turns"] = []
+  const turns = parseTurnsFromRaw(raw)
   let summary: CompactionSummary | undefined
   let section: "none" | "summary" | "turns" = "none"
 
@@ -205,17 +205,7 @@ export function parseSessionFromFile(raw: string): { turns: SessionMemory["turns
     else if (line.startsWith("## 对话记录")) { section = "turns"; continue }
     else if (line.startsWith("## ")) { section = "none"; continue }
 
-    if (section === "turns") {
-      const m = line.match(/^-\s*\[([^\]]+)\]\s*\*\*([^*]+)\*\*:\s*(.+)/)
-      if (m) {
-        const ts = Date.parse(m[1])
-        turns.push({
-          role: m[2].trim() === "糖糖" ? "assistant" : "user",
-          text: m[3].trim(),
-          timestamp: isNaN(ts) ? Date.now() : ts,
-        })
-      }
-    } else if (section === "summary") {
+    if (section === "summary") {
       if (!summary) summary = emptyCompactionSummary()
       if (line.startsWith("- 主请求:")) summary.mainRequest = line.replace("- 主请求:", "").trim()
       else if (line.startsWith("- 关键技术:")) summary.keyTech = splitCsv(line.replace("- 关键技术:", ""))
@@ -234,12 +224,29 @@ export function parseSessionFromFile(raw: string): { turns: SessionMemory["turns
 export function parseTurnsFromRaw(raw: string): SessionMemory["turns"] {
   const turns: SessionMemory["turns"] = []
   let inConversation = false
-  for (const line of raw.split("\n")) {
+  const lines = raw.split("\n")
+  for (let index = 0; index < lines.length; index++) {
+    const line = lines[index]
     if (line.startsWith("## 对话记录")) { inConversation = true; continue }
     if (line.startsWith("## ")) { inConversation = false; continue }
     if (!inConversation) continue
+
+    const structuredMatch = line.match(/<!--\s*deskpet-turn:([^\s]+)\s*-->/)
+    if (structuredMatch) {
+      try {
+        const turn = JSON.parse(decodeURIComponent(structuredMatch[1])) as SessionMemory["turns"][number]
+        if (turn.role === "user" || turn.role === "assistant") {
+          turns.push({ role: turn.role, text: String(turn.text), timestamp: Number(turn.timestamp) || Date.now() })
+        }
+      } catch { /* Corrupt metadata does not invalidate other readable turns. */ }
+      continue
+    }
+
     const m = line.match(/^-\s*\[([^\]]+)\]\s*\*\*([^*]+)\*\*:\s*(.+)/)
     if (m) {
+      // New records keep a readable preview immediately before the exact metadata.
+      // Skip that preview so mixed legacy/new files preserve every turn exactly once.
+      if (lines[index + 1]?.match(/<!--\s*deskpet-turn:([^\s]+)\s*-->/)) continue
       const ts = Date.parse(m[1])
       turns.push({
         role: m[2].trim() === "糖糖" ? "assistant" : "user",
@@ -251,6 +258,16 @@ export function parseTurnsFromRaw(raw: string): SessionMemory["turns"] {
   return turns
 }
 
+export function serializeSessionTurn(turn: SessionMemory["turns"][number]): string[] {
+  const role = turn.role === "assistant" ? "糖糖" : "用户"
+  const preview = turn.text.replace(/\s+/g, " ").trim().substring(0, 300)
+  const encoded = encodeURIComponent(JSON.stringify(turn))
+  return [
+    `- [${localTime(turn.timestamp)}] **${role}**: ${preview}`,
+    `  <!-- deskpet-turn:${encoded} -->`,
+  ]
+}
+
 export function buildSessionFileContent(sm: SessionMemory): string[] {
   const topic = findTopicFromTurns(sm.turns)
   return [
@@ -260,7 +277,7 @@ export function buildSessionFileContent(sm: SessionMemory): string[] {
     "",
     ...buildSummarySection(sm),
     `## 对话记录 (${sm.turns.length} 轮)`,
-    ...sm.turns.map(t => `- [${localTime(t.timestamp)}] **${t.role === "assistant" ? "糖糖" : "用户"}**: ${t.text.substring(0, 300)}`),
+    ...sm.turns.flatMap(serializeSessionTurn),
     "",
   ]
 }

@@ -1,6 +1,13 @@
-import { createApp } from "vue";
-import NotificationCard from "./components/NotificationCard.vue";
-import "./styles/fonts.css";
+import { createApp } from "vue"
+import { initPaths } from "@/services/paths"
+import { initConfig } from "@/services/config"
+import "./styles/fonts.css"
 
-const app = createApp(NotificationCard);
-app.mount("#app");
+async function bootstrap(): Promise<void> {
+  await initPaths()
+  await initConfig()
+  const { default: NotificationCard } = await import("./components/NotificationCard.vue")
+  createApp(NotificationCard).mount("#app")
+}
+
+void bootstrap()

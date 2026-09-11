@@ -4,6 +4,7 @@
 // ==========================================
 
 import type { SoundDef } from "./types"
+import { getOverride, setOverride } from "@/services/config"
 
 // 从各效果文件导入音效数组
 import { basicSounds } from "./effects/basic"
@@ -63,16 +64,10 @@ export const soundEvents: SoundEvent[] = [
 const eventDefaults: Record<string, string> = {}
 for (const e of soundEvents) eventDefaults[e.key] = e.defaultSoundId
 
-// ── 用户音效分配（localStorage）──
-const ASSIGNMENTS_KEY = "deskpet_sound_assignments"
+// ── 用户音效分配（CONFIG）──
 
 function loadAssignments(): Record<string, string> {
-  try {
-    return JSON.parse(localStorage.getItem(ASSIGNMENTS_KEY) || "{}")
-  } catch (e) {
-    console.warn("[Audio] 音效分配数据解析失败，已重置:", e)
-    return {}
-  }
+  return getOverride<Record<string, string>>("appearance.soundAssignments") || {}
 }
 
 /** 获取所有音效分配 */
@@ -87,9 +82,7 @@ export function getSoundAssignments(): Record<string, string> {
 
 /** 保存音效分配 */
 export function saveSoundAssignments(assignments: Record<string, string>): void {
-  try {
-    localStorage.setItem(ASSIGNMENTS_KEY, JSON.stringify(assignments))
-  } catch {}
+  setOverride("appearance.soundAssignments", assignments)
 }
 
 // ── 统一播放入口 ──

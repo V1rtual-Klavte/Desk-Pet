@@ -1,7 +1,6 @@
 // ==========================================
 // Profile IO — 导入/导出/删除
-// 内置 profile 从 public/profiles/ 读取
-// 用户 profile 通过 Tauri fs 写入 AppData
+// 内置 profile 从只读资源目录读取，用户 profile 写入 AppPaths.profiles。
 // ==========================================
 
 import JSZip from "jszip";
@@ -24,16 +23,19 @@ const PROFILE_FILES = [
 /** 递归列出 profile 目录中所有文件 */
 async function listProfileFiles(profileId: string): Promise<string[]> {
   const files: string[] = [];
+  const profile = getProfile(profileId)
+  if (!profile) return files
+  const basePath = profile.basePath
 
   // 基础文件
   for (const f of PROFILE_FILES) {
-    const resp = await fetch(`/profiles/${profileId}/${f}`);
+    const resp = await fetch(`${basePath}/${f}`);
     if (resp.ok) files.push(f);
   }
 
   // frames/ 目录 — 通过 character.yaml 知道有哪些帧
   try {
-    const charResp = await fetch(`/profiles/${profileId}/character.yaml`);
+    const charResp = await fetch(`${basePath}/character.yaml`);
     if (charResp.ok) {
       const text = await charResp.text();
       // 从 YAML 文本中提取帧路径（简单解析，避免加载 js-yaml）
@@ -48,7 +50,7 @@ async function listProfileFiles(profileId: string): Promise<string[]> {
 
   // fonts/ 目录
   try {
-    const resp = await fetch(`/profiles/${profileId}/fonts/zpix.ttf`);
+    const resp = await fetch(`${basePath}/fonts/zpix.ttf`);
     if (resp.ok) {
       for (const font of ["zpix.ttf", "PixelMplus10-Regular.ttf", "PixelMplus10-Bold.ttf"]) {
         files.push(`fonts/${font}`);
@@ -64,7 +66,7 @@ async function listProfileFiles(profileId: string): Promise<string[]> {
   ];
   for (const s of knownSounds) {
     try {
-      const resp = await fetch(`/profiles/${profileId}/sounds/${s}`);
+      const resp = await fetch(`${basePath}/sounds/${s}`);
       if (resp.ok) files.push(`sounds/${s}`);
     } catch { /* skip */ }
   }
@@ -80,10 +82,10 @@ async function listProfileFiles(profileId: string): Promise<string[]> {
         photo: [], // photo 目录可能为空或没有关键文件，跳过
       };
       for (const testFile of testPaths[sub] || []) {
-        const resp = await fetch(`/profiles/${profileId}/ui/${sub}/${testFile}`);
+        const resp = await fetch(`${basePath}/ui/${sub}/${testFile}`);
         if (resp.ok) {
           // 目录存在，使用已知文件列表
-          await listUiDir(profileId, sub, files);
+          await listUiDir(basePath, sub, files);
           break;
         }
       }
@@ -94,7 +96,7 @@ async function listProfileFiles(profileId: string): Promise<string[]> {
 }
 
 /** 列出 ui 子目录中的文件（完整已知文件表） */
-async function listUiDir(profileId: string, subDir: string, files: string[]): Promise<void> {
+async function listUiDir(basePath: string, subDir: string, files: string[]): Promise<void> {
   // ★ 完整文件表 — 基于实际磁盘扫描，覆盖所有现有素材
   const knownFiles: Record<string, string[]> = {
     windows: [
@@ -175,7 +177,7 @@ async function listUiDir(profileId: string, subDir: string, files: string[]): Pr
 
   const list = knownFiles[subDir] || [];
   for (const f of list) {
-    const resp = await fetch(`/profiles/${profileId}/ui/${subDir}/${f}`);
+    const resp = await fetch(`${basePath}/ui/${subDir}/${f}`);
     if (resp.ok) files.push(`ui/${subDir}/${f}`);
   }
 }
@@ -194,7 +196,7 @@ export async function exportProfileZip(profileId: string): Promise<void> {
 
   for (const f of files) {
     try {
-      const resp = await fetch(`/profiles/${profileId}/${f}`);
+      const resp = await fetch(`${profile.basePath}/${f}`);
       if (resp.ok) {
         const blob = await resp.blob();
         zip.file(f, blob);

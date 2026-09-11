@@ -5,7 +5,7 @@
 
 import { getActiveCard } from "@/services/personality"
 import { getFallbackReply } from "@/services/personality/stages-cache"
-import { runPiAgentTurn } from "@/services/agent/pi"
+import { runPiAgentTurn } from "@/services/engine/pi"
 import { preProcess } from "@/services/engine/preprocessor"
 import { transition, getState } from "@/services/engine/session"
 import {
@@ -14,9 +14,7 @@ import {
   getContextMessages, initWelcome, resetUnanswered,
   initSessions, getActiveSessionId,
 } from "@/services/session"
-import { loadMessages, saveMessages } from "@/services/session/persistence"
-import { updateSessionMessageCount } from "@/services/session/manager"
-import { createAssistantMessage } from "@/services/agent/types"
+import { incrementSessionMessageCount } from "@/services/session/manager"
 import { isAIGenerating, setAIGenerating } from "@/services/cooldown"
 import { createLogger } from "@/services/logger"
 
@@ -38,7 +36,7 @@ export async function initChat(welcomeText?: string): Promise<void> {
     log.info("当前人格: 默认")
   }
 
-  // 初始化会话（扫描 sessions/ 目录 + localStorage 缓存）
+  // 初始化会话（扫描 sessions/*.md + sessions/index.json UI 状态）
   const sessions = await initSessions()
   log.info("会话已恢复:", sessions.length, "个, 活跃:", getActiveSessionId())
 
@@ -55,7 +53,7 @@ export async function initChat(welcomeText?: string): Promise<void> {
  * 使用 Agent Loop（支持工具调用多轮）。
  *
  * ★ 绑定会话：入口捕获 sessionId，异步回复回来时校验。
- *   若会话已切换，回复存入原会话 localStorage + session 文件，不污染当前 chatHistory。
+ *   若会话已切换，回复只写回原会话的 session Markdown，不污染当前 chatHistory。
  */
 export async function sendMessage(text: string): Promise<{
   reply: string
@@ -111,6 +109,7 @@ export async function sendMessage(text: string): Promise<{
     // ── Step 4: 运行 Agent Loop ──
     toolCallHistory.clear()
     const result = await runPiAgentTurn({
+      sessionId: originSessionId,
       userText: preResult.text,
       chatMessages: getContextMessages(),
       unansweredCount: unansweredCount.value,
@@ -132,14 +131,8 @@ export async function sendMessage(text: string): Promise<{
     // ★ 会话校验：若等待 AI 回复期间用户切了会话，回复存入原会话
     if (getActiveSessionId() !== originSessionId) {
       log.warn("sendMessage: 会话已切换，回复存入原会话", originSessionId)
-      // 从 localStorage 加载原会话消息，追加 assistant 回复，写回
-      const originMsgs = loadMessages(originSessionId)
-      originMsgs.push(createAssistantMessage(result.reply))
-      saveMessages(originSessionId, originMsgs)
-      updateSessionMessageCount(originSessionId)
-      // 写入原会话的 sessions/*.md
-      const { MemoryService } = await import("@/services/agent/memory")
-      await MemoryService.recordTurnToSession(originSessionId, "assistant", result.reply)
+      incrementSessionMessageCount(originSessionId)
+      // Pi runtime 已按入口捕获的 sessionId 写入原会话 Markdown。
     } else {
       pushAssistantMessage(result.reply)
     }
@@ -158,9 +151,8 @@ export async function sendMessage(text: string): Promise<{
     const fallback = getFallbackReply("llmUnavailable")
     // ★ 同样校验会话
     if (getActiveSessionId() !== originSessionId) {
-      const originMsgs = loadMessages(originSessionId)
-      originMsgs.push(createAssistantMessage(fallback))
-      saveMessages(originSessionId, originMsgs)
+      const { MemoryService } = await import("@/services/agent/memory")
+      await MemoryService.recordTurnToSession(originSessionId, "assistant", fallback)
     } else {
       pushAssistantMessage(fallback)
     }

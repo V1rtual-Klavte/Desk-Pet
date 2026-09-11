@@ -85,17 +85,17 @@ src/services/__tests__/live/
 src/
 ├── components/                 # Vue 界面、角色展示、聊天、设置、会话
 ├── services/
-│   ├── engine/                 # 输入预处理、Plan、Slash、会话状态与上下文压缩工具
+│   ├── engine/                 # Pi Runtime、输入预处理、Plan、Slash、会话状态与上下文压缩工具
 │   ├── personality/            # Card、人格注册、阶段文案、变量状态、情绪映射
 │   ├── reply/                  # RUNTIME_DATA 解析与回复后处理
-│   ├── agent/                  # Pi Runtime、Provider、Runner、子代理、记忆与主动搭话
+│   ├── agent/                  # Provider、Runner、子代理、记忆与主动搭话
 │   ├── context/                # System Prompt 构建
 │   ├── tool/                   # 工具注册、路由、Pi 基础工具、Skill、MCP
 │   ├── safety/                 # 风险等级、策略和确认桥接
 │   ├── session/                # 会话响应式状态与切换归档
 │   ├── profile/                # Profile 选择、加载、导入导出
 │   ├── paths/                  # 前端 BaseDirs 与统一路径初始化
-│   ├── config.ts               # YAML 配置与 localStorage 覆盖
+│   ├── config.ts               # YAML 运行时配置与类型化 getter
 │   ├── logger.ts               # 统一日志
 │   └── window/                 # 前台窗口监控与主动搭话
 └── styles/                     # 全局样式与字体
@@ -163,7 +163,8 @@ interface VariableState {
 - `CANDY.md`：用户手写的系统指令。
 - `User.md`：重要用户事实的系统文件视图。
 - `MEMORY.md`：长期记忆注册表。
-- `sessions/*.md`：会话记录和压缩摘要。
+- `sessions/*.md`：会话正文和压缩摘要的唯一真相源。
+- `sessions/index.json`：仅保存打开标签、活跃标签和未回复数等可丢弃 UI 状态。
 - `Project.md`：会话归档索引。
 
 当前长期记忆的自动提取和 Prompt 检索尚未闭环。不要在代码或文档中声称 `MemoryService.search()` 已经自动注入，或声称 `forkMemorySupplement()` 已经由每轮对话调用。
@@ -173,15 +174,15 @@ interface VariableState {
 配置链路：
 
 ```text
-CONFIG-DEV.yaml（存在且 enabled 时）
-  -> CONFIG.yaml 默认值
-  -> Vite YAML Plugin
+开发：工作区 CONFIG-DEV.yaml（存在时）或 CONFIG.yaml
+生产：data_root/settings/CONFIG.yaml（首次由内置 CONFIG.yaml 初始化）
   -> services/config.ts 类型化 getter
-  -> localStorage userConfig 覆盖
+  -> 设置页回写同一份运行时 CONFIG
 ```
 
 - 所有模块通过 `@/services/config` 读取配置，不在模块内复制常量。
-- 本地调参只改 `CONFIG-DEV.yaml`。
+- 开发环境本地调参只改 `CONFIG-DEV.yaml`；它必须是完整配置文件，不是增量覆盖层。
+- `localStorage` 不保存配置、会话正文或 Profile 编辑状态；启动时会清理历史缓存 key。
 - 新增配置项必须同步默认配置、开发配置、配置类型 getter、设置页面和相关说明。
 - 不主动修改 `.gitignore`、真实配置或用户运行时数据，除非用户明确要求。
 
@@ -189,11 +190,12 @@ CONFIG-DEV.yaml（存在且 enabled 时）
 
 ```text
 开发：{project}/data/desk-pet/
-生产：{AppData}/desk-pet/
+生产：Tauri app_local_data_dir（平台和应用标识专属）
 
 data_root/
+├── settings/     CONFIG.yaml（仅生产；开发配置留在工作区）
 ├── memory/       MEMORY.md、CANDY.md、User.md、Outside.md、Project.md
-├── sessions/     session-YYYYMMDD-HHmmss-主题.md
+├── sessions/     session-YYYYMMDD-HHmmss-主题.md、index.json
 ├── personality/ stages/{cardId}.json、vars.json、用户 Card
 └── profiles/     用户 Profile 与素材
 ```
@@ -214,20 +216,20 @@ pub fn my_command(paths: tauri::State<AppPaths>) -> Result<(), String> {
 - 写入前必须使用 `validate_path()`；不存在的文件要校验父目录。
 - 禁止手写 `dirs_next()`、`find_project_root()` 或 `env!("CARGO_MANIFEST_DIR")` 解析业务路径。
 - 禁止使用 `canonicalize().unwrap_or()` 静默回退。
-- 读操作按约定先查 `builtin_*`，再查运行时目录；写操作只走运行时目录。
+- 内置 Profile/Card 是只读打包资源；Profile 素材读取可由同 ID 用户目录按相对路径覆盖，写操作只走运行时目录。
 - 新命令必须在 `lib.rs` 的 `invoke_handler!` 中注册。
 - Windows/macOS 专有代码必须使用条件编译和对应平台依赖。
 
 ### TypeScript 约束
 
 ```typescript
-import { BaseDirs, initPaths } from "@/services/paths"
+import { initPaths, runtimePath } from "@/services/paths"
 
 await initPaths()
-const memoryPath = `${BaseDirs.memory()}/MEMORY.md`
+const memoryPath = await runtimePath("memory", "MEMORY.md")
 ```
 
-`BaseDirs` 只提供目录。业务文件名由所属模块管理，不把业务文件名集中硬编码进 `paths.ts`。
+`BaseDirs` 只提供目录；需要得到完整路径时调用 `runtimePath()` 交给 Rust 校验和拼接。业务文件名由所属模块管理，不把业务文件名集中硬编码进 `paths.ts`。
 
 ## 编码约定
 

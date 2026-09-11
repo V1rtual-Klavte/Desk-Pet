@@ -4,7 +4,7 @@
 // ==========================================
 
 import type { ToolDef } from "@/services/tool/types"
-import type { PiSubAgentOutput } from "@/services/agent/pi"
+import type { PiSubAgentOutput } from "@/services/engine/pi"
 import type { ThinkingEffort } from "@/services/agent/types"
 import { planConfig } from "@/services/config"
 import { createLogger } from "@/services/logger"
@@ -270,7 +270,7 @@ async function executeStep(
     tools.push(...getToolsForMode("assistant"))
   }
 
-  const { runPiSubAgent } = await import("@/services/agent/pi")
+  const { runPiSubAgent } = await import("@/services/engine/pi")
   return runPiSubAgent({
     task: step.description,
     tools,

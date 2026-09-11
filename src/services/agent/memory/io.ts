@@ -4,7 +4,7 @@
 
 import { invoke } from "@tauri-apps/api/core"
 import { createLogger } from "@/services/logger"
-import { BaseDirs } from "@/services/paths"
+import { BaseDirs, runtimePath } from "@/services/paths"
 
 const log = createLogger("MemoryIO")
 
@@ -44,7 +44,8 @@ export async function withLock<T>(fn: () => Promise<T>): Promise<T> {
 export async function readMemoryFile(filename: string): Promise<string> {
   try {
     if (!memoryDir) return ""
-    const result = await invoke<{ content: string; size: number }>("file_read", { path: `${memoryDir}/${filename}` })
+    const path = await runtimePath("memory", filename)
+    const result = await invoke<{ content: string; size: number }>("file_read", { path })
     return result.content
   } catch { return "" }
 }
@@ -52,7 +53,7 @@ export async function readMemoryFile(filename: string): Promise<string> {
 export async function writeMemoryFile(filename: string, content: string): Promise<boolean> {
   try {
     if (!memoryDir) { log.warn("writeMemoryFile: memoryDir 未设置"); return false }
-    const path = `${memoryDir}/${filename}`
+    const path = await runtimePath("memory", filename)
     await invoke("file_write", { path, content })
     return true
   } catch (e) { log.error(`写入 ${filename} 失败: ${memoryDir}/${filename}`, e instanceof Error ? e : undefined); return false }
@@ -63,7 +64,8 @@ export async function writeMemoryFile(filename: string, content: string): Promis
 export async function readSessionFile(filename: string): Promise<string> {
   try {
     if (!sessionsDir) return ""
-    const result = await invoke<{ content: string; size: number }>("file_read", { path: `${sessionsDir}/${filename}` })
+    const path = await runtimePath("sessions", filename)
+    const result = await invoke<{ content: string; size: number }>("file_read", { path })
     return result.content
   } catch { return "" }
 }
@@ -71,7 +73,7 @@ export async function readSessionFile(filename: string): Promise<string> {
 export async function writeSessionFile(filename: string, content: string): Promise<boolean> {
   try {
     if (!sessionsDir) { log.warn("writeSessionFile: sessionsDir 未设置"); return false }
-    const path = `${sessionsDir}/${filename}`
+    const path = await runtimePath("sessions", filename)
     await invoke("file_write", { path, content })
     log.debug("Session 文件已写入:", filename, `(${content.length} bytes)`)
     return true

@@ -41,15 +41,15 @@ LLM 可见回复文本 + <RUNTIME_DATA>
 
 `system`、`interaction` 和 `session` 状态由系统维护；LLM 不能借由 RUNTIME_DATA 创建任意变量。Card 的 `whenText` 是注入 Prompt 的语气指引，不是可执行条件 DSL。
 
-`src/services/agent/pi/runtime.ts` 是唯一的多轮 Agent Runtime。它在调用 Pi 前刷新变量池、构建 Prompt，并把 Pi 的工具调用接回既有 Safety 和 ToolRouter；Pi 返回最终文本后才调用 `reply/generator.ts`。因此流式增量、工具中间消息都不会直接写入 Card 变量。
+`src/services/engine/pi/runtime.ts` 是唯一的多轮 Agent Runtime。它在调用 Pi 前刷新变量池、构建 Prompt，并把 Pi 的工具调用接回既有 Safety 和 ToolRouter；Pi 返回最终文本后才调用 `reply/generator.ts`。因此流式增量、工具中间消息都不会直接写入 Card 变量。
 
 当前主 Agent Runtime、Planner 和 Live Test 契约都以 RUNTIME_DATA 为准；旧变量工具只在历史归档中出现，不代表当前接口仍有效。当前记忆压缩与长期召回仍保持既有边界，后续会单独按 Claude Code 风格的文件记忆协议重构。
 
 ## 配置与运行时数据
 
-所有功能配置由 `CONFIG.yaml` 经 `src/services/config.ts` 暴露；本地调参使用 `CONFIG-DEV.yaml`，用户设置使用 localStorage 覆盖。业务模块不得自行复制配置常量。
+所有功能配置由运行时 `CONFIG.yaml` 经 `src/services/config.ts` 暴露。开发构建使用工作区 `CONFIG-DEV.yaml`（不存在时回退 `CONFIG.yaml`）；生产构建首次将默认配置初始化到 `data_root/settings/CONFIG.yaml`，设置页直接回写它。业务模块不得自行复制配置常量或以 localStorage 覆盖配置。
 
-运行时文件统一由 Rust `AppPaths` 和前端 `BaseDirs` 定位：内置 Card/Profile 为只读资源，用户与运行时数据写入 `data_root` 下的 `memory/`、`sessions/`、`personality/` 和 `profiles/`。路径命令必须使用 `validate_path()` 校验写入边界。
+运行时文件统一由 Rust `AppPaths` 和前端 `BaseDirs`/`runtimePath()` 定位：开发数据根为 `{project}/data/desk-pet`，生产数据根为 Tauri 应用专属本地目录。内置 Card/Profile 为只读资源；同 ID 用户 Profile 文件可按相对路径覆盖内置素材。会话正文由 `sessions/*.md` 持久化，`sessions/index.json` 只保存 UI 状态。路径命令必须使用 `validate_path()` 校验写入边界。
 
 ## 平台原则
 

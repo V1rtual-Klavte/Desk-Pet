@@ -3,7 +3,7 @@
 // ==========================================
 
 import type { VariablePool } from "@/services/personality/variable-pool"
-import type { PiAgentTurnOutput } from "@/services/agent/pi"
+import type { PiAgentTurnOutput } from "@/services/engine/pi"
 
 // ── Scene DSL ──
 

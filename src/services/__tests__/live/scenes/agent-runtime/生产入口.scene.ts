@@ -1,4 +1,6 @@
 import { initChat } from "@/services/agent/runner"
+import { MemoryService } from "@/services/agent/memory"
+import { flushSessionWrites } from "@/services/agent/memory/session-files"
 import type { SceneDef } from "../../types"
 
 export const 生产入口: SceneDef = {
@@ -24,6 +26,16 @@ export const 生产入口: SceneDef = {
         } },
         { type: "expectSessionMessage", run: async context => {
           if (context.session.messageCount < 1) throw new Error(`session messageCount=${context.session.messageCount}`)
+        } },
+        { type: "expectSessionPersistence", run: async () => {
+          await flushSessionWrites()
+          const turns = await MemoryService.loadSessionMessages(MemoryService.sessionId)
+          if (!turns?.some(turn => turn.role === "user" && turn.text.includes("简单和我打个招呼"))) {
+            throw new Error("生产入口用户消息未从 sessions/*.md 读回")
+          }
+          if (!turns.some(turn => turn.role === "assistant" && turn.text.trim())) {
+            throw new Error("生产入口助手回复未从 sessions/*.md 读回")
+          }
         } },
       ],
     },

@@ -15,6 +15,9 @@ export {
   getCharacterScaleMode,
   getUiUrl,
   getFontUrl,
+  getProfileAssetUrl,
+  resolveProfileAssetUrl,
+  refreshProfileAssets,
 } from "./loader";
 
 export {

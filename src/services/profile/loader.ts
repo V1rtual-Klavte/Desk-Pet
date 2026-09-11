@@ -5,6 +5,7 @@
 
 import { createLogger } from "@/services/logger";
 import { appearanceConfig } from "@/services/config";
+import { convertFileSrc, invoke } from "@tauri-apps/api/core";
 
 const log = createLogger("Profile");
 
@@ -98,6 +99,8 @@ export interface ProfileData {
   sound: ProfileSound; character: ProfileCharacter
   animations: Record<string, AnimDef>; expressions: ExpressionRule[]
   builtinAnimations: string[]; basePath: string
+  userAssetBasePath?: string
+  userAssetOverrides: Set<string>
 }
 
 // ── 内部状态 ──
@@ -105,6 +108,7 @@ let profiles = new Map<string, ProfileData>();
 let activeId: string | null = null;
 let loaded = false;
 const DEFAULT_BUILTIN = "sugar-pink";
+const profileBaseUrls = new Map<string, string>();
 
 // ── YAML 加载 ──
 let jsYamlModule: any = null;
@@ -122,10 +126,53 @@ async function fetchYaml<T>(url: string): Promise<T> {
   return yaml.load(text) as T;
 }
 
+async function resolveProfileBaseUrl(id: string): Promise<string> {
+  const cached = profileBaseUrls.get(id)
+  if (cached) return cached
+  const path = await invoke<string>("profile_asset_base", { profileId: id })
+  const url = path ? convertFileSrc(path).replace(/\/$/, "") : `/profiles/${id}`
+  profileBaseUrls.set(id, url)
+  return url
+}
+
+async function loadUserAssetOverlay(id: string): Promise<{ basePath?: string; files: Set<string> }> {
+  const [path, files] = await Promise.all([
+    invoke<string>("profile_user_asset_base", { profileId: id }),
+    invoke<string[]>("list_profile_files", { profileId: id, subdir: null }),
+  ])
+  return {
+    basePath: path ? convertFileSrc(path).replace(/\/$/, "") : undefined,
+    files: new Set(files.map(file => file.replaceAll("\\", "/").replace(/^\/+/, ""))),
+  }
+}
+
+export function resolveProfileAssetUrl(profile: ProfileData, relativePath: string): string {
+  const cleanPath = relativePath.replaceAll("\\", "/").replace(/^\/+/, "")
+  const base = profile.userAssetBasePath && profile.userAssetOverrides.has(cleanPath)
+    ? profile.userAssetBasePath
+    : profile.basePath
+  return `${base}/${cleanPath}`
+}
+
+export async function refreshProfileAssets(profileId: string): Promise<void> {
+  const profile = profiles.get(profileId)
+  if (!profile) return
+  const overlay = await loadUserAssetOverlay(profileId)
+  profile.userAssetBasePath = overlay.basePath
+  profile.userAssetOverrides = overlay.files
+}
+
+export async function getProfileAssetUrl(profileId: string, relativePath: string): Promise<string> {
+  const profile = profiles.get(profileId)
+  if (profile) return resolveProfileAssetUrl(profile, relativePath)
+  return `${await resolveProfileBaseUrl(profileId)}/${relativePath.replace(/^\/+/, "")}`
+}
+
 // ── Profile 加载 ──
 
 async function loadProfile(id: string): Promise<ProfileData> {
-  const basePath = `/profiles/${id}`;
+  const basePath = await resolveProfileBaseUrl(id);
+  const overlay = await loadUserAssetOverlay(id);
 
   const rawProfile = await fetchYaml<any>(`${basePath}/profile.yaml`);
 
@@ -134,7 +181,7 @@ async function loadProfile(id: string): Promise<ProfileData> {
   try {
     rawChar = await fetchYaml<any>(`${basePath}/character.yaml`);
   } catch {
-    charBasePath = `/profiles/${DEFAULT_BUILTIN}`;
+    charBasePath = await resolveProfileBaseUrl(DEFAULT_BUILTIN);
     rawChar = await fetchYaml<any>(`${charBasePath}/character.yaml`);
   }
   const resolveFramePath = (f: string) => `${charBasePath}/${f}`;
@@ -197,6 +244,8 @@ async function loadProfile(id: string): Promise<ProfileData> {
     expressions: rawChar?.expressions || [],
     builtinAnimations: rawChar?.builtinAnimations || [],
     basePath,
+    userAssetBasePath: overlay.basePath,
+    userAssetOverrides: overlay.files,
   };
 }
 
@@ -227,10 +276,9 @@ export async function initProfiles(): Promise<void> {
 export async function discoverAllProfiles(): Promise<string[]> {
   const found = new Set<string>();
   for (const id of ["sugar-pink", "dark-purple", "glass"]) {
-    try { const resp = await fetch(`/profiles/${id}/profile.yaml`); if (resp.ok) found.add(id); } catch {}
+    try { await resolveProfileBaseUrl(id); found.add(id); } catch {}
   }
   try {
-    const { invoke } = await import("@tauri-apps/api/core");
     const userProfiles: string[] = await invoke("list_user_profiles");
     for (const id of userProfiles) found.add(id);
   } catch {}
@@ -257,8 +305,6 @@ export function activateProfile(id: string): boolean {
   const p = profiles.get(id)!;
   injectFonts(p);
   injectCssVars(p);
-  // 通知 StreamView 重载图层（解决 profile 懒加载时序问题）
-  try { localStorage.setItem("deskpet_parallax_dirty", "1"); } catch {}
   log.info(`Profile 已激活: "${id}" (${p.meta.name})`);
   return true;
 }
@@ -409,7 +455,7 @@ export function isProfilesLoaded(): boolean { return loaded; }
 export function getBodyUrl(profile?: ProfileData): string {
   const p = profile || getActiveProfile();
   if (!p) return `/profiles/${DEFAULT_BUILTIN}/materials/L2/body.png`;
-  return `${p.basePath}/materials/L2/body.png`;
+  return resolveProfileAssetUrl(p, "materials/L2/body.png");
 }
 
 export function getCharacterScale(): number {
@@ -430,5 +476,5 @@ export function getParallaxLayerUrl(layerIndex: number, profile?: ProfileData): 
   if (!p) return null;
   const layer = p.theme.parallax.layers[layerIndex];
   if (!layer || !layer.image) return null;
-  return `${p.basePath}/${layer.image}`;
+  return resolveProfileAssetUrl(p, layer.image);
 }
