@@ -7,6 +7,7 @@ import type { ToolDef } from "../types"
 import { register } from "../registry"
 import { invoke } from "@tauri-apps/api/core"
 import { createLogger } from "@/services/logger"
+import { formatError } from "@/services/error"
 
 const log = createLogger("ToolFile")
 
@@ -38,7 +39,7 @@ const fileListTool: ToolDef = {
         .join("\n")
       return { success: true, content: listing || "(空目录)" }
     } catch (e) {
-      const msg = e instanceof Error ? e.message : String(e)
+      const msg = formatError(e)
       return { success: false, content: "", error: msg }
     }
   },
@@ -75,7 +76,7 @@ const fileSearchTool: ToolDef = {
         : `在 ${params.path} 中未找到包含 "${params.keyword}" 的文件`
       return { success: true, content: listing }
     } catch (e) {
-      const msg = e instanceof Error ? e.message : String(e)
+      const msg = formatError(e)
       return { success: false, content: "", error: msg }
     }
   },

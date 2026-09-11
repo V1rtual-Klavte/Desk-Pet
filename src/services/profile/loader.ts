@@ -6,6 +6,7 @@
 import { createLogger } from "@/services/logger";
 import { appearanceConfig } from "@/services/config";
 import { convertFileSrc, invoke } from "@tauri-apps/api/core";
+import { formatError } from "@/services/error";
 
 const log = createLogger("Profile");
 
@@ -276,12 +277,17 @@ export async function initProfiles(): Promise<void> {
 export async function discoverAllProfiles(): Promise<string[]> {
   const found = new Set<string>();
   for (const id of ["sugar-pink", "dark-purple", "glass"]) {
-    try { await resolveProfileBaseUrl(id); found.add(id); } catch {}
+    // 探测内置 profile 时 404 属正常路径，降级到 debug 留痕即可
+    try { await resolveProfileBaseUrl(id); found.add(id); }
+    catch (e) { log.debug(`内置 profile 探测跳过: ${id}`, formatError(e)); }
   }
   try {
     const userProfiles: string[] = await invoke("list_user_profiles");
     for (const id of userProfiles) found.add(id);
-  } catch {}
+  } catch (e) {
+    // 这里失败会让用户自定义 Profile 整个消失，必须留痕
+    log.warn("列举用户 Profile 失败", formatError(e));
+  }
   return [...found];
 }
 

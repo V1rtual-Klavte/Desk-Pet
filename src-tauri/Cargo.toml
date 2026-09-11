@@ -18,6 +18,10 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tauri = { version = "2.11", features = ["macos-private-api", "image-png", "tray-icon", "protocol-asset"] }
 num_cpus = "1"
+# 本地时间戳（chrono::Local）—— 仅需 clock + std，不拉 serde/unicode
+chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
+# 结构化错误类型
+thiserror = "1"
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.52", features = ["Win32_Foundation", "Win32_UI_WindowsAndMessaging", "Win32_Graphics_Gdi", "Win32_UI_HiDpi"] }

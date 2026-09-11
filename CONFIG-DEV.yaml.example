@@ -7,6 +7,8 @@ general:
   popup: { mode: cursor, autoPopupOnMessage: false, defaultSize: { w: 448, h: 272 } }
   shortcut: { key: "P", macModifiers: ["Control", "Command"], winModifiers: ["Control", "Alt"] }
   logging: { level: debug }
+  # 错误覆盖层：auto(dev 弹/生产不弹) | always | never
+  errors: { overlay: auto }
   desktop: { pollingIntervalMs: 3000, pauseExtraMs: 5000, waitTimeoutMs: 5000 }
 
 ai:

@@ -5,6 +5,7 @@
 
 import { toolsConfig, setOverride } from "@/services/config"
 import { createLogger } from "@/services/logger"
+import { formatError } from "@/services/error"
 
 const log = createLogger("MCP")
 
@@ -222,7 +223,7 @@ export async function connectMcpServer(server: McpServerConfig): Promise<{ succe
 
     return { success: true, toolCount: toolDefs.length }
   } catch (e) {
-    return { success: false, toolCount: 0, error: e instanceof Error ? e.message : String(e) }
+    return { success: false, toolCount: 0, error: formatError(e) }
   }
 }
 

@@ -16,6 +16,7 @@ import type {
 import type { Context } from "@earendil-works/pi-agent-core"
 import { toolsConfig } from "@/services/config"
 import type { ToolMode } from "../types"
+import { formatError } from "@/services/error"
 
 const MAX_TOOL_FILE_BYTES = 5 * 1024 * 1024
 
@@ -40,7 +41,7 @@ type BashPayload = {
 }
 
 function fileFailure(error: unknown, path?: string): FileError {
-  const message = error instanceof Error ? error.message : String(error)
+  const message = formatError(error)
   const lower = message.toLowerCase()
   const code = /不存在|not found|no such/.test(lower)
     ? "not_found"
@@ -53,7 +54,7 @@ function fileFailure(error: unknown, path?: string): FileError {
 }
 
 function executionFailure(error: unknown): ExecutionError {
-  const message = error instanceof Error ? error.message : String(error)
+  const message = formatError(error)
   const lower = message.toLowerCase()
   const code = /取消|abort/.test(lower) ? "aborted" : /超时|timeout/.test(lower) ? "timeout" : "unknown"
   return new ExecutionError(code, message)

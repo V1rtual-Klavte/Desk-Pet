@@ -8,7 +8,7 @@ use std::thread;
 use std::time::Duration;
 
 use crate::monitor::MonitorState;
-use crate::{rust_info, rust_debug, rust_log};
+use crate::{rust_info, rust_debug};
 
 #[tauri::command]
 pub fn pause_monitor(state: tauri::State<'_, Arc<MonitorState>>, duration_ms: u64) {
@@ -20,7 +20,8 @@ pub fn pause_monitor(state: tauri::State<'_, Arc<MonitorState>>, duration_ms: u6
         thread::sleep(Duration::from_millis(duration_ms + extra));
         if state_clone.paused.load(Ordering::SeqCst) {
             state_clone.paused.store(false, Ordering::SeqCst);
-            let _lock = state_clone.lock.lock().unwrap();
+            // 锁中毒不 panic：后台线程崩过也要能继续恢复监控
+            let _lock = state_clone.lock.lock().unwrap_or_else(|e| e.into_inner());
             state_clone.cv.notify_one();
             rust_debug!("监控自动恢复");
         }
@@ -30,7 +31,7 @@ pub fn pause_monitor(state: tauri::State<'_, Arc<MonitorState>>, duration_ms: u6
 #[tauri::command]
 pub fn resume_monitor(state: tauri::State<'_, Arc<MonitorState>>) {
     state.paused.store(false, Ordering::SeqCst);
-    let _lock = state.lock.lock().unwrap();
+    let _lock = state.lock.lock().unwrap_or_else(|e| e.into_inner());
     state.cv.notify_one();
     rust_debug!("监控手动恢复");
 }

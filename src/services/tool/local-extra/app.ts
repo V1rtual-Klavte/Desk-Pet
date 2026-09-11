@@ -7,6 +7,7 @@ import { register } from "../registry"
 import { invoke } from "@tauri-apps/api/core"
 import { loopConfig } from "@/services/config"
 import { createLogger } from "@/services/logger"
+import { formatError } from "@/services/error"
 
 const log = createLogger("ToolApp")
 
@@ -38,7 +39,7 @@ const appOpenTool: ToolDef = {
         error: result.success ? undefined : "无法打开",
       }
     } catch (e) {
-      const msg = e instanceof Error ? e.message : String(e)
+      const msg = formatError(e)
       return { success: false, content: "", error: msg }
     }
   },

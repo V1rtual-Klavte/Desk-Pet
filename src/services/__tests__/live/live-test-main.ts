@@ -8,6 +8,7 @@ import { parseArgs } from "./cli"
 import type { ModuleContract, SceneDef, TestReport } from "./types"
 import { initPaths } from "@/services/paths"
 import { initConfig } from "@/services/config"
+import { installGlobalHandlers, reportError } from "@/services/error"
 
 interface RuntimeOptions {
   module?: string
@@ -148,8 +149,12 @@ async function main(): Promise<void> {
   await invoke("live_test_complete", { passed, report: formatted })
 }
 
+// 测试报告本身走 console（见上方 formatReport），这里只补「未捕获异常也要有出口」。
+// overlay: false —— 独立测试窗口不需要弹覆盖层，日志与报告已足够。
+installGlobalHandlers("live-test", { overlay: false })
+
 main().catch(async error => {
   const message = error instanceof Error ? error.stack || error.message : String(error)
-  console.error("[LiveTest] 启动或执行失败", message)
+  reportError("live-test", error, { kind: "启动或执行失败" })
   try { await invoke("live_test_complete", { passed: false, report: message }) } catch { /* app may not be ready */ }
 })

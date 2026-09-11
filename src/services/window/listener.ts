@@ -10,7 +10,6 @@ import { generateActiveMessage } from "@/services/agent"
 import { playNotificationByBoundary } from "@/services/audio/registry"
 import { windowMonitorConfig } from "@/services/config"
 import { createLogger } from "@/services/logger"
-import type { StreamViewRef } from "@/services/command-handler"
 
 const log = createLogger("WinLis")
 
@@ -21,7 +20,6 @@ interface WindowChangePayload {
 }
 
 export async function initWindowListener(
-  streamRef: Ref<StreamViewRef | null>,
   winSize: Ref<{ w: number; h: number }>,
 ): Promise<() => void> {
   const cleanups: (() => void)[] = []
@@ -37,7 +35,6 @@ export async function initWindowListener(
         if (reply) {
           pushAssistantMessage(reply)
           incrementUnanswered()
-          streamRef.value?.setExpression("smile")
           playNotificationByBoundary()
         }
       })

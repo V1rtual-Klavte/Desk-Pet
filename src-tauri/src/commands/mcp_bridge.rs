@@ -9,6 +9,8 @@ use std::io::{BufRead, BufReader, Write};
 use std::process::{Child, Command, Stdio};
 use std::sync::Mutex;
 use tauri::State;
+use crate::error::AppResult;
+use crate::{rust_info, rust_warn};
 
 /// 托管 MCP 子进程
 struct McpProcess {
@@ -52,7 +54,7 @@ pub fn mcp_spawn(
     command: String,
     args: Vec<String>,
     transport: String,
-) -> Result<McpSpawnResult, String> {
+) -> AppResult<McpSpawnResult> {
     if transport != "stdio" {
         return Ok(McpSpawnResult {
             success: false,
@@ -76,7 +78,8 @@ pub fn mcp_spawn(
             let reader = std::io::BufReader::new(stderr);
             for line in reader.lines() {
                 if let Ok(l) = line {
-                    eprintln!("[MCP stderr] {}: {}", sid, l);
+                    // 子进程原样转发：不套 Rust 前缀，但要走统一出口才能落盘
+                    crate::logger::emit_frontend(&format!("[MCP stderr] {sid}: {l}"));
                 }
             }
         });
@@ -95,7 +98,7 @@ pub fn mcp_spawn(
         McpProcess { child },
     );
 
-    println!("[INFO] [Rust] MCP 进程已启动: {} ({} {})", server_id, command, args.join(" "));
+    rust_info!("MCP 进程已启动: {} ({} {})", server_id, command, args.join(" "));
 
     Ok(McpSpawnResult {
         success: true,
@@ -112,7 +115,7 @@ pub fn mcp_send(
     server_id: String,
     method: String,
     params: Value,
-) -> Result<McpResponseResult, String> {
+) -> AppResult<McpResponseResult> {
     // 1. 移出子进程（短暂持锁）
     let mut proc = {
         let mut pool = state.0.lock().map_err(|e| format!("锁错误: {}", e))?;
@@ -218,12 +221,12 @@ pub fn mcp_send(
 pub fn mcp_kill(
     state: State<'_, McpPool>,
     server_id: String,
-) -> Result<McpKillResult, String> {
+) -> AppResult<McpKillResult> {
     let mut pool = state.0.lock().map_err(|e| format!("锁错误: {}", e))?;
 
     if let Some(proc) = pool.remove(&server_id) {
         let _ = kill_child(proc.child);
-        println!("[INFO] [Rust] MCP 进程已终止: {}", server_id);
+        rust_info!("MCP 进程已终止: {}", server_id);
         Ok(McpKillResult {
             success: true,
             server_id,
@@ -245,5 +248,5 @@ fn kill_child(mut child: Child) {
             Ok(None) => std::thread::sleep(std::time::Duration::from_millis(100)),
         }
     }
-    eprintln!("[WARN] [Rust] MCP 进程未在 2s 内退出, 已放弃等待");
+    rust_warn!("MCP 进程未在 2s 内退出, 已放弃等待");
 }

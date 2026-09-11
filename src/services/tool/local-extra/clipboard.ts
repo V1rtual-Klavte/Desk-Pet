@@ -7,6 +7,7 @@ import { register } from "../registry"
 import { invoke } from "@tauri-apps/api/core"
 import { loopConfig } from "@/services/config"
 import { createLogger } from "@/services/logger"
+import { formatError } from "@/services/error"
 
 const log = createLogger("ToolClip")
 
@@ -30,7 +31,7 @@ const clipboardReadTool: ToolDef = {
       const result = await invoke<{ text: string }>("clipboard_read")
       return { success: true, content: result.text || "(剪贴板为空)" }
     } catch (e) {
-      const msg = e instanceof Error ? e.message : String(e)
+      const msg = formatError(e)
       return { success: false, content: "", error: msg }
     }
   },
@@ -58,7 +59,7 @@ const clipboardWriteTool: ToolDef = {
       await invoke("clipboard_write", { text: params.text })
       return { success: true, content: "已写入剪贴板" }
     } catch (e) {
-      const msg = e instanceof Error ? e.message : String(e)
+      const msg = formatError(e)
       return { success: false, content: "", error: msg }
     }
   },

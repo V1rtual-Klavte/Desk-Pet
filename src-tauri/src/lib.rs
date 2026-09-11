@@ -6,6 +6,8 @@ mod monitor;
 mod window;
 mod commands;
 mod paths;
+pub mod logger;
+pub mod error;
 
 use std::sync::Arc;
 use std::path::PathBuf;
@@ -20,7 +22,7 @@ use crate::commands::{
     get_cursor_position, compute_popup_position,
     pause_monitor, resume_monitor, set_monitor_config,
     open_windows_sim, close_windows_sim,
-    log_message, focus_main, open_devtools,
+    log_messages, set_log_config, report_frontend_error, focus_main, open_devtools,
     bash_exec, bash_cancel, file_read, file_read_binary, file_write, file_list,
     file_info, file_exists, file_canonical_path,
     system_info, app_open, clipboard_read, clipboard_write,
@@ -33,6 +35,7 @@ use crate::commands::{
 };
 
 use crate::paths::AppPaths;
+use crate::error::{err, AppError, AppResult};
 
 // ==========================================
 // AppPaths 统一路径 commands
@@ -96,7 +99,7 @@ fn resolve_runtime_path(
     paths: tauri::State<AppPaths>,
     scope: String,
     segments: Vec<String>,
-) -> Result<String, String> {
+) -> AppResult<String> {
     let mut path = match scope.as_str() {
         "data" => paths.data_root.clone(),
         "memory" => paths.memory.clone(),
@@ -104,14 +107,14 @@ fn resolve_runtime_path(
         "personality" => paths.personality.clone(),
         "profiles" => paths.profiles.clone(),
         "settings" => paths.settings.clone(),
-        _ => return Err(format!("未知运行时路径域: {scope}")),
+        _ => return err(format!("未知运行时路径域: {scope}")),
     };
     for segment in segments {
         let candidate = std::path::Path::new(&segment);
         if candidate.is_absolute()
             || candidate.components().any(|part| !matches!(part, std::path::Component::Normal(_)))
         {
-            return Err("运行时路径片段非法".to_string());
+            return Err(AppError::PathEscape);
         }
         path.push(candidate);
     }
@@ -119,29 +122,29 @@ fn resolve_runtime_path(
 }
 
 #[tauri::command]
-fn read_runtime_config(paths: tauri::State<AppPaths>) -> Result<String, String> {
+fn read_runtime_config(paths: tauri::State<AppPaths>) -> AppResult<String> {
     std::fs::read_to_string(&paths.config_file)
-        .map_err(|e| format!("读取配置失败 {:?}: {e}", paths.config_file))
+        .map_err(|e| AppError::Io(format!("读取配置失败 {:?}: {e}", paths.config_file)))
 }
 
 #[tauri::command]
-fn write_runtime_config(paths: tauri::State<AppPaths>, content: String) -> Result<(), String> {
+fn write_runtime_config(paths: tauri::State<AppPaths>, content: String) -> AppResult<()> {
     let parent = paths.config_file.parent().ok_or("配置文件路径没有父目录")?;
     std::fs::create_dir_all(parent).map_err(|e| format!("创建配置目录失败: {e}"))?;
-    std::fs::write(&paths.config_file, content).map_err(|e| format!("写入配置失败: {e}"))
+    std::fs::write(&paths.config_file, content).map_err(|e| AppError::Io(format!("写入配置失败: {e}")))
 }
 
 #[tauri::command]
-fn read_session_ui_state(paths: tauri::State<AppPaths>) -> Result<Option<String>, String> {
+fn read_session_ui_state(paths: tauri::State<AppPaths>) -> AppResult<Option<String>> {
     let file = paths.sessions.join("index.json");
     if !file.exists() { return Ok(None); }
-    std::fs::read_to_string(file).map(Some).map_err(|e| format!("读取会话 UI 状态失败: {e}"))
+    std::fs::read_to_string(file).map(Some).map_err(|e| AppError::Io(format!("读取会话 UI 状态失败: {e}")))
 }
 
 #[tauri::command]
-fn write_session_ui_state(paths: tauri::State<AppPaths>, content: String) -> Result<(), String> {
+fn write_session_ui_state(paths: tauri::State<AppPaths>, content: String) -> AppResult<()> {
     let file = paths.sessions.join("index.json");
-    std::fs::write(file, content).map_err(|e| format!("写入会话 UI 状态失败: {e}"))
+    std::fs::write(file, content).map_err(|e| AppError::Io(format!("写入会话 UI 状态失败: {e}")))
 }
 
 #[tauri::command]
@@ -189,11 +192,12 @@ fn get_live_test_options() -> LiveTestOptions {
 }
 
 #[tauri::command]
-fn live_test_complete(app: tauri::AppHandle, paths: tauri::State<AppPaths>, passed: bool, report: String) -> Result<(), String> {
+fn live_test_complete(app: tauri::AppHandle, paths: tauri::State<AppPaths>, passed: bool, report: String) -> AppResult<()> {
     if !cfg!(debug_assertions) {
-        return Err("Live Test 仅允许 debug 构建".to_string());
+        return err("Live Test 仅允许 debug 构建");
     }
-    println!("[LiveTest] completed passed={passed}\n{report}");
+    // 报告是多行结构，原样转发（不套 Rust 前缀），但要经过统一出口才能落盘
+    logger::emit_frontend(&format!("[LiveTest] completed passed={passed}\n{report}"));
     let result = format!("{}\n{}", if passed { "PASS" } else { "FAIL" }, report);
     if let Err(error) = std::fs::write(paths.data_root.join("live-test-result.txt"), result) {
         eprintln!("[LiveTest] 无法写入测试结果: {error}");
@@ -207,6 +211,28 @@ fn live_test_complete(app: tauri::AppHandle, paths: tauri::State<AppPaths>, pass
 // ==========================================
 
 pub fn run() {
+    // 必须在任何日志之前：DESKPET_LOG_LEVEL 可覆写默认级别
+    logger::init_from_env();
+
+    // panic 默认只写 stderr；release 构建（windows_subsystem="windows"）没有控制台，
+    // 换掉 hook 才能让崩溃留下可查的记录。
+    std::panic::set_hook(Box::new(|info| {
+        let message = info
+            .payload()
+            .downcast_ref::<&str>()
+            .map(|s| (*s).to_string())
+            .or_else(|| info.payload().downcast_ref::<String>().cloned())
+            .unwrap_or_else(|| "未知 panic".to_string());
+        let location = info
+            .location()
+            .map(|l| format!("{}:{}:{}", l.file(), l.line(), l.column()))
+            .unwrap_or_else(|| "未知位置".to_string());
+        logger::emit(
+            logger::LEVEL_ERROR,
+            format_args!("[PANIC] {message} @ {location}"),
+        );
+    }));
+
     let monitor_state = Arc::new(MonitorState::default());
     let monitor_state_clone = Arc::clone(&monitor_state);
 
@@ -229,8 +255,17 @@ pub fn run() {
 
             let live_test = cfg!(debug_assertions)
                 && std::env::var("DESKPET_LIVE_TEST").ok().as_deref() == Some("1");
-            let paths = AppPaths::init(app.handle()).expect("路径初始化失败");
+            let paths = match AppPaths::init(app.handle()) {
+                Ok(p) => p,
+                Err(e) => {
+                    // 极早期失败：窗口尚未创建，前端无从汇报，只能靠终端 + 退出码
+                    rust_error!("路径初始化失败: {e}");
+                    std::process::exit(1);
+                }
+            };
             app.asset_protocol_scope().allow_directory(&paths.profiles, true)?;
+            // 文件 sink 必须在 paths 就绪后初始化；此处之前的日志只进终端
+            logger::init_file_sink(&paths.logs);
             app.manage(paths);
 
             if live_test {
@@ -256,46 +291,61 @@ pub fn run() {
                 };
             }
 
-            // ── 系统托盘 ──
-            let tray_menu = MenuBuilder::new(app.handle())
-                .item(&MenuItemBuilder::with_id("show", "显示").build(app.handle()).unwrap())
-                .item(&MenuItemBuilder::with_id("quit", "退出").build(app.handle()).unwrap())
-                .build()
-                .unwrap();
+            // ── 系统托盘 ── 非必需组件：构建失败只告警，应用仍可运行
+            let tray_result = (|| -> Result<(), String> {
+                let show_item = MenuItemBuilder::with_id("show", "显示")
+                    .build(app.handle()).map_err(|e| format!("菜单项 show: {e}"))?;
+                let quit_item = MenuItemBuilder::with_id("quit", "退出")
+                    .build(app.handle()).map_err(|e| format!("菜单项 quit: {e}"))?;
+                let tray_menu = MenuBuilder::new(app.handle())
+                    .item(&show_item)
+                    .item(&quit_item)
+                    .build()
+                    .map_err(|e| format!("托盘菜单: {e}"))?;
 
-            let handle2 = app.handle().clone();
-            let _tray = TrayIconBuilder::new()
-                .icon(app.default_window_icon().unwrap().clone())
-                .menu(&tray_menu)
-                .on_menu_event(move |app, event| {
-                    match event.id().as_ref() {
-                        "show" => {
-                            if let Some(w) = app.get_webview_window("main") {
+                let handle2 = app.handle().clone();
+                let icon = app.default_window_icon()
+                    .ok_or_else(|| "缺少默认窗口图标".to_string())?
+                    .clone();
+
+                TrayIconBuilder::new()
+                    .icon(icon)
+                    .menu(&tray_menu)
+                    .on_menu_event(move |app, event| {
+                        match event.id().as_ref() {
+                            "show" => {
+                                if let Some(w) = app.get_webview_window("main") {
+                                    let _ = w.show();
+                                    let _ = w.unminimize();
+                                    let _ = w.set_focus();
+                                }
+                            }
+                            "quit" => {
+                                rust_info!("托盘菜单 → 退出");
+                                app.exit(0);
+                            }
+                            _ => {}
+                        }
+                    })
+                    .on_tray_icon_event(move |_tray, event| {
+                        if let TrayIconEvent::Click { button: MouseButton::Left, button_state: MouseButtonState::Up, .. } = event {
+                            if let Some(w) = handle2.get_webview_window("main") {
                                 let _ = w.show();
                                 let _ = w.unminimize();
                                 let _ = w.set_focus();
+                                rust_debug!("托盘单击 → 显示窗口");
                             }
                         }
-                        "quit" => {
-                            rust_info!("托盘菜单 → 退出");
-                            app.exit(0);
-                        }
-                        _ => {}
-                    }
-                })
-                .on_tray_icon_event(move |_tray, event| {
-                    if let TrayIconEvent::Click { button: MouseButton::Left, button_state: MouseButtonState::Up, .. } = event {
-                        if let Some(w) = handle2.get_webview_window("main") {
-                            let _ = w.show();
-                            let _ = w.unminimize();
-                            let _ = w.set_focus();
-                            rust_debug!("托盘单击 → 显示窗口");
-                        }
-                    }
-                })
-                .build(app.handle())
-                .unwrap();
-            rust_info!("系统托盘已创建");
+                    })
+                    .build(app.handle())
+                    .map_err(|e| format!("托盘图标: {e}"))?;
+                Ok(())
+            })();
+
+            match tray_result {
+                Ok(()) => rust_info!("系统托盘已创建"),
+                Err(e) => rust_warn!("系统托盘创建失败（应用继续运行）: {e}"),
+            }
 
             // 启动窗口监控后台线程
             monitor::spawn_monitor_thread(app.handle().clone(), monitor_state_clone);
@@ -313,7 +363,9 @@ pub fn run() {
             set_monitor_config,
             open_windows_sim,
             close_windows_sim,
-            log_message,
+            log_messages,
+            set_log_config,
+            report_frontend_error,
             focus_main,
             open_devtools,
             enhance_settings_window,
@@ -367,5 +419,9 @@ pub fn run() {
             personality_file_delete,
         ])
         .run(tauri::generate_context!())
-        .expect("startup failure");
+        .unwrap_or_else(|e| {
+            // 不做裸 panic：给出可读原因并保留退出码
+            rust_error!("事件循环启动失败: {e}");
+            std::process::exit(1);
+        });
 }

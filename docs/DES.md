@@ -599,7 +599,7 @@ Profile选择: 下拉框（内置+用户）
 │  UI 层 (Vue 3)                                            │
 │  StreamView(角色动画) / ChatPanel(对话) / TitleBar         │
 │  SessionTabs(会话标签) / SettingsPanel(设置) / DebugBar    │
-│  NotificationCard / winsim(Windows模拟器彩蛋)               │
+│  winsim(Windows模拟器彩蛋)                                  │
 ├──────────────────────────────────────────────────────────┤
 │  人格中间件 (PetPersonalityMiddleware)                      │
 │  ┌──────────────────────────────────────────────────┐    │

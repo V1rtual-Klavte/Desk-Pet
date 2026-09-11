@@ -7,6 +7,7 @@ import type { ToolDef } from "../types"
 import { register } from "../registry"
 import { invoke } from "@tauri-apps/api/core"
 import { createLogger } from "@/services/logger"
+import { formatError } from "@/services/error"
 
 const log = createLogger("ToolSys")
 
@@ -46,7 +47,7 @@ const systemTool: ToolDef = {
 
       return { success: true, content: text }
     } catch (e) {
-      const msg = e instanceof Error ? e.message : String(e)
+      const msg = formatError(e)
       return { success: false, content: "", error: msg }
     }
   },

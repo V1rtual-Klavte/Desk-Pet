@@ -14,16 +14,17 @@
 use std::fs;
 use std::path::PathBuf;
 use crate::paths::AppPaths;
+use crate::error::{err, AppError, AppResult};
 
 /// 读取 personality/ 或 cards/ 下的文件
 /// 优先从 builtin 读取，不存在则回退到 runtime 目录
 #[tauri::command]
-pub fn personality_file_read(path: String, paths: tauri::State<AppPaths>) -> Result<Vec<u8>, String> {
+pub fn personality_file_read(path: String, paths: tauri::State<AppPaths>) -> AppResult<Vec<u8>> {
     let file_path = resolve_personality_path(&path, "read", &paths)?;
     if !file_path.exists() {
-        return Err(format!("文件不存在: {}", path));
+        return Err(AppError::PathNotFound(format!("文件不存在: {}", path)));
     }
-    fs::read(&file_path).map_err(|e| format!("读取失败: {e}"))
+    fs::read(&file_path).map_err(|e| AppError::Io(format!("读取失败: {e}")))
 }
 
 /// 写入 personality/ 或 cards/ 下的文件（仅 runtime，自动创建父目录）
@@ -32,7 +33,7 @@ pub fn personality_file_write(
     path: String,
     content: Vec<u8>,
     paths: tauri::State<AppPaths>,
-) -> Result<String, String> {
+) -> AppResult<String> {
     let file_path = resolve_personality_path(&path, "write", &paths)?;
     fs::write(&file_path, &content).map_err(|e| format!("写入文件失败: {e}"))?;
     Ok(file_path.to_string_lossy().to_string())
@@ -41,13 +42,13 @@ pub fn personality_file_write(
 /// 列出 personality/ 或 cards/ 下指定目录的文件
 /// 优先从 builtin 查找目录，不存在则回退到 runtime
 #[tauri::command]
-pub fn personality_file_list(dir_path: String, paths: tauri::State<AppPaths>) -> Result<Vec<String>, String> {
+pub fn personality_file_list(dir_path: String, paths: tauri::State<AppPaths>) -> AppResult<Vec<String>> {
     let dir = resolve_personality_path(&dir_path, "read", &paths)?;
     if !dir.exists() {
         return Ok(vec![]);
     }
     if !dir.is_dir() {
-        return Err(format!("不是目录: {}", dir_path));
+        return err(format!("不是目录: {}", dir_path));
     }
 
     let mut files: Vec<String> = Vec::new();
@@ -64,13 +65,13 @@ pub fn personality_file_list(dir_path: String, paths: tauri::State<AppPaths>) ->
 
 /// 删除 personality/ 或 cards/ 下的文件（仅 runtime）
 #[tauri::command]
-pub fn personality_file_delete(path: String, paths: tauri::State<AppPaths>) -> Result<(), String> {
+pub fn personality_file_delete(path: String, paths: tauri::State<AppPaths>) -> AppResult<()> {
     let file_path = resolve_personality_path(&path, "write", &paths)?;
     if !file_path.exists() {
         return Ok(());
     }
     if file_path.is_dir() {
-        return Err("不允许删除目录".into());
+        return Err(AppError::PathEscape);
     }
 
     // write 模式下 resolve 已校验父目录在 personality 内，此处再做文件级二次校验
@@ -78,7 +79,7 @@ pub fn personality_file_delete(path: String, paths: tauri::State<AppPaths>) -> R
         AppPaths::validate_path(&file_path, &paths.personality)?;
     }
 
-    fs::remove_file(&file_path).map_err(|e| format!("删除失败: {e}"))
+    fs::remove_file(&file_path).map_err(|e| AppError::Io(format!("删除失败: {e}")))
 }
 
 // ==========================================
@@ -90,7 +91,7 @@ pub fn personality_file_delete(path: String, paths: tauri::State<AppPaths>) -> R
 /// mode:
 ///   "read"  — 先在 builtin_personality 查找，不存在则回退到 personality
 ///   "write" — 仅解析到 personality (runtime)，自动创建父目录并校验路径安全
-fn resolve_personality_path(relative: &str, mode: &str, paths: &AppPaths) -> Result<PathBuf, String> {
+fn resolve_personality_path(relative: &str, mode: &str, paths: &AppPaths) -> AppResult<PathBuf> {
     // 兼容前端传入 "personality/stages/xxx" 的旧相对路径
     let normalized = relative.strip_prefix("personality/").unwrap_or(relative);
 
@@ -127,6 +128,6 @@ fn resolve_personality_path(relative: &str, mode: &str, paths: &AppPaths) -> Res
 
             Ok(target)
         }
-        _ => Err("未知路径解析模式".to_string()),
+        _ => err("未知路径解析模式"),
     }
 }

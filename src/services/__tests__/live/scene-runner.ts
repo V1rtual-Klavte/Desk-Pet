@@ -16,6 +16,7 @@ import { getSession } from "@/services/engine/session"
 import { getContextMessages } from "@/services/session/store"
 import { pushAssistantMessage, pushUserMessage } from "@/services/session/messages"
 import { MemoryService } from "@/services/agent/memory"
+import { formatError } from "@/services/error"
 
 const DEFAULT_SCENE_TIMEOUT = 120_000
 
@@ -44,7 +45,7 @@ function heapUsedBytes(): number | undefined {
 }
 
 function classifyError(error: unknown): ErrorKind {
-  const message = (error instanceof Error ? error.message : String(error)).toLowerCase()
+  const message = (formatError(error)).toLowerCase()
   if (error instanceof SceneTimeoutError || /timeout|timed out|超时/.test(message)) return "timeout"
   if (/401|403|unauthorized|forbidden|api.?key|认证/.test(message)) return "auth"
   if (/429|rate.?limit|限流/.test(message)) return "rate_limit"
@@ -89,7 +90,7 @@ async function runSceneInner(scene: SceneDef, trial: number): Promise<SceneResul
     try {
       await scene.setup()
     } catch (error) {
-      const message = error instanceof Error ? error.message : String(error)
+      const message = formatError(error)
       return {
         caseId: scene.meta.caseId,
         scene: scene.meta.description,
@@ -138,7 +139,7 @@ async function runSceneInner(scene: SceneDef, trial: number): Promise<SceneResul
           assertions.push({
             type: check.type,
             pass: false,
-            error: error instanceof Error ? error.message : String(error),
+            error: formatError(error),
           })
         }
       }
@@ -171,7 +172,7 @@ async function runSceneInner(scene: SceneDef, trial: number): Promise<SceneResul
         assertions: [{
           type: "system",
           pass: false,
-          error: error instanceof Error ? error.message : String(error),
+          error: formatError(error),
         }],
         duration,
         metrics: { duration, replyChars: 0, toolCalls: 0, retries: 0, heapUsedBytes: heapUsedBytes() },
@@ -223,7 +224,7 @@ export async function runScene(scene: SceneDef, trial = 1): Promise<SceneResult>
       status: error instanceof SceneTimeoutError ? "timeout" : "fail",
       turns: [],
       duration: timeout,
-      error: error instanceof Error ? error.message : String(error),
+      error: formatError(error),
       errorKind: classifyError(error),
     }
   } finally {

@@ -18,17 +18,19 @@ use std::path::PathBuf;
 use std::fs;
 use tauri::command;
 use crate::paths::AppPaths;
+use crate::error::{err, AppError, AppResult};
+use crate::rust_debug;
 
 /// 获取 memory/ 目录下指定文件的完整路径。
 #[command]
-pub fn get_memory_file(paths: tauri::State<AppPaths>, filename: String) -> Result<String, String> {
+pub fn get_memory_file(paths: tauri::State<AppPaths>, filename: String) -> AppResult<String> {
     let safe_name = PathBuf::from(&filename)
         .file_name()
         .map(|n| n.to_string_lossy().to_string())
         .ok_or_else(|| format!("无效文件名: {}", filename))?;
 
     if safe_name.contains("..") || safe_name.contains('/') || safe_name.contains('\\') {
-        return Err(format!("非法文件名: {}", safe_name));
+        return err(format!("非法文件名: {}", safe_name));
     }
 
     let file_path = paths.memory.join(&safe_name);
@@ -37,14 +39,14 @@ pub fn get_memory_file(paths: tauri::State<AppPaths>, filename: String) -> Resul
 
 /// 获取 sessions/ 目录下指定文件的完整路径。
 #[command]
-pub fn get_session_file(paths: tauri::State<AppPaths>, filename: String) -> Result<String, String> {
+pub fn get_session_file(paths: tauri::State<AppPaths>, filename: String) -> AppResult<String> {
     let safe_name = PathBuf::from(&filename)
         .file_name()
         .map(|n| n.to_string_lossy().to_string())
         .ok_or_else(|| format!("无效文件名: {}", filename))?;
 
     if safe_name.contains("..") || safe_name.contains('/') || safe_name.contains('\\') {
-        return Err(format!("非法文件名: {}", safe_name));
+        return err(format!("非法文件名: {}", safe_name));
     }
 
     let file_path = paths.sessions.join(&safe_name);
@@ -53,7 +55,7 @@ pub fn get_session_file(paths: tauri::State<AppPaths>, filename: String) -> Resu
 
 /// ★ 列出 sessions/ 目录下所有 .md 文件（按名称倒序）
 #[command]
-pub fn list_session_files(paths: tauri::State<AppPaths>) -> Result<Vec<String>, String> {
+pub fn list_session_files(paths: tauri::State<AppPaths>) -> AppResult<Vec<String>> {
     let sessions_dir = &paths.sessions;
 
     let mut files: Vec<String> = Vec::new();
@@ -73,8 +75,8 @@ pub fn list_session_files(paths: tauri::State<AppPaths>) -> Result<Vec<String>, 
 
 /// ★ 删除 sessions/ 目录下指定的文件
 #[command]
-pub fn delete_session_file(paths: tauri::State<AppPaths>, filename: String) -> Result<(), String> {
-    println!("[Rust] delete_session_file: {} | dir: {}", filename, paths.sessions.display());
+pub fn delete_session_file(paths: tauri::State<AppPaths>, filename: String) -> AppResult<()> {
+    rust_debug!("delete_session_file: {} | dir: {}", filename, paths.sessions.display());
 
     // 安全检查
     let safe_name = PathBuf::from(&filename)
@@ -83,11 +85,11 @@ pub fn delete_session_file(paths: tauri::State<AppPaths>, filename: String) -> R
         .ok_or_else(|| format!("无效文件名: {}", filename))?;
 
     if safe_name.contains("..") || safe_name.contains('/') || safe_name.contains('\\') {
-        return Err(format!("非法文件名: {}", safe_name));
+        return err(format!("非法文件名: {}", safe_name));
     }
 
     if !safe_name.ends_with(".md") {
-        return Err(format!("不是有效的会话文件: {}", safe_name));
+        return err(format!("不是有效的会话文件: {}", safe_name));
     }
 
     let file_path = paths.sessions.join(&safe_name);
@@ -101,7 +103,7 @@ pub fn delete_session_file(paths: tauri::State<AppPaths>, filename: String) -> R
 
 /// ★ 删除任意文件（用于 file_delete 工具 + 重命名清理）
 #[command]
-pub fn file_delete(paths: tauri::State<AppPaths>, path: String) -> Result<(), String> {
+pub fn file_delete(paths: tauri::State<AppPaths>, path: String) -> AppResult<()> {
     let p = PathBuf::from(&path);
     if !p.exists() {
         return Ok(()); // 文件不存在不算错误
@@ -111,16 +113,16 @@ pub fn file_delete(paths: tauri::State<AppPaths>, path: String) -> Result<(), St
     let in_memory = resolved.starts_with(&paths.memory);
     let in_sessions = resolved.starts_with(&paths.sessions);
     if !in_memory && !in_sessions {
-        return Err("安全限制: 只能在 memory/ 或 sessions/ 目录下删除文件".to_string());
+        return Err(AppError::PathEscape);
     }
-    fs::remove_file(&p).map_err(|e| format!("删除失败: {}", e))
+    fs::remove_file(&p).map_err(|e| AppError::Io(format!("删除失败: {}", e)))
 }
 
 /// 初始化 memory/ 和 sessions/ 目录结构及模板文件。
 /// ★ 使用 AppPaths 统一路径管理。
 /// 模板使用新的 MEMORY.md 双块结构。
 #[command]
-pub fn init_memory_files(paths: tauri::State<AppPaths>) -> Result<String, String> {
+pub fn init_memory_files(paths: tauri::State<AppPaths>) -> AppResult<String> {
     let memory_dir = &paths.memory;
     let sessions_dir = &paths.sessions;
 

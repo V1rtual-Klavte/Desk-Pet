@@ -8,6 +8,7 @@ import type { PersonalityCard, CardSections, CardVariableDef, VariableScope, Var
 import { parseEmotionMappings } from "./emotion"
 import { parseMustRules } from "./must-rules"
 import { createLogger } from "@/services/logger"
+import { formatError } from "@/services/error"
 
 const log = createLogger("Persona")
 
@@ -274,7 +275,7 @@ async function parseCard(raw: string, source: "builtin" | "user"): Promise<Perso
 async function loadBuiltin(): Promise<PersonalityCard[]> {
   const result: PersonalityCard[] = []
   for (const [fileName, raw] of Object.entries(BUILTIN_RAW)) {
-    try { result.push(await parseCard(raw, "builtin")) } catch (e) { log.warn(`内置 Card 解析失败: ${fileName}`, e instanceof Error ? e.message : String(e)) }
+    try { result.push(await parseCard(raw, "builtin")) } catch (e) { log.warn(`内置 Card 解析失败: ${fileName}`, formatError(e)) }
   }
   return result
 }

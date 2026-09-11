@@ -4,7 +4,7 @@
 // macOS:   osascript (AppleScript) → 应用名回退
 // ==========================================
 
-use crate::{rust_debug, rust_log};
+use crate::rust_debug;
 
 pub fn capture_window_title() -> String {
     #[cfg(target_os = "windows")]

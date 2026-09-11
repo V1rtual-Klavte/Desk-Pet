@@ -12,7 +12,7 @@ use super::{MonitorState, WindowChangePayload};
 use super::capture::capture_window_title;
 use super::visibility::is_pet_visible;
 
-use crate::{rust_info, rust_debug, rust_log, rust_warn};
+use crate::{rust_info, rust_debug, rust_warn};
 
 pub fn spawn_monitor_thread(
     handle: tauri::AppHandle,

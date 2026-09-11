@@ -7,6 +7,7 @@ import type { ToolDef, ToolResult, ToolContext } from "./types"
 import { getToolByName } from "./registry"
 import { loopConfig } from "@/services/config"
 import { createLogger } from "@/services/logger"
+import { formatError } from "@/services/error"
 
 const log = createLogger("ToolRouter")
 
@@ -62,7 +63,7 @@ export async function executeTool(
     log.warn("工具失败:", toolName, "|", result.error)
     return result
   } catch (e) {
-    const errMsg = e instanceof Error ? e.message : String(e)
+    const errMsg = formatError(e)
     log.error("工具异常:", toolName, "|", errMsg)
     return { success: false, content: "", error: errMsg }
   }

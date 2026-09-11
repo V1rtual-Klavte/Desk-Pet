@@ -8,6 +8,7 @@ import type { ToolDef } from "../types"
 import { register } from "../registry"
 import { loopConfig } from "@/services/config"
 import { createLogger } from "@/services/logger"
+import { formatError } from "@/services/error"
 
 const log = createLogger("ToolAgent")
 
@@ -57,7 +58,7 @@ const agentSpawnTool: ToolDef = {
       }
       return { success: false, content: "", error: result.error ?? "子代理执行失败" }
     } catch (e) {
-      const msg = e instanceof Error ? e.message : String(e)
+      const msg = formatError(e)
       log.error("子代理异常:", msg)
       return { success: false, content: "", error: `子代理异常: ${msg}` }
     }

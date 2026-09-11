@@ -17,6 +17,8 @@ import {
 import { incrementSessionMessageCount } from "@/services/session/manager"
 import { isAIGenerating, setAIGenerating } from "@/services/cooldown"
 import { createLogger } from "@/services/logger"
+import { formatError, summarizeError } from "@/services/error"
+import { reportError } from "@/services/error"
 
 const log = createLogger("Agent")
 
@@ -147,7 +149,9 @@ export async function sendMessage(text: string): Promise<{
       },
     }
   } catch (e) {
-    log.error("sendMessage 失败", e instanceof Error ? e.message : String(e))
+    log.error("sendMessage 失败", formatError(e))
+    // 走全局通道：终端/日志文件留完整记录，开发期还会弹覆盖层
+    reportError("runner", e, { kind: "LLM 调用失败" })
     const fallback = getFallbackReply("llmUnavailable")
     // ★ 同样校验会话
     if (getActiveSessionId() !== originSessionId) {
@@ -155,6 +159,10 @@ export async function sendMessage(text: string): Promise<{
       await MemoryService.recordTurnToSession(originSessionId, "assistant", fallback)
     } else {
       pushAssistantMessage(fallback)
+      // 角色台词会掩盖故障：补一条系统消息，让用户分得清「降级」和「正常回复」。
+      // 该消息随会话持久化进 .md，所以用脱敏摘要而非原始错误。
+      const { pushSystemMessage } = await import("@/services/session/messages")
+      pushSystemMessage(`LLM 调用失败，已降级回复：${summarizeError(e)}`)
     }
     transition("WAITING")
     return {

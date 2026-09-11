@@ -20,7 +20,6 @@ import { desktopConfig, shortcutConfig, userConfig, reloadConfig } from "@/servi
 import { isMacOS } from "@/services/env";
 import { getUiUrl } from "@/services/profile";
 import { createLogger } from "@/services/logger";
-import type { StreamViewRef } from "@/services/command-handler";
 import { playEventSound } from "@/services/audio/registry";
 import { emit, listen } from "@tauri-apps/api/event";
 import { stopMemoryConsolidationTimer } from "@/services/agent/memory/consolidate"
@@ -47,7 +46,6 @@ provide("globalCursor", globalCursor);
 provide("windowPos", lastMovedPos);
 provide("windowSize", winSize);
 provide("isRetracted", isRetracted);
-const streamRef = ref<StreamViewRef | null>(null);
 const chatRef = ref<InstanceType<typeof ChatPanel> | null>(null);
 const tabsRef = ref<InstanceType<typeof SessionTabs> | null>(null);
 
@@ -523,7 +521,7 @@ onMounted(async () => {
     waitTimeoutMs: desktopConfig.waitTimeoutMs,
   }).catch(() => {});
   playEventSound("welcome");
-  cleanupListener = await initWindowListener(streamRef, winSize);
+  cleanupListener = await initWindowListener(winSize);
 
   await registerShortcut();
 
@@ -674,7 +672,7 @@ onUnmounted(() => {
     <div id="body">
       <div id="stream-col">
         <img id="bg" :src="getUiUrl('windows/operation_base.png')" alt="" />
-        <StreamView ref="streamRef" />
+        <StreamView />
       </div>
       <div
         id="divider"

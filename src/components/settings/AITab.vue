@@ -15,6 +15,7 @@ import type { PersonalityCard } from "@/services/personality";
 import type { EmotionMapping } from "@/services/personality";
 import type { StageMap, StagePrompts } from "@/services/personality";
 import { createLogger } from "@/services/logger";
+import { formatError } from "@/services/error"
 
 const log = createLogger("Settings");
 
@@ -224,7 +225,7 @@ async function persistCurrentStages() {
     log.info("阶段文案已持久化:", cardId);
   } catch (e) {
     log.error("阶段文案持久化失败:", e);
-    switchError.value = "持久化失败: " + (e instanceof Error ? e.message : String(e));
+    switchError.value = "持久化失败: " + (formatError(e));
   }
 }
 
@@ -270,7 +271,7 @@ async function applySwitch() {
       pushAssistantMessage(greeting);
     }
   } catch (e) {
-    const msg = e instanceof Error ? e.message : String(e);
+    const msg = formatError(e);
     switchError.value = msg;
     log.error("Card 切换失败:", msg);
     pendingCardId.value = oldCardId;
@@ -365,7 +366,7 @@ async function importCard() {
       log.info("Card 已导入并持久化:", card.id);
     } catch (e) {
       log.error("Card 导入失败:", e);
-      switchError.value = "Card 导入失败: " + (e instanceof Error ? e.message : String(e));
+      switchError.value = "Card 导入失败: " + (formatError(e));
     }
   };
   input.click();
@@ -442,7 +443,7 @@ onMounted(async () => {
   }
   poolRefreshTick.value++;
   } catch (e) {
-    console.warn("AITab initCards 失败", e instanceof Error ? e.message : String(e))
+    log.warn("initCards 失败", formatError(e))
   }
 });
 

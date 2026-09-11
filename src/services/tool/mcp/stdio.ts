@@ -4,6 +4,7 @@
 
 import { invoke } from "@tauri-apps/api/core"
 import { createLogger } from "@/services/logger"
+import { formatError } from "@/services/error"
 
 const log = createLogger("MCPstdio")
 
@@ -40,7 +41,7 @@ export class StdioTransport {
       log.error("stdio 连接失败")
       return false
     } catch (e) {
-      log.error("stdio spawn 失败:", e instanceof Error ? e.message : String(e))
+      log.error("stdio spawn 失败:", formatError(e))
       return false
     }
   }
@@ -56,7 +57,7 @@ export class StdioTransport {
       })
       return response
     } catch (e) {
-      return { success: false, result: null, error: e instanceof Error ? e.message : String(e) }
+      return { success: false, result: null, error: formatError(e) }
     }
   }
 

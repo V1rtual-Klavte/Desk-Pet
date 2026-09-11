@@ -10,6 +10,7 @@ use std::process::{Child, Command, Stdio};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use tauri::{command, State};
+use crate::error::{err, AppError, AppResult};
 
 #[derive(Default)]
 pub struct BashPool(Mutex<HashMap<String, Arc<Mutex<Child>>>>);
@@ -28,11 +29,11 @@ pub fn bash_exec(
     whitelist: Option<Vec<String>>,
     max_bytes: Option<usize>,
     max_lines: Option<usize>,
-) -> Result<BashResult, String> {
+) -> AppResult<BashResult> {
     enforce_bash_policy(&command, restricted.unwrap_or(true), whitelist.as_deref().unwrap_or(&[]))?;
     let execution_id = execution_id.unwrap_or_else(|| format!("legacy-{}", std::process::id()));
     if !execution_id.chars().all(|c| c.is_ascii_alphanumeric() || c == '-') {
-        return Err("无效的执行 ID".to_string());
+        return err("无效的执行 ID");
     }
 
     // 跨平台 shell 选择
@@ -48,16 +49,16 @@ pub fn bash_exec(
     if let Some(dir) = &cwd {
         let safe_cwd = crate::paths::AppPaths::validate_file_path(Path::new(dir))?;
         if !safe_cwd.is_dir() {
-            return Err("工作目录不是目录".to_string());
+            return err("工作目录不是目录");
         }
         cmd.current_dir(safe_cwd);
     }
 
     let stdout_path = std::env::temp_dir().join(format!("deskpet-{execution_id}.stdout"));
     let stderr_path = std::env::temp_dir().join(format!("deskpet-{execution_id}.stderr"));
-    cmd.stdout(Stdio::from(File::create(&stdout_path).map_err(|e| format!("创建输出文件失败: {e}"))?));
-    cmd.stderr(Stdio::from(File::create(&stderr_path).map_err(|e| format!("创建错误文件失败: {e}"))?));
-    let child = Arc::new(Mutex::new(cmd.spawn().map_err(|e| format!("执行失败: {e}"))?));
+    cmd.stdout(Stdio::from(File::create(&stdout_path).map_err(|e| AppError::Io(format!("创建输出文件失败: {e}")))?));
+    cmd.stderr(Stdio::from(File::create(&stderr_path).map_err(|e| AppError::Io(format!("创建错误文件失败: {e}")))?));
+    let child = Arc::new(Mutex::new(cmd.spawn().map_err(|e| AppError::Io(format!("执行失败: {e}")))?));
     pool.0.lock().map_err(|_| "Bash 状态锁损坏")?.insert(execution_id.clone(), Arc::clone(&child));
 
     let started = Instant::now();
@@ -71,7 +72,7 @@ pub fn bash_exec(
             let _ = child.lock().map_err(|_| "Bash 进程锁损坏")?.kill();
             pool.0.lock().map_err(|_| "Bash 状态锁损坏")?.remove(&execution_id);
             cleanup_temp_outputs(&stdout_path, &stderr_path);
-            return Err("命令执行超时".to_string());
+            return err("命令执行超时");
         }
         std::thread::sleep(Duration::from_millis(25));
     };
@@ -102,31 +103,31 @@ pub fn bash_exec(
     })
 }
 
-fn enforce_bash_policy(command: &str, restricted: bool, whitelist: &[String]) -> Result<(), String> {
+fn enforce_bash_policy(command: &str, restricted: bool, whitelist: &[String]) -> AppResult<()> {
     let lower = command.to_lowercase();
     let hard_patterns = [
         "rm -rf /", "sudo rm", "mkfs", "dd if=", "curl | sh", "curl | bash", "> /etc/",
     ];
     if hard_patterns.iter().any(|pattern| lower.contains(pattern)) {
-        return Err("命令包含硬禁止操作".to_string());
+        return Err(AppError::Tool("命令包含硬禁止操作".into()));
     }
     if restricted {
         if command.chars().any(|c| matches!(c, ';' | '&' | '|' | '>' | '<' | '`' | '\n'))
             || command.contains("$(")
             || command.contains("${")
         {
-            return Err("轻量模式不允许 Shell 组合语法".to_string());
+            return Err(AppError::Tool("轻量模式不允许 Shell 组合语法".into()));
         }
         let base = command.split_whitespace().next().unwrap_or("");
         if !whitelist.iter().any(|allowed| allowed == base) {
-            return Err(format!("命令不在白名单中: {base}"));
+            return Err(AppError::Tool(format!("命令不在白名单中: {base}")));
         }
     }
     Ok(())
 }
 
 #[command]
-pub fn bash_cancel(pool: State<BashPool>, execution_id: String) -> Result<(), String> {
+pub fn bash_cancel(pool: State<BashPool>, execution_id: String) -> AppResult<()> {
     let child = pool.0.lock().map_err(|_| "Bash 状态锁损坏")?.get(&execution_id).cloned();
     if let Some(child) = child {
         child.lock().map_err(|_| "Bash 进程锁损坏")?.kill()
@@ -199,12 +200,12 @@ pub struct BashResult {
 // ── 文件操作 ──
 
 #[command]
-pub fn file_read(path: String, max_bytes: Option<usize>) -> Result<FileReadResult, String> {
+pub fn file_read(path: String, max_bytes: Option<usize>) -> AppResult<FileReadResult> {
     use crate::paths::AppPaths;
     let safe_path = AppPaths::validate_file_path(Path::new(&path))?;
     let metadata = std::fs::metadata(&safe_path).map_err(|e| format!("读取元数据失败: {e}"))?;
     if max_bytes.is_some_and(|limit| metadata.len() as usize > limit) {
-        return Err(format!("文件过大，最多读取 {} bytes", max_bytes.unwrap_or(0)));
+        return err(format!("文件过大，最多读取 {} bytes", max_bytes.unwrap_or(0)));
     }
     let content = std::fs::read_to_string(&safe_path)
         .map_err(|e| format!("读取失败: {}", e))?;
@@ -219,10 +220,10 @@ pub struct FileReadResult {
 }
 
 #[command]
-pub fn file_write(path: String, content: String, max_bytes: Option<usize>) -> Result<FileWriteResult, String> {
+pub fn file_write(path: String, content: String, max_bytes: Option<usize>) -> AppResult<FileWriteResult> {
     use crate::paths::AppPaths;
     if max_bytes.is_some_and(|limit| content.len() > limit) {
-        return Err(format!("写入内容过大，最多 {} bytes", max_bytes.unwrap_or(0)));
+        return err(format!("写入内容过大，最多 {} bytes", max_bytes.unwrap_or(0)));
     }
     let safe_path = AppPaths::validate_new_file_path(Path::new(&path))?;
     let parent = safe_path.parent().ok_or("无效的文件路径")?;
@@ -238,7 +239,7 @@ pub struct FileWriteResult {
 }
 
 #[command]
-pub fn file_list(path: String) -> Result<FileListResult, String> {
+pub fn file_list(path: String) -> AppResult<FileListResult> {
     use crate::paths::AppPaths;
     let safe_path = AppPaths::validate_file_path(Path::new(&path))?;
     let entries = std::fs::read_dir(&safe_path)
@@ -270,15 +271,15 @@ pub fn file_list(path: String) -> Result<FileListResult, String> {
 }
 
 #[command]
-pub fn file_read_binary(path: String, max_bytes: Option<usize>) -> Result<Vec<u8>, String> {
+pub fn file_read_binary(path: String, max_bytes: Option<usize>) -> AppResult<Vec<u8>> {
     use crate::paths::AppPaths;
     let safe_path = AppPaths::validate_file_path(Path::new(&path))?;
     let metadata = std::fs::metadata(&safe_path).map_err(|e| format!("读取元数据失败: {e}"))?;
     let limit = max_bytes.unwrap_or(5 * 1024 * 1024);
     if metadata.len() as usize > limit {
-        return Err(format!("文件过大，最多读取 {} bytes", limit));
+        return err(format!("文件过大，最多读取 {} bytes", limit));
     }
-    std::fs::read(&safe_path).map_err(|e| format!("读取失败: {e}"))
+    std::fs::read(&safe_path).map_err(|e| AppError::Io(format!("读取失败: {e}")))
 }
 
 #[derive(serde::Serialize)]
@@ -292,7 +293,7 @@ pub struct FileInfoResult {
 }
 
 #[command]
-pub fn file_info(path: String) -> Result<FileInfoResult, String> {
+pub fn file_info(path: String) -> AppResult<FileInfoResult> {
     use crate::paths::AppPaths;
     let safe_path = AppPaths::validate_file_path(Path::new(&path))?;
     let metadata = std::fs::symlink_metadata(&safe_path).map_err(|e| format!("读取元数据失败: {e}"))?;
@@ -317,7 +318,7 @@ pub fn file_info(path: String) -> Result<FileInfoResult, String> {
 }
 
 #[command]
-pub fn file_exists(path: String) -> Result<bool, String> {
+pub fn file_exists(path: String) -> AppResult<bool> {
     use crate::paths::AppPaths;
     let p = Path::new(&path);
     if p.exists() {
@@ -329,7 +330,7 @@ pub fn file_exists(path: String) -> Result<bool, String> {
 }
 
 #[command]
-pub fn file_canonical_path(path: String) -> Result<String, String> {
+pub fn file_canonical_path(path: String) -> AppResult<String> {
     use crate::paths::AppPaths;
     let safe_path = AppPaths::validate_file_path(Path::new(&path))?;
     Ok(safe_path.to_string_lossy().to_string())
@@ -472,7 +473,7 @@ fn get_memory_info() -> (u64, u64) {
 // ── 打开应用 ──
 
 #[command]
-pub fn app_open(path: String) -> Result<AppOpenResult, String> {
+pub fn app_open(path: String) -> AppResult<AppOpenResult> {
     #[cfg(target_os = "macos")]
     {
         Command::new("open")
@@ -508,7 +509,7 @@ pub struct AppOpenResult {
 // ── 剪贴板 ──
 
 #[command]
-pub fn clipboard_read() -> Result<ClipboardResult, String> {
+pub fn clipboard_read() -> AppResult<ClipboardResult> {
     #[cfg(target_os = "macos")]
     {
         let out = Command::new("pbpaste")
@@ -545,7 +546,7 @@ pub fn clipboard_read() -> Result<ClipboardResult, String> {
 }
 
 #[command]
-pub fn clipboard_write(text: String) -> Result<ClipboardWriteResult, String> {
+pub fn clipboard_write(text: String) -> AppResult<ClipboardWriteResult> {
     #[cfg(target_os = "macos")]
     {
         use std::io::Write;

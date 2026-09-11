@@ -702,6 +702,7 @@ dependencies = [
 name = "deskpet"
 version = "0.1.0"
 dependencies = [
+ "chrono",
  "num_cpus",
  "objc",
  "serde",
@@ -710,6 +711,7 @@ dependencies = [
  "tauri-build",
  "tauri-plugin-global-shortcut",
  "tauri-plugin-notification",
+ "thiserror 1.0.69",
  "windows-sys 0.52.0",
 ]
 

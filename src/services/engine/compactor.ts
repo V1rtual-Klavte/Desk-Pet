@@ -16,6 +16,7 @@ import type { CompactionSummary } from "@/services/agent/memory"
 import { MemoryService } from "@/services/agent/memory"
 import { aiConfig, loopConfig } from "@/services/config"
 import { createLogger } from "@/services/logger"
+import { formatError } from "@/services/error"
 
 const log = createLogger("Compactor")
 
@@ -118,7 +119,7 @@ export async function compactIncremental(
     log.info("增量压缩完成", "mainRequest:", summary.mainRequest.substring(0, 50))
     return summary
   } catch (e) {
-    log.warn("compactIncremental 失败, 回退规则提取", e instanceof Error ? e.message : String(e))
+    log.warn("compactIncremental 失败, 回退规则提取", formatError(e))
     return fallbackSummary(newMessages, existingSummary, userIntent)
   }
 }
@@ -177,7 +178,7 @@ export async function compactFull(sessionContent: string): Promise<CompactionSum
     log.info("全量压缩完成")
     return result
   } catch (e) {
-    log.warn("全量 LLM 压缩失败", e instanceof Error ? e.message : String(e))
+    log.warn("全量 LLM 压缩失败", formatError(e))
     return null
   }
 }
@@ -256,7 +257,7 @@ function parseCompactionResponse(
 
     return summary
   } catch (e) {
-    log.warn("摘要 JSON 解析失败", e instanceof Error ? e.message : String(e))
+    log.warn("摘要 JSON 解析失败", formatError(e))
     return null
   }
 }
@@ -320,7 +321,7 @@ export function compactOnHighUsage(recentMessages: Message[], userIntent: string
   ).then(summary => {
     if (summary) log.info("EoT 压缩完成")
   }).catch(e => {
-    log.warn("EoT 压缩失败", e instanceof Error ? e.message : String(e))
+    log.warn("EoT 压缩失败", formatError(e))
   })
 }
 

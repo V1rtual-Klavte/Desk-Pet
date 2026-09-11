@@ -5,10 +5,11 @@
 use std::path::PathBuf;
 use tauri::{WebviewWindowBuilder, Manager};
 
-use crate::{rust_info, rust_log};
+use crate::rust_info;
+use crate::error::{AppError, AppResult};
 
 #[tauri::command]
-pub fn close_windows_sim(app: tauri::AppHandle) -> Result<String, String> {
+pub fn close_windows_sim(app: tauri::AppHandle) -> AppResult<String> {
     if let Some(w) = app.get_webview_window("windows-sim") {
         rust_info!("关闭 Windows 模拟器");
         let _ = w.destroy();
@@ -19,7 +20,7 @@ pub fn close_windows_sim(app: tauri::AppHandle) -> Result<String, String> {
 }
 
 #[tauri::command]
-pub async fn open_windows_sim(app: tauri::AppHandle) -> Result<String, String> {
+pub async fn open_windows_sim(app: tauri::AppHandle) -> AppResult<String> {
     let label = "windows-sim";
     if let Some(existing) = app.get_webview_window(label) {
         let _ = existing.set_focus();
@@ -36,5 +37,5 @@ pub async fn open_windows_sim(app: tauri::AppHandle) -> Result<String, String> {
         .devtools(true)
         .build()
         .map(|w| format!("created: {}", w.label()))
-        .map_err(|e| format!("{}", e))
+        .map_err(|e| AppError::Io(format!("{}", e)))
 }

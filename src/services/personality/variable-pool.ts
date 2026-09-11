@@ -5,6 +5,7 @@
 
 import { createLogger } from "@/services/logger"
 import type { CardVariableDef, VariableState, VariableType, VariablePrimitive } from "./types"
+import { formatError } from "@/services/error"
 
 const log = createLogger("VarPool")
 
@@ -458,7 +459,7 @@ export async function loadCardVars(
       interaction: (vars.interaction || {}) as Record<string, VariableState>,
     }
   } catch (e) {
-    log.warn(`stages JSON 损坏, cardId=${cardId}`, e instanceof Error ? e.message : String(e))
+    log.warn(`stages JSON 损坏, cardId=${cardId}`, formatError(e))
     return null
   }
 }

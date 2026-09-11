@@ -6,6 +6,7 @@
 use std::fs;
 use std::path::{Component, Path, PathBuf};
 use crate::paths::AppPaths;
+use crate::error::{err, AppError, AppResult};
 
 /// 写入 profile 文件（自动创建父目录）
 #[tauri::command]
@@ -14,7 +15,7 @@ pub fn profile_file_write(
     relative_path: String,
     content: Vec<u8>,
     paths: tauri::State<AppPaths>,
-) -> Result<(), String> {
+) -> AppResult<()> {
     let file_path = safe_profile_path(&paths.profiles, &profile_id, &relative_path)?;
 
     // 安全检查：防止路径穿越 — validate_path 在 canonicalize 失败时直接 Err
@@ -25,7 +26,7 @@ pub fn profile_file_write(
         }
         fs::create_dir_all(parent).map_err(|e| format!("创建目录失败: {e}"))?;
     } else {
-        return Err("无效的文件路径".into());
+        return err("无效的文件路径");
     }
     fs::write(&file_path, &content).map_err(|e| format!("写入文件失败: {e}"))?;
 
@@ -38,23 +39,23 @@ pub fn profile_file_read(
     profile_id: String,
     relative_path: String,
     paths: tauri::State<AppPaths>,
-) -> Result<Vec<u8>, String> {
+) -> AppResult<Vec<u8>> {
     // 1. 用户 profile (AppPaths.profiles)
     let user_path = safe_profile_path(&paths.profiles, &profile_id, &relative_path)?;
     if user_path.exists() {
-        return fs::read(&user_path).map_err(|e| format!("读取失败: {e}"));
+        return fs::read(&user_path).map_err(|e| AppError::Io(format!("读取失败: {e}")));
     }
     // 2. 内置 profile (AppPaths.builtin_profiles)
     let builtin_path = safe_profile_path(&paths.builtin_profiles, &profile_id, &relative_path)?;
     if builtin_path.exists() {
-        return fs::read(&builtin_path).map_err(|e| format!("读取失败: {e}"));
+        return fs::read(&builtin_path).map_err(|e| AppError::Io(format!("读取失败: {e}")));
     }
-    Err(format!("文件不存在: {}/{}", profile_id, relative_path))
+    Err(AppError::PathNotFound(format!("文件不存在: {}/{}", profile_id, relative_path)))
 }
 
 /// 删除用户 profile 目录
 #[tauri::command]
-pub fn profile_delete(profile_id: String, paths: tauri::State<AppPaths>) -> Result<(), String> {
+pub fn profile_delete(profile_id: String, paths: tauri::State<AppPaths>) -> AppResult<()> {
     let dir = safe_profile_path(&paths.profiles, &profile_id, "profile.yaml")?
         .parent().ok_or("无效 Profile 目录")?.to_path_buf();
     if dir.exists() {
@@ -65,7 +66,7 @@ pub fn profile_delete(profile_id: String, paths: tauri::State<AppPaths>) -> Resu
 
 /// 返回用户 Profile 素材目录；内置 Profile 由前端打包资源 URL 提供。
 #[tauri::command]
-pub fn profile_asset_base(profile_id: String, paths: tauri::State<AppPaths>) -> Result<String, String> {
+pub fn profile_asset_base(profile_id: String, paths: tauri::State<AppPaths>) -> AppResult<String> {
     validate_profile_id(&profile_id)?;
     let user = paths.profiles.join(&profile_id);
     Ok(if user.join("profile.yaml").is_file() {
@@ -77,7 +78,7 @@ pub fn profile_asset_base(profile_id: String, paths: tauri::State<AppPaths>) -> 
 
 /// 返回 Profile 的可写用户覆盖目录。目录不存在时返回空字符串。
 #[tauri::command]
-pub fn profile_user_asset_base(profile_id: String, paths: tauri::State<AppPaths>) -> Result<String, String> {
+pub fn profile_user_asset_base(profile_id: String, paths: tauri::State<AppPaths>) -> AppResult<String> {
     validate_profile_id(&profile_id)?;
     let user = paths.profiles.join(&profile_id);
     Ok(if user.is_dir() {
@@ -87,25 +88,25 @@ pub fn profile_user_asset_base(profile_id: String, paths: tauri::State<AppPaths>
     })
 }
 
-fn validate_profile_id(profile_id: &str) -> Result<(), String> {
+fn validate_profile_id(profile_id: &str) -> AppResult<()> {
     if profile_id.is_empty() || !profile_id.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_') {
-        return Err("Profile ID 只能包含字母、数字、连字符和下划线".to_string());
+        return Err(AppError::PathEscape);
     }
     Ok(())
 }
 
-fn safe_profile_path(base: &Path, profile_id: &str, relative_path: &str) -> Result<PathBuf, String> {
+fn safe_profile_path(base: &Path, profile_id: &str, relative_path: &str) -> AppResult<PathBuf> {
     validate_profile_id(profile_id)?;
     let relative = Path::new(relative_path);
     if relative.is_absolute() || relative.components().any(|part| !matches!(part, Component::Normal(_))) {
-        return Err("Profile 相对路径非法".to_string());
+        return Err(AppError::PathEscape);
     }
     Ok(base.join(profile_id).join(relative))
 }
 
 /// 列出用户 profiles（AppPaths.profiles 下）
 #[tauri::command]
-pub fn list_user_profiles(paths: tauri::State<AppPaths>) -> Result<Vec<String>, String> {
+pub fn list_user_profiles(paths: tauri::State<AppPaths>) -> AppResult<Vec<String>> {
     let dir = &paths.profiles;
     if !dir.exists() {
         return Ok(vec![]);
@@ -123,7 +124,7 @@ pub fn list_user_profiles(paths: tauri::State<AppPaths>) -> Result<Vec<String>, 
 }
 
 /// 递归列出目录中所有图片文件的相对路径
-fn list_image_files(dir: &PathBuf) -> Result<Vec<String>, String> {
+fn list_image_files(dir: &PathBuf) -> AppResult<Vec<String>> {
     if !dir.exists() {
         return Ok(vec![]);
     }
@@ -133,7 +134,7 @@ fn list_image_files(dir: &PathBuf) -> Result<Vec<String>, String> {
     Ok(files)
 }
 
-fn list_files_recursive(base: &PathBuf, current: &PathBuf, files: &mut Vec<String>) -> Result<(), String> {
+fn list_files_recursive(base: &PathBuf, current: &PathBuf, files: &mut Vec<String>) -> AppResult<()> {
     let dir = fs::read_dir(current).map_err(|e| format!("读取目录失败: {e}"))?;
     for entry in dir {
         let entry = entry.map_err(|e| format!("读取条目失败: {e}"))?;
@@ -157,7 +158,7 @@ fn list_files_recursive(base: &PathBuf, current: &PathBuf, files: &mut Vec<Strin
 /// 列出 profile 中所有图片素材（合并用户 + 内置来源）
 /// subdir: 可选子目录过滤（如 "materials/L2"）
 #[tauri::command]
-pub fn list_profile_files(profile_id: String, subdir: Option<String>, paths: tauri::State<AppPaths>) -> Result<Vec<String>, String> {
+pub fn list_profile_files(profile_id: String, subdir: Option<String>, paths: tauri::State<AppPaths>) -> AppResult<Vec<String>> {
     validate_profile_id(&profile_id)?;
     let prefix = subdir.as_ref().map(|s| {
         let trimmed = s.trim_matches('/');
@@ -182,7 +183,7 @@ pub fn list_profile_files(profile_id: String, subdir: Option<String>, paths: tau
     Ok(all_files)
 }
 
-fn list_image_files_filtered(dir: &PathBuf, prefix: &Option<String>) -> Result<Vec<String>, String> {
+fn list_image_files_filtered(dir: &PathBuf, prefix: &Option<String>) -> AppResult<Vec<String>> {
     let all = list_image_files(dir)?;
     match prefix {
         Some(p) => Ok(all.into_iter().filter(|f| f.starts_with(p.as_str())).collect()),

@@ -1,12 +1,3 @@
-import { createApp } from "vue"
-import { initPaths } from "@/services/paths"
-import { initConfig } from "@/services/config"
+import { bootWindow } from "@/services/boot"
 
-async function bootstrap(): Promise<void> {
-  await initPaths()
-  await initConfig()
-  const { default: App } = await import("./App.vue")
-  createApp(App).mount("#app")
-}
-
-void bootstrap()
+void bootWindow("main", () => import("./App.vue"))

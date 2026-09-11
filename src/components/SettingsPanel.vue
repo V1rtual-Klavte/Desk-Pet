@@ -88,6 +88,7 @@ async function doSave() {
     "general.desktop.pauseExtraMs": g.deskPause,
     "general.desktop.waitTimeoutMs": g.deskWait,
     "general.logging.level": g.logLevel,
+    "general.errors.overlay": g.errOverlay,
     "general.mode.assistant": g.assistantMode,
     "ai.safety.mode": a.safetyMode,
     "ai.safety.sessionTrustEnabled": a.sessionTrustEnabled,

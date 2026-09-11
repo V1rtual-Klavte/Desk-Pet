@@ -7,6 +7,7 @@ import { StdioTransport } from "./stdio"
 import type { ToolDef } from "@/services/tool/types"
 import { createLogger } from "@/services/logger"
 import { loopConfig } from "@/services/config"
+import { formatError } from "@/services/error"
 
 const log = createLogger("MCPClient")
 
@@ -154,7 +155,7 @@ export class McpClient {
               content: typeof result === "string" ? result : JSON.stringify(result),
             }
           } catch (e) {
-            return { success: false, content: "", error: e instanceof Error ? e.message : String(e) }
+            return { success: false, content: "", error: formatError(e) }
           }
         },
       }

@@ -181,6 +181,7 @@ ${toolList}
 // ── 计划执行 ──
 
 import { getToolsForMode, getToolByName } from "@/services/tool/registry"
+import { formatError } from "@/services/error"
 
 export interface ExecutePlanCallbacks {
   onStepStart(step: PlanStep): void
@@ -228,7 +229,7 @@ export async function executePlan(
         if (decision === "abort") { overallSuccess = false; break }
       }
     } catch (e) {
-      const errMsg = e instanceof Error ? e.message : String(e)
+      const errMsg = formatError(e)
       stepResults.push({
         step, durationMs: Date.now() - stepStart,
         output: { reply: "", toolCallsMade: 0, success: false, error: errMsg },

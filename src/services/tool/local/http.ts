@@ -7,6 +7,7 @@ import type { ToolDef } from "../types"
 import { register } from "../registry"
 import { loopConfig } from "@/services/config"
 import { createLogger } from "@/services/logger"
+import { formatError } from "@/services/error"
 
 const log = createLogger("ToolHttp")
 
@@ -63,7 +64,7 @@ const httpTool: ToolDef = {
         : text
       return { success: true, content: truncated }
     } catch (e) {
-      const msg = e instanceof Error ? e.message : String(e)
+      const msg = formatError(e)
       return { success: false, content: "", error: msg }
     }
   },

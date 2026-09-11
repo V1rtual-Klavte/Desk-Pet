@@ -18,6 +18,7 @@ import {
   loadSessionList, saveSessionList, loadActiveId, saveActiveId,
 } from "./persistence"
 import { createLogger } from "@/services/logger"
+import { formatError } from "@/services/error"
 
 const log = createLogger("Session")
 
@@ -53,7 +54,7 @@ async function createSessionFileOnDisk(id: string): Promise<void> {
     const { MemoryService } = await import("@/services/agent/memory")
     await MemoryService.createSessionFile(id)
   } catch (e) {
-    log.warn("Session 文件创建失败:", id, e instanceof Error ? e.message : String(e))
+    log.warn("Session 文件创建失败:", id, formatError(e))
   }
 }
 
@@ -256,7 +257,7 @@ export async function deleteSession(sessionId: string): Promise<void> {
     const match = files.find(f => f.filename.startsWith(sessionId))
     if (match) await MemoryService.deleteSessionFile(match.filename)
   } catch (e) {
-    log.warn("Session: 删除文件失败", e instanceof Error ? e.message : String(e))
+    log.warn("Session: 删除文件失败", formatError(e))
   }
 }
 

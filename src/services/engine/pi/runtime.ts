@@ -28,6 +28,7 @@ import type { ToolDef } from "@/services/tool/types"
 import { aiConfig, generalConfig, loopConfig, planConfig, safetyConfig } from "@/services/config"
 import { emit } from "@tauri-apps/api/event"
 import { getPiModel, piStream, toPiAgentThinkingLevel } from "./model-gateway"
+import { formatError } from "@/services/error"
 
 const EMPTY_USAGE = {
   input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0,
@@ -323,7 +324,7 @@ async function runPiLoop(input: PiLoopInput): Promise<PiLoopOutput> {
         ? { reply: input.timeoutReply, toolCallsMade }
         : { reply: "", toolCallsMade, error: "子代理执行超时" }
     }
-    return { reply: "", toolCallsMade, error: error instanceof Error ? error.message : String(error) }
+    return { reply: "", toolCallsMade, error: formatError(error) }
   } finally {
     clearTimeout(timer)
   }

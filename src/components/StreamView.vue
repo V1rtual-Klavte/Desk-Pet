@@ -100,8 +100,8 @@ function reloadParallax() {
           }
         }
         // ★ 向后兼容：整数=旧像素 → 百分比（拖拽产生小数，默认0不动）
-        if (merged.offsetX !== 0 && Number.isInteger(merged.offsetX)) { const oldOX = merged.offsetX; merged.offsetX = +(merged.offsetX / (userConfig.popupSize.w || 730) * 100).toFixed(2); console.log("[StreamView] offset迁移 L"+i+": "+oldOX+"px → "+merged.offsetX+"%"); }
-        if (merged.offsetY !== 0 && Number.isInteger(merged.offsetY)) { const oldOY = merged.offsetY; merged.offsetY = +(merged.offsetY / (userConfig.popupSize.h || 450) * 100).toFixed(2); console.log("[StreamView] offset迁移 L"+i+" Y: "+oldOY+"px → "+merged.offsetY+"%"); }
+        if (merged.offsetX !== 0 && Number.isInteger(merged.offsetX)) { const oldOX = merged.offsetX; merged.offsetX = +(merged.offsetX / (userConfig.popupSize.w || 730) * 100).toFixed(2); log.debug("offset迁移 L"+i+": "+oldOX+"px → "+merged.offsetX+"%"); }
+        if (merged.offsetY !== 0 && Number.isInteger(merged.offsetY)) { const oldOY = merged.offsetY; merged.offsetY = +(merged.offsetY / (userConfig.popupSize.h || 450) * 100).toFixed(2); log.debug("offset迁移 L"+i+" Y: "+oldOY+"px → "+merged.offsetY+"%"); }
 
     newLayers.push(merged);
   }

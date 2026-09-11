@@ -3,6 +3,9 @@ import { reactive, ref, onMounted, onUnmounted } from "vue";
 import { MemoryService } from "@/services/agent/memory";
 import type { SessionFileMeta } from "@/services/agent/memory";
 import { getSessions, getActiveSessionId } from "@/services/session";
+import { createLogger } from "@/services/logger";
+
+const log = createLogger("SessionTabs");
 
 // ── Session meta ──
 export interface SessionMeta {
@@ -103,7 +106,7 @@ async function loadHistoryFiles(): Promise<void> {
 }
 
 async function deleteHistoryFile(filename: string): Promise<void> {
-  console.log("[SessionTabs] deleteHistoryFile 点击:", filename)
+  log.debug("deleteHistoryFile 点击:", filename)
   emit("delete-file", filename)
   // ★ 不在此立即过滤 UI，由父组件 finally 中调用 refreshHistory 统一刷新
 }

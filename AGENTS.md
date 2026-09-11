@@ -86,7 +86,6 @@ src/
 ├── main.ts                     # 主窗口入口
 ├── settings-main.ts            # 设置窗口入口
 ├── layer-editor-main.ts        # 图层编辑窗口入口
-├── notification-main.ts        # 通知窗口入口
 ├── App.vue                     # 主窗口根组件
 ├── vite-env.d.ts               # Vite 环境与 *.vue / *.yaml 模块声明
 ├── components/                 # Vue 界面、角色展示、聊天、设置、会话
@@ -104,14 +103,16 @@ src/
 │   ├── profile/                # Profile 选择、加载、导入导出
 │   ├── window/                 # 前台窗口监控与主动搭话
 │   ├── audio/                  # 音效注册与播放
+│   ├── error/                  # 异常体系（归一化、全局拦截、DOM 覆盖层）
+│   ├── logger/                 # 统一日志（级别、批量转发、落盘）
 │   ├── animation.ts            # 从 Profile 加载的动画系统
-│   ├── command-handler.ts      # 聊天文本中的表情切换与窗口命令
+│   ├── boot.ts                 # 窗口启动引导（4 个入口共用）
+│   ├── command-handler.ts      # 聊天命令与表情切换（待接入）
 │   ├── cooldown.ts             # 统一全局冷却控制器
 │   ├── config.ts               # YAML 运行时配置与类型化 getter
 │   ├── debug.ts                # token 消耗、上下文利用率与工具注册数追踪
 │   ├── env.ts                  # 平台检测与运行时环境
 │   ├── init.ts                 # 统一启动初始化
-│   ├── logger.ts               # 统一日志
 │   └── paths.ts                # 前端 BaseDirs 与统一路径初始化
 └── styles/                     # 全局样式与字体
 
@@ -119,6 +120,8 @@ src-tauri/src/
 ├── main.rs                     # 入口
 ├── lib.rs                      # AppPaths、命令注册和应用启动
 ├── paths.rs                    # data_root、内置资源和路径校验
+├── logger.rs                   # 日志内核（级别过滤、本地时间戳、文件 sink）
+├── error.rs                    # 统一错误类型 AppError
 ├── commands/                   # 窗口、文件、工具、记忆、Profile 等命令
 ├── macros/                     # Rust 端日志宏
 ├── monitor/                    # Windows/macOS 前台窗口监控
@@ -261,7 +264,7 @@ const memoryPath = await runtimePath("memory", "MEMORY.md")
 
 ## 日志
 
-日志输出到运行 `pnpm tauri dev` 的终端，并保留 DevTools Console。
+日志同时输出到三处：`pnpm tauri dev` 的终端、`{data_root}/logs/deskpet.log`（超 5MB 轮转，保留 2 份备份）、DevTools Console。
 
 ```typescript
 import { createLogger } from "@/services/logger"
@@ -269,10 +272,46 @@ const log = createLogger("模块前缀")
 log.debug("调试信息")
 log.info("重要节点")
 log.warn("警告")
-log.error("错误", error)
+log.error("错误", error)   // error 不受级别限制
 ```
 
-Rust 使用现有日志宏。格式为 `[HH:MM:SS.mmm] LEVEL [前缀] 消息`，级别由配置控制。
+Rust 对应 `rust_debug!` / `rust_info!` / `rust_warn!` / `rust_error!`。两端格式统一为
+`[HH:MM:SS.mmm] LEVEL [前缀] 消息`，时间戳**同为本地时间**，混在终端与日志文件里可直接对时序。
+前端日志经 60ms/32 行批量转发到 Rust，与 Rust 日志汇合进同一个文件。
+
+级别策略（`config.ts` 的 `computeLogLevel()`）：
+
+```text
+VITE_LOG_LEVEL 显式覆写  >  dev 一律 debug（忽略配置）  >  生产读 general.logging.level
+```
+
+`VITE_LOG_LEVEL` 经项目根的 `.env` 设置（模板见 `.env.example`，`.env` 不入库）。
+临时验证可直接 `VITE_LOG_LEVEL=info pnpm tauri dev` —— 这是 dev 下唯一能观察生产过滤行为的手段。
+
+Rust 侧默认值随构建模式：debug 构建全量、release 默认 info；`DESKPET_LOG_LEVEL` 环境变量可覆写。
+前端启动后经 `set_log_config` 推送生效级别，两端保持一致。
+
+⚠️ 区分 `generalConfig.loggingLevel`（设置面板的**读写接口**，会回写 YAML）与 `computeLogLevel()`
+（**运行期生效值**）。不要在**前者**上做 dev/prod 分支，否则 dev 里保存设置会把 `level: debug`
+静默写进 `CONFIG-DEV.yaml`。
+
+## 异常处理
+
+- 全局拦截在 `services/global-error.ts`，4 个窗口入口经 `services/boot.ts` 的 `bootWindow()`
+  统一安装，覆盖 `window.onerror`、`unhandledrejection`、Vue `errorHandler` 和 bootstrap 失败。
+- 异常走 `reportError()` 单一出口：写日志 → `invoke("report_frontend_error")` 落到 Rust →
+  按配置弹全屏 DOM 覆盖层。覆盖层**零 Vue 依赖**，所以在 `mount()` 之前、`initConfig()`
+  失败时同样有效（这正是它要覆盖的首要场景）。
+- 覆盖层行为由 `general.errors.overlay` 控制：`auto`（默认，dev 弹 / 生产不弹）、
+  `always`、`never`。判定在**报错时惰性求值** —— 拦截器必须早于 `initConfig()` 安装，
+  那时还读不到配置。
+- 判断错误一律用 `@/services/error` 的 `formatError()` / `errorCode()` / `summarizeError()`，
+  不要写 `e instanceof Error ? e.message : String(e)` —— Rust 命令返回 `{ code, message }`
+  结构化错误，裸 `String(e)` 会退化成 `[object Object]`。
+- 会持久化进会话文件的消息必须用 `summarizeError()`（已脱敏，掩掉 `sk-*` 等密钥）。
+- Rust 命令统一返回 `AppResult<T>`（`src-tauri/src/error.rs`），错误序列化为 `{ code, message }`。
+  新代码用具体的 `AppError::Xxx` 变体，`err(...)` 只作迁移期兜底。
+- Rust panic 已接 `std::panic::set_hook`，会带位置写入日志文件。
 
 
 ## 修改后的同步规则

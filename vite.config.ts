@@ -36,7 +36,6 @@ export default defineConfig({
     rollupOptions: {
       input: {
         main: resolve(__dirname, "index.html"),
-        notification: resolve(__dirname, "notification.html"),
         settings: resolve(__dirname, "settings.html"),
         "layer-editor": resolve(__dirname, "layer-editor.html"),
       },

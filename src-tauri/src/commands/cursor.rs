@@ -10,15 +10,15 @@ use tauri::{Emitter, Manager};
 
 use crate::rust_debug;
 use crate::rust_info;
-use crate::rust_log;
 use crate::window::enhance_to_iterm_style;
+use crate::error::{err, AppResult};
 
 /// 获取光标位置和所在屏幕信息（返回原始平台坐标，不做 Y 轴翻转）
 /// Windows: (cx, cy, sx, sy, sw, sh) 全部 web 坐标系（左上原点）
 /// macOS:   (cx, cy, sx, sy, sw, sh) Cocoa 坐标系（原点左下），调用方需做 Y 轴翻转
 type CursorScreen = (i32, i32, i32, i32, i32, i32, f64, f64);
 
-fn get_cursor_and_screen() -> Result<CursorScreen, String> {
+fn get_cursor_and_screen() -> AppResult<CursorScreen> {
     #[cfg(target_os = "windows")]
     // SAFETY: SetCursorPos is an atomic syscall with no memory side effects.
     // Coordinates are plain integers — no pointer or handle involved.
@@ -29,7 +29,7 @@ fn get_cursor_and_screen() -> Result<CursorScreen, String> {
         use windows_sys::Win32::Foundation::POINT;
         let mut pt = POINT { x: 0, y: 0 };
         if GetCursorPos(&mut pt) == 0 {
-            return Err("无法获取光标位置".into());
+            return err("无法获取光标位置");
         }
         let monitor = MonitorFromPoint(pt, 2); // MONITOR_DEFAULTTONEAREST
         let mut info: MONITORINFOEXW = std::mem::zeroed();
@@ -95,7 +95,7 @@ fn get_cursor_and_screen() -> Result<CursorScreen, String> {
     compile_error!("get_cursor_and_screen: 不支持的平台");
 
     #[allow(unreachable_code)]
-    Err("无法获取光标位置".into())
+    err("无法获取光标位置")
 }
 
 /// macOS Cocoa → web Y 轴翻转
@@ -118,7 +118,7 @@ pub struct CursorPosition {
 }
 
 #[tauri::command]
-pub fn get_cursor_position() -> Result<CursorPosition, String> {
+pub fn get_cursor_position() -> AppResult<CursorPosition> {
     let (cx, cy, sx, sy, sw, sh, _scale_x, _scale_y) = get_cursor_and_screen()?;
 
     // Windows 已是 web 坐标，macOS 需要 Y 轴翻转
@@ -154,7 +154,7 @@ pub struct PopupPosition {
 }
 
 #[tauri::command]
-pub fn compute_popup_position(app: tauri::AppHandle, win_w: i32, win_h: i32) -> Result<PopupPosition, String> {
+pub fn compute_popup_position(app: tauri::AppHandle, win_w: i32, win_h: i32) -> AppResult<PopupPosition> {
     let win_w = if win_w > 0 { win_w } else { 730 };
     let win_h = if win_h > 0 { win_h } else { 450 };
 

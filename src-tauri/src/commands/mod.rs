@@ -15,7 +15,7 @@ pub mod personality_fs_cmd;
 pub use cursor::{get_cursor_position, compute_popup_position, spawn_cursor_tracker};
 pub use monitor_ctl::{pause_monitor, resume_monitor, set_monitor_config};
 pub use sim::{open_windows_sim, close_windows_sim};
-pub use logging::{log_message, focus_main, open_devtools};
+pub use logging::{log_messages, set_log_config, report_frontend_error, focus_main, open_devtools};
 pub use tool_exec::{
     bash_exec, bash_cancel, file_read, file_read_binary, file_write, file_list,
     file_info, file_exists, file_canonical_path,

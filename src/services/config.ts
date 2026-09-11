@@ -9,6 +9,10 @@ import { invoke } from "@tauri-apps/api/core";
 import { dump as dumpYaml, load as loadYaml } from "js-yaml";
 import type { ParallaxLayerCfg } from "@/composables/useParallax";
 import { DEFAULT_LAYERS } from "@/composables/useParallax";
+import { createLogger, LEVELS, LEVEL_ORDER, setLogLevel, type Level } from "@/services/logger";
+import { formatError } from "@/services/error";
+
+const log = createLogger("Config");
 
 // ── 类型定义 ──
 
@@ -50,6 +54,7 @@ interface Config {
       winModifiers: string[]
     }
     logging: { level: "debug" | "info" | "warn" | "error" }
+    errors: { overlay: "auto" | "always" | "never" }
     desktop: {
       pollingIntervalMs: number
       pauseExtraMs: number
@@ -169,6 +174,8 @@ export async function reloadConfig(): Promise<void> {
   configInitialized = false
   _cache = null
   await initConfig()
+  // 配置可能改了日志级别，立刻作用到前端与 Rust，不必等重启
+  applyLogLevel()
 }
 
 function clearLegacyConfigCache(): void {
@@ -376,6 +383,32 @@ export const generalConfig = {
   get waitTimeoutMs() { return overrideOr("general.desktop.waitTimeoutMs", cfg.general?.desktop?.waitTimeoutMs ?? 5000); },
 };
 
+/**
+ * 运行期真正生效的日志级别 —— logger 的唯一依据。
+ *
+ * 与 `generalConfig.loggingLevel` 的区别很重要：那个 getter 是**配置的读写接口**
+ * （设置面板用它做下拉初值并回写 YAML），不能在 dev 下改写，否则在 dev 里
+ * 保存任何设置都会把 `level: debug` 静默写进 CONFIG-DEV.yaml。
+ */
+export function computeLogLevel(): Level {
+  const env = import.meta.env.VITE_LOG_LEVEL as Level | undefined;
+  if (env && LEVELS.includes(env)) return env;
+  if (import.meta.env.DEV) return "debug";   // dev 全量打印，忽略配置
+  return generalConfig.loggingLevel;
+}
+
+/**
+ * 重新计算并应用运行期日志级别（前端 + Rust）。
+ * 设置面板保存后经 reloadConfig() 调用，让级别改动**立即生效**而不必重启。
+ */
+export function applyLogLevel(): Level {
+  const level = computeLogLevel();
+  setLogLevel(level);
+  // 推给 Rust，保持两端过滤一致；Rust 未就绪时忽略（它有各自的构建默认值）
+  invoke("set_log_config", { level: LEVEL_ORDER[level] }).catch(() => {});
+  return level;
+}
+
 export const shortcutConfig = {
   get key() { return generalConfig.shortcutKey; },
   get macModifiers() { return generalConfig.shortcutMacModifiers; },
@@ -384,6 +417,14 @@ export const shortcutConfig = {
 
 export const loggingConfig = {
   get level() { return generalConfig.loggingLevel; },
+};
+
+/** 未捕获异常覆盖层的行为 */
+export type OverlayMode = "auto" | "always" | "never";
+
+export const errorsConfig = {
+  /** auto = dev 弹、生产不弹；always / never 强制。见 error/global.ts 的 shouldShowOverlay() */
+  get overlay() { return overrideOr("general.errors.overlay", cfg.general?.errors?.overlay ?? "auto") as OverlayMode; },
 };
 
 export const desktopConfig = {
@@ -411,7 +452,7 @@ const _ai = {
         high: overrideOr("ai.thinking.budget.high", cfg.ai?.thinking?.budget?.high ?? 16000),
       }
     } catch (e) {
-      console.warn("config 键缺失，回退默认值", e instanceof Error ? e.message : String(e))
+      log.warn("config 键缺失，回退默认值", formatError(e))
       return { low: 1000, medium: 4000, high: 16000 }
     }
   },
@@ -498,5 +539,5 @@ export const appearanceConfig = {
 // 开发时日志
 // ══════════════════════════════════════════
 if (import.meta.env.DEV) {
-  console.log("[Config] 已加载运行时 CONFIG | AI:", aiConfig.provider, "| endpoint:", aiConfig.endpoint);
+  log.info("已加载运行时 CONFIG | AI:", aiConfig.provider, "| endpoint:", aiConfig.endpoint);
 }

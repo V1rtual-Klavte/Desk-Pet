@@ -16,6 +16,7 @@ import {
   snapshotStagesCache, restoreStagesCache, clearStagesCache,
 } from "./stages-cache"
 import { createLogger } from "@/services/logger"
+import { formatError } from "@/services/error"
 
 const log = createLogger("Registry")
 
@@ -142,7 +143,7 @@ export async function switchPersonality(id: string | null): Promise<SwitchResult
     activeId = prevActiveId
     restoreVariablePoolState(prevPool)
     restoreStagesCache(prevStages)
-    const msg = e instanceof Error ? e.message : String(e)
+    const msg = formatError(e)
     log.error("人格切换失败，已回滚:", card.id, msg)
     return { ok: false, error: msg, card }
   }

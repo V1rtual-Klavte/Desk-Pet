@@ -5,7 +5,7 @@
 use std::path::PathBuf;
 use tauri::WebviewWindowBuilder;
 
-use crate::{rust_info, rust_log};
+use crate::rust_info;
 
 /// 手动创建主窗口（在 ActivationPolicy::Accessory 之后）
 pub fn create_main_window(app: &tauri::AppHandle) -> tauri::Result<tauri::WebviewWindow> {

@@ -1,8 +1,9 @@
 <script setup lang="ts">
 import { ref, computed, onMounted, onUnmounted } from "vue";
 import { emit, listen } from "@tauri-apps/api/event";
-import { userConfig, generalConfig, loggingConfig, desktopConfig } from "@/services/config";
+import { userConfig, generalConfig, loggingConfig, desktopConfig, errorsConfig } from "@/services/config";
 import { createLogger } from "@/services/logger";
+import { formatError } from "@/services/error";
 import { isMacOS } from "@/services/env";
 
 const log = createLogger("Settings");
@@ -56,6 +57,9 @@ const displayPos = ref<{ x: number; y: number } | null>(userConfig.fixedPosition
 // ── 日志 ──
 const logLevel = ref(loggingConfig.level);
 
+// ── 错误覆盖层 ──
+const errOverlay = ref(errorsConfig.overlay);
+
 // ── 桌面轮询 ──
 const deskPoll = ref(desktopConfig.pollingIntervalMs);
 const deskPause = ref(desktopConfig.pauseExtraMs);
@@ -85,7 +89,10 @@ onMounted(async () => {
         popupH.value = e.payload.h;
       }
     );
-  } catch {}
+  } catch (e) {
+    // 监听注册失败会让设置面板的尺寸预览冻结在旧值，必须留痕
+    log.warn("deskpet-resized 监听注册失败", formatError(e));
+  }
   try {
     cleanupMove = await listen<{ x: number; y: number }>(
       "deskpet-moved",
@@ -93,7 +100,9 @@ onMounted(async () => {
         displayPos.value = { x: e.payload.x, y: e.payload.y };
       }
     );
-  } catch {}
+  } catch (e) {
+    log.warn("deskpet-moved 监听注册失败", formatError(e));
+  }
 });
 
 onUnmounted(() => {
@@ -111,6 +120,7 @@ defineExpose({
   recKey,
   recMods,
   logLevel,
+  errOverlay,
   deskPoll,
   deskPause,
   deskWait,
@@ -158,6 +168,13 @@ defineExpose({
     <div class="s-label">📝 日志</div>
     <div class="radio-row">
       <label v-for="lv in ['debug','info','warn','error']" :key="lv" class="chk"><input type="radio" v-model="logLevel" :value="lv" /><span>{{ lv }}</span></label>
+    </div>
+  </div>
+
+  <div class="s-section">
+    <div class="s-label">⚠️ 错误弹窗</div>
+    <div class="radio-row">
+      <label v-for="m in ['auto','always','never']" :key="m" class="chk"><input type="radio" v-model="errOverlay" :value="m" /><span>{{ m }}</span></label>
     </div>
   </div>
 

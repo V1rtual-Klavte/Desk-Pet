@@ -27,6 +27,13 @@ general:
   logging:
     level: info
 
+  errors:
+    # 未捕获异常的覆盖层行为
+    #   auto   = dev 弹、生产不弹（推荐）
+    #   always = 两端都弹
+    #   never  = 两端都不弹，只写日志 + 上报 Rust
+    overlay: auto
+
   desktop:
     pollingIntervalMs: 3000
     pauseExtraMs: 5000
