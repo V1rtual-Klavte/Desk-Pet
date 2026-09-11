@@ -14,6 +14,8 @@ export interface Message {
   toolCalls?: ToolCallRequest[]
   /** 工具调用结果（tool 消息） */
   toolCallId?: string
+  /** 工具执行是否失败（tool 消息）。丢失它会让模型把失败的工具调用当成成功。 */
+  isError?: boolean
   /** 思考文本（模型扩展思考） */
   thinking?: string
 }
@@ -103,6 +105,6 @@ export function createSystemMessage(text: string): Message {
   return { id: createMessageId(), role: "system", text, timestamp: Date.now() }
 }
 
-export function createToolMessage(toolCallId: string, text: string): Message {
-  return { id: createMessageId(), role: "tool", text, toolCallId, timestamp: Date.now() }
+export function createToolMessage(toolCallId: string, text: string, isError = false): Message {
+  return { id: createMessageId(), role: "tool", text, toolCallId, isError, timestamp: Date.now() }
 }

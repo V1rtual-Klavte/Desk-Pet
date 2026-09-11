@@ -24,7 +24,7 @@ import { checkSafety, isToolTrusted, requestConfirm, trustToolInSession } from "
 import { pushMessage } from "@/services/session/store"
 import { getToolByName, getToolsForMode } from "@/services/tool/registry"
 import { executeTool } from "@/services/tool/router"
-import type { ToolDef } from "@/services/tool/types"
+import type { ActionCategory, ToolDef } from "@/services/tool/types"
 import { aiConfig, generalConfig, loopConfig, planConfig, safetyConfig } from "@/services/config"
 import { emit } from "@tauri-apps/api/event"
 import { getPiModel, piStream, toPiAgentThinkingLevel } from "./model-gateway"
@@ -36,6 +36,29 @@ const EMPTY_USAGE = {
 }
 
 let lastSeenSessionStart = getSessionStart()
+
+/**
+ * 当前正在执行的顶层 Pi Agent 及其所属会话。
+ * Pi 的 steering 队列会在这轮工具全部结束后把消息注入下一轮，
+ * 让用户能在糖糖跑工具的过程中改变方向，而不是只能干等或整个取消。
+ */
+let activeTurnAgent: Agent | null = null
+let activeTurnSessionId: string | undefined
+
+/**
+ * 向正在执行的回合插话，并把插话内容记入该回合所属会话。
+ *
+ * Pi 的语义是「本轮结束后注入」，不是立即中止 —— 当前批次里已经开始的工具会照常跑完，
+ * 模型在下一轮才会看到这条消息并据此调整。
+ *
+ * @returns 是否有正在执行的回合可以接收插话
+ */
+export async function steerActiveTurn(text: string): Promise<boolean> {
+  if (!activeTurnAgent) return false
+  activeTurnAgent.steer({ role: "user", content: text, timestamp: Date.now() })
+  await persistTurn(activeTurnSessionId ?? "", "user", text)
+  return true
+}
 
 export interface PiAgentTurnInput {
   sessionId?: string
@@ -80,11 +103,23 @@ interface PiLoopInput {
   timeoutMs: number
   thinkingEffort: ThinkingEffort
   mode: "pet" | "assistant"
+  /** 传给 Pi 用于 Provider 端 prompt cache 的会话标识 */
+  sessionId?: string
+  /** 是否把本回合的 Agent 登记为「可插话」。主回合为真，子代理/规划步骤为假。 */
+  exposeAsActiveAgent?: boolean
   effects?: PiAgentTurnOutput["effects"]
   toolCallHistory?: PiAgentTurnOutput["toolCallHistory"]
   persistToolMessages?: boolean
   timeoutReply?: string
 }
+
+/**
+ * 同一批次里可以并行执行的只读操作类别。
+ * 其余类别（写入、执行、启动应用、子代理、Skill）都会把整批拉回串行。
+ */
+const PARALLEL_SAFE_CATEGORIES: ReadonlySet<ActionCategory> = new Set([
+  "fs.read", "os.info", "net.fetch", "clip.read",
+])
 
 interface PiLoopOutput {
   reply: string
@@ -181,6 +216,8 @@ export async function runPiAgentTurn(input: PiAgentTurnInput): Promise<PiAgentTu
       timeoutReply: getFallbackReply("turnTimeout"),
       thinkingEffort,
       mode: generalConfig.assistantMode ? "assistant" : "pet",
+      sessionId: turnSessionId,
+      exposeAsActiveAgent: true,
       effects,
       toolCallHistory,
       persistToolMessages: true,
@@ -255,7 +292,10 @@ async function runPiLoop(input: PiLoopInput): Promise<PiLoopOutput> {
       messages: toPiMessages(input.chatMessages),
     },
     streamFn: piStream,
-    toolExecution: "sequential",
+    sessionId: input.sessionId,
+    // Pi 的规则：批次里只要有一个工具标了 sequential，整批就走串行。
+    // 只读工具因此仍能并发，写/执行类工具会把整批拉回串行。
+    toolExecution: "parallel",
     // Current memory compaction is intentionally deferred to the next migration stage.
     transformContext: async (messages) => messages,
     beforeToolCall: async ({ toolCall, args }) => {
@@ -310,6 +350,11 @@ async function runPiLoop(input: PiLoopInput): Promise<PiLoopOutput> {
     }
   })
 
+  if (input.exposeAsActiveAgent) {
+    activeTurnAgent = agent
+    activeTurnSessionId = input.sessionId
+  }
+
   let timedOut = false
   const timer = setTimeout(() => { timedOut = true; agent.abort() }, input.timeoutMs)
   try {
@@ -327,6 +372,10 @@ async function runPiLoop(input: PiLoopInput): Promise<PiLoopOutput> {
     return { reply: "", toolCallsMade, error: formatError(error) }
   } finally {
     clearTimeout(timer)
+    if (input.exposeAsActiveAgent) {
+      activeTurnAgent = null
+      activeTurnSessionId = undefined
+    }
   }
 
   if (stoppedAtToolLimit) {
@@ -368,7 +417,7 @@ function toPiTool(
     // Pi validates plain JSON Schema too; Desk-Pet's schemas are already that subset.
     parameters: tool.parameters as any,
     prepareArguments: tool.prepareArguments,
-    executionMode: "sequential",
+    executionMode: PARALLEL_SAFE_CATEGORIES.has(tool.actionCategory) ? "parallel" : "sequential",
     async execute(toolCallId, params, signal, onUpdate) {
       const current = toolsByName.get(tool.name)
       if (!current) throw new Error(`工具未注册: ${tool.name}`)
@@ -414,7 +463,8 @@ function toPiMessages(messages: Message[]): PiMessage[] {
         toolCallId: message.toolCallId ?? message.id,
         toolName: toolNames.get(message.toolCallId ?? "") ?? "tool",
         content: [{ type: "text", text: message.text }],
-        isError: false,
+        // 必须还原落盘时的 isError，否则重开会话后模型会把失败的工具调用当成成功。
+        isError: message.isError ?? false,
         timestamp: message.timestamp,
       })
       continue
@@ -458,7 +508,7 @@ function persistPiMessage(message: AgentMessage, seen: Set<string>): void {
     const id = `tool:${message.toolCallId}`
     if (seen.has(id)) return
     seen.add(id)
-    pushMessage(createToolMessage(message.toolCallId, contentText(message.content)))
+    pushMessage(createToolMessage(message.toolCallId, contentText(message.content), message.isError))
   }
 }
 

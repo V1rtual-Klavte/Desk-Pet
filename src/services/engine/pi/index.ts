@@ -1,4 +1,4 @@
-export { runPiAgentTurn, runPiSubAgent } from "./runtime"
+export { runPiAgentTurn, runPiSubAgent, steerActiveTurn } from "./runtime"
 export type {
   PiAgentTurnInput,
   PiAgentTurnOutput,

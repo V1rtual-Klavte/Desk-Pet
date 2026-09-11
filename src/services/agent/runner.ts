@@ -5,7 +5,7 @@
 
 import { getActiveCard } from "@/services/personality"
 import { getFallbackReply } from "@/services/personality/stages-cache"
-import { runPiAgentTurn } from "@/services/engine/pi"
+import { runPiAgentTurn, steerActiveTurn } from "@/services/engine/pi"
 import { preProcess } from "@/services/engine/preprocessor"
 import { transition, getState } from "@/services/engine/session"
 import {
@@ -65,8 +65,18 @@ export async function sendMessage(text: string): Promise<{
   // ★ 入口绑定会话 ID（防止异步回复错位到其他会话）
   const originSessionId = getActiveSessionId()
 
-  // 并发锁
+  // 并发锁：生成中优先尝试插话（Pi steering），没有可插话的回合才拒绝。
+  // slash 命令例外 —— 切换人格、清空会话这类副作用不该在回合中途发生。
   if (isAIGenerating()) {
+    if (!text.startsWith("/") && await steerActiveTurn(text)) {
+      log.info("AI 生成中，用户消息已转为插话")
+      pushUserMessage(text)
+      return {
+        reply: "",
+        toolCallsMade: 0,
+        personalityEffect: { expression: "idle", soundEvent: null },
+      }
+    }
     log.warn("AI 生成中，拒绝用户消息并发请求")
     return {
       reply: "（糖糖正在想事情，等一下再发哦～）",
