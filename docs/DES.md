@@ -456,7 +456,7 @@ playNotificationByBoundary();
 #### 目录结构
 
 ```
-sugar-pink/                  # Profile 示例（内置3个: sugar-pink / dark-purple / glass）
+sugar-pink/                  # Profile 示例（内置4个: sugar-pink / dark-purple / glass / yuki）
 ├── profile.yaml             # 主题色(18中文键) + 预设类型 + 字体 + 音效映射 + 灵动图层
 ├── character.yaml           # 角色动画帧定义 + 表情关键词规则
 ├── body.png                 # 角色立绘（Layer 2 核心层）
@@ -500,6 +500,7 @@ sugar-pink/                  # Profile 示例（内置3个: sugar-pink / dark-pu
 | `sugar-pink` | 糖糖粉 | pink | 粉色系，温暖甜美，默认主题 |
 | `dark-purple` | 暗夜紫 | dark | 暗紫色系，护眼低亮 |
 | `glass` | 透明玻璃 | glass | 半透明毛玻璃，全窗口透明+16px模糊 |
+| `yuki` | yuki | glass | 结城理主题，蓝色透明玻璃与五层雨夜图层 |
 
 #### 色彩系统
 
@@ -658,7 +659,7 @@ src/services/
 │   ├── stages-prompt.md   # 阶段文案生成模板（含 fallbacks 字段）
 │   ├── variable-pool.ts   # 变量状态 (system/card/interaction/session)
 │   ├── vars.json          # 系统变量持久化快照
-│   ├── cards/             # 人格卡 .md (4张: neutral/angelkawaii/ame/pchan)
+│   ├── cards/             # 人格卡 .md (5张: neutral/angelkawaii/ame/pchan/yuki)
 │   └── stages/            # 阶段文案 JSON (LLM生成, per-card)
 │
 ├── session/               # 会话持久化管理
@@ -672,10 +673,8 @@ src/services/
 │   ├── registry.ts        # ★ 统一注册表 (按mode注册/查询/注销)
 │   ├── router.ts          # 工具路由 + 超时控制 + 结果截断
 │   ├── local/             # 双模式基础工具 (Pi Agent Core 适配)
-│   │   ├── file.ts        # file_list / file_search
 │   │   ├── pi-tools.ts    # Pi read / write / edit / bash
-│   │   ├── system.ts      # system_info
-│   │   └── http.ts        # http_get
+│   │   └── system.ts      # system_info
 │   ├── pi/                # Pi Harness 与 Tauri 执行环境
 │   │   ├── harness-adapter.ts
 │   │   └── tauri-execution-env.ts
@@ -683,15 +682,13 @@ src/services/
 │   │   ├── app.ts         # app_open (NORMAL)
 │   │   ├── clipboard.ts   # clipboard_read/write (NORMAL/DANGER)
 │   │   ├── agent-tool.ts  # agent_spawn (NORMAL)【已实现 fork/team】
-│   ├── skill/             # Skill 系统 (助手模式)
-│   │   ├── loader.ts      # YAML frontmatter解析 + ToolDef转换 + 动态增删 + 上传.md注册
-│   │   ├── registry.ts    # Skill 注册/查询/关键词匹配
-│   │   └── runner.ts      # Skill 子循环编排【已实现】
 │   └── mcp/               # MCP 集成 (助手模式)
-│       ├── manager.ts     # MCP Manager + 真实连接 + Mock工具 + 服务器管理【已实现】
+│       ├── manager.ts     # MCP Manager + 真实连接 + 服务器管理【已实现】
 │       ├── client.ts      # MCP Client JSON-RPC协议栈 + ToolDef转换【已实现】
-│       ├── stdio.ts       # MCP stdio 传输层 (Tauri invoke桥接)【已实现】
-│       └── sse.ts         # SSE 传输【占位】
+│       └── stdio.ts       # MCP stdio 传输层 (Tauri invoke桥接)【已实现】
+├── skill/                 # ★ Skill (非工具，Pi 渐进披露)
+│   ├── index.ts           # 统一导出
+│   └── loader.ts          # SKILL.md 解析 + 落盘 data_root/skills/ + Prompt 注入
 │
 ├── safety/                # 安全控制
 │   ├── checker.ts         # 四级安全 + 三策略 + 会话信任 + 危险模式库
@@ -848,13 +845,12 @@ ToolRegistry:                      ToolRegistry 额外:
 ├── pi-write (DANGER, 确认)        ├── clipboard_read (NORMAL)
 ├── pi-edit (DANGER, 确认)         ├── clipboard_write (DANGER)
 ├── pi-bash (白名单/NORMAL)        ├── agent_spawn (NORMAL)【已实现 fork/team】
-├── file_list (SAFE)               ├── MCP Mock工具 (4个)
-├── file_search (SAFE)             └── Skill 工具 (按声明加载)
-├── system_info (SAFE)
-└── http_get (NORMAL)
+└── system_info (SAFE)             └── MCP 工具 (按服务器声明)
 
-Safety: SAFE/NORMAL自动；写入与扩展Bash确认   MCP/Skill: 完整加载 (Mock + 真实)
-MCP/Skill: 不加载
+Safety: SAFE/NORMAL自动；写入与扩展Bash确认   MCP: 按服务器声明加载
+目录列举走 bash ls；联网能力由 MCP 提供
+Skill 不是工具：清单注入 Prompt，正文由模型用 read 按需加载
+MCP: 不加载
 ```
 
 #### 能力对比
@@ -865,16 +861,16 @@ MCP/Skill: 不加载
 | 窗口感知主动搭话 | ✅ | ✅ |
 | 表情/音效/人格中间件 | ✅ | ✅ |
 | 记忆系统 (长期+短期+整理) | ✅ | ✅ |
-| 读/列/搜文件 | ✅ | ✅ |
+| 读/列文件 | ✅ | ✅ |
 | 系统信息 | ✅ | ✅ |
 | Bash 白名单命令 | ✅ | ✅ |
-| HTTP GET | ✅ | ✅ |
+| 联网（MCP 服务器） | ❌ | ✅ |
 | 写/编辑文件 | ✅（执行时确认） | ✅（按安全策略确认） |
 | Bash | ✅（白名单自动，其余按风险确认） | ✅（按安全策略确认） |
 | 打开应用 | ❌ | ✅ |
 | 剪贴板操作 | ❌ | ✅ (三端: macOS/Win/Linux) |
-| MCP Server | ❌ | ✅ (Mock+真实) |
-| Skill (编排) | ❌ | ✅ (子循环执行) |
+| MCP Server | ❌ | ✅ |
+| Skill (渐进披露) | ❌ | ✅ |
 | SubAgent (agent.spawn) | ❌ | ✅ (fork/team) |
 | 完整安全确认 UI | ✅（写入/扩展命令） | ✅ (四级+三策略+确认弹窗) |
 
@@ -1018,12 +1014,12 @@ sessions/                      会话目录（唯一真相源）
 | 思考强度 | ✅ | 全局默认+会话覆盖(仪表盘下拉)，移除自动选择 |
 | 人格中间件 (8阶段) | ✅ | `personality/middleware.ts` |
 | 人格注册表 + 热插拔 | ✅ | `personality/registry.ts` + `loader.ts`（neutral 兜底） |
-| 4个人格卡 + 模板 | ✅ | `personality/cards/` (neutral/angelkawaii/ame/pchan) |
+| 5个人格卡 + 模板 | ✅ | `personality/cards/` (neutral/angelkawaii/ame/pchan/yuki) |
 | 变量状态系统 | ✅ | `personality/variable-pool.ts`（system/card/interaction/session，RUNTIME_DATA + batchWriteVars） |
 | 统一 ToolRegistry | ✅ | `tool/registry.ts` |
 | ToolRouter (路由+超时) | ✅ | `tool/router.ts` |
-| 轻量6工具 | ✅ | `tool/local/` (file/bas/system/http) |
-| 助手6额外工具 | ✅ | `tool/local-extra/` (write/full/app/clipboard/delete) |
+| 轻量 5 工具 | ✅ | `tool/local/`（pi-tools: read/write/edit/bash）+ system_info |
+| 助手 4 额外工具 | ✅ | `tool/local-extra/`（app / clipboard / agent-tool） |
 | 安全控制 (四级+三策略+确认UI) | ✅ | `safety/checker.ts` + `confirm.ts` |
 | 上下文引擎 | ✅ | `context/builder.ts` |
 | 回复生成器 | ✅ | `reply/generator.ts` — 一步后处理: 解析 RUNTIME_DATA → 情绪/变量校验 → trim/截断 → ReplyResult |
@@ -1051,12 +1047,12 @@ sessions/                      会话目录（唯一真相源）
 
 | 模块 | 状态 | 说明 |
 |------|:---:|------|
-| Skill Loader (YAML解析) | ✅ | `tool/skill/loader.ts` |
-| Skill Registry (注册/查询) | ✅ | `tool/skill/registry.ts` |
+| Skill Loader | ✅ | `services/skill/loader.ts` — 解析 + 落盘 + 注入 |
+| **渐进披露模型** | ✅ 已实现 | Prompt 只放 name/description/location，正文由模型 read |
 | 3个内置 Skill | ✅ | summarize-code / organize-files / check-weather |
-| skills/ 目录 | ✅ | `skills/*.md` — import.meta.glob 编译时加载 |
-| **Skill Runner (编排执行)** | ✅ 已实现 | 子循环调用 Local 工具，解析 steps 执行 |
-| **Skill 持久化到 CONFIG** | ✅ 已实现 | syncUserSkillsToConfig()，跨 webview 不丢失 |
+| skills/ 目录 | ✅ | `skills/{name}/SKILL.md` — import.meta.glob 编译时加载 |
+| **Skill 落盘** | ✅ 已实现 | 启动时写 `data_root/skills/`，模型可 read |
+| **Skill 持久化到 CONFIG** | ✅ 已实现 | 用户 Skill 存覆盖层，重启后重新落盘 |
 | **MCP Mock 工具** | ❌ 已移除 | 4个假工具已删除，只留真实连接 |
 | **MCP Manager (真实连接)** | ✅ 已实现 | 连接生命周期 + 工具发现 → ToolRegistry |
 | **MCP Client (JSON-RPC)** | ✅ 已实现 | connect/initialize/listTools/callTool + ToolDef |

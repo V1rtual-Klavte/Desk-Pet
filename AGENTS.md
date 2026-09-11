@@ -109,7 +109,8 @@ src/
 │   ├── reply/                  # RUNTIME_DATA 解析与回复后处理
 │   ├── agent/                  # Provider、Runner、子代理、记忆与主动搭话
 │   ├── context/                # System Prompt 构建
-│   ├── tool/                   # 工具注册、路由、Pi 基础工具、Skill、MCP
+│   ├── tool/                   # 工具注册、路由、Pi 基础工具、MCP
+│   ├── skill/                  # Skill 加载与 Prompt 注入（Pi 渐进披露，非工具）
 │   ├── safety/                 # 风险等级、策略和确认桥接
 │   ├── session/                # 会话响应式状态与切换归档
 │   ├── profile/                # Profile 选择、加载、导入导出
@@ -150,7 +151,8 @@ src-tauri/src/
   -> context/buildPrompt
        Card 角色 / 语气指引 / 必须遵守 / 变量 / 记忆 / 工具
   -> 助手模式下可选 planner
-  -> Pi Agent Core + pi-ai 流 + ToolRouter（read/write/edit/bash）+ Safety 检查
+  -> Pi Agent Core + pi-ai 流 + ToolRouter（read/write/edit/bash/…）+ Safety 检查
+       Skill 只注入 name/description/location，正文由模型用 read 工具按需加载
   -> reply/generator 解析 <RUNTIME_DATA>
        emotion -> 表情与音效
        合法 card 变量 -> batchWriteVars -> savePoolToDisk
@@ -285,7 +287,7 @@ data_root/
 └── profiles/     用户 Profile 与素材
 ```
 
-内置 Card/Profile 只读，运行时数据只写入 `data_root`。
+内置 Card/Profile 只读，运行时数据只写入 `data_root`。当前内置 Profile 包括 `sugar-pink`、`dark-purple`、`glass` 和 `yuki`。
 
 ### 路径拼接规则
 

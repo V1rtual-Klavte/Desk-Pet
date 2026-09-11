@@ -16,7 +16,7 @@
 - **桌面常驻** — 无边框透明窗口，角色在所有桌面和全屏 Space 悬浮
 - **AI 聊天** — Card 驱动人格，兼容 OpenAI、DeepSeek、Ollama 等 OpenAI 兼容接口
 - **会话管理** — 多会话切换、新建、关闭、归档、恢复和会话文件持久化
-- **工具系统** — 文件读写/搜索、Bash、系统信息、HTTP、剪贴板、子代理、Skill、MCP
+- **工具系统** — 文件读写、Bash、系统信息、剪贴板、子代理、Skill、MCP（联网能力由 MCP 服务器提供）
 - **助手模式** — 解锁更完整的文件、命令、应用、剪贴板和任务编排能力，并经过安全策略控制
 - **Pi Agent Core** — 统一管理模型请求、顺序工具循环、超时和可选的复杂任务计划；产品状态仍由 Desk-Pet 管理
 - **人格系统** — Card 热切换，支持 neutral、angelkawaii、ame、pchan 和用户导入 Card
@@ -24,7 +24,7 @@
 - **窗口感知** — 监控前台窗口，停留超时后 AI 主动搭话
 - **安全控制** — SAFE / NORMAL / DANGER / NOWAY 风险等级与确认策略
 - **记忆系统** — CANDY、User、MEMORY、sessions 和压缩摘要；长期记忆自动提取与召回仍在规划
-- **Profile 主题** — 糖糖粉、暗夜紫、透明玻璃等内置预设，支持导入导出
+- **Profile 主题** — 糖糖粉、暗夜紫、透明玻璃、yuki 雨夜蓝等内置预设，支持导入导出
 - **灵动图层** — 五层景深视差、全局光标追踪、CSS 3D 增强和逐层设置
 - **音效系统** — Web Audio 合成音效与人格边界映射
 - **设置面板** — 独立窗口配置 AI、外观、人格、监控、安全、工具、MCP、Skill 和快捷键
@@ -40,12 +40,12 @@
 | AI 聊天 + 人格系统 | ✅ | ✅ |
 | Card 状态与 RUNTIME_DATA 处理 | ✅ | ✅ |
 | 窗口感知主动搭话 | ✅ | ✅ |
-| 文件读/列/搜 + 系统信息 + Bash 白名单 + HTTP | ✅ | ✅ |
+| 文件读写 + 系统信息 + Bash 白名单 | ✅ | ✅ |
 | 计划编排与步骤进度 | ❌ | ✅ |
 | 文件写/编辑 + Bash（白名单/扩展命令按风险确认） | ✅（确认） | ✅（按安全策略） |
 | 文件删除 | ❌（无模型工具） | ❌（硬禁止） |
 | MCP 服务器 | ❌ | ✅ |
-| Skill 编排 | ❌ | ✅ |
+| Skill（渐进披露，模型用 read 加载正文） | ❌ | ✅ |
 | 子代理 agent.spawn（fork/team） | ❌ | ✅ |
 | 安全确认策略 | SAFE/NORMAL 自动；写入和扩展 Bash 可确认 | 四级风险 + 三策略 + 会话信任 |
 
@@ -110,7 +110,8 @@ Desk-Pet/
 │       ├── personality/              # Card、阶段文案、变量状态、情绪映射
 │       ├── reply/                    # RUNTIME_DATA 解析与回复后处理
 │       ├── agent/                    # Provider、Runner、子代理、Memory、Active
-│       ├── tool/                     # 工具注册、路由、Skill、MCP
+│       ├── tool/                     # 工具注册、路由、MCP
+│       ├── skill/                    # Skill 加载与 Prompt 注入
 │       ├── safety/                   # 风险检查与确认
 │       ├── session/                  # 多会话持久化管理
 │       ├── profile/                  # Profile 主题与导入导出
@@ -124,7 +125,7 @@ Desk-Pet/
 │       ├── window/                   # 主窗口与设置窗口
 │       ├── monitor/                  # 前台窗口监控
 │       └── commands/                 # 文件、记忆、Profile、系统命令
-├── skills/                           # 内置 Skill 定义
+├── skills/                           # 内置 Skill（{name}/SKILL.md，Pi 约定）
 ├── public/profiles/                  # 内置 Profile 素材
 └── data/desk-pet/                    # 开发环境运行时数据（生产使用应用专属目录）
 ```
