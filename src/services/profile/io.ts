@@ -5,7 +5,7 @@
 
 import JSZip from "jszip";
 import { invoke } from "@tauri-apps/api/core";
-import { listProfiles, getProfile, getActiveProfile, type ProfileData } from "./loader";
+import { listProfiles, getProfile, getActiveProfile, invalidateProfileCache, type ProfileData } from "./loader";
 import { createLogger } from "@/services/logger";
 
 const log = createLogger("ProfileIO");
@@ -263,6 +263,7 @@ export async function importProfileZip(file: File): Promise<ImportResult> {
     }
 
     log.info(`Profile "${profileId}" 导入完成 (${count} 文件)`);
+    invalidateProfileCache(profileId)
     return { success: true, profileId };
   } catch (e: any) {
     log.error("导入失败:", e);

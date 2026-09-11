@@ -25,6 +25,7 @@ const {
   pickerPreview,
   selectedLayer,
   isL2,
+  isBuiltinProfile,
   onPointerDown,
   onPointerMove,
   onPointerUp,
@@ -157,9 +158,10 @@ const {
             <button class="le-btn le-btn-xs" @click="openPicker()">
               🖼 更换
             </button>
-            <button class="le-btn le-btn-xs" @click="uploadImage()" :disabled="uploading === selectedIndex">
+            <button class="le-btn le-btn-xs" @click="uploadImage()" :disabled="isBuiltinProfile || uploading === selectedIndex" title="内置 Profile 请先复制为用户 Profile">
               {{ uploading === selectedIndex ? '⏳' : '📤 上传' }}
             </button>
+            <span v-if="isBuiltinProfile" class="le-prop-val" style="font-size:8px;opacity:0.55">内置 Profile 只读</span>
             <button class="le-btn le-btn-xs le-btn-d" @click="removeImage()" :disabled="!selectedLayer.config.image">
               ✕ 移除
             </button>

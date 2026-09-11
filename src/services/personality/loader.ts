@@ -283,11 +283,11 @@ async function loadBuiltin(): Promise<PersonalityCard[]> {
 async function loadUserCards(builtinIds: Set<string>): Promise<PersonalityCard[]> {
   try {
     const { invoke } = await import("@tauri-apps/api/core")
-    const files = await invoke<string[]>("personality_file_list", { dirPath: "personality/cards" })
+    const files = await invoke<string[]>("personality_file_list", { dirPath: "cards" })
     const result: PersonalityCard[] = []
     for (const file of files.filter(f => f.endsWith(".md") && !f.startsWith("_"))) {
       try {
-        const rawBytes = await invoke<number[]>("personality_file_read", { path: `personality/cards/${file}` })
+        const rawBytes = await invoke<number[]>("personality_file_read", { path: `cards/${file}` })
         const raw = new TextDecoder().decode(new Uint8Array(rawBytes))
         const card = await parseCard(raw, "user")
         // 内置 Card 源文件也位于 src/services/personality/cards，避免被 Tauri 扫描后覆盖成 user。
@@ -315,7 +315,7 @@ export async function saveUserCard(raw: string): Promise<PersonalityCard> {
   const safeName = card.id.replace(/[^\w一-鿿-]/g, "_")
   const { invoke } = await import("@tauri-apps/api/core")
   await invoke("personality_file_write", {
-    path: `personality/cards/${safeName}.md`,
+    path: `cards/${safeName}.md`,
     content: Array.from(new TextEncoder().encode(raw)),
   })
   return card

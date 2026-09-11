@@ -186,7 +186,7 @@ export async function loadStagesFromDisk(
   try {
     const { invoke } = await import("@tauri-apps/api/core")
     const raw = await invoke<number[]>("personality_file_read", {
-      path: `personality/stages/${cardId}.json`,
+      path: `stages/${cardId}.json`,
     })
     const json = new TextDecoder().decode(new Uint8Array(raw))
     const data = deserializeStages(json)
@@ -445,7 +445,7 @@ export async function generateStagesForCard(
     }
 
     const { invoke } = await import("@tauri-apps/api/core")
-    const path = `personality/stages/${cardId}.json`
+    const path = `stages/${cardId}.json`
     const absolutePath = await invoke<string>("personality_file_write", {
       path,
       content: Array.from(new TextEncoder().encode(serializeStages(result))),

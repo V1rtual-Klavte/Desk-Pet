@@ -79,6 +79,18 @@ src/services/__tests__/live/
 
 不使用内部版本号描述当前实现。发布版本以 GitHub tag 为准。
 
+### 规则文件本身
+
+- 本文件是**唯一的规则来源**。`CLAUDE.md` 只有一行 `@AGENTS.md` **导入指令** ——
+  Claude Code 只读 `CLAUDE.md`，不读 `AGENTS.md`，靠这行 import 把本文件注入上下文。
+- ⚠️ 不要把 `@AGENTS.md` 改成 Markdown 链接：链接形式**不会加载**，只等于建议 agent 自己去读。
+  也不要把本文件内容复制进 `CLAUDE.md`，那会制造两份需要同步的规则。
+- **不建立子目录 AGENTS.md**。本文件的规则（配置 SSOT、路径、日志、异常、模块落位）都是
+  **跨模块横向生效**的，按模块拆开只会得到 N 份需要同步的副本 —— 正是本节要防的漂移。
+  触发拆分的条件是：某模块有 ≥15 行只属于它且与全局无关的约定，
+  或本文件涨到 800 行 / 12k token，或某模块需要**局部覆盖**全局规则（后者应先修全局）。
+  模块特有的细节优先写进**模块自身的代码注释或 barrel 头部**，而不是新建规则文件。
+
 ## 项目结构
 
 ```text
@@ -189,6 +201,56 @@ interface VariableState {
 
 当前长期记忆的自动提取和 Prompt 检索尚未闭环。不要在代码或文档中声称 `MemoryService.search()` 已经自动注入，或声称 `forkMemorySupplement()` 已经由每轮对话调用。
 
+## 单一真相源（SSOT）
+
+项目高发的四类问题 —— **配置乱飞、魔法值、改动不同步、架构散落** —— 根因相同：
+*同一件事存在多个定义点*。动手改任何「会被多处使用」的东西前，过一遍下面四张清单。
+
+### ① 配置不散落
+
+一份配置从定义到生效要经过 5 个位置，**漏掉任何一处都不报错，只是静默失效**：
+
+| # | 位置 | 漏掉会怎样 |
+|---|---|---|
+| 1 | `CONFIG.yaml` | 生产首次启动没有该字段 |
+| 2 | `CONFIG-DEV.yaml.example` + `CONFIG-DEV.yaml` | 开发环境拿不到 |
+| 3 | `src/services/config.ts` 的 `Config` 类型 + 类型化 getter | TS 无类型、读不到 |
+| 4 | `SettingsPanel.vue` 的 `setOverrides` 映射 + 对应 Tab 的 ref/expose | 设置页存了也不生效 |
+| 5 | 本节与 `README.md` | 下一个人不知道它存在 |
+
+- 读取一律走 `@/services/config` 的 getter。模块内不得直读 `cfg.general.xxx`、不得复制常量、不得硬编码默认值。
+- **同一字段不得有两个语义**。一个值若既要被设置页读写、又要参与运行期判断，拆成两个导出。
+  范例：`generalConfig.loggingLevel`（读写接口）vs `computeLogLevel()`（运行期生效值）——
+  在**前者**上做 dev/prod 分支，会让 dev 里保存设置时把 `debug` 静默写回 YAML。
+
+### ② 不写魔法值
+
+- 会被 ≥2 处引用的字面量（阈值、超时、路径片段、命令名、枚举值）**必须是配置项或模块常量**。
+- 只在单个函数体内出现一次的字面量可以内联 —— 不为 DRY 抽无复用价值的常量。
+- 判定标准：**「改这个值的人会去哪找它？」** 答案不唯一，就该抽出来。
+- 常量放**它所属的模块**，不建集中式 `constants.ts`。
+
+### ③ 改动必须全链路同步
+
+动手前先 `rg` 找出全部消费者。`pnpm run test:types` 只抓得住类型与编译，**下面这些它抓不住**：
+
+| 你改了什么 | 必须同时检查 | test:types 能抓吗 |
+|---|---|---|
+| Rust 命令签名/返回类型 | 前端 `invoke` 调用点、`commands/mod.rs` 的 `pub use`、`lib.rs` 的 `invoke_handler!` | 部分 |
+| 前端 `invoke` 的命令名 | Rust 侧 `#[tauri::command]` 函数名 | ❌ 运行期才报 "command not found" |
+| 文件/模块移动改名 | 所有 import、`vite.config.ts` 的 `rollupOptions.input`、`capabilities/*.json` 的 `windows` 数组 | 部分 |
+| 新增窗口 | 上一条 + `xxx.html` + `src/xxx-main.ts` + Rust 创建代码 + z-order 提层 | ❌ |
+| 删除文件 | 全仓 `rg` 确认零引用，再同步结构树与文档 | 仅 import 层面 |
+
+### ④ 架构不散落
+
+- 新模块放进 `src/services/<领域>/`，**必须带 `index.ts` barrel**
+  （现有 13 个服务子目录无一例外，`__tests__/` 不计）。外部只从 barrel 导入，不深入内部文件路径。
+- 跨领域共享的纯函数放**零依赖叶子模块**，避免循环依赖。
+  范例：`services/error/format.ts` 不 import 任何业务模块，所以 `logger` 引用它不会成环。
+- 单一文件的服务平铺为 `src/services/<name>.ts`；成组（≥3 文件或有内部结构）时升级为目录。
+- 新增或移动文件后，同步本文件的结构树。
+
 ## 配置规则
 
 用哪份配置由**构建模式**决定（Rust `cfg!(debug_assertions)`），不由配置文件里的字段控制：
@@ -222,13 +284,36 @@ data_root/
 └── profiles/     用户 Profile 与素材
 ```
 
-内置 Card/Profile 只读，运行时数据只写入 `data_root`。路径统一由 Rust `AppPaths` 和 TS `BaseDirs` 管理。
+内置 Card/Profile 只读，运行时数据只写入 `data_root`。
+
+### 路径拼接规则
+
+**模块内不得出现任何硬编码路径**（含 `"personality/xxx"` 这类带域前缀的相对路径）。路径一律由路径模块产出：
+
+| 层 | 用什么 | 说明 |
+|---|---|---|
+| Rust | `AppPaths` 的字段（`paths.personality` 等） | 唯一真相源；`data_root` 由 `cfg!(debug_assertions)` 裁定 |
+| TS | `runtimePath(scope, ...segments)` | 交给 Rust 拼接 + 校验，返回绝对路径 |
+| TS | `BaseDirs` | **只给目录**；写文件必须走 `runtimePath()` |
+
+- 需要区分 dev/生产时用 `getRuntimeMode()`，**不要**自己判断 `import.meta.env.DEV` ——
+  前者是**路径环境**（Rust `cfg!(debug_assertions)` 裁定），后者是**前端构建模式**，两者概念不同。
+- 业务文件名由**所属模块**管理（如 memory 模块管 `MEMORY.md`），不集中堆进 `paths.ts`。
+- **两种合法模式，按命令设计选**：
+  1. **Rust 持有 base 目录**（如 `personality_file_*`）→ 前端只传**域内相对路径**
+     （`stages/x.json`、`vars.json`），**绝不带 `personality/` 前缀**。
+     Rust 侧 `resolve_personality_path()` 会显式拒绝带前缀的入参（容忍它会让写入静默建错嵌套目录）。
+  2. **前端需要绝对路径**（展示、传给通用文件 API）→ 用 `runtimePath(scope, ...segments)`。
+- 日志里的**描述性路径**（如 `` `personality/stages/${id}.json` ``）不算违规 —— 它不参与行为决策，
+  只是给人看的 `data_root` 相对位置。改动目录布局时一并更新即可。
 
 ### Rust 约束
 
 ```rust
+use crate::error::{AppError, AppResult};
+
 #[tauri::command]
-pub fn my_command(paths: tauri::State<AppPaths>) -> Result<(), String> {
+pub fn my_command(paths: tauri::State<AppPaths>) -> AppResult<()> {
     AppPaths::validate_path(&file_path, &paths.personality)?;
     Ok(())
 }
@@ -236,9 +321,11 @@ pub fn my_command(paths: tauri::State<AppPaths>) -> Result<(), String> {
 
 - 路径相关命令必须注入 `tauri::State<AppPaths>`。
 - 写入前必须使用 `validate_path()`；不存在的文件要校验父目录。
+- 命令一律返回 `AppResult<T>`，不要退回 `Result<T, String>`（见「异常处理」）。
 - 禁止手写 `dirs_next()`、`find_project_root()` 或 `env!("CARGO_MANIFEST_DIR")` 解析业务路径。
 - 禁止使用 `canonicalize().unwrap_or()` 静默回退。
-- 内置 Profile/Card 是只读打包资源；Profile 素材读取可由同 ID 用户目录按相对路径覆盖，写操作只走运行时目录。
+- 禁止 `.lock().unwrap()`；用 `.unwrap_or_else(|e| e.into_inner())` 忽略锁中毒。
+- 内置 Profile/Card 是只读打包资源；设置页必须提示先“复制为用户 Profile”，复制后的完整资源与导入 Profile 都写入运行时 `profiles/{id}/`，写操作只走该目录。
 - 新命令必须在 `lib.rs` 的 `invoke_handler!` 中注册。
 - Windows/macOS 专有代码必须使用条件编译和对应平台依赖。
 
@@ -258,9 +345,10 @@ const memoryPath = await runtimePath("memory", "MEMORY.md")
 - 先读后写，优先复用已有代码，不为简单逻辑增加抽象。
 - 所有操作同时评估 Windows 和 macOS。
 - Vue 组件使用 `<script setup lang="ts">`。
-- 使用模块 barrel：`@/services/engine`、`personality`、`tool`、`agent`、`context`、`reply`。
+- 服务模块一律从 barrel 导入（`@/services/<领域>`），不深入内部文件路径；落位规则见「单一真相源 ④」。
 - 全局冷却和 AI 并发锁走现有模块，平台检测走 `@/services/env`。
-- 配置走 `@/services/config`。
+- 配置走 `@/services/config`（见「单一真相源 ①」）。
+- 日志走 `@/services/logger`，异常走 `@/services/error`，禁止直接 `console.*` / `String(e)`。
 
 ## 日志
 
@@ -297,7 +385,7 @@ Rust 侧默认值随构建模式：debug 构建全量、release 默认 info；`D
 
 ## 异常处理
 
-- 全局拦截在 `services/global-error.ts`，4 个窗口入口经 `services/boot.ts` 的 `bootWindow()`
+- 全局拦截在 `services/error/global.ts`，4 个窗口入口经 `services/boot.ts` 的 `bootWindow()`
   统一安装，覆盖 `window.onerror`、`unhandledrejection`、Vue `errorHandler` 和 bootstrap 失败。
 - 异常走 `reportError()` 单一出口：写日志 → `invoke("report_frontend_error")` 落到 Rust →
   按配置弹全屏 DOM 覆盖层。覆盖层**零 Vue 依赖**，所以在 `mount()` 之前、`initConfig()`
@@ -320,18 +408,17 @@ Rust 侧默认值随构建模式：debug 构建全量、release 默认 info；`D
 |---|---|
 | 普通代码修改 | `README.md`、`AGENTS.md`、`docs/DES.md`，按影响补充 `docs/current/` |
 | 架构或模块变更 | `README.md`、`AGENTS.md`、`docs/DES.md`、对应当前模块文档 |
-| 配置项变更 | `CONFIG.yaml`、`CONFIG-DEV.yaml`、示例配置、设置页面、README 和相关文档 |
+| 配置项变更 | 按「单一真相源 ①」的五处清单 |
 | 新增或删除模块 | AGENTS 结构、README 结构、DES 总览和当前模块文档 |
 | 实施计划完成 | 保留正文，补充状态元数据后移入 `docs/history/` |
 
 历史文档只保存当时的设计细节，不为了追踪当前代码而改写正文。
+每轮修改结束都要同步 `README.md`、`AGENTS.md`、`docs/DES.md`；有影响时同步 `docs/current/`。
 
 ## 用户规则
 
 - 任何修改必须先给思路，用户同意后才能编码。
 - 不自作主张扩大范围，疑问先探索代码并基于事实判断。
-- 配置项必须统一维护，不能只改某一个消费者。
-- 每轮修改结束同步 `README.md`、`AGENTS.md`、`docs/DES.md`；有影响时同步当前文档。
 
 ## 核心方针
 

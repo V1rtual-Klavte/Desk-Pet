@@ -163,6 +163,12 @@ export async function refreshProfileAssets(profileId: string): Promise<void> {
   profile.userAssetOverrides = overlay.files
 }
 
+/** 导入或复制后清理内存缓存，确保下次加载读取最新文件。 */
+export function invalidateProfileCache(profileId: string): void {
+  profiles.delete(profileId)
+  profileBaseUrls.delete(profileId)
+}
+
 export async function getProfileAssetUrl(profileId: string, relativePath: string): Promise<string> {
   const profile = profiles.get(profileId)
   if (profile) return resolveProfileAssetUrl(profile, relativePath)
@@ -172,8 +178,11 @@ export async function getProfileAssetUrl(profileId: string, relativePath: string
 // ── Profile 加载 ──
 
 async function loadProfile(id: string): Promise<ProfileData> {
-  const basePath = await resolveProfileBaseUrl(id);
-  const overlay = await loadUserAssetOverlay(id);
+  const [basePath, overlay, userProfilePath] = await Promise.all([
+    resolveProfileBaseUrl(id),
+    loadUserAssetOverlay(id),
+    invoke<string>("profile_asset_base", { profileId: id }),
+  ]);
 
   const rawProfile = await fetchYaml<any>(`${basePath}/profile.yaml`);
 
@@ -207,7 +216,8 @@ async function loadProfile(id: string): Promise<ProfileData> {
       name: rawProfile?.meta?.name || id,
       description: rawProfile?.meta?.description || "",
       version: rawProfile?.meta?.version || 1,
-      builtin: rawProfile?.meta?.builtin ?? false,
+      // 内置身份由实际加载来源决定，不能信任导入 YAML 中的 meta.builtin。
+      builtin: !userProfilePath,
       preset: rawProfile?.meta?.preset,
     },
     theme: {

@@ -365,7 +365,7 @@ export async function saveVariablePoolAsync(
     updatedAt: Date.now(),
   }
   try {
-    await writeFileExternal("personality/vars.json", encoder.encode(JSON.stringify(sysData, null, 2)))
+    await writeFileExternal("vars.json", encoder.encode(JSON.stringify(sysData, null, 2)))
   } catch (e) {
     log.warn("vars.json 持久化失败:", e)
     // 继续尝试保存 stages 文件，不因 vars.json 失败而跳过
@@ -373,7 +373,7 @@ export async function saveVariablePoolAsync(
 
   // 2. 写 stages/{cardId}.json（保留 stages，更新 variables）
   try {
-    const path = `personality/stages/${currentCardId}.json`
+    const path = `stages/${currentCardId}.json`
     const existingRaw = await readFile(path)
     let existing: Record<string, unknown> = {}
     if (existingRaw) {
@@ -410,9 +410,9 @@ export async function saveVariablePoolStrict(
     system: { ...pool.system },
     updatedAt: Date.now(),
   }
-  await writeFileExternal("personality/vars.json", encoder.encode(JSON.stringify(sysData, null, 2)))
+  await writeFileExternal("vars.json", encoder.encode(JSON.stringify(sysData, null, 2)))
 
-  const path = `personality/stages/${currentCardId}.json`
+  const path = `stages/${currentCardId}.json`
   const existingRaw = await readFile(path)
   let existing: Record<string, unknown> = {}
   if (existingRaw) {
@@ -449,7 +449,7 @@ export async function loadCardVars(
   cardId: string,
 ): Promise<{ card: Record<string, VariableState>; interaction: Record<string, VariableState> } | null> {
   try {
-    const raw = await readFile(`personality/stages/${cardId}.json`)
+    const raw = await readFile(`stages/${cardId}.json`)
     if (!raw) return null
     const data = JSON.parse(new TextDecoder().decode(raw))
     const vars = data.variables as Record<string, unknown> | undefined
@@ -467,7 +467,7 @@ export async function loadCardVars(
 /** 读取 vars.json（system snapshot, 给设置页等使用） */
 export async function readSystemVars(): Promise<Record<string, number | string | boolean> | null> {
   try {
-    const raw = await readFile("personality/vars.json")
+    const raw = await readFile("vars.json")
     if (!raw) return null
     const data = JSON.parse(new TextDecoder().decode(raw)) as PersistedSystemVars
     if (data.schemaVersion >= 1) return data.system

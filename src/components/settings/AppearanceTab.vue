@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { ref, onMounted } from "vue";
 import { WebviewWindow } from "@tauri-apps/api/webviewWindow";
-import { userConfig } from "@/services/config";
+import { userConfig, setOverride } from "@/services/config";
 import {
   getSoundLibrary,
   getSoundAssignments,
@@ -16,6 +16,7 @@ import {
   exportProfileZip,
   importProfileZip,
   deleteProfile,
+  invalidateProfileCache,
   type ProfileData,
   type ProfileThemeColors,
 } from "@/services/profile";
@@ -108,6 +109,7 @@ async function switchProfile(id: string) {
     profileDetail.value = getActiveProfile();
     initColorEditor();
     initFontEditor();
+    setOverride("appearance.activeProfile", id);
   }
 }
 
@@ -248,7 +250,9 @@ function resetColors() {
 async function saveColorsToProfile() {
   const p = getActiveProfile();
   if (!p || p.meta.builtin) {
-    log.warn("内置 Profile 不可修改");
+    const message = "内置 Profile 不可直接修改，请先点击“复制”为用户 Profile。";
+    log.warn(message);
+    window.alert(message);
     return;
   }
   try {
@@ -269,6 +273,11 @@ async function saveColorsToProfile() {
       relativePath: "profile.yaml",
       content: Array.from(new TextEncoder().encode(newYaml)),
     });
+    invalidateProfileCache(p.id);
+    const { ensureProfileLoaded } = await import("@/services/profile");
+    await ensureProfileLoaded(p.id);
+    activateProfile(p.id);
+    profileDetail.value = getActiveProfile();
     log.info("颜色已保存");
   } catch (e: any) {
     log.error("保存失败:", e);
@@ -293,26 +302,28 @@ async function doCloneProfile() {
   if (!src) return;
   const newId = `${src.id}-clone-${Date.now()}`;
   try {
-    for (const fn of ["profile.yaml", "character.yaml"]) {
-      const resp = await fetch(`${src.basePath}/${fn}`);
-      if (resp.ok) {
-        let text = await resp.text();
-        if (fn === "profile.yaml")
-          text = text
-            .replace(/builtin:\s*true/, "builtin: false")
-            .replace(/name:\s*"[^"]*"/, `name: "${src.meta.name} (副本)"`);
-        const buf = new TextEncoder().encode(text);
-        const { invoke } = await import("@tauri-apps/api/core");
-        await invoke("profile_file_write", {
-          profileId: newId,
-          relativePath: fn,
-          content: Array.from(buf),
-        });
-      }
-    }
+    const { invoke } = await import("@tauri-apps/api/core");
+    await invoke("profile_clone", {
+      sourceProfileId: src.id,
+      targetProfileId: newId,
+    });
+    const copied = await invoke<number[]>("profile_file_read", {
+      profileId: newId,
+      relativePath: "profile.yaml",
+    });
+    const jsYaml = await import("js-yaml");
+    const doc = jsYaml.load(new TextDecoder().decode(new Uint8Array(copied))) as any;
+    doc.meta = { ...(doc.meta || {}), builtin: false, name: `${src.meta.name} (副本)` };
+    delete doc.meta.preset;
+    await invoke("profile_file_write", {
+      profileId: newId,
+      relativePath: "profile.yaml",
+      content: Array.from(new TextEncoder().encode(jsYaml.dump(doc, { lineWidth: -1, noRefs: true }))),
+    });
+    invalidateProfileCache(newId);
     log.info(`已克隆: "${newId}"`);
     await refreshProfileList();
-    switchProfile(newId);
+    await switchProfile(newId);
   } catch (e: any) {
     log.error("克隆失败:", e);
   }
@@ -397,6 +408,7 @@ defineExpose({
         <input class="inp color-val" :value="editedColors[f.key]" @input="(e: any) => { editedColors[f.key] = e.target.value; applyColors(); }" />
       </div>
     </div>
+    <div v-if="profileDetail?.meta.builtin" class="s-hint">内置 Profile 为只读资源。复制为用户 Profile 后才可修改和上传素材。</div>
     <div class="row-gap" style="margin-top:6px">
       <button class="btn-s" @click="applyColors()">应用</button>
       <button class="btn-s btn-d" @click="resetColors()">恢复</button>
@@ -443,7 +455,7 @@ defineExpose({
     <div class="s-label">📦 管理</div>
     <div class="row-gap">
       <button class="btn-s" @click="refreshProfileList()">🔄 刷新</button>
-      <button class="btn-s" @click="doCloneProfile()">📋 克隆</button>
+      <button class="btn-s" @click="doCloneProfile()">📋 复制为用户 Profile</button>
       <button class="btn-s" @click="doExportProfile()">📤 导出</button>
       <button class="btn-s" @click="doImportProfile()">📥 导入</button>
       <button class="btn-s btn-d" @click="doDeleteProfile()" :disabled="profileDetail?.meta.builtin">🗑 删除</button>

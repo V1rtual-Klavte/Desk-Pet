@@ -86,17 +86,25 @@ pub fn personality_file_delete(path: String, paths: tauri::State<AppPaths>) -> A
 // 路径解析（内部）
 // ==========================================
 
-/// 将前端相对路径（可选 "personality/" 前缀）解析为绝对路径
+/// 将**域内相对路径**（如 `stages/x.json`、`vars.json`）解析为绝对路径。
+///
+/// base 目录由本模块持有，调用方不得带 `personality/` 前缀 —— 见下方显式拒绝。
 ///
 /// mode:
 ///   "read"  — 先在 builtin_personality 查找，不存在则回退到 personality
 ///   "write" — 仅解析到 personality (runtime)，自动创建父目录并校验路径安全
 fn resolve_personality_path(relative: &str, mode: &str, paths: &AppPaths) -> AppResult<PathBuf> {
-    // 兼容前端传入 "personality/stages/xxx" 的旧相对路径
-    let normalized = relative.strip_prefix("personality/").unwrap_or(relative);
+    // 明确拒绝域前缀：base 目录由本模块持有，前端只该传域内相对路径。
+    // 若容忍 "personality/xxx"，它会拼成 personality/personality/xxx —— 读是静默找不到，
+    // 写则会悄悄建出错误的嵌套目录。这里直接报错，不给兼容空间。
+    if relative.starts_with("personality/") || relative.starts_with("personality\\") {
+        return err(format!(
+            "不要传域前缀，请传域内相对路径（如 stages/x.json）: {relative}"
+        ));
+    }
 
     // 安全检查：过滤 ParentDir 组件防止路径穿越
-    let safe: PathBuf = PathBuf::from(normalized)
+    let safe: PathBuf = PathBuf::from(relative)
         .components()
         .filter(|c| !matches!(c, std::path::Component::ParentDir))
         .collect();

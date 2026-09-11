@@ -113,7 +113,7 @@ async function checkStagesExists(cardId: string): Promise<boolean> {
   try {
     const { invoke } = await import("@tauri-apps/api/core");
     const files = await invoke<string[]>("personality_file_list", {
-      dirPath: "personality/stages",
+      dirPath: "stages",
     });
     return files.some(f => f === `${cardId}.json`);
   } catch {
@@ -212,7 +212,7 @@ async function persistCurrentStages() {
       stages: data,
     }, null, 2);
     await invoke("personality_file_write", {
-      path: `personality/stages/${cardId}.json`,
+      path: `stages/${cardId}.json`,
       content: Array.from(new TextEncoder().encode(content)),
     });
     const { loadStages } = await import("@/services/personality");

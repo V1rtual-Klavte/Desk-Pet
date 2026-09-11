@@ -18,6 +18,7 @@ export {
   getProfileAssetUrl,
   resolveProfileAssetUrl,
   refreshProfileAssets,
+  invalidateProfileCache,
 } from "./loader";
 
 export {

@@ -491,7 +491,7 @@ sugar-pink/                  # Profile 示例（内置3个: sugar-pink / dark-pu
 - **持久化**: 图层编辑器保存到运行时 CONFIG 的 `appearance.parallax.layers`，通过 Tauri 事件通知主窗口重载
 - **核心文件**: `src/composables/useParallax.ts`（引擎，导出 `layerDepth()`）+ `StreamView.vue`（五层渲染）+ `src/components/LayerEditor.vue`（编辑器弹窗）
 - **Rust**: `cursor.rs` → `spawn_cursor_tracker` 后台线程 ~60fps emit；`profile_cmd.rs` → `profile_file_write` 写入用户覆盖目录，`list_profile_files` 只扫描该可写目录
-- **素材来源**: 内置 Profile 由打包资源只读提供；用户写入同 ID、同相对路径的图片时优先覆盖内置素材，无需复制整套 Profile
+- **素材来源**: 内置 Profile 由打包资源只读提供；需要编辑时在设置页复制为完整用户 Profile，后续素材和配置只写入用户目录
 
 #### 内置 Profile
 
@@ -572,7 +572,7 @@ Profile 缺失的素材自动回退到 `DEFAULT_BUILTIN`（sugar-pink）：
 | **导出** | `exportProfileZip(id)` — 打包 profile 文件为 Zip 触发下载 |
 | **导入** | `importProfileZip(file)` — 解包 Zip → Tauri invoke `profile_file_write` → 写入 AppData |
 | **删除** | `deleteProfile(id)` — 仅限非内置 profile，调用 `profile_delete` 删除目录 |
-| **存储** | 内置 → `public/profiles/`；用户导入 → `{AppData}/desk-pet/profiles/` |
+| **存储** | 内置 → `public/profiles/` 并随安装包发布；用户导入/复制 → `{data_root}/profiles/` |
 
 #### 设置面板外观页
 

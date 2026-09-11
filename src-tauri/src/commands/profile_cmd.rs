@@ -16,6 +16,7 @@ pub fn profile_file_write(
     content: Vec<u8>,
     paths: tauri::State<AppPaths>,
 ) -> AppResult<()> {
+    ensure_user_profile_target(&paths, &profile_id)?;
     let file_path = safe_profile_path(&paths.profiles, &profile_id, &relative_path)?;
 
     // 安全检查：防止路径穿越 — validate_path 在 canonicalize 失败时直接 Err
@@ -56,6 +57,7 @@ pub fn profile_file_read(
 /// 删除用户 profile 目录
 #[tauri::command]
 pub fn profile_delete(profile_id: String, paths: tauri::State<AppPaths>) -> AppResult<()> {
+    ensure_user_profile_target(&paths, &profile_id)?;
     let dir = safe_profile_path(&paths.profiles, &profile_id, "profile.yaml")?
         .parent().ok_or("无效 Profile 目录")?.to_path_buf();
     if dir.exists() {
@@ -64,10 +66,65 @@ pub fn profile_delete(profile_id: String, paths: tauri::State<AppPaths>) -> AppR
     Ok(())
 }
 
+/// 将 Profile 完整复制到用户目录。内置资源先复制，已有用户覆盖再叠加。
+#[tauri::command]
+pub fn profile_clone(
+    source_profile_id: String,
+    target_profile_id: String,
+    paths: tauri::State<AppPaths>,
+) -> AppResult<()> {
+    validate_profile_id(&source_profile_id)?;
+    ensure_user_profile_target(&paths, &target_profile_id)?;
+    if source_profile_id == target_profile_id {
+        return err("源 Profile 和目标 Profile 不能相同");
+    }
+
+    let target = paths.profiles.join(&target_profile_id);
+    if target.exists() {
+        return err("目标 Profile 已存在");
+    }
+
+    let user_source = paths.profiles.join(&source_profile_id);
+    let builtin_source = paths.builtin_profiles.join(&source_profile_id);
+    if !user_source.is_dir() && !builtin_source.is_dir() {
+        return err(format!("源 Profile 不存在: {source_profile_id}"));
+    }
+
+    fs::create_dir_all(&target).map_err(|e| AppError::Io(format!("创建目标目录失败: {e}")))?;
+    let target = AppPaths::validate_path(&target, &paths.profiles)?;
+    // 内置资源作为基础，用户目录中的同名文件作为覆盖层。
+    if builtin_source.is_dir() {
+        copy_profile_tree(&builtin_source, &target)?;
+    }
+    if user_source.is_dir() && !is_builtin_profile(&paths, &source_profile_id) {
+        copy_profile_tree(&user_source, &target)?;
+    }
+    Ok(())
+}
+
+fn copy_profile_tree(source: &Path, target: &Path) -> AppResult<()> {
+    for entry in fs::read_dir(source).map_err(|e| AppError::Io(format!("读取 Profile 失败: {e}")))? {
+        let entry = entry.map_err(|e| AppError::Io(format!("读取 Profile 条目失败: {e}")))?;
+        let source_path = entry.path();
+        let target_path = target.join(entry.file_name());
+        let file_type = entry.file_type().map_err(|e| AppError::Io(format!("读取文件类型失败: {e}")))?;
+        if file_type.is_dir() {
+            fs::create_dir_all(&target_path).map_err(|e| AppError::Io(format!("创建目录失败: {e}")))?;
+            copy_profile_tree(&source_path, &target_path)?;
+        } else if file_type.is_file() {
+            fs::copy(&source_path, &target_path).map_err(|e| AppError::Io(format!("复制文件失败: {e}")))?;
+        }
+    }
+    Ok(())
+}
+
 /// 返回用户 Profile 素材目录；内置 Profile 由前端打包资源 URL 提供。
 #[tauri::command]
 pub fn profile_asset_base(profile_id: String, paths: tauri::State<AppPaths>) -> AppResult<String> {
     validate_profile_id(&profile_id)?;
+    if is_builtin_profile(&paths, &profile_id) {
+        return Ok(String::new());
+    }
     let user = paths.profiles.join(&profile_id);
     Ok(if user.join("profile.yaml").is_file() {
         user.to_string_lossy().to_string()
@@ -80,6 +137,9 @@ pub fn profile_asset_base(profile_id: String, paths: tauri::State<AppPaths>) -> 
 #[tauri::command]
 pub fn profile_user_asset_base(profile_id: String, paths: tauri::State<AppPaths>) -> AppResult<String> {
     validate_profile_id(&profile_id)?;
+    if is_builtin_profile(&paths, &profile_id) {
+        return Ok(String::new());
+    }
     let user = paths.profiles.join(&profile_id);
     Ok(if user.is_dir() {
         user.to_string_lossy().to_string()
@@ -91,6 +151,18 @@ pub fn profile_user_asset_base(profile_id: String, paths: tauri::State<AppPaths>
 fn validate_profile_id(profile_id: &str) -> AppResult<()> {
     if profile_id.is_empty() || !profile_id.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_') {
         return Err(AppError::PathEscape);
+    }
+    Ok(())
+}
+
+fn is_builtin_profile(paths: &AppPaths, profile_id: &str) -> bool {
+    paths.builtin_profiles.join(profile_id).is_dir()
+}
+
+fn ensure_user_profile_target(paths: &AppPaths, profile_id: &str) -> AppResult<()> {
+    validate_profile_id(profile_id)?;
+    if is_builtin_profile(paths, profile_id) {
+        return err("内置 Profile 为只读资源，请先复制为用户 Profile");
     }
     Ok(())
 }
@@ -116,7 +188,9 @@ pub fn list_user_profiles(paths: tauri::State<AppPaths>) -> AppResult<Vec<String
         let entry = entry.map_err(|e| format!("读取条目失败: {e}"))?;
         if entry.file_type().map(|t| t.is_dir()).unwrap_or(false) {
             if let Some(name) = entry.file_name().to_str() {
-                profiles.push(name.to_string());
+                if !is_builtin_profile(&paths, name) {
+                    profiles.push(name.to_string());
+                }
             }
         }
     }
@@ -160,6 +234,9 @@ fn list_files_recursive(base: &PathBuf, current: &PathBuf, files: &mut Vec<Strin
 #[tauri::command]
 pub fn list_profile_files(profile_id: String, subdir: Option<String>, paths: tauri::State<AppPaths>) -> AppResult<Vec<String>> {
     validate_profile_id(&profile_id)?;
+    if is_builtin_profile(&paths, &profile_id) {
+        return Ok(vec![]);
+    }
     let prefix = subdir.as_ref().map(|s| {
         let trimmed = s.trim_matches('/');
         if trimmed.is_empty() { None } else { Some(format!("{}/", trimmed)) }

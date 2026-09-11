@@ -23,15 +23,21 @@ data_root/
 │   ├── index.json                       # 仅 UI 状态，可安全丢弃
 │   └── session-YYYYMMDD-HHmmss-主题.md  # 会话正文和摘要真相源
 ├── personality/                         # Card 阶段与变量状态
-└── profiles/                            # 用户 Profile 和内置 Profile 的素材覆盖文件
+└── profiles/                            # 用户导入/复制的 Profile
 ```
 
 会话 Markdown 的每轮记录同时含可读预览与完整原文元数据，历史格式仍可读取。启动时先扫描 Markdown 重建会话历史，再用 `index.json` 恢复上次打开和活跃的标签；index 损坏不应丢失任何对话。
 
 ## Profile 素材覆盖
 
-内置 Profile 通过前端打包资源只读提供，不复制到生产数据目录。用户写入
-`profiles/{profileId}/` 后，同一相对路径的图片优先从该目录加载；没有覆盖的文件仍回退内置资源。这允许为内置 Profile 定制图层，同时避免整套素材重复占用磁盘。
+内置 Profile 随应用一起打包，开发时源文件位于 `public/profiles/`，生产构建也
+作为 Tauri bundle resource 提供给后端复制。它们是只读资源，设置页不可直接保存
+内置 Profile 的颜色或上传素材；Rust 命令层也拒绝对内置 ID 的写入、删除和同名导入。
+
+用户导入的 Profile 以及“复制为用户 Profile”生成的完整副本都写入
+`profiles/{profileId}/`。复制时会将完整内置资源复制到该目录，并将 `profile.yaml`
+标记为用户 Profile；之后颜色、素材等修改只写这个目录。Profile 选择会保存到
+运行时 CONFIG 的 `appearance.activeProfile`，下次启动从该值恢复。
 
 ## 不再使用的缓存
 
