@@ -7,6 +7,7 @@ import type { Message, ToolDeclaration, ThinkingEffort } from "@/services/agent/
 import { getToolDeclarations } from "@/services/tool/registry"
 import { MemoryService } from "@/services/agent/memory"
 import { aiConfig } from "@/services/config"
+import { getSkillsPromptBlock } from "@/services/skill"
 import { formatPoolForPrompt } from "@/services/personality/variable-pool"
 import { formatAllRules } from "@/services/personality/must-rules"
 import { formatEmotionForPrompt } from "@/services/personality/emotion"
@@ -87,6 +88,8 @@ export function buildPrompt(
   // ── ⑨ 工具提示 ──
   if (tools.length > 0) {
     systemPrompt += "\n\n你可以使用工具完成任务。需要工具时只输出工具调用。完成后基于结果简短回复。"
+    // Skill 清单只在有工具时注入：模型要靠 read 工具才能加载正文。
+    systemPrompt += getSkillsPromptBlock()
   } else {
     systemPrompt += "\n\n请简短口语化回复。"
   }

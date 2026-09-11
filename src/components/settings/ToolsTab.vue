@@ -30,7 +30,7 @@ const mcpTestResult = ref("");
 
 // ── Skill ──
 const skillEnabled = ref(toolsConfig.skillEnabled);
-const skillList = ref<{ id: string; name: string; description: string; keywords: string }[]>([]);
+const skillList = ref<{ id: string; name: string; description: string; removable: boolean }[]>([]);
 
 // ── 内置 MCP ──
 async function loadBuiltinMcpConfig() {
@@ -161,18 +161,18 @@ async function testMcpConnection() {
 
 // ── Skill ──
 async function loadSkillConfig() {
-  const { getLoadedSkills } = await import("@/services/tool/skill/loader");
-  skillList.value = getLoadedSkills().map((s) => ({
-    id: s.meta.id,
-    name: s.meta.name,
-    description: s.meta.description,
-    keywords: (s.meta.trigger_keywords ?? []).join(", "),
+  const { listSkills, isUserSkill } = await import("@/services/skill");
+  skillList.value = listSkills().map((s) => ({
+    id: s.name,
+    name: s.name,
+    description: s.description,
+    removable: isUserSkill(s.name),
   }));
 }
 
 async function removeSkill(skillId: string) {
-  const { removeSkill: doRemove } = await import("@/services/tool/skill/loader");
-  doRemove(skillId);
+  const { removeUserSkill } = await import("@/services/skill");
+  await removeUserSkill(skillId);
   await loadSkillConfig();
 }
 
@@ -184,8 +184,8 @@ async function uploadSkillMd() {
     const file = input.files?.[0];
     if (!file) return;
     const text = await file.text();
-    const { addSkillFromMarkdown } = await import("@/services/tool/skill/loader");
-    addSkillFromMarkdown(text);
+    const { upsertUserSkill } = await import("@/services/skill");
+    await upsertUserSkill(text);
     await loadSkillConfig();
   };
   input.click();
@@ -274,7 +274,10 @@ defineExpose({
     <div v-if="skillList.length === 0" class="s-hint">暂无</div>
     <div v-for="s in skillList" :key="s.id" class="li-row">
       <span><b>{{ s.name }}</b> {{ s.description }}</span>
-      <span><span class="s-hint" style="margin:0 8px">{{ s.keywords }}</span><button class="btn-s btn-d" @click="removeSkill(s.id)">✕</button></span>
+      <span>
+        <span v-if="!s.removable" class="s-hint" style="margin:0 8px">内置</span>
+        <button v-else class="btn-s btn-d" @click="removeSkill(s.id)">✕</button>
+      </span>
     </div>
   </div>
 </div>

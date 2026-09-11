@@ -5,7 +5,7 @@
 
 import { MemoryService, startMemoryConsolidationTimer } from "@/services/agent/memory"
 import { initRegistry, initCards } from "@/services/personality"
-import { registerDefaultTools, registerAll, registerAssistantTools } from "@/services/tool"
+import { registerDefaultTools, registerAssistantTools } from "@/services/tool"
 import { initDebug } from "@/services/debug"
 import { initSessions, chatHistory, initWelcome } from "@/services/session"
 import { getActiveCard } from "@/services/personality"
@@ -59,13 +59,11 @@ export async function initApp(welcomeText: string): Promise<void> {
     log.info(`4c/7 MCP 就绪 (${connected} 个服务器连接)`)
   }
 
-  if (toolsConfig.skillEnabled) {
-    const { getSkillTools } = await import("@/services/tool/skill/loader")
-    const { initSkillRegistry } = await import("@/services/tool/skill/registry")
-    initSkillRegistry()
-    registerAll(getSkillTools())
-    log.info("4d/7 Skill 工具就绪")
-  }
+  // Skill 不注册工具：清单注入 system prompt，正文由模型用 read 工具按需加载。
+  // 始终加载（含落盘到 data_root/skills/），是否注入 Prompt 由 toolsConfig.skillEnabled 决定。
+  const { loadSkills } = await import("@/services/skill")
+  const skills = await loadSkills()
+  log.info(`4d/7 Skill 就绪 (${skills.length} 个 | 注入:${toolsConfig.skillEnabled})`)
 
   const { toolCount } = await import("@/services/tool/registry")
   log.info(`4/7 工具就绪 (${toolCount()} 个) | 助手:${generalConfig.assistantMode} MCP:${toolsConfig.mcpEnabled} Skill:${toolsConfig.skillEnabled}`)
