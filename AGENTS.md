@@ -329,6 +329,7 @@ pub fn my_command(paths: tauri::State<AppPaths>) -> AppResult<()> {
 - 禁止使用 `canonicalize().unwrap_or()` 静默回退。
 - 禁止 `.lock().unwrap()`；用 `.unwrap_or_else(|e| e.into_inner())` 忽略锁中毒。
 - 内置 Profile/Card 是只读打包资源；设置页必须提示先“复制为用户 Profile”，复制后的完整资源与导入 Profile 都写入运行时 `profiles/{id}/`，写操作只走该目录。
+- 灵动图层的逐层素材与参数属于 Profile 的 `theme.parallax.layers`；运行时 CONFIG 只保存跨 Profile 共用的开关和强度，禁止用全局 layers 覆盖当前 Profile。
 - 新命令必须在 `lib.rs` 的 `invoke_handler!` 中注册。
 - Windows/macOS 专有代码必须使用条件编译和对应平台依赖。
 

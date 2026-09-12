@@ -447,7 +447,7 @@ playNotificationByBoundary();
 | `general` | `mode.assistant` / `popup` / `shortcut` / `logging` / `desktop` |
 | `ai` | provider / endpoint / apiKey / model / thinking / personality / loop / memory / lock / windowMonitor / safety |
 | `tools` | bash(whitelist) / file(writeEnabled) / mcp(servers+builtin) / skill |
-| `appearance` | `activeProfile`、全局视差开关/强度/图层覆盖和音效分配；Profile 继续提供默认主题、角色和素材 |
+| `appearance` | `activeProfile`、全局视差开关/强度和音效分配；逐层参数与素材只属于 Profile |
 
 ### 8.2 Profile 系统 — 主题/角色/音效（自包含闭包）
 
@@ -488,7 +488,7 @@ sugar-pink/                  # Profile 示例（内置4个: sugar-pink / dark-pu
 - **五层始终渲染**: DOM 中 5 个 `div.pl-layer` 始终存在，`display:none` 由 `layerStyles` computed 控制
 - **3D 增强**: CSS `drop-shadow` + `brightness/contrast/saturate` 按深度调整
 - **配置**: `profile.yaml` → `theme.parallax`；设置页 → 全局开关+强度；**图层编辑器弹窗** → 逐层交互式编辑（拖拽位置/属性调整/锁定/隐藏）
-- **持久化**: 图层编辑器保存到运行时 CONFIG 的 `appearance.parallax.layers`，通过 Tauri 事件通知主窗口重载
+- **持久化**: 图层编辑器只允许编辑用户 Profile，并保存到该 Profile 的 `profile.yaml`；运行时 CONFIG 只保存全局开关和强度
 - **核心文件**: `src/composables/useParallax.ts`（引擎，导出 `layerDepth()`）+ `StreamView.vue`（五层渲染）+ `src/components/LayerEditor.vue`（编辑器弹窗）
 - **Rust**: `cursor.rs` → `spawn_cursor_tracker` 后台线程 ~60fps emit；`profile_cmd.rs` → `profile_file_write` 写入用户覆盖目录，`list_profile_files` 只扫描该可写目录
 - **素材来源**: 内置 Profile 由打包资源只读提供；需要编辑时在设置页复制为完整用户 Profile，后续素材和配置只写入用户目录
@@ -533,7 +533,8 @@ sugar-pink/                  # Profile 示例（内置4个: sugar-pink / dark-pu
   │     └── 帧路径: 当前 profile 首选，缺失回退默认
   └── activateProfile(id) → injectFonts() + injectCssVars()
 
-图层编辑器保存 → 回写运行时 CONFIG → emit("deskpet-parallax-saved") → StreamView 重载
+Profile 切换或用户 Profile 保存 → flush CONFIG/Profile → emit("deskpet-profile-updated")
+  → 各 WebView 重新加载并激活目标 Profile → StreamView 重载五层
 
 设置页打开 →
   ├── discoverAllProfiles()   # 扫描内置 + 用户 data_root/profiles 列表

@@ -46,6 +46,16 @@ data_root/
 标记为用户 Profile；之后颜色、素材等修改只写这个目录。Profile 选择会保存到
 运行时 CONFIG 的 `appearance.activeProfile`，下次启动从该值恢复。
 
+`appearance.parallax` 只保存跨 Profile 共用的启用开关和强度。每层的素材、显隐、
+灵敏度、滤镜、缩放和偏移只从当前 Profile 的 `theme.parallax.layers` 读取，图层编辑器
+也只把这些字段写回用户 Profile。旧 CONFIG 中遗留的 `appearance.parallax.layers`
+会被忽略，不能覆盖或串入另一个 Profile。Profile 切换与用户 Profile 保存通过
+`deskpet-profile-updated` 事件让各 WebView 重新加载同一个 Profile。
+
+Profile 没有自带窗口 UI 位图时，可在 `theme.useDefaultUi` 声明为 `true`，运行时会直接
+使用默认内置 UI，而不是请求当前 Profile 的空 `ui/` 目录。该回退仅用于 UI 位图；灵动
+图层素材不会跨 Profile 回退，缺失时会停止该层并在编辑器中标记。
+
 ## 不再使用的缓存
 
 `localStorage` 不再存储配置、会话正文、会话列表、图层编辑结果、分割线位置或音效分配。启动配置完成后会清理旧 `deskpet_*` key，避免旧缓存重新覆盖文件真相源。

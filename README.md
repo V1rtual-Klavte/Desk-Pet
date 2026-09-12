@@ -84,7 +84,8 @@ cp CONFIG-DEV.yaml.example CONFIG-DEV.yaml
 开发构建直接使用工作区的完整 `CONFIG-DEV.yaml`；文件不存在时使用 `CONFIG.yaml`。生产构建首次启动会把默认 `CONFIG.yaml` 写入应用数据目录的 `settings/CONFIG.yaml`，之后设置页和导入导出都回写该文件。macOS 窗口监控需要在系统设置的“隐私与安全性 → 辅助功能”中允许终端或 Tauri。
 
 内置 Profile 随安装包只读发布；在设置中“复制为用户 Profile”或导入的 Profile
-会写入运行时 `profiles/` 目录，之后才可编辑。运行时数据路径和会话恢复规则见
+会写入运行时 `profiles/` 目录，之后才可编辑。灵动图层的逐层素材与参数保存在各自
+Profile 的 `profile.yaml`，CONFIG 只保存全局开关和强度。运行时数据路径和会话恢复规则见
 [运行时数据](docs/current/runtime-data.md)。
 
 ---
