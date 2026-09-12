@@ -7,8 +7,6 @@
 import rawConfig from "../../CONFIG.yaml";
 import { invoke } from "@tauri-apps/api/core";
 import { dump as dumpYaml, load as loadYaml } from "js-yaml";
-import type { ParallaxLayerCfg } from "@/composables/useParallax";
-import { DEFAULT_LAYERS } from "@/composables/useParallax";
 import { createLogger, LEVELS, LEVEL_ORDER, setLogLevel, type Level } from "@/services/logger";
 import { formatError } from "@/services/error";
 
@@ -27,7 +25,6 @@ interface UserSettings {
   autoPopupOnMessage: boolean;
   parallaxEnabled: boolean;
   parallaxIntensity: number;
-  parallaxLayers: ParallaxLayerCfg[];
 }
 
 export interface BuiltinMcpServer {
@@ -124,7 +121,6 @@ interface Config {
     parallax?: {
       enabled: boolean
       intensity: number
-      layers: ParallaxLayerCfg[]
     }
     soundAssignments?: Record<string, string>
   }
@@ -232,7 +228,6 @@ const USER_DEFAULTS: UserSettings = {
   autoPopupOnMessage: cfg.general?.popup?.autoPopupOnMessage ?? false,
   parallaxEnabled: cfg.appearance?.parallax?.enabled ?? false,
   parallaxIntensity: cfg.appearance?.parallax?.intensity ?? 1.0,
-  parallaxLayers: cfg.appearance?.parallax?.layers ?? DEFAULT_LAYERS.map(l => ({ ...l })),
 };
 
 function loadUserOverrides(): UserSettings {
@@ -247,7 +242,6 @@ function loadUserOverrides(): UserSettings {
     autoPopupOnMessage: cfg.general?.popup?.autoPopupOnMessage ?? USER_DEFAULTS.autoPopupOnMessage,
     parallaxEnabled: cfg.appearance?.parallax?.enabled ?? USER_DEFAULTS.parallaxEnabled,
     parallaxIntensity: cfg.appearance?.parallax?.intensity ?? USER_DEFAULTS.parallaxIntensity,
-    parallaxLayers: cfg.appearance?.parallax?.layers ?? USER_DEFAULTS.parallaxLayers,
   }
 }
 
@@ -263,7 +257,6 @@ function saveUserOverrides(s: UserSettings): void {
   cfg.appearance.parallax = {
     enabled: s.parallaxEnabled,
     intensity: s.parallaxIntensity,
-    layers: s.parallaxLayers,
   }
   queueConfigSave()
 }
@@ -299,8 +292,6 @@ export const userConfig = {
   set parallaxEnabled(v: boolean) { const u = loadUserOverrides(); u.parallaxEnabled = v; saveUserOverrides(u); },
   get parallaxIntensity() { return getUser().parallaxIntensity; },
   set parallaxIntensity(v: number) { const u = loadUserOverrides(); u.parallaxIntensity = v; saveUserOverrides(u); },
-  get parallaxLayers() { return getUser().parallaxLayers; },
-  set parallaxLayers(v: ParallaxLayerCfg[]) { const u = loadUserOverrides(); u.parallaxLayers = v; saveUserOverrides(u); },
   getAll(): UserSettings { return { ...getUser() }; },
   setAll(s: Partial<UserSettings>) { const u = { ...loadUserOverrides(), ...s }; saveUserOverrides(u); },
   resetAll() {

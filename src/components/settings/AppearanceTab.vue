@@ -1,7 +1,8 @@
 <script setup lang="ts">
 import { ref, onMounted } from "vue";
+import { emit } from "@tauri-apps/api/event";
 import { WebviewWindow } from "@tauri-apps/api/webviewWindow";
-import { userConfig, setOverride } from "@/services/config";
+import { flushConfig, userConfig, setOverride } from "@/services/config";
 import {
   getSoundLibrary,
   getSoundAssignments,
@@ -114,6 +115,8 @@ async function switchProfile(id: string) {
     initColorEditor();
     initFontEditor();
     setOverride("appearance.activeProfile", id);
+    await flushConfig();
+    await emit("deskpet-profile-updated", { profileId: id });
   }
 }
 
@@ -285,6 +288,7 @@ async function saveColorsToProfile() {
     await ensureProfileLoaded(p.id);
     activateProfile(p.id);
     profileDetail.value = getActiveProfile();
+    await emit("deskpet-profile-updated", { profileId: p.id });
     log.info("颜色已保存");
   } catch (e: any) {
     log.error("保存失败:", e);

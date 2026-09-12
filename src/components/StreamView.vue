@@ -6,9 +6,9 @@
 
 import { ref, computed, onMounted, onUnmounted, inject, type Ref } from "vue";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
-import { getCharacterScaleMode, getActiveProfile, refreshProfileAssets, resolveProfileAssetUrl } from "@/services/profile";
+import { activateProfile, ensureProfileLoaded, getCharacterScaleMode, getActiveProfile, invalidateProfileCache, refreshProfileAssets, resolveProfileAssetUrl } from "@/services/profile";
 import { useParallax, DEFAULT_PARALLAX_STATE, type ParallaxState } from "@/composables/useParallax";
-import { userConfig, reloadConfig } from "@/services/config";
+import { appearanceConfig, userConfig, reloadConfig } from "@/services/config";
 import { createLogger } from "@/services/logger";
 
 const log = createLogger("Stream");
@@ -27,10 +27,10 @@ const scaleMode = computed(() => getCharacterScaleMode() === "smooth" ? "auto" :
 const parallaxConfig = ref<ParallaxState>({
   enabled: userConfig.parallaxEnabled,
   intensity: userConfig.parallaxIntensity,
-  layers: userConfig.parallaxLayers.map(l => ({ ...l })),
+  layers: DEFAULT_PARALLAX_STATE.layers.map(l => ({ ...l })),
 });
 
-// ── 图层素材 URL（直接调 getActiveProfile()，不用 computed 包装避免死 computed）──
+// ── 图层素材 URL（activeProfileRevision 让 Profile 切换触发重新计算）──
 const layerUrls = computed<(string | null)[]>(() => {
   const p = getActiveProfile();
   log.info(`layerUrls 求值: profile=${p ? p.id : "null"}, layersLen=${parallaxConfig.value.layers.length}`);
@@ -63,8 +63,8 @@ let _reloadRetryId: ReturnType<typeof setTimeout> | null = null;
 function reloadParallax() {
   const p = getActiveProfile();
   if (!p) {
-    // Profile 尚未加载（冷启动时序：StreamView onMounted 早于 App initProfiles）
-    // 延迟重试，同时依赖 activateProfile 的 dirty flag 触发
+    // Profile 尚未加载（冷启动时序：StreamView onMounted 早于 App initProfiles）。
+    // 延迟重试兜底；正常切换由 deskpet-profile-updated 事件完成同步。
     if (!_reloadRetryId) {
       _reloadRetryId = setTimeout(() => {
         _reloadRetryId = null;
@@ -78,30 +78,25 @@ function reloadParallax() {
   parallaxConfig.value.enabled = userConfig.parallaxEnabled;
   parallaxConfig.value.intensity = userConfig.parallaxIntensity;
 
-  const uLayers = userConfig.parallaxLayers;
-
   const pLayers = p.theme.parallax.layers;
   const newLayers: typeof parallaxConfig.value.layers = [];
   for (let i = 0; i < 5; i++) {
     const pLayer = pLayers?.[i];
-    const base = pLayer
+    const merged = pLayer
       ? { ...DEFAULT_PARALLAX_STATE.layers[i], ...pLayer }
       : { ...DEFAULT_PARALLAX_STATE.layers[i] };
-    const uLayer = uLayers?.[i];
-        // 用户覆盖优先，向后兼容旧扁平路径 → 新 L{i}/ 结构
-        const merged = uLayer ? { ...base, ...uLayer } : { ...base };
-        if (merged.image && !merged.image.includes("/L") && merged.image.startsWith("materials/")) {
-          const filename = merged.image.split("/").pop() || "";
-          const LAYER_MIGRATION: Record<string, string> = { "bg_base.png": "L0", "body.png": "L2", "shield_gold.png": "L4" };
-          if (filename && LAYER_MIGRATION[filename]) {
-            merged.image = `materials/${LAYER_MIGRATION[filename]}/${filename}`;
-          } else {
-            merged.image = base.image;
-          }
-        }
-        // ★ 向后兼容：整数=旧像素 → 百分比（拖拽产生小数，默认0不动）
-        if (merged.offsetX !== 0 && Number.isInteger(merged.offsetX)) { const oldOX = merged.offsetX; merged.offsetX = +(merged.offsetX / (userConfig.popupSize.w || 730) * 100).toFixed(2); log.debug("offset迁移 L"+i+": "+oldOX+"px → "+merged.offsetX+"%"); }
-        if (merged.offsetY !== 0 && Number.isInteger(merged.offsetY)) { const oldOY = merged.offsetY; merged.offsetY = +(merged.offsetY / (userConfig.popupSize.h || 450) * 100).toFixed(2); log.debug("offset迁移 L"+i+" Y: "+oldOY+"px → "+merged.offsetY+"%"); }
+
+    // 向后兼容：整数=旧像素 → 百分比（拖拽产生小数，默认 0 不动）。
+    if (merged.offsetX !== 0 && Number.isInteger(merged.offsetX)) {
+      const oldOX = merged.offsetX;
+      merged.offsetX = +(merged.offsetX / (userConfig.popupSize.w || 730) * 100).toFixed(2);
+      log.debug("offset迁移 L" + i + ": " + oldOX + "px → " + merged.offsetX + "%");
+    }
+    if (merged.offsetY !== 0 && Number.isInteger(merged.offsetY)) {
+      const oldOY = merged.offsetY;
+      merged.offsetY = +(merged.offsetY / (userConfig.popupSize.h || 450) * 100).toFixed(2);
+      log.debug("offset迁移 L" + i + " Y: " + oldOY + "px → " + merged.offsetY + "%");
+    }
 
     newLayers.push(merged);
   }
@@ -114,19 +109,29 @@ function reloadParallax() {
     `L${i}: ${l.enabled ? l.image : '(disabled)'}`).join(" | "));
 }
 
-let unlistenParallax: UnlistenFn | null = null;
+let unlistenProfileUpdated: UnlistenFn | null = null;
+
+async function syncActiveProfile(profileId?: string) {
+  await reloadConfig();
+  const id = profileId || appearanceConfig.activeProfile;
+  invalidateProfileCache(id);
+  const profile = await ensureProfileLoaded(id);
+  if (!profile || !activateProfile(id)) {
+    log.warn(`Profile 同步失败: ${id}`);
+    return;
+  }
+  await refreshProfileAssets(id);
+  reloadParallax();
+}
 
 onMounted(async () => {
   reloadParallax();
-  unlistenParallax = await listen("deskpet-parallax-saved", async () => {
-    await reloadConfig()
-    const profile = getActiveProfile()
-    if (profile) await refreshProfileAssets(profile.id)
-    reloadParallax()
+  unlistenProfileUpdated = await listen<{ profileId?: string }>("deskpet-profile-updated", async ({ payload }) => {
+    await syncActiveProfile(payload?.profileId);
   })
 });
 onUnmounted(() => {
-  unlistenParallax?.();
+  unlistenProfileUpdated?.();
   if (_reloadRetryId) clearTimeout(_reloadRetryId);
 });
 

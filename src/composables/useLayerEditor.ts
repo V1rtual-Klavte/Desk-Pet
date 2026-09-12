@@ -6,12 +6,12 @@
 import { ref, computed, onMounted, onUnmounted } from "vue";
 import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
 import { invoke } from "@tauri-apps/api/core";
-import { emit } from "@tauri-apps/api/event";
+import { emit, listen, type UnlistenFn } from "@tauri-apps/api/event";
 import {
-  initProfiles, getActiveProfile, getProfileAssetUrl,
+  activateProfile, ensureProfileLoaded, initProfiles, getActiveProfile, invalidateProfileCache,
   refreshProfileAssets, resolveProfileAssetUrl, type ProfileData,
 } from "@/services/profile";
-import { flushConfig, userConfig } from "@/services/config";
+import { reloadConfig, userConfig } from "@/services/config";
 import { DEFAULT_LAYERS, LAYER_NAMES, layerDepth, type ParallaxLayerCfg } from "@/composables/useParallax";
 import { createLogger } from "@/services/logger";
 
@@ -85,12 +85,21 @@ export function useLayerEditor() {
   }
 
   let resizeObs: ResizeObserver | null = null;
+  let unlistenProfileUpdated: UnlistenFn | null = null;
 
   // ── 初始化 ──
-  async function initFromStorage() {
+  async function initFromStorage(profileId?: string) {
     try {
       log.info("开始初始化...");
       await initProfiles();
+      if (profileId) {
+        invalidateProfileCache(profileId);
+        const requested = await ensureProfileLoaded(profileId);
+        if (!requested || !activateProfile(profileId)) {
+          log.warn(`无法加载切换后的 Profile: ${profileId}`);
+          return;
+        }
+      }
       const p = getActiveProfile();
       profile.value = p;
       if (!p) {
@@ -99,16 +108,12 @@ export function useLayerEditor() {
       }
       log.info(`Profile: ${p.id} basePath=${p.basePath}`);
 
-      const uLayers = userConfig.parallaxLayers;
-      log.info("uLayers:", uLayers);
-
       for (let i = 0; i < 5; i++) {
         const pLayer = p.theme.parallax.layers?.[i];
         const base = pLayer
           ? { ...DEFAULT_LAYERS[i], ...pLayer }
           : { ...DEFAULT_LAYERS[i] };
-        const uLayer = uLayers?.[i];
-        layers.value[i].config = uLayer ? { ...base, ...uLayer } : { ...base };
+        layers.value[i].config = { ...base };
         // 版本迁移：整数=旧像素，小数=新百分比（拖拽产生小数）
         const cfg = layers.value[i].config;
         if (cfg.offsetX !== 0 && Number.isInteger(cfg.offsetX)) {
@@ -143,19 +148,10 @@ export function useLayerEditor() {
 
   // ── 素材回调 ──
   function onImgLoad(_i: number) {}
-  async function onImgError(i: number, e: Event) {
+  function onImgError(i: number, e: Event) {
     const img = e.target as HTMLImageElement;
-    const p = profile.value;
     img.style.display = "none";
     log.warn(`L${i} 加载失败: ${img.src}`);
-    if (p && p.id !== "sugar-pink") {
-      const lImg = layers.value[i].config.image;
-      const fbUrl = await getProfileAssetUrl("sugar-pink", lImg || "materials/L2/body.png");
-      log.warn(`L${i} 尝试回退: ${fbUrl}`);
-      img.src = fbUrl;
-      img.style.display = "";
-      return;
-    }
     layers.value[i].loadFailed = true;
   }
 
@@ -391,32 +387,52 @@ export function useLayerEditor() {
     pickerPreview.value = "";
   }
 
+  async function persistLayers() {
+    const p = profile.value;
+    if (!p || p.meta.builtin) {
+      throw new Error("内置 Profile 为只读资源，请先复制为用户 Profile")
+    }
+    const raw = await invoke<number[]>("profile_file_read", {
+      profileId: p.id,
+      relativePath: "profile.yaml",
+    });
+    const yaml = await import("js-yaml");
+    const profileYaml = yaml.load(new TextDecoder().decode(new Uint8Array(raw))) as Record<string, any>;
+    profileYaml.theme = profileYaml.theme || {};
+    profileYaml.theme.parallax = profileYaml.theme.parallax || {};
+    profileYaml.theme.parallax.layers = layers.value.map((layer) => ({
+      enabled: layer.config.enabled,
+      image: layer.config.image,
+      sensitivity: layer.config.sensitivity,
+      shadow: layer.config.shadow,
+      brightness: layer.config.brightness,
+      contrast: layer.config.contrast,
+      saturate: layer.config.saturate,
+      scale: layer.config.scale ?? 1,
+      offsetX: layer.config.offsetX,
+      offsetY: layer.config.offsetY,
+      locked: layer.config.locked,
+    }));
+    await invoke("profile_file_write", {
+      profileId: p.id,
+      relativePath: "profile.yaml",
+      content: Array.from(new TextEncoder().encode(yaml.dump(profileYaml, { lineWidth: -1, noRefs: true }))),
+    });
+  }
+
   // ── 保存 ──
   async function save() {
-    const cfg = JSON.parse(
-      JSON.stringify(
-        layers.value.map((l) => ({
-          enabled: l.config.enabled,
-          image: l.config.image,
-          sensitivity: l.config.sensitivity,
-          shadow: l.config.shadow,
-          brightness: l.config.brightness,
-          contrast: l.config.contrast,
-          saturate: l.config.saturate,
-          scale: l.config.scale ?? 1,
-          offsetX: l.config.offsetX,
-          offsetY: l.config.offsetY,
-          locked: l.config.locked,
-        }))
-      )
-    );
-    userConfig.parallaxLayers = cfg;
-    await flushConfig()
-    await emit("deskpet-parallax-saved")
-    saved.value = true;
-    setTimeout(() => {
-      saved.value = false;
-    }, 2000);
+    try {
+      await persistLayers();
+      await emit("deskpet-profile-updated", { profileId: profile.value?.id });
+      saved.value = true;
+      setTimeout(() => {
+        saved.value = false;
+      }, 2000);
+    } catch (e: any) {
+      log.warn(`保存图层失败: ${e?.message || e}`);
+      window.alert(e?.message || "保存图层失败");
+    }
   }
 
   function closeWindow() {
@@ -426,6 +442,10 @@ export function useLayerEditor() {
   // ── 生命周期 ──
   onMounted(async () => {
     await initFromStorage();
+    unlistenProfileUpdated = await listen<{ profileId?: string }>("deskpet-profile-updated", async ({ payload }) => {
+      await reloadConfig();
+      await initFromStorage(payload?.profileId);
+    });
     try {
       await win.setTitle(
         `🎨 图层编辑器 - ${profile.value?.meta.name || "糖糖桌宠"}`
@@ -439,6 +459,7 @@ export function useLayerEditor() {
   });
 
   onUnmounted(() => {
+    unlistenProfileUpdated?.();
     if (resizeObs) {
       resizeObs.disconnect();
       resizeObs = null;

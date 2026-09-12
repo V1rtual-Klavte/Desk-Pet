@@ -7,6 +7,7 @@ import { createLogger } from "@/services/logger";
 import { appearanceConfig } from "@/services/config";
 import { convertFileSrc, invoke } from "@tauri-apps/api/core";
 import { formatError } from "@/services/error";
+import { ref } from "vue";
 
 const log = createLogger("Profile");
 
@@ -67,6 +68,8 @@ export interface ProfileTheme {
   colors: ProfileThemeColors
   fonts: { ui: string; chat: string; size: number }
   shield: { enabled: boolean; image: string }
+  /** 当前 Profile 未携带 UI 位图时，直接使用默认内置 UI，不请求空目录。 */
+  useDefaultUi: boolean
   parallax: ProfileParallax
 }
 
@@ -107,6 +110,8 @@ export interface ProfileData {
 // ── 内部状态 ──
 let profiles = new Map<string, ProfileData>();
 let activeId: string | null = null;
+/** 让通过 getActiveProfile() 读取资源的 Vue 模板随 Profile 切换重新计算。 */
+export const activeProfileRevision = ref(0);
 let loaded = false;
 const DEFAULT_BUILTIN = "sugar-pink";
 const profileBaseUrls = new Map<string, string>();
@@ -242,6 +247,7 @@ async function loadProfile(id: string): Promise<ProfileData> {
       colors: rawProfile?.theme?.colors || {},
       fonts: rawProfile?.theme?.fonts || { ui: "zpix", chat: "zpix", size: 14 },
       shield: rawProfile?.theme?.shield || { enabled: false, image: "" },
+      useDefaultUi: rawProfile?.theme?.useDefaultUi === true,
       parallax: {
         intensity: rawProfile?.theme?.parallax?.intensity ?? 1.0,
         layers: (rawProfile?.theme?.parallax?.layers || []).map((l: any, i: number) => ({
@@ -336,6 +342,7 @@ export function activateProfile(id: string): boolean {
   const p = profiles.get(id)!;
   injectFonts(p);
   injectCssVars(p);
+  activeProfileRevision.value++;
   log.info(`Profile 已激活: "${id}" (${p.meta.name})`);
   return true;
 }
@@ -460,6 +467,7 @@ function injectCssVars(profile: ProfileData): void {
 export function getUiUrl(relativePath: string): string {
   const p = getActiveProfile();
   if (!p) return `/profiles/${DEFAULT_BUILTIN}/ui/${relativePath}`;
+  if (p.theme.useDefaultUi) return `/profiles/${DEFAULT_BUILTIN}/ui/${relativePath}`;
   return `${p.basePath}/ui/${relativePath}`;
 }
 
@@ -469,6 +477,8 @@ export function getFontUrl(filename: string): string {
 }
 
 export function getActiveProfile(): ProfileData | null {
+  // 保留函数式读取接口，同时建立 Vue 的响应式依赖。
+  void activeProfileRevision.value;
   if (!activeId) return null;
   return profiles.get(activeId) || null;
 }
