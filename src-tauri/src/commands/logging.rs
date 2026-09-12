@@ -4,9 +4,9 @@
 
 use tauri::Manager;
 
+use crate::error::AppResult;
 use crate::logger;
 use crate::rust_info;
-use crate::error::AppResult;
 
 /// 接收前端统一日志。
 /// 前端已按生效级别过滤，且以**单一 FIFO 队列**批量发送以保证顺序，
@@ -23,7 +23,10 @@ pub fn log_messages(msgs: Vec<String>) {
 #[tauri::command]
 pub fn set_log_config(level: u8) {
     logger::set_level(level);
-    rust_info!("日志级别已由前端设置: {}", logger::level_name(logger::level()));
+    rust_info!(
+        "日志级别已由前端设置: {}",
+        logger::level_name(logger::level())
+    );
 }
 
 /// 前端未捕获异常上报 —— 即使前端界面全挂，终端与日志文件里也要留下完整记录。

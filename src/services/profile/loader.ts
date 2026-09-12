@@ -1,5 +1,5 @@
 // ==========================================
-// Profile 加载器 — 懒加载 + 精简色彩 + 素材回退
+// Profile 加载器 — 懒加载 + 精简色彩
 // 启动只加载 CONFIG 指定的 profile，设置页才扫描列表
 // ==========================================
 
@@ -16,7 +16,6 @@ let _fontStyleEl: HTMLStyleElement | null = null;
 
 function injectFonts(profile: ProfileData): void {
   if (_fontStyleEl) { _fontStyleEl.remove(); _fontStyleEl = null; }
-  const b = profile.basePath;
   const fonts = profile.theme.fonts;
 
   const fontMap: Record<string, string> = {
@@ -33,7 +32,7 @@ function injectFonts(profile: ProfileData): void {
   for (const family of families) {
     const filename = fontMap[family];
     if (filename) {
-      css += `@font-face{font-family:"${family}";src:url("${b}/fonts/${filename}") format("truetype");}\n`;
+      css += `@font-face{font-family:"${family}";src:url("${resolveProfileAssetUrl(profile, `fonts/${filename}`)}") format("truetype");}\n`;
     }
   }
 
@@ -50,7 +49,6 @@ export interface ProfileMeta {
   name: string
   description: string
   version: number
-  builtin: boolean
   preset?: string
 }
 
@@ -68,7 +66,7 @@ export interface ProfileTheme {
   colors: ProfileThemeColors
   fonts: { ui: string; chat: string; size: number }
   shield: { enabled: boolean; image: string }
-  /** 当前 Profile 未携带 UI 位图时，直接使用默认内置 UI，不请求空目录。 */
+  /** 当前 Profile 未携带 UI 位图时，使用默认 Profile 的 UI。 */
   useDefaultUi: boolean
   parallax: ProfileParallax
 }
@@ -102,9 +100,7 @@ export interface ProfileData {
   id: string; meta: ProfileMeta; theme: ProfileTheme
   sound: ProfileSound; character: ProfileCharacter
   animations: Record<string, AnimDef>; expressions: ExpressionRule[]
-  builtinAnimations: string[]; basePath: string
-  userAssetBasePath?: string
-  userAssetOverrides: Set<string>
+  builtinAnimations: string[]; basePath: string; defaultUiBasePath?: string
 }
 
 // ── 内部状态 ──
@@ -113,7 +109,7 @@ let activeId: string | null = null;
 /** 让通过 getActiveProfile() 读取资源的 Vue 模板随 Profile 切换重新计算。 */
 export const activeProfileRevision = ref(0);
 let loaded = false;
-const DEFAULT_BUILTIN = "sugar-pink";
+const DEFAULT_PROFILE = "sugar-pink";
 const profileBaseUrls = new Map<string, string>();
 
 // ── YAML 加载 ──
@@ -136,42 +132,30 @@ async function resolveProfileBaseUrl(id: string): Promise<string> {
   const cached = profileBaseUrls.get(id)
   if (cached) return cached
   const path = await invoke<string>("profile_asset_base", { profileId: id })
-  const url = path ? convertFileSrc(path).replace(/\/$/, "") : `/profiles/${id}`
+  if (!path) throw new Error(`Profile 不存在: ${id}`)
+  const url = convertFileSrc(path).replace(/\/$/, "")
   profileBaseUrls.set(id, url)
   return url
 }
 
-async function loadUserAssetOverlay(id: string): Promise<{ basePath?: string; files: Set<string> }> {
-  const [path, files] = await Promise.all([
-    invoke<string>("profile_user_asset_base", { profileId: id }),
-    invoke<string[]>("list_profile_files", { profileId: id, subdir: null }),
-  ])
-  return {
-    basePath: path ? convertFileSrc(path).replace(/\/$/, "") : undefined,
-    files: new Set(files.map(file => file.replaceAll("\\", "/").replace(/^\/+/, ""))),
-  }
-}
-
 export function resolveProfileAssetUrl(profile: ProfileData, relativePath: string): string {
   const cleanPath = relativePath.replaceAll("\\", "/").replace(/^\/+/, "")
-  const base = profile.userAssetBasePath && profile.userAssetOverrides.has(cleanPath)
-    ? profile.userAssetBasePath
-    : profile.basePath
-  return `${base}/${cleanPath}`
-}
-
-export async function refreshProfileAssets(profileId: string): Promise<void> {
-  const profile = profiles.get(profileId)
-  if (!profile) return
-  const overlay = await loadUserAssetOverlay(profileId)
-  profile.userAssetBasePath = overlay.basePath
-  profile.userAssetOverrides = overlay.files
+  return `${profile.basePath}/${cleanPath}`
 }
 
 /** 导入或复制后清理内存缓存，确保下次加载读取最新文件。 */
 export function invalidateProfileCache(profileId: string): void {
   profiles.delete(profileId)
   profileBaseUrls.delete(profileId)
+}
+
+/** 文件编辑后重新读取运行时 Profile；保留旧接口以供图层编辑器触发刷新。 */
+export async function refreshProfileAssets(profileId: string): Promise<ProfileData | null> {
+  const wasActive = activeId === profileId
+  invalidateProfileCache(profileId)
+  const profile = await ensureProfileLoaded(profileId)
+  if (profile && wasActive) activateProfile(profileId)
+  return profile
 }
 
 export async function getProfileAssetUrl(profileId: string, relativePath: string): Promise<string> {
@@ -182,39 +166,25 @@ export async function getProfileAssetUrl(profileId: string, relativePath: string
 
 // ── Profile 加载 ──
 
-// ── 内置身份 ──
-// 唯一依据：Rust 的 list_builtin_profiles（即打包资源目录 builtin_profiles/ 下是否存在该 id）。
-// 不要改为读 profile.yaml 的 meta.builtin（那是自述，导入的包可以伪造），
-// 也不要改为「用户目录里没有就是内置」——用户目录遮蔽内置 id 时那会和命令层分歧。
-let _builtinIds: Set<string> | null = null;
-
-async function getBuiltinIds(): Promise<Set<string>> {
-  if (!_builtinIds) {
-    try {
-      _builtinIds = new Set(await invoke<string[]>("list_builtin_profiles"));
-    } catch (e) {
-      log.warn("列举内置 Profile 失败，本次会话按「非内置」处理", formatError(e));
-      _builtinIds = new Set();
-    }
-  }
-  return _builtinIds;
-}
-
 async function loadProfile(id: string): Promise<ProfileData> {
-  const [basePath, overlay, builtinIds] = await Promise.all([
-    resolveProfileBaseUrl(id),
-    loadUserAssetOverlay(id),
-    getBuiltinIds(),
-  ]);
+  const basePath = await resolveProfileBaseUrl(id);
 
   const rawProfile = await fetchYaml<any>(`${basePath}/profile.yaml`);
+  let defaultUiBasePath: string | undefined;
+  if (rawProfile?.theme?.useDefaultUi === true && id !== DEFAULT_PROFILE) {
+    try {
+      defaultUiBasePath = await resolveProfileBaseUrl(DEFAULT_PROFILE);
+    } catch (error) {
+      log.warn(`默认 UI Profile 不可用，继续使用 ${id} 自身资源`, error);
+    }
+  }
 
   let rawChar: any;
   let charBasePath = basePath; // ★ 帧素材实际所在 Profile（可能回退到默认）
   try {
     rawChar = await fetchYaml<any>(`${basePath}/character.yaml`);
   } catch {
-    charBasePath = await resolveProfileBaseUrl(DEFAULT_BUILTIN);
+    charBasePath = await resolveProfileBaseUrl(DEFAULT_PROFILE);
     rawChar = await fetchYaml<any>(`${charBasePath}/character.yaml`);
   }
   const resolveFramePath = (f: string) => `${charBasePath}/${f}`;
@@ -239,8 +209,6 @@ async function loadProfile(id: string): Promise<ProfileData> {
       name: rawProfile?.meta?.name || id,
       description: rawProfile?.meta?.description || "",
       version: rawProfile?.meta?.version || 1,
-      // 内置身份由内置资源目录决定，见 getBuiltinIds()
-      builtin: builtinIds.has(id),
       preset: rawProfile?.meta?.preset,
     },
     theme: {
@@ -279,8 +247,7 @@ async function loadProfile(id: string): Promise<ProfileData> {
     expressions: rawChar?.expressions || [],
     builtinAnimations: rawChar?.builtinAnimations || [],
     basePath,
-    userAssetBasePath: overlay.basePath,
-    userAssetOverrides: overlay.files,
+    defaultUiBasePath,
   };
 }
 
@@ -288,18 +255,18 @@ async function loadProfile(id: string): Promise<ProfileData> {
 
 export async function initProfiles(): Promise<void> {
   if (loaded) return;
-  const targetId = appearanceConfig.activeProfile || DEFAULT_BUILTIN;
+  const targetId = appearanceConfig.activeProfile || DEFAULT_PROFILE;
   try {
     const data = await loadProfile(targetId);
     profiles.set(targetId, data);
     log.info(`Profile 已加载: "${targetId}" (${data.meta.name})`);
   } catch (e) {
     log.error(`Profile "${targetId}" 加载失败:`, e);
-    if (targetId !== DEFAULT_BUILTIN) {
+    if (targetId !== DEFAULT_PROFILE) {
       try {
-        const fallback = await loadProfile(DEFAULT_BUILTIN);
-        profiles.set(DEFAULT_BUILTIN, fallback);
-        log.warn(`回退到默认 Profile: "${DEFAULT_BUILTIN}"`);
+        const fallback = await loadProfile(DEFAULT_PROFILE);
+        profiles.set(DEFAULT_PROFILE, fallback);
+        log.warn(`回退到默认 Profile: "${DEFAULT_PROFILE}"`);
       } catch (e2) { log.error("默认 Profile 也加载失败:", e2); }
     }
   }
@@ -310,14 +277,11 @@ export async function initProfiles(): Promise<void> {
 
 export async function discoverAllProfiles(): Promise<string[]> {
   const found = new Set<string>();
-  // 内置清单来自 Rust 的目录扫描，不再硬编码 —— 加/删内置 Profile 无需改前端
-  for (const id of await getBuiltinIds()) found.add(id);
   try {
-    const userProfiles: string[] = await invoke("list_user_profiles");
-    for (const id of userProfiles) found.add(id);
+    const runtimeProfiles: string[] = await invoke("list_profiles");
+    for (const id of runtimeProfiles) found.add(id);
   } catch (e) {
-    // 这里失败会让用户自定义 Profile 整个消失，必须留痕
-    log.warn("列举用户 Profile 失败", formatError(e));
+    log.warn("列举 Profile 失败", formatError(e));
   }
   return [...found];
 }
@@ -466,14 +430,16 @@ function injectCssVars(profile: ProfileData): void {
 
 export function getUiUrl(relativePath: string): string {
   const p = getActiveProfile();
-  if (!p) return `/profiles/${DEFAULT_BUILTIN}/ui/${relativePath}`;
-  if (p.theme.useDefaultUi) return `/profiles/${DEFAULT_BUILTIN}/ui/${relativePath}`;
-  return `${p.basePath}/ui/${relativePath}`;
+  if (!p) return "";
+  if (p.theme.useDefaultUi && p.defaultUiBasePath) {
+    return `${p.defaultUiBasePath}/ui/${relativePath.replace(/^\/+/, "")}`;
+  }
+  return resolveProfileAssetUrl(p, `ui/${relativePath}`);
 }
 
 export function getFontUrl(filename: string): string {
   const p = getActiveProfile();
-  return p ? `${p.basePath}/fonts/${filename}` : `/profiles/${DEFAULT_BUILTIN}/fonts/${filename}`;
+  return p ? resolveProfileAssetUrl(p, `fonts/${filename}`) : "";
 }
 
 export function getActiveProfile(): ProfileData | null {
@@ -495,7 +461,7 @@ export function isProfilesLoaded(): boolean { return loaded; }
 
 export function getBodyUrl(profile?: ProfileData): string {
   const p = profile || getActiveProfile();
-  if (!p) return `/profiles/${DEFAULT_BUILTIN}/materials/L2/body.png`;
+  if (!p) return "";
   return resolveProfileAssetUrl(p, "materials/L2/body.png");
 }
 

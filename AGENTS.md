@@ -133,7 +133,7 @@ src/
 src-tauri/src/
 ├── main.rs                     # 入口
 ├── lib.rs                      # AppPaths、命令注册和应用启动
-├── paths.rs                    # data_root、内置资源和路径校验
+├── paths.rs                    # data_root、默认资源种子和路径校验
 ├── logger.rs                   # 日志内核（级别过滤、本地时间戳、文件 sink）
 ├── error.rs                    # 统一错误类型 AppError
 ├── commands/                   # 窗口、文件、工具、记忆、Profile 等命令
@@ -287,7 +287,7 @@ data_root/
 └── profiles/     用户 Profile 与素材
 ```
 
-内置 Card/Profile 只读，运行时数据只写入 `data_root`。当前内置 Profile 包括 `sugar-pink`、`dark-purple`、`glass` 和 `yuki`。
+应用随包提供默认 Card/Profile 种子，首次启动复制到 `data_root`。初始化完成后所有 Card/Profile 都是普通运行时资源，可编辑、复制、导出和删除；打包资源只用于首次初始化，不参与运行时读取。
 
 ### 路径拼接规则
 
@@ -328,7 +328,7 @@ pub fn my_command(paths: tauri::State<AppPaths>) -> AppResult<()> {
 - 禁止手写 `dirs_next()`、`find_project_root()` 或 `env!("CARGO_MANIFEST_DIR")` 解析业务路径。
 - 禁止使用 `canonicalize().unwrap_or()` 静默回退。
 - 禁止 `.lock().unwrap()`；用 `.unwrap_or_else(|e| e.into_inner())` 忽略锁中毒。
-- 内置 Profile/Card 是只读打包资源；设置页必须提示先“复制为用户 Profile”，复制后的完整资源与导入 Profile 都写入运行时 `profiles/{id}/`，写操作只走该目录。
+- 默认 Profile/Card 位于 `src-tauri/resources/defaults/`，仅作为首次初始化种子；运行时读取、编辑、导入、复制、删除全部只走 `data_root/profiles/` 与 `data_root/personality/cards/`。初始化标记写入 `data_root/settings/.default-resources-seeded`，标记存在后不会因删除而自动恢复。
 - 灵动图层的逐层素材与参数属于 Profile 的 `theme.parallax.layers`；运行时 CONFIG 只保存跨 Profile 共用的开关和强度，禁止用全局 layers 覆盖当前 Profile。
 - 新命令必须在 `lib.rs` 的 `invoke_handler!` 中注册。
 - Windows/macOS 专有代码必须使用条件编译和对应平台依赖。
@@ -445,10 +445,10 @@ Rust 侧默认值随构建模式：debug 构建全量、release 默认 info；`D
 - 正文只在需要解释**动机或取舍**时写，用 `-` 列表。
 
 ```text
-feat(profile): 内置 Profile 改为只读，新增复制为用户 Profile
+refactor(profile): 默认资源首次初始化为可编辑 Profile
 
-- 内置 ID 在命令层拒绝写入与删除
-- 复制时打包完整资源到 data_root/profiles/{id}
+- 随包默认资源只在首次启动复制到 data_root/profiles/{id}
+- 运行时 Profile 与用户导入 Profile 具有相同的编辑和删除权限
 
 fix(paths): personality 命令拒绝带域前缀的入参
 

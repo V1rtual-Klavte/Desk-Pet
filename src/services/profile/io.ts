@@ -1,14 +1,14 @@
 // ==========================================
 // Profile IO — 导入 / 导出 / 复制 / 删除
 //
-// 内置 profile 从只读资源目录读取，用户 profile 写入 AppPaths.profiles。
+// 所有 Profile 都从运行时 data_root/profiles 读取和写入。
 // 所有操作返回 ProfileOpResult，由调用方决定怎么提示用户 —— 不在这里弹窗，
 // 保持服务层与 UI 解耦。
 // ==========================================
 
 import JSZip from "jszip";
 import { invoke } from "@tauri-apps/api/core";
-import { getProfile, invalidateProfileCache } from "./loader";
+import { invalidateProfileCache } from "./loader";
 import { BaseDirs } from "@/services/paths";
 import { createLogger } from "@/services/logger";
 import { formatError } from "@/services/error";
@@ -72,10 +72,7 @@ export function nextCloneId(existingIds: string[]): string {
 }
 
 /**
- * 复制 Profile（内置或用户都可以作为源）。
- *
- * 副本必须改写 `meta.builtin = false` —— 否则会被当成只读内置资源；
- * 同时删掉 `meta.preset`，否则会混进设置页的预设按钮里。
+ * 复制 Profile。副本不再属于预设按钮，后续按普通运行时 Profile 管理。
  */
 export async function cloneProfile(
   sourceId: string,
@@ -94,7 +91,8 @@ export async function cloneProfile(
     })
     const jsYaml = await import("js-yaml")
     const doc = jsYaml.load(new TextDecoder().decode(new Uint8Array(raw))) as Record<string, any>
-    doc.meta = { ...(doc.meta || {}), builtin: false }
+    doc.meta = { ...(doc.meta || {}) }
+    delete doc.meta.builtin
     delete doc.meta.preset
     await invoke("profile_file_write", {
       profileId: newId,
@@ -127,10 +125,6 @@ export async function importProfileZip(file: File): Promise<ProfileOpResult & { 
       .toLowerCase()
     if (!profileId) return fail("无法从文件名推导出合法的 Profile ID")
 
-    if (getProfile(profileId)?.meta.builtin) {
-      return fail(`"${profileId}" 与内置 Profile 同名，请重命名压缩包后再导入`)
-    }
-
     let count = 0
     for (const [path, entry] of Object.entries(zip.files)) {
       if (entry.dir) continue
@@ -157,10 +151,6 @@ export async function importProfileZip(file: File): Promise<ProfileOpResult & { 
 // ── 删除 ──
 
 export async function deleteProfile(profileId: string): Promise<ProfileOpResult> {
-  const profile = getProfile(profileId)
-  if (profile?.meta.builtin) {
-    return fail(`"${profileId}" 是内置 Profile，不可删除`)
-  }
   try {
     await invoke("profile_delete", { profileId })
     invalidateProfileCache(profileId)

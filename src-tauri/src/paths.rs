@@ -10,18 +10,19 @@ use tauri::Manager;
 use crate::error::{AppError, AppResult};
 
 pub struct AppPaths {
-    pub data_root:    PathBuf,  // 统一读写根
-    pub memory:       PathBuf,  // {data_root}/memory/
-    pub sessions:     PathBuf,  // {data_root}/sessions/
-    pub personality:  PathBuf,  // {data_root}/personality/
-    pub profiles:     PathBuf,  // {data_root}/profiles/
-    pub settings:     PathBuf,  // {data_root}/settings/
-    pub logs:         PathBuf,  // {data_root}/logs/ —— 日志落盘
-    pub config_file:  PathBuf,  // 开发 CONFIG-DEV.yaml / 生产 settings/CONFIG.yaml
+    pub data_root: PathBuf,   // 统一读写根
+    pub memory: PathBuf,      // {data_root}/memory/
+    pub sessions: PathBuf,    // {data_root}/sessions/
+    pub personality: PathBuf, // {data_root}/personality/
+    pub profiles: PathBuf,    // {data_root}/profiles/
+    pub settings: PathBuf,    // {data_root}/settings/
+    pub logs: PathBuf,        // {data_root}/logs/ —— 日志落盘
+    pub config_file: PathBuf, // 开发 CONFIG-DEV.yaml / 生产 settings/CONFIG.yaml
     pub runtime_mode: &'static str,
 
-    pub builtin_personality: PathBuf,  // {resource}/personality/  (只读)
-    pub builtin_profiles:    PathBuf,  // {resource}/profiles/     (只读)
+    // 仅用于首次初始化的随包种子；业务读取和写入始终只使用上面的运行时目录。
+    pub seed_personality_cards: PathBuf,
+    pub seed_profiles: PathBuf,
 }
 
 impl AppPaths {
@@ -40,43 +41,63 @@ impl AppPaths {
             }
         } else {
             // app_local_data_dir 已包含 bundle identifier，不能再次拼 desk-pet。
-            app.path().app_local_data_dir()
+            app.path()
+                .app_local_data_dir()
                 .map_err(|e| AppError::Config(format!("app_local_data_dir: {e}")))?
         };
 
         let settings = data_root.join("settings");
         let config_file = if cfg!(debug_assertions) {
             let dev = project_root().join("CONFIG-DEV.yaml");
-            if dev.exists() { dev } else { project_root().join("CONFIG.yaml") }
+            if dev.exists() {
+                dev
+            } else {
+                project_root().join("CONFIG.yaml")
+            }
         } else {
             settings.join("CONFIG.yaml")
         };
 
         let paths = Self {
-            memory:       data_root.join("memory"),
-            sessions:     data_root.join("sessions"),
-            personality:  data_root.join("personality"),
-            profiles:     data_root.join("profiles"),
+            memory: data_root.join("memory"),
+            sessions: data_root.join("sessions"),
+            personality: data_root.join("personality"),
+            profiles: data_root.join("profiles"),
             settings,
             logs: data_root.join("logs"),
             config_file,
-            runtime_mode: if cfg!(debug_assertions) { "development" } else { "production" },
-            builtin_personality: resource.join("personality"),
-            builtin_profiles:    resource.join("profiles"),
+            runtime_mode: if cfg!(debug_assertions) {
+                "development"
+            } else {
+                "production"
+            },
+            seed_personality_cards: resource.join("defaults").join("personality").join("cards"),
+            seed_profiles: resource.join("defaults").join("profiles"),
             data_root,
         };
 
-        for dir in [&paths.memory, &paths.sessions, &paths.personality, &paths.profiles, &paths.settings, &paths.logs] {
-            fs::create_dir_all(dir).map_err(|e| AppError::Io(format!("创建目录失败: {dir:?}: {e}")))?;
+        for dir in [
+            &paths.memory,
+            &paths.sessions,
+            &paths.personality,
+            &paths.profiles,
+            &paths.settings,
+            &paths.logs,
+        ] {
+            fs::create_dir_all(dir)
+                .map_err(|e| AppError::Io(format!("创建目录失败: {dir:?}: {e}")))?;
         }
+
+        seed_default_resources(&paths)?;
 
         if cfg!(debug_assertions) && is_live_test() {
             seed_live_test_stages(&paths)?;
         }
 
         if !cfg!(debug_assertions) && !paths.config_file.exists() {
-            fs::write(&paths.config_file, include_str!("../../CONFIG.yaml"))
-                .map_err(|e| AppError::Config(format!("初始化生产配置失败: {:?}: {e}", paths.config_file)))?;
+            fs::write(&paths.config_file, include_str!("../../CONFIG.yaml")).map_err(|e| {
+                AppError::Config(format!("初始化生产配置失败: {:?}: {e}", paths.config_file))
+            })?;
         }
 
         Ok(paths)
@@ -86,9 +107,13 @@ impl AppPaths {
 
     /// 校验路径在 base 内（用于 personality/memory/profile 读写）
     pub fn validate_path(path: &Path, base: &Path) -> AppResult<PathBuf> {
-        let resolved = path.canonicalize()
+        let resolved = path
+            .canonicalize()
             .map_err(|_| AppError::PathNotFound(path.to_string_lossy().to_string()))?;
-        if !resolved.starts_with(base) {
+        let resolved_base = base
+            .canonicalize()
+            .map_err(|_| AppError::PathNotFound(base.to_string_lossy().to_string()))?;
+        if !resolved.starts_with(&resolved_base) {
             return Err(AppError::PathEscape);
         }
         Ok(resolved)
@@ -96,7 +121,8 @@ impl AppPaths {
 
     /// 校验文件路径在 home / temp 内（用于 tool_exec file_read/write）
     pub fn validate_file_path(path: &Path) -> AppResult<PathBuf> {
-        let resolved = path.canonicalize()
+        let resolved = path
+            .canonicalize()
             .map_err(|_| AppError::PathNotFound(path.to_string_lossy().to_string()))?;
         if !is_allowed_file_path(&resolved)? {
             return Err(AppError::PathEscape);
@@ -111,15 +137,25 @@ impl AppPaths {
             return Err(AppError::PathEscape);
         }
 
-        let mut ancestor = normalized.parent()
-            .ok_or_else(|| AppError::PathNotFound(format!("无效的文件路径: {}", path.to_string_lossy())))?
+        let mut ancestor = normalized
+            .parent()
+            .ok_or_else(|| {
+                AppError::PathNotFound(format!("无效的文件路径: {}", path.to_string_lossy()))
+            })?
             .to_path_buf();
         while !ancestor.exists() {
-            ancestor = ancestor.parent()
-                .ok_or_else(|| AppError::PathNotFound(format!("路径没有可校验的父目录: {}", path.to_string_lossy())))?
+            ancestor = ancestor
+                .parent()
+                .ok_or_else(|| {
+                    AppError::PathNotFound(format!(
+                        "路径没有可校验的父目录: {}",
+                        path.to_string_lossy()
+                    ))
+                })?
                 .to_path_buf();
         }
-        let canonical_ancestor = ancestor.canonicalize()
+        let canonical_ancestor = ancestor
+            .canonicalize()
             .map_err(|_| AppError::PathNotFound(ancestor.to_string_lossy().to_string()))?;
         if !is_allowed_file_path(&canonical_ancestor)? {
             return Err(AppError::PathEscape);
@@ -143,7 +179,9 @@ fn allowed_file_roots() -> AppResult<Vec<PathBuf>> {
 }
 
 fn is_allowed_file_path(path: &Path) -> AppResult<bool> {
-    Ok(allowed_file_roots()?.iter().any(|root| path.starts_with(root)))
+    Ok(allowed_file_roots()?
+        .iter()
+        .any(|root| path.starts_with(root)))
 }
 
 fn normalize_absolute(path: &Path) -> AppResult<PathBuf> {
@@ -169,12 +207,13 @@ fn normalize_absolute(path: &Path) -> AppResult<PathBuf> {
 
 fn resolve_resource_dir(app: &tauri::AppHandle) -> AppResult<PathBuf> {
     if cfg!(debug_assertions) {
-        let p = project_root().join("public");
+        let p = project_root().join("src-tauri").join("resources");
         if p.exists() {
             return Ok(p);
         }
     }
-    app.path().resource_dir()
+    app.path()
+        .resource_dir()
         .map_err(|e| AppError::Config(format!("resource_dir: {e}")))
 }
 
@@ -204,11 +243,15 @@ fn seed_live_test_stages(paths: &AppPaths) -> AppResult<()> {
 
 fn copy_directory(source: &Path, target: &Path) -> AppResult<()> {
     fs::create_dir_all(target).map_err(|e| AppError::Io(format!("创建测试种子目录失败: {e}")))?;
-    for entry in fs::read_dir(source).map_err(|e| AppError::Io(format!("读取测试种子目录失败: {e}")))? {
+    for entry in
+        fs::read_dir(source).map_err(|e| AppError::Io(format!("读取测试种子目录失败: {e}")))?
+    {
         let entry = entry.map_err(|e| AppError::Io(format!("读取测试种子条目失败: {e}")))?;
         let source_path = entry.path();
         let target_path = target.join(entry.file_name());
-        let file_type = entry.file_type().map_err(|e| AppError::Io(format!("读取测试种子类型失败: {e}")))?;
+        let file_type = entry
+            .file_type()
+            .map_err(|e| AppError::Io(format!("读取测试种子类型失败: {e}")))?;
         if file_type.is_dir() {
             copy_directory(&source_path, &target_path)?;
         } else if file_type.is_file() {
@@ -219,11 +262,121 @@ fn copy_directory(source: &Path, target: &Path) -> AppResult<()> {
     Ok(())
 }
 
+/// 默认资源只在第一次初始化时复制到运行时目录。
+///
+/// 标记写入后不再补齐缺失文件，用户删除自带 Profile/Card 或素材后不会在下一次
+/// 启动时被恢复；运行时目录中的资源与用户导入资源具有完全相同的所有权。
+fn seed_default_resources(paths: &AppPaths) -> AppResult<()> {
+    let marker = paths.settings.join(".default-resources-seeded");
+    if marker.exists() {
+        AppPaths::validate_path(&marker, &paths.settings)?;
+        return Ok(());
+    }
+
+    seed_missing_directory(&paths.seed_profiles, &paths.profiles, "Profile")?;
+    seed_missing_directory(
+        &paths.seed_personality_cards,
+        &paths.personality.join("cards"),
+        "Card",
+    )?;
+    fs::write(&marker, b"1\n")
+        .map_err(|e| AppError::Io(format!("写入默认资源初始化标记失败: {marker:?}: {e}")))?;
+    Ok(())
+}
+
+/// 首次初始化时只补齐缺失的种子文件，绝不覆盖已有运行时编辑结果。
+fn seed_missing_directory(source: &Path, target: &Path, label: &str) -> AppResult<()> {
+    if !source.is_dir() {
+        return Ok(());
+    }
+    fs::create_dir_all(target).map_err(|e| AppError::Io(format!("创建 {label} 目录失败: {e}")))?;
+    for entry in
+        fs::read_dir(source).map_err(|e| AppError::Io(format!("读取 {label} 种子失败: {e}")))?
+    {
+        let entry = entry.map_err(|e| AppError::Io(format!("读取 {label} 种子条目失败: {e}")))?;
+        let source_path = entry.path();
+        let target_path = target.join(entry.file_name());
+        let file_type = entry
+            .file_type()
+            .map_err(|e| AppError::Io(format!("读取 {label} 种子类型失败: {e}")))?;
+        if file_type.is_dir() {
+            seed_missing_directory(&source_path, &target_path, label)?;
+        } else if file_type.is_file() && !target_path.exists() {
+            fs::copy(&source_path, &target_path)
+                .map_err(|e| AppError::Io(format!("初始化 {label} 种子失败: {e}")))?;
+        }
+    }
+    Ok(())
+}
+
 fn home_dir() -> Option<PathBuf> {
     #[cfg(target_os = "macos")]
-    { std::env::var("HOME").ok().map(PathBuf::from) }
+    {
+        std::env::var("HOME").ok().map(PathBuf::from)
+    }
     #[cfg(target_os = "windows")]
-    { std::env::var("USERPROFILE").ok().map(PathBuf::from) }
+    {
+        std::env::var("USERPROFILE").ok().map(PathBuf::from)
+    }
     #[cfg(not(any(target_os = "macos", target_os = "windows")))]
-    { std::env::var("HOME").ok().map(PathBuf::from) }
+    {
+        std::env::var("HOME").ok().map(PathBuf::from)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    static TEST_COUNTER: AtomicUsize = AtomicUsize::new(0);
+
+    fn test_paths(root: &Path, seeds: &Path) -> AppPaths {
+        AppPaths {
+            data_root: root.to_path_buf(),
+            memory: root.join("memory"),
+            sessions: root.join("sessions"),
+            personality: root.join("personality"),
+            profiles: root.join("profiles"),
+            settings: root.join("settings"),
+            logs: root.join("logs"),
+            config_file: root.join("CONFIG.yaml"),
+            runtime_mode: "test",
+            seed_personality_cards: seeds.join("personality/cards"),
+            seed_profiles: seeds.join("profiles"),
+        }
+    }
+
+    #[test]
+    fn default_resources_are_not_restored_after_first_seed() {
+        let suffix = format!(
+            "deskpet-paths-{}-{}",
+            std::process::id(),
+            TEST_COUNTER.fetch_add(1, Ordering::Relaxed)
+        );
+        let root = std::env::temp_dir().join(&suffix);
+        let seeds = root.join("seeds");
+        fs::create_dir_all(seeds.join("profiles/default")).unwrap();
+        fs::create_dir_all(seeds.join("personality/cards")).unwrap();
+        fs::write(seeds.join("profiles/default/profile.yaml"), "meta: {}\n").unwrap();
+        fs::write(seeds.join("personality/cards/default.md"), "# default\n").unwrap();
+
+        let paths = test_paths(&root, &seeds);
+        for dir in [&paths.profiles, &paths.personality, &paths.settings] {
+            fs::create_dir_all(dir).unwrap();
+        }
+        seed_default_resources(&paths).unwrap();
+        let profile = paths.profiles.join("default/profile.yaml");
+        assert!(profile.exists());
+        assert!(paths.personality.join("cards/default.md").exists());
+
+        fs::remove_file(&profile).unwrap();
+        seed_default_resources(&paths).unwrap();
+        assert!(
+            !profile.exists(),
+            "seed marker must preserve a user deletion"
+        );
+
+        fs::remove_dir_all(&root).unwrap();
+    }
 }

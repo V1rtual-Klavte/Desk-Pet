@@ -72,11 +72,11 @@
 
 人格系统已从 Agent 执行层分离为 `src/services/personality/` 独立模块，**只参与 Prompt 生成**，不影响 Agent 执行逻辑。
 
-- **人格卡**：YAML frontmatter + 7 section Markdown；内置卡位于 `src/services/personality/cards/`，用户导入卡也持久化到 `src/services/personality/cards/`
+- **人格卡**：YAML frontmatter + 7 section Markdown；默认 Card 首次启动复制到 `data_root/personality/cards/`，所有 Card 均从该运行时目录加载
 - **热插拔**：设置面板可随时切换 Card（neutral 为默认兜底），切换为事务式阻塞流程：stages 加载/生成、变量池初始化/持久化任一失败则回滚旧 Card
 - **语气指引**：Card `#行为进阶` 的 `whenText` 以自然语言描述当前角色语气，作为 Prompt 的一部分，不在前端执行表达式
 - **情绪表达**：Card `#情绪表达` 定义 `key → 表情,音效` 映射，回复生成器从 `RUNTIME_DATA` 解析后统一处理
-- **阶段文案**：per-card stages 由 LLM 生成并持久化到 `src/services/personality/stages/{cardId}.json`
+- **阶段文案**：per-card stages 由 LLM 生成并持久化到 `data_root/personality/stages/{cardId}.json`
 - **fallbacks 兜底**：stages JSON 含 `fallbacks` 字段 (8 个 key)，`getFallbackReply(key)` 按 Card 返回角色化兜底；`llmUnavailable` 为数组随机选取；最终回退到极简中性常数
 - **neutral 默认卡**：`cards/neutral.md` — 中性桌面助手，替代旧 `personality.enabled=false`
 - **变量状态**：四类变量 `system` / `card` / `interaction` / `session`
@@ -87,7 +87,7 @@
   - **持久化**：`vars.json` (system snapshot) + `stages/{cardId}.json:variables` (card+interaction)
   - **注册表**：Card `#变量定义 > ## card / ## interaction` YAML block → `CardVariableDef[]`，loader 解析
   - **更新闭环**：Agent Loop 开始 refresh → reset 策略 → 生成器批量校验/写入 → `savePoolToDisk()` 持久化
-- **扩展性**：内置 cards 由 `import.meta.glob` 自动扫描；用户 cards 通过 Tauri fs 导入/扫描
+- **扩展性**：所有 Card 由 Tauri fs 从运行时目录导入、保存和扫描
 
 #### 人格中间件（stages 缓存驱动 + fallbacks）
 
@@ -273,7 +273,7 @@ __memory.consolidate()                     // 手动触发记忆整理
 
 ### 4.1 人格卡（Character Card）
 
-角色人格通过 Markdown 文件定义，位于 `src/services/personality/cards/`。**支持 HMR 热更新**（编辑即生效）。所有人格卡使用统一模板（YAML frontmatter + 结构化章节）。
+角色人格通过 Markdown 文件定义，运行时位于 `data_root/personality/cards/`。修改后重新扫描即可生效。所有人格卡使用统一模板（YAML frontmatter + 结构化章节）。
 
 人格卡在设置面板中可配置开关（同时只能开一个或不使用，用默认人格），做到随时开关、热插拔。
 
@@ -451,12 +451,12 @@ playNotificationByBoundary();
 
 ### 8.2 Profile 系统 — 主题/角色/音效（自包含闭包）
 
-每个 Profile 是一个独立文件夹，位于 `public/profiles/<id>/`，**拖入即用，零外部引用**。导出 = 打包整个文件夹为 Zip。
+每个 Profile 是一个独立文件夹，运行时位于 `data_root/profiles/<id>/`，**拖入即用，零外部引用**。默认 Profile 随包位于 `src-tauri/resources/defaults/profiles/`，只在首次启动时复制到运行时目录。导出 = 打包整个文件夹为 Zip。
 
 #### 目录结构
 
 ```
-sugar-pink/                  # Profile 示例（内置4个: sugar-pink / dark-purple / glass / yuki）
+sugar-pink/                  # Profile 示例（默认提供: sugar-pink / dark-purple / glass / yuki）
 ├── profile.yaml             # 主题色(18中文键) + 预设类型 + 字体 + 音效映射 + 灵动图层
 ├── character.yaml           # 角色动画帧定义 + 表情关键词规则
 ├── body.png                 # 角色立绘（Layer 2 核心层）
@@ -488,12 +488,12 @@ sugar-pink/                  # Profile 示例（内置4个: sugar-pink / dark-pu
 - **五层始终渲染**: DOM 中 5 个 `div.pl-layer` 始终存在，`display:none` 由 `layerStyles` computed 控制
 - **3D 增强**: CSS `drop-shadow` + `brightness/contrast/saturate` 按深度调整
 - **配置**: `profile.yaml` → `theme.parallax`；设置页 → 全局开关+强度；**图层编辑器弹窗** → 逐层交互式编辑（拖拽位置/属性调整/锁定/隐藏）
-- **持久化**: 图层编辑器只允许编辑用户 Profile，并保存到该 Profile 的 `profile.yaml`；运行时 CONFIG 只保存全局开关和强度
+- **持久化**: 图层编辑器编辑当前 Profile，并保存到该 Profile 的 `profile.yaml`；运行时 CONFIG 只保存全局开关和强度
 - **核心文件**: `src/composables/useParallax.ts`（引擎，导出 `layerDepth()`）+ `StreamView.vue`（五层渲染）+ `src/components/LayerEditor.vue`（编辑器弹窗）
-- **Rust**: `cursor.rs` → `spawn_cursor_tracker` 后台线程 ~60fps emit；`profile_cmd.rs` → `profile_file_write` 写入用户覆盖目录，`list_profile_files` 只扫描该可写目录
-- **素材来源**: 内置 Profile 由打包资源只读提供；需要编辑时在设置页复制为完整用户 Profile，后续素材和配置只写入用户目录
+- **Rust**: `cursor.rs` → `spawn_cursor_tracker` 后台线程 ~60fps emit；`profile_cmd.rs` → `profile_file_write` 写入当前运行时 Profile，`list_profile_files` 只扫描该目录
+- **素材来源**: 默认 Profile 的种子随包提供，首次启动复制到运行时目录；之后所有素材和配置只读写该运行时目录
 
-#### 内置 Profile
+#### 默认 Profile
 
 | Profile ID | 名称 | 预设 | 特点 |
 |-----------|------|:---:|------|
@@ -529,7 +529,7 @@ sugar-pink/                  # Profile 示例（内置4个: sugar-pink / dark-pu
 启动 → initProfiles()
   ├── 读取 appearanceConfig.activeProfile（默认 "sugar-pink"）
   ├── loadProfile(id) → fetch profile.yaml + character.yaml
-  │     ├── character.yaml 加载失败? → 回退到 DEFAULT_BUILTIN("sugar-pink")
+  │     ├── character.yaml 加载失败? → 回退到 DEFAULT_PROFILE("sugar-pink")
   │     └── 帧路径: 当前 profile 首选，缺失回退默认
   └── activateProfile(id) → injectFonts() + injectCssVars()
 
@@ -537,7 +537,7 @@ Profile 切换或用户 Profile 保存 → flush CONFIG/Profile → emit("deskpe
   → 各 WebView 重新加载并激活目标 Profile → StreamView 重载五层
 
 设置页打开 →
-  ├── discoverAllProfiles()   # 扫描内置 + 用户 data_root/profiles 列表
+  ├── discoverAllProfiles()   # 扫描 data_root/profiles 列表
   └── ensureProfileLoaded(id) # 按需加载，切换时调用
 ```
 
@@ -555,7 +555,7 @@ Profile 切换或用户 Profile 保存 → flush CONFIG/Profile → emit("deskpe
 
 #### 素材回退
 
-Profile 缺失的素材自动回退到 `DEFAULT_BUILTIN`（sugar-pink）：
+Profile 缺失的素材自动回退到 `DEFAULT_PROFILE`（sugar-pink）：
 
 | 缺失素材 | 回退来源 |
 |----------|---------|
@@ -573,9 +573,9 @@ Profile 缺失的素材自动回退到 `DEFAULT_BUILTIN`（sugar-pink）：
 |------|------|
 | **导出** | `exportProfileZip(id)` — 前端只传 profileId；Rust 遍历目录打包（`zip` crate）→ 原生「另存为」对话框（`tauri-plugin-dialog`）→ 写盘并回传完整路径。**不在 Rust 侧收前端字节**：Profile 约 28MB / 229 文件，经 IPC 会序列化成上百 MB 的 JSON。用户取消返回 `Ok(None)`，不算失败 |
 | **导入** | `importProfileZip(file)` — 前端 JSZip 解包 → Tauri invoke `profile_file_write` → 写入 `{data_root}/profiles/` |
-| **复制** | `cloneProfile(sourceId, existingIds)` — Rust `profile_clone` 复制目录树，副本 ID 取最小未占用的 `copy{n}`，并改写 `meta.builtin = false` / 删除 `meta.preset` |
-| **删除** | `deleteProfile(id)` — 仅限非内置 profile，调用 `profile_delete` 删除目录 |
-| **存储** | 内置 → `public/profiles/` 并随安装包发布；用户导入/复制 → `{data_root}/profiles/` |
+| **复制** | `cloneProfile(sourceId, existingIds)` — Rust `profile_clone` 复制目录树，副本 ID 取最小未占用的 `copy{n}`，并删除 `meta.preset` |
+| **删除** | `deleteProfile(id)` — 调用 `profile_delete` 删除运行时目录 |
+| **存储** | 默认种子 → `src-tauri/resources/defaults/profiles/`；运行时 Profile → `{data_root}/profiles/` |
 
 所有操作返回统一的 `ProfileOpResult { ok, message, detail?, cancelled? }`，
 Service 层不弹窗；由 `AppearanceTab` 经 `services/dialog` 的 `showSuccess` / `showFailure`
@@ -589,8 +589,7 @@ Service 层不弹窗；由 `AppearanceTab` 经 `services/dialog` 的 `showSucces
 预设切换: [🌸粉色] [🌙暗夜] [🪟玻璃]  ← 一键切换
 📦 Profile                          [🔄 刷新] [📥 导入]
   ├ 每行一个 Profile，点整行切换为当前
-  ├ 内置行: [复制] [导出]
-  └ 用户行: [复制] [导出] [🗑 删除]（删除前二次确认）
+  └ 每行: [复制] [导出] [🗑 删除]（删除前二次确认）
 预览: 当前 Profile 的立绘 + 角色名 + 动画数
 配色: 18个颜色选择器（中文标签）
 字体: UI字体 / 聊天字体 下拉选择

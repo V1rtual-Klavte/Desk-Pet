@@ -512,7 +512,7 @@ export const toolsConfig = {
 
 // ══════════════════════════════════════════
 // 4. 外观 — Profile 系统
-// 主题/角色/音效由 Profile 管理 (public/profiles/)
+// 主题/角色/音效由运行时 data_root/profiles/ 管理
 // ==========================================
 export const appearanceConfig = {
   get activeProfile() { return overrideOr("appearance.activeProfile", cfg.appearance?.activeProfile || "sugar-pink"); },

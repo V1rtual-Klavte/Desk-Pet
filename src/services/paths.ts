@@ -69,6 +69,4 @@ export function getRuntimeMode(): "development" | "production" {
   return _runtimeMode
 }
 
-/** 内置 profile 的 URL 前缀 */
-export const BUILTIN_PROFILES_URL = "/profiles"
 export const DEFAULT_PROFILE = "sugar-pink"

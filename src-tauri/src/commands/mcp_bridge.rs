@@ -3,14 +3,14 @@
 // 助手模式: 通过 Rust spawn MCP Server 子进程并桥接 stdin/stdout
 // ==========================================
 
+use crate::error::AppResult;
+use crate::{rust_info, rust_warn};
 use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Write};
 use std::process::{Child, Command, Stdio};
 use std::sync::Mutex;
 use tauri::State;
-use crate::error::AppResult;
-use crate::{rust_info, rust_warn};
 
 /// 托管 MCP 子进程
 struct McpProcess {
@@ -93,12 +93,14 @@ pub fn mcp_spawn(
         let _ = kill_child(old.child);
     }
 
-    pool.insert(
-        server_id.clone(),
-        McpProcess { child },
-    );
+    pool.insert(server_id.clone(), McpProcess { child });
 
-    rust_info!("MCP 进程已启动: {} ({} {})", server_id, command, args.join(" "));
+    rust_info!(
+        "MCP 进程已启动: {} ({} {})",
+        server_id,
+        command,
+        args.join(" ")
+    );
 
     Ok(McpSpawnResult {
         success: true,
@@ -133,22 +135,16 @@ pub fn mcp_send(
 
     // 3. 写入 stdin（无锁）
     {
-        let stdin = proc
-            .child
-            .stdin
-            .as_mut()
-            .ok_or("stdin 不可用")?;
+        let stdin = proc.child.stdin.as_mut().ok_or("stdin 不可用")?;
         let req_str = serde_json::to_string(&request).map_err(|e| format!("序列化失败: {}", e))?;
         writeln!(stdin, "{}", req_str).map_err(|e| format!("写入 stdin 失败: {}", e))?;
-        stdin.flush().map_err(|e| format!("flush stdin 失败: {}", e))?;
+        stdin
+            .flush()
+            .map_err(|e| format!("flush stdin 失败: {}", e))?;
     }
 
     // 4. 读取 stdout（无锁，read_line 阻塞等待响应）
-    let stdout = proc
-        .child
-        .stdout
-        .as_mut()
-        .ok_or("stdout 不可用")?;
+    let stdout = proc.child.stdout.as_mut().ok_or("stdout 不可用")?;
     let mut reader = BufReader::new(stdout);
     let mut line = String::new();
 
@@ -218,10 +214,7 @@ pub fn mcp_send(
 
 /// 终止 MCP 子进程
 #[tauri::command]
-pub fn mcp_kill(
-    state: State<'_, McpPool>,
-    server_id: String,
-) -> AppResult<McpKillResult> {
+pub fn mcp_kill(state: State<'_, McpPool>, server_id: String) -> AppResult<McpKillResult> {
     let mut pool = state.0.lock().map_err(|e| format!("锁错误: {}", e))?;
 
     if let Some(proc) = pool.remove(&server_id) {

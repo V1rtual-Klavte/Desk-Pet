@@ -55,14 +55,6 @@ export function useLayerEditor() {
 
   const selectedLayer = computed(() => layers.value[selectedIndex.value]);
   const isL2 = computed(() => selectedIndex.value === 2);
-  const isBuiltinProfile = computed(() => profile.value?.meta.builtin === true);
-
-  function requireUserProfile(): boolean {
-    if (!isBuiltinProfile.value) return true;
-    window.alert("内置 Profile 为只读资源，请先在设置中复制为用户 Profile 后再上传或复制素材。");
-    return false;
-  }
-
   // ── 画布自适应尺寸（维持实际窗口等比例）──
   const canvasWrap = ref<HTMLElement | null>(null);
   const canvasSize = ref({ w: 600, h: 370 });
@@ -246,12 +238,10 @@ export function useLayerEditor() {
   // ── 素材上传/移除 ──
   let _uploadTargetLayer = -1;
   function uploadImage() {
-    if (!requireUserProfile()) return;
     _uploadTargetLayer = selectedIndex.value;
     fileInput.value?.click();
   }
   function onFileSelected(e: Event) {
-    if (!requireUserProfile()) return;
     const i = _uploadTargetLayer;
     if (i < 0) return;
     const input = e.target as HTMLInputElement;
@@ -345,7 +335,6 @@ export function useLayerEditor() {
     const i = selectedIndex.value;
     const prefix = `materials/L${i}/`;
     if (!path.startsWith(prefix)) {
-      if (!requireUserProfile()) return;
       uploading.value = i;
       log.info(`跨层复制 | 源: ${path} → 目标层: L${i}/${prefix}`);
       try {
@@ -389,9 +378,7 @@ export function useLayerEditor() {
 
   async function persistLayers() {
     const p = profile.value;
-    if (!p || p.meta.builtin) {
-      throw new Error("内置 Profile 为只读资源，请先复制为用户 Profile")
-    }
+    if (!p) throw new Error("没有激活的 Profile")
     const raw = await invoke<number[]>("profile_file_read", {
       profileId: p.id,
       relativePath: "profile.yaml",
@@ -487,7 +474,6 @@ export function useLayerEditor() {
     // computed
     selectedLayer,
     isL2,
-    isBuiltinProfile,
     // events
     onPointerDown,
     onPointerMove,

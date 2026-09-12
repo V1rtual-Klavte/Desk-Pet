@@ -2,8 +2,11 @@
 // 窗口监控 —— MonitorState + 类型定义
 // ==========================================
 
-use std::sync::{Mutex, Condvar, atomic::{AtomicBool, AtomicU64}};
 use serde::Serialize;
+use std::sync::{
+    atomic::{AtomicBool, AtomicU64},
+    Condvar, Mutex,
+};
 
 /// 监控状态：暂停/恢复控制 + 可配置参数
 pub struct MonitorState {
@@ -40,7 +43,7 @@ pub struct WindowChangePayload {
 
 // ── 子模块声明 ──
 mod capture;
-mod visibility;
 mod thread;
+mod visibility;
 
 pub use thread::spawn_monitor_thread;

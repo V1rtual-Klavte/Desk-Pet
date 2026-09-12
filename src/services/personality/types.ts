@@ -60,7 +60,7 @@ export interface PersonalityCard {
   rawContent: string
   sections: CardSections
   hash: string
-  source: "builtin" | "user"
+  source: "runtime"
 }
 
 /** 人格注册表状态 */

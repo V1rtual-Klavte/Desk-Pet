@@ -86,7 +86,7 @@ function restoreSoundDefaults() {
 
 // ── Profile ──
 const profileList = ref<
-  { id: string; meta: { name: string; description: string; builtin: boolean; preset?: string } }[]
+  { id: string; meta: { name: string; description: string; preset?: string } }[]
 >([]);
 const activeProfileId = ref("");
 const profileDetail = ref<ProfileData | null>(null);
@@ -259,8 +259,8 @@ function resetColors() {
 
 async function saveColorsToProfile() {
   const p = getActiveProfile();
-  if (!p || p.meta.builtin) {
-    const message = "内置 Profile 不可直接修改，请先点击“复制”为用户 Profile。";
+  if (!p) {
+    const message = "没有激活的 Profile，无法保存。";
     log.warn(message);
     window.alert(message);
     return;
@@ -377,14 +377,13 @@ defineExpose({
       >
         <div class="pf-row-main">
           <span class="pf-row-name">{{ p.meta.name }}</span>
-          <span class="pf-row-tag">{{ p.meta.builtin ? '内置' : '用户' }}</span>
           <span class="pf-row-id">{{ p.id }}</span>
           <span v-if="p.id === activeProfileId" class="pf-row-current">●当前</span>
         </div>
         <div class="pf-row-actions" @click.stop>
           <button class="btn-s" @click="doCloneProfile(p.id)">复制</button>
           <button class="btn-s" @click="doExportProfile(p.id)">导出</button>
-          <button v-if="!p.meta.builtin" class="btn-s btn-d" @click="doDeleteProfile(p.id)">🗑</button>
+          <button class="btn-s btn-d" @click="doDeleteProfile(p.id)">🗑</button>
         </div>
       </div>
       <div v-if="!profileList.length" class="s-hint">未发现任何 Profile</div>
@@ -396,8 +395,6 @@ defineExpose({
         <div class="preview-name">{{ profileDetail.meta.name }}</div>
         <div class="preview-meta">角色: {{ profileDetail.character.name }} · {{ Object.keys(profileDetail.animations).length }}动画</div>
         <div class="preview-tags">
-          <span v-if="profileDetail.meta.builtin" class="tag-tip">内置</span>
-          <span v-else class="tag-tip" style="background:rgba(100,200,100,0.2)">用户</span>
         </div>
       </div>
     </div>
@@ -413,11 +410,10 @@ defineExpose({
         <input class="inp color-val" :value="editedColors[f.key]" @input="(e: any) => { editedColors[f.key] = e.target.value; applyColors(); }" />
       </div>
     </div>
-    <div v-if="profileDetail?.meta.builtin" class="s-hint">内置 Profile 为只读资源。复制为用户 Profile 后才可修改和上传素材。</div>
     <div class="row-gap" style="margin-top:6px">
       <button class="btn-s" @click="applyColors()">应用</button>
       <button class="btn-s btn-d" @click="resetColors()">恢复</button>
-      <button v-if="!profileDetail?.meta.builtin" class="btn-s" @click="saveColorsToProfile()">💾 保存</button>
+      <button class="btn-s" @click="saveColorsToProfile()">💾 保存</button>
     </div>
   </div>
 

@@ -49,7 +49,7 @@ LLM 可见回复文本 + <RUNTIME_DATA>
 
 所有功能配置由运行时 `CONFIG.yaml` 经 `src/services/config.ts` 暴露。开发构建使用工作区 `CONFIG-DEV.yaml`（不存在时回退 `CONFIG.yaml`）；生产构建首次将默认配置初始化到 `data_root/settings/CONFIG.yaml`，设置页直接回写它。业务模块不得自行复制配置常量或以 localStorage 覆盖配置。
 
-运行时文件统一由 Rust `AppPaths` 和前端 `BaseDirs`/`runtimePath()` 定位：开发数据根为 `{project}/data/desk-pet`，生产数据根为 Tauri 应用专属本地目录。内置 Card/Profile 为只读资源；内置 Profile 必须先复制为用户 Profile，完整副本写入 `data_root/profiles/{id}` 后才能编辑。会话正文由 `sessions/*.md` 持久化，`sessions/index.json` 只保存 UI 状态。路径命令必须使用 `validate_path()` 校验写入边界。
+运行时文件统一由 Rust `AppPaths` 和前端 `BaseDirs`/`runtimePath()` 定位：开发数据根为 `{project}/data/desk-pet`，生产数据根为 Tauri 应用专属本地目录。默认 Card/Profile 只作为首次启动种子复制到运行时目录，之后不再区分默认与用户资源，均可编辑和删除。会话正文由 `sessions/*.md` 持久化，`sessions/index.json` 只保存 UI 状态。路径命令必须使用 `validate_path()` 校验写入边界。
 
 ## 平台原则
 

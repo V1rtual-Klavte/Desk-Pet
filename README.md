@@ -24,7 +24,7 @@
 - **窗口感知** — 监控前台窗口，停留超时后 AI 主动搭话
 - **安全控制** — SAFE / NORMAL / DANGER / NOWAY 风险等级与确认策略
 - **记忆系统** — CANDY、User、MEMORY、sessions 和压缩摘要；长期记忆自动提取与召回仍在规划
-- **Profile 主题** — 糖糖粉、暗夜紫、透明玻璃、yuki 雨夜蓝等内置预设，支持导入导出
+- **Profile 主题** — 糖糖粉、暗夜紫、透明玻璃、yuki 雨夜蓝等随应用提供的默认主题，支持编辑、复制、删除、导入导出
 - **灵动图层** — 五层景深视差、全局光标追踪、CSS 3D 增强和逐层设置
 - **音效系统** — Web Audio 合成音效与人格边界映射
 - **设置面板** — 独立窗口配置 AI、外观、人格、监控、安全、工具、MCP、Skill 和快捷键
@@ -83,8 +83,8 @@ cp CONFIG-DEV.yaml.example CONFIG-DEV.yaml
 
 开发构建直接使用工作区的完整 `CONFIG-DEV.yaml`；文件不存在时使用 `CONFIG.yaml`。生产构建首次启动会把默认 `CONFIG.yaml` 写入应用数据目录的 `settings/CONFIG.yaml`，之后设置页和导入导出都回写该文件。macOS 窗口监控需要在系统设置的“隐私与安全性 → 辅助功能”中允许终端或 Tauri。
 
-内置 Profile 随安装包只读发布；在设置中“复制为用户 Profile”或导入的 Profile
-会写入运行时 `profiles/` 目录，之后才可编辑。灵动图层的逐层素材与参数保存在各自
+默认 Profile 随安装包作为首次初始化种子发布；首次启动复制到运行时 `profiles/` 目录后，
+与用户导入的 Profile 一样可编辑、复制、删除和导出。灵动图层的逐层素材与参数保存在各自
 Profile 的 `profile.yaml`，CONFIG 只保存全局开关和强度。运行时数据路径和会话恢复规则见
 [运行时数据](docs/current/runtime-data.md)。
 
@@ -127,7 +127,7 @@ Desk-Pet/
 │       ├── monitor/                  # 前台窗口监控
 │       └── commands/                 # 文件、记忆、Profile、系统命令
 ├── skills/                           # 内置 Skill（{name}/SKILL.md，Pi 约定）
-├── public/profiles/                  # 内置 Profile 素材
+├── src-tauri/resources/defaults/     # 首次启动复制的默认 Profile/Card 种子
 └── data/desk-pet/                    # 开发环境运行时数据（生产使用应用专属目录）
 ```
 

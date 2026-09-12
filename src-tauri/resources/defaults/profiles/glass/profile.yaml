@@ -7,7 +7,6 @@ meta:
   name: "透明玻璃"
   description: "半透明毛玻璃效果"
   version: 3
-  builtin: true
   preset: glass
 
 # ── 主题 ──

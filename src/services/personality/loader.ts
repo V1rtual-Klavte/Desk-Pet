@@ -1,7 +1,6 @@
 // ==========================================
-// 人格卡加载器 — glob 扫描 + Section 解析 + SHA256
-// 内置: import.meta.glob 自动发现
-// 用户: Tauri fs → {project}/src/services/personality/cards/*.md
+// 人格卡加载器 — 运行时目录扫描 + Section 解析 + SHA256
+// 默认 Card 会在首次启动时复制到 data_root/personality/cards，之后不再区分来源。
 // ==========================================
 
 import type { PersonalityCard, CardSections, CardVariableDef, VariableScope, VariableType, VariableUpdateBy, VariableResetPolicy } from "./types"
@@ -11,16 +10,6 @@ import { createLogger } from "@/services/logger"
 import { formatError } from "@/services/error"
 
 const log = createLogger("Persona")
-
-// ── glob 自动扫描内置 cards ──
-
-const BUILTIN_RAW: Record<string, string> = {}
-const globModules = import.meta.glob<{ default: string } | string>("./cards/*.md", { query: "?raw", eager: true })
-for (const [path, mod] of Object.entries(globModules)) {
-  const filename = path.split("/").pop()?.replace(".md", "") ?? path
-  if (filename.startsWith("_")) continue
-  BUILTIN_RAW[filename] = typeof mod === "string" ? mod : (mod as { default: string }).default
-}
 
 // ── 解析 ──
 
@@ -265,22 +254,14 @@ async function computeHash(content: string): Promise<string> {
 
 let cards: PersonalityCard[] = []
 
-async function parseCard(raw: string, source: "builtin" | "user"): Promise<PersonalityCard> {
+async function parseCard(raw: string): Promise<PersonalityCard> {
   const { meta, body } = parseFrontmatter(raw)
   const sections = parseSections(body)
   const hash = await computeHash(raw)
-  return { id: meta.id, name: meta.name || meta.id, description: meta.description, version: meta.version, rawContent: raw, sections, hash, source }
+  return { id: meta.id, name: meta.name || meta.id, description: meta.description, version: meta.version, rawContent: raw, sections, hash, source: "runtime" }
 }
 
-async function loadBuiltin(): Promise<PersonalityCard[]> {
-  const result: PersonalityCard[] = []
-  for (const [fileName, raw] of Object.entries(BUILTIN_RAW)) {
-    try { result.push(await parseCard(raw, "builtin")) } catch (e) { log.warn(`内置 Card 解析失败: ${fileName}`, formatError(e)) }
-  }
-  return result
-}
-
-async function loadUserCards(builtinIds: Set<string>): Promise<PersonalityCard[]> {
+async function loadRuntimeCards(): Promise<PersonalityCard[]> {
   try {
     const { invoke } = await import("@tauri-apps/api/core")
     const files = await invoke<string[]>("personality_file_list", { dirPath: "cards" })
@@ -289,11 +270,7 @@ async function loadUserCards(builtinIds: Set<string>): Promise<PersonalityCard[]
       try {
         const rawBytes = await invoke<number[]>("personality_file_read", { path: `cards/${file}` })
         const raw = new TextDecoder().decode(new Uint8Array(rawBytes))
-        const card = await parseCard(raw, "user")
-        // 内置 Card 源文件也位于 src/services/personality/cards，避免被 Tauri 扫描后覆盖成 user。
-        // 若用户导入同 id 但内容不同，则允许覆盖内置。
-        if (builtinIds.has(card.id) && Object.values(BUILTIN_RAW).includes(raw)) continue
-        result.push(card)
+        result.push(await parseCard(raw))
       } catch (e) {
         log.warn("用户 Card 读取失败:", file, e)
       }
@@ -306,11 +283,11 @@ async function loadUserCards(builtinIds: Set<string>): Promise<PersonalityCard[]
 }
 
 export async function importUserCard(raw: string): Promise<PersonalityCard> {
-  return parseCard(raw, "user")
+  return parseCard(raw)
 }
 
 export async function saveUserCard(raw: string): Promise<PersonalityCard> {
-  const card = await parseCard(raw, "user")
+  const card = await parseCard(raw)
   if (!card.id || card.id === "unknown") throw new Error("Card 缺少有效 id")
   const safeName = card.id.replace(/[^\w一-鿿-]/g, "_")
   const { invoke } = await import("@tauri-apps/api/core")
@@ -322,11 +299,8 @@ export async function saveUserCard(raw: string): Promise<PersonalityCard> {
 }
 
 export async function initCards(): Promise<void> {
-  const builtinCards = await loadBuiltin()
-  const userCards = await loadUserCards(new Set(builtinCards.map(c => c.id)))
-  cards = builtinCards
-  mergeUserCards(userCards)
-  log.info(`已加载 ${builtinCards.length} 个内置 Card + ${userCards.length} 个用户 Card:`, cards.map(c => c.id).join(", "))
+  cards = await loadRuntimeCards()
+  log.info(`已加载 ${cards.length} 个运行时 Card:`, cards.map(c => c.id).join(", "))
 }
 
 export function getCards(): PersonalityCard[] { return cards }
@@ -347,7 +321,7 @@ initCards()
 
 if (import.meta.hot) {
   import.meta.hot.accept(async () => {
-    cards = await loadBuiltin()
+    cards = await loadRuntimeCards()
     log.info("Card HMR:", cards.map(c => c.id).join(", "))
   })
 }

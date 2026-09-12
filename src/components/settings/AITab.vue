@@ -494,8 +494,11 @@ defineExpose({
     <div class="radio-row">
       <label v-for="lv in ['auto','low','medium','high']" :key="'p1'+lv" class="chk"><input type="radio" v-model="aiThinkingEffort" :value="lv" /><span>{{ lv }}</span></label>
     </div>
+  </div>
 
-    <div class="s-subtitle" style="margin-top:6px">思考强度</div>
+  <!-- ═══ 🎭 人格卡 ═══ -->
+  <div class="s-section">
+    <div class="s-label">🎭 人格卡</div>
 
     <div class="card-grid">
       <div
@@ -514,7 +517,6 @@ defineExpose({
             <span v-if="(card as any)._stagesExist === false" class="tag-tip tag-warn">无stages</span>
             <span v-else-if="(card as any)._stagesExist" class="tag-tip tag-ok">stages</span>
             <span v-if="personalityActive === card.id" class="tag-tip" style="background:var(--color-accent, #c4276f);color:#fff">当前</span>
-            <span class="tag-tip" :class="card.source">{{ card.source }}</span>
             <span class="card-arrow">{{ expandedCardId === card.id ? '▾' : '▸' }}</span>
           </span>
         </div>
@@ -739,7 +741,6 @@ defineExpose({
 .card-meta { display: flex; align-items: center; gap: 4px; }
 .card-arrow { font-size: 9px; opacity: 0.5; min-width: 12px; text-align: center; }
 
-.tag-tip.builtin { background: rgba(100,149,237,0.25); }
 .tag-tip.user { background: rgba(144,238,144,0.25); }
 .tag-tip.tag-warn { background: rgba(255,170,0,0.25); color: #fa0; }
 .tag-tip.tag-ok { background: rgba(0,255,100,0.15); color: #0f8; }

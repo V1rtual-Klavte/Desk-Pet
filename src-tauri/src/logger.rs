@@ -18,7 +18,11 @@ pub const LEVEL_ERROR: u8 = 3;
 const LEVEL_TAG: [&str; 4] = ["DEBUG", "INFO ", "WARN ", "ERROR"];
 
 /// 默认级别：debug 构建全量打印（对齐前端「dev 一律 debug」），release 只留 info 以上。
-const DEFAULT_LEVEL: u8 = if cfg!(debug_assertions) { LEVEL_DEBUG } else { LEVEL_INFO };
+const DEFAULT_LEVEL: u8 = if cfg!(debug_assertions) {
+    LEVEL_DEBUG
+} else {
+    LEVEL_INFO
+};
 
 /// 进程级日志级别。
 ///
@@ -78,7 +82,12 @@ pub fn init_from_env() {
 
 /// Rust 自身日志出口
 pub fn emit(level: u8, args: std::fmt::Arguments) {
-    write_line(&format!("[{}] {} [Rust] {}", local_hms(), level_name(level), args));
+    write_line(&format!(
+        "[{}] {} [Rust] {}",
+        local_hms(),
+        level_name(level),
+        args
+    ));
 }
 
 /// 前端转发日志：保留前端已排好的整行（自带时间戳/级别/前缀），只做级别过滤后落盘
@@ -127,7 +136,11 @@ pub fn init_file_sink(dir: &Path) {
 fn open_sink(path: &Path) -> std::io::Result<FileSink> {
     let file = OpenOptions::new().create(true).append(true).open(path)?;
     let written = file.metadata().map(|m| m.len()).unwrap_or(0);
-    Ok(FileSink { path: path.to_path_buf(), file, written })
+    Ok(FileSink {
+        path: path.to_path_buf(),
+        file,
+        written,
+    })
 }
 
 fn write_file(line: &str) {

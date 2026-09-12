@@ -7,7 +7,6 @@ meta:
   name: "暗夜紫"
   description: "暗色主题"
   version: 3
-  builtin: true
   preset: dark
 
 # ── 主题 ──

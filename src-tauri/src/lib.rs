@@ -1,41 +1,38 @@
 #![cfg_attr(target_os = "windows", windows_subsystem = "windows")]
 #![allow(unexpected_cfgs)]
 
+mod commands;
+pub mod error;
+pub mod logger;
 mod macros;
 mod monitor;
-mod window;
-mod commands;
 mod paths;
-pub mod logger;
-pub mod error;
+mod window;
 
-use std::sync::Arc;
 use std::path::PathBuf;
+use std::sync::Arc;
+use tauri::menu::{MenuBuilder, MenuItemBuilder};
+use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
 use tauri::Manager;
 use tauri::{WebviewUrl, WebviewWindowBuilder};
-use tauri::tray::{TrayIconBuilder, MouseButton, MouseButtonState, TrayIconEvent};
-use tauri::menu::{MenuBuilder, MenuItemBuilder};
 
-use crate::monitor::MonitorState;
-use crate::window::{create_main_window, enhance_settings_window, enhance_layer_editor_window};
 use crate::commands::{
-    get_cursor_position, compute_popup_position,
-    pause_monitor, resume_monitor, set_monitor_config,
-    open_windows_sim, close_windows_sim,
-    log_messages, set_log_config, report_frontend_error, focus_main, open_devtools,
-    bash_exec, bash_cancel, file_read, file_read_binary, file_write, file_list,
-    file_info, file_exists, file_canonical_path,
-    system_info, app_open, clipboard_read, clipboard_write,
-    mcp_spawn, mcp_send, mcp_kill, McpPool, BashPool,
-    get_memory_file, get_session_file, init_memory_files,
-    list_session_files, delete_session_file, file_delete,
-    profile_file_write, profile_file_read, profile_delete, profile_clone, export_profile_zip, profile_asset_base, profile_user_asset_base, list_user_profiles, list_profile_files, list_builtin_profiles,
-    personality_file_read, personality_file_write, personality_file_list, personality_file_delete,
-    spawn_cursor_tracker,
+    app_open, bash_cancel, bash_exec, clipboard_read, clipboard_write, close_windows_sim,
+    compute_popup_position, delete_session_file, export_profile_zip, file_canonical_path,
+    file_delete, file_exists, file_info, file_list, file_read, file_read_binary, file_write,
+    focus_main, get_cursor_position, get_memory_file, get_session_file, init_memory_files,
+    list_profile_files, list_profiles, list_session_files, log_messages, mcp_kill, mcp_send,
+    mcp_spawn, open_devtools, open_windows_sim, pause_monitor, personality_file_delete,
+    personality_file_list, personality_file_read, personality_file_write, profile_asset_base,
+    profile_clone, profile_delete, profile_file_read, profile_file_write, report_frontend_error,
+    resume_monitor, set_log_config, set_monitor_config, spawn_cursor_tracker, system_info,
+    BashPool, McpPool,
 };
+use crate::monitor::MonitorState;
+use crate::window::{create_main_window, enhance_layer_editor_window, enhance_settings_window};
 
-use crate::paths::AppPaths;
 use crate::error::{err, AppError, AppResult};
+use crate::paths::AppPaths;
 
 // ==========================================
 // AppPaths 统一路径 commands
@@ -112,7 +109,9 @@ fn resolve_runtime_path(
     for segment in segments {
         let candidate = std::path::Path::new(&segment);
         if candidate.is_absolute()
-            || candidate.components().any(|part| !matches!(part, std::path::Component::Normal(_)))
+            || candidate
+                .components()
+                .any(|part| !matches!(part, std::path::Component::Normal(_)))
         {
             return Err(AppError::PathEscape);
         }
@@ -131,14 +130,19 @@ fn read_runtime_config(paths: tauri::State<AppPaths>) -> AppResult<String> {
 fn write_runtime_config(paths: tauri::State<AppPaths>, content: String) -> AppResult<()> {
     let parent = paths.config_file.parent().ok_or("配置文件路径没有父目录")?;
     std::fs::create_dir_all(parent).map_err(|e| format!("创建配置目录失败: {e}"))?;
-    std::fs::write(&paths.config_file, content).map_err(|e| AppError::Io(format!("写入配置失败: {e}")))
+    std::fs::write(&paths.config_file, content)
+        .map_err(|e| AppError::Io(format!("写入配置失败: {e}")))
 }
 
 #[tauri::command]
 fn read_session_ui_state(paths: tauri::State<AppPaths>) -> AppResult<Option<String>> {
     let file = paths.sessions.join("index.json");
-    if !file.exists() { return Ok(None); }
-    std::fs::read_to_string(file).map(Some).map_err(|e| AppError::Io(format!("读取会话 UI 状态失败: {e}")))
+    if !file.exists() {
+        return Ok(None);
+    }
+    std::fs::read_to_string(file)
+        .map(Some)
+        .map_err(|e| AppError::Io(format!("读取会话 UI 状态失败: {e}")))
 }
 
 #[tauri::command]
@@ -149,7 +153,11 @@ fn write_session_ui_state(paths: tauri::State<AppPaths>, content: String) -> App
 
 #[tauri::command]
 fn get_cards_dir(paths: tauri::State<AppPaths>) -> String {
-    paths.personality.join("cards").to_string_lossy().to_string()
+    paths
+        .personality
+        .join("cards")
+        .to_string_lossy()
+        .to_string()
 }
 
 #[derive(serde::Serialize)]
@@ -172,8 +180,16 @@ struct LiveTestOptions {
 fn get_live_test_options() -> LiveTestOptions {
     if !cfg!(debug_assertions) {
         return LiveTestOptions {
-            module: None, scene: None, case_id: None, tag: None, suite: None,
-            repeat: None, strict: None, report: None, seed_hash: None, commit: None,
+            module: None,
+            scene: None,
+            case_id: None,
+            tag: None,
+            suite: None,
+            repeat: None,
+            strict: None,
+            report: None,
+            seed_hash: None,
+            commit: None,
         };
     }
     let env_value = |key: &str| std::env::var(key).ok().filter(|v| !v.is_empty());
@@ -192,7 +208,12 @@ fn get_live_test_options() -> LiveTestOptions {
 }
 
 #[tauri::command]
-fn live_test_complete(app: tauri::AppHandle, paths: tauri::State<AppPaths>, passed: bool, report: String) -> AppResult<()> {
+fn live_test_complete(
+    app: tauri::AppHandle,
+    paths: tauri::State<AppPaths>,
+    passed: bool,
+    report: String,
+) -> AppResult<()> {
     if !cfg!(debug_assertions) {
         return err("Live Test 仅允许 debug 构建");
     }
@@ -263,7 +284,8 @@ pub fn run() {
                     std::process::exit(1);
                 }
             };
-            app.asset_protocol_scope().allow_directory(&paths.profiles, true)?;
+            app.asset_protocol_scope()
+                .allow_directory(&paths.profiles, true)?;
             // 文件 sink 必须在 paths 就绪后初始化；此处之前的日志只进终端
             logger::init_file_sink(&paths.logs);
             app.manage(paths);
@@ -279,24 +301,36 @@ pub fn run() {
                 .visible(true)
                 .build();
                 match window {
-                    Ok(_) => { rust_info!("Live Test 窗口已创建"); }
-                    Err(e) => { rust_warn!("Live Test 窗口创建失败: {e}"); }
+                    Ok(_) => {
+                        rust_info!("Live Test 窗口已创建");
+                    }
+                    Err(e) => {
+                        rust_warn!("Live Test 窗口创建失败: {e}");
+                    }
                 }
                 return Ok(());
             } else {
                 // 手动创建主窗口（在 Accessory 之后），默认显示
                 let _main_window = match create_main_window(app.handle()) {
-                    Ok(w) => { rust_info!("主窗口已创建并显示"); Some(w) }
-                    Err(e) => { rust_warn!("创建主窗口失败: {e}"); None }
+                    Ok(w) => {
+                        rust_info!("主窗口已创建并显示");
+                        Some(w)
+                    }
+                    Err(e) => {
+                        rust_warn!("创建主窗口失败: {e}");
+                        None
+                    }
                 };
             }
 
             // ── 系统托盘 ── 非必需组件：构建失败只告警，应用仍可运行
             let tray_result = (|| -> Result<(), String> {
                 let show_item = MenuItemBuilder::with_id("show", "显示")
-                    .build(app.handle()).map_err(|e| format!("菜单项 show: {e}"))?;
+                    .build(app.handle())
+                    .map_err(|e| format!("菜单项 show: {e}"))?;
                 let quit_item = MenuItemBuilder::with_id("quit", "退出")
-                    .build(app.handle()).map_err(|e| format!("菜单项 quit: {e}"))?;
+                    .build(app.handle())
+                    .map_err(|e| format!("菜单项 quit: {e}"))?;
                 let tray_menu = MenuBuilder::new(app.handle())
                     .item(&show_item)
                     .item(&quit_item)
@@ -304,31 +338,35 @@ pub fn run() {
                     .map_err(|e| format!("托盘菜单: {e}"))?;
 
                 let handle2 = app.handle().clone();
-                let icon = app.default_window_icon()
+                let icon = app
+                    .default_window_icon()
                     .ok_or_else(|| "缺少默认窗口图标".to_string())?
                     .clone();
 
                 TrayIconBuilder::new()
                     .icon(icon)
                     .menu(&tray_menu)
-                    .on_menu_event(move |app, event| {
-                        match event.id().as_ref() {
-                            "show" => {
-                                if let Some(w) = app.get_webview_window("main") {
-                                    let _ = w.show();
-                                    let _ = w.unminimize();
-                                    let _ = w.set_focus();
-                                }
+                    .on_menu_event(move |app, event| match event.id().as_ref() {
+                        "show" => {
+                            if let Some(w) = app.get_webview_window("main") {
+                                let _ = w.show();
+                                let _ = w.unminimize();
+                                let _ = w.set_focus();
                             }
-                            "quit" => {
-                                rust_info!("托盘菜单 → 退出");
-                                app.exit(0);
-                            }
-                            _ => {}
                         }
+                        "quit" => {
+                            rust_info!("托盘菜单 → 退出");
+                            app.exit(0);
+                        }
+                        _ => {}
                     })
                     .on_tray_icon_event(move |_tray, event| {
-                        if let TrayIconEvent::Click { button: MouseButton::Left, button_state: MouseButtonState::Up, .. } = event {
+                        if let TrayIconEvent::Click {
+                            button: MouseButton::Left,
+                            button_state: MouseButtonState::Up,
+                            ..
+                        } = event
+                        {
                             if let Some(w) = handle2.get_webview_window("main") {
                                 let _ = w.show();
                                 let _ = w.unminimize();
@@ -408,10 +446,8 @@ pub fn run() {
             profile_clone,
             export_profile_zip,
             profile_asset_base,
-            profile_user_asset_base,
-            list_user_profiles,
+            list_profiles,
             list_profile_files,
-            list_builtin_profiles,
             get_personality_dir,
             get_cards_dir,
             get_live_test_options,

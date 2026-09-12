@@ -1,13 +1,12 @@
 # ==========================================
 # Profile: 结城理 / yuki
-# 内置蓝色透明玻璃主题；运行时只读，用户副本写入 data_root/profiles/yuki
+# 自带蓝色透明玻璃主题；首次启动复制到运行时 data_root/profiles/yuki 后按普通 Profile 管理
 # ==========================================
 
 meta:
   name: "yuki"
   description: "结城理 · 雨夜蓝色透明玻璃"
   version: 1
-  builtin: true
   preset: glass
 
 theme:

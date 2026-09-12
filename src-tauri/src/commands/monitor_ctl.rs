@@ -3,12 +3,12 @@
 // pause_monitor / resume_monitor / set_monitor_config
 // ==========================================
 
-use std::sync::{Arc, atomic::Ordering};
+use std::sync::{atomic::Ordering, Arc};
 use std::thread;
 use std::time::Duration;
 
 use crate::monitor::MonitorState;
-use crate::{rust_info, rust_debug};
+use crate::{rust_debug, rust_info};
 
 #[tauri::command]
 pub fn pause_monitor(state: tauri::State<'_, Arc<MonitorState>>, duration_ms: u64) {
@@ -44,9 +44,17 @@ pub fn set_monitor_config(
     pause_extra_ms: u64,
     wait_timeout_ms: u64,
 ) {
-    state.polling_interval_ms.store(polling_interval_ms, Ordering::SeqCst);
+    state
+        .polling_interval_ms
+        .store(polling_interval_ms, Ordering::SeqCst);
     state.pause_extra_ms.store(pause_extra_ms, Ordering::SeqCst);
-    state.wait_timeout_ms.store(wait_timeout_ms, Ordering::SeqCst);
-    rust_info!("配置已接收 | 轮询:{}ms 暂停额外:{}ms 等待超时:{}ms",
-        polling_interval_ms, pause_extra_ms, wait_timeout_ms);
+    state
+        .wait_timeout_ms
+        .store(wait_timeout_ms, Ordering::SeqCst);
+    rust_info!(
+        "配置已接收 | 轮询:{}ms 暂停额外:{}ms 等待超时:{}ms",
+        polling_interval_ms,
+        pause_extra_ms,
+        wait_timeout_ms
+    );
 }

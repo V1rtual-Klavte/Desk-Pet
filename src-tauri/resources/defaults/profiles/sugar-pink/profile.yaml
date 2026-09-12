@@ -7,7 +7,6 @@ meta:
   name: "糖糖粉"
   description: "默认粉色主题"
   version: 3
-  builtin: true
   preset: pink
 
 # ── 主题 ──

@@ -14,12 +14,12 @@
 //       session-YYYYMMDD-HHmmss-主题.md   结构化会话文件
 // ==========================================
 
-use std::path::PathBuf;
-use std::fs;
-use tauri::command;
-use crate::paths::AppPaths;
 use crate::error::{err, AppError, AppResult};
+use crate::paths::AppPaths;
 use crate::rust_debug;
+use std::fs;
+use std::path::PathBuf;
+use tauri::command;
 
 /// 获取 memory/ 目录下指定文件的完整路径。
 #[command]
@@ -76,7 +76,11 @@ pub fn list_session_files(paths: tauri::State<AppPaths>) -> AppResult<Vec<String
 /// ★ 删除 sessions/ 目录下指定的文件
 #[command]
 pub fn delete_session_file(paths: tauri::State<AppPaths>, filename: String) -> AppResult<()> {
-    rust_debug!("delete_session_file: {} | dir: {}", filename, paths.sessions.display());
+    rust_debug!(
+        "delete_session_file: {} | dir: {}",
+        filename,
+        paths.sessions.display()
+    );
 
     // 安全检查
     let safe_name = PathBuf::from(&filename)
@@ -94,8 +98,7 @@ pub fn delete_session_file(paths: tauri::State<AppPaths>, filename: String) -> A
 
     let file_path = paths.sessions.join(&safe_name);
     if file_path.exists() {
-        fs::remove_file(&file_path)
-            .map_err(|e| format!("删除失败: {}", e))?;
+        fs::remove_file(&file_path).map_err(|e| format!("删除失败: {}", e))?;
     }
 
     Ok(())
@@ -127,8 +130,7 @@ pub fn init_memory_files(paths: tauri::State<AppPaths>) -> AppResult<String> {
     let sessions_dir = &paths.sessions;
 
     // 确保 sessions/ 目录存在
-    fs::create_dir_all(sessions_dir)
-        .map_err(|e| format!("无法创建 sessions 目录: {}", e))?;
+    fs::create_dir_all(sessions_dir).map_err(|e| format!("无法创建 sessions 目录: {}", e))?;
 
     // ── 模板文件（新 MEMORY.md 双块结构，无 SESSION_MEMORY.md）──
     let templates: [(&str, &str); 5] = [
@@ -177,8 +179,7 @@ pub fn init_memory_files(paths: tauri::State<AppPaths>) -> AppResult<String> {
     for (filename, template) in &templates {
         let file_path = memory_dir.join(filename);
         if !file_path.exists() {
-            fs::write(&file_path, template)
-                .map_err(|e| format!("无法创建 {}: {}", filename, e))?;
+            fs::write(&file_path, template).map_err(|e| format!("无法创建 {}: {}", filename, e))?;
         }
     }
 

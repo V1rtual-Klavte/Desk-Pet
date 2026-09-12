@@ -3,6 +3,7 @@
 // 所有系统级工具调用通过此模块桥接到 OS
 // ==========================================
 
+use crate::error::{err, AppError, AppResult};
 use std::collections::HashMap;
 use std::fs::File;
 use std::path::Path;
@@ -10,7 +11,6 @@ use std::process::{Child, Command, Stdio};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use tauri::{command, State};
-use crate::error::{err, AppError, AppResult};
 
 #[derive(Default)]
 pub struct BashPool(Mutex<HashMap<String, Arc<Mutex<Child>>>>);
@@ -30,9 +30,16 @@ pub fn bash_exec(
     max_bytes: Option<usize>,
     max_lines: Option<usize>,
 ) -> AppResult<BashResult> {
-    enforce_bash_policy(&command, restricted.unwrap_or(true), whitelist.as_deref().unwrap_or(&[]))?;
+    enforce_bash_policy(
+        &command,
+        restricted.unwrap_or(true),
+        whitelist.as_deref().unwrap_or(&[]),
+    )?;
     let execution_id = execution_id.unwrap_or_else(|| format!("legacy-{}", std::process::id()));
-    if !execution_id.chars().all(|c| c.is_ascii_alphanumeric() || c == '-') {
+    if !execution_id
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || c == '-')
+    {
         return err("无效的执行 ID");
     }
 
@@ -56,37 +63,62 @@ pub fn bash_exec(
 
     let stdout_path = std::env::temp_dir().join(format!("deskpet-{execution_id}.stdout"));
     let stderr_path = std::env::temp_dir().join(format!("deskpet-{execution_id}.stderr"));
-    cmd.stdout(Stdio::from(File::create(&stdout_path).map_err(|e| AppError::Io(format!("创建输出文件失败: {e}")))?));
-    cmd.stderr(Stdio::from(File::create(&stderr_path).map_err(|e| AppError::Io(format!("创建错误文件失败: {e}")))?));
-    let child = Arc::new(Mutex::new(cmd.spawn().map_err(|e| AppError::Io(format!("执行失败: {e}")))?));
-    pool.0.lock().map_err(|_| "Bash 状态锁损坏")?.insert(execution_id.clone(), Arc::clone(&child));
+    cmd.stdout(Stdio::from(
+        File::create(&stdout_path).map_err(|e| AppError::Io(format!("创建输出文件失败: {e}")))?,
+    ));
+    cmd.stderr(Stdio::from(
+        File::create(&stderr_path).map_err(|e| AppError::Io(format!("创建错误文件失败: {e}")))?,
+    ));
+    let child = Arc::new(Mutex::new(
+        cmd.spawn()
+            .map_err(|e| AppError::Io(format!("执行失败: {e}")))?,
+    ));
+    pool.0
+        .lock()
+        .map_err(|_| "Bash 状态锁损坏")?
+        .insert(execution_id.clone(), Arc::clone(&child));
 
     let started = Instant::now();
     let status = loop {
-        let status = child.lock().map_err(|_| "Bash 进程锁损坏")?
-            .try_wait().map_err(|e| format!("等待命令失败: {e}"))?;
+        let status = child
+            .lock()
+            .map_err(|_| "Bash 进程锁损坏")?
+            .try_wait()
+            .map_err(|e| format!("等待命令失败: {e}"))?;
         if let Some(status) = status {
             break status;
         }
         if timeout_ms.is_some_and(|limit| started.elapsed() >= Duration::from_millis(limit)) {
             let _ = child.lock().map_err(|_| "Bash 进程锁损坏")?.kill();
-            pool.0.lock().map_err(|_| "Bash 状态锁损坏")?.remove(&execution_id);
+            pool.0
+                .lock()
+                .map_err(|_| "Bash 状态锁损坏")?
+                .remove(&execution_id);
             cleanup_temp_outputs(&stdout_path, &stderr_path);
             return err("命令执行超时");
         }
         std::thread::sleep(Duration::from_millis(25));
     };
-    pool.0.lock().map_err(|_| "Bash 状态锁损坏")?.remove(&execution_id);
+    pool.0
+        .lock()
+        .map_err(|_| "Bash 状态锁损坏")?
+        .remove(&execution_id);
 
     let stdout = std::fs::read_to_string(&stdout_path).unwrap_or_default();
     let stderr = std::fs::read_to_string(&stderr_path).unwrap_or_default();
     cleanup_temp_outputs(&stdout_path, &stderr_path);
-    let combined = if stderr.is_empty() { stdout.clone() } else if stdout.is_empty() {
+    let combined = if stderr.is_empty() {
+        stdout.clone()
+    } else if stdout.is_empty() {
         stderr.clone()
     } else {
         format!("{stdout}\n{stderr}")
     };
-    let captured = truncate_output(&combined, max_bytes.unwrap_or(50 * 1024), max_lines.unwrap_or(2000));
+    let captured = truncate_output(
+        &combined,
+        max_bytes.unwrap_or(50 * 1024),
+        max_lines.unwrap_or(2000),
+    );
 
     Ok(BashResult {
         stdout,
@@ -106,13 +138,21 @@ pub fn bash_exec(
 fn enforce_bash_policy(command: &str, restricted: bool, whitelist: &[String]) -> AppResult<()> {
     let lower = command.to_lowercase();
     let hard_patterns = [
-        "rm -rf /", "sudo rm", "mkfs", "dd if=", "curl | sh", "curl | bash", "> /etc/",
+        "rm -rf /",
+        "sudo rm",
+        "mkfs",
+        "dd if=",
+        "curl | sh",
+        "curl | bash",
+        "> /etc/",
     ];
     if hard_patterns.iter().any(|pattern| lower.contains(pattern)) {
         return Err(AppError::Tool("命令包含硬禁止操作".into()));
     }
     if restricted {
-        if command.chars().any(|c| matches!(c, ';' | '&' | '|' | '>' | '<' | '`' | '\n'))
+        if command
+            .chars()
+            .any(|c| matches!(c, ';' | '&' | '|' | '>' | '<' | '`' | '\n'))
             || command.contains("$(")
             || command.contains("${")
         {
@@ -128,9 +168,17 @@ fn enforce_bash_policy(command: &str, restricted: bool, whitelist: &[String]) ->
 
 #[command]
 pub fn bash_cancel(pool: State<BashPool>, execution_id: String) -> AppResult<()> {
-    let child = pool.0.lock().map_err(|_| "Bash 状态锁损坏")?.get(&execution_id).cloned();
+    let child = pool
+        .0
+        .lock()
+        .map_err(|_| "Bash 状态锁损坏")?
+        .get(&execution_id)
+        .cloned();
     if let Some(child) = child {
-        child.lock().map_err(|_| "Bash 进程锁损坏")?.kill()
+        child
+            .lock()
+            .map_err(|_| "Bash 进程锁损坏")?
+            .kill()
             .map_err(|e| format!("取消命令失败: {e}"))?;
     }
     Ok(())
@@ -154,24 +202,39 @@ struct CapturedOutput {
 
 fn truncate_output(text: &str, max_bytes: usize, max_lines: usize) -> CapturedOutput {
     let total_bytes = text.len();
-    let total_lines = if text.is_empty() { 0 } else { text.lines().count() };
+    let total_lines = if text.is_empty() {
+        0
+    } else {
+        text.lines().count()
+    };
     let mut start = 0;
     let mut truncated_by = None;
     if total_lines > max_lines {
-        start = text.match_indices('\n').rev().nth(max_lines.saturating_sub(1))
-            .map(|(index, _)| index + 1).unwrap_or(0);
+        start = text
+            .match_indices('\n')
+            .rev()
+            .nth(max_lines.saturating_sub(1))
+            .map(|(index, _)| index + 1)
+            .unwrap_or(0);
         truncated_by = Some("lines".to_string());
     }
     if text.len().saturating_sub(start) > max_bytes {
         start = text.len().saturating_sub(max_bytes);
-        while start < text.len() && !text.is_char_boundary(start) { start += 1; }
+        while start < text.len() && !text.is_char_boundary(start) {
+            start += 1;
+        }
         truncated_by = Some("bytes".to_string());
     }
     let output = text[start..].to_string();
-    let last_line_partial = start > 0 && text.as_bytes().get(start.saturating_sub(1)) != Some(&b'\n');
+    let last_line_partial =
+        start > 0 && text.as_bytes().get(start.saturating_sub(1)) != Some(&b'\n');
     CapturedOutput {
         output_bytes: output.len(),
-        output_lines: if output.is_empty() { 0 } else { output.lines().count() },
+        output_lines: if output.is_empty() {
+            0
+        } else {
+            output.lines().count()
+        },
         truncated: start > 0,
         output,
         total_bytes,
@@ -205,10 +268,12 @@ pub fn file_read(path: String, max_bytes: Option<usize>) -> AppResult<FileReadRe
     let safe_path = AppPaths::validate_file_path(Path::new(&path))?;
     let metadata = std::fs::metadata(&safe_path).map_err(|e| format!("读取元数据失败: {e}"))?;
     if max_bytes.is_some_and(|limit| metadata.len() as usize > limit) {
-        return err(format!("文件过大，最多读取 {} bytes", max_bytes.unwrap_or(0)));
+        return err(format!(
+            "文件过大，最多读取 {} bytes",
+            max_bytes.unwrap_or(0)
+        ));
     }
-    let content = std::fs::read_to_string(&safe_path)
-        .map_err(|e| format!("读取失败: {}", e))?;
+    let content = std::fs::read_to_string(&safe_path).map_err(|e| format!("读取失败: {}", e))?;
     let size = content.len() as u64;
     Ok(FileReadResult { content, size })
 }
@@ -220,16 +285,22 @@ pub struct FileReadResult {
 }
 
 #[command]
-pub fn file_write(path: String, content: String, max_bytes: Option<usize>) -> AppResult<FileWriteResult> {
+pub fn file_write(
+    path: String,
+    content: String,
+    max_bytes: Option<usize>,
+) -> AppResult<FileWriteResult> {
     use crate::paths::AppPaths;
     if max_bytes.is_some_and(|limit| content.len() > limit) {
-        return err(format!("写入内容过大，最多 {} bytes", max_bytes.unwrap_or(0)));
+        return err(format!(
+            "写入内容过大，最多 {} bytes",
+            max_bytes.unwrap_or(0)
+        ));
     }
     let safe_path = AppPaths::validate_new_file_path(Path::new(&path))?;
     let parent = safe_path.parent().ok_or("无效的文件路径")?;
     std::fs::create_dir_all(parent).map_err(|e| format!("创建目录失败: {e}"))?;
-    std::fs::write(&safe_path, &content)
-        .map_err(|e| format!("写入失败: {}", e))?;
+    std::fs::write(&safe_path, &content).map_err(|e| format!("写入失败: {}", e))?;
     Ok(FileWriteResult { success: true })
 }
 
@@ -242,8 +313,7 @@ pub struct FileWriteResult {
 pub fn file_list(path: String) -> AppResult<FileListResult> {
     use crate::paths::AppPaths;
     let safe_path = AppPaths::validate_file_path(Path::new(&path))?;
-    let entries = std::fs::read_dir(&safe_path)
-        .map_err(|e| format!("读取目录失败: {}", e))?;
+    let entries = std::fs::read_dir(&safe_path).map_err(|e| format!("读取目录失败: {}", e))?;
 
     let mut file_entries: Vec<FileEntry> = Vec::new();
 
@@ -263,11 +333,14 @@ pub fn file_list(path: String) -> AppResult<FileListResult> {
 
     // 按字母排序（目录优先）
     file_entries.sort_by(|a, b| {
-        a.kind.cmp(&b.kind)
+        a.kind
+            .cmp(&b.kind)
             .then_with(|| a.name.to_lowercase().cmp(&b.name.to_lowercase()))
     });
 
-    Ok(FileListResult { entries: file_entries })
+    Ok(FileListResult {
+        entries: file_entries,
+    })
 }
 
 #[command]
@@ -296,7 +369,8 @@ pub struct FileInfoResult {
 pub fn file_info(path: String) -> AppResult<FileInfoResult> {
     use crate::paths::AppPaths;
     let safe_path = AppPaths::validate_file_path(Path::new(&path))?;
-    let metadata = std::fs::symlink_metadata(&safe_path).map_err(|e| format!("读取元数据失败: {e}"))?;
+    let metadata =
+        std::fs::symlink_metadata(&safe_path).map_err(|e| format!("读取元数据失败: {e}"))?;
     let kind = if metadata.file_type().is_symlink() {
         "symlink"
     } else if metadata.is_dir() {
@@ -304,12 +378,17 @@ pub fn file_info(path: String) -> AppResult<FileInfoResult> {
     } else {
         "file"
     };
-    let mtime_ms = metadata.modified().ok()
+    let mtime_ms = metadata
+        .modified()
+        .ok()
         .and_then(|time| time.duration_since(std::time::UNIX_EPOCH).ok())
         .map(|duration| duration.as_millis() as u64)
         .unwrap_or(0);
     Ok(FileInfoResult {
-        name: safe_path.file_name().map(|v| v.to_string_lossy().to_string()).unwrap_or_default(),
+        name: safe_path
+            .file_name()
+            .map(|v| v.to_string_lossy().to_string())
+            .unwrap_or_default(),
         path: safe_path.to_string_lossy().to_string(),
         kind: kind.to_string(),
         size: metadata.len(),
@@ -411,7 +490,9 @@ fn get_memory_info() -> (u64, u64) {
             let mut compressed = 0u64;
             for line in vm_stat.lines() {
                 let parts: Vec<&str> = line.split(':').collect();
-                if parts.len() < 2 { continue; }
+                if parts.len() < 2 {
+                    continue;
+                }
                 let key = parts[0].trim().trim_matches('"');
                 let val = parts[1].trim().trim_end_matches('.');
                 match key {
@@ -432,7 +513,9 @@ fn get_memory_info() -> (u64, u64) {
         // SAFETY: GlobalMemoryStatusEx reads a caller-allocated MEMORYSTATUSEX struct.
         // The struct is stack-allocated with correct dwLength. No pointer aliasing or concurrent writes.
         unsafe {
-            use windows_sys::Win32::System::SystemInformation::{GlobalMemoryStatusEx, MEMORYSTATUSEX};
+            use windows_sys::Win32::System::SystemInformation::{
+                GlobalMemoryStatusEx, MEMORYSTATUSEX,
+            };
             let mut mem = MEMORYSTATUSEX {
                 dwLength: std::mem::size_of::<MEMORYSTATUSEX>() as u32,
                 dwMemoryLoad: 0,
@@ -456,12 +539,14 @@ fn get_memory_info() -> (u64, u64) {
     {
         // Linux: /proc/meminfo
         let read_mem = |key: &str| -> Option<u64> {
-            std::fs::read_to_string("/proc/meminfo").ok()
-                .and_then(|s| s.lines()
-                    .find(|l| l.starts_with(key))
-                    .and_then(|l| l.split_whitespace().nth(1))
-                    .and_then(|v| v.parse::<u64>().ok())
-                )
+            std::fs::read_to_string("/proc/meminfo")
+                .ok()
+                .and_then(|s| {
+                    s.lines()
+                        .find(|l| l.starts_with(key))
+                        .and_then(|l| l.split_whitespace().nth(1))
+                        .and_then(|v| v.parse::<u64>().ok())
+                })
                 .map(|kb| kb * 1024)
         };
         let total = read_mem("MemTotal:").unwrap_or(0);
@@ -528,7 +613,9 @@ pub fn clipboard_read() -> AppResult<ClipboardResult> {
             .output()
             .map_err(|e| format!("读取剪贴板失败: {}", e))?;
         Ok(ClipboardResult {
-            text: String::from_utf8_lossy(&out.stdout).trim_end_matches("\r\n").to_string(),
+            text: String::from_utf8_lossy(&out.stdout)
+                .trim_end_matches("\r\n")
+                .to_string(),
         })
     }
 
@@ -556,7 +643,8 @@ pub fn clipboard_write(text: String) -> AppResult<ClipboardWriteResult> {
             .map_err(|e| format!("写入剪贴板失败: {}", e))?;
 
         if let Some(mut stdin) = child.stdin.take() {
-            stdin.write_all(text.as_bytes())
+            stdin
+                .write_all(text.as_bytes())
                 .map_err(|e| format!("写入失败: {}", e))?;
         }
         child.wait().map_err(|e| format!("等待进程失败: {}", e))?;
@@ -573,7 +661,8 @@ pub fn clipboard_write(text: String) -> AppResult<ClipboardWriteResult> {
             .map_err(|e| format!("写入剪贴板失败: {}", e))?;
 
         if let Some(mut stdin) = child.stdin.take() {
-            stdin.write_all(text.as_bytes())
+            stdin
+                .write_all(text.as_bytes())
                 .map_err(|e| format!("写入失败: {}", e))?;
         }
         child.wait().map_err(|e| format!("等待进程失败: {}", e))?;
@@ -590,7 +679,8 @@ pub fn clipboard_write(text: String) -> AppResult<ClipboardWriteResult> {
             .map_err(|e| format!("写入剪贴板失败 (需要 xclip): {}", e))?;
 
         if let Some(mut stdin) = child.stdin.take() {
-            stdin.write_all(text.as_bytes())
+            stdin
+                .write_all(text.as_bytes())
                 .map_err(|e| format!("写入失败: {}", e))?;
         }
         child.wait().map_err(|e| format!("等待进程失败: {}", e))?;

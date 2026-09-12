@@ -9,8 +9,8 @@ use tauri::Manager;
 pub fn enhance_settings_window(app: tauri::AppHandle) {
     #[cfg(target_os = "macos")]
     if let Some(win) = app.get_webview_window("settings") {
-        use objc::{msg_send, sel, sel_impl};
         use objc::runtime::Object;
+        use objc::{msg_send, sel, sel_impl};
         if let Ok(ns_win) = win.ns_window() {
             let ns_win = ns_win as *mut Object;
             // SAFETY: SetWindowLongPtrW with GWL_STYLE modifies window attributes atomically.
@@ -30,8 +30,8 @@ pub fn enhance_settings_window(app: tauri::AppHandle) {
 pub fn enhance_layer_editor_window(app: tauri::AppHandle) {
     #[cfg(target_os = "macos")]
     if let Some(win) = app.get_webview_window("layer-editor") {
-        use objc::{msg_send, sel, sel_impl};
         use objc::runtime::Object;
+        use objc::{msg_send, sel, sel_impl};
         if let Ok(ns_win) = win.ns_window() {
             let ns_win = ns_win as *mut Object;
             unsafe {
@@ -44,9 +44,13 @@ pub fn enhance_layer_editor_window(app: tauri::AppHandle) {
     }
     #[cfg(target_os = "windows")]
     if let Some(win) = app.get_webview_window("layer-editor") {
-        use windows_sys::Win32::UI::WindowsAndMessaging::{SetWindowPos, HWND_TOPMOST, SWP_NOMOVE, SWP_NOSIZE};
+        use windows_sys::Win32::UI::WindowsAndMessaging::{
+            SetWindowPos, HWND_TOPMOST, SWP_NOMOVE, SWP_NOSIZE,
+        };
         if let Ok(hwnd) = win.hwnd() {
-            unsafe { SetWindowPos(hwnd as _, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE); }
+            unsafe {
+                SetWindowPos(hwnd as _, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE);
+            }
         }
     }
     let _ = app;

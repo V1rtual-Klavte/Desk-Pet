@@ -11,9 +11,12 @@ pub fn capture_window_title() -> String {
     // SAFETY: CreateDC + DeleteDC pairing guarantees handle lifecycle.
     // All DC operations during capture are read-only.
     unsafe {
-        use windows_sys::Win32::UI::WindowsAndMessaging::{GetForegroundWindow, GetWindowTextW};
-        use windows_sys::Win32::System::Threading::{GetWindowThreadProcessId, OpenProcess, PROCESS_QUERY_INFORMATION, PROCESS_VM_READ, CloseHandle};
         use windows_sys::Win32::System::ProcessStatus::GetProcessImageFileNameW;
+        use windows_sys::Win32::System::Threading::{
+            CloseHandle, GetWindowThreadProcessId, OpenProcess, PROCESS_QUERY_INFORMATION,
+            PROCESS_VM_READ,
+        };
+        use windows_sys::Win32::UI::WindowsAndMessaging::{GetForegroundWindow, GetWindowTextW};
         let hwnd = GetForegroundWindow();
         let mut buf = [0u16; 1024];
         let len = GetWindowTextW(hwnd, buf.as_mut_ptr(), 1024);

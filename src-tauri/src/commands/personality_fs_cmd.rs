@@ -6,24 +6,23 @@
 //     stages/{cardId}.json      ← per-card 阶段文案
 //     vars.json                 ← 单例变量池
 //
-// 路径解析:
-//   读 (file_read / file_list): builtin_personality → personality
-//   写 (file_write / file_delete): 仅 personality (带 validate_path)
+// 所有 Card 和人格运行时文件都位于 AppPaths.personality。
 // ==========================================
 
+use crate::error::{err, AppError, AppResult};
+use crate::paths::AppPaths;
 use std::fs;
 use std::path::{Component, Path, PathBuf};
-use crate::paths::AppPaths;
-use crate::error::{err, AppError, AppResult};
 
 /// 读取 personality/ 或 cards/ 下的文件
-/// 优先从 builtin 读取，不存在则回退到 runtime 目录
+/// 从运行时人格目录读取文件
 #[tauri::command]
 pub fn personality_file_read(path: String, paths: tauri::State<AppPaths>) -> AppResult<Vec<u8>> {
     let file_path = resolve_personality_path(&path, "read", &paths)?;
     if !file_path.exists() {
         return Err(AppError::PathNotFound(format!("文件不存在: {}", path)));
     }
+    let file_path = AppPaths::validate_path(&file_path, &paths.personality)?;
     fs::read(&file_path).map_err(|e| AppError::Io(format!("读取失败: {e}")))
 }
 
@@ -40,13 +39,17 @@ pub fn personality_file_write(
 }
 
 /// 列出 personality/ 或 cards/ 下指定目录的文件
-/// 优先从 builtin 查找目录，不存在则回退到 runtime
+/// 列出运行时人格目录
 #[tauri::command]
-pub fn personality_file_list(dir_path: String, paths: tauri::State<AppPaths>) -> AppResult<Vec<String>> {
+pub fn personality_file_list(
+    dir_path: String,
+    paths: tauri::State<AppPaths>,
+) -> AppResult<Vec<String>> {
     let dir = resolve_personality_path(&dir_path, "read", &paths)?;
     if !dir.exists() {
         return Ok(vec![]);
     }
+    let dir = AppPaths::validate_path(&dir, &paths.personality)?;
     if !dir.is_dir() {
         return err(format!("不是目录: {}", dir_path));
     }
@@ -91,8 +94,8 @@ pub fn personality_file_delete(path: String, paths: tauri::State<AppPaths>) -> A
 /// base 目录由本模块持有，调用方不得带 `personality/` 前缀 —— 见下方显式拒绝。
 ///
 /// mode:
-///   "read"  — 先在 builtin_personality 查找，不存在则回退到 personality
-///   "write" — 仅解析到 personality (runtime)，自动创建父目录并校验路径安全
+///   "read"  — 解析到 personality (runtime)
+///   "write" — 解析到 personality (runtime)，自动创建父目录并校验路径安全
 fn resolve_personality_path(relative: &str, mode: &str, paths: &AppPaths) -> AppResult<PathBuf> {
     // 明确拒绝域前缀：base 目录由本模块持有，前端只该传域内相对路径。
     // 若容忍 "personality/xxx"，它会拼成 personality/personality/xxx —— 读是静默找不到，
@@ -108,14 +111,7 @@ fn resolve_personality_path(relative: &str, mode: &str, paths: &AppPaths) -> App
     let safe = safe_relative_path(relative)?;
 
     match mode {
-        "read" => {
-            // 优先 builtin，再 runtime
-            let builtin = paths.builtin_personality.join(&safe);
-            if builtin.exists() {
-                return Ok(builtin);
-            }
-            Ok(paths.personality.join(&safe))
-        }
+        "read" => Ok(paths.personality.join(&safe)),
         "write" => {
             let target = paths.personality.join(&safe);
 
@@ -129,7 +125,10 @@ fn resolve_personality_path(relative: &str, mode: &str, paths: &AppPaths) -> App
 
 fn safe_relative_path(relative: &str) -> AppResult<PathBuf> {
     let path = Path::new(relative);
-    if path.components().any(|part| !matches!(part, Component::Normal(_))) {
+    if path
+        .components()
+        .any(|part| !matches!(part, Component::Normal(_)))
+    {
         return Err(AppError::PathEscape);
     }
     Ok(path.to_path_buf())
@@ -156,12 +155,15 @@ fn prepare_personality_write_path(target: &Path, base: &Path) -> AppResult<()> {
 
 #[cfg(test)]
 mod tests {
-    use std::path::PathBuf;
     use super::safe_relative_path;
+    use std::path::PathBuf;
 
     #[test]
     fn accepts_only_normal_relative_components() {
-        assert_eq!(safe_relative_path("stages/card.json").unwrap(), PathBuf::from("stages").join("card.json"));
+        assert_eq!(
+            safe_relative_path("stages/card.json").unwrap(),
+            PathBuf::from("stages").join("card.json")
+        );
         assert!(safe_relative_path("../outside.json").is_err());
         assert!(safe_relative_path("./stages/card.json").is_err());
         assert!(safe_relative_path("/tmp/outside.json").is_err());

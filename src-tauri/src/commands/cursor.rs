@@ -3,15 +3,15 @@
 // 共享光标/屏幕检测辅助函数
 // ==========================================
 
+use serde::Serialize;
 use std::thread;
 use std::time::Duration;
-use serde::Serialize;
 use tauri::{Emitter, Manager};
 
+use crate::error::{err, AppResult};
 use crate::rust_debug;
 use crate::rust_info;
 use crate::window::enhance_to_iterm_style;
-use crate::error::{err, AppResult};
 
 /// 获取光标位置和所在屏幕信息（返回原始平台坐标，不做 Y 轴翻转）
 /// Windows: (cx, cy, sx, sy, sw, sh) 全部 web 坐标系（左上原点）
@@ -23,10 +23,12 @@ fn get_cursor_and_screen() -> AppResult<CursorScreen> {
     // SAFETY: SetCursorPos is an atomic syscall with no memory side effects.
     // Coordinates are plain integers — no pointer or handle involved.
     unsafe {
-        use windows_sys::Win32::UI::WindowsAndMessaging::GetCursorPos;
-        use windows_sys::Win32::Graphics::Gdi::{MonitorFromPoint, GetMonitorInfoW, MONITORINFOEXW};
-        use windows_sys::Win32::UI::HiDpi::GetDpiForMonitor;
         use windows_sys::Win32::Foundation::POINT;
+        use windows_sys::Win32::Graphics::Gdi::{
+            GetMonitorInfoW, MonitorFromPoint, MONITORINFOEXW,
+        };
+        use windows_sys::Win32::UI::HiDpi::GetDpiForMonitor;
+        use windows_sys::Win32::UI::WindowsAndMessaging::GetCursorPos;
         let mut pt = POINT { x: 0, y: 0 };
         if GetCursorPos(&mut pt) == 0 {
             return err("无法获取光标位置");
@@ -37,8 +39,10 @@ fn get_cursor_and_screen() -> AppResult<CursorScreen> {
         let (mut sx, mut sy, mut sw, mut sh) = (0i32, 0i32, 1920i32, 1080i32);
         if GetMonitorInfoW(monitor, &mut info as *mut _ as *mut _) != 0 {
             let r = info.monitorInfo.rcMonitor;
-            sx = r.left; sy = r.top;
-            sw = r.right - r.left; sh = r.bottom - r.top;
+            sx = r.left;
+            sy = r.top;
+            sw = r.right - r.left;
+            sh = r.bottom - r.top;
         }
         // 获取显示器 DPI，物理像素转逻辑（web）坐标
         let mut dpi_x: u32 = 96;
@@ -52,18 +56,45 @@ fn get_cursor_and_screen() -> AppResult<CursorScreen> {
         let lsy = (sy as f64 / scale_y).round() as i32;
         let lsw = (sw as f64 / scale_x).round() as i32;
         let lsh = (sh as f64 / scale_y).round() as i32;
-        rust_debug!("光标(Win): 物({},{}) 逻({},{}) 屏:物({},{} {}x{}) 逻({},{} {}x{}) DPI:({},{})",
-            pt.x, pt.y, lx, ly, sx, sy, sw, sh, lsx, lsy, lsw, lsh, dpi_x, dpi_y);
+        rust_debug!(
+            "光标(Win): 物({},{}) 逻({},{}) 屏:物({},{} {}x{}) 逻({},{} {}x{}) DPI:({},{})",
+            pt.x,
+            pt.y,
+            lx,
+            ly,
+            sx,
+            sy,
+            sw,
+            sh,
+            lsx,
+            lsy,
+            lsw,
+            lsh,
+            dpi_x,
+            dpi_y
+        );
         return Ok((lx, ly, lsx, lsy, lsw, lsh, scale_x, scale_y));
     }
 
     #[cfg(target_os = "macos")]
     {
-        use objc::{class, msg_send, sel, sel_impl};
         use objc::runtime::Object;
-        #[repr(C)] struct NSPoint { x: f64, y: f64 }
-        #[repr(C)] struct NSSize { width: f64, height: f64 }
-        #[repr(C)] struct NSRect { origin: NSPoint, size: NSSize }
+        use objc::{class, msg_send, sel, sel_impl};
+        #[repr(C)]
+        struct NSPoint {
+            x: f64,
+            y: f64,
+        }
+        #[repr(C)]
+        struct NSSize {
+            width: f64,
+            height: f64,
+        }
+        #[repr(C)]
+        struct NSRect {
+            origin: NSPoint,
+            size: NSSize,
+        }
 
         let pt: NSPoint = unsafe { msg_send![class!(NSEvent), mouseLocation] };
 
@@ -74,9 +105,14 @@ fn get_cursor_and_screen() -> AppResult<CursorScreen> {
         for i in 0..count {
             let screen: *mut Object = unsafe { msg_send![screens, objectAtIndex: i] };
             let f: NSRect = unsafe { msg_send![screen, frame] };
-            if pt.x >= f.origin.x && pt.x < f.origin.x + f.size.width
-                && pt.y >= f.origin.y && pt.y < f.origin.y + f.size.height
-            { sf = f; break; }
+            if pt.x >= f.origin.x
+                && pt.x < f.origin.x + f.size.width
+                && pt.y >= f.origin.y
+                && pt.y < f.origin.y + f.size.height
+            {
+                sf = f;
+                break;
+            }
         }
         // fallback: 主屏幕
         if sf.size.width == 0.0 {
@@ -85,10 +121,15 @@ fn get_cursor_and_screen() -> AppResult<CursorScreen> {
         }
 
         return Ok((
-            pt.x as i32, pt.y as i32,
-            sf.origin.x as i32, sf.origin.y as i32,
-            sf.size.width as i32, sf.size.height as i32,
-            1.0, 1.0));
+            pt.x as i32,
+            pt.y as i32,
+            sf.origin.x as i32,
+            sf.origin.y as i32,
+            sf.size.width as i32,
+            sf.size.height as i32,
+            1.0,
+            1.0,
+        ));
     }
 
     #[cfg(not(any(target_os = "windows", target_os = "macos")))]
@@ -127,7 +168,15 @@ pub fn get_cursor_position() -> AppResult<CursorPosition> {
     #[cfg(target_os = "windows")]
     let web_y = cy;
 
-    rust_debug!("光标(web): ({},{}) 屏:({},{} {}x{})", cx, web_y, sx, sy, sw, sh);
+    rust_debug!(
+        "光标(web): ({},{}) 屏:({},{} {}x{})",
+        cx,
+        web_y,
+        sx,
+        sy,
+        sw,
+        sh
+    );
 
     Ok(CursorPosition {
         x: cx,
@@ -154,7 +203,11 @@ pub struct PopupPosition {
 }
 
 #[tauri::command]
-pub fn compute_popup_position(app: tauri::AppHandle, win_w: i32, win_h: i32) -> AppResult<PopupPosition> {
+pub fn compute_popup_position(
+    app: tauri::AppHandle,
+    win_w: i32,
+    win_h: i32,
+) -> AppResult<PopupPosition> {
     let win_w = if win_w > 0 { win_w } else { 730 };
     let win_h = if win_h > 0 { win_h } else { 450 };
 
@@ -179,10 +232,26 @@ pub fn compute_popup_position(app: tauri::AppHandle, win_w: i32, win_h: i32) -> 
     win_x = win_x.clamp(sx, sx + sw - win_w);
     win_y = win_y.clamp(sy, sy + sh - win_h);
 
-    rust_debug!("弹窗位置 web: win({},{}) cursor({},{}) 屏:({},{} {}x{})",
-        win_x, win_y, web_cx, web_cy, sx, sy, sw, sh);
+    rust_debug!(
+        "弹窗位置 web: win({},{}) cursor({},{}) 屏:({},{} {}x{})",
+        win_x,
+        win_y,
+        web_cx,
+        web_cy,
+        sx,
+        sy,
+        sw,
+        sh
+    );
 
-    Ok(PopupPosition { win_x, win_y, cursor_x: web_cx, cursor_y: web_cy, scale_x, scale_y })
+    Ok(PopupPosition {
+        win_x,
+        win_y,
+        cursor_x: web_cx,
+        cursor_y: web_cy,
+        scale_x,
+        scale_y,
+    })
 }
 
 // ==========================================
@@ -202,14 +271,17 @@ pub fn spawn_cursor_tracker(app: tauri::AppHandle) {
                 #[cfg(target_os = "windows")]
                 let web_y = cy;
 
-                let _ = app.emit("deskpet-cursor-move", CursorPosition {
-                    x: cx,
-                    y: web_y,
-                    screen_x: _sx,
-                    screen_y: _sy,
-                    screen_w: _sw,
-                    screen_h: _sh,
-                });
+                let _ = app.emit(
+                    "deskpet-cursor-move",
+                    CursorPosition {
+                        x: cx,
+                        y: web_y,
+                        screen_x: _sx,
+                        screen_y: _sy,
+                        screen_w: _sw,
+                        screen_h: _sh,
+                    },
+                );
             }
             thread::sleep(Duration::from_millis(16));
         }

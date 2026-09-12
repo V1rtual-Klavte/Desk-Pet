@@ -1,7 +1,7 @@
 # ==========================================
 # 糖糖桌宠 全局配置
 # 功能域：general / ai / tools / appearance
-# 主题/角色/音效 → 由 Profile 管理 (public/profiles/)
+# 主题/角色/音效 → 由运行时 data_root/profiles/ 管理
 # 开发环境无 CONFIG-DEV.yaml 时使用本文件；修改后重启桌宠使运行时配置重新加载
 # ==========================================
 
@@ -168,7 +168,7 @@ tools:
 # ══════════════════════════════════════════
 # 4. 外观 — Profile 系统
 # ══════════════════════════════════════════
-# 主题/角色/音效配置已移至 public/profiles/ 目录
+# 主题/角色/音效配置位于运行时 data_root/profiles/ 目录
 # 每个 profile 是一个自包含文件夹，拖入即用
 appearance:
   activeProfile: "sugar-pink"     # 当前激活的 Profile ID
