@@ -18,6 +18,10 @@
 - agent.call: 子代理 / 多代理
 - _default: MCP、Skill 或其他未知工具
 
+[激活问候语 (greetings)]
+角色被激活或用户新建会话时，从中随机选一条作为开场白。这是用户看到的第一句话，
+要能立刻立住角色，且明确是在向用户打招呼。2-3 条，以 JSON 数组形式。
+
 [系统兜底提示语 (fallbacks)]
 当系统遇到异常情况时，会用这些文案告知用户。请在保持角色语气的前提下生成。
 - concurrentRejected: 用户发送消息太快（并发锁），提示稍等片刻
@@ -38,6 +42,7 @@
 - done 至少覆盖 fs.read、fs.write、os.exec、os.info、net.fetch、app.launch、clip.read、clip.write、agent.call、_default。
 - blocked 至少覆盖 fs.write、os.exec、clip.write、_default。
 - fallbacks 中 llmUnavailable 必须是字符串数组（2-3 条），其他 key 为字符串。
+- greetings 必须是字符串数组（2-3 条），每条都应是完整的招呼句。
 - 不要省略字段，不要输出空字符串。
 
 必须严格输出以下 JSON 结构，并重写所有字符串 value：
@@ -89,5 +94,6 @@
     "subAgentFailed": "",
     "subAgentNoResult": "",
     "compactionFailed": ""
-  }
+  },
+  "greetings": ["", "", ""]
 }

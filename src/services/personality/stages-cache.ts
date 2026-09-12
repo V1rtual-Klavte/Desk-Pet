@@ -47,6 +47,8 @@ export interface StageMap {
   retry: string
   /** 系统兜底回复，每个 Card 有自己的角色化版本 */
   fallbacks: FallbackReplies
+  /** 首次激活的问候语，每个 Card 有自己的角色化版本；运行时随机选一条 */
+  greetings: string[]
 }
 
 /** 系统兜底回复类型 — 替代硬编码中文 */
@@ -100,6 +102,7 @@ export const FALLBACK_STAGES: StageMap = {
   timeout: "操作超时",
   retry: "正在重试...",
   fallbacks: FALLBACK_FALLBACKS,
+  greetings: ["你好，有什么可以帮你的吗？"],
 }
 
 // ── 内存缓存 ──
@@ -155,6 +158,20 @@ export function getFallbackReply(key: keyof FallbackReplies): string {
   return (FALLBACK_FALLBACKS[key] as string) ?? ""
 }
 
+/** 当前 Card 的激活问候语；缺失时回退极简中性问候 */
+export function getGreetings(): string[] {
+  const greetings = cache?.stages.greetings
+  if (Array.isArray(greetings) && greetings.length > 0) return greetings
+  return FALLBACK_STAGES.greetings
+}
+
+/** 随机选一条当前 Card 的问候语 */
+export function pickActiveGreeting(): string | null {
+  const greetings = getGreetings()
+  if (greetings.length === 0) return null
+  return greetings[Math.floor(Math.random() * greetings.length)]
+}
+
 export function serializeStages(prompts: StagePrompts): string {
   return JSON.stringify(prompts, null, 2)
 }
@@ -168,7 +185,10 @@ export function validateStages(data: unknown): data is StagePrompts {
   const d = data as Record<string, unknown>
   if (typeof d.cardId !== "string" || !d.stages) return false
   const s = d.stages as Record<string, unknown>
-  return typeof s.error === "string" && typeof s.timeout === "string"
+  // greetings 是后加的字段：旧 stages 文件缺它时判为过期，触发按新模板重新生成。
+  return typeof s.error === "string"
+    && typeof s.timeout === "string"
+    && Array.isArray(s.greetings) && s.greetings.length > 0
 }
 
 export function validateStagesForCard(
@@ -285,6 +305,9 @@ function normalizeStageMap(raw: Partial<StageMap>): StageMap {
     timeout: typeof raw.timeout === "string" ? raw.timeout : FALLBACK_STAGES.timeout,
     retry: typeof raw.retry === "string" ? raw.retry : FALLBACK_STAGES.retry,
     fallbacks: normalizeFallbacks(raw.fallbacks),
+    greetings: Array.isArray(raw.greetings) && raw.greetings.length > 0
+      ? raw.greetings
+      : FALLBACK_STAGES.greetings,
   }
 }
 
@@ -433,6 +456,13 @@ export async function generateStagesForCard(
     if (typeof stageMap.error !== "string" || typeof stageMap.timeout !== "string" || typeof stageMap.retry !== "string") {
       log.error("stages 校验失败: 缺少 error/timeout/retry 字段", JSON.stringify(stageMap).slice(0, 200))
       return null
+    }
+
+    // greetings 缺失时补中性问候。落盘的文件必须能通过 validateStages，
+    // 否则下次启动会判定过期、反复重新生成。
+    if (!Array.isArray(stageMap.greetings) || stageMap.greetings.length === 0) {
+      log.warn("stages 缺少 greetings，回退中性问候:", cardId)
+      stageMap.greetings = [...FALLBACK_STAGES.greetings]
     }
 
     const result: StagePrompts = {

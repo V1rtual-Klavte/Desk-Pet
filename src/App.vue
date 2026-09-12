@@ -27,6 +27,13 @@ import { disconnectAllMcpServers } from "@/services/tool/mcp/manager"
 
 const log = createLogger("App");
 
+/** 新建会话后补一条问候语 —— 一律走当前激活 Card，不在调用点写死文案。 */
+async function greetNewSession(): Promise<void> {
+  const { pickActiveGreeting } = await import("@/services/personality");
+  const greeting = pickActiveGreeting();
+  if (greeting) initWelcome(greeting);
+}
+
 const isWinSim = (() => {
   try { return getCurrentWebviewWindow().label === "windows-sim"; }
   catch { return false; }
@@ -107,7 +114,7 @@ async function onSessionNew() {
   await nextTick();
   tabsRef.value?.loadSessions();
   tabsRef.value?.refreshHistory();
-  initWelcome("Pちゃん！你终于来了！今天也要一直在一起哦～♡");
+  await greetNewSession();
 }
 
 async function onSessionClose(sessionId: string) {
@@ -115,7 +122,7 @@ async function onSessionClose(sessionId: string) {
   const remaining = getSessions()
   if (remaining.length === 0) {
     await createNewSession()
-    initWelcome("Pちゃん！你终于来了！今天也要一直在一起哦～♡")
+    await greetNewSession()
   } else if (getActiveSessionId() === sessionId || getActiveSessionId() === "") {
     await switchToSession(remaining[0].id)
   }
@@ -142,7 +149,7 @@ async function onDeleteFile(filename: string) {
           await switchToSession(remaining[0].id)
         } else {
           await createNewSession()
-          initWelcome("Pちゃん！你终于来了！今天也要一直在一起哦～♡")
+          await greetNewSession()
         }
       }
     }
@@ -512,7 +519,7 @@ onMounted(async () => {
     log.debug("初始化 lastMovedPos:", lastMovedPos.value);
   }
 
-  await initApp("Pちゃん！你终于来了！今天也要一直在一起哦～♡");
+  await initApp();
   tabsRef.value?.loadSessions();
 
   invoke("set_monitor_config", {

@@ -26,7 +26,7 @@ const log = createLogger("Init")
  *   5. 欢迎语 (仅当 chatHistory 确实为空)
  *   6. Debug 状态
  */
-export async function initApp(welcomeText: string): Promise<void> {
+export async function initApp(): Promise<void> {
   log.info("──── 初始化开始 ────")
 
   // ── 1. Memory 文件系统 ──
@@ -72,16 +72,11 @@ export async function initApp(welcomeText: string): Promise<void> {
   const sessions = await initSessions()
   log.info(`5/7 会话就绪: ${sessions.length} 个, 活跃: ${sessions[0]?.id ?? "无"}, 消息: ${chatHistory.length} 条`)
 
-  // ── 6. 欢迎语 ──
-  const card = getActiveCard()
+  // ── 6. 欢迎语（一律走激活 Card 的问候语）──
   if (chatHistory.length === 0) {
-    if (welcomeText) {
-      initWelcome(welcomeText)
-    } else if (card) {
-      const { pickGreeting } = await import("@/services/personality")
-      const greeting = pickGreeting(card.sections.mustRules.greetings)
-      if (greeting) initWelcome(greeting)
-    }
+    const { pickActiveGreeting } = await import("@/services/personality")
+    const greeting = pickActiveGreeting()
+    if (greeting) initWelcome(greeting)
     log.info("6/7 欢迎语已写入")
   } else {
     log.info("6/7 跳过欢迎语（已有历史消息）")

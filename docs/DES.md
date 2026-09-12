@@ -652,15 +652,15 @@ src/services/
 │   ├── middleware.ts      # ★ 人格中间件（包裹所有Agent阶段, 8阶段无retry）
 │   ├── types.ts           # 人格类型定义
 │   ├── registry.ts        # 人格注册表 (neutral兜底, 无enabled开关)
-│   ├── loader.ts          # 人格卡 YAML 加载 + glob 自动扫描
+│   ├── loader.ts          # 人格卡 YAML 加载（扫描运行时 personality/cards/）
 │   ├── emotion.ts         # 情绪映射解析 + Prompt生成
-│   ├── must-rules.ts      # 必须遵守规则解析 + 问候提取
-│   ├── stages-cache.ts    # 阶段文案缓存 + getFallbackReply() 兜底
-│   ├── stages-prompt.md   # 阶段文案生成模板（含 fallbacks 字段）
+│   ├── must-rules.ts      # 必须遵守规则解析
+│   ├── stages-cache.ts    # 阶段文案缓存 + getFallbackReply() / pickActiveGreeting() 兜底
+│   ├── stages-prompt.md   # 阶段文案生成模板（含 fallbacks / greetings 字段）
 │   ├── variable-pool.ts   # 变量状态 (system/card/interaction/session)
 │   ├── vars.json          # 系统变量持久化快照
-│   ├── cards/             # 人格卡 .md (5张: neutral/angelkawaii/ame/pchan/yuki)
 │   └── stages/            # 阶段文案 JSON (LLM生成, per-card)
+# 人格卡随包种子在 src-tauri/resources/defaults/personality/cards/，首次启动复制到运行时目录
 │
 ├── session/               # 会话持久化管理
 │   ├── store.ts           # reactive 状态

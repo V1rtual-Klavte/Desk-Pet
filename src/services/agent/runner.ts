@@ -3,13 +3,13 @@
 // 接入 Agent Loop + 中间件 + 工具系统
 // ==========================================
 
-import { getActiveCard } from "@/services/personality"
+import { getActiveCard, pickActiveGreeting } from "@/services/personality"
 import { getFallbackReply } from "@/services/personality/stages-cache"
 import { runPiAgentTurn, steerActiveTurn } from "@/services/engine/pi"
 import { preProcess } from "@/services/engine/preprocessor"
-import { transition, getState } from "@/services/engine/session"
+import { transition } from "@/services/engine/session"
 import {
-  chatHistory, unansweredCount,
+  unansweredCount,
   pushUserMessage, pushAssistantMessage,
   getContextMessages, initWelcome, resetUnanswered,
   initSessions, getActiveSessionId,
@@ -29,25 +29,20 @@ export const toolCallHistory = {
   push(e: { toolName: string; status: string; personalityMsg?: string }) { this.entries.push(e) },
 }
 
-/** 初始化聊天 */
-export async function initChat(welcomeText?: string): Promise<void> {
+/**
+ * 轻量聊天初始化：恢复会话列表并写入激活 Card 的问候语。
+ *
+ * Live Test 的「生产入口」场景用它进入真实聊天入口；应用启动走 init.ts 的 initApp()。
+ */
+export async function initChat(): Promise<void> {
   const card = getActiveCard()
-  if (card) {
-    log.info("当前人格:", card.name, "| ID:", card.id)
-  } else {
-    log.info("当前人格: 默认")
-  }
+  log.info(card ? `当前人格: ${card.name} | ID: ${card.id}` : "当前人格: 默认")
 
-  // 初始化会话（扫描 sessions/*.md + sessions/index.json UI 状态）
   const sessions = await initSessions()
   log.info("会话已恢复:", sessions.length, "个, 活跃:", getActiveSessionId())
 
-  if (welcomeText) {
-    initWelcome(welcomeText)
-  } else if (card) {
-    const greeting = (await import("@/services/personality")).pickGreeting(card.sections.mustRules.greetings)
-    if (greeting) initWelcome(greeting)
-  }
+  const greeting = pickActiveGreeting()
+  if (greeting) initWelcome(greeting)
 }
 
 /**

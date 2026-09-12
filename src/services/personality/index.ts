@@ -24,11 +24,11 @@ export type { AgentStage, StageContext, PersonalityEffect } from "./middleware"
 export { initVariablePool, refreshVariablePool, getPoolSnapshot, formatPoolForPrompt, batchWriteVars, saveVariablePoolAsync, savePoolToDisk, savePoolToDiskStrict, loadCardVars, readSystemVars, updateInteractionVar, setSessionVars, applyResetPolicies, computeSystemVariables, destroyPool, setSessionStart, getSessionStart, getVariableRegistry } from "./variable-pool"
 export type { VariablePool, VariablePoolRuntimeState } from "./variable-pool"
 
-export { parseMustRules, pickGreeting, formatAllRules } from "./must-rules"
+export { parseMustRules, formatAllRules } from "./must-rules"
 export type { MustRules } from "./must-rules"
 
 export { parseEmotionMappings, resolveEmotion, formatEmotionForPrompt } from "./emotion"
 export type { EmotionMapping } from "./emotion"
 
-export { loadStages, getCachedStages, snapshotStagesCache, restoreStagesCache, clearStagesCache, getStagePrompt, getSimpleStage, getFallbackReply, FALLBACK_STAGES, generateStagesForCard, loadStagesFromDisk, buildStagesPrompt, parseStagesResponse, serializeStages, deserializeStages, validateStages, validateStagesForCard } from "./stages-cache"
+export { loadStages, getCachedStages, snapshotStagesCache, restoreStagesCache, clearStagesCache, getStagePrompt, getSimpleStage, getFallbackReply, getGreetings, pickActiveGreeting, FALLBACK_STAGES, generateStagesForCard, loadStagesFromDisk, buildStagesPrompt, parseStagesResponse, serializeStages, deserializeStages, validateStages, validateStagesForCard } from "./stages-cache"
 export type { StagePrompts, StageMap, FallbackReplies } from "./stages-cache"

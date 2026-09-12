@@ -263,9 +263,9 @@ async function applySwitch() {
     switchSuccess.value = `已切换到 ${targetCard.name}`;
     log.info("Card 切换成功:", targetId);
 
-    // 3. 发送激活问候
-    const { pickGreeting } = await import("@/services/personality");
-    const greeting = pickGreeting(targetCard.sections.mustRules.greetings);
+    // 3. 发送激活问候（switchPersonality 已加载新卡 stages，这里读到的就是新卡的）
+    const { pickActiveGreeting } = await import("@/services/personality");
+    const greeting = pickActiveGreeting();
     if (greeting) {
       const { pushAssistantMessage } = await import("@/services/session/messages");
       pushAssistantMessage(greeting);
