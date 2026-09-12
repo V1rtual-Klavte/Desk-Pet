@@ -68,16 +68,16 @@ const {
         </button>
       </div>
       <div class="le-actions">
-        <button class="le-btn" @click="toggleLock()" :title="selectedLayer.config.locked?'解锁':'锁定'">
+        <button class="le-btn" @click="toggleLock()" :disabled="isBuiltinProfile" :title="isBuiltinProfile ? '内置 Profile 请先复制' : selectedLayer.config.locked?'解锁':'锁定'">
           {{ selectedLayer.config.locked ? '🔒 已锁' : '🔓 解锁' }}
         </button>
-        <button class="le-btn" @click="toggleEnabled()">
+        <button class="le-btn" @click="toggleEnabled()" :disabled="isBuiltinProfile">
           {{ selectedLayer.config.enabled ? '👁 可见' : '🚫 隐藏' }}
         </button>
-        <button class="le-btn le-btn-d" @click="resetLayer()">↺ 重置</button>
+        <button class="le-btn le-btn-d" @click="resetLayer()" :disabled="isBuiltinProfile">↺ 重置</button>
         <span class="le-spacer"></span>
         <span v-if="saved" class="le-saved">✅ 已保存</span>
-        <button class="le-btn le-btn-primary" @click="save()">💾 保存</button>
+        <button class="le-btn le-btn-primary" @click="save()" :disabled="isBuiltinProfile" :title="isBuiltinProfile ? '内置 Profile 请先复制为用户 Profile' : ''">💾 保存</button>
         <button class="le-btn le-btn-d" @click="closeWindow()">✕ 关闭</button>
       </div>
     </div>
