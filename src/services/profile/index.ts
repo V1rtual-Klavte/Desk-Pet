@@ -19,6 +19,7 @@ export {
   resolveProfileAssetUrl,
   refreshProfileAssets,
   invalidateProfileCache,
+  invalidateAllProfileCaches,
 } from "./loader";
 
 export {
@@ -27,6 +28,7 @@ export {
   deleteProfile,
   cloneProfile,
   nextCloneId,
+  restoreDefaultResources,
 } from "./io";
 
 export type { ProfileOpResult } from "./io";

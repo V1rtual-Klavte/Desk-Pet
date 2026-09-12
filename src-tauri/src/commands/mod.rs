@@ -9,6 +9,7 @@ pub mod memory_cmd;
 pub mod monitor_ctl;
 pub mod personality_fs_cmd;
 pub mod profile_cmd;
+pub mod resources_cmd;
 pub mod sim;
 pub mod tool_exec;
 
@@ -28,6 +29,7 @@ pub use profile_cmd::{
     export_profile_zip, list_profile_files, list_profiles, profile_asset_base, profile_clone,
     profile_delete, profile_file_read, profile_file_write,
 };
+pub use resources_cmd::restore_default_resources;
 pub use sim::{close_windows_sim, open_windows_sim};
 pub(crate) use tool_exec::BashPool;
 pub use tool_exec::{

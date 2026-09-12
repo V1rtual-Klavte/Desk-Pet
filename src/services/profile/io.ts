@@ -8,7 +8,7 @@
 
 import JSZip from "jszip";
 import { invoke } from "@tauri-apps/api/core";
-import { invalidateProfileCache } from "./loader";
+import { invalidateAllProfileCaches, invalidateProfileCache } from "./loader";
 import { BaseDirs } from "@/services/paths";
 import { createLogger } from "@/services/logger";
 import { formatError } from "@/services/error";
@@ -158,6 +158,40 @@ export async function deleteProfile(profileId: string): Promise<ProfileOpResult>
     return ok(`已删除 ${profileId}`, profileLabel(profileId))
   } catch (e) {
     log.error("删除失败", formatError(e))
+    return fail(formatError(e))
+  }
+}
+
+// ── 恢复默认资源 ──
+
+/** Rust 侧 restore_default_resources 的返回 */
+interface RestoreResult {
+  profiles: number
+  cards: number
+}
+
+/**
+ * 用随包种子覆盖运行时资源，恢复出厂状态。
+ *
+ * 会覆盖运行时目录里同名的内置 Profile 与 Card（含你对它们的改动）；
+ * 用户自建的 Profile / Card 不在种子里，不受影响。调用方必须先向用户确认。
+ */
+export async function restoreDefaultResources(): Promise<ProfileOpResult> {
+  try {
+    const r = await invoke<RestoreResult>("restore_default_resources")
+
+    // 磁盘上的内置资源已被覆盖：Profile 丢弃缓存，Card 重新读盘。
+    invalidateAllProfileCaches()
+    const { initCards } = await import("@/services/personality")
+    await initCards()
+
+    log.info(`默认资源已恢复: Profile ${r.profiles} 个文件, Card ${r.cards} 个文件`)
+    return ok(
+      `已恢复 ${r.profiles} 个 Profile 文件、${r.cards} 个 Card 文件`,
+      "人格卡需重启后完全生效",
+    )
+  } catch (e) {
+    log.error("恢复默认资源失败", formatError(e))
     return fail(formatError(e))
   }
 }

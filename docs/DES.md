@@ -151,6 +151,7 @@ macOS 未签名构建下系统通知无法实现：tauri-plugin-notification 需
 | 弹窗大小 | 自定义宽高 + 预览 + 拖动窗口实时同步（也可拖动主窗口边缘实时调整）| 即时生效 |
 | 快捷键录制 | 录制自定义组合键 | 即时生效 |
 | 音效选择 | 每个事件下拉选择音效库中的音效（或关闭）+ 恢复默认按钮 | 即时生效 |
+| Profile 管理 | 切换/复制/导出/删除/导入 + 恢复默认资源（用随包种子覆盖内置 Profile 与人格卡）| Profile 即时生效，人格卡需重启 |
 | 工具配置 | Bash 白名单编辑(逐行) / 文件写开关 | 即时生效 |
 | MCP 配置 | 启用开关 / 服务器列表(添加/编辑/删除, stdio/sse) / JSON 导入导出 | 需重启 |
 | Skill 配置 | 启用开关 / 已加载列表 / 上传 .md 添加 / 删除 | 需重启 |
@@ -575,6 +576,7 @@ Profile 缺失的素材自动回退到 `DEFAULT_PROFILE`（sugar-pink）：
 | **导入** | `importProfileZip(file)` — 前端 JSZip 解包 → Tauri invoke `profile_file_write` → 写入 `{data_root}/profiles/` |
 | **复制** | `cloneProfile(sourceId, existingIds)` — Rust `profile_clone` 复制目录树，副本 ID 取最小未占用的 `copy{n}`，并删除 `meta.preset` |
 | **删除** | `deleteProfile(id)` — 调用 `profile_delete` 删除运行时目录 |
+| **恢复默认资源** | `restoreDefaultResources()` — Rust `restore_default_resources` 用随包种子**覆盖**运行时同名 Profile 与人格卡。种子只含内置资源，用户自建的 Profile / Card 不受影响；用于找回误删的内置资源或同步随包更新。会丢弃对内置资源的改动，因此必须走确认弹窗 |
 | **存储** | 默认种子 → `src-tauri/resources/defaults/profiles/`；运行时 Profile → `{data_root}/profiles/` |
 
 所有操作返回统一的 `ProfileOpResult { ok, message, detail?, cancelled? }`，
@@ -587,7 +589,7 @@ Service 层不弹窗；由 `AppearanceTab` 经 `services/dialog` 的 `showSucces
 
 ```
 预设切换: [🌸粉色] [🌙暗夜] [🪟玻璃]  ← 一键切换
-📦 Profile                          [🔄 刷新] [📥 导入]
+📦 Profile                [↺ 恢复默认] [🔄 刷新] [📥 导入]
   ├ 每行一个 Profile，点整行切换为当前
   └ 每行: [复制] [导出] [🗑 删除]（删除前二次确认）
 预览: 当前 Profile 的立绘 + 角色名 + 动画数

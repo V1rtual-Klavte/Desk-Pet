@@ -18,6 +18,7 @@ import {
   importProfileZip,
   deleteProfile,
   cloneProfile,
+  restoreDefaultResources,
   invalidateProfileCache,
   type ProfileOpResult,
   type ProfileData,
@@ -166,6 +167,20 @@ async function doDeleteProfile(profileId: string): Promise<void> {
   });
   if (!accepted) return;
   await reportResult(await deleteProfile(profileId), "删除成功");
+}
+
+async function doRestoreDefaults(): Promise<void> {
+  const accepted = await confirmDialog(
+    "将用随包内置资源覆盖运行时目录里的同名 Profile 与人格卡，你对它们的改动会丢失。"
+    + "你自己创建的 Profile / 人格卡不受影响。",
+    {
+      title: "恢复默认资源",
+      okLabel: "恢复",
+      detail: "用于找回被删掉的内置 Profile，或同步随包资源的更新",
+    },
+  );
+  if (!accepted) return;
+  await reportResult(await restoreDefaultResources(), "恢复完成");
 }
 
 // ── 预设切换 ──
@@ -362,6 +377,7 @@ defineExpose({
     <div class="pf-head">
       <span class="s-label" style="margin:0">📦 Profile</span>
       <span class="pf-head-actions">
+        <button class="btn-s btn-d" @click="doRestoreDefaults()">↺ 恢复默认</button>
         <button class="btn-s" @click="refreshProfileList()">🔄 刷新</button>
         <button class="btn-s" @click="doImportProfile()">📥 导入</button>
       </span>

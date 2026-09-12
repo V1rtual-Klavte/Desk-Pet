@@ -37,6 +37,10 @@ Tauri bundle resource 提供给后端。首次启动只将缺失文件复制到�
 `settings/.default-resources-seeded` 写入初始化标记；之后运行时只读取 `data_root/profiles/`，
 默认 Profile 与用户 Profile 没有权限差异，均可直接编辑、复制、导出和删除。
 
+标记写入后不再自动补齐，误删或想同步随包资源的更新时，用设置页的「恢复默认资源」
+（`restore_default_resources`）手动触发。该命令用种子**覆盖**运行时同名文件，因此
+会丢弃用户对内置 Profile / Card 的改动；种子之外的用户自建资源不受影响。
+
 当前随应用提供的默认 Profile 包括 `sugar-pink`、`dark-purple`、`glass` 和 `yuki`；`yuki` 的五层
 透明 PNG 契约为 `profiles/yuki/materials/L0/bg_base.png`、`L1/rain_mid.png`、
 `L2/body.png`、`L3/highlights.png` 与 `L4/rain_front.png`；五张图应保持同一画布尺寸与

@@ -149,6 +149,12 @@ export function invalidateProfileCache(profileId: string): void {
   profileBaseUrls.delete(profileId)
 }
 
+/** 清空全部 Profile 缓存（默认资源恢复后调用，让下次读取走磁盘）。 */
+export function invalidateAllProfileCaches(): void {
+  profiles.clear()
+  profileBaseUrls.clear()
+}
+
 /** 文件编辑后重新读取运行时 Profile；保留旧接口以供图层编辑器触发刷新。 */
 export async function refreshProfileAssets(profileId: string): Promise<ProfileData | null> {
   const wasActive = activeId === profileId

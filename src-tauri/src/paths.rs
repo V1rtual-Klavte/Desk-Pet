@@ -273,23 +273,49 @@ fn seed_default_resources(paths: &AppPaths) -> AppResult<()> {
         return Ok(());
     }
 
-    seed_missing_directory(&paths.seed_profiles, &paths.profiles, "Profile")?;
-    seed_missing_directory(
+    sync_seed_directory(&paths.seed_profiles, &paths.profiles, "Profile", false)?;
+    sync_seed_directory(
         &paths.seed_personality_cards,
         &paths.personality.join("cards"),
         "Card",
+        false,
     )?;
     fs::write(&marker, b"1\n")
         .map_err(|e| AppError::Io(format!("写入默认资源初始化标记失败: {marker:?}: {e}")))?;
     Ok(())
 }
 
-/// 首次初始化时只补齐缺失的种子文件，绝不覆盖已有运行时编辑结果。
-fn seed_missing_directory(source: &Path, target: &Path, label: &str) -> AppResult<()> {
+/// 用随包种子覆盖运行时资源，恢复出厂状态，返回 (Profile 文件数, Card 文件数)。
+///
+/// 与首次初始化不同，这里会覆盖同名文件。用户自建的 Profile/Card 不在种子里，
+/// 因此不受影响；被覆盖的只有随包内置资源。
+pub fn restore_default_resources(paths: &AppPaths) -> AppResult<(usize, usize)> {
+    let profiles = sync_seed_directory(&paths.seed_profiles, &paths.profiles, "Profile", true)?;
+    let cards = sync_seed_directory(
+        &paths.seed_personality_cards,
+        &paths.personality.join("cards"),
+        "Card",
+        true,
+    )?;
+    Ok((profiles, cards))
+}
+
+/// 把种子目录同步到运行时目录，返回复制的文件数。
+///
+/// `overwrite` 为假时只补缺失文件（首次初始化，绝不覆盖运行时编辑结果），
+/// 为真时用种子覆盖同名文件（恢复出厂）。两种模式都只处理种子里存在的条目。
+fn sync_seed_directory(
+    source: &Path,
+    target: &Path,
+    label: &str,
+    overwrite: bool,
+) -> AppResult<usize> {
     if !source.is_dir() {
-        return Ok(());
+        return Ok(0);
     }
     fs::create_dir_all(target).map_err(|e| AppError::Io(format!("创建 {label} 目录失败: {e}")))?;
+
+    let mut copied = 0;
     for entry in
         fs::read_dir(source).map_err(|e| AppError::Io(format!("读取 {label} 种子失败: {e}")))?
     {
@@ -300,13 +326,14 @@ fn seed_missing_directory(source: &Path, target: &Path, label: &str) -> AppResul
             .file_type()
             .map_err(|e| AppError::Io(format!("读取 {label} 种子类型失败: {e}")))?;
         if file_type.is_dir() {
-            seed_missing_directory(&source_path, &target_path, label)?;
-        } else if file_type.is_file() && !target_path.exists() {
+            copied += sync_seed_directory(&source_path, &target_path, label, overwrite)?;
+        } else if file_type.is_file() && (overwrite || !target_path.exists()) {
             fs::copy(&source_path, &target_path)
-                .map_err(|e| AppError::Io(format!("初始化 {label} 种子失败: {e}")))?;
+                .map_err(|e| AppError::Io(format!("写入 {label} 种子失败: {e}")))?;
+            copied += 1;
         }
     }
-    Ok(())
+    Ok(copied)
 }
 
 fn home_dir() -> Option<PathBuf> {
@@ -375,6 +402,51 @@ mod tests {
         assert!(
             !profile.exists(),
             "seed marker must preserve a user deletion"
+        );
+
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn restore_overwrites_builtin_resources_but_keeps_user_ones() {
+        let suffix = format!(
+            "deskpet-restore-{}-{}",
+            std::process::id(),
+            TEST_COUNTER.fetch_add(1, Ordering::Relaxed)
+        );
+        let root = std::env::temp_dir().join(&suffix);
+        let seeds = root.join("seeds");
+        fs::create_dir_all(seeds.join("profiles/default")).unwrap();
+        fs::create_dir_all(seeds.join("personality/cards")).unwrap();
+        fs::write(seeds.join("profiles/default/profile.yaml"), "meta: {}\n").unwrap();
+        fs::write(seeds.join("personality/cards/default.md"), "# default\n").unwrap();
+
+        let paths = test_paths(&root, &seeds);
+        for dir in [&paths.profiles, &paths.personality, &paths.settings] {
+            fs::create_dir_all(dir).unwrap();
+        }
+
+        // 内置资源被用户改过；另有一份用户自建的资源
+        fs::create_dir_all(paths.profiles.join("default")).unwrap();
+        fs::write(
+            paths.profiles.join("default/profile.yaml"),
+            "meta: {edited: true}\n",
+        )
+        .unwrap();
+        fs::create_dir_all(paths.profiles.join("mine")).unwrap();
+        fs::write(paths.profiles.join("mine/profile.yaml"), "meta: {}\n").unwrap();
+
+        let (profiles, cards) = restore_default_resources(&paths).unwrap();
+        assert_eq!((profiles, cards), (1, 1));
+
+        assert_eq!(
+            fs::read_to_string(paths.profiles.join("default/profile.yaml")).unwrap(),
+            "meta: {}\n",
+            "内置资源应被种子覆盖"
+        );
+        assert!(
+            paths.profiles.join("mine/profile.yaml").exists(),
+            "用户自建的 Profile 不在种子里，不应被删除"
         );
 
         fs::remove_dir_all(&root).unwrap();
