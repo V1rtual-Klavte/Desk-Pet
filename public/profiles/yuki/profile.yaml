@@ -36,6 +36,8 @@ theme:
     ui: "zpix"
     chat: "zpix"
     size: 14
+  # 视觉素材由五层雨夜图负责；窗口 UI 复用默认内置资源。
+  useDefaultUi: true
   shield:
     enabled: false
     image: ""

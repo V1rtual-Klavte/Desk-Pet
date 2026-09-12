@@ -45,6 +45,8 @@ theme:
     ui: "zpix"
     chat: "zpix"
     size: 14
+  # 本 Profile 不携带 UI 位图，直接使用默认内置 UI，避免空目录 404。
+  useDefaultUi: true
   shield:
     enabled: false
     image: ""
