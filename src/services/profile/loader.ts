@@ -5,6 +5,7 @@
 
 import { createLogger } from "@/services/logger";
 import { appearanceConfig } from "@/services/config";
+import { DEFAULT_PROFILE } from "@/services/paths";
 import { convertFileSrc, invoke } from "@tauri-apps/api/core";
 import { formatError } from "@/services/error";
 import { ref } from "vue";
@@ -109,7 +110,6 @@ let activeId: string | null = null;
 /** 让通过 getActiveProfile() 读取资源的 Vue 模板随 Profile 切换重新计算。 */
 export const activeProfileRevision = ref(0);
 let loaded = false;
-const DEFAULT_PROFILE = "sugar-pink";
 const profileBaseUrls = new Map<string, string>();
 
 // ── YAML 加载 ──

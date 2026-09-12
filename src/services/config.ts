@@ -7,6 +7,7 @@
 import rawConfig from "../../CONFIG.yaml";
 import { invoke } from "@tauri-apps/api/core";
 import { dump as dumpYaml, load as loadYaml } from "js-yaml";
+import { DEFAULT_PROFILE } from "@/services/paths";
 import { createLogger, LEVELS, LEVEL_ORDER, setLogLevel, type Level } from "@/services/logger";
 import { formatError } from "@/services/error";
 
@@ -515,7 +516,7 @@ export const toolsConfig = {
 // 主题/角色/音效由运行时 data_root/profiles/ 管理
 // ==========================================
 export const appearanceConfig = {
-  get activeProfile() { return overrideOr("appearance.activeProfile", cfg.appearance?.activeProfile || "sugar-pink"); },
+  get activeProfile() { return overrideOr("appearance.activeProfile", cfg.appearance?.activeProfile || DEFAULT_PROFILE); },
 };
 
 // ══════════════════════════════════════════
