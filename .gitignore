@@ -36,10 +36,3 @@ DESIGN_ORIGIN.docx
 
 # Runtime data (Phase G — unified data_root)
 data/
-
-# Sessions (individual session files, keep .gitkeep)
-sessions/*.md
-
-# Memory (runtime-generated, keep .gitkeep for empty dir)
-memory/*
-!memory/.gitkeep
