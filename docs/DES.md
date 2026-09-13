@@ -512,13 +512,14 @@ sugar-pink/                  # Profile 示例（默认提供: sugar-pink / dark-
 
 ```text
 同一张图渲染两次
-  底层  整图 + blur(blur px) + 背景滤镜，并放大 blurScale 盖住模糊渗出的透明边
+  底层  整图 + blur(blur px) + 背景滤镜，并乘一个固定的边缘补偿系数
   上层  同一张图，被焦点区 mask 裁出，保持锐利
 ```
 
 - **焦点区是椭圆**，用 `radial-gradient` 一行 CSS 做遮罩，`feather` 控制边缘过渡宽度；多个区域就是多层 gradient 叠加
-- **无焦点区**时整张图统一模糊，锐利副本不参与渲染 —— 又是一种玩法
+- **无焦点区**时整张图统一模糊，锐利副本不参与渲染 —— 又是一种玩法。首次选图会自动给一个居中椭圆，否则刚选完就是一片糊，容易以为出错
 - **焦点区坐标全部用百分比**（`x`/`y` 是中心，`rx`/`ry` 是半径），换窗口尺寸不错位
+- **`scale` 是取景缩放**：图与画布尺寸不合时放大它，超出部分由舞台的 `overflow: hidden` 裁掉。两层共用同一个 scale 才能对齐；模糊层另乘一个固定的边缘补偿系数（常量，不进配置）
 - **编辑器交互**：画布上拖动画出焦点椭圆；在椭圆内拖动可移动它；右侧面板可数值微调中心、半径与羽化
 - **核心文件**: `src/composables/useDepthOfField.ts`（样式与遮罩计算，编辑器与渲染共用，所见即所得）
 - **Rust**: `cursor.rs` → `spawn_cursor_tracker` 后台线程 ~60fps emit；`profile_cmd.rs` → `profile_file_write` 写入当前运行时 Profile，`list_profile_files` 只扫描该目录

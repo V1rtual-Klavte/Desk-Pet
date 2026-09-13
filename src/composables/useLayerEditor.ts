@@ -57,10 +57,22 @@ export function useLayerEditor() {
 
   const dof = ref<DofState>({
     image: "", url: "",
-    blur: 8, blurScale: 1.05,
+    blur: 8, scale: 1.0,
     brightness: 0.95, contrast: 1.0, saturate: 0.9,
     focus: [],
   });
+
+  /**
+   * 首次选图时给一个居中的默认焦点区。
+   *
+   * 没有焦点区时是「整图统一模糊」，刚选完图就看到一片糊会让人以为出错了；
+   * 给个默认椭圆能立刻看到清晰/模糊的对比，不想要再点「清除焦点区」。
+   */
+  function ensureDefaultFocus(): void {
+    if (dof.value.focus.length > 0) return;
+    dof.value.focus = [{ x: 50, y: 50, rx: 30, ry: 40, feather: 0.35 }];
+    selectedFocus.value = 0;
+  }
   /** 当前选中的焦点区索引；-1 = 没有 */
   const selectedFocus = ref(-1);
   /** 画布预览用；和 StreamView 共用同一套样式计算，所见即所得 */
@@ -409,6 +421,7 @@ export function useLayerEditor() {
     const relativePath = `materials/dof_${Date.now()}.${ext}`;
     dof.value.image = relativePath;
     dof.value.url = URL.createObjectURL(file);
+    ensureDefaultFocus();
     try {
       const bytes = Array.from(new Uint8Array(await file.arrayBuffer()));
       await invoke("profile_file_write", { profileId: p.id, relativePath, content: bytes });
@@ -552,6 +565,7 @@ export function useLayerEditor() {
     if (pickerTarget.value === "dof") {
       dof.value.image = path;
       dof.value.url = resolveProfileAssetUrl(profile.value!, path);
+      ensureDefaultFocus();
       log.info(`景深素材已选择 | ${path}`);
       showPicker.value = false;
       pickerPreview.value = "";
@@ -632,7 +646,7 @@ export function useLayerEditor() {
     profileYaml.theme.depthOfField = {
       image: d.image,
       blur: d.blur,
-      blurScale: d.blurScale,
+      scale: d.scale,
       brightness: d.brightness,
       contrast: d.contrast,
       saturate: d.saturate,

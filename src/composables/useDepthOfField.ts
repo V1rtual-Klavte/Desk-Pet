@@ -42,10 +42,19 @@ export function buildFocusMask(regions: ProfileDofRegion[]): string | undefined 
 }
 
 /**
+ * 模糊层额外放大的比例。
+ *
+ * CSS `blur()` 会采样到图像边界之外的透明区，不放大就会在四周透出一圈发虚的底。
+ * 这是技术补偿，不是给用户调的参数，所以做成常量而不进配置。
+ */
+const BLUR_EDGE_MARGIN = 1.05
+
+/**
  * 景深样式。
  *
- * 背景层放大 `blurScale` —— CSS blur 会采样到图像边界之外的透明区，
- * 不放大就会在四周出现一圈发虚的底。
+ * `scale` 是用户控制的取景缩放：图与画布尺寸不合时放大它，超出画布的部分由
+ * 舞台的 `overflow: hidden` 裁掉。两层必须用同一个 scale 才能对齐，模糊层
+ * 在其之上再乘一个技术补偿系数。
  */
 export function useDepthOfField(config: Ref<DofState>) {
   const hasImage = computed(() => config.value.url !== "")
@@ -59,12 +68,14 @@ export function useDepthOfField(config: Ref<DofState>) {
         `contrast(${c.contrast.toFixed(2)})`,
         `saturate(${c.saturate.toFixed(2)})`,
       ].join(" "),
-      transform: `scale(${c.blurScale.toFixed(3)})`,
+      transform: `scale(${(c.scale * BLUR_EDGE_MARGIN).toFixed(3)})`,
     }
   })
 
   const foregroundStyle = computed<Record<string, string>>(() => {
-    const style: Record<string, string> = {}
+    const style: Record<string, string> = {
+      transform: `scale(${config.value.scale.toFixed(3)})`,
+    }
     const mask = buildFocusMask(config.value.focus)
     if (mask) {
       style.maskImage = mask

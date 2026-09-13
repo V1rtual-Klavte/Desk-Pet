@@ -211,11 +211,11 @@ const {
             <span class="le-prop-num">{{ dof.blur.toFixed(1) }}px</span>
           </div>
           <div class="le-prop-row">
-            <span class="le-prop-label">放大</span>
-            <input type="range" class="le-range" min="1" max="1.3" step="0.01" v-model.number="dof.blurScale" />
-            <span class="le-prop-num">{{ dof.blurScale.toFixed(2) }}</span>
+            <span class="le-prop-label">缩放</span>
+            <input type="range" class="le-range" min="0.2" max="3" step="0.01" v-model.number="dof.scale" />
+            <span class="le-prop-num">{{ dof.scale.toFixed(2) }}</span>
           </div>
-          <div class="le-hint">「放大」用来盖住 CSS 模糊在图像边缘渗出的透明边。</div>
+          <div class="le-hint">素材与画布尺寸不合时用它取景，超出画布的部分会被自动裁掉。</div>
 
           <div class="le-prop-section">
             <div class="le-panel-title" style="margin-bottom:4px">背景滤镜</div>

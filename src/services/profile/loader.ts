@@ -106,8 +106,8 @@ export interface ProfileDepthOfField {
   image: string
   /** 背景模糊半径 px */
   blur: number
-  /** 模糊层放大倍数：CSS blur 会采到图像外的透明区导致边缘发虚，放大一点盖住 */
-  blurScale: number
+  /** 素材取景缩放：图与画布尺寸不合时放大，超出部分被画布裁掉 */
+  scale: number
   /** 焦点区外的背景滤镜，用来压暗/降饱和增强景深感 */
   brightness: number; contrast: number; saturate: number
   focus: ProfileDofRegion[]
@@ -270,7 +270,7 @@ async function loadProfile(id: string): Promise<ProfileData> {
       depthOfField: {
         image: rawProfile?.theme?.depthOfField?.image ?? "",
         blur: rawProfile?.theme?.depthOfField?.blur ?? 8,
-        blurScale: rawProfile?.theme?.depthOfField?.blurScale ?? 1.05,
+        scale: rawProfile?.theme?.depthOfField?.scale ?? 1.0,
         brightness: rawProfile?.theme?.depthOfField?.brightness ?? 0.95,
         contrast: rawProfile?.theme?.depthOfField?.contrast ?? 1.0,
         saturate: rawProfile?.theme?.depthOfField?.saturate ?? 0.9,
