@@ -25,7 +25,8 @@ data_root/
 │   ├── index.json                       # 仅 UI 状态，可安全丢弃
 │   └── session-YYYYMMDD-HHmmss-主题.md  # 会话正文和摘要真相源
 ├── personality/                         # Card 阶段与变量状态
-└── profiles/                            # 用户导入/复制的 Profile
+├── profiles/                            # 用户导入/复制的 Profile
+└── skills/{name}/SKILL.md               # 模型用 read 加载的 Skill，随包种子首次复制
 ```
 
 会话 Markdown 的每轮记录同时含可读预览与完整原文元数据，历史格式仍可读取。启动时先扫描 Markdown 重建会话历史，再用 `index.json` 恢复上次打开和活跃的标签；index 损坏不应丢失任何对话。

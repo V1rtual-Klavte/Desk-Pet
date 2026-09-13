@@ -43,17 +43,17 @@ Pi 官方 CLI（`pi-coding-agent`）提供 `ls` / `grep` / `find`，但它们的
 Skill **不是工具**：不注册 `ToolDef`，不占工具声明槽。采用 Pi 原生的渐进披露模型：
 
 ```text
-skills/{name}/SKILL.md（内置，编译期经 import.meta.glob 注入）
-CONFIG tools.skill.skills（用户上传）
-  -> loadSkills() 落盘到 data_root/skills/{name}/SKILL.md
-  -> formatSkillsForSystemPrompt() 只把 name / description / location 注入 system prompt
-  -> 模型判定任务匹配后，用已有的 read 工具读取 location 加载正文
+src-tauri/resources/defaults/skills/{name}/SKILL.md   ← 随包种子，只读
+  └─ 首次启动复制一次 ──→ data_root/skills/{name}/SKILL.md   ← 唯一真相源，用户可改可删
+       -> formatSkillsForSystemPrompt() 只把 name / description / location 注入 system prompt
+       -> 模型判定任务匹配后，用已有的 read 工具读取 location 加载正文
 ```
 
 - 名称必须是 kebab-case（`^[a-z0-9]+(-[a-z0-9]+)*$`），且与目录名一致；`description` 必填。不合规的 Skill 会被丢弃并记 warn。
-- `data_root/skills/` 是**派生目录**：每次启动按当前来源重写，真相源是内置资源与 CONFIG。内置 Skill 不可删除，用户 Skill 覆盖同名内置 Skill。
+- `data_root/skills/` 与其他运行时资源同一套所有权模型：种子只在首次启动复制一次，之后应用不再覆盖。误删或想同步种子更新，用设置页的「恢复默认资源」。
+- 新增/覆盖 Skill 直接写 `data_root/skills/{name}/SKILL.md`；删除走 `skill_delete`（通用 `file_delete` 只允许 memory/ 与 sessions/）。不再有内置 / 用户之分。
 - 清单只在 `toolsConfig.skillEnabled` 为真、且本轮有工具可用时才注入 —— 模型要靠 `read` 才能加载正文。
-- Skill 不再携带自己的安全级别。它调用的每个工具各自走 `checkSafety`，权限落在具体操作上。
+- Skill 不携带自己的安全级别。它调用的每个工具各自走 `checkSafety`，权限落在具体操作上。
 
 ## 执行与资源边界
 

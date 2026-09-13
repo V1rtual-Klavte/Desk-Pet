@@ -126,8 +126,7 @@ Desk-Pet/
 │       ├── window/                   # 主窗口与设置窗口
 │       ├── monitor/                  # 前台窗口监控
 │       └── commands/                 # 文件、记忆、Profile、系统命令
-├── skills/                           # 内置 Skill（{name}/SKILL.md，Pi 约定）
-├── src-tauri/resources/defaults/     # 首次启动复制的默认 Profile/Card 种子
+├── src-tauri/resources/defaults/     # 首次启动复制的种子：profiles / personality/cards / skills
 └── data/desk-pet/                    # 开发环境运行时数据（生产使用应用专属目录）
 ```
 

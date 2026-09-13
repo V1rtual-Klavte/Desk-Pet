@@ -151,7 +151,7 @@ macOS 未签名构建下系统通知无法实现：tauri-plugin-notification 需
 | 弹窗大小 | 自定义宽高 + 预览 + 拖动窗口实时同步（也可拖动主窗口边缘实时调整）| 即时生效 |
 | 快捷键录制 | 录制自定义组合键 | 即时生效 |
 | 音效选择 | 每个事件下拉选择音效库中的音效（或关闭）+ 恢复默认按钮 | 即时生效 |
-| Profile 管理 | 切换/复制/导出/删除/导入 + 恢复默认资源（用随包种子覆盖内置 Profile 与人格卡）| Profile 即时生效，人格卡需重启 |
+| Profile 管理 | 切换/复制/导出/删除/导入 + 恢复默认资源（用随包种子覆盖内置 Profile / 人格卡 / Skill）| Profile 与 Skill 即时生效，人格卡需重启 |
 | 工具配置 | Bash 白名单编辑(逐行) / 文件写开关 | 即时生效 |
 | MCP 配置 | 启用开关 / 服务器列表(添加/编辑/删除, stdio/sse) / JSON 导入导出 | 需重启 |
 | Skill 配置 | 启用开关 / 已加载列表 / 上传 .md 添加 / 删除 | 需重启 |
@@ -659,10 +659,9 @@ src/services/
 │   ├── must-rules.ts      # 必须遵守规则解析
 │   ├── stages-cache.ts    # 阶段文案缓存 + getFallbackReply() / pickActiveGreeting() 兜底
 │   ├── stages-prompt.md   # 阶段文案生成模板（含 fallbacks / greetings 字段）
-│   ├── variable-pool.ts   # 变量状态 (system/card/interaction/session)
-│   ├── vars.json          # 系统变量持久化快照
-│   └── stages/            # 阶段文案 JSON (LLM生成, per-card)
+│   └── variable-pool.ts   # 变量状态 (system/card/interaction/session)
 # 人格卡随包种子在 src-tauri/resources/defaults/personality/cards/，首次启动复制到运行时目录
+# 运行时产物（stages/{cardId}.json、vars.json）只写 data_root/personality/，源码树不留副本
 │
 ├── session/               # 会话持久化管理
 │   ├── store.ts           # reactive 状态
@@ -690,7 +689,7 @@ src/services/
 │       └── stdio.ts       # MCP stdio 传输层 (Tauri invoke桥接)【已实现】
 ├── skill/                 # ★ Skill (非工具，Pi 渐进披露)
 │   ├── index.ts           # 统一导出
-│   └── loader.ts          # SKILL.md 解析 + 落盘 data_root/skills/ + Prompt 注入
+│   └── loader.ts          # 扫描 data_root/skills/ 解析 SKILL.md + Prompt 注入
 │
 ├── safety/                # 安全控制
 │   ├── checker.ts         # 四级安全 + 三策略 + 会话信任 + 危险模式库
@@ -1052,8 +1051,8 @@ sessions/                      会话目录（唯一真相源）
 | Skill Loader | ✅ | `services/skill/loader.ts` — 解析 + 落盘 + 注入 |
 | **渐进披露模型** | ✅ 已实现 | Prompt 只放 name/description/location，正文由模型 read |
 | 3个内置 Skill | ✅ | summarize-code / organize-files / check-weather |
-| skills/ 目录 | ✅ | `skills/{name}/SKILL.md` — import.meta.glob 编译时加载 |
-| **Skill 落盘** | ✅ 已实现 | 启动时写 `data_root/skills/`，模型可 read |
+| 种子目录 | ✅ | `src-tauri/resources/defaults/skills/{name}/SKILL.md`，首次启动复制 |
+| **Skill 所有权** | ✅ 已实现 | `data_root/skills/` 是唯一真相源，种子只复制一次，应用不再覆盖 |
 | **Skill 持久化到 CONFIG** | ✅ 已实现 | 用户 Skill 存覆盖层，重启后重新落盘 |
 | **MCP Mock 工具** | ❌ 已移除 | 4个假工具已删除，只留真实连接 |
 | **MCP Manager (真实连接)** | ✅ 已实现 | 连接生命周期 + 工具发现 → ToolRegistry |
