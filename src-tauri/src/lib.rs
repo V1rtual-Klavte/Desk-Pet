@@ -15,6 +15,7 @@ use crate::monitor::MonitorState;
 use crate::window::{create_main_window, enhance_settings_window};
 use crate::commands::{
     get_cursor_position, compute_popup_position,
+    get_normalized_cursor,
     pause_monitor, resume_monitor, set_monitor_config,
     open_windows_sim, close_windows_sim,
     log_message, focus_main,
@@ -97,6 +98,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             get_cursor_position,
             compute_popup_position,
+            get_normalized_cursor,
             pause_monitor,
             resume_monitor,
             set_monitor_config,

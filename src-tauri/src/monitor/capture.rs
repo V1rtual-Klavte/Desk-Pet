@@ -6,6 +6,11 @@
 
 use crate::{rust_debug, rust_log};
 
+/// 按字符截断，避免字节下标切进 UTF-8 多字节字符中间触发 panic
+fn head(s: &str, max_chars: usize) -> String {
+    s.chars().take(max_chars).collect()
+}
+
 pub fn capture_window_title() -> String {
     #[cfg(target_os = "windows")]
     unsafe {
@@ -15,7 +20,7 @@ pub fn capture_window_title() -> String {
         let len = GetWindowTextW(hwnd, buf.as_mut_ptr(), 1024);
         if len > 0 {
             let title = String::from_utf16_lossy(&buf[..len as usize]);
-            rust_debug!("窗口标题(Win): {}", &title[..title.len().min(60)]);
+            rust_debug!("窗口标题(Win): {}", head(&title, 60));
             return title;
         }
     }
@@ -31,7 +36,7 @@ pub fn capture_window_title() -> String {
             if out.status.success() {
                 let t = String::from_utf8_lossy(&out.stdout).trim().to_string();
                 if !t.is_empty() {
-                    rust_debug!("窗口标题(Mac): {}", &t[..t.len().min(60)]);
+                    rust_debug!("窗口标题(Mac): {}", head(&t, 60));
                     return t;
                 }
             }
@@ -45,7 +50,7 @@ pub fn capture_window_title() -> String {
             if out.status.success() {
                 let t = String::from_utf8_lossy(&out.stdout).trim().to_string();
                 if !t.is_empty() {
-                    rust_debug!("应用名(Mac): {}", &t[..t.len().min(40)]);
+                    rust_debug!("应用名(Mac): {}", head(&t, 40));
                     return t;
                 }
             }

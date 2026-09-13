@@ -65,6 +65,7 @@ Desk-Pet/
 │   │   ├── command-handler.ts   # 聊天命令
 │   │   ├── expressions.ts       # 关键词
 │   │   ├── animation.ts         # 动画帧定义
+│   │   ├── mouse-tracking.ts    # 鼠标追踪（rAF + 阻尼的可复用 transform 层，与序列帧动画解耦）
 │   │   └── audio/               # registry.ts (统一音效注册中心, async AudioContext) + boundary.ts (人格界限)
 │   └── styles/                  # global.css + fonts.css
 │
@@ -206,6 +207,7 @@ Dock/任务栏 点击 → onFocusChanged → handleDockPopup() → 屏幕中央�
 - Windows 专有依赖用 `[target.'cfg(windows)'.dependencies]`
 - Vue 组件用 `<script setup lang="ts">` 语法
 - 新增表情在 `animation.ts` 加一条即可
+- 鼠标追踪参数集中在 `mouse-tracking.ts` 的 `MOUSE_PARALLAX_CONFIG`（`BACKGROUND_X_FACTOR` / `CHARACTER_X_FACTOR` / `SHARED_Y_FACTOR` / `MAX_X` / `MAX_Y` / `TRACKING_SMOOTHNESS`）；全局归一化光标由 Rust 命令 `get_normalized_cursor` 提供
 - AI 模块通过 `@/services/ai` 统一导入
 - 全局冷却/并发锁走 `cooldown.ts`
 - 平台检测走 `@/services/env`

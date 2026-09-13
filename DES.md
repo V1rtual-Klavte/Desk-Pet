@@ -50,9 +50,12 @@
 
 当窗口处于隐藏（收回）状态时，点击 Dock 或任务栏的应用图标，窗口在**屏幕中央**淡入弹出，方便快速找回桌宠。
 
-### 2.7 系统通知（已移除）
+### 2.7 系统通知
 
-macOS 未签名构建下系统通知无法实现：tauri-plugin-notification 需代码签名，osascript `display notification` 在 Tauri WebView 沙箱下无法触发通知中心。代码中留有注释占位（`listener.ts`、`commands/logging.rs`），后续若有新方案可重新启用。
+桌宠**收回（隐藏）**时收到主动消息，会额外弹一条系统通知（标题「糖糖」+ 回复内容），避免收起后错过搭话；窗口可见时只走气泡 + 音效，不重复打扰。开关为 `notification.enabled`，设置页「🔔 系统通知」也可切换。
+
+- Windows：走 `tauri-plugin-notification`，可直接使用。
+- macOS：未签名构建下可能弹不出来，失败只告警，不影响主流程。
 
 ### 2.8 设置页（独立窗口）
 
@@ -69,6 +72,25 @@ macOS 未签名构建下系统通知无法实现：tauri-plugin-notification 需
 | 快捷键录制 | 录制自定义组合键 | 即时生效 |
 | 音效选择 | 每个事件下拉选择音效库中的音效（或关闭）+ 恢复默认按钮 | 即时生效 |
 | **保存后** | **窗口不自动关闭**，显示"已保存"提示 3 秒后消失 | — |
+
+---
+
+### 2.9 鼠标追踪 ★ 轻量视觉跟随
+
+光标在**整个电脑屏幕**上移动时（包括其他应用 / 其他显示器），背景图层与人物序列帧图层产生**水平视差 + 垂直完全同步**的跟随：
+
+- **作用对象**：背景层 `bg_stream_shield_gold.png`（`<img id="shield">`）与人物序列帧层（`animation.ts` → `<img id="char">`）
+- **数学模型**：Rust 命令 `get_normalized_cursor` 以光标所在屏幕中心为原点归一化到 `[-1,1]`
+  - `characterX = normX × CHARACTER_X_FACTOR`，`backgroundX = normX × BACKGROUND_X_FACTOR`（两因子不同 → 水平视差）
+  - `characterY = backgroundY = normY × SHARED_Y_FACTOR`（同一变量 → 垂直完全同步），分别 clamp 到 `MAX_X / MAX_Y`
+- **实现**：`src/services/mouse-tracking.ts` 的 `createMouseParallaxScene()`——单一场景实例，所有图层在**同一次 rAF tick 内统一提交 transform**
+  - 数据源为 OS 级全局光标（Windows `GetCursorPos` / macOS `NSEvent.mouseLocation`），不使用 `clientX/clientY` 作为主数据源
+  - 全局轮询器：窗口可见时 ~30Hz，隐藏时低频心跳；平滑作用于共享的归一化值 → 两图层位移比例恒定，无相位差/局部先移动
+  - 收敛后自动暂停 rAF，空闲零 CPU
+- **与序列帧动画解耦**：transform 分别施加在 `#char`（人物帧渲染层）与 `#shield`（金色盾形背景层）上；帧切换只改 `#char` 的 `src`，追踪状态不闪烁、不归零
+- **排除对象**：`operation_base.png`（`<img id="bg">`）不参与本次鼠标追踪
+- **参数集中管理**：`MOUSE_PARALLAX_CONFIG`（`BACKGROUND_X_FACTOR` / `CHARACTER_X_FACTOR` / `SHARED_Y_FACTOR` / `MAX_X` / `MAX_Y` / `TRACKING_SMOOTHNESS`）
+- **生命周期**：窗口隐藏（visibilitychange）时立即归零停止，恢复显示时从初始状态开始
 
 ---
 
@@ -324,19 +346,20 @@ playNotificationByBoundary();
 
 ## 8. 配置系统
 
-全部配置集中于 `CONFIG.yaml` / `CONFIG-DEV.yaml`，7 个配置段：
+全部配置集中于 `CONFIG.yaml` / `CONFIG-DEV.yaml`，8 个配置段：
 
 | 配置段 | 控制内容 |
 |--------|---------|
-| `ai` | API 端点/Key/模型/上下文数/默认人格/fallback语录 |
+| `ai` | API 端点/Key/requireApiKey/模型/上下文数/默认人格/fallback语录 |
 | `windowMonitor` | 停留秒数/防抖/冷却/同页冷却/额外延迟 |
 | `aiLock` | 生成锁安全超时 |
 | `memory` | 长期记忆最大条数 |
+| `notification` | 桌宠收起时的系统通知开关 |
 | `desktop` | Rust 轮询间隔/暂停参数 |
 | `shortcut` | 全局快捷键键值 + macOS/Windows 分别的修饰键 |
 | `logging` | 日志级别 |
 
-> `notification` 配置段已移除（macOS 系统通知无法实现，见 2.7 节）。
+> `notification` 配置段控制桌宠收起时的系统通知（见 2.7 节）。
 
 DEV 配置 `enabled: true` 时完全替换生产配置，本地调试无需改代码。
 

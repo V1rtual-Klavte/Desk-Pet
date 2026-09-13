@@ -25,10 +25,9 @@ export function getAIConfig(): AIConfig {
   };
 }
 
-/** 是否已配置 API Key + Endpoint */
+/** 是否已配置 API（endpoint 必填；requireApiKey 关闭时不需要 Key，如本地 Ollama） */
 export function isAIConfigured(): boolean {
-  const c = getAIConfig();
-  return Boolean(c.endpoint && c.apiKey);
+  return aiConfig.configured;
 }
 
 // ==========================================

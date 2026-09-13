@@ -19,6 +19,7 @@ import { isMacOS } from "@/services/env";
 import { createLogger } from "@/services/logger";
 import { playEventSound } from "@/services/audio/registry";
 import { emit, listen } from "@tauri-apps/api/event";
+import { createMouseParallaxScene, registerGlobalMouseSource, tauriGlobalMouseSource, MOUSE_PARALLAX_CONFIG, type MouseParallaxScene } from "./services/mouse-tracking";
 
 const log = createLogger("Shortcut");
 
@@ -31,6 +32,7 @@ const showChat = ref(true);
 const winSize = ref({ w: 0, h: 0 });
 const streamRef = ref<InstanceType<typeof StreamView> | null>(null);
 const chatRef = ref<InstanceType<typeof ChatPanel> | null>(null);
+let parallaxScene: MouseParallaxScene | null = null;
 
 function onChatSend(text: string) {
   handleCommand(text, streamRef.value);
@@ -348,6 +350,27 @@ function hideCtxMenu() {
 onMounted(async () => {
   if (isWinSim) return;
 
+  // ── 鼠标追踪：全屏视差场景（两个真实目标，同一次 rAF 提交）──
+  registerGlobalMouseSource(tauriGlobalMouseSource);
+  const tracking = streamRef.value?.getTrackingElements();
+  const backgroundTarget = tracking?.background;
+  const characterTarget = tracking?.character;
+  if (backgroundTarget && characterTarget) {
+    parallaxScene = createMouseParallaxScene([
+      {
+        // 背景层：bg_stream_shield_gold.png（不是 operation_base.png）
+        element: backgroundTarget,
+        xFactor: MOUSE_PARALLAX_CONFIG.BACKGROUND_X_FACTOR,
+      },
+      {
+        // 人物层：animation.ts 控制的序列帧渲染元素
+        element: characterTarget,
+        xFactor: MOUSE_PARALLAX_CONFIG.CHARACTER_X_FACTOR,
+      },
+    ]);
+    parallaxScene.start();
+  }
+
   // ── 从持久化配置恢复窗口尺寸和位置 ──
   const win = getCurrentWebviewWindow();
   const savedSize = getPopupSize();
@@ -471,6 +494,8 @@ onMounted(async () => {
 });
 
 onUnmounted(() => {
+  registerGlobalMouseSource(null);
+  parallaxScene?.stop();
   if (cleanupListener) cleanupListener();
   if (cleanupFocus) cleanupFocus();
   if (cleanupMoved) cleanupMoved();

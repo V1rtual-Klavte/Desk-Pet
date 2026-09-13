@@ -8,7 +8,7 @@ import { pushAssistantMessage, incrementUnanswered } from "@/services/ai";
 import { checkWindowTiming } from "./monitor";
 import { generateActiveMessage } from "./active-context";
 import { playNotificationByBoundary } from "@/services/audio/registry";
-import { windowMonitorConfig } from "@/services/config";
+import { windowMonitorConfig, notificationConfig } from "@/services/config";
 import { createLogger } from "@/services/logger";
 import type { StreamViewRef } from "@/services/command-handler";
 
@@ -21,17 +21,28 @@ interface WindowChangePayload {
 }
 
 // ═══════════════════════════════════════════════════════════════
-// sendToastNotification — 系统通知（已禁用）
-// macOS: tauri-plugin-notification 需代码签名才可工作；
-//        osascript display notification 在 Tauri WebView 沙箱
-//        下无法触发用户通知中心，均不可用。
-// Windows: tauri-plugin-notification 理论上可用但未充分测试。
-// 保留函数签名和调用点，待后续方案成熟后启用。
+// sendToastNotification — 系统通知
+// Windows: tauri-plugin-notification 直接可用；
+// macOS: 未签名构建下可能不弹，失败只告警，不影响主流程。
 // ═══════════════════════════════════════════════════════════════
 export async function sendToastNotification(body: string): Promise<void> {
-  // 占位 — 系统通知功能当前不可用
-  // 原因见上方注释
-  void body;
+  try {
+    const { sendNotification, isPermissionGranted, requestPermission } = await import("@tauri-apps/plugin-notification");
+    let granted = await isPermissionGranted();
+    if (!granted) {
+      const r = await requestPermission();
+      granted = r === "granted";
+      log.debug("通知权限请求:", r);
+    }
+    if (!granted) {
+      log.warn("通知权限未授予，跳过系统通知");
+      return;
+    }
+    sendNotification({ title: "糖糖", body });
+    log.info("系统通知已发送:", body.substring(0, 30));
+  } catch (e) {
+    log.warn("系统通知发送失败:", e instanceof Error ? e.message : String(e));
+  }
 }
 
 export async function initWindowListener(
@@ -53,7 +64,8 @@ export async function initWindowListener(
           incrementUnanswered();
           streamRef.value?.setExpression("smile");
           playNotificationByBoundary();
-          // 系统通知: 已禁用（macOS 无法实现，见文件顶部注释）
+          // 桌宠收回（隐藏）时发送系统通知
+          if (notificationConfig.enabled && !is_pet_visible) sendToastNotification(reply);
         }
       });
     });

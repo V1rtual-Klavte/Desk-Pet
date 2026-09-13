@@ -36,7 +36,7 @@ export class OpenAICompatibleProvider implements AIProvider {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
-          Authorization: "Bearer " + config.apiKey,
+          ...(config.apiKey ? { Authorization: "Bearer " + config.apiKey } : {}),
         },
         body,
       });

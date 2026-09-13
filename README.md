@@ -22,6 +22,7 @@
 - **设置面板** — 独立窗口，AI / 监控 / 弹窗 / 快捷键 / 音效可配置
 - **Windows 模拟器** — 彩蛋：像素风 Win7 桌面（输入 `open win` 触发）
 - **系统托盘** — 关闭隐藏到托盘，单击恢复
+- **鼠标追踪** — 全屏视差跟随：背景/人物水平位移比例不同，垂直完全同步（单一 rAF 同帧提交，与序列帧动画解耦）
 
 ---
 
@@ -59,7 +60,8 @@ pnpm tauri dev
 
 ```bash
 cp CONFIG-DEV.yaml.example CONFIG-DEV.yaml
-# 编辑 CONFIG-DEV.yaml，填入 API Key
+# 编辑 CONFIG-DEV.yaml：填入 API 端点与 Key
+# 本地 Ollama/LM Studio 可将 requireApiKey 设为 false（无需 Key）
 ```
 
 `enabled: true` 时 DEV 配置完全替换 CONFIG.yaml。
@@ -88,6 +90,7 @@ Desk-Pet/
 │       ├── window/          # 窗口监控（listener / monitor / active-context）
 │       ├── audio/           # 音效注册中心 + 人格界限
 │       ├── config.ts        # 配置加载器（YAML → 类型化 getter）
+│       ├── mouse-tracking.ts # 鼠标追踪（轻量视觉跟随）
 │       ├── cooldown.ts      # 全局冷却 + AI 并发锁
 │       └── ...
 │

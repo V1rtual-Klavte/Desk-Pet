@@ -12,6 +12,7 @@ ai:
   provider: deepseek # deepseek | openai | ollama | custom
   endpoint: 
   apiKey: "" # 留空则读环境变量 VITE_API_KEY
+  requireApiKey: true # 是否需要 API Key（本地 Ollama/LM Studio 可设为 false）
   model: deepseek-v4-pro
   maxContextMessages: 20 # 发送给模型的最大上下文消息数
 
@@ -49,9 +50,10 @@ aiLock:
 memory:
   maxEntries: 200 # 最大记忆条数
 
-# ── 系统通知（已移除）──
-# macOS 未签名构建下无法实现，代码中留有注释占位。
-# 若后续有新方案可重新启用。
+# ── 系统通知（桌宠收起时提醒）──
+# Windows 走 tauri-plugin-notification；macOS 未签名时可能不弹，失败自动降级
+notification:
+  enabled: true
 
 # ── 桌面后端（Rust 轮询）──
 desktop:

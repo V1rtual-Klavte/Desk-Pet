@@ -4,7 +4,7 @@ import { WebviewWindow, getCurrentWebviewWindow } from "@tauri-apps/api/webviewW
 import { LogicalSize } from "@tauri-apps/api/dpi";
 import {
   userConfig, aiConfig, windowMonitorConfig, aiLockConfig,
-  memoryConfig, desktopConfig, loggingConfig,
+  memoryConfig, notificationConfig, desktopConfig, loggingConfig,
   setOverrides, clearOverrides,
 } from "@/services/config";
 import {
@@ -53,6 +53,7 @@ const aiModel = ref(aiConfig.model);
 const aiMaxContext = ref(aiConfig.maxContextMessages);
 const aiSystemPrompt = ref(aiConfig.defaultSystemPrompt);
 const showApiKey = ref(false);
+const aiRequireApiKey = ref(aiConfig.requireApiKey);
 
 // ── 窗口监控 ──
 const wmEnabled = ref(windowMonitorConfig.enabled);
@@ -60,6 +61,9 @@ const wmStaySeconds = ref(windowMonitorConfig.staySeconds);
 const wmSettleMs = ref(windowMonitorConfig.settleMs);
 const wmCooldownSec = ref(windowMonitorConfig.cooldownSeconds);
 const wmSamePageCool = ref(windowMonitorConfig.samePageCooldownSeconds);
+
+// ── 系统通知 ──
+const notifEnabled = ref(notificationConfig.enabled);
 
 // ── AI 锁 ──
 const lockTimeout = ref(aiLockConfig.safetyTimeoutMs);
@@ -154,6 +158,7 @@ async function doSave() {
   setOverrides({
     "ai.endpoint": aiEndpoint.value,
     "ai.apiKey": aiApiKey.value,
+    "ai.requireApiKey": aiRequireApiKey.value,
     "ai.model": aiModel.value,
     "ai.maxContextMessages": aiMaxContext.value,
     "ai.defaultSystemPrompt": aiSystemPrompt.value,
@@ -162,6 +167,7 @@ async function doSave() {
     "windowMonitor.settleMs": wmSettleMs.value,
     "windowMonitor.cooldownSeconds": wmCooldownSec.value,
     "windowMonitor.samePageCooldownSeconds": wmSamePageCool.value,
+    "notification.enabled": notifEnabled.value,
     "aiLock.safetyTimeoutMs": lockTimeout.value,
     "memory.maxEntries": memMax.value,
     "desktop.pollingIntervalMs": deskPoll.value,
@@ -234,6 +240,13 @@ onUnmounted(() => {
           <button class="s-btn-mini" @click="showApiKey = !showApiKey">{{ showApiKey ? '🙈' : '👁' }}</button>
         </div>
         <div class="s-field">
+          <span class="s-fname">需要密钥</span>
+          <label class="radio-item">
+            <input type="checkbox" v-model="aiRequireApiKey" />
+            <span>关闭后可在本地 Ollama 等无密钥环境使用</span>
+          </label>
+        </div>
+        <div class="s-field">
           <span class="s-fname">模型</span>
           <input class="s-input" v-model="aiModel" />
         </div>
@@ -263,6 +276,17 @@ onUnmounted(() => {
         <div class="s-field-inline">
           <label>全局冷却 <input class="s-input-num" type="number" v-model.number="wmCooldownSec" /> 秒</label>
           <label>同页冷却 <input class="s-input-num" type="number" v-model.number="wmSamePageCool" /> 秒</label>
+        </div>
+      </div>
+
+      <!-- 系统通知 -->
+      <div class="s-section">
+        <div class="s-label">🔔 系统通知 <span class="s-tag">即时生效</span></div>
+        <div class="s-field-inline">
+          <label class="radio-item">
+            <input type="checkbox" v-model="notifEnabled" />
+            <span>桌宠收起时，主动消息弹系统通知</span>
+          </label>
         </div>
       </div>
 

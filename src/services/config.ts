@@ -22,6 +22,7 @@ interface Config {
     provider: string;
     endpoint: string;
     apiKey: string;
+    requireApiKey: boolean;
     model: string;
     maxContextMessages: number;
     defaultSystemPrompt: string;
@@ -42,7 +43,9 @@ interface Config {
   memory: {
     maxEntries: number;
   };
-  // notification 配置段已从 YAML 移除（macOS 系统通知无法实现）
+  notification: {
+    enabled: boolean;
+  };
   desktop: {
     pollingIntervalMs: number;
     pauseExtraMs: number;
@@ -197,8 +200,10 @@ const _ai = {
   get maxContextMessages() { return overrideOr("ai.maxContextMessages", cfg.ai.maxContextMessages || 20); },
   get defaultSystemPrompt() { return overrideOr("ai.defaultSystemPrompt", cfg.ai.defaultSystemPrompt || "你叫糖糖，是一个在直播的虚拟主播。"); },
   get fallbackReplies() { return overrideOr("ai.fallbackReplies", cfg.ai.fallbackReplies || ["嗯嗯～"]); },
+  /** 是否需要 API Key（本地 Ollama 等可关闭） */
+  get requireApiKey() { return overrideOr("ai.requireApiKey", cfg.ai.requireApiKey ?? true); },
   /** 是否已配置 API */
-  get configured() { return Boolean(this.endpoint && this.apiKey); },
+  get configured() { if (!this.endpoint) return false; if (!this.requireApiKey) return true; return Boolean(this.apiKey); },
 };
 export const aiConfig = _ai;
 
@@ -230,12 +235,12 @@ export const memoryConfig = {
 };
 
 // ==========================================
-// 通知弹窗配置（已移除 — macOS 系统通知无法实现）
-// 保留空壳避免引用报错，始终返回 false/0
+// 系统通知配置（桌宠收起时的提醒）
+// Windows 走 tauri-plugin-notification；macOS 未签名时可能不弹，失败自动降级
 // ==========================================
 export const notificationConfig = {
-  get enabled() { return false; },
-  get autoCloseMs() { return 8000; },
+  get enabled() { return overrideOr("notification.enabled", cfg.notification?.enabled ?? true); },
+  get autoCloseMs() { return overrideOr("notification.autoCloseMs", 8000); },
 };
 
 // ==========================================

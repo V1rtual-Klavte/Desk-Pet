@@ -3,6 +3,8 @@ import { ref, onMounted, onUnmounted } from "vue";
 import { animations } from "../services/animation";
 
 const currentSrc = ref("/assets/ctj/stream_cho_body.png");
+const charRef = ref<HTMLImageElement | null>(null);
+const shieldRef = ref<HTMLImageElement | null>(null);
 let timer: ReturnType<typeof setTimeout> | null = null;
 let currentAnim: any = null;
 let frameIndex = 0;
@@ -31,14 +33,20 @@ function showFrame() {
 function setExpression(name: string) { playAnim(name); }
 onMounted(() => playAnim("idle"));
 onUnmounted(() => { if (timer) clearTimeout(timer); });
-defineExpose({ setExpression });
+
+/** 供父组件接入鼠标追踪场景：返回两个真实渲染元素（人物帧渲染层 + 金色盾形背景层） */
+function getTrackingElements(): { character: HTMLImageElement | null; background: HTMLImageElement | null } {
+  return { character: charRef.value, background: shieldRef.value };
+}
+
+defineExpose({ setExpression, getTrackingElements });
 </script>
 
 <template>
   <div id="stream">
     <div id="stack">
-      <img id="char" :src="currentSrc" alt="" draggable="false" />
-      <img id="shield" src="/assets/windows/bg_stream_shield_gold.png" alt="" draggable="false" />
+      <img id="char" ref="charRef" :src="currentSrc" alt="" draggable="false" />
+      <img id="shield" ref="shieldRef" src="/assets/windows/bg_stream_shield_gold.png" alt="" draggable="false" />
     </div>
   </div>
 </template>
