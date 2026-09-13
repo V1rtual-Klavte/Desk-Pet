@@ -37,22 +37,15 @@ function clamp(v: number, lo: number, hi: number): number {
 }
 
 /**
- * 生成焦点区遮罩。
+ * 单个焦点区的遮罩。
  *
- * 多个区域时用逗号分隔的多层 radial-gradient 叠加 —— 任一层不透明即保留锐利，
- * 所以默认的 add 合成就能得到并集。
- * 没有区域时返回 undefined，表示整张图统一模糊。
+ * 每个焦点区是一个**独立的层**，所以遮罩只描述自己那一个椭圆，不是并集 ——
+ * 否则它们只能一起移动，做不出分层级。
  */
-export function buildFocusMask(regions: ProfileDofRegion[]): string | undefined {
-  if (regions.length === 0) return undefined
-
-  const layers = regions.map((r) => {
-    const feather = clamp(r.feather, 0, 1)
-    const solid = ((1 - feather) * 100).toFixed(1)
-    return `radial-gradient(ellipse ${r.rx}% ${r.ry}% at ${r.x}% ${r.y}%, #000 0%, #000 ${solid}%, transparent 100%)`
-  })
-
-  return layers.join(", ")
+export function buildFocusMask(region: ProfileDofRegion): string {
+  const feather = clamp(region.feather, 0, 1)
+  const solid = ((1 - feather) * 100).toFixed(1)
+  return `radial-gradient(ellipse ${region.rx}% ${region.ry}% at ${region.x}% ${region.y}%, #000 0%, #000 ${solid}%, transparent 100%)`
 }
 
 /**
@@ -111,9 +104,8 @@ export function useDepthOfField(config: Ref<DofState>, viewport: DofViewport) {
     return { x: norm.value.x * max, y: norm.value.y * max }
   }
 
-  /** 背景层位移 —— 编辑器的焦点圈要跟着它对齐，所以单独暴露 */
+  /** 背景层位移 */
   const backgroundTravel = computed(() => travel(config.value.bgSensitivity))
-  const foregroundTravel = computed(() => travel(config.value.fgSensitivity))
 
   /**
    * 取景变换 + 视差位移。两层共用取景，位移各算各的。
@@ -142,18 +134,26 @@ export function useDepthOfField(config: Ref<DofState>, viewport: DofViewport) {
     }
   })
 
-  const foregroundStyle = computed<Record<string, string>>(() => {
-    const style: Record<string, string> = { transform: transform(foregroundTravel.value, 1) }
-    const mask = buildFocusMask(config.value.focus)
-    if (mask) {
-      style.maskImage = mask
-      style.WebkitMaskImage = mask
-    } else {
-      // 没有焦点区 = 整张图统一模糊，锐利副本不参与渲染。
-      style.display = "none"
-    }
-    return style
-  })
+  /**
+   * 焦点层列表：每个焦点区一张同图副本，各自遮罩 + 各自灵敏度。
+   *
+   * 分开成独立层才能「分层级」—— 近处焦点区动得多、远处动得少；
+   * 合成在一起的话它们只能同进同退。
+   */
+  const focusLayers = computed(() =>
+    config.value.focus.map((r) => {
+      const motion = travel(r.sensitivity)
+      return {
+        style: {
+          transform: transform(motion, 1),
+          maskImage: buildFocusMask(r),
+          WebkitMaskImage: buildFocusMask(r),
+        } as Record<string, string>,
+        /** 编辑器的焦点圈要跟着这一层对齐 */
+        travel: motion,
+      }
+    }),
+  )
 
-  return { hasImage, backgroundStyle, foregroundStyle, foregroundTravel }
+  return { hasImage, backgroundStyle, focusLayers }
 }

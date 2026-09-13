@@ -96,6 +96,13 @@ export interface ProfileDofRegion {
   rx: number; ry: number
   /** 边缘羽化宽度，占半径的比例 0–1 */
   feather: number
+  /**
+   * 该焦点层的视差灵敏度。
+   *
+   * 每个焦点区是一个**独立的层**，各自跟随光标移动 —— 给不同焦点区不同的值
+   * 就形成层级：近处动得多、远处动得少。
+   */
+  sensitivity: number
 }
 
 /**
@@ -112,11 +119,12 @@ export interface ProfileDepthOfField {
   offsetX: number
   offsetY: number
   /**
-   * 两层各自的视差灵敏度：位移差就是深度感的来源。
-   * 背景该动得少、焦点区主体动得多，否则整张图一起平移只是「图在滑」，没有立体感。
+   * 背景层的视差灵敏度。
+   *
+   * 位移差就是深度感的来源：背景该动得少，焦点层动得多，否则整张图一起平移
+   * 只是「图在滑」，没有立体感。焦点层的灵敏度在各自的 region 上。
    */
   bgSensitivity: number
-  fgSensitivity: number
   /** 焦点区外的背景滤镜，用来压暗/降饱和增强景深感 */
   brightness: number; contrast: number; saturate: number
   focus: ProfileDofRegion[]
@@ -283,7 +291,6 @@ async function loadProfile(id: string): Promise<ProfileData> {
         offsetX: rawProfile?.theme?.depthOfField?.offsetX ?? 0,
         offsetY: rawProfile?.theme?.depthOfField?.offsetY ?? 0,
         bgSensitivity: rawProfile?.theme?.depthOfField?.bgSensitivity ?? 0.35,
-        fgSensitivity: rawProfile?.theme?.depthOfField?.fgSensitivity ?? 0.9,
         brightness: rawProfile?.theme?.depthOfField?.brightness ?? 0.95,
         contrast: rawProfile?.theme?.depthOfField?.contrast ?? 1.0,
         saturate: rawProfile?.theme?.depthOfField?.saturate ?? 0.9,
@@ -294,6 +301,7 @@ async function loadProfile(id: string): Promise<ProfileData> {
           rx: r?.rx ?? 25,
           ry: r?.ry ?? 35,
           feather: r?.feather ?? 0.35,
+          sensitivity: r?.sensitivity ?? 0.9,
         })),
       },
     },

@@ -29,7 +29,7 @@ const {
   isDof,
   dof,
   dofBgStyle,
-  dofFgStyle,
+  dofFocusLayers,
   dofUploading,
   selectedFocus,
   selectedRegion,
@@ -40,6 +40,7 @@ const {
   dofFocusDrag,
   focusRings,
   addFocusRegion,
+  removeFocusRegion,
   clearFocus,
   resetFraming,
   openDofPicker,
@@ -135,7 +136,12 @@ const {
           <template v-if="isDof">
             <template v-if="ready && dof.image">
               <img class="le-dof-layer" :src="dof.url" :style="dofBgStyle" alt="" draggable="false" />
-              <img class="le-dof-layer" :src="dof.url" :style="dofFgStyle" alt="" draggable="false" />
+              <img
+                v-for="(layer, i) in dofFocusLayers" :key="i"
+                class="le-dof-layer" :src="dof.url"
+                :style="{ ...layer.style, zIndex: i + 1 }"
+                alt="" draggable="false"
+              />
             </template>
             <div v-else-if="ready" class="le-dof-empty">还没有素材，点右侧「选择素材」</div>
 
@@ -228,18 +234,13 @@ const {
           <div class="le-prop-section">
             <div class="le-panel-title" style="margin-bottom:4px">视差（跟光标移动）</div>
             <div class="le-prop-row">
-              <span class="le-prop-label">背景</span>
+              <span class="le-prop-label">背景层</span>
               <input type="range" class="le-range" min="0" max="2" step="0.05" v-model.number="dof.bgSensitivity" />
               <span class="le-prop-num">{{ dof.bgSensitivity.toFixed(2) }}</span>
             </div>
-            <div class="le-prop-row">
-              <span class="le-prop-label">焦点区</span>
-              <input type="range" class="le-range" min="0" max="2" step="0.05" v-model.number="dof.fgSensitivity" />
-              <span class="le-prop-num">{{ dof.fgSensitivity.toFixed(2) }}</span>
-            </div>
             <div class="le-hint">
-              两层位移不同才有立体感 —— 焦点区比背景动得多，主体就会「浮」起来。
-              在画布上移动鼠标即可预览。
+              每个焦点区是独立的一层，灵敏度在下面各自的设置里。
+              背景动得少、焦点区动得多，主体就会「浮」起来；在画布上移动鼠标即可预览。
             </div>
           </div>
 
@@ -264,24 +265,43 @@ const {
 
           <div class="le-prop-section">
             <div class="le-prop-row">
-              <span class="le-prop-label">焦点区</span>
-              <span class="le-prop-val">{{ dof.focus.length ? `第 ${selectedFocus + 1} 个` : '无（整图模糊）' }}</span>
+              <span class="le-prop-label">焦点层</span>
+              <span class="le-prop-val">{{ dof.focus.length || '无（整图模糊）' }}</span>
+            </div>
+
+            <!-- 焦点区列表：每个是一个独立层，各有各的灵敏度 -->
+            <div v-if="dof.focus.length" class="le-focus-list">
+              <button
+                v-for="(r, i) in dof.focus" :key="i"
+                class="le-focus-item" :class="{ active: selectedFocus === i }"
+                @click="selectedFocus = i"
+              >
+                <span class="le-focus-idx">{{ i + 1 }}</span>
+                <span class="le-focus-sens">灵敏度 {{ r.sensitivity.toFixed(2) }}</span>
+              </button>
             </div>
             <div class="le-prop-row" style="gap:3px;flex-wrap:wrap">
-              <button class="le-btn le-btn-xs" v-if="dof.focus.length === 0" @click="addFocusRegion()">＋ 添加焦点区</button>
-              <button class="le-btn le-btn-xs le-btn-d" v-else @click="clearFocus()">✕ 清除焦点区</button>
+              <button class="le-btn le-btn-xs" @click="addFocusRegion()">＋ 添加</button>
+              <button class="le-btn le-btn-xs le-btn-d" @click="removeFocusRegion()" :disabled="selectedFocus < 0">✕ 删除</button>
+              <button class="le-btn le-btn-xs le-btn-d" @click="clearFocus()" :disabled="!dof.focus.length">🗑 全清</button>
             </div>
+
             <label class="le-check-row">
               <input type="checkbox" v-model="dofFocusDrag" />
               <span>拖动焦点区</span>
             </label>
             <div class="le-hint">
               {{ dofFocusDrag
-                ? '在椭圆内按下拖动可移动焦点区；大小由下面的滑块决定。'
+                ? '在椭圆内按下拖动可移动选中的焦点区；大小由下面的滑块决定。'
                 : '在画布上拖动即可平移素材取景。想移动焦点区就勾上上面那项。' }}
             </div>
 
             <template v-if="selectedRegion">
+              <div class="le-prop-row">
+                <span class="le-prop-label">灵敏度</span>
+                <input type="range" class="le-range" min="0" max="2" step="0.05" v-model.number="selectedRegion.sensitivity" />
+                <span class="le-prop-num">{{ selectedRegion.sensitivity.toFixed(2) }}</span>
+              </div>
               <div class="le-prop-row">
                 <span class="le-prop-label">羽化</span>
                 <input type="range" class="le-range" min="0" max="1" step="0.01" v-model.number="selectedRegion.feather" />
@@ -297,6 +317,7 @@ const {
                 <input type="range" class="le-range" min="2" max="60" step="0.5" v-model.number="selectedRegion.rx" />
                 <input type="range" class="le-range" min="2" max="60" step="0.5" v-model.number="selectedRegion.ry" />
               </div>
+              <div class="le-hint">灵敏度越大动得越多。近处调高、远处调低，就有了层次。</div>
             </template>
           </div>
         </template>
@@ -578,6 +599,27 @@ html, body {
   color: rgba(255,255,255,0.35);
   padding: 2px 0 4px;
 }
+.le-focus-list {
+  display: flex; flex-direction: column; gap: 2px;
+  padding: 2px 0;
+}
+.le-focus-item {
+  display: flex; align-items: center; gap: 6px;
+  padding: 4px 8px; border-radius: 6px;
+  border: 1px solid rgba(255,255,255,0.1);
+  background: rgba(255,255,255,0.03);
+  color: rgba(255,255,255,0.6);
+  font-family: inherit; font-size: 10px; cursor: pointer;
+  transition: all .12s;
+}
+.le-focus-item:hover { background: rgba(255,255,255,0.07); }
+.le-focus-item.active {
+  background: rgba(196,39,111,0.25);
+  border-color: rgba(196,39,111,0.45);
+  color: #f0a0c0;
+}
+.le-focus-idx { font-weight: bold; min-width: 12px; }
+.le-focus-sens { opacity: 0.75; }
 .le-check-row {
   display: flex; align-items: center; gap: 5px;
   font-size: 10px; color: rgba(255,255,255,0.6);

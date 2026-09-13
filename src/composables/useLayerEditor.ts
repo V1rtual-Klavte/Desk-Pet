@@ -58,7 +58,7 @@ export function useLayerEditor() {
   const dof = ref<DofState>({
     image: "", url: "",
     blur: 8, scale: 1.0, offsetX: 0, offsetY: 0,
-    bgSensitivity: 0.35, fgSensitivity: 0.9,
+    bgSensitivity: 0.35,
     brightness: 0.95, contrast: 1.0, saturate: 0.9,
     focus: [],
   });
@@ -71,8 +71,8 @@ export function useLayerEditor() {
    */
   const localCursor = ref<{ x: number; y: number } | null>(null);
 
-  /** 默认焦点椭圆：居中、占画布六成宽八成高 */
-  const DEFAULT_FOCUS: ProfileDofRegion = { x: 50, y: 50, rx: 30, ry: 40, feather: 0.35 };
+  /** 默认焦点椭圆：居中、占画布六成宽八成高，灵敏度取 0.9（近景） */
+  const DEFAULT_FOCUS: ProfileDofRegion = { x: 50, y: 50, rx: 30, ry: 40, feather: 0.35, sensitivity: 0.9 };
 
   /**
    * 补一个默认焦点区。
@@ -86,14 +86,23 @@ export function useLayerEditor() {
   }
 
   /**
-   * 加一个默认大小的焦点椭圆。
+   * 追加一个默认大小的焦点椭圆，并选中它。
    *
    * 焦点区只由这里和右侧滑块决定大小 —— 不在画布上拖出来，否则手一抖就会
-   * 把椭圆替换成指甲盖那么大。
+   * 把椭圆拖成指甲盖那么大。后续追加的会横向错开，免得和已有的完全重叠看不出来。
    */
   function addFocusRegion(): void {
-    dof.value.focus = [{ ...DEFAULT_FOCUS }];
-    selectedFocus.value = 0;
+    const n = dof.value.focus.length;
+    dof.value.focus = [...dof.value.focus, { ...DEFAULT_FOCUS, x: clamp(50 + n * 10, 15, 85) }];
+    selectedFocus.value = n;
+  }
+
+  /** 删掉当前选中的焦点区 */
+  function removeFocusRegion(): void {
+    const i = selectedFocus.value;
+    if (i < 0) return;
+    dof.value.focus = dof.value.focus.filter((_, idx) => idx !== i);
+    selectedFocus.value = dof.value.focus.length > 0 ? Math.min(i, dof.value.focus.length - 1) : -1;
   }
   /** 当前选中的焦点区索引；-1 = 没有 */
   const selectedFocus = ref(-1);
@@ -122,7 +131,7 @@ export function useLayerEditor() {
   // 景深预览：样式与位移都和 StreamView 共用同一套计算，所见即所得。
   const originPos = ref({ x: 0, y: 0 });
   const alwaysVisible = ref(true);
-  const { backgroundStyle: dofBgStyle, foregroundStyle: dofFgStyle, foregroundTravel: dofFgTravel } =
+  const { backgroundStyle: dofBgStyle, focusLayers: dofFocusLayers } =
     useDepthOfField(dof, {
       cursor: localCursor,
       windowPos: originPos,
@@ -402,14 +411,14 @@ export function useLayerEditor() {
    * 椭圆存在素材坐标里（这样缩放后它仍贴着主体），画到屏幕上必须换算成画布
    * 坐标 —— 不换算的话，缩放之后看到的圈和实际清晰区会分家。
    */
-  const focusRings = computed(() => {
-    // 圈跟着前景层一起走，否则视差一动圈就和实际清晰区分家
-    const travel = dofFgTravel.value;
-    return dof.value.focus.map((r) => {
+  const focusRings = computed(() =>
+    dof.value.focus.map((r, i) => {
       const cx = imageToCanvas(r.x, dof.value.offsetX, dof.value.scale);
       const cy = imageToCanvas(r.y, dof.value.offsetY, dof.value.scale);
       const rx = r.rx * dof.value.scale;
       const ry = r.ry * dof.value.scale;
+      // 圈跟着自己那一层走 —— 各层灵敏度不同，用同一个位移就会错开
+      const travel = dofFocusLayers.value[i]?.travel ?? { x: 0, y: 0 };
       return {
         left: `${(cx - rx).toFixed(2)}%`,
         top: `${(cy - ry).toFixed(2)}%`,
@@ -418,8 +427,7 @@ export function useLayerEditor() {
         opacity: 0.25 + (1 - r.feather) * 0.55,
         transform: `translate(${travel.x.toFixed(1)}px, ${travel.y.toFixed(1)}px)`,
       };
-    });
-  });
+    }));
 
   function clearFocus() {
     dof.value.focus = [];
@@ -724,11 +732,12 @@ export function useLayerEditor() {
       offsetX: d.offsetX,
       offsetY: d.offsetY,
       bgSensitivity: d.bgSensitivity,
-      fgSensitivity: d.fgSensitivity,
       brightness: d.brightness,
       contrast: d.contrast,
       saturate: d.saturate,
-      focus: d.focus.map((r) => ({ x: r.x, y: r.y, rx: r.rx, ry: r.ry, feather: r.feather })),
+      focus: d.focus.map((r) => ({
+        x: r.x, y: r.y, rx: r.rx, ry: r.ry, feather: r.feather, sensitivity: r.sensitivity,
+      })),
     };
 
     await invoke("profile_file_write", {
@@ -816,7 +825,7 @@ export function useLayerEditor() {
     isDof,
     dof,
     dofBgStyle,
-    dofFgStyle,
+    dofFocusLayers,
     dofUploading,
     selectedFocus,
     selectedRegion,
@@ -827,6 +836,7 @@ export function useLayerEditor() {
     dofFocusDrag,
     focusRings,
     addFocusRegion,
+    removeFocusRegion,
     clearFocus,
     resetFraming,
     openDofPicker,

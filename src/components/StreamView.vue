@@ -34,12 +34,12 @@ const effectMode = ref<EffectMode>(userConfig.effectMode);
 const dofConfig = ref<DofState>({
   image: "", url: "",
   blur: 8, scale: 1.0, offsetX: 0, offsetY: 0,
-  bgSensitivity: 0.35, fgSensitivity: 0.9,
+  bgSensitivity: 0.35,
   brightness: 0.95, contrast: 1.0, saturate: 0.9,
   focus: [],
 });
-// 和灵动图层共用同一组光标注入，两层各自按灵敏度跟随
-const { hasImage: dofHasImage, backgroundStyle: dofBgStyle, foregroundStyle: dofFgStyle } =
+// 和灵动图层共用同一组光标注入；背景与每个焦点层各按自己的灵敏度跟随
+const { hasImage: dofHasImage, backgroundStyle: dofBgStyle, focusLayers: dofFocusLayers } =
   useDepthOfField(dofConfig, { cursor: globalCursor, windowPos, windowSize, isVisible });
 
 // ── 灵动图层配置 ──
@@ -201,10 +201,12 @@ onUnmounted(() => {
         alt="" draggable="false"
         @error="onImgError"
       />
+      <!-- 每个焦点区一张同图副本，各自遮罩 + 各自灵敏度 -->
       <img
+        v-for="(layer, i) in dofFocusLayers" :key="i"
         class="dof-layer dof-fg"
         :src="dofConfig.url"
-        :style="{ ...dofFgStyle, imageRendering: scaleMode }"
+        :style="{ ...layer.style, imageRendering: scaleMode, zIndex: i + 1 }"
         alt="" draggable="false"
         @load="onImgLoad"
       />
