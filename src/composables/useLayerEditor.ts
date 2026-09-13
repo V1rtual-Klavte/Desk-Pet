@@ -88,6 +88,8 @@ export function useLayerEditor() {
   }
   /** 当前选中的焦点区索引；-1 = 没有 */
   const selectedFocus = ref(-1);
+  /** 画布拖动的作用：false=平移素材（默认），true=移动焦点区 */
+  const dofFocusDrag = ref(false);
   /** 画布预览用；和 StreamView 共用同一套样式计算，所见即所得 */
   const { backgroundStyle: dofBgStyle, foregroundStyle: dofFgStyle } = useDepthOfField(dof);
   const selectedRegion = computed(() =>
@@ -273,8 +275,9 @@ export function useLayerEditor() {
   }
 
   // ── 景深：画布拖拽 ──
-  // 椭圆内拖 = 移动焦点区；空白处拖 = 平移素材取景。
-  // 两种都不改变焦点区的大小 —— 大小只由滑块决定，手抖不会把椭圆拖没。
+  // 默认拖素材取景；勾上「拖动焦点区」才改为操作焦点椭圆。
+  // 不靠自动命中判断 —— 那会让「我想挪图」和「我想挪圈」互相抢手势。
+  // 两种模式都不改变焦点区大小，大小只由滑块决定。
   let dofDrag = false,
     dofMoved = false;
   let dofSX = 0,
@@ -324,7 +327,8 @@ export function useLayerEditor() {
     dofSX = p.x;
     dofSY = p.y;
     dofStartOffset = { x: dof.value.offsetX, y: dof.value.offsetY };
-    const hit = hitFocus(p);
+
+    const hit = dofFocusDrag.value ? hitFocus(p) : -1;
     if (hit >= 0) {
       dofMovingIdx = hit;
       selectedFocus.value = hit;
@@ -333,7 +337,7 @@ export function useLayerEditor() {
     } else {
       dofMovingIdx = -1;
       dofStart = null;
-      dragHint.value = "平移素材取景";
+      dragHint.value = dofFocusDrag.value ? "在椭圆内按下才能拖动焦点区" : "平移素材取景";
     }
     e.preventDefault();
   }
@@ -790,6 +794,7 @@ export function useLayerEditor() {
     onDofPointerDown,
     onDofPointerMove,
     onDofPointerUp,
+    dofFocusDrag,
     focusRings,
     addFocusRegion,
     clearFocus,

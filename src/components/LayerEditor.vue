@@ -36,6 +36,7 @@ const {
   onDofPointerDown,
   onDofPointerMove,
   onDofPointerUp,
+  dofFocusDrag,
   focusRings,
   addFocusRegion,
   clearFocus,
@@ -250,7 +251,15 @@ const {
               <button class="le-btn le-btn-xs" v-if="dof.focus.length === 0" @click="addFocusRegion()">＋ 添加焦点区</button>
               <button class="le-btn le-btn-xs le-btn-d" v-else @click="clearFocus()">✕ 清除焦点区</button>
             </div>
-            <div class="le-hint">在椭圆内拖动可移动它；空白处拖动是平移素材。大小只由下面的滑块决定。</div>
+            <label class="le-check-row">
+              <input type="checkbox" v-model="dofFocusDrag" />
+              <span>拖动焦点区</span>
+            </label>
+            <div class="le-hint">
+              {{ dofFocusDrag
+                ? '在椭圆内按下拖动可移动焦点区；大小由下面的滑块决定。'
+                : '在画布上拖动即可平移素材取景。想移动焦点区就勾上上面那项。' }}
+            </div>
 
             <template v-if="selectedRegion">
               <div class="le-prop-row">
@@ -549,6 +558,12 @@ html, body {
   color: rgba(255,255,255,0.35);
   padding: 2px 0 4px;
 }
+.le-check-row {
+  display: flex; align-items: center; gap: 5px;
+  font-size: 10px; color: rgba(255,255,255,0.6);
+  padding: 3px 0; cursor: pointer;
+}
+.le-check-row input { accent-color: #c4276f; cursor: pointer; }
 .le-drag-hint {
   position: absolute; bottom: 6px; left: 50%; transform: translateX(-50%);
   padding: 3px 10px; background: rgba(0,0,0,0.75);
