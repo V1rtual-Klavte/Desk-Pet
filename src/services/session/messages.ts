@@ -16,9 +16,16 @@ const log = createLogger("Msg")
 // 欢迎 & 推送
 // ═══════════════════════════════════════════════════
 
-export function initWelcome(text: string): void {
+export async function initWelcome(text: string): Promise<void> {
   if (chatHistory.length > 0) return
   pushMessage(createAssistantMessage(text))
+
+  // 问候语不经过 Agent 回合，没有别的地方替它落盘。只推内存的话，
+  // 切走会话再从 sessions/*.md 恢复时它就消失了。
+  const sessionId = activeSessionId.value
+  if (!sessionId) return
+  const { MemoryService } = await import("@/services/agent/memory")
+  await MemoryService.recordTurnToSession(sessionId, "assistant", text)
 }
 
 export function pushUserMessage(text: string): Message {

@@ -135,7 +135,9 @@ export async function runPiAgentTurn(input: PiAgentTurnInput): Promise<PiAgentTu
 
   recordMessage()
   const turnSessionId = input.sessionId || MemoryService.sessionId
-  await persistTurn(turnSessionId, "user", userText)
+  // 主动搭话的 userText 是系统拼的窗口上下文，不是用户输入。落盘会让会话主题
+  // 提取拿它当首条用户消息，重载后还会显示成用户气泡并进入长期记忆。
+  if (!isActiveMessage) await persistTurn(turnSessionId, "user", userText)
 
   refreshVariablePool()
   updateInteractionVar("unansweredCount", unansweredCount)

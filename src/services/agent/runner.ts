@@ -42,7 +42,7 @@ export async function initChat(): Promise<void> {
   log.info("会话已恢复:", sessions.length, "个, 活跃:", getActiveSessionId())
 
   const greeting = pickActiveGreeting()
-  if (greeting) initWelcome(greeting)
+  if (greeting) await initWelcome(greeting)
 }
 
 /**

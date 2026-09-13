@@ -76,7 +76,7 @@ export async function initApp(): Promise<void> {
   if (chatHistory.length === 0) {
     const { pickActiveGreeting } = await import("@/services/personality")
     const greeting = pickActiveGreeting()
-    if (greeting) initWelcome(greeting)
+    if (greeting) await initWelcome(greeting)
     log.info("6/7 欢迎语已写入")
   } else {
     log.info("6/7 跳过欢迎语（已有历史消息）")
