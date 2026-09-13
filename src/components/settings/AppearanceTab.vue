@@ -367,7 +367,9 @@ defineExpose({
     <div class="preset-row">
       <button
         v-for="m in EFFECT_MODES" :key="m.id"
+        class="preset-btn"
         :class="{ active: effectMode === m.id }"
+        :title="m.hint"
         @click="effectMode = m.id"
       >{{ m.label }}</button>
     </div>

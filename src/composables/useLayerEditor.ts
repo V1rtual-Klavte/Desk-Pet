@@ -104,6 +104,7 @@ export function useLayerEditor() {
 
   let resizeObs: ResizeObserver | null = null;
   let unlistenProfileUpdated: UnlistenFn | null = null;
+  let unlistenSettingsSaved: UnlistenFn | null = null;
 
   // ── 初始化 ──
   async function initFromStorage(profileId?: string) {
@@ -372,16 +373,33 @@ export function useLayerEditor() {
   let _uploadTargetLayer = -1;
   /** 同一个 file input 兼作景深上传，用这个开关分辨本次是给谁的 */
   let _uploadDof = false;
+  /**
+   * 打开系统文件对话框。
+   *
+   * 编辑器窗口被抬到 1500 才能盖住设置窗和主窗口，而原生对话框在普通层级，
+   * 会被整个盖住。所以取文件期间把三个窗口临时降级，对话框关闭后再恢复
+   * （取消时 WebView 同样会重新获得焦点）。
+   */
+  function openFileDialog(): void {
+    invoke("set_picker_window_level", { picking: true }).catch(() => {});
+    const restore = () => {
+      window.removeEventListener("focus", restore);
+      invoke("set_picker_window_level", { picking: false }).catch(() => {});
+    };
+    window.addEventListener("focus", restore);
+    fileInput.value?.click();
+  }
+
   function uploadImage() {
     _uploadDof = false;
     _uploadTargetLayer = selectedIndex.value;
-    fileInput.value?.click();
+    openFileDialog();
   }
 
   /** 景深素材上传：写进 materials/ 根，不与任何层绑定 */
   function uploadDofImage() {
     _uploadDof = true;
-    fileInput.value?.click();
+    openFileDialog();
   }
 
   async function uploadDofToProfile(file: File) {
@@ -405,6 +423,8 @@ export function useLayerEditor() {
   }
 
   function onFileSelected(e: Event) {
+    // 双保险：取完文件立刻恢复窗口层级。取消时 change 可能不触发，那条路由 focus 兜底。
+    invoke("set_picker_window_level", { picking: false }).catch(() => {});
     const input = e.target as HTMLInputElement;
     const file = input.files?.[0];
     if (!file) return;
@@ -652,6 +672,11 @@ export function useLayerEditor() {
       await reloadConfig();
       await initFromStorage(payload?.profileId);
     });
+    // 效果模式是 CONFIG 字段：设置页切换后要立刻换面板，否则编辑器会停在旧模式的界面上。
+    unlistenSettingsSaved = await listen("deskpet-settings-saved", async () => {
+      await reloadConfig();
+      await initFromStorage();
+    });
     try {
       await win.setTitle(
         `🎨 图层编辑器 - ${profile.value?.meta.name || "糖糖桌宠"}`
@@ -666,6 +691,7 @@ export function useLayerEditor() {
 
   onUnmounted(() => {
     unlistenProfileUpdated?.();
+    unlistenSettingsSaved?.();
     if (resizeObs) {
       resizeObs.disconnect();
       resizeObs = null;

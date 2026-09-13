@@ -29,7 +29,9 @@ use crate::commands::{
     spawn_cursor_tracker, system_info, BashPool, McpPool,
 };
 use crate::monitor::MonitorState;
-use crate::window::{create_main_window, enhance_layer_editor_window, enhance_settings_window};
+use crate::window::{
+    create_main_window, enhance_layer_editor_window, enhance_settings_window, set_picker_window_level,
+};
 
 use crate::error::{err, AppError, AppResult};
 use crate::paths::AppPaths;
@@ -408,6 +410,7 @@ pub fn run() {
             open_devtools,
             enhance_settings_window,
             enhance_layer_editor_window,
+            set_picker_window_level,
             bash_exec,
             bash_cancel,
             file_read,
