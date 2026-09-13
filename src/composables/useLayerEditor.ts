@@ -13,7 +13,7 @@ import {
 } from "@/services/profile";
 import { reloadConfig, userConfig, type EffectMode } from "@/services/config";
 import { DEFAULT_LAYERS, LAYER_NAMES, layerDepth, type ParallaxLayerCfg } from "@/composables/useParallax";
-import { useDepthOfField, type DofState } from "@/composables/useDepthOfField";
+import { useDepthOfField, canvasToImage, imageToCanvas, type DofState } from "@/composables/useDepthOfField";
 import { createLogger } from "@/services/logger";
 
 function clamp(v: number, lo: number, hi: number): number {
@@ -57,20 +57,33 @@ export function useLayerEditor() {
 
   const dof = ref<DofState>({
     image: "", url: "",
-    blur: 8, scale: 1.0,
+    blur: 8, scale: 1.0, offsetX: 0, offsetY: 0,
     brightness: 0.95, contrast: 1.0, saturate: 0.9,
     focus: [],
   });
 
+  /** 默认焦点椭圆：居中、占画布六成宽八成高 */
+  const DEFAULT_FOCUS: ProfileDofRegion = { x: 50, y: 50, rx: 30, ry: 40, feather: 0.35 };
+
   /**
-   * 首次选图时给一个居中的默认焦点区。
+   * 补一个默认焦点区。
    *
    * 没有焦点区时是「整图统一模糊」，刚选完图就看到一片糊会让人以为出错了；
    * 给个默认椭圆能立刻看到清晰/模糊的对比，不想要再点「清除焦点区」。
    */
   function ensureDefaultFocus(): void {
     if (dof.value.focus.length > 0) return;
-    dof.value.focus = [{ x: 50, y: 50, rx: 30, ry: 40, feather: 0.35 }];
+    addFocusRegion();
+  }
+
+  /**
+   * 加一个默认大小的焦点椭圆。
+   *
+   * 焦点区只由这里和右侧滑块决定大小 —— 不在画布上拖出来，否则手一抖就会
+   * 把椭圆替换成指甲盖那么大。
+   */
+  function addFocusRegion(): void {
+    dof.value.focus = [{ ...DEFAULT_FOCUS }];
     selectedFocus.value = 0;
   }
   /** 当前选中的焦点区索引；-1 = 没有 */
@@ -259,14 +272,16 @@ export function useLayerEditor() {
     log.debug(`滚轮缩放 ${l.name} → ${next}`);
   }
 
-  // ── 景深：焦点区拖拽 ──
-  // 空白处拖 = 画一个新的（外接矩形内切椭圆）；已有椭圆内拖 = 移动它。
+  // ── 景深：画布拖拽 ──
+  // 椭圆内拖 = 移动焦点区；空白处拖 = 平移素材取景。
+  // 两种都不改变焦点区的大小 —— 大小只由滑块决定，手抖不会把椭圆拖没。
   let dofDrag = false,
     dofMoved = false;
   let dofSX = 0,
     dofSY = 0;
   let dofMovingIdx = -1;
   let dofStart: ProfileDofRegion | null = null;
+  let dofStartOffset = { x: 0, y: 0 };
 
   /** 指针位置 → 画布百分比坐标 */
   function dofPoint(e: PointerEvent): { x: number; y: number } | null {
@@ -280,13 +295,20 @@ export function useLayerEditor() {
     };
   }
 
-  /** 命中测试：点落在哪个椭圆内（后画的在上，所以倒序遍历） */
+  /**
+   * 命中测试：点落在哪个椭圆内（后画的在上，所以倒序遍历）。
+   *
+   * 入参是画布坐标，而椭圆存在素材坐标里，先换算再比较 —— 缩放/平移之后
+   * 不换算就会「看着在图里点，实际判定在外面」。
+   */
   function hitFocus(p: { x: number; y: number }): number {
-    const regions = dof.value.focus;
-    for (let i = regions.length - 1; i >= 0; i--) {
-      const r = regions[i];
-      const dx = (p.x - r.x) / (r.rx || 1);
-      const dy = (p.y - r.y) / (r.ry || 1);
+    const { scale, offsetX, offsetY, focus } = dof.value;
+    const ix = canvasToImage(p.x, offsetX, scale);
+    const iy = canvasToImage(p.y, offsetY, scale);
+    for (let i = focus.length - 1; i >= 0; i--) {
+      const r = focus[i];
+      const dx = (ix - r.x) / (r.rx || 1);
+      const dy = (iy - r.y) / (r.ry || 1);
       if (dx * dx + dy * dy <= 1) return i;
     }
     return -1;
@@ -301,16 +323,17 @@ export function useLayerEditor() {
     dofMoved = false;
     dofSX = p.x;
     dofSY = p.y;
+    dofStartOffset = { x: dof.value.offsetX, y: dof.value.offsetY };
     const hit = hitFocus(p);
     if (hit >= 0) {
       dofMovingIdx = hit;
       selectedFocus.value = hit;
       dofStart = { ...dof.value.focus[hit] };
-      dragHint.value = "拖动焦点区";
+      dragHint.value = "移动焦点区";
     } else {
       dofMovingIdx = -1;
       dofStart = null;
-      dragHint.value = "拖出焦点区";
+      dragHint.value = "平移素材取景";
     }
     e.preventDefault();
   }
@@ -322,26 +345,18 @@ export function useLayerEditor() {
     if (!dofMoved && Math.abs(p.x - dofSX) < 0.5 && Math.abs(p.y - dofSY) < 0.5) return;
     dofMoved = true;
 
+    const { scale } = dof.value;
+
     if (dofMovingIdx >= 0 && dofStart) {
+      // 画布位移换算回素材坐标：缩放越大，同样的手部位移对应的素材位移越小
       const r = dof.value.focus[dofMovingIdx];
-      r.x = clamp(dofStart.x + (p.x - dofSX), 0, 100);
-      r.y = clamp(dofStart.y + (p.y - dofSY), 0, 100);
+      r.x = clamp(dofStart.x + (p.x - dofSX) / (scale || 1), 0, 100);
+      r.y = clamp(dofStart.y + (p.y - dofSY) / (scale || 1), 0, 100);
       return;
     }
 
-    // 新建：起点到当前点构成外接矩形，取内切椭圆
-    const cx = (dofSX + p.x) / 2;
-    const cy = (dofSY + p.y) / 2;
-    const rx = Math.max(2, Math.abs(p.x - dofSX) / 2);
-    const ry = Math.max(2, Math.abs(p.y - dofSY) / 2);
-    const region: ProfileDofRegion = { x: cx, y: cy, rx, ry, feather: 0.35 };
-    // 界面只做一个焦点区，拖新框即替换旧的。
-    dof.value.focus = [region];
-    selectedFocus.value = 0;
-    dofMovingIdx = 0;
-    dofStart = { ...region };
-    dofSX = p.x;
-    dofSY = p.y;
+    dof.value.offsetX = dofStartOffset.x + (p.x - dofSX);
+    dof.value.offsetY = dofStartOffset.y + (p.y - dofSY);
   }
 
   function onDofPointerUp(e: PointerEvent) {
@@ -354,9 +369,37 @@ export function useLayerEditor() {
     if (el?.hasPointerCapture(e.pointerId)) el.releasePointerCapture(e.pointerId);
   }
 
+  /**
+   * 焦点椭圆在画布上的位置。
+   *
+   * 椭圆存在素材坐标里（这样缩放后它仍贴着主体），画到屏幕上必须换算成画布
+   * 坐标 —— 不换算的话，缩放之后看到的圈和实际清晰区会分家。
+   */
+  const focusRings = computed(() =>
+    dof.value.focus.map((r) => {
+      const cx = imageToCanvas(r.x, dof.value.offsetX, dof.value.scale);
+      const cy = imageToCanvas(r.y, dof.value.offsetY, dof.value.scale);
+      const rx = r.rx * dof.value.scale;
+      const ry = r.ry * dof.value.scale;
+      return {
+        left: `${(cx - rx).toFixed(2)}%`,
+        top: `${(cy - ry).toFixed(2)}%`,
+        width: `${(rx * 2).toFixed(2)}%`,
+        height: `${(ry * 2).toFixed(2)}%`,
+        opacity: 0.25 + (1 - r.feather) * 0.55,
+      };
+    }));
+
   function clearFocus() {
     dof.value.focus = [];
     selectedFocus.value = -1;
+  }
+
+  /** 取景复位：缩放回 1、平移归零。焦点区不受影响。 */
+  function resetFraming() {
+    dof.value.scale = 1;
+    dof.value.offsetX = 0;
+    dof.value.offsetY = 0;
   }
 
   // ── 锁定/启用 ──
@@ -647,6 +690,8 @@ export function useLayerEditor() {
       image: d.image,
       blur: d.blur,
       scale: d.scale,
+      offsetX: d.offsetX,
+      offsetY: d.offsetY,
       brightness: d.brightness,
       contrast: d.contrast,
       saturate: d.saturate,
@@ -745,7 +790,10 @@ export function useLayerEditor() {
     onDofPointerDown,
     onDofPointerMove,
     onDofPointerUp,
+    focusRings,
+    addFocusRegion,
     clearFocus,
+    resetFraming,
     openDofPicker,
     uploadDofImage,
     // events

@@ -108,6 +108,9 @@ export interface ProfileDepthOfField {
   blur: number
   /** 素材取景缩放：图与画布尺寸不合时放大，超出部分被画布裁掉 */
   scale: number
+  /** 取景平移，占画布宽/高的百分比。与 scale 一起构成「取景」 */
+  offsetX: number
+  offsetY: number
   /** 焦点区外的背景滤镜，用来压暗/降饱和增强景深感 */
   brightness: number; contrast: number; saturate: number
   focus: ProfileDofRegion[]
@@ -271,6 +274,8 @@ async function loadProfile(id: string): Promise<ProfileData> {
         image: rawProfile?.theme?.depthOfField?.image ?? "",
         blur: rawProfile?.theme?.depthOfField?.blur ?? 8,
         scale: rawProfile?.theme?.depthOfField?.scale ?? 1.0,
+        offsetX: rawProfile?.theme?.depthOfField?.offsetX ?? 0,
+        offsetY: rawProfile?.theme?.depthOfField?.offsetY ?? 0,
         brightness: rawProfile?.theme?.depthOfField?.brightness ?? 0.95,
         contrast: rawProfile?.theme?.depthOfField?.contrast ?? 1.0,
         saturate: rawProfile?.theme?.depthOfField?.saturate ?? 0.9,

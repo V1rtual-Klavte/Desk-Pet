@@ -36,7 +36,10 @@ const {
   onDofPointerDown,
   onDofPointerMove,
   onDofPointerUp,
+  focusRings,
+  addFocusRegion,
   clearFocus,
+  resetFraming,
   openDofPicker,
   uploadDofImage,
   onPointerDown,
@@ -133,17 +136,11 @@ const {
             </template>
             <div v-else-if="ready" class="le-dof-empty">还没有素材，点右侧「选择素材」</div>
 
-            <!-- 焦点椭圆的可视化边框：拖拽时看得到范围 -->
+            <!-- 焦点椭圆的可视化边框；focusRings 已把素材坐标换算到画布坐标 -->
             <div
-              v-for="(r, i) in dof.focus" :key="i"
+              v-for="(ring, i) in focusRings" :key="i"
               class="le-focus-ring" :class="{ active: selectedFocus === i }"
-              :style="{
-                left: (r.x - r.rx) + '%',
-                top: (r.y - r.ry) + '%',
-                width: (r.rx * 2) + '%',
-                height: (r.ry * 2) + '%',
-                opacity: 0.25 + (1 - r.feather) * 0.55,
-              }"
+              :style="ring"
             ></div>
           </template>
 
@@ -215,7 +212,15 @@ const {
             <input type="range" class="le-range" min="0.2" max="3" step="0.01" v-model.number="dof.scale" />
             <span class="le-prop-num">{{ dof.scale.toFixed(2) }}</span>
           </div>
-          <div class="le-hint">素材与画布尺寸不合时用它取景，超出画布的部分会被自动裁掉。</div>
+          <div class="le-prop-row">
+            <span class="le-prop-label">平移 X/Y</span>
+            <input type="range" class="le-range" min="-100" max="100" step="0.5" v-model.number="dof.offsetX" />
+            <input type="range" class="le-range" min="-100" max="100" step="0.5" v-model.number="dof.offsetY" />
+          </div>
+          <div class="le-prop-row" style="gap:3px;flex-wrap:wrap">
+            <button class="le-btn le-btn-xs" @click="resetFraming()">↺ 取景复位</button>
+          </div>
+          <div class="le-hint">「取景」= 缩放 + 平移；直接拖画布空白处也能平移，超出的部分会被裁掉。</div>
 
           <div class="le-prop-section">
             <div class="le-panel-title" style="margin-bottom:4px">背景滤镜</div>
@@ -242,9 +247,10 @@ const {
               <span class="le-prop-val">{{ dof.focus.length ? `第 ${selectedFocus + 1} 个` : '无（整图模糊）' }}</span>
             </div>
             <div class="le-prop-row" style="gap:3px;flex-wrap:wrap">
-              <button class="le-btn le-btn-xs le-btn-d" @click="clearFocus()" :disabled="dof.focus.length === 0">✕ 清除焦点区</button>
+              <button class="le-btn le-btn-xs" v-if="dof.focus.length === 0" @click="addFocusRegion()">＋ 添加焦点区</button>
+              <button class="le-btn le-btn-xs le-btn-d" v-else @click="clearFocus()">✕ 清除焦点区</button>
             </div>
-            <div class="le-hint">在画布上拖动画出焦点椭圆；在椭圆内拖动可移动它。</div>
+            <div class="le-hint">在椭圆内拖动可移动它；空白处拖动是平移素材。大小只由下面的滑块决定。</div>
 
             <template v-if="selectedRegion">
               <div class="le-prop-row">

@@ -33,7 +33,7 @@ const effectMode = ref<EffectMode>(userConfig.effectMode);
 // ── 景深配置 ──
 const dofConfig = ref<DofState>({
   image: "", url: "",
-  blur: 8, scale: 1.0,
+  blur: 8, scale: 1.0, offsetX: 0, offsetY: 0,
   brightness: 0.95, contrast: 1.0, saturate: 0.9,
   focus: [],
 });
