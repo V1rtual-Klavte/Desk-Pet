@@ -13,6 +13,11 @@ dist-ssr
 *.local
 target
 
+# 包管理统一用 pnpm；npm 的 lockfile 是 2026-06 合并冲突时带进来的残留，
+# 留着会让人误按过期版本安装依赖。
+package-lock.json
+yarn.lock
+
 # Editor directories and files
 .idea
 .DS_Store
