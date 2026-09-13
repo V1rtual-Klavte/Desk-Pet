@@ -45,6 +45,8 @@ LLM 可见回复文本 + <RUNTIME_DATA>
 
 当前主 Agent Runtime、Planner 和 Live Test 契约都以 RUNTIME_DATA 为准；旧变量工具只在历史归档中出现，不代表当前接口仍有效。当前记忆压缩与长期召回仍保持既有边界，后续会单独按 Claude Code 风格的文件记忆协议重构。
 
+运行时基础重构的目标协议、Pi Agent Core hook 边界、队列/Plan 持久化、PromptSnapshot、恢复、安全和 Memory Eval 见[记忆系统重构前置准备](../plans/active/记忆系统重构前置准备.md)。该计划中的接口和阶段门禁不表示当前 runtime 已经实现。
+
 ## 配置与运行时数据
 
 所有功能配置由运行时 `CONFIG.yaml` 经 `src/services/config.ts` 暴露。开发构建使用工作区 `CONFIG-DEV.yaml`（不存在时回退 `CONFIG.yaml`）；生产构建首次将默认配置初始化到 `data_root/settings/CONFIG.yaml`，设置页直接回写它。业务模块不得自行复制配置常量或以 localStorage 覆盖配置。

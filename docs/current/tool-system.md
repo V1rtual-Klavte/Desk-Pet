@@ -75,7 +75,7 @@ src-tauri/resources/defaults/skills/{name}/SKILL.md   ← 随包种子，只读
 | `onUpdate` | 工具执行中的快照回传 |
 | `isError` 往返 | tool 消息落盘保留失败标记，重开会话后模型仍能区分成功与失败 |
 
-压缩相关（`transformContext`、`shouldStopAfterTurn`）暂未接入，留待记忆系统重构。
+Pi 0.85.1 已公开 `transformContext`、`shouldStopAfterTurn`、`prepareNextTurnWithContext`、`subscribe`、`onPayload` 和 `onResponse`；当前 runtime 尚未把它们接成完整的 ContextKernel、PromptSnapshot 和恢复协议，实施边界见[记忆系统重构前置准备](../plans/active/记忆系统重构前置准备.md)。
 
 ## 已知问题
 

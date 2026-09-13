@@ -222,6 +222,7 @@ Live Test 位于 `src/services/__tests__/live/`，通过独立 Tauri WebView 使
 - [当前系统设计](docs/current/system-design.md)
 - [当前工具系统](docs/current/tool-system.md)
 - [当前记忆系统](docs/current/memory.md)
+- [记忆系统重构前置准备](docs/plans/active/记忆系统重构前置准备.md)
 - [当前测试说明](docs/current/testing.md)
 - [阶段现状（2026-08-06）](docs/history/analysis/阶段现状-2026.8.6.md)
 - [完整文档索引](docs/INDEX.md)
