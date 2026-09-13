@@ -34,11 +34,13 @@ const effectMode = ref<EffectMode>(userConfig.effectMode);
 const dofConfig = ref<DofState>({
   image: "", url: "",
   blur: 8, scale: 1.0, offsetX: 0, offsetY: 0,
+  bgSensitivity: 0.35, fgSensitivity: 0.9,
   brightness: 0.95, contrast: 1.0, saturate: 0.9,
   focus: [],
 });
+// 和灵动图层共用同一组光标注入，两层各自按灵敏度跟随
 const { hasImage: dofHasImage, backgroundStyle: dofBgStyle, foregroundStyle: dofFgStyle } =
-  useDepthOfField(dofConfig);
+  useDepthOfField(dofConfig, { cursor: globalCursor, windowPos, windowSize, isVisible });
 
 // ── 灵动图层配置 ──
 const parallaxConfig = ref<ParallaxState>({

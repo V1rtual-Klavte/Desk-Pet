@@ -36,6 +36,7 @@ const {
   onDofPointerDown,
   onDofPointerMove,
   onDofPointerUp,
+  onCanvasPointerLeave,
   dofFocusDrag,
   focusRings,
   addFocusRegion,
@@ -117,6 +118,7 @@ const {
           @pointermove="isDof ? onDofPointerMove($event) : onPointerMove($event)"
           @pointerup="isDof ? onDofPointerUp($event) : onPointerUp($event)"
           @pointercancel="isDof ? onDofPointerUp($event) : onPointerUp($event)"
+          @pointerleave="isDof ? onCanvasPointerLeave() : undefined"
           @wheel.prevent="isDof ? undefined : onWheel($event)"
         >
           <div class="le-grid-h" style="top:50%"></div>
@@ -222,6 +224,24 @@ const {
             <button class="le-btn le-btn-xs" @click="resetFraming()">↺ 取景复位</button>
           </div>
           <div class="le-hint">「取景」= 缩放 + 平移；直接拖画布空白处也能平移，超出的部分会被裁掉。</div>
+
+          <div class="le-prop-section">
+            <div class="le-panel-title" style="margin-bottom:4px">视差（跟光标移动）</div>
+            <div class="le-prop-row">
+              <span class="le-prop-label">背景</span>
+              <input type="range" class="le-range" min="0" max="2" step="0.05" v-model.number="dof.bgSensitivity" />
+              <span class="le-prop-num">{{ dof.bgSensitivity.toFixed(2) }}</span>
+            </div>
+            <div class="le-prop-row">
+              <span class="le-prop-label">焦点区</span>
+              <input type="range" class="le-range" min="0" max="2" step="0.05" v-model.number="dof.fgSensitivity" />
+              <span class="le-prop-num">{{ dof.fgSensitivity.toFixed(2) }}</span>
+            </div>
+            <div class="le-hint">
+              两层位移不同才有立体感 —— 焦点区比背景动得多，主体就会「浮」起来。
+              在画布上移动鼠标即可预览。
+            </div>
+          </div>
 
           <div class="le-prop-section">
             <div class="le-panel-title" style="margin-bottom:4px">背景滤镜</div>

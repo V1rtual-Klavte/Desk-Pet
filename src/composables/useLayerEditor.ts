@@ -58,9 +58,18 @@ export function useLayerEditor() {
   const dof = ref<DofState>({
     image: "", url: "",
     blur: 8, scale: 1.0, offsetX: 0, offsetY: 0,
+    bgSensitivity: 0.35, fgSensitivity: 0.9,
     brightness: 0.95, contrast: 1.0, saturate: 0.9,
     focus: [],
   });
+
+  /**
+   * 编辑器里的视差预览用的光标。
+   *
+   * 正式运行用全局光标，但编辑器是个普通窗口，拿画布自身当坐标系更直观 ——
+   * 鼠标在画布上移动就能看到两层错开，不用真去动桌宠。
+   */
+  const localCursor = ref<{ x: number; y: number } | null>(null);
 
   /** 默认焦点椭圆：居中、占画布六成宽八成高 */
   const DEFAULT_FOCUS: ProfileDofRegion = { x: 50, y: 50, rx: 30, ry: 40, feather: 0.35 };
@@ -90,8 +99,6 @@ export function useLayerEditor() {
   const selectedFocus = ref(-1);
   /** 画布拖动的作用：false=平移素材（默认），true=移动焦点区 */
   const dofFocusDrag = ref(false);
-  /** 画布预览用；和 StreamView 共用同一套样式计算，所见即所得 */
-  const { backgroundStyle: dofBgStyle, foregroundStyle: dofFgStyle } = useDepthOfField(dof);
   const selectedRegion = computed(() =>
     selectedFocus.value >= 0 ? dof.value.focus[selectedFocus.value] : undefined);
 
@@ -111,6 +118,17 @@ export function useLayerEditor() {
   // ── 画布自适应尺寸（维持实际窗口等比例）──
   const canvasWrap = ref<HTMLElement | null>(null);
   const canvasSize = ref({ w: 600, h: 370 });
+
+  // 景深预览：样式与位移都和 StreamView 共用同一套计算，所见即所得。
+  const originPos = ref({ x: 0, y: 0 });
+  const alwaysVisible = ref(true);
+  const { backgroundStyle: dofBgStyle, foregroundStyle: dofFgStyle, foregroundTravel: dofFgTravel } =
+    useDepthOfField(dof, {
+      cursor: localCursor,
+      windowPos: originPos,
+      windowSize: canvasSize,
+      isVisible: alwaysVisible,
+    });
 
   function updateCanvasSize() {
     const wrap = canvasWrap.value;
@@ -286,16 +304,21 @@ export function useLayerEditor() {
   let dofStart: ProfileDofRegion | null = null;
   let dofStartOffset = { x: 0, y: 0 };
 
-  /** 指针位置 → 画布百分比坐标 */
+  /** 指针位置 → 画布百分比坐标。顺带刷新视差预览用的画布内坐标。 */
   function dofPoint(e: PointerEvent): { x: number; y: number } | null {
     const el = canvasEl.value;
     if (!el) return null;
     const rect = el.getBoundingClientRect();
     if (rect.width <= 0 || rect.height <= 0) return null;
-    return {
-      x: ((e.clientX - rect.left) / rect.width) * 100,
-      y: ((e.clientY - rect.top) / rect.height) * 100,
-    };
+    const px = e.clientX - rect.left;
+    const py = e.clientY - rect.top;
+    localCursor.value = { x: px, y: py };
+    return { x: (px / rect.width) * 100, y: (py / rect.height) * 100 };
+  }
+
+  /** 指针离开画布 → 视差归位 */
+  function onCanvasPointerLeave() {
+    localCursor.value = null;
   }
 
   /**
@@ -343,9 +366,9 @@ export function useLayerEditor() {
   }
 
   function onDofPointerMove(e: PointerEvent) {
-    if (!dofDrag) return;
+    // 先取坐标：即使没在拖动，也要刷新视差预览（鼠标一动，两层就该错开）
     const p = dofPoint(e);
-    if (!p) return;
+    if (!p || !dofDrag) return;
     if (!dofMoved && Math.abs(p.x - dofSX) < 0.5 && Math.abs(p.y - dofSY) < 0.5) return;
     dofMoved = true;
 
@@ -379,8 +402,10 @@ export function useLayerEditor() {
    * 椭圆存在素材坐标里（这样缩放后它仍贴着主体），画到屏幕上必须换算成画布
    * 坐标 —— 不换算的话，缩放之后看到的圈和实际清晰区会分家。
    */
-  const focusRings = computed(() =>
-    dof.value.focus.map((r) => {
+  const focusRings = computed(() => {
+    // 圈跟着前景层一起走，否则视差一动圈就和实际清晰区分家
+    const travel = dofFgTravel.value;
+    return dof.value.focus.map((r) => {
       const cx = imageToCanvas(r.x, dof.value.offsetX, dof.value.scale);
       const cy = imageToCanvas(r.y, dof.value.offsetY, dof.value.scale);
       const rx = r.rx * dof.value.scale;
@@ -391,8 +416,10 @@ export function useLayerEditor() {
         width: `${(rx * 2).toFixed(2)}%`,
         height: `${(ry * 2).toFixed(2)}%`,
         opacity: 0.25 + (1 - r.feather) * 0.55,
+        transform: `translate(${travel.x.toFixed(1)}px, ${travel.y.toFixed(1)}px)`,
       };
-    }));
+    });
+  });
 
   function clearFocus() {
     dof.value.focus = [];
@@ -696,6 +723,8 @@ export function useLayerEditor() {
       scale: d.scale,
       offsetX: d.offsetX,
       offsetY: d.offsetY,
+      bgSensitivity: d.bgSensitivity,
+      fgSensitivity: d.fgSensitivity,
       brightness: d.brightness,
       contrast: d.contrast,
       saturate: d.saturate,
@@ -794,6 +823,7 @@ export function useLayerEditor() {
     onDofPointerDown,
     onDofPointerMove,
     onDofPointerUp,
+    onCanvasPointerLeave,
     dofFocusDrag,
     focusRings,
     addFocusRegion,
