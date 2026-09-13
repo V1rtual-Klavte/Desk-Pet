@@ -14,7 +14,6 @@ export {
   getCharacterScale,
   getCharacterScaleMode,
   getUiUrl,
-  getFontUrl,
   getProfileAssetUrl,
   resolveProfileAssetUrl,
   refreshProfileAssets,

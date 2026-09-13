@@ -27,7 +27,10 @@ const scaleMode = computed(() => getCharacterScaleMode() === "smooth" ? "auto" :
 const parallaxConfig = ref<ParallaxState>({
   enabled: userConfig.parallaxEnabled,
   intensity: userConfig.parallaxIntensity,
-  layers: DEFAULT_PARALLAX_STATE.layers.map(l => ({ ...l })),
+  // 初值留空：DEFAULT_PARALLAX_STATE 是 sugar-pink 的层，Profile 一就绪就会被拿去
+  // 解析当前 Profile 的素材目录（yuki 没有 shield_gold.png），必然 404 一次。
+  // 交给 reloadParallax() 填入当前 Profile 的层再渲染。
+  layers: [],
 });
 
 // ── 图层素材 URL（activeProfileRevision 让 Profile 切换触发重新计算）──

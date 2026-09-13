@@ -434,18 +434,24 @@ function injectCssVars(profile: ProfileData): void {
 
 // ── 资源 URL ──
 
+/**
+ * 1×1 透明 PNG。
+ *
+ * `<img src="">` 是非法值：浏览器会把它解析成文档地址（`http://localhost:1420/`），
+ * 于是启动阶段每个还没拿到 Profile 的图片都产生一条资源加载失败。
+ * 用透明占位代替空串，等 Profile 就绪后 activeProfileRevision 会触发重算。
+ */
+const PENDING_IMAGE =
+  "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==";
+
+/** Profile 自带 UI 位图的 URL；Profile 未就绪时返回透明占位图。 */
 export function getUiUrl(relativePath: string): string {
   const p = getActiveProfile();
-  if (!p) return "";
+  if (!p) return PENDING_IMAGE;
   if (p.theme.useDefaultUi && p.defaultUiBasePath) {
     return `${p.defaultUiBasePath}/ui/${relativePath.replace(/^\/+/, "")}`;
   }
   return resolveProfileAssetUrl(p, `ui/${relativePath}`);
-}
-
-export function getFontUrl(filename: string): string {
-  const p = getActiveProfile();
-  return p ? resolveProfileAssetUrl(p, `fonts/${filename}`) : "";
 }
 
 export function getActiveProfile(): ProfileData | null {
