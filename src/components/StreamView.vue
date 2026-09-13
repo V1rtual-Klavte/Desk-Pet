@@ -1,14 +1,18 @@
 <script setup lang="ts">
 // ==========================================
-// StreamView — 五层灵动图层（直接映射）
-// Layer DOM 始终渲染，display 由 layerStyles 控制
+// StreamView — 角色展示
+//
+// 两种效果互斥，由 CONFIG 的 appearance.effectMode 决定：
+//   parallax — 五层灵动图层，层 DOM 始终渲染，display 由 layerStyles 控制
+//   dof      — 单张素材景深，同图渲染两次（底层模糊 + 焦点区锐利）
 // ==========================================
 
 import { ref, computed, onMounted, onUnmounted, inject, type Ref } from "vue";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { activateProfile, ensureProfileLoaded, getCharacterScaleMode, getActiveProfile, invalidateProfileCache, refreshProfileAssets, resolveProfileAssetUrl } from "@/services/profile";
 import { useParallax, DEFAULT_PARALLAX_STATE, type ParallaxState } from "@/composables/useParallax";
-import { appearanceConfig, userConfig, reloadConfig } from "@/services/config";
+import { useDepthOfField, type DofState } from "@/composables/useDepthOfField";
+import { appearanceConfig, userConfig, reloadConfig, type EffectMode } from "@/services/config";
 import { createLogger } from "@/services/logger";
 
 const log = createLogger("Stream");
@@ -23,9 +27,22 @@ const isVisible = computed(() => !isRetracted.value);
 // ── Profile ──
 const scaleMode = computed(() => getCharacterScaleMode() === "smooth" ? "auto" : "pixelated");
 
+// ── 效果模式（由 reloadEffects() 从 CONFIG 同步，settings-saved 时刷新）──
+const effectMode = ref<EffectMode>(userConfig.effectMode);
+
+// ── 景深配置 ──
+const dofConfig = ref<DofState>({
+  image: "", url: "",
+  blur: 8, blurScale: 1.05,
+  brightness: 0.95, contrast: 1.0, saturate: 0.9,
+  focus: [],
+});
+const { hasImage: dofHasImage, backgroundStyle: dofBgStyle, foregroundStyle: dofFgStyle } =
+  useDepthOfField(dofConfig);
+
 // ── 灵动图层配置 ──
 const parallaxConfig = ref<ParallaxState>({
-  enabled: userConfig.parallaxEnabled,
+  enabled: true,
   intensity: userConfig.parallaxIntensity,
   // 初值留空：DEFAULT_PARALLAX_STATE 是 sugar-pink 的层，Profile 一就绪就会被拿去
   // 解析当前 Profile 的素材目录（yuki 没有 shield_gold.png），必然 404 一次。
@@ -63,7 +80,7 @@ function onImgLoad(e: Event) {
 // ── ☆ 图层重载：启动时 + 定期检查 dirty flag ──
 let _reloadRetryId: ReturnType<typeof setTimeout> | null = null;
 
-function reloadParallax() {
+function reloadEffects() {
   const p = getActiveProfile();
   if (!p) {
     // Profile 尚未加载（冷启动时序：StreamView onMounted 早于 App initProfiles）。
@@ -71,15 +88,19 @@ function reloadParallax() {
     if (!_reloadRetryId) {
       _reloadRetryId = setTimeout(() => {
         _reloadRetryId = null;
-        reloadParallax();
+        reloadEffects();
       }, 500);
-      log.info("Profile 未就绪，500ms 后重试图层加载...");
+      log.info("Profile 未就绪，500ms 后重试效果加载...");
     }
     return;
   }
 
-  parallaxConfig.value.enabled = userConfig.parallaxEnabled;
+  effectMode.value = userConfig.effectMode;
   parallaxConfig.value.intensity = userConfig.parallaxIntensity;
+
+  // 景深与灵动图层共用同一份素材目录，各自取自己的字段。
+  const d = p.theme.depthOfField;
+  dofConfig.value = { ...d, url: d.image ? resolveProfileAssetUrl(p, d.image) : "" };
 
   const pLayers = p.theme.parallax.layers;
   const newLayers: typeof parallaxConfig.value.layers = [];
@@ -113,6 +134,7 @@ function reloadParallax() {
 }
 
 let unlistenProfileUpdated: UnlistenFn | null = null;
+let unlistenSettingsSaved: UnlistenFn | null = null;
 
 async function syncActiveProfile(profileId?: string) {
   await reloadConfig();
@@ -124,17 +146,23 @@ async function syncActiveProfile(profileId?: string) {
     return;
   }
   await refreshProfileAssets(id);
-  reloadParallax();
+  reloadEffects();
 }
 
 onMounted(async () => {
-  reloadParallax();
+  reloadEffects();
   unlistenProfileUpdated = await listen<{ profileId?: string }>("deskpet-profile-updated", async ({ payload }) => {
     await syncActiveProfile(payload?.profileId);
+  })
+  // 效果模式是 CONFIG 字段，设置页保存后重新读一次就能即时切换，不必重启。
+  unlistenSettingsSaved = await listen("deskpet-settings-saved", async () => {
+    await reloadConfig();
+    reloadEffects();
   })
 });
 onUnmounted(() => {
   unlistenProfileUpdated?.();
+  unlistenSettingsSaved?.();
   if (_reloadRetryId) clearTimeout(_reloadRetryId);
 });
 
@@ -142,22 +170,42 @@ onUnmounted(() => {
 
 <template>
   <div id="parallax-stage" :style="{ aspectRatio: userConfig.popupSize.w + '/' + userConfig.popupSize.h }">
-    <!-- 五层始终渲染，display 由 layerStyles 控制 -->
-    <template v-for="i in 5" :key="i">
-      <div
-        class="pl-layer"
-        :class="`pl-layer-${i - 1}`"
-        :style="layerStyles[i - 1]"
-      >
-        <img
-          v-if="layerUrls[i - 1]"
-          :src="layerUrls[i - 1]!"
-          alt="" draggable="false"
-          :style="{ imageRendering: scaleMode, width: '100%', height: '100%', objectFit: 'contain' }"
-          @load="onImgLoad"
-          @error="onImgError"
-        />
-      </div>
+    <!-- 灵动图层：五层始终渲染，display 由 layerStyles 控制 -->
+    <template v-if="effectMode === 'parallax'">
+      <template v-for="i in 5" :key="i">
+        <div
+          class="pl-layer"
+          :class="`pl-layer-${i - 1}`"
+          :style="layerStyles[i - 1]"
+        >
+          <img
+            v-if="layerUrls[i - 1]"
+            :src="layerUrls[i - 1]!"
+            alt="" draggable="false"
+            :style="{ imageRendering: scaleMode, width: '100%', height: '100%', objectFit: 'contain' }"
+            @load="onImgLoad"
+            @error="onImgError"
+          />
+        </div>
+      </template>
+    </template>
+
+    <!-- 景深：同一张图两次 —— 底层整体模糊，上层被焦点区遮罩裁出保持锐利 -->
+    <template v-else-if="effectMode === 'dof' && dofHasImage">
+      <img
+        class="dof-layer dof-bg"
+        :src="dofConfig.url"
+        :style="{ ...dofBgStyle, imageRendering: scaleMode }"
+        alt="" draggable="false"
+        @error="onImgError"
+      />
+      <img
+        class="dof-layer dof-fg"
+        :src="dofConfig.url"
+        :style="{ ...dofFgStyle, imageRendering: scaleMode }"
+        alt="" draggable="false"
+        @load="onImgLoad"
+      />
     </template>
   </div>
 </template>
@@ -189,4 +237,16 @@ onUnmounted(() => {
 .pl-layer-2 { z-index: 2; }
 .pl-layer-3 { z-index: 3; }
 .pl-layer-4 { z-index: 4; }
+
+/* 景深：两层同图上下叠放，上层靠 mask 裁出焦点区 */
+.dof-layer {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  pointer-events: none;
+}
+.dof-bg { z-index: 0; }
+.dof-fg { z-index: 1; }
 </style>

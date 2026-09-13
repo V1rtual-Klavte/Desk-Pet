@@ -329,7 +329,8 @@ pub fn my_command(paths: tauri::State<AppPaths>) -> AppResult<()> {
 - 禁止使用 `canonicalize().unwrap_or()` 静默回退。
 - 禁止 `.lock().unwrap()`；用 `.unwrap_or_else(|e| e.into_inner())` 忽略锁中毒。
 - 默认 Profile/Card 位于 `src-tauri/resources/defaults/`，仅作为首次初始化种子；运行时读取、编辑、导入、复制、删除全部只走 `data_root/profiles/` 与 `data_root/personality/cards/`。初始化标记写入 `data_root/settings/.default-resources-seeded`，标记存在后不会因删除而自动恢复。
-- 灵动图层的逐层素材与参数属于 Profile 的 `theme.parallax.layers`；运行时 CONFIG 只保存跨 Profile 共用的开关和强度，禁止用全局 layers 覆盖当前 Profile。
+- 角色展示效果由 `appearance.effectMode`（`off`/`parallax`/`dof`）单字段裁定，两者互斥；禁止拆成两个布尔开关。
+- 灵动图层的逐层素材与参数属于 Profile 的 `theme.parallax.layers`，景深的素材与参数属于 `theme.depthOfField`；运行时 CONFIG 只保存效果模式与全局强度，禁止用全局配置覆盖当前 Profile 的效果参数。
 - 新命令必须在 `lib.rs` 的 `invoke_handler!` 中注册。
 - Windows/macOS 专有代码必须使用条件编译和对应平台依赖。
 

@@ -2,7 +2,7 @@
 import { ref, onMounted } from "vue";
 import { emit } from "@tauri-apps/api/event";
 import { WebviewWindow } from "@tauri-apps/api/webviewWindow";
-import { flushConfig, userConfig, setOverride } from "@/services/config";
+import { flushConfig, userConfig, setOverride, type EffectMode } from "@/services/config";
 import {
   getSoundLibrary,
   getSoundAssignments,
@@ -31,7 +31,14 @@ import { createLogger } from "@/services/logger";
 const log = createLogger("Settings");
 
 // ── 灵动图层 ──
-const parallaxEnabled = ref(userConfig.parallaxEnabled);
+const effectMode = ref<EffectMode>(userConfig.effectMode);
+
+/** 三选一。灵动图层与景深互斥，所以用一个枚举而不是两个开关。 */
+const EFFECT_MODES: { id: EffectMode; label: string; hint: string }[] = [
+  { id: "off", label: "关闭", hint: "按静态立绘渲染，不使用任何分层素材。" },
+  { id: "parallax", label: "灵动图层", hint: "五层素材随光标做景深视差。逐层素材、灵敏度、偏移与滤镜在图层编辑器里调整。" },
+  { id: "dof", label: "景深", hint: "单张素材：背景模糊、焦点区保持清晰。素材、模糊强度与焦点区在图层编辑器里调整。" },
+];
 const parallaxIntensity = ref(userConfig.parallaxIntensity);
 
 async function openLayerEditor() {
@@ -330,7 +337,7 @@ onMounted(async () => {
 });
 
 defineExpose({
-  parallaxEnabled,
+  effectMode,
   parallaxIntensity,
   assignments,
 });
@@ -354,22 +361,27 @@ defineExpose({
     <div class="s-hint">一键切换配色方案，应用即时生效</div>
   </div>
 
-  <!-- 灵动图层 -->
+  <!-- 角色展示效果：灵动图层与景深互斥，只能选一个 -->
   <div class="s-section">
-    <div class="s-label">✨ 灵动图层（五层景深视差）</div>
-    <label class="s-toggle-row">
-      <span class="fn">启用景深视差</span>
-      <input type="checkbox" class="s-check" v-model="parallaxEnabled" />
-    </label>
-    <div class="fld" v-if="parallaxEnabled">
+    <div class="s-label">✨ 角色展示效果</div>
+    <div class="preset-row">
+      <button
+        v-for="m in EFFECT_MODES" :key="m.id"
+        :class="{ active: effectMode === m.id }"
+        @click="effectMode = m.id"
+      >{{ m.label }}</button>
+    </div>
+
+    <div class="fld" v-if="effectMode === 'parallax'">
       <span class="fn">视差强度</span>
       <input type="range" class="inp-range" min="0" max="2" step="0.1" v-model.number="parallaxIntensity" />
       <span class="range-val">{{ parallaxIntensity.toFixed(1) }}</span>
     </div>
-    <div class="row-gap" style="margin-top:6px">
+
+    <div class="row-gap" style="margin-top:6px" v-if="effectMode !== 'off'">
       <button class="btn-s" style="background:rgba(196,39,111,0.2);border-color:rgba(196,39,111,0.4);color:#f0a0c0" @click="openLayerEditor()">🎨 打开图层编辑器</button>
     </div>
-    <div class="s-hint">逐层调整素材、灵敏度、偏移、滤镜。图层编辑器以独立弹窗打开，级别高于设置窗。</div>
+    <div class="s-hint">{{ EFFECT_MODES.find(m => m.id === effectMode)?.hint }}</div>
   </div>
 
   <!-- Profile + 预览 -->

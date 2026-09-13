@@ -39,6 +39,8 @@ export type {
   ProfileThemeColors,
   ProfileParallax,
   ProfileParallaxLayer,
+  ProfileDepthOfField,
+  ProfileDofRegion,
   ProfileSound,
   ProfileCharacter,
   AnimDef,

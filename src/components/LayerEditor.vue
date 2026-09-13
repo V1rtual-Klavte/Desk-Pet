@@ -25,6 +25,20 @@ const {
   pickerPreview,
   selectedLayer,
   isL2,
+  // 景深
+  isDof,
+  dof,
+  dofBgStyle,
+  dofFgStyle,
+  dofUploading,
+  selectedFocus,
+  selectedRegion,
+  onDofPointerDown,
+  onDofPointerMove,
+  onDofPointerUp,
+  clearFocus,
+  openDofPicker,
+  uploadDofImage,
   onPointerDown,
   onPointerMove,
   onPointerUp,
@@ -56,24 +70,32 @@ const {
     <!-- 工具栏 -->
     <div id="le-toolbar">
       <div class="le-tabs">
-        <button v-for="(l, i) in layers" :key="i" class="le-tab"
-          :class="{ active: selectedIndex === i, disabled: !l.config.enabled, locked: l.config.locked }"
-          @click="selectedIndex = i">
-          <span class="le-dot" :class="`ldot-${i}`"></span>
-          <span class="le-tab-name">{{ l.name }}</span>
-          <span v-if="l.config.locked" class="le-tag">🔒</span>
-          <span v-else-if="!l.config.enabled" class="le-tag off">关</span>
-          <span v-if="l.loadFailed" class="le-tag err">⚠</span>
+        <!-- 景深只有一张素材，没有层可选 -->
+        <button v-if="isDof" class="le-tab active">
+          <span class="le-dot"></span><span class="le-tab-name">景深</span>
         </button>
+        <template v-else>
+          <button v-for="(l, i) in layers" :key="i" class="le-tab"
+            :class="{ active: selectedIndex === i, disabled: !l.config.enabled, locked: l.config.locked }"
+            @click="selectedIndex = i">
+            <span class="le-dot" :class="`ldot-${i}`"></span>
+            <span class="le-tab-name">{{ l.name }}</span>
+            <span v-if="l.config.locked" class="le-tag">🔒</span>
+            <span v-else-if="!l.config.enabled" class="le-tag off">关</span>
+            <span v-if="l.loadFailed" class="le-tag err">⚠</span>
+          </button>
+        </template>
       </div>
       <div class="le-actions">
-        <button class="le-btn" @click="toggleLock()" :title="selectedLayer.config.locked?'解锁':'锁定'">
-          {{ selectedLayer.config.locked ? '🔒 已锁' : '🔓 解锁' }}
-        </button>
-        <button class="le-btn" @click="toggleEnabled()">
-          {{ selectedLayer.config.enabled ? '👁 可见' : '🚫 隐藏' }}
-        </button>
-        <button class="le-btn le-btn-d" @click="resetLayer()">↺ 重置</button>
+        <template v-if="!isDof">
+          <button class="le-btn" @click="toggleLock()" :title="selectedLayer.config.locked?'解锁':'锁定'">
+            {{ selectedLayer.config.locked ? '🔒 已锁' : '🔓 解锁' }}
+          </button>
+          <button class="le-btn" @click="toggleEnabled()">
+            {{ selectedLayer.config.enabled ? '👁 可见' : '🚫 隐藏' }}
+          </button>
+          <button class="le-btn le-btn-d" @click="resetLayer()">↺ 重置</button>
+        </template>
         <span class="le-spacer"></span>
         <span v-if="saved" class="le-saved">✅ 已保存</span>
         <button class="le-btn le-btn-primary" @click="save()">💾 保存</button>
@@ -87,10 +109,11 @@ const {
       <div id="le-canvas-wrap">
         <div id="le-canvas" ref="canvasEl"
           :style="{ width: canvasSize.w + 'px', height: canvasSize.h + 'px' }"
-          @pointermove="onPointerMove"
-          @pointerup="onPointerUp"
-          @pointercancel="onPointerUp"
-          @wheel.prevent="onWheel"
+          @pointerdown="isDof ? onDofPointerDown($event) : undefined"
+          @pointermove="isDof ? onDofPointerMove($event) : onPointerMove($event)"
+          @pointerup="isDof ? onDofPointerUp($event) : onPointerUp($event)"
+          @pointercancel="isDof ? onDofPointerUp($event) : onPointerUp($event)"
+          @wheel.prevent="isDof ? undefined : onWheel($event)"
         >
           <div class="le-grid-h" style="top:50%"></div>
           <div class="le-grid-v" style="left:50%"></div>
@@ -102,7 +125,30 @@ const {
 
           <div v-if="!ready" class="le-loading">加载中...</div>
 
+          <!-- 景深：同图两层，底层模糊、上层靠 mask 裁出焦点区 -->
+          <template v-if="isDof">
+            <template v-if="ready && dof.image">
+              <img class="le-dof-layer" :src="dof.url" :style="dofBgStyle" alt="" draggable="false" />
+              <img class="le-dof-layer" :src="dof.url" :style="dofFgStyle" alt="" draggable="false" />
+            </template>
+            <div v-else-if="ready" class="le-dof-empty">还没有素材，点右侧「选择素材」</div>
+
+            <!-- 焦点椭圆的可视化边框：拖拽时看得到范围 -->
+            <div
+              v-for="(r, i) in dof.focus" :key="i"
+              class="le-focus-ring" :class="{ active: selectedFocus === i }"
+              :style="{
+                left: (r.x - r.rx) + '%',
+                top: (r.y - r.ry) + '%',
+                width: (r.rx * 2) + '%',
+                height: (r.ry * 2) + '%',
+                opacity: 0.25 + (1 - r.feather) * 0.55,
+              }"
+            ></div>
+          </template>
+
           <!-- ★ 全部五层始终渲染 ★ -->
+          <template v-else>
           <template v-for="(l, i) in layers" :key="i">
             <div
               v-if="ready"
@@ -131,6 +177,7 @@ const {
               </span>
             </div>
           </template>
+          </template>
 
           <div v-if="dragHint" class="le-drag-hint">{{ dragHint }}</div>
         </div>
@@ -138,6 +185,89 @@ const {
 
       <!-- 属性面板 -->
       <div id="le-panel">
+        <!-- ── 景深面板 ── -->
+        <template v-if="isDof">
+          <div class="le-panel-head">
+            <span class="le-dot"></span>
+            <span class="le-panel-title">景深</span>
+          </div>
+
+          <div class="le-prop-section">
+            <div class="le-prop-row">
+              <span class="le-prop-label">素材</span>
+              <span class="le-prop-val" :class="{ empty: !dof.image }">{{ dof.image || '未设置' }}</span>
+            </div>
+            <div class="le-prop-row" style="gap:3px;flex-wrap:wrap">
+              <button class="le-btn le-btn-xs" @click="openDofPicker()">🖼 选择素材</button>
+              <button class="le-btn le-btn-xs" @click="uploadDofImage()" :disabled="dofUploading">
+                {{ dofUploading ? '⏳' : '📤 上传' }}
+              </button>
+            </div>
+          </div>
+
+          <div class="le-prop-row">
+            <span class="le-prop-label">模糊</span>
+            <input type="range" class="le-range" min="0" max="30" step="0.5" v-model.number="dof.blur" />
+            <span class="le-prop-num">{{ dof.blur.toFixed(1) }}px</span>
+          </div>
+          <div class="le-prop-row">
+            <span class="le-prop-label">放大</span>
+            <input type="range" class="le-range" min="1" max="1.3" step="0.01" v-model.number="dof.blurScale" />
+            <span class="le-prop-num">{{ dof.blurScale.toFixed(2) }}</span>
+          </div>
+          <div class="le-hint">「放大」用来盖住 CSS 模糊在图像边缘渗出的透明边。</div>
+
+          <div class="le-prop-section">
+            <div class="le-panel-title" style="margin-bottom:4px">背景滤镜</div>
+            <div class="le-prop-row">
+              <span class="le-prop-label">亮度</span>
+              <input type="range" class="le-range" min="0.2" max="2" step="0.01" v-model.number="dof.brightness" />
+              <span class="le-prop-num">{{ dof.brightness.toFixed(2) }}</span>
+            </div>
+            <div class="le-prop-row">
+              <span class="le-prop-label">对比度</span>
+              <input type="range" class="le-range" min="0.2" max="2" step="0.01" v-model.number="dof.contrast" />
+              <span class="le-prop-num">{{ dof.contrast.toFixed(2) }}</span>
+            </div>
+            <div class="le-prop-row">
+              <span class="le-prop-label">饱和度</span>
+              <input type="range" class="le-range" min="0" max="2" step="0.01" v-model.number="dof.saturate" />
+              <span class="le-prop-num">{{ dof.saturate.toFixed(2) }}</span>
+            </div>
+          </div>
+
+          <div class="le-prop-section">
+            <div class="le-prop-row">
+              <span class="le-prop-label">焦点区</span>
+              <span class="le-prop-val">{{ dof.focus.length ? `第 ${selectedFocus + 1} 个` : '无（整图模糊）' }}</span>
+            </div>
+            <div class="le-prop-row" style="gap:3px;flex-wrap:wrap">
+              <button class="le-btn le-btn-xs le-btn-d" @click="clearFocus()" :disabled="dof.focus.length === 0">✕ 清除焦点区</button>
+            </div>
+            <div class="le-hint">在画布上拖动画出焦点椭圆；在椭圆内拖动可移动它。</div>
+
+            <template v-if="selectedRegion">
+              <div class="le-prop-row">
+                <span class="le-prop-label">羽化</span>
+                <input type="range" class="le-range" min="0" max="1" step="0.01" v-model.number="selectedRegion.feather" />
+                <span class="le-prop-num">{{ selectedRegion.feather.toFixed(2) }}</span>
+              </div>
+              <div class="le-prop-row">
+                <span class="le-prop-label">中心 X/Y</span>
+                <input type="range" class="le-range" min="0" max="100" step="0.5" v-model.number="selectedRegion.x" />
+                <input type="range" class="le-range" min="0" max="100" step="0.5" v-model.number="selectedRegion.y" />
+              </div>
+              <div class="le-prop-row">
+                <span class="le-prop-label">半径 X/Y</span>
+                <input type="range" class="le-range" min="2" max="60" step="0.5" v-model.number="selectedRegion.rx" />
+                <input type="range" class="le-range" min="2" max="60" step="0.5" v-model.number="selectedRegion.ry" />
+              </div>
+            </template>
+          </div>
+        </template>
+
+        <!-- ── 灵动图层面板 ── -->
+        <template v-else>
         <div class="le-panel-head">
           <span class="le-dot" :class="`ldot-${selectedIndex}`"></span>
           <span class="le-panel-title">{{ selectedLayer.name }}</span>
@@ -216,6 +346,7 @@ const {
         <div class="le-filter-preview">
           <code>滤镜: brightness({{ selectedLayer.config.brightness.toFixed(2) }}) contrast({{ selectedLayer.config.contrast.toFixed(2) }}) saturate({{ selectedLayer.config.saturate.toFixed(2) }})</code>
         </div>
+        </template>
       </div>
     </div>
 
@@ -382,6 +513,35 @@ html, body {
 }
 .le-no-img {
   font-size: 11px; color: rgba(255,255,255,0.2); pointer-events: none;
+}
+
+/* ── 景深 ── */
+.le-dof-layer {
+  position: absolute; inset: 0;
+  width: 100%; height: 100%;
+  object-fit: contain; pointer-events: none;
+}
+/* 焦点椭圆的可视化边框 —— 拖拽时看得到范围，透明度随羽化变化 */
+.le-focus-ring {
+  position: absolute;
+  border: 1.5px dashed rgba(240,160,192,0.9);
+  border-radius: 50%;
+  pointer-events: none;
+}
+.le-focus-ring.active {
+  border-color: #fff;
+  border-style: solid;
+  box-shadow: 0 0 0 1px rgba(0,0,0,0.6);
+}
+.le-dof-empty {
+  position: absolute; inset: 0;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 11px; color: rgba(255,255,255,0.35);
+}
+.le-hint {
+  font-size: 9px; line-height: 1.5;
+  color: rgba(255,255,255,0.35);
+  padding: 2px 0 4px;
 }
 .le-drag-hint {
   position: absolute; bottom: 6px; left: 50%; transform: translateX(-50%);

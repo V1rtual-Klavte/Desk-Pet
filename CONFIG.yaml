@@ -171,7 +171,7 @@ tools:
 # 每个 profile 是一个自包含文件夹，拖入即用
 appearance:
   activeProfile: "sugar-pink"     # 当前激活的 Profile ID
+  effectMode: "off"               # 角色展示效果: off | parallax(灵动图层) | dof(景深)，互斥
   soundAssignments: {}
   parallax:
-    enabled: false
-    intensity: 1.0
+    intensity: 1.0                # 灵动图层的全局强度；逐层参数在 Profile 的 theme.parallax.layers

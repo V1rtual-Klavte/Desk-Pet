@@ -76,3 +76,6 @@ tools:
 
 appearance:
   activeProfile: "sugar-pink"
+  effectMode: "off"               # off | parallax(灵动图层) | dof(景深)，互斥
+  parallax:
+    intensity: 1.0

@@ -70,6 +70,7 @@ export interface ProfileTheme {
   /** 当前 Profile 未携带 UI 位图时，使用默认 Profile 的 UI。 */
   useDefaultUi: boolean
   parallax: ProfileParallax
+  depthOfField: ProfileDepthOfField
 }
 
 export interface ProfileParallaxLayer {
@@ -82,6 +83,34 @@ export interface ProfileParallaxLayer {
 export interface ProfileParallax {
   intensity: number
   layers: ProfileParallaxLayer[]
+}
+
+/**
+ * 景深的焦点区域（椭圆），全部用占画布的百分比表示，换窗口尺寸也不会错位。
+ * 缺省 `regions` 为空数组 = 整张图统一模糊，不做焦点。
+ */
+export interface ProfileDofRegion {
+  /** 椭圆中心 */
+  x: number; y: number
+  /** 椭圆半径（占画布宽/高） */
+  rx: number; ry: number
+  /** 边缘羽化宽度，占半径的比例 0–1 */
+  feather: number
+}
+
+/**
+ * 景深：一张素材 + 背景模糊 + 焦点区保持清晰。
+ * 渲染时同一张图用两次 —— 底层整体模糊，上层被焦点区遮罩裁出来保持锐利。
+ */
+export interface ProfileDepthOfField {
+  image: string
+  /** 背景模糊半径 px */
+  blur: number
+  /** 模糊层放大倍数：CSS blur 会采到图像外的透明区导致边缘发虚，放大一点盖住 */
+  blurScale: number
+  /** 焦点区外的背景滤镜，用来压暗/降饱和增强景深感 */
+  brightness: number; contrast: number; saturate: number
+  focus: ProfileDofRegion[]
 }
 
 export interface ProfileSound {
@@ -236,6 +265,22 @@ async function loadProfile(id: string): Promise<ProfileData> {
           offsetX: l?.offsetX ?? 0,
           offsetY: l?.offsetY ?? 0,
           locked: l?.locked ?? false,
+        })),
+      },
+      depthOfField: {
+        image: rawProfile?.theme?.depthOfField?.image ?? "",
+        blur: rawProfile?.theme?.depthOfField?.blur ?? 8,
+        blurScale: rawProfile?.theme?.depthOfField?.blurScale ?? 1.05,
+        brightness: rawProfile?.theme?.depthOfField?.brightness ?? 0.95,
+        contrast: rawProfile?.theme?.depthOfField?.contrast ?? 1.0,
+        saturate: rawProfile?.theme?.depthOfField?.saturate ?? 0.9,
+        // 空 focus 数组 = 整张图统一模糊，不做焦点区。
+        focus: (rawProfile?.theme?.depthOfField?.focus || []).map((r: any) => ({
+          x: r?.x ?? 50,
+          y: r?.y ?? 50,
+          rx: r?.rx ?? 25,
+          ry: r?.ry ?? 35,
+          feather: r?.feather ?? 0.35,
         })),
       },
     },

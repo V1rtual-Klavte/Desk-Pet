@@ -64,7 +64,7 @@ async function doSave() {
   userConfig.shortcutKey = g.recKey;
   if (isMacOS) userConfig.shortcutMacModifiers = g.recMods;
   else userConfig.shortcutWinModifiers = g.recMods;
-  userConfig.parallaxEnabled = ap.parallaxEnabled;
+  userConfig.effectMode = ap.effectMode;
   userConfig.parallaxIntensity = ap.parallaxIntensity;
 
   // 音效分配持久化

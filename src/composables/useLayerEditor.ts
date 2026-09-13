@@ -9,11 +9,16 @@ import { invoke } from "@tauri-apps/api/core";
 import { emit, listen, type UnlistenFn } from "@tauri-apps/api/event";
 import {
   activateProfile, ensureProfileLoaded, initProfiles, getActiveProfile, invalidateProfileCache,
-  refreshProfileAssets, resolveProfileAssetUrl, type ProfileData,
+  refreshProfileAssets, resolveProfileAssetUrl, type ProfileData, type ProfileDofRegion,
 } from "@/services/profile";
-import { reloadConfig, userConfig } from "@/services/config";
+import { reloadConfig, userConfig, type EffectMode } from "@/services/config";
 import { DEFAULT_LAYERS, LAYER_NAMES, layerDepth, type ParallaxLayerCfg } from "@/composables/useParallax";
+import { useDepthOfField, type DofState } from "@/composables/useDepthOfField";
 import { createLogger } from "@/services/logger";
+
+function clamp(v: number, lo: number, hi: number): number {
+  return v < lo ? lo : v > hi ? hi : v;
+}
 
 export function useLayerEditor() {
   const log = createLogger("LayerEditor");
@@ -45,9 +50,30 @@ export function useLayerEditor() {
     }))
   );
 
+  // ── 景深 ──
+  // 与灵动图层互斥，靠 CONFIG 的 effectMode 决定编辑器显示哪套面板。
+  const effectMode = ref<EffectMode>(userConfig.effectMode);
+  const isDof = computed(() => effectMode.value === "dof");
+
+  const dof = ref<DofState>({
+    image: "", url: "",
+    blur: 8, blurScale: 1.05,
+    brightness: 0.95, contrast: 1.0, saturate: 0.9,
+    focus: [],
+  });
+  /** 当前选中的焦点区索引；-1 = 没有 */
+  const selectedFocus = ref(-1);
+  /** 画布预览用；和 StreamView 共用同一套样式计算，所见即所得 */
+  const { backgroundStyle: dofBgStyle, foregroundStyle: dofFgStyle } = useDepthOfField(dof);
+  const selectedRegion = computed(() =>
+    selectedFocus.value >= 0 ? dof.value.focus[selectedFocus.value] : undefined);
+
   const saved = ref(false);
   const uploading = ref<number | null>(null);
   const showPicker = ref(false);
+  /** 素材选择器的目标：给某一层选，还是给景深选 */
+  const pickerTarget = ref<"layer" | "dof">("layer");
+  const dofUploading = ref(false);
   const assetList = ref<string[]>([]);
   const assetLoading = ref(false);
   const pickerPreview = ref("");
@@ -117,8 +143,15 @@ export function useLayerEditor() {
         refreshLayerUrl(i);
         log.info(`L${i}: url="${layers.value[i].url}" image="${layers.value[i].config.image}"`);
       }
+
+      // 景深：模式决定编辑器显示哪套面板，配置从同一个 Profile 的另一组字段读。
+      effectMode.value = userConfig.effectMode;
+      const d = p.theme.depthOfField;
+      dof.value = { ...d, url: d.image ? resolveProfileAssetUrl(p, d.image) : "" };
+      selectedFocus.value = d.focus.length > 0 ? 0 : -1;
+
       ready.value = true;
-      log.info("就绪");
+      log.info(`就绪 | 效果模式: ${effectMode.value}`);
     } catch (err) {
       log.error("init 异常:", err);
     }
@@ -213,6 +246,106 @@ export function useLayerEditor() {
     log.debug(`滚轮缩放 ${l.name} → ${next}`);
   }
 
+  // ── 景深：焦点区拖拽 ──
+  // 空白处拖 = 画一个新的（外接矩形内切椭圆）；已有椭圆内拖 = 移动它。
+  let dofDrag = false,
+    dofMoved = false;
+  let dofSX = 0,
+    dofSY = 0;
+  let dofMovingIdx = -1;
+  let dofStart: ProfileDofRegion | null = null;
+
+  /** 指针位置 → 画布百分比坐标 */
+  function dofPoint(e: PointerEvent): { x: number; y: number } | null {
+    const el = canvasEl.value;
+    if (!el) return null;
+    const rect = el.getBoundingClientRect();
+    if (rect.width <= 0 || rect.height <= 0) return null;
+    return {
+      x: ((e.clientX - rect.left) / rect.width) * 100,
+      y: ((e.clientY - rect.top) / rect.height) * 100,
+    };
+  }
+
+  /** 命中测试：点落在哪个椭圆内（后画的在上，所以倒序遍历） */
+  function hitFocus(p: { x: number; y: number }): number {
+    const regions = dof.value.focus;
+    for (let i = regions.length - 1; i >= 0; i--) {
+      const r = regions[i];
+      const dx = (p.x - r.x) / (r.rx || 1);
+      const dy = (p.y - r.y) / (r.ry || 1);
+      if (dx * dx + dy * dy <= 1) return i;
+    }
+    return -1;
+  }
+
+  function onDofPointerDown(e: PointerEvent) {
+    const el = canvasEl.value;
+    const p = dofPoint(e);
+    if (!el || !p) return;
+    el.setPointerCapture(e.pointerId);
+    dofDrag = true;
+    dofMoved = false;
+    dofSX = p.x;
+    dofSY = p.y;
+    const hit = hitFocus(p);
+    if (hit >= 0) {
+      dofMovingIdx = hit;
+      selectedFocus.value = hit;
+      dofStart = { ...dof.value.focus[hit] };
+      dragHint.value = "拖动焦点区";
+    } else {
+      dofMovingIdx = -1;
+      dofStart = null;
+      dragHint.value = "拖出焦点区";
+    }
+    e.preventDefault();
+  }
+
+  function onDofPointerMove(e: PointerEvent) {
+    if (!dofDrag) return;
+    const p = dofPoint(e);
+    if (!p) return;
+    if (!dofMoved && Math.abs(p.x - dofSX) < 0.5 && Math.abs(p.y - dofSY) < 0.5) return;
+    dofMoved = true;
+
+    if (dofMovingIdx >= 0 && dofStart) {
+      const r = dof.value.focus[dofMovingIdx];
+      r.x = clamp(dofStart.x + (p.x - dofSX), 0, 100);
+      r.y = clamp(dofStart.y + (p.y - dofSY), 0, 100);
+      return;
+    }
+
+    // 新建：起点到当前点构成外接矩形，取内切椭圆
+    const cx = (dofSX + p.x) / 2;
+    const cy = (dofSY + p.y) / 2;
+    const rx = Math.max(2, Math.abs(p.x - dofSX) / 2);
+    const ry = Math.max(2, Math.abs(p.y - dofSY) / 2);
+    const region: ProfileDofRegion = { x: cx, y: cy, rx, ry, feather: 0.35 };
+    // 界面只做一个焦点区，拖新框即替换旧的。
+    dof.value.focus = [region];
+    selectedFocus.value = 0;
+    dofMovingIdx = 0;
+    dofStart = { ...region };
+    dofSX = p.x;
+    dofSY = p.y;
+  }
+
+  function onDofPointerUp(e: PointerEvent) {
+    if (!dofDrag) return;
+    dofDrag = false;
+    dofMovingIdx = -1;
+    dofStart = null;
+    dragHint.value = "";
+    const el = canvasEl.value;
+    if (el?.hasPointerCapture(e.pointerId)) el.releasePointerCapture(e.pointerId);
+  }
+
+  function clearFocus() {
+    dof.value.focus = [];
+    selectedFocus.value = -1;
+  }
+
   // ── 锁定/启用 ──
   function toggleLock() {
     layers.value[selectedIndex.value].config.locked = !selectedLayer.value.config.locked;
@@ -237,16 +370,52 @@ export function useLayerEditor() {
 
   // ── 素材上传/移除 ──
   let _uploadTargetLayer = -1;
+  /** 同一个 file input 兼作景深上传，用这个开关分辨本次是给谁的 */
+  let _uploadDof = false;
   function uploadImage() {
+    _uploadDof = false;
     _uploadTargetLayer = selectedIndex.value;
     fileInput.value?.click();
   }
+
+  /** 景深素材上传：写进 materials/ 根，不与任何层绑定 */
+  function uploadDofImage() {
+    _uploadDof = true;
+    fileInput.value?.click();
+  }
+
+  async function uploadDofToProfile(file: File) {
+    const p = profile.value!;
+    dofUploading.value = true;
+    const ext = file.name.split(".").pop() || "png";
+    const relativePath = `materials/dof_${Date.now()}.${ext}`;
+    dof.value.image = relativePath;
+    dof.value.url = URL.createObjectURL(file);
+    try {
+      const bytes = Array.from(new Uint8Array(await file.arrayBuffer()));
+      await invoke("profile_file_write", { profileId: p.id, relativePath, content: bytes });
+      await refreshProfileAssets(p.id);
+      dof.value.url = resolveProfileAssetUrl(p, relativePath);
+      log.info(`景深素材已上传: ${relativePath}`);
+    } catch (e: any) {
+      log.error(`景深素材写入失败 | ${relativePath} |`, e?.message || e);
+    } finally {
+      dofUploading.value = false;
+    }
+  }
+
   function onFileSelected(e: Event) {
-    const i = _uploadTargetLayer;
-    if (i < 0) return;
     const input = e.target as HTMLInputElement;
     const file = input.files?.[0];
     if (!file) return;
+    if (_uploadDof) {
+      _uploadDof = false;
+      input.value = "";
+      void uploadDofToProfile(file);
+      return;
+    }
+    const i = _uploadTargetLayer;
+    if (i < 0) return;
     uploading.value = i;
     const p = profile.value!;
     log.info(
@@ -295,6 +464,7 @@ export function useLayerEditor() {
 
   // ── 素材选择器 ──
   async function openPicker() {
+    pickerTarget.value = "layer";
     const i = selectedIndex.value;
     const subdir = `materials/L${i}`;
     log.info(`打开素材选择器 | 层: L${i} "${LAYER_NAMES[i]}" | 查询目录: ${subdir}/`);
@@ -327,11 +497,47 @@ export function useLayerEditor() {
     }
   }
 
+  /**
+   * 景深素材选择器。
+   *
+   * 列整个 materials/ 目录（含子目录）—— 景深只用一张图，不该被限制在某个 L{n} 里。
+   */
+  async function openDofPicker() {
+    pickerTarget.value = "dof";
+    log.info("打开素材选择器 | 景深素材 | 查询目录: materials/");
+    showPicker.value = true;
+    assetList.value = [];
+    assetLoading.value = true;
+    try {
+      const files: string[] = await invoke("list_profile_files", {
+        profileId: profile.value!.id,
+        subdir: "materials",
+      });
+      assetList.value = [...new Set(files)];
+      log.info(`素材列表 | materials/ → ${files.length} 个文件`);
+    } catch (e: any) {
+      log.warn("景深素材列表加载失败:", e?.message || e);
+      assetList.value = [];
+    } finally {
+      assetLoading.value = false;
+    }
+  }
+
   function previewAsset(path: string) {
     pickerPreview.value = resolveProfileAssetUrl(profile.value!, path);
   }
 
   async function selectAsset(path: string) {
+    // 景深只有一张素材，直接引用，不需要跨层复制那一套。
+    if (pickerTarget.value === "dof") {
+      dof.value.image = path;
+      dof.value.url = resolveProfileAssetUrl(profile.value!, path);
+      log.info(`景深素材已选择 | ${path}`);
+      showPicker.value = false;
+      pickerPreview.value = "";
+      return;
+    }
+
     const i = selectedIndex.value;
     const prefix = `materials/L${i}/`;
     if (!path.startsWith(prefix)) {
@@ -376,7 +582,8 @@ export function useLayerEditor() {
     pickerPreview.value = "";
   }
 
-  async function persistLayers() {
+  /** 把两种效果各自的配置写回当前 Profile 的 profile.yaml */
+  async function persistProfile() {
     const p = profile.value;
     if (!p) throw new Error("没有激活的 Profile")
     const raw = await invoke<number[]>("profile_file_read", {
@@ -400,6 +607,18 @@ export function useLayerEditor() {
       offsetY: layer.config.offsetY,
       locked: layer.config.locked,
     }));
+
+    const d = dof.value;
+    profileYaml.theme.depthOfField = {
+      image: d.image,
+      blur: d.blur,
+      blurScale: d.blurScale,
+      brightness: d.brightness,
+      contrast: d.contrast,
+      saturate: d.saturate,
+      focus: d.focus.map((r) => ({ x: r.x, y: r.y, rx: r.rx, ry: r.ry, feather: r.feather })),
+    };
+
     await invoke("profile_file_write", {
       profileId: p.id,
       relativePath: "profile.yaml",
@@ -410,7 +629,7 @@ export function useLayerEditor() {
   // ── 保存 ──
   async function save() {
     try {
-      await persistLayers();
+      await persistProfile();
       await emit("deskpet-profile-updated", { profileId: profile.value?.id });
       saved.value = true;
       setTimeout(() => {
@@ -474,6 +693,21 @@ export function useLayerEditor() {
     // computed
     selectedLayer,
     isL2,
+    // 景深
+    effectMode,
+    isDof,
+    dof,
+    dofBgStyle,
+    dofFgStyle,
+    dofUploading,
+    selectedFocus,
+    selectedRegion,
+    onDofPointerDown,
+    onDofPointerMove,
+    onDofPointerUp,
+    clearFocus,
+    openDofPicker,
+    uploadDofImage,
     // events
     onPointerDown,
     onPointerMove,

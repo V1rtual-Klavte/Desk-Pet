@@ -24,9 +24,15 @@ interface UserSettings {
   shortcutMacModifiers: string[];
   shortcutWinModifiers: string[];
   autoPopupOnMessage: boolean;
-  parallaxEnabled: boolean;
+  effectMode: EffectMode;
   parallaxIntensity: number;
 }
+
+/**
+ * 角色展示效果。单字段枚举 —— 灵动图层与景深互斥，
+ * 用两个 bool 会允许同时为真；off 时按静态立绘渲染。
+ */
+export type EffectMode = "off" | "parallax" | "dof"
 
 export interface BuiltinMcpServer {
   enabled: boolean
@@ -119,8 +125,10 @@ interface Config {
   }
   appearance: {
     activeProfile: string
+    /** 角色展示效果，唯一开关；灵动图层与景深互斥 */
+    effectMode?: EffectMode
+    /** 灵动图层的全局强度；逐层素材与参数在 Profile 的 theme.parallax.layers */
     parallax?: {
-      enabled: boolean
       intensity: number
     }
     soundAssignments?: Record<string, string>
@@ -227,7 +235,7 @@ const USER_DEFAULTS: UserSettings = {
   shortcutMacModifiers: cfg.general?.shortcut?.macModifiers || ["Control", "Command"],
   shortcutWinModifiers: cfg.general?.shortcut?.winModifiers || ["Control", "Alt"],
   autoPopupOnMessage: cfg.general?.popup?.autoPopupOnMessage ?? false,
-  parallaxEnabled: cfg.appearance?.parallax?.enabled ?? false,
+  effectMode: cfg.appearance?.effectMode ?? "off",
   parallaxIntensity: cfg.appearance?.parallax?.intensity ?? 1.0,
 };
 
@@ -241,7 +249,7 @@ function loadUserOverrides(): UserSettings {
     shortcutMacModifiers: cfg.general?.shortcut?.macModifiers ?? USER_DEFAULTS.shortcutMacModifiers,
     shortcutWinModifiers: cfg.general?.shortcut?.winModifiers ?? USER_DEFAULTS.shortcutWinModifiers,
     autoPopupOnMessage: cfg.general?.popup?.autoPopupOnMessage ?? USER_DEFAULTS.autoPopupOnMessage,
-    parallaxEnabled: cfg.appearance?.parallax?.enabled ?? USER_DEFAULTS.parallaxEnabled,
+    effectMode: cfg.appearance?.effectMode ?? USER_DEFAULTS.effectMode,
     parallaxIntensity: cfg.appearance?.parallax?.intensity ?? USER_DEFAULTS.parallaxIntensity,
   }
 }
@@ -255,8 +263,8 @@ function saveUserOverrides(s: UserSettings): void {
   cfg.general.shortcut.key = s.shortcutKey
   cfg.general.shortcut.macModifiers = s.shortcutMacModifiers
   cfg.general.shortcut.winModifiers = s.shortcutWinModifiers
+  cfg.appearance.effectMode = s.effectMode
   cfg.appearance.parallax = {
-    enabled: s.parallaxEnabled,
     intensity: s.parallaxIntensity,
   }
   queueConfigSave()
@@ -289,8 +297,8 @@ export const userConfig = {
   set shortcutWinModifiers(v: string[]) { const u = loadUserOverrides(); u.shortcutWinModifiers = v; saveUserOverrides(u); },
   get autoPopupOnMessage() { return getUser().autoPopupOnMessage; },
   set autoPopupOnMessage(v: boolean) { const u = loadUserOverrides(); u.autoPopupOnMessage = v; saveUserOverrides(u); },
-  get parallaxEnabled() { return getUser().parallaxEnabled; },
-  set parallaxEnabled(v: boolean) { const u = loadUserOverrides(); u.parallaxEnabled = v; saveUserOverrides(u); },
+  get effectMode() { return getUser().effectMode; },
+  set effectMode(v: EffectMode) { const u = loadUserOverrides(); u.effectMode = v; saveUserOverrides(u); },
   get parallaxIntensity() { return getUser().parallaxIntensity; },
   set parallaxIntensity(v: number) { const u = loadUserOverrides(); u.parallaxIntensity = v; saveUserOverrides(u); },
   getAll(): UserSettings { return { ...getUser() }; },

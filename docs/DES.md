@@ -448,7 +448,7 @@ playNotificationByBoundary();
 | `general` | `mode.assistant` / `popup` / `shortcut` / `logging` / `desktop` |
 | `ai` | provider / endpoint / apiKey / model / thinking / personality / loop / memory / lock / windowMonitor / safety |
 | `tools` | bash(whitelist) / file(writeEnabled) / mcp(servers+builtin) / skill |
-| `appearance` | `activeProfile`、全局视差开关/强度和音效分配；逐层参数与素材只属于 Profile |
+| `appearance` | `activeProfile`、`effectMode`（off/parallax/dof，互斥）和音效分配；逐层参数、景深参数与素材只属于 Profile |
 
 ### 8.2 Profile 系统 — 主题/角色/音效（自包含闭包）
 
@@ -470,6 +470,20 @@ sugar-pink/                  # Profile 示例（默认提供: sugar-pink / dark-
 └── ui/                      # UI素材（可选，缺失回退默认）
 ```
 
+#### 角色展示效果：灵动图层 / 景深（互斥）
+
+两种效果只能开一个，由运行时 CONFIG 的 `appearance.effectMode`（`off` / `parallax` / `dof`）决定 ——
+用单字段枚举而不是两个开关，否则可能出现两个同时为真的状态。设置页的「角色展示效果」是三选一。
+
+两者的**素材与参数各自独立**，都保存在当前 Profile 的 `profile.yaml`：
+
+| 模式 | Profile 字段 | 素材 |
+|---|---|---|
+| 灵动图层 | `theme.parallax.{intensity, layers}` | 五层，`materials/L0` ~ `L4` |
+| 景深 | `theme.depthOfField` | 单张，`materials/` 下任意图 |
+
+**图层编辑器按当前模式显示不同面板**：灵动图层显示五层列表 + 逐层属性，景深显示单张素材 + 模糊参数 + 焦点区编辑。
+
 #### 灵动图层系统
 
 五层景深视差效果，各层跟随鼠标以不同灵敏度偏移。使用 **直接映射（computed 响应式）**，零惯性指哪打哪，无弹簧/速度/RAF 累积。
@@ -488,9 +502,25 @@ sugar-pink/                  # Profile 示例（默认提供: sugar-pink / dark-
 - **直接映射**: Vue `computed` 直接响应 `globalCursor` ref 变化，无需 RAF 循环
 - **五层始终渲染**: DOM 中 5 个 `div.pl-layer` 始终存在，`display:none` 由 `layerStyles` computed 控制
 - **3D 增强**: CSS `drop-shadow` + `brightness/contrast/saturate` 按深度调整
-- **配置**: `profile.yaml` → `theme.parallax`；设置页 → 全局开关+强度；**图层编辑器弹窗** → 逐层交互式编辑（拖拽位置/属性调整/锁定/隐藏）
-- **持久化**: 图层编辑器编辑当前 Profile，并保存到该 Profile 的 `profile.yaml`；运行时 CONFIG 只保存全局开关和强度
+- **配置**: `profile.yaml` → `theme.parallax`；设置页 → 效果模式与全局强度；**图层编辑器弹窗** → 逐层交互式编辑（拖拽位置/属性调整/锁定/隐藏）
+- **持久化**: 图层编辑器编辑当前 Profile，并保存到该 Profile 的 `profile.yaml`；运行时 CONFIG 只保存效果模式与强度
 - **核心文件**: `src/composables/useParallax.ts`（引擎，导出 `layerDepth()`）+ `StreamView.vue`（五层渲染）+ `src/components/LayerEditor.vue`（编辑器弹窗）
+
+#### 景深系统
+
+单张素材做出「背景虚化、主体清晰」的相机景深效果，不需要预先抠图：
+
+```text
+同一张图渲染两次
+  底层  整图 + blur(blur px) + 背景滤镜，并放大 blurScale 盖住模糊渗出的透明边
+  上层  同一张图，被焦点区 mask 裁出，保持锐利
+```
+
+- **焦点区是椭圆**，用 `radial-gradient` 一行 CSS 做遮罩，`feather` 控制边缘过渡宽度；多个区域就是多层 gradient 叠加
+- **无焦点区**时整张图统一模糊，锐利副本不参与渲染 —— 又是一种玩法
+- **焦点区坐标全部用百分比**（`x`/`y` 是中心，`rx`/`ry` 是半径），换窗口尺寸不错位
+- **编辑器交互**：画布上拖动画出焦点椭圆；在椭圆内拖动可移动它；右侧面板可数值微调中心、半径与羽化
+- **核心文件**: `src/composables/useDepthOfField.ts`（样式与遮罩计算，编辑器与渲染共用，所见即所得）
 - **Rust**: `cursor.rs` → `spawn_cursor_tracker` 后台线程 ~60fps emit；`profile_cmd.rs` → `profile_file_write` 写入当前运行时 Profile，`list_profile_files` 只扫描该目录
 - **素材来源**: 默认 Profile 的种子随包提供，首次启动复制到运行时目录；之后所有素材和配置只读写该运行时目录
 
