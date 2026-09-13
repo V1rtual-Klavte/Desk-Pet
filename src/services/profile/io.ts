@@ -168,6 +168,7 @@ export async function deleteProfile(profileId: string): Promise<ProfileOpResult>
 interface RestoreResult {
   profiles: number
   cards: number
+  skills: number
 }
 
 /**
@@ -180,14 +181,18 @@ export async function restoreDefaultResources(): Promise<ProfileOpResult> {
   try {
     const r = await invoke<RestoreResult>("restore_default_resources")
 
-    // 磁盘上的内置资源已被覆盖：Profile 丢弃缓存，Card 重新读盘。
+    // 磁盘上的内置资源已被覆盖：Profile 丢弃缓存，Card 与 Skill 重新读盘。
     invalidateAllProfileCaches()
     const { initCards } = await import("@/services/personality")
     await initCards()
+    const { refreshSkills } = await import("@/services/skill")
+    await refreshSkills()
 
-    log.info(`默认资源已恢复: Profile ${r.profiles} 个文件, Card ${r.cards} 个文件`)
+    log.info(
+      `默认资源已恢复: Profile ${r.profiles} 个文件, Card ${r.cards} 个文件, Skill ${r.skills} 个文件`,
+    )
     return ok(
-      `已恢复 ${r.profiles} 个 Profile 文件、${r.cards} 个 Card 文件`,
+      `已恢复 ${r.profiles} 个 Profile 文件、${r.cards} 个 Card 文件、${r.skills} 个 Skill 文件`,
       "人格卡需重启后完全生效",
     )
   } catch (e) {

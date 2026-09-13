@@ -29,7 +29,7 @@ pub use profile_cmd::{
     export_profile_zip, list_profile_files, list_profiles, profile_asset_base, profile_clone,
     profile_delete, profile_file_read, profile_file_write,
 };
-pub use resources_cmd::restore_default_resources;
+pub use resources_cmd::{restore_default_resources, skill_delete};
 pub use sim::{close_windows_sim, open_windows_sim};
 pub(crate) use tool_exec::BashPool;
 pub use tool_exec::{

@@ -72,7 +72,7 @@ tools:
       playwright:   { enabled: true,  command: npx, args: ["-y", "@anthropic/mcp-playwright"], description: "🎭 Playwright" }
       git:          { enabled: false, command: npx, args: ["-y", "@anthropic/mcp-git", "/"], description: "📝 Git" }
       github:       { enabled: false, command: npx, args: ["-y", "@anthropic/mcp-github"], env: { GITHUB_PERSONAL_ACCESS_TOKEN: "" }, description: "🐙 GitHub" }
-  skill: { enabled: false, skills: [] }
+  skill: { enabled: false }
 
 appearance:
   activeProfile: "sugar-pink"

@@ -115,7 +115,7 @@ interface Config {
       servers: Record<string, unknown>[]
       builtin: Record<string, BuiltinMcpServer>
     }
-    skill: { enabled: boolean; skills: { raw: string }[] }
+    skill: { enabled: boolean }
   }
   appearance: {
     activeProfile: string
@@ -508,7 +508,6 @@ export const toolsConfig = {
   get mcpServers() { return overrideOr("tools.mcp.servers", cfg.tools?.mcp?.servers || []); },
   get builtinMcpServers() { return overrideOr("tools.mcp.builtin", cfg.tools?.mcp?.builtin || {}) as Record<string, BuiltinMcpServer>; },
   get skillEnabled() { return generalConfig.assistantMode && (overrideOr("tools.skill.enabled", cfg.tools?.skill?.enabled ?? false)); },
-  get skillSkills() { return overrideOr("tools.skill.skills", cfg.tools?.skill?.skills || []) as { raw: string }[]; },
 };
 
 // ══════════════════════════════════════════

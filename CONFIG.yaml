@@ -163,7 +163,6 @@ tools:
 
   skill:
     enabled: false
-    skills: []
 
 # ══════════════════════════════════════════
 # 4. 外观 — Profile 系统

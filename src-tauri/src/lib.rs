@@ -25,7 +25,7 @@ use crate::commands::{
     mcp_spawn, open_devtools, open_windows_sim, pause_monitor, personality_file_delete,
     personality_file_list, personality_file_read, personality_file_write, profile_asset_base,
     profile_clone, profile_delete, profile_file_read, profile_file_write, report_frontend_error,
-    restore_default_resources, resume_monitor, set_log_config, set_monitor_config,
+    restore_default_resources, resume_monitor, set_log_config, set_monitor_config, skill_delete,
     spawn_cursor_tracker, system_info, BashPool, McpPool,
 };
 use crate::monitor::MonitorState;
@@ -449,6 +449,7 @@ pub fn run() {
             list_profiles,
             list_profile_files,
             restore_default_resources,
+            skill_delete,
             get_personality_dir,
             get_cards_dir,
             get_live_test_options,

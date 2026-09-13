@@ -30,7 +30,7 @@ const mcpTestResult = ref("");
 
 // ── Skill ──
 const skillEnabled = ref(toolsConfig.skillEnabled);
-const skillList = ref<{ id: string; name: string; description: string; removable: boolean }[]>([]);
+const skillList = ref<{ id: string; name: string; description: string }[]>([]);
 
 // ── 内置 MCP ──
 async function loadBuiltinMcpConfig() {
@@ -161,18 +161,17 @@ async function testMcpConnection() {
 
 // ── Skill ──
 async function loadSkillConfig() {
-  const { listSkills, isUserSkill } = await import("@/services/skill");
+  const { listSkills } = await import("@/services/skill");
   skillList.value = listSkills().map((s) => ({
     id: s.name,
     name: s.name,
     description: s.description,
-    removable: isUserSkill(s.name),
   }));
 }
 
 async function removeSkill(skillId: string) {
-  const { removeUserSkill } = await import("@/services/skill");
-  await removeUserSkill(skillId);
+  const { deleteSkill } = await import("@/services/skill");
+  await deleteSkill(skillId);
   await loadSkillConfig();
 }
 
@@ -184,8 +183,8 @@ async function uploadSkillMd() {
     const file = input.files?.[0];
     if (!file) return;
     const text = await file.text();
-    const { upsertUserSkill } = await import("@/services/skill");
-    await upsertUserSkill(text);
+    const { upsertSkill } = await import("@/services/skill");
+    await upsertSkill(text);
     await loadSkillConfig();
   };
   input.click();
@@ -275,8 +274,7 @@ defineExpose({
     <div v-for="s in skillList" :key="s.id" class="li-row">
       <span><b>{{ s.name }}</b> {{ s.description }}</span>
       <span>
-        <span v-if="!s.removable" class="s-hint" style="margin:0 8px">内置</span>
-        <button v-else class="btn-s btn-d" @click="removeSkill(s.id)">✕</button>
+        <button class="btn-s btn-d" @click="removeSkill(s.id)">✕</button>
       </span>
     </div>
   </div>

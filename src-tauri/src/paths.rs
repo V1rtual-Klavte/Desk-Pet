@@ -15,6 +15,7 @@ pub struct AppPaths {
     pub sessions: PathBuf,    // {data_root}/sessions/
     pub personality: PathBuf, // {data_root}/personality/
     pub profiles: PathBuf,    // {data_root}/profiles/
+    pub skills: PathBuf,      // {data_root}/skills/
     pub settings: PathBuf,    // {data_root}/settings/
     pub logs: PathBuf,        // {data_root}/logs/ —— 日志落盘
     pub config_file: PathBuf, // 开发 CONFIG-DEV.yaml / 生产 settings/CONFIG.yaml
@@ -23,6 +24,7 @@ pub struct AppPaths {
     // 仅用于首次初始化的随包种子；业务读取和写入始终只使用上面的运行时目录。
     pub seed_personality_cards: PathBuf,
     pub seed_profiles: PathBuf,
+    pub seed_skills: PathBuf,
 }
 
 impl AppPaths {
@@ -63,6 +65,7 @@ impl AppPaths {
             sessions: data_root.join("sessions"),
             personality: data_root.join("personality"),
             profiles: data_root.join("profiles"),
+            skills: data_root.join("skills"),
             settings,
             logs: data_root.join("logs"),
             config_file,
@@ -73,6 +76,7 @@ impl AppPaths {
             },
             seed_personality_cards: resource.join("defaults").join("personality").join("cards"),
             seed_profiles: resource.join("defaults").join("profiles"),
+            seed_skills: resource.join("defaults").join("skills"),
             data_root,
         };
 
@@ -81,6 +85,7 @@ impl AppPaths {
             &paths.sessions,
             &paths.personality,
             &paths.profiles,
+            &paths.skills,
             &paths.settings,
             &paths.logs,
         ] {
@@ -273,31 +278,39 @@ fn seed_default_resources(paths: &AppPaths) -> AppResult<()> {
         return Ok(());
     }
 
-    sync_seed_directory(&paths.seed_profiles, &paths.profiles, "Profile", false)?;
-    sync_seed_directory(
-        &paths.seed_personality_cards,
-        &paths.personality.join("cards"),
-        "Card",
-        false,
-    )?;
+    seed_all(&paths, false)?;
     fs::write(&marker, b"1\n")
         .map_err(|e| AppError::Io(format!("写入默认资源初始化标记失败: {marker:?}: {e}")))?;
     Ok(())
 }
 
-/// 用随包种子覆盖运行时资源，恢复出厂状态，返回 (Profile 文件数, Card 文件数)。
+/// 各类默认资源的种子同步结果，字段是写回的文件数。
+#[derive(serde::Serialize)]
+pub struct SeedSummary {
+    pub profiles: usize,
+    pub cards: usize,
+    pub skills: usize,
+}
+
+/// 用随包种子覆盖运行时资源，恢复出厂状态。
 ///
-/// 与首次初始化不同，这里会覆盖同名文件。用户自建的 Profile/Card 不在种子里，
+/// 与首次初始化不同，这里会覆盖同名文件。用户自建的资源不在种子里，
 /// 因此不受影响；被覆盖的只有随包内置资源。
-pub fn restore_default_resources(paths: &AppPaths) -> AppResult<(usize, usize)> {
-    let profiles = sync_seed_directory(&paths.seed_profiles, &paths.profiles, "Profile", true)?;
-    let cards = sync_seed_directory(
-        &paths.seed_personality_cards,
-        &paths.personality.join("cards"),
-        "Card",
-        true,
-    )?;
-    Ok((profiles, cards))
+pub fn restore_default_resources(paths: &AppPaths) -> AppResult<SeedSummary> {
+    seed_all(paths, true)
+}
+
+fn seed_all(paths: &AppPaths, overwrite: bool) -> AppResult<SeedSummary> {
+    Ok(SeedSummary {
+        profiles: sync_seed_directory(&paths.seed_profiles, &paths.profiles, "Profile", overwrite)?,
+        cards: sync_seed_directory(
+            &paths.seed_personality_cards,
+            &paths.personality.join("cards"),
+            "Card",
+            overwrite,
+        )?,
+        skills: sync_seed_directory(&paths.seed_skills, &paths.skills, "Skill", overwrite)?,
+    })
 }
 
 /// 把种子目录同步到运行时目录，返回复制的文件数。
@@ -365,12 +378,14 @@ mod tests {
             sessions: root.join("sessions"),
             personality: root.join("personality"),
             profiles: root.join("profiles"),
+            skills: root.join("skills"),
             settings: root.join("settings"),
             logs: root.join("logs"),
             config_file: root.join("CONFIG.yaml"),
             runtime_mode: "test",
             seed_personality_cards: seeds.join("personality/cards"),
             seed_profiles: seeds.join("profiles"),
+            seed_skills: seeds.join("skills"),
         }
     }
 
@@ -436,8 +451,8 @@ mod tests {
         fs::create_dir_all(paths.profiles.join("mine")).unwrap();
         fs::write(paths.profiles.join("mine/profile.yaml"), "meta: {}\n").unwrap();
 
-        let (profiles, cards) = restore_default_resources(&paths).unwrap();
-        assert_eq!((profiles, cards), (1, 1));
+        let summary = restore_default_resources(&paths).unwrap();
+        assert_eq!((summary.profiles, summary.cards, summary.skills), (1, 1, 0));
 
         assert_eq!(
             fs::read_to_string(paths.profiles.join("default/profile.yaml")).unwrap(),
