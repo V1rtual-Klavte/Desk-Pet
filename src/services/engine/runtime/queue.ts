@@ -1,4 +1,4 @@
-import type { MessagePriority, QueueAck, QueueAckState, QueueEntry } from "./types"
+import type { MessagePriority, QueueAck, QueueAckState, QueueEntry, QuerySource, MessageTaint } from "./types"
 
 const PRIORITY_ORDER: Record<MessagePriority, number> = { now: 0, next: 1, later: 2 }
 
@@ -10,6 +10,10 @@ export interface EnqueueInput {
   priority: MessagePriority
   deliveryMode: QueueEntry["deliveryMode"]
   enqueuedAt?: number
+  rawText?: string
+  normalizedText?: string
+  querySource?: QuerySource
+  taint?: MessageTaint
 }
 
 /**
@@ -34,6 +38,10 @@ export class RuntimeQueue {
       enqueuedAt: input.enqueuedAt ?? Date.now(),
       ackState: "persisted",
       attempt: 0,
+      rawText: input.rawText,
+      normalizedText: input.normalizedText,
+      querySource: input.querySource,
+      taint: input.taint,
     }
     this.entries.set(entry.queueId, entry)
     return { ...entry }

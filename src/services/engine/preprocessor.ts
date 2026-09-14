@@ -17,6 +17,8 @@ export interface PreProcessResult {
   response?: string
   /** 经过过滤的用户文本（空 = 跳过） */
   text: string
+  rawText: string
+  normalizedText: string
 }
 
 export interface PreProcessState {
@@ -38,7 +40,7 @@ export async function preProcess(rawText: string, state: PreProcessState = {}): 
 
   // ── 空消息 ──
   if (!text) {
-    return { handled: true, text: "" }
+    return { handled: true, text: "", rawText, normalizedText: text }
   }
 
   // ── Slash 命令 ──
@@ -50,29 +52,29 @@ export async function preProcess(rawText: string, state: PreProcessState = {}): 
       try {
         const result = await cmd.execute()
         if (result !== null) {
-          return { handled: true, response: result, text: "" }
+          return { handled: true, response: result, text: "", rawText, normalizedText: text }
         }
         // result === null → 命令已执行但不需要显示回复（如表情切换）
-        return { handled: true, text: "" }
+        return { handled: true, text: "", rawText, normalizedText: text }
       } catch (e) {
         log.error("命令执行失败:", cmdText, e)
-        return { handled: true, response: "命令执行出错…", text: "" }
+        return { handled: true, response: "命令执行出错…", text: "", rawText, normalizedText: text }
       }
     }
 
     // / 开头但未注册的命令 → 透传给 AI（用户可能在问 "/etc 是什么"）
     log.debug("未注册的 slash 输入，透传 AI:", cmdText)
-    return { handled: false, text }
+    return { handled: false, text, rawText, normalizedText: text }
   }
 
   // ── 去重 ──
   const now = Date.now()
   if (text === state.lastUserText && now - (state.lastUserTime ?? 0) < loopConfig.dedupWindowMs) {
     log.debug("重复消息过滤")
-    return { handled: true, text: "" }
+    return { handled: true, text: "", rawText, normalizedText: text }
   }
   state.lastUserText = text
   state.lastUserTime = now
 
-  return { handled: false, text }
+  return { handled: false, text, rawText, normalizedText: text }
 }

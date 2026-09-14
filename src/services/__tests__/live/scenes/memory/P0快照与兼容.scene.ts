@@ -66,6 +66,9 @@ export const 主动消息来源: SceneDef = {
       if (ctx.memory.sessionTurns.some(turn => turn.role === "user" && turn.text.includes("窗口上下文"))) throw new Error("主动消息被写成 user 事实")
       if ((activeProvider?.state.callCount ?? 0) < 1) throw new Error("fake provider 未被调用")
       if (!(activeTrace?.events.some(event => event.kind === "agent_start") ?? false)) throw new Error("主动回合没有 trace")
+      const events = await (await import("@/services/agent/memory")).MemoryService.loadSessionEvents((await import("@/services/agent/memory")).MemoryService.sessionId)
+      const active = events.find(event => event.kind === "active_message")
+      if (!active || active.origin !== "active" || active.payload.querySource !== "active_monitor" || active.payload.eligibleForMemory !== false) throw new Error(`主动消息缺少 active 来源元数据: ${JSON.stringify(active)}`)
       activeTrace?.unsubscribe()
     } },
   ] }],

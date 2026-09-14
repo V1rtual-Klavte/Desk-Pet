@@ -10,7 +10,7 @@ import type {
 } from "./types"
 import type { PiAgentTurnOutput } from "@/services/engine/pi"
 import { runPiAgentTurn } from "@/services/engine/pi"
-import { sendMessage, toolCallHistory as productionToolHistory } from "@/services/agent/runner"
+import { sendMessage, sendActiveMessage, toolCallHistory as productionToolHistory } from "@/services/agent/runner"
 import { getPoolSnapshot } from "@/services/personality/variable-pool"
 import { getSession } from "@/services/engine/session"
 import { getContextMessages } from "@/services/session/store"
@@ -66,6 +66,11 @@ async function executeTurn(userText: string, entry: SceneEntry, isActiveMessage 
       retriesUsed: 0,
       effects: [result.personalityEffect],
     }
+  }
+
+  if (isActiveMessage) {
+    const reply = await sendActiveMessage(userText)
+    return { reply, toolCallHistory: [], retriesUsed: 0, effects: [] }
   }
 
   // Mirror the production message lifecycle around the lower-level Pi runtime.

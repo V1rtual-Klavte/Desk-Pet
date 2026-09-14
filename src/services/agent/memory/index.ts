@@ -19,7 +19,7 @@ import { parseSessionFilename, parseTurnsFromRaw } from "./parsers"
 // Session files
 import {
   setActiveSession, setActiveSessionSync, createSessionFile as _createSessionFile,
-  loadSessionMessages, updateSessionTopic, deleteSessionFile as _deleteSessionFile,
+  loadSessionMessages, loadSessionEvents, updateSessionTopic, deleteSessionFile as _deleteSessionFile,
   deleteSessionAndPointer as _deleteSessionAndPointer,
   recordTurnToSession, appendTurnToSessionFile as _appendTurnToSessionFile,
   appendSessionEventToSession,
@@ -179,6 +179,7 @@ export const MemoryService = {
     await flushProjectSave()
   },
   async loadSessionMessages(sessionId: string) { await ensureInit(); return loadSessionMessages(sessionId) },
+  async loadSessionEvents(sessionId: string) { await ensureInit(); return loadSessionEvents(sessionId) },
   async updateSessionTopic(topic: string): Promise<void> { return updateSessionTopic(topic) },
 
   recordTurn(role: "user" | "assistant", text: string): void {

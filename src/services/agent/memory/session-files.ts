@@ -100,6 +100,17 @@ export async function loadSessionMessages(sessionId: string): Promise<{ role: "u
   } catch { return null }
 }
 
+export async function loadSessionEvents(sessionId: string): Promise<SessionEvent[]> {
+  if (!sessionsDir) return []
+  try {
+    const files = await invoke<string[]>("list_session_files")
+    const match = files.find(f => f.startsWith(sessionId))
+    if (!match) return []
+    return parseSessionEventDocument(await readSessionFile(match), sessionId).events
+      .filter((event): event is SessionEvent => event.schemaVersion === 1)
+  } catch { return [] }
+}
+
 export async function updateSessionTopic(topic: string): Promise<void> {
   if (!sessionMemory || !topic) return
   const oldName = makeSessionFilename(sessionMemory.sessionId, "新会话")

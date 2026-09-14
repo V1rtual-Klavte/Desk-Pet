@@ -229,6 +229,10 @@ export interface QueueEntry {
   enqueuedAt: number
   ackState: QueueAckState
   attempt: number
+  rawText?: string
+  normalizedText?: string
+  querySource?: QuerySource
+  taint?: MessageTaint
 }
 
 export interface QueueAck {

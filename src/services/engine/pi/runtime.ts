@@ -6,6 +6,7 @@ import { contentText } from "@earendil-works/pi-ai"
 import type { AgentMessage, AgentTool, StreamFn } from "@earendil-works/pi-agent-core"
 import type { AssistantMessage, Message as PiMessage, Model } from "@earendil-works/pi-ai"
 import type { Message, ThinkingEffort, ToolCallRequest } from "@/services/agent/types"
+import type { IngressEnvelope, MessageOrigin, MessageTaint, SessionEvent } from "@/services/engine/runtime"
 import { createMessageId, createToolMessage } from "@/services/agent/types"
 import { MemoryService } from "@/services/agent/memory"
 import { buildPrompt } from "@/services/context"
@@ -79,7 +80,19 @@ export function resetPiRuntimeProviderForTest(): void {
 export async function steerActiveTurn(text: string): Promise<boolean> {
   if (!activeTurnAgent) return false
   activeTurnAgent.steer({ role: "user", content: text, timestamp: Date.now() })
-  await persistTurn(activeTurnSessionId ?? "", "user", text)
+  const sessionId = activeTurnSessionId ?? ""
+  await persistTurn(sessionId, "user", text, {
+    schemaVersion: 1,
+    requestId: `steer-${crypto.randomUUID()}`,
+    sessionId,
+    origin: "user",
+    querySource: "chat",
+    rawText: text,
+    normalizedText: text.trim(),
+    receivedAt: Date.now(),
+    priority: "now",
+    taint: "trusted_user",
+  })
   return true
 }
 
@@ -91,6 +104,7 @@ export interface PiAgentTurnInput {
   messageCount: number
   isActiveMessage?: boolean
   isRetry?: boolean
+  ingress?: IngressEnvelope
 }
 
 export interface PiAgentTurnOutput {
@@ -160,7 +174,8 @@ export async function runPiAgentTurn(input: PiAgentTurnInput): Promise<PiAgentTu
   const turnSessionId = input.sessionId || MemoryService.sessionId
   // 主动搭话的 userText 是系统拼的窗口上下文，不是用户输入。落盘会让会话主题
   // 提取拿它当首条用户消息，重载后还会显示成用户气泡并进入长期记忆。
-  if (!isActiveMessage) await persistTurn(turnSessionId, "user", userText)
+  if (!isActiveMessage) await persistTurn(turnSessionId, "user", userText, input.ingress)
+  else await persistRuntimeEvent(turnSessionId, "active", userText, input.ingress)
 
   refreshVariablePool()
   updateInteractionVar("unansweredCount", unansweredCount)
@@ -272,12 +287,44 @@ export async function runPiAgentTurn(input: PiAgentTurnInput): Promise<PiAgentTu
   return { reply: processed.text, toolCallHistory, retriesUsed, effects, runtimeData: processed.runtimeData }
 }
 
-async function persistTurn(sessionId: string, role: "user" | "assistant", text: string): Promise<void> {
+async function persistTurn(sessionId: string, role: "user" | "assistant", text: string, ingress?: IngressEnvelope): Promise<void> {
   if (!sessionId || MemoryService.sessionId === sessionId) {
     MemoryService.recordTurn(role, text)
-    return
+  } else {
+    await MemoryService.recordTurnToSession(sessionId, role, text)
   }
-  await MemoryService.recordTurnToSession(sessionId, role, text)
+  await persistRuntimeEvent(sessionId, role, text, ingress)
+}
+
+async function persistRuntimeEvent(sessionId: string, origin: MessageOrigin, text: string, ingress?: IngressEnvelope): Promise<void> {
+  if (!sessionId) return
+  const isActive = origin === "active"
+  const event: SessionEvent = {
+    schemaVersion: 1,
+    eventId: `${origin}-${ingress?.requestId ?? crypto.randomUUID()}-${Date.now()}`,
+    sessionId,
+    kind: isActive ? "active_message" : origin === "assistant" ? "assistant_message" : "user_message",
+    origin,
+    payload: {
+      text,
+      rawText: ingress?.rawText ?? text,
+      normalizedText: ingress?.normalizedText ?? text.trim(),
+      visibleToUser: !isActive,
+      persisted: true,
+      eligibleForTranscript: !isActive,
+      eligibleForMemory: origin === "user" && !isActive,
+      isMeta: isActive,
+      taint: ingress?.taint ?? (isActive ? "derived" : "trusted_user") as MessageTaint,
+      ...(ingress ? { querySource: ingress.querySource, priority: ingress.priority, requestId: ingress.requestId } : {}),
+    },
+    createdAt: Date.now(),
+    idempotencyKey: `${origin}:${ingress?.requestId ?? text}:${text}`,
+  }
+  const written = await MemoryService.appendSessionEventToSession(sessionId, event, text)
+  if (!written) {
+    await MemoryService.createSessionFile(sessionId)
+    await MemoryService.appendSessionEventToSession(sessionId, event, text)
+  }
 }
 
 /** Used by planning and fork/team agents. It shares the same Pi runtime, not a second loop. */

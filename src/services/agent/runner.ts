@@ -20,7 +20,7 @@ import { createLogger } from "@/services/logger"
 import { formatError, summarizeError } from "@/services/error"
 import { reportError } from "@/services/error"
 import { RuntimeQueue } from "@/services/engine/runtime"
-import type { MessagePriority, QueueAck, QueueEntry } from "@/services/engine/runtime"
+import type { IngressEnvelope, MessagePriority, QueueAck, QueueEntry } from "@/services/engine/runtime"
 import { MemoryService, queueAckEvent, queueEntryEvent, queueRecoveryEvent } from "@/services/agent/memory"
 
 const log = createLogger("Agent")
@@ -113,6 +113,39 @@ export interface SendMessageOptions {
   priority?: MessagePriority
 }
 
+function makeIngressEnvelope(rawText: string, normalizedText: string, sessionId: string, requestId: string, priority: MessagePriority): IngressEnvelope {
+  return {
+    schemaVersion: 1,
+    requestId,
+    sessionId,
+    origin: "user",
+    querySource: "chat",
+    rawText,
+    normalizedText,
+    receivedAt: Date.now(),
+    priority,
+    taint: "trusted_user",
+  }
+}
+
+async function enqueuePendingMessage(envelope: IngressEnvelope): Promise<QueueEntry> {
+  const entry = runtimeQueue.enqueue({
+    queueId: makeIngressId("queue"),
+    sessionId: envelope.sessionId,
+    turnId: makeIngressId("turn"),
+    requestId: envelope.requestId,
+    priority: envelope.priority,
+    deliveryMode: "prompt",
+    rawText: envelope.rawText,
+    normalizedText: envelope.normalizedText,
+    querySource: envelope.querySource,
+    taint: envelope.taint,
+  })
+  await persistQueueEntry(entry)
+  pushUserMessage(envelope.normalizedText)
+  return entry
+}
+
 export async function sendMessage(text: string, options: SendMessageOptions = {}): Promise<{
   reply: string
   toolCallsMade: number
@@ -125,6 +158,8 @@ export async function sendMessage(text: string, options: SendMessageOptions = {}
   // 并发锁：生成中优先尝试插话（Pi steering），没有可插话的回合才拒绝。
   // slash 命令例外 —— 切换人格、清空会话这类副作用不该在回合中途发生。
   if (isAIGenerating()) {
+    const requestId = options.requestId ?? makeIngressId("request")
+    const priority = options.priority ?? "next"
     if (!text.startsWith("/") && await steerActiveTurn(text)) {
       log.info("AI 生成中，用户消息已转为插话")
       pushUserMessage(text)
@@ -134,7 +169,17 @@ export async function sendMessage(text: string, options: SendMessageOptions = {}
         personalityEffect: { expression: "idle", soundEvent: null },
       }
     }
-    log.warn("AI 生成中，拒绝用户消息并发请求")
+    const preResult = await preProcess(text, preprocessStates.get(originSessionId) ?? {})
+    if (!preResult.handled) {
+      await enqueuePendingMessage(makeIngressEnvelope(text, preResult.normalizedText, originSessionId, requestId, priority))
+      log.info("AI 生成中，用户消息已持久化到队列:", requestId)
+      return {
+        reply: "",
+        toolCallsMade: 0,
+        personalityEffect: { expression: "idle", soundEvent: null },
+      }
+    }
+    log.warn("AI 生成中，忽略已处理的输入")
     return {
       reply: "（糖糖正在想事情，等一下再发哦～）",
       toolCallsMade: 0,
@@ -172,6 +217,7 @@ export async function sendMessage(text: string, options: SendMessageOptions = {}
     }
 
     const requestId = options.requestId ?? makeIngressId("request")
+    const ingress = makeIngressEnvelope(preResult.rawText, preResult.normalizedText, originSessionId, requestId, options.priority ?? "now")
     const previous = runtimeQueue.snapshot().find(entry => entry.requestId === requestId)
     if (previous) {
       log.info("重复 requestId，跳过重复投递:", requestId)
@@ -188,6 +234,10 @@ export async function sendMessage(text: string, options: SendMessageOptions = {}
       requestId,
       priority: options.priority ?? "now",
       deliveryMode: "prompt",
+      rawText: preResult.rawText,
+      normalizedText: preResult.normalizedText,
+      querySource: "chat",
+      taint: "trusted_user",
     })
     await persistQueueEntry(activeQueueEntry)
     const reserved = runtimeQueue.reserve(originSessionId)
@@ -213,6 +263,7 @@ export async function sendMessage(text: string, options: SendMessageOptions = {}
       messageCount: getContextMessages().length,
       isActiveMessage: false,
       isRetry: false,
+      ingress,
     })
 
     // ── Step 5: 提取人格效果（Pi Runtime 已通过 generateReply 处理）──
@@ -282,12 +333,28 @@ export async function sendMessage(text: string, options: SendMessageOptions = {}
 // ── 为主动搭话提供便捷入口 ──
 
 export async function sendActiveMessage(userText: string): Promise<string> {
+  const sessionId = getActiveSessionId() || MemoryService.sessionId || `session-${new Date().toISOString().replace(/[-:TZ.]/g, "").slice(0, 15)}`
+  if (!MemoryService.sessionId) MemoryService.setActiveSessionSync(sessionId)
+  const ingress: IngressEnvelope = {
+    schemaVersion: 1,
+    requestId: makeIngressId("active"),
+    sessionId,
+    origin: "active",
+    querySource: "active_monitor",
+    rawText: userText,
+    normalizedText: userText.trim(),
+    receivedAt: Date.now(),
+    priority: "later",
+    taint: "derived",
+  }
   const result = await runPiAgentTurn({
+    sessionId,
     userText,
     chatMessages: getContextMessages(),
     unansweredCount: unansweredCount.value,
     messageCount: getContextMessages().length,
     isActiveMessage: true,
+    ingress,
   })
   return result.reply
 }
