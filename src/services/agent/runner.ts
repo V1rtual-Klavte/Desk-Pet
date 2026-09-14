@@ -49,7 +49,7 @@ export async function recoverRuntimeQueue(): Promise<{ requeued: number; quarant
       }
       runtimeQueue.restore({ ...record.entry, ackState: state })
       requeued++
-    } else if (record.state === "reserved" || record.state === "dispatched") {
+    } else if (["reserved", "dispatched", "running", "waiting_tool", "interrupted", "unknown_side_effect"].includes(record.state)) {
       await MemoryService.appendSessionEventToSession(
         record.entry.sessionId,
         queueRecoveryEvent(record.entry, record.state),
