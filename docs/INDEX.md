@@ -17,6 +17,7 @@
 - [Pi Agent 内核迁移设计](plans/active/pi-agent-迁移设计.md)：待 PoC 决策的 Pi Core 迁移目标、边界、资源验证和 Coding 能力路线。
 - [Pi Agent 能力替换与运行链路设计](plans/active/pi-agent-能力替换与运行链路设计.md)：队列、Pi AI Provider、工具协议、UI 事件和上下文压缩的下一阶段方案。
 - [记忆系统重构前置准备](plans/active/记忆系统重构前置准备.md)：在记忆系统实施前，先稳定会话队列、持久化、Prompt 分层、压缩、缓存和恢复协议。
+- [记忆系统重构执行手册](plans/active/记忆系统重构执行手册.md)：按 P0-P6 推进的任务、门禁、检查点和新会话接力入口。
 - `plans/active/`：尚未实施的计划。计划完成后移入历史目录。
 - `history/design/`：过去的设计与 PRD，保留当时的取舍和细节。
 - `history/implementation/`：已完成的实施计划与修复记录，正文不再按当前代码维护。
