@@ -77,6 +77,8 @@ export {
   subscribeRuntimeTrace,
 } from "./runtime"
 export type { RuntimeTraceContext, RuntimeTraceEvent, RuntimeTraceKind, RuntimeTraceListener } from "./runtime"
+export { RuntimeQueue } from "./runtime"
+export type { EnqueueInput } from "./runtime"
 
 // ── Pi Agent Core Runtime ──
 export { runPiAgentTurn, runPiSubAgent, steerActiveTurn } from "./pi"

@@ -46,3 +46,5 @@ export {
   subscribeRuntimeTrace,
 } from "./trace"
 export type { RuntimeTraceContext, RuntimeTraceEvent, RuntimeTraceKind, RuntimeTraceListener } from "./trace"
+export { RuntimeQueue } from "./queue"
+export type { EnqueueInput } from "./queue"
