@@ -686,6 +686,7 @@ src/services/
 │   ├── planner.ts         # Plan 编排 — 复杂度检测 + LLM 拆解 + 子代理逐步执行 ✅ 已实现
 │   ├── parser.ts          # AI输出解析 (function_call/纯文本/思考)
 │   ├── session.ts         # 会话状态机 (WAITING→PRE→GENERATING→EXECUTING)
+│   ├── runtime/           # 运行时协议类型、PromptSnapshot 与脱敏 hash（逐步接入中）
 │   └── slash/             # ★ Slash 命令系统
 │       ├── index.ts / types.ts / registry.ts
 │       └── commands/      # help/clear/memory/expression/win

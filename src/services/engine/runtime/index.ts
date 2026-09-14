@@ -30,3 +30,12 @@ export type {
   SessionTurnRecord,
   TurnState,
 } from "./types"
+
+export {
+  createPromptSnapshot,
+  redactText,
+  serializePromptSnapshot,
+  sha256Text,
+  stableSerialize,
+} from "./snapshot"
+export type { PromptSnapshotInput, RedactedText } from "./snapshot"

@@ -63,6 +63,14 @@ export type {
   SessionTurnRecord,
   TurnState,
 } from "./runtime"
+export {
+  createPromptSnapshot,
+  redactText,
+  serializePromptSnapshot,
+  sha256Text,
+  stableSerialize,
+} from "./runtime"
+export type { PromptSnapshotInput, RedactedText } from "./runtime"
 
 // ── Pi Agent Core Runtime ──
 export { runPiAgentTurn, runPiSubAgent, steerActiveTurn } from "./pi"

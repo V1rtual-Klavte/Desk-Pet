@@ -107,6 +107,7 @@ src/
 ├── composables/                # useParallax、useLayerEditor 组合式逻辑
 ├── services/
 │   ├── engine/                 # Pi Runtime、输入预处理、Plan、Slash、会话状态与上下文压缩工具
+│   │   └── runtime/            # 运行时协议类型、PromptSnapshot 与脱敏 hash
 │   ├── personality/            # Card、人格注册、阶段文案、变量状态、情绪映射
 │   ├── reply/                  # RUNTIME_DATA 解析与回复后处理
 │   ├── agent/                  # Provider、Runner、子代理、记忆与主动搭话
