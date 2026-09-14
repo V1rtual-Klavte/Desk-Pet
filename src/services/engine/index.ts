@@ -31,6 +31,39 @@ export type { PlanStep, PlanResult, ComplexityResult, PlanExecutionResult } from
 // ── Plan 确认桥接 ──
 export { resolvePlanConfirm, resolvePlanStepDecision } from "./plan-confirmation"
 
+// ── Runtime protocol vocabulary ──
+export type {
+  ContextBlock,
+  ContextLayer,
+  DeliveryMode,
+  IngressEnvelope,
+  MessageMeta,
+  MessageOrigin,
+  MessagePriority,
+  MessageTaint,
+  PlanEffectClass,
+  PlanRecord,
+  PlanState,
+  PlanStepRecord,
+  PlanStepState,
+  PromptAgentMessage,
+  PromptCacheInfo,
+  PromptLlmMessage,
+  PromptSnapshot,
+  PromptToolSchema,
+  PromptTransform,
+  PromptTransformReason,
+  QuerySource,
+  QueueAck,
+  QueueAckState,
+  QueueEntry,
+  SessionEvent,
+  SessionEventKind,
+  SessionRole,
+  SessionTurnRecord,
+  TurnState,
+} from "./runtime"
+
 // ── Pi Agent Core Runtime ──
 export { runPiAgentTurn, runPiSubAgent, steerActiveTurn } from "./pi"
 export type { PiAgentTurnOutput, PiSubAgentOutput } from "./pi"
