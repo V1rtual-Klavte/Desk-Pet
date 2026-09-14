@@ -73,8 +73,7 @@ export async function readSessionFile(filename: string): Promise<string> {
 export async function writeSessionFile(filename: string, content: string): Promise<boolean> {
   try {
     if (!sessionsDir) { log.warn("writeSessionFile: sessionsDir 未设置"); return false }
-    const path = await runtimePath("sessions", filename)
-    await invoke("file_write", { path, content })
+    await invoke("session_file_write_atomic", { filename, content })
     log.debug("Session 文件已写入:", filename, `(${content.length} bytes)`)
     return true
   } catch (e) { log.error(`写入 sessions/${filename} 失败: ${sessionsDir}`, e instanceof Error ? e : undefined); return false }

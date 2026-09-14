@@ -19,7 +19,7 @@ pub(crate) use mcp_bridge::McpPool;
 pub use mcp_bridge::{mcp_kill, mcp_send, mcp_spawn};
 pub use memory_cmd::{
     delete_session_file, file_delete, get_memory_file, get_session_file, init_memory_files,
-    list_session_files,
+    list_session_files, session_file_write_atomic,
 };
 pub use monitor_ctl::{pause_monitor, resume_monitor, set_monitor_config};
 pub use personality_fs_cmd::{

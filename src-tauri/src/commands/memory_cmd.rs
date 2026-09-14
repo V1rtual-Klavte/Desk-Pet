@@ -19,6 +19,7 @@ use crate::paths::AppPaths;
 use crate::rust_debug;
 use std::fs;
 use std::path::PathBuf;
+use std::time::{SystemTime, UNIX_EPOCH};
 use tauri::command;
 
 /// 获取 memory/ 目录下指定文件的完整路径。
@@ -71,6 +72,33 @@ pub fn list_session_files(paths: tauri::State<AppPaths>) -> AppResult<Vec<String
     // 按文件名倒序（新的在前）
     files.sort_by(|a, b| b.cmp(a));
     Ok(files)
+}
+
+/// 会话正文专用原子写入：临时文件与目标位于同一目录，rename 后才对读者可见。
+#[command]
+pub fn session_file_write_atomic(
+    paths: tauri::State<AppPaths>,
+    filename: String,
+    content: String,
+) -> AppResult<()> {
+    let safe_name = PathBuf::from(&filename)
+        .file_name()
+        .map(|name| name.to_string_lossy().to_string())
+        .ok_or_else(|| format!("无效会话文件名: {filename}"))?;
+    if safe_name != filename || !safe_name.ends_with(".md") || safe_name.contains("..") {
+        return err(format!("非法会话文件名: {filename}"));
+    }
+    let target = paths.sessions.join(&safe_name);
+    AppPaths::validate_new_file_path(&target)?;
+    fs::create_dir_all(&paths.sessions).map_err(|e| AppError::Io(format!("创建 sessions 目录失败: {e}")))?;
+    let stamp = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_nanos();
+    let temp = paths.sessions.join(format!(".{safe_name}.{stamp}.tmp"));
+    fs::write(&temp, content).map_err(|e| AppError::Io(format!("写入会话临时文件失败: {e}")))?;
+    if let Err(error) = fs::rename(&temp, &target) {
+        let _ = fs::remove_file(&temp);
+        return Err(AppError::Io(format!("提交会话文件失败: {error}")));
+    }
+    Ok(())
 }
 
 /// ★ 删除 sessions/ 目录下指定的文件
