@@ -26,15 +26,18 @@ export function getSessionsDir(): string {
 }
 
 // ── 文件写入串行化 ──
-let writeTail: Promise<void> = Promise.resolve()
+const writeTails = new Map<string, Promise<void>>()
 
 /**
  * Serialize read-modify-write operations. The tail always recovers so one
  * failed write cannot deadlock later session or memory writes.
  */
-export function withLock<T>(fn: () => Promise<T>): Promise<T> {
-  const run = writeTail.then(fn, fn)
-  writeTail = run.then(() => undefined, () => undefined)
+export function withLock<T>(keyOrFn: string | (() => Promise<T>), maybeFn?: () => Promise<T>): Promise<T> {
+  const key = typeof keyOrFn === "string" ? keyOrFn : "global"
+  const fn = typeof keyOrFn === "string" ? maybeFn! : keyOrFn
+  const tail = writeTails.get(key) ?? Promise.resolve()
+  const run = tail.then(fn, fn)
+  writeTails.set(key, run.then(() => undefined, () => undefined))
   return run
 }
 

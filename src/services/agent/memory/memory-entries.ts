@@ -34,20 +34,20 @@ let memorySaveTimer: ReturnType<typeof setTimeout> | null = null
 export function scheduleMemorySave(): void {
   if (memorySaveTimer) clearTimeout(memorySaveTimer)
   memorySaveTimer = setTimeout(async () => {
-    await withLock(async () => {
+    await withLock("memory", async () => {
       await writeMemoryFile("MEMORY.md", serializeMEMORYmd(entries))
     })
   }, 200)
 }
 
 export async function flushMemory(): Promise<void> {
-  await withLock(async () => {
+  await withLock("memory", async () => {
     await writeMemoryFile("MEMORY.md", serializeMEMORYmd(entries))
   })
 }
 
 export async function flushProjectSave(): Promise<void> {
-  await withLock(async () => {
+  await withLock("memory", async () => {
     await writeMemoryFile("Project.md", serializeProjectMd(projectEntries))
   })
 }

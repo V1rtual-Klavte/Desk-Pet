@@ -73,6 +73,7 @@ export async function createSessionFile(sessionId: string): Promise<void> {
   const filename = makeSessionFilename(sessionId, "新会话")
   const content = [
     `# ${sessionId}-新会话`, `> 开始: ${localTime(new Date())}`, `> 轮数: 0`,
+    "> 版本: 0",
     "", "## 摘要", "<!-- 归档时填充 -->", "", "## 对话记录 (0 轮)", "",
   ].join("\n")
   const ok = await writeSessionFile(filename, content)
@@ -180,7 +181,7 @@ export function recordTurn(role: "user" | "assistant", text: string, checkConsol
 
 export async function recordTurnToSession(sessionId: string, role: "user" | "assistant", text: string): Promise<void> {
   if (!sessionsDir) { log.warn("recordTurnToSession: sessionsDir 未设置"); return }
-  await withLock(async () => {
+  await withLock(`session:${sessionId}`, async () => {
     try {
     const files = await invoke<string[]>("list_session_files")
     const match = files.find(f => f.startsWith(sessionId))
@@ -191,17 +192,54 @@ export async function recordTurnToSession(sessionId: string, role: "user" | "ass
     current = current
       .replace(/^> 轮数: \d+/m, `> 轮数: ${turnMatches.length + 1}`)
       .replace(/^## 对话记录 \(\d+ 轮\)/m, `## 对话记录 (${turnMatches.length + 1} 轮)`)
-    current = current.trimEnd() + "\n" + serializeSessionTurn({ role, text, timestamp: Date.now() }).join("\n") + "\n"
+    current = writeSessionVersion(current.trimEnd() + "\n" + serializeSessionTurn({ role, text, timestamp: Date.now() }).join("\n") + "\n", readSessionVersion(current) + 1)
     await writeSessionFile(match, current)
     log.debug(`recordTurnToSession: ${role} → ${match} (${turnMatches.length + 1} 轮)`)
     } catch (e) { log.warn("recordTurnToSession 失败", e instanceof Error ? e : undefined) }
   })
 }
 
+export interface SessionWriteVersion { version: number }
+
+function readSessionVersion(raw: string): number {
+  const match = raw.match(/^> 版本: (\d+)/m)
+  return match ? Number(match[1]) : 0
+}
+
+function writeSessionVersion(raw: string, version: number): string {
+  if (/^> 版本: \d+/m.test(raw)) return raw.replace(/^> 版本: \d+/m, `> 版本: ${version}`)
+  return raw.replace(/^(> 开始:.*)$/m, `$1\n> 版本: ${version}`)
+}
+
+export async function readSessionWriteVersion(sessionId: string): Promise<SessionWriteVersion | null> {
+  if (!sessionsDir) return null
+  const files = await invoke<string[]>("list_session_files")
+  const match = files.find(f => f.startsWith(sessionId))
+  if (!match) return null
+  return { version: readSessionVersion(await readSessionFile(match)) }
+}
+
+export async function appendSessionEventWithVersion(sessionId: string, event: SessionEvent, expectedVersion: number, previewText?: string): Promise<SessionWriteVersion> {
+  if (!sessionsDir) throw new Error("sessionsDir 未设置")
+  return withLock(`session:${sessionId}`, async () => {
+    const files = await invoke<string[]>("list_session_files")
+    const match = files.find(f => f.startsWith(sessionId))
+    if (!match) throw new Error(`未找到会话文件: ${sessionId}`)
+    const current = await readSessionFile(match)
+    const currentVersion = readSessionVersion(current)
+    if (currentVersion !== expectedVersion) throw new Error(`session version conflict: expected=${expectedVersion} actual=${currentVersion}`)
+    const parsed = parseSessionEventDocument(current, sessionId)
+    if (parsed.events.some(item => item.eventId === event.eventId || item.idempotencyKey === event.idempotencyKey)) return { version: currentVersion }
+    const updated = writeSessionVersion(current.trimEnd() + "\n" + serializeSessionEvent(event, previewText).join("\n") + "\n", currentVersion + 1)
+    if (!await writeSessionFile(match, updated)) throw new Error(`session 写入失败: ${match}`)
+    return { version: currentVersion + 1 }
+  })
+}
+
 /** Append a protocol event without affecting the human-visible turn count. */
 export async function appendSessionEventToSession(sessionId: string, event: SessionEvent, previewText?: string): Promise<boolean> {
   if (!sessionsDir) { log.warn("appendSessionEventToSession: sessionsDir 未设置"); return false }
-  return withLock(async () => {
+  return withLock(`session:${sessionId}`, async () => {
     try {
       const files = await invoke<string[]>("list_session_files")
       const match = files.find(f => f.startsWith(sessionId))
@@ -211,7 +249,7 @@ export async function appendSessionEventToSession(sessionId: string, event: Sess
       const parsed = parseSessionEventDocument(current, sessionId)
       if (parsed.events.some(item => item.eventId === event.eventId || item.idempotencyKey === event.idempotencyKey)) return true
       const lines = serializeSessionEvent(event, previewText).join("\n")
-      const updated = current.trimEnd() + "\n" + lines + "\n"
+      const updated = writeSessionVersion(current.trimEnd() + "\n" + lines + "\n", readSessionVersion(current) + 1)
       return await writeSessionFile(match, updated)
     } catch (e) {
       log.warn("appendSessionEventToSession 失败", e instanceof Error ? e : undefined)
@@ -249,12 +287,14 @@ export async function listQueueRecoveryRecords(): Promise<QueueRecoveryRecord[]>
             || (candidate.priority !== "now" && candidate.priority !== "next" && candidate.priority !== "later")
             || (candidate.deliveryMode !== "prompt" && candidate.deliveryMode !== "steer" && candidate.deliveryMode !== "followup")
             || typeof candidate.attempt !== "number" || typeof candidate.ackState !== "string") continue
+          if (!["persisted", "reserved", "dispatched", "running", "waiting_tool", "interrupted", "unknown_side_effect", "accepted", "failed", "requeued", "dead_letter"].includes(candidate.ackState)) continue
           records.set(candidate.queueId, { entry: { ...candidate } as QueueEntry, state: candidate.ackState })
           continue
         }
         if (typeof payload.queueId !== "string" || typeof payload.state !== "string") continue
         const current = records.get(payload.queueId)
         if (!current) continue
+        if (!["persisted", "reserved", "dispatched", "running", "waiting_tool", "interrupted", "unknown_side_effect", "accepted", "failed", "requeued", "dead_letter"].includes(payload.state)) continue
         const state = payload.state as QueueAckState
         current.state = state
         if (typeof payload.errorCode === "string") current.errorCode = payload.errorCode
@@ -270,7 +310,7 @@ export async function listQueueRecoveryRecords(): Promise<QueueRecoveryRecord[]>
 export async function appendTurnToSessionFile(role: "user" | "assistant", text: string, targetSession = sessionMemory): Promise<void> {
   if (!targetSession) { log.warn("appendTurnToSessionFile: sessionMemory 为空"); return }
   if (!sessionsDir) { log.warn("appendTurnToSessionFile: sessionsDir 未设置"); return }
-  await withLock(async () => {
+  await withLock(`session:${targetSession.sessionId}`, async () => {
     let filename = ""
   try {
     const files = await invoke<string[]>("list_session_files")
@@ -291,8 +331,9 @@ export async function appendTurnToSessionFile(role: "user" | "assistant", text: 
       const topic = targetSession.turns.length > 0
         ? targetSession.turns.find(t => t.role === "user")?.text.substring(0, 20)?.replace(/[\n\r/\\:*?"<>|]/g, "").trim() || "新会话"
         : "新会话"
-      current = [
-        `# ${targetSession.sessionId}-${topic}`, `> 开始: ${localTime(targetSession.startedAt)}`, `> 轮数: 1`,
+        current = [
+          `# ${targetSession.sessionId}-${topic}`, `> 开始: ${localTime(targetSession.startedAt)}`, `> 轮数: 1`,
+          "> 版本: 1",
         `> Token累计: 0/0 | 上下文: 0%`, "", "## 摘要", "<!-- 归档时填充 -->", "", "## 对话记录 (1 轮)", "", turnBlock, "",
       ].join("\n")
     } else {
@@ -313,7 +354,7 @@ export async function appendTurnToSessionFile(role: "user" | "assistant", text: 
         const newFilename = makeSessionFilename(targetSession.sessionId, newTopic)
         if (newFilename !== filename) writeFilename = newFilename
       }
-      current = current.trimEnd() + "\n" + turnBlock + "\n"
+      current = writeSessionVersion(current.trimEnd() + "\n" + turnBlock + "\n", readSessionVersion(current) + 1)
     }
     await writeSessionFile(writeFilename, current)
     if (writeFilename !== filename) {

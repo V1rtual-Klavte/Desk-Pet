@@ -197,6 +197,10 @@ export const MemoryService = {
     await ensureInit()
     return appendSessionEventToSession(sessionId, event, previewText)
   },
+  async readSessionWriteVersion(sessionId: string) { await ensureInit(); return (await import("./session-files")).readSessionWriteVersion(sessionId) },
+  async appendSessionEventWithVersion(sessionId: string, event: import("@/services/engine/runtime").SessionEvent, expectedVersion: number, previewText?: string) {
+    await ensureInit(); return (await import("./session-files")).appendSessionEventWithVersion(sessionId, event, expectedVersion, previewText)
+  },
   async listQueueRecoveryRecords() { await ensureInit(); return listQueueRecoveryRecords() },
   async flushSessionWrites(): Promise<void> { await flushSessionWrites() },
 
