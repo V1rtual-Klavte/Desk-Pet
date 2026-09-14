@@ -27,9 +27,10 @@ const sceneModules = import.meta.glob<{ default?: SceneDef }>("./scenes/**/*.sce
 const contractModules = import.meta.glob<Record<string, ModuleContract>>("./contracts/*.contract.ts", { eager: true })
 
 function collectScenes(): SceneDef[] {
-  return Object.values(sceneModules)
-    .map(module => module.default ?? Object.values(module).find(value => value && typeof value === "object" && "meta" in value) as SceneDef)
-    .filter((scene): scene is SceneDef => Boolean(scene?.meta))
+  const scenes = Object.values(sceneModules)
+    .flatMap(module => Object.values(module))
+    .filter((scene): scene is SceneDef => Boolean(scene && typeof scene === "object" && "meta" in scene && scene.meta))
+  return [...new Map(scenes.map(scene => [scene.meta.caseId, scene])).values()]
 }
 
 function collectContracts(): ModuleContract[] {
