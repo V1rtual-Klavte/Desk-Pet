@@ -44,7 +44,7 @@
 
 **聊天面板与角色区域之间**有可拖动的竖线分割，拖动位置写入运行时 CONFIG，无需在设置页配置。
 
-每个会话的对话轮次**实时写入** `sessions/session-YYYYMMDD-HHmmss-主题.md`，首次用户消息后自动提取主题并重命名文件。**累计 token 消耗、上下文占比同步持久化到 .md 元数据**，重启后自动恢复。随时可查看历史记录。
+每个会话的对话轮次**实时写入** `sessions/session-YYYYMMDD-HHmmss-主题.md`，通过专用 `session_file_write_atomic` 命令以同目录临时文件 + rename 提交；首次用户消息后自动提取主题并重命名文件。**累计 token 消耗、上下文占比同步持久化到 .md 元数据**，重启后自动恢复。随时可查看历史记录。
 
 #### Agent Loop 机制
 

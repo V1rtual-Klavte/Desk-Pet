@@ -148,7 +148,7 @@ Desk-Pet/
        ├─ emotion → expression / sound
        ├─ 合法 Card 变量 → batchWriteVars → savePoolToDisk
        └─ trim / 截断 → ReplyResult
-  → 写入 sessions/*.md（完整正文）与上下文摘要；sessions/index.json 仅保存 UI 状态
+  → 通过 session_file_write_atomic 原子写入 sessions/*.md（完整正文）与上下文摘要；sessions/index.json 仅保存 UI 状态
   → ChatPanel / StreamView 展示
 ```
 

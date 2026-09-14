@@ -55,6 +55,7 @@ export type {
   SessionEventParseIssueCode,
 } from "./events"
 export { parseSessionEventDocument, parseSessionEventsFromRaw, serializeSessionEvent } from "./events"
+export { queueAckEvent, queueEntryEvent } from "./queue-events"
 
 const log = createLogger("Memory")
 

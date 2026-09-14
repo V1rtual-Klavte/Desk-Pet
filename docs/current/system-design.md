@@ -45,7 +45,7 @@ LLM 可见回复文本 + <RUNTIME_DATA>
 
 当前主 Agent Runtime、Planner 和 Live Test 契约都以 RUNTIME_DATA 为准；旧变量工具只在历史归档中出现，不代表当前接口仍有效。当前记忆压缩与长期召回仍保持既有边界，后续会单独按 Claude Code 风格的文件记忆协议重构。
 
-运行时基础重构的目标协议、Pi Agent Core hook 边界、队列/Plan 持久化、PromptSnapshot、恢复、安全和 Memory Eval 见[记忆系统重构前置准备](../plans/active/记忆系统重构前置准备.md)。当前已落地 `src/services/engine/runtime/` 协议类型、事件兼容适配、快照脱敏纯函数和只读 trace 总线；`src/services/engine/pi/runtime.ts` 已接入 Agent 生命周期、工具事件及 provider 请求/响应元数据观测，观测失败不会阻塞回复，正文仍不落盘。队列、Plan 持久化、恢复和长期召回仍未接入；该计划中的接口和阶段门禁不表示这些能力已经全部实现。
+运行时基础重构的目标协议、Pi Agent Core hook 边界、队列/Plan 持久化、PromptSnapshot、恢复、安全和 Memory Eval 见[记忆系统重构前置准备](../plans/active/记忆系统重构前置准备.md)。当前已落地 `src/services/engine/runtime/` 协议类型、事件兼容适配、快照脱敏纯函数、只读 trace 总线、RuntimeQueue 语义内核和 queue event adapter；`src/services/engine/pi/runtime.ts` 已接入 Agent 生命周期、工具事件及 provider 请求/响应元数据观测，观测失败不会阻塞回复，正文仍不落盘。队列尚未接入具体 ingress，Plan 持久化、恢复和长期召回仍未接入；该计划中的接口和阶段门禁不表示这些能力已经全部实现。
 
 ## 配置与运行时数据
 

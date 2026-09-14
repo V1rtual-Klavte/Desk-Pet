@@ -8,10 +8,11 @@ export const memoryContract: ModuleContract = {
     "src/services/agent/memory/session-files.ts",
     "src/services/agent/memory/parsers.ts",
     "src/services/agent/memory/events.ts",
+    "src/services/agent/memory/queue-events.ts",
     "src/services/engine/runtime/snapshot.ts",
   ],
   generatedAt: "2026-09-14",
-  sourceHash: "935c4ed4ef8a584f32c8e0c2b72e77633a9fa84b864226ab08a53287516dfc1a",
+  sourceHash: "87a31963cb173d16b52b110d62bd3291c0f6443a5e10fc3d869ffddb14133a2f",
   coverage: [
     { id: "mm-01", feature: "Memory 添加条目", description: "MemoryService.append() 创建记忆", why: "记忆系统基础 CRUD", depth: "shallow", scenarios: [] },
     { id: "mm-02", feature: "Memory 搜索", description: "MemoryService.search(query, limit) 按内容搜索", why: "LLM 需检索相关记忆", depth: "shallow", scenarios: [] },

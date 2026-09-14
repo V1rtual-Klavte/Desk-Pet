@@ -202,7 +202,7 @@ interface VariableState {
 - `User.md`：重要用户事实的系统文件视图。
 - `Outside.md`：外部知识指针。
 - `MEMORY.md`：长期记忆注册表。
-- `sessions/*.md`：会话正文和压缩摘要的唯一真相源。
+- `sessions/*.md`：会话正文和压缩摘要的唯一真相源；正文写入使用专用 `session_file_write_atomic` 命令（同目录临时文件 + rename）。
 - `sessions/index.json`：仅保存打开标签、活跃标签和未回复数等可丢弃 UI 状态。
 - `Project.md`：会话归档索引。
 
@@ -327,6 +327,7 @@ pub fn my_command(paths: tauri::State<AppPaths>) -> AppResult<()> {
 ```
 
 - 路径相关命令必须注入 `tauri::State<AppPaths>`。
+- 会话正文原子写入使用 `session_file_write_atomic`；不要为此改变通用 `file_write` 的语义。
 - 写入前必须使用 `validate_path()`；不存在的文件要校验父目录。
 - 命令一律返回 `AppResult<T>`，不要退回 `Result<T, String>`（见「异常处理」）。
 - 禁止手写 `dirs_next()`、`find_project_root()` 或 `env!("CARGO_MANIFEST_DIR")` 解析业务路径。
