@@ -5,7 +5,12 @@ import {
   fauxToolCall,
   type AssistantMessage,
   type FauxResponseStep,
+  type SimpleStreamOptions,
+  type Context,
+  type Model,
+  type AssistantMessageEventStream,
 } from "@earendil-works/pi-ai"
+import type { StreamFn } from "@earendil-works/pi-agent-core"
 import { installPiRuntimeProviderForTest } from "@/services/engine/pi"
 
 /**
@@ -22,7 +27,10 @@ export function installFakeProvider(responses: FauxResponseStep[]) {
   if (!model) throw new Error("fake provider 未创建 model")
   const restore = installPiRuntimeProviderForTest({
     model,
-    streamFn: fake.provider.streamSimple.bind(fake.provider),
+    streamFn: ((requestModel: Model<any>, context: Context, options?: SimpleStreamOptions): AssistantMessageEventStream => {
+      options?.onPayload?.({ model: requestModel.id, messages: context.messages, tools: context.tools }, requestModel)
+      return fake.provider.streamSimple(requestModel, context, options)
+    }) as StreamFn,
   })
   return {
     state: fake.state,

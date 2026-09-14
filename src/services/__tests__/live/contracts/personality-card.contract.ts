@@ -3,8 +3,8 @@ import type { ModuleContract } from "../types"
 export const personalityCardContract: ModuleContract = {
   module: "personality-card",
   sourceFiles: ["src/services/personality/registry.ts", "src/services/personality/loader.ts"],
-  generatedAt: "2026-07-24T00:00:00Z",
-  sourceHash: "789c03ba9790dbe479d3f2b5fb144c6ceb013f734211a1cce713d4fcab3dc098",
+  generatedAt: "2026-09-14",
+  sourceHash: "a99d8b13dc08cf503d17ac388717aef560cb0a24d7735d16487febd706d27888",
   coverage: [
     { id: "pc-01", feature: "Card 加载", description: "从 builtin/user 源加载 Card 并解析 sections", why: "人格卡系统基础", depth: "shallow", scenarios: [] },
     { id: "pc-02", feature: "getActiveCard 永不 null", description: "getActiveCard() neutral 兜底", why: "人格运行时核心约束", depth: "shallow", scenarios: [] },

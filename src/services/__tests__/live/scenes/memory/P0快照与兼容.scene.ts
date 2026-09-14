@@ -45,7 +45,7 @@ export const 旧会话兼容: SceneDef = {
   setup: async () => { compatProvider = installFakeProvider([fakeText("兼容读取完成")]) },
   turns: [{ index: 1, description: "读取旧格式记录", userText: "执行兼容读取。", checks: [
     { type: "expectLegacyPreview", run: async () => {
-      const raw = ["## 对话记录", "- [2026-09-14 09:00:00] **用户**: 旧预览内容", "  <!-- deskpet-turn:%7B%22role%22%3A%22assistant%22%2C%22text%22%3A%22旧JSON%22%2C%22timestamp%22%3A1%7D -->", "  <!-- deskpet-event:not-json -->"].join("\n")
+      const raw = ["## 对话记录", "- [2026-09-14 09:00:00] **用户**: 旧预览内容", "普通旧格式分隔行", "  <!-- deskpet-event:not-json -->", "  <!-- deskpet-turn:%7B%22role%22%3A%22assistant%22%2C%22text%22%3A%22旧JSON%22%2C%22timestamp%22%3A1%7D -->"].join("\n")
       const parsed = parseSessionEventDocument(raw, "legacy-smoke")
       if (parsed.events.length < 2 || parsed.issues.length !== 1) throw new Error(`兼容结果不正确 events=${parsed.events.length} issues=${parsed.issues.length}`)
       const event = parsed.events.find(item => item.kind === "assistant_message") as SessionEvent | undefined
