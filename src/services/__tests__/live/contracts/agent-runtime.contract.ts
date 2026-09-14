@@ -8,8 +8,8 @@ export const agentRuntimeContract: ModuleContract = {
     "src/services/session/manager.ts",
     "src/services/session/persistence.ts",
   ],
-  generatedAt: "2026-09-10",
-  sourceHash: "ca85c3ae85b629803dcf576bfdce09c78bfbce2504bc845457ae340974c25020",
+  generatedAt: "2026-09-14",
+  sourceHash: "7835dd7b737da46df10a50097e3de85d3347f41a747e5c994830d2c0a7ee6b1c",
   coverage: [
     {
       id: "ar-01",

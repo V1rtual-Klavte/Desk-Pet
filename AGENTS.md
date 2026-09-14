@@ -50,6 +50,7 @@ pnpm run test:release
 src/services/__tests__/live/
 ├── contracts/                 # 模块行为契约（输入、输出、持久化和边界）
 ├── scenes/                    # 多轮真实链路场景
+├── fake-provider.ts           # 不依赖外部 API 的可重复 Pi provider
 ├── cli.ts                     # 命令行参数解析（--module/--scene/--repeat/--strict 等）
 ├── contract-checker.ts        # 契约断言和覆盖检查
 ├── dataset.ts                 # 数据集版本与场景/契约校验
@@ -62,7 +63,7 @@ src/services/__tests__/live/
 └── README.md                  # Live Test 使用说明
 ```
 
-测试分为两层：Contract 描述单模块的可验证行为，Scene 描述 Agent Loop、工具、安全、人格、变量和记忆之间的真实调用链。Contract 的 `scenarios` 必须解析到已发现、同模块且同 `contractId` 的 Scene；边界和错误规则只统计带 `boundary`/`error` tag 的实际场景。Scene 具有稳定 `caseId` 和 `regression`/`capability`/`safety`/`stress` 套件归属；`entry: "production"` 必须经过 `sendMessage()`。Live Test 在独立 Tauri WebView 中调用真实 Provider 和 Rust IPC，使用临时数据根和 `deskpet_live_test_*` 浏览器缓存 keyspace；每个 trial 都重置测试状态而不删除正常用户缓存，`meta.repetitions` 是最低试验次数。JSON 报告记录数据集版本、环境种子、轨迹指标、错误分类与 `pass@k`/`pass^k`；因此需要本地开发配置和可用的 API，不能把没有 Provider 的静态检查结果当作运行时通过。
+测试分为两层：Contract 描述单模块的可验证行为，Scene 描述 Agent Loop、工具、安全、人格、变量和记忆之间的真实调用链。Contract 的 `scenarios` 必须解析到已发现、同模块且同 `contractId` 的 Scene；边界和错误规则只统计带 `boundary`/`error` tag 的实际场景。Scene 具有稳定 `caseId` 和 `regression`/`capability`/`safety`/`stress` 套件归属；`entry: "production"` 必须经过 `sendMessage()`。Live Test 默认在独立 Tauri WebView 中调用真实 Provider 和 Rust IPC；需要确定性响应的基础场景可通过 `fake-provider.ts` 注入 Pi provider，但仍执行真实 Agent/Tool loop。测试使用临时数据根和 `deskpet_live_test_*` 浏览器缓存 keyspace；每个 trial 都重置测试状态而不删除正常用户缓存，`meta.repetitions` 是最低试验次数。JSON 报告记录数据集版本、环境种子、轨迹指标、错误分类与 `pass@k`/`pass^k`；没有通过 Contract hash 门禁或没有真实/ fake Provider 响应都不能作为运行时通过。
 
 - 代码或数据契约变更后，按 `live/SKILL.md` 的 analyze → generate 工作流重新分析源码生成覆盖契约，再补充对应场景；这三个触发词是 AI 工作流约定，不是 shell 命令。
 - 使用 `pnpm test -- --module <module>` 做模块范围验证；跨模块修改再运行完整 `pnpm test`。发布前运行 `pnpm test -- --strict --repeat 3 --report json`，严格 Contract 缺口和不稳定 trial 不能作为通过结论。

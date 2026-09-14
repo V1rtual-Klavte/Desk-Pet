@@ -15,6 +15,7 @@ import { initCards } from "@/services/personality/loader"
 import { registerDefaultTools } from "@/services/tool/registry"
 import { resetCooldown, setAIGenerating } from "@/services/cooldown"
 import { resetPreprocessorForTest } from "@/services/engine/preprocessor"
+import { resetPiRuntimeProviderForTest } from "@/services/engine/pi"
 
 let bootstrapped = false
 
@@ -62,5 +63,6 @@ export async function standardSetup(): Promise<void> {
   resetCooldown()
   setAIGenerating(false)
   resetPreprocessorForTest()
+  resetPiRuntimeProviderForTest()
   await resetSessionPersistenceForTest()
 }

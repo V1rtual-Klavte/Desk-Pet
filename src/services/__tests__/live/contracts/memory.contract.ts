@@ -8,9 +8,10 @@ export const memoryContract: ModuleContract = {
     "src/services/agent/memory/session-files.ts",
     "src/services/agent/memory/parsers.ts",
     "src/services/agent/memory/events.ts",
+    "src/services/engine/runtime/snapshot.ts",
   ],
   generatedAt: "2026-09-14",
-  sourceHash: "9e3ca9730cee31853eb7e5cc4b645d511e300a2d18010a805f4e4295043b90ba",
+  sourceHash: "935c4ed4ef8a584f32c8e0c2b72e77633a9fa84b864226ab08a53287516dfc1a",
   coverage: [
     { id: "mm-01", feature: "Memory 添加条目", description: "MemoryService.append() 创建记忆", why: "记忆系统基础 CRUD", depth: "shallow", scenarios: [] },
     { id: "mm-02", feature: "Memory 搜索", description: "MemoryService.search(query, limit) 按内容搜索", why: "LLM 需检索相关记忆", depth: "shallow", scenarios: [] },
@@ -21,7 +22,10 @@ export const memoryContract: ModuleContract = {
     { id: "mm-07", feature: "Candy/User 指令", description: "getCandyInstructionsSync/getUserProfileSync 返回指令", why: "prompt 注入的记忆内容", depth: "shallow", scenarios: [] },
     { id: "mm-08", feature: "多轮会话 Markdown 持久化", description: "真实多轮对话后可从 sessions/*.md 重新读取完整原始正文", why: "文件是会话真相源，预览行不能替代原文", depth: "deep", scenarios: ["memory-multi-turn"] },
     { id: "mm-09", feature: "会话事件序列化", description: "serializeSessionEvent() 生成可读预览和无损 deskpet-event JSON", why: "新事件协议必须保留可读性与完整字段", depth: "shallow", scenarios: [] },
-    { id: "mm-10", feature: "旧会话事件兼容解析", description: "parseSessionEventsFromRaw() 兼容 deskpet-turn 与纯预览并报告损坏记录", why: "迁移期间不能丢失历史会话或静默吞掉损坏数据", depth: "deep", scenarios: [] },
+    { id: "mm-10", feature: "旧会话事件兼容解析", description: "parseSessionEventsFromRaw() 兼容 deskpet-turn 与纯预览并报告损坏记录", why: "迁移期间不能丢失历史会话或静默吞掉损坏数据", depth: "deep", scenarios: ["memory-old-session-compat"] },
+    { id: "mm-11", feature: "PromptSnapshot", description: "快照保留 block 顺序、内容 hash 和 usage 区分并脱敏", why: "上下文审计不能泄露原始 prompt 或把估算 token 当成实际 usage", depth: "deep", scenarios: ["memory-prompt-snapshot"] },
+    { id: "mm-12", feature: "主动消息来源", description: "主动搭话保持 active 来源，不写入 user 事实", why: "系统上下文不能污染用户事实和长期记忆", depth: "deep", scenarios: ["memory-active-origin"] },
+    { id: "mm-13", feature: "工具成对观测", description: "工具调用与结果均可从 trace 和 runtime history 观察", why: "后续压缩和恢复需要完整 tool pair 基线", depth: "deep", scenarios: ["memory-tool-pair-baseline"] },
   ],
   rules: { minScenarios: 6, minDeepScenarios: 2, requireBoundary: true, requireErrorPath: true },
 }

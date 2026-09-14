@@ -3,8 +3,8 @@
 
 import { Agent } from "@earendil-works/pi-agent-core"
 import { contentText } from "@earendil-works/pi-ai"
-import type { AgentMessage, AgentTool } from "@earendil-works/pi-agent-core"
-import type { AssistantMessage, Message as PiMessage } from "@earendil-works/pi-ai"
+import type { AgentMessage, AgentTool, StreamFn } from "@earendil-works/pi-agent-core"
+import type { AssistantMessage, Message as PiMessage, Model } from "@earendil-works/pi-ai"
 import type { Message, ThinkingEffort, ToolCallRequest } from "@/services/agent/types"
 import { createMessageId, createToolMessage } from "@/services/agent/types"
 import { MemoryService } from "@/services/agent/memory"
@@ -46,6 +46,27 @@ let lastSeenSessionStart = getSessionStart()
  */
 let activeTurnAgent: Agent | null = null
 let activeTurnSessionId: string | undefined
+
+export interface PiRuntimeProviderOverride {
+  model: Model<any>
+  streamFn: StreamFn
+}
+
+let piRuntimeProviderOverride: PiRuntimeProviderOverride | undefined
+
+/**
+ * Live Test 专用 provider 注入点。生产启动不会调用它，默认仍走配置的 piStream。
+ * 返回清理函数，避免 fake provider 泄漏到后续场景。
+ */
+export function installPiRuntimeProviderForTest(override: PiRuntimeProviderOverride): () => void {
+  const previous = piRuntimeProviderOverride
+  piRuntimeProviderOverride = override
+  return () => { piRuntimeProviderOverride = previous }
+}
+
+export function resetPiRuntimeProviderForTest(): void {
+  piRuntimeProviderOverride = undefined
+}
 
 /**
  * 向正在执行的回合插话，并把插话内容记入该回合所属会话。
@@ -287,6 +308,8 @@ async function runPiLoop(input: PiLoopInput): Promise<PiLoopOutput> {
   const persistedMessageIds = new Set<string>()
   let stoppedAtToolLimit = false
   const traceContext = createRuntimeTraceContext(input.sessionId)
+  const runtimeProvider = piRuntimeProviderOverride
+  const model = runtimeProvider?.model ?? getPiModel()
   publishRuntimeTrace(traceContext, "agent_start", {
     toolCount: input.tools.length,
     mode: input.mode,
@@ -296,12 +319,12 @@ async function runPiLoop(input: PiLoopInput): Promise<PiLoopOutput> {
   const agent = new Agent({
     initialState: {
       systemPrompt: input.systemPrompt,
-      model: getPiModel(),
+      model,
       thinkingLevel: toPiAgentThinkingLevel(input.thinkingEffort),
       tools: input.tools.map(tool => toPiTool(tool, input, toolsByName, toolCallHistory, effects)),
-      messages: toPiMessages(input.chatMessages),
+      messages: toPiMessages(input.chatMessages, model),
     },
-    streamFn: piStream,
+    streamFn: runtimeProvider?.streamFn ?? piStream,
     sessionId: input.sessionId,
     // Pi 的规则：批次里只要有一个工具标了 sequential，整批就走串行。
     // 只读工具因此仍能并发，写/执行类工具会把整批拉回串行。
@@ -491,10 +514,9 @@ function toPiTool(
   }
 }
 
-function toPiMessages(messages: Message[]): PiMessage[] {
+function toPiMessages(messages: Message[], model = getPiModel()): PiMessage[] {
   const toolNames = new Map<string, string>()
   const result: PiMessage[] = []
-  const model = getPiModel()
   for (const message of messages) {
     if (message.role === "system") continue
     if (message.role === "user") {

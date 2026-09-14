@@ -55,7 +55,7 @@ function classifyError(error: unknown): ErrorKind {
   return "unknown"
 }
 
-async function executeTurn(userText: string, entry: SceneEntry): Promise<PiAgentTurnOutput> {
+async function executeTurn(userText: string, entry: SceneEntry, isActiveMessage = false): Promise<PiAgentTurnOutput> {
   if (entry === "production") {
     // sendMessage clears this after preprocessing; clear here so handled requests cannot leak a prior turn.
     productionToolHistory.clear()
@@ -69,13 +69,13 @@ async function executeTurn(userText: string, entry: SceneEntry): Promise<PiAgent
   }
 
   // Mirror the production message lifecycle around the lower-level Pi runtime.
-  pushUserMessage(userText)
+  if (!isActiveMessage) pushUserMessage(userText)
   const output = await runPiAgentTurn({
     userText,
     chatMessages: getContextMessages(),
     unansweredCount: 0,
     messageCount: getContextMessages().length,
-    isActiveMessage: false,
+    isActiveMessage,
   })
   pushAssistantMessage(output.reply)
   return output
@@ -112,7 +112,7 @@ async function runSceneInner(scene: SceneDef, trial: number): Promise<SceneResul
     const turnStart = Date.now()
 
     try {
-      const output = await executeTurn(turn.userText, entry)
+      const output = await executeTurn(turn.userText, entry, turn.isActiveMessage)
       const session = getSession()
       const ctx: AssertContext = {
         output,

@@ -49,6 +49,7 @@ export interface TurnDef {
   index: number
   description: string
   userText: string
+  isActiveMessage?: boolean
   checks: AssertCheck[]
 }
 

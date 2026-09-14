@@ -27,8 +27,8 @@ export interface PromptSnapshotInput {
   thinkingLevel?: string
   systemBlocks: ContextBlock[]
   toolSchemas: PromptToolSchema[]
-  agentMessages: Array<PromptAgentMessage & { content?: string }>
-  llmMessages: Array<PromptLlmMessage & { content?: string }>
+  agentMessages: Array<Omit<PromptAgentMessage, "contentHash"> & { content?: string }>
+  llmMessages: Array<Omit<PromptLlmMessage, "contentHash"> & { content?: string }>
   transforms: PromptTransform[]
   estimatedInputTokens: number
   actualInputTokens?: number
