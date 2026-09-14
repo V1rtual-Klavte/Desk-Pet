@@ -19,8 +19,63 @@ import { isAIGenerating, setAIGenerating } from "@/services/cooldown"
 import { createLogger } from "@/services/logger"
 import { formatError, summarizeError } from "@/services/error"
 import { reportError } from "@/services/error"
+import { RuntimeQueue } from "@/services/engine/runtime"
+import type { MessagePriority, QueueAck, QueueEntry } from "@/services/engine/runtime"
+import { MemoryService, queueAckEvent, queueEntryEvent, queueRecoveryEvent } from "@/services/agent/memory"
 
 const log = createLogger("Agent")
+
+const runtimeQueue = new RuntimeQueue()
+const preprocessStates = new Map<string, { lastUserText?: string; lastUserTime?: number }>()
+
+/** Test isolation hook; production queue state is intentionally process-local. */
+export function resetRuntimeQueueForTest(): void { runtimeQueue.clear(); preprocessStates.clear() }
+export function getRuntimeQueueSnapshot(): QueueEntry[] { return runtimeQueue.snapshot() }
+
+/** Rehydrate safe queue entries and quarantine in-flight entries after restart. */
+export async function recoverRuntimeQueue(): Promise<{ requeued: number; quarantined: number }> {
+  const records = await MemoryService.listQueueRecoveryRecords()
+  let requeued = 0
+  let quarantined = 0
+  for (const record of records) {
+    if (record.state === "persisted" || record.state === "requeued") {
+      const state = record.state === "persisted" ? "requeued" : record.state
+      if (record.state === "persisted") {
+        await MemoryService.appendSessionEventToSession(
+          record.entry.sessionId,
+          queueAckEvent(record.entry, { queueId: record.entry.queueId, turnId: record.entry.turnId, state }),
+          "queue recovery persisted → requeued",
+        )
+      }
+      runtimeQueue.restore({ ...record.entry, ackState: state })
+      requeued++
+    } else if (record.state === "reserved" || record.state === "dispatched") {
+      await MemoryService.appendSessionEventToSession(
+        record.entry.sessionId,
+        queueRecoveryEvent(record.entry, record.state),
+        `queue recovery ${record.state} → unknown_side_effect`,
+      )
+      quarantined++
+    }
+  }
+  if (requeued || quarantined) log.info("队列启动恢复完成:", { requeued, quarantined })
+  return { requeued, quarantined }
+}
+
+function makeIngressId(prefix: string): string {
+  const uuid = globalThis.crypto?.randomUUID?.()
+  return uuid ? `${prefix}-${uuid}` : `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2)}`
+}
+
+async function persistQueueEntry(entry: QueueEntry): Promise<void> {
+  const ok = await MemoryService.appendSessionEventToSession(entry.sessionId, queueEntryEvent(entry), "queued")
+  if (!ok) throw new Error(`queued 事件落盘失败: ${entry.queueId}`)
+}
+
+async function persistQueueAck(entry: QueueEntry, ack: QueueAck): Promise<void> {
+  const ok = await MemoryService.appendSessionEventToSession(entry.sessionId, queueAckEvent(entry, ack), `queue ${ack.state}`)
+  if (!ok) log.warn(`queue ack 事件落盘失败: ${entry.queueId}/${ack.state}`)
+}
 
 /** 工具调用历史（供 UI 展示人格化过程） */
 export const toolCallHistory = {
@@ -40,6 +95,7 @@ export async function initChat(): Promise<void> {
 
   const sessions = await initSessions()
   log.info("会话已恢复:", sessions.length, "个, 活跃:", getActiveSessionId())
+  await recoverRuntimeQueue()
 
   const greeting = pickActiveGreeting()
   if (greeting) await initWelcome(greeting)
@@ -52,13 +108,19 @@ export async function initChat(): Promise<void> {
  * ★ 绑定会话：入口捕获 sessionId，异步回复回来时校验。
  *   若会话已切换，回复只写回原会话的 session Markdown，不污染当前 chatHistory。
  */
-export async function sendMessage(text: string): Promise<{
+export interface SendMessageOptions {
+  requestId?: string
+  priority?: MessagePriority
+}
+
+export async function sendMessage(text: string, options: SendMessageOptions = {}): Promise<{
   reply: string
   toolCallsMade: number
   personalityEffect: { expression: string; soundEvent: string | null }
 }> {
   // ★ 入口绑定会话 ID（防止异步回复错位到其他会话）
   const originSessionId = getActiveSessionId()
+  let activeQueueEntry: QueueEntry | undefined
 
   // 并发锁：生成中优先尝试插话（Pi steering），没有可插话的回合才拒绝。
   // slash 命令例外 —— 切换人格、清空会话这类副作用不该在回合中途发生。
@@ -85,7 +147,9 @@ export async function sendMessage(text: string): Promise<{
   try {
     // ── Step 1: 预处理 ──
     transition("PRE")
-    const preResult = await preProcess(text)
+    const preprocessState = preprocessStates.get(originSessionId) ?? {}
+    preprocessStates.set(originSessionId, preprocessState)
+    const preResult = await preProcess(text, preprocessState)
 
     if (preResult.handled) {
       if (preResult.response) {
@@ -107,6 +171,30 @@ export async function sendMessage(text: string): Promise<{
       }
     }
 
+    const requestId = options.requestId ?? makeIngressId("request")
+    const previous = runtimeQueue.snapshot().find(entry => entry.requestId === requestId)
+    if (previous) {
+      log.info("重复 requestId，跳过重复投递:", requestId)
+      return {
+        reply: "",
+        toolCallsMade: 0,
+        personalityEffect: { expression: "idle", soundEvent: null },
+      }
+    }
+    activeQueueEntry = runtimeQueue.enqueue({
+      queueId: makeIngressId("queue"),
+      sessionId: originSessionId,
+      turnId: makeIngressId("turn"),
+      requestId,
+      priority: options.priority ?? "now",
+      deliveryMode: "prompt",
+    })
+    await persistQueueEntry(activeQueueEntry)
+    const reserved = runtimeQueue.reserve(originSessionId)
+    if (!reserved) throw new Error(`queued 事件无法 reserve: ${activeQueueEntry.queueId}`)
+    activeQueueEntry = reserved
+    await persistQueueAck(activeQueueEntry, { queueId: reserved.queueId, turnId: reserved.turnId, state: "reserved" })
+
     pushUserMessage(preResult.text)
     resetUnanswered()
 
@@ -114,6 +202,8 @@ export async function sendMessage(text: string): Promise<{
     transition("GENERATING")
 
     // ── Step 4: 运行 Agent Loop ──
+    const dispatched = runtimeQueue.acknowledge(activeQueueEntry.queueId, "dispatched")
+    if (dispatched) await persistQueueAck(activeQueueEntry, dispatched)
     toolCallHistory.clear()
     const result = await runPiAgentTurn({
       sessionId: originSessionId,
@@ -144,6 +234,10 @@ export async function sendMessage(text: string): Promise<{
       pushAssistantMessage(result.reply)
     }
 
+    await MemoryService.flushSessionWrites()
+    const accepted = runtimeQueue.acknowledge(activeQueueEntry.queueId, "accepted")
+    if (accepted) await persistQueueAck(activeQueueEntry, accepted)
+
     transition("WAITING")
     return {
       reply: result.reply,
@@ -154,6 +248,11 @@ export async function sendMessage(text: string): Promise<{
       },
     }
   } catch (e) {
+    if (activeQueueEntry) {
+      await MemoryService.flushSessionWrites()
+      const failed = runtimeQueue.acknowledge(activeQueueEntry.queueId, "failed", "agent_turn_failed")
+      if (failed) await persistQueueAck(activeQueueEntry, failed)
+    }
     log.error("sendMessage 失败", formatError(e))
     // 走全局通道：终端/日志文件留完整记录，开发期还会弹覆盖层
     reportError("runner", e, { kind: "LLM 调用失败" })

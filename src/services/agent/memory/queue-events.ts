@@ -33,3 +33,24 @@ export function queueAckEvent(entry: QueueEntry, ack: QueueAck): SessionEvent {
     idempotencyKey: `queue:${entry.requestId}:${ack.state}`,
   }
 }
+
+/** Startup recovery marker for entries that may already have caused a side effect. */
+export function queueRecoveryEvent(entry: QueueEntry, previousState: QueueAck["state"]): SessionEvent {
+  return {
+    schemaVersion: 1,
+    eventId: `queue-recovery-${entry.queueId}-${previousState}`,
+    sessionId: entry.sessionId,
+    turnId: entry.turnId,
+    kind: "recovery",
+    origin: "recovery",
+    payload: {
+      queueId: entry.queueId,
+      turnId: entry.turnId,
+      previousState,
+      state: "unknown_side_effect",
+      action: "manual_review",
+    },
+    createdAt: Date.now(),
+    idempotencyKey: `queue-recovery:${entry.requestId}:${previousState}`,
+  }
+}

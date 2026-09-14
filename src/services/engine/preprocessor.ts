@@ -19,14 +19,13 @@ export interface PreProcessResult {
   text: string
 }
 
-let lastUserText = ""
-let lastUserTime = 0
-
-/** Clears module-local deduplication state for the isolated Live Test host. */
-export function resetPreprocessorForTest(): void {
-  lastUserText = ""
-  lastUserTime = 0
+export interface PreProcessState {
+  lastUserText?: string
+  lastUserTime?: number
 }
+
+/** Kept for Live Test compatibility; deduplication state now belongs to the caller. */
+export function resetPreprocessorForTest(): void {}
 
 /**
  * 预处理用户输入。
@@ -34,7 +33,7 @@ export function resetPreprocessorForTest(): void {
  * - 空/纯空格 → 跳过
  * - 短时间重复 → 跳过（30s 内相同文本）
  */
-export async function preProcess(rawText: string): Promise<PreProcessResult> {
+export async function preProcess(rawText: string, state: PreProcessState = {}): Promise<PreProcessResult> {
   const text = rawText.trim()
 
   // ── 空消息 ──
@@ -68,12 +67,12 @@ export async function preProcess(rawText: string): Promise<PreProcessResult> {
 
   // ── 去重 ──
   const now = Date.now()
-  if (text === lastUserText && now - lastUserTime < loopConfig.dedupWindowMs) {
+  if (text === state.lastUserText && now - (state.lastUserTime ?? 0) < loopConfig.dedupWindowMs) {
     log.debug("重复消息过滤")
     return { handled: true, text: "" }
   }
-  lastUserText = text
-  lastUserTime = now
+  state.lastUserText = text
+  state.lastUserTime = now
 
   return { handled: false, text }
 }

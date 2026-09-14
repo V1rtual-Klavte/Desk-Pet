@@ -71,6 +71,8 @@ export async function initApp(): Promise<void> {
   // ── 5. 会话初始化 ──
   const sessions = await initSessions()
   log.info(`5/7 会话就绪: ${sessions.length} 个, 活跃: ${sessions[0]?.id ?? "无"}, 消息: ${chatHistory.length} 条`)
+  const { recoverRuntimeQueue } = await import("@/services/agent/runner")
+  await recoverRuntimeQueue()
 
   // ── 6. 欢迎语（一律走激活 Card 的问候语）──
   if (chatHistory.length === 0) {

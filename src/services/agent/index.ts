@@ -53,7 +53,8 @@ export type {
 export { parseSessionEventDocument, parseSessionEventsFromRaw, serializeSessionEvent } from "./memory"
 
 // ── Agent 运行器 ──
-export { sendMessage, initChat, sendActiveMessage, toolCallHistory } from "./runner"
+export { sendMessage, initChat, sendActiveMessage, toolCallHistory, resetRuntimeQueueForTest, getRuntimeQueueSnapshot, recoverRuntimeQueue } from "./runner"
+export type { SendMessageOptions } from "./runner"
 
 // ── 统一初始化 ──
 export { initApp } from "@/services/init"

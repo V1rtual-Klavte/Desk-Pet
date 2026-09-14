@@ -4,6 +4,7 @@ export const memoryContract: ModuleContract = {
   module: "memory",
   sourceFiles: [
     "src/services/agent/memory/index.ts",
+    "src/services/agent/memory/io.ts",
     "src/services/agent/memory/memory-entries.ts",
     "src/services/agent/memory/session-files.ts",
     "src/services/agent/memory/parsers.ts",
@@ -12,7 +13,7 @@ export const memoryContract: ModuleContract = {
     "src/services/engine/runtime/snapshot.ts",
   ],
   generatedAt: "2026-09-14",
-  sourceHash: "87a31963cb173d16b52b110d62bd3291c0f6443a5e10fc3d869ffddb14133a2f",
+  sourceHash: "f10768fbd46d11de02f810d8d21cd4b2a01c30a4d998862a121a337475018aa7",
   coverage: [
     { id: "mm-01", feature: "Memory 添加条目", description: "MemoryService.append() 创建记忆", why: "记忆系统基础 CRUD", depth: "shallow", scenarios: [] },
     { id: "mm-02", feature: "Memory 搜索", description: "MemoryService.search(query, limit) 按内容搜索", why: "LLM 需检索相关记忆", depth: "shallow", scenarios: [] },
@@ -27,6 +28,7 @@ export const memoryContract: ModuleContract = {
     { id: "mm-11", feature: "PromptSnapshot", description: "快照保留 block 顺序、内容 hash 和 usage 区分并脱敏", why: "上下文审计不能泄露原始 prompt 或把估算 token 当成实际 usage", depth: "deep", scenarios: ["memory-prompt-snapshot"] },
     { id: "mm-12", feature: "主动消息来源", description: "主动搭话保持 active 来源，不写入 user 事实", why: "系统上下文不能污染用户事实和长期记忆", depth: "deep", scenarios: ["memory-active-origin"] },
     { id: "mm-13", feature: "工具成对观测", description: "工具调用与结果均可从 trace 和 runtime history 观察", why: "后续压缩和恢复需要完整 tool pair 基线", depth: "deep", scenarios: ["memory-tool-pair-baseline"] },
+    { id: "mm-14", feature: "队列恢复与幂等", description: "queued 事件重启后可 requeue，requestId 不重复投递", why: "输入不能因进程中断丢失或重复执行", depth: "deep", scenarios: ["queued-recovery"] },
   ],
   rules: { minScenarios: 6, minDeepScenarios: 2, requireBoundary: true, requireErrorPath: true },
 }

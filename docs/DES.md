@@ -26,7 +26,7 @@
 
 这份文档保留设计和玩法的历史细节；`docs/current/` 用来记录已经与代码核对过的当前契约，`docs/history/` 只用于查阅阶段决策。
 
-记忆系统进入实现前的运行时基础契约见[记忆系统重构前置准备](plans/active/记忆系统重构前置准备.md)；其中的队列、Prompt 快照、恢复、权限和 dreaming 均属于待实施计划。实际执行顺序、阶段门禁和新会话接力见[记忆系统重构执行手册](plans/active/记忆系统重构执行手册.md)。
+记忆系统进入实现前的运行时基础契约见[记忆系统重构前置准备](plans/active/记忆系统重构前置准备.md)；当前 `sendMessage()` 已先持久化 queued 事件再调用 Pi，并写入 dispatched/accepted/failed ack；启动会扫描并恢复安全的 queued/requeued 请求，对 reserved/dispatched 写 recovery 并隔离未知副作用。后台 drain、Plan 持久化、长期召回、权限和 dreaming 仍属于后续阶段。实际执行顺序、阶段门禁和新会话接力见[记忆系统重构执行手册](plans/active/记忆系统重构执行手册.md)。
 
 2026-08-06 的全仓阶段审查、记忆系统边界、测试覆盖和后续优先级见 [阶段现状](history/analysis/阶段现状-2026.8.6.md)。
 

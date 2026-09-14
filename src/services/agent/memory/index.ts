@@ -22,6 +22,9 @@ import {
   loadSessionMessages, updateSessionTopic, deleteSessionFile as _deleteSessionFile,
   deleteSessionAndPointer as _deleteSessionAndPointer,
   recordTurnToSession, appendTurnToSessionFile as _appendTurnToSessionFile,
+  appendSessionEventToSession,
+  listQueueRecoveryRecords,
+  flushSessionWrites,
   writeCompactionSummary as _writeCompactionSummary, getCompactionSummarySync,
   archiveSession as _archiveSession, loadArchivedSession,
   listSessionFiles as _listSessionFiles,
@@ -55,7 +58,8 @@ export type {
   SessionEventParseIssueCode,
 } from "./events"
 export { parseSessionEventDocument, parseSessionEventsFromRaw, serializeSessionEvent } from "./events"
-export { queueAckEvent, queueEntryEvent } from "./queue-events"
+export { queueAckEvent, queueEntryEvent, queueRecoveryEvent } from "./queue-events"
+export type { QueueRecoveryRecord } from "./session-files"
 
 const log = createLogger("Memory")
 
@@ -188,6 +192,12 @@ export const MemoryService = {
     await ensureInit()
     return _appendTurnToSessionFile(role, text)
   },
+  async appendSessionEventToSession(sessionId: string, event: import("@/services/engine/runtime").SessionEvent, previewText?: string): Promise<boolean> {
+    await ensureInit()
+    return appendSessionEventToSession(sessionId, event, previewText)
+  },
+  async listQueueRecoveryRecords() { await ensureInit(); return listQueueRecoveryRecords() },
+  async flushSessionWrites(): Promise<void> { await flushSessionWrites() },
 
   async writeCompactionSummary(opts: {
     mainRequest: string; keyTech: string[]; files: string[]

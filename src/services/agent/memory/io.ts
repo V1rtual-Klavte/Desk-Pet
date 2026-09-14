@@ -25,18 +25,17 @@ export function getSessionsDir(): string {
   return sessionsDir || BaseDirs.sessions()
 }
 
-// ── 文件锁 ──
-let lockHeld = false
-const LOCK_TIMEOUT = 5000
+// ── 文件写入串行化 ──
+let writeTail: Promise<void> = Promise.resolve()
 
-export async function withLock<T>(fn: () => Promise<T>): Promise<T> {
-  const start = Date.now()
-  while (lockHeld && Date.now() - start < LOCK_TIMEOUT) {
-    await new Promise(r => setTimeout(r, 50))
-  }
-  lockHeld = true
-  try { return await fn() }
-  finally { lockHeld = false }
+/**
+ * Serialize read-modify-write operations. The tail always recovers so one
+ * failed write cannot deadlock later session or memory writes.
+ */
+export function withLock<T>(fn: () => Promise<T>): Promise<T> {
+  const run = writeTail.then(fn, fn)
+  writeTail = run.then(() => undefined, () => undefined)
+  return run
 }
 
 // ── Memory 文件读写 ──

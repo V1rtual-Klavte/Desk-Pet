@@ -164,6 +164,8 @@ src-tauri/src/
   -> Vue 展示最终文本与效果
 ```
 
+普通聊天 ingress 在调用 Pi 前先通过 RuntimeQueue 写入 `queued` session event；Pi 完成后追加 `dispatched` 与 `accepted`/`failed` ack。启动会扫描 session event：`persisted/requeued` 重新入队，`reserved/dispatched` 写 recovery 并隔离为未知副作用；这仍不等于后台 drain。
+
 `RUNTIME_DATA` 是内部元数据，不显示给用户。回复生成器负责解析、剥离、验证和持久化；不要把这些工作重新塞回 Agent Loop。
 
 ## 人格与变量状态

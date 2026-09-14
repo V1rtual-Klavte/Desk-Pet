@@ -39,9 +39,18 @@ export class RuntimeQueue {
     return { ...entry }
   }
 
+  /** Hydrate an entry recovered from the session event log without changing its sequence. */
+  restore(entry: QueueEntry): QueueEntry {
+    const duplicate = [...this.entries.values()].find(item => item.requestId === entry.requestId)
+    if (duplicate) return { ...duplicate }
+    this.entries.set(entry.queueId, { ...entry })
+    this.sequence = Math.max(this.sequence, entry.sequence + 1)
+    return { ...entry }
+  }
+
   reserve(sessionId?: string): QueueEntry | undefined {
     const candidate = [...this.entries.values()]
-      .filter(entry => entry.ackState === "persisted" && (!sessionId || entry.sessionId === sessionId))
+      .filter(entry => (entry.ackState === "persisted" || entry.ackState === "requeued") && (!sessionId || entry.sessionId === sessionId))
       .sort((a, b) => PRIORITY_ORDER[a.priority] - PRIORITY_ORDER[b.priority] || a.sequence - b.sequence)[0]
     if (!candidate) return undefined
     candidate.ackState = "reserved"

@@ -4,7 +4,7 @@
 
 // ── PreProcessor ──
 export { preProcess } from "./preprocessor"
-export type { PreProcessResult } from "./preprocessor"
+export type { PreProcessResult, PreProcessState } from "./preprocessor"
 
 // ── Session ──
 export {

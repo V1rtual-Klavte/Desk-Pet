@@ -16,6 +16,7 @@ import { registerDefaultTools } from "@/services/tool/registry"
 import { resetCooldown, setAIGenerating } from "@/services/cooldown"
 import { resetPreprocessorForTest } from "@/services/engine/preprocessor"
 import { resetPiRuntimeProviderForTest } from "@/services/engine/pi"
+import { resetRuntimeQueueForTest } from "@/services/agent/runner"
 
 let bootstrapped = false
 
@@ -64,5 +65,6 @@ export async function standardSetup(): Promise<void> {
   setAIGenerating(false)
   resetPreprocessorForTest()
   resetPiRuntimeProviderForTest()
+  resetRuntimeQueueForTest()
   await resetSessionPersistenceForTest()
 }

@@ -8,6 +8,8 @@ import type { SessionMemory, ProjectEntry, SessionFileMeta, MemoryEntry, Compact
 import { readSessionFile, writeSessionFile, sessionsDir, withLock } from "./io"
 import { localTime, localDate, localCompact, parseSessionFilename, parseSessionFileMeta, parseSessionFromFile, parseTurnsFromRaw, buildSessionFileContent, makeSessionFilename, findTopicFromTurns, serializeSessionTurn } from "./parsers"
 import { createLogger } from "@/services/logger"
+import type { QueueAckState, QueueEntry, SessionEvent } from "@/services/engine/runtime"
+import { parseSessionEventDocument, serializeSessionEvent } from "./events"
 
 const log = createLogger("MemorySessions")
 
@@ -151,13 +153,14 @@ export function recordTurn(role: "user" | "assistant", text: string, checkConsol
     log.warn("recordTurn: sessionMemory 为空，创建新会话记忆")
     sessionMemory = newSessionMemory()
   }
-  sessionMemory.turns.push({ role, text, timestamp: Date.now() })
+  const targetSession = sessionMemory
+  targetSession.turns.push({ role, text, timestamp: Date.now() })
   turnCounter++
   if (turnCounter % 5 === 0) {
     log.info(`已达到 ${turnCounter} 轮，触发记忆整理`)
     checkConsolidate()
   }
-  const pending = appendTurnToSessionFile(role, text)
+  const pending = appendTurnToSessionFile(role, text, targetSession)
   pendingSessionWrites.add(pending)
   void pending
     .catch(e => log.warn("session 文件实时写入失败", e))
@@ -166,7 +169,8 @@ export function recordTurn(role: "user" | "assistant", text: string, checkConsol
 
 export async function recordTurnToSession(sessionId: string, role: "user" | "assistant", text: string): Promise<void> {
   if (!sessionsDir) { log.warn("recordTurnToSession: sessionsDir 未设置"); return }
-  try {
+  await withLock(async () => {
+    try {
     const files = await invoke<string[]>("list_session_files")
     const match = files.find(f => f.startsWith(sessionId))
     if (!match) { log.warn("recordTurnToSession: 未找到会话文件", sessionId); return }
@@ -179,40 +183,111 @@ export async function recordTurnToSession(sessionId: string, role: "user" | "ass
     current = current.trimEnd() + "\n" + serializeSessionTurn({ role, text, timestamp: Date.now() }).join("\n") + "\n"
     await writeSessionFile(match, current)
     log.debug(`recordTurnToSession: ${role} → ${match} (${turnMatches.length + 1} 轮)`)
-  } catch (e) { log.warn("recordTurnToSession 失败", e instanceof Error ? e : undefined) }
+    } catch (e) { log.warn("recordTurnToSession 失败", e instanceof Error ? e : undefined) }
+  })
 }
 
-export async function appendTurnToSessionFile(role: "user" | "assistant", text: string): Promise<void> {
-  if (!sessionMemory) { log.warn("appendTurnToSessionFile: sessionMemory 为空"); return }
-  if (!sessionsDir) { log.warn("appendTurnToSessionFile: sessionsDir 未设置"); return }
-  let filename = ""
+/** Append a protocol event without affecting the human-visible turn count. */
+export async function appendSessionEventToSession(sessionId: string, event: SessionEvent, previewText?: string): Promise<boolean> {
+  if (!sessionsDir) { log.warn("appendSessionEventToSession: sessionsDir 未设置"); return false }
+  return withLock(async () => {
+    try {
+      const files = await invoke<string[]>("list_session_files")
+      const match = files.find(f => f.startsWith(sessionId))
+      if (!match) { log.warn("appendSessionEventToSession: 未找到会话文件", sessionId); return false }
+      const current = await readSessionFile(match)
+      if (!current || current.length < 20) { log.warn("appendSessionEventToSession: 文件内容为空", match); return false }
+      const parsed = parseSessionEventDocument(current, sessionId)
+      if (parsed.events.some(item => item.eventId === event.eventId || item.idempotencyKey === event.idempotencyKey)) return true
+      const lines = serializeSessionEvent(event, previewText).join("\n")
+      const updated = current.trimEnd() + "\n" + lines + "\n"
+      return await writeSessionFile(match, updated)
+    } catch (e) {
+      log.warn("appendSessionEventToSession 失败", e instanceof Error ? e : undefined)
+      return false
+    }
+  })
+}
+
+export interface QueueRecoveryRecord {
+  entry: QueueEntry
+  state: QueueAckState
+  errorCode?: string
+}
+
+/** Rebuild queue state from the append-only session event log during startup. */
+export async function listQueueRecoveryRecords(): Promise<QueueRecoveryRecord[]> {
+  if (!sessionsDir) return []
   try {
     const files = await invoke<string[]>("list_session_files")
-    const match = files.find(f => f.startsWith(sessionMemory!.sessionId))
+    const records = new Map<string, QueueRecoveryRecord>()
+    for (const filename of files) {
+      const parsed = parseSessionFilename(filename)
+      if (!parsed) continue
+      const raw = await readSessionFile(filename)
+      const events = parseSessionEventDocument(raw, parsed.sessionId).events
+      for (const event of events) {
+        if (event.kind !== "queue_state") continue
+        const payload = event.payload as Record<string, unknown>
+        const queue = payload.queue
+        if (queue && typeof queue === "object") {
+          const candidate = queue as Partial<QueueEntry>
+          if (typeof candidate.queueId !== "string" || typeof candidate.requestId !== "string"
+            || typeof candidate.turnId !== "string" || typeof candidate.sessionId !== "string"
+            || typeof candidate.sequence !== "number" || typeof candidate.enqueuedAt !== "number"
+            || (candidate.priority !== "now" && candidate.priority !== "next" && candidate.priority !== "later")
+            || (candidate.deliveryMode !== "prompt" && candidate.deliveryMode !== "steer" && candidate.deliveryMode !== "followup")
+            || typeof candidate.attempt !== "number" || typeof candidate.ackState !== "string") continue
+          records.set(candidate.queueId, { entry: { ...candidate } as QueueEntry, state: candidate.ackState })
+          continue
+        }
+        if (typeof payload.queueId !== "string" || typeof payload.state !== "string") continue
+        const current = records.get(payload.queueId)
+        if (!current) continue
+        const state = payload.state as QueueAckState
+        current.state = state
+        if (typeof payload.errorCode === "string") current.errorCode = payload.errorCode
+      }
+    }
+    return [...records.values()].sort((a, b) => a.entry.sequence - b.entry.sequence)
+  } catch (e) {
+    log.warn("启动扫描 queue event 失败", e instanceof Error ? e : undefined)
+    return []
+  }
+}
+
+export async function appendTurnToSessionFile(role: "user" | "assistant", text: string, targetSession = sessionMemory): Promise<void> {
+  if (!targetSession) { log.warn("appendTurnToSessionFile: sessionMemory 为空"); return }
+  if (!sessionsDir) { log.warn("appendTurnToSessionFile: sessionsDir 未设置"); return }
+  await withLock(async () => {
+    let filename = ""
+  try {
+    const files = await invoke<string[]>("list_session_files")
+    const match = files.find(f => f.startsWith(targetSession.sessionId))
     if (match) filename = match
   } catch { /* ignore */ }
   if (!filename) {
-    const topic = sessionMemory.turns.length > 0
-      ? sessionMemory.turns.find(t => t.role === "user")?.text.substring(0, 20)?.replace(/[\n\r/\\:*?"<>|]/g, "").trim() || "新会话"
+    const topic = targetSession.turns.length > 0
+      ? targetSession.turns.find(t => t.role === "user")?.text.substring(0, 20)?.replace(/[\n\r/\\:*?"<>|]/g, "").trim() || "新会话"
       : "新会话"
-    filename = makeSessionFilename(sessionMemory.sessionId, topic)
+    filename = makeSessionFilename(targetSession.sessionId, topic)
   }
   try {
     let current = await readSessionFile(filename)
     let writeFilename = filename
     const turnBlock = serializeSessionTurn({ role, text, timestamp: Date.now() }).join("\n")
     if (!current || current.length < 20) {
-      const topic = sessionMemory.turns.length > 0
-        ? sessionMemory.turns.find(t => t.role === "user")?.text.substring(0, 20)?.replace(/[\n\r/\\:*?"<>|]/g, "").trim() || "新会话"
+      const topic = targetSession.turns.length > 0
+        ? targetSession.turns.find(t => t.role === "user")?.text.substring(0, 20)?.replace(/[\n\r/\\:*?"<>|]/g, "").trim() || "新会话"
         : "新会话"
       current = [
-        `# ${sessionMemory.sessionId}-${topic}`, `> 开始: ${localTime(sessionMemory.startedAt)}`, `> 轮数: 1`,
+        `# ${targetSession.sessionId}-${topic}`, `> 开始: ${localTime(targetSession.startedAt)}`, `> 轮数: 1`,
         `> Token累计: 0/0 | 上下文: 0%`, "", "## 摘要", "<!-- 归档时填充 -->", "", "## 对话记录 (1 轮)", "", turnBlock, "",
       ].join("\n")
     } else {
       const turnMatches = parseTurnsFromRaw(current)
       const turnCount = turnMatches.length + 1
-      const newTopic = sessionMemory.turns.find(t => t.role === "user")?.text.substring(0, 20)?.replace(/[\n\r/\\:*?"<>|]/g, "").trim() || ""
+      const newTopic = targetSession.turns.find(t => t.role === "user")?.text.substring(0, 20)?.replace(/[\n\r/\\:*?"<>|]/g, "").trim() || ""
       const { debug } = await import("@/services/debug")
       const tokenLine = `> Token累计: ${debug.totalPromptTokens}/${debug.totalCompletionTokens} | 上下文: ${debug.lastContextUsage}%`
       current = current
@@ -223,8 +298,8 @@ export async function appendTurnToSessionFile(role: "user" | "assistant", text: 
         current = current.replace(/^(> 轮数: \d+)/m, `$1\n${tokenLine}`)
       }
       if (newTopic && filename.includes("-新会话")) {
-        current = current.replace(/^# session-\d{8}-\d{6}-新会话/m, `# ${sessionMemory.sessionId}-${newTopic}`)
-        const newFilename = makeSessionFilename(sessionMemory.sessionId, newTopic)
+        current = current.replace(/^# session-\d{8}-\d{6}-新会话/m, `# ${targetSession.sessionId}-${newTopic}`)
+        const newFilename = makeSessionFilename(targetSession.sessionId, newTopic)
         if (newFilename !== filename) writeFilename = newFilename
       }
       current = current.trimEnd() + "\n" + turnBlock + "\n"
@@ -239,7 +314,8 @@ export async function appendTurnToSessionFile(role: "user" | "assistant", text: 
       const turnMatches = parseTurnsFromRaw(current)
       pe.rounds = turnMatches.length
     }
-  } catch (e) { log.warn("实时写入 session 文件失败", e instanceof Error ? e : undefined) }
+    } catch (e) { log.warn("实时写入 session 文件失败", e instanceof Error ? e : undefined) }
+  })
 }
 
 // ── 压缩摘要 ──
