@@ -43,6 +43,14 @@ export {
   onSessionEnd,
 } from "./memory"
 export type { MemoryEntry, SessionMemory, CompactionSummary, SessionFileMeta } from "./memory"
+export type {
+  LegacySessionEvent,
+  SessionEventCompat,
+  SessionEventDocument,
+  SessionEventParseIssue,
+  SessionEventParseIssueCode,
+} from "./memory"
+export { parseSessionEventDocument, parseSessionEventsFromRaw, serializeSessionEvent } from "./memory"
 
 // ── Agent 运行器 ──
 export { sendMessage, initChat, sendActiveMessage, toolCallHistory } from "./runner"

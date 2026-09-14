@@ -47,6 +47,14 @@ import {
 
 // Re-export types
 export type { MemoryEntry, ProjectEntry, SessionFileMeta, SessionMemory, CompactionSummary }
+export type {
+  LegacySessionEvent,
+  SessionEventCompat,
+  SessionEventDocument,
+  SessionEventParseIssue,
+  SessionEventParseIssueCode,
+} from "./events"
+export { parseSessionEventDocument, parseSessionEventsFromRaw, serializeSessionEvent } from "./events"
 
 const log = createLogger("Memory")
 
