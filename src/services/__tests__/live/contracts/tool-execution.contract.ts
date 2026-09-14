@@ -13,7 +13,7 @@ export const toolExecutionContract: ModuleContract = {
     "src/services/reply/generator.ts",
   ],
   generatedAt: "2026-09-14",
-  sourceHash: "80ff8ee9bfb74f4c408b8f624e482ac76a199fc013111c2827773b8f5709340a",
+  sourceHash: "c5d2a1afad53f958cfbb05f573c47eafc20255b08e16c10de09a023fa960373b",
   coverage: [
     { id: "te-08", feature: "真 LLM 多工具调用", description: "真实 LLM 对话中先后调用多个工具", why: "端到端工具链验证", depth: "deep", scenarios: ["tool-system-info"] },
   ],
