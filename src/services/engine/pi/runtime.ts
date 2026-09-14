@@ -29,6 +29,8 @@ import { aiConfig, generalConfig, loopConfig, planConfig, safetyConfig } from "@
 import { emit } from "@tauri-apps/api/event"
 import { getPiModel, piStream, toPiAgentThinkingLevel } from "./model-gateway"
 import { formatError } from "@/services/error"
+import { createRuntimeTraceContext, publishRuntimeTrace } from "@/services/engine/runtime"
+import { redactText, sha256Text, stableSerialize } from "@/services/engine/runtime"
 
 const EMPTY_USAGE = {
   input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0,
@@ -284,6 +286,12 @@ async function runPiLoop(input: PiLoopInput): Promise<PiLoopOutput> {
   let toolCallsMade = 0
   const persistedMessageIds = new Set<string>()
   let stoppedAtToolLimit = false
+  const traceContext = createRuntimeTraceContext(input.sessionId)
+  publishRuntimeTrace(traceContext, "agent_start", {
+    toolCount: input.tools.length,
+    mode: input.mode,
+    thinkingEffort: input.thinkingEffort,
+  })
 
   const agent = new Agent({
     initialState: {
@@ -298,6 +306,26 @@ async function runPiLoop(input: PiLoopInput): Promise<PiLoopOutput> {
     // Pi 的规则：批次里只要有一个工具标了 sequential，整批就走串行。
     // 只读工具因此仍能并发，写/执行类工具会把整批拉回串行。
     toolExecution: "parallel",
+    onPayload: (payload, model) => {
+      const safePayload = redactText(stableSerialize(payload))
+      void sha256Text(safePayload.text)
+        .then(payloadHash => publishRuntimeTrace(traceContext, "provider_payload", {
+          model: model.id,
+          api: model.api,
+          payloadHash,
+          redactions: safePayload.redactions,
+        }))
+        .catch(() => undefined)
+      return undefined
+    },
+    onResponse: (response, model) => {
+      publishRuntimeTrace(traceContext, "provider_response", {
+        model: model.id,
+        api: model.api,
+        status: response.status,
+        headerNames: Object.keys(response.headers).sort(),
+      })
+    },
     // Current memory compaction is intentionally deferred to the next migration stage.
     transformContext: async (messages) => messages,
     beforeToolCall: async ({ toolCall, args }) => {
@@ -340,6 +368,15 @@ async function runPiLoop(input: PiLoopInput): Promise<PiLoopOutput> {
   })
 
   agent.subscribe((event) => {
+    const eventPayload: Record<string, unknown> = {}
+    if ("message" in event && event.message && typeof event.message === "object") {
+      const message = event.message as { role?: unknown }
+      if (typeof message.role === "string") eventPayload.role = message.role
+    }
+    if ("toolName" in event && typeof event.toolName === "string") eventPayload.toolName = event.toolName
+    if ("toolCallId" in event && typeof event.toolCallId === "string") eventPayload.toolCallId = event.toolCallId
+    if ("isError" in event && typeof event.isError === "boolean") eventPayload.isError = event.isError
+    publishRuntimeTrace(traceContext, event.type, eventPayload)
     if (event.type === "message_end" && input.persistToolMessages) {
       persistPiMessage(event.message, persistedMessageIds)
     }
@@ -378,6 +415,11 @@ async function runPiLoop(input: PiLoopInput): Promise<PiLoopOutput> {
       activeTurnAgent = null
       activeTurnSessionId = undefined
     }
+    publishRuntimeTrace(traceContext, "agent_end", {
+      toolCallsMade,
+      timedOut,
+      stoppedAtToolLimit,
+    })
   }
 
   if (stoppedAtToolLimit) {

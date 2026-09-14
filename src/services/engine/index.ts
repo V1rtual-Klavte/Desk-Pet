@@ -71,6 +71,12 @@ export {
   stableSerialize,
 } from "./runtime"
 export type { PromptSnapshotInput, RedactedText } from "./runtime"
+export {
+  createRuntimeTraceContext,
+  publishRuntimeTrace,
+  subscribeRuntimeTrace,
+} from "./runtime"
+export type { RuntimeTraceContext, RuntimeTraceEvent, RuntimeTraceKind, RuntimeTraceListener } from "./runtime"
 
 // ── Pi Agent Core Runtime ──
 export { runPiAgentTurn, runPiSubAgent, steerActiveTurn } from "./pi"

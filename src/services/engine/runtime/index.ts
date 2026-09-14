@@ -39,3 +39,10 @@ export {
   stableSerialize,
 } from "./snapshot"
 export type { PromptSnapshotInput, RedactedText } from "./snapshot"
+
+export {
+  createRuntimeTraceContext,
+  publishRuntimeTrace,
+  subscribeRuntimeTrace,
+} from "./trace"
+export type { RuntimeTraceContext, RuntimeTraceEvent, RuntimeTraceKind, RuntimeTraceListener } from "./trace"
