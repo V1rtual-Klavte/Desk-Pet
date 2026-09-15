@@ -140,6 +140,10 @@ export interface ContextBlock {
   tokenBudget?: number
   origin: MessageOrigin | "system"
   taint: MessageTaint
+  sourceId?: string
+  provenance?: string
+  projectionVersion?: number
+  memoryVersion?: string
 }
 
 export type PromptTransformReason =

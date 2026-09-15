@@ -16,6 +16,8 @@ import type { VariablePool } from "@/services/personality/variable-pool"
 import { createLogger } from "@/services/logger"
 import { buildContextKernel } from "./kernel"
 import type { ContextBlock } from "@/services/engine/runtime"
+import type { MemoryProjection } from "@/services/agent/memory"
+import { createUserProfileProjection, memoryProjectionBlocks, profileProjectionBlock } from "./projection"
 
 const log = createLogger("Context")
 
@@ -27,6 +29,7 @@ export interface BuildContextInput {
   unansweredCount?: number
   thinkingEffort: ThinkingEffort
   isActiveMessage?: boolean
+  memoryProjections?: MemoryProjection[]
 }
 
 export interface BuildContextOutput {
@@ -88,6 +91,7 @@ export function buildPrompt(
   const user = MemoryService.getUserProfileSync()
   const sess = MemoryService.getCompactionSummarySync()
   const memoryPrompt = `${candy}${sess}`
+  const profileProjection = createUserProfileProjection(user)
 
   // ── ⑨ 工具提示 ──
   if (tools.length > 0) {
@@ -104,8 +108,9 @@ export function buildPrompt(
   const kernel = buildContextKernel([
     { blockId: "static:card", layer: "static", source: "personality-card", text: rolePrompt, priority: 100, origin: "system", taint: "system" },
     { blockId: "dynamic:runtime", layer: "dynamic", source: "runtime", text: dynamicPrompt, priority: 90, origin: "system", taint: "system" },
-    { blockId: "profile:user", layer: "profile", source: "User.md", text: user, priority: 80, origin: "memory", taint: "derived" },
+    profileProjectionBlock(profileProjection),
     { blockId: "memory:session", layer: "memory", source: "CANDY.md+session-summary", text: memoryPrompt, priority: 70, origin: "memory", taint: "derived" },
+    ...memoryProjectionBlocks(input.memoryProjections ?? []),
     { blockId: "transcript:history", layer: "transcript", source: "session", text: "", priority: 60, origin: "assistant", taint: "derived" },
     { blockId: "ephemeral:active", layer: "ephemeral", source: isActiveMessage ? "active_monitor" : "none", text: isActiveMessage ? input.userText : "", priority: 50, origin: isActiveMessage ? "active" : "system", taint: "derived" },
   ], input.recentMessages, aiConfig.contextMaxTokens)

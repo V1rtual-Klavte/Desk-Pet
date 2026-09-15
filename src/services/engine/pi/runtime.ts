@@ -8,7 +8,7 @@ import type { AssistantMessage, Message as PiMessage, Model } from "@earendil-wo
 import type { Message, ThinkingEffort, ToolCallRequest } from "@/services/agent/types"
 import type { IngressEnvelope, MessageOrigin, MessageTaint, SessionEvent } from "@/services/engine/runtime"
 import { createMessageId, createToolMessage } from "@/services/agent/types"
-import { MemoryService, planCheckpointStore, planStepEffectClass } from "@/services/agent/memory"
+import { MemoryService, emptyMemoryProvider, planCheckpointStore, planStepEffectClass } from "@/services/agent/memory"
 import { buildPrompt } from "@/services/context"
 import { compactOnHighUsage, estimateTokens } from "@/services/engine/compactor"
 import { requestPlanConfirm, requestPlanStepDecision } from "@/services/engine/plan-confirmation"
@@ -170,8 +170,14 @@ export async function runPiAgentTurn(input: PiAgentTurnInput): Promise<PiAgentTu
 
   const card = getActiveCard()
   const thinkingEffort = getEffectiveThinkingEffort()
+  const memoryProjections = await emptyMemoryProvider.recall({
+    requestId: input.ingress?.requestId ?? `runtime-${input.turnId ?? turnSessionId}`,
+    sessionId: turnSessionId,
+    query: userText,
+    tokenBudget: Math.floor(aiConfig.contextMaxTokens * 0.15),
+  })
   const context = buildPrompt(
-    { recentMessages: chatMessages, userText, unansweredCount, thinkingEffort, isActiveMessage },
+    { recentMessages: chatMessages, userText, unansweredCount, thinkingEffort, isActiveMessage, memoryProjections },
     card,
     getPoolSnapshot(),
   )

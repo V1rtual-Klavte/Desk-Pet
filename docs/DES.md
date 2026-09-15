@@ -869,7 +869,7 @@ WAITING ──(收到消息)──→ PRE ──→ GENERATING
 
 #### 上下文与记忆边界
 
-Pi Runtime 当前由 ContextKernel 按 `static → dynamic → profile → memory → transcript → ephemeral` 固定层级生成兼容 `systemPrompt`，并按上下文窗口保留最近 transcript、记录结构化裁剪原因。最终回复后仍调用既有 `compactOnHighUsage()` 异步写入会话摘要。长期记忆索引和召回尚未接通。
+Pi Runtime 当前由 ContextKernel 按 `static → dynamic → profile → memory → transcript → ephemeral` 固定层级生成兼容 `systemPrompt`，并按上下文窗口保留最近 transcript、记录结构化裁剪原因。`User.md` 先转换为带来源、版本和 taint 的只读画像 projection；长期记忆调用空 `MemoryProvider`，不会自动注入 `MemoryService.search()` 结果。最终回复后仍调用既有 `compactOnHighUsage()` 异步写入会话摘要。
 
 ### 9.5 工具系统详细说明
 

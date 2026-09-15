@@ -43,7 +43,7 @@ LLM 可见回复文本 + <RUNTIME_DATA>
 
 `src/services/engine/pi/runtime.ts` 是唯一的多轮 Agent Runtime。它在调用 Pi 前刷新变量池、构建 Prompt，并把 Pi 的工具调用接回既有 Safety 和 ToolRouter；Pi 返回最终文本后才调用 `reply/generator.ts`。因此流式增量、工具中间消息都不会直接写入 Card 变量。
 
-当前主 Agent Runtime、Planner 和 Live Test 契约都以 RUNTIME_DATA 为准；旧变量工具只在历史归档中出现，不代表当前接口仍有效。ContextKernel 已固定 `static → dynamic → profile → memory → transcript → ephemeral` 层级，并按上下文上限保留最近 transcript；预算不足会记录被裁剪 block、原始 token、保留 token 和原因。当前长期召回仍保持既有边界。
+当前主 Agent Runtime、Planner 和 Live Test 契约都以 RUNTIME_DATA 为准；旧变量工具只在历史归档中出现，不代表当前接口仍有效。ContextKernel 已固定 `static → dynamic → profile → memory → transcript → ephemeral` 层级，并按上下文上限保留最近 transcript；预算不足会记录被裁剪 block、原始 token、保留 token 和原因。`User.md` 只通过带来源、版本和 taint 的 profile projection 注入；长期记忆已建立 `MemoryProvider` 边界，但默认 provider 返回空集合，尚未自动召回。
 
 运行时基础重构的目标协议、Pi Agent Core hook 边界、队列/Plan 持久化、PromptSnapshot、恢复、安全和 Memory Eval 见[记忆系统重构前置准备](../plans/active/记忆系统重构前置准备.md)。当前已落地 `src/services/engine/runtime/` 协议类型、事件兼容适配、快照脱敏纯函数、只读 trace 总线、RuntimeQueue、queue event adapter、SessionTurnStore、PlanCheckpointStore、按 sessionId 隔离的 AgentSlot 和 ContextKernel 层级预算。`sendMessage()` 先写 queued，再通过版本/CAS 记录 turn 的 dispatching、running 和 done/failed。AgentSlot 按 streaming/settling 阶段把已落盘输入投递为 steer/followUp，deferred 可由 drain 或启动恢复继续消费。Plan/step 及子代理工具开始/结束写入 session event；启动恢复把运行中只读步骤重置为 pending，把未知外部副作用隔离并暂停计划。长期召回仍未实现；该计划中的接口和阶段门禁不表示这些能力已经全部实现。
 

@@ -5,6 +5,9 @@
 
 import { invoke } from "@tauri-apps/api/core"
 import { createLogger } from "@/services/logger"
+
+export { emptyMemoryProvider } from "./provider"
+export type { MemoryProvider, MemoryProjection, MemoryRecallRequest } from "./provider"
 import type { MemoryEntry, ProjectEntry, SessionFileMeta, SessionMemory, CompactionSummary } from "./types"
 
 // IO

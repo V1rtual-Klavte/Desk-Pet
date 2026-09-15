@@ -211,6 +211,7 @@ interface VariableState {
 - `Project.md`：会话归档索引。
 
 当前长期记忆的自动提取和 Prompt 检索尚未闭环。不要在代码或文档中声称 `MemoryService.search()` 已经自动注入，或声称 `forkMemorySupplement()` 已经由每轮对话调用。
+`User.md` 通过带来源、版本和 taint 的只读 profile projection 进入 ContextKernel；长期记忆只接入空 `MemoryProvider`，当前每轮 recall 返回空集合。
 
 ## 单一真相源（SSOT）
 
