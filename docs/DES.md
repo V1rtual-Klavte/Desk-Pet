@@ -26,7 +26,7 @@
 
 这份文档保留设计和玩法的历史细节；`docs/current/` 用来记录已经与代码核对过的当前契约，`docs/history/` 只用于查阅阶段决策。
 
-记忆系统的运行时基础契约见[记忆系统运行时契约](plans/active/记忆系统运行时契约.md)；当前 `sendMessage()` 已先持久化 queued 事件再调用 Pi，SessionTurnStore 通过版本/CAS 记录 queued 到 done/failed，并写入 queue ack。启动会恢复 persisted/requeued/deferred 请求，对进行中的 queue/turn 写 recovery 并隔离未知副作用；AgentSlot 按会话持有当前 Agent 与 generation，旧回合的异步清理不会释放新 run。工具执行期间的新输入先落盘再 steer，Agent settling 边界改用 followUp。助手模式 Plan、step 和子代理工具边界写入 checkpoint；恢复时只读步骤可重置，未知外部副作用被隔离。ContextKernel 已固定六层 block 顺序并执行预算裁剪，长期召回仍属于后续阶段。工具侧的门禁走 Pi 原生 `beforeToolCall`（fail-closed），配合 deny-first 会话信任顺序和按调用的 operationId/policyHash 审计；会话正文只写一份 `deskpet-turn` 记录，事件视图在读取时从 turn 投影，压缩由 LLM 生成结构化摘要写回会话文件。Rust bash 已改为不可关闭的两层 token 基线，`app_open` 路径校验仍未收紧。实际执行顺序、阶段门禁和新会话接力见[记忆系统重构执行手册](plans/active/记忆系统重构执行手册.md)。
+记忆系统的运行时基础契约见[记忆系统运行时契约](plans/active/记忆系统运行时契约.md)；当前 `sendMessage()` 已先持久化 queued 事件再调用 Pi，SessionTurnStore 通过版本/CAS 记录 queued 到 done/failed，并写入 queue ack。启动会恢复 persisted/requeued/deferred 请求，对进行中的 queue/turn 写 recovery 并隔离未知副作用；AgentSlot 按会话持有当前 Agent 与 generation，旧回合的异步清理不会释放新 run。工具执行期间的新输入先落盘再 steer，Agent settling 边界改用 followUp。助手模式 Plan、step 和子代理工具边界写入 checkpoint；恢复时只读步骤可重置，未知外部副作用被隔离。ContextKernel 已固定六层 block 顺序并执行预算裁剪，长期召回仍属于后续阶段。工具侧的门禁走 Pi 原生 `beforeToolCall`（fail-closed），配合 deny-first 会话信任顺序和按调用的 operationId/policyHash 审计；会话正文只写一份 `deskpet-turn` 记录，事件视图在读取时从 turn 投影，压缩由 LLM 生成结构化摘要写回会话文件。Rust bash 已改为不可关闭的两层 token 基线，并且不再整读输出（尾部窗口 + 分块统计，超时缺省 120s）；`app_open` 已补路径校验并改走 `ShellExecuteW`；截断的工具输出会把完整内容留在 spill 文件里供模型按需读取；会话信任的粒度是「工具 + 本次参数」。文件工具的路径分级（私钥凭据 NOWAY、`.env` 与系统目录 DANGER）已接到 `pi-read`/`pi-write`/`pi-edit` 上。实际执行顺序、阶段门禁和新会话接力见[记忆系统重构执行手册](plans/active/记忆系统重构执行手册.md)。
 
 2026-08-06 的全仓阶段审查、记忆系统边界、测试覆盖和后续优先级见 [阶段现状](history/analysis/阶段现状-2026.8.6.md)。
 
@@ -918,7 +918,7 @@ Pi Runtime 当前由 ContextKernel 按 `static → dynamic → profile → memor
 轻量模式 (默认)                   助手模式 (设置中开启)
   │                                   │
 ToolRegistry:                      ToolRegistry 额外:
-├── pi-read (SAFE)                 ├── app_open (NORMAL)
+├── pi-read (SAFE，路径分级)       ├── app_open (DANGER)
 ├── pi-write (DANGER, 确认)        ├── clipboard_read (NORMAL)
 ├── pi-edit (DANGER, 确认)         ├── clipboard_write (DANGER)
 ├── pi-bash (白名单/NORMAL)        ├── agent_spawn (NORMAL)【已实现 fork/team】
@@ -987,8 +987,10 @@ BASH_DANGEROUS_PATTERNS: [rm -rf, sudo, chmod 777, > /dev/, curl|sh, mkfs, dd if
 // Bash 硬禁止 (即使助手也拦截)
 BASH_NOWAY_PATTERNS: [rm -rf /, sudo rm, mkfs, dd ... of=/dev/, curl|sh, > /etc/]
 
-// 文件路径危险
-FILE_DANGEROUS_PATTERNS: [/.ssh/, /etc/passwd, /etc/shadow, /System/, /Windows/, .pem, .key, .env]
+// 文件路径分级 (resolveFilePathLevel，已接到 pi-read/pi-write/pi-edit)
+FILE_NOWAY_PATTERNS:     [/.ssh/, .pem, .key]                       // 私钥与凭据：只读也不放行
+FILE_SENSITIVE_PATTERNS: [/etc/passwd, /etc/shadow, /System/, /Windows/, .env]  // 敏感：可确认
+FILE_DANGEROUS_PATTERNS: 上面两者的并集
 ```
 
 上面的模式库只负责 TS 侧的风险分级与确认决策，不是最终门禁。`src-tauri/src/commands/bash_policy.rs` 才是不可关闭的最终基线，按两层 token 判定：层 1 硬基线（递归删根/家目录、格式化、`dd` 直接读写设备、系统电源命令、fork bomb、`-delete`/`-exec` 类破坏性参数、重定向写系统路径）在 pet 与 assistant 两种 scope 下都执行；层 2 才按 scope 叠加 —— pet 要求首词在白名单内且禁用 Shell 组合符，assistant 放行扩展命令与组合符但仍拒绝操作系统路径。前端只能叠加规则，不能关闭基线。

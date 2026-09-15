@@ -104,8 +104,8 @@ Desk-Pet 曾自研 blocking / async 的 HookBus，因生产消费者为零（唯
 
 以下问题已定位但**尚未修复**，属 P5 遗留项，需要连同权限、沙箱与安全体系一起重审：
 
-- `app_open` 没有路径校验，Rust 命令未注入 `State<AppPaths>`；且 NORMAL 级别在确认一次后可会话内信任。
-- 工具输出没有 spill：`tool/router.ts` 只做 50000 字符内联截断，超长输出仍会进入上下文。
+- 会话信任的粒度是「工具 + 本次参数」（`trustSignature`），但 `pi-write` 的签名包含完整正文，所以同一文件的不同内容每次都算新调用，需要各自确认。
+- `bash_exec` 的 spill 文件保留最近 10 份后自动淘汰，没有跨会话的持久保留策略。
 - Provider 网络只校验协议、超时和响应体上限，没有重定向次数与私网/环回 IP 防护。
 - `tools.bash.enabled` 与 `tools.file.enabled` 是死配置：`config.ts` 的 `bashEnabled` / `fileEnabled` getter 没有任何消费者，设置页的开关不改变行为。
 
@@ -113,7 +113,14 @@ Desk-Pet 曾自研 blocking / async 的 HookBus，因生产消费者为零（唯
 
 - **bash 最终基线**：`restricted: bool` 换成必填的 `policy { scope, whitelist }`，助手模式不再能关闭 Rust 校验；`find -delete` / `-exec` 一类「首词合法、参数致命」的命令已由层 1 参数级禁项覆盖（提交 `eb9a312`）。
 - `checkSafety` 的会话信任短路 —— 现在先计算 `resolveSafetyLevel` 再应用会话信任，且信任不能越过动态 NOWAY。
+- **`bash_exec` 阻塞与内存**：命令体搬进 `spawn_blocking`；`timeout_ms` 缺省补 120s 兜底；输出改走尾部窗口读取 + 分块统计行数，不再整读入内存（提交 `c270680`）。
+- **工具输出 spill**：Rust 在截断时保留完整输出并回传 `spillPath`，`exec()` 把它同时放进流式更新与最终结果，`router` 的内联预算改为同时作用于 `contentParts`（提交 `ff1f49e`）。
+- **`app_open` 无校验**：Rust 命令注入 `State<AppPaths>` 并先走 `validate_file_path`；macOS 与 `xdg-open` 加 `--`；Windows 改走 `ShellExecuteW`，路径不再经过 cmd 解析；工具级别由 NORMAL 提为 DANGER（提交 `15a64d3`）。
+- **文件路径分级未接通**：`resolveFilePathLevel` 已接到 `pi-read`/`pi-write`/`pi-edit`，私钥凭据 NOWAY、`.env` 与系统目录 DANGER（提交 `4aedfd1`）。
+- **信任粒度**：`trustToolInSession(toolName, signature?)` 记的是「工具 + 本次参数」，DANGER 工具确认后按参数记住；`ToolContext.sessionTrusted` 这个从未被读取的死字段已删除（提交 `2998607`）。
 
 ## 验证状态
 
-`pnpm run test:types` 与 `pnpm run build` 通过。safety 与 tool-execution 模块已建立 Live Contract 与场景（`safety-safe`/`safety-normal`/`safety-danger`/`safety-noway`/`safety-hook-errors`/`safety-trust-lifecycle`/`tool-cancelled`/`tool-provider-network-boundary` 等）；`safety-hook-errors` 现在断言 Pi 原生 `beforeToolCall` 在 block 与抛错两种情况下都不执行工具。bash 两层策略有 `bash_policy.rs` 内的 Rust 单元测试（`#[cfg(test)]`），但它不在 Live Test 里，`test:types` 与 CI 也只跑 `cargo check`、不执行 `cargo test`。P5 阶段的 `pnpm test -- --module safety|tool-execution --strict` 结果尚未采集，不能视为运行时验证通过；见[执行手册](../plans/active/记忆系统重构执行手册.md)「当前检查点」。
+`pnpm run test:types` 与 `pnpm run build` 通过。safety 与 tool-execution 模块已建立 Live Contract 与场景（`safety-safe`/`safety-normal`/`safety-danger`/`safety-noway`/`safety-hook-errors`/`safety-trust-lifecycle`/`tool-cancelled`/`tool-provider-network-boundary` 等）；`safety-hook-errors` 现在断言 Pi 原生 `beforeToolCall` 在 block 与抛错两种情况下都不执行工具。bash 两层策略有 `bash_policy.rs` 内的 Rust 单元测试（`#[cfg(test)]`），`paths.rs` 与 `tool_exec.rs` 也各有 `#[cfg(test)]` 用例（符号链接叶子、尾部窗口截断与旧实现逐字段比对）；这些都不在 Live Test 里，`test:types` 与 CI 也只跑 `cargo check`、不执行 `cargo test`。
+
+2026-09-15 采集：`pnpm test -- --module tool-execution --strict` 5/5 通过；`pnpm test -- --module safety --strict --repeat 2` 在 5 次运行中 3 次 25/25 通过、2 次各出现 1 个场景超时（总时长 137–140s，即恰好一个场景耗尽 120s 的 `DEFAULT_SCENE_TIMEOUT`）。超时发生在纯逻辑场景上——它们仍会走一次真实 LLM 回合（本文件此前记录的 L7 问题），因此判定为 Provider 侧调用停滞，不是本轮改动的确定性回归，但**尚未做「改动前基线对照」**，不能记为稳定通过。

@@ -34,7 +34,7 @@
 ## 后续路线
 
 1. 按[记忆系统运行时契约](../plans/active/记忆系统运行时契约.md)推进 P6：候选记忆提取、来源门禁、画像写入候选和 dreaming；阶段进度见[执行手册](../plans/active/记忆系统重构执行手册.md)。
-2. 补齐 P4/P5 遗留：API round 分级压缩、compaction 版本与 lock、工具输出 spill、网络私网 IP 与重定向防护、`app_open` 路径校验。
+2. 补齐 P4/P5 遗留：API round 分级压缩、compaction 版本与 lock、Provider 网络的重定向与私网 IP 防护。
 3. 以关键词检索、重要性排序和固定 token 预算实现最小召回闭环。
 4. 补充纠正、删除、冲突和过期处理；只有关键词检索不足时再评估向量检索。
 

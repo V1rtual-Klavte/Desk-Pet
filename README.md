@@ -26,7 +26,7 @@
 - **人格系统** — Card 热切换，支持 neutral、angelkawaii、ame、pchan 和用户导入 Card
 - **Card 运行时状态** — 通过回复末尾的 `RUNTIME_DATA` 更新已注册的角色变量
 - **窗口感知** — 监控前台窗口，停留超时后 AI 主动搭话
-- **安全控制** — SAFE / NORMAL / DANGER / NOWAY 风险等级与确认策略；动态风险等级先于会话信任解析（deny-first）
+- **安全控制** — SAFE / NORMAL / DANGER / NOWAY 风险等级与确认策略；动态风险等级先于会话信任解析（deny-first）；会话信任的粒度是「工具 + 本次参数」，确认过的参数才免重复询问；文件工具另有路径分级，私钥与凭据类路径直接 NOWAY
 - **Bash 硬基线** — Rust 侧两层 token 策略：层 1 硬基线（破坏性目标、`-delete`/`-exec` 类参数、系统路径重定向）在任何模式下都执行且调用方无法关闭，层 2 才按模式叠加白名单或扩展命令规则
 - **工具门禁与审计** — 工具前后置门禁走 Pi 原生 `beforeToolCall` / `afterToolCall`；每次工具调用记录 operationId、policyHash 与取消/超时的稳定错误码
 - **记忆系统** — CANDY、User、MEMORY、sessions 和压缩摘要；正文只写一份会话记录，压缩由 LLM 生成结构化摘要写回会话文件；User.md 以只读画像 projection 注入，长期记忆 provider 当前为空，自动提取与召回仍在规划
@@ -53,7 +53,7 @@
 | MCP 服务器 | ❌ | ✅ |
 | Skill（渐进披露，模型用 read 加载正文） | ❌ | ✅ |
 | 子代理 agent.spawn（fork/team） | ❌ | ✅ |
-| 安全确认策略 | SAFE/NORMAL 自动；写入和扩展 Bash 可确认 | 四级风险 + 三策略 + 会话信任 |
+| 安全确认策略 | SAFE/NORMAL 自动；写入和扩展 Bash 可确认 | 四级风险 + 三策略 + 按调用粒度的会话信任 |
 
 ---
 
