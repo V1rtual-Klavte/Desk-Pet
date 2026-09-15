@@ -1,16 +1,19 @@
 ---
-document_type: active_plan
-status: proposed
+document_type: historical_implementation_record
+status: archived
 created_at: 2026-09-10
+archived_at: 2026-09-15
 scope: pi_runtime_provider_tool_ui_context
 parent_plan: pi-agent-迁移设计.md
+current_reference: ../../plans/active/记忆系统运行时契约.md
 ---
 
 # Pi Agent 能力替换与运行链路设计
 
-> 本文承接《[Pi Agent 内核迁移设计](pi-agent-迁移设计.md)》和
-> `docs/current/1.md` 的补充意见，专门讨论队列、Provider、工具、UI 事件、
-> 上下文压缩和 Memory 的下一步边界。
+> 归档: 2026-09-15 | 原分支: V1rtual_memory_prep | 关联: [记忆系统运行时契约](../../plans/active/记忆系统运行时契约.md)
+
+> 本文承接《[Pi Agent 内核迁移设计](pi-agent-迁移设计.md)》，专门讨论队列、
+> Provider、工具、UI 事件、上下文压缩和 Memory 的下一步边界。
 >
 > 本文是待实施方案，不代表当前代码已经完成这些改动。当前已经完成的是主
 > 多轮 Loop 迁移；本文描述的是下一阶段的目标架构和实施顺序。
