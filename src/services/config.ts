@@ -9,7 +9,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { dump as dumpYaml, load as loadYaml } from "js-yaml";
 import { DEFAULT_PROFILE } from "@/services/paths";
 import { createLogger, LEVELS, LEVEL_ORDER, setLogLevel, type Level } from "@/services/logger";
-import { formatError } from "@/services/error";
+import { formatError, reportError } from "@/services/error";
 
 const log = createLogger("Config");
 
@@ -138,6 +138,8 @@ interface Config {
 let cfg = structuredClone(rawConfig) as Config;
 let configInitialized = false
 let writeQueue: Promise<void> = Promise.resolve()
+/** 最近一次写盘的真实失败；被后一次成功写入清空 */
+let lastWriteError: unknown = null
 let saveQueued = false
 let leadingComments = ""  // 首次读取时保留的头部注释块
 
@@ -199,24 +201,70 @@ function clearLegacyConfigCache(): void {
   } catch { /* WebView storage may be unavailable in tests. */ }
 }
 
+// ── 配置写队列 ──
+// 队列尾必须永远 fulfilled：Promise 链一旦 rejected，后续 `.then` 的回调就不再执行，
+// 该会话内所有后续设置保存都会静默失效。真实失败只沿「本次调用返回的那条 promise」
+// 传播（fire-and-forget 路径自行上报），链尾用 .catch 消化。
+const WRITE_MAX_RETRIES = 1        // 首次之外再重试 1 次，不做无限重试
+const WRITE_RETRY_BASE_MS = 250    // 指数退避基数
+const WRITE_RETRY_CAP_MS = 1000    // 退避封顶
+
+const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms))
+
+/** 写盘（含有限重试）；重试耗尽后抛出最后一次错误，由调用方决定如何呈现 */
+async function writeConfigFile(content: string): Promise<void> {
+  for (let attempt = 0; ; attempt++) {
+    try {
+      await invoke<void>("write_runtime_config", { content })
+      return
+    } catch (error) {
+      if (attempt >= WRITE_MAX_RETRIES) throw error
+      await sleep(Math.min(WRITE_RETRY_BASE_MS * 2 ** attempt, WRITE_RETRY_CAP_MS))
+    }
+  }
+}
+
+/**
+ * 入队一次配置写盘。
+ * 返回的 promise 保留真实成功/失败（flushConfig 的调用方要 await 到它）；
+ * 队列尾另行消化错误，保证一次失败不会让后续写入全部失效。
+ */
+function enqueueConfigWrite(content: string): Promise<void> {
+  const run = writeQueue.then(async () => {
+    try {
+      await writeConfigFile(content)
+      lastWriteError = null
+    } catch (error) {
+      lastWriteError = error
+      throw error
+    }
+  })
+  writeQueue = run.catch(() => { /* 队尾消化：链保持 fulfilled，后续写入照常执行 */ })
+  return run
+}
+
 function queueConfigSave(): void {
   if (saveQueued) return
   saveQueued = true
   queueMicrotask(() => {
     saveQueued = false
-    const content = serializeConfig()
-    writeQueue = writeQueue.then(() => invoke<void>("write_runtime_config", { content }))
-    void writeQueue
+    // 合并窗口内的保存没有调用方 await 这条 promise，失败必须主动上报，否则只会静默丢配置
+    enqueueConfigWrite(serializeConfig()).catch((error) => {
+      reportError("Config", error, { kind: "save" })
+    })
   })
 }
 
 export async function flushConfig(): Promise<void> {
   if (saveQueued) {
     saveQueued = false
-    const content = serializeConfig()
-    writeQueue = writeQueue.then(() => invoke<void>("write_runtime_config", { content }))
+    // 这条不做消化：调用方 await 到的就是本次写盘的真实成功/失败
+    await enqueueConfigWrite(serializeConfig())
+    return
   }
   await writeQueue
+  // 队尾消化过错误，但最后一次写盘失败意味着磁盘上的配置已经过期，调用方有权知道
+  if (lastWriteError !== null) throw lastWriteError
 }
 
 function cloneConfig(): Config {
