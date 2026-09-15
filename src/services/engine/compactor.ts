@@ -49,26 +49,51 @@ export function shouldCompact(estimatedUsage: number, totalBudget: number): bool
  * 这步只做内存层面的消息替换，不调 LLM。
  */
 export function compactMessages(messages: Message[]): Message[] {
-  const keepCount = Math.max(1, Math.floor(messages.length * 0.4))
-  const toKeep = messages.slice(messages.length - keepCount)
+  const units = groupMessageUnits(messages)
+  const keepUnitCount = Math.max(1, Math.floor(units.length * 0.4))
+  const toKeep = units.slice(units.length - keepUnitCount).flat()
 
   if (messages.length === toKeep.length) return messages
 
   // 从上下文引擎获取已有摘要，注入为占位消息
   const existing = MemoryService.getCompactionSummarySync()
   const summaryText = existing
-    || `[对话摘要] 之前 ${messages.length - keepCount} 轮对话已归档到 sessions/`
+    || `[对话摘要] 之前 ${messages.length - toKeep.length} 条消息已归档到 sessions/`
 
   const summaryMsg: Message = {
     id: `compact-${Date.now()}`,
-    role: "tool",
+    role: "system",
     text: summaryText,
     timestamp: Date.now(),
-    toolCallId: "context-compaction",
   }
 
-  log.debug(`内存压缩: ${messages.length} → ${keepCount + 1} (裁剪 ${messages.length - keepCount} 条)`)
+  log.debug(`内存压缩: ${messages.length} → ${toKeep.length + 1} (裁剪 ${messages.length - toKeep.length} 条，保持工具成对)`)
   return [summaryMsg, ...toKeep]
+}
+
+/** 把 assistant 工具调用和其结果视作不可拆分的上下文单元。 */
+export function groupMessageUnits(messages: Message[]): Message[][] {
+  const units: Message[][] = []
+  const pending = new Map<string, Message>()
+  for (const message of messages) {
+    if (message.role === "assistant" && message.toolCalls?.length) {
+      const unit = [message]
+      units.push(unit)
+      for (const call of message.toolCalls) pending.set(call.id, unit[0])
+      continue
+    }
+    if (message.role === "tool" && message.toolCallId) {
+      const owner = pending.get(message.toolCallId)
+      if (owner) {
+        const unit = units.find(candidate => candidate[0] === owner)
+        if (unit) unit.push(message)
+        pending.delete(message.toolCallId)
+        continue
+      }
+    }
+    units.push([message])
+  }
+  return units
 }
 
 // ═══════════════════════════════════════════════════════════════
