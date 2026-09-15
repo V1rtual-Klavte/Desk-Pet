@@ -73,6 +73,8 @@ src-tauri/resources/defaults/skills/{name}/SKILL.md   ← 随包种子，只读
 | `beforeToolCall` | 工具次数上限、`checkSafety`、用户确认 |
 | `steering` | 用户可在回合执行中插话，本轮工具跑完后注入下一轮 |
 | `onUpdate` | 工具执行中的快照回传 |
+
+Provider 网络请求只允许 `http`/`https`，请求有固定超时，响应体按 4 MiB 上限流式读取；超限、取消和超时均转为失败结果，不把异常正文继续交给模型。
 | `isError` 往返 | tool 消息落盘保留失败标记，重开会话后模型仍能区分成功与失败 |
 
 Pi 0.85.1 已公开 `transformContext`、`shouldStopAfterTurn`、`prepareNextTurnWithContext`、`subscribe`、`onPayload` 和 `onResponse`；当前 runtime 尚未把它们接成完整的 ContextKernel、PromptSnapshot 和恢复协议，实施边界见[记忆系统重构前置准备](../plans/active/记忆系统重构前置准备.md)。
