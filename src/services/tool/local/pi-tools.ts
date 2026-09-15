@@ -10,7 +10,13 @@ import { adaptHarnessTool } from "../pi/harness-adapter"
 import { TauriExecutionEnv } from "../pi/tauri-execution-env"
 import { createLogger } from "@/services/logger"
 import { toolsConfig } from "@/services/config"
-import { BASH_DANGEROUS_PATTERNS, BASH_NOWAY_PATTERNS, matchesAnyPattern } from "@/services/safety/checker"
+import {
+  BASH_DANGEROUS_PATTERNS,
+  BASH_NOWAY_PATTERNS,
+  matchesAnyPattern,
+  maxSafetyLevel,
+  resolveFilePathLevel,
+} from "@/services/safety/checker"
 
 const log = createLogger("PiTools")
 
@@ -22,17 +28,26 @@ export async function registerPiBaseTools(): Promise<void> {
   const edit = createEditTool<{ env: ExecutionEnv }>()
   const bash = createBashTool<{ env: ExecutionEnv }>()
 
+  // 写类工具的固有等级由配置决定；路径风险只在此基础上加码，不降级
+  const writeBaseLevel = (): "DANGER" | "NOWAY" => toolsConfig.fileWriteEnabled ? "DANGER" : "NOWAY"
+  const classifyWriteRisk = (params: Record<string, unknown>) =>
+    maxSafetyLevel(writeBaseLevel(), resolveFilePathLevel(params.path))
+
   registerAll([
-    adaptHarnessTool(read, ctx => createEnv(ctx.mode), { id: "pi-read", safetyLevel: "SAFE", actionCategory: "fs.read" }),
+    {
+      ...adaptHarnessTool(read, ctx => createEnv(ctx.mode), { id: "pi-read", safetyLevel: "SAFE", actionCategory: "fs.read" }),
+      // 只读不等于无害：私钥凭据类路径只读一次就足以泄露
+      resolveSafetyLevel: params => resolveFilePathLevel(params.path),
+    },
     {
       ...adaptHarnessTool(write, ctx => createEnv(ctx.mode), { id: "pi-write", safetyLevel: "DANGER", actionCategory: "fs.write" }),
       lightweightPolicy: "confirm",
-      resolveSafetyLevel: () => !toolsConfig.fileWriteEnabled ? "NOWAY" : "DANGER",
+      resolveSafetyLevel: classifyWriteRisk,
     },
     {
       ...adaptHarnessTool(edit, ctx => createEnv(ctx.mode), { id: "pi-edit", safetyLevel: "DANGER", actionCategory: "fs.write" }),
       lightweightPolicy: "confirm",
-      resolveSafetyLevel: () => !toolsConfig.fileWriteEnabled ? "NOWAY" : "DANGER",
+      resolveSafetyLevel: classifyWriteRisk,
     },
     {
       ...adaptHarnessTool(bash, ctx => createEnv(ctx.mode), { id: "pi-bash", safetyLevel: "NORMAL", actionCategory: "os.exec" }),

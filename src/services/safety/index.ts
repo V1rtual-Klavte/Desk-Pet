@@ -11,7 +11,11 @@ export {
   BASH_DANGEROUS_PATTERNS,
   BASH_NOWAY_PATTERNS,
   FILE_DANGEROUS_PATTERNS,
+  FILE_NOWAY_PATTERNS,
+  FILE_SENSITIVE_PATTERNS,
   matchesAnyPattern,
+  maxSafetyLevel,
+  resolveFilePathLevel,
 } from "./checker"
 export type { SafetyCheckResult } from "./checker"
 

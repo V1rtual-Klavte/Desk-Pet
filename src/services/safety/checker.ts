@@ -47,16 +47,54 @@ export const BASH_NOWAY_PATTERNS: RegExp[] = [
   />\s*\/etc\//,
 ]
 
-/** 文件路径危险模式 */
-export const FILE_DANGEROUS_PATTERNS: RegExp[] = [
-  /\/\.ssh\//, /\/etc\/passwd/, /\/etc\/shadow/,
+/** 私钥与凭据类路径 — 连读取都不允许，内容一旦进模型上下文就等于泄露 */
+export const FILE_NOWAY_PATTERNS: RegExp[] = [
+  /\/\.ssh\//, /\.pem$/, /\.key$/,
+]
+
+/** 敏感但可由用户确认的路径 — 环境变量文件与系统目录 */
+export const FILE_SENSITIVE_PATTERNS: RegExp[] = [
+  /\/etc\/passwd/, /\/etc\/shadow/,
   /\/System\//, /\/Windows\//,
-  /\.pem$/, /\.key$/, /\.env$/,
+  /\.env$/,
+]
+
+/** 全部敏感路径模式。按子集并入，语义与拆分前一致，粗粒度断言仍然成立。 */
+export const FILE_DANGEROUS_PATTERNS: RegExp[] = [
+  ...FILE_NOWAY_PATTERNS,
+  ...FILE_SENSITIVE_PATTERNS,
 ]
 
 /** 检测文本是否匹配任一危险模式 */
 export function matchesAnyPattern(text: string, patterns: RegExp[]): boolean {
   return patterns.some(p => p.test(text))
+}
+
+/** 安全级别由低到高，用于合并「工具固有等级」与「本次调用的路径风险」。 */
+const SAFETY_ORDER: SafetyLevel[] = ["SAFE", "NORMAL", "DANGER", "NOWAY"]
+
+/** 取两个安全级别中更严的那个。 */
+export function maxSafetyLevel(a: SafetyLevel, b: SafetyLevel): SafetyLevel {
+  return SAFETY_ORDER.indexOf(a) >= SAFETY_ORDER.indexOf(b) ? a : b
+}
+
+/**
+ * 按本次调用的路径解析文件风险等级。
+ *
+ * 这里是 `FILE_*_PATTERNS` 的生产接入点。此前它们只有测试消费者，
+ * 于是 `pi-read` 以 SAFE 放行一切路径 —— `~/.ssh/id_rsa` 会被原样送进模型上下文。
+ *
+ * 返回 `SAFE` 表示「路径本身不额外提级」，由调用方与工具固有等级合并，
+ * 因此这个函数可以单独用作只读工具的 `resolveSafetyLevel`。
+ *
+ * Windows 的反斜杠先归一成 `/`，否则同一份规则在两个平台表现不一致。
+ */
+export function resolveFilePathLevel(path: unknown): SafetyLevel {
+  if (typeof path !== "string" || path.length === 0) return "SAFE"
+  const normalized = path.replace(/\\/g, "/")
+  if (matchesAnyPattern(normalized, FILE_NOWAY_PATTERNS)) return "NOWAY"
+  if (matchesAnyPattern(normalized, FILE_SENSITIVE_PATTERNS)) return "DANGER"
+  return "SAFE"
 }
 
 // ═══════════════════════════════════════════════════════════════

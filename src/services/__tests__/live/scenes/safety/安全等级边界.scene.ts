@@ -1,5 +1,5 @@
 import type { SceneDef } from "../../types"
-import { checkSafety, matchesAnyPattern, BASH_DANGEROUS_PATTERNS, BASH_NOWAY_PATTERNS, FILE_DANGEROUS_PATTERNS, trustToolInSession, resetSessionTrust, isToolTrusted } from "@/services/safety"
+import { checkSafety, matchesAnyPattern, BASH_DANGEROUS_PATTERNS, BASH_NOWAY_PATTERNS, FILE_DANGEROUS_PATTERNS, resolveFilePathLevel, trustToolInSession, resetSessionTrust, isToolTrusted } from "@/services/safety"
 import type { ToolDef, SafetyLevel } from "@/services/tool"
 
 const tool = (safetyLevel: SafetyLevel): ToolDef => ({ id: "test-safety", name: "test_safety", description: "test", parameters: { type: "object", properties: {} }, safetyLevel, source: "local", sourceId: "", mode: "pet", actionCategory: "_default", handler: async () => ({ success: true, content: "ok" }) })
@@ -28,7 +28,26 @@ export const 硬禁止匹配 = scene("safety-noway-pattern", "sf-06", "硬禁止
   // 误杀防护：非根目录不是硬禁止，只由 DANGER 兜住。
   if (matchesAnyPattern("rm -rf /home/user", BASH_NOWAY_PATTERNS)) throw new Error("rm -rf /home/user 被误判为硬禁止")
 })
-export const 敏感路径匹配 = scene("safety-file-pattern", "sf-07", "敏感路径匹配", () => { if (!matchesAnyPattern("/home/user/.ssh/id_rsa", FILE_DANGEROUS_PATTERNS)) throw new Error("敏感路径未命中") })
+export const 敏感路径匹配 = scene("safety-file-pattern", "sf-07", "敏感路径分级", () => {
+  if (!matchesAnyPattern("/home/user/.ssh/id_rsa", FILE_DANGEROUS_PATTERNS)) throw new Error("敏感路径未命中")
+
+  // 私钥与凭据：只读也不放行
+  for (const path of ["/home/user/.ssh/id_rsa", "/home/user/cert.pem", "/home/user/server.key"]) {
+    if (resolveFilePathLevel(path) !== "NOWAY") throw new Error(`私钥路径未判为 NOWAY: ${path}`)
+  }
+  // .env 与系统目录：可由用户确认
+  for (const path of ["/home/user/.env", "/etc/passwd", "/etc/shadow", "/System/Library/CoreServices", "/Windows/System32/cmd.exe"]) {
+    if (resolveFilePathLevel(path) !== "DANGER") throw new Error(`敏感路径未判为 DANGER: ${path}`)
+  }
+  // 普通路径不额外提级，否则所有文件操作都会被弹窗
+  for (const path of ["/home/user/notes.md", "/tmp/out.txt", ""]) {
+    if (resolveFilePathLevel(path) !== "SAFE") throw new Error(`普通路径被误提级: ${path}`)
+  }
+  // Windows 反斜杠先归一再匹配，否则同一份规则在两端表现不一致
+  if (resolveFilePathLevel("C:\\Users\\me\\.ssh\\id_rsa") !== "NOWAY") throw new Error("Windows 私钥路径未命中")
+  // 参数缺失（模型漏填 path）不能顺带提级或抛错
+  if (resolveFilePathLevel(undefined) !== "SAFE") throw new Error("缺失 path 参数应保持 SAFE")
+})
 export const 信任周期 = scene("safety-trust-lifecycle", "sf-08", "会话信任可清除且不越过动态禁止", () => {
   trustToolInSession("test_safety")
   if (!isToolTrusted("test_safety")) throw new Error("信任未记录")
