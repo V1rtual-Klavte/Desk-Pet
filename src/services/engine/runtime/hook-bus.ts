@@ -18,6 +18,7 @@ export interface HookEvent {
 export interface HookResult {
   decision: "allow" | "block"
   reason?: string
+  errorCode?: "hook_timeout" | "hook_failed" | "hook_reentrancy"
 }
 
 export interface HookHandler {
@@ -61,13 +62,14 @@ export class HookBus {
   }
 
   private async runBlocking(handler: HookHandler, event: HookEvent): Promise<HookResult> {
-    if (this.active.has(handler.id)) return { decision: "block", reason: "hook_reentrancy" }
+    if (this.active.has(handler.id)) return { decision: "block", reason: "hook_reentrancy", errorCode: "hook_reentrancy" }
     this.active.add(handler.id)
     try {
       const result = await this.withDeadline(handler, event)
       return result ?? { decision: "allow" }
     } catch (error) {
-      return { decision: "block", reason: error instanceof Error ? error.message : "hook_failed" }
+      const reason = error instanceof Error ? error.message : "hook_failed"
+      return { decision: "block", reason, errorCode: reason === "hook_timeout" ? "hook_timeout" : "hook_failed" }
     } finally {
       this.active.delete(handler.id)
     }
