@@ -11,12 +11,14 @@ pub fn capture_window_title() -> String {
     // SAFETY: CreateDC + DeleteDC pairing guarantees handle lifecycle.
     // All DC operations during capture are read-only.
     unsafe {
+        use windows_sys::Win32::Foundation::CloseHandle;
         use windows_sys::Win32::System::ProcessStatus::GetProcessImageFileNameW;
         use windows_sys::Win32::System::Threading::{
-            CloseHandle, GetWindowThreadProcessId, OpenProcess, PROCESS_QUERY_INFORMATION,
-            PROCESS_VM_READ,
+            OpenProcess, PROCESS_QUERY_INFORMATION, PROCESS_VM_READ,
         };
-        use windows_sys::Win32::UI::WindowsAndMessaging::{GetForegroundWindow, GetWindowTextW};
+        use windows_sys::Win32::UI::WindowsAndMessaging::{
+            GetForegroundWindow, GetWindowTextW, GetWindowThreadProcessId,
+        };
         let hwnd = GetForegroundWindow();
         let mut buf = [0u16; 1024];
         let len = GetWindowTextW(hwnd, buf.as_mut_ptr(), 1024);
@@ -30,7 +32,8 @@ pub fn capture_window_title() -> String {
         GetWindowThreadProcessId(hwnd, &mut pid);
         if pid > 0 {
             let h = OpenProcess(PROCESS_QUERY_INFORMATION | PROCESS_VM_READ, 0, pid);
-            if !h.is_null() {
+            // windows-sys 0.52 的 HANDLE 是 isize，失败返回 0（不是空指针）
+            if h != 0 {
                 let mut name_buf = [0u16; 260];
                 let name_len = GetProcessImageFileNameW(h, name_buf.as_mut_ptr(), 260);
                 CloseHandle(h);

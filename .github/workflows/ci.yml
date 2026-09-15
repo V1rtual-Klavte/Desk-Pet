@@ -1,0 +1,43 @@
+name: CI
+
+# 目标平台是 Windows + macOS，两端各跑一次原生 `cargo check`：
+# 本机（macOS）永远看不到 `#[cfg(target_os = "windows")]` 分支，Windows job 才是唯一可靠验证器。
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test-types:
+    name: test:types (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: "11"
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      # 各平台用各自的原生 target，无需 rustup target add。
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - run: pnpm install --frozen-lockfile
+
+      # = vue-tsc --noEmit && cargo check --manifest-path src-tauri/Cargo.toml
+      # cargo 侧解析到仓库根 workspace，Cargo.lock 与 target/ 均在仓库根。
+      - run: pnpm run test:types

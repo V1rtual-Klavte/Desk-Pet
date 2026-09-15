@@ -30,7 +30,17 @@ thiserror = "1"
 zip = { version = "8", default-features = false, features = ["deflate-flate2-zlib-rs"] }
 
 [target.'cfg(windows)'.dependencies]
-windows-sys = { version = "0.52", features = ["Win32_Foundation", "Win32_UI_WindowsAndMessaging", "Win32_Graphics_Gdi", "Win32_UI_HiDpi"] }
+# feature 必须覆盖每个符号所属模块，缺一个就只在 Windows 目标上编译失败。
+# 0.52 的消费者只有本 crate（Tauri/tao/wry 走 0.59+），不存在 feature unification 兜底。
+windows-sys = { version = "0.52", features = [
+    "Win32_Foundation",             # CloseHandle / HWND / BOOL / HANDLE
+    "Win32_UI_WindowsAndMessaging", # GetForegroundWindow / GetWindowTextW / GetWindowThreadProcessId / GetCursorPos / SetWindowPos
+    "Win32_Graphics_Gdi",           # GetMonitorInfoW / MonitorFromPoint / MONITORINFOEXW
+    "Win32_UI_HiDpi",               # GetDpiForMonitor
+    "Win32_System_Threading",       # OpenProcess / PROCESS_QUERY_INFORMATION / PROCESS_VM_READ
+    "Win32_System_ProcessStatus",   # GetProcessImageFileNameW
+    "Win32_System_SystemInformation", # GlobalMemoryStatusEx / MEMORYSTATUSEX
+] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 objc = "0.2"
