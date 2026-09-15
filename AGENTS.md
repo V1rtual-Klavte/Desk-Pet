@@ -112,7 +112,7 @@ src/
 │   ├── personality/            # Card、人格注册、阶段文案、变量状态、情绪映射
 │   ├── reply/                  # RUNTIME_DATA 解析与回复后处理
 │   ├── agent/                  # Provider、Runner、子代理、记忆与主动搭话
-│   ├── context/                # System Prompt 构建
+│   ├── context/                # ContextKernel 分层、预算与兼容 Prompt 构建
 │   ├── tool/                   # 工具注册、路由、Pi 基础工具、MCP
 │   ├── skill/                  # Skill 加载与 Prompt 注入（Pi 渐进披露，非工具）
 │   ├── safety/                 # 风险等级、策略和确认桥接
@@ -152,8 +152,8 @@ src-tauri/src/
 用户输入
   -> agent/runner + engine/preprocessor
   -> session 状态、Card 变量刷新、重置策略
-  -> context/buildPrompt
-       Card 角色 / 语气指引 / 必须遵守 / 变量 / 记忆 / 工具
+  -> context/buildPrompt -> ContextKernel
+       static / dynamic / profile / memory / transcript / ephemeral 固定层级与预算裁剪
   -> 助手模式下可选 planner
   -> Pi Agent Core + pi-ai 流 + ToolRouter（read/write/edit/bash/…）+ Safety 检查
        Skill 只注入 name/description/location，正文由模型用 read 工具按需加载

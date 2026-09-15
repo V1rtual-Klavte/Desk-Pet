@@ -26,7 +26,7 @@
 
 这份文档保留设计和玩法的历史细节；`docs/current/` 用来记录已经与代码核对过的当前契约，`docs/history/` 只用于查阅阶段决策。
 
-记忆系统进入实现前的运行时基础契约见[记忆系统重构前置准备](plans/active/记忆系统重构前置准备.md)；当前 `sendMessage()` 已先持久化 queued 事件再调用 Pi，SessionTurnStore 通过版本/CAS 记录 queued 到 done/failed，并写入 queue ack。启动会恢复 persisted/requeued/deferred 请求，对进行中的 queue/turn 写 recovery 并隔离未知副作用；AgentSlot 按会话持有当前 Agent 与 generation，旧回合的异步清理不会释放新 run。工具执行期间的新输入先落盘再 steer，Agent settling 边界改用 followUp。助手模式 Plan、step 和子代理工具边界写入 checkpoint；恢复时只读步骤可重置，未知外部副作用被隔离。ContextKernel 和长期召回仍属于后续阶段。实际执行顺序、阶段门禁和新会话接力见[记忆系统重构执行手册](plans/active/记忆系统重构执行手册.md)。
+记忆系统进入实现前的运行时基础契约见[记忆系统重构前置准备](plans/active/记忆系统重构前置准备.md)；当前 `sendMessage()` 已先持久化 queued 事件再调用 Pi，SessionTurnStore 通过版本/CAS 记录 queued 到 done/failed，并写入 queue ack。启动会恢复 persisted/requeued/deferred 请求，对进行中的 queue/turn 写 recovery 并隔离未知副作用；AgentSlot 按会话持有当前 Agent 与 generation，旧回合的异步清理不会释放新 run。工具执行期间的新输入先落盘再 steer，Agent settling 边界改用 followUp。助手模式 Plan、step 和子代理工具边界写入 checkpoint；恢复时只读步骤可重置，未知外部副作用被隔离。ContextKernel 已固定六层 block 顺序并执行预算裁剪，长期召回仍属于后续阶段。实际执行顺序、阶段门禁和新会话接力见[记忆系统重构执行手册](plans/active/记忆系统重构执行手册.md)。
 
 2026-08-06 的全仓阶段审查、记忆系统边界、测试覆盖和后续优先级见 [阶段现状](history/analysis/阶段现状-2026.8.6.md)。
 
@@ -869,7 +869,7 @@ WAITING ──(收到消息)──→ PRE ──→ GENERATING
 
 #### 上下文与记忆边界
 
-Pi Runtime 当前从 Desk-Pet 会话记录重建本轮 transcript，并保留既有会话摘要注入。它不在 Pi 的 `transformContext` 中裁剪或写入长期记忆；最终回复后仍调用既有 `compactOnHighUsage()` 异步写入会话摘要。长期记忆索引、召回和压缩协议将在下一阶段按文件记忆协议独立重构，避免迁移 Loop 时改变记忆事实源。
+Pi Runtime 当前由 ContextKernel 按 `static → dynamic → profile → memory → transcript → ephemeral` 固定层级生成兼容 `systemPrompt`，并按上下文窗口保留最近 transcript、记录结构化裁剪原因。最终回复后仍调用既有 `compactOnHighUsage()` 异步写入会话摘要。长期记忆索引和召回尚未接通。
 
 ### 9.5 工具系统详细说明
 
@@ -986,16 +986,15 @@ FILE_DANGEROUS_PATTERNS: [/.ssh/, /etc/passwd, /etc/shadow, /System/, /Windows/,
 
 ### 9.8 上下文引擎
 
-#### SystemPrompt 组装顺序（每次请求动态构建）
+#### ContextKernel 组装顺序（每次请求动态构建）
 
 ```
-1. 人格 Prompt (card + boundary)              ~500-2000 tokens
-2. CANDY.md + User.md 注入                     ~50-200 tokens
-3. 会话记忆注入（压缩摘要）                     ~300-500 tokens
-4. 长期记忆检索                                  当前未自动注入
-5. 工具声明（轻量始终带/助手按需L0-L2）         ~150-1500 tokens
-6. 输出约束 + 助手能力提示                     ~150 tokens
-7. 思考强度提示 (low/high)                     ~30 tokens
+1. static：Card 角色、语气和行为规则
+2. dynamic：变量、工具、Skill 与思考强度
+3. profile：User.md 用户画像投影
+4. memory：CANDY 与会话压缩摘要；长期召回当前未自动注入
+5. transcript：按预算保留最近完整消息
+6. ephemeral：active/hook/recovery 等当前轮临时上下文
 ```
 
 #### 工具声明策略

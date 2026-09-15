@@ -269,7 +269,7 @@ export async function runPiAgentTurn(input: PiAgentTurnInput): Promise<PiAgentTu
   for (let attempt = 0; attempt <= loopConfig.maxRetry; attempt++) {
     const result = await runPiLoop({
       userText,
-      chatMessages,
+      chatMessages: context.recentMessages,
       systemPrompt: context.systemPrompt,
       tools: isActiveMessage ? [] : getToolsForMode(),
       maxToolCalls: loopConfig.maxToolCallsPerTurn,

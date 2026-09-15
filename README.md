@@ -18,6 +18,7 @@
 - **会话管理** — 多会话切换、新建、关闭、归档、恢复和会话文件持久化
 - **会话运行槽与队列化入口** — 聊天消息先将 queued 事实事件原子写入 sessions，再进入 Pi；SessionTurnStore 通过版本/CAS 记录 queued 到 done/failed，按 sessionId 隔离的 AgentSlot 持有当前 Agent 和 generation；忙碌输入先落盘再投递 steer/followUp，暂不可投递时保留 deferred 等待 drain 或重启恢复
 - **可恢复 Plan** — 助手模式的 Plan、step、子代理工具开始/结束均写入 session checkpoint；重启后只读步骤可回到 pending，缺少完成凭证的外部副作用进入 unknown_side_effect
+- **分层上下文** — ContextKernel 固定 `static → dynamic → profile → memory → transcript → ephemeral` 顺序，并记录预算裁剪原因
 - **工具系统** — 文件读写、Bash、系统信息、剪贴板、子代理、Skill、MCP（联网能力由 MCP 服务器提供）
 - **助手模式** — 解锁更完整的文件、命令、应用、剪贴板和任务编排能力，并经过安全策略控制
 - **Pi Agent Core** — 统一管理模型请求、顺序工具循环、超时和可选的复杂任务计划；产品状态仍由 Desk-Pet 管理
@@ -120,7 +121,7 @@ Desk-Pet/
 │       ├── session/                  # 多会话持久化管理
 │       ├── profile/                  # Profile 主题与导入导出
 │       ├── audio/                    # Web Audio 音效
-│       ├── context/                  # System Prompt 构建
+│       ├── context/                  # ContextKernel 分层、预算与兼容 Prompt 构建
 │       └── paths.ts                  # 统一路径管理
 ├── src-tauri/                        # Rust 后端
 │   └── src/
@@ -141,7 +142,7 @@ Desk-Pet/
 用户消息
   → PreProcessor / Session 状态
   → refreshVariablePool() + reset 策略
-  → buildPrompt(Card / 语气 / 规则 / 变量 / 记忆 / 工具)
+  → ContextKernel 六层组装与预算裁剪（兼容 buildPrompt）
   → 助手模式可选 Plan：复杂度检测 → 拆解 → 步骤执行
   → Pi Agent Core + pi-ai OpenAI-compatible 流 + ToolRouter 顺序工具循环
   → Safety 检查与确认

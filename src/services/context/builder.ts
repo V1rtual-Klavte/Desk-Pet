@@ -14,6 +14,8 @@ import { formatEmotionForPrompt } from "@/services/personality/emotion"
 import type { PersonalityCard } from "@/services/personality/types"
 import type { VariablePool } from "@/services/personality/variable-pool"
 import { createLogger } from "@/services/logger"
+import { buildContextKernel } from "./kernel"
+import type { ContextBlock } from "@/services/engine/runtime"
 
 const log = createLogger("Context")
 
@@ -30,6 +32,10 @@ export interface BuildContextInput {
 export interface BuildContextOutput {
   systemPrompt: string; tools: ToolDeclaration[]
   estimatedSystemTokens: number; contextMaxTokens: number
+  blocks: ContextBlock[]
+  recentMessages: Message[]
+  inputTokenBudget: number
+  budgetAdjustments: import("./kernel").ContextBudgetAdjustment[]
 }
 
 // ── 统一 Prompt 构建 ──
@@ -41,12 +47,12 @@ export function buildPrompt(
   const s = card?.sections
 
   // ── ① 角色设定 (WHO) ──
-  let systemPrompt = ""
+  let rolePrompt = ""
   if (s) {
-    systemPrompt += `${s.roleSetting}\n\n${s.languageStyle}\n\n${s.outputRules}`
+    rolePrompt += `${s.roleSetting}\n\n${s.languageStyle}\n\n${s.outputRules}`
   } else {
     // 无 Card（neutral 兜底不应发生，但保留回退）
-    systemPrompt = `你是一个桌面助手。准确、完整地回答用户问题。
+    rolePrompt = `你是一个桌面助手。准确、完整地回答用户问题。
 
 要求:
 - 使用 markdown 组织信息
@@ -58,49 +64,60 @@ export function buildPrompt(
 
   // ── ② 情绪表达 (EMOTION) ──
   if (s && s.emotionMappings.length > 0) {
-    systemPrompt += `\n\n${formatEmotionForPrompt(s.emotionMappings)}`
+    rolePrompt += `\n\n${formatEmotionForPrompt(s.emotionMappings)}`
   }
 
   // ── ③ When 语气 ──
   if (s?.whenText) {
-    systemPrompt += `\n\n[语气指引]\n${s.whenText}`
+    rolePrompt += `\n\n[语气指引]\n${s.whenText}`
   }
 
   // ── ④ 行为准则 ──
   if (s && s.mustRules.all.length > 0) {
-    systemPrompt += `\n\n${formatAllRules(s.mustRules)}`
+    rolePrompt += `\n\n${formatAllRules(s.mustRules)}`
   }
 
   // ── ⑤ 工具声明（先决定工具有哪些）──
   const tools = decideTools(isActiveMessage ?? false)
 
   // ── ⑥ 变量池（始终注入）──
-  systemPrompt += `\n\n${formatPoolForPrompt()}`
+  let dynamicPrompt = formatPoolForPrompt()
 
   // ── ⑧ 记忆 ──
   const candy = MemoryService.getCandyInstructionsSync()
   const user = MemoryService.getUserProfileSync()
   const sess = MemoryService.getCompactionSummarySync()
-  if (candy) systemPrompt += candy
-  if (user) systemPrompt += user
-  if (sess) systemPrompt += sess
+  const memoryPrompt = `${candy}${sess}`
 
   // ── ⑨ 工具提示 ──
   if (tools.length > 0) {
-    systemPrompt += "\n\n你可以使用工具完成任务。需要工具时只输出工具调用。完成后基于结果简短回复。"
+    dynamicPrompt += "\n\n你可以使用工具完成任务。需要工具时只输出工具调用。完成后基于结果简短回复。"
     // Skill 清单只在有工具时注入：模型要靠 read 工具才能加载正文。
-    systemPrompt += getSkillsPromptBlock()
+    dynamicPrompt += getSkillsPromptBlock()
   } else {
-    systemPrompt += "\n\n请简短口语化回复。"
+    dynamicPrompt += "\n\n请简短口语化回复。"
   }
 
-  if (thinkingEffort === "low") systemPrompt += "\n[请快速简要回答]"
-  else if (thinkingEffort === "high") systemPrompt += "\n[请仔细深入思考]"
+  if (thinkingEffort === "low") dynamicPrompt += "\n[请快速简要回答]"
+  else if (thinkingEffort === "high") dynamicPrompt += "\n[请仔细深入思考]"
+
+  const kernel = buildContextKernel([
+    { blockId: "static:card", layer: "static", source: "personality-card", text: rolePrompt, priority: 100, origin: "system", taint: "system" },
+    { blockId: "dynamic:runtime", layer: "dynamic", source: "runtime", text: dynamicPrompt, priority: 90, origin: "system", taint: "system" },
+    { blockId: "profile:user", layer: "profile", source: "User.md", text: user, priority: 80, origin: "memory", taint: "derived" },
+    { blockId: "memory:session", layer: "memory", source: "CANDY.md+session-summary", text: memoryPrompt, priority: 70, origin: "memory", taint: "derived" },
+    { blockId: "transcript:history", layer: "transcript", source: "session", text: "", priority: 60, origin: "assistant", taint: "derived" },
+    { blockId: "ephemeral:active", layer: "ephemeral", source: isActiveMessage ? "active_monitor" : "none", text: isActiveMessage ? input.userText : "", priority: 50, origin: isActiveMessage ? "active" : "system", taint: "derived" },
+  ], input.recentMessages, aiConfig.contextMaxTokens)
 
   return {
-    systemPrompt, tools,
-    estimatedSystemTokens: Math.ceil(systemPrompt.length / 2.5),
+    systemPrompt: kernel.systemPrompt, tools,
+    estimatedSystemTokens: Math.ceil(kernel.systemPrompt.length / 2.5),
     contextMaxTokens: aiConfig.contextMaxTokens,
+    blocks: kernel.blocks,
+    recentMessages: kernel.messages,
+    inputTokenBudget: kernel.inputTokenBudget,
+    budgetAdjustments: kernel.budgetAdjustments,
   }
 }
 
