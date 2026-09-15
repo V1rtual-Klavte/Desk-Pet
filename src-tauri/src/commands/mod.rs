@@ -2,6 +2,7 @@
 // Tauri Commands 统一导出
 // ==========================================
 
+pub mod bash_policy;
 pub mod cursor;
 pub mod logging;
 pub mod mcp_bridge;

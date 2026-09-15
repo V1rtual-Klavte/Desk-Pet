@@ -3,6 +3,7 @@
 // 所有系统级工具调用通过此模块桥接到 OS
 // ==========================================
 
+use super::bash_policy::{enforce_bash_policy, BashPolicy};
 use crate::error::{err, AppError, AppResult};
 use std::collections::HashMap;
 use std::fs::File;
@@ -18,6 +19,9 @@ pub struct BashPool(Mutex<HashMap<String, Arc<Mutex<Child>>>>);
 // ── Bash 命令执行 ──
 
 /// 执行 bash 命令
+///
+/// `policy` 必填：策略强度不再由前端「是否受限」的布尔值决定，
+/// scope 只能叠加层 2 规则，硬基线（bash_policy 的层 1）恒定执行。
 #[command]
 pub fn bash_exec(
     pool: State<BashPool>,
@@ -25,16 +29,11 @@ pub fn bash_exec(
     cwd: Option<String>,
     execution_id: Option<String>,
     timeout_ms: Option<u64>,
-    restricted: Option<bool>,
-    whitelist: Option<Vec<String>>,
+    policy: BashPolicy,
     max_bytes: Option<usize>,
     max_lines: Option<usize>,
 ) -> AppResult<BashResult> {
-    enforce_bash_policy(
-        &command,
-        restricted.unwrap_or(true),
-        whitelist.as_deref().unwrap_or(&[]),
-    )?;
+    enforce_bash_policy(&command, policy.scope, &policy.whitelist)?;
     let execution_id = execution_id.unwrap_or_else(|| format!("legacy-{}", std::process::id()));
     if !execution_id
         .chars()
@@ -61,6 +60,9 @@ pub fn bash_exec(
         cmd.current_dir(safe_cwd);
     }
 
+    // 已知问题（不在本次改动范围）：输出先全量落盘，再整份读回内存，最后才截断。
+    // 命令输出远大于 max_bytes/max_lines 时，磁盘写放大与峰值内存都不受限制；
+    // 正确做法是边读边截断（流式读取 + 提前 kill）。async 化是独立的改动。
     let stdout_path = std::env::temp_dir().join(format!("deskpet-{execution_id}.stdout"));
     let stderr_path = std::env::temp_dir().join(format!("deskpet-{execution_id}.stderr"));
     cmd.stdout(Stdio::from(
@@ -104,6 +106,7 @@ pub fn bash_exec(
         .map_err(|_| "Bash 状态锁损坏")?
         .remove(&execution_id);
 
+    // 同上：这里是「整读入内存」的落点，truncate_output 只在读完之后生效。
     let stdout = std::fs::read_to_string(&stdout_path).unwrap_or_default();
     let stderr = std::fs::read_to_string(&stderr_path).unwrap_or_default();
     cleanup_temp_outputs(&stdout_path, &stderr_path);
@@ -135,36 +138,9 @@ pub fn bash_exec(
     })
 }
 
-fn enforce_bash_policy(command: &str, restricted: bool, whitelist: &[String]) -> AppResult<()> {
-    let lower = command.to_lowercase();
-    let hard_patterns = [
-        "rm -rf /",
-        "sudo rm",
-        "mkfs",
-        "dd if=",
-        "curl | sh",
-        "curl | bash",
-        "> /etc/",
-    ];
-    if hard_patterns.iter().any(|pattern| lower.contains(pattern)) {
-        return Err(AppError::Tool("命令包含硬禁止操作".into()));
-    }
-    if restricted {
-        if command
-            .chars()
-            .any(|c| matches!(c, ';' | '&' | '|' | '>' | '<' | '`' | '\n'))
-            || command.contains("$(")
-            || command.contains("${")
-        {
-            return Err(AppError::Tool("轻量模式不允许 Shell 组合语法".into()));
-        }
-        let base = command.split_whitespace().next().unwrap_or("");
-        if !whitelist.iter().any(|allowed| allowed == base) {
-            return Err(AppError::Tool(format!("命令不在白名单中: {base}")));
-        }
-    }
-    Ok(())
-}
+// 旧的内联策略已移入 bash_policy.rs：
+// 子串匹配（`rm -rf /` 之类）既漏 `rm  -rf  /`、`find ~ -delete`，
+// 又误杀 `rm -rf /Users`，且助手模式整段跳过。
 
 #[command]
 pub fn bash_cancel(pool: State<BashPool>, execution_id: String) -> AppResult<()> {

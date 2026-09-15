@@ -215,8 +215,7 @@ export class TauriExecutionEnv implements ExecutionEnv {
         command,
         cwd: options?.cwd ?? this.cwd,
         timeoutMs: options?.timeout === undefined ? null : Math.round(options.timeout * 1000),
-        restricted: this.mode === "pet",
-        whitelist: toolsConfig.bashWhitelist,
+        policy: { scope: this.mode, whitelist: toolsConfig.bashWhitelist },
         maxBytes: limits?.maxBytes ?? 50 * 1024,
         maxLines: limits?.maxLines ?? 2000,
       })
