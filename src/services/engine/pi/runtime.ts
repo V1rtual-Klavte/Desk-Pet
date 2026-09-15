@@ -8,7 +8,7 @@ import type { AssistantMessage, Message as PiMessage, Model } from "@earendil-wo
 import type { Message, ThinkingEffort, ToolCallRequest } from "@/services/agent/types"
 import type { IngressEnvelope, MessageOrigin, MessageTaint, SessionEvent } from "@/services/engine/runtime"
 import { createMessageId, createToolMessage } from "@/services/agent/types"
-import { MemoryService } from "@/services/agent/memory"
+import { MemoryService, planCheckpointStore, planStepEffectClass } from "@/services/agent/memory"
 import { buildPrompt } from "@/services/context"
 import { compactOnHighUsage, estimateTokens } from "@/services/engine/compactor"
 import { requestPlanConfirm, requestPlanStepDecision } from "@/services/engine/plan-confirmation"
@@ -83,6 +83,7 @@ export interface PiAgentTurnInput {
   isRetry?: boolean
   ingress?: IngressEnvelope
   runGeneration?: number
+  turnId?: string
 }
 
 export interface PiAgentTurnOutput {
@@ -100,6 +101,8 @@ export interface PiSubAgentInput {
   maxRounds?: number
   timeoutMs?: number
   thinkingEffort?: ThinkingEffort
+  onToolStart?: (toolName: string, toolCallId: string) => Promise<void> | void
+  onToolDone?: (toolName: string, toolCallId: string, success: boolean) => Promise<void> | void
 }
 
 export interface PiSubAgentOutput {
@@ -127,6 +130,8 @@ interface PiLoopInput {
   toolCallHistory?: PiAgentTurnOutput["toolCallHistory"]
   persistToolMessages?: boolean
   timeoutReply?: string
+  onToolStart?: PiSubAgentInput["onToolStart"]
+  onToolDone?: PiSubAgentInput["onToolDone"]
 }
 
 /**
@@ -187,6 +192,31 @@ export async function runPiAgentTurn(input: PiAgentTurnInput): Promise<PiAgentTu
         thinkingEffort: planConfig.thinkingEffort,
       })
       if (plan.steps.length > 0) {
+        const now = Date.now()
+        const planId = `plan-${input.ingress?.requestId ?? crypto.randomUUID()}`
+        const rootTurnId = input.turnId ?? input.ingress?.parentTurnId ?? `turn-${input.ingress?.requestId ?? crypto.randomUUID()}`
+        await planCheckpointStore.create({
+          schemaVersion: 1,
+          planId,
+          sessionId: turnSessionId,
+          rootTurnId,
+          state: "admitting",
+          agentIds: plan.steps.map(step => `${planId}:agent:${step.id}`),
+          version: 1,
+          createdAt: now,
+          updatedAt: now,
+        }, plan.steps.map(step => ({
+          planId,
+          stepId: String(step.id),
+          agentId: `${planId}:agent:${step.id}`,
+          title: step.description,
+          dependsOn: (step.dependsOn ?? []).map(String),
+          state: "pending",
+          attempt: 0,
+          idempotencyKey: `${planId}:step:${step.id}`,
+          effectClass: planStepEffectClass(step.allowedTools),
+          updatedAt: now,
+        })))
         let confirmed = safetyConfig.mode === "just_do_it"
         let stepMode: "auto" | "stepByStep" = "auto"
         if (!confirmed) {
@@ -198,11 +228,14 @@ export async function runPiAgentTurn(input: PiAgentTurnInput): Promise<PiAgentTu
           stepMode = result.mode
         }
         if (!confirmed) {
+          for (const step of plan.steps) await planCheckpointStore.transitionStep(planId, String(step.id), "skipped")
+          await planCheckpointStore.transitionPlan(planId, "failed")
           transition("WAITING")
           const reply = getSimpleStage("planning") ?? "好的，已取消计划～"
           await persistTurn(turnSessionId, "assistant", reply)
           return { reply, toolCallHistory, retriesUsed: 0, effects: [] }
         }
+        await planCheckpointStore.transitionPlan(planId, "running")
         const result = await executePlan(plan, {
           stepTimeoutMs: planConfig.stepTimeoutMs,
           stepMaxRounds: planConfig.stepMaxRounds,
@@ -210,10 +243,19 @@ export async function runPiAgentTurn(input: PiAgentTurnInput): Promise<PiAgentTu
           maxSteps: planConfig.maxSteps,
           onStepFailure: stepMode === "stepByStep" ? "ask" : planConfig.onStepFailure,
         }, {
-          onStepStart(step) { emit("deskpet-plan-progress", { step: step.id, total: plan.steps.length, desc: step.description, status: "running" }) },
-          onStepDone(step, output) { emit("deskpet-plan-progress", { step: step.id, total: plan.steps.length, desc: step.description, status: output.success ? "done" : "failed" }) },
+          async onStepStart(step) {
+            await planCheckpointStore.transitionStep(planId, String(step.id), "running")
+            emit("deskpet-plan-progress", { step: step.id, total: plan.steps.length, desc: step.description, status: "running" })
+          },
+          async onStepDone(step, output) {
+            await planCheckpointStore.transitionStep(planId, String(step.id), output.success ? "done" : "failed")
+            emit("deskpet-plan-progress", { step: step.id, total: plan.steps.length, desc: step.description, status: output.success ? "done" : "failed" })
+          },
           onStepFailed: requestPlanStepDecision,
+          onToolStart: (step, toolName, toolCallId) => planCheckpointStore.checkpointTool(planId, String(step.id), "tool_start", toolName, toolCallId),
+          onToolDone: (step, toolName, toolCallId, success) => planCheckpointStore.checkpointTool(planId, String(step.id), "tool_end", toolName, toolCallId, success),
         })
+        await planCheckpointStore.transitionPlan(planId, result.overallSuccess ? "done" : "failed")
         planStepContext = formatStepResults(result)
       }
     }
@@ -318,6 +360,8 @@ export async function runPiSubAgent(input: PiSubAgentInput): Promise<PiSubAgentO
     timeoutMs: input.timeoutMs ?? 60000,
     thinkingEffort: input.thinkingEffort ?? "low",
     mode: "pet",
+    onToolStart: input.onToolStart,
+    onToolDone: input.onToolDone,
   })
   return {
     reply: result.reply || getFallbackReply(result.error ? "subAgentFailed" : "subAgentDone"),
@@ -514,16 +558,24 @@ function toPiTool(
     async execute(toolCallId, params, signal, onUpdate) {
       const current = toolsByName.get(tool.name)
       if (!current) throw new Error(`工具未注册: ${tool.name}`)
-      const result = await executeTool(tool.name, params as Record<string, unknown>, {
-        mode: input.mode,
-        sessionTrusted: isToolTrusted(tool.name),
-        toolCallId,
-        signal,
-        onUpdate: partial => onUpdate?.({
-          content: partial.contentParts ?? [{ type: "text", text: partial.content }],
-          details: partial.details,
-        }),
-      })
+      await input.onToolStart?.(tool.name, toolCallId)
+      let toolSucceeded = false
+      let result: Awaited<ReturnType<typeof executeTool>>
+      try {
+        result = await executeTool(tool.name, params as Record<string, unknown>, {
+          mode: input.mode,
+          sessionTrusted: isToolTrusted(tool.name),
+          toolCallId,
+          signal,
+          onUpdate: partial => onUpdate?.({
+            content: partial.contentParts ?? [{ type: "text", text: partial.content }],
+            details: partial.details,
+          }),
+        })
+        toolSucceeded = result.success
+      } finally {
+        await input.onToolDone?.(tool.name, toolCallId, toolSucceeded)
+      }
       const category = current.actionCategory ?? "_default"
       if (result.success) {
         if (effects) applyEffect(PetPersonalityMiddleware.wrap("done", { actionCategory: category, toolName: tool.name }), effects)

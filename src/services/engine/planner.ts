@@ -184,9 +184,11 @@ import { getToolsForMode, getToolByName } from "@/services/tool/registry"
 import { formatError } from "@/services/error"
 
 export interface ExecutePlanCallbacks {
-  onStepStart(step: PlanStep): void
-  onStepDone(step: PlanStep, result: PiSubAgentOutput): void
+  onStepStart(step: PlanStep): Promise<void> | void
+  onStepDone(step: PlanStep, result: PiSubAgentOutput): Promise<void> | void
   onStepFailed(step: PlanStep, error: string): Promise<"continue" | "abort">
+  onToolStart?(step: PlanStep, toolName: string, toolCallId: string): Promise<void> | void
+  onToolDone?(step: PlanStep, toolName: string, toolCallId: string, success: boolean): Promise<void> | void
 }
 
 export interface ExecutePlanConfig {
@@ -211,14 +213,14 @@ export async function executePlan(
   const steps = plan.steps.slice(0, config.maxSteps)
 
   for (const step of steps) {
-    callbacks.onStepStart(step)
+    await callbacks.onStepStart(step)
     const stepStart = Date.now()
 
     try {
-      const output = await executeStep(step, config)
+      const output = await executeStep(step, config, callbacks)
       const durationMs = Date.now() - stepStart
       stepResults.push({ step, output, durationMs })
-      callbacks.onStepDone(step, output)
+      await callbacks.onStepDone(step, output)
 
       if (!output.success && config.onStepFailure === "abort") {
         overallSuccess = false
@@ -248,6 +250,7 @@ export async function executePlan(
 async function executeStep(
   step: PlanStep,
   config: ExecutePlanConfig,
+  callbacks: ExecutePlanCallbacks,
 ): Promise<PiSubAgentOutput> {
   const stepPrompt = `你是糖糖桌宠的子代理，角色: ${step.role || "执行员"}。
 正在执行计划第 ${step.id} 步: ${step.description}
@@ -279,6 +282,8 @@ async function executeStep(
     maxRounds: config.stepMaxRounds,
     timeoutMs: config.stepTimeoutMs,
     thinkingEffort: config.stepThinkingEffort,
+    onToolStart: (toolName, toolCallId) => callbacks.onToolStart?.(step, toolName, toolCallId),
+    onToolDone: (toolName, toolCallId, success) => callbacks.onToolDone?.(step, toolName, toolCallId, success),
   })
 }
 

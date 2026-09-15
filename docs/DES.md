@@ -26,7 +26,7 @@
 
 这份文档保留设计和玩法的历史细节；`docs/current/` 用来记录已经与代码核对过的当前契约，`docs/history/` 只用于查阅阶段决策。
 
-记忆系统进入实现前的运行时基础契约见[记忆系统重构前置准备](plans/active/记忆系统重构前置准备.md)；当前 `sendMessage()` 已先持久化 queued 事件再调用 Pi，SessionTurnStore 通过版本/CAS 记录 queued 到 done/failed，并写入 queue ack。启动会恢复 persisted/requeued/deferred 请求，对进行中的 queue/turn 写 recovery 并隔离未知副作用；AgentSlot 按会话持有当前 Agent 与 generation，旧回合的异步清理不会释放新 run。工具执行期间的新输入先落盘再 steer，Agent settling 边界改用 followUp，并分别记录正式回执。Plan 持久化和长期召回仍属于后续阶段。实际执行顺序、阶段门禁和新会话接力见[记忆系统重构执行手册](plans/active/记忆系统重构执行手册.md)。
+记忆系统进入实现前的运行时基础契约见[记忆系统重构前置准备](plans/active/记忆系统重构前置准备.md)；当前 `sendMessage()` 已先持久化 queued 事件再调用 Pi，SessionTurnStore 通过版本/CAS 记录 queued 到 done/failed，并写入 queue ack。启动会恢复 persisted/requeued/deferred 请求，对进行中的 queue/turn 写 recovery 并隔离未知副作用；AgentSlot 按会话持有当前 Agent 与 generation，旧回合的异步清理不会释放新 run。工具执行期间的新输入先落盘再 steer，Agent settling 边界改用 followUp。助手模式 Plan、step 和子代理工具边界写入 checkpoint；恢复时只读步骤可重置，未知外部副作用被隔离。ContextKernel 和长期召回仍属于后续阶段。实际执行顺序、阶段门禁和新会话接力见[记忆系统重构执行手册](plans/active/记忆系统重构执行手册.md)。
 
 2026-08-06 的全仓阶段审查、记忆系统边界、测试覆盖和后续优先级见 [阶段现状](history/analysis/阶段现状-2026.8.6.md)。
 

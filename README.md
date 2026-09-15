@@ -17,6 +17,7 @@
 - **AI 聊天** — Card 驱动人格，兼容 OpenAI、DeepSeek、Ollama 等 OpenAI 兼容接口
 - **会话管理** — 多会话切换、新建、关闭、归档、恢复和会话文件持久化
 - **会话运行槽与队列化入口** — 聊天消息先将 queued 事实事件原子写入 sessions，再进入 Pi；SessionTurnStore 通过版本/CAS 记录 queued 到 done/failed，按 sessionId 隔离的 AgentSlot 持有当前 Agent 和 generation；忙碌输入先落盘再投递 steer/followUp，暂不可投递时保留 deferred 等待 drain 或重启恢复
+- **可恢复 Plan** — 助手模式的 Plan、step、子代理工具开始/结束均写入 session checkpoint；重启后只读步骤可回到 pending，缺少完成凭证的外部副作用进入 unknown_side_effect
 - **工具系统** — 文件读写、Bash、系统信息、剪贴板、子代理、Skill、MCP（联网能力由 MCP 服务器提供）
 - **助手模式** — 解锁更完整的文件、命令、应用、剪贴板和任务编排能力，并经过安全策略控制
 - **Pi Agent Core** — 统一管理模型请求、顺序工具循环、超时和可选的复杂任务计划；产品状态仍由 Desk-Pet 管理

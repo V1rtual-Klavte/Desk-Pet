@@ -21,7 +21,7 @@ import { formatError, summarizeError } from "@/services/error"
 import { reportError } from "@/services/error"
 import { agentSlots, RuntimeQueue } from "@/services/engine/runtime"
 import type { IngressEnvelope, MessagePriority, QueueAck, QueueEntry, SessionTurnRecord } from "@/services/engine/runtime"
-import { MemoryService, queueAckEvent, queueEntryEvent, queueRecoveryEvent, sessionTurnStore } from "@/services/agent/memory"
+import { MemoryService, planCheckpointStore, queueAckEvent, queueEntryEvent, queueRecoveryEvent, sessionTurnStore } from "@/services/agent/memory"
 
 const log = createLogger("Agent")
 
@@ -33,6 +33,7 @@ export function resetRuntimeQueueForTest(): void {
   runtimeQueue.clear()
   preprocessStates.clear()
   sessionTurnStore.reset()
+  planCheckpointStore.reset()
   agentSlots.reset()
 }
 export function getRuntimeQueueSnapshot(): QueueEntry[] { return runtimeQueue.snapshot() }
@@ -73,6 +74,15 @@ export async function recoverRuntimeQueue(): Promise<{ requeued: number; quarant
   return { requeued, quarantined }
 }
 
+export async function recoverPlanCheckpoints(): Promise<number> {
+  let recovered = 0
+  for (const file of await MemoryService.listSessionFiles()) {
+    recovered += (await planCheckpointStore.recover(file.sessionId)).length
+  }
+  if (recovered) log.info("Plan checkpoint 恢复完成:", recovered)
+  return recovered
+}
+
 function makeIngressId(prefix: string): string {
   const uuid = globalThis.crypto?.randomUUID?.()
   return uuid ? `${prefix}-${uuid}` : `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2)}`
@@ -108,6 +118,7 @@ export async function initChat(): Promise<void> {
   const sessions = await initSessions()
   log.info("会话已恢复:", sessions.length, "个, 活跃:", getActiveSessionId())
   await recoverRuntimeQueue()
+  await recoverPlanCheckpoints()
 
   const greeting = pickActiveGreeting()
   if (greeting) await initWelcome(greeting)
@@ -320,6 +331,7 @@ async function dispatchMessage(text: string, options: SendMessageOptions = {}, p
       isRetry: false,
       ingress,
       runGeneration,
+      turnId: activeQueueEntry.turnId,
     })
 
     // ── Step 5: 提取人格效果（Pi Runtime 已通过 generateReply 处理）──

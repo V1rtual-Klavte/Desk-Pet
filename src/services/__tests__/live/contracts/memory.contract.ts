@@ -10,10 +10,11 @@ export const memoryContract: ModuleContract = {
     "src/services/agent/memory/parsers.ts",
     "src/services/agent/memory/events.ts",
     "src/services/agent/memory/queue-events.ts",
+    "src/services/agent/memory/plan-checkpoint-store.ts",
     "src/services/engine/runtime/snapshot.ts",
   ],
   generatedAt: "2026-09-15",
-  sourceHash: "c92012da1a3a0379dbaa2dab13629d616b852b6b8732fd5ae5476f36fac59460",
+  sourceHash: "fdd2bfe12f455788552f89f327c9b9af45dc985a0d4e40cdb6291a779d76244b",
   coverage: [
     { id: "mm-01", feature: "Memory 添加条目", description: "MemoryService.append() 创建记忆", why: "记忆系统基础 CRUD", depth: "shallow", scenarios: ["memory-append"] },
     { id: "mm-02", feature: "Memory 搜索", description: "MemoryService.search(query, limit) 按内容搜索", why: "LLM 需检索相关记忆", depth: "shallow", scenarios: ["memory-search"] },
@@ -29,6 +30,7 @@ export const memoryContract: ModuleContract = {
     { id: "mm-12", feature: "主动消息来源", description: "主动搭话保持 active 来源，不写入 user 事实", why: "系统上下文不能污染用户事实和长期记忆", depth: "deep", scenarios: ["memory-active-origin"] },
     { id: "mm-13", feature: "工具成对观测", description: "工具调用与结果均可从 trace 和 runtime history 观察", why: "后续压缩和恢复需要完整 tool pair 基线", depth: "deep", scenarios: ["memory-tool-pair-baseline"] },
     { id: "mm-14", feature: "队列恢复与幂等", description: "queued 事件重启后可 requeue，requestId 不重复投递", why: "输入不能因进程中断丢失或重复执行", depth: "deep", scenarios: ["queued-recovery"] },
+    { id: "mm-15", feature: "Plan checkpoint 恢复", description: "运行中 Plan 从 session event 恢复；只读步骤回到 pending，未知外部副作用进入 unknown_side_effect", why: "进程重启后不能重复执行没有完成凭证的外部操作", depth: "deep", scenarios: ["memory-plan-resume"] },
   ],
   rules: { minScenarios: 6, minDeepScenarios: 2, requireBoundary: true, requireErrorPath: true },
 }
