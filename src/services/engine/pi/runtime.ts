@@ -31,7 +31,7 @@ import { emit } from "@tauri-apps/api/event"
 import { getPiModel, piStream, toPiAgentThinkingLevel } from "./model-gateway"
 import { formatError } from "@/services/error"
 import { createLogger } from "@/services/logger"
-import { agentSlots, createPromptRewrite, createPromptSnapshot, createRuntimeTraceContext, publishRuntimeTrace } from "@/services/engine/runtime"
+import { agentSlots, createPromptRewrite, createPromptSnapshot, createRuntimeTraceContext, hookBus, publishRuntimeTrace } from "@/services/engine/runtime"
 import { redactText, sha256Text, stableSerialize } from "@/services/engine/runtime"
 
 const EMPTY_USAGE = {
@@ -138,6 +138,7 @@ interface PiLoopInput {
   promptTransforms?: PromptTransform[]
   requestId?: string
   turnId?: string
+  ingress?: IngressEnvelope
 }
 
 /**
@@ -313,6 +314,7 @@ export async function runPiAgentTurn(input: PiAgentTurnInput): Promise<PiAgentTu
       promptTransforms,
       requestId,
       turnId: input.turnId,
+      ingress: input.ingress,
     })
     if (!result.error) {
       rawReply = result.reply
@@ -557,6 +559,18 @@ async function runPiLoop(input: PiLoopInput): Promise<PiLoopOutput> {
 
       recordToolCall()
       const category = tool.actionCategory ?? "_default"
+      const hook = await hookBus.emit({
+        hookId: `${toolCall.id}:before`,
+        name: "before_tool_call",
+        sessionId: input.sessionId,
+        turnId: input.turnId,
+        taint: input.ingress?.taint ?? "derived",
+        payload: { toolName: tool.name, toolCallId: toolCall.id, args },
+      })
+      if (hook.decision === "block") {
+        toolCallHistory.push({ toolName: tool.name, status: "blocked" })
+        return { block: true, reason: hook.reason ?? "工具调用被 Hook 拦截" }
+      }
       transition("EXECUTING")
       if (effects) applyEffect(PetPersonalityMiddleware.wrap("executing", { actionCategory: category, toolName: tool.name }), effects)
       emitToolEvent("tool-executing", { toolId: tool.name, toolName: tool.name })
@@ -696,6 +710,14 @@ function toPiTool(
         toolSucceeded = result.success
       } finally {
         await input.onToolDone?.(tool.name, toolCallId, toolSucceeded)
+        void hookBus.emit({
+          hookId: `${toolCallId}:after`,
+          name: "after_tool_call",
+          sessionId: input.sessionId,
+          turnId: input.turnId,
+          taint: input.ingress?.taint ?? "derived",
+          payload: { toolName: tool.name, toolCallId, success: toolSucceeded },
+        })
       }
       const category = current.actionCategory ?? "_default"
       if (result.success) {
