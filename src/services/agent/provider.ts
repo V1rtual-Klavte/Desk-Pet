@@ -10,6 +10,8 @@ import { aiConfig } from "@/services/config"
 import { createLogger } from "@/services/logger"
 
 const log = createLogger("Provider")
+const PROVIDER_TIMEOUT_MS = 60_000
+const MAX_PROVIDER_RESPONSE_BYTES = 4 * 1024 * 1024
 
 export class OpenAICompatibleProvider implements AIProvider {
   readonly name = "openai-compatible"
@@ -23,7 +25,7 @@ export class OpenAICompatibleProvider implements AIProvider {
     const res = await doFetch(url, body)
     if (!res.ok) throw new Error(`HTTP ${res.status}`)
 
-    const data = await res.json()
+    const data = JSON.parse(await readResponseText(res))
     const parsed = parseAIResponse(data)
     if (!parsed.text && parsed.toolCalls.length === 0) {
       log.warn("响应正文为空:", summarizeEmptyResponse(data))
@@ -96,6 +98,12 @@ function summarizeEmptyResponse(data: unknown): string {
 }
 
 async function doFetch(url: string, body: string): Promise<Response> {
+  const parsed = new URL(url)
+  if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+    throw new Error("Provider URL 协议不允许")
+  }
+  const controller = new AbortController()
+  const timer = setTimeout(() => controller.abort(new Error("Provider 请求超时")), PROVIDER_TIMEOUT_MS)
   try {
     return await fetch(url, {
       method: "POST",
@@ -104,10 +112,44 @@ async function doFetch(url: string, body: string): Promise<Response> {
         ...(aiConfig.apiKey ? { Authorization: "Bearer " + aiConfig.apiKey } : {}),
       },
       body,
+      signal: controller.signal,
     })
   } catch (e) {
-    throw new Error(e instanceof TypeError ? `网络不可达 (${e.message})` : String(e))
+    if (controller.signal.aborted) throw new Error("Provider 请求超时或已取消")
+    throw new Error(e instanceof TypeError ? `网络不可达 (${e.message})` : "Provider 请求失败")
+  } finally {
+    clearTimeout(timer)
   }
+}
+
+async function readResponseText(response: Response): Promise<string> {
+  const declared = Number(response.headers.get("content-length") ?? 0)
+  if (declared > MAX_PROVIDER_RESPONSE_BYTES) throw new Error("Provider 响应超过大小上限")
+  if (!response.body) return response.text()
+  const reader = response.body.getReader()
+  const chunks: Uint8Array[] = []
+  let total = 0
+  try {
+    for (;;) {
+      const next = await reader.read()
+      if (next.done) break
+      total += next.value.byteLength
+      if (total > MAX_PROVIDER_RESPONSE_BYTES) {
+        await reader.cancel()
+        throw new Error("Provider 响应超过大小上限")
+      }
+      chunks.push(next.value)
+    }
+  } finally {
+    reader.releaseLock()
+  }
+  const merged = new Uint8Array(total)
+  let offset = 0
+  for (const chunk of chunks) {
+    merged.set(chunk, offset)
+    offset += chunk.byteLength
+  }
+  return new TextDecoder().decode(merged)
 }
 
 function toAPIMessage(m: Message): APIMessage {
