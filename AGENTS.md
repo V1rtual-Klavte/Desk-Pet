@@ -75,8 +75,8 @@ src/services/__tests__/live/
 - `docs/DES.md`：项目总览、概述、玩法、交互和整体机制，面向项目负责人阅读。
 - `docs/current/`：根据当前代码核对过的模块契约和现状。
 - `docs/plans/active/`：尚未实施的方案；完成后移入历史目录。
-- 记忆系统前置方案以 [记忆系统重构前置准备](docs/plans/active/记忆系统重构前置准备.md) 为准；它定义运行时基础契约，不代表这些能力已经接入当前代码。
-- 记忆系统实施按 [记忆系统重构执行手册](docs/plans/active/记忆系统重构执行手册.md) 接力；手册的“当前检查点”是跨会话执行状态，不等于已通过代码或测试门禁。
+- 记忆系统运行时契约以 [记忆系统运行时契约](docs/plans/active/记忆系统运行时契约.md) 为准；它定义目标协议，§1.1 记录逐节落地状态，已落地部分不代表全部能力接通。
+- 记忆系统实施按 [记忆系统重构执行手册](docs/plans/active/记忆系统重构执行手册.md) 接力；手册的“当前检查点”是跨会话执行状态，不等于已通过代码或测试门禁。P0–P3 已完成，P4/P5 只部分落地，P6 未开始。
 - `docs/history/`：阶段设计、实施计划、修复记录和分析报告，只保存当时细节，不作为当前契约。
 - `README.md`：安装、运行、能力概览和文档入口。
 
@@ -155,7 +155,7 @@ src-tauri/src/
   -> context/buildPrompt -> ContextKernel
        static / dynamic / profile / memory / transcript / ephemeral 固定层级与预算裁剪
   -> 助手模式下可选 planner
-  -> Pi Agent Core + pi-ai 流 + ToolRouter（read/write/edit/bash/…）+ Safety 检查
+  -> Pi Agent Core + pi-ai 流 + HookBus + ToolRouter（read/write/edit/bash/…）+ Safety 检查（deny-first）
        Skill 只注入 name/description/location，正文由模型用 read 工具按需加载
   -> reply/generator 解析 <RUNTIME_DATA>
        emotion -> 表情与音效

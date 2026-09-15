@@ -69,24 +69,37 @@ src-tauri/resources/defaults/skills/{name}/SKILL.md   ← 随包种子，只读
 | 能力 | 用途 |
 |---|---|
 | `sessionId` | Provider 端 prompt cache |
-| `toolExecution: "sequential"` | P5 安全门禁完成前所有工具按确定性顺序执行；只读并行需等 schema、权限和 launch checkpoint 门禁完成后再开放 |
+| `toolExecution: "sequential"` | Agent 级无条件串行开关。Pi 的实现是 `config.toolExecution === "sequential"` 时整批串行，per-tool `executionMode` 只能强制串行、不能强制并行；因此 `PARALLEL_SAFE_CATEGORIES` 当前不产生效果，只读并行需等 P5 遗留门禁关闭后再逐类开放 |
 | `beforeToolCall` | 工具次数上限、`checkSafety`、用户确认 |
 | `steering` | 用户可在回合执行中插话，本轮工具跑完后注入下一轮 |
 | `onUpdate` | 工具执行中的快照回传 |
-
-Provider 网络请求只允许 `http`/`https`，请求有固定超时，响应体按 4 MiB 上限流式读取；超限、取消和超时均转为失败结果，不把异常正文继续交给模型。
 | `isError` 往返 | tool 消息落盘保留失败标记，重开会话后模型仍能区分成功与失败 |
 
-Pi 0.85.1 已公开 `transformContext`、`shouldStopAfterTurn`、`prepareNextTurnWithContext`、`subscribe`、`onPayload` 和 `onResponse`；当前 runtime 尚未把它们接成完整的 ContextKernel、PromptSnapshot 和恢复协议，实施边界见[记忆系统重构前置准备](../plans/active/记忆系统重构前置准备.md)。
+Provider 网络请求只允许 `http`/`https`，请求有固定超时，响应体按 4 MiB 上限流式读取；超限、取消和超时均转为失败结果，不把异常正文继续交给模型。
+
+Pi 0.85.1 已公开 `transformContext`、`shouldStopAfterTurn`、`prepareNextTurnWithContext`、`subscribe`、`onPayload` 和 `onResponse`；当前 runtime 已接入 `transformContext`、`onPayload`、`onResponse`、`subscribe` 和 `beforeToolCall`，用于 ContextKernel、双阶段 PromptSnapshot 和 trace。`prepareNextTurnWithContext` / `shouldStopAfterTurn` 仍未接入，队列 drain 由 `AgentSlot` 自行驱动。
+
+## Hook 与审计
+
+`engine/runtime/hook-bus.ts` 提供 Desk-Pet 的 HookBus：blocking handler 串行等待并可以返回 `block`，async handler 脱离主链路；每个 handler 有 deadline（钳制在 1–2000ms）、重入保护和 `hook_timeout` / `hook_failed` / `hook_reentrancy` 稳定错误码。
+
+`pi/runtime.ts` 在 `beforeToolCall` 发 `before_tool_call`（blocking，可阻断执行），在工具结束后发 `after_tool_call`（async）。**当前没有任何生产代码调用 `hookBus.register`**，所以 block 分支不会触发；HookBus 是已接线但尚无消费者的扩展点。
+
+`tool/router.ts` 为每次调用生成 `operationId`（取 `toolCallId`）和 `policyHash`（由 `actionCategory` 与 `safetyLevel` 序列化而来），把 `{ operationId, toolName, outcome, policyHash }` 写入结果的 `details.audit`。同一组 hash 也会进入 PromptSnapshot 的 `toolSchemas`。
+
+取消与超时：`executeTool` 在入口检查 `ctx.signal`，为 handler 创建独立 `AbortController` 并叠加超时；取消返回 `cancelled`，超时返回 `timeout`，未注册返回 `not_found`，其余失败返回 `failed`。
 
 ## 已知问题
 
-以下问题已定位但**尚未修复**，需要连同权限、沙箱与安全体系一起重审：
+以下问题已定位但**尚未修复**，属 P5 遗留项，需要连同权限、沙箱与安全体系一起重审：
 
-- `checkSafety` 的会话信任短路发生在 `resolveSafetyLevel` **之前**，被信任的工具不再重新计算风险等级。
-- 助手模式下 `bash_exec` 的 `restricted` 为假，Rust 侧只剩 7 个子串硬匹配，白名单与 Shell 组合符检查都不生效。
-- `app_open` 没有路径校验，且 NORMAL 级别在确认一次后可会话内信任。
+- 助手模式下 `bash_exec` 的 `restricted` 为假（`tauri-execution-env.ts` 传 `this.mode === "pet"`），Rust 侧只剩 7 个子串硬匹配，白名单与 Shell 组合符检查都不生效。前端模式不应关闭 Rust 最终基线。
+- `app_open` 没有路径校验，Rust 命令未注入 `State<AppPaths>`；且 NORMAL 级别在确认一次后可会话内信任。
+- 工具输出没有 spill：`tool/router.ts` 只做 50000 字符内联截断，超长输出仍会进入上下文。
+- Provider 网络只校验协议、超时和响应体上限，没有重定向次数与私网/环回 IP 防护。
+
+已修复（2026-09-15 复核）：`checkSafety` 的会话信任短路 —— 现在先计算 `resolveSafetyLevel` 再应用会话信任，且信任不能越过动态 NOWAY。
 
 ## 验证状态
 
-`pnpm run test:types` 与 `pnpm run build` 通过。本轮的运行时行为变更（并行工具执行、steering 插话、Skill 渐进披露）尚未经过真实 Provider 的 Live Test 覆盖，不能视为运行时验证通过。
+`pnpm run test:types` 与 `pnpm run build` 通过。safety 与 tool-execution 模块已建立 Live Contract 与场景（`safety-safe`/`safety-normal`/`safety-danger`/`safety-noway`/`safety-hook-errors`/`safety-trust-lifecycle`/`tool-cancelled`/`tool-provider-network-boundary` 等）。P5 阶段的 `pnpm test -- --module safety|tool-execution --strict` 结果尚未采集，不能视为运行时验证通过；见[执行手册](../plans/active/记忆系统重构执行手册.md)「当前检查点」。

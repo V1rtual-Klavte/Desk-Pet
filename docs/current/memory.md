@@ -13,6 +13,17 @@
 
 会话每轮实时写入文件。每条记录保留可读预览行和 HTML 注释中的 URI 编码完整 JSON，读取时优先还原完整正文，并兼容旧预览格式；上下文接近阈值时，压缩器会生成结构化摘要并写回会话文件。启动时会从 Markdown 重建会话，再恢复可丢弃的 UI 标签状态。
 
+## 运行时基础（已落地）
+
+`src/services/engine/runtime/` 与 `src/services/agent/memory/` 已提供会话事件协议、`SessionTurnStore`、`PlanCheckpointStore`、RuntimeQueue、AgentSlot 和 PromptSnapshot：
+
+- 每条用户输入先写 `queued` 事件再调用 Pi；turn 状态按 `queued → dispatching → running → done/failed` 走版本/CAS，队列投递写 `persisted`/`steered`/`followup`/`deferred`/`accepted` 回执。
+- 启动扫描会话事件：`persisted`/`requeued`/`deferred` 重新入队，进行中的 queue/turn 写 recovery 并隔离为未知副作用；Plan 运行中的只读步骤回到 `pending`，未知外部副作用进入 `unknown_side_effect` 并暂停计划。
+- 主动搭话写 `origin=active`、`eligibleForMemory=false`、`querySource=active_monitor`，不产生用户事实事件。
+- 上下文由 ContextKernel 按 `static → dynamic → profile → memory → transcript → ephemeral` 固定层级裁剪；`User.md` 以只读 profile projection 进入 profile 层。
+- PromptSnapshot 在 `transformContext` 和 `provider_payload` 两阶段发布，只保存 hash、层级、工具策略和关联 ID，原始 Prompt 不落盘。
+- 压缩目前只保证 assistant/tool pair 成组（`groupMessageUnits`）；仍按消息比例切片，没有 API round 分级摘要和 compaction 版本。
+
 ## 当前限制
 
 - Prompt 当前只直接注入 CANDY、User 和当前会话摘要；长期记忆的关键词搜索尚未接入 Prompt 构建。
@@ -22,11 +33,11 @@
 
 ## 后续路线
 
-1. 先按[记忆系统重构前置准备](../plans/active/记忆系统重构前置准备.md)和[执行手册](../plans/active/记忆系统重构执行手册.md)稳定 SessionTurn、队列、PromptSnapshot、压缩和崩溃恢复协议。
-2. 接入低成本、可审计的长期事实提取，明确保存范围和来源会话。
+1. 按[记忆系统运行时契约](../plans/active/记忆系统运行时契约.md)推进 P6：候选记忆提取、来源门禁、画像写入候选和 dreaming；阶段进度见[执行手册](../plans/active/记忆系统重构执行手册.md)。
+2. 补齐 P4/P5 遗留：API round 分级压缩、compaction 版本与 lock、工具输出 spill、网络私网 IP 与重定向防护、HookBus 生产 handler。
 3. 以关键词检索、重要性排序和固定 token 预算实现最小召回闭环。
 4. 补充纠正、删除、冲突和过期处理；只有关键词检索不足时再评估向量检索。
 
-前置方案是实施契约，不是当前能力清单。长期记忆自动召回、画像写入和 dreaming 在通过对应 eval 门禁前仍视为未接通。
+运行时契约是实施目标，不是当前能力清单。长期记忆自动召回、画像写入和 dreaming 在通过对应 eval 门禁前仍视为未接通。
 
 Card 变量用于人格状态，不承担长期记忆职责。

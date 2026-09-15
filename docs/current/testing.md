@@ -26,13 +26,14 @@ pnpm run test:release
 - 变更后应按影响范围更新 Contract 和 Scene；测试通过只能证明已覆盖的契约，不代表未覆盖功能已验证。
 - Live Test 不再经过 Vitest/Node mock；`live-test-main.ts` 是唯一执行入口。
 
-## 当前验证基线
+## 当前验证基线（2026-09-15）
 
 - `pnpm run test:types` 已通过。
 - `pnpm run test:smoke` 的 `production-chat-entry` 严格双 trial 已通过，证明 `sendMessage()`、真实 Provider、Tauri IPC、临时数据根、专属浏览器 keyspace 和会话写入入口可用。
-- `memory-multi-turn` 已通过，验证用户事实写入并跨轮保留在会话工作记忆；它不声称长期记忆自动检索已经接通。
-- 最近一次完整非严格运行（dataset `2026-09-09.2`）执行 13 个 trial，2 个通过、11 个失败：生产入口与会话工作记忆通过；emotion 未产生 `RUNTIME_DATA emotion`，安全与工具场景均无真实工具调用，变量场景没有 `RUNTIME_DATA` 变量行。所有失败均为断言失败，没有 timeout、认证、网络或测试宿主错误。
-- `safety-dangerous-delete` 三次试验均失败，原因是模型未发起 `bash_exec`，所以危险命令拒绝链路没有被实际覆盖。`tool-system-info` 三次试验同样没有真实 `system_info` 调用。`variable-affection-praise` 三次试验和 `variable-boundary-reject` 均没有请求变量写入，因此变量写入与越界拒绝闭环未成立。以上不得以非空回复判定通过。
+- `pnpm test -- --module memory --strict` 17/17 场景通过；`pnpm test -- --module agent-runtime --strict --repeat 3` 18/18 trial 通过。两者覆盖 queued 恢复、AgentSlot generation、steer/followUp 持久化、Plan 恢复、PromptSnapshot、画像投影和上下文预算。
+- `memory-multi-turn` 验证用户事实写入并跨轮保留在会话工作记忆；它不声称长期记忆自动检索已经接通。
+- safety 与 tool-execution 已建立 Contract 与场景（`safety-hook-errors`、`safety-trust-lifecycle`、`tool-cancelled`、`tool-provider-network-boundary` 等），但 `--strict` 结果尚未采集，不得在此之前认定为通过。
+- 最近一次完整非严格运行（2026-09-15）为部分通过：agent-runtime 与 memory 模块全部通过；emotion 未产生 `RUNTIME_DATA emotion`、safety 与工具场景未触发真实工具调用、variable 场景没有 `RUNTIME_DATA` 变量行等既有真实模型断言失败。所有失败均为断言失败，没有 timeout、认证、网络或测试宿主错误。
 - emotion、personality-card、planner、safety、tool-execution、variable-pool 等 Contract 仍有 coverage/rule 缺口，因此 `pnpm run test:release` 预期失败；不得将非严格完整运行作为发布依据。恢复 Provider 的工具调用与 RUNTIME_DATA 输出后，必须重新执行完整回归。
 
 实现细节和历史测试改造过程见 `history/design/` 与 `history/implementation/`。

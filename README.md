@@ -26,7 +26,8 @@
 - **人格系统** — Card 热切换，支持 neutral、angelkawaii、ame、pchan 和用户导入 Card
 - **Card 运行时状态** — 通过回复末尾的 `RUNTIME_DATA` 更新已注册的角色变量
 - **窗口感知** — 监控前台窗口，停留超时后 AI 主动搭话
-- **安全控制** — SAFE / NORMAL / DANGER / NOWAY 风险等级与确认策略
+- **安全控制** — SAFE / NORMAL / DANGER / NOWAY 风险等级与确认策略；动态风险等级先于会话信任解析（deny-first）
+- **Hook 与工具审计** — HookBus 提供 blocking / async 生命周期门禁（已接线，暂无内置 handler）；每次工具调用记录 operationId、policyHash 与取消/超时的稳定错误码
 - **记忆系统** — CANDY、User、MEMORY、sessions 和压缩摘要；压缩保持工具调用成对，User.md 以只读画像 projection 注入，长期记忆 provider 当前为空，自动提取与召回仍在规划
 - **Profile 主题** — 糖糖粉、暗夜紫、透明玻璃、yuki 雨夜蓝等随应用提供的默认主题，支持编辑、复制、删除、导入导出
 - **角色展示效果** — 灵动图层（五层视差）与景深（单图背景虚化 + 焦点区）二选一，都由图层编辑器所见即所得地调参
@@ -227,7 +228,7 @@ Live Test 位于 `src/services/__tests__/live/`，通过独立 Tauri WebView 使
 - [当前系统设计](docs/current/system-design.md)
 - [当前工具系统](docs/current/tool-system.md)
 - [当前记忆系统](docs/current/memory.md)
-- [记忆系统重构前置准备](docs/plans/active/记忆系统重构前置准备.md)
+- [记忆系统运行时契约](docs/plans/active/记忆系统运行时契约.md)
 - [记忆系统重构执行手册（新会话接力入口）](docs/plans/active/记忆系统重构执行手册.md)
 - [当前测试说明](docs/current/testing.md)
 - [阶段现状（2026-08-06）](docs/history/analysis/阶段现状-2026.8.6.md)
