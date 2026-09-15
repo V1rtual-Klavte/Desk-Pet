@@ -12,6 +12,26 @@ import { sha256Text, stableSerialize } from "@/services/engine/runtime"
 
 const log = createLogger("ToolRouter")
 
+/** 单个工具结果内联给模型的字符预算。 */
+const MAX_INLINE_CHARS = 50000
+const INLINE_TRUNCATION_NOTICE = "\n...(结果已截断)"
+
+/**
+ * 把工具结果压进内联预算。
+ *
+ * 必须同时处理 `contentParts` 的文本块：Pi 工具总是带 contentParts，
+ * 而下游取的是 `contentParts ?? [{ text: content }]`，只截 content 等于没截。
+ * 图片块不走字符预算 —— 那是 base64，按字符裁会直接破坏数据。
+ */
+function boundInlineOutput(result: ToolResult): ToolResult {
+  const bounded = (text: string): string =>
+    text.length > MAX_INLINE_CHARS ? text.substring(0, MAX_INLINE_CHARS) + INLINE_TRUNCATION_NOTICE : text
+  const contentParts = result.contentParts?.map(part =>
+    part.type === "text" ? { ...part, text: bounded(part.text) } : part,
+  )
+  return { ...result, content: bounded(result.content), ...(contentParts ? { contentParts } : {}) }
+}
+
 /** 执行工具调用 */
 export async function executeTool(
   toolName: string,
@@ -60,12 +80,9 @@ export async function executeTool(
     }
 
     if (result.success) {
-      // 截断过长结果
-      const truncated = result.content.length > 50000
-        ? result.content.substring(0, 50000) + "\n...(结果已截断)"
-        : result.content
-      log.debug("工具完成:", toolName, "| 结果:", truncated.substring(0, 100))
-      return audit({ ...result, content: truncated }, "success")
+      const bounded = boundInlineOutput(result)
+      log.debug("工具完成:", toolName, "| 结果:", bounded.content.substring(0, 100))
+      return audit(bounded, "success")
     }
 
     log.warn("工具失败:", toolName, "|", result.error)

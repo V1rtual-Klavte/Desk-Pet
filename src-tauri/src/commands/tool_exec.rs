@@ -6,9 +6,9 @@
 use super::bash_policy::{enforce_bash_policy, BashPolicy};
 use crate::error::{err, AppError, AppResult};
 use std::collections::HashMap;
-use std::fs::File;
-use std::io::{Read, Seek, SeekFrom};
-use std::path::Path;
+use std::fs::{File, OpenOptions};
+use std::io::{Read, Seek, SeekFrom, Write};
+use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -29,6 +29,11 @@ const DEFAULT_MAX_OUTPUT_LINES: usize = 2000;
 
 /// 流式统计输出文件时的块大小。
 const STAT_CHUNK_BYTES: usize = 64 * 1024;
+
+/// 截断时保留的全量输出文件数量上限，超出部分按时间从旧到新淘汰。
+const MAX_SPILL_FILES: usize = 10;
+/// 全量输出文件名前缀；回收时按它识别自己的文件，不碰 temp 目录里的其他内容。
+const SPILL_PREFIX: &str = "deskpet-spill-";
 
 /// 运行中的 bash 子进程表。
 ///
@@ -56,10 +61,11 @@ pub async fn bash_exec(
     policy: BashPolicy,
     max_bytes: Option<usize>,
     max_lines: Option<usize>,
+    spill: Option<bool>,
 ) -> AppResult<BashResult> {
     let pool = pool.inner().clone();
     tauri::async_runtime::spawn_blocking(move || {
-        run_bash(pool, command, cwd, execution_id, timeout_ms, policy, max_bytes, max_lines)
+        run_bash(pool, command, cwd, execution_id, timeout_ms, policy, max_bytes, max_lines, spill)
     })
     .await
     .map_err(|e| AppError::Io(format!("bash 执行任务失败: {e}")))?
@@ -75,6 +81,7 @@ fn run_bash(
     policy: BashPolicy,
     max_bytes: Option<usize>,
     max_lines: Option<usize>,
+    spill: Option<bool>,
 ) -> AppResult<BashResult> {
     enforce_bash_policy(&command, policy.scope, &policy.whitelist)?;
     let execution_id = execution_id.unwrap_or_else(|| format!("legacy-{}", std::process::id()));
@@ -113,6 +120,9 @@ fn run_bash(
     cmd.stderr(Stdio::from(
         File::create(&stderr_path).map_err(|e| AppError::Io(format!("创建错误文件失败: {e}")))?,
     ));
+    // 从这里起，任何返回路径（含 `?` 提前退出）都不会把临时文件留在 temp 目录；
+    // 只有真的产出了 spill 才会解除守卫，因为那份文件是刻意要留的。
+    let mut temps = TempOutputs::new(&stdout_path, &stderr_path);
     let child = Arc::new(Mutex::new(
         cmd.spawn()
             .map_err(|e| AppError::Io(format!("执行失败: {e}")))?,
@@ -139,7 +149,7 @@ fn run_bash(
                 .lock()
                 .map_err(|_| "Bash 状态锁损坏")?
                 .remove(&execution_id);
-            cleanup_temp_outputs(&stdout_path, &stderr_path);
+            // 临时文件交给 `temps` 守卫清理
             return err("命令执行超时");
         }
         std::thread::sleep(BASH_POLL_INTERVAL);
@@ -151,10 +161,10 @@ fn run_bash(
 
     let max_bytes = max_bytes.unwrap_or(DEFAULT_MAX_OUTPUT_BYTES);
     let max_lines = max_lines.unwrap_or(DEFAULT_MAX_OUTPUT_LINES);
-    let stdout = read_tail_window(&stdout_path, max_bytes);
-    let stderr = read_tail_window(&stderr_path, max_bytes);
-    cleanup_temp_outputs(&stdout_path, &stderr_path);
-    let (text, stats, starts_at_line_start, window_clipped) = combine_windows(stdout?, stderr?);
+    let stdout_window = read_tail_window(&stdout_path, max_bytes)?;
+    let stderr_window = read_tail_window(&stderr_path, max_bytes)?;
+    let (stdout_bytes, stderr_bytes) = (stdout_window.stats.bytes, stderr_window.stats.bytes);
+    let (text, stats, starts_at_line_start, window_clipped) = combine_windows(stdout_window, stderr_window);
     let captured = truncate_output(
         &text,
         &stats,
@@ -163,6 +173,17 @@ fn run_bash(
         max_bytes,
         max_lines,
     );
+
+    // 只在「确实截断了」且调用方要求 spill 时才留全量文件：
+    // 没有截断时留一份与 output 完全相同的副本，纯属占地方。
+    let spill_path = if captured.truncated && spill.unwrap_or(false) {
+        let path = build_spill(&stdout_path, &stderr_path, &execution_id, stdout_bytes, stderr_bytes)?;
+        temps.disarm();
+        evict_old_spills();
+        Some(path.to_string_lossy().into_owned())
+    } else {
+        None
+    };
 
     Ok(BashResult {
         exit_code: status.code().unwrap_or(-1),
@@ -174,6 +195,7 @@ fn run_bash(
         truncated: captured.truncated,
         truncated_by: captured.truncated_by,
         last_line_partial: captured.last_line_partial,
+        spill_path,
     })
 }
 
@@ -202,6 +224,103 @@ pub fn bash_cancel(pool: State<BashPool>, execution_id: String) -> AppResult<()>
 fn cleanup_temp_outputs(stdout: &Path, stderr: &Path) {
     let _ = std::fs::remove_file(stdout);
     let _ = std::fs::remove_file(stderr);
+}
+
+/// 临时输出文件的清理守卫。
+///
+/// 提前返回的路径（超时、读取失败、`?` 传播）如果只靠显式调用，很容易漏掉清理；
+/// 交给 `Drop` 之后，成功与失败都走同一条收尾逻辑。
+struct TempOutputs<'a> {
+    stdout: &'a Path,
+    stderr: &'a Path,
+    armed: bool,
+}
+
+impl<'a> TempOutputs<'a> {
+    fn new(stdout: &'a Path, stderr: &'a Path) -> Self {
+        Self {
+            stdout,
+            stderr,
+            armed: true,
+        }
+    }
+
+    /// 解除守卫：两路输出此刻已被搬进 spill 文件，原文件不该再删。
+    fn disarm(&mut self) {
+        self.armed = false;
+    }
+}
+
+impl Drop for TempOutputs<'_> {
+    fn drop(&mut self) {
+        if self.armed {
+            cleanup_temp_outputs(self.stdout, self.stderr);
+        }
+    }
+}
+
+/// spill 文件名以 13 位毫秒时间戳开头，因而字典序即时间序，淘汰时无需读元数据。
+fn spill_path_of(execution_id: &str) -> PathBuf {
+    let millis = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|elapsed| elapsed.as_millis())
+        .unwrap_or(0);
+    std::env::temp_dir().join(format!("{SPILL_PREFIX}{millis:013}-{execution_id}.out"))
+}
+
+/// 把两路输出合成一份全量文件保留下来，供调用方在截断后按需读取。
+///
+/// 先把 stdout 搬过去（通常是大头）再把 stderr 追加进来，避免为大文件做一次完整拷贝。
+fn build_spill(
+    stdout: &Path,
+    stderr: &Path,
+    execution_id: &str,
+    stdout_bytes: usize,
+    stderr_bytes: usize,
+) -> AppResult<PathBuf> {
+    let spill = spill_path_of(execution_id);
+    std::fs::rename(stdout, &spill).map_err(|e| AppError::Io(format!("保留完整输出失败: {e}")))?;
+    if stderr_bytes > 0 {
+        let mut source =
+            File::open(stderr).map_err(|e| AppError::Io(format!("打开错误输出失败: {e}")))?;
+        let mut sink = OpenOptions::new()
+            .append(true)
+            .open(&spill)
+            .map_err(|e| AppError::Io(format!("追加完整输出失败: {e}")))?;
+        // 两路都非空时才补分隔换行，与内联片段的拼接规则保持一致
+        if stdout_bytes > 0 {
+            sink.write_all(b"\n")
+                .map_err(|e| AppError::Io(format!("追加完整输出失败: {e}")))?;
+        }
+        std::io::copy(&mut source, &mut sink)
+            .map_err(|e| AppError::Io(format!("追加完整输出失败: {e}")))?;
+        let _ = std::fs::remove_file(stderr);
+    }
+    Ok(spill)
+}
+
+/// 只保留最近 `MAX_SPILL_FILES` 份全量输出，超出的按时间从旧到新淘汰。
+fn evict_old_spills() {
+    let Ok(entries) = std::fs::read_dir(std::env::temp_dir()) else {
+        return;
+    };
+    let mut spills: Vec<PathBuf> = entries
+        .flatten()
+        .map(|entry| entry.path())
+        .filter(|path| {
+            path.file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(|name| name.starts_with(SPILL_PREFIX))
+        })
+        .collect();
+    if spills.len() <= MAX_SPILL_FILES {
+        return;
+    }
+    spills.sort();
+    let stale_count = spills.len() - MAX_SPILL_FILES;
+    for stale in &spills[..stale_count] {
+        let _ = std::fs::remove_file(stale);
+    }
 }
 
 struct CapturedOutput {
@@ -416,6 +535,8 @@ pub struct BashResult {
     truncated: bool,
     truncated_by: Option<String>,
     last_line_partial: bool,
+    /// 截断且调用方要求 spill 时，保留完整输出的文件路径；否则为 null。
+    spill_path: Option<String>,
 }
 
 // ── 文件操作 ──

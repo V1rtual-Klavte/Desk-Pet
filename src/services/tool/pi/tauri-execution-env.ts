@@ -38,6 +38,8 @@ type BashPayload = {
   truncated: boolean
   truncatedBy: "lines" | "bytes" | null
   lastLinePartial: boolean
+  /** 截断且请求了 spill 时，Rust 侧保留的完整输出文件路径 */
+  spillPath: string | null
 }
 
 function fileFailure(error: unknown, path?: string): FileError {
@@ -210,6 +212,7 @@ export class TauriExecutionEnv implements ExecutionEnv {
     try {
       throwIfAborted(context)
       const limits = options?.capture?.limits
+      const spill = options?.capture?.spill === true
       const result = await invoke<BashPayload>("bash_exec", {
         executionId,
         command,
@@ -218,6 +221,7 @@ export class TauriExecutionEnv implements ExecutionEnv {
         policy: { scope: this.mode, whitelist: toolsConfig.bashWhitelist },
         maxBytes: limits?.maxBytes ?? 50 * 1024,
         maxLines: limits?.maxLines ?? 2000,
+        spill,
       })
       throwIfAborted(context)
       const truncation = {
@@ -232,8 +236,11 @@ export class TauriExecutionEnv implements ExecutionEnv {
         maxLines: limits?.maxLines ?? 2000,
         maxBytes: limits?.maxBytes ?? 50 * 1024,
       }
-      options?.onUpdate?.({ kind: "replace", output: { text: result.output, truncation } }, context)
-      return ok({ exitCode: result.exitCode, truncation })
+      // bash 工具会把 spillPath 拼进给模型的文本（「Full output: <path>」），
+      // 所以它必须同时出现在流式更新和最终结果里，缺一个模型都会看到字面量 undefined。
+      const spillPath = spill ? result.spillPath ?? undefined : undefined
+      options?.onUpdate?.({ kind: "replace", output: { text: result.output, truncation, spillPath } }, context)
+      return ok({ exitCode: result.exitCode, truncation, spillPath })
     } catch (error) {
       return err(executionFailure(error))
     } finally {
