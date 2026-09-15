@@ -165,7 +165,38 @@ impl AppPaths {
         if !is_allowed_file_path(&canonical_ancestor)? {
             return Err(AppError::PathEscape);
         }
+
+        // 上面的前缀检查都建立在不解析符号链接的词法路径上，而写入会跟随叶子。
+        // 叶子是指向根外的链接时，前面全是绿灯、实际数据却落在允许根之外。
+        if let Ok(meta) = fs::symlink_metadata(&normalized) {
+            if meta.file_type().is_symlink() {
+                // 悬空链接的 canonicalize() 必然失败，那个失败本身就是结论：
+                // 写入会替调用方在根外新建文件，只能拒绝。
+                let resolved = normalized
+                    .canonicalize()
+                    .map_err(|_| AppError::PathEscape)?;
+                if !is_allowed_file_path(&resolved)? {
+                    return Err(AppError::PathEscape);
+                }
+                return Ok(resolved);
+            }
+        }
         Ok(normalized)
+    }
+
+    /// `create_dir_all` 之后重新确认父目录仍解析在允许根内。
+    ///
+    /// 校验与实际写入之间存在时间窗口，中间某个目录组件可能被换成指向根外的符号链接。
+    /// 这里再解析一次，把窗口收窄到「本次调用与 write 之间」。
+    pub fn revalidate_existing_parent(path: &Path) -> AppResult<()> {
+        let parent = path.parent().ok_or(AppError::PathEscape)?;
+        let resolved = parent
+            .canonicalize()
+            .map_err(|_| AppError::PathNotFound(parent.to_string_lossy().to_string()))?;
+        if !is_allowed_file_path(&resolved)? {
+            return Err(AppError::PathEscape);
+        }
+        Ok(())
     }
 }
 
@@ -464,6 +495,77 @@ mod tests {
             "用户自建的 Profile 不在种子里，不应被删除"
         );
 
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    /// 创建符号链接。unix 与 windows 的 API 不同，两端都要能编译。
+    fn symlink_file(original: &Path, link: &Path) -> std::io::Result<()> {
+        #[cfg(unix)]
+        {
+            std::os::unix::fs::symlink(original, link)
+        }
+        #[cfg(windows)]
+        {
+            std::os::windows::fs::symlink_file(original, link)
+        }
+        #[cfg(not(any(unix, windows)))]
+        {
+            let _ = (original, link);
+            Err(std::io::Error::new(
+                std::io::ErrorKind::Unsupported,
+                "当前平台不支持符号链接",
+            ))
+        }
+    }
+
+    fn symlink_test_root(tag: &str) -> PathBuf {
+        let root = std::env::temp_dir().join(format!(
+            "deskpet-{tag}-{}-{}",
+            std::process::id(),
+            TEST_COUNTER.fetch_add(1, Ordering::Relaxed)
+        ));
+        fs::create_dir_all(&root).unwrap();
+        root
+    }
+
+    #[test]
+    fn new_file_path_rejects_symlink_leaf() {
+        let root = symlink_test_root("symlink");
+
+        // 悬空链接：canonicalize 必然失败，而写入会替调用方在根外新建文件 —— 必须拒绝
+        let dangling = root.join("dangling.json");
+        if symlink_file(&root.join("never-created.json"), &dangling).is_err() {
+            // Windows 未开启开发者模式时创建符号链接需要管理员权限，跳过而不是误报失败
+            fs::remove_dir_all(&root).unwrap();
+            return;
+        }
+        assert!(matches!(
+            AppPaths::validate_new_file_path(&dangling),
+            Err(AppError::PathEscape)
+        ));
+
+        // 指向根内真实文件的链接：放行，并返回解析后的真实路径
+        let real = root.join("real.json");
+        fs::write(&real, "x").unwrap();
+        let linked = root.join("linked.json");
+        symlink_file(&real, &linked).unwrap();
+        assert_eq!(
+            AppPaths::validate_new_file_path(&linked).unwrap(),
+            real.canonicalize().unwrap()
+        );
+
+        // 普通的新文件路径不能被这次加固误伤
+        let plain = root.join("nested/plain.json");
+        assert_eq!(AppPaths::validate_new_file_path(&plain).unwrap(), plain);
+
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn revalidate_existing_parent_requires_a_real_parent() {
+        let root = symlink_test_root("parent");
+        assert!(AppPaths::revalidate_existing_parent(&root.join("ok.json")).is_ok());
+        assert!(AppPaths::revalidate_existing_parent(&root.join("missing/ok.json")).is_err());
         fs::remove_dir_all(&root).unwrap();
     }
 }

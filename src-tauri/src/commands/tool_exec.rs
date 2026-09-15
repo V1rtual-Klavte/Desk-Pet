@@ -579,6 +579,9 @@ pub fn file_write(
     let safe_path = AppPaths::validate_new_file_path(Path::new(&path))?;
     let parent = safe_path.parent().ok_or("无效的文件路径")?;
     std::fs::create_dir_all(parent).map_err(|e| format!("创建目录失败: {e}"))?;
+    // 建目录之后再确认一次父目录的去向：校验通过到真正写入之间，
+    // 中间目录可能刚被换成指向允许根外的符号链接。
+    AppPaths::revalidate_existing_parent(&safe_path)?;
     std::fs::write(&safe_path, &content).map_err(|e| format!("写入失败: {}", e))?;
     Ok(FileWriteResult { success: true })
 }

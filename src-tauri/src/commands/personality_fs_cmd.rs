@@ -136,6 +136,15 @@ fn safe_relative_path(relative: &str) -> AppResult<PathBuf> {
 
 /// 在创建目录前先校验最近的已存在祖先，避免已有符号链接把创建操作导向 data_root 外。
 fn prepare_personality_write_path(target: &Path, base: &Path) -> AppResult<()> {
+    // 叶子是符号链接时必须单独判：`exists()` 会跟随链接，悬空链接因此返回 false，
+    // 于是走到下面的「创建」分支并原样放行，随后 fs::write 顺着链接在域外建出文件。
+    // personality 域内的文件都是 data_root 下的普通数据文件，链接叶子没有正当用途，直接拒绝。
+    if fs::symlink_metadata(target)
+        .is_ok_and(|meta| meta.file_type().is_symlink())
+    {
+        return Err(AppError::PathEscape);
+    }
+
     if target.exists() {
         AppPaths::validate_path(target, base)?;
         return Ok(());
