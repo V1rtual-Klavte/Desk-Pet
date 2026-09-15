@@ -32,6 +32,7 @@ export async function executeTool(
   })
 
   try {
+    if (ctx.signal?.aborted) return audit({ success: false, content: "", error: "工具执行已取消", errorCode: "cancelled" }, "cancelled")
     log.debug("执行工具:", toolName, "| params:", JSON.stringify(params).substring(0, 100))
 
     const controller = new AbortController()
@@ -73,6 +74,6 @@ export async function executeTool(
     const errMsg = formatError(e)
     log.error("工具异常:", toolName, "|", errMsg)
     const outcome = ctx.signal?.aborted ? "cancelled" : errMsg.includes("超时") ? "timeout" : "error"
-    return audit({ success: false, content: "", error: errMsg }, outcome)
+    return audit({ success: false, content: "", error: errMsg, errorCode: outcome === "cancelled" ? "cancelled" : outcome === "timeout" ? "timeout" : "failed" }, outcome)
   }
 }
