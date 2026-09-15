@@ -21,6 +21,24 @@ export interface McpServerConfig {
   enabled: boolean
 }
 
+/**
+ * 归一化 env：只保留「非空键名 + 非空字符串值」的键值对。
+ * - 返回 `undefined` 表示未提供（调用方据此决定是否沿用旧值）
+ * - 返回 `{}` 表示显式清空
+ * 空值视为「未配置」：CONFIG 里的 `KEY: ""` 占位不应覆盖父进程已导出的同名变量。
+ */
+function normalizeEnv(raw: unknown): Record<string, string> | undefined {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return undefined
+  const out: Record<string, string> = {}
+  for (const [k, v] of Object.entries(raw as Record<string, unknown>)) {
+    if (!k || v === undefined || v === null) continue
+    const value = String(v)
+    if (value === "") continue
+    out[k] = value
+  }
+  return out
+}
+
 // ── 服务器列表 ──
 
 let mcpServers: McpServerConfig[] = []
@@ -36,6 +54,7 @@ function ensureServersLoaded(): void {
       command: s.command ? String(s.command) : undefined,
       args: s.args ? (Array.isArray(s.args) ? s.args.map(String) : [String(s.args)]) : undefined,
       url: s.url ? String(s.url) : undefined,
+      env: normalizeEnv(s.env),
       enabled: s.enabled !== false,
     }))
     log.info("MCP 服务器列表已从 CONFIG 加载:", mcpServers.length, "个")
@@ -55,8 +74,8 @@ export function getBuiltinServers(): McpServerConfig[] {
     command: def.command || "npx",
     args: Array.isArray(def.args) ? def.args : [],
     url: undefined,
+    env: normalizeEnv(def.env),
     enabled: def.enabled !== false,
-    env: def.env,
   }))
 }
 
@@ -100,13 +119,24 @@ export function getMcpServers(): McpServerConfig[] {
   return [...mcpServers]
 }
 
+/**
+ * env 缺省时沿用同名旧服务器的 env。
+ * 设置面板的服务器列表不携带 env 字段，直接整体替换会让 CONFIG 里的 env 在保存时静默丢失。
+ */
+function inheritEnv(server: McpServerConfig): McpServerConfig {
+  if (server.env !== undefined) return { ...server }
+  const old = mcpServers.find(s => s.name === server.name)
+  return old?.env ? { ...server, env: old.env } : { ...server }
+}
+
 /** 设置 MCP 服务器列表（替换） */
 export async function setMcpServers(servers: McpServerConfig[]): Promise<void> {
-  // 注销旧服务器的工具
+  const next = servers.map(inheritEnv)
+  // 换配置前先断开旧连接：只注销工具会让子进程失去引用并常驻（disconnectMcpServer 已含工具注销）
   for (const s of mcpServers) {
-    await unregisterMcpServerTools(s)
+    await disconnectMcpServer(s.name)
   }
-  mcpServers = servers.map(s => ({ ...s }))
+  mcpServers = next
   mcpServersLoaded = true
   syncServersToConfig()
   log.info("MCP 服务器列表已更新:", mcpServers.length, "个")
@@ -117,8 +147,8 @@ export async function addMcpServer(server: McpServerConfig): Promise<void> {
   ensureServersLoaded()
   const existing = mcpServers.findIndex(s => s.name === server.name)
   if (existing >= 0) {
-    await unregisterMcpServerTools(mcpServers[existing])
-    mcpServers[existing] = { ...server }
+    await disconnectMcpServer(server.name)
+    mcpServers[existing] = inheritEnv(server)
     log.info("MCP 服务器已覆盖:", server.name)
   } else {
     mcpServers.push({ ...server })
@@ -132,15 +162,14 @@ export async function removeMcpServer(name: string): Promise<boolean> {
   ensureServersLoaded()
   const idx = mcpServers.findIndex(s => s.name === name)
   if (idx === -1) return false
-  const server = mcpServers[idx]
-  await unregisterMcpServerTools(server)
+  await disconnectMcpServer(name)
   mcpServers.splice(idx, 1)
   syncServersToConfig()
   log.info("MCP 服务器已删除:", name)
   return true
 }
 
-/** 同步服务器列表到 CONFIG 覆盖层 */
+/** 同步服务器列表到 CONFIG 覆盖层（env 为 undefined 时 js-yaml 不落键） */
 function syncServersToConfig(): void {
   setOverride("tools.mcp.servers", mcpServers.map(s => ({
     name: s.name,
@@ -148,6 +177,7 @@ function syncServersToConfig(): void {
     command: s.command,
     args: s.args,
     url: s.url,
+    env: s.env,
     enabled: s.enabled,
   })))
 }
@@ -163,6 +193,7 @@ export function importMcpServersFromJson(json: string): { success: boolean; coun
       command: item.command ? String(item.command) : undefined,
       args: item.args ? (Array.isArray(item.args) ? item.args.map(String) : [String(item.args)]) : undefined,
       url: item.url ? String(item.url) : undefined,
+      env: normalizeEnv(item.env),
       enabled: item.enabled !== false,
     })).filter((s: McpServerConfig) => s.name)
     setMcpServers(servers)
@@ -177,16 +208,6 @@ export function exportMcpServersToJson(): string {
   return JSON.stringify(mcpServers, null, 2)
 }
 
-async function unregisterMcpServerTools(server: McpServerConfig): Promise<void> {
-  const { listAll, unregister } = await import("@/services/tool/registry")
-  const prefix = `mcp-${server.name}-`
-  for (const t of listAll()) {
-    if (t.id.startsWith(prefix)) {
-      unregister(t.id)
-    }
-  }
-}
-
 // ── 真实 MCP 连接 ──
 
 const connectedClients = new Map<string, import("./client").McpClient>()
@@ -194,11 +215,17 @@ const connectedClients = new Map<string, import("./client").McpClient>()
 /** 连接并发现 MCP 服务器的工具 */
 export async function connectMcpServer(server: McpServerConfig): Promise<{ success: boolean; toolCount: number; error?: string }> {
   try {
+    // 同名重连：先回收旧 client 及其子进程，否则旧 client 被覆盖后失联，
+    // 且 Rust 侧同名进程会被新 spawn 顶掉、旧 client 的 kill 反而会杀掉新进程
+    if (connectedClients.has(server.name)) {
+      await disconnectMcpServer(server.name)
+    }
+
     const { McpClient } = await import("./client")
     const client = new McpClient(server.name)
 
     if (server.transport === "stdio" && server.command) {
-      const ok = await client.connect(server.command, server.args ?? [])
+      const ok = await client.connect(server.command, server.args ?? [], server.env)
       if (!ok) return { success: false, toolCount: 0, error: "连接失败" }
     } else {
       // SSE 暂未实现

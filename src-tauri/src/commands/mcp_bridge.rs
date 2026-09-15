@@ -47,6 +47,8 @@ pub struct McpKillResult {
 }
 
 /// 启动 MCP 子进程（stdio 模式）
+///
+/// `env` 为附加环境变量（API Key 等），在父进程环境之上合并，同名覆盖。
 #[tauri::command]
 pub fn mcp_spawn(
     state: State<'_, McpPool>,
@@ -54,6 +56,7 @@ pub fn mcp_spawn(
     command: String,
     args: Vec<String>,
     transport: String,
+    env: Option<HashMap<String, String>>,
 ) -> AppResult<McpSpawnResult> {
     if transport != "stdio" {
         return Ok(McpSpawnResult {
@@ -63,11 +66,19 @@ pub fn mcp_spawn(
         });
     }
 
-    let mut child = Command::new(&command)
-        .args(&args)
+    let mut cmd = Command::new(&command);
+    cmd.args(&args)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
+        .stderr(Stdio::piped());
+
+    // env 常含凭据（如 BRAVE_API_KEY / GITHUB_PERSONAL_ACCESS_TOKEN）：
+    // 只透传给子进程，任何日志都不得打印键值。
+    if let Some(env) = env.filter(|e| !e.is_empty()) {
+        cmd.envs(env);
+    }
+
+    let mut child = cmd
         .spawn()
         .map_err(|e| format!("启动 MCP 进程失败: {}", e))?;
 
@@ -95,6 +106,7 @@ pub fn mcp_spawn(
 
     pool.insert(server_id.clone(), McpProcess { child });
 
+    // 只记录 command/args：env 属敏感数据，禁止写入任何日志
     rust_info!(
         "MCP 进程已启动: {} ({} {})",
         server_id,

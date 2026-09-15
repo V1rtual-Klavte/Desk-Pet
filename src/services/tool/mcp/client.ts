@@ -52,9 +52,10 @@ export class McpClient {
 
   /**
    * 建立 stdio 连接 + JSON-RPC initialize。
+   * `env` 透传给子进程（API Key 等），与父进程环境合并，同名覆盖。
    */
-  async connect(command: string, args: string[] = []): Promise<boolean> {
-    this.transport = new StdioTransport({ command, args })
+  async connect(command: string, args: string[] = [], env?: Record<string, string>): Promise<boolean> {
+    this.transport = new StdioTransport({ command, args, env })
     const ok = await this.transport.connect(this.serverId)
     if (!ok) return false
 

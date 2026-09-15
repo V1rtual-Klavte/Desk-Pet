@@ -11,6 +11,8 @@ const log = createLogger("MCPstdio")
 export interface StdioTransportConfig {
   command: string
   args?: string[]
+  /** 附加到子进程的环境变量（API Key 等）；与父进程环境合并，同名覆盖 */
+  env?: Record<string, string>
 }
 
 /**
@@ -31,6 +33,7 @@ export class StdioTransport {
         command: this.config.command,
         args: this.config.args ?? [],
         transport: "stdio",
+        env: this.config.env ?? {},
       })
       if (result.success) {
         this.serverId = result.server_id
