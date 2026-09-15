@@ -1,5 +1,8 @@
 // ==========================================
-// 助手模式工具：打开应用 (NORMAL)
+// 助手模式工具：打开应用 (DANGER)
+//
+// 这是唯一把用户可控字符串交给操作系统去执行的工具（macOS 走 `open`，
+// Windows 走 ShellExecuteW），路径可指向任意已存在文件，所以按 DANGER 走确认。
 // ==========================================
 
 import type { ToolDef } from "../types"
@@ -22,7 +25,7 @@ const appOpenTool: ToolDef = {
     },
     required: ["path"],
   },
-  safetyLevel: "NORMAL",
+  safetyLevel: "DANGER",
   source: "local",
   sourceId: "",
   mode: "assistant",

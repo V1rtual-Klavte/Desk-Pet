@@ -40,6 +40,7 @@ windows-sys = { version = "0.52", features = [
     "Win32_System_Threading",       # OpenProcess / PROCESS_QUERY_INFORMATION / PROCESS_VM_READ
     "Win32_System_ProcessStatus",   # GetProcessImageFileNameW
     "Win32_System_SystemInformation", # GlobalMemoryStatusEx / MEMORYSTATUSEX
+    "Win32_UI_Shell",               # ShellExecuteW（app_open 用它替代 cmd /C start）
 ] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
