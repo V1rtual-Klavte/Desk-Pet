@@ -8,6 +8,7 @@ import { getToolByName } from "./registry"
 import { loopConfig } from "@/services/config"
 import { createLogger } from "@/services/logger"
 import { formatError } from "@/services/error"
+import { sha256Text, stableSerialize } from "@/services/engine/runtime"
 
 const log = createLogger("ToolRouter")
 
@@ -23,6 +24,12 @@ export async function executeTool(
   }
 
   const timeout = tool.timeoutMs ?? loopConfig.toolTimeoutMs
+  const operationId = ctx.toolCallId ?? `${toolName}:${Date.now()}`
+  const policyHash = await sha256Text(stableSerialize({ actionCategory: tool.actionCategory, safetyLevel: tool.safetyLevel }))
+  const audit = (result: ToolResult, outcome: string): ToolResult => ({
+    ...result,
+    details: { ...(result.details && typeof result.details === "object" ? result.details : {}), audit: { operationId, toolName, outcome, policyHash } },
+  })
 
   try {
     log.debug("执行工具:", toolName, "| params:", JSON.stringify(params).substring(0, 100))
@@ -57,14 +64,15 @@ export async function executeTool(
         ? result.content.substring(0, 50000) + "\n...(结果已截断)"
         : result.content
       log.debug("工具完成:", toolName, "| 结果:", truncated.substring(0, 100))
-      return { ...result, content: truncated }
+      return audit({ ...result, content: truncated }, "success")
     }
 
     log.warn("工具失败:", toolName, "|", result.error)
-    return result
+    return audit(result, "failed")
   } catch (e) {
     const errMsg = formatError(e)
     log.error("工具异常:", toolName, "|", errMsg)
-    return { success: false, content: "", error: errMsg }
+    const outcome = ctx.signal?.aborted ? "cancelled" : errMsg.includes("超时") ? "timeout" : "error"
+    return audit({ success: false, content: "", error: errMsg }, outcome)
   }
 }

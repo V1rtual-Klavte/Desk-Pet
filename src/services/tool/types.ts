@@ -31,6 +31,10 @@ export interface ToolContext {
   sessionTrusted: boolean
   /** 当前 Pi 工具调用 ID */
   toolCallId?: string
+  /** 稳定的单次操作标识，用于审计和幂等关联。 */
+  operationId?: string
+  /** 工具声明与安全策略的摘要。 */
+  policyHash?: string
   /** Agent 取消/超时信号 */
   signal?: AbortSignal
   /** 工具执行中的完整快照更新 */

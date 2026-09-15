@@ -701,6 +701,8 @@ function toPiTool(
           mode: input.mode,
           sessionTrusted: isToolTrusted(tool.name),
           toolCallId,
+          operationId: toolCallId,
+          policyHash: await sha256Text(stableSerialize({ actionCategory: current.actionCategory, safetyLevel: current.safetyLevel })),
           signal,
           onUpdate: partial => onUpdate?.({
             content: partial.contentParts ?? [{ type: "text", text: partial.content }],
