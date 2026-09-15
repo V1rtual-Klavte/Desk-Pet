@@ -20,7 +20,7 @@ export async function executeTool(
 ): Promise<ToolResult> {
   const tool = getToolByName(toolName)
   if (!tool) {
-    return { success: false, content: "", error: `工具未注册: ${toolName}` }
+    return { success: false, content: "", error: `工具未注册: ${toolName}`, errorCode: "not_found" }
   }
 
   const timeout = tool.timeoutMs ?? loopConfig.toolTimeoutMs

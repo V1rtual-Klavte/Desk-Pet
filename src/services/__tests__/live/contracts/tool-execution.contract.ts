@@ -14,10 +14,11 @@ export const toolExecutionContract: ModuleContract = {
     "src/services/agent/provider.ts",
   ],
   generatedAt: "2026-09-14",
-  sourceHash: "9e6901c0481b3f118a28eea91e1a09508af9d08ccca06ae61151808d8837c947",
+  sourceHash: "ffe0c619a0193e4752cab40d68fc01842fca736c1a91e1777eccca3ff2881b79",
   coverage: [
     { id: "te-08", feature: "真 LLM 多工具调用", description: "真实 LLM 对话中先后调用多个工具", why: "端到端工具链验证", depth: "deep", scenarios: ["tool-system-info"] },
     { id: "te-09", feature: "Provider 网络边界", description: "Provider 拒绝非 HTTP 协议并限制响应体", why: "避免网络策略绕过和内存失控", depth: "shallow", scenarios: ["tool-provider-network-boundary"] },
+    { id: "te-10", feature: "工具取消错误码", description: "已取消的工具调用不进入 handler 且返回稳定错误码", why: "取消必须可观测且不可产生副作用", depth: "shallow", scenarios: ["tool-cancelled"] },
   ],
   rules: { minScenarios: 1, minDeepScenarios: 1, requireBoundary: false, requireErrorPath: false },
 }
