@@ -15,11 +15,11 @@ import {
   initSessions, getActiveSessionId,
 } from "@/services/session"
 import { incrementSessionMessageCount } from "@/services/session/manager"
-import { isAIGenerating, setAIGenerating } from "@/services/cooldown"
+import { setAIGenerating } from "@/services/cooldown"
 import { createLogger } from "@/services/logger"
 import { formatError, summarizeError } from "@/services/error"
 import { reportError } from "@/services/error"
-import { RuntimeQueue } from "@/services/engine/runtime"
+import { agentSlots, RuntimeQueue } from "@/services/engine/runtime"
 import type { IngressEnvelope, MessagePriority, QueueAck, QueueEntry, SessionTurnRecord } from "@/services/engine/runtime"
 import { MemoryService, queueAckEvent, queueEntryEvent, queueRecoveryEvent, sessionTurnStore } from "@/services/agent/memory"
 
@@ -27,16 +27,13 @@ const log = createLogger("Agent")
 
 const runtimeQueue = new RuntimeQueue()
 const preprocessStates = new Map<string, { lastUserText?: string; lastUserTime?: number }>()
-let drainPromise: Promise<void> | undefined
-let drainGeneration = 0
 
 /** Test isolation hook; production queue state is intentionally process-local. */
 export function resetRuntimeQueueForTest(): void {
   runtimeQueue.clear()
   preprocessStates.clear()
   sessionTurnStore.reset()
-  drainGeneration++
-  drainPromise = undefined
+  agentSlots.reset()
 }
 export function getRuntimeQueueSnapshot(): QueueEntry[] { return runtimeQueue.snapshot() }
 
@@ -195,10 +192,10 @@ async function dispatchMessage(text: string, options: SendMessageOptions = {}, p
 
   // 并发锁：生成中优先尝试插话（Pi steering），没有可插话的回合才拒绝。
   // slash 命令例外 —— 切换人格、清空会话这类副作用不该在回合中途发生。
-  if (!pendingEntry && isAIGenerating()) {
+  if (!pendingEntry && agentSlots.isRunning(originSessionId)) {
     const requestId = options.requestId ?? makeIngressId("request")
     const priority = options.priority ?? "next"
-    if (!text.startsWith("/") && await steerActiveTurn(text)) {
+    if (!text.startsWith("/") && await steerActiveTurn(originSessionId, text)) {
       log.info("AI 生成中，用户消息已转为插话")
       pushUserMessage(text)
       return {
@@ -225,6 +222,10 @@ async function dispatchMessage(text: string, options: SendMessageOptions = {}, p
     }
   }
 
+  const runGeneration = agentSlots.begin(originSessionId)
+  if (runGeneration === undefined) {
+    throw new Error(`会话已有运行中的 Agent: ${originSessionId}`)
+  }
   setAIGenerating(true)
 
   try {
@@ -312,6 +313,7 @@ async function dispatchMessage(text: string, options: SendMessageOptions = {}, p
       isActiveMessage: false,
       isRetry: false,
       ingress,
+      runGeneration,
     })
 
     // ── Step 5: 提取人格效果（Pi Runtime 已通过 generateReply 处理）──
@@ -381,18 +383,17 @@ async function dispatchMessage(text: string, options: SendMessageOptions = {}, p
       personalityEffect: { expression: "sleepy", soundEvent: null },
     }
   } finally {
-    setAIGenerating(false)
-    if (!drainPromise && runtimeQueue.peek(originSessionId)) void drainRuntimeQueue(originSessionId)
+    agentSlots.end(originSessionId, runGeneration)
+    setAIGenerating(agentSlots.isAnyRunning())
+    if (runtimeQueue.peek(originSessionId)) void drainRuntimeQueue(originSessionId)
   }
 }
 
 /** Consume already-persisted messages for one session after the active turn releases the AI lock. */
 export function drainRuntimeQueue(sessionId = getActiveSessionId()): Promise<void> {
-  if (drainPromise) return drainPromise
-  const generation = ++drainGeneration
-  const run = (async () => {
-    while (generation === drainGeneration) {
-      if (isAIGenerating()) return
+  return agentSlots.drain(sessionId, async generation => {
+    while (agentSlots.isDrainCurrent(sessionId, generation)) {
+      if (agentSlots.isRunning(sessionId)) return
       const entry = runtimeQueue.peek(sessionId)
       if (!entry) return
       if (!entry.rawText && !entry.normalizedText) {
@@ -402,11 +403,7 @@ export function drainRuntimeQueue(sessionId = getActiveSessionId()): Promise<voi
       }
       await dispatchMessage(entry.rawText ?? entry.normalizedText ?? "", { requestId: entry.requestId, priority: entry.priority }, entry)
     }
-  })().finally(() => {
-    if (generation === drainGeneration) drainPromise = undefined
   })
-  drainPromise = run
-  return run
 }
 
 // ── 为主动搭话提供便捷入口 ──
@@ -426,16 +423,25 @@ export async function sendActiveMessage(userText: string): Promise<string> {
     priority: "later",
     taint: "derived",
   }
-  const result = await runPiAgentTurn({
-    sessionId,
-    userText,
-    chatMessages: getContextMessages(),
-    unansweredCount: unansweredCount.value,
-    messageCount: getContextMessages().length,
-    isActiveMessage: true,
-    ingress,
-  })
-  return result.reply
+  const runGeneration = agentSlots.begin(sessionId)
+  if (runGeneration === undefined) return ""
+  setAIGenerating(true)
+  try {
+    const result = await runPiAgentTurn({
+      sessionId,
+      userText,
+      chatMessages: getContextMessages(),
+      unansweredCount: unansweredCount.value,
+      messageCount: getContextMessages().length,
+      isActiveMessage: true,
+      ingress,
+      runGeneration,
+    })
+    return result.reply
+  } finally {
+    agentSlots.end(sessionId, runGeneration)
+    setAIGenerating(agentSlots.isAnyRunning())
+  }
 }
 
 // ── HMR ──

@@ -48,3 +48,5 @@ export {
 export type { RuntimeTraceContext, RuntimeTraceEvent, RuntimeTraceKind, RuntimeTraceListener } from "./trace"
 export { RuntimeQueue } from "./queue"
 export type { EnqueueInput } from "./queue"
+export { AgentSlotRegistry, agentSlots } from "./agent-slot"
+export type { AgentSlotSnapshot, AgentSlotState, SlotAgent } from "./agent-slot"

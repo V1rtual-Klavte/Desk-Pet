@@ -30,7 +30,7 @@ import { aiConfig, generalConfig, loopConfig, planConfig, safetyConfig } from "@
 import { emit } from "@tauri-apps/api/event"
 import { getPiModel, piStream, toPiAgentThinkingLevel } from "./model-gateway"
 import { formatError } from "@/services/error"
-import { createRuntimeTraceContext, publishRuntimeTrace } from "@/services/engine/runtime"
+import { agentSlots, createRuntimeTraceContext, publishRuntimeTrace } from "@/services/engine/runtime"
 import { redactText, sha256Text, stableSerialize } from "@/services/engine/runtime"
 
 const EMPTY_USAGE = {
@@ -39,14 +39,6 @@ const EMPTY_USAGE = {
 }
 
 let lastSeenSessionStart = getSessionStart()
-
-/**
- * 当前正在执行的顶层 Pi Agent 及其所属会话。
- * Pi 的 steering 队列会在这轮工具全部结束后把消息注入下一轮，
- * 让用户能在糖糖跑工具的过程中改变方向，而不是只能干等或整个取消。
- */
-let activeTurnAgent: Agent | null = null
-let activeTurnSessionId: string | undefined
 
 export interface PiRuntimeProviderOverride {
   model: Model<any>
@@ -77,10 +69,10 @@ export function resetPiRuntimeProviderForTest(): void {
  *
  * @returns 是否有正在执行的回合可以接收插话
  */
-export async function steerActiveTurn(text: string): Promise<boolean> {
-  if (!activeTurnAgent) return false
-  activeTurnAgent.steer({ role: "user", content: text, timestamp: Date.now() })
-  const sessionId = activeTurnSessionId ?? ""
+export async function steerActiveTurn(sessionId: string, text: string): Promise<boolean> {
+  const agent = agentSlots.activeAgent(sessionId)
+  if (!agent) return false
+  agent.steer({ role: "user", content: text, timestamp: Date.now() })
   await persistTurn(sessionId, "user", text, {
     schemaVersion: 1,
     requestId: `steer-${crypto.randomUUID()}`,
@@ -105,6 +97,7 @@ export interface PiAgentTurnInput {
   isActiveMessage?: boolean
   isRetry?: boolean
   ingress?: IngressEnvelope
+  runGeneration?: number
 }
 
 export interface PiAgentTurnOutput {
@@ -144,6 +137,7 @@ interface PiLoopInput {
   sessionId?: string
   /** 是否把本回合的 Agent 登记为「可插话」。主回合为真，子代理/规划步骤为假。 */
   exposeAsActiveAgent?: boolean
+  runGeneration?: number
   effects?: PiAgentTurnOutput["effects"]
   toolCallHistory?: PiAgentTurnOutput["toolCallHistory"]
   persistToolMessages?: boolean
@@ -258,6 +252,7 @@ export async function runPiAgentTurn(input: PiAgentTurnInput): Promise<PiAgentTu
       mode: generalConfig.assistantMode ? "assistant" : "pet",
       sessionId: turnSessionId,
       exposeAsActiveAgent: true,
+      runGeneration: input.runGeneration,
       effects,
       toolCallHistory,
       persistToolMessages: true,
@@ -459,9 +454,8 @@ async function runPiLoop(input: PiLoopInput): Promise<PiLoopOutput> {
     }
   })
 
-  if (input.exposeAsActiveAgent) {
-    activeTurnAgent = agent
-    activeTurnSessionId = input.sessionId
+  if (input.exposeAsActiveAgent && input.sessionId && input.runGeneration !== undefined) {
+    agentSlots.attach(input.sessionId, input.runGeneration, agent)
   }
 
   let timedOut = false
@@ -481,10 +475,6 @@ async function runPiLoop(input: PiLoopInput): Promise<PiLoopOutput> {
     return { reply: "", toolCallsMade, error: formatError(error) }
   } finally {
     clearTimeout(timer)
-    if (input.exposeAsActiveAgent) {
-      activeTurnAgent = null
-      activeTurnSessionId = undefined
-    }
     publishRuntimeTrace(traceContext, "agent_end", {
       toolCallsMade,
       timedOut,

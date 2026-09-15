@@ -19,6 +19,7 @@ import {
 } from "./persistence"
 import { createLogger } from "@/services/logger"
 import { formatError } from "@/services/error"
+import { agentSlots } from "@/services/engine/runtime"
 
 const log = createLogger("Session")
 
@@ -158,9 +159,11 @@ export async function switchToSession(sessionId: string): Promise<void> {
     return
   }
 
+  const previousSessionId = activeSessionId.value
   // 保存当前 UI 状态；对话正文已由 MemoryService 实时写入 Markdown。
-  if (activeSessionId.value) {
-    saveUnanswered(activeSessionId.value, unansweredCount.value)
+  if (previousSessionId) {
+    saveUnanswered(previousSessionId, unansweredCount.value)
+    agentSlots.releaseWhenIdle(previousSessionId)
   }
 
   // 切换到目标
@@ -190,6 +193,7 @@ export async function createNewSession(): Promise<SessionMeta> {
   const oldId = activeSessionId.value
   if (oldId) {
     saveUnanswered(oldId, unansweredCount.value)
+    agentSlots.releaseWhenIdle(oldId)
     try {
       const { MemoryService } = await import("@/services/agent/memory")
       if (chatHistory.length > 0) await MemoryService.archiveSession()
@@ -230,6 +234,7 @@ export function closeSession(sessionId: string): void {
   }
 
   removeSessionMeta(sessionId)
+  agentSlots.releaseWhenIdle(sessionId)
   deleteUnanswered(sessionId)
   saveSessionList([...sessions])
 }
@@ -244,6 +249,8 @@ export function openSession(meta: SessionMeta): void {
 export async function deleteSession(sessionId: string): Promise<void> {
   const meta = sessions.find(s => s.id === sessionId)
   if (!meta) return
+
+  await agentSlots.dispose(sessionId)
 
   // 从内存列表移除
   removeSessionMeta(sessionId)

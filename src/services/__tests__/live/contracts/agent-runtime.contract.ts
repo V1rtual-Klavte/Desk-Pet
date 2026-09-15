@@ -6,13 +6,14 @@ export const agentRuntimeContract: ModuleContract = {
     "src/services/agent/runner.ts",
     "src/services/agent/memory/session-turn-store.ts",
     "src/services/engine/runtime/queue.ts",
+    "src/services/engine/runtime/agent-slot.ts",
     "src/services/engine/preprocessor.ts",
     "src/services/engine/pi/runtime.ts",
     "src/services/session/manager.ts",
     "src/services/session/persistence.ts",
   ],
   generatedAt: "2026-09-15",
-  sourceHash: "d8a6e72fc1aee182c0d607432d88d397b724fad4709d2c5aecfd42a307ee131e",
+  sourceHash: "7e561b2d511892e0e80bc082ba06af3ae9840ae417c9506a1ce1ea52b455aa0f",
   coverage: [
     {
       id: "ar-01",
@@ -38,8 +39,16 @@ export const agentRuntimeContract: ModuleContract = {
       depth: "deep",
       scenarios: ["queued-drain-after-turn"],
     },
+    {
+      id: "ar-04",
+      feature: "会话 AgentSlot 生命周期",
+      description: "主回合按 sessionId 持有 Agent 和 generation，会话切换回收空闲 slot，旧 generation 不能结束新 run",
+      why: "模块级 Agent 引用和全局忙碌锁无法隔离不同会话，也会让迟到的异步清理释放后续回合",
+      depth: "deep",
+      scenarios: ["session-agent-slot-generation"],
+    },
   ],
-  rules: { minScenarios: 3, minDeepScenarios: 3, requireBoundary: true, requireErrorPath: false },
+  rules: { minScenarios: 4, minDeepScenarios: 4, requireBoundary: true, requireErrorPath: false },
 }
 
 export default agentRuntimeContract
