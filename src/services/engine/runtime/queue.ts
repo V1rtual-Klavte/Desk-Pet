@@ -57,13 +57,32 @@ export class RuntimeQueue {
   }
 
   reserve(sessionId?: string): QueueEntry | undefined {
-    const candidate = [...this.entries.values()]
-      .filter(entry => (entry.ackState === "persisted" || entry.ackState === "requeued") && (!sessionId || entry.sessionId === sessionId))
-      .sort((a, b) => PRIORITY_ORDER[a.priority] - PRIORITY_ORDER[b.priority] || a.sequence - b.sequence)[0]
+    const candidate = this.findPending(sessionId)
+    return this.markReserved(candidate)
+  }
+
+  reserveEntry(queueId: string): QueueEntry | undefined {
+    const candidate = this.entries.get(queueId)
+    if (candidate?.ackState !== "persisted" && candidate?.ackState !== "requeued") return undefined
+    return this.markReserved(candidate)
+  }
+
+  private markReserved(candidate: QueueEntry | undefined): QueueEntry | undefined {
     if (!candidate) return undefined
     candidate.ackState = "reserved"
     candidate.attempt += 1
     return { ...candidate }
+  }
+
+  peek(sessionId?: string): QueueEntry | undefined {
+    const candidate = this.findPending(sessionId)
+    return candidate ? { ...candidate } : undefined
+  }
+
+  private findPending(sessionId?: string): QueueEntry | undefined {
+    return [...this.entries.values()]
+      .filter(entry => (entry.ackState === "persisted" || entry.ackState === "requeued") && (!sessionId || entry.sessionId === sessionId))
+      .sort((a, b) => PRIORITY_ORDER[a.priority] - PRIORITY_ORDER[b.priority] || a.sequence - b.sequence)[0]
   }
 
   acknowledge(queueId: string, state: Exclude<QueueAckState, "persisted" | "reserved">, errorCode?: string): QueueAck | undefined {

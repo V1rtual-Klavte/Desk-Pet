@@ -4,13 +4,14 @@ export const agentRuntimeContract: ModuleContract = {
   module: "agent-runtime",
   sourceFiles: [
     "src/services/agent/runner.ts",
+    "src/services/engine/runtime/queue.ts",
     "src/services/engine/preprocessor.ts",
     "src/services/engine/pi/runtime.ts",
     "src/services/session/manager.ts",
     "src/services/session/persistence.ts",
   ],
   generatedAt: "2026-09-14",
-  sourceHash: "7d0c12f9321b664be3f744e913a4c851a6ad7d0ed8202045151b2e7d80f40b3a",
+  sourceHash: "8f2a17324f400f31b3afdadddc01b8edda1d971dbb06356cc020d1a3e9ed5672",
   coverage: [
     {
       id: "ar-01",
@@ -28,8 +29,16 @@ export const agentRuntimeContract: ModuleContract = {
       depth: "deep",
       scenarios: ["queued-before-dispatch"],
     },
+    {
+      id: "ar-03",
+      feature: "后台队列消费",
+      description: "当前回合结束后自动消费同会话 persisted/requeued 消息，且不重复写入用户事实",
+      why: "只持久化不 drain 会让忙碌期间的用户输入永久停留在队列中",
+      depth: "deep",
+      scenarios: ["queued-drain-after-turn"],
+    },
   ],
-  rules: { minScenarios: 1, minDeepScenarios: 1, requireBoundary: false, requireErrorPath: false },
+  rules: { minScenarios: 3, minDeepScenarios: 3, requireBoundary: true, requireErrorPath: false },
 }
 
 export default agentRuntimeContract

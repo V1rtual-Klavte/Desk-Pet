@@ -27,9 +27,16 @@ const log = createLogger("Agent")
 
 const runtimeQueue = new RuntimeQueue()
 const preprocessStates = new Map<string, { lastUserText?: string; lastUserTime?: number }>()
+let drainPromise: Promise<void> | undefined
+let drainGeneration = 0
 
 /** Test isolation hook; production queue state is intentionally process-local. */
-export function resetRuntimeQueueForTest(): void { runtimeQueue.clear(); preprocessStates.clear() }
+export function resetRuntimeQueueForTest(): void {
+  runtimeQueue.clear()
+  preprocessStates.clear()
+  drainGeneration++
+  drainPromise = undefined
+}
 export function getRuntimeQueueSnapshot(): QueueEntry[] { return runtimeQueue.snapshot() }
 
 /** Rehydrate safe queue entries and quarantine in-flight entries after restart. */
@@ -113,6 +120,12 @@ export interface SendMessageOptions {
   priority?: MessagePriority
 }
 
+export interface SendMessageResult {
+  reply: string
+  toolCallsMade: number
+  personalityEffect: { expression: string; soundEvent: string | null }
+}
+
 function makeIngressEnvelope(rawText: string, normalizedText: string, sessionId: string, requestId: string, priority: MessagePriority): IngressEnvelope {
   return {
     schemaVersion: 1,
@@ -146,18 +159,18 @@ async function enqueuePendingMessage(envelope: IngressEnvelope): Promise<QueueEn
   return entry
 }
 
-export async function sendMessage(text: string, options: SendMessageOptions = {}): Promise<{
-  reply: string
-  toolCallsMade: number
-  personalityEffect: { expression: string; soundEvent: string | null }
-}> {
+export async function sendMessage(text: string, options: SendMessageOptions = {}): Promise<SendMessageResult> {
+  return dispatchMessage(text, options)
+}
+
+async function dispatchMessage(text: string, options: SendMessageOptions = {}, pendingEntry?: QueueEntry): Promise<SendMessageResult> {
   // ★ 入口绑定会话 ID（防止异步回复错位到其他会话）
-  const originSessionId = getActiveSessionId()
+  const originSessionId = pendingEntry?.sessionId ?? getActiveSessionId()
   let activeQueueEntry: QueueEntry | undefined
 
   // 并发锁：生成中优先尝试插话（Pi steering），没有可插话的回合才拒绝。
   // slash 命令例外 —— 切换人格、清空会话这类副作用不该在回合中途发生。
-  if (isAIGenerating()) {
+  if (!pendingEntry && isAIGenerating()) {
     const requestId = options.requestId ?? makeIngressId("request")
     const priority = options.priority ?? "next"
     if (!text.startsWith("/") && await steerActiveTurn(text)) {
@@ -194,7 +207,14 @@ export async function sendMessage(text: string, options: SendMessageOptions = {}
     transition("PRE")
     const preprocessState = preprocessStates.get(originSessionId) ?? {}
     preprocessStates.set(originSessionId, preprocessState)
-    const preResult = await preProcess(text, preprocessState)
+    const preResult = pendingEntry
+      ? {
+          handled: false as const,
+          rawText: pendingEntry.rawText ?? text,
+          normalizedText: pendingEntry.normalizedText ?? text.trim(),
+          text: pendingEntry.normalizedText ?? text.trim(),
+        }
+      : await preProcess(text, preprocessState)
 
     if (preResult.handled) {
       if (preResult.response) {
@@ -216,9 +236,9 @@ export async function sendMessage(text: string, options: SendMessageOptions = {}
       }
     }
 
-    const requestId = options.requestId ?? makeIngressId("request")
-    const ingress = makeIngressEnvelope(preResult.rawText, preResult.normalizedText, originSessionId, requestId, options.priority ?? "now")
-    const previous = runtimeQueue.snapshot().find(entry => entry.requestId === requestId)
+    const requestId = pendingEntry?.requestId ?? options.requestId ?? makeIngressId("request")
+    const ingress = makeIngressEnvelope(preResult.rawText, preResult.normalizedText, originSessionId, requestId, pendingEntry?.priority ?? options.priority ?? "now")
+    const previous = !pendingEntry && runtimeQueue.snapshot().find(entry => entry.requestId === requestId)
     if (previous) {
       log.info("重复 requestId，跳过重复投递:", requestId)
       return {
@@ -227,25 +247,25 @@ export async function sendMessage(text: string, options: SendMessageOptions = {}
         personalityEffect: { expression: "idle", soundEvent: null },
       }
     }
-    activeQueueEntry = runtimeQueue.enqueue({
-      queueId: makeIngressId("queue"),
-      sessionId: originSessionId,
-      turnId: makeIngressId("turn"),
-      requestId,
-      priority: options.priority ?? "now",
-      deliveryMode: "prompt",
-      rawText: preResult.rawText,
-      normalizedText: preResult.normalizedText,
-      querySource: "chat",
-      taint: "trusted_user",
-    })
-    await persistQueueEntry(activeQueueEntry)
-    const reserved = runtimeQueue.reserve(originSessionId)
+    activeQueueEntry = pendingEntry ?? runtimeQueue.enqueue({
+        queueId: makeIngressId("queue"),
+        sessionId: originSessionId,
+        turnId: makeIngressId("turn"),
+        requestId,
+        priority: options.priority ?? "now",
+        deliveryMode: "prompt",
+        rawText: preResult.rawText,
+        normalizedText: preResult.normalizedText,
+        querySource: "chat",
+        taint: "trusted_user",
+      })
+    if (!pendingEntry) await persistQueueEntry(activeQueueEntry)
+    const reserved = runtimeQueue.reserveEntry(activeQueueEntry.queueId)
     if (!reserved) throw new Error(`queued 事件无法 reserve: ${activeQueueEntry.queueId}`)
     activeQueueEntry = reserved
     await persistQueueAck(activeQueueEntry, { queueId: reserved.queueId, turnId: reserved.turnId, state: "reserved" })
 
-    pushUserMessage(preResult.text)
+    if (!pendingEntry) pushUserMessage(preResult.text)
     resetUnanswered()
 
     // ── Step 3: 进入 Generating 状态 ──
@@ -327,7 +347,31 @@ export async function sendMessage(text: string, options: SendMessageOptions = {}
     }
   } finally {
     setAIGenerating(false)
+    if (!drainPromise && runtimeQueue.peek(originSessionId)) void drainRuntimeQueue(originSessionId)
   }
+}
+
+/** Consume already-persisted messages for one session after the active turn releases the AI lock. */
+export function drainRuntimeQueue(sessionId = getActiveSessionId()): Promise<void> {
+  if (drainPromise) return drainPromise
+  const generation = ++drainGeneration
+  const run = (async () => {
+    while (generation === drainGeneration) {
+      if (isAIGenerating()) return
+      const entry = runtimeQueue.peek(sessionId)
+      if (!entry) return
+      if (!entry.rawText && !entry.normalizedText) {
+        const failed = runtimeQueue.acknowledge(entry.queueId, "failed", "queue_payload_missing")
+        if (failed) await persistQueueAck(entry, failed)
+        continue
+      }
+      await dispatchMessage(entry.rawText ?? entry.normalizedText ?? "", { requestId: entry.requestId, priority: entry.priority }, entry)
+    }
+  })().finally(() => {
+    if (generation === drainGeneration) drainPromise = undefined
+  })
+  drainPromise = run
+  return run
 }
 
 // ── 为主动搭话提供便捷入口 ──

@@ -45,7 +45,7 @@ LLM 可见回复文本 + <RUNTIME_DATA>
 
 当前主 Agent Runtime、Planner 和 Live Test 契约都以 RUNTIME_DATA 为准；旧变量工具只在历史归档中出现，不代表当前接口仍有效。当前记忆压缩与长期召回仍保持既有边界，后续会单独按 Claude Code 风格的文件记忆协议重构。
 
-运行时基础重构的目标协议、Pi Agent Core hook 边界、队列/Plan 持久化、PromptSnapshot、恢复、安全和 Memory Eval 见[记忆系统重构前置准备](../plans/active/记忆系统重构前置准备.md)。当前已落地 `src/services/engine/runtime/` 协议类型、事件兼容适配、快照脱敏纯函数、只读 trace 总线、RuntimeQueue 语义内核、queue event adapter，以及 `sendMessage()` 的 queued → dispatched → accepted/failed 入口接入；queued 和终态 ack 通过同目录原子写入，并在终态 ack 前等待挂起的轮次写入。启动初始化会扫描 queue event：安全的 persisted/requeued 请求重新入队，reserved/dispatched 请求写 recovery 并隔离未知副作用。后台 drain、Plan 持久化和长期召回仍未实现；该计划中的接口和阶段门禁不表示这些能力已经全部实现。
+运行时基础重构的目标协议、Pi Agent Core hook 边界、队列/Plan 持久化、PromptSnapshot、恢复、安全和 Memory Eval 见[记忆系统重构前置准备](../plans/active/记忆系统重构前置准备.md)。当前已落地 `src/services/engine/runtime/` 协议类型、事件兼容适配、快照脱敏纯函数、只读 trace 总线、RuntimeQueue 语义内核、queue event adapter，以及 `sendMessage()` 的 queued → dispatched → accepted/failed 入口接入；queued 和终态 ack 通过同目录原子写入，并在终态 ack 前等待挂起的轮次写入。启动初始化会扫描 queue event：安全的 persisted/requeued 请求重新入队，进行中请求写 recovery 并隔离未知副作用；当前回合释放 AI 锁后会按优先级自动 drain 同会话 pending 消息。跨会话 AgentSlot、Plan 持久化和长期召回仍未实现；该计划中的接口和阶段门禁不表示这些能力已经全部实现。
 
 ## 配置与运行时数据
 
