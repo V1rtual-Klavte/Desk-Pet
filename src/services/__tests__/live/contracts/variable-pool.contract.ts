@@ -3,8 +3,8 @@ import type { ModuleContract } from "../types"
 export const variablePoolContract: ModuleContract = {
   module: "variable-pool",
   sourceFiles: ["src/services/engine/pi/runtime.ts", "src/services/personality/variable-pool.ts", "src/services/personality/types.ts", "src/services/reply/generator.ts"],
-  generatedAt: "2026-09-14",
-  sourceHash: "2fa0715ed404e0dbb24f26a982f7324b4f522f2833ca162ee73fb69adf1343bb",
+  generatedAt: "2026-09-15",
+  sourceHash: "24222a9aa021ad0885eae92b68ed52503bb0efb4c090288cfd4dc255c94a307f",
   coverage: [
     { id: "vp-01", feature: "系统变量计算", description: "computeSystemVariables 计算6个系统变量", why: "Prompt 注入基础", depth: "shallow", scenarios: [] },
     { id: "vp-02", feature: "变量池初始化", description: "initVariablePool 从Card variableDefs初始化", why: "Card切换和重启时正确构建", depth: "deep", scenarios: [] },

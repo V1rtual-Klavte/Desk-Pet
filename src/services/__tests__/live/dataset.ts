@@ -1,6 +1,6 @@
 import type { ModuleContract, SceneDef } from "./types"
 
-export const LIVE_DATASET_VERSION = "2026-09-09.2"
+export const LIVE_DATASET_VERSION = "2026-09-15.1"
 
 export function validateDataset(scenes: SceneDef[], contracts: ModuleContract[]): string[] {
   const errors: string[] = []

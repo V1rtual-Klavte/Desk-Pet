@@ -47,11 +47,14 @@ function formatTerminal(report: TestReport): string {
 
   lines.push("-".repeat(72))
   lines.push(
-    `pass=${report.summary.passed}/${report.summary.total} (${percent(report.summary.passRate)}) | ` +
+    `pass=${report.summary.passed}/${report.summary.executedTrials} (${percent(report.summary.passRate)}) | ` +
     `pass@k=${percent(report.summary.passAtK)} | pass^k=${percent(report.summary.passPowerK)} | ` +
     `duration=${(report.summary.totalDuration / 1000).toFixed(1)}s`,
   )
-  lines.push(`fail=${report.summary.failed}, timeout=${report.summary.timeout}, skip=${report.summary.skipped}`)
+  lines.push(
+    `fail=${report.summary.failed}, timeout=${report.summary.timeout}, skip=${report.summary.skipped} | ` +
+    `planned=${report.summary.plannedTrials}, executed=${report.summary.executedTrials}`,
+  )
   return lines.join("\n")
 }
 
@@ -61,7 +64,7 @@ function formatMarkdown(report: TestReport): string {
     "",
     `- Dataset: \`${report.datasetVersion}\``,
     `- Run: \`${report.runId}\``,
-    `- Trials: ${report.summary.totalTrials}`,
+    `- Trials: planned ${report.summary.plannedTrials} / executed ${report.summary.executedTrials} (skip ${report.summary.skipped})`,
     `- Pass rate: ${percent(report.summary.passRate)}`,
     `- pass@k: ${percent(report.summary.passAtK)}`,
     `- pass^k: ${percent(report.summary.passPowerK)}`,

@@ -21,7 +21,7 @@ export const memoryContract: ModuleContract = {
     "src/services/context/projection.ts",
   ],
   generatedAt: "2026-09-15",
-  sourceHash: "b8d3f5fa39a371f9e143ac449a0a771c6e07a9923d504aa9dd3d65e88635b80c",
+  sourceHash: "401cad7ecf9dde539e59aeda27130d4c0a6d1ca66d27180d994aca7c302c88c8",
   coverage: [
     { id: "mm-01", feature: "Memory 添加条目", description: "MemoryService.append() 创建记忆", why: "记忆系统基础 CRUD", depth: "shallow", scenarios: ["memory-append"] },
     { id: "mm-02", feature: "Memory 搜索", description: "MemoryService.search(query, limit) 按内容搜索", why: "LLM 需检索相关记忆", depth: "shallow", scenarios: ["memory-search"] },
@@ -40,6 +40,7 @@ export const memoryContract: ModuleContract = {
     { id: "mm-15", feature: "Plan checkpoint 恢复", description: "运行中 Plan 从 session event 恢复；只读步骤回到 pending，未知外部副作用进入 unknown_side_effect", why: "进程重启后不能重复执行没有完成凭证的外部操作", depth: "deep", scenarios: ["memory-plan-resume"] },
     { id: "mm-16", feature: "ContextKernel 预算", description: "六层上下文顺序固定，预算不足时记录结构化裁剪原因", why: "Provider 输入需要可预测且可审计地限制在上下文窗口内", depth: "deep", scenarios: ["memory-context-budget"] },
     { id: "mm-17", feature: "画像与记忆投影", description: "User.md 作为带来源的只读 projection，默认 MemoryProvider 不执行长期召回", why: "画像和长期事实需要显式来源边界，未完成召回策略前不能隐式注入", depth: "deep", scenarios: ["memory-profile-rewrite"] },
+    { id: "mm-18", feature: "正文记录单次写入", description: "一次真实回合后同一句话只有一条 deskpet-turn 记录；user_message 事件由 turn 记录投影得到，不再同时写 deskpet-event", why: "消息双写会让重载按预览和事件各重放一次，造成重复消息与翻倍轮数", depth: "deep", scenarios: ["memory-single-message-write"] },
   ],
   rules: { minScenarios: 6, minDeepScenarios: 2, requireBoundary: true, requireErrorPath: true },
 }

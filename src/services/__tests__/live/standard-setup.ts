@@ -17,6 +17,8 @@ import { resetCooldown, setAIGenerating } from "@/services/cooldown"
 import { resetPreprocessorForTest } from "@/services/engine/preprocessor"
 import { resetPiRuntimeProviderForTest } from "@/services/engine/pi"
 import { resetRuntimeQueueForTest } from "@/services/agent/runner"
+import { resetConfirmChannel } from "./confirm-channel"
+import type { ConfirmPolicy } from "./types"
 
 let bootstrapped = false
 
@@ -28,8 +30,16 @@ async function bootstrapOnce(): Promise<void> {
   bootstrapped = true
 }
 
-export async function standardSetup(): Promise<void> {
+/**
+ * 场景隔离入口。
+ *
+ * `confirmPolicy` 由场景声明（`meta.confirmPolicy`），在隔离点一起重置：
+ * 确认通道是典型跨场景状态，一个场景留下的 pending 必须在这里被收尾，
+ * 不能等下一个场景的请求把它覆盖掉。
+ */
+export async function standardSetup(confirmPolicy: ConfirmPolicy = "deny"): Promise<void> {
   await bootstrapOnce()
+  resetConfirmChannel(confirmPolicy)
 
   // 上一场景的异步 session 写入必须先完成，之后才能清空模块状态。
   await MemoryService.init()

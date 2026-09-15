@@ -106,6 +106,20 @@ Scene 会由 Vite 的 `import.meta.glob` 自动发现，通常不需要修改 Ru
 
 工具场景必须断言具体工具及状态。仅断言回复非空不能证明工具链成功。安全场景不能通过执行真实破坏操作验证，应断言模型实际发起目标调用且该调用被拒绝、拦截或以受控错误结束；没有调用不构成通过。
 
+### 确认弹窗（confirm）在测试宿主中的应答
+
+测试页 `live-test.html` 没有 ChatPanel，`requestConfirm()` 的 Promise 不会有人 resolve。宿主因此装了一条应答通道（`confirm-channel.ts`），按场景声明的策略**立即**应答：
+
+```ts
+meta: { …, confirmPolicy: "deny" }   // 默认值：拒绝所有确认请求
+meta: { …, confirmPolicy: "approve" } // 显式放行（只用于验证通道本身）
+```
+
+- 不声明时默认 `"deny"`，场景不会因为随机弹窗而挂起；需要放行的场景必须显式声明。
+- DANGER 工具被拒后，`toolHistory` 会留下 `denied`，并且该请求进入 `ctx.confirms`；
+  场景应据此区分「模型没有调用工具」与「调用被拒绝」，不要让回合静默退化成空回复。
+- 确认通道是跨场景状态：每个场景在 `standardSetup()` 里重置，上一场景留下的 pending 会被拒绝收尾。
+
 真实 LLM 输出存在波动。场景应断言稳定的产品合同和状态，不应依赖固定措辞、标点或完整字符串相等。
 
 ## 5. 运行环境和数据隔离
@@ -118,6 +132,8 @@ Scene 会由 Vite 的 `import.meta.glob` 自动发现，通常不需要修改 Ru
 4. 启动 Vite 和 debug Tauri 测试窗口。
 5. 每个 trial 先等待前一个场景的异步会话写入，再重置会话工作记忆、轮次计数、session 文件与 UI index、变量池、聊天记录、长期记忆、预处理去重状态和 AI 锁。
 6. 在真实 WebView 中执行 Contract、Scene 和断言；每个 Scene 可声明超时，超时不再伪装成普通失败。
+   某条场景超时后只终止该场景（它的剩余 trial 记为 `skip`），后续场景继续执行；
+   需要「一超时即停」的调用方可以用 `runAllScenes(scenes, repeat, { onTimeout: "abort" })`。
 7. 写出测试结果、关闭应用并删除临时数据根。Node 侧会处理 SIGINT/SIGTERM 和 10 分钟宿主超时。
 
 正常运行不会修改 `data/desk-pet` 中的用户 Memory、Session、Card 或变量状态。异常强制终止时，可以检查用户目录是否遗留 `.deskpet-live-test-*`；确认没有测试进程使用后再手工清理。
@@ -159,6 +175,7 @@ live/
 ├── scenes/               # 真实多轮场景与断言
 ├── dataset.ts            # 数据集版本与 caseId/Contract 完整性校验
 ├── live-test-main.ts     # Tauri WebView 执行入口
+├── confirm-channel.ts    # 测试宿主的确认弹窗应答通道
 ├── standard-setup.ts     # 场景状态隔离和标准初始化
 ├── scene-runner.ts       # 场景执行、状态快照和断言
 ├── contract-checker.ts   # 覆盖完整性检查
@@ -168,5 +185,7 @@ live/
 ```
 
 测试报告采用 `desk-pet-live/v2` schema。JSON 报告包含数据集版本、Git commit、Card 种子 hash、筛选项、每个 trial 的工具/重试/回复长度/浏览器堆指标、错误分类和 `pass@k`/`pass^k`。它们分别表示“至少一次试验通过”和“所有已执行试验都通过”；不能用 `pass@k` 替代回归门禁。
+
+summary 里的 `plannedTrials` 与 `executedTrials` 分别表示「计划试验数」和「实际执行试验数」，`skipped` 只来自前序 trial 超时；`passRate`、`pass@k`、`pass^k` 的分母都只统计实际执行的部分，避免少跑的场景被算成通过。
 
 测试宿主脚本位于项目根目录的 `scripts/live-test.mjs`，Tauri 测试页为 `live-test.html`，Rust 测试窗口和退出命令位于 `src-tauri/src/lib.rs`。

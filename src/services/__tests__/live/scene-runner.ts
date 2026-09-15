@@ -17,6 +17,7 @@ import { getContextMessages } from "@/services/session/store"
 import { pushAssistantMessage, pushUserMessage } from "@/services/session/messages"
 import { MemoryService } from "@/services/agent/memory"
 import { formatError } from "@/services/error"
+import { confirmRecords } from "./confirm-channel"
 
 const DEFAULT_SCENE_TIMEOUT = 120_000
 
@@ -132,6 +133,7 @@ async function runSceneInner(scene: SceneDef, trial: number): Promise<SceneResul
           toolName: item.toolName,
           status: item.status,
         })),
+        confirms: confirmRecords(),
         trial,
       }
 
@@ -237,15 +239,57 @@ export async function runScene(scene: SceneDef, trial = 1): Promise<SceneResult>
   }
 }
 
-export async function runAllScenes(scenes: SceneDef[], repeat = 1): Promise<SceneResult[]> {
+/** 计划试验数：Σ 每个场景的 max(repeat, meta.repetitions)。报告用它和实际执行数对照。 */
+export function plannedTrialCount(scenes: SceneDef[], repeat = 1): number {
+  return scenes.reduce((sum, scene) => sum + Math.max(repeat, scene.meta.repetitions ?? 1), 0)
+}
+
+function skippedTrial(scene: SceneDef, trial: number, reason: string): SceneResult {
+  return {
+    caseId: scene.meta.caseId,
+    scene: scene.meta.description,
+    module: scene.meta.module,
+    contractId: scene.meta.contractId,
+    suite: scene.meta.suite,
+    trial,
+    entry: scene.meta.entry ?? "runtime",
+    status: "skip",
+    turns: [],
+    duration: 0,
+    error: reason,
+  }
+}
+
+export interface RunAllScenesOptions {
+  /**
+   * 超时策略。
+   * - `"continue"`（默认）：只终止超时的那条场景 —— 它的剩余 trial 记为 skip，
+   *   后续场景照常执行。
+   * - `"abort"`：维持旧行为，超时后立即结束整个 run。
+   */
+  onTimeout?: "continue" | "abort"
+}
+
+export async function runAllScenes(
+  scenes: SceneDef[],
+  repeat = 1,
+  options: RunAllScenesOptions = {},
+): Promise<SceneResult[]> {
+  const onTimeout = options.onTimeout ?? "continue"
   const results: SceneResult[] = []
   for (const scene of scenes) {
     const trialCount = Math.max(repeat, scene.meta.repetitions ?? 1)
     for (let trial = 1; trial <= trialCount; trial++) {
       const result = await runScene(scene, trial)
       results.push(result)
-      // The Provider API cannot cancel an in-flight request, so stop the run after a timeout.
-      if (result.status === "timeout") return results
+      if (result.status !== "timeout") continue
+      // Provider 请求无法取消，同场景的剩余 trial 不再重试；但它们是被计划过的，
+      // 如实记为 skip，报告才能区分「计划执行」和「实际执行」。
+      if (onTimeout === "abort") return results
+      for (let skipped = trial + 1; skipped <= trialCount; skipped++) {
+        results.push(skippedTrial(scene, skipped, `前序 trial #${trial} 超时，未执行`))
+      }
+      break
     }
   }
   return results

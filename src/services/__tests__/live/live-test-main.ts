@@ -1,6 +1,6 @@
 import { invoke } from "@tauri-apps/api/core"
 import { validateDataset, LIVE_DATASET_VERSION } from "./dataset"
-import { runAllScenes } from "./scene-runner"
+import { runAllScenes, plannedTrialCount } from "./scene-runner"
 import { standardSetup } from "./standard-setup"
 import { formatReport } from "./reporter"
 import { checkAllContracts } from "./contract-checker"
@@ -45,37 +45,48 @@ function withStandardSetup(scene: SceneDef): SceneDef {
   return {
     ...scene,
     setup: async () => {
-      await standardSetup()
+      // 场景声明在这里落到宿主的确认通道上：withStandardSetup 是唯一同时持有
+      // 场景元数据与 setup 包装的位置（确认通道本身由 standard-setup 负责重置）。
+      await standardSetup(scene.meta.confirmPolicy)
       await sceneSetup?.()
     },
   }
 }
 
-function makeSummary(results: TestReport["scenes"]): TestReport["summary"] {
+function makeSummary(results: TestReport["scenes"], plannedTrials: number): TestReport["summary"] {
   const caseResults = new Map<string, TestReport["scenes"]>()
   for (const result of results) {
     const list = caseResults.get(result.caseId) ?? []
     list.push(result)
     caseResults.set(result.caseId, list)
   }
-  const passedCases = [...caseResults.values()].filter(trials => trials.some(trial => trial.status === "pass")).length
-  const passedEveryTrial = [...caseResults.values()].filter(trials => trials.length > 0 && trials.every(trial => trial.status === "pass")).length
+  // skip 只来自「前序 trial 超时，本 trial 未执行」，既不算通过也不算失败：
+  // 通过率与 pass@k / pass^k 的分母都只统计实际执行过的 trial。
+  const executedByCase = [...caseResults.values()].map(trials => trials.filter(trial => trial.status !== "skip"))
+  const executedCases = executedByCase.filter(trials => trials.length > 0)
+  const passedCases = executedCases.filter(trials => trials.some(trial => trial.status === "pass")).length
+  const passedEveryTrial = executedCases.filter(trials => trials.every(trial => trial.status === "pass")).length
+  const passed = results.filter(result => result.status === "pass").length
+  const skipped = results.filter(result => result.status === "skip").length
   const total = results.length
-  const totalCases = caseResults.size
+  const executedTrials = total - skipped
 
   return {
     total,
-    passed: results.filter(result => result.status === "pass").length,
+    passed,
     failed: results.filter(result => result.status === "fail").length,
-    skipped: results.filter(result => result.status === "skip").length,
+    skipped,
     timeout: results.filter(result => result.status === "timeout").length,
     totalDuration: results.reduce((sum, result) => sum + result.duration, 0),
-    totalCases,
+    totalCases: caseResults.size,
+    executedCases: executedCases.length,
     totalTrials: total,
-    passRate: total === 0 ? 0 : results.filter(result => result.status === "pass").length / total,
+    plannedTrials,
+    executedTrials,
+    passRate: executedTrials === 0 ? 0 : passed / executedTrials,
     // pass@k: at least one successful trial; pass^k: every observed trial successful.
-    passAtK: totalCases === 0 ? 0 : passedCases / totalCases,
-    passPowerK: totalCases === 0 ? 0 : passedEveryTrial / totalCases,
+    passAtK: executedCases.length === 0 ? 0 : passedCases / executedCases.length,
+    passPowerK: executedCases.length === 0 ? 0 : passedEveryTrial / executedCases.length,
   }
 }
 
@@ -131,7 +142,7 @@ async function main(): Promise<void> {
   }
 
   if (datasetErrors.length > 0 || strictContractFailure) {
-    const report: TestReport = { ...reportBase, scenes: [], summary: makeSummary([]) }
+    const report: TestReport = { ...reportBase, scenes: [], summary: makeSummary([], 0) }
     const formatted = formatReport(report, opts.report)
     console.error(formatted)
     await invoke("live_test_complete", { passed: false, report: formatted })
@@ -139,7 +150,7 @@ async function main(): Promise<void> {
   }
 
   const results = await runAllScenes(scenes.map(withStandardSetup), opts.repeat)
-  const report: TestReport = { ...reportBase, scenes: results, summary: makeSummary(results) }
+  const report: TestReport = { ...reportBase, scenes: results, summary: makeSummary(results, plannedTrialCount(scenes, opts.repeat)) }
   const formatted = formatReport(report, opts.report)
   console.log(formatted)
   const passed = report.summary.failed === 0

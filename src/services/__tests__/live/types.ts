@@ -10,6 +10,9 @@ import type { PiAgentTurnOutput } from "@/services/engine/pi"
 export type TestSuite = "regression" | "capability" | "safety" | "stress"
 export type SceneEntry = "runtime" | "production"
 
+/** 测试宿主对 `requestConfirm()` 的应答策略；默认 "deny"（确定性优先）。 */
+export type ConfirmPolicy = "deny" | "approve"
+
 export interface SceneMeta {
   /** Stable dataset identifier. The human description is allowed to change. */
   caseId: string
@@ -22,6 +25,11 @@ export interface SceneMeta {
   tags?: string[]
   timeout?: number  // ms, 默认 120000
   repetitions?: number
+  /**
+   * 场景对「确认弹窗」的显式期望。测试宿主没有 ChatPanel，
+   * 由 confirm-channel 按此策略确定性应答；不声明时为 "deny"。
+   */
+  confirmPolicy?: ConfirmPolicy
 }
 
 export type AssertCheck = {
@@ -35,6 +43,8 @@ export interface AssertContext {
   session: { state: string; messageCount: number; toolCallCount: number }
   memory: MemorySnapshot
   toolHistory: { toolName: string; status: string }[]
+  /** 本场景已发生的确认请求（不含上一场景残留），用于区分「没调用工具」与「调用被拒」。 */
+  confirms: { toolName: string; approved: boolean }[]
   trial: number
 }
 
@@ -174,7 +184,13 @@ export interface TestReport {
     timeout: number
     totalDuration: number
     totalCases: number
+    /** 至少执行过一次 trial 的 case 数；pass@k / pass^k 的分母。 */
+    executedCases: number
     totalTrials: number
+    /** 计划试验数（Σ 每个场景的 max(repeat, repetitions)），与 totalTrials 对照可看出未执行的部分。 */
+    plannedTrials: number
+    /** 实际执行试验数（totalTrials - skipped）。passRate / pass@k / pass^k 都用它作分母。 */
+    executedTrials: number
     passRate: number
     passAtK: number
     passPowerK: number
