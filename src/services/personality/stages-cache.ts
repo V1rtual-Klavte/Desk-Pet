@@ -419,7 +419,7 @@ function readLooseFallbacks(text: string, defaults: FallbackReplies): FallbackRe
 
 /**
  * 为指定 Card 生成阶段文案（阻塞 LLM 调用）
- * 使用 OpenAICompatibleProvider 统一请求构建，避免 URL 拼接错误
+ * 请求走 engine/pi 的 completePiText，复用主链路的模型解析与网络边界
  * @returns 成功的 StagePrompts，失败返回 null
  */
 export async function generateStagesForCard(
@@ -438,12 +438,11 @@ export async function generateStagesForCard(
   log.info("开始生成 stages:", cardId)
 
   try {
-    const { OpenAICompatibleProvider } = await import("@/services/agent/provider")
-    const provider = new OpenAICompatibleProvider()
-
-    const resp = await provider.generateReply({
-      messages: [{ id: "stages-gen", role: "user", text: prompt, timestamp: Date.now() }],
+    const { completePiText } = await import("@/services/engine/pi")
+    const resp = await completePiText({
+      purpose: "stages",
       systemPrompt: "你是一个 JSON 生成器。你的唯一任务是根据模板输出 JSON 对象。不要输出角色对话、不要输出叙述文字、不要输出任何非 JSON 内容。只输出一个完整 JSON 对象。",
+      userText: prompt,
       maxTokens: 8192,
     })
 

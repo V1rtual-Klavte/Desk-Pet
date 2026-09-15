@@ -66,20 +66,15 @@ export async function evaluateComplexity(
 
   // 3. LLM 自判断（轻量 prompt）
   try {
-    const { OpenAICompatibleProvider } = await import("@/services/agent/provider")
-    const provider = new OpenAICompatibleProvider()
-    const resp = await provider.generateReply({
-      messages: [{
-        id: "plan-complexity",
-        role: "user",
-        text: `评估以下用户请求的复杂度（1=简单问候/闲聊, 5=需要多步工具调用的复杂任务），只回复数字 1-5：
+    const { completePiText } = await import("@/services/engine/pi")
+    const resp = await completePiText({
+      purpose: "planner",
+      systemPrompt: "你是一个复杂度评估器。只回复1-5的数字，不要任何解释。",
+      userText: `评估以下用户请求的复杂度（1=简单问候/闲聊, 5=需要多步工具调用的复杂任务），只回复数字 1-5：
 
 "${userText}"
 
 复杂度评分 (1-5):`,
-        timestamp: Date.now(),
-      }],
-      systemPrompt: "你是一个复杂度评估器。只回复1-5的数字，不要任何解释。",
       thinkingEffort: "low",
     })
     const num = parseInt(resp.text?.trim() || "1", 10)
@@ -144,17 +139,12 @@ ${toolList}
 - allowedTools 为空表示可用所有工具
 - 只输出 JSON，不要其他内容`
 
-  const { OpenAICompatibleProvider } = await import("@/services/agent/provider")
-  const provider = new OpenAICompatibleProvider()
+  const { completePiText } = await import("@/services/engine/pi")
 
-  const resp = await provider.generateReply({
-    messages: [{
-      id: "plan-generate",
-      role: "user",
-      text: `用户请求: ${userText}`,
-      timestamp: Date.now(),
-    }],
+  const resp = await completePiText({
+    purpose: "planner",
     systemPrompt,
+    userText: `用户请求: ${userText}`,
     thinkingEffort,
   })
 

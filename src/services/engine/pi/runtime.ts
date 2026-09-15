@@ -3,8 +3,8 @@
 
 import { Agent } from "@earendil-works/pi-agent-core"
 import { contentText } from "@earendil-works/pi-ai"
-import type { AgentMessage, AgentTool, StreamFn } from "@earendil-works/pi-agent-core"
-import type { AssistantMessage, Message as PiMessage, Model } from "@earendil-works/pi-ai"
+import type { AgentMessage, AgentTool } from "@earendil-works/pi-agent-core"
+import type { AssistantMessage, Message as PiMessage } from "@earendil-works/pi-ai"
 import type { Message, ThinkingEffort, ToolCallRequest } from "@/services/agent/types"
 import type { ContextBlock, IngressEnvelope, MessageTaint, PromptSnapshot, PromptTransform, SessionEvent } from "@/services/engine/runtime"
 import { createMessageId, createToolMessage } from "@/services/agent/types"
@@ -28,7 +28,7 @@ import { executeTool } from "@/services/tool/router"
 import type { ActionCategory, ToolDef } from "@/services/tool/types"
 import { aiConfig, generalConfig, loopConfig, planConfig, safetyConfig } from "@/services/config"
 import { emit } from "@tauri-apps/api/event"
-import { getPiModel, piStream, toPiAgentThinkingLevel } from "./model-gateway"
+import { getPiModel, getPiRuntimeProviderOverride, piStream, toPiAgentThinkingLevel } from "./model-gateway"
 import { formatError } from "@/services/error"
 import { createLogger } from "@/services/logger"
 import { agentSlots, createPromptRewrite, createPromptSnapshot, createRuntimeTraceContext, publishRuntimeTrace } from "@/services/engine/runtime"
@@ -41,27 +41,6 @@ const EMPTY_USAGE = {
 const log = createLogger("PiRuntime")
 
 let lastSeenSessionStart = getSessionStart()
-
-export interface PiRuntimeProviderOverride {
-  model: Model<any>
-  streamFn: StreamFn
-}
-
-let piRuntimeProviderOverride: PiRuntimeProviderOverride | undefined
-
-/**
- * Live Test 专用 provider 注入点。生产启动不会调用它，默认仍走配置的 piStream。
- * 返回清理函数，避免 fake provider 泄漏到后续场景。
- */
-export function installPiRuntimeProviderForTest(override: PiRuntimeProviderOverride): () => void {
-  const previous = piRuntimeProviderOverride
-  piRuntimeProviderOverride = override
-  return () => { piRuntimeProviderOverride = previous }
-}
-
-export function resetPiRuntimeProviderForTest(): void {
-  piRuntimeProviderOverride = undefined
-}
 
 /**
  * 向正在执行的回合插话，并把插话内容记入该回合所属会话。
@@ -446,7 +425,7 @@ async function runPiLoop(input: PiLoopInput): Promise<PiLoopOutput> {
   const persistedMessageIds = new Set<string>()
   let stoppedAtToolLimit = false
   const traceContext = createRuntimeTraceContext(input.sessionId, input.requestId, input.turnId)
-  const runtimeProvider = piRuntimeProviderOverride
+  const runtimeProvider = getPiRuntimeProviderOverride()
   const model = runtimeProvider?.model ?? getPiModel()
   const snapshotTasks: Promise<void>[] = []
   let snapshotSequence = 0

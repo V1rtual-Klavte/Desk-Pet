@@ -687,10 +687,10 @@ src/services/
 │   ├── planner.ts         # Plan 编排: 复杂度检测 + LLM 拆解 + 子代理逐步执行
 │   ├── plan-confirmation.ts # Plan 确认 Promise 桥接
 │   ├── compactor.ts       # 上下文压缩: 阈值触发 LLM 结构化摘要并写回会话文件
-│   ├── parser.ts          # AI 输出解析 (function_call / 纯文本 / 思考)
 │   ├── pi/                # ★ Pi Agent Core Runtime
 │   │   ├── runtime.ts     # 唯一多轮 Agent Runtime: Loop + Pi 原生工具门禁 + 双阶段快照
-│   │   ├── model-gateway.ts # pi-ai openai-completions 模型描述与流入口
+│   │   ├── model-gateway.ts # pi-ai 模型描述/流入口 + completePiText 一次性文本调用
+│   │   ├── net-guard.ts   # Provider 协议白名单与响应体上限 (零依赖)
 │   │   └── index.ts
 │   ├── runtime/           # 运行时协议 (零依赖 barrel)
 │   │   ├── types.ts       # MessageMeta / SessionEvent / QueueEntry / PromptSnapshot …
@@ -727,7 +727,6 @@ src/services/
 │   ├── index.ts           # 统一导出
 │   ├── types.ts           # Message / ToolCallRequest 等产品侧消息类型
 │   ├── runner.ts          # sendMessage(): queued 先落盘 → SessionTurnStore → Pi
-│   ├── provider.ts        # 旧 OpenAICompatibleProvider (Plan/压缩/记忆整理/阶段文案仍在用)
 │   ├── sub-agent.ts       # 子代理 (fork/team 双模式)
 │   ├── active.ts          # 窗口监控 → 主动搭话
 │   └── memory/            # ★ 记忆与会话持久化 (12 文件)
@@ -1089,7 +1088,6 @@ sessions/                      会话目录（唯一真相源）
 | Pi Agent Core 多轮循环 | ✅ | `engine/pi/runtime.ts` |
 | PreProcessor (slash/去重) | ✅ | `engine/preprocessor.ts` |
 | 会话状态机 | ✅ | `engine/session.ts` |
-| AI 输出解析器 | ✅ | `engine/parser.ts` |
 | 思考强度 | ✅ | 全局默认+会话覆盖(仪表盘下拉)，移除自动选择 |
 | 人格中间件 (8阶段) | ✅ | `personality/middleware.ts` |
 | 人格注册表 + 热插拔 | ✅ | `personality/registry.ts` + `loader.ts`（neutral 兜底） |
@@ -1102,7 +1100,7 @@ sessions/                      会话目录（唯一真相源）
 | 安全控制 (四级+三策略+确认UI) | ✅ | `safety/checker.ts` + `confirm.ts` |
 | 上下文引擎 | ✅ | `context/builder.ts` |
 | 回复生成器 | ✅ | `reply/generator.ts` — 一步后处理: 解析 RUNTIME_DATA → 情绪/变量校验 → trim/截断 → ReplyResult |
-| OpenAI 兼容 Provider | ✅ | `agent/provider.ts` |
+| OpenAI 兼容 Provider | ✅ | `engine/pi/model-gateway.ts`（pi-ai `streamSimple` + `completePiText`），网络边界 `engine/pi/net-guard.ts` |
 | 记忆系统（注册表/会话/压缩） | ⚠️ | `agent/memory/`；自动提取和 Prompt 检索尚未闭环 |
 | Rust 工具执行 | ✅ | `commands/tool_exec.rs` |
 | Debug 状态栏 | ✅ | `DebugBar.vue` + `debug.ts` |

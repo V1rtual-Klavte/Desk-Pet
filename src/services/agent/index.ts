@@ -5,16 +5,12 @@
 // ── 类型 ──
 export type {
   Message, ToolCallRequest, ToolResult,
-  ParsedAIOutput, APIMessage, ToolDeclaration,
-  ThinkingEffort, GenerateRequest, GenerateResponse,
-  AIProvider,
+  ToolDeclaration,
+  ThinkingEffort,
 } from "./types"
 export {
   createMessageId, createUserMessage, createAssistantMessage, createToolMessage,
 } from "./types"
-
-// ── Provider ──
-export { OpenAICompatibleProvider } from "./provider"
 
 // ── 会话 (→ session/ 模块) ──
 export type { SessionMeta } from "@/services/session"

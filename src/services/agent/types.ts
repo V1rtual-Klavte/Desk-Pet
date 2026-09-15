@@ -2,8 +2,6 @@
 // Agent 模块 —— 消息 / 工具 / Loop 类型定义
 // ==========================================
 
-import type { ToolDeclaration } from "@/services/tool/types"
-
 /** 消息类型 —— 聊天记录的基本单元 */
 export interface Message {
   id: string
@@ -33,59 +31,8 @@ export interface ToolCallRequest {
 // 此处不再重复定义，避免两套类型分歧
 export type { ToolResult, ToolDeclaration } from "@/services/tool/types"
 
-// ── AI 输出解析结果 ──
-
-export interface ParsedAIOutput {
-  /** 纯文本内容（可能为空，如果有工具调用） */
-  text: string
-  /** 工具调用列表 */
-  toolCalls: ToolCallRequest[]
-  /** 思考文本 */
-  thinking?: string
-  /** 是否完成（流式时 false 表示还有更多） */
-  finished: boolean
-}
-
-// ── AI Provider 接口 ──
-
-/** 发送给 AI 的 API 消息格式 */
-export interface APIMessage {
-  role: "system" | "user" | "assistant" | "tool"
-  content: string | null
-  tool_calls?: {
-    id: string
-    type: "function"
-    function: { name: string; arguments: string }
-  }[]
-  tool_call_id?: string
-  name?: string
-}
-
 /** 思考强度 */
 export type ThinkingEffort = "auto" | "low" | "medium" | "high"
-
-/** AI 生成请求参数 */
-export interface GenerateRequest {
-  messages: Message[]
-  systemPrompt: string
-  tools?: ToolDeclaration[]
-  thinkingEffort?: ThinkingEffort
-  thinkingBudget?: number
-  maxTokens?: number
-}
-
-/** AI 生成响应 */
-export interface GenerateResponse {
-  text: string
-  toolCalls: ToolCallRequest[]
-  thinking?: string
-  usage?: { promptTokens: number; completionTokens: number }
-}
-
-export interface AIProvider {
-  readonly name: string
-  generateReply(req: GenerateRequest): Promise<GenerateResponse>
-}
 
 // ── 工具函数 ──
 

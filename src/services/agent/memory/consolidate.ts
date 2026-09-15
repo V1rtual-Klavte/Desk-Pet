@@ -30,10 +30,11 @@ export async function consolidateWithLLM(): Promise<{ removed: number; kept: num
   ].join("\n")
 
   try {
-    const { OpenAICompatibleProvider } = await import("@/services/agent/provider")
-    const resp = await new OpenAICompatibleProvider().generateReply({
-      messages: [{ id: "consolidate", role: "user", text: prompt, timestamp: Date.now() }],
+    const { completePiText } = await import("@/services/engine/pi")
+    const resp = await completePiText({
+      purpose: "memory",
       systemPrompt: "你是一个记忆管理助手。只输出JSON，不要其他内容。",
+      userText: prompt,
       thinkingEffort: "medium",
     })
     const jsonText = resp.text.replace(/```json\n?|```/g, "").trim()
@@ -76,10 +77,11 @@ export async function forkMemorySupplement(dialogueSummary: string): Promise<voi
       "", `已有记忆: ${existingSummary || "无"}`, "", `对话:\n${dialogueSummary}`,
     ].join("\n")
 
-    const { OpenAICompatibleProvider } = await import("@/services/agent/provider")
-    const resp = await new OpenAICompatibleProvider().generateReply({
-      messages: [{ id: "fork", role: "user", text: prompt, timestamp: Date.now() }],
+    const { completePiText } = await import("@/services/engine/pi")
+    const resp = await completePiText({
+      purpose: "memory",
       systemPrompt: "只输出JSON数组，不要其他内容。",
+      userText: prompt,
       thinkingEffort: "low",
     })
     const jsonText = resp.text.replace(/```json\n?|```/g, "").trim()

@@ -1,9 +1,26 @@
 // Pi AI gateway for Desk-Pet's OpenAI-compatible provider configuration.
+//
+// 这里是「Desk-Pet 配置 → pi-ai 调用」的唯一出口：主链路（runtime.ts）用
+// piStream，一次性文本调用（planner / 压缩 / 记忆 / 阶段文案）用 completePiText。
+// 两者共用同一套模型解析、reasoning 映射与网络防护。
 
 import { streamSimple } from "@earendil-works/pi-ai/api/openai-completions"
-import type { Context, Model, SimpleStreamOptions } from "@earendil-works/pi-ai"
+import { contentText } from "@earendil-works/pi-ai"
+import type { AssistantMessage, Context, Message as PiMessage, Model, SimpleStreamOptions, StopReason, ThinkingContent, ThinkingLevel, Usage } from "@earendil-works/pi-ai"
+import type { StreamFn } from "@earendil-works/pi-agent-core"
 import type { ThinkingEffort } from "@/services/agent/types"
 import { aiConfig } from "@/services/config"
+import { createLogger } from "@/services/logger"
+import { PROVIDER_TIMEOUT_MS, guardProviderFetch } from "./net-guard"
+
+const log = createLogger("PiGateway")
+
+/**
+ * 非推理模型 + low 思考时的兜底提示。
+ * 旧 provider 对 LM Studio / Ollama 这类不认 reasoning_effort 的端点追加过它，
+ * 保留是为了不改变这些用户的既有体验。仅对 `model.reasoning === false` 生效。
+ */
+const NON_REASONING_LOW_EFFORT_HINT = "\n\n[请快速简要回答，不需要过多思考]"
 
 function normalizeBaseUrl(endpoint: string): string {
   const base = endpoint.replace(/\/+$/, "")
@@ -41,10 +58,143 @@ export function toPiAgentThinkingLevel(effort: ThinkingEffort | undefined): "off
   }
 }
 
+/**
+ * Desk-Pet 的思考强度 → pi-ai 的 `reasoning` 档位。
+ * `auto` 返回 undefined：不指定档位，由模型自己决定（对齐旧 provider 不传 reasoning_effort 的行为）。
+ */
+export function toPiReasoningLevel(effort: ThinkingEffort | undefined): ThinkingLevel | undefined {
+  switch (effort) {
+    case "low": return "low"
+    case "medium": return "medium"
+    case "high": return "high"
+    default: return undefined
+  }
+}
+
 export function piStream(model: Model<any>, context: Context, options?: SimpleStreamOptions) {
   return streamSimple(model as Model<"openai-completions">, context, {
     ...options,
+    // 网络防护挂在 fetch 上：协议白名单与响应体上限对主链路同样生效。
+    // 不支持外部传入 fetch —— 边界只有一处，不接受绕过。
+    fetch: guardProviderFetch,
     // pi-ai requires a non-empty key even for local OpenAI-compatible endpoints.
+    // 必须放在 spread 之后：runtime.ts 会显式传 `apiKey: undefined` 进来。
     apiKey: aiConfig.apiKey || "local-openai-compatible",
   })
+}
+
+// ── Live Test provider 注入点 ──
+
+export interface PiRuntimeProviderOverride {
+  model: Model<any>
+  streamFn: StreamFn
+}
+
+let piRuntimeProviderOverride: PiRuntimeProviderOverride | undefined
+
+/**
+ * Live Test 专用 provider 注入点。生产启动不会调用它，默认仍走配置的 piStream。
+ * 返回清理函数，避免 fake provider 泄漏到后续场景。
+ */
+export function installPiRuntimeProviderForTest(override: PiRuntimeProviderOverride): () => void {
+  const previous = piRuntimeProviderOverride
+  piRuntimeProviderOverride = override
+  return () => { piRuntimeProviderOverride = previous }
+}
+
+export function resetPiRuntimeProviderForTest(): void {
+  piRuntimeProviderOverride = undefined
+}
+
+/** 当前生效的测试 provider；未注入时为 undefined（生产路径）。 */
+export function getPiRuntimeProviderOverride(): PiRuntimeProviderOverride | undefined {
+  return piRuntimeProviderOverride
+}
+
+// ── 一次性文本调用 ──
+
+export interface PiTextCallInput {
+  /** 调用用途，仅用于日志与未来路由；不参与请求构造 */
+  purpose: "planner" | "compaction" | "memory" | "stages"
+  systemPrompt: string
+  userText: string
+  thinkingEffort?: ThinkingEffort
+  maxTokens?: number
+  /** 总时限，默认 PROVIDER_TIMEOUT_MS */
+  timeoutMs?: number
+}
+
+export interface PiTextCallResult {
+  text: string
+  /** 拼接后的 thinking 块；stages 需要 text+thinking 合并解析 */
+  thinking?: string
+  usage: Usage
+  stopReason: StopReason
+  durationMs: number
+}
+
+function thinkingText(content: AssistantMessage["content"]): string {
+  return content
+    .filter((block): block is ThinkingContent => block.type === "thinking")
+    .map((block) => block.thinking)
+    .join("\n")
+}
+
+/**
+ * 一次性（无工具、无多轮）的文本补全，替代已删除的旧 OpenAI-compatible Provider 实现。
+ *
+ * 三个刻意的语义决策：
+ * 1. 自己检查 `stopReason`：pi-ai 的失败是「正常结束 + stopReason=error/aborted」，
+ *    不检查就会把失败当成空回复交给调用方。
+ * 2. 自己用 AbortController 兜总时限：`timeoutMs` 只是 SDK 的请求超时（收到响应头就清），
+ *    SSE 断在半路不会触发。abort 文案沿用旧 provider 的「Provider 请求超时或已取消」。
+ * 3. 不写 PromptSnapshot、不写 updateRequestStats：这是一次性旁路调用，不属于 transcript，
+ *    混进回合统计只会污染主链路的 token/工具计数。
+ */
+export async function completePiText(input: PiTextCallInput): Promise<PiTextCallResult> {
+  const startedAt = Date.now()
+  const timeoutMs = input.timeoutMs ?? PROVIDER_TIMEOUT_MS
+  const override = piRuntimeProviderOverride
+  const model = override?.model ?? getPiModel()
+  const streamFn = override?.streamFn ?? piStream
+
+  let systemPrompt = input.systemPrompt
+  if (input.thinkingEffort === "low" && !model.reasoning) systemPrompt += NON_REASONING_LOW_EFFORT_HINT
+
+  const controller = new AbortController()
+  const timer = setTimeout(() => controller.abort(new Error("Provider 请求超时")), timeoutMs)
+  try {
+    const messages: PiMessage[] = [{ role: "user", content: input.userText, timestamp: startedAt }]
+    // StreamFn 允许返回 Promise（pi-agent-core 的签名），先 await 拿到流本身。
+    const stream = await streamFn(model, { systemPrompt, messages }, {
+      signal: controller.signal,
+      // 头阶段超时双保险；总时限仍然由上面的 AbortController 兜底。
+      timeoutMs,
+      reasoning: toPiReasoningLevel(input.thinkingEffort),
+      ...(input.maxTokens ? { maxTokens: input.maxTokens } : {}),
+    })
+    const message = await stream.result()
+
+    if (message.stopReason === "error" || message.stopReason === "aborted") {
+      throw new Error(controller.signal.aborted
+        ? "Provider 请求超时或已取消"
+        : message.errorMessage || "Provider 请求失败")
+    }
+
+    const thinking = thinkingText(message.content)
+    const result: PiTextCallResult = {
+      text: contentText(message.content),
+      ...(thinking ? { thinking } : {}),
+      usage: message.usage,
+      stopReason: message.stopReason,
+      durationMs: Date.now() - startedAt,
+    }
+    log.debug(`[${input.purpose}] 完成: ${result.durationMs}ms, stop=${result.stopReason}, out=${result.usage.output}`)
+    return result
+  } catch (e) {
+    log.warn(`[${input.purpose}] 失败 (${Date.now() - startedAt}ms):`, e instanceof Error ? e.message : String(e))
+    throw e
+  } finally {
+    clearTimeout(timer)
+  }
 }

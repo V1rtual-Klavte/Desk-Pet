@@ -118,11 +118,11 @@ export async function compactIncremental(
   const prompt = buildCompactionPrompt(text, existingSummary, userIntent)
 
   try {
-    const { OpenAICompatibleProvider } = await import("@/services/agent/provider")
-    const provider = new OpenAICompatibleProvider()
-    const resp = await provider.generateReply({
-      messages: [{ id: "compact", role: "user", text: prompt, timestamp: Date.now() }],
+    const { completePiText } = await import("@/services/engine/pi")
+    const resp = await completePiText({
+      purpose: "compaction",
       systemPrompt: "你是会话摘要助手。只输出 JSON，不要其他内容。严格遵循格式。",
+      userText: prompt,
       thinkingEffort: "low",
     })
 
@@ -178,11 +178,11 @@ export async function compactFull(sessionContent: string): Promise<CompactionSum
   ].join("\n")
 
   try {
-    const { OpenAICompatibleProvider } = await import("@/services/agent/provider")
-    const provider = new OpenAICompatibleProvider()
-    const resp = await provider.generateReply({
-      messages: [{ id: "full-compact", role: "user", text: prompt, timestamp: Date.now() }],
+    const { completePiText } = await import("@/services/engine/pi")
+    const resp = await completePiText({
+      purpose: "compaction",
       systemPrompt: "你是会话摘要助手。只输出 JSON，不要其他内容。",
+      userText: prompt,
       thinkingEffort: "medium",
     })
 

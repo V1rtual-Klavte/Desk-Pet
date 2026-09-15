@@ -16,7 +16,7 @@ export const agentRuntimeContract: ModuleContract = {
     "src/services/session/persistence.ts",
   ],
   generatedAt: "2026-09-15",
-  sourceHash: "e9eedd3b7ea41cc8361ba39562831cc74c9f85ffe54dd95914bee5c81f3eeb0e",
+  sourceHash: "57aa37d5506a0f9a2ae60e420fd61289959e7b3f5db80b5e6d913951fa37b713",
   coverage: [
     {
       id: "ar-01",
