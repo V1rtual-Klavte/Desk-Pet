@@ -8,8 +8,10 @@ use crate::rust_debug;
 
 pub fn capture_window_title() -> String {
     #[cfg(target_os = "windows")]
-    // SAFETY: CreateDC + DeleteDC pairing guarantees handle lifecycle.
-    // All DC operations during capture are read-only.
+    // SAFETY: 只调用只读的 Win32 查询 API（GetForegroundWindow / GetWindowTextW /
+    // GetWindowThreadProcessId / GetProcessImageFileNameW），没有设备上下文或句柄创建。
+    // 唯一的句柄来自 OpenProcess：非 0 时立即由 CloseHandle 释放(:41)，不跨作用域逃逸。
+    // 两个缓冲区（[u16; 1024] / [u16; 260]）都是栈上定长数组，切片按 API 返回的长度截断。
     unsafe {
         use windows_sys::Win32::Foundation::CloseHandle;
         use windows_sys::Win32::System::ProcessStatus::GetProcessImageFileNameW;

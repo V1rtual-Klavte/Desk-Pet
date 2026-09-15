@@ -90,7 +90,8 @@ pub fn emit(level: u8, args: std::fmt::Arguments) {
     ));
 }
 
-/// 前端转发日志：保留前端已排好的整行（自带时间戳/级别/前缀），只做级别过滤后落盘
+/// 前端转发日志：前端已在转发前完成级别过滤（services/logger/index.ts 的 enabled()），
+/// 这里只落盘，不做二次判定 —— 整行自带时间戳/级别/前缀，原样保留
 pub fn emit_frontend(msg: &str) {
     write_line(msg);
 }

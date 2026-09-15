@@ -4,7 +4,11 @@
 
 use tauri::Manager;
 
-/// 提升设置窗口层级，确保浮动在主窗口之上（双端）
+/// 提升设置窗口层级，确保浮动在主窗口之上。
+///
+/// 仅 macOS 生效：Windows 没有等价的「窗口 level」概念。Windows 侧的层级由
+/// `set_picker_window_level`(:40) 用 SetWindowPos(HWND_TOPMOST) 统一维护
+/// （设置窗口创建时另带了 alwaysOnTop，见 App.vue 的 openSettings）。
 #[tauri::command]
 pub fn enhance_settings_window(app: tauri::AppHandle) {
     #[cfg(target_os = "macos")]
@@ -13,8 +17,10 @@ pub fn enhance_settings_window(app: tauri::AppHandle) {
         use objc::{msg_send, sel, sel_impl};
         if let Ok(ns_win) = win.ns_window() {
             let ns_win = ns_win as *mut Object;
-            // SAFETY: SetWindowLongPtrW with GWL_STYLE modifies window attributes atomically.
-            // Flag values are compile-time constants.
+            // SAFETY: 只对 ns_window() 返回的、由 Tauri 持有的 NSWindow 指针发消息，
+            // 不接管所有权（窗口已销毁时 get_webview_window 返回 None，这里拿不到悬垂指针）。
+            // 三个调用依次是：设层级 1200（主窗口 1000 之上、图层编辑器 1500 之下）、
+            // 前移、置顶并激活。
             unsafe {
                 let _: () = msg_send![ns_win, setLevel: 1200isize];
                 let _: () = msg_send![ns_win, orderFrontRegardless];
