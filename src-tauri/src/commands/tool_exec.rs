@@ -7,14 +7,34 @@ use super::bash_policy::{enforce_bash_policy, BashPolicy};
 use crate::error::{err, AppError, AppResult};
 use std::collections::HashMap;
 use std::fs::File;
+use std::io::{Read, Seek, SeekFrom};
 use std::path::Path;
 use std::process::{Child, Command, Stdio};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use tauri::{command, State};
 
-#[derive(Default)]
-pub struct BashPool(Mutex<HashMap<String, Arc<Mutex<Child>>>>);
+/// 子进程退出状态的轮询间隔。只影响等待粒度，不影响正确性。
+const BASH_POLL_INTERVAL: Duration = Duration::from_millis(25);
+
+/// `timeout_ms` 缺省时的上限。
+///
+/// 调用方（`tauri-execution-env.ts`）未指定超时时传 `null`；这里若没有兜底，
+/// 就等于给子进程一个「永不终止」的条件 —— 不退出就一直占着 blocking 线程与池中条目。
+const DEFAULT_BASH_TIMEOUT_MS: u64 = 120_000;
+
+/// 内联返回给调用方的输出上限；超出部分由调用方按需从 spill 文件读取。
+const DEFAULT_MAX_OUTPUT_BYTES: usize = 50 * 1024;
+const DEFAULT_MAX_OUTPUT_LINES: usize = 2000;
+
+/// 流式统计输出文件时的块大小。
+const STAT_CHUNK_BYTES: usize = 64 * 1024;
+
+/// 运行中的 bash 子进程表。
+///
+/// 内层 `Arc` 让命令体能把它搬进 `spawn_blocking`：`State` 的借用撑不到任务结束。
+#[derive(Default, Clone)]
+pub struct BashPool(Arc<Mutex<HashMap<String, Arc<Mutex<Child>>>>>);
 
 // ── Bash 命令执行 ──
 
@@ -22,9 +42,32 @@ pub struct BashPool(Mutex<HashMap<String, Arc<Mutex<Child>>>>);
 ///
 /// `policy` 必填：策略强度不再由前端「是否受限」的布尔值决定，
 /// scope 只能叠加层 2 规则，硬基线（bash_policy 的层 1）恒定执行。
+///
+/// 命令体是同步阻塞的（等子进程 + 轮询），必须搬进 `spawn_blocking`：
+/// 直接挂在 async worker 上，等待期间会把运行时的调度线程占死。
+/// `State` 的借用撑不到任务结束，所以先把池句柄 clone 出来。
 #[command]
-pub fn bash_exec(
-    pool: State<BashPool>,
+pub async fn bash_exec(
+    pool: State<'_, BashPool>,
+    command: String,
+    cwd: Option<String>,
+    execution_id: Option<String>,
+    timeout_ms: Option<u64>,
+    policy: BashPolicy,
+    max_bytes: Option<usize>,
+    max_lines: Option<usize>,
+) -> AppResult<BashResult> {
+    let pool = pool.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        run_bash(pool, command, cwd, execution_id, timeout_ms, policy, max_bytes, max_lines)
+    })
+    .await
+    .map_err(|e| AppError::Io(format!("bash 执行任务失败: {e}")))?
+}
+
+#[allow(clippy::too_many_arguments)]
+fn run_bash(
+    pool: BashPool,
     command: String,
     cwd: Option<String>,
     execution_id: Option<String>,
@@ -60,9 +103,8 @@ pub fn bash_exec(
         cmd.current_dir(safe_cwd);
     }
 
-    // 已知问题（不在本次改动范围）：输出先全量落盘，再整份读回内存，最后才截断。
-    // 命令输出远大于 max_bytes/max_lines 时，磁盘写放大与峰值内存都不受限制；
-    // 正确做法是边读边截断（流式读取 + 提前 kill）。async 化是独立的改动。
+    // 输出重定向到临时文件：输出量级由被执行的命令决定，
+    // 先落盘再按尾部窗口读回，内存占用与输出总量解耦。
     let stdout_path = std::env::temp_dir().join(format!("deskpet-{execution_id}.stdout"));
     let stderr_path = std::env::temp_dir().join(format!("deskpet-{execution_id}.stderr"));
     cmd.stdout(Stdio::from(
@@ -80,6 +122,7 @@ pub fn bash_exec(
         .map_err(|_| "Bash 状态锁损坏")?
         .insert(execution_id.clone(), Arc::clone(&child));
 
+    let timeout = Duration::from_millis(timeout_ms.unwrap_or(DEFAULT_BASH_TIMEOUT_MS));
     let started = Instant::now();
     let status = loop {
         let status = child
@@ -90,7 +133,7 @@ pub fn bash_exec(
         if let Some(status) = status {
             break status;
         }
-        if timeout_ms.is_some_and(|limit| started.elapsed() >= Duration::from_millis(limit)) {
+        if started.elapsed() >= timeout {
             let _ = child.lock().map_err(|_| "Bash 进程锁损坏")?.kill();
             pool.0
                 .lock()
@@ -99,33 +142,29 @@ pub fn bash_exec(
             cleanup_temp_outputs(&stdout_path, &stderr_path);
             return err("命令执行超时");
         }
-        std::thread::sleep(Duration::from_millis(25));
+        std::thread::sleep(BASH_POLL_INTERVAL);
     };
     pool.0
         .lock()
         .map_err(|_| "Bash 状态锁损坏")?
         .remove(&execution_id);
 
-    // 同上：这里是「整读入内存」的落点，truncate_output 只在读完之后生效。
-    let stdout = std::fs::read_to_string(&stdout_path).unwrap_or_default();
-    let stderr = std::fs::read_to_string(&stderr_path).unwrap_or_default();
+    let max_bytes = max_bytes.unwrap_or(DEFAULT_MAX_OUTPUT_BYTES);
+    let max_lines = max_lines.unwrap_or(DEFAULT_MAX_OUTPUT_LINES);
+    let stdout = read_tail_window(&stdout_path, max_bytes);
+    let stderr = read_tail_window(&stderr_path, max_bytes);
     cleanup_temp_outputs(&stdout_path, &stderr_path);
-    let combined = if stderr.is_empty() {
-        stdout.clone()
-    } else if stdout.is_empty() {
-        stderr.clone()
-    } else {
-        format!("{stdout}\n{stderr}")
-    };
+    let (text, stats, starts_at_line_start, window_clipped) = combine_windows(stdout?, stderr?);
     let captured = truncate_output(
-        &combined,
-        max_bytes.unwrap_or(50 * 1024),
-        max_lines.unwrap_or(2000),
+        &text,
+        &stats,
+        starts_at_line_start,
+        window_clipped,
+        max_bytes,
+        max_lines,
     );
 
     Ok(BashResult {
-        stdout,
-        stderr,
         exit_code: status.code().unwrap_or(-1),
         output: captured.output,
         total_bytes: captured.total_bytes,
@@ -176,45 +215,190 @@ struct CapturedOutput {
     last_line_partial: bool,
 }
 
-fn truncate_output(text: &str, max_bytes: usize, max_lines: usize) -> CapturedOutput {
-    let total_bytes = text.len();
-    let total_lines = if text.is_empty() {
-        0
+/// 一份输出文件的全量统计 —— 与实际读进内存的窗口无关。
+#[derive(Default, Clone, Copy)]
+struct OutputStats {
+    bytes: usize,
+    newlines: usize,
+    ends_with_newline: bool,
+}
+
+impl OutputStats {
+    fn is_empty(&self) -> bool {
+        self.bytes == 0
+    }
+
+    /// 与 `str::lines().count()` 等价：换行符是分隔符，结尾换行不额外产生一行。
+    fn lines(&self) -> usize {
+        if self.bytes == 0 {
+            0
+        } else {
+            self.newlines + usize::from(!self.ends_with_newline)
+        }
+    }
+}
+
+/// 输出文件的尾部窗口。
+struct TailWindow {
+    text: String,
+    stats: OutputStats,
+    /// 窗口首字节是否恰好是一行的开头；当截断正好落在窗口起点时用于判断首行是否残缺。
+    starts_at_line_start: bool,
+    /// 窗口是否短于原文件，即读取阶段就已经丢掉了头部。
+    clipped: bool,
+}
+
+/// 只读输出文件的尾部窗口，同时取得全量统计。
+///
+/// 内联给调用方的片段一定取自动态尾部（先按行截断、再按字节截断，两者都保留结尾），
+/// 所以只要窗口不短于 `max_bytes`，被保留的那段就必然完整落在窗口内 —— 不必整读文件。
+/// 文件本身不大时直接整读，避免为常见情况多跑一趟流式统计。
+fn read_tail_window(path: &Path, max_bytes: usize) -> AppResult<TailWindow> {
+    let len = std::fs::metadata(path)
+        .map_err(|e| AppError::Io(format!("读取输出文件信息失败: {e}")))?
+        .len() as usize;
+
+    if len <= max_bytes {
+        let bytes = std::fs::read(path).map_err(|e| AppError::Io(format!("读取输出失败: {e}")))?;
+        return Ok(TailWindow {
+            stats: stats_of(&bytes),
+            text: String::from_utf8_lossy(&bytes).into_owned(),
+            starts_at_line_start: true,
+            clipped: false,
+        });
+    }
+
+    let stats = stream_stats(path)?;
+    // 多读 1 字节：用它判断窗口起点前一个字节是不是换行，进而知道首行是否残缺。
+    let window_start = len.saturating_sub(max_bytes.saturating_add(1));
+    let mut file = File::open(path).map_err(|e| AppError::Io(format!("打开输出文件失败: {e}")))?;
+    file.seek(SeekFrom::Start(window_start as u64))
+        .map_err(|e| AppError::Io(format!("定位输出文件失败: {e}")))?;
+    let mut bytes = Vec::with_capacity(len - window_start);
+    file.read_to_end(&mut bytes)
+        .map_err(|e| AppError::Io(format!("读取输出失败: {e}")))?;
+
+    let starts_at_line_start = window_start == 0 || bytes.first() == Some(&b'\n');
+    let body = if window_start == 0 { &bytes[..] } else { &bytes[1..] };
+    // 窗口起点可能落在多字节 UTF-8 字符中间，跳过其续字节（最多 3 个）。
+    // 用 lossy 而不是 from_utf8：命令往 stdout 写二进制时不该退化成空输出。
+    let mut skip = 0;
+    while skip < body.len().min(3) && body[skip] & 0xC0 == 0x80 {
+        skip += 1;
+    }
+    Ok(TailWindow {
+        text: String::from_utf8_lossy(&body[skip..]).into_owned(),
+        stats,
+        starts_at_line_start,
+        clipped: true,
+    })
+}
+
+fn stats_of(bytes: &[u8]) -> OutputStats {
+    OutputStats {
+        bytes: bytes.len(),
+        newlines: bytes.iter().filter(|byte| **byte == b'\n').count(),
+        ends_with_newline: bytes.last() == Some(&b'\n'),
+    }
+}
+
+/// 分块统计整份输出，内存占用与文件大小无关。
+fn stream_stats(path: &Path) -> AppResult<OutputStats> {
+    let mut file = File::open(path).map_err(|e| AppError::Io(format!("打开输出文件失败: {e}")))?;
+    let mut buffer = vec![0u8; STAT_CHUNK_BYTES];
+    let mut stats = OutputStats::default();
+    let mut last_byte = None;
+    loop {
+        let read = file
+            .read(&mut buffer)
+            .map_err(|e| AppError::Io(format!("统计输出失败: {e}")))?;
+        if read == 0 {
+            break;
+        }
+        stats.bytes += read;
+        stats.newlines += buffer[..read].iter().filter(|byte| **byte == b'\n').count();
+        last_byte = Some(buffer[read - 1]);
+    }
+    stats.ends_with_newline = last_byte == Some(b'\n');
+    Ok(stats)
+}
+
+/// 把两路输出窗口拼成一份与「先合并再截断」等价的文本 + 全量统计。
+///
+/// 拼接规则沿用合并前的实现：两路都非空时用一个换行连接。
+/// 结果始终是被拼接全量文本的后缀，且长度不小于 `max_bytes`
+/// （两路长度和为 a、b，则 a+b+1 > max_bytes ⟹ min(a,max)+1+min(b,max) > max_bytes），
+/// 因此对它按尾部截断与直接对全量文本截断得到同一段文字。
+fn combine_windows(stdout: TailWindow, stderr: TailWindow) -> (String, OutputStats, bool, bool) {
+    let clipped = stdout.clipped || stderr.clipped;
+    if stderr.stats.is_empty() {
+        (stdout.text, stdout.stats, stdout.starts_at_line_start, clipped)
+    } else if stdout.stats.is_empty() {
+        (stderr.text, stderr.stats, stderr.starts_at_line_start, clipped)
     } else {
-        text.lines().count()
-    };
+        let stats = OutputStats {
+            bytes: stdout.stats.bytes + 1 + stderr.stats.bytes,
+            newlines: stdout.stats.newlines + 1 + stderr.stats.newlines,
+            ends_with_newline: stderr.stats.ends_with_newline,
+        };
+        (
+            format!("{}\n{}", stdout.text, stderr.text),
+            stats,
+            stdout.starts_at_line_start,
+            clipped,
+        )
+    }
+}
+
+/// 从尾部窗口裁出内联片段。
+///
+/// 截断与否由 `stats`（全量）判定，而不是由窗口内的偏移量判定 ——
+/// 窗口本身可能已经短于原文，只看窗口会把「读取阶段就丢了头部」误判成未截断。
+fn truncate_output(
+    tail: &str,
+    stats: &OutputStats,
+    starts_at_line_start: bool,
+    window_clipped: bool,
+    max_bytes: usize,
+    max_lines: usize,
+) -> CapturedOutput {
     let mut start = 0;
     let mut truncated_by = None;
-    if total_lines > max_lines {
-        start = text
-            .match_indices('\n')
-            .rev()
-            .nth(max_lines.saturating_sub(1))
-            .map(|(index, _)| index + 1)
-            .unwrap_or(0);
-        truncated_by = Some("lines".to_string());
+    // 只有真正定位到截断点才算「按行截断」。窗口已经短于原文时尾窗里可能凑不满
+    // max_lines 个换行，此时 `nth` 返回 None、start 不动，不能报成按行截断。
+    if stats.lines() > max_lines {
+        if let Some((index, _)) = tail.match_indices('\n').rev().nth(max_lines.saturating_sub(1)) {
+            start = index + 1;
+            truncated_by = Some("lines".to_string());
+        }
     }
-    if text.len().saturating_sub(start) > max_bytes {
-        start = text.len().saturating_sub(max_bytes);
-        while start < text.len() && !text.is_char_boundary(start) {
+    if tail.len().saturating_sub(start) > max_bytes {
+        start = tail.len().saturating_sub(max_bytes);
+        while start < tail.len() && !tail.is_char_boundary(start) {
             start += 1;
         }
         truncated_by = Some("bytes".to_string());
     }
-    let output = text[start..].to_string();
-    let last_line_partial =
-        start > 0 && text.as_bytes().get(start.saturating_sub(1)) != Some(&b'\n');
+    // 窗口在读取阶段就丢掉了头部：即便上面两条规则都没能定位截断点，
+    // 也必须给出原因，否则会出现 truncated=true 却没有 truncated_by 的矛盾状态。
+    if truncated_by.is_none() && window_clipped {
+        truncated_by = Some("bytes".to_string());
+    }
+    let output = tail[start..].to_string();
+    let truncated = window_clipped || stats.lines() > max_lines || stats.bytes > max_bytes;
+    let last_line_partial = truncated
+        && if start > 0 {
+            tail.as_bytes().get(start - 1) != Some(&b'\n')
+        } else {
+            !starts_at_line_start
+        };
     CapturedOutput {
         output_bytes: output.len(),
-        output_lines: if output.is_empty() {
-            0
-        } else {
-            output.lines().count()
-        },
-        truncated: start > 0,
+        output_lines: output.lines().count(),
+        truncated,
         output,
-        total_bytes,
-        total_lines,
+        total_bytes: stats.bytes,
+        total_lines: stats.lines(),
         truncated_by,
         last_line_partial,
     }
@@ -223,8 +407,6 @@ fn truncate_output(text: &str, max_bytes: usize, max_lines: usize) -> CapturedOu
 #[derive(serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct BashResult {
-    stdout: String,
-    stderr: String,
     exit_code: i32,
     output: String,
     total_bytes: usize,
@@ -673,4 +855,247 @@ pub struct ClipboardResult {
 #[derive(serde::Serialize)]
 pub struct ClipboardWriteResult {
     success: bool,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// 改成尾部窗口读取之前的实现：对全量文本直接截断。
+    /// 新实现必须只在「内存占用」上与它不同，结果必须逐字段一致。
+    fn reference_truncate(text: &str, max_bytes: usize, max_lines: usize) -> CapturedOutput {
+        let total_bytes = text.len();
+        let total_lines = if text.is_empty() {
+            0
+        } else {
+            text.lines().count()
+        };
+        let mut start = 0;
+        let mut truncated_by = None;
+        if total_lines > max_lines {
+            start = text
+                .match_indices('\n')
+                .rev()
+                .nth(max_lines.saturating_sub(1))
+                .map(|(index, _)| index + 1)
+                .unwrap_or(0);
+            truncated_by = Some("lines".to_string());
+        }
+        if text.len().saturating_sub(start) > max_bytes {
+            start = text.len().saturating_sub(max_bytes);
+            while start < text.len() && !text.is_char_boundary(start) {
+                start += 1;
+            }
+            truncated_by = Some("bytes".to_string());
+        }
+        let output = text[start..].to_string();
+        let last_line_partial =
+            start > 0 && text.as_bytes().get(start.saturating_sub(1)) != Some(&b'\n');
+        CapturedOutput {
+            output_bytes: output.len(),
+            output_lines: output.lines().count(),
+            truncated: start > 0,
+            output,
+            total_bytes,
+            total_lines,
+            truncated_by,
+            last_line_partial,
+        }
+    }
+
+    /// 复刻 `read_tail_window` 的窗口语义，不碰文件系统。
+    fn window_of(full: &str, max_bytes: usize) -> TailWindow {
+        let bytes = full.as_bytes();
+        if bytes.len() <= max_bytes {
+            return TailWindow {
+                text: full.to_string(),
+                stats: stats_of(bytes),
+                starts_at_line_start: true,
+                clipped: false,
+            };
+        }
+        let start = bytes.len() - max_bytes - 1;
+        let body = &bytes[start + 1..];
+        let mut skip = 0;
+        while skip < body.len().min(3) && body[skip] & 0xC0 == 0x80 {
+            skip += 1;
+        }
+        TailWindow {
+            text: String::from_utf8_lossy(&body[skip..]).into_owned(),
+            stats: stats_of(bytes),
+            starts_at_line_start: bytes[start] == b'\n',
+            clipped: true,
+        }
+    }
+
+    /// `compare_reason=false` 用于窗口被裁剪的场景：那里 `truncated_by` 允许与参考实现不同。
+    ///
+    /// 参考实现总能在全量文本里定位到行截断点；窗口化实现只看得到尾部，
+    /// 当行截断点正好落在窗口起点时，尾窗里已经没有换行符可定位，标签便由「行」退化为「字节」。
+    /// 两种标签都描述了真实发生过的截断，只有这个纯展示字段不同。
+    /// 此时改断言更强的不变量：`truncated_by` 与 `truncated` 必须同进同退。
+    fn assert_same(
+        actual: &CapturedOutput,
+        expected: &CapturedOutput,
+        case: &str,
+        compare_reason: bool,
+    ) {
+        assert_eq!(actual.output, expected.output, "{case}: output 不一致");
+        assert_eq!(actual.truncated, expected.truncated, "{case}: truncated 不一致");
+        if compare_reason {
+            assert_eq!(
+                actual.truncated_by, expected.truncated_by,
+                "{case}: truncated_by 不一致"
+            );
+        } else {
+            assert_eq!(
+                actual.truncated_by.is_some(),
+                actual.truncated,
+                "{case}: truncated 与 truncated_by 必须同时有值"
+            );
+        }
+        assert_eq!(
+            actual.total_bytes, expected.total_bytes,
+            "{case}: total_bytes 不一致"
+        );
+        assert_eq!(
+            actual.total_lines, expected.total_lines,
+            "{case}: total_lines 不一致"
+        );
+        assert_eq!(
+            actual.output_bytes, expected.output_bytes,
+            "{case}: output_bytes 不一致"
+        );
+        assert_eq!(
+            actual.output_lines, expected.output_lines,
+            "{case}: output_lines 不一致"
+        );
+        assert_eq!(
+            actual.last_line_partial, expected.last_line_partial,
+            "{case}: last_line_partial 不一致"
+        );
+    }
+
+    #[test]
+    fn stats_lines_matches_str_lines() {
+        for text in ["", "a", "a\n", "a\nb", "a\n\n", "\n", "\n\n", "a\nb\n", "\n\n\n"] {
+            assert_eq!(
+                stats_of(text.as_bytes()).lines(),
+                text.lines().count(),
+                "文本 {text:?} 的行数统计与 str::lines 不一致"
+            );
+        }
+    }
+
+    /// 窗口不小于原文时，新实现必须与旧实现完全一致。
+    #[test]
+    fn window_not_clipped_matches_reference() {
+        let cases = [
+            "",
+            "short",
+            "no trailing newline",
+            "trailing newline\n",
+            "line1\nline2\nline3\nline4\nline5\n",
+            "中文多字节内容\n第二行内容\n第三行内容\n",
+        ];
+        for text in cases {
+            for (max_bytes, max_lines) in [(50 * 1024, 2000), (8, 2000), (1024, 2), (4, 1), (0, 0)] {
+                let stats = stats_of(text.as_bytes());
+                let actual = truncate_output(text, &stats, true, false, max_bytes, max_lines);
+                let expected = reference_truncate(text, max_bytes, max_lines);
+                assert_same(
+                    &actual,
+                    &expected,
+                    &format!("{text:?} @ {max_bytes}/{max_lines}"),
+                    true,
+                );
+            }
+        }
+    }
+
+    /// 窗口被裁剪时（原文超过 max_bytes），端到端的截断结果仍要与整读原文一致。
+    #[test]
+    fn clipped_window_matches_reference() {
+        let long = "x".repeat(300) + "\n" + &"y".repeat(300) + "\n" + &"z".repeat(300);
+        // 单字节字符：窗口起点可能落在任意偏移，覆盖到与没覆盖到换行两种情形
+        for max_bytes in [1, 7, 64, 300, 301, 599, 600, 601, 900] {
+            for max_lines in [1, 2, 3, 2000] {
+                let stdout = window_of(&long, max_bytes);
+                let empty = window_of("", max_bytes);
+                let (text, stats, starts_at_line_start, clipped) = combine_windows(stdout, empty);
+                let actual =
+                    truncate_output(&text, &stats, starts_at_line_start, clipped, max_bytes, max_lines);
+                let expected = reference_truncate(&long, max_bytes, max_lines);
+                assert_same(
+                    &actual,
+                    &expected,
+                    &format!("裁剪窗口 @ {max_bytes}/{max_lines}"),
+                    false,
+                );
+            }
+        }
+    }
+
+    /// 多字节字符被窗口从中间切开时，既不能产出非法 UTF-8，也不能丢掉尾部。
+    /// `max_bytes` 小于单个字符宽度（3 字节）时结果为空的空串本就是正确行为 ——
+    /// 末尾窗口装不下一个完整字符，参考实现在同一输入下同样返回空串。
+    #[test]
+    fn clipped_window_aligns_multibyte_boundary() {
+        let long = "字".repeat(500); // 每个字符 3 字节
+        for max_bytes in [1, 2, 3, 4, 5, 6, 7, 100, 101] {
+            let stdout = window_of(&long, max_bytes);
+            let empty = window_of("", max_bytes);
+            let (text, stats, starts_at_line_start, clipped) = combine_windows(stdout, empty);
+            let actual = truncate_output(&text, &stats, starts_at_line_start, clipped, max_bytes, 2000);
+            let expected = reference_truncate(&long, max_bytes, 2000);
+            assert_same(&actual, &expected, &format!("多字节窗口 @ {max_bytes}"), true);
+            assert!(
+                long.ends_with(&actual.output),
+                "{max_bytes}: 输出不是原文的后缀"
+            );
+        }
+    }
+
+    /// 两路输出合并后的统计与直接拼接全量文本一致。
+    #[test]
+    fn combined_stats_match_concatenation() {
+        let pairs = [
+            ("", ""),
+            ("out\n", ""),
+            ("", "err\n"),
+            ("out\n", "err\n"),
+            ("out", "err"),
+            ("out\n", "err"),
+            ("out", "err\n"),
+        ];
+        for (a, b) in pairs {
+            let full = if b.is_empty() {
+                a.to_string()
+            } else if a.is_empty() {
+                b.to_string()
+            } else {
+                format!("{a}\n{b}")
+            };
+            let (text, stats, _, clipped) = combine_windows(window_of(a, 1024), window_of(b, 1024));
+            assert_eq!(text, full, "{a:?}+{b:?}: 合并文本不一致");
+            assert!(!clipped, "{a:?}+{b:?}: 不该被裁剪");
+            assert_eq!(stats.bytes, full.len(), "{a:?}+{b:?}: total_bytes 不一致");
+            assert_eq!(
+                stats.lines(),
+                full.lines().count(),
+                "{a:?}+{b:?}: total_lines 不一致"
+            );
+        }
+    }
+
+    /// 二进制输出不该让整段结果退化成空串。
+    #[test]
+    fn invalid_utf8_degrades_to_lossy_not_empty() {
+        let raw = b"prefix\xFF\xFEtail\n";
+        let stats = stats_of(raw);
+        let text = String::from_utf8_lossy(raw).into_owned();
+        let actual = truncate_output(&text, &stats, true, false, 1024, 2000);
+        assert!(!actual.output.is_empty());
+        assert!(actual.output.contains("tail"));
+    }
 }
