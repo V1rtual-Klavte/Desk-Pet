@@ -2,9 +2,9 @@ import type { ModuleContract } from "../types"
 
 export const safetyContract: ModuleContract = {
   module: "safety",
-  sourceFiles: ["src/services/engine/pi/runtime.ts", "src/services/safety/checker.ts"],
+  sourceFiles: ["src/services/engine/pi/runtime.ts", "src/services/safety/checker.ts", "src/services/engine/runtime/hook-bus.ts"],
   generatedAt: "2026-09-14",
-  sourceHash: "9d168c7d84004277fe2e0a197ac77b85b2f5cb0791aaefab55706df78559a771",
+  sourceHash: "ff81b6c779dd729ee135c95c5c49d6b3112a46d4e2219a0edc10cb3f939a224c",
   coverage: [
     { id: "sf-01", feature: "SAFE 级别放行", description: "safetyLevel=SAFE 工具被直接放行", why: "安全等级体系基础", depth: "shallow", scenarios: ["safety-safe"] },
     { id: "sf-02", feature: "NORMAL 级别检查", description: "safetyLevel=NORMAL 工具执行前检查", why: "常规工具需要安全评估", depth: "shallow", scenarios: ["safety-normal"] },
@@ -15,6 +15,7 @@ export const safetyContract: ModuleContract = {
     { id: "sf-07", feature: "文件危险路径匹配", description: "FILE_DANGEROUS_PATTERNS 匹配 .ssh/ 等敏感文件", why: "敏感文件泄露防护", depth: "shallow", scenarios: ["safety-file-pattern"] },
     { id: "sf-08", feature: "会话信任机制", description: "trustToolInSession + resetSessionTrust 信任周期", why: "用户确认后免重复弹窗", depth: "deep", scenarios: ["safety-trust-lifecycle"] },
     { id: "sf-09", feature: "LLM 危险 Bash 调用实际拦截", description: "真 LLM 请求 rm -rf / 时，Bash 硬禁止策略拒绝执行", why: "端到端安全验证", depth: "deep", scenarios: ["safety-dangerous-delete"] },
+    { id: "sf-10", feature: "Hook 超时与重入错误码", description: "阻塞 Hook 超时和重入返回稳定错误码", why: "生命周期门禁必须可诊断", depth: "deep", scenarios: ["safety-hook-errors"] },
   ],
   rules: { minScenarios: 7, minDeepScenarios: 3, requireBoundary: true, requireErrorPath: true },
 }
