@@ -1,4 +1,9 @@
-/** Bounded, non-blocking observer bus for Pi runtime lifecycle telemetry. */
+/**
+ * Bounded, non-blocking observer bus for Pi runtime lifecycle telemetry.
+ *
+ * 只做观测：listener 的返回值不参与任何决策，超时与异常都被隔离，永远不能改写 Agent loop 的状态。
+ * 需要「阻断」语义的门禁不要挂在这里 —— 那属于 Pi 原生 hook（`beforeToolCall` / `afterToolCall`）。
+ */
 
 export type RuntimeTraceKind =
   | "agent_start"

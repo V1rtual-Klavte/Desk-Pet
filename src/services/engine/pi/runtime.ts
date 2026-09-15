@@ -6,7 +6,7 @@ import { contentText } from "@earendil-works/pi-ai"
 import type { AgentMessage, AgentTool, StreamFn } from "@earendil-works/pi-agent-core"
 import type { AssistantMessage, Message as PiMessage, Model } from "@earendil-works/pi-ai"
 import type { Message, ThinkingEffort, ToolCallRequest } from "@/services/agent/types"
-import type { ContextBlock, IngressEnvelope, MessageOrigin, MessageTaint, PromptSnapshot, PromptTransform, SessionEvent } from "@/services/engine/runtime"
+import type { ContextBlock, IngressEnvelope, MessageTaint, PromptSnapshot, PromptTransform, SessionEvent } from "@/services/engine/runtime"
 import { createMessageId, createToolMessage } from "@/services/agent/types"
 import { MemoryService, emptyMemoryProvider, planCheckpointStore, planStepEffectClass } from "@/services/agent/memory"
 import { buildPrompt } from "@/services/context"
@@ -31,7 +31,7 @@ import { emit } from "@tauri-apps/api/event"
 import { getPiModel, piStream, toPiAgentThinkingLevel } from "./model-gateway"
 import { formatError } from "@/services/error"
 import { createLogger } from "@/services/logger"
-import { agentSlots, createPromptRewrite, createPromptSnapshot, createRuntimeTraceContext, hookBus, publishRuntimeTrace } from "@/services/engine/runtime"
+import { agentSlots, createPromptRewrite, createPromptSnapshot, createRuntimeTraceContext, publishRuntimeTrace } from "@/services/engine/runtime"
 import { redactText, sha256Text, stableSerialize } from "@/services/engine/runtime"
 
 const EMPTY_USAGE = {
@@ -165,8 +165,8 @@ export async function runPiAgentTurn(input: PiAgentTurnInput): Promise<PiAgentTu
   const turnSessionId = input.sessionId || MemoryService.sessionId
   // 主动搭话的 userText 是系统拼的窗口上下文，不是用户输入。落盘会让会话主题
   // 提取拿它当首条用户消息，重载后还会显示成用户气泡并进入长期记忆。
-  if (!isActiveMessage) await persistTurn(turnSessionId, "user", userText, input.ingress)
-  else await persistRuntimeEvent(turnSessionId, "active", userText, input.ingress)
+  if (!isActiveMessage) await persistTurn(turnSessionId, "user", userText)
+  else await persistRuntimeEvent(turnSessionId, userText, input.ingress)
 
   refreshVariablePool()
   updateInteractionVar("unansweredCount", unansweredCount)
@@ -341,38 +341,42 @@ export async function runPiAgentTurn(input: PiAgentTurnInput): Promise<PiAgentTu
   return { reply: processed.text, toolCallHistory, retriesUsed, effects, runtimeData: processed.runtimeData }
 }
 
-async function persistTurn(sessionId: string, role: "user" | "assistant", text: string, ingress?: IngressEnvelope): Promise<void> {
+/**
+ * 正文只写一次：`deskpet-turn` 记录是会话正文的唯一真相源，事件视图在读取时
+ * 由 `memory/events.ts` 从 turn 记录投影出 `user_message` / `assistant_message`。
+ * 不要在这里补回 `persistRuntimeEvent` —— 那会把同一句话双写成两份。
+ */
+async function persistTurn(sessionId: string, role: "user" | "assistant", text: string): Promise<void> {
   if (!sessionId || MemoryService.sessionId === sessionId) {
     MemoryService.recordTurn(role, text)
   } else {
     await MemoryService.recordTurnToSession(sessionId, role, text)
   }
-  await persistRuntimeEvent(sessionId, role, text, ingress)
 }
 
-async function persistRuntimeEvent(sessionId: string, origin: MessageOrigin, text: string, ingress?: IngressEnvelope): Promise<void> {
+/** 仅用于不进 transcript 的消息（当前只有主动搭话的 active 上下文）。 */
+async function persistRuntimeEvent(sessionId: string, text: string, ingress?: IngressEnvelope): Promise<void> {
   if (!sessionId) return
-  const isActive = origin === "active"
   const event: SessionEvent = {
     schemaVersion: 1,
-    eventId: `${origin}-${ingress?.requestId ?? crypto.randomUUID()}-${Date.now()}`,
+    eventId: `active-${ingress?.requestId ?? crypto.randomUUID()}-${Date.now()}`,
     sessionId,
-    kind: isActive ? "active_message" : origin === "assistant" ? "assistant_message" : "user_message",
-    origin,
+    kind: "active_message",
+    origin: "active",
     payload: {
       text,
       rawText: ingress?.rawText ?? text,
       normalizedText: ingress?.normalizedText ?? text.trim(),
-      visibleToUser: !isActive,
+      visibleToUser: false,
       persisted: true,
-      eligibleForTranscript: !isActive,
-      eligibleForMemory: origin === "user" && !isActive,
-      isMeta: isActive,
-      taint: ingress?.taint ?? (isActive ? "derived" : "trusted_user") as MessageTaint,
+      eligibleForTranscript: false,
+      eligibleForMemory: false,
+      isMeta: true,
+      taint: ingress?.taint ?? "derived" as MessageTaint,
       ...(ingress ? { querySource: ingress.querySource, priority: ingress.priority, requestId: ingress.requestId } : {}),
     },
     createdAt: Date.now(),
-    idempotencyKey: `${origin}:${ingress?.requestId ?? text}:${text}`,
+    idempotencyKey: `active:${ingress?.requestId ?? text}:${text}`,
   }
   const written = await MemoryService.appendSessionEventToSession(sessionId, event, text)
   if (!written) {
@@ -541,7 +545,13 @@ async function runPiLoop(input: PiLoopInput): Promise<PiLoopOutput> {
     },
     transformContext: async (messages) => {
       latestTransformedMessages = messages
-      await captureSnapshot("transform_context", messages, [])
+      // Pi 的契约要求这个回调 "must not throw or reject"（agent-loop.js 里直接 await，没有 try/catch）。
+      // 快照属于遥测，失败只能降级为「跳过本次快照」，不能把整个 run 打断。
+      try {
+        await captureSnapshot("transform_context", messages, [])
+      } catch (error) {
+        log.warn("PromptSnapshot 采集失败，跳过本次快照", formatError(error))
+      }
       return messages
     },
     beforeToolCall: async ({ toolCall, args }) => {
@@ -559,18 +569,6 @@ async function runPiLoop(input: PiLoopInput): Promise<PiLoopOutput> {
 
       recordToolCall()
       const category = tool.actionCategory ?? "_default"
-      const hook = await hookBus.emit({
-        hookId: `${toolCall.id}:before`,
-        name: "before_tool_call",
-        sessionId: input.sessionId,
-        turnId: input.turnId,
-        taint: input.ingress?.taint ?? "derived",
-        payload: { toolName: tool.name, toolCallId: toolCall.id, args },
-      })
-      if (hook.decision === "block") {
-        toolCallHistory.push({ toolName: tool.name, status: "blocked" })
-        return { block: true, reason: hook.reason ?? "工具调用被 Hook 拦截" }
-      }
       transition("EXECUTING")
       if (effects) applyEffect(PetPersonalityMiddleware.wrap("executing", { actionCategory: category, toolName: tool.name }), effects)
       emitToolEvent("tool-executing", { toolId: tool.name, toolName: tool.name })
@@ -712,14 +710,6 @@ function toPiTool(
         toolSucceeded = result.success
       } finally {
         await input.onToolDone?.(tool.name, toolCallId, toolSucceeded)
-        void hookBus.emit({
-          hookId: `${toolCallId}:after`,
-          name: "after_tool_call",
-          sessionId: input.sessionId,
-          turnId: input.turnId,
-          taint: input.ingress?.taint ?? "derived",
-          payload: { toolName: tool.name, toolCallId, success: toolSucceeded },
-        })
       }
       const category = current.actionCategory ?? "_default"
       if (result.success) {

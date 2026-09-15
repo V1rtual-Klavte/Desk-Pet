@@ -2,7 +2,7 @@ import type { ModuleContract } from "../types"
 
 export const safetyContract: ModuleContract = {
   module: "safety",
-  sourceFiles: ["src/services/engine/pi/runtime.ts", "src/services/safety/checker.ts", "src/services/engine/runtime/hook-bus.ts"],
+  sourceFiles: ["src/services/engine/pi/runtime.ts", "src/services/safety/checker.ts"],
   generatedAt: "2026-09-14",
   sourceHash: "ff81b6c779dd729ee135c95c5c49d6b3112a46d4e2219a0edc10cb3f939a224c",
   coverage: [
@@ -15,7 +15,7 @@ export const safetyContract: ModuleContract = {
     { id: "sf-07", feature: "文件危险路径匹配", description: "FILE_DANGEROUS_PATTERNS 匹配 .ssh/ 等敏感文件", why: "敏感文件泄露防护", depth: "shallow", scenarios: ["safety-file-pattern"] },
     { id: "sf-08", feature: "会话信任机制", description: "trustToolInSession + resetSessionTrust 信任周期", why: "用户确认后免重复弹窗", depth: "deep", scenarios: ["safety-trust-lifecycle"] },
     { id: "sf-09", feature: "LLM 危险 Bash 调用实际拦截", description: "真 LLM 请求 rm -rf / 时，Bash 硬禁止策略拒绝执行", why: "端到端安全验证", depth: "deep", scenarios: ["safety-dangerous-delete"] },
-    { id: "sf-10", feature: "Hook 超时与重入错误码", description: "阻塞 Hook 超时和重入返回稳定错误码", why: "生命周期门禁必须可诊断", depth: "deep", scenarios: ["safety-hook-errors"] },
+    { id: "sf-10", feature: "Pi beforeToolCall fail-closed 门禁", description: "Pi 原生 beforeToolCall 在 block 与抛错两种情况下都不执行工具，并留下带原因的 error 工具结果", why: "工具门禁必须 fail-closed，否则安全策略只是建议", depth: "deep", scenarios: ["safety-hook-errors"] },
   ],
   rules: { minScenarios: 7, minDeepScenarios: 3, requireBoundary: true, requireErrorPath: true },
 }
