@@ -13,6 +13,12 @@ const log = createLogger("Provider")
 const PROVIDER_TIMEOUT_MS = 60_000
 const MAX_PROVIDER_RESPONSE_BYTES = 4 * 1024 * 1024
 
+export function validateProviderUrl(value: string): URL {
+  const parsed = new URL(value)
+  if (parsed.protocol !== "http:" && parsed.protocol !== "https:") throw new Error("Provider URL 协议不允许")
+  return parsed
+}
+
 export class OpenAICompatibleProvider implements AIProvider {
   readonly name = "openai-compatible"
 
@@ -98,10 +104,7 @@ function summarizeEmptyResponse(data: unknown): string {
 }
 
 async function doFetch(url: string, body: string): Promise<Response> {
-  const parsed = new URL(url)
-  if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
-    throw new Error("Provider URL 协议不允许")
-  }
+  validateProviderUrl(url)
   const controller = new AbortController()
   const timer = setTimeout(() => controller.abort(new Error("Provider 请求超时")), PROVIDER_TIMEOUT_MS)
   try {
