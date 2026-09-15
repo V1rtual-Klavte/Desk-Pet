@@ -459,14 +459,15 @@ playNotificationByBoundary();
 #### 目录结构
 
 ```
-sugar-pink/                  # Profile 示例（默认提供: sugar-pink / dark-purple / glass / yuki）
-├── profile.yaml             # 主题色(18中文键) + 预设类型 + 字体 + 音效映射 + 灵动图层
+<profile-id>/                # 默认提供: sugar-pink / dark-purple / glass / yuki
+├── profile.yaml             # 主题色(18中文键) + 预设类型 + 字体 + 音效映射 + 灵动图层参数
 ├── character.yaml           # 角色动画帧定义 + 表情关键词规则
-├── body.png                 # 角色立绘（Layer 2 核心层）
-├── bg_base.png              # L0: 场景底背景（可选，缺失跳过）
-├── char_bg.png              # L1: 人物背景（可选）
-├── overlay_1.png            # L3: 覆盖层1（可选）
-├── overlay_2.png            # L4: 覆盖层2（可选）
+├── materials/               # 灵动图层素材，按 L0–L4 分层；某层没有文件时该层跳过
+│   ├── L0/bg_base.png       #   场景底背景
+│   ├── L1/…                 #   人物背景（可选，如 yuki 的 rain_mid.png）
+│   ├── L2/body.png          #   角色立绘（核心层，getBodyUrl() 固定读这个路径）
+│   ├── L3/…                 #   覆盖层（可选，如 yuki 的 highlights.png）
+│   └── L4/…                 #   前景层（如 sugar-pink 的 shield_gold.png）
 ├── frames/                  # 序列帧 PNG（自包含，无外部引用）
 ├── fonts/                   # 像素字体文件（可选，缺失回退默认）
 └── ui/                      # UI素材（可选，缺失回退默认）
@@ -680,102 +681,138 @@ Service 层不弹窗；由 `AppearanceTab` 经 `services/dialog` 的 `showSucces
 ```
 src/services/
 ├── engine/                # ★ 核心引擎
-│   ├── plan-confirmation.ts # Plan 确认 Promise 桥接
-│   ├── compactor.ts       # 上下文压缩 (compactMessages + 摘要写入)
-│   ├── preprocessor.ts    # Slash命令 + 空/重复消息过滤
-│   ├── planner.ts         # Plan 编排 — 复杂度检测 + LLM 拆解 + 子代理逐步执行 ✅ 已实现
-│   ├── parser.ts          # AI输出解析 (function_call/纯文本/思考)
+│   ├── index.ts           # 统一导出
+│   ├── preprocessor.ts    # Slash 命令分流 + 规范化/过滤（去重状态由入口按会话持有）
 │   ├── session.ts         # 会话状态机 (WAITING→PRE→GENERATING→EXECUTING)
-│   ├── runtime/           # 运行时协议类型、PromptSnapshot 与脱敏 hash（逐步接入中）
+│   ├── planner.ts         # Plan 编排: 复杂度检测 + LLM 拆解 + 子代理逐步执行
+│   ├── plan-confirmation.ts # Plan 确认 Promise 桥接
+│   ├── compactor.ts       # 上下文压缩: tool pair 成组 + LLM 摘要写回会话文件
+│   ├── parser.ts          # AI 输出解析 (function_call / 纯文本 / 思考)
+│   ├── pi/                # ★ Pi Agent Core Runtime
+│   │   ├── runtime.ts     # 唯一多轮 Agent Runtime: Loop + HookBus + 双阶段快照
+│   │   ├── model-gateway.ts # pi-ai openai-completions 模型描述与流入口
+│   │   └── index.ts
+│   ├── runtime/           # 运行时协议 (零依赖 barrel)
+│   │   ├── types.ts       # MessageMeta / SessionEvent / QueueEntry / PromptSnapshot …
+│   │   ├── snapshot.ts    # 快照构造与脱敏 hash
+│   │   ├── trace.ts       # 只读 trace 总线
+│   │   ├── queue.ts       # RuntimeQueue
+│   │   ├── agent-slot.ts  # 按 sessionId 的 Agent 槽与 generation
+│   │   ├── hook-bus.ts    # HookBus (blocking / async)
+│   │   └── index.ts
 │   └── slash/             # ★ Slash 命令系统
 │       ├── index.ts / types.ts / registry.ts
-│       └── commands/      # help/clear/memory/expression/win
+│       └── commands/      # clear / compact / expression / help / memory / win
+│
+├── context/               # ★ 上下文引擎
+│   ├── builder.ts         # 兼容入口: 组装 systemPrompt
+│   ├── kernel.ts          # 六层 block 排序 + token 预算裁剪与记录
+│   ├── projection.ts      # User.md 只读画像投影 + 记忆 block
+│   └── index.ts
 │
 ├── personality/           # ★ 人格模块
-│   ├── middleware.ts      # ★ 人格中间件（包裹所有Agent阶段, 8阶段无retry）
+│   ├── index.ts
+│   ├── middleware.ts      # ★ 人格中间件 (包裹所有 Agent 阶段, 8 阶段无 retry)
 │   ├── types.ts           # 人格类型定义
-│   ├── registry.ts        # 人格注册表 (neutral兜底, 无enabled开关)
-│   ├── loader.ts          # 人格卡 YAML 加载（扫描运行时 personality/cards/）
-│   ├── emotion.ts         # 情绪映射解析 + Prompt生成
+│   ├── registry.ts        # 人格注册表 (neutral 兜底)
+│   ├── loader.ts          # 人格卡 YAML 加载 (扫描运行时 personality/cards/)
+│   ├── emotion.ts         # 情绪映射解析 + Prompt 生成
 │   ├── must-rules.ts      # 必须遵守规则解析
 │   ├── stages-cache.ts    # 阶段文案缓存 + getFallbackReply() / pickActiveGreeting() 兜底
-│   ├── stages-prompt.md   # 阶段文案生成模板（含 fallbacks / greetings 字段）
+│   ├── stages-prompt.md   # 阶段文案生成模板
 │   └── variable-pool.ts   # 变量状态 (system/card/interaction/session)
 # 人格卡随包种子在 src-tauri/resources/defaults/personality/cards/，首次启动复制到运行时目录
-# 运行时产物（stages/{cardId}.json、vars.json）只写 data_root/personality/，源码树不留副本
+# 运行时产物 (stages/{cardId}.json、vars.json) 只写 data_root/personality/，源码树不留副本
+│
+├── agent/                 # Agent 模块
+│   ├── index.ts           # 统一导出
+│   ├── types.ts           # Message / ToolCallRequest 等产品侧消息类型
+│   ├── runner.ts          # sendMessage(): queued 先落盘 → SessionTurnStore → Pi
+│   ├── provider.ts        # 旧 OpenAICompatibleProvider (Plan/压缩/记忆整理/阶段文案仍在用)
+│   ├── sub-agent.ts       # 子代理 (fork/team 双模式)
+│   ├── active.ts          # 窗口监控 → 主动搭话
+│   └── memory/            # ★ 记忆与会话持久化 (12 文件)
+│       ├── events.ts / session-files.ts        # 事件序列化 + 原子写入
+│       ├── session-turn-store.ts / queue-events.ts
+│       ├── plan-checkpoint-store.ts            # Plan / Step checkpoint
+│       ├── memory-entries.ts / parsers.ts / io.ts
+│       ├── consolidate.ts                      # 记忆整理 (非自动提取闭环)
+│       ├── provider.ts                         # 空 MemoryProvider (长期召回未接通)
+│       └── types.ts / index.ts
 │
 ├── session/               # 会话持久化管理
 │   ├── store.ts           # reactive 状态
 │   ├── manager.ts         # 多会话切换/新建/归档/恢复
-│   └── persistence.ts / messages.ts
+│   ├── persistence.ts / messages.ts
+│   └── index.ts
+│
+├── profile/               # Profile 选择、加载与导入导出
+│   ├── loader.ts          # Profile 解析与默认 UI 回退
+│   ├── io.ts              # 导入导出与 restore_default_resources 桥接
+│   └── index.ts
 │
 ├── tool/                  # ★ 工具系统
-│   ├── index.ts           # 统一导出
-│   ├── types.ts           # ToolDef / ToolResult / SafetyLevel
-│   ├── registry.ts        # ★ 统一注册表 (按mode注册/查询/注销)
-│   ├── router.ts          # 工具路由 + 超时控制 + 结果截断
+│   ├── index.ts / types.ts
+│   ├── registry.ts        # ★ 统一注册表 (按 mode 注册/查询/注销)
+│   ├── router.ts          # 工具路由 + opId/审计 + 超时与取消 + 结果截断
 │   ├── local/             # 双模式基础工具 (Pi Agent Core 适配)
 │   │   ├── pi-tools.ts    # Pi read / write / edit / bash
 │   │   └── system.ts      # system_info
 │   ├── pi/                # Pi Harness 与 Tauri 执行环境
 │   │   ├── harness-adapter.ts
 │   │   └── tauri-execution-env.ts
-│   ├── local-extra/       # 助手模式工具 (动态加载, mode: "assistant")
-│   │   ├── app.ts         # app_open (NORMAL)
-│   │   ├── clipboard.ts   # clipboard_read/write (NORMAL/DANGER)
-│   │   ├── agent-tool.ts  # agent_spawn (NORMAL)【已实现 fork/team】
+│   ├── local-extra/       # 助手模式工具 (mode: "assistant")
+│   │   ├── app.ts         # app_open
+│   │   ├── clipboard.ts   # clipboard_read / clipboard_write
+│   │   └── agent-tool.ts  # agent_spawn (fork / team)
 │   └── mcp/               # MCP 集成 (助手模式)
-│       ├── manager.ts     # MCP Manager + 真实连接 + 服务器管理【已实现】
-│       ├── client.ts      # MCP Client JSON-RPC协议栈 + ToolDef转换【已实现】
-│       └── stdio.ts       # MCP stdio 传输层 (Tauri invoke桥接)【已实现】
+│       └── manager.ts / client.ts / stdio.ts
+│
 ├── skill/                 # ★ Skill (非工具，Pi 渐进披露)
-│   ├── index.ts           # 统一导出
+│   ├── index.ts
 │   └── loader.ts          # 扫描 data_root/skills/ 解析 SKILL.md + Prompt 注入
 │
 ├── safety/                # 安全控制
-│   ├── checker.ts         # 四级安全 + 三策略 + 会话信任 + 危险模式库
-│   └── confirm.ts         # 确认弹窗 Promise 桥接 (AgentLoop ↔ ChatPanel)
-│                          # 【待补: 确认UI弹窗】
-│
-├── context/               # ★ 上下文引擎
-│   └── builder.ts         # SystemPrompt 动态组装 (6层拼合)
-│                          # 工具声明策略 (轻量始终带/助手L0-L2)
-│                          # compactMessages 上下文压缩
+│   ├── checker.ts         # 四级安全 + 三策略 + deny-first 会话信任 + 危险模式库
+│   ├── confirm.ts         # 确认 Promise 桥接 (runtime ↔ ChatPanel)
+│   └── index.ts
 │
 ├── reply/                 # 回复生成器
-│   └── generator.ts       # 一步后处理: RUNTIME_DATA 解析 + 表情/音效映射 + trim + 截断
-│                          #   generateReply(raw, card) → ReplyResult { text, emotionKey, expression, sound }
-│
-├── agent/                 # Agent 模块
-│   ├── index.ts           # 统一导出
-│   ├── types.ts           # Message / ToolCall / GenerateRequest 类型
-│   ├── runner.ts          # sendMessage() — 接入 AgentLoop
-│   ├── pi/                # Pi Agent Core Runtime + OpenAI-compatible Model Adapter
-│   ├── provider.ts        # 旧一次性 OpenAICompatibleProvider（Plan/压缩等尚在使用）
-│   ├── sub-agent.ts       # 子代理 (fork/team 双模式)
-│   ├── active.ts          # 窗口监控 → 主动搭话
-│   └── memory/            # ★ 长期记忆 (7个文件: index/io/consolidate/memory-entries/parsers/session-files/types)
+│   ├── generator.ts       # RUNTIME_DATA 解析 + 表情/音效映射 + trim + 截断
+│   └── index.ts
 │
 ├── window/                # 窗口监控
 │   ├── monitor.ts         # 前后台检测
-│   ├── listener.ts        # Tauri事件监听 + 冷却
-│   └── active-context.ts  # 窗口上下文
+│   ├── listener.ts        # Tauri 事件监听 + 冷却
+│   └── index.ts
 │
 ├── audio/                 # 音效系统
-│   ├── registry.ts        # Web Audio 合成 + 33音效 + 事件映射
-│   ├── context.ts          # AudioContext 管理
-│   ├── effects/            # 音效实现 (按类别拆分)
-│   ├── types.ts            # 音效类型定义
-│   └── index.ts            # 统一导出
+│   ├── registry.ts        # Web Audio 合成 + 音效 + 事件映射
+│   ├── context.ts         # AudioContext 管理
+│   ├── effects/           # 音效实现 (basic/horror/long/mid/ping/short/special/surface)
+│   ├── types.ts
+│   └── index.ts
 │
-├── config.ts              # 配置加载 (YAML → 类型化getter)
-├── cooldown.ts            # 全局冷却 + AI并发锁
-├── logger.ts              # 统一日志 (createLogger)
-├── debug.ts               # Debug状态栏数据
+├── error/                 # 异常体系
+│   ├── format.ts          # 零依赖错误格式化 (formatError / errorCode / summarizeError)
+│   ├── global.ts          # 全局拦截 + DOM 覆盖层
+│   └── index.ts
+│
+├── logger/                # 统一日志 (createLogger, 批量转发 Rust)
+│   └── index.ts
+│
+├── dialog/                # 通用提示 Dialog (服务层单例 + 确认模式)
+│   └── index.ts
+│
+├── boot.ts                # 窗口启动引导 (4 个入口共用)
+├── init.ts                # 统一启动初始化
+├── paths.ts               # BaseDirs 与 runtimePath 初始化
+├── config.ts              # 配置加载 (YAML → 类型化 getter)
+├── cooldown.ts            # 全局冷却 + AI 并发锁
+├── debug.ts               # Debug 状态栏数据
 ├── env.ts                 # 平台检测
 ├── animation.ts           # 角色动画表情映射
-├── expressions.ts         # 表情关键词匹配
-├── command-handler.ts     # 角色表情命令处理
+└── command-handler.ts     # 聊天命令与表情切换
 ```
 
 ### 9.3 完整数据流
