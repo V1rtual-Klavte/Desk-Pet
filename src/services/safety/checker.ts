@@ -29,14 +29,20 @@ const log = createLogger("Safety")
 
 /** Bash 命令危险模式 — NORMAL 级别拦截 */
 export const BASH_DANGEROUS_PATTERNS: RegExp[] = [
-  /\brm\s+-rf\b/, /\bsudo\b/, /\bchmod\s+777\b/,
+  // rm 的递归删除：短选项可合并（-rf、-fr）也可分开（-r -f），并接受长选项 --recursive
+  /\brm\s+(?:--?[a-zA-Z-]+\s+)*(?:-[a-zA-Z]*[rR][a-zA-Z]*|--recursive)\b/,
+  /\bsudo\b/, /\bchmod\s+777\b/,
   />\s*\/dev\//, /\bcurl\b.*\|\s*(ba)?sh\b/,
   /\bmkfs\b/, /\bdd\s+if=/,
 ]
 
 /** Bash 命令硬禁止模式 — 所有模式永远拦截 */
 export const BASH_NOWAY_PATTERNS: RegExp[] = [
-  /\brm\s+-rf\s+\/\b/, /\bsudo\s+rm\b/, /\bmkfs\b/,
+  // 递归删除根目录：目标必须是 "/" 本身（后接空白或行尾）才算硬禁止，避免误杀 "rm -rf /home"。
+  // 旧写法把 \b 放在 "/" 之后，而 "/" 与行尾之间不存在单词边界，断言恒为假 ——
+  // 结果是 "rm -rf /" 只落到 DANGER，多空格写法（"rm  -rf  /"）同样不命中。
+  /\brm\s+(?:--?[a-zA-Z-]+\s+)*(?:-[a-zA-Z]*[rR][a-zA-Z]*|--recursive)(?:\s+-{1,2}[a-zA-Z-]+)*\s+\/(?:\s|$)/,
+  /\bsudo\s+rm\b/, /\bmkfs\b/,
   /\bdd\s+if=.*of=\/dev\//, /\bcurl\b.*\|\s*(ba)?sh\b/,
   />\s*\/etc\//,
 ]

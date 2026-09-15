@@ -13,8 +13,8 @@ export const toolExecutionContract: ModuleContract = {
     "src/services/reply/generator.ts",
     "src/services/agent/provider.ts",
   ],
-  generatedAt: "2026-09-14",
-  sourceHash: "ffe0c619a0193e4752cab40d68fc01842fca736c1a91e1777eccca3ff2881b79",
+  generatedAt: "2026-09-15",
+  sourceHash: "aeb42b1bd6d980d4ac3691e8ae93bf8d2e027871a0dc0831676aafffcfb95070",
   coverage: [
     { id: "te-08", feature: "真 LLM 多工具调用", description: "真实 LLM 对话中先后调用多个工具", why: "端到端工具链验证", depth: "deep", scenarios: ["tool-system-info"] },
     { id: "te-09", feature: "Provider 网络边界", description: "Provider 拒绝非 HTTP 协议并限制响应体", why: "避免网络策略绕过和内存失控", depth: "shallow", scenarios: ["tool-provider-network-boundary"] },

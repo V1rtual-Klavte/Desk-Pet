@@ -12,8 +12,22 @@ export const SAFE放行 = scene("safety-safe", "sf-01", "SAFE 放行", () => { i
 export const NORMAL检查 = scene("safety-normal", "sf-02", "NORMAL 轻量模式检查", () => { if (!checkSafety(tool("NORMAL"), {}, { mode: "pet", sessionTrusted: false }).allowed) throw new Error("NORMAL 未放行") })
 export const DANGER拒绝 = scene("safety-danger", "sf-03", "DANGER 轻量模式拒绝", () => { if (checkSafety(tool("DANGER"), {}, { mode: "pet", sessionTrusted: false }).allowed) throw new Error("DANGER 被放行") }, "deep")
 export const NOWAY拒绝 = scene("safety-noway", "sf-04", "NOWAY 即使信任也拒绝", () => { if (checkSafety(tool("NOWAY"), {}, { mode: "assistant", sessionTrusted: true }).allowed) throw new Error("NOWAY 被放行") })
-export const 危险命令匹配 = scene("safety-danger-pattern", "sf-05", "危险命令匹配", () => { if (!matchesAnyPattern("sudo echo test", BASH_DANGEROUS_PATTERNS)) throw new Error("危险命令未命中") })
-export const 硬禁止匹配 = scene("safety-noway-pattern", "sf-06", "硬禁止命令匹配", () => { if (!matchesAnyPattern("sudo rm -rf /", BASH_NOWAY_PATTERNS)) throw new Error("硬禁止未命中") })
+export const 危险命令匹配 = scene("safety-danger-pattern", "sf-05", "危险命令匹配", () => {
+  if (!matchesAnyPattern("sudo echo test", BASH_DANGEROUS_PATTERNS)) throw new Error("危险命令未命中")
+  // 递归删除的各种写法都要落进 DANGER：合并短选项、分开的短选项、长选项、多空格。
+  for (const command of ["rm -rf /tmp/x", "rm -r -f /tmp/x", "rm  -rf  /tmp/x", "rm --recursive /tmp/x"]) {
+    if (!matchesAnyPattern(command, BASH_DANGEROUS_PATTERNS)) throw new Error(`危险命令未命中: ${command}`)
+  }
+  if (matchesAnyPattern("rm file.txt", BASH_DANGEROUS_PATTERNS)) throw new Error("普通 rm 被误判为危险命令")
+})
+export const 硬禁止匹配 = scene("safety-noway-pattern", "sf-06", "硬禁止命令匹配", () => {
+  if (!matchesAnyPattern("sudo rm -rf /", BASH_NOWAY_PATTERNS)) throw new Error("硬禁止未命中")
+  // 回归：旧正则尾部的 \b 落在 "/" 之后恒不成立，`rm -rf /` 只被判成 DANGER。
+  if (!matchesAnyPattern("rm -rf /", BASH_NOWAY_PATTERNS)) throw new Error("rm -rf / 未命中硬禁止")
+  if (!matchesAnyPattern("rm  -rf  /", BASH_NOWAY_PATTERNS)) throw new Error("多空格 rm -rf / 未命中硬禁止")
+  // 误杀防护：非根目录不是硬禁止，只由 DANGER 兜住。
+  if (matchesAnyPattern("rm -rf /home/user", BASH_NOWAY_PATTERNS)) throw new Error("rm -rf /home/user 被误判为硬禁止")
+})
 export const 敏感路径匹配 = scene("safety-file-pattern", "sf-07", "敏感路径匹配", () => { if (!matchesAnyPattern("/home/user/.ssh/id_rsa", FILE_DANGEROUS_PATTERNS)) throw new Error("敏感路径未命中") })
 export const 信任周期 = scene("safety-trust-lifecycle", "sf-08", "会话信任可清除且不越过动态禁止", () => {
   trustToolInSession("test_safety")
