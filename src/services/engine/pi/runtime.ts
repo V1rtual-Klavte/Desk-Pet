@@ -21,7 +21,7 @@ import { PetPersonalityMiddleware } from "@/services/personality/middleware"
 import type { PersonalityEffect } from "@/services/personality/middleware"
 import { getFallbackReply, getSimpleStage, getStagePrompt } from "@/services/personality/stages-cache"
 import { generateReply } from "@/services/reply"
-import { checkSafety, isToolTrusted, requestConfirm, trustToolInSession } from "@/services/safety"
+import { checkSafety, requestConfirm, trustSignature, trustToolInSession } from "@/services/safety"
 import { pushMessage } from "@/services/session/store"
 import { getToolByName, getToolsForMode } from "@/services/tool/registry"
 import { executeTool } from "@/services/tool/router"
@@ -552,7 +552,8 @@ async function runPiLoop(input: PiLoopInput): Promise<PiLoopOutput> {
       if (effects) applyEffect(PetPersonalityMiddleware.wrap("executing", { actionCategory: category, toolName: tool.name }), effects)
       emitToolEvent("tool-executing", { toolId: tool.name, toolName: tool.name })
 
-      const safety = checkSafety(tool, args as Record<string, unknown>, { mode: input.mode, sessionTrusted: isToolTrusted(tool.name) })
+      const toolArgs = args as Record<string, unknown>
+      const safety = checkSafety(tool, toolArgs, { mode: input.mode })
       if (!safety.allowed) {
         const message = safety.personalityMessage ?? getStagePrompt("blocked", category) ?? "操作被拦截"
         if (effects) applyEffect(PetPersonalityMiddleware.wrap("blocked", { actionCategory: category, toolName: tool.name }), effects)
@@ -566,7 +567,10 @@ async function runPiLoop(input: PiLoopInput): Promise<PiLoopOutput> {
           toolCallHistory.push({ toolName: tool.name, status: "denied", personalityMsg: message })
           return { block: true, reason: message }
         }
-        if (tool.safetyLevel === "NORMAL") trustToolInSession(tool.name)
+        // 记住的是「这次调用」，不是「这个工具」：换一组参数仍会重新确认。
+        // 不再限定 NORMAL —— DANGER 工具（如 app_open）按参数记住才有意义，
+        // 否则它每次都要重新询问同一个操作。
+        trustToolInSession(tool.name, trustSignature(toolArgs))
       }
       return undefined
     },
@@ -676,7 +680,6 @@ function toPiTool(
       try {
         result = await executeTool(tool.name, params as Record<string, unknown>, {
           mode: input.mode,
-          sessionTrusted: isToolTrusted(tool.name),
           toolCallId,
           operationId: toolCallId,
           policyHash: await sha256Text(stableSerialize({ actionCategory: current.actionCategory, safetyLevel: current.safetyLevel })),

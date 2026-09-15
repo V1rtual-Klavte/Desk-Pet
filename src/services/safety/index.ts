@@ -8,6 +8,7 @@ export {
   trustToolInSession,
   isToolTrusted,
   resetSessionTrust,
+  trustSignature,
   BASH_DANGEROUS_PATTERNS,
   BASH_NOWAY_PATTERNS,
   FILE_DANGEROUS_PATTERNS,

@@ -14,7 +14,7 @@ export const toolExecutionContract: ModuleContract = {
     "src/services/engine/pi/net-guard.ts",
   ],
   generatedAt: "2026-09-15",
-  sourceHash: "92f6109dce1f326505d8770c3788b0f2b4e2cb8359d2f75e0a1e1d1ed20e404e",
+  sourceHash: "05fb7030b9d28f6192f1e50ae9a2a38c1d5274432a24ba03a51fe7f797c7ec69",
   coverage: [
     { id: "te-08", feature: "真 LLM 多工具调用", description: "真实 LLM 对话中先后调用多个工具", why: "端到端工具链验证", depth: "deep", scenarios: ["tool-system-info"] },
     { id: "te-09", feature: "Provider 网络边界", description: "Provider 拒绝非 HTTP 协议并限制响应体", why: "避免网络策略绕过和内存失控", depth: "shallow", scenarios: ["tool-provider-network-boundary"] },

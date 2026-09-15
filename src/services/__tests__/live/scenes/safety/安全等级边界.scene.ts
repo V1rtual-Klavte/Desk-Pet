@@ -8,10 +8,18 @@ const scene = (caseId: string, contractId: string, description: string, run: () 
   turns: [{ index: 1, description, userText: "检查安全策略。", checks: [{ type: "expectSafety", run: async () => run() }] }],
 })
 
-export const SAFE放行 = scene("safety-safe", "sf-01", "SAFE 放行", () => { if (!checkSafety(tool("SAFE"), {}, { mode: "pet", sessionTrusted: false }).allowed) throw new Error("SAFE 未放行") })
-export const NORMAL检查 = scene("safety-normal", "sf-02", "NORMAL 轻量模式检查", () => { if (!checkSafety(tool("NORMAL"), {}, { mode: "pet", sessionTrusted: false }).allowed) throw new Error("NORMAL 未放行") })
-export const DANGER拒绝 = scene("safety-danger", "sf-03", "DANGER 轻量模式拒绝", () => { if (checkSafety(tool("DANGER"), {}, { mode: "pet", sessionTrusted: false }).allowed) throw new Error("DANGER 被放行") }, "deep")
-export const NOWAY拒绝 = scene("safety-noway", "sf-04", "NOWAY 即使信任也拒绝", () => { if (checkSafety(tool("NOWAY"), {}, { mode: "assistant", sessionTrusted: true }).allowed) throw new Error("NOWAY 被放行") })
+export const SAFE放行 = scene("safety-safe", "sf-01", "SAFE 放行", () => { if (!checkSafety(tool("SAFE"), {}, { mode: "pet" }).allowed) throw new Error("SAFE 未放行") })
+export const NORMAL检查 = scene("safety-normal", "sf-02", "NORMAL 轻量模式检查", () => { if (!checkSafety(tool("NORMAL"), {}, { mode: "pet" }).allowed) throw new Error("NORMAL 未放行") })
+export const DANGER拒绝 = scene("safety-danger", "sf-03", "DANGER 轻量模式拒绝", () => { if (checkSafety(tool("DANGER"), {}, { mode: "pet" }).allowed) throw new Error("DANGER 被放行") }, "deep")
+export const NOWAY拒绝 = scene("safety-noway", "sf-04", "NOWAY 即使信任也拒绝", () => {
+  // 先真的把工具标成已信任，再断言 NOWAY 不因信任而放行
+  trustToolInSession("test_safety")
+  try {
+    if (checkSafety(tool("NOWAY"), {}, { mode: "assistant" }).allowed) throw new Error("NOWAY 被放行")
+  } finally {
+    resetSessionTrust()
+  }
+})
 export const 危险命令匹配 = scene("safety-danger-pattern", "sf-05", "危险命令匹配", () => {
   if (!matchesAnyPattern("sudo echo test", BASH_DANGEROUS_PATTERNS)) throw new Error("危险命令未命中")
   // 递归删除的各种写法都要落进 DANGER：合并短选项、分开的短选项、长选项、多空格。
@@ -48,11 +56,18 @@ export const 敏感路径匹配 = scene("safety-file-pattern", "sf-07", "敏感�
   // 参数缺失（模型漏填 path）不能顺带提级或抛错
   if (resolveFilePathLevel(undefined) !== "SAFE") throw new Error("缺失 path 参数应保持 SAFE")
 })
-export const 信任周期 = scene("safety-trust-lifecycle", "sf-08", "会话信任可清除且不越过动态禁止", () => {
+export const 信任周期 = scene("safety-trust-lifecycle", "sf-08", "会话信任按调用生效、可清除且不越过动态禁止", () => {
   trustToolInSession("test_safety")
   if (!isToolTrusted("test_safety")) throw new Error("信任未记录")
   const dynamic = { ...tool("NORMAL"), resolveSafetyLevel: () => "NOWAY" as const }
-  if (checkSafety(dynamic, {}, { mode: "assistant", sessionTrusted: true }).allowed) throw new Error("信任绕过动态禁止")
+  if (checkSafety(dynamic, {}, { mode: "assistant" }).allowed) throw new Error("信任绕过动态禁止")
   resetSessionTrust()
   if (isToolTrusted("test_safety")) throw new Error("信任未清除")
+
+  // 调用级信任只覆盖那一组参数：这是信任粒度收窄的核心断言
+  trustToolInSession("test_safety", "signature-a")
+  if (!isToolTrusted("test_safety", "signature-a")) throw new Error("调用级信任未记录")
+  if (isToolTrusted("test_safety", "signature-b")) throw new Error("调用级信任越界到别的参数")
+  if (isToolTrusted("test_safety")) throw new Error("调用级信任不应升级成整个工具")
+  resetSessionTrust()
 }, "deep")

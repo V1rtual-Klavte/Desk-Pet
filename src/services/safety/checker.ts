@@ -20,6 +20,8 @@ import type { SafetyLevel, ToolDef, ToolContext } from "@/services/tool/types"
 import { safetyConfig } from "@/services/config"
 import { getEffectiveSafetyMode } from "@/services/debug"
 import { createLogger } from "@/services/logger"
+// engine/runtime 是零业务副作用的协议层，不反向依赖 safety，不存在环
+import { stableSerialize } from "@/services/engine/runtime"
 
 const log = createLogger("Safety")
 
@@ -114,22 +116,52 @@ export interface SafetyCheckResult {
 
 // ── 会话内信任缓存 ──
 
+/** 按工具名整体信任 —— 只保留给单参调用，生产链路一律走调用级信任。 */
 let sessionTrustedTools = new Set<string>()
+/** 工具名 → 已确认过的调用签名。 */
+let sessionTrustedCalls = new Map<string, Set<string>>()
 
-/** 将某工具标记为会话内已信任（NORMAL 确认通过后） */
-export function trustToolInSession(toolName: string): void {
-  sessionTrustedTools.add(toolName)
-  log.debug("会话信任:", toolName)
+/**
+ * 会话信任的签名：本次调用的参数。
+ *
+ * 只按工具名记信任，等于把「确认一次」放大成「该工具本会话全免确认」——
+ * `app_open` 确认过 A 路径之后，B 路径就不再询问。
+ *
+ * 用参数原样序列化而不是哈希：精确比较没有碰撞空间，
+ * 而哈希碰撞在这里意味着「没确认过的调用被自动放行」。
+ * 存储量由本会话的确认次数天然限制，不需要额外淘汰。
+ */
+export function trustSignature(params: Record<string, unknown>): string {
+  return stableSerialize(params)
 }
 
-/** 检查工具是否已被会话信任 */
-export function isToolTrusted(toolName: string): boolean {
-  return sessionTrustedTools.has(toolName)
+/**
+ * 记录一次会话信任。
+ *
+ * 不传 `signature` 时按工具名整体信任；生产链路必须传签名。
+ */
+export function trustToolInSession(toolName: string, signature?: string): void {
+  if (signature === undefined) {
+    sessionTrustedTools.add(toolName)
+    log.debug("会话信任 (整个工具):", toolName)
+    return
+  }
+  const signatures = sessionTrustedCalls.get(toolName) ?? new Set<string>()
+  signatures.add(signature)
+  sessionTrustedCalls.set(toolName, signatures)
+  log.debug("会话信任 (本次调用):", toolName)
+}
+
+/** 工具级信任与调用级信任任一命中即视为已信任 */
+export function isToolTrusted(toolName: string, signature?: string): boolean {
+  if (sessionTrustedTools.has(toolName)) return true
+  return signature !== undefined && (sessionTrustedCalls.get(toolName)?.has(signature) ?? false)
 }
 
 /** 重置会话信任（新会话时调用） */
 export function resetSessionTrust(): void {
-  sessionTrustedTools.clear()
+  sessionTrustedTools = new Set()
+  sessionTrustedCalls = new Map()
   log.debug("会话信任已重置")
 }
 
@@ -148,9 +180,12 @@ export function resetSessionTrust(): void {
  *
  * 助手模式 (assistant):
  *   SAFE    → 直接放行
- *   NORMAL  → 首次确认后可会话内信任（sessionTrustEnabled=true 时）
- *   DANGER  → just_do_it 放行 / 否则每次确认
+ *   NORMAL  → 首次确认后可按调用信任（sessionTrustEnabled=true 时）
+ *   DANGER  → just_do_it 放行 / 同一份参数已确认则放行 / 否则确认
  *   NOWAY   → 硬拒绝
+ *
+ * 信任粒度是「工具 + 本次参数」，见 `trustSignature`；
+ * let_me_tk 是最保守的模式，会话信任在它下面不参与。
  */
 export function checkSafety(
   tool: ToolDef,
@@ -184,9 +219,9 @@ export function checkSafety(
         }
       }
 
-      // 会话已信任 → 跳过确认
-      if (trustEnabled && isToolTrusted(tool.name)) {
-        log.info("助手模式 NORMAL 放行 (会话已信任):", tool.name)
+      // 本次调用已确认过 → 跳过确认
+      if (trustEnabled && isToolTrusted(tool.name, trustSignature(params))) {
+        log.info("助手模式 NORMAL 放行 (本次调用已确认):", tool.name)
         return { allowed: true }
       }
 
@@ -224,13 +259,27 @@ export function checkSafety(
         return { allowed: true }
       }
 
-      // tell_me / let_me_tk → 每次都确认
-      log.warn("助手模式 DANGER 需要确认:", tool.name)
-      return {
+      const dangerConfirm = {
         allowed: true,
         needsConfirm: true,
         confirmMessage: `⚠️ "${tool.name}" 是高风险操作！确认执行？`,
       }
+
+      // let_me_tk 是最保守的模式：DANGER 每次都重新确认，会话信任不参与
+      if (safetyMode === "let_me_tk") {
+        log.warn("助手模式 DANGER 需要确认 (let_me_tk):", tool.name)
+        return dangerConfirm
+      }
+
+      // 同一份参数已经被确认过 → 不再重复询问；换一组参数会重新确认
+      if (trustEnabled && isToolTrusted(tool.name, trustSignature(params))) {
+        log.info("助手模式 DANGER 放行 (本次调用已确认):", tool.name)
+        return { allowed: true }
+      }
+
+      // tell_me → 首次确认
+      log.warn("助手模式 DANGER 需要确认:", tool.name)
+      return dangerConfirm
     }
 
     case "NOWAY":

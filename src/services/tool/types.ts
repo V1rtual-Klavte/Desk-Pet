@@ -27,8 +27,6 @@ export type ActionCategory =
 export interface ToolContext {
   /** 当前模式 */
   mode: "pet" | "assistant"
-  /** 会话已信任（助手模式安全） */
-  sessionTrusted: boolean
   /** 当前 Pi 工具调用 ID */
   toolCallId?: string
   /** 稳定的单次操作标识，用于审计和幂等关联。 */

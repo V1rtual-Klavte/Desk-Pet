@@ -11,7 +11,7 @@ const scene: SceneDef = {
     try {
       const controller = new AbortController()
       controller.abort()
-      const result = await executeTool(id, {}, { mode: "pet", sessionTrusted: false, signal: controller.signal })
+      const result = await executeTool(id, {}, { mode: "pet", signal: controller.signal })
       if (called || result.success || result.errorCode !== "cancelled") throw new Error("取消工具未返回 cancelled")
     } finally {
       unregister(id)
