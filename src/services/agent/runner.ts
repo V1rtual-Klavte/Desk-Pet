@@ -5,7 +5,7 @@
 
 import { getActiveCard, pickActiveGreeting } from "@/services/personality"
 import { getFallbackReply } from "@/services/personality/stages-cache"
-import { runPiAgentTurn, steerActiveTurn } from "@/services/engine/pi"
+import { deliverActiveTurn, runPiAgentTurn } from "@/services/engine/pi"
 import { preProcess } from "@/services/engine/preprocessor"
 import { transition } from "@/services/engine/session"
 import {
@@ -49,13 +49,13 @@ export async function recoverRuntimeQueue(): Promise<{ requeued: number; quarant
     }
   }
   for (const record of records) {
-    if (record.state === "persisted" || record.state === "requeued") {
-      const state = record.state === "persisted" ? "requeued" : record.state
-      if (record.state === "persisted") {
+    if (record.state === "persisted" || record.state === "requeued" || record.state === "deferred") {
+      const state = "requeued" as const
+      if (record.state !== "requeued") {
         await MemoryService.appendSessionEventToSession(
           record.entry.sessionId,
           queueAckEvent(record.entry, { queueId: record.entry.queueId, turnId: record.entry.turnId, state }),
-          "queue recovery persisted → requeued",
+          `queue recovery ${record.state} → requeued`,
         )
       }
       runtimeQueue.restore({ ...record.entry, ackState: state })
@@ -163,14 +163,14 @@ function makeTurnRecord(entry: QueueEntry): SessionTurnRecord {
   }
 }
 
-async function enqueuePendingMessage(envelope: IngressEnvelope): Promise<QueueEntry> {
+async function enqueuePendingMessage(envelope: IngressEnvelope, deliveryMode: QueueEntry["deliveryMode"] = "prompt"): Promise<QueueEntry> {
   const entry = runtimeQueue.enqueue({
     queueId: makeIngressId("queue"),
     sessionId: envelope.sessionId,
     turnId: makeIngressId("turn"),
     requestId: envelope.requestId,
     priority: envelope.priority,
-    deliveryMode: "prompt",
+    deliveryMode,
     rawText: envelope.rawText,
     normalizedText: envelope.normalizedText,
     querySource: envelope.querySource,
@@ -195,19 +195,25 @@ async function dispatchMessage(text: string, options: SendMessageOptions = {}, p
   if (!pendingEntry && agentSlots.isRunning(originSessionId)) {
     const requestId = options.requestId ?? makeIngressId("request")
     const priority = options.priority ?? "next"
-    if (!text.startsWith("/") && await steerActiveTurn(originSessionId, text)) {
-      log.info("AI 生成中，用户消息已转为插话")
-      pushUserMessage(text)
-      return {
-        reply: "",
-        toolCallsMade: 0,
-        personalityEffect: { expression: "idle", soundEvent: null },
-      }
-    }
     const preResult = await preProcess(text, preprocessStates.get(originSessionId) ?? {})
     if (!preResult.handled) {
-      await enqueuePendingMessage(makeIngressEnvelope(text, preResult.normalizedText, originSessionId, requestId, priority))
-      log.info("AI 生成中，用户消息已持久化到队列:", requestId)
+      const entry = await enqueuePendingMessage(
+        makeIngressEnvelope(text, preResult.normalizedText, originSessionId, requestId, priority),
+        text.startsWith("/") ? "prompt" : agentSlots.deliveryMode(originSessionId) ?? "steer",
+      )
+      const receipt = text.startsWith("/") ? undefined : deliverActiveTurn(originSessionId, preResult.normalizedText)
+      if (receipt) {
+        await sessionTurnStore.transition(entry.turnId, "dispatching")
+        const ack = runtimeQueue.acknowledge(entry.queueId, receipt)
+        if (ack) await persistQueueAck(entry, ack)
+        await sessionTurnStore.transition(entry.turnId, "running")
+        await sessionTurnStore.transition(entry.turnId, "done")
+        log.info(`AI 生成中，用户消息已投递为 ${receipt}:`, requestId)
+      } else {
+        const ack = runtimeQueue.acknowledge(entry.queueId, "deferred")
+        if (ack) await persistQueueAck(entry, ack)
+        log.info("AI 生成中，用户消息已持久化并延后:", requestId)
+      }
       return {
         reply: "",
         toolCallsMade: 0,

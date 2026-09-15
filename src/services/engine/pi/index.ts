@@ -1,4 +1,4 @@
-export { installPiRuntimeProviderForTest, resetPiRuntimeProviderForTest, runPiAgentTurn, runPiSubAgent, steerActiveTurn } from "./runtime"
+export { deliverActiveTurn, installPiRuntimeProviderForTest, resetPiRuntimeProviderForTest, runPiAgentTurn, runPiSubAgent } from "./runtime"
 export type {
   PiAgentTurnInput,
   PiAgentTurnOutput,

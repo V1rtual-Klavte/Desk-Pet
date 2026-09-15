@@ -1,9 +1,7 @@
 import type { QueueAck, QueueEntry, SessionEvent } from "@/services/engine/runtime"
 
 function queueOrigin(entry: QueueEntry): SessionEvent["origin"] {
-  if (entry.deliveryMode === "steer") return "hook"
-  if (entry.deliveryMode === "followup") return "queue"
-  return "user"
+  return entry.querySource === "chat" ? "user" : "queue"
 }
 
 export function queueEntryEvent(entry: QueueEntry): SessionEvent {

@@ -63,7 +63,7 @@ export class RuntimeQueue {
 
   reserveEntry(queueId: string): QueueEntry | undefined {
     const candidate = this.entries.get(queueId)
-    if (candidate?.ackState !== "persisted" && candidate?.ackState !== "requeued") return undefined
+    if (candidate?.ackState !== "persisted" && candidate?.ackState !== "requeued" && candidate?.ackState !== "deferred") return undefined
     return this.markReserved(candidate)
   }
 
@@ -81,7 +81,7 @@ export class RuntimeQueue {
 
   private findPending(sessionId?: string): QueueEntry | undefined {
     return [...this.entries.values()]
-      .filter(entry => (entry.ackState === "persisted" || entry.ackState === "requeued") && (!sessionId || entry.sessionId === sessionId))
+      .filter(entry => (entry.ackState === "persisted" || entry.ackState === "requeued" || entry.ackState === "deferred") && (!sessionId || entry.sessionId === sessionId))
       .sort((a, b) => PRIORITY_ORDER[a.priority] - PRIORITY_ORDER[b.priority] || a.sequence - b.sequence)[0]
   }
 

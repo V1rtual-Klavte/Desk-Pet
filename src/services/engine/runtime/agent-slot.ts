@@ -6,12 +6,15 @@ export interface SlotAgent {
 }
 
 export type AgentSlotState = "idle" | "running" | "disposed"
+export type AgentDeliveryPhase = "streaming" | "settling"
+export type AgentDeliveryReceipt = "steered" | "followup"
 
 export interface AgentSlotSnapshot {
   sessionId: string
   generation: number
   state: AgentSlotState
   hasAgent: boolean
+  deliveryPhase?: AgentDeliveryPhase
 }
 
 interface AgentSlot {
@@ -19,6 +22,7 @@ interface AgentSlot {
   generation: number
   state: AgentSlotState
   agent?: SlotAgent
+  deliveryPhase?: AgentDeliveryPhase
   drainGeneration: number
   drainPromise?: Promise<void>
 }
@@ -45,7 +49,33 @@ export class AgentSlotRegistry {
     const slot = this.slots.get(sessionId)
     if (!slot || slot.state !== "running" || slot.generation !== generation) return false
     slot.agent = agent
+    slot.deliveryPhase = "streaming"
     return true
+  }
+
+  markDeliveryPhase(sessionId: string, generation: number, phase: AgentDeliveryPhase): boolean {
+    const slot = this.slots.get(sessionId)
+    if (!slot || slot.state !== "running" || slot.generation !== generation || !slot.agent) return false
+    slot.deliveryPhase = phase
+    return true
+  }
+
+  deliver(sessionId: string, text: string): AgentDeliveryReceipt | undefined {
+    const slot = this.slots.get(sessionId)
+    if (slot?.state !== "running" || !slot.agent || !slot.deliveryPhase) return undefined
+    const message = { role: "user" as const, content: text, timestamp: Date.now() }
+    if (slot.deliveryPhase === "settling") {
+      slot.agent.followUp(message)
+      return "followup"
+    }
+    slot.agent.steer(message)
+    return "steered"
+  }
+
+  deliveryMode(sessionId: string): "steer" | "followup" | undefined {
+    const phase = this.slots.get(sessionId)?.deliveryPhase
+    if (phase === "settling") return "followup"
+    return phase === "streaming" ? "steer" : undefined
   }
 
   end(sessionId: string, generation: number): boolean {
@@ -76,19 +106,25 @@ export class AgentSlotRegistry {
     }
     if (slot.drainPromise) return slot.drainPromise
     const drainGeneration = ++slot.drainGeneration
-    const run = worker(drainGeneration).finally(() => {
+    let resolveRun!: () => void
+    let rejectRun!: (error: unknown) => void
+    const run = new Promise<void>((resolve, reject) => {
+      resolveRun = resolve
+      rejectRun = reject
+    })
+    slot.drainPromise = run
+    void worker(drainGeneration).then(resolveRun, rejectRun).finally(() => {
       const current = this.slots.get(sessionId)
       if (current?.drainGeneration === drainGeneration && current.drainPromise === run) {
         current.drainPromise = undefined
       }
     })
-    slot.drainPromise = run
     return run
   }
 
   isDrainCurrent(sessionId: string, generation: number): boolean {
     const slot = this.slots.get(sessionId)
-    return Boolean(slot?.drainPromise && slot.drainGeneration === generation)
+    return slot?.drainGeneration === generation
   }
 
   releaseWhenIdle(sessionId: string): boolean {
@@ -118,6 +154,7 @@ export class AgentSlotRegistry {
       generation: slot.generation,
       state: slot.state,
       hasAgent: Boolean(slot.agent),
+      deliveryPhase: slot.deliveryPhase,
     }
   }
 

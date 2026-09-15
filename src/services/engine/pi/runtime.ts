@@ -69,23 +69,8 @@ export function resetPiRuntimeProviderForTest(): void {
  *
  * @returns 是否有正在执行的回合可以接收插话
  */
-export async function steerActiveTurn(sessionId: string, text: string): Promise<boolean> {
-  const agent = agentSlots.activeAgent(sessionId)
-  if (!agent) return false
-  agent.steer({ role: "user", content: text, timestamp: Date.now() })
-  await persistTurn(sessionId, "user", text, {
-    schemaVersion: 1,
-    requestId: `steer-${crypto.randomUUID()}`,
-    sessionId,
-    origin: "user",
-    querySource: "chat",
-    rawText: text,
-    normalizedText: text.trim(),
-    receivedAt: Date.now(),
-    priority: "now",
-    taint: "trusted_user",
-  })
-  return true
+export function deliverActiveTurn(sessionId: string, text: string): "steered" | "followup" | undefined {
+  return agentSlots.deliver(sessionId, text)
 }
 
 export interface PiAgentTurnInput {
@@ -442,6 +427,10 @@ async function runPiLoop(input: PiLoopInput): Promise<PiLoopOutput> {
     if ("toolCallId" in event && typeof event.toolCallId === "string") eventPayload.toolCallId = event.toolCallId
     if ("isError" in event && typeof event.isError === "boolean") eventPayload.isError = event.isError
     publishRuntimeTrace(traceContext, event.type, eventPayload)
+    if (input.exposeAsActiveAgent && input.sessionId && input.runGeneration !== undefined) {
+      if (event.type === "turn_start") agentSlots.markDeliveryPhase(input.sessionId, input.runGeneration, "streaming")
+      if (event.type === "turn_end") agentSlots.markDeliveryPhase(input.sessionId, input.runGeneration, "settling")
+    }
     if (event.type === "message_end" && input.persistToolMessages) {
       persistPiMessage(event.message, persistedMessageIds)
     }

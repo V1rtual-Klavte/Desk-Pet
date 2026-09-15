@@ -45,7 +45,7 @@ LLM 可见回复文本 + <RUNTIME_DATA>
 
 当前主 Agent Runtime、Planner 和 Live Test 契约都以 RUNTIME_DATA 为准；旧变量工具只在历史归档中出现，不代表当前接口仍有效。当前记忆压缩与长期召回仍保持既有边界，后续会单独按 Claude Code 风格的文件记忆协议重构。
 
-运行时基础重构的目标协议、Pi Agent Core hook 边界、队列/Plan 持久化、PromptSnapshot、恢复、安全和 Memory Eval 见[记忆系统重构前置准备](../plans/active/记忆系统重构前置准备.md)。当前已落地 `src/services/engine/runtime/` 协议类型、事件兼容适配、快照脱敏纯函数、只读 trace 总线、RuntimeQueue、queue event adapter、SessionTurnStore 和按 sessionId 隔离的 AgentSlot；`sendMessage()` 先写 queued，再通过版本/CAS 记录 turn 的 dispatching、running 和 done/failed。AgentSlot 用单调 generation 保护新 run 不受旧异步清理影响，会话切换只回收空闲 slot；当前回合结束后会按优先级自动 drain 同会话 pending 消息。steer/follow-up 持久化、Plan 持久化和长期召回仍未实现；该计划中的接口和阶段门禁不表示这些能力已经全部实现。
+运行时基础重构的目标协议、Pi Agent Core hook 边界、队列/Plan 持久化、PromptSnapshot、恢复、安全和 Memory Eval 见[记忆系统重构前置准备](../plans/active/记忆系统重构前置准备.md)。当前已落地 `src/services/engine/runtime/` 协议类型、事件兼容适配、快照脱敏纯函数、只读 trace 总线、RuntimeQueue、queue event adapter、SessionTurnStore 和按 sessionId 隔离的 AgentSlot；`sendMessage()` 先写 queued，再通过版本/CAS 记录 turn 的 dispatching、running 和 done/failed。AgentSlot 用单调 generation 保护新 run 不受旧异步清理影响，并按 streaming/settling 阶段把已落盘输入投递为 steer/followUp；暂不可投递的 deferred 仍留在待处理集合，可由 drain 或启动恢复继续消费。Plan 持久化和长期召回仍未实现；该计划中的接口和阶段门禁不表示这些能力已经全部实现。
 
 ## 配置与运行时数据
 

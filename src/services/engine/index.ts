@@ -81,5 +81,5 @@ export { RuntimeQueue } from "./runtime"
 export type { EnqueueInput } from "./runtime"
 
 // ── Pi Agent Core Runtime ──
-export { runPiAgentTurn, runPiSubAgent, steerActiveTurn } from "./pi"
+export { deliverActiveTurn, runPiAgentTurn, runPiSubAgent } from "./pi"
 export type { PiAgentTurnOutput, PiSubAgentOutput } from "./pi"

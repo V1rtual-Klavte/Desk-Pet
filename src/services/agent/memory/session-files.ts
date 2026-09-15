@@ -287,14 +287,14 @@ export async function listQueueRecoveryRecords(): Promise<QueueRecoveryRecord[]>
             || (candidate.priority !== "now" && candidate.priority !== "next" && candidate.priority !== "later")
             || (candidate.deliveryMode !== "prompt" && candidate.deliveryMode !== "steer" && candidate.deliveryMode !== "followup")
             || typeof candidate.attempt !== "number" || typeof candidate.ackState !== "string") continue
-          if (!["persisted", "reserved", "dispatched", "running", "waiting_tool", "interrupted", "unknown_side_effect", "accepted", "failed", "requeued", "dead_letter"].includes(candidate.ackState)) continue
+          if (!["persisted", "reserved", "dispatched", "running", "waiting_tool", "interrupted", "unknown_side_effect", "accepted", "steered", "followup", "deferred", "failed", "requeued", "dead_letter"].includes(candidate.ackState)) continue
           records.set(candidate.queueId, { entry: { ...candidate } as QueueEntry, state: candidate.ackState })
           continue
         }
         if (typeof payload.queueId !== "string" || typeof payload.state !== "string") continue
         const current = records.get(payload.queueId)
         if (!current) continue
-        if (!["persisted", "reserved", "dispatched", "running", "waiting_tool", "interrupted", "unknown_side_effect", "accepted", "failed", "requeued", "dead_letter"].includes(payload.state)) continue
+        if (!["persisted", "reserved", "dispatched", "running", "waiting_tool", "interrupted", "unknown_side_effect", "accepted", "steered", "followup", "deferred", "failed", "requeued", "dead_letter"].includes(payload.state)) continue
         const state = payload.state as QueueAckState
         current.state = state
         if (typeof payload.errorCode === "string") current.errorCode = payload.errorCode

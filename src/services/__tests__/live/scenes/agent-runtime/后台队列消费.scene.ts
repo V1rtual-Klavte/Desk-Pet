@@ -1,8 +1,9 @@
 import { invoke } from "@tauri-apps/api/core"
-import { setAIGenerating } from "@/services/cooldown"
 import { drainRuntimeQueue, initChat, sendMessage } from "@/services/agent/runner"
+import { agentSlots } from "@/services/engine/runtime"
 import { MemoryService, parseSessionEventDocument } from "@/services/agent/memory"
 import { runtimePath } from "@/services/paths"
+import { getActiveSessionId } from "@/services/session"
 import { installFakeProvider, fakeText } from "../../fake-provider"
 import type { SceneDef } from "../../types"
 
@@ -23,11 +24,13 @@ export const 后台队列消费: SceneDef = {
   setup: async () => {
     provider = installFakeProvider([fakeText("当前回合完成"), fakeText("排队消息完成")])
     await initChat()
-    setAIGenerating(true)
+    const sessionId = getActiveSessionId()
+    const generation = agentSlots.begin(sessionId)
+    if (generation === undefined) throw new Error("无法建立测试运行槽")
     try {
       await sendMessage("这是忙碌期间排队的消息。", { requestId: PENDING_REQUEST_ID })
     } finally {
-      setAIGenerating(false)
+      agentSlots.end(sessionId, generation)
     }
   },
   turns: [{

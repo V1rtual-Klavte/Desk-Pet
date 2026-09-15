@@ -13,7 +13,7 @@ export const memoryContract: ModuleContract = {
     "src/services/engine/runtime/snapshot.ts",
   ],
   generatedAt: "2026-09-15",
-  sourceHash: "c308328e82d81cc1c7a309461c659876e30d3ad6c629f1d3855668c6b3a7da78",
+  sourceHash: "c92012da1a3a0379dbaa2dab13629d616b852b6b8732fd5ae5476f36fac59460",
   coverage: [
     { id: "mm-01", feature: "Memory 添加条目", description: "MemoryService.append() 创建记忆", why: "记忆系统基础 CRUD", depth: "shallow", scenarios: ["memory-append"] },
     { id: "mm-02", feature: "Memory 搜索", description: "MemoryService.search(query, limit) 按内容搜索", why: "LLM 需检索相关记忆", depth: "shallow", scenarios: ["memory-search"] },

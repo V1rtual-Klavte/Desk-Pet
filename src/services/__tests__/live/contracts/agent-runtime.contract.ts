@@ -5,15 +5,18 @@ export const agentRuntimeContract: ModuleContract = {
   sourceFiles: [
     "src/services/agent/runner.ts",
     "src/services/agent/memory/session-turn-store.ts",
+    "src/services/agent/memory/queue-events.ts",
+    "src/services/agent/memory/session-files.ts",
     "src/services/engine/runtime/queue.ts",
     "src/services/engine/runtime/agent-slot.ts",
+    "src/services/engine/runtime/types.ts",
     "src/services/engine/preprocessor.ts",
     "src/services/engine/pi/runtime.ts",
     "src/services/session/manager.ts",
     "src/services/session/persistence.ts",
   ],
   generatedAt: "2026-09-15",
-  sourceHash: "7e561b2d511892e0e80bc082ba06af3ae9840ae417c9506a1ce1ea52b455aa0f",
+  sourceHash: "b286a022f53f3ed293f0af9fa456d20290a22076bbac3585f78da18f9e1a2c3a",
   coverage: [
     {
       id: "ar-01",
@@ -47,8 +50,24 @@ export const agentRuntimeContract: ModuleContract = {
       depth: "deep",
       scenarios: ["session-agent-slot-generation"],
     },
+    {
+      id: "ar-05",
+      feature: "工具期间 steer 持久化投递",
+      description: "工具执行期间的新输入先写 QueueEntry 和 queued turn，再调用 Pi steer，最后写 steered 回执和 done 状态",
+      why: "先调用 Pi 再落盘会在进程退出时丢失用户已经发出的方向调整",
+      depth: "deep",
+      scenarios: ["memory-steer-during-tool"],
+    },
+    {
+      id: "ar-06",
+      feature: "回合结束 followUp 持久化投递",
+      description: "Agent 进入 settling 后的新输入以 followup 模式先持久化再投递，并保留正式回执",
+      why: "自然结束边界继续使用 steer 会混淆 Pi 的队列语义并缺少可恢复状态",
+      depth: "deep",
+      scenarios: ["memory-followup-after-turn"],
+    },
   ],
-  rules: { minScenarios: 4, minDeepScenarios: 4, requireBoundary: true, requireErrorPath: false },
+  rules: { minScenarios: 6, minDeepScenarios: 6, requireBoundary: true, requireErrorPath: false },
 }
 
 export default agentRuntimeContract
