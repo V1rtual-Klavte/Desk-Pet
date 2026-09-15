@@ -7,7 +7,7 @@ import type {
   SessionEventKind,
 } from "@/services/engine/runtime"
 import type { SessionMemory } from "./types"
-import { localTime } from "./parsers"
+import { isDeskpetMetadataComment, localTime, normalizeTurnRole } from "./parsers"
 
 const EVENT_MARKER = /<!--\s*deskpet-event:([^\s]+)\s*-->/
 const TURN_MARKER = /<!--\s*deskpet-turn:([^\s]+)\s*-->/
@@ -207,10 +207,10 @@ export function parseSessionEventDocument(raw: string, sessionId = "legacy-sessi
     const previewMatch = line.match(PREVIEW_LINE)
     if (!previewMatch) continue
     // A preview immediately followed by exact metadata is display-only.
-    if (EVENT_MARKER.test(lines[index + 1] ?? "") || TURN_MARKER.test(lines[index + 1] ?? "")) continue
+    if (isDeskpetMetadataComment(lines[index + 1])) continue
     const timestamp = Date.parse(previewMatch[1])
     const turn: SessionMemory["turns"][number] = {
-      role: previewMatch[2].trim() === "糖糖" ? "assistant" : "user",
+      role: normalizeTurnRole(previewMatch[2]),
       text: previewMatch[3].trim(),
       timestamp: Number.isNaN(timestamp) ? 0 : timestamp,
     }

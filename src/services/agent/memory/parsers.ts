@@ -194,6 +194,33 @@ export function serializeProjectMd(list: ProjectEntry[]): string {
 // Session 文件解析
 // ═══════════════════════════════════════════════════
 
+// ── 记录行规则（turn / event 两种记录格式共用）──
+
+/**
+ * 结构化元数据注释。`deskpet-turn` 与 `deskpet-event` 两种记录都会在预览行下一行
+ * 紧跟自己的注释，注释里才是精确正文、毫秒时间戳和完整字段。
+ */
+const DESKPET_METADATA_COMMENT = /^\s*<!--\s*deskpet-(?:turn|event):/
+
+/**
+ * 该行是否为 deskpet 元数据注释。
+ * 预览行下一行命中时，说明这一行只是给人看的显示副本：正文被压成单行并截断到 300 字，
+ * 时间戳只到秒。跳过它，同一条记录才不会既按预览又按注释重放两次。
+ */
+export function isDeskpetMetadataComment(line: string | undefined): boolean {
+  return line !== undefined && DESKPET_METADATA_COMMENT.test(line)
+}
+
+/**
+ * 记录标签 → 会话角色的显式映射。
+ * `用户`/`user` → user，`糖糖`/`assistant` → assistant。
+ * 其它标签（未知旧格式、event 的 tool/queue 等来源）不丢弃，按 user 处理。
+ */
+export function normalizeTurnRole(label: string): "user" | "assistant" {
+  const normalized = label.trim().toLowerCase()
+  return normalized === "糖糖" || normalized === "assistant" ? "assistant" : "user"
+}
+
 export function parseSessionFromFile(raw: string): { turns: SessionMemory["turns"]; summary?: CompactionSummary } | null {
   if (!raw || raw.length < 20) return null
   const turns = parseTurnsFromRaw(raw)
@@ -246,10 +273,11 @@ export function parseTurnsFromRaw(raw: string): SessionMemory["turns"] {
     if (m) {
       // New records keep a readable preview immediately before the exact metadata.
       // Skip that preview so mixed legacy/new files preserve every turn exactly once.
-      if (lines[index + 1]?.match(/<!--\s*deskpet-turn:([^\s]+)\s*-->/)) continue
+      // Both `deskpet-turn` and `deskpet-event` records leave such a preview.
+      if (isDeskpetMetadataComment(lines[index + 1])) continue
       const ts = Date.parse(m[1])
       turns.push({
-        role: m[2].trim() === "糖糖" ? "assistant" : "user",
+        role: normalizeTurnRole(m[2]),
         text: m[3].trim(),
         timestamp: isNaN(ts) ? Date.now() : ts,
       })

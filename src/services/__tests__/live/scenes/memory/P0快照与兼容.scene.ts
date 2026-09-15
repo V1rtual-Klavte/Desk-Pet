@@ -53,7 +53,7 @@ export const 记忆Prompt快照: SceneDef = {
 
 let compatProvider: ReturnType<typeof installFakeProvider> | undefined
 export const 旧会话兼容: SceneDef = {
-  meta: { caseId: "memory-old-session-compat", module: "memory", contractId: "mm-10", description: "旧会话预览、旧 JSON 与损坏记录兼容读取", depth: "deep", suite: "regression", tags: ["memory", "compat", "error"] },
+  meta: { caseId: "memory-old-session-compat", module: "memory", contractId: "mm-10", description: "旧会话预览、旧 JSON 与损坏记录兼容读取", depth: "deep", suite: "regression", tags: ["memory", "compat", "error", "boundary"] },
   setup: async () => { compatProvider = installFakeProvider([fakeText("兼容读取完成")]) },
   turns: [{ index: 1, description: "读取旧格式记录", userText: "执行兼容读取。", checks: [
     { type: "expectLegacyPreview", run: async () => {
@@ -64,6 +64,24 @@ export const 旧会话兼容: SceneDef = {
       if (!event) throw new Error("旧 turn 未升级为 assistant_message")
       if (!serializeSessionEvent(event).some(line => line.includes("deskpet-event:"))) throw new Error("兼容事件无法 round-trip")
       if ((compatProvider?.state.callCount ?? 0) < 1) throw new Error("fake provider 未被调用")
+    } },
+    { type: "expectEventPreviewNotReplayed", run: async () => {
+      // 预览行紧跟自己的 deskpet-event 注释时，预览只是显示副本：
+      // 不能既按预览升级出一条截断消息，又按注释还原出精确事件。
+      const event: SessionEvent = {
+        schemaVersion: 1, eventId: "event-preview-compat", sessionId: "legacy-preview",
+        kind: "assistant_message", origin: "assistant",
+        payload: { text: "事件精确正文：" + "丙".repeat(400) },
+        createdAt: 1789000123456, idempotencyKey: "event-preview-compat",
+      }
+      const raw = ["## 对话记录", ...serializeSessionEvent(event, String(event.payload.text))].join("\n")
+      const parsed = parseSessionEventDocument(raw, event.sessionId)
+      if (parsed.issues.length !== 0) throw new Error(`合法 deskpet-event 被误报损坏 issues=${parsed.issues.length}`)
+      if (parsed.events.length !== 1) throw new Error(`预览副本被重复升级 events=${parsed.events.length}`)
+      const restored = parsed.events[0]
+      if (restored.kind !== "assistant_message" || restored.payload.text !== event.payload.text || restored.createdAt !== event.createdAt) {
+        throw new Error("deskpet-event 未按精确正文与毫秒时间戳恢复")
+      }
     } },
   ] }],
 }
