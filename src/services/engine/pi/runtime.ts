@@ -511,9 +511,8 @@ async function runPiLoop(input: PiLoopInput): Promise<PiLoopOutput> {
     },
     streamFn: runtimeProvider?.streamFn ?? piStream,
     sessionId: input.sessionId,
-    // Pi 的规则：批次里只要有一个工具标了 sequential，整批就走串行。
-    // 只读工具因此仍能并发，写/执行类工具会把整批拉回串行。
-    toolExecution: "parallel",
+    // P5 safety gates are not complete yet; keep tool rounds deterministic and paired.
+    toolExecution: "sequential",
     onPayload: (payload, model) => {
       const safePayload = redactText(stableSerialize(payload))
       const task = sha256Text(safePayload.text)

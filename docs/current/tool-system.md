@@ -69,7 +69,7 @@ src-tauri/resources/defaults/skills/{name}/SKILL.md   ← 随包种子，只读
 | 能力 | 用途 |
 |---|---|
 | `sessionId` | Provider 端 prompt cache |
-| `toolExecution: "parallel"` | 批次里只要有一个工具标 `sequential` 就整批串行；只读类别（`fs.read` / `os.info` / `net.fetch` / `clip.read`）保持并发。`net.fetch` 目前没有对应工具，属于预留 |
+| `toolExecution: "sequential"` | P5 安全门禁完成前所有工具按确定性顺序执行；只读并行需等 schema、权限和 launch checkpoint 门禁完成后再开放 |
 | `beforeToolCall` | 工具次数上限、`checkSafety`、用户确认 |
 | `steering` | 用户可在回合执行中插话，本轮工具跑完后注入下一轮 |
 | `onUpdate` | 工具执行中的快照回传 |
