@@ -23,7 +23,7 @@ Pi 的 `read`、`write`、`edit`、`bash` 通过统一适配器暴露给 Desk-Pe
 | `read` | Pi | SAFE | 文本与图片（jpg/png/gif/webp/bmp）；图片以附件形式发给模型 |
 | `write` | Pi | DANGER | 配置关闭时硬拒绝 |
 | `edit` | Pi | DANGER | 同上 |
-| `bash` | Pi | 动态 | 白名单单命令为 NORMAL；扩展命令进入确认；命中硬禁止模式为 NOWAY |
+| `bash` | Pi | 动态 | Rust 两层 token 策略：层 1 硬基线在两种模式下都执行；层 2 按 scope 叠加，pet 要求首词在白名单内且禁 Shell 组合符，assistant 放行扩展命令但仍拒绝操作系统路径。TS 侧再按风险分级决定确认 |
 | `system_info` | 本地 | SAFE | OS / 架构 / CPU / 内存 |
 
 仅助手模式额外加载：`app_open`、`clipboard_read`、`clipboard_write`、`agent_spawn`（fork / team），以及启用后的 MCP 工具。
@@ -79,27 +79,41 @@ Provider 网络请求只允许 `http`/`https`，请求有固定超时，响应�
 
 Pi 0.85.1 已公开 `transformContext`、`shouldStopAfterTurn`、`prepareNextTurnWithContext`、`subscribe`、`onPayload` 和 `onResponse`；当前 runtime 已接入 `transformContext`、`onPayload`、`onResponse`、`subscribe` 和 `beforeToolCall`，用于 ContextKernel、双阶段 PromptSnapshot 和 trace。`prepareNextTurnWithContext` / `shouldStopAfterTurn` 仍未接入，队列 drain 由 `AgentSlot` 自行驱动。
 
-## Hook 与审计
+## 工具门禁与审计
 
-`engine/runtime/hook-bus.ts` 提供 Desk-Pet 的 HookBus：blocking handler 串行等待并可以返回 `block`，async handler 脱离主链路；每个 handler 有 deadline（钳制在 1–2000ms）、重入保护和 `hook_timeout` / `hook_failed` / `hook_reentrancy` 稳定错误码。
+工具前后置门禁走 **Pi 原生语义**：`pi/runtime.ts` 在 `beforeToolCall` 内联执行工具次数上限、`checkSafety` 和用户确认，返回 `{ block: true }` 或回调抛错时工具都不会执行（fail-closed，场景 `safety-hook-errors` 断言该行为）；工具结束后由 Pi 的 `afterToolCall` 与 trace 记录结果。
 
-`pi/runtime.ts` 在 `beforeToolCall` 发 `before_tool_call`（blocking，可阻断执行），在工具结束后发 `after_tool_call`（async）。**当前没有任何生产代码调用 `hookBus.register`**，所以 block 分支不会触发；HookBus 是已接线但尚无消费者的扩展点。
+Desk-Pet 曾自研 blocking / async 的 HookBus，因生产消费者为零（唯一使用者是测试里自建实例的自证循环）而整模块删除。**需要「阻断」语义的门禁不要放到观测总线上** —— `engine/runtime/trace.ts` 只做观测，listener 的返回值不参与决策，超时与异常都被隔离。
 
 `tool/router.ts` 为每次调用生成 `operationId`（取 `toolCallId`）和 `policyHash`（由 `actionCategory` 与 `safetyLevel` 序列化而来），把 `{ operationId, toolName, outcome, policyHash }` 写入结果的 `details.audit`。同一组 hash 也会进入 PromptSnapshot 的 `toolSchemas`。
 
 取消与超时：`executeTool` 在入口检查 `ctx.signal`，为 handler 创建独立 `AbortController` 并叠加超时；取消返回 `cancelled`，超时返回 `timeout`，未注册返回 `not_found`，其余失败返回 `failed`。
 
+## Bash 最终基线
+
+`src-tauri/src/commands/bash_policy.rs` 是不可关闭的最终门禁，`bash_exec` 的 `policy` 参数必填 `{ scope, whitelist }`（漏传即反序列化报错，不会静默退化为最弱策略），调用方只能**叠加**规则：
+
+| 层 | 规则 | pet | assistant |
+|---|---|---|---|
+| 层 1 硬基线 | 递归删根/家目录、`mkfs*`、`dd` 直接读写设备、系统电源命令、fork bomb、下载管道直连 shell、`-delete`/`-exec` 类破坏性参数、递归 `chmod`/`chown` 777 或指向根/家目录、重定向写系统路径 | 执行 | 执行 |
+| 层 2 按 scope | pet：首词必须在白名单内 + 禁 Shell 组合符；assistant：允许白名单外命令与组合符，但 `rm`/`mv`/`dd`/`chmod` 等写删类动词指向固定系统路径即拒绝 | 执行 | 执行 |
+
+判定基于 Shell 级 token 分析（引号、控制运算符、`sudo` 等前缀包裹命令、嵌套 `sh -c`），不做子串 `contains` —— 旧实现既漏 `rm  -rf  /`、`find ~ -delete`，又误杀 `rm -rf /Users`。参数级禁项不与二进制绑定，所以 `find`、`fd`、`xargs`、`rsync` 一并覆盖，白名单里新增命令不需要重新审一遍参数。
+
 ## 已知问题
 
 以下问题已定位但**尚未修复**，属 P5 遗留项，需要连同权限、沙箱与安全体系一起重审：
 
-- 助手模式下 `bash_exec` 的 `restricted` 为假（`tauri-execution-env.ts` 传 `this.mode === "pet"`），Rust 侧只剩 7 个子串硬匹配，白名单与 Shell 组合符检查都不生效。前端模式不应关闭 Rust 最终基线。
 - `app_open` 没有路径校验，Rust 命令未注入 `State<AppPaths>`；且 NORMAL 级别在确认一次后可会话内信任。
 - 工具输出没有 spill：`tool/router.ts` 只做 50000 字符内联截断，超长输出仍会进入上下文。
 - Provider 网络只校验协议、超时和响应体上限，没有重定向次数与私网/环回 IP 防护。
+- `tools.bash.enabled` 与 `tools.file.enabled` 是死配置：`config.ts` 的 `bashEnabled` / `fileEnabled` getter 没有任何消费者，设置页的开关不改变行为。
 
-已修复（2026-09-15 复核）：`checkSafety` 的会话信任短路 —— 现在先计算 `resolveSafetyLevel` 再应用会话信任，且信任不能越过动态 NOWAY。
+已修复（2026-09-15 复核）：
+
+- **bash 最终基线**：`restricted: bool` 换成必填的 `policy { scope, whitelist }`，助手模式不再能关闭 Rust 校验；`find -delete` / `-exec` 一类「首词合法、参数致命」的命令已由层 1 参数级禁项覆盖（提交 `eb9a312`）。
+- `checkSafety` 的会话信任短路 —— 现在先计算 `resolveSafetyLevel` 再应用会话信任，且信任不能越过动态 NOWAY。
 
 ## 验证状态
 
-`pnpm run test:types` 与 `pnpm run build` 通过。safety 与 tool-execution 模块已建立 Live Contract 与场景（`safety-safe`/`safety-normal`/`safety-danger`/`safety-noway`/`safety-hook-errors`/`safety-trust-lifecycle`/`tool-cancelled`/`tool-provider-network-boundary` 等）。P5 阶段的 `pnpm test -- --module safety|tool-execution --strict` 结果尚未采集，不能视为运行时验证通过；见[执行手册](../plans/active/记忆系统重构执行手册.md)「当前检查点」。
+`pnpm run test:types` 与 `pnpm run build` 通过。safety 与 tool-execution 模块已建立 Live Contract 与场景（`safety-safe`/`safety-normal`/`safety-danger`/`safety-noway`/`safety-hook-errors`/`safety-trust-lifecycle`/`tool-cancelled`/`tool-provider-network-boundary` 等）；`safety-hook-errors` 现在断言 Pi 原生 `beforeToolCall` 在 block 与抛错两种情况下都不执行工具。bash 两层策略有 `bash_policy.rs` 内的 Rust 单元测试（`#[cfg(test)]`），但它不在 Live Test 里，`test:types` 与 CI 也只跑 `cargo check`、不执行 `cargo test`。P5 阶段的 `pnpm test -- --module safety|tool-execution --strict` 结果尚未采集，不能视为运行时验证通过；见[执行手册](../plans/active/记忆系统重构执行手册.md)「当前检查点」。

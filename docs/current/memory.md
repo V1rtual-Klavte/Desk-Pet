@@ -11,7 +11,7 @@
 | 长期记忆注册表 | `memory/MEMORY.md` | 保存结构化条目，提供 CRUD、关键词搜索与整理。 |
 | 会话归档索引 | `memory/Project.md` | 指向 sessions 目录中的历史会话。 |
 
-会话每轮实时写入文件。每条记录保留可读预览行和 HTML 注释中的 URI 编码完整 JSON，读取时优先还原完整正文，并兼容旧预览格式；上下文接近阈值时，压缩器会生成结构化摘要并写回会话文件。启动时会从 Markdown 重建会话，再恢复可丢弃的 UI 标签状态。
+会话每轮实时写入文件。正文只写一份 `deskpet-turn` 记录（可读预览行 + HTML 注释中的 URI 编码完整 JSON），事件视图由 `events.ts` 在读取时从 turn 记录投影；`deskpet-event` 只用于不进 transcript 的消息（当前只有主动搭话的 active 上下文）。读取时优先还原完整正文并兼容旧预览格式：预览行紧跟任意 deskpet 注释时跳过，避免同一条记录被按预览和注释重放两次；未知标签保守按 user 处理。上下文接近阈值时，压缩器调用 LLM 生成结构化摘要并写回会话文件。启动时会从 Markdown 重建会话，再恢复可丢弃的 UI 标签状态。
 
 ## 运行时基础（已落地）
 
@@ -22,7 +22,7 @@
 - 主动搭话写 `origin=active`、`eligibleForMemory=false`、`querySource=active_monitor`，不产生用户事实事件。
 - 上下文由 ContextKernel 按 `static → dynamic → profile → memory → transcript → ephemeral` 固定层级裁剪；`User.md` 以只读 profile projection 进入 profile 层。
 - PromptSnapshot 在 `transformContext` 和 `provider_payload` 两阶段发布，只保存 hash、层级、工具策略和关联 ID，原始 Prompt 不落盘。
-- 压缩目前只保证 assistant/tool pair 成组（`groupMessageUnits`）；仍按消息比例切片，没有 API round 分级摘要和 compaction 版本。
+- 压缩由 `compactOnHighUsage()` 在上下文接近阈值时调用 LLM 生成结构化摘要并写回会话文件，不做消息切片；`compactMessages()` / `groupMessageUnits()` 的「保留最近 40%」截断没有生产调用点。API round 分级摘要、compaction 版本与 lock 仍未实施。
 
 ## 当前限制
 
@@ -34,7 +34,7 @@
 ## 后续路线
 
 1. 按[记忆系统运行时契约](../plans/active/记忆系统运行时契约.md)推进 P6：候选记忆提取、来源门禁、画像写入候选和 dreaming；阶段进度见[执行手册](../plans/active/记忆系统重构执行手册.md)。
-2. 补齐 P4/P5 遗留：API round 分级压缩、compaction 版本与 lock、工具输出 spill、网络私网 IP 与重定向防护、HookBus 生产 handler。
+2. 补齐 P4/P5 遗留：API round 分级压缩、compaction 版本与 lock、工具输出 spill、网络私网 IP 与重定向防护、`app_open` 路径校验。
 3. 以关键词检索、重要性排序和固定 token 预算实现最小召回闭环。
 4. 补充纠正、删除、冲突和过期处理；只有关键词检索不足时再评估向量检索。
 

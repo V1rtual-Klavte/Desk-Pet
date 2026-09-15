@@ -22,6 +22,8 @@ pnpm run test:release
 - 每个 trial 在执行前都会等待上次会话文件写入完成，并清理 session 文件、UI index、工作记忆、长期记忆、变量池、聊天状态、预处理去重状态和 AI 锁。`meta.repetitions` 是该场景最低 trial 数，CLI `--repeat` 只能提高它。超时、初始化失败和 Provider/网络/认证类错误以单独状态记录，不能记为 skip 或 pass。
 - 报告使用 `desk-pet-live/v2` schema，记录数据集版本、commit、Card 种子 hash、每轮耗时/工具数/重试数/回复长度/可用的浏览器堆指标、错误分类和 `pass@k`、`pass^k`。`pass@k` 仅说明至少一个 trial 成功；发布门禁要求所有 trial 都成立。
 - `entry: "production"` 场景经过 `sendMessage()`；`entry: "runtime"` 验证 Pi runtime 适配层。`production-chat-entry` 是当前严格双 trial smoke。
+- CI（`.github/workflows/ci.yml`）在 push / PR / 手动触发时，于 `macos-latest` 与 `windows-latest` 各跑一次 `pnpm run test:types`（`vue-tsc --noEmit && cargo check`）。Live Test 需要真实 Provider，不在 CI 内执行。
+- **Windows 分支只能靠 CI 做编译级验证**：本机交叉 `cargo check --target x86_64-pc-windows-msvc` 会卡在 `tauri-build` 的 `embed-resource`（需要 `llvm-rc`），且在此之前不会编译到项目自身代码。
 - 静态检查与 `cargo check` 不能替代真实交互验证。
 - 变更后应按影响范围更新 Contract 和 Scene；测试通过只能证明已覆盖的契约，不代表未覆盖功能已验证。
 - Live Test 不再经过 Vitest/Node mock；`live-test-main.ts` 是唯一执行入口。

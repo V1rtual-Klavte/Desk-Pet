@@ -29,7 +29,7 @@ data_root/
 └── skills/{name}/SKILL.md               # 模型用 read 加载的 Skill，随包种子首次复制
 ```
 
-会话 Markdown 的每轮记录同时含可读预览与完整原文元数据，历史格式仍可读取。启动时先扫描 Markdown 重建会话历史，再用 `index.json` 恢复上次打开和活跃的标签；index 损坏不应丢失任何对话。
+会话 Markdown 的每轮记录同时含可读预览与完整原文元数据，历史格式仍可读取。正文只以 `deskpet-turn` 记录写一次，事件视图由读取侧从 turn 投影；`deskpet-event` 只用于不进正文的消息（如主动搭话）。启动时先扫描 Markdown 重建会话历史，再用 `index.json` 恢复上次打开和活跃的标签；index 损坏不应丢失任何对话。
 
 ## Profile 素材覆盖
 

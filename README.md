@@ -27,8 +27,9 @@
 - **Card 运行时状态** — 通过回复末尾的 `RUNTIME_DATA` 更新已注册的角色变量
 - **窗口感知** — 监控前台窗口，停留超时后 AI 主动搭话
 - **安全控制** — SAFE / NORMAL / DANGER / NOWAY 风险等级与确认策略；动态风险等级先于会话信任解析（deny-first）
-- **Hook 与工具审计** — HookBus 提供 blocking / async 生命周期门禁（已接线，暂无内置 handler）；每次工具调用记录 operationId、policyHash 与取消/超时的稳定错误码
-- **记忆系统** — CANDY、User、MEMORY、sessions 和压缩摘要；压缩保持工具调用成对，User.md 以只读画像 projection 注入，长期记忆 provider 当前为空，自动提取与召回仍在规划
+- **Bash 硬基线** — Rust 侧两层 token 策略：层 1 硬基线（破坏性目标、`-delete`/`-exec` 类参数、系统路径重定向）在任何模式下都执行且调用方无法关闭，层 2 才按模式叠加白名单或扩展命令规则
+- **工具门禁与审计** — 工具前后置门禁走 Pi 原生 `beforeToolCall` / `afterToolCall`；每次工具调用记录 operationId、policyHash 与取消/超时的稳定错误码
+- **记忆系统** — CANDY、User、MEMORY、sessions 和压缩摘要；正文只写一份会话记录，压缩由 LLM 生成结构化摘要写回会话文件；User.md 以只读画像 projection 注入，长期记忆 provider 当前为空，自动提取与召回仍在规划
 - **Profile 主题** — 糖糖粉、暗夜紫、透明玻璃、yuki 雨夜蓝等随应用提供的默认主题，支持编辑、复制、删除、导入导出
 - **角色展示效果** — 灵动图层（五层视差）与景深（单图背景虚化 + 焦点区）二选一，都由图层编辑器所见即所得地调参
 - **音效系统** — Web Audio 合成音效与人格边界映射
@@ -47,7 +48,7 @@
 | 窗口感知主动搭话 | ✅ | ✅ |
 | 文件读写 + 系统信息 + Bash 白名单 | ✅ | ✅ |
 | 计划编排与步骤进度 | ❌ | ✅ |
-| 文件写/编辑 + Bash（白名单/扩展命令按风险确认） | ✅（确认） | ✅（按安全策略） |
+| 文件写/编辑 + Bash（硬基线常开，白名单/扩展命令按风险确认） | ✅（确认） | ✅（按安全策略） |
 | 文件删除 | ❌（无模型工具） | ❌（硬禁止） |
 | MCP 服务器 | ❌ | ✅ |
 | Skill（渐进披露，模型用 read 加载正文） | ❌ | ✅ |
@@ -100,6 +101,7 @@ cp CONFIG-DEV.yaml.example CONFIG-DEV.yaml
 ```text
 Desk-Pet/
 ├── CONFIG.yaml / CONFIG-DEV.yaml     # 全局配置
+├── .github/workflows/ci.yml          # CI：macOS + Windows 双平台 test:types
 ├── AGENTS.md                         # Agent 开发约束
 ├── CLAUDE.md                         # 兼容入口，规则指向 AGENTS.md
 ├── docs/
@@ -205,6 +207,12 @@ pnpm test -- --module variable-pool
 
 Live Test 位于 `src/services/__tests__/live/`，通过独立 Tauri WebView 使用真实 IPC、临时文件系统和真实 Provider 运行；需要确定性响应的基础场景可注入 `fake-provider.ts`，但仍执行真实 Agent/Tool loop。测试完成后自动清理临时数据。Scene 带稳定 `caseId`、测试套件和最低 trial 数，`--repeat 3` 只会提高试验次数；`--strict` 将实际 Scene 关联、边界/错误 tag 与 Contract 缺口作为门禁。Contract `sourceHash` 会在启动前校验，过期会直接阻断执行。JSON 报告记录数据集版本、环境种子、指标、错误分类和 `pass@k`/`pass^k`。测试通过只代表已覆盖场景通过。
 
+### CI
+
+`.github/workflows/ci.yml` 在 push、pull request 和手动触发时，于 `macos-latest` 与 `windows-latest` 各跑一次 `pnpm run test:types`（`vue-tsc --noEmit && cargo check`）；Live Test 需要真实 Provider，不在 CI 内执行。
+
+目标平台是 Windows + macOS，但本机（macOS）永远看不到 `#[cfg(target_os = "windows")]` 分支，本机交叉 check 又会卡在 tauri-build 的 embed-resource（需要 `llvm-rc`）且不编译 deskpet 自身。因此 **Windows 分支的编译级验证只能靠 CI**，改动 `cfg(windows)` 代码或 Windows 依赖 feature 后必须看 Windows job 结果。
+
 ---
 
 ## 📋 平台兼容
@@ -219,6 +227,7 @@ Live Test 位于 `src/services/__tests__/live/`，通过独立 Tauri WebView 使
 | Dock/任务栏点击弹出 | ✅ | ✅ |
 | 剪贴板操作 | ✅ pbpaste/pbcopy | ✅ PowerShell |
 | 系统通知 | ❌ 未签名构建不支持 | 依赖平台配置 |
+| 编译级验证（`test:types`） | ✅ 本机 + CI | ✅ 仅 CI |
 
 ---
 

@@ -69,6 +69,7 @@ src/services/__tests__/live/
 - 使用 `pnpm test -- --module <module>` 做模块范围验证；跨模块修改再运行完整 `pnpm test`。发布前运行 `pnpm test -- --strict --repeat 3 --report json`，严格 Contract 缺口和不稳定 trial 不能作为通过结论。
 - `npx vue-tsc --noEmit` 和 `cargo check` 只证明类型/编译，不替代 Live Test。
 - Contract 的 `sourceHash` 不能为空；启动前发现空 hash 或源码变更会直接阻断 Live Test。
+- `.github/workflows/ci.yml` 在 push / pull request / 手动触发时，于 macOS 与 Windows 各跑一次 `pnpm run test:types`，Live Test 不在 CI 内执行。目标平台是 Windows + macOS，而 **Windows 分支只能靠 CI 做编译级验证**：本机交叉 check 会卡在 tauri-build 的 embed-resource（需要 `llvm-rc`）且不编译 deskpet 自身。改动 `cfg(windows)` 代码或 Windows 依赖 feature 后必须看 Windows job。
 
 ## 文档职责
 
@@ -155,7 +156,7 @@ src-tauri/src/
   -> context/buildPrompt -> ContextKernel
        static / dynamic / profile / memory / transcript / ephemeral 固定层级与预算裁剪
   -> 助手模式下可选 planner
-  -> Pi Agent Core + pi-ai 流 + HookBus + ToolRouter（read/write/edit/bash/…）+ Safety 检查（deny-first）
+  -> Pi Agent Core + pi-ai 流 + ToolRouter（read/write/edit/bash/…）+ Safety 检查（deny-first）
        Skill 只注入 name/description/location，正文由模型用 read 工具按需加载
   -> reply/generator 解析 <RUNTIME_DATA>
        emotion -> 表情与音效

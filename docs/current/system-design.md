@@ -1,6 +1,6 @@
 # 当前系统设计
-2026.9.10 10:26
-本文记录已在当前代码中存在的运行链路和模块边界。项目概览与玩法见 [DES.md](../DES.md)。
+
+本文记录已在当前代码中存在的运行链路和模块边界。项目概览与玩法见 [DES.md](../DES.md)。内容以代码为准，改动时间以 git 历史为准。
 
 ## 分层
 
@@ -21,7 +21,7 @@
   -> session 状态更新 + 变量状态刷新
   -> buildPrompt / ContextKernel（六层 block、预算裁剪、兼容 systemPrompt）
   -> 可选 Plan 编排
-  -> Pi Agent Core + pi-ai OpenAI-compatible 流 + 顺序工具循环 + HookBus + 安全检查
+  -> Pi Agent Core + pi-ai OpenAI-compatible 流 + 顺序工具循环（Pi 原生 beforeToolCall 门禁）+ 安全检查
   -> reply/generator 解析 RUNTIME_DATA
   -> 表情与音效事件、Card 状态持久化、会话写入与既有的异步摘要压缩
   -> ChatPanel / StreamView 展示
@@ -45,7 +45,7 @@ LLM 可见回复文本 + <RUNTIME_DATA>
 
 当前主 Agent Runtime、Planner 和 Live Test 契约都以 RUNTIME_DATA 为准；旧变量工具只在历史归档中出现，不代表当前接口仍有效。ContextKernel 已固定 `static → dynamic → profile → memory → transcript → ephemeral` 层级，并按上下文上限保留最近 transcript；预算不足会记录被裁剪 block、原始 token、保留 token 和原因。`User.md` 只通过带来源、版本和 taint 的 profile projection 注入；长期记忆已建立 `MemoryProvider` 边界，但默认 provider 返回空集合，尚未自动召回。Runtime 在 `transformContext` 和 `provider_payload` 阶段发布脱敏 Prompt 快照，并用请求、回合和运行代际关联，输入规范化只记录 hash 改写链。
 
-运行时基础重构的目标协议、Pi Agent Core hook 边界、队列/Plan 持久化、PromptSnapshot、恢复、安全和 Memory Eval 见[记忆系统运行时契约](../plans/active/记忆系统运行时契约.md)，阶段进度见[执行手册](../plans/active/记忆系统重构执行手册.md)。已落地：`src/services/engine/runtime/` 协议类型、事件兼容适配、快照脱敏纯函数、只读 trace 总线、RuntimeQueue、queue event adapter、SessionTurnStore、PlanCheckpointStore、按 sessionId 隔离的 AgentSlot、ContextKernel 层级预算，以及 HookBus 生命周期门禁。`sendMessage()` 先写 queued，再通过版本/CAS 记录 turn 的 dispatching、running 和 done/failed。AgentSlot 按 streaming/settling 阶段把已落盘输入投递为 steer/followUp，deferred 可由 drain 或启动恢复继续消费。Plan/step 及子代理工具开始/结束写入 session event；启动恢复把运行中只读步骤重置为 pending，把未知外部副作用隔离并暂停计划。`executeTool()` 为每次调用记录 `operationId` / `policyHash` / `outcome`，取消和超时返回稳定错误码；`checkSafety` 先解析动态风险等级再应用会话信任。压缩侧目前只保证 assistant/tool pair 成组，API round 分级摘要、compaction 版本与输出 spill 尚未实施。HookBus 已接线但没有生产 handler。长期召回仍未实现；契约中的接口和阶段门禁不表示这些能力已经全部实现。
+运行时基础重构的目标协议、Pi Agent Core hook 边界、队列/Plan 持久化、PromptSnapshot、恢复、安全和 Memory Eval 见[记忆系统运行时契约](../plans/active/记忆系统运行时契约.md)，阶段进度见[执行手册](../plans/active/记忆系统重构执行手册.md)。已落地：`src/services/engine/runtime/` 协议类型、事件兼容适配、快照脱敏纯函数、只读 trace 总线、RuntimeQueue、queue event adapter、SessionTurnStore、PlanCheckpointStore、按 sessionId 隔离的 AgentSlot、ContextKernel 层级预算和 Pi 原生工具门禁。`sendMessage()` 先写 queued，再通过版本/CAS 记录 turn 的 dispatching、running 和 done/failed。AgentSlot 按 streaming/settling 阶段把已落盘输入投递为 steer/followUp，deferred 可由 drain 或启动恢复继续消费。Plan/step 及子代理工具开始/结束写入 session event；启动恢复把运行中只读步骤重置为 pending，把未知外部副作用隔离并暂停计划。`executeTool()` 为每次调用记录 `operationId` / `policyHash` / `outcome`，取消和超时返回稳定错误码；`checkSafety` 先解析动态风险等级再应用会话信任。bash 的最终基线在 Rust 侧按两层 token 策略执行，硬基线不可被前端模式关闭。会话正文只写一份 `deskpet-turn` 记录，事件视图在读取时从 turn 投影。压缩走阈值触发的 LLM 结构化摘要并写回会话文件，`compactMessages` / `groupMessageUnits` 的分组截断没有生产调用点；API round 分级摘要、compaction 版本与输出 spill 尚未实施。长期召回仍未实现；契约中的接口和阶段门禁不表示这些能力已经全部实现。
 
 ## 配置与运行时数据
 
