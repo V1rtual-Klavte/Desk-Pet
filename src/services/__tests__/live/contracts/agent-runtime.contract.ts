@@ -4,14 +4,15 @@ export const agentRuntimeContract: ModuleContract = {
   module: "agent-runtime",
   sourceFiles: [
     "src/services/agent/runner.ts",
+    "src/services/agent/memory/session-turn-store.ts",
     "src/services/engine/runtime/queue.ts",
     "src/services/engine/preprocessor.ts",
     "src/services/engine/pi/runtime.ts",
     "src/services/session/manager.ts",
     "src/services/session/persistence.ts",
   ],
-  generatedAt: "2026-09-14",
-  sourceHash: "8f2a17324f400f31b3afdadddc01b8edda1d971dbb06356cc020d1a3e9ed5672",
+  generatedAt: "2026-09-15",
+  sourceHash: "d8a6e72fc1aee182c0d607432d88d397b724fad4709d2c5aecfd42a307ee131e",
   coverage: [
     {
       id: "ar-01",
@@ -32,7 +33,7 @@ export const agentRuntimeContract: ModuleContract = {
     {
       id: "ar-03",
       feature: "后台队列消费",
-      description: "当前回合结束后自动消费同会话 persisted/requeued 消息，且不重复写入用户事实",
+      description: "当前回合结束后自动消费同会话 persisted/requeued 消息，通过 CAS 记录 queued 到 done 的 turn 状态，且不重复写入用户事实",
       why: "只持久化不 drain 会让忙碌期间的用户输入永久停留在队列中",
       depth: "deep",
       scenarios: ["queued-drain-after-turn"],

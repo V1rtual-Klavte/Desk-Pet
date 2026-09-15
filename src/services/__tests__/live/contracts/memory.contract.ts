@@ -12,8 +12,8 @@ export const memoryContract: ModuleContract = {
     "src/services/agent/memory/queue-events.ts",
     "src/services/engine/runtime/snapshot.ts",
   ],
-  generatedAt: "2026-09-14",
-  sourceHash: "1b82049932c223607d88c195665605b5fa9b64e762ae55305628efeacafba240",
+  generatedAt: "2026-09-15",
+  sourceHash: "c308328e82d81cc1c7a309461c659876e30d3ad6c629f1d3855668c6b3a7da78",
   coverage: [
     { id: "mm-01", feature: "Memory 添加条目", description: "MemoryService.append() 创建记忆", why: "记忆系统基础 CRUD", depth: "shallow", scenarios: ["memory-append"] },
     { id: "mm-02", feature: "Memory 搜索", description: "MemoryService.search(query, limit) 按内容搜索", why: "LLM 需检索相关记忆", depth: "shallow", scenarios: ["memory-search"] },

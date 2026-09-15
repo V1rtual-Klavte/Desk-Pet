@@ -59,6 +59,7 @@ export type {
 } from "./events"
 export { parseSessionEventDocument, parseSessionEventsFromRaw, serializeSessionEvent } from "./events"
 export { queueAckEvent, queueEntryEvent, queueRecoveryEvent } from "./queue-events"
+export { SessionTurnStore, sessionTurnStore } from "./session-turn-store"
 export type { QueueRecoveryRecord } from "./session-files"
 
 const log = createLogger("Memory")

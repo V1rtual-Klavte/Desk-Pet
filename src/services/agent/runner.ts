@@ -20,8 +20,8 @@ import { createLogger } from "@/services/logger"
 import { formatError, summarizeError } from "@/services/error"
 import { reportError } from "@/services/error"
 import { RuntimeQueue } from "@/services/engine/runtime"
-import type { IngressEnvelope, MessagePriority, QueueAck, QueueEntry } from "@/services/engine/runtime"
-import { MemoryService, queueAckEvent, queueEntryEvent, queueRecoveryEvent } from "@/services/agent/memory"
+import type { IngressEnvelope, MessagePriority, QueueAck, QueueEntry, SessionTurnRecord } from "@/services/engine/runtime"
+import { MemoryService, queueAckEvent, queueEntryEvent, queueRecoveryEvent, sessionTurnStore } from "@/services/agent/memory"
 
 const log = createLogger("Agent")
 
@@ -34,6 +34,7 @@ let drainGeneration = 0
 export function resetRuntimeQueueForTest(): void {
   runtimeQueue.clear()
   preprocessStates.clear()
+  sessionTurnStore.reset()
   drainGeneration++
   drainPromise = undefined
 }
@@ -44,6 +45,12 @@ export async function recoverRuntimeQueue(): Promise<{ requeued: number; quarant
   const records = await MemoryService.listQueueRecoveryRecords()
   let requeued = 0
   let quarantined = 0
+  for (const sessionId of new Set(records.map(record => record.entry.sessionId))) {
+    const turns = await sessionTurnStore.readRecoverable(sessionId)
+    for (const turn of turns) {
+      if (turn.state !== "queued") await sessionTurnStore.transition(turn.turnId, "unknown_side_effect")
+    }
+  }
   for (const record of records) {
     if (record.state === "persisted" || record.state === "requeued") {
       const state = record.state === "persisted" ? "requeued" : record.state
@@ -77,6 +84,7 @@ function makeIngressId(prefix: string): string {
 async function persistQueueEntry(entry: QueueEntry): Promise<void> {
   const ok = await MemoryService.appendSessionEventToSession(entry.sessionId, queueEntryEvent(entry), "queued")
   if (!ok) throw new Error(`queued 事件落盘失败: ${entry.queueId}`)
+  await sessionTurnStore.append(makeTurnRecord(entry))
 }
 
 async function persistQueueAck(entry: QueueEntry, ack: QueueAck): Promise<void> {
@@ -138,6 +146,23 @@ function makeIngressEnvelope(rawText: string, normalizedText: string, sessionId:
     receivedAt: Date.now(),
     priority,
     taint: "trusted_user",
+  }
+}
+
+function makeTurnRecord(entry: QueueEntry): SessionTurnRecord {
+  return {
+    schemaVersion: 1,
+    turnId: entry.turnId,
+    sessionId: entry.sessionId,
+    requestId: entry.requestId,
+    role: "user",
+    origin: "user",
+    state: "queued",
+    text: entry.rawText,
+    attempt: entry.attempt,
+    idempotencyKey: `turn:${entry.requestId}`,
+    createdAt: entry.enqueuedAt,
+    updatedAt: entry.enqueuedAt,
   }
 }
 
@@ -260,10 +285,12 @@ async function dispatchMessage(text: string, options: SendMessageOptions = {}, p
         taint: "trusted_user",
       })
     if (!pendingEntry) await persistQueueEntry(activeQueueEntry)
+    else await sessionTurnStore.append(makeTurnRecord(activeQueueEntry))
     const reserved = runtimeQueue.reserveEntry(activeQueueEntry.queueId)
     if (!reserved) throw new Error(`queued 事件无法 reserve: ${activeQueueEntry.queueId}`)
     activeQueueEntry = reserved
     await persistQueueAck(activeQueueEntry, { queueId: reserved.queueId, turnId: reserved.turnId, state: "reserved" })
+    await sessionTurnStore.transition(activeQueueEntry.turnId, "dispatching", { attempt: activeQueueEntry.attempt })
 
     if (!pendingEntry) pushUserMessage(preResult.text)
     resetUnanswered()
@@ -274,6 +301,7 @@ async function dispatchMessage(text: string, options: SendMessageOptions = {}, p
     // ── Step 4: 运行 Agent Loop ──
     const dispatched = runtimeQueue.acknowledge(activeQueueEntry.queueId, "dispatched")
     if (dispatched) await persistQueueAck(activeQueueEntry, dispatched)
+    await sessionTurnStore.transition(activeQueueEntry.turnId, "running")
     toolCallHistory.clear()
     const result = await runPiAgentTurn({
       sessionId: originSessionId,
@@ -308,6 +336,8 @@ async function dispatchMessage(text: string, options: SendMessageOptions = {}, p
     await MemoryService.flushSessionWrites()
     const accepted = runtimeQueue.acknowledge(activeQueueEntry.queueId, "accepted")
     if (accepted) await persistQueueAck(activeQueueEntry, accepted)
+    await sessionTurnStore.transition(activeQueueEntry.turnId, "done")
+    await sessionTurnStore.flush(originSessionId)
 
     transition("WAITING")
     return {
@@ -323,6 +353,11 @@ async function dispatchMessage(text: string, options: SendMessageOptions = {}, p
       await MemoryService.flushSessionWrites()
       const failed = runtimeQueue.acknowledge(activeQueueEntry.queueId, "failed", "agent_turn_failed")
       if (failed) await persistQueueAck(activeQueueEntry, failed)
+      try {
+        await sessionTurnStore.transition(activeQueueEntry.turnId, "failed")
+      } catch (turnError) {
+        log.warn("turn failed 状态落盘失败", turnError instanceof Error ? turnError : undefined)
+      }
     }
     log.error("sendMessage 失败", formatError(e))
     // 走全局通道：终端/日志文件留完整记录，开发期还会弹覆盖层

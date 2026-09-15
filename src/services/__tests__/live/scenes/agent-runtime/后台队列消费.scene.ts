@@ -61,6 +61,18 @@ export const 后台队列消费: SceneDef = {
         if (states.filter(state => state === "persisted").length !== 1 || states[states.length - 1] !== "accepted") {
           throw new Error(`pending 队列生命周期异常: ${states.join(",")}`)
         }
+
+        const turnStates = events
+          .filter(event => event.turnId === pendingTurnId && (event.kind === "turn_created" || event.kind === "turn_state"))
+          .map(event => (event.payload as { record?: { state?: string } }).record?.state)
+        const expectedTurnStates = ["queued", "dispatching", "running", "done"]
+        if (turnStates.join(",") !== expectedTurnStates.join(",")) {
+          throw new Error(`turn 状态链异常: ${turnStates.join(",")}`)
+        }
+        const version = Number(raw.match(/^> 版本: (\d+)/m)?.[1] ?? 0)
+        if (version < pendingEvents.length + turnStates.length) {
+          throw new Error(`session 版本未随事件推进: ${version}`)
+        }
       },
     }],
   }],

@@ -1,7 +1,7 @@
 import { installFakeProvider, fakeText } from "../../fake-provider"
 import { RuntimeQueue } from "@/services/engine/runtime"
 import { getRuntimeQueueSnapshot, initChat, recoverRuntimeQueue, resetRuntimeQueueForTest } from "@/services/agent/runner"
-import { MemoryService, queueAckEvent, queueEntryEvent, parseSessionEventDocument, serializeSessionEvent } from "@/services/agent/memory"
+import { MemoryService, queueAckEvent, queueEntryEvent, parseSessionEventDocument, serializeSessionEvent, sessionTurnStore } from "@/services/agent/memory"
 import type { SceneDef } from "../../types"
 
 let provider: ReturnType<typeof installFakeProvider> | undefined
@@ -37,6 +37,20 @@ export const 队列恢复: SceneDef = {
       queueAckEvent(inFlightEntry, { queueId: inFlightEntry.queueId, turnId: inFlightEntry.turnId, state: "dispatched" }),
       "queue dispatched",
     )
+    await sessionTurnStore.append({
+      schemaVersion: 1,
+      turnId: inFlightEntry.turnId,
+      sessionId,
+      requestId: inFlightEntry.requestId,
+      role: "user",
+      origin: "user",
+      state: "queued",
+      attempt: 1,
+      idempotencyKey: `turn:${inFlightEntry.requestId}`,
+      createdAt: inFlightEntry.enqueuedAt,
+      updatedAt: inFlightEntry.enqueuedAt,
+    })
+    await sessionTurnStore.transition(inFlightEntry.turnId, "running")
     resetRuntimeQueueForTest()
     const recovered = await recoverRuntimeQueue()
     if (recovered.requeued !== 1) throw new Error("启动扫描未重新入队 persisted 请求")
@@ -46,6 +60,12 @@ export const 队列恢复: SceneDef = {
     }
     if (getRuntimeQueueSnapshot().some(entry => entry.requestId === inFlightEntry.requestId)) {
       throw new Error("未知副作用请求不应自动重试")
+    }
+    const recoveredTurn = (await MemoryService.loadSessionEvents(sessionId))
+      .filter(event => event.turnId === inFlightEntry.turnId && event.kind === "turn_state")
+      .map(event => (event.payload as { record?: { state?: string } }).record?.state)
+    if (recoveredTurn[recoveredTurn.length - 1] !== "unknown_side_effect") {
+      throw new Error(`进行中 turn 未隔离未知副作用: ${recoveredTurn.join(",")}`)
     }
   },
   turns: [{ index: 1, description: "模拟 queued 恢复和幂等", userText: "验证 queued 恢复。", checks: [

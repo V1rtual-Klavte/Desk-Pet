@@ -164,7 +164,7 @@ src-tauri/src/
   -> Vue 展示最终文本与效果
 ```
 
-普通聊天 ingress 在调用 Pi 前先通过 RuntimeQueue 写入 `queued` session event；Pi 完成后追加 `dispatched` 与 `accepted`/`failed` ack。启动会扫描 session event：`persisted/requeued` 重新入队，`reserved/dispatched/running/waiting_tool` 写 recovery 并隔离为未知副作用。当前回合释放 AI 锁后会按优先级自动 drain 同会话的 `persisted/requeued` 消息；跨会话 AgentSlot 和 steer/follow-up 队列仍属于后续阶段。
+普通聊天 ingress 在调用 Pi 前先通过 RuntimeQueue 写入 `queued` session event；SessionTurnStore 通过 session 版本/CAS 记录 `queued → dispatching → running → done/failed`，Pi 完成后追加 `accepted`/`failed` queue ack。启动会扫描 session event：`persisted/requeued` 重新入队，进行中的 queue/turn 写 recovery 并隔离为未知副作用。当前回合释放 AI 锁后会按优先级自动 drain 同会话的 `persisted/requeued` 消息；跨会话 AgentSlot 和 steer/follow-up 队列仍属于后续阶段。
 
 `RUNTIME_DATA` 是内部元数据，不显示给用户。回复生成器负责解析、剥离、验证和持久化；不要把这些工作重新塞回 Agent Loop。
 

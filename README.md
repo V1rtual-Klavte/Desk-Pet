@@ -16,7 +16,7 @@
 - **桌面常驻** — 无边框透明窗口，角色在所有桌面和全屏 Space 悬浮
 - **AI 聊天** — Card 驱动人格，兼容 OpenAI、DeepSeek、Ollama 等 OpenAI 兼容接口
 - **会话管理** — 多会话切换、新建、关闭、归档、恢复和会话文件持久化
-- **队列化入口** — 聊天消息先将 queued 事实事件原子写入 sessions，再进入 Pi；启动会恢复安全的 queued/requeued 请求并隔离未知副作用，当前回合结束后自动消费同会话 pending 消息，终态 ack 可追踪
+- **队列化入口** — 聊天消息先将 queued 事实事件原子写入 sessions，再进入 Pi；SessionTurnStore 通过版本/CAS 记录 queued 到 done/failed，启动恢复会隔离未知副作用，当前回合结束后自动消费同会话 pending 消息
 - **工具系统** — 文件读写、Bash、系统信息、剪贴板、子代理、Skill、MCP（联网能力由 MCP 服务器提供）
 - **助手模式** — 解锁更完整的文件、命令、应用、剪贴板和任务编排能力，并经过安全策略控制
 - **Pi Agent Core** — 统一管理模型请求、顺序工具循环、超时和可选的复杂任务计划；产品状态仍由 Desk-Pet 管理
