@@ -95,7 +95,7 @@ export function buildContextKernel(
   }
 
   const systemPrompt = blocks
-    .filter(block => block.layer !== "transcript" && block.layer !== "ephemeral" && block.text)
+    .filter(block => block.layer !== "transcript" && !(block.layer === "ephemeral" && block.origin === "active") && block.text)
     .map(block => block.text)
     .join("\n\n")
 

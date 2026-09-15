@@ -166,6 +166,8 @@ src-tauri/src/
 
 普通聊天 ingress 在调用 Pi 前先通过 RuntimeQueue 写入 `queued` session event；SessionTurnStore 通过 session 版本/CAS 记录 `queued → dispatching → running → done/failed`，Pi 完成后追加 `accepted`/`failed` queue ack。启动会扫描 session event：`persisted/requeued/deferred` 重新入队，进行中的 queue/turn 写 recovery 并隔离为未知副作用。AgentSlot 按 sessionId 持有当前 Pi Agent 与单调 generation，旧异步清理不能结束新 run；会话切换会回收空闲 slot，运行中的 slot 保留到结束。忙碌期间的新输入必须先落盘，再按 Agent 阶段调用 Pi `steer`/`followUp` 并写 `steered`/`followup` 回执；暂不可投递则写 `deferred` 并保留待处理状态。
 
+Pi Runtime 在 `transformContext` 与 `provider_payload` 两个阶段发布脱敏 Prompt 快照；快照只保存输入输出 hash、层级、工具策略和请求/回合/运行代际关联，原始 Prompt 不落盘。
+
 助手模式 Plan 通过 PlanCheckpointStore 持久化 plan/step 状态和子代理工具开始/结束事件。启动恢复时，运行中的只读步骤回到 `pending`，没有完成凭证的外部副作用进入 `unknown_side_effect`，Plan 进入 `paused`，不得自动重试未知副作用。
 
 `RUNTIME_DATA` 是内部元数据，不显示给用户。回复生成器负责解析、剥离、验证和持久化；不要把这些工作重新塞回 Agent Loop。

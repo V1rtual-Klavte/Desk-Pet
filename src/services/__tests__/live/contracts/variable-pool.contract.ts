@@ -4,7 +4,7 @@ export const variablePoolContract: ModuleContract = {
   module: "variable-pool",
   sourceFiles: ["src/services/engine/pi/runtime.ts", "src/services/personality/variable-pool.ts", "src/services/personality/types.ts", "src/services/reply/generator.ts"],
   generatedAt: "2026-09-14",
-  sourceHash: "55fc6cb8aadc9e499e04d61e46fe4492997979af7e8c5c57799bdb4317c6068f",
+  sourceHash: "03d6f125525566544b9b893b066c6c5ef01ef8e9f7913d3abb068e78fc9d4801",
   coverage: [
     { id: "vp-01", feature: "系统变量计算", description: "computeSystemVariables 计算6个系统变量", why: "Prompt 注入基础", depth: "shallow", scenarios: [] },
     { id: "vp-02", feature: "变量池初始化", description: "initVariablePool 从Card variableDefs初始化", why: "Card切换和重启时正确构建", depth: "deep", scenarios: [] },

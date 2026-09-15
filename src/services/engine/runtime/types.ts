@@ -147,6 +147,7 @@ export interface ContextBlock {
 }
 
 export type PromptTransformReason =
+  | "input_normalization"
   | "profile_rewrite"
   | "memory_recall"
   | "compaction"
@@ -195,6 +196,7 @@ export interface PromptSnapshot {
   sessionId: string
   turnId: string
   runId: string
+  captureStage: "transform_context" | "provider_payload"
   model: string
   provider: string
   thinkingLevel?: string

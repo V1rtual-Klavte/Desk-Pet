@@ -30,6 +30,8 @@ export interface BuildContextInput {
   thinkingEffort: ThinkingEffort
   isActiveMessage?: boolean
   memoryProjections?: MemoryProjection[]
+  ephemeralText?: string
+  ephemeralOrigin?: "active" | "hook" | "recovery" | "plan"
 }
 
 export interface BuildContextOutput {
@@ -112,7 +114,15 @@ export function buildPrompt(
     { blockId: "memory:session", layer: "memory", source: "CANDY.md+session-summary", text: memoryPrompt, priority: 70, origin: "memory", taint: "derived" },
     ...memoryProjectionBlocks(input.memoryProjections ?? []),
     { blockId: "transcript:history", layer: "transcript", source: "session", text: "", priority: 60, origin: "assistant", taint: "derived" },
-    { blockId: "ephemeral:active", layer: "ephemeral", source: isActiveMessage ? "active_monitor" : "none", text: isActiveMessage ? input.userText : "", priority: 50, origin: isActiveMessage ? "active" : "system", taint: "derived" },
+    {
+      blockId: `ephemeral:${input.ephemeralOrigin ?? (isActiveMessage ? "active" : "none")}`,
+      layer: "ephemeral",
+      source: input.ephemeralOrigin ?? (isActiveMessage ? "active_monitor" : "none"),
+      text: input.ephemeralText ?? (isActiveMessage ? input.userText : ""),
+      priority: 50,
+      origin: input.ephemeralOrigin ?? (isActiveMessage ? "active" : "system"),
+      taint: "derived",
+    },
   ], input.recentMessages, aiConfig.contextMaxTokens)
 
   return {

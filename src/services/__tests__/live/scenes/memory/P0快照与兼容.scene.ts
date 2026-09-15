@@ -1,7 +1,7 @@
 import type { SceneDef } from "../../types"
 import { installFakeProvider, fakeText, fakeToolCall } from "../../fake-provider"
 import { captureRuntimeTrace } from "../../trace-observer"
-import { createPromptSnapshot, serializePromptSnapshot } from "@/services/engine/runtime"
+import { createPromptRewrite, createPromptSnapshot, serializePromptSnapshot } from "@/services/engine/runtime"
 import { parseSessionEventDocument, serializeSessionEvent } from "@/services/agent/memory"
 import type { SessionEvent } from "@/services/engine/runtime"
 
@@ -19,7 +19,7 @@ export const 记忆Prompt快照: SceneDef = {
     { type: "expectPromptSnapshot", run: async () => {
       const input = {
         snapshotId: "snapshot-smoke", requestId: "request-smoke", sessionId: "session-smoke", turnId: "turn-1", runId: "run-1",
-        model: "deskpet-fake", provider: "deskpet-fake",
+        model: "deskpet-fake", provider: "deskpet-fake", captureStage: "provider_payload" as const,
         systemBlocks: [{ blockId: "b1", layer: "static" as const, source: "test", text: "系统规则", priority: 1, origin: "system" as const, taint: "system" as const }],
         toolSchemas: [{ name: "system_info", schemaHash: "schema-hash", policyHash: "policy-hash" }],
         agentMessages: [{ id: "m1", role: "user", origin: "user" as const, content: "token=sk-secret-12345678" }],
@@ -30,10 +30,22 @@ export const 记忆Prompt快照: SceneDef = {
       if (!snapshot.systemBlocks[0] || snapshot.agentMessages[0]?.contentHash === undefined) throw new Error("snapshot 缺少 block/hash")
       if (snapshot.estimatedInputTokens !== 12 || snapshot.actualInputTokens !== 10 || snapshot.actualOutputTokens !== 4) throw new Error("估算 usage 与实际 usage 未区分")
       if (serialized.includes("sk-secret-12345678")) throw new Error("snapshot 泄露密钥")
+      const rewrite = await createPromptRewrite({
+        transformId: "rewrite-smoke", name: "normalize_user_input",
+        rawText: "  用户原文  ", derivedText: "用户原文",
+        reason: "input_normalization", derivedFrom: ["turn-1"],
+      })
+      const rewriteJson = JSON.stringify(rewrite)
+      if (!rewrite.inputHash || !rewrite.outputHash || rewrite.inputHash === rewrite.outputHash) throw new Error("rewrite 缺少输入输出 hash")
+      if (rewriteJson.includes("用户原文")) throw new Error("rewrite 保存了用户原文")
     } },
     { type: "expectProviderTrace", run: async () => {
       const kinds = promptTrace?.events.map(event => event.kind) ?? []
       if (!kinds.includes("provider_payload") || !kinds.includes("provider_response") || !kinds.includes("agent_end")) throw new Error(`trace 不完整: ${kinds.join(",")}`)
+      const snapshots = promptTrace?.events.filter(event => event.kind === "prompt_snapshot") ?? []
+      const stages = snapshots.map(event => event.payload.captureStage)
+      if (!stages.includes("transform_context") || !stages.includes("provider_payload")) throw new Error(`双快照不完整: ${stages.join(",")}`)
+      if (snapshots.some(event => !event.runId || !event.payload.requestId || !event.payload.turnId)) throw new Error("快照无法关联 request/turn/run")
       promptTrace?.unsubscribe()
     } },
   ] }],

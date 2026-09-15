@@ -32,13 +32,14 @@ export type {
 } from "./types"
 
 export {
+  createPromptRewrite,
   createPromptSnapshot,
   redactText,
   serializePromptSnapshot,
   sha256Text,
   stableSerialize,
 } from "./snapshot"
-export type { PromptSnapshotInput, RedactedText } from "./snapshot"
+export type { PromptRewriteInput, PromptSnapshotInput, RedactedText } from "./snapshot"
 
 export {
   createRuntimeTraceContext,

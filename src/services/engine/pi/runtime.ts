@@ -6,7 +6,7 @@ import { contentText } from "@earendil-works/pi-ai"
 import type { AgentMessage, AgentTool, StreamFn } from "@earendil-works/pi-agent-core"
 import type { AssistantMessage, Message as PiMessage, Model } from "@earendil-works/pi-ai"
 import type { Message, ThinkingEffort, ToolCallRequest } from "@/services/agent/types"
-import type { IngressEnvelope, MessageOrigin, MessageTaint, SessionEvent } from "@/services/engine/runtime"
+import type { ContextBlock, IngressEnvelope, MessageOrigin, MessageTaint, PromptSnapshot, PromptTransform, SessionEvent } from "@/services/engine/runtime"
 import { createMessageId, createToolMessage } from "@/services/agent/types"
 import { MemoryService, emptyMemoryProvider, planCheckpointStore, planStepEffectClass } from "@/services/agent/memory"
 import { buildPrompt } from "@/services/context"
@@ -30,13 +30,15 @@ import { aiConfig, generalConfig, loopConfig, planConfig, safetyConfig } from "@
 import { emit } from "@tauri-apps/api/event"
 import { getPiModel, piStream, toPiAgentThinkingLevel } from "./model-gateway"
 import { formatError } from "@/services/error"
-import { agentSlots, createRuntimeTraceContext, publishRuntimeTrace } from "@/services/engine/runtime"
+import { createLogger } from "@/services/logger"
+import { agentSlots, createPromptRewrite, createPromptSnapshot, createRuntimeTraceContext, publishRuntimeTrace } from "@/services/engine/runtime"
 import { redactText, sha256Text, stableSerialize } from "@/services/engine/runtime"
 
 const EMPTY_USAGE = {
   input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0,
   cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
 }
+const log = createLogger("PiRuntime")
 
 let lastSeenSessionStart = getSessionStart()
 
@@ -132,6 +134,10 @@ interface PiLoopInput {
   timeoutReply?: string
   onToolStart?: PiSubAgentInput["onToolStart"]
   onToolDone?: PiSubAgentInput["onToolDone"]
+  contextBlocks?: ContextBlock[]
+  promptTransforms?: PromptTransform[]
+  requestId?: string
+  turnId?: string
 }
 
 /**
@@ -170,18 +176,6 @@ export async function runPiAgentTurn(input: PiAgentTurnInput): Promise<PiAgentTu
 
   const card = getActiveCard()
   const thinkingEffort = getEffectiveThinkingEffort()
-  const memoryProjections = await emptyMemoryProvider.recall({
-    requestId: input.ingress?.requestId ?? `runtime-${input.turnId ?? turnSessionId}`,
-    sessionId: turnSessionId,
-    query: userText,
-    tokenBudget: Math.floor(aiConfig.contextMaxTokens * 0.15),
-  })
-  const context = buildPrompt(
-    { recentMessages: chatMessages, userText, unansweredCount, thinkingEffort, isActiveMessage, memoryProjections },
-    card,
-    getPoolSnapshot(),
-  )
-
   let planStepContext = ""
   let planUserText = userText
   if (generalConfig.assistantMode && planConfig.enabled) {
@@ -267,7 +261,33 @@ export async function runPiAgentTurn(input: PiAgentTurnInput): Promise<PiAgentTu
     }
   }
 
-  if (planStepContext) context.systemPrompt += `\n\n${planStepContext.slice(0, 4000)}`
+  const requestId = input.ingress?.requestId ?? `runtime-${input.turnId ?? turnSessionId}`
+  const memoryProjections = await emptyMemoryProvider.recall({
+    requestId,
+    sessionId: turnSessionId,
+    query: userText,
+    tokenBudget: Math.floor(aiConfig.contextMaxTokens * 0.15),
+  })
+  const context = buildPrompt({
+    recentMessages: chatMessages,
+    userText,
+    unansweredCount,
+    thinkingEffort,
+    isActiveMessage,
+    memoryProjections,
+    ...(planStepContext ? { ephemeralText: planStepContext.slice(0, 4000), ephemeralOrigin: "plan" as const } : {}),
+  }, card, getPoolSnapshot())
+  const promptTransforms: PromptTransform[] = []
+  if (input.ingress && input.ingress.rawText !== userText) {
+    promptTransforms.push(await createPromptRewrite({
+      transformId: `rewrite-${requestId}`,
+      name: "normalize_user_input",
+      rawText: input.ingress.rawText,
+      derivedText: userText,
+      reason: "input_normalization",
+      derivedFrom: [input.turnId ?? requestId],
+    }))
+  }
   applyEffect(PetPersonalityMiddleware.wrap("thinking"), effects)
 
   let retriesUsed = 0
@@ -289,6 +309,10 @@ export async function runPiAgentTurn(input: PiAgentTurnInput): Promise<PiAgentTu
       effects,
       toolCallHistory,
       persistToolMessages: true,
+      contextBlocks: context.blocks,
+      promptTransforms,
+      requestId,
+      turnId: input.turnId,
     })
     if (!result.error) {
       rawReply = result.reply
@@ -355,6 +379,37 @@ async function persistRuntimeEvent(sessionId: string, origin: MessageOrigin, tex
   }
 }
 
+async function persistPromptSnapshot(sessionId: string, snapshot: PromptSnapshot): Promise<void> {
+  const event: SessionEvent = {
+    schemaVersion: 1,
+    eventId: `prompt-snapshot-${snapshot.snapshotId}`,
+    sessionId,
+    turnId: snapshot.turnId,
+    kind: "prompt_snapshot",
+    origin: "assistant",
+    payload: { snapshot },
+    createdAt: snapshot.createdAt,
+    idempotencyKey: `prompt-snapshot:${snapshot.snapshotId}`,
+  }
+  await MemoryService.appendSessionEventToSession(sessionId, event)
+}
+
+function providerMessages(payload: unknown): Array<{ role: string; content?: string; toolCallId?: string }> {
+  if (!payload || typeof payload !== "object") return []
+  const messages = (payload as { messages?: unknown }).messages
+  if (!Array.isArray(messages)) return []
+  return messages.flatMap(message => {
+    if (!message || typeof message !== "object") return []
+    const record = message as Record<string, unknown>
+    if (typeof record.role !== "string") return []
+    return [{
+      role: record.role,
+      content: stableSerialize(record.content ?? ""),
+      ...(typeof record.tool_call_id === "string" ? { toolCallId: record.tool_call_id } : {}),
+    }]
+  })
+}
+
 /** Used by planning and fork/team agents. It shares the same Pi runtime, not a second loop. */
 export async function runPiSubAgent(input: PiSubAgentInput): Promise<PiSubAgentOutput> {
   const result = await runPiLoop({
@@ -384,9 +439,62 @@ async function runPiLoop(input: PiLoopInput): Promise<PiLoopOutput> {
   let toolCallsMade = 0
   const persistedMessageIds = new Set<string>()
   let stoppedAtToolLimit = false
-  const traceContext = createRuntimeTraceContext(input.sessionId)
+  const traceContext = createRuntimeTraceContext(input.sessionId, input.requestId, input.turnId)
   const runtimeProvider = piRuntimeProviderOverride
   const model = runtimeProvider?.model ?? getPiModel()
+  const snapshotTasks: Promise<void>[] = []
+  let snapshotSequence = 0
+  let latestTransformedMessages: AgentMessage[] = []
+
+  const captureSnapshot = async (
+    captureStage: PromptSnapshot["captureStage"],
+    agentMessages: AgentMessage[],
+    llmMessages: Array<{ role: string; content?: string; toolCallId?: string }>,
+  ): Promise<void> => {
+    const snapshotId = `${traceContext.runId}:${captureStage}:${++snapshotSequence}`
+    const toolSchemas = await Promise.all(input.tools.map(async tool => ({
+      name: tool.name,
+      schemaHash: await sha256Text(stableSerialize(tool.parameters)),
+      policyHash: await sha256Text(stableSerialize({ actionCategory: tool.actionCategory, safetyLevel: tool.safetyLevel })),
+    })))
+    const snapshot = await createPromptSnapshot({
+      snapshotId,
+      requestId: input.requestId ?? traceContext.runId,
+      sessionId: input.sessionId ?? "sub-agent",
+      turnId: input.turnId ?? input.requestId ?? traceContext.runId,
+      runId: traceContext.runId,
+      captureStage,
+      model: model.id,
+      provider: model.provider,
+      thinkingLevel: input.thinkingEffort,
+      systemBlocks: input.contextBlocks ?? [{
+        blockId: "static:sub-agent", layer: "static", source: "sub-agent",
+        text: input.systemPrompt, priority: 100, origin: "system", taint: "system",
+      }],
+      toolSchemas,
+      agentMessages: agentMessages.map((message, index) => ({
+        id: `agent:${index}`,
+        role: message.role,
+        content: stableSerialize(message),
+      })),
+      llmMessages,
+      transforms: input.promptTransforms ?? [],
+      estimatedInputTokens: Math.ceil(input.systemPrompt.length / 2.5) + estimateTokens(input.chatMessages),
+    })
+    publishRuntimeTrace(traceContext, "prompt_snapshot", {
+      snapshotId,
+      requestId: snapshot.requestId,
+      turnId: snapshot.turnId,
+      captureStage,
+    })
+    if (input.sessionId) {
+      try {
+        await persistPromptSnapshot(input.sessionId, snapshot)
+      } catch (error) {
+        log.warn(`PromptSnapshot 持久化失败: ${snapshot.snapshotId}`, formatError(error))
+      }
+    }
+  }
   publishRuntimeTrace(traceContext, "agent_start", {
     toolCount: input.tools.length,
     mode: input.mode,
@@ -408,14 +516,18 @@ async function runPiLoop(input: PiLoopInput): Promise<PiLoopOutput> {
     toolExecution: "parallel",
     onPayload: (payload, model) => {
       const safePayload = redactText(stableSerialize(payload))
-      void sha256Text(safePayload.text)
-        .then(payloadHash => publishRuntimeTrace(traceContext, "provider_payload", {
+      const task = sha256Text(safePayload.text)
+        .then(async payloadHash => {
+          await captureSnapshot("provider_payload", latestTransformedMessages, providerMessages(payload))
+          publishRuntimeTrace(traceContext, "provider_payload", {
           model: model.id,
           api: model.api,
           payloadHash,
           redactions: safePayload.redactions,
-        }))
+          })
+        })
         .catch(() => undefined)
+      snapshotTasks.push(task)
       return undefined
     },
     onResponse: (response, model) => {
@@ -426,8 +538,11 @@ async function runPiLoop(input: PiLoopInput): Promise<PiLoopOutput> {
         headerNames: Object.keys(response.headers).sort(),
       })
     },
-    // Current memory compaction is intentionally deferred to the next migration stage.
-    transformContext: async (messages) => messages,
+    transformContext: async (messages) => {
+      latestTransformedMessages = messages
+      await captureSnapshot("transform_context", messages, [])
+      return messages
+    },
     beforeToolCall: async ({ toolCall, args }) => {
       const tool = toolsByName.get(toolCall.name)
       if (toolCallsMade >= input.maxToolCalls) {
@@ -514,6 +629,7 @@ async function runPiLoop(input: PiLoopInput): Promise<PiLoopOutput> {
     return { reply: "", toolCallsMade, error: formatError(error) }
   } finally {
     clearTimeout(timer)
+    await Promise.allSettled(snapshotTasks)
     publishRuntimeTrace(traceContext, "agent_end", {
       toolCallsMade,
       timedOut,

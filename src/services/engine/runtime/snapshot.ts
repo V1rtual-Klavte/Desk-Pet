@@ -22,6 +22,7 @@ export interface PromptSnapshotInput {
   sessionId: string
   turnId: string
   runId: string
+  captureStage: PromptSnapshot["captureStage"]
   model: string
   provider: string
   thinkingLevel?: string
@@ -132,6 +133,7 @@ export async function createPromptSnapshot(input: PromptSnapshotInput): Promise<
     sessionId: input.sessionId,
     turnId: input.turnId,
     runId: input.runId,
+    captureStage: input.captureStage,
     model: model.text,
     provider: provider.text,
     ...(input.thinkingLevel ? { thinkingLevel: input.thinkingLevel } : {}),
@@ -152,4 +154,26 @@ export async function createPromptSnapshot(input: PromptSnapshotInput): Promise<
 /** Serialize only the already-redacted snapshot; never pass a raw payload here. */
 export function serializePromptSnapshot(snapshot: PromptSnapshot): string {
   return stableSerialize(snapshot)
+}
+
+export interface PromptRewriteInput {
+  transformId: string
+  name: string
+  rawText: string
+  derivedText: string
+  reason: PromptTransform["reason"]
+  derivedFrom: string[]
+}
+
+/** Describe a derived prompt value without mutating or storing its source text. */
+export async function createPromptRewrite(input: PromptRewriteInput): Promise<PromptTransform> {
+  return {
+    transformId: input.transformId,
+    name: input.name,
+    inputHash: await sha256Text(stableSerialize(redactText(input.rawText).text)),
+    outputHash: await sha256Text(stableSerialize(redactText(input.derivedText).text)),
+    reason: input.reason,
+    derivedFrom: [...input.derivedFrom],
+    createdAt: Date.now(),
+  }
 }
