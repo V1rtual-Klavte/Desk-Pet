@@ -5,7 +5,7 @@
 import { type Ref } from "vue"
 import { listen } from "@tauri-apps/api/event"
 import { pushAssistantMessage, incrementUnanswered } from "@/services/agent"
-import { checkWindowTiming } from "./monitor"
+import { checkWindowTiming, processTrigger } from "./monitor"
 import { generateActiveMessage } from "@/services/agent"
 import { playNotificationByBoundary } from "@/services/audio/registry"
 import { windowMonitorConfig } from "@/services/config"
@@ -30,6 +30,11 @@ export async function initWindowListener(
       const { title, content, is_pet_visible } = event.payload
       log.debug("窗口:", (title || "(空)").substring(0, 60))
       if (!checkWindowTiming(title)) return
+
+      // 放行之后必须立刻进入冷却并暂停窗口监控：这一步此前只在零调用者的
+      // processTrigger 里，于是配置的冷却时长、pause_monitor / resume_monitor
+      // 与 pauseExtraMs 全都从未生效过。
+      processTrigger({ source: "ai", message: content || title })
 
       generateActiveMessage({ title, content: content || title, timestamp: Date.now() }).then((reply) => {
         if (reply) {

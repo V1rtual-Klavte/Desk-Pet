@@ -118,12 +118,3 @@ export async function registerAssistantTools(): Promise<void> {
   log.info("助手模式工具已注册, 总计:", toolCount(), "个")
 }
 
-/** 注销助手模式工具 */
-export function unregisterAssistantTools(): void {
-  for (const [id, tool] of tools) {
-    if (tool.mode === "assistant") {
-      tools.delete(id)
-    }
-  }
-  log.info("助手模式工具已注销, 剩余:", toolCount(), "个")
-}

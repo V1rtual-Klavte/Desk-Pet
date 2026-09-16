@@ -33,7 +33,8 @@ export async function generateActiveMessage(ctx: PageContext): Promise<string | 
   if (isCoolingDown()) { log.debug("全局冷却中，跳过"); return null }
 
   const contentHash = hash(ctx.title + ctx.content.substring(0, 200))
-  if (contentHash === lastContentHash && Date.now() - lastTriggerTime < windowMonitorConfig.samePageCooldownSeconds * 1000) {
+  // 同页冷却也是毫秒，直接比较；原写法把 7800 当秒再 ×1000，实际是 130 分钟
+  if (contentHash === lastContentHash && Date.now() - lastTriggerTime < windowMonitorConfig.samePageCooldownMs) {
     log.debug("同页面冷却中")
     return null
   }

@@ -29,7 +29,7 @@ export { evaluateComplexity, generatePlan, executePlan, formatStepResults } from
 export type { PlanStep, PlanResult, ComplexityResult, PlanExecutionResult } from "./planner"
 
 // ── Plan 确认桥接 ──
-export { resolvePlanConfirm, resolvePlanStepDecision } from "./plan-confirmation"
+export { abortRunningPlan, bindRunningPlan, clearRunningPlan, notifyPlanEnd, resolvePlanConfirm, resolvePlanStepDecision } from "./plan-confirmation"
 
 // ── Runtime protocol vocabulary ──
 export type {

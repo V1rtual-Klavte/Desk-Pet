@@ -2,7 +2,7 @@
 import { ref, onMounted, onUnmounted } from "vue"
 import { listen } from "@tauri-apps/api/event"
 import type { PlanStep } from "@/services/engine"
-import { resolvePlanConfirm, resolvePlanStepDecision } from "@/services/engine"
+import { abortRunningPlan, resolvePlanConfirm, resolvePlanStepDecision } from "@/services/engine"
 
 interface StepStatus {
   step: PlanStep
@@ -44,7 +44,13 @@ onMounted(async () => {
       resolvePlanStepDecision("continue")
     },
   )
-  unlistens = [u1, u2, u3]
+  const u4 = await listen<{ reason: string }>("deskpet-plan-end", () => {
+    // 计划结束（跑完 / 失败 / 取消）都要收起面板：原先 visible 只在两个按钮里
+    // 被置回 false，计划跑完之后面板会一直挂在聊天区。
+    visible.value = false
+    executing.value = false
+  })
+  unlistens = [u1, u2, u3, u4]
 })
 
 onUnmounted(() => unlistens.forEach(fn => fn()))
@@ -52,7 +58,15 @@ onUnmounted(() => unlistens.forEach(fn => fn()))
 function confirmAutoAll() { resolvePlanConfirm({ confirmed: true, mode: "auto" }); executing.value = true }
 function confirmStepByStep() { resolvePlanConfirm({ confirmed: true, mode: "stepByStep" }); executing.value = true }
 function cancel() { resolvePlanConfirm({ confirmed: false, mode: "auto" }); visible.value = false }
-function abortExecution() { resolvePlanConfirm({ confirmed: false, mode: "auto" }); visible.value = false }
+function abortExecution() {
+  // 执行期终止：走真正的中断通道。原先这里调 resolvePlanConfirm，而确认
+  // 早在「全部执行/逐步确认」时就被消费掉了，resolver 已经是 null ——
+  // 按钮只把面板藏起来，计划照跑。
+  if (abortRunningPlan()) return
+  // 还没进入执行（仍在确认阶段）：终止等价于取消这次计划
+  resolvePlanConfirm({ confirmed: false, mode: "auto" })
+  visible.value = false
+}
 </script>
 
 <template>

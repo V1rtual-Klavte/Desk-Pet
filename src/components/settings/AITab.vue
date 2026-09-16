@@ -38,8 +38,9 @@ const sessionTrustEnabled = ref(safetyConfig.sessionTrustEnabled);
 const wmEnabled = ref(windowMonitorConfig.enabled);
 const wmStaySeconds = ref(windowMonitorConfig.staySeconds);
 const wmSettleMs = ref(windowMonitorConfig.settleMs);
-const wmCooldownSec = ref(windowMonitorConfig.cooldownSeconds);
-const wmSamePageCool = ref(windowMonitorConfig.samePageCooldownSeconds);
+// 配置存的是毫秒（`cooldownMs`），面板让人按秒填，换算在 SettingsPanel 的 setOverrides
+const wmCooldownSec = ref(Math.round(windowMonitorConfig.cooldownMs / 1000));
+const wmSamePageCool = ref(Math.round(windowMonitorConfig.samePageCooldownMs / 1000));
 
 // ── 并发锁 ──
 const lockTimeout = ref(aiLockConfig.safetyTimeoutMs);

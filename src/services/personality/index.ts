@@ -6,7 +6,7 @@
 export type { PersonalityCard, PersonalityState, CardSections, CardVariableDef, VariableState, VariableScope, VariableType, VariableUpdateBy, VariableResetPolicy, VariablePrimitive } from "./types"
 
 // ── 加载器 ──
-export { getCards, getCard, initCards, importUserCard, saveUserCard, mergeUserCards } from "./loader"
+export { getCards, getCard, initCards, importUserCard, saveUserCard } from "./loader"
 
 // ── 注册表 ──
 export {
@@ -21,7 +21,7 @@ export { PetPersonalityMiddleware } from "./middleware"
 export type { AgentStage, StageContext, PersonalityEffect } from "./middleware"
 
 // ── 人格运行时模块 ──
-export { initVariablePool, refreshVariablePool, getPoolSnapshot, formatPoolForPrompt, batchWriteVars, saveVariablePoolAsync, savePoolToDisk, savePoolToDiskStrict, loadCardVars, readSystemVars, updateInteractionVar, setSessionVars, applyResetPolicies, computeSystemVariables, destroyPool, setSessionStart, getSessionStart, getVariableRegistry } from "./variable-pool"
+export { initVariablePool, refreshVariablePool, getPoolSnapshot, formatPoolForPrompt, batchWriteVars, saveVariablePoolAsync, savePoolToDisk, savePoolToDiskStrict, loadCardVars, updateInteractionVar, setSessionVars, applyResetPolicies, computeSystemVariables, destroyPool, setSessionStart, getSessionStart, getVariableRegistry } from "./variable-pool"
 export type { VariablePool, VariablePoolRuntimeState } from "./variable-pool"
 
 export { parseMustRules, formatAllRules } from "./must-rules"

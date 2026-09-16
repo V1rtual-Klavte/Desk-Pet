@@ -187,6 +187,8 @@ export interface ExecutePlanConfig {
   stepThinkingEffort: ThinkingEffort
   maxSteps: number
   onStepFailure: "continue" | "abort" | "ask"
+  /** 外部终止通道：每一步开始前检查，已中止则不再执行剩余步骤 */
+  signal?: AbortSignal
 }
 
 export async function executePlan(
@@ -203,6 +205,13 @@ export async function executePlan(
   const steps = plan.steps.slice(0, config.maxSteps)
 
   for (const step of steps) {
+    // 外部终止（用户在 Plan 面板点「终止执行」）：每一步开始前检查。
+    // 不打断正在跑的那一步，但不会继续往下走 —— 没有这个检查的话终止按钮就是摆设。
+    if (config.signal?.aborted) {
+      log.info("计划被外部终止，剩余步骤不再执行")
+      overallSuccess = false
+      break
+    }
     await callbacks.onStepStart(step)
     const stepStart = Date.now()
 

@@ -19,11 +19,10 @@ use tauri::{WebviewUrl, WebviewWindowBuilder};
 use crate::commands::{
     app_open, bash_cancel, bash_exec, clipboard_read, clipboard_write, close_windows_sim,
     compute_popup_position, delete_session_file, export_profile_zip, file_canonical_path,
-    file_delete, file_exists, file_info, file_list, file_read, file_read_binary, file_write,
-    focus_main, get_cursor_position, get_memory_file, get_session_file, init_memory_files,
+    file_exists, file_info, file_list, file_read, file_read_binary, file_write,
+    get_cursor_position, init_memory_files,
     list_profile_files, list_profiles, list_session_files, session_file_write_atomic, log_messages, mcp_kill, mcp_send,
-    mcp_spawn, open_devtools, open_windows_sim, pause_monitor, personality_file_delete,
-    personality_file_list, personality_file_read, personality_file_write, profile_asset_base,
+    mcp_spawn, open_devtools, open_windows_sim, pause_monitor, personality_file_list, personality_file_read, personality_file_write, profile_asset_base,
     profile_clone, profile_delete, profile_file_read, profile_file_write, report_frontend_error,
     restore_default_resources, resume_monitor, set_log_config, set_monitor_config, skill_delete,
     spawn_cursor_tracker, system_info, BashPool, McpPool,
@@ -39,31 +38,6 @@ use crate::paths::AppPaths;
 // ==========================================
 // AppPaths 统一路径 commands
 // ==========================================
-
-#[tauri::command]
-fn get_data_dir(paths: tauri::State<AppPaths>) -> String {
-    paths.data_root.to_string_lossy().to_string()
-}
-
-#[tauri::command]
-fn get_memory_dir(paths: tauri::State<AppPaths>) -> String {
-    paths.memory.to_string_lossy().to_string()
-}
-
-#[tauri::command]
-fn get_sessions_dir(paths: tauri::State<AppPaths>) -> String {
-    paths.sessions.to_string_lossy().to_string()
-}
-
-#[tauri::command]
-fn get_personality_dir(paths: tauri::State<AppPaths>) -> String {
-    paths.personality.to_string_lossy().to_string()
-}
-
-#[tauri::command]
-fn get_profiles_dir(paths: tauri::State<AppPaths>) -> String {
-    paths.profiles.to_string_lossy().to_string()
-}
 
 #[derive(serde::Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -151,15 +125,6 @@ fn read_session_ui_state(paths: tauri::State<AppPaths>) -> AppResult<Option<Stri
 fn write_session_ui_state(paths: tauri::State<AppPaths>, content: String) -> AppResult<()> {
     let file = paths.sessions.join("index.json");
     std::fs::write(file, content).map_err(|e| AppError::Io(format!("写入会话 UI 状态失败: {e}")))
-}
-
-#[tauri::command]
-fn get_cards_dir(paths: tauri::State<AppPaths>) -> String {
-    paths
-        .personality
-        .join("cards")
-        .to_string_lossy()
-        .to_string()
 }
 
 #[derive(serde::Serialize)]
@@ -260,7 +225,6 @@ pub fn run() {
     let monitor_state_clone = Arc::clone(&monitor_state);
 
     tauri::Builder::default()
-        .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_global_shortcut::Builder::new().build())
         .plugin(tauri_plugin_dialog::init())
         .manage(monitor_state)
@@ -406,7 +370,6 @@ pub fn run() {
             log_messages,
             set_log_config,
             report_frontend_error,
-            focus_main,
             open_devtools,
             enhance_settings_window,
             enhance_layer_editor_window,
@@ -428,16 +391,9 @@ pub fn run() {
             mcp_spawn,
             mcp_send,
             mcp_kill,
-            get_data_dir,
-            get_memory_dir,
-            get_sessions_dir,
-            get_memory_file,
-            get_session_file,
             init_memory_files,
             list_session_files,
             delete_session_file,
-            file_delete,
-            get_profiles_dir,
             get_runtime_paths,
             resolve_runtime_path,
             read_runtime_config,
@@ -454,15 +410,12 @@ pub fn run() {
             list_profile_files,
             restore_default_resources,
             skill_delete,
-            get_personality_dir,
-            get_cards_dir,
             get_live_test_options,
             live_test_complete,
             personality_file_read,
             personality_file_write,
             personality_file_list,
-            personality_file_delete,
-        ])
+            ])
         .build(tauri::generate_context!())
         .unwrap_or_else(|e| {
             // 不做裸 panic：给出可读原因并保留退出码

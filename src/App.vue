@@ -95,10 +95,6 @@ function onDividerMousedown(e: MouseEvent) {
   document.addEventListener("mouseup", onUp);
 }
 
-function onChatSend(_text: string) {
-  // Slash 命令和表情切换现在由 ChatPanel 内部处理
-}
-
 async function onSessionSwitch(session: { id: string; name: string }) {
   log.info("切换到会话:", session.id, session.name)
   try {
@@ -696,7 +692,7 @@ onUnmounted(() => {
           @delete-file="onDeleteFile"
           @restore-session="onRestoreSession"
         />
-        <ChatPanel v-show="showChat" ref="chatRef" @send="onChatSend" @request-popup="onRequestPopup" />
+        <ChatPanel v-show="showChat" ref="chatRef" @request-popup="onRequestPopup" />
       </div>
     </div>
 
@@ -711,6 +707,10 @@ onUnmounted(() => {
         <button class="ctx-item" @click="openDevTools">🔧 控制台</button>
       </div>
     </Transition>
+
+    <!-- services/dialog 的宿主：不挂它的话，主窗口里任何 showDialog/confirmDialog
+         都会永远挂起（Promise 没有人 resolve）。SettingsPanel 那边另挂一份。 -->
+    <AppDialog />
   </div>
 </template>
 

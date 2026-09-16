@@ -39,17 +39,6 @@ pub fn report_frontend_error(source: String, message: String, stack: String) {
 }
 
 /// 聚焦主窗口（通知卡片点击时调用）
-#[tauri::command]
-pub fn focus_main(app: tauri::AppHandle) -> AppResult<()> {
-    if let Some(w) = app.get_webview_window("main") {
-        let _ = w.show();
-        let _ = w.unminimize();
-        let _ = w.set_focus();
-        rust_info!("通知点击 → 聚焦主窗口");
-    }
-    Ok(())
-}
-
 // ═══════════════════════════════════════════════════════════════
 // macOS 系统通知 — 已移除
 // 尝试过 tauri-plugin-notification（需代码签名）和 osascript

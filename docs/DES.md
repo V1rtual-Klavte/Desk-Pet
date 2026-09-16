@@ -136,7 +136,7 @@ whenText: 当用户长时间未回复时，语气可以更在意对方，但不�
 
 ### 2.8 系统通知（已移除）
 
-macOS 未签名构建下系统通知无法实现：tauri-plugin-notification 需代码签名，osascript `display notification` 在 Tauri WebView 沙箱下无法触发通知中心。代码中留有注释占位（`listener.ts`、`commands/logging.rs`），后续若有新方案可重新启用。
+macOS 未签名构建下系统通知无法实现：通知插件需代码签名，osascript `display notification` 在 Tauri WebView 沙箱下也无法触发通知中心。**`tauri-plugin-notification` 已整体移除**（Cargo / lib.rs / capabilities / package.json 四处注册，但前端零调用），后续若有新方案再引入。
 
 ### 2.9 设置页（独立窗口）
 
@@ -348,8 +348,8 @@ Rust 后台线程 ──(轮询间隔)──→ Win32/osascript 获取前台窗�
 
 | 机制 | 说明 |
 |------|------|
-| **全局冷却** | 触发一次后，`cooldownSeconds`（默认10s）内不再触发 |
-| **同页面冷却** | 同一页面 `samePageCooldownSeconds`（默认60s）内不重复触发 |
+| **全局冷却** | 触发一次后，`cooldownMs`（毫秒，默认 5000）内不再触发；同时暂停窗口监控 |
+| **同页面冷却** | 同一页面内容重复出现时，`samePageCooldownMs`（毫秒，默认 7800）内不再触发 |
 | **AI 并发锁** | 一次只能有一个 AI 请求（sendMessage + generateActiveMessage 共用），带 `safetyTimeoutMs`（30s）安全超时 |
 | **窗口防抖** | 窗口切换后 `settleMs`（2s）内不判定为新窗口停留 |
 | **触发后重置** | 主动消息触发后重置停留计时 + 清空当前窗口标题，防止冷却结束立即再次触发 |

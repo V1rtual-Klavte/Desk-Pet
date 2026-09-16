@@ -3,7 +3,7 @@
 // ==========================================
 
 import { invoke } from "@tauri-apps/api/core";
-import { isCoolingDown, isAIGenerating, triggerCooldown, setCooldown, getCooldownSeconds } from "@/services/cooldown";
+import { isCoolingDown, isAIGenerating, triggerCooldown, setCooldown, getCooldownMs } from "@/services/cooldown";
 import { windowMonitorConfig } from "@/services/config";
 import { createLogger } from "@/services/logger";
 
@@ -15,7 +15,7 @@ let pendingTitle = "";
 let pendingTime = 0;
 let cooldownTimer: ReturnType<typeof setTimeout> | null = null;
 
-setCooldown(windowMonitorConfig.cooldownSeconds);
+setCooldown(windowMonitorConfig.cooldownMs);
 
 export interface TriggerResult {
   source: "regex" | "ai";
@@ -26,12 +26,9 @@ export function checkWindowTiming(title: string): boolean {
   // 每次运行时读取最新配置值（防止模块级 const 缓存在覆盖值更新后不生效）
   const staySeconds = windowMonitorConfig.staySeconds;
   const settleMs = windowMonitorConfig.settleMs;
-  const cooldownSeconds = windowMonitorConfig.cooldownSeconds;
-  const samePageCooldownSeconds = windowMonitorConfig.samePageCooldownSeconds;
-  const resumeExtraMs = windowMonitorConfig.resumeExtraMs;
 
-  // 更新全局冷却时长为最新配置值
-  setCooldown(cooldownSeconds);
+  // 更新全局冷却时长为最新配置值（毫秒）
+  setCooldown(windowMonitorConfig.cooldownMs);
 
   if (title !== currentWindowTitle) {
     if (title !== pendingTitle) { pendingTitle = title; pendingTime = Date.now(); return false; }
@@ -51,6 +48,13 @@ export function checkWindowTiming(title: string): boolean {
   return true;
 }
 
+/**
+ * 一次主动搭话之后进入冷却，并把窗口监控暂停到冷却结束。
+ *
+ * `listener.ts` 在 `checkWindowTiming` 放行之后必须调用它 —— 否则
+ * 「全局冷却」与 `pause_monitor` / `resume_monitor` 都不会发生，
+ * `general.desktop.pauseExtraMs` 也没有任何效果。
+ */
 export function processTrigger(result: TriggerResult): void {
   // 触发后重置停留计时 + 当前窗口标题，防止冷却结束立即再次触发同一页面
   // reset currentWindowTitle → 同标题会走 settle 流程重新计时
@@ -58,11 +62,11 @@ export function processTrigger(result: TriggerResult): void {
   currentWindowTitle = "";
   pendingTitle = "";
   triggerCooldown();
-  const s = getCooldownSeconds();
+  const cooldownMs = getCooldownMs();
   const resumeExtraMs = windowMonitorConfig.resumeExtraMs;
-  invoke("pause_monitor", { durationMs: s * 1000 }).catch(() => {});
-  cooldownTimer = setTimeout(() => invoke("resume_monitor").catch(() => {}), s * 1000 + resumeExtraMs);
-  log.info("source:", result.source, "→ 全局冷却:", s + "s");
+  invoke("pause_monitor", { durationMs: cooldownMs }).catch(() => {});
+  cooldownTimer = setTimeout(() => invoke("resume_monitor").catch(() => {}), cooldownMs + resumeExtraMs);
+  log.info("source:", result.source, "→ 全局冷却:", cooldownMs + "ms");
 }
 
 /** 停止监控并清理定时器 */

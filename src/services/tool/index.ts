@@ -20,8 +20,7 @@ export {
   toolCount,
   registerDefaultTools,
   registerAssistantTools,
-  unregisterAssistantTools,
-} from "./registry"
+  } from "./registry"
 
 // ── 路由器 ──
 export { executeTool } from "./router"

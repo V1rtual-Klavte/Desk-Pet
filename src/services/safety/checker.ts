@@ -299,12 +299,3 @@ export function checkSafety(
   }
 }
 
-/** 批量检查多个工具调用 */
-export function checkAll(
-  tools: { tool: ToolDef; params: Record<string, unknown> }[],
-  ctx: ToolContext,
-): { allowed: boolean; results: SafetyCheckResult[] } {
-  const results = tools.map(({ tool, params }) => checkSafety(tool, params, ctx))
-  const allAllowed = results.every(r => r.allowed)
-  return { allowed: allAllowed, results }
-}

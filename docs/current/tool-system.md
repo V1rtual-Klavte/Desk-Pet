@@ -51,7 +51,7 @@ src-tauri/resources/defaults/skills/{name}/SKILL.md   ← 随包种子，只读
 
 - 名称必须是 kebab-case（`^[a-z0-9]+(-[a-z0-9]+)*$`），且与目录名一致；`description` 必填。不合规的 Skill 会被丢弃并记 warn。
 - `data_root/skills/` 与其他运行时资源同一套所有权模型：种子只在首次启动复制一次，之后应用不再覆盖。误删或想同步种子更新，用设置页的「恢复默认资源」。
-- 新增/覆盖 Skill 直接写 `data_root/skills/{name}/SKILL.md`；删除走 `skill_delete`（通用 `file_delete` 只允许 memory/ 与 sessions/）。不再有内置 / 用户之分。
+- 新增/覆盖 Skill 直接写 `data_root/skills/{name}/SKILL.md`；删除走 `skill_delete`。不再有内置 / 用户之分。
 - 清单只在 `toolsConfig.skillEnabled` 为真、且本轮有工具可用时才注入 —— 模型要靠 `read` 才能加载正文。
 - Skill 不携带自己的安全级别。它调用的每个工具各自走 `checkSafety`，权限落在具体操作上。
 
@@ -117,7 +117,7 @@ MCP server 由 Rust 以 stdio 子进程方式托管（`commands/mcp_bridge.rs`�
 - 会话信任的粒度是「工具 + 本次参数」（`trustSignature`），但 `pi-write` 的签名包含完整正文，所以同一文件的不同内容每次都算新调用，需要各自确认。
 - `bash_exec` 的 spill 文件保留最近 10 份后自动淘汰，没有跨会话的持久保留策略。
 - Provider 网络只校验协议、超时和响应体上限，没有重定向次数与私网/环回 IP 防护。
-- `tools.bash.enabled` 与 `tools.file.enabled` 是死配置：`config.ts` 的 `bashEnabled` / `fileEnabled` getter 没有任何消费者，设置页的开关不改变行为。
+
 
 已修复（2026-09-15 复核）：
 

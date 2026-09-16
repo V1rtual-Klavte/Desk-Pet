@@ -12,7 +12,6 @@ crate-type = ["rlib"]
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
-tauri-plugin-notification = "2"
 tauri-plugin-global-shortcut = "2"
 # 原生「另存为」对话框 —— 仅 Rust 侧使用，前端经自有命令调用
 tauri-plugin-dialog = "2"

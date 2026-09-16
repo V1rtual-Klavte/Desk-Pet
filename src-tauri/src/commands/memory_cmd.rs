@@ -23,37 +23,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use tauri::command;
 
 /// 获取 memory/ 目录下指定文件的完整路径。
-#[command]
-pub fn get_memory_file(paths: tauri::State<AppPaths>, filename: String) -> AppResult<String> {
-    let safe_name = PathBuf::from(&filename)
-        .file_name()
-        .map(|n| n.to_string_lossy().to_string())
-        .ok_or_else(|| format!("无效文件名: {}", filename))?;
-
-    if safe_name.contains("..") || safe_name.contains('/') || safe_name.contains('\\') {
-        return err(format!("非法文件名: {}", safe_name));
-    }
-
-    let file_path = paths.memory.join(&safe_name);
-    Ok(file_path.to_string_lossy().to_string())
-}
-
 /// 获取 sessions/ 目录下指定文件的完整路径。
-#[command]
-pub fn get_session_file(paths: tauri::State<AppPaths>, filename: String) -> AppResult<String> {
-    let safe_name = PathBuf::from(&filename)
-        .file_name()
-        .map(|n| n.to_string_lossy().to_string())
-        .ok_or_else(|| format!("无效文件名: {}", filename))?;
-
-    if safe_name.contains("..") || safe_name.contains('/') || safe_name.contains('\\') {
-        return err(format!("非法文件名: {}", safe_name));
-    }
-
-    let file_path = paths.sessions.join(&safe_name);
-    Ok(file_path.to_string_lossy().to_string())
-}
-
 /// ★ 列出 sessions/ 目录下所有 .md 文件（按名称倒序）
 #[command]
 pub fn list_session_files(paths: tauri::State<AppPaths>) -> AppResult<Vec<String>> {
@@ -133,22 +103,6 @@ pub fn delete_session_file(paths: tauri::State<AppPaths>, filename: String) -> A
 }
 
 /// ★ 删除任意文件（用于 file_delete 工具 + 重命名清理）
-#[command]
-pub fn file_delete(paths: tauri::State<AppPaths>, path: String) -> AppResult<()> {
-    let p = PathBuf::from(&path);
-    if !p.exists() {
-        return Ok(()); // 文件不存在不算错误
-    }
-    // 路径穿越防护：校验在 memory/ 或 sessions/ 内
-    let resolved = p.canonicalize().map_err(|e| format!("路径解析失败: {e}"))?;
-    let in_memory = resolved.starts_with(&paths.memory);
-    let in_sessions = resolved.starts_with(&paths.sessions);
-    if !in_memory && !in_sessions {
-        return Err(AppError::PathEscape);
-    }
-    fs::remove_file(&p).map_err(|e| AppError::Io(format!("删除失败: {}", e)))
-}
-
 /// 初始化 memory/ 和 sessions/ 目录结构及模板文件。
 /// ★ 使用 AppPaths 统一路径管理。
 /// 模板使用新的 MEMORY.md 双块结构。

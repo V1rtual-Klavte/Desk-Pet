@@ -305,14 +305,6 @@ export async function initCards(): Promise<void> {
 
 export function getCards(): PersonalityCard[] { return cards }
 
-export function mergeUserCards(userCards: PersonalityCard[]): PersonalityCard[] {
-  for (const uc of userCards) {
-    const idx = cards.findIndex(c => c.id === uc.id)
-    if (idx >= 0) cards[idx] = uc; else cards.push(uc)
-  }
-  return cards
-}
-
 export function getCard(id: string): PersonalityCard | undefined {
   return cards.find(c => c.id === id)
 }

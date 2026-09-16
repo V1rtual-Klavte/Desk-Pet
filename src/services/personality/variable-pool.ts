@@ -465,18 +465,6 @@ export async function loadCardVars(
 }
 
 /** 读取 vars.json（system snapshot, 给设置页等使用） */
-export async function readSystemVars(): Promise<Record<string, number | string | boolean> | null> {
-  try {
-    const raw = await readFile("vars.json")
-    if (!raw) return null
-    const data = JSON.parse(new TextDecoder().decode(raw)) as PersistedSystemVars
-    if (data.schemaVersion >= 1) return data.system
-    return null
-  } catch {
-    return null
-  }
-}
-
 // ── 批量写入 (RUNTIME_DATA 解析后调用) ──
 
 function coerceValue(raw: string, def: CardVariableDef): number | string | boolean | undefined {

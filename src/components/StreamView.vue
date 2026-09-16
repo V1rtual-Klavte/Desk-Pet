@@ -81,21 +81,32 @@ function onImgLoad(e: Event) {
 
 // ── ☆ 图层重载：启动时 + 定期检查 dirty flag ──
 let _reloadRetryId: ReturnType<typeof setTimeout> | null = null;
+let _reloadRetries = 0;
+
+/** 重试上限：Profile 一直不就绪时不能无限刷日志，正常切换有事件驱动 */
+const MAX_PROFILE_RETRIES = 20;
 
 function reloadEffects() {
   const p = getActiveProfile();
   if (!p) {
     // Profile 尚未加载（冷启动时序：StreamView onMounted 早于 App initProfiles）。
     // 延迟重试兜底；正常切换由 deskpet-profile-updated 事件完成同步。
-    if (!_reloadRetryId) {
-      _reloadRetryId = setTimeout(() => {
-        _reloadRetryId = null;
-        reloadEffects();
-      }, 500);
-      log.info("Profile 未就绪，500ms 后重试效果加载...");
+    if (_reloadRetryId) return;
+    if (_reloadRetries >= MAX_PROFILE_RETRIES) {
+      // 原实现无上限，Profile 永不就绪就会一直刷日志。放弃重试并留一条明确记录，
+      // 之后仍可靠 profile-updated 事件恢复。
+      log.warn(`Profile 持续未就绪，已放弃重试（${MAX_PROFILE_RETRIES} 次）`);
+      return;
     }
+    _reloadRetries++;
+    _reloadRetryId = setTimeout(() => {
+      _reloadRetryId = null;
+      reloadEffects();
+    }, 500);
+    log.info(`Profile 未就绪，500ms 后重试效果加载... (${_reloadRetries}/${MAX_PROFILE_RETRIES})`);
     return;
   }
+  _reloadRetries = 0;
 
   effectMode.value = userConfig.effectMode;
   parallaxConfig.value.intensity = userConfig.parallaxIntensity;

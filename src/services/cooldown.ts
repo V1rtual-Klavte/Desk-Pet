@@ -8,19 +8,25 @@ import { createLogger } from "@/services/logger";
 const log = createLogger("Cool");
 
 /** 冷却时长（毫秒），由外部配置 */
-let cooldownMs = windowMonitorConfig.defaultCooldownMs;
+let cooldownMs = windowMonitorConfig.cooldownMs;
 
 /** 全局冷却截止时间戳 */
 let globalCooldownUntil = 0;
 
-/** 设置冷却时长 */
-export function setCooldown(seconds: number): void {
-  cooldownMs = seconds * 1000;
+/**
+ * 设置冷却时长（**毫秒**）。
+ *
+ * 参数名曾经是 `seconds` 并在内部乘 1000，而唯一的调用方传的却是
+ * `cooldownSeconds: 5000` 这个**毫秒**原值 —— 「5 秒」被静默当成 5000 秒。
+ * 单位写进入参名之后，这类错配在调用点就能看出来。
+ */
+export function setCooldown(ms: number): void {
+  cooldownMs = ms;
 }
 
-/** 获取当前冷却时长（秒） */
-export function getCooldownSeconds(): number {
-  return cooldownMs / 1000;
+/** 获取当前冷却时长（毫秒） */
+export function getCooldownMs(): number {
+  return cooldownMs;
 }
 
 /** 是否正在冷却 */
@@ -71,7 +77,7 @@ export function setAIGenerating(v: boolean): void {
 if (typeof window !== "undefined") {
   (window as any).__cooldown = {
     isCoolingDown, remainingSeconds, triggerCooldown, resetCooldown,
-    getCooldownSeconds, setCooldown,
+    getCooldownMs, setCooldown,
     isAIGenerating, setAIGenerating,  // 调试锁状态
   };
   log.info("__cooldown / AI 锁 已就绪");

@@ -67,24 +67,6 @@ pub fn personality_file_list(
 }
 
 /// 删除 personality/ 或 cards/ 下的文件（仅 runtime）
-#[tauri::command]
-pub fn personality_file_delete(path: String, paths: tauri::State<AppPaths>) -> AppResult<()> {
-    let file_path = resolve_personality_path(&path, "write", &paths)?;
-    if !file_path.exists() {
-        return Ok(());
-    }
-    if file_path.is_dir() {
-        return Err(AppError::PathEscape);
-    }
-
-    // write 模式下 resolve 已校验父目录在 personality 内，此处再做文件级二次校验
-    if file_path.exists() {
-        AppPaths::validate_path(&file_path, &paths.personality)?;
-    }
-
-    fs::remove_file(&file_path).map_err(|e| AppError::Io(format!("删除失败: {e}")))
-}
-
 // ==========================================
 // 路径解析（内部）
 // ==========================================

@@ -4,7 +4,6 @@
 
 export {
   checkSafety,
-  checkAll,
   trustToolInSession,
   isToolTrusted,
   resetSessionTrust,

@@ -17,6 +17,5 @@ export {
   reportError,
   installGlobalHandlers,
   installVueErrorHandler,
-  dismissErrors,
   type ReportOptions,
 } from "./global"

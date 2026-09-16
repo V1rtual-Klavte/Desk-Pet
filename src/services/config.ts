@@ -9,7 +9,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { dump as dumpYaml, load as loadYaml } from "js-yaml";
 import { DEFAULT_PROFILE } from "@/services/paths";
 import { createLogger, LEVELS, LEVEL_ORDER, setLogLevel, type Level } from "@/services/logger";
-import { formatError, reportError } from "@/services/error";
+import { reportError } from "@/services/error";
 
 const log = createLogger("Config");
 
@@ -74,11 +74,9 @@ interface Config {
     contextMaxTokens: number
     thinking: {
       effort: string
-      budget: { low: number; medium: number; high: number }
     }
     personality: {
       active: string
-      cards: { id: string; name: string; path: string; description: string }[]
     }
     loop: {
       maxRetry: number
@@ -106,16 +104,15 @@ interface Config {
       enabled: boolean
       staySeconds: number
       settleMs: number
-      cooldownSeconds: number
-      samePageCooldownSeconds: number
-      defaultCooldownMs: number
+      cooldownMs: number
+      samePageCooldownMs: number
       resumeExtraMs: number
     }
     safety: { mode: string; sessionTrustEnabled: boolean }
   }
   tools: {
-    bash: { enabled: boolean; whitelist: string[] }
-    file: { enabled: boolean; writeEnabled: boolean }
+    bash: { whitelist: string[] }
+    file: { writeEnabled: boolean }
     mcp: {
       enabled: boolean
       servers: Record<string, unknown>[]
@@ -349,23 +346,7 @@ export const userConfig = {
   set effectMode(v: EffectMode) { const u = loadUserOverrides(); u.effectMode = v; saveUserOverrides(u); },
   get parallaxIntensity() { return getUser().parallaxIntensity; },
   set parallaxIntensity(v: number) { const u = loadUserOverrides(); u.parallaxIntensity = v; saveUserOverrides(u); },
-  getAll(): UserSettings { return { ...getUser() }; },
-  setAll(s: Partial<UserSettings>) { const u = { ...loadUserOverrides(), ...s }; saveUserOverrides(u); },
-  resetAll() {
-    const defaults = structuredClone(rawConfig) as Config
-    cfg.general.popup = defaults.general.popup
-    cfg.general.shortcut = defaults.general.shortcut
-    cfg.appearance.parallax = defaults.appearance.parallax
-    queueConfigSave()
-  },
 };
-
-// ==========================================
-// 点路径配置 API（保留调用接口，实际直接修改 cfg）
-// ==========================================
-function getAtPath(key: string): any {
-  return key.split(".").reduce<any>((value, part) => value?.[part], cfg)
-}
 
 function setAtPath(key: string, value: any): void {
   const parts = key.split(".")
@@ -375,6 +356,13 @@ function setAtPath(key: string, value: any): void {
     cursor = cursor[part]
   }
   cursor[parts[parts.length - 1]] = value
+}
+
+// ==========================================
+// 点路径配置 API（保留调用接口，实际直接修改 cfg）
+// ==========================================
+function getAtPath(key: string): any {
+  return key.split(".").reduce<any>((value, part) => value?.[part], cfg)
 }
 
 export function getOverride<T>(key: string): T | undefined {
@@ -394,11 +382,6 @@ export function setOverrides(map: Record<string, any>): void {
 
 export function getAllOverrides(): Record<string, any> {
   return cloneConfig() as unknown as Record<string, any>
-}
-
-export function clearOverrides(): void {
-  cfg = structuredClone(rawConfig) as Config
-  queueConfigSave()
 }
 
 function overrideOr<T>(key: string, fallback: T): T {
@@ -484,18 +467,6 @@ const _ai = {
   get contextMaxTokens() { return overrideOr("ai.contextMaxTokens", cfg.ai?.contextMaxTokens ?? 16000); },
   get thinkingEffort() { return overrideOr("ai.thinking.effort", cfg.ai?.thinking?.effort || "auto") as import("@/services/agent/types").ThinkingEffort; },
   get requireApiKey() { return overrideOr("ai.requireApiKey", cfg.ai?.requireApiKey ?? true); },
-  get thinkingBudget() {
-    try {
-      return {
-        low: overrideOr("ai.thinking.budget.low", cfg.ai?.thinking?.budget?.low ?? 1000),
-        medium: overrideOr("ai.thinking.budget.medium", cfg.ai?.thinking?.budget?.medium ?? 4000),
-        high: overrideOr("ai.thinking.budget.high", cfg.ai?.thinking?.budget?.high ?? 16000),
-      }
-    } catch (e) {
-      log.warn("config 键缺失，回退默认值", formatError(e))
-      return { low: 1000, medium: 4000, high: 16000 }
-    }
-  },
   get configured() { if (!this.endpoint) return false; if (!this.requireApiKey) return true; return Boolean(this.apiKey); },
 };
 
@@ -503,16 +474,18 @@ export const aiConfig = _ai;
 
 export const personalityConfig = {
   get active() { return overrideOr("ai.personality.active", cfg.ai?.personality?.active || ""); },
-  get cards() { return overrideOr("ai.personality.cards", cfg.ai?.personality?.cards || []); },
 };
 
 export const windowMonitorConfig = {
   get enabled() { return overrideOr("ai.windowMonitor.enabled", cfg.ai?.windowMonitor?.enabled ?? true); },
   get staySeconds() { return overrideOr("ai.windowMonitor.staySeconds", cfg.ai?.windowMonitor?.staySeconds || 60); },
   get settleMs() { return overrideOr("ai.windowMonitor.settleMs", cfg.ai?.windowMonitor?.settleMs || 2000); },
-  get cooldownSeconds() { return overrideOr("ai.windowMonitor.cooldownSeconds", cfg.ai?.windowMonitor?.cooldownSeconds || 5000); },
-  get samePageCooldownSeconds() { return overrideOr("ai.windowMonitor.samePageCooldownSeconds", cfg.ai?.windowMonitor?.samePageCooldownSeconds || 7800); },
-  get defaultCooldownMs() { return overrideOr("ai.windowMonitor.defaultCooldownMs", cfg.ai?.windowMonitor?.defaultCooldownMs || 12000); },
+  // 冷却时长统一用毫秒。早先这里是 `cooldownSeconds: 5000` 由调用方当秒乘 1000，
+  // 于是「5 秒」静默变成 83 分钟；同一个量还有第二个键 `defaultCooldownMs` 喂同一变量，
+  // 两者只保留了前者。
+  get cooldownMs() { return overrideOr("ai.windowMonitor.cooldownMs", cfg.ai?.windowMonitor?.cooldownMs || 5000); },
+  /** 同一页面内容重复触发时的抑制窗口；消费者在 `services/agent/active.ts` */
+  get samePageCooldownMs() { return overrideOr("ai.windowMonitor.samePageCooldownMs", cfg.ai?.windowMonitor?.samePageCooldownMs || 7800); },
   get resumeExtraMs() { return overrideOr("ai.windowMonitor.resumeExtraMs", cfg.ai?.windowMonitor?.resumeExtraMs || 2000); },
 };
 
@@ -556,9 +529,7 @@ export const safetyConfig = {
 // 3. 工具配置
 // ══════════════════════════════════════════
 export const toolsConfig = {
-  get bashEnabled() { return overrideOr("tools.bash.enabled", cfg.tools?.bash?.enabled ?? true); },
   get bashWhitelist() { return overrideOr("tools.bash.whitelist", cfg.tools?.bash?.whitelist || ["ls", "cat", "head", "tail", "grep", "find", "which", "echo", "pwd", "date", "whoami", "uname", "df", "du", "ps"]); },
-  get fileEnabled() { return overrideOr("tools.file.enabled", cfg.tools?.file?.enabled ?? true); },
   get fileWriteEnabled() { return overrideOr("tools.file.writeEnabled", cfg.tools?.file?.writeEnabled ?? true); },
   get mcpEnabled() { return generalConfig.assistantMode && (overrideOr("tools.mcp.enabled", cfg.tools?.mcp?.enabled ?? false)); },
   get mcpServers() { return overrideOr("tools.mcp.servers", cfg.tools?.mcp?.servers || []); },

@@ -6,7 +6,7 @@
 import { invoke } from "@tauri-apps/api/core"
 import type { SessionMemory, ProjectEntry, SessionFileMeta, MemoryEntry, CompactionSummary } from "./types"
 import { readSessionFile, writeSessionFile, sessionsDir, withLock } from "./io"
-import { localTime, localDate, localCompact, parseSessionFilename, parseSessionFileMeta, parseSessionFromFile, parseTurnsFromRaw, buildSessionFileContent, makeSessionFilename, findTopicFromTurns, serializeSessionTurn } from "./parsers"
+import { localTime, localDate, localCompact, parseSessionFilename, parseSessionFileMeta, parseTurnsFromRaw, buildSessionFileContent, makeSessionFilename, findTopicFromTurns, serializeSessionTurn } from "./parsers"
 import { createLogger } from "@/services/logger"
 import type { QueueAckState, QueueEntry, SessionEvent } from "@/services/engine/runtime"
 import { parseSessionEventDocument, serializeSessionEvent } from "./events"

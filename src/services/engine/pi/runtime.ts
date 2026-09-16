@@ -11,7 +11,7 @@ import { createMessageId, createToolMessage } from "@/services/agent/types"
 import { MemoryService, emptyMemoryProvider, planCheckpointStore, planStepEffectClass } from "@/services/agent/memory"
 import { buildPrompt } from "@/services/context"
 import { compactOnHighUsage, estimateTokens } from "@/services/engine/compactor"
-import { requestPlanConfirm, requestPlanStepDecision } from "@/services/engine/plan-confirmation"
+import { bindRunningPlan, clearRunningPlan, notifyPlanEnd, requestPlanConfirm, requestPlanStepDecision } from "@/services/engine/plan-confirmation"
 import { executePlan, evaluateComplexity, formatStepResults, generatePlan } from "@/services/engine/planner"
 import { recordMessage, recordToolCall, transition } from "@/services/engine/session"
 import { getEffectiveThinkingEffort, updateRequestStats } from "@/services/debug"
@@ -235,18 +235,24 @@ export async function runPiAgentTurn(input: PiAgentTurnInput): Promise<PiAgentTu
         if (!confirmed) {
           for (const step of plan.steps) await planCheckpointStore.transitionStep(planId, String(step.id), "skipped")
           await planCheckpointStore.transitionPlan(planId, "failed")
+          notifyPlanEnd("cancelled")
           transition("WAITING")
           const reply = getSimpleStage("planning") ?? "好的，已取消计划～"
           await persistTurn(turnSessionId, "assistant", reply)
           return { reply, toolCallHistory, retriesUsed: 0, effects: [] }
         }
         await planCheckpointStore.transitionPlan(planId, "running")
+        // 执行期登记中断通道，「终止执行」据此真正停下剩余步骤；
+        // `finally` 保证任何退出路径都会清空登记，不给下一次计划留悬空引用
+        const planAbort = new AbortController()
+        bindRunningPlan(planAbort)
         const result = await executePlan(plan, {
           stepTimeoutMs: planConfig.stepTimeoutMs,
           stepMaxRounds: planConfig.stepMaxRounds,
           stepThinkingEffort: planConfig.stepThinkingEffort,
           maxSteps: planConfig.maxSteps,
           onStepFailure: stepMode === "stepByStep" ? "ask" : planConfig.onStepFailure,
+          signal: planAbort.signal,
         }, {
           async onStepStart(step) {
             await planCheckpointStore.transitionStep(planId, String(step.id), "running")
@@ -259,8 +265,10 @@ export async function runPiAgentTurn(input: PiAgentTurnInput): Promise<PiAgentTu
           onStepFailed: requestPlanStepDecision,
           onToolStart: (step, toolName, toolCallId) => planCheckpointStore.checkpointTool(planId, String(step.id), "tool_start", toolName, toolCallId),
           onToolDone: (step, toolName, toolCallId, success) => planCheckpointStore.checkpointTool(planId, String(step.id), "tool_end", toolName, toolCallId, success),
-        })
+        }).finally(() => clearRunningPlan())
         await planCheckpointStore.transitionPlan(planId, result.overallSuccess ? "done" : "failed")
+        // 收起 Plan 面板：没有这个事件时它只在两个按钮里被隐藏，跑完会一直挂着
+        notifyPlanEnd(result.overallSuccess ? "done" : "failed")
         planStepContext = formatStepResults(result)
       }
     }

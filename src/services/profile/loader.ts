@@ -362,10 +362,13 @@ export async function ensureProfileLoaded(id: string): Promise<ProfileData | nul
   if (profiles.has(id)) return profiles.get(id)!;
   const MAX_PROFILES = 20
   if (profiles.size >= MAX_PROFILES) {
-    const oldest = profiles.keys().next().value
-    if (oldest) {
-      profiles.delete(oldest)
-      log.info("profile 已达上限，淘汰最旧:", oldest)
+    // 淘汰最旧的**非激活**项。Map 按插入序，而激活的 Profile 恰恰是最先插入的那个
+    // （initProfiles 先 set 再 activate），所以直接取第一个等于把当前角色删掉 ——
+    // Profile 满 20 个之后打开外观 Tab 就可能让角色消失。
+    const victim = [...profiles.keys()].find(id => id !== activeId)
+    if (victim) {
+      profiles.delete(victim)
+      log.info("profile 已达上限，淘汰最旧:", victim)
     }
   }
   try { const data = await loadProfile(id); profiles.set(id, data); return data; }

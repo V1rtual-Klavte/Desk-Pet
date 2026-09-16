@@ -20,14 +20,8 @@ ai:
   contextMaxTokens: 16000
   thinking:
     effort: auto
-    budget: { low: 1000, medium: 4000, high: 16000 }
   personality:
     active: angelkawaii
-    cards:
-      - { id: neutral, name: 桌面助手, path: cards/neutral.md, description: "中性默认助手" }
-      - { id: angelkawaii, name: KAngel, path: cards/angelkawaii.md, description: "甜蜜活泼女友+病娇" }
-      - { id: ame, name: Ame, path: cards/ame.md, description: "冷静管家型" }
-      - { id: pchan, name: P酱, path: cards/pchan.md, description: "慵懒电竞少女" }
   loop:
     maxRetry: 3
     maxToolCallsPerTurn: 5
@@ -52,17 +46,16 @@ ai:
     enabled: true
     staySeconds: 60
     settleMs: 2000
-    cooldownSeconds: 5000
-    samePageCooldownSeconds: 7800
-    defaultCooldownMs: 12000
+    # 冷却时长统一毫秒
+    cooldownMs: 5000
+    samePageCooldownMs: 7800
     resumeExtraMs: 2000
   safety: { mode: tell_me, sessionTrustEnabled: true }
 
 tools:
   bash:
-    enabled: true
     whitelist: ["ls", "cat", "head", "tail", "grep", "find", "which", "echo", "pwd", "date", "whoami", "uname", "df", "du", "ps", "tasklist", "system_profiler", "ifconfig"]
-  file: { enabled: true, writeEnabled: false }
+  file: { writeEnabled: false }
   mcp:
     enabled: false
     servers: []

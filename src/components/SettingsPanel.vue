@@ -82,10 +82,19 @@ async function doSave() {
     "ai.windowMonitor.enabled": a.wmEnabled,
     "ai.windowMonitor.staySeconds": a.wmStaySeconds,
     "ai.windowMonitor.settleMs": a.wmSettleMs,
-    "ai.windowMonitor.cooldownSeconds": a.wmCooldownSec,
-    "ai.windowMonitor.samePageCooldownSeconds": a.wmSamePageCool,
+    // 配置面统一毫秒，界面面用秒（给人读的），换算就放在这个边界上
+    "ai.windowMonitor.cooldownMs": Math.round(a.wmCooldownSec * 1000),
+    "ai.windowMonitor.samePageCooldownMs": Math.round(a.wmSamePageCool * 1000),
     "ai.lock.safetyTimeoutMs": a.lockTimeout,
     "ai.memory.maxEntries": a.memMax,
+    // Plan 的六个键在 AITab 里都有 UI 和 expose，此前没进这张表 ——
+    // 用户在设置页改完保存会被静默丢弃，且 test:types 抓不到
+    "ai.plan.enabled": a.planEnabled,
+    "ai.plan.complexityThreshold": a.planComplexityThreshold,
+    "ai.plan.maxSteps": a.planMaxSteps,
+    "ai.plan.thinkingEffort": a.planThinkingEffort,
+    "ai.plan.stepThinkingEffort": a.planStepThinkingEffort,
+    "ai.plan.onStepFailure": a.planOnStepFailure,
     "general.desktop.pollingIntervalMs": g.deskPoll,
     "general.desktop.pauseExtraMs": g.deskPause,
     "general.desktop.waitTimeoutMs": g.deskWait,

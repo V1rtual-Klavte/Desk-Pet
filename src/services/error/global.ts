@@ -260,11 +260,6 @@ function renderOverlay(): void {
   if (counter) counter.textContent = entries.length > 1 ? `共 ${entries.length} 条` : ""
 }
 
-/** 关闭覆盖层（条目保留：下次异常会带着历史一起重新弹出） */
-export function dismissErrors(): void {
-  hideOverlay()
-}
-
 function hideOverlay(): void {
   overlayEl?.remove()
   overlayEl = null

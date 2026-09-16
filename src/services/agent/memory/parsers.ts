@@ -221,33 +221,6 @@ export function normalizeTurnRole(label: string): "user" | "assistant" {
   return normalized === "糖糖" || normalized === "assistant" ? "assistant" : "user"
 }
 
-export function parseSessionFromFile(raw: string): { turns: SessionMemory["turns"]; summary?: CompactionSummary } | null {
-  if (!raw || raw.length < 20) return null
-  const turns = parseTurnsFromRaw(raw)
-  let summary: CompactionSummary | undefined
-  let section: "none" | "summary" | "turns" = "none"
-
-  for (const line of raw.split("\n")) {
-    if (line.startsWith("## 摘要")) { section = "summary"; continue }
-    else if (line.startsWith("## 对话记录")) { section = "turns"; continue }
-    else if (line.startsWith("## ")) { section = "none"; continue }
-
-    if (section === "summary") {
-      if (!summary) summary = emptyCompactionSummary()
-      if (line.startsWith("- 主请求:")) summary.mainRequest = line.replace("- 主请求:", "").trim()
-      else if (line.startsWith("- 关键技术:")) summary.keyTech = splitCsv(line.replace("- 关键技术:", ""))
-      else if (line.startsWith("- 文件")) summary.files = splitCsv(line.replace(/^- 文件\S*:\s*/, ""))
-      else if (line.startsWith("- 问题")) summary.problems = line.replace(/^- 问题\S*:\s*/, "").trim()
-      else if (line.startsWith("- 当前工作:")) summary.currentWork = line.replace("- 当前工作:", "").trim()
-      else if (line.startsWith("- 下一步:")) summary.nextSteps = line.replace("- 下一步:", "").trim()
-      else if (line.startsWith("- 提交的任务:")) summary.tasks = splitCsv(line.replace("- 提交的任务:", ""))
-      else if (line.startsWith("- 现在的工作:")) summary.currentWork = line.replace("- 现在的工作:", "").trim()
-      else if (line.startsWith("- 用户所有消息:")) summary.userMessages = splitCsv(line.replace("- 用户所有消息:", ""))
-    }
-  }
-  return { turns, summary }
-}
-
 export function parseTurnsFromRaw(raw: string): SessionMemory["turns"] {
   const turns: SessionMemory["turns"] = []
   let inConversation = false
