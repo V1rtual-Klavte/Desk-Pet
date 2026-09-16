@@ -729,7 +729,10 @@ pub fn system_info() -> SystemInfoResult {
     }
 }
 
+// 前端按 camelCase 读取（cpuCount / memTotal / memUsed）。
+// 漏掉这行属性不会报错，只会让三个字段在 TS 侧全是 undefined —— 显示成 NaNGB。
 #[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct SystemInfoResult {
     os: String,
     arch: String,
@@ -1252,6 +1255,27 @@ mod tests {
                 "{a:?}+{b:?}: total_lines 不一致"
             );
         }
+    }
+
+    /// `system_info` 曾因漏掉 `rename_all = "camelCase"` 让前端三个字段全读到 undefined，
+    /// 界面上显示成 `NaNGB / NaNGB`。类型检查两边都发现不了，只能钉住线上载荷的字段名。
+    #[test]
+    fn system_info_payload_uses_camel_case() {
+        let payload = serde_json::to_value(SystemInfoResult {
+            os: "macos".into(),
+            arch: "aarch64".into(),
+            cpu_count: 8,
+            mem_total: 16 * 1024 * 1024 * 1024,
+            mem_used: 8 * 1024 * 1024 * 1024,
+        })
+        .unwrap();
+        for field in ["cpuCount", "memTotal", "memUsed"] {
+            assert!(
+                payload.get(field).is_some(),
+                "载荷缺少 {field}（前端按 camelCase 读取）: {payload}"
+            );
+        }
+        assert_eq!(payload["cpuCount"], 8);
     }
 
     /// 二进制输出不该让整段结果退化成空串。
