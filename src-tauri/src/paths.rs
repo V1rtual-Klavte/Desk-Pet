@@ -203,8 +203,25 @@ impl AppPaths {
 fn allowed_file_roots() -> AppResult<Vec<PathBuf>> {
     let home = home_dir().ok_or(AppError::NoHomeDir)?;
     let temp = std::env::temp_dir();
-    let mut roots = vec![normalize_absolute(&home)?, normalize_absolute(&temp)?];
-    for root in [home, temp] {
+    let mut candidates = vec![home, temp];
+
+    // 开发构建下再把项目根纳入：dev 的数据根是 `{project}/data/desk-pet`，
+    // 仓库若不在 $HOME 之内（外置卷、/opt、Windows 的 D:\），所有会话写入
+    // 都会直接撞 PATH_ESCAPE，而错误只给出 code，很难看出是根目录的问题。
+    // 生产构建不受影响：那时数据根本来就在用户目录下。
+    if cfg!(debug_assertions) {
+        candidates.push(project_root());
+    }
+
+    let mut roots = Vec::with_capacity(candidates.len() * 2);
+    for root in candidates {
+        let normalized = normalize_absolute(&root)?;
+        if !roots.contains(&normalized) {
+            roots.push(normalized);
+        }
+    }
+    // canonicalize 后的形态也各留一份：macOS 的 /var → /private/var、Windows 的短名都走这条
+    for root in roots.clone() {
         if let Ok(canonical) = root.canonicalize() {
             if !roots.contains(&canonical) {
                 roots.push(canonical);

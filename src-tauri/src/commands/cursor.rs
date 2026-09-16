@@ -9,7 +9,6 @@ use std::time::Duration;
 use tauri::{Emitter, Manager};
 
 use crate::error::{err, AppResult};
-use crate::rust_debug;
 use crate::rust_info;
 use crate::window::enhance_to_iterm_style;
 
@@ -56,23 +55,6 @@ fn get_cursor_and_screen() -> AppResult<CursorScreen> {
         let lsy = (sy as f64 / scale_y).round() as i32;
         let lsw = (sw as f64 / scale_x).round() as i32;
         let lsh = (sh as f64 / scale_y).round() as i32;
-        rust_debug!(
-            "光标(Win): 物({},{}) 逻({},{}) 屏:物({},{} {}x{}) 逻({},{} {}x{}) DPI:({},{})",
-            pt.x,
-            pt.y,
-            lx,
-            ly,
-            sx,
-            sy,
-            sw,
-            sh,
-            lsx,
-            lsy,
-            lsw,
-            lsh,
-            dpi_x,
-            dpi_y
-        );
         return Ok((lx, ly, lsx, lsy, lsw, lsh, scale_x, scale_y));
     }
 
@@ -168,15 +150,6 @@ pub fn get_cursor_position() -> AppResult<CursorPosition> {
     #[cfg(target_os = "windows")]
     let web_y = cy;
 
-    rust_debug!(
-        "光标(web): ({},{}) 屏:({},{} {}x{})",
-        cx,
-        web_y,
-        sx,
-        sy,
-        sw,
-        sh
-    );
 
     Ok(CursorPosition {
         x: cx,
@@ -232,17 +205,6 @@ pub fn compute_popup_position(
     win_x = win_x.clamp(sx, sx + sw - win_w);
     win_y = win_y.clamp(sy, sy + sh - win_h);
 
-    rust_debug!(
-        "弹窗位置 web: win({},{}) cursor({},{}) 屏:({},{} {}x{})",
-        win_x,
-        win_y,
-        web_cx,
-        web_cy,
-        sx,
-        sy,
-        sw,
-        sh
-    );
 
     Ok(PopupPosition {
         win_x,
@@ -258,10 +220,19 @@ pub fn compute_popup_position(
 // 光标追踪 — 后台线程 ~60fps 推送光标坐标
 // ==========================================
 
-/// 启动光标追踪线程，每 ~16ms emit "deskpet-cursor-move" 事件
+/// 轮询间隔：光标静止时也按这个节奏醒来，用来发现「开始移动」。
+const CURSOR_POLL_INTERVAL: Duration = Duration::from_millis(16);
+
+/// 启动光标追踪线程，光标位置**发生变化时** emit "deskpet-cursor-move"。
+///
+/// 早先每 16ms 无条件 emit 一次并逐帧写 debug 日志：日志在 dev 下约 23MB/小时，
+/// 而日志轮转上限只有 15MB，大约 12 分钟就把整个有效日志窗口冲掉。
+/// 现在去掉了逐帧日志，并且只在坐标真的变了（或首帧）时才发事件 ——
+/// 光标不动时前端本来也不需要收到通知。
 pub fn spawn_cursor_tracker(app: tauri::AppHandle) {
     thread::spawn(move || {
-        rust_info!("光标追踪线程已启动 (~60fps)");
+        rust_info!("光标追踪线程已启动 (~60fps 轮询，仅变化时派发)");
+        let mut last: Option<(i32, i32, i32, i32, i32, i32)> = None;
         loop {
             // 获取光标位置（复用已有逻辑）
             let pos = get_cursor_and_screen();
@@ -271,19 +242,24 @@ pub fn spawn_cursor_tracker(app: tauri::AppHandle) {
                 #[cfg(target_os = "windows")]
                 let web_y = cy;
 
-                let _ = app.emit(
-                    "deskpet-cursor-move",
-                    CursorPosition {
-                        x: cx,
-                        y: web_y,
-                        screen_x: _sx,
-                        screen_y: _sy,
-                        screen_w: _sw,
-                        screen_h: _sh,
-                    },
-                );
+                let current = (cx, web_y, _sx, _sy, _sw, _sh);
+                // 首帧必须派发：否则应用启动后光标一直不动，前端永远收不到初始位置
+                if last != Some(current) {
+                    last = Some(current);
+                    let _ = app.emit(
+                        "deskpet-cursor-move",
+                        CursorPosition {
+                            x: cx,
+                            y: web_y,
+                            screen_x: _sx,
+                            screen_y: _sy,
+                            screen_w: _sw,
+                            screen_h: _sh,
+                        },
+                    );
+                }
             }
-            thread::sleep(Duration::from_millis(16));
+            thread::sleep(CURSOR_POLL_INTERVAL);
         }
     });
 }

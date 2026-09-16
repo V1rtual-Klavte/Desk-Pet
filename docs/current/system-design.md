@@ -56,3 +56,11 @@ LLM 可见回复文本 + <RUNTIME_DATA>
 ## 平台原则
 
 任何窗口、系统能力、文件或快捷键变更都必须同时评估 Windows 与 macOS。平台专有 Rust 实现使用条件编译；前端不得假设某个平台独有能力在另一端可用。
+
+### 打包与 CSP
+
+- 打包目标按平台分文件管理：`tauri.conf.json` 保留 Windows 的 `nsis`，`tauri.macos.conf.json` 提供 `app` + `dmg`。不用 `"all"` —— 它会连带 MSI，而 MSI 依赖 WiX 工具链。
+- `tauri.conf.json` 的 `csp` 不是 `null`：`script-src 'self'` 与 `object-src 'none'` 是主防线；`style-src` 放开 `'unsafe-inline'` 供 Vue 的 `:style` 绑定，`img`/`media`/`font-src` 放开 `asset:` 与 `http://asset.localhost`（`convertFileSrc` 在两端的不同形态），`connect-src` 放开 `ipc:`/`http://ipc.localhost` 与 `http:`/`https:`（Provider 端点由用户自填，无法收敛成白名单）。
+- ⚠️ CSP 只在生产构建生效，dev 拿不到。改动后必须在 `pnpm tauri build` 的产物上人工确认，`cargo check` 只能证明配置能被解析。
+- 文件工具的允许根是 home + 系统临时目录，**debug 构建下额外包含项目根**：dev 数据根是 `{project}/data/desk-pet`，仓库不在 `$HOME` 内时否则所有会话写入都会撞 `PATH_ESCAPE`。
+- 光标追踪线程按 ~16ms 轮询，但**只在坐标变化时**派发事件、且不再逐帧写日志（逐帧日志在 dev 下约 23MB/小时，远超日志轮转上限）。
