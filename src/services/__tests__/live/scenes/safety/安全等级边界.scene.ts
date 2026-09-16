@@ -3,8 +3,15 @@ import { checkSafety, matchesAnyPattern, BASH_DANGEROUS_PATTERNS, BASH_NOWAY_PAT
 import type { ToolDef, SafetyLevel } from "@/services/tool"
 
 const tool = (safetyLevel: SafetyLevel): ToolDef => ({ id: "test-safety", name: "test_safety", description: "test", parameters: { type: "object", properties: {} }, safetyLevel, source: "local", sourceId: "", mode: "pet", actionCategory: "_default", handler: async () => ({ success: true, content: "ok" }) })
+/**
+ * 这里的 `run` 不接收任何上下文：断言直接调被测函数，与回合输出无关。
+ *
+ * 因此统一标 `entry: "unit"` —— 跑到真实模型上只会让这条场景的成败取决于
+ * Provider 抖不抖，对断言本身没有任何增量。真正「门禁是否接在运行时上」
+ * 由 sf-03 / sf-09 / sf-10 这些非 unit 场景负责。
+ */
 const scene = (caseId: string, contractId: string, description: string, run: () => void, depth: "shallow" | "deep" = "shallow"): SceneDef => ({
-  meta: { caseId, module: "safety", contractId, description, depth, suite: "safety", tags: ["safety", "boundary", "error"] },
+  meta: { caseId, module: "safety", contractId, description, depth, suite: "safety", entry: "unit", tags: ["safety", "boundary", "error"] },
   turns: [{ index: 1, description, userText: "检查安全策略。", checks: [{ type: "expectSafety", run: async () => run() }] }],
 })
 

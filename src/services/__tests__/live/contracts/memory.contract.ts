@@ -21,7 +21,7 @@ export const memoryContract: ModuleContract = {
     "src/services/context/projection.ts",
   ],
   generatedAt: "2026-09-15",
-  sourceHash: "9ce36ea602fdda579db47454560c85b41996985f8616880af6942fd75dcfca33",
+  sourceHash: "af851b6332d9cc62c46c061b38a2b95764d123cdbba6abcf25d226d9d7ae111a",
   coverage: [
     { id: "mm-01", feature: "Memory 添加条目", description: "MemoryService.append() 创建记忆", why: "记忆系统基础 CRUD", depth: "shallow", scenarios: ["memory-append"] },
     { id: "mm-02", feature: "Memory 搜索", description: "MemoryService.search(query, limit) 按内容搜索", why: "LLM 需检索相关记忆", depth: "shallow", scenarios: ["memory-search"] },

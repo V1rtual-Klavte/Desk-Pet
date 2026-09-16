@@ -67,12 +67,37 @@ export interface PiAgentTurnInput {
   turnId?: string
 }
 
+/**
+ * 回合在拿到模型回复之前就失败的结构化原因。
+ *
+ * 产品侧要的是「有兜底文案可显示」，报告侧要的是「这次失败属于哪一类」，两者不冲突：
+ * 只返回兜底文案会让报告把 Provider 故障记成 assertion 失败，观测直接失效。
+ * `kind` 与 Live Test 的 `ErrorKind` 同名，报告可直接照搬。
+ */
+export interface TurnFailure {
+  kind: "timeout" | "auth" | "rate_limit" | "network" | "provider" | "unknown"
+  message: string
+}
+
 export interface PiAgentTurnOutput {
   reply: string
   toolCallHistory: { toolName: string; status: string; personalityMsg?: string }[]
   retriesUsed: number
   effects: { expression: string; soundEvent: string | null }[]
   runtimeData?: { emotionKey: string | null; variables: Record<string, string> }
+  /** 仅在重试耗尽、回复是兜底文案时出现 */
+  failure?: TurnFailure
+}
+
+/** 把 Provider 的失败文案收敛成稳定分类 */
+function classifyTurnFailure(message: string): TurnFailure["kind"] {
+  const lower = message.toLowerCase()
+  if (/timeout|timed out|超时/.test(lower)) return "timeout"
+  if (/401|403|unauthor|invalid api key|api key/.test(lower)) return "auth"
+  if (/429|rate limit|too many requests/.test(lower)) return "rate_limit"
+  if (/enotfound|econnrefused|econnreset|network|fetch failed|dns/.test(lower)) return "network"
+  if (/5\d\d|upstream|service unavailable|provider/.test(lower)) return "provider"
+  return "unknown"
 }
 
 export interface PiSubAgentInput {
@@ -306,7 +331,14 @@ export async function runPiAgentTurn(input: PiAgentTurnInput): Promise<PiAgentTu
       applyEffect(PetPersonalityMiddleware.wrap("error", { message: result.error }), effects)
       const reply = getFallbackReply("maxRetriesExhausted")
       await persistTurn(turnSessionId, "assistant", reply)
-      return { reply, toolCallHistory, retriesUsed: attempt, effects }
+      return {
+        reply,
+        toolCallHistory,
+        retriesUsed: attempt,
+        effects,
+        // 产品照旧拿到可显示的兜底文案；报告侧拿到「这次不是模型答得不好，是根本没答成」
+        failure: { kind: classifyTurnFailure(result.error), message: result.error },
+      }
     }
   }
 

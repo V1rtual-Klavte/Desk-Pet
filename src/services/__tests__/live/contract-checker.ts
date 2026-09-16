@@ -65,6 +65,20 @@ export function checkContract(contract: ModuleContract, scenes: SceneDef[]): Con
     }
   }
 
+  // 7. ENTRY: 每个 Contract 至少要有一个不走 `unit` 的场景。
+  //
+  // 没有这条，Contract 可以整体退化成「不跑模型、直接断言」——
+  // 那等于把 Live Test 变成单元测试，真实调用链再没人验证，
+  // 而报告依然全绿。这是 entry: "unit" 唯一需要的防退化约束。
+  if (contract.rules.unitOnly) {
+    // 显式豁免：必须说明为什么做不到，否则和忘记写非 unit 场景没有区别
+    if (!contract.rules.unitOnlyReason?.trim()) {
+      issues.push(`[GAP:ENTRY] ${contract.module} 声明了 unitOnly 但没写 unitOnlyReason`)
+    }
+  } else if (validScenes.length > 0 && validScenes.every(scene => (scene.meta.entry ?? "runtime") === "unit")) {
+    issues.push("[GAP:ENTRY] 全部场景都是 unit：至少需要一个真正驱动模型或生产入口的场景")
+  }
+
   return {
     module: contract.module,
     stale,

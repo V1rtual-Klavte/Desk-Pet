@@ -1,11 +1,11 @@
-import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync } from "node:fs"
+import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync } from "node:fs"
 import { createHash } from "node:crypto"
 import { execFileSync, spawn } from "node:child_process"
 import { homedir } from "node:os"
 import { join } from "node:path"
 
 const args = process.argv.slice(2)
-const valueOptions = new Set(["--module", "--scene", "--case", "--tag", "--suite", "--repeat", "--report"])
+const valueOptions = new Set(["--module", "--scene", "--case", "--tag", "--suite", "--repeat", "--report", "--contracts"])
 const flagOptions = new Set(["--strict"])
 const env = { ...process.env, DESKPET_LIVE_TEST: "1" }
 
@@ -20,9 +20,39 @@ function currentCommit() {
   catch { return "unknown" }
 }
 
+// 参数要先解析：下面的 Contract 门禁需要知道自己是不是单模块运行
+for (let index = 0; index < args.length; index++) {
+  const option = args[index]
+  if (flagOptions.has(option)) {
+    env[`DESKPET_LIVE_TEST_${option.slice(2).toUpperCase()}`] = "1"
+    continue
+  }
+  if (!valueOptions.has(option) || !args[index + 1]) continue
+  env[`DESKPET_LIVE_TEST_${option.slice(2).toUpperCase().replace(/-/g, "_")}`] = args[++index]
+}
+
+/**
+ * `--contracts=selected` 只校验 `--module` 选中的那一份 Contract。
+ *
+ * 默认仍是全量校验：「改了源码忘了刷 hash」正是这条门禁要挡的事。
+ * 但单模块调试时会反复被别的模块的过期 hash 拦住（本轮就撞过一次），
+ * 所以留一个显式开关，而不是把门禁默认放松。
+ */
+function selectedContractFile() {
+  if ((env.DESKPET_LIVE_TEST_CONTRACTS ?? "all") !== "selected") return null
+  const module = env.DESKPET_LIVE_TEST_MODULE
+  if (!module) return null
+  return `${module}.contract.ts`
+}
+
 function checkContractHashes() {
   const directory = join(process.cwd(), "src/services/__tests__/live/contracts")
-  for (const file of readdirSync(directory).filter(name => name.endsWith(".contract.ts"))) {
+  const only = selectedContractFile()
+  const targets = readdirSync(directory).filter(name => name.endsWith(".contract.ts") && (!only || name === only))
+  if (only && targets.length === 0) {
+    throw new Error(`[STALE] 找不到 ${only}，--module 与 --contracts=selected 对不上`)
+  }
+  for (const file of targets) {
     const content = readFileSync(join(directory, file), "utf8")
     const hashMatch = content.match(/sourceHash:\s*"([0-9a-f]*)"/)
     const filesMatch = content.match(/sourceFiles:\s*\[([\s\S]*?)\]/)
@@ -40,16 +70,6 @@ try { checkContractHashes() } catch (error) {
   process.exit(1)
 }
 
-for (let index = 0; index < args.length; index++) {
-  const option = args[index]
-  if (flagOptions.has(option)) {
-    env[`DESKPET_LIVE_TEST_${option.slice(2).toUpperCase()}`] = "1"
-    continue
-  }
-  if (!valueOptions.has(option) || !args[index + 1]) continue
-  env[`DESKPET_LIVE_TEST_${option.slice(2).toUpperCase().replace(/-/g, "_")}`] = args[++index]
-}
-
 const dataRoot = mkdtempSync(join(homedir(), ".deskpet-live-test-"))
 const resultPath = join(dataRoot, "live-test-result.txt")
 env.DESKPET_LIVE_TEST_DATA_ROOT = dataRoot
@@ -63,11 +83,40 @@ function stopChild(signal = "SIGTERM") {
   if (child && child.exitCode === null && child.signalCode === null) child.kill(signal)
 }
 
+/**
+ * 报告原先只写在一次性临时数据根里，随根一起删掉：CI 拿不到产物，
+ * 也没法 diff 两次运行。清理之前先复制到稳定目录。
+ *
+ * 放用户主目录而不是仓库内：仓库侧要为此改 .gitignore，而报告是运行产物，
+ * 不该出现在工作树里。保留最近 MAX_REPORTS 份，避免无限堆积。
+ */
+const REPORTS_DIR = join(homedir(), ".deskpet-live-test-reports")
+const MAX_REPORTS = 20
+
+function preserveReport() {
+  if (!existsSync(resultPath)) return
+  try {
+    mkdirSync(REPORTS_DIR, { recursive: true })
+    const stamp = new Date().toISOString().replace(/[:.]/g, "-")
+    const extension = /\.json$/.test(resultPath) ? "json" : "txt"
+    copyFileSync(resultPath, join(REPORTS_DIR, `${stamp}.${extension}`))
+    const kept = readdirSync(REPORTS_DIR).filter(name => /\.(json|txt)$/.test(name)).sort()
+    for (const stale of kept.slice(0, Math.max(0, kept.length - MAX_REPORTS))) {
+      rmSync(join(REPORTS_DIR, stale), { force: true })
+    }
+    console.error(`[LiveTest] 报告已留存: ${REPORTS_DIR}`)
+  } catch (error) {
+    // 留存失败不该影响测试结论本身
+    console.error(`[LiveTest] 报告留存失败: ${error.message}`)
+  }
+}
+
 function finalize(exitCode, reason) {
   if (finalized) return
   finalized = true
   if (timeout) clearTimeout(timeout)
   if (reason) console.error(`[LiveTest] ${reason}`)
+  preserveReport()
   rmSync(dataRoot, { recursive: true, force: true })
   process.exit(exitCode)
 }

@@ -8,7 +8,17 @@ import type { PiAgentTurnOutput } from "@/services/engine/pi"
 // ── Scene DSL ──
 
 export type TestSuite = "regression" | "capability" | "safety" | "stress"
-export type SceneEntry = "runtime" | "production"
+
+/**
+ * 场景怎么进入被测代码。
+ *
+ * - `production`：走 `sendMessage()` 真实入口
+ * - `runtime`：绕过入口，直接驱动 Pi Agent Runtime（默认）
+ * - `unit`：**不跑模型**，只执行断言。断言只依赖进程内状态（纯函数、注册表、
+ *   变量池）时用它 —— 跑一次真实 LLM 既不增加信息量，又把场景时长和 Provider
+ *   抖动绑在一起（一次网络停滞就让整条场景判超时）。
+ */
+export type SceneEntry = "runtime" | "production" | "unit"
 
 /** 测试宿主对 `requestConfirm()` 的应答策略；默认 "deny"（确定性优先）。 */
 export type ConfirmPolicy = "deny" | "approve"
@@ -85,6 +95,15 @@ export interface ContractRules {
   minDeepScenarios: number
   requireBoundary: boolean
   requireErrorPath: boolean
+  /**
+   * 声明该 Contract 暂时只能由 unit 场景覆盖。
+   *
+   * 这是**显式豁免**，不是静默退化：必须同时写 `unitOnlyReason`，否则判为 GAP。
+   * 结构上做不到「至少一个非 unit 场景」时才用它 —— 例如被测入口在 Live Test
+   * 的配置下根本不可达。用它是承认覆盖不足，不是把它标成通过。
+   */
+  unitOnly?: boolean
+  unitOnlyReason?: string
 }
 
 export interface ModuleContract {

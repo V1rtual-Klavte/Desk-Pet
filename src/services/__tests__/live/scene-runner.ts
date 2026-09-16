@@ -19,7 +19,12 @@ import { MemoryService } from "@/services/agent/memory"
 import { formatError } from "@/services/error"
 import { confirmRecords } from "./confirm-channel"
 
-const DEFAULT_SCENE_TIMEOUT = 120_000
+export const DEFAULT_SCENE_TIMEOUT = 120_000
+/**
+ * unit 场景的超时上限。它们不跑模型，正常都是毫秒级；
+ * 留 10 秒是为了容下首次触碰磁盘（变量池持久化、Card 加载）的开销。
+ */
+export const UNIT_SCENE_TIMEOUT = 10_000
 
 class SceneTimeoutError extends Error {
   constructor(timeout: number) {
@@ -57,6 +62,12 @@ function classifyError(error: unknown): ErrorKind {
 }
 
 async function executeTurn(userText: string, entry: SceneEntry, isActiveMessage = false): Promise<PiAgentTurnOutput> {
+  if (entry === "unit") {
+    // 不进入模型：断言只依赖进程内状态（纯函数、注册表、变量池）。
+    // 返回空输出，让 ctx.output 保持可读而不必特判 undefined。
+    return { reply: "", toolCallHistory: [], retriesUsed: 0, effects: [] }
+  }
+
   if (entry === "production") {
     // sendMessage clears this after preprocessing; clear here so handled requests cannot leak a prior turn.
     productionToolHistory.clear()
@@ -165,7 +176,11 @@ async function runSceneInner(scene: SceneDef, trial: number): Promise<SceneResul
           retries: output.retriesUsed,
           heapUsedBytes: heapUsedBytes(),
         },
-        errorKind: assertions.every(assertion => assertion.pass) ? undefined : "assertion",
+        // 重试耗尽时 runtime 返回的是兜底文案，断言多半会跟着失败 ——
+        // 但把它记成 assertion 会让报告彻底看不出 Provider 的真实故障分布。
+        errorKind: output.failure
+          ? output.failure.kind
+          : assertions.every(assertion => assertion.pass) ? undefined : "assertion",
       })
 
       if (assertions.some(assertion => !assertion.pass)) break
@@ -210,7 +225,8 @@ async function runSceneInner(scene: SceneDef, trial: number): Promise<SceneResul
 }
 
 export async function runScene(scene: SceneDef, trial = 1): Promise<SceneResult> {
-  const timeout = scene.meta.timeout ?? DEFAULT_SCENE_TIMEOUT
+  const entry = scene.meta.entry ?? "runtime"
+  const timeout = scene.meta.timeout ?? (entry === "unit" ? UNIT_SCENE_TIMEOUT : DEFAULT_SCENE_TIMEOUT)
   let timer: ReturnType<typeof setTimeout> | undefined
   try {
     return await Promise.race([
