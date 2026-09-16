@@ -1,6 +1,8 @@
 import type { MessagePriority, QueueAck, QueueAckState, QueueEntry, QuerySource, MessageTaint } from "./types"
 
 const PRIORITY_ORDER: Record<MessagePriority, number> = { now: 0, next: 1, later: 2 }
+const MAX_RETAINED_TERMINAL_ENTRIES = 512
+const TERMINAL_STATES = new Set<QueueAckState>(["accepted", "failed", "dead_letter"])
 
 export interface EnqueueInput {
   queueId: string
@@ -89,12 +91,21 @@ export class RuntimeQueue {
     const entry = this.entries.get(queueId)
     if (!entry) return undefined
     entry.ackState = state
+    this.pruneTerminalEntries(queueId)
     return {
       queueId: entry.queueId,
       turnId: entry.turnId,
       state,
       ...(state === "accepted" ? { acceptedAt: Date.now() } : {}),
       ...(errorCode ? { errorCode } : {}),
+    }
+  }
+
+  private pruneTerminalEntries(currentQueueId: string): void {
+    if (this.entries.size <= MAX_RETAINED_TERMINAL_ENTRIES) return
+    for (const [queueId, entry] of this.entries) {
+      if (this.entries.size <= MAX_RETAINED_TERMINAL_ENTRIES) return
+      if (queueId !== currentQueueId && TERMINAL_STATES.has(entry.ackState)) this.entries.delete(queueId)
     }
   }
 

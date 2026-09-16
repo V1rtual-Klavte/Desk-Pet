@@ -1,82 +1,78 @@
-// ==========================================
-// 核心引擎 —— 会话引擎（状态机）
-// 管理 Agent 状态流转: WAITING → PRE → PLANNING/GENERATING → EXECUTING
-// ==========================================
-
 import { createLogger } from "@/services/logger"
 
 const log = createLogger("Session")
+const DEFAULT_SESSION = "__default__"
 
-// ── Agent 状态 ──
-
-export type AgentState =
-  | "WAITING"     // 等待用户输入
-  | "PRE"         // 预处理（slash命令/去重）
-  | "PLANNING"    // Plan 生成中（助手模式复杂任务）
-  | "GENERATING"  // AI 生成中
-  | "EXECUTING"   // 执行工具中
-
-// ── 会话 ──
+export type AgentState = "WAITING" | "PRE" | "PLANNING" | "GENERATING" | "EXECUTING"
 
 export interface SessionState {
+  sessionId: string
   agentState: AgentState
-  /** 会话开始时间 */
   startedAt: number
-  /** 本会话消息数 */
   messageCount: number
-  /** 本会话工具调用数 */
   toolCallCount: number
-  /** 上次活动时间 */
   lastActivityAt: number
 }
 
-let session: SessionState = {
-  agentState: "WAITING",
-  startedAt: Date.now(),
-  messageCount: 0,
-  toolCallCount: 0,
-  lastActivityAt: Date.now(),
+const ALLOWED_TRANSITIONS: Record<AgentState, ReadonlySet<AgentState>> = {
+  WAITING: new Set(["PRE", "PLANNING", "GENERATING"]),
+  PRE: new Set(["WAITING", "PLANNING", "GENERATING"]),
+  PLANNING: new Set(["WAITING", "GENERATING", "EXECUTING"]),
+  GENERATING: new Set(["WAITING", "PLANNING", "GENERATING", "EXECUTING"]),
+  EXECUTING: new Set(["WAITING", "GENERATING", "EXECUTING"]),
 }
 
-// ── 状态转换 ──
+const states = new Map<string, SessionState>()
+let lastSessionId = DEFAULT_SESSION
 
-export function getState(): AgentState {
-  return session.agentState
+function stateFor(sessionId?: string): SessionState {
+  const key = sessionId || lastSessionId
+  let state = states.get(key)
+  if (!state) {
+    const now = Date.now()
+    state = { sessionId: key, agentState: "WAITING", startedAt: now, messageCount: 0, toolCallCount: 0, lastActivityAt: now }
+    states.set(key, state)
+  }
+  lastSessionId = key
+  return state
 }
 
-export function transition(to: AgentState): void {
-  const from = session.agentState
+export function getState(sessionId?: string): AgentState { return stateFor(sessionId).agentState }
+
+export function transition(to: AgentState, sessionId?: string): void {
+  const state = stateFor(sessionId)
+  const from = state.agentState
   if (from === to) return
-  log.debug(`状态: ${from} → ${to}`)
-  session.agentState = to
-  session.lastActivityAt = Date.now()
+  if (!ALLOWED_TRANSITIONS[from].has(to)) throw new Error(`非法 Agent 状态迁移: ${from} → ${to}`)
+  log.debug(`[${state.sessionId}] 状态: ${from} → ${to}`)
+  state.agentState = to
+  state.lastActivityAt = Date.now()
 }
 
-export function recordMessage(): void {
-  session.messageCount++
-  session.lastActivityAt = Date.now()
+export function recordMessage(sessionId?: string): void {
+  const state = stateFor(sessionId)
+  state.messageCount++
+  state.lastActivityAt = Date.now()
 }
 
-export function recordToolCall(): void {
-  session.toolCallCount++
-  session.lastActivityAt = Date.now()
+export function recordToolCall(sessionId?: string): void {
+  const state = stateFor(sessionId)
+  state.toolCallCount++
+  state.lastActivityAt = Date.now()
 }
 
-export function getSession(): Readonly<SessionState> {
-  return { ...session }
-}
+export function getSession(sessionId?: string): Readonly<SessionState> { return { ...stateFor(sessionId) } }
 
-export function resetSession(): void {
-  session = {
-    agentState: "WAITING",
-    startedAt: Date.now(),
-    messageCount: 0,
-    toolCallCount: 0,
-    lastActivityAt: Date.now(),
+export function resetSession(sessionId?: string): void {
+  if (sessionId) {
+    states.delete(sessionId)
+    if (lastSessionId === sessionId) lastSessionId = DEFAULT_SESSION
+  } else {
+    states.clear()
+    lastSessionId = DEFAULT_SESSION
   }
 }
 
-/** 会话是否超时（长时间不活动） */
-export function isSessionStale(maxIdleMs: number = 3600000): boolean {
-  return Date.now() - session.lastActivityAt > maxIdleMs
+export function isSessionStale(maxIdleMs = 3_600_000, sessionId?: string): boolean {
+  return Date.now() - stateFor(sessionId).lastActivityAt > maxIdleMs
 }

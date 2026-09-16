@@ -51,7 +51,7 @@ export const 队列恢复: SceneDef = {
       updatedAt: inFlightEntry.enqueuedAt,
     })
     await sessionTurnStore.transition(inFlightEntry.turnId, "running")
-    resetRuntimeQueueForTest()
+    await resetRuntimeQueueForTest()
     const recovered = await recoverRuntimeQueue()
     if (recovered.requeued !== 1) throw new Error("启动扫描未重新入队 persisted 请求")
     if (recovered.quarantined !== 1) throw new Error("启动扫描未隔离 dispatched 请求")

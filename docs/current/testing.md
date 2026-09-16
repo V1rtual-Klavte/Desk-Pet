@@ -21,7 +21,7 @@ pnpm run test:release
 - `--strict` 会再将 coverage/rule 缺口作为运行门禁；coverage 引用必须指向实际发现、module 与 `contractId` 都匹配的 Scene，`boundary`/`error` 规则只统计同名 tag。
 - 两条防退化门禁：每个 Contract 至少有一个非 `unit` 场景（做不到的必须显式声明 `unitOnly` 并写明原因）；`unit` 场景的 timeout 不得超过 10s。没有前者，全部场景都能退化成「不跑模型」而报告依旧全绿。
 - Live Test 覆盖真实 Provider、人格、工具、变量和记忆等跨模块链路时具有价值，但依赖模型、配置和外部环境。
-- 每个 trial 在执行前都会等待上次会话文件写入完成，并清理 session 文件、UI index、工作记忆、长期记忆、变量池、聊天状态、预处理去重状态和 AI 锁。`meta.repetitions` 是该场景最低 trial 数，CLI `--repeat` 只能提高它。超时、初始化失败和 Provider/网络/认证类错误以单独状态记录，不能记为 skip 或 pass。
+- 每个 trial 在执行前都会取消并等待上次 Agent 收尾，再清理 session 文件、UI index、工作记忆、长期记忆、变量池、聊天状态、预处理去重状态和 AI 锁。超时、初始化失败和 Provider/网络/认证类错误以单独状态记录；兜底回复不改变失败结论。
 - 报告使用 `desk-pet-live/v2` schema，记录数据集版本、commit、Card 种子 hash、每轮耗时/工具数/重试数/回复长度/可用的浏览器堆指标、错误分类和 `pass@k`、`pass^k`。`pass@k` 仅说明至少一个 trial 成功；发布门禁要求所有 trial 都成立。
 - `entry: "production"` 场景经过 `sendMessage()`；`entry: "runtime"` 验证 Pi runtime 适配层；`entry: "unit"` **不进入模型**，直接执行断言，默认超时 10s。断言只依赖进程内状态（纯函数、注册表、变量池）时用 unit —— 让它去跑真实 LLM 既不增加信息量，又把场景成败绑到 Provider 抖动上。`production-chat-entry` 是当前严格双 trial smoke。
 - 重试耗尽时 runtime 会在 `PiAgentTurnOutput.failure` 上带结构化原因（`timeout`/`auth`/`rate_limit`/`network`/`provider`/`unknown`），报告据此分类；只有兜底文案的话，Provider 故障会被记成 assertion 失败，观测直接失效。
@@ -31,11 +31,11 @@ pnpm run test:release
 - 变更后应按影响范围更新 Contract 和 Scene；测试通过只能证明已覆盖的契约，不代表未覆盖功能已验证。
 - Live Test 不再经过 Vitest/Node mock；`live-test-main.ts` 是唯一执行入口。
 
-## 当前验证基线（2026-09-15）
+## 当前验证基线（2026-09-16）
 
 - `pnpm run test:types` 已通过。
 - `pnpm run test:smoke` 的 `production-chat-entry` 严格双 trial 已通过，证明 `sendMessage()`、真实 Provider、Tauri IPC、临时数据根、专属浏览器 keyspace 和会话写入入口可用。
-- `pnpm test -- --module memory --strict` 17/17 场景通过；`pnpm test -- --module agent-runtime --strict --repeat 3` 18/18 trial 通过。两者覆盖 queued 恢复、AgentSlot generation、steer/followUp 持久化、Plan 恢复、PromptSnapshot、画像投影和上下文预算。
+- 本轮 session 严格绑定改造后，`pnpm test -- --module memory --contracts selected --strict` 18/18 场景通过，`pnpm test -- --module agent-runtime --contracts selected --strict` 6/6 场景通过。两者覆盖 queued 恢复、AgentSlot generation、steer/followUp 持久化、Plan 恢复、PromptSnapshot、画像投影、上下文预算和异步压缩写回。
 - `memory-multi-turn` 验证用户事实写入并跨轮保留在会话工作记忆；它不声称长期记忆自动检索已经接通。
 - safety 与 tool-execution 已建立 Contract 与场景（`safety-hook-errors`、`safety-trust-lifecycle`、`tool-cancelled`、`tool-provider-network-boundary` 等）。
 - **2026-09-16 采集**：`pnpm test -- --strict --repeat 2` = **161/161**（零 fail / 零 timeout / 零 skip，约 30s），8 份 Contract 全部有效且无 GAP。这是第一次跑通的严格全量。报告会在清理临时数据根前复制到 `~/.deskpet-live-test-reports/`（保留最近 20 份）。

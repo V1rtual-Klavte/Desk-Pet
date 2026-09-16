@@ -16,7 +16,7 @@
 - **桌面常驻** — 无边框透明窗口，角色在所有桌面和全屏 Space 悬浮
 - **AI 聊天** — Card 驱动人格，兼容 OpenAI、DeepSeek、Ollama 等 OpenAI 兼容接口
 - **会话管理** — 多会话切换、新建、关闭、归档、恢复和会话文件持久化
-- **会话运行槽与队列化入口** — 聊天消息先将 queued 事实事件原子写入 sessions，再进入 Pi；SessionTurnStore 通过版本/CAS 记录 queued 到 done/failed，按 sessionId 隔离的 AgentSlot 持有当前 Agent 和 generation；忙碌输入先落盘再投递 steer/followUp，暂不可投递时保留 deferred 等待 drain 或重启恢复
+- **会话运行槽与队列化入口** — 聊天消息先将 queued 事实事件原子写入 sessions，再进入 Pi；Agent、运行阶段、上下文和异步写回均绑定 sessionId；steer/followUp 在 Agent 消费结束后才进入 accepted/done，结构化失败不会因存在兜底文案而记为成功
 - **可恢复 Plan** — 助手模式的 Plan、step、子代理工具开始/结束均写入 session checkpoint；重启后只读步骤可回到 pending，缺少完成凭证的外部副作用进入 unknown_side_effect
 - **分层上下文** — ContextKernel 固定 `static → dynamic → profile → memory → transcript → ephemeral` 顺序，并记录预算裁剪原因
 - **Prompt 审计** — Runtime 在上下文变换和 Provider payload 两个阶段保存脱敏 Prompt 快照，并以请求、回合和运行代际关联

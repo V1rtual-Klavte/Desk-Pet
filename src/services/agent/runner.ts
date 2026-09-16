@@ -29,13 +29,14 @@ const runtimeQueue = new RuntimeQueue()
 const preprocessStates = new Map<string, { lastUserText?: string; lastUserTime?: number }>()
 
 /** Test isolation hook; production queue state is intentionally process-local. */
-export function resetRuntimeQueueForTest(): void {
+export async function resetRuntimeQueueForTest(): Promise<void> {
+  await agentSlots.abortAndWaitAll()
   runtimeQueue.clear()
   preprocessStates.clear()
   sessionTurnStore.reset()
   planCheckpointStore.reset()
-  agentSlots.reset()
 }
+export async function abortAgentRuns(): Promise<void> { await agentSlots.abortAndWaitAll() }
 export function getRuntimeQueueSnapshot(): QueueEntry[] { return runtimeQueue.snapshot() }
 
 /** Rehydrate safe queue entries and quarantine in-flight entries after restart. */
@@ -99,6 +100,18 @@ async function persistQueueAck(entry: QueueEntry, ack: QueueAck): Promise<void> 
   if (!ok) log.warn(`queue ack 事件落盘失败: ${entry.queueId}/${ack.state}`)
 }
 
+async function settleDeliveredEntries(sessionId: string, succeeded: boolean): Promise<void> {
+  const delivered = runtimeQueue.snapshot().filter(entry =>
+    entry.sessionId === sessionId && (entry.ackState === "steered" || entry.ackState === "followup"),
+  )
+  for (const entry of delivered) {
+    const state = succeeded ? "accepted" : "unknown_side_effect"
+    const ack = runtimeQueue.acknowledge(entry.queueId, state, succeeded ? undefined : "parent_turn_failed")
+    if (ack) await persistQueueAck(entry, ack)
+    await sessionTurnStore.transition(entry.turnId, succeeded ? "done" : "unknown_side_effect")
+  }
+}
+
 /** 工具调用历史（供 UI 展示人格化过程） */
 export const toolCallHistory = {
   entries: [] as { toolName: string; status: string; personalityMsg?: string }[],
@@ -139,6 +152,9 @@ export interface SendMessageOptions {
 export interface SendMessageResult {
   reply: string
   toolCallsMade: number
+  retriesUsed: number
+  outcome: "queued" | "succeeded" | "failed"
+  failure?: import("@/services/engine/pi").TurnFailure
   personalityEffect: { expression: string; soundEvent: string | null }
 }
 
@@ -218,7 +234,6 @@ async function dispatchMessage(text: string, options: SendMessageOptions = {}, p
         const ack = runtimeQueue.acknowledge(entry.queueId, receipt)
         if (ack) await persistQueueAck(entry, ack)
         await sessionTurnStore.transition(entry.turnId, "running")
-        await sessionTurnStore.transition(entry.turnId, "done")
         log.info(`AI 生成中，用户消息已投递为 ${receipt}:`, requestId)
       } else {
         const ack = runtimeQueue.acknowledge(entry.queueId, "deferred")
@@ -228,6 +243,8 @@ async function dispatchMessage(text: string, options: SendMessageOptions = {}, p
       return {
         reply: "",
         toolCallsMade: 0,
+        retriesUsed: 0,
+        outcome: "queued",
         personalityEffect: { expression: "idle", soundEvent: null },
       }
     }
@@ -235,6 +252,8 @@ async function dispatchMessage(text: string, options: SendMessageOptions = {}, p
     return {
       reply: "（糖糖正在想事情，等一下再发哦～）",
       toolCallsMade: 0,
+      retriesUsed: 0,
+      outcome: "succeeded",
       personalityEffect: { expression: "idle", soundEvent: null },
     }
   }
@@ -247,7 +266,7 @@ async function dispatchMessage(text: string, options: SendMessageOptions = {}, p
 
   try {
     // ── Step 1: 预处理 ──
-    transition("PRE")
+    transition("PRE", originSessionId)
     const preprocessState = preprocessStates.get(originSessionId) ?? {}
     preprocessStates.set(originSessionId, preprocessState)
     const preResult = pendingEntry
@@ -264,17 +283,21 @@ async function dispatchMessage(text: string, options: SendMessageOptions = {}, p
         // slash 命令输出 → 以系统消息推送
         const { pushSystemMessage } = await import("@/services/session/messages");
         pushSystemMessage(preResult.response)
-        transition("WAITING")
+        transition("WAITING", originSessionId)
         return {
           reply: preResult.response,
           toolCallsMade: 0,
+          retriesUsed: 0,
+          outcome: "succeeded",
           personalityEffect: { expression: "idle", soundEvent: null },
         }
       }
-      transition("WAITING")
+      transition("WAITING", originSessionId)
       return {
         reply: "",
         toolCallsMade: 0,
+        retriesUsed: 0,
+        outcome: "succeeded",
         personalityEffect: { expression: "idle", soundEvent: null },
       }
     }
@@ -287,6 +310,8 @@ async function dispatchMessage(text: string, options: SendMessageOptions = {}, p
       return {
         reply: "",
         toolCallsMade: 0,
+        retriesUsed: 0,
+        outcome: "succeeded",
         personalityEffect: { expression: "idle", soundEvent: null },
       }
     }
@@ -314,25 +339,33 @@ async function dispatchMessage(text: string, options: SendMessageOptions = {}, p
     resetUnanswered()
 
     // ── Step 3: 进入 Generating 状态 ──
-    transition("GENERATING")
+    transition("GENERATING", originSessionId)
 
     // ── Step 4: 运行 Agent Loop ──
     const dispatched = runtimeQueue.acknowledge(activeQueueEntry.queueId, "dispatched")
     if (dispatched) await persistQueueAck(activeQueueEntry, dispatched)
     await sessionTurnStore.transition(activeQueueEntry.turnId, "running")
     toolCallHistory.clear()
+    const storedMessages = await MemoryService.loadSessionMessages(originSessionId) ?? []
+    const contextMessages = storedMessages.map((message, index) => ({
+      id: `session:${originSessionId}:${message.timestamp}:${index}`,
+      role: message.role,
+      text: message.text,
+      timestamp: message.timestamp,
+    }))
     const result = await runPiAgentTurn({
       sessionId: originSessionId,
       userText: preResult.text,
-      chatMessages: getContextMessages(),
+      chatMessages: contextMessages,
       unansweredCount: unansweredCount.value,
-      messageCount: getContextMessages().length,
+      messageCount: contextMessages.length,
       isActiveMessage: false,
       isRetry: false,
       ingress,
       runGeneration,
       turnId: activeQueueEntry.turnId,
     })
+    await settleDeliveredEntries(originSessionId, !result.failure)
 
     // ── Step 5: 提取人格效果（Pi Runtime 已通过 generateReply 处理）──
     const lastEffect = result.effects.length > 0
@@ -354,15 +387,19 @@ async function dispatchMessage(text: string, options: SendMessageOptions = {}, p
     }
 
     await MemoryService.flushSessionWrites()
-    const accepted = runtimeQueue.acknowledge(activeQueueEntry.queueId, "accepted")
-    if (accepted) await persistQueueAck(activeQueueEntry, accepted)
-    await sessionTurnStore.transition(activeQueueEntry.turnId, "done")
+    const terminalState = result.failure ? "failed" : "accepted"
+    const terminal = runtimeQueue.acknowledge(activeQueueEntry.queueId, terminalState, result.failure?.kind)
+    if (terminal) await persistQueueAck(activeQueueEntry, terminal)
+    await sessionTurnStore.transition(activeQueueEntry.turnId, result.failure ? "failed" : "done")
     await sessionTurnStore.flush(originSessionId)
 
-    transition("WAITING")
+    transition("WAITING", originSessionId)
     return {
       reply: result.reply,
       toolCallsMade: result.toolCallHistory.length,
+      retriesUsed: result.retriesUsed,
+      outcome: result.failure ? "failed" : "succeeded",
+      ...(result.failure ? { failure: result.failure } : {}),
       personalityEffect: {
         expression: lastEffect.expression,
         soundEvent: lastEffect.soundEvent,
@@ -394,10 +431,13 @@ async function dispatchMessage(text: string, options: SendMessageOptions = {}, p
       const { pushSystemMessage } = await import("@/services/session/messages")
       pushSystemMessage(`LLM 调用失败，已降级回复：${summarizeError(e)}`)
     }
-    transition("WAITING")
+    transition("WAITING", originSessionId)
     return {
       reply: fallback,
       toolCallsMade: 0,
+      retriesUsed: 0,
+      outcome: "failed",
+      failure: { kind: "unknown", message: summarizeError(e) },
       personalityEffect: { expression: "sleepy", soundEvent: null },
     }
   } finally {

@@ -166,7 +166,7 @@ src-tauri/src/
   -> Vue 展示最终文本与效果
 ```
 
-普通聊天 ingress 在调用 Pi 前先通过 RuntimeQueue 写入 `queued` session event；SessionTurnStore 通过 session 版本/CAS 记录 `queued → dispatching → running → done/failed`，Pi 完成后追加 `accepted`/`failed` queue ack。启动会扫描 session event：`persisted/requeued/deferred` 重新入队，进行中的 queue/turn 写 recovery 并隔离为未知副作用。AgentSlot 按 sessionId 持有当前 Pi Agent 与单调 generation，旧异步清理不能结束新 run；会话切换会回收空闲 slot，运行中的 slot 保留到结束。忙碌期间的新输入必须先落盘，再按 Agent 阶段调用 Pi `steer`/`followUp` 并写 `steered`/`followup` 回执；暂不可投递则写 `deferred` 并保留待处理状态。
+普通聊天 ingress 在调用 Pi 前先通过 RuntimeQueue 写入 `queued` session event；SessionTurnStore 通过 session 版本/CAS 记录 `queued → dispatching → running → done/failed`，Pi 完成后追加 `accepted`/`failed` queue ack。AgentSlot、运行阶段、上下文读取和异步写回均严格绑定 sessionId；忙碌输入先落盘并写 `steered`/`followup`，只有 Agent 消费结束后才进入 `accepted`/`done`。结构化失败即使带可显示的兜底文案也保持失败结论；启动恢复隔离未知副作用。
 
 Pi Runtime 在 `transformContext` 与 `provider_payload` 两个阶段发布脱敏 Prompt 快照；快照只保存输入输出 hash、层级、工具策略和请求/回合/运行代际关联，原始 Prompt 不落盘。
 

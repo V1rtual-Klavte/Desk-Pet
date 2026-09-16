@@ -28,7 +28,7 @@ import {
   appendSessionEventToSession,
   listQueueRecoveryRecords,
   flushSessionWrites,
-  writeCompactionSummary as _writeCompactionSummary, getCompactionSummarySync,
+  writeCompactionSummary as _writeCompactionSummary, writeCompactionSummaryToSession as _writeCompactionSummaryToSession, getCompactionSummarySync,
   archiveSession as _archiveSession, loadArchivedSession,
   listSessionFiles as _listSessionFiles,
   getSession, getSessionId, getSessionTurnCount, getProjectCount, getSessionFilename,
@@ -214,6 +214,10 @@ export const MemoryService = {
     problems: string; userMessages: string[]; tasks?: string[]
     currentWork: string; nextSteps: string
   }): Promise<void> { return _writeCompactionSummary(opts) },
+  async writeCompactionSummaryToSession(sessionId: string, opts: Omit<CompactionSummary, "generatedAt">, expectedVersion?: number): Promise<boolean> {
+    await ensureInit()
+    return _writeCompactionSummaryToSession(sessionId, opts, expectedVersion)
+  },
   getCompactionSummarySync(): string { return getCompactionSummarySync() },
 
   // ── 会话归档 ──

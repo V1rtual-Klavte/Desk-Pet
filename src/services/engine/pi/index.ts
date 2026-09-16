@@ -6,6 +6,7 @@ export type {
   PiAgentTurnOutput,
   PiSubAgentInput,
   PiSubAgentOutput,
+  TurnFailure,
 } from "./runtime"
 
 export {

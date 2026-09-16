@@ -22,7 +22,7 @@ import type { PersonalityEffect } from "@/services/personality/middleware"
 import { getFallbackReply, getSimpleStage, getStagePrompt } from "@/services/personality/stages-cache"
 import { generateReply } from "@/services/reply"
 import { checkSafety, requestConfirm, trustSignature, trustToolInSession } from "@/services/safety"
-import { pushMessage } from "@/services/session/store"
+import { getActiveSessionId, pushMessage } from "@/services/session/store"
 import { getToolByName, getToolsForMode } from "@/services/tool/registry"
 import { executeTool } from "@/services/tool/router"
 import type { ActionCategory, ToolDef } from "@/services/tool/types"
@@ -165,8 +165,8 @@ export async function runPiAgentTurn(input: PiAgentTurnInput): Promise<PiAgentTu
   const toolCallHistory: PiAgentTurnOutput["toolCallHistory"] = []
   const effects: PiAgentTurnOutput["effects"] = []
 
-  recordMessage()
   const turnSessionId = input.sessionId || MemoryService.sessionId
+  recordMessage(turnSessionId)
   // 主动搭话的 userText 是系统拼的窗口上下文，不是用户输入。落盘会让会话主题
   // 提取拿它当首条用户消息，重载后还会显示成用户气泡并进入长期记忆。
   if (!isActiveMessage) await persistTurn(turnSessionId, "user", userText)
@@ -188,7 +188,7 @@ export async function runPiAgentTurn(input: PiAgentTurnInput): Promise<PiAgentTu
     if (forcePlan) planUserText = userText.replace(/^--plan\s*/, "")
     const complexity = await evaluateComplexity(planUserText, planConfig.keywords)
     if (complexity.score >= planConfig.complexityThreshold) {
-      transition("PLANNING")
+      transition("PLANNING", turnSessionId)
       applyEffect(PetPersonalityMiddleware.wrap("planning"), effects)
       const plan = await generatePlan(planUserText, {
         cardId: card?.id ?? "neutral",
@@ -236,7 +236,7 @@ export async function runPiAgentTurn(input: PiAgentTurnInput): Promise<PiAgentTu
           for (const step of plan.steps) await planCheckpointStore.transitionStep(planId, String(step.id), "skipped")
           await planCheckpointStore.transitionPlan(planId, "failed")
           notifyPlanEnd("cancelled")
-          transition("WAITING")
+          transition("WAITING", turnSessionId)
           const reply = getSimpleStage("planning") ?? "好的，已取消计划～"
           await persistTurn(turnSessionId, "assistant", reply)
           return { reply, toolCallHistory, retriesUsed: 0, effects: [] }
@@ -335,7 +335,7 @@ export async function runPiAgentTurn(input: PiAgentTurnInput): Promise<PiAgentTu
     }
     // Replaying a failed model request is safe only before any side-effecting tool ran.
     if (result.toolCallsMade > 0 || attempt >= loopConfig.maxRetry) {
-      transition("WAITING")
+      transition("WAITING", turnSessionId)
       applyEffect(PetPersonalityMiddleware.wrap("error", { message: result.error }), effects)
       const reply = getFallbackReply("maxRetriesExhausted")
       await persistTurn(turnSessionId, "assistant", reply)
@@ -354,7 +354,7 @@ export async function runPiAgentTurn(input: PiAgentTurnInput): Promise<PiAgentTu
   effects.push({ expression: processed.expression, soundEvent: processed.sound })
   emit("deskpet-expression", { expression: processed.expression }).catch(() => {})
   if (processed.sound) emit("deskpet-sound", { event: processed.sound }).catch(() => {})
-  transition("WAITING")
+  transition("WAITING", turnSessionId)
   await persistTurn(turnSessionId, "assistant", processed.text)
   compactOnHighUsage(chatMessages, userText)
   return { reply: processed.text, toolCallHistory, retriesUsed, effects, runtimeData: processed.runtimeData }
@@ -586,9 +586,9 @@ async function runPiLoop(input: PiLoopInput): Promise<PiLoopOutput> {
         return { block: true, reason: `工具 ${toolCall.name} 不可用` }
       }
 
-      recordToolCall()
+      recordToolCall(input.sessionId)
       const category = tool.actionCategory ?? "_default"
-      transition("EXECUTING")
+      transition("EXECUTING", input.sessionId)
       if (effects) applyEffect(PetPersonalityMiddleware.wrap("executing", { actionCategory: category, toolName: tool.name }), effects)
       emitToolEvent("tool-executing", { toolId: tool.name, toolName: tool.name })
 
@@ -631,7 +631,7 @@ async function runPiLoop(input: PiLoopInput): Promise<PiLoopOutput> {
       if (event.type === "turn_end") agentSlots.markDeliveryPhase(input.sessionId, input.runGeneration, "settling")
     }
     if (event.type === "message_end" && input.persistToolMessages) {
-      persistPiMessage(event.message, persistedMessageIds)
+      persistPiMessage(event.message, persistedMessageIds, input.sessionId)
     }
     if (event.type === "tool_execution_end") {
       emitToolEvent("tool-completed", {
@@ -649,16 +649,14 @@ async function runPiLoop(input: PiLoopInput): Promise<PiLoopOutput> {
   let timedOut = false
   const timer = setTimeout(() => { timedOut = true; agent.abort() }, input.timeoutMs)
   try {
-    transition("GENERATING")
+    transition("GENERATING", input.sessionId)
     const initial = agent.state.messages
     const last = initial[initial.length - 1]
     if (last?.role === "user") await agent.continue()
     else await agent.prompt(input.userText)
   } catch (error) {
     if (timedOut) {
-      return input.timeoutReply
-        ? { reply: input.timeoutReply, toolCallsMade }
-        : { reply: "", toolCallsMade, error: "子代理执行超时" }
+      return { reply: input.timeoutReply ?? "", toolCallsMade, error: "Agent 执行超时" }
     }
     return { reply: "", toolCallsMade, error: formatError(error) }
   } finally {
@@ -676,9 +674,7 @@ async function runPiLoop(input: PiLoopInput): Promise<PiLoopOutput> {
   }
 
   if (timedOut) {
-    return input.timeoutReply
-      ? { reply: input.timeoutReply, toolCallsMade }
-      : { reply: "", toolCallsMade, error: "子代理执行超时" }
+    return { reply: input.timeoutReply ?? "", toolCallsMade, error: "Agent 执行超时" }
   }
 
   const lastAssistant = [...agent.state.messages].reverse().find((message): message is AssistantMessage => message.role === "assistant")
@@ -788,7 +784,8 @@ function toPiMessages(messages: Message[], model = getPiModel()): PiMessage[] {
   return result
 }
 
-function persistPiMessage(message: AgentMessage, seen: Set<string>): void {
+function persistPiMessage(message: AgentMessage, seen: Set<string>, sessionId?: string): void {
+  if (sessionId && getActiveSessionId() !== sessionId) return
   if (message.role === "assistant") {
     const toolCalls = message.content.filter((part): part is Extract<typeof part, { type: "toolCall" }> => part.type === "toolCall")
     if (toolCalls.length === 0) return

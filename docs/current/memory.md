@@ -22,7 +22,7 @@
 - 主动搭话写 `origin=active`、`eligibleForMemory=false`、`querySource=active_monitor`，不产生用户事实事件。
 - 上下文由 ContextKernel 按 `static → dynamic → profile → memory → transcript → ephemeral` 固定层级裁剪；`User.md` 以只读 profile projection 进入 profile 层。
 - PromptSnapshot 在 `transformContext` 和 `provider_payload` 两阶段发布，只保存 hash、层级、工具策略和关联 ID，原始 Prompt 不落盘。
-- 压缩由 `compactOnHighUsage()` 在上下文接近阈值时调用 LLM 生成结构化摘要并写回会话文件，不做消息切片；`compactMessages()` / `groupMessageUnits()` 的「保留最近 40%」截断没有生产调用点。API round 分级摘要、compaction 版本与 lock 仍未实施。
+- 压缩由 `compactOnHighUsage()` 在上下文接近阈值时捕获 sessionId 和文件版本；LLM 返回后仅在版本仍匹配时写回目标会话，过期结果直接丢弃。API round 分级摘要仍未实施。
 
 ## 当前限制
 

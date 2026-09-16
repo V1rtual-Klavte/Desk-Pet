@@ -26,7 +26,7 @@
 
 这份文档保留设计和玩法的历史细节；`docs/current/` 用来记录已经与代码核对过的当前契约，`docs/history/` 只用于查阅阶段决策。
 
-记忆系统的运行时基础契约见[记忆系统运行时契约](plans/active/记忆系统运行时契约.md)；当前 `sendMessage()` 已先持久化 queued 事件再调用 Pi，SessionTurnStore 通过版本/CAS 记录 queued 到 done/failed，并写入 queue ack。启动会恢复 persisted/requeued/deferred 请求，对进行中的 queue/turn 写 recovery 并隔离未知副作用；AgentSlot 按会话持有当前 Agent 与 generation，旧回合的异步清理不会释放新 run。工具执行期间的新输入先落盘再 steer，Agent settling 边界改用 followUp。助手模式 Plan、step 和子代理工具边界写入 checkpoint；恢复时只读步骤可重置，未知外部副作用被隔离。ContextKernel 已固定六层 block 顺序并执行预算裁剪，长期召回仍属于后续阶段。工具侧的门禁走 Pi 原生 `beforeToolCall`（fail-closed），配合 deny-first 会话信任顺序和按调用的 operationId/policyHash 审计；会话正文只写一份 `deskpet-turn` 记录，事件视图在读取时从 turn 投影，压缩由 LLM 生成结构化摘要写回会话文件。Rust bash 已改为不可关闭的两层 token 基线，并且不再整读输出（尾部窗口 + 分块统计，超时缺省 120s）；`app_open` 已补路径校验并改走 `ShellExecuteW`；截断的工具输出会把完整内容留在 spill 文件里供模型按需读取；会话信任的粒度是「工具 + 本次参数」。文件工具的路径分级（私钥凭据 NOWAY、`.env` 与系统目录 DANGER）已接到 `pi-read`/`pi-write`/`pi-edit` 上。实际执行顺序、阶段门禁和新会话接力见[记忆系统重构执行手册](plans/active/记忆系统重构执行手册.md)。
+记忆系统的运行时基础契约见[记忆系统运行时契约](plans/active/记忆系统运行时契约.md)；`sendMessage()` 先持久化 queued 事件再调用 Pi，SessionTurnStore 通过版本/CAS 记录 queued 到 done/failed。Agent、运行阶段、上下文和异步摘要写回均严格绑定 sessionId；steer/followUp 只有在 Agent 消费结束后才进入 accepted/done，结构化失败不会因兜底文案而伪装成成功。启动恢复会隔离未知副作用。Plan、ContextKernel、PromptSnapshot、工具门禁、bash 基线和路径安全的详细状态见[记忆系统重构执行手册](plans/active/记忆系统重构执行手册.md)。
 
 2026-08-06 的全仓阶段审查、记忆系统边界、测试覆盖和后续优先级见 [阶段现状](history/analysis/阶段现状-2026.8.6.md)。
 

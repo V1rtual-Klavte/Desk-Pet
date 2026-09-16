@@ -162,6 +162,15 @@ export class AgentSlotRegistry {
     for (const slot of this.slots.values()) slot.agent?.abort()
     this.slots.clear()
   }
+
+  async abortAndWaitAll(): Promise<void> {
+    const runs = [...this.slots.values()].map(async slot => {
+      slot.agent?.abort()
+      await slot.agent?.waitForIdle().catch(() => undefined)
+    })
+    await Promise.allSettled(runs)
+    this.slots.clear()
+  }
 }
 
 export const agentSlots = new AgentSlotRegistry()

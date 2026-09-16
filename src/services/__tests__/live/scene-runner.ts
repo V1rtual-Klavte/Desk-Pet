@@ -10,7 +10,7 @@ import type {
 } from "./types"
 import type { PiAgentTurnOutput } from "@/services/engine/pi"
 import { runPiAgentTurn } from "@/services/engine/pi"
-import { sendMessage, sendActiveMessage, toolCallHistory as productionToolHistory } from "@/services/agent/runner"
+import { abortAgentRuns, sendMessage, sendActiveMessage, toolCallHistory as productionToolHistory } from "@/services/agent/runner"
 import { getPoolSnapshot } from "@/services/personality/variable-pool"
 import { getSession } from "@/services/engine/session"
 import { getContextMessages } from "@/services/session/store"
@@ -75,8 +75,9 @@ async function executeTurn(userText: string, entry: SceneEntry, isActiveMessage 
     return {
       reply: result.reply,
       toolCallHistory: productionToolHistory.entries.map(item => ({ ...item })),
-      retriesUsed: 0,
+      retriesUsed: result.retriesUsed,
       effects: [result.personalityEffect],
+      ...(result.failure ? { failure: result.failure } : {}),
     }
   }
 
@@ -206,7 +207,7 @@ async function runSceneInner(scene: SceneDef, trial: number): Promise<SceneResul
 
   const duration = Date.now() - start
   const allTurnsPassed = turnResults.length === scene.turns.length
-    && turnResults.every(turn => turn.assertions.every(assertion => assertion.pass))
+    && turnResults.every(turn => !turn.errorKind && turn.assertions.every(assertion => assertion.pass))
   const firstErrorKind = turnResults.find(turn => turn.errorKind)?.errorKind
 
   return {
@@ -236,6 +237,7 @@ export async function runScene(scene: SceneDef, trial = 1): Promise<SceneResult>
       }),
     ])
   } catch (error) {
+    if (error instanceof SceneTimeoutError) await abortAgentRuns()
     return {
       caseId: scene.meta.caseId,
       scene: scene.meta.description,

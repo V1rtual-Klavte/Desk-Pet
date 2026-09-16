@@ -15,8 +15,8 @@ export const agentRuntimeContract: ModuleContract = {
     "src/services/session/manager.ts",
     "src/services/session/persistence.ts",
   ],
-  generatedAt: "2026-09-15",
-  sourceHash: "89607c47eec0486dea8fb703ccdce4b646dfb76df884a858f2c7e97cca70678c",
+  generatedAt: "2026-09-16",
+  sourceHash: "9be93336a5eae0189259aad236197c3eec7b69250d945dfc9e02634d07e39e0e",
   coverage: [
     {
       id: "ar-01",
@@ -45,7 +45,7 @@ export const agentRuntimeContract: ModuleContract = {
     {
       id: "ar-04",
       feature: "会话 AgentSlot 生命周期",
-      description: "主回合按 sessionId 持有 Agent 和 generation，会话切换回收空闲 slot，旧 generation 不能结束新 run",
+      description: "主回合按 sessionId 持有 Agent、上下文、状态和 generation；会话切换不串历史，旧 generation 不能结束新 run",
       why: "模块级 Agent 引用和全局忙碌锁无法隔离不同会话，也会让迟到的异步清理释放后续回合",
       depth: "deep",
       scenarios: ["session-agent-slot-generation"],
@@ -53,7 +53,7 @@ export const agentRuntimeContract: ModuleContract = {
     {
       id: "ar-05",
       feature: "工具期间 steer 持久化投递",
-      description: "工具执行期间的新输入先写 QueueEntry 和 queued turn，再调用 Pi steer，最后写 steered 回执和 done 状态",
+      description: "工具执行期间的新输入先写 QueueEntry 和 queued turn，再调用 Pi steer；入口返回 queued，Agent 成功消费后才写 accepted/done，失败则隔离为 unknown_side_effect",
       why: "先调用 Pi 再落盘会在进程退出时丢失用户已经发出的方向调整",
       depth: "deep",
       scenarios: ["memory-steer-during-tool"],

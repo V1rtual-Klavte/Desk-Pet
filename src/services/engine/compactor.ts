@@ -111,6 +111,7 @@ export async function compactIncremental(
   newMessages: Message[],
   existingSummary: string | null,
   userIntent: string,
+  target?: { sessionId: string; expectedVersion?: number },
 ): Promise<CompactionSummary | null> {
   const text = messagesToText(newMessages)
   if (text.length < 50) return null // 内容太少，不值得压缩
@@ -130,7 +131,7 @@ export async function compactIncremental(
     if (!summary) return null
 
     // 写回 sessions/*.md
-    await MemoryService.writeCompactionSummary({
+    const summaryInput = {
       mainRequest: summary.mainRequest,
       keyTech: summary.keyTech,
       files: summary.files,
@@ -139,7 +140,9 @@ export async function compactIncremental(
       tasks: summary.tasks,
       currentWork: summary.currentWork,
       nextSteps: summary.nextSteps,
-    })
+    }
+    if (target) await MemoryService.writeCompactionSummaryToSession(target.sessionId, summaryInput, target.expectedVersion)
+    else await MemoryService.writeCompactionSummary(summaryInput)
 
     log.info("增量压缩完成", "mainRequest:", summary.mainRequest.substring(0, 50))
     return summary
@@ -339,11 +342,13 @@ export function compactOnHighUsage(recentMessages: Message[], userIntent: string
 
   log.info("轮次结束压缩触发:", `~${estimatedTokens}/${maxTokens} tokens`, `(${session.turns.length} 轮)`)
 
-  compactIncremental(
+  const sessionId = session.sessionId
+  void MemoryService.readSessionWriteVersion(sessionId).then(version => compactIncremental(
     recentMessages,
     MemoryService.getCompactionSummarySync() || null,
     userIntent,
-  ).then(summary => {
+    { sessionId, expectedVersion: version?.version },
+  )).then(summary => {
     if (summary) log.info("EoT 压缩完成")
   }).catch(e => {
     log.warn("EoT 压缩失败", formatError(e))

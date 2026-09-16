@@ -383,6 +383,44 @@ export async function writeCompactionSummary(opts: {
   log.info("压缩摘要已写入 sessions/")
 }
 
+export async function writeCompactionSummaryToSession(
+  sessionId: string,
+  opts: Omit<CompactionSummary, "generatedAt">,
+  expectedVersion?: number,
+): Promise<boolean> {
+  if (!sessionsDir) return false
+  return withLock(`session:${sessionId}`, async () => {
+    const files = await invoke<string[]>("list_session_files")
+    const filename = files.find(file => file.startsWith(sessionId))
+    if (!filename) return false
+    const current = await readSessionFile(filename)
+    const version = readSessionVersion(current)
+    if (expectedVersion !== undefined && version !== expectedVersion) {
+      log.info(`压缩摘要丢弃过期结果: ${sessionId} expected=${expectedVersion} current=${version}`)
+      return false
+    }
+    const summary = { ...opts, tasks: opts.tasks ?? [], generatedAt: Date.now() }
+    const section = [
+      "## 摘要",
+      `- 主请求: ${summary.mainRequest || "无"}`,
+      `- 关键技术: ${summary.keyTech.join(", ") || "无"}`,
+      `- 文件/代码: ${summary.files.join(", ") || "无"}`,
+      `- 问题及解决: ${summary.problems || "无"}`,
+      `- 提交的任务: ${summary.tasks.join(", ") || "无"}`,
+      `- 现在的工作: ${summary.currentWork || "无"}`,
+      `- 下一步: ${summary.nextSteps || "无"}`,
+      "",
+    ].join("\n")
+    const updated = writeSessionVersion(
+      current.replace(/## 摘要[\s\S]*?(?=## 对话记录)/, section),
+      version + 1,
+    )
+    const ok = await writeSessionFile(filename, updated)
+    if (ok && sessionMemory?.sessionId === sessionId) sessionMemory.compactionSummary = summary
+    return ok
+  })
+}
+
 export function getCompactionSummarySync(): string {
   const cs = sessionMemory?.compactionSummary
   if (!cs) return ""

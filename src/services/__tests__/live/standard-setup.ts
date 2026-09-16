@@ -75,6 +75,6 @@ export async function standardSetup(confirmPolicy: ConfirmPolicy = "deny"): Prom
   setAIGenerating(false)
   resetPreprocessorForTest()
   resetPiRuntimeProviderForTest()
-  resetRuntimeQueueForTest()
+  await resetRuntimeQueueForTest()
   await resetSessionPersistenceForTest()
 }
