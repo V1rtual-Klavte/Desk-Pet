@@ -157,7 +157,7 @@ src-tauri/src/
   -> context/buildPrompt -> ContextKernel
        static / dynamic / profile / memory / transcript / ephemeral 固定层级与预算裁剪
   -> 助手模式下可选 planner
-  -> Pi Agent Core + pi-ai 流 + ToolRouter（read/write/edit/bash/…）+ Safety 检查（deny-first）
+  -> Pi Agent Core + pi-ai Provider/Models 工厂 + ToolRouter（read/write/edit/bash/…）+ Safety 检查（deny-first）
        Skill 只注入 name/description/location，正文由模型用 read 工具按需加载
   -> reply/generator 解析 <RUNTIME_DATA>
        emotion -> 表情与音效
@@ -216,6 +216,8 @@ interface VariableState {
 
 当前长期记忆的自动提取和 Prompt 检索尚未闭环。不要在代码或文档中声称 `MemoryService.search()` 已经自动注入，或声称 `forkMemorySupplement()` 已经由每轮对话调用。
 `User.md` 通过带来源、版本和 taint 的只读 profile projection 进入 ContextKernel；长期记忆只接入空 `MemoryProvider`，当前每轮 recall 返回空集合。
+
+Provider 请求统一走 `engine/pi/model-gateway.ts`：由 Pi `createProvider()` / `createModels()` 构造，主回合和一次性文本请求共享配置快照、认证、增量响应上限和取消语义。SDK 内层重试关闭，回合重试共享一个总 deadline。长期记忆只能通过可注入 `MemoryProvider` 进入 Runtime；默认空实现，provider 有 1.5 秒召回时限和 token 预算边界。
 
 ## 单一真相源（SSOT）
 
@@ -482,5 +484,3 @@ chore(deps): 引入 chrono 与 thiserror
 ## 核心方针
 
 轻量化、低内存占用、高性能、token 消耗少、功能完整。
-
-Provider 请求统一经 Pi `createProvider` / `createModels` gateway：内置模型沿用 Pi 的协议和能力目录，自定义模型走 OpenAI-compatible 工厂；运行中的模型绑定配置快照。响应体按 chunk 限流并传播取消，不再整段缓冲 SSE。主回合重试共享总 deadline，关闭 SDK 嵌套重试，认证失败、超时或已执行工具后不重放回合。

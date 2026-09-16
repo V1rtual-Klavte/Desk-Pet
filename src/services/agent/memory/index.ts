@@ -6,7 +6,7 @@
 import { invoke } from "@tauri-apps/api/core"
 import { createLogger } from "@/services/logger"
 
-export { emptyMemoryProvider } from "./provider"
+export { emptyMemoryProvider, getMemoryProvider, installMemoryProvider, recallMemory, resetMemoryProvider } from "./provider"
 export type { MemoryProvider, MemoryProjection, MemoryRecallRequest } from "./provider"
 import type { MemoryEntry, ProjectEntry, SessionFileMeta, SessionMemory, CompactionSummary } from "./types"
 
@@ -29,6 +29,7 @@ import {
   listQueueRecoveryRecords,
   flushSessionWrites,
   writeCompactionSummary as _writeCompactionSummary, writeCompactionSummaryToSession as _writeCompactionSummaryToSession, getCompactionSummarySync,
+  getCompactionSummaryForSession,
   archiveSession as _archiveSession, loadArchivedSession,
   listSessionFiles as _listSessionFiles,
   getSession, getSessionId, getSessionTurnCount, getProjectCount, getSessionFilename,
@@ -219,6 +220,10 @@ export const MemoryService = {
     return _writeCompactionSummaryToSession(sessionId, opts, expectedVersion)
   },
   getCompactionSummarySync(): string { return getCompactionSummarySync() },
+  async getCompactionSummaryForSession(sessionId: string): Promise<string> {
+    await ensureInit()
+    return getCompactionSummaryForSession(sessionId)
+  },
 
   // ── 会话归档 ──
   async archiveSession(): Promise<string | null> {

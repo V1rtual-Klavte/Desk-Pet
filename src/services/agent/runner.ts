@@ -332,6 +332,10 @@ async function dispatchMessage(text: string, options: SendMessageOptions = {}, p
     const reserved = runtimeQueue.reserveEntry(activeQueueEntry.queueId)
     if (!reserved) throw new Error(`queued 事件无法 reserve: ${activeQueueEntry.queueId}`)
     activeQueueEntry = reserved
+    agentSlots.bindRun(originSessionId, runGeneration, {
+      requestId: activeQueueEntry.requestId,
+      turnId: activeQueueEntry.turnId,
+    })
     await persistQueueAck(activeQueueEntry, { queueId: reserved.queueId, turnId: reserved.turnId, state: "reserved" })
     await sessionTurnStore.transition(activeQueueEntry.turnId, "dispatching", { attempt: activeQueueEntry.attempt })
 
@@ -484,13 +488,20 @@ export async function sendActiveMessage(userText: string): Promise<string> {
   const runGeneration = agentSlots.begin(sessionId)
   if (runGeneration === undefined) return ""
   setAIGenerating(true)
+  agentSlots.bindRun(sessionId, runGeneration, { requestId: ingress.requestId })
   try {
+    const activeMessages = (await MemoryService.loadSessionMessages(sessionId) ?? []).map((message, index) => ({
+      id: `session:${sessionId}:${message.timestamp}:${index}`,
+      role: message.role,
+      text: message.text,
+      timestamp: message.timestamp,
+    }))
     const result = await runPiAgentTurn({
       sessionId,
       userText,
-      chatMessages: getContextMessages(),
+      chatMessages: activeMessages,
       unansweredCount: unansweredCount.value,
-      messageCount: getContextMessages().length,
+      messageCount: activeMessages.length,
       isActiveMessage: true,
       ingress,
       runGeneration,

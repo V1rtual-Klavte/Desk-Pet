@@ -39,6 +39,7 @@ pnpm run test:release
 - `memory-multi-turn` 验证用户事实写入并跨轮保留在会话工作记忆；它不声称长期记忆自动检索已经接通。
 - safety 与 tool-execution 已建立 Contract 与场景（`safety-hook-errors`、`safety-trust-lifecycle`、`tool-cancelled`、`tool-provider-network-boundary` 等）。
 - **2026-09-16 采集**：`pnpm test -- --strict --repeat 2` = **161/161**（零 fail / 零 timeout / 零 skip，约 30s），8 份 Contract 全部有效且无 GAP。这是第一次跑通的严格全量。报告会在清理临时数据根前复制到 `~/.deskpet-live-test-reports/`（保留最近 20 份）。
+- **2026-09-16 runtime hardening 后**：`agent-runtime` 6/6、`memory` 18/18、`pnpm test -- --strict --report json` 85/85，均为零失败、零超时；覆盖 sessionId 强制绑定、可注入 MemoryProvider 和 Pi 工厂请求链。
 - 最近一次完整非严格运行（2026-09-15）为部分通过：agent-runtime 与 memory 模块全部通过；emotion 未产生 `RUNTIME_DATA emotion`、safety 与工具场景未触发真实工具调用、variable 场景没有 `RUNTIME_DATA` 变量行等既有真实模型断言失败。所有失败均为断言失败，没有 timeout、认证、网络或测试宿主错误。
 - coverage 缺口已补齐（8 份 Contract 0 空点），`pnpm run test:release` 不再因门禁早退。
 - **planner 的运行时接线仍未覆盖**：Plan 入口由 `generalConfig.assistantMode && planConfig.enabled` 双重把守，而 Live Test 恒以 pet 模式运行，触达不到。该 Contract 已显式声明 `unitOnly` 并写明原因。

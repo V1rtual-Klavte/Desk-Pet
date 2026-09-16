@@ -30,6 +30,7 @@ export interface BuildContextInput {
   thinkingEffort: ThinkingEffort
   isActiveMessage?: boolean
   memoryProjections?: MemoryProjection[]
+  sessionSummary?: string
   ephemeralText?: string
   ephemeralOrigin?: "active" | "hook" | "recovery" | "plan"
 }
@@ -91,7 +92,7 @@ export function buildPrompt(
   // ── ⑧ 记忆 ──
   const candy = MemoryService.getCandyInstructionsSync()
   const user = MemoryService.getUserProfileSync()
-  const sess = MemoryService.getCompactionSummarySync()
+  const sess = input.sessionSummary ?? ""
   const memoryPrompt = `${candy}${sess}`
   const profileProjection = createUserProfileProjection(user)
 

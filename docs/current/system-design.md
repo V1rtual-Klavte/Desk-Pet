@@ -47,6 +47,8 @@ LLM 可见回复文本 + <RUNTIME_DATA>
 
 运行时基础重构的目标协议见[记忆系统运行时契约](../plans/active/记忆系统运行时契约.md)，阶段进度见[执行手册](../plans/active/记忆系统重构执行手册.md)。`sendMessage()` 先写 queued，再通过版本/CAS 记录 turn 状态；Agent、运行阶段和上下文读取绑定 sessionId。AgentSlot 投递 steer/followUp 后，只有 Agent 消费结束才写 accepted/done；结构化失败保持 failed。测试超时会取消并等待在飞 Agent 收尾。压缩捕获目标 sessionId 和文件版本，过期结果不会覆盖新会话状态。长期召回仍未实现。
 
+主 Agent 的运行身份是 `sessionId + generation + requestId + turnId`：AgentSlot 保存进程内所有权和投递阶段，SessionTurnStore 保存可恢复的 queued/dispatching/running/done/failed 事实。主回合类型强制要求 sessionId；Prompt 历史、会话摘要、主动消息和异步压缩都按该 ID 读取或写回。长期召回只依赖 `MemoryProvider` 端口，默认空实现，provider 失败或超时会降级为空召回。
+
 ## 配置与运行时数据
 
 所有功能配置由运行时 `CONFIG.yaml` 经 `src/services/config.ts` 暴露。开发构建使用工作区 `CONFIG-DEV.yaml`（不存在时回退 `CONFIG.yaml`）；生产构建首次将默认配置初始化到 `data_root/settings/CONFIG.yaml`，设置页直接回写它。业务模块不得自行复制配置常量或以 localStorage 覆盖配置。
@@ -64,5 +66,3 @@ LLM 可见回复文本 + <RUNTIME_DATA>
 - ⚠️ CSP 只在生产构建生效，dev 拿不到。改动后必须在 `pnpm tauri build` 的产物上人工确认，`cargo check` 只能证明配置能被解析。
 - 文件工具的允许根是 home + 系统临时目录，**debug 构建下额外包含项目根**：dev 数据根是 `{project}/data/desk-pet`，仓库不在 `$HOME` 内时否则所有会话写入都会撞 `PATH_ESCAPE`。
 - 光标追踪线程按 ~16ms 轮询，但**只在坐标变化时**派发事件、且不再逐帧写日志（逐帧日志在 dev 下约 23MB/小时，远超日志轮转上限）。
-
-Provider 请求统一经 Pi `createProvider` / `createModels` gateway：内置模型沿用 Pi 的协议和能力目录，自定义模型走 OpenAI-compatible 工厂；运行中的模型绑定配置快照。响应体按 chunk 限流并传播取消，不再整段缓冲 SSE。主回合重试共享总 deadline，关闭 SDK 嵌套重试，认证失败、超时或已执行工具后不重放回合。

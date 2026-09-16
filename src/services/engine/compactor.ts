@@ -330,25 +330,24 @@ function extractFilePathsFromMessages(msgs: Message[]): string[] {
  * @param recentMessages 当前轮的消息列表
  * @param userIntent 用户意图文本
  */
-export function compactOnHighUsage(recentMessages: Message[], userIntent: string): void {
-  const session = MemoryService.session
-  if (!session || session.turns.length < 3) return // 太少不压
-
-  // 粗略估算：每轮平均 200 tokens
-  const estimatedTokens = session.turns.length * 200 + recentMessages.length * 150
-  const maxTokens = aiConfig.contextMaxTokens
-
-  if (!shouldCompact(estimatedTokens, maxTokens)) return
-
-  log.info("轮次结束压缩触发:", `~${estimatedTokens}/${maxTokens} tokens`, `(${session.turns.length} 轮)`)
-
-  const sessionId = session.sessionId
-  void MemoryService.readSessionWriteVersion(sessionId).then(version => compactIncremental(
-    recentMessages,
-    MemoryService.getCompactionSummarySync() || null,
-    userIntent,
-    { sessionId, expectedVersion: version?.version },
-  )).then(summary => {
+export function compactOnHighUsage(sessionId: string, recentMessages: Message[], userIntent: string): void {
+  void Promise.all([
+    MemoryService.loadSessionMessages(sessionId),
+    MemoryService.readSessionWriteVersion(sessionId),
+    MemoryService.getCompactionSummaryForSession(sessionId),
+  ]).then(([messages, version, existingSummary]) => {
+    if (!messages || messages.length < 6) return null
+    const estimatedTokens = messages.length * 100 + recentMessages.length * 150
+    const maxTokens = aiConfig.contextMaxTokens
+    if (!shouldCompact(estimatedTokens, maxTokens)) return null
+    log.info("轮次结束压缩触发:", `[${sessionId}]`, `~${estimatedTokens}/${maxTokens} tokens`, `(${messages.length} 条)`)
+    return compactIncremental(
+      recentMessages,
+      existingSummary || null,
+      userIntent,
+      { sessionId, expectedVersion: version?.version },
+    )
+  }).then(summary => {
     if (summary) log.info("EoT 压缩完成")
   }).catch(e => {
     log.warn("EoT 压缩失败", formatError(e))

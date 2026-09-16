@@ -7,7 +7,7 @@ import { resetSession } from "@/services/engine/session"
 import { clearMessages } from "@/services/session/store"
 import { activeSessionId, sessions, unansweredCount } from "@/services/session/store"
 import { resetSessionPersistenceForTest } from "@/services/session/persistence"
-import { MemoryService } from "@/services/agent/memory"
+import { MemoryService, resetMemoryProvider } from "@/services/agent/memory"
 import { flushMemory } from "@/services/agent/memory/memory-entries"
 import { resetSessionRuntimeForTest } from "@/services/agent/memory/session-files"
 import { getActiveCard, initRegistry } from "@/services/personality/registry"
@@ -75,6 +75,7 @@ export async function standardSetup(confirmPolicy: ConfirmPolicy = "deny"): Prom
   setAIGenerating(false)
   resetPreprocessorForTest()
   resetPiRuntimeProviderForTest()
+  resetMemoryProvider()
   await resetRuntimeQueueForTest()
   await resetSessionPersistenceForTest()
 }

@@ -148,7 +148,7 @@ Desk-Pet/
   → refreshVariablePool() + reset 策略
   → ContextKernel 六层组装与预算裁剪（兼容 buildPrompt）
   → 助手模式可选 Plan：复杂度检测 → 拆解 → 步骤执行
-  → Pi Agent Core + pi-ai OpenAI-compatible 流 + ToolRouter 顺序工具循环
+  → Pi Agent Core + pi-ai Provider/Models 工厂 + ToolRouter 工具循环
   → Safety 检查与确认
   → generateReply(raw, card)
        ├─ 解析并移除 <RUNTIME_DATA>
@@ -207,6 +207,8 @@ pnpm test -- --module variable-pool
 
 Live Test 位于 `src/services/__tests__/live/`，通过独立 Tauri WebView 使用真实 IPC、临时文件系统和真实 Provider 运行；需要确定性响应的基础场景可注入 `fake-provider.ts`，但仍执行真实 Agent/Tool loop。测试完成后自动清理临时数据。Scene 带稳定 `caseId`、测试套件和最低 trial 数，`--repeat 3` 只会提高试验次数；`--strict` 将实际 Scene 关联、边界/错误 tag 与 Contract 缺口作为门禁。Contract `sourceHash` 会在启动前校验，过期会直接阻断执行。JSON 报告记录数据集版本、环境种子、指标、错误分类和 `pass@k`/`pass^k`。测试通过只代表已覆盖场景通过。
 
+Provider 请求统一由 Pi 的 `createProvider()` / `createModels()` 构造并执行；主回合和一次性文本请求共享认证、配置快照、增量响应上限与取消语义。Harness 关闭 SDK 内层重试，由回合层在同一个总 deadline 内决定是否重试。
+
 ### CI
 
 `.github/workflows/ci.yml` 在 push、pull request 和手动触发时，于 `macos-latest` 与 `windows-latest` 各跑一次 `pnpm run test:types`（`vue-tsc --noEmit && cargo check`）；Live Test 需要真实 Provider，不在 CI 内执行。
@@ -254,5 +256,3 @@ pnpm 版本由 `package.json` 的 `packageManager` 字段裁定，CI 不单独�
 ## 📝 License
 
 MIT
-
-Provider 请求统一经 Pi `createProvider` / `createModels` gateway：内置模型沿用 Pi 的协议和能力目录，自定义模型走 OpenAI-compatible 工厂；运行中的模型绑定配置快照。响应体按 chunk 限流并传播取消，不再整段缓冲 SSE。主回合重试共享总 deadline，关闭 SDK 嵌套重试，认证失败、超时或已执行工具后不重放回合。

@@ -13,7 +13,7 @@ import { runPiAgentTurn } from "@/services/engine/pi"
 import { abortAgentRuns, sendMessage, sendActiveMessage, toolCallHistory as productionToolHistory } from "@/services/agent/runner"
 import { getPoolSnapshot } from "@/services/personality/variable-pool"
 import { getSession } from "@/services/engine/session"
-import { getContextMessages } from "@/services/session/store"
+import { getActiveSessionId, getContextMessages } from "@/services/session/store"
 import { pushAssistantMessage, pushUserMessage } from "@/services/session/messages"
 import { MemoryService } from "@/services/agent/memory"
 import { formatError } from "@/services/error"
@@ -88,7 +88,10 @@ async function executeTurn(userText: string, entry: SceneEntry, isActiveMessage 
 
   // Mirror the production message lifecycle around the lower-level Pi runtime.
   if (!isActiveMessage) pushUserMessage(userText)
+  const sessionId = getActiveSessionId() || MemoryService.sessionId || `live-runtime-${Date.now()}`
+  if (!MemoryService.sessionId) MemoryService.setActiveSessionSync(sessionId)
   const output = await runPiAgentTurn({
+    sessionId,
     userText,
     chatMessages: getContextMessages(),
     unansweredCount: 0,
@@ -131,7 +134,7 @@ async function runSceneInner(scene: SceneDef, trial: number): Promise<SceneResul
 
     try {
       const output = await executeTurn(turn.userText, entry, turn.isActiveMessage)
-      const session = getSession()
+      const session = getSession(getActiveSessionId() || MemoryService.sessionId)
       const ctx: AssertContext = {
         output,
         pool: getPoolSnapshot(),

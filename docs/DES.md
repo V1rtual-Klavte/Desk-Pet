@@ -904,7 +904,7 @@ WAITING ──(收到消息)──→ PRE ──→ GENERATING
 
 #### 上下文与记忆边界
 
-Pi Runtime 当前由 ContextKernel 按 `static → dynamic → profile → memory → transcript → ephemeral` 固定层级生成兼容 `systemPrompt`，并按上下文窗口保留最近 transcript、记录结构化裁剪原因。`User.md` 先转换为带来源、版本和 taint 的只读画像 projection；长期记忆调用空 `MemoryProvider`，不会自动注入 `MemoryService.search()` 结果。Runtime 在 `transformContext` 和 `provider_payload` 两个阶段发布脱敏 Prompt 快照，记录请求、回合、运行代际以及输入规范化的 hash 改写链。最终回复后仍调用既有 `compactOnHighUsage()` 异步写入会话摘要。
+Pi Runtime 当前由 ContextKernel 按 `static → dynamic → profile → memory → transcript → ephemeral` 固定层级生成兼容 `systemPrompt`，并按上下文窗口保留最近 transcript、记录结构化裁剪原因。`User.md` 先转换为带来源、版本和 taint 的只读画像 projection；长期记忆经可注入 `MemoryProvider` 召回，默认空实现，并具有取消、超时和 token 预算边界。Runtime 在 `transformContext` 和 `provider_payload` 两个阶段发布脱敏 Prompt 快照，记录请求、回合、运行代际以及输入规范化的 hash 改写链。Prompt 历史、会话摘要和异步压缩均显式绑定回合 sessionId。
 
 ### 9.5 工具系统详细说明
 
@@ -1102,7 +1102,7 @@ sessions/                      会话目录（唯一真相源）
 | 安全控制 (四级+三策略+确认UI) | ✅ | `safety/checker.ts` + `confirm.ts` |
 | 上下文引擎 | ✅ | `context/builder.ts` |
 | 回复生成器 | ✅ | `reply/generator.ts` — 一步后处理: 解析 RUNTIME_DATA → 情绪/变量校验 → trim/截断 → ReplyResult |
-| OpenAI 兼容 Provider | ✅ | `engine/pi/model-gateway.ts`（pi-ai `streamSimple` + `completePiText`），网络边界 `engine/pi/net-guard.ts` |
+| OpenAI 兼容 Provider | ✅ | `engine/pi/model-gateway.ts`（pi-ai `createProvider` / `createModels` + `completePiText`），网络边界 `engine/pi/net-guard.ts` |
 | 记忆系统（注册表/会话/压缩） | ⚠️ | `agent/memory/`；自动提取和 Prompt 检索尚未闭环 |
 | Rust 工具执行 | ✅ | `commands/tool_exec.rs` |
 | Debug 状态栏 | ✅ | `DebugBar.vue` + `debug.ts` |
@@ -1164,5 +1164,3 @@ sessions/                      会话目录（唯一真相源）
 8. **工具优先**：MCP/Skill/Local Tool 三者同级注册，模型自行选择
 9. **安全内建**：不在各处分散判断，统一入口强制校验
 10. **人格中间件**：工具调用、结果、错误全部经人格层转换为角色化表达
-
-Provider 请求统一经 Pi `createProvider` / `createModels` gateway：内置模型沿用 Pi 的协议和能力目录，自定义模型走 OpenAI-compatible 工厂；运行中的模型绑定配置快照。响应体按 chunk 限流并传播取消，不再整段缓冲 SSE。主回合重试共享总 deadline，关闭 SDK 嵌套重试，认证失败、超时或已执行工具后不重放回合。

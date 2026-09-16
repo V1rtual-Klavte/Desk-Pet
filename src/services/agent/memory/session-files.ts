@@ -436,6 +436,20 @@ export function getCompactionSummarySync(): string {
   ].filter(l => l.length > 0).join("\n")
 }
 
+export async function getCompactionSummaryForSession(sessionId: string): Promise<string> {
+  if (!sessionsDir) return ""
+  const files = await invoke<string[]>("list_session_files")
+  const filename = files.find(file => file.startsWith(sessionId))
+  if (!filename) return ""
+  const raw = await readSessionFile(filename)
+  const section = raw.match(/^## 摘要\s*\n([\s\S]*?)(?=^## |\s*$)/m)?.[1] ?? ""
+  const lines = section.split("\n")
+    .map(line => line.trim())
+    .filter(line => line.startsWith("- ") && !line.endsWith(": 无"))
+    .map(line => line.slice(2))
+  return lines.length > 0 ? `\n\n[会话上下文]\n${lines.join("\n")}` : ""
+}
+
 async function _syncSessionFile(): Promise<void> {
   if (!sessionMemory || !sessionsDir) return
   const filename = makeSessionFilename(sessionMemory.sessionId, findTopicFromTurns(sessionMemory.turns))

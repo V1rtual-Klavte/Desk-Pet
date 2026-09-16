@@ -21,7 +21,7 @@ export const memoryContract: ModuleContract = {
     "src/services/context/projection.ts",
   ],
   generatedAt: "2026-09-16",
-  sourceHash: "41f1c247e08cb2e78582cb4c469f2c0883047abcabf7a1a51693a5fc72e4d177",
+  sourceHash: "136e894377ed06c2e52f577b437717e06774065cefb9368c33378ad197c0d66b",
   coverage: [
     { id: "mm-01", feature: "Memory 添加条目", description: "MemoryService.append() 创建记忆", why: "记忆系统基础 CRUD", depth: "shallow", scenarios: ["memory-append"] },
     { id: "mm-02", feature: "Memory 搜索", description: "MemoryService.search(query, limit) 按内容搜索", why: "LLM 需检索相关记忆", depth: "shallow", scenarios: ["memory-search"] },
@@ -39,7 +39,7 @@ export const memoryContract: ModuleContract = {
     { id: "mm-14", feature: "队列恢复与幂等", description: "queued 事件重启后可 requeue，requestId 不重复投递", why: "输入不能因进程中断丢失或重复执行", depth: "deep", scenarios: ["queued-recovery"] },
     { id: "mm-15", feature: "Plan checkpoint 恢复", description: "运行中 Plan 从 session event 恢复；只读步骤回到 pending，未知外部副作用进入 unknown_side_effect", why: "进程重启后不能重复执行没有完成凭证的外部操作", depth: "deep", scenarios: ["memory-plan-resume"] },
     { id: "mm-16", feature: "ContextKernel 预算", description: "六层上下文顺序固定，预算不足时记录结构化裁剪原因", why: "Provider 输入需要可预测且可审计地限制在上下文窗口内", depth: "deep", scenarios: ["memory-context-budget"] },
-    { id: "mm-17", feature: "画像与记忆投影", description: "User.md 作为带来源的只读 projection，默认 MemoryProvider 不执行长期召回", why: "画像和长期事实需要显式来源边界，未完成召回策略前不能隐式注入", depth: "deep", scenarios: ["memory-profile-rewrite"] },
+    { id: "mm-17", feature: "画像与记忆投影", description: "User.md 使用带来源的只读 projection；MemoryProvider 可注入、取消、限时、裁剪并恢复，默认空实现不执行长期召回", why: "画像和长期事实需要显式来源边界，下一阶段选择存储与检索策略时不能改动 Agent Runtime", depth: "deep", scenarios: ["memory-profile-rewrite"] },
     { id: "mm-18", feature: "正文记录单次写入", description: "一次真实回合后同一句话只有一条 deskpet-turn 记录；user_message 事件由 turn 记录投影得到，不再同时写 deskpet-event", why: "消息双写会让重载按预览和事件各重放一次，造成重复消息与翻倍轮数", depth: "deep", scenarios: ["memory-single-message-write"] },
   ],
   rules: { minScenarios: 6, minDeepScenarios: 2, requireBoundary: true, requireErrorPath: true },

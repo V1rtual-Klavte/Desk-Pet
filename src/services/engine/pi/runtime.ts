@@ -8,7 +8,7 @@ import type { AssistantMessage, Message as PiMessage } from "@earendil-works/pi-
 import type { Message, ThinkingEffort, ToolCallRequest } from "@/services/agent/types"
 import type { ContextBlock, IngressEnvelope, MessageTaint, PromptSnapshot, PromptTransform, SessionEvent } from "@/services/engine/runtime"
 import { createMessageId, createToolMessage } from "@/services/agent/types"
-import { MemoryService, emptyMemoryProvider, planCheckpointStore, planStepEffectClass } from "@/services/agent/memory"
+import { MemoryService, recallMemory, planCheckpointStore, planStepEffectClass } from "@/services/agent/memory"
 import { buildPrompt } from "@/services/context"
 import { compactOnHighUsage, estimateTokens } from "@/services/engine/compactor"
 import { bindRunningPlan, clearRunningPlan, notifyPlanEnd, requestPlanConfirm, requestPlanStepDecision } from "@/services/engine/plan-confirmation"
@@ -40,7 +40,7 @@ const EMPTY_USAGE = {
 }
 const log = createLogger("PiRuntime")
 
-let lastSeenSessionStart = getSessionStart()
+const lastSeenSessionStarts = new Map<string, number>()
 
 /**
  * 向正在执行的回合插话，并把插话内容记入该回合所属会话。
@@ -55,7 +55,7 @@ export function deliverActiveTurn(sessionId: string, text: string): "steered" | 
 }
 
 export interface PiAgentTurnInput {
-  sessionId?: string
+  sessionId: string
   userText: string
   chatMessages: Message[]
   unansweredCount: number
@@ -161,11 +161,12 @@ interface PiLoopOutput {
 
 /** Main pet turn. This replaces the deleted hand-written Agent Loop. */
 export async function runPiAgentTurn(input: PiAgentTurnInput): Promise<PiAgentTurnOutput> {
+  if (!input.sessionId.trim()) throw new Error("Pi Agent 回合缺少 sessionId")
   const { userText, chatMessages, unansweredCount, isActiveMessage } = input
   const toolCallHistory: PiAgentTurnOutput["toolCallHistory"] = []
   const effects: PiAgentTurnOutput["effects"] = []
 
-  const turnSessionId = input.sessionId || MemoryService.sessionId
+  const turnSessionId = input.sessionId
   recordMessage(turnSessionId)
   // 主动搭话的 userText 是系统拼的窗口上下文，不是用户输入。落盘会让会话主题
   // 提取拿它当首条用户消息，重载后还会显示成用户气泡并进入长期记忆。
@@ -175,8 +176,8 @@ export async function runPiAgentTurn(input: PiAgentTurnInput): Promise<PiAgentTu
   refreshVariablePool()
   updateInteractionVar("unansweredCount", unansweredCount)
   const currentSessionStart = getSessionStart()
-  const isNewSession = currentSessionStart !== lastSeenSessionStart
-  if (isNewSession) lastSeenSessionStart = currentSessionStart
+  const isNewSession = currentSessionStart !== lastSeenSessionStarts.get(turnSessionId)
+  lastSeenSessionStarts.set(turnSessionId, currentSessionStart)
   applyResetPolicies(new Date(), isNewSession)
 
   const card = getActiveCard()
@@ -275,12 +276,18 @@ export async function runPiAgentTurn(input: PiAgentTurnInput): Promise<PiAgentTu
   }
 
   const requestId = input.ingress?.requestId ?? `runtime-${input.turnId ?? turnSessionId}`
-  const memoryProjections = await emptyMemoryProvider.recall({
-    requestId,
-    sessionId: turnSessionId,
-    query: userText,
-    tokenBudget: Math.floor(aiConfig.contextMaxTokens * 0.15),
-  })
+  let memoryProjections = [] as import("@/services/agent/memory").MemoryProjection[]
+  try {
+    memoryProjections = await recallMemory({
+      requestId,
+      sessionId: turnSessionId,
+      query: userText,
+      tokenBudget: Math.floor(aiConfig.contextMaxTokens * 0.15),
+    })
+  } catch (error) {
+    log.warn("MemoryProvider 召回失败，按空召回继续", formatError(error))
+  }
+  const sessionSummary = await MemoryService.getCompactionSummaryForSession(turnSessionId)
   const context = buildPrompt({
     recentMessages: chatMessages,
     userText,
@@ -288,6 +295,7 @@ export async function runPiAgentTurn(input: PiAgentTurnInput): Promise<PiAgentTu
     thinkingEffort,
     isActiveMessage,
     memoryProjections,
+    sessionSummary,
     ...(planStepContext ? { ephemeralText: planStepContext.slice(0, 4000), ephemeralOrigin: "plan" as const } : {}),
   }, card, getPoolSnapshot())
   const promptTransforms: PromptTransform[] = []
@@ -359,7 +367,7 @@ export async function runPiAgentTurn(input: PiAgentTurnInput): Promise<PiAgentTu
   if (processed.sound) emit("deskpet-sound", { event: processed.sound }).catch(() => {})
   transition("WAITING", turnSessionId)
   await persistTurn(turnSessionId, "assistant", processed.text)
-  compactOnHighUsage(chatMessages, userText)
+  compactOnHighUsage(turnSessionId, chatMessages, userText)
   return { reply: processed.text, toolCallHistory, retriesUsed, effects, runtimeData: processed.runtimeData }
 }
 

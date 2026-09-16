@@ -15,6 +15,8 @@ export interface AgentSlotSnapshot {
   state: AgentSlotState
   hasAgent: boolean
   deliveryPhase?: AgentDeliveryPhase
+  requestId?: string
+  turnId?: string
 }
 
 interface AgentSlot {
@@ -25,6 +27,8 @@ interface AgentSlot {
   deliveryPhase?: AgentDeliveryPhase
   drainGeneration: number
   drainPromise?: Promise<void>
+  requestId?: string
+  turnId?: string
 }
 
 /** Per-session ownership for Pi runs. Generation checks prevent stale cleanup from releasing a newer run. */
@@ -50,6 +54,14 @@ export class AgentSlotRegistry {
     if (!slot || slot.state !== "running" || slot.generation !== generation) return false
     slot.agent = agent
     slot.deliveryPhase = "streaming"
+    return true
+  }
+
+  bindRun(sessionId: string, generation: number, identity: { requestId: string; turnId?: string }): boolean {
+    const slot = this.slots.get(sessionId)
+    if (!slot || slot.state !== "running" || slot.generation !== generation) return false
+    slot.requestId = identity.requestId
+    slot.turnId = identity.turnId
     return true
   }
 
@@ -155,6 +167,8 @@ export class AgentSlotRegistry {
       state: slot.state,
       hasAgent: Boolean(slot.agent),
       deliveryPhase: slot.deliveryPhase,
+      requestId: slot.requestId,
+      turnId: slot.turnId,
     }
   }
 
