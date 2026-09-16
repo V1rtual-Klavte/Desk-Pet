@@ -39,6 +39,29 @@ function normalizeEnv(raw: unknown): Record<string, string> | undefined {
   return out
 }
 
+/**
+ * `KEY=VALUE` 每行一条 → env 对象。
+ *
+ * 设置面板用这种文本编辑 env（比逐对增删的表格省地方），落盘前要还原成对象。
+ * 空行与不含 `=` 的行忽略：它们只可能是格式噪音，不该变成空键名的变量。
+ */
+export function parseEnvText(text: string): Record<string, string> {
+  const env: Record<string, string> = {}
+  for (const line of text.split("\n")) {
+    const trimmed = line.trim()
+    if (!trimmed) continue
+    const at = trimmed.indexOf("=")
+    if (at <= 0) continue
+    env[trimmed.slice(0, at).trim()] = trimmed.slice(at + 1).trim()
+  }
+  return env
+}
+
+/** env 对象 → 设置面板里那种一行一条的文本 */
+export function formatEnvText(env: Record<string, string> | undefined): string {
+  return env ? Object.entries(env).map(([k, v]) => `${k}=${v}`).join("\n") : ""
+}
+
 // ── 服务器列表 ──
 
 let mcpServers: McpServerConfig[] = []
@@ -182,8 +205,13 @@ function syncServersToConfig(): void {
   })))
 }
 
-/** 从 JSON 数组批量导入 MCP 服务器 */
-export function importMcpServersFromJson(json: string): { success: boolean; count: number; error?: string } {
+/**
+ * 从 JSON 数组批量导入 MCP 服务器。
+ *
+ * 必须 `await setMcpServers`：早先同步返回，调用方紧接着 `loadMcpConfig()`
+ * 会读到还没写回 CONFIG 的旧列表。
+ */
+export async function importMcpServersFromJson(json: string): Promise<{ success: boolean; count: number; error?: string }> {
   try {
     const arr = JSON.parse(json)
     if (!Array.isArray(arr)) return { success: false, count: 0, error: "JSON 必须是数组格式" }
@@ -196,10 +224,10 @@ export function importMcpServersFromJson(json: string): { success: boolean; coun
       env: normalizeEnv(item.env),
       enabled: item.enabled !== false,
     })).filter((s: McpServerConfig) => s.name)
-    setMcpServers(servers)
+    await setMcpServers(servers)
     return { success: true, count: servers.length }
   } catch (e) {
-    return { success: false, count: 0, error: String(e) }
+    return { success: false, count: 0, error: formatError(e) }
   }
 }
 
@@ -313,4 +341,14 @@ export function isMcpConnected(): boolean {
 
 export function setMcpConnected(v: boolean): void {
   mcpConnected = v
+}
+
+/**
+ * 某个 MCP 服务器当前是否已连接。
+ *
+ * 「测试连接」用它区分两种情形：本来就没连的，测完要回收，
+ * 否则子进程与已注册工具会一直留着；本来就连着的，保持连着的状态。
+ */
+export function isMcpServerConnected(name: string): boolean {
+  return connectedClients.has(name)
 }

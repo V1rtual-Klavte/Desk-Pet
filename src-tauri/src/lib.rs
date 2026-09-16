@@ -463,10 +463,18 @@ pub fn run() {
             personality_file_list,
             personality_file_delete,
         ])
-        .run(tauri::generate_context!())
+        .build(tauri::generate_context!())
         .unwrap_or_else(|e| {
             // 不做裸 panic：给出可读原因并保留退出码
             rust_error!("事件循环启动失败: {e}");
             std::process::exit(1);
+        })
+        .run(|app, event| {
+            // MCP 子进程必须在进程真正退出前回收。`Exit` 覆盖所有退出路径，
+            // 包括托盘菜单那条 —— 它直接调用 Rust 的 app.exit，不经过前端钩子，
+            // 只靠 App.vue 的 onUnmounted 会留下一批常驻的 npx / node。
+            if let tauri::RunEvent::Exit = event {
+                app.state::<McpPool>().kill_all();
+            }
         });
 }

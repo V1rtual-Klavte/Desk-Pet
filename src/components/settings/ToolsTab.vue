@@ -2,6 +2,9 @@
 import { ref, onMounted } from "vue";
 import { toolsConfig } from "@/services/config";
 import { createLogger } from "@/services/logger";
+import { formatError } from "@/services/error";
+// 纯文本工具函数，同步使用；其余 MCP 生命周期 API 仍按需动态 import
+import { parseEnvText, formatEnvText } from "@/services/tool/mcp";
 
 const log = createLogger("Settings");
 
@@ -16,11 +19,12 @@ const fileWriteEnabled = ref(toolsConfig.fileWriteEnabled);
 
 // ── MCP ──
 const mcpEnabled = ref(toolsConfig.mcpEnabled);
+
 const mcpServerList = ref<
-  { name: string; transport: string; command: string; args: string; url: string; enabled: boolean }[]
+  { name: string; transport: string; command: string; args: string; url: string; envStr: string; enabled: boolean }[]
 >([]);
 const editingMcpIdx = ref(-1);
-const mcpForm = ref({ name: "", transport: "stdio", command: "", args: "", url: "", enabled: true });
+const mcpForm = ref({ name: "", transport: "stdio", command: "", args: "", url: "", envStr: "", enabled: true });
 const builtinMcpList = ref<
   { name: string; enabled: boolean; args: string; description: string; envStr: string }[]
 >([]);
@@ -44,11 +48,7 @@ async function loadBuiltinMcpConfig() {
     enabled: def.enabled !== false,
     args: Array.isArray(def.args) ? def.args.join(" ") : def.args ? String(def.args) : "",
     description: def.description ?? name,
-    envStr: def.env
-      ? Object.entries(def.env)
-          .map(([k, v]) => `${k}=${v}`)
-          .join("\n")
-      : "",
+    envStr: formatEnvText(def.env),
   }));
 }
 
@@ -74,6 +74,7 @@ async function loadMcpConfig() {
       command: s.command ? String(s.command) : "",
       args: Array.isArray(s.args) ? s.args.join(" ") : s.args ? String(s.args) : "",
       url: s.url ? String(s.url) : "",
+      envStr: formatEnvText(s.env),
       enabled: s.enabled !== false,
     }));
   }
@@ -87,7 +88,7 @@ function addOrUpdateMcpServer() {
   } else {
     mcpServerList.value.push({ ...s });
   }
-  mcpForm.value = { name: "", transport: "stdio", command: "", args: "", url: "", enabled: true };
+  mcpForm.value = { name: "", transport: "stdio", command: "", args: "", url: "", envStr: "", enabled: true };
   editingMcpIdx.value = -1;
 }
 
@@ -103,7 +104,7 @@ function removeMcpServer(idx: number) {
 
 function cancelMcpEdit() {
   editingMcpIdx.value = -1;
-  mcpForm.value = { name: "", transport: "stdio", command: "", args: "", url: "", enabled: true };
+  mcpForm.value = { name: "", transport: "stdio", command: "", args: "", url: "", envStr: "", enabled: true };
 }
 
 async function importMcpJson() {
@@ -114,16 +115,32 @@ async function importMcpJson() {
     const file = input.files?.[0];
     if (!file) return;
     const text = await file.text();
-    const { importMcpServersFromJson } = await import("@/services/tool/mcp/manager");
-    importMcpServersFromJson(text);
+    const { importMcpServersFromJson } = await import("@/services/tool/mcp");
+    // 必须 await：写回 CONFIG 是异步的，不等它就会读到还没更新的旧列表
+    const result = await importMcpServersFromJson(text);
+    if (!result.success) {
+      const { showFailure } = await import("@/services/dialog");
+      await showFailure(result.error ?? "导入失败", { title: "MCP 导入失败" });
+      return;
+    }
     await loadMcpConfig();
   };
   input.click();
 }
 
 async function exportMcpJson() {
-  const { exportMcpServersToJson } = await import("@/services/tool/mcp/manager");
-  const blob = new Blob([exportMcpServersToJson()], { type: "application/json" });
+  const { exportMcpServersToJson } = await import("@/services/tool/mcp");
+  const json = exportMcpServersToJson();
+  // env 是明文写进文件的：导出后文件可以随手转发，必须让用户知道里面有什么
+  if (json.includes('"env"')) {
+    const { confirmDialog } = await import("@/services/dialog");
+    const accepted = await confirmDialog(
+      "导出的文件包含明文 API Key 等凭据，请勿随意外发。",
+      { title: "确认导出", detail: `共 ${mcpServerList.value.length} 个服务器`, okLabel: "仍然导出" },
+    );
+    if (!accepted) return;
+  }
+  const blob = new Blob([json], { type: "application/json" });
   const url = URL.createObjectURL(blob);
   const a = document.createElement("a");
   a.href = url;
@@ -140,21 +157,28 @@ async function testMcpConnection() {
   }
   mcpTesting.value = true;
   mcpTestResult.value = "⏳ 连接中...";
+  const name = s.name.trim();
   try {
-    const { connectMcpServer } = await import("@/services/tool/mcp/manager");
+    const { connectMcpServer, disconnectMcpServer, isMcpServerConnected } = await import("@/services/tool/mcp");
+    // 本来就没连的服务器，测完立刻回收：否则子进程与已注册的工具会一直留着。
+    // 本来就连着的，connectMcpServer 内部会先断开再重连，状态保持连接。
+    const wasConnected = isMcpServerConnected(name);
     const r = await connectMcpServer({
-      name: s.name.trim(),
+      name,
       transport: s.transport as "stdio" | "sse",
       command: s.command.trim(),
       args: s.args.trim() ? s.args.trim().split(/\s+/) : [],
       url: s.url.trim() || undefined,
+      // env 必须带上：不传的话带 API Key 的服务器永远测不出真实结果
+      env: parseEnvText(s.envStr),
       enabled: s.enabled,
     });
+    if (!wasConnected) await disconnectMcpServer(name);
     mcpTestResult.value = r.success
       ? `✅ 连接成功！${r.toolCount} 个工具`
       : `❌ 失败: ${r.error}`;
-  } catch (e: any) {
-    mcpTestResult.value = `❌ 异常: ${e.message || e}`;
+  } catch (e) {
+    mcpTestResult.value = `❌ 异常: ${formatError(e)}`;
   }
   mcpTesting.value = false;
 }
@@ -254,6 +278,7 @@ defineExpose({
       <div class="fld"><label>传输</label><select class="inp" v-model="mcpForm.transport" style="width:70px"><option value="stdio">stdio</option><option value="sse">sse</option></select></div>
       <div class="fld" v-if="mcpForm.transport === 'stdio'"><label>命令</label><input class="inp" v-model="mcpForm.command" style="width:100px" /><label>参数</label><input class="inp" v-model="mcpForm.args" style="width:140px" /></div>
       <div class="fld" v-if="mcpForm.transport === 'sse'"><label>URL</label><input class="inp" v-model="mcpForm.url" style="width:220px" /></div>
+      <div class="fld-col"><label>环境变量</label><textarea class="inp txa mono" v-model="mcpForm.envStr" rows="2" placeholder="KEY=VALUE"></textarea></div>
       <div class="row-gap">
         <button class="btn-s" @click="addOrUpdateMcpServer()">{{ editingMcpIdx >= 0 ? '更新' : '添加' }}</button>
         <button v-if="editingMcpIdx >= 0" class="btn-s btn-d" @click="cancelMcpEdit()">取消</button>

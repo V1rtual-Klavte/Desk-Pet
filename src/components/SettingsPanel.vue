@@ -11,6 +11,7 @@ import {
 import { switchPersonality, getActivePersonalityId } from "@/services/personality";
 import { createLogger } from "@/services/logger";
 import { isMacOS } from "@/services/env";
+import { parseEnvText } from "@/services/tool/mcp";
 import { emit } from "@tauri-apps/api/event";
 import GeneralTab from "@/components/settings/GeneralTab.vue";
 import AITab from "@/components/settings/AITab.vue";
@@ -123,16 +124,22 @@ async function doSave() {
     setOverride("tools.mcp.builtin", updated);
   }
 
-  const { setMcpServers } = await import("@/services/tool/mcp/manager");
+  const { setMcpServers } = await import("@/services/tool/mcp");
   setMcpServers(
-    t.mcpServerList.map((s) => ({
-      name: s.name,
-      transport: s.transport as "stdio" | "sse",
-      command: s.command || undefined,
-      args: s.args ? s.args.split(/\s+/).filter(Boolean) : undefined,
-      url: s.url || undefined,
-      enabled: s.enabled,
-    }))
+    t.mcpServerList.map((s) => {
+      // 面板用一行一条的文本编辑 env，落盘前还原成对象；
+      // 全空时给 undefined，让 manager 的 inheritEnv 决定是否沿用旧值
+      const env = parseEnvText(s.envStr);
+      return {
+        name: s.name,
+        transport: s.transport as "stdio" | "sse",
+        command: s.command || undefined,
+        args: s.args ? s.args.split(/\s+/).filter(Boolean) : undefined,
+        url: s.url || undefined,
+        env: Object.keys(env).length > 0 ? env : undefined,
+        enabled: s.enabled,
+      };
+    })
   );
 
   const switchResult = await switchPersonality(a.personalityActive);

@@ -54,7 +54,7 @@ export async function initApp(): Promise<void> {
   }
 
   if (toolsConfig.mcpEnabled) {
-    const { connectAllMcpServers } = await import("@/services/tool/mcp/manager")
+    const { connectAllMcpServers } = await import("@/services/tool/mcp")
     const connected = await connectAllMcpServers()
     log.info(`4c/7 MCP 就绪 (${connected} 个服务器连接)`)
   }

@@ -100,6 +100,16 @@ Desk-Pet 曾自研 blocking / async 的 HookBus，因生产消费者为零（唯
 
 判定基于 Shell 级 token 分析（引号、控制运算符、`sudo` 等前缀包裹命令、嵌套 `sh -c`），不做子串 `contains` —— 旧实现既漏 `rm  -rf  /`、`find ~ -delete`，又误杀 `rm -rf /Users`。参数级禁项不与二进制绑定，所以 `find`、`fd`、`xargs`、`rsync` 一并覆盖，白名单里新增命令不需要重新审一遍参数。
 
+## MCP 桥接
+
+MCP server 由 Rust 以 stdio 子进程方式托管（`commands/mcp_bridge.rs`），前端只经 `src/services/tool/mcp/` 的 barrel 调用。
+
+- **请求/响应配对**：`mcp_send` 每次用递增的 JSON-RPC `id` 发请求，只接受 id 匹配的响应。server 主动推送的 notification（有 `method` 无 `id`）与非 JSON 调试输出都被跳过 —— 早期实现把任何能解析的 JSON 都当响应返回，notification 因此变成「成功但 result 为空」。
+- **读取不阻塞**：stdout 由常驻读线程按行投递到 channel，请求侧 `recv_timeout` 上限 60s。早期每请求新建 `BufReader` 还有丢数据的隐患：一次 `read_line` 会预读多行，`BufReader` 析构时缓冲里剩下的字节直接丢失。
+- **进程回收**：`mcp_kill` 结束单个 server；应用退出时 `lib.rs` 的 `RunEvent::Exit` 调 `McpPool::kill_all()`，覆盖托盘退出这条不经过前端钩子的路径。Windows 上 `taskkill /T /F /PID` 递归结束进程树，避免 `npx` 派生的 `node` 变孤儿。
+- **env（API Key 等）**：设置面板用 `KEY=VALUE` 每行一条的文本编辑，落盘前由 `parseEnvText` 还原成对象。env 只透传给子进程，日志里只记 command/args；导出 JSON 含 env 时会先弹确认框提示文件里有明文凭据。
+- **测试连接**不会留下常驻连接：本来没连的测完立刻断开，本来连着的保持连接状态。
+
 ## 已知问题
 
 以下问题已定位但**尚未修复**，属 P5 遗留项，需要连同权限、沙箱与安全体系一起重审：

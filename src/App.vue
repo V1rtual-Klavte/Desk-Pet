@@ -23,7 +23,7 @@ import { createLogger } from "@/services/logger";
 import { playEventSound } from "@/services/audio/registry";
 import { emit, listen } from "@tauri-apps/api/event";
 import { stopMemoryConsolidationTimer } from "@/services/agent/memory/consolidate"
-import { disconnectAllMcpServers } from "@/services/tool/mcp/manager"
+import { disconnectAllMcpServers } from "@/services/tool/mcp"
 
 const log = createLogger("App");
 
