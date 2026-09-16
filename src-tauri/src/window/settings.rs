@@ -67,8 +67,9 @@ pub fn set_picker_window_level(app: tauri::AppHandle, picking: bool) {
         for label in ["main", "settings", "layer-editor"] {
             if let Some(win) = app.get_webview_window(label) {
                 if let Ok(hwnd) = win.hwnd() {
+                    // hwnd() 返回 windows crate 的 HWND 新类型（内部 *mut c_void）；本 crate 的 windows-sys 0.52 用 `type HWND = isize`。
                     unsafe {
-                        SetWindowPos(hwnd as _, z, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE);
+                        SetWindowPos(hwnd.0 as _, z, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE);
                     }
                 }
             }
@@ -100,8 +101,9 @@ pub fn enhance_layer_editor_window(app: tauri::AppHandle) {
             SetWindowPos, HWND_TOPMOST, SWP_NOMOVE, SWP_NOSIZE,
         };
         if let Ok(hwnd) = win.hwnd() {
+            // hwnd() 返回 windows crate 的 HWND 新类型（内部 *mut c_void）；本 crate 的 windows-sys 0.52 用 `type HWND = isize`。
             unsafe {
-                SetWindowPos(hwnd as _, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE);
+                SetWindowPos(hwnd.0 as _, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE);
             }
         }
     }
