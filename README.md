@@ -254,3 +254,5 @@ pnpm 版本由 `package.json` 的 `packageManager` 字段裁定，CI 不单独�
 ## 📝 License
 
 MIT
+
+Provider 请求统一经 Pi `createProvider` / `createModels` gateway：内置模型沿用 Pi 的协议和能力目录，自定义模型走 OpenAI-compatible 工厂；运行中的模型绑定配置快照。响应体按 chunk 限流并传播取消，不再整段缓冲 SSE。主回合重试共享总 deadline，关闭 SDK 嵌套重试，认证失败、超时或已执行工具后不重放回合。

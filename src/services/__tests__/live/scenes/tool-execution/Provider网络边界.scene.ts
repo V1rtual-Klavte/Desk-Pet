@@ -25,9 +25,22 @@ export const Provider网络边界: SceneDef = {
     })
     let streamRejected = false
     try {
-      await capProviderResponseBody(new Response(oversized))
+      await (await capProviderResponseBody(new Response(oversized))).arrayBuffer()
     } catch { streamRejected = true }
     if (!streamRejected) throw new Error("流式响应超限未拒绝")
+
+    let upstream: ReadableStreamDefaultController<Uint8Array> | undefined
+    let cancelled = false
+    const source = new ReadableStream<Uint8Array>({
+      start(controller) { upstream = controller; controller.enqueue(new Uint8Array([1])) },
+      cancel() { cancelled = true },
+    })
+    const guarded = await capProviderResponseBody(new Response(source))
+    const reader = guarded.body!.getReader()
+    const first = await reader.read()
+    if (first.value?.[0] !== 1) throw new Error("首块没有增量交付")
+    await reader.cancel()
+    if (!cancelled || !upstream) throw new Error("消费者取消未传播到上游")
   } }] }],
 }
 

@@ -28,39 +28,43 @@ function requestUrl(input: RequestInfo | URL): string {
 /**
  * 限制 Provider 响应体大小，超限即抛错。
  *
- * 计数与拼接都用手写 reader 循环，不用 TransformStream（老 WKWebView 没有它）。
- * 超限时先 `reader.cancel()` 停止下载再抛错，不让连接继续占着。
- * 返回的 Response 复用原 status/statusText/headers；body 已是 fetch 解码后的
- * 明文字节，因此不会出现二次解压。
+ * 返回一个按 chunk 计数的 ReadableStream，不预读、不整段缓冲 SSE。超限时先
+ * 取消上游 reader 再报错，避免连接继续占用网络和内存。
  */
 export async function capProviderResponseBody(response: Response): Promise<Response> {
   const declared = Number(response.headers.get("content-length") ?? 0)
-  if (declared > MAX_PROVIDER_RESPONSE_BYTES) throw new Error("Provider 响应超过大小上限")
+  if (declared > MAX_PROVIDER_RESPONSE_BYTES) {
+    await response.body?.cancel()
+    throw new Error("Provider 响应超过大小上限")
+  }
   if (!response.body) return response
   const reader = response.body.getReader()
-  const chunks: Uint8Array[] = []
   let total = 0
-  try {
-    for (;;) {
-      const next = await reader.read()
-      if (next.done) break
-      total += next.value.byteLength
-      if (total > MAX_PROVIDER_RESPONSE_BYTES) {
-        await reader.cancel()
-        throw new Error("Provider 响应超过大小上限")
+  const body = new ReadableStream<Uint8Array>({
+    async pull(controller) {
+      try {
+        const next = await reader.read()
+        if (next.done) {
+          reader.releaseLock()
+          controller.close()
+          return
+        }
+        total += next.value.byteLength
+        if (total > MAX_PROVIDER_RESPONSE_BYTES) {
+          await reader.cancel()
+          controller.error(new Error("Provider 响应超过大小上限"))
+          return
+        }
+        controller.enqueue(next.value)
+      } catch (error) {
+        controller.error(error)
       }
-      chunks.push(next.value)
-    }
-  } finally {
-    reader.releaseLock()
-  }
-  const merged = new Uint8Array(total)
-  let offset = 0
-  for (const chunk of chunks) {
-    merged.set(chunk, offset)
-    offset += chunk.byteLength
-  }
-  return new Response(merged, {
+    },
+    async cancel(reason) {
+      await reader.cancel(reason)
+    },
+  })
+  return new Response(body, {
     status: response.status,
     statusText: response.statusText,
     headers: response.headers,

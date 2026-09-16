@@ -4,9 +4,11 @@
 // piStream，一次性文本调用（planner / 压缩 / 记忆 / 阶段文案）用 completePiText。
 // 两者共用同一套模型解析、reasoning 映射与网络防护。
 
-import { streamSimple } from "@earendil-works/pi-ai/api/openai-completions"
-import { contentText } from "@earendil-works/pi-ai"
-import type { AssistantMessage, Context, Message as PiMessage, Model, SimpleStreamOptions, StopReason, ThinkingContent, ThinkingLevel, Usage } from "@earendil-works/pi-ai"
+import { contentText, createModels, createProvider } from "@earendil-works/pi-ai"
+import { openAICompletionsApi } from "@earendil-works/pi-ai/api/openai-completions.lazy"
+import { deepseekProvider } from "@earendil-works/pi-ai/providers/deepseek"
+import { openaiProvider } from "@earendil-works/pi-ai/providers/openai"
+import type { AssistantMessage, Context, Message as PiMessage, Model, MutableModels, Provider, SimpleStreamOptions, StopReason, ThinkingContent, ThinkingLevel, Usage } from "@earendil-works/pi-ai"
 import type { StreamFn } from "@earendil-works/pi-agent-core"
 import type { ThinkingEffort } from "@/services/agent/types"
 import { aiConfig } from "@/services/config"
@@ -22,31 +24,83 @@ const log = createLogger("PiGateway")
  */
 const NON_REASONING_LOW_EFFORT_HINT = "\n\n[请快速简要回答，不需要过多思考]"
 
-function normalizeBaseUrl(endpoint: string): string {
-  const base = endpoint.replace(/\/+$/, "")
-  return base.endsWith("/v1") ? base : `${base}/v1`
+interface PiGateway {
+  signature: string
+  model: Model<any>
+  models: MutableModels
 }
 
-function isReasoningModel(): boolean {
-  const name = aiConfig.model.toLowerCase()
-  const endpoint = aiConfig.endpoint.toLowerCase()
-  return name.includes("reason") || name.includes("o1") || name.includes("o3") || name.includes("o4") || endpoint.includes("deepseek")
+let gatewayCache: PiGateway | undefined
+const modelGateways = new WeakMap<Model<any>, PiGateway>()
+
+function configuredProviderId(): string {
+  return aiConfig.provider.trim().toLowerCase() || "openai-compatible"
 }
 
-export function getPiModel(): Model<"openai-completions"> {
-  return {
+function builtinProvider(providerId: string): Provider | undefined {
+  if (providerId === "deepseek") return deepseekProvider()
+  if (providerId === "openai") return openaiProvider()
+  return undefined
+}
+
+function createConfiguredGateway(): PiGateway {
+  const providerId = configuredProviderId()
+  const url = new URL(aiConfig.endpoint)
+  // Existing local-server configurations accept a bare host; custom API paths are preserved.
+  if (url.pathname === "/" && ["openai", "ollama", "lmstudio", "lm-studio"].includes(providerId)) url.pathname = "/v1"
+  const endpoint = url.toString().replace(/\/+$/, "")
+  const configuredKey = aiConfig.apiKey
+  const requireApiKey = aiConfig.requireApiKey
+  const signature = JSON.stringify([
+    providerId, endpoint, configuredKey, aiConfig.requireApiKey,
+    aiConfig.model, aiConfig.contextMaxTokens,
+  ])
+  if (gatewayCache?.signature === signature) return gatewayCache
+
+  const builtin = builtinProvider(providerId)
+  const catalog = builtin?.getModels().find(model => model.id === aiConfig.model)
+  const model: Model<any> = {
+    ...catalog,
     id: aiConfig.model,
     name: aiConfig.model,
-    api: "openai-completions",
-    provider: aiConfig.provider as Model<"openai-completions">["provider"],
-    baseUrl: normalizeBaseUrl(aiConfig.endpoint),
-    reasoning: isReasoningModel(),
-    input: ["text"],
-    cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+    api: catalog?.api ?? "openai-completions",
+    provider: providerId,
+    baseUrl: endpoint,
+    reasoning: catalog?.reasoning ?? false,
+    input: catalog?.input ?? ["text"],
+    cost: catalog?.cost ?? { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
     contextWindow: aiConfig.contextMaxTokens,
     // ReplyGenerator only keeps 500 characters; leave headroom for reasoning and RUNTIME_DATA.
     maxTokens: Math.min(4096, Math.max(1024, Math.floor(aiConfig.contextMaxTokens / 4))),
   }
+  const provider = createProvider({
+    id: providerId,
+    name: providerId,
+    baseUrl: endpoint,
+    auth: {
+      apiKey: {
+        name: `${providerId} API key`,
+        async check() {
+          return configuredKey || !requireApiKey ? { type: "api_key", source: "Desk-Pet config" } : undefined
+        },
+        async resolve() {
+          const apiKey = configuredKey || (!requireApiKey ? "local-openai-compatible" : "")
+          return apiKey ? { auth: { apiKey }, source: "Desk-Pet config" } : undefined
+        },
+      },
+    },
+    models: [model],
+    api: catalog && builtin ? builtin : openAICompletionsApi(),
+  })
+  const models = createModels()
+  models.setProvider(provider)
+  gatewayCache = { signature, model, models }
+  modelGateways.set(model, gatewayCache)
+  return gatewayCache
+}
+
+export function getPiModel(): Model<any> {
+  return createConfiguredGateway().model
 }
 
 export function toPiAgentThinkingLevel(effort: ThinkingEffort | undefined): "off" | "low" | "medium" | "high" {
@@ -72,14 +126,13 @@ export function toPiReasoningLevel(effort: ThinkingEffort | undefined): Thinking
 }
 
 export function piStream(model: Model<any>, context: Context, options?: SimpleStreamOptions) {
-  return streamSimple(model as Model<"openai-completions">, context, {
+  return (modelGateways.get(model) ?? createConfiguredGateway()).models.streamSimple(model, context, {
     ...options,
     // 网络防护挂在 fetch 上：协议白名单与响应体上限对主链路同样生效。
     // 不支持外部传入 fetch —— 边界只有一处，不接受绕过。
     fetch: guardProviderFetch,
-    // pi-ai requires a non-empty key even for local OpenAI-compatible endpoints.
-    // 必须放在 spread 之后：runtime.ts 会显式传 `apiKey: undefined` 进来。
-    apiKey: aiConfig.apiKey || "local-openai-compatible",
+    // Harness owns retry budgets; avoid multiplying SDK retries by turn retries.
+    maxRetries: 0,
   })
 }
 

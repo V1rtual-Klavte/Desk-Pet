@@ -1164,3 +1164,5 @@ sessions/                      会话目录（唯一真相源）
 8. **工具优先**：MCP/Skill/Local Tool 三者同级注册，模型自行选择
 9. **安全内建**：不在各处分散判断，统一入口强制校验
 10. **人格中间件**：工具调用、结果、错误全部经人格层转换为角色化表达
+
+Provider 请求统一经 Pi `createProvider` / `createModels` gateway：内置模型沿用 Pi 的协议和能力目录，自定义模型走 OpenAI-compatible 工厂；运行中的模型绑定配置快照。响应体按 chunk 限流并传播取消，不再整段缓冲 SSE。主回合重试共享总 deadline，关闭 SDK 嵌套重试，认证失败、超时或已执行工具后不重放回合。

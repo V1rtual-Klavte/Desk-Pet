@@ -305,6 +305,7 @@ export async function runPiAgentTurn(input: PiAgentTurnInput): Promise<PiAgentTu
 
   let retriesUsed = 0
   let rawReply = ""
+  const deadline = Date.now() + loopConfig.turnTimeoutMs
   for (let attempt = 0; attempt <= loopConfig.maxRetry; attempt++) {
     const result = await runPiLoop({
       userText,
@@ -312,7 +313,7 @@ export async function runPiAgentTurn(input: PiAgentTurnInput): Promise<PiAgentTu
       systemPrompt: context.systemPrompt,
       tools: isActiveMessage ? [] : getToolsForMode(),
       maxToolCalls: loopConfig.maxToolCallsPerTurn,
-      timeoutMs: loopConfig.turnTimeoutMs,
+      timeoutMs: Math.max(1, deadline - Date.now()),
       timeoutReply: getFallbackReply("turnTimeout"),
       thinkingEffort,
       mode: generalConfig.assistantMode ? "assistant" : "pet",
@@ -334,7 +335,9 @@ export async function runPiAgentTurn(input: PiAgentTurnInput): Promise<PiAgentTu
       break
     }
     // Replaying a failed model request is safe only before any side-effecting tool ran.
-    if (result.toolCallsMade > 0 || attempt >= loopConfig.maxRetry) {
+    const failureKind = classifyTurnFailure(result.error)
+    if (result.toolCallsMade > 0 || attempt >= loopConfig.maxRetry
+      || failureKind === "auth" || failureKind === "timeout" || Date.now() >= deadline) {
       transition("WAITING", turnSessionId)
       applyEffect(PetPersonalityMiddleware.wrap("error", { message: result.error }), effects)
       const reply = getFallbackReply("maxRetriesExhausted")
@@ -345,7 +348,7 @@ export async function runPiAgentTurn(input: PiAgentTurnInput): Promise<PiAgentTu
         retriesUsed: attempt,
         effects,
         // 产品照旧拿到可显示的兜底文案；报告侧拿到「这次不是模型答得不好，是根本没答成」
-        failure: { kind: classifyTurnFailure(result.error), message: result.error },
+        failure: { kind: failureKind, message: result.error },
       }
     }
   }

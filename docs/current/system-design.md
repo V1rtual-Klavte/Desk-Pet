@@ -64,3 +64,5 @@ LLM 可见回复文本 + <RUNTIME_DATA>
 - ⚠️ CSP 只在生产构建生效，dev 拿不到。改动后必须在 `pnpm tauri build` 的产物上人工确认，`cargo check` 只能证明配置能被解析。
 - 文件工具的允许根是 home + 系统临时目录，**debug 构建下额外包含项目根**：dev 数据根是 `{project}/data/desk-pet`，仓库不在 `$HOME` 内时否则所有会话写入都会撞 `PATH_ESCAPE`。
 - 光标追踪线程按 ~16ms 轮询，但**只在坐标变化时**派发事件、且不再逐帧写日志（逐帧日志在 dev 下约 23MB/小时，远超日志轮转上限）。
+
+Provider 请求统一经 Pi `createProvider` / `createModels` gateway：内置模型沿用 Pi 的协议和能力目录，自定义模型走 OpenAI-compatible 工厂；运行中的模型绑定配置快照。响应体按 chunk 限流并传播取消，不再整段缓冲 SSE。主回合重试共享总 deadline，关闭 SDK 嵌套重试，认证失败、超时或已执行工具后不重放回合。

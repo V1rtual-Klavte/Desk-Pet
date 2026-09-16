@@ -482,3 +482,5 @@ chore(deps): 引入 chrono 与 thiserror
 ## 核心方针
 
 轻量化、低内存占用、高性能、token 消耗少、功能完整。
+
+Provider 请求统一经 Pi `createProvider` / `createModels` gateway：内置模型沿用 Pi 的协议和能力目录，自定义模型走 OpenAI-compatible 工厂；运行中的模型绑定配置快照。响应体按 chunk 限流并传播取消，不再整段缓冲 SSE。主回合重试共享总 deadline，关闭 SDK 嵌套重试，认证失败、超时或已执行工具后不重放回合。
