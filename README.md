@@ -61,7 +61,7 @@
 
 ### 前置
 
-- Node.js ≥ 18 + pnpm
+- Node.js ≥ 18 + pnpm 11（具体版本由 `package.json` 的 `packageManager` 字段裁定）
 - Rust toolchain
 - macOS：Xcode Command Line Tools
 
@@ -210,6 +210,8 @@ Live Test 位于 `src/services/__tests__/live/`，通过独立 Tauri WebView 使
 ### CI
 
 `.github/workflows/ci.yml` 在 push、pull request 和手动触发时，于 `macos-latest` 与 `windows-latest` 各跑一次 `pnpm run test:types`（`vue-tsc --noEmit && cargo check`）；Live Test 需要真实 Provider，不在 CI 内执行。
+
+pnpm 版本由 `package.json` 的 `packageManager` 字段裁定，CI 不单独指定。pnpm 11 的 `strictDepBuilds` 默认为 `true`：依赖若带构建脚本而没在 `pnpm-workspace.yaml` 的 `allowBuilds` 里显式声明 `true`/`false`，**全新** `pnpm install` 会以 `ERR_PNPM_IGNORED_BUILDS` 失败 —— 本地 `node_modules` 已存在时 install 会 `Already up to date` 直接跳过，这个错误只在干净安装时暴露。新增带 `postinstall`/`prepare` 的依赖时需要同步该字段。
 
 目标平台是 Windows + macOS，但本机（macOS）永远看不到 `#[cfg(target_os = "windows")]` 分支，本机交叉 check 又会卡在 tauri-build 的 embed-resource（需要 `llvm-rc`）且不编译 deskpet 自身。因此 **Windows 分支的编译级验证只能靠 CI**，改动 `cfg(windows)` 代码或 Windows 依赖 feature 后必须看 Windows job 结果。
 

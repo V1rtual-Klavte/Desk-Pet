@@ -22,9 +22,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # 版本由 package.json 的 packageManager 字段裁定：action-setup@v4 没有 version 输入时读该字段。
+      # 不在这里重复写版本号，避免 CI 与本地装到不同的 pnpm。
       - uses: pnpm/action-setup@v4
-        with:
-          version: "11"
 
       - uses: actions/setup-node@v4
         with:

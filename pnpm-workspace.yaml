@@ -1,4 +1,9 @@
 allowBuilds:
   esbuild: true
+  # pnpm 11 的 strictDepBuilds 默认为 true：未在此列出的构建脚本会让全新 install 直接失败。
+  # 这两个包必须显式写 false —— @google/genai 的 prepare 引用未随包发布的 scripts/，
+  # protobufjs 的 postinstall 只打印版本号警告；两者的 dist 均为预构建产物。
+  '@google/genai': false
+  protobufjs: false
 minimumReleaseAgeExclude:
   - '@types/node@26.0.0'

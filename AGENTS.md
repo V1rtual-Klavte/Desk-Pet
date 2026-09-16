@@ -70,6 +70,7 @@ src/services/__tests__/live/
 - `npx vue-tsc --noEmit` 和 `cargo check` 只证明类型/编译，不替代 Live Test。
 - Contract 的 `sourceHash` 不能为空；启动前发现空 hash 或源码变更会直接阻断 Live Test。
 - `.github/workflows/ci.yml` 在 push / pull request / 手动触发时，于 macOS 与 Windows 各跑一次 `pnpm run test:types`，Live Test 不在 CI 内执行。目标平台是 Windows + macOS，而 **Windows 分支只能靠 CI 做编译级验证**：本机交叉 check 会卡在 tauri-build 的 embed-resource（需要 `llvm-rc`）且不编译 deskpet 自身。改动 `cfg(windows)` 代码或 Windows 依赖 feature 后必须看 Windows job。
+- pnpm 版本由 `package.json` 的 `packageManager` 字段裁定，CI 不单独指定。新增带 `postinstall`/`prepare` 的依赖时，必须在 `pnpm-workspace.yaml` 的 `allowBuilds` 里显式写 `true`（运行）或 `false`（跳过）：pnpm 11 的 `strictDepBuilds` 默认 `true`，未列出的构建脚本会让 `pnpm install` 以 `ERR_PNPM_IGNORED_BUILDS` 退出 1。本地 `node_modules` 已存在时 install 会 `Already up to date` 直接跳过，**这个错误只在全新安装（CI、换机、删掉 node_modules）时暴露**。
 
 ## 文档职责
 
