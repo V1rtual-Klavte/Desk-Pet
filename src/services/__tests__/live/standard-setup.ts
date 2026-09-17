@@ -9,14 +9,14 @@ import { activeSessionId, sessions, unansweredCount } from "@/services/session/s
 import { resetSessionPersistenceForTest } from "@/services/session/persistence"
 import { MemoryService, resetMemoryProvider } from "@/services/agent/memory"
 import { flushMemory } from "@/services/agent/memory/memory-entries"
-import { resetSessionRuntimeForTest } from "@/services/agent/memory/session-files"
+import { deleteAllPiSessionsForTest } from "@/services/session/repo"
 import { getActiveCard, initRegistry } from "@/services/personality/registry"
 import { initCards } from "@/services/personality/loader"
 import { registerDefaultTools } from "@/services/tool/registry"
 import { resetCooldown, setAIGenerating } from "@/services/cooldown"
 import { resetPreprocessorForTest } from "@/services/engine/preprocessor"
 import { resetPiRuntimeProviderForTest } from "@/services/engine/pi"
-import { resetRuntimeQueueForTest } from "@/services/agent/runner"
+import { resetAgentRuntimeForTest } from "@/services/agent/runner"
 import { resetConfirmChannel } from "./confirm-channel"
 import type { ConfirmPolicy } from "./types"
 
@@ -43,11 +43,8 @@ export async function standardSetup(confirmPolicy: ConfirmPolicy = "deny"): Prom
 
   // 上一场景的异步 session 写入必须先完成，之后才能清空模块状态。
   await MemoryService.init()
-  await resetSessionRuntimeForTest()
-  for (const session of await MemoryService.listSessionFiles()) {
-    await MemoryService.deleteSessionFile(session.filename)
-  }
-  await resetSessionRuntimeForTest()
+  // 会话正文真相源是 sessions/ 下的 JSONL：先关句柄再逐个删除，场景之间不共享会话。
+  await deleteAllPiSessionsForTest()
 
   // 1. 重置会话状态
   resetSession()
@@ -76,6 +73,6 @@ export async function standardSetup(confirmPolicy: ConfirmPolicy = "deny"): Prom
   resetPreprocessorForTest()
   resetPiRuntimeProviderForTest()
   resetMemoryProvider()
-  await resetRuntimeQueueForTest()
+  await resetAgentRuntimeForTest()
   await resetSessionPersistenceForTest()
 }

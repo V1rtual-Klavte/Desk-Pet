@@ -8,7 +8,7 @@ import {
 } from "@earendil-works/pi-agent-core/harness/session/testing"
 import type { JsonlSessionMetadata, SessionRepo } from "@earendil-works/pi-agent-core"
 import type { SceneDef } from "../../types"
-import { createPiSessionRepo, PI_SESSIONS_DIR } from "@/services/engine/pi"
+import { createPiSessionRepo } from "@/services/engine/pi"
 import type { PiSessionRepo } from "@/services/engine/pi"
 import { runtimePath } from "@/services/paths"
 
@@ -23,7 +23,7 @@ let currentRepo: PiSessionRepo | undefined
  * JsonlSessionListOptions 签名不兼容；这里按官方签名做一层纯转发，不改变行为。
  */
 async function freshRepo(): Promise<SessionRepo<JsonlSessionMetadata>> {
-  const sessionsRoot = await runtimePath("data", PI_SESSIONS_DIR, `conformance-${crypto.randomUUID()}`)
+  const sessionsRoot = await runtimePath("data", `conformance-${crypto.randomUUID()}`)
   const repo = await createPiSessionRepo({ sessionsRoot })
   currentRepo = repo
   return {

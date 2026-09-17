@@ -1,7 +1,7 @@
 // ==========================================
 // Live Test 确认通道 —— 测试宿主的确定性应答
 //
-// live-test.html 是裸页，没有 ChatPanel：`requestConfirm()` 写入的
+// live-test.html 是裸页，没有 ChatPanel：`requestPermissionConfirm()` 写入的
 // `confirmState.pending` 无人 resolve，DANGER 工具一旦走到确认就会挂到场景超时。
 //
 // 这里给宿主装一条应答通道：watcher 以同步 flush 兜住每一条确认请求，

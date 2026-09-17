@@ -7,7 +7,7 @@ export const harnessStorageContract: ModuleContract = {
     "src/services/tool/pi/tauri-execution-env.ts",
   ],
   generatedAt: "2026-09-17",
-  sourceHash: "42536436bd8ae91d1dd813644ec3f9be40697862d821d14a1406ac7af5878d86",
+  sourceHash: "ec52e19ed1dbf9c3473178b932b3f6c428094704a69316c208e170a548b1d7f9",
   coverage: [
     {
       id: "hs-01",
@@ -20,16 +20,16 @@ export const harnessStorageContract: ModuleContract = {
     {
       id: "hs-02",
       feature: "TauriExecutionEnv FileSystem 补全",
-      description: "appendFile/renameFile/createDir/remove/createTempDir 经真实 Rust 命令完成且不 throw：rename 原子替换已存在目标；remove 遵守 recursive/force（force 时缺失算成功，目录需 recursive）；createDir 默认递归",
-      why: "JsonlSessionRepo 的原子发布依赖 append+rename，能力缺口会让会话无法落盘",
+      description: "appendFile/renameFile/createDir/remove/createTempDir/listDir 经真实 Rust 命令完成且不 throw：rename 原子替换已存在目标；remove 遵守 recursive/force（force 时缺失算成功，目录需 recursive）；createDir 默认递归；listDir 直接返回绝对 path、size、mtimeMs 与 file/directory/symlink 三值 kind",
+      why: "JsonlSessionRepo 的原子发布依赖 append+rename，list 依赖完整 FileInfo 字段，能力缺口会让会话无法落盘或无法恢复",
       depth: "deep",
       scenarios: ["harness-execution-env-filetree"],
     },
     {
       id: "hs-03",
       feature: "会话重启恢复与目录边界",
-      description: "同一磁盘根上新建仓库实例后，list 从磁盘头部恢复 metadata、open 重新加载会话状态；会话文件落在数据根 pi-sessions 下，不写进旧 sessions/*.md",
-      why: "H-1 的完成条件是重启后可恢复会话，且新旧会话格式不得混放",
+      description: "同一磁盘根上新建仓库实例后，list 从磁盘头部恢复 metadata、open 重新加载会话状态；会话文件落在给定会话根（数据根 sessions/ 同形）的 --cwd-- 子目录下，根上的 index.json（UI 状态）与旧 .md 残留不参与扫描、也不影响读写",
+      why: "H-1 的完成条件是重启后可恢复会话，且会话正文与同根的 UI 状态文件互不干扰",
       depth: "deep",
       scenarios: ["harness-session-restart-recovery"],
     },

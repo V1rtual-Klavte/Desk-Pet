@@ -15,7 +15,7 @@ interface ProbeOutcome {
  * 用 faux provider 驱动一个只含探针工具的 Pi Agent，`beforeToolCall` 由用例注入。
  *
  * 这里直接跑 Pi 的 Agent 而不是 Desk-Pet 的运行时：被测的是 Pi 原生 hook 契约本身 ——
- * `pi/runtime.ts` 的整个工具门禁就挂在 `beforeToolCall` 上，它一旦不 fail-closed，
+ * 运行内核的工具门禁复用同一语义（Harness `before_tool` ← Agent `beforeToolCall`），它一旦不 fail-closed，
  * 安全策略就只是建议。
  */
 async function runProbeAgent(

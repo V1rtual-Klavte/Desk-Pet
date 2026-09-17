@@ -19,6 +19,7 @@ import { initSessions } from "@/services/session"
 import { MemoryService } from "@/services/agent/memory"
 import { formatError } from "@/services/error"
 import { confirmRecords } from "./confirm-channel"
+import { sessionMessages } from "./session-entries"
 
 export const DEFAULT_SCENE_TIMEOUT = 120_000
 /**
@@ -34,15 +35,21 @@ class SceneTimeoutError extends Error {
   }
 }
 
-function takeMemorySnapshot(): MemorySnapshot {
+/** 会话轮次直接来自会话条目（与 UI 同一读模型），不依赖任何进程内会话工作记忆。 */
+async function takeMemorySnapshot(sessionId: string): Promise<MemorySnapshot> {
+  const messages = sessionId ? await sessionMessages(sessionId).catch(() => []) : []
+  const turns = messages
+    .filter((message): message is typeof message & { role: "user" | "assistant" } =>
+      message.role === "user" || message.role === "assistant")
+    .map(message => ({ role: message.role, text: message.text }))
   return {
     totalEntries: MemoryService.count,
-    sessionTurnCount: MemoryService.sessionTurnCount,
+    sessionTurnCount: turns.length,
     entriesByCategory: MemoryService.list().reduce((acc, entry) => {
       acc[entry.category] = (acc[entry.category] || 0) + 1
       return acc
     }, {} as Record<string, number>),
-    sessionTurns: MemoryService.session?.turns.map(({ role, text }) => ({ role, text })) ?? [],
+    sessionTurns: turns,
   }
 }
 
@@ -70,7 +77,7 @@ async function executeTurn(userText: string, entry: SceneEntry, isActiveMessage 
   }
 
   // Runtime tests use the same durable session creation as the desktop entry.
-  if (!getActiveSessionId() && (entry === "production" || isActiveMessage || !MemoryService.sessionId)) await initSessions()
+  if (!getActiveSessionId()) await initSessions()
 
   if (entry === "production") {
     // sendMessage clears this after preprocessing; clear here so handled requests cannot leak a prior turn.
@@ -92,7 +99,7 @@ async function executeTurn(userText: string, entry: SceneEntry, isActiveMessage 
 
   // Mirror the production message lifecycle around the lower-level Pi runtime.
   if (!isActiveMessage) pushUserMessage(userText)
-  const sessionId = getActiveSessionId() || MemoryService.sessionId
+  const sessionId = getActiveSessionId()
   const output = await runPiAgentTurn({
     sessionId,
     userText,
@@ -137,7 +144,7 @@ async function runSceneInner(scene: SceneDef, trial: number): Promise<SceneResul
 
     try {
       const output = await executeTurn(turn.userText, entry, turn.isActiveMessage)
-      const session = getSession(getActiveSessionId() || MemoryService.sessionId)
+      const session = getSession(getActiveSessionId())
       const ctx: AssertContext = {
         output,
         pool: getPoolSnapshot(),
@@ -146,7 +153,7 @@ async function runSceneInner(scene: SceneDef, trial: number): Promise<SceneResul
           messageCount: session.messageCount,
           toolCallCount: session.toolCallCount,
         },
-        memory: takeMemorySnapshot(),
+        memory: await takeMemorySnapshot(getActiveSessionId()),
         toolHistory: output.toolCallHistory.map(item => ({
           toolName: item.toolName,
           status: item.status,

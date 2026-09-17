@@ -20,9 +20,9 @@ export const toolExecutionContract: ModuleContract = {
     "src/services/tool/mcp/manager.ts",
   ],
   generatedAt: "2026-09-17",
-  sourceHash: "9b57552d2ff1295a09f7ebde4b962242307fe11538b88d543c7b58a88c99f6ae",
+  sourceHash: "46cc6a35d2f67a456cabb79e69e5966636cfad79c39c40f81a6f22bd915a0793",
   coverage: [
-    { id: "te-13", feature: "工具结果持久化与回读", description: "生产工具配对按实际round持久化，完整工具文本保留，L0只改请求视图，分页回读限定当前session", why: "短请求不能以丢失工具证据为代价", depth: "deep", scenarios: ["tool-transcript-recovery"] },
+    { id: "te-13", feature: "工具结果持久化与回读", description: "生产工具配对作为会话条目持久化，完整工具文本保留（L0只改请求视图），read_session_event 按条目 id 分页回读并限定当前 session", why: "短请求不能以丢失工具证据为代价", depth: "deep", scenarios: ["tool-transcript-recovery"] },
     { id: "te-08", feature: "真 LLM 多工具调用", description: "真实 LLM 对话中先后调用多个工具", why: "端到端工具链验证", depth: "deep", scenarios: ["tool-system-info"] },
     { id: "te-09", feature: "Provider 网络边界", description: "Provider 固定用户配置的 origin，拒绝 host/scheme/port 漂移并禁止重定向携带认证；显式 localhost/provider 可用，响应按流限额", why: "避免网络策略绕过和内存失控", depth: "shallow", scenarios: ["tool-provider-network-boundary"] },
     { id: "te-10", feature: "工具取消错误码", description: "已取消的工具调用不进入 handler 且返回稳定错误码", why: "取消必须可观测且不可产生副作用", depth: "shallow", scenarios: ["tool-cancelled"] },

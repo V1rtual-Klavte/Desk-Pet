@@ -20,7 +20,7 @@ export type TestSuite = "regression" | "capability" | "safety" | "stress"
  */
 export type SceneEntry = "runtime" | "production" | "unit"
 
-/** 测试宿主对 `requestConfirm()` 的应答策略；默认 "deny"（确定性优先）。 */
+/** 测试宿主对 `requestPermissionConfirm()` 的应答策略；默认 "deny"（确定性优先）。 */
 export type ConfirmPolicy = "deny" | "approve"
 
 export interface SceneMeta {
@@ -60,6 +60,7 @@ export interface AssertContext {
 
 export interface MemorySnapshot {
   totalEntries: number
+  /** 会话条目中的用户/助手消息条数（与 UI 同一读模型，不读进程内工作记忆）。 */
   sessionTurnCount: number
   entriesByCategory: Record<string, number>
   sessionTurns: { role: "user" | "assistant"; text: string }[]

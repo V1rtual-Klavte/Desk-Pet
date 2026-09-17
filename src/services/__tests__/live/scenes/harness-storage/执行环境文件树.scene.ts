@@ -107,7 +107,34 @@ export const 执行环境文件树: SceneDef = {
           try {
             const info = fileOk(await env.fileInfo(root, context))
             if (info.kind !== "directory") throw new Error(`createTempDir 应产出目录，实际 ${info.kind}`)
-            if (root.startsWith(BaseDirs.sessions())) throw new Error("临时目录不应落在旧会话目录下")
+            if (root.startsWith(BaseDirs.sessions())) throw new Error("临时目录不应落在会话目录下")
+          } finally {
+            await env.remove(root, { recursive: true, force: true }, context)
+          }
+        },
+      },
+      {
+        // Rust file_list 直接返回 FileInfo 全字段（绝对 path、kind 三值、size、mtimeMs）；
+        // 前端不再用 file_info 回填短条目 —— 缺字段会让 JsonlSessionRepo.list 直接失效。
+        type: "expectListDirFullFileInfo",
+        run: async () => {
+          const env = await createEnv()
+          const context = BACKGROUND_CONTEXT
+          const root = fileOk(await env.createTempDir("deskpet-live-listdir-", context))
+          try {
+            fileOk(await env.createDir(`${root}/sub`, undefined, context))
+            fileOk(await env.writeFile(`${root}/a.txt`, "abc", context))
+            const entries = fileOk(await env.listDir(root, context))
+            const file = entries.find(entry => entry.name === "a.txt")
+            const dir = entries.find(entry => entry.name === "sub")
+            if (!file || !dir) throw new Error(`listDir 缺少条目: ${JSON.stringify(entries)}`)
+            if (file.kind !== "file" || dir.kind !== "directory") {
+              throw new Error(`listDir kind 不符合契约: file=${file.kind}, dir=${dir.kind}`)
+            }
+            if (file.path !== `${root}/a.txt` || file.size !== 3) {
+              throw new Error(`listDir 缺绝对 path 或 size 错误: ${JSON.stringify(file)}`)
+            }
+            if (!(file.mtimeMs > 0) || !(dir.mtimeMs > 0)) throw new Error("listDir 缺少 mtimeMs")
           } finally {
             await env.remove(root, { recursive: true, force: true }, context)
           }

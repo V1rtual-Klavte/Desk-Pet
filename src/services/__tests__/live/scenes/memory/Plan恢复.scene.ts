@@ -1,7 +1,7 @@
-import { invoke } from "@tauri-apps/api/core"
-import { MemoryService, parseSessionEventDocument, planCheckpointStore } from "@/services/agent/memory"
+import { planCheckpointStore, PLAN_CHECKPOINT_ENTRY } from "@/services/agent/memory"
 import { initChat } from "@/services/agent/runner"
-import { runtimePath } from "@/services/paths"
+import { getActiveSessionId } from "@/services/session/store"
+import { readPiSessionEntries } from "@/services/session/repo"
 import { fakeText, installFakeProvider } from "../../fake-provider"
 import type { SceneDef } from "../../types"
 
@@ -21,7 +21,7 @@ export const Plan恢复: SceneDef = {
   setup: async () => {
     installFakeProvider([fakeText("Plan 恢复验证完成")])
     await initChat()
-    const sessionId = MemoryService.sessionId
+    const sessionId = getActiveSessionId()
     const now = Date.now()
     await planCheckpointStore.create({
       schemaVersion: 1,
@@ -42,12 +42,13 @@ export const Plan恢复: SceneDef = {
   },
   turns: [{
     index: 1,
-    description: "从 session events 恢复运行中的计划",
+    description: "从 deskpet.plan_checkpoint 会话条目恢复运行中的计划",
     userText: "验证 Plan 恢复。",
     checks: [{
       type: "expectPlanRecoveryIsolation",
       run: async () => {
-        const recovered = await planCheckpointStore.recover(MemoryService.sessionId)
+        const sessionId = getActiveSessionId()
+        const recovered = await planCheckpointStore.recover(sessionId)
         const current = recovered.find(item => item.plan.planId === PLAN_ID)
         if (!current || current.plan.state !== "paused") throw new Error("Plan 未恢复为 paused")
         const readStep = current.steps.find(step => step.stepId === "read")
@@ -55,16 +56,15 @@ export const Plan恢复: SceneDef = {
         if (readStep?.state !== "pending" || writeStep?.state !== "unknown_side_effect") {
           throw new Error(`Plan step 恢复错误: read=${readStep?.state}, write=${writeStep?.state}`)
         }
-        const files = await MemoryService.listSessionFiles()
-        const filename = files.find(file => file.sessionId === MemoryService.sessionId)?.filename
-        if (!filename) throw new Error("未找到当前 session 文件")
-        const path = await runtimePath("sessions", filename)
-        const raw = (await invoke<{ content: string }>("file_read", { path })).content
-        const actions = parseSessionEventDocument(raw, MemoryService.sessionId).events
-          .filter(event => event.kind === "plan_checkpoint")
-          .map(event => (event.payload as Record<string, unknown>).action)
+        // 恢复写入经会话条目落盘：最新快照与 recovery 标记都能按 customType 读回。
+        const entries = await readPiSessionEntries(sessionId)
+        const actions = entries.flatMap(entry => {
+          if (entry.type !== "custom" || entry.customType !== PLAN_CHECKPOINT_ENTRY) return []
+          const action = (entry.data as unknown as { action?: string } | undefined)?.action
+          return typeof action === "string" ? [action] : []
+        })
         for (const required of ["created", "tool_start", "recovery"]) {
-          if (!actions.includes(required)) throw new Error(`缺少 Plan checkpoint: ${required}`)
+          if (!actions.includes(required)) throw new Error(`缺少 Plan checkpoint 条目: ${required}`)
         }
       },
     }],

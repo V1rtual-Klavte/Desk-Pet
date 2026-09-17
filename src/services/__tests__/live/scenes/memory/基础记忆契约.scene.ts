@@ -39,14 +39,6 @@ export const 记忆更新删除: SceneDef = {
   } }] }],
 }
 
-export const 记忆轮次: SceneDef = {
-  meta: { caseId: "memory-record-turn", module: "memory", contractId: "mm-05", description: "recordTurn 递增会话轮次", depth: "deep", suite: "regression", tags: ["memory"] },
-  setup: async () => { providerSetup(); MemoryService.recordTurn("user", "recorded user turn") },
-  turns: [{ index: 1, description: "验证会话轮次", userText: "验证轮次记录。", checks: [{ type: "expectRecordTurn", run: async (ctx) => {
-    if (ctx.memory.sessionTurnCount < 1 || !ctx.memory.sessionTurns.some(turn => turn.text === "recorded user turn")) throw new Error("recordTurn 未保留轮次")
-  } }] }],
-}
-
 export const 记忆整理: SceneDef = {
   meta: { caseId: "memory-consolidate", module: "memory", contractId: "mm-06", description: "本地 consolidate 去重", depth: "shallow", suite: "regression", tags: ["memory"] },
   setup: async () => { providerSetup(); MemoryService.append("duplicate fact", "general", 5); MemoryService.append("duplicate fact", "general", 4) },

@@ -1,6 +1,6 @@
 import type { SceneDef } from "../../types"
 import { fakeText, fakeToolCall, installFakeProvider } from "../../fake-provider"
-import { requestConfirm } from "@/services/safety"
+import { requestPermissionConfirm } from "@/services/safety"
 import { confirmRecords } from "../../confirm-channel"
 
 /**
@@ -67,8 +67,13 @@ export const 确认放行: SceneDef = {
   setup: async () => { installFakeProvider([fakeText("通道自检完成")]) },
   turns: [{ index: 1, description: "确认通道 approve 策略", userText: "检查确认通道。",
     checks: [{ type: "expectConfirmApproved", run: async () => {
-      const approved = await requestConfirm("probe_tool", "通道自检")
-      if (!approved) throw new Error("approve 策略下确认请求未被放行")
+      // 直接走生产入口（PermissionKernel 同一函数）：探针请求必须被宿主按场景策略应答。
+      const decision = await requestPermissionConfirm({
+        requestId: "channel-probe", sessionId: "probe-session", runGeneration: 0,
+        toolCallId: "probe_tool", toolName: "probe_tool", inputHash: "probe", policyHash: "probe",
+        expiresAt: Date.now() + 60_000, message: "通道自检", parameterSummary: "", effectClass: "external_side_effect",
+      })
+      if (decision === "deny") throw new Error("approve 策略下确认请求未被放行")
       const records = confirmRecords().filter(record => record.toolName === "probe_tool")
       if (records.length !== 1 || !records[0].approved) throw new Error("确认记录缺失或未标记放行")
     } }] }],
