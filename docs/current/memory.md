@@ -2,6 +2,18 @@
 
 长期记忆仍通过 `MemoryProvider` 只读端口进入 Runtime，默认返回空集合，召回时限为 1.5 秒。SQLite、自动事实提取、画像候选、纠正/遗忘和 dreaming 属于下一阶段。Card 变量与用户长期事实分别管理。
 
+## 当前文件职责
+
+| 文件 | 当前用途 |
+|---|---|
+| CANDY.md | 用户手写系统指令 |
+| User.md | 重要用户事实的文件视图，作为只读 profile projection 进入上下文 |
+| Outside.md | 外部知识指针，不自动成为用户事实 |
+| MEMORY.md | 当前长期记忆注册表，尚未迁移到 SQLite |
+| Project.md | 会话归档索引；正文仍以 sessions/*.md 为准 |
+
+这些文件的读取/整理接口仍在 [memory-entries.ts](../../src/services/agent/memory/memory-entries.ts)；接口存在不表示自动链路已接通，不能声称 MemoryService.search() 已自动注入或 forkMemorySupplement() 已被每轮调用。未来 SQLite 迁移的写入与投影边界见 [P6 目标](../plans/active/记忆系统运行时契约.md)。
+
 ## 会话真相源
 
 `sessions/*.md` 保存完整正文、工具调用/结果和控制事件；`sessions/index.json` 只保存可丢弃 UI 状态。新增正文以一条 `deskpet-event` 保存完整 `Message`，预览不参与重放，兼容旧 `deskpet-turn` 和纯预览。`appendSequence` 按同一会话写锁下的落盘顺序递增；实际 Pi 工具调用与结果保存同一 `apiRoundId`、call ID、错误标记和来源。主动上下文不成为用户事实。
@@ -18,9 +30,11 @@
 
 ## 预算与工具大结果
 
-预算由 `context/budget.ts` 统一，主请求与一次性文本请求共享输出预留。正常目标在硬输入上限下留 `min(20,000, 16% 窗口)` 余量（极小窗口另有限制）；保留原文尾部和摘要输出各有独立上限。设置中的窗口还受已知模型上限约束。
+预算由 [context/budget.ts](../../src/services/context/budget.ts) 统一，估算会计入标准化消息和完整工具 schema，不把估算值当成 Provider usage；主请求与一次性文本请求共享输出预留。正常目标在硬输入上限下留 `min(20,000, 16% 窗口)` 余量（极小窗口另有限制）；保留原文尾部和摘要输出各有独立上限。设置中的窗口还受已知模型上限约束。
 
-- L0：请求内缩短大工具结果，保留头尾和 eventId；完整文本仍在会话，`read_session_event` 按当前会话分页读取。Bash 继续复用已有 Rust spill。
+请求层顺序为 static → dynamic → profile → memory → transcript → ephemeral，稳定静态前缀先放。预算桶比例是 static 12%、tools 8%、dynamic 10%、memory 15%、transcript 50%、ephemeral 5%；profile 计入 dynamic，schema/Skill 清单计入 tools。它们是可借用空闲容量的软配额，不是按百分比强行截字；设置页调整总窗口，比例由预算模块定义。
+
+- L0：请求内缩短大工具结果，保留头尾和 eventId；工具实际返回的完整文本仍在会话，`read_session_event` 按当前会话分页读取。Bash 在返回前可能已截断并生成会淘汰的 spill 文件，不能把这些文件等同于持久会话原文；见[工具输出边界](tool-system.md#文件命令与取消)。
 - L1：对最旧的连续完整用户意图轮生成结构化摘要。工具批次不能拆开，最后一轮与未完成调用保留；大历史分多次有界提交。
 - L2：在无法再安全压缩时保留原文；如果核心输入仍超过硬上限，返回可解释的上下文不足错误，不用占位文案伪装压缩成功。
 
@@ -28,8 +42,8 @@
 
 ## 请求快照与长期记忆边界
 
-每轮冻结模型、Card、变量、CANDY、User、工具和 Skill 目录。PromptSnapshot 分 `transform_context / provider_payload / provider_usage` 三阶段，持久化 hash、来源、预算估算、真实 usage、缓存 token 和 context epoch，不保存原始 Prompt。摘要调用不计为正常聊天回复。
+回合冻结与三阶段 PromptSnapshot 由[运行时契约](runtime-contract.md#快照与人格状态)维护。摘要调用不计为正常聊天回复。
 
 `CANDY.md` 是人工指令，`User.md` 通过带来源的只读画像投影进入动态层；两者与摘要分别建块。现有记忆整理接口保留，但应用启动、每五轮和 session 结束不隐式发起记忆 LLM 整理。明确的长期记忆写入闭环在 P6 实施。
 
-本分支 macOS 类型/编译通过；89 个场景三次严格 trial（267 次）全部通过。详细实现、报告路径与下一阶段边界见[执行手册](../plans/active/记忆系统重构执行手册.md)。
+当前实现入口为 [session-files.ts](../../src/services/agent/memory/session-files.ts)、[compaction-store.ts](../../src/services/agent/memory/compaction-store.ts)、[compactor.ts](../../src/services/engine/compactor.ts) 和 [provider.ts](../../src/services/agent/memory/provider.ts)。历史验证证据只在[执行手册](../plans/active/记忆系统重构执行手册.md)记录。

@@ -1,262 +1,93 @@
-# 🍬 糖糖桌宠 (Desk Pet)
+# 🍬 糖糖桌宠（Desk-Pet）
 
-> 像素风桌面虚拟主播助手：常驻桌面，能聊天、能用工具、能看你窗口、能主动搭话。
->
-> Card 负责角色表达，Profile 负责外观呈现，会话和运行时数据独立持久化。
+可自定义角色与外观的桌面陪伴应用。角色常驻桌面，能聊天、感知前台窗口并主动搭话；助手模式提供工具与任务能力。
 
 [![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20macOS-blue)](https://github.com/Klavte/Desk-Pet)
 [![Tauri](https://img.shields.io/badge/Tauri-v2-ffc131)](https://tauri.app)
 [![Vue](https://img.shields.io/badge/Vue-3-4fc08d)](https://vuejs.org)
-[![Rust](https://img.shields.io/badge/Rust-🦀-dea584)](https://www.rust-lang.org)
 
----
+## 能做什么
 
-## ✨ 功能
+- **陪伴聊天**：Card 定义角色、语气、情绪和互动变量；支持多会话切换与历史恢复。
+- **自定义外观**：Profile 包含主题、动画和素材，可编辑、复制、导入导出；支持灵动图层与景深效果。
+- **窗口感知**：开启监控后，根据前台应用和窗口标题主动搭话，可配置停留时长与冷却。
+- **桌面交互**：透明置顶窗口、全局快捷键、托盘、表情和音效。
+- **工具协助**：文件读写、Bash、系统信息；助手模式扩展剪贴板、应用打开、计划与子代理。
+- **扩展能力**：Skill 按需读取说明，MCP 提供外部工具；具体操作受统一权限策略约束。
+- **对话连续性**：长会话按预算压缩上下文，原始记录保留；压缩摘要与长期记忆分别管理。
 
-- **桌面常驻** — 无边框透明窗口，角色在所有桌面和全屏 Space 悬浮
-- **AI 聊天** — Card 驱动人格，兼容 OpenAI、DeepSeek、Ollama 等 OpenAI 兼容接口
-- **会话管理** — 多会话切换、新建、关闭、归档、恢复和会话文件持久化
-- **会话运行槽与队列化入口** — 聊天消息先将 queued 事实事件原子写入 sessions，再进入 Pi；Agent、运行阶段、上下文和异步写回均绑定 sessionId；steer/followUp 在 Agent 消费结束后才进入 accepted/done，结构化失败不会因存在兜底文案而记为成功
-- **可恢复 Plan** — 助手模式的 Plan、step、子代理工具开始/结束均写入 session checkpoint；重启后只读步骤可回到 pending，缺少完成凭证的外部副作用进入 unknown_side_effect
-- **分层上下文** — ContextKernel 固定 `static → dynamic → profile → memory → transcript → ephemeral` 顺序，并记录预算裁剪原因
-- **Prompt 审计** — Runtime 在上下文变换和 Provider payload 两个阶段保存脱敏 Prompt 快照，并以请求、回合和运行代际关联
-- **工具系统** — 文件读写、Bash、系统信息、剪贴板、子代理、Skill、MCP（联网能力由 MCP 服务器提供）
-- **助手模式** — 解锁更完整的文件、命令、应用、剪贴板和任务编排能力，并经过安全策略控制
-- **Pi Agent Core** — 统一管理模型请求、顺序工具循环、超时和可选的复杂任务计划；产品状态仍由 Desk-Pet 管理
-- **人格系统** — Card 热切换，支持 neutral、angelkawaii、ame、pchan 和用户导入 Card
-- **Card 运行时状态** — 通过回复末尾的 `RUNTIME_DATA` 更新已注册的角色变量
-- **窗口感知** — 监控前台窗口，停留超时后 AI 主动搭话
-- **安全控制** — SAFE / NORMAL / DANGER / NOWAY 风险等级与确认策略；动态风险等级先于会话信任解析（deny-first）；会话信任的粒度是「工具 + 本次参数」，确认过的参数才免重复询问；文件工具另有路径分级，私钥与凭据类路径直接 NOWAY
-- **Bash 硬基线** — Rust 侧两层 token 策略：层 1 硬基线（破坏性目标、`-delete`/`-exec` 类参数、系统路径重定向）在任何模式下都执行且调用方无法关闭，层 2 才按模式叠加白名单或扩展命令规则
-- **工具门禁与审计** — 工具前置门禁走 Pi 原生 `beforeToolCall`，结果由 ToolRouter 和 Pi 事件记录；每次调用记录 operationId、policyHash 与取消/超时的稳定错误码，`afterToolCall` 统一转换待后续接线
-- **记忆系统** — CANDY、User、MEMORY、sessions 和压缩摘要；完整正文与工具事件只保留一个权威记录；请求前按预算生成可恢复压缩检查点，保留原文与完整回合尾部；User.md 以只读画像 projection 注入，长期记忆 provider 当前为空，自动提取与召回仍在规划
-- **Profile 主题** — 糖糖粉、暗夜紫、透明玻璃、yuki 雨夜蓝等随应用提供的默认主题，支持编辑、复制、删除、导入导出
-- **角色展示效果** — 灵动图层（五层视差）与景深（单图背景虚化 + 焦点区）二选一，都由图层编辑器所见即所得地调参
-- **音效系统** — Web Audio 合成音效与人格边界映射
-- **设置面板** — 独立窗口配置 AI、外观、人格、监控、安全、工具、MCP、Skill 和快捷键
-- **系统托盘** — 关闭后隐藏到托盘，单击恢复；Dock/任务栏点击可弹出
-- **Windows 模拟器** — 彩蛋：像素风 Win7 桌面（输入 `open win`）
+用户长期记忆的自动提取、跨会话自动召回、画像写入与 dreaming 尚未接通。当前已提供会话记录、上下文压缩与只读用户画像入口；详见[记忆边界](docs/current/memory.md)。
 
----
-
-## 🔄 双模式
+## 两种模式
 
 | 能力 | 轻量模式 | 助手模式 |
-|------|:---:|:---:|
-| AI 聊天 + 人格系统 | ✅ | ✅ |
-| Card 状态与 RUNTIME_DATA 处理 | ✅ | ✅ |
-| 窗口感知主动搭话 | ✅ | ✅ |
-| 文件读写 + 系统信息 + Bash 白名单 | ✅ | ✅ |
-| 计划编排与步骤进度 | ❌ | ✅ |
-| 文件写/编辑 + Bash（硬基线常开，白名单/扩展命令按风险确认） | ✅（确认） | ✅（按安全策略） |
-| 文件删除 | ❌（无模型工具） | ❌（硬禁止） |
-| MCP 服务器 | ❌ | ✅ |
-| Skill（元数据索引，模型用 read 加载正文） | ✅ 按 Skill 策略 | ✅ |
-| 子代理 agent.spawn（fork/team） | ❌ | ✅ |
-| 安全确认策略 | SAFE/NORMAL 自动；写入和扩展 Bash 可确认 | 四级风险 + 三策略 + 按调用粒度的会话信任 |
+|---|---|---|
+| 聊天、人格、会话、窗口感知 | 支持 | 支持 |
+| 基础文件工具、系统信息、Bash | 按配置与风险策略 | 按配置与风险策略，扩展命令能力 |
+| Skill | 按 Skill 的模式声明启用 | 按 Skill 的模式声明启用 |
+| MCP 外部工具 | 不连接 | 对话运行时按需取得并释放 |
+| Plan、子代理、剪贴板、应用打开 | 不提供 | 可用，依配置与权限 |
 
----
+启动不连接 MCP、不载入全部 Skill 正文、不启动记忆 LLM 整理。两种模式都保留 Rust 路径与命令安全基线；助手模式不等于无条件授权。
 
-## 🚀 快速开始
+## 安装与运行
 
-### 前置
+项目使用 Tauri v2、Vue 3/TypeScript、Rust 和 Pi Agent Core。
 
-- Node.js ≥ 18 + pnpm 11（具体版本由 `package.json` 的 `packageManager` 字段裁定）
-- Rust toolchain
-- macOS：Xcode Command Line Tools
+开发环境准备：
 
-### 安装
+- Node.js 22（与当前 CI 一致）；pnpm 版本由 [package.json](package.json) 的 `packageManager` 指定。
+- Rust toolchain。
+- macOS：Xcode Command Line Tools。
+- Windows：Tauri 所需的 Microsoft C++ 构建工具及 WebView2 运行环境。
 
 ```bash
 git clone https://github.com/Klavte/Desk-Pet.git
 cd Desk-Pet
 pnpm install
+# 首次开发时创建配置；已有该文件时不要覆盖
+cp CONFIG-DEV.yaml.example CONFIG-DEV.yaml
+# 编辑 AI 端点、模型与密钥后启动
 pnpm tauri dev
 ```
 
-仅启动前端开发服务：
+支持 DeepSeek、OpenAI、Ollama、LM Studio 等兼容接口。macOS 窗口监控可能需要在“隐私与安全性 → 辅助功能”中授权。
+
+常用命令：
 
 ```bash
-pnpm dev
+pnpm dev          # 只启动前端，不包含 Rust IPC
+pnpm tauri dev    # 完整桌面开发环境
+pnpm tauri build  # 构建安装产物
 ```
 
-### 配置
+开发数据保存在 `data/desk-pet/`，生产数据保存在应用专属本地目录。配置选择、备份位置与资源恢复行为见[运行时数据](docs/current/runtime-data.md)。
+
+## 使用与设置
+
+在设置窗口选择 Card、Profile 和 AI 模型；开启所需的窗口监控、工具或助手模式。默认 Card/Profile 首次初始化后也是可编辑的运行时资源。“恢复默认资源”会覆盖同名内置资源的用户改动。
+
+聊天框输入 `/help` 查看命令，`/compact` 整理当前会话上下文。完整玩法、角色展示效果和交互方式见[产品设计](docs/DES.md)。
+
+## 开发与验证
 
 ```bash
-cp CONFIG-DEV.yaml.example CONFIG-DEV.yaml
-# 编辑 CONFIG-DEV.yaml，填入 API Key
+pnpm run test:types
+pnpm test -- --module memory
 ```
 
-开发构建直接使用工作区的完整 `CONFIG-DEV.yaml`；文件不存在时使用 `CONFIG.yaml`。生产构建首次启动会把默认 `CONFIG.yaml` 写入应用数据目录的 `settings/CONFIG.yaml`，之后设置页和导入导出都回写该文件。macOS 窗口监控需要在系统设置的“隐私与安全性 → 辅助功能”中允许终端或 Tauri。
+类型与编译检查不代表运行时通过。Live Test 在独立 Tauri WebView 与临时数据根中运行，支持真实 Provider 和确定性 fake Provider；完整命令、场景规范及发布门禁以[测试 README](src/services/__tests__/live/README.md)为准。
 
-默认 Profile 随安装包作为首次初始化种子发布；首次启动复制到运行时 `profiles/` 目录后，
-与用户导入的 Profile 一样可编辑、复制、删除和导出。灵动图层与景深各自的素材和参数保存在
-各自 Profile 的 `profile.yaml`，CONFIG 只保存效果模式与全局强度。运行时数据路径和会话恢复规则见
-[运行时数据](docs/current/runtime-data.md)。
+[CI](.github/workflows/ci.yml) 在 macOS 与 Windows 执行类型/编译检查，当前不执行 Live Test。平台支持不等于所有 UI 行为均已通过双平台验收，验证范围见[测试说明](docs/current/testing.md)。
 
----
+## 文档入口
 
-## 🏗 架构
-
-```text
-Desk-Pet/
-├── CONFIG.yaml / CONFIG-DEV.yaml     # 全局配置
-├── .github/workflows/ci.yml          # CI：macOS + Windows 双平台 test:types
-├── AGENTS.md                         # Agent 开发约束
-├── CLAUDE.md                         # 兼容入口，规则指向 AGENTS.md
-├── docs/
-│   ├── DES.md                        # 项目总览、玩法和整体机制
-│   ├── current/                      # 当前实现说明
-│   ├── plans/active/                 # 待实施计划
-│   └── history/                      # 历史设计、计划、分析和原始文档
-├── src/                              # Vue 3 + TypeScript 前端
-│   ├── App.vue                       # 根组件
-│   ├── components/                   # 聊天、角色、设置、会话和窗口 UI
-│   ├── composables/                  # 视差与编辑器状态
-│   └── services/
-│       ├── engine/                   # Pi Runtime、输入预处理、Plan、Slash、会话状态和压缩工具
-│       │   └── runtime/              # 运行时协议类型、PromptSnapshot 与脱敏 hash
-│       ├── personality/              # Card、阶段文案、变量状态、情绪映射
-│       ├── reply/                    # RUNTIME_DATA 解析与回复后处理
-│       ├── agent/                    # Provider、Runner、子代理、Memory、Active
-│       ├── tool/                     # 工具注册、路由、MCP
-│       ├── skill/                    # Skill 元数据目录与渐进 Prompt 注入
-│       ├── safety/                   # 风险检查与确认
-│       ├── session/                  # 多会话持久化管理
-│       ├── profile/                  # Profile 主题与导入导出
-│       ├── audio/                    # Web Audio 音效
-│       ├── context/                  # ContextKernel 分层、预算与兼容 Prompt 构建
-│       └── paths.ts                  # 统一路径管理
-├── src-tauri/                        # Rust 后端
-│   └── src/
-│       ├── lib.rs                    # 应用入口和命令注册
-│       ├── paths.rs                  # AppPaths 路径管理与校验
-│       ├── window/                   # 主窗口与设置窗口
-│       ├── monitor/                  # 前台窗口监控
-│       └── commands/                 # 文件、记忆、Profile、系统命令
-├── src-tauri/resources/defaults/     # 首次启动复制的种子：profiles / personality/cards / skills
-└── data/desk-pet/                    # 开发环境运行时数据（生产使用应用专属目录）
-```
-
----
-
-## 📐 核心数据流
-
-```text
-用户消息
-  → PreProcessor / Session 状态
-  → refreshVariablePool() + reset 策略
-  → ContextKernel 六层组装与预算裁剪（兼容 buildPrompt）
-  → 助手模式可选 Plan：复杂度检测 → 拆解 → 步骤执行
-  → Pi Agent Core + pi-ai Provider/Models 工厂 + ToolRouter 工具循环
-  → Safety 检查与确认
-  → generateReply(raw, card)
-       ├─ 解析并移除 <RUNTIME_DATA>
-       ├─ emotion → expression / sound
-       ├─ 合法 Card 变量 → batchWriteVars → savePoolToDisk
-       └─ trim / 截断 → ReplyResult
-  → 通过 session_file_write_atomic 原子写入 sessions/*.md（完整正文）与上下文摘要；sessions/index.json 仅保存 UI 状态
-  → ChatPanel / StreamView 展示
-```
-
-`RUNTIME_DATA` 是内部元数据，不显示给用户。主链路和 Planner 都不依赖旧的变量工具或情绪前缀；旧接口仅保留在历史归档中。
-
----
-
-## 🎛 设置面板
-
-独立窗口，标题栏按钮打开：
-
-| 类别 | 配置项 |
-|------|--------|
-| 外观 | Profile、预设、颜色、字体、角色展示效果（灵动图层/景深）、导入导出 |
-| AI | Provider、端点、密钥、模型、上下文、思考强度、Plan |
-| 人格 | Card 选择、变量状态查看、阶段文案 |
-| 监控 | 开关、停留秒数、防抖、冷却 |
-| 安全 | 风险模式、确认策略 |
-| 弹窗 | 位置、大小、自动弹出 |
-| 快捷键 | 自定义组合键 |
-| 工具 | Bash 白名单、文件写入开关 |
-| MCP | 服务器增删改、JSON 导入导出 |
-| Skill | 上传、启用、删除 Skill |
-| 配置 | YAML 导入导出 |
-
----
-
-## 🛠 技术栈
-
-| 层 | 技术 |
-|----|------|
-| 框架 | Tauri v2 |
-| 前端 | Vue 3 + TypeScript + Vite |
-| 后端 | Rust + Cargo |
-| AI | Pi Agent Core + pi-ai OpenAI-compatible 接口（tool calls / reasoning effort） |
-| 配置 | YAML（js-yaml + Rust 运行时配置文件） |
-| 音效 | Web Audio API（OscillatorNode 合成） |
-| 包管理 | pnpm（前端）+ Cargo（后端） |
-| 测试 | Live Test（Contract + Scene + 真实 Provider） |
-
----
-
-## 🧪 测试
-
-```bash
-pnpm test
-pnpm test -- --module variable-pool
-```
-
-Live Test 位于 `src/services/__tests__/live/`，通过独立 Tauri WebView 使用真实 IPC、临时文件系统和真实 Provider 运行；需要确定性响应的基础场景可注入 `fake-provider.ts`，但仍执行真实 Agent/Tool loop。测试完成后自动清理临时数据。Scene 带稳定 `caseId`、测试套件和最低 trial 数，`--repeat 3` 只会提高试验次数；`--strict` 将实际 Scene 关联、边界/错误 tag 与 Contract 缺口作为门禁。Contract `sourceHash` 会在启动前校验，过期会直接阻断执行。JSON 报告记录数据集版本、环境种子、指标、错误分类和 `pass@k`/`pass^k`。测试通过只代表已覆盖场景通过。
-
-Provider 请求统一由 Pi 的 `createProvider()` / `createModels()` 构造并执行；主回合和一次性文本请求共享认证、配置快照、增量响应上限与取消语义。Harness 关闭 SDK 内层重试，由回合层在同一个总 deadline 内决定是否重试。
-
-### CI
-
-`.github/workflows/ci.yml` 在 push、pull request 和手动触发时，于 `macos-latest` 与 `windows-latest` 各跑一次 `pnpm run test:types`（`vue-tsc --noEmit && cargo check`）；Live Test 需要真实 Provider，不在 CI 内执行。
-
-pnpm 版本由 `package.json` 的 `packageManager` 字段裁定，CI 不单独指定。pnpm 11 的 `strictDepBuilds` 默认为 `true`：依赖若带构建脚本而没在 `pnpm-workspace.yaml` 的 `allowBuilds` 里显式声明 `true`/`false`，**全新** `pnpm install` 会以 `ERR_PNPM_IGNORED_BUILDS` 失败 —— 本地 `node_modules` 已存在时 install 会 `Already up to date` 直接跳过，这个错误只在干净安装时暴露。新增带 `postinstall`/`prepare` 的依赖时需要同步该字段。
-
-目标平台是 Windows + macOS，但本机（macOS）永远看不到 `#[cfg(target_os = "windows")]` 分支，本机交叉 check 又会卡在 tauri-build 的 embed-resource（需要 `llvm-rc`）且不编译 deskpet 自身。因此 **Windows 分支的编译级验证只能靠 CI**，改动 `cfg(windows)` 代码或 Windows 依赖 feature 后必须看 Windows job 结果。
-
----
-
-## 📋 平台兼容
-
-| 功能 | macOS | Windows |
-|------|:---:|:---:|
-| AI 聊天 / Agent Loop / 工具调用 | ✅ | ✅ |
-| 桌面悬浮（无边框透明置顶） | ✅ | ✅ |
-| 窗口标题监控 + 主动搭话 | ✅ osascript | ✅ Win32 API |
-| 全局快捷键召唤 | ✅ | ✅ |
-| 系统托盘 | ✅ | ✅ |
-| Dock/任务栏点击弹出 | ✅ | ✅ |
-| 剪贴板操作 | ✅ pbpaste/pbcopy | ✅ PowerShell |
-| 系统通知 | ❌ 未签名构建不支持 | 依赖平台配置 |
-| 编译级验证（`test:types`） | ✅ 本机 + CI | ✅ 仅 CI |
-
----
-
-## 📖 文档
-
-- [项目总览与玩法](docs/DES.md)
-- [当前系统设计](docs/current/system-design.md)
-- [当前工具系统](docs/current/tool-system.md)
-- [当前记忆系统](docs/current/memory.md)
-- [记忆系统运行时契约](docs/plans/active/记忆系统运行时契约.md)
-- [记忆系统重构执行手册（新会话接力入口）](docs/plans/active/记忆系统重构执行手册.md)
-- [轻量陪伴运行时与统一内核建设方案](docs/plans/active/轻量陪伴运行时与统一内核建设方案.md)：运行时前置已实现统一快照、上下文/权限和渐进 Skill；SQLite 长期记忆后置
-- [会话压缩建设方案](docs/history/implementation/会话压缩建设方案.md)：边界检查点、原子摘要提交、完整回合尾部及请求预检的建设与验收记录
-- [当前测试说明](docs/current/testing.md)
-- [阶段现状（2026-08-06）](docs/history/analysis/阶段现状-2026.8.6.md)
-- [完整文档索引](docs/INDEX.md)
+- [文档索引与按任务导航](docs/INDEX.md)
+- [产品定位、玩法与交互](docs/DES.md)
+- [当前系统地图](docs/current/system-design.md)
 - [开发约束](AGENTS.md)
-- [Claude 兼容入口](CLAUDE.md)
+- [记忆重构当前检查点](docs/plans/active/记忆系统重构执行手册.md)
 
-历史设计、实施计划和阶段分析保存在 [docs/history/](docs/history/)，正文仅增加归档元数据，不作为当前实现契约。
-
----
-
-## 📝 License
+## License
 
 MIT
-
-运行时前置：上下文预算统一计入输出预留、工具 schema 和压缩余量（最大 20K）；核心输入超限显式提示。权限采用 allow/ask/deny，MCP passthrough 交总策略终裁。Skill 的 `tools.skill.enabled` 可在轻量模式启用，正文仍按需读取。MCP 与记忆 LLM 整理不随应用启动；旧 `ai.loop.contextCompactAt` 不再生效。

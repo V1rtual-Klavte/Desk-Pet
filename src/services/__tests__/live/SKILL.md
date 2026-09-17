@@ -1,81 +1,56 @@
 ---
 name: live-test
-description: Desk-Pet Live Test Framework — AI 自驱动端到端测试。分析源码生成覆盖契约和测试场景，用真 LLM 模拟对话验证系统行为。
+description: Desk-Pet Live Test 的 Contract 分析、Scene 生成与覆盖审查流程。
 ---
 
-# Live Test Framework Skill
+# Live Test 工作流
 
-运行命令、源码变更流程和 Scene 编写规范见同目录 `README.md`。本文件只定义代码代理负责的 Contract 分析、Scene 生成和覆盖审查工作流。
+运行命令、执行环境和 Scene 规范以 [README.md](./README.md) 为权威。本文件只定义代码代理在源码变更后如何分析 Contract、生成 Scene 和审查覆盖；它不是 shell 脚本。
 
-## 触发
+## 触发词
 
-- `/analyze test [module]` — AI 分析源码 → 生成覆盖契约 (Contract)
-- `/generate test [module]` — AI 读 Contract → 生成测试场景 (Scene)
-- `/audit test [--strict]` — AI 审视覆盖完整性
-- "跑测试" / "运行 live test" → 执行 `pnpm test`
+- `/analyze test [module]`：从当前源码重新分析 Contract。
+- `/generate test [module]`：按 Contract 补充或修订 Scene。
+- `/audit test [--strict]`：审查 Contract 与 Scene 的引用和覆盖质量。
 
-## 工作流程
+## `/analyze test [module]`
 
-### `/analyze test [module]`
+1. 确定受影响模块和跨模块调用链；读取当前 `contracts/{module}.contract.ts`、其 `sourceFiles` 与相关 Scene。
+2. 分析当前公开行为、状态转换、持久化、取消/错误分支、边界值和平台差异。不要把计划文档中的 P6 或未接通能力写成已实现。
+3. 更新 `sourceFiles`，使其覆盖行为实际所在的源码；覆盖点描述当前可验证行为，不以文件名替代行为。
+4. 为每个 coverage point 设置唯一 id、`depth` 与 `scenarios`。`scenarios` 填已存在或将创建的 Scene **caseId**。
+5. 根据实际风险设置 `minScenarios`、`minDeepScenarios`、`requireBoundary`、`requireErrorPath`。只有确实无法经运行时入口触达时才声明 `unitOnly`，并写明 `unitOnlyReason`。
+6. 按项目的 source hash 计算方式刷新 `sourceHash`。不能只改 hash 而不完成前述行为审查。
 
-1. 读取指定模块（或全部 7 个模块）的源码文件
-2. 对照 `src/services/__tests__/live/types.ts` 中 `ModuleContract` 和 `CoveragePoint` 类型
-3. AI 分析：
-   - 导出函数/方法 → 每个公开 API 一个 coverage point
-   - 分支路径 (if/switch/try-catch) → 每个分支一个 coverage point
-   - 边界值 (min/max/enum/范围校验) → 边界 coverage point
-   - 错误路径 (返回 false/error) → 错误 coverage point
-   - 深度判定: 有状态变化的 → deep; 纯计算/查询的 → shallow
-4. 计算所有 sourceFiles 的 sha256 hash
-5. 生成 `ModuleContract` 写入 `src/services/__tests__/live/contracts/{module}.contract.ts`
-6. 设置合理的 `rules`:
-   - minScenarios: coverage points 数量的 80% (至少 2)
-   - minDeepScenarios: deep points 数量的 100% (至少 1)
-   - requireBoundary: true
-   - requireErrorPath: true
+## `/generate test [module]`
 
-### `/generate test [module]`
+1. 读取目标 Contract、`sourceFiles` 和相关实现，确认每个 coverage point 的输入、输出、状态和副作用。
+2. 为每个 coverage point 创建或更新 Scene；`meta.module` 必须等于 Contract module，`meta.contractId` 必须等于 coverage point id，`meta.caseId` 为全局稳定的小写 kebab-case。
+3. 选择入口：完整聊天产品路径使用 `production`；运行时适配层使用 `runtime`；纯确定性逻辑使用 `unit`。不要以 unit 替代本该覆盖的产品链路。
+4. 需要可重复模型输出时使用 fake Provider；它仍应经过真实运行时和工具链。需要验证真实模型能力时使用真实 Provider，并把模型不稳定性与产品失败区分开。
+5. 断言用户可见结果之外的真实证据：工具调用状态、确认记录、会话事件、文件回读、变量状态、取消或错误结论。安全场景不执行破坏操作，只验证实际调用被受控拒绝。
+6. Contract 要求边界或错误路径时，在对应 Scene 加 `boundary`、`error` tag；不要仅在描述文字中声称覆盖。
+7. Scene 集合改变后更新 `dataset.ts` 的版本。
 
-1. 读取指定的 contract 文件
-2. 对每个 coverage point:
-   - 读 contract: { id, feature, description, why, depth }
-   - 读相关源码 (contract.sourceFiles)
-   - AI 生成 SceneDef 文件要求:
-     - 声明稳定的 `caseId` 和 `suite`；回归修复优先进入 `regression`，危险行为进入 `safety`
-     - `meta.module` 与 Contract 模块一致，`meta.contractId` 与回写该 Scene 的 coverage point 一致；边界/错误场景分别带 `boundary`/`error` tag
-     - 需要覆盖实际 UI 聊天入口时声明 `entry: "production"`，不要只直调 runtime
-     - 用户消息自然口语化，像真人聊天
-     - deep 场景必须多轮对话，包含对比
-     - 每轮必须断言: 回复输出 + 内部状态 + 副作用；不能仅以非空回复替代变量、工具或 RUNTIME_DATA 的实际观测
-     - 边界测试构造触发边界的对话
-     - 错误路径构造触发错误的对话
-   - 生成 .scene.ts 文件写入 `src/services/__tests__/live/scenes/{module}/`
-   - 回写 contract: coverage.scenarios[] 填充文件名
+## `/audit test [--strict]`
 
-### `/audit test [--strict]`
+1. 检查每个 Contract 的 `sourceFiles` 是否仍覆盖当前实现，并确认 `sourceHash` 与审查后的源码一致。
+2. 检查每个 `coverage.scenarios` 是否是已发现的 caseId，且其 module/contractId 精确匹配。
+3. 检查深度、边界、错误与非 unit 入口要求是否由真实 Scene metadata 满足；审查 `unitOnly` 是否仍有充分理由。
+4. 审阅断言是否真正观测目标状态或副作用，避免“回复非空”“未报错”之类无法证明能力的断言。
+5. 输出缺口、风险、建议补充的 Scene 与尚不可验证的能力。严格审查时，任何 GAP 都不能报告为已通过。
 
-1. 读取所有 contract 文件
-2. 运行 contract-checker 检查 (STALE / MISSING / GAP)
-3. AI 额外审视: 覆盖完整性、深度、边界、错误路径
-4. 校验 `scenarios` 引用的 Scene 已被发现且 module/contractId 精确匹配；边界和错误规则只以 Scene tag 计数
-5. 输出报告
-6. `--strict` 时: 有 GAP 直接报错
+## 当前 Contract 模块
 
-## 覆盖模块
+当前目录包含以下 Contract：
 
-| 模块 | 源文件 |
-|------|--------|
-| variable-pool | `src/services/personality/variable-pool.ts`, `src/services/personality/types.ts` |
-| emotion | `src/services/personality/emotion.ts` |
-| safety | `src/services/safety/checker.ts` |
-| memory | `src/services/agent/memory/index.ts`, `src/services/agent/memory/memory-entries.ts` |
-| planner | `src/services/engine/planner.ts` |
-| tool-execution | `src/services/tool/router.ts`, `src/services/tool/registry.ts` |
-| personality-card | `src/services/personality/registry.ts`, `src/services/personality/loader.ts` |
-| agent-runtime | `src/services/agent/runner.ts`, `src/services/engine/pi/runtime.ts` |
+- `agent-runtime`
+- `emotion`
+- `memory`
+- `personality-card`
+- `planner`
+- `safety`
+- `tool-execution`
+- `variable-pool`
 
-## 约束
-
-- Contract 和 Scene 文件均由 AI 生成，每次 analyze 必须重新审视
-- 生成完成后提示用户 review，用户确认后提交
-- 如果源码 hash 变化但不重新 analyze，pnpm test 会报 [STALE] 并拒绝执行
+新增模块时先新增 Contract 和至少一个关联 Scene，再把它加入此列表；不因历史通过记录或计划阶段名称推断其已验证。

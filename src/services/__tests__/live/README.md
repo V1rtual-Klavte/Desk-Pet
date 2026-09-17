@@ -1,191 +1,84 @@
-# Live Test 使用规范
+# Desk-Pet Live Test
 
-Live Test 用于验证 Desk-Pet 的真实运行链路。它会启动独立的 Tauri WebView，调用真实 Provider、真实 Rust IPC、真实工具和真实状态模块，不使用 Tauri mock。
+Live Test 是 Desk-Pet 的运行时验证入口。它在独立 Tauri WebView 中执行真实前端服务、Rust IPC、临时数据根和 Agent/Tool 链路；测试数据不会写入正常用户数据根。
 
-## 1. 两类入口
+Contract/Scene 的代码代理工作流见 [SKILL.md](./SKILL.md)。当前验证边界与证据索引见 [docs/current/testing.md](../../../../docs/current/testing.md)。
 
-Live Test 有两个不同入口，不要混用。
+## 运行命令
 
-### 代码代理工作流
-
-以下内容发送给代码代理，不是在终端执行的命令：
-
-```text
-/analyze test variable-pool
-/generate test variable-pool
-/audit test --strict
-```
-
-- `/analyze test [module]`：重新分析源码，更新 Contract、覆盖点、`sourceFiles` 和 `sourceHash`。
-- `/generate test [module]`：根据 Contract 补充或更新 Scene。
-- `/audit test [--strict]`：审查覆盖缺口、边界路径、错误路径和断言质量。
-- 这些工作流的具体约束定义在同目录的 `SKILL.md`。
-
-不要尝试在 shell 中执行 `SKILL.md`。它是代码代理的工作说明，不是脚本。
-
-### 终端执行入口
-
-Contract 和 Scene 准备完成后，在项目根目录运行：
+在项目根目录执行：
 
 ```bash
-# 静态编译门禁（不替代真实运行）
+# 编译与类型门禁；不替代运行时验证
 pnpm run test:types
 
-# 真实生产入口的严格 smoke，固定执行 2 次
-pnpm run test:smoke
-
-# 执行全部场景
+# 全部 Live Scene
 pnpm test
 
-# 执行指定模块
-pnpm test -- --module variable-pool
+# 模块、稳定 caseId、描述、标签或套件筛选
+pnpm test -- --module memory
+pnpm test -- --case memory-compaction-checkpoint
+pnpm test -- --scene "压缩检查点"
+pnpm test -- --tag boundary
+pnpm test -- --suite safety
 
-# 按场景描述筛选，使用包含匹配
-pnpm test -- --scene "越界值"
+# 严格 Contract 门禁与重复试验
+pnpm test -- --strict --repeat 3 --report json
 
-# 按标签精确筛选
-pnpm test -- --tag runtime-data
-
-# 按稳定数据集 ID 运行，或运行某个测试套件
-pnpm test -- --case production-chat-entry
-pnpm test -- --suite safety --repeat 3
-
-# 在 CI/发布前将 Contract 缺口作为失败门禁
-pnpm test -- --strict --report json
-
-# 切换报告格式：terminal、json 或 markdown
-pnpm test -- --module memory --report markdown
-
-# 发布门禁：编译 + 全集 Contract 严格检查 + 每个场景 3 次真实试验
+# 生产入口 smoke 与发布门禁
+pnpm run test:smoke
 pnpm run test:release
 ```
 
-筛选参数可以组合使用。`--repeat` 范围为 1-20；场景的 `meta.repetitions` 是该场景的最低试验次数，CLI 的 `--repeat` 只会提高而不会降低它。命令成功退出码为 `0`；场景失败、超时、Contract 过期、严格 Contract 门禁失败或测试宿主异常时退出码为非 `0`。
+可组合的筛选参数为 `--module`、`--scene`、`--case`、`--tag`、`--suite`、`--repeat`、`--strict`、`--report`。`--repeat` 范围为 1–20，且不会低于 Scene 的 `meta.repetitions`。`test:release` 执行类型检查与严格三次 Live 试验。
 
-`test:release` 现在会如实因现有遗留 Contract 的 coverage 缺口失败，直到每个 coverage point 都有对应场景和可验证断言。不要把非严格 `pnpm test` 的结果用于发布结论。
+默认在启动时检查全部 Contract；聚焦单模块可用 `--module memory --contracts selected`，这不替代跨模块或发布前全量门禁。源码或 Contract 改动完成后再集中执行受影响模块和必要的全量验证；纯文档修改不运行 Live Test。
 
-## 2. 普通源码变更后的流程
+## Contract 与 sourceHash
 
-修改已有模块源码后，按下面顺序处理：
+`contracts/*.contract.ts` 是模块行为契约。每个 coverage point 的 `scenarios` 必须写 Scene 的稳定 **`caseId`**，不是文件名、描述或导出名。每个 caseId 只能归属一个 Scene，且 Scene 的 `meta.module`、`meta.contractId` 必须与其 Contract coverage point 一致。
 
-1. 确定受影响的 Contract。查看 `contracts/*.contract.ts` 的 `sourceFiles`，调用链跨模块时需要处理所有受影响 Contract。
-2. 在代码代理会话中执行 `/analyze test <module>`。即使你认为行为没有变化，也应让代理重新检查公开 API、分支、边界和错误路径。
-3. 审查 Contract diff，确认 `sourceFiles`、coverage 和 rules 与当前代码一致。
-4. 如果新增或改变了行为，执行 `/generate test <module>`，补充或更新对应 Scene；纯实现变化且合同未变时，可以保留原 Scene。
-5. 执行 `/audit test --strict`，检查没有遗漏的覆盖点和无效断言；发布前使用 `pnpm test -- --strict --repeat 3 --report json` 留存真实运行证据。
-6. 在终端先运行受影响模块：`pnpm test -- --module <module>`。
-7. 模块测试通过后运行完整 `pnpm test`，检查跨模块回归。
+Node 启动预检会校验 `sourceHash`；源码变更后应先按 SKILL 重新分析 Contract，再更新 hash 和场景。不要只替换 hash 来绕过门禁。`--strict` 还会拒绝 coverage、深度、边界、错误或入口规则的缺口。
 
-`sourceHash` 是门禁，不是覆盖证明。禁止为了让测试启动而只手工替换 hash；必须先重新审视 Contract。当前 hash 算法是：按路径排序后拼接 `sourceFiles` 的 UTF-8 内容，再计算 SHA-256。
+## Scene 规范
 
-任意一个 Contract 过期都会在 Tauri 启动前阻断测试，即使本次使用了 `--module` 筛选。
+每个 Scene 声明稳定的小写 kebab-case `caseId`、`module`、`contractId`、`suite` 和 `depth`。`suite` 取值为 `regression`、`capability`、`safety` 或 `stress`；需要满足 Contract 的边界/错误规则时，分别带 `boundary` / `error` tag。
 
-## 3. 新增模块或能力
+入口按要验证的边界选择：
 
-新增可测试模块时：
+| `entry` | 执行内容 | 适用场景 |
+| --- | --- | --- |
+| `production` | 经过 `sendMessage()` 的真实聊天入口 | 验证预处理、队列、会话/UI 消息与完整产品链路 |
+| `runtime` | 直接调用 Pi runtime，并镜像必要的会话消息生命周期 | 验证 Agent、上下文、工具、持久化等运行时适配 |
+| `unit` | 不调用模型，只运行进程内断言 | 纯函数、注册表、解析与确定性状态边界 |
 
-1. 在 `contracts/` 新增 `{module}.contract.ts`。
-2. 在 `scenes/{module}/` 新增一个或多个 `.scene.ts`。
-3. 将模块和主要源文件补入 `SKILL.md` 的覆盖表。
-4. Contract 的每个 coverage point 通过 `scenarios` 关联实际 Scene；每个引用必须解析到已发现的 Scene，且 Scene 的 `module` 和 `contractId` 必须分别匹配 Contract 模块与 coverage point。
-5. 至少覆盖正常路径、状态变化、边界值和错误路径。
-6. 先执行模块测试，再执行完整测试。
+`runtime` 与 `production` 可使用真实 Provider，也可由场景安装 fake Provider：fake Provider 只替换模型响应，保留真实 Agent/Tool 执行路径；是否发生工具调用或 Rust IPC 由具体 Scene 的断言证明。`unit` 不证明模型、Provider 或桌面入口行为；非 `unitOnly` Contract 至少保留一个非 unit Scene。
 
-Scene 会由 Vite 的 `import.meta.glob` 自动发现，通常不需要修改 Runner 或入口文件。每个 Scene 必须有全局稳定的 `caseId`（小写 kebab-case）、`suite`（`regression`、`capability`、`safety`、`stress`）和与 Contract 对应的 `contractId`；启动时会校验它们。Contract 要求边界或错误路径时，对应 Scene 必须分别带有 `boundary` 或 `error` tag，不能以中文描述文本代替。
+场景断言应观察实际结果：工具要断言具体调用与状态，持久化要回读临时数据根，安全场景要区分“未调用”和“调用后被拒绝”。不要只以回复非空代替状态或副作用验证。
 
-## 4. Scene 编写要求
+测试宿主没有 ChatPanel。涉及确认请求的 Scene 用 `meta.confirmPolicy` 声明 `deny`（默认）或 `approve`，由 `confirm-channel.ts` 确定性应答。
 
-每个场景应验证行为结果，而不是只验证“模型返回了文字”。`entry: "runtime"` 验证 Pi 运行时；`entry: "production"` 必须走 `sendMessage()`，用于覆盖预处理、会话和 UI 消息写入。根据合同至少组合以下断言：
+## 隔离、报告与失败
 
-- `output.reply`：最终用户可见回复有效。
-- `pool`：Card、interaction 等变量状态及 `VariableState` 元数据正确。
-- `session`：状态回到 `WAITING`，消息数和工具调用数符合预期。
-- `memory`：会话轮数、条目数量、分类或已保存的工作记忆内容正确。长期记忆的自动检索未闭环时，不能把模型复述当作长期召回通过。
-- `toolHistory`：目标工具实际被调用，并具有预期的 `done`、`blocked`、`denied` 或 `error` 状态。
-- 副作用：需要持久化的内容确实通过真实 IPC 写入测试数据目录。
+每个 trial 在 `standard-setup.ts` 中取消并等待已登记 Agent 回合，然后重置会话文件、UI index、工作记忆、变量池、聊天状态、预处理与 AI 锁。超时会尝试取消已登记 Agent；目前尚无覆盖任意 setup/assertion Promise 的 Scene 级取消通道，超时报表仍可能丢失已完成回合现场。待办见[加固计划](../../../../docs/plans/active/运行时加固与清理计划.md)。Provider、网络、认证和断言等错误会分类，兜底回复不把失败改写为成功。
 
-工具场景必须断言具体工具及状态。仅断言回复非空不能证明工具链成功。安全场景不能通过执行真实破坏操作验证，应断言模型实际发起目标调用且该调用被拒绝、拦截或以受控错误结束；没有调用不构成通过。
+测试脚本在用户 Home 下创建 `.deskpet-live-test-*` 临时目录，退出时清理；清理前将报告复制到 `~/.deskpet-live-test-reports/`，按脚本保留数量淘汰。
 
-### 确认弹窗（confirm）在测试宿主中的应答
+JSON 报告使用 `desk-pet-live/v2`，包含数据集版本、筛选项、trial 指标、错误分类与 `pass@k`/`pass^k`。前者表示至少一次试验通过，后者表示全部已执行试验通过；回归或发布结论使用后者及严格 Contract 结果。
 
-测试页 `live-test.html` 没有 ChatPanel，`requestConfirm()` 的 Promise 不会有人 resolve。宿主因此装了一条应答通道（`confirm-channel.ts`），按场景声明的策略**立即**应答：
+运行需要可用的 Tauri/Rust 环境与对应 Provider 配置。不要与占用同一 Vite/Tauri 端口的开发实例并行运行。
 
-```ts
-meta: { …, confirmPolicy: "deny" }   // 默认值：拒绝所有确认请求
-meta: { …, confirmPolicy: "approve" } // 显式放行（只用于验证通道本身）
-```
-
-- 不声明时默认 `"deny"`，场景不会因为随机弹窗而挂起；需要放行的场景必须显式声明。
-- DANGER 工具被拒后，`toolHistory` 会留下 `denied`，并且该请求进入 `ctx.confirms`；
-  场景应据此区分「模型没有调用工具」与「调用被拒绝」，不要让回合静默退化成空回复。
-- 确认通道是跨场景状态：每个场景在 `standardSetup()` 里重置，上一场景留下的 pending 会被拒绝收尾。
-
-真实 LLM 输出存在波动。场景应断言稳定的产品合同和状态，不应依赖固定措辞、标点或完整字符串相等。
-
-## 5. 运行环境和数据隔离
-
-执行 `pnpm test` 时会：
-
-1. 在 Node 侧校验全部 Contract 的 `sourceHash`。
-2. 在用户目录创建临时的 `.deskpet-live-test-*` 数据根。
-3. Rust `AppPaths` 从唯一的开发数据根只读复制现有阶段数据作为测试种子（若存在）。
-4. 启动 Vite 和 debug Tauri 测试窗口。
-5. 每个 trial 先等待前一个场景的异步会话写入，再重置会话工作记忆、轮次计数、session 文件与 UI index、变量池、聊天记录、长期记忆、预处理去重状态和 AI 锁。
-6. 在真实 WebView 中执行 Contract、Scene 和断言；每个 Scene 可声明超时，超时不再伪装成普通失败。
-   某条场景超时后只终止该场景（它的剩余 trial 记为 `skip`），后续场景继续执行；
-   需要「一超时即停」的调用方可以用 `runAllScenes(scenes, repeat, { onTimeout: "abort" })`。
-7. 写出测试结果、关闭应用并删除临时数据根。Node 侧会处理 SIGINT/SIGTERM 和 10 分钟宿主超时。
-
-正常运行不会修改 `data/desk-pet` 中的用户 Memory、Session、Card 或变量状态。异常强制终止时，可以检查用户目录是否遗留 `.deskpet-live-test-*`；确认没有测试进程使用后再手工清理。
-
-运行前需要：
-
-- 已安装项目依赖和 Rust/Tauri 构建环境。
-- `CONFIG-DEV.yaml` 或默认配置中存在可用的 Provider 配置。
-- Provider 支持待测能力；例如工具场景要求模型和兼容接口支持 tool calls。
-- 本机端口 `1420` 未被其他 Vite/Tauri 开发进程占用。
-
-不要并行执行多个 Live Test，也不要在 `pnpm tauri dev` 占用同一端口时启动 Live Test。
-
-## 6. 如何判断失败
-
-失败报告需要按证据分类，不要为了通过而放宽断言：
-
-| 现象 | 首先检查 |
-|---|---|
-| `[STALE]` | 源码已变化，执行 `/analyze test <module>`，不要只改 hash |
-| Provider 401/403 | API key、权限和 endpoint |
-| Provider 429/503/超时 | Provider 可用性、限流和网络，不得声明业务通过 |
-| 有回复但没有工具历史 | 模型/Provider 未发起 tool call，或工具声明未送达 |
-| 工具状态为 `error` | Rust IPC 返回值、参数、路径和平台实现 |
-| 工具状态为 `blocked/denied/error` | Safety 规则、确认策略及工具 handler 的拒绝路径是否符合合同 |
-| 变量未变化 | RUNTIME_DATA、Card 注册表、类型/范围和 `updateBy` |
-| Memory/Session 写入失败 | 临时数据根、Rust 路径校验和初始化顺序 |
-| Setup 失败 | 测试基础设施失败；会以 fail 结束，不能把它算成 skip |
-
-测试通过只证明当前 Provider、当前配置和已覆盖 Scene 下的合同成立，不代表所有未覆盖行为都正确。
-
-## 7. 目录职责
+## 目录职责
 
 ```text
 live/
-├── README.md             # 本使用规范
-├── SKILL.md              # 代码代理的分析、生成和审查工作流
-├── contracts/            # 当前模块行为合同和源码 hash
-├── scenes/               # 真实多轮场景与断言
-├── dataset.ts            # 数据集版本与 caseId/Contract 完整性校验
-├── live-test-main.ts     # Tauri WebView 执行入口
-├── confirm-channel.ts    # 测试宿主的确认弹窗应答通道
-├── standard-setup.ts     # 场景状态隔离和标准初始化
-├── scene-runner.ts       # 场景执行、状态快照和断言
-├── contract-checker.ts   # 覆盖完整性检查
-├── reporter.ts           # terminal/json/markdown 报告
-├── cli.ts                # 筛选参数解析
-└── types.ts              # Contract、Scene 和报告类型
+├── README.md             # 命令、运行边界和 Scene 规范
+├── SKILL.md              # Contract 分析、Scene 生成与覆盖审查流程
+├── contracts/            # 模块行为 Contract 与 sourceHash
+├── scenes/               # SceneDef 场景
+├── standard-setup.ts     # 状态隔离
+├── scene-runner.ts       # Scene 执行与断言
+├── contract-checker.ts   # Contract 引用与覆盖规则
+├── dataset.ts            # 数据集版本和 caseId 校验
+└── reporter.ts           # terminal/json/markdown 报告
 ```
-
-测试报告采用 `desk-pet-live/v2` schema。JSON 报告包含数据集版本、Git commit、Card 种子 hash、筛选项、每个 trial 的工具/重试/回复长度/浏览器堆指标、错误分类和 `pass@k`/`pass^k`。它们分别表示“至少一次试验通过”和“所有已执行试验都通过”；不能用 `pass@k` 替代回归门禁。
-
-summary 里的 `plannedTrials` 与 `executedTrials` 分别表示「计划试验数」和「实际执行试验数」，`skipped` 只来自前序 trial 超时；`passRate`、`pass@k`、`pass^k` 的分母都只统计实际执行的部分，避免少跑的场景被算成通过。
-
-测试宿主脚本位于项目根目录的 `scripts/live-test.mjs`，Tauri 测试页为 `live-test.html`，Rust 测试窗口和退出命令位于 `src-tauri/src/lib.rs`。

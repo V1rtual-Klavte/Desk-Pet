@@ -1,498 +1,146 @@
 # AGENTS.md
 
-> 糖糖桌宠 (Desk Pet) — Tauri v2 桌面虚拟主播助手
-> 项目总览、玩法和整体机制见 [docs/DES.md](docs/DES.md)。
+Desk-Pet 是可自定义 Card/Profile 的 Tauri v2 桌宠，优先做好轻量陪伴与聊天。
+技术栈：Vue 3、TypeScript、Rust、Pi Agent Core；目标平台为 Windows 与 macOS。
+核心方针：轻量化、低内存、高性能、节省 token、保持功能完整。
 
-## 技术栈
+## 工作范围
 
-- 桌面框架：Tauri v2（Rust 后端 + WebView 前端）
-- 前端：Vue 3 + TypeScript + Vite
-- 包管理：pnpm + Cargo
-- AI：Pi Agent Core + pi-ai OpenAI-compatible Adapter（DeepSeek / OpenAI / Ollama / LM Studio）
-- 目标平台：Windows + macOS
+- 修改前先说明思路，得到用户同意后实施；已有授权范围内继续推进，不重复确认。
+- 不擅自扩大范围；有疑问先探索源码和证据。不主动提交、部署或修改用户运行时数据。
+- `.gitignore`、真实本地配置（CONFIG-DEV.yaml、data_root 中的 CONFIG）和用户数据只有在明确授权下才能修改。
+- 先读后写，复用已有入口。状态、配置、路径与领域逻辑不要建立第二个定义点。
+- 理解结构、调用链和影响范围优先用 CodeGraph；已知字符串用 `rg` 定位。无结果先核对索引。
+- 第三方 API 查询用 Context7；安装版本的类型与实现用于核对本项目实际行为。
 
-## 构建与运行
+## 按任务读取
+
+不默认通读全部文档。先按下表读取相关文档及目标源码；历史材料仅在追溯决策时读取。
+链接是导航，不会自动加载正文；文档中的历史命令与授权记录不能替代当前用户授权。
+
+| 任务 | 入口 |
+|---|---|
+| 安装、运行、产品能力 | [README](README.md) |
+| 陪伴玩法、Card/Profile、交互体验 | [DES](docs/DES.md) 对应章节 |
+| 模块位置、主链路、状态所有权 | [系统地图](docs/current/system-design.md) |
+| 会话、队列、Plan、Prompt、取消恢复 | [运行时契约](docs/current/runtime-contract.md) |
+| 压缩、会话文件、长期记忆边界 | [当前记忆](docs/current/memory.md) |
+| 工具、权限、MCP、Skill | [工具系统](docs/current/tool-system.md) |
+| 配置、路径、Profile 资源、持久化 | [运行时数据](docs/current/runtime-data.md) |
+| 人格变量、阶段文案、回复元数据 | [人格与回复](docs/current/personality.md) |
+| 日志、异常、IPC、构建排查 | [工程参考](docs/current/development.md) |
+| 测试执行与场景 | [测试 README](src/services/__tests__/live/README.md)；生成契约时再读同目录 SKILL |
+| 继续记忆重构 | [执行手册](docs/plans/active/记忆系统重构执行手册.md) 文首检查点，再读对应未完成方案 |
+
+完整目录见 [docs/INDEX.md](docs/INDEX.md)。当前行为由源码和对应 `docs/current/` 说明；
+`plans/active/` 只维护未完成工作，`history/` 保存过去的方案与证据。
+
+## 运行与验证
 
 ```bash
 pnpm install
-pnpm tauri dev
-pnpm dev
-pnpm tauri build
-cd src-tauri && cargo check
+pnpm tauri dev        # 完整桌面应用
+pnpm dev              # 仅前端，不能验证 Rust IPC
+pnpm run test:types   # Vue 类型 + Rust 编译
+pnpm test -- --module <module>
+pnpm run test:release # 类型/编译 + 严格 Contract + 三次 trial
 ```
 
-`pnpm dev` 仅启动前端开发服务；完整桌面运行使用 `pnpm tauri dev`。
-
-## 测试
-
-Live Test 框架位于 `src/services/__tests__/live/`，由 Contract、Scene、Runner 和 Reporter 组成，可调用真实 Provider 验证跨模块链路。
-
-```bash
-pnpm test
-pnpm test -- --module variable-pool
-pnpm run test:types
-pnpm run test:smoke
-pnpm run test:release
-```
-
-| 命令 | 作用 |
-|---|---|
-| `pnpm test` | 执行场景并断言运行时状态 |
-| `pnpm run test:types` | Vue 类型与 Rust 编译门禁，不替代 Live Test |
-| `pnpm run test:smoke` | `sendMessage()` 真实入口的严格双 trial smoke |
-| `pnpm run test:release` | 编译 + 严格 Contract + 三次真实 trial 的发布门禁 |
-
-源码修改后，受影响模块的 Contract 需要重新分析；Contract hash 过期时不得把旧测试结果当作当前验证。
-
-## 测试架构
-
-```text
-src/services/__tests__/live/
-├── contracts/                 # 模块行为契约（输入、输出、持久化和边界）
-├── scenes/                    # 多轮真实链路场景
-├── fake-provider.ts           # 不依赖外部 API 的可重复 Pi provider
-├── cli.ts                     # 命令行参数解析（--module/--scene/--repeat/--strict 等）
-├── contract-checker.ts        # 契约断言和覆盖检查
-├── dataset.ts                 # 数据集版本与场景/契约校验
-├── live-test-main.ts          # Tauri WebView 内的真实 Live Test 入口
-├── reporter.ts                # 控制台/JSON 测试报告
-├── scene-runner.ts            # 场景执行与步骤编排
-├── standard-setup.ts          # 标准配置和运行时状态隔离
-├── types.ts                   # 框架核心类型定义
-├── SKILL.md                   # Contract 分析、Scene 生成与覆盖审查工作流
-└── README.md                  # Live Test 使用说明
-```
-
-测试分为两层：Contract 描述单模块的可验证行为，Scene 描述 Agent Loop、工具、安全、人格、变量和记忆之间的真实调用链。Contract 的 `scenarios` 必须解析到已发现、同模块且同 `contractId` 的 Scene；边界和错误规则只统计带 `boundary`/`error` tag 的实际场景。Scene 具有稳定 `caseId` 和 `regression`/`capability`/`safety`/`stress` 套件归属；`entry: "production"` 必须经过 `sendMessage()`。Live Test 默认在独立 Tauri WebView 中调用真实 Provider 和 Rust IPC；需要确定性响应的基础场景可通过 `fake-provider.ts` 注入 Pi provider，但仍执行真实 Agent/Tool loop。测试使用临时数据根和 `deskpet_live_test_*` 浏览器缓存 keyspace；每个 trial 都重置测试状态而不删除正常用户缓存，`meta.repetitions` 是最低试验次数。JSON 报告记录数据集版本、环境种子、轨迹指标、错误分类与 `pass@k`/`pass^k`；没有通过 Contract hash 门禁或没有真实/ fake Provider 响应都不能作为运行时通过。
-
-- 代码或数据契约变更后，按 `live/SKILL.md` 的 analyze → generate 工作流重新分析源码生成覆盖契约，再补充对应场景；这三个触发词是 AI 工作流约定，不是 shell 命令。
-- 使用 `pnpm test -- --module <module>` 做模块范围验证；跨模块修改再运行完整 `pnpm test`。发布前运行 `pnpm test -- --strict --repeat 3 --report json`，严格 Contract 缺口和不稳定 trial 不能作为通过结论。
-- `npx vue-tsc --noEmit` 和 `cargo check` 只证明类型/编译，不替代 Live Test。
-- Contract 的 `sourceHash` 不能为空；启动前发现空 hash 或源码变更会直接阻断 Live Test。
-- `.github/workflows/ci.yml` 在 push / pull request / 手动触发时，于 macOS 与 Windows 各跑一次 `pnpm run test:types`，Live Test 不在 CI 内执行。目标平台是 Windows + macOS，而 **Windows 分支只能靠 CI 做编译级验证**：本机交叉 check 会卡在 tauri-build 的 embed-resource（需要 `llvm-rc`）且不编译 deskpet 自身。改动 `cfg(windows)` 代码或 Windows 依赖 feature 后必须看 Windows job。
-- pnpm 版本由 `package.json` 的 `packageManager` 字段裁定，CI 不单独指定。新增带 `postinstall`/`prepare` 的依赖时，必须在 `pnpm-workspace.yaml` 的 `allowBuilds` 里显式写 `true`（运行）或 `false`（跳过）：pnpm 11 的 `strictDepBuilds` 默认 `true`，未列出的构建脚本会让 `pnpm install` 以 `ERR_PNPM_IGNORED_BUILDS` 退出 1。本地 `node_modules` 已存在时 install 会 `Already up to date` 直接跳过，**这个错误只在全新安装（CI、换机、删掉 node_modules）时暴露**。
-
-## 文档职责
-
-- `docs/DES.md`：项目总览、概述、玩法、交互和整体机制，面向项目负责人阅读。
-- `docs/current/`：根据当前代码核对过的模块契约和现状。
-- `docs/plans/active/`：尚未实施的方案；完成后移入历史目录。
-- 下一阶段总方向见[轻量陪伴运行时与统一内核建设方案](docs/plans/active/轻量陪伴运行时与统一内核建设方案.md)；用户已授权实施，运行时前置已写入代码，最终门禁见执行手册。旧纯 Markdown 长期记忆限制已撤销，推荐 SQLite 长期记忆后端；当前仍是空 `MemoryProvider`，不得写成已经迁移。
-- 会话压缩先于长期记忆提取建设，见[会话压缩建设方案](docs/history/implementation/会话压缩建设方案.md)：摘要、覆盖边界和近期原文尾部组成可恢复检查点；压缩不改变 `sessionId`，不删除完整会话，不自动晋升长期事实。
-- 记忆系统运行时契约以 [记忆系统运行时契约](docs/plans/active/记忆系统运行时契约.md) 为准；它定义目标协议，§1.1 记录逐节落地状态，已落地部分不代表全部能力接通。
-- 记忆系统实施按 [记忆系统重构执行手册](docs/plans/active/记忆系统重构执行手册.md) 接力；手册的“当前检查点”是跨会话执行状态，不等于已通过代码或测试门禁。P0–P3 已完成；P4/P5 前置已完成，macOS 类型/编译与 89 场景 × 3 trials 严格门禁通过，详见执行手册；P6 未开始。
-- `docs/history/`：阶段设计、实施计划、修复记录和分析报告，只保存当时细节，不作为当前契约。
-- `README.md`：安装、运行、能力概览和文档入口。
-
-不使用内部版本号描述当前实现。发布版本以 GitHub tag 为准。
-
-### 规则文件本身
-
-- 本文件是**唯一的规则来源**。`CLAUDE.md` 只有一行 `@AGENTS.md` **导入指令** ——
-  Claude Code 只读 `CLAUDE.md`，不读 `AGENTS.md`，靠这行 import 把本文件注入上下文。
-- ⚠️ 不要把 `@AGENTS.md` 改成 Markdown 链接：链接形式**不会加载**，只等于建议 agent 自己去读。
-  也不要把本文件内容复制进 `CLAUDE.md`，那会制造两份需要同步的规则。
-- **不建立子目录 AGENTS.md**。本文件的规则（配置 SSOT、路径、日志、异常、模块落位）都是
-  **跨模块横向生效**的，按模块拆开只会得到 N 份需要同步的副本 —— 正是本节要防的漂移。
-  触发拆分的条件是：某模块有 ≥15 行只属于它且与全局无关的约定，
-  或本文件涨到 800 行 / 12k token，或某模块需要**局部覆盖**全局规则（后者应先修全局）。
-  模块特有的细节优先写进**模块自身的代码注释或 barrel 头部**，而不是新建规则文件。
-
-## 项目结构
-
-```text
-src/
-├── main.ts                     # 主窗口入口
-├── settings-main.ts            # 设置窗口入口
-├── layer-editor-main.ts        # 图层编辑窗口入口
-├── App.vue                     # 主窗口根组件
-├── vite-env.d.ts               # Vite 环境与 *.vue / *.yaml 模块声明
-├── components/                 # Vue 界面、角色展示、聊天、设置、会话
-│   └── winsim/                 # WinSim 开机模拟（BIOS、Logo、登录、桌面）
-├── composables/                # useParallax、useLayerEditor 组合式逻辑
-├── services/
-│   ├── engine/                 # Pi Runtime、输入预处理、Plan、Slash、会话状态与上下文压缩工具
-│   │   └── runtime/            # 运行时协议类型、PromptSnapshot 与脱敏 hash
-│   ├── personality/            # Card、人格注册、阶段文案、变量状态、情绪映射
-│   ├── reply/                  # RUNTIME_DATA 解析与回复后处理
-│   ├── agent/                  # Provider、Runner、子代理、记忆与主动搭话
-│   ├── context/                # ContextKernel、共享预算、完整轮与工具结果请求投影
-│   ├── tool/                   # 工具注册、路由、Pi 基础工具、MCP
-│   ├── skill/                  # Skill 有界元数据索引与 Prompt 注入（正文按需 read，非工具）
-│   ├── safety/                 # 风险等级、策略和确认桥接
-│   ├── session/                # 会话响应式状态与切换归档
-│   ├── profile/                # Profile 选择、加载、导入导出
-│   ├── window/                 # 前台窗口监控与主动搭话
-│   ├── audio/                  # 音效注册与播放
-│   ├── dialog/                 # 通用提示 Dialog（服务层单例 + 确认模式）
-│   ├── error/                  # 异常体系（归一化、全局拦截、DOM 覆盖层）
-│   ├── logger/                 # 统一日志（级别、批量转发、落盘）
-│   ├── animation.ts            # 从 Profile 加载的动画系统
-│   ├── boot.ts                 # 窗口启动引导（4 个入口共用）
-│   ├── command-handler.ts      # 聊天命令与表情切换（待接入）
-│   ├── cooldown.ts             # 统一全局冷却控制器
-│   ├── config.ts               # YAML 运行时配置与类型化 getter
-│   ├── debug.ts                # token 消耗、上下文利用率与工具注册数追踪
-│   ├── env.ts                  # 平台检测与运行时环境
-│   ├── init.ts                 # 统一启动初始化
-│   └── paths.ts                # 前端 BaseDirs 与统一路径初始化
-└── styles/                     # 全局样式与字体
-
-src-tauri/src/
-├── main.rs                     # 入口
-├── lib.rs                      # AppPaths、命令注册和应用启动
-├── paths.rs                    # data_root、默认资源种子和路径校验
-├── logger.rs                   # 日志内核（级别过滤、本地时间戳、文件 sink）
-├── error.rs                    # 统一错误类型 AppError
-├── commands/                   # 窗口、文件、工具、记忆、Profile 等命令
-├── macros/                     # Rust 端日志宏
-├── monitor/                    # Windows/macOS 前台窗口监控
-└── window/                     # 主窗口和设置窗口
-```
-
-## 当前核心数据流
-
-```text
-用户输入
-  -> agent/runner + engine/preprocessor
-  -> session 状态、Card 变量刷新、重置策略
-  -> context/buildPrompt -> ContextKernel
-       static / dynamic / profile / memory / transcript / ephemeral 固定层级与预算裁剪
-  -> 助手模式下可选 planner
-  -> Pi Agent Core + pi-ai Provider/Models 工厂 + ToolRouter（read/write/edit/bash/…）+ Safety 检查（deny-first）
-       Skill 只注入 name/description/location，正文由模型用 read 工具按需加载
-  -> reply/generator 解析 <RUNTIME_DATA>
-       emotion -> 表情与音效
-       合法 card 变量 -> batchWriteVars -> savePoolToDisk
-  -> MemoryService 记录会话和必要的压缩摘要
-  -> Vue 展示最终文本与效果
-```
-
-普通聊天 ingress 在调用 Pi 前先通过 RuntimeQueue 写入 `queued` session event；SessionTurnStore 通过 session 版本/CAS 记录 `queued → dispatching → running → done/failed`，Pi 完成后追加 `accepted`/`failed` queue ack。AgentSlot、运行阶段、上下文读取和异步写回均严格绑定 sessionId；忙碌输入先落盘并写 `steered`/`followup`，只有 Agent 消费结束后才进入 `accepted`/`done`。结构化失败即使带可显示的兜底文案也保持失败结论；启动恢复隔离未知副作用。
-
-Pi Runtime 在 `transformContext`、`provider_payload` 与 `provider_usage` 三个阶段发布脱敏 Prompt 快照；快照只保存输入输出 hash、层级、工具策略和请求/回合/运行代际关联，原始 Prompt 不落盘。
-
-助手模式 Plan 通过 PlanCheckpointStore 持久化 plan/step 状态和子代理工具开始/结束事件。启动恢复时，运行中的只读步骤回到 `pending`，没有完成凭证的外部副作用进入 `unknown_side_effect`，Plan 进入 `paused`，不得自动重试未知副作用。
-
-`RUNTIME_DATA` 是内部元数据，不显示给用户。回复生成器负责解析、剥离、验证和持久化；不要把这些工作重新塞回 Agent Loop。
-
-## 人格与变量状态
-
-人格 Card 和用户长期记忆是不同模块。
-
-- `system`：运行时计算，只读。
-- `card`：Card 注册的角色长期状态，只有 `updateBy=llm` 的变量可由 RUNTIME_DATA 更新。
-- `interaction`：系统维护的互动状态，只读给模型。
-- `session`：会话状态，只读注入 Prompt，不进入人格 Card 持久化。
-
-运行时和 `personality/stages/{cardId}.json` 使用同一种 `VariableState` 格式：
-
-```typescript
-interface VariableState {
-  value: number | string | boolean
-  type: "number" | "string" | "boolean"
-  updatedAt: number
-  updatedBy: "llm" | "manual" | "system"
-  lastResetAt?: number
-}
-```
-
-规则：
-
-- `card` 和 `interaction` 必须存 `VariableState`，禁止退回原始值。
-- `system` 和 `session` 使用原始值，不附加 Card 状态元数据。
-- Card 变量必须来自 `card.sections.variableDefs` 注册表。
-- `batchWriteVars()` 拒绝未注册、不可写、类型错误或越界的变量。
-- Card 的 `whenText` 是自然语言语气指引，不是可执行 When DSL。
-- 主回复链路不使用旧变量工具链，变量更新统一走 RUNTIME_DATA；旧接口只在历史归档中保留，不作为当前契约。
-
-## 记忆边界
-
-- `CANDY.md`：用户手写的系统指令。
-- `User.md`：重要用户事实的系统文件视图。
-- `Outside.md`：外部知识指针。
-- `MEMORY.md`：长期记忆注册表。
-- `sessions/*.md`：会话正文和压缩摘要的唯一真相源；正文写入使用专用 `session_file_write_atomic` 命令（同目录临时文件 + rename）。
-- `sessions/index.json`：仅保存打开标签、活跃标签和未回复数等可丢弃 UI 状态。
-- `Project.md`：会话归档索引。
-
-当前长期记忆的自动提取和 Prompt 检索尚未闭环。不要在代码或文档中声称 `MemoryService.search()` 已经自动注入，或声称 `forkMemorySupplement()` 已经由每轮对话调用。
-上述文件说明当前实现。计划中的长期记忆 SQLite 与会话存储是独立模块；迁移前 `MEMORY.md`/`User.md` 行为不变，迁移后的 Markdown 视图不再成为第二个可自动回写的真相源。会话压缩记录与长期记忆候选必须保留来源/版本，摘要不能替代权限授权或 Card 状态。
-`User.md` 通过带来源、版本和 taint 的只读 profile projection 进入 ContextKernel；长期记忆只接入空 `MemoryProvider`，当前每轮 recall 返回空集合。
-
-Provider 请求统一走 `engine/pi/model-gateway.ts`：由 Pi `createProvider()` / `createModels()` 构造，主回合和一次性文本请求共享配置快照、认证、增量响应上限和取消语义。SDK 内层重试关闭，回合重试共享一个总 deadline。长期记忆只能通过可注入 `MemoryProvider` 进入 Runtime；默认空实现，provider 有 1.5 秒召回时限和 token 预算边界。
-
-## 单一真相源（SSOT）
-
-项目高发的四类问题 —— **配置乱飞、魔法值、改动不同步、架构散落** —— 根因相同：
-*同一件事存在多个定义点*。动手改任何「会被多处使用」的东西前，过一遍下面四张清单。
-
-### ① 配置不散落
-
-一份配置从定义到生效要经过 5 个位置，**漏掉任何一处都不报错，只是静默失效**：
-
-| # | 位置 | 漏掉会怎样 |
-|---|---|---|
-| 1 | `CONFIG.yaml` | 生产首次启动没有该字段 |
-| 2 | `CONFIG-DEV.yaml.example` + `CONFIG-DEV.yaml` | 开发环境拿不到 |
-| 3 | `src/services/config.ts` 的 `Config` 类型 + 类型化 getter | TS 无类型、读不到 |
-| 4 | `SettingsPanel.vue` 的 `setOverrides` 映射 + 对应 Tab 的 ref/expose | 设置页存了也不生效 |
-| 5 | 本节与 `README.md` | 下一个人不知道它存在 |
-
-- 读取一律走 `@/services/config` 的 getter。模块内不得直读 `cfg.general.xxx`、不得复制常量、不得硬编码默认值。
-- **同一字段不得有两个语义**。一个值若既要被设置页读写、又要参与运行期判断，拆成两个导出。
-  范例：`generalConfig.loggingLevel`（读写接口）vs `computeLogLevel()`（运行期生效值）——
-  在**前者**上做 dev/prod 分支，会让 dev 里保存设置时把 `debug` 静默写回 YAML。
-
-### ② 不写魔法值
-
-- 会被 ≥2 处引用的字面量（阈值、超时、路径片段、命令名、枚举值）**必须是配置项或模块常量**。
-- 只在单个函数体内出现一次的字面量可以内联 —— 不为 DRY 抽无复用价值的常量。
-- 判定标准：**「改这个值的人会去哪找它？」** 答案不唯一，就该抽出来。
-- 常量放**它所属的模块**，不建集中式 `constants.ts`。
-
-### ③ 改动必须全链路同步
-
-动手前先 `rg` 找出全部消费者。`pnpm run test:types` 只抓得住类型与编译，**下面这些它抓不住**：
-
-| 你改了什么 | 必须同时检查 | test:types 能抓吗 |
-|---|---|---|
-| Rust 命令签名/返回类型 | 前端 `invoke` 调用点、`commands/mod.rs` 的 `pub use`、`lib.rs` 的 `invoke_handler!` | 部分 |
-| 前端 `invoke` 的命令名 | Rust 侧 `#[tauri::command]` 函数名 | ❌ 运行期才报 "command not found" |
-| 文件/模块移动改名 | 所有 import、`vite.config.ts` 的 `rollupOptions.input`、`capabilities/*.json` 的 `windows` 数组 | 部分 |
-| 新增窗口 | 上一条 + `xxx.html` + `src/xxx-main.ts` + Rust 创建代码 + z-order 提层 | ❌ |
-| 删除文件 | 全仓 `rg` 确认零引用，再同步结构树与文档 | 仅 import 层面 |
-
-### ④ 架构不散落
-
-- 新模块放进 `src/services/<领域>/`，**必须带 `index.ts` barrel**
-  （现有 13 个服务子目录无一例外，`__tests__/` 不计）。外部只从 barrel 导入，不深入内部文件路径。
-- 跨领域共享的纯函数放**零依赖叶子模块**，避免循环依赖。
-  范例：`services/error/format.ts` 不 import 任何业务模块，所以 `logger` 引用它不会成环。
-- 单一文件的服务平铺为 `src/services/<name>.ts`；成组（≥3 文件或有内部结构）时升级为目录。
-- 新增或移动文件后，同步本文件的结构树。
-
-## 配置规则
-
-用哪份配置由**构建模式**决定（Rust `cfg!(debug_assertions)`），不由配置文件里的字段控制：
-
-```text
-开发（cargo tauri dev）：工作区 CONFIG-DEV.yaml（存在时）或 CONFIG.yaml
-生产（cargo tauri build）：data_root/settings/CONFIG.yaml（首次由内置 CONFIG.yaml 初始化）
-  -> services/config.ts 类型化 getter
-  -> 设置页回写同一份运行时 CONFIG
-```
-
-- 生产构建完全忽略工作区的 `CONFIG-DEV.yaml`；该文件在 `.gitignore` 中，首次使用需 `cp CONFIG-DEV.yaml.example CONFIG-DEV.yaml`。
-- 所有模块通过 `@/services/config` 读取配置，不在模块内复制常量。
-- 开发环境本地调参只改 `CONFIG-DEV.yaml`；它必须是完整配置文件，不是增量覆盖层。
-- 设置页回写经 `serializeConfig()` 保留运行时 CONFIG 的文件头部注释块，正文由 `js-yaml` dump 重排。
-- `localStorage` 不保存配置、会话正文或 Profile 编辑状态；启动时会清理历史缓存 key。
-- 新增配置项必须同步默认配置、开发配置、配置类型 getter、设置页面和相关说明。
-- 不主动修改 `.gitignore`、真实配置或用户运行时数据，除非用户明确要求。
-
-## 路径与运行时数据
-
-```text
-开发：{project}/data/desk-pet/
-生产：Tauri app_local_data_dir（平台和应用标识专属）
-
-data_root/
-├── settings/     CONFIG.yaml（仅生产；开发配置留在工作区）
-├── memory/       MEMORY.md、CANDY.md、User.md、Outside.md、Project.md
-├── sessions/     session-YYYYMMDD-HHmmss-主题.md、index.json
-├── personality/ stages/{cardId}.json、vars.json、用户 Card
-└── profiles/     用户 Profile 与素材
-```
-
-应用随包提供默认 Card/Profile 种子，首次启动复制到 `data_root`。初始化完成后所有 Card/Profile 都是普通运行时资源，可编辑、复制、导出和删除；打包资源只用于首次初始化，不参与运行时读取。
-
-### 路径拼接规则
-
-**模块内不得出现任何硬编码路径**（含 `"personality/xxx"` 这类带域前缀的相对路径）。路径一律由路径模块产出：
-
-| 层 | 用什么 | 说明 |
-|---|---|---|
-| Rust | `AppPaths` 的字段（`paths.personality` 等） | 唯一真相源；`data_root` 由 `cfg!(debug_assertions)` 裁定 |
-| TS | `runtimePath(scope, ...segments)` | 交给 Rust 拼接 + 校验，返回绝对路径 |
-| TS | `BaseDirs` | **只给目录**；写文件必须走 `runtimePath()` |
-
-- 需要区分 dev/生产时用 `getRuntimeMode()`，**不要**自己判断 `import.meta.env.DEV` ——
-  前者是**路径环境**（Rust `cfg!(debug_assertions)` 裁定），后者是**前端构建模式**，两者概念不同。
-- 业务文件名由**所属模块**管理（如 memory 模块管 `MEMORY.md`），不集中堆进 `paths.ts`。
-- **两种合法模式，按命令设计选**：
-  1. **Rust 持有 base 目录**（如 `personality_file_*`）→ 前端只传**域内相对路径**
-     （`stages/x.json`、`vars.json`），**绝不带 `personality/` 前缀**。
-     Rust 侧 `resolve_personality_path()` 会显式拒绝带前缀的入参（容忍它会让写入静默建错嵌套目录）。
-  2. **前端需要绝对路径**（展示、传给通用文件 API）→ 用 `runtimePath(scope, ...segments)`。
-- 日志里的**描述性路径**（如 `` `personality/stages/${id}.json` ``）不算违规 —— 它不参与行为决策，
-  只是给人看的 `data_root` 相对位置。改动目录布局时一并更新即可。
-
-### Rust 约束
-
-```rust
-use crate::error::{AppError, AppResult};
-
-#[tauri::command]
-pub fn my_command(paths: tauri::State<AppPaths>) -> AppResult<()> {
-    AppPaths::validate_path(&file_path, &paths.personality)?;
-    Ok(())
-}
-```
-
-- 路径相关命令必须注入 `tauri::State<AppPaths>`。
-- 会话正文原子写入使用 `session_file_write_atomic`；不要为此改变通用 `file_write` 的语义。
-- 写入前必须使用 `validate_path()`；不存在的文件要校验父目录。
-- 命令一律返回 `AppResult<T>`，不要退回 `Result<T, String>`（见「异常处理」）。
-- 禁止手写 `dirs_next()`、`find_project_root()` 或 `env!("CARGO_MANIFEST_DIR")` 解析业务路径。
-- 禁止使用 `canonicalize().unwrap_or()` 静默回退。
-- 禁止 `.lock().unwrap()`；用 `.unwrap_or_else(|e| e.into_inner())` 忽略锁中毒。
-- 默认 Profile/Card 位于 `src-tauri/resources/defaults/`，仅作为首次初始化种子；运行时读取、编辑、导入、复制、删除全部只走 `data_root/profiles/` 与 `data_root/personality/cards/`。初始化标记写入 `data_root/settings/.default-resources-seeded`，标记存在后不会因删除而自动恢复。
-- 角色展示效果由 `appearance.effectMode`（`off`/`parallax`/`dof`）单字段裁定，两者互斥；禁止拆成两个布尔开关。
-- 灵动图层的逐层素材与参数属于 Profile 的 `theme.parallax.layers`，景深的素材与参数属于 `theme.depthOfField`；运行时 CONFIG 只保存效果模式与全局强度，禁止用全局配置覆盖当前 Profile 的效果参数。
-- 新命令必须在 `lib.rs` 的 `invoke_handler!` 中注册。
-- Windows/macOS 专有代码必须使用条件编译和对应平台依赖。
-
-### TypeScript 约束
-
-```typescript
-import { initPaths, runtimePath } from "@/services/paths"
-
-await initPaths()
-const memoryPath = await runtimePath("memory", "MEMORY.md")
-```
-
-`BaseDirs` 只提供目录；需要得到完整路径时调用 `runtimePath()` 交给 Rust 校验和拼接。业务文件名由所属模块管理，不把业务文件名集中硬编码进 `paths.ts`。
-
-## 编码约定
-
-- 先读后写，优先复用已有代码，不为简单逻辑增加抽象。
-- 所有操作同时评估 Windows 和 macOS。
-- Vue 组件使用 `<script setup lang="ts">`。
-- 服务模块一律从 barrel 导入（`@/services/<领域>`），不深入内部文件路径；落位规则见「单一真相源 ④」。
-- 全局冷却和 AI 并发锁走现有模块，平台检测走 `@/services/env`。
-- 配置走 `@/services/config`（见「单一真相源 ①」）。
-- 日志走 `@/services/logger`，异常走 `@/services/error`，禁止直接 `console.*` / `String(e)`。
-
-## 日志
-
-日志同时输出到三处：`pnpm tauri dev` 的终端、`{data_root}/logs/deskpet.log`（超 5MB 轮转，保留 2 份备份）、DevTools Console。
-
-```typescript
-import { createLogger } from "@/services/logger"
-const log = createLogger("模块前缀")
-log.debug("调试信息")
-log.info("重要节点")
-log.warn("警告")
-log.error("错误", error)   // error 不受级别限制
-```
-
-Rust 对应 `rust_debug!` / `rust_info!` / `rust_warn!` / `rust_error!`。两端格式统一为
-`[HH:MM:SS.mmm] LEVEL [前缀] 消息`，时间戳**同为本地时间**，混在终端与日志文件里可直接对时序。
-前端日志经 60ms/32 行批量转发到 Rust，与 Rust 日志汇合进同一个文件。
-
-级别策略（`config.ts` 的 `computeLogLevel()`）：
-
-```text
-VITE_LOG_LEVEL 显式覆写  >  dev 一律 debug（忽略配置）  >  生产读 general.logging.level
-```
-
-`VITE_LOG_LEVEL` 经项目根的 `.env` 设置（模板见 `.env.example`，`.env` 不入库）。
-临时验证可直接 `VITE_LOG_LEVEL=info pnpm tauri dev` —— 这是 dev 下唯一能观察生产过滤行为的手段。
-
-Rust 侧默认值随构建模式：debug 构建全量、release 默认 info；`DESKPET_LOG_LEVEL` 环境变量可覆写。
-前端启动后经 `set_log_config` 推送生效级别，两端保持一致。
-
-⚠️ 区分 `generalConfig.loggingLevel`（设置面板的**读写接口**，会回写 YAML）与 `computeLogLevel()`
-（**运行期生效值**）。不要在**前者**上做 dev/prod 分支，否则 dev 里保存设置会把 `level: debug`
-静默写进 `CONFIG-DEV.yaml`。
-
-## 异常处理
-
-- 全局拦截在 `services/error/global.ts`，4 个窗口入口经 `services/boot.ts` 的 `bootWindow()`
-  统一安装，覆盖 `window.onerror`、`unhandledrejection`、Vue `errorHandler` 和 bootstrap 失败。
-- 异常走 `reportError()` 单一出口：写日志 → `invoke("report_frontend_error")` 落到 Rust →
-  按配置弹全屏 DOM 覆盖层。覆盖层**零 Vue 依赖**，所以在 `mount()` 之前、`initConfig()`
-  失败时同样有效（这正是它要覆盖的首要场景）。
-- 覆盖层行为由 `general.errors.overlay` 控制：`auto`（默认，dev 弹 / 生产不弹）、
-  `always`、`never`。判定在**报错时惰性求值** —— 拦截器必须早于 `initConfig()` 安装，
-  那时还读不到配置。
-- 判断错误一律用 `@/services/error` 的 `formatError()` / `errorCode()` / `summarizeError()`，
-  不要写 `e instanceof Error ? e.message : String(e)` —— Rust 命令返回 `{ code, message }`
-  结构化错误，裸 `String(e)` 会退化成 `[object Object]`。
-- 会持久化进会话文件的消息必须用 `summarizeError()`（已脱敏，掩掉 `sk-*` 等密钥）。
-- Rust 命令统一返回 `AppResult<T>`（`src-tauri/src/error.rs`），错误序列化为 `{ code, message }`。
-  新代码用具体的 `AppError::Xxx` 变体，`err(...)` 只作迁移期兜底。
-- Rust panic 已接 `std::panic::set_hook`，会带位置写入日志文件。
-
-
-## 修改后的同步规则
-
-| 改动类型 | 需要同步 |
-|---|---|
-| 普通代码修改 | `README.md`、`AGENTS.md`、`docs/DES.md`，按影响补充 `docs/current/` |
-| 架构或模块变更 | `README.md`、`AGENTS.md`、`docs/DES.md`、对应当前模块文档 |
-| 配置项变更 | 按「单一真相源 ①」的五处清单 |
-| 新增或删除模块 | AGENTS 结构、README 结构、DES 总览和当前模块文档 |
-| 实施计划完成 | 保留正文，补充状态元数据后移入 `docs/history/` |
-
-历史文档只保存当时的设计细节，不为了追踪当前代码而改写正文。
-每轮修改结束都要同步 `README.md`、`AGENTS.md`、`docs/DES.md`；有影响时同步 `docs/current/`。
-
-## 提交规范
-
-使用 **Conventional Commits**：
-
-```text
-<type>(<scope>): <描述>
-
-[可选正文：说明「为什么」，不是复述 diff]
-```
-
-**type**（必填）：`feat` 新功能 / `fix` 修 bug / `refactor` 重构 / `perf` 性能 /
-`docs` 只改文档 / `test` 只改测试 / `build` 构建与依赖 / `chore` 杂项 / `revert` 回滚。
-
-**scope**（建议填）：取**模块名**，与结构树保持一致，便于检索——
-`config`、`paths`、`log`、`error`、`agent`、`tool`、`memory`、`personality`、`profile`、
-`session`、`reply`、`safety`、`window`、`ui`、`livetest`、`tauri`、`deps`、`docs`。
-跨模块改动可省略 scope。
-
-规则：
-
-- 描述用**中文**、不加句号、不以大写开头，说清**做了什么**而不是改了哪个文件。
-- 破坏性变更在 type 后加 `!`（如 `feat(config)!: ...`），并在正文写 `BREAKING CHANGE: 具体影响`。
-- **一次提交只做一件事**；顺手带的格式化、重命名、无关修复拆成独立提交。
-- 正文只在需要解释**动机或取舍**时写，用 `-` 列表。
-
-```text
-refactor(profile): 默认资源首次初始化为可编辑 Profile
-
-- 随包默认资源只在首次启动复制到 data_root/profiles/{id}
-- 运行时 Profile 与用户导入 Profile 具有相同的编辑和删除权限
-
-fix(paths): personality 命令拒绝带域前缀的入参
-
-容忍 "personality/xxx" 会拼成 personality/personality/xxx，写入时静默建出错误的嵌套目录。
-
-refactor(log): 时间戳由 UTC 改为本地时间
-docs: 补充路径拼接规则
-chore(deps): 引入 chrono 与 thiserror
-```
-
-## 用户规则
-
-- 任何修改必须先给思路，用户同意后才能编码。
-- 不自作主张扩大范围，疑问先探索代码并基于事实判断。
-
-## 核心方针
-
-轻量化、低内存占用、高性能、token 消耗少、功能完整。
-
-### 记忆重构前置的已实现边界
-
-- 新会话正文使用带 appendSequence/apiRoundId 的 deskpet-event，兼容旧 deskpet-turn；工具调用先落盘再执行，结果落盘后才请求下一轮。
-- 压缩只有 committed 可报告完成；摘要与边界原子提交，校验版本、完整轮与输入/输出 hash。完整会话不删除，归档不重建正文。原子提交开始后取消不回滚已写事实。
-- 每轮冻结模型/Card/变量/CANDY/User/工具/Skill 目录；所有请求统一输出/schema/余量预算。20K 是大窗口压缩余量上限，不是摘要长度；旧 contextCompactAt 已移除。不得静默丢弃未覆盖 transcript。
-- PermissionKernel 在 Pi beforeToolCall 终裁 allow/ask/deny，passthrough 不能直接执行。确认与授权绑定会话/代际/精确参数/策略/到期时间，afterToolCall 标注来源。
-- Skill 初始仅加载有界元数据，tools.skill.enabled 可用于轻量模式；MCP 由助手回合按 owner 取得与释放。启动不加载 Skill 正文、不启动记忆 LLM 整理。
-- read_session_event 只分页读取捕获的当前会话工具结果，配合 context/tool-output.ts 的请求内缩短；不得以请求投影覆盖磁盘原文。
+- pnpm 版本以 `package.json` 的 `packageManager` 为准；新增有构建脚本的依赖须在
+  `pnpm-workspace.yaml` 的 `allowBuilds` 显式声明运行或跳过，避免干净安装失败。
+- 先完成授权范围内的实现与 Contract/Scene，再按影响范围集中验证；修复失败后重验。
+- 源码或行为契约变化须按 Live Test SKILL 重新 analyze → generate；不能只改 sourceHash 过门禁。
+- 类型/编译不能代替运行验证。非 unit 场景需实际 Provider 或 fake Provider 响应；
+  `entry: production` 须经过 `sendMessage()`，fake 只替换 Provider，工具和 IPC 行为仍需场景断言。
+- 跨模块改动运行完整 Live Test；发布门禁为严格 Contract 与至少三次 trial，跳过/超时不得报通过。
+- 文档改动只检查链接、事实、引用及格式，不因文案变化重跑完整 Live Test。
+- 平台代码同时考虑 Windows/macOS；修改 Windows 条件代码或依赖后须检查 Windows CI。
+  本机 macOS check 不证明 Windows 分支，现有本机交叉构建也不能替代 Windows job。
+- Rust 平台专有实现须使用条件编译和对应平台依赖，不能让另一平台的编译路径引用它。
+
+## 单一真相源与模块落位
+
+- 配置只经 `@/services/config` 的类型化 getter 读取；不复制默认值，不直读内部 cfg。
+- 设置读写值与运行期派生值分开，例如 `generalConfig.loggingLevel` 与 `computeLogLevel()`。
+- YAML 运行时 CONFIG 字段新增、改名、删除或含义/单位/默认值变化，必须逐项核对并同步整条链：
+  `CONFIG.yaml` → `CONFIG-DEV.yaml.example` → Config/getter → 设置 Tab 的读取/ref/defineExpose
+  → SettingsPanel 的保存映射或 setter → 写盘/刷新消费者 → 对应文档。
+  不能只加 UI 或 YAML；不提供 UI 的字段须明确用途与修改入口，详见[配置同步清单](docs/current/runtime-data.md#配置变更同步清单)。
+- 真实开发配置需单独授权后同步，未同步须在交付时说明；不得因未获授权而跳过模板或代码同步。
+  本地调参只改开发副本，不污染生产默认值；开发配置是完整文件，不是增量覆盖层。
+- 被 ≥2 处使用的阈值、超时、业务文件名、命令名和枚举必须放所属模块配置或常量；
+  单函数内一次使用的字面量可内联，不为无复用逻辑增加抽象，不建大一统 constants 文件。
+- 单文件服务可平铺；≥3 文件或有内部结构时放 `src/services/<领域>/` 并提供 `index.ts`。
+  跨领域使用公开 barrel，不深入业务内部文件；零依赖叶子保持独立，避免循环引用。
+- 跨领域共享纯函数放零依赖叶子；全局冷却与并发所有权复用现有模块，平台检测走 `@/services/env`。
+- 改共享接口前先查全部消费者；移动、改名或删除文件时，结合 CodeGraph 与全仓 `rg` 检查
+  import、字符串/动态引用、Vite input、capabilities、Rust 注册、Contract sourceFiles 和文档链接。
+  删除后确认已无有效消费者；类型检查不能代替这项核对。
+- Vue 使用 `<script setup lang="ts">`。目录地图只在系统地图维护，行为、用户入口和玩法仍须同步各自文档。
+
+## 路径、配置与资源
+
+- Rust `AppPaths` 决定数据根；开发/生产依据 Rust 构建模式，前端通过 `getRuntimeMode()` 判断路径环境。
+  不用 `import.meta.env.DEV` 代替，不用 `dirs_next()`、`find_project_root()` 或 `env!("CARGO_MANIFEST_DIR")` 推导业务路径。
+- TS 先初始化路径；`BaseDirs` 只表示目录，完整文件路径通过 `runtimePath(scope, ...segments)` 取得。
+- Rust 持有 base 的命令仅接收域内相对路径，如 `stages/x.json`，不加 `personality/` 等域前缀。
+  通用文件 API 需要绝对路径时使用 `runtimePath()`；模块不硬编码数据根或带域前缀的业务路径。
+- 路径命令注入 `State<AppPaths>` 并校验边界；不存在的写入目标校验父目录与符号链接风险。
+  不用 `canonicalize().unwrap_or()` 静默回退。
+- 默认 Card/Profile/Skill 仅作首次初始化种子；完成后所有读取和编辑走运行时资源。
+  初始化标记存在后删除不自动恢复；恢复默认资源是明确的覆盖操作。
+- `appearance.effectMode` 单字段裁定 off/parallax/dof；逐层素材、取景、焦点等属于当前 Profile，
+  全局 CONFIG 不覆盖 Profile 的效果参数。
+- localStorage 不保存配置、会话正文或 Profile 编辑状态。
+
+## 运行时不变量
+
+- 会话正文与控制事件以 `sessions/*.md` 为真相源，`sessions/index.json` 仅保存可丢弃 UI 状态。
+  正文用专用 `session_file_write_atomic`，不改变通用 `file_write` 语义。
+- 新正文保存稳定 eventId、appendSequence、apiRoundId；兼容旧记录。用户 ingress 先落盘再投递；
+  工具调用先落盘再执行，结果落盘后才进入下一次 Provider 请求。
+- 所有异步读取、写回、确认、取消都绑定 session 与 run generation；旧运行不能改写新所有者状态。
+  未知外部副作用不自动重放；UI 和 Pi 内存消息不成为第二份持久化 Store。
+- 压缩只改变请求视图，完整正文保留；只有 committed 可报告成功。摘要与边界原子提交，
+  校验版本、来源 hash 和完整回合，禁止默默丢弃未覆盖历史；已进入原子提交的写入不因取消回滚。
+- 预算共用 ContextKernel 规则，包含完整 schema、输出预留及压缩余量；静态协议与当前输入不截字。
+  每轮冻结 Card/变量/配置/能力；PromptSnapshot 只保存 hash 与审计元数据，不落盘原始 Prompt。
+- Card、互动状态、用户长期事实分开。RUNTIME_DATA 由回复模块剥离、验证、持久化，不能重新塞回 Loop。
+  card/interaction 保存 VariableState；system/session 使用原始只读值。LLM 只写注册且允许更新的 card 变量。
+- `whenText` 是自然语言指引；不恢复旧变量工具、情绪前缀或可执行 When DSL。
+- 主请求与一次性文本请求统一走模型网关，共享配置、认证、取消和 deadline；不叠加 SDK 内层重试。
+- 长期记忆只经 MemoryProvider 进入 Runtime；默认空实现。不得把压缩摘要、工具结果、主动消息
+  或助手台词晋升为用户事实，不宣称尚未接通的自动提取、召回、画像写入或 dreaming 已完成。
+
+## 工具与权限
+
+- 使用 Pi 原生 `beforeToolCall` / `afterToolCall` / `transformContext` 等扩展点；不重建无消费者的 HookBus。
+- PermissionKernel 终裁 allow/ask/deny；passthrough 只能继续策略链，不能直接执行。MCP 走 passthrough。
+- deny-first；确认与授权绑定会话、代际、精确参数、策略和有效期，变更后重审；摘要不能恢复授权。
+- Rust 保留最终路径与 Bash 安全基线，助手模式不能关闭；网络边界不得夸大为通用沙箱。
+- Skill 初始只读有界元数据，正文经 read 按需读取；Skill 不提升权限。MCP 按运行借用并释放。
+  启动不加载 Skill 正文、不连接 MCP、不隐式启动记忆 LLM 整理。
+
+## 日志、异常与 IPC
+
+- 日志走 `@/services/logger` / Rust 日志宏，错误走 `@/services/error`；禁止直接 `console.*` 或 `String(e)`。
+- 错误判断使用 `formatError()` / `errorCode()`；持久化错误使用脱敏的 `summarizeError()`。
+- 全局异常经 `bootWindow()` 安装拦截、`reportError()` 单一出口，不自行再建覆盖层。
+- Rust 命令返回 `AppResult<T>`，使用具体 AppError；不退回 `Result<T, String>`。
+  锁中毒用 `.unwrap_or_else(|e| e.into_inner())` 恢复，不写 `.lock().unwrap()`。
+- IPC 变更同步 Rust 签名、mod 导出、`lib.rs` 注册与 TS invoke；新增窗口同时核对 HTML/TS 入口、
+  Vite input、capabilities windows 与 Rust 创建逻辑。类型检查不能证明命令注册正确。
+
+## 文档维护与提交
+
+- 本文件是唯一全局规则入口；`CLAUDE.md` 仅保留一行 `@AGENTS.md`，不改成普通链接。
+- 不建立子目录 AGENTS。模块协议与例子放对应 current 文档或源码注释；这里仅保留全局约束。
+- 每轮核对 README、AGENTS、DES 和相关 current 的影响，受影响内容必须在同一改动中更新：
+  行为→current，玩法→DES，用户入口→README，规则→AGENTS，未完成进度→执行手册。
+  新增/删除模块还要更新系统地图及受影响导航；没有变化不为同步而追加总结。
+  配置变更同时执行上面的全链路清单；交付注明尚未同步或未验证部分，不能只写“已同步”。
+- 完成方案保留正文与证据后归档，注明日期和替代入口；历史内容不作为当前指令或实现契约。
+  测试结果只在检查点记录一次，注明基线/范围/未验证项；不在多个概览复制数字。
+- Conventional Commits：`<type>(<scope>): <中文描述>`；不加句号，一次提交一个主题，正文解释原因。
+  scope 使用模块名，跨模块可省略；破坏性变更用 `!` 与 `BREAKING CHANGE`，是否提交遵循用户授权。
+  当前实现不用内部版本号命名，发布版本以 Git tag 为准。

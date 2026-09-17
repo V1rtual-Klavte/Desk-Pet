@@ -1,1175 +1,139 @@
-# DES.md — 糖糖桌宠 设计文档
+# Desk-Pet 产品设计
 
-> 糖糖桌宠 (Desk Pet) 的设计理念、玩法机制、交互说明与架构实现进度
-> 面向项目负责人和开发者：用于快速回顾项目全貌；具体当前契约以代码和 `docs/current/` 为准。
+本文面向项目负责人，说明陪伴定位、玩法与交互。实现协议见 [current/](current/)，未完成工作见[执行手册](plans/active/记忆系统重构执行手册.md)。重构前的详细说明保存在[历史基线](history/design/DES-2026-09-17基线.md)，默认无需通读。
 
----
+## 1. 定位与体验原则
 
-## 1. 项目概述
+Desk-Pet 是可自定义 Card 与 Profile 的桌面陪伴应用。角色常驻桌面，用户可以聊天、切换外观，或让她在合适时机主动搭话。助手模式用于需要工具和任务编排的场景。
 
-**糖糖桌宠**是一个桌面虚拟主播宠物应用。像素风角色常驻桌面，**无边框透明窗口置顶显示**，像真正的桌面宠物一样陪伴用户。她能聊天、能察觉你正在看什么、能主动搭话、能用工具完成任务。
+产品优先级：
 
-**一句话**：把 VTuber 搬到桌面，让她真的注视你。
+1. **人格稳定**：Card 决定角色与表达，技术错误和工具状态也尽量保持一致语气。
+2. **对话连续**：切换、关闭或重启后能够找回会话；长对话压缩后保留当前意图、纠正和未完成话题。
+3. **低打扰**：主动搭话可关闭，受到停留阈值、冷却与运行状态限制。
+4. **轻量常驻**：普通陪伴不承担 MCP 常驻进程、全部 Skill 正文或后台记忆 LLM 整理。
+5. **能力可控**：用户能理解工具在做什么，需要确认时看到具体请求；角色语气不改变权限结果。
 
-### 快速代码回顾路径
+低内存和低延迟是设计目标，具体数值需要实测，不根据动态 import 或采用某个框架直接作保证。
 
-需要重新建立代码全貌时，按下面顺序阅读即可：
+## 2. Card、Profile 与用户记忆
 
-1. `README.md`：安装、启动命令、能力边界和文档入口。
-2. `src/App.vue`、`src/services/agent/runner.ts`：应用启动后的 UI 入口与用户消息入口。
-3. `src/services/engine/pi/runtime.ts`、`src/services/context/builder.ts`：Pi 主循环适配、Prompt 组装、工具循环和上下文边界。
-4. `src/services/personality/`、`src/services/reply/generator.ts`：人格 Card、变量状态、`RUNTIME_DATA`、情绪和回复后处理。
-5. `src/services/tool/`、`src/services/safety/`：工具注册/路由、助手模式能力和安全确认。
-6. `src/services/agent/memory/`、`src/services/session/`：会话持久化、压缩摘要和当前尚未接通的长期记忆能力。
-7. `src-tauri/src/lib.rs`、`src-tauri/src/commands/`、`src-tauri/src/monitor/`：Rust 命令、路径边界、窗口和前台应用监控。
-8. `src/services/__tests__/live/`：先看 Contract 和带稳定 `caseId` 的 Scene 数据集，确认 coverage 引用到实际同模块 Scene，并用 `boundary`/`error` tag 表示规则覆盖；确定性基础场景可使用 fake provider，但仍经过真实 Agent/Tool loop；最后运行 `pnpm test -- --module <module>` 在真实 Tauri WebView 中验证实际链路。Live Test 使用临时数据根和专属浏览器缓存 keyspace，不清除正常用户会话；发布前以 `--strict --repeat 3 --report json` 留存多 trial 的结果、轨迹指标和环境种子。
-
-这份文档保留设计和玩法的历史细节；`docs/current/` 用来记录已经与代码核对过的当前契约，`docs/history/` 只用于查阅阶段决策。
-
-记忆系统的运行时基础契约见[记忆系统运行时契约](plans/active/记忆系统运行时契约.md)；`sendMessage()` 先持久化 queued 事件再调用 Pi，SessionTurnStore 通过版本/CAS 记录 queued 到 done/failed。Agent、运行阶段、上下文和异步摘要写回均严格绑定 sessionId；steer/followUp 只有在 Agent 消费结束后才进入 accepted/done，结构化失败不会因兜底文案而伪装成成功。启动恢复会隔离未知副作用。Plan、ContextKernel、PromptSnapshot、工具门禁、bash 基线和路径安全的详细状态见[记忆系统重构执行手册](plans/active/记忆系统重构执行手册.md)。
-
-下一阶段建设方向已记录在[轻量陪伴运行时与统一内核建设方案](plans/active/轻量陪伴运行时与统一内核建设方案.md)：以轻量陪伴优先，统一领域状态快照、上下文预算、工具权限和 Skill 渐进加载；推荐 SQLite 承载结构化长期记忆，Markdown 保留人工指令、Card、会话与导入导出用途。其中运行时前置已经写入代码，SQLite 与长期记忆候选仍待实施；验证进度见执行手册。
-
-[会话压缩建设方案](history/implementation/会话压缩建设方案.md)已作为独立前置工作包实施：用显式边界检查点、结构化摘要和近期完整回合重建模型上下文，保持完整会话可读。它先于长期记忆提取建设；“压缩当前上下文”和“整理长期事实”分别验证。
-
-2026-08-06 的全仓阶段审查、记忆系统边界、测试覆盖和后续优先级见 [阶段现状](history/analysis/阶段现状-2026.8.6.md)。
-
----
-
-## 2. 核心玩法
-
-### 2.1 桌面常驻
-
-桌宠窗口**无边框、透明背景、始终置顶**，显示一个可拖拽的像素动画角色。角色以序列帧动画展现各种表情（微笑、晚安、生气、飞吻等），默认待机动画循环播放。
-
-### 2.2 AI 聊天
-
-左侧可展开聊天面板，顶部为会话标签页，可切换/新建/关闭会话。用户输入文字与角色对话。回复由 AI 大模型生成，**人格卡驱动**。支持多人格切换，可在设置面板热插拔。
-
-**聊天面板与角色区域之间**有可拖动的竖线分割，拖动位置写入运行时 CONFIG，无需在设置页配置。
-
-每个会话的对话轮次**实时写入** `sessions/session-YYYYMMDD-HHmmss-主题.md`，通过专用 `session_file_write_atomic` 命令以同目录临时文件 + rename 提交；首次用户消息后自动提取主题并重命名文件。**累计 token 消耗、上下文占比同步持久化到 .md 元数据**，重启后自动恢复。随时可查看历史记录。
-
-#### Agent Loop 机制
-
-```
-用户消息 → PreProcessor → 变量状态刷新 + 人格语气指引组装
-  → Pi Agent Core 驱动的 LLM 流（最终仍以完整回复统一处理）
-    SystemPrompt = Card 全量角色内容 (设定/风格/情绪/语气指引/行为准则)
-                   + 变量状态 + 工具声明 + 会话摘要
-    → 顺序工具循环：安全检查→执行→回注
-    → 直接输出 <RUNTIME_DATA> + 角色化回复
-  → Generator 后处理: 解析/剥离 RUNTIME_DATA → Card 情绪映射 → trim → 截断
-  → ReplyResult { text, emotionKey, expression, sound }
-  → batchWriteVars() 校验变量更新并持久化 → 会话元数据/上下文压缩
-```
-
-- 固定 1 次 LLM (非流式)。Card 永远激活 (neutral 兜底，替代旧人格开关)
-- 统一 system prompt：Card 全量角色内容 + 工具声明 + 变量状态 + 会话摘要，一次注入
-- 变量上下文：四类变量 `system` / `card` / `interaction` / `session`
-- `#行为进阶` 的 `whenText` 是自然语言语气指引，随 Card 一起注入 Prompt，不再执行条件 DSL
-- 情绪和变量更新由 `<RUNTIME_DATA>` 内部元数据携带；`generator.ts` 解析、校验后映射 Card 的 `emotionMappings`
-- ReplyResult: `{ text, emotionKey, expression, sound }` — 表情/音效由 generator 统一解析
-- chatHistory: 用户消息 + 工具链 + 角色化回复
-- 已移除: `buildStylePrompt`、`summarizeToolCalls`、`formatToolRules`、`generateReplyStream`、旧人格开关和旧兜底回复链路
-- 新增: neutral Card (默认桌面助手), getFallbackReply / stages fallbacks (替代 18 处硬编码), ReplyResult 接口
-
-### 2.3 人格系统（独立模块）
-
-人格系统已从 Agent 执行层分离为 `src/services/personality/` 独立模块，**只参与 Prompt 生成**，不影响 Agent 执行逻辑。
-
-- **人格卡**：YAML frontmatter + 7 section Markdown；默认 Card 首次启动复制到 `data_root/personality/cards/`，所有 Card 均从该运行时目录加载
-- **热插拔**：设置面板可随时切换 Card（neutral 为默认兜底），切换为事务式阻塞流程：stages 加载/生成、变量池初始化/持久化任一失败则回滚旧 Card
-- **语气指引**：Card `#行为进阶` 的 `whenText` 以自然语言描述当前角色语气，作为 Prompt 的一部分，不在前端执行表达式
-- **情绪表达**：Card `#情绪表达` 定义 `key → 表情,音效` 映射，回复生成器从 `RUNTIME_DATA` 解析后统一处理
-- **阶段文案**：per-card stages 由 LLM 生成并持久化到 `data_root/personality/stages/{cardId}.json`
-- **fallbacks 兜底**：stages JSON 含 `fallbacks` 字段 (8 个 key)，`getFallbackReply(key)` 按 Card 返回角色化兜底；`llmUnavailable` 为数组随机选取；最终回退到极简中性常数
-- **neutral 默认卡**：`cards/neutral.md` — 中性桌面助手，替代旧 `personality.enabled=false`
-- **变量状态**：四类变量 `system` / `card` / `interaction` / `session`
-  - **system**：6 个运行时派生变量（hour/minute/dayOfWeek/isNightTime/isWeekend/activeCardId），只读
-  - **card**：Card 注册表驱动，`RUNTIME_DATA` 中的更新经 `batchWriteVars()` 校验 type/min/max/enum/updateBy 后写入
-  - **interaction**：系统维护（如 `unansweredCount`），`updateInteractionVar` API 更新，LLM 只读
-  - **session**：`setSessionVars` 注入，仅进 Prompt，不参与 Card 持久化
-  - **持久化**：`vars.json` (system snapshot) + `stages/{cardId}.json:variables` (card+interaction)
-  - **注册表**：Card `#变量定义 > ## card / ## interaction` YAML block → `CardVariableDef[]`，loader 解析
-  - **更新闭环**：Agent Loop 开始 refresh → reset 策略 → 生成器批量校验/写入 → `savePoolToDisk()` 持久化
-- **扩展性**：所有 Card 由 Tauri fs 从运行时目录导入、保存和扫描
-
-#### 人格中间件（stages 缓存驱动 + fallbacks）
-
-```ts
-PetPersonalityMiddleware.wrap(stage, { actionCategory })
-```
-- AgentStage: thinking | planning | generating | executing | blocked | error | done | idle
-- 阶段文案由 stages-cache 返回（per-card LLM 生成），无硬编码
-- executing/done/blocked 按 `actionCategory`（fs.read/os.exec/.../`_default`）匹配
-- 情绪表情由 `generator.ts` 解析 `RUNTIME_DATA` 后统一处理
-- fallbacks: `getFallbackReply(key)` → 替代所有硬编码中文兜底 (8 个 key)
-
-### 2.4 窗口感知主动搭话 ★ 核心机制
-
-桌宠**监控当前前台窗口标题**（通过 Windows API 或 macOS AppleScript），当用户在同一窗口停留足够时间后，触发 AI 生成一条与当前内容相关的主动消息。
-
-- 用户在看 B站 → 桌宠："Pちゃん又在刷视频？让我也看看嘛～"
-- 用户在写文档 → 桌宠："好认真哦…偶尔也理理我嘛"
-
-### 2.5 动态语气（行为进阶）
-
-Card 的 `#行为进阶` section 用 `whenText` 描述当前语气和互动倾向，随人格设定一起交给模型：
-
-```md
-whenText: 当用户长时间未回复时，语气可以更在意对方，但不要替用户下判断或表现攻击性。
-```
-
-- **人格驱动**：这段文本表达角色在不同互动状态下的语言边界与倾向，不是可执行逻辑
-- **变量配合**：当前变量状态仍会被注入 Prompt，模型结合它和 `whenText` 生成回复
-- **统一注入**：`whenText` 与角色设定、必须遵守规则和变量状态一起由 `buildPrompt` 组装
-
-### 2.6 快捷键召唤/收回 ★ 核心机制
-
-按下全局快捷键（Mac `Control+Command+P` / Win `Control+Alt+P`），桌宠会以 **macOS 神奇缩放特效** 从光标处弹出或缩回。
-
-- **弹出**：窗口从隐藏状态 → 先 `opacity:0` → `show()` → Rust `compute_popup_position`（Cocoa→web坐标转换+clamp+窗口增强）→ 魔法缩放动画
-- **收回**：窗口从可见状态 → 缩放缩回光标 → `hide()` 隐藏窗口 → 恢复到桌面"家"位置
-- **位置记忆**：首次收回时自动保存窗口的"家"位置，后续收回时恢复（窗口隐藏在该位置，无白窗残影）
-- **桌面悬浮**：`NSScreenSaverWindowLevel(1000)` + `canJoinAllSpaces` + `fullScreenAuxiliary` + `orderFrontRegardless`（iTerm 风格升级）
-
-### 2.7 Dock 点击弹出 ★ 新机制
-
-当窗口处于隐藏（收回）状态时，点击 Dock 或任务栏的应用图标，窗口在**屏幕中央**淡入弹出，方便快速找回桌宠。
-
-### 2.8 系统通知（已移除）
-
-macOS 未签名构建下系统通知无法实现：通知插件需代码签名，osascript `display notification` 在 Tauri WebView 沙箱下也无法触发通知中心。**`tauri-plugin-notification` 已整体移除**（Cargo / lib.rs / capabilities / package.json 四处注册，但前端零调用），后续若有新方案再引入。
-
-### 2.9 设置页（独立窗口）
-
-点击标题栏 深蓝像素齿轮按钮打开**独立设置窗口**，所有配置可编辑，部分即时生效，部分重启后生效：
-
-| 设置项 | 说明 | 生效时机 |
-|--------|------|----------|
-| AI 接口 | 端点/密钥/模型/上下文数/默认人格 | 即时生效（覆盖值动态读取）|
-| 人格切换 | 启用人格系统 / 选择人格卡（热插拔，同时只开一个）| 即时生效 |
-| 窗口监控 | 停留秒数/防抖/冷却/同页冷却 | 即时生效（覆盖值动态读取）|
-| 桌面后端 | 轮询间隔/暂停额外/等待超时 | 即时生效（覆盖值动态读取）|
-| 日志级别 | debug/info/warn/error | 即时生效（覆盖值动态读取）|
-| 弹窗位置 | 跟随光标 / 固定位置（拖动窗口自动保存）| 即时生效 |
-| 弹窗大小 | 自定义宽高 + 预览 + 拖动窗口实时同步（也可拖动主窗口边缘实时调整）| 即时生效 |
-| 快捷键录制 | 录制自定义组合键 | 即时生效 |
-| 音效选择 | 每个事件下拉选择音效库中的音效（或关闭）+ 恢复默认按钮 | 即时生效 |
-| Profile 管理 | 切换/复制/导出/删除/导入 + 恢复默认资源（用随包种子覆盖内置 Profile / 人格卡 / Skill）| Profile 与 Skill 即时生效，人格卡需重启 |
-| 工具配置 | Bash 白名单编辑(逐行) / 文件写开关 | 即时生效 |
-| MCP 配置 | 启用开关 / 服务器列表(添加/编辑/删除, stdio/sse) / JSON 导入导出 | 需重启 |
-| Skill 配置 | 启用开关 / 已加载列表 / 上传 .md 添加 / 删除 | 需重启 |
-| CONFIG 导入导出 | 导出当前覆盖值为 YAML 文件 / 上传 YAML 导入覆盖层 | 导入后刷新 |
-| **保存后** | **窗口不自动关闭**，显示"已保存"提示 3 秒后消失 | — |
-
----
-
-## 3. 交互方式
-
-| 操作 | 方式 | 说明 |
-|------|------|------|
-| 拖拽窗口 | 标题栏拖拽（data-tauri-drag-region） | 移动桌宠位置 |
-| **切换会话** | 聊天面板顶部标签页 | 切换会话，自动保存当前会话 |
-| **新建会话** | `+` 按钮 | 归档当前会话到 sessions/，创建新会话 |
-| **关闭会话** | 标签页 `×` 按钮 | 归档并删除会话（至少保留1个） |
-| **会话恢复** | 启动时 | 自动恢复上次活跃会话的所有消息 |
-| **调整面板宽度** | 拖动角色/聊天之间的分割线 | 自动写入运行时 CONFIG |
-| 打开/关闭聊天 | 标题栏 💬 按钮 | 聊天面板展开/收起 |
-| 设置 | 标题栏 深蓝像素齿轮按钮 | 独立窗口：AI接口/窗口监控/弹窗/音效/快捷键/工具/MCP/Skill等全部CONFIG可编辑 + 导入导出 |
-| 输入聊天 | 聊天面板底部输入框 + Enter | 发送消息给角色 |
-| **右键选中文字** | 右键选中文字 | 显示自定义右键菜单，仅"复制" |
-| 右键空白区域 | 右键 | 禁用默认菜单 |
-| **隐藏到托盘** | 标题栏 ✕ 按钮 | 窗口隐藏到系统托盘，单击托盘图标恢复 |
-| **快捷键召唤** | `Ctrl+Cmd+P` (Mac) / `Ctrl+Alt+P` (Win) | 桌宠弹出/收回到光标位置 |
-| **Dock 点击** | 点击应用图标 | 窗口隐藏时在屏幕中央弹出 |
-| **F12 调试命令** | DevTools Console | 见下方 |
-
-### 3.1 快捷键召唤/收回机制
-
-全局快捷键 `Control+Command+P`（Mac）/ `Control+Alt+P`（Win）触发桌宠的弹出/收回切换：
-
-**弹出**（窗口隐藏 → 可见）：
-1. 先设 `opacity:0`（防白窗闪烁）→ `show()` → 若最小化则 `unminimize()`
-2. 调用 Rust `compute_popup_position`：获取光标 + 屏幕 → Cocoa→web 坐标转换（Y轴翻转）→ 窗口居中 clamp → 返回 `(win_x, win_y, cursor_x, cursor_y)` 全 web 坐标
-3. 前端直接 `setPosition(win_x, win_y)` + `transformOrigin = (cursor_x-win_x, cursor_y-win_y)`，不做任何坐标换算
-4. 设置窗口到用户弹窗大小（默认 448×272）
-5. 以光标相对位置为原点播放神奇缩放动画（scale 0→1, 350ms cubic-bezier 弹性曲线）
-6. 播放轻快上行弹出音效
-7. `focusInput()` 自动聚焦输入框，可直接打字
-
-**收回**（窗口可见 → 隐藏）：
-1. 首次收回时保存窗口当前桌面位置作为"家"
-2. 调用 Rust `get_cursor_position` 获取光标位置（已统一为 web 坐标系，macOS 端已做 Cocoa→web Y轴翻转）
-3. 以光标为原点播放反向缩放动画（scale 1→0, 250ms ease-in 曲线）
-4. **先 `hide()` 再清除样式**（零白色残影，配合 `html,body{background:transparent}` 消除浏览器默认白底）
-5. 恢复窗口到"家"位置（隐藏状态）
-6. 播放温柔下行收回音效
-
-**Dock 点击弹出**：
-1. 监听 `onFocusChanged` 事件
-2. 仅在 `isRetracted && !isAnimating` 时触发
-3. `opacity:0` → `show()` + `unminimize()` → 屏幕中央 + 淡入动画
-4. `focusInput()` 聚焦输入框 + 播放弹出音效
-
-**窗口悬浮**（iTerm 风格）：
-- `tauri.conf.json`: `windows: []` — 清空，由 Rust 完全接管窗口创建
-- `ActivationPolicy::Accessory` — 在窗口创建**之前**设置，隐藏 Dock 图标（等效 LSUIElement=true）
-- `create_main_window` — Rust 手动创建窗口（transparent + alwaysOnTop + visibleOnAllWorkspaces）
-- `enhance_to_iterm_style` — iTerm 风格增强：`NSScreenSaverWindowLevel(1000)` 层级 + `canJoinAllSpaces | fullScreenAuxiliary | stationary | ignoresCycle | transient` + `orderFrontRegardless` + `activateIgnoringOtherApps`；Windows 端 `HWND_TOPMOST`
-- 每次 `compute_popup_position` 调用都重新增强一次，确保全屏 Space 可靠性
-- `canJoinAllSpaces` — 跟随到所有 macOS 桌面/Spaces
-- `visibleOnAllWorkspaces` + `alwaysOnTop` — Tauri 配置层面兜底
-
-**动画特性**：
-- `transform-origin` 动态设定为光标相对于窗口的坐标，实现"从光标处生长/缩回"效果
-- 弹出使用 `cubic-bezier(0.34, 1.56, 0.64, 1)` 弹性缓出（macOS 神奇效果）
-- 收回使用 `cubic-bezier(0.36, 0, 0.66, -0.56)` 加速缩入
-- 动画期间设 `isAnimating` 锁，防止重复触发
-
-### 3.2 聊天命令（统一 Slash 系统）
-
-在聊天框输入 `/` 会弹出下拉框，显示所有可用命令及简介。支持键盘导航（↑↓选择 + Enter确认 + Esc关闭）和鼠标点击。
-
-所有命令统一通过 `src/services/engine/slash/` 系统注册和执行：
-
-| 命令 | 说明 |
-|------|------|
-| `/help` | 显示所有可用命令 |
-| `/clear` | 归档当前会话并清空对话 |
-| `/compact` | 手动触发上下文压缩 |
-| `/memory clean` | 清理所有长期记忆 |
-| `/smile` | 切换表情为 😊 微笑 |
-| `/sleep` | 切换表情为 😴 困倦 |
-| `/gaoo` | 切换表情为 😠 生气 |
-| `/chu` | 切换表情为 💋 飞吻 |
-| `/superchat` | 切换表情为 💰 SC感谢 |
-| `/business` | 切换表情为 💼 业务洽谈 |
-| `/you` | 切换表情为 😏 毒舌 |
-| `/win open` | 打开 Windows 模拟器彩蛋 |
-| `/win close` | 关闭 Windows 模拟器 |
-
-**命令执行流程**：
-```
-用户输入 / → ChatPanel 下拉框出现 → 继续输入过滤 → 选中确认
-  → SlashCommand.execute() → 表情切换(emit事件) / 文本回复(pushAssistantMessage)
-  → 不调 AI，纯本地执行
-```
-
-**未注册的 / 开头文本**（如 `/etc`）会透传给 AI 正常对话。
-
-### 3.3 F12 控制台调试命令
-
-右键桌面窗口 → Inspect → Console：
-
-```js
-CharacterService.switchCharacter("pchan")  // 切换角色
-__cooldown.isCoolingDown()                 // 冷却状态
-__cooldown.setCooldown(sec)                // 设置冷却时长
-__cooldown.resetCooldown()                 // 重置冷却
-__testAI("哔哩哔哩")                        // 手动触发 AI 主动消息
-__memory.list()                            // 记忆列表
-__memory.search("关键词")                   // 搜索记忆
-__memory.consolidate()                     // 手动触发记忆整理
-```
-
----
-
-## 4. 角色系统
-
-### 4.1 人格卡（Character Card）
-
-角色人格通过 Markdown 文件定义，运行时位于 `data_root/personality/cards/`。修改后重新扫描即可生效。所有人格卡使用统一模板（YAML frontmatter + 结构化章节）。
-
-人格卡在设置面板中可配置开关（同时只能开一个或不使用，用默认人格），做到随时开关、热插拔。
-
-| 角色 ID | 名称 | 性格 |
-|---------|------|------|
-| `angelkawaii` | KAngel | 甜蜜活泼女友 + 深层病娇（默认） |
-| `ame` | Ame | 冷静严肃管家型 AI |
-| `pchan` | P酱 | 慵懒电竞少女 |
-
-### 4.2 KAngel 人格完整设计（angelkawaii.md）
-
-**核心设定**：日本网络偶像 KAngel（Ame Kawakami）与用户进行一对一视频通话。她视用户为最重要的人。
-
-**人格分层**（由 `unansweredCount` 驱动）：
-
-| 计数 | 状态 | 行为 |
-|------|------|------|
-| 0 | 甜蜜女友 | 活泼撒娇、亲密 tease、像正常情侣视频 |
-| 1 | 轻微不满 | 带撒娇的抱怨、温柔索取注意力 |
-| 2 | 占有欲上升 | 明显在意和警告、语气变重 |
-| ≥3 | 极端病娇 | Monika 式 meta 执念、打破第四墙、精神威胁 |
-
-**人格界限（boundary）**联动提示音：
-- boundary=2~3 表层 → 轻快叮咚
-- boundary=4 中层 → 轻微颤音
-- boundary≥5 深层 → 紊乱噪音+降调
-
-**输出规则**（硬约束）：
-- 只输出纯对话文字，无叙述、无动作描写、无心理描写
-- 绝不用括号（除 kaomoji ♡ ～）
-- 永不用星号/引号包裹
-- 永不提及 AI、prompt、角色卡等元信息
-
----
-
-## 5. 窗口监控机制
-
-```
-Rust 后台线程 ──(轮询间隔)──→ Win32/osascript 获取前台窗口标题
-                                      │
-                                      │ Tauri Event "window-changed"
-                                      ▼
-                              listener.ts
-                                      │
-                          ┌───────────┴───────────┐
-                          │                       │
-                   停留 ≥ staySeconds?      标题含表情关键词?
-                    (默认 60s)                (如 "哔哩哔哩")
-                          │                       │
-                    冷却检查通过?             matchExpression()
-                    同页面冷却?                    │
-                          │                       │
-                          ▼                       ▼
-                    agent/active.ts           sprite 表情切换
-                    sendActiveMessage()       (无冷却限制)
-                          │
-                    → runPiAgentTurn(isActiveMessage: true)
-                    → 思考强度: auto→low (主动搭话无需深度推理)
-                    → 上下文不带工具声明 (纯闲聊)
-                    → AI 生成简短口语化回复
-                          │
-                    pushAssistantMessage
-                    + incrementUnanswered
-                          │
-                    ChatPanel 显示
-```
-
-### 5.1 冷却与并发控制
-
-| 机制 | 说明 |
-|------|------|
-| **全局冷却** | 触发一次后，`cooldownMs`（毫秒，默认 5000）内不再触发；同时暂停窗口监控 |
-| **同页面冷却** | 同一页面内容重复出现时，`samePageCooldownMs`（毫秒，默认 7800）内不再触发 |
-| **AI 并发锁** | 一次只能有一个 AI 请求（sendMessage + generateActiveMessage 共用），带 `safetyTimeoutMs`（30s）安全超时 |
-| **窗口防抖** | 窗口切换后 `settleMs`（2s）内不判定为新窗口停留 |
-| **触发后重置** | 主动消息触发后重置停留计时 + 清空当前窗口标题，防止冷却结束立即再次触发 |
-
----
-
-## 6. 提示音系统
-
-### 6.1 统一音效注册中心
-
-所有音效集中在 `src/services/audio/registry.ts`，不依赖外部音频文件，用 Web Audio API `OscillatorNode` 实时合成。AudioContext 异步初始化（await resume），确保 macOS WebView 下音效可靠播放。每个 `play()` 函数和 `playEventSound()` 均为 async。
-
-**音效库**（`soundLibrary`，所有可用音效）：
-
-| 音效ID | 名称 | 音色 |
-|--------|------|------|
-| `popup_up` | 轻快上行 | 双音 sine（800→1200Hz + 1000→1600Hz）|
-| `retract_down` | 温柔下行 | 双音 sine（1400→900Hz + 1100→600Hz）|
-| `welcome_chord` | 温暖和弦 | C5→E5→G5→C6 依次发声 |
-| `send_short` | 短促上行 | sine（1200→1600Hz, 80ms）|
-| `reply_ding` | 柔和叮咚 | 双音 sine（880+1320Hz）|
-| `surface_light` | 轻快提示 | 双音 sine（1600+1800Hz）|
-| `middle_tremolo` | 轻微颤音 | 下降 sine + LFO 6Hz 颤音 |
-| `deep_noise` | 紊乱噪音 | 方波+白噪音+降调 |
-| `pop_short` | 电子弹跳 | 方波快速上跳 400→2400Hz |
-| `drop_short` | 水滴 | 高音正弦衰减 2400→800Hz |
-| `chime_short` | 风铃 | 三角波双音 1600+2400Hz |
-| `tick_short` | 咔哒 | 极短低频点击 |
-| `arpeggio_mid` | 琶音上行 | E5→G5→C6→E6 依次升阶 |
-| `wave_mid` | 柔波 | 正弦波 + LFO 振幅调制 |
-| `sparkle_mid` | 星尘 | 多高频粒子随机散射 |
-| `resonance_mid` | 共鸣 | 五度和声长鸣 |
-| `wind_long` | 风潮 | C4→E4→G4→C5 和弦渐入渐出 |
-| `crystal_long` | 水晶 | C6→E7 高频依次闪烁 |
-| `warm_long` | 暖阳 | 锯齿波 A3→E4 + 低通滤波扫频 |
-| `bell_long` | 余韵 | 六层泛音 C5→G6 钟声衰减 |
-| `horror_stab` | 惊悚短音 | 不协和小二度刺耳短促 |
-| `heartbeat` | 心跳 | 双低频脉冲 80→40Hz |
-| `dread_rise` | 渐近恐惧 | 半音阶上升 + 噪声渐强 |
-| `ghost_whisper` | 鬼魅低语 | 滤波调制 + 泛音飘忽 |
-| `cosmic_float` | 宇宙飘浮 | 正弦缓慢飘移 + 泛音点缀 |
-| `pulse_rhythm` | 脉冲 | 三角波节奏性低频脉冲 |
-| `raindrop` | 雨滴 | 15音下行级联水珠 + 氛围底音 |
-| `music_box` | 八音盒 | 三角波旋律弹拨 + 泛音回响 |
-| `none` | 关闭 | 静音 |
-
-**音效事件**（`soundEvents`，可配置的事件 → 音效映射）：
-
-| 事件 key | 标签 | 默认音效 |
-|----------|------|----------|
-| `welcome` | 启动欢迎 | `welcome_chord` |
-| `send` | 发送消息 | `send_short` |
-| `reply` | 收到回复 | `reply_ding` |
-| `popup` | 弹窗出现 | `popup_up` |
-| `retract` | 窗口收回 | `retract_down` |
-| `surface` | 表层提示 | `surface_light` |
-| `middle` | 中层提示 | `middle_tremolo` |
-| `deep` | 深层提示 | `deep_noise` |
-
-### 6.2 统一播放入口
-
-```ts
-// 播放指定事件的音效（按用户分配，回退默认）
-import { playEventSound } from "@/services/audio/registry";
-playEventSound("popup");   // 弹窗音效
-playEventSound("send");    // 发送音效
-
-// 人格界限联动（根据 boundary 自动选表/中/深层）
-import { playNotificationByBoundary } from "@/services/audio/registry";
-playNotificationByBoundary();
-```
-
-### 6.3 音效自定义
-
-用户可在设置面板为每个事件独立选择音效库中的音效（或"关闭"），分配保存在运行时 CONFIG 的 `appearance.soundAssignments`。人格界限（表层/中层/深层）也可更换音效，触发机制保持系统联动。
-
----
-
-## 7. Windows 模拟器（彩蛋）
-
-键入 `open win` 打开一个**像素风 Windows XP/7 风格模拟器**窗口：
-
-- **启动流程**：BIOS → Boot Logo → 登录画面 → 桌面
-- **桌面功能**：像素图标（EgoSearcher、Internet、文件夹、Twitter、YouTube等）
-- **任务栏**：Start 菜单、任务栏按钮、系统托盘、实时时钟
-- **可操作**：点击图标选中/高亮，Start 菜单弹出关闭按钮
-
----
-
-## 8. 配置系统
-
-> Profile 架构已落地：主题、角色和音效从 `CONFIG.yaml` 移入自包含 Profile 文件夹。
-
-### 8.1 CONFIG.yaml — 功能配置（4域）
-
-| 配置域 | 控制内容 |
-|--------|---------|
-| `general` | `mode.assistant` / `popup` / `shortcut` / `logging` / `desktop` |
-| `ai` | provider / endpoint / apiKey / model / thinking / personality / loop / memory / lock / windowMonitor / safety |
-| `tools` | bash(whitelist) / file(writeEnabled) / mcp(servers+builtin) / skill |
-| `appearance` | `activeProfile`、`effectMode`（off/parallax/dof，互斥）和音效分配；逐层参数、景深参数与素材只属于 Profile |
-
-### 8.2 Profile 系统 — 主题/角色/音效（自包含闭包）
-
-每个 Profile 是一个独立文件夹，运行时位于 `data_root/profiles/<id>/`，**拖入即用，零外部引用**。默认 Profile 随包位于 `src-tauri/resources/defaults/profiles/`，只在首次启动时复制到运行时目录。导出 = 打包整个文件夹为 Zip。
-
-#### 目录结构
-
-```
-<profile-id>/                # 默认提供: sugar-pink / dark-purple / glass / yuki
-├── profile.yaml             # 主题色(18中文键) + 预设类型 + 字体 + 音效映射 + 灵动图层参数
-├── character.yaml           # 角色动画帧定义 + 表情关键词规则
-├── materials/               # 灵动图层素材，按 L0–L4 分层；某层没有文件时该层跳过
-│   ├── L0/bg_base.png       #   场景底背景
-│   ├── L1/…                 #   人物背景（可选，如 yuki 的 rain_mid.png）
-│   ├── L2/body.png          #   角色立绘（核心层，getBodyUrl() 固定读这个路径）
-│   ├── L3/…                 #   覆盖层（可选，如 yuki 的 highlights.png）
-│   └── L4/…                 #   前景层（如 sugar-pink 的 shield_gold.png）
-├── frames/                  # 序列帧 PNG（自包含，无外部引用）
-├── fonts/                   # 像素字体文件（可选，缺失回退默认）
-└── ui/                      # UI素材（可选，缺失回退默认）
-```
-
-#### 角色展示效果：灵动图层 / 景深（互斥）
-
-两种效果只能开一个，由运行时 CONFIG 的 `appearance.effectMode`（`off` / `parallax` / `dof`）决定 ——
-用单字段枚举而不是两个开关，否则可能出现两个同时为真的状态。设置页的「角色展示效果」是三选一。
-
-两者的**素材与参数各自独立**，都保存在当前 Profile 的 `profile.yaml`：
-
-| 模式 | Profile 字段 | 素材 |
+| 对象 | 用户可定制内容 | 与其他对象的关系 |
 |---|---|---|
-| 灵动图层 | `theme.parallax.{intensity, layers}` | 五层，`materials/L0` ~ `L4` |
-| 景深 | `theme.depthOfField` | 单张，`materials/` 下任意图 |
-
-**图层编辑器按当前模式显示不同面板**：灵动图层显示五层列表 + 逐层属性，景深显示单张素材 + 模糊参数 + 焦点区编辑。
-
-#### 灵动图层系统
-
-五层景深视差效果，各层跟随鼠标以不同灵敏度偏移。使用 **直接映射（computed 响应式）**，零惯性指哪打哪，无弹簧/速度/RAF 累积。
-
-| 层 | 目录 | 素材 | 灵敏度 | 说明 |
-|----|------|------|:---:|------|
-| L0 底背景 | `materials/L0/` | `bg_base.png` | 0.2 | 最远，偏移最少，阴影最重 |
-| L1 人物背景 | `materials/L1/` | 无 | 0.5 | 光环/特效底座 |
-| L2 角色本体 | `materials/L2/` | `body.png` | 0.8 | 核心层，帧动画，始终启用 |
-| L3 覆盖层1 | `materials/L3/` | 无 | 1.2 | 前景光效/粒子 |
-| L4 覆盖层2 | `materials/L4/` | `shield_gold.png` | 1.6 | 最近，偏移最多 |
-
-- **素材按层分目录** (`materials/L0/` ~ `materials/L4/`)，编辑器按层预览对应目录，上传自动写入 `materials/L{i}/` 形成闭包
-- **即时预览**：上传后用 `URL.createObjectURL()` 即时显示，不等 dev server 识别
-- **深度缩放**：编辑器预览和实际渲染一致使用 `depthScale = lerp(1.02, 0.98, depth)`
-- **直接映射**: Vue `computed` 直接响应 `globalCursor` ref 变化，无需 RAF 循环
-- **五层始终渲染**: DOM 中 5 个 `div.pl-layer` 始终存在，`display:none` 由 `layerStyles` computed 控制
-- **3D 增强**: CSS `drop-shadow` + `brightness/contrast/saturate` 按深度调整
-- **配置**: `profile.yaml` → `theme.parallax`；设置页 → 效果模式与全局强度；**图层编辑器弹窗** → 逐层交互式编辑（拖拽位置/属性调整/锁定/隐藏）
-- **持久化**: 图层编辑器编辑当前 Profile，并保存到该 Profile 的 `profile.yaml`；运行时 CONFIG 只保存效果模式与强度
-- **核心文件**: `src/composables/useParallax.ts`（引擎，导出 `layerDepth()`）+ `StreamView.vue`（五层渲染）+ `src/components/LayerEditor.vue`（编辑器弹窗）
-
-#### 景深系统
-
-单张素材做出 iOS 透视壁纸那样的效果：**背景虚化 + 主体清晰 + 两层跟光标错位移动**。
-
-```text
-同一张图渲染多次
-  背景层  整图 + blur(blur px) + 背景滤镜，乘固定边缘补偿系数；bgSensitivity 控制位移
-  焦点层 × N  各自被自己的椭圆 mask 裁出保持锐利，各自带 sensitivity
-```
-
-**每个焦点区是一个独立层**，各自遮罩、各自灵敏度 —— 给不同焦点区不同的值就形成
-层级：近处动得多、远处动得少。合成在一个层里它们只能同进同退，做不出层次。
-
-**位移差才是深度感的来源**。只做模糊不做位移只是一张「糊了一片」的静态图。
-位移公式与灵动图层共用同一套基准，手感一致。
-
-- **焦点区是椭圆**，用 `radial-gradient` 一行 CSS 做遮罩，`feather` 控制边缘过渡宽度；多个焦点区就是多个独立的层
-- **无焦点区**时整张图统一模糊，锐利副本不参与渲染 —— 又是一种玩法。首次选图会自动给一个居中椭圆，否则刚选完就是一片糊，容易以为出错
-- **焦点区坐标全部用百分比**（`x`/`y` 是中心，`rx`/`ry` 是半径），换窗口尺寸不错位
-- **`scale` + `offsetX/Y` 是取景**：图与画布尺寸不合时缩放并平移，超出部分由舞台的 `overflow: hidden` 裁掉。两层共用同一组取景参数才能对齐；模糊层另乘一个固定的边缘补偿系数（常量，不进配置）
-- **两套坐标系必须换算**：焦点椭圆存在**素材坐标**里（缩放后仍贴着主体），而拖拽发生在**画布坐标**里。`imageToCanvas()` / `canvasToImage()` 负责换算，漏掉它就会出现「圈和实际清晰区分家」
-- **编辑器交互**：画布拖动默认是**平移素材取景**；勾选「拖动焦点区」后才改为在椭圆内拖动移动它。不靠自动命中判断 —— 那会让「想挪图」和「想挪圈」互相抢手势。**焦点区大小只由右侧滑块决定**，不在画布上拖出来
-- **核心文件**: `src/composables/useDepthOfField.ts`（样式与遮罩计算，编辑器与渲染共用，所见即所得）
-- **Rust**: `cursor.rs` → `spawn_cursor_tracker` 后台线程 ~60fps emit；`profile_cmd.rs` → `profile_file_write` 写入当前运行时 Profile，`list_profile_files` 只扫描该目录
-- **素材来源**: 默认 Profile 的种子随包提供，首次启动复制到运行时目录；之后所有素材和配置只读写该运行时目录
-
-#### 默认 Profile
-
-| Profile ID | 名称 | 预设 | 特点 |
-|-----------|------|:---:|------|
-| `sugar-pink` | 糖糖粉 | pink | 粉色系，温暖甜美，默认主题 |
-| `dark-purple` | 暗夜紫 | dark | 暗紫色系，护眼低亮 |
-| `glass` | 透明玻璃 | glass | 半透明毛玻璃，全窗口透明+16px模糊 |
-| `yuki` | yuki | glass | 结城理主题，蓝色透明玻璃与五层雨夜图层 |
-
-#### 色彩系统
-
-**18个中文键** → 算法派生 → **50+ CSS 变量**。不再逐一定义每个变量，而是通过 `injectCssVars()` 智能推导：
-
-```yaml
-# profile.yaml → theme.colors (18键)
-背景: "#fce4ec"        卡片背景: "#2a1020"    聊天背景: "#fce4ec"
-边框: "#a01a5a"        分割线: "#e8a0b0"      输入边框: "#6a4060"
-主文字: "#333"         亮文字: "#f0e0f0"      粉色文字: "#f0a0c0"
-暗文字: "#8a6080"      强调色: "#c4276f"      强调悬浮: "#e84a8a"
-标题栏渐变起: "#f7a8c4"  标题栏渐变止: "#c4276f"  标题栏文字: "#fff"
-表面色: "#4a2540"      深表面色: "#3e1a2e"    遮罩: "rgba(30,8,16,0.7)"
-透明背景: "rgba(252,228,236,0.25)"  模糊度: "16px"  # ← 玻璃预设专用
-```
-
-**派生规则**：
-- 强调色 → `强调色.replace("rgb","rgba").半透明` = 浅强调色
-- 深表面色 → 通知卡片/下拉菜单/历史面板等半透明变体
-- 标题栏渐变色 → CSS gradient `linear-gradient(起,止)`
-- 粉色文字 → 滚动条滑块色 + hover/drag 不透明度渐变
-
-#### 加载流程（懒加载）
-
-```
-启动 → initProfiles()
-  ├── 读取 appearanceConfig.activeProfile（默认 "sugar-pink"）
-  ├── loadProfile(id) → fetch profile.yaml + character.yaml
-  │     ├── character.yaml 加载失败? → 回退到 DEFAULT_PROFILE("sugar-pink")
-  │     └── 帧路径: 当前 profile 首选，缺失回退默认
-  └── activateProfile(id) → injectFonts() + injectCssVars()
-
-Profile 切换或用户 Profile 保存 → flush CONFIG/Profile → emit("deskpet-profile-updated")
-  → 各 WebView 重新加载并激活目标 Profile → StreamView 重载五层
-
-设置页打开 →
-  ├── discoverAllProfiles()   # 扫描 data_root/profiles 列表
-  └── ensureProfileLoaded(id) # 按需加载，切换时调用
-```
-
-**关键设计**：启动只加载 CONFIG 指定的 1 个 profile，不扫描全部。设置页才按需 `discoverAllProfiles()` + `ensureProfileLoaded()`。
-
-#### 玻璃透明效果
-
-玻璃预设 (`preset: glass`) 实现全窗口透明+毛玻璃模糊：
-
-1. **Tauri 层**：主窗 + 设置窗均 `transparent: true`（Rust 创建时已设置）
-2. **HTML 层**：`settings.html` → `html,body{background:transparent}`
-3. **CSS 层**：`injectCssVars()` 检测 `preset === "glass"` → 注入 `#root, #s-root { backdrop-filter: blur(模糊度); background: 透明背景 }`
-
-透明链路：`桌面壁纸 → Tauri透明窗 → CSS半透明背景 → backdrop-filter模糊 → 角色+UI可见`
-
-#### 素材回退
-
-Profile 缺失的素材自动回退到 `DEFAULT_PROFILE`（sugar-pink）：
-
-| 缺失素材 | 回退来源 |
-|----------|---------|
-| `body.png` | `/profiles/sugar-pink/body.png` |
-| `character.yaml` | `/profiles/sugar-pink/character.yaml` |
-| `frames/` 中某帧 | `/profiles/sugar-pink/frames/xxx.png` |
-| `fonts/` 字体 | sugar-pink 的对应字体 |
-| `ui/` 资源 | `/profiles/sugar-pink/ui/xxx.png` |
-
-#### 用户 Profile 管理
-
-通过 `io.ts` + Rust `profile_cmd.rs` 实现：
-
-| 操作 | 实现 |
-|------|------|
-| **导出** | `exportProfileZip(id)` — 前端只传 profileId；Rust 遍历目录打包（`zip` crate）→ 原生「另存为」对话框（`tauri-plugin-dialog`）→ 写盘并回传完整路径。**不在 Rust 侧收前端字节**：Profile 约 28MB / 229 文件，经 IPC 会序列化成上百 MB 的 JSON。用户取消返回 `Ok(None)`，不算失败 |
-| **导入** | `importProfileZip(file)` — 前端 JSZip 解包 → Tauri invoke `profile_file_write` → 写入 `{data_root}/profiles/` |
-| **复制** | `cloneProfile(sourceId, existingIds)` — Rust `profile_clone` 复制目录树，副本 ID 取最小未占用的 `copy{n}`，并删除 `meta.preset` |
-| **删除** | `deleteProfile(id)` — 调用 `profile_delete` 删除运行时目录 |
-| **恢复默认资源** | `restoreDefaultResources()` — Rust `restore_default_resources` 用随包种子**覆盖**运行时同名 Profile 与人格卡。种子只含内置资源，用户自建的 Profile / Card 不受影响；用于找回误删的内置资源或同步随包更新。会丢弃对内置资源的改动，因此必须走确认弹窗 |
-| **存储** | 默认种子 → `src-tauri/resources/defaults/profiles/`；运行时 Profile → `{data_root}/profiles/` |
-
-所有操作返回统一的 `ProfileOpResult { ok, message, detail?, cancelled? }`，
-Service 层不弹窗；由 `AppearanceTab` 经 `services/dialog` 的 `showSuccess` / `showFailure`
-提示用户 —— 成功带完整路径且可一键复制。
-
-#### 设置面板外观页
-
-单页扁平布局（无子标签）：
-
-```
-预设切换: [🌸粉色] [🌙暗夜] [🪟玻璃]  ← 一键切换
-📦 Profile                [↺ 恢复默认] [🔄 刷新] [📥 导入]
-  ├ 每行一个 Profile，点整行切换为当前
-  └ 每行: [复制] [导出] [🗑 删除]（删除前二次确认）
-预览: 当前 Profile 的立绘 + 角色名 + 动画数
-配色: 18个颜色选择器（中文标签）
-字体: UI字体 / 聊天字体 下拉选择
-音效: 音量滑块 + 事件→音效映射
-```
-
----
-
-## 9. 技术架构
-
-### 9.1 系统分层
-
-```
-┌──────────────────────────────────────────────────────────┐
-│  UI 层 (Vue 3)                                            │
-│  StreamView(角色动画) / ChatPanel(对话) / TitleBar         │
-│  SessionTabs(会话标签) / SettingsPanel(设置) / DebugBar    │
-│  winsim(Windows模拟器彩蛋)                                  │
-├──────────────────────────────────────────────────────────┤
-│  人格中间件 (PetPersonalityMiddleware)                      │
-│  ┌──────────────────────────────────────────────────┐    │
-│  │ 思考中→表情  │ 调工具→角色化语言  │ 结果→自然解读    │    │
-│  │ 被拦截→撒娇抱怨 │ 出错→傲娇吐槽  │ 完成→开心表情   │    │
-│  └──────────────────────────────────────────────────┘    │
-├──────────────────────────────────────────────────────────┤
-│  核心引擎 (CoreEngine)                                     │
-│  PreProcessor → SessionEngine → AgentLoop                │
-├──────────────────────────────────────────────────────────┤
-│  上下文引擎                    │  工具系统                  │
-│  SystemPrompt + Memory         │  Skill → MCP/Local       │
-│  + 工具声明 + 摘要压缩          │  统一 ToolRegistry        │
-│  + 思考强度提示                 │  按模式动态注册            │
-├──────────────────────────────────────────────────────────┤
-│  安全控制 (SafetyControl) —— 所有工具调用强制经过            │
-│  四级安全(SAFE/NORMAL/DANGER/NOWAY) + 三策略 + 确认弹窗       │
-│  全局默认(设置页) + 会话覆盖(仪表盘)  【✅ 已实现】           │
-├──────────────────────────────────────────────────────────┤
-│  平台桥接 (Rust) —— 窗口/系统调用/后台轮询                  │
-│  Pi read/write/edit/bash → Tauri ExecutionEnv              │
-│  system_info / app_open / clipboard / mcp_bridge【已实现】   │
-└──────────────────────────────────────────────────────────┘
-```
-
-### 9.2 模块目录结构
-
-```
-src/services/
-├── engine/                # ★ 核心引擎
-│   ├── index.ts           # 统一导出
-│   ├── preprocessor.ts    # Slash 命令分流 + 规范化/过滤（去重状态由入口按会话持有）
-│   ├── session.ts         # 会话状态机 (WAITING→PRE→GENERATING→EXECUTING)
-│   ├── planner.ts         # Plan 编排: 复杂度检测 + LLM 拆解 + 子代理逐步执行
-│   ├── plan-confirmation.ts # Plan 确认 Promise 桥接
-│   ├── compactor.ts       # 请求前结构化摘要、CAS边界与完整回合恢复
-│   ├── pi/                # ★ Pi Agent Core Runtime
-│   │   ├── runtime.ts     # 唯一多轮 Agent Runtime: Loop + Pi 原生工具门禁 + 三阶段 hash 快照
-│   │   ├── model-gateway.ts # pi-ai 模型描述/流入口 + completePiText 一次性文本调用
-│   │   ├── net-guard.ts   # Provider 协议白名单与响应体上限 (零依赖)
-│   │   └── index.ts
-│   ├── runtime/           # 运行时协议 (零依赖 barrel)
-│   │   ├── types.ts       # MessageMeta / SessionEvent / QueueEntry / PromptSnapshot …
-│   │   ├── snapshot.ts    # 快照构造与脱敏 hash
-│   │   ├── trace.ts       # 只读 trace 总线
-│   │   ├── queue.ts       # RuntimeQueue
-│   │   ├── agent-slot.ts  # 按 sessionId 的 Agent 槽与 generation
-│   │   └── index.ts
-│   └── slash/             # ★ Slash 命令系统
-│       ├── index.ts / types.ts / registry.ts
-│       └── commands/      # clear / compact / expression / help / memory / win
-│
-├── context/               # ★ 上下文引擎
-│   ├── builder.ts         # 兼容入口: 组装 systemPrompt
-│   ├── kernel.ts          # 六层 block 排序 + token 预算裁剪与记录
-│   ├── projection.ts      # User.md 只读画像投影 + 记忆 block
-│   └── index.ts
-│
-├── personality/           # ★ 人格模块
-│   ├── index.ts
-│   ├── middleware.ts      # ★ 人格中间件 (包裹所有 Agent 阶段, 8 阶段无 retry)
-│   ├── types.ts           # 人格类型定义
-│   ├── registry.ts        # 人格注册表 (neutral 兜底)
-│   ├── loader.ts          # 人格卡 YAML 加载 (扫描运行时 personality/cards/)
-│   ├── emotion.ts         # 情绪映射解析 + Prompt 生成
-│   ├── must-rules.ts      # 必须遵守规则解析
-│   ├── stages-cache.ts    # 阶段文案缓存 + getFallbackReply() / pickActiveGreeting() 兜底
-│   ├── stages-prompt.md   # 阶段文案生成模板
-│   └── variable-pool.ts   # 变量状态 (system/card/interaction/session)
-# 人格卡随包种子在 src-tauri/resources/defaults/personality/cards/，首次启动复制到运行时目录
-# 运行时产物 (stages/{cardId}.json、vars.json) 只写 data_root/personality/，源码树不留副本
-│
-├── agent/                 # Agent 模块
-│   ├── index.ts           # 统一导出
-│   ├── types.ts           # Message / ToolCallRequest 等产品侧消息类型
-│   ├── runner.ts          # sendMessage(): queued 先落盘 → SessionTurnStore → Pi
-│   ├── sub-agent.ts       # 子代理 (fork/team 双模式)
-│   ├── active.ts          # 窗口监控 → 主动搭话
-│   └── memory/            # ★ 记忆与会话持久化 (12 文件)
-│       ├── events.ts / session-files.ts        # 事件序列化 + 原子写入
-│       ├── session-turn-store.ts / queue-events.ts
-│       ├── plan-checkpoint-store.ts            # Plan / Step checkpoint
-│       ├── memory-entries.ts / parsers.ts / io.ts
-│       ├── consolidate.ts                      # 记忆整理 (非自动提取闭环)
-│       ├── provider.ts                         # 空 MemoryProvider (长期召回未接通)
-│       └── types.ts / index.ts
-│
-├── session/               # 会话持久化管理
-│   ├── store.ts           # reactive 状态
-│   ├── manager.ts         # 多会话切换/新建/归档/恢复
-│   ├── persistence.ts / messages.ts
-│   └── index.ts
-│
-├── profile/               # Profile 选择、加载与导入导出
-│   ├── loader.ts          # Profile 解析与默认 UI 回退
-│   ├── io.ts              # 导入导出与 restore_default_resources 桥接
-│   └── index.ts
-│
-├── tool/                  # ★ 工具系统
-│   ├── index.ts / types.ts
-│   ├── registry.ts        # ★ 统一注册表 (按 mode 注册/查询/注销)
-│   ├── router.ts          # 工具路由 + opId/审计 + 超时与取消 + 结果截断
-│   ├── local/             # 双模式基础工具 (Pi Agent Core 适配)
-│   │   ├── pi-tools.ts    # Pi read / write / edit / bash
-│   │   └── system.ts      # system_info
-│   ├── pi/                # Pi Harness 与 Tauri 执行环境
-│   │   ├── harness-adapter.ts
-│   │   └── tauri-execution-env.ts
-│   ├── local-extra/       # 助手模式工具 (mode: "assistant")
-│   │   ├── app.ts         # app_open
-│   │   ├── clipboard.ts   # clipboard_read / clipboard_write
-│   │   └── agent-tool.ts  # agent_spawn (fork / team)
-│   └── mcp/               # MCP 集成 (助手模式)
-│       └── manager.ts / client.ts / stdio.ts
-│
-├── skill/                 # ★ Skill (非工具，Pi 渐进披露)
-│   ├── index.ts
-│   └── loader.ts          # 扫描 data_root/skills/ 解析 SKILL.md + Prompt 注入
-│
-├── safety/                # 安全控制
-│   ├── checker.ts         # 四级安全 + 三策略 + deny-first 会话信任 + 危险模式库
-│   ├── confirm.ts         # 确认 Promise 桥接 (runtime ↔ ChatPanel)
-│   └── index.ts
-│
-├── reply/                 # 回复生成器
-│   ├── generator.ts       # RUNTIME_DATA 解析 + 表情/音效映射 + trim + 截断
-│   └── index.ts
-│
-├── window/                # 窗口监控
-│   ├── monitor.ts         # 前后台检测
-│   ├── listener.ts        # Tauri 事件监听 + 冷却
-│   └── index.ts
-│
-├── audio/                 # 音效系统
-│   ├── registry.ts        # Web Audio 合成 + 音效 + 事件映射
-│   ├── context.ts         # AudioContext 管理
-│   ├── effects/           # 音效实现 (basic/horror/long/mid/ping/short/special/surface)
-│   ├── types.ts
-│   └── index.ts
-│
-├── error/                 # 异常体系
-│   ├── format.ts          # 零依赖错误格式化 (formatError / errorCode / summarizeError)
-│   ├── global.ts          # 全局拦截 + DOM 覆盖层
-│   └── index.ts
-│
-├── logger/                # 统一日志 (createLogger, 批量转发 Rust)
-│   └── index.ts
-│
-├── dialog/                # 通用提示 Dialog (服务层单例 + 确认模式)
-│   └── index.ts
-│
-├── boot.ts                # 窗口启动引导 (4 个入口共用)
-├── init.ts                # 统一启动初始化
-├── paths.ts               # BaseDirs 与 runtimePath 初始化
-├── config.ts              # 配置加载 (YAML → 类型化 getter)
-├── cooldown.ts            # 全局冷却 + AI 并发锁
-├── debug.ts               # Debug 状态栏数据
-├── env.ts                 # 平台检测
-├── animation.ts           # 角色动画表情映射
-└── command-handler.ts     # 聊天命令与表情切换
-```
-
-### 9.3 完整数据流
-
-```
-用户消息
-  │
-  ├── agent/runner.sendMessage()
-  │     ├── 并发锁检查 (isAIGenerating)
-  │     ├── PreProcessor → /slash? → 直接返回
-  │     ├── pushUserMessage + resetUnanswered
-  │     │
-  │     └── runPiAgentTurn()
-  │           │
-  │           ├── 思考强度决策 (auto: 闲聊→low / 工具关键词→medium / 复杂关键词→high)
-  │           ├── ContextEngine.build()
-  │           │     ├── 1. 人格 Prompt (card + boundary)
-  │           │     ├── 2. CANDY.md + User.md 注入
-  │           │     ├── 3. 会话记忆注入 (压缩摘要)
-  │           │     ├── 4. 长期记忆检索（当前未自动注入）
-  │           │     ├── 5. 工具声明 (轻量始终带 / 助手L0-L3)
-  │           │     ├── 6. 输出约束 + 助手能力提示
-  │           │     └── 7. 思考强度提示 (low→快速 / high→深入)
-  │           │
-  │           ├── 人格中间件.wrap("thinking") → expression/sound event
-  │           │
-  │           ├── ★ Pi Agent Core 主循环（顺序工具执行，最多 maxToolCallsPerTurn 次）
-  │           │     │
-  │           │     ├── pi-ai OpenAI-compatible stream
-  │           │     │     ├── POST { model, messages, tools?, reasoning_effort? }
-  │           │     │     └── Pi Agent 维护消息与工具回注
-  │           │     │
-  │           │     ├── 无工具调用 → 退出循环
-  │           │     │
-  │           │     ├── 有工具调用:
-  │           │     │     ├── 人格中间件.wrap("executing") → 角色化文案
-  │           │     │     ├── SafetyControl.check(tool, params)
-  │           │     │     │     SAFE→放行 / NORMAL+DANGER→拒绝(轻量)
-  │           │     │     ├── Pi Tool → Harness Adapter → TauriExecutionEnv → Rust IPC
-  │           │     │     ├── 结果回注 → 下一轮循环
-  │           │     │     └── 人格中间件.wrap("done"/"blocked"/"error")
-  │           │     │
-  │           │     └── 达上限或超时 → 终止当前 Pi turn
-  │           │
-  │           ├── 人格中间件.wrap("done") → expression: "chu", sound: "reply"
-  │           ├── MemoryService.recordTurn("assistant") → sessions/*.md
-  │           ├── 下一次请求前 compactSession() → 原文保留 + 原子压缩检查点
-  │           ├── [待接通] MemoryService.forkMemorySupplement()（当前不在正常对话链路）
-  │           └── 返回 { reply, toolCallHistory, effects[] }
-  │
-  ├── ReplyGenerator 后处理 (RUNTIME_DATA/表情/变量校验)
-  ├── pushAssistantMessage → session/store.ts 状态更新
-  └── ChatPanel + StreamView + 音效 展示
-```
-
-**窗口主动搭话路径**：
-```
-Rust monitor → emit("window-changed") → listener.ts
-  → 冷却通过 → agent/active.sendActiveMessage()
-  → runPiAgentTurn(isActiveMessage: true)
-    → 思考强度: auto→low
-    → 上下文: 无工具声明
-    → AI 生成简短口语化回复
-  → pushAssistantMessage + incrementUnanswered
-  → audio.playNotificationByBoundary()
-```
-
-### 9.4 Pi Agent Core 详细说明
-
-#### 循环控制参数
-
-| 参数 | 默认值 | 说明 |
-|------|--------|------|
-| `maxRetry` | 3 | 工具调用/验证失败最大重试次数 |
-| `maxToolCallsPerTurn` | 5 | 单轮最多工具调用链长度 |
-| `toolTimeoutMs` | 30000 | 单个工具执行超时 |
-| `turnTimeoutMs` | 120000 | 整轮总超时 |
-| 共享上下文预算 | 窗口百分比 | schema/输出预留/最大20K压缩余量统一计入；旧contextCompactAt移除 |
-
-#### 状态机
-
-```
-WAITING ──(收到消息)──→ PRE ──→ GENERATING
-   ▲                       │          │
-   │                       │          ├── 纯文本回复 → WAITING
-   │                       │          │
-   │                       │          └── 工具调用 → EXECUTING
-   │                       │               │
-   └────(完成)──────────────┴───────────────┘
-```
-
-#### 上下文与记忆边界
-
-Pi Runtime 当前由 ContextKernel 按 `static → dynamic → profile → memory → transcript → ephemeral` 固定层级生成兼容 `systemPrompt`，静态输入与完整工具schema不截断、未覆盖transcript不静默丢弃，记录完整块的预算分配与淘汰原因。`User.md` 先转换为带来源、版本和 taint 的只读画像 projection；长期记忆经可注入 `MemoryProvider` 召回，默认空实现，并具有取消、超时和 token 预算边界。Runtime 在 `transformContext`、`provider_payload` 和 `provider_usage` 三个阶段发布脱敏 Prompt 快照，记录请求、回合、运行代际以及输入规范化的 hash 改写链。Prompt 历史、会话摘要和异步压缩均显式绑定回合 sessionId。
-
-### 9.5 工具系统详细说明
-
-#### 双模式架构
-
-```
-同一套 Agent Loop（始终运行）
-        │
-  ┌─────┴─────────────────────────────┐
-  │                                   │
-轻量模式 (默认)                   助手模式 (设置中开启)
-  │                                   │
-ToolRegistry:                      ToolRegistry 额外:
-├── pi-read (SAFE，路径分级)       ├── app_open (DANGER)
-├── pi-write (DANGER, 确认)        ├── clipboard_read (NORMAL)
-├── pi-edit (DANGER, 确认)         ├── clipboard_write (DANGER)
-├── pi-bash (白名单/NORMAL)        ├── agent_spawn (NORMAL)【已实现 fork/team】
-└── system_info (SAFE)             └── MCP 工具 (按服务器声明)
-
-Safety: SAFE/NORMAL自动；写入与扩展Bash确认   MCP: 按服务器声明加载
-目录列举走 bash ls；联网能力由 MCP 提供
-Skill 不是工具：清单注入 Prompt，正文由模型用 read 按需加载
-MCP: 不加载
-```
-
-#### 能力对比
-
-| 能力 | 轻量模式 | 助手模式 |
-|------|:---:|:---:|
-| AI 聊天 + 人格系统 | ✅ | ✅ |
-| 窗口感知主动搭话 | ✅ | ✅ |
-| 表情/音效/人格中间件 | ✅ | ✅ |
-| 记忆系统 (长期+短期+整理) | ✅ | ✅ |
-| 读/列文件 | ✅ | ✅ |
-| 系统信息 | ✅ | ✅ |
-| Bash 白名单命令 | ✅ | ✅ |
-| 联网（MCP 服务器） | ❌ | ✅ |
-| 写/编辑文件 | ✅（执行时确认） | ✅（按安全策略确认） |
-| Bash | ✅（白名单自动，其余按风险确认） | ✅（按安全策略确认） |
-| 打开应用 | ❌ | ✅ |
-| 剪贴板操作 | ❌ | ✅ (三端: macOS/Win/Linux) |
-| MCP Server | ❌ | ✅ |
-| Skill (元数据渐进披露) | ✅ 按声明策略 | ✅ |
-| SubAgent (agent.spawn) | ❌ | ✅ (fork/team) |
-| 完整安全确认 UI | ✅（写入/扩展命令） | ✅ (四级+三策略+确认弹窗) |
-
-### 9.6 安全控制
-
-#### 四级安全（已实现）
-
-| 级别 | 标识 | 轻量模式 | 助手模式 |
-|------|:---:|------|------|
-| SAFE | 🟢 | 自动放行 | 自动放行 |
-| NORMAL | 🟡 | 放行(handler二次校验) | 首次确认→会话内信任 |
-| DANGER | 🟠 | 写入/编辑与扩展 Bash 需确认 | 每次确认 (just_do_it 跳过) |
-| NOWAY | 🔴 | 硬拒绝 | 硬拒绝 |
-
-#### 三策略 (safety.mode)
-
-| 策略 | 说明 | 设置页 | 仪表盘会话覆盖 |
-|------|------|:---:|:---:|
-| `just_do_it` | DANGER 直接放行 | ✅ | ✅ |
-| `tell_me` | 按规则确认 (默认) | ✅ | ✅ |
-| `let_me_tk` | 所有非SAFE都确认 | ✅ | ✅ |
-
-#### 实现文件
-
-- `safety/checker.ts` — 四级安全+三策略+会话信任+危险模式库
-- `safety/confirm.ts` — 确认弹窗 Promise 桥接 (AgentLoop ↔ ChatPanel)
-- `ChatPanel.vue` — 确认弹窗渲染
-
-#### 统一危险模式库
-
-所有工具共享同一套模式库（`safety/checker.ts`），不分散在各地判断：
-
-```ts
-// Bash 危险模式 (NORMAL拦截)
-BASH_DANGEROUS_PATTERNS: [rm -rf, sudo, chmod 777, > /dev/, curl|sh, mkfs, dd if=]
-
-// Bash 硬禁止 (即使助手也拦截)
-BASH_NOWAY_PATTERNS: [rm -rf /, sudo rm, mkfs, dd ... of=/dev/, curl|sh, > /etc/]
-
-// 文件路径分级 (resolveFilePathLevel，已接到 pi-read/pi-write/pi-edit)
-FILE_NOWAY_PATTERNS:     [/.ssh/, .pem, .key]                       // 私钥与凭据：只读也不放行
-FILE_SENSITIVE_PATTERNS: [/etc/passwd, /etc/shadow, /System/, /Windows/, .env]  // 敏感：可确认
-FILE_DANGEROUS_PATTERNS: 上面两者的并集
-```
-
-上面的模式库只负责 TS 侧的风险分级与确认决策，不是最终门禁。`src-tauri/src/commands/bash_policy.rs` 才是不可关闭的最终基线，按两层 token 判定：层 1 硬基线（递归删根/家目录、格式化、`dd` 直接读写设备、系统电源命令、fork bomb、`-delete`/`-exec` 类破坏性参数、重定向写系统路径）在 pet 与 assistant 两种 scope 下都执行；层 2 才按 scope 叠加 —— pet 要求首词在白名单内且禁用 Shell 组合符，assistant 放行扩展命令与组合符但仍拒绝操作系统路径。前端只能叠加规则，不能关闭基线。
-
-### 9.7 思考强度
-
-与模式正交的独立维度，控制 AI 推理深度：
-
-| 强度 | 说明 | 触发条件 | Token消耗 |
-|------|------|----------|:---:|
-| `low` | 快速响应 | 闲聊/主动搭话 | 低 |
-| `medium` | 均衡 | "帮我/查看/搜索"等工具关键词 | 中 |
-| `high` | 深度推理 | "分析/整理/重构"等复杂关键词 / 工具调用≥2轮 / 错误重试 | 高 |
-| `auto` | 自动(默认) | 根据上述规则自动切换 | 动态 |
-
-#### auto 模式切换逻辑
-
-```
-任务检测:
-  闲聊/表情/打招呼/主动搭话 → low
-  "帮我"/"查看"/"搜索"/"找" → medium
-  "分析"/"整理"/"重构" / 工具调用≥2轮 / 错误重试 → high
-```
-
-#### 实现方式
-
-| Provider | 参数 |
-|----------|------|
-| DeepSeek | `reasoning_effort` |
-| OpenAI (o-series) | `reasoning_effort` |
-| 通用 OpenAI 兼容 | SystemPrompt 追加 "请快速简要回答" / "请仔细深入思考后回答" |
-
-### 9.8 上下文引擎
-
-#### ContextKernel 组装顺序（每次请求动态构建）
-
-```
-1. static：Card 角色、语气和行为规则
-2. dynamic：冻结变量、运行状态与思考强度；工具和Skill目录属于session静态段
-3. profile：User.md 用户画像投影
-4. memory：派生会话摘要与只读召回；CANDY属于静态人工指令，默认长期召回为空
-5. transcript：已提交摘要边界后的完整原文尾部；超限先压缩，不能静默删除
-6. ephemeral：active/hook/recovery 等当前轮临时上下文
-```
-
-#### 工具声明策略
-
-- **轻量模式**：冻结当前模式的基础工具；权限继续由统一策略裁决，不连接 MCP。
-- **助手模式**：按本次运行取得启用的 MCP 并冻结可用工具；运行结束释放连接。
-- 两种模式都按完整 schema 计费，并提供受当前 session 限制的工具事件读取；主动搭话不携带工具。
-
-### 9.9 记忆系统
-
-#### 存储模型
-
-```
-memory/                        长期记忆目录
-├── MEMORY.md                  ★ 结构化注册表（双块）
-│     ## 系统文件               4个系统指针（CANDY/User/Outside/Project）
-│     ## 长期记忆               用户记忆条目
-├── CANDY.md                   用户手写系统指令
-├── User.md                    用户画像（imp≥7 自动同步）
-├── Outside.md                 外部知识指针
-└── Project.md                 ★ 会话归档指针 → sessions/
-
-sessions/                      会话目录（唯一真相源）
-├── index.json                 UI 标签/活跃状态（可丢弃）
-└── session-YYYYMMDD-HHmmss-主题.md
-       元信息 → 结构化摘要 → 完整对话记录
-```
-
-#### 记忆整理
-
-| 路径 | 当前行为 |
-|------|----------|
-| 应用启动、每五轮、会话结束 | 不隐式调用 LLM 记忆整理；启动不挂维护定时器 |
-| `checkAndConsolidate()` | 只做本地去重和容量裁剪，与运行模式无关 |
-| 手动 `/memory clean` | 显式本地维护 |
-| `consolidateWithLLM()` | 保留独立接口，未自动挂入前台对话生命周期 |
-| 会话过长 / `/compact` | 走独立 `compactSession()`，提交摘要 checkpoint，全文保留 |
-
-自动用户事实提取、长期召回、画像候选和 dreaming 在下一阶段实施，不通过旧记忆整理接口隐式开启。
-
-#### Fork 记忆补充（助手模式，待接通）
-
-`forkMemorySupplement()` 已有实现，目标是在后台提取值得长期记住的信息并写入 `MEMORY.md`。当前它尚未接入正常对话结束链路，不能作为已具备的自动长期记忆能力。
-
----
-
-## 10. 当前能力与已知限制
-
-### 核心引擎与轻量模式
-
-| 模块 | 状态 | 文件 |
-|------|:---:|------|
-| Pi Agent Core 多轮循环 | ✅ | `engine/pi/runtime.ts` |
-| PreProcessor (slash/去重) | ✅ | `engine/preprocessor.ts` |
-| 会话状态机 | ✅ | `engine/session.ts` |
-| 思考强度 | ✅ | 全局默认+会话覆盖(仪表盘下拉)，移除自动选择 |
-| 人格中间件 (8阶段) | ✅ | `personality/middleware.ts` |
-| 人格注册表 + 热插拔 | ✅ | `personality/registry.ts` + `loader.ts`（neutral 兜底） |
-| 5个人格卡 + 模板 | ✅ | `personality/cards/` (neutral/angelkawaii/ame/pchan/yuki) |
-| 变量状态系统 | ✅ | `personality/variable-pool.ts`（system/card/interaction/session，RUNTIME_DATA + batchWriteVars） |
-| 统一 ToolRegistry | ✅ | `tool/registry.ts` |
-| ToolRouter (路由+超时) | ✅ | `tool/router.ts` |
-| 轻量 5 工具 | ✅ | `tool/local/`（pi-tools: read/write/edit/bash）+ system_info |
-| 助手 4 额外工具 | ✅ | `tool/local-extra/`（app / clipboard / agent-tool） |
-| 安全控制 (四级+三策略+确认UI) | ✅ | `safety/checker.ts` + `confirm.ts` |
-| 上下文引擎 | ✅ | `context/builder.ts` |
-| 回复生成器 | ✅ | `reply/generator.ts` — 一步后处理: 解析 RUNTIME_DATA → 情绪/变量校验 → trim/截断 → ReplyResult |
-| OpenAI 兼容 Provider | ✅ | `engine/pi/model-gateway.ts`（pi-ai `createProvider` / `createModels` + `completePiText`），网络边界 `engine/pi/net-guard.ts` |
-| 记忆系统（注册表/会话/压缩） | ⚠️ | `agent/memory/`；自动提取和 Prompt 检索尚未闭环 |
-| Rust 工具执行 | ✅ | `commands/tool_exec.rs` |
-| Debug 状态栏 | ✅ | `DebugBar.vue` + `debug.ts` |
-| **Profile 主题系统** | ✅ | `profile/loader.ts`(懒加载+18色→50+CSS变量) + `io.ts`(导入导出) + Rust `profile_cmd.rs` |
-| **玻璃透明效果** | ✅ | Tauri `transparent:true` + CSS `backdrop-filter` + 全窗口半透明 |
-| **灵动图层视差** | ✅ | 五层景深 + 直接映射（computed） + 全局鼠标追踪 + 3D CSS 增强 + 设置页逐层配置 |
-
-### 助手模式
-
-| 模块 | 状态 | 说明 |
-|------|:---:|------|
-| 助手模式开关 + 设置UI | ✅ | `CONFIG.yaml` mode.assistant |
-| 模式切换动态加载 | ✅ | registerAssistantTools/unregisterAssistantTools |
-| 助手专属工具 (5个+1个NOWAY) | ✅ | local-extra/ |
-| **Plan 模块 — 复杂任务编排** | ✅ 已实现 | `engine/planner.ts` — 复杂度检测(Type+LLM+force) + LLM拆解 + 逐步执行 |
-| **agent.spawn 子代理** | ✅ 已实现 | fork/team 双模式，子循环最多3轮，90s超时 |
-| **助手完整安全 (四级+确认UI)** | ✅ 已实现 | checker.ts + confirm.ts + ChatPanel 弹窗 |
-| **安全策略会话覆盖** | ✅ 已实现 | 仪表盘下拉，getEffectiveSafetyMode() |
-
-### MCP 与 Skill
-
-| 模块 | 状态 | 说明 |
-|------|:---:|------|
-| Skill Loader | ✅ | `services/skill/loader.ts` — 解析 + 落盘 + 注入 |
-| **渐进披露模型** | ✅ 已实现 | Prompt 只放 name/description/location，正文由模型 read |
-| 3个内置 Skill | ✅ | summarize-code / organize-files / check-weather |
-| 种子目录 | ✅ | `src-tauri/resources/defaults/skills/{name}/SKILL.md`，首次启动复制 |
-| **Skill 所有权** | ✅ 已实现 | `data_root/skills/` 是唯一真相源，种子只复制一次，应用不再覆盖 |
-| **Skill 持久化到 CONFIG** | ✅ 已实现 | 用户 Skill 存覆盖层，重启后重新落盘 |
-| **MCP Mock 工具** | ❌ 已移除 | 4个假工具已删除，只留真实连接 |
-| **MCP Manager (真实连接)** | ✅ 已实现 | 连接生命周期 + 工具发现 → ToolRegistry |
-| **MCP Client (JSON-RPC)** | ✅ 已实现 | connect/initialize/listTools/callTool + ToolDef |
-| **MCP stdio 传输** | ✅ 已实现 | Tauri invoke 桥接 Rust 子进程 stdin/stdout |
-| **Rust MCP Bridge** | ✅ 已实现 | spawn/kill 子进程 + JSON-RPC 桥接 |
-| **内置 5 个 MCP** | ✅ 已实现 | Filesystem/BraveSearch/Playwright/Git/GitHub |
-| **流式输出** | ❌ 已移除 | 永远非流式，`generateReplyStream` 已删除 |
-
-### 后续目标
-
-| 优先级 | 任务 | 说明 |
-|:---:|------|------|
-| ~~P0~~ | ~~助手模式完整安全~~ | ✅ 已实现: checker.ts + confirm.ts + ChatPanel 弹窗 |
-| P0 | ⚠️ 工具/Skill/安全 集成测试 | 功能已实现，全路径测试未覆盖 |
-| ~~P2~~ | ~~流式输出~~ | ❌ 已移除：永远非流式 |
-| P2 | MCP SSE 传输 | EventSource 连接方式 |
-| P3 | Agent Loop 时间本地化 | ✅ 已实现: toISOString → localTime() 全局替换 |
-
----
-
-## 11. 设计理念
-
-1. **桌面宠物第一**：窗口无边框透明置顶，不遮挡工作流
-2. **渐进式人格**：角色不是固定模板，随互动历史演变
-3. **被动陪伴 + 主动搭话**：不只在用户主动聊天时才响应
-4. **像素美学**：序列帧动画、像素字体、复古 Windows 风格
-5. **配置驱动**：所有参数可调，不做硬编码
-6. **前后端分离清晰**：UI（Vue）→ 业务（TS Services）→ 平台（Rust）
-7. **同一Loop+不同工具集**：轻量/助手模式共用核心引擎，仅工具可见范围不同
-8. **工具优先**：MCP/Local Tool统一权限；Skill仅提供元数据，正文由read按需读取
-9. **安全内建**：不在各处分散判断，统一入口强制校验
-10. **人格中间件**：工具调用、结果、错误全部经人格层转换为角色化表达
-
-### 记忆重构前置实现
-
-会话正文和工具结果保留完整事件，按 appendSequence 重放。压缩采用有覆盖边界、hash、版本和epoch的检查点；对旧完整意图轮做摘要，保留最新轮与完整tool pair，失败不推进边界。超长工具结果仅在请求内缩短，read_session_event可分页回查。
-
-回合冻结模型、Card、变量和工具/Skill清单；CANDY与派生摘要分开。PermissionKernel把MCP passthrough收敛为allow/ask/deny；确认支持本次/会话内精确参数/拒绝，绑定代际与到期时间。应用启动不连接MCP、不缓存Skill全文、不启动记忆LLM整理。长期记忆仍为空Provider，SQLite与事实提取后置。
+| Card | 角色设定、语言风格、情绪映射、行为指引、角色变量 | 定义表达与互动状态，不拥有工具授权或用户长期事实 |
+| Profile | 主题、动画、立绘、字体、音效映射、图层与景深素材 | 定义视觉和声音，不决定人格与权限 |
+| 会话 | 当前话题、对话历史、工具记录、压缩摘要 | 支持多标签切换与历史恢复 |
+| 用户画像与长期记忆 | 当前只读画像；未来可追溯的事实、偏好与关系记录 | 与 Card 的角色状态分开，自动提取/召回尚未实施 |
+
+随包提供的 Card/Profile 是首次初始化种子。复制到运行时目录后，与用户导入资源一样可以编辑、复制或删除；恢复默认资源会覆盖同名种子资源，需要用户明确操作。
+
+### Card 玩法
+
+同一桌宠可切换不同角色。`neutral` 提供中性助手，其他 Card 展示不同的语气与互动方式；实际列表以设置页和运行时资源为准。
+
+Card 的自然语言行为指引结合当前互动状态影响回复，例如“长时间未回复时表达关心，但不要攻击用户”。这些文字交给模型理解，不作为前端执行的条件脚本。
+
+模型回复中的内部情绪与变量信息由回复模块解析，正文中不显示 `RUNTIME_DATA`。只有 Card 注册并允许更新的角色变量能被模型改写；角色台词、工具结果和摘要不会自动成为用户长期事实。
+
+切换 Card 会准备阶段文案与变量状态，失败时回到原角色。缺少阶段文案时可能请求模型生成，因此不能把“不启动记忆整理”等同于所有初始化都不请求模型。精确状态边界见[人格与回复](current/personality.md)。
+
+## 3. 聊天与会话
+
+聊天面板支持新建、切换、关闭标签和查看历史。角色与聊天之间的分割线可以拖动调整。
+
+普通消息先保存再交给模型处理。运行中输入会按队列与插话规则处理，不因为模型忙碌就直接丢弃。切换标签后，原会话的后台结果仍归原会话；失败会保留失败状态，不因展示了角色化兜底文案而算作成功。
+
+模型可能进行多次请求和工具调用。Provider 使用流式链路，最终回复统一经过情绪、变量和显示文本处理；产品不承诺“每条聊天固定一次 LLM”。
+
+### 长对话如何继续
+
+上下文容量取自模型与用户设置。接近预算时，对较旧的完整话题轮生成摘要，保留近期原文和工具配对，原始会话文件不删除。
+
+`/compact` 可手动触发这一过程。只有摘要与边界成功提交才显示完成；摘要失败且无法构造可发送上下文时，会提示上下文不足。压缩用于当前会话连续性，跨会话长期记忆是独立的后续能力。
+
+会话持久化、取消、恢复与工具记录的协议见[运行时契约](current/runtime-contract.md)及[当前记忆](current/memory.md)。
+
+## 4. 主动陪伴
+
+开启窗口监控后，应用观察前台应用与窗口标题。用户在同一窗口停留到达条件时，角色可以发起与当前情境相关的话题，例如写文档时问候、观看视频时轻松搭话。
+
+当前依据是窗口信息，不能写成已具备屏幕图像理解或能读懂所有网页内容。用户可配置开关、停留时间、防抖和冷却。
+
+主动搭话使用明确的主动来源，受冷却与忙碌状态约束，不携带工具。监控提示和角色自己的回复都不能冒充用户陈述写入长期记忆。
+
+## 5. 桌面交互
+
+| 操作 | 行为 |
+|---|---|
+| 拖动标题栏 | 移动窗口 |
+| 聊天按钮 | 展开或收起聊天面板 |
+| 会话标签与 `+` | 切换或新建会话 |
+| 标签关闭按钮 | 关闭标签并保留归档，保持可用会话 |
+| 标题栏关闭按钮 | 隐藏到托盘 |
+| 托盘或平台应用激活 | 恢复应用窗口 |
+| 全局快捷键 | 召唤或收回桌宠，可在设置中修改 |
+| 设置按钮 | 打开独立设置窗口 |
+| 图层编辑入口 | 编辑当前 Profile 的展示效果并预览 |
+
+召唤/收回使用光标附近的缩放动效，动画期间避免重复触发。透明、置顶和全屏桌面的表现依赖平台窗口能力，macOS 与 Windows 的具体实现分别维护。
+
+快捷键、监控和窗口权限受系统设置影响。默认组合与可用选项以当前设置面板为准；实现参数不在产品文档中重复枚举。
+
+### 聊天命令
+
+输入 `/` 可以浏览和筛选命令；`/help` 是可用命令的入口。
+
+| 命令 | 用户目的 |
+|---|---|
+| `/clear` | 归档当前对话并创建新会话 |
+| `/compact` | 压缩当前会话的模型上下文，可能调用摘要模型 |
+| `/memory clean` | 清空当前长期记忆注册表条目；不是会话压缩或普通去重 |
+| `/win open`、`/win close` | 打开或关闭 Windows 模拟器彩蛋 |
+
+旧文档列出的 `/smile`、`/sleep` 等表情命令当前未有效注册，不列为可用能力。未识别的 `/` 开头文本会按普通消息处理。精确命令集合由[命令注册模块](../src/services/engine/slash/commands/index.ts)维护。
+
+## 6. 外观、图层与声音
+
+Profile 是可导入导出的资源集合，包含主题、角色动画和素材。当前默认主题包含糖糖粉、暗夜紫、透明玻璃和 yuki；用户可复制后编辑自己的版本。
+
+### 角色展示效果
+
+同一时刻选择关闭、灵动图层或景深一种效果。每个 Profile 保存自己的素材和效果参数，全局设置只控制效果模式与全局强度。
+
+- **灵动图层**：不同深度的背景、角色和前景随光标产生不同位移，形成层次感。编辑器可选择素材、调整位置与逐层参数。
+- **景深**：使用同一张图的模糊背景和清晰焦点区域，背景与各焦点区可有不同位移。焦点区可设置位置、大小和羽化。
+- **取景与焦点编辑分开**：平移素材调整取景，切换焦点编辑后再移动焦点，减少手势冲突。
+
+编辑器与角色展示共用效果计算，保存到当前 Profile。切换 Profile 不应把上一份素材或参数带到下一份。字段、坐标和资源回退边界见[运行时数据](current/runtime-data.md)。
+
+### 音效
+
+音效用于发送、回复、弹出、收回和情绪反馈。当前音效库由 Web Audio 合成，Profile 可以指定事件到音效的映射；声音应辅助陪伴，不抢占用户注意力。
+
+音效 ID、波形和具体参数由[音效模块](../src/services/audio/index.ts)维护；设置页提供可用选项，不在本文复制完整注册表。
+
+## 7. 助手能力与安全呈现
+
+轻量模式保留聊天和基础工具；助手模式增加 MCP、计划、子代理、剪贴板和应用打开等能力。具体工具取决于设置、当前运行模式和服务连接状态。
+
+复杂任务可通过 Plan 拆解步骤。步骤与工具状态保留检查点，恢复时不会自动重试结果未知的外部副作用。当前验证范围和未完成体验项见[加固待办](plans/active/运行时加固与清理计划.md)，不把具备 Plan 接口等同于所有任务均可无人值守完成。
+
+风险等级与权限结果分开：SAFE/NORMAL/DANGER/NOWAY 表达风险；allow/ask/deny 表达裁决。MCP 的 passthrough 表示继续交给统一策略，Skill 的说明不产生额外授权。
+
+确认界面提供拒绝、仅本次允许和有限范围授权。运行结束、参数或策略改变等情况会使旧授权失效，不能把角色说“上次同意过”作为执行凭据。实现和网络边界见[工具系统](current/tool-system.md)。
+
+## 8. 设置与数据
+
+设置窗口覆盖 AI、人格、外观、监控、工具、安全、MCP、Skill 和快捷键。运行中的请求持有自己的快照；改变设置不代表在飞请求会立即改用新模型或 Card。
+
+CONFIG 保存应用功能设置，Card/Profile 保存各自内容与素材，会话文件保存对话。配置不会从历史浏览器缓存覆盖回来。开发/生产位置和恢复默认资源的覆盖范围见[运行时数据](current/runtime-data.md)。
+
+导出配置或 MCP 配置可能包含用户填入的凭据，分享前应检查内容。默认资源恢复会覆盖同名资源的修改，自建资源的保留规则以实际恢复入口为准。
+
+## 9. 后续方向
+
+下一阶段重点是可追溯的长期记忆：明确记住什么、来自哪条用户消息、如何纠正、忘记及限定 Card/用户范围。推荐 SQLite 承载结构化事实，Markdown 继续承载人工指令、会话与导入导出视图；当前尚未迁移。
+
+中文召回质量、误记/漏记、矛盾纠正、资源占用和后台整理对首答的影响，需要独立评测。更重的助手检索、可选向量和后台 dreaming 依赖这些基础闭环。
+
+方向与剩余验收项统一维护在[建设方案](plans/active/轻量陪伴运行时与统一内核建设方案.md)；本文不复制阶段编号、测试通过数和提交清单。

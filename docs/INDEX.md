@@ -1,30 +1,54 @@
 # 文档索引
 
-本目录按文档用途组织。代码与配置是运行行为的最终依据；文档用于说明已验证的现状、记录待实施方案和保存历史决策。
+按任务选择入口，不默认把 README、DES、全部 current 与历史方案一起载入上下文。源码与配置决定实际行为；“当前文档”说明核对过的实现，“计划”说明尚未完成的目标。
 
-## 当前文档
+## 阅读入口
 
-- [DES.md](DES.md)：项目总览、玩法、交互与平台能力，面向项目负责人阅读。
-- [当前系统设计](current/system-design.md)：当前模块边界、主链路和运行时数据契约。
-- [运行时数据与配置](current/runtime-data.md)：开发/生产数据根、CONFIG 真相源、会话恢复和 Profile 覆盖规则。
-- [当前工具系统](current/tool-system.md)：Pi 基础工具、双模式策略、Tauri 执行环境与验证边界。
-- [当前记忆系统](current/memory.md)：记忆系统已接通的能力、已知缺口和后续路线。
-- [当前测试说明](current/testing.md)：Live Test 的执行方式、覆盖范围与验证边界。
+| 要解决的问题 | 先读 | 需要时再读 |
+|---|---|---|
+| 安装、运行、能力概览 | [README](../README.md) | [工程参考](current/development.md) |
+| 产品定位、Card/Profile 玩法、交互 | [DES](DES.md) 对应章节 | [人格与回复](current/personality.md)、[资源所有权](current/runtime-data.md) |
+| 找模块、跟踪主调用链 | [系统地图](current/system-design.md) | 目标源码与对应 current 文档 |
+| 会话队列、取消、恢复、Pi 接线、PromptSnapshot | [运行时契约](current/runtime-contract.md) | [记忆与压缩](current/memory.md)、[工具系统](current/tool-system.md) |
+| 配置、路径、Profile 持久化 | [运行时数据](current/runtime-data.md) | Config getter、AppPaths 和目标设置 Tab |
+| 工具权限、MCP、Skill | [工具系统](current/tool-system.md) | PermissionKernel、Router、对应工具实现 |
+| 测试执行/验证边界 | [测试边界](current/testing.md) | [Live README](../src/services/__tests__/live/README.md)；生成契约时再读 [SKILL](../src/services/__tests__/live/SKILL.md) |
+| 继续记忆系统重构 | [执行手册的当前检查点](plans/active/记忆系统重构执行手册.md#当前检查点) | [P6 目标契约](plans/active/记忆系统运行时契约.md)及相关源码 |
+| 追溯旧方案、比较项目与实施证据 | 下方历史入口 | 只读关联章节，历史命令与授权不自动生效 |
 
-## 计划与历史
+## 文档职责与维护
 
-- [轻量陪伴运行时与统一内核建设方案](plans/active/轻量陪伴运行时与统一内核建设方案.md)：当前建设总方案，覆盖轻量陪伴、状态/上下文、权限、Skill 和结构化长期记忆；运行时前置已实施，SQLite/长期记忆后置，集中验证见执行手册。
-- [会话压缩建设方案](history/implementation/会话压缩建设方案.md)：已完成的前置实现归档：比较参考项目，交付压缩边界、原子提交与完整尾部，含集中验证记录。
-- [愿景驱动整体重构方案（历史）](history/design/愿景驱动整体重构方案.md)：保留当时全文；纯 Markdown 限制与 Pi 候选结论已被新总方案替代，不再作为实施依据。
-- [记忆系统运行时契约](plans/active/记忆系统运行时契约.md)：运行时基础契约（来源、队列、Plan、Prompt 分层、压缩、安全与追踪协议）；P0–P5 前置已实施，P6 后置；逐节状态见其 §1.1。
-- [记忆系统重构执行手册](plans/active/记忆系统重构执行手册.md)：保留 P0-P6 证据与遗留项；当前检查点记录本分支实施与集中验证证据，下一阶段为 P6。
-- [运行时加固与清理计划](plans/active/运行时加固与清理计划.md)：2026-09-15 全仓深度审查的缺陷归档、已拍板决策、剩余待办与建议顺序。
-- `plans/active/`：尚未实施的计划。计划完成后移入历史目录。
-- `history/design/`：过去的设计与 PRD，保留当时的取舍和细节。
-- `history/implementation/`：已完成的实施计划与修复记录，正文不再按当前代码维护。
-- `history/analysis/`：特定日期的现状分析和审查报告。
-- `history/source/`：原始外部文档。
+| 文档 | 只维护什么 |
+|---|---|
+| [AGENTS](../AGENTS.md) | 全局约束与任务阅读路由；不承担项目百科、详细测试教程或动态进度 |
+| README | 用户安装、启动、能力简介与文档导航 |
+| DES | 产品定位、玩法与用户可感知行为 |
+| current | 已核对的模块契约、关键边界与源码入口；按主题分文档 |
+| plans/active | 未完成目标、待决策、验收条件与接力检查点 |
+| history | 当时设计、旧实现和验证证据；不随新代码反复改写正文 |
 
-历史 Markdown 文档文件头均标记为 `archived`；`history/source/` 保存的原始文件按文件格式保留。它们不构成当前实现契约，阅读当前行为时优先使用本目录的当前文档和源码。
+一个事实只有一个主要维护位置，其他文件用链接。每轮都核对 README、AGENTS、DES 与相关 current 的影响，受影响内容在同一改动中同步；新增规则改 AGENTS，用户入口变化改 README，玩法变化改 DES，模块变更更新系统地图及受影响导航。未变化的文档不为同步而追加总结。
 
-最新全仓阶段审查：[阶段现状（2026-08-06）](history/analysis/阶段现状-2026.8.6.md)。
+运行时 CONFIG 字段新增、改名、删除或语义变化同时执行[配置变更同步清单](current/runtime-data.md#配置变更同步清单)，覆盖 CONFIG、开发模板、类型/getter、设置页、保存与刷新消费者。真实本地配置需单独授权，未同步/未验证项在交付中说明。完成计划后保留正文和证据归档，active 留后续事项及跳转。
+
+计划/归档文件用简短文件头说明用途、状态、日期及替代入口；核对日期不代表整个工作树已验证。报告必须区分源码基线、执行环境和未验证项，不把旧通过数复制到每份概览。历史文件可能带 archived 或 implemented_verified 等状态，所在 history 目录均表示它不再是当前行为契约。
+
+AGENTS 维持全局规则入口，CLAUDE 只导入它；模块细节通过任务路由按需读取，不建立互相重复的子目录规则。阅读路径的成本按实际文件 token 数评估，仓库 Markdown 总量不等于每轮 Prompt 注入量。
+
+## 未完成工作
+
+- [轻量陪伴与统一内核方向](plans/active/轻量陪伴运行时与统一内核建设方案.md)：已完成前置的短索引，以及长期记忆和评测方向。
+- [P6 目标契约](plans/active/记忆系统运行时契约.md)：候选、来源、受控召回、纠正/遗忘与评测要求；这些目标尚未成为运行时能力。
+- [执行手册](plans/active/记忆系统重构执行手册.md)：当前检查点、已有验证证据、实施顺序与未验证边界。
+- [加固待办](plans/active/运行时加固与清理计划.md)：仍需处理或复核的工程事项，不重复旧修复流水。
+
+## 历史入口
+
+- [会话压缩建设方案](history/implementation/会话压缩建设方案.md)：参考项目比较、压缩设计与当时的实施证据。
+- [旧产品与技术说明](history/design/DES-2026-09-17基线.md)：DES 精简前正文。
+- [旧统一内核总方案](history/design/轻量陪伴运行时与统一内核建设方案-2026-09-17基线.md)：原比较、论证和候选设计。
+- [旧运行时契约](history/implementation/记忆系统运行时契约-2026-09-17基线.md)、[旧执行手册](history/implementation/记忆系统重构执行手册-2026-09-17基线.md)：原阶段协议、接力记录与证据。
+- [加固审查基线](history/analysis/运行时加固与清理计划-2026-09-17基线.md)：原缺陷、修复批次、历史行号与当时决策。
+- [愿景驱动重构方案](history/design/愿景驱动整体重构方案.md)：早期设计；其中纯 Markdown 和 Pi 候选结论已被后续方案替代。
+
+其他材料按 `history/design/`、`history/implementation/`、`history/analysis/`、`history/source/` 保存；目录与文件名用于检索，不将某篇旧全仓审查称为当前实现基线。

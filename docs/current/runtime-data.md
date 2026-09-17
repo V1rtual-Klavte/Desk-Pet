@@ -1,70 +1,83 @@
 # 运行时数据与配置
 
-## 唯一路径策略
+本文维护配置、路径、文件布局和资源所有权。会话事件与压缩协议见[当前记忆](memory.md)，运行代际与恢复见[运行时契约](runtime-contract.md)。
 
-Rust `AppPaths` 是环境判断和运行时路径的唯一真相源。前端必须先执行
-`initPaths()`，需要完整文件路径时通过 `runtimePath(scope, ...segments)` 交给 Rust
-拼接和校验；业务模块不能自行判断开发/生产环境或硬编码数据根。
+## 配置与环境
 
-| 环境 | 数据根 | 配置真相源 |
+Rust [AppPaths](../../src-tauri/src/paths.rs) 依据 `cfg!(debug_assertions)` 决定路径环境；前端通过 [paths.ts](../../src/services/paths.ts) 的 `getRuntimeMode()` 获取，不以 Vite 的构建模式推断。
+
+| 环境 | 数据根 | 运行时 CONFIG |
 |---|---|---|
-| 开发调试构建 | `{project}/data/desk-pet/` | 工作区 `CONFIG-DEV.yaml`，不存在时 `CONFIG.yaml` |
-| 生产发布构建 | Tauri 应用标识专属的 `app_local_data_dir` | `data_root/settings/CONFIG.yaml`，首次由默认 `CONFIG.yaml` 初始化 |
+| 开发调试构建 | `{project}/data/desk-pet/` | 工作区 `CONFIG-DEV.yaml`，不存在时用 `CONFIG.yaml` |
+| 生产发布构建 | Tauri 应用标识专属 `app_local_data_dir` | `data_root/settings/CONFIG.yaml`，首次由内置默认配置初始化 |
 
-`CONFIG-DEV.yaml` 是完整开发配置，不是与默认配置合并的增量覆盖层。生产配置不再依赖打包进前端的开发文件；设置页、配置导入导出和运行时写入同一份生产 CONFIG。
+`CONFIG-DEV.yaml` 是完整文件，不是增量覆盖层；生产忽略工作区开发配置。设置页、导入导出和运行期 getter 使用同一份配置。开发副本由用户从模板创建，不能为同步默认值而覆盖已有本地配置。
 
-Live Test 仅在 debug 构建且 `DESKPET_LIVE_TEST=1` 时将数据根替换为系统临时目录；测试结束会删除该目录。它不属于正常开发或生产运行位置，阶段种子由 `AppPaths` 从开发数据根复制，测试脚本不维护数据目录布局。
+## 配置变更同步清单
 
-## 数据布局
+[AGENTS](../../AGENTS.md#单一真相源与模块落位)要求 YAML 运行时 CONFIG 字段变更检查完整链路。新增、改名、删除，以及默认值、类型、单位或语义变化都适用；“同步”不代表各环境必须使用相同的值。环境变量、构建或测试开关按各自定义与消费者同步，不要求增加 YAML 字段或设置控件。
+
+| 环节 | 必须核对和同步的内容 |
+|---|---|
+| 默认配置 | [CONFIG.yaml](../../CONFIG.yaml) 的键、类型、默认值、单位与注释；它也是首次生产初始化来源 |
+| 开发模板 | [CONFIG-DEV.yaml.example](../../CONFIG-DEV.yaml.example) 的对应定义；开发端点/密钥等可保留占位值 |
+| 真实开发副本 | CONFIG-DEV.yaml 是完整文件，需单独授权后更新；保留用户已有值，未同步须交付说明，不能用模板覆盖本地配置 |
+| 类型与运行期读取 | [config.ts](../../src/services/config.ts) 的 Config、类型化 getter/setter 与默认/兼容逻辑；模块不复制默认值 |
+| 设置显示与编辑 | 对应 [settings Tab](../../src/components/settings/) 的初值读取、ref、控件、校验和 defineExpose；检查数值范围、枚举与单位换算 |
+| 保存映射 | [SettingsPanel.vue](../../src/components/SettingsPanel.vue) 的 doSave/setOverrides、setOverride 或 userConfig setter；不能只在 Tab 暴露字段 |
+| 落盘与生效 | serializeConfig/flushConfig 写入同一运行时 CONFIG，保存后通知及读取方刷新；声明字段是即时生效、下一 run 生效还是需重启 |
+| 说明 | 对应 current 文档解释语义/单位/生效时机；影响用户操作时更新 README/DES，改变全局规则时更新 AGENTS |
+
+新字段若按产品范围决定不提供设置控件，必须在对应文档说明用途与文件修改入口，不能把漏接 UI 当作默认豁免。改名/删除还需定义旧用户文件的兼容、迁移或忽略语义，清理旧 UI 映射与消费者；当前配置初始化不会自动把缺失字段与默认 YAML 深合并。
+
+当前主保存路径为：Tab 控件 → defineExpose → SettingsPanel.doSave → setOverrides/userConfig setter → config 写队列 → flushConfig → deskpet-settings-saved。主窗口、角色展示与图层编辑器分别处理刷新；字段是否即时生效取决于具体消费者，不能只以事件已发出为完成依据。Profile 素材和参数有自己的保存路径，不强行塞进 CONFIG。
+
+例如窗口冷却的 getter/CONFIG 使用毫秒，AITab 给用户显示秒，SettingsPanel 保存时换算回毫秒；日志设置读取配置值，运行期才应用 dev 的 debug 覆盖。这两类边界不能混入 getter 导致保存污染。
+
+设置改动完成后集中核对“修改 → 保存 → 文件回读 → 运行期读取 → 关闭重开设置”的往返；涉及跨窗口、模式或重启生效时一并核对对应消费者。类型检查不能发现字符串配置键漏映射或单位错误；本清单是后续变更的验收要求，不表示本轮文档修改运行了这些验证。
+
+模块只经类型化 getter 读取。`serializeConfig()` 保留文件头注释块，正文由 js-yaml 重排，不承诺保留正文注释或原格式。
+
+## 路径与文件布局
 
 ```text
 data_root/
-├── settings/CONFIG.yaml                 # 生产配置
-├── memory/                              # CANDY.md、User.md、MEMORY.md、Project.md
-├── sessions/
-│   ├── index.json                       # 仅 UI 状态，可安全丢弃
-│   └── session-YYYYMMDD-HHmmss-主题.md  # 会话正文和摘要真相源
-├── personality/                         # Card 阶段与变量状态
-├── profiles/                            # 用户导入/复制的 Profile
-└── skills/{name}/SKILL.md               # 模型用 read 加载的 Skill，随包种子首次复制
+├── settings/       生产 CONFIG 与默认资源初始化标记
+├── memory/         CANDY.md、User.md、Outside.md、MEMORY.md、Project.md
+├── sessions/       会话 Markdown；index.json 仅 UI 状态
+├── personality/    cards/、stages/{cardId}.json、vars.json
+├── profiles/       {profileId}/ 下的 Profile 与素材
+├── skills/         {name}/SKILL.md
+└── logs/           运行日志
 ```
 
-会话 Markdown 的每轮记录同时含可读预览与完整原文元数据，历史格式仍可读取。正文只以 `deskpet-turn` 记录写一次，事件视图由读取侧从 turn 投影；`deskpet-event` 只用于不进正文的消息（如主动搭话）。启动时先扫描 Markdown 重建会话历史，再用 `index.json` 恢复上次打开和活跃的标签；index 损坏不应丢失任何对话。
+TS 先执行 `initPaths()`；`BaseDirs` 只给目录，需要完整路径时用 `runtimePath(scope, ...segments)` 交给 Rust 拼接和校验。业务文件名由所属模块管理。
 
-## Profile 素材覆盖
+Rust 持有 base 的命令接收域内相对路径，例如 personality 命令接收 `stages/x.json`，不能传 `personality/stages/x.json`。通用文件 API 接收绝对路径时由 runtimePath 生成。写入需校验目标/父目录与符号链接边界，不能在 canonicalize 失败后静默退回原路径。
 
-默认 Profile 随应用一起打包，源文件位于 `src-tauri/resources/defaults/profiles/`，生产构建作为
-Tauri bundle resource 提供给后端。首次启动只将缺失文件复制到运行时目录，并在
-`settings/.default-resources-seeded` 写入初始化标记；之后运行时只读取 `data_root/profiles/`，
-默认 Profile 与用户 Profile 没有权限差异，均可直接编辑、复制、导出和删除。
+会话文件保存完整事件；新正文使用 `deskpet-event`，旧 `deskpet-turn` 仍可读取。启动扫描 Markdown 恢复会话，再用 index.json 恢复标签和未回复数；丢失 index 不应丢失正文。格式与原子提交只在[当前记忆](memory.md)维护。
 
-标记写入后不再自动补齐，误删或想同步随包资源的更新时，用设置页的「恢复默认资源」
-（`restore_default_resources`）手动触发。该命令用种子**覆盖**运行时同名文件，因此
-会丢弃用户对内置 Profile / Card 的改动；种子之外的用户自建资源不受影响。
+Live Test 在 debug 且 `DESKPET_LIVE_TEST=1` 时使用测试脚本在用户 Home 下创建的临时数据根，结束后清理。隔离边界与报告位置见[测试 README](../../src/services/__tests__/live/README.md)，不把测试目录当作正常用户数据位置。
 
-当前随应用提供的默认 Profile 包括 `sugar-pink`、`dark-purple`、`glass` 和 `yuki`；`yuki` 的五层
-透明 PNG 契约为 `profiles/yuki/materials/L0/bg_base.png`、`L1/rain_mid.png`、
-`L2/body.png`、`L3/highlights.png` 与 `L4/rain_front.png`；五张图应保持同一画布尺寸与
-主体位置。
+## 默认资源与 Profile
 
-用户导入和复制的 Profile 都写入 `profiles/{profileId}/`。所有 Profile 的颜色、素材等修改
-都只写这个目录。Profile 选择会保存到
-运行时 CONFIG 的 `appearance.activeProfile`，下次启动从该值恢复。
+[随包资源](../../src-tauri/resources/defaults/) 只作首次种子，复制后写入 `settings/.default-resources-seeded`。运行时只读写 data_root；默认和用户 Card/Profile/Skill 没有两套编辑权限。标记存在后删除资源不会自动恢复。
 
-`appearance.effectMode`（`off` / `parallax` / `dof`）是角色展示效果的唯一开关：
-灵动图层与景深互斥，用单字段枚举避免出现两个开关同时为真。`appearance.parallax`
-只保存灵动图层的全局强度。
+设置页“恢复默认资源”调用 [restore_default_resources](../../src-tauri/src/commands/resources_cmd.rs)，**覆盖运行时同名种子文件**，会丢弃这些文件的用户改动；种子之外的用户自建文件保留。
 
-两种效果各自的素材与参数都只从当前 Profile 读取，图层编辑器也只写回当前 Profile：
-灵动图层是 `theme.parallax.layers`，景深是 `theme.depthOfField`。旧 CONFIG 中遗留的
-`appearance.parallax.layers` / `appearance.parallax.enabled` 会被忽略，不能覆盖或串入
-另一个 Profile。Profile 切换与用户 Profile 保存通过 `deskpet-profile-updated` 事件让
-各 WebView 重新加载同一个 Profile；效果模式改动经 `deskpet-settings-saved` 即时生效。
+Profile 导入、复制和编辑写入 `profiles/{profileId}/`；选择保存在 `appearance.activeProfile`。效果所有权为：
 
-Profile 没有自带窗口 UI 位图时，可在 `theme.useDefaultUi` 声明为 `true`，运行时会直接
-使用默认 Profile 的 UI，而不是请求当前 Profile 的空 `ui/` 目录。该回退仅用于 UI 位图；灵动
-图层素材不会跨 Profile 回退，缺失时会停止该层并在编辑器中标记。
+| 数据 | 唯一所有者 |
+|---|---|
+| 展示模式 off/parallax/dof | CONFIG 的 `appearance.effectMode` |
+| 灵动图层全局强度 | CONFIG 的 `appearance.parallax` |
+| 每层素材和参数 | 当前 Profile 的 `theme.parallax.layers` |
+| 景深素材、取景和焦点参数 | 当前 Profile 的 `theme.depthOfField` |
 
-## 不再使用的缓存
+旧 CONFIG 的 parallax.layers/enabled 不覆盖 Profile。Profile 保存/切换通过 `deskpet-profile-updated` 通知 WebView，设置变化通过 `deskpet-settings-saved` 生效，入口见 [profile/](../../src/services/profile/)。
 
-`localStorage` 不再存储配置、会话正文、会话列表、图层编辑结果、分割线位置或音效分配。启动配置完成后会清理旧 `deskpet_*` key，避免旧缓存重新覆盖文件真相源。
+`theme.useDefaultUi=true` 允许窗口 UI 位图回退到默认 Profile；图层素材不跨 Profile 回退，缺失时停止对应层并在编辑器提示。默认 yuki 的五层 PNG 位于 `materials/L0/bg_base.png`、`L1/rain_mid.png`、`L2/body.png`、`L3/highlights.png`、`L4/rain_front.png`，应保持相同画布与主体位置；实际资源以[默认 Profile 目录](../../src-tauri/resources/defaults/profiles/)为准。
+
+## 浏览器缓存边界
+
+localStorage 不保存配置、会话正文/列表、Profile 编辑结果、分割线位置或音效分配。配置初始化后清理已知旧缓存 key，避免缓存覆盖文件真相源；测试 keyspace 的清理由测试宿主管理。
