@@ -1,3 +1,4 @@
+import { invalidatePermissionScope } from "@/services/safety"
 // ==========================================
 // 会话管理器 —— 生命周期操作 (init/create/switch/close/delete)
 // ==========================================
@@ -39,12 +40,7 @@ async function loadMessagesFromFile(sessionId: string): Promise<Message[]> {
     const { MemoryService } = await import("@/services/agent/memory")
     const turns = await MemoryService.loadSessionMessages(sessionId)
     if (!turns || turns.length === 0) return []
-    return turns.map(t => ({
-      id: `${sessionId}-${t.timestamp}`,
-      role: t.role,
-      text: t.text,
-      timestamp: t.timestamp,
-    }))
+    return turns
   } catch {
     return []
   }
@@ -162,6 +158,7 @@ export async function switchToSession(sessionId: string): Promise<void> {
   const previousSessionId = activeSessionId.value
   // 保存当前 UI 状态；对话正文已由 MemoryService 实时写入 Markdown。
   if (previousSessionId) {
+    invalidatePermissionScope(previousSessionId)
     saveUnanswered(previousSessionId, unansweredCount.value)
     agentSlots.releaseWhenIdle(previousSessionId)
   }
@@ -171,11 +168,13 @@ export async function switchToSession(sessionId: string): Promise<void> {
   saveActiveId(sessionId)
 
   const msgs = await loadMessagesFromFile(sessionId)
+  if (activeSessionId.value !== sessionId) return
   chatHistory.splice(0, chatHistory.length, ...msgs)
   unansweredCount.value = loadUnanswered(sessionId)
 
   const { MemoryService } = await import("@/services/agent/memory")
   await MemoryService.setActiveSession(sessionId)
+  if (activeSessionId.value !== sessionId) return
 
   // 对齐会话开始时间
   const { setSessionStart } = await import("@/services/personality")
@@ -192,6 +191,7 @@ export async function createNewSession(): Promise<SessionMeta> {
   // 保存并归档当前
   const oldId = activeSessionId.value
   if (oldId) {
+    invalidatePermissionScope(oldId)
     saveUnanswered(oldId, unansweredCount.value)
     agentSlots.releaseWhenIdle(oldId)
     try {
@@ -225,6 +225,7 @@ export async function createNewSession(): Promise<SessionMeta> {
 
 /** 关闭标签（从列表移除，保留文件） */
 export function closeSession(sessionId: string): void {
+  invalidatePermissionScope(sessionId)
   const idx = sessions.findIndex(s => s.id === sessionId)
   if (idx === -1) return
 
@@ -250,6 +251,7 @@ export async function deleteSession(sessionId: string): Promise<void> {
   const meta = sessions.find(s => s.id === sessionId)
   if (!meta) return
 
+  invalidatePermissionScope(sessionId)
   await agentSlots.dispose(sessionId)
 
   // 从内存列表移除

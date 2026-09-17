@@ -7,6 +7,7 @@ import type {
   SessionEventKind,
 } from "@/services/engine/runtime"
 import type { SessionMemory } from "./types"
+import type { Message } from "@/services/agent/types"
 import { isDeskpetMetadataComment, localTime, normalizeTurnRole } from "./parsers"
 
 const EVENT_MARKER = /<!--\s*deskpet-event:([^\s]+)\s*-->/
@@ -217,10 +218,39 @@ export function parseSessionEventDocument(raw: string, sessionId = "legacy-sessi
     append(legacyEvent(sessionId, legacyIndex++, turn))
   }
 
-  events.sort((a, b) => a.createdAt - b.createdAt || a.eventId.localeCompare(b.eventId))
+  // File append order is authoritative. Timestamps can collide or move backwards.
   return { events, issues }
 }
 
 export function parseSessionEventsFromRaw(raw: string, sessionId = "legacy-session"): SessionEventCompat[] {
   return parseSessionEventDocument(raw, sessionId).events
+}
+
+export function nextAppendSequence(events: readonly SessionEventCompat[]): number {
+  return events.reduce((sequence, event) => Math.max(sequence + 1, event.schemaVersion === 1 ? event.appendSequence ?? 0 : 0), 0) + 1
+}
+
+/** Only explicit transcript kinds are replayed. Queue, active, summary and telemetry remain metadata. */
+export function transcriptFromEvents(events: readonly SessionEventCompat[]): Message[] {
+  let previous: SessionEventCompat | undefined
+  return events.flatMap(event => {
+    if (!["user_message", "assistant_message", "tool_call", "tool_result"].includes(event.kind)) return []
+    if (event.payload.eligibleForTranscript === false) return []
+    const payload = event.payload as Record<string, unknown>
+    const saved = payload.message as Message | undefined
+    const role = event.kind === "user_message" ? "user" : event.kind === "tool_result" ? "tool" : "assistant"
+    const text = saved?.text ?? event.payload.text
+    if (typeof text !== "string") return []
+    // Pre-migration releases wrote a legacy turn followed by an unmarked metadata mirror.
+    // Only that adjacent legacy shape is coalesced; explicit new records are never text-deduped.
+    const legacyMirror = event.schemaVersion === 1 && !saved && payload.eligibleForTranscript === undefined
+      && previous?.schemaVersion === 0 && previous.kind === event.kind && previous.payload.text === text
+    previous = event
+    if (legacyMirror) return []
+    return [{ ...saved, id: event.eventId, eventId: event.eventId, role, text, timestamp: event.createdAt,
+      appendSequence: event.schemaVersion === 1 ? event.appendSequence : undefined,
+      apiRoundId: event.schemaVersion === 1 ? event.apiRoundId : undefined,
+      origin: event.origin, taint: (payload.taint ?? (role === "user" ? "trusted_user" : "derived")) as Message["taint"],
+    } satisfies Message]
+  })
 }

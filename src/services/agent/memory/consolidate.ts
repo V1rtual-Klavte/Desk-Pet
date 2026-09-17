@@ -1,5 +1,5 @@
 // ==========================================
-// 记忆系统 — LLM 记忆整理 + Fork 补充 + 定时器
+// 记忆系统 — 显式 LLM 维护、Fork 补充与本地去重定时器
 // ==========================================
 
 import { generalConfig, memoryConfig } from "@/services/config"
@@ -57,10 +57,9 @@ export async function consolidateWithLLM(): Promise<{ removed: number; kept: num
 }
 
 export function checkAndConsolidate(): boolean {
-  if (generalConfig.assistantMode) {
-    consolidateWithLLM().then(r => log.info("LLM 记忆整理:", r.report)).catch(() => {})
-    return true
-  }
+  // 此函数可能由旧定时器或兼容 API 调用，因此只能做同步、本地、无网络的去重。
+  // LLM 整理必须由明确的维护工作流调用 consolidateWithLLM()，不能借助手模式
+  // 或会话结束自动启动。
   return consolidateLocal().removed > 0
 }
 
@@ -103,7 +102,7 @@ let consolidationTimer: ReturnType<typeof setInterval> | null = null
 export function startMemoryConsolidationTimer(): void {
   if (consolidationTimer) return
   consolidationTimer = setInterval(() => checkAndConsolidate(), 60 * 60 * 1000)
-  log.info("记忆整理定时器已启动 (60min)")
+  log.info("本地记忆去重定时器已启动 (60min)")
 }
 
 export function stopMemoryConsolidationTimer(): void {
@@ -112,13 +111,7 @@ export function stopMemoryConsolidationTimer(): void {
 
 // ── 会话结束计数 ──
 
-let sessionEndCounter = 0
-
 export function onSessionEnd(): void {
-  sessionEndCounter++
-  if (sessionEndCounter >= 2) {
-    sessionEndCounter = 0
-    log.info("2 个会话结束，触发整理")
-    checkAndConsolidate()
-  }
+  // 会话结束不能隐式发起 LLM 整理或从会话提取长期事实。长期记忆候选的来源、
+  // 版本和用户授权尚未闭环；显式维护操作可单独调用 consolidateWithLLM()。
 }

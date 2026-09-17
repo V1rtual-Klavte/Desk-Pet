@@ -62,6 +62,10 @@ export type {
   SessionEventParseIssueCode,
 } from "./events"
 export { parseSessionEventDocument, parseSessionEventsFromRaw, serializeSessionEvent } from "./events"
+export { transcriptFromEvents } from "./events"
+export { appendSessionEventToSession, appendTranscriptMessage, finalizeTranscriptMessage, readSessionDocument, updateSessionDocument } from "./session-files"
+export { readContextView, commitCompaction, compactionInputHash, parseStructuredSummary, formatStructuredSummary } from "./compaction-store"
+export type { CompactionCheckpoint, StructuredSummary, SessionContextView } from "./compaction-store"
 export { queueAckEvent, queueEntryEvent, queueRecoveryEvent } from "./queue-events"
 export { SessionTurnStore, sessionTurnStore } from "./session-turn-store"
 export { PlanCheckpointStore, planCheckpointStore, planStepEffectClass } from "./plan-checkpoint-store"

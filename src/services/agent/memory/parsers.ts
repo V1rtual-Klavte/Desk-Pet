@@ -224,6 +224,7 @@ export function normalizeTurnRole(label: string): "user" | "assistant" {
 export function parseTurnsFromRaw(raw: string): SessionMemory["turns"] {
   const turns: SessionMemory["turns"] = []
   let inConversation = false
+  let previousWasLegacy = false
   const lines = raw.split("\n")
   for (let index = 0; index < lines.length; index++) {
     const line = lines[index]
@@ -231,12 +232,30 @@ export function parseTurnsFromRaw(raw: string): SessionMemory["turns"] {
     if (line.startsWith("## ")) { inConversation = false; continue }
     if (!inConversation) continue
 
+    const eventMatch = line.match(/<!--\s*deskpet-event:([^\s]+)\s*-->/)
+    if (eventMatch) {
+      try {
+        const event = JSON.parse(decodeURIComponent(eventMatch[1]))
+        if ((event.kind === "user_message" || event.kind === "assistant_message") && event.payload?.eligibleForTranscript !== false) {
+          const message = event.payload.message ?? event.payload
+          const role = event.kind === "user_message" ? "user" : "assistant"
+          const previous = turns[turns.length - 1]
+          const mirror = previousWasLegacy && !event.payload.message && event.payload.eligibleForTranscript === undefined
+            && previous?.role === role && previous.text === message.text
+          if (!mirror && typeof message.text === "string") turns.push({ role, text: message.text, timestamp: event.createdAt })
+          previousWasLegacy = false
+        }
+      } catch { /* Preserve the other valid records. */ }
+      continue
+    }
+
     const structuredMatch = line.match(/<!--\s*deskpet-turn:([^\s]+)\s*-->/)
     if (structuredMatch) {
       try {
         const turn = JSON.parse(decodeURIComponent(structuredMatch[1])) as SessionMemory["turns"][number]
         if (turn.role === "user" || turn.role === "assistant") {
           turns.push({ role: turn.role, text: String(turn.text), timestamp: Number(turn.timestamp) || Date.now() })
+          previousWasLegacy = true
         }
       } catch { /* Corrupt metadata does not invalidate other readable turns. */ }
       continue
@@ -325,7 +344,8 @@ export function parseSessionFileMeta(raw: string): Partial<SessionFileMeta> {
     else if (line.startsWith("> 模式:")) result.mode = line.replace("> 模式:", "").trim()
     else if (line.startsWith("> 轮数:")) result.rounds = parseInt(line.replace("> 轮数:", ""), 10) || 0
     else if (line.startsWith("# ")) {
-      const parsed = parseSessionFilename(line.replace("# ", "").trim())
+      const title = line.replace("# ", "").trim()
+      const parsed = parseSessionFilename(title.endsWith(".md") ? title : `${title}.md`)
       if (parsed) {
         result.sessionId = parsed.sessionId
         result.topic = parsed.topic

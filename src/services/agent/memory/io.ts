@@ -37,7 +37,9 @@ export function withLock<T>(keyOrFn: string | (() => Promise<T>), maybeFn?: () =
   const fn = typeof keyOrFn === "string" ? maybeFn! : keyOrFn
   const tail = writeTails.get(key) ?? Promise.resolve()
   const run = tail.then(fn, fn)
-  writeTails.set(key, run.then(() => undefined, () => undefined))
+  const recovered = run.then(() => undefined, () => undefined)
+  writeTails.set(key, recovered)
+  void recovered.then(() => { if (writeTails.get(key) === recovered) writeTails.delete(key) })
   return run
 }
 

@@ -9,16 +9,18 @@ import { readSessionFile, writeSessionFile, sessionsDir, withLock } from "./io"
 import { localTime, localDate, localCompact, parseSessionFilename, parseSessionFileMeta, parseTurnsFromRaw, buildSessionFileContent, makeSessionFilename, findTopicFromTurns, serializeSessionTurn } from "./parsers"
 import { createLogger } from "@/services/logger"
 import type { QueueAckState, QueueEntry, SessionEvent } from "@/services/engine/runtime"
-import { parseSessionEventDocument, serializeSessionEvent } from "./events"
+import { parseSessionEventDocument, serializeSessionEvent, nextAppendSequence, transcriptFromEvents } from "./events"
+import type { Message } from "@/services/agent/types"
 
 const log = createLogger("MemorySessions")
 
 // ── 模块状态（共享）──
 let sessionMemory: SessionMemory | null = null
+let activeSelection = 0
 let projectEntries: ProjectEntry[] = []
 
 export function getSessionMemory(): SessionMemory | null { return sessionMemory }
-export function setSessionMemory(sm: SessionMemory | null): void { sessionMemory = sm }
+export function setSessionMemory(sm: SessionMemory | null): void { activeSelection++; sessionMemory = sm }
 export function getProjectEntries(): ProjectEntry[] { return [...projectEntries] }
 export function setProjectEntries(p: ProjectEntry[]): void { projectEntries = p }
 
@@ -32,12 +34,13 @@ export function newSessionMemory(): SessionMemory {
 // ── 活跃会话设置 ──
 
 export async function setActiveSession(sessionId: string): Promise<void> {
+  const selection = ++activeSelection
   if (sessionMemory?.sessionId === sessionId) return
   let startedAt = Date.now()
   let existingTurns: SessionMemory["turns"] = []
   try {
     const files = await invoke<string[]>("list_session_files")
-    const match = files.find(f => f.startsWith(sessionId))
+    const match = files.find(f => parseSessionFilename(f)?.sessionId === sessionId)
     if (match) {
       const raw = await readSessionFile(match)
       if (raw) {
@@ -56,11 +59,13 @@ export async function setActiveSession(sessionId: string): Promise<void> {
       }
     }
   } catch { /* 静默 */ }
+  if (selection !== activeSelection) return
   sessionMemory = { sessionId, startedAt, turns: existingTurns }
   log.info("活跃会话已设置:", sessionId, `(${existingTurns.length} 轮已恢复)`)
 }
 
 export function setActiveSessionSync(sessionId: string): void {
+  activeSelection++
   if (sessionMemory?.sessionId === sessionId) return
   sessionMemory = { sessionId, startedAt: Date.now(), turns: [] }
   log.info("活跃会话已设置(sync):", sessionId)
@@ -87,15 +92,15 @@ export async function createSessionFile(sessionId: string): Promise<void> {
   }
 }
 
-export async function loadSessionMessages(sessionId: string): Promise<{ role: "user" | "assistant"; text: string; timestamp: number }[] | null> {
+export async function loadSessionMessages(sessionId: string): Promise<Message[] | null> {
   if (!sessionsDir) { log.warn("loadSessionMessages: sessionsDir 未设置"); return null }
   try {
     const files = await invoke<string[]>("list_session_files")
-    const match = files.find(f => f.startsWith(sessionId))
+    const match = files.find(f => parseSessionFilename(f)?.sessionId === sessionId)
     if (!match) { log.warn("loadSessionMessages: 未找到匹配文件", sessionId); return null }
     const raw = await readSessionFile(match)
     if (!raw || raw.length < 20) return null
-    const turns = parseTurnsFromRaw(raw)
+    const turns = transcriptFromEvents(parseSessionEventDocument(raw, sessionId).events)
     log.info(`从 sessions/ 加载 ${turns.length} 轮对话:`, match)
     return turns
   } catch { return null }
@@ -105,7 +110,7 @@ export async function loadSessionEvents(sessionId: string): Promise<SessionEvent
   if (!sessionsDir) return []
   try {
     const files = await invoke<string[]>("list_session_files")
-    const match = files.find(f => f.startsWith(sessionId))
+    const match = files.find(f => parseSessionFilename(f)?.sessionId === sessionId)
     if (!match) return []
     return parseSessionEventDocument(await readSessionFile(match), sessionId).events
       .filter((event): event is SessionEvent => event.schemaVersion === 1)
@@ -168,10 +173,8 @@ export function recordTurn(role: "user" | "assistant", text: string, checkConsol
   const targetSession = sessionMemory
   targetSession.turns.push({ role, text, timestamp: Date.now() })
   turnCounter++
-  if (turnCounter % 5 === 0) {
-    log.info(`已达到 ${turnCounter} 轮，触发记忆整理`)
-    checkConsolidate()
-  }
+  // Long-term consolidation is an explicit background operation, never a chat side effect.
+  void checkConsolidate
   const pending = appendTurnToSessionFile(role, text, targetSession)
   pendingSessionWrites.add(pending)
   void pending
@@ -184,7 +187,7 @@ export async function recordTurnToSession(sessionId: string, role: "user" | "ass
   await withLock(`session:${sessionId}`, async () => {
     try {
     const files = await invoke<string[]>("list_session_files")
-    const match = files.find(f => f.startsWith(sessionId))
+    const match = files.find(f => parseSessionFilename(f)?.sessionId === sessionId)
     if (!match) { log.warn("recordTurnToSession: 未找到会话文件", sessionId); return }
     let current = await readSessionFile(match)
     if (!current || current.length < 20) { log.warn("recordTurnToSession: 文件内容为空", match); return }
@@ -201,6 +204,65 @@ export async function recordTurnToSession(sessionId: string, role: "user" | "ass
 
 export interface SessionWriteVersion { version: number }
 
+export async function readSessionDocument(sessionId: string): Promise<{ raw: string; version: number }> {
+  const files = await invoke<string[]>("list_session_files")
+  const filename = files.find(f => parseSessionFilename(f)?.sessionId === sessionId)
+  if (!filename) throw new Error(`未找到会话文件: ${sessionId}`)
+  const raw = await readSessionFile(filename)
+  if (!raw) throw new Error(`会话读取失败: ${sessionId}`)
+  return { raw, version: readSessionVersion(raw) }
+}
+
+/** All transcript/checkpoint mutations share the existing session write lock. */
+export async function updateSessionDocument(
+  sessionId: string,
+  update: (raw: string, version: number) => string | null,
+  isCurrent: () => boolean = () => true,
+): Promise<boolean> {
+  return withLock(`session:${sessionId}`, async () => {
+    const files = await invoke<string[]>("list_session_files")
+    const filename = files.find(f => parseSessionFilename(f)?.sessionId === sessionId)
+    if (!filename) throw new Error(`未找到会话文件: ${sessionId}`)
+    const raw = await readSessionFile(filename)
+    if (!raw) throw new Error(`会话读取失败: ${sessionId}`)
+    if (!isCurrent()) return false
+    const version = readSessionVersion(raw)
+    const next = update(raw, version)
+    if (next === null || !isCurrent()) return false
+    if (!await writeSessionFile(filename, writeSessionVersion(next, version + 1))) throw new Error(`会话写入失败: ${sessionId}`)
+    if (sessionMemory?.sessionId === sessionId) sessionMemory.turns = parseTurnsFromRaw(next)
+    return true
+  })
+}
+
+export async function appendTranscriptMessage(sessionId: string, message: Message, isCurrent: () => boolean = () => true): Promise<void> {
+  const event: SessionEvent = {
+    schemaVersion: 1, eventId: message.eventId ?? message.id, sessionId,
+    apiRoundId: message.apiRoundId,
+    kind: message.role === "user" ? "user_message" : message.role === "tool" ? "tool_result" : message.toolCalls?.length ? "tool_call" : "assistant_message",
+    origin: message.origin ?? (message.role === "tool" ? "tool" : message.role === "user" ? "user" : "assistant"),
+    payload: { message, text: message.text, eligibleForTranscript: true, eligibleForMemory: message.role === "user" && (!message.origin || message.origin === "user"), taint: message.taint ?? (message.role === "user" ? "trusted_user" : "derived") },
+    createdAt: message.timestamp, idempotencyKey: `message:${message.eventId ?? message.id}`,
+  }
+  let duplicate = false
+  const written = await updateSessionDocument(sessionId, raw => {
+    const parsed = parseSessionEventDocument(raw, sessionId)
+    const existing = parsed.events.find(e => e.eventId === event.eventId || e.idempotencyKey === event.idempotencyKey)
+    if (existing) {
+      const saved = (existing.payload as Record<string, unknown>).message as Message | undefined
+      if ((saved?.text ?? existing.payload.text) !== message.text || existing.kind !== event.kind) throw new Error("消息幂等键冲突")
+      duplicate = true
+      return null
+    }
+    const result = raw.trimEnd() + "\n" + serializeSessionEvent({ ...event, appendSequence: nextAppendSequence(parsed.events) }).join("\n") + "\n"
+    const turns = parseTurnsFromRaw(result)
+    const count = turns.length
+    const topic = findTopicFromTurns(turns)
+    return result.replace(/^# .*$/m, `# ${sessionId}-${topic}`).replace(/^> 轮数: \d+/m, `> 轮数: ${count}`).replace(/^## 对话记录 \(\d+ 轮\)/m, `## 对话记录 (${count} 轮)`)
+  }, isCurrent)
+  if (!written && !duplicate) throw new Error("消息写入因运行取消而停止")
+}
+
 function readSessionVersion(raw: string): number {
   const match = raw.match(/^> 版本: (\d+)/m)
   return match ? Number(match[1]) : 0
@@ -214,7 +276,7 @@ function writeSessionVersion(raw: string, version: number): string {
 export async function readSessionWriteVersion(sessionId: string): Promise<SessionWriteVersion | null> {
   if (!sessionsDir) return null
   const files = await invoke<string[]>("list_session_files")
-  const match = files.find(f => f.startsWith(sessionId))
+  const match = files.find(f => parseSessionFilename(f)?.sessionId === sessionId)
   if (!match) return null
   return { version: readSessionVersion(await readSessionFile(match)) }
 }
@@ -223,14 +285,15 @@ export async function appendSessionEventWithVersion(sessionId: string, event: Se
   if (!sessionsDir) throw new Error("sessionsDir 未设置")
   return withLock(`session:${sessionId}`, async () => {
     const files = await invoke<string[]>("list_session_files")
-    const match = files.find(f => f.startsWith(sessionId))
+    const match = files.find(f => parseSessionFilename(f)?.sessionId === sessionId)
     if (!match) throw new Error(`未找到会话文件: ${sessionId}`)
     const current = await readSessionFile(match)
     const currentVersion = readSessionVersion(current)
     if (currentVersion !== expectedVersion) throw new Error(`session version conflict: expected=${expectedVersion} actual=${currentVersion}`)
     const parsed = parseSessionEventDocument(current, sessionId)
     if (parsed.events.some(item => item.eventId === event.eventId || item.idempotencyKey === event.idempotencyKey)) return { version: currentVersion }
-    const updated = writeSessionVersion(current.trimEnd() + "\n" + serializeSessionEvent(event, previewText).join("\n") + "\n", currentVersion + 1)
+    const sequenced = { ...event, appendSequence: nextAppendSequence(parsed.events) }
+    const updated = writeSessionVersion(current.trimEnd() + "\n" + serializeSessionEvent(sequenced, previewText).join("\n") + "\n", currentVersion + 1)
     if (!await writeSessionFile(match, updated)) throw new Error(`session 写入失败: ${match}`)
     return { version: currentVersion + 1 }
   })
@@ -242,19 +305,40 @@ export async function appendSessionEventToSession(sessionId: string, event: Sess
   return withLock(`session:${sessionId}`, async () => {
     try {
       const files = await invoke<string[]>("list_session_files")
-      const match = files.find(f => f.startsWith(sessionId))
+      const match = files.find(f => parseSessionFilename(f)?.sessionId === sessionId)
       if (!match) { log.warn("appendSessionEventToSession: 未找到会话文件", sessionId); return false }
       const current = await readSessionFile(match)
       if (!current || current.length < 20) { log.warn("appendSessionEventToSession: 文件内容为空", match); return false }
       const parsed = parseSessionEventDocument(current, sessionId)
       if (parsed.events.some(item => item.eventId === event.eventId || item.idempotencyKey === event.idempotencyKey)) return true
-      const lines = serializeSessionEvent(event, previewText).join("\n")
+      const lines = serializeSessionEvent({ ...event, appendSequence: nextAppendSequence(parsed.events) }, previewText).join("\n")
       const updated = writeSessionVersion(current.trimEnd() + "\n" + lines + "\n", readSessionVersion(current) + 1)
       return await writeSessionFile(match, updated)
     } catch (e) {
       log.warn("appendSessionEventToSession 失败", e instanceof Error ? e : undefined)
       return false
     }
+  })
+}
+
+/** Replace the final reply projection without creating a second transcript record. */
+export async function finalizeTranscriptMessage(sessionId: string, eventId: string, text: string): Promise<void> {
+  await updateSessionDocument(sessionId, raw => {
+    const lines = raw.split("\n")
+    for (let i = 0; i < lines.length; i++) {
+      const match = lines[i]!.match(/<!--\s*deskpet-event:([^\s]+)\s*-->/)
+      if (!match) continue
+      let event: SessionEvent
+      try { event = JSON.parse(decodeURIComponent(match[1]!)) as SessionEvent } catch { continue }
+      if (event.eventId !== eventId) continue
+      const message = event.payload.message as Message
+      event.payload = { ...event.payload, text, message: { ...message, text } }
+      const serialized = serializeSessionEvent(event)
+      lines[i] = serialized[1]!
+      if (i > 0) lines[i - 1] = serialized[0]!
+      return lines.join("\n")
+    }
+    throw new Error(`回复记录不存在: ${eventId}`)
   })
 }
 
@@ -314,7 +398,7 @@ export async function appendTurnToSessionFile(role: "user" | "assistant", text: 
     let filename = ""
   try {
     const files = await invoke<string[]>("list_session_files")
-    const match = files.find(f => f.startsWith(targetSession.sessionId))
+    const match = files.find(f => parseSessionFilename(f)?.sessionId === targetSession.sessionId)
     if (match) filename = match
   } catch { /* ignore */ }
   if (!filename) {
@@ -377,9 +461,9 @@ export async function writeCompactionSummary(opts: {
   problems: string; userMessages: string[]; tasks?: string[]
   currentWork: string; nextSteps: string
 }): Promise<void> {
-  if (!sessionMemory) sessionMemory = newSessionMemory()
-  sessionMemory.compactionSummary = { ...opts, tasks: opts.tasks ?? [], generatedAt: Date.now() }
-  await _syncSessionFile()
+  const sessionId = sessionMemory?.sessionId
+  if (!sessionId) throw new Error("没有活跃会话")
+  if (!await writeCompactionSummaryToSession(sessionId, { ...opts, tasks: opts.tasks ?? [] })) throw new Error("摘要写入失败")
   log.info("压缩摘要已写入 sessions/")
 }
 
@@ -391,7 +475,7 @@ export async function writeCompactionSummaryToSession(
   if (!sessionsDir) return false
   return withLock(`session:${sessionId}`, async () => {
     const files = await invoke<string[]>("list_session_files")
-    const filename = files.find(file => file.startsWith(sessionId))
+    const filename = files.find(file => parseSessionFilename(file)?.sessionId === sessionId)
     if (!filename) return false
     const current = await readSessionFile(filename)
     const version = readSessionVersion(current)
@@ -439,7 +523,7 @@ export function getCompactionSummarySync(): string {
 export async function getCompactionSummaryForSession(sessionId: string): Promise<string> {
   if (!sessionsDir) return ""
   const files = await invoke<string[]>("list_session_files")
-  const filename = files.find(file => file.startsWith(sessionId))
+  const filename = files.find(file => parseSessionFilename(file)?.sessionId === sessionId)
   if (!filename) return ""
   const raw = await readSessionFile(filename)
   const section = raw.match(/^## 摘要\s*\n([\s\S]*?)(?=^## |\s*$)/m)?.[1] ?? ""
@@ -450,33 +534,27 @@ export async function getCompactionSummaryForSession(sessionId: string): Promise
   return lines.length > 0 ? `\n\n[会话上下文]\n${lines.join("\n")}` : ""
 }
 
-async function _syncSessionFile(): Promise<void> {
-  if (!sessionMemory || !sessionsDir) return
-  const filename = makeSessionFilename(sessionMemory.sessionId, findTopicFromTurns(sessionMemory.turns))
-  const lines = buildSessionFileContent(sessionMemory)
-  await writeSessionFile(filename, lines.join("\n"))
-}
-
 // ── 归档 ──
 
 export async function archiveSession(): Promise<string | null> {
   if (!sessionMemory || sessionMemory.turns.length === 0) return null
-  const sid = sessionMemory.sessionId
-  const cs = sessionMemory.compactionSummary
-  const firstUser = sessionMemory.turns.find(t => t.role === "user")
-  const topic = findTopicFromTurns(sessionMemory.turns)
-  const filename = makeSessionFilename(sid, topic)
-  const lines = buildSessionFileContent(sessionMemory)
-  lines.splice(3, 0, `> 归档: ${localTime(new Date())}`)
-  const ok = await writeSessionFile(filename, lines.join("\n"))
+  const captured = sessionMemory
+  const sid = captured.sessionId
+  const cs = captured.compactionSummary
+  const firstUser = captured.turns.find(t => t.role === "user")
+  const topic = findTopicFromTurns(captured.turns)
+  const files = await invoke<string[]>("list_session_files")
+  const filename = files.find(file => parseSessionFilename(file)?.sessionId === sid) ?? makeSessionFilename(sid, topic)
+  await flushSessionWrites()
+  const ok = await updateSessionDocument(sid, raw => raw.replace(/^> 归档:.*\n/gm, "").replace(/^## 摘要/m, `> 归档: ${localTime(new Date())}\n\n## 摘要`))
   if (!ok) { log.error("会话归档写入失败:", filename); return null }
   projectEntries.push({
-    sessionFile: filename, date: localDate(), rounds: sessionMemory.turns.length,
+    sessionFile: filename, date: localDate(), rounds: captured.turns.length,
     mainRequest: cs?.mainRequest ?? firstUser?.text.substring(0, 50) ?? "无",
     keyTech: cs?.keyTech ?? [],
   })
-  log.info(`会话已归档: sessions/${filename} (${sessionMemory.turns.length} 轮) → Project.md`)
-  sessionMemory = newSessionMemory()
+  log.info(`会话已归档: sessions/${filename} (${captured.turns.length} 轮) → Project.md`)
+  if (sessionMemory === captured) { activeSelection++; sessionMemory = newSessionMemory() }
   return sid
 }
 
