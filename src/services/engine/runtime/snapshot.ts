@@ -32,6 +32,9 @@ export interface PromptSnapshotInput {
   llmMessages: Array<Omit<PromptLlmMessage, "contentHash"> & { content?: string }>
   transforms: PromptTransform[]
   estimatedInputTokens: number
+  budget?: import("@/services/context").ContextBudget
+  allocations?: import("./types").ContextAllocation[]
+  contextEpoch?: number
   actualInputTokens?: number
   actualOutputTokens?: number
   cache?: PromptCacheInfo
@@ -88,10 +91,10 @@ export function redactText(value: string): RedactedText {
   return { text, redactions: [...redactions] }
 }
 
-function redactContextBlock(block: ContextBlock, redactions: Set<string>): ContextBlock {
+async function redactContextBlock(block: ContextBlock, redactions: Set<string>): Promise<ContextBlock> {
   const result = redactText(block.text)
   result.redactions.forEach(item => redactions.add(item))
-  return { ...block, text: result.text }
+  return { ...block, text: "", contentHash: await sha256Text(stableSerialize(result.text)) }
 }
 
 function hashableMessageContent(content: string | undefined): string {
@@ -108,7 +111,7 @@ export async function createPromptSnapshot(input: PromptSnapshotInput): Promise<
   const provider = redactText(input.provider)
   model.redactions.forEach(item => redactions.add(item))
   provider.redactions.forEach(item => redactions.add(item))
-  const systemBlocks = input.systemBlocks.map(block => redactContextBlock(block, redactions))
+  const systemBlocks = await Promise.all(input.systemBlocks.map(block => redactContextBlock(block, redactions)))
   const agentMessages = await Promise.all(input.agentMessages.map(async message => {
     const contentHash = await sha256Text(hashableMessageContent(message.content))
     const result: PromptAgentMessage = { id: message.id, role: message.role, contentHash }
@@ -143,6 +146,9 @@ export async function createPromptSnapshot(input: PromptSnapshotInput): Promise<
     llmMessages,
     transforms: input.transforms.map(transform => ({ ...transform, derivedFrom: [...transform.derivedFrom] })),
     estimatedInputTokens: input.estimatedInputTokens,
+    ...(input.budget ? { budget: { ...input.budget } } : {}),
+    ...(input.allocations ? { allocations: input.allocations.map(allocation => ({ ...allocation })) } : {}),
+    ...(input.contextEpoch === undefined ? {} : { contextEpoch: input.contextEpoch }),
     ...(input.actualInputTokens === undefined ? {} : { actualInputTokens: input.actualInputTokens }),
     ...(input.actualOutputTokens === undefined ? {} : { actualOutputTokens: input.actualOutputTokens }),
     cache: { ...(input.cache ?? {}) },

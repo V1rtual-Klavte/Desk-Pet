@@ -16,12 +16,14 @@ export {
   resetPiRuntimeProviderForTest,
   toPiReasoningLevel,
 } from "./model-gateway"
-export type { PiRuntimeProviderOverride, PiTextCallInput, PiTextCallResult } from "./model-gateway"
+export type { PiModel, PiRuntimeProviderOverride, PiTextCallInput, PiTextCallResult } from "./model-gateway"
 
 export {
   MAX_PROVIDER_RESPONSE_BYTES,
   PROVIDER_TIMEOUT_MS,
   capProviderResponseBody,
   guardProviderFetch,
+  configuredProviderOrigin,
+  createProviderFetchGuard,
   validateProviderUrl,
 } from "./net-guard"

@@ -61,7 +61,6 @@ ai:
     maxToolCallsPerTurn: 5
     toolTimeoutMs: 30000
     turnTimeoutMs: 120000
-    contextCompactAt: 0.95
     dedupWindowMs: 30000
     maxVisibleMessages: 200
 
@@ -150,6 +149,7 @@ tools:
         description: "🐙 GitHub — 仓库/Issue/PR 管理（需 Token）"
 
   skill:
+    # Skill 首回合只列元数据，正文由 read 工具按需读取；pet/both policy 可用于轻量模式。
     enabled: false
 
 # ══════════════════════════════════════════

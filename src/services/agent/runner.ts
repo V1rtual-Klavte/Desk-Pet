@@ -1,3 +1,4 @@
+import { ContextBudgetError } from "@/services/context"
 // ==========================================
 // Agent 运行器 —— sendMessage / initChat
 // 接入 Agent Loop + 中间件 + 工具系统
@@ -22,6 +23,7 @@ import { reportError } from "@/services/error"
 import { agentSlots, RuntimeQueue } from "@/services/engine/runtime"
 import type { IngressEnvelope, MessagePriority, QueueAck, QueueEntry, SessionTurnRecord } from "@/services/engine/runtime"
 import { MemoryService, planCheckpointStore, queueAckEvent, queueEntryEvent, queueRecoveryEvent, sessionTurnStore } from "@/services/agent/memory"
+import { applyPendingConversationCapabilities } from "@/services/init"
 
 const log = createLogger("Agent")
 
@@ -228,7 +230,7 @@ async function dispatchMessage(text: string, options: SendMessageOptions = {}, p
         makeIngressEnvelope(text, preResult.normalizedText, originSessionId, requestId, priority),
         text.startsWith("/") ? "prompt" : agentSlots.deliveryMode(originSessionId) ?? "steer",
       )
-      const receipt = text.startsWith("/") ? undefined : deliverActiveTurn(originSessionId, preResult.normalizedText)
+      const receipt = text.startsWith("/") ? undefined : deliverActiveTurn(originSessionId, preResult.normalizedText, `${entry.requestId}:user`)
       if (receipt) {
         await sessionTurnStore.transition(entry.turnId, "dispatching")
         const ack = runtimeQueue.acknowledge(entry.queueId, receipt)
@@ -351,12 +353,7 @@ async function dispatchMessage(text: string, options: SendMessageOptions = {}, p
     await sessionTurnStore.transition(activeQueueEntry.turnId, "running")
     toolCallHistory.clear()
     const storedMessages = await MemoryService.loadSessionMessages(originSessionId) ?? []
-    const contextMessages = storedMessages.map((message, index) => ({
-      id: `session:${originSessionId}:${message.timestamp}:${index}`,
-      role: message.role,
-      text: message.text,
-      timestamp: message.timestamp,
-    }))
+    const contextMessages = storedMessages
     const result = await runPiAgentTurn({
       sessionId: originSessionId,
       userText: preResult.text,
@@ -422,8 +419,8 @@ async function dispatchMessage(text: string, options: SendMessageOptions = {}, p
     }
     log.error("sendMessage 失败", formatError(e))
     // 走全局通道：终端/日志文件留完整记录，开发期还会弹覆盖层
-    reportError("runner", e, { kind: "LLM 调用失败" })
-    const fallback = getFallbackReply("llmUnavailable")
+    if (!(e instanceof ContextBudgetError)) reportError("runner", e, { kind: "LLM 调用失败" })
+    const fallback = e instanceof ContextBudgetError ? e.message : getFallbackReply("llmUnavailable")
     // ★ 同样校验会话
     if (getActiveSessionId() !== originSessionId) {
       const { MemoryService } = await import("@/services/agent/memory")
@@ -447,6 +444,7 @@ async function dispatchMessage(text: string, options: SendMessageOptions = {}, p
   } finally {
     agentSlots.end(originSessionId, runGeneration)
     setAIGenerating(agentSlots.isAnyRunning())
+    await applyPendingConversationCapabilities()
     if (runtimeQueue.peek(originSessionId)) void drainRuntimeQueue(originSessionId)
   }
 }
@@ -510,6 +508,7 @@ export async function sendActiveMessage(userText: string): Promise<string> {
   } finally {
     agentSlots.end(sessionId, runGeneration)
     setAIGenerating(agentSlots.isAnyRunning())
+    await applyPendingConversationCapabilities()
   }
 }
 

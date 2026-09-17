@@ -24,6 +24,8 @@ export interface ReplyResult {
 export interface ReplyOptions {
   /** 最大字符数（超出裁断并加省略号） */
   maxLength?: number
+  /** A stale Card run may display text but cannot mutate the current Card. */
+  applyRuntimeData?: boolean
 }
 
 const DEFAULT_MAX_LENGTH = 500
@@ -37,7 +39,7 @@ interface ParsedRuntime {
   runtime: { emotion: string | null; vars: Record<string, string> }
 }
 
-function parseRuntimeData(raw: string): ParsedRuntime {
+export function parseRuntimeData(raw: string): ParsedRuntime {
   const match = raw.match(RUNTIME_RE)
   if (!match) return { text: raw, runtime: { emotion: null, vars: {} } }
 
@@ -85,12 +87,12 @@ export async function generateReply(
   const { expression, sound } = resolveEmotion(runtime.emotion, emotionMappings)
 
   // 3. 变量批量写入
-  if (runtime.vars && Object.keys(runtime.vars).length > 0) {
+  if (options.applyRuntimeData !== false && runtime.vars && Object.keys(runtime.vars).length > 0) {
     batchWriteVars(runtime.vars)
   }
 
   // 4. 落盘
-  await savePoolToDisk()
+  if (options.applyRuntimeData !== false) await savePoolToDisk()
 
   // 5. trim + 截断
   let text = cleanText.trim()

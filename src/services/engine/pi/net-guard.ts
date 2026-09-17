@@ -1,5 +1,5 @@
 // ==========================================
-// Provider 网络防护 —— 协议白名单 + 响应体大小上限
+// Provider 网络防护 —— 固定 origin、禁止重定向与响应体大小上限
 // ==========================================
 //
 // 零依赖叶子模块：只回答「请求能发向哪里」和「最多读多少字节」两个问题，
@@ -16,7 +16,19 @@ export const MAX_PROVIDER_RESPONSE_BYTES = 4 * 1024 * 1024
 export function validateProviderUrl(value: string): URL {
   const parsed = new URL(value)
   if (parsed.protocol !== "http:" && parsed.protocol !== "https:") throw new Error("Provider URL 协议不允许")
+  if (parsed.username || parsed.password) throw new Error("Provider URL 不允许内嵌凭据")
   return parsed
+}
+
+/**
+ * 把用户设置的 endpoint 归一为唯一允许的 Provider origin。
+ *
+ * localhost 与私有地址是用户显式配置的本地模型服务，允许使用；本层只约束
+ * 浏览器实际请求不会离开这个 origin。没有 Rust 代理时无法防止 DNS rebinding，
+ * 因而不能把它描述成通用 SSRF/DNS 防护。
+ */
+export function configuredProviderOrigin(endpoint: string): string {
+  return validateProviderUrl(endpoint).origin
 }
 
 function requestUrl(input: RequestInfo | URL): string {
@@ -80,6 +92,20 @@ export async function capProviderResponseBody(response: Response): Promise<Respo
  */
 export async function guardProviderFetch(input: RequestInfo | URL, init?: RequestInit): Promise<Response> {
   validateProviderUrl(requestUrl(input))
-  const response = await globalThis.fetch(input, init)
+  // 不跟随 30x，避免 Authorization/API Key 被转发到重定向目标。
+  const response = await globalThis.fetch(input, { ...init, redirect: "error" })
   return capProviderResponseBody(response)
+}
+
+/**
+ * 为一个配置快照创建 fetch 边界。所有请求都必须留在 endpoint 的同一 origin；
+ * path/query 可由 pi-ai 正常追加，host、scheme 或 port 的漂移一律拒绝。
+ */
+export function createProviderFetchGuard(endpoint: string): typeof fetch {
+  const origin = configuredProviderOrigin(endpoint)
+  return async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+    const request = validateProviderUrl(requestUrl(input))
+    if (request.origin !== origin) throw new Error("Provider 请求目标不在已配置 origin 内")
+    return guardProviderFetch(input, init)
+  }
 }

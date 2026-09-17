@@ -7,24 +7,26 @@ import type { AgentMessage, AgentTool } from "@earendil-works/pi-agent-core"
 import type { AssistantMessage, Message as PiMessage } from "@earendil-works/pi-ai"
 import type { Message, ThinkingEffort, ToolCallRequest } from "@/services/agent/types"
 import type { ContextBlock, IngressEnvelope, MessageTaint, PromptSnapshot, PromptTransform, SessionEvent } from "@/services/engine/runtime"
-import { createMessageId, createToolMessage } from "@/services/agent/types"
-import { MemoryService, recallMemory, planCheckpointStore, planStepEffectClass } from "@/services/agent/memory"
-import { buildPrompt } from "@/services/context"
-import { compactOnHighUsage, estimateTokens } from "@/services/engine/compactor"
+import { createMessageId } from "@/services/agent/types"
+import { MemoryService, recallMemory, planCheckpointStore, planStepEffectClass, appendTranscriptMessage, finalizeTranscriptMessage, readContextView } from "@/services/agent/memory"
+import { buildPrompt, contextBudget, CONTEXT_RATIOS, estimateRequestTokens, estimateContextTokens, estimateMessageTokens, ContextBudgetError, projectToolMessages } from "@/services/context"
+import { compactSession, estimateTokens } from "@/services/engine/compactor"
 import { bindRunningPlan, clearRunningPlan, notifyPlanEnd, requestPlanConfirm, requestPlanStepDecision } from "@/services/engine/plan-confirmation"
 import { executePlan, evaluateComplexity, formatStepResults, generatePlan } from "@/services/engine/planner"
 import { recordMessage, recordToolCall, transition } from "@/services/engine/session"
 import { getEffectiveThinkingEffort, updateRequestStats } from "@/services/debug"
+import { getSkillsPromptBlock, getSkillCatalogFingerprint } from "@/services/skill"
+import { formatPoolForPrompt } from "@/services/personality/variable-pool"
 import { getActiveCard } from "@/services/personality/registry"
 import { getPoolSnapshot, getSessionStart, applyResetPolicies, refreshVariablePool, updateInteractionVar } from "@/services/personality/variable-pool"
 import { PetPersonalityMiddleware } from "@/services/personality/middleware"
 import type { PersonalityEffect } from "@/services/personality/middleware"
 import { getFallbackReply, getSimpleStage, getStagePrompt } from "@/services/personality/stages-cache"
-import { generateReply } from "@/services/reply"
-import { checkSafety, requestConfirm, trustSignature, trustToolInSession } from "@/services/safety"
+import { generateReply, parseRuntimeData } from "@/services/reply"
+import { authorizeToolExecution, invalidatePermissionScope } from "@/services/safety"
 import { getActiveSessionId, pushMessage } from "@/services/session/store"
 import { getToolByName, getToolsForMode } from "@/services/tool/registry"
-import { executeTool } from "@/services/tool/router"
+import { executeToolDefinition, createSessionTranscriptTool, SESSION_TRANSCRIPT_TOOL, toToolDeclaration } from "@/services/tool"
 import type { ActionCategory, ToolDef } from "@/services/tool/types"
 import { aiConfig, generalConfig, loopConfig, planConfig, safetyConfig } from "@/services/config"
 import { emit } from "@tauri-apps/api/event"
@@ -50,8 +52,8 @@ const lastSeenSessionStarts = new Map<string, number>()
  *
  * @returns 是否有正在执行的回合可以接收插话
  */
-export function deliverActiveTurn(sessionId: string, text: string): "steered" | "followup" | undefined {
-  return agentSlots.deliver(sessionId, text)
+export function deliverActiveTurn(sessionId: string, text: string, eventId?: string): "steered" | "followup" | undefined {
+  return agentSlots.deliver(sessionId, text, eventId)
 }
 
 export interface PiAgentTurnInput {
@@ -143,6 +145,12 @@ interface PiLoopInput {
   requestId?: string
   turnId?: string
   ingress?: IngressEnvelope
+  signal?: AbortSignal
+  allocations?: import("@/services/engine/runtime").ContextAllocation[]
+  skillCatalogFingerprint?: string
+  transientUserInput?: boolean
+  model?: ReturnType<typeof getPiModel>
+  rebuildContext?: (messages: Message[], summary: string) => ReturnType<typeof buildPrompt>
 }
 
 /**
@@ -157,6 +165,7 @@ interface PiLoopOutput {
   reply: string
   toolCallsMade: number
   error?: string
+  finalMessageId?: string
 }
 
 /** Main pet turn. This replaces the deleted hand-written Agent Loop. */
@@ -167,27 +176,54 @@ export async function runPiAgentTurn(input: PiAgentTurnInput): Promise<PiAgentTu
   const effects: PiAgentTurnOutput["effects"] = []
 
   const turnSessionId = input.sessionId
-  recordMessage(turnSessionId)
-  // 主动搭话的 userText 是系统拼的窗口上下文，不是用户输入。落盘会让会话主题
-  // 提取拿它当首条用户消息，重载后还会显示成用户气泡并进入长期记忆。
-  if (!isActiveMessage) await persistTurn(turnSessionId, "user", userText)
-  else await persistRuntimeEvent(turnSessionId, userText, input.ingress)
-
+  const requestId = input.ingress?.requestId ?? `runtime-${input.turnId ?? crypto.randomUUID()}`
+  const mode = generalConfig.assistantMode ? "assistant" as const : "pet" as const
+  const overrideModel = getPiRuntimeProviderOverride()?.model
+  const model = overrideModel ? { ...overrideModel, contextWindow: Math.min(aiConfig.contextMaxTokens, overrideModel.contextWindow),
+    maxTokens: contextBudget(Math.min(aiConfig.contextMaxTokens, overrideModel.contextWindow)).outputReserve } : getPiModel()
+  const windowTokens = model.contextWindow
+  const controller = new AbortController()
+  const slotSignal = input.runGeneration === undefined ? undefined : agentSlots.signal(turnSessionId, input.runGeneration)
+  const cancel = () => controller.abort(slotSignal?.reason)
+  if (slotSignal?.aborted) cancel()
+  else slotSignal?.addEventListener("abort", cancel, { once: true })
+  const runSignal = controller.signal
+  const deadline = Date.now() + loopConfig.turnTimeoutMs
+  const runTimer = setTimeout(() => controller.abort(new Error("Agent 执行超时")), loopConfig.turnTimeoutMs)
+  const runIsCurrent = () => !runSignal.aborted && (input.runGeneration === undefined
+    || (agentSlots.snapshot(turnSessionId)?.generation === input.runGeneration && agentSlots.isRunning(turnSessionId)))
+  const assertCurrent = () => { if (!runIsCurrent()) throw new Error("回合已取消或运行代际已失效") }
   refreshVariablePool()
   updateInteractionVar("unansweredCount", unansweredCount)
   const currentSessionStart = getSessionStart()
   const isNewSession = currentSessionStart !== lastSeenSessionStarts.get(turnSessionId)
   lastSeenSessionStarts.set(turnSessionId, currentSessionStart)
   applyResetPolicies(new Date(), isNewSession)
-
-  const card = getActiveCard()
+  const currentCard = getActiveCard()
+  const card = currentCard ? JSON.parse(JSON.stringify(currentCard)) as typeof currentCard : null
+  const pool = getPoolSnapshot()
   const thinkingEffort = getEffectiveThinkingEffort()
+  const frozenUserContext = { candyInstructions: MemoryService.getCandyInstructionsSync(),
+    userProfileText: MemoryService.getUserProfileSync(),
+    dynamicPrompt: `${formatPoolForPrompt(pool)}${thinkingEffort === "low" ? "\n[请快速简要回答]" : thinkingEffort === "high" ? "\n[请仔细深入思考]" : ""}` }
+  try {
+  assertCurrent()
+  const { prepareConversationCapabilities } = await import("@/services/init")
+  await prepareConversationCapabilities(mode, requestId)
+  assertCurrent()
+  const frozenTools = isActiveMessage ? [] : [...getToolsForMode(mode)]
+  if (frozenTools.length) frozenTools.push(createSessionTranscriptTool(turnSessionId))
+  recordMessage(turnSessionId)
+  if (!isActiveMessage) await persistTurn(turnSessionId, "user", userText, `${requestId}:user`, runIsCurrent)
+  else await persistRuntimeEvent(turnSessionId, userText, input.ingress)
+  assertCurrent()
   let planStepContext = ""
   let planUserText = userText
-  if (generalConfig.assistantMode && planConfig.enabled) {
+  if (mode === "assistant" && planConfig.enabled) {
     const forcePlan = userText.startsWith("--plan")
     if (forcePlan) planUserText = userText.replace(/^--plan\s*/, "")
     const complexity = await evaluateComplexity(planUserText, planConfig.keywords)
+    assertCurrent()
     if (complexity.score >= planConfig.complexityThreshold) {
       transition("PLANNING", turnSessionId)
       applyEffect(PetPersonalityMiddleware.wrap("planning"), effects)
@@ -197,6 +233,7 @@ export async function runPiAgentTurn(input: PiAgentTurnInput): Promise<PiAgentTu
         availableTools: getToolsForMode("assistant"),
         thinkingEffort: planConfig.thinkingEffort,
       })
+      assertCurrent()
       if (plan.steps.length > 0) {
         const now = Date.now()
         const planId = `plan-${input.ingress?.requestId ?? crypto.randomUUID()}`
@@ -239,7 +276,7 @@ export async function runPiAgentTurn(input: PiAgentTurnInput): Promise<PiAgentTu
           notifyPlanEnd("cancelled")
           transition("WAITING", turnSessionId)
           const reply = getSimpleStage("planning") ?? "好的，已取消计划～"
-          await persistTurn(turnSessionId, "assistant", reply)
+          await persistTurn(turnSessionId, "assistant", reply, `${requestId}:failure`)
           return { reply, toolCallHistory, retriesUsed: 0, effects: [] }
         }
         await planCheckpointStore.transitionPlan(planId, "running")
@@ -275,29 +312,45 @@ export async function runPiAgentTurn(input: PiAgentTurnInput): Promise<PiAgentTu
     }
   }
 
-  const requestId = input.ingress?.requestId ?? `runtime-${input.turnId ?? turnSessionId}`
   let memoryProjections = [] as import("@/services/agent/memory").MemoryProjection[]
   try {
     memoryProjections = await recallMemory({
       requestId,
       sessionId: turnSessionId,
       query: userText,
-      tokenBudget: Math.floor(aiConfig.contextMaxTokens * 0.15),
+      tokenBudget: Math.floor(contextBudget(windowTokens, model.maxTokens).normalInputTarget * CONTEXT_RATIOS.memory),
     })
   } catch (error) {
     log.warn("MemoryProvider 召回失败，按空召回继续", formatError(error))
   }
-  const sessionSummary = await MemoryService.getCompactionSummaryForSession(turnSessionId)
-  const context = buildPrompt({
-    recentMessages: chatMessages,
-    userText,
-    unansweredCount,
-    thinkingEffort,
-    isActiveMessage,
-    memoryProjections,
-    sessionSummary,
-    ...(planStepContext ? { ephemeralText: planStepContext.slice(0, 4000), ephemeralOrigin: "plan" as const } : {}),
-  }, card, getPoolSnapshot())
+  assertCurrent()
+  const frozenContext = { ...frozenUserContext, skillsPromptBlock: getSkillsPromptBlock({ mode }) }
+  const skillCatalogFingerprint = getSkillCatalogFingerprint() ?? undefined
+  const rebuildContext = (messages: Message[], summary: string) => buildPrompt({
+    ...frozenContext,
+    recentMessages: projectToolMessages(messages, windowTokens, SESSION_TRANSCRIPT_TOOL), userText, unansweredCount, thinkingEffort, isActiveMessage,
+    currentInputInTranscript: !isActiveMessage,
+    memoryProjections, sessionSummary: summary, mode, contextMaxTokens: windowTokens, maxOutputTokens: model.maxTokens,
+    tools: frozenTools.map(toToolDeclaration),
+    ...(planStepContext ? { ephemeralText: planStepContext, ephemeralOrigin: "plan" as const } : {}),
+  }, card, pool)
+  let view = await readContextView(turnSessionId)
+  // Initial preflight belongs to the host; Pi does not prepareNextTurn before request one.
+  let context: ReturnType<typeof buildPrompt>
+  while (true) {
+    let budgetFailure: ContextBudgetError | undefined
+    try { context = rebuildContext(view.messages, view.summary) }
+    catch (error) { if (!(error instanceof ContextBudgetError)) throw error; budgetFailure = error }
+    if (!budgetFailure && !context!.overNormalTarget) break
+    const outcome = await compactSession({ sessionId: turnSessionId, mode, runGeneration: input.runGeneration ?? 0,
+      contextMaxTokens: windowTokens, model, signal: runSignal, trigger: "preflight",
+      isCurrent: runIsCurrent })
+    if (outcome.status !== "committed") {
+      if (budgetFailure) throw budgetFailure
+      break // Failed summaries never discard history; a request below hard limit remains safe.
+    }
+    view = await readContextView(turnSessionId)
+  }
   const promptTransforms: PromptTransform[] = []
   if (input.ingress && input.ingress.rawText !== userText) {
     promptTransforms.push(await createPromptRewrite({
@@ -313,25 +366,26 @@ export async function runPiAgentTurn(input: PiAgentTurnInput): Promise<PiAgentTu
 
   let retriesUsed = 0
   let rawReply = ""
-  const deadline = Date.now() + loopConfig.turnTimeoutMs
+  let finalMessageId: string | undefined
   for (let attempt = 0; attempt <= loopConfig.maxRetry; attempt++) {
     const result = await runPiLoop({
       userText,
-      chatMessages: context.recentMessages,
-      systemPrompt: context.systemPrompt,
-      tools: isActiveMessage ? [] : getToolsForMode(),
+      chatMessages: context!.recentMessages,
+      systemPrompt: context!.systemPrompt,
+      tools: frozenTools,
+      model, signal: runSignal, skillCatalogFingerprint, rebuildContext, transientUserInput: isActiveMessage,
       maxToolCalls: loopConfig.maxToolCallsPerTurn,
       timeoutMs: Math.max(1, deadline - Date.now()),
       timeoutReply: getFallbackReply("turnTimeout"),
       thinkingEffort,
-      mode: generalConfig.assistantMode ? "assistant" : "pet",
+      mode,
       sessionId: turnSessionId,
       exposeAsActiveAgent: true,
       runGeneration: input.runGeneration,
       effects,
       toolCallHistory,
       persistToolMessages: true,
-      contextBlocks: context.blocks,
+      contextBlocks: context!.blocks, allocations: context!.allocations,
       promptTransforms,
       requestId,
       turnId: input.turnId,
@@ -339,6 +393,7 @@ export async function runPiAgentTurn(input: PiAgentTurnInput): Promise<PiAgentTu
     })
     if (!result.error) {
       rawReply = result.reply
+      finalMessageId = result.finalMessageId
       retriesUsed = attempt
       break
     }
@@ -348,8 +403,8 @@ export async function runPiAgentTurn(input: PiAgentTurnInput): Promise<PiAgentTu
       || failureKind === "auth" || failureKind === "timeout" || Date.now() >= deadline) {
       transition("WAITING", turnSessionId)
       applyEffect(PetPersonalityMiddleware.wrap("error", { message: result.error }), effects)
-      const reply = getFallbackReply("maxRetriesExhausted")
-      await persistTurn(turnSessionId, "assistant", reply)
+      const reply = result.error.includes("上下文需要约") ? result.error : getFallbackReply("maxRetriesExhausted")
+      await persistTurn(turnSessionId, "assistant", reply, `${requestId}:failure`)
       return {
         reply,
         toolCallHistory,
@@ -361,27 +416,29 @@ export async function runPiAgentTurn(input: PiAgentTurnInput): Promise<PiAgentTu
     }
   }
 
-  const processed = await generateReply(rawReply, card)
+  assertCurrent()
+  const liveCard = getActiveCard()
+  const cardIsCurrent = liveCard?.id === card?.id && liveCard?.hash === card?.hash && liveCard?.version === card?.version
+  const processed = await generateReply(rawReply, card, { applyRuntimeData: cardIsCurrent })
   effects.push({ expression: processed.expression, soundEvent: processed.sound })
-  emit("deskpet-expression", { expression: processed.expression }).catch(() => {})
-  if (processed.sound) emit("deskpet-sound", { event: processed.sound }).catch(() => {})
+  if (cardIsCurrent && getActiveSessionId() === turnSessionId) emit("deskpet-expression", { expression: processed.expression }).catch(() => {})
+  if (cardIsCurrent && getActiveSessionId() === turnSessionId && processed.sound) emit("deskpet-sound", { event: processed.sound }).catch(() => {})
   transition("WAITING", turnSessionId)
-  await persistTurn(turnSessionId, "assistant", processed.text)
-  compactOnHighUsage(turnSessionId, chatMessages, userText)
+  if (finalMessageId) await finalizeTranscriptMessage(turnSessionId, finalMessageId, processed.text)
+  else await persistTurn(turnSessionId, "assistant", processed.text, `${requestId}:assistant`)
   return { reply: processed.text, toolCallHistory, retriesUsed, effects, runtimeData: processed.runtimeData }
+  } finally {
+    clearTimeout(runTimer)
+    slotSignal?.removeEventListener("abort", cancel)
+    const { releaseMcpOwner } = await import("@/services/tool")
+    await releaseMcpOwner(requestId)
+  }
 }
 
-/**
- * 正文只写一次：`deskpet-turn` 记录是会话正文的唯一真相源，事件视图在读取时
- * 由 `memory/events.ts` 从 turn 记录投影出 `user_message` / `assistant_message`。
- * 不要在这里补回 `persistRuntimeEvent` —— 那会把同一句话双写成两份。
- */
-async function persistTurn(sessionId: string, role: "user" | "assistant", text: string): Promise<void> {
-  if (!sessionId || MemoryService.sessionId === sessionId) {
-    MemoryService.recordTurn(role, text)
-  } else {
-    await MemoryService.recordTurnToSession(sessionId, role, text)
-  }
+/** New records keep complete transcript payloads; old deskpet-turn records remain readable. */
+async function persistTurn(sessionId: string, role: "user" | "assistant", text: string, eventId: string, isCurrent?: () => boolean): Promise<void> {
+  await appendTranscriptMessage(sessionId, { id: eventId, eventId, role, text, timestamp: Date.now(),
+    origin: role, apiRoundId: `${eventId.replace(/:(user|assistant|failure)$/, "")}:1`, taint: role === "user" ? "trusted_user" : "derived" }, isCurrent)
 }
 
 /** 仅用于不进 transcript 的消息（当前只有主动搭话的 active 上下文）。 */
@@ -411,7 +468,7 @@ async function persistRuntimeEvent(sessionId: string, text: string, ingress?: In
   const written = await MemoryService.appendSessionEventToSession(sessionId, event, text)
   if (!written) {
     await MemoryService.createSessionFile(sessionId)
-    await MemoryService.appendSessionEventToSession(sessionId, event, text)
+    if (!await MemoryService.appendSessionEventToSession(sessionId, event, text)) throw new Error("主动上下文事件写入失败")
   }
 }
 
@@ -473,11 +530,19 @@ async function runPiLoop(input: PiLoopInput): Promise<PiLoopOutput> {
   const effects = input.effects
   const toolsByName = new Map(input.tools.map(tool => [tool.name, tool]))
   let toolCallsMade = 0
-  const persistedMessageIds = new Set<string>()
+  const messageIds = new WeakMap<object, string>()
+  let transcriptWrites = Promise.resolve()
+  let persistenceError: unknown
+  let apiRound = 0
+  let contextError: unknown
+  let requestSystemPrompt = input.systemPrompt
+  let requestBlocks = input.contextBlocks
+  let allocations = input.allocations
+  let contextEpoch = 0
   let stoppedAtToolLimit = false
   const traceContext = createRuntimeTraceContext(input.sessionId, input.requestId, input.turnId)
   const runtimeProvider = getPiRuntimeProviderOverride()
-  const model = runtimeProvider?.model ?? getPiModel()
+  const model = input.model ?? runtimeProvider?.model ?? getPiModel()
   const snapshotTasks: Promise<void>[] = []
   let snapshotSequence = 0
   let latestTransformedMessages: AgentMessage[] = []
@@ -486,11 +551,23 @@ async function runPiLoop(input: PiLoopInput): Promise<PiLoopOutput> {
     captureStage: PromptSnapshot["captureStage"],
     agentMessages: AgentMessage[],
     llmMessages: Array<{ role: string; content?: string; toolCallId?: string }>,
+    usage?: AssistantMessage["usage"],
   ): Promise<void> => {
     const snapshotId = `${traceContext.runId}:${captureStage}:${++snapshotSequence}`
+    // Tool rounds add messages after the initial builder. Refresh their allocation
+    // from the exact request projection, without counting Pi usage/timestamps.
+    const transient = agentMessages.filter(message => input.transientUserInput && message.role === "user" && !messageIds.has(message))
+    const transientTokens = transient.reduce((n, message) => n + estimateMessageTokens(message), 0)
+    const transcriptTokens = agentMessages.reduce((n, message) => n + estimateMessageTokens(message), 0) - transientTokens
+    const snapshotAllocations = allocations?.map(allocation => {
+      if (allocation.layer !== "transcript" && allocation.layer !== "ephemeral") return { ...allocation }
+      const used = allocation.layer === "transcript" ? transcriptTokens
+        : (requestBlocks ?? []).filter(block => block.layer === "ephemeral" && block.origin !== "active").reduce((n, block) => n + estimateContextTokens(block.text), 0) + transientTokens
+      return { ...allocation, requested: used, used, borrowed: Math.max(0, used - allocation.assigned), dropped: 0 }
+    })
     const toolSchemas = await Promise.all(input.tools.map(async tool => ({
       name: tool.name,
-      schemaHash: await sha256Text(stableSerialize(tool.parameters)),
+      schemaHash: await sha256Text(stableSerialize({ name: tool.name, description: tool.description, parameters: tool.parameters })),
       policyHash: await sha256Text(stableSerialize({ actionCategory: tool.actionCategory, safetyLevel: tool.safetyLevel })),
     })))
     const snapshot = await createPromptSnapshot({
@@ -503,19 +580,26 @@ async function runPiLoop(input: PiLoopInput): Promise<PiLoopOutput> {
       model: model.id,
       provider: model.provider,
       thinkingLevel: input.thinkingEffort,
-      systemBlocks: input.contextBlocks ?? [{
+      systemBlocks: requestBlocks ?? [{
         blockId: "static:sub-agent", layer: "static", source: "sub-agent",
-        text: input.systemPrompt, priority: 100, origin: "system", taint: "system",
+        text: requestSystemPrompt, priority: 100, origin: "system", taint: "system",
       }],
       toolSchemas,
       agentMessages: agentMessages.map((message, index) => ({
-        id: `agent:${index}`,
+        id: messageIds.get(message) ?? `agent:${index}`,
+        origin: input.transientUserInput ? "active" : message.role === "toolResult" ? "tool" : message.role === "assistant" ? "assistant" : "user",
         role: message.role,
         content: stableSerialize(message),
       })),
       llmMessages,
       transforms: input.promptTransforms ?? [],
-      estimatedInputTokens: Math.ceil(input.systemPrompt.length / 2.5) + estimateTokens(input.chatMessages),
+      actualInputTokens: usage?.input, actualOutputTokens: usage?.output,
+      contextEpoch, budget: contextBudget(model.contextWindow, model.maxTokens), allocations: snapshotAllocations,
+      cache: { sessionId: input.sessionId, prefixHash: await sha256Text(stableSerialize({
+        model: model.id, provider: model.provider, thinking: input.thinkingEffort,
+        blocks: (requestBlocks ?? []).filter(block => block.layer === "static"), toolSchemas, skillCatalogFingerprint: input.skillCatalogFingerprint,
+      })), cacheReadTokens: usage?.cacheRead, cacheWriteTokens: usage?.cacheWrite },
+      estimatedInputTokens: estimateRequestTokens(requestSystemPrompt, agentMessages, input.tools),
     })
     publishRuntimeTrace(traceContext, "prompt_snapshot", {
       snapshotId,
@@ -537,17 +621,52 @@ async function runPiLoop(input: PiLoopInput): Promise<PiLoopOutput> {
     thinkingEffort: input.thinkingEffort,
   })
 
+  const initialMessages = toPiMessages(input.chatMessages, model)
+  input.chatMessages.filter(m => m.role !== "system").forEach((message, index) => {
+    if (initialMessages[index]) messageIds.set(initialMessages[index]!, message.eventId ?? message.id)
+  })
+  const isCurrent = () => !input.exposeAsActiveAgent || input.runGeneration === undefined
+    || agentSlots.snapshot(input.sessionId!)?.generation === input.runGeneration
+  const flushTranscript = async () => { await transcriptWrites; if (persistenceError) throw persistenceError }
+  const enqueueTranscript = (message: AgentMessage) => {
+    if (!input.persistToolMessages || !input.sessionId || messageIds.has(message)) return
+    if (input.transientUserInput && message.role === "user") return
+    const id = (message as unknown as { deskpetEventId?: string }).deskpetEventId
+      ?? `${traceContext.runId}:${apiRound}:${message.role}:${createMessageId()}`
+    const appMessage = fromPiMessage(message, id, `${input.requestId ?? traceContext.runId}:${apiRound}`)
+    if (!appMessage) return
+    if (input.transientUserInput) appMessage.origin = "active"
+    messageIds.set(message, id)
+    transcriptWrites = transcriptWrites.then(() => appendTranscriptMessage(input.sessionId!, appMessage)).catch(error => {
+      persistenceError = error
+      agent.abort()
+    })
+    if (getActiveSessionId() === input.sessionId && (appMessage.role === "tool" || appMessage.toolCalls?.length)) pushMessage(appMessage)
+  }
+
   const agent = new Agent({
     initialState: {
       systemPrompt: input.systemPrompt,
       model,
       thinkingLevel: toPiAgentThinkingLevel(input.thinkingEffort),
       tools: input.tools.map(tool => toPiTool(tool, input, toolsByName, toolCallHistory, effects)),
-      messages: toPiMessages(input.chatMessages, model),
+      messages: initialMessages,
     },
-    streamFn: runtimeProvider?.streamFn ?? piStream,
+    streamFn: async (requestModel, context, options) => {
+      await flushTranscript()
+      if (contextError) throw contextError
+      if (!isCurrent()) throw new Error("回合代际已失效")
+      const budget = contextBudget(model.contextWindow, model.maxTokens)
+      const used = estimateRequestTokens(requestSystemPrompt, context.messages, context.tools ?? [])
+      if (used > budget.hardInputLimit) throw new ContextBudgetError(used, budget.hardInputLimit)
+      return (runtimeProvider?.streamFn ?? piStream)(requestModel, { ...context, systemPrompt: requestSystemPrompt }, options)
+    },
+    convertToLlm: messages => messages.map(message => {
+      const { deskpetEventId: _id, ...clean } = message as typeof message & { deskpetEventId?: string }
+      return clean as PiMessage
+    }),
     sessionId: input.sessionId,
-    // P5 safety gates are not complete yet; keep tool rounds deterministic and paired.
+    // Keep tool rounds deterministic; parallel execution is a separate optimization.
     toolExecution: "sequential",
     onPayload: (payload, model) => {
       const safePayload = redactText(stableSerialize(payload))
@@ -573,18 +692,62 @@ async function runPiLoop(input: PiLoopInput): Promise<PiLoopOutput> {
         headerNames: Object.keys(response.headers).sort(),
       })
     },
-    transformContext: async (messages) => {
-      latestTransformedMessages = messages
-      // Pi 的契约要求这个回调 "must not throw or reject"（agent-loop.js 里直接 await，没有 try/catch）。
-      // 快照属于遥测，失败只能降级为「跳过本次快照」，不能把整个 run 打断。
+    transformContext: async (messages, signal) => {
+      let prepared = messages
+      if (input.persistToolMessages) prepared = prepared.map(message => {
+        const id = messageIds.get(message)
+        if (message.role !== "toolResult" || !id) return message
+        const source: Message = { id, eventId: id, role: "tool", text: contentText(message.content), timestamp: message.timestamp }
+        const projected = projectToolMessages([source], model.contextWindow, SESSION_TRANSCRIPT_TOOL)[0]!
+        if (projected === source) return message
+        const reduced = { ...message, content: [{ type: "text" as const, text: projected.text }] }
+        messageIds.set(reduced, id)
+        return reduced
+      })
       try {
-        await captureSnapshot("transform_context", messages, [])
+        await flushTranscript()
+        const budget = contextBudget(model.contextWindow, model.maxTokens)
+        const used = estimateRequestTokens(requestSystemPrompt, prepared, input.tools)
+        if (input.persistToolMessages && input.sessionId && input.rebuildContext && used > budget.normalInputTarget) {
+          await Promise.allSettled(snapshotTasks)
+          // Only committed checkpoints authorize removal; unmapped/in-flight messages always stay.
+          let outcome = await compactSession({ sessionId: input.sessionId, mode: input.mode,
+            runGeneration: input.runGeneration ?? 0, trigger: "preflight", contextMaxTokens: model.contextWindow, model, signal, isCurrent })
+          while (outcome.status === "committed") {
+            const view = await readContextView(input.sessionId)
+            contextEpoch = view.checkpoint?.contextEpoch ?? 0
+            const retained = new Set(view.messages.map(m => m.eventId))
+            prepared = prepared.filter(message => !messageIds.has(message) || retained.has(messageIds.get(message)))
+            let budgetFailure: ContextBudgetError | undefined
+            try {
+              const next = input.rebuildContext(view.messages, view.summary)
+              requestSystemPrompt = next.systemPrompt; requestBlocks = next.blocks; allocations = next.allocations
+              if (!next.overNormalTarget) break
+            } catch (error) {
+              if (!(error instanceof ContextBudgetError)) throw error
+              budgetFailure = error
+            }
+            outcome = await compactSession({ sessionId: input.sessionId, mode: input.mode, runGeneration: input.runGeneration ?? 0,
+              trigger: "preflight", contextMaxTokens: model.contextWindow, model, signal, isCurrent })
+            if (budgetFailure && outcome.status !== "committed") throw budgetFailure
+          }
+        }
       } catch (error) {
-        log.warn("PromptSnapshot 采集失败，跳过本次快照", formatError(error))
+        contextError = error
       }
-      return messages
+      latestTransformedMessages = prepared
+      try { await captureSnapshot("transform_context", prepared, []) }
+      catch (error) { log.warn("PromptSnapshot 采集失败", formatError(error)) }
+      return prepared // Pi requires this hook never to reject; streamFn enforces any recorded error.
     },
-    beforeToolCall: async ({ toolCall, args }) => {
+    afterToolCall: async ({ result, isError }) => ({
+      content: result.content,
+      details: { ...(result.details && typeof result.details === "object" ? result.details : {}),
+        origin: "tool", taint: "untrusted_external", isError },
+      isError,
+    }),
+    beforeToolCall: async ({ toolCall, args }, signal) => {
+      try { await flushTranscript() } catch (error) { return { block: true, reason: formatError(error), terminate: true } }
       const tool = toolsByName.get(toolCall.name)
       if (toolCallsMade >= input.maxToolCalls) {
         stoppedAtToolLimit = true
@@ -604,24 +767,15 @@ async function runPiLoop(input: PiLoopInput): Promise<PiLoopOutput> {
       emitToolEvent("tool-executing", { toolId: tool.name, toolName: tool.name })
 
       const toolArgs = args as Record<string, unknown>
-      const safety = checkSafety(tool, toolArgs, { mode: input.mode })
-      if (!safety.allowed) {
-        const message = safety.personalityMessage ?? getStagePrompt("blocked", category) ?? "操作被拦截"
-        if (effects) applyEffect(PetPersonalityMiddleware.wrap("blocked", { actionCategory: category, toolName: tool.name }), effects)
-        toolCallHistory.push({ toolName: tool.name, status: "blocked", personalityMsg: message })
-        return { block: true, reason: message }
-      }
-      if (safety.needsConfirm && safety.confirmMessage) {
-        const approved = await requestConfirm(tool.name, safety.confirmMessage)
-        if (!approved) {
-          const message = getStagePrompt("blocked", category) ?? "操作被拦截"
-          toolCallHistory.push({ toolName: tool.name, status: "denied", personalityMsg: message })
-          return { block: true, reason: message }
-        }
-        // 记住的是「这次调用」，不是「这个工具」：换一组参数仍会重新确认。
-        // 不再限定 NORMAL —— DANGER 工具（如 app_open）按参数记住才有意义，
-        // 否则它每次都要重新询问同一个操作。
-        trustToolInSession(tool.name, trustSignature(toolArgs))
+      const permission = await authorizeToolExecution(tool, toolArgs, {
+        mode: input.mode, sessionId: input.sessionId ?? traceContext.runId,
+        runGeneration: input.runGeneration ?? 0, toolCallId: toolCall.id, signal,
+        isCurrent: () => isCurrent() && (!input.sessionId || getActiveSessionId() === input.sessionId),
+      })
+      if (permission.decision !== "allow") {
+        const reason = permission.reason ?? "操作未获授权"
+        toolCallHistory.push({ toolName: tool.name, status: permission.request ? "denied" : "blocked", personalityMsg: reason })
+        return { block: true, reason }
       }
       return undefined
     },
@@ -641,9 +795,8 @@ async function runPiLoop(input: PiLoopInput): Promise<PiLoopOutput> {
       if (event.type === "turn_start") agentSlots.markDeliveryPhase(input.sessionId, input.runGeneration, "streaming")
       if (event.type === "turn_end") agentSlots.markDeliveryPhase(input.sessionId, input.runGeneration, "settling")
     }
-    if (event.type === "message_end" && input.persistToolMessages) {
-      persistPiMessage(event.message, persistedMessageIds, input.sessionId)
-    }
+    if (event.type === "turn_start") apiRound++
+    if (event.type === "message_end") enqueueTranscript(event.message)
     if (event.type === "tool_execution_end") {
       emitToolEvent("tool-completed", {
         toolId: event.toolName,
@@ -659,12 +812,16 @@ async function runPiLoop(input: PiLoopInput): Promise<PiLoopOutput> {
 
   let timedOut = false
   const timer = setTimeout(() => { timedOut = true; agent.abort() }, input.timeoutMs)
+  const abort = () => agent.abort()
+  input.signal?.addEventListener("abort", abort, { once: true })
   try {
+    if (input.signal?.aborted) throw new Error("回合已取消")
     transition("GENERATING", input.sessionId)
     const initial = agent.state.messages
     const last = initial[initial.length - 1]
     if (last?.role === "user") await agent.continue()
     else await agent.prompt(input.userText)
+    await flushTranscript()
   } catch (error) {
     if (timedOut) {
       return { reply: input.timeoutReply ?? "", toolCallsMade, error: "Agent 执行超时" }
@@ -672,6 +829,9 @@ async function runPiLoop(input: PiLoopInput): Promise<PiLoopOutput> {
     return { reply: "", toolCallsMade, error: formatError(error) }
   } finally {
     clearTimeout(timer)
+    input.signal?.removeEventListener("abort", abort)
+    invalidatePermissionScope(input.sessionId ?? traceContext.runId, input.runGeneration ?? 0)
+    await transcriptWrites
     await Promise.allSettled(snapshotTasks)
     publishRuntimeTrace(traceContext, "agent_end", {
       toolCallsMade,
@@ -695,12 +855,16 @@ async function runPiLoop(input: PiLoopInput): Promise<PiLoopOutput> {
   updateRequestStats({
     promptTokens: lastAssistant.usage.input,
     completionTokens: lastAssistant.usage.output,
-    systemTokens: Math.ceil(input.systemPrompt.length / 2.5),
+    systemTokens: estimateContextTokens(requestSystemPrompt),
     conversationTokens: estimateTokens(input.chatMessages),
     toolCount: input.tools.length,
     toolNames: input.tools.map(tool => tool.name),
   })
-  return { reply: contentText(lastAssistant.content), toolCallsMade }
+  await captureSnapshot("provider_usage", latestTransformedMessages, [], lastAssistant.usage).catch(error => log.warn("usage 快照写入失败", formatError(error)))
+  publishRuntimeTrace(traceContext, "provider_usage", { contextEpoch,
+    inputTokens: lastAssistant.usage.input, outputTokens: lastAssistant.usage.output,
+    cacheRead: lastAssistant.usage.cacheRead, cacheWrite: lastAssistant.usage.cacheWrite })
+  return { reply: contentText(lastAssistant.content), toolCallsMade, finalMessageId: messageIds.get(lastAssistant) }
 }
 
 function toPiTool(
@@ -723,9 +887,11 @@ function toPiTool(
       if (!current) throw new Error(`工具未注册: ${tool.name}`)
       await input.onToolStart?.(tool.name, toolCallId)
       let toolSucceeded = false
-      let result: Awaited<ReturnType<typeof executeTool>>
+      let result: Awaited<ReturnType<typeof executeToolDefinition>>
       try {
-        result = await executeTool(tool.name, params as Record<string, unknown>, {
+        result = await executeToolDefinition(current, params as Record<string, unknown>, {
+          sessionId: input.sessionId, runGeneration: input.runGeneration,
+          isCurrent: () => input.runGeneration === undefined || agentSlots.snapshot(input.sessionId!)?.generation === input.runGeneration,
           mode: input.mode,
           toolCallId,
           operationId: toolCallId,
@@ -783,10 +949,11 @@ function toPiMessages(messages: Message[], model = getPiModel()): PiMessage[] {
     })
     result.push({
       role: "assistant",
-      content: toolCalls.length > 0 ? toolCalls : [{ type: "text" as const, text: message.text }],
+      content: toolCalls.length > 0 ? [...(message.text ? [{ type: "text" as const, text: message.text }] : []), ...toolCalls]
+        : [{ type: "text" as const, text: message.text }],
       api: "openai-completions",
       provider: model.provider,
-      model: aiConfig.model,
+      model: model.id,
       usage: EMPTY_USAGE,
       stopReason: "stop",
       timestamp: message.timestamp,
@@ -795,30 +962,18 @@ function toPiMessages(messages: Message[], model = getPiModel()): PiMessage[] {
   return result
 }
 
-function persistPiMessage(message: AgentMessage, seen: Set<string>, sessionId?: string): void {
-  if (sessionId && getActiveSessionId() !== sessionId) return
+function fromPiMessage(message: AgentMessage, id: string, apiRoundId: string): Message | undefined {
+  const identity = { id, eventId: id, apiRoundId, timestamp: "timestamp" in message ? message.timestamp : Date.now() }
+  if (message.role === "user") return { ...identity, role: "user", text: typeof message.content === "string" ? message.content : contentText(message.content), origin: "user", taint: "trusted_user" }
   if (message.role === "assistant") {
-    const toolCalls = message.content.filter((part): part is Extract<typeof part, { type: "toolCall" }> => part.type === "toolCall")
-    if (toolCalls.length === 0) return
-    const id = toolCalls.map(call => call.id).join(":")
-    if (seen.has(id)) return
-    seen.add(id)
-    const appMessage: Message = {
-      id: createMessageId(),
-      role: "assistant",
-      text: contentText(message.content),
-      toolCalls: toolCalls.map((call): ToolCallRequest => ({ id: call.id, name: call.name, arguments: JSON.stringify(call.arguments) })),
-      timestamp: message.timestamp,
-    }
-    pushMessage(appMessage)
-    return
+    if (message.stopReason === "error" || message.stopReason === "aborted") return undefined
+    const toolCalls = message.content.filter(part => part.type === "toolCall").map(call => ({ id: call.id, name: call.name, arguments: JSON.stringify(call.arguments) }))
+    return { ...identity, role: "assistant", text: parseRuntimeData(contentText(message.content)).text, origin: "assistant", taint: "derived",
+      ...(toolCalls.length ? { toolCalls } : {}) }
   }
-  if (message.role === "toolResult") {
-    const id = `tool:${message.toolCallId}`
-    if (seen.has(id)) return
-    seen.add(id)
-    pushMessage(createToolMessage(message.toolCallId, contentText(message.content), message.isError))
-  }
+  if (message.role === "toolResult") return { ...identity, role: "tool", text: contentText(message.content),
+    toolCallId: message.toolCallId, isError: message.isError, origin: "tool", taint: "untrusted_external" }
+  return undefined
 }
 
 function parseArgs(args: string): Record<string, unknown> {

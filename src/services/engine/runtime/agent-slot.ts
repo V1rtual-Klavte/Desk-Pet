@@ -1,6 +1,6 @@
 export interface SlotAgent {
-  steer(message: { role: "user"; content: string; timestamp: number }): void
-  followUp(message: { role: "user"; content: string; timestamp: number }): void
+  steer(message: { role: "user"; content: string; timestamp: number; deskpetEventId?: string }): void
+  followUp(message: { role: "user"; content: string; timestamp: number; deskpetEventId?: string }): void
   abort(): void
   waitForIdle(): Promise<void>
 }
@@ -23,6 +23,7 @@ interface AgentSlot {
   sessionId: string
   generation: number
   state: AgentSlotState
+  controller?: AbortController
   agent?: SlotAgent
   deliveryPhase?: AgentDeliveryPhase
   drainGeneration: number
@@ -34,15 +35,20 @@ interface AgentSlot {
 /** Per-session ownership for Pi runs. Generation checks prevent stale cleanup from releasing a newer run. */
 export class AgentSlotRegistry {
   private readonly slots = new Map<string, AgentSlot>()
+  /** 跨 slot 删除、reset 与重建单调递增，不能从 Map 中的旧 slot 推导。 */
+  private nextGeneration = 0
+  /** drain worker 同样需要跨删除的代际，避免旧 finally 清空新 drainPromise。 */
+  private nextDrainGeneration = 0
 
   begin(sessionId: string): number | undefined {
     const current = this.slots.get(sessionId)
     if (current?.state === "running") return undefined
-    const generation = (current?.generation ?? 0) + 1
+    const generation = ++this.nextGeneration
     this.slots.set(sessionId, {
       sessionId,
       generation,
       state: "running",
+      controller: new AbortController(),
       drainGeneration: current?.drainGeneration ?? 0,
       drainPromise: current?.drainPromise,
     })
@@ -72,10 +78,10 @@ export class AgentSlotRegistry {
     return true
   }
 
-  deliver(sessionId: string, text: string): AgentDeliveryReceipt | undefined {
+  deliver(sessionId: string, text: string, deskpetEventId?: string): AgentDeliveryReceipt | undefined {
     const slot = this.slots.get(sessionId)
     if (slot?.state !== "running" || !slot.agent || !slot.deliveryPhase) return undefined
-    const message = { role: "user" as const, content: text, timestamp: Date.now() }
+    const message = { role: "user" as const, content: text, timestamp: Date.now(), deskpetEventId }
     if (slot.deliveryPhase === "settling") {
       slot.agent.followUp(message)
       return "followup"
@@ -93,6 +99,7 @@ export class AgentSlotRegistry {
   end(sessionId: string, generation: number): boolean {
     const slot = this.slots.get(sessionId)
     if (!slot || slot.state !== "running" || slot.generation !== generation) return false
+    slot.controller?.abort()
     slot.state = "idle"
     return true
   }
@@ -103,6 +110,11 @@ export class AgentSlotRegistry {
 
   isAnyRunning(): boolean {
     return [...this.slots.values()].some(slot => slot.state === "running")
+  }
+
+  signal(sessionId: string, generation: number): AbortSignal | undefined {
+    const slot = this.slots.get(sessionId)
+    return slot?.generation === generation ? slot.controller?.signal : undefined
   }
 
   activeAgent(sessionId: string): SlotAgent | undefined {
@@ -117,7 +129,8 @@ export class AgentSlotRegistry {
       this.slots.set(sessionId, slot)
     }
     if (slot.drainPromise) return slot.drainPromise
-    const drainGeneration = ++slot.drainGeneration
+    const drainGeneration = ++this.nextDrainGeneration
+    slot.drainGeneration = drainGeneration
     let resolveRun!: () => void
     let rejectRun!: (error: unknown) => void
     const run = new Promise<void>((resolve, reject) => {
@@ -151,6 +164,7 @@ export class AgentSlotRegistry {
     const slot = this.slots.get(sessionId)
     if (!slot) return
     const generation = slot.generation
+    slot.controller?.abort()
     slot.agent?.abort()
     await slot.agent?.waitForIdle().catch(() => undefined)
     const current = this.slots.get(sessionId)
@@ -173,13 +187,14 @@ export class AgentSlotRegistry {
   }
 
   reset(): void {
-    for (const slot of this.slots.values()) slot.agent?.abort()
+    for (const slot of this.slots.values()) { slot.controller?.abort(); slot.agent?.abort() }
     this.slots.clear()
   }
 
   async abortAndWaitAll(): Promise<void> {
     const runs = [...this.slots.values()].map(async slot => {
-      slot.agent?.abort()
+      slot.controller?.abort()
+    slot.agent?.abort()
       await slot.agent?.waitForIdle().catch(() => undefined)
     })
     await Promise.allSettled(runs)

@@ -18,6 +18,7 @@ export type RuntimeTraceKind =
   | "tool_execution_end"
   | "provider_payload"
   | "provider_response"
+  | "provider_usage"
   | "prompt_snapshot"
 
 export interface RuntimeTraceEvent {

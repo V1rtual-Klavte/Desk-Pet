@@ -13,7 +13,9 @@ import type { StreamFn } from "@earendil-works/pi-agent-core"
 import type { ThinkingEffort } from "@/services/agent/types"
 import { aiConfig } from "@/services/config"
 import { createLogger } from "@/services/logger"
-import { PROVIDER_TIMEOUT_MS, guardProviderFetch } from "./net-guard"
+import { formatError } from "@/services/error"
+import { contextBudget, ContextBudgetError, estimateRequestTokens } from "@/services/context"
+import { PROVIDER_TIMEOUT_MS, createProviderFetchGuard, validateProviderUrl } from "./net-guard"
 
 const log = createLogger("PiGateway")
 
@@ -28,7 +30,11 @@ interface PiGateway {
   signature: string
   model: Model<any>
   models: MutableModels
+  fetch: typeof fetch
 }
+
+/** 已冻结的 pi-ai 模型快照，避免一次性调用在中途重新读取设置。 */
+export type PiModel = Model<any>
 
 let gatewayCache: PiGateway | undefined
 const modelGateways = new WeakMap<Model<any>, PiGateway>()
@@ -45,7 +51,7 @@ function builtinProvider(providerId: string): Provider | undefined {
 
 function createConfiguredGateway(): PiGateway {
   const providerId = configuredProviderId()
-  const url = new URL(aiConfig.endpoint)
+  const url = validateProviderUrl(aiConfig.endpoint)
   // Existing local-server configurations accept a bare host; custom API paths are preserved.
   if (url.pathname === "/" && ["openai", "ollama", "lmstudio", "lm-studio"].includes(providerId)) url.pathname = "/v1"
   const endpoint = url.toString().replace(/\/+$/, "")
@@ -69,9 +75,9 @@ function createConfiguredGateway(): PiGateway {
     reasoning: catalog?.reasoning ?? false,
     input: catalog?.input ?? ["text"],
     cost: catalog?.cost ?? { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-    contextWindow: aiConfig.contextMaxTokens,
+    contextWindow: Math.min(aiConfig.contextMaxTokens, catalog?.contextWindow ?? aiConfig.contextMaxTokens),
     // ReplyGenerator only keeps 500 characters; leave headroom for reasoning and RUNTIME_DATA.
-    maxTokens: Math.min(4096, Math.max(1024, Math.floor(aiConfig.contextMaxTokens / 4))),
+    maxTokens: contextBudget(Math.min(aiConfig.contextMaxTokens, catalog?.contextWindow ?? aiConfig.contextMaxTokens)).outputReserve,
   }
   const provider = createProvider({
     id: providerId,
@@ -94,7 +100,7 @@ function createConfiguredGateway(): PiGateway {
   })
   const models = createModels()
   models.setProvider(provider)
-  gatewayCache = { signature, model, models }
+  gatewayCache = { signature, model, models, fetch: createProviderFetchGuard(endpoint) }
   modelGateways.set(model, gatewayCache)
   return gatewayCache
 }
@@ -126,11 +132,12 @@ export function toPiReasoningLevel(effort: ThinkingEffort | undefined): Thinking
 }
 
 export function piStream(model: Model<any>, context: Context, options?: SimpleStreamOptions) {
-  return (modelGateways.get(model) ?? createConfiguredGateway()).models.streamSimple(model, context, {
+  const gateway = modelGateways.get(model) ?? createConfiguredGateway()
+  return gateway.models.streamSimple(model, context, {
     ...options,
     // 网络防护挂在 fetch 上：协议白名单与响应体上限对主链路同样生效。
     // 不支持外部传入 fetch —— 边界只有一处，不接受绕过。
-    fetch: guardProviderFetch,
+    fetch: gateway.fetch,
     // Harness owns retry budgets; avoid multiplying SDK retries by turn retries.
     maxRetries: 0,
   })
@@ -172,6 +179,10 @@ export interface PiTextCallInput {
   systemPrompt: string
   userText: string
   thinkingEffort?: ThinkingEffort
+  /** 上游取消会与总超时合并，任何一个触发都终止请求。 */
+  signal?: AbortSignal
+  /** 调用方在 preflight 冻结的模型；提供后不得重新读取运行时配置。 */
+  model?: PiModel
   maxTokens?: number
   /** 总时限，默认 PROVIDER_TIMEOUT_MS */
   timeoutMs?: number
@@ -208,15 +219,29 @@ export async function completePiText(input: PiTextCallInput): Promise<PiTextCall
   const startedAt = Date.now()
   const timeoutMs = input.timeoutMs ?? PROVIDER_TIMEOUT_MS
   const override = piRuntimeProviderOverride
-  const model = override?.model ?? getPiModel()
+  const model = input.model ?? override?.model ?? getPiModel()
   const streamFn = override?.streamFn ?? piStream
+  const outputBudget = contextBudget(model.contextWindow, model.maxTokens).outputReserve
+  if (input.maxTokens !== undefined && (!Number.isSafeInteger(input.maxTokens) || input.maxTokens < 1)) {
+    throw new Error("maxTokens 必须是正整数")
+  }
+  const maxTokens = input.maxTokens === undefined ? outputBudget : Math.min(input.maxTokens, outputBudget)
 
   let systemPrompt = input.systemPrompt
   if (input.thinkingEffort === "low" && !model.reasoning) systemPrompt += NON_REASONING_LOW_EFFORT_HINT
 
+  const requestBudget = contextBudget(model.contextWindow, maxTokens)
+  const estimatedInput = estimateRequestTokens(systemPrompt, [{ role: "user", content: input.userText }])
+  if (estimatedInput > requestBudget.hardInputLimit) throw new ContextBudgetError(estimatedInput, requestBudget.hardInputLimit)
+
   const controller = new AbortController()
+  const abortFromCaller = () => controller.abort(input.signal?.reason ?? new Error("Provider 请求已取消"))
+  if (input.signal?.aborted) abortFromCaller()
+  else input.signal?.addEventListener("abort", abortFromCaller, { once: true })
   const timer = setTimeout(() => controller.abort(new Error("Provider 请求超时")), timeoutMs)
   try {
+    // 不把已取消的 signal 交给可能忽略它的 provider/fake stream，避免取消后仍发起请求。
+    if (controller.signal.aborted) throw new Error("Provider 请求超时或已取消")
     const messages: PiMessage[] = [{ role: "user", content: input.userText, timestamp: startedAt }]
     // StreamFn 允许返回 Promise（pi-agent-core 的签名），先 await 拿到流本身。
     const stream = await streamFn(model, { systemPrompt, messages }, {
@@ -224,7 +249,8 @@ export async function completePiText(input: PiTextCallInput): Promise<PiTextCall
       // 头阶段超时双保险；总时限仍然由上面的 AbortController 兜底。
       timeoutMs,
       reasoning: toPiReasoningLevel(input.thinkingEffort),
-      ...(input.maxTokens ? { maxTokens: input.maxTokens } : {}),
+      // 所有一次性调用与主上下文使用相同的输出预留；调用方只能再收紧。
+      maxTokens,
     })
     const message = await stream.result()
 
@@ -232,6 +258,9 @@ export async function completePiText(input: PiTextCallInput): Promise<PiTextCall
       throw new Error(controller.signal.aborted
         ? "Provider 请求超时或已取消"
         : message.errorMessage || "Provider 请求失败")
+    }
+    if (message.stopReason === "length") {
+      throw new Error("Provider 输出达到长度上限，拒绝使用不完整结果")
     }
 
     const thinking = thinkingText(message.content)
@@ -245,9 +274,10 @@ export async function completePiText(input: PiTextCallInput): Promise<PiTextCall
     log.debug(`[${input.purpose}] 完成: ${result.durationMs}ms, stop=${result.stopReason}, out=${result.usage.output}`)
     return result
   } catch (e) {
-    log.warn(`[${input.purpose}] 失败 (${Date.now() - startedAt}ms):`, e instanceof Error ? e.message : String(e))
+    log.warn(`[${input.purpose}] 失败 (${Date.now() - startedAt}ms):`, formatError(e))
     throw e
   } finally {
     clearTimeout(timer)
+    input.signal?.removeEventListener("abort", abortFromCaller)
   }
 }

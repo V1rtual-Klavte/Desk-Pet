@@ -121,6 +121,9 @@ export interface SessionEvent {
   payload: Record<string, unknown>
   createdAt: number
   idempotencyKey: string
+  /** Allocated only by the session writer under its lock. */
+  appendSequence?: number
+  apiRoundId?: string
 }
 
 export type ContextLayer =
@@ -131,11 +134,22 @@ export type ContextLayer =
   | "transcript"
   | "ephemeral"
 
+export interface ContextAllocation {
+  layer: "static" | "tools" | "dynamic" | "memory" | "transcript" | "ephemeral"
+  requested: number
+  assigned: number
+  used: number
+  borrowed: number
+  dropped: number
+}
+
 export interface ContextBlock {
   blockId: string
   layer: ContextLayer
   source: string
   text: string
+  /** Persistence-safe snapshots clear text and retain this digest. */
+  contentHash?: string
   priority: number
   tokenBudget?: number
   origin: MessageOrigin | "system"
@@ -187,6 +201,8 @@ export interface PromptCacheInfo {
   sessionId?: string
   prefixHash?: string
   breakReason?: string
+  cacheReadTokens?: number
+  cacheWriteTokens?: number
 }
 
 export interface PromptSnapshot {
@@ -196,7 +212,7 @@ export interface PromptSnapshot {
   sessionId: string
   turnId: string
   runId: string
-  captureStage: "transform_context" | "provider_payload"
+  captureStage: "transform_context" | "provider_payload" | "provider_usage"
   model: string
   provider: string
   thinkingLevel?: string
@@ -206,6 +222,9 @@ export interface PromptSnapshot {
   llmMessages: PromptLlmMessage[]
   transforms: PromptTransform[]
   estimatedInputTokens: number
+  budget?: import("@/services/context").ContextBudget
+  allocations?: ContextAllocation[]
+  contextEpoch?: number
   actualInputTokens?: number
   actualOutputTokens?: number
   cache: PromptCacheInfo

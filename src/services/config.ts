@@ -35,6 +35,8 @@ interface UserSettings {
 export type EffectMode = "off" | "parallax" | "dof"
 
 export interface BuiltinMcpServer {
+  includeTools?: string[]
+  excludeTools?: string[]
   enabled: boolean
   command: string
   args: string[]
@@ -83,7 +85,6 @@ interface Config {
       maxToolCallsPerTurn: number
       toolTimeoutMs: number
       turnTimeoutMs: number
-      contextCompactAt: number
       dedupWindowMs: number
       maxVisibleMessages: number
     }
@@ -515,7 +516,6 @@ export const loopConfig = {
   get maxToolCallsPerTurn() { return overrideOr("ai.loop.maxToolCallsPerTurn", cfg.ai?.loop?.maxToolCallsPerTurn ?? 5); },
   get toolTimeoutMs() { return overrideOr("ai.loop.toolTimeoutMs", cfg.ai?.loop?.toolTimeoutMs ?? 30000); },
   get turnTimeoutMs() { return overrideOr("ai.loop.turnTimeoutMs", cfg.ai?.loop?.turnTimeoutMs ?? 120000); },
-  get contextCompactAt() { return overrideOr("ai.loop.contextCompactAt", cfg.ai?.loop?.contextCompactAt ?? 0.95); },
   get dedupWindowMs() { return overrideOr("ai.loop.dedupWindowMs", cfg.ai?.loop?.dedupWindowMs ?? 30000); },
   get maxVisibleMessages() { return overrideOr("ai.loop.maxVisibleMessages", cfg.ai?.loop?.maxVisibleMessages ?? 200); },
 };
@@ -534,7 +534,9 @@ export const toolsConfig = {
   get mcpEnabled() { return generalConfig.assistantMode && (overrideOr("tools.mcp.enabled", cfg.tools?.mcp?.enabled ?? false)); },
   get mcpServers() { return overrideOr("tools.mcp.servers", cfg.tools?.mcp?.servers || []); },
   get builtinMcpServers() { return overrideOr("tools.mcp.builtin", cfg.tools?.mcp?.builtin || {}) as Record<string, BuiltinMcpServer>; },
-  get skillEnabled() { return generalConfig.assistantMode && (overrideOr("tools.skill.enabled", cfg.tools?.skill?.enabled ?? false)); },
+  // Skill 是按 invocationPolicy 过滤的对话说明，不等同于助手工具；轻量模式可使用
+  // 明确声明 pet/both 的 Skill，但不能因此获得 bash、MCP 或写入权限。
+  get skillEnabled() { return overrideOr("tools.skill.enabled", cfg.tools?.skill?.enabled ?? false); },
 };
 
 // ══════════════════════════════════════════

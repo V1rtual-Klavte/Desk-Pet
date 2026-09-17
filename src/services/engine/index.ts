@@ -22,7 +22,7 @@ export { initSlashCommands, search as searchSlashCommands, find as findSlashComm
 export type { SlashCommand, SlashMatch } from "./slash"
 
 // ── Compactor ──
-export { shouldCompact, compactMessages, estimateTokens, compactIncremental, compactFull, compactOnHighUsage } from "./compactor"
+export { compactSession, estimateTokens, groupMessageUnits } from "./compactor"
 
 // ── Planner ──
 export { evaluateComplexity, generatePlan, executePlan, formatStepResults } from "./planner"
