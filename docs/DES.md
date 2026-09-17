@@ -28,6 +28,10 @@
 
 记忆系统的运行时基础契约见[记忆系统运行时契约](plans/active/记忆系统运行时契约.md)；`sendMessage()` 先持久化 queued 事件再调用 Pi，SessionTurnStore 通过版本/CAS 记录 queued 到 done/failed。Agent、运行阶段、上下文和异步摘要写回均严格绑定 sessionId；steer/followUp 只有在 Agent 消费结束后才进入 accepted/done，结构化失败不会因兜底文案而伪装成成功。启动恢复会隔离未知副作用。Plan、ContextKernel、PromptSnapshot、工具门禁、bash 基线和路径安全的详细状态见[记忆系统重构执行手册](plans/active/记忆系统重构执行手册.md)。
 
+下一阶段建设方向已记录在[轻量陪伴运行时与统一内核建设方案](plans/active/轻量陪伴运行时与统一内核建设方案.md)：以轻量陪伴优先，统一领域状态快照、上下文预算、工具权限和 Skill 渐进加载；推荐 SQLite 承载结构化长期记忆，Markdown 保留人工指令、Card、会话与导入导出用途。其中运行时前置已经写入代码，SQLite 与长期记忆候选仍待实施；验证进度见执行手册。
+
+[会话压缩建设方案](history/implementation/会话压缩建设方案.md)已作为独立前置工作包实施：用显式边界检查点、结构化摘要和近期完整回合重建模型上下文，保持完整会话可读。它先于长期记忆提取建设；“压缩当前上下文”和“整理长期事实”分别验证。
+
 2026-08-06 的全仓阶段审查、记忆系统边界、测试覆盖和后续优先级见 [阶段现状](history/analysis/阶段现状-2026.8.6.md)。
 
 ---
@@ -686,9 +690,9 @@ src/services/
 │   ├── session.ts         # 会话状态机 (WAITING→PRE→GENERATING→EXECUTING)
 │   ├── planner.ts         # Plan 编排: 复杂度检测 + LLM 拆解 + 子代理逐步执行
 │   ├── plan-confirmation.ts # Plan 确认 Promise 桥接
-│   ├── compactor.ts       # 上下文压缩: 阈值触发 LLM 结构化摘要并写回会话文件
+│   ├── compactor.ts       # 请求前结构化摘要、CAS边界与完整回合恢复
 │   ├── pi/                # ★ Pi Agent Core Runtime
-│   │   ├── runtime.ts     # 唯一多轮 Agent Runtime: Loop + Pi 原生工具门禁 + 双阶段快照
+│   │   ├── runtime.ts     # 唯一多轮 Agent Runtime: Loop + Pi 原生工具门禁 + 三阶段 hash 快照
 │   │   ├── model-gateway.ts # pi-ai 模型描述/流入口 + completePiText 一次性文本调用
 │   │   ├── net-guard.ts   # Provider 协议白名单与响应体上限 (零依赖)
 │   │   └── index.ts
@@ -857,7 +861,7 @@ src/services/
   │           │
   │           ├── 人格中间件.wrap("done") → expression: "chu", sound: "reply"
   │           ├── MemoryService.recordTurn("assistant") → sessions/*.md
-  │           ├── compactOnHighUsage() → 保持既有 sessions/*.md 异步摘要压缩
+  │           ├── 下一次请求前 compactSession() → 原文保留 + 原子压缩检查点
   │           ├── [待接通] MemoryService.forkMemorySupplement()（当前不在正常对话链路）
   │           └── 返回 { reply, toolCallHistory, effects[] }
   │
@@ -888,7 +892,7 @@ Rust monitor → emit("window-changed") → listener.ts
 | `maxToolCallsPerTurn` | 5 | 单轮最多工具调用链长度 |
 | `toolTimeoutMs` | 30000 | 单个工具执行超时 |
 | `turnTimeoutMs` | 120000 | 整轮总超时 |
-| `contextCompactAt` | 0.95 | 上下文利用率达95%触发摘要压缩 |
+| 共享上下文预算 | 窗口百分比 | schema/输出预留/最大20K压缩余量统一计入；旧contextCompactAt移除 |
 
 #### 状态机
 
@@ -904,7 +908,7 @@ WAITING ──(收到消息)──→ PRE ──→ GENERATING
 
 #### 上下文与记忆边界
 
-Pi Runtime 当前由 ContextKernel 按 `static → dynamic → profile → memory → transcript → ephemeral` 固定层级生成兼容 `systemPrompt`，并按上下文窗口保留最近 transcript、记录结构化裁剪原因。`User.md` 先转换为带来源、版本和 taint 的只读画像 projection；长期记忆经可注入 `MemoryProvider` 召回，默认空实现，并具有取消、超时和 token 预算边界。Runtime 在 `transformContext` 和 `provider_payload` 两个阶段发布脱敏 Prompt 快照，记录请求、回合、运行代际以及输入规范化的 hash 改写链。Prompt 历史、会话摘要和异步压缩均显式绑定回合 sessionId。
+Pi Runtime 当前由 ContextKernel 按 `static → dynamic → profile → memory → transcript → ephemeral` 固定层级生成兼容 `systemPrompt`，静态输入与完整工具schema不截断、未覆盖transcript不静默丢弃，记录完整块的预算分配与淘汰原因。`User.md` 先转换为带来源、版本和 taint 的只读画像 projection；长期记忆经可注入 `MemoryProvider` 召回，默认空实现，并具有取消、超时和 token 预算边界。Runtime 在 `transformContext`、`provider_payload` 和 `provider_usage` 三个阶段发布脱敏 Prompt 快照，记录请求、回合、运行代际以及输入规范化的 hash 改写链。Prompt 历史、会话摘要和异步压缩均显式绑定回合 sessionId。
 
 ### 9.5 工具系统详细说明
 
@@ -947,7 +951,7 @@ MCP: 不加载
 | 打开应用 | ❌ | ✅ |
 | 剪贴板操作 | ❌ | ✅ (三端: macOS/Win/Linux) |
 | MCP Server | ❌ | ✅ |
-| Skill (渐进披露) | ❌ | ✅ |
+| Skill (元数据渐进披露) | ✅ 按声明策略 | ✅ |
 | SubAgent (agent.spawn) | ❌ | ✅ (fork/team) |
 | 完整安全确认 UI | ✅（写入/扩展命令） | ✅ (四级+三策略+确认弹窗) |
 
@@ -1029,17 +1033,18 @@ FILE_DANGEROUS_PATTERNS: 上面两者的并集
 
 ```
 1. static：Card 角色、语气和行为规则
-2. dynamic：变量、工具、Skill 与思考强度
+2. dynamic：冻结变量、运行状态与思考强度；工具和Skill目录属于session静态段
 3. profile：User.md 用户画像投影
-4. memory：CANDY 与会话压缩摘要；长期召回当前未自动注入
-5. transcript：按预算保留最近完整消息
+4. memory：派生会话摘要与只读召回；CANDY属于静态人工指令，默认长期召回为空
+5. transcript：已提交摘要边界后的完整原文尾部；超限先压缩，不能静默删除
 6. ephemeral：active/hook/recovery 等当前轮临时上下文
 ```
 
 #### 工具声明策略
 
-- **轻量模式**：始终携带 8 个基础工具声明（含 Pi read/write/edit/bash；~200 tokens），省去动态加载决策
-- **助手模式**：L0(闲聊 无工具) / L1+L2(有工具意图 全量)
+- **轻量模式**：冻结当前模式的基础工具；权限继续由统一策略裁决，不连接 MCP。
+- **助手模式**：按本次运行取得启用的 MCP 并冻结可用工具；运行结束释放连接。
+- 两种模式都按完整 schema 计费，并提供受当前 session 限制的工具事件读取；主动搭话不携带工具。
 
 ### 9.9 记忆系统
 
@@ -1063,17 +1068,15 @@ sessions/                      会话目录（唯一真相源）
 
 #### 记忆整理
 
-| 触发条件 | 实现 |
-|----------|------|
-| 每 5 轮对话自动触发 | `recordTurn()` 计数 → `checkAndConsolidate()` |
-| 每 60min 定时器 | `startMemoryConsolidationTimer()` → 60min间隔 |
-| 2 个会话结束 | `onSessionEnd()` 计数 → 达到2触发 |
-| 手动 `/memory clean` | Slash命令 |
+| 路径 | 当前行为 |
+|------|----------|
+| 应用启动、每五轮、会话结束 | 不隐式调用 LLM 记忆整理；启动不挂维护定时器 |
+| `checkAndConsolidate()` | 只做本地去重和容量裁剪，与运行模式无关 |
+| 手动 `/memory clean` | 显式本地维护 |
+| `consolidateWithLLM()` | 保留独立接口，未自动挂入前台对话生命周期 |
+| 会话过长 / `/compact` | 走独立 `compactSession()`，提交摘要 checkpoint，全文保留 |
 
-| 模式 | 整理方式 |
-|------|---------|
-| 轻量模式 | `consolidate()` — 本地去重裁剪（按content前缀去重 + 按importance排序保留maxEntries） |
-| 助手模式 | `consolidateWithLLM()` — LLM 分析 merge/conflicts/expired/adjust/newFacts → 回退基础整理 |
+自动用户事实提取、长期召回、画像候选和 dreaming 在下一阶段实施，不通过旧记忆整理接口隐式开启。
 
 #### Fork 记忆补充（助手模式，待接通）
 
@@ -1161,6 +1164,12 @@ sessions/                      会话目录（唯一真相源）
 5. **配置驱动**：所有参数可调，不做硬编码
 6. **前后端分离清晰**：UI（Vue）→ 业务（TS Services）→ 平台（Rust）
 7. **同一Loop+不同工具集**：轻量/助手模式共用核心引擎，仅工具可见范围不同
-8. **工具优先**：MCP/Skill/Local Tool 三者同级注册，模型自行选择
+8. **工具优先**：MCP/Local Tool统一权限；Skill仅提供元数据，正文由read按需读取
 9. **安全内建**：不在各处分散判断，统一入口强制校验
 10. **人格中间件**：工具调用、结果、错误全部经人格层转换为角色化表达
+
+### 记忆重构前置实现
+
+会话正文和工具结果保留完整事件，按 appendSequence 重放。压缩采用有覆盖边界、hash、版本和epoch的检查点；对旧完整意图轮做摘要，保留最新轮与完整tool pair，失败不推进边界。超长工具结果仅在请求内缩短，read_session_event可分页回查。
+
+回合冻结模型、Card、变量和工具/Skill清单；CANDY与派生摘要分开。PermissionKernel把MCP passthrough收敛为allow/ask/deny；确认支持本次/会话内精确参数/拒绝，绑定代际与到期时间。应用启动不连接MCP、不缓存Skill全文、不启动记忆LLM整理。长期记忆仍为空Provider，SQLite与事实提取后置。

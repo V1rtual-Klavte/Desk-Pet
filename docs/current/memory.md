@@ -1,45 +1,35 @@
-# 当前记忆系统
+# 当前记忆与会话基础
 
-长期记忆通过可注入的 `MemoryProvider` 端口进入 Agent Runtime。端口负责 sessionId、取消、1.5 秒超时和 token 预算裁剪；默认实现返回空集合，因此本阶段没有选择向量库、全文索引或其他记忆策略，也没有开启自动长期召回。会话 Markdown 属于独立的会话持久化边界，不作为可替换长期记忆实现的一部分。
+长期记忆仍通过 `MemoryProvider` 只读端口进入 Runtime，默认返回空集合，召回时限为 1.5 秒。SQLite、自动事实提取、画像候选、纠正/遗忘和 dreaming 属于下一阶段。Card 变量与用户长期事实分别管理。
 
-## 已接通的能力
+## 会话真相源
 
-| 范围 | 真相源 | 当前用途 |
-|---|---|---|
-| 用户自定义指令 | `memory/CANDY.md` | 注入 System Prompt。 |
-| 用户画像 | `memory/User.md` | 注入 System Prompt；由高重要性用户条目同步。 |
-| 当前会话 | `sessions/*.md` | 会话正文唯一真相源；内存中的 `SessionMemory` 是当前会话缓存，用于生成与摘要。 |
-| 会话 UI 状态 | `sessions/index.json` | 打开标签、活跃标签与未回复数；损坏或丢失不会影响 Markdown 会话恢复。 |
-| 长期记忆注册表 | `memory/MEMORY.md` | 保存结构化条目，提供 CRUD、关键词搜索与整理。 |
-| 会话归档索引 | `memory/Project.md` | 指向 sessions 目录中的历史会话。 |
+`sessions/*.md` 保存完整正文、工具调用/结果和控制事件；`sessions/index.json` 只保存可丢弃 UI 状态。新增正文以一条 `deskpet-event` 保存完整 `Message`，预览不参与重放，兼容旧 `deskpet-turn` 和纯预览。`appendSequence` 按同一会话写锁下的落盘顺序递增；实际 Pi 工具调用与结果保存同一 `apiRoundId`、call ID、错误标记和来源。主动上下文不成为用户事实。
 
-会话每轮实时写入文件。正文只写一份 `deskpet-turn` 记录（可读预览行 + HTML 注释中的 URI 编码完整 JSON），事件视图由 `events.ts` 在读取时从 turn 记录投影；`deskpet-event` 只用于不进 transcript 的消息（当前只有主动搭话的 active 上下文）。读取时优先还原完整正文并兼容旧预览格式：预览行紧跟任意 deskpet 注释时跳过，避免同一条记录被按预览和注释重放两次；未知标签保守按 user 处理。上下文接近阈值时，压缩器调用 LLM 生成结构化摘要并写回会话文件。启动时会从 Markdown 重建会话，再恢复可丢弃的 UI 标签状态。
+调用事件落盘后才准许执行工具；结果落盘后才允许下一次 Provider 请求。异步订阅通过回合内写队列收敛，写入失败阻止继续执行。归档只更新元数据，不再用内存文本重建文件。切换会话、旧代际回调和后台回复都绑定原 session。
 
-## 运行时基础（已落地）
+## 压缩提交与恢复
 
-`src/services/engine/runtime/` 与 `src/services/agent/memory/` 已提供会话事件协议、`SessionTurnStore`、`PlanCheckpointStore`、RuntimeQueue、AgentSlot 和 PromptSnapshot：
+`compactSession()` 返回 `committed / skipped / stale / failed`，只有 `committed` 显示完成。`/compact` 固定调用时的 session 和 generation；自动压缩在首次请求前及 Pi `transformContext` 中执行，不在每轮回复后启动后台 LLM。
 
-- 每条用户输入先写 `queued` 事件再调用 Pi；turn 状态按 `queued → dispatching → running → done/failed` 走版本/CAS，队列投递写 `persisted`/`steered`/`followup`/`deferred`/`accepted` 回执。
-- 启动扫描会话事件：`persisted`/`requeued`/`deferred` 重新入队，进行中的 queue/turn 写 recovery 并隔离为未知副作用；Plan 运行中的只读步骤回到 `pending`，未知外部副作用进入 `unknown_side_effect` 并暂停计划。
-- 主动搭话写 `origin=active`、`eligibleForMemory=false`、`querySource=active_monitor`，不产生用户事实事件。
-- 上下文由 ContextKernel 按 `static → dynamic → profile → memory → transcript → ephemeral` 固定层级裁剪；`User.md` 以只读 profile projection 进入 profile 层。
-- PromptSnapshot 在 `transformContext` 和 `provider_payload` 两阶段发布，只保存 hash、层级、工具策略和关联 ID，原始 Prompt 不落盘。
-- 压缩由 `compactOnHighUsage()` 在上下文接近阈值时捕获 sessionId 和文件版本；LLM 返回后仅在版本仍匹配时写回目标会话，过期结果直接丢弃。API round 分级摘要仍未实施。
+检查点保存：结构化 summary、连续 `coveredEventIds`、`keepFromEventId`、输入/输出 hash、前一个检查点、context epoch、来源 revision、session version、run generation。提交前校验完整轮边界及 hash，写入时再次 CAS；摘要与检查点由同一 `session_file_write_atomic` 原子提交。取消在进入提交前使结果失效；进入原子写入后属于已开始的提交，不尝试删除或回滚已写入事实。
 
-## 当前限制
+重载时从完整事件重建并验证检查点链，只有有效覆盖前缀会从模型请求视图中移除。损坏或无效边界不能授权删除历史。原始文件始终保留，旧格式也可参与新检查点。摘要是派生历史数据，不能变成系统指令、权限许可、Card 状态或长期事实。
 
-- Prompt 当前只直接注入 CANDY、User 和当前会话摘要；长期记忆的关键词搜索尚未接入 Prompt 构建。
-- `forkMemorySupplement()` 已有实现，但尚未接入正常对话结束链路，因此不能视为自动长期记忆提取能力。
-- 恢复历史会话时，需要把摘要恢复与会话恢复作为后续可靠性改进项验证。
-- 记忆整理能处理既有条目的去重、过期和重要性调整；它不是长期记忆提取闭环的替代品。
+## 预算与工具大结果
 
-## 后续路线
+预算由 `context/budget.ts` 统一，主请求与一次性文本请求共享输出预留。正常目标在硬输入上限下留 `min(20,000, 16% 窗口)` 余量（极小窗口另有限制）；保留原文尾部和摘要输出各有独立上限。设置中的窗口还受已知模型上限约束。
 
-1. 按[记忆系统运行时契约](../plans/active/记忆系统运行时契约.md)推进 P6：候选记忆提取、来源门禁、画像写入候选和 dreaming；阶段进度见[执行手册](../plans/active/记忆系统重构执行手册.md)。
-2. 补齐 P4/P5 遗留：API round 分级压缩、compaction 版本与 lock、Provider 网络的重定向与私网 IP 防护。
-3. 以关键词检索、重要性排序和固定 token 预算实现最小召回闭环。
-4. 补充纠正、删除、冲突和过期处理；只有关键词检索不足时再评估向量检索。
+- L0：请求内缩短大工具结果，保留头尾和 eventId；完整文本仍在会话，`read_session_event` 按当前会话分页读取。Bash 继续复用已有 Rust spill。
+- L1：对最旧的连续完整用户意图轮生成结构化摘要。工具批次不能拆开，最后一轮与未完成调用保留；大历史分多次有界提交。
+- L2：在无法再安全压缩时保留原文；如果核心输入仍超过硬上限，返回可解释的上下文不足错误，不用占位文案伪装压缩成功。
 
-运行时契约是实施目标，不是当前能力清单。长期记忆自动召回、画像写入和 dreaming 在通过对应 eval 门禁前仍视为未接通。
+静态 Card、CANDY、完整工具 schema 和当前输入不按字符截断。画像/召回可以整块淘汰并记录预算原因；未被摘要覆盖的 transcript 不得静默删除。`loop.contextCompactAt` 已从默认配置与 getter 移除，旧文件保留该键不影响新预算。
 
-Card 变量用于人格状态，不承担长期记忆职责。
+## 请求快照与长期记忆边界
+
+每轮冻结模型、Card、变量、CANDY、User、工具和 Skill 目录。PromptSnapshot 分 `transform_context / provider_payload / provider_usage` 三阶段，持久化 hash、来源、预算估算、真实 usage、缓存 token 和 context epoch，不保存原始 Prompt。摘要调用不计为正常聊天回复。
+
+`CANDY.md` 是人工指令，`User.md` 通过带来源的只读画像投影进入动态层；两者与摘要分别建块。现有记忆整理接口保留，但应用启动、每五轮和 session 结束不隐式发起记忆 LLM 整理。明确的长期记忆写入闭环在 P6 实施。
+
+本分支 macOS 类型/编译通过；89 个场景三次严格 trial（267 次）全部通过。详细实现、报告路径与下一阶段边界见[执行手册](../plans/active/记忆系统重构执行手册.md)。

@@ -77,8 +77,10 @@ src/services/__tests__/live/
 - `docs/DES.md`：项目总览、概述、玩法、交互和整体机制，面向项目负责人阅读。
 - `docs/current/`：根据当前代码核对过的模块契约和现状。
 - `docs/plans/active/`：尚未实施的方案；完成后移入历史目录。
+- 下一阶段总方向见[轻量陪伴运行时与统一内核建设方案](docs/plans/active/轻量陪伴运行时与统一内核建设方案.md)；用户已授权实施，运行时前置已写入代码，最终门禁见执行手册。旧纯 Markdown 长期记忆限制已撤销，推荐 SQLite 长期记忆后端；当前仍是空 `MemoryProvider`，不得写成已经迁移。
+- 会话压缩先于长期记忆提取建设，见[会话压缩建设方案](docs/history/implementation/会话压缩建设方案.md)：摘要、覆盖边界和近期原文尾部组成可恢复检查点；压缩不改变 `sessionId`，不删除完整会话，不自动晋升长期事实。
 - 记忆系统运行时契约以 [记忆系统运行时契约](docs/plans/active/记忆系统运行时契约.md) 为准；它定义目标协议，§1.1 记录逐节落地状态，已落地部分不代表全部能力接通。
-- 记忆系统实施按 [记忆系统重构执行手册](docs/plans/active/记忆系统重构执行手册.md) 接力；手册的“当前检查点”是跨会话执行状态，不等于已通过代码或测试门禁。P0–P3 已完成，P4/P5 只部分落地，P6 未开始。
+- 记忆系统实施按 [记忆系统重构执行手册](docs/plans/active/记忆系统重构执行手册.md) 接力；手册的“当前检查点”是跨会话执行状态，不等于已通过代码或测试门禁。P0–P3 已完成；P4/P5 前置已完成，macOS 类型/编译与 89 场景 × 3 trials 严格门禁通过，详见执行手册；P6 未开始。
 - `docs/history/`：阶段设计、实施计划、修复记录和分析报告，只保存当时细节，不作为当前契约。
 - `README.md`：安装、运行、能力概览和文档入口。
 
@@ -114,9 +116,9 @@ src/
 │   ├── personality/            # Card、人格注册、阶段文案、变量状态、情绪映射
 │   ├── reply/                  # RUNTIME_DATA 解析与回复后处理
 │   ├── agent/                  # Provider、Runner、子代理、记忆与主动搭话
-│   ├── context/                # ContextKernel 分层、预算与兼容 Prompt 构建
+│   ├── context/                # ContextKernel、共享预算、完整轮与工具结果请求投影
 │   ├── tool/                   # 工具注册、路由、Pi 基础工具、MCP
-│   ├── skill/                  # Skill 加载与 Prompt 注入（Pi 渐进披露，非工具）
+│   ├── skill/                  # Skill 有界元数据索引与 Prompt 注入（正文按需 read，非工具）
 │   ├── safety/                 # 风险等级、策略和确认桥接
 │   ├── session/                # 会话响应式状态与切换归档
 │   ├── profile/                # Profile 选择、加载、导入导出
@@ -168,7 +170,7 @@ src-tauri/src/
 
 普通聊天 ingress 在调用 Pi 前先通过 RuntimeQueue 写入 `queued` session event；SessionTurnStore 通过 session 版本/CAS 记录 `queued → dispatching → running → done/failed`，Pi 完成后追加 `accepted`/`failed` queue ack。AgentSlot、运行阶段、上下文读取和异步写回均严格绑定 sessionId；忙碌输入先落盘并写 `steered`/`followup`，只有 Agent 消费结束后才进入 `accepted`/`done`。结构化失败即使带可显示的兜底文案也保持失败结论；启动恢复隔离未知副作用。
 
-Pi Runtime 在 `transformContext` 与 `provider_payload` 两个阶段发布脱敏 Prompt 快照；快照只保存输入输出 hash、层级、工具策略和请求/回合/运行代际关联，原始 Prompt 不落盘。
+Pi Runtime 在 `transformContext`、`provider_payload` 与 `provider_usage` 三个阶段发布脱敏 Prompt 快照；快照只保存输入输出 hash、层级、工具策略和请求/回合/运行代际关联，原始 Prompt 不落盘。
 
 助手模式 Plan 通过 PlanCheckpointStore 持久化 plan/step 状态和子代理工具开始/结束事件。启动恢复时，运行中的只读步骤回到 `pending`，没有完成凭证的外部副作用进入 `unknown_side_effect`，Plan 进入 `paused`，不得自动重试未知副作用。
 
@@ -215,6 +217,7 @@ interface VariableState {
 - `Project.md`：会话归档索引。
 
 当前长期记忆的自动提取和 Prompt 检索尚未闭环。不要在代码或文档中声称 `MemoryService.search()` 已经自动注入，或声称 `forkMemorySupplement()` 已经由每轮对话调用。
+上述文件说明当前实现。计划中的长期记忆 SQLite 与会话存储是独立模块；迁移前 `MEMORY.md`/`User.md` 行为不变，迁移后的 Markdown 视图不再成为第二个可自动回写的真相源。会话压缩记录与长期记忆候选必须保留来源/版本，摘要不能替代权限授权或 Card 状态。
 `User.md` 通过带来源、版本和 taint 的只读 profile projection 进入 ContextKernel；长期记忆只接入空 `MemoryProvider`，当前每轮 recall 返回空集合。
 
 Provider 请求统一走 `engine/pi/model-gateway.ts`：由 Pi `createProvider()` / `createModels()` 构造，主回合和一次性文本请求共享配置快照、认证、增量响应上限和取消语义。SDK 内层重试关闭，回合重试共享一个总 deadline。长期记忆只能通过可注入 `MemoryProvider` 进入 Runtime；默认空实现，provider 有 1.5 秒召回时限和 token 预算边界。
@@ -484,3 +487,12 @@ chore(deps): 引入 chrono 与 thiserror
 ## 核心方针
 
 轻量化、低内存占用、高性能、token 消耗少、功能完整。
+
+### 记忆重构前置的已实现边界
+
+- 新会话正文使用带 appendSequence/apiRoundId 的 deskpet-event，兼容旧 deskpet-turn；工具调用先落盘再执行，结果落盘后才请求下一轮。
+- 压缩只有 committed 可报告完成；摘要与边界原子提交，校验版本、完整轮与输入/输出 hash。完整会话不删除，归档不重建正文。原子提交开始后取消不回滚已写事实。
+- 每轮冻结模型/Card/变量/CANDY/User/工具/Skill 目录；所有请求统一输出/schema/余量预算。20K 是大窗口压缩余量上限，不是摘要长度；旧 contextCompactAt 已移除。不得静默丢弃未覆盖 transcript。
+- PermissionKernel 在 Pi beforeToolCall 终裁 allow/ask/deny，passthrough 不能直接执行。确认与授权绑定会话/代际/精确参数/策略/到期时间，afterToolCall 标注来源。
+- Skill 初始仅加载有界元数据，tools.skill.enabled 可用于轻量模式；MCP 由助手回合按 owner 取得与释放。启动不加载 Skill 正文、不启动记忆 LLM 整理。
+- read_session_event 只分页读取捕获的当前会话工具结果，配合 context/tool-output.ts 的请求内缩短；不得以请求投影覆盖磁盘原文。

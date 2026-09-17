@@ -25,6 +25,7 @@ Pi 的 `read`、`write`、`edit`、`bash` 通过统一适配器暴露给 Desk-Pe
 | `edit` | Pi | DANGER | 同上 |
 | `bash` | Pi | 动态 | Rust 两层 token 策略：层 1 硬基线在两种模式下都执行；层 2 按 scope 叠加，pet 要求首词在白名单内且禁 Shell 组合符，assistant 放行扩展命令但仍拒绝操作系统路径。TS 侧再按风险分级决定确认 |
 | `system_info` | 本地 | SAFE | OS / 架构 / CPU / 内存 |
+| `read_session_event` | 回合内本地工具 | SAFE | 按 eventId 分页读取当前会话完整工具结果 |
 
 仅助手模式额外加载：`app_open`、`clipboard_read`、`clipboard_write`、`agent_spawn`（fork / team），以及启用后的 MCP 工具。
 
@@ -40,6 +41,8 @@ Pi 官方 CLI（`pi-coding-agent`）提供 `ls` / `grep` / `find`，但它们的
 
 ## Skill
 
+Skill catalog 仅缓存有界 frontmatter 元数据；Rust `skill_list_metadata` 不读取完整正文。目录按 TTL、上传、删除和模式退出失效，回合冻结 fingerprint 与清单。`invocationPolicy` 支持 pet/assistant/both（默认 assistant），`capabilityTags` 支持能力过滤。`tools.skill.enabled` 在两种模式均可开启，不提升具体工具权限。
+
 Skill **不是工具**：不注册 `ToolDef`，不占工具声明槽。采用 Pi 原生的渐进披露模型：
 
 ```text
@@ -53,7 +56,7 @@ src-tauri/resources/defaults/skills/{name}/SKILL.md   ← 随包种子，只读
 - `data_root/skills/` 与其他运行时资源同一套所有权模型：种子只在首次启动复制一次，之后应用不再覆盖。误删或想同步种子更新，用设置页的「恢复默认资源」。
 - 新增/覆盖 Skill 直接写 `data_root/skills/{name}/SKILL.md`；删除走 `skill_delete`。不再有内置 / 用户之分。
 - 清单只在 `toolsConfig.skillEnabled` 为真、且本轮有工具可用时才注入 —— 模型要靠 `read` 才能加载正文。
-- Skill 不携带自己的安全级别。它调用的每个工具各自走 `checkSafety`，权限落在具体操作上。
+- Skill 不携带自己的安全级别。它调用的每个工具各自走 `PermissionKernel`，权限落在具体操作上。
 
 ## 执行与资源边界
 
@@ -69,19 +72,23 @@ src-tauri/resources/defaults/skills/{name}/SKILL.md   ← 随包种子，只读
 | 能力 | 用途 |
 |---|---|
 | `sessionId` | Provider 端 prompt cache |
-| `toolExecution: "sequential"` | Agent 级无条件串行开关。Pi 的实现是 `config.toolExecution === "sequential"` 时整批串行，per-tool `executionMode` 只能强制串行、不能强制并行；因此 `PARALLEL_SAFE_CATEGORIES` 当前不产生效果，只读并行需等 P5 遗留门禁关闭后再逐类开放 |
-| `beforeToolCall` | 工具次数上限、`checkSafety`、用户确认 |
+| `toolExecution: "sequential"` | Agent 级无条件串行开关。Pi 的实现是 `config.toolExecution === "sequential"` 时整批串行，per-tool `executionMode` 只能强制串行、不能强制并行；因此 `PARALLEL_SAFE_CATEGORIES` 当前不产生效果，只读并行是后续独立优化，本分支保留串行 |
+| `beforeToolCall` | 工具次数上限、`PermissionKernel`、用户确认 |
 | `steering` | 用户可在回合执行中插话，本轮工具跑完后注入下一轮 |
 | `onUpdate` | 工具执行中的快照回传 |
-| `isError` 往返 | tool 消息落盘保留失败标记，重开会话后模型仍能区分成功与失败 |
+| `isError` 往返 | 工具 call/result 在下一次请求前持久化，保留实际 API round、错误标记与非可信来源；重开会话从磁盘恢复 |
 
-Provider 网络请求只允许 `http`/`https`，请求有固定超时，响应体按 4 MiB 上限流式读取；超限、取消和超时均转为失败结果，不把异常正文继续交给模型。
+Provider 网络请求固定到用户配置的 `http`/`https` origin，禁止 URL 内嵌凭据与任何重定向，显式 localhost/私网配置用于本地模型；WebView 不提供 DNS pinning，因此这不是任意 URL 的通用 SSRF 代理。请求有固定超时，响应体按 4 MiB 上限流式读取；超限、取消和超时均转为失败结果，不把异常正文继续交给模型。
 
-Pi 0.85.1 已公开 `transformContext`、`shouldStopAfterTurn`、`prepareNextTurnWithContext`、`subscribe`、`onPayload` 和 `onResponse`；当前 runtime 已接入 `transformContext`、`onPayload`、`onResponse`、`subscribe` 和 `beforeToolCall`，用于 ContextKernel、双阶段 PromptSnapshot 和 trace。`prepareNextTurnWithContext` / `shouldStopAfterTurn` 仍未接入，队列 drain 由 `AgentSlot` 自行驱动。
+Pi 0.85.1 已公开 `transformContext`、`shouldStopAfterTurn`、`prepareNextTurnWithContext`、`subscribe`、`onPayload` 和 `onResponse`；当前 runtime 已接入 `transformContext`、`onPayload`、`onResponse`、`subscribe` 、`beforeToolCall` 和 `afterToolCall`，用于 ContextKernel、三阶段 PromptSnapshot 和 trace。`prepareNextTurnWithContext` / `shouldStopAfterTurn` 仍未接入，队列 drain 由 `AgentSlot` 自行驱动。
 
 ## 工具门禁与审计
 
-工具前后置门禁走 **Pi 原生语义**：`pi/runtime.ts` 在 `beforeToolCall` 内联执行工具次数上限、`checkSafety` 和用户确认，返回 `{ block: true }` 或回调抛错时工具都不会执行（fail-closed，场景 `safety-hook-errors` 断言该行为）；工具结束后由 Pi 的 `afterToolCall` 与 trace 记录结果。
+`PermissionKernel` 将风险等级与最终 `allow / ask / deny` 分开。工具可返回 `passthrough`，MCP 明确采用此值；它只能继续总策略，不能到达 executor。静态硬拒绝优先，来源 allow 不能吞掉总策略 ask。
+
+`beforeToolCall` 先等待工具调用事实落盘，再检查次数和权限。确认包含 session、generation、call ID、参数 hash、策略 hash 和到期时间；UI 支持仅本次、会话内同参数和拒绝。确认后重新校验，策略或参数变化、取消、切换会话均失效。授权在回合结束释放。
+
+`afterToolCall` 统一标注结果来源/taint/error；`subscribe` 将完整调用结果加入严格写队列；`transformContext` 构造请求视图，Provider wrapper 执行最终硬预算检查。禁止再引入无生产消费者的通用 HookBus。
 
 Desk-Pet 曾自研 blocking / async 的 HookBus，因生产消费者为零（唯一使用者是测试里自建实例的自证循环）而整模块删除。**需要「阻断」语义的门禁不要放到观测总线上** —— `engine/runtime/trace.ts` 只做观测，listener 的返回值不参与决策，超时与异常都被隔离。
 
@@ -110,19 +117,17 @@ MCP server 由 Rust 以 stdio 子进程方式托管（`commands/mcp_bridge.rs`�
 - **env（API Key 等）**：设置面板用 `KEY=VALUE` 每行一条的文本编辑，落盘前由 `parseEnvText` 还原成对象。env 只透传给子进程，日志里只记 command/args；导出 JSON 含 env 时会先弹确认框提示文件里有明文凭据。
 - **测试连接**不会留下常驻连接：本来没连的测完立刻断开，本来连着的保持连接状态。
 
-## 已知问题
+## 当前边界与取舍
 
-以下问题已定位但**尚未修复**，属 P5 遗留项，需要连同权限、沙箱与安全体系一起重审：
-
-- 会话信任的粒度是「工具 + 本次参数」（`trustSignature`），但 `pi-write` 的签名包含完整正文，所以同一文件的不同内容每次都算新调用，需要各自确认。
-- `bash_exec` 的 spill 文件保留最近 10 份后自动淘汰，没有跨会话的持久保留策略。
-- Provider 网络只校验协议、超时和响应体上限，没有重定向次数与私网/环回 IP 防护。
-
+- 有限授权绑定 session、run generation、工具、完整参数和策略 hash；同一文件不同写入正文是不同授权，运行结束失效。这是权限边界，不从摘要恢复授权。
+- Bash spill 最近 10 份自动淘汰；会话中的工具结果事件与 `read_session_event` 则按会话保留。Bash 本身的超长输出以 spill 引用为准，不声称永不淘汰。
+- Provider 请求固定配置 origin、禁止 redirect、限制超时和增量响应体；显式 localhost 模型合法。WebView 无 DNS pinning，MCP/shell 的网络行为不由 Provider fetch wrapper 控制。
+- 工具仍串行执行；只读并行未在本分支开放。
 
 已修复（2026-09-15 复核）：
 
 - **bash 最终基线**：`restricted: bool` 换成必填的 `policy { scope, whitelist }`，助手模式不再能关闭 Rust 校验；`find -delete` / `-exec` 一类「首词合法、参数致命」的命令已由层 1 参数级禁项覆盖（提交 `eb9a312`）。
-- `checkSafety` 的会话信任短路 —— 现在先计算 `resolveSafetyLevel` 再应用会话信任，且信任不能越过动态 NOWAY。
+- `PermissionKernel` 的会话信任短路 —— 现在先计算 `resolveSafetyLevel` 再应用会话信任，且信任不能越过动态 NOWAY。
 - **`bash_exec` 阻塞与内存**：命令体搬进 `spawn_blocking`；`timeout_ms` 缺省补 120s 兜底；输出改走尾部窗口读取 + 分块统计行数，不再整读入内存（提交 `c270680`）。
 - **工具输出 spill**：Rust 在截断时保留完整输出并回传 `spillPath`，`exec()` 把它同时放进流式更新与最终结果，`router` 的内联预算改为同时作用于 `contentParts`（提交 `ff1f49e`）。
 - **`app_open` 无校验**：Rust 命令注入 `State<AppPaths>` 并先走 `validate_file_path`；macOS 与 `xdg-open` 加 `--`；Windows 改走 `ShellExecuteW`，路径不再经过 cmd 解析；工具级别由 NORMAL 提为 DANGER（提交 `15a64d3`）。
@@ -131,6 +136,10 @@ MCP server 由 Rust 以 stdio 子进程方式托管（`commands/mcp_bridge.rs`�
 
 ## 验证状态
 
+2026-09-17 本分支的当前集中验证以[执行手册 §6.1](../plans/active/记忆系统重构执行手册.md#61-当前检查点接力唯一依据)为准。以下命令与不稳定记录为 2026-09-15 历史基线，不代表当前工作树。
+
 `pnpm run test:types` 与 `pnpm run build` 通过。safety 与 tool-execution 模块已建立 Live Contract 与场景（`safety-safe`/`safety-normal`/`safety-danger`/`safety-noway`/`safety-hook-errors`/`safety-trust-lifecycle`/`tool-cancelled`/`tool-provider-network-boundary` 等）；`safety-hook-errors` 现在断言 Pi 原生 `beforeToolCall` 在 block 与抛错两种情况下都不执行工具。bash 两层策略有 `bash_policy.rs` 内的 Rust 单元测试（`#[cfg(test)]`），`paths.rs` 与 `tool_exec.rs` 也各有 `#[cfg(test)]` 用例（符号链接叶子、尾部窗口截断与旧实现逐字段比对）；这些都不在 Live Test 里，`test:types` 与 CI 也只跑 `cargo check`、不执行 `cargo test`。
 
 2026-09-15 采集：`pnpm test -- --module tool-execution --strict` 5/5 通过；`pnpm test -- --module safety --strict --repeat 2` **不稳定** —— 本轮改动后 7 次运行中 5 次 25/25 全绿，2 次各出现 1 个场景超时（137.1s / 139.7s，均为单个场景耗尽 120s 的 `DEFAULT_SCENE_TIMEOUT`）。改动前的基线 `380ab45` 连跑 5 次全部 25/25、耗时 14.8–24.6s；Fisher 精确检验 p≈0.47，样本量不足以判定两组有显著差异，改动中也没有能使 Provider 网络调用停滞的机制，因此**归因未定**，不能记为稳定通过。超时落在纯逻辑场景上——它们照样走一次真实 LLM 回合（计划 §3.5 的 L7），根治办法是 L2 的 `entry: "unit"`，而不是继续加采样。
+
+MCP 不在应用启动时连接。助手回合按 owner 取得启用的 server；并发取得串行化，最后 owner 释放时关闭进程并注销工具。`includeTools`/`excludeTools` 过滤发现结果；当前回合执行已冻结的 ToolDef。设置修改不会无声杀掉被运行回合借用的连接。

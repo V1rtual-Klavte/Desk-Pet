@@ -4,7 +4,7 @@ status: archived
 created_at: 2026-09-07
 archived_at: 2026-09-15
 scope: agent_runtime
-parent_plan: ../../plans/active/愿景驱动整体重构方案.md
+parent_plan: ../design/愿景驱动整体重构方案.md
 current_reference: ../../plans/active/记忆系统运行时契约.md
 ---
 
@@ -12,7 +12,7 @@ current_reference: ../../plans/active/记忆系统运行时契约.md
 
 > 归档: 2026-09-15 | 原分支: V1rtual_memory_prep | 关联: [记忆系统运行时契约](../../plans/active/记忆系统运行时契约.md)
 
-> 本文是《[愿景驱动整体重构方案](../../plans/active/愿景驱动整体重构方案.md)》中的 Agent 技术专题。
+> 本文是《[愿景驱动整体重构方案](../design/愿景驱动整体重构方案.md)》中的 Agent 技术专题。
 > 整体架构、MemoryKernel 与全项目迁移顺序以总方案为准。
 
 ## 1. 结论摘要

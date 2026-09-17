@@ -28,8 +28,8 @@
 - **窗口感知** — 监控前台窗口，停留超时后 AI 主动搭话
 - **安全控制** — SAFE / NORMAL / DANGER / NOWAY 风险等级与确认策略；动态风险等级先于会话信任解析（deny-first）；会话信任的粒度是「工具 + 本次参数」，确认过的参数才免重复询问；文件工具另有路径分级，私钥与凭据类路径直接 NOWAY
 - **Bash 硬基线** — Rust 侧两层 token 策略：层 1 硬基线（破坏性目标、`-delete`/`-exec` 类参数、系统路径重定向）在任何模式下都执行且调用方无法关闭，层 2 才按模式叠加白名单或扩展命令规则
-- **工具门禁与审计** — 工具前后置门禁走 Pi 原生 `beforeToolCall` / `afterToolCall`；每次工具调用记录 operationId、policyHash 与取消/超时的稳定错误码
-- **记忆系统** — CANDY、User、MEMORY、sessions 和压缩摘要；正文只写一份会话记录，压缩由 LLM 生成结构化摘要写回会话文件；User.md 以只读画像 projection 注入，长期记忆 provider 当前为空，自动提取与召回仍在规划
+- **工具门禁与审计** — 工具前置门禁走 Pi 原生 `beforeToolCall`，结果由 ToolRouter 和 Pi 事件记录；每次调用记录 operationId、policyHash 与取消/超时的稳定错误码，`afterToolCall` 统一转换待后续接线
+- **记忆系统** — CANDY、User、MEMORY、sessions 和压缩摘要；完整正文与工具事件只保留一个权威记录；请求前按预算生成可恢复压缩检查点，保留原文与完整回合尾部；User.md 以只读画像 projection 注入，长期记忆 provider 当前为空，自动提取与召回仍在规划
 - **Profile 主题** — 糖糖粉、暗夜紫、透明玻璃、yuki 雨夜蓝等随应用提供的默认主题，支持编辑、复制、删除、导入导出
 - **角色展示效果** — 灵动图层（五层视差）与景深（单图背景虚化 + 焦点区）二选一，都由图层编辑器所见即所得地调参
 - **音效系统** — Web Audio 合成音效与人格边界映射
@@ -51,7 +51,7 @@
 | 文件写/编辑 + Bash（硬基线常开，白名单/扩展命令按风险确认） | ✅（确认） | ✅（按安全策略） |
 | 文件删除 | ❌（无模型工具） | ❌（硬禁止） |
 | MCP 服务器 | ❌ | ✅ |
-| Skill（渐进披露，模型用 read 加载正文） | ❌ | ✅ |
+| Skill（元数据索引，模型用 read 加载正文） | ✅ 按 Skill 策略 | ✅ |
 | 子代理 agent.spawn（fork/team） | ❌ | ✅ |
 | 安全确认策略 | SAFE/NORMAL 自动；写入和扩展 Bash 可确认 | 四级风险 + 三策略 + 按调用粒度的会话信任 |
 
@@ -120,7 +120,7 @@ Desk-Pet/
 │       ├── reply/                    # RUNTIME_DATA 解析与回复后处理
 │       ├── agent/                    # Provider、Runner、子代理、Memory、Active
 │       ├── tool/                     # 工具注册、路由、MCP
-│       ├── skill/                    # Skill 加载与 Prompt 注入
+│       ├── skill/                    # Skill 元数据目录与渐进 Prompt 注入
 │       ├── safety/                   # 风险检查与确认
 │       ├── session/                  # 多会话持久化管理
 │       ├── profile/                  # Profile 主题与导入导出
@@ -243,6 +243,8 @@ pnpm 版本由 `package.json` 的 `packageManager` 字段裁定，CI 不单独�
 - [当前记忆系统](docs/current/memory.md)
 - [记忆系统运行时契约](docs/plans/active/记忆系统运行时契约.md)
 - [记忆系统重构执行手册（新会话接力入口）](docs/plans/active/记忆系统重构执行手册.md)
+- [轻量陪伴运行时与统一内核建设方案](docs/plans/active/轻量陪伴运行时与统一内核建设方案.md)：运行时前置已实现统一快照、上下文/权限和渐进 Skill；SQLite 长期记忆后置
+- [会话压缩建设方案](docs/history/implementation/会话压缩建设方案.md)：边界检查点、原子摘要提交、完整回合尾部及请求预检的建设与验收记录
 - [当前测试说明](docs/current/testing.md)
 - [阶段现状（2026-08-06）](docs/history/analysis/阶段现状-2026.8.6.md)
 - [完整文档索引](docs/INDEX.md)
@@ -256,3 +258,5 @@ pnpm 版本由 `package.json` 的 `packageManager` 字段裁定，CI 不单独�
 ## 📝 License
 
 MIT
+
+运行时前置：上下文预算统一计入输出预留、工具 schema 和压缩余量（最大 20K）；核心输入超限显式提示。权限采用 allow/ask/deny，MCP passthrough 交总策略终裁。Skill 的 `tools.skill.enabled` 可在轻量模式启用，正文仍按需读取。MCP 与记忆 LLM 整理不随应用启动；旧 `ai.loop.contextCompactAt` 不再生效。
