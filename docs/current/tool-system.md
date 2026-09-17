@@ -23,6 +23,8 @@ Pi Harness Tool → harness-adapter → ToolRouter → TauriExecutionEnv → Rus
 
 实际清单由 [registry.ts](../../src/services/tool/registry.ts)、[pi-tools.ts](../../src/services/tool/local/pi-tools.ts) 和回合冻结快照决定。目录列举使用 bash ls；不再注册独立 ls/file_search/http_get。Pi CLI 的 Node 工具不能直接移入 WebView，需要现有 ExecutionEnv 边界。
 
+当前 ToolDef 已统一身份、schema、风险、权限检查和 handler，尚无统一的并行/结果投影/历史摘要/replay 策略。Pi 适配虽按 actionCategory 设置 executionMode，Agent 全局 sequential 仍使实际执行串行。薄 BaseTool 与必填策略、只读并行和混合批次限制见[目标工具协议](../plans/active/Pi运行时与工具协议建设方案.md#4-统一工具声明与薄抽象类)，尚未实施。
+
 ## 权限终裁
 
 [PermissionKernel](../../src/services/safety/permission.ts) 将风险等级与 `allow / ask / deny / passthrough` 分开：前三种表达工具侧意见，passthrough 继续总策略；内核最终只能给出 allow/ask/deny。MCP 明确走 passthrough，不绕过总策略。硬拒绝优先，工具 allow 不能吞掉总策略 ask。

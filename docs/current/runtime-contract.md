@@ -14,14 +14,20 @@ scope: runtime-foundation-before-memory-kernel
 - 普通输入先持久化再进入 Pi；会话事件使用同一会话锁、幂等键与版本/CAS。主动输入记录为 metadata，不进入 transcript；其回复带 `active` 来源，不能成为用户事实。[`runPiAgentTurn`](../../src/services/engine/pi/runtime.ts) 与 [`readContextView`](../../src/services/agent/memory/compaction-store.ts)
 - `AgentSlot` 按 `sessionId + generation` 约束投递；忙碌输入走 `steer` 或 `followUp`。计划恢复只重试可证明安全的步骤，未知外部副作用保持待处理状态。[`agentSlots.deliver`](../../src/services/engine/runtime/agent-slot.ts) 与 [`PlanCheckpointStore`](../../src/services/agent/memory/plan-checkpoint-store.ts)
 
-普通输入的持久化状态为 queued → dispatching → running → done/failed，Pi 完成后补 queue accepted/failed ack；忙碌输入先记 steered/followup，不能在 Agent 消费结束前记成成功。启动恢复隔离未知副作用。Plan 的运行中只读步骤可回 pending，没有完成凭证的外部副作用进入 unknown_side_effect，Plan 暂停，不能自动重试。
+普通输入的持久化状态为 queued → dispatching → running → done/failed，Pi 完成后补 queue accepted/failed ack。当前忙碌输入先记 steered/followup，`settleDeliveredEntries()` 再按父运行结果批量结算，尚未逐条核对消费和请求证据。因此 steered/followup 仅表示已投递，不能证明每条已进入模型；收尾时仍接收投递存在静态审查发现的竞态风险。[双模式与逐条确认方案](../plans/active/Pi运行时与工具协议建设方案.md#3-steer-与-follow-up-双模式)尚未实施，也未在本轮运行复现测试。
+
+当前 delivery mode 由 streaming/settling 阶段选择，Pi queue mode 使用默认 one-at-a-time；steer 等当前响应及整个工具批次结束，follow-up 等运行准备自然结束，均不硬中断工具。ChatPanel 还有直接执行 Slash 的入口，不能把 Runner 的 busy 分支当成所有命令的统一门禁。
+
+启动恢复隔离未知副作用。Plan 的运行中只读步骤可回 pending，没有完成凭证的外部副作用进入 unknown_side_effect，Plan 暂停，不能自动重试。
 
 ## 请求生命周期
 
 - [`ContextKernel`](../../src/services/context/kernel.ts) 产生冻结的请求视图；首请求的准备是宿主 preflight，**不是** Pi hook。压缩只消费已提交 checkpoint；完整 round、L0 请求投影、硬预算和恢复语义见[当前记忆与会话基础](./memory.md#压缩提交与恢复)。
 - 主回合与一次性文本请求经 [model-gateway.ts](../../src/services/engine/pi/model-gateway.ts) 使用 Pi createProvider/createModels。配置、认证、取消与增量响应上限共用；SDK 内层重试关闭，回合重试共享总 deadline，有工具执行后的失败不自动重放整个回合。
-- Pi 负责 Agent loop。transformContext 重建请求视图并等待工具持久化；beforeToolCall 承担权限/次数门禁；afterToolCall 标注来源和错误；subscribe 收敛事件与写队列，onPayload/onResponse 提供请求与 usage 观测。具体权限见[工具系统](tool-system.md#权限终裁)。
+- Pi 负责 Agent loop。transformContext 重建请求视图并等待工具持久化；beforeToolCall 承担权限/次数门禁；afterToolCall 标注来源和错误；subscribe 收敛事件与写队列，onPayload 采集请求快照，onResponse 记录状态/响应头。主运行结束时从最后一个 assistant 记录 usage，尚未在此逐请求汇总；不能把 onResponse 称为完整 usage 回调。具体权限见[工具系统](tool-system.md#权限终裁)。
 - 项目没有通用 HookBus；prepareNextTurnWithContext 和 shouldStopAfterTurn 尚无生产接线，队列 drain 由 AgentSlot 驱动，不能把宿主 preflight 或观测总线称作可阻断 Pi hook。
+
+依赖 0.85.1 已公开 AgentHarness、会话存储与压缩函数，但项目主链路使用基础 Agent，自建持久化与压缩；完整 Harness 尚未接入。后续利用范围见[Pi 建设方案](../plans/active/Pi运行时与工具协议建设方案.md)，该方案不改变这里的当前事实。
 
 ## Pi、权限与网络
 

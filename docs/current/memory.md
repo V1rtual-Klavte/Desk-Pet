@@ -24,6 +24,8 @@
 
 `compactSession()` 返回 `committed / skipped / stale / failed`，只有 `committed` 显示完成。`/compact` 固定调用时的 session 和 generation；自动压缩在首次请求前及 Pi `transformContext` 中执行，不在每轮回复后启动后台 LLM。
 
+当前使用项目自建压缩器。安装的 Pi Agent Core 0.85.1 已公开压缩算法，但基础 Agent 不自动调度它们；Harness 的自动压缩也未接入。逐请求 usage 校准、按工具声明投影/保留与长轮次切分属于[后续方案](../plans/active/Pi运行时与工具协议建设方案.md#7-压缩算法的渐进复用)，不能把目标切分规则当作现有 checkpoint 允许的行为。
+
 检查点保存：结构化 summary、连续 `coveredEventIds`、`keepFromEventId`、输入/输出 hash、前一个检查点、context epoch、来源 revision、session version、run generation。提交前校验完整轮边界及 hash，写入时再次 CAS；摘要与检查点由同一 `session_file_write_atomic` 原子提交。取消在进入提交前使结果失效；进入原子写入后属于已开始的提交，不尝试删除或回滚已写入事实。
 
 重载时从完整事件重建并验证检查点链，只有有效覆盖前缀会从模型请求视图中移除。损坏或无效边界不能授权删除历史。原始文件始终保留，旧格式也可参与新检查点。摘要是派生历史数据，不能变成系统指令、权限许可、Card 状态或长期事实。
