@@ -29,6 +29,7 @@ export const 记忆Prompt快照: SceneDef = {
       const serialized = serializePromptSnapshot(snapshot)
       if (!snapshot.systemBlocks[0] || snapshot.agentMessages[0]?.contentHash === undefined) throw new Error("snapshot 缺少 block/hash")
       if (snapshot.estimatedInputTokens !== 12 || snapshot.actualInputTokens !== 10 || snapshot.actualOutputTokens !== 4) throw new Error("估算 usage 与实际 usage 未区分")
+      if (snapshot.systemBlocks[0]?.text || !snapshot.systemBlocks[0]?.contentHash || serialized.includes("系统规则")) throw new Error("snapshot 保存了原始系统Prompt")
       if (serialized.includes("sk-secret-12345678")) throw new Error("snapshot 泄露密钥")
       const rewrite = await createPromptRewrite({
         transformId: "rewrite-smoke", name: "normalize_user_input",

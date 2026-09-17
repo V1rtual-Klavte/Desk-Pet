@@ -3,8 +3,8 @@ import type { ModuleContract } from "../types"
 export const emotionContract: ModuleContract = {
   module: "emotion",
   sourceFiles: ["src/services/personality/emotion.ts", "src/services/reply/generator.ts"],
-  generatedAt: "2026-09-09",
-  sourceHash: "456e9ee1f9376b2be763dea4fd526e4431c7256fc1cf4bd0f921f5f01d4a85b2",
+  generatedAt: "2026-09-17",
+  sourceHash: "4b373245f6cb79e270eb43c19b1f37ddbc699ae81ed36b1803b8c3c686bc422e",
   coverage: [
     { id: "em-01", feature: "resolveEmotion 映射解析", description: "命中 card 映射时返回该映射的 expression+sound；card 映射优先于系统默认表；空映射数组不崩", why: "表情音效正确映射", depth: "shallow", scenarios: ["emotion-map-resolve"] },
     { id: "em-02", feature: "resolveEmotion 未识别 key 兜底", description: "null key 与两边都未定义的 key 都回落到 smile/null；card 未定义但属于系统默认表的 key 命中默认表", why: "LLM 可能输出未定义 key", depth: "shallow", scenarios: ["emotion-map-fallback"] },

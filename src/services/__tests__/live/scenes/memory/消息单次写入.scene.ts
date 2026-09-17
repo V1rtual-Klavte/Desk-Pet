@@ -3,14 +3,11 @@ import { installFakeProvider, fakeText } from "../../fake-provider"
 import { MemoryService, parseSessionEventDocument } from "@/services/agent/memory"
 import { initChat } from "@/services/agent/runner"
 
-// 正文记录（deskpet-turn）是会话消息的唯一存放点：persistTurn 只写这一份，
-// user_message / assistant_message 事件视图由 events.ts 从 turn 记录投影得到。
-// 一旦双写回归，同一句话会同时留下 turn 记录与 event 记录，重载时按预览和注释
-// 各重放一次，消息数量与 Project.md 轮数一起翻倍。
+// deskpet-event 是新会话消息的唯一持久化记录。历史 deskpet-turn 只供兼容读取，
+// 新回合不能双写两种格式，否则重载会把同一句话重放两次。
 const USER_ONE = "先记个暗号：紫水晶七号，等下我要考你。"
 const USER_TWO = "再补一个暗号：柠檬四号。"
-// 生产入口的 initChat 会把启动问候写成一条 assistant 正文记录，
-// 所以助手侧按回复原文精确计数，而不是数 assistant 记录总数。
+// 生产入口可能保留启动问候；所以只按本场景回复原文精确计数。
 const REPLY_ONE = "暗号记下了。"
 const REPLY_TWO = "又记下一个啦。"
 
@@ -38,21 +35,20 @@ async function readSessionRaw(): Promise<string> {
   return raw
 }
 
-function assertSingleTurnRecord(raw: string, role: "user" | "assistant", text: string): void {
+function assertSingleMessageEvent(raw: string, role: "user" | "assistant", text: string): void {
+  const kind = `${role}_message`
+  const count = decodeRecords(raw, "deskpet-event")
+    .filter(record => record.kind === kind && (record.payload as { text?: unknown } | undefined)?.text === text).length
+  if (count !== 1) throw new Error(`"${text}" 落了 ${count} 条 ${kind}，期望 1 条`)
+}
+
+/** 新回合不得再写 deskpet-turn：两个协议同时写会把正文重放两次。 */
+function assertNoLegacyTurn(raw: string, role: "user" | "assistant", text: string): void {
   const count = decodeRecords(raw, "deskpet-turn").filter(record => record.role === role && record.text === text).length
-  if (count !== 1) throw new Error(`"${text}" 落了 ${count} 条 ${role} 正文记录，期望 1 条`)
+  if (count > 0) throw new Error(`"${text}" 被同时写成 ${count} 条 deskpet-turn（双写回归）`)
 }
 
-/** 消息事件不得再以 deskpet-event 落盘：双写回归会让同一句话重放两次。 */
-function assertNoMessageEvent(raw: string): void {
-  const messageEvents = decodeRecords(raw, "deskpet-event")
-    .filter(record => record.kind === "user_message" || record.kind === "assistant_message")
-  if (messageEvents.length > 0) {
-    throw new Error(`消息被同时写成 deskpet-event（双写回归）: ${messageEvents.map(record => String(record.kind)).join(",")}`)
-  }
-}
-
-/** turn 记录投影出的 user_message：每句话恰好 1 条，总数与预期一致。 */
+/** 从新消息事件重载的 user_message：每句话恰好 1 条，总数与预期一致。 */
 function assertUserMessageProjection(raw: string, expected: string[]): void {
   const parsed = parseSessionEventDocument(raw, MemoryService.sessionId)
   if (parsed.issues.length > 0) throw new Error(`会话文件出现损坏记录: ${parsed.issues.map(issue => issue.code).join(",")}`)
@@ -69,7 +65,7 @@ export const 消息单次写入: SceneDef = {
     caseId: "memory-single-message-write",
     module: "memory",
     contractId: "mm-18",
-    description: "正文记录单次写入：一句话只有一条 deskpet-turn，消息事件不双写",
+    description: "消息事件单次写入：一句话只有一条 deskpet-event，不双写 legacy turn",
     depth: "deep",
     suite: "regression",
     entry: "production",
@@ -80,24 +76,28 @@ export const 消息单次写入: SceneDef = {
     await initChat()
   },
   turns: [
-    { index: 1, description: "首个回合后只留一条正文记录", userText: USER_ONE, checks: [
+    { index: 1, description: "首个回合后只留一条消息事件", userText: USER_ONE, checks: [
       { type: "expectSingleMessageWrite", run: async () => {
         if ((provider?.state.callCount ?? 0) < 1) throw new Error("fake provider 未被调用")
         const raw = await readSessionRaw()
-        assertSingleTurnRecord(raw, "user", USER_ONE)
-        assertSingleTurnRecord(raw, "assistant", REPLY_ONE)
-        assertNoMessageEvent(raw)
+        assertSingleMessageEvent(raw, "user", USER_ONE)
+        assertSingleMessageEvent(raw, "assistant", REPLY_ONE)
+        assertNoLegacyTurn(raw, "user", USER_ONE)
+        assertNoLegacyTurn(raw, "assistant", REPLY_ONE)
         assertUserMessageProjection(raw, [USER_ONE])
       } },
     ] },
     { index: 2, description: "第二回合后历史消息不重复追加", userText: USER_TWO, checks: [
       { type: "expectNoDuplicateMessageWrite", run: async () => {
         const raw = await readSessionRaw()
-        assertSingleTurnRecord(raw, "user", USER_ONE)
-        assertSingleTurnRecord(raw, "user", USER_TWO)
-        assertSingleTurnRecord(raw, "assistant", REPLY_ONE)
-        assertSingleTurnRecord(raw, "assistant", REPLY_TWO)
-        assertNoMessageEvent(raw)
+        assertSingleMessageEvent(raw, "user", USER_ONE)
+        assertSingleMessageEvent(raw, "user", USER_TWO)
+        assertSingleMessageEvent(raw, "assistant", REPLY_ONE)
+        assertSingleMessageEvent(raw, "assistant", REPLY_TWO)
+        assertNoLegacyTurn(raw, "user", USER_ONE)
+        assertNoLegacyTurn(raw, "user", USER_TWO)
+        assertNoLegacyTurn(raw, "assistant", REPLY_ONE)
+        assertNoLegacyTurn(raw, "assistant", REPLY_TWO)
         assertUserMessageProjection(raw, [USER_ONE, USER_TWO])
       } },
     ] },

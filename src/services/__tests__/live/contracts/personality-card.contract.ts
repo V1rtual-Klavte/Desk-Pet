@@ -3,7 +3,7 @@ import type { ModuleContract } from "../types"
 export const personalityCardContract: ModuleContract = {
   module: "personality-card",
   sourceFiles: ["src/services/personality/registry.ts", "src/services/personality/loader.ts"],
-  generatedAt: "2026-09-14",
+  generatedAt: "2026-09-17",
   sourceHash: "0263716ed09aee786c57c8ec3f638cb38d2921151ba40f6baf5f4c041b35e0a3",
   coverage: [
     { id: "pc-01", feature: "Card 解析", description: "importUserCard 把 Card markdown 解析成 PersonalityCard：frontmatter 的 id/name/version 与六个区块的 sections 都要落到字段上，source 恒为 runtime，hash 非空", why: "人格卡系统基础", depth: "shallow", scenarios: ["card-parse"] },

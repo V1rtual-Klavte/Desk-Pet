@@ -15,6 +15,7 @@ import { getPoolSnapshot } from "@/services/personality/variable-pool"
 import { getSession } from "@/services/engine/session"
 import { getActiveSessionId, getContextMessages } from "@/services/session/store"
 import { pushAssistantMessage, pushUserMessage } from "@/services/session/messages"
+import { initSessions } from "@/services/session"
 import { MemoryService } from "@/services/agent/memory"
 import { formatError } from "@/services/error"
 import { confirmRecords } from "./confirm-channel"
@@ -68,6 +69,9 @@ async function executeTurn(userText: string, entry: SceneEntry, isActiveMessage 
     return { reply: "", toolCallHistory: [], retriesUsed: 0, effects: [] }
   }
 
+  // Runtime tests use the same durable session creation as the desktop entry.
+  if (!getActiveSessionId() && (entry === "production" || isActiveMessage || !MemoryService.sessionId)) await initSessions()
+
   if (entry === "production") {
     // sendMessage clears this after preprocessing; clear here so handled requests cannot leak a prior turn.
     productionToolHistory.clear()
@@ -88,8 +92,7 @@ async function executeTurn(userText: string, entry: SceneEntry, isActiveMessage 
 
   // Mirror the production message lifecycle around the lower-level Pi runtime.
   if (!isActiveMessage) pushUserMessage(userText)
-  const sessionId = getActiveSessionId() || MemoryService.sessionId || `live-runtime-${Date.now()}`
-  if (!MemoryService.sessionId) MemoryService.setActiveSessionSync(sessionId)
+  const sessionId = getActiveSessionId() || MemoryService.sessionId
   const output = await runPiAgentTurn({
     sessionId,
     userText,

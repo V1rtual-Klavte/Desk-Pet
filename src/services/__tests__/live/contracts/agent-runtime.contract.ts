@@ -15,8 +15,8 @@ export const agentRuntimeContract: ModuleContract = {
     "src/services/session/manager.ts",
     "src/services/session/persistence.ts",
   ],
-  generatedAt: "2026-09-16",
-  sourceHash: "62f63fc27519201bec9566d200a86c8eb9a62af0c181bcfb3e0de40ef162481d",
+  generatedAt: "2026-09-17",
+  sourceHash: "caa9b8f3ea72de335cab3120dfc8f215a9e50b204b54c14e003669efc3a95de6",
   coverage: [
     {
       id: "ar-01",
@@ -45,8 +45,8 @@ export const agentRuntimeContract: ModuleContract = {
     {
       id: "ar-04",
       feature: "会话 AgentSlot 生命周期",
-      description: "主回合按 sessionId 持有 Agent、上下文、状态和 generation；会话切换不串历史，旧 generation 不能结束新 run",
-      why: "模块级 Agent 引用和全局忙碌锁无法隔离不同会话，也会让迟到的异步清理释放后续回合",
+      description: "主回合按 sessionId 持有 Agent、上下文、状态和单调 generation/drainGeneration；会话切换或删除重建不串历史，旧异步清理不能命中新 run（ABA）",
+      why: "模块级 Agent 引用和全局忙碌锁无法隔离不同会话；代际在删除后归零会让迟到的 end/finally 释放重建后的运行",
       depth: "deep",
       scenarios: ["session-agent-slot-generation"],
     },

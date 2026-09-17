@@ -36,8 +36,9 @@ export const 队列入口: SceneDef = {
       if (states[0] !== "persisted" || !states.includes("accepted")) {
         throw new Error(`队列回执不完整: ${states.join(",")}`)
       }
-      const queuedAt = raw.indexOf("queued")
-      const userAt = raw.indexOf("deskpet-turn:%7B%22role%22%3A%22user")
+      const allEvents = parseSessionEventDocument(raw, MemoryService.sessionId).events
+      const queuedAt = allEvents.findIndex(event => event.kind === "queue_state")
+      const userAt = allEvents.findIndex(event => event.kind === "user_message")
       if (queuedAt < 0 || userAt < 0 || queuedAt > userAt) throw new Error("queued 未先于用户事实事件落盘")
     } },
   ] }],
