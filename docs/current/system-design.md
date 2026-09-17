@@ -9,11 +9,11 @@
 | 前端窗口入口 | 主窗口、设置、图层编辑与模拟器；统一启动拦截和配置加载 | [boot.ts](../../src/services/boot.ts)、[main.ts](../../src/main.ts)、[vite.config.ts](../../vite.config.ts) |
 | Vue 界面 | 会话、聊天、角色、设置和确认的投影 | [App.vue](../../src/App.vue)、[components/](../../src/components/) |
 | agent | 用户输入、Provider 适配调用、子代理和主动消息入口 | [runner.ts](../../src/services/agent/runner.ts)、[agent/](../../src/services/agent/) |
-| engine | 预处理、Plan、Slash、Pi loop、会话运行阶段、压缩、Pi 会话存储（未接线） | [engine/](../../src/services/engine/)、[pi/runtime.ts](../../src/services/engine/pi/runtime.ts)、[pi/session-repo.ts](../../src/services/engine/pi/session-repo.ts) |
-| engine/runtime | Queue、Turn、AgentSlot、trace、快照协议 | [runtime/](../../src/services/engine/runtime/) |
+| engine | 预处理、Plan、Slash、Harness 运行槽、会话仓库与压缩接线 | [engine/](../../src/services/engine/)、[pi/harness-slot.ts](../../src/services/engine/pi/harness-slot.ts)、[pi/runtime.ts](../../src/services/engine/pi/runtime.ts)、[pi/session-repo.ts](../../src/services/engine/pi/session-repo.ts) |
+| engine/runtime | trace、快照协议（Queue/AgentSlot 已退役） | [runtime/](../../src/services/engine/runtime/) |
 | context | 分层构建、共享预算、完整轮与工具输出请求投影 | [context/](../../src/services/context/) |
-| agent/memory | 会话事件、checkpoint、Markdown 兼容、只读 MemoryProvider | [memory/](../../src/services/agent/memory/) |
-| session | 标签、消息展示、切换、归档与恢复 | [session/](../../src/services/session/) |
+| agent/memory | Plan checkpoint、记忆文件与只读 MemoryProvider（会话正文在 `sessions/` JSONL） | [memory/](../../src/services/agent/memory/) |
+| session | 会话仓库访问层、标签、消息读模型、切换与恢复 | [session/](../../src/services/session/) |
 | personality / reply | Card、变量与阶段文案；回复元数据解析和效果 | [personality/](../../src/services/personality/)、[reply/](../../src/services/reply/) |
 | tool / safety | 工具注册和路由、Pi 文件工具、MCP；权限与确认 | [tool/](../../src/services/tool/)、[safety/](../../src/services/safety/) |
 | skill | 有界元数据索引与按需正文读取的 Prompt 目录 | [skill/](../../src/services/skill/) |
@@ -31,14 +31,14 @@
 
 ```text
 sendMessage → preprocessor / Slash
-  → 持久化 queued / SessionTurnStore → AgentSlot 调度
-  → runPiAgentTurn：捕获会话与运行身份、Card/变量/模型快照
-      → 准备当前模式工具与 Skill 元数据，持久化输入
+  → 空闲 lane.prompt / 忙碌 lane 持久 inbox（steer / followUp）
+  → runPiAgentTurn：捕获会话与运行身份、Card/变量/模型快照（preflight）
+      → 准备当前模式工具与 Skill 元数据
       → 助手模式按配置执行可选 Plan，取得步骤结果
-      → recallMemory（默认空）→ ContextKernel / 请求前压缩
-      → Pi Agent：transformContext → Provider → 工具门禁与执行 → 持久化结果
+      → recallMemory（默认空）→ Harness Lane：transform_context 投影 → Provider → before_tool 权限与执行
+      → 条目提交、逐请求 usage、流式正文事件
       → ReplyGenerator：RUNTIME_DATA、变量、情绪与显示文本
-  → 固定 session 的正文/状态完成 → Vue 投影
+  → 固定 session 的条目/状态完成 → Vue 投影
 ```
 
 该图描述普通消息主路径。主动消息、Slash、错误和恢复有各自来源与终止路径；不能据此推断每条输入都调用模型或 Planner。
@@ -47,9 +47,9 @@ sendMessage → preprocessor / Slash
 
 | 生命周期 | 所有者 | 边界 |
 |---|---|---|
-| 跨重启 | 配置文件、Card/Profile 资源、session 事件 | 文件原子提交；index 不是正文来源 |
+| 跨重启 | 配置文件、Card/Profile 资源、会话 JSONL 条目 | 文件原子提交；index 不是正文来源 |
 | 应用 | 配置、Card/Profile 选择、能力目录 | 新 run 读取快照；切换有专用入口 |
-| 会话 | RuntimeQueue、SessionTurnStore、AgentSlot | 身份由 sessionId 与 generation 关联 |
+| 会话 | Lane 持久 inbox、会话 JSONL 条目 | 身份由 sessionId 与操作代际关联 |
 | 单次运行 | 冻结模型/能力/Prompt 来源、AbortSignal、写队列 | 旧运行不能修改新的会话或 Card 所有者 |
 | 界面 | Vue 标签、消息、进度与表达效果 | 从领域事实投影，不重建第二份持久化 Store |
 

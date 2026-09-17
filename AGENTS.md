@@ -7,6 +7,9 @@ Desk-Pet 是可自定义 Card/Profile 的 Tauri v2 桌宠，优先做好轻量�
 ## 工作范围
 
 - 修改前先说明思路，得到用户同意后实施；已有授权范围内继续推进，不重复确认。
+- 开发阶段不保留兼容层：不引入新旧并存的前缀、双写、兼容读取或过渡脚手架；迁移与重构
+  直接替换到最终命名、路径与格式，旧数据视为可弃（不为区分新旧给路径加前缀）。废弃代码删除、
+  过时文档归档，主路径不留临时代码。
 - 不擅自扩大范围；有疑问先探索源码和证据。不主动提交、部署或修改用户运行时数据。
 - `.gitignore`、真实本地配置（CONFIG-DEV.yaml、data_root 中的 CONFIG）和用户数据只有在明确授权下才能修改。
 - 先读后写，复用已有入口。状态、配置、路径与领域逻辑不要建立第二个定义点。
@@ -26,7 +29,7 @@ Desk-Pet 是可自定义 Card/Profile 的 Tauri v2 桌宠，优先做好轻量�
 | 会话、队列、Plan、Prompt、取消恢复 | [运行时契约](docs/current/runtime-contract.md) |
 | 压缩、会话文件、长期记忆边界 | [当前记忆](docs/current/memory.md) |
 | 工具、权限、MCP、Skill | [工具系统](docs/current/tool-system.md) |
-| Pi 接线改造、插话双模式、工具并行/压缩策略 | [Pi 运行时与工具协议方案](docs/plans/active/Pi运行时与工具协议建设方案.md)对应章节；目标未实现前不作为当前能力 |
+| Pi 接线改造、插话双模式、工具并行/压缩策略 | [Pi 运行时与工具协议方案](docs/plans/active/Pi运行时与工具协议建设方案.md)对应章节；§8 Harness 迁移已落代码待集中验证，其余目标未实现前不作为当前能力 |
 | 配置、路径、Profile 资源、持久化 | [运行时数据](docs/current/runtime-data.md) |
 | 人格变量、阶段文案、回复元数据 | [人格与回复](docs/current/personality.md) |
 | 日志、异常、IPC、构建排查 | [工程参考](docs/current/development.md) |
@@ -96,14 +99,14 @@ pnpm run test:release # 类型/编译 + 严格 Contract + 三次 trial
 
 ## 运行时不变量
 
-- 会话正文与控制事件以 `sessions/*.md` 为真相源，`sessions/index.json` 仅保存可丢弃 UI 状态。
-  正文用专用 `session_file_write_atomic`，不改变通用 `file_write` 语义。
-- 新正文保存稳定 eventId、appendSequence、apiRoundId；兼容旧记录。用户 ingress 先落盘再投递；
+- 会话正文以数据根 `sessions/` 的 JSONL 为真相源（JsonlSessionRepo，commit 事务写入）；
+  `sessions/index.json` 仅保存可丢弃 UI 状态。
+- 正文条目保存稳定 entryId/seq 与运行关联；用户 ingress 先落盘再投递（lane 持久 inbox）；
   工具调用先落盘再执行，结果落盘后才进入下一次 Provider 请求。
 - 所有异步读取、写回、确认、取消都绑定 session 与 run generation；旧运行不能改写新所有者状态。
   未知外部副作用不自动重放；UI 和 Pi 内存消息不成为第二份持久化 Store。
-- 压缩只改变请求视图，完整正文保留；只有 committed 可报告成功。摘要与边界原子提交，
-  校验版本、来源 hash 和完整回合，禁止默默丢弃未覆盖历史；已进入原子提交的写入不因取消回滚。
+- 压缩只改变请求视图，完整正文保留；compaction 条目由 Harness 单事务提交，提交成功前不报告完成。
+  摘要失败或无可覆盖时 decline/报错，禁止默默丢弃未覆盖历史；已提交的写入不因取消回滚。
 - 预算共用 ContextKernel 规则，包含完整 schema、输出预留及压缩余量；静态协议与当前输入不截字。
   每轮冻结 Card/变量/配置/能力；PromptSnapshot 只保存 hash 与审计元数据，不落盘原始 Prompt。
 - Card、互动状态、用户长期事实分开。RUNTIME_DATA 由回复模块剥离、验证、持久化，不能重新塞回 Loop。
@@ -115,7 +118,7 @@ pnpm run test:release # 类型/编译 + 严格 Contract + 三次 trial
 
 ## 工具与权限
 
-- 使用 Pi 原生 `beforeToolCall` / `afterToolCall` / `transformContext` 等扩展点；不重建无消费者的 HookBus。
+- 使用 Pi AgentHarness 原生 hook（`before_tool` / `after_tool` / `transform_context` / `before_compaction` 等）；不重建无消费者的 HookBus。
 - PermissionKernel 终裁 allow/ask/deny；passthrough 只能继续策略链，不能直接执行。MCP 走 passthrough。
 - deny-first；确认与授权绑定会话、代际、精确参数、策略和有效期，变更后重审；摘要不能恢复授权。
 - Rust 保留最终路径与 Bash 安全基线，助手模式不能关闭；网络边界不得夸大为通用沙箱。

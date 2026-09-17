@@ -11,23 +11,23 @@ scope: runtime-foundation-before-memory-kernel
 
 ## 会话、来源与恢复
 
-- 普通输入先持久化再进入 Pi；会话事件使用同一会话锁、幂等键与版本/CAS。主动输入记录为 metadata，不进入 transcript；其回复带 `active` 来源，不能成为用户事实。[`runPiAgentTurn`](../../src/services/engine/pi/runtime.ts) 与 [`readContextView`](../../src/services/agent/memory/compaction-store.ts)
-- `AgentSlot` 按 `sessionId + generation` 约束投递；忙碌输入走 `steer` 或 `followUp`。计划恢复只重试可证明安全的步骤，未知外部副作用保持待处理状态。[`agentSlots.deliver`](../../src/services/engine/runtime/agent-slot.ts) 与 [`PlanCheckpointStore`](../../src/services/agent/memory/plan-checkpoint-store.ts)
+- 普通输入先落盘再投递：空闲走 `lane.prompt`，忙碌进入 lane 持久 inbox（steer / followUp），消费证据由条目与运行关联给出。主动输入以 `deskpet.active_message` 自定义消息记录，其回复带 `active` 来源，不能成为用户事实。[`runPiAgentTurn`](../../src/services/engine/pi/runtime.ts) 与 [`harness-slot.ts`](../../src/services/engine/pi/harness-slot.ts)
+- 运行槽按 `sessionId` 与注册表级单调代际约束投递与释放；停止/中断把未消费 inbox 项以 `nextRun` 归还、等待下一次运行接受，不自动继续。计划恢复只重试可证明安全的步骤，未知外部副作用保持待处理状态（Plan checkpoint 以 `deskpet.plan_checkpoint` 自定义条目落盘）。[`harness-slot.ts`](../../src/services/engine/pi/harness-slot.ts) 与 [`PlanCheckpointStore`](../../src/services/agent/memory/plan-checkpoint-store.ts)
 
-普通输入的持久化状态为 queued → dispatching → running → done/failed，Pi 完成后补 queue accepted/failed ack。当前忙碌输入先记 steered/followup，`settleDeliveredEntries()` 再按父运行结果批量结算，尚未逐条核对消费和请求证据。因此 steered/followup 仅表示已投递，不能证明每条已进入模型；收尾时仍接收投递存在静态审查发现的竞态风险。[双模式与逐条确认方案](../plans/active/Pi运行时与工具协议建设方案.md#3-steer-与-follow-up-双模式)尚未实施，也未在本轮运行复现测试。
+忙碌输入的持久状态由 lane inbox 承担：投递即 commit 进会话文件；被消费即移出并进入正文；未消费项在停止/中断后归还，不会虚假 accepted。单项撤回经 `cancelQueued` 返回 `cancelled / already_consumed / not_found`，排队项另有只读视图供 UI/场景使用。[双模式方案](../plans/active/Pi运行时与工具协议建设方案.md#3-steer-与-follow-up-双模式)的显式用户意图选择界面（PI-1）尚未实施。
 
-当前 delivery mode 由 streaming/settling 阶段选择，Pi queue mode 使用默认 one-at-a-time；steer 等当前响应及整个工具批次结束，follow-up 等运行准备自然结束，均不硬中断工具。ChatPanel 还有直接执行 Slash 的入口，不能把 Runner 的 busy 分支当成所有命令的统一门禁。
+当前 delivery 仍按运行阶段分流（回合进行中 steer、收尾阶段 followUp），queue mode 用默认 one-at-a-time；steer 等当前响应及整个工具批次结束，follow-up 等运行准备自然结束，均不硬中断工具。ChatPanel 仍存在直接执行 Slash 的入口，入口归一属于 PI-1 目标。
 
-启动恢复隔离未知副作用。Plan 的运行中只读步骤可回 pending，没有完成凭证的外部副作用进入 unknown_side_effect，Plan 暂停，不能自动重试。
+启动恢复隔离未知副作用。Plan 的运行中只读步骤可回 pending，没有完成凭证的外部副作用进入 unknown_side_effect，Plan 暂停，不能自动重试。Harness 重启后以 open 操作暴露中断运行，默认暂停并提示继续/丢弃，不自动重放。
 
 ## 请求生命周期
 
-- [`ContextKernel`](../../src/services/context/kernel.ts) 产生冻结的请求视图；首请求的准备是宿主 preflight，**不是** Pi hook。压缩只消费已提交 checkpoint；完整 round、L0 请求投影、硬预算和恢复语义见[当前记忆与会话基础](./memory.md#压缩提交与恢复)。
-- 主回合与一次性文本请求经 [model-gateway.ts](../../src/services/engine/pi/model-gateway.ts) 使用 Pi createProvider/createModels。配置、认证、取消与增量响应上限共用；SDK 内层重试关闭，回合重试共享总 deadline，有工具执行后的失败不自动重放整个回合。
-- Pi 负责 Agent loop。transformContext 重建请求视图并等待工具持久化；beforeToolCall 承担权限/次数门禁；afterToolCall 标注来源和错误；subscribe 收敛事件与写队列，onPayload 采集请求快照，onResponse 记录状态/响应头。主运行结束时从最后一个 assistant 记录 usage，尚未在此逐请求汇总；不能把 onResponse 称为完整 usage 回调。具体权限见[工具系统](tool-system.md#权限终裁)。
-- 项目没有通用 HookBus；prepareNextTurnWithContext 和 shouldStopAfterTurn 尚无生产接线，队列 drain 由 AgentSlot 驱动，不能把宿主 preflight 或观测总线称作可阻断 Pi hook。
+- 宿主 preflight（`runPiAgentTurn`）冻结 Card/变量/配置/能力并构建首个 systemPrompt；此后每个请求由 Harness 从已提交条目重建，宿主在 `transform_context` 只做 L0 工具结果投影与硬预算核对。压缩由 Harness 阈值/手动/溢出调度，摘要内核与提交语义见[当前记忆与会话基础](./memory.md#压缩提交与恢复)。
+- 主回合与一次性文本请求经 [model-gateway.ts](../../src/services/engine/pi/model-gateway.ts)（createProvider/createModels + Harness Models 薄包装）。配置、认证、取消与增量响应上限共用；SDK 内层重试关闭，生成级重试由 Harness RetryPolicy 承担，有工具执行后的失败不自动重放整个回合。
+- 请求循环由 AgentHarness Lane 承担：`transform_context` 投影、`before_tool` 承担权限/次数门禁、`after_tool` 标注来源与错误、`after_response` 剥离 RUNTIME_DATA 并记录状态/响应头、`before_payload` 采集脱敏快照、usage 事件按请求进入统计。具体权限见[工具系统](tool-system.md#权限终裁)。
+- 项目没有通用 HookBus；宿主 preflight 与观测通道不构成可阻断的 Pi hook，队列驱动由 Lane 持久 inbox 承担。流式正文经 `message_update` 增量事件走 UI 通道，只展示正文、不展示思考内容，`<RUNTIME_DATA>` 跨分片被缓冲。
 
-依赖 0.85.1 已公开 AgentHarness、会话存储与压缩函数，但项目主链路使用基础 Agent，自建持久化与压缩；完整 Harness 尚未接入。后续利用范围见[Pi 建设方案](../plans/active/Pi运行时与工具协议建设方案.md)，该方案不改变这里的当前事实。
+0.85.1 的 AgentHarness、JsonlSessionRepo 与压缩调度已接入为运行内核（§8 迁移已落代码，集中验证见[执行手册](../plans/active/记忆系统重构执行手册.md)）；插话双模式 UI（PI-1）、工具策略/只读并行（PI-2）与 usage purpose 单列（PI-4）尚未实施，见[Pi 建设方案](../plans/active/Pi运行时与工具协议建设方案.md)。
 
 ## Pi、权限与网络
 

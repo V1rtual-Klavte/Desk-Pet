@@ -87,7 +87,7 @@ pnpm test -- --module memory
 - [当前系统地图](docs/current/system-design.md)
 - [开发约束](AGENTS.md)
 - [记忆重构当前检查点](docs/plans/active/记忆系统重构执行手册.md)
-- [Pi 接入、插话双模式与工具策略方案（待实施）](docs/plans/active/Pi运行时与工具协议建设方案.md)
+- [Pi 接入与 Harness 运行时迁移方案（迁移已实现，待集中验证）](docs/plans/active/Pi运行时与工具协议建设方案.md)
 
 ## License
 

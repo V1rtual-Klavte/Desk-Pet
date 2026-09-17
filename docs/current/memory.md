@@ -10,25 +10,23 @@
 | User.md | 重要用户事实的文件视图，作为只读 profile projection 进入上下文 |
 | Outside.md | 外部知识指针，不自动成为用户事实 |
 | MEMORY.md | 当前长期记忆注册表，尚未迁移到 SQLite |
-| Project.md | 会话归档索引；正文仍以 sessions/*.md 为准 |
+| Project.md | 会话归档索引（写入链路已随旧格式清理删除） |
 
 这些文件的读取/整理接口仍在 [memory-entries.ts](../../src/services/agent/memory/memory-entries.ts)；接口存在不表示自动链路已接通，不能声称 MemoryService.search() 已自动注入或 forkMemorySupplement() 已被每轮调用。未来 SQLite 迁移的写入与投影边界见 [P6 目标](../plans/active/记忆系统运行时契约.md)。
 
 ## 会话真相源
 
-`sessions/*.md` 保存完整正文、工具调用/结果和控制事件；`sessions/index.json` 只保存可丢弃 UI 状态。新增正文以一条 `deskpet-event` 保存完整 `Message`，预览不参与重放，兼容旧 `deskpet-turn` 和纯预览。`appendSequence` 按同一会话写锁下的落盘顺序递增；实际 Pi 工具调用与结果保存同一 `apiRoundId`、call ID、错误标记和来源。主动上下文不成为用户事实。
+聊天正文以数据根 `sessions/` 的 JSONL 为真相源（JsonlSessionRepo，每会话一个文件，commit 事务写入）；`sessions/index.json` 只保存可丢弃 UI 状态。条目保存稳定 entryId/seq；工具调用/结果、usage 行与来源标记都落在条目与 usage 记录里。控制信息用 `deskpet.*` 自定义条目（如 prompt_snapshot、active_message、plan_checkpoint）；旧 Markdown 会话格式及其解析代码已删除，旧数据可弃。主动上下文不成为用户事实。
 
-调用事件落盘后才准许执行工具；结果落盘后才允许下一次 Provider 请求。异步订阅通过回合内写队列收敛，写入失败阻止继续执行。归档只更新元数据，不再用内存文本重建文件。切换会话、旧代际回调和后台回复都绑定原 session。
+用户 ingress 先落盘再投递（lane 持久 inbox）；工具调用落盘后才执行；结果落盘后才允许下一次 Provider 请求。切换会话、旧代际回调和后台回复都绑定原 session。
 
 ## 压缩提交与恢复
 
-`compactSession()` 返回 `committed / skipped / stale / failed`，只有 `committed` 显示完成。`/compact` 固定调用时的 session 和 generation；自动压缩在首次请求前及 Pi `transformContext` 中执行，不在每轮回复后启动后台 LLM。
+压缩由 Harness 调度（阈值 / 手动 `/compact`→`lane.compact()` / 一次性溢出恢复），`/compact` 绑定调用时的会话与运行。陪伴/助手双模式结构化摘要在 `before_compaction` 钩子内生成——复用 [compactor.ts](../../src/services/engine/compactor.ts) 的摘要内核，经 model-gateway `completePiText` 发送——以 `CompactResult`（summary + retainedTail）返回，由 Harness 单事务提交为 compaction 条目；提交成功前不报告完成，摘要失败或无可覆盖时 decline/报错，切分回合的 turn-prefix 另段摘要。压缩调用不计为正常聊天回复，其 usage 落会话 totals 但不进主回合统计（purpose 单列属 PI-4）。
 
-当前使用项目自建压缩器。安装的 Pi Agent Core 0.85.1 已公开压缩算法，但基础 Agent 不自动调度它们；Harness 的自动压缩也未接入。逐请求 usage 校准、按工具声明投影/保留与长轮次切分属于[后续方案](../plans/active/Pi运行时与工具协议建设方案.md#7-压缩算法的渐进复用)，不能把目标切分规则当作现有 checkpoint 允许的行为。
+压缩设置（reserve/keepRecent）由 `contextBudget()` 推导并按模型窗口同步，不套用 Pi 默认值（默认窗口下会退化为每个检查点都压缩）。上下文 epoch 在快照中等于已提交 compaction 条目数。
 
-检查点保存：结构化 summary、连续 `coveredEventIds`、`keepFromEventId`、输入/输出 hash、前一个检查点、context epoch、来源 revision、session version、run generation。提交前校验完整轮边界及 hash，写入时再次 CAS；摘要与检查点由同一 `session_file_write_atomic` 原子提交。取消在进入提交前使结果失效；进入原子写入后属于已开始的提交，不尝试删除或回滚已写入事实。
-
-重载时从完整事件重建并验证检查点链，只有有效覆盖前缀会从模型请求视图中移除。损坏或无效边界不能授权删除历史。原始文件始终保留，旧格式也可参与新检查点。摘要是派生历史数据，不能变成系统指令、权限许可、Card 状态或长期事实。
+原始条目始终保留，压缩只改变请求视图；损坏或无效边界不能授权删除历史。摘要是派生历史数据，不能变成系统指令、权限许可、Card 状态或长期事实。
 
 ## 预算与工具大结果
 
@@ -36,7 +34,7 @@
 
 请求层顺序为 static → dynamic → profile → memory → transcript → ephemeral，稳定静态前缀先放。预算桶比例是 static 12%、tools 8%、dynamic 10%、memory 15%、transcript 50%、ephemeral 5%；profile 计入 dynamic，schema/Skill 清单计入 tools。它们是可借用空闲容量的软配额，不是按百分比强行截字；设置页调整总窗口，比例由预算模块定义。
 
-- L0：请求内缩短大工具结果，保留头尾和 eventId；工具实际返回的完整文本仍在会话，`read_session_event` 按当前会话分页读取。Bash 在返回前可能已截断并生成会淘汰的 spill 文件，不能把这些文件等同于持久会话原文；见[工具输出边界](tool-system.md#文件命令与取消)。
+- L0：请求内缩短大工具结果，保留头尾和 eventId；工具实际返回的完整文本仍在会话条目，`read_session_event` 按当前会话条目分页读取。Bash 在返回前可能已截断并生成会淘汰的 spill 文件，不能把这些文件等同于持久会话原文；见[工具输出边界](tool-system.md#文件命令与取消)。
 - L1：对最旧的连续完整用户意图轮生成结构化摘要。工具批次不能拆开，最后一轮与未完成调用保留；大历史分多次有界提交。
 - L2：在无法再安全压缩时保留原文；如果核心输入仍超过硬上限，返回可解释的上下文不足错误，不用占位文案伪装压缩成功。
 
@@ -48,4 +46,4 @@
 
 `CANDY.md` 是人工指令，`User.md` 通过带来源的只读画像投影进入动态层；两者与摘要分别建块。现有记忆整理接口保留，但应用启动、每五轮和 session 结束不隐式发起记忆 LLM 整理。明确的长期记忆写入闭环在 P6 实施。
 
-当前实现入口为 [session-files.ts](../../src/services/agent/memory/session-files.ts)、[compaction-store.ts](../../src/services/agent/memory/compaction-store.ts)、[compactor.ts](../../src/services/engine/compactor.ts) 和 [provider.ts](../../src/services/agent/memory/provider.ts)。历史验证证据只在[执行手册](../plans/active/记忆系统重构执行手册.md)记录。
+当前实现入口为 [harness-slot.ts](../../src/services/engine/pi/harness-slot.ts)（运行与压缩调度）、[compactor.ts](../../src/services/engine/compactor.ts)（摘要内核）、[session/repo.ts](../../src/services/session/repo.ts)（会话仓库）与 [provider.ts](../../src/services/agent/memory/provider.ts)（长期记忆只读端口）。历史验证证据只在[执行手册](../plans/active/记忆系统重构执行手册.md)记录。

@@ -1,6 +1,6 @@
 ---
 document_type: implementation_plan
-status: pending_implementation
+status: implemented_pending_verification
 updated_at: 2026-09-17
 code_baseline: a7fd393
 dependency_baseline: pi-agent-core@0.85.1 / pi-ai@0.85.1
@@ -9,7 +9,7 @@ scope: conversation_delivery_tool_policy_pi_hooks_context_harness_migration
 
 # Pi 运行时与工具协议建设方案
 
-本文落实 Pi 能力审查与用户补充：**steer 是聊天感的核心，follow-up 同时保留；只读工具可以并行，写入等有顺序要求的工具串行；每个工具明确声明权限、输出压缩与执行策略。** §8 另行按用户决策确定用 AgentHarness 替换宿主运行内核：存储走 JsonlSessionRepo，旧会话数据按测试数据弃用。本轮仅形成文档，下面的新增字段、UI、调度、迁移和验收均未实现，旧测试记录不能证明这些目标已通过。
+本文落实 Pi 能力审查与用户补充：**steer 是聊天感的核心，follow-up 同时保留；只读工具可以并行，写入等有顺序要求的工具串行；每个工具明确声明权限、输出压缩与执行策略。** §8 另行按用户决策确定用 AgentHarness 替换宿主运行内核：存储走 JsonlSessionRepo，旧会话数据按测试数据弃用。**§8 的 H-1–H-4 已落代码（待集中验证，见[执行手册](记忆系统重构执行手册.md#当前检查点)）；§3–§5 的 UI、配置字段与工具策略等目标仍未实现**，旧测试记录不能证明这些目标已通过。
 
 当前事实分别维护在[运行时契约](../../current/runtime-contract.md)、[工具系统](../../current/tool-system.md)、[记忆与压缩](../../current/memory.md)。本文是目标协议的主要维护位置，执行进度只记录在[执行手册](记忆系统重构执行手册.md#当前检查点)。不要求每次任务通读本文：插话读 §3，工具读 §4–5，Pi 接线读 §6，压缩读 §7，Harness 迁移读 §8，实施与配置读 §9–10。
 
@@ -30,7 +30,7 @@ scope: conversation_delivery_tool_policy_pi_hooks_context_harness_migration
 
 | 位置 | 已有实现 | 本方案处理的缺口 |
 |---|---|---|
-| [AgentSlot](../../../src/services/engine/runtime/agent-slot.ts) | streaming 调 steer，settling 调 followUp | 无显式用户投递选择；收尾阶段仍可能向已停止消费的 Pi 队列投递 |
+| AgentSlot（H-4 已退役） | streaming 调 steer，settling 调 followUp | 无显式用户投递选择；收尾阶段仍可能向已停止消费的 Pi 队列投递 |
 | [Runner](../../../src/services/agent/runner.ts) | 先落盘，忙碌消息记 steered/followup | `settleDeliveredEntries()` 按父回合结果批量确认，缺逐条消费/请求/回复关联 |
 | [ChatPanel](../../../src/components/ChatPanel.vue)、[Preprocessor](../../../src/services/engine/preprocessor.ts) | 忙碌时仍能输入，均存在 Slash 执行入口 | Slash 可绕过统一运行策略；尚无双模式发送与排队状态展示 |
 | [Pi runtime](../../../src/services/engine/pi/runtime.ts) | 原生权限 hook、上下文转换、事件写队列 | 全局固定 sequential；未接下一轮准备/停止 hook；usage 主要取最后一个 assistant |
@@ -38,7 +38,7 @@ scope: conversation_delivery_tool_policy_pi_hooks_context_harness_migration
 | [L0 投影](../../../src/services/context/tool-output.ts) | 工具长结果缩短并保留 eventId | 未按工具策略区分；分页恢复结果也可能再次被缩短 |
 | [compactor](../../../src/services/engine/compactor.ts) | 陪伴/助手摘要、完整轮、来源校验与 CAS | 最新长工具轮难以压缩；估算未按每次真实请求 usage 校准 |
 
-上述竞态是静态审查发现的风险，须通过 §10 场景验证；不能写成已复现、已修复或已通过。
+上述竞态是静态审查发现的风险，须通过 §10 场景验证；不能写成已复现、已修复或已通过。该表是迁移前基线的缺口盘点；H-1–H-4 已按 §8 落地，逐条实现与未验证项见[执行手册](记忆系统重构执行手册.md#当前检查点)。
 
 ### 2.2 Pi 0.85.1 公共能力清单
 
@@ -281,18 +281,18 @@ Pi 0.85.1 根入口已经提供压缩；基础 Agent 不自动调度，Harness �
 ### 8.1 存储与范围
 
 - `JsonlSessionRepo({ fileSystem, sessionsRoot, now? })` 直接产出 `Session`，不实现自定义 `Storage`；`StorageBackedSession` 仅在未来需要自持 metadata 时再考虑。
-- 会话布局为 `<sessionsRoot>/--<cwd>--/<时间戳>_<id>.jsonl`，每会话一个文件；`cwd` 统一取数据根，不用它区分业务。`sessionsRoot` 取数据根下的 `pi-sessions/`，与旧 `sessions/*.md` 分开，避免混读。
+- 会话布局为 `<sessionsRoot>/--<cwd>--/<时间戳>_<id>.jsonl`，每会话一个文件；`cwd` 统一取数据根，不用它区分业务。`sessionsRoot` 直接取数据根的 `sessions/` 域（最终命名，不区分新旧；`sessions/index.json` 仅为可丢弃 UI 状态，与 JSONL 共存已实测）。
 - `TauriExecutionEnv` 必须补齐 JSONL 用到的 `FileSystem` 方法：`appendFile`、`renameFile`、`createDir`、`remove`（已核对 dist 调用集：exists/remove/listDir/readTextLines/joinPath/fileInfo/absolutePath/writeFile/renameFile/readTextFile/createDir/appendFile）；`createTempDir` 视内置工具需要补。必要时在 Rust 侧增加对应命令并沿用现有路径边界校验与大小上限。
 - 一个会话一个 lane（`"main"`）；不启用树导航与 fork 的 UI 入口，`before_navigation` 不注册业务。
 - 落地时 `sessions/*.md` 停止产生新数据，旧文件按测试数据弃用；禁止长期双写两套权威状态。
-- H-1 实现期发现（2026-09-17）：`file_list` 只回 `name/kind(dir/file)/size`，与 FileSystem 契约的 `path/mtimeMs/"directory"` 不符，当前由 TauriExecutionEnv 用 `file_info` 回填；Rust 侧补齐字段后可删除回填桥。官方一致性套件 `fork destination reservation` 组第二 case 在官方 NodeExecutionEnv + node:fs 上同样稳定失败（16/17），根因在 `JsonlSessionRepo.fork` 的占位时序；场景如实排除该组并留证，不改写上游语义。
+- H-1 实现期发现（2026-09-17）：官方一致性套件 `fork destination reservation` 组第二 case 在官方 NodeExecutionEnv + node:fs 上同样稳定失败（16/17），根因在 `JsonlSessionRepo.fork` 的占位时序；场景如实排除该组并留证，不改写上游语义。（`file_list` 已按 FileSystem 契约直接返回全字段，无回填桥。）
 
 ### 8.2 替换映射
 
 | 现有 | 去向 | Harness 承接物 |
 |---|---|---|
-| [RuntimeQueue](../../../src/services/engine/runtime/queue.ts) | 删除 | Lane 持久 inbox：`LaneState.inbox`（`entryId` + `kind: steer/followUp/nextRun/write`），随 commit 落盘，消费即移出 |
-| [AgentSlotRegistry](../../../src/services/engine/runtime/agent-slot.ts) | 删除 | Lane + 持久操作协议；代际由 `operationId` 与 `Control.cancel_requested` 表达 |
+| RuntimeQueue | 已删除（H-4） | Lane 持久 inbox：`LaneState.inbox`（`entryId` + `kind: steer/followUp/nextRun/write`），随 commit 落盘，消费即移出 |
+| AgentSlotRegistry | 已删除（H-4） | Lane + 持久操作协议；代际由 `operationId` 与 `Control.cancel_requested` 表达 |
 | [runner.ts](../../../src/services/agent/runner.ts) 投递/结算/批量确认 | 大部分删除 | `accept/drive/resume/abort`、`OperationResultRecord`、`cancelQueued` |
 | [compactor.ts](../../../src/services/engine/compactor.ts) 调度与切点 | 调度删除、摘要内核保留 | 阈值/手动/溢出调度 + `prepareCompaction` 切点；摘要经 `before_compaction` 注入 |
 | [runtime.ts](../../../src/services/engine/pi/runtime.ts) Agent 接线、transcriptWrites/flushTranscript | 重写/删除 | `createAgentHarness`、Hooks 注册表、`session.commit` 单事务、`lane.watch()`/`harness.events` |

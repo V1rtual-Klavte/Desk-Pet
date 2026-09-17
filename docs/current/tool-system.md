@@ -23,7 +23,7 @@ Pi Harness Tool → harness-adapter → ToolRouter → TauriExecutionEnv → Rus
 
 实际清单由 [registry.ts](../../src/services/tool/registry.ts)、[pi-tools.ts](../../src/services/tool/local/pi-tools.ts) 和回合冻结快照决定。目录列举使用 bash ls；不再注册独立 ls/file_search/http_get。Pi CLI 的 Node 工具不能直接移入 WebView，需要现有 ExecutionEnv 边界。
 
-当前 ToolDef 已统一身份、schema、风险、权限检查和 handler，尚无统一的并行/结果投影/历史摘要/replay 策略。Pi 适配虽按 actionCategory 设置 executionMode，Agent 全局 sequential 仍使实际执行串行。薄 BaseTool 与必填策略、只读并行和混合批次限制见[目标工具协议](../plans/active/Pi运行时与工具协议建设方案.md#4-统一工具声明与薄抽象类)，尚未实施。
+当前 ToolDef 已统一身份、schema、风险、权限检查和 handler，尚无统一的并行/结果投影/历史摘要/replay 策略。Pi 适配虽按 actionCategory 设置 executionMode，Harness lane 级 toolExecution 仍为 sequential，实际执行保持串行。薄 BaseTool 与必填策略、只读并行和混合批次限制见[目标工具协议](../plans/active/Pi运行时与工具协议建设方案.md#4-统一工具声明与薄抽象类)，尚未实施。
 
 ## 权限终裁
 
