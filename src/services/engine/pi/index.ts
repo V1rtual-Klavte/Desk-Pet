@@ -27,3 +27,6 @@ export {
   createProviderFetchGuard,
   validateProviderUrl,
 } from "./net-guard"
+
+export { createPiSessionRepo, PI_SESSIONS_DIR } from "./session-repo"
+export type { PiSessionRepo, PiSessionRepoOptions } from "./session-repo"

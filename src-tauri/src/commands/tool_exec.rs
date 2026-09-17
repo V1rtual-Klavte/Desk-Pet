@@ -5,6 +5,7 @@
 
 use super::bash_policy::{enforce_bash_policy, BashPolicy};
 use crate::error::{err, AppError, AppResult};
+use crate::rust_debug;
 use std::collections::HashMap;
 use std::fs::{File, OpenOptions};
 use std::io::{Read, Seek, SeekFrom, Write};
@@ -589,6 +590,123 @@ pub fn file_write(
 #[derive(serde::Serialize)]
 pub struct FileWriteResult {
     success: bool,
+}
+
+/// 追加写入：文件不存在则创建，存在则追加到末尾（UTF-8）。
+///
+/// `max_bytes` 与 `file_write` 同口径，约束本次写入的 `content` 字节数，
+/// 而不是追加后的文件总大小 —— 会话存储按行追加，单次上限即调用方的写入节流。
+/// 大小上限只在这条命令内校验；文件历史大小属于调用方的存储协议，不在路径守卫的职责内。
+#[command]
+pub fn file_append(path: String, content: String, max_bytes: u64) -> AppResult<()> {
+    use crate::paths::AppPaths;
+    if content.len() as u64 > max_bytes {
+        return err(format!("追加内容过大，最多 {max_bytes} bytes"));
+    }
+    let safe_path = AppPaths::validate_new_file_path(Path::new(&path))?;
+    let parent = safe_path.parent().ok_or("无效的文件路径")?;
+    // 与 file_write 一致：父目录缺失时补齐（FileSystem 契约的 creating parent directories）。
+    std::fs::create_dir_all(parent).map_err(|e| AppError::Io(format!("创建目录失败: {e}")))?;
+    // 建目录之后再确认一次父目录的去向：校验通过到真正写入之间，
+    // 中间目录可能刚被换成指向允许根外的符号链接。
+    AppPaths::revalidate_existing_parent(&safe_path)?;
+    // append 打开：`create` 覆盖「不存在则创建」，写只在末尾发生。
+    let mut file = OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&safe_path)
+        .map_err(|e| AppError::Io(format!("打开文件失败: {e}")))?;
+    file.write_all(content.as_bytes())
+        .map_err(|e| AppError::Io(format!("追加失败: {e}")))?;
+    Ok(())
+}
+
+/// 重命名/移动文件，替换已存在的目标（FileSystem 契约的 replace 语义）。
+///
+/// 不复制跨文件系统：Unix 走 `rename(2)`；Windows 上 Rust std 的 `fs::rename`
+/// 走 `MoveFileExW` + `MOVEFILE_REPLACE_EXISTING`（标准库 sys/windows/fs.rs），
+/// 两端都用原生原子替换，跨卷/盘符时同样直接报错而不是退化为复制。
+/// 目标的父目录不在这里创建：会话存储的 publish 流程先 write 临时文件（write 会创建父目录）再 rename。
+#[command]
+pub fn file_rename(source_path: String, destination_path: String) -> AppResult<()> {
+    use crate::paths::AppPaths;
+    let source = AppPaths::validate_file_path(Path::new(&source_path))?;
+    let target = Path::new(&destination_path);
+    // 目标已存在按替换处理：canonicalize 后必须仍在允许根内；
+    // 目标不存在则走与 file_write 相同的新文件校验（词法路径 + 最近的已存在祖先）。
+    let destination = if target.exists() {
+        AppPaths::validate_file_path(target)?
+    } else {
+        AppPaths::validate_new_file_path(target)?
+    };
+    rust_debug!(
+        "file_rename: {} -> {}",
+        source.display(),
+        destination.display()
+    );
+    std::fs::rename(&source, &destination).map_err(|e| AppError::Io(format!("重命名失败: {e}")))?;
+    Ok(())
+}
+
+/// 删除文件或目录。
+///
+/// `force = true` 时目标不存在视为成功（仍要过路径守卫，不把根外请求当作幂等成功）；
+/// `force = false` 时不存在返回 `PathNotFound`，对应 FileSystem 的 not_found。
+/// `recursive = false` 时目标是目录则报错、不删，与 FileSystem 契约的默认值一致。
+#[command]
+pub fn file_remove(path: String, recursive: bool, force: bool) -> AppResult<()> {
+    use crate::paths::AppPaths;
+    let target = Path::new(&path);
+    // 存在性判定与 file_exists 一致：exists() 跟随符号链接，悬空链接视为不存在。
+    if !target.exists() {
+        AppPaths::validate_new_file_path(target)?;
+        if force {
+            return Ok(());
+        }
+        return Err(AppError::PathNotFound(path));
+    }
+    let safe_path = AppPaths::validate_file_path(target)?;
+    rust_debug!(
+        "file_remove: {} (recursive={recursive})",
+        safe_path.display()
+    );
+    let metadata =
+        std::fs::metadata(&safe_path).map_err(|e| AppError::Io(format!("读取元数据失败: {e}")))?;
+    if metadata.is_dir() {
+        if !recursive {
+            return err(format!(
+                "目标是目录，需要 recursive = true 才能删除: {}",
+                safe_path.display()
+            ));
+        }
+        std::fs::remove_dir_all(&safe_path)
+            .map_err(|e| AppError::Io(format!("删除目录失败: {e}")))?;
+    } else {
+        std::fs::remove_file(&safe_path).map_err(|e| AppError::Io(format!("删除文件失败: {e}")))?;
+    }
+    Ok(())
+}
+
+/// 创建目录。
+///
+/// `recursive = true` 时补齐缺失的上级目录，已存在视为成功（FileSystem 契约默认 recursive）；
+/// `recursive = false` 时父目录缺失或目标已存在都会报错。
+#[command]
+pub fn dir_create(path: String, recursive: bool) -> AppResult<()> {
+    use crate::paths::AppPaths;
+    let target = Path::new(&path);
+    // 与 file_write 相同的两段式校验：先词法路径 + 最近的已存在祖先，创建后再确认最终去向。
+    let safe_path = AppPaths::validate_new_file_path(target)?;
+    let result = if recursive {
+        std::fs::create_dir_all(&safe_path)
+    } else {
+        std::fs::create_dir(&safe_path)
+    };
+    result.map_err(|e| AppError::Io(format!("创建目录失败: {e}")))?;
+    // 校验到真正创建之间，中间目录可能刚被换成指向允许根外的符号链接；
+    // 创建后 canonicalize 一次，把窗口收窄到「本次调用与创建之间」。
+    AppPaths::validate_file_path(target)?;
+    Ok(())
 }
 
 #[command]

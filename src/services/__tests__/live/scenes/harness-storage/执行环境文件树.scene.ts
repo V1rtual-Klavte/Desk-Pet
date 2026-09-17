@@ -1,0 +1,120 @@
+import { BACKGROUND_CONTEXT } from "@earendil-works/pi-agent-core"
+import type { FileError, Result } from "@earendil-works/pi-agent-core"
+import type { SceneDef } from "../../types"
+import { TauriExecutionEnv } from "@/services/tool/pi/tauri-execution-env"
+import { BaseDirs, runtimePath } from "@/services/paths"
+
+/** 每个 check 自建临时根，失败互不污染；临时目录在系统 temp 下，不触碰用户数据根。 */
+async function createEnv(): Promise<TauriExecutionEnv> {
+  return new TauriExecutionEnv(await runtimePath("data"), "pet")
+}
+
+function fileOk<T>(result: Result<T, FileError>): T {
+  if (!result.ok) throw new Error(`期望成功，实际失败: ${result.error.message}`)
+  return result.value
+}
+
+export const 执行环境文件树: SceneDef = {
+  meta: {
+    caseId: "harness-execution-env-filetree",
+    module: "harness-storage",
+    contractId: "hs-02",
+    description: "TauriExecutionEnv 的 append/rename/createDir/remove/createTempDir 真实命令语义",
+    depth: "deep",
+    suite: "regression",
+    entry: "unit",
+    tags: ["harness-storage", "execution-env", "boundary", "error"],
+  },
+  turns: [{
+    index: 1,
+    description: "逐项校验 FileSystem 契约语义",
+    userText: "校验 TauriExecutionEnv 的文件系统能力。",
+    checks: [
+      {
+        type: "expectCreateDirAndAppendFile",
+        run: async () => {
+          const env = await createEnv()
+          const context = BACKGROUND_CONTEXT
+          const root = fileOk(await env.createTempDir("deskpet-live-env-", context))
+
+          // createDir 默认 recursive：一次建多层
+          fileOk(await env.createDir(`${root}/nested/deep`, undefined, context))
+          fileOk(await env.exists(`${root}/nested/deep`, context))
+
+          // append 创建缺失文件（含缺失父目录）并在末尾追加
+          fileOk(await env.appendFile(`${root}/nested/deep/data.txt`, "AB", context))
+          fileOk(await env.appendFile(`${root}/nested/deep/data.txt`, "CD", context))
+          const content = fileOk(await env.readTextFile(`${root}/nested/deep/data.txt`, context))
+          if (content !== "ABCD") throw new Error(`追加结果应为 ABCD，实际 ${JSON.stringify(content)}`)
+
+          fileOk(await env.remove(root, { recursive: true, force: true }, context))
+        },
+      },
+      {
+        type: "expectRenameReplacesDestination",
+        run: async () => {
+          const env = await createEnv()
+          const context = BACKGROUND_CONTEXT
+          const root = fileOk(await env.createTempDir("deskpet-live-env-", context))
+          try {
+            fileOk(await env.writeFile(`${root}/a.txt`, "A", context))
+            fileOk(await env.writeFile(`${root}/b.txt`, "B", context))
+            // 契约：替换已存在目标
+            fileOk(await env.renameFile(`${root}/a.txt`, `${root}/b.txt`, context))
+            const content = fileOk(await env.readTextFile(`${root}/b.txt`, context))
+            if (content !== "A") throw new Error(`rename 应替换目标内容，实际 ${JSON.stringify(content)}`)
+            const sourceExists = fileOk(await env.exists(`${root}/a.txt`, context))
+            if (sourceExists) throw new Error("rename 后源文件不应存在")
+          } finally {
+            await env.remove(root, { recursive: true, force: true }, context)
+          }
+        },
+      },
+      {
+        type: "expectRemoveRespectsFlags",
+        run: async () => {
+          const env = await createEnv()
+          const context = BACKGROUND_CONTEXT
+          const root = fileOk(await env.createTempDir("deskpet-live-env-", context))
+          try {
+            fileOk(await env.createDir(`${root}/tree/child`, undefined, context))
+            fileOk(await env.appendFile(`${root}/tree/child/f.txt`, "x", context))
+
+            // 目录 + recursive=false：失败编码进 Result，不 throw
+            const refused = await env.remove(`${root}/tree`, undefined, context)
+            if (refused.ok) throw new Error("remove 目录时 recursive=false 不应成功")
+            fileOk(await env.exists(`${root}/tree`, context))
+
+            // 缺失路径：force=false 失败、force=true 成功
+            const missing = await env.remove(`${root}/missing`, undefined, context)
+            if (missing.ok) throw new Error("remove 缺失路径时 force=false 不应成功")
+            fileOk(await env.remove(`${root}/missing`, { force: true }, context))
+
+            fileOk(await env.remove(`${root}/tree`, { recursive: true }, context))
+            const treeExists = fileOk(await env.exists(`${root}/tree`, context))
+            if (treeExists) throw new Error("recursive 删除后目录不应存在")
+          } finally {
+            await env.remove(root, { recursive: true, force: true }, context)
+          }
+        },
+      },
+      {
+        type: "expectCreateTempDir",
+        run: async () => {
+          const env = await createEnv()
+          const context = BACKGROUND_CONTEXT
+          const root = fileOk(await env.createTempDir(undefined, context))
+          try {
+            const info = fileOk(await env.fileInfo(root, context))
+            if (info.kind !== "directory") throw new Error(`createTempDir 应产出目录，实际 ${info.kind}`)
+            if (root.startsWith(BaseDirs.sessions())) throw new Error("临时目录不应落在旧会话目录下")
+          } finally {
+            await env.remove(root, { recursive: true, force: true }, context)
+          }
+        },
+      },
+    ],
+  }],
+}
+
+export default 执行环境文件树

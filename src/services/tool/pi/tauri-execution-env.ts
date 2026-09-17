@@ -28,6 +28,23 @@ type FileInfoPayload = {
   mtimeMs: number
 }
 
+/**
+ * `file_list` 的原始条目：Rust 目前只返回 name/kind/size 的短形态（kind 为 "dir"/"file"），
+ * 而 FileSystem 契约要求 FileInfo 带绝对 path、mtimeMs，目录种类为 "directory"。
+ */
+type RawFileListEntry = {
+  name: string
+  kind: string
+  size?: number
+  path?: string
+  mtimeMs?: number
+}
+
+function asFileKind(kind: string): FileInfo["kind"] {
+  if (kind === "dir" || kind === "directory") return "directory"
+  return kind === "symlink" ? "symlink" : "file"
+}
+
 type BashPayload = {
   output: string
   exitCode: number
@@ -136,12 +153,27 @@ export class TauriExecutionEnv implements ExecutionEnv {
     }
   }
 
-  async appendFile(_path: string, _content: string | Uint8Array, _context: Context): Promise<Result<void, FileError>> {
-    return unsupported("追加写入", _path)
+  async appendFile(path: string, content: string | Uint8Array, context: Context): Promise<Result<void, FileError>> {
+    if (content instanceof Uint8Array) return unsupported("二进制追加", path)
+    try {
+      throwIfAborted(context)
+      await invoke("file_append", { path, content, maxBytes: MAX_TOOL_FILE_BYTES })
+      throwIfAborted(context)
+      return ok(undefined)
+    } catch (error) {
+      return err(fileFailure(error, path))
+    }
   }
 
-  async renameFile(_sourcePath: string, _destinationPath: string, _context: Context): Promise<Result<void, FileError>> {
-    return unsupported("重命名", _sourcePath)
+  async renameFile(sourcePath: string, destinationPath: string, context: Context): Promise<Result<void, FileError>> {
+    try {
+      throwIfAborted(context)
+      await invoke("file_rename", { sourcePath, destinationPath })
+      throwIfAborted(context)
+      return ok(undefined)
+    } catch (error) {
+      return err(fileFailure(error, sourcePath))
+    }
   }
 
   async fileInfo(path: string, context: Context): Promise<Result<FileInfo, FileError>> {
@@ -153,11 +185,33 @@ export class TauriExecutionEnv implements ExecutionEnv {
     }
   }
 
+  /**
+   * `file_list` 的短条目缺 path/mtimeMs，JsonlSessionRepo 会按 `kind === "directory"` 与
+   * 会话文件的 path 组装目录，缺字段会让 list/open 直接失效，所以这里缺什么补什么：
+   * 字段齐全的条目直接透传，短条目用 file_info 回填（回填顺带纠正 symlink 的 kind）。
+   */
   async listDir(path: string, context: Context): Promise<Result<FileInfo[], FileError>> {
     try {
       throwIfAborted(context)
-      const result = await invoke<{ entries: FileInfoPayload[] }>("file_list", { path })
-      return ok(result.entries)
+      const result = await invoke<{ entries: RawFileListEntry[] }>("file_list", { path })
+      const entries: FileInfo[] = []
+      for (const entry of result.entries) {
+        if (entry.path !== undefined && entry.mtimeMs !== undefined && entry.size !== undefined) {
+          entries.push({
+            name: entry.name,
+            path: entry.path,
+            kind: asFileKind(entry.kind),
+            size: entry.size,
+            mtimeMs: entry.mtimeMs,
+          })
+          continue
+        }
+        const info = await this.fileInfo(entry.path ?? await join(path, entry.name), context)
+        if (!info.ok) return info
+        entries.push(info.value)
+      }
+      throwIfAborted(context)
+      return ok(entries)
     } catch (error) {
       return err(fileFailure(error, path))
     }
@@ -181,16 +235,43 @@ export class TauriExecutionEnv implements ExecutionEnv {
     }
   }
 
-  async createDir(_path: string, _options: { recursive?: boolean } | undefined, _context: Context): Promise<Result<void, FileError>> {
-    return unsupported("显式创建目录", _path)
+  async createDir(path: string, options: { recursive?: boolean } | undefined, context: Context): Promise<Result<void, FileError>> {
+    try {
+      throwIfAborted(context)
+      // FileSystem 契约：recursive 默认 true
+      await invoke("dir_create", { path, recursive: options?.recursive ?? true })
+      throwIfAborted(context)
+      return ok(undefined)
+    } catch (error) {
+      return err(fileFailure(error, path))
+    }
   }
 
-  async remove(_path: string, _options: { recursive?: boolean; force?: boolean } | undefined, _context: Context): Promise<Result<void, FileError>> {
-    return unsupported("删除", _path)
+  async remove(path: string, options: { recursive?: boolean; force?: boolean } | undefined, context: Context): Promise<Result<void, FileError>> {
+    try {
+      throwIfAborted(context)
+      // FileSystem 契约：recursive/force 默认 false；force 时缺失路径由 Rust 侧视为成功
+      await invoke("file_remove", {
+        path,
+        recursive: options?.recursive ?? false,
+        force: options?.force ?? false,
+      })
+      throwIfAborted(context)
+      return ok(undefined)
+    } catch (error) {
+      return err(fileFailure(error, path))
+    }
   }
 
-  async createTempDir(_prefix: string | undefined, _context: Context): Promise<Result<string, FileError>> {
-    return unsupported("临时目录")
+  async createTempDir(prefix: string | undefined, context: Context): Promise<Result<string, FileError>> {
+    try {
+      throwIfAborted(context)
+      const path = await join(await tempDir(), `${prefix ?? "deskpet-"}${crypto.randomUUID()}`)
+      const result = await this.createDir(path, undefined, context)
+      return result.ok ? ok(path) : result
+    } catch (error) {
+      return err(fileFailure(error))
+    }
   }
 
   async createTempFile(options: { prefix?: string; suffix?: string } | undefined, context: Context): Promise<Result<string, FileError>> {

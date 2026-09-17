@@ -36,6 +36,7 @@ pub use skill_cmd::skill_list_metadata;
 pub use sim::{close_windows_sim, open_windows_sim};
 pub(crate) use tool_exec::BashPool;
 pub use tool_exec::{
-    app_open, bash_cancel, bash_exec, clipboard_read, clipboard_write, file_canonical_path,
-    file_exists, file_info, file_list, file_read, file_read_binary, file_write, system_info,
+    app_open, bash_cancel, bash_exec, clipboard_read, clipboard_write, dir_create, file_append,
+    file_canonical_path, file_exists, file_info, file_list, file_read, file_read_binary,
+    file_remove, file_rename, file_write, system_info,
 };

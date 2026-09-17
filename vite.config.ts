@@ -25,6 +25,12 @@ export default defineConfig({
   resolve: {
     alias: {
       "@": resolve(__dirname, "src"),
+      // 官方一致性套件（@earendil-works/pi-agent-core/harness/session/testing）
+      // 在模块顶层 import node:assert/strict；浏览器构建会把它 externalize 成
+      // 「访问即抛错」的代理，连带整个 Live Test 窗口加载失败。这里换成只实现
+      // 套件实际用到的断言的本地 shim：没有生产代码 import 这个内建模块，
+      // 别名只影响 Live Test 依赖树，也不新增依赖。
+      "node:assert/strict": resolve(__dirname, "src/services/__tests__/live/shims/node-assert-strict.ts"),
     },
   },
   server: {
