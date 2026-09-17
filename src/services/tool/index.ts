@@ -3,7 +3,10 @@
 // ==========================================
 
 // ── 类型 ──
-export type { ToolDef, ToolResult, SafetyLevel, ToolSource, ToolMode, ToolContext, ActionCategory, ToolDeclaration } from "./types"
+export type {
+  ToolDef, ToolResult, SafetyLevel, ToolSource, ToolMode, ToolContext, ActionCategory, ToolDeclaration,
+  PermissionDecision, ToolCheckResult, EffectClass,
+} from "./types"
 export { toToolDeclaration } from "./types"
 
 // ── 注册表 ──
@@ -20,7 +23,11 @@ export {
   toolCount,
   registerDefaultTools,
   registerAssistantTools,
+  unregisterAssistantTools,
   } from "./registry"
 
 // ── 路由器 ──
-export { executeTool } from "./router"
+export { executeTool, executeToolDefinition } from "./router"
+
+export { releaseMcpOwner } from "./mcp"
+export { createSessionTranscriptTool, SESSION_TRANSCRIPT_TOOL, SESSION_EVENT_PAGE_CHARS } from "./session-transcript"

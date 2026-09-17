@@ -13,6 +13,13 @@ export type ToolMode = "pet" | "assistant"
 
 export type LightweightPolicy = "allow" | "confirm" | "deny"
 
+/** PermissionKernel 的最终裁决；passthrough 只允许规则层内部使用。 */
+export type PermissionDecision = "allow" | "ask" | "deny"
+export type ToolCheckResult = PermissionDecision | "passthrough"
+
+/** 操作效果分类，风险等级描述影响程度，效果分类描述影响对象。 */
+export type EffectClass = "read" | "local_mutation" | "process" | "external_side_effect"
+
 /** 工具操作类别（用于阶段文案匹配） */
 export type ActionCategory =
   | "fs.read" | "fs.write"
@@ -37,6 +44,12 @@ export interface ToolContext {
   signal?: AbortSignal
   /** 工具执行中的完整快照更新 */
   onUpdate?: (partial: ToolResult) => void
+  /** 权限确认必须绑定所属会话，子代理使用稳定 run id。 */
+  sessionId?: string
+  /** 当前会话运行代际；旧代际不得取得新授权。 */
+  runGeneration?: number
+  /** 确认等待后仍为当前回合的守卫。 */
+  isCurrent?: () => boolean
 }
 
 /** 工具执行结果 */
@@ -86,6 +99,13 @@ export interface ToolDef {
   mode: ToolMode
   /** 操作类别，用于阶段文案匹配（§7.1） */
   actionCategory: ActionCategory
+  /** 本次工具效果分类，未声明时由 PermissionKernel 按 actionCategory 推导。 */
+  effectClass?: EffectClass
+  /**
+   * 来源/工具专属的权限规则。passthrough 不是执行许可，必须由
+   * PermissionKernel 继续收敛为 allow / ask / deny。
+   */
+  permissionCheck?: (params: Record<string, unknown>, ctx: ToolContext) => ToolCheckResult | Promise<ToolCheckResult>
   /** 执行函数 */
   handler: (params: Record<string, unknown>, ctx: ToolContext) => Promise<ToolResult>
   /** 超时（ms），默认 loop.toolTimeoutMs */

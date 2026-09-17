@@ -161,7 +161,7 @@ async function testMcpConnection() {
   try {
     const { connectMcpServer, disconnectMcpServer, isMcpServerConnected } = await import("@/services/tool/mcp");
     // 本来就没连的服务器，测完立刻回收：否则子进程与已注册的工具会一直留着。
-    // 本来就连着的，connectMcpServer 内部会先断开再重连，状态保持连接。
+    // 正在被回合持有的连接会拒绝重连，避免测试按钮终止运行中的 MCP 工具。
     const wasConnected = isMcpServerConnected(name);
     const r = await connectMcpServer({
       name,
@@ -173,7 +173,7 @@ async function testMcpConnection() {
       env: parseEnvText(s.envStr),
       enabled: s.enabled,
     });
-    if (!wasConnected) await disconnectMcpServer(name);
+    if (!wasConnected && r.success) await disconnectMcpServer(name);
     mcpTestResult.value = r.success
       ? `✅ 连接成功！${r.toolCount} 个工具`
       : `❌ 失败: ${r.error}`;
@@ -185,7 +185,8 @@ async function testMcpConnection() {
 
 // ── Skill ──
 async function loadSkillConfig() {
-  const { listSkills } = await import("@/services/skill");
+  const { ensureSkillCatalog, listSkills } = await import("@/services/skill");
+  await ensureSkillCatalog();
   skillList.value = listSkills().map((s) => ({
     id: s.name,
     name: s.name,
@@ -289,8 +290,9 @@ defineExpose({
   </div>
 
   <div class="s-section">
-    <div class="s-label">📦 Skill <span class="tag-tip">需重启</span></div>
-    <label class="chk"><input type="checkbox" v-model="skillEnabled" :disabled="!assistantMode" /><span>启用 Skill（仅助手模式）</span></label>
+    <div class="s-label">📦 Skill</div>
+    <label class="chk"><input type="checkbox" v-model="skillEnabled" /><span>启用 Skill（按声明支持轻量或助手模式）</span></label>
+    <div class="s-hint">首回合只列名称、说明和位置；正文由模型按需读取。Skill 不会额外授予工具权限。</div>
     <div class="row-gap" style="margin-top:4px">
       <button class="btn-s" @click="uploadSkillMd()">📤 上传 .md</button>
       <button class="btn-s" @click="loadSkillConfig()">🔄 刷新</button>

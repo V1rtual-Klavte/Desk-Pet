@@ -3,14 +3,15 @@
 // 所有应用启动初始化逻辑集中在此，按顺序执行
 // ==========================================
 
-import { MemoryService, startMemoryConsolidationTimer } from "@/services/agent/memory"
+import { MemoryService, stopMemoryConsolidationTimer } from "@/services/agent/memory"
 import { initRegistry, initCards } from "@/services/personality"
-import { registerDefaultTools, registerAssistantTools } from "@/services/tool"
+import { registerDefaultTools, registerAssistantTools, unregisterAssistantTools } from "@/services/tool"
 import { initDebug } from "@/services/debug"
 import { initSessions, chatHistory, initWelcome } from "@/services/session"
 import { getActiveCard } from "@/services/personality"
 import { generalConfig, toolsConfig } from "@/services/config"
 import { createLogger } from "@/services/logger"
+import { agentSlots } from "@/services/engine/runtime"
 
 const log = createLogger("Init")
 
@@ -21,7 +22,7 @@ const log = createLogger("Init")
  * 顺序:
  *   1. Memory 文件系统 (memory/ + sessions/ 目录就绪)
  *   2. 人格模块注册
- *   3. 工具注册 (默认 + 条件: 助手工具/MCP/Skill)
+ *   3. Presence 所需的基础工具
  *   4. 会话扫描恢复 (sessions/*.md → 列表 + 加载活跃会话消息)
  *   5. 欢迎语 (仅当 chatHistory 确实为空)
  *   6. Debug 状态
@@ -48,25 +49,8 @@ export async function initApp(): Promise<void> {
   await registerDefaultTools()
   log.info("4a/7 基础工具就绪")
 
-  if (generalConfig.assistantMode) {
-    await registerAssistantTools()
-    log.info("4b/7 助手工具就绪")
-  }
-
-  if (toolsConfig.mcpEnabled) {
-    const { connectAllMcpServers } = await import("@/services/tool/mcp")
-    const connected = await connectAllMcpServers()
-    log.info(`4c/7 MCP 就绪 (${connected} 个服务器连接)`)
-  }
-
-  // Skill 不注册工具：清单注入 system prompt，正文由模型用 read 工具按需加载。
-  // 始终加载（含落盘到 data_root/skills/），是否注入 Prompt 由 toolsConfig.skillEnabled 决定。
-  const { loadSkills } = await import("@/services/skill")
-  const skills = await loadSkills()
-  log.info(`4d/7 Skill 就绪 (${skills.length} 个 | 注入:${toolsConfig.skillEnabled})`)
-
   const { toolCount } = await import("@/services/tool/registry")
-  log.info(`4/7 工具就绪 (${toolCount()} 个) | 助手:${generalConfig.assistantMode} MCP:${toolsConfig.mcpEnabled} Skill:${toolsConfig.skillEnabled}`)
+  log.info(`4/7 Presence 工具就绪 (${toolCount()} 个) | 助手配置:${generalConfig.assistantMode} MCP:${toolsConfig.mcpEnabled} Skill:${toolsConfig.skillEnabled}`)
 
   // ── 5. 会话初始化 ──
   const sessions = await initSessions()
@@ -88,8 +72,67 @@ export async function initApp(): Promise<void> {
   await initDebug()
   log.info("7/7 Debug 就绪")
 
-  // ── 启动后台任务 ──
-  startMemoryConsolidationTimer()
+  // LLM 记忆整理不属于 Presence 启动路径。清理热更新遗留定时器，后续只由
+  // 已实现的记忆工作流在明确调度点启动，不能由应用启动隐式触发。
+  stopMemoryConsolidationTimer()
 
   log.info("──── 初始化完成 ────")
+}
+
+/**
+ * 对话前按本轮模式准备能力。调用方必须在 run 结束后才以 pet 调用本函数，不能
+ * 在运行中清掉 router 仍可能使用的已冻结工具；root 在 run preflight 冻结 snapshot。
+ */
+export async function prepareConversationCapabilities(mode: "pet" | "assistant", owner = "runtime"): Promise<void> {
+  await registerDefaultTools()
+  if (mode === "assistant") {
+    await registerAssistantTools()
+    if (toolsConfig.mcpEnabled) {
+      const { acquireMcpServer, getBuiltinServers, getMcpServers } = await import("@/services/tool/mcp")
+      const servers = [...getBuiltinServers(), ...getMcpServers()]
+      for (const server of servers) {
+        if (!server.enabled) continue
+        const acquired = await acquireMcpServer(server.name, owner)
+        if (!acquired.success) log.warn(`MCP 获取失败: ${server.name} | ${acquired.error ?? "未知错误"}`)
+      }
+    }
+  }
+  if (toolsConfig.skillEnabled) {
+    const { ensureSkillCatalog } = await import("@/services/skill")
+    await ensureSkillCatalog()
+  }
+}
+
+let pendingCapabilityMode: "pet" | "assistant" | null = null
+
+/**
+ * 设置保存时请求模式收敛。运行中的回合继续使用其冻结快照，最后一个回合 settled
+ * 后由 runner 调用 applyPendingConversationCapabilities() 释放助手资源。
+ */
+export async function requestConversationCapabilityMode(mode: "pet" | "assistant"): Promise<boolean> {
+  pendingCapabilityMode = mode
+  if (agentSlots.isAnyRunning()) {
+    log.info("能力模式变更已延后到当前回合结束:", mode)
+    return false
+  }
+  await applyPendingConversationCapabilities()
+  return true
+}
+
+/** runner 在 agentSlots.end() 后调用，避免模式切换破坏在飞工具调用。 */
+export async function applyPendingConversationCapabilities(): Promise<void> {
+  const mode = pendingCapabilityMode
+  if (!mode || agentSlots.isAnyRunning()) return
+  pendingCapabilityMode = null
+  if (mode === "pet") {
+    // 仅在没有任何 run 时全局卸载助手本地工具；普通轻量 run 的 preflight 不做此事，
+    // 避免并行助手 run 的 router 找不到已冻结的定义。
+    unregisterAssistantTools()
+    const { invalidateSkillCatalog } = await import("@/services/skill")
+    invalidateSkillCatalog("mode-change")
+    const { releaseMcpOwner } = await import("@/services/tool/mcp")
+    await releaseMcpOwner("runtime")
+    log.info("已切回轻量对话能力")
+  }
+  await prepareConversationCapabilities(mode)
 }

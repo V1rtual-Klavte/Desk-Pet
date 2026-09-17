@@ -7,6 +7,7 @@
 
 import { reactive } from "vue"
 import { createLogger } from "@/services/logger"
+import type { PermissionConfirmation, PermissionRequest } from "./permission"
 
 const log = createLogger("SafetyConfirm")
 
@@ -23,7 +24,11 @@ export interface ConfirmRequest {
   id: string
   message: string
   toolName: string
-  resolve: (approved: boolean) => void
+  sessionId?: string
+  runGeneration?: number
+  parameterSummary?: string
+  expiresAt?: number
+  resolve: (decision: PermissionConfirmation) => void
 }
 
 export const confirmState = reactive({
@@ -31,33 +36,76 @@ export const confirmState = reactive({
 })
 
 /** Agent Loop 调用：等待用户确认（超时按拒绝结算） */
-export function requestConfirm(toolName: string, message: string): Promise<boolean> {
+function settle(request: ConfirmRequest, decision: PermissionConfirmation): void {
+  if (confirmState.pending?.id !== request.id) return
+  confirmState.pending = null
+  request.resolve(decision)
+}
+
+/** PermissionKernel 使用的有身份确认入口。 */
+export function requestPermissionConfirm(request: PermissionRequest, signal?: AbortSignal): Promise<PermissionConfirmation> {
+  if (signal?.aborted || request.expiresAt <= Date.now()) return Promise.resolve("deny")
   return new Promise((resolve) => {
-    const id = Math.random().toString(36).slice(2, 10)
-    const timer = setTimeout(() => {
-      // 只在这个 id 仍然是当前待确认项时才结算：期间用户可能已经点过、或换成了别的请求
-      if (confirmState.pending?.id !== id) return
-      confirmState.pending = null
-      log.warn(`确认超时（${CONFIRM_TIMEOUT_MS}ms），按拒绝处理:`, toolName)
-      resolve(false)
-    }, CONFIRM_TIMEOUT_MS)
+    if (confirmState.pending) settle(confirmState.pending, "deny")
+    const id = request.requestId
+    let settled = false
+    let timer: ReturnType<typeof setTimeout> | undefined
+    const complete = (decision: PermissionConfirmation) => {
+      if (settled) return
+      settled = true
+      if (timer) clearTimeout(timer)
+      signal?.removeEventListener("abort", abort)
+      resolve(decision)
+    }
+    const abort = () => {
+      if (confirmState.pending?.id === id) {
+        confirmState.pending = null
+        log.warn("确认因取消失效:", request.toolName)
+      }
+      complete("deny")
+    }
+    const remaining = Math.max(0, request.expiresAt - Date.now())
+    timer = setTimeout(() => {
+      if (confirmState.pending?.id === id) confirmState.pending = null
+      log.warn(`确认超时（${remaining}ms），按拒绝处理:`, request.toolName)
+      complete("deny")
+    }, Math.min(CONFIRM_TIMEOUT_MS, remaining))
+    signal?.addEventListener("abort", abort, { once: true })
 
     confirmState.pending = {
       id,
-      message,
-      toolName,
-      resolve: approved => {
-        clearTimeout(timer)
-        resolve(approved)
-      },
+      message: request.message,
+      toolName: request.toolName, sessionId: request.sessionId, runGeneration: request.runGeneration,
+      parameterSummary: request.parameterSummary,
+      expiresAt: request.expiresAt,
+      resolve: complete,
     }
   })
 }
 
+/** 旧调用点的 boolean 兼容适配；确认代表本会话精确参数授权。 */
+export function requestConfirm(toolName: string, message: string): Promise<boolean> {
+  const now = Date.now()
+  return requestPermissionConfirm({
+    requestId: `legacy-${now}-${Math.random().toString(36).slice(2)}`,
+    sessionId: "legacy", runGeneration: 0, toolCallId: toolName, toolName,
+    inputHash: "legacy", policyHash: "legacy", expiresAt: now + CONFIRM_TIMEOUT_MS,
+    message, parameterSummary: "", effectClass: "external_side_effect",
+  }).then(decision => decision !== "deny")
+}
+
 /** ChatPanel 调用：用户点击确认/取消 */
 export function resolveConfirm(approved: boolean): void {
-  if (confirmState.pending) {
-    confirmState.pending.resolve(approved)
-    confirmState.pending = null
-  }
+  resolvePermissionConfirm(approved ? "allow_session" : "deny")
+}
+
+/** 新 UI 使用：一次允许、会话内精确参数授权或拒绝。 */
+export function resolvePermissionConfirm(decision: PermissionConfirmation): void {
+  if (confirmState.pending) settle(confirmState.pending, decision)
+}
+
+export function cancelPermissionConfirm(sessionId?: string, runGeneration?: number): void {
+  const pending = confirmState.pending
+  if (pending && (sessionId === undefined || pending.sessionId === sessionId)
+    && (runGeneration === undefined || pending.runGeneration === runGeneration)) settle(pending, "deny")
 }

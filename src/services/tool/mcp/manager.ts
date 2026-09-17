@@ -18,6 +18,10 @@ export interface McpServerConfig {
   args?: string[]
   url?: string
   env?: Record<string, string>
+  /** 仅发现这些原始 MCP 工具名；空数组表示不暴露任何工具。 */
+  includeTools?: string[]
+  /** 在 includeTools 之后排除的原始 MCP 工具名。 */
+  excludeTools?: string[]
   enabled: boolean
 }
 
@@ -78,6 +82,8 @@ function ensureServersLoaded(): void {
       args: s.args ? (Array.isArray(s.args) ? s.args.map(String) : [String(s.args)]) : undefined,
       url: s.url ? String(s.url) : undefined,
       env: normalizeEnv(s.env),
+      includeTools: Array.isArray(s.includeTools) ? s.includeTools.map(String) : undefined,
+      excludeTools: Array.isArray(s.excludeTools) ? s.excludeTools.map(String) : undefined,
       enabled: s.enabled !== false,
     }))
     log.info("MCP 服务器列表已从 CONFIG 加载:", mcpServers.length, "个")
@@ -98,6 +104,8 @@ export function getBuiltinServers(): McpServerConfig[] {
     args: Array.isArray(def.args) ? def.args : [],
     url: undefined,
     env: normalizeEnv(def.env),
+    includeTools: Array.isArray((def as any).includeTools) ? (def as any).includeTools.map(String) : undefined,
+    excludeTools: Array.isArray((def as any).excludeTools) ? (def as any).excludeTools.map(String) : undefined,
     enabled: def.enabled !== false,
   }))
 }
@@ -122,15 +130,12 @@ export function setBuiltinMcpConfig(name: string, config: Partial<{ enabled: boo
   if (!raw || typeof raw !== "object") return
   const current = (raw as any)[name] as Record<string, unknown> | undefined
   if (!current) return
-  const updated: Record<string, unknown> = {
-    enabled: config.enabled ?? current.enabled ?? false,
-    command: current.command || "npx",
-    args: config.args ?? current.args ?? [],
-    description: current.description || "",
-  }
-  if (config.env !== undefined || current.env) {
-    updated.env = config.env ?? current.env ?? {}
-  }
+  if (isServerBusy(name)) throw new Error(MCP_BUSY_ERROR)
+  // 设置页只编辑 enabled/args/env；其余源字段（尤其 includeTools/excludeTools）必须原样保留。
+  const updated: Record<string, unknown> = { ...current }
+  if (config.enabled !== undefined) updated.enabled = config.enabled
+  if (config.args !== undefined) updated.args = config.args
+  if (config.env !== undefined) updated.env = config.env
   setOverride("tools.mcp.builtin", { ...raw, [name]: updated })
 }
 
@@ -143,22 +148,27 @@ export function getMcpServers(): McpServerConfig[] {
 }
 
 /**
- * env 缺省时沿用同名旧服务器的 env。
- * 设置面板的服务器列表不携带 env 字段，直接整体替换会让 CONFIG 里的 env 在保存时静默丢失。
+ * 设置面板未编辑的高级字段要沿用同名服务器，避免常规保存把 filter 静默清掉。
  */
 function inheritEnv(server: McpServerConfig): McpServerConfig {
-  if (server.env !== undefined) return { ...server }
   const old = mcpServers.find(s => s.name === server.name)
-  return old?.env ? { ...server, env: old.env } : { ...server }
+  if (!old) return { ...server }
+  return {
+    ...server,
+    env: server.env ?? old.env,
+    includeTools: server.includeTools ?? old.includeTools,
+    excludeTools: server.excludeTools ?? old.excludeTools,
+  }
 }
 
 /** 设置 MCP 服务器列表（替换） */
 export async function setMcpServers(servers: McpServerConfig[]): Promise<void> {
+  ensureServersLoaded()
   const next = servers.map(inheritEnv)
-  // 换配置前先断开旧连接：只注销工具会让子进程失去引用并常驻（disconnectMcpServer 已含工具注销）
-  for (const s of mcpServers) {
-    await disconnectMcpServer(s.name)
-  }
+  const affected = new Set([...mcpServers.map(server => server.name), ...next.map(server => server.name)])
+  if ([...affected].some(isServerBusy)) throw new Error(MCP_BUSY_ERROR)
+  // No run owns these clients; disconnect them before replacing their source config.
+  for (const name of affected) await disconnectMcpServer(name)
   mcpServers = next
   mcpServersLoaded = true
   syncServersToConfig()
@@ -170,6 +180,7 @@ export async function addMcpServer(server: McpServerConfig): Promise<void> {
   ensureServersLoaded()
   const existing = mcpServers.findIndex(s => s.name === server.name)
   if (existing >= 0) {
+    if (isServerBusy(server.name)) throw new Error(MCP_BUSY_ERROR)
     await disconnectMcpServer(server.name)
     mcpServers[existing] = inheritEnv(server)
     log.info("MCP 服务器已覆盖:", server.name)
@@ -185,6 +196,7 @@ export async function removeMcpServer(name: string): Promise<boolean> {
   ensureServersLoaded()
   const idx = mcpServers.findIndex(s => s.name === name)
   if (idx === -1) return false
+  if (isServerBusy(name)) throw new Error(MCP_BUSY_ERROR)
   await disconnectMcpServer(name)
   mcpServers.splice(idx, 1)
   syncServersToConfig()
@@ -201,6 +213,8 @@ function syncServersToConfig(): void {
     args: s.args,
     url: s.url,
     env: s.env,
+    includeTools: s.includeTools,
+    excludeTools: s.excludeTools,
     enabled: s.enabled,
   })))
 }
@@ -222,6 +236,8 @@ export async function importMcpServersFromJson(json: string): Promise<{ success:
       args: item.args ? (Array.isArray(item.args) ? item.args.map(String) : [String(item.args)]) : undefined,
       url: item.url ? String(item.url) : undefined,
       env: normalizeEnv(item.env),
+      includeTools: Array.isArray(item.includeTools) ? item.includeTools.map(String) : undefined,
+      excludeTools: Array.isArray(item.excludeTools) ? item.excludeTools.map(String) : undefined,
       enabled: item.enabled !== false,
     })).filter((s: McpServerConfig) => s.name)
     await setMcpServers(servers)
@@ -238,97 +254,182 @@ export function exportMcpServersToJson(): string {
 
 // ── 真实 MCP 连接 ──
 
+type McpConnectResult = { success: boolean; toolCount: number; error?: string }
+
 const connectedClients = new Map<string, import("./client").McpClient>()
+/** 一个 server 可被多个 session/mode owner 借用；最后一个释放时才终止子进程。 */
+const connectionOwners = new Map<string, Set<string>>()
+/** 每个 server 的所有连接、释放、配置断开共享一条串行尾巴。 */
+const serverOperationTails = new Map<string, Promise<void>>()
+/** acquire 已入队但尚未登记 owner 时，releaseMcpOwner 也必须等待并释放它。 */
+const pendingOwnerServers = new Map<string, Set<string>>()
+const MCP_BUSY_ERROR = "MCP 服务器正在被运行中的回合使用，结束后再修改配置"
 
-/** 连接并发现 MCP 服务器的工具 */
-export async function connectMcpServer(server: McpServerConfig): Promise<{ success: boolean; toolCount: number; error?: string }> {
+function withServerLock<T>(name: string, operation: () => Promise<T>): Promise<T> {
+  const tail = serverOperationTails.get(name) ?? Promise.resolve()
+  const run = tail.then(operation, operation)
+  serverOperationTails.set(name, run.then(() => undefined, () => undefined))
+  return run
+}
+
+function markPendingOwner(name: string, owner: string): void {
+  const names = pendingOwnerServers.get(owner) ?? new Set<string>()
+  names.add(name)
+  pendingOwnerServers.set(owner, names)
+}
+
+function clearPendingOwner(name: string, owner: string): void {
+  const names = pendingOwnerServers.get(owner)
+  if (!names) return
+  names.delete(name)
+  if (names.size === 0) pendingOwnerServers.delete(owner)
+}
+
+function findServer(name: string): McpServerConfig | undefined {
+  ensureServersLoaded()
+  return getBuiltinServers().find(server => server.name === name) ?? mcpServers.find(server => server.name === name)
+}
+
+function filterDiscoveredTools<T extends { name: string }>(server: McpServerConfig, tools: T[]): T[] {
+  const included = server.includeTools === undefined
+    ? tools
+    : tools.filter(tool => server.includeTools!.includes(tool.name))
+  return server.excludeTools?.length
+    ? included.filter(tool => !server.excludeTools!.includes(tool.name))
+    : included
+}
+
+function hasOwners(name: string): boolean {
+  return (connectionOwners.get(name)?.size ?? 0) > 0
+}
+
+/** 配置变更也要拒绝尚在 acquire 队列中的 owner，不能让旧配置的连接在后台完成。 */
+function isServerBusy(name: string): boolean {
+  return hasOwners(name) || [...pendingOwnerServers.values()].some(names => names.has(name))
+}
+
+/** Lock-held implementation. A zero-tool discovery is deliberately not retained as a connection/owner. */
+async function connectMcpServerUnlocked(server: McpServerConfig): Promise<McpConnectResult> {
+  let client: import("./client").McpClient | undefined
   try {
-    // 同名重连：先回收旧 client 及其子进程，否则旧 client 被覆盖后失联，
-    // 且 Rust 侧同名进程会被新 spawn 顶掉、旧 client 的 kill 反而会杀掉新进程
-    if (connectedClients.has(server.name)) {
-      await disconnectMcpServer(server.name)
-    }
-
+    if (connectedClients.has(server.name)) await disconnectMcpServerUnlocked(server.name)
     const { McpClient } = await import("./client")
-    const client = new McpClient(server.name)
-
-    if (server.transport === "stdio" && server.command) {
-      const ok = await client.connect(server.command, server.args ?? [], server.env)
-      if (!ok) return { success: false, toolCount: 0, error: "连接失败" }
-    } else {
-      // SSE 暂未实现
+    client = new McpClient(server.name)
+    if (server.transport !== "stdio" || !server.command) {
       return { success: false, toolCount: 0, error: `不支持的传输方式: ${server.transport}` }
     }
-
-    // 发现工具
-    const toolSchemas = await client.listTools()
-    if (toolSchemas.length === 0) {
-      await client.disconnect()
-      return { success: true, toolCount: 0 }
+    if (!await client.connect(server.command, server.args ?? [], server.env)) {
+      return { success: false, toolCount: 0, error: "连接失败" }
     }
+    const toolSchemas = filterDiscoveredTools(server, await client.listTools())
+    if (toolSchemas.length === 0) return { success: true, toolCount: 0 }
 
-    // 转换为 ToolDef 并注册
     const toolDefs = client.toToolDefs(server.name, toolSchemas)
     const { registerAll } = await import("@/services/tool/registry")
     registerAll(toolDefs)
-
     connectedClients.set(server.name, client)
+    client = undefined // ownership moved to connectedClients
     setMcpConnected(true)
     log.info("MCP 服务器已连接:", server.name, "| 工具:", toolDefs.length)
-
     return { success: true, toolCount: toolDefs.length }
-  } catch (e) {
-    return { success: false, toolCount: 0, error: formatError(e) }
+  } catch (error) {
+    return { success: false, toolCount: 0, error: formatError(error) }
+  } finally {
+    // connect/list/filter failure and an intentionally empty filter must not leave a child process behind.
+    if (client) await client.disconnect().catch(error => log.warn(`MCP 连接清理失败: ${server.name}`, formatError(error)))
   }
 }
 
-/** 断开 MCP 服务器连接并注销工具 */
-export async function disconnectMcpServer(name: string): Promise<void> {
+/** Lock-held implementation. Callers decide whether owner references permit a forced disconnect. */
+async function disconnectMcpServerUnlocked(name: string): Promise<void> {
   const client = connectedClients.get(name)
   if (client) {
-    await client.disconnect()
-    connectedClients.delete(name)
+    try { await client.disconnect() }
+    finally { connectedClients.delete(name) }
   }
-
-  // 注销该服务器的所有工具
   const { listAll, unregister } = await import("@/services/tool/registry")
   const prefix = `mcp-${name}-`
-  for (const t of listAll()) {
-    if (t.id.startsWith(prefix)) {
-      unregister(t.id)
-    }
-  }
-
+  for (const tool of listAll()) if (tool.id.startsWith(prefix)) unregister(tool.id)
+  connectionOwners.delete(name)
   if (connectedClients.size === 0) setMcpConnected(false)
   log.info("MCP 服务器已断开:", name)
+}
+
+/** Manual connect is only allowed when no active run owns this server. */
+export async function connectMcpServer(server: McpServerConfig): Promise<McpConnectResult> {
+  return withServerLock(server.name, async () => {
+    if (hasOwners(server.name)) return { success: false, toolCount: 0, error: MCP_BUSY_ERROR }
+    return connectMcpServerUnlocked(server)
+  })
+}
+
+/** Manual/config disconnect refuses to terminate a client owned by a live run. */
+export async function disconnectMcpServer(name: string): Promise<void> {
+  await withServerLock(name, async () => {
+    if (hasOwners(name)) throw new Error(MCP_BUSY_ERROR)
+    await disconnectMcpServerUnlocked(name)
+  })
+}
+
+/** 按需取得一个 MCP server；同一 owner 重复取得不会重复 spawn。 */
+export async function acquireMcpServer(name: string, owner = "runtime"): Promise<McpConnectResult> {
+  markPendingOwner(name, owner)
+  try {
+    return await withServerLock(name, async () => {
+      const server = findServer(name)
+      if (!server || !server.enabled) return { success: false, toolCount: 0, error: "MCP 服务器未配置或未启用" }
+      const owners = connectionOwners.get(name) ?? new Set<string>()
+      if (owners.has(owner)) return { success: true, toolCount: 0 }
+      const result = connectedClients.has(name)
+        ? { success: true, toolCount: 0 }
+        : await connectMcpServerUnlocked(server)
+      // Empty include/exclude results deliberately leave no client and no owner reference.
+      if (result.success && connectedClients.has(name)) {
+        owners.add(owner)
+        connectionOwners.set(name, owners)
+      }
+      return result
+    })
+  } finally {
+    clearPendingOwner(name, owner)
+  }
+}
+
+/** 释放 owner 的使用权；没有其他 owner 时注销工具并终止 server。 */
+export async function releaseMcpServer(name: string, owner = "runtime"): Promise<void> {
+  await withServerLock(name, async () => {
+    const owners = connectionOwners.get(name)
+    if (!owners) return
+    owners.delete(owner)
+    if (owners.size === 0) await disconnectMcpServerUnlocked(name)
+  })
+}
+
+/** 切 session/模式或应用退出时按 owner 批量释放；覆盖仍在连接中的 acquire。 */
+export async function releaseMcpOwner(owner: string): Promise<void> {
+  const names = new Set<string>([
+    ...[...connectionOwners].filter(([, owners]) => owners.has(owner)).map(([name]) => name),
+    ...(pendingOwnerServers.get(owner) ?? []),
+  ])
+  await Promise.all([...names].map(name => releaseMcpServer(name, owner)))
 }
 
 /** 连接所有已启用的 MCP 服务器（自定义 + 内置） */
 export async function connectAllMcpServers(): Promise<number> {
   ensureServersLoaded()
   let connected = 0
-
-  // 内置 MCP
-  for (const s of getBuiltinServers()) {
-    if (!s.enabled) continue
-    const result = await connectMcpServer(s)
-    if (result.success) connected++
-  }
-
-  // 自定义 MCP
-  for (const s of mcpServers) {
-    if (!s.enabled) continue
-    const result = await connectMcpServer(s)
+  for (const server of [...getBuiltinServers(), ...mcpServers]) {
+    if (!server.enabled) continue
+    const result = await acquireMcpServer(server.name, "legacy-all")
     if (result.success) connected++
   }
   return connected
 }
 
-/** 断开所有 MCP 服务器 */
+/** 应用退出的强制回收：先等待进行中的连接，再关闭所有 client。 */
 export async function disconnectAllMcpServers(): Promise<void> {
-  for (const [name] of connectedClients) {
-    await disconnectMcpServer(name)
-  }
+  const names = new Set([...connectedClients.keys(), ...serverOperationTails.keys(), ...connectionOwners.keys()])
+  await Promise.all([...names].map(name => withServerLock(name, () => disconnectMcpServerUnlocked(name))))
 }
 
 // ── MCP 状态 ──

@@ -43,6 +43,12 @@ export async function executeTool(
     return { success: false, content: "", error: `工具未注册: ${toolName}`, errorCode: "not_found" }
   }
 
+  return executeToolDefinition(tool, params, ctx)
+}
+
+/** Execute the immutable definition selected for this run, even when settings change. */
+export async function executeToolDefinition(tool: ToolDef, params: Record<string, unknown>, ctx: ToolContext): Promise<ToolResult> {
+  const toolName = tool.name
   const timeout = tool.timeoutMs ?? loopConfig.toolTimeoutMs
   const operationId = ctx.toolCallId ?? `${toolName}:${Date.now()}`
   const policyHash = await sha256Text(stableSerialize({ actionCategory: tool.actionCategory, safetyLevel: tool.safetyLevel }))

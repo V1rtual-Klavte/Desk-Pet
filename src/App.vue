@@ -16,14 +16,13 @@ import { initWindowListener } from "./services/window";
 import { MemoryService, switchToSession, createNewSession, closeSession, openSession, getSessions, getActiveSessionId, initWelcome } from "@/services/agent";
 import type { SessionFileMeta } from "@/services/agent/memory";
 import { initApp } from "@/services/init";
-import { desktopConfig, shortcutConfig, userConfig, reloadConfig } from "@/services/config";
+import { desktopConfig, generalConfig, shortcutConfig, userConfig, reloadConfig } from "@/services/config";
 import { isMacOS } from "@/services/env";
 import { getUiUrl } from "@/services/profile";
 import { createLogger } from "@/services/logger";
 import { playEventSound } from "@/services/audio/registry";
 import { emit, listen } from "@tauri-apps/api/event";
 import { stopMemoryConsolidationTimer } from "@/services/agent/memory/consolidate"
-import { disconnectAllMcpServers } from "@/services/tool/mcp"
 
 const log = createLogger("App");
 
@@ -603,11 +602,21 @@ onMounted(async () => {
   // 设置面板保存
   try {
     cleanupSettingsSaved = await listen("deskpet-settings-saved", async () => {
+      const previousAssistantMode = generalConfig.assistantMode;
       await reloadConfig();
       const { initDebug } = await import("@/services/debug");
       await initDebug();
       await unregisterShortcut();
       await registerShortcut();
+      // 配置快照变化不能复用旧 catalog；在飞回合仍持有自己的已冻结 prompt。
+      const { invalidateSkillCatalog } = await import("@/services/skill");
+      invalidateSkillCatalog("config");
+      // 进入助手模式仍等下一轮对话预检按需加载；退出请求会等在飞 run settled，
+      // 再释放 MCP 连接、助手工具和 Skill 元数据缓存。
+      if (previousAssistantMode && !generalConfig.assistantMode) {
+        const { requestConversationCapabilityMode } = await import("@/services/init");
+        await requestConversationCapabilityMode("pet");
+      }
       log.debug("配置缓存已刷新 + Debug状态已更新 + 快捷键已重注册");
     });
   } catch { /* ignore */ }
@@ -653,7 +662,7 @@ onMounted(async () => {
 
 onUnmounted(() => {
   stopMemoryConsolidationTimer()
-  disconnectAllMcpServers()
+  void import("@/services/tool/mcp").then(({ disconnectAllMcpServers }) => disconnectAllMcpServers())
   if (cleanupListener) cleanupListener();
   if (cleanupCursorTracker) cleanupCursorTracker();
   if (cleanupFocus) cleanupFocus();

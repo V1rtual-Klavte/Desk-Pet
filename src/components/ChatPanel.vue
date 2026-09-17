@@ -10,7 +10,7 @@ import { searchSlashCommands, findSlashCommand, initSlashCommands } from "@/serv
 import type { SlashMatch } from "@/services/engine";
 import DebugBar from "./DebugBar.vue";
 import PlanConfirm from "./PlanConfirm.vue";
-import { confirmState, resolveConfirm } from "@/services/safety";
+import { confirmState, resolvePermissionConfirm } from "@/services/safety";
 
 // ★ 同步初始化 Slash 命令注册表（模块加载时即完成，保证后续即时可用）
 initSlashCommands();
@@ -399,9 +399,11 @@ onUnmounted(() => {
       <div v-if="confirmState.pending" id="ch-confirm-overlay">
         <div id="ch-confirm-box">
           <div id="ch-confirm-msg">{{ confirmState.pending.message }}</div>
+          <div v-if="confirmState.pending.parameterSummary" id="ch-confirm-params">{{ confirmState.pending.parameterSummary }}</div>
           <div id="ch-confirm-btns">
-            <button class="ch-confirm-btn ch-confirm-deny" @click="resolveConfirm(false)">✕ 取消</button>
-            <button class="ch-confirm-btn ch-confirm-ok" @click="resolveConfirm(true)">✓ 确认执行</button>
+            <button class="ch-confirm-btn ch-confirm-deny" @click="resolvePermissionConfirm('deny')">✕ 拒绝</button>
+            <button class="ch-confirm-btn" @click="resolvePermissionConfirm('allow_once')">本次允许</button>
+            <button class="ch-confirm-btn ch-confirm-ok" @click="resolvePermissionConfirm('allow_session')">会话内允许</button>
           </div>
         </div>
       </div>
@@ -656,6 +658,10 @@ onUnmounted(() => {
   font-size: 11px;
   margin-bottom: 8px;
   text-align: center;
+}
+#ch-confirm-params {
+  color: var(--color-text-muted); font-size: 10px; line-height: 1.4;
+  margin: -2px 0 8px; max-height: 56px; overflow: auto; word-break: break-all;
 }
 #ch-confirm-btns {
   display: flex; gap: 8px; justify-content: center;

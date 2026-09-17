@@ -12,6 +12,7 @@ pub mod personality_fs_cmd;
 pub mod profile_cmd;
 pub mod resources_cmd;
 pub mod sim;
+pub mod skill_cmd;
 pub mod tool_exec;
 
 pub use cursor::{compute_popup_position, get_cursor_position, spawn_cursor_tracker};
@@ -31,6 +32,7 @@ pub use profile_cmd::{
     profile_delete, profile_file_read, profile_file_write,
 };
 pub use resources_cmd::{restore_default_resources, skill_delete};
+pub use skill_cmd::skill_list_metadata;
 pub use sim::{close_windows_sim, open_windows_sim};
 pub(crate) use tool_exec::BashPool;
 pub use tool_exec::{

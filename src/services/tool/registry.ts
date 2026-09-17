@@ -118,3 +118,13 @@ export async function registerAssistantTools(): Promise<void> {
   log.info("助手模式工具已注册, 总计:", toolCount(), "个")
 }
 
+/**
+ * 释放仅属于助手模式的本地工具。调用方必须在对应 run 已 settled 后执行，避免
+ * router 在一轮工具调用中失去已冻结的工具定义。
+ */
+export function unregisterAssistantTools(): void {
+  for (const id of ["local-app-open", "local-clipboard-read", "local-clipboard-write", "local-agent-spawn"]) {
+    unregister(id)
+  }
+  log.info("助手模式本地工具已释放, 总计:", toolCount(), "个")
+}

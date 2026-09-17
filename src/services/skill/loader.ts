@@ -1,15 +1,5 @@
-// ==========================================
-// Skill 加载 —— Pi 原生渐进披露
-//
-// system prompt 只注入 name / description / location 三行，正文由模型在任务
-// 匹配时用 read 工具读取 location 自行加载。
-//
-// data_root/skills/ 是唯一真相源：随包种子只在首次启动复制一次，之后用户可以
-// 改、可以删，应用不再覆盖 —— 与 Profile / Card 同一套所有权模型。
-// ==========================================
+// Skill 目录渐进加载：缓存仅含有界 frontmatter 元数据，正文经 read 按需读取。
 
-import type { Skill } from "@earendil-works/pi-agent-core"
-import { formatSkillsForSystemPrompt } from "@earendil-works/pi-agent-core"
 import { invoke } from "@tauri-apps/api/core"
 import yaml from "js-yaml"
 import { runtimePath } from "@/services/paths"
@@ -18,144 +8,200 @@ import { createLogger } from "@/services/logger"
 import { formatError } from "@/services/error"
 
 const log = createLogger("Skill")
-
-/** data_root 下的 Skill 根目录与文件名（Pi 约定：目录名即 skill 名） */
 const SKILLS_DIR = "skills"
 const SKILL_FILE = "SKILL.md"
-
-/** 单文件读写上限，防止超大 SKILL.md 撑爆 IPC */
 const MAX_SKILL_BYTES = 512 * 1024
-
-/** Pi 的 Skill 名校验：小写字母/数字，用单个连字符分段 */
+const MAX_PROMPT_CHARS = 8 * 1024
+const MAX_DESCRIPTION_CHARS = 1024
+const MAX_CAPABILITY_TAGS = 16
+const MAX_CAPABILITY_TAG_CHARS = 64
+const CATALOG_TTL_MS = 5 * 60 * 1000
 const SKILL_NAME_PATTERN = /^[a-z0-9]+(-[a-z0-9]+)*$/
-
 const FRONTMATTER_PATTERN = /^---\r?\n([\s\S]*?)\r?\n---\r?\n?([\s\S]*)$/
 
-// ── 类型 ──
+export type SkillMode = "pet" | "assistant"
+export type SkillInvocationPolicy = "pet" | "assistant" | "both"
 
-export interface SkillSource {
-  /** 目录名，同时是模型看到的 skill 名 */
+/** 上传校验的短期对象，不会进入 catalog 缓存。 */
+export interface SkillSource { name: string; description: string; body: string; raw: string }
+
+/** 第一层常驻索引，刻意没有正文 content/body/raw。 */
+export interface SkillMetadata {
   name: string
-  /** 模型可见的一句话说明：什么时候该用这个 skill */
   description: string
-  /** frontmatter 之后的正文 */
-  body: string
-  /** 完整 SKILL.md 原文 */
-  raw: string
+  location: string
+  capabilityTags: string[]
+  invocationPolicy: SkillInvocationPolicy
+  mtime: number
+  size: number
+  fingerprint: string
 }
 
-// ── 解析 ──
+interface RawSkillCatalogEntry {
+  directoryName: string
+  filePath: string
+  frontmatter: string
+  mtimeMs: number
+  size: number
+  fingerprint: string
+}
+interface RawSkillCatalog { entries: RawSkillCatalogEntry[]; fingerprint: string; truncated: boolean }
+interface SkillCatalog { entries: SkillMetadata[]; fingerprint: string; truncated: boolean; loadedAt: number }
 
-/**
- * 解析 SKILL.md。只认 Pi 定义的 `name` 与 `description`：
- * 名称必须是 kebab-case，说明必填，两者任一不合规就丢弃这个 Skill。
- */
+let catalog: SkillCatalog | null = null
+let catalogGeneration = 0
+let pendingCatalogLoad: { generation: number; promise: Promise<readonly SkillMetadata[]> } | null = null
+
 export function parseSkillSource(raw: string): SkillSource | null {
   const match = raw.match(FRONTMATTER_PATTERN)
   if (!match) return null
+  const parsed = parseFrontmatter(match[1])
+  return parsed ? { name: parsed.name, description: parsed.description, body: match[2].trim(), raw } : null
+}
 
-  const parsed = yaml.load(match[1])
-  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return null
-
-  const front = parsed as Record<string, unknown>
+function parseFrontmatter(frontmatter: string): Pick<SkillMetadata, "name" | "description" | "capabilityTags" | "invocationPolicy"> | null {
+  let loaded: unknown
+  try { loaded = yaml.load(frontmatter) }
+  catch (error) { log.warn("Skill frontmatter 无法解析:", formatError(error)); return null }
+  if (!loaded || typeof loaded !== "object" || Array.isArray(loaded)) return null
+  const front = loaded as Record<string, unknown>
   const name = typeof front.name === "string" ? front.name.trim() : ""
   const description = typeof front.description === "string" ? front.description.trim() : ""
-
   if (!SKILL_NAME_PATTERN.test(name)) {
     log.warn("Skill 名不合规（只允许小写字母/数字/连字符）:", name || "(空)")
     return null
   }
-  if (!description) {
-    log.warn("Skill 缺少 description:", name)
+  if (!description) { log.warn("Skill 缺少 description:", name); return null }
+  if (description.length > MAX_DESCRIPTION_CHARS) {
+    log.warn(`Skill description 超过 ${MAX_DESCRIPTION_CHARS} 字符，已跳过:`, name)
     return null
   }
-
-  return { name, description, body: match[2].trim(), raw }
+  const rawTags = front.capabilityTags ?? front["capability-tags"]
+  const capabilityTags = Array.isArray(rawTags)
+    ? rawTags
+      .filter((tag): tag is string => typeof tag === "string" && Boolean(tag.trim()))
+      .map(tag => tag.trim())
+      .filter(tag => tag.length <= MAX_CAPABILITY_TAG_CHARS)
+      .slice(0, MAX_CAPABILITY_TAGS)
+    : []
+  const rawPolicy = front.invocationPolicy ?? front["invocation-policy"]
+  const invocationPolicy: SkillInvocationPolicy = rawPolicy === "pet" || rawPolicy === "both" || rawPolicy === "assistant"
+    ? rawPolicy : "assistant"
+  return { name, description, capabilityTags, invocationPolicy }
 }
 
-// ── 对外 API ──
-
-let cache: Skill[] | null = null
-
-/**
- * 扫描 data_root/skills/ 加载全部 Skill。
- *
- * 单个 Skill 解析或读取失败只跳过它，不影响其余 Skill 和启动流程。
- */
-export async function loadSkills(): Promise<Skill[]> {
-  if (cache) return cache
-
-  const skills: Skill[] = []
-  try {
-    const root = await runtimePath("data", SKILLS_DIR)
-    const listing = await invoke<{ entries: { name: string; kind: string }[] }>("file_list", {
-      path: root,
-    })
-    for (const entry of listing.entries) {
-      if (entry.kind !== "dir") continue
-      try {
-        const filePath = await runtimePath("data", SKILLS_DIR, entry.name, SKILL_FILE)
-        const file = await invoke<{ content: string }>("file_read", {
-          path: filePath,
-          maxBytes: MAX_SKILL_BYTES,
-        })
-        const parsed = parseSkillSource(file.content)
-        if (!parsed) continue
-        skills.push({
-          name: parsed.name,
-          description: parsed.description,
-          content: parsed.body,
-          filePath,
-        })
-      } catch (e) {
-        log.warn("Skill 读取失败，已跳过:", entry.name, "|", formatError(e))
-      }
+/** Rust 每个文件仅读取有界 frontmatter；解析后原文立即丢弃。 */
+export async function ensureSkillCatalog(): Promise<readonly SkillMetadata[]> {
+  while (true) {
+    if (catalog && Date.now() - catalog.loadedAt < CATALOG_TTL_MS) return catalog.entries
+    if (catalog) {
+      invalidateSkillCatalog("ttl")
+      continue
     }
-  } catch (e) {
-    log.warn("Skill 目录不可用:", formatError(e))
+    const generation = catalogGeneration
+    if (pendingCatalogLoad?.generation === generation) {
+      await pendingCatalogLoad.promise
+      continue
+    }
+    const promise = (async (): Promise<readonly SkillMetadata[]> => {
+      try {
+        const raw = await invoke<RawSkillCatalog>("skill_list_metadata")
+        const entries: SkillMetadata[] = []
+        for (const entry of raw.entries) {
+          const parsed = parseFrontmatter(entry.frontmatter)
+          if (!parsed) continue
+          if (parsed.name !== entry.directoryName) {
+            log.warn("Skill 名与目录不一致，已跳过:", entry.directoryName)
+            continue
+          }
+          entries.push({ ...parsed, location: entry.filePath, mtime: entry.mtimeMs, size: entry.size, fingerprint: entry.fingerprint })
+        }
+        if (generation === catalogGeneration) {
+          catalog = { entries, fingerprint: raw.fingerprint, truncated: raw.truncated, loadedAt: Date.now() }
+          if (raw.truncated) log.warn("Skill 目录超过索引上限，未收录的 Skill 不会注入当前会话")
+          log.info(`Skill 元数据索引已就绪: ${entries.length} 个 | 指纹:${raw.fingerprint}`)
+        }
+        return entries
+      } catch (error) {
+        log.warn("Skill 元数据索引不可用:", formatError(error))
+        if (generation === catalogGeneration) catalog = { entries: [], fingerprint: "unavailable", truncated: false, loadedAt: Date.now() }
+        return []
+      }
+    })()
+    pendingCatalogLoad = { generation, promise }
+    await promise
+    if (pendingCatalogLoad?.promise === promise) pendingCatalogLoad = null
+    // If invalidated while the request was in flight, loop and await the newer generation.
+    if (generation !== catalogGeneration) continue
+    return listSkills()
   }
-
-  cache = skills
-  log.info(`已加载 ${skills.length} 个 Skill:`, skills.map(s => s.name).join(", ") || "无")
-  return skills
 }
 
-/** 丢弃缓存并重新扫描 */
-export async function refreshSkills(): Promise<Skill[]> {
-  cache = null
-  return loadSkills()
+/** 保存、删除、刷新与模式切换后使下一轮冻结快照重新扫描。 */
+export function invalidateSkillCatalog(reason: "save" | "delete" | "refresh" | "config" | "mode-change" | "dispose" | "ttl"): void {
+  catalogGeneration++
+  catalog = null
+  log.debug("Skill 元数据索引已失效:", reason)
 }
 
-/** 已加载 Skill 的只读快照 */
-export function listSkills(): Skill[] {
-  return cache ? [...cache] : []
+export async function refreshSkills(): Promise<readonly SkillMetadata[]> {
+  invalidateSkillCatalog("refresh")
+  return ensureSkillCatalog()
+}
+
+/** 只返回当前缓存，绝不触发 I/O。 */
+export function listSkills(): readonly SkillMetadata[] { return catalog?.entries ?? [] }
+export function getSkillCatalogFingerprint(): string | null { return catalog?.fingerprint ?? null }
+
+function isAvailableInMode(skill: SkillMetadata, mode: SkillMode): boolean {
+  return skill.invocationPolicy === "both" || skill.invocationPolicy === mode
+}
+function escapeXml(value: string): string {
+  const entities: Record<string, string> = { "<": "&lt;", ">": "&gt;", "&": "&amp;", '"': "&quot;", "'": "&apos;" }
+  return value.replace(/[<>&"']/g, char => entities[char])
 }
 
 /**
- * 注入 system prompt 的 Skill 清单；未启用、未加载或没有 Skill 时返回空串。
- *
- * 清单始终可加载（设置页要展示），但注入与否只由 toolsConfig.skillEnabled 决定。
+ * 模型可见的仅是 name/description/location，并且受模式、能力与字符预算过滤。
+ * 调用方须在冻结 run snapshot 前先 await ensureSkillCatalog()。
  */
-export function getSkillsPromptBlock(): string {
-  if (!toolsConfig.skillEnabled || !cache || cache.length === 0) return ""
-  const block = formatSkillsForSystemPrompt(cache)
-  return block ? `\n\n${block}` : ""
+export function getSkillsPromptBlock(options: { mode?: SkillMode; capabilityTags?: readonly string[]; maxChars?: number } = {}): string {
+  if (!toolsConfig.skillEnabled || !catalog?.entries.length) return ""
+  const mode = options.mode ?? "assistant"
+  const requiredTags = options.capabilityTags ?? []
+  const limit = Math.min(Math.max(options.maxChars ?? MAX_PROMPT_CHARS, 0), MAX_PROMPT_CHARS)
+  let used = 0
+  const lines: string[] = []
+  for (const skill of catalog.entries) {
+    if (!isAvailableInMode(skill, mode)) continue
+    if (requiredTags.length && !requiredTags.some(tag => skill.capabilityTags.includes(tag))) continue
+    const line = `<skill name="${escapeXml(skill.name)}" description="${escapeXml(skill.description)}" location="${escapeXml(skill.location)}" />`
+    if (used + line.length > limit) break
+    lines.push(line)
+    used += line.length
+  }
+  return lines.length ? `\n\n<available_skills>\n${lines.join("\n")}\n</available_skills>` : ""
 }
 
-/** 新增或覆盖一个 Skill：写入 data_root/skills/{name}/SKILL.md */
+/** 上传全文只在当前请求中存在，保存后重新建立纯元数据索引。 */
 export async function upsertSkill(raw: string): Promise<SkillSource | null> {
+  if (new TextEncoder().encode(raw).byteLength > MAX_SKILL_BYTES) {
+    log.warn(`Skill 写入被拒绝：超过 ${MAX_SKILL_BYTES} bytes`)
+    return null
+  }
   const parsed = parseSkillSource(raw)
   if (!parsed) return null
   const filePath = await runtimePath("data", SKILLS_DIR, parsed.name, SKILL_FILE)
   await invoke("file_write", { path: filePath, content: raw, maxBytes: MAX_SKILL_BYTES })
-  await refreshSkills()
+  invalidateSkillCatalog("save")
+  await ensureSkillCatalog()
   log.info("Skill 已保存:", parsed.name)
   return parsed
 }
 
-/** 删除一个 Skill 目录 */
 export async function deleteSkill(name: string): Promise<void> {
   await invoke("skill_delete", { name })
-  await refreshSkills()
+  invalidateSkillCatalog("delete")
+  await ensureSkillCatalog()
   log.info("Skill 已删除:", name)
 }

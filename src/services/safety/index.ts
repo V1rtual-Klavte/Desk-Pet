@@ -19,5 +19,14 @@ export {
 } from "./checker"
 export type { SafetyCheckResult } from "./checker"
 
-export { confirmState, requestConfirm, resolveConfirm } from "./confirm"
+export {
+  authorizeToolExecution,
+  awaitPermission,
+  evaluateToolPermission,
+  invalidatePermissionScope,
+} from "./permission"
+export type { PermissionConfirmation, PermissionContext, PermissionRequest, PermissionResult } from "./permission"
+export type { PermissionDecision, ToolCheckResult, EffectClass } from "@/services/tool/types"
+
+export { confirmState, requestConfirm, requestPermissionConfirm, resolveConfirm, resolvePermissionConfirm } from "./confirm"
 export type { ConfirmRequest } from "./confirm"

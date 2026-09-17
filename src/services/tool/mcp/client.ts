@@ -140,6 +140,10 @@ export class McpClient {
           required: (t.inputSchema?.required as string[]) ?? [],
         },
         safetyLevel: "NORMAL" as const,
+        effectClass: "external_side_effect" as const,
+        // MCP 发现只提供能力描述，不能把协议身份变成默认授权。
+        // PermissionKernel 必须继续把 passthrough 收敛为最终裁决。
+        permissionCheck: () => "passthrough" as const,
         source: "mcp" as const,
         sourceId: serverId,
         mode: "assistant" as const,

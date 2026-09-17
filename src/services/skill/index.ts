@@ -9,12 +9,14 @@
 // ==========================================
 
 export {
-  loadSkills,
   refreshSkills,
+  ensureSkillCatalog,
   listSkills,
   getSkillsPromptBlock,
+  getSkillCatalogFingerprint,
+  invalidateSkillCatalog,
   parseSkillSource,
   upsertSkill,
   deleteSkill,
 } from "./loader"
-export type { SkillSource } from "./loader"
+export type { SkillMetadata, SkillMode, SkillInvocationPolicy, SkillSource } from "./loader"
