@@ -22,7 +22,9 @@ export { initSlashCommands, search as searchSlashCommands, find as findSlashComm
 export type { SlashCommand, SlashMatch } from "./slash"
 
 // ── Compactor ──
-export { compactSession, estimateTokens, groupMessageUnits } from "./compactor"
+// 摘要内核经 before_compaction 钩子使用；旧调度入口（compactSession）随 H-4 退役。
+export { summarizeCompaction } from "./compactor"
+export type { CompactionSummaryInput, CompactionSummaryOutcome } from "./compactor"
 
 // ── Planner ──
 export { evaluateComplexity, generatePlan, executePlan, formatStepResults } from "./planner"
@@ -35,9 +37,7 @@ export { abortRunningPlan, bindRunningPlan, clearRunningPlan, notifyPlanEnd, res
 export type {
   ContextBlock,
   ContextLayer,
-  DeliveryMode,
   IngressEnvelope,
-  MessageMeta,
   MessageOrigin,
   MessagePriority,
   MessageTaint,
@@ -54,14 +54,6 @@ export type {
   PromptTransform,
   PromptTransformReason,
   QuerySource,
-  QueueAck,
-  QueueAckState,
-  QueueEntry,
-  SessionEvent,
-  SessionEventKind,
-  SessionRole,
-  SessionTurnRecord,
-  TurnState,
 } from "./runtime"
 export {
   createPromptSnapshot,
@@ -77,9 +69,16 @@ export {
   subscribeRuntimeTrace,
 } from "./runtime"
 export type { RuntimeTraceContext, RuntimeTraceEvent, RuntimeTraceKind, RuntimeTraceListener } from "./runtime"
-export { RuntimeQueue } from "./runtime"
-export type { EnqueueInput } from "./runtime"
 
 // ── Pi Agent Core Runtime ──
-export { deliverActiveTurn, runPiAgentTurn, runPiSubAgent } from "./pi"
-export type { PiAgentTurnOutput, PiSubAgentOutput } from "./pi"
+export {
+  compactActiveSession,
+  continueInterruptedRun,
+  deliverActiveTurn,
+  discardInterruptedRun,
+  getInterruptedRun,
+  harnessSlots,
+  runPiAgentTurn,
+  runPiSubAgent,
+} from "./pi"
+export type { InterruptedRunInfo, ManualCompactionResult, PiAgentTurnOutput, PiSubAgentOutput } from "./pi"

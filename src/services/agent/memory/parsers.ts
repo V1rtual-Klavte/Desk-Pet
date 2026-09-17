@@ -1,9 +1,9 @@
 // ==========================================
 // 记忆系统 — 解析器 & 序列化
-// MEMORY.md / Project.md / session 文件 解析 + 日期工具
+// MEMORY.md / Project.md 解析 + 日期工具
 // ==========================================
 
-import type { MemoryEntry, ProjectEntry, SessionMemory, CompactionSummary, SessionFileMeta } from "./types"
+import type { MemoryEntry, ProjectEntry } from "./types"
 
 // ── 日期格式化工具 ──
 
@@ -19,26 +19,12 @@ export function localDate(d?: Date | number): string {
   return `${dt.getFullYear()}-${pad(dt.getMonth()+1)}-${pad(dt.getDate())}`
 }
 
-export function localCompact(d: Date): string {
-  return `${d.getFullYear()}${pad(d.getMonth()+1)}${pad(d.getDate())}-${pad(d.getHours())}${pad(d.getMinutes())}${pad(d.getSeconds())}`
-}
-
 export function generateId(): string {
   return crypto.randomUUID?.() ?? `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`
 }
 
-export function splitCsv(s: string): string[] {
-  return s.split(",").map(x => x.trim()).filter(Boolean)
-}
-
 export function escapeRegex(s: string): string {
   return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
-}
-
-// ── CompactionSummary ──
-
-export function emptyCompactionSummary(): CompactionSummary {
-  return { mainRequest: "", keyTech: [], files: [], problems: "", userMessages: [], tasks: [], currentWork: "", nextSteps: "", generatedAt: Date.now() }
 }
 
 // ═══════════════════════════════════════════════════
@@ -148,9 +134,10 @@ export function serializeMEMORYmd(list: MemoryEntry[]): string {
 }
 
 // ═══════════════════════════════════════════════════
-// Project.md 解析/序列化
+// Project.md 解析
 // ═══════════════════════════════════════════════════
 
+/** 读取 Project.md 的归档索引（旧归档链路的只读残留，保留待 P6 退役）。 */
 export function parseProjectMd(raw: string): ProjectEntry[] {
   const result: ProjectEntry[] = []
   if (!raw) return result
@@ -167,199 +154,6 @@ export function parseProjectMd(raw: string): ProjectEntry[] {
     }
   }
   return result
-}
-
-export function serializeProjectMd(list: ProjectEntry[]): string {
-  const lines = list.map(e => {
-    let line = `- [${e.date}] ${e.sessionFile} | ${e.rounds}轮 | 主请求: ${e.mainRequest}`
-    if (e.keyTech.length > 0) line += ` | 关键技术: ${e.keyTech.join(", ")}`
-    return line
-  })
-  return [
-    "# Project.md — 会话归档指针索引",
-    "",
-    "> 指向 sessions/ 目录中的历史会话文件。",
-    "> 格式: `- [日期] session名 | 轮数 | 主请求 | 关键技术`",
-    "",
-    "---",
-    "",
-    `## 归档会话 (${lines.length})`,
-    "",
-    ...(lines.length > 0 ? lines : ["<!-- 暂无归档会话 -->"]),
-    "",
-  ].join("\n")
-}
-
-// ═══════════════════════════════════════════════════
-// Session 文件解析
-// ═══════════════════════════════════════════════════
-
-// ── 记录行规则（turn / event 两种记录格式共用）──
-
-/**
- * 结构化元数据注释。`deskpet-turn` 与 `deskpet-event` 两种记录都会在预览行下一行
- * 紧跟自己的注释，注释里才是精确正文、毫秒时间戳和完整字段。
- */
-const DESKPET_METADATA_COMMENT = /^\s*<!--\s*deskpet-(?:turn|event):/
-
-/**
- * 该行是否为 deskpet 元数据注释。
- * 预览行下一行命中时，说明这一行只是给人看的显示副本：正文被压成单行并截断到 300 字，
- * 时间戳只到秒。跳过它，同一条记录才不会既按预览又按注释重放两次。
- */
-export function isDeskpetMetadataComment(line: string | undefined): boolean {
-  return line !== undefined && DESKPET_METADATA_COMMENT.test(line)
-}
-
-/**
- * 记录标签 → 会话角色的显式映射。
- * `用户`/`user` → user，`糖糖`/`assistant` → assistant。
- * 其它标签（未知旧格式、event 的 tool/queue 等来源）不丢弃，按 user 处理。
- */
-export function normalizeTurnRole(label: string): "user" | "assistant" {
-  const normalized = label.trim().toLowerCase()
-  return normalized === "糖糖" || normalized === "assistant" ? "assistant" : "user"
-}
-
-export function parseTurnsFromRaw(raw: string): SessionMemory["turns"] {
-  const turns: SessionMemory["turns"] = []
-  let inConversation = false
-  let previousWasLegacy = false
-  const lines = raw.split("\n")
-  for (let index = 0; index < lines.length; index++) {
-    const line = lines[index]
-    if (line.startsWith("## 对话记录")) { inConversation = true; continue }
-    if (line.startsWith("## ")) { inConversation = false; continue }
-    if (!inConversation) continue
-
-    const eventMatch = line.match(/<!--\s*deskpet-event:([^\s]+)\s*-->/)
-    if (eventMatch) {
-      try {
-        const event = JSON.parse(decodeURIComponent(eventMatch[1]))
-        if ((event.kind === "user_message" || event.kind === "assistant_message") && event.payload?.eligibleForTranscript !== false) {
-          const message = event.payload.message ?? event.payload
-          const role = event.kind === "user_message" ? "user" : "assistant"
-          const previous = turns[turns.length - 1]
-          const mirror = previousWasLegacy && !event.payload.message && event.payload.eligibleForTranscript === undefined
-            && previous?.role === role && previous.text === message.text
-          if (!mirror && typeof message.text === "string") turns.push({ role, text: message.text, timestamp: event.createdAt })
-          previousWasLegacy = false
-        }
-      } catch { /* Preserve the other valid records. */ }
-      continue
-    }
-
-    const structuredMatch = line.match(/<!--\s*deskpet-turn:([^\s]+)\s*-->/)
-    if (structuredMatch) {
-      try {
-        const turn = JSON.parse(decodeURIComponent(structuredMatch[1])) as SessionMemory["turns"][number]
-        if (turn.role === "user" || turn.role === "assistant") {
-          turns.push({ role: turn.role, text: String(turn.text), timestamp: Number(turn.timestamp) || Date.now() })
-          previousWasLegacy = true
-        }
-      } catch { /* Corrupt metadata does not invalidate other readable turns. */ }
-      continue
-    }
-
-    const m = line.match(/^-\s*\[([^\]]+)\]\s*\*\*([^*]+)\*\*:\s*(.+)/)
-    if (m) {
-      // New records keep a readable preview immediately before the exact metadata.
-      // Skip that preview so mixed legacy/new files preserve every turn exactly once.
-      // Both `deskpet-turn` and `deskpet-event` records leave such a preview.
-      if (isDeskpetMetadataComment(lines[index + 1])) continue
-      const ts = Date.parse(m[1])
-      turns.push({
-        role: normalizeTurnRole(m[2]),
-        text: m[3].trim(),
-        timestamp: isNaN(ts) ? Date.now() : ts,
-      })
-    }
-  }
-  return turns
-}
-
-export function serializeSessionTurn(turn: SessionMemory["turns"][number]): string[] {
-  const role = turn.role === "assistant" ? "糖糖" : "用户"
-  const preview = turn.text.replace(/\s+/g, " ").trim().substring(0, 300)
-  const encoded = encodeURIComponent(JSON.stringify(turn))
-  return [
-    `- [${localTime(turn.timestamp)}] **${role}**: ${preview}`,
-    `  <!-- deskpet-turn:${encoded} -->`,
-  ]
-}
-
-export function buildSessionFileContent(sm: SessionMemory): string[] {
-  const topic = findTopicFromTurns(sm.turns)
-  return [
-    `# ${sm.sessionId}-${topic}`,
-    `> 开始: ${localTime(sm.startedAt)}`,
-    `> 轮数: ${sm.turns.length}`,
-    "",
-    ...buildSummarySection(sm),
-    `## 对话记录 (${sm.turns.length} 轮)`,
-    ...sm.turns.flatMap(serializeSessionTurn),
-    "",
-  ]
-}
-
-function buildSummarySection(sm: SessionMemory): string[] {
-  if (sm.compactionSummary) {
-    const cs = sm.compactionSummary
-    return [
-      "## 摘要",
-      `- 主请求: ${cs.mainRequest || "无"}`,
-      `- 关键技术: ${cs.keyTech.join(", ") || "无"}`,
-      `- 文件/代码: ${cs.files.join(", ") || "无"}`,
-      `- 问题及解决: ${cs.problems || "无"}`,
-      `- 提交的任务: ${cs.tasks.join(", ") || "无"}`,
-      `- 现在的工作: ${cs.currentWork || "无"}`,
-      `- 下一步: ${cs.nextSteps || "无"}`,
-      "",
-    ]
-  }
-  return ["## 摘要", "<!-- 归档时填充 -->", ""]
-}
-
-// ── 文件名格式 ──
-
-export function makeSessionFilename(sessionId: string, topic?: string): string {
-  const slug = topic
-    ? topic.replace(/[\n\r/\\:*?"<>|]/g, "").substring(0, 20).trim() || "新会话"
-    : "新会话"
-  return `${sessionId}-${slug}.md`
-}
-
-export function parseSessionFilename(filename: string): { sessionId: string; topic: string } | null {
-  let m = filename.match(/^(session-\d{8}-\d{6})-(.+)\.md$/)
-  if (m) return { sessionId: m[1], topic: m[2] }
-  m = filename.match(/^(\d{8}\d{2}:\d{2}:\d{2})-(.+)\.md$/)
-  if (m) return { sessionId: `session-${m[1].replace(/:/g, "")}`, topic: m[2] }
-  return null
-}
-
-export function parseSessionFileMeta(raw: string): Partial<SessionFileMeta> {
-  const result: Partial<SessionFileMeta> = {}
-  for (const line of raw.split("\n")) {
-    if (line.startsWith("> 开始:")) result.createdAt = line.replace("> 开始:", "").trim()
-    else if (line.startsWith("> 模式:")) result.mode = line.replace("> 模式:", "").trim()
-    else if (line.startsWith("> 轮数:")) result.rounds = parseInt(line.replace("> 轮数:", ""), 10) || 0
-    else if (line.startsWith("# ")) {
-      const title = line.replace("# ", "").trim()
-      const parsed = parseSessionFilename(title.endsWith(".md") ? title : `${title}.md`)
-      if (parsed) {
-        result.sessionId = parsed.sessionId
-        result.topic = parsed.topic
-      }
-    }
-  }
-  return result
-}
-
-// ── Topic 提取 ──
-
-export function findTopicFromTurns(turns: SessionMemory["turns"]): string {
-  const firstUser = turns.find(t => t.role === "user")
-  return firstUser?.text.substring(0, 20).replace(/[\n\r/\\:*?"<>|]/g, "").trim() || "新会话"
 }
 
 // ── 提取 markdown section ──

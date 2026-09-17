@@ -13,13 +13,14 @@ import ChatPanel from "./components/ChatPanel.vue";
 import SessionTabs from "./components/SessionTabs.vue";
 import WinSim from "./components/winsim/WinSim.vue";
 import { initWindowListener } from "./services/window";
-import { MemoryService, switchToSession, createNewSession, closeSession, openSession, getSessions, getActiveSessionId, initWelcome } from "@/services/agent";
-import type { SessionFileMeta } from "@/services/agent/memory";
+import { switchToSession, createNewSession, closeSession, openSession, deleteSession, getSessions, getActiveSessionId, initWelcome } from "@/services/agent";
+import type { PiSessionSummary } from "@/services/session";
 import { initApp } from "@/services/init";
 import { desktopConfig, generalConfig, shortcutConfig, userConfig, reloadConfig } from "@/services/config";
 import { isMacOS } from "@/services/env";
 import { getUiUrl } from "@/services/profile";
 import { createLogger } from "@/services/logger";
+import { formatError } from "@/services/error";
 import { playEventSound } from "@/services/audio/registry";
 import { emit, listen } from "@tauri-apps/api/event";
 import { stopMemoryConsolidationTimer } from "@/services/agent/memory/consolidate"
@@ -105,7 +106,12 @@ async function onSessionSwitch(session: { id: string; name: string }) {
 }
 
 async function onSessionNew() {
-  await createNewSession();
+  try {
+    await createNewSession();
+  } catch (e) {
+    log.error("新建会话失败:", formatError(e))
+    return
+  }
   await nextTick();
   tabsRef.value?.loadSessions();
   tabsRef.value?.refreshHistory();
@@ -125,50 +131,42 @@ async function onSessionClose(sessionId: string) {
   tabsRef.value?.refreshHistory()
 }
 
-async function onDeleteFile(filename: string) {
-  log.info("onDeleteFile:", filename)
+async function onDeleteSession(sessionId: string) {
+  log.info("onDeleteSession:", sessionId)
   try {
-    await MemoryService.deleteSessionFile(filename)
-    let sid = ""
-    const m = filename.match(/^(session-\d{8}-\d{6})-.+\.md$/)
-    if (m) sid = m[1]
-    else {
-      const old = filename.match(/^(\d{8}\d{2}:\d{2}:\d{2})-.+\.md$/)
-      if (old) sid = `session-${old[1].replace(/:/g, "")}`
+    const wasActive = getActiveSessionId() === sessionId
+    await deleteSession(sessionId)
+    if (getSessions().length === 0) {
+      await createNewSession()
+      await greetNewSession()
+    } else if (wasActive || getActiveSessionId() === "") {
+      await switchToSession(getSessions()[0].id)
     }
-    if (sid) {
-      closeSession(sid)
-      if (getActiveSessionId() === sid || getActiveSessionId() === "") {
-        const remaining = getSessions()
-        if (remaining.length > 0) {
-          await switchToSession(remaining[0].id)
-        } else {
-          await createNewSession()
-          await greetNewSession()
-        }
-      }
-    }
-    log.info("onDeleteFile 完成:", filename, "sid:", sid)
+    log.info("onDeleteSession 完成:", sessionId)
   } catch (e) {
-    log.error("删除会话文件失败:", filename, e)
-    log.error("onDeleteFile 异常:", e)
+    log.error("删除会话失败:", sessionId, formatError(e))
   } finally {
     tabsRef.value?.loadSessions()
     tabsRef.value?.refreshHistory()
   }
 }
 
-async function onRestoreSession(sf: SessionFileMeta) {
-  log.info("onRestoreSession:", sf.sessionId, sf.topic)
+async function onRestoreSession(item: PiSessionSummary) {
+  log.info("onRestoreSession:", item.id, item.name)
   try {
-    openSession({ id: sf.sessionId, name: sf.topic || "已恢复", createdAt: sf.createdAt ? new Date(sf.createdAt).getTime() : Date.now(), messageCount: sf.rounds })
-    await switchToSession(sf.sessionId)
+    openSession({
+      id: item.id,
+      name: item.name || "新会话",
+      createdAt: item.createdAt,
+      messageCount: item.messageCount,
+      path: item.path,
+    })
+    await switchToSession(item.id)
     tabsRef.value?.loadSessions()
     tabsRef.value?.refreshHistory()
-    log.info("onRestoreSession 完成:", sf.sessionId)
+    log.info("onRestoreSession 完成:", item.id)
   } catch (e) {
-    log.error("恢复会话失败:", sf.sessionId, e)
-    log.error("onRestoreSession 异常:", e)
+    log.error("恢复会话失败:", item.id, formatError(e))
   }
 }
 
@@ -698,7 +696,7 @@ onUnmounted(() => {
           @switch="onSessionSwitch"
           @new="onSessionNew"
           @close-tab="onSessionClose"
-          @delete-file="onDeleteFile"
+          @delete-session="onDeleteSession"
           @restore-session="onRestoreSession"
         />
         <ChatPanel v-show="showChat" ref="chatRef" @request-popup="onRequestPopup" />

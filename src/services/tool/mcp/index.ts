@@ -25,7 +25,6 @@ export {
   acquireMcpServer,
   releaseMcpServer,
   releaseMcpOwner,
-  connectAllMcpServers,
   disconnectAllMcpServers,
   isMcpConnected,
   setMcpConnected,

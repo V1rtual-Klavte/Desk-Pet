@@ -3,11 +3,10 @@
 // 记忆列表管理 + 系统文件索引 + 本地去重
 // ==========================================
 
-import { invoke } from "@tauri-apps/api/core"
 import { memoryConfig } from "@/services/config"
-import type { MemoryEntry, ProjectEntry, SessionMemory, CompactionSummary } from "./types"
-import { readMemoryFile, writeMemoryFile, sessionsDir, memoryDir, withLock } from "./io"
-import { localDate, localTime, generateId, serializeMEMORYmd, serializeProjectMd, parseMEMORYmd, parseProjectMd, extractSection } from "./parsers"
+import type { MemoryEntry, ProjectEntry } from "./types"
+import { readMemoryFile, writeMemoryFile, withLock } from "./io"
+import { localDate, localTime, generateId, serializeMEMORYmd, parseMEMORYmd, parseProjectMd, extractSection } from "./parsers"
 import { createLogger } from "@/services/logger"
 
 const log = createLogger("MemoryEntries")
@@ -22,10 +21,10 @@ export function setEntries(e: MemoryEntry[]): void { entries = e }
 export function getCachedCandy(): string { return cachedCandy }
 export function getCachedUser(): string { return cachedUser }
 
-// ── Project Entries（共享状态）──
+// ── Project Entries（Project.md 归档索引的只读状态）──
 let projectEntries: ProjectEntry[] = []
-export function getProjectEntriesRef(): ProjectEntry[] { return projectEntries }
-export function setProjectEntriesRef(p: ProjectEntry[]): void { projectEntries = p }
+export function getProjectEntries(): ProjectEntry[] { return [...projectEntries] }
+export function getProjectCount(): number { return projectEntries.length }
 
 // ── 持久化调度 ──
 
@@ -43,12 +42,6 @@ export function scheduleMemorySave(): void {
 export async function flushMemory(): Promise<void> {
   await withLock("memory", async () => {
     await writeMemoryFile("MEMORY.md", serializeMEMORYmd(entries))
-  })
-}
-
-export async function flushProjectSave(): Promise<void> {
-  await withLock("memory", async () => {
-    await writeMemoryFile("Project.md", serializeProjectMd(projectEntries))
   })
 }
 

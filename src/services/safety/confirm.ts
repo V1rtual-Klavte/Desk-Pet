@@ -1,6 +1,6 @@
 // ==========================================
 // 安全确认 UI 状态 —— Agent Loop 与 ChatPanel 的桥接
-// Agent Loop 调用 requestConfirm() 返回 Promise
+// PermissionKernel 调用 requestPermissionConfirm() 返回 Promise
 // ChatPanel 监听 confirmState 渲染弹窗
 // 用户点击 → resolveConfirm() → Promise 完成 → Loop 继续
 // ==========================================
@@ -81,17 +81,6 @@ export function requestPermissionConfirm(request: PermissionRequest, signal?: Ab
       resolve: complete,
     }
   })
-}
-
-/** 旧调用点的 boolean 兼容适配；确认代表本会话精确参数授权。 */
-export function requestConfirm(toolName: string, message: string): Promise<boolean> {
-  const now = Date.now()
-  return requestPermissionConfirm({
-    requestId: `legacy-${now}-${Math.random().toString(36).slice(2)}`,
-    sessionId: "legacy", runGeneration: 0, toolCallId: toolName, toolName,
-    inputHash: "legacy", policyHash: "legacy", expiresAt: now + CONFIRM_TIMEOUT_MS,
-    message, parameterSummary: "", effectClass: "external_side_effect",
-  }).then(decision => decision !== "deny")
 }
 
 /** ChatPanel 调用：用户点击确认/取消 */

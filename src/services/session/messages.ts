@@ -8,7 +8,10 @@ import { chatHistory, unansweredCount, activeSessionId } from "./store"
 import { pushMessage, clearMessages, deleteMessage as delMsg } from "./store"
 import { saveUnanswered } from "./persistence"
 import { updateSessionName, updateSessionMessageCount } from "./manager"
+import { appendPiSessionCustomEntry } from "./repo"
+import { DESKPET_GREETING_ENTRY } from "./read-model"
 import { createLogger } from "@/services/logger"
+import { formatError } from "@/services/error"
 
 const log = createLogger("Msg")
 
@@ -20,12 +23,15 @@ export async function initWelcome(text: string): Promise<void> {
   if (chatHistory.length > 0) return
   pushMessage(createAssistantMessage(text))
 
-  // 问候语不经过 Agent 回合，没有别的地方替它落盘。只推内存的话，
-  // 切走会话再从 sessions/*.md 恢复时它就消失了。
+  // 问候语不经过 Agent 回合，没有别的地方替它落盘。写入 deskpet 自定义 entry，
+  // 切走会话/重启后仍能恢复（harness 默认不把它投影进模型上下文）。
   const sessionId = activeSessionId.value
   if (!sessionId) return
-  const { MemoryService } = await import("@/services/agent/memory")
-  await MemoryService.recordTurnToSession(sessionId, "assistant", text)
+  try {
+    await appendPiSessionCustomEntry(sessionId, DESKPET_GREETING_ENTRY, { text })
+  } catch (error) {
+    log.warn("问候语落盘失败:", formatError(error))
+  }
 }
 
 export function pushUserMessage(text: string): Message {

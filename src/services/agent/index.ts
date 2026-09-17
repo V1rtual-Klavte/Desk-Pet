@@ -38,18 +38,10 @@ export {
   stopMemoryConsolidationTimer,
   onSessionEnd,
 } from "./memory"
-export type { MemoryEntry, SessionMemory, CompactionSummary, SessionFileMeta } from "./memory"
-export type {
-  LegacySessionEvent,
-  SessionEventCompat,
-  SessionEventDocument,
-  SessionEventParseIssue,
-  SessionEventParseIssueCode,
-} from "./memory"
-export { parseSessionEventDocument, parseSessionEventsFromRaw, serializeSessionEvent } from "./memory"
+export type { MemoryEntry, ProjectEntry } from "./memory"
 
 // ── Agent 运行器 ──
-export { sendMessage, initChat, sendActiveMessage, toolCallHistory, resetRuntimeQueueForTest, getRuntimeQueueSnapshot, recoverRuntimeQueue } from "./runner"
+export { sendMessage, initChat, sendActiveMessage, toolCallHistory, resetAgentRuntimeForTest } from "./runner"
 export type { SendMessageOptions } from "./runner"
 
 // ── 统一初始化 ──

@@ -1,6 +1,14 @@
-import type { PlanEffectClass, PlanRecord, PlanState, PlanStepRecord, PlanStepState, SessionEvent } from "@/services/engine/runtime"
-import { loadSessionEvents } from "./session-files"
-import { sessionTurnStore } from "./session-turn-store"
+// Plan checkpoint 的持久化与恢复：经会话仓库以 `deskpet.plan_checkpoint` 自定义条目读写。
+//
+// 恢复语义：处于 admitting/running/interrupted 的计划恢复为 paused；running 步骤中只读类回 pending、
+// 未知外部副作用进入 unknown_side_effect（不自动重试，等待用户处置）。
+
+import type { Entry, JsonValue } from "@earendil-works/pi-agent-core"
+import type { PlanEffectClass, PlanRecord, PlanState, PlanStepRecord, PlanStepState } from "@/services/engine/runtime"
+import { appendPiSessionCustomEntry, readPiSessionEntriesOnce } from "@/services/session"
+
+/** Plan checkpoint 条目类型；恢复扫描按它过滤会话条目。 */
+export const PLAN_CHECKPOINT_ENTRY = "deskpet.plan_checkpoint"
 
 interface PlanCheckpointPayload {
   action: "created" | "plan_state" | "step_state" | "tool_start" | "tool_end" | "recovery"
@@ -12,10 +20,10 @@ interface PlanCheckpointPayload {
   success?: boolean
 }
 
-function eventPayload(event: SessionEvent): PlanCheckpointPayload | undefined {
-  if (event.kind !== "plan_checkpoint") return undefined
-  const payload = event.payload as Partial<PlanCheckpointPayload>
-  if (!payload.plan || !Array.isArray(payload.steps) || typeof payload.action !== "string") return undefined
+function entryPayload(entry: Entry): PlanCheckpointPayload | undefined {
+  if (entry.type !== "custom" || entry.customType !== PLAN_CHECKPOINT_ENTRY) return undefined
+  const payload = entry.data as unknown as Partial<PlanCheckpointPayload> | undefined
+  if (!payload || !payload.plan || !Array.isArray(payload.steps) || typeof payload.action !== "string") return undefined
   return payload as PlanCheckpointPayload
 }
 
@@ -53,8 +61,8 @@ export class PlanCheckpointStore {
 
   async recover(sessionId: string): Promise<Array<{ plan: PlanRecord; steps: PlanStepRecord[] }>> {
     const latest = new Map<string, { plan: PlanRecord; steps: PlanStepRecord[] }>()
-    for (const event of await loadSessionEvents(sessionId)) {
-      const payload = eventPayload(event)
+    for (const entry of await readPiSessionEntriesOnce(sessionId)) {
+      const payload = entryPayload(entry)
       if (payload) latest.set(payload.plan.planId, { plan: payload.plan, steps: payload.steps })
     }
     const recovered: Array<{ plan: PlanRecord; steps: PlanStepRecord[] }> = []
@@ -93,18 +101,8 @@ export class PlanCheckpointStore {
 
   private async write(planId: string, action: PlanCheckpointPayload["action"], extra: Partial<PlanCheckpointPayload> = {}): Promise<void> {
     const current = this.require(planId)
-    const event: SessionEvent = {
-      schemaVersion: 1,
-      eventId: `plan-${planId}-${current.plan.version}-${action}`,
-      sessionId: current.plan.sessionId,
-      turnId: current.plan.rootTurnId,
-      kind: "plan_checkpoint",
-      origin: "plan",
-      payload: { action, plan: current.plan, steps: current.steps, ...extra },
-      createdAt: Date.now(),
-      idempotencyKey: `plan:${planId}:${current.plan.version}:${action}`,
-    }
-    await sessionTurnStore.appendEvent(event, `plan ${action}`)
+    const payload: PlanCheckpointPayload = { action, plan: current.plan, steps: current.steps, ...extra }
+    await appendPiSessionCustomEntry(current.plan.sessionId, PLAN_CHECKPOINT_ENTRY, payload as unknown as JsonValue)
   }
 }
 

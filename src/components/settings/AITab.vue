@@ -423,14 +423,20 @@ onMounted(async () => {
   try {
     const { MemoryService } = await import("@/services/agent/memory");
     await MemoryService.init();
-    const sm = MemoryService.session;
+    // 会话状态直接读活跃会话的条目（真相源），不再依赖旧的进程内会话工作记忆。
+    const { getActiveSessionId, readPiSessionEntriesOnce, messagesFromEntries } = await import("@/services/session");
+    const sessionId = getActiveSessionId();
+    const entries = sessionId ? await readPiSessionEntriesOnce(sessionId).catch(() => []) : [];
+    const sessionTurns = messagesFromEntries(entries)
+      .filter(message => message.role === "user" || message.role === "assistant").length;
+    const compactions = entries.filter(entry => entry.type === "compaction").length;
     memStatus.value = {
       count: MemoryService.count,
       projectCount: MemoryService.projectCount,
-      lastConsolidation: sm?.compactionSummary ? "已压缩" : "运行中",
+      lastConsolidation: compactions > 0 ? `已压缩 ${compactions} 次` : "运行中",
       mode: generalConfig.assistantMode ? "助手(LLM)" : "轻量(去重)",
-      sessionTurns: sm?.turns.length ?? 0,
-      sessionId: sm?.sessionId ?? "",
+      sessionTurns,
+      sessionId,
     };
     const candy = MemoryService.getCandyInstructionsSync();
     if (candy)

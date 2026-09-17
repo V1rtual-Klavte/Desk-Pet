@@ -57,7 +57,7 @@ export async function consolidateWithLLM(): Promise<{ removed: number; kept: num
 }
 
 export function checkAndConsolidate(): boolean {
-  // 此函数可能由旧定时器或兼容 API 调用，因此只能做同步、本地、无网络的去重。
+  // 此函数可能由维护定时器或显式调用触发，因此只能做同步、本地、无网络的去重。
   // LLM 整理必须由明确的维护工作流调用 consolidateWithLLM()，不能借助手模式
   // 或会话结束自动启动。
   return consolidateLocal().removed > 0

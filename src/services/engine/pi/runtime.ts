@@ -1,16 +1,16 @@
-// Desk-Pet's only multi-turn agent runtime. Pi owns the model/tool loop;
-// Desk-Pet owns product state, safety, sessions, Card variables, and effects.
+// Desk-Pet's only multi-turn agent runtime. Pi AgentHarness owns the model/tool loop,
+// durable queues, and session entries; Desk-Pet owns product state, safety, Card
+// variables, reply processing, and effects.
 
-import { Agent } from "@earendil-works/pi-agent-core"
 import { contentText } from "@earendil-works/pi-ai"
-import type { AgentMessage, AgentTool } from "@earendil-works/pi-agent-core"
-import type { AssistantMessage, Message as PiMessage } from "@earendil-works/pi-ai"
-import type { Message, ThinkingEffort, ToolCallRequest } from "@/services/agent/types"
-import type { ContextBlock, IngressEnvelope, MessageTaint, PromptSnapshot, PromptTransform, SessionEvent } from "@/services/engine/runtime"
+import type { AgentMessage, SettledAssistantMessage } from "@earendil-works/pi-agent-core"
+import type { Usage } from "@earendil-works/pi-ai"
+import type { Message, ThinkingEffort } from "@/services/agent/types"
+import type { ContextAllocation, ContextBlock, IngressEnvelope, PromptSnapshot, PromptTransform } from "@/services/engine/runtime"
 import { createMessageId } from "@/services/agent/types"
-import { MemoryService, recallMemory, planCheckpointStore, planStepEffectClass, appendTranscriptMessage, finalizeTranscriptMessage, readContextView } from "@/services/agent/memory"
+import { MemoryService, recallMemory, planCheckpointStore, planStepEffectClass } from "@/services/agent/memory"
+import type { StructuredSummary } from "@/services/agent/memory"
 import { buildPrompt, contextBudget, CONTEXT_RATIOS, estimateRequestTokens, estimateContextTokens, estimateMessageTokens, ContextBudgetError, projectToolMessages } from "@/services/context"
-import { compactSession, estimateTokens } from "@/services/engine/compactor"
 import { bindRunningPlan, clearRunningPlan, notifyPlanEnd, requestPlanConfirm, requestPlanStepDecision } from "@/services/engine/plan-confirmation"
 import { executePlan, evaluateComplexity, formatStepResults, generatePlan } from "@/services/engine/planner"
 import { recordMessage, recordToolCall, transition } from "@/services/engine/session"
@@ -18,42 +18,57 @@ import { getEffectiveThinkingEffort, updateRequestStats } from "@/services/debug
 import { getSkillsPromptBlock, getSkillCatalogFingerprint } from "@/services/skill"
 import { formatPoolForPrompt } from "@/services/personality/variable-pool"
 import { getActiveCard } from "@/services/personality/registry"
+import type { PersonalityCard } from "@/services/personality/types"
 import { getPoolSnapshot, getSessionStart, applyResetPolicies, refreshVariablePool, updateInteractionVar } from "@/services/personality/variable-pool"
 import { PetPersonalityMiddleware } from "@/services/personality/middleware"
 import type { PersonalityEffect } from "@/services/personality/middleware"
-import { getFallbackReply, getSimpleStage, getStagePrompt } from "@/services/personality/stages-cache"
+import { getFallbackReply, getSimpleStage } from "@/services/personality/stages-cache"
 import { generateReply, parseRuntimeData } from "@/services/reply"
 import { authorizeToolExecution, invalidatePermissionScope } from "@/services/safety"
 import { getActiveSessionId, pushMessage } from "@/services/session/store"
-import { getToolByName, getToolsForMode } from "@/services/tool/registry"
-import { executeToolDefinition, createSessionTranscriptTool, SESSION_TRANSCRIPT_TOOL, toToolDeclaration } from "@/services/tool"
-import type { ActionCategory, ToolDef } from "@/services/tool/types"
-import { aiConfig, generalConfig, loopConfig, planConfig, safetyConfig } from "@/services/config"
+import { getToolsForMode } from "@/services/tool/registry"
+import { SESSION_TRANSCRIPT_TOOL, toToolDeclaration, createTranscriptTool } from "@/services/tool"
+import type { HarnessToolRun } from "@/services/tool/pi/harness-tool-adapter"
+import type { ToolDef } from "@/services/tool/types"
+import { generalConfig, loopConfig, planConfig, safetyConfig } from "@/services/config"
 import { emit } from "@tauri-apps/api/event"
-import { getPiModel, getPiRuntimeProviderOverride, piStream, toPiAgentThinkingLevel } from "./model-gateway"
+import { resolvePiTurnModel } from "./model-gateway"
+import type { PiModel } from "./model-gateway"
+import { PROVIDER_TIMEOUT_MS } from "./net-guard"
+import { RuntimeDataStreamFilter } from "./stream-text"
+import { summarizeCompaction } from "../compactor"
+import { createHarnessRunState, harnessSlots, HarnessSlot } from "./harness-slot"
+import type { HarnessCompactOutcome, HarnessDeliveryReceipt, HarnessRunHooks, HarnessRunResult, HarnessRunSinks, HarnessRunSpec, HarnessRunState } from "./harness-slot"
 import { formatError } from "@/services/error"
 import { createLogger } from "@/services/logger"
-import { agentSlots, createPromptRewrite, createPromptSnapshot, createRuntimeTraceContext, publishRuntimeTrace } from "@/services/engine/runtime"
+import { createPromptRewrite, createPromptSnapshot, createRuntimeTraceContext, publishRuntimeTrace } from "@/services/engine/runtime"
+import type { RuntimeTraceContext } from "@/services/engine/runtime"
 import { redactText, sha256Text, stableSerialize } from "@/services/engine/runtime"
 
-const EMPTY_USAGE = {
-  input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0,
-  cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
-}
 const log = createLogger("PiRuntime")
 
 const lastSeenSessionStarts = new Map<string, number>()
 
 /**
- * 向正在执行的回合插话，并把插话内容记入该回合所属会话。
+ * 向正在执行的回合投递新输入，先落盘（lane 持久 inbox）再影响模型。
  *
- * Pi 的语义是「本轮结束后注入」，不是立即中止 —— 当前批次里已经开始的工具会照常跑完，
- * 模型在下一轮才会看到这条消息并据此调整。
+ * Harness 的语义是「本轮边界注入」，不是立即中止 —— 当前批次里已经开始的工具会照常跑完，
+ * 模型在下一轮才会看到这条消息并据此调整；settling 阶段改用 followUp，自然结束前继续处理。
  *
- * @returns 是否有正在执行的回合可以接收插话
+ * @returns 是否有正在执行的回合接收了投递（undefined 表示没有可投递的运行）
  */
-export function deliverActiveTurn(sessionId: string, text: string, eventId?: string): "steered" | "followup" | undefined {
-  return agentSlots.deliver(sessionId, text, eventId)
+export async function deliverActiveTurn(
+  sessionId: string,
+  text: string,
+  eventId?: string,
+  kind?: "steer" | "followUp" | "nextRun",
+): Promise<HarnessDeliveryReceipt | undefined> {
+  if (!harnessSlots.isRunning(sessionId)) return undefined
+  const slot = harnessSlots.peek(sessionId)
+  if (!slot) return undefined
+  const receipt = await slot.steer(text, eventId, kind)
+  if (!receipt) log.warn("投递未生效:", { sessionId, kind: kind ?? "auto" })
+  return receipt
 }
 
 export interface PiAgentTurnInput {
@@ -89,6 +104,10 @@ export interface PiAgentTurnOutput {
   runtimeData?: { emotionKey: string | null; variables: Record<string, string> }
   /** 仅在重试耗尽、回复是兜底文案时出现 */
   failure?: TurnFailure
+  /** 停止归还：未消费的补充消息 requestId（宿主决定重新排队或丢弃）。 */
+  undelivered?: string[]
+  /** 回合因显式停止（不是超时）结束；宿主不得在停止后自动继续剩余输入。 */
+  abortedByStop?: boolean
 }
 
 /** 把 Provider 的失败文案收敛成稳定分类 */
@@ -120,78 +139,381 @@ export interface PiSubAgentOutput {
   error?: string
 }
 
-interface PiLoopInput {
-  userText: string
-  chatMessages: Message[]
-  systemPrompt: string
-  tools: ToolDef[]
-  maxToolCalls: number
-  timeoutMs: number
-  thinkingEffort: ThinkingEffort
-  mode: "pet" | "assistant"
-  /** 传给 Pi 用于 Provider 端 prompt cache 的会话标识 */
+/** 一次运行的宿主侧共享上下文；主回合与子代理复用同一套投影/快照/审计。 */
+interface TurnKernel {
   sessionId?: string
-  /** 是否把本回合的 Agent 登记为「可插话」。主回合为真，子代理/规划步骤为假。 */
-  exposeAsActiveAgent?: boolean
-  runGeneration?: number
-  effects?: PiAgentTurnOutput["effects"]
-  toolCallHistory?: PiAgentTurnOutput["toolCallHistory"]
-  persistToolMessages?: boolean
-  timeoutReply?: string
-  onToolStart?: PiSubAgentInput["onToolStart"]
-  onToolDone?: PiSubAgentInput["onToolDone"]
-  contextBlocks?: ContextBlock[]
-  promptTransforms?: PromptTransform[]
-  requestId?: string
+  requestId: string
   turnId?: string
-  ingress?: IngressEnvelope
-  signal?: AbortSignal
-  allocations?: import("@/services/engine/runtime").ContextAllocation[]
+  mode: "pet" | "assistant"
+  model: PiModel
+  thinkingEffort: ThinkingEffort
+  systemPrompt: string
+  tools: readonly ToolDef[]
+  blocks: ContextBlock[]
+  allocations?: ContextAllocation[]
+  promptTransforms: PromptTransform[]
   skillCatalogFingerprint?: string
-  transientUserInput?: boolean
-  model?: ReturnType<typeof getPiModel>
-  rebuildContext?: (messages: Message[], summary: string) => ReturnType<typeof buildPrompt>
+  transientUserInput: boolean
+  persistSnapshots: boolean
+  effects?: PiAgentTurnOutput["effects"]
+  toolRun: HarnessToolRun
+  state: HarnessRunState
+  card: PersonalityCard | null
+  traceContext: RuntimeTraceContext
+  latestMessages: AgentMessage[]
+  snapshotTasks: Promise<void>[]
+  snapshotSequence: number
+  captureSnapshot: (
+    captureStage: PromptSnapshot["captureStage"],
+    agentMessages: AgentMessage[],
+    llmMessages: Array<{ role: string; content?: string; toolCallId?: string }>,
+    usage?: Usage,
+  ) => Promise<void>
+}
+
+interface TurnKernelOptions {
+  sessionId?: string
+  requestId: string
+  turnId?: string
+  mode: "pet" | "assistant"
+  model: PiModel
+  thinkingEffort: ThinkingEffort
+  systemPrompt: string
+  tools: readonly ToolDef[]
+  blocks?: ContextBlock[]
+  allocations?: ContextAllocation[]
+  promptTransforms?: PromptTransform[]
+  skillCatalogFingerprint?: string
+  transientUserInput: boolean
+  persistSnapshots: boolean
+  effects?: PiAgentTurnOutput["effects"]
+  toolRun: HarnessToolRun
+  card?: PersonalityCard | null
+}
+
+function createTurnKernel(options: TurnKernelOptions): TurnKernel {
+  const traceContext = createRuntimeTraceContext(options.sessionId, options.requestId, options.turnId)
+  const state = createHarnessRunState()
+  const latestMessages: AgentMessage[] = []
+  const snapshotTasks: Promise<void>[] = []
+  const kernel: TurnKernel = {
+    ...options,
+    blocks: options.blocks ?? [],
+    promptTransforms: options.promptTransforms ?? [],
+    state,
+    card: options.card ?? null,
+    traceContext,
+    latestMessages,
+    snapshotTasks,
+    snapshotSequence: 0,
+    captureSnapshot: async (captureStage, agentMessages, llmMessages, usage) => {
+      const snapshotId = `${traceContext.runId}:${captureStage}:${++kernel.snapshotSequence}`
+      // 工具轮会追加消息；用准确请求投影刷新分配，不计入 Pi usage/时间戳。
+      const transientTokens = agentMessages
+        .filter(message => options.transientUserInput && message.role === "user")
+        .reduce((n, message) => n + estimateMessageTokens(message), 0)
+      const snapshotAllocations = options.allocations?.map(allocation => {
+        if (allocation.layer !== "transcript" && allocation.layer !== "ephemeral") return { ...allocation }
+        const used = allocation.layer === "transcript"
+          ? agentMessages.reduce((n, message) => n + estimateMessageTokens(message), 0) - transientTokens
+          : kernel.blocks.filter(block => block.layer === "ephemeral" && block.origin !== "active")
+              .reduce((n, block) => n + estimateContextTokens(block.text), 0) + transientTokens
+        return { ...allocation, requested: used, used, borrowed: Math.max(0, used - allocation.assigned), dropped: 0 }
+      })
+      const toolSchemas = await Promise.all(options.tools.map(async tool => ({
+        name: tool.name,
+        schemaHash: await sha256Text(stableSerialize({ name: tool.name, description: tool.description, parameters: tool.parameters })),
+        policyHash: await sha256Text(stableSerialize({ actionCategory: tool.actionCategory, safetyLevel: tool.safetyLevel })),
+      })))
+      const snapshot = await createPromptSnapshot({
+        snapshotId,
+        requestId: options.requestId,
+        sessionId: options.sessionId ?? "sub-agent",
+        turnId: options.turnId ?? options.requestId,
+        runId: traceContext.runId,
+        captureStage,
+        model: options.model.id,
+        provider: options.model.provider,
+        thinkingLevel: options.thinkingEffort,
+        systemBlocks: kernel.blocks.length ? kernel.blocks : [{
+          blockId: "static:sub-agent", layer: "static", source: "sub-agent",
+          text: options.systemPrompt, priority: 100, origin: "system", taint: "system",
+        }],
+        toolSchemas,
+        agentMessages: agentMessages.map((message, index) => ({
+          id: `agent:${index}`,
+          origin: options.transientUserInput ? "active" : message.role === "toolResult" ? "tool" : message.role === "assistant" ? "assistant" : "user",
+          role: message.role,
+          content: stableSerialize(message),
+        })),
+        llmMessages,
+        transforms: kernel.promptTransforms,
+        actualInputTokens: usage?.input, actualOutputTokens: usage?.output,
+        // 请求视图换代身份：已提交的压缩次数（旧 contextEpoch 的 Harness 等价物）。
+        contextEpoch: options.sessionId ? harnessSlots.snapshot(options.sessionId)?.contextEpoch ?? 0 : 0,
+        budget: contextBudget(options.model.contextWindow, options.model.maxTokens),
+        allocations: snapshotAllocations,
+        cache: {
+          sessionId: options.sessionId,
+          prefixHash: await sha256Text(stableSerialize({
+            model: options.model.id, provider: options.model.provider, thinking: options.thinkingEffort,
+            blocks: kernel.blocks.filter(block => block.layer === "static"), toolSchemas,
+            skillCatalogFingerprint: options.skillCatalogFingerprint,
+          })),
+          cacheReadTokens: usage?.cacheRead, cacheWriteTokens: usage?.cacheWrite,
+        },
+        estimatedInputTokens: estimateRequestTokens(options.systemPrompt, agentMessages, options.tools),
+      })
+      publishRuntimeTrace(traceContext, "prompt_snapshot", {
+        snapshotId,
+        requestId: snapshot.requestId,
+        turnId: snapshot.turnId,
+        captureStage,
+      })
+      if (options.persistSnapshots && options.sessionId) {
+        try {
+          await harnessSlots.get(options.sessionId).appendAuditEntry("deskpet.prompt_snapshot", snapshot as unknown as import("@earendil-works/pi-agent-core").JsonValue)
+        } catch (error) {
+          log.warn(`PromptSnapshot 持久化失败: ${snapshotId}`, formatError(error))
+        }
+      }
+    },
+  }
+  return kernel
+}
+
+/** 陪伴/助手结构化摘要的 before_compaction 钩子；主回合与手动 /compact 共用同一内核（H-3/§7）。 */
+function createCompactionHook(options: {
+  mode: "pet" | "assistant"
+  model: PiModel
+  onSummary?: (summary: StructuredSummary) => void
+}): NonNullable<HarnessRunHooks["beforeCompaction"]> {
+  return async ({ preparation, signal }) => {
+    // 全量都在保留窗口内时没有可安全摘要的覆盖范围：decline 让 Harness 原样收尾。
+    if (!preparation.messagesToSummarize.length && !preparation.turnPrefixMessages.length) return { decline: true }
+    const outcome = await summarizeCompaction({
+      mode: options.mode,
+      messages: preparation.messagesToSummarize,
+      turnPrefixMessages: preparation.turnPrefixMessages,
+      previousSummary: preparation.previousSummary,
+      model: options.model,
+      signal,
+    })
+    options.onSummary?.(outcome.summary)
+    return {
+      compaction: {
+        summary: outcome.text,
+        retainedTail: preparation.retainedTail,
+        tokensBefore: preparation.tokensBefore,
+        usage: outcome.usage,
+      },
+    }
+  }
 }
 
 /**
- * 同一批次里可以并行执行的只读操作类别。
- * 其余类别（写入、执行、启动应用、子代理、Skill）都会把整批拉回串行。
+ * 逐请求 streamOptions：HTTP 请求超时用现有 PROVIDER_TIMEOUT_MS（SDK 默认约 10 分钟，项目口径更紧）。
+ * 不在此处重复 SDK 重试开关：piStream 已统一为 maxRetries 0，重试预算归 Harness RetryPolicy。
  */
-const PARALLEL_SAFE_CATEGORIES: ReadonlySet<ActionCategory> = new Set([
-  "fs.read", "os.info", "net.fetch", "clip.read",
-])
-
-interface PiLoopOutput {
-  reply: string
-  toolCallsMade: number
-  error?: string
-  finalMessageId?: string
+function createRequestOptionsPatch(): NonNullable<HarnessRunHooks["beforeRequest"]> {
+  return () => ({ streamOptions: { timeoutMs: PROVIDER_TIMEOUT_MS } })
 }
 
-/** Main pet turn. This replaces the deleted hand-written Agent Loop. */
+/** 每回合的 Harness 运行规格；权限、投影、观测与 UI/统计消费点都在这里接线。 */
+function createTurnSpec(kernel: TurnKernel, options: {
+  prompt: string | AgentMessage
+  timeoutMs: number
+  maxToolCalls: number
+  projectToolResults: boolean
+  isPermissionCurrent: () => boolean
+  runGeneration: number
+}): HarnessRunSpec {
+  const state = kernel.state
+  const toolsByName = new Map(kernel.tools.map(tool => [tool.name, tool]))
+  let toolCallsUsed = 0
+  const hooks: HarnessRunHooks = {
+    beforeTool: async ({ toolCallId, toolName, args, signal }) => {
+      const tool = toolsByName.get(toolName)
+      if (toolCallsUsed >= options.maxToolCalls) {
+        state.stoppedAtToolLimit = true
+        kernel.toolRun.history.push({ toolName, status: "blocked" })
+        return { block: { reason: `工具调用次数达到上限 (${options.maxToolCalls})`, terminate: true } }
+      }
+      toolCallsUsed++
+      state.toolCallsMade = toolCallsUsed
+      if (!tool) {
+        kernel.toolRun.history.push({ toolName, status: "error" })
+        return { block: { reason: `工具 ${toolName} 不可用` } }
+      }
+      recordToolCall(kernel.sessionId)
+      const category = tool.actionCategory ?? "_default"
+      transition("EXECUTING", kernel.sessionId)
+      applyEffect(PetPersonalityMiddleware.wrap("executing", { actionCategory: category, toolName: tool.name }), kernel.effects)
+      emitUiEvent("tool-executing", { toolId: tool.name, toolName: tool.name })
+      const permission = await authorizeToolExecution(tool, args as Record<string, unknown>, {
+        mode: kernel.mode,
+        sessionId: kernel.sessionId ?? kernel.traceContext.runId,
+        runGeneration: options.runGeneration,
+        toolCallId,
+        signal,
+        isCurrent: options.isPermissionCurrent,
+      })
+      if (permission.decision !== "allow") {
+        const reason = permission.reason ?? "操作未获授权"
+        kernel.toolRun.history.push({ toolName: tool.name, status: permission.request ? "denied" : "blocked", personalityMsg: reason })
+        return { block: { reason } }
+      }
+      return undefined
+    },
+    afterTool: ({ details, isError }) => ({
+      details: {
+        ...(details && typeof details === "object" ? details as Record<string, unknown> : {}),
+        origin: "tool", taint: "untrusted_external", isError,
+      },
+      isError,
+    }),
+    transformContext: ({ messages, systemPrompt }) => {
+      let prepared = messages
+      try {
+        if (options.projectToolResults) {
+          prepared = prepared.map(message => projectToolResultMessage(message, kernel.model.contextWindow))
+        }
+        kernel.latestMessages = prepared
+        const budget = contextBudget(kernel.model.contextWindow, kernel.model.maxTokens)
+        const used = estimateRequestTokens(systemPrompt, prepared, kernel.tools)
+        if (used > budget.hardInputLimit) {
+          // transform_context 不允许 reject：错误记入回合状态，由网关在下一次请求阻断。
+          state.contextError ??= new ContextBudgetError(used, budget.hardInputLimit)
+        }
+        void kernel.captureSnapshot("transform_context", prepared, []).catch(error => log.warn("PromptSnapshot 采集失败", formatError(error)))
+      } catch (error) {
+        state.contextError ??= error
+      }
+      return { messages: prepared }
+    },
+    beforeCompaction: createCompactionHook({ mode: kernel.mode, model: kernel.model }),
+    beforeRequest: createRequestOptionsPatch(),
+    afterResponse: (message, meta) => {
+      publishRuntimeTrace(kernel.traceContext, "provider_response", {
+        model: kernel.model.id,
+        api: kernel.model.api,
+        status: meta.status,
+        headerNames: Object.keys(meta.headers ?? {}).sort(),
+      })
+      // 提交前剥离 RUNTIME_DATA：条目是真相源，但正文块不进入后续请求与展示。
+      return stripRuntimeData(message)
+    },
+    beforePayload: (payload, payloadModel) => {
+      const safePayload = redactText(stableSerialize(payload))
+      const task = sha256Text(safePayload.text)
+        .then(async payloadHash => {
+          await kernel.captureSnapshot("provider_payload", kernel.latestMessages, providerMessages(payload))
+          publishRuntimeTrace(kernel.traceContext, "provider_payload", {
+            model: payloadModel.id,
+            api: payloadModel.api,
+            payloadHash,
+            redactions: safePayload.redactions,
+          })
+        })
+        .catch(() => undefined)
+      kernel.snapshotTasks.push(task)
+    },
+  }
+  return {
+    requestId: kernel.requestId,
+    turnId: kernel.turnId,
+    model: kernel.model,
+    thinkingEffort: kernel.thinkingEffort,
+    systemPrompt: kernel.systemPrompt,
+    tools: kernel.tools,
+    toolRun: kernel.toolRun,
+    prompt: options.prompt,
+    timeoutMs: options.timeoutMs,
+    hooks,
+    sinks: createTurnSinks(kernel),
+    state,
+  }
+}
+
+/** 主回合消费点：流式正文按消息落 UI，usage 按请求进统计。 */
+function createTurnSinks(kernel: TurnKernel): HarnessRunSinks {
+  let apiRound = 0
+  const sessionId = kernel.sessionId
+  // 瞬时流式展示：只发正文增量（§6）。RUNTIME_DATA 起止与非活动会话在这里被过滤。
+  let streamFilter: RuntimeDataStreamFilter | undefined
+  const publishStreamDelta = (delta: string): void => {
+    if (!delta || !sessionId || getActiveSessionId() !== sessionId) return
+    void emitUiEvent("deskpet-assistant-stream", { sessionId, delta })
+  }
+  return {
+    onTurnStart: () => { apiRound++ },
+    onAssistantDelta: delta => {
+      streamFilter ??= new RuntimeDataStreamFilter()
+      publishStreamDelta(streamFilter.push(delta))
+    },
+    onAssistantStreamEnd: () => {
+      // 未构成标签的尾部按普通正文归还；随后清空瞬时缓冲，真实消息由提交路径推送。
+      const tail = streamFilter?.flush() ?? ""
+      streamFilter = undefined
+      publishStreamDelta(tail)
+      if (sessionId) void emitUiEvent("deskpet-assistant-stream-end", { sessionId })
+    },
+    onAssistantMessage: message => {
+      const appMessage = fromPiMessage(message, `${kernel.traceContext.runId}:${apiRound}:assistant:${createMessageId()}`, `${kernel.requestId}:${apiRound}`)
+      // 带 toolCall 的过程消息与工具结果进 UI；纯文本回复由入口统一推送。
+      if (appMessage && sessionId && getActiveSessionId() === sessionId && (appMessage.role === "tool" || appMessage.toolCalls?.length)) {
+        pushMessage(appMessage)
+      }
+    },
+    onToolResultMessage: message => {
+      const appMessage = fromPiMessage(message, `${kernel.traceContext.runId}:${apiRound}:tool:${message.toolCallId}`, `${kernel.requestId}:${apiRound}`)
+      if (appMessage && sessionId && getActiveSessionId() === sessionId) pushMessage(appMessage)
+    },
+    onToolEnd: (toolName, isError) => {
+      emitUiEvent("tool-completed", { toolId: toolName, toolName, success: !isError })
+    },
+    onUsage: async row => {
+      updateRequestStats({
+        promptTokens: row.usage.input,
+        completionTokens: row.usage.output,
+        systemTokens: estimateContextTokens(kernel.systemPrompt),
+        conversationTokens: kernel.latestMessages.reduce((n, message) => n + estimateMessageTokens(message), 0),
+        toolCount: kernel.tools.length,
+        toolNames: kernel.tools.map(tool => tool.name),
+      })
+      publishRuntimeTrace(kernel.traceContext, "provider_usage", {
+        inputTokens: row.usage.input,
+        outputTokens: row.usage.output,
+        cacheRead: row.usage.cacheRead,
+        cacheWrite: row.usage.cacheWrite,
+      })
+      await kernel.captureSnapshot("provider_usage", kernel.latestMessages, [], row.usage).catch(error => log.warn("usage 快照写入失败", formatError(error)))
+    },
+  }
+}
+
+/** Main pet turn. This replaces the hand-written Agent Loop with the harness lane. */
 export async function runPiAgentTurn(input: PiAgentTurnInput): Promise<PiAgentTurnOutput> {
   if (!input.sessionId.trim()) throw new Error("Pi Agent 回合缺少 sessionId")
-  const { userText, chatMessages, unansweredCount, isActiveMessage } = input
+  const { userText, unansweredCount, isActiveMessage } = input
   const toolCallHistory: PiAgentTurnOutput["toolCallHistory"] = []
   const effects: PiAgentTurnOutput["effects"] = []
 
   const turnSessionId = input.sessionId
   const requestId = input.ingress?.requestId ?? `runtime-${input.turnId ?? crypto.randomUUID()}`
   const mode = generalConfig.assistantMode ? "assistant" as const : "pet" as const
-  const overrideModel = getPiRuntimeProviderOverride()?.model
-  const model = overrideModel ? { ...overrideModel, contextWindow: Math.min(aiConfig.contextMaxTokens, overrideModel.contextWindow),
-    maxTokens: contextBudget(Math.min(aiConfig.contextMaxTokens, overrideModel.contextWindow)).outputReserve } : getPiModel()
+  const model = resolvePiTurnModel()
   const windowTokens = model.contextWindow
-  const controller = new AbortController()
-  const slotSignal = input.runGeneration === undefined ? undefined : agentSlots.signal(turnSessionId, input.runGeneration)
-  const cancel = () => controller.abort(slotSignal?.reason)
-  if (slotSignal?.aborted) cancel()
-  else slotSignal?.addEventListener("abort", cancel, { once: true })
-  const runSignal = controller.signal
-  const deadline = Date.now() + loopConfig.turnTimeoutMs
-  const runTimer = setTimeout(() => controller.abort(new Error("Agent 执行超时")), loopConfig.turnTimeoutMs)
-  const runIsCurrent = () => !runSignal.aborted && (input.runGeneration === undefined
-    || (agentSlots.snapshot(turnSessionId)?.generation === input.runGeneration && agentSlots.isRunning(turnSessionId)))
+  // 代际：runner 已 begin 时复用其代际；Live Test 直连路径由本函数自持。
+  let generation = input.runGeneration
+  let ownedGeneration = false
+  if (generation === undefined) {
+    generation = harnessSlots.begin(turnSessionId, { requestId, turnId: input.turnId })
+    if (generation === undefined) throw new Error(`会话已有运行中的 Agent: ${turnSessionId}`)
+    ownedGeneration = true
+  }
+  const slot = harnessSlots.get(turnSessionId)
+  const runIsCurrent = () => harnessSlots.isCurrent(turnSessionId, generation)
   const assertCurrent = () => { if (!runIsCurrent()) throw new Error("回合已取消或运行代际已失效") }
   refreshVariablePool()
   updateInteractionVar("unansweredCount", unansweredCount)
@@ -211,11 +533,12 @@ export async function runPiAgentTurn(input: PiAgentTurnInput): Promise<PiAgentTu
   const { prepareConversationCapabilities } = await import("@/services/init")
   await prepareConversationCapabilities(mode, requestId)
   assertCurrent()
-  const frozenTools = isActiveMessage ? [] : [...getToolsForMode(mode)]
-  if (frozenTools.length) frozenTools.push(createSessionTranscriptTool(turnSessionId))
+  const frozenTools: ToolDef[] = isActiveMessage ? [] : [...getToolsForMode(mode)]
+  // 工具结果回读：请求投影里标注的 eventId 就是 Harness 条目 id，按条目分页读取。
+  if (frozenTools.length) frozenTools.push(createTranscriptTool(entryId => slot.readToolResult(entryId)))
   recordMessage(turnSessionId)
-  if (!isActiveMessage) await persistTurn(turnSessionId, "user", userText, `${requestId}:user`, runIsCurrent)
-  else await persistRuntimeEvent(turnSessionId, userText, input.ingress)
+  // 用户正文由 Harness 的 prompt 条目承担落盘（先落盘再投递由 Harness 事务保证）；
+  // 主动消息用 deskpet.active_message 自定义消息投递，保持 origin/taint 且不成为用户事实。
   assertCurrent()
   let planStepContext = ""
   let planUserText = userText
@@ -276,7 +599,7 @@ export async function runPiAgentTurn(input: PiAgentTurnInput): Promise<PiAgentTu
           notifyPlanEnd("cancelled")
           transition("WAITING", turnSessionId)
           const reply = getSimpleStage("planning") ?? "好的，已取消计划～"
-          await persistTurn(turnSessionId, "assistant", reply, `${requestId}:failure`)
+          await slot.appendAssistantMessage(reply)
           return { reply, toolCallHistory, retriesUsed: 0, effects: [] }
         }
         await planCheckpointStore.transitionPlan(planId, "running")
@@ -326,31 +649,15 @@ export async function runPiAgentTurn(input: PiAgentTurnInput): Promise<PiAgentTu
   assertCurrent()
   const frozenContext = { ...frozenUserContext, skillsPromptBlock: getSkillsPromptBlock({ mode }) }
   const skillCatalogFingerprint = getSkillCatalogFingerprint() ?? undefined
-  const rebuildContext = (messages: Message[], summary: string) => buildPrompt({
+  // 会话历史由 Harness 条目承担；buildPrompt 只负责静态/动态/记忆块与预算分配记录。
+  const context = buildPrompt({
     ...frozenContext,
-    recentMessages: projectToolMessages(messages, windowTokens, SESSION_TRANSCRIPT_TOOL), userText, unansweredCount, thinkingEffort, isActiveMessage,
-    currentInputInTranscript: !isActiveMessage,
-    memoryProjections, sessionSummary: summary, mode, contextMaxTokens: windowTokens, maxOutputTokens: model.maxTokens,
+    recentMessages: [], userText, unansweredCount, thinkingEffort, isActiveMessage,
+    currentInputInTranscript: true,
+    memoryProjections, mode, contextMaxTokens: windowTokens, maxOutputTokens: model.maxTokens,
     tools: frozenTools.map(toToolDeclaration),
     ...(planStepContext ? { ephemeralText: planStepContext, ephemeralOrigin: "plan" as const } : {}),
   }, card, pool)
-  let view = await readContextView(turnSessionId)
-  // Initial preflight belongs to the host; Pi does not prepareNextTurn before request one.
-  let context: ReturnType<typeof buildPrompt>
-  while (true) {
-    let budgetFailure: ContextBudgetError | undefined
-    try { context = rebuildContext(view.messages, view.summary) }
-    catch (error) { if (!(error instanceof ContextBudgetError)) throw error; budgetFailure = error }
-    if (!budgetFailure && !context!.overNormalTarget) break
-    const outcome = await compactSession({ sessionId: turnSessionId, mode, runGeneration: input.runGeneration ?? 0,
-      contextMaxTokens: windowTokens, model, signal: runSignal, trigger: "preflight",
-      isCurrent: runIsCurrent })
-    if (outcome.status !== "committed") {
-      if (budgetFailure) throw budgetFailure
-      break // Failed summaries never discard history; a request below hard limit remains safe.
-    }
-    view = await readContextView(turnSessionId)
-  }
   const promptTransforms: PromptTransform[] = []
   if (input.ingress && input.ingress.rawText !== userText) {
     promptTransforms.push(await createPromptRewrite({
@@ -364,127 +671,314 @@ export async function runPiAgentTurn(input: PiAgentTurnInput): Promise<PiAgentTu
   }
   applyEffect(PetPersonalityMiddleware.wrap("thinking"), effects)
 
-  let retriesUsed = 0
-  let rawReply = ""
-  let finalMessageId: string | undefined
-  for (let attempt = 0; attempt <= loopConfig.maxRetry; attempt++) {
-    const result = await runPiLoop({
-      userText,
-      chatMessages: context!.recentMessages,
-      systemPrompt: context!.systemPrompt,
-      tools: frozenTools,
-      model, signal: runSignal, skillCatalogFingerprint, rebuildContext, transientUserInput: isActiveMessage,
-      maxToolCalls: loopConfig.maxToolCallsPerTurn,
-      timeoutMs: Math.max(1, deadline - Date.now()),
-      timeoutReply: getFallbackReply("turnTimeout"),
-      thinkingEffort,
-      mode,
-      sessionId: turnSessionId,
-      exposeAsActiveAgent: true,
-      runGeneration: input.runGeneration,
-      effects,
-      toolCallHistory,
-      persistToolMessages: true,
-      contextBlocks: context!.blocks, allocations: context!.allocations,
-      promptTransforms,
-      requestId,
-      turnId: input.turnId,
-      ingress: input.ingress,
-    })
-    if (!result.error) {
-      rawReply = result.reply
-      finalMessageId = result.finalMessageId
-      retriesUsed = attempt
-      break
-    }
-    // Replaying a failed model request is safe only before any side-effecting tool ran.
-    const failureKind = classifyTurnFailure(result.error)
-    if (result.toolCallsMade > 0 || attempt >= loopConfig.maxRetry
-      || failureKind === "auth" || failureKind === "timeout" || Date.now() >= deadline) {
-      transition("WAITING", turnSessionId)
-      applyEffect(PetPersonalityMiddleware.wrap("error", { message: result.error }), effects)
-      const reply = result.error.includes("上下文需要约") ? result.error : getFallbackReply("maxRetriesExhausted")
-      await persistTurn(turnSessionId, "assistant", reply, `${requestId}:failure`)
-      return {
-        reply,
-        toolCallHistory,
-        retriesUsed: attempt,
-        effects,
-        // 产品照旧拿到可显示的兜底文案；报告侧拿到「这次不是模型答得不好，是根本没答成」
-        failure: { kind: failureKind, message: result.error },
-      }
-    }
-  }
-
-  assertCurrent()
-  const liveCard = getActiveCard()
-  const cardIsCurrent = liveCard?.id === card?.id && liveCard?.hash === card?.hash && liveCard?.version === card?.version
-  const processed = await generateReply(rawReply, card, { applyRuntimeData: cardIsCurrent })
-  effects.push({ expression: processed.expression, soundEvent: processed.sound })
-  if (cardIsCurrent && getActiveSessionId() === turnSessionId) emit("deskpet-expression", { expression: processed.expression }).catch(() => {})
-  if (cardIsCurrent && getActiveSessionId() === turnSessionId && processed.sound) emit("deskpet-sound", { event: processed.sound }).catch(() => {})
-  transition("WAITING", turnSessionId)
-  if (finalMessageId) await finalizeTranscriptMessage(turnSessionId, finalMessageId, processed.text)
-  else await persistTurn(turnSessionId, "assistant", processed.text, `${requestId}:assistant`)
-  return { reply: processed.text, toolCallHistory, retriesUsed, effects, runtimeData: processed.runtimeData }
+  const kernel = createTurnKernel({
+    sessionId: turnSessionId,
+    requestId,
+    turnId: input.turnId,
+    mode,
+    model,
+    thinkingEffort,
+    systemPrompt: context.systemPrompt,
+    tools: frozenTools,
+    blocks: context.blocks,
+    allocations: context.allocations,
+    promptTransforms,
+    skillCatalogFingerprint,
+    transientUserInput: isActiveMessage === true,
+    persistSnapshots: true,
+    effects,
+    card,
+    toolRun: {
+      mode, sessionId: turnSessionId, runGeneration: generation,
+      isCurrent: () => runIsCurrent(),
+      history: toolCallHistory, effects,
+    },
+  })
+  const spec = createTurnSpec(kernel, {
+    prompt: isActiveMessage ? createActiveMessage(userText, input.ingress) : userText,
+    timeoutMs: loopConfig.turnTimeoutMs,
+    maxToolCalls: loopConfig.maxToolCallsPerTurn,
+    projectToolResults: true,
+    runGeneration: generation,
+    // 权限确认绑定当前会话：等待确认期间用户切走会话，旧回合不再取得授权。
+    isPermissionCurrent: () => runIsCurrent() && getActiveSessionId() === turnSessionId,
+  })
+  transition("GENERATING", turnSessionId)
+  const result = await slot.run(spec)
+  await slot.waitForIdle()
+  await Promise.allSettled(kernel.snapshotTasks)
+  return settleMainTurn({ input, kernel, result, effects, toolCallHistory })
   } finally {
-    clearTimeout(runTimer)
-    slotSignal?.removeEventListener("abort", cancel)
+    if (ownedGeneration) harnessSlots.end(turnSessionId, generation)
+    invalidatePermissionScope(turnSessionId, generation)
     const { releaseMcpOwner } = await import("@/services/tool")
     await releaseMcpOwner(requestId)
   }
 }
 
-/** New records keep complete transcript payloads; old deskpet-turn records remain readable. */
-async function persistTurn(sessionId: string, role: "user" | "assistant", text: string, eventId: string, isCurrent?: () => boolean): Promise<void> {
-  await appendTranscriptMessage(sessionId, { id: eventId, eventId, role, text, timestamp: Date.now(),
-    origin: role, apiRoundId: `${eventId.replace(/:(user|assistant|failure)$/, "")}:1`, taint: role === "user" ? "trusted_user" : "derived" }, isCurrent)
+/** 结算主回合：失败分类、超时、上限终止、最终回复校验与 RUNTIME_DATA 提交。 */
+async function settleMainTurn(args: {
+  input: PiAgentTurnInput
+  kernel: TurnKernel
+  result: HarnessRunResult
+  effects: PiAgentTurnOutput["effects"]
+  toolCallHistory: PiAgentTurnOutput["toolCallHistory"]
+}): Promise<PiAgentTurnOutput> {
+  const { kernel, result, effects, toolCallHistory } = args
+  const turnSessionId = args.input.sessionId
+  const state = kernel.state
+  const slot = harnessSlots.get(turnSessionId)
+
+  const failTurn = async (message: string, kind: TurnFailure["kind"]): Promise<PiAgentTurnOutput> => {
+    transition("WAITING", turnSessionId)
+    applyEffect(PetPersonalityMiddleware.wrap("error", { message }), effects)
+    const reply = message.includes("上下文需要约") ? message : getFallbackReply("maxRetriesExhausted")
+    await slot.appendAssistantMessage(reply).catch(error => log.warn("兜底回复落盘失败", formatError(error)))
+    return { reply, toolCallHistory, retriesUsed: state.retriesUsed, effects, failure: { kind, message } }
+  }
+
+  if (result.status === "interrupted") {
+    // §8.7.3：中断运行默认暂停；继续/丢弃入口见 getInterruptedRun / continueInterruptedRun。
+    // 产品文案直接说明下一步，不套兜底回复。
+    const reply = "上次运行中断啦，请先选择继续或丢弃这次未完成的运行～"
+    transition("WAITING", turnSessionId)
+    await slot.appendAssistantMessage(reply).catch(error => log.warn("中断提示落盘失败", formatError(error)))
+    return { reply, toolCallHistory, retriesUsed: 0, effects, failure: { kind: "unknown", message: reply } }
+  }
+  if (result.status === "busy") {
+    return failTurn(`会话已有运行中的 Agent: ${turnSessionId}`, "unknown")
+  }
+  if (state.stoppedAtToolLimit) {
+    return { reply: getFallbackReply("toolLoopMaxRounds"), toolCallHistory, retriesUsed: state.retriesUsed, effects }
+  }
+  if (result.status === "aborted") {
+    const reason = result.timedOut ? "Agent 执行超时" : result.error ?? "回合已取消"
+    const failed = await failTurn(reason, result.timedOut ? "timeout" : "unknown")
+    return { ...failed, undelivered: result.undelivered, abortedByStop: !result.timedOut }
+  }
+  if (result.status !== "completed") {
+    const reason = result.error ?? "Pi Agent 未返回有效回复"
+    const failed = await failTurn(reason, classifyTurnFailure(reason))
+    return { ...failed, undelivered: result.undelivered }
+  }
+  const finalAssistant = state.finalPlainAssistant ?? state.finalAssistant
+  if (!finalAssistant || finalAssistant.stopReason === "error" || finalAssistant.stopReason === "aborted") {
+    return failTurn(finalAssistant?.errorMessage || "Pi Agent 未返回有效回复", "unknown")
+  }
+  const rawReply = contentText(finalAssistant.content)
+  const liveCard = getActiveCard()
+  // 卡片快照不一致（运行中切换 Card）时只展示文本，不写变量：变量写入必须归属本回合冻结的快照。
+  const cardIsCurrent = liveCard?.id === kernel.card?.id && liveCard?.hash === kernel.card?.hash && liveCard?.version === kernel.card?.version
+  const processed = await generateReply(rawReply, kernel.card, { applyRuntimeData: cardIsCurrent })
+  effects.push({ expression: processed.expression, soundEvent: processed.sound })
+  if (cardIsCurrent && getActiveSessionId() === turnSessionId) emit("deskpet-expression", { expression: processed.expression }).catch(() => {})
+  if (cardIsCurrent && getActiveSessionId() === turnSessionId && processed.sound) emit("deskpet-sound", { event: processed.sound }).catch(() => {})
+  transition("WAITING", turnSessionId)
+  return { reply: processed.text, toolCallHistory, retriesUsed: state.retriesUsed, effects, runtimeData: processed.runtimeData }
 }
 
-/** 仅用于不进 transcript 的消息（当前只有主动搭话的 active 上下文）。 */
-async function persistRuntimeEvent(sessionId: string, text: string, ingress?: IngressEnvelope): Promise<void> {
-  if (!sessionId) return
-  const event: SessionEvent = {
-    schemaVersion: 1,
-    eventId: `active-${ingress?.requestId ?? crypto.randomUUID()}-${Date.now()}`,
-    sessionId,
-    kind: "active_message",
-    origin: "active",
-    payload: {
-      text,
+// ── 崩溃恢复入口（§8.7.3） ──
+//
+// createAgentHarness 只附着运行时：上次未完成的操作默认暂停，由用户选择继续或丢弃。
+// 这里提供最小状态与两个动作入口（组件渲染由并行批次负责）。
+
+export interface InterruptedRunInfo {
+  sessionId: string
+  operationId: string
+  kind: "run" | "compaction" | "navigation"
+  startedAt: number
+  aborting: boolean
+}
+
+/** 打开会话槽并读取「上次运行中断」状态；无中断返回 undefined。 */
+export async function getInterruptedRun(sessionId: string): Promise<InterruptedRunInfo | undefined> {
+  const slot = harnessSlots.get(sessionId)
+  await slot.open()
+  const interrupted = slot.getInterrupted()
+  return interrupted ? { sessionId, ...interrupted } : undefined
+}
+
+/**
+ * 继续上次中断的运行：用当前冻结上下文（Card/工具/预算）驱动未完成的操作。
+ * 不重放未知副作用由 Harness 的恢复协议保证（effect gate + 工具 memo）。
+ */
+export async function continueInterruptedRun(sessionId: string): Promise<PiAgentTurnOutput | undefined> {
+  const slot = harnessSlots.get(sessionId)
+  await slot.open()
+  if (!slot.getInterrupted()) return undefined
+  const mode = generalConfig.assistantMode ? "assistant" as const : "pet" as const
+  const model = resolvePiTurnModel()
+  const generation = harnessSlots.begin(sessionId, { requestId: `resume-${crypto.randomUUID()}` })
+  if (generation === undefined) throw new Error(`会话已有运行中的 Agent: ${sessionId}`)
+  const toolCallHistory: PiAgentTurnOutput["toolCallHistory"] = []
+  const effects: PiAgentTurnOutput["effects"] = []
+  try {
+    const currentCard = getActiveCard()
+    const card = currentCard ? JSON.parse(JSON.stringify(currentCard)) as typeof currentCard : null
+    const pool = getPoolSnapshot()
+    const frozenTools = [...getToolsForMode(mode)]
+    frozenTools.push(createTranscriptTool(entryId => slot.readToolResult(entryId)))
+    const thinkingEffort = getEffectiveThinkingEffort()
+    // 中断运行的原始冻结快照已随进程丢失：用当前 Card/变量重建只读前缀，不静默改 Card。
+    const context = buildPrompt({
+      ...{ candyInstructions: MemoryService.getCandyInstructionsSync(), userProfileText: MemoryService.getUserProfileSync() },
+      recentMessages: [], userText: "继续", unansweredCount: 0, thinkingEffort, mode,
+      currentInputInTranscript: true,
+      contextMaxTokens: model.contextWindow, maxOutputTokens: model.maxTokens,
+      tools: frozenTools.map(toToolDeclaration),
+    }, card, pool)
+    const kernel = createTurnKernel({
+      sessionId, requestId: `resume-${crypto.randomUUID()}`, mode, model,
+      thinkingEffort, systemPrompt: context.systemPrompt, tools: frozenTools,
+      blocks: context.blocks, allocations: context.allocations,
+      transientUserInput: false, persistSnapshots: false, effects, card,
+      toolRun: {
+        mode, sessionId, runGeneration: generation,
+        isCurrent: () => harnessSlots.isCurrent(sessionId, generation),
+        history: toolCallHistory, effects,
+      },
+    })
+    const spec = createTurnSpec(kernel, {
+      prompt: "继续",
+      timeoutMs: loopConfig.turnTimeoutMs,
+      maxToolCalls: loopConfig.maxToolCallsPerTurn,
+      projectToolResults: true,
+      runGeneration: generation,
+      isPermissionCurrent: () => harnessSlots.isCurrent(sessionId, generation) && getActiveSessionId() === sessionId,
+    })
+    const result = await slot.resumeInterrupted(spec)
+    return await settleMainTurn({ input: { sessionId, userText: "继续", chatMessages: [], unansweredCount: 0, messageCount: 0 }, kernel, result, effects, toolCallHistory })
+  } finally {
+    harnessSlots.end(sessionId, generation)
+  }
+}
+
+/** 丢弃上次中断的运行：按 aborted 收尾，不重放未知副作用，并归还未消费消息。 */
+export async function discardInterruptedRun(sessionId: string): Promise<{ steer: string[]; followUp: string[] } | undefined> {
+  return harnessSlots.get(sessionId).discardInterrupted()
+}
+
+// ── 手动压缩入口（/compact） ──
+
+export type ManualCompactionResult = HarnessCompactOutcome & { intent?: string }
+
+/**
+ * 手动压缩一个会话：切点、提交与持久化由 Harness 承担（manual reason），
+ * 摘要走陪伴/助手结构化内核。运行中返回 busy，由命令层给出用户可见文案（§3.4）。
+ */
+export async function compactActiveSession(sessionId: string): Promise<ManualCompactionResult> {
+  if (!sessionId.trim()) return { status: "failed", error: "当前没有可压缩的会话" }
+  const mode = generalConfig.assistantMode ? "assistant" as const : "pet" as const
+  const model = resolvePiTurnModel()
+  let intent: string | undefined
+  const outcome = await harnessSlots.get(sessionId).compact({
+    beforeCompaction: createCompactionHook({ mode, model, onSummary: summary => { intent = summary.intent } }),
+    beforeRequest: createRequestOptionsPatch(),
+  })
+  return intent === undefined ? outcome : { ...outcome, intent }
+}
+
+/** Used by planning and fork/team agents. It shares the same harness kernel, not a second loop. */
+export async function runPiSubAgent(input: PiSubAgentInput): Promise<PiSubAgentOutput> {
+  const thinkingEffort = input.thinkingEffort ?? "low"
+  const model = resolvePiTurnModel()
+  const history: PiAgentTurnOutput["toolCallHistory"] = []
+  const toolRun: HarnessToolRun = {
+    mode: "pet",
+    isCurrent: () => true,
+    history,
+    onToolStart: input.onToolStart,
+    onToolDone: input.onToolDone,
+  }
+  const kernel = createTurnKernel({
+    requestId: `sub-agent-${crypto.randomUUID()}`,
+    mode: "pet",
+    model,
+    thinkingEffort,
+    systemPrompt: input.systemPrompt,
+    tools: input.tools,
+    transientUserInput: false,
+    persistSnapshots: false,
+    toolRun,
+  })
+  // 子代理使用内存会话的一次性槽：不写聊天记录，也不占用 App 会话代际。
+  const slot = new HarnessSlot(`subagent-${crypto.randomUUID()}`, { transient: true })
+  try {
+    const spec = createTurnSpec(kernel, {
+      prompt: input.task,
+      timeoutMs: input.timeoutMs ?? 60000,
+      maxToolCalls: input.maxRounds ?? 3,
+      projectToolResults: false,
+      runGeneration: 0,
+      isPermissionCurrent: () => true,
+    })
+    const result = await slot.run(spec)
+    if (result.status === "completed") {
+      const finalAssistant = kernel.state.finalPlainAssistant ?? kernel.state.finalAssistant
+      const reply = finalAssistant ? contentText(finalAssistant.content) : ""
+      return {
+        reply: reply || getFallbackReply("subAgentDone"),
+        toolCallsMade: kernel.state.toolCallsMade,
+        success: true,
+      }
+    }
+    const error = result.timedOut ? "Agent 执行超时" : result.error ?? "Pi Agent 未返回有效回复"
+    return {
+      reply: getFallbackReply("subAgentFailed"),
+      toolCallsMade: kernel.state.toolCallsMade,
+      success: false,
+      error,
+    }
+  } finally {
+    await slot.close()
+  }
+}
+
+/** 工具结果请求投影：条目保持全文，只有请求视图被缩短并标注回读地址。 */
+function projectToolResultMessage(message: AgentMessage, windowTokens: number): AgentMessage {
+  if (message.role !== "toolResult") return message
+  const details = message.details && typeof message.details === "object" ? message.details as Record<string, unknown> : {}
+  const entryId = typeof details.deskpetEntryId === "string" ? details.deskpetEntryId : message.toolCallId
+  const text = contentText(message.content)
+  const source: Message = { id: entryId, eventId: entryId, role: "tool", text, timestamp: message.timestamp }
+  const projected = projectToolMessages([source], windowTokens, SESSION_TRANSCRIPT_TOOL)[0]!
+  if (projected === source) return message
+  return { ...message, content: [{ type: "text" as const, text: projected.text }] }
+}
+
+/** 提交前剥离 RUNTIME_DATA；thinking 等其它块保持原样。 */
+function stripRuntimeData(message: SettledAssistantMessage): SettledAssistantMessage {
+  let changed = false
+  const content = message.content.map(part => {
+    if (part.type !== "text") return part
+    const { text } = parseRuntimeData(part.text)
+    if (text === part.text) return part
+    changed = true
+    return { ...part, text }
+  })
+  return changed ? { ...message, content } : message
+}
+
+/** 主动搭话以自定义消息投递：模型看到内容，记录里不是用户事实。 */
+function createActiveMessage(text: string, ingress?: IngressEnvelope): AgentMessage {
+  return {
+    role: "custom",
+    customType: "deskpet.active_message",
+    content: text,
+    display: false,
+    details: {
+      requestId: ingress?.requestId ?? null,
       rawText: ingress?.rawText ?? text,
       normalizedText: ingress?.normalizedText ?? text.trim(),
+      querySource: ingress?.querySource ?? "active_monitor",
+      priority: ingress?.priority ?? "later",
+      taint: ingress?.taint ?? "derived",
       visibleToUser: false,
-      persisted: true,
       eligibleForTranscript: false,
       eligibleForMemory: false,
-      isMeta: true,
-      taint: ingress?.taint ?? "derived" as MessageTaint,
-      ...(ingress ? { querySource: ingress.querySource, priority: ingress.priority, requestId: ingress.requestId } : {}),
     },
-    createdAt: Date.now(),
-    idempotencyKey: `active:${ingress?.requestId ?? text}:${text}`,
+    timestamp: Date.now(),
   }
-  const written = await MemoryService.appendSessionEventToSession(sessionId, event, text)
-  if (!written) {
-    await MemoryService.createSessionFile(sessionId)
-    if (!await MemoryService.appendSessionEventToSession(sessionId, event, text)) throw new Error("主动上下文事件写入失败")
-  }
-}
-
-async function persistPromptSnapshot(sessionId: string, snapshot: PromptSnapshot): Promise<void> {
-  const event: SessionEvent = {
-    schemaVersion: 1,
-    eventId: `prompt-snapshot-${snapshot.snapshotId}`,
-    sessionId,
-    turnId: snapshot.turnId,
-    kind: "prompt_snapshot",
-    origin: "assistant",
-    payload: { snapshot },
-    createdAt: snapshot.createdAt,
-    idempotencyKey: `prompt-snapshot:${snapshot.snapshotId}`,
-  }
-  await MemoryService.appendSessionEventToSession(sessionId, event)
 }
 
 function providerMessages(payload: unknown): Array<{ role: string; content?: string; toolCallId?: string }> {
@@ -503,465 +997,6 @@ function providerMessages(payload: unknown): Array<{ role: string; content?: str
   })
 }
 
-/** Used by planning and fork/team agents. It shares the same Pi runtime, not a second loop. */
-export async function runPiSubAgent(input: PiSubAgentInput): Promise<PiSubAgentOutput> {
-  const result = await runPiLoop({
-    userText: input.task,
-    chatMessages: [],
-    systemPrompt: input.systemPrompt,
-    tools: input.tools,
-    maxToolCalls: input.maxRounds ?? 3,
-    timeoutMs: input.timeoutMs ?? 60000,
-    thinkingEffort: input.thinkingEffort ?? "low",
-    mode: "pet",
-    onToolStart: input.onToolStart,
-    onToolDone: input.onToolDone,
-  })
-  return {
-    reply: result.reply || getFallbackReply(result.error ? "subAgentFailed" : "subAgentDone"),
-    toolCallsMade: result.toolCallsMade,
-    success: !result.error,
-    error: result.error,
-  }
-}
-
-async function runPiLoop(input: PiLoopInput): Promise<PiLoopOutput> {
-  const toolCallHistory = input.toolCallHistory ?? []
-  const effects = input.effects
-  const toolsByName = new Map(input.tools.map(tool => [tool.name, tool]))
-  let toolCallsMade = 0
-  const messageIds = new WeakMap<object, string>()
-  let transcriptWrites = Promise.resolve()
-  let persistenceError: unknown
-  let apiRound = 0
-  let contextError: unknown
-  let requestSystemPrompt = input.systemPrompt
-  let requestBlocks = input.contextBlocks
-  let allocations = input.allocations
-  let contextEpoch = 0
-  let stoppedAtToolLimit = false
-  const traceContext = createRuntimeTraceContext(input.sessionId, input.requestId, input.turnId)
-  const runtimeProvider = getPiRuntimeProviderOverride()
-  const model = input.model ?? runtimeProvider?.model ?? getPiModel()
-  const snapshotTasks: Promise<void>[] = []
-  let snapshotSequence = 0
-  let latestTransformedMessages: AgentMessage[] = []
-
-  const captureSnapshot = async (
-    captureStage: PromptSnapshot["captureStage"],
-    agentMessages: AgentMessage[],
-    llmMessages: Array<{ role: string; content?: string; toolCallId?: string }>,
-    usage?: AssistantMessage["usage"],
-  ): Promise<void> => {
-    const snapshotId = `${traceContext.runId}:${captureStage}:${++snapshotSequence}`
-    // Tool rounds add messages after the initial builder. Refresh their allocation
-    // from the exact request projection, without counting Pi usage/timestamps.
-    const transient = agentMessages.filter(message => input.transientUserInput && message.role === "user" && !messageIds.has(message))
-    const transientTokens = transient.reduce((n, message) => n + estimateMessageTokens(message), 0)
-    const transcriptTokens = agentMessages.reduce((n, message) => n + estimateMessageTokens(message), 0) - transientTokens
-    const snapshotAllocations = allocations?.map(allocation => {
-      if (allocation.layer !== "transcript" && allocation.layer !== "ephemeral") return { ...allocation }
-      const used = allocation.layer === "transcript" ? transcriptTokens
-        : (requestBlocks ?? []).filter(block => block.layer === "ephemeral" && block.origin !== "active").reduce((n, block) => n + estimateContextTokens(block.text), 0) + transientTokens
-      return { ...allocation, requested: used, used, borrowed: Math.max(0, used - allocation.assigned), dropped: 0 }
-    })
-    const toolSchemas = await Promise.all(input.tools.map(async tool => ({
-      name: tool.name,
-      schemaHash: await sha256Text(stableSerialize({ name: tool.name, description: tool.description, parameters: tool.parameters })),
-      policyHash: await sha256Text(stableSerialize({ actionCategory: tool.actionCategory, safetyLevel: tool.safetyLevel })),
-    })))
-    const snapshot = await createPromptSnapshot({
-      snapshotId,
-      requestId: input.requestId ?? traceContext.runId,
-      sessionId: input.sessionId ?? "sub-agent",
-      turnId: input.turnId ?? input.requestId ?? traceContext.runId,
-      runId: traceContext.runId,
-      captureStage,
-      model: model.id,
-      provider: model.provider,
-      thinkingLevel: input.thinkingEffort,
-      systemBlocks: requestBlocks ?? [{
-        blockId: "static:sub-agent", layer: "static", source: "sub-agent",
-        text: requestSystemPrompt, priority: 100, origin: "system", taint: "system",
-      }],
-      toolSchemas,
-      agentMessages: agentMessages.map((message, index) => ({
-        id: messageIds.get(message) ?? `agent:${index}`,
-        origin: input.transientUserInput ? "active" : message.role === "toolResult" ? "tool" : message.role === "assistant" ? "assistant" : "user",
-        role: message.role,
-        content: stableSerialize(message),
-      })),
-      llmMessages,
-      transforms: input.promptTransforms ?? [],
-      actualInputTokens: usage?.input, actualOutputTokens: usage?.output,
-      contextEpoch, budget: contextBudget(model.contextWindow, model.maxTokens), allocations: snapshotAllocations,
-      cache: { sessionId: input.sessionId, prefixHash: await sha256Text(stableSerialize({
-        model: model.id, provider: model.provider, thinking: input.thinkingEffort,
-        blocks: (requestBlocks ?? []).filter(block => block.layer === "static"), toolSchemas, skillCatalogFingerprint: input.skillCatalogFingerprint,
-      })), cacheReadTokens: usage?.cacheRead, cacheWriteTokens: usage?.cacheWrite },
-      estimatedInputTokens: estimateRequestTokens(requestSystemPrompt, agentMessages, input.tools),
-    })
-    publishRuntimeTrace(traceContext, "prompt_snapshot", {
-      snapshotId,
-      requestId: snapshot.requestId,
-      turnId: snapshot.turnId,
-      captureStage,
-    })
-    if (input.sessionId) {
-      try {
-        await persistPromptSnapshot(input.sessionId, snapshot)
-      } catch (error) {
-        log.warn(`PromptSnapshot 持久化失败: ${snapshot.snapshotId}`, formatError(error))
-      }
-    }
-  }
-  publishRuntimeTrace(traceContext, "agent_start", {
-    toolCount: input.tools.length,
-    mode: input.mode,
-    thinkingEffort: input.thinkingEffort,
-  })
-
-  const initialMessages = toPiMessages(input.chatMessages, model)
-  input.chatMessages.filter(m => m.role !== "system").forEach((message, index) => {
-    if (initialMessages[index]) messageIds.set(initialMessages[index]!, message.eventId ?? message.id)
-  })
-  const isCurrent = () => !input.exposeAsActiveAgent || input.runGeneration === undefined
-    || agentSlots.snapshot(input.sessionId!)?.generation === input.runGeneration
-  const flushTranscript = async () => { await transcriptWrites; if (persistenceError) throw persistenceError }
-  const enqueueTranscript = (message: AgentMessage) => {
-    if (!input.persistToolMessages || !input.sessionId || messageIds.has(message)) return
-    if (input.transientUserInput && message.role === "user") return
-    const id = (message as unknown as { deskpetEventId?: string }).deskpetEventId
-      ?? `${traceContext.runId}:${apiRound}:${message.role}:${createMessageId()}`
-    const appMessage = fromPiMessage(message, id, `${input.requestId ?? traceContext.runId}:${apiRound}`)
-    if (!appMessage) return
-    if (input.transientUserInput) appMessage.origin = "active"
-    messageIds.set(message, id)
-    transcriptWrites = transcriptWrites.then(() => appendTranscriptMessage(input.sessionId!, appMessage)).catch(error => {
-      persistenceError = error
-      agent.abort()
-    })
-    if (getActiveSessionId() === input.sessionId && (appMessage.role === "tool" || appMessage.toolCalls?.length)) pushMessage(appMessage)
-  }
-
-  const agent = new Agent({
-    initialState: {
-      systemPrompt: input.systemPrompt,
-      model,
-      thinkingLevel: toPiAgentThinkingLevel(input.thinkingEffort),
-      tools: input.tools.map(tool => toPiTool(tool, input, toolsByName, toolCallHistory, effects)),
-      messages: initialMessages,
-    },
-    streamFn: async (requestModel, context, options) => {
-      await flushTranscript()
-      if (contextError) throw contextError
-      if (!isCurrent()) throw new Error("回合代际已失效")
-      const budget = contextBudget(model.contextWindow, model.maxTokens)
-      const used = estimateRequestTokens(requestSystemPrompt, context.messages, context.tools ?? [])
-      if (used > budget.hardInputLimit) throw new ContextBudgetError(used, budget.hardInputLimit)
-      return (runtimeProvider?.streamFn ?? piStream)(requestModel, { ...context, systemPrompt: requestSystemPrompt }, options)
-    },
-    convertToLlm: messages => messages.map(message => {
-      const { deskpetEventId: _id, ...clean } = message as typeof message & { deskpetEventId?: string }
-      return clean as PiMessage
-    }),
-    sessionId: input.sessionId,
-    // Keep tool rounds deterministic; parallel execution is a separate optimization.
-    toolExecution: "sequential",
-    onPayload: (payload, model) => {
-      const safePayload = redactText(stableSerialize(payload))
-      const task = sha256Text(safePayload.text)
-        .then(async payloadHash => {
-          await captureSnapshot("provider_payload", latestTransformedMessages, providerMessages(payload))
-          publishRuntimeTrace(traceContext, "provider_payload", {
-          model: model.id,
-          api: model.api,
-          payloadHash,
-          redactions: safePayload.redactions,
-          })
-        })
-        .catch(() => undefined)
-      snapshotTasks.push(task)
-      return undefined
-    },
-    onResponse: (response, model) => {
-      publishRuntimeTrace(traceContext, "provider_response", {
-        model: model.id,
-        api: model.api,
-        status: response.status,
-        headerNames: Object.keys(response.headers).sort(),
-      })
-    },
-    transformContext: async (messages, signal) => {
-      let prepared = messages
-      if (input.persistToolMessages) prepared = prepared.map(message => {
-        const id = messageIds.get(message)
-        if (message.role !== "toolResult" || !id) return message
-        const source: Message = { id, eventId: id, role: "tool", text: contentText(message.content), timestamp: message.timestamp }
-        const projected = projectToolMessages([source], model.contextWindow, SESSION_TRANSCRIPT_TOOL)[0]!
-        if (projected === source) return message
-        const reduced = { ...message, content: [{ type: "text" as const, text: projected.text }] }
-        messageIds.set(reduced, id)
-        return reduced
-      })
-      try {
-        await flushTranscript()
-        const budget = contextBudget(model.contextWindow, model.maxTokens)
-        const used = estimateRequestTokens(requestSystemPrompt, prepared, input.tools)
-        if (input.persistToolMessages && input.sessionId && input.rebuildContext && used > budget.normalInputTarget) {
-          await Promise.allSettled(snapshotTasks)
-          // Only committed checkpoints authorize removal; unmapped/in-flight messages always stay.
-          let outcome = await compactSession({ sessionId: input.sessionId, mode: input.mode,
-            runGeneration: input.runGeneration ?? 0, trigger: "preflight", contextMaxTokens: model.contextWindow, model, signal, isCurrent })
-          while (outcome.status === "committed") {
-            const view = await readContextView(input.sessionId)
-            contextEpoch = view.checkpoint?.contextEpoch ?? 0
-            const retained = new Set(view.messages.map(m => m.eventId))
-            prepared = prepared.filter(message => !messageIds.has(message) || retained.has(messageIds.get(message)))
-            let budgetFailure: ContextBudgetError | undefined
-            try {
-              const next = input.rebuildContext(view.messages, view.summary)
-              requestSystemPrompt = next.systemPrompt; requestBlocks = next.blocks; allocations = next.allocations
-              if (!next.overNormalTarget) break
-            } catch (error) {
-              if (!(error instanceof ContextBudgetError)) throw error
-              budgetFailure = error
-            }
-            outcome = await compactSession({ sessionId: input.sessionId, mode: input.mode, runGeneration: input.runGeneration ?? 0,
-              trigger: "preflight", contextMaxTokens: model.contextWindow, model, signal, isCurrent })
-            if (budgetFailure && outcome.status !== "committed") throw budgetFailure
-          }
-        }
-      } catch (error) {
-        contextError = error
-      }
-      latestTransformedMessages = prepared
-      try { await captureSnapshot("transform_context", prepared, []) }
-      catch (error) { log.warn("PromptSnapshot 采集失败", formatError(error)) }
-      return prepared // Pi requires this hook never to reject; streamFn enforces any recorded error.
-    },
-    afterToolCall: async ({ result, isError }) => ({
-      content: result.content,
-      details: { ...(result.details && typeof result.details === "object" ? result.details : {}),
-        origin: "tool", taint: "untrusted_external", isError },
-      isError,
-    }),
-    beforeToolCall: async ({ toolCall, args }, signal) => {
-      try { await flushTranscript() } catch (error) { return { block: true, reason: formatError(error), terminate: true } }
-      const tool = toolsByName.get(toolCall.name)
-      if (toolCallsMade >= input.maxToolCalls) {
-        stoppedAtToolLimit = true
-        toolCallHistory.push({ toolName: toolCall.name, status: "blocked" })
-        return { block: true, reason: `工具调用次数达到上限 (${input.maxToolCalls})`, terminate: true }
-      }
-      toolCallsMade++
-      if (!tool) {
-        toolCallHistory.push({ toolName: toolCall.name, status: "error" })
-        return { block: true, reason: `工具 ${toolCall.name} 不可用` }
-      }
-
-      recordToolCall(input.sessionId)
-      const category = tool.actionCategory ?? "_default"
-      transition("EXECUTING", input.sessionId)
-      if (effects) applyEffect(PetPersonalityMiddleware.wrap("executing", { actionCategory: category, toolName: tool.name }), effects)
-      emitToolEvent("tool-executing", { toolId: tool.name, toolName: tool.name })
-
-      const toolArgs = args as Record<string, unknown>
-      const permission = await authorizeToolExecution(tool, toolArgs, {
-        mode: input.mode, sessionId: input.sessionId ?? traceContext.runId,
-        runGeneration: input.runGeneration ?? 0, toolCallId: toolCall.id, signal,
-        isCurrent: () => isCurrent() && (!input.sessionId || getActiveSessionId() === input.sessionId),
-      })
-      if (permission.decision !== "allow") {
-        const reason = permission.reason ?? "操作未获授权"
-        toolCallHistory.push({ toolName: tool.name, status: permission.request ? "denied" : "blocked", personalityMsg: reason })
-        return { block: true, reason }
-      }
-      return undefined
-    },
-  })
-
-  agent.subscribe((event) => {
-    const eventPayload: Record<string, unknown> = {}
-    if ("message" in event && event.message && typeof event.message === "object") {
-      const message = event.message as { role?: unknown }
-      if (typeof message.role === "string") eventPayload.role = message.role
-    }
-    if ("toolName" in event && typeof event.toolName === "string") eventPayload.toolName = event.toolName
-    if ("toolCallId" in event && typeof event.toolCallId === "string") eventPayload.toolCallId = event.toolCallId
-    if ("isError" in event && typeof event.isError === "boolean") eventPayload.isError = event.isError
-    publishRuntimeTrace(traceContext, event.type, eventPayload)
-    if (input.exposeAsActiveAgent && input.sessionId && input.runGeneration !== undefined) {
-      if (event.type === "turn_start") agentSlots.markDeliveryPhase(input.sessionId, input.runGeneration, "streaming")
-      if (event.type === "turn_end") agentSlots.markDeliveryPhase(input.sessionId, input.runGeneration, "settling")
-    }
-    if (event.type === "turn_start") apiRound++
-    if (event.type === "message_end") enqueueTranscript(event.message)
-    if (event.type === "tool_execution_end") {
-      emitToolEvent("tool-completed", {
-        toolId: event.toolName,
-        toolName: event.toolName,
-        success: !event.isError,
-      })
-    }
-  })
-
-  if (input.exposeAsActiveAgent && input.sessionId && input.runGeneration !== undefined) {
-    agentSlots.attach(input.sessionId, input.runGeneration, agent)
-  }
-
-  let timedOut = false
-  const timer = setTimeout(() => { timedOut = true; agent.abort() }, input.timeoutMs)
-  const abort = () => agent.abort()
-  input.signal?.addEventListener("abort", abort, { once: true })
-  try {
-    if (input.signal?.aborted) throw new Error("回合已取消")
-    transition("GENERATING", input.sessionId)
-    const initial = agent.state.messages
-    const last = initial[initial.length - 1]
-    if (last?.role === "user") await agent.continue()
-    else await agent.prompt(input.userText)
-    await flushTranscript()
-  } catch (error) {
-    if (timedOut) {
-      return { reply: input.timeoutReply ?? "", toolCallsMade, error: "Agent 执行超时" }
-    }
-    return { reply: "", toolCallsMade, error: formatError(error) }
-  } finally {
-    clearTimeout(timer)
-    input.signal?.removeEventListener("abort", abort)
-    invalidatePermissionScope(input.sessionId ?? traceContext.runId, input.runGeneration ?? 0)
-    await transcriptWrites
-    await Promise.allSettled(snapshotTasks)
-    publishRuntimeTrace(traceContext, "agent_end", {
-      toolCallsMade,
-      timedOut,
-      stoppedAtToolLimit,
-    })
-  }
-
-  if (stoppedAtToolLimit) {
-    return { reply: getFallbackReply("toolLoopMaxRounds"), toolCallsMade }
-  }
-
-  if (timedOut) {
-    return { reply: input.timeoutReply ?? "", toolCallsMade, error: "Agent 执行超时" }
-  }
-
-  const lastAssistant = [...agent.state.messages].reverse().find((message): message is AssistantMessage => message.role === "assistant")
-  if (!lastAssistant || lastAssistant.stopReason === "error" || lastAssistant.stopReason === "aborted") {
-    return { reply: "", toolCallsMade, error: lastAssistant?.errorMessage || "Pi Agent 未返回有效回复" }
-  }
-  updateRequestStats({
-    promptTokens: lastAssistant.usage.input,
-    completionTokens: lastAssistant.usage.output,
-    systemTokens: estimateContextTokens(requestSystemPrompt),
-    conversationTokens: estimateTokens(input.chatMessages),
-    toolCount: input.tools.length,
-    toolNames: input.tools.map(tool => tool.name),
-  })
-  await captureSnapshot("provider_usage", latestTransformedMessages, [], lastAssistant.usage).catch(error => log.warn("usage 快照写入失败", formatError(error)))
-  publishRuntimeTrace(traceContext, "provider_usage", { contextEpoch,
-    inputTokens: lastAssistant.usage.input, outputTokens: lastAssistant.usage.output,
-    cacheRead: lastAssistant.usage.cacheRead, cacheWrite: lastAssistant.usage.cacheWrite })
-  return { reply: contentText(lastAssistant.content), toolCallsMade, finalMessageId: messageIds.get(lastAssistant) }
-}
-
-function toPiTool(
-  tool: ToolDef,
-  input: PiLoopInput,
-  toolsByName: Map<string, ToolDef>,
-  history: PiAgentTurnOutput["toolCallHistory"],
-  effects: PiAgentTurnOutput["effects"] | undefined,
-): AgentTool<any> {
-  return {
-    name: tool.name,
-    label: tool.name,
-    description: tool.description,
-    // Pi validates plain JSON Schema too; Desk-Pet's schemas are already that subset.
-    parameters: tool.parameters as any,
-    prepareArguments: tool.prepareArguments,
-    executionMode: PARALLEL_SAFE_CATEGORIES.has(tool.actionCategory) ? "parallel" : "sequential",
-    async execute(toolCallId, params, signal, onUpdate) {
-      const current = toolsByName.get(tool.name)
-      if (!current) throw new Error(`工具未注册: ${tool.name}`)
-      await input.onToolStart?.(tool.name, toolCallId)
-      let toolSucceeded = false
-      let result: Awaited<ReturnType<typeof executeToolDefinition>>
-      try {
-        result = await executeToolDefinition(current, params as Record<string, unknown>, {
-          sessionId: input.sessionId, runGeneration: input.runGeneration,
-          isCurrent: () => input.runGeneration === undefined || agentSlots.snapshot(input.sessionId!)?.generation === input.runGeneration,
-          mode: input.mode,
-          toolCallId,
-          operationId: toolCallId,
-          policyHash: await sha256Text(stableSerialize({ actionCategory: current.actionCategory, safetyLevel: current.safetyLevel })),
-          signal,
-          onUpdate: partial => onUpdate?.({
-            content: partial.contentParts ?? [{ type: "text", text: partial.content }],
-            details: partial.details,
-          }),
-        })
-        toolSucceeded = result.success
-      } finally {
-        await input.onToolDone?.(tool.name, toolCallId, toolSucceeded)
-      }
-      const category = current.actionCategory ?? "_default"
-      if (result.success) {
-        if (effects) applyEffect(PetPersonalityMiddleware.wrap("done", { actionCategory: category, toolName: tool.name }), effects)
-        history.push({ toolName: tool.name, status: "done" })
-        return {
-          content: result.contentParts ?? [{ type: "text", text: result.content }],
-          details: result.details ?? result,
-        }
-      }
-      if (effects) applyEffect(PetPersonalityMiddleware.wrap("error", { actionCategory: category, toolName: tool.name, message: result.error }), effects)
-      history.push({ toolName: tool.name, status: "error" })
-      throw new Error(`${getSimpleStage("error") ?? "Error"}: ${result.error ?? "工具执行失败"}`)
-    },
-  }
-}
-
-function toPiMessages(messages: Message[], model = getPiModel()): PiMessage[] {
-  const toolNames = new Map<string, string>()
-  const result: PiMessage[] = []
-  for (const message of messages) {
-    if (message.role === "system") continue
-    if (message.role === "user") {
-      result.push({ role: "user", content: message.text, timestamp: message.timestamp })
-      continue
-    }
-    if (message.role === "tool") {
-      result.push({
-        role: "toolResult",
-        toolCallId: message.toolCallId ?? message.id,
-        toolName: toolNames.get(message.toolCallId ?? "") ?? "tool",
-        content: [{ type: "text", text: message.text }],
-        // 必须还原落盘时的 isError，否则重开会话后模型会把失败的工具调用当成成功。
-        isError: message.isError ?? false,
-        timestamp: message.timestamp,
-      })
-      continue
-    }
-    const toolCalls = (message.toolCalls ?? []).map((toolCall) => {
-      toolNames.set(toolCall.id, toolCall.name)
-      return { type: "toolCall" as const, id: toolCall.id, name: toolCall.name, arguments: parseArgs(toolCall.arguments) }
-    })
-    result.push({
-      role: "assistant",
-      content: toolCalls.length > 0 ? [...(message.text ? [{ type: "text" as const, text: message.text }] : []), ...toolCalls]
-        : [{ type: "text" as const, text: message.text }],
-      api: "openai-completions",
-      provider: model.provider,
-      model: model.id,
-      usage: EMPTY_USAGE,
-      stopReason: "stop",
-      timestamp: message.timestamp,
-    })
-  }
-  return result
-}
-
 function fromPiMessage(message: AgentMessage, id: string, apiRoundId: string): Message | undefined {
   const identity = { id, eventId: id, apiRoundId, timestamp: "timestamp" in message ? message.timestamp : Date.now() }
   if (message.role === "user") return { ...identity, role: "user", text: typeof message.content === "string" ? message.content : contentText(message.content), origin: "user", taint: "trusted_user" }
@@ -976,14 +1011,11 @@ function fromPiMessage(message: AgentMessage, id: string, apiRoundId: string): M
   return undefined
 }
 
-function parseArgs(args: string): Record<string, unknown> {
-  try { return JSON.parse(args) } catch { return {} }
+function applyEffect(effect: PersonalityEffect, effects: PiAgentTurnOutput["effects"] | undefined): void {
+  effects?.push({ expression: effect.expression, soundEvent: effect.soundEvent })
 }
 
-function applyEffect(effect: PersonalityEffect, effects: PiAgentTurnOutput["effects"]): void {
-  effects.push({ expression: effect.expression, soundEvent: effect.soundEvent })
-}
-
-async function emitToolEvent(event: string, payload: Record<string, unknown>): Promise<void> {
+/** UI 事件（工具状态、流式增量等）统一 best-effort：失败不影响回合。 */
+async function emitUiEvent(event: string, payload: Record<string, unknown>): Promise<void> {
   try { await emit(event, payload) } catch { /* UI event is best effort */ }
 }

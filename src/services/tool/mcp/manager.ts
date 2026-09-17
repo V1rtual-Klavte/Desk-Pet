@@ -414,18 +414,6 @@ export async function releaseMcpOwner(owner: string): Promise<void> {
   await Promise.all([...names].map(name => releaseMcpServer(name, owner)))
 }
 
-/** 连接所有已启用的 MCP 服务器（自定义 + 内置） */
-export async function connectAllMcpServers(): Promise<number> {
-  ensureServersLoaded()
-  let connected = 0
-  for (const server of [...getBuiltinServers(), ...mcpServers]) {
-    if (!server.enabled) continue
-    const result = await acquireMcpServer(server.name, "legacy-all")
-    if (result.success) connected++
-  }
-  return connected
-}
-
 /** 应用退出的强制回收：先等待进行中的连接，再关闭所有 client。 */
 export async function disconnectAllMcpServers(): Promise<void> {
   const names = new Set([...connectedClients.keys(), ...serverOperationTails.keys(), ...connectionOwners.keys()])

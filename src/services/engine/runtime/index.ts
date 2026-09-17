@@ -2,9 +2,7 @@
 export type {
   ContextBlock,
   ContextLayer,
-  DeliveryMode,
   IngressEnvelope,
-  MessageMeta,
   MessageOrigin,
   MessagePriority,
   MessageTaint,
@@ -21,14 +19,6 @@ export type {
   PromptTransform,
   PromptTransformReason,
   QuerySource,
-  QueueAck,
-  QueueAckState,
-  QueueEntry,
-  SessionEvent,
-  SessionEventKind,
-  SessionRole,
-  SessionTurnRecord,
-  TurnState,
 } from "./types"
 
 export {
@@ -47,9 +37,5 @@ export {
   subscribeRuntimeTrace,
 } from "./trace"
 export type { RuntimeTraceContext, RuntimeTraceEvent, RuntimeTraceKind, RuntimeTraceListener } from "./trace"
-export { RuntimeQueue } from "./queue"
-export type { EnqueueInput } from "./queue"
-export { AgentSlotRegistry, agentSlots } from "./agent-slot"
-export type { AgentDeliveryPhase, AgentDeliveryReceipt, AgentSlotSnapshot, AgentSlotState, SlotAgent } from "./agent-slot"
 
 export type { ContextAllocation } from "./types"

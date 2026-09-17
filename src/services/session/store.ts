@@ -1,6 +1,7 @@
 // ==========================================
 // 会话响应式状态存储
 // 全局单例，所有组件和模块共享同一份状态
+// 会话元数据来自 sessions/ 下的 JSONL 仓库；index.json 只承载 UI 状态
 // ==========================================
 
 import { reactive, ref } from "vue"
@@ -16,6 +17,14 @@ export interface SessionMeta {
   name: string
   createdAt: number
   messageCount: number
+  /** 会话条目文件路径（sessions/ 下） */
+  path?: string
+  /**
+   * 「上次运行中断」状态（H-2 扩展点）。
+   * 运行内核恢复扫描后就绪，经 manager.setSessionInterrupted() 写入；
+   * 内核接口未接入前恒为 undefined，UI 已按 interrupted 渲染提示。
+   */
+  interrupted?: boolean
 }
 
 // ═══════════════════════════════════════════════════

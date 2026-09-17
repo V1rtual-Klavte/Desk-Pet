@@ -11,7 +11,7 @@ import { initSessions, chatHistory, initWelcome } from "@/services/session"
 import { getActiveCard } from "@/services/personality"
 import { generalConfig, toolsConfig } from "@/services/config"
 import { createLogger } from "@/services/logger"
-import { agentSlots } from "@/services/engine/runtime"
+import { harnessSlots } from "@/services/engine/pi"
 
 const log = createLogger("Init")
 
@@ -20,10 +20,10 @@ const log = createLogger("Init")
  * App.vue onMounted 中调用一次。
  *
  * 顺序:
- *   1. Memory 文件系统 (memory/ + sessions/ 目录就绪)
+ *   1. Memory 文件系统 (memory/ 目录就绪)
  *   2. 人格模块注册
  *   3. Presence 所需的基础工具
- *   4. 会话扫描恢复 (sessions/*.md → 列表 + 加载活跃会话消息)
+ *   4. 会话扫描恢复 (sessions → 列表 + 加载活跃会话消息) + Plan checkpoint 恢复
  *   5. 欢迎语 (仅当 chatHistory 确实为空)
  *   6. Debug 状态
  */
@@ -53,10 +53,12 @@ export async function initApp(): Promise<void> {
   log.info(`4/7 Presence 工具就绪 (${toolCount()} 个) | 助手配置:${generalConfig.assistantMode} MCP:${toolsConfig.mcpEnabled} Skill:${toolsConfig.skillEnabled}`)
 
   // ── 5. 会话初始化 ──
+  // 崩溃恢复不再扫描旧队列事件：Harness 在打开会话时报告未完成操作（§8.7.3），
+  // 由用户选择继续或丢弃；这里只恢复 Plan checkpoint。
   const sessions = await initSessions()
   log.info(`5/7 会话就绪: ${sessions.length} 个, 活跃: ${sessions[0]?.id ?? "无"}, 消息: ${chatHistory.length} 条`)
-  const { recoverRuntimeQueue } = await import("@/services/agent/runner")
-  await recoverRuntimeQueue()
+  const { recoverPlanCheckpoints } = await import("@/services/agent/runner")
+  await recoverPlanCheckpoints()
 
   // ── 6. 欢迎语（一律走激活 Card 的问候语）──
   if (chatHistory.length === 0) {
@@ -111,7 +113,7 @@ let pendingCapabilityMode: "pet" | "assistant" | null = null
  */
 export async function requestConversationCapabilityMode(mode: "pet" | "assistant"): Promise<boolean> {
   pendingCapabilityMode = mode
-  if (agentSlots.isAnyRunning()) {
+  if (harnessSlots.isAnyRunning()) {
     log.info("能力模式变更已延后到当前回合结束:", mode)
     return false
   }
@@ -119,10 +121,10 @@ export async function requestConversationCapabilityMode(mode: "pet" | "assistant
   return true
 }
 
-/** runner 在 agentSlots.end() 后调用，避免模式切换破坏在飞工具调用。 */
+/** runner 在 harnessSlots.end() 后调用，避免模式切换破坏在飞工具调用。 */
 export async function applyPendingConversationCapabilities(): Promise<void> {
   const mode = pendingCapabilityMode
-  if (!mode || agentSlots.isAnyRunning()) return
+  if (!mode || harnessSlots.isAnyRunning()) return
   pendingCapabilityMode = null
   if (mode === "pet") {
     // 仅在没有任何 run 时全局卸载助手本地工具；普通轻量 run 的 preflight 不做此事，

@@ -1,11 +1,26 @@
+// read_session_event 的唯一实现（H-4）。
+//
+// 真相源是 Harness 会话条目（sessions/ 下的 JSONL）：请求投影里的引用地址就是工具结果条目的 id。
+// 分页语义：同名同参、offset/总长。
+
+import { contentText } from "@earendil-works/pi-ai"
 import type { ToolDef } from "./types"
-import { readContextView } from "@/services/agent/memory"
 
 export const SESSION_TRANSCRIPT_TOOL = "read_session_event"
 export const SESSION_EVENT_PAGE_CHARS = 8000
 
-/** Read-only, run-scoped access to retained tool output; no model-supplied path or session id. */
-export function createSessionTranscriptTool(sessionId: string): ToolDef {
+/** 工具结果条目的分页格式；回读工具只此一处实现，不建第二套。 */
+export function formatTranscriptPage(text: string, offset: number): string {
+  const start = typeof offset === "number" && Number.isSafeInteger(offset) && offset >= 0 ? offset : 0
+  const end = Math.min(text.length, start + SESSION_EVENT_PAGE_CHARS)
+  return `[${start}-${end}/${text.length}]\n${text.slice(start, end)}`
+}
+
+/** 读取一条工具结果条目全文；不存在或不是工具结果时返回 undefined。 */
+export type ToolResultEntryReader = (entryId: string) => Promise<string | undefined>
+
+/** Read-only run-scoped access to retained tool output; no model-supplied path or session id. */
+export function createTranscriptTool(readEntry: ToolResultEntryReader): ToolDef {
   return {
     id: "local-session-event", name: SESSION_TRANSCRIPT_TOOL,
     description: "按 eventId 分页读取当前会话中保留的完整工具结果。被上下文缩短的结果可由此恢复。",
@@ -13,12 +28,32 @@ export function createSessionTranscriptTool(sessionId: string): ToolDef {
     parameters: { type: "object", properties: { eventId: { type: "string" }, offset: { type: "integer", minimum: 0 } }, required: ["eventId"] },
     async handler(params, ctx) {
       if (ctx.signal?.aborted || (ctx.isCurrent && !ctx.isCurrent())) return { success: false, content: "", error: "回合已取消", errorCode: "cancelled" }
-      const view = await readContextView(sessionId)
-      const message = view.allMessages.find(m => m.role === "tool" && m.eventId === params.eventId)
-      if (!message) return { success: false, content: "", error: "当前会话没有此工具结果", errorCode: "not_found" }
-      const offset = typeof params.offset === "number" && Number.isSafeInteger(params.offset) && params.offset >= 0 ? params.offset : 0
-      const end = Math.min(message.text.length, offset + SESSION_EVENT_PAGE_CHARS)
-      return { success: true, content: `[${offset}-${end}/${message.text.length}]\n${message.text.slice(offset, end)}` }
+      const entryId = typeof params.eventId === "string" ? params.eventId : ""
+      const text = await readEntry(entryId)
+      if (text === undefined) return { success: false, content: "", error: "当前会话没有此工具结果", errorCode: "not_found" }
+      return { success: true, content: formatTranscriptPage(text, typeof params.offset === "number" ? params.offset : 0) }
     },
   }
+}
+
+/**
+ * 按会话读取一条工具结果条目。
+ * 动态 import 会话仓库：工具模块被运行内核 barrel 引用，静态依赖会形成
+ * tool → session/repo → engine/pi → tool 的初始化环。
+ */
+export async function readSessionToolResultEntry(sessionId: string, entryId: string): Promise<string | undefined> {
+  if (!sessionId.trim() || !entryId) return undefined
+  const [{ acquirePiSession }, { BACKGROUND_CONTEXT }] = await Promise.all([
+    import("@/services/session/repo"),
+    import("@earendil-works/pi-agent-core"),
+  ])
+  const session = await acquirePiSession(sessionId)
+  const entry = await session.getEntry(entryId, BACKGROUND_CONTEXT)
+  if (entry?.type !== "message" || entry.message.role !== "toolResult") return undefined
+  return contentText(entry.message.content)
+}
+
+/** Read-only, session-scoped access to retained tool output; 供会话级工具入口使用。 */
+export function createSessionTranscriptTool(sessionId: string): ToolDef {
+  return createTranscriptTool(entryId => readSessionToolResultEntry(sessionId, entryId))
 }

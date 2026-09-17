@@ -1,26 +1,29 @@
 import { invalidatePermissionScope } from "@/services/safety"
 // ==========================================
 // 会话管理器 —— 生命周期操作 (init/create/switch/close/delete)
+// 会话列表与正文以 sessions/ 下的 JSONL 仓库为真相源；index.json 只承载 UI 状态。
 // ==========================================
 
 import type { Message } from "@/services/agent/types"
-import { createAssistantMessage } from "@/services/agent/types"
 import type { SessionMeta } from "./store"
 import {
   chatHistory, unansweredCount,
   sessions, activeSessionId,
-  getContextMessages, getFullHistory,
-  clearMessages, pushMessage,
-  addSessionMeta, removeSessionMeta,
-  getSessions, getActiveSessionId,
+  clearMessages, addSessionMeta, removeSessionMeta,
 } from "./store"
 import {
   initSessionPersistence, loadUnanswered, saveUnanswered, deleteUnanswered,
   loadSessionList, saveSessionList, loadActiveId, saveActiveId,
 } from "./persistence"
+import {
+  createPiSession, deletePiSession, listPiSessionMetadata, readPiSessionSummary,
+  readPiSessionEntries, persistPiSessionName,
+} from "./repo"
+import type { PiSessionSummary } from "./repo"
+import { messagesFromEntries } from "./read-model"
 import { createLogger } from "@/services/logger"
 import { formatError } from "@/services/error"
-import { agentSlots } from "@/services/engine/runtime"
+import { harnessSlots } from "@/services/engine/pi"
 
 const log = createLogger("Session")
 
@@ -28,31 +31,45 @@ const log = createLogger("Session")
 // 内部辅助
 // ═══════════════════════════════════════════════════════════════
 
-function generateSessionId(): string {
-  const now = new Date()
-  const pad = (n: number) => String(n).padStart(2, "0")
-  const ts = `${now.getFullYear()}${pad(now.getMonth()+1)}${pad(now.getDate())}-${pad(now.getHours())}${pad(now.getMinutes())}${pad(now.getSeconds())}`
-  return `session-${ts}`
+function summaryToMeta(summary: PiSessionSummary): SessionMeta {
+  return {
+    id: summary.id,
+    name: summary.name || "新会话",
+    createdAt: summary.createdAt,
+    messageCount: summary.messageCount,
+    path: summary.path,
+  }
 }
 
-async function loadMessagesFromFile(sessionId: string): Promise<Message[]> {
+async function loadMessagesFromSession(sessionId: string): Promise<Message[]> {
   try {
-    const { MemoryService } = await import("@/services/agent/memory")
-    const turns = await MemoryService.loadSessionMessages(sessionId)
-    if (!turns || turns.length === 0) return []
-    return turns
-  } catch {
+    return messagesFromEntries(await readPiSessionEntries(sessionId))
+  } catch (error) {
+    log.warn("加载会话正文失败:", sessionId, formatError(error))
     return []
   }
 }
 
-async function createSessionFileOnDisk(id: string): Promise<void> {
-  try {
-    const { MemoryService } = await import("@/services/agent/memory")
-    await MemoryService.createSessionFile(id)
-  } catch (e) {
-    log.warn("Session 文件创建失败:", id, formatError(e))
+/**
+ * 激活会话：切换指针、加载正文与未回复数，并对齐记忆模块活跃指针与会话开始时间。
+ * 所有异步读取后都重新校验活跃会话，旧切换不能覆盖新所有者。
+ */
+async function activateSession(sessionId: string): Promise<void> {
+  activeSessionId.value = sessionId
+  saveActiveId(sessionId)
+
+  const messages = await loadMessagesFromSession(sessionId)
+  if (activeSessionId.value !== sessionId) return
+  chatHistory.splice(0, chatHistory.length, ...messages)
+  unansweredCount.value = loadUnanswered(sessionId)
+
+  const meta = sessions.find(item => item.id === sessionId)
+  if (meta) {
+    // 变量池对齐真实会话开始时间
+    const { setSessionStart } = await import("@/services/personality")
+    setSessionStart(meta.createdAt)
   }
+  log.info(`Session: 已激活 ${sessionId} (${messages.length} 条)`)
 }
 
 // ═══════════════════════════════════════════════════════════════
@@ -60,79 +77,53 @@ async function createSessionFileOnDisk(id: string): Promise<void> {
 // ═══════════════════════════════════════════════════════════════
 
 /**
- * 初始化：扫描 sessions/*.md 重建会话，再读取 sessions/index.json 的 UI 状态。
+ * 初始化：扫描 sessions/ 下的 JSONL 仓库重建会话列表，再读取 index.json 的 UI 状态。
  * 应用启动时调用一次。
  */
 export async function initSessions(): Promise<SessionMeta[]> {
-  const { MemoryService } = await import("@/services/agent/memory")
   await initSessionPersistence()
 
-  // 1. 从 sessions/ 目录扫描（真相源）
-  let rebuilt: SessionMeta[] = []
+  // 1. 从会话仓库扫描（正文真相源）
+  let metadata: Awaited<ReturnType<typeof listPiSessionMetadata>> = []
   try {
-    const sessionFiles = await MemoryService.listSessionFiles()
-    log.info(`Session: sessions/ 扫描到 ${sessionFiles.length} 个文件`)
-
-    for (const sf of sessionFiles) {
-      rebuilt.push({
-        id: sf.sessionId,
-        name: sf.topic || "已恢复的会话",
-        createdAt: sf.createdAt ? new Date(sf.createdAt).getTime() : Date.now(),
-        messageCount: sf.rounds,
-      })
-    }
-    rebuilt.sort((a, b) => b.createdAt - a.createdAt)
-  } catch (e) {
-    log.warn("Session: sessions/ 扫描失败", e instanceof Error ? e.message : undefined)
+    metadata = await listPiSessionMetadata()
+    log.info(`Session: sessions 扫描到 ${metadata.length} 个会话`)
+  } catch (error) {
+    log.warn("Session: sessions 扫描失败", formatError(error))
   }
 
   // 2. 首次升级前没有 index.json 时，打开全部历史；之后只恢复上次打开的标签。
   const rememberedIds = loadSessionList()
-  if (rememberedIds.length > 0) {
-    const byId = new Map(rebuilt.map(item => [item.id, item]))
-    rebuilt = rememberedIds.map(id => byId.get(id)).filter((item): item is SessionMeta => Boolean(item))
+  const byId = new Map(metadata.map(item => [item.id, item]))
+  const selected = rememberedIds.length > 0
+    ? rememberedIds.map(id => byId.get(id)).filter((item): item is NonNullable<typeof item> => Boolean(item))
+    : metadata
+
+  // 3. 读取每个标签会话的展示元数据（名称/消息数）
+  const rebuilt: SessionMeta[] = []
+  for (const item of selected) {
+    const summary = await readPiSessionSummary(item)
+    if (summary) rebuilt.push(summaryToMeta(summary))
   }
 
-  // 3. 确保至少一个会话
+  // 4. 确保至少一个会话
   if (rebuilt.length === 0) {
-    const s: SessionMeta = {
-      id: generateSessionId(),
-      name: "新会话",
-      createdAt: Date.now(),
-      messageCount: 0,
+    try {
+      rebuilt.push(summaryToMeta(await createPiSession("新会话")))
+    } catch (error) {
+      log.error("Session: 新会话创建失败", formatError(error))
     }
-    rebuilt.push(s)
-    await createSessionFileOnDisk(s.id)
   }
 
-  // 4. 覆盖内部状态
+  // 5. 覆盖内部状态
   sessions.splice(0, sessions.length, ...rebuilt)
   saveSessionList(rebuilt)
-  log.info(`Session: 重建完成 ${sessions.length} 个`, sessions.map(s => s.id))
+  log.info(`Session: 重建完成 ${sessions.length} 个`, sessions.map(item => item.id))
 
-  // 5. 恢复活跃会话。消息只从 Markdown 读取。
+  // 6. 恢复活跃会话；消息只从 pi 会话 entry 读取。
   const id = activeSessionId.value || loadActiveId()
-  if (id && sessions.find(s => s.id === id)) {
-    const msgs = await loadMessagesFromFile(id)
-    chatHistory.splice(0, chatHistory.length, ...msgs)
-    activeSessionId.value = id
-    saveActiveId(id)
-    unansweredCount.value = loadUnanswered(id)
-    await MemoryService.setActiveSession(id)
-    // 变量池对齐真实会话开始时间
-    const activeMeta = sessions.find(s => s.id === id)
-    if (activeMeta) {
-      const { setSessionStart } = await import("@/services/personality")
-      setSessionStart(activeMeta.createdAt)
-    }
-    log.info(`Session: 已恢复: ${id} (${msgs.length} 条)`)
-  } else if (sessions.length > 0) {
-    activeSessionId.value = sessions[0].id
-    saveActiveId(sessions[0].id)
-    const msgs = await loadMessagesFromFile(sessions[0].id)
-    chatHistory.splice(0, chatHistory.length, ...msgs)
-    await MemoryService.setActiveSession(sessions[0].id)
-  }
+  const target = (id && rebuilt.find(item => item.id === id) ? id : rebuilt[0]?.id) ?? ""
+  if (target) await activateSession(target)
 
   return [...sessions]
 }
@@ -143,49 +134,32 @@ export async function initSessions(): Promise<SessionMeta[]> {
 
 /**
  * 切换活跃会话。
- * 保存当前会话 → 加载目标会话。
+ * 保存当前会话 UI 状态 → 加载目标会话正文。
  */
 export async function switchToSession(sessionId: string): Promise<void> {
   if (!sessionId) { log.warn("switchToSession: sessionId 为空"); return }
   if (sessionId === activeSessionId.value) return
 
-  const target = sessions.find(s => s.id === sessionId)
+  const target = sessions.find(item => item.id === sessionId)
   if (!target) {
     log.error("switchToSession: 会话不存在", sessionId)
     return
   }
 
   const previousSessionId = activeSessionId.value
-  // 保存当前 UI 状态；对话正文已由 MemoryService 实时写入 Markdown。
+  // 保存当前 UI 状态；对话正文由仓库持久化。
   if (previousSessionId) {
     invalidatePermissionScope(previousSessionId)
     saveUnanswered(previousSessionId, unansweredCount.value)
-    agentSlots.releaseWhenIdle(previousSessionId)
+    harnessSlots.releaseWhenIdle(previousSessionId)
   }
 
-  // 切换到目标
-  activeSessionId.value = sessionId
-  saveActiveId(sessionId)
-
-  const msgs = await loadMessagesFromFile(sessionId)
-  if (activeSessionId.value !== sessionId) return
-  chatHistory.splice(0, chatHistory.length, ...msgs)
-  unansweredCount.value = loadUnanswered(sessionId)
-
-  const { MemoryService } = await import("@/services/agent/memory")
-  await MemoryService.setActiveSession(sessionId)
-  if (activeSessionId.value !== sessionId) return
-
-  // 对齐会话开始时间
-  const { setSessionStart } = await import("@/services/personality")
-  setSessionStart(target.createdAt)
-
-  log.info(`Session: 已切换到 ${sessionId} (${msgs.length} 条)`)
+  await activateSession(sessionId)
 }
 
 /**
  * 新建会话。
- * 归档当前 → 创建新 ID → 清空状态 → 创建文件。
+ * 在 pi 仓库创建会话 → 切换 ID 并清空状态 → 注册到列表。
  */
 export async function createNewSession(): Promise<SessionMeta> {
   // 保存并归档当前
@@ -193,101 +167,115 @@ export async function createNewSession(): Promise<SessionMeta> {
   if (oldId) {
     invalidatePermissionScope(oldId)
     saveUnanswered(oldId, unansweredCount.value)
-    agentSlots.releaseWhenIdle(oldId)
-    try {
-      const { MemoryService } = await import("@/services/agent/memory")
-      if (chatHistory.length > 0) await MemoryService.archiveSession()
-    } catch { /* ignore */ }
+    harnessSlots.releaseWhenIdle(oldId)
   }
 
-  // ★ 先切换 ID + 清空（在 async 操作之前，避免保存到错误会话）
-  const id = generateSessionId()
-  activeSessionId.value = id
-  saveActiveId(id)
+  const summary = await createPiSession("新会话")
+
+  // ★ 先切换 ID + 清空（在后续异步操作之前，避免保存到错误会话）
+  const meta = summaryToMeta(summary)
+  activeSessionId.value = meta.id
+  saveActiveId(meta.id)
   clearMessages()
   unansweredCount.value = 0
 
   // 注册到列表
-  const s: SessionMeta = { id, name: "新会话", createdAt: Date.now(), messageCount: 0 }
-  addSessionMeta(s)
+  addSessionMeta(meta)
   saveSessionList([...sessions])
-
-  // 创建磁盘文件
-  await createSessionFileOnDisk(id)
 
   // 变量池对齐新会话开始时间
   const { setSessionStart } = await import("@/services/personality")
-  setSessionStart(s.createdAt)
+  setSessionStart(meta.createdAt)
 
-  log.info(`Session: 新会话已创建 ${id} (chatHistory: ${chatHistory.length} 条)`)
-  return s
+  log.info(`Session: 新会话已创建 ${meta.id} (chatHistory: ${chatHistory.length} 条)`)
+  return meta
 }
 
-/** 关闭标签（从列表移除，保留文件） */
+/** 关闭标签（从列表移除，保留会话文件） */
 export function closeSession(sessionId: string): void {
   invalidatePermissionScope(sessionId)
-  const idx = sessions.findIndex(s => s.id === sessionId)
+  const idx = sessions.findIndex(item => item.id === sessionId)
   if (idx === -1) return
 
-  // 仅保存 UI 状态，关闭不删除会话 Markdown。
+  // 仅保存 UI 状态，关闭不删除会话文件。
   if (sessionId === activeSessionId.value) {
     saveUnanswered(sessionId, unansweredCount.value)
   }
 
   removeSessionMeta(sessionId)
-  agentSlots.releaseWhenIdle(sessionId)
+  harnessSlots.releaseWhenIdle(sessionId)
   deleteUnanswered(sessionId)
   saveSessionList([...sessions])
 }
 
-/** 从历史面板重新打开一个已有的 Markdown 会话。 */
+/** 从历史面板重新打开一个已有会话（标签栏）。 */
 export function openSession(meta: SessionMeta): void {
   addSessionMeta(meta)
   saveSessionList([...sessions])
 }
 
-/** 删除会话（从列表 + 文件删除） */
-export async function deleteSession(sessionId: string): Promise<void> {
-  const meta = sessions.find(s => s.id === sessionId)
-  if (!meta) return
-
+/** 删除会话（磁盘文件 + 列表 + UI 状态）；历史面板与标签操作共用。 */
+export async function deleteSession(sessionId: string): Promise<boolean> {
   invalidatePermissionScope(sessionId)
-  await agentSlots.dispose(sessionId)
+  await harnessSlots.dispose(sessionId)
 
-  // 从内存列表移除
+  const wasActive = activeSessionId.value === sessionId
   removeSessionMeta(sessionId)
   deleteUnanswered(sessionId)
+  if (wasActive) activeSessionId.value = ""
   saveSessionList([...sessions])
 
-  // 删除磁盘文件
   try {
-    const { MemoryService } = await import("@/services/agent/memory")
-    const files = await MemoryService.listSessionFiles()
-    const match = files.find(f => f.filename.startsWith(sessionId))
-    if (match) await MemoryService.deleteSessionFile(match.filename)
-  } catch (e) {
-    log.warn("Session: 删除文件失败", formatError(e))
+    return await deletePiSession(sessionId)
+  } catch (error) {
+    log.warn("Session: 删除会话失败", sessionId, formatError(error))
+    return false
   }
 }
 
-/** 更新会话名（首条用户消息时） */
+/** 历史面板数据：sessions/ 下全部会话（含未打开标签的归档会话）。 */
+export async function listSessionHistory(): Promise<PiSessionSummary[]> {
+  const metadata = await listPiSessionMetadata()
+  const items: PiSessionSummary[] = []
+  for (const item of metadata) {
+    const summary = await readPiSessionSummary(item)
+    if (summary) items.push(summary)
+  }
+  return items
+}
+
+/** 更新会话名（首条用户消息时）；展示名持久化到会话文件。 */
 export function updateSessionName(sessionId: string, firstUserMsg: string): void {
-  const s = sessions.find(x => x.id === sessionId)
-  if (!s || s.name !== "新会话") return
-  s.name = firstUserMsg.substring(0, 20).replace(/[\n\r/\\:*?"<>|]/g, "").trim() || "新会话"
+  const meta = sessions.find(item => item.id === sessionId)
+  if (!meta || meta.name !== "新会话") return
+  meta.name = firstUserMsg.substring(0, 20).replace(/[\n\r/\\:*?"<>|]/g, "").trim() || "新会话"
   saveSessionList([...sessions])
+  void persistPiSessionName(sessionId, meta.name)
 }
 
 /** 更新消息计数 */
 export function updateSessionMessageCount(sessionId: string): void {
-  const s = sessions.find(x => x.id === sessionId)
-  if (!s) return
-  s.messageCount = chatHistory.length
+  const meta = sessions.find(item => item.id === sessionId)
+  if (!meta) return
+  meta.messageCount = chatHistory.length
 }
 
 /** 异步回复返回时目标会话可能已不活跃，此时不能用当前 chatHistory 覆盖其计数。 */
 export function incrementSessionMessageCount(sessionId: string): void {
-  const s = sessions.find(x => x.id === sessionId)
-  if (!s) return
-  s.messageCount++
+  const meta = sessions.find(item => item.id === sessionId)
+  if (!meta) return
+  meta.messageCount++
+}
+
+/**
+ * 写入/清除某会话的「上次运行中断」标记（H-2 扩展点）。
+ * 运行内核（HarnessSlot）在恢复扫描后调用：createAgentHarness 返回未完成操作即置 true，
+ * 用户继续/丢弃后置回 false。内核接口就绪前无人调用，UI 已按 interrupted 渲染提示。
+ */
+export function setSessionInterrupted(sessionId: string, interrupted: boolean): void {
+  const meta = sessions.find(item => item.id === sessionId)
+  if (!meta) return
+  if (Boolean(meta.interrupted) === interrupted) return
+  meta.interrupted = interrupted
+  log.info(`Session: 中断标记 ${sessionId} → ${interrupted}`)
 }

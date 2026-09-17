@@ -2,8 +2,9 @@
  * Desk-Pet runtime protocol types.
  *
  * This module intentionally has no business imports.  It is the shared
- * vocabulary for ingress, session events, prompt snapshots, queues and plans;
+ * vocabulary for ingress, prompt snapshots and plans;
  * concrete stores and adapters live in their owning domains.
+ * H-4：宿主队列（QueueEntry/QueueAck）随 RuntimeQueue 退役，投递语义由 Harness lane 承接。
  */
 
 export type MessageOrigin =
@@ -46,84 +47,6 @@ export interface IngressEnvelope {
   receivedAt: number
   priority: MessagePriority
   taint: MessageTaint
-}
-
-export interface MessageMeta {
-  origin: MessageOrigin
-  requestId: string
-  sessionId: string
-  turnId?: string
-  runId?: string
-  visibleToUser: boolean
-  persisted: boolean
-  eligibleForTranscript: boolean
-  eligibleForMemory: boolean
-  isMeta: boolean
-  taint: MessageTaint
-}
-
-export type SessionEventKind =
-  | "turn_created"
-  | "turn_state"
-  | "user_message"
-  | "assistant_message"
-  | "tool_call"
-  | "tool_result"
-  | "system_message"
-  | "active_message"
-  | "hook_message"
-  | "plan_checkpoint"
-  | "queue_state"
-  | "recovery"
-  | "prompt_snapshot"
-  | "compaction"
-  | "memory_projection"
-  | "error"
-
-export type TurnState =
-  | "queued"
-  | "dispatching"
-  | "running"
-  | "waiting_tool"
-  | "done"
-  | "failed"
-  | "interrupted"
-  | "unknown_side_effect"
-
-export type SessionRole = "user" | "assistant" | "tool" | "system"
-
-export interface SessionTurnRecord {
-  schemaVersion: 1
-  turnId: string
-  sessionId: string
-  runId?: string
-  requestId: string
-  role: SessionRole
-  origin: MessageOrigin
-  state: TurnState
-  text?: string
-  apiRoundId?: string
-  toolCallId?: string
-  parentTurnId?: string
-  attempt: number
-  idempotencyKey: string
-  createdAt: number
-  updatedAt: number
-}
-
-export interface SessionEvent {
-  schemaVersion: 1
-  eventId: string
-  sessionId: string
-  turnId?: string
-  kind: SessionEventKind
-  origin: MessageOrigin
-  payload: Record<string, unknown>
-  createdAt: number
-  idempotencyKey: string
-  /** Allocated only by the session writer under its lock. */
-  appendSequence?: number
-  apiRoundId?: string
 }
 
 export type ContextLayer =
@@ -230,49 +153,6 @@ export interface PromptSnapshot {
   cache: PromptCacheInfo
   redactions: string[]
   createdAt: number
-}
-
-export type DeliveryMode = "prompt" | "steer" | "followup"
-
-export type QueueAckState =
-  | "persisted"
-  | "reserved"
-  | "dispatched"
-  | "running"
-  | "waiting_tool"
-  | "interrupted"
-  | "unknown_side_effect"
-  | "accepted"
-  | "steered"
-  | "followup"
-  | "deferred"
-  | "failed"
-  | "requeued"
-  | "dead_letter"
-
-export interface QueueEntry {
-  queueId: string
-  sessionId: string
-  turnId: string
-  requestId: string
-  priority: MessagePriority
-  deliveryMode: DeliveryMode
-  sequence: number
-  enqueuedAt: number
-  ackState: QueueAckState
-  attempt: number
-  rawText?: string
-  normalizedText?: string
-  querySource?: QuerySource
-  taint?: MessageTaint
-}
-
-export interface QueueAck {
-  queueId: string
-  turnId: string
-  state: QueueAckState
-  acceptedAt?: number
-  errorCode?: string
 }
 
 export type PlanState = "admitting" | "running" | "paused" | "done" | "failed" | "interrupted"

@@ -1,18 +1,19 @@
 import { ContextBudgetError } from "@/services/context"
 // ==========================================
 // Agent 运行器 —— sendMessage / initChat
-// 接入 Agent Loop + 中间件 + 工具系统
+// 入口只做预处理、会话/UI 记账与结果结算；运行内核是 AgentHarness（H-4 起
+// 不再有宿主 RuntimeQueue/AgentSlot：排队、投递与取消都由 lane 持久 inbox 承担）。
 // ==========================================
 
 import { getActiveCard, pickActiveGreeting } from "@/services/personality"
 import { getFallbackReply } from "@/services/personality/stages-cache"
-import { deliverActiveTurn, runPiAgentTurn } from "@/services/engine/pi"
+import { deliverActiveTurn, harnessSlots, runPiAgentTurn } from "@/services/engine/pi"
 import { preProcess } from "@/services/engine/preprocessor"
 import { transition } from "@/services/engine/session"
 import {
   unansweredCount,
   pushUserMessage, pushAssistantMessage,
-  getContextMessages, initWelcome, resetUnanswered,
+  initWelcome, resetUnanswered,
   initSessions, getActiveSessionId,
 } from "@/services/session"
 import { incrementSessionMessageCount } from "@/services/session/manager"
@@ -20,67 +21,40 @@ import { setAIGenerating } from "@/services/cooldown"
 import { createLogger } from "@/services/logger"
 import { formatError, summarizeError } from "@/services/error"
 import { reportError } from "@/services/error"
-import { agentSlots, RuntimeQueue } from "@/services/engine/runtime"
-import type { IngressEnvelope, MessagePriority, QueueAck, QueueEntry, SessionTurnRecord } from "@/services/engine/runtime"
-import { MemoryService, planCheckpointStore, queueAckEvent, queueEntryEvent, queueRecoveryEvent, sessionTurnStore } from "@/services/agent/memory"
+import type { IngressEnvelope, MessagePriority } from "@/services/engine/runtime"
+import { planCheckpointStore } from "@/services/agent/memory"
+import { listPiSessionMetadata } from "@/services/session"
 import { applyPendingConversationCapabilities } from "@/services/init"
 
 const log = createLogger("Agent")
 
-const runtimeQueue = new RuntimeQueue()
 const preprocessStates = new Map<string, { lastUserText?: string; lastUserTime?: number }>()
 
-/** Test isolation hook; production queue state is intentionally process-local. */
-export async function resetRuntimeQueueForTest(): Promise<void> {
-  await agentSlots.abortAndWaitAll()
-  runtimeQueue.clear()
+/** Test isolation hook；运行槽持有 Provider/模型与文件系统句柄，场景之间一并关闭。 */
+export async function resetAgentRuntimeForTest(): Promise<void> {
+  await harnessSlots.abortAndWaitAll()
+  await harnessSlots.reset()
   preprocessStates.clear()
-  sessionTurnStore.reset()
   planCheckpointStore.reset()
 }
-export async function abortAgentRuns(): Promise<void> { await agentSlots.abortAndWaitAll() }
-export function getRuntimeQueueSnapshot(): QueueEntry[] { return runtimeQueue.snapshot() }
+export async function abortAgentRuns(): Promise<void> { await harnessSlots.abortAndWaitAll() }
 
-/** Rehydrate safe queue entries and quarantine in-flight entries after restart. */
-export async function recoverRuntimeQueue(): Promise<{ requeued: number; quarantined: number }> {
-  const records = await MemoryService.listQueueRecoveryRecords()
-  let requeued = 0
-  let quarantined = 0
-  for (const sessionId of new Set(records.map(record => record.entry.sessionId))) {
-    const turns = await sessionTurnStore.readRecoverable(sessionId)
-    for (const turn of turns) {
-      if (turn.state !== "queued") await sessionTurnStore.transition(turn.turnId, "unknown_side_effect")
-    }
-  }
-  for (const record of records) {
-    if (record.state === "persisted" || record.state === "requeued" || record.state === "deferred") {
-      const state = "requeued" as const
-      if (record.state !== "requeued") {
-        await MemoryService.appendSessionEventToSession(
-          record.entry.sessionId,
-          queueAckEvent(record.entry, { queueId: record.entry.queueId, turnId: record.entry.turnId, state }),
-          `queue recovery ${record.state} → requeued`,
-        )
-      }
-      runtimeQueue.restore({ ...record.entry, ackState: state })
-      requeued++
-    } else if (["reserved", "dispatched", "running", "waiting_tool", "interrupted", "unknown_side_effect"].includes(record.state)) {
-      await MemoryService.appendSessionEventToSession(
-        record.entry.sessionId,
-        queueRecoveryEvent(record.entry, record.state),
-        `queue recovery ${record.state} → unknown_side_effect`,
-      )
-      quarantined++
-    }
-  }
-  if (requeued || quarantined) log.info("队列启动恢复完成:", { requeued, quarantined })
-  return { requeued, quarantined }
-}
-
+/** 启动期恢复扫描：逐会话读 `deskpet.plan_checkpoint` 条目；单个会话失败不阻断其余恢复。 */
 export async function recoverPlanCheckpoints(): Promise<number> {
   let recovered = 0
-  for (const file of await MemoryService.listSessionFiles()) {
-    recovered += (await planCheckpointStore.recover(file.sessionId)).length
+  let metadata: Awaited<ReturnType<typeof listPiSessionMetadata>>
+  try {
+    metadata = await listPiSessionMetadata()
+  } catch (error) {
+    log.warn("Plan checkpoint 恢复扫描失败:", formatError(error))
+    return 0
+  }
+  for (const item of metadata) {
+    try {
+      recovered += (await planCheckpointStore.recover(item.id)).length
+    } catch (error) {
+      log.warn("Plan checkpoint 恢复失败:", item.id, formatError(error))
+    }
   }
   if (recovered) log.info("Plan checkpoint 恢复完成:", recovered)
   return recovered
@@ -89,29 +63,6 @@ export async function recoverPlanCheckpoints(): Promise<number> {
 function makeIngressId(prefix: string): string {
   const uuid = globalThis.crypto?.randomUUID?.()
   return uuid ? `${prefix}-${uuid}` : `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2)}`
-}
-
-async function persistQueueEntry(entry: QueueEntry): Promise<void> {
-  const ok = await MemoryService.appendSessionEventToSession(entry.sessionId, queueEntryEvent(entry), "queued")
-  if (!ok) throw new Error(`queued 事件落盘失败: ${entry.queueId}`)
-  await sessionTurnStore.append(makeTurnRecord(entry))
-}
-
-async function persistQueueAck(entry: QueueEntry, ack: QueueAck): Promise<void> {
-  const ok = await MemoryService.appendSessionEventToSession(entry.sessionId, queueAckEvent(entry, ack), `queue ${ack.state}`)
-  if (!ok) log.warn(`queue ack 事件落盘失败: ${entry.queueId}/${ack.state}`)
-}
-
-async function settleDeliveredEntries(sessionId: string, succeeded: boolean): Promise<void> {
-  const delivered = runtimeQueue.snapshot().filter(entry =>
-    entry.sessionId === sessionId && (entry.ackState === "steered" || entry.ackState === "followup"),
-  )
-  for (const entry of delivered) {
-    const state = succeeded ? "accepted" : "unknown_side_effect"
-    const ack = runtimeQueue.acknowledge(entry.queueId, state, succeeded ? undefined : "parent_turn_failed")
-    if (ack) await persistQueueAck(entry, ack)
-    await sessionTurnStore.transition(entry.turnId, succeeded ? "done" : "unknown_side_effect")
-  }
 }
 
 /** 工具调用历史（供 UI 展示人格化过程） */
@@ -132,7 +83,6 @@ export async function initChat(): Promise<void> {
 
   const sessions = await initSessions()
   log.info("会话已恢复:", sessions.length, "个, 活跃:", getActiveSessionId())
-  await recoverRuntimeQueue()
   await recoverPlanCheckpoints()
 
   const greeting = pickActiveGreeting()
@@ -141,10 +91,9 @@ export async function initChat(): Promise<void> {
 
 /**
  * 发送用户消息并获取 AI 回复。
- * 使用 Agent Loop（支持工具调用多轮）。
+ * 使用 AgentHarness lane（支持工具调用多轮）。
  *
  * ★ 绑定会话：入口捕获 sessionId，异步回复回来时校验。
- *   若会话已切换，回复只写回原会话的 session Markdown，不污染当前 chatHistory。
  */
 export interface SendMessageOptions {
   requestId?: string
@@ -175,73 +124,38 @@ function makeIngressEnvelope(rawText: string, normalizedText: string, sessionId:
   }
 }
 
-function makeTurnRecord(entry: QueueEntry): SessionTurnRecord {
-  return {
-    schemaVersion: 1,
-    turnId: entry.turnId,
-    sessionId: entry.sessionId,
-    requestId: entry.requestId,
-    role: "user",
-    origin: "user",
-    state: "queued",
-    text: entry.rawText,
-    attempt: entry.attempt,
-    idempotencyKey: `turn:${entry.requestId}`,
-    createdAt: entry.enqueuedAt,
-    updatedAt: entry.enqueuedAt,
-  }
-}
-
-async function enqueuePendingMessage(envelope: IngressEnvelope, deliveryMode: QueueEntry["deliveryMode"] = "prompt"): Promise<QueueEntry> {
-  const entry = runtimeQueue.enqueue({
-    queueId: makeIngressId("queue"),
-    sessionId: envelope.sessionId,
-    turnId: makeIngressId("turn"),
-    requestId: envelope.requestId,
-    priority: envelope.priority,
-    deliveryMode,
-    rawText: envelope.rawText,
-    normalizedText: envelope.normalizedText,
-    querySource: envelope.querySource,
-    taint: envelope.taint,
-  })
-  await persistQueueEntry(entry)
-  pushUserMessage(envelope.normalizedText)
-  return entry
-}
-
 export async function sendMessage(text: string, options: SendMessageOptions = {}): Promise<SendMessageResult> {
   return dispatchMessage(text, options)
 }
 
-async function dispatchMessage(text: string, options: SendMessageOptions = {}, pendingEntry?: QueueEntry): Promise<SendMessageResult> {
+async function dispatchMessage(text: string, options: SendMessageOptions = {}): Promise<SendMessageResult> {
   // ★ 入口绑定会话 ID（防止异步回复错位到其他会话）
-  const originSessionId = pendingEntry?.sessionId ?? getActiveSessionId()
-  let activeQueueEntry: QueueEntry | undefined
+  const originSessionId = getActiveSessionId()
 
-  // 并发锁：生成中优先尝试插话（Pi steering），没有可插话的回合才拒绝。
-  // slash 命令例外 —— 切换人格、清空会话这类副作用不该在回合中途发生。
-  if (!pendingEntry && agentSlots.isRunning(originSessionId)) {
+  // 并发入口：生成中把新输入投递到正在运行的 lane（先落盘到持久 inbox，再影响模型）。
+  // 未识别的 slash 文本按下一次运行排队（nextRun），不在回合中途改状态。
+  // 投递失败说明运行槽刚好结束或不可用：不丢输入，继续走下面的正常回合。
+  let busyPreResult: Awaited<ReturnType<typeof preProcess>> | undefined
+  if (harnessSlots.isRunning(originSessionId)) {
     const requestId = options.requestId ?? makeIngressId("request")
-    const priority = options.priority ?? "next"
     const preResult = await preProcess(text, preprocessStates.get(originSessionId) ?? {})
-    if (!preResult.handled) {
-      const entry = await enqueuePendingMessage(
-        makeIngressEnvelope(text, preResult.normalizedText, originSessionId, requestId, priority),
-        text.startsWith("/") ? "prompt" : agentSlots.deliveryMode(originSessionId) ?? "steer",
-      )
-      const receipt = text.startsWith("/") ? undefined : deliverActiveTurn(originSessionId, preResult.normalizedText, `${entry.requestId}:user`)
-      if (receipt) {
-        await sessionTurnStore.transition(entry.turnId, "dispatching")
-        const ack = runtimeQueue.acknowledge(entry.queueId, receipt)
-        if (ack) await persistQueueAck(entry, ack)
-        await sessionTurnStore.transition(entry.turnId, "running")
-        log.info(`AI 生成中，用户消息已投递为 ${receipt}:`, requestId)
-      } else {
-        const ack = runtimeQueue.acknowledge(entry.queueId, "deferred")
-        if (ack) await persistQueueAck(entry, ack)
-        log.info("AI 生成中，用户消息已持久化并延后:", requestId)
+    if (preResult.handled) {
+      log.warn("AI 生成中，忽略已处理的输入")
+      return {
+        reply: "（糖糖正在想事情，等一下再发哦～）",
+        toolCallsMade: 0,
+        retriesUsed: 0,
+        outcome: "succeeded",
+        personalityEffect: { expression: "idle", soundEvent: null },
       }
+    }
+    const receipt = await deliverActiveTurn(
+      originSessionId, preResult.normalizedText, `${requestId}:user`,
+      text.startsWith("/") ? "nextRun" : undefined,
+    )
+    if (receipt) {
+      pushUserMessage(preResult.normalizedText)
+      log.info(`AI 生成中，用户消息已投递为 ${receipt}:`, requestId)
       return {
         reply: "",
         toolCallsMade: 0,
@@ -250,19 +164,24 @@ async function dispatchMessage(text: string, options: SendMessageOptions = {}, p
         personalityEffect: { expression: "idle", soundEvent: null },
       }
     }
-    log.warn("AI 生成中，忽略已处理的输入")
-    return {
-      reply: "（糖糖正在想事情，等一下再发哦～）",
-      toolCallsMade: 0,
-      retriesUsed: 0,
-      outcome: "succeeded",
-      personalityEffect: { expression: "idle", soundEvent: null },
-    }
+    log.warn("运行槽不可投递，改走正常回合:", requestId)
+    busyPreResult = preResult
   }
 
-  const runGeneration = agentSlots.begin(originSessionId)
+  const runGeneration = harnessSlots.begin(originSessionId)
   if (runGeneration === undefined) {
-    throw new Error(`会话已有运行中的 Agent: ${originSessionId}`)
+    // 罕见竞态（投递失败后槽仍被占用）或槽已 fault：不抛给 UI，按「未发送」如实告知。
+    log.warn("会话已有运行中的 Agent，输入未发送:", originSessionId)
+    const notice = "（糖糖还在处理上一条消息呢，稍等一下再发哦～）"
+    pushAssistantMessage(notice)
+    return {
+      reply: notice,
+      toolCallsMade: 0,
+      retriesUsed: 0,
+      outcome: "failed",
+      failure: { kind: "unknown", message: "会话已有运行中的运行槽" },
+      personalityEffect: { expression: "idle", soundEvent: null },
+    }
   }
   setAIGenerating(true)
 
@@ -271,14 +190,7 @@ async function dispatchMessage(text: string, options: SendMessageOptions = {}, p
     transition("PRE", originSessionId)
     const preprocessState = preprocessStates.get(originSessionId) ?? {}
     preprocessStates.set(originSessionId, preprocessState)
-    const preResult = pendingEntry
-      ? {
-          handled: false as const,
-          rawText: pendingEntry.rawText ?? text,
-          normalizedText: pendingEntry.normalizedText ?? text.trim(),
-          text: pendingEntry.normalizedText ?? text.trim(),
-        }
-      : await preProcess(text, preprocessState)
+    const preResult = busyPreResult ?? await preProcess(text, preprocessState)
 
     if (preResult.handled) {
       if (preResult.response) {
@@ -304,69 +216,29 @@ async function dispatchMessage(text: string, options: SendMessageOptions = {}, p
       }
     }
 
-    const requestId = pendingEntry?.requestId ?? options.requestId ?? makeIngressId("request")
-    const ingress = makeIngressEnvelope(preResult.rawText, preResult.normalizedText, originSessionId, requestId, pendingEntry?.priority ?? options.priority ?? "now")
-    const previous = !pendingEntry && runtimeQueue.snapshot().find(entry => entry.requestId === requestId)
-    if (previous) {
-      log.info("重复 requestId，跳过重复投递:", requestId)
-      return {
-        reply: "",
-        toolCallsMade: 0,
-        retriesUsed: 0,
-        outcome: "succeeded",
-        personalityEffect: { expression: "idle", soundEvent: null },
-      }
-    }
-    activeQueueEntry = pendingEntry ?? runtimeQueue.enqueue({
-        queueId: makeIngressId("queue"),
-        sessionId: originSessionId,
-        turnId: makeIngressId("turn"),
-        requestId,
-        priority: options.priority ?? "now",
-        deliveryMode: "prompt",
-        rawText: preResult.rawText,
-        normalizedText: preResult.normalizedText,
-        querySource: "chat",
-        taint: "trusted_user",
-      })
-    if (!pendingEntry) await persistQueueEntry(activeQueueEntry)
-    else await sessionTurnStore.append(makeTurnRecord(activeQueueEntry))
-    const reserved = runtimeQueue.reserveEntry(activeQueueEntry.queueId)
-    if (!reserved) throw new Error(`queued 事件无法 reserve: ${activeQueueEntry.queueId}`)
-    activeQueueEntry = reserved
-    agentSlots.bindRun(originSessionId, runGeneration, {
-      requestId: activeQueueEntry.requestId,
-      turnId: activeQueueEntry.turnId,
-    })
-    await persistQueueAck(activeQueueEntry, { queueId: reserved.queueId, turnId: reserved.turnId, state: "reserved" })
-    await sessionTurnStore.transition(activeQueueEntry.turnId, "dispatching", { attempt: activeQueueEntry.attempt })
+    const requestId = options.requestId ?? makeIngressId("request")
+    const ingress = makeIngressEnvelope(preResult.rawText, preResult.normalizedText, originSessionId, requestId, options.priority ?? "now")
+    harnessSlots.bindRun(originSessionId, runGeneration, { requestId })
 
-    if (!pendingEntry) pushUserMessage(preResult.text)
+    pushUserMessage(preResult.text)
     resetUnanswered()
 
     // ── Step 3: 进入 Generating 状态 ──
     transition("GENERATING", originSessionId)
 
-    // ── Step 4: 运行 Agent Loop ──
-    const dispatched = runtimeQueue.acknowledge(activeQueueEntry.queueId, "dispatched")
-    if (dispatched) await persistQueueAck(activeQueueEntry, dispatched)
-    await sessionTurnStore.transition(activeQueueEntry.turnId, "running")
+    // ── Step 4: 运行 Agent lane（用户正文由 Harness 先落盘再进请求）──
     toolCallHistory.clear()
-    const storedMessages = await MemoryService.loadSessionMessages(originSessionId) ?? []
-    const contextMessages = storedMessages
     const result = await runPiAgentTurn({
       sessionId: originSessionId,
       userText: preResult.text,
-      chatMessages: contextMessages,
+      chatMessages: [],
       unansweredCount: unansweredCount.value,
-      messageCount: contextMessages.length,
+      messageCount: 0,
       isActiveMessage: false,
       isRetry: false,
       ingress,
       runGeneration,
-      turnId: activeQueueEntry.turnId,
     })
-    await settleDeliveredEntries(originSessionId, !result.failure)
 
     // ── Step 5: 提取人格效果（Pi Runtime 已通过 generateReply 处理）──
     const lastEffect = result.effects.length > 0
@@ -378,21 +250,14 @@ async function dispatchMessage(text: string, options: SendMessageOptions = {}, p
       toolCallHistory.entries.push(...result.toolCallHistory)
     }
 
-    // ★ 会话校验：若等待 AI 回复期间用户切了会话，回复存入原会话
+    // ★ 会话校验：若等待 AI 回复期间用户切了会话，回复只推进原会话的计数，
+    // 不污染当前 chatHistory（正文已由 Harness 写入原会话条目）。
     if (getActiveSessionId() !== originSessionId) {
       log.warn("sendMessage: 会话已切换，回复存入原会话", originSessionId)
       incrementSessionMessageCount(originSessionId)
-      // Pi runtime 已按入口捕获的 sessionId 写入原会话 Markdown。
     } else {
       pushAssistantMessage(result.reply)
     }
-
-    await MemoryService.flushSessionWrites()
-    const terminalState = result.failure ? "failed" : "accepted"
-    const terminal = runtimeQueue.acknowledge(activeQueueEntry.queueId, terminalState, result.failure?.kind)
-    if (terminal) await persistQueueAck(activeQueueEntry, terminal)
-    await sessionTurnStore.transition(activeQueueEntry.turnId, result.failure ? "failed" : "done")
-    await sessionTurnStore.flush(originSessionId)
 
     transition("WAITING", originSessionId)
     return {
@@ -407,30 +272,20 @@ async function dispatchMessage(text: string, options: SendMessageOptions = {}, p
       },
     }
   } catch (e) {
-    if (activeQueueEntry) {
-      await MemoryService.flushSessionWrites()
-      const failed = runtimeQueue.acknowledge(activeQueueEntry.queueId, "failed", "agent_turn_failed")
-      if (failed) await persistQueueAck(activeQueueEntry, failed)
-      try {
-        await sessionTurnStore.transition(activeQueueEntry.turnId, "failed")
-      } catch (turnError) {
-        log.warn("turn failed 状态落盘失败", turnError instanceof Error ? turnError : undefined)
-      }
-    }
     log.error("sendMessage 失败", formatError(e))
     // 走全局通道：终端/日志文件留完整记录，开发期还会弹覆盖层
     if (!(e instanceof ContextBudgetError)) reportError("runner", e, { kind: "LLM 调用失败" })
     const fallback = e instanceof ContextBudgetError ? e.message : getFallbackReply("llmUnavailable")
-    // ★ 同样校验会话
-    if (getActiveSessionId() !== originSessionId) {
-      const { MemoryService } = await import("@/services/agent/memory")
-      await MemoryService.recordTurnToSession(originSessionId, "assistant", fallback)
-    } else {
+    if (getActiveSessionId() === originSessionId) {
       pushAssistantMessage(fallback)
       // 角色台词会掩盖故障：补一条系统消息，让用户分得清「降级」和「正常回复」。
-      // 该消息随会话持久化进 .md，所以用脱敏摘要而非原始错误。
+      // 该消息随会话持久化，所以用脱敏摘要而非原始错误。
       const { pushSystemMessage } = await import("@/services/session/messages")
       pushSystemMessage(`LLM 调用失败，已降级回复：${summarizeError(e)}`)
+    } else {
+      // 会话已切换：原会话没有 UI 通道，兜底回复按会话条目落盘（旧 recordTurnToSession 的替代）。
+      const slot = harnessSlots.peek(originSessionId)
+      if (slot) await slot.appendAssistantMessage(fallback).catch(error => log.warn("兜底回复落盘失败", formatError(error)))
     }
     transition("WAITING", originSessionId)
     return {
@@ -442,35 +297,21 @@ async function dispatchMessage(text: string, options: SendMessageOptions = {}, p
       personalityEffect: { expression: "sleepy", soundEvent: null },
     }
   } finally {
-    agentSlots.end(originSessionId, runGeneration)
-    setAIGenerating(agentSlots.isAnyRunning())
+    harnessSlots.end(originSessionId, runGeneration)
+    setAIGenerating(harnessSlots.isAnyRunning())
     await applyPendingConversationCapabilities()
-    if (runtimeQueue.peek(originSessionId)) void drainRuntimeQueue(originSessionId)
   }
-}
-
-/** Consume already-persisted messages for one session after the active turn releases the AI lock. */
-export function drainRuntimeQueue(sessionId = getActiveSessionId()): Promise<void> {
-  return agentSlots.drain(sessionId, async generation => {
-    while (agentSlots.isDrainCurrent(sessionId, generation)) {
-      if (agentSlots.isRunning(sessionId)) return
-      const entry = runtimeQueue.peek(sessionId)
-      if (!entry) return
-      if (!entry.rawText && !entry.normalizedText) {
-        const failed = runtimeQueue.acknowledge(entry.queueId, "failed", "queue_payload_missing")
-        if (failed) await persistQueueAck(entry, failed)
-        continue
-      }
-      await dispatchMessage(entry.rawText ?? entry.normalizedText ?? "", { requestId: entry.requestId, priority: entry.priority }, entry)
-    }
-  })
 }
 
 // ── 为主动搭话提供便捷入口 ──
 
 export async function sendActiveMessage(userText: string): Promise<string> {
-  const sessionId = getActiveSessionId() || MemoryService.sessionId || `session-${new Date().toISOString().replace(/[-:TZ.]/g, "").slice(0, 15)}`
-  if (!MemoryService.sessionId) MemoryService.setActiveSessionSync(sessionId)
+  // 主动搭话必须落在真实会话上：没有活跃会话时直接放弃，不再伪造会话 id。
+  const sessionId = getActiveSessionId()
+  if (!sessionId) {
+    log.warn("sendActiveMessage: 没有活跃会话")
+    return ""
+  }
   const ingress: IngressEnvelope = {
     schemaVersion: 1,
     requestId: makeIngressId("active"),
@@ -483,31 +324,25 @@ export async function sendActiveMessage(userText: string): Promise<string> {
     priority: "later",
     taint: "derived",
   }
-  const runGeneration = agentSlots.begin(sessionId)
+  const runGeneration = harnessSlots.begin(sessionId, { requestId: ingress.requestId })
   if (runGeneration === undefined) return ""
   setAIGenerating(true)
-  agentSlots.bindRun(sessionId, runGeneration, { requestId: ingress.requestId })
+  harnessSlots.bindRun(sessionId, runGeneration, { requestId: ingress.requestId })
   try {
-    const activeMessages = (await MemoryService.loadSessionMessages(sessionId) ?? []).map((message, index) => ({
-      id: `session:${sessionId}:${message.timestamp}:${index}`,
-      role: message.role,
-      text: message.text,
-      timestamp: message.timestamp,
-    }))
     const result = await runPiAgentTurn({
       sessionId,
       userText,
-      chatMessages: activeMessages,
+      chatMessages: [],
       unansweredCount: unansweredCount.value,
-      messageCount: activeMessages.length,
+      messageCount: 0,
       isActiveMessage: true,
       ingress,
       runGeneration,
     })
     return result.reply
   } finally {
-    agentSlots.end(sessionId, runGeneration)
-    setAIGenerating(agentSlots.isAnyRunning())
+    harnessSlots.end(sessionId, runGeneration)
+    setAIGenerating(harnessSlots.isAnyRunning())
     await applyPendingConversationCapabilities()
   }
 }

@@ -8,42 +8,21 @@ import { createLogger } from "@/services/logger"
 
 export { emptyMemoryProvider, getMemoryProvider, installMemoryProvider, recallMemory, resetMemoryProvider } from "./provider"
 export type { MemoryProvider, MemoryProjection, MemoryRecallRequest } from "./provider"
-import type { MemoryEntry, ProjectEntry, SessionFileMeta, SessionMemory, CompactionSummary } from "./types"
+import type { MemoryEntry, ProjectEntry } from "./types"
 
 // IO
-import { setMemoryDir, setSessionsDir, readSessionFile, sessionsDir } from "./io"
+import { setMemoryDir } from "./io"
 
 // Paths — unified path management
-import { BaseDirs, initPaths } from "@/services/paths"
-
-// Parsers
-import { parseSessionFilename, parseTurnsFromRaw } from "./parsers"
-
-// Session files
-import {
-  setActiveSession, setActiveSessionSync, createSessionFile as _createSessionFile,
-  loadSessionMessages, loadSessionEvents, updateSessionTopic, deleteSessionFile as _deleteSessionFile,
-  deleteSessionAndPointer as _deleteSessionAndPointer,
-  recordTurnToSession, appendTurnToSessionFile as _appendTurnToSessionFile,
-  appendSessionEventToSession,
-  listQueueRecoveryRecords,
-  flushSessionWrites,
-  writeCompactionSummary as _writeCompactionSummary, writeCompactionSummaryToSession as _writeCompactionSummaryToSession, getCompactionSummarySync,
-  getCompactionSummaryForSession,
-  archiveSession as _archiveSession, loadArchivedSession,
-  listSessionFiles as _listSessionFiles,
-  getSession, getSessionId, getSessionTurnCount, getProjectCount, getSessionFilename,
-  recordTurn, getProjectEntries, setProjectEntries, setSessionMemory,
-} from "./session-files"
+import { initPaths } from "@/services/paths"
 
 // Memory entries
 import {
   listMemory, listByCategory, getMemoryCount, appendMemory, searchMemory,
   importantMemory, updateMemory, removeMemory, clearMemory, consolidateLocal,
   getCandyInstructionsSync, updateCandy, getUserProfileSync,
-  syncUserProfile, addOutsideRef, ensureSystemIndex, loadMemoryFiles,
-  scheduleMemorySave, flushMemory, flushProjectSave,
-  getProjectEntriesRef, setProjectEntriesRef,
+  syncUserProfile, addOutsideRef, loadMemoryFiles,
+  getProjectEntries, getProjectCount,
 } from "./memory-entries"
 
 // Consolidate
@@ -53,23 +32,10 @@ import {
 } from "./consolidate"
 
 // Re-export types
-export type { MemoryEntry, ProjectEntry, SessionFileMeta, SessionMemory, CompactionSummary }
-export type {
-  LegacySessionEvent,
-  SessionEventCompat,
-  SessionEventDocument,
-  SessionEventParseIssue,
-  SessionEventParseIssueCode,
-} from "./events"
-export { parseSessionEventDocument, parseSessionEventsFromRaw, serializeSessionEvent } from "./events"
-export { transcriptFromEvents } from "./events"
-export { appendSessionEventToSession, appendTranscriptMessage, finalizeTranscriptMessage, readSessionDocument, updateSessionDocument } from "./session-files"
-export { readContextView, commitCompaction, compactionInputHash, parseStructuredSummary, formatStructuredSummary } from "./compaction-store"
-export type { CompactionCheckpoint, StructuredSummary, SessionContextView } from "./compaction-store"
-export { queueAckEvent, queueEntryEvent, queueRecoveryEvent } from "./queue-events"
-export { SessionTurnStore, sessionTurnStore } from "./session-turn-store"
-export { PlanCheckpointStore, planCheckpointStore, planStepEffectClass } from "./plan-checkpoint-store"
-export type { QueueRecoveryRecord } from "./session-files"
+export type { MemoryEntry, ProjectEntry }
+export { parseStructuredSummary, formatStructuredSummary } from "./compaction-store"
+export type { StructuredSummary } from "./compaction-store"
+export { PlanCheckpointStore, planCheckpointStore, planStepEffectClass, PLAN_CHECKPOINT_ENTRY } from "./plan-checkpoint-store"
 
 const log = createLogger("Memory")
 
@@ -94,56 +60,21 @@ async function _doInit(): Promise<void> {
     await initPaths()
 
     const memDir = await invoke<string>("init_memory_files")
-    const sessDir = BaseDirs.sessions()
     setMemoryDir(memDir)
-    setSessionsDir(sessDir)
-    log.info("Memory:", memDir, "| Sessions:", sessDir)
+    log.info("Memory:", memDir)
 
     await loadMemoryFiles()
-    setSessionMemory(null)
-
-    await _syncProjectFromSessionsDir()
 
     initialized = true
     log.info(`Memory 就绪: ${getMemoryCount()} 记忆, ${getProjectCount()} 归档`)
   } catch (e) {
     log.error("Memory 初始化失败", e instanceof Error ? e : undefined)
-    setSessionMemory(null)
     throw e
   }
 }
 
-async function _syncProjectFromSessionsDir(): Promise<void> {
-  if (!sessionsDir) return
-  try {
-    const files = await invoke<string[]>("list_session_files")
-    const rebuilt: ProjectEntry[] = []
-    for (const filename of files) {
-      const parsed = parseSessionFilename(filename)
-      if (!parsed) continue
-      const raw = await readSessionFile(filename)
-      const turnCount = parseTurnsFromRaw(raw).length
-      let mainRequest = "无"
-      const reqMatch = raw.match(/- 主请求:\s*(.+)/)
-      if (reqMatch) mainRequest = reqMatch[1]
-      let date = new Date().toISOString().slice(0, 10)
-      const startMatch = raw.match(/> 开始:\s*(.+)/)
-      if (startMatch) { try { date = new Date(startMatch[1]).toISOString().slice(0, 10) } catch {} }
-      rebuilt.push({ sessionFile: filename, date, rounds: turnCount, mainRequest, keyTech: [] })
-    }
-    const old = getProjectEntriesRef()
-    const diff = old.length - rebuilt.length
-    setProjectEntriesRef(rebuilt)
-    setProjectEntries(rebuilt)
-    await flushProjectSave()
-    if (diff !== 0) log.info(`Project.md 同步: ${rebuilt.length} 条 (${diff > 0 ? "移除" : "新增"} ${Math.abs(diff)} 条)`)
-  } catch (e) {
-    log.warn("Project.md 同步失败", e instanceof Error ? e : undefined)
-  }
-}
-
 // ═══════════════════════════════════════════════════
-// MemoryService — 保持原始 API 兼容
+// MemoryService
 // ═══════════════════════════════════════════════════
 
 export const MemoryService = {
@@ -163,8 +94,6 @@ export const MemoryService = {
   },
   remove(id: string): boolean { return removeMemory(id) },
   clear(): void { clearMemory() },
-  trimToMax(): void {},
-  async _syncEntryToFile(_entry: MemoryEntry): Promise<void> {},
 
   // ── 系统文件管理 ──
   getCandyInstructionsSync(): string { return getCandyInstructionsSync() },
@@ -172,86 +101,10 @@ export const MemoryService = {
   getUserProfileSync(): string { return getUserProfileSync() },
   async syncUserProfile(): Promise<void> { return syncUserProfile() },
   async addOutsideRef(url: string, description: string): Promise<void> { return addOutsideRef(url, description) },
-  _touchSystemEntry(_filename: string): void {},
 
-  // ── 会话工作记忆 ──
-  get session(): SessionMemory | null { return getSession() },
-  get sessionId(): string { return getSessionId() },
-  get sessionTurnCount(): number { return getSessionTurnCount() },
+  // ── Project 归档索引（旧归档链路的只读残留）──
   get projectCount(): number { return getProjectCount() },
-  getSessionFilename(topic?: string): string { return getSessionFilename(topic) },
-
-  async setActiveSession(sessionId: string): Promise<void> { await ensureInit(); return setActiveSession(sessionId) },
-  setActiveSessionSync(sessionId: string): void { setActiveSessionSync(sessionId) },
-  async createSessionFile(sessionId: string): Promise<void> {
-    await ensureInit()
-    await _createSessionFile(sessionId)
-    await flushProjectSave()
-  },
-  async loadSessionMessages(sessionId: string) { await ensureInit(); return loadSessionMessages(sessionId) },
-  async loadSessionEvents(sessionId: string) { await ensureInit(); return loadSessionEvents(sessionId) },
-  async updateSessionTopic(topic: string): Promise<void> { return updateSessionTopic(topic) },
-
-  recordTurn(role: "user" | "assistant", text: string): void {
-    recordTurn(role, text, checkAndConsolidate)
-  },
-  async recordTurnToSession(sessionId: string, role: "user" | "assistant", text: string): Promise<void> {
-    await ensureInit()
-    return recordTurnToSession(sessionId, role, text)
-  },
-  async appendTurnToSessionFile(role: "user" | "assistant", text: string): Promise<void> {
-    await ensureInit()
-    return _appendTurnToSessionFile(role, text)
-  },
-  async appendSessionEventToSession(sessionId: string, event: import("@/services/engine/runtime").SessionEvent, previewText?: string): Promise<boolean> {
-    await ensureInit()
-    return appendSessionEventToSession(sessionId, event, previewText)
-  },
-  async readSessionWriteVersion(sessionId: string) { await ensureInit(); return (await import("./session-files")).readSessionWriteVersion(sessionId) },
-  async appendSessionEventWithVersion(sessionId: string, event: import("@/services/engine/runtime").SessionEvent, expectedVersion: number, previewText?: string) {
-    await ensureInit(); return (await import("./session-files")).appendSessionEventWithVersion(sessionId, event, expectedVersion, previewText)
-  },
-  async listQueueRecoveryRecords() { await ensureInit(); return listQueueRecoveryRecords() },
-  async flushSessionWrites(): Promise<void> { await flushSessionWrites() },
-
-  async writeCompactionSummary(opts: {
-    mainRequest: string; keyTech: string[]; files: string[]
-    problems: string; userMessages: string[]; tasks?: string[]
-    currentWork: string; nextSteps: string
-  }): Promise<void> { return _writeCompactionSummary(opts) },
-  async writeCompactionSummaryToSession(sessionId: string, opts: Omit<CompactionSummary, "generatedAt">, expectedVersion?: number): Promise<boolean> {
-    await ensureInit()
-    return _writeCompactionSummaryToSession(sessionId, opts, expectedVersion)
-  },
-  getCompactionSummarySync(): string { return getCompactionSummarySync() },
-  async getCompactionSummaryForSession(sessionId: string): Promise<string> {
-    await ensureInit()
-    return getCompactionSummaryForSession(sessionId)
-  },
-
-  // ── 会话归档 ──
-  async archiveSession(): Promise<string | null> {
-    const result = await _archiveSession()
-    if (result) await flushProjectSave()
-    return result
-  },
   getProjectEntries(): ProjectEntry[] { return getProjectEntries() },
-  async loadArchivedSession(filename: string): Promise<string | null> { return loadArchivedSession(filename) },
-
-  // ── Sessions 目录管理 ──
-  async listSessionFiles(): Promise<SessionFileMeta[]> { await ensureInit(); return _listSessionFiles() },
-  async deleteSessionFile(filename: string): Promise<boolean> {
-    await ensureInit()
-    const ok = await _deleteSessionFile(filename)
-    if (ok) await flushProjectSave()
-    return ok
-  },
-  async deleteSessionAndPointer(filename: string): Promise<boolean> {
-    await ensureInit()
-    const ok = await _deleteSessionAndPointer(filename)
-    if (ok) await flushProjectSave()
-    return ok
-  },
 
   // ── 整理 ──
   consolidate(): { removed: number; kept: number } { return consolidateLocal() },
@@ -266,5 +119,5 @@ export { startMemoryConsolidationTimer, stopMemoryConsolidationTimer, onSessionE
 
 if (typeof window !== "undefined") {
   (window as any).__memory = MemoryService
-  log.info("__memory 就绪 (MEMORY.md 双块, sessions/ topic文件名)")
+  log.info("__memory 就绪 (MEMORY.md 双块)")
 }

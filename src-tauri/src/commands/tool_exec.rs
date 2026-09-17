@@ -85,7 +85,8 @@ fn run_bash(
     spill: Option<bool>,
 ) -> AppResult<BashResult> {
     enforce_bash_policy(&command, policy.scope, &policy.whitelist)?;
-    let execution_id = execution_id.unwrap_or_else(|| format!("legacy-{}", std::process::id()));
+    // 调用方未提供执行 ID 时按进程号生成一个临时 ID（仅用于进程表登记与临时文件名）。
+    let execution_id = execution_id.unwrap_or_else(|| format!("adhoc-{}", std::process::id()));
     if !execution_id
         .chars()
         .all(|c| c.is_ascii_alphanumeric() || c == '-')
@@ -709,29 +710,54 @@ pub fn dir_create(path: String, recursive: bool) -> AppResult<()> {
     Ok(())
 }
 
+/// 列出目录条目，字段与 FileSystem 契约的 `FileInfo` 一致。
+///
+/// 符号链接不跟随：`file_type()`/`DirEntry::metadata()` 都按链接自身取元数据，
+/// kind 报 `symlink`、size/mtime 也是链接本身的（契约语义，调用方不再二次回填）。
 #[command]
 pub fn file_list(path: String) -> AppResult<FileListResult> {
     use crate::paths::AppPaths;
     let safe_path = AppPaths::validate_file_path(Path::new(&path))?;
-    let entries = std::fs::read_dir(&safe_path).map_err(|e| format!("读取目录失败: {}", e))?;
+    read_file_entries(&safe_path)
+}
+
+fn read_file_entries(dir: &Path) -> AppResult<FileListResult> {
+    let entries = std::fs::read_dir(dir).map_err(|e| AppError::Io(format!("读取目录失败: {e}")))?;
 
     let mut file_entries: Vec<FileEntry> = Vec::new();
-
-    for entry in entries {
-        if let Ok(entry) = entry {
-            let name = entry.file_name().to_string_lossy().to_string();
-            let metadata = entry.metadata().ok();
-            let kind = if entry.file_type().map(|t| t.is_dir()).unwrap_or(false) {
-                "dir".to_string()
-            } else {
-                "file".to_string()
-            };
-            let size = metadata.map(|m| m.len()).unwrap_or(0);
-            file_entries.push(FileEntry { name, kind, size });
-        }
+    for entry in entries.flatten() {
+        let name = entry.file_name().to_string_lossy().to_string();
+        // 元数据取不到时按最小信息保留条目（kind 回退 file、size/mtime 为 0），
+        // 单个条目读失败不丢掉整次列表：按最小信息保留（kind 回退 file、size/mtime 为 0）。
+        let metadata = entry.metadata().ok();
+        let kind = entry
+            .file_type()
+            .map(|t| {
+                if t.is_symlink() {
+                    "symlink"
+                } else if t.is_dir() {
+                    "directory"
+                } else {
+                    "file"
+                }
+            })
+            .unwrap_or("file");
+        let mtime_ms = metadata
+            .as_ref()
+            .and_then(|m| m.modified().ok())
+            .and_then(|time| time.duration_since(std::time::UNIX_EPOCH).ok())
+            .map(|duration| duration.as_millis() as u64)
+            .unwrap_or(0);
+        file_entries.push(FileEntry {
+            name,
+            path: entry.path().to_string_lossy().to_string(),
+            kind: kind.to_string(),
+            size: metadata.map(|m| m.len()).unwrap_or(0),
+            mtime_ms,
+        });
     }
 
-    // 按字母排序（目录优先）
+    // 按字母排序（目录优先；symlink 排在 file 之后）
     file_entries.sort_by(|a, b| {
         a.kind
             .cmp(&b.kind)
@@ -820,11 +846,17 @@ pub struct FileListResult {
     entries: Vec<FileEntry>,
 }
 
+/// 目录条目，字段与 FileSystem 契约的 `FileInfo` 逐项对应（TS 侧按 camelCase 读取）。
 #[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct FileEntry {
     name: String,
+    /// 绝对路径。
+    path: String,
+    /// `file` / `directory` / `symlink`；符号链接按链接自身报告，不跟随。
     kind: String,
     size: u64,
+    mtime_ms: u64,
 }
 
 // ── 系统信息 ──
@@ -1274,7 +1306,7 @@ mod tests {
         }
     }
 
-    /// 窗口不小于原文时，新实现必须与旧实现完全一致。
+    /// 窗口不小于原文时，新实现必须与参考实现（reference_truncate）完全一致。
     #[test]
     fn window_not_clipped_matches_reference() {
         let cases = [
@@ -1394,6 +1426,67 @@ mod tests {
             );
         }
         assert_eq!(payload["cpuCount"], 8);
+    }
+
+    /// `file_list` 只回 name/kind(dir/file)/size 的短形态曾由前端 file_info 回填补全；
+    /// 现在 Rust 直接给出 FileSystem 契约的完整字段（绝对 path、三值 kind、mtimeMs），
+    /// 且符号链接不跟随 —— 回填桥删除后这条契约只能在这里钉住。
+    #[test]
+    fn file_list_returns_full_file_info_without_following_symlinks() {
+        let root = std::env::temp_dir().join(format!(
+            "deskpet-file-list-test-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(root.join("subdir")).unwrap();
+        std::fs::write(root.join("file.txt"), b"hello").unwrap();
+
+        #[cfg(unix)]
+        {
+            std::os::unix::fs::symlink(root.join("file.txt"), root.join("link.txt")).unwrap();
+            // 悬空链接同样按链接自身报告，不因目标缺失而消失。
+            std::os::unix::fs::symlink(root.join("missing-target"), root.join("dangling.txt"))
+                .unwrap();
+        }
+
+        let entries = read_file_entries(&root).unwrap().entries;
+        let by_name = |name: &str| {
+            entries
+                .iter()
+                .find(|entry| entry.name == name)
+                .unwrap_or_else(|| panic!("缺少条目 {name}"))
+        };
+
+        let dir = by_name("subdir");
+        assert_eq!(dir.kind, "directory");
+        assert_eq!(dir.path, root.join("subdir").to_string_lossy().to_string());
+        assert!(Path::new(&dir.path).is_absolute(), "path 必须是绝对路径");
+
+        let file = by_name("file.txt");
+        assert_eq!(file.kind, "file");
+        assert_eq!(file.size, 5);
+        assert!(file.mtime_ms > 0, "文件应有 mtime");
+
+        #[cfg(unix)]
+        {
+            assert_eq!(by_name("link.txt").kind, "symlink", "符号链接必须报 symlink");
+            assert_eq!(
+                by_name("dangling.txt").kind,
+                "symlink",
+                "悬空链接同样按 symlink 报告"
+            );
+        }
+
+        // kind 有序：directory < file < symlink
+        let kinds: Vec<&str> = entries.iter().map(|entry| entry.kind.as_str()).collect();
+        let mut sorted = kinds.clone();
+        sorted.sort();
+        assert_eq!(kinds, sorted, "kind 应有序（directory < file < symlink）");
+
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     /// 二进制输出不该让整段结果退化成空串。

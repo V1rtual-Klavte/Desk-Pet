@@ -30,7 +30,7 @@ export interface BuildContextInput {
   sessionSummary?: string
   ephemeralText?: string
   ephemeralOrigin?: "active" | "hook" | "recovery" | "plan"
-  /** Run-preflight snapshots. Omission preserves the legacy direct-call API. */
+  /** Run-preflight 冻结快照；调用方未提供时回退到当前配置与注册表。 */
   mode?: "pet" | "assistant"
   contextMaxTokens?: number
   maxOutputTokens?: number

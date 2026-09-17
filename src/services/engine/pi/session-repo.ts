@@ -1,5 +1,6 @@
 // Pi AgentHarness 的会话存储工厂（H-1）。
-// JsonlSessionRepo 直接产出 Session；会话目录与旧 `sessions/*.md` 分开存放，互不混读。
+// JsonlSessionRepo 直接产出 Session；会话根目录取运行时路径域 `sessions`（数据根下），
+// 与 UI 状态文件 index.json 同根存放。
 
 import { JsonlSessionRepo } from "@earendil-works/pi-agent-core"
 import type {
@@ -16,9 +17,6 @@ import { TauriExecutionEnv } from "@/services/tool/pi/tauri-execution-env"
 import { createLogger } from "@/services/logger"
 
 const log = createLogger("PiSessionRepo")
-
-/** 数据根下的 Pi 会话目录；不是旧 `sessions/`（BaseDirs.sessions）。 */
-export const PI_SESSIONS_DIR = "pi-sessions"
 
 /**
  * Desk-Pet 的会话仓库门面。
@@ -41,7 +39,7 @@ export interface PiSessionRepo {
 export interface PiSessionRepoOptions {
   /** 注入文件系统能力；默认 TauriExecutionEnv（真实 Rust IPC）。 */
   fileSystem?: FileSystem
-  /** 会话根目录；默认 `<数据根>/pi-sessions`。 */
+  /** 会话根目录；默认数据根下 `sessions/`（运行时路径域 sessions）。 */
   sessionsRoot?: string
   /** 会话 cwd；默认数据根（§8.1）。注入 fileSystem 时一并注入，避免依赖路径模块。 */
   cwd?: string
@@ -79,8 +77,8 @@ class DataRootSessionRepo implements PiSessionRepo {
 /**
  * 创建会话仓库（方案 §8.1）。
  *
- * - `sessionsRoot` 取数据根下的 `pi-sessions/`：与旧 `sessions/*.md` 分目录，
- *   旧格式按测试数据弃用，不做双写。
+ * - `sessionsRoot` 取数据根下的 `sessions/`（运行时路径域 `sessions`）；UI 状态
+ *   index.json 同根存放，但它不是 .jsonl 会话条目，仓库读写互不涉及。
  * - 会话布局为 `<sessionsRoot>/--<cwd>--/<时间戳>_<id>.jsonl`；cwd 固定数据根，
  *   只用于会话归属与相对路径解析，不拿它区分业务。
  * - 目录不在这里预建：repo 首次 `create` 会按需对会话目录 `createDir`（recursive）。
@@ -90,7 +88,7 @@ class DataRootSessionRepo implements PiSessionRepo {
 export async function createPiSessionRepo(options: PiSessionRepoOptions = {}): Promise<PiSessionRepo> {
   const cwd = options.cwd ?? (await runtimePath("data"))
   const fileSystem = options.fileSystem ?? new TauriExecutionEnv(cwd, "pet")
-  const sessionsRoot = options.sessionsRoot ?? (await runtimePath("data", PI_SESSIONS_DIR))
+  const sessionsRoot = options.sessionsRoot ?? (await runtimePath("sessions"))
   log.info("JsonlSessionRepo 就绪:", sessionsRoot)
   return new DataRootSessionRepo(new JsonlSessionRepo({ fileSystem, sessionsRoot }), sessionsRoot, cwd)
 }

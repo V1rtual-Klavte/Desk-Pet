@@ -1,111 +1,24 @@
 // ==========================================
-// 记忆系统命令 —— 文件注册表 + 会话文件管理
+// 记忆系统命令 —— memory/ 与 sessions/ 目录初始化
 // ==========================================
 // 目录结构:
 //   {data_root}/
 //     memory/               长期记忆注册表
 //       MEMORY.md           ★ 结构化注册表（系统块 + 记忆块）
-//       SESSION_MEMORY.md   ★ 当前会话工作记忆
 //       CANDY.md            用户系统指令
 //       User.md             用户画像
 //       Outside.md          外部知识
-//       Project.md          ★ 会话归档指针 → sessions/
-//     sessions/             会话归档目录
-//       session-YYYYMMDD-HHmmss-主题.md   结构化会话文件
+//       Project.md          会话归档指针（旧归档链路的只读残留）
+//     sessions/             会话 JSONL 存储（JsonlSessionRepo 经通用文件命令读写）
 // ==========================================
 
-use crate::error::{err, AppError, AppResult};
+use crate::error::AppResult;
 use crate::paths::AppPaths;
-use crate::rust_debug;
 use std::fs;
-use std::path::PathBuf;
-use std::time::{SystemTime, UNIX_EPOCH};
 use tauri::command;
 
-/// 获取 memory/ 目录下指定文件的完整路径。
-/// 获取 sessions/ 目录下指定文件的完整路径。
-/// ★ 列出 sessions/ 目录下所有 .md 文件（按名称倒序）
-#[command]
-pub fn list_session_files(paths: tauri::State<AppPaths>) -> AppResult<Vec<String>> {
-    let sessions_dir = &paths.sessions;
-
-    let mut files: Vec<String> = Vec::new();
-    if let Ok(entries) = fs::read_dir(sessions_dir) {
-        for entry in entries.flatten() {
-            let name = entry.file_name().to_string_lossy().to_string();
-            if name.ends_with(".md") && name != ".gitkeep" {
-                files.push(name);
-            }
-        }
-    }
-
-    // 按文件名倒序（新的在前）
-    files.sort_by(|a, b| b.cmp(a));
-    Ok(files)
-}
-
-/// 会话正文专用原子写入：临时文件与目标位于同一目录，rename 后才对读者可见。
-#[command]
-pub fn session_file_write_atomic(
-    paths: tauri::State<AppPaths>,
-    filename: String,
-    content: String,
-) -> AppResult<()> {
-    let safe_name = PathBuf::from(&filename)
-        .file_name()
-        .map(|name| name.to_string_lossy().to_string())
-        .ok_or_else(|| format!("无效会话文件名: {filename}"))?;
-    if safe_name != filename || !safe_name.ends_with(".md") || safe_name.contains("..") {
-        return err(format!("非法会话文件名: {filename}"));
-    }
-    let target = paths.sessions.join(&safe_name);
-    AppPaths::validate_new_file_path(&target)?;
-    fs::create_dir_all(&paths.sessions).map_err(|e| AppError::Io(format!("创建 sessions 目录失败: {e}")))?;
-    let stamp = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_nanos();
-    let temp = paths.sessions.join(format!(".{safe_name}.{stamp}.tmp"));
-    fs::write(&temp, content).map_err(|e| AppError::Io(format!("写入会话临时文件失败: {e}")))?;
-    if let Err(error) = fs::rename(&temp, &target) {
-        let _ = fs::remove_file(&temp);
-        return Err(AppError::Io(format!("提交会话文件失败: {error}")));
-    }
-    Ok(())
-}
-
-/// ★ 删除 sessions/ 目录下指定的文件
-#[command]
-pub fn delete_session_file(paths: tauri::State<AppPaths>, filename: String) -> AppResult<()> {
-    rust_debug!(
-        "delete_session_file: {} | dir: {}",
-        filename,
-        paths.sessions.display()
-    );
-
-    // 安全检查
-    let safe_name = PathBuf::from(&filename)
-        .file_name()
-        .map(|n| n.to_string_lossy().to_string())
-        .ok_or_else(|| format!("无效文件名: {}", filename))?;
-
-    if safe_name.contains("..") || safe_name.contains('/') || safe_name.contains('\\') {
-        return err(format!("非法文件名: {}", safe_name));
-    }
-
-    if !safe_name.ends_with(".md") {
-        return err(format!("不是有效的会话文件: {}", safe_name));
-    }
-
-    let file_path = paths.sessions.join(&safe_name);
-    if file_path.exists() {
-        fs::remove_file(&file_path).map_err(|e| format!("删除失败: {}", e))?;
-    }
-
-    Ok(())
-}
-
-/// ★ 删除任意文件（用于 file_delete 工具 + 重命名清理）
 /// 初始化 memory/ 和 sessions/ 目录结构及模板文件。
-/// ★ 使用 AppPaths 统一路径管理。
-/// 模板使用新的 MEMORY.md 双块结构。
+/// 使用 AppPaths 统一路径管理。模板使用 MEMORY.md 双块结构。
 #[command]
 pub fn init_memory_files(paths: tauri::State<AppPaths>) -> AppResult<String> {
     let memory_dir = &paths.memory;
@@ -114,7 +27,7 @@ pub fn init_memory_files(paths: tauri::State<AppPaths>) -> AppResult<String> {
     // 确保 sessions/ 目录存在
     fs::create_dir_all(sessions_dir).map_err(|e| format!("无法创建 sessions 目录: {}", e))?;
 
-    // ── 模板文件（新 MEMORY.md 双块结构，无 SESSION_MEMORY.md）──
+    // ── 模板文件（MEMORY.md 双块结构，无 SESSION_MEMORY.md）──
     let templates: [(&str, &str); 5] = [
         ("MEMORY.md",
          "# MEMORY.md — 长期记忆注册表\n\n\

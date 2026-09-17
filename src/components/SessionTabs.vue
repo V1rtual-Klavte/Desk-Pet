@@ -1,26 +1,17 @@
 <script setup lang="ts">
 import { reactive, ref, onMounted, onUnmounted } from "vue";
-import { MemoryService } from "@/services/agent/memory";
-import type { SessionFileMeta } from "@/services/agent/memory";
-import { getSessions, getActiveSessionId } from "@/services/session";
+import { getSessions, getActiveSessionId, listSessionHistory } from "@/services/session";
+import type { PiSessionSummary, SessionMeta } from "@/services/session";
 import { createLogger } from "@/services/logger";
 
 const log = createLogger("SessionTabs");
 
-// ── Session meta ──
-export interface SessionMeta {
-  id: string;
-  name: string;
-  createdAt: number;
-  messageCount: number;
-}
-
 const sessions = reactive<SessionMeta[]>([]);
 const activeId = ref("");
 
-// ★ 会话历史面板
+// ★ 会话历史面板（sessions/ 仓库中的全部会话，含未打开标签的归档）
 const showHistory = ref(false);
-const historyFiles = ref<SessionFileMeta[]>([]);
+const historySessions = ref<PiSessionSummary[]>([]);
 const historyLoading = ref(false);
 
 const restoreTimer = ref<ReturnType<typeof setTimeout> | null>(null);
@@ -29,8 +20,8 @@ const emit = defineEmits<{
   "switch": [session: SessionMeta];
   "new": [];
   "close-tab": [id: string];
-  "delete-file": [filename: string];
-  "restore-session": [sf: SessionFileMeta];
+  "delete-session": [id: string];
+  "restore-session": [session: PiSessionSummary];
 }>();
 
 // ── 加载会话列表（从 session store 同步，不走 localStorage）──
@@ -90,46 +81,43 @@ function closeSession(id: string): void {
 async function toggleHistory() {
   showHistory.value = !showHistory.value;
   if (showHistory.value) {
-    await loadHistoryFiles();
+    await loadHistorySessions();
   }
 }
 
-async function loadHistoryFiles(): Promise<void> {
+async function loadHistorySessions(): Promise<void> {
   historyLoading.value = true;
   try {
-    historyFiles.value = await MemoryService.listSessionFiles();
+    historySessions.value = await listSessionHistory();
   } catch {
-    historyFiles.value = [];
+    historySessions.value = [];
   } finally {
     historyLoading.value = false;
   }
 }
 
-async function deleteHistoryFile(filename: string): Promise<void> {
-  log.debug("deleteHistoryFile 点击:", filename)
-  emit("delete-file", filename)
+async function deleteHistorySession(id: string): Promise<void> {
+  log.debug("deleteHistorySession 点击:", id)
+  emit("delete-session", id)
   // ★ 不在此立即过滤 UI，由父组件 finally 中调用 refreshHistory 统一刷新
 }
 
 /** ★ 刷新历史面板（父组件在会话操作完成后调用） */
 async function refreshHistory(): Promise<void> {
   if (showHistory.value) {
-    await loadHistoryFiles()
+    await loadHistorySessions()
   }
 }
 
-async function restoreHistorySession(sf: SessionFileMeta): Promise<void> {
-  emit("restore-session", sf)
+async function restoreHistorySession(item: PiSessionSummary): Promise<void> {
+  emit("restore-session", item)
   // 即时刷新标签栏（父组件会同步）
   restoreTimer.value = setTimeout(() => loadSessions(), 300)
 }
 
-function formatDate(isoStr: string): string {
-  if (!isoStr) return ""
-  try {
-    const d = new Date(isoStr)
-    return d.toLocaleDateString("zh-CN", { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" })
-  } catch { return isoStr.substring(0, 10) }
+function formatDate(timestamp: number): string {
+  if (!timestamp) return ""
+  return new Date(timestamp).toLocaleDateString("zh-CN", { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" })
 }
 
 // ★ 滚轮横向滚动（macOS 隐藏滚动条后滚轮不会自动转横向）
@@ -168,6 +156,8 @@ onUnmounted(() => {
           @click="switchTo(s.id)"
         >
           <span class="st-name">{{ s.name }}</span>
+          <!-- 上次运行中断提示（H-2 扩展点：内核恢复扫描后经 setSessionInterrupted 写入） -->
+          <span v-if="s.interrupted" class="st-interrupted" title="上次运行中断，等待恢复">!</span>
           <button
             v-if="sessions.length > 1"
             class="st-close"
@@ -189,26 +179,26 @@ onUnmounted(() => {
     <!-- ★ 会话历史下拉面板 -->
     <div v-if="showHistory" id="history-panel">
       <div id="history-header">
-        <span>会话历史 (sessions/)</span>
+        <span>会话历史</span>
         <button id="history-close" @click="showHistory = false">×</button>
       </div>
       <div id="history-list">
         <div v-if="historyLoading" class="history-status">加载中...</div>
-        <div v-else-if="historyFiles.length === 0" class="history-status">暂无归档会话</div>
+        <div v-else-if="historySessions.length === 0" class="history-status">暂无历史会话</div>
         <div
-          v-for="f in historyFiles"
-          :key="f.filename"
+          v-for="item in historySessions"
+          :key="item.id"
           class="history-item"
-          @click="restoreHistorySession(f)"
+          @click="restoreHistorySession(item)"
         >
           <div class="history-info">
-            <span class="history-topic">{{ f.topic }}</span>
-            <span class="history-meta">{{ formatDate(f.createdAt) }} · {{ f.rounds }}轮 · {{ f.mode }}</span>
+            <span class="history-topic">{{ item.name || "新会话" }}</span>
+            <span class="history-meta">{{ formatDate(item.createdAt) }} · {{ item.messageCount }} 条</span>
           </div>
           <button
             class="history-delete"
-            @click.stop="deleteHistoryFile(f.filename)"
-            title="删除此会话文件"
+            @click.stop="deleteHistorySession(item.id)"
+            title="删除此会话"
           >🗑</button>
         </div>
       </div>
@@ -284,6 +274,19 @@ onUnmounted(() => {
   white-space: nowrap;
   flex: 1;
   min-width: 0;
+}
+
+/* 上次运行中断提示 */
+.st-interrupted {
+  flex-shrink: 0;
+  width: 12px; height: 12px;
+  border-radius: 50%;
+  background: var(--color-accent);
+  color: var(--color-tab-active-text);
+  font-size: 9px;
+  line-height: 12px;
+  text-align: center;
+  cursor: help;
 }
 
 .st-close {

@@ -20,29 +20,13 @@ import { formatError } from "@/services/error"
 
 const MAX_TOOL_FILE_BYTES = 5 * 1024 * 1024
 
+/** `file_list` / `file_info` 的载荷：与 FileSystem 契约的 FileInfo 逐字段一致。 */
 type FileInfoPayload = {
   name: string
   path: string
   kind: "file" | "directory" | "symlink"
   size: number
   mtimeMs: number
-}
-
-/**
- * `file_list` 的原始条目：Rust 目前只返回 name/kind/size 的短形态（kind 为 "dir"/"file"），
- * 而 FileSystem 契约要求 FileInfo 带绝对 path、mtimeMs，目录种类为 "directory"。
- */
-type RawFileListEntry = {
-  name: string
-  kind: string
-  size?: number
-  path?: string
-  mtimeMs?: number
-}
-
-function asFileKind(kind: string): FileInfo["kind"] {
-  if (kind === "dir" || kind === "directory") return "directory"
-  return kind === "symlink" ? "symlink" : "file"
 }
 
 type BashPayload = {
@@ -185,33 +169,13 @@ export class TauriExecutionEnv implements ExecutionEnv {
     }
   }
 
-  /**
-   * `file_list` 的短条目缺 path/mtimeMs，JsonlSessionRepo 会按 `kind === "directory"` 与
-   * 会话文件的 path 组装目录，缺字段会让 list/open 直接失效，所以这里缺什么补什么：
-   * 字段齐全的条目直接透传，短条目用 file_info 回填（回填顺带纠正 symlink 的 kind）。
-   */
+  /** Rust `file_list` 直接给 FileInfo 全字段（含绝对 path 与 mtimeMs），原样透传。 */
   async listDir(path: string, context: Context): Promise<Result<FileInfo[], FileError>> {
     try {
       throwIfAborted(context)
-      const result = await invoke<{ entries: RawFileListEntry[] }>("file_list", { path })
-      const entries: FileInfo[] = []
-      for (const entry of result.entries) {
-        if (entry.path !== undefined && entry.mtimeMs !== undefined && entry.size !== undefined) {
-          entries.push({
-            name: entry.name,
-            path: entry.path,
-            kind: asFileKind(entry.kind),
-            size: entry.size,
-            mtimeMs: entry.mtimeMs,
-          })
-          continue
-        }
-        const info = await this.fileInfo(entry.path ?? await join(path, entry.name), context)
-        if (!info.ok) return info
-        entries.push(info.value)
-      }
+      const result = await invoke<{ entries: FileInfoPayload[] }>("file_list", { path })
       throwIfAborted(context)
-      return ok(entries)
+      return ok(result.entries)
     } catch (error) {
       return err(fileFailure(error, path))
     }

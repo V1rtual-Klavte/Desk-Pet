@@ -4,33 +4,21 @@
 
 import { invoke } from "@tauri-apps/api/core"
 import { createLogger } from "@/services/logger"
-import { BaseDirs, runtimePath } from "@/services/paths"
+import { runtimePath } from "@/services/paths"
 
 const log = createLogger("MemoryIO")
 
 // ── 目录路径 ──
-export let memoryDir = ""
-export let sessionsDir = ""
+let memoryDir = ""
 
 export function setMemoryDir(dir: string): void { memoryDir = dir }
-export function setSessionsDir(dir: string): void { sessionsDir = dir }
-
-/** 获取 memory 目录（优先已设置的值，fallback BaseDirs） */
-export function getMemoryDir(): string {
-  return memoryDir || BaseDirs.memory()
-}
-
-/** 获取 sessions 目录（优先已设置的值，fallback BaseDirs） */
-export function getSessionsDir(): string {
-  return sessionsDir || BaseDirs.sessions()
-}
 
 // ── 文件写入串行化 ──
 const writeTails = new Map<string, Promise<void>>()
 
 /**
  * Serialize read-modify-write operations. The tail always recovers so one
- * failed write cannot deadlock later session or memory writes.
+ * failed write cannot deadlock later memory writes.
  */
 export function withLock<T>(keyOrFn: string | (() => Promise<T>), maybeFn?: () => Promise<T>): Promise<T> {
   const key = typeof keyOrFn === "string" ? keyOrFn : "global"
@@ -61,24 +49,4 @@ export async function writeMemoryFile(filename: string, content: string): Promis
     await invoke("file_write", { path, content })
     return true
   } catch (e) { log.error(`写入 ${filename} 失败: ${memoryDir}/${filename}`, e instanceof Error ? e : undefined); return false }
-}
-
-// ── Session 文件读写 ──
-
-export async function readSessionFile(filename: string): Promise<string> {
-  try {
-    if (!sessionsDir) return ""
-    const path = await runtimePath("sessions", filename)
-    const result = await invoke<{ content: string; size: number }>("file_read", { path })
-    return result.content
-  } catch { return "" }
-}
-
-export async function writeSessionFile(filename: string, content: string): Promise<boolean> {
-  try {
-    if (!sessionsDir) { log.warn("writeSessionFile: sessionsDir 未设置"); return false }
-    await invoke("session_file_write_atomic", { filename, content })
-    log.debug("Session 文件已写入:", filename, `(${content.length} bytes)`)
-    return true
-  } catch (e) { log.error(`写入 sessions/${filename} 失败: ${sessionsDir}`, e instanceof Error ? e : undefined); return false }
 }

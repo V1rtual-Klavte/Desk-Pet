@@ -30,4 +30,11 @@ export {
 export { executeTool, executeToolDefinition } from "./router"
 
 export { releaseMcpOwner } from "./mcp"
-export { createSessionTranscriptTool, SESSION_TRANSCRIPT_TOOL, SESSION_EVENT_PAGE_CHARS } from "./session-transcript"
+export {
+  createSessionTranscriptTool,
+  createTranscriptTool,
+  readSessionToolResultEntry,
+  SESSION_TRANSCRIPT_TOOL,
+  SESSION_EVENT_PAGE_CHARS,
+} from "./session-transcript"
+export type { ToolResultEntryReader } from "./session-transcript"

@@ -4,11 +4,11 @@
 // piStream，一次性文本调用（planner / 压缩 / 记忆 / 阶段文案）用 completePiText。
 // 两者共用同一套模型解析、reasoning 映射与网络防护。
 
-import { contentText, createModels, createProvider } from "@earendil-works/pi-ai"
+import { contentText, createAssistantMessageEventStream, createModels, createProvider } from "@earendil-works/pi-ai"
 import { openAICompletionsApi } from "@earendil-works/pi-ai/api/openai-completions.lazy"
 import { deepseekProvider } from "@earendil-works/pi-ai/providers/deepseek"
 import { openaiProvider } from "@earendil-works/pi-ai/providers/openai"
-import type { AssistantMessage, Context, Message as PiMessage, Model, MutableModels, Provider, SimpleStreamOptions, StopReason, ThinkingContent, ThinkingLevel, Usage } from "@earendil-works/pi-ai"
+import type { AssistantMessage, AssistantMessageEventStream, Context, Message as PiMessage, Model, Models, MutableModels, Provider, SimpleStreamOptions, StopReason, ThinkingContent, ThinkingLevel, Usage } from "@earendil-works/pi-ai"
 import type { StreamFn } from "@earendil-works/pi-agent-core"
 import type { ThinkingEffort } from "@/services/agent/types"
 import { aiConfig } from "@/services/config"
@@ -141,6 +141,118 @@ export function piStream(model: Model<any>, context: Context, options?: SimpleSt
     // Harness owns retry budgets; avoid multiplying SDK retries by turn retries.
     maxRetries: 0,
   })
+}
+
+// ── Harness 注入面 ──
+
+/**
+ * 主回合的模型解析（Harness 与 ContextKernel 共用的唯一入口）。
+ * 测试注入的 model 优先，其余走配置网关；contextWindow 与 maxTokens 收敛到本项目的预算口径。
+ */
+export function resolvePiTurnModel(): PiModel {
+  const overrideModel = piRuntimeProviderOverride?.model
+  if (!overrideModel) return getPiModel()
+  const window = Math.min(aiConfig.contextMaxTokens, overrideModel.contextWindow)
+  return { ...overrideModel, contextWindow: window, maxTokens: contextBudget(window).outputReserve }
+}
+
+export interface HarnessModelsOptions {
+  /** 本回合冻结的模型（或读取器）；缺省取测试注入或配置模型。 */
+  model?: PiModel | (() => PiModel | undefined)
+  /**
+   * 返回本回合累计的投影错误（transform_context 记录）。有值时以下一次请求的错误响应阻断，
+   * 而不是同步抛出 —— Harness 的驱动状态机不接受 streamSimple 抛异常（会 fault 整条 lane）。
+   */
+  getBlockedError?: () => Error | undefined
+}
+
+/**
+ * Harness 需要的 Models 薄包装：只覆盖 getModel 与 streamSimple，其余方法直通底层网关。
+ *
+ * - `getModel` 保证本回合冻结的模型身份总能解析：测试注入的 model 不在网关目录里，
+ *   但 Harness 用它做 configuration 校验（identity → model）。
+ * - `streamSimple` 委托 piStream（NetGuard fetch、maxRetries: 0）或测试注入的 streamFn；
+ *   Harness 每次请求传入的 signal/sessionId/telemetryContext 与其余 streamOptions 原样透传。
+ */
+export function createHarnessModels(options: HarnessModelsOptions = {}): Models {
+  const base = createConfiguredGateway().models
+  const resolveModel = (): PiModel => {
+    if (options.model === undefined) return resolvePiTurnModel()
+    return typeof options.model === "function" ? options.model() ?? resolvePiTurnModel() : options.model
+  }
+  return new Proxy(base, {
+    get(target, property) {
+      if (property === "getModel") {
+        return (provider: string, id: string) => {
+          const resolved = resolveModel()
+          return provider === resolved.provider && id === resolved.id ? resolved : target.getModel(provider, id)
+        }
+      }
+      if (property === "streamSimple") {
+        return (model: Model<any>, context: Context, streamOptions?: SimpleStreamOptions): AssistantMessageEventStream => {
+          const blocked = options.getBlockedError?.()
+          if (blocked) return failedAssistantStream(model, blocked)
+          return toAssistantStream((piRuntimeProviderOverride?.streamFn ?? piStream)(model, context, streamOptions), model)
+        }
+      }
+      const value = Reflect.get(target, property, target)
+      return typeof value === "function" ? value.bind(target) : value
+    },
+  }) as Models
+}
+
+/** 以 stopReason=error 结束的 Provider 流：Harness 会把它结算为失败回合，错误文案原样上报。 */
+function failedAssistantStream(model: Model<any>, error: Error): AssistantMessageEventStream {
+  const stream = createAssistantMessageEventStream()
+  stream.end({
+    role: "assistant",
+    content: [],
+    api: model.api,
+    provider: model.provider,
+    model: model.id,
+    usage: EMPTY_GATEWAY_USAGE,
+    stopReason: "error",
+    errorMessage: error.message,
+    timestamp: Date.now(),
+  })
+  return stream
+}
+
+/**
+ * Harness 要求 streamSimple 同步返回消息流；测试注入的 StreamFn 允许返回 Promise。
+ * 出现 Promise 时桥接成同步流，避免 Harness 驱动状态机拿到不可迭代对象而 fault。
+ */
+function toAssistantStream(
+  result: AssistantMessageEventStream | Promise<AssistantMessageEventStream>,
+  model: Model<any>,
+): AssistantMessageEventStream {
+  if (!(result instanceof Promise)) return result
+  const bridged = createAssistantMessageEventStream()
+  const fail = (error: unknown) => bridged.end({
+    role: "assistant",
+    content: [],
+    api: model.api,
+    provider: model.provider,
+    model: model.id,
+    usage: EMPTY_GATEWAY_USAGE,
+    stopReason: "error",
+    errorMessage: formatError(error),
+    timestamp: Date.now(),
+  })
+  void result.then(async stream => {
+    try {
+      for await (const event of stream) bridged.push(event)
+      bridged.end(await stream.result())
+    } catch (error) {
+      fail(error)
+    }
+  }, fail)
+  return bridged
+}
+
+const EMPTY_GATEWAY_USAGE: Usage = {
+  input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0,
+  cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
 }
 
 // ── Live Test provider 注入点 ──

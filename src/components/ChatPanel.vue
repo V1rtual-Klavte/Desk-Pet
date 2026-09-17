@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { ref, nextTick, onMounted, onUnmounted, watch } from "vue";
-import { chatHistory, sendMessage } from "@/services/agent";
+import { chatHistory, sendMessage, getActiveSessionId } from "@/services/agent";
 import { playEventSound } from "@/services/audio/registry";
 import { userConfig } from "@/services/config";
 import { getUiUrl } from "@/services/profile";
@@ -28,6 +28,25 @@ const toolStatus = ref<{ text: string; visible: boolean }>({ text: "", visible: 
 let cleanupToolExec: (() => void) | null = null;
 let cleanupToolDone: (() => void) | null = null;
 const toolCompletedTimer = ref<ReturnType<typeof setTimeout> | null>(null);
+
+/**
+ * 流式正文的瞬时展示（H-3）：
+ * - 只显示正文增量，RUNTIME_DATA 与 thinking 在运行内核侧已被过滤；
+ * - 不写入 chatHistory，回合结束以既有提交路径推送的完整消息为准；
+ * - 只属于当前会话，切走/切回后不显示旧会话的半截正文。
+ */
+const streamingText = ref("");
+let cleanupStreamDelta: (() => void) | null = null;
+let cleanupStreamEnd: (() => void) | null = null;
+
+function handleStreamDelta(payload: { sessionId?: string; delta?: string }) {
+  if (!payload.delta || payload.sessionId !== getActiveSessionId()) return;
+  streamingText.value += payload.delta;
+  nextTick(() => {
+    if (isAtBottom.value) scrollToBottom();
+    else { hasNewBelow.value = true; updateThumb(); }
+  });
+}
 
 // ==========================================
 // Slash 命令下拉框
@@ -305,11 +324,25 @@ onMounted(async () => {
     toolStatus.value = { text: hint, visible: true }
     toolCompletedTimer.value = setTimeout(() => { if (toolStatus.value.text === hint) toolStatus.value.visible = false }, 2500)
   }).then(fn => { cleanupToolDone = fn }).catch(() => {})
+
+  // ── 流式正文（运行内核 message_update → 事件通道）──
+  listen<{ sessionId?: string; delta?: string }>("deskpet-assistant-stream", (event) => {
+    handleStreamDelta(event.payload)
+  }).then(fn => { cleanupStreamDelta = fn }).catch(() => {})
+  listen<{ sessionId?: string }>("deskpet-assistant-stream-end", (event) => {
+    // 真实消息由既有提交路径推送；这里只清掉不会再更新的瞬时文本。
+    if (event.payload.sessionId === getActiveSessionId()) streamingText.value = ""
+  }).then(fn => { cleanupStreamEnd = fn }).catch(() => {})
 });
+
+// 切换会话不显示上一会话的半截流式正文。
+watch(() => getActiveSessionId(), () => { streamingText.value = "" });
 
 onUnmounted(() => {
   if (cleanupToolExec) cleanupToolExec()
   if (cleanupToolDone) cleanupToolDone()
+  if (cleanupStreamDelta) cleanupStreamDelta()
+  if (cleanupStreamEnd) cleanupStreamEnd()
   if (toolCompletedTimer.value) clearTimeout(toolCompletedTimer.value)
 });
 </script>
@@ -324,6 +357,11 @@ onUnmounted(() => {
         <div v-for="m in chatHistory" :key="m.id" class="cm" :class="m.role">
           <span class="cn">{{ m.role === "system" ? "📋" : m.role === "assistant" ? "糖糖" : "你" }}</span>
           <span class="ct">{{ m.text }}</span>
+        </div>
+        <!-- 流式正文：只做瞬时展示，回合结束后由提交路径推送的完整消息取代 -->
+        <div v-if="streamingText" class="cm assistant stream">
+          <span class="cn">糖糖</span>
+          <span class="ct">{{ streamingText }}<span class="ct-cursor">▍</span></span>
         </div>
       </div>
 
@@ -502,6 +540,11 @@ onUnmounted(() => {
 .ct { color: var(--color-text-bright); word-break: break-word; padding: 4px 8px; border-radius: 12px; max-width: 95%; font-size: clamp(9px, 2.5vw, 15px); }
 .cm.user .ct { background: var(--color-border-light); }
 .cm.assistant .ct { background: var(--color-surface-dark); }
+
+/* 流式正文：半透明 + 光标，区别未提交内容 */
+.cm.stream .ct { background: var(--color-surface-dark); opacity: 0.75; }
+.ct-cursor { margin-left: 1px; animation: stream-cursor 1s steps(2, start) infinite; }
+@keyframes stream-cursor { 0%, 100% { opacity: 1; } 50% { opacity: 0; } }
 
 /* ── 系统消息（斜杠命令输出）── */
 .cm.system { align-items: stretch; }
