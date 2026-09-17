@@ -45,6 +45,7 @@ data_root/
 ├── settings/       生产 CONFIG 与默认资源初始化标记
 ├── memory/         CANDY.md、User.md、Outside.md、MEMORY.md、Project.md
 ├── sessions/       会话 Markdown；index.json 仅 UI 状态
+├── pi-sessions/    Pi AgentHarness 会话 JSONL（H-1 存储底座，尚未接入运行链路）
 ├── personality/    cards/、stages/{cardId}.json、vars.json
 ├── profiles/       {profileId}/ 下的 Profile 与素材
 ├── skills/         {name}/SKILL.md

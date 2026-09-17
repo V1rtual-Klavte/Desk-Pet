@@ -9,7 +9,7 @@
 | 前端窗口入口 | 主窗口、设置、图层编辑与模拟器；统一启动拦截和配置加载 | [boot.ts](../../src/services/boot.ts)、[main.ts](../../src/main.ts)、[vite.config.ts](../../vite.config.ts) |
 | Vue 界面 | 会话、聊天、角色、设置和确认的投影 | [App.vue](../../src/App.vue)、[components/](../../src/components/) |
 | agent | 用户输入、Provider 适配调用、子代理和主动消息入口 | [runner.ts](../../src/services/agent/runner.ts)、[agent/](../../src/services/agent/) |
-| engine | 预处理、Plan、Slash、Pi loop、会话运行阶段、压缩 | [engine/](../../src/services/engine/)、[pi/runtime.ts](../../src/services/engine/pi/runtime.ts) |
+| engine | 预处理、Plan、Slash、Pi loop、会话运行阶段、压缩、Pi 会话存储（未接线） | [engine/](../../src/services/engine/)、[pi/runtime.ts](../../src/services/engine/pi/runtime.ts)、[pi/session-repo.ts](../../src/services/engine/pi/session-repo.ts) |
 | engine/runtime | Queue、Turn、AgentSlot、trace、快照协议 | [runtime/](../../src/services/engine/runtime/) |
 | context | 分层构建、共享预算、完整轮与工具输出请求投影 | [context/](../../src/services/context/) |
 | agent/memory | 会话事件、checkpoint、Markdown 兼容、只读 MemoryProvider | [memory/](../../src/services/agent/memory/) |
