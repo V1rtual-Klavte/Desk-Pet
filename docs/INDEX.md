@@ -12,7 +12,7 @@
 | 会话队列、取消、恢复、Pi 接线、PromptSnapshot | [运行时契约](current/runtime-contract.md) | [记忆与压缩](current/memory.md)、[工具系统](current/tool-system.md) |
 | 配置、路径、Profile 持久化 | [运行时数据](current/runtime-data.md) | Config getter、AppPaths 和目标设置 Tab |
 | 工具权限、MCP、Skill | [工具系统](current/tool-system.md) | PermissionKernel、Router、对应工具实现 |
-| 实施插话双模式、工具并行/压缩策略、Pi hook | [Pi 运行时与工具协议方案](plans/active/Pi运行时与工具协议建设方案.md)对应章节 | 当前 runtime/tool/memory 契约与源码 |
+| 实施插话双模式、工具并行/压缩策略、Pi hook、Harness 迁移 | [Pi 运行时与工具协议方案](plans/active/Pi运行时与工具协议建设方案.md)对应章节 | 当前 runtime/tool/memory 契约与源码 |
 | 测试执行/验证边界 | [测试边界](current/testing.md) | [Live README](../src/services/__tests__/live/README.md)；生成契约时再读 [SKILL](../src/services/__tests__/live/SKILL.md) |
 | 继续记忆系统重构 | [执行手册的当前检查点](plans/active/记忆系统重构执行手册.md#当前检查点) | [P6 目标契约](plans/active/记忆系统运行时契约.md)及相关源码 |
 | 追溯旧方案、比较项目与实施证据 | 下方历史入口 | 只读关联章节，历史命令与授权不自动生效 |
@@ -39,7 +39,7 @@ AGENTS 维持全局规则入口，CLAUDE 只导入它；模块细节通过任务
 ## 未完成工作
 
 - [轻量陪伴与统一内核方向](plans/active/轻量陪伴运行时与统一内核建设方案.md)：已完成前置的短索引，以及长期记忆和评测方向。
-- [Pi 运行时与工具协议方案](plans/active/Pi运行时与工具协议建设方案.md)：steer/followup 显式双模式、逐条确认、统一工具策略、只读并行、原生 hook 与压缩复用；尚未实施。
+- [Pi 运行时与工具协议方案](plans/active/Pi运行时与工具协议建设方案.md)：steer/followup 显式双模式、逐条确认、统一工具策略、只读并行、原生 hook、压缩复用与 AgentHarness 迁移（§8）；尚未实施。
 - [P6 目标契约](plans/active/记忆系统运行时契约.md)：候选、来源、受控召回、纠正/遗忘与评测要求；这些目标尚未成为运行时能力。
 - [执行手册](plans/active/记忆系统重构执行手册.md)：当前检查点、已有验证证据、实施顺序与未验证边界。
 - [加固待办](plans/active/运行时加固与清理计划.md)：仍需处理或复核的工程事项，不重复旧修复流水。
