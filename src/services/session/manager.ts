@@ -217,7 +217,10 @@ export function openSession(meta: SessionMeta): void {
 /** 删除会话（磁盘文件 + 列表 + UI 状态）；历史面板与标签操作共用。 */
 export async function deleteSession(sessionId: string): Promise<boolean> {
   invalidatePermissionScope(sessionId)
-  await harnessSlots.dispose(sessionId)
+  // 删除意图优先，但「带着未结束的运行删文件」不能是静默行为。
+  if (!(await harnessSlots.dispose(sessionId))) {
+    log.warn("Session: 会话运行未在删除前收尾，继续删除:", sessionId)
+  }
 
   const wasActive = activeSessionId.value === sessionId
   removeSessionMeta(sessionId)

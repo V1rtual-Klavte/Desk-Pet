@@ -3,6 +3,7 @@ import { reactive, ref, onMounted, onUnmounted } from "vue";
 import { getSessions, getActiveSessionId, listSessionHistory } from "@/services/session";
 import type { PiSessionSummary, SessionMeta } from "@/services/session";
 import { createLogger } from "@/services/logger";
+import { formatError } from "@/services/error";
 
 const log = createLogger("SessionTabs");
 
@@ -13,6 +14,7 @@ const activeId = ref("");
 const showHistory = ref(false);
 const historySessions = ref<PiSessionSummary[]>([]);
 const historyLoading = ref(false);
+const historyError = ref(false);
 
 const restoreTimer = ref<ReturnType<typeof setTimeout> | null>(null);
 
@@ -89,8 +91,12 @@ async function loadHistorySessions(): Promise<void> {
   historyLoading.value = true;
   try {
     historySessions.value = await listSessionHistory();
-  } catch {
+    historyError.value = false;
+  } catch (error) {
+    // 读取失败不能与「确实没有会话」同形：否则用户会以为历史被清空了。
+    log.warn("加载历史会话失败:", formatError(error));
     historySessions.value = [];
+    historyError.value = true;
   } finally {
     historyLoading.value = false;
   }
@@ -184,6 +190,7 @@ onUnmounted(() => {
       </div>
       <div id="history-list">
         <div v-if="historyLoading" class="history-status">加载中...</div>
+        <div v-else-if="historyError" class="history-status">历史会话读取失败，请查看日志</div>
         <div v-else-if="historySessions.length === 0" class="history-status">暂无历史会话</div>
         <div
           v-for="item in historySessions"
