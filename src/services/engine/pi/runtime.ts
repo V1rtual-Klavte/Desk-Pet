@@ -271,11 +271,11 @@ function createTurnKernel(options: TurnKernelOptions): TurnKernel {
         captureStage,
       })
       if (options.persistSnapshots && options.sessionId) {
-        try {
-          await harnessSlots.get(options.sessionId).appendAuditEntry("deskpet.prompt_snapshot", snapshot as unknown as import("@earendil-works/pi-agent-core").JsonValue)
-        } catch (error) {
-          log.warn(`PromptSnapshot 持久化失败: ${snapshotId}`, formatError(error))
-        }
+        // 只排队，不在此写入：本函数在 Harness hook / 事件处理器内被 await，
+        // 那里直接写 lane 会与 drive 持有的命令锁循环等待（usage 事件必现死锁）。
+        // 宿主在回合 drive 结束后统一 flush（HarnessSlot.flushAuditQueue）。
+        harnessSlots.get(options.sessionId)
+          .queueAuditEntry("deskpet.prompt_snapshot", snapshot as unknown as import("@earendil-works/pi-agent-core").JsonValue)
       }
     },
   }

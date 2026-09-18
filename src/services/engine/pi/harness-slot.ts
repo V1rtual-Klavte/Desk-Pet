@@ -225,6 +225,8 @@ export class HarnessSlot {
   private readonly pendingDeliveryEntries = new Map<string, string>()
   /** 停止归还的未消费消息：在回合收尾点（或没有在飞 run 时）以 nextRun 重新入队。 */
   private readonly requeuePending: AgentMessage[] = []
+  /** 审计条目排队区：hook / 事件处理器只入队，drive 结束后由宿主写入（见 queueAuditEntry）。 */
+  private readonly auditPending: Array<{ customType: string; data: JsonValue }> = []
 
   /** transient 槽使用内存会话（子代理/一次性驱动），不写聊天目录。 */
   constructor(sessionId: string, options: { transient?: boolean; generationSeed?: number } = {}) {
@@ -493,10 +495,14 @@ export class HarnessSlot {
     await this.open()
     if (!this.interruptedInfo || !this.lane) return undefined
     const aborted = await this.lane.abort(TODO_CONTEXT)
+    if (!aborted.ok) {
+      // 丢弃失败必须保留中断状态：否则 UI 报「已丢弃」，实际运行从未停止、输入去向成谜。
+      log.warn("丢弃中断运行失败，保留中断状态:", { sessionId: this.sessionId, tag: aborted.error._tag })
+      return undefined
+    }
     this.interruptedInfo = undefined
     this.state = "idle"
     this.markInterrupted(false)
-    if (!aborted.ok) return { steer: [], followUp: [] }
     this.requeuePending.push(...aborted.value.steer, ...aborted.value.followUp)
     await this.flushRequeueQueue()
     return {
@@ -572,7 +578,11 @@ export class HarnessSlot {
     this.abortReason = reason
     if (!this.lane) return undefined
     const aborted = await this.lane.abort(TODO_CONTEXT)
-    if (!aborted.ok) return { steer: [], followUp: [] }
+    if (!aborted.ok) {
+      // 不能伪装成「停止成功但无归还项」：abort 未被接受时中断状态与归还列表都必须如实缺省。
+      log.warn("停止运行未被接受:", { sessionId: this.sessionId, reason, tag: aborted.error._tag })
+      return undefined
+    }
     // 未消费的 steer/followUp 已被 lane 从 inbox 移出：以 nextRun 重新入队（随会话持久），
     // 保证「停止归还」不丢用户输入、也不自动继续执行（§3.3.5）。
     // 有在飞 run 时由回合收尾点统一入队：否则会被 collectPendingDelivery 的队列清理覆盖。
@@ -584,8 +594,19 @@ export class HarnessSlot {
     return { steer: collectRequestIds(aborted.value.steer), followUp: collectRequestIds(aborted.value.followUp) }
   }
 
-  async waitForIdle(): Promise<void> {
-    await this.lane?.waitForIdle(TODO_CONTEXT).catch(() => undefined)
+  /**
+   * 等待 lane 空闲。失败不静默：返回 false，让收尾调用方知道自己带着未结束的运行继续。
+   * 这是唯一的「等运行结束」入口，吞掉失败会让删除会话/释放槽在未收尾时静默推进。
+   */
+  async waitForIdle(): Promise<boolean> {
+    if (!this.lane) return true
+    try {
+      await this.lane.waitForIdle(TODO_CONTEXT)
+      return true
+    } catch (error) {
+      log.warn("等待运行空闲失败:", { sessionId: this.sessionId, reason: this.abortReason }, formatError(error))
+      return false
+    }
   }
 
   // ── 会话数据读取（供 deskpet 工具与恢复核对） ──
@@ -599,10 +620,31 @@ export class HarnessSlot {
     return contentText(entry.message.content)
   }
 
-  /** 追加 Desk-Pet 控制信息（customType deskpet.*），最小化落位；不进入模型上下文。 */
-  async appendAuditEntry(customType: string, data: JsonValue): Promise<void> {
-    await this.open()
-    await this.lane?.appendCustomEntry(customType, data, TODO_CONTEXT)
+  /**
+   * 排队一条审计条目（customType deskpet.*），等本回 drive 结束后由宿主统一写入。
+   *
+   * 不能在 Harness 的 hook / 事件处理器里直接 await lane 写入：那些回调运行在 drive 内，
+   * drive 提交阶段持有 lane 命令锁，而 drive 又在 await 回调返回，会永久循环等待。
+   * 也不能交给 lane.runWhenIdle 兜底：那条路径与 waitForIdle 争抢 idleOwner，会让回合收尾悬空。
+   */
+  queueAuditEntry(customType: string, data: JsonValue): void {
+    this.auditPending.push({ customType, data })
+    // 没有在飞回合（一次性调用、子代理快照）时 lane 本就空闲，立即写入。
+    if (!this.isRunning()) void this.flushAuditQueue()
+  }
+
+  /** 写入排队的审计条目；只在 lane 空闲时调用。失败只记录，不影响回合结算。 */
+  private async flushAuditQueue(): Promise<void> {
+    const lane = this.lane
+    if (!lane || !this.auditPending.length) return
+    const queued = this.auditPending.splice(0, this.auditPending.length)
+    for (const item of queued) {
+      try {
+        await lane.appendCustomEntry(item.customType, item.data, TODO_CONTEXT)
+      } catch (error) {
+        log.warn("审计条目写入失败:", item.customType, formatError(error))
+      }
+    }
   }
 
   /** 兜底回复也属于会话记录：追加为普通 assistant 条目。 */
@@ -682,6 +724,8 @@ export class HarnessSlot {
       return { status: "failed", timedOut: this.abortReason === ABORT_REASON_TIMEOUT, undelivered: [...spec.state.undelivered], state: spec.state, error: formatError(error) }
     } finally {
       this.clearTimer()
+      // drive 已结束、lane 空闲，这里才是写审计条目的安全点（hook 内写入必死锁）。
+      await this.flushAuditQueue()
       // 运行收尾（含中止/失败）必须结束瞬时流式展示，不能让半截正文悬在 UI 上。
       this.endAssistantStream()
       this.activeRun = undefined
@@ -701,7 +745,8 @@ export class HarnessSlot {
       if (!run.spec.state.undelivered.includes(requestId)) run.spec.state.undelivered.push(requestId)
       this.pendingDeliveryEntries.set(requestId, item.entryId)
     }
-    this.pendingQueues = []
+    // 不清空宿主镜像：lane 持久 inbox 里可能仍有本次运行不消费的项（nextRun 只留给下一次运行），
+    // 清空会让 snapshot().queued 与持久真相源分叉。镜像只由 queue_update 事件更新。
     await this.flushRequeueQueue()
   }
 
@@ -1018,18 +1063,26 @@ export class HarnessSlots {
     return true
   }
 
-  async dispose(sessionId: string): Promise<void> {
+  /** 释放会话槽；返回是否在空闲状态下释放（false 表示带着未结束的运行继续，已 warn）。 */
+  async dispose(sessionId: string): Promise<boolean> {
     const slot = this.peek(sessionId)
-    if (!slot) return
-    await slot.abort(ABORT_REASON_DISPOSE).catch(() => undefined)
-    await slot.waitForIdle()
+    if (!slot) return true
+    await slot.abort(ABORT_REASON_DISPOSE).catch(error => {
+      log.warn("释放会话槽时停止运行失败:", sessionId, formatError(error))
+      return undefined
+    })
+    const idle = await slot.waitForIdle()
     this.slots.delete(sessionId)
     await slot.close()
+    return idle
   }
 
   async abortAndWaitAll(): Promise<void> {
     await Promise.allSettled([...this.slots.values()].map(async slot => {
-      await slot.abort(ABORT_REASON_DISPOSE).catch(() => undefined)
+      await slot.abort(ABORT_REASON_DISPOSE).catch(error => {
+        log.warn("停止运行失败:", { sessionId: slot.snapshot().sessionId }, formatError(error))
+        return undefined
+      })
       await slot.waitForIdle()
     }))
   }
