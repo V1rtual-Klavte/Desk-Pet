@@ -169,6 +169,14 @@ interface TurnKernel {
     llmMessages: Array<{ role: string; content?: string; toolCallId?: string }>,
     usage?: Usage,
   ) => Promise<void>
+  /**
+   * 记录「原始正文 ↔ 剥离 RUNTIME_DATA 后正文」的配对。
+   * afterResponse 会先剥离再提交，事件里拿到的最终助手消息已经没有标签，
+   * 结算时直接解析会丢掉 emotion 与变量写入，所以必须在这里留底。
+   */
+  recordSettledReply: (raw: string, stripped: string) => void
+  /** 取回与剥离后正文配对的原始正文；没有配对时原样返回。 */
+  rawTextForSettledReply: (stripped: string) => string
 }
 
 interface TurnKernelOptions {
@@ -196,6 +204,7 @@ function createTurnKernel(options: TurnKernelOptions): TurnKernel {
   const state = createHarnessRunState()
   const latestMessages: AgentMessage[] = []
   const snapshotTasks: Promise<void>[] = []
+  let settledReply: { raw: string; stripped: string } | undefined
   const kernel: TurnKernel = {
     ...options,
     blocks: options.blocks ?? [],
@@ -206,6 +215,8 @@ function createTurnKernel(options: TurnKernelOptions): TurnKernel {
     latestMessages,
     snapshotTasks,
     snapshotSequence: 0,
+    recordSettledReply: (raw, stripped) => { settledReply = { raw, stripped } },
+    rawTextForSettledReply: stripped => settledReply?.stripped === stripped ? settledReply.raw : stripped,
     captureSnapshot: async (captureStage, agentMessages, llmMessages, usage) => {
       const snapshotId = `${traceContext.runId}:${captureStage}:${++kernel.snapshotSequence}`
       // 工具轮会追加消息；用准确请求投影刷新分配，不计入 Pi usage/时间戳。
@@ -401,7 +412,11 @@ function createTurnSpec(kernel: TurnKernel, options: {
         headerNames: Object.keys(meta.headers ?? {}).sort(),
       })
       // 提交前剥离 RUNTIME_DATA：条目是真相源，但正文块不进入后续请求与展示。
-      return stripRuntimeData(message)
+      // 剥离前先留底原始正文：事件里的最终助手消息已经没有标签，结算时的 emotion
+      // 映射与 RUNTIME_DATA 变量写入都要靠它。
+      const stripped = stripRuntimeData(message)
+      kernel.recordSettledReply(contentText(message.content), contentText(stripped.content))
+      return stripped
     },
     beforePayload: (payload, payloadModel) => {
       const safePayload = redactText(stableSerialize(payload))
@@ -765,7 +780,8 @@ async function settleMainTurn(args: {
   if (!finalAssistant || finalAssistant.stopReason === "error" || finalAssistant.stopReason === "aborted") {
     return failTurn(finalAssistant?.errorMessage || "Pi Agent 未返回有效回复", "unknown")
   }
-  const rawReply = contentText(finalAssistant.content)
+  // afterResponse 已把提交的助手消息剥离过 RUNTIME_DATA，取配对留底的原始正文再交给回复模块。
+  const rawReply = kernel.rawTextForSettledReply(contentText(finalAssistant.content))
   const liveCard = getActiveCard()
   // 卡片快照不一致（运行中切换 Card）时只展示文本，不写变量：变量写入必须归属本回合冻结的快照。
   const cardIsCurrent = liveCard?.id === kernel.card?.id && liveCard?.hash === kernel.card?.hash && liveCard?.version === kernel.card?.version

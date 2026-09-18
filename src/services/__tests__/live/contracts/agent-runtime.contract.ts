@@ -12,7 +12,7 @@ export const agentRuntimeContract: ModuleContract = {
     "src/services/session/repo.ts",
   ],
   generatedAt: "2026-09-18",
-  sourceHash: "8d86b55831f3063be61756d3aab3392e8e93e337803b207c4941b7cce5817057",
+  sourceHash: "424414255c67b35a614333e6777c83c58d0875a7aaa83f0e7a7402e3d50e2613",
   coverage: [
     {
       id: "ar-01",
@@ -32,9 +32,9 @@ export const agentRuntimeContract: ModuleContract = {
     },
     {
       id: "ar-03",
-      feature: "收尾阶段的 followUp 投递",
-      description: "turn_end 后（settling）的新输入以 followUp 入队，由本次运行自然结束前继续处理，正文恰好一次且排在首个回复之后",
-      why: "followUp 语义不能被 steer 混淆，也不能在自然结束边界丢输入",
+      feature: "followUp 通道语义",
+      description: "以 followUp 入队的收尾输入由本次运行继续处理，正文恰好一次且排在首个回复之后；工具执行期（streaming）的投递模式必须是 steer，不得冒充 followUp",
+      why: "followUp 语义不能被 steer 混淆，也不能在自然结束边界丢输入。注：settling 窗口由 Harness 的 turn_end 事件驱动、无法在场景里稳定命中（旧内核的 markDeliveryPhase 入口已随迁移删除），因此本覆盖点验证的是 followUp 通道自身的语义与 streaming 侧的投递模式判定，不声称验证了 settling 自动路由",
       depth: "deep",
       scenarios: ["memory-followup-after-turn"],
     },
