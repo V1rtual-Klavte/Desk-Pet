@@ -1,16 +1,28 @@
-import type { AssistantMessage, Context } from "@earendil-works/pi-ai"
+import type { Context, FauxResponseStep } from "@earendil-works/pi-ai"
 import { harnessSlots, compactActiveSession } from "@/services/engine/pi"
 import { initChat } from "@/services/agent/runner"
 import { getActiveSessionId } from "@/services/session"
+import { aiConfig } from "@/services/config"
+import { contextBudget } from "@/services/context"
 import { installFakeProvider, fakeText } from "../../fake-provider"
 import { compactionEntries, sessionEntries, sessionMessages } from "../../session-entries"
 import type { SceneDef } from "../../types"
 
-// 待查：Harness 的 findCutPoint 在本模型窗口下始终给出空的可摘要范围。
-// 实测 keepRecentTokens=3648、tokensBefore=8210（repeat 224）与 9050（repeat 476），
-// 两种载荷都得到 messagesToSummarize=0 / turnPrefixMessages=0，before_compaction 只能 decline。
-// 载荷规模不是唯一变量，切点判定的真实条件仍未定位，故此处保持原载荷不做无依据的调参。
-const LONG = "压缩候选正文必须保留在磁盘中。".repeat(224)
+// ── 场景前置：载荷按当前窗口预算推导 ──
+//
+// 上游 findCutPoint 只对消息本体做 chars/4 估算，并且必须"从尾部往回累加、在中途越过
+// keepRecentTokens"才存在可摘要范围；越过点落在首条消息上时切点就是第一条，整个会话都算最近。
+// keepRecentTokens 由窗口推导（harness-slot.compactionSettings），所以载荷必须按预算算：
+// 首条之后的正文合计留 1.25 倍保留窗口，首条本身只需是一段像样的早期历史。
+//
+// 窗口由配置保证 ≥ MIN_CONTEXT_WINDOW（64k），该下限下这套载荷同样成立；
+// 低于下限的窗口不做压缩而是在模型解析处报错，由 上下文窗口下限 场景单独覆盖。
+const KEEP_MARGIN = 1.25
+const UNIT = "压缩候选正文必须保留在磁盘中。"   // 15 字符
+const budget = contextBudget(aiConfig.contextMaxTokens)
+const LONG = UNIT.repeat(Math.ceil(budget.keepRecentTokens * 4 * KEEP_MARGIN / 2 / UNIT.length))
+const FIRST = `用户第一轮：${UNIT.repeat(133)}`
+
 const SUMMARY_MARKER = "继续讨论会话压缩的可靠提交"
 const SUMMARY = JSON.stringify({
   intent: SUMMARY_MARKER,
@@ -21,17 +33,21 @@ const SUMMARY = JSON.stringify({
   nextSteps: ["检查 contextEpoch 是否推进"],
 })
 
-/**
- * 摘要请求与普通回复共用同一个 provider 脚本：按请求正文区分。
- * 摘要输入是 compactor 内核的 JSON（含 instructions 字段），其余请求返回普通长回复。
- */
-function summaryOrLongReply(longReply: string) {
-  return (context: Context): AssistantMessage => {
-    const last = context.messages[context.messages.length - 1]
-    const text = typeof last?.content === "string"
-      ? last.content
-      : (last?.content ?? []).map(part => (part.type === "text" ? part.text : "")).join("")
-    return fakeText(text.includes("\"instructions\"") ? SUMMARY : longReply)
+function lastRequestText(context: Context): string {
+  const last = context.messages[context.messages.length - 1]
+  return typeof last?.content === "string"
+    ? last.content
+    : (last?.content ?? []).map(part => (part.type === "text" ? part.text : "")).join("")
+}
+
+/** 第 4 条脚本响应专供 before_compaction 的摘要请求；被别的请求取走就是脚本错位，立即报错。 */
+function summaryStep(): FauxResponseStep {
+  return context => {
+    const text = lastRequestText(context)
+    if (!text.includes("\"instructions\"")) {
+      throw new Error(`摘要脚本被非摘要请求取走: ${text.slice(0, 60)}`)
+    }
+    return fakeText(SUMMARY)
   }
 }
 
@@ -47,16 +63,21 @@ export const 压缩检查点: SceneDef = {
     tags: ["memory", "compaction", "boundary", "error"],
   },
   setup: async () => {
-    installFakeProvider([summaryOrLongReply("第一轮回复完成。"), summaryOrLongReply("第二轮回复完成。"), summaryOrLongReply("第三轮回复完成。")])
+    installFakeProvider([
+      () => fakeText("第一轮回复完成。"),
+      () => fakeText("第二轮回复完成。"),
+      () => fakeText("第三轮回复完成。"),
+      summaryStep(),
+    ])
     await initChat()
   },
   turns: [
-    { index: 1, description: "积累可压缩的完整历史", userText: `用户第一轮：${LONG}`, checks: [
+    { index: 1, description: "铺垫早期历史", userText: FIRST, checks: [
       { type: "expectTurnCompleted", run: async context => {
         if (!context.output.reply.trim()) throw new Error("第一轮没有回复")
       } },
     ] },
-    { index: 2, description: "继续积累历史", userText: `用户第二轮：${LONG}`, checks: [
+    { index: 2, description: "积累到超过保留窗口", userText: `用户第二轮：${LONG}`, checks: [
       { type: "expectTurnCompleted", run: async context => {
         if (!context.output.reply.trim()) throw new Error("第二轮没有回复")
       } },
@@ -67,16 +88,18 @@ export const 压缩检查点: SceneDef = {
         const before = await sessionEntries()
         const beforeTexts = (await sessionMessages()).map(message => message.text).filter(text => text.length > 0)
         const outcome = await compactActiveSession(sessionId)
-        if (outcome.status === "failed") throw new Error(`压缩失败: ${outcome.error ?? "未知原因"}`)
+        if (outcome.status !== "completed") {
+          throw new Error(outcome.status === "failed"
+            ? `压缩失败: ${outcome.error ?? "未知原因"}`
+            : `压缩未完成: ${outcome.status}（空可摘要范围：首条之后的正文需超过 keepRecentTokens=${budget.keepRecentTokens} 的 chars/4 估算）`)
+        }
 
         const after = await sessionEntries()
         const compactions = compactionEntries(after)
         if (compactions.length === 0) throw new Error(`没有产生 compaction 条目: ${outcome.status}`)
         const fromHook = compactions.filter(entry => entry.fromHook)
-        if (outcome.status === "completed" && fromHook.length === 0) {
-          throw new Error("压缩条目不是由宿主 before_compaction 内核提交")
-        }
-        if (fromHook.length > 0 && !fromHook.some(entry => entry.summary.includes(SUMMARY_MARKER))) {
+        if (fromHook.length === 0) throw new Error("压缩条目不是由宿主 before_compaction 内核提交")
+        if (!fromHook.some(entry => entry.summary.includes(SUMMARY_MARKER))) {
           throw new Error("宿主摘要内核的结构化摘要没有进入 compaction 条目")
         }
         // 压缩只改变请求视图：全部原始正文条目仍在会话文件里。

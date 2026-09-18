@@ -16,6 +16,7 @@ import type { EmotionMapping } from "@/services/personality";
 import type { StageMap, StagePrompts } from "@/services/personality";
 import { createLogger } from "@/services/logger";
 import { formatError } from "@/services/error"
+import { MIN_CONTEXT_WINDOW } from "@/services/context"
 
 const log = createLogger("Settings");
 
@@ -489,7 +490,7 @@ defineExpose({
     <div class="fld"><span class="fn">端点</span><input class="inp" v-model="aiEndpoint" /></div>
     <div class="fld"><span class="fn">密钥</span><input class="inp" :type="showApiKey ? 'text' : 'password'" v-model="aiApiKey" /><button class="btn-s" @click="showApiKey = !showApiKey">{{ showApiKey ? '🙈' : '👁' }}</button></div>
     <div class="fld"><span class="fn">模型</span><input class="inp" v-model="aiModel" /></div>
-    <div class="fld"><span class="fn">上下文</span><input class="inp-num" type="number" v-model.number="aiContextMaxTokens" style="width:80px" /><span class="s-muted">tokens</span></div>
+    <div class="fld"><span class="fn">上下文</span><input class="inp-num" type="number" :min="MIN_CONTEXT_WINDOW" v-model.number="aiContextMaxTokens" style="width:80px" /><span class="s-muted">tokens（最低 {{ MIN_CONTEXT_WINDOW }}）</span></div>
     <label class="chk" style="margin-top:4px"><input type="checkbox" v-model="aiRequireApiKey" /><span>需要 API Key</span></label>
   </div>
 

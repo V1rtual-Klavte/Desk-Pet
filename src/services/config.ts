@@ -8,6 +8,8 @@ import rawConfig from "../../CONFIG.yaml";
 import { invoke } from "@tauri-apps/api/core";
 import { dump as dumpYaml, load as loadYaml } from "js-yaml";
 import { DEFAULT_PROFILE } from "@/services/paths";
+// 零依赖叶子：窗口语义的唯一定义点（默认 128k / 下限 64k），config 只做缺省引用。
+import { DEFAULT_CONTEXT_WINDOW } from "./context/budget";
 import { createLogger, LEVELS, LEVEL_ORDER, setLogLevel, type Level } from "@/services/logger";
 import { reportError } from "@/services/error";
 
@@ -465,7 +467,7 @@ const _ai = {
   get endpoint() { return overrideOr("ai.endpoint", cfg.ai?.endpoint || import.meta.env.VITE_API_ENDPOINT || ""); },
   get apiKey() { return overrideOr("ai.apiKey", cfg.ai?.apiKey || import.meta.env.VITE_API_KEY || ""); },
   get model() { return overrideOr("ai.model", cfg.ai?.model || import.meta.env.VITE_MODEL || "deepseek-chat"); },
-  get contextMaxTokens() { return overrideOr("ai.contextMaxTokens", cfg.ai?.contextMaxTokens ?? 16000); },
+  get contextMaxTokens() { return overrideOr("ai.contextMaxTokens", cfg.ai?.contextMaxTokens ?? DEFAULT_CONTEXT_WINDOW); },
   get thinkingEffort() { return overrideOr("ai.thinking.effort", cfg.ai?.thinking?.effort || "auto") as import("@/services/agent/types").ThinkingEffort; },
   get requireApiKey() { return overrideOr("ai.requireApiKey", cfg.ai?.requireApiKey ?? true); },
   get configured() { if (!this.endpoint) return false; if (!this.requireApiKey) return true; return Boolean(this.apiKey); },

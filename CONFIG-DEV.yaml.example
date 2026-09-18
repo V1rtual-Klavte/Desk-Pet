@@ -17,7 +17,8 @@ ai:
   apiKey: ""
   requireApiKey: true
   model: deepseek-chat
-  contextMaxTokens: 16000
+  # 上下文窗口（tokens）：默认 128k，最低 65536（再低压缩找不到可摘要范围）
+  contextMaxTokens: 131072
   thinking:
     effort: auto
   personality:

@@ -12,6 +12,7 @@ import { switchPersonality, getActivePersonalityId } from "@/services/personalit
 import { createLogger } from "@/services/logger";
 import { isMacOS } from "@/services/env";
 import { parseEnvText } from "@/services/tool/mcp";
+import { contextWindowError } from "@/services/context";
 import { emit } from "@tauri-apps/api/event";
 import GeneralTab from "@/components/settings/GeneralTab.vue";
 import AITab from "@/components/settings/AITab.vue";
@@ -57,6 +58,14 @@ async function doSave() {
   const t = toolsTabRef.value!;
   const ap = appearanceTabRef.value!;
   saveError.value = "";
+  // 窗口低于支持下限时拒绝保存：这类配置会让压缩找不到可摘要范围，
+  // 落盘只会把“静默跑坏”固化进 CONFIG；运行期同样会在模型解析处报错。
+  const windowIssue = contextWindowError(a.aiContextMaxTokens);
+  if (windowIssue) {
+    saveError.value = windowIssue;
+    log.error("设置保存失败:", windowIssue);
+    return;
+  }
   const previousPersonalityActive = getActivePersonalityId();
 
   userConfig.popupMode = g.popupMode;

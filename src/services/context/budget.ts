@@ -1,5 +1,12 @@
 /** All request budgets, including one-shot summaries, use the same units. */
 export const CONTEXT_RATIOS = Object.freeze({ static: .12, tools: .08, dynamic: .10, memory: .15, transcript: .50, ephemeral: .05 })
+/** 上下文窗口默认值（tokens）：CONFIG 与设置页的缺省都取它（128k）。 */
+export const DEFAULT_CONTEXT_WINDOW = 131_072
+/**
+ * 支持的最低上下文窗口（64k）。静态提示词与工具 schema 已占掉硬输入预算的大头，
+ * 再低时留给消息的空间小于上游切点所需的保留窗口，压缩永远找不到可摘要范围。
+ */
+export const MIN_CONTEXT_WINDOW = 65_536
 const CHARS_PER_TOKEN = 2.5
 const MIN_OUTPUT = 1024
 const MAX_OUTPUT = 4096
@@ -76,4 +83,12 @@ export class ContextBudgetError extends Error {
     super(`上下文需要约 ${used} tokens，超过可用 ${limit} tokens；请缩短当前输入或调整上下文窗口`)
     this.name = "ContextBudgetError"
   }
+}
+
+/** 窗口校验：合法返回 undefined，低于下限返回用户可读文案（设置页保存与模型解析共用）。 */
+export function contextWindowError(window: number): string | undefined {
+  const value = Number.isFinite(window) ? Math.floor(window) : 0
+  return value >= MIN_CONTEXT_WINDOW
+    ? undefined
+    : `上下文窗口配置最低 ${MIN_CONTEXT_WINDOW} tokens（当前 ${value}），再低会让压缩找不到可摘要范围`
 }

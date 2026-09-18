@@ -14,7 +14,7 @@ import type { ThinkingEffort } from "@/services/agent/types"
 import { aiConfig } from "@/services/config"
 import { createLogger } from "@/services/logger"
 import { formatError } from "@/services/error"
-import { contextBudget, ContextBudgetError, estimateRequestTokens } from "@/services/context"
+import { contextBudget, ContextBudgetError, contextWindowError, estimateRequestTokens } from "@/services/context"
 import { PROVIDER_TIMEOUT_MS, createProviderFetchGuard, validateProviderUrl } from "./net-guard"
 
 const log = createLogger("PiGateway")
@@ -151,9 +151,18 @@ export function piStream(model: Model<any>, context: Context, options?: SimpleSt
  */
 export function resolvePiTurnModel(): PiModel {
   const overrideModel = piRuntimeProviderOverride?.model
-  if (!overrideModel) return getPiModel()
-  const window = Math.min(aiConfig.contextMaxTokens, overrideModel.contextWindow)
-  return { ...overrideModel, contextWindow: window, maxTokens: contextBudget(window).outputReserve }
+  let model: PiModel
+  if (overrideModel) {
+    const window = Math.min(aiConfig.contextMaxTokens, overrideModel.contextWindow)
+    model = { ...overrideModel, contextWindow: window, maxTokens: contextBudget(window).outputReserve }
+  } else {
+    model = getPiModel()
+  }
+  // 低于下限的窗口没有可用的压缩切点：在模型解析这个唯一入口报错，
+  // 不让回合静默跑在坏预算上（设置页保存时同样会拒绝）。
+  const issue = contextWindowError(model.contextWindow)
+  if (issue) throw new Error(issue)
+  return model
 }
 
 export interface HarnessModelsOptions {

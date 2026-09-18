@@ -15,6 +15,7 @@ export const memoryContract: ModuleContract = {
     "src/services/engine/runtime/types.ts",
     "src/services/engine/runtime/trace.ts",
     "src/services/engine/pi/runtime.ts",
+    "src/services/engine/pi/model-gateway.ts",
     "src/services/engine/compactor.ts",
     "src/services/context/builder.ts",
     "src/services/context/kernel.ts",
@@ -23,8 +24,8 @@ export const memoryContract: ModuleContract = {
     "src/services/context/rounds.ts",
     "src/services/context/tool-output.ts",
   ],
-  generatedAt: "2026-09-17",
-  sourceHash: "4efb17c93c1bff6802eee16b8c58c2c26ac360dccb1f75920604e833d8d5beb4",
+  generatedAt: "2026-09-18",
+  sourceHash: "2605149b6211e9ae3af7968444572dff68507cfa903bacd1202a86e7ae8bd78f",
   coverage: [
     { id: "mm-01", feature: "Memory 添加条目", description: "MemoryService.append() 创建记忆", why: "记忆系统基础 CRUD", depth: "shallow", scenarios: ["memory-append"] },
     { id: "mm-02", feature: "Memory 搜索", description: "MemoryService.search(query, limit) 按内容搜索", why: "LLM 需检索相关记忆", depth: "shallow", scenarios: ["memory-search"] },
@@ -41,6 +42,7 @@ export const memoryContract: ModuleContract = {
     { id: "mm-17", feature: "画像与记忆投影", description: "User.md 使用带来源的只读 projection；MemoryProvider 可注入、取消、限时、裁剪并恢复，默认空实现不执行长期召回", why: "画像和长期事实需要显式来源边界，下一阶段选择存储与检索策略时不能改动 Agent Runtime", depth: "deep", scenarios: ["memory-profile-rewrite"] },
     { id: "mm-18", feature: "消息条目单次写入", description: "一次真实回合后同一句话只有一条 pi 会话条目；后续回合不重复追加历史消息", why: "双写或历史重放会让重载出现重复消息与翻倍轮数", depth: "deep", scenarios: ["memory-single-message-write"] },
     { id: "mm-19", feature: "Harness 压缩与摘要内核", description: "手动/阈值压缩由 Harness 调度：宿主 before_compaction 生成结构化摘要并提交 compaction 条目，原始消息条目全部保留，contextEpoch 推进", why: "摘要只能替换后续请求视图，不能删除会话真相源，也不能把压缩调度留在宿主第二套状态机里", depth: "deep", scenarios: ["memory-compaction-checkpoint"] },
+    { id: "mm-20", feature: "上下文窗口下限", description: "低于 65536 的窗口被拒绝：设置保存报错、运行期在模型解析处报错，合法窗口照常解析且不超过配置值", why: "窗口过小时压缩找不到可摘要范围，静默接受只会把预算问题推迟成运行期的另一种报错", depth: "shallow", scenarios: ["memory-context-window-floor"] },
   ],
   rules: { minScenarios: 6, minDeepScenarios: 2, requireBoundary: true, requireErrorPath: true },
 }
