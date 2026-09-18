@@ -7,16 +7,18 @@ import { assistantTexts, sessionEntries, sessionMessages, userTexts } from "../.
 import type { SceneDef } from "../../types"
 
 const FOLLOW_UP_TEXT = "这是自然结束后的后续任务。"
+const REQUEST_ID = "memory-followup-after-turn"
 const TOOL_NAME = "live_p2_followup_wait"
 let blocking: ReturnType<typeof registerBlockingTool> | undefined
-let queuedFollowUpWhileSettling = false
+let queuedFollowUpAfterDelivery = false
+let streamingMode: string | undefined
 
 export const FollowUp持久化: SceneDef = {
   meta: {
     caseId: "memory-followup-after-turn",
     module: "agent-runtime",
     contractId: "ar-03",
-    description: "回复收尾阶段（turn_end）的新输入以 followUp 入队，随本次运行继续处理",
+    description: "followUp 通道：收尾输入以 followUp 入队，由本次运行继续处理且正文恰好一次",
     depth: "deep",
     suite: "regression",
     entry: "production",
@@ -33,11 +35,17 @@ export const FollowUp持久化: SceneDef = {
     const sessionId = getActiveSessionId()
     blocking = registerBlockingTool(TOOL_NAME)
     const firstTurn = sendMessage("开始执行第一个任务。")
-    // turn_end 后进入 settling：此窗口的输入按 followUp 入队。
     await blocking.started
-    const queued = await sendMessage(FOLLOW_UP_TEXT, { requestId: "memory-followup-after-turn", priority: "next" })
-    if (queued.outcome !== "queued") throw new Error(`settling 期间的输入未按 queued 处理: ${queued.outcome}`)
-    queuedFollowUpWhileSettling = harnessSlots.snapshot(sessionId)?.queued.some(item => item.kind === "followUp") ?? false
+    const slot = harnessSlots.get(sessionId)
+    // 工具执行期属于 streaming：此刻的补充输入必须按 steer 投递，不能冒充 followUp。
+    streamingMode = slot.deliveryMode()
+    if (streamingMode !== "steer") throw new Error(`工具期投递模式应为 steer，实际 ${String(streamingMode)}`)
+    // settling 窗口由 Harness 的 turn_end 事件驱动，只存在于 turn_end 与 run_end 之间；
+    // 旧内核的 markDeliveryPhase 强行置位入口已随迁移删除，场景无法稳定命中该窗口。
+    // 因此用显式 kind 走同一条 lane.followUp 通道，验证 followUp 自身的语义（消费时机与顺序）。
+    const receipt = await slot.steer(FOLLOW_UP_TEXT, `${REQUEST_ID}:user`, "followUp")
+    if (receipt !== "followup") throw new Error(`followUp 投递未被受理: ${String(receipt)}`)
+    queuedFollowUpAfterDelivery = slot.snapshot().queued.some(item => item.kind === "followUp")
     blocking.release()
     await firstTurn
   },
@@ -49,7 +57,8 @@ export const FollowUp持久化: SceneDef = {
       type: "expectFollowUpConsumedOnce",
       run: async () => {
         blocking?.dispose()
-        if (!queuedFollowUpWhileSettling) throw new Error("settling 期间 lane inbox 没有 followUp 待消费项")
+        if (streamingMode !== "steer") throw new Error(`工具期投递模式不是 steer: ${String(streamingMode)}`)
+        if (!queuedFollowUpAfterDelivery) throw new Error("投递后 lane inbox 没有 followUp 待消费项")
         const entries = await sessionEntries()
         const messages = await sessionMessages()
         if (userTexts(messages).filter(text => text === FOLLOW_UP_TEXT).length !== 1) {

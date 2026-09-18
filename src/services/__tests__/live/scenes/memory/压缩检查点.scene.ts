@@ -6,6 +6,10 @@ import { installFakeProvider, fakeText } from "../../fake-provider"
 import { compactionEntries, sessionEntries, sessionMessages } from "../../session-entries"
 import type { SceneDef } from "../../types"
 
+// 待查：Harness 的 findCutPoint 在本模型窗口下始终给出空的可摘要范围。
+// 实测 keepRecentTokens=3648、tokensBefore=8210（repeat 224）与 9050（repeat 476），
+// 两种载荷都得到 messagesToSummarize=0 / turnPrefixMessages=0，before_compaction 只能 decline。
+// 载荷规模不是唯一变量，切点判定的真实条件仍未定位，故此处保持原载荷不做无依据的调参。
 const LONG = "压缩候选正文必须保留在磁盘中。".repeat(224)
 const SUMMARY_MARKER = "继续讨论会话压缩的可靠提交"
 const SUMMARY = JSON.stringify({
