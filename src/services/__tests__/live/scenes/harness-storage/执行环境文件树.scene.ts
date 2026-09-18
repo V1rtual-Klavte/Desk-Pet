@@ -131,7 +131,12 @@ export const 执行环境文件树: SceneDef = {
             if (file.kind !== "file" || dir.kind !== "directory") {
               throw new Error(`listDir kind 不符合契约: file=${file.kind}, dir=${dir.kind}`)
             }
-            if (file.path !== `${root}/a.txt` || file.size !== 3) {
+            // file_list 的 path 来自 Rust 侧 validate_file_path 规范化后的绝对路径，
+            // 不能直接拿 createTempDir 的原始返回值拼字符串：macOS 上 temp 根位于
+            // /var（指向 /private/var 的符号链接），两者必然不等。
+            const canonicalRoot = fileOk(await env.canonicalPath(root, context))
+            const expectedPath = fileOk(await env.joinPath([canonicalRoot, "a.txt"], context))
+            if (file.path !== expectedPath || file.size !== 3) {
               throw new Error(`listDir 缺绝对 path 或 size 错误: ${JSON.stringify(file)}`)
             }
             if (!(file.mtimeMs > 0) || !(dir.mtimeMs > 0)) throw new Error("listDir 缺少 mtimeMs")

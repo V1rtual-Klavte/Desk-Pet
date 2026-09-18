@@ -63,6 +63,15 @@ export const 会话运行槽: SceneDef = {
         }
         releaseFirst()
         await firstDrain
+
+        // 空闲槽上的停止请求必须如实失败：不能返回「已停止、无归还项」的空成功，
+        // 否则一次从未发生的停止会被上报成成功（lane.abort 的 NoActiveOperation 分支）。
+        const openSlot = harnessSlots.get(sessionId)
+        if (await openSlot.abort() !== undefined) {
+          throw new Error("空闲槽上的停止不应报告已归还项")
+        }
+        if (harnessSlots.isRunning(sessionId)) throw new Error("空闲槽停止后不应处于运行态")
+
         harnessSlots.releaseWhenIdle(sessionId)
       },
     }],
