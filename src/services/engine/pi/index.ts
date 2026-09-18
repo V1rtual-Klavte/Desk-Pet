@@ -35,6 +35,7 @@ export { completePiText } from "./model-gateway"
 export {
   HarnessSlot,
   HARNESS_LANE,
+  compactionSettingsFor,
   createHarnessRunState,
   harnessSlots,
 } from "./harness-slot"

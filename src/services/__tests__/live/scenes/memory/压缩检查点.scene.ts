@@ -3,7 +3,7 @@ import { harnessSlots, compactActiveSession } from "@/services/engine/pi"
 import { initChat } from "@/services/agent/runner"
 import { getActiveSessionId } from "@/services/session"
 import { aiConfig } from "@/services/config"
-import { contextBudget } from "@/services/context"
+import { compactionSettingsFor } from "@/services/engine/pi"
 import { installFakeProvider, fakeText } from "../../fake-provider"
 import { compactionEntries, sessionEntries, sessionMessages } from "../../session-entries"
 import type { SceneDef } from "../../types"
@@ -12,15 +12,15 @@ import type { SceneDef } from "../../types"
 //
 // 上游 findCutPoint 只对消息本体做 chars/4 估算，并且必须"从尾部往回累加、在中途越过
 // keepRecentTokens"才存在可摘要范围；越过点落在首条消息上时切点就是第一条，整个会话都算最近。
-// keepRecentTokens 由窗口推导（harness-slot.compactionSettings），所以载荷必须按预算算：
-// 首条之后的正文合计留 1.25 倍保留窗口，首条本身只需是一段像样的早期历史。
+// 所以载荷直接按 Harness 真正收到的保留窗口算：首条之后的正文合计留 1.25 倍保留窗口，
+// 首条本身只需是一段像样的早期历史（口径换算见 compactionSettingsFor）。
 //
 // 窗口由配置保证 ≥ MIN_CONTEXT_WINDOW（64k），该下限下这套载荷同样成立；
 // 低于下限的窗口不做压缩而是在模型解析处报错，由 上下文窗口下限 场景单独覆盖。
 const KEEP_MARGIN = 1.25
 const UNIT = "压缩候选正文必须保留在磁盘中。"   // 15 字符
-const budget = contextBudget(aiConfig.contextMaxTokens)
-const LONG = UNIT.repeat(Math.ceil(budget.keepRecentTokens * 4 * KEEP_MARGIN / 2 / UNIT.length))
+const settings = compactionSettingsFor(aiConfig.contextMaxTokens)
+const LONG = UNIT.repeat(Math.ceil(settings.keepRecentTokens * 4 * KEEP_MARGIN / 2 / UNIT.length))
 const FIRST = `用户第一轮：${UNIT.repeat(133)}`
 
 const SUMMARY_MARKER = "继续讨论会话压缩的可靠提交"
@@ -91,7 +91,7 @@ export const 压缩检查点: SceneDef = {
         if (outcome.status !== "completed") {
           throw new Error(outcome.status === "failed"
             ? `压缩失败: ${outcome.error ?? "未知原因"}`
-            : `压缩未完成: ${outcome.status}（空可摘要范围：首条之后的正文需超过 keepRecentTokens=${budget.keepRecentTokens} 的 chars/4 估算）`)
+            : `压缩未完成: ${outcome.status}（空可摘要范围：首条之后的正文需超过 keepRecentTokens=${settings.keepRecentTokens} 的 chars/4 估算）`)
         }
 
         const after = await sessionEntries()

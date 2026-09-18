@@ -31,7 +31,7 @@ import type { ThinkingEffort } from "@/services/agent/types"
 import type { ToolDef } from "@/services/tool/types"
 import type { HarnessToolRun } from "@/services/tool/pi/harness-tool-adapter"
 import { toAgentHarnessTools } from "@/services/tool/pi/harness-tool-adapter"
-import { contextBudget } from "@/services/context"
+import { contextBudget, toHarnessEstimateTokens } from "@/services/context"
 import { loopConfig } from "@/services/config"
 import { PI_LANE } from "@/services/session/repo"
 import { createLogger } from "@/services/logger"
@@ -191,6 +191,24 @@ export type HarnessAbortReason = typeof ABORT_REASON_TIMEOUT | typeof ABORT_REAS
  * 单会话运行槽。同一时刻只允许一个 run；所有 lane 操作串行经过 Harness 的持久操作记录。
  * 打开失败的槽不静默重建（§8.7.4）：fault 后该会话停止驱动，需宿主显式处理。
  */
+/**
+ * 压缩设置：阈值与保留窗口都由本仓预算换算到上游估算口径，绝不照搬 Pi 的 16k/20k 默认值
+ * （上游默认值只适配它自己的默认窗口）。
+ *
+ * Harness 的 `shouldCompact` 比较的是它自己的估算（消息 chars/4，或 provider usage），
+ * 本仓预算是 chars/2.5；不换算时阈值会比正常输入目标晚约 1.6 倍触发，宿主硬预算会先一步
+ * 把请求拦成报错而不是先压缩。换算后阈值正好落在 normalInputTarget，保留窗口同样回到
+ * normalInputTarget 的 40%（见 toHarnessEstimateTokens）。
+ */
+export function compactionSettingsFor(window: number, maxOutput?: number): CompactionSettings {
+  const budget = contextBudget(window, maxOutput)
+  return {
+    enabled: true,
+    reserveTokens: Math.max(1, budget.window - toHarnessEstimateTokens(budget.normalInputTarget)),
+    keepRecentTokens: toHarnessEstimateTokens(budget.keepRecentTokens),
+  }
+}
+
 export class HarnessSlot {
   readonly sessionId: string
   generation = 0
@@ -316,18 +334,9 @@ export class HarnessSlot {
       && (item.kind === "steer" || item.kind === "followUp" || item.kind === "nextRun"))
   }
 
-  /**
-   * 压缩阈值由现有预算推导（§7）：窗口 − 正常输入目标 = 输出预留 + 协议开销 + 压缩余量。
-   * 请求视图超过正常输入目标即触发阈值压缩，绝不照搬 Pi 的 16k/20k 默认值（默认窗口仅 16k）。
-   */
+  /** 压缩阈值由现有预算推导（§7）：窗口 − 正常输入目标 = 输出预留 + 协议开销 + 压缩余量。 */
   private compactionSettings(model: PiModel): { settings: CompactionSettings; key: string } {
-    const budget = contextBudget(model.contextWindow, model.maxTokens)
-    const settings: CompactionSettings = {
-      enabled: true,
-      reserveTokens: Math.max(1, budget.window - budget.normalInputTarget),
-      // 保留原文的口径复用预算定义（normalInputTarget 的 40%），与旧压缩调度同源。
-      keepRecentTokens: budget.keepRecentTokens,
-    }
+    const settings = compactionSettingsFor(model.contextWindow, model.maxTokens)
     return { settings, key: `${settings.reserveTokens}:${settings.keepRecentTokens}` }
   }
 

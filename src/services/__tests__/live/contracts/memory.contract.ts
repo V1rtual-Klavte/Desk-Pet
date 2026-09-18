@@ -16,6 +16,7 @@ export const memoryContract: ModuleContract = {
     "src/services/engine/runtime/trace.ts",
     "src/services/engine/pi/runtime.ts",
     "src/services/engine/pi/model-gateway.ts",
+    "src/services/engine/pi/harness-slot.ts",
     "src/services/engine/compactor.ts",
     "src/services/context/builder.ts",
     "src/services/context/kernel.ts",
@@ -25,7 +26,7 @@ export const memoryContract: ModuleContract = {
     "src/services/context/tool-output.ts",
   ],
   generatedAt: "2026-09-18",
-  sourceHash: "2605149b6211e9ae3af7968444572dff68507cfa903bacd1202a86e7ae8bd78f",
+  sourceHash: "10161dee4c40756e873a35c918bf3bfaf47059ff9ab2277b792bc24e25297d9e",
   coverage: [
     { id: "mm-01", feature: "Memory 添加条目", description: "MemoryService.append() 创建记忆", why: "记忆系统基础 CRUD", depth: "shallow", scenarios: ["memory-append"] },
     { id: "mm-02", feature: "Memory 搜索", description: "MemoryService.search(query, limit) 按内容搜索", why: "LLM 需检索相关记忆", depth: "shallow", scenarios: ["memory-search"] },
@@ -43,6 +44,7 @@ export const memoryContract: ModuleContract = {
     { id: "mm-18", feature: "消息条目单次写入", description: "一次真实回合后同一句话只有一条 pi 会话条目；后续回合不重复追加历史消息", why: "双写或历史重放会让重载出现重复消息与翻倍轮数", depth: "deep", scenarios: ["memory-single-message-write"] },
     { id: "mm-19", feature: "Harness 压缩与摘要内核", description: "手动/阈值压缩由 Harness 调度：宿主 before_compaction 生成结构化摘要并提交 compaction 条目，原始消息条目全部保留，contextEpoch 推进", why: "摘要只能替换后续请求视图，不能删除会话真相源，也不能把压缩调度留在宿主第二套状态机里", depth: "deep", scenarios: ["memory-compaction-checkpoint"] },
     { id: "mm-20", feature: "上下文窗口下限", description: "低于 65536 的窗口被拒绝：设置保存报错、运行期在模型解析处报错，合法窗口照常解析且不超过配置值", why: "窗口过小时压缩找不到可摘要范围，静默接受只会把预算问题推迟成运行期的另一种报错", depth: "shallow", scenarios: ["memory-context-window-floor"] },
+    { id: "mm-21", feature: "压缩阈值口径换算", description: "派生的 reserve/keepRecent 换算到上游 chars/4 估算口径：阈值落在本仓 normalInputTarget 上、先于宿主硬预算触发，保留窗口放得进消息空间", why: "上游按自己的估算比较阈值，不换算会让阈值晚约 1.6 倍触发，请求先撞宿主硬预算报错而不是先压缩", depth: "shallow", scenarios: ["memory-compaction-threshold-calibration"] },
   ],
   rules: { minScenarios: 6, minDeepScenarios: 2, requireBoundary: true, requireErrorPath: true },
 }

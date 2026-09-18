@@ -24,7 +24,7 @@
 
 压缩由 Harness 调度（阈值 / 手动 `/compact`→`lane.compact()` / 一次性溢出恢复），`/compact` 绑定调用时的会话与运行。陪伴/助手双模式结构化摘要在 `before_compaction` 钩子内生成——复用 [compactor.ts](../../src/services/engine/compactor.ts) 的摘要内核，经 model-gateway `completePiText` 发送——以 `CompactResult`（summary + retainedTail）返回，由 Harness 单事务提交为 compaction 条目；提交成功前不报告完成，摘要失败或无可覆盖时 decline/报错，切分回合的 turn-prefix 另段摘要。压缩调用不计为正常聊天回复，其 usage 落会话 totals 但不进主回合统计（purpose 单列属 PI-4）。
 
-压缩设置（reserve/keepRecent）由 `contextBudget()` 推导并按模型窗口同步，不套用 Pi 默认值（默认窗口下会退化为每个检查点都压缩）。保留窗口只覆盖消息本体、按 chars/4 估算，静态提示词占比过大时会出现无可覆盖范围并 decline，因此窗口有下限：默认 `DEFAULT_CONTEXT_WINDOW` 128k、最低 `MIN_CONTEXT_WINDOW` 64k，低于下限时[设置页](../../src/components/SettingsPanel.vue)拒绝保存、运行期在模型解析处报错，不静默跑在坏预算上。上下文 epoch 在快照中等于已提交 compaction 条目数。
+压缩设置（reserve/keepRecent）由 `contextBudget()` 推导并按模型窗口同步，不套用 Pi 默认值（默认窗口下会退化为每个检查点都压缩）；推导值还要经 `toHarnessEstimateTokens()` 换算到上游估算口径（本仓 chars/2.5 ↔ 上游 chars/4），否则阈值会比本仓正常输入目标晚约 1.6 倍触发，请求先撞宿主硬预算报错而不是先压缩。保留窗口只覆盖消息本体、按 chars/4 估算，静态提示词占比过大时会出现无可覆盖范围并 decline，因此窗口有下限：默认 `DEFAULT_CONTEXT_WINDOW` 128k、最低 `MIN_CONTEXT_WINDOW` 64k，低于下限时[设置页](../../src/components/SettingsPanel.vue)拒绝保存、运行期在模型解析处报错，不静默跑在坏预算上。上下文 epoch 在快照中等于已提交 compaction 条目数。
 
 原始条目始终保留，压缩只改变请求视图；损坏或无效边界不能授权删除历史。摘要是派生历史数据，不能变成系统指令、权限许可、Card 状态或长期事实。
 

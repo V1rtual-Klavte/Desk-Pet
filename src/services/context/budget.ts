@@ -85,6 +85,15 @@ export class ContextBudgetError extends Error {
   }
 }
 
+/**
+ * 上游 AgentHarness 压缩估算的口径换算：它按 4 字符 ≈ 1 token 估消息本体
+ * （pi-agent-core compaction.estimateTokens），本仓按 CHARS_PER_TOKEN 计同一份文本。
+ * 本仓预算换算成上游口径要乘 CHARS_PER_TOKEN / 4，否则阈值与保留窗口都会晚约 1.6 倍触发。
+ */
+export function toHarnessEstimateTokens(ourTokens: number): number {
+  return Math.max(1, Math.floor(ourTokens * CHARS_PER_TOKEN / 4))
+}
+
 /** 窗口校验：合法返回 undefined，低于下限返回用户可读文案（设置页保存与模型解析共用）。 */
 export function contextWindowError(window: number): string | undefined {
   const value = Number.isFinite(window) ? Math.floor(window) : 0
