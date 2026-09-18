@@ -29,7 +29,7 @@ Desk-Pet 是可自定义 Card/Profile 的 Tauri v2 桌宠，优先做好轻量�
 | 会话、队列、Plan、Prompt、取消恢复 | [运行时契约](docs/current/runtime-contract.md) |
 | 压缩、会话文件、长期记忆边界 | [当前记忆](docs/current/memory.md) |
 | 工具、权限、MCP、Skill | [工具系统](docs/current/tool-system.md) |
-| Pi 接线改造、插话双模式、工具并行/压缩策略 | [Pi 运行时与工具协议方案](docs/plans/active/Pi运行时与工具协议建设方案.md)对应章节；§8 Harness 迁移已落代码待集中验证，其余目标未实现前不作为当前能力 |
+| Pi 接线改造、插话双模式、工具并行/压缩策略 | [Pi 运行时与工具协议方案](docs/plans/active/Pi运行时与工具协议建设方案.md)对应章节；§8 Harness 迁移已实施并通过集中验证（协议见[归档基线](docs/history/implementation/AgentHarness迁移方案-2026-09-18基线.md)），其余目标未实现前不作为当前能力 |
 | 配置、路径、Profile 资源、持久化 | [运行时数据](docs/current/runtime-data.md) |
 | 人格变量、阶段文案、回复元数据 | [人格与回复](docs/current/personality.md) |
 | 日志、异常、IPC、构建排查 | [工程参考](docs/current/development.md) |

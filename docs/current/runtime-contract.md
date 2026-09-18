@@ -27,7 +27,7 @@ scope: runtime-foundation-before-memory-kernel
 - 请求循环由 AgentHarness Lane 承担：`transform_context` 投影、`before_tool` 承担权限/次数门禁、`after_tool` 标注来源与错误、`after_response` 剥离 RUNTIME_DATA 并记录状态/响应头、`before_payload` 采集脱敏快照、usage 事件按请求进入统计。具体权限见[工具系统](tool-system.md#权限终裁)。
 - 项目没有通用 HookBus；宿主 preflight 与观测通道不构成可阻断的 Pi hook，队列驱动由 Lane 持久 inbox 承担。流式正文经 `message_update` 增量事件走 UI 通道，只展示正文、不展示思考内容，`<RUNTIME_DATA>` 跨分片被缓冲。
 
-0.85.1 的 AgentHarness、JsonlSessionRepo 与压缩调度已接入为运行内核（§8 迁移已落代码，集中验证见[执行手册](../plans/active/记忆系统重构执行手册.md)）；插话双模式 UI（PI-1）、工具策略/只读并行（PI-2）与 usage purpose 单列（PI-4）尚未实施，见[Pi 建设方案](../plans/active/Pi运行时与工具协议建设方案.md)。
+0.85.1 的 AgentHarness、JsonlSessionRepo 与压缩调度已接入为运行内核（§8 迁移已实施并通过 2026-09-18 集中验证，证据见[执行手册](../plans/active/记忆系统重构执行手册.md#已有验证证据)，协议正文见[归档基线](../history/implementation/AgentHarness迁移方案-2026-09-18基线.md)）；插话双模式 UI（PI-1）、工具策略/只读并行（PI-2）与 usage purpose 单列（PI-4）尚未实施，见[Pi 建设方案](../plans/active/Pi运行时与工具协议建设方案.md)。
 
 ## Pi、权限与网络
 

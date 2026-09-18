@@ -12,7 +12,7 @@
 | 会话队列、取消、恢复、Pi 接线、PromptSnapshot | [运行时契约](current/runtime-contract.md) | [记忆与压缩](current/memory.md)、[工具系统](current/tool-system.md) |
 | 配置、路径、Profile 持久化 | [运行时数据](current/runtime-data.md) | Config getter、AppPaths 和目标设置 Tab |
 | 工具权限、MCP、Skill | [工具系统](current/tool-system.md) | PermissionKernel、Router、对应工具实现 |
-| 实施插话双模式、工具并行/压缩策略、Pi hook、Harness 迁移 | [Pi 运行时与工具协议方案](plans/active/Pi运行时与工具协议建设方案.md)对应章节 | 当前 runtime/tool/memory 契约与源码 |
+| 实施插话双模式、工具并行/压缩策略、Pi hook | [Pi 运行时与工具协议方案](plans/active/Pi运行时与工具协议建设方案.md)对应章节 | 当前 runtime/tool/memory 契约与源码 |
 | 测试执行/验证边界 | [测试边界](current/testing.md) | [Live README](../src/services/__tests__/live/README.md)；生成契约时再读 [SKILL](../src/services/__tests__/live/SKILL.md) |
 | 继续记忆系统重构 | [执行手册的当前检查点](plans/active/记忆系统重构执行手册.md#当前检查点) | [P6 目标契约](plans/active/记忆系统运行时契约.md)及相关源码 |
 | 追溯旧方案、比较项目与实施证据 | 下方历史入口 | 只读关联章节，历史命令与授权不自动生效 |
@@ -39,13 +39,15 @@ AGENTS 维持全局规则入口，CLAUDE 只导入它；模块细节通过任务
 ## 未完成工作
 
 - [轻量陪伴与统一内核方向](plans/active/轻量陪伴运行时与统一内核建设方案.md)：已完成前置的短索引，以及长期记忆和评测方向。
-- [Pi 运行时与工具协议方案](plans/active/Pi运行时与工具协议建设方案.md)：AgentHarness 迁移（§8）已实现待集中验证；steer/followup 显式双模式与逐条确认、统一工具策略、只读并行仍为目标。
+- [Pi 运行时与工具协议方案](plans/active/Pi运行时与工具协议建设方案.md)：AgentHarness 迁移（§8）已实施并通过 2026-09-18 集中验证，协议正文已归档；steer/followup 显式双模式与逐条确认（PI-1）、统一工具策略与只读并行（PI-2）、usage purpose 单列（PI-4）仍为目标。
 - [P6 目标契约](plans/active/记忆系统运行时契约.md)：候选、来源、受控召回、纠正/遗忘与评测要求；这些目标尚未成为运行时能力。
-- [执行手册](plans/active/记忆系统重构执行手册.md)：当前检查点、已有验证证据、实施顺序与未验证边界。
-- [加固待办](plans/active/运行时加固与清理计划.md)：仍需处理或复核的工程事项，不重复旧修复流水。
+- [执行手册](plans/active/记忆系统重构执行手册.md)：当前检查点、最近一次集中验证证据、P6 实施顺序与未验证边界；实现与修复过程见 [2026-09-18 基线](history/implementation/记忆系统重构执行手册-2026-09-18基线.md)。
+- [加固待办](plans/active/运行时加固与清理计划.md)：仍需处理的工程事项，2026-09-18 已按源码逐条复核；不重复旧修复流水。
 
 ## 历史入口
 
+- [AgentHarness 迁移方案基线](history/implementation/AgentHarness迁移方案-2026-09-18基线.md)：运行内核替换的协议、替换映射与 H-1–H-4 批次设计（已实施并通过集中验证）。
+- [2026-09-18 执行手册基线](history/implementation/记忆系统重构执行手册-2026-09-18基线.md)：H-1–H-4 的实现与修复细节、集中验证收敛过程与当时的证据表。
 - [会话压缩建设方案](history/implementation/会话压缩建设方案.md)：参考项目比较、压缩设计与当时的实施证据。
 - [旧产品与技术说明](history/design/DES-2026-09-17基线.md)：DES 精简前正文。
 - [旧统一内核总方案](history/design/轻量陪伴运行时与统一内核建设方案-2026-09-17基线.md)：原比较、论证和候选设计。
