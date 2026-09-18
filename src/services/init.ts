@@ -9,7 +9,7 @@ import { registerDefaultTools, registerAssistantTools, unregisterAssistantTools 
 import { initDebug } from "@/services/debug"
 import { initSessions, chatHistory, initWelcome } from "@/services/session"
 import { getActiveCard } from "@/services/personality"
-import { generalConfig, toolsConfig } from "@/services/config"
+import { computeMcpEnabled, generalConfig, toolsConfig } from "@/services/config"
 import { createLogger } from "@/services/logger"
 import { harnessSlots } from "@/services/engine/pi"
 
@@ -50,7 +50,7 @@ export async function initApp(): Promise<void> {
   log.info("4a/7 基础工具就绪")
 
   const { toolCount } = await import("@/services/tool/registry")
-  log.info(`4/7 Presence 工具就绪 (${toolCount()} 个) | 助手配置:${generalConfig.assistantMode} MCP:${toolsConfig.mcpEnabled} Skill:${toolsConfig.skillEnabled}`)
+  log.info(`4/7 Presence 工具就绪 (${toolCount()} 个) | 助手配置:${generalConfig.assistantMode} MCP:${computeMcpEnabled()} Skill:${toolsConfig.skillEnabled}`)
 
   // ── 5. 会话初始化 ──
   // 崩溃恢复不再扫描旧队列事件：Harness 在打开会话时报告未完成操作（§8.7.3），
@@ -89,7 +89,7 @@ export async function prepareConversationCapabilities(mode: "pet" | "assistant",
   await registerDefaultTools()
   if (mode === "assistant") {
     await registerAssistantTools()
-    if (toolsConfig.mcpEnabled) {
+    if (computeMcpEnabled()) {
       const { acquireMcpServer, getBuiltinServers, getMcpServers } = await import("@/services/tool/mcp")
       const servers = [...getBuiltinServers(), ...getMcpServers()]
       for (const server of servers) {

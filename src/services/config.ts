@@ -531,13 +531,23 @@ export const safetyConfig = {
 export const toolsConfig = {
   get bashWhitelist() { return overrideOr("tools.bash.whitelist", cfg.tools?.bash?.whitelist || ["ls", "cat", "head", "tail", "grep", "find", "which", "echo", "pwd", "date", "whoami", "uname", "df", "du", "ps"]); },
   get fileWriteEnabled() { return overrideOr("tools.file.writeEnabled", cfg.tools?.file?.writeEnabled ?? true); },
-  get mcpEnabled() { return generalConfig.assistantMode && (overrideOr("tools.mcp.enabled", cfg.tools?.mcp?.enabled ?? false)); },
+  // 读写值：设置页勾选框的初值与回写都读它，宠物模式下也如实反映用户配置。
+  get mcpEnabled() { return overrideOr("tools.mcp.enabled", cfg.tools?.mcp?.enabled ?? false); },
   get mcpServers() { return overrideOr("tools.mcp.servers", cfg.tools?.mcp?.servers || []); },
   get builtinMcpServers() { return overrideOr("tools.mcp.builtin", cfg.tools?.mcp?.builtin || {}) as Record<string, BuiltinMcpServer>; },
   // Skill 是按 invocationPolicy 过滤的对话说明，不等同于助手工具；轻量模式可使用
   // 明确声明 pet/both 的 Skill，但不能因此获得 bash、MCP 或写入权限。
   get skillEnabled() { return overrideOr("tools.skill.enabled", cfg.tools?.skill?.enabled ?? false); },
 };
+
+/**
+ * 运行期 MCP 是否生效：助手模式与配置读写值的合取。
+ * 派生值只服务运行期消费者，不得回流设置页读写——否则宠物模式下打开设置再保存，
+ * 会把用户配置里的 true 静默改写成 false（同 generalConfig.loggingLevel 与 computeLogLevel 的分工）。
+ */
+export function computeMcpEnabled(): boolean {
+  return generalConfig.assistantMode && toolsConfig.mcpEnabled;
+}
 
 // ══════════════════════════════════════════
 // 4. 外观 — Profile 系统
