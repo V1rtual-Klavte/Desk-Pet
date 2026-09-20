@@ -45,7 +45,6 @@ description: Desk-Pet Live Test 的 Contract 分析、Scene 生成与覆盖审�
 当前目录包含以下 Contract：
 
 - `agent-runtime`
-- `emotion`
 - `harness-storage`
 - `memory`
 - `personality-card`

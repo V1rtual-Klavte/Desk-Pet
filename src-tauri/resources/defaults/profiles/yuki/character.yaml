@@ -5,10 +5,3 @@ character:
   name: "结城理"
   scale: 1.0
   scaleMode: smooth
-
-# 保留一个兼容性的单帧入口；完整视觉由五层灵动图层合成。
-animations:
-  idle:
-    loop: true
-    frames:
-      - { f: "materials/L2/body.png", d: 3000 }

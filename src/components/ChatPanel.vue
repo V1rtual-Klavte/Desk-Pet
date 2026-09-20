@@ -259,10 +259,7 @@ async function send() {
   slashVisible.value = false;
   emit("send", t);
   playEventSound("send");
-  const result = await sendMessage(t);
-  if (result.personalityEffect.soundEvent) {
-    playEventSound(result.personalityEffect.soundEvent as Parameters<typeof playEventSound>[0])
-  }
+  await sendMessage(t);
   scrollToBottom();
 }
 

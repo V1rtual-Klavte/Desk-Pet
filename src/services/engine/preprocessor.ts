@@ -54,7 +54,7 @@ export async function preProcess(rawText: string, state: PreProcessState = {}): 
         if (result !== null) {
           return { handled: true, response: result, text: "", rawText, normalizedText: text }
         }
-        // result === null → 命令已执行但不需要显示回复（如表情切换）
+        // result === null → 命令已执行但不需要显示回复
         return { handled: true, text: "", rawText, normalizedText: text }
       } catch (e) {
         log.error("命令执行失败:", cmdText, e)

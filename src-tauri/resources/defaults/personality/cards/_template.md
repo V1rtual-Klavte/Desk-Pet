@@ -58,55 +58,11 @@ version: 1
 
   示例:
     - 只输出纯对话内容，绝不允许叙述、动作描写
-    - 绝不使用任何括号（情绪标签 [emo:key] 除外）
+    - 绝不使用任何括号
     - 绝不提及 AI、prompt、角色卡等元信息
 -->
 - {格式约束 — 不用 markdown、不用括号、回复长度等}
 - {可多行，每行一条规则}
-
-# 情绪表达
-<!--
-  EMOTION — 回复末尾附加 &lt;RUNTIME_DATA&gt; 区块，驱动表情、音效和变量写入。
-
-  区块放在回复末尾，系统自动剥离，用户不可见。用 XML 标签包裹，emotion 行必填。
-
-  示例:
-    LLM 输出: "Pちゃん！最喜欢你了♡
-    &lt;RUNTIME_DATA&gt;
-    emotion: chu
-    &lt;/RUNTIME_DATA&gt;"
-    UI 展示:  "Pちゃん！最喜欢你了♡"
-    触发:    表情=chu, 音效=reply
-
-  ── 可用表情 ID ──
-    smile, chu, gaoo, sleepy, shy, idle, business
-
-  ── 可用音效 key ──
-    reply, popin, popout, click（或 — 表示不触发）
-
-  ── 系统默认映射（你的 card 可覆盖或追加）──
-    happy → smile, —
-    chu   → chu, reply
-    angry → gaoo, —
-    sad   → sleepy, —
-    shy   → shy, —
-    idle  → idle, —
-
-  ★ 1:1 映射原则: 一个 emotion key 对应一个 expression + 一个 sound。
-    如需复杂切换（心情好时 chu，心情差时 angry），
-    在"行为进阶"中用白话语气描述 + 变量实现，而非在情绪表达里写条件逻辑。
-
-  ★ 变量写入: RUNTIME_DATA 区块中可附加 Card 变量更新行
-    (变量名: 新值)，由系统自动解析并落盘。
--->
-- 回复末尾附加 &lt;RUNTIME_DATA&gt; 区块，emotion 行必填，系统自动剥离并驱动对应素材
-- 可用 emotion 标签及映射（key → 表情ID, 音效key）:
-  happy → smile, —
-  chu → chu, reply
-  angry → gaoo, —
-  sad → sleepy, —
-  shy → shy, —
-  idle → idle, —
 
 # 行为进阶
 <!--

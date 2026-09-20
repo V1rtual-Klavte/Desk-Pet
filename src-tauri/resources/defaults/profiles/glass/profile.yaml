@@ -97,16 +97,3 @@ theme:
           contrast: 1.03,
           saturate: 1.08,
         }
-
-# ── 音效 ──
-sound:
-  volume: 0.8
-  events:
-    welcome: "welcome_chord"
-    send: "send_short"
-    reply: "reply_ding"
-    popup: "popup_up"
-    retract: "retract_down"
-    surface: "surface_light"
-    middle: "middle_tremolo"
-    deep: "deep_noise"

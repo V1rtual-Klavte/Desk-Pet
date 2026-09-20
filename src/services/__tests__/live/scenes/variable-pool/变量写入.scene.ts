@@ -43,7 +43,6 @@ const scene: SceneDef = {
       const raw = [
         "谢谢你陪我聊天。",
         "<RUNTIME_DATA>",
-        "emotion: happy",
         "亲密: 7",
         "心情: 开心",
         "不存在的变量: 123",
@@ -56,8 +55,6 @@ const scene: SceneDef = {
       // RUNTIME_DATA 是内部元数据，绝不能出现在给用户看的文本里
       if (result.text.includes("RUNTIME_DATA")) throw new Error("元数据块没有被剥离")
       if (!result.text.includes("谢谢你陪我聊天")) throw new Error("正文被误删")
-      // 无 card 映射时 emotion 走系统默认表
-      if (result.emotionKey !== "happy") throw new Error(`emotion 未解析: ${result.emotionKey}`)
 
       // 合法变量写进池子
       const pool = getPoolSnapshot()

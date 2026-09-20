@@ -1,23 +1,16 @@
 // ==========================================
 // 回复生成器 — 一步生成后处理
-// 解析 RUNTIME_DATA 块 → 情绪表情/音效映射 → 变量写入落盘 → 截断
+// 解析 RUNTIME_DATA 块 → 变量写入落盘 → 截断
 // ==========================================
 
-import { createLogger } from "@/services/logger"
-import { resolveEmotion } from "@/services/personality/emotion"
 import { batchWriteVars, savePoolToDisk } from "@/services/personality/variable-pool"
 import type { PersonalityCard } from "@/services/personality/types"
-
-const log = createLogger("ReplyGen")
 
 /** 回复后处理结果 */
 export interface ReplyResult {
   text: string
-  emotionKey: string | null
-  expression: string
-  sound: string | null
   /** Parsed internal metadata. It has already been applied and is never user-visible. */
-  runtimeData: { emotionKey: string | null; variables: Record<string, string> }
+  runtimeData: { variables: Record<string, string> }
 }
 
 /** 后处理选项 */
@@ -36,19 +29,18 @@ const RUNTIME_RE = /<RUNTIME_DATA>\s*([\s\S]*?)\s*<\/RUNTIME_DATA>/i
 
 interface ParsedRuntime {
   text: string
-  runtime: { emotion: string | null; vars: Record<string, string> }
+  runtime: { vars: Record<string, string> }
 }
 
 export function parseRuntimeData(raw: string): ParsedRuntime {
   const match = raw.match(RUNTIME_RE)
-  if (!match) return { text: raw, runtime: { emotion: null, vars: {} } }
+  if (!match) return { text: raw, runtime: { vars: {} } }
 
   const block = match[1]
   const beforeBlock = raw.slice(0, match.index)
   const afterBlock = raw.slice(match.index! + match[0].length)
   const text = (beforeBlock + afterBlock).trim()
 
-  let emotion: string | null = null
   const vars: Record<string, string> = {}
 
   for (const line of block.split("\n")) {
@@ -59,42 +51,38 @@ export function parseRuntimeData(raw: string): ParsedRuntime {
     const key = trimmed.slice(0, colonIdx).trim()
     const value = trimmed.slice(colonIdx + 1).trim()
     if (!key || !value) continue
-    if (key === "emotion") { emotion = value }
-    else { vars[key] = value }
+    vars[key] = value
   }
 
-  return { text, runtime: { emotion, vars } }
+  return { text, runtime: { vars } }
 }
 
 // ── 主入口 ──
 
 /**
  * 生成最终回复。
- * 解析 RUNTIME_DATA 块 → 查映射表情/音效 → 变量批量写入落盘 → trim → 长度截断。
+ * 解析 RUNTIME_DATA 块 → 变量批量写入落盘 → trim → 长度截断。
+ * `card` 位置保留给调用契约（调用方仍按 (raw, card, options) 传参）。
  */
 export async function generateReply(
   raw: string,
-  card?: PersonalityCard | null,
+  _card?: PersonalityCard | null,
   options: ReplyOptions = {},
 ): Promise<ReplyResult> {
   const { maxLength = DEFAULT_MAX_LENGTH } = options
-  const emotionMappings = card?.sections.emotionMappings ?? []
 
   // 1. 解析 RUNTIME_DATA
   const { text: cleanText, runtime } = parseRuntimeData(raw)
 
-  // 2. 情绪解析
-  const { expression, sound } = resolveEmotion(runtime.emotion, emotionMappings)
-
-  // 3. 变量批量写入
-  if (options.applyRuntimeData !== false && runtime.vars && Object.keys(runtime.vars).length > 0) {
+  // 2. 变量批量写入
+  if (options.applyRuntimeData !== false && Object.keys(runtime.vars).length > 0) {
     batchWriteVars(runtime.vars)
   }
 
-  // 4. 落盘
+  // 3. 落盘
   if (options.applyRuntimeData !== false) await savePoolToDisk()
 
-  // 5. trim + 截断
+  // 4. trim + 截断
   let text = cleanText.trim()
   if (text.length > maxLength) {
     const truncated = text.substring(0, maxLength)
@@ -111,9 +99,6 @@ export async function generateReply(
 
   return {
     text,
-    emotionKey: runtime.emotion,
-    expression,
-    sound,
-    runtimeData: { emotionKey: runtime.emotion, variables: { ...runtime.vars } },
+    runtimeData: { variables: { ...runtime.vars } },
   }
 }

@@ -41,9 +41,5 @@ export type {
   ProfileParallaxLayer,
   ProfileDepthOfField,
   ProfileDofRegion,
-  ProfileSound,
   ProfileCharacter,
-  AnimDef,
-  AnimFrame,
-  ExpressionRule,
 } from "./loader";

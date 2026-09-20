@@ -7,7 +7,6 @@ import type { AgentHarnessTool } from "@earendil-works/pi-agent-core"
 import type { ActionCategory, ToolDef } from "../types"
 import { executeToolDefinition } from "../router"
 import { getSimpleStage } from "@/services/personality/stages-cache"
-import { PetPersonalityMiddleware } from "@/services/personality/middleware"
 import { sha256Text, stableSerialize } from "@/services/engine/runtime"
 
 /**
@@ -29,14 +28,8 @@ export interface HarnessToolRun {
   isCurrent: () => boolean
   /** 回合级工具调用历史（返回给 UI/报告）。 */
   history: { toolName: string; status: string; personalityMsg?: string }[]
-  /** 回合级人格效果收集（子代理不收集）。 */
-  effects?: { expression: string; soundEvent: string | null }[]
   onToolStart?: (toolName: string, toolCallId: string) => Promise<void> | void
   onToolDone?: (toolName: string, toolCallId: string, success: boolean) => Promise<void> | void
-}
-
-function pushEffect(effects: HarnessToolRun["effects"], effect: { expression: string; soundEvent: string | null }): void {
-  effects?.push({ expression: effect.expression, soundEvent: effect.soundEvent })
 }
 
 /** 把冻结的工具集转成 Harness 原生工具数组；每次 run 前用 setTools 注入。 */
@@ -73,9 +66,7 @@ export function toAgentHarnessTools(tools: readonly ToolDef[], run: HarnessToolR
       } finally {
         await run.onToolDone?.(tool.name, toolCallId, toolSucceeded)
       }
-      const category = tool.actionCategory ?? "_default"
       if (result.success) {
-        pushEffect(run.effects, PetPersonalityMiddleware.wrap("done", { actionCategory: category, toolName: tool.name }))
         run.history.push({ toolName: tool.name, status: "done" })
         return {
           content: result.contentParts ?? [{ type: "text", text: result.content }],
@@ -84,7 +75,6 @@ export function toAgentHarnessTools(tools: readonly ToolDef[], run: HarnessToolR
           details: { ...(result.details && typeof result.details === "object" ? result.details : {}), deskpetEntryId: invocation.invocationId },
         }
       }
-      pushEffect(run.effects, PetPersonalityMiddleware.wrap("error", { actionCategory: category, toolName: tool.name, message: result.error }))
       run.history.push({ toolName: tool.name, status: "error" })
       throw new Error(`${getSimpleStage("error") ?? "Error"}: ${result.error ?? "工具执行失败"}`)
     },

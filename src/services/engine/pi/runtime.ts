@@ -1,6 +1,6 @@
 // Desk-Pet's only multi-turn agent runtime. Pi AgentHarness owns the model/tool loop,
 // durable queues, and session entries; Desk-Pet owns product state, safety, Card
-// variables, reply processing, and effects.
+// variables, and reply processing.
 
 import { contentText } from "@earendil-works/pi-ai"
 import type { AgentMessage, SettledAssistantMessage } from "@earendil-works/pi-agent-core"
@@ -20,8 +20,6 @@ import { formatPoolForPrompt } from "@/services/personality/variable-pool"
 import { getActiveCard } from "@/services/personality/registry"
 import type { PersonalityCard } from "@/services/personality/types"
 import { getPoolSnapshot, getSessionStart, applyResetPolicies, refreshVariablePool, updateInteractionVar } from "@/services/personality/variable-pool"
-import { PetPersonalityMiddleware } from "@/services/personality/middleware"
-import type { PersonalityEffect } from "@/services/personality/middleware"
 import { getFallbackReply, getSimpleStage } from "@/services/personality/stages-cache"
 import { generateReply, parseRuntimeData } from "@/services/reply"
 import { authorizeToolExecution, invalidatePermissionScope } from "@/services/safety"
@@ -100,8 +98,7 @@ export interface PiAgentTurnOutput {
   reply: string
   toolCallHistory: { toolName: string; status: string; personalityMsg?: string }[]
   retriesUsed: number
-  effects: { expression: string; soundEvent: string | null }[]
-  runtimeData?: { emotionKey: string | null; variables: Record<string, string> }
+  runtimeData?: { variables: Record<string, string> }
   /** 仅在重试耗尽、回复是兜底文案时出现 */
   failure?: TurnFailure
   /** 停止归还：未消费的补充消息 requestId（宿主决定重新排队或丢弃）。 */
@@ -155,7 +152,6 @@ interface TurnKernel {
   skillCatalogFingerprint?: string
   transientUserInput: boolean
   persistSnapshots: boolean
-  effects?: PiAgentTurnOutput["effects"]
   toolRun: HarnessToolRun
   state: HarnessRunState
   card: PersonalityCard | null
@@ -172,7 +168,7 @@ interface TurnKernel {
   /**
    * 记录「原始正文 ↔ 剥离 RUNTIME_DATA 后正文」的配对。
    * afterResponse 会先剥离再提交，事件里拿到的最终助手消息已经没有标签，
-   * 结算时直接解析会丢掉 emotion 与变量写入，所以必须在这里留底。
+   * 结算时直接解析会丢掉变量写入，所以必须在这里留底。
    */
   recordSettledReply: (raw: string, stripped: string) => void
   /** 取回与剥离后正文配对的原始正文；没有配对时原样返回。 */
@@ -194,7 +190,6 @@ interface TurnKernelOptions {
   skillCatalogFingerprint?: string
   transientUserInput: boolean
   persistSnapshots: boolean
-  effects?: PiAgentTurnOutput["effects"]
   toolRun: HarnessToolRun
   card?: PersonalityCard | null
 }
@@ -357,9 +352,7 @@ function createTurnSpec(kernel: TurnKernel, options: {
         return { block: { reason: `工具 ${toolName} 不可用` } }
       }
       recordToolCall(kernel.sessionId)
-      const category = tool.actionCategory ?? "_default"
       transition("EXECUTING", kernel.sessionId)
-      applyEffect(PetPersonalityMiddleware.wrap("executing", { actionCategory: category, toolName: tool.name }), kernel.effects)
       emitUiEvent("tool-executing", { toolId: tool.name, toolName: tool.name })
       const permission = await authorizeToolExecution(tool, args as Record<string, unknown>, {
         mode: kernel.mode,
@@ -412,8 +405,8 @@ function createTurnSpec(kernel: TurnKernel, options: {
         headerNames: Object.keys(meta.headers ?? {}).sort(),
       })
       // 提交前剥离 RUNTIME_DATA：条目是真相源，但正文块不进入后续请求与展示。
-      // 剥离前先留底原始正文：事件里的最终助手消息已经没有标签，结算时的 emotion
-      // 映射与 RUNTIME_DATA 变量写入都要靠它。
+      // 剥离前先留底原始正文：事件里的最终助手消息已经没有标签，
+      // 结算时的 RUNTIME_DATA 变量写入要靠它。
       const stripped = stripRuntimeData(message)
       kernel.recordSettledReply(contentText(message.content), contentText(stripped.content))
       return stripped
@@ -512,7 +505,6 @@ export async function runPiAgentTurn(input: PiAgentTurnInput): Promise<PiAgentTu
   if (!input.sessionId.trim()) throw new Error("Pi Agent 回合缺少 sessionId")
   const { userText, unansweredCount, isActiveMessage } = input
   const toolCallHistory: PiAgentTurnOutput["toolCallHistory"] = []
-  const effects: PiAgentTurnOutput["effects"] = []
 
   const turnSessionId = input.sessionId
   const requestId = input.ingress?.requestId ?? `runtime-${input.turnId ?? crypto.randomUUID()}`
@@ -564,7 +556,6 @@ export async function runPiAgentTurn(input: PiAgentTurnInput): Promise<PiAgentTu
     assertCurrent()
     if (complexity.score >= planConfig.complexityThreshold) {
       transition("PLANNING", turnSessionId)
-      applyEffect(PetPersonalityMiddleware.wrap("planning"), effects)
       const plan = await generatePlan(planUserText, {
         cardId: card?.id ?? "neutral",
         cardRole: card?.sections.roleSetting ?? "",
@@ -615,7 +606,7 @@ export async function runPiAgentTurn(input: PiAgentTurnInput): Promise<PiAgentTu
           transition("WAITING", turnSessionId)
           const reply = getSimpleStage("planning") ?? "好的，已取消计划～"
           await slot.appendAssistantMessage(reply)
-          return { reply, toolCallHistory, retriesUsed: 0, effects: [] }
+          return { reply, toolCallHistory, retriesUsed: 0 }
         }
         await planCheckpointStore.transitionPlan(planId, "running")
         // 执行期登记中断通道，「终止执行」据此真正停下剩余步骤；
@@ -684,8 +675,6 @@ export async function runPiAgentTurn(input: PiAgentTurnInput): Promise<PiAgentTu
       derivedFrom: [input.turnId ?? requestId],
     }))
   }
-  applyEffect(PetPersonalityMiddleware.wrap("thinking"), effects)
-
   const kernel = createTurnKernel({
     sessionId: turnSessionId,
     requestId,
@@ -701,12 +690,11 @@ export async function runPiAgentTurn(input: PiAgentTurnInput): Promise<PiAgentTu
     skillCatalogFingerprint,
     transientUserInput: isActiveMessage === true,
     persistSnapshots: true,
-    effects,
     card,
     toolRun: {
       mode, sessionId: turnSessionId, runGeneration: generation,
       isCurrent: () => runIsCurrent(),
-      history: toolCallHistory, effects,
+      history: toolCallHistory,
     },
   })
   const spec = createTurnSpec(kernel, {
@@ -722,7 +710,7 @@ export async function runPiAgentTurn(input: PiAgentTurnInput): Promise<PiAgentTu
   const result = await slot.run(spec)
   await slot.waitForIdle()
   await Promise.allSettled(kernel.snapshotTasks)
-  return settleMainTurn({ input, kernel, result, effects, toolCallHistory })
+  return settleMainTurn({ input, kernel, result, toolCallHistory })
   } finally {
     if (ownedGeneration) harnessSlots.end(turnSessionId, generation)
     invalidatePermissionScope(turnSessionId, generation)
@@ -736,20 +724,18 @@ async function settleMainTurn(args: {
   input: PiAgentTurnInput
   kernel: TurnKernel
   result: HarnessRunResult
-  effects: PiAgentTurnOutput["effects"]
   toolCallHistory: PiAgentTurnOutput["toolCallHistory"]
 }): Promise<PiAgentTurnOutput> {
-  const { kernel, result, effects, toolCallHistory } = args
+  const { kernel, result, toolCallHistory } = args
   const turnSessionId = args.input.sessionId
   const state = kernel.state
   const slot = harnessSlots.get(turnSessionId)
 
   const failTurn = async (message: string, kind: TurnFailure["kind"]): Promise<PiAgentTurnOutput> => {
     transition("WAITING", turnSessionId)
-    applyEffect(PetPersonalityMiddleware.wrap("error", { message }), effects)
     const reply = message.includes("上下文需要约") ? message : getFallbackReply("maxRetriesExhausted")
     await slot.appendAssistantMessage(reply).catch(error => log.warn("兜底回复落盘失败", formatError(error)))
-    return { reply, toolCallHistory, retriesUsed: state.retriesUsed, effects, failure: { kind, message } }
+    return { reply, toolCallHistory, retriesUsed: state.retriesUsed, failure: { kind, message } }
   }
 
   if (result.status === "interrupted") {
@@ -758,13 +744,13 @@ async function settleMainTurn(args: {
     const reply = "上次运行中断啦，请先选择继续或丢弃这次未完成的运行～"
     transition("WAITING", turnSessionId)
     await slot.appendAssistantMessage(reply).catch(error => log.warn("中断提示落盘失败", formatError(error)))
-    return { reply, toolCallHistory, retriesUsed: 0, effects, failure: { kind: "unknown", message: reply } }
+    return { reply, toolCallHistory, retriesUsed: 0, failure: { kind: "unknown", message: reply } }
   }
   if (result.status === "busy") {
     return failTurn(`会话已有运行中的 Agent: ${turnSessionId}`, "unknown")
   }
   if (state.stoppedAtToolLimit) {
-    return { reply: getFallbackReply("toolLoopMaxRounds"), toolCallHistory, retriesUsed: state.retriesUsed, effects }
+    return { reply: getFallbackReply("toolLoopMaxRounds"), toolCallHistory, retriesUsed: state.retriesUsed }
   }
   if (result.status === "aborted") {
     const reason = result.timedOut ? "Agent 执行超时" : result.error ?? "回合已取消"
@@ -786,11 +772,8 @@ async function settleMainTurn(args: {
   // 卡片快照不一致（运行中切换 Card）时只展示文本，不写变量：变量写入必须归属本回合冻结的快照。
   const cardIsCurrent = liveCard?.id === kernel.card?.id && liveCard?.hash === kernel.card?.hash && liveCard?.version === kernel.card?.version
   const processed = await generateReply(rawReply, kernel.card, { applyRuntimeData: cardIsCurrent })
-  effects.push({ expression: processed.expression, soundEvent: processed.sound })
-  if (cardIsCurrent && getActiveSessionId() === turnSessionId) emit("deskpet-expression", { expression: processed.expression }).catch(() => {})
-  if (cardIsCurrent && getActiveSessionId() === turnSessionId && processed.sound) emit("deskpet-sound", { event: processed.sound }).catch(() => {})
   transition("WAITING", turnSessionId)
-  return { reply: processed.text, toolCallHistory, retriesUsed: state.retriesUsed, effects, runtimeData: processed.runtimeData }
+  return { reply: processed.text, toolCallHistory, retriesUsed: state.retriesUsed, runtimeData: processed.runtimeData }
 }
 
 // ── 崩溃恢复入口（§8.7.3） ──
@@ -827,7 +810,6 @@ export async function continueInterruptedRun(sessionId: string): Promise<PiAgent
   const generation = harnessSlots.begin(sessionId, { requestId: `resume-${crypto.randomUUID()}` })
   if (generation === undefined) throw new Error(`会话已有运行中的 Agent: ${sessionId}`)
   const toolCallHistory: PiAgentTurnOutput["toolCallHistory"] = []
-  const effects: PiAgentTurnOutput["effects"] = []
   try {
     const currentCard = getActiveCard()
     const card = currentCard ? JSON.parse(JSON.stringify(currentCard)) as typeof currentCard : null
@@ -847,11 +829,11 @@ export async function continueInterruptedRun(sessionId: string): Promise<PiAgent
       sessionId, requestId: `resume-${crypto.randomUUID()}`, mode, model,
       thinkingEffort, systemPrompt: context.systemPrompt, tools: frozenTools,
       blocks: context.blocks, allocations: context.allocations,
-      transientUserInput: false, persistSnapshots: false, effects, card,
+      transientUserInput: false, persistSnapshots: false, card,
       toolRun: {
         mode, sessionId, runGeneration: generation,
         isCurrent: () => harnessSlots.isCurrent(sessionId, generation),
-        history: toolCallHistory, effects,
+        history: toolCallHistory,
       },
     })
     const spec = createTurnSpec(kernel, {
@@ -863,7 +845,7 @@ export async function continueInterruptedRun(sessionId: string): Promise<PiAgent
       isPermissionCurrent: () => harnessSlots.isCurrent(sessionId, generation) && getActiveSessionId() === sessionId,
     })
     const result = await slot.resumeInterrupted(spec)
-    return await settleMainTurn({ input: { sessionId, userText: "继续", chatMessages: [], unansweredCount: 0, messageCount: 0 }, kernel, result, effects, toolCallHistory })
+    return await settleMainTurn({ input: { sessionId, userText: "继续", chatMessages: [], unansweredCount: 0, messageCount: 0 }, kernel, result, toolCallHistory })
   } finally {
     harnessSlots.end(sessionId, generation)
   }
@@ -1025,10 +1007,6 @@ function fromPiMessage(message: AgentMessage, id: string, apiRoundId: string): M
   if (message.role === "toolResult") return { ...identity, role: "tool", text: contentText(message.content),
     toolCallId: message.toolCallId, isError: message.isError, origin: "tool", taint: "untrusted_external" }
   return undefined
-}
-
-function applyEffect(effect: PersonalityEffect, effects: PiAgentTurnOutput["effects"] | undefined): void {
-  effects?.push({ expression: effect.expression, soundEvent: effect.soundEvent })
 }
 
 /** UI 事件（工具状态、流式增量等）统一 best-effort：失败不影响回合。 */

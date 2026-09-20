@@ -106,7 +106,6 @@ export interface SendMessageResult {
   retriesUsed: number
   outcome: "queued" | "succeeded" | "failed"
   failure?: import("@/services/engine/pi").TurnFailure
-  personalityEffect: { expression: string; soundEvent: string | null }
 }
 
 function makeIngressEnvelope(rawText: string, normalizedText: string, sessionId: string, requestId: string, priority: MessagePriority): IngressEnvelope {
@@ -146,7 +145,6 @@ async function dispatchMessage(text: string, options: SendMessageOptions = {}): 
         toolCallsMade: 0,
         retriesUsed: 0,
         outcome: "succeeded",
-        personalityEffect: { expression: "idle", soundEvent: null },
       }
     }
     const receipt = await deliverActiveTurn(
@@ -161,7 +159,6 @@ async function dispatchMessage(text: string, options: SendMessageOptions = {}): 
         toolCallsMade: 0,
         retriesUsed: 0,
         outcome: "queued",
-        personalityEffect: { expression: "idle", soundEvent: null },
       }
     }
     log.warn("运行槽不可投递，改走正常回合:", requestId)
@@ -180,7 +177,6 @@ async function dispatchMessage(text: string, options: SendMessageOptions = {}): 
       retriesUsed: 0,
       outcome: "failed",
       failure: { kind: "unknown", message: "会话已有运行中的运行槽" },
-      personalityEffect: { expression: "idle", soundEvent: null },
     }
   }
   setAIGenerating(true)
@@ -203,7 +199,6 @@ async function dispatchMessage(text: string, options: SendMessageOptions = {}): 
           toolCallsMade: 0,
           retriesUsed: 0,
           outcome: "succeeded",
-          personalityEffect: { expression: "idle", soundEvent: null },
         }
       }
       transition("WAITING", originSessionId)
@@ -212,7 +207,6 @@ async function dispatchMessage(text: string, options: SendMessageOptions = {}): 
         toolCallsMade: 0,
         retriesUsed: 0,
         outcome: "succeeded",
-        personalityEffect: { expression: "idle", soundEvent: null },
       }
     }
 
@@ -240,11 +234,6 @@ async function dispatchMessage(text: string, options: SendMessageOptions = {}): 
       runGeneration,
     })
 
-    // ── Step 5: 提取人格效果（Pi Runtime 已通过 generateReply 处理）──
-    const lastEffect = result.effects.length > 0
-      ? result.effects[result.effects.length - 1]
-      : { expression: "smile", soundEvent: "reply" }
-
     // 记录工具调用历史
     if (result.toolCallHistory.length > 0) {
       toolCallHistory.entries.push(...result.toolCallHistory)
@@ -266,10 +255,6 @@ async function dispatchMessage(text: string, options: SendMessageOptions = {}): 
       retriesUsed: result.retriesUsed,
       outcome: result.failure ? "failed" : "succeeded",
       ...(result.failure ? { failure: result.failure } : {}),
-      personalityEffect: {
-        expression: lastEffect.expression,
-        soundEvent: lastEffect.soundEvent,
-      },
     }
   } catch (e) {
     log.error("sendMessage 失败", formatError(e))
@@ -294,7 +279,6 @@ async function dispatchMessage(text: string, options: SendMessageOptions = {}): 
       retriesUsed: 0,
       outcome: "failed",
       failure: { kind: "unknown", message: summarizeError(e) },
-      personalityEffect: { expression: "sleepy", soundEvent: null },
     }
   } finally {
     harnessSlots.end(originSessionId, runGeneration)

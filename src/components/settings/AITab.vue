@@ -12,7 +12,6 @@ import {
 import { getPoolSnapshot, formatPoolForPrompt } from "@/services/personality";
 import { getCachedStages } from "@/services/personality";
 import type { PersonalityCard } from "@/services/personality";
-import type { EmotionMapping } from "@/services/personality";
 import type { StageMap, StagePrompts } from "@/services/personality";
 import { createLogger } from "@/services/logger";
 import { formatError } from "@/services/error"
@@ -87,7 +86,6 @@ const switchSuccess = ref("");
 // ── Card 面板折叠 ──
 const showVarPool = ref(false);
 const showStages = ref(false);
-const showEmotion = ref(false);
 
 // ── 变量池 ──
 const poolRefreshTick = ref(0);
@@ -99,12 +97,6 @@ const stagesData = ref<StagePrompts | null>(null);
 const editingStages = ref(false);
 const stageEditJson = ref("");
 const stagesFileExists = ref(false);
-
-// ── 情绪表达 ──
-const emotionMappings = computed<EmotionMapping[]>(() => {
-  const card = cardList.value.find(c => c.id === personalityActive.value);
-  return card?.sections.emotionMappings ?? [];
-});
 
 // ── 辅助 ──
 const currentCard = computed(() =>
@@ -546,7 +538,6 @@ defineExpose({
           <div class="card-stats">
             <span v-if="card.sections.whenText">有语气指引</span>
             <span>{{ card.sections.variableDefs.length }} 个变量</span>
-            <span>{{ card.sections.emotionMappings.length }} 个情绪</span>
             <span>v{{ card.version }}</span>
           </div>
 
@@ -630,26 +621,6 @@ defineExpose({
           <span class="s-hint">⚠ 重新生成会覆盖手动编辑</span>
         </div>
       </div>
-    </div>
-  </div>
-
-  <!-- ═══ 😊 情绪表达 ═══ -->
-  <div class="s-section">
-    <div class="s-label" style="cursor:pointer" @click="showEmotion = !showEmotion">
-      😊 情绪表达 <span style="flex:1"></span><span class="card-arrow">{{ showEmotion ? '▾' : '▸' }}</span>
-    </div>
-
-    <div v-if="showEmotion">
-      <div v-if="emotionMappings.length === 0" class="s-hint">无情绪映射</div>
-      <div v-else class="emotion-grid">
-        <div v-for="em in emotionMappings" :key="em.key" class="emotion-row">
-          <span class="tag-tip">{{ em.key }}</span>
-          <span class="s-muted">→</span>
-          <span>{{ em.expression }}</span>
-          <span class="s-muted">{{ em.sound ? `🔊 ${em.sound}` : '🔇' }}</span>
-        </div>
-      </div>
-      <div class="s-hint">回复开头 [emo:key] 驱动，系统自动剥离</div>
     </div>
   </div>
 
@@ -858,22 +829,4 @@ defineExpose({
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-
-/* ── 情绪映射 ── */
-.emotion-grid {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-  padding: 2px 0;
-}
-
-.emotion-row {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  font-size: 10px;
-  padding: 1px 4px;
-  border-radius: 3px;
-}
-.emotion-row:hover { background: rgba(255,255,255,0.03); }
 </style>

@@ -2,8 +2,6 @@
 // 人格模块 —— 类型定义
 // ==========================================
 
-import type { EmotionMapping } from "./emotion"
-
 import type { MustRules } from "./must-rules"
 
 // ── 变量状态类型 ──
@@ -43,8 +41,6 @@ export interface CardSections {
   roleSetting: string
   languageStyle: string
   outputRules: string
-  emotionRaw: string
-  emotionMappings: EmotionMapping[]
   whenText: string
   mustRules: MustRules
   /** Card 注册表变量定义（结构化 schema） */

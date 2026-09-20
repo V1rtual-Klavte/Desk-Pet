@@ -423,7 +423,7 @@ defineExpose({
       <img :src="getBodyUrl(profileDetail)" class="preview-body" @error="($event.target as HTMLImageElement).style.display='none'" />
       <div class="preview-info">
         <div class="preview-name">{{ profileDetail.meta.name }}</div>
-        <div class="preview-meta">角色: {{ profileDetail.character.name }} · {{ Object.keys(profileDetail.animations).length }}动画</div>
+        <div class="preview-meta">角色: {{ profileDetail.character.name }}</div>
         <div class="preview-tags">
         </div>
       </div>

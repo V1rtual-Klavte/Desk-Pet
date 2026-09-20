@@ -26,7 +26,7 @@ export const memoryContract: ModuleContract = {
     "src/services/context/tool-output.ts",
   ],
   generatedAt: "2026-09-18",
-  sourceHash: "10161dee4c40756e873a35c918bf3bfaf47059ff9ab2277b792bc24e25297d9e",
+  sourceHash: "93fd0772461a0a58daf94087561c98e9198782b3b620aa064b3eb7e052852ec2",
   coverage: [
     { id: "mm-01", feature: "Memory 添加条目", description: "MemoryService.append() 创建记忆", why: "记忆系统基础 CRUD", depth: "shallow", scenarios: ["memory-append"] },
     { id: "mm-02", feature: "Memory 搜索", description: "MemoryService.search(query, limit) 按内容搜索", why: "LLM 需检索相关记忆", depth: "shallow", scenarios: ["memory-search"] },

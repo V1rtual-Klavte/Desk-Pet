@@ -19,9 +19,9 @@ card/interaction 状态保存在 `personality/stages/{cardId}.json` 的变量区
 
 [loader.ts](../../src/services/personality/loader.ts) 从运行时 cards 目录读取和解析 Card，包内 defaults 只作首次初始化种子。[registry.ts](../../src/services/personality/registry.ts) 的 `switchPersonality()` 先准备阶段文案与变量池，成功后改变活动 Card；失败恢复旧 Card、变量池与阶段缓存。
 
-默认种子提供 neutral 中性选择；没有可用 Card 时允许无活动 Card 降级运行。`whenText` 是自然语言语气指引；mustRules 和 emotionMappings 参与 Prompt/回复解释，不是一套任意执行脚本。
+默认种子提供 neutral 中性选择；没有可用 Card 时允许无活动 Card 降级运行。`whenText` 是自然语言语气指引；mustRules 参与 Prompt 构建，不是一套任意执行脚本。
 
-阶段文案先读持久化缓存，缺失时可经模型生成。`getFallbackReply()` 提供角色化兜底并有中性回退；音效和表情映射由 Card 定义，具体资源由 Profile/音效模块提供。
+阶段文案先读持久化缓存，缺失时可经模型生成。`getFallbackReply()` 提供角色化兜底并有中性回退。
 
 ## 回复与写入
 

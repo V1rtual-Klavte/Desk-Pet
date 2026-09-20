@@ -9,7 +9,7 @@ export interface SlashCommand {
   /** 简介描述，显示在下拉框和 /help 中 */
   description: string
   /** 分类，用于 /help 分组显示 */
-  category?: "general" | "expression" | "session" | "memory" | "easteregg"
+  category?: "general" | "session" | "memory" | "easteregg"
   /** 参数说明（可选），如 "[关键词]" */
   args?: string
   /** 执行函数，返回给用户的消息（null = 不显示） */

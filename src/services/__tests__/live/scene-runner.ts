@@ -73,7 +73,7 @@ async function executeTurn(userText: string, entry: SceneEntry, isActiveMessage 
   if (entry === "unit") {
     // 不进入模型：断言只依赖进程内状态（纯函数、注册表、变量池）。
     // 返回空输出，让 ctx.output 保持可读而不必特判 undefined。
-    return { reply: "", toolCallHistory: [], retriesUsed: 0, effects: [] }
+    return { reply: "", toolCallHistory: [], retriesUsed: 0 }
   }
 
   // Runtime tests use the same durable session creation as the desktop entry.
@@ -87,14 +87,13 @@ async function executeTurn(userText: string, entry: SceneEntry, isActiveMessage 
       reply: result.reply,
       toolCallHistory: productionToolHistory.entries.map(item => ({ ...item })),
       retriesUsed: result.retriesUsed,
-      effects: [result.personalityEffect],
       ...(result.failure ? { failure: result.failure } : {}),
     }
   }
 
   if (isActiveMessage) {
     const reply = await sendActiveMessage(userText)
-    return { reply, toolCallHistory: [], retriesUsed: 0, effects: [] }
+    return { reply, toolCallHistory: [], retriesUsed: 0 }
   }
 
   // Mirror the production message lifecycle around the lower-level Pi runtime.

@@ -17,7 +17,7 @@
 | personality / reply | Card、变量与阶段文案；回复元数据解析和效果 | [personality/](../../src/services/personality/)、[reply/](../../src/services/reply/) |
 | tool / safety | 工具注册和路由、Pi 文件工具、MCP；权限与确认 | [tool/](../../src/services/tool/)、[safety/](../../src/services/safety/) |
 | skill | 有界元数据索引与按需正文读取的 Prompt 目录 | [skill/](../../src/services/skill/) |
-| profile / audio | 外观资源、导入导出与音效映射 | [profile/](../../src/services/profile/)、[audio/](../../src/services/audio/) |
+| profile / audio | 外观资源、导入导出与系统音效 | [profile/](../../src/services/profile/)、[audio/](../../src/services/audio/) |
 | window / cooldown | 前台窗口监控、主动消息与共享冷却 | [window/](../../src/services/window/)、[cooldown.ts](../../src/services/cooldown.ts) |
 | config / paths | 类型化配置与 Rust 路径桥接 | [config.ts](../../src/services/config.ts)、[paths.ts](../../src/services/paths.ts) |
 | logger / error / dialog | 统一日志、异常出口与通用交互提示 | [logger/](../../src/services/logger/)、[error/](../../src/services/error/)、[dialog/](../../src/services/dialog/) |
@@ -25,7 +25,7 @@
 | Rust window / monitor | Windows/macOS 窗口与前台应用监控 | [window/](../../src-tauri/src/window/)、[monitor/](../../src-tauri/src/monitor/) |
 | Live Test | Contract、Scene、隔离宿主与报告 | [测试 README](../../src/services/__tests__/live/README.md) |
 
-图层和景深的共享计算位于 [composables/](../../src/composables/)，展示入口是 [StreamView.vue](../../src/components/StreamView.vue)。旧 animation.ts 尚未接入该主展示路径，不能因文件存在而认为表情动画链已闭环。[init.ts](../../src/services/init.ts) 负责能力准备和模式资源生命周期。
+图层和景深的共享计算位于 [composables/](../../src/composables/)，展示入口是 [StreamView.vue](../../src/components/StreamView.vue)。[init.ts](../../src/services/init.ts) 负责能力准备和模式资源生命周期。
 
 ## 主消息链路
 

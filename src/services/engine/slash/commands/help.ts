@@ -7,7 +7,6 @@ import { listAll } from "../registry"
 
 const CATEGORY_CONFIG: Record<string, { emoji: string; label: string }> = {
   session:     { emoji: "💬", label: "会话" },
-  expression:  { emoji: "😊", label: "表情切换" },
   memory:      { emoji: "🧠", label: "记忆" },
   easteregg:   { emoji: "🕹️", label: "彩蛋" },
   general:     { emoji: "⚙️", label: "通用" },
@@ -25,7 +24,7 @@ function formatHelp(): string {
   }
 
   // 按分类顺序排列
-  const order = ["session", "expression", "memory", "easteregg", "general"]
+  const order = ["session", "memory", "easteregg", "general"]
 
   const lines: string[] = []
   lines.push(`📋 可用命令 (共 ${cmds.length} 个)`)
