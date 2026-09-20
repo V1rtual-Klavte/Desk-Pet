@@ -13,7 +13,7 @@
 | engine/runtime | trace、快照协议（Queue/AgentSlot 已退役） | [runtime/](../../src/services/engine/runtime/) |
 | context | 分层构建、共享预算、完整轮与工具输出请求投影 | [context/](../../src/services/context/) |
 | agent/memory | Plan checkpoint、记忆文件与只读 MemoryProvider（会话正文在 `sessions/` JSONL） | [memory/](../../src/services/agent/memory/) |
-| session | 会话仓库访问层、标签、消息读模型、切换与恢复 | [session/](../../src/services/session/) |
+| session | 会话仓库访问层、会话列表与消息读模型、切换与恢复 | [session/](../../src/services/session/) |
 | personality / reply | Card、变量与阶段文案；回复元数据解析和效果 | [personality/](../../src/services/personality/)、[reply/](../../src/services/reply/) |
 | tool / safety | 工具注册和路由、Pi 文件工具、MCP；权限与确认 | [tool/](../../src/services/tool/)、[safety/](../../src/services/safety/) |
 | skill | 有界元数据索引与按需正文读取的 Prompt 目录 | [skill/](../../src/services/skill/) |
@@ -51,7 +51,7 @@ sendMessage → preprocessor / Slash
 | 应用 | 配置、Card/Profile 选择、能力目录 | 新 run 读取快照；切换有专用入口 |
 | 会话 | Lane 持久 inbox、会话 JSONL 条目 | 身份由 sessionId 与操作代际关联 |
 | 单次运行 | 冻结模型/能力/Prompt 来源、AbortSignal、写队列 | 旧运行不能修改新的会话或 Card 所有者 |
-| 界面 | Vue 标签、消息、进度与表达效果 | 从领域事实投影，不重建第二份持久化 Store |
+| 界面 | Vue 标签、消息、进度与表达效果 | 从领域事实投影（会话列表读模型归 session 模块），不重建第二份持久化 Store |
 
 具体模型工厂、重试、取消、Plan 恢复、PromptSnapshot 与工具写入顺序由[运行时契约](runtime-contract.md)维护。
 

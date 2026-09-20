@@ -20,6 +20,7 @@ import {
   readPiSessionEntries, persistPiSessionName,
 } from "./repo"
 import type { PiSessionSummary } from "./repo"
+import { prependSessionHistory, removeSessionHistory, renameSessionHistory } from "./history"
 import { messagesFromEntries } from "./read-model"
 import { createLogger } from "@/services/logger"
 import { formatError } from "@/services/error"
@@ -182,6 +183,7 @@ export async function createNewSession(): Promise<SessionMeta> {
   // 注册到列表
   addSessionMeta(meta)
   saveSessionList([...sessions])
+  prependSessionHistory(summary)
 
   // 变量池对齐新会话开始时间
   const { setSessionStart } = await import("@/services/personality")
@@ -229,22 +231,13 @@ export async function deleteSession(sessionId: string): Promise<boolean> {
   saveSessionList([...sessions])
 
   try {
-    return await deletePiSession(sessionId)
+    const deleted = await deletePiSession(sessionId)
+    if (deleted) removeSessionHistory(sessionId)
+    return deleted
   } catch (error) {
     log.warn("Session: 删除会话失败", sessionId, formatError(error))
     return false
   }
-}
-
-/** 历史面板数据：sessions/ 下全部会话（含未打开标签的归档会话）。 */
-export async function listSessionHistory(): Promise<PiSessionSummary[]> {
-  const metadata = await listPiSessionMetadata()
-  const items: PiSessionSummary[] = []
-  for (const item of metadata) {
-    const summary = await readPiSessionSummary(item)
-    if (summary) items.push(summary)
-  }
-  return items
 }
 
 /** 更新会话名（首条用户消息时）；展示名持久化到会话文件。 */
@@ -253,6 +246,7 @@ export function updateSessionName(sessionId: string, firstUserMsg: string): void
   if (!meta || meta.name !== "新会话") return
   meta.name = firstUserMsg.substring(0, 20).replace(/[\n\r/\\:*?"<>|]/g, "").trim() || "新会话"
   saveSessionList([...sessions])
+  renameSessionHistory(sessionId, meta.name)
   void persistPiSessionName(sessionId, meta.name)
 }
 

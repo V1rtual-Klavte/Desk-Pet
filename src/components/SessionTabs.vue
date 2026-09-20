@@ -1,22 +1,17 @@
 <script setup lang="ts">
-import { reactive, ref, onMounted, onUnmounted } from "vue";
-import { getSessions, getActiveSessionId, listSessionHistory } from "@/services/session";
+import { computed, ref } from "vue";
+import {
+  getActiveSessionId, sessions,
+  sessionHistory, sessionHistoryError, sessionHistoryLoading,
+  refreshSessionHistory,
+} from "@/services/session";
 import type { PiSessionSummary, SessionMeta } from "@/services/session";
-import { createLogger } from "@/services/logger";
-import { formatError } from "@/services/error";
 
-const log = createLogger("SessionTabs");
-
-const sessions = reactive<SessionMeta[]>([]);
-const activeId = ref("");
+/** 标签列表与活跃指针都直接消费会话读模型：组件不再维护本地副本，也不再需要父组件补刷。 */
+const activeId = computed(() => getActiveSessionId());
 
 // ★ 会话历史面板（sessions/ 仓库中的全部会话，含未打开标签的归档）
 const showHistory = ref(false);
-const historySessions = ref<PiSessionSummary[]>([]);
-const historyLoading = ref(false);
-const historyError = ref(false);
-
-const restoreTimer = ref<ReturnType<typeof setTimeout> | null>(null);
 
 const emit = defineEmits<{
   "switch": [session: SessionMeta];
@@ -26,34 +21,12 @@ const emit = defineEmits<{
   "restore-session": [session: PiSessionSummary];
 }>();
 
-// ── 加载会话列表（从 session store 同步，不走 localStorage）──
-function loadSessions(): void {
-  const list = getSessions();
-  sessions.splice(0, sessions.length, ...list);
-  activeId.value = getActiveSessionId();
-}
-
-// ── 获取/创建 ──
-function getActiveId(): string {
-  return activeId.value || (sessions.length > 0 ? sessions[0].id : "");
-}
-
-function ensureSession(): void {
-  if (sessions.length === 0) {
-    // 不在此创建，由父组件 initChat 负责
-  }
-  if (!activeId.value || !sessions.find(s => s.id === activeId.value)) {
-    activeId.value = sessions[0]?.id ?? "";
-  }
-}
-
 // ── 操作 ──
 function switchTo(id: string): void {
   if (!id || id === activeId.value) return;
-  const s = sessions.find(x => x.id === id);
-  if (!s) return;
-  activeId.value = id;
-  emit("switch", s);
+  const target = sessions.find(item => item.id === id);
+  if (!target) return;
+  emit("switch", target);
 }
 
 /** ★ "+" 按钮: 只触发父组件创建，不在此创建 */
@@ -61,64 +34,26 @@ function newSession(): void {
   emit("new");
 }
 
-/** 关闭会话标签 */
+/** 关闭会话标签：列表由会话读模型移除，不在此就地过滤；后续切到哪个会话由父组件裁定 */
 function closeSession(id: string): void {
   if (sessions.length <= 1) return;
-  const idx = sessions.findIndex(x => x.id === id);
-  if (idx === -1) return;
-
-  const removed = sessions.splice(idx, 1)[0];
-  emit("close-tab", removed.id);
-
-  if (activeId.value === id) {
-    activeId.value = sessions[0]?.id ?? "";
-    if (activeId.value) {
-      const s = sessions.find(x => x.id === activeId.value);
-      if (s) emit("switch", s);
-    }
-  }
+  emit("close-tab", id);
 }
 
-// ★ 会话历史
-async function toggleHistory() {
+// ★ 会话历史（读取、错误态与增删改都由会话读模型负责）
+async function toggleHistory(): Promise<void> {
   showHistory.value = !showHistory.value;
-  if (showHistory.value) {
-    await loadHistorySessions();
-  }
+  if (showHistory.value) await refreshSessionHistory();
 }
 
-async function loadHistorySessions(): Promise<void> {
-  historyLoading.value = true;
-  try {
-    historySessions.value = await listSessionHistory();
-    historyError.value = false;
-  } catch (error) {
-    // 读取失败不能与「确实没有会话」同形：否则用户会以为历史被清空了。
-    log.warn("加载历史会话失败:", formatError(error));
-    historySessions.value = [];
-    historyError.value = true;
-  } finally {
-    historyLoading.value = false;
-  }
+/** 删除交给父组件：失败要能在面板里留错误态，不在这里做乐观过滤 */
+function deleteHistorySession(id: string): void {
+  emit("delete-session", id);
 }
 
-async function deleteHistorySession(id: string): Promise<void> {
-  log.debug("deleteHistorySession 点击:", id)
-  emit("delete-session", id)
-  // ★ 不在此立即过滤 UI，由父组件 finally 中调用 refreshHistory 统一刷新
-}
-
-/** ★ 刷新历史面板（父组件在会话操作完成后调用） */
-async function refreshHistory(): Promise<void> {
-  if (showHistory.value) {
-    await loadHistorySessions()
-  }
-}
-
-async function restoreHistorySession(item: PiSessionSummary): Promise<void> {
-  emit("restore-session", item)
-  // 即时刷新标签栏（父组件会同步）
-  restoreTimer.value = setTimeout(() => loadSessions(), 300)
+/** 恢复只发意图；标签栏与历史列表都由会话读模型更新 */
+function restoreHistorySession(item: PiSessionSummary): void {
+  emit("restore-session", item);
 }
 
 function formatDate(timestamp: number): string {
@@ -131,22 +66,6 @@ function onWheel(e: WheelEvent) {
   const row = e.currentTarget as HTMLElement
   row.scrollLeft += e.deltaY
 }
-
-// ── 暴露给父组件 ──
-defineExpose({
-  loadSessions,       // 父组件在 createNewSession 后调用刷新
-  getActiveId,
-  ensureSession,
-  refreshHistory,     // ★ 父组件在会话操作完成后刷新历史面板
-});
-
-onMounted(() => {
-  loadSessions();
-});
-
-onUnmounted(() => {
-  if (restoreTimer.value) clearTimeout(restoreTimer.value);
-});
 </script>
 
 <template>
@@ -189,11 +108,11 @@ onUnmounted(() => {
         <button id="history-close" @click="showHistory = false">×</button>
       </div>
       <div id="history-list">
-        <div v-if="historyLoading" class="history-status">加载中...</div>
-        <div v-else-if="historyError" class="history-status">历史会话读取失败，请查看日志</div>
-        <div v-else-if="historySessions.length === 0" class="history-status">暂无历史会话</div>
+        <div v-if="sessionHistoryLoading" class="history-status">加载中...</div>
+        <div v-else-if="sessionHistoryError" class="history-status">历史会话读取失败，请查看日志</div>
+        <div v-else-if="sessionHistory.length === 0" class="history-status">暂无历史会话</div>
         <div
-          v-for="item in historySessions"
+          v-for="item in sessionHistory"
           :key="item.id"
           class="history-item"
           @click="restoreHistorySession(item)"

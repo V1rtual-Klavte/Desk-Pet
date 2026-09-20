@@ -28,12 +28,19 @@ export {
   closeSession,
   openSession,
   deleteSession,
-  listSessionHistory,
   updateSessionName,
   updateSessionMessageCount,
   incrementSessionMessageCount,
   setSessionInterrupted,
 } from "./manager"
+
+// ── 会话历史读模型（sessions/ 仓库全量会话，含未打开标签的归档）──
+export {
+  sessionHistory,
+  sessionHistoryLoading,
+  sessionHistoryError,
+  refreshSessionHistory,
+} from "./history"
 
 // ── Repo（运行内核注入 `createAgentHarness({ session })` 时经这里取句柄）──
 export {

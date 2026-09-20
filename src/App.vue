@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import "./styles/fonts.css";
 import "./styles/global.css";
-import { ref, nextTick, onMounted, onUnmounted, provide } from "vue";
+import { ref, onMounted, onUnmounted, provide } from "vue";
 import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
 import { WebviewWindow } from "@tauri-apps/api/webviewWindow";
 import { LogicalPosition, LogicalSize } from "@tauri-apps/api/dpi";
@@ -54,7 +54,6 @@ provide("windowPos", lastMovedPos);
 provide("windowSize", winSize);
 provide("isRetracted", isRetracted);
 const chatRef = ref<InstanceType<typeof ChatPanel> | null>(null);
-const tabsRef = ref<InstanceType<typeof SessionTabs> | null>(null);
 
 // ── 可拖动分割线 ──
 const DEFAULT_CHAT_WIDTH = 220;
@@ -112,9 +111,6 @@ async function onSessionNew() {
     log.error("新建会话失败:", formatError(e))
     return
   }
-  await nextTick();
-  tabsRef.value?.loadSessions();
-  tabsRef.value?.refreshHistory();
   await greetNewSession();
 }
 
@@ -127,8 +123,6 @@ async function onSessionClose(sessionId: string) {
   } else if (getActiveSessionId() === sessionId || getActiveSessionId() === "") {
     await switchToSession(remaining[0].id)
   }
-  tabsRef.value?.loadSessions()
-  tabsRef.value?.refreshHistory()
 }
 
 async function onDeleteSession(sessionId: string) {
@@ -145,9 +139,6 @@ async function onDeleteSession(sessionId: string) {
     log.info("onDeleteSession 完成:", sessionId)
   } catch (e) {
     log.error("删除会话失败:", sessionId, formatError(e))
-  } finally {
-    tabsRef.value?.loadSessions()
-    tabsRef.value?.refreshHistory()
   }
 }
 
@@ -162,8 +153,6 @@ async function onRestoreSession(item: PiSessionSummary) {
       path: item.path,
     })
     await switchToSession(item.id)
-    tabsRef.value?.loadSessions()
-    tabsRef.value?.refreshHistory()
     log.info("onRestoreSession 完成:", item.id)
   } catch (e) {
     log.error("恢复会话失败:", item.id, formatError(e))
@@ -512,7 +501,6 @@ onMounted(async () => {
   }
 
   await initApp();
-  tabsRef.value?.loadSessions();
 
   invoke("set_monitor_config", {
     pollingIntervalMs: desktopConfig.pollingIntervalMs,
@@ -678,7 +666,6 @@ onUnmounted(() => {
       <div id="chat-slot" :class="{ closed: !showChat, dragging: isDraggingDivider }" :style="showChat ? { width: chatWidth + 'px' } : {}">
         <SessionTabs
           v-show="showChat"
-          ref="tabsRef"
           @switch="onSessionSwitch"
           @new="onSessionNew"
           @close-tab="onSessionClose"
