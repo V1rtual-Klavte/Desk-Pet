@@ -329,6 +329,42 @@ function initFontEditor() {
   };
 }
 
+/** 字体属于 Profile，写入 profile.yaml 的 theme.fonts（保留同段其它字段，如 size）。 */
+async function saveFontsToProfile() {
+  const p = getActiveProfile();
+  if (!p) {
+    const message = "没有激活的 Profile，无法保存。";
+    log.warn(message);
+    window.alert(message);
+    return;
+  }
+  try {
+    const resp = await fetch(`${p.basePath}/profile.yaml`);
+    if (!resp.ok) throw new Error("无法读取");
+    const jsYaml = await import("js-yaml");
+    const doc = jsYaml.load(await resp.text()) as any;
+    if (!doc.theme) doc.theme = {};
+    doc.theme.fonts = { ...(doc.theme.fonts || {}), ui: fontAssign.value.ui, chat: fontAssign.value.chat };
+    const newYaml = jsYaml.dump(doc, { lineWidth: -1, noRefs: true });
+    const { invoke } = await import("@tauri-apps/api/core");
+    await invoke("profile_file_write", {
+      profileId: p.id,
+      relativePath: "profile.yaml",
+      content: Array.from(new TextEncoder().encode(newYaml)),
+    });
+    invalidateProfileCache(p.id);
+    const { ensureProfileLoaded } = await import("@/services/profile");
+    await ensureProfileLoaded(p.id);
+    activateProfile(p.id);
+    profileDetail.value = getActiveProfile();
+    initFontEditor();
+    await emit("deskpet-profile-updated", { profileId: p.id });
+    log.info("字体已保存");
+  } catch (e: any) {
+    log.error("字体保存失败:", e);
+  }
+}
+
 // ── 生命周期 ──
 onMounted(async () => {
   await initProfiles();
@@ -461,6 +497,9 @@ defineExpose({
         <option value="zpix">zpix</option>
         <option value="pixel-mplus">pixel-mplus</option>
       </select>
+    </div>
+    <div class="row-gap" style="margin-top:6px">
+      <button class="btn-s" @click="saveFontsToProfile()">💾 保存</button>
     </div>
   </div>
 
