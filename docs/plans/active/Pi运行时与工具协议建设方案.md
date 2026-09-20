@@ -174,7 +174,7 @@ defineTool/注册入口统一校验并冻结描述；BaseTool 不保存会话、
 ### 4.2 权限、配置与来源
 
 - defaultDecision 是工具侧意见，动态 check 是本次参数附加约束，PermissionKernel 才是终裁。deny 优先，ask 不被 allow 抹掉；passthrough 表示继续框架策略，不能流到执行器。
-- write/edit 建议工具侧 ask；read 可为 allow，但敏感路径、禁用开关、模式和 Rust 安全基线仍能提高为 ask/deny。Bash 用 passthrough 加现有参数级风险规则，不能仅凭工具名放行。
+- write/edit ~~建议工具侧 ask~~（**实施订正：改为 passthrough**，理由见 §4.3 末）；read 可为 allow，但敏感路径、禁用开关、模式和 Rust 安全基线仍能提高为 ask/deny。Bash 用 passthrough 加现有参数级风险规则，不能仅凭工具名放行。
 - MCP 一律声明 passthrough，保持助手模式按需连接；pet 不注册，绕过注册直接调用也由模式规则拒绝。未知能力以 external_side_effect、sequential、never 处理，助手模式的框架初始意见至少 ask，只有当前精确范围的有效授权才能继续。当前 MCP 已有 assistant 模式限制，不能把 NORMAL 等级误报成 pet 可直接执行的漏洞。MCP annotations 只能作提示，不能直接授予只读并行、重试资格或执行许可。
 - 工具策略、已验证来源与规则版本进入回合快照和 policyHash。函数不能靠 JSON 序列化形成身份；用明确规则版本/实现标识关联，策略变更后旧授权失效。
 - 展示的脱敏参数摘要不是授权参数；授权仍绑定精确 args hash、session/generation、toolCallId、策略和到期时间。等待执行许可后重新核对，避免确认有效但排队后已经取消/过期。
@@ -191,7 +191,7 @@ defineTool/注册入口统一校验并冻结描述；BaseTool 不保存会话、
 | system_info | allow | parallel / shared_read | reference | summarize | never |
 | read_session_event | allow + 固定会话/eventId | parallel / shared_read | preserve；源头有界分页 | summarize | never；未来可验证稳定视图 |
 | clipboard_read | passthrough + 现有隐私策略 | parallel / shared_read | reference | summarize | never，读取对象易变 |
-| write / edit | ask + 路径/开关检查 | sequential / exclusive_effect | preserve 成败/路径/错误；长附属 diff 可显式引用 | summarize，保留副作用结论 | never |
+| write / edit | ~~ask~~ **passthrough**（实施订正，见下）+ 路径/开关检查 | sequential / exclusive_effect | preserve 成败/路径/错误；长附属 diff 可显式引用 | summarize，保留副作用结论 | never |
 | bash | passthrough + 参数风险 | sequential / exclusive_effect | reference；保留 exit/取消/错误元数据 | summarize | never |
 | clipboard_write / app_open | passthrough + 现有风险策略 | sequential / exclusive_effect | preserve | summarize | never |
 | agent_spawn | passthrough + 子代理策略 | sequential / delegate | reference，保留子运行身份 | summarize 完成的子运行 | never |
@@ -199,6 +199,12 @@ defineTool/注册入口统一校验并冻结描述；BaseTool 不保存会话、
 | 宿主验证的只读 MCP | passthrough | parallel / shared_read | 同上 | summarize | never；不能靠 readOnlyHint 自动升级 |
 
 工具下线或被配置禁止时有效结果为 deny，不必另造一个“禁止工具”类。若新增必须原样保留的特殊工具，用 historyCompaction=retain 显式声明，并遵守 §5.2 的预算后果。
+
+**实施订正（write / edit 的工具侧意见）**：本节与 §4.1 原提案让 `write` / `edit` 在工具侧声明 `ask`，实施时**决定不采用**，保持 `passthrough`。
+
+原因是工具侧意见的组合顺序：`tool deny` 与 `tool ask` 都优先于 base 的结果，所以工具侧 `ask` 会**压过** base `allow`——包括 `safety.mode = just_do_it` 下经 checker 判定为放行的 DANGER 调用。那等于用一个静态工具声明静默改掉了安全模式的语义，而用户选 `just_do_it` 的意图本来就是“别问我”。
+
+要收紧写类工具的确认，正确的位置是安全模式或 checker（它们能看到模式与本次参数），不是工具声明。矩阵中该行已按实施结果标注。
 
 replay 字段只表达工具是否可能满足安全恢复条件，不自动启用重试。首轮全部设 never；未来有实际恢复消费者时，只有无副作用、输入和读取视图可验证稳定的工具才可启用 safe，且仍受运行记录检查。不要把“只读”当成“重复执行返回相同结果”。
 
