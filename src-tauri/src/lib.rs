@@ -25,7 +25,8 @@ use crate::commands::{
     mcp_spawn, open_devtools, open_windows_sim, pause_monitor, personality_file_list, personality_file_read, personality_file_write, profile_asset_base,
     profile_clone, profile_delete, profile_file_read, profile_file_write, report_frontend_error,
     restore_default_resources, resume_monitor, set_log_config, set_monitor_config, skill_delete, skill_list_metadata,
-    spawn_cursor_tracker, system_info, BashPool, McpPool,
+    spawn_cursor_tracker, system_info, tool_permit_acquire, tool_permit_cancel, tool_permit_release,
+    tool_permit_set_max_shared_readers, tool_permit_snapshot, BashPool, McpPool, ToolPermitPool,
 };
 use crate::monitor::MonitorState;
 use crate::window::{
@@ -140,6 +141,7 @@ struct LiveTestOptions {
     strict: Option<String>,
     report: Option<String>,
     seed_hash: Option<String>,
+    source_hashes: Option<String>,
     commit: Option<String>,
 }
 
@@ -156,6 +158,7 @@ fn get_live_test_options() -> LiveTestOptions {
             strict: None,
             report: None,
             seed_hash: None,
+            source_hashes: None,
             commit: None,
         };
     }
@@ -170,6 +173,7 @@ fn get_live_test_options() -> LiveTestOptions {
         strict: env_value("DESKPET_LIVE_TEST_STRICT"),
         report: env_value("DESKPET_LIVE_TEST_REPORT"),
         seed_hash: env_value("DESKPET_LIVE_TEST_SEED_HASH"),
+        source_hashes: env_value("DESKPET_LIVE_TEST_SOURCE_HASHES"),
         commit: env_value("DESKPET_LIVE_TEST_COMMIT"),
     }
 }
@@ -230,6 +234,7 @@ pub fn run() {
         .manage(monitor_state)
         .manage(McpPool::default())
         .manage(BashPool::default())
+        .manage(ToolPermitPool::default())
         .setup(move |app| {
             rust_info!("糖糖桌宠已启动");
 
@@ -418,6 +423,11 @@ pub fn run() {
             personality_file_read,
             personality_file_write,
             personality_file_list,
+            tool_permit_acquire,
+            tool_permit_release,
+            tool_permit_cancel,
+            tool_permit_set_max_shared_readers,
+            tool_permit_snapshot,
             ])
         .build(tauri::generate_context!())
         .unwrap_or_else(|e| {

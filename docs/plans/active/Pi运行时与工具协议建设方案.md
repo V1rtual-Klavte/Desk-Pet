@@ -208,6 +208,8 @@ replay 字段只表达工具是否可能满足安全恢复条件，不自动启�
 
 Pi Agent 全局改为 `toolExecution: parallel`，每个工具的 executionMode 来自 policy，而非 actionCategory 白名单。Pi 0.85.1 先顺序执行 preflight；**批次内任一工具 sequential，整个批次都会串行**。因此 read+read 可以并行，read+write 仍串行。本阶段不承诺混合批次中任意只读子集并行，也不通过 Promise.all 二次调度 Pi 工具。
 
+> 实施订正（2026-09-20，§8 迁移后）：上面的「批次内任一工具 sequential 整批串行」是 Pi 根 Agent loop 的语义。当前运行内核 AgentHarness 0.85.1 只读 run 级 `toolExecution`（`runSequential` / `runParallel` 二选一），**不读逐工具 `executionMode`**；`runParallel` 会把整批并发，没有读/写分类。因此纯读并行与写互斥由下一条的有界执行许可在同一批次内实现：run 级置 `parallel`，每个调用在执行入口借用额度（shared_read 有界共享、exclusive_effect 互斥），语义等价于「批次内有写则串行」，而不依赖 Harness 的逐工具声明。
+
 并行还需要统一的有界执行许可，接在现有 ToolRouter/执行入口。目标所有者是 Rust AppState 中应用级 permit 服务，前端工具执行前借用、完成后释放；它只管理额度与互斥，不重建 Pi 的队列和 toolResult 调度。许可带 window/session/runGeneration/operationId，获取等待可取消，取消/失联按实际进程或调用状态收尾；不能用超时自动释放仍在运行的写任务。Live Test 使用隔离的测试许可域，不干扰用户运行。
 
 - shared_read 共用可取消的并发上限；exclusive_effect 与受管理的其他读写执行互斥。排队不持有确认弹窗，等待期间能取消；有写入等待时不允许无限新增读任务造成饥饿。
@@ -289,24 +291,24 @@ Pi 0.85.1 根入口已经提供压缩；基础 Agent 不自动调度，Harness �
 
 | 批次 | 状态 | 内容与主要落点 | 完成条件 |
 |---|---|---|---|
-| PI-1 | 未实施 | ChatPanel/Runner 的输入意图选择与排队状态展示；宿主队列/确认/AgentSlot 由 §8 迁移承接 | 输入意图可显式选择、状态不虚构；不再新写宿主队列 |
-| PI-2 | 未实施 | ToolDef/注册/适配器、PermissionKernel、Router、L0、设置说明 | 每个工具策略完整，纯读并行/写互斥、分页不反复压缩；不存在双套字段消费者 |
-| PI-3 | 已随 H-3 落地 | model-gateway、reply/UI：原生 hook、逐请求 usage、流式正文 | 无第二份 Prompt 真相源；元数据不泄漏，所有请求成本可追溯 |
-| PI-4 | 部分落地（剩 usage purpose 单列） | 陪伴摘要内核（结构、来源校验）接入 before_compaction 与 usage 校准 | 摘要确实释放预算；来源/配对/取消语义由 Harness 协议承接 |
+| PI-1 | 已落地（UI 范围） | ChatPanel/Runner 的输入意图选择、排队视图与单项撤回；Slash 执行收敛到 ingress 并按 busyPolicy 准入；宿主队列/确认/AgentSlot 由 §8 迁移承接 | 输入意图可显式选择、状态不虚构；不再新写宿主队列。§3.2 更细的逐项证据状态（request_prepared 等）与停止入口仍未实施 |
+| PI-2 | 已落地（核心），设置展示与发布门禁未完成 | ToolDef 携带完整 policy（权限/执行/投影/摘要/replay）；defineTool 是唯一构造入口，Pi 适配与 MCP 都经它产出；旧字段（permissionCheck / effectClass / timeoutMs）消费者已清零；执行许可由 Rust 应用级所有者裁定（shared_read 有界并行、exclusive_effect 互斥、delegate 不占额度）；共享读上限经 `ai.loop.maxParallelTools` 配置；L0 按 resultProjection，retain 保护压缩边界 | 每个工具策略完整，纯读并行/写互斥、分页不反复压缩；不存在双套字段消费者。剩余：薄 BaseTool（当前无消费者，未实现）、设置页展示完整 policy、未跑严格全量门禁 |
+| PI-3 | 已随 H-3 落地 | model-gateway、reply/UI：原生 hook、逐请求 usage、流式正文 | 无第二份 Prompt 真相源；元数据不泄漏；所有请求成本可追溯 |
+| PI-4 | 已完成（2026-09-20，含 usage purpose 单列） | 陪伴摘要内核（结构、来源校验）接入 before_compaction 与 usage 校准；压缩/规划等一次性调用按 purpose 分列计量，总量由分项相加 | 摘要确实释放预算；来源/配对/取消语义由 Harness 协议承接；一次性调用可单独查看且不从总消耗消失 |
 | H-1–H-4 | 已完成并验证（2026-09-18） | AgentHarness 迁移批次（协议见 [归档基线](../../history/implementation/AgentHarness迁移方案-2026-09-18基线.md)） | 官方一致性套件通过；无重复状态机残留 |
 
 PI-1 / PI-2 独立实施；H 批次已完成，存储与控制面以 JSONL 会话为准，P6 的会话读取源按该格式实施。各批次实现及 Contract/Scene 完整后集中验证；失败修复后按受影响范围重验。批次可先落代码再统一跑门禁，不在每个文案/小改动后重复启动 Live Test。
 
-### 拟新增配置与设置入口
+### 配置与设置入口
 
-以下键仅为待实施提案，本轮不向 YAML 或设置页写入尚无消费者的字段：
+`ai.conversation.defaultDelivery` / `steeringMode` / `followUpMode` 已落地，全链路见[配置变更同步清单](../../current/runtime-data.md#配置变更同步清单)与[运行时数据](../../current/runtime-data.md#对话投递字段的语义与生效时机)：
 
-| 提案字段 | 初始值/含义 | 用户入口与生效边界 |
+| 字段 | 初始值/含义 | 用户入口与生效边界 |
 |---|---|---|
-| ai.conversation.defaultDelivery | steer | 聊天默认发送方式；单条显式选择优先，空闲时正常开始 |
-| ai.conversation.steeringMode | all | AI 高级设置“集中处理补充/逐条处理”；按运行冻结 |
-| ai.conversation.followUpMode | one-at-a-time | AI 高级设置“后续消息逐条/集中处理”；按运行冻结 |
-| ai.loop.maxParallelTools | 4，范围 1–8 | 工具页“同时执行的只读工具数”；更新 Rust 应用级许可所有者，1 是保守回退 |
+| ai.conversation.defaultDelivery | steer（已实现） | AITab“默认发送方式（忙碌时）”；聊天框单条显式选择优先，空闲时正常开始 |
+| ai.conversation.steeringMode | all（已实现） | AITab“插话批量处理：集中处理补充/逐条处理”；每次 run 开始前下发，按运行冻结 |
+| ai.conversation.followUpMode | one-at-a-time（已实现） | AITab“稍后继续的后续消息：逐条处理/集中处理”；同上 |
+| ai.loop.maxParallelTools | 4，范围 1–8（已实现） | 工具页“同时执行的只读工具数”；消费者是 PI-2 的 Rust 应用级许可所有者，1 是保守回退。每个 run 开始前下发、按运行生效；范围外的值在 getter、设置页保存与 Rust 下发三处都不静默接受 |
 
 工具页从同一 ToolDef 显示权限意见、当前模式可用性、读并行/副作用串行、结果是否缩短、历史是否摘要。静态展示注明“声明/默认策略”，不能在没有参数时伪称本次有效授权。权限确认仍显示本次参数与裁决。
 
