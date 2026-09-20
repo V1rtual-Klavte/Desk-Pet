@@ -1,6 +1,6 @@
 name: CI
 
-# 目标平台是 Windows + macOS，两端各跑一次原生 `cargo check`：
+# 目标平台是 Windows + macOS，两端各跑一次原生 `cargo check` 与 `cargo test --lib`：
 # 本机（macOS）永远看不到 `#[cfg(target_os = "windows")]` 分支，Windows job 才是唯一可靠验证器。
 on:
   push:
@@ -12,8 +12,8 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  test-types:
-    name: test:types (${{ matrix.os }})
+  verify:
+    name: verify (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -41,3 +41,7 @@ jobs:
       # = vue-tsc --noEmit && cargo check --manifest-path src-tauri/Cargo.toml
       # cargo 侧解析到仓库根 workspace，Cargo.lock 与 target/ 均在仓库根。
       - run: pnpm run test:types
+
+      # = cargo test --manifest-path src-tauri/Cargo.toml --lib
+      # 单测与 check 一样按平台原生编译运行；`#[cfg(unix)]`/`#[cfg(windows)]` 分支只在对应 job 生效。
+      - run: pnpm run test:rust

@@ -73,12 +73,13 @@ pnpm tauri build  # 构建安装产物
 
 ```bash
 pnpm run test:types
+pnpm run test:rust
 pnpm test -- --module memory
 ```
 
-类型与编译检查不代表运行时通过。Live Test 在独立 Tauri WebView 与临时数据根中运行，支持真实 Provider 和确定性 fake Provider；完整命令、场景规范及发布门禁以[测试 README](src/services/__tests__/live/README.md)为准。
+类型与编译检查不代表运行时通过。Rust 单测覆盖仓内 Rust 纯逻辑（命令策略、路径校验、输出裁剪、工具许可），`pnpm run test:rust` 等价于 `cargo test --manifest-path src-tauri/Cargo.toml --lib`。Live Test 在独立 Tauri WebView 与临时数据根中运行，支持真实 Provider 和确定性 fake Provider；完整命令、场景规范及发布门禁以[测试 README](src/services/__tests__/live/README.md)为准。
 
-[CI](.github/workflows/ci.yml) 在 macOS 与 Windows 执行类型/编译检查，当前不执行 Live Test。平台支持不等于所有 UI 行为均已通过双平台验收，验证范围见[测试说明](docs/current/testing.md)。
+[CI](.github/workflows/ci.yml) 在 macOS 与 Windows 执行类型/编译检查与 Rust 单测，当前不执行 Live Test。平台支持不等于所有 UI 行为均已通过双平台验收，验证范围见[测试说明](docs/current/testing.md)。
 
 ## 文档入口
 

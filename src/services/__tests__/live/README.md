@@ -12,6 +12,9 @@ Contract/Scene 的代码代理工作流见 [SKILL.md](./SKILL.md)。当前验证
 # 编译与类型门禁；不替代运行时验证
 pnpm run test:types
 
+# Rust 单测（内联在 src-tauri/src/**；不替代运行时验证）
+pnpm run test:rust
+
 # 全部 Live Scene
 pnpm test
 
@@ -30,7 +33,7 @@ pnpm run test:smoke
 pnpm run test:release
 ```
 
-可组合的筛选参数为 `--module`、`--scene`、`--case`、`--tag`、`--suite`、`--repeat`、`--strict`、`--report`。`--repeat` 范围为 1–20，且不会低于 Scene 的 `meta.repetitions`。`test:release` 执行类型检查与严格三次 Live 试验。
+可组合的筛选参数为 `--module`、`--scene`、`--case`、`--tag`、`--suite`、`--repeat`、`--strict`、`--report`。`--repeat` 范围为 1–20，且不会低于 Scene 的 `meta.repetitions`。`test:release` 执行类型检查、Rust 单测与严格三次 Live 试验。
 
 默认在启动时检查全部 Contract；聚焦单模块可用 `--module memory --contracts selected`，这不替代跨模块或发布前全量门禁。源码或 Contract 改动完成后再集中执行受影响模块和必要的全量验证；纯文档修改不运行 Live Test。
 

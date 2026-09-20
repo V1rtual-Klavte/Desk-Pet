@@ -46,10 +46,13 @@ pnpm install
 pnpm tauri dev        # 完整桌面应用
 pnpm dev              # 仅前端，不能验证 Rust IPC
 pnpm run test:types   # Vue 类型 + Rust 编译
+pnpm run test:rust    # Rust 单测（cargo test --lib）
 pnpm test -- --module <module>
-pnpm run test:release # 类型/编译 + 严格 Contract + 三次 trial
+pnpm run test:release # 类型/编译 + Rust 单测 + 严格 Contract + 三次 trial
 ```
 
+- Rust 单测内联在 `src-tauri/src/**`，`pnpm run test:rust` 执行；CI 在 macOS 与 Windows
+  两端都跑，缺少执行的测试不算门禁。
 - pnpm 版本以 `package.json` 的 `packageManager` 为准；新增有构建脚本的依赖须在
   `pnpm-workspace.yaml` 的 `allowBuilds` 显式声明运行或跳过，避免干净安装失败。
 - 先完成授权范围内的实现与 Contract/Scene，再按影响范围集中验证；修复失败后重验。
