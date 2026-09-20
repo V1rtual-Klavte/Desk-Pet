@@ -45,7 +45,7 @@ Node 启动预检会校验 `sourceHash`；源码变更后应先按 SKILL 重新�
 
 浏览器侧不做也不假装做独立校验：预检通过时把「模块 → sourceHash」的证明交给运行中的测试窗口，契约声明与证明不一致、或根本没有证明（例如绕过启动脚本直接开 Tauri）时该 Contract 记为 `stale`，严格模式据此失败。
 
-`sourceHash` 只覆盖 Contract 声明的 `sourceFiles`，不是依赖闭包；两者的差异清单与是否收紧门禁见[2026-09-20 收尾清单](../../../../docs/plans/active/2026-09-20收尾清单.md) L3。
+`sourceHash` 只覆盖 Contract 声明的 `sourceFiles`，不是依赖闭包；两者的差异清单与是否收紧门禁见[未完成工作与已知缺口](../../../../docs/plans/active/未完成工作与已知缺口.md) 的已决策小节。
 
 ## Scene 规范
 

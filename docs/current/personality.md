@@ -28,15 +28,15 @@ card/interaction 状态保存在 `personality/stages/{cardId}.json` 的变量区
 ```text
 模型完整回复
   → parseRuntimeData：解析并剥离内部块
-  → generateReply：情绪映射、显示文本处理
+  → generateReply：解析 RUNTIME_DATA、变量写入落盘、显示文本处理
   → batchWriteVars：注册/写权限/类型/范围校验
   → savePoolToDisk：保存 Card 状态
 ```
 
 入口见 [reply/generator.ts](../../src/services/reply/generator.ts) 和 [personality/index.ts](../../src/services/personality/index.ts)。模型不能新增变量、写 system/session、通过字符串绕过类型与边界限制。
 
-主 run 捕获 Card ID、版本和 hash；返回时若当前 Card 已变，旧文本仍可保存到所属会话，但旧 RUNTIME_DATA 不写入新角色变量，也不会在 runtime 直接 emit 当前 UI 效果；返回的 effects 仍包含解析结果，调用方的显示/播放隔离需单独验证。流式增量和工具中间消息不直接写入 Card 变量。
+主 run 捕获 Card ID、版本和 hash；返回时若当前 Card 已变，旧文本仍可保存到所属会话，但旧 RUNTIME_DATA 不写入新角色变量。流式增量和工具中间消息不直接写入 Card 变量。
 
 ## 验证入口
 
-相关 Contract：`personality-card`、`variable-pool`、`emotion`；运行命令见[测试 README](../../src/services/__tests__/live/README.md)。格式解析的确定性断言与模型是否自发生成情绪字段是不同验证目标，不能相互代替。
+相关 Contract：`personality-card`、`variable-pool`；运行命令见[测试 README](../../src/services/__tests__/live/README.md)。格式解析的确定性断言与模型是否主动写入变量是不同验证目标，不能相互代替。

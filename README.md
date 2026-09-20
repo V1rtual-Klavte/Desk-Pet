@@ -87,8 +87,8 @@ pnpm test -- --module memory
 - [产品定位、玩法与交互](docs/DES.md)
 - [当前系统地图](docs/current/system-design.md)
 - [开发约束](AGENTS.md)
-- [记忆重构当前检查点](docs/plans/active/记忆系统重构执行手册.md)
-- [Pi 接入与 Harness 运行时迁移方案（迁移已实施并验证）](docs/plans/active/Pi运行时与工具协议建设方案.md)
+- [未完成工作与已知缺口](docs/plans/active/未完成工作与已知缺口.md)
+- [Pi 协议与 Harness 迁移基线（已实施并验证）](docs/history/implementation/Pi运行时与工具协议建设方案-2026-09-20基线.md)
 
 ## License
 

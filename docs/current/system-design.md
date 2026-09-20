@@ -37,7 +37,7 @@ sendMessage → preprocessor / Slash
       → 助手模式按配置执行可选 Plan，取得步骤结果
       → recallMemory（默认空）→ Harness Lane：transform_context 投影 → Provider → before_tool 权限与执行
       → 条目提交、逐请求 usage、流式正文事件
-      → ReplyGenerator：RUNTIME_DATA、变量、情绪与显示文本
+      → ReplyGenerator：RUNTIME_DATA、变量与显示文本
   → 固定 session 的条目/状态完成 → Vue 投影
 ```
 

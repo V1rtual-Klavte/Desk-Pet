@@ -12,9 +12,9 @@
 | 会话队列、取消、恢复、Pi 接线、PromptSnapshot | [运行时契约](current/runtime-contract.md) | [记忆与压缩](current/memory.md)、[工具系统](current/tool-system.md) |
 | 配置、路径、Profile 持久化 | [运行时数据](current/runtime-data.md) | Config getter、AppPaths 和目标设置 Tab |
 | 工具权限、MCP、Skill | [工具系统](current/tool-system.md) | PermissionKernel、Router、对应工具实现 |
-| 实施插话双模式、工具并行/压缩策略、Pi hook | [Pi 运行时与工具协议方案](plans/active/Pi运行时与工具协议建设方案.md)对应章节 | 当前 runtime/tool/memory 契约与源码 |
+| 查 Pi 协议与 Harness 迁移的原设计 | [Pi 方案 2026-09-20 基线](history/implementation/Pi运行时与工具协议建设方案-2026-09-20基线.md)对应章节 | 当前 runtime/tool/memory 契约与源码 |
 | 测试执行/验证边界 | [测试边界](current/testing.md) | [Live README](../src/services/__tests__/live/README.md)；生成契约时再读 [SKILL](../src/services/__tests__/live/SKILL.md) |
-| 查看还剩哪些未完成工作、继续记忆重构 | [2026-09-20 收尾清单](plans/active/2026-09-20收尾清单.md) | [P6 目标契约](plans/active/记忆系统运行时契约.md)、[执行手册](plans/active/记忆系统重构执行手册.md#已有验证证据)及相关源码 |
+| 查看还剩哪些未完成工作、继续记忆重构 | [未完成工作与已知缺口](plans/active/未完成工作与已知缺口.md) | [P6 目标契约](plans/active/记忆系统运行时契约.md)、[执行手册基线](history/implementation/记忆系统重构执行手册-2026-09-20基线.md)及相关源码 |
 | 追溯旧方案、比较项目与实施证据 | 下方历史入口 | 只读关联章节，历史命令与授权不自动生效 |
 
 ## 文档职责与维护
@@ -25,7 +25,7 @@
 | README | 用户安装、启动、能力简介与文档导航 |
 | DES | 产品定位、玩法与用户可感知行为 |
 | current | 已核对的模块契约、关键边界与源码入口；按主题分文档 |
-| plans/active | 未完成目标、待决策、验收条件与接力检查点 |
+| plans/active | 未完成工作总表与尚在实施的目标契约；不为单一主题另开文档 |
 | history | 当时设计、旧实现和验证证据；不随新代码反复改写正文 |
 
 一个事实只有一个主要维护位置，其他文件用链接。每轮都核对 README、AGENTS、DES 与相关 current 的影响，受影响内容在同一改动中同步；新增规则改 AGENTS，用户入口变化改 README，玩法变化改 DES，模块变更更新系统地图及受影响导航。未变化的文档不为同步而追加总结。
@@ -38,15 +38,16 @@ AGENTS 维持全局规则入口，CLAUDE 只导入它；模块细节通过任务
 
 ## 未完成工作
 
-- [2026-09-20 收尾清单](plans/active/2026-09-20收尾清单.md)：**唯一未完成工作总表**——本期表情/动画/音效收尾、Pi 剩余批次、运行时断链、工程加固待办、P6 与验证缺口。
-- [Pi 运行时与工具协议方案](plans/active/Pi运行时与工具协议建设方案.md)：PI-1/PI-2 的目标协议正文与验收设计要求；§8 Harness 迁移已实施并归档。
+- [未完成工作与已知缺口](plans/active/未完成工作与已知缺口.md)：**唯一未完成工作总表**——Pi 剩余批次、平台与发布、已知代码缺口、验证缺口、P6 与当前验证证据。
 - [P6 目标契约](plans/active/记忆系统运行时契约.md)：候选、来源、受控召回、纠正/遗忘与评测要求；这些目标尚未成为运行时能力。
-- [执行手册](plans/active/记忆系统重构执行手册.md)：验证证据的唯一记录点、环境注意与未验证边界；实现与修复过程见 [2026-09-18 基线](history/implementation/记忆系统重构执行手册-2026-09-18基线.md)。
 
 ## 历史入口
 
+- [收尾清单 2026-09-20 基线](history/analysis/收尾清单-2026-09-20基线.md)：表情/动画/音效移除收尾、L3 与许可残留的决策论证、当时的验证缺口快照。
+- [Pi 方案 2026-09-20 基线](history/implementation/Pi运行时与工具协议建设方案-2026-09-20基线.md)：PI-1/PI-2 协议正文、实施订正与验收设计。
+- [执行手册 2026-09-20 基线](history/implementation/记忆系统重构执行手册-2026-09-20基线.md)：H-1–H-4 实现细节、06:58 轮证据与当时的未验证边界。
 - [表情 / 动画 / 音效移除基线](history/implementation/表情动画音效移除-2026-09-20基线.md)：移除边界、保留范围，以及 `RUNTIME_DATA` 指令随情绪链被删的回归与处理（已实施并通过整轮门禁）。
-- [加固计划 2026-09-20 基线](history/analysis/运行时加固与清理计划-2026-09-20基线.md)：2026-09-18 逐条复核后的剩余待办快照；剩余条目已迁入收尾清单。
+- [加固计划 2026-09-20 基线](history/analysis/运行时加固与清理计划-2026-09-20基线.md)：2026-09-18 逐条复核后的剩余待办快照；剩余条目已迁入当前未完成工作总表。
 - [轻量陪伴方案 2026-09-20 基线](history/design/轻量陪伴运行时与统一内核建设方案-2026-09-20基线.md)：A–E 已完成、F/G 待建时的方向快照。
 - [AgentHarness 迁移方案基线](history/implementation/AgentHarness迁移方案-2026-09-18基线.md)：运行内核替换的协议、替换映射与 H-1–H-4 批次设计（已实施并通过集中验证）。
 - [2026-09-18 执行手册基线](history/implementation/记忆系统重构执行手册-2026-09-18基线.md)：H-1–H-4 的实现与修复细节、集中验证收敛过程与当时的证据表。
