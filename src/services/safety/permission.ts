@@ -7,6 +7,7 @@ import type {
 } from "@/services/tool/types"
 import { safetyConfig } from "@/services/config"
 import { getEffectiveSafetyMode } from "@/services/debug"
+import { toolPolicyFingerprint } from "@/services/tool/policy"
 import { createLogger } from "@/services/logger"
 import { redactText, sha256Text, stableSerialize } from "@/services/engine/runtime"
 import { requestPermissionConfirm, cancelPermissionConfirm } from "./confirm"
@@ -58,13 +59,9 @@ function grantKey(grant: Pick<PermissionGrant, "sessionId" | "runGeneration" | "
   return stableSerialize({ sessionId: grant.sessionId, runGeneration: grant.runGeneration, toolName: grant.toolName, inputHash: grant.inputHash, policyHash: grant.policyHash })
 }
 
+/** 效果分类只来自策略声明；actionCategory 不参与推导。 */
 function effectClass(tool: ToolDef): EffectClass {
-  if (tool.effectClass) return tool.effectClass
-  if (tool.source === "mcp") return "external_side_effect"
-  if (tool.actionCategory === "fs.read" || tool.actionCategory === "os.info" || tool.actionCategory === "clip.read") return "read"
-  if (tool.actionCategory === "fs.write" || tool.actionCategory === "clip.write") return "local_mutation"
-  if (tool.actionCategory === "os.exec" || tool.actionCategory === "app.launch") return "process"
-  return "external_side_effect"
+  return tool.policy.execution.effect
 }
 
 function parameterSummary(params: Record<string, unknown>): string {
@@ -100,10 +97,10 @@ function standardDecision(tool: ToolDef, params: Record<string, unknown>, ctx: P
 }
 
 async function policyHash(tool: ToolDef, params: Record<string, unknown>, ctx: PermissionContext): Promise<string> {
+  // 静态策略身份与本次解析结果一起入 hash：策略或风险变化后旧授权自然失效。
   return sha256Text(stableSerialize({
-    toolId: tool.id, source: tool.source, sourceId: tool.sourceId, mode: tool.mode,
-    safetyLevel: tool.safetyLevel, resolvedSafetyLevel: tool.resolveSafetyLevel?.(params, ctx) ?? tool.safetyLevel,
-    actionCategory: tool.actionCategory, effectClass: effectClass(tool),
+    policy: toolPolicyFingerprint(tool),
+    resolvedSafetyLevel: tool.resolveSafetyLevel?.(params, ctx) ?? tool.safetyLevel,
     safetyMode: getEffectiveSafetyMode(), sessionTrustEnabled: safetyConfig.sessionTrustEnabled,
   }))
 }
@@ -131,9 +128,10 @@ export async function evaluateToolPermission(
   const base = standardDecision(tool, params, ctx)
   if (base.decision === "deny") return base
 
-  let toolDecision: ToolCheckResult = "passthrough"
+  // 工具侧意见：策略里的静态表态，或按本次参数附加的约束（后者优先）。
+  let toolDecision: ToolCheckResult = tool.policy.permission.defaultDecision
   try {
-    toolDecision = await tool.permissionCheck?.(params, ctx) ?? "passthrough"
+    if (tool.policy.permission.check) toolDecision = await tool.policy.permission.check(params, ctx)
   } catch (error) {
     log.error("工具权限规则异常，按拒绝处理", error)
     return { decision: "deny", reason: "工具权限规则失败" }

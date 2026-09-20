@@ -4,20 +4,10 @@
 // execute 只执行已放行的工具；工具结果映射与失败语义由本适配器统一表达。
 
 import type { AgentHarnessTool } from "@earendil-works/pi-agent-core"
-import type { ActionCategory, ToolDef } from "../types"
+import type { ToolDef } from "../types"
 import { executeToolDefinition } from "../router"
+import { toolPolicyHash } from "../policy"
 import { getSimpleStage } from "@/services/personality/stages-cache"
-import { sha256Text, stableSerialize } from "@/services/engine/runtime"
-
-/**
- * 同一批次里可以并行执行的只读操作类别。
- * 其余类别（写入、执行、启动应用、子代理、Skill）都会把整批拉回串行。
- * Harness 目前按 lane 级 toolExecution 排批（本回合沿用 sequential），
- * 逐工具声明保留给后续并行批次使用。
- */
-export const PARALLEL_SAFE_CATEGORIES: ReadonlySet<ActionCategory> = new Set([
-  "fs.read", "os.info", "net.fetch", "clip.read",
-])
 
 /** 一次工具调用所属回合的执行上下文；主回合与子代理共用。 */
 export interface HarnessToolRun {
@@ -41,7 +31,9 @@ export function toAgentHarnessTools(tools: readonly ToolDef[], run: HarnessToolR
     // Pi validates plain JSON Schema too; Desk-Pet's schemas are already that subset.
     parameters: tool.parameters as never,
     prepareArguments: tool.prepareArguments,
-    executionMode: PARALLEL_SAFE_CATEGORIES.has(tool.actionCategory) ? "parallel" : "sequential",
+    // 调度、重放资格都来自策略声明；actionCategory 只负责人格阶段文案。
+    executionMode: tool.policy.execution.mode,
+    replay: tool.policy.execution.replay,
     async execute(toolCallId, params, onUpdate, _toolContext, invocation, context) {
       await run.onToolStart?.(tool.name, toolCallId)
       let toolSucceeded = false
@@ -54,7 +46,7 @@ export function toAgentHarnessTools(tools: readonly ToolDef[], run: HarnessToolR
           isCurrent: run.isCurrent,
           toolCallId,
           operationId: invocation.invocationId,
-          policyHash: await sha256Text(stableSerialize({ actionCategory: tool.actionCategory, safetyLevel: tool.safetyLevel })),
+          policyHash: await toolPolicyHash(tool),
           // Harness 的 gate signal 映射进现 handler 的 ToolContext.signal。
           signal: context.abortSignal,
           onUpdate: partial => onUpdate?.({

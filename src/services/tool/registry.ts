@@ -5,6 +5,7 @@
 
 import type { ToolDef, ToolDeclaration, ToolMode } from "./types"
 import { toToolDeclaration } from "./types"
+import { validateToolPolicy } from "./policy"
 import { generalConfig } from "@/services/config"
 import { createLogger } from "@/services/logger"
 
@@ -15,8 +16,9 @@ const log = createLogger("ToolReg")
 /** 所有已注册工具 */
 const tools = new Map<string, ToolDef>()
 
-/** 注册工具 */
+/** 注册工具。缺少或不一致的策略是注册错误，不做缺省猜测；入库的是校验后的冻结定义。 */
 export function register(tool: ToolDef): void {
+  const policy = validateToolPolicy(tool.policy, tool.id)
   const conflicting = getToolByName(tool.name)
   if (conflicting && conflicting.id !== tool.id) {
     throw new Error(`工具名称冲突: ${tool.name} (${conflicting.id} / ${tool.id})`)
@@ -24,7 +26,8 @@ export function register(tool: ToolDef): void {
   if (tools.has(tool.id)) {
     log.warn("工具已存在，覆盖:", tool.id)
   }
-  tools.set(tool.id, tool)
+  // 绕过 defineTool 直接注册时也要拿到同一份冻结描述，注册表不与调用方的可变对象共享。
+  tools.set(tool.id, tool.policy === policy ? tool : Object.freeze({ ...tool, policy }))
   log.debug("注册工具:", tool.id, "|", tool.mode)
 }
 

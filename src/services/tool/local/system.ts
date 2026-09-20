@@ -4,6 +4,8 @@
 // ==========================================
 
 import type { ToolDef } from "../types"
+import { TOOL_POLICY_VERSION } from "../types"
+import { defineTool } from "../policy"
 import { register } from "../registry"
 import { invoke } from "@tauri-apps/api/core"
 import { createLogger } from "@/services/logger"
@@ -11,7 +13,7 @@ import { formatError } from "@/services/error"
 
 const log = createLogger("ToolSys")
 
-const systemTool: ToolDef = {
+const systemTool: ToolDef = defineTool({
   id: "local-system-info",
   name: "system_info",
   description: "获取当前系统信息：操作系统、CPU核心数、总内存、已用内存、平台架构。",
@@ -25,33 +27,38 @@ const systemTool: ToolDef = {
   sourceId: "",
   mode: "pet",
   actionCategory: "os.info",
-  async handler() {
-    try {
-      const info = await invoke<{
-        os: string; arch: string; cpuCount: number;
-        memTotal: number; memUsed: number;
-      }>("system_info")
-
-      const memTotalGB = (info.memTotal / (1024 * 1024 * 1024)).toFixed(1)
-      const memUsedGB = (info.memUsed / (1024 * 1024 * 1024)).toFixed(1)
-      const memPercent = info.memTotal > 0
-        ? ((info.memUsed / info.memTotal) * 100).toFixed(1)
-        : "?"
-
-      const text = [
-        `操作系统: ${info.os}`,
-        `架构: ${info.arch}`,
-        `CPU 核心数: ${info.cpuCount}`,
-        `内存: ${memUsedGB}GB / ${memTotalGB}GB (${memPercent}%)`,
-      ].join("\n")
-
-      return { success: true, content: text }
-    } catch (e) {
-      const msg = formatError(e)
-      return { success: false, content: "", error: msg }
-    }
+  policy: {
+    version: TOOL_POLICY_VERSION,
+    permission: { defaultDecision: "allow" },
+    execution: { effect: "read", mode: "parallel", isolation: "shared_read", replay: "never" },
+    context: { resultProjection: "reference", historyCompaction: "summarize" },
   },
-}
+}, async () => {
+  try {
+    const info = await invoke<{
+      os: string; arch: string; cpuCount: number;
+      memTotal: number; memUsed: number;
+    }>("system_info")
+
+    const memTotalGB = (info.memTotal / (1024 * 1024 * 1024)).toFixed(1)
+    const memUsedGB = (info.memUsed / (1024 * 1024 * 1024)).toFixed(1)
+    const memPercent = info.memTotal > 0
+      ? ((info.memUsed / info.memTotal) * 100).toFixed(1)
+      : "?"
+
+    const text = [
+      `操作系统: ${info.os}`,
+      `架构: ${info.arch}`,
+      `CPU 核心数: ${info.cpuCount}`,
+      `内存: ${memUsedGB}GB / ${memTotalGB}GB (${memPercent}%)`,
+    ].join("\n")
+
+    return { success: true, content: text }
+  } catch (e) {
+    const msg = formatError(e)
+    return { success: false, content: "", error: msg }
+  }
+})
 
 export function registerSystemTool(): void {
   register(systemTool)

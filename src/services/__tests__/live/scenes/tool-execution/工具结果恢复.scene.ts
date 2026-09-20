@@ -1,6 +1,6 @@
 import type { SceneDef } from "../../types"
 import { fakeText, fakeToolCall, installFakeProvider } from "../../fake-provider"
-import { register, createSessionTranscriptTool, executeToolDefinition } from "@/services/tool"
+import { register, createSessionTranscriptTool, executeToolDefinition, TOOL_POLICY_VERSION } from "@/services/tool"
 import { getActiveSessionId } from "@/services/session"
 import { sessionEntries } from "../../session-entries"
 import type { Entry } from "@earendil-works/pi-agent-core"
@@ -20,6 +20,12 @@ export const 工具结果恢复: SceneDef = {
   setup: async () => {
     register({ id: "test-durable-output", name: "durable_test_output", description: "测试完整工具结果", source: "local", sourceId: "",
       safetyLevel: "SAFE", actionCategory: "fs.read", mode: "pet", parameters: { type: "object", properties: {} },
+      policy: {
+        version: TOOL_POLICY_VERSION,
+        permission: { defaultDecision: "allow" },
+        execution: { effect: "read", mode: "parallel", isolation: "shared_read", replay: "never" },
+        context: { resultProjection: "reference", historyCompaction: "summarize" },
+      },
       handler: async () => ({ success: true, content: BODY }) })
     installFakeProvider([fakeToolCall("durable_test_output", {}, "durable-call"), fakeText("结果已保存，可以继续。"), fakeText("仍能回查完整结果。")])
   },

@@ -5,6 +5,8 @@
 
 import { contentText } from "@earendil-works/pi-ai"
 import type { ToolDef } from "./types"
+import { TOOL_POLICY_VERSION } from "./types"
+import { defineTool } from "./policy"
 
 export const SESSION_TRANSCRIPT_TOOL = "read_session_event"
 export const SESSION_EVENT_PAGE_CHARS = 8000
@@ -21,19 +23,26 @@ export type ToolResultEntryReader = (entryId: string) => Promise<string | undefi
 
 /** Read-only run-scoped access to retained tool output; no model-supplied path or session id. */
 export function createTranscriptTool(readEntry: ToolResultEntryReader): ToolDef {
-  return {
+  return defineTool({
     id: "local-session-event", name: SESSION_TRANSCRIPT_TOOL,
     description: "按 eventId 分页读取当前会话中保留的完整工具结果。被上下文缩短的结果可由此恢复。",
-    source: "local", sourceId: "", mode: "pet", actionCategory: "fs.read", safetyLevel: "SAFE", effectClass: "read",
+    source: "local", sourceId: "", mode: "pet", actionCategory: "fs.read", safetyLevel: "SAFE",
     parameters: { type: "object", properties: { eventId: { type: "string" }, offset: { type: "integer", minimum: 0 } }, required: ["eventId"] },
-    async handler(params, ctx) {
-      if (ctx.signal?.aborted || (ctx.isCurrent && !ctx.isCurrent())) return { success: false, content: "", error: "回合已取消", errorCode: "cancelled" }
-      const entryId = typeof params.eventId === "string" ? params.eventId : ""
-      const text = await readEntry(entryId)
-      if (text === undefined) return { success: false, content: "", error: "当前会话没有此工具结果", errorCode: "not_found" }
-      return { success: true, content: formatTranscriptPage(text, typeof params.offset === "number" ? params.offset : 0) }
+    policy: {
+      version: TOOL_POLICY_VERSION,
+      // 只能读当前会话，且分页大小由统一预算限定；工具侧不额外表态。
+      permission: { defaultDecision: "allow" },
+      execution: { effect: "read", mode: "parallel", isolation: "shared_read", replay: "never" },
+      // 页本身就是有界投影：请求里不再二次缩短，避免「引用 → 读取 → 又变成引用」的循环。
+      context: { resultProjection: "preserve", historyCompaction: "summarize" },
     },
-  }
+  }, async (params, ctx) => {
+    if (ctx.signal?.aborted || (ctx.isCurrent && !ctx.isCurrent())) return { success: false, content: "", error: "回合已取消", errorCode: "cancelled" }
+    const entryId = typeof params.eventId === "string" ? params.eventId : ""
+    const text = await readEntry(entryId)
+    if (text === undefined) return { success: false, content: "", error: "当前会话没有此工具结果", errorCode: "not_found" }
+    return { success: true, content: formatTranscriptPage(text, typeof params.offset === "number" ? params.offset : 0) }
+  })
 }
 
 /**

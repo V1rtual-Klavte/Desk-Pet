@@ -5,6 +5,8 @@
 // ==========================================
 
 import type { ToolDef } from "../types"
+import { TOOL_POLICY_VERSION } from "../types"
+import { defineTool } from "../policy"
 import { register } from "../registry"
 import { loopConfig } from "@/services/config"
 import { createLogger } from "@/services/logger"
@@ -12,7 +14,7 @@ import { formatError } from "@/services/error"
 
 const log = createLogger("ToolAgent")
 
-const agentSpawnTool: ToolDef = {
+const agentSpawnTool: ToolDef = defineTool({
   id: "local-agent-spawn",
   name: "agent_spawn",
   description:
@@ -33,9 +35,15 @@ const agentSpawnTool: ToolDef = {
   source: "local",
   sourceId: "",
   mode: "assistant",
-  timeoutMs: loopConfig.toolTimeoutMs * 4,
   actionCategory: "agent.call",
-  async handler(params) {
+  // delegate：子运行各自取执行许可，父批次不占额度；重放与投影都不在父层处理。
+  policy: {
+    version: TOOL_POLICY_VERSION,
+    permission: { defaultDecision: "passthrough" },
+    execution: { effect: "external_side_effect", mode: "sequential", isolation: "delegate", replay: "never", timeoutMs: loopConfig.toolTimeoutMs * 4 },
+    context: { resultProjection: "reference", historyCompaction: "summarize" },
+  },
+}, async (params) => {
     const task = String(params.task ?? "")
     const mode = String(params.mode ?? "fork")
 
@@ -62,8 +70,7 @@ const agentSpawnTool: ToolDef = {
       log.error("子代理异常:", msg)
       return { success: false, content: "", error: `子代理异常: ${msg}` }
     }
-  },
-}
+})
 
 export function registerAgentSpawnTool(): void {
   register(agentSpawnTool)
