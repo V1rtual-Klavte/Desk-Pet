@@ -195,10 +195,10 @@ export type HarnessAbortReason = typeof ABORT_REASON_TIMEOUT | typeof ABORT_REAS
  * 压缩设置：阈值与保留窗口都由本仓预算换算到上游估算口径，绝不照搬 Pi 的 16k/20k 默认值
  * （上游默认值只适配它自己的默认窗口）。
  *
- * Harness 的 `shouldCompact` 比较的是它自己的估算（消息 chars/4，或 provider usage），
- * 本仓预算是 chars/2.5；不换算时阈值会比正常输入目标晚约 1.6 倍触发，宿主硬预算会先一步
- * 把请求拦成报错而不是先压缩。换算后阈值正好落在 normalInputTarget，保留窗口同样回到
- * normalInputTarget 的 40%（见 toHarnessEstimateTokens）。
+ * Harness 的 `shouldCompact` 比的是它自己的 `estimateContextTokens`：有 provider usage 时
+ * 前缀按真实 usage 计，本仓预算同样以真实 token 为目标口径，因此换算后阈值正好落在
+ * normalInputTarget，保留窗口回到 normalInputTarget 的 40%（换算规则见
+ * toHarnessEstimateTokens，不要再按 chars/4 反推因子）。
  */
 export function compactionSettingsFor(window: number, maxOutput?: number): CompactionSettings {
   const budget = contextBudget(window, maxOutput)
