@@ -60,7 +60,7 @@ Node 启动预检会校验 `sourceHash`；源码变更后应先按 SKILL 重新�
 
 ## 隔离、报告与失败
 
-每个 trial 在 `standard-setup.ts` 中取消并等待已登记 Agent 回合，然后重置会话文件、UI index、工作记忆、变量池、聊天状态、预处理与 AI 锁。超时会尝试取消已登记 Agent；目前尚无覆盖任意 setup/assertion Promise 的 Scene 级取消通道，超时报表仍可能丢失已完成回合现场。待办见[加固计划](../../../../docs/plans/active/运行时加固与清理计划.md)。Provider、网络、认证和断言等错误会分类，兜底回复不把失败改写为成功。
+每个 trial 在 `standard-setup.ts` 中取消并等待已登记 Agent 回合，然后重置会话文件、UI index、工作记忆、变量池、聊天状态、预处理与 AI 锁。超时会尝试取消已登记 Agent；目前尚无覆盖任意 setup/assertion Promise 的 Scene 级取消通道，超时报表仍可能丢失已完成回合现场。待办见[2026-09-20 收尾清单](../../../../docs/plans/active/2026-09-20收尾清单.md)。Provider、网络、认证和断言等错误会分类，兜底回复不把失败改写为成功。
 
 测试脚本在用户 Home 下创建 `.deskpet-live-test-*` 临时目录，退出时清理；清理前将报告复制到 `~/.deskpet-live-test-reports/`，按脚本保留数量淘汰。
 
