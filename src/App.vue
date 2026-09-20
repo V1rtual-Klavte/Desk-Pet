@@ -233,7 +233,6 @@ let cleanupMoved: (() => void) | null = null;
 let cleanupResized: (() => void) | null = null;
 let cleanupPreview: (() => void) | null = null;
 let cleanupSettingsSaved: (() => void) | null = null;
-let cleanupRestart: (() => void) | null = null;
 let cleanupClick: (() => void) | null = null;
 
 // ==========================================
@@ -619,18 +618,6 @@ onMounted(async () => {
     });
   } catch { /* ignore */ }
 
-  // 重启
-  try {
-    cleanupRestart = await listen("deskpet-restart", async () => {
-      log.info("收到重启请求，正在退出...")
-      const { getAllWebviewWindows } = await import("@tauri-apps/api/webviewWindow")
-      const windows = await getAllWebviewWindows()
-      for (const w of windows) {
-        try { await w.close() } catch { /* ignore */ }
-      }
-    })
-  } catch { /* ignore */ }
-
   document.addEventListener("click", hideCtxMenu);
 
   const rootEl = rootRef.value!;
@@ -668,7 +655,6 @@ onUnmounted(() => {
   if (cleanupResized) cleanupResized();
   if (cleanupPreview) cleanupPreview();
   if (cleanupSettingsSaved) cleanupSettingsSaved();
-  if (cleanupRestart) cleanupRestart();
   if (cleanupClick) cleanupClick();
   document.removeEventListener("click", hideCtxMenu);
   unregisterShortcut();

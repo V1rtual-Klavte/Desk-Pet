@@ -17,7 +17,7 @@ use tauri::Manager;
 use tauri::{WebviewUrl, WebviewWindowBuilder};
 
 use crate::commands::{
-    app_open, bash_cancel, bash_exec, clipboard_read, clipboard_write, close_windows_sim,
+    app_open, app_restart, bash_cancel, bash_exec, clipboard_read, clipboard_write, close_windows_sim,
     compute_popup_position, dir_create, export_profile_zip, file_append,
     file_canonical_path, file_exists, file_info, file_list, file_read, file_read_binary,
     file_remove, file_rename, file_write, get_cursor_position, init_memory_files,
@@ -360,6 +360,7 @@ pub fn run() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
+            app_restart,
             get_cursor_position,
             compute_popup_position,
             pause_monitor,

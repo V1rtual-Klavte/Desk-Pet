@@ -10,6 +10,7 @@ import {
 } from "@/services/audio/registry";
 import { switchPersonality, getActivePersonalityId } from "@/services/personality";
 import { createLogger } from "@/services/logger";
+import { formatError } from "@/services/error";
 import { isMacOS } from "@/services/env";
 import { parseEnvText } from "@/services/tool/mcp";
 import { contextWindowError } from "@/services/context";
@@ -190,15 +191,21 @@ function doCancel() {
   win.close().catch(() => {});
 }
 
+/**
+ * 进程级重启。写盘必须先于重启：设置改动先进写盘队列，直接重启会把队列里
+ * 还没落盘的配置丢掉，用户以为是"重启后生效"，实际是改动没了。写盘失败就
+ * 不重启，把原因摆出来。
+ */
 async function restartApp() {
   try {
-    const { getAllWebviewWindows } = await import("@tauri-apps/api/webviewWindow");
-    const windows = await getAllWebviewWindows();
-    for (const w of windows) {
-      try { w.close(); } catch {}
-    }
-  } catch {}
-  win.close().catch(() => {});
+    await flushConfig();
+  } catch (error) {
+    saveError.value = "配置写盘失败，已取消重启：" + formatError(error);
+    log.error("重启前写盘失败:", formatError(error));
+    return;
+  }
+  const { invoke } = await import("@tauri-apps/api/core");
+  await invoke("app_restart");
 }
 
 // CONFIG 导入导出

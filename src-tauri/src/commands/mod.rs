@@ -2,6 +2,7 @@
 // Tauri Commands 统一导出
 // ==========================================
 
+pub mod app_lifecycle;
 pub mod bash_policy;
 pub mod cursor;
 pub mod logging;
@@ -15,6 +16,7 @@ pub mod sim;
 pub mod skill_cmd;
 pub mod tool_exec;
 
+pub use app_lifecycle::app_restart;
 pub use cursor::{compute_popup_position, get_cursor_position, spawn_cursor_tracker};
 pub use logging::{log_messages, open_devtools, report_frontend_error, set_log_config};
 pub(crate) use mcp_bridge::McpPool;

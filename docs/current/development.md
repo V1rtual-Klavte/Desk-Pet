@@ -21,6 +21,8 @@ Rust 命令集中在 [commands/](../../src-tauri/src/commands/)，由 [mod.rs](.
 
 新窗口涉及 HTML/TS、[Vite input](../../vite.config.ts)、Rust 创建、[capabilities](../../src-tauri/capabilities/) 和层级/聚焦行为。窗口启动共用 [bootWindow](../../src/services/boot.ts)，全局拦截先于路径和配置初始化，避免启动失败变成空白窗口。
 
+进程级重启走 `app_restart`（[app_lifecycle.rs](../../src-tauri/src/commands/app_lifecycle.rs)）。它用 `AppHandle::request_restart()` 而不是 `restart()`：后者在调用线程就是事件循环线程时直接 `process::restart()`，**不发 `RunEvent::Exit`**，[lib.rs](../../src-tauri/src/lib.rs) 那条回收 MCP 子进程的钩子不会执行，每次重启漏下一批 npx/node。前端在 invoke 前先 `flushConfig()`——设置改动先进写盘队列，直接重启会把未落盘的配置丢掉。
+
 ## 日志
 
 TS 入口为 [logger/index.ts](../../src/services/logger/index.ts) 的 createLogger：
