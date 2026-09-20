@@ -26,7 +26,7 @@ import { authorizeToolExecution, invalidatePermissionScope } from "@/services/sa
 import { getActiveSessionId, pushMessage } from "@/services/session/store"
 import { getToolsForMode } from "@/services/tool/registry"
 import { SESSION_TRANSCRIPT_TOOL, toToolDeclaration, createTranscriptTool } from "@/services/tool"
-import { findRetainedToolCall, retainedToolNames, toolPolicyHash } from "@/services/tool/policy"
+import { findRetainedToolCall, preservedToolNames, retainedToolNames, toolPolicyHash } from "@/services/tool/policy"
 import type { HarnessToolRun } from "@/services/tool/pi/harness-tool-adapter"
 import type { ToolDef } from "@/services/tool/types"
 import { generalConfig, loopConfig, planConfig, safetyConfig } from "@/services/config"
@@ -361,6 +361,7 @@ function createCompactionHook(options: {
   onSummary?: (summary: StructuredSummary) => void
 }): NonNullable<HarnessRunHooks["beforeCompaction"]> {
   const retained = retainedToolNames(options.tools)
+  const preserved = preservedToolNames(options.tools)
   return async ({ preparation, signal }) => {
     // 全量都在保留窗口内时没有可安全摘要的覆盖范围：decline 让 Harness 原样收尾。
     if (!preparation.messagesToSummarize.length && !preparation.turnPrefixMessages.length) return { decline: true }
@@ -379,6 +380,7 @@ function createCompactionHook(options: {
       previousSummary: preparation.previousSummary,
       model: options.model,
       signal,
+      preserveToolNames: preserved,
     })
     options.onSummary?.(outcome.summary)
     return {

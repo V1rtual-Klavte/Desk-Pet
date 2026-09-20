@@ -78,7 +78,7 @@ export async function acquireToolPermit(tool: ToolDef, ctx: ToolContext): Promis
   const signal = ctx.signal
   // 等待期间取消：通知 Rust 移除排队项，acquire 会以未取得额度结束。
   const cancelWait = () => {
-    void invoke<boolean>("tool_permit_cancel", { requestId: id })
+    void invoke<boolean>("tool_permit_cancel", { requestId: id, borrowerId })
       .catch(error => log.warn("取消许可等待失败:", formatError(error)))
   }
   signal?.addEventListener("abort", cancelWait, { once: true })
@@ -98,10 +98,10 @@ export async function acquireToolPermit(tool: ToolDef, ctx: ToolContext): Promis
   return granted ? { kind: "granted", lease: { requestId: id, kind } } : { kind: "cancelled" }
 }
 
-/** 归还额度。只在真实执行结算后调用；释放失败只记录，不改变工具结果。 */
+/** 归还额度。只在真实执行结算后调用，且只有借出它的借用者能归还；释放失败只记录，不改变工具结果。 */
 export async function releaseToolPermit(lease: ToolPermitLease): Promise<void> {
   try {
-    await invoke("tool_permit_release", { requestId: lease.requestId })
+    await invoke("tool_permit_release", { requestId: lease.requestId, borrowerId })
   } catch (error) {
     log.error("释放工具许可失败:", formatError(error))
   }

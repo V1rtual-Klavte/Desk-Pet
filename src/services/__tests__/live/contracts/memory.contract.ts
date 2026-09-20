@@ -27,7 +27,7 @@ export const memoryContract: ModuleContract = {
     "src/services/debug.ts",
   ],
   generatedAt: "2026-09-20",
-  sourceHash: "00cff6a65133edccc4195152083aee6392939cf09e8cb7265fdb6353070e6f8c",
+  sourceHash: "064b4a39cf3b2d0cdac20fe40685f9d1a0521942326d5fb632304d9182f8dde1",
   coverage: [
     { id: "mm-01", feature: "Memory 添加条目", description: "MemoryService.append() 创建记忆", why: "记忆系统基础 CRUD", depth: "shallow", scenarios: ["memory-append"] },
     { id: "mm-02", feature: "Memory 搜索", description: "MemoryService.search(query, limit) 按内容搜索", why: "LLM 需检索相关记忆", depth: "shallow", scenarios: ["memory-search"] },
@@ -43,7 +43,7 @@ export const memoryContract: ModuleContract = {
     { id: "mm-16", feature: "ContextKernel 预算", description: "完整静态前缀、工具 schema 与当前会话视图按硬预算验证；可选投影整块降级", why: "Provider 输入需要可预测且可审计地限制在上下文窗口内，且不能静默丢失指令或未压缩历史", depth: "deep", scenarios: ["memory-context-budget"] },
     { id: "mm-17", feature: "画像与记忆投影", description: "User.md 使用带来源的只读 projection；MemoryProvider 可注入、取消、限时、裁剪并恢复，默认空实现不执行长期召回", why: "画像和长期事实需要显式来源边界，下一阶段选择存储与检索策略时不能改动 Agent Runtime", depth: "deep", scenarios: ["memory-profile-rewrite"] },
     { id: "mm-18", feature: "消息条目单次写入", description: "一次真实回合后同一句话只有一条 pi 会话条目；后续回合不重复追加历史消息", why: "双写或历史重放会让重载出现重复消息与翻倍轮数", depth: "deep", scenarios: ["memory-single-message-write"] },
-    { id: "mm-19", feature: "Harness 压缩与摘要内核", description: "手动/阈值压缩由 Harness 调度：宿主 before_compaction 生成结构化摘要并提交 compaction 条目，原始消息条目全部保留，contextEpoch 推进；摘要调用的 usage 落压缩条目并按 purpose 单列，不冒充主回合统计", why: "摘要只能替换后续请求视图，不能删除会话真相源，也不能把压缩调度留在宿主第二套状态机里；一次性摘要的成本既不能混进主回合统计，也不能在总量里消失", depth: "deep", scenarios: ["memory-compaction-checkpoint"] },
+    { id: "mm-19", feature: "Harness 压缩与摘要内核", description: "手动/阈值压缩由 Harness 调度：宿主 before_compaction 生成结构化摘要并提交 compaction 条目，原始消息条目全部保留，contextEpoch 推进；摘要调用的 usage 落压缩条目并按 purpose 单列，不冒充主回合统计；摘要素材的 L0 投影与主请求同口径：resultProjection=preserve 的工具结果完整进入摘要请求，reference 的才被缩短并留下回读标记", why: "摘要只能替换后续请求视图，不能删除会话真相源，也不能把压缩调度留在宿主第二套状态机里；一次性摘要的成本既不能混进主回合统计，也不能在总量里消失", depth: "deep", scenarios: ["memory-compaction-checkpoint", "memory-summary-preserve-projection"] },
     { id: "mm-20", feature: "上下文窗口下限", description: "低于 65536 的窗口被拒绝：设置保存报错、运行期在模型解析处报错，合法窗口照常解析且不超过配置值", why: "窗口过小时压缩找不到可摘要范围，静默接受只会把预算问题推迟成运行期的另一种报错", depth: "shallow", scenarios: ["memory-context-window-floor"] },
     { id: "mm-21", feature: "压缩阈值口径换算", description: "派生的 reserve/keepRecent 换算到 Harness 的计数口径：阈值落在本仓 normalInputTarget 上、先于宿主硬预算触发，保留窗口放得进消息空间，且估算器偏差不越过硬预算余量", why: "Harness 的 shouldCompact 在会话存在 provider usage 时按真实 usage 计，本仓估算同为目标真实 token 口径；估算器偏差一旦吃掉硬预算与正常输入目标的差额，硬预算就会先于压缩报错", depth: "shallow", scenarios: ["memory-compaction-threshold-calibration"] },
     { id: "mm-22", feature: "硬预算超限的溢出恢复", description: "宿主 transform_context 核对出的硬预算超限经网关上报为 Provider 溢出响应，Harness 用宿主 before_compaction 摘要压缩后重试一次；超限请求不发给 Provider，压缩只改请求视图，原文条目始终保留。恢复用尽时按可解释的硬预算判定失败；上游因没有可安全摘要的范围 declined 时，失败分类保留上游文案，回复仍回落本回合的硬预算判定。本地预算判定的失败分类只由「它是本地判定」决定，不随判定文案里估算数字的形态漂移（长数字串里的 5xx/401/429 片段不算状态码，真正的状态码仍命中对应分桶）", why: "硬预算只是发送前的本地上限，直接终止回合会让 Harness 自带的一次性溢出恢复永远轮不到；恢复既不能改变会话真相源、不能把压缩挪到重试之后，也不能让用户丢掉可解释的预算判定，更不能把本地失败记成 Provider/认证/限流故障", depth: "deep", scenarios: ["memory-budget-overflow-recovery", "memory-budget-overflow-classification"] },

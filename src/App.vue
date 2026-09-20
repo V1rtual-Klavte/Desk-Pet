@@ -184,9 +184,33 @@ async function openSettings() {
     alwaysOnTop: true,
     transparent: true,
   });
-  setTimeout(() => {
-    invoke("enhance_settings_window").catch(() => {});
-  }, 300);
+  void enhanceWindowWhenReady("settings", "enhance_settings_window");
+}
+
+/**
+ * 提层命令要在窗口真正建好之后才生效：窗口未就绪时 getByLabel 拿不到、命令会静默空转。
+ * 轮询等待目标出现（上限 2s）再调用，超时留日志 —— 创建时的 alwaysOnTop 仍作兜底，
+ * 但不能靠它掩盖静默失效。
+ */
+async function enhanceWindowWhenReady(
+  label: string,
+  command: string,
+  beforeEnhance?: (win: WebviewWindow) => Promise<void>,
+): Promise<void> {
+  const deadline = Date.now() + 2000;
+  for (;;) {
+    const win = await WebviewWindow.getByLabel(label).catch(() => null);
+    if (win) {
+      if (beforeEnhance) await beforeEnhance(win).catch(() => {});
+      await invoke(command).catch(error => log.warn(`${command} 调用失败:`, formatError(error)));
+      return;
+    }
+    if (Date.now() >= deadline) {
+      log.warn(`${command} 跳过：窗口 ${label} 未在 2s 内就绪`);
+      return;
+    }
+    await new Promise(resolve => setTimeout(resolve, 100));
+  }
 }
 
 async function openLayerEditor() {
@@ -203,16 +227,10 @@ async function openLayerEditor() {
     decorations: true,
     alwaysOnTop: true,
   });
-  setTimeout(async () => {
-    try {
-      const w = await WebviewWindow.getByLabel("layer-editor");
-      if (w) {
-        await w.setAlwaysOnTop(true);
-        await w.setFocus();
-      }
-    } catch {}
-    invoke("enhance_layer_editor_window").catch(() => {});
-  }, 300);
+  void enhanceWindowWhenReady("layer-editor", "enhance_layer_editor_window", async win => {
+    await win.setAlwaysOnTop(true);
+    await win.setFocus();
+  });
 }
 
 let cleanupListener: (() => void) | null = null;

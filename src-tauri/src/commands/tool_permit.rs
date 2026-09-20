@@ -92,6 +92,16 @@ enum Outcome {
     Cancelled,
 }
 
+/// 释放请求的结算结果。
+enum ReleaseOutcome {
+    /// 未借出、重复释放或已被回收：不报错，也不能凭空增加额度。
+    NotFound,
+    /// 调用方不是借出该额度的借用者：拒绝，额度保持不动。
+    BorrowerMismatch,
+    /// 已归还，等待者可被唤醒。
+    Released,
+}
+
 /// 一个许可域的额度状态。域按应用数据根区分：Live Test 的临时数据根自带隔离域，
 /// 测试流量不会占用或阻塞用户运行的额度。
 struct Gate {
@@ -190,9 +200,12 @@ impl Gate {
         reclaimed
     }
 
-    /// 移除仍排队的等待者；已经借出的不算排队，返回 false。
-    fn cancel(&mut self, request_id: &str) -> bool {
-        let Some(index) = self.queue.iter().position(|waiter| waiter.request_id == request_id) else {
+    /// 移除仍排队的等待者；已借出的、或不属于该借用者的都不算，返回 false。
+    /// 只作用于调用方自己的排队项：其它窗口/页面不能取消别人的等待。
+    fn cancel(&mut self, request_id: &str, borrower: &Borrower) -> bool {
+        let Some(index) = self.queue.iter().position(|waiter| {
+            waiter.request_id == request_id && &waiter.borrower == borrower
+        }) else {
             return false;
         };
         let Some(waiter) = self.queue.remove(index) else { return false };
@@ -202,6 +215,22 @@ impl Gate {
         // 会把它们永远留在队列里（没有别的归还事件再把它们唤醒）。
         self.drain();
         true
+    }
+
+    /// 按借用者校验后归还额度：只有借出它的借用者能释放。
+    /// 别的窗口/页面即使拿到 requestId 也不能归还（更不能借机放开在飞的独占效果）。
+    fn release(&mut self, request_id: &str, borrower: &Borrower) -> ReleaseOutcome {
+        let Some(lease) = self.active.get(request_id) else {
+            return ReleaseOutcome::NotFound;
+        };
+        if &lease.borrower != borrower {
+            return ReleaseOutcome::BorrowerMismatch;
+        }
+        if let Some(lease) = self.active.remove(request_id) {
+            self.give_back(lease.kind);
+            self.drain();
+        }
+        ReleaseOutcome::Released
     }
 }
 
@@ -308,37 +337,52 @@ pub fn tool_permit_attach(
     Ok(reclaimed)
 }
 
-/// 归还许可。必须在真实执行结算后调用，且只对已借出的 requestId 生效。
+/// 归还许可。必须在真实执行结算后调用，且只对借出它的借用者生效。
 #[tauri::command]
 pub fn tool_permit_release(
     pool: State<'_, ToolPermitPool>,
     paths: State<'_, AppPaths>,
+    window: tauri::Window,
+    borrower_id: String,
     request_id: String,
 ) -> AppResult<()> {
+    let borrower = Borrower::new(window.label(), &borrower_id);
     let domain = domain_key(&paths);
     let mut domains = pool.domains();
     let Some(gate) = domains.get_mut(&domain) else { return Ok(()) };
-    let Some(lease) = gate.active.remove(&request_id) else {
-        // 重复释放、未借出或已被回收：不报错，也不能凭空增加额度。
-        rust_warn!("工具许可释放时未找到记录: {request_id}");
-        return Ok(());
-    };
-    gate.give_back(lease.kind);
-    gate.drain();
-    Ok(())
+    match gate.release(&request_id, &borrower) {
+        ReleaseOutcome::Released => Ok(()),
+        ReleaseOutcome::NotFound => {
+            // 重复释放、未借出或已被回收：不报错，也不能凭空增加额度。
+            rust_warn!("工具许可释放时未找到记录: {request_id}");
+            Ok(())
+        }
+        ReleaseOutcome::BorrowerMismatch => {
+            // 别的窗口/页面不能归还（或借机放开）他人的在飞额度。
+            rust_warn!(
+                "工具许可释放被借用者不符拒绝: window={} request={request_id}",
+                borrower.window
+            );
+            Err(AppError::Tool("许可释放者与借用者不符".into()))
+        }
+    }
 }
 
-/// 取消仍在排队的等待。已经借出的许可不能被这里取消，只能由执行方释放。
+/// 取消仍在排队的等待。已经借出的许可不能被这里取消，只能由执行方释放；
+/// 同样只对调用方自己的排队项生效。
 #[tauri::command]
 pub fn tool_permit_cancel(
     pool: State<'_, ToolPermitPool>,
     paths: State<'_, AppPaths>,
+    window: tauri::Window,
+    borrower_id: String,
     request_id: String,
 ) -> AppResult<bool> {
+    let borrower = Borrower::new(window.label(), &borrower_id);
     let domain = domain_key(&paths);
     let mut domains = pool.domains();
     let Some(gate) = domains.get_mut(&domain) else { return Ok(false) };
-    Ok(gate.cancel(&request_id))
+    Ok(gate.cancel(&request_id, &borrower))
 }
 
 /// 下发共享读上限（`ai.loop.maxParallelTools`）。前端与队列批量策略同一模式：每个 run
@@ -497,5 +541,29 @@ mod tests {
         assert!(matches!(live_wait.try_recv(), Ok(Outcome::Granted)), "回收出的额度应放行仍在等待的借用者");
         assert!(gate.active.contains_key("live-wait"));
         assert_eq!(gate.shared_active, 1);
+    }
+
+    #[test]
+    fn release_and_cancel_only_apply_to_the_borrowing_page() {
+        let mut gate = Gate::default();
+        lease(&mut gate, "mine", PermitKind::Exclusive, "main", "p1");
+        enqueue(&mut gate, "queued", PermitKind::Shared, "main", "p1");
+
+        // 其它窗口即使拿到 requestId 也不能释放在飞额度或取消别人的排队项。
+        let intruder = Borrower::new("sim", "p2");
+        assert!(matches!(gate.release("mine", &intruder), ReleaseOutcome::BorrowerMismatch));
+        assert!(gate.exclusive_active, "被拒绝的释放必须保持额度不动");
+        assert!(!gate.cancel("queued", &intruder));
+        assert_eq!(gate.queue.len(), 1, "其它借用者的排队项不能被取消");
+
+        // 同窗口但不同页面实例（已失效的旧实例）同样不能动新实例的额度。
+        let stale_page = Borrower::new("main", "p0");
+        assert!(matches!(gate.release("mine", &stale_page), ReleaseOutcome::BorrowerMismatch));
+        assert!(gate.exclusive_active);
+
+        // 真正的借用者可以释放；释放后重复释放是 NotFound，不报错也不加额度。
+        assert!(matches!(gate.release("mine", &Borrower::new("main", "p1")), ReleaseOutcome::Released));
+        assert!(!gate.exclusive_active);
+        assert!(matches!(gate.release("mine", &Borrower::new("main", "p1")), ReleaseOutcome::NotFound));
     }
 }

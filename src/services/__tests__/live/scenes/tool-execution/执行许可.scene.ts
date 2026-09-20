@@ -132,7 +132,10 @@ export const 执行许可: SceneDef = {
         const borrowAs = (borrowerId: string, requestId: string, kind: "shared" | "exclusive" = "shared") =>
           invoke<boolean>("tool_permit_acquire", { requestId, kind, borrowerId, sessionId: "permit-probe", runGeneration: 1, operationId: requestId })
         const borrow = (requestId: string, kind: "shared" | "exclusive") => borrowAs("permit-probe-page", requestId, kind)
-        const release = (requestId: string) => invoke("tool_permit_release", { requestId })
+        // 释放与取消都绑定借用者：窗口标签由 Rust 从调用来源填，前端只补页面实例 id。
+        const releaseAs = (borrowerId: string, requestId: string) => invoke("tool_permit_release", { requestId, borrowerId })
+        const release = (requestId: string) => releaseAs("permit-probe-page", requestId)
+        const cancelAs = (borrowerId: string, requestId: string) => invoke<boolean>("tool_permit_cancel", { requestId, borrowerId })
 
         const holder = await borrow("probe-holder", "shared")
         if (!holder) throw new Error("共享占位没有取得额度")
@@ -146,7 +149,7 @@ export const 执行许可: SceneDef = {
         if (readGranted) throw new Error("读抢在排队中的独占之前")
 
         // 取消排队中的独占：后面的读必须被重新唤醒，而不是永远留在队列里。
-        await invoke("tool_permit_cancel", { requestId: "probe-queued-write" })
+        await cancelAs("permit-probe-page", "probe-queued-write")
         if (await queuedWrite) throw new Error("被取消的独占等待仍取得额度")
         if (!await queuedRead) throw new Error("队首独占取消后，后面的读没有被放行")
         await release("probe-holder")
@@ -240,7 +243,7 @@ export const 执行许可: SceneDef = {
         if (await within(borrowAs(FRESH_PAGE, "fresh-read")) !== true) {
           throw new Error("回收后新页面的读没有取得额度（额度仍被卡住）")
         }
-        await release("fresh-read")
+        await releaseAs(FRESH_PAGE, "fresh-read")
 
         // 在飞的独占效果不能被回收：同一借用者重复上线（页面内模块再求值）必须是空操作。
         if (!await borrowAs(FRESH_PAGE, "fresh-write", "exclusive")) throw new Error("独占效果没有取得额度")
@@ -254,13 +257,35 @@ export const 执行许可: SceneDef = {
         await new Promise(resolve => setTimeout(resolve, 200))
         if (blockedGranted) throw new Error("重复上线把在飞的独占效果放开了")
         if ((await permitSnapshot()).exclusiveActive !== true) throw new Error("重复上线撤销了在飞的独占效果")
-        await invoke("tool_permit_cancel", { requestId: "fresh-read-blocked" })
-        await release("fresh-write")
+        await cancelAs(FRESH_PAGE, "fresh-read-blocked")
+        await releaseAs(FRESH_PAGE, "fresh-write")
 
         const clean = await permitSnapshot()
         if (clean.sharedActive !== 0 || clean.exclusiveActive || clean.queued !== 0) {
           throw new Error(`生命周期兜底后额度没有归还干净: shared=${clean.sharedActive} exclusive=${clean.exclusiveActive} queued=${clean.queued}`)
         }
+
+        // ── 8. 释放与取消绑定借用者：别的页面实例拿到 requestId 也不能动它人的额度 ──
+        // 借出记录里的借用者与调用方不符时，释放必须被拒绝且额度保持不动；
+        // 取消只作用于调用方自己的排队项，不能替别人撤销等待。
+        if (!await borrowAs(FRESH_PAGE, "guard-lease", "exclusive")) throw new Error("守卫探针没有取得独占额度")
+        let foreignReleaseRejected = false
+        try {
+          await invoke("tool_permit_release", { requestId: "guard-lease", borrowerId: "permit-intruder-page" })
+        } catch { foreignReleaseRejected = true }
+        if (!foreignReleaseRejected) throw new Error("其它借用者释放了不属于它的在飞额度")
+        if ((await permitSnapshot()).exclusiveActive !== true) throw new Error("被拒绝的释放放开了在飞的独占效果")
+
+        const foreignQueued = borrowAs(FRESH_PAGE, "guard-queued")
+        if (!await waitForQueued(1)) throw new Error("守卫探针的读没有进入许可队列")
+        const cancelledByForeign = await cancelAs("permit-intruder-page", "guard-queued")
+        if (cancelledByForeign) throw new Error("其它借用者取消了不属于它的排队项")
+        if ((await permitSnapshot()).queued !== 1) throw new Error("越权取消改变了许可队列")
+
+        if (!await cancelAs(FRESH_PAGE, "guard-queued")) throw new Error("真正的借用者无法取消自己的排队项")
+        if (await within(foreignQueued) !== false) throw new Error("被取消的排队读仍取得了额度")
+        await releaseAs(FRESH_PAGE, "guard-lease")
+        if ((await permitSnapshot()).exclusiveActive !== false) throw new Error("借用者自己的释放没有归还额度")
 
         // 收尾：把上限还给运行期配置值，不把本场景的探针值留给后续场景。
         await setLimit(loopConfig.maxParallelTools)

@@ -220,11 +220,48 @@ async function uploadSkillMd() {
   input.click();
 }
 
+// ── 工具策略（只读声明） ──
+interface ToolPolicyRow {
+  id: string;
+  name: string;
+  audience: string;
+  summary: string;
+}
+const toolPolicyRows = ref<ToolPolicyRow[]>([]);
+
+const PERMISSION_LABELS: Record<string, string> = { allow: "允许", ask: "询问", deny: "拒绝", passthrough: "交给策略" };
+const ISOLATION_LABELS: Record<string, string> = { shared_read: "只读并行", exclusive_effect: "效果互斥", delegate: "编排串行" };
+
+async function loadToolPolicies() {
+  try {
+    // 设置窗口有独立的注册表实例：注册内置工具只为读取静态声明，不借用许可、不连接 MCP。
+    const { registerDefaultTools, registerAssistantTools, listAll } = await import("@/services/tool/registry");
+    await registerDefaultTools();
+    await registerAssistantTools();
+    toolPolicyRows.value = listAll()
+      .map(tool => ({
+        id: tool.id,
+        name: tool.name,
+        audience: tool.mode === "pet" ? "两模式" : "仅助手",
+        summary: [
+          PERMISSION_LABELS[tool.policy.permission.defaultDecision] ?? tool.policy.permission.defaultDecision,
+          ISOLATION_LABELS[tool.policy.execution.isolation] ?? tool.policy.execution.isolation,
+          tool.policy.context.resultProjection === "preserve" ? "结果原样" : "结果可引用",
+          tool.policy.context.historyCompaction === "retain" ? "历史保留原文" : "历史随轮摘要",
+        ].join(" · "),
+      }))
+      .sort((a, b) => a.name.localeCompare(b.name));
+  } catch (error) {
+    log.warn("读取工具策略声明失败:", formatError(error));
+  }
+}
+
 // ── 生命周期 ──
 onMounted(async () => {
   await loadMcpConfig();
   loadBuiltinMcpConfig();
   await loadSkillConfig();
+  void loadToolPolicies();
 });
 
 defineExpose({
@@ -261,6 +298,16 @@ defineExpose({
       <span class="s-muted">同时执行的只读工具数（{{ MIN_PARALLEL_TOOLS }}-{{ MAX_PARALLEL_TOOLS }}）</span>
     </div>
     <div class="s-hint">效果类工具仍与其它执行互斥；保存后从下一次运行开始生效。</div>
+  </div>
+
+  <div class="s-section">
+    <div class="s-label">🧾 工具策略（声明）</div>
+    <div class="s-hint">工具在代码里声明的默认策略，不代表本次运行的有效授权；实际执行仍按本次参数与权限终裁。</div>
+    <div v-if="toolPolicyRows.length === 0" class="s-hint">读取中…</div>
+    <div v-for="row in toolPolicyRows" :key="row.id" class="li-row">
+      <span><b class="mono">{{ row.name }}</b> <span class="s-muted">{{ row.audience }}</span></span>
+      <span class="s-muted">{{ row.summary }}</span>
+    </div>
   </div>
 
   <div class="s-section">

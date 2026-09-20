@@ -155,14 +155,18 @@ function heapUsedBytes(): number | undefined {
   return memory?.usedJSHeapSize
 }
 
+/**
+ * 状态码档位按独立数字匹配（与 `classifyTurnFailure` 同一口径）：
+ * 文案里的估算 token 数等长数字串不能把无关失败误分类成认证、限流或 Provider 故障。
+ */
 function classifyError(error: unknown): ErrorKind {
   const message = (formatError(error)).toLowerCase()
   if (error instanceof SceneTimeoutError || /timeout|timed out|超时/.test(message)) return "timeout"
-  if (/401|403|unauthorized|forbidden|api.?key|认证/.test(message)) return "auth"
-  if (/429|rate.?limit|限流/.test(message)) return "rate_limit"
+  if (/\b401\b|\b403\b|unauthorized|forbidden|api.?key|认证/.test(message)) return "auth"
+  if (/\b429\b|rate.?limit|限流/.test(message)) return "rate_limit"
   if (/fetch|network|econn|enotfound|socket|网络/.test(message)) return "network"
   if (/config|provider|model|配置/.test(message)) return "configuration"
-  if (/5\d\d|upstream|service unavailable/.test(message)) return "provider"
+  if (/\b5\d\d\b|upstream|service unavailable/.test(message)) return "provider"
   return "unknown"
 }
 

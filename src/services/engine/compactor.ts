@@ -39,6 +39,8 @@ export interface CompactionSummaryInput {
   /** 调用方冻结的模型；缺省回退到配置窗口。 */
   model?: import("./pi").PiModel
   signal?: AbortSignal
+  /** resultProjection=preserve 的工具名：素材与主请求投影同口径，不做 L0 二次缩短。 */
+  preserveToolNames?: ReadonlySet<string>
 }
 
 export interface CompactionSummaryOutcome {
@@ -52,12 +54,17 @@ export interface CompactionSummaryOutcome {
 /** 生成一次结构化压缩摘要；失败抛错，由 Harness 按 handler_error 上报并可回退默认摘要。 */
 export async function summarizeCompaction(input: CompactionSummaryInput): Promise<CompactionSummaryOutcome> {
   const budget = contextBudget(input.model?.contextWindow ?? aiConfig.contextMaxTokens)
-  // 工具结果先进 L0 投影（保留 eventId 回读地址），与请求视图共用同一份缩短逻辑。
+  const preserveToolNames = input.preserveToolNames ?? new Set<string>()
+  // 工具结果先进 L0 投影（保留 eventId 回读地址），与请求视图共用同一份缩短逻辑；
+  // 但 resultProjection=preserve 的工具与主请求同口径跳过缩短 —— 摘要素材不能二次缩短
+  // 分页读取或写类成败这类关键结果（条目仍是可回读的真相源）。
   const project = (messages: readonly AgentMessage[]): Message[] =>
-    projectToolMessages(messages.flatMap((message, index) => {
+    messages.flatMap((message, index) => {
       const projected = summaryMessage(message, index)
-      return projected ? [projected] : []
-    }), budget.window)
+      if (!projected) return []
+      if (message.role === "toolResult" && preserveToolNames.has(message.toolName)) return [projected]
+      return projectToolMessages([projected], budget.window)
+    })
   const splitTurnPrefix = project(input.turnPrefixMessages ?? [])
   const userText = JSON.stringify({
     instructions: splitTurnPrefix.length
