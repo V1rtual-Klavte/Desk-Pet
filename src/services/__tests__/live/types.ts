@@ -222,6 +222,8 @@ export interface TestReport {
 export interface ContractCheckResult {
   module: string
   stale: boolean
+  /** stale 的原因：没有启动预检证明，或预检 hash 与契约声明不一致。 */
+  staleReason?: string
   missing: string[]       // coverage points without scenes
   gaps: string[]           // rules violations
   valid: boolean

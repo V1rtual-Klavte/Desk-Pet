@@ -20,6 +20,7 @@ interface RuntimeOptions {
   strict?: string
   report?: string
   seedHash?: string
+  sourceHashes?: string
   commit?: string
 }
 
@@ -38,6 +39,22 @@ function collectContracts(): ModuleContract[] {
     .flatMap(module => Object.values(module))
     .filter((contract): contract is ModuleContract => Boolean(contract?.module && contract?.coverage))
   return [...new Map(contracts.map(contract => [contract.module, contract])).values()]
+}
+
+/**
+ * 解析启动脚本通过环境变量送进来的 sourceHash 证明。
+ * 形状不对（或没值）就当作「没有证明」，由 contract-checker 判为 stale，
+ * 不在这里猜测 —— 猜错的方向是「假通过」，代价比多跑一次预检高。
+ */
+function parseHashAttestation(raw?: string): Record<string, string> | undefined {
+  if (!raw) return undefined
+  try {
+    const parsed = JSON.parse(raw) as Record<string, unknown>
+    const entries = Object.entries(parsed).filter((entry): entry is [string, string] => typeof entry[1] === "string")
+    return entries.length > 0 ? Object.fromEntries(entries) : undefined
+  } catch {
+    return undefined
+  }
 }
 
 function withStandardSetup(scene: SceneDef): SceneDef {
@@ -107,8 +124,9 @@ async function main(): Promise<void> {
 
   const contracts = collectContracts()
   const allScenes = collectScenes()
-  const contractResults = checkAllContracts(contracts, allScenes)
+  const contractResults = checkAllContracts(contracts, allScenes, parseHashAttestation(raw.sourceHashes))
   for (const result of contractResults) {
+    if (result.stale) console.warn(`[STALE] ${result.module}: ${result.staleReason ?? "sourceHash 未确认"}`)
     for (const missing of result.missing) console.warn(`[MISSING] ${result.module}/${missing}: ${missing}`)
     for (const gap of result.gaps) console.error(gap)
   }

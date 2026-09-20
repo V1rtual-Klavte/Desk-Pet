@@ -4,17 +4,39 @@
 
 import type { ModuleContract, ContractCheckResult, SceneDef } from "./types"
 
+/**
+ * Node 启动预检留下的证明：模块 → 预检通过时的 sourceHash。
+ * 浏览器内没有源码文件可读，只能核对「预检算出的 hash」是否等于「契约里声明的 hash」；
+ * 缺失或不一致都表示这次运行没有经过预检，不能声称源码版本已验证。
+ */
+export type HashAttestation = Record<string, string>
+
+function staleReason(contract: ModuleContract, attestation?: HashAttestation): string | undefined {
+  const attested = attestation?.[contract.module]
+  if (!attested) {
+    return "缺少 Node 启动预检的 sourceHash 证明 —— 浏览器不能独立校验源码版本，此运行可能绕过预检"
+  }
+  if (attested !== contract.sourceHash) {
+    return `预检 sourceHash=${attested}，契约声明=${contract.sourceHash || "<empty>"}；重新运行 /analyze test 并走启动脚本`
+  }
+  return undefined
+}
+
 /** 检查单个 contract */
-export function checkContract(contract: ModuleContract, scenes: SceneDef[]): ContractCheckResult {
+export function checkContract(
+  contract: ModuleContract,
+  scenes: SceneDef[],
+  attestation?: HashAttestation,
+): ContractCheckResult {
   const issues: string[] = []
   const missing: string[] = []
   const scenesByCaseId = new Map(scenes.map(scene => [scene.meta.caseId, scene]))
   const validScenarioIds = new Set<string>()
 
-  // 1. STALE: hash 是否过期（空 hash 跳过，首次生成）
-  // 源码 hash 在 Node 侧生成；浏览器内的真实 Tauri runner 不直接读取源码。
-  // 空 hash 暂时表示该合同尚未生成 hash，不能伪装成当前源码已验证。
-  const stale = false
+  // 1. STALE: 只认启动预检的证明。源码 hash 由 Node 侧对 sourceFiles 计算，
+  // 浏览器读不到源码，因此这里不做也不假装做独立校验。
+  const staleMessage = staleReason(contract, attestation)
+  const stale = staleMessage !== undefined
 
   // 2. MISSING: 每个 coverage point 必须指向已发现、同模块且同 point 的场景。
   for (const point of contract.coverage) {
@@ -82,6 +104,7 @@ export function checkContract(contract: ModuleContract, scenes: SceneDef[]): Con
   return {
     module: contract.module,
     stale,
+    ...(staleMessage ? { staleReason: staleMessage } : {}),
     missing,
     gaps: issues,
     valid: !stale && missing.length === 0 && issues.length === 0,
@@ -89,6 +112,10 @@ export function checkContract(contract: ModuleContract, scenes: SceneDef[]): Con
 }
 
 /** 浏览器内运行的真实 Tauri runner：合同通过 Vite import.meta.glob 注入。 */
-export function checkAllContracts(contracts: ModuleContract[], scenes: SceneDef[]): ContractCheckResult[] {
-  return contracts.map(contract => checkContract(contract, scenes))
+export function checkAllContracts(
+  contracts: ModuleContract[],
+  scenes: SceneDef[],
+  attestation?: HashAttestation,
+): ContractCheckResult[] {
+  return contracts.map(contract => checkContract(contract, scenes, attestation))
 }

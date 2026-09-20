@@ -40,6 +40,10 @@ pnpm run test:release
 
 Node 启动预检会校验 `sourceHash`；源码变更后应先按 SKILL 重新分析 Contract，再更新 hash 和场景。不要只替换 hash 来绕过门禁。`--strict` 还会拒绝 coverage、深度、边界、错误或入口规则的缺口。
 
+浏览器侧不做也不假装做独立校验：预检通过时把「模块 → sourceHash」的证明交给运行中的测试窗口，契约声明与证明不一致、或根本没有证明（例如绕过启动脚本直接开 Tauri）时该 Contract 记为 `stale`，严格模式据此失败。
+
+`sourceHash` 只覆盖 Contract 声明的 `sourceFiles`，不是依赖闭包；两者的差异清单与是否收紧门禁见[2026-09-20 收尾清单](../../../../docs/plans/active/2026-09-20收尾清单.md) L3。
+
 ## Scene 规范
 
 每个 Scene 声明稳定的小写 kebab-case `caseId`、`module`、`contractId`、`suite` 和 `depth`。`suite` 取值为 `regression`、`capability`、`safety` 或 `stress`；需要满足 Contract 的边界/错误规则时，分别带 `boundary` / `error` tag。
@@ -60,11 +64,13 @@ Node 启动预检会校验 `sourceHash`；源码变更后应先按 SKILL 重新�
 
 ## 隔离、报告与失败
 
-每个 trial 在 `standard-setup.ts` 中取消并等待已登记 Agent 回合，然后重置会话文件、UI index、工作记忆、变量池、聊天状态、预处理与 AI 锁。超时会尝试取消已登记 Agent；目前尚无覆盖任意 setup/assertion Promise 的 Scene 级取消通道，超时报表仍可能丢失已完成回合现场。待办见[2026-09-20 收尾清单](../../../../docs/plans/active/2026-09-20收尾清单.md)。Provider、网络、认证和断言等错误会分类，兜底回复不把失败改写为成功。
+每个 trial 在 `standard-setup.ts` 中取消并等待已登记 Agent 回合，然后重置会话文件、UI index、工作记忆、变量池、聊天状态、预处理与 AI 锁。超时按固定顺序收尾：置取消位（框架在每个步骤边界停下，不再推进后续 setup 与断言）→ 取现场 → 取消已登记的 Agent 回合 → 最多等 `SCENE_CANCEL_GRACE_MS` 让被放弃的执行落地，没落地会写进超时 error。超时报告保留已完成轮次和在飞轮次已跑完的断言，并补一条失败的 `timeout` 断言；`status` 仍是 `timeout`，不进通过统计。
+
+取消是协作式的：JS 不能强杀任意 await，Scene 自己发起、不经过框架边界的等待只能靠上述宽限时间收尾。Provider、网络、认证和断言等错误会分类，兜底回复不把失败改写为成功。
 
 测试脚本在用户 Home 下创建 `.deskpet-live-test-*` 临时目录，退出时清理；清理前将报告复制到 `~/.deskpet-live-test-reports/`，按脚本保留数量淘汰。
 
-JSON 报告使用 `desk-pet-live/v2`，包含数据集版本、筛选项、trial 指标、错误分类与 `pass@k`/`pass^k`。前者表示至少一次试验通过，后者表示全部已执行试验通过；回归或发布结论使用后者及严格 Contract 结果。
+JSON 报告使用 `desk-pet-live/v2`，包含数据集版本、筛选项、trial 指标、错误分类与 `pass@k`/`pass^k`。前者表示至少一次试验通过，后者表示全部已执行试验通过；回归或发布结论使用后者及严格 Contract 结果。`environment.seedHash` 由启动脚本生成：覆盖 `src-tauri/resources/defaults` 下的文本种子与开发构建实际加载的 CONFIG，凭据按 key 名脱敏后不参与摘要，二进制素材与摘要无关。
 
 运行需要可用的 Tauri/Rust 环境与对应 Provider 配置。不要与占用同一 Vite/Tauri 端口的开发实例并行运行。
 

@@ -29,8 +29,12 @@ function formatTerminal(report: TestReport): string {
   ]
 
   for (const error of report.datasetErrors) lines.push(`DATASET ERROR: ${error}`)
+  for (const contract of report.contracts.filter(contract => contract.stale)) {
+    lines.push(`CONTRACT STALE: ${contract.module}: ${contract.staleReason ?? "sourceHash 未确认"}`)
+  }
   for (const contract of report.contracts.filter(contract => !contract.valid)) {
-    lines.push(`CONTRACT GAP: ${contract.module}: ${[...contract.missing, ...contract.gaps].join("; ")}`)
+    const detail = [...contract.missing, ...contract.gaps].join("; ")
+    if (detail) lines.push(`CONTRACT GAP: ${contract.module}: ${detail}`)
   }
 
   for (const scene of report.scenes) {
@@ -78,6 +82,13 @@ function formatMarkdown(report: TestReport): string {
   if (report.datasetErrors.length > 0) {
     lines.push("", "## Dataset errors", "")
     for (const error of report.datasetErrors) lines.push(`- ${error}`)
+  }
+  const staleContracts = report.contracts.filter(contract => contract.stale)
+  if (staleContracts.length > 0) {
+    lines.push("", "## Stale contracts", "")
+    for (const contract of staleContracts) {
+      lines.push(`- ${contract.module}: ${contract.staleReason ?? "sourceHash 未确认"}`)
+    }
   }
   return lines.join("\n")
 }
