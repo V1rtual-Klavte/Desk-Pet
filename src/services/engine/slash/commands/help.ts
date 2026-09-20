@@ -51,5 +51,7 @@ export const helpCommand: SlashCommand = {
   name: "help",
   description: "显示所有可用命令",
   category: "general",
+  // 只读查询：不看运行状态，忙碌期也能立即执行。
+  busyPolicy: "immediate",
   execute: async () => formatHelp(),
 }

@@ -7,7 +7,10 @@ import { ContextBudgetError } from "@/services/context"
 
 import { getActiveCard, pickActiveGreeting } from "@/services/personality"
 import { getFallbackReply } from "@/services/personality/stages-cache"
+import { conversationConfig } from "@/services/config"
+import type { DeliveryIntent } from "@/services/config"
 import { deliverActiveTurn, harnessSlots, runPiAgentTurn } from "@/services/engine/pi"
+import type { HarnessDeliveryReceipt } from "@/services/engine/pi"
 import { preProcess } from "@/services/engine/preprocessor"
 import { transition } from "@/services/engine/session"
 import {
@@ -98,6 +101,8 @@ export async function initChat(): Promise<void> {
 export interface SendMessageOptions {
   requestId?: string
   priority?: MessagePriority
+  /** 用户显式选择的投递意图：steer=插话 / followUp=稍后继续；空闲发送不受影响。 */
+  delivery?: DeliveryIntent
 }
 
 export interface SendMessageResult {
@@ -105,7 +110,19 @@ export interface SendMessageResult {
   toolCallsMade: number
   retriesUsed: number
   outcome: "queued" | "succeeded" | "failed"
+  /** 忙碌投递给当前运行的准确回执；空闲回合与直接拒绝不返回。 */
+  delivery?: HarnessDeliveryReceipt
   failure?: import("@/services/engine/pi").TurnFailure
+}
+
+/**
+ * 忙碌投递意图（§3.1）：显式选择优先；未注册的 slash 文本按下一次运行排队（nextRun）；
+ * 其余按配置 defaultDelivery。运行阶段只决定能否投递，不再替用户选择意图。
+ */
+function resolveDeliveryIntent(explicit: DeliveryIntent | undefined, text: string): "steer" | "followUp" | "nextRun" {
+  if (explicit) return explicit
+  if (text.startsWith("/")) return "nextRun"
+  return conversationConfig.defaultDelivery
 }
 
 function makeIngressEnvelope(rawText: string, normalizedText: string, sessionId: string, requestId: string, priority: MessagePriority): IngressEnvelope {
@@ -132,16 +149,22 @@ async function dispatchMessage(text: string, options: SendMessageOptions = {}): 
   const originSessionId = getActiveSessionId()
 
   // 并发入口：生成中把新输入投递到正在运行的 lane（先落盘到持久 inbox，再影响模型）。
-  // 未识别的 slash 文本按下一次运行排队（nextRun），不在回合中途改状态。
-  // 投递失败说明运行槽刚好结束或不可用：不丢输入，继续走下面的正常回合。
+  // 命令按 busyPolicy 准入（exclusive 明确拒绝），投递意图由单条显式选择或配置默认决定；
+  // 未识别的 slash 文本按下一次运行排队（nextRun）。投递失败说明运行槽刚好结束或不可用：
+  // 不丢输入，继续走下面的正常回合。
   let busyPreResult: Awaited<ReturnType<typeof preProcess>> | undefined
   if (harnessSlots.isRunning(originSessionId)) {
     const requestId = options.requestId ?? makeIngressId("request")
-    const preResult = await preProcess(text, preprocessStates.get(originSessionId) ?? {})
+    const preResult = await preProcess(text, preprocessStates.get(originSessionId) ?? {}, { busy: true })
     if (preResult.handled) {
-      log.warn("AI 生成中，忽略已处理的输入")
+      // 命令已执行（immediate/coordinated）或已被明确拒绝；两种结果都如实呈现，不谎称在思考。
+      if (preResult.response) {
+        const { pushSystemMessage } = await import("@/services/session/messages")
+        pushSystemMessage(preResult.response)
+      }
+      log.info("AI 生成中，命令已按 busyPolicy 处理:", text.split(/\s/)[0])
       return {
-        reply: "（糖糖正在想事情，等一下再发哦～）",
+        reply: preResult.response ?? "",
         toolCallsMade: 0,
         retriesUsed: 0,
         outcome: "succeeded",
@@ -149,7 +172,7 @@ async function dispatchMessage(text: string, options: SendMessageOptions = {}): 
     }
     const receipt = await deliverActiveTurn(
       originSessionId, preResult.normalizedText, `${requestId}:user`,
-      text.startsWith("/") ? "nextRun" : undefined,
+      resolveDeliveryIntent(options.delivery, text),
     )
     if (receipt) {
       pushUserMessage(preResult.normalizedText)
@@ -159,10 +182,33 @@ async function dispatchMessage(text: string, options: SendMessageOptions = {}): 
         toolCallsMade: 0,
         retriesUsed: 0,
         outcome: "queued",
+        delivery: receipt,
       }
     }
     log.warn("运行槽不可投递，改走正常回合:", requestId)
     busyPreResult = preResult
+  }
+
+  // ── Step 1: 预处理（命令不占用运行槽：/compact 需要看到真实空闲状态）──
+  const preprocessState = preprocessStates.get(originSessionId) ?? {}
+  preprocessStates.set(originSessionId, preprocessState)
+  const preResult = busyPreResult ?? await preProcess(text, preprocessState)
+
+  if (preResult.handled) {
+    if (preResult.response) {
+      // slash 命令输出 → 以系统消息推送
+      const { pushSystemMessage } = await import("@/services/session/messages");
+      pushSystemMessage(preResult.response)
+    }
+    transition("WAITING", originSessionId)
+    // 命令没有运行槽可用，但延后的能力模式切换仍要走同一出口释放。
+    await applyPendingConversationCapabilities()
+    return {
+      reply: preResult.response ?? "",
+      toolCallsMade: 0,
+      retriesUsed: 0,
+      outcome: "succeeded",
+    }
   }
 
   const runGeneration = harnessSlots.begin(originSessionId)
@@ -182,34 +228,7 @@ async function dispatchMessage(text: string, options: SendMessageOptions = {}): 
   setAIGenerating(true)
 
   try {
-    // ── Step 1: 预处理 ──
     transition("PRE", originSessionId)
-    const preprocessState = preprocessStates.get(originSessionId) ?? {}
-    preprocessStates.set(originSessionId, preprocessState)
-    const preResult = busyPreResult ?? await preProcess(text, preprocessState)
-
-    if (preResult.handled) {
-      if (preResult.response) {
-        // slash 命令输出 → 以系统消息推送
-        const { pushSystemMessage } = await import("@/services/session/messages");
-        pushSystemMessage(preResult.response)
-        transition("WAITING", originSessionId)
-        return {
-          reply: preResult.response,
-          toolCallsMade: 0,
-          retriesUsed: 0,
-          outcome: "succeeded",
-        }
-      }
-      transition("WAITING", originSessionId)
-      return {
-        reply: "",
-        toolCallsMade: 0,
-        retriesUsed: 0,
-        outcome: "succeeded",
-      }
-    }
-
     const requestId = options.requestId ?? makeIngressId("request")
     const ingress = makeIngressEnvelope(preResult.rawText, preResult.normalizedText, originSessionId, requestId, options.priority ?? "now")
     harnessSlots.bindRun(originSessionId, runGeneration, { requestId })

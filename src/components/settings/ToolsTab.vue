@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { ref, onMounted } from "vue";
-import { toolsConfig } from "@/services/config";
+import { toolsConfig, loopConfig, MIN_PARALLEL_TOOLS, MAX_PARALLEL_TOOLS } from "@/services/config";
 import { createLogger } from "@/services/logger";
 import { formatError } from "@/services/error";
 // 纯文本工具函数，同步使用；其余 MCP 生命周期 API 仍按需动态 import
@@ -16,6 +16,11 @@ const bashWhitelist = ref(toolsConfig.bashWhitelist.join("\n"));
 
 // ── 文件 ──
 const fileWriteEnabled = ref(toolsConfig.fileWriteEnabled);
+
+// ── 工具执行并发 ──
+// 共享读上限：范围校验在 SettingsPanel.doSave 里按 parallelToolsError 拒绝越界值，
+// 这里只做初值读取与控件提示。
+const maxParallelTools = ref(loopConfig.maxParallelTools);
 
 // ── MCP ──
 const mcpEnabled = ref(toolsConfig.mcpEnabled);
@@ -225,6 +230,7 @@ onMounted(async () => {
 defineExpose({
   bashWhitelist,
   fileWriteEnabled,
+  maxParallelTools,
   mcpEnabled,
   mcpServerList,
   builtinMcpList,
@@ -245,6 +251,16 @@ defineExpose({
   <div class="s-section">
     <div class="s-label">📁 文件工作流</div>
     <label class="chk"><input type="checkbox" v-model="fileWriteEnabled" /><span>允许写入/编辑文件（两个模式均可用，执行时按策略确认）</span></label>
+  </div>
+
+  <div class="s-section">
+    <div class="s-label">🔀 工具执行</div>
+    <div class="fld">
+      <span class="fn">只读并行</span>
+      <input class="inp-num" type="number" :min="MIN_PARALLEL_TOOLS" :max="MAX_PARALLEL_TOOLS" v-model.number="maxParallelTools" />
+      <span class="s-muted">同时执行的只读工具数（{{ MIN_PARALLEL_TOOLS }}-{{ MAX_PARALLEL_TOOLS }}）</span>
+    </div>
+    <div class="s-hint">效果类工具仍与其它执行互斥；保存后从下一次运行开始生效。</div>
   </div>
 
   <div class="s-section">

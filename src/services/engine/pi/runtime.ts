@@ -14,7 +14,7 @@ import { buildPrompt, contextBudget, CONTEXT_RATIOS, estimateRequestTokens, esti
 import { bindRunningPlan, clearRunningPlan, notifyPlanEnd, requestPlanConfirm, requestPlanStepDecision } from "@/services/engine/plan-confirmation"
 import { executePlan, evaluateComplexity, formatStepResults, generatePlan } from "@/services/engine/planner"
 import { recordMessage, recordToolCall, transition } from "@/services/engine/session"
-import { getEffectiveThinkingEffort, updateRequestStats } from "@/services/debug"
+import { getEffectiveThinkingEffort, recordModelUsage, updateRequestStats } from "@/services/debug"
 import { getSkillsPromptBlock, getSkillCatalogFingerprint } from "@/services/skill"
 import { formatPoolForPrompt } from "@/services/personality/variable-pool"
 import { getActiveCard } from "@/services/personality/registry"
@@ -26,6 +26,7 @@ import { authorizeToolExecution, invalidatePermissionScope } from "@/services/sa
 import { getActiveSessionId, pushMessage } from "@/services/session/store"
 import { getToolsForMode } from "@/services/tool/registry"
 import { SESSION_TRANSCRIPT_TOOL, toToolDeclaration, createTranscriptTool } from "@/services/tool"
+import { findRetainedToolCall, retainedToolNames, toolPolicyHash } from "@/services/tool/policy"
 import type { HarnessToolRun } from "@/services/tool/pi/harness-tool-adapter"
 import type { ToolDef } from "@/services/tool/types"
 import { generalConfig, loopConfig, planConfig, safetyConfig } from "@/services/config"
@@ -36,7 +37,17 @@ import { PROVIDER_TIMEOUT_MS } from "./net-guard"
 import { RuntimeDataStreamFilter } from "./stream-text"
 import { summarizeCompaction } from "../compactor"
 import { createHarnessRunState, harnessSlots, HarnessSlot } from "./harness-slot"
-import type { HarnessCompactOutcome, HarnessDeliveryReceipt, HarnessRunHooks, HarnessRunResult, HarnessRunSinks, HarnessRunSpec, HarnessRunState } from "./harness-slot"
+import type {
+  HarnessCancelQueuedKind,
+  HarnessCompactOutcome,
+  HarnessDeliveryReceipt,
+  HarnessQueuedItem,
+  HarnessRunHooks,
+  HarnessRunResult,
+  HarnessRunSinks,
+  HarnessRunSpec,
+  HarnessRunState,
+} from "./harness-slot"
 import { formatError } from "@/services/error"
 import { createLogger } from "@/services/logger"
 import { createPromptRewrite, createPromptSnapshot, createRuntimeTraceContext, publishRuntimeTrace } from "@/services/engine/runtime"
@@ -67,6 +78,32 @@ export async function deliverActiveTurn(
   const receipt = await slot.steer(text, eventId, kind)
   if (!receipt) log.warn("投递未生效:", { sessionId, kind: kind ?? "auto" })
   return receipt
+}
+
+// ── 排队视图与单项撤回（PI-1：UI 不再自建队列状态） ──
+
+export interface QueuedInputsView {
+  /** false = 该会话还没有运行槽（未打开），此时列表为空不代表「没有排队项」。 */
+  loaded: boolean
+  /** 当前运行是否在进行（消费中的项离开列表说明已进入对话）。 */
+  running: boolean
+  items: HarnessQueuedItem[]
+}
+
+/** lane 持久 inbox 的只读排队视图；真相源仍由 Harness 持有。 */
+export function listQueuedInputs(sessionId: string): QueuedInputsView {
+  const snapshot = harnessSlots.snapshot(sessionId)
+  if (!snapshot) return { loaded: false, running: false, items: [] }
+  return { loaded: true, running: snapshot.state === "running", items: snapshot.queued }
+}
+
+/**
+ * 撤回一条尚未被消费的排队项。
+ * cancelled / already_consumed / not_found 的语义与 lane.cancelQueued 一致；
+ * unavailable 表示该会话的槽或通道当前不可用。
+ */
+export async function withdrawQueuedInput(sessionId: string, entryId: string): Promise<HarnessCancelQueuedKind> {
+  return await harnessSlots.cancelQueued(sessionId, entryId)
 }
 
 export interface PiAgentTurnInput {
@@ -105,6 +142,23 @@ export interface PiAgentTurnOutput {
   undelivered?: string[]
   /** 回合因显式停止（不是超时）结束；宿主不得在停止后自动继续剩余输入。 */
   abortedByStop?: boolean
+}
+
+/**
+ * 失败回合的展示文案。
+ *
+ * 硬预算判定必须原样透出（用户要看到的是「缩短输入或调整上下文窗口」）：溢出恢复用尽时
+ * 失败文案就是这条判定；上游以「没有可安全摘要的范围」declined 时失败文案是上游的，
+ * 回复回落到本回合最后一次判定。判定只有在上游确实拒过溢出压缩时才借用 ——
+ * 否则运行里留存的旧判定会顶替无关故障的文案。
+ */
+export function turnFailureReply(
+  message: string,
+  state: Pick<HarnessRunState, "lastBudgetError" | "overflowRecoveryDeclined">,
+): string {
+  if (message.includes("上下文需要约")) return message
+  if (state.overflowRecoveryDeclined && state.lastBudgetError) return state.lastBudgetError
+  return getFallbackReply("maxRetriesExhausted")
 }
 
 /** 把 Provider 的失败文案收敛成稳定分类 */
@@ -229,7 +283,7 @@ function createTurnKernel(options: TurnKernelOptions): TurnKernel {
       const toolSchemas = await Promise.all(options.tools.map(async tool => ({
         name: tool.name,
         schemaHash: await sha256Text(stableSerialize({ name: tool.name, description: tool.description, parameters: tool.parameters })),
-        policyHash: await sha256Text(stableSerialize({ actionCategory: tool.actionCategory, safetyLevel: tool.safetyLevel })),
+        policyHash: await toolPolicyHash(tool),
       })))
       const snapshot = await createPromptSnapshot({
         snapshotId,
@@ -292,11 +346,21 @@ function createTurnKernel(options: TurnKernelOptions): TurnKernel {
 function createCompactionHook(options: {
   mode: "pet" | "assistant"
   model: PiModel
+  tools: readonly ToolDef[]
   onSummary?: (summary: StructuredSummary) => void
 }): NonNullable<HarnessRunHooks["beforeCompaction"]> {
+  const retained = retainedToolNames(options.tools)
   return async ({ preparation, signal }) => {
     // 全量都在保留窗口内时没有可安全摘要的覆盖范围：decline 让 Harness 原样收尾。
     if (!preparation.messagesToSummarize.length && !preparation.turnPrefixMessages.length) return { decline: true }
+    // historyCompaction=retain 的调用配对必须保留原文：连续完整轮下不能把覆盖边界推进越过它，
+    // 宁可 decline（由宿主预算守卫报告上下文不足），也不默默丢掉未覆盖历史。
+    const retainedTool = findRetainedToolCall(preparation.messagesToSummarize, retained)
+      ?? findRetainedToolCall(preparation.turnPrefixMessages, retained)
+    if (retainedTool) {
+      log.warn("摘要范围覆盖了必须保留原文的工具调用，本轮不压缩:", retainedTool)
+      return { decline: true }
+    }
     const outcome = await summarizeCompaction({
       mode: options.mode,
       messages: preparation.messagesToSummarize,
@@ -380,14 +444,16 @@ function createTurnSpec(kernel: TurnKernel, options: {
       let prepared = messages
       try {
         if (options.projectToolResults) {
-          prepared = prepared.map(message => projectToolResultMessage(message, kernel.model.contextWindow))
+          prepared = prepared.map(message => projectToolResultMessage(message, kernel.model.contextWindow, toolsByName))
         }
         kernel.latestMessages = prepared
         const budget = contextBudget(kernel.model.contextWindow, kernel.model.maxTokens)
         const used = estimateRequestTokens(systemPrompt, prepared, kernel.tools)
         if (used > budget.hardInputLimit) {
-          // transform_context 不允许 reject：错误记入回合状态，由网关在下一次请求阻断。
-          state.contextError ??= new ContextBudgetError(used, budget.hardInputLimit)
+          // transform_context 不允许 reject：判定记入回合状态，由网关在下一次请求上报。
+          // 每次投影都按当次视图重算并覆盖（不粘住首条判定）：网关取走判定后，Harness 会压缩
+          // 再重试一次，重试请求要拿到的是压缩后视图的结论；残留旧判定会让恢复永远被挡住。
+          state.contextError = new ContextBudgetError(used, budget.hardInputLimit)
         }
         void kernel.captureSnapshot("transform_context", prepared, []).catch(error => log.warn("PromptSnapshot 采集失败", formatError(error)))
       } catch (error) {
@@ -395,7 +461,7 @@ function createTurnSpec(kernel: TurnKernel, options: {
       }
       return { messages: prepared }
     },
-    beforeCompaction: createCompactionHook({ mode: kernel.mode, model: kernel.model }),
+    beforeCompaction: createCompactionHook({ mode: kernel.mode, model: kernel.model, tools: kernel.tools }),
     beforeRequest: createRequestOptionsPatch(),
     afterResponse: (message, meta) => {
       publishRuntimeTrace(kernel.traceContext, "provider_response", {
@@ -489,6 +555,9 @@ function createTurnSinks(kernel: TurnKernel): HarnessRunSinks {
         toolCount: kernel.tools.length,
         toolNames: kernel.tools.map(tool => tool.name),
       })
+      // 主回合逐请求用量记进分列统计；压缩等一次性调用不走这个 sink，
+      // 由 completePiText 按自己的 purpose 单独记录。
+      recordModelUsage("main", row.usage)
       publishRuntimeTrace(kernel.traceContext, "provider_usage", {
         inputTokens: row.usage.input,
         outputTokens: row.usage.output,
@@ -733,7 +802,8 @@ async function settleMainTurn(args: {
 
   const failTurn = async (message: string, kind: TurnFailure["kind"]): Promise<PiAgentTurnOutput> => {
     transition("WAITING", turnSessionId)
-    const reply = message.includes("上下文需要约") ? message : getFallbackReply("maxRetriesExhausted")
+    // 失败分类保留上游文案（decline 不改写成预算错误），只有展示文案回到硬预算判定。
+    const reply = turnFailureReply(message, state)
     await slot.appendAssistantMessage(reply).catch(error => log.warn("兜底回复落盘失败", formatError(error)))
     return { reply, toolCallHistory, retriesUsed: state.retriesUsed, failure: { kind, message } }
   }
@@ -870,7 +940,8 @@ export async function compactActiveSession(sessionId: string): Promise<ManualCom
   const model = resolvePiTurnModel()
   let intent: string | undefined
   const outcome = await harnessSlots.get(sessionId).compact({
-    beforeCompaction: createCompactionHook({ mode, model, onSummary: summary => { intent = summary.intent } }),
+    // 手动压缩没有冻结的回合工具集，按当前注册表判定 retain 保护。
+    beforeCompaction: createCompactionHook({ mode, model, tools: getToolsForMode(mode), onSummary: summary => { intent = summary.intent } }),
     beforeRequest: createRequestOptionsPatch(),
   })
   return intent === undefined ? outcome : { ...outcome, intent }
@@ -932,9 +1003,15 @@ export async function runPiSubAgent(input: PiSubAgentInput): Promise<PiSubAgentO
   }
 }
 
-/** 工具结果请求投影：条目保持全文，只有请求视图被缩短并标注回读地址。 */
-function projectToolResultMessage(message: AgentMessage, windowTokens: number): AgentMessage {
+/**
+ * 工具结果请求投影：条目保持全文，只有请求视图被缩短并标注回读地址。
+ *
+ * resultProjection=preserve 的工具（分页读取、写类结果）不再二次缩短；
+ * 未注册的历史工具没有策略可查，沿用既有缩短行为（条目仍是可回读的真相源）。
+ */
+function projectToolResultMessage(message: AgentMessage, windowTokens: number, toolsByName: ReadonlyMap<string, ToolDef>): AgentMessage {
   if (message.role !== "toolResult") return message
+  if (toolsByName.get(message.toolName)?.policy.context.resultProjection === "preserve") return message
   const details = message.details && typeof message.details === "object" ? message.details as Record<string, unknown> : {}
   const entryId = typeof details.deskpetEntryId === "string" ? details.deskpetEntryId : message.toolCallId
   const text = contentText(message.content)

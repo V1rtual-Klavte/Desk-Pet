@@ -1,9 +1,30 @@
 <script setup lang="ts">
 import { computed, ref, watch } from "vue"
-import { debug, getEffectiveThinkingEffort, setSessionThinkingEffort, resetSessionThinkingEffort, getEffectiveSafetyMode, setSessionSafetyMode, resetSessionSafetyMode } from "@/services/debug"
+import { debug, getEffectiveThinkingEffort, setSessionThinkingEffort, resetSessionThinkingEffort, getEffectiveSafetyMode, setSessionSafetyMode, resetSessionSafetyMode, usageGrandTotal } from "@/services/debug"
+import type { PurposeUsage, UsagePurpose } from "@/services/debug"
 
 const showTools = ref(false)
 const showDetail = ref(false)
+const showUsage = ref(false)
+
+// ── 模型用量（按 purpose 分列；总量与分项同源） ──
+const usageRows = computed(() =>
+  Object.entries(debug.usage) as [UsagePurpose, PurposeUsage][]
+)
+const usageTotal = computed(() => usageGrandTotal())
+const PURPOSE_LABELS: Record<UsagePurpose, string> = {
+  main: "主回合",
+  compaction: "压缩",
+  planner: "规划",
+  memory: "记忆",
+  stages: "阶段",
+}
+const usageLabel = computed(() =>
+  usageTotal.value.total > 0 ? `${(usageTotal.value.total / 1000).toFixed(1)}k` : "—"
+)
+function formatTokens(n: number): string {
+  return n >= 1000 ? `${(n / 1000).toFixed(1)}k` : String(n)
+}
 
 const ctxColor = computed(() => {
   if (debug.lastContextUsage >= 80) return "#ff6b6b"
@@ -89,10 +110,25 @@ watch(sessionSafety, (v) => {
       </div>
     </div>
     <div class="db-row db-row-sub">
+      <span class="db-item db-dim" @click="showUsage = !showUsage" title="按用途分列的模型用量">
+        Σ 用量: {{ usageLabel }}
+      </span>
       <span class="db-item db-dim" @click="showDetail = !showDetail">
         📦 工具注册: {{ debug.registeredToolCount }}
         (技能:{{ debug.registeredSkillCount }} MCP:{{ debug.registeredMcpCount }})
       </span>
+    </div>
+    <div v-if="showUsage" class="db-tool-list">
+      <div v-for="[purpose, bucket] in usageRows" :key="purpose" class="db-usage-item">
+        <span class="db-usage-src">{{ PURPOSE_LABELS[purpose] }}</span>
+        <span v-if="bucket.reported > 0">入 {{ formatTokens(bucket.input) }} / 出 {{ formatTokens(bucket.output) }}</span>
+        <span v-else-if="bucket.calls > 0" class="db-usage-unreported">未回报 usage</span>
+        <span v-else class="db-usage-unreported">暂无</span>
+        <span class="db-usage-calls">
+          {{ bucket.calls }} 次<template v-if="bucket.reported < bucket.calls">（{{ bucket.calls - bucket.reported }} 次未回报）</template>
+        </span>
+      </div>
+      <div class="db-usage-note">Provider 回报的 usage（含缓存口径），不是估算值</div>
     </div>
     <div v-if="showDetail" class="db-tool-list">
       <div
@@ -175,6 +211,29 @@ watch(sessionSafety, (v) => {
   color: var(--color-debug-dim-text);
   font-size: 8px;
   min-width: 24px;
+}
+.db-usage-item {
+  padding: 1px 4px;
+  color: var(--color-debug-tool-text);
+  font-size: 9px;
+  display: flex;
+  gap: 6px;
+}
+.db-usage-src {
+  color: var(--color-debug-dim-text);
+  min-width: 32px;
+}
+.db-usage-unreported {
+  color: var(--color-debug-empty);
+}
+.db-usage-calls {
+  margin-left: auto;
+  color: var(--color-debug-dim-text);
+}
+.db-usage-note {
+  padding: 2px 4px 1px;
+  color: var(--color-debug-empty);
+  font-size: 8px;
 }
 .db-thinking-select {
   background: var(--color-surface-deepest);

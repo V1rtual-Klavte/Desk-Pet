@@ -3,7 +3,7 @@ import { ref, onMounted, computed } from "vue";
 import {
   aiConfig, windowMonitorConfig, aiLockConfig,
   memoryConfig, personalityConfig, generalConfig,
-  safetyConfig, planConfig,
+  safetyConfig, planConfig, conversationConfig,
 } from "@/services/config";
 import {
   listPersonalities, getActiveCard,
@@ -29,6 +29,11 @@ const aiRequireApiKey = ref(aiConfig.requireApiKey);
 
 // ── 思考 ──
 const aiThinkingEffort = ref(aiConfig.thinkingEffort);
+
+// ── 对话投递（忙碌时的默认方式与队列批量策略）──
+const defaultDelivery = ref(conversationConfig.defaultDelivery);
+const steeringMode = ref(conversationConfig.steeringMode);
+const followUpMode = ref(conversationConfig.followUpMode);
 
 // ── 安全 ──
 const safetyMode = ref(safetyConfig.mode as string);
@@ -454,6 +459,9 @@ defineExpose({
   aiContextMaxTokens,
   aiThinkingEffort,
   aiRequireApiKey,
+  defaultDelivery,
+  steeringMode,
+  followUpMode,
   safetyMode,
   sessionTrustEnabled,
   wmEnabled,
@@ -494,6 +502,28 @@ defineExpose({
     <div class="radio-row">
       <label v-for="lv in ['auto','low','medium','high']" :key="'p1'+lv" class="chk"><input type="radio" v-model="aiThinkingEffort" :value="lv" /><span>{{ lv }}</span></label>
     </div>
+  </div>
+
+  <!-- ═══ 💬 对话投递 ═══ -->
+  <div class="s-section">
+    <div class="s-label">💬 对话投递</div>
+
+    <div class="s-subtitle">默认发送方式（忙碌时）</div>
+    <div class="radio-row">
+      <label v-for="m in [{v:'steer',l:'插话'},{v:'followUp',l:'稍后继续'}]" :key="'dd'+m.v" class="chk"><input type="radio" v-model="defaultDelivery" :value="m.v" /><span>{{ m.l }}</span></label>
+    </div>
+    <div class="s-hint">聊天框里可为单条消息覆盖；空闲时两种方式都直接开始新回合</div>
+
+    <div class="s-subtitle" style="margin-top:6px">插话批量处理</div>
+    <div class="radio-row">
+      <label v-for="m in [{v:'all',l:'集中处理补充'},{v:'one-at-a-time',l:'逐条处理'}]" :key="'sm'+m.v" class="chk"><input type="radio" v-model="steeringMode" :value="m.v" /><span>{{ m.l }}</span></label>
+    </div>
+
+    <div class="s-subtitle" style="margin-top:6px">稍后继续的后续消息</div>
+    <div class="radio-row">
+      <label v-for="m in [{v:'one-at-a-time',l:'逐条处理'},{v:'all',l:'集中处理'}]" :key="'fm'+m.v" class="chk"><input type="radio" v-model="followUpMode" :value="m.v" /><span>{{ m.l }}</span></label>
+    </div>
+    <div class="s-hint">批量策略在下一回合开始前生效，不重排已排队消息</div>
   </div>
 
   <!-- ═══ 🎭 人格卡 ═══ -->

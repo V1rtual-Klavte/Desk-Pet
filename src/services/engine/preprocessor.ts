@@ -7,6 +7,7 @@
 import { createLogger } from "@/services/logger"
 import { loopConfig } from "@/services/config"
 import { find } from "./slash/registry"
+import type { SlashCommand } from "./slash/types"
 
 const log = createLogger("PreProc")
 
@@ -26,16 +27,28 @@ export interface PreProcessState {
   lastUserTime?: number
 }
 
+export interface PreProcessOptions {
+  /** 同会话有在飞运行：命令按 busyPolicy 准入，exclusive 的命令明确拒绝而不是丢弃。 */
+  busy?: boolean
+}
+
 /** Kept for Live Test compatibility; deduplication state now belongs to the caller. */
 export function resetPreprocessorForTest(): void {}
 
+/** 忙碌期准入：只有 immediate / coordinated 的命令能执行，其余明确拒绝（§3.4）。 */
+function busyRejection(command: SlashCommand): string | undefined {
+  const policy = command.busyPolicy ?? "exclusive"
+  if (policy === "immediate" || policy === "coordinated") return undefined
+  return `/${command.name} 需要等当前回合结束再执行。`
+}
+
 /**
- * 预处理用户输入。
- * - slash 命令 → 查找注册表并执行
+ * 预处理用户输入 —— Slash 的唯一执行入口（ChatPanel / 运行器都经这里）。
+ * - slash 命令 → 查找注册表并按 busyPolicy 执行或拒绝
  * - 空/纯空格 → 跳过
  * - 短时间重复 → 跳过（30s 内相同文本）
  */
-export async function preProcess(rawText: string, state: PreProcessState = {}): Promise<PreProcessResult> {
+export async function preProcess(rawText: string, state: PreProcessState = {}, options: PreProcessOptions = {}): Promise<PreProcessResult> {
   const text = rawText.trim()
 
   // ── 空消息 ──
@@ -49,6 +62,13 @@ export async function preProcess(rawText: string, state: PreProcessState = {}): 
     const cmd = find(cmdText)
 
     if (cmd) {
+      if (options.busy) {
+        const rejection = busyRejection(cmd)
+        if (rejection) {
+          log.info("忙碌期拒绝命令:", cmd.name)
+          return { handled: true, response: rejection, text: "", rawText, normalizedText: text }
+        }
+      }
       try {
         const result = await cmd.execute()
         if (result !== null) {

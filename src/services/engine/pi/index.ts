@@ -6,8 +6,11 @@ export {
   deliverActiveTurn,
   discardInterruptedRun,
   getInterruptedRun,
+  listQueuedInputs,
   runPiAgentTurn,
   runPiSubAgent,
+  turnFailureReply,
+  withdrawQueuedInput,
 } from "./runtime"
 export type {
   InterruptedRunInfo,
@@ -16,6 +19,7 @@ export type {
   PiAgentTurnOutput,
   PiSubAgentInput,
   PiSubAgentOutput,
+  QueuedInputsView,
   TurnFailure,
 } from "./runtime"
 
@@ -29,7 +33,7 @@ export {
   resolvePiTurnModel,
   toPiReasoningLevel,
 } from "./model-gateway"
-export type { HarnessModelsOptions, PiModel, PiRuntimeProviderOverride, PiTextCallInput, PiTextCallResult } from "./model-gateway"
+export type { HarnessModelsOptions, PiModel, PiRuntimeProviderOverride, PiTextCallInput, PiTextCallResult, PiTextPurpose } from "./model-gateway"
 export { completePiText } from "./model-gateway"
 
 export {
@@ -41,9 +45,12 @@ export {
 } from "./harness-slot"
 export type {
   HarnessAbortReason,
+  HarnessCancelQueuedKind,
   HarnessCompactOutcome,
   HarnessDeliveryPhase,
   HarnessDeliveryReceipt,
+  HarnessQueueCounts,
+  HarnessQueuedItem,
   HarnessRunHooks,
   HarnessRunResult,
   HarnessRunSinks,

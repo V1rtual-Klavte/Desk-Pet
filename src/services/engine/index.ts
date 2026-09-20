@@ -18,7 +18,9 @@ export { buildPrompt } from "@/services/context"
 export type { BuildContextInput, BuildContextOutput } from "@/services/context"
 
 // ── Slash ──
-export { initSlashCommands, search as searchSlashCommands, find as findSlashCommand, listAll as listAllSlashCommands } from "./slash"
+// 命令查找/执行只在 ingress（preProcess → slash/registry）内部发生：
+// UI 侧只需要下拉补全数据，不再导出第二条执行入口。
+export { initSlashCommands, search as searchSlashCommands, listAll as listAllSlashCommands } from "./slash"
 export type { SlashCommand, SlashMatch } from "./slash"
 
 // ── Compactor ──
@@ -78,7 +80,15 @@ export {
   discardInterruptedRun,
   getInterruptedRun,
   harnessSlots,
+  listQueuedInputs,
   runPiAgentTurn,
   runPiSubAgent,
+  withdrawQueuedInput,
 } from "./pi"
-export type { InterruptedRunInfo, ManualCompactionResult, PiAgentTurnOutput, PiSubAgentOutput } from "./pi"
+export type {
+  InterruptedRunInfo,
+  ManualCompactionResult,
+  PiAgentTurnOutput,
+  PiSubAgentOutput,
+  QueuedInputsView,
+} from "./pi"

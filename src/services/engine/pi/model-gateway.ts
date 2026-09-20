@@ -12,6 +12,7 @@ import type { AssistantMessage, AssistantMessageEventStream, Context, Message as
 import type { StreamFn } from "@earendil-works/pi-agent-core"
 import type { ThinkingEffort } from "@/services/agent/types"
 import { aiConfig } from "@/services/config"
+import { recordModelUsage } from "@/services/debug"
 import { createLogger } from "@/services/logger"
 import { formatError } from "@/services/error"
 import { contextBudget, ContextBudgetError, contextWindowError, estimateRequestTokens } from "@/services/context"
@@ -169,10 +170,13 @@ export interface HarnessModelsOptions {
   /** 本回合冻结的模型（或读取器）；缺省取测试注入或配置模型。 */
   model?: PiModel | (() => PiModel | undefined)
   /**
-   * 返回本回合累计的投影错误（transform_context 记录）。有值时以下一次请求的错误响应阻断，
+   * 取走 `transform_context` 记录的当次请求判定。有值时以下一次请求的响应上报，
    * 而不是同步抛出 —— Harness 的驱动状态机不接受 streamSimple 抛异常（会 fault 整条 lane）。
+   *
+   * 取走即清空：判定绑定当次请求视图。硬预算超限触发溢出恢复后，Harness 会压缩再重试，
+   * 重试请求重新执行 `transform_context` 得到新判定；残留旧判定会让重试被同一条错误挡住。
    */
-  getBlockedError?: () => Error | undefined
+  takeBlockedError?: () => Error | undefined
 }
 
 /**
@@ -199,8 +203,8 @@ export function createHarnessModels(options: HarnessModelsOptions = {}): Models 
       }
       if (property === "streamSimple") {
         return (model: Model<any>, context: Context, streamOptions?: SimpleStreamOptions): AssistantMessageEventStream => {
-          const blocked = options.getBlockedError?.()
-          if (blocked) return failedAssistantStream(model, blocked)
+          const blocked = options.takeBlockedError?.()
+          if (blocked) return blockedAssistantStream(model, blocked)
           return toAssistantStream((piRuntimeProviderOverride?.streamFn ?? piStream)(model, context, streamOptions), model)
         }
       }
@@ -210,8 +214,22 @@ export function createHarnessModels(options: HarnessModelsOptions = {}): Models 
   }) as Models
 }
 
-/** 以 stopReason=error 结束的 Provider 流：Harness 会把它结算为失败回合，错误文案原样上报。 */
-function failedAssistantStream(model: Model<any>, error: Error): AssistantMessageEventStream {
+/**
+ * 本地拒绝的 Provider 响应：Harness 会把它结算为失败回合，错误文案原样上报。
+ *
+ * 硬预算拒绝改走上游的一次性溢出恢复。上游只在响应上判溢出
+ * （pi-agent-core `harness/runtime/drive/response.js:115-118`：
+ * `isContextOverflow(...) || isRecoverableLength(...)`）：本地拒绝先于请求发生，没有真实
+ * provider 文案可以命中 `isContextOverflow` 的正则，而伪造一条命中正则的文案会把用户可见
+ * 错误文案绑到上游正则上。改用结构化那条判据 —— `isRecoverableLength` 只要求
+ * 「stopReason 为 length 且 usage.output 低于本次请求的输出上限」，正是本地拒绝的语义：
+ * 窗口里没有生成空间，输出为 0。命中后 Harness 会 `prepareOverflowCompaction` → 宿主
+ * `before_compaction` 摘要 → 单事务提交 → 带 `overflowRecoveryUsed` 重试一次；
+ * 恢复用尽或没有可摘要范围时照旧按错误结算，文案不变。
+ *
+ * 其余投影错误保持 stopReason=error（普通失败路径），不冒充溢出。
+ */
+function blockedAssistantStream(model: Model<any>, error: Error): AssistantMessageEventStream {
   const stream = createAssistantMessageEventStream()
   stream.end({
     role: "assistant",
@@ -220,7 +238,7 @@ function failedAssistantStream(model: Model<any>, error: Error): AssistantMessag
     provider: model.provider,
     model: model.id,
     usage: EMPTY_GATEWAY_USAGE,
-    stopReason: "error",
+    stopReason: error instanceof ContextBudgetError ? "length" : "error",
     errorMessage: error.message,
     timestamp: Date.now(),
   })
@@ -294,9 +312,12 @@ export function getPiRuntimeProviderOverride(): PiRuntimeProviderOverride | unde
 
 // ── 一次性文本调用 ──
 
+/** 一次性调用的用途；用量统计按它单列，不从主回合统计里消失。 */
+export type PiTextPurpose = "planner" | "compaction" | "memory" | "stages"
+
 export interface PiTextCallInput {
-  /** 调用用途，仅用于日志与未来路由；不参与请求构造 */
-  purpose: "planner" | "compaction" | "memory" | "stages"
+  /** 调用用途：进入按 purpose 分列的用量统计，也用于日志。 */
+  purpose: PiTextPurpose
   systemPrompt: string
   userText: string
   thinkingEffort?: ThinkingEffort
@@ -334,7 +355,8 @@ function thinkingText(content: AssistantMessage["content"]): string {
  * 2. 自己用 AbortController 兜总时限：`timeoutMs` 只是 SDK 的请求超时（收到响应头就清），
  *    SSE 断在半路不会触发。abort 文案沿用旧 provider 的「Provider 请求超时或已取消」。
  * 3. 不写 PromptSnapshot、不写 updateRequestStats：这是一次性旁路调用，不属于 transcript，
- *    混进回合统计只会污染主链路的 token/工具计数。
+ *    混进主回合的 last/上下文统计只会污染主链路的 token/工具计数。用量按 purpose 记进
+ *    分列统计（含失败响应），既不冒充主回复统计，也不从总消耗里消失。
  */
 export async function completePiText(input: PiTextCallInput): Promise<PiTextCallResult> {
   const startedAt = Date.now()
@@ -374,6 +396,9 @@ export async function completePiText(input: PiTextCallInput): Promise<PiTextCall
       maxTokens,
     })
     const message = await stream.result()
+    // 响应一到就记用量：失败/截断的响应同样产生成本，不能只计成功调用。
+    // Provider 未回报时这里只累加次数（recordModelUsage 不把全 0 当准确值）。
+    recordModelUsage(input.purpose, message.usage)
 
     if (message.stopReason === "error" || message.stopReason === "aborted") {
       throw new Error(controller.signal.aborted

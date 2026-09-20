@@ -3,7 +3,7 @@ import { ref, onMounted, onUnmounted } from "vue";
 import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
 import {
   userConfig, generalConfig, toolsConfig,
-  setOverrides, setOverride, getAllOverrides, flushConfig,
+  setOverrides, setOverride, getAllOverrides, flushConfig, parallelToolsError,
 } from "@/services/config";
 import {
   saveSoundAssignments,
@@ -67,6 +67,14 @@ async function doSave() {
     log.error("设置保存失败:", windowIssue);
     return;
   }
+  // 共享读上限越界同样拒绝保存：范围外的手写值不会静默夹到边界后落盘，
+  // 用户看到的是错误而不是“保存成功但生效值不同”。
+  const parallelIssue = parallelToolsError(t.maxParallelTools);
+  if (parallelIssue) {
+    saveError.value = parallelIssue;
+    log.error("设置保存失败:", parallelIssue);
+    return;
+  }
   const previousPersonalityActive = getActivePersonalityId();
 
   userConfig.popupMode = g.popupMode;
@@ -88,6 +96,10 @@ async function doSave() {
     "ai.model": a.aiModel,
     "ai.contextMaxTokens": a.aiContextMaxTokens,
     "ai.thinking.effort": a.aiThinkingEffort,
+    // 对话投递：默认发送方式与队列批量策略（忙碌投递与下一回合的批量行为）
+    "ai.conversation.defaultDelivery": a.defaultDelivery,
+    "ai.conversation.steeringMode": a.steeringMode,
+    "ai.conversation.followUpMode": a.followUpMode,
     "ai.personality.active": a.personalityActive,
     "ai.windowMonitor.enabled": a.wmEnabled,
     "ai.windowMonitor.staySeconds": a.wmStaySeconds,
@@ -113,6 +125,8 @@ async function doSave() {
     "general.mode.assistant": g.assistantMode,
     "ai.safety.mode": a.safetyMode,
     "ai.safety.sessionTrustEnabled": a.sessionTrustEnabled,
+    // 共享读并行上限：并发所有权在 Rust 许可池，这里只落配置值
+    "ai.loop.maxParallelTools": t.maxParallelTools,
     "tools.bash.whitelist": t.bashWhitelist.split("\n").map(s => s.trim()).filter(Boolean),
     "tools.file.writeEnabled": t.fileWriteEnabled,
     "tools.mcp.enabled": t.mcpEnabled,

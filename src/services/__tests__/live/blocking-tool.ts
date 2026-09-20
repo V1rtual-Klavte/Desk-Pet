@@ -3,7 +3,7 @@
 // 工具同时观察 gate signal：取消路径必须立即结束，否则 abort 要等工具结算会死锁。
 
 import type { ToolResult } from "@/services/tool"
-import { register, unregister } from "@/services/tool"
+import { register, unregister, defineTool, TOOL_POLICY_VERSION } from "@/services/tool"
 
 export interface BlockingToolHandle {
   /** 工具已进入执行（只在第一次调用时 resolve）。 */
@@ -21,7 +21,7 @@ export function registerBlockingTool(name: string): BlockingToolHandle {
   let releaseAll!: () => void
   const released = new Promise<void>(resolve => { releaseAll = resolve })
   const id = `live-block-${name}`
-  register({
+  register(defineTool({
     id,
     name,
     description: `Live Test blocking tool ${name}`,
@@ -31,17 +31,22 @@ export function registerBlockingTool(name: string): BlockingToolHandle {
     sourceId: "",
     mode: "pet",
     actionCategory: "os.info",
-    async handler(_params, ctx): Promise<ToolResult> {
-      markStarted()
-      await new Promise<void>(resolve => {
-        void released.then(resolve)
-        const signal = ctx.signal
-        if (signal?.aborted) resolve()
-        else signal?.addEventListener("abort", () => resolve(), { once: true })
-      })
-      if (ctx.signal?.aborted) return { success: false, content: "", error: "工具已取消", errorCode: "cancelled" }
-      return { success: true, content: "released" }
+    policy: {
+      version: TOOL_POLICY_VERSION,
+      permission: { defaultDecision: "allow" },
+      execution: { effect: "read", mode: "parallel", isolation: "shared_read", replay: "never" },
+      context: { resultProjection: "reference", historyCompaction: "summarize" },
     },
-  })
+  }, async (_params, ctx): Promise<ToolResult> => {
+    markStarted()
+    await new Promise<void>(resolve => {
+      void released.then(resolve)
+      const signal = ctx.signal
+      if (signal?.aborted) resolve()
+      else signal?.addEventListener("abort", () => resolve(), { once: true })
+    })
+    if (ctx.signal?.aborted) return { success: false, content: "", error: "工具已取消", errorCode: "cancelled" }
+    return { success: true, content: "released" }
+  }))
   return { started, release: releaseAll, dispose: () => unregister(id) }
 }

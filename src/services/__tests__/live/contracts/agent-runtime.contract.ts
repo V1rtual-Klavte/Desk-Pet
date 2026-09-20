@@ -4,7 +4,9 @@ export const agentRuntimeContract: ModuleContract = {
   module: "agent-runtime",
   sourceFiles: [
     "src/services/agent/runner.ts",
+    "src/services/debug.ts",
     "src/services/engine/pi/harness-slot.ts",
+    "src/services/engine/pi/model-gateway.ts",
     "src/services/engine/pi/runtime.ts",
     "src/services/engine/preprocessor.ts",
     "src/services/session/manager.ts",
@@ -12,7 +14,7 @@ export const agentRuntimeContract: ModuleContract = {
     "src/services/session/repo.ts",
   ],
   generatedAt: "2026-09-20",
-  sourceHash: "ad53e7536dd9630321fd35051c9c17c98079716d9c7e8be365f90f176251013c",
+  sourceHash: "34fad3f61e2e5abc81c331652fe3f1404b54e334b92261e773e2b7854ac36b09",
   coverage: [
     {
       id: "ar-01",
@@ -61,6 +63,22 @@ export const agentRuntimeContract: ModuleContract = {
       why: "排队输入必须有持久归宿且不重复追加用户正文",
       depth: "deep",
       scenarios: ["runtime-nextrun-inbox"],
+    },
+    {
+      id: "ar-07",
+      feature: "用量按 purpose 分列",
+      description: "主回合逐请求 usage 记入 main 分项；规划等一次性调用（压缩走同一通道）按自己的 purpose 单独计数，不覆盖主回合的 last/上下文统计，也不计入 main；总量由各分项相加，未回报 usage 的失败调用只计次数",
+      why: "一次性调用既不能冒充主回复统计，也不能从总消耗里消失；分别只累加数字会让总量与分项对不上",
+      depth: "deep",
+      scenarios: ["runtime-usage-purpose-split"],
+    },
+    {
+      id: "ar-08",
+      feature: "显式投递意图与排队视图",
+      description: "忙碌时显式选择插话/稍后继续的投递回执与 lane inbox 的 kind 一致（steered/followup），排队视图（listQueuedInputs）按序给出 kind 与正文；单项撤回仍在 inbox 的项返回 cancelled 且不再进入对话，已消费项返回 already_consumed，运行结束后队列为空",
+      why: "投递意图必须由用户显式选择而不是由运行阶段决定；排队状态与撤回结果不能虚构，否则用户会把「已排队」当成「已处理」",
+      depth: "deep",
+      scenarios: ["runtime-delivery-intent"],
     },
   ],
   rules: { minScenarios: 6, minDeepScenarios: 6, requireBoundary: true, requireErrorPath: false },

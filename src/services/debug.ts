@@ -1,12 +1,13 @@
 // ==========================================
-// Debug 状态 —— 追踪 token 消耗、上下文利用率、工具注册数
-// 供 ChatPanel 底部状态栏 + SettingsPanel 预览使用
-// ★ token/上下文数据持久化到会话 .md 文件，重启后自动恢复
+// Debug 状态 —— 追踪模型用量、上下文利用率、工具注册数
+// 供 ChatPanel 底部状态栏（DebugBar）使用
+// 用量取自 Provider 回报的 usage（failure 响应也算一次调用）；不填估算值冒充准确用量
 // ==========================================
 
 import { reactive } from "vue"
-import type { ToolDeclaration } from "@/services/agent/types"
+import type { Usage } from "@earendil-works/pi-ai"
 import type { ThinkingEffort } from "@/services/agent/types"
+import type { PiTextPurpose } from "@/services/engine/pi"
 import { aiConfig, safetyConfig } from "@/services/config"
 
 // ── 会话级思考强度覆盖 ──
@@ -63,10 +64,8 @@ export interface DebugState {
   lastContextUsage: number
   /** 上下文上限 (tokens) */
   contextMaxTokens: number
-  /** 累计总 prompt tokens */
-  totalPromptTokens: number
-  /** 累计总 completion tokens */
-  totalCompletionTokens: number
+  /** 模型用量按 purpose 分列；总量与分项来自同一份累计，不另算旁路 */
+  usage: Record<UsagePurpose, PurposeUsage>
 
   /** 当前已注册工具总数 */
   registeredToolCount: number
@@ -78,6 +77,26 @@ export interface DebugState {
   registeredMcpCount: number
 }
 
+/** 用量分项：主回合（含工具轮）与一次性文本调用。 */
+export type UsagePurpose = "main" | PiTextPurpose
+
+export interface PurposeUsage {
+  /** 已完成的模型调用次数（含 Provider 未回报 usage 的失败响应）。 */
+  calls: number
+  /** Provider 明确回报 usage 的次数；未回报的调用不计入下列 token 数。 */
+  reported: number
+  input: number
+  output: number
+  cacheRead: number
+  cacheWrite: number
+  /** Provider 回报的 totalTokens 之和（已含缓存口径，不重复相加）。 */
+  total: number
+}
+
+function emptyPurposeUsage(): PurposeUsage {
+  return { calls: 0, reported: 0, input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 }
+}
+
 export const debug = reactive<DebugState>({
   lastPromptTokens: 0,
   lastCompletionTokens: 0,
@@ -86,8 +105,13 @@ export const debug = reactive<DebugState>({
   lastToolNames: [],
   lastContextUsage: 0,
   contextMaxTokens: aiConfig.contextMaxTokens,
-  totalPromptTokens: 0,
-  totalCompletionTokens: 0,
+  usage: {
+    main: emptyPurposeUsage(),
+    compaction: emptyPurposeUsage(),
+    planner: emptyPurposeUsage(),
+    memory: emptyPurposeUsage(),
+    stages: emptyPurposeUsage(),
+  },
 
   registeredToolCount: 0,
   registeredTools: [],
@@ -95,7 +119,40 @@ export const debug = reactive<DebugState>({
   registeredMcpCount: 0,
 })
 
-/** 更新上次请求统计 + 维护累计值 */
+/**
+ * 记录一次模型调用的用量。
+ *
+ * 单一写入点：运行时按请求的逐请求 usage 记 `main`，`completePiText` 按调用用途记
+ * 一次性 purpose。Provider 未回报 usage（全 0）的调用只累加次数，不把 0 当准确值。
+ */
+export function recordModelUsage(purpose: UsagePurpose, usage: Usage): void {
+  const bucket = debug.usage[purpose]
+  bucket.calls += 1
+  if (usage.input === 0 && usage.output === 0 && usage.totalTokens === 0) return
+  bucket.reported += 1
+  bucket.input += usage.input
+  bucket.output += usage.output
+  bucket.cacheRead += usage.cacheRead
+  bucket.cacheWrite += usage.cacheWrite
+  bucket.total += usage.totalTokens
+}
+
+/** 全部分项相加得到的总量视图；与分项同源，不从别处另算。 */
+export function usageGrandTotal(): PurposeUsage {
+  const total = emptyPurposeUsage()
+  for (const bucket of Object.values(debug.usage)) {
+    total.calls += bucket.calls
+    total.reported += bucket.reported
+    total.input += bucket.input
+    total.output += bucket.output
+    total.cacheRead += bucket.cacheRead
+    total.cacheWrite += bucket.cacheWrite
+    total.total += bucket.total
+  }
+  return total
+}
+
+/** 更新上次请求统计（主回合逐请求展示；累计用量走 recordModelUsage） */
 export function updateRequestStats(opts: {
   promptTokens?: number
   completionTokens?: number
@@ -104,14 +161,8 @@ export function updateRequestStats(opts: {
   toolNames?: string[]
   conversationTokens?: number
 }) {
-  if (opts.promptTokens !== undefined) {
-    debug.lastPromptTokens = opts.promptTokens
-    debug.totalPromptTokens += opts.promptTokens
-  }
-  if (opts.completionTokens !== undefined) {
-    debug.lastCompletionTokens = opts.completionTokens
-    debug.totalCompletionTokens += opts.completionTokens
-  }
+  if (opts.promptTokens !== undefined) debug.lastPromptTokens = opts.promptTokens
+  if (opts.completionTokens !== undefined) debug.lastCompletionTokens = opts.completionTokens
   if (opts.systemTokens !== undefined) debug.lastSystemTokens = opts.systemTokens
   if (opts.toolCount !== undefined) {
     debug.lastToolCount = opts.toolCount
@@ -122,13 +173,6 @@ export function updateRequestStats(opts: {
   const max = debug.contextMaxTokens > 0 ? debug.contextMaxTokens : aiConfig.contextMaxTokens
   const total = debug.lastSystemTokens + conv
   debug.lastContextUsage = Math.round((total / max) * 100)
-}
-
-/** 从 .md 文件元数据恢复 debug 统计 */
-export function restoreDebugStats(stats: { totalPrompt?: number; totalCompletion?: number; lastContextUsage?: number }) {
-  if (stats.totalPrompt !== undefined) debug.totalPromptTokens = stats.totalPrompt
-  if (stats.totalCompletion !== undefined) debug.totalCompletionTokens = stats.totalCompletion
-  if (stats.lastContextUsage !== undefined) debug.lastContextUsage = stats.lastContextUsage
 }
 
 /** 刷新已注册工具统计 */

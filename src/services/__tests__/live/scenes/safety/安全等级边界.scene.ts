@@ -1,8 +1,20 @@
 import type { SceneDef } from "../../types"
 import { checkSafety, matchesAnyPattern, BASH_DANGEROUS_PATTERNS, BASH_NOWAY_PATTERNS, FILE_DANGEROUS_PATTERNS, resolveFilePathLevel, trustToolInSession, resetSessionTrust, isToolTrusted } from "@/services/safety"
 import type { ToolDef, SafetyLevel } from "@/services/tool"
+import { TOOL_POLICY_VERSION } from "@/services/tool"
 
-const tool = (safetyLevel: SafetyLevel): ToolDef => ({ id: "test-safety", name: "test_safety", description: "test", parameters: { type: "object", properties: {} }, safetyLevel, source: "local", sourceId: "", mode: "pet", actionCategory: "_default", handler: async () => ({ success: true, content: "ok" }) })
+/** 风险等级场景只关心 safetyLevel，策略用最小合法声明。 */
+const tool = (safetyLevel: SafetyLevel): ToolDef => ({
+  id: "test-safety", name: "test_safety", description: "test", parameters: { type: "object", properties: {} },
+  safetyLevel, source: "local", sourceId: "", mode: "pet", actionCategory: "_default",
+  policy: {
+    version: TOOL_POLICY_VERSION,
+    permission: { defaultDecision: "passthrough" },
+    execution: { effect: "read", mode: "parallel", isolation: "shared_read", replay: "never" },
+    context: { resultProjection: "reference", historyCompaction: "summarize" },
+  },
+  handler: async () => ({ success: true, content: "ok" }),
+})
 /**
  * 这里的 `run` 不接收任何上下文：断言直接调被测函数，与回合输出无关。
  *

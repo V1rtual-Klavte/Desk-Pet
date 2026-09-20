@@ -22,7 +22,7 @@
 
 ## 压缩提交与恢复
 
-压缩由 Harness 调度（阈值 / 手动 `/compact`→`lane.compact()` / 一次性溢出恢复），`/compact` 绑定调用时的会话与运行。陪伴/助手双模式结构化摘要在 `before_compaction` 钩子内生成——复用 [compactor.ts](../../src/services/engine/compactor.ts) 的摘要内核，经 model-gateway `completePiText` 发送——以 `CompactResult`（summary + retainedTail）返回，由 Harness 单事务提交为 compaction 条目；提交成功前不报告完成，摘要失败或无可覆盖时 decline/报错，切分回合的 turn-prefix 另段摘要。压缩调用不计为正常聊天回复，其 usage 落会话 totals 但不进主回合统计（purpose 单列属 PI-4）。
+压缩由 Harness 调度（阈值 / 手动 `/compact`→`lane.compact()` / 一次性溢出恢复），`/compact` 绑定调用时的会话与运行。宿主硬预算超限同属这条恢复：`transform_context` 的判定由 model-gateway 作为 Provider 响应上报（length 停止、输出 0，命中上游 `isRecoverableLength`），Harness 压缩后带 `overflowRecoveryUsed` 重试一次；超限请求不发给 Provider，判定按当次请求视图重算（网关取走即清空），恢复用尽时按这条判定失败；上游因没有可安全摘要的范围 declined 时，失败分类保留上游文案，回复仍回落这条判定。陪伴/助手双模式结构化摘要在 `before_compaction` 钩子内生成——复用 [compactor.ts](../../src/services/engine/compactor.ts) 的摘要内核，经 model-gateway `completePiText` 发送——以 `CompactResult`（summary + retainedTail）返回，由 Harness 单事务提交为 compaction 条目；提交成功前不报告完成，摘要失败或无可覆盖时 decline/报错，切分回合的 turn-prefix 另段摘要。压缩调用不计为正常聊天回复，其 usage 落会话 totals 但不进主回合统计；摘要调用的用量按 purpose 单列到用量统计的 `compaction` 分项，与主回合分项相加得到总消耗。
 
 压缩设置（reserve/keepRecent）由 `contextBudget()` 推导并按模型窗口同步，不套用 Pi 默认值（默认窗口下会退化为每个检查点都压缩）；推导值还要经 `toHarnessEstimateTokens()` 换算到 Harness 的计数口径。Harness 的 `shouldCompact` 在会话存在 provider usage 时按真实 usage 计，本仓估算同为目标真实 token 口径，所以换算因子是 1，阈值正好落在本仓 `normalInputTarget` 上。
 
@@ -40,7 +40,7 @@
 
 - L0：请求内缩短大工具结果，保留头尾和 eventId；工具实际返回的完整文本仍在会话条目，`read_session_event` 按当前会话条目分页读取。Bash 在返回前可能已截断并生成会淘汰的 spill 文件，不能把这些文件等同于持久会话原文；见[工具输出边界](tool-system.md#文件命令与取消)。
 - L1：对最旧的连续完整用户意图轮生成结构化摘要。工具批次不能拆开，最后一轮与未完成调用保留；大历史分多次有界提交。
-- L2：在无法再安全压缩时保留原文；如果核心输入仍超过硬上限，返回可解释的上下文不足错误，不用占位文案伪装压缩成功。
+- L2：在无法再安全压缩时保留原文；如果核心输入仍超过硬上限，先走 Harness 的一次性溢出恢复（压缩后重试一次，见上），恢复用尽或没有可摘要范围时才返回可解释的上下文不足错误，不用占位文案伪装压缩成功。
 
 静态 Card、CANDY、完整工具 schema 和当前输入不按字符截断。画像/召回可以整块淘汰并记录预算原因；未被摘要覆盖的 transcript 不得静默删除。`loop.contextCompactAt` 已从默认配置与 getter 移除，旧文件保留该键不影响新预算。
 
