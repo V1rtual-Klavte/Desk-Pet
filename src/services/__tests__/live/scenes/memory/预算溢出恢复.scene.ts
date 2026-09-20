@@ -211,9 +211,11 @@ export const 预算溢出恢复: SceneDef = {
       index: 3,
       description: "第三段单独超过硬预算：压缩一次后重试仍超限，恢复用尽并回落硬预算判定",
       userText: THIRD,
-      // 失败分类从文案派生（runtime 的 classifyTurnFailure），预算判定文案里带估算值，
-      // 同一个失败会落在 unknown 或 provider；路径本身由判定文案（含本回合硬上限）钉住。
-      expectFailure: { kind: ["unknown", "provider"], message: budgetVerdict() },
+      // 失败分类从文案派生（runtime 的 classifyTurnFailure）：判定文案里的估算值是长数字串，
+      // 状态码按独立数字匹配，本地预算判定因此稳定落在 unknown，不随估算值的数字形态漂移
+      // （跨数字形态的稳定性由 预算溢出判定 场景按多种形态断言）。路径本身由判定文案
+      // （含本回合硬上限）钉住。
+      expectFailure: { kind: "unknown", message: budgetVerdict() },
       checks: [{ type: "expectOverflowRecoveryExhausted", run: async context => {
         // 1) 用户可见回复就是本回合的硬预算判定（失败文案同一句话，由 expectFailure 的匹配器钉住）
         if (!budgetVerdict().test(context.output.reply)) {

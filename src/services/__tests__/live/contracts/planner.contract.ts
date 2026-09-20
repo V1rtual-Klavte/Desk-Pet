@@ -4,7 +4,7 @@ export const plannerContract: ModuleContract = {
   module: "planner",
   sourceFiles: ["src/services/engine/pi/runtime.ts", "src/services/engine/planner.ts"],
   generatedAt: "2026-09-20",
-  sourceHash: "d6136f3c8924b9524dfb05b0ba3aeca4e38694733ace40d685458458dc429371",
+  sourceHash: "e95ab5b24c0fa2d0dd6fa13c882714f73a50a6310427bfb48a8c26a9d29825a2",
   coverage: [
     { id: "pl-01", feature: "evaluateComplexity force触发", description: "--plan 前缀强制触发评分=5", why: "用户手动触发 Plan", depth: "shallow", scenarios: ["plan-force-trigger"] },
     { id: "pl-02", feature: "evaluateComplexity 关键词匹配", description: "关键词列表匹配 → 评分 >= 3", why: "自动检测复杂任务", depth: "shallow", scenarios: ["plan-keyword-trigger"] },

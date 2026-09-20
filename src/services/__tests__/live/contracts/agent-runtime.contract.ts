@@ -14,7 +14,7 @@ export const agentRuntimeContract: ModuleContract = {
     "src/services/session/repo.ts",
   ],
   generatedAt: "2026-09-20",
-  sourceHash: "34fad3f61e2e5abc81c331652fe3f1404b54e334b92261e773e2b7854ac36b09",
+  sourceHash: "b54d3e4a195ee48672d5258a0fcee7a80d32e24fc8197a4216171de2dfecdd07",
   coverage: [
     {
       id: "ar-01",

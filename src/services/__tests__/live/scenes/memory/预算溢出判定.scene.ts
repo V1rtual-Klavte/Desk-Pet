@@ -1,7 +1,8 @@
 import type { Context, Model } from "@earendil-works/pi-ai"
 import { isRecoverableLength } from "@earendil-works/pi-ai"
 import { ContextBudgetError } from "@/services/context"
-import { createHarnessModels, turnFailureReply } from "@/services/engine/pi"
+import { classifyTurnFailure, createHarnessModels, turnFailureReply } from "@/services/engine/pi"
+import type { TurnFailure } from "@/services/engine/pi"
 import type { SceneDef } from "../../types"
 
 // ── 判定口径：硬预算拒绝必须以「上游认得出」的响应上报 ──
@@ -23,7 +24,7 @@ export const 预算溢出判定: SceneDef = {
     caseId: "memory-budget-overflow-classification",
     module: "memory",
     contractId: "mm-22",
-    description: "硬预算拒绝按上游溢出判据上报（length 停止 + 输出 0），普通投影错误不上报为溢出",
+    description: "硬预算拒绝按上游溢出判据上报（length 停止 + 输出 0），普通投影错误不上报为溢出；失败分类只看语义，不随本地判定文案里估算数字的形态变化",
     depth: "shallow",
     suite: "regression",
     entry: "unit",
@@ -68,6 +69,39 @@ export const 预算溢出判定: SceneDef = {
       }
       if (turnFailureReply("网络不可达", { overflowRecoveryDeclined: false, lastBudgetError: verdict }).includes("上下文需要约")) {
         throw new Error("无关故障被旧预算判定顶替了文案")
+      }
+    } }] },
+  {
+    index: 2,
+    description: "失败分类只看语义：本地预算判定的分类不随估算数字的形态变化，真正的状态码仍命中对应分桶",
+    userText: "核对失败分类。",
+    checks: [{ type: "expectFailureKindDigitInvariance", run: async () => {
+      /**
+       * 失败分类只能从文案反推（Harness 把运行失败降维成一条 message），因此状态码必须是
+       * **独立数字** —— 本仓预算判定带的是估算 token 数那样的长数字串，里面的 `523` /
+       * `403` / `429` 片段不是状态码。
+       *
+       * 两个方向都写进样本：只有「长数字串不改变分类」会让「全部返回 unknown」的写法蒙混过关，
+       * 只有「状态码命中」又证明不了本地判定不被数字形态污染。
+       */
+      const samples: readonly (readonly [string, TurnFailure["kind"]])[] = [
+        // 本地预算判定换数字形态（含 5xx / 401 / 429 形态的片段），分类必须都是 unknown
+        [new ContextBudgetError(130_243, 124_354).message, "unknown"],
+        [new ContextBudgetError(130_523, 124_354).message, "unknown"],
+        [new ContextBudgetError(104_031, 124_354).message, "unknown"],
+        [new ContextBudgetError(142_900, 124_354).message, "unknown"],
+        // 长数字串里的片段同样不是状态码：没有状态码语义的文案保持 unknown
+        ["上下文预算已用 15000 tokens，仍不可用", "unknown"],
+        // 真正的状态码仍然是状态码：这三条除了状态码没有任何分桶关键词
+        ["服务返回 503，请求被上游拒绝", "provider"],
+        ["（429）请求过于频繁", "rate_limit"],
+        ["认证失败 (401)", "auth"],
+      ]
+      for (const [text, expected] of samples) {
+        const kind = classifyTurnFailure(text)
+        if (kind !== expected) {
+          throw new Error(`失败分类随数字形态变化: 期望 ${expected}，实得 ${kind}（文案：${text}）`)
+        }
       }
     } }],
   }],

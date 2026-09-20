@@ -1,6 +1,7 @@
 // Pi 运行时 barrel：多轮 Agent 回合（AgentHarness lane）、一次性文本调用、Provider 网络边界的统一出口。
 
 export {
+  classifyTurnFailure,
   compactActiveSession,
   continueInterruptedRun,
   deliverActiveTurn,

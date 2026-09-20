@@ -161,14 +161,25 @@ export function turnFailureReply(
   return getFallbackReply("maxRetriesExhausted")
 }
 
-/** 把 Provider 的失败文案收敛成稳定分类 */
-function classifyTurnFailure(message: string): TurnFailure["kind"] {
+/**
+ * 把 Provider 的失败文案收敛成稳定分类。
+ *
+ * 状态码必须按**独立数字**匹配（`\b`）：HTTP 状态码在文案里前后一定不是数字，而本仓
+ * 预算判定这类本地文案带的是估算 token 数那样的长数字串。无边界的老写法会让
+ * `130523` 里的 `523`、`104031` 里的 `403`、`142900` 里的 `429` 命中，
+ * 把本地预算失败记成 provider / auth / rate_limit —— 数字的形态因此污染了分类。
+ *
+ * 分类只能从文案反推：Harness 把运行失败降维成一条 message，没有结构化状态码通道
+ * （记录里的 `code` 只有 assistant_error 一档），所以边界必须在这里钉死。
+ * 稳定性由 `memory` 的 预算溢出判定 场景按多种数字形态断言。
+ */
+export function classifyTurnFailure(message: string): TurnFailure["kind"] {
   const lower = message.toLowerCase()
   if (/timeout|timed out|超时/.test(lower)) return "timeout"
-  if (/401|403|unauthor|invalid api key|api key/.test(lower)) return "auth"
-  if (/429|rate limit|too many requests/.test(lower)) return "rate_limit"
+  if (/\b401\b|\b403\b|unauthor|invalid api key|api key/.test(lower)) return "auth"
+  if (/\b429\b|rate limit|too many requests/.test(lower)) return "rate_limit"
   if (/enotfound|econnrefused|econnreset|network|fetch failed|dns/.test(lower)) return "network"
-  if (/5\d\d|upstream|service unavailable|provider/.test(lower)) return "provider"
+  if (/\b5\d\d\b|upstream|service unavailable|provider/.test(lower)) return "provider"
   return "unknown"
 }
 
