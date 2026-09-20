@@ -43,6 +43,6 @@ pub use tool_exec::{
 // 应用级工具执行许可所有者（§5.1）：前端借用/释放，Rust 持有额度。
 pub(crate) use tool_permit::ToolPermitPool;
 pub use tool_permit::{
-    tool_permit_acquire, tool_permit_cancel, tool_permit_release, tool_permit_set_max_shared_readers,
-    tool_permit_snapshot,
+    tool_permit_acquire, tool_permit_attach, tool_permit_cancel, tool_permit_release,
+    tool_permit_set_max_shared_readers, tool_permit_snapshot,
 };

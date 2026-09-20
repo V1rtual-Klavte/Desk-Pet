@@ -16,7 +16,7 @@ export type { ToolSpec, ToolHandler } from "./policy"
 
 // ── 执行许可（Rust 应用级所有者）──
 export { acquireToolPermit, releaseToolPermit, setToolPermitLimit, permitSnapshot } from "./execution-permit"
-export type { ToolPermitLease, PermitAcquisition, PermitSnapshot } from "./execution-permit"
+export type { ToolPermitLease, PermitAcquisition, PermitSnapshot, PermitReclaim } from "./execution-permit"
 
 // ── 注册表 ──
 export {

@@ -1,14 +1,15 @@
 import type { SceneDef } from "../../types"
-import type { ToolDef, ToolPolicy } from "@/services/tool"
+import type { PermitReclaim, ToolDef, ToolPolicy } from "@/services/tool"
 import { defineTool, register, unregister, executeToolDefinition, permitSnapshot, TOOL_POLICY_VERSION } from "@/services/tool"
 import { loopConfig } from "@/services/config"
 import { invoke } from "@tauri-apps/api/core"
 
 /**
- * 执行许可：共享读可以有界并发，效果操作与其它执行互斥。
+ * 执行许可：共享读可以有界并发，效果操作与其它执行互斥；借用者（页面实例）消失后，
+ * 它的在飞额度与排队项被一次性回收，后续读不再被永久卡住。
  *
  * 断言不靠时序猜测：等待是否发生直接读 Rust 许可域的额度快照（queued），
- * 再断言 handler 是否已经开始执行。
+ * 再断言 handler 是否已经开始执行；额度回收由所有者返回的回收数量与快照共同证明。
  */
 const WAIT_BUDGET_MS = 3000
 
@@ -43,12 +44,12 @@ const settle = (promise: Promise<unknown>): Promise<void> => promise.then(() => 
 export const 执行许可: SceneDef = {
   meta: {
     caseId: "tool-execution-permit", module: "tool-execution", contractId: "te-16",
-    description: "只读共享额度可并发，独占效果与其它执行互斥，执行结束才释放",
+    description: "只读共享额度可并发，独占效果与其它执行互斥，执行结束才释放，借用者消失后额度被回收",
     depth: "deep", suite: "safety", entry: "unit", tags: ["tool-execution", "safety", "boundary", "error"],
   },
   turns: [{
     index: 1,
-    description: "校验纯读并行与效果互斥",
+    description: "校验纯读并行、效果互斥与借用者生命周期兜底",
     userText: "检查工具执行许可。",
     checks: [{
       type: "expectExecutionPermit",
@@ -126,9 +127,11 @@ export const 执行许可: SceneDef = {
         if (lateReadStartedAt < effectFinishedAt) throw new Error("排队读早于独占效果结束")
 
         // ── 4. 排队公平与取消等待：队首独占被取消后必须重新 drain ──
-        // 直接对许可所有者下指令，构造「读被排在独占之后」的确定顺序。
-        const borrow = (requestId: string, kind: "shared" | "exclusive") =>
-          invoke<boolean>("tool_permit_acquire", { requestId, kind, sessionId: "permit-probe", runGeneration: 1, operationId: requestId })
+        // 直接对许可所有者下指令，构造「读被排在独占之后」的确定顺序；借用者身份显式给出，
+        // 让探针额度与页面实例一一对应（回收判定的一半是它）。
+        const borrowAs = (borrowerId: string, requestId: string, kind: "shared" | "exclusive" = "shared") =>
+          invoke<boolean>("tool_permit_acquire", { requestId, kind, borrowerId, sessionId: "permit-probe", runGeneration: 1, operationId: requestId })
+        const borrow = (requestId: string, kind: "shared" | "exclusive") => borrowAs("permit-probe-page", requestId, kind)
         const release = (requestId: string) => invoke("tool_permit_release", { requestId })
 
         const holder = await borrow("probe-holder", "shared")
@@ -196,6 +199,68 @@ export const 执行许可: SceneDef = {
         await release("inflight-b")
         if (!await inflightThird) throw new Error("占用降到新上限以下后排队读没有被放行")
         await release("inflight-third")
+
+        // ── 7. 借用者生命周期兜底：页面实例消失后额度被回收，后续读不再被永久卡住 ──
+        // 复现热重载现场：旧页面实例借满额度、留下排队项后再也没人归还（它的 JS 上下文
+        // 已被新页面取代），能证明它已经消失的只有「同窗口的新实例上线」这条事实。
+        const STALE_PAGE = "permit-stale-page"
+        const FRESH_PAGE = "permit-fresh-page"
+        const attach = (borrowerId: string) => invoke<PermitReclaim>("tool_permit_attach", { borrowerId })
+        /** 有界等待许可结果：永久排队必须报失败，而不是把整个场景挂住。 */
+        const within = (grant: Promise<boolean>): Promise<boolean | undefined> =>
+          Promise.race([grant, new Promise<undefined>(resolve => setTimeout(() => resolve(undefined), WAIT_BUDGET_MS))])
+
+        await setLimit(2)
+        await attach(STALE_PAGE)
+        if (!await borrowAs(STALE_PAGE, "stale-a") || !await borrowAs(STALE_PAGE, "stale-b")) {
+          throw new Error("旧页面实例没有借满共享额度")
+        }
+        const staleQueued = borrowAs(STALE_PAGE, "stale-queued")
+        if (!await waitForQueued(1)) throw new Error("旧页面实例的读没有进入许可队列")
+        const leaked = await permitSnapshot()
+        if (leaked.sharedActive !== 2 || leaked.queued !== 1) {
+          throw new Error(`没有构造出泄漏现场: shared=${leaked.sharedActive} queued=${leaked.queued}`)
+        }
+
+        // 新页面实例上线：旧实例的在飞额度与排队项必须一次性回收，数量精确。
+        const reclaimed = await attach(FRESH_PAGE)
+        if (reclaimed.reclaimedActive !== 2) {
+          throw new Error(`新页面实例回收的在飞额度是 ${reclaimed.reclaimedActive}，应为 2（额度泄漏没有被兜底）`)
+        }
+        if (reclaimed.reclaimedQueued !== 1) {
+          throw new Error(`新页面实例回收的排队项是 ${reclaimed.reclaimedQueued}，应为 1`)
+        }
+        if (await within(staleQueued) !== false) throw new Error("失效借用者的排队请求没有被取消")
+        const recovered = await permitSnapshot()
+        if (recovered.sharedActive !== 0 || recovered.queued !== 0) {
+          throw new Error(`回收后额度没有回到所有者: shared=${recovered.sharedActive} queued=${recovered.queued}`)
+        }
+
+        // 后续读不再被永久卡住：新实例立刻拿得到额度，而不是靠上限放宽或碰巧通过。
+        if (await within(borrowAs(FRESH_PAGE, "fresh-read")) !== true) {
+          throw new Error("回收后新页面的读没有取得额度（额度仍被卡住）")
+        }
+        await release("fresh-read")
+
+        // 在飞的独占效果不能被回收：同一借用者重复上线（页面内模块再求值）必须是空操作。
+        if (!await borrowAs(FRESH_PAGE, "fresh-write", "exclusive")) throw new Error("独占效果没有取得额度")
+        const noop = await attach(FRESH_PAGE)
+        if (noop.reclaimedActive !== 0 || noop.reclaimedQueued !== 0) {
+          throw new Error("同一借用者重复上线回收了在飞额度")
+        }
+        let blockedGranted = false
+        void borrowAs(FRESH_PAGE, "fresh-read-blocked").then(granted => { blockedGranted = granted })
+        if (!await waitForQueued(1)) throw new Error("独占期间新的读没有进入许可队列")
+        await new Promise(resolve => setTimeout(resolve, 200))
+        if (blockedGranted) throw new Error("重复上线把在飞的独占效果放开了")
+        if ((await permitSnapshot()).exclusiveActive !== true) throw new Error("重复上线撤销了在飞的独占效果")
+        await invoke("tool_permit_cancel", { requestId: "fresh-read-blocked" })
+        await release("fresh-write")
+
+        const clean = await permitSnapshot()
+        if (clean.sharedActive !== 0 || clean.exclusiveActive || clean.queued !== 0) {
+          throw new Error(`生命周期兜底后额度没有归还干净: shared=${clean.sharedActive} exclusive=${clean.exclusiveActive} queued=${clean.queued}`)
+        }
 
         // 收尾：把上限还给运行期配置值，不把本场景的探针值留给后续场景。
         await setLimit(loopConfig.maxParallelTools)

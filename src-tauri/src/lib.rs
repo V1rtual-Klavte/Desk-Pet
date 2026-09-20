@@ -25,8 +25,9 @@ use crate::commands::{
     mcp_spawn, open_devtools, open_windows_sim, pause_monitor, personality_file_list, personality_file_read, personality_file_write, profile_asset_base,
     profile_clone, profile_delete, profile_file_read, profile_file_write, report_frontend_error,
     restore_default_resources, resume_monitor, set_log_config, set_monitor_config, skill_delete, skill_list_metadata,
-    spawn_cursor_tracker, system_info, tool_permit_acquire, tool_permit_cancel, tool_permit_release,
-    tool_permit_set_max_shared_readers, tool_permit_snapshot, BashPool, McpPool, ToolPermitPool,
+    spawn_cursor_tracker, system_info, tool_permit_acquire, tool_permit_attach, tool_permit_cancel,
+    tool_permit_release, tool_permit_set_max_shared_readers, tool_permit_snapshot, BashPool, McpPool,
+    ToolPermitPool,
 };
 use crate::monitor::MonitorState;
 use crate::window::{
@@ -424,6 +425,7 @@ pub fn run() {
             personality_file_write,
             personality_file_list,
             tool_permit_acquire,
+            tool_permit_attach,
             tool_permit_release,
             tool_permit_cancel,
             tool_permit_set_max_shared_readers,

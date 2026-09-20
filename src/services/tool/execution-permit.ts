@@ -5,6 +5,10 @@
 // shared_read 走有界共享，exclusive_effect 与其他执行互斥，delegate 由子运行
 // 各自取许可、不占父批次额度。前端只负责借用、取消等待与真实结算后释放，
 // 不自己建第二份锁。
+//
+// 借用者身份（本页面实例）在模块加载时声明上线：Rust 据此回收上一个页面实例留下的
+// 孤儿额度。页面重新加载（Vite 全量热重载、WebView 重建）后旧实例已经无法归还额度，
+// 没有这一步，泄漏的额度会让后续工具一直卡在排队上。
 // ==========================================
 
 import { invoke } from "@tauri-apps/api/core"
@@ -25,6 +29,29 @@ export type PermitAcquisition =
   | { kind: "not_required" }
   /** 等待期间被取消，未取得额度。 */
   | { kind: "cancelled" }
+
+/** 借用者上线时的回收结果（对应 Rust 的 PermitReclaim）。 */
+export interface PermitReclaim {
+  readonly reclaimedActive: number
+  readonly reclaimedQueued: number
+}
+
+/**
+ * 借用者身份：本页面实例的 id。窗口标签由 Rust 从调用来源填，前端不复制一份。
+ *
+ * 存在 globalThis 上是刻意的：同一次页面加载内的模块再求值（HMR 模块热替换）必须复用
+ * 同一身份，否则新实例会把仍在运行的额度当成孤儿回收 —— 在飞的 exclusive_effect 不能被
+ * 回收。页面重新加载会拿到新 id，上一个实例的额度由 `tool_permit_attach` 一次性回收。
+ */
+const BORROWER_KEY = "__deskpetToolPermitBorrower"
+const borrowerId: string = (() => {
+  const holder = globalThis as unknown as Record<string, string | undefined>
+  const existing = holder[BORROWER_KEY]
+  if (existing) return existing
+  const created = crypto.randomUUID?.() ?? `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`
+  holder[BORROWER_KEY] = created
+  return created
+})()
 
 function permitKind(tool: ToolDef): ToolPermitLease["kind"] | undefined {
   const { isolation } = tool.policy.execution
@@ -60,6 +87,7 @@ export async function acquireToolPermit(tool: ToolDef, ctx: ToolContext): Promis
     granted = await invoke<boolean>("tool_permit_acquire", {
       requestId: id,
       kind,
+      borrowerId,
       sessionId: ctx.sessionId ?? "",
       runGeneration: ctx.runGeneration ?? -1,
       operationId: ctx.operationId ?? ctx.toolCallId ?? "",
@@ -102,3 +130,23 @@ export async function setToolPermitLimit(limit: number): Promise<number> {
 export async function permitSnapshot(): Promise<PermitSnapshot> {
   return invoke<PermitSnapshot>("tool_permit_snapshot")
 }
+
+/**
+ * 声明本页面实例接管该窗口的额度归属，并一次性回收同窗口下上一个页面实例留下的
+ * 在飞额度与排队项。判定只认「借用者已经不存在」（页面重新加载），不看时间 ——
+ * 仍在运行的 exclusive_effect 不会被回收放开。
+ */
+async function attachToolPermitBorrower(): Promise<PermitReclaim> {
+  return invoke<PermitReclaim>("tool_permit_attach", { borrowerId })
+}
+
+// 页面加载即接管：页面被重新加载后，上一个实例的额度在这里回到所有者手里。失败只记录，
+// 不阻断页面 —— 所有者当前的额度与上限仍然有效，工具照常借用。
+void attachToolPermitBorrower().then(
+  reclaimed => {
+    if (reclaimed.reclaimedActive > 0 || reclaimed.reclaimedQueued > 0) {
+      log.info("回收失效借用者的额度:", reclaimed)
+    }
+  },
+  error => log.warn("许可借用者上线失败:", formatError(error)),
+)

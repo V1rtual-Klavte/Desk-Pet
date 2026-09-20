@@ -12,6 +12,12 @@
 //
 // 这里只管理额度与互斥，不接管 Pi 的批次调度；等待可取消，但没有超时自动
 // 释放 —— 仍在运行的写任务不许因为等待超时被放开而与他人并发。
+//
+// 生命周期兜底：每次借出都记下借用者（窗口标签 + 页面实例 id，前端在页面加载时声明）。
+// 同一窗口同一时刻只有一个活着的页面实例，前端页面重新加载（Vite 全量热重载、WebView
+// 重建）后旧实例的 JS 上下文已经销毁，它既不会归还额度也不会再消费排队项 —— 新实例
+// 上线时按这条事实一次性回收。回收只由“借用者已经不存在”触发，不看时间：在飞的
+// exclusive_effect 不能被任何时间条件或全量重置放开。
 // ==========================================
 
 use std::collections::{HashMap, VecDeque};
@@ -46,10 +52,38 @@ impl PermitKind {
     }
 }
 
+/// 借用者身份：Rust 提供的窗口标签 + 前端本次页面加载的实例 id。
+///
+/// 窗口标签由 Rust 填，前端只补页面实例 id：同一个窗口同一时刻只有一个活着的页面实例，
+/// 新实例声明上线时，同窗口下其它实例的额度与排队项都属于已经消失的借用者。
+#[derive(Clone, PartialEq, Eq, Debug)]
+struct Borrower {
+    window: String,
+    page: String,
+}
+
+impl Borrower {
+    fn new(window: &str, page: &str) -> Self {
+        Self { window: window.to_string(), page: page.to_string() }
+    }
+
+    /// 另一个借用者是否已被本身份取代：同窗口、不同页面实例。
+    fn replaces(&self, other: &Self) -> bool {
+        self.window == other.window && self.page != other.page
+    }
+}
+
+/// 已借出的额度：类型与借用者，释放时据此归还。
+struct ActiveLease {
+    kind: PermitKind,
+    borrower: Borrower,
+}
+
 /// 排队中的等待者；许可被借出后不再保留。
 struct Waiter {
     request_id: String,
     kind: PermitKind,
+    borrower: Borrower,
     tx: Sender<Outcome>,
 }
 
@@ -64,8 +98,8 @@ struct Gate {
     shared_active: usize,
     exclusive_active: bool,
     queue: VecDeque<Waiter>,
-    /// 已借出额度的归属：request_id → 类型，释放时据此归还。
-    active: HashMap<String, PermitKind>,
+    /// 已借出额度的归属：request_id → 额度，释放时据此归还。
+    active: HashMap<String, ActiveLease>,
     /// 共享读上限；由 `tool_permit_set_max_shared_readers` 在运行开始前下发，
     /// 未下发时等于历史常量，行为不变。
     max_shared_readers: usize,
@@ -117,8 +151,43 @@ impl Gate {
                 self.give_back(waiter.kind);
                 continue;
             }
-            self.active.insert(waiter.request_id, waiter.kind);
+            self.active.insert(waiter.request_id, ActiveLease { kind: waiter.kind, borrower: waiter.borrower });
         }
+    }
+
+    /// 回收同窗口下其它页面实例的额度与排队项：那些实例已经被 `current` 取代
+    /// （页面重新加载），额度不可能再被归还、排队项不可能再被消费。
+    ///
+    /// 只按借用者身份判定，不看时间；同窗口的当前实例、其它窗口的借用者都不受影响。
+    fn reclaim_other_borrowers(&mut self, current: &Borrower) -> PermitReclaim {
+        let mut reclaimed = PermitReclaim::default();
+        let stale: Vec<String> = self
+            .active
+            .iter()
+            .filter(|(_, lease)| current.replaces(&lease.borrower))
+            .map(|(request_id, _)| request_id.clone())
+            .collect();
+        for request_id in stale {
+            if let Some(lease) = self.active.remove(&request_id) {
+                self.give_back(lease.kind);
+                reclaimed.reclaimed_active += 1;
+            }
+        }
+        // 排队项按原顺序留在队列里，只摘掉失效借用者的那些：FIFO 与等待可取消都不变。
+        let mut kept = VecDeque::with_capacity(self.queue.len());
+        while let Some(waiter) = self.queue.pop_front() {
+            if current.replaces(&waiter.borrower) {
+                // 接收端可能已经随页面消失；发送失败按已取消处理。
+                let _ = waiter.tx.try_send(Outcome::Cancelled);
+                reclaimed.reclaimed_queued += 1;
+            } else {
+                kept.push_back(waiter);
+            }
+        }
+        self.queue = kept;
+        // 回收出来的额度可能正好放行仍在等待的借用者。
+        self.drain();
+        reclaimed
     }
 
     /// 移除仍排队的等待者；已经借出的不算排队，返回 false。
@@ -160,6 +229,7 @@ pub async fn tool_permit_acquire(
     window: tauri::Window,
     request_id: String,
     kind: String,
+    borrower_id: String,
     session_id: String,
     run_generation: i64,
     operation_id: String,
@@ -167,9 +237,13 @@ pub async fn tool_permit_acquire(
     if request_id.trim().is_empty() {
         return Err(AppError::Tool("许可请求缺少 requestId".into()));
     }
+    if borrower_id.trim().is_empty() {
+        return Err(AppError::Tool("许可请求缺少 borrowerId".into()));
+    }
     let kind = PermitKind::parse(&kind)?;
     let domain = domain_key(&paths);
     let label = window.label().to_string();
+    let borrower = Borrower::new(&label, &borrower_id);
 
     let mut receiver = {
         let mut domains = pool.domains();
@@ -180,24 +254,58 @@ pub async fn tool_permit_acquire(
         }
         if gate.queue.is_empty() && gate.can_admit(kind) {
             gate.take(kind);
-            gate.active.insert(request_id.clone(), kind);
+            gate.active.insert(request_id.clone(), ActiveLease { kind, borrower });
             return Ok(true);
         }
         // 队列有等待者时不得插队，否则持续的读请求会让写任务饥饿。
         let (tx, rx) = channel::<Outcome>(1);
-        gate.queue.push_back(Waiter { request_id: request_id.clone(), kind, tx });
+        gate.queue.push_back(Waiter { request_id: request_id.clone(), kind, borrower, tx });
         rx
     };
 
     let outcome = receiver.recv().await;
     match outcome {
         Some(Outcome::Granted) => {
-            log_permit("借出", &label, &request_id, kind, &session_id, run_generation, &operation_id);
+            log_permit("借出", &label, &borrower_id, &request_id, kind, &session_id, run_generation, &operation_id);
             Ok(true)
         }
         // 取消或接收端失效都按未取得额度处理。
         _ => Ok(false),
     }
+}
+
+/// 借用者上线：页面实例声明自己接管该窗口的额度归属，并一次性回收同一窗口下前一个
+/// 页面实例留下的在飞额度与排队项。
+///
+/// 触点是页面加载（Vite 全量热重载、WebView 重建）：旧实例的 JS 上下文已经销毁，它
+/// 无法再归还额度，后续工具会一直卡在额度上，直到进程退出。这里不做超时释放，也不
+/// 触碰其它窗口或同一实例的额度 —— 在飞的 exclusive_effect 不能被回收放开。
+#[tauri::command]
+pub fn tool_permit_attach(
+    pool: State<'_, ToolPermitPool>,
+    paths: State<'_, AppPaths>,
+    window: tauri::Window,
+    borrower_id: String,
+) -> AppResult<PermitReclaim> {
+    if borrower_id.trim().is_empty() {
+        return Err(AppError::Tool("许可借用者缺少 borrowerId".into()));
+    }
+    let borrower = Borrower::new(window.label(), &borrower_id);
+    let domain = domain_key(&paths);
+    let mut domains = pool.domains();
+    let gate = domains.entry(domain).or_default();
+    let reclaimed = gate.reclaim_other_borrowers(&borrower);
+    if reclaimed.reclaimed_active > 0 || reclaimed.reclaimed_queued > 0 {
+        // 生产环境出现孤儿额度意味着一个页面实例在持有额度时消失，按警告记录。
+        rust_warn!(
+            "工具许可回收失效借用者的额度: window={} page={} active={} queued={}",
+            borrower.window,
+            borrower.page,
+            reclaimed.reclaimed_active,
+            reclaimed.reclaimed_queued
+        );
+    }
+    Ok(reclaimed)
 }
 
 /// 归还许可。必须在真实执行结算后调用，且只对已借出的 requestId 生效。
@@ -210,12 +318,12 @@ pub fn tool_permit_release(
     let domain = domain_key(&paths);
     let mut domains = pool.domains();
     let Some(gate) = domains.get_mut(&domain) else { return Ok(()) };
-    let Some(kind) = gate.active.remove(&request_id) else {
-        // 重复释放或未借出：不报错，也不能凭空增加额度。
+    let Some(lease) = gate.active.remove(&request_id) else {
+        // 重复释放、未借出或已被回收：不报错，也不能凭空增加额度。
         rust_warn!("工具许可释放时未找到记录: {request_id}");
         return Ok(());
     };
-    gate.give_back(kind);
+    gate.give_back(lease.kind);
     gate.drain();
     Ok(())
 }
@@ -295,9 +403,19 @@ pub struct PermitSnapshot {
     max_shared_readers: usize,
 }
 
+/// 借用者上线时的回收结果：失效借用者留下的在飞额度与排队项数量。
+/// 归零表示同窗口下没有孤儿额度；非零是「一个页面实例带着额度消失」的证据。
+#[derive(Default, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PermitReclaim {
+    reclaimed_active: usize,
+    reclaimed_queued: usize,
+}
+
 fn log_permit(
     phase: &str,
     window: &str,
+    page: &str,
     request_id: &str,
     kind: PermitKind,
     session_id: &str,
@@ -306,6 +424,78 @@ fn log_permit(
 ) {
     // 归属信息只进日志：许可是额度，不是授权证据。
     rust_debug!(
-        "工具许可{phase}: {request_id} | {kind:?} | window={window} session={session_id} gen={run_generation} op={operation_id}"
+        "工具许可{phase}: {request_id} | {kind:?} | window={window} page={page} session={session_id} gen={run_generation} op={operation_id}"
     );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tauri::async_runtime::Receiver;
+
+    /// 直接构造额度归属，绕过 IPC：这里只验证 Gate 自己的回收判定。
+    /// Live Test 只能从一个窗口发起调用，跨窗口隔离只有这层能覆盖。
+    fn lease(gate: &mut Gate, request_id: &str, kind: PermitKind, window: &str, page: &str) {
+        gate.take(kind);
+        gate.active.insert(request_id.into(), ActiveLease { kind, borrower: Borrower::new(window, page) });
+    }
+
+    fn enqueue(gate: &mut Gate, request_id: &str, kind: PermitKind, window: &str, page: &str) -> Receiver<Outcome> {
+        let (tx, rx) = channel::<Outcome>(1);
+        gate.queue.push_back(Waiter { request_id: request_id.into(), kind, borrower: Borrower::new(window, page), tx });
+        rx
+    }
+
+    #[test]
+    fn reclaim_takes_only_the_stale_page_in_the_same_window() {
+        let mut gate = Gate::default();
+        lease(&mut gate, "stale-a", PermitKind::Shared, "main", "p1");
+        lease(&mut gate, "stale-b", PermitKind::Shared, "main", "p1");
+        // 其它窗口的借用者不是同一个身份，回收不能碰。
+        lease(&mut gate, "sim-write", PermitKind::Exclusive, "sim", "p2");
+        // 另一个窗口恰好用同一个页面实例 id：窗口标签是身份的一半，不能只看 id。
+        lease(&mut gate, "sim-same-page", PermitKind::Shared, "sim", "p1");
+        let mut stale_wait = enqueue(&mut gate, "stale-wait", PermitKind::Shared, "main", "p1");
+        let mut live_wait = enqueue(&mut gate, "live-wait", PermitKind::Shared, "sim", "p2");
+
+        let reclaimed = gate.reclaim_other_borrowers(&Borrower::new("main", "p2"));
+
+        assert_eq!(reclaimed.reclaimed_active, 2, "同窗口旧实例的在飞额度应被回收");
+        assert_eq!(reclaimed.reclaimed_queued, 1, "同窗口旧实例的排队项应被回收");
+        assert_eq!(gate.shared_active, 1, "其它窗口的共享额度不受影响");
+        assert!(gate.exclusive_active, "其它窗口的在飞独占效果不能被回收");
+        assert!(gate.active.contains_key("sim-write") && gate.active.contains_key("sim-same-page"));
+        assert!(matches!(stale_wait.try_recv(), Ok(Outcome::Cancelled)), "失效借用者的排队项按取消结算");
+        assert!(live_wait.try_recv().is_err(), "仍在运行的借用者不能被顺手放行或取消");
+        assert_eq!(gate.queue.len(), 1, "只摘掉失效借用者的排队项");
+    }
+
+    #[test]
+    fn reclaim_never_touches_the_current_page_or_releases_in_flight_work() {
+        let mut gate = Gate::default();
+        lease(&mut gate, "write", PermitKind::Exclusive, "main", "p2");
+        let mut waiting = enqueue(&mut gate, "waiting-read", PermitKind::Shared, "main", "p2");
+
+        let reclaimed = gate.reclaim_other_borrowers(&Borrower::new("main", "p2"));
+
+        assert_eq!((reclaimed.reclaimed_active, reclaimed.reclaimed_queued), (0, 0), "同一页面实例重复上线必须是空操作");
+        assert!(gate.exclusive_active, "在飞的独占效果不能被回收");
+        assert_eq!(gate.queue.len(), 1, "等待中的读不能在独占期间被放开");
+        assert!(waiting.try_recv().is_err());
+    }
+
+    #[test]
+    fn reclaimed_capacity_wakes_live_waiters_in_order() {
+        let mut gate = Gate::default();
+        gate.max_shared_readers = 1;
+        lease(&mut gate, "stale", PermitKind::Shared, "main", "p1");
+        let mut live_wait = enqueue(&mut gate, "live-wait", PermitKind::Shared, "sim", "p2");
+
+        let reclaimed = gate.reclaim_other_borrowers(&Borrower::new("main", "p2"));
+
+        assert_eq!(reclaimed.reclaimed_active, 1);
+        assert!(matches!(live_wait.try_recv(), Ok(Outcome::Granted)), "回收出的额度应放行仍在等待的借用者");
+        assert!(gate.active.contains_key("live-wait"));
+        assert_eq!(gate.shared_active, 1);
+    }
 }
