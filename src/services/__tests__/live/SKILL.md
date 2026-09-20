@@ -30,7 +30,8 @@ description: Desk-Pet Live Test 的 Contract 分析、Scene 生成与覆盖审�
 4. 需要可重复模型输出时使用 fake Provider；它仍应经过真实运行时和工具链。需要验证真实模型能力时使用真实 Provider，并把模型不稳定性与产品失败区分开。
 5. 断言用户可见结果之外的真实证据：工具调用状态、确认记录、会话事件、文件回读、变量状态、取消或错误结论。安全场景不执行破坏操作，只验证实际调用被受控拒绝。
 6. Contract 要求边界或错误路径时，在对应 Scene 加 `boundary`、`error` tag；不要仅在描述文字中声称覆盖。
-7. Scene 集合改变后更新 `dataset.ts` 的版本。
+7. 失败路径以 `turns[].expectFailure` 声明预期失败（分类 + 失败正文匹配器），让本回合以声明的分类与文案失败才算通过；不要用「不写断言」或「允许任何失败」的方式放过失败 —— 预期之外的失败必须照旧判失败。
+8. Scene 集合改变后更新 `dataset.ts` 的版本。
 
 ## `/audit test [--strict]`
 

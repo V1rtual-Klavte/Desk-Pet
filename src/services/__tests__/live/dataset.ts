@@ -7,7 +7,7 @@ import { DEFAULT_SCENE_TIMEOUT, UNIT_SCENE_TIMEOUT } from "./scene-runner"
  * 报告里的 pass@k 只在同一版本内可比：场景集合变了，分母就变了。
  * 格式由 `validateDataset` 强制，写错了会在启动前直接报错。
  */
-export const LIVE_DATASET_VERSION = "2026-09-20.9"
+export const LIVE_DATASET_VERSION = "2026-09-20.11"
 
 export function validateDataset(scenes: SceneDef[], contracts: ModuleContract[]): string[] {
   const errors: string[] = []
@@ -37,6 +37,15 @@ export function validateDataset(scenes: SceneDef[], contracts: ModuleContract[])
     if (scene.turns.length === 0) errors.push(`${meta.caseId}: 没有测试轮次`)
     for (const turn of scene.turns) {
       if (turn.checks.length === 0) errors.push(`${meta.caseId}/T${turn.index}: 没有断言`)
+      // 预期失败必须钉住具体的分类与文案：空匹配器等于「允许任何失败」，那是被挡掉的用法。
+      const expected = turn.expectFailure
+      if (!expected) continue
+      const kinds = typeof expected.kind === "string" ? [expected.kind] : expected.kind
+      if (kinds.length === 0) errors.push(`${meta.caseId}/T${turn.index}: expectFailure.kind 不能为空`)
+      const message = typeof expected.message === "string" ? expected.message : expected.message.source
+      if (message.trim().length === 0) {
+        errors.push(`${meta.caseId}/T${turn.index}: expectFailure.message 不能为空 —— 预期失败要钉住具体失败路径`)
+      }
     }
     const entry = meta.entry ?? "runtime"
     const timeout = meta.timeout ?? (entry === "unit" ? UNIT_SCENE_TIMEOUT : DEFAULT_SCENE_TIMEOUT)

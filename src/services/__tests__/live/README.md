@@ -60,6 +60,8 @@ Node 启动预检会校验 `sourceHash`；源码变更后应先按 SKILL 重新�
 
 场景断言应观察实际结果：工具要断言具体调用与状态，持久化要回读临时数据根，安全场景要区分“未调用”和“调用后被拒绝”。不要只以回复非空代替状态或副作用验证。
 
+要验证「本回合以某类失败结束」时用 `turns[].expectFailure` 声明，而不是删掉断言：`kind` 必须命中 `output.failure.kind`（允许声明一组），`message` 是失败正文的匹配器（字符串按子串、正则按 `test`，空匹配器在数据集校验时被拒绝），两者都命中才算预期失败，回合的其余断言照常执行。回合正常完成、以别的分类失败或文案不匹配都判失败 —— 它只覆盖 `output.failure`，回合抛出异常仍是系统错误。报告把这类回合标为 `expected failure`（errorKind 照常记录真实分类）。
+
 测试宿主没有 ChatPanel。涉及确认请求的 Scene 用 `meta.confirmPolicy` 声明 `deny`（默认）或 `approve`，由 `confirm-channel.ts` 确定性应答。
 
 ## 隔离、报告与失败

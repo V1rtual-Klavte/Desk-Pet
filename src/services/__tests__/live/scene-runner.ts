@@ -2,6 +2,7 @@ import type {
   AssertContext,
   AssertionResult,
   ErrorKind,
+  ExpectedTurnFailure,
   MemorySnapshot,
   SceneDef,
   SceneEntry,
@@ -9,7 +10,7 @@ import type {
   TurnDef,
   TurnResult,
 } from "./types"
-import type { PiAgentTurnOutput } from "@/services/engine/pi"
+import type { PiAgentTurnOutput, TurnFailure } from "@/services/engine/pi"
 import { runPiAgentTurn } from "@/services/engine/pi"
 import { abortAgentRuns, sendMessage, sendActiveMessage, toolCallHistory as productionToolHistory } from "@/services/agent/runner"
 import { getPoolSnapshot } from "@/services/personality/variable-pool"
@@ -165,6 +166,48 @@ function classifyError(error: unknown): ErrorKind {
   return "unknown"
 }
 
+/**
+ * 预期失败的判定：声明的分类与文案都命中才算通过，并把命中的真实失败交回给回合结果。
+ *
+ * 这里是「预期失败」与「被吞掉的错误」的分界：回合正常完成、以别的分类失败、
+ * 或失败文案不匹配，都产生一条失败断言 —— 回合照旧判失败，场景照旧不进通过统计。
+ */
+function judgeExpectedFailure(
+  expected: ExpectedTurnFailure,
+  output: PiAgentTurnOutput,
+): { assertion: AssertionResult; matched?: TurnFailure } {
+  const kinds = typeof expected.kind === "string" ? [expected.kind] : expected.kind
+  const declaration = `${kinds.join("/")} + ${String(expected.message)}`
+  const failure = output.failure
+  if (!failure) {
+    return { assertion: {
+      type: "expectTurnFailure",
+      pass: false,
+      error: `期望回合以 ${kinds.join("/")} 失败，但回合正常完成`,
+      expected: declaration,
+      actual: "回合正常完成",
+    } }
+  }
+  // 分类只能圈到粗桶（从文案派生），失败路径本身由文案钉住，两者都要命中。
+  const messageHit = typeof expected.message === "string"
+    ? failure.message.includes(expected.message)
+    : expected.message.test(failure.message)
+  const matched = kinds.includes(failure.kind) && messageHit
+  const actual = `${failure.kind}: ${failure.message}`
+  return {
+    assertion: matched
+      ? { type: "expectTurnFailure", pass: true, expected: declaration, actual }
+      : {
+        type: "expectTurnFailure",
+        pass: false,
+        error: `回合失败与声明的预期不符，期望 ${declaration}`,
+        expected: declaration,
+        actual,
+      },
+    ...(matched ? { matched: failure } : {}),
+  }
+}
+
 async function executeTurn(userText: string, entry: SceneEntry, isActiveMessage = false): Promise<PiAgentTurnOutput> {
   if (entry === "unit") {
     // 不进入模型：断言只依赖进程内状态（纯函数、注册表、变量池）。
@@ -287,11 +330,16 @@ async function runSceneInner(
         // 每完成一条就同步现场：超时可能发生在任意一条断言之后。
         progress.assertions = [...assertions]
       }
+      // 场景声明了预期失败时，框架在场景自己的断言之后补一条判定：
+      // 只有声明并命中的失败才不算失败，其余失败照旧让回合判失败。
+      const expectation = turn.expectFailure ? judgeExpectedFailure(turn.expectFailure, output) : undefined
+      if (expectation) assertions.push(expectation.assertion)
       progress.check = undefined
       // 被取消的轮次没跑完，不算已完成回合 —— 它由超时报告单独呈现。
       if (cancel.isCancelled()) break
 
       const duration = Date.now() - turnStart
+      const matchedFailure = expectation?.matched
       const result: TurnResult = {
         index: turn.index,
         description: turn.description,
@@ -310,6 +358,9 @@ async function runSceneInner(
         errorKind: output.failure
           ? output.failure.kind
           : assertions.every(assertion => assertion.pass) ? undefined : "assertion",
+        // 声明并命中的预期失败照常记录真实分类，同时标注它是预期：
+        // 报告据此区分「场景预期的失败」与「失败被吞掉」。
+        ...(matchedFailure ? { expectedFailure: { kind: matchedFailure.kind, message: matchedFailure.message } } : {}),
       }
       turnResults.push(result)
       progress.completed.push(result)
@@ -338,9 +389,14 @@ async function runSceneInner(
   }
 
   const duration = Date.now() - start
-  const allTurnsPassed = turnResults.length === scene.turns.length
-    && turnResults.every(turn => !turn.errorKind && turn.assertions.every(assertion => assertion.pass))
-  const firstErrorKind = turnResults.find(turn => turn.errorKind)?.errorKind
+  // 预期失败不是「允许失败」：回合带的 errorKind 只有在被 expectFailure 判定命中时
+  // 才不计入失败，其余情况（含没声明却失败）照旧让整个场景判失败。
+  const turnPassed = (turn: TurnResult): boolean =>
+    turn.assertions.every(assertion => assertion.pass)
+    && (!turn.errorKind || turn.expectedFailure !== undefined)
+  const allTurnsPassed = turnResults.length === scene.turns.length && turnResults.every(turnPassed)
+  // 场景级分类只报告「非预期」的失败：预期的失败不该让通过场景看起来带错。
+  const firstErrorKind = turnResults.find(turn => turn.errorKind && !turn.expectedFailure)?.errorKind
 
   return {
     caseId: scene.meta.caseId,
