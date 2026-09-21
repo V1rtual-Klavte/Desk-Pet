@@ -8,8 +8,11 @@ export {
   discardInterruptedRun,
   getInterruptedRun,
   listQueuedInputs,
+  pausedInputsText,
+  returnPausedInputs,
   runPiAgentTurn,
   runPiSubAgent,
+  takePausedInputs,
   turnFailureReply,
   withdrawQueuedInput,
 } from "./runtime"
@@ -23,6 +26,9 @@ export type {
   QueuedInputsView,
   TurnFailure,
 } from "./runtime"
+
+export { describeInputDelivery, isInputCommitted, PROMPT_SNAPSHOT_ENTRY } from "./delivery"
+export type { InputDeliveryEvidence, InputDeliveryStage } from "./delivery"
 
 export { RuntimeDataStreamFilter } from "./stream-text"
 

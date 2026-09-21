@@ -33,6 +33,7 @@ import type { HarnessToolRun } from "@/services/tool/pi/harness-tool-adapter"
 import { toAgentHarnessTools } from "@/services/tool/pi/harness-tool-adapter"
 import { setToolPermitLimit } from "@/services/tool/execution-permit"
 import { ContextBudgetError, contextBudget, toHarnessEstimateTokens } from "@/services/context"
+import { messageRequestId } from "@/services/engine/runtime"
 import { conversationConfig, loopConfig } from "@/services/config"
 import { PI_LANE } from "@/services/session/repo"
 import { createLogger } from "@/services/logger"
@@ -134,7 +135,8 @@ export interface HarnessRunSpec {
   systemPrompt: string
   tools: readonly ToolDef[]
   toolRun: HarnessToolRun
-  prompt: string | AgentMessage
+  /** 多条消息用于「停止后继续」：把取回的暂停输入按原顺序一次性投递（身份不合并）。 */
+  prompt: string | AgentMessage | AgentMessage[]
   timeoutMs: number
   hooks: HarnessRunHooks
   sinks?: HarnessRunSinks
@@ -186,6 +188,8 @@ export interface HarnessQueuedItem {
   entryId: string
   kind: "steer" | "followUp" | "nextRun"
   text: string
+  /** 投递时写入的宿主 requestId（`deskpetEventId` 的主键部分）；证据链按它关联输入。 */
+  requestId?: string
 }
 
 /** lane 持久 inbox 的排队计数（按 kind）：压缩拒绝、排队视图共用同一明细。 */
@@ -386,10 +390,16 @@ export class HarnessSlot {
 
   /** 排队项只读视图：正文取排队消息本身，不是第二份状态。 */
   private queuedItems(): HarnessQueuedItem[] {
-    return this.pendingQueues.flatMap(item =>
-      item.type === "message" && item.kind !== "write"
-        ? [{ entryId: item.entryId, kind: item.kind, text: queuedMessageText(item.message) }]
-        : [])
+    return this.pendingQueues.flatMap(item => {
+      if (item.type !== "message" || item.kind === "write") return []
+      const requestId = messageRequestId(item.message as { deskpetEventId?: unknown })
+      return [{
+        entryId: item.entryId,
+        kind: item.kind,
+        text: queuedMessageText(item.message),
+        ...(requestId ? { requestId } : {}),
+      }]
+    })
   }
 
   /** 压缩阈值由现有预算推导（§7）：窗口 − 正常输入目标 = 输出预留 + 协议开销 + 压缩余量。 */
@@ -592,6 +602,32 @@ export class HarnessSlot {
       if (id === entryId) this.pendingDeliveryEntries.delete(requestId)
     }
     return result.value.kind
+  }
+
+  /**
+   * 取出全部仍留在 lane inbox 的暂停项（nextRun）并撤回，返回原消息对象。
+   * 供「停止后继续」重投递：撤回失败（已被消费 / 已不在）的项直接跳过 ——
+   * 已进入正文的消息不能再投一次，宁可少投也不能重复追加用户正文。
+   *
+   * 注意这里只取出不投递：投递由宿主的下一回合承担，因此两者之间进程被杀会丢这几条
+   * （已在 §1.1 记为实施边界）；投递未获接受时宿主按 nextRun 原样放回。
+   */
+  async takePausedMessages(): Promise<AgentMessage[]> {
+    if (!this.lane) return []
+    const paused = this.pendingQueues.flatMap(item =>
+      item.type === "message" && item.kind === "nextRun" ? [{ entryId: item.entryId, message: item.message }] : [])
+    const taken: AgentMessage[] = []
+    for (const item of paused) {
+      if (await this.cancelQueued(item.entryId) === "cancelled") taken.push(item.message)
+    }
+    return taken
+  }
+
+  /** 把取出的暂停消息按 nextRun 放回：投递未获接受时的回滚，持久且不自动继续。 */
+  async requeuePausedMessages(messages: AgentMessage[]): Promise<void> {
+    if (messages.length === 0 || !this.lane) return
+    this.requeuePending.push(...messages)
+    await this.flushRequeueQueue()
   }
 
   // ── 崩溃恢复入口（§8.7.3） ──
@@ -1100,11 +1136,11 @@ export class HarnessSlot {
   }
 }
 
-/** 从归还的消息里取回宿主 requestId（投递时写入 deskpetEventId=`${requestId}:user`）。 */
+/** 从归还的消息里取回宿主 requestId（身份换算见 input-identity）。 */
 function collectRequestIds(messages: AgentMessage[]): string[] {
   return messages.flatMap(message => {
-    const eventId = (message as { deskpetEventId?: string }).deskpetEventId
-    return typeof eventId === "string" ? [eventId.replace(/:user$/, "")] : []
+    const requestId = messageRequestId(message as { deskpetEventId?: unknown })
+    return requestId ? [requestId] : []
   })
 }
 

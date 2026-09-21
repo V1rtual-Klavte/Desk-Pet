@@ -9,8 +9,9 @@ import { getActiveCard, pickActiveGreeting } from "@/services/personality"
 import { getFallbackReply } from "@/services/personality/stages-cache"
 import { conversationConfig } from "@/services/config"
 import type { DeliveryIntent } from "@/services/config"
-import { deliverActiveTurn, harnessSlots, runPiAgentTurn } from "@/services/engine/pi"
-import type { HarnessDeliveryReceipt } from "@/services/engine/pi"
+import { deliverActiveTurn, harnessSlots, isInputCommitted, pausedInputsText, returnPausedInputs, runPiAgentTurn, takePausedInputs } from "@/services/engine/pi"
+import type { HarnessDeliveryReceipt, PiAgentTurnOutput } from "@/services/engine/pi"
+import type { AgentMessage } from "@earendil-works/pi-agent-core"
 import { preProcess } from "@/services/engine/preprocessor"
 import { transition } from "@/services/engine/session"
 import {
@@ -25,6 +26,7 @@ import { createLogger } from "@/services/logger"
 import { formatError, summarizeError } from "@/services/error"
 import { reportError } from "@/services/error"
 import type { IngressEnvelope, MessagePriority } from "@/services/engine/runtime"
+import { inputEventId, messageRequestId } from "@/services/engine/runtime"
 import { planCheckpointStore } from "@/services/agent/memory"
 import { listPiSessionMetadata } from "@/services/session"
 import { applyPendingConversationCapabilities } from "@/services/init"
@@ -157,6 +159,130 @@ export async function sendMessage(text: string, options: SendMessageOptions = {}
   return dispatchMessage(text, options)
 }
 
+/** 两个入口（普通发送 / 停止后继续）共用的回合入参。 */
+interface TurnInvocation {
+  sessionId: string
+  requestId: string
+  runGeneration: number
+  userText: string
+  ingress?: IngressEnvelope
+  /** 停止后继续：暂停输入按原顺序一次性投递（身份不合并、正文不重复追加）。 */
+  pausedMessages?: AgentMessage[]
+  /** 投递前记账（普通输入推用户气泡、清未回复计数）；继续暂停输入不需要。 */
+  beforeRun?: () => void
+}
+
+/**
+ * 两个入口共用的回合体：状态推进 → 绑定运行身份 → 投递前记账 → 驱动运行内核。
+ * 抛出的异常交给调用方按各自的降级策略处理（普通发送与继续的兜底文案不同）。
+ */
+async function performTurn(invocation: TurnInvocation): Promise<PiAgentTurnOutput> {
+  const { sessionId, requestId, runGeneration } = invocation
+  transition("PRE", sessionId)
+  harnessSlots.bindRun(sessionId, runGeneration, { requestId })
+  invocation.beforeRun?.()
+  transition("GENERATING", sessionId)
+  toolCallHistory.clear()
+  const result = await runPiAgentTurn({
+    sessionId,
+    userText: invocation.userText,
+    chatMessages: [],
+    unansweredCount: unansweredCount.value,
+    messageCount: 0,
+    isActiveMessage: false,
+    isRetry: false,
+    ...(invocation.ingress ? { ingress: invocation.ingress } : {}),
+    ...(invocation.pausedMessages ? { pausedMessages: invocation.pausedMessages } : {}),
+    runGeneration,
+  })
+  // 记录工具调用历史（供 UI 展示人格化过程）
+  if (result.toolCallHistory.length > 0) {
+    toolCallHistory.entries.push(...result.toolCallHistory)
+  }
+  return result
+}
+
+/**
+ * 回合结果的界面呈现：用户主动停止不写兜底回复（运行内核已按「停止不是失败」结算），
+ * 只如实说明剩余输入的归宿，不暗示已撤销写入。
+ */
+async function pushTurnOutcome(result: PiAgentTurnOutput): Promise<void> {
+  if (result.abortedByStop) {
+    const paused = result.undelivered?.length ?? 0
+    const { pushSystemMessage } = await import("@/services/session/messages")
+    pushSystemMessage(paused > 0 ? `已停止本次回复；${paused} 条未处理的输入已暂停，可选择继续或丢弃` : "已停止本次回复")
+    return
+  }
+  pushAssistantMessage(result.reply)
+}
+
+/**
+ * 停止后继续：把停止归还的暂停输入（nextRun）按原顺序投递成一次标准回合。
+ *
+ * 这是「继续」的显式入口；用户发新消息仍会顺带消费暂停项（nextRun 的内核语义，ar-06），
+ * 这里不拦那条路径，只让用户能主动选择。没有暂停项时返回 undefined，由界面如实提示。
+ */
+export async function resumePausedInputs(sessionId: string = getActiveSessionId()): Promise<SendMessageResult | undefined> {
+  if (!sessionId) return undefined
+  const pausedMessages = await takePausedInputs(sessionId)
+  if (pausedMessages.length === 0) return undefined
+
+  const requestId = makeIngressId("request")
+  const runGeneration = harnessSlots.begin(sessionId, { requestId })
+  if (runGeneration === undefined) {
+    // 已有在飞运行：把取出的暂停项放回，绝不扣在手里（放回是持久 nextRun，不自动继续）。
+    await returnPausedInputs(sessionId, pausedMessages)
+    return { reply: "", toolCallsMade: 0, retriesUsed: 0, outcome: "failed", failure: { kind: "unknown", message: "会话已有运行中的运行槽" } }
+  }
+  setAIGenerating(true)
+
+  try {
+    const result = await performTurn({
+      sessionId,
+      requestId,
+      runGeneration,
+      userText: pausedInputsText(pausedMessages),
+      pausedMessages,
+    })
+    // 正文在排队时就已展示：这里只推回复/停止提示，不重复插入用户气泡。
+    if (getActiveSessionId() === sessionId) await pushTurnOutcome(result)
+    transition("WAITING", sessionId)
+    return {
+      reply: result.reply,
+      toolCallsMade: result.toolCallHistory.length,
+      retriesUsed: result.retriesUsed,
+      outcome: result.failure ? "failed" : "succeeded",
+      ...(result.failure ? { failure: result.failure } : {}),
+    }
+  } catch (e) {
+    log.error("继续暂停输入失败", formatError(e))
+    if (!(e instanceof ContextBudgetError)) reportError("runner", e, { kind: "LLM 调用失败" })
+    // 回滚：暂停项在投递前已从 inbox 取出。已落盘的条目是权威正文，放回会重复追加用户正文，
+    // 所以只在「一条都没成为正文」时放回（宁可少投也不能造出第二份用户正文）。
+    if (!(await pausedInputsCommitted(sessionId, pausedMessages))) {
+      await returnPausedInputs(sessionId, pausedMessages)
+        .catch(error => log.warn("暂停输入回滚失败，需用户重新发送:", formatError(error)))
+    }
+    const fallback = e instanceof ContextBudgetError ? e.message : getFallbackReply("llmUnavailable")
+    if (getActiveSessionId() === sessionId) pushAssistantMessage(fallback)
+    transition("WAITING", sessionId)
+    return { reply: fallback, toolCallsMade: 0, retriesUsed: 0, outcome: "failed", failure: { kind: "unknown", message: summarizeError(e) } }
+  } finally {
+    harnessSlots.end(sessionId, runGeneration)
+    setAIGenerating(harnessSlots.isAnyRunning())
+    await applyPendingConversationCapabilities()
+  }
+}
+
+/** 暂停输入是否已有条目落盘：逐条按身份核对，任一条成为正文就不再放回。 */
+async function pausedInputsCommitted(sessionId: string, messages: AgentMessage[]): Promise<boolean> {
+  for (const message of messages) {
+    const requestId = messageRequestId(message as { deskpetEventId?: unknown })
+    if (requestId && await isInputCommitted(sessionId, requestId)) return true
+  }
+  return false
+}
+
 async function dispatchMessage(text: string, options: SendMessageOptions = {}): Promise<SendMessageResult> {
   // ★ 入口绑定会话 ID（防止异步回复错位到其他会话）
   const originSessionId = getActiveSessionId()
@@ -184,7 +310,7 @@ async function dispatchMessage(text: string, options: SendMessageOptions = {}): 
       }
     }
     const receipt = await deliverActiveTurn(
-      originSessionId, preResult.normalizedText, `${requestId}:user`,
+      originSessionId, preResult.normalizedText, inputEventId(requestId),
       resolveDeliveryIntent(options.delivery, text),
     )
     if (receipt) {
@@ -241,49 +367,28 @@ async function dispatchMessage(text: string, options: SendMessageOptions = {}): 
   setAIGenerating(true)
 
   try {
-    transition("PRE", originSessionId)
     const requestId = options.requestId ?? makeIngressId("request")
     const ingress = makeIngressEnvelope(preResult.rawText, preResult.normalizedText, originSessionId, requestId, options.priority ?? "now")
-    harnessSlots.bindRun(originSessionId, runGeneration, { requestId })
-
-    pushUserMessage(preResult.text)
-    resetUnanswered()
-
-    // ── Step 3: 进入 Generating 状态 ──
-    transition("GENERATING", originSessionId)
-
-    // ── Step 4: 运行 Agent lane（用户正文由 Harness 先落盘再进请求）──
-    toolCallHistory.clear()
-    const result = await runPiAgentTurn({
+    const result = await performTurn({
       sessionId: originSessionId,
-      userText: preResult.text,
-      chatMessages: [],
-      unansweredCount: unansweredCount.value,
-      messageCount: 0,
-      isActiveMessage: false,
-      isRetry: false,
-      ingress,
+      requestId,
       runGeneration,
+      userText: preResult.text,
+      ingress,
+      // 投递前记账：用户气泡与未回复计数属于「用户发了这条消息」，继续暂停输入不重复做。
+      beforeRun: () => {
+        pushUserMessage(preResult.text)
+        resetUnanswered()
+      },
     })
-
-    // 记录工具调用历史
-    if (result.toolCallHistory.length > 0) {
-      toolCallHistory.entries.push(...result.toolCallHistory)
-    }
 
     // ★ 会话校验：若等待 AI 回复期间用户切了会话，回复只推进原会话的计数，
     // 不污染当前 chatHistory（正文已由 Harness 写入原会话条目）。
     if (getActiveSessionId() !== originSessionId) {
       log.warn("sendMessage: 会话已切换，回复存入原会话", originSessionId)
       incrementSessionMessageCount(originSessionId)
-    } else if (result.abortedByStop) {
-      // 用户主动停止：会话里不写兜底回复（运行内核已按「停止不是失败」结算），
-      // 界面只如实说明剩余输入的归宿，不暗示已经撤销写入。
-      const paused = result.undelivered?.length ?? 0
-      const { pushSystemMessage } = await import("@/services/session/messages")
-      pushSystemMessage(paused > 0 ? `已停止本次回复；${paused} 条未处理的输入已暂停，可选择继续或丢弃` : "已停止本次回复")
     } else {
-      pushAssistantMessage(result.reply)
+      await pushTurnOutcome(result)
     }
 
     transition("WAITING", originSessionId)

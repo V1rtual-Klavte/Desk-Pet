@@ -37,6 +37,7 @@ import { PROVIDER_TIMEOUT_MS } from "./net-guard"
 import { RuntimeDataStreamFilter } from "./stream-text"
 import { summarizeCompaction } from "../compactor"
 import { createHarnessRunState, harnessSlots, HarnessSlot } from "./harness-slot"
+import { PROMPT_SNAPSHOT_ENTRY } from "./delivery"
 import type {
   HarnessCancelQueuedKind,
   HarnessCompactOutcome,
@@ -50,7 +51,7 @@ import type {
 } from "./harness-slot"
 import { formatError } from "@/services/error"
 import { createLogger } from "@/services/logger"
-import { createPromptRewrite, createPromptSnapshot, createRuntimeTraceContext, publishRuntimeTrace } from "@/services/engine/runtime"
+import { createPromptRewrite, createPromptSnapshot, createRuntimeTraceContext, messageEventId, publishRuntimeTrace } from "@/services/engine/runtime"
 import type { RuntimeTraceContext } from "@/services/engine/runtime"
 import { redactText, sha256Text, stableSerialize } from "@/services/engine/runtime"
 
@@ -106,9 +107,42 @@ export async function withdrawQueuedInput(sessionId: string, entryId: string): P
   return await harnessSlots.cancelQueued(sessionId, entryId)
 }
 
+// ── 停止后继续 / 丢弃（PI-1：归还的暂停输入由用户决定） ──
+
+/**
+ * 取出暂停项（停止归还的 nextRun）准备重投递：取出即从 lane inbox 撤回，
+ * 所以调用方必须在投递失败时用 returnPausedInputs 放回，不能吞掉。
+ */
+export async function takePausedInputs(sessionId: string): Promise<AgentMessage[]> {
+  const slot = harnessSlots.peek(sessionId)
+  return slot ? await slot.takePausedMessages() : []
+}
+
+/** 投递未获接受时把取出的暂停消息按 nextRun 原样放回（持久、不自动继续）。 */
+export async function returnPausedInputs(sessionId: string, messages: AgentMessage[]): Promise<void> {
+  if (messages.length === 0) return
+  const slot = harnessSlots.peek(sessionId)
+  if (!slot) return
+  await slot.requeuePausedMessages(messages)
+}
+
+/** 取回的暂停消息拼成文本（规划/召回按文本工作）；身份留在消息本身上，不靠这段文本。 */
+export function pausedInputsText(messages: AgentMessage[]): string {
+  return messages.flatMap(message => {
+    const content = (message as { content?: unknown }).content
+    if (typeof content === "string") return [content]
+    return Array.isArray(content) ? [contentText(content as Parameters<typeof contentText>[0])] : []
+  }).join("\n")
+}
+
 export interface PiAgentTurnInput {
   sessionId: string
   userText: string
+  /**
+   * 停止后继续：把取回的暂停输入按原顺序作为本次投递内容（身份不合并、正文不重复追加）。
+   * userText 仍用于规划/召回等按文本工作的环节。
+   */
+  pausedMessages?: AgentMessage[]
   chatMessages: Message[]
   unansweredCount: number
   messageCount: number
@@ -312,7 +346,9 @@ function createTurnKernel(options: TurnKernelOptions): TurnKernel {
         }],
         toolSchemas,
         agentMessages: agentMessages.map((message, index) => ({
-          id: `agent:${index}`,
+          // 投递输入的持久身份写进快照：request_prepared 才能按身份核对「这条输入进了这次请求」；
+          // 位置号只作没有身份的消息（回合首条 prompt、工具结果）的回退。
+          id: messageEventId(message as { deskpetEventId?: unknown }) ?? `agent:${index}`,
           origin: options.transientUserInput ? "active" : message.role === "toolResult" ? "tool" : message.role === "assistant" ? "assistant" : "user",
           role: message.role,
           content: stableSerialize(message),
@@ -346,7 +382,7 @@ function createTurnKernel(options: TurnKernelOptions): TurnKernel {
         // 那里直接写 lane 会与 drive 持有的命令锁循环等待（usage 事件必现死锁）。
         // 宿主在回合 drive 结束后统一 flush（HarnessSlot.flushAuditQueue）。
         harnessSlots.get(options.sessionId)
-          .queueAuditEntry("deskpet.prompt_snapshot", snapshot as unknown as import("@earendil-works/pi-agent-core").JsonValue)
+          .queueAuditEntry(PROMPT_SNAPSHOT_ENTRY, snapshot as unknown as import("@earendil-works/pi-agent-core").JsonValue)
       }
     },
   }
@@ -404,7 +440,7 @@ function createRequestOptionsPatch(): NonNullable<HarnessRunHooks["beforeRequest
 
 /** 每回合的 Harness 运行规格；权限、投影、观测与 UI/统计消费点都在这里接线。 */
 function createTurnSpec(kernel: TurnKernel, options: {
-  prompt: string | AgentMessage
+  prompt: string | AgentMessage | AgentMessage[]
   timeoutMs: number
   maxToolCalls: number
   projectToolResults: boolean
@@ -783,7 +819,9 @@ export async function runPiAgentTurn(input: PiAgentTurnInput): Promise<PiAgentTu
     },
   })
   const spec = createTurnSpec(kernel, {
-    prompt: isActiveMessage ? createActiveMessage(userText, input.ingress) : userText,
+    prompt: input.pausedMessages?.length
+      ? input.pausedMessages
+      : isActiveMessage ? createActiveMessage(userText, input.ingress) : userText,
     timeoutMs: loopConfig.turnTimeoutMs,
     maxToolCalls: loopConfig.maxToolCallsPerTurn,
     projectToolResults: true,

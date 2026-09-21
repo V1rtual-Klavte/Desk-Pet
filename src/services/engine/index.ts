@@ -77,6 +77,7 @@ export {
   compactActiveSession,
   continueInterruptedRun,
   deliverActiveTurn,
+  describeInputDelivery,
   discardInterruptedRun,
   getInterruptedRun,
   harnessSlots,
@@ -86,6 +87,9 @@ export {
   withdrawQueuedInput,
 } from "./pi"
 export type {
+  HarnessQueuedItem,
+  InputDeliveryEvidence,
+  InputDeliveryStage,
   InterruptedRunInfo,
   ManualCompactionResult,
   PiAgentTurnOutput,

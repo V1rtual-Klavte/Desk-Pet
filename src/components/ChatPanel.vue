@@ -1,14 +1,23 @@
 <script setup lang="ts">
-import { ref, nextTick, onMounted, onUnmounted, watch } from "vue";
-import { chatHistory, sendMessage, getActiveSessionId, stopActiveRun } from "@/services/agent";
+import { computed, ref, nextTick, onMounted, onUnmounted, watch } from "vue";
+import { chatHistory, sendMessage, getActiveSessionId, pushAssistantMessage, resumePausedInputs, stopActiveRun } from "@/services/agent";
 import { playEventSound } from "@/services/audio/registry";
 import { conversationConfig, userConfig } from "@/services/config";
 import { getUiUrl } from "@/services/profile";
 import { createLogger } from "@/services/logger";
 import { formatError } from "@/services/error";
 import { listen } from "@tauri-apps/api/event";
-import { searchSlashCommands, initSlashCommands, listQueuedInputs, withdrawQueuedInput } from "@/services/engine";
-import type { SlashMatch } from "@/services/engine";
+import {
+  continueInterruptedRun,
+  describeInputDelivery,
+  discardInterruptedRun,
+  getInterruptedRun,
+  initSlashCommands,
+  listQueuedInputs,
+  searchSlashCommands,
+  withdrawQueuedInput,
+} from "@/services/engine";
+import type { HarnessQueuedItem, InterruptedRunInfo, SlashMatch } from "@/services/engine";
 import DebugBar from "./DebugBar.vue";
 import PlanConfirm from "./PlanConfirm.vue";
 import { confirmState, resolvePermissionConfirm } from "@/services/safety";
@@ -55,14 +64,104 @@ function handleStreamDelta(payload: { sessionId?: string; delta?: string }) {
 // 排队视图与撤回都读 lane 持久 inbox 的只读快照，不在这里另存一份队列状态。
 // ==========================================
 const DELIVERY_LABELS = { steer: "插话", followUp: "稍后继续" } as const;
-const QUEUE_KIND_LABELS = { steer: "插话", followUp: "稍后继续", nextRun: "下一次运行" } as const;
+// nextRun 一律按「已暂停」呈现：无论是停止归还还是主动排队，它都要等下一次运行才被消费。
+const QUEUE_KIND_LABELS = { steer: "插话", followUp: "稍后继续", nextRun: "已暂停" } as const;
 
 /** 单条显式选择的投递意图；初值来自配置，空闲时两种方式都直接开始新回合。 */
 const deliveryIntent = ref<"steer" | "followUp">(conversationConfig.defaultDelivery);
 const intentOpen = ref(false);
 
-const queuedItems = ref<{ entryId: string; kind: "steer" | "followUp" | "nextRun"; text: string }[]>([]);
+const queuedItems = ref<HarnessQueuedItem[]>([]);
 let previousQueuedIds: string[] = [];
+
+/** 暂停项（停止归还的 nextRun）：面板给「继续处理 / 全部丢弃」两个显式动作。 */
+const pausedItems = computed(() => queuedItems.value.filter(item => item.kind === "nextRun"));
+const resuming = ref(false);
+
+/**
+ * 中断运行（崩溃恢复）：内核默认暂停，必须由用户显式选继续或丢弃。
+ * 状态只在打开会话槽后才可读（中断态来自会话文件里的未完成操作），
+ * 所以这里在挂载与会话切换时查询，不跟着每个运行事件轮询。
+ */
+const interrupted = ref<InterruptedRunInfo | undefined>(undefined);
+const interruptedBusy = ref(false);
+
+async function refreshInterrupted() {
+  const sessionId = getActiveSessionId();
+  if (!sessionId) {
+    interrupted.value = undefined;
+    return;
+  }
+  try {
+    interrupted.value = await getInterruptedRun(sessionId);
+  } catch (error) {
+    log.warn("读取中断运行失败:", formatError(error));
+    interrupted.value = undefined;
+  }
+}
+
+async function resolveInterrupted(action: "continue" | "discard") {
+  const sessionId = getActiveSessionId();
+  if (!sessionId || interruptedBusy.value) return;
+  interruptedBusy.value = true;
+  try {
+    if (action === "continue") {
+      const result = await continueInterruptedRun(sessionId);
+      if (!result) {
+        showDeliveryNote("没有可继续的中断运行");
+      } else {
+        // 续跑结果不经过 sendMessage 的提交路径：正文由这里补进界面，避免会话文件里有、界面没有。
+        if (getActiveSessionId() === sessionId && result.reply) pushAssistantMessage(result.reply);
+        showDeliveryNote("已继续上次未完成的运行");
+      }
+    } else {
+      const returned = await discardInterruptedRun(sessionId);
+      const paused = (returned?.steer.length ?? 0) + (returned?.followUp.length ?? 0);
+      showDeliveryNote(paused > 0 ? `已丢弃中断运行；${paused} 条未处理输入已暂停` : "已丢弃中断运行");
+    }
+  } catch (error) {
+    log.warn("处理中断运行失败:", formatError(error));
+    showDeliveryNote("处理失败，请再试一次");
+  } finally {
+    interruptedBusy.value = false;
+    await refreshInterrupted();
+    refreshQueue();
+  }
+}
+
+/** 显式继续：把暂停输入按原顺序投递成一次标准回合（没有暂停项时如实提示）。 */
+async function resumePaused() {
+  if (resuming.value) return;
+  resuming.value = true;
+  try {
+    const result = await resumePausedInputs(getActiveSessionId());
+    if (!result) showDeliveryNote("没有已暂停的输入");
+    else if (result.outcome === "failed") showDeliveryNote("继续失败，请再试一次");
+  } catch (error) {
+    log.warn("继续暂停输入失败:", formatError(error));
+    showDeliveryNote("继续失败，请再试一次");
+  } finally {
+    resuming.value = false;
+    refreshQueue();
+  }
+}
+
+/** 全部丢弃：逐条撤回暂停项；结果如实计数，不把部分成功报成全部成功。 */
+async function discardPaused() {
+  const sessionId = getActiveSessionId();
+  const items = [...pausedItems.value];
+  if (!sessionId || items.length === 0) return;
+  let cancelled = 0;
+  for (const item of items) {
+    const kind = await withdrawQueuedInput(sessionId, item.entryId);
+    if (kind === "cancelled") {
+      cancelled++;
+      previousQueuedIds = previousQueuedIds.filter(id => id !== item.entryId);
+    }
+  }
+  refreshQueue();
+  showDeliveryNote(cancelled === items.length ? "已丢弃全部暂停消息" : `已丢弃 ${cancelled}/${items.length} 条暂停消息`);
+}
 
 /**
  * 运行态与停止入口（PI-1）：running 来自 lane 快照的只读视图，不由事件负载自行维护；
@@ -131,18 +230,27 @@ function refreshQueue() {
   queuedItems.value = view.items;
 }
 
-async function withdraw(item: { entryId: string }) {
+async function withdraw(item: HarnessQueuedItem) {
   const sessionId = getActiveSessionId();
   if (!sessionId) return;
   const kind = await withdrawQueuedInput(sessionId, item.entryId);
   // 撤回不是「被消费」：先摘掉本地记录，避免刷新时误报“已加入本次对话”。
   previousQueuedIds = previousQueuedIds.filter(id => id !== item.entryId);
   refreshQueue();
-  showDeliveryNote(
-    kind === "cancelled" ? "已撤回排队消息"
-      : kind === "already_consumed" ? "这条消息已经开始处理，无法撤回"
+  if (kind !== "already_consumed") {
+    showDeliveryNote(
+      kind === "cancelled" ? "已撤回排队消息"
         : kind === "not_found" ? "这条排队消息已不在队列中"
           : "撤回失败：运行槽不可用",
+    );
+    return;
+  }
+  // 已被消费：按投递证据说清走到哪一档，不把「已进入请求」说成「已回复」。
+  const evidence = item.requestId ? await describeInputDelivery(sessionId, item.requestId) : undefined;
+  showDeliveryNote(
+    evidence?.stage === "responded" ? "这条消息已进入请求并拿到回复，无法撤回"
+      : evidence?.stage === "request_prepared" ? "这条消息已进入请求，无法撤回"
+        : "这条消息已加入对话，无法撤回",
   );
 }
 
@@ -399,6 +507,7 @@ onMounted(async () => {
   scrollToBottom();
   checkBottom();
   refreshQueue();
+  void refreshInterrupted();
 
   // ── 工具执行状态监听 ──
   listen<{ toolName: string }>("tool-executing", (event) => {
@@ -442,6 +551,7 @@ watch(() => getActiveSessionId(), () => {
   previousQueuedIds = []
   deliveryNote.value = ""
   refreshQueue()
+  void refreshInterrupted()
 });
 
 onUnmounted(() => {
@@ -506,6 +616,17 @@ onUnmounted(() => {
       </div>
     </Transition>
 
+    <!-- 中断运行（崩溃恢复）：内核默认暂停，继续/丢弃由用户显式决定 -->
+    <div v-if="interrupted" id="ch-interrupted">
+      <span id="ch-interrupted-text">上次运行中断啦，还有一次没跑完的运行在等你决定～</span>
+      <div id="ch-interrupted-actions">
+        <button type="button" class="ch-queue-action" :disabled="interruptedBusy" @click="resolveInterrupted('continue')">
+          {{ interruptedBusy ? "处理中…" : "继续" }}
+        </button>
+        <button type="button" class="ch-queue-action" :disabled="interruptedBusy" @click="resolveInterrupted('discard')">丢弃</button>
+      </div>
+    </div>
+
     <!-- 排队视图：lane 持久 inbox 的只读快照（含停止归还的 nextRun 项），单项可撤回 -->
     <div v-if="queuedItems.length" id="ch-queue">
       <div id="ch-queue-head">排队中 · {{ queuedItems.length }}</div>
@@ -513,6 +634,16 @@ onUnmounted(() => {
         <span class="ch-queue-kind">{{ QUEUE_KIND_LABELS[item.kind] }}</span>
         <span class="ch-queue-text">{{ previewText(item.text) }}</span>
         <button class="ch-queue-withdraw" @click="withdraw(item)">撤回</button>
+      </div>
+      <!-- 暂停项：用户显式决定继续或丢弃；不假装拦住了「发新消息顺带处理」的内核语义 -->
+      <div v-if="pausedItems.length" id="ch-queue-paused">
+        <span id="ch-queue-paused-hint">{{ pausedItems.length }} 条已暂停，发新消息会先处理它们</span>
+        <div id="ch-queue-paused-actions">
+          <button type="button" class="ch-queue-action" :disabled="resuming" @click="resumePaused">
+            {{ resuming ? "继续中…" : "继续处理" }}
+          </button>
+          <button type="button" class="ch-queue-action" @click="discardPaused">全部丢弃</button>
+        </div>
       </div>
     </div>
 
@@ -830,6 +961,43 @@ onUnmounted(() => {
   cursor: pointer;
 }
 .ch-queue-withdraw:hover { background: var(--color-border-light); }
+
+/* ── 中断运行决策条（崩溃恢复的继续 / 丢弃）── */
+#ch-interrupted {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 4px 8px;
+  border-top: 1px solid var(--color-border-light);
+  background: var(--color-surface-dark);
+}
+#ch-interrupted-text { font-size: 10px; color: var(--color-text-pink); }
+#ch-interrupted-actions { display: flex; gap: 4px; flex: 0 0 auto; }
+
+/* ── 暂停项的操作条（继续 / 全部丢弃）── */
+#ch-queue-paused {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 4px 8px 5px;
+  border-top: 1px dashed var(--color-border-light);
+}
+#ch-queue-paused-hint { font-size: 10px; color: var(--color-text-muted); }
+#ch-queue-paused-actions { display: flex; gap: 4px; flex: 0 0 auto; }
+.ch-queue-action {
+  padding: 2px 8px;
+  background: var(--color-surface-darker);
+  color: var(--color-text-bright);
+  border: 1px solid var(--color-border-input);
+  border-radius: 10px;
+  font-size: 10px;
+  font-family: inherit;
+  cursor: pointer;
+}
+.ch-queue-action:hover { background: var(--color-surface-dark); }
+.ch-queue-action:disabled { color: var(--color-text-muted); cursor: default; }
 
 /* ── 单条状态提示 ── */
 #ch-delivery-note {
