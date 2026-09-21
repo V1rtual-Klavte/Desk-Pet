@@ -24,8 +24,8 @@ export const toolExecutionContract: ModuleContract = {
     "src-tauri/src/commands/tool_permit.rs",
     "src/services/tool/mcp/manager.ts",
   ],
-  generatedAt: "2026-09-20",
-  sourceHash: "1efd3d459a80866099ef6b942869ef935a900feaeb8d7c9fe1e6d05c104d1989",
+  generatedAt: "2026-09-21",
+  sourceHash: "35b9a63b40f1867db655e1eb168dc6686bcf1f8e313e2f91b9469bad38289f15",
   coverage: [
     { id: "te-13", feature: "工具结果持久化与回读", description: "生产工具配对作为会话条目持久化，完整工具文本保留（L0只改请求视图），read_session_event 按条目 id 分页回读并限定当前 session", why: "短请求不能以丢失工具证据为代价", depth: "deep", scenarios: ["tool-transcript-recovery"] },
     { id: "te-08", feature: "真 LLM 多工具调用", description: "真实 LLM 对话中先后调用多个工具", why: "端到端工具链验证", depth: "deep", scenarios: ["tool-system-info"] },
