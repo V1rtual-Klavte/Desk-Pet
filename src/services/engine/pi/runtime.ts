@@ -618,6 +618,9 @@ export async function runPiAgentTurn(input: PiAgentTurnInput): Promise<PiAgentTu
     userProfileText: MemoryService.getUserProfileSync(),
     dynamicPrompt: `${formatPoolForPrompt(pool)}${thinkingEffort === "low" ? "\n[请快速简要回答]" : thinkingEffort === "high" ? "\n[请仔细深入思考]" : ""}` }
   try {
+  // 运行态信号：ChatPanel 据此显示/收起停止按钮。真相仍是 harnessSlots 的运行槽，
+  // 事件只是通知通道，UI 不因此持有第二份运行状态。
+  void emitUiEvent("deskpet-run-state", { sessionId: turnSessionId, running: true })
   assertCurrent()
   const { prepareConversationCapabilities } = await import("@/services/init")
   await prepareConversationCapabilities(mode, requestId)
@@ -796,6 +799,8 @@ export async function runPiAgentTurn(input: PiAgentTurnInput): Promise<PiAgentTu
   } finally {
     if (ownedGeneration) harnessSlots.end(turnSessionId, generation)
     invalidatePermissionScope(turnSessionId, generation)
+    // 收尾先于释放：运行槽已 end，界面停止按钮据此收敛（排队视图在收尾后刷新）。
+    void emitUiEvent("deskpet-run-state", { sessionId: turnSessionId, running: false })
     const { releaseMcpOwner } = await import("@/services/tool")
     await releaseMcpOwner(requestId)
   }
@@ -836,9 +841,16 @@ async function settleMainTurn(args: {
     return { reply: getFallbackReply("toolLoopMaxRounds"), toolCallHistory, retriesUsed: state.retriesUsed }
   }
   if (result.status === "aborted") {
+    if (result.abortReason === "user") {
+      // 用户主动停止不是故障：不写兜底失败回复、不标 failure —— 否则「我点了停止」会被
+      // 记成模型失败，还会往会话里塞一条与事实相反的降级文案。归还的未消费输入交给
+      // 用户决定继续或丢弃（宿主入口 stopActiveRun / resumePausedInputs）。
+      transition("WAITING", turnSessionId)
+      return { reply: "", toolCallHistory, retriesUsed: state.retriesUsed, undelivered: result.undelivered, abortedByStop: true }
+    }
     const reason = result.timedOut ? "Agent 执行超时" : result.error ?? "回合已取消"
     const failed = await failTurn(reason, result.timedOut ? "timeout" : "unknown")
-    return { ...failed, undelivered: result.undelivered, abortedByStop: !result.timedOut }
+    return { ...failed, undelivered: result.undelivered, abortedByStop: false }
   }
   if (result.status !== "completed") {
     const reason = result.error ?? "Pi Agent 未返回有效回复"

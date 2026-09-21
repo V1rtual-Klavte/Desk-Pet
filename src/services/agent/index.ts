@@ -41,7 +41,7 @@ export {
 export type { MemoryEntry, ProjectEntry } from "./memory"
 
 // ── Agent 运行器 ──
-export { sendMessage, initChat, sendActiveMessage, toolCallHistory, resetAgentRuntimeForTest } from "./runner"
+export { sendMessage, initChat, sendActiveMessage, stopActiveRun, toolCallHistory, resetAgentRuntimeForTest } from "./runner"
 export type { SendMessageOptions } from "./runner"
 
 // ── 统一初始化 ──

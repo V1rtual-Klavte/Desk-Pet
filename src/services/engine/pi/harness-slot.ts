@@ -150,6 +150,8 @@ export interface HarnessRunResult {
   error?: string
   /** 由本槽的超时中止（区别于宿主显式停止）。 */
   timedOut: boolean
+  /** 本次运行的停止来源；未停止时为 undefined。宿主据此区分用户主动停止与超时/释放。 */
+  abortReason?: HarnessAbortReason
   /** 未消费的 steer/followUp：入参 requestId 与正文由宿主决定重新排队或丢弃。 */
   undelivered: string[]
   state: HarnessRunState
@@ -836,13 +838,21 @@ export class HarnessSlot {
         record,
         ...(record.error ? { error: record.error.message } : {}),
         timedOut: this.abortReason === ABORT_REASON_TIMEOUT,
+        ...(this.abortReason ? { abortReason: this.abortReason } : {}),
         undelivered: [...spec.state.undelivered],
         state: spec.state,
       }
     } catch (error) {
       // Harness 驱动拒绝（例如上下文取消）或槽自身异常：不静默重建，交给宿主结算。
       await this.collectPendingDelivery(run)
-      return { status: "failed", timedOut: this.abortReason === ABORT_REASON_TIMEOUT, undelivered: [...spec.state.undelivered], state: spec.state, error: formatError(error) }
+      return {
+        status: "failed",
+        timedOut: this.abortReason === ABORT_REASON_TIMEOUT,
+        ...(this.abortReason ? { abortReason: this.abortReason } : {}),
+        undelivered: [...spec.state.undelivered],
+        state: spec.state,
+        error: formatError(error),
+      }
     } finally {
       this.clearTimer()
       // drive 已结束、lane 空闲，这里才是写审计条目的安全点（hook 内写入必死锁）。

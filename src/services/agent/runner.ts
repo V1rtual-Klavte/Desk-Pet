@@ -42,6 +42,19 @@ export async function resetAgentRuntimeForTest(): Promise<void> {
 }
 export async function abortAgentRuns(): Promise<void> { await harnessSlots.abortAndWaitAll() }
 
+/**
+ * 用户显式停止：取消指定会话的运行，返回本次归还未消费输入的 requestId 清单。
+ * 与 `abortAgentRuns()`（释放全部槽的进程级入口）不同，这是聊天界面的停止按钮入口：
+ * 只作用于一条会话，未消费输入以 nextRun 留在 lane 持久 inbox，等用户选择继续或丢弃。
+ */
+export async function stopActiveRun(
+  sessionId: string = getActiveSessionId(),
+): Promise<{ steer: string[]; followUp: string[] } | undefined> {
+  const slot = harnessSlots.peek(sessionId)
+  if (!slot || !slot.isRunning()) return undefined
+  return await slot.abort("user")
+}
+
 /** 启动期恢复扫描：逐会话读 `deskpet.plan_checkpoint` 条目；单个会话失败不阻断其余恢复。 */
 export async function recoverPlanCheckpoints(): Promise<number> {
   let recovered = 0
@@ -263,6 +276,12 @@ async function dispatchMessage(text: string, options: SendMessageOptions = {}): 
     if (getActiveSessionId() !== originSessionId) {
       log.warn("sendMessage: 会话已切换，回复存入原会话", originSessionId)
       incrementSessionMessageCount(originSessionId)
+    } else if (result.abortedByStop) {
+      // 用户主动停止：会话里不写兜底回复（运行内核已按「停止不是失败」结算），
+      // 界面只如实说明剩余输入的归宿，不暗示已经撤销写入。
+      const paused = result.undelivered?.length ?? 0
+      const { pushSystemMessage } = await import("@/services/session/messages")
+      pushSystemMessage(paused > 0 ? `已停止本次回复；${paused} 条未处理的输入已暂停，可选择继续或丢弃` : "已停止本次回复")
     } else {
       pushAssistantMessage(result.reply)
     }

@@ -1,10 +1,11 @@
 <script setup lang="ts">
 import { ref, nextTick, onMounted, onUnmounted, watch } from "vue";
-import { chatHistory, sendMessage, getActiveSessionId } from "@/services/agent";
+import { chatHistory, sendMessage, getActiveSessionId, stopActiveRun } from "@/services/agent";
 import { playEventSound } from "@/services/audio/registry";
 import { conversationConfig, userConfig } from "@/services/config";
 import { getUiUrl } from "@/services/profile";
 import { createLogger } from "@/services/logger";
+import { formatError } from "@/services/error";
 import { listen } from "@tauri-apps/api/event";
 import { searchSlashCommands, initSlashCommands, listQueuedInputs, withdrawQueuedInput } from "@/services/engine";
 import type { SlashMatch } from "@/services/engine";
@@ -38,6 +39,7 @@ const toolCompletedTimer = ref<ReturnType<typeof setTimeout> | null>(null);
 const streamingText = ref("");
 let cleanupStreamDelta: (() => void) | null = null;
 let cleanupStreamEnd: (() => void) | null = null;
+let cleanupRunState: (() => void) | null = null;
 
 function handleStreamDelta(payload: { sessionId?: string; delta?: string }) {
   if (!payload.delta || payload.sessionId !== getActiveSessionId()) return;
@@ -61,6 +63,31 @@ const intentOpen = ref(false);
 
 const queuedItems = ref<{ entryId: string; kind: "steer" | "followUp" | "nextRun"; text: string }[]>([]);
 let previousQueuedIds: string[] = [];
+
+/**
+ * 运行态与停止入口（PI-1）：running 来自 lane 快照的只读视图，不由事件负载自行维护；
+ * deskpet-run-state 事件只是「现在该刷新了」的通知（运行开始/收尾）。
+ */
+const runRunning = ref(false);
+const stopping = ref(false);
+
+async function stopRun() {
+  const sessionId = getActiveSessionId();
+  if (!sessionId || stopping.value) return;
+  stopping.value = true;
+  try {
+    const stopped = await stopActiveRun(sessionId);
+    // 没有在飞运行时如实告知：不假装「正在停止」，也不留下停止中的按钮。
+    if (!stopped) {
+      stopping.value = false;
+      showDeliveryNote("当前没有正在进行的回复");
+    }
+  } catch (error) {
+    stopping.value = false;
+    log.warn("停止运行失败:", formatError(error));
+    showDeliveryNote("停止失败，请再试一次");
+  }
+}
 
 /** 单条状态提示（投递回执/撤回结果/已加入本次对话），短暂展示，不落盘。 */
 const deliveryNote = ref("");
@@ -92,6 +119,8 @@ function previewText(text: string): string {
 /** 读 lane 快照刷新排队视图；离开列表且仍在下一次运行 = 已被消费（已进入对话）。 */
 function refreshQueue() {
   const view = listQueuedInputs(getActiveSessionId());
+  // 运行态与排队项同源（同一个只读快照）：切会话/事件通知都只走这一条刷新路径。
+  runRunning.value = view.running;
   const ids = view.items.map(item => item.entryId);
   if (view.running) {
     // 只看运行中的会话：队列项离开 inbox 说明已被消费成正文（撤回路径已先摘除记录）。
@@ -395,6 +424,14 @@ onMounted(async () => {
     refreshQueue()
   }).then(fn => { cleanupStreamEnd = fn }).catch(() => {})
 
+  // ── 运行态（停止按钮）──
+  listen<{ sessionId?: string; running?: boolean }>("deskpet-run-state", (event) => {
+    if (event.payload.sessionId !== getActiveSessionId()) return
+    if (event.payload.running === false) stopping.value = false
+    // 运行开始/收尾都按 lane 快照刷新：按钮与排队视图同源，不靠事件负载记账。
+    refreshQueue()
+  }).then(fn => { cleanupRunState = fn }).catch(() => {})
+
   // 意图菜单点击外部关闭
   document.addEventListener("click", closeIntentMenu)
 });
@@ -412,6 +449,7 @@ onUnmounted(() => {
   if (cleanupToolDone) cleanupToolDone()
   if (cleanupStreamDelta) cleanupStreamDelta()
   if (cleanupStreamEnd) cleanupStreamEnd()
+  if (cleanupRunState) cleanupRunState()
   if (toolCompletedTimer.value) clearTimeout(toolCompletedTimer.value)
   if (deliveryNoteTimer) clearTimeout(deliveryNoteTimer)
   document.removeEventListener("click", closeIntentMenu)
@@ -539,6 +577,10 @@ onUnmounted(() => {
           </div>
         </Transition>
       </div>
+      <!-- 停止入口：运行中才出现，取消当前会话的运行并等待工具收尾（不暗示已撤销写入） -->
+      <button v-if="runRunning" id="ch-stop" type="button" :disabled="stopping" @click="stopRun">
+        {{ stopping ? "停止中…" : "停止" }}
+      </button>
       <button @click="send" :disabled="!input.trim()">发送</button>
     </div>
 
@@ -718,6 +760,9 @@ onUnmounted(() => {
 }
 #ch-foot button:hover { background: var(--color-accent-hover); }
 #ch-foot button:disabled { background: var(--color-border-light); color: var(--color-text-muted); cursor: default; }
+/* 停止是打断而不是危险操作：不借用强调色，避免和「发送」争视觉重心 */
+#ch-foot #ch-stop { background: var(--color-surface-darker); color: var(--color-text-pink); border: 1px solid var(--color-border-input); }
+#ch-foot #ch-stop:hover { background: var(--color-surface-dark); }
 
 /* ── 工具执行状态提示 ── */
 #ch-tool-status {
