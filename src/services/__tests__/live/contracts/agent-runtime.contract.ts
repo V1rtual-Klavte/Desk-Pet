@@ -98,6 +98,14 @@ export const agentRuntimeContract: ModuleContract = {
       depth: "deep",
       scenarios: ["runtime-delivery-evidence"],
     },
+    {
+      id: "ar-11",
+      feature: "中断运行的继续与丢弃",
+      description: "未完成操作在重新附着后默认暂停并暴露中断态：用户选择继续时由未完成操作续跑并产出回复、中断态清除；选择丢弃时按 aborted 收尾、不重放未知副作用，之后会话照常可用",
+      why: "进程被杀后无人决定的运行既不能自动重放（未知副作用），也不能把用户卡在一个没有出口的中断态里",
+      depth: "deep",
+      scenarios: ["runtime-interrupt-resume", "runtime-interrupt-discard"],
+    },
   ],
   rules: { minScenarios: 6, minDeepScenarios: 6, requireBoundary: true, requireErrorPath: false },
 }
