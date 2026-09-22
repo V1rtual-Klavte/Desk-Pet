@@ -23,6 +23,17 @@ pub fn create_main_window(app: &tauri::AppHandle) -> tauri::Result<tauri::Webvie
     .min_inner_size(448.0, 272.0)
     .center()
     .build()?;
+    // 关闭请求（Alt+F4、⌘W、系统关闭）一律隐藏到托盘，与标题栏按钮同一语义：
+    // main 一旦被真正销毁，托盘「显示」就再也拿不到窗口，而它若是最后一个窗口，
+    // 进程会随之退出。真正退出走托盘菜单的 app.exit —— 它不经过 CloseRequested。
+    let handle = window.clone();
+    window.on_window_event(move |event| {
+        if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+            api.prevent_close();
+            let _ = handle.hide();
+            rust_info!("主窗口关闭请求 → 隐藏到托盘");
+        }
+    });
     enhance_to_iterm_style(&window);
     rust_info!("主窗口已创建 (Rust 手动, URL=index.html)");
     Ok(window)

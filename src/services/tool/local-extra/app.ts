@@ -6,15 +6,16 @@
 // ==========================================
 
 import type { ToolDef } from "../types"
+import { TOOL_POLICY_VERSION } from "../types"
+import { defineTool } from "../policy"
 import { register } from "../registry"
 import { invoke } from "@tauri-apps/api/core"
-import { loopConfig } from "@/services/config"
 import { createLogger } from "@/services/logger"
 import { formatError } from "@/services/error"
 
 const log = createLogger("ToolApp")
 
-const appOpenTool: ToolDef = {
+const appOpenTool: ToolDef = defineTool({
   id: "local-app-open",
   name: "app_open",
   description: "打开指定路径的应用程序或文件。助手模式专用。",
@@ -29,24 +30,29 @@ const appOpenTool: ToolDef = {
   source: "local",
   sourceId: "",
   mode: "assistant",
-  timeoutMs: loopConfig.toolTimeoutMs,
   actionCategory: "app.launch",
-  async handler(params) {
-    try {
-      const result = await invoke<{ success: boolean }>("app_open", {
-        path: params.path,
-      })
-      return {
-        success: result.success,
-        content: result.success ? `已打开: ${params.path}` : "",
-        error: result.success ? undefined : "无法打开",
-      }
-    } catch (e) {
-      const msg = formatError(e)
-      return { success: false, content: "", error: msg }
-    }
+  // 拉起外部程序是效果操作：不与其它执行并发，超时取 loop.toolTimeoutMs。
+  policy: {
+    version: TOOL_POLICY_VERSION,
+    permission: { defaultDecision: "passthrough" },
+    execution: { effect: "process", mode: "sequential", isolation: "exclusive_effect", replay: "never" },
+    context: { resultProjection: "preserve", historyCompaction: "summarize" },
   },
-}
+}, async (params) => {
+  try {
+    const result = await invoke<{ success: boolean }>("app_open", {
+      path: params.path,
+    })
+    return {
+      success: result.success,
+      content: result.success ? `已打开: ${params.path}` : "",
+      error: result.success ? undefined : "无法打开",
+    }
+  } catch (e) {
+    const msg = formatError(e)
+    return { success: false, content: "", error: msg }
+  }
+})
 
 export function registerAppOpenTool(): void {
   register(appOpenTool)

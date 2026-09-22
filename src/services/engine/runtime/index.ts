@@ -39,3 +39,5 @@ export {
 export type { RuntimeTraceContext, RuntimeTraceEvent, RuntimeTraceKind, RuntimeTraceListener } from "./trace"
 
 export type { ContextAllocation } from "./types"
+
+export { inputEventId, messageEventId, messageRequestId } from "./input-identity"

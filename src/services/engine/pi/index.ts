@@ -1,13 +1,20 @@
 // Pi 运行时 barrel：多轮 Agent 回合（AgentHarness lane）、一次性文本调用、Provider 网络边界的统一出口。
 
 export {
+  classifyTurnFailure,
   compactActiveSession,
   continueInterruptedRun,
   deliverActiveTurn,
   discardInterruptedRun,
   getInterruptedRun,
+  listQueuedInputs,
+  pausedInputsText,
+  returnPausedInputs,
   runPiAgentTurn,
   runPiSubAgent,
+  takePausedInputs,
+  turnFailureReply,
+  withdrawQueuedInput,
 } from "./runtime"
 export type {
   InterruptedRunInfo,
@@ -16,8 +23,12 @@ export type {
   PiAgentTurnOutput,
   PiSubAgentInput,
   PiSubAgentOutput,
+  QueuedInputsView,
   TurnFailure,
 } from "./runtime"
+
+export { describeInputDelivery, isInputCommitted, PROMPT_SNAPSHOT_ENTRY } from "./delivery"
+export type { InputDeliveryEvidence, InputDeliveryStage } from "./delivery"
 
 export { RuntimeDataStreamFilter } from "./stream-text"
 
@@ -29,7 +40,7 @@ export {
   resolvePiTurnModel,
   toPiReasoningLevel,
 } from "./model-gateway"
-export type { HarnessModelsOptions, PiModel, PiRuntimeProviderOverride, PiTextCallInput, PiTextCallResult } from "./model-gateway"
+export type { HarnessModelsOptions, PiModel, PiRuntimeProviderOverride, PiTextCallInput, PiTextCallResult, PiTextPurpose } from "./model-gateway"
 export { completePiText } from "./model-gateway"
 
 export {
@@ -41,9 +52,12 @@ export {
 } from "./harness-slot"
 export type {
   HarnessAbortReason,
+  HarnessCancelQueuedKind,
   HarnessCompactOutcome,
   HarnessDeliveryPhase,
   HarnessDeliveryReceipt,
+  HarnessQueueCounts,
+  HarnessQueuedItem,
   HarnessRunHooks,
   HarnessRunResult,
   HarnessRunSinks,

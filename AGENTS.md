@@ -29,12 +29,12 @@ Desk-Pet 是可自定义 Card/Profile 的 Tauri v2 桌宠，优先做好轻量�
 | 会话、队列、Plan、Prompt、取消恢复 | [运行时契约](docs/current/runtime-contract.md) |
 | 压缩、会话文件、长期记忆边界 | [当前记忆](docs/current/memory.md) |
 | 工具、权限、MCP、Skill | [工具系统](docs/current/tool-system.md) |
-| Pi 接线改造、插话双模式、工具并行/压缩策略 | [Pi 运行时与工具协议方案](docs/plans/active/Pi运行时与工具协议建设方案.md)对应章节；§8 Harness 迁移已实施并通过集中验证（协议见[归档基线](docs/history/implementation/AgentHarness迁移方案-2026-09-18基线.md)），其余目标未实现前不作为当前能力 |
+| Pi 接线改造、插话双模式、工具并行/压缩策略 | [未完成工作与已知缺口](docs/plans/active/未完成工作与已知缺口.md)的 PI 剩余批次；已实施的协议见 [Pi 方案基线](docs/history/implementation/Pi运行时与工具协议建设方案-2026-09-20基线.md)，Harness 迁移协议见[归档基线](docs/history/implementation/AgentHarness迁移方案-2026-09-18基线.md) |
 | 配置、路径、Profile 资源、持久化 | [运行时数据](docs/current/runtime-data.md) |
 | 人格变量、阶段文案、回复元数据 | [人格与回复](docs/current/personality.md) |
 | 日志、异常、IPC、构建排查 | [工程参考](docs/current/development.md) |
 | 测试执行与场景 | [测试 README](src/services/__tests__/live/README.md)；生成契约时再读同目录 SKILL |
-| 继续记忆重构 | [执行手册](docs/plans/active/记忆系统重构执行手册.md) 文首检查点，再读对应未完成方案 |
+| 继续记忆重构 | [未完成工作与已知缺口](docs/plans/active/未完成工作与已知缺口.md) 的 P6 章节，再读 [P6 目标契约](docs/plans/active/记忆系统运行时契约.md) |
 
 完整目录见 [docs/INDEX.md](docs/INDEX.md)。当前行为由源码和对应 `docs/current/` 说明；
 `plans/active/` 只维护未完成工作，`history/` 保存过去的方案与证据。
@@ -46,10 +46,13 @@ pnpm install
 pnpm tauri dev        # 完整桌面应用
 pnpm dev              # 仅前端，不能验证 Rust IPC
 pnpm run test:types   # Vue 类型 + Rust 编译
+pnpm run test:rust    # Rust 单测（cargo test --lib）
 pnpm test -- --module <module>
-pnpm run test:release # 类型/编译 + 严格 Contract + 三次 trial
+pnpm run test:release # 类型/编译 + Rust 单测 + 严格 Contract + 三次 trial
 ```
 
+- Rust 单测内联在 `src-tauri/src/**`，`pnpm run test:rust` 执行；CI 在 macOS 与 Windows
+  两端都跑，缺少执行的测试不算门禁。
 - pnpm 版本以 `package.json` 的 `packageManager` 为准；新增有构建脚本的依赖须在
   `pnpm-workspace.yaml` 的 `allowBuilds` 显式声明运行或跳过，避免干净安装失败。
 - 先完成授权范围内的实现与 Contract/Scene，再按影响范围集中验证；修复失败后重验。
@@ -140,10 +143,11 @@ pnpm run test:release # 类型/编译 + 严格 Contract + 三次 trial
 - 本文件是唯一全局规则入口；`CLAUDE.md` 仅保留一行 `@AGENTS.md`，不改成普通链接。
 - 不建立子目录 AGENTS。模块协议与例子放对应 current 文档或源码注释；这里仅保留全局约束。
 - 每轮核对 README、AGENTS、DES 和相关 current 的影响，受影响内容必须在同一改动中更新：
-  行为→current，玩法→DES，用户入口→README，规则→AGENTS，未完成进度→执行手册。
+  行为→current，玩法→DES，用户入口→README，规则→AGENTS，未完成进度→未完成工作与已知缺口。
   新增/删除模块还要更新系统地图及受影响导航；没有变化不为同步而追加总结。
   配置变更同时执行上面的全链路清单；交付注明尚未同步或未验证部分，不能只写“已同步”。
 - 完成方案保留正文与证据后归档，注明日期和替代入口；历史内容不作为当前指令或实现契约。
+  `plans/active/` 收敛为一份未完成工作总表与尚在实施的目标契约，不为单一主题另开文档。
   测试结果只在检查点记录一次，注明基线/范围/未验证项；不在多个概览复制数字。
 - Conventional Commits：`<type>(<scope>): <中文描述>`；不加句号，一次提交一个主题，正文解释原因。
   scope 使用模块名，跨模块可省略；破坏性变更用 `!` 与 `BREAKING CHANGE`，是否提交遵循用户授权。

@@ -38,6 +38,26 @@ Rust [AppPaths](../../src-tauri/src/paths.rs) 依据 `cfg!(debug_assertions)` �
 
 模块只经类型化 getter 读取。`serializeConfig()` 保留文件头注释块，正文由 js-yaml 重排，不承诺保留正文注释或原格式。
 
+### 对话投递字段的语义与生效时机
+
+| 字段 | 取值 | 语义 | 生效 |
+|---|---|---|---|
+| `ai.conversation.defaultDelivery` | steer / followUp | 忙碌时未显式选择意图的默认投递方式（插话 / 稍后继续） | 下一次发送即读取；聊天框的单条显式选择优先 |
+| `ai.conversation.steeringMode` | all / one-at-a-time | 插话在同一安全边界前一起进入下一次请求，或逐条处理 | 每个 run 开始前下发，按运行冻结；不重排已排队项 |
+| `ai.conversation.followUpMode` | all / one-at-a-time | 稍后继续的后续消息集中处理或逐条保留话题边界 | 同上 |
+
+三个字段由 [AITab](../../src/components/settings/AITab.vue) 的「对话投递」读取与回写、经 SettingsPanel 的 setOverrides 落盘，运行期只经 [config.ts](../../src/services/config.ts) 的 `conversationConfig` getter 读取；未知取值一律按保守默认（steer / all / one-at-a-time）解释，不把非法值透传给运行内核。
+
+### 工具并行上限字段的语义与生效时机
+
+| 字段 | 取值 | 语义 | 生效 |
+|---|---|---|---|
+| `ai.loop.maxParallelTools` | 1–8 的整数，默认 4 | 同时执行的只读（`shared_read`）工具数上限；效果类工具始终与其它执行互斥，不受它影响 | 每个 run 开始前下发给 Rust 许可所有者，运行期间不撤销已借出的额度 |
+
+由 [ToolsTab](../../src/components/settings/ToolsTab.vue) 的「工具执行」读取与回写、经 SettingsPanel 的 setOverrides 落盘，保存后由 `deskpet-settings-saved` 触发的 `reloadConfig()` 生效；运行期只经 [config.ts](../../src/services/config.ts) 的 `loopConfig.maxParallelTools` 读取，并发所有权仍在 [tool_permit.rs](../../src-tauri/src/commands/tool_permit.rs)。
+
+非法值不静默接受：手写 YAML 的非数值按默认值、越界值收拢到最近边界（getter）；设置页保存前用 `parallelToolsError()` 拒绝越界输入；Rust 许可所有者收到 1–8 之外的下发直接报错而不夹边界（上限 0 会让所有读永久排队）。降低上限暂停新获准执行，提高会唤醒有序等待项。
+
 ## 路径与文件布局
 
 ```text

@@ -5,8 +5,9 @@
 
 import { StdioTransport } from "./stdio"
 import type { ToolDef } from "@/services/tool/types"
+import { TOOL_POLICY_VERSION } from "@/services/tool/types"
+import { defineTool } from "@/services/tool/policy"
 import { createLogger } from "@/services/logger"
-import { loopConfig } from "@/services/config"
 import { formatError } from "@/services/error"
 
 const log = createLogger("MCPClient")
@@ -119,6 +120,9 @@ export class McpClient {
 
   /**
    * 将 MCP 工具 schema 转换为 ToolDef。
+   *
+   * 未知能力的策略是显式保守适配，不是缺省：效果、串行、不重放、请求投影与
+   * 摘要都必须写明。annotations 只能当提示，不能由它自动升级出并行资格或执行许可。
    */
   toToolDefs(serverId: string, tools: McpToolSchema[]): ToolDef[] {
     const client = this
@@ -130,7 +134,7 @@ export class McpClient {
           if (v.enum) props[k].enum = v.enum
         }
       }
-      return {
+      return defineTool({
         id: `mcp-${serverId}-${t.name}`,
         name: `mcp_${serverId}_${t.name.replace(/[^a-zA-Z0-9_]/g, "_")}`,
         description: t.description ?? `MCP 工具: ${t.name}`,
@@ -140,30 +144,32 @@ export class McpClient {
           required: (t.inputSchema?.required as string[]) ?? [],
         },
         safetyLevel: "NORMAL" as const,
-        effectClass: "external_side_effect" as const,
         // MCP 发现只提供能力描述，不能把协议身份变成默认授权。
         // PermissionKernel 必须继续把 passthrough 收敛为最终裁决。
-        permissionCheck: () => "passthrough" as const,
+        policy: {
+          version: TOOL_POLICY_VERSION,
+          permission: { defaultDecision: "passthrough" },
+          execution: { effect: "external_side_effect", mode: "sequential", isolation: "exclusive_effect", replay: "never" },
+          context: { resultProjection: "reference", historyCompaction: "summarize" },
+        },
         source: "mcp" as const,
         sourceId: serverId,
         mode: "assistant" as const,
-        timeoutMs: loopConfig.toolTimeoutMs,
         actionCategory: "_default",
-        async handler(params: Record<string, unknown>) {
-          try {
-            const result = await client.callTool(t.name, params)
-            if (result && typeof result === "object" && "error" in (result as any)) {
-              return { success: false, content: "", error: String((result as any).error) }
-            }
-            return {
-              success: true,
-              content: typeof result === "string" ? result : JSON.stringify(result),
-            }
-          } catch (e) {
-            return { success: false, content: "", error: formatError(e) }
+      }, async (params: Record<string, unknown>) => {
+        try {
+          const result = await client.callTool(t.name, params)
+          if (result && typeof result === "object" && "error" in (result as any)) {
+            return { success: false, content: "", error: String((result as any).error) }
           }
-        },
-      }
+          return {
+            success: true,
+            content: typeof result === "string" ? result : JSON.stringify(result),
+          }
+        } catch (e) {
+          return { success: false, content: "", error: formatError(e) }
+        }
+      })
     })
   }
 

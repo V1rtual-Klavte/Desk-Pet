@@ -1,4 +1,5 @@
 import type { Context, FauxResponseStep } from "@earendil-works/pi-ai"
+import { debug } from "@/services/debug"
 import { harnessSlots, compactActiveSession } from "@/services/engine/pi"
 import { initChat } from "@/services/agent/runner"
 import { getActiveSessionId } from "@/services/session"
@@ -87,6 +88,8 @@ export const 压缩检查点: SceneDef = {
         const sessionId = getActiveSessionId()
         const before = await sessionEntries()
         const beforeTexts = (await sessionMessages()).map(message => message.text).filter(text => text.length > 0)
+        const mainUsageBefore = { ...debug.usage.main }
+        const summaryUsageBefore = { ...debug.usage.compaction }
         const outcome = await compactActiveSession(sessionId)
         if (outcome.status !== "completed") {
           throw new Error(outcome.status === "failed"
@@ -112,6 +115,20 @@ export const 压缩检查点: SceneDef = {
           throw new Error("压缩减少了会话消息条目")
         }
         if ((harnessSlots.snapshot(sessionId)?.contextEpoch ?? 0) < 1) throw new Error("压缩后 contextEpoch 未推进")
+
+        // 摘要是一次性调用：usage 落 compaction 条目（随 usage 行进入会话 totals），
+        // 并按 purpose 单列在压缩分项里，不冒充主回合统计。
+        const summaryUsage = fromHook[fromHook.length - 1]?.usage
+        if (!summaryUsage || summaryUsage.totalTokens <= 0) throw new Error("压缩条目的 usage 没有落盘")
+        const summaryUsageAfter = debug.usage.compaction
+        if (summaryUsageAfter.calls !== summaryUsageBefore.calls + 1) throw new Error("压缩摘要调用没有按 purpose 单独计数")
+        if (summaryUsageAfter.input <= summaryUsageBefore.input || summaryUsageAfter.reported <= summaryUsageBefore.reported) {
+          throw new Error("压缩摘要的 usage 没有进入压缩分项")
+        }
+        const mainUsageAfter = debug.usage.main
+        if (mainUsageAfter.calls !== mainUsageBefore.calls || mainUsageAfter.total !== mainUsageBefore.total) {
+          throw new Error("压缩用量混进了主回合统计")
+        }
       } },
     ] },
   ],

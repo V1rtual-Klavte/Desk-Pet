@@ -31,8 +31,10 @@ import type { ThinkingEffort } from "@/services/agent/types"
 import type { ToolDef } from "@/services/tool/types"
 import type { HarnessToolRun } from "@/services/tool/pi/harness-tool-adapter"
 import { toAgentHarnessTools } from "@/services/tool/pi/harness-tool-adapter"
-import { contextBudget, toHarnessEstimateTokens } from "@/services/context"
-import { loopConfig } from "@/services/config"
+import { setToolPermitLimit } from "@/services/tool/execution-permit"
+import { ContextBudgetError, contextBudget, toHarnessEstimateTokens } from "@/services/context"
+import { messageRequestId } from "@/services/engine/runtime"
+import { conversationConfig, loopConfig } from "@/services/config"
 import { PI_LANE } from "@/services/session/repo"
 import { createLogger } from "@/services/logger"
 import { formatError } from "@/services/error"
@@ -49,8 +51,16 @@ export interface HarnessRunState {
   stoppedAtToolLimit: boolean
   toolCallsMade: number
   retriesUsed: number
-  /** transform_context 记录的本回合投影错误；由网关在下一次请求阻断。 */
+  /** transform_context 记录的当次请求判定；由网关在下一次请求取走（取走即清空）。 */
   contextError?: unknown
+  /**
+   * 本回合最近一次被取走的硬预算判定文案。硬预算超限改走 Harness 溢出恢复后，
+   * 上游以「没有可摘要范围」declined 时回合会失败、失败文案是上游的；
+   * 结算需要回到这条可解释的判定，才能告诉用户该缩短输入还是调窗口。
+   */
+  lastBudgetError?: string
+  /** 上游对溢出压缩的终态：declined 表示这次硬预算超限没有可安全摘要的范围。 */
+  overflowRecoveryDeclined?: boolean
   /** abort 归还的未消费消息（deskpetEventId → requestId）。 */
   undelivered: string[]
   usage?: Usage
@@ -125,7 +135,8 @@ export interface HarnessRunSpec {
   systemPrompt: string
   tools: readonly ToolDef[]
   toolRun: HarnessToolRun
-  prompt: string | AgentMessage
+  /** 多条消息用于「停止后继续」：把取回的暂停输入按原顺序一次性投递（身份不合并）。 */
+  prompt: string | AgentMessage | AgentMessage[]
   timeoutMs: number
   hooks: HarnessRunHooks
   sinks?: HarnessRunSinks
@@ -141,6 +152,8 @@ export interface HarnessRunResult {
   error?: string
   /** 由本槽的超时中止（区别于宿主显式停止）。 */
   timedOut: boolean
+  /** 本次运行的停止来源；未停止时为 undefined。宿主据此区分用户主动停止与超时/释放。 */
+  abortReason?: HarnessAbortReason
   /** 未消费的 steer/followUp：入参 requestId 与正文由宿主决定重新排队或丢弃。 */
   undelivered: string[]
   state: HarnessRunState
@@ -166,15 +179,36 @@ export interface HarnessSlotSnapshot {
   /** 已提交的压缩次数：请求视图的换代身份（旧 contextEpoch 的等价物，用于快照/审计）。 */
   contextEpoch: number
   /** lane 持久 inbox 的待消费项（真相源在会话文件；这里是最近一次 queue_update 的只读快照）。 */
-  queued: Array<{ entryId: string; kind: LaneQueuedItem["kind"] }>
+  queued: HarnessQueuedItem[]
   interrupted?: { operationId: string; kind: "run" | "compaction" | "navigation"; startedAt: number; aborting: boolean }
+}
+
+/** 排队项的只读视图：UI 展示与撤回都以它为准，不在前端另存一份队列状态。 */
+export interface HarnessQueuedItem {
+  entryId: string
+  kind: "steer" | "followUp" | "nextRun"
+  text: string
+  /** 投递时写入的宿主 requestId（`deskpetEventId` 的主键部分）；证据链按它关联输入。 */
+  requestId?: string
+}
+
+/** lane 持久 inbox 的排队计数（按 kind）：压缩拒绝、排队视图共用同一明细。 */
+export interface HarnessQueueCounts {
+  steer: number
+  followUp: number
+  nextRun: number
 }
 
 /** 手动压缩（/compact）的终态；文案由调用方决定。 */
 export interface HarnessCompactOutcome {
   status: "completed" | "declined" | "nothing" | "busy" | "pending" | "closed" | "failed"
   error?: string
+  /** status=pending 时的排队明细：压缩续跑可能消费 lane inbox，不能只报「有排队」。 */
+  queued?: HarnessQueueCounts
 }
+
+/** 单项撤回结果：与 lane.cancelQueued 的 kind 同名，unavailable 表示槽/通道不可用。 */
+export type HarnessCancelQueuedKind = "cancelled" | "already_consumed" | "not_found" | "unavailable"
 
 interface ActiveRun {
   spec: HarnessRunSpec
@@ -195,10 +229,10 @@ export type HarnessAbortReason = typeof ABORT_REASON_TIMEOUT | typeof ABORT_REAS
  * 压缩设置：阈值与保留窗口都由本仓预算换算到上游估算口径，绝不照搬 Pi 的 16k/20k 默认值
  * （上游默认值只适配它自己的默认窗口）。
  *
- * Harness 的 `shouldCompact` 比较的是它自己的估算（消息 chars/4，或 provider usage），
- * 本仓预算是 chars/2.5；不换算时阈值会比正常输入目标晚约 1.6 倍触发，宿主硬预算会先一步
- * 把请求拦成报错而不是先压缩。换算后阈值正好落在 normalInputTarget，保留窗口同样回到
- * normalInputTarget 的 40%（见 toHarnessEstimateTokens）。
+ * Harness 的 `shouldCompact` 比的是它自己的 `estimateContextTokens`：有 provider usage 时
+ * 前缀按真实 usage 计，本仓预算同样以真实 token 为目标口径，因此换算后阈值正好落在
+ * normalInputTarget，保留窗口回到 normalInputTarget 的 40%（换算规则见
+ * toHarnessEstimateTokens，不要再按 chars/4 反推因子）。
  */
 export function compactionSettingsFor(window: number, maxOutput?: number): CompactionSettings {
   const budget = contextBudget(window, maxOutput)
@@ -235,6 +269,11 @@ export class HarnessSlot {
   private compactionEpoch = 0
   /** 已下发的压缩阈值去重键（reserveTokens:keepRecentTokens）。 */
   private compactionSettingsKey?: string
+  /** 已下发的队列批量策略：按运行生效，运行开始前与配置对齐。 */
+  private steeringMode: "all" | "one-at-a-time" = "all"
+  private followUpMode: "all" | "one-at-a-time" = "one-at-a-time"
+  /** 已下发给许可所有者的共享读上限；未下发过时为 undefined，首次 run 必定对齐。 */
+  private toolPermitLimit?: number
   /** 正在流式输出的 assistant 消息是否已经产生过展示增量。 */
   private streamActive = false
   /** 最近一次 queue_update 的 lane 队列快照：用于核对「已投递但未消费」的输入。 */
@@ -285,23 +324,31 @@ export class HarnessSlot {
       }
     }
     const compaction = this.compactionSettings(resolvePiTurnModel())
+    this.steeringMode = conversationConfig.steeringMode
+    this.followUpMode = conversationConfig.followUpMode
     const created = await AgentHarness.create({
       session: this.session,
       models: createHarnessModels({
         model: () => this.activeRun?.spec.model ?? resolvePiTurnModel(),
-        getBlockedError: () => {
-          const error = this.activeRun?.spec.state.contextError
-          return error instanceof Error ? error : undefined
+        takeBlockedError: () => {
+          const state = this.activeRun?.spec.state
+          const blocked = state?.contextError
+          if (state) state.contextError = undefined
+          if (state && blocked instanceof ContextBudgetError) state.lastBudgetError = blocked.message
+          return blocked instanceof Error ? blocked : undefined
         },
       }),
       model: resolvePiTurnModel(),
       tools: [],
       // 阈值/手动/溢出调度与一次性溢出恢复交给 Harness（§7）；阈值由现有预算推导（见 compactionSettings）。
       compaction: compaction.settings,
-      toolExecution: "sequential",
-      // 与旧 Agent 默认一致：逐条处理补充/后续消息；批量策略是后续配置批次的事。
-      steeringMode: "one-at-a-time",
-      followUpMode: "one-at-a-time",
+      // 由执行许可保证「纯读并行、效果互斥」：批次内调用可并发派发，
+      // 真正执行前各自借用额度（Rust 应用级所有者），写类与其它执行互斥。
+      toolExecution: "parallel",
+      // 队列批量策略来自配置、按运行冻结（§3.1）：一条消息的身份不因批量而合并，
+      // 下一个 run 开始前由 syncQueueModes 与当前配置对齐。
+      steeringMode: this.steeringMode,
+      followUpMode: this.followUpMode,
       systemPrompt: () => this.activeRun?.spec.systemPrompt ?? "",
       retry: { enabled: loopConfig.maxRetry > 0, maxRetries: loopConfig.maxRetry, baseDelayMs: 1000 },
     }, ctx)
@@ -334,6 +381,27 @@ export class HarnessSlot {
       && (item.kind === "steer" || item.kind === "followUp" || item.kind === "nextRun"))
   }
 
+  /** 排队计数（按 kind）：压缩续跑会经 accept 消费整个 inbox，三类都要报出来。 */
+  private queuedCounts(): HarnessQueueCounts {
+    const count = (kind: "steer" | "followUp" | "nextRun") =>
+      this.pendingQueues.filter(item => item.type === "message" && item.kind === kind).length
+    return { steer: count("steer"), followUp: count("followUp"), nextRun: count("nextRun") }
+  }
+
+  /** 排队项只读视图：正文取排队消息本身，不是第二份状态。 */
+  private queuedItems(): HarnessQueuedItem[] {
+    return this.pendingQueues.flatMap(item => {
+      if (item.type !== "message" || item.kind === "write") return []
+      const requestId = messageRequestId(item.message as { deskpetEventId?: unknown })
+      return [{
+        entryId: item.entryId,
+        kind: item.kind,
+        text: queuedMessageText(item.message),
+        ...(requestId ? { requestId } : {}),
+      }]
+    })
+  }
+
   /** 压缩阈值由现有预算推导（§7）：窗口 − 正常输入目标 = 输出预留 + 协议开销 + 压缩余量。 */
   private compactionSettings(model: PiModel): { settings: CompactionSettings; key: string } {
     const settings = compactionSettingsFor(model.contextWindow, model.maxTokens)
@@ -347,6 +415,36 @@ export class HarnessSlot {
     if (key === this.compactionSettingsKey) return
     this.compactionSettingsKey = key
     await this.harness.setCompactionSettings(settings, TODO_CONTEXT)
+  }
+
+  /**
+   * 队列批量策略按运行生效（§3.1）：只在下一次 run 开始前对齐，运行期间不改变
+   * 已冻结的批量行为。改回默认只需改配置，不在这里重排已排队项。
+   */
+  private async syncQueueModes(): Promise<void> {
+    if (!this.harness) return
+    const steering = conversationConfig.steeringMode
+    const followUp = conversationConfig.followUpMode
+    if (steering === this.steeringMode && followUp === this.followUpMode) return
+    this.steeringMode = steering
+    this.followUpMode = followUp
+    await this.harness.setSteeringMode(steering, TODO_CONTEXT)
+    await this.harness.setFollowUpMode(followUp, TODO_CONTEXT)
+  }
+
+  /**
+   * 共享读上限（`ai.loop.maxParallelTools`）同样按运行生效：下一次 run 开始前把当前配置
+   * 下发给 Rust 许可所有者，运行期间不撤销已借出的额度。所有者始终是权威，槽只记下发值
+   * 避免重复 IPC；下发失败沿用所有者当前上限，不因调优失败让整个 run 起不来。
+   */
+  private async syncToolPermitLimit(): Promise<void> {
+    const limit = loopConfig.maxParallelTools
+    if (limit === this.toolPermitLimit) return
+    try {
+      this.toolPermitLimit = await setToolPermitLimit(limit)
+    } catch (error) {
+      log.warn("共享读上限下发失败，沿用许可所有者当前上限:", formatError(error))
+    }
   }
 
   /** 会话文件里已提交的压缩次数：请求视图换代身份（旧 contextEpoch 的等价物）。 */
@@ -478,9 +576,58 @@ export class HarnessSlot {
       turnId: this.runIdentity?.turnId,
       operationId: this.activeRun?.operationId,
       contextEpoch: this.compactionEpoch,
-      queued: this.pendingQueues.map(item => ({ entryId: item.entryId, kind: item.kind })),
+      queued: this.queuedItems(),
       interrupted: this.interruptedInfo,
     }
+  }
+
+  // ── 排队单项撤回（PI-1） ──
+
+  /**
+   * 撤回一条仍在 lane 持久 inbox、尚未被消费的排队项。
+   * already_consumed 表示正文已成为会话条目：不能报告撤回成功，也不能把它塞回队列。
+   */
+  async cancelQueued(entryId: string): Promise<HarnessCancelQueuedKind> {
+    if (!this.lane) return "unavailable"
+    let result: Awaited<ReturnType<AgentLane["cancelQueued"]>>
+    try {
+      result = await this.lane.cancelQueued(entryId, TODO_CONTEXT)
+    } catch (error) {
+      log.warn("撤回排队项失败:", { sessionId: this.sessionId, entryId }, formatError(error))
+      return "unavailable"
+    }
+    if (!result.ok) return "unavailable"
+    // 撤回成功的项不能再留在「待重投递」映射里，否则下一次重投递会拿着过期 entryId 去撤销。
+    for (const [requestId, id] of this.pendingDeliveryEntries) {
+      if (id === entryId) this.pendingDeliveryEntries.delete(requestId)
+    }
+    return result.value.kind
+  }
+
+  /**
+   * 取出全部仍留在 lane inbox 的暂停项（nextRun）并撤回，返回原消息对象。
+   * 供「停止后继续」重投递：撤回失败（已被消费 / 已不在）的项直接跳过 ——
+   * 已进入正文的消息不能再投一次，宁可少投也不能重复追加用户正文。
+   *
+   * 注意这里只取出不投递：投递由宿主的下一回合承担，因此两者之间进程被杀会丢这几条
+   * （已在 §1.1 记为实施边界）；投递未获接受时宿主按 nextRun 原样放回。
+   */
+  async takePausedMessages(): Promise<AgentMessage[]> {
+    if (!this.lane) return []
+    const paused = this.pendingQueues.flatMap(item =>
+      item.type === "message" && item.kind === "nextRun" ? [{ entryId: item.entryId, message: item.message }] : [])
+    const taken: AgentMessage[] = []
+    for (const item of paused) {
+      if (await this.cancelQueued(item.entryId) === "cancelled") taken.push(item.message)
+    }
+    return taken
+  }
+
+  /** 把取出的暂停消息按 nextRun 放回：投递未获接受时的回滚，持久且不自动继续。 */
+  async requeuePausedMessages(messages: AgentMessage[]): Promise<void> {
+    if (messages.length === 0 || !this.lane) return
+    this.requeuePending.push(...messages)
+    await this.flushRequeueQueue()
   }
 
   // ── 崩溃恢复入口（§8.7.3） ──
@@ -526,14 +673,15 @@ export class HarnessSlot {
    * 驱动一次 `manual` 压缩：切点、会话提交与持久化都由 Harness 承担（§7/§8.5），
    * 摘要生成由调用方经 hooks.beforeCompaction 提供。运行中不抢跑（LaneBusy 同义返回 busy）。
    *
-   * 注意：压缩完成后 Harness 可能驱动一次续跑消费 lane 持久 inbox。那种续跑没有宿主
-   * spec（权限/结算钩子缺失），所以有排队消息时先拒绝，由用户决定何时压缩。
+   * 注意：压缩完成后 Harness 可能驱动一次续跑消费 lane 持久 inbox。那种续跑经 accept 选中
+   * inbox 里的消息（nextRun 也在内），但没有宿主 spec（权限/结算钩子缺失），
+   * 所以有排队消息时拒绝，并给出按 kind 的明细，由用户决定撤回还是等处理完。
    */
   async compact(hooks: HarnessRunHooks, options: { customInstructions?: string } = {}): Promise<HarnessCompactOutcome> {
     await this.open()
     if (!this.isUsable() || !this.lane) return { status: "closed" }
     if (this.isRunning()) return { status: "busy" }
-    if (this.hasQueuedMessages()) return { status: "pending" }
+    if (this.hasQueuedMessages()) return { status: "pending", queued: this.queuedCounts() }
     this.manualHooks = hooks
     try {
       const result = await this.lane.compact(
@@ -689,6 +837,8 @@ export class HarnessSlot {
       const tools = toAgentHarnessTools(spec.tools, spec.toolRun)
       await this.harness!.setTools(tools, TODO_CONTEXT)
       await this.syncCompactionSettings(spec.model)
+      await this.syncQueueModes()
+      await this.syncToolPermitLimit()
       await this.lane!.setModel({ provider: spec.model.provider, modelId: spec.model.id }, TODO_CONTEXT)
       await this.lane!.setThinkingLevel(toPiAgentThinkingLevel(spec.thinkingEffort), TODO_CONTEXT)
       await this.lane!.setActiveTools(spec.tools.map(tool => tool.name), TODO_CONTEXT)
@@ -724,13 +874,21 @@ export class HarnessSlot {
         record,
         ...(record.error ? { error: record.error.message } : {}),
         timedOut: this.abortReason === ABORT_REASON_TIMEOUT,
+        ...(this.abortReason ? { abortReason: this.abortReason } : {}),
         undelivered: [...spec.state.undelivered],
         state: spec.state,
       }
     } catch (error) {
       // Harness 驱动拒绝（例如上下文取消）或槽自身异常：不静默重建，交给宿主结算。
       await this.collectPendingDelivery(run)
-      return { status: "failed", timedOut: this.abortReason === ABORT_REASON_TIMEOUT, undelivered: [...spec.state.undelivered], state: spec.state, error: formatError(error) }
+      return {
+        status: "failed",
+        timedOut: this.abortReason === ABORT_REASON_TIMEOUT,
+        ...(this.abortReason ? { abortReason: this.abortReason } : {}),
+        undelivered: [...spec.state.undelivered],
+        state: spec.state,
+        error: formatError(error),
+      }
     } finally {
       this.clearTimer()
       // drive 已结束、lane 空闲，这里才是写审计条目的安全点（hook 内写入必死锁）。
@@ -944,6 +1102,10 @@ export class HarnessSlot {
         this.compactionActive = false
         // 已提交的压缩推进请求视图换代身份（旧 contextEpoch 的等价物）。
         if (event.status === "completed") this.compactionEpoch++
+        // 溢出恢复的终态：declined 表示硬预算超限没有可安全摘要的范围，回合会失败；
+        // 结算文案要回到本条判定（否则用户只看到上游的 decline 文案和兜底回复）。
+        const run = this.activeRun
+        if (run && event.reason === "overflow") run.spec.state.overflowRecoveryDeclined = event.status === "declined"
       }),
       events.on("queue_update", (event) => {
         this.pendingQueues = event.queues
@@ -974,12 +1136,19 @@ export class HarnessSlot {
   }
 }
 
-/** 从归还的消息里取回宿主 requestId（投递时写入 deskpetEventId=`${requestId}:user`）。 */
+/** 从归还的消息里取回宿主 requestId（身份换算见 input-identity）。 */
 function collectRequestIds(messages: AgentMessage[]): string[] {
   return messages.flatMap(message => {
-    const eventId = (message as { deskpetEventId?: string }).deskpetEventId
-    return typeof eventId === "string" ? [eventId.replace(/:user$/, "")] : []
+    const requestId = messageRequestId(message as { deskpetEventId?: unknown })
+    return requestId ? [requestId] : []
   })
+}
+
+/** 排队项的正文预览：排队消息以字符串正文投递，结构化内容回退到 contentText。 */
+function queuedMessageText(message: AgentMessage): string {
+  const content = (message as { content?: unknown }).content
+  if (typeof content === "string") return content
+  return Array.isArray(content) ? contentText(content as Parameters<typeof contentText>[0]) : ""
 }
 
 const EMPTY_SLOT_USAGE: Usage = {
@@ -1053,6 +1222,12 @@ export class HarnessSlots {
   /** 撤销尚未被消费的投递（best-effort）；未打开过的会话没有待撤销项。 */
   async cancelPendingDelivery(sessionId: string, requestId: string): Promise<boolean> {
     return await this.peek(sessionId)?.cancelPendingDelivery(requestId) ?? false
+  }
+
+  /** 单项撤回（UI 排队视图）：没有槽的会话本来就没有可撤回项。 */
+  async cancelQueued(sessionId: string, entryId: string): Promise<HarnessCancelQueuedKind> {
+    const slot = this.peek(sessionId)
+    return slot ? await slot.cancelQueued(entryId) : "not_found"
   }
 
   drain(sessionId: string, worker: (generation: number) => Promise<void>): Promise<void> {

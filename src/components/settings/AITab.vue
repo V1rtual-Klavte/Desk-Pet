@@ -3,7 +3,7 @@ import { ref, onMounted, computed } from "vue";
 import {
   aiConfig, windowMonitorConfig, aiLockConfig,
   memoryConfig, personalityConfig, generalConfig,
-  safetyConfig, planConfig,
+  safetyConfig, planConfig, conversationConfig,
 } from "@/services/config";
 import {
   listPersonalities, getActiveCard,
@@ -12,7 +12,6 @@ import {
 import { getPoolSnapshot, formatPoolForPrompt } from "@/services/personality";
 import { getCachedStages } from "@/services/personality";
 import type { PersonalityCard } from "@/services/personality";
-import type { EmotionMapping } from "@/services/personality";
 import type { StageMap, StagePrompts } from "@/services/personality";
 import { createLogger } from "@/services/logger";
 import { formatError } from "@/services/error"
@@ -30,6 +29,11 @@ const aiRequireApiKey = ref(aiConfig.requireApiKey);
 
 // ── 思考 ──
 const aiThinkingEffort = ref(aiConfig.thinkingEffort);
+
+// ── 对话投递（忙碌时的默认方式与队列批量策略）──
+const defaultDelivery = ref(conversationConfig.defaultDelivery);
+const steeringMode = ref(conversationConfig.steeringMode);
+const followUpMode = ref(conversationConfig.followUpMode);
 
 // ── 安全 ──
 const safetyMode = ref(safetyConfig.mode as string);
@@ -87,7 +91,6 @@ const switchSuccess = ref("");
 // ── Card 面板折叠 ──
 const showVarPool = ref(false);
 const showStages = ref(false);
-const showEmotion = ref(false);
 
 // ── 变量池 ──
 const poolRefreshTick = ref(0);
@@ -99,12 +102,6 @@ const stagesData = ref<StagePrompts | null>(null);
 const editingStages = ref(false);
 const stageEditJson = ref("");
 const stagesFileExists = ref(false);
-
-// ── 情绪表达 ──
-const emotionMappings = computed<EmotionMapping[]>(() => {
-  const card = cardList.value.find(c => c.id === personalityActive.value);
-  return card?.sections.emotionMappings ?? [];
-});
 
 // ── 辅助 ──
 const currentCard = computed(() =>
@@ -462,6 +459,9 @@ defineExpose({
   aiContextMaxTokens,
   aiThinkingEffort,
   aiRequireApiKey,
+  defaultDelivery,
+  steeringMode,
+  followUpMode,
   safetyMode,
   sessionTrustEnabled,
   wmEnabled,
@@ -502,6 +502,28 @@ defineExpose({
     <div class="radio-row">
       <label v-for="lv in ['auto','low','medium','high']" :key="'p1'+lv" class="chk"><input type="radio" v-model="aiThinkingEffort" :value="lv" /><span>{{ lv }}</span></label>
     </div>
+  </div>
+
+  <!-- ═══ 💬 对话投递 ═══ -->
+  <div class="s-section">
+    <div class="s-label">💬 对话投递</div>
+
+    <div class="s-subtitle">默认发送方式（忙碌时）</div>
+    <div class="radio-row">
+      <label v-for="m in [{v:'steer',l:'插话'},{v:'followUp',l:'稍后继续'}]" :key="'dd'+m.v" class="chk"><input type="radio" v-model="defaultDelivery" :value="m.v" /><span>{{ m.l }}</span></label>
+    </div>
+    <div class="s-hint">聊天框里可为单条消息覆盖；空闲时两种方式都直接开始新回合</div>
+
+    <div class="s-subtitle" style="margin-top:6px">插话批量处理</div>
+    <div class="radio-row">
+      <label v-for="m in [{v:'all',l:'集中处理补充'},{v:'one-at-a-time',l:'逐条处理'}]" :key="'sm'+m.v" class="chk"><input type="radio" v-model="steeringMode" :value="m.v" /><span>{{ m.l }}</span></label>
+    </div>
+
+    <div class="s-subtitle" style="margin-top:6px">稍后继续的后续消息</div>
+    <div class="radio-row">
+      <label v-for="m in [{v:'one-at-a-time',l:'逐条处理'},{v:'all',l:'集中处理'}]" :key="'fm'+m.v" class="chk"><input type="radio" v-model="followUpMode" :value="m.v" /><span>{{ m.l }}</span></label>
+    </div>
+    <div class="s-hint">批量策略在下一回合开始前生效，不重排已排队消息</div>
   </div>
 
   <!-- ═══ 🎭 人格卡 ═══ -->
@@ -546,7 +568,6 @@ defineExpose({
           <div class="card-stats">
             <span v-if="card.sections.whenText">有语气指引</span>
             <span>{{ card.sections.variableDefs.length }} 个变量</span>
-            <span>{{ card.sections.emotionMappings.length }} 个情绪</span>
             <span>v{{ card.version }}</span>
           </div>
 
@@ -587,7 +608,7 @@ defineExpose({
   <!-- ═══ 📊 变量池 ═══ -->
   <div class="s-section">
     <div class="s-label" style="cursor:pointer" @click="showVarPool = !showVarPool">
-      📊 变量池 <span style="flex:1"></span><span class="card-arrow">{{ showVarPool ? '▾' : '▸' }}</span>
+      📊 变量池 (Card变量/互动状态为上次运行快照) <span style="flex:1"></span><span class="card-arrow">{{ showVarPool ? '▾' : '▸' }}</span>
     </div>
 
     <div v-if="showVarPool">
@@ -630,26 +651,6 @@ defineExpose({
           <span class="s-hint">⚠ 重新生成会覆盖手动编辑</span>
         </div>
       </div>
-    </div>
-  </div>
-
-  <!-- ═══ 😊 情绪表达 ═══ -->
-  <div class="s-section">
-    <div class="s-label" style="cursor:pointer" @click="showEmotion = !showEmotion">
-      😊 情绪表达 <span style="flex:1"></span><span class="card-arrow">{{ showEmotion ? '▾' : '▸' }}</span>
-    </div>
-
-    <div v-if="showEmotion">
-      <div v-if="emotionMappings.length === 0" class="s-hint">无情绪映射</div>
-      <div v-else class="emotion-grid">
-        <div v-for="em in emotionMappings" :key="em.key" class="emotion-row">
-          <span class="tag-tip">{{ em.key }}</span>
-          <span class="s-muted">→</span>
-          <span>{{ em.expression }}</span>
-          <span class="s-muted">{{ em.sound ? `🔊 ${em.sound}` : '🔇' }}</span>
-        </div>
-      </div>
-      <div class="s-hint">回复开头 [emo:key] 驱动，系统自动剥离</div>
     </div>
   </div>
 
@@ -858,22 +859,4 @@ defineExpose({
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-
-/* ── 情绪映射 ── */
-.emotion-grid {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-  padding: 2px 0;
-}
-
-.emotion-row {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  font-size: 10px;
-  padding: 1px 4px;
-  border-radius: 3px;
-}
-.emotion-row:hover { background: rgba(255,255,255,0.03); }
 </style>

@@ -55,6 +55,15 @@ ai:
   thinking:
     effort: auto
 
+  conversation:
+    # 忙碌时未显式选择的默认投递方式：steer=插话（当前响应结束后处理）、followUp=稍后继续（当前任务结束后继续）。
+    # 单条显式选择优先；空闲时两种方式都直接开始正常回合。
+    defaultDelivery: steer
+    # 插话批量策略：all=同一安全边界前积压的补充一起进入下一次请求；one-at-a-time=逐条处理。
+    steeringMode: all
+    # 稍后继续的批量策略：one-at-a-time=逐条保留后续话题边界；all=集中处理。
+    followUpMode: one-at-a-time
+
   personality:
     active: angelkawaii
 
@@ -65,6 +74,9 @@ ai:
     turnTimeoutMs: 120000
     dedupWindowMs: 30000
     maxVisibleMessages: 200
+    # 同时执行的只读（shared_read）工具数上限，范围 1–8。效果类工具始终与其它执行互斥，
+    # 不受它影响；每个 run 开始前下发给 Rust 许可所有者，运行期间不撤销已借出的额度。
+    maxParallelTools: 4
 
   memory:
     maxEntries: 200

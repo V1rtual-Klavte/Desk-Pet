@@ -1,5 +1,5 @@
 // ==========================================
-// 窗口监听 —— 接收 Rust 事件，触发 AI / 表情响应
+// 窗口监听 —— 接收 Rust 事件，触发主动搭话
 // ==========================================
 
 import { type Ref } from "vue"
@@ -39,8 +39,8 @@ export async function initWindowListener(
       generateActiveMessage({ title, content: content || title, timestamp: Date.now() }).then((reply) => {
         if (reply) {
           pushAssistantMessage(reply)
-          incrementUnanswered()
-          playNotificationByBoundary()
+          // 把递增后的未回复数传进去，否则分级提示音恒为 surface 级。
+          playNotificationByBoundary(incrementUnanswered())
         }
       })
     })

@@ -3,13 +3,14 @@ import { ref, onMounted, onUnmounted } from "vue";
 import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
 import {
   userConfig, generalConfig, toolsConfig,
-  setOverrides, setOverride, getAllOverrides, flushConfig,
+  setOverrides, setOverride, getAllOverrides, flushConfig, parallelToolsError,
 } from "@/services/config";
 import {
   saveSoundAssignments,
 } from "@/services/audio/registry";
 import { switchPersonality, getActivePersonalityId } from "@/services/personality";
 import { createLogger } from "@/services/logger";
+import { formatError } from "@/services/error";
 import { isMacOS } from "@/services/env";
 import { parseEnvText } from "@/services/tool/mcp";
 import { contextWindowError } from "@/services/context";
@@ -66,6 +67,14 @@ async function doSave() {
     log.error("设置保存失败:", windowIssue);
     return;
   }
+  // 共享读上限越界同样拒绝保存：范围外的手写值不会静默夹到边界后落盘，
+  // 用户看到的是错误而不是“保存成功但生效值不同”。
+  const parallelIssue = parallelToolsError(t.maxParallelTools);
+  if (parallelIssue) {
+    saveError.value = parallelIssue;
+    log.error("设置保存失败:", parallelIssue);
+    return;
+  }
   const previousPersonalityActive = getActivePersonalityId();
 
   userConfig.popupMode = g.popupMode;
@@ -87,6 +96,10 @@ async function doSave() {
     "ai.model": a.aiModel,
     "ai.contextMaxTokens": a.aiContextMaxTokens,
     "ai.thinking.effort": a.aiThinkingEffort,
+    // 对话投递：默认发送方式与队列批量策略（忙碌投递与下一回合的批量行为）
+    "ai.conversation.defaultDelivery": a.defaultDelivery,
+    "ai.conversation.steeringMode": a.steeringMode,
+    "ai.conversation.followUpMode": a.followUpMode,
     "ai.personality.active": a.personalityActive,
     "ai.windowMonitor.enabled": a.wmEnabled,
     "ai.windowMonitor.staySeconds": a.wmStaySeconds,
@@ -112,6 +125,8 @@ async function doSave() {
     "general.mode.assistant": g.assistantMode,
     "ai.safety.mode": a.safetyMode,
     "ai.safety.sessionTrustEnabled": a.sessionTrustEnabled,
+    // 共享读并行上限：并发所有权在 Rust 许可池，这里只落配置值
+    "ai.loop.maxParallelTools": t.maxParallelTools,
     "tools.bash.whitelist": t.bashWhitelist.split("\n").map(s => s.trim()).filter(Boolean),
     "tools.file.writeEnabled": t.fileWriteEnabled,
     "tools.mcp.enabled": t.mcpEnabled,
@@ -190,15 +205,21 @@ function doCancel() {
   win.close().catch(() => {});
 }
 
+/**
+ * 进程级重启。写盘必须先于重启：设置改动先进写盘队列，直接重启会把队列里
+ * 还没落盘的配置丢掉，用户以为是"重启后生效"，实际是改动没了。写盘失败就
+ * 不重启，把原因摆出来。
+ */
 async function restartApp() {
   try {
-    const { getAllWebviewWindows } = await import("@tauri-apps/api/webviewWindow");
-    const windows = await getAllWebviewWindows();
-    for (const w of windows) {
-      try { w.close(); } catch {}
-    }
-  } catch {}
-  win.close().catch(() => {});
+    await flushConfig();
+  } catch (error) {
+    saveError.value = "配置写盘失败，已取消重启：" + formatError(error);
+    log.error("重启前写盘失败:", formatError(error));
+    return;
+  }
+  const { invoke } = await import("@tauri-apps/api/core");
+  await invoke("app_restart");
 }
 
 // CONFIG 导入导出

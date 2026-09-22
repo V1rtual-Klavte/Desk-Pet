@@ -5,8 +5,8 @@
 ## 执行链与模式
 
 ```text
-Pi Harness Tool → harness-adapter → ToolRouter → TauriExecutionEnv → Rust tool_exec
-                       ↑ beforeToolCall / PermissionKernel 先完成门禁
+Pi Harness Tool → harness-tool-adapter → ToolRouter → 执行许可借用 → TauriExecutionEnv → Rust tool_exec
+                        ↑ beforeToolCall / PermissionKernel 先完成门禁
 ```
 
 文件与命令工具来自 Pi 的 ExecutionEnv 抽象，通过 [harness-adapter](../../src/services/tool/pi/harness-adapter.ts) 和 [TauriExecutionEnv](../../src/services/tool/pi/tauri-execution-env.ts) 接入 WebView。内部 IPC 的 file_read/file_write/bash_exec 仍可被宿主服务使用；它们不是另一个模型工具集。
@@ -23,7 +23,32 @@ Pi Harness Tool → harness-adapter → ToolRouter → TauriExecutionEnv → Rus
 
 实际清单由 [registry.ts](../../src/services/tool/registry.ts)、[pi-tools.ts](../../src/services/tool/local/pi-tools.ts) 和回合冻结快照决定。目录列举使用 bash ls；不再注册独立 ls/file_search/http_get。Pi CLI 的 Node 工具不能直接移入 WebView，需要现有 ExecutionEnv 边界。
 
-当前 ToolDef 已统一身份、schema、风险、权限检查和 handler，尚无统一的并行/结果投影/历史摘要/replay 策略。Pi 适配虽按 actionCategory 设置 executionMode，Harness lane 级 toolExecution 仍为 sequential，实际执行保持串行。薄 BaseTool 与必填策略、只读并行和混合批次限制见[目标工具协议](../plans/active/Pi运行时与工具协议建设方案.md#4-统一工具声明与薄抽象类)，尚未实施。
+## 工具策略
+
+`ToolDef` 仍携带身份、schema、风险等级与 handler，策略集中在 `policy`（[types.ts](../../src/services/tool/types.ts)）：
+
+- `permission.defaultDecision` / `permission.check` 是工具侧权限意见，`passthrough` 不是执行许可。
+- `execution.effect / mode / isolation / replay / timeoutMs`：效果分类、调度声明、隔离级别、恢复重放资格与超时；未声明超时时统一取 `loop.toolTimeoutMs`。
+- `context.resultProjection`：`preserve` 的原样进入请求，`reference` 的可被 L0 缩短并标注 eventId 回读地址；两者都只改请求视图，会话条目存档始终保留全文。
+- `context.historyCompaction`：`retain` 的调用配对必须保留原文，压缩覆盖边界不得越过（连续完整轮下命中即 decline，由预算守卫报告上下文不足）。
+
+[defineTool](../../src/services/tool/policy.ts) 是唯一构造入口（手写、Pi 适配、MCP 都经它产出 ToolDef），注册入口再次校验：缺策略、`parallel` 搭配非只读效果、`exclusive_effect`/`delegate` 非串行都是注册错误，不做缺省猜测。`actionCategory` 只用于人格阶段文案，不再决定并行、权限或压缩。`replay` 由 Harness 恢复路径消费：只有持久化调用与当前工具都声明 `safe` 才会重放效果，当前全部工具为 `never`。
+
+Pi 适配器按策略设置 `executionMode`；当前 Harness 的批次调度只看 run 级 `toolExecution`（现为 `parallel`），逐工具 `executionMode` 在 Harness 路径上没有消费者，实际互斥由下面的执行许可保证。
+
+## 执行许可（纯读并行与效果互斥）
+
+Harness 以 `toolExecution: parallel` 派发批次，效果之间的并发由 Rust 应用级许可所有者裁定：[tool_permit.rs](../../src-tauri/src/commands/tool_permit.rs) 持有额度，前端在 [router.ts](../../src/services/tool/router.ts) 执行入口借用、真实结算后释放（[execution-permit.ts](../../src/services/tool/execution-permit.ts)）。
+
+- `shared_read` 走有界共享额度（默认 4，由 [`ai.loop.maxParallelTools`](runtime-data.md#工具并行上限字段的语义与生效时机) 配置，范围 1–8），两个只读可真正重叠；`exclusive_effect`（write/edit/bash/app_open/clipboard_write/MCP）与进行中的读写互斥，效果按借用顺序串行。
+- `delegate`（agent_spawn）不占父批次额度，子运行的工具各自取许可；编排入口不自行执行文件写入。
+- 等待可取消（取消会移出排队项），没有超时自动释放；拿到额度后重新核对取消与代际，排队不能成为绕过检查的通道。
+- `tool_permit_release` 与 `tool_permit_cancel` 同样绑定借用者：其它窗口/页面即使拿到 requestId 也不能释放在飞额度或取消他人的排队项，被拒绝的调用不改变额度状态。
+- 借用者身份 = Rust 提供的窗口标签 + 前端页面实例 id（[execution-permit.ts](../../src/services/tool/execution-permit.ts) 在模块加载时声明上线）。同一窗口同一时刻只有一个活着的页面实例：新实例上线（Vite 全量热重载、WebView 重建）时一次性回收同窗口其它实例的在飞额度与排队项，并以回收数量作为证据。回收只由「借用者已经不存在」触发，不看时间：同一实例重复上线是空操作，其它窗口的借用者与在飞的 `exclusive_effect` 都不受影响；窗口关闭且不再重新加载时，它留下的额度仍要等下一次同窗口上线或进程退出才回收。
+- 上限由前端在每个 run 开始前下发给所有者并按运行生效（与队列批量策略同一模式）：降低上限不撤销在飞许可，只是暂停新获准执行；提高会唤醒有序等待项。越界值三处处理不同（见[运行时数据](runtime-data.md#工具并行上限字段的语义与生效时机)）：getter 收拢到最近边界，设置页保存拒绝，Rust 下发直接报错。
+- 许可域按数据根区分，Live Test 的临时根自带隔离域；多个 WebView 共用同一所有者。许可只约束 Desk-Pet 托管的调用，不承诺阻止外部进程改文件。
+
+薄 `BaseTool` 仍未实施（当前零消费者）；设置页「工具策略（声明）」区从同一 ToolDef 展示权限意见、隔离级别、结果投影与历史摘要，不复制第二份策略定义。
 
 ## 权限终裁
 
@@ -59,6 +84,6 @@ Skill 不注册 ToolDef，不占工具声明槽，也不授予权限。[skill/lo
 
 Rust [mcp_bridge.rs](../../src-tauri/src/commands/mcp_bridge.rs) 托管 stdio 进程：按 JSON-RPC id 配对响应，跳过 notification 和非 JSON 输出，常驻 stdout 读取线程与有界等待避免请求无限阻塞。应用退出回收 server；Windows 结束进程树，避免派生进程遗留。
 
-设置页测试连接后恢复原连接状态。env 只透传给子进程，日志不打印 env；配置导出含 env 时需要确认明文凭据。当前工具执行保持串行，只读并行尚未开放。
+设置页测试连接后恢复原连接状态。env 只透传给子进程，日志不打印 env；配置导出含 env 时需要确认明文凭据。MCP 工具一律声明 `passthrough` + `external_side_effect` + `exclusive_effect`，既不能凭发现结果自动获得执行许可，也不能与其它执行并发。
 
-验证规则见[测试边界](testing.md)，集中执行证据只在[执行手册](../plans/active/记忆系统重构执行手册.md)记录。
+验证规则见[测试边界](testing.md)，集中执行证据只在[未完成工作与已知缺口](../plans/active/未完成工作与已知缺口.md#6-当前验证证据)记录。

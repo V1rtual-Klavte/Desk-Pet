@@ -20,6 +20,58 @@ export type ToolCheckResult = PermissionDecision | "passthrough"
 /** 操作效果分类，风险等级描述影响程度，效果分类描述影响对象。 */
 export type EffectClass = "read" | "local_mutation" | "process" | "external_side_effect"
 
+// ── 工具策略（统一声明：权限 / 执行 / 投影 / 摘要）──
+
+/**
+ * 策略语义版本。策略字段含义变化时递增；恢复旧调用时按低版本保守读取，
+ * 版本进入 policyHash，策略变化后旧授权失效。
+ */
+export const TOOL_POLICY_VERSION = 1
+
+/** 调度模式：parallel 只表示「可与其他调用并发」，不代表权限。 */
+export type ExecutionMode = "parallel" | "sequential"
+
+/**
+ * 隔离级别。delegate 只用于宿主编排工具（子运行自己取许可）；
+ * exclusive_effect 与其他执行互斥。
+ */
+export type ToolIsolation = "shared_read" | "exclusive_effect" | "delegate"
+
+/** 副作用未知时的恢复重放资格；safe 不自动启用重试，由 Harness 恢复路径判定。 */
+export type ToolReplay = "never" | "safe"
+
+/** 请求视图投影：preserve 表示源结果按原样进入请求，不再被 L0 二次缩短。 */
+export type ResultProjection = "preserve" | "reference"
+
+/** 历史摘要：retain 表示该调用配对必须保留原文，压缩边界不得越过它。 */
+export type HistoryCompaction = "summarize" | "retain"
+
+/**
+ * 工具完整策略。风险等级（safetyLevel / resolveSafetyLevel）与轻量模式策略
+ * （lightweightPolicy）继续留在 ToolDef 顶层：那是风险维度，不是权限意见。
+ */
+export interface ToolPolicy {
+  version: number
+  permission: {
+    /** 工具侧静态意见。passthrough 不是执行许可，必须由 PermissionKernel 收敛。 */
+    defaultDecision: ToolCheckResult
+    /** 按本次参数附加的约束，优先级高于 defaultDecision。 */
+    check?: (params: Record<string, unknown>, ctx: ToolContext) => ToolCheckResult | Promise<ToolCheckResult>
+  }
+  execution: {
+    effect: EffectClass
+    mode: ExecutionMode
+    isolation: ToolIsolation
+    replay: ToolReplay
+    /** 未声明时统一取现有 loopConfig.toolTimeoutMs。 */
+    timeoutMs?: number
+  }
+  context: {
+    resultProjection: ResultProjection
+    historyCompaction: HistoryCompaction
+  }
+}
+
 /** 工具操作类别（用于阶段文案匹配） */
 export type ActionCategory =
   | "fs.read" | "fs.write"
@@ -97,19 +149,12 @@ export interface ToolDef {
   sourceId: string
   /** 哪个模式可用 */
   mode: ToolMode
-  /** 操作类别，用于阶段文案匹配（§7.1） */
+  /** 操作类别，只用于阶段文案匹配（§7.1），不决定并行、权限或压缩 */
   actionCategory: ActionCategory
-  /** 本次工具效果分类，未声明时由 PermissionKernel 按 actionCategory 推导。 */
-  effectClass?: EffectClass
-  /**
-   * 来源/工具专属的权限规则。passthrough 不是执行许可，必须由
-   * PermissionKernel 继续收敛为 allow / ask / deny。
-   */
-  permissionCheck?: (params: Record<string, unknown>, ctx: ToolContext) => ToolCheckResult | Promise<ToolCheckResult>
+  /** 权限 / 执行 / 投影 / 摘要的统一策略；缺策略视为注册错误。 */
+  policy: ToolPolicy
   /** 执行函数 */
   handler: (params: Record<string, unknown>, ctx: ToolContext) => Promise<ToolResult>
-  /** 超时（ms），默认 loop.toolTimeoutMs */
-  timeoutMs?: number
 }
 
 // ── 工具声明（给 AI 的 function schema）──

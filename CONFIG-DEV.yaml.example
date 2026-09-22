@@ -21,6 +21,13 @@ ai:
   contextMaxTokens: 131072
   thinking:
     effort: auto
+  conversation:
+    # 忙碌时未显式选择的默认投递方式：steer=插话 / followUp=稍后继续（空闲发送不受影响）
+    defaultDelivery: steer
+    # 插话批量策略：all=同一安全边界前积压的补充一起处理 | one-at-a-time=逐条
+    steeringMode: all
+    # 稍后继续的批量策略：one-at-a-time=逐条保留话题边界 | all=集中处理
+    followUpMode: one-at-a-time
   personality:
     active: angelkawaii
   loop:
@@ -30,6 +37,8 @@ ai:
     turnTimeoutMs: 120000
     dedupWindowMs: 30000
     maxVisibleMessages: 200
+    # 同时执行的只读（shared_read）工具数上限，范围 1–8；每个 run 开始前下发给许可所有者
+    maxParallelTools: 4
   memory: { maxEntries: 200, maxSessions: 20 }
   plan:
     enabled: true
@@ -71,5 +80,6 @@ tools:
 appearance:
   activeProfile: "sugar-pink"
   effectMode: "off"               # off | parallax(灵动图层) | dof(景深)，互斥
+  soundAssignments: {}            # 事件 → 音效 ID；空表示全走内置默认，设置页可改
   parallax:
     intensity: 1.0

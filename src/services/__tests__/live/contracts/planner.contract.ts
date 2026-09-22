@@ -3,8 +3,8 @@ import type { ModuleContract } from "../types"
 export const plannerContract: ModuleContract = {
   module: "planner",
   sourceFiles: ["src/services/engine/pi/runtime.ts", "src/services/engine/planner.ts"],
-  generatedAt: "2026-09-17",
-  sourceHash: "aa724b9a36e9e535959843fa6f3e6a90191f94ce4b393103ed697b0787d1bf3b",
+  generatedAt: "2026-09-21",
+  sourceHash: "54ee8cb0ccf74d480a6879ca140d86488f25b6d4b28305d9bb7d4e332edb3414",
   coverage: [
     { id: "pl-01", feature: "evaluateComplexity force触发", description: "--plan 前缀强制触发评分=5", why: "用户手动触发 Plan", depth: "shallow", scenarios: ["plan-force-trigger"] },
     { id: "pl-02", feature: "evaluateComplexity 关键词匹配", description: "关键词列表匹配 → 评分 >= 3", why: "自动检测复杂任务", depth: "shallow", scenarios: ["plan-keyword-trigger"] },

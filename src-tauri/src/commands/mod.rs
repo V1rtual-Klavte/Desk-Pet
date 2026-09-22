@@ -2,6 +2,7 @@
 // Tauri Commands 统一导出
 // ==========================================
 
+pub mod app_lifecycle;
 pub mod bash_policy;
 pub mod cursor;
 pub mod logging;
@@ -14,7 +15,9 @@ pub mod resources_cmd;
 pub mod sim;
 pub mod skill_cmd;
 pub mod tool_exec;
+pub mod tool_permit;
 
+pub use app_lifecycle::app_restart;
 pub use cursor::{compute_popup_position, get_cursor_position, spawn_cursor_tracker};
 pub use logging::{log_messages, open_devtools, report_frontend_error, set_log_config};
 pub(crate) use mcp_bridge::McpPool;
@@ -36,4 +39,10 @@ pub use tool_exec::{
     app_open, bash_cancel, bash_exec, clipboard_read, clipboard_write, dir_create, file_append,
     file_canonical_path, file_exists, file_info, file_list, file_read, file_read_binary,
     file_remove, file_rename, file_write, system_info,
+};
+// 应用级工具执行许可所有者（§5.1）：前端借用/释放，Rust 持有额度。
+pub(crate) use tool_permit::ToolPermitPool;
+pub use tool_permit::{
+    tool_permit_acquire, tool_permit_attach, tool_permit_cancel, tool_permit_release,
+    tool_permit_set_max_shared_readers, tool_permit_snapshot,
 };

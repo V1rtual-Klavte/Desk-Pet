@@ -9,7 +9,6 @@ import { aiConfig } from "@/services/config"
 import { getSkillsPromptBlock } from "@/services/skill"
 import { formatPoolForPrompt } from "@/services/personality/variable-pool"
 import { formatAllRules } from "@/services/personality/must-rules"
-import { formatEmotionForPrompt } from "@/services/personality/emotion"
 import type { PersonalityCard } from "@/services/personality/types"
 import type { VariablePool } from "@/services/personality/variable-pool"
 import type { ContextBlock } from "@/services/engine/runtime"
@@ -59,12 +58,29 @@ export interface BuildContextOutput {
   allocations: import("@/services/engine/runtime").ContextAllocation[]
 }
 
+/**
+ * RUNTIME_DATA 协议说明。解析侧是 `reply/generator.ts` 的 `RUNTIME_RE`，改动时两处必须对齐。
+ * 只在 Card 声明了可被模型写入的变量时注入：没有可写目标时这段只是白占静态前缀。
+ */
+const RUNTIME_DATA_INSTRUCTION = `[回复元数据]
+你的回复末尾必须附加一个 RUNTIME_DATA 区块，系统自动剥离，用户不可见。
+
+格式：
+<RUNTIME_DATA>
+<变量名>: <值>
+</RUNTIME_DATA>
+
+- 每轮都必须附带该区块；Card 变量有变化时逐行写入（变量名: 新值），没有变化则留空区块`
+
 function cardStaticPrompt(card: PersonalityCard | null): string {
   const sections = card?.sections
   if (!sections) return `你是一个桌面助手。准确、完整地回答用户问题。\n\n要求:\n- 使用 markdown 组织信息\n- 技术问题给出具体方案，不要模糊\n- 不会就说不知道，但尝试提供线索\n- 回复长度按问题复杂度自然调整`
   const pieces = [sections.roleSetting, sections.languageStyle, sections.outputRules]
-  // Card is frozen at run start: role, emotions, whenText and must rules all belong to the static prefix.
-  if (sections.emotionMappings.length) pieces.push(formatEmotionForPrompt(sections.emotionMappings))
+  // RUNTIME_DATA 是模型写 Card 变量的唯一通道；Card 没有可写变量时不注入，省静态前缀。
+  if (sections.variableDefs.some(def => def.scope === "card" && def.updateBy === "llm")) {
+    pieces.push(RUNTIME_DATA_INSTRUCTION)
+  }
+  // Card is frozen at run start: role, whenText and must rules all belong to the static prefix.
   if (sections.whenText) pieces.push(`[语气指引]\n${sections.whenText}`)
   if (sections.mustRules.all.length) pieces.push(formatAllRules(sections.mustRules))
   return pieces.filter(Boolean).join("\n\n")

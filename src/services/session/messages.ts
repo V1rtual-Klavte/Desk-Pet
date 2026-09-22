@@ -77,9 +77,11 @@ export function deleteMessage(id: string): boolean {
 // 未回复计数
 // ═══════════════════════════════════════════════════
 
-export function incrementUnanswered(): void {
+/** 递增当前会话的未回复数，并返回递增后的值（分级提示音按它选级别）。 */
+export function incrementUnanswered(): number {
   unansweredCount.value++
   saveUnanswered(activeSessionId.value, unansweredCount.value)
+  return unansweredCount.value
 }
 
 export function resetUnanswered(): void {

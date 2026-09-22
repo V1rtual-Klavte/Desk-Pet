@@ -36,6 +36,15 @@ interface UserSettings {
  */
 export type EffectMode = "off" | "parallax" | "dof"
 
+/**
+ * 用户可选的投递意图：steer=插话（当前响应及工具批次结束后处理），
+ * followUp=稍后继续（当前运行自然准备结束时继续）。与 Pi 函数名解耦，UI 不显示这两个词。
+ */
+export type DeliveryIntent = "steer" | "followUp"
+
+/** 队列批量策略：all=同一安全边界前积压的补充一起进入下一次请求；one-at-a-time=逐条。 */
+export type QueueMode = "all" | "one-at-a-time"
+
 export interface BuiltinMcpServer {
   includeTools?: string[]
   excludeTools?: string[]
@@ -79,6 +88,14 @@ interface Config {
     thinking: {
       effort: string
     }
+    conversation: {
+      /** 忙碌时未显式选择意图的默认投递方式（steer / followUp） */
+      defaultDelivery: string
+      /** 插话批量策略：all / one-at-a-time */
+      steeringMode: string
+      /** 稍后继续的批量策略：all / one-at-a-time */
+      followUpMode: string
+    }
     personality: {
       active: string
     }
@@ -89,6 +106,8 @@ interface Config {
       turnTimeoutMs: number
       dedupWindowMs: number
       maxVisibleMessages: number
+      /** 同时执行的只读（shared_read）工具数上限；运行期所有者是 Rust 许可池 */
+      maxParallelTools: number
     }
     memory: { maxEntries: number; maxSessions: number }
     plan: {
@@ -479,6 +498,26 @@ export const personalityConfig = {
   get active() { return overrideOr("ai.personality.active", cfg.ai?.personality?.active || ""); },
 };
 
+/**
+ * 对话投递（§3.1）：defaultDelivery 只决定忙碌时未显式选择意图的默认；
+ * steeringMode / followUpMode 是队列批量策略，按运行冻结（运行开始前下发）。
+ * 手写 YAML 里的未知取值一律按保守默认读取，不把非法值透传到运行内核。
+ */
+export const conversationConfig = {
+  get defaultDelivery() {
+    const value = overrideOr("ai.conversation.defaultDelivery", cfg.ai?.conversation?.defaultDelivery);
+    return (value === "followUp" ? "followUp" : "steer") as DeliveryIntent;
+  },
+  get steeringMode() {
+    const value = overrideOr("ai.conversation.steeringMode", cfg.ai?.conversation?.steeringMode);
+    return (value === "one-at-a-time" ? "one-at-a-time" : "all") as QueueMode;
+  },
+  get followUpMode() {
+    const value = overrideOr("ai.conversation.followUpMode", cfg.ai?.conversation?.followUpMode);
+    return (value === "all" ? "all" : "one-at-a-time") as QueueMode;
+  },
+};
+
 export const windowMonitorConfig = {
   get enabled() { return overrideOr("ai.windowMonitor.enabled", cfg.ai?.windowMonitor?.enabled ?? true); },
   get staySeconds() { return overrideOr("ai.windowMonitor.staySeconds", cfg.ai?.windowMonitor?.staySeconds || 60); },
@@ -513,6 +552,33 @@ export const planConfig = {
   get keywords() { return overrideOr("ai.plan.keywords", cfg.ai?.plan?.keywords || ["分析", "整理", "重构", "修复", "审查", "合并", "总结", "生成", "创建项目"]) as string[]; },
 };
 
+/**
+ * 共享读并行上限（`ai.loop.maxParallelTools`）的取值范围与默认值。
+ *
+ * 默认值等于许可所有者（src-tauri/src/commands/tool_permit.rs）的内置上限：不写这个
+ * 字段时行为与引入配置前一致。运行期上限由所有者裁定，这里只定义可配置边界。
+ */
+export const MIN_PARALLEL_TOOLS = 1
+export const MAX_PARALLEL_TOOLS = 8
+export const DEFAULT_PARALLEL_TOOLS = 4
+
+/**
+ * 手写 YAML 的共享读上限收拢成范围内的整数：非数值按默认值，越界按最近边界。
+ * 不把非法值透传给运行内核（设置页保存会先报错，Rust 下发还会再拒绝一次越界）。
+ */
+export function clampParallelTools(value: unknown): number {
+  if (typeof value !== "number" || !Number.isFinite(value)) return DEFAULT_PARALLEL_TOOLS
+  return Math.min(MAX_PARALLEL_TOOLS, Math.max(MIN_PARALLEL_TOOLS, Math.floor(value)))
+}
+
+/** 设置页保存前的范围校验：合法返回 undefined（与 contextWindowError 同一用法）。 */
+export function parallelToolsError(value: number): string | undefined {
+  if (!Number.isInteger(value) || value < MIN_PARALLEL_TOOLS || value > MAX_PARALLEL_TOOLS) {
+    return `同时执行的只读工具数必须是 ${MIN_PARALLEL_TOOLS}-${MAX_PARALLEL_TOOLS} 的整数（当前 ${value}）`
+  }
+  return undefined
+}
+
 export const loopConfig = {
   get maxRetry() { return overrideOr("ai.loop.maxRetry", cfg.ai?.loop?.maxRetry ?? 3); },
   get maxToolCallsPerTurn() { return overrideOr("ai.loop.maxToolCallsPerTurn", cfg.ai?.loop?.maxToolCallsPerTurn ?? 5); },
@@ -520,6 +586,8 @@ export const loopConfig = {
   get turnTimeoutMs() { return overrideOr("ai.loop.turnTimeoutMs", cfg.ai?.loop?.turnTimeoutMs ?? 120000); },
   get dedupWindowMs() { return overrideOr("ai.loop.dedupWindowMs", cfg.ai?.loop?.dedupWindowMs ?? 30000); },
   get maxVisibleMessages() { return overrideOr("ai.loop.maxVisibleMessages", cfg.ai?.loop?.maxVisibleMessages ?? 200); },
+  /** 同时执行的只读工具数（`ai.loop.maxParallelTools`）；每个 run 开始前下发给许可所有者。 */
+  get maxParallelTools() { return clampParallelTools(overrideOr("ai.loop.maxParallelTools", cfg.ai?.loop?.maxParallelTools)); },
 };
 
 export const safetyConfig = {

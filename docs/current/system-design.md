@@ -13,11 +13,11 @@
 | engine/runtime | trace、快照协议（Queue/AgentSlot 已退役） | [runtime/](../../src/services/engine/runtime/) |
 | context | 分层构建、共享预算、完整轮与工具输出请求投影 | [context/](../../src/services/context/) |
 | agent/memory | Plan checkpoint、记忆文件与只读 MemoryProvider（会话正文在 `sessions/` JSONL） | [memory/](../../src/services/agent/memory/) |
-| session | 会话仓库访问层、标签、消息读模型、切换与恢复 | [session/](../../src/services/session/) |
+| session | 会话仓库访问层、会话列表与消息读模型、切换与恢复 | [session/](../../src/services/session/) |
 | personality / reply | Card、变量与阶段文案；回复元数据解析和效果 | [personality/](../../src/services/personality/)、[reply/](../../src/services/reply/) |
 | tool / safety | 工具注册和路由、Pi 文件工具、MCP；权限与确认 | [tool/](../../src/services/tool/)、[safety/](../../src/services/safety/) |
 | skill | 有界元数据索引与按需正文读取的 Prompt 目录 | [skill/](../../src/services/skill/) |
-| profile / audio | 外观资源、导入导出与音效映射 | [profile/](../../src/services/profile/)、[audio/](../../src/services/audio/) |
+| profile / audio | 外观资源、导入导出与系统音效 | [profile/](../../src/services/profile/)、[audio/](../../src/services/audio/) |
 | window / cooldown | 前台窗口监控、主动消息与共享冷却 | [window/](../../src/services/window/)、[cooldown.ts](../../src/services/cooldown.ts) |
 | config / paths | 类型化配置与 Rust 路径桥接 | [config.ts](../../src/services/config.ts)、[paths.ts](../../src/services/paths.ts) |
 | logger / error / dialog | 统一日志、异常出口与通用交互提示 | [logger/](../../src/services/logger/)、[error/](../../src/services/error/)、[dialog/](../../src/services/dialog/) |
@@ -25,7 +25,7 @@
 | Rust window / monitor | Windows/macOS 窗口与前台应用监控 | [window/](../../src-tauri/src/window/)、[monitor/](../../src-tauri/src/monitor/) |
 | Live Test | Contract、Scene、隔离宿主与报告 | [测试 README](../../src/services/__tests__/live/README.md) |
 
-图层和景深的共享计算位于 [composables/](../../src/composables/)，展示入口是 [StreamView.vue](../../src/components/StreamView.vue)。旧 animation.ts 尚未接入该主展示路径，不能因文件存在而认为表情动画链已闭环。[init.ts](../../src/services/init.ts) 负责能力准备和模式资源生命周期。
+图层和景深的共享计算位于 [composables/](../../src/composables/)，展示入口是 [StreamView.vue](../../src/components/StreamView.vue)。[init.ts](../../src/services/init.ts) 负责能力准备和模式资源生命周期。
 
 ## 主消息链路
 
@@ -37,7 +37,7 @@ sendMessage → preprocessor / Slash
       → 助手模式按配置执行可选 Plan，取得步骤结果
       → recallMemory（默认空）→ Harness Lane：transform_context 投影 → Provider → before_tool 权限与执行
       → 条目提交、逐请求 usage、流式正文事件
-      → ReplyGenerator：RUNTIME_DATA、变量、情绪与显示文本
+      → ReplyGenerator：RUNTIME_DATA、变量与显示文本
   → 固定 session 的条目/状态完成 → Vue 投影
 ```
 
@@ -51,7 +51,7 @@ sendMessage → preprocessor / Slash
 | 应用 | 配置、Card/Profile 选择、能力目录 | 新 run 读取快照；切换有专用入口 |
 | 会话 | Lane 持久 inbox、会话 JSONL 条目 | 身份由 sessionId 与操作代际关联 |
 | 单次运行 | 冻结模型/能力/Prompt 来源、AbortSignal、写队列 | 旧运行不能修改新的会话或 Card 所有者 |
-| 界面 | Vue 标签、消息、进度与表达效果 | 从领域事实投影，不重建第二份持久化 Store |
+| 界面 | Vue 标签、消息、进度与表达效果 | 从领域事实投影（会话列表读模型归 session 模块），不重建第二份持久化 Store |
 
 具体模型工厂、重试、取消、Plan 恢复、PromptSnapshot 与工具写入顺序由[运行时契约](runtime-contract.md)维护。
 

@@ -2,10 +2,10 @@
 document_type: archived_plan_section
 status: archived
 archived_at: 2026-09-18
-superseded_by: ../../plans/active/Pi运行时与工具协议建设方案.md
+superseded_by: ./Pi运行时与工具协议建设方案-2026-09-20基线.md
 ---
 
-> **Archived baseline.** 本文是 [Pi 运行时与工具协议建设方案](../../plans/active/Pi运行时与工具协议建设方案.md) §8 在 2026-09-18 的完整正文。H-1–H-4 已按此协议落地并删除旧内核，且通过当日的集中验证（证据见[执行手册](../../plans/active/记忆系统重构执行手册.md#已有验证证据)）。当前行为契约以 [current/runtime-contract.md](../../current/runtime-contract.md)、[current/memory.md](../../current/memory.md) 与 [current/system-design.md](../../current/system-design.md) 为准；本页只保留迁移协议、替换映射、hook 映射与批次设计，不再作为实现契约。
+> **Archived baseline.** 本文是 [Pi 运行时与工具协议建设方案](./Pi运行时与工具协议建设方案-2026-09-20基线.md) §8 在 2026-09-18 的完整正文。H-1–H-4 已按此协议落地并删除旧内核，且通过当日的集中验证（证据见[执行手册](../../plans/active/未完成工作与已知缺口.md#6-当前验证证据)）。当前行为契约以 [current/runtime-contract.md](../../current/runtime-contract.md)、[current/memory.md](../../current/memory.md) 与 [current/system-design.md](../../current/system-design.md) 为准；本页只保留迁移协议、替换映射、hook 映射与批次设计，不再作为实现契约。
 
 ---
 ## 8. AgentHarness 迁移（运行内核替换）

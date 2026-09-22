@@ -9,9 +9,9 @@
 ## 能做什么
 
 - **陪伴聊天**：Card 定义角色、语气、情绪和互动变量；支持多会话切换与历史恢复。
-- **自定义外观**：Profile 包含主题、动画和素材，可编辑、复制、导入导出；支持灵动图层与景深效果。
+- **自定义外观**：Profile 包含主题、立绘和素材，可编辑、复制、导入导出；支持灵动图层与景深效果。
 - **窗口感知**：开启监控后，根据前台应用和窗口标题主动搭话，可配置停留时长与冷却。
-- **桌面交互**：透明置顶窗口、全局快捷键、托盘、表情和音效。
+- **桌面交互**：透明置顶窗口、全局快捷键、托盘和音效。
 - **工具协助**：文件读写、Bash、系统信息；助手模式扩展剪贴板、应用打开、计划与子代理。
 - **扩展能力**：Skill 按需读取说明，MCP 提供外部工具；具体操作受统一权限策略约束。
 - **对话连续性**：长会话按预算压缩上下文，原始记录保留；压缩摘要与长期记忆分别管理。
@@ -67,18 +67,19 @@ pnpm tauri build  # 构建安装产物
 
 在设置窗口选择 Card、Profile 和 AI 模型；开启所需的窗口监控、工具或助手模式。默认 Card/Profile 首次初始化后也是可编辑的运行时资源。“恢复默认资源”会覆盖同名内置资源的用户改动。
 
-聊天框输入 `/help` 查看命令，`/compact` 整理当前会话上下文。完整玩法、角色展示效果和交互方式见[产品设计](docs/DES.md)。
+聊天框输入 `/help` 查看命令，`/compact` 整理当前会话上下文。运行中仍可继续发送：发送按钮旁选择「插话」或「稍后继续」，排队中的消息显示在输入框上方并可逐条撤回。完整玩法、角色展示效果和交互方式见[产品设计](docs/DES.md)。
 
 ## 开发与验证
 
 ```bash
 pnpm run test:types
+pnpm run test:rust
 pnpm test -- --module memory
 ```
 
-类型与编译检查不代表运行时通过。Live Test 在独立 Tauri WebView 与临时数据根中运行，支持真实 Provider 和确定性 fake Provider；完整命令、场景规范及发布门禁以[测试 README](src/services/__tests__/live/README.md)为准。
+类型与编译检查不代表运行时通过。Rust 单测覆盖仓内 Rust 纯逻辑（命令策略、路径校验、输出裁剪、工具许可），`pnpm run test:rust` 等价于 `cargo test --manifest-path src-tauri/Cargo.toml --lib`。Live Test 在独立 Tauri WebView 与临时数据根中运行，支持真实 Provider 和确定性 fake Provider；完整命令、场景规范及发布门禁以[测试 README](src/services/__tests__/live/README.md)为准。
 
-[CI](.github/workflows/ci.yml) 在 macOS 与 Windows 执行类型/编译检查，当前不执行 Live Test。平台支持不等于所有 UI 行为均已通过双平台验收，验证范围见[测试说明](docs/current/testing.md)。
+[CI](.github/workflows/ci.yml) 在 macOS 与 Windows 执行类型/编译检查与 Rust 单测，当前不执行 Live Test。平台支持不等于所有 UI 行为均已通过双平台验收，验证范围见[测试说明](docs/current/testing.md)。
 
 ## 文档入口
 
@@ -86,8 +87,8 @@ pnpm test -- --module memory
 - [产品定位、玩法与交互](docs/DES.md)
 - [当前系统地图](docs/current/system-design.md)
 - [开发约束](AGENTS.md)
-- [记忆重构当前检查点](docs/plans/active/记忆系统重构执行手册.md)
-- [Pi 接入与 Harness 运行时迁移方案（迁移已实施并验证）](docs/plans/active/Pi运行时与工具协议建设方案.md)
+- [未完成工作与已知缺口](docs/plans/active/未完成工作与已知缺口.md)
+- [Pi 协议与 Harness 迁移基线（已实施并验证）](docs/history/implementation/Pi运行时与工具协议建设方案-2026-09-20基线.md)
 
 ## License
 

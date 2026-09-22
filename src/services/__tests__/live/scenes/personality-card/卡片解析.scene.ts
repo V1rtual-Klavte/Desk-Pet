@@ -52,11 +52,6 @@ version: 3
 # 输出规则
 不要输出多余的解释。
 
-# 情绪表达
-- 可用标签及映射（key → 表情 ID, 音效 key）：
-  happy → smile, —
-  chu → chu, reply
-
 # 行为进阶
 - 用户着急时：先给结论
 - 默认：保持简短
@@ -134,14 +129,6 @@ export const 卡片语气指引 = unit("card-when-text", "pc-04", "Card whenText
   if (!whenText.includes("默认")) throw new Error("行为进阶未完整保留")
 })
 
-export const 卡片情绪映射 = unit("card-emotion-mappings", "pc-05", "Card emotionMappings 解析", async () => {
-  const mappings = (await importUserCard(CARD_MD)).sections.emotionMappings
-
-  if (mappings.length !== 2) throw new Error(`应解析出 2 条映射，实际 ${mappings.length}`)
-  const chu = mappings.find(m => m.key === "chu")
-  if (chu?.expression !== "chu" || chu?.sound !== "reply") throw new Error(`映射内容不对: ${JSON.stringify(chu)}`)
-})
-
 export const 注册表拒绝非法切换 = unit("card-registry-guard", "pc-02", "注册表拒绝非法人格切换", async () => {
   const before = getActivePersonalityId()
 
@@ -172,19 +159,6 @@ export const 激活卡驱动提示词 = unit("card-active-prompt", "pc-07", "激
     throw new Error(`系统提示词没有包含激活 Card 的角色设定（card=${card.id}）`)
   }
 
-  // 情绪区块是 `context/builder.ts` 按 emotionMappings.length > 0 决定是否注入的，
-  // 激活的 Card 一条映射都没有的话，模型拿不到「emotion 必填」的指令 ——
-  // 这会让 em-05 那类断言看起来像模型不配合，实际是 prompt 里根本没有要求。
-  const { emotionMappings } = card.sections
-  if (emotionMappings.length === 0) {
-    throw new Error(`激活 Card ${card.id} 没有解析出任何情绪映射，情绪指令不会进入 prompt`)
-  }
-  // 每条映射都必须是完整的，缺 expression 的映射进 prompt 只会误导模型
-  for (const mapping of emotionMappings) {
-    if (!mapping.key || !mapping.expression) {
-      throw new Error(`映射不完整: ${JSON.stringify(mapping)}`)
-    }
-  }
 }, "deep")
 
 export const 切卡重置变量池 = unit("card-switch-resets-pool", "pc-06", "换一套 defs 后旧变量消失", () => {

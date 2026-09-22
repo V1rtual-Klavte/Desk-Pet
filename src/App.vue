@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import "./styles/fonts.css";
 import "./styles/global.css";
-import { ref, nextTick, onMounted, onUnmounted, provide } from "vue";
+import { ref, onMounted, onUnmounted, provide } from "vue";
 import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
 import { WebviewWindow } from "@tauri-apps/api/webviewWindow";
 import { LogicalPosition, LogicalSize } from "@tauri-apps/api/dpi";
@@ -54,7 +54,6 @@ provide("windowPos", lastMovedPos);
 provide("windowSize", winSize);
 provide("isRetracted", isRetracted);
 const chatRef = ref<InstanceType<typeof ChatPanel> | null>(null);
-const tabsRef = ref<InstanceType<typeof SessionTabs> | null>(null);
 
 // ── 可拖动分割线 ──
 const DEFAULT_CHAT_WIDTH = 220;
@@ -112,9 +111,6 @@ async function onSessionNew() {
     log.error("新建会话失败:", formatError(e))
     return
   }
-  await nextTick();
-  tabsRef.value?.loadSessions();
-  tabsRef.value?.refreshHistory();
   await greetNewSession();
 }
 
@@ -127,8 +123,6 @@ async function onSessionClose(sessionId: string) {
   } else if (getActiveSessionId() === sessionId || getActiveSessionId() === "") {
     await switchToSession(remaining[0].id)
   }
-  tabsRef.value?.loadSessions()
-  tabsRef.value?.refreshHistory()
 }
 
 async function onDeleteSession(sessionId: string) {
@@ -145,9 +139,6 @@ async function onDeleteSession(sessionId: string) {
     log.info("onDeleteSession 完成:", sessionId)
   } catch (e) {
     log.error("删除会话失败:", sessionId, formatError(e))
-  } finally {
-    tabsRef.value?.loadSessions()
-    tabsRef.value?.refreshHistory()
   }
 }
 
@@ -162,8 +153,6 @@ async function onRestoreSession(item: PiSessionSummary) {
       path: item.path,
     })
     await switchToSession(item.id)
-    tabsRef.value?.loadSessions()
-    tabsRef.value?.refreshHistory()
     log.info("onRestoreSession 完成:", item.id)
   } catch (e) {
     log.error("恢复会话失败:", item.id, formatError(e))
@@ -195,9 +184,33 @@ async function openSettings() {
     alwaysOnTop: true,
     transparent: true,
   });
-  setTimeout(() => {
-    invoke("enhance_settings_window").catch(() => {});
-  }, 300);
+  void enhanceWindowWhenReady("settings", "enhance_settings_window");
+}
+
+/**
+ * 提层命令要在窗口真正建好之后才生效：窗口未就绪时 getByLabel 拿不到、命令会静默空转。
+ * 轮询等待目标出现（上限 2s）再调用，超时留日志 —— 创建时的 alwaysOnTop 仍作兜底，
+ * 但不能靠它掩盖静默失效。
+ */
+async function enhanceWindowWhenReady(
+  label: string,
+  command: string,
+  beforeEnhance?: (win: WebviewWindow) => Promise<void>,
+): Promise<void> {
+  const deadline = Date.now() + 2000;
+  for (;;) {
+    const win = await WebviewWindow.getByLabel(label).catch(() => null);
+    if (win) {
+      if (beforeEnhance) await beforeEnhance(win).catch(() => {});
+      await invoke(command).catch(error => log.warn(`${command} 调用失败:`, formatError(error)));
+      return;
+    }
+    if (Date.now() >= deadline) {
+      log.warn(`${command} 跳过：窗口 ${label} 未在 2s 内就绪`);
+      return;
+    }
+    await new Promise(resolve => setTimeout(resolve, 100));
+  }
 }
 
 async function openLayerEditor() {
@@ -214,26 +227,23 @@ async function openLayerEditor() {
     decorations: true,
     alwaysOnTop: true,
   });
-  setTimeout(async () => {
-    try {
-      const w = await WebviewWindow.getByLabel("layer-editor");
-      if (w) {
-        await w.setAlwaysOnTop(true);
-        await w.setFocus();
-      }
-    } catch {}
-    invoke("enhance_layer_editor_window").catch(() => {});
-  }, 300);
+  void enhanceWindowWhenReady("layer-editor", "enhance_layer_editor_window", async win => {
+    await win.setAlwaysOnTop(true);
+    await win.setFocus();
+  });
 }
 
 let cleanupListener: (() => void) | null = null;
+/** 光标追踪的注销句柄：非 null 即当前已注册（只在 effectMode ≠ off 时） */
 let cleanupCursorTracker: (() => void) | null = null;
+/** 注册态判定的串行队列 + 卸载标记，见 syncCursorTracker() */
+let cursorTrackerQueue: Promise<void> = Promise.resolve();
+let cursorTrackerDisposed = false;
 let cleanupFocus: (() => void) | null = null;
 let cleanupMoved: (() => void) | null = null;
 let cleanupResized: (() => void) | null = null;
 let cleanupPreview: (() => void) | null = null;
 let cleanupSettingsSaved: (() => void) | null = null;
-let cleanupRestart: (() => void) | null = null;
 let cleanupClick: (() => void) | null = null;
 
 // ==========================================
@@ -487,6 +497,69 @@ async function openDevTools() {
 }
 
 // ==========================================
+// 光标追踪 — 按 effectMode 条件注册
+//
+// off 的语义就是「不要这套机构」：不注册监听，Rust 派发的光标事件不进前端，
+// globalCursor 这条响应式链也就不存在消费者。parallax / dof 才注册，行为与条件化之前一致。
+// effectMode 是 CONFIG 字段、只能从设置页改，主窗口经 deskpet-settings-saved →
+// reloadConfig() 拿到新值，所以挂载与每次设置保存后各重判一次注册态。
+// ==========================================
+type CursorMovePayload = {
+  x: number; y: number;
+  screen_x: number; screen_y: number; screen_w: number; screen_h: number;
+};
+
+let cursorEventCount = 0;
+function onCursorMove(event: { payload: CursorMovePayload }): void {
+  cursorEventCount++;
+  globalCursor.value = { x: event.payload.x, y: event.payload.y };
+  if (cursorEventCount % 120 === 0) {
+    log.debug(`光标追踪 #${cursorEventCount} | 全局(${event.payload.x},${event.payload.y})`);
+  }
+}
+
+/** 把注册态收敛到当前 effectMode 要求的形态；已在目标形态时不重复注册。 */
+async function applyCursorTracker(): Promise<void> {
+  try {
+    if (cursorTrackerDisposed) return;
+    const wanted = userConfig.effectMode !== "off";
+    if (wanted && !cleanupCursorTracker) {
+      const unlisten = await listen<CursorMovePayload>("deskpet-cursor-move", onCursorMove);
+      // 注册是异步的：await 期间可能已卸载，那就当场注销，不留悬挂监听
+      if (cursorTrackerDisposed) { unlisten(); return; }
+      cleanupCursorTracker = unlisten;
+      log.info("灵动图层光标追踪已就绪");
+    } else if (!wanted && cleanupCursorTracker) {
+      cleanupCursorTracker();
+      cleanupCursorTracker = null;
+      // 清掉陈旧坐标：切回 parallax/dof 时从「无光标」居中态起步，不会先跳到旧位置
+      globalCursor.value = null;
+      log.info("效果模式为 off，光标追踪已注销");
+    }
+  } catch (e) {
+    log.warn("灵动图层光标追踪注册失败", e);
+  }
+}
+
+/**
+ * 触发一次注册态判定。串行执行 —— 两次快速保存不会并发注册出重复监听；
+ * applyCursorTracker 自身消化异常，队列尾不会留 rejected promise 卡死后续判定。
+ */
+function syncCursorTracker(): Promise<void> {
+  cursorTrackerQueue = cursorTrackerQueue.then(applyCursorTracker);
+  return cursorTrackerQueue;
+}
+
+/** 卸载：先标记再注销；仍在 await 中的 listen 解析后会自行注销。 */
+function disposeCursorTracker(): void {
+  cursorTrackerDisposed = true;
+  if (cleanupCursorTracker) {
+    cleanupCursorTracker();
+    cleanupCursorTracker = null;
+  }
+}
+
+// ==========================================
 // 生命周期
 // ==========================================
 onMounted(async () => {
@@ -513,7 +586,6 @@ onMounted(async () => {
   }
 
   await initApp();
-  tabsRef.value?.loadSessions();
 
   invoke("set_monitor_config", {
     pollingIntervalMs: desktopConfig.pollingIntervalMs,
@@ -525,20 +597,8 @@ onMounted(async () => {
 
   await registerShortcut();
 
-  // 灵动图层：监听 Rust 光标追踪
-  try {
-    let evtCount = 0;
-    cleanupCursorTracker = await listen<{ x: number; y: number; screen_x: number; screen_y: number; screen_w: number; screen_h: number }>("deskpet-cursor-move", (event) => {
-      evtCount++;
-      globalCursor.value = { x: event.payload.x, y: event.payload.y };
-      if (evtCount % 120 === 0) {
-        log.debug(`光标追踪 #${evtCount} | 全局(${event.payload.x},${event.payload.y})`);
-      }
-    });
-    log.info("灵动图层光标追踪已就绪");
-  } catch (e) {
-    log.warn("灵动图层光标追踪注册失败", e);
-  }
+  // 灵动图层：按当前 effectMode 决定是否监听 Rust 光标追踪（off 不注册）
+  await syncCursorTracker();
 
   // Dock 点击
   try {
@@ -602,6 +662,8 @@ onMounted(async () => {
     cleanupSettingsSaved = await listen("deskpet-settings-saved", async () => {
       const previousAssistantMode = generalConfig.assistantMode;
       await reloadConfig();
+      // 效果模式可能刚被改：紧跟配置刷新重判光标追踪的注册态，不拖到能力收敛之后
+      await syncCursorTracker();
       const { initDebug } = await import("@/services/debug");
       await initDebug();
       await unregisterShortcut();
@@ -615,20 +677,8 @@ onMounted(async () => {
         const { requestConversationCapabilityMode } = await import("@/services/init");
         await requestConversationCapabilityMode("pet");
       }
-      log.debug("配置缓存已刷新 + Debug状态已更新 + 快捷键已重注册");
+      log.debug("配置缓存已刷新 + Debug状态已更新 + 快捷键已重注册 + 光标追踪已按 effectMode 同步");
     });
-  } catch { /* ignore */ }
-
-  // 重启
-  try {
-    cleanupRestart = await listen("deskpet-restart", async () => {
-      log.info("收到重启请求，正在退出...")
-      const { getAllWebviewWindows } = await import("@tauri-apps/api/webviewWindow")
-      const windows = await getAllWebviewWindows()
-      for (const w of windows) {
-        try { await w.close() } catch { /* ignore */ }
-      }
-    })
   } catch { /* ignore */ }
 
   document.addEventListener("click", hideCtxMenu);
@@ -662,13 +712,12 @@ onUnmounted(() => {
   stopMemoryConsolidationTimer()
   void import("@/services/tool/mcp").then(({ disconnectAllMcpServers }) => disconnectAllMcpServers())
   if (cleanupListener) cleanupListener();
-  if (cleanupCursorTracker) cleanupCursorTracker();
+  disposeCursorTracker();
   if (cleanupFocus) cleanupFocus();
   if (cleanupMoved) cleanupMoved();
   if (cleanupResized) cleanupResized();
   if (cleanupPreview) cleanupPreview();
   if (cleanupSettingsSaved) cleanupSettingsSaved();
-  if (cleanupRestart) cleanupRestart();
   if (cleanupClick) cleanupClick();
   document.removeEventListener("click", hideCtxMenu);
   unregisterShortcut();
@@ -692,7 +741,6 @@ onUnmounted(() => {
       <div id="chat-slot" :class="{ closed: !showChat, dragging: isDraggingDivider }" :style="showChat ? { width: chatWidth + 'px' } : {}">
         <SessionTabs
           v-show="showChat"
-          ref="tabsRef"
           @switch="onSessionSwitch"
           @new="onSessionNew"
           @close-tab="onSessionClose"

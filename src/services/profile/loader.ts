@@ -130,24 +130,14 @@ export interface ProfileDepthOfField {
   focus: ProfileDofRegion[]
 }
 
-export interface ProfileSound {
-  volume: number
-  events: Record<string, string>
-}
-
 export interface ProfileCharacter {
   id: string; name: string; scale: number; scaleMode: "pixelated" | "smooth"
 }
 
-export interface AnimFrame { f: string; d: number }
-export interface AnimDef { loop: boolean; frames: AnimFrame[] }
-export interface ExpressionRule { kw: string[]; anim: string }
-
 export interface ProfileData {
   id: string; meta: ProfileMeta; theme: ProfileTheme
-  sound: ProfileSound; character: ProfileCharacter
-  animations: Record<string, AnimDef>; expressions: ExpressionRule[]
-  builtinAnimations: string[]; basePath: string; defaultUiBasePath?: string
+  character: ProfileCharacter
+  basePath: string; defaultUiBasePath?: string
 }
 
 // ── 内部状态 ──
@@ -232,27 +222,12 @@ async function loadProfile(id: string): Promise<ProfileData> {
   }
 
   let rawChar: any;
-  let charBasePath = basePath; // ★ 帧素材实际所在 Profile（可能回退到默认）
+  let charBasePath = basePath; // ★ character.yaml 实际所在 Profile（可能回退到默认）
   try {
     rawChar = await fetchYaml<any>(`${basePath}/character.yaml`);
   } catch {
     charBasePath = await resolveProfileBaseUrl(DEFAULT_PROFILE);
     rawChar = await fetchYaml<any>(`${charBasePath}/character.yaml`);
-  }
-  const resolveFramePath = (f: string) => `${charBasePath}/${f}`;
-
-  const animations: Record<string, AnimDef> = {};
-  if (rawChar?.animations) {
-    for (const [name, def] of Object.entries(rawChar.animations)) {
-      const animDef = def as any;
-      animations[name] = {
-        loop: animDef.loop === true,
-        frames: (animDef.frames || []).map((f: any) => ({
-          f: resolveFramePath(f.f),
-          d: f.d || 120,
-        })),
-      };
-    }
   }
 
   return {
@@ -305,19 +280,12 @@ async function loadProfile(id: string): Promise<ProfileData> {
         })),
       },
     },
-    sound: {
-      volume: rawProfile?.sound?.volume ?? 0.8,
-      events: rawProfile?.sound?.events || {},
-    },
     character: {
       id: rawChar?.character?.id || id,
       name: rawChar?.character?.name || id,
       scale: rawChar?.character?.scale ?? 1.0,
       scaleMode: rawChar?.character?.scaleMode || "pixelated",
     },
-    animations,
-    expressions: rawChar?.expressions || [],
-    builtinAnimations: rawChar?.builtinAnimations || [],
     basePath,
     defaultUiBasePath,
   };

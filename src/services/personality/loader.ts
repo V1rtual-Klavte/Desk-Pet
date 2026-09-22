@@ -4,7 +4,6 @@
 // ==========================================
 
 import type { PersonalityCard, CardSections, CardVariableDef, VariableScope, VariableType, VariableUpdateBy, VariableResetPolicy } from "./types"
-import { parseEmotionMappings } from "./emotion"
 import { parseMustRules } from "./must-rules"
 import { createLogger } from "@/services/logger"
 import { formatError } from "@/services/error"
@@ -218,10 +217,6 @@ function parseSections(body: string): CardSections {
   // 行为进阶 — 原文作为 LLM 语气指引
   const whenText = (sections["行为进阶"] || "").trim()
 
-  // 情绪表达
-  const emotionRaw = sections["情绪表达"] || ""
-  const emotionMappings = parseEmotionMappings(emotionRaw)
-
   // 必须遵守
   const mustRaw = sections["必须遵守"] || ""
   const mustRules = parseMustRules(mustRaw)
@@ -230,7 +225,7 @@ function parseSections(body: string): CardSections {
     roleSetting: sections["角色设定"] || "",
     languageStyle: sections["语言风格"] || "",
     outputRules: sections["输出规则"] || "",
-    emotionRaw, emotionMappings, whenText, mustRules,
+    whenText, mustRules,
     variableDefs,
   }
 }

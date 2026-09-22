@@ -7,7 +7,6 @@ import { helpCommand } from "./help"
 import { clearCommand } from "./clear"
 import { memoryCommand } from "./memory"
 import { compactCommand } from "./compact"
-import { expressionCommands } from "./expression"
 import { winCommands } from "./win"
 
 let _initialized = false
@@ -20,7 +19,6 @@ export function initSlashCommands(): void {
     clearCommand,
     memoryCommand,
     compactCommand,
-    ...expressionCommands,
     ...winCommands,
   ])
   _initialized = true

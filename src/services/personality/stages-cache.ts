@@ -122,7 +122,7 @@ export function restoreStagesCache(state: StagePrompts | null): void { cache = s
 
 export function clearStagesCache(): void { cache = null }
 
-/** 从缓存获取工具阶段文案（middleware 调用） */
+/** 按工具类别获取工具阶段文案（executing / done / blocked） */
 export function getStagePrompt(
   stage: "executing" | "done" | "blocked",
   actionCategory: string,

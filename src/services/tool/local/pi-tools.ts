@@ -8,6 +8,7 @@ import type { ExecutionEnv } from "@earendil-works/pi-agent-core"
 import { registerAll } from "../registry"
 import { adaptHarnessTool } from "../pi/harness-adapter"
 import { TauriExecutionEnv } from "../pi/tauri-execution-env"
+import { TOOL_POLICY_VERSION } from "../types"
 import { createLogger } from "@/services/logger"
 import { toolsConfig } from "@/services/config"
 import {
@@ -34,26 +35,53 @@ export async function registerPiBaseTools(): Promise<void> {
     maxSafetyLevel(writeBaseLevel(), resolveFilePathLevel(params.path))
 
   registerAll([
-    {
-      ...adaptHarnessTool(read, ctx => createEnv(ctx.mode), { id: "pi-read", safetyLevel: "SAFE", actionCategory: "fs.read" }),
+    adaptHarnessTool(read, ctx => createEnv(ctx.mode), {
+      id: "pi-read", safetyLevel: "SAFE", actionCategory: "fs.read",
       // 只读不等于无害：私钥凭据类路径只读一次就足以泄露
       resolveSafetyLevel: params => resolveFilePathLevel(params.path),
-    },
-    {
-      ...adaptHarnessTool(write, ctx => createEnv(ctx.mode), { id: "pi-write", safetyLevel: "DANGER", actionCategory: "fs.write" }),
+      // 只读能力可与同批其它读取并发；敏感路径仍会在风险维度提高为 ask/deny。
+      policy: {
+        version: TOOL_POLICY_VERSION,
+        permission: { defaultDecision: "allow" },
+        execution: { effect: "read", mode: "parallel", isolation: "shared_read", replay: "never" },
+        context: { resultProjection: "reference", historyCompaction: "summarize" },
+      },
+    }),
+    adaptHarnessTool(write, ctx => createEnv(ctx.mode), {
+      id: "pi-write", safetyLevel: "DANGER", actionCategory: "fs.write",
       lightweightPolicy: "confirm",
       resolveSafetyLevel: classifyWriteRisk,
-    },
-    {
-      ...adaptHarnessTool(edit, ctx => createEnv(ctx.mode), { id: "pi-edit", safetyLevel: "DANGER", actionCategory: "fs.write" }),
+      // 工具侧不额外表态：改文件的风险与确认由风险维度与总策略给出。
+      policy: {
+        version: TOOL_POLICY_VERSION,
+        permission: { defaultDecision: "passthrough" },
+        execution: { effect: "local_mutation", mode: "sequential", isolation: "exclusive_effect", replay: "never" },
+        context: { resultProjection: "preserve", historyCompaction: "summarize" },
+      },
+    }),
+    adaptHarnessTool(edit, ctx => createEnv(ctx.mode), {
+      id: "pi-edit", safetyLevel: "DANGER", actionCategory: "fs.write",
       lightweightPolicy: "confirm",
       resolveSafetyLevel: classifyWriteRisk,
-    },
-    {
-      ...adaptHarnessTool(bash, ctx => createEnv(ctx.mode), { id: "pi-bash", safetyLevel: "NORMAL", actionCategory: "os.exec" }),
+      policy: {
+        version: TOOL_POLICY_VERSION,
+        permission: { defaultDecision: "passthrough" },
+        execution: { effect: "local_mutation", mode: "sequential", isolation: "exclusive_effect", replay: "never" },
+        context: { resultProjection: "preserve", historyCompaction: "summarize" },
+      },
+    }),
+    adaptHarnessTool(bash, ctx => createEnv(ctx.mode), {
+      id: "pi-bash", safetyLevel: "NORMAL", actionCategory: "os.exec",
       lightweightPolicy: "confirm",
       resolveSafetyLevel: classifyBashRisk,
-    },
+      // 参数级风险由 resolveSafetyLevel 给出，不能仅凭工具名放行。
+      policy: {
+        version: TOOL_POLICY_VERSION,
+        permission: { defaultDecision: "passthrough" },
+        execution: { effect: "process", mode: "sequential", isolation: "exclusive_effect", replay: "never" },
+        context: { resultProjection: "reference", historyCompaction: "summarize" },
+      },
+    }),
   ])
   log.info("Pi 基础工具已注册: read/write/edit/bash")
 }

@@ -3,7 +3,7 @@
 // ==========================================
 
 import type { VariablePool } from "@/services/personality/variable-pool"
-import type { PiAgentTurnOutput } from "@/services/engine/pi"
+import type { PiAgentTurnOutput, TurnFailure } from "@/services/engine/pi"
 
 // ── Scene DSL ──
 
@@ -66,12 +66,37 @@ export interface MemorySnapshot {
   sessionTurns: { role: "user" | "assistant"; text: string }[]
 }
 
+/**
+ * 本回合的预期失败。
+ *
+ * 声明后，这个回合必须以「命中这条声明的失败」结束：回合正常完成、以别的分类失败、
+ * 或失败文案不匹配，都判失败 —— 期望不是「允许失败」。
+ * 只覆盖 `output.failure`（回合拿到模型回复之前的结构化失败）；回合抛出异常仍是系统错误。
+ */
+export interface ExpectedTurnFailure {
+  /**
+   * 期望的失败分类，必须命中 `output.failure.kind` 之一。
+   *
+   * 分类由运行期从失败文案派生（`runtime.ts` 的 `classifyTurnFailure`），只能圈到粗桶：
+   * 同一个失败路径的文案里带不同的数字时，可能落在相邻的两个桶里。所以允许声明一组，
+   * 真正钉住「哪条失败路径」的是 `message`。
+   */
+  kind: TurnFailure["kind"] | readonly TurnFailure["kind"][]
+  /**
+   * 失败正文匹配器：字符串按子串，正则按 `RegExp.test`。
+   * 不要用带 `g` 标志的正则（`test` 会保留上次匹配位置）。
+   */
+  message: string | RegExp
+}
+
 export interface TurnDef {
   index: number
   description: string
   userText: string
   isActiveMessage?: boolean
   checks: AssertCheck[]
+  /** 本回合预期以某类失败结束；不声明时，任何 `output.failure` 都判失败。 */
+  expectFailure?: ExpectedTurnFailure
 }
 
 export interface SceneDef {
@@ -142,6 +167,13 @@ export interface TurnResult {
   duration: number
   metrics: TurnMetrics
   errorKind?: ErrorKind
+  /**
+   * 本回合按 `TurnDef.expectFailure` 声明并命中的失败。
+   *
+   * 它只标注「这条 errorKind 是场景预期的」：报告据此把预期失败与真实故障分开，
+   * 失败路径本身仍由该回合的断言证明。
+   */
+  expectedFailure?: { kind: TurnFailure["kind"]; message: string }
 }
 
 export type SceneStatus = "pass" | "fail" | "skip" | "timeout"
@@ -222,6 +254,8 @@ export interface TestReport {
 export interface ContractCheckResult {
   module: string
   stale: boolean
+  /** stale 的原因：没有启动预检证明，或预检 hash 与契约声明不一致。 */
+  staleReason?: string
   missing: string[]       // coverage points without scenes
   gaps: string[]           // rules violations
   valid: boolean

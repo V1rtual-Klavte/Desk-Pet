@@ -6,7 +6,8 @@ Desk-Pet 的运行时验证以 [Live Test 使用规范](../../src/services/__tes
 
 - **Live Test** 在独立 Tauri WebView 中运行真实前端服务、Rust IPC、运行时状态和临时数据根。它按 Scene 的入口选择真实 Provider、fake Provider 或无模型的 unit 断言；这些入口的含义及命令见 Live README。
 - **类型与编译检查**只证明 TypeScript/Rust 的静态可构建性，不能替代 Live Test 的状态、IPC、Provider 或工具链验证。
-- **CI** 在 macOS 和 Windows 执行编译级检查；Live Test 不在 CI 中运行。Windows 的运行时交互仍须在支持的桌面环境中验证。
+- **Rust 单测**（`pnpm run test:rust`，即 `cargo test --lib`）覆盖 `src-tauri` 内不依赖运行时的纯逻辑：Bash 策略、路径校验、输出裁剪与工具许可额度。它们不启动 Tauri，也不验证 IPC、Provider 与持久化。
+- **CI** 在 macOS 和 Windows 执行编译级检查与 Rust 单测；Live Test 不在 CI 中运行。Windows 的运行时交互仍须在支持的桌面环境中验证。
 
 ## Contract 门禁
 
@@ -20,4 +21,4 @@ Desk-Pet 的运行时验证以 [Live Test 使用规范](../../src/services/__tes
 
 通过结果只证明当次配置、Provider 与已覆盖 Scene 下的行为；长期记忆自动检索、未覆盖平台路径或尚未接通的规划能力不能由已有场景推断为已验证。
 
-最新集中验证证据与仍存缺口记录在[记忆系统重构执行手册](../plans/active/记忆系统重构执行手册.md)。
+最新集中验证证据与仍存缺口记录在[未完成工作与已知缺口](../plans/active/未完成工作与已知缺口.md#6-当前验证证据)。

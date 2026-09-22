@@ -1,6 +1,6 @@
 // Desk-Pet's only multi-turn agent runtime. Pi AgentHarness owns the model/tool loop,
 // durable queues, and session entries; Desk-Pet owns product state, safety, Card
-// variables, reply processing, and effects.
+// variables, and reply processing.
 
 import { contentText } from "@earendil-works/pi-ai"
 import type { AgentMessage, SettledAssistantMessage } from "@earendil-works/pi-agent-core"
@@ -14,20 +14,19 @@ import { buildPrompt, contextBudget, CONTEXT_RATIOS, estimateRequestTokens, esti
 import { bindRunningPlan, clearRunningPlan, notifyPlanEnd, requestPlanConfirm, requestPlanStepDecision } from "@/services/engine/plan-confirmation"
 import { executePlan, evaluateComplexity, formatStepResults, generatePlan } from "@/services/engine/planner"
 import { recordMessage, recordToolCall, transition } from "@/services/engine/session"
-import { getEffectiveThinkingEffort, updateRequestStats } from "@/services/debug"
+import { getEffectiveThinkingEffort, recordModelUsage, updateRequestStats } from "@/services/debug"
 import { getSkillsPromptBlock, getSkillCatalogFingerprint } from "@/services/skill"
 import { formatPoolForPrompt } from "@/services/personality/variable-pool"
 import { getActiveCard } from "@/services/personality/registry"
 import type { PersonalityCard } from "@/services/personality/types"
 import { getPoolSnapshot, getSessionStart, applyResetPolicies, refreshVariablePool, updateInteractionVar } from "@/services/personality/variable-pool"
-import { PetPersonalityMiddleware } from "@/services/personality/middleware"
-import type { PersonalityEffect } from "@/services/personality/middleware"
 import { getFallbackReply, getSimpleStage } from "@/services/personality/stages-cache"
 import { generateReply, parseRuntimeData } from "@/services/reply"
 import { authorizeToolExecution, invalidatePermissionScope } from "@/services/safety"
 import { getActiveSessionId, pushMessage } from "@/services/session/store"
 import { getToolsForMode } from "@/services/tool/registry"
 import { SESSION_TRANSCRIPT_TOOL, toToolDeclaration, createTranscriptTool } from "@/services/tool"
+import { findRetainedToolCall, preservedToolNames, retainedToolNames, toolPolicyHash } from "@/services/tool/policy"
 import type { HarnessToolRun } from "@/services/tool/pi/harness-tool-adapter"
 import type { ToolDef } from "@/services/tool/types"
 import { generalConfig, loopConfig, planConfig, safetyConfig } from "@/services/config"
@@ -38,10 +37,21 @@ import { PROVIDER_TIMEOUT_MS } from "./net-guard"
 import { RuntimeDataStreamFilter } from "./stream-text"
 import { summarizeCompaction } from "../compactor"
 import { createHarnessRunState, harnessSlots, HarnessSlot } from "./harness-slot"
-import type { HarnessCompactOutcome, HarnessDeliveryReceipt, HarnessRunHooks, HarnessRunResult, HarnessRunSinks, HarnessRunSpec, HarnessRunState } from "./harness-slot"
+import { PROMPT_SNAPSHOT_ENTRY } from "./delivery"
+import type {
+  HarnessCancelQueuedKind,
+  HarnessCompactOutcome,
+  HarnessDeliveryReceipt,
+  HarnessQueuedItem,
+  HarnessRunHooks,
+  HarnessRunResult,
+  HarnessRunSinks,
+  HarnessRunSpec,
+  HarnessRunState,
+} from "./harness-slot"
 import { formatError } from "@/services/error"
 import { createLogger } from "@/services/logger"
-import { createPromptRewrite, createPromptSnapshot, createRuntimeTraceContext, publishRuntimeTrace } from "@/services/engine/runtime"
+import { createPromptRewrite, createPromptSnapshot, createRuntimeTraceContext, messageEventId, publishRuntimeTrace } from "@/services/engine/runtime"
 import type { RuntimeTraceContext } from "@/services/engine/runtime"
 import { redactText, sha256Text, stableSerialize } from "@/services/engine/runtime"
 
@@ -71,9 +81,68 @@ export async function deliverActiveTurn(
   return receipt
 }
 
+// ── 排队视图与单项撤回（PI-1：UI 不再自建队列状态） ──
+
+export interface QueuedInputsView {
+  /** false = 该会话还没有运行槽（未打开），此时列表为空不代表「没有排队项」。 */
+  loaded: boolean
+  /** 当前运行是否在进行（消费中的项离开列表说明已进入对话）。 */
+  running: boolean
+  items: HarnessQueuedItem[]
+}
+
+/** lane 持久 inbox 的只读排队视图；真相源仍由 Harness 持有。 */
+export function listQueuedInputs(sessionId: string): QueuedInputsView {
+  const snapshot = harnessSlots.snapshot(sessionId)
+  if (!snapshot) return { loaded: false, running: false, items: [] }
+  return { loaded: true, running: snapshot.state === "running", items: snapshot.queued }
+}
+
+/**
+ * 撤回一条尚未被消费的排队项。
+ * cancelled / already_consumed / not_found 的语义与 lane.cancelQueued 一致；
+ * unavailable 表示该会话的槽或通道当前不可用。
+ */
+export async function withdrawQueuedInput(sessionId: string, entryId: string): Promise<HarnessCancelQueuedKind> {
+  return await harnessSlots.cancelQueued(sessionId, entryId)
+}
+
+// ── 停止后继续 / 丢弃（PI-1：归还的暂停输入由用户决定） ──
+
+/**
+ * 取出暂停项（停止归还的 nextRun）准备重投递：取出即从 lane inbox 撤回，
+ * 所以调用方必须在投递失败时用 returnPausedInputs 放回，不能吞掉。
+ */
+export async function takePausedInputs(sessionId: string): Promise<AgentMessage[]> {
+  const slot = harnessSlots.peek(sessionId)
+  return slot ? await slot.takePausedMessages() : []
+}
+
+/** 投递未获接受时把取出的暂停消息按 nextRun 原样放回（持久、不自动继续）。 */
+export async function returnPausedInputs(sessionId: string, messages: AgentMessage[]): Promise<void> {
+  if (messages.length === 0) return
+  const slot = harnessSlots.peek(sessionId)
+  if (!slot) return
+  await slot.requeuePausedMessages(messages)
+}
+
+/** 取回的暂停消息拼成文本（规划/召回按文本工作）；身份留在消息本身上，不靠这段文本。 */
+export function pausedInputsText(messages: AgentMessage[]): string {
+  return messages.flatMap(message => {
+    const content = (message as { content?: unknown }).content
+    if (typeof content === "string") return [content]
+    return Array.isArray(content) ? [contentText(content as Parameters<typeof contentText>[0])] : []
+  }).join("\n")
+}
+
 export interface PiAgentTurnInput {
   sessionId: string
   userText: string
+  /**
+   * 停止后继续：把取回的暂停输入按原顺序作为本次投递内容（身份不合并、正文不重复追加）。
+   * userText 仍用于规划/召回等按文本工作的环节。
+   */
+  pausedMessages?: AgentMessage[]
   chatMessages: Message[]
   unansweredCount: number
   messageCount: number
@@ -100,8 +169,7 @@ export interface PiAgentTurnOutput {
   reply: string
   toolCallHistory: { toolName: string; status: string; personalityMsg?: string }[]
   retriesUsed: number
-  effects: { expression: string; soundEvent: string | null }[]
-  runtimeData?: { emotionKey: string | null; variables: Record<string, string> }
+  runtimeData?: { variables: Record<string, string> }
   /** 仅在重试耗尽、回复是兜底文案时出现 */
   failure?: TurnFailure
   /** 停止归还：未消费的补充消息 requestId（宿主决定重新排队或丢弃）。 */
@@ -110,14 +178,42 @@ export interface PiAgentTurnOutput {
   abortedByStop?: boolean
 }
 
-/** 把 Provider 的失败文案收敛成稳定分类 */
-function classifyTurnFailure(message: string): TurnFailure["kind"] {
+/**
+ * 失败回合的展示文案。
+ *
+ * 硬预算判定必须原样透出（用户要看到的是「缩短输入或调整上下文窗口」）：溢出恢复用尽时
+ * 失败文案就是这条判定；上游以「没有可安全摘要的范围」declined 时失败文案是上游的，
+ * 回复回落到本回合最后一次判定。判定只有在上游确实拒过溢出压缩时才借用 ——
+ * 否则运行里留存的旧判定会顶替无关故障的文案。
+ */
+export function turnFailureReply(
+  message: string,
+  state: Pick<HarnessRunState, "lastBudgetError" | "overflowRecoveryDeclined">,
+): string {
+  if (message.includes("上下文需要约")) return message
+  if (state.overflowRecoveryDeclined && state.lastBudgetError) return state.lastBudgetError
+  return getFallbackReply("maxRetriesExhausted")
+}
+
+/**
+ * 把 Provider 的失败文案收敛成稳定分类。
+ *
+ * 状态码必须按**独立数字**匹配（`\b`）：HTTP 状态码在文案里前后一定不是数字，而本仓
+ * 预算判定这类本地文案带的是估算 token 数那样的长数字串。无边界的老写法会让
+ * `130523` 里的 `523`、`104031` 里的 `403`、`142900` 里的 `429` 命中，
+ * 把本地预算失败记成 provider / auth / rate_limit —— 数字的形态因此污染了分类。
+ *
+ * 分类只能从文案反推：Harness 把运行失败降维成一条 message，没有结构化状态码通道
+ * （记录里的 `code` 只有 assistant_error 一档），所以边界必须在这里钉死。
+ * 稳定性由 `memory` 的 预算溢出判定 场景按多种数字形态断言。
+ */
+export function classifyTurnFailure(message: string): TurnFailure["kind"] {
   const lower = message.toLowerCase()
   if (/timeout|timed out|超时/.test(lower)) return "timeout"
-  if (/401|403|unauthor|invalid api key|api key/.test(lower)) return "auth"
-  if (/429|rate limit|too many requests/.test(lower)) return "rate_limit"
+  if (/\b401\b|\b403\b|unauthor|invalid api key|api key/.test(lower)) return "auth"
+  if (/\b429\b|rate limit|too many requests/.test(lower)) return "rate_limit"
   if (/enotfound|econnrefused|econnreset|network|fetch failed|dns/.test(lower)) return "network"
-  if (/5\d\d|upstream|service unavailable|provider/.test(lower)) return "provider"
+  if (/\b5\d\d\b|upstream|service unavailable|provider/.test(lower)) return "provider"
   return "unknown"
 }
 
@@ -155,7 +251,6 @@ interface TurnKernel {
   skillCatalogFingerprint?: string
   transientUserInput: boolean
   persistSnapshots: boolean
-  effects?: PiAgentTurnOutput["effects"]
   toolRun: HarnessToolRun
   state: HarnessRunState
   card: PersonalityCard | null
@@ -172,7 +267,7 @@ interface TurnKernel {
   /**
    * 记录「原始正文 ↔ 剥离 RUNTIME_DATA 后正文」的配对。
    * afterResponse 会先剥离再提交，事件里拿到的最终助手消息已经没有标签，
-   * 结算时直接解析会丢掉 emotion 与变量写入，所以必须在这里留底。
+   * 结算时直接解析会丢掉变量写入，所以必须在这里留底。
    */
   recordSettledReply: (raw: string, stripped: string) => void
   /** 取回与剥离后正文配对的原始正文；没有配对时原样返回。 */
@@ -194,7 +289,6 @@ interface TurnKernelOptions {
   skillCatalogFingerprint?: string
   transientUserInput: boolean
   persistSnapshots: boolean
-  effects?: PiAgentTurnOutput["effects"]
   toolRun: HarnessToolRun
   card?: PersonalityCard | null
 }
@@ -234,7 +328,7 @@ function createTurnKernel(options: TurnKernelOptions): TurnKernel {
       const toolSchemas = await Promise.all(options.tools.map(async tool => ({
         name: tool.name,
         schemaHash: await sha256Text(stableSerialize({ name: tool.name, description: tool.description, parameters: tool.parameters })),
-        policyHash: await sha256Text(stableSerialize({ actionCategory: tool.actionCategory, safetyLevel: tool.safetyLevel })),
+        policyHash: await toolPolicyHash(tool),
       })))
       const snapshot = await createPromptSnapshot({
         snapshotId,
@@ -252,7 +346,9 @@ function createTurnKernel(options: TurnKernelOptions): TurnKernel {
         }],
         toolSchemas,
         agentMessages: agentMessages.map((message, index) => ({
-          id: `agent:${index}`,
+          // 投递输入的持久身份写进快照：request_prepared 才能按身份核对「这条输入进了这次请求」；
+          // 位置号只作没有身份的消息（回合首条 prompt、工具结果）的回退。
+          id: messageEventId(message as { deskpetEventId?: unknown }) ?? `agent:${index}`,
           origin: options.transientUserInput ? "active" : message.role === "toolResult" ? "tool" : message.role === "assistant" ? "assistant" : "user",
           role: message.role,
           content: stableSerialize(message),
@@ -286,7 +382,7 @@ function createTurnKernel(options: TurnKernelOptions): TurnKernel {
         // 那里直接写 lane 会与 drive 持有的命令锁循环等待（usage 事件必现死锁）。
         // 宿主在回合 drive 结束后统一 flush（HarnessSlot.flushAuditQueue）。
         harnessSlots.get(options.sessionId)
-          .queueAuditEntry("deskpet.prompt_snapshot", snapshot as unknown as import("@earendil-works/pi-agent-core").JsonValue)
+          .queueAuditEntry(PROMPT_SNAPSHOT_ENTRY, snapshot as unknown as import("@earendil-works/pi-agent-core").JsonValue)
       }
     },
   }
@@ -297,11 +393,22 @@ function createTurnKernel(options: TurnKernelOptions): TurnKernel {
 function createCompactionHook(options: {
   mode: "pet" | "assistant"
   model: PiModel
+  tools: readonly ToolDef[]
   onSummary?: (summary: StructuredSummary) => void
 }): NonNullable<HarnessRunHooks["beforeCompaction"]> {
+  const retained = retainedToolNames(options.tools)
+  const preserved = preservedToolNames(options.tools)
   return async ({ preparation, signal }) => {
     // 全量都在保留窗口内时没有可安全摘要的覆盖范围：decline 让 Harness 原样收尾。
     if (!preparation.messagesToSummarize.length && !preparation.turnPrefixMessages.length) return { decline: true }
+    // historyCompaction=retain 的调用配对必须保留原文：连续完整轮下不能把覆盖边界推进越过它，
+    // 宁可 decline（由宿主预算守卫报告上下文不足），也不默默丢掉未覆盖历史。
+    const retainedTool = findRetainedToolCall(preparation.messagesToSummarize, retained)
+      ?? findRetainedToolCall(preparation.turnPrefixMessages, retained)
+    if (retainedTool) {
+      log.warn("摘要范围覆盖了必须保留原文的工具调用，本轮不压缩:", retainedTool)
+      return { decline: true }
+    }
     const outcome = await summarizeCompaction({
       mode: options.mode,
       messages: preparation.messagesToSummarize,
@@ -309,6 +416,7 @@ function createCompactionHook(options: {
       previousSummary: preparation.previousSummary,
       model: options.model,
       signal,
+      preserveToolNames: preserved,
     })
     options.onSummary?.(outcome.summary)
     return {
@@ -332,7 +440,7 @@ function createRequestOptionsPatch(): NonNullable<HarnessRunHooks["beforeRequest
 
 /** 每回合的 Harness 运行规格；权限、投影、观测与 UI/统计消费点都在这里接线。 */
 function createTurnSpec(kernel: TurnKernel, options: {
-  prompt: string | AgentMessage
+  prompt: string | AgentMessage | AgentMessage[]
   timeoutMs: number
   maxToolCalls: number
   projectToolResults: boolean
@@ -357,9 +465,7 @@ function createTurnSpec(kernel: TurnKernel, options: {
         return { block: { reason: `工具 ${toolName} 不可用` } }
       }
       recordToolCall(kernel.sessionId)
-      const category = tool.actionCategory ?? "_default"
       transition("EXECUTING", kernel.sessionId)
-      applyEffect(PetPersonalityMiddleware.wrap("executing", { actionCategory: category, toolName: tool.name }), kernel.effects)
       emitUiEvent("tool-executing", { toolId: tool.name, toolName: tool.name })
       const permission = await authorizeToolExecution(tool, args as Record<string, unknown>, {
         mode: kernel.mode,
@@ -387,14 +493,16 @@ function createTurnSpec(kernel: TurnKernel, options: {
       let prepared = messages
       try {
         if (options.projectToolResults) {
-          prepared = prepared.map(message => projectToolResultMessage(message, kernel.model.contextWindow))
+          prepared = prepared.map(message => projectToolResultMessage(message, kernel.model.contextWindow, toolsByName))
         }
         kernel.latestMessages = prepared
         const budget = contextBudget(kernel.model.contextWindow, kernel.model.maxTokens)
         const used = estimateRequestTokens(systemPrompt, prepared, kernel.tools)
         if (used > budget.hardInputLimit) {
-          // transform_context 不允许 reject：错误记入回合状态，由网关在下一次请求阻断。
-          state.contextError ??= new ContextBudgetError(used, budget.hardInputLimit)
+          // transform_context 不允许 reject：判定记入回合状态，由网关在下一次请求上报。
+          // 每次投影都按当次视图重算并覆盖（不粘住首条判定）：网关取走判定后，Harness 会压缩
+          // 再重试一次，重试请求要拿到的是压缩后视图的结论；残留旧判定会让恢复永远被挡住。
+          state.contextError = new ContextBudgetError(used, budget.hardInputLimit)
         }
         void kernel.captureSnapshot("transform_context", prepared, []).catch(error => log.warn("PromptSnapshot 采集失败", formatError(error)))
       } catch (error) {
@@ -402,7 +510,7 @@ function createTurnSpec(kernel: TurnKernel, options: {
       }
       return { messages: prepared }
     },
-    beforeCompaction: createCompactionHook({ mode: kernel.mode, model: kernel.model }),
+    beforeCompaction: createCompactionHook({ mode: kernel.mode, model: kernel.model, tools: kernel.tools }),
     beforeRequest: createRequestOptionsPatch(),
     afterResponse: (message, meta) => {
       publishRuntimeTrace(kernel.traceContext, "provider_response", {
@@ -412,8 +520,8 @@ function createTurnSpec(kernel: TurnKernel, options: {
         headerNames: Object.keys(meta.headers ?? {}).sort(),
       })
       // 提交前剥离 RUNTIME_DATA：条目是真相源，但正文块不进入后续请求与展示。
-      // 剥离前先留底原始正文：事件里的最终助手消息已经没有标签，结算时的 emotion
-      // 映射与 RUNTIME_DATA 变量写入都要靠它。
+      // 剥离前先留底原始正文：事件里的最终助手消息已经没有标签，
+      // 结算时的 RUNTIME_DATA 变量写入要靠它。
       const stripped = stripRuntimeData(message)
       kernel.recordSettledReply(contentText(message.content), contentText(stripped.content))
       return stripped
@@ -496,6 +604,9 @@ function createTurnSinks(kernel: TurnKernel): HarnessRunSinks {
         toolCount: kernel.tools.length,
         toolNames: kernel.tools.map(tool => tool.name),
       })
+      // 主回合逐请求用量记进分列统计；压缩等一次性调用不走这个 sink，
+      // 由 completePiText 按自己的 purpose 单独记录。
+      recordModelUsage("main", row.usage)
       publishRuntimeTrace(kernel.traceContext, "provider_usage", {
         inputTokens: row.usage.input,
         outputTokens: row.usage.output,
@@ -512,7 +623,6 @@ export async function runPiAgentTurn(input: PiAgentTurnInput): Promise<PiAgentTu
   if (!input.sessionId.trim()) throw new Error("Pi Agent 回合缺少 sessionId")
   const { userText, unansweredCount, isActiveMessage } = input
   const toolCallHistory: PiAgentTurnOutput["toolCallHistory"] = []
-  const effects: PiAgentTurnOutput["effects"] = []
 
   const turnSessionId = input.sessionId
   const requestId = input.ingress?.requestId ?? `runtime-${input.turnId ?? crypto.randomUUID()}`
@@ -544,6 +654,9 @@ export async function runPiAgentTurn(input: PiAgentTurnInput): Promise<PiAgentTu
     userProfileText: MemoryService.getUserProfileSync(),
     dynamicPrompt: `${formatPoolForPrompt(pool)}${thinkingEffort === "low" ? "\n[请快速简要回答]" : thinkingEffort === "high" ? "\n[请仔细深入思考]" : ""}` }
   try {
+  // 运行态信号：ChatPanel 据此显示/收起停止按钮。真相仍是 harnessSlots 的运行槽，
+  // 事件只是通知通道，UI 不因此持有第二份运行状态。
+  void emitUiEvent("deskpet-run-state", { sessionId: turnSessionId, running: true })
   assertCurrent()
   const { prepareConversationCapabilities } = await import("@/services/init")
   await prepareConversationCapabilities(mode, requestId)
@@ -564,7 +677,6 @@ export async function runPiAgentTurn(input: PiAgentTurnInput): Promise<PiAgentTu
     assertCurrent()
     if (complexity.score >= planConfig.complexityThreshold) {
       transition("PLANNING", turnSessionId)
-      applyEffect(PetPersonalityMiddleware.wrap("planning"), effects)
       const plan = await generatePlan(planUserText, {
         cardId: card?.id ?? "neutral",
         cardRole: card?.sections.roleSetting ?? "",
@@ -615,7 +727,7 @@ export async function runPiAgentTurn(input: PiAgentTurnInput): Promise<PiAgentTu
           transition("WAITING", turnSessionId)
           const reply = getSimpleStage("planning") ?? "好的，已取消计划～"
           await slot.appendAssistantMessage(reply)
-          return { reply, toolCallHistory, retriesUsed: 0, effects: [] }
+          return { reply, toolCallHistory, retriesUsed: 0 }
         }
         await planCheckpointStore.transitionPlan(planId, "running")
         // 执行期登记中断通道，「终止执行」据此真正停下剩余步骤；
@@ -684,8 +796,6 @@ export async function runPiAgentTurn(input: PiAgentTurnInput): Promise<PiAgentTu
       derivedFrom: [input.turnId ?? requestId],
     }))
   }
-  applyEffect(PetPersonalityMiddleware.wrap("thinking"), effects)
-
   const kernel = createTurnKernel({
     sessionId: turnSessionId,
     requestId,
@@ -701,16 +811,17 @@ export async function runPiAgentTurn(input: PiAgentTurnInput): Promise<PiAgentTu
     skillCatalogFingerprint,
     transientUserInput: isActiveMessage === true,
     persistSnapshots: true,
-    effects,
     card,
     toolRun: {
       mode, sessionId: turnSessionId, runGeneration: generation,
       isCurrent: () => runIsCurrent(),
-      history: toolCallHistory, effects,
+      history: toolCallHistory,
     },
   })
   const spec = createTurnSpec(kernel, {
-    prompt: isActiveMessage ? createActiveMessage(userText, input.ingress) : userText,
+    prompt: input.pausedMessages?.length
+      ? input.pausedMessages
+      : isActiveMessage ? createActiveMessage(userText, input.ingress) : userText,
     timeoutMs: loopConfig.turnTimeoutMs,
     maxToolCalls: loopConfig.maxToolCallsPerTurn,
     projectToolResults: true,
@@ -722,10 +833,12 @@ export async function runPiAgentTurn(input: PiAgentTurnInput): Promise<PiAgentTu
   const result = await slot.run(spec)
   await slot.waitForIdle()
   await Promise.allSettled(kernel.snapshotTasks)
-  return settleMainTurn({ input, kernel, result, effects, toolCallHistory })
+  return settleMainTurn({ input, kernel, result, toolCallHistory })
   } finally {
     if (ownedGeneration) harnessSlots.end(turnSessionId, generation)
     invalidatePermissionScope(turnSessionId, generation)
+    // 收尾先于释放：运行槽已 end，界面停止按钮据此收敛（排队视图在收尾后刷新）。
+    void emitUiEvent("deskpet-run-state", { sessionId: turnSessionId, running: false })
     const { releaseMcpOwner } = await import("@/services/tool")
     await releaseMcpOwner(requestId)
   }
@@ -736,20 +849,19 @@ async function settleMainTurn(args: {
   input: PiAgentTurnInput
   kernel: TurnKernel
   result: HarnessRunResult
-  effects: PiAgentTurnOutput["effects"]
   toolCallHistory: PiAgentTurnOutput["toolCallHistory"]
 }): Promise<PiAgentTurnOutput> {
-  const { kernel, result, effects, toolCallHistory } = args
+  const { kernel, result, toolCallHistory } = args
   const turnSessionId = args.input.sessionId
   const state = kernel.state
   const slot = harnessSlots.get(turnSessionId)
 
   const failTurn = async (message: string, kind: TurnFailure["kind"]): Promise<PiAgentTurnOutput> => {
     transition("WAITING", turnSessionId)
-    applyEffect(PetPersonalityMiddleware.wrap("error", { message }), effects)
-    const reply = message.includes("上下文需要约") ? message : getFallbackReply("maxRetriesExhausted")
+    // 失败分类保留上游文案（decline 不改写成预算错误），只有展示文案回到硬预算判定。
+    const reply = turnFailureReply(message, state)
     await slot.appendAssistantMessage(reply).catch(error => log.warn("兜底回复落盘失败", formatError(error)))
-    return { reply, toolCallHistory, retriesUsed: state.retriesUsed, effects, failure: { kind, message } }
+    return { reply, toolCallHistory, retriesUsed: state.retriesUsed, failure: { kind, message } }
   }
 
   if (result.status === "interrupted") {
@@ -758,18 +870,25 @@ async function settleMainTurn(args: {
     const reply = "上次运行中断啦，请先选择继续或丢弃这次未完成的运行～"
     transition("WAITING", turnSessionId)
     await slot.appendAssistantMessage(reply).catch(error => log.warn("中断提示落盘失败", formatError(error)))
-    return { reply, toolCallHistory, retriesUsed: 0, effects, failure: { kind: "unknown", message: reply } }
+    return { reply, toolCallHistory, retriesUsed: 0, failure: { kind: "unknown", message: reply } }
   }
   if (result.status === "busy") {
     return failTurn(`会话已有运行中的 Agent: ${turnSessionId}`, "unknown")
   }
   if (state.stoppedAtToolLimit) {
-    return { reply: getFallbackReply("toolLoopMaxRounds"), toolCallHistory, retriesUsed: state.retriesUsed, effects }
+    return { reply: getFallbackReply("toolLoopMaxRounds"), toolCallHistory, retriesUsed: state.retriesUsed }
   }
   if (result.status === "aborted") {
+    if (result.abortReason === "user") {
+      // 用户主动停止不是故障：不写兜底失败回复、不标 failure —— 否则「我点了停止」会被
+      // 记成模型失败，还会往会话里塞一条与事实相反的降级文案。归还的未消费输入交给
+      // 用户决定继续或丢弃（宿主入口 stopActiveRun / resumePausedInputs）。
+      transition("WAITING", turnSessionId)
+      return { reply: "", toolCallHistory, retriesUsed: state.retriesUsed, undelivered: result.undelivered, abortedByStop: true }
+    }
     const reason = result.timedOut ? "Agent 执行超时" : result.error ?? "回合已取消"
     const failed = await failTurn(reason, result.timedOut ? "timeout" : "unknown")
-    return { ...failed, undelivered: result.undelivered, abortedByStop: !result.timedOut }
+    return { ...failed, undelivered: result.undelivered, abortedByStop: false }
   }
   if (result.status !== "completed") {
     const reason = result.error ?? "Pi Agent 未返回有效回复"
@@ -786,11 +905,8 @@ async function settleMainTurn(args: {
   // 卡片快照不一致（运行中切换 Card）时只展示文本，不写变量：变量写入必须归属本回合冻结的快照。
   const cardIsCurrent = liveCard?.id === kernel.card?.id && liveCard?.hash === kernel.card?.hash && liveCard?.version === kernel.card?.version
   const processed = await generateReply(rawReply, kernel.card, { applyRuntimeData: cardIsCurrent })
-  effects.push({ expression: processed.expression, soundEvent: processed.sound })
-  if (cardIsCurrent && getActiveSessionId() === turnSessionId) emit("deskpet-expression", { expression: processed.expression }).catch(() => {})
-  if (cardIsCurrent && getActiveSessionId() === turnSessionId && processed.sound) emit("deskpet-sound", { event: processed.sound }).catch(() => {})
   transition("WAITING", turnSessionId)
-  return { reply: processed.text, toolCallHistory, retriesUsed: state.retriesUsed, effects, runtimeData: processed.runtimeData }
+  return { reply: processed.text, toolCallHistory, retriesUsed: state.retriesUsed, runtimeData: processed.runtimeData }
 }
 
 // ── 崩溃恢复入口（§8.7.3） ──
@@ -827,7 +943,6 @@ export async function continueInterruptedRun(sessionId: string): Promise<PiAgent
   const generation = harnessSlots.begin(sessionId, { requestId: `resume-${crypto.randomUUID()}` })
   if (generation === undefined) throw new Error(`会话已有运行中的 Agent: ${sessionId}`)
   const toolCallHistory: PiAgentTurnOutput["toolCallHistory"] = []
-  const effects: PiAgentTurnOutput["effects"] = []
   try {
     const currentCard = getActiveCard()
     const card = currentCard ? JSON.parse(JSON.stringify(currentCard)) as typeof currentCard : null
@@ -847,11 +962,11 @@ export async function continueInterruptedRun(sessionId: string): Promise<PiAgent
       sessionId, requestId: `resume-${crypto.randomUUID()}`, mode, model,
       thinkingEffort, systemPrompt: context.systemPrompt, tools: frozenTools,
       blocks: context.blocks, allocations: context.allocations,
-      transientUserInput: false, persistSnapshots: false, effects, card,
+      transientUserInput: false, persistSnapshots: false, card,
       toolRun: {
         mode, sessionId, runGeneration: generation,
         isCurrent: () => harnessSlots.isCurrent(sessionId, generation),
-        history: toolCallHistory, effects,
+        history: toolCallHistory,
       },
     })
     const spec = createTurnSpec(kernel, {
@@ -863,7 +978,7 @@ export async function continueInterruptedRun(sessionId: string): Promise<PiAgent
       isPermissionCurrent: () => harnessSlots.isCurrent(sessionId, generation) && getActiveSessionId() === sessionId,
     })
     const result = await slot.resumeInterrupted(spec)
-    return await settleMainTurn({ input: { sessionId, userText: "继续", chatMessages: [], unansweredCount: 0, messageCount: 0 }, kernel, result, effects, toolCallHistory })
+    return await settleMainTurn({ input: { sessionId, userText: "继续", chatMessages: [], unansweredCount: 0, messageCount: 0 }, kernel, result, toolCallHistory })
   } finally {
     harnessSlots.end(sessionId, generation)
   }
@@ -888,7 +1003,8 @@ export async function compactActiveSession(sessionId: string): Promise<ManualCom
   const model = resolvePiTurnModel()
   let intent: string | undefined
   const outcome = await harnessSlots.get(sessionId).compact({
-    beforeCompaction: createCompactionHook({ mode, model, onSummary: summary => { intent = summary.intent } }),
+    // 手动压缩没有冻结的回合工具集，按当前注册表判定 retain 保护。
+    beforeCompaction: createCompactionHook({ mode, model, tools: getToolsForMode(mode), onSummary: summary => { intent = summary.intent } }),
     beforeRequest: createRequestOptionsPatch(),
   })
   return intent === undefined ? outcome : { ...outcome, intent }
@@ -950,9 +1066,15 @@ export async function runPiSubAgent(input: PiSubAgentInput): Promise<PiSubAgentO
   }
 }
 
-/** 工具结果请求投影：条目保持全文，只有请求视图被缩短并标注回读地址。 */
-function projectToolResultMessage(message: AgentMessage, windowTokens: number): AgentMessage {
+/**
+ * 工具结果请求投影：条目保持全文，只有请求视图被缩短并标注回读地址。
+ *
+ * resultProjection=preserve 的工具（分页读取、写类结果）不再二次缩短；
+ * 未注册的历史工具没有策略可查，沿用既有缩短行为（条目仍是可回读的真相源）。
+ */
+function projectToolResultMessage(message: AgentMessage, windowTokens: number, toolsByName: ReadonlyMap<string, ToolDef>): AgentMessage {
   if (message.role !== "toolResult") return message
+  if (toolsByName.get(message.toolName)?.policy.context.resultProjection === "preserve") return message
   const details = message.details && typeof message.details === "object" ? message.details as Record<string, unknown> : {}
   const entryId = typeof details.deskpetEntryId === "string" ? details.deskpetEntryId : message.toolCallId
   const text = contentText(message.content)
@@ -1025,10 +1147,6 @@ function fromPiMessage(message: AgentMessage, id: string, apiRoundId: string): M
   if (message.role === "toolResult") return { ...identity, role: "tool", text: contentText(message.content),
     toolCallId: message.toolCallId, isError: message.isError, origin: "tool", taint: "untrusted_external" }
   return undefined
-}
-
-function applyEffect(effect: PersonalityEffect, effects: PiAgentTurnOutput["effects"] | undefined): void {
-  effects?.push({ expression: effect.expression, soundEvent: effect.soundEvent })
 }
 
 /** UI 事件（工具状态、流式增量等）统一 best-effort：失败不影响回合。 */
