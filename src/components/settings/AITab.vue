@@ -608,7 +608,7 @@ defineExpose({
   <!-- ═══ 📊 变量池 ═══ -->
   <div class="s-section">
     <div class="s-label" style="cursor:pointer" @click="showVarPool = !showVarPool">
-      📊 变量池 <span style="flex:1"></span><span class="card-arrow">{{ showVarPool ? '▾' : '▸' }}</span>
+      📊 变量池 (Card变量/互动状态为上次运行快照) <span style="flex:1"></span><span class="card-arrow">{{ showVarPool ? '▾' : '▸' }}</span>
     </div>
 
     <div v-if="showVarPool">
