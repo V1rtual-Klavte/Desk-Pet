@@ -205,6 +205,11 @@ export interface HarnessSlotSnapshot {
   contextEpoch: number
   /** lane 持久 inbox 的待消费项（真相源在会话文件；这里是最近一次 queue_update 的只读快照）。 */
   queued: HarnessQueuedItem[]
+  /**
+   * `queued` 镜像是否可信：开槽时用 lane 的一次性读取播种，此后由 queue_update 全量覆盖。
+   * false 表示这个镜像还没有初值（或播种失败），消费者按「未就绪」处理，不把空镜像当「没有排队项」。
+   */
+  queueMirrorReady: boolean
   interrupted?: { operationId: string; kind: "run" | "compaction" | "navigation"; startedAt: number; aborting: boolean }
 }
 
@@ -308,6 +313,8 @@ export class HarnessSlot {
   private streamActive = false
   /** 最近一次 queue_update 的 lane 队列快照：用于核对「已投递但未消费」的输入。 */
   private pendingQueues: LaneQueuedItem[] = []
+  /** pendingQueues 是否已经拿到初值（开槽时播种，见 seedQueuedMirror）。 */
+  private queueMirrorReady = false
   /** requestId → lane inbox entryId：重投递前用它撤销仍未消费的项，保证用户正文恰好一次。 */
   private readonly pendingDeliveryEntries = new Map<string, string>()
   /** 停止归还的未消费消息：在回合收尾点（或没有在飞 run 时）以 nextRun 重新入队。 */
@@ -412,6 +419,7 @@ export class HarnessSlot {
     this.registerHooks()
     this.lane = await this.harness.lane(PI_LANE, ctx)
     this.subscribeEvents()
+    await this.seedQueuedMirror()
     if (created.open.length > 0) {
       // §8.7.3：createAgentHarness 只附着运行时；上次中断的操作默认暂停，由用户选择继续/丢弃。
       const open = created.open[0]!
@@ -443,10 +451,10 @@ export class HarnessSlot {
   /**
    * 宿主镜像里是否还有未消费的用户消息（steer/followUp/nextRun）：**只读视图专用**
    * （槽被释放重建后镜像从空开始）。`compact()` 的准入改读 lane 真相（laneQueueCounts），
-   * 不用它放行 —— 镜像为空不等于队列为空。
+   * 不用它放行 —— 镜像为空不等于队列为空，镜像未就绪（`queueMirrorReady=false`）也不等于没有。
    */
   private hasQueuedMessages(): boolean {
-    return this.pendingQueues.some(item => item.type === "message"
+    return this.queueMirrorReady && this.pendingQueues.some(item => item.type === "message"
       && (item.kind === "steer" || item.kind === "followUp" || item.kind === "nextRun"))
   }
 
@@ -500,6 +508,22 @@ export class HarnessSlot {
       log.error("lane 队列读取失败:", this.sessionId, formatError(error))
       return undefined
     }
+  }
+
+  /**
+   * 重开槽后 lane 已把 inbox 装回内存但不发事件：从 lane 读一次初值播种镜像，随后只由 queue_update 更新。
+   * 播种失败按未就绪处理（`queueMirrorReady=false`），后续准入/守卫 fail-closed，不把空镜像当「没有排队项」。
+   */
+  private async seedQueuedMirror(): Promise<void> {
+    if (!this.lane || this.transient) return   // transient 槽没有 UI/压缩消费者，不播种也不标记就绪
+    const queues = await this.readQueuesOnce()
+    if (queues === undefined) {
+      this.queueMirrorReady = false
+      log.error("队列镜像播种失败，暂停输入与压缩守卫将按未就绪处理:", this.sessionId)
+      return
+    }
+    this.pendingQueues = queues
+    this.queueMirrorReady = true
   }
 
   /** 压缩阈值由现有预算推导（§7）：窗口 − 正常输入目标 = 输出预留 + 协议开销 + 压缩余量。 */
@@ -726,6 +750,7 @@ export class HarnessSlot {
       operationId: this.activeRun?.operationId,
       contextEpoch: this.compactionEpoch,
       queued: this.queuedItems(),
+      queueMirrorReady: this.queueMirrorReady,
       interrupted: this.interruptedInfo,
     }
   }
@@ -833,6 +858,8 @@ export class HarnessSlot {
     await this.open()
     if (!this.isUsable() || !this.lane) return { status: "closed" }
     if (this.isRunning()) return { status: "busy" }
+    // 队列镜像未就绪时 fail-closed：镜像不是真相（lane 才是），没拿到初值就不放行压缩。
+    if (!this.queueMirrorReady) return { status: "failed", error: "队列状态未就绪，稍后再试" }
     const live = await this.laneQueueCounts()
     if (live === undefined) log.error("队列真相读取失败，按存在排队项拒绝手动压缩:", this.sessionId)
     const counts = live ?? this.queuedCounts()

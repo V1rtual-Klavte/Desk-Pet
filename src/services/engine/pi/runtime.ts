@@ -96,7 +96,10 @@ export async function isSessionBusy(sessionId: string): Promise<boolean> {
 // ── 排队视图与单项撤回（PI-1：UI 不再自建队列状态） ──
 
 export interface QueuedInputsView {
-  /** false = 该会话还没有运行槽（未打开），此时列表为空不代表「没有排队项」。 */
+  /**
+   * false = 队列镜像不可信：会话还没有运行槽（未打开），或开槽时的初值播种未完成/失败。
+   * 此时列表为空不代表「没有排队项」，也不代表「槽不存在」。
+   */
   loaded: boolean
   /** 当前运行是否在进行（消费中的项离开列表说明已进入对话）。 */
   running: boolean
@@ -107,7 +110,7 @@ export interface QueuedInputsView {
 export function listQueuedInputs(sessionId: string): QueuedInputsView {
   const snapshot = harnessSlots.snapshot(sessionId)
   if (!snapshot) return { loaded: false, running: false, items: [] }
-  return { loaded: true, running: snapshot.state === "running", items: snapshot.queued }
+  return { loaded: snapshot.queueMirrorReady, running: snapshot.state === "running", items: snapshot.queued }
 }
 
 /**

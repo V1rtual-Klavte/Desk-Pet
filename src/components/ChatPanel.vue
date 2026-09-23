@@ -97,6 +97,10 @@ async function refreshInterrupted() {
   } catch (error) {
     log.warn("读取中断运行失败:", formatError(error));
     interrupted.value = undefined;
+  } finally {
+    // getInterruptedRun 会打开运行槽，队列镜像在开槽时才播种：这里补刷一次，
+    // 覆盖「onMounted 先刷队列、后打开槽」的顺序缺口（本函数的调用点都不必再各自补刷）。
+    refreshQueue();
   }
 }
 
