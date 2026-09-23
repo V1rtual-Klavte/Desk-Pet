@@ -2,7 +2,10 @@
 import { ref, onMounted, onUnmounted } from "vue";
 import { invoke } from "@tauri-apps/api/core";
 import { getUiUrl } from "@/services/profile";
+import { formatError } from "@/services/error";
+import { createLogger } from "@/services/logger";
 
+const log = createLogger("WinSim");
 const u = (p: string) => getUiUrl(p);
 
 interface DesktopIcon { id: string; label: string; src: string; }
@@ -56,7 +59,7 @@ const startMenuItems=[
 ];
 
 function toggleStartMenu(){showStartMenu.value=!showStartMenu.value}
-function closeWindow(){invoke("close_windows_sim").catch(()=>{})}
+function closeWindow(){invoke("close_windows_sim").catch(error=>log.warn("关闭 Windows 模拟器失败:", formatError(error)))}
 </script>
 
 <template>

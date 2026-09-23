@@ -199,7 +199,7 @@ function ensureOverlay(): HTMLElement {
     const text = entries
       .map((e) => `[${e.time}] ${e.source} · ${e.kind}\n${e.detail}`)
       .join("\n\n")
-    void navigator.clipboard?.writeText(text).catch(() => {})
+    void navigator.clipboard?.writeText(text).catch(error => log.warn("复制异常详情失败:", formatError(error)))
   })
 
   const closeBtn = button("关闭", () => hideOverlay())

@@ -5,6 +5,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { isCoolingDown, isAIGenerating, triggerCooldown, setCooldown, getCooldownMs } from "@/services/cooldown";
 import { windowMonitorConfig } from "@/services/config";
+import { formatError } from "@/services/error";
 import { createLogger } from "@/services/logger";
 
 const log = createLogger("WinMon");
@@ -64,8 +65,12 @@ export function processTrigger(result: TriggerResult): void {
   triggerCooldown();
   const cooldownMs = getCooldownMs();
   const resumeExtraMs = windowMonitorConfig.resumeExtraMs;
-  invoke("pause_monitor", { durationMs: cooldownMs }).catch(() => {});
-  cooldownTimer = setTimeout(() => invoke("resume_monitor").catch(() => {}), cooldownMs + resumeExtraMs);
+  invoke("pause_monitor", { durationMs: cooldownMs })
+    .catch(error => log.warn("监控暂停失败：冷却期内可能反复触发主动搭话", formatError(error)));
+  cooldownTimer = setTimeout(
+    () => invoke("resume_monitor").catch(error => log.warn("监控恢复失败：桌面监测将持续失效，桌宠不再主动搭话", formatError(error))),
+    cooldownMs + resumeExtraMs,
+  );
   log.info("source:", result.source, "→ 全局冷却:", cooldownMs + "ms");
 }
 
