@@ -155,6 +155,11 @@ export interface SendMessageResult {
   /** 忙碌投递给当前运行的准确回执；空闲回合与直接拒绝不返回。 */
   delivery?: HarnessDeliveryReceipt
   failure?: import("@/services/engine/pi").TurnFailure
+  /**
+   * 回复在界面显示了但没能写进会话文件：宿主已用系统消息告知用户，
+   * 这里透传同样的事实供场景/调用方断言「界面与持久正文不一致」。
+   */
+  persistFailed?: boolean
 }
 
 /**
@@ -231,6 +236,11 @@ async function performTurn(invocation: TurnInvocation): Promise<PiAgentTurnOutpu
  * 只如实说明剩余输入的归宿，不暗示已撤销写入。
  */
 async function pushTurnOutcome(result: PiAgentTurnOutput, sessionId: string): Promise<void> {
+  // 「界面看到过、会话文件里没有」必须说出来：重开应用后这条回复会消失，用户不该在重启后
+  // 才发现。检查放在停止分支之前 —— 停止收尾文案落盘失败（finishWithoutTurn）同样置位。
+  if (result.persistFailed) {
+    pushSystemMessage("这条回复没能写进会话文件，重开应用后可能看不到它。", sessionId)
+  }
   if (result.abortedByStop) {
     const paused = result.undelivered?.length ?? 0
     const { pushSystemMessage } = await import("@/services/session/messages")
@@ -471,6 +481,8 @@ async function dispatchMessage(text: string, options: SendMessageOptions = {}): 
       outcome: result.failure ? "failed" : "succeeded",
       toolCalls: result.toolCallHistory.map(({ toolName, status }) => ({ toolName, status })),
       ...(result.failure ? { failure: result.failure } : {}),
+      // 失败可见性透传：场景与调用方据此知道这条回复只在界面上存在过。
+      ...(result.persistFailed ? { persistFailed: true } : {}),
     }
   } catch (e) {
     log.error("sendMessage 失败", formatError(e))
