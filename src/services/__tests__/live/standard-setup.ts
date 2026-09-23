@@ -81,10 +81,10 @@ let configSnapshot: ConfigTree | undefined
 /**
  * 运行开始时的配置快照，场景之间的还原目标。
  *
- * 助手模式在这里按 pet 基线钉死：`planner.contract.ts` 的 unitOnlyReason 写着
- * 「Live Test 恒以 pet 模式运行」，那句断言的代码依据就是这个键 —— 计划入口由
- * `generalConfig.assistantMode && planConfig.enabled` 双重把守，钉住助手模式就走不到计划段；
- * 场景要跑计划段必须在自己的 setup 里显式打开（两个计划场景都这么做）。
+ * 助手模式在这里按 pet 基线钉死：Live Test 默认恒以 pet 模式运行，这个键就是那句约定的
+ * 代码依据 —— 计划入口由 `generalConfig.assistantMode && planConfig.enabled` 双重把守，
+ * 钉住助手模式就走不到计划段；场景要跑计划段必须在自己的 setup 里显式打开
+ * （`计划生产闭环` 等场景都这么做）。
  * `ai.plan.enabled` 不在钉住之列：pet 模式下它不生效，钉住它只会把开发配置里出厂即 `true`
  * 的值改写成 false，而它在场景之间的漂移由快照还原兜住。
  */

@@ -22,6 +22,7 @@ import { initSessions } from "@/services/session"
 import { MemoryService } from "@/services/agent/memory"
 import { formatError } from "@/services/error"
 import { confirmRecords } from "./confirm-channel"
+import { planRecords } from "./plan-confirm-channel"
 import { sessionMessages } from "./session-entries"
 
 export const DEFAULT_SCENE_TIMEOUT = 120_000
@@ -317,6 +318,7 @@ async function runSceneInner(
           status: item.status,
         })),
         confirms: confirmRecords(),
+        plans: planRecords(),
         trial,
       }
 

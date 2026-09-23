@@ -69,7 +69,21 @@ export interface AssertContext {
   toolHistory: { toolName: string; status: string }[]
   /** 本场景已发生的确认请求（不含上一场景残留），用于区分「没调用工具」与「调用被拒」。 */
   confirms: { toolName: string; approved: boolean }[]
+  /** 本场景已发生的计划确认（不含上一场景残留），按发生顺序；进度与终态见 plan-confirm-channel。 */
+  plans: PlanConfirmRecord[]
   trial: number
+}
+
+/**
+ * 一次计划确认的记录。字段取确认当时的真实视图：
+ * `steps` 是**截断后**（`maxSteps` 生效后）的计划步数，`mode` 是一次性答复给出的执行方式。
+ */
+export interface PlanConfirmRecord {
+  planId: string
+  sessionId: string
+  confirmed: boolean
+  mode: "auto" | "stepByStep"
+  steps: number
 }
 
 export interface MemorySnapshot {

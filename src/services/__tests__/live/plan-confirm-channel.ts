@@ -11,8 +11,13 @@
 // ==========================================
 
 import { watch } from "vue"
+import { listen } from "@tauri-apps/api/event"
 import { planConfirmState, resolvePlanConfirm, resolvePlanStepDecision } from "@/services/engine"
-import type { PlanPolicy } from "./types"
+import { createLogger } from "@/services/logger"
+import { formatError } from "@/services/error"
+import type { PlanConfirmRecord, PlanPolicy } from "./types"
+
+const log = createLogger("PlanConfirmChannel")
 
 export interface PlanInteractionRecord {
   planId: string
@@ -22,9 +27,38 @@ export interface PlanInteractionRecord {
   decision: string
 }
 
+/** 进度事件的载荷（`deskpet-plan-progress`，宿主不参与应答）。 */
+interface PlanProgressPayload { sessionId: string; stepId: string; total: number; status: string }
+/** 终态事件的载荷（`deskpet-plan-end`）。 */
+interface PlanEndPayload { sessionId: string; reason: string }
+
 let policy: PlanPolicy = "deny"
 let stopResponders: (() => void)[] | undefined
 const records: PlanInteractionRecord[] = []
+/** 确认记录：由同步 watcher 顺带落下（确认视图与事件载荷同源，不等事件回环）。 */
+const confirms: PlanConfirmRecord[] = []
+/** 进度与终态只记录、不应答：它们没有等待方，订阅一次后由事件回环投递。 */
+const progressRecords: { step: number; total: number; status: string }[] = []
+const endRecords: { reason: string }[] = []
+let planEventRecorderInstalled = false
+
+/**
+ * 订阅进度与终态事件（宿主自己 emit，`core:default` 允许本窗口 listen）。
+ * 只装一次：订阅没有等待方，场景之间只清记录（见 `resetPlanConfirmChannel`）。
+ */
+function installPlanEventRecorder(): void {
+  if (planEventRecorderInstalled) return
+  planEventRecorderInstalled = true
+  void Promise.all([
+    listen<PlanProgressPayload>("deskpet-plan-progress", event => {
+      const step = Number(event.payload.stepId)
+      progressRecords.push({ step, total: event.payload.total, status: event.payload.status })
+    }),
+    listen<PlanEndPayload>("deskpet-plan-end", event => {
+      endRecords.push({ reason: event.payload.reason })
+    }),
+  ]).catch(error => log.error("计划进度/终态事件订阅失败，记录不可用:", formatError(error)))
+}
 
 /**
  * 安装应答器并把通道重置到指定策略。每个场景开始时调用一次（见 standard-setup.ts）。
@@ -42,6 +76,13 @@ export function resetPlanConfirmChannel(next: PlanPolicy = "deny"): void {
         pending => {
           if (!pending) return
           records.push({ planId: pending.planId, kind: "confirm", decision: policy === "deny" ? "user" : policy })
+          confirms.push({
+            planId: pending.planId,
+            sessionId: pending.sessionId,
+            confirmed: policy !== "deny",
+            mode: policy === "stepByStep" ? "stepByStep" : "auto",
+            steps: pending.steps.length,
+          })
           resolvePlanConfirm(
             pending.planId,
             policy === "deny"
@@ -66,6 +107,10 @@ export function resetPlanConfirmChannel(next: PlanPolicy = "deny"): void {
     ]
   }
   records.length = 0
+  confirms.length = 0
+  progressRecords.length = 0
+  endRecords.length = 0
+  installPlanEventRecorder()
   policy = next
   if (planConfirmState.pending) resolvePlanConfirm(planConfirmState.pending.planId, { confirmed: false, reason: "user" })
   if (planConfirmState.stepGate) resolvePlanStepDecision(planConfirmState.stepGate.planId, "abort")
@@ -74,4 +119,19 @@ export function resetPlanConfirmChannel(next: PlanPolicy = "deny"): void {
 /** 本场景已应答的确认与门，按发生顺序。 */
 export function planInteractionRecords(): PlanInteractionRecord[] {
   return records.map(record => ({ ...record }))
+}
+
+/** 本场景已发生的计划确认，按发生顺序（供 `AssertContext.plans` 与断言使用）。 */
+export function planRecords(): PlanConfirmRecord[] {
+  return confirms.map(record => ({ ...record }))
+}
+
+/** 本场景已发生的进度事件（`step` 是 1 基的 stepId，`total` 是计划总步数）。 */
+export function planProgressRecords(): { step: number; total: number; status: string }[] {
+  return progressRecords.map(record => ({ ...record }))
+}
+
+/** 本场景已发生的计划终态事件（reason：done / failed / cancelled）。 */
+export function planEndRecords(): { reason: string }[] {
+  return endRecords.map(record => ({ ...record }))
 }
