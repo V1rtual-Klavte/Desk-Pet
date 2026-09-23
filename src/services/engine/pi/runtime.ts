@@ -223,6 +223,22 @@ export function classifyTurnFailure(message: string): TurnFailure["kind"] {
   return "unknown"
 }
 
+/**
+ * 子运行归属（PLAN-02 / PLAN-03）：子代理的许可身份绑定父会话与代际，并挂到父槽下随父取消。
+ * 缺省时子代理是自持的一次性运行（fork/team 的独立子代理）：许可借用身份落在
+ * `no-session:-1:…`，也不参与任何取消域。
+ */
+export interface PiSubAgentScope {
+  sessionId: string
+  runGeneration: number
+  /** 父回合的代际与活跃会话判定：许可确认与工具执行都按它核对（切会话即失效）。 */
+  isCurrent: () => boolean
+  /** 父取消通道：中止时当前正在跑的那一步也立刻停，而不是等步骤边界。 */
+  signal?: AbortSignal
+  /** 父槽：注册为子槽，父槽 abort/close/dispose 时级联到本子运行。 */
+  parentSlot?: HarnessSlot
+}
+
 export interface PiSubAgentInput {
   task: string
   tools: ToolDef[]
@@ -232,6 +248,8 @@ export interface PiSubAgentInput {
   thinkingEffort?: ThinkingEffort
   onToolStart?: (toolName: string, toolCallId: string) => Promise<void> | void
   onToolDone?: (toolName: string, toolCallId: string, success: boolean) => Promise<void> | void
+  /** 子运行归属：存在时填进 HarnessToolRun 与 createTurnSpec，并挂到父槽下随父取消。 */
+  scope?: PiSubAgentScope
 }
 
 export interface PiSubAgentOutput {
@@ -855,6 +873,11 @@ async function runPlanPhase(args: {
 }): Promise<PlanPhaseOutcome> {
   const { sessionId, planAbort } = args
   const planId = args.existingPlanId ?? args.planId
+  // 子运行的代际身份：父槽的当前代际就是本回合的代际（计划段在回合内，槽不会被再次 begin）。
+  const parentGeneration = args.parentSlot.generation
+  // 计划段的事件回调与终态写盘都按回合代际核对：取消后不再写计划状态、不再发进度。
+  // 只认代际（`runIsCurrent`）——切会话不取消执行中的计划，只把面板移出视图（FIX-32）。
+  const assertCurrent = () => { if (!args.runIsCurrent()) throw new Error("回合已取消或运行代际已失效") }
   let plan: PlanResult
   let stepMode: "auto" | "stepByStep"
 
@@ -951,13 +974,25 @@ async function runPlanPhase(args: {
     // §7 #33：计划级时限由步骤配置派生（`stepTimeoutMs × maxSteps`），不新增 YAML 字段
     deadlineAt: Date.now() + planConfig.stepTimeoutMs * planConfig.maxSteps,
     stepGate: stepMode === "stepByStep" ? "each" : "none",
+    // 子运行归属（PLAN-02 / PLAN-03）：步骤子代理的许可身份绑定父会话与代际，
+    // 并挂到父槽下 —— 「终止执行」/会话切换/计划时限都能立刻结束当前那一步。
+    scope: {
+      sessionId,
+      runGeneration: parentGeneration,
+      // 许可确认还要看活跃会话：切走后同参 grant 不得命中（PLAN-03 的验证点）。
+      isCurrent: () => args.runIsCurrent() && getActiveSessionId() === sessionId,
+      signal: planAbort.signal,
+      parentSlot: args.parentSlot,
+    },
   }, {
     async onStepStart(step) {
+      assertCurrent()
       stepStartedAt = Date.now()
       await planCheckpointStore.transitionStep(planId, String(step.id), "running")
       void emitUiEvent("deskpet-plan-progress", { sessionId, planId, stepId: String(step.id), total: plan.steps.length, desc: step.description, status: "running" })
     },
     async onStepDone(step, output) {
+      assertCurrent()
       await planCheckpointStore.transitionStep(planId, String(step.id), output.success ? "done" : "failed")
       void emitUiEvent("deskpet-plan-progress", { sessionId, planId, stepId: String(step.id), total: plan.steps.length, desc: step.description, status: output.success ? "done" : "failed" })
       // PLAN-09②：步骤产出落盘成可回读证据（失败路径同样落，FIX-50 —— 失败原因与工具调用数
@@ -1006,8 +1041,14 @@ async function runPlanPhase(args: {
       index: index + 1,
       total: plan.steps.length,
     }),
-    onToolStart: (step, toolName, toolCallId) => planCheckpointStore.checkpointTool(planId, String(step.id), "tool_start", toolName, toolCallId, planEffectClassFor([toolName])),
-    onToolDone: (step, toolName, toolCallId, success) => planCheckpointStore.checkpointTool(planId, String(step.id), "tool_end", toolName, toolCallId, planEffectClassFor([toolName]), success),
+    onToolStart: (step, toolName, toolCallId) => {
+      assertCurrent()
+      return planCheckpointStore.checkpointTool(planId, String(step.id), "tool_start", toolName, toolCallId, planEffectClassFor([toolName]))
+    },
+    onToolDone: (step, toolName, toolCallId, success) => {
+      assertCurrent()
+      return planCheckpointStore.checkpointTool(planId, String(step.id), "tool_end", toolName, toolCallId, planEffectClassFor([toolName]), success)
+    },
   }).finally(() => clearRunningPlan(sessionId, planId))
 
   // 回填回读地址：`onStepDone` 里落盘时只有 stepId，这里按它对齐到执行结果，
@@ -1029,6 +1070,10 @@ async function runPlanPhase(args: {
       context: `${result.stepResults.length}/${plan.steps.length} 步已执行，${reasonText}`,
     })
   }
+  // `executePlan` 已收尾、写终态之前再核对一次代际：取消后不再把计划写成完成/失败。
+  // 放在取消归宿之后是刻意的 —— 取消本身必须把计划如实落 `interrupted`，守卫拦在这里
+  // 会让记录永远停在 `running`，回合还会被 runner 当成 LLM 失败。
+  assertCurrent()
   await finishPlan({
     sessionId,
     planId,
@@ -1323,14 +1368,20 @@ export async function runPiSubAgent(input: PiSubAgentInput): Promise<PiSubAgentO
   const thinkingEffort = input.thinkingEffort ?? "low"
   const model = resolvePiTurnModel()
   const history: PiAgentTurnOutput["toolCallHistory"] = []
+  const scope = input.scope
   const toolRun: HarnessToolRun = {
     mode: "pet",
-    isCurrent: () => true,
+    // 有 scope 时工具上下文带上父会话与代际：许可借用 requestId 从 `no-session:-1:…`
+    // 变成 `${sessionId}:${generation}:…`，会话内 grant 也随之按会话与代际失效（PLAN-03）。
+    sessionId: scope?.sessionId,
+    runGeneration: scope?.runGeneration,
+    isCurrent: scope?.isCurrent ?? (() => true),
     history,
     onToolStart: input.onToolStart,
     onToolDone: input.onToolDone,
   }
   const kernel = createTurnKernel({
+    sessionId: scope?.sessionId,
     requestId: `sub-agent-${crypto.randomUUID()}`,
     mode: "pet",
     model,
@@ -1343,14 +1394,25 @@ export async function runPiSubAgent(input: PiSubAgentInput): Promise<PiSubAgentO
   })
   // 子代理使用内存会话的一次性槽：不写聊天记录，也不占用 App 会话代际。
   const slot = new HarnessSlot(`subagent-${crypto.randomUUID()}`, { transient: true })
+  // 取消域级联：挂到父槽下，父槽 abort/close/dispose 都会级联到这个子运行。
+  const detach = scope?.parentSlot?.attachChild(slot)
+  // 父取消通道（终止执行/会话切换/计划时限）：正在跑的那一步也要立刻停 ——
+  // 只在步骤边界检查信号会让「终止」等满一整步。
+  const abortFromScope = () => {
+    void slot.abort().catch(error => log.warn("子运行停止失败:", { sessionId: scope?.sessionId }, formatError(error)))
+  }
+  if (scope?.signal) {
+    if (scope.signal.aborted) abortFromScope()
+    else scope.signal.addEventListener("abort", abortFromScope, { once: true })
+  }
   try {
     const spec = createTurnSpec(kernel, {
       prompt: input.task,
       timeoutMs: input.timeoutMs ?? 60000,
       maxToolCalls: input.maxRounds ?? 3,
       projectToolResults: false,
-      runGeneration: 0,
-      isPermissionCurrent: () => true,
+      runGeneration: scope?.runGeneration ?? 0,
+      isPermissionCurrent: scope?.isCurrent ?? (() => true),
     })
     const result = await slot.run(spec)
     if (result.status === "completed") {
@@ -1379,7 +1441,9 @@ export async function runPiSubAgent(input: PiSubAgentInput): Promise<PiSubAgentO
       error,
     }
   } finally {
+    scope?.signal?.removeEventListener("abort", abortFromScope)
     await slot.close()
+    detach?.()
   }
 }
 

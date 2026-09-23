@@ -106,6 +106,14 @@ export const agentRuntimeContract: ModuleContract = {
       depth: "deep",
       scenarios: ["runtime-interrupt-resume", "runtime-interrupt-discard"],
     },
+    {
+      id: "ar-17",
+      feature: "取消域级联",
+      description: "工具执行中停止：停止同时终止在跑的计划与它的子运行（子槽随父槽级联取消），归还清单如实，停止后不再产生新的工具结果条目，独占额度回到空闲，下一回合照常可用",
+      why: "「停止」必须真的停下正在跑的计划与子代理：否则用户点了停止，界面说没有正在进行的回复，步骤却还在继续执行",
+      depth: "deep",
+      scenarios: ["runtime-stop-no-new-tool-end"],
+    },
   ],
   rules: { minScenarios: 6, minDeepScenarios: 6, requireBoundary: true, requireErrorPath: false },
 }

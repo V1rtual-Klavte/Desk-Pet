@@ -23,6 +23,7 @@ export type {
   PiAgentTurnOutput,
   PiSubAgentInput,
   PiSubAgentOutput,
+  PiSubAgentScope,
   QueuedInputsView,
   TurnFailure,
 } from "./runtime"

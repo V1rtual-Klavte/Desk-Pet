@@ -41,7 +41,8 @@ Pi 适配器按策略设置 `executionMode`；当前 Harness 的批次调度只�
 Harness 以 `toolExecution: parallel` 派发批次，效果之间的并发由 Rust 应用级许可所有者裁定：[tool_permit.rs](../../src-tauri/src/commands/tool_permit.rs) 持有额度，前端在 [router.ts](../../src/services/tool/router.ts) 执行入口借用、真实结算后释放（[execution-permit.ts](../../src/services/tool/execution-permit.ts)）。
 
 - `shared_read` 走有界共享额度（默认 4，由 [`ai.loop.maxParallelTools`](runtime-data.md#工具并行上限字段的语义与生效时机) 配置，范围 1–8），两个只读可真正重叠；`exclusive_effect`（write/edit/bash/app_open/clipboard_write/MCP）与进行中的读写互斥，效果按借用顺序串行。
-- `delegate`（agent_spawn）不占父批次额度，子运行的工具各自取许可；编排入口不自行执行文件写入。
+- `delegate`（agent_spawn）不占父批次额度，子运行的工具各自取许可；编排入口不自行执行文件写入。子代理运行随父运行取消（取消域级联：子槽挂到父槽下，父槽停止/关闭/释放都会级联到子运行），许可借用身份绑定父会话 + 代际 —— 计划步骤的子代理不再落到 `no-session:-1:…` 这一档。
+- Harness 的工具 memo 持久位（`invocation.getMemo` / `setMemo`）维持不实现：没有任何 Desk-Pet 工具把中间状态放进 memo（[harness-adapter.ts](../../src/services/tool/pi/harness-adapter.ts) 是空实现），恢复判定只按会话条目与工具结果条目这一份证据。
 - 等待可取消（取消会移出排队项），没有超时自动释放；拿到额度后重新核对取消与代际，排队不能成为绕过检查的通道。
 - `tool_permit_release` 与 `tool_permit_cancel` 同样绑定借用者：其它窗口/页面即使拿到 requestId 也不能释放在飞额度或取消他人的排队项，被拒绝的调用不改变额度状态。
 - 借用者身份 = Rust 提供的窗口标签 + 前端页面实例 id（[execution-permit.ts](../../src/services/tool/execution-permit.ts) 在模块加载时声明上线）。同一窗口同一时刻只有一个活着的页面实例：新实例上线（Vite 全量热重载、WebView 重建）时一次性回收同窗口其它实例的在飞额度与排队项，并以回收数量作为证据。回收只由「借用者已经不存在」触发，不看时间：同一实例重复上线是空操作，其它窗口的借用者与在飞的 `exclusive_effect` 都不受影响；窗口关闭且不再重新加载时，它留下的额度仍要等下一次同窗口上线或进程退出才回收。

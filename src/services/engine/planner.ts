@@ -4,7 +4,7 @@
 // ==========================================
 
 import { getToolByName, getToolsForMode, type ToolDef } from "@/services/tool"
-import type { PiSubAgentOutput } from "@/services/engine/pi"
+import type { PiSubAgentOutput, PiSubAgentScope } from "@/services/engine/pi"
 import type { ThinkingEffort } from "@/services/agent/types"
 import type { PlanEffectClass, PlanRecord, PlanStepRecord } from "@/services/engine/runtime"
 import { planConfig } from "@/services/config"
@@ -300,6 +300,8 @@ export interface ExecutePlanConfig {
   deadlineAt?: number
   /** 逐步门：`each` 时每步执行前经 `onStepGate` 取得继续/中止；`none` 或缺该回调时不做门。 */
   stepGate?: "each" | "none"
+  /** 子运行归属：透传给 `runPiSubAgent`（许可身份绑定父会话与代际、挂到父槽下随父取消）。 */
+  scope?: PiSubAgentScope
 }
 
 export async function executePlan(
@@ -428,6 +430,7 @@ async function executeStep(
     maxRounds: config.stepMaxRounds,
     timeoutMs: config.stepTimeoutMs,
     thinkingEffort: config.stepThinkingEffort,
+    ...(config.scope ? { scope: config.scope } : {}),
     onToolStart: (toolName, toolCallId) => callbacks.onToolStart?.(step, toolName, toolCallId),
     onToolDone: (toolName, toolCallId, success) => callbacks.onToolDone?.(step, toolName, toolCallId, success),
   })

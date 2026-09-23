@@ -284,6 +284,11 @@ export class HarnessSlot {
   private readonly requeuePending: AgentMessage[] = []
   /** 审计条目排队区：hook / 事件处理器只入队，drive 结束后由宿主写入（见 queueAuditEntry）。 */
   private readonly auditPending: Array<{ customType: string; data: JsonValue }> = []
+  /**
+   * 子运行归属（取消域级联）：子槽（计划步骤的子代理）不注册在会话表里，
+   * 父槽是它们唯一的可达句柄 —— 父槽 abort/close/dispose 必须级联到它们。
+   */
+  private readonly children = new Set<HarnessSlot>()
 
   /** transient 槽使用内存会话（子代理/一次性驱动），不写聊天目录。 */
   constructor(sessionId: string, options: { transient?: boolean; generationSeed?: number } = {}) {
@@ -467,8 +472,28 @@ export class HarnessSlot {
       .catch(error => log.warn("中断标记写入失败:", this.sessionId, formatError(error)))
   }
 
+  /**
+   * 子运行归属：注册后父槽的 abort/close 会级联到子槽。返回 detach 函数。
+   * 子槽是父槽取消域的一部分 —— 只挂在会话表上的注册表索引不到它。
+   */
+  attachChild(child: HarnessSlot): () => void {
+    this.children.add(child)
+    return () => { this.children.delete(child) }
+  }
+
+  /** 只读的子槽快照：`abortAndWaitAll`/`dispose` 需要等它们也收尾。 */
+  childSlots(): HarnessSlot[] {
+    return [...this.children]
+  }
+
   /** 显式关闭槽：关闭 Harness 与事件订阅，释放会话句柄。 */
   async close(): Promise<void> {
+    // 取消域级联（子先父后）：父句柄先释放会让子运行在已关闭的会话上收尾。
+    const children = [...this.children]
+    const closed = await Promise.allSettled(children.map(child => child.close()))
+    closed.forEach((result, index) => {
+      if (result.status === "rejected") log.warn("子运行关闭失败:", { sessionId: children[index]!.sessionId }, formatError(result.reason))
+    })
     if (!this.harness) {
       this.state = "closed"
       return
@@ -733,6 +758,19 @@ export class HarnessSlot {
   /** 宿主显式停止：取消当前操作并归还未消费消息。 */
   async abort(reason: HarnessAbortReason = ABORT_REASON_USER): Promise<{ steer: string[]; followUp: string[] } | undefined> {
     this.abortReason = reason
+    const aborted = await this.abortSelf(reason)
+    // 取消域级联：父槽停止后子运行不能继续跑（计划步骤的子代理就挂在父槽下）。
+    // 一条失败不阻断其余，也仍然如实返回父槽自己的归还清单。
+    const children = [...this.children]
+    const settled = await Promise.allSettled(children.map(child => child.abort(reason)))
+    settled.forEach((result, index) => {
+      if (result.status === "rejected") log.warn("子运行停止失败:", { sessionId: children[index]!.sessionId }, formatError(result.reason))
+    })
+    return aborted
+  }
+
+  /** 停止自身 lane 上的在飞操作；返回归还清单（无操作或未被接受时为 undefined）。 */
+  private async abortSelf(reason: HarnessAbortReason): Promise<{ steer: string[]; followUp: string[] } | undefined> {
     if (!this.lane) return undefined
     const aborted = await this.lane.abort(TODO_CONTEXT)
     if (!aborted.ok) {
@@ -1256,6 +1294,8 @@ export class HarnessSlots {
       return undefined
     })
     const idle = await slot.waitForIdle()
+    // 子运行不注册在会话表里：abort 已级联到它们，这里再等它们收尾（句柄释放不能反序）。
+    await Promise.allSettled(slot.childSlots().map(child => child.waitForIdle()))
     this.slots.delete(sessionId)
     await slot.close()
     return idle
@@ -1268,6 +1308,9 @@ export class HarnessSlots {
         return undefined
       })
       await slot.waitForIdle()
+      // 子槽（计划步骤的子代理）不在会话表里：不等它们收尾，隔离点会在子运行未结束时
+      // 关掉文件句柄（resetAgentRuntimeForTest 的直接后果）。
+      await Promise.allSettled(slot.childSlots().map(child => child.waitForIdle()))
     }))
   }
 

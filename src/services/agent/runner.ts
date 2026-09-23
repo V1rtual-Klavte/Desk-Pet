@@ -28,6 +28,7 @@ import { reportError } from "@/services/error"
 import type { IngressEnvelope, MessagePriority } from "@/services/engine/runtime"
 import { inputEventId, messageRequestId } from "@/services/engine/runtime"
 import { planCheckpointStore } from "@/services/agent/memory"
+import { abortRunningPlan } from "@/services/engine/plan-confirmation"
 import { listPiSessionMetadata } from "@/services/session"
 import { applyPendingConversationCapabilities } from "@/services/init"
 
@@ -48,13 +49,20 @@ export async function abortAgentRuns(): Promise<void> { await harnessSlots.abort
  * 用户显式停止：取消指定会话的运行，返回本次归还未消费输入的 requestId 清单。
  * 与 `abortAgentRuns()`（释放全部槽的进程级入口）不同，这是聊天界面的停止按钮入口：
  * 只作用于一条会话，未消费输入以 nextRun 留在 lane 持久 inbox，等用户选择继续或丢弃。
+ *
+ * 先终止在跑的计划再停回合：计划执行期父 lane 上没有在飞操作，只停回合停不住步骤
+ * （`planAborted` 让调用方能区分「计划被终止」与「没有在飞回复」）。
  */
 export async function stopActiveRun(
   sessionId: string = getActiveSessionId(),
-): Promise<{ steer: string[]; followUp: string[] } | undefined> {
+): Promise<{ steer: string[]; followUp: string[]; planAborted: boolean } | undefined> {
+  const planAborted = abortRunningPlan(sessionId)
+  // 停回合会经父槽级联到子运行（计划步骤的子代理挂在父槽下），正在跑的那一步也停下。
   const slot = harnessSlots.peek(sessionId)
-  if (!slot || !slot.isRunning()) return undefined
-  return await slot.abort("user")
+  const aborted = slot && slot.isRunning() ? await slot.abort("user") : undefined
+  // 两者都没命中时「没有正在进行的回复」才是真话。
+  if (!aborted && !planAborted) return undefined
+  return { steer: aborted?.steer ?? [], followUp: aborted?.followUp ?? [], planAborted }
 }
 
 /** 启动期恢复扫描：逐会话读 `deskpet.plan_checkpoint` 条目；单个会话失败不阻断其余恢复。 */

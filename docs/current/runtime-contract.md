@@ -27,11 +27,11 @@ scope: runtime-foundation-before-memory-kernel
 - 请求循环由 AgentHarness Lane 承担：`transform_context` 投影、`before_tool` 承担权限/次数门禁、`after_tool` 标注来源与错误、`after_response` 剥离 RUNTIME_DATA 并记录状态/响应头、`before_payload` 采集脱敏快照；主回合逐请求 usage 进入 `main` 分项，压缩/规划等一次性调用经同一模型网关按 purpose 单列（[debug.ts](../../src/services/debug.ts)），总量由分项相加得到。具体权限见[工具系统](tool-system.md#权限终裁)。
 - 项目没有通用 HookBus；宿主 preflight 与观测通道不构成可阻断的 Pi hook，队列驱动由 Lane 持久 inbox 承担。流式正文经 `message_update` 增量事件走 UI 通道，只展示正文、不展示思考内容，`<RUNTIME_DATA>` 跨分片被缓冲。
 
-0.85.1 的 AgentHarness、JsonlSessionRepo 与压缩调度已接入为运行内核（§8 迁移已实施并通过 2026-09-18 集中验证，协议正文见[归档基线](../history/implementation/AgentHarness迁移方案-2026-09-18基线.md)）；插话双模式的输入意图选择、排队视图、单项撤回、停止入口与逐项投递证据、工具策略与只读并行（PI-2）及 usage purpose 单列均已落地，当前验证证据与剩余批次见[未完成工作与已知缺口](../plans/active/未完成工作与已知缺口.md)。运行态经 `deskpet-run-state { sessionId, running }` 事件通知界面，按钮与排队视图仍读同一个 lane 快照，前端不持有第二份运行状态。
+0.85.1 的 AgentHarness、JsonlSessionRepo 与压缩调度已接入为运行内核（§8 迁移已实施并通过 2026-09-18 集中验证，协议正文见[归档基线](../history/implementation/AgentHarness迁移方案-2026-09-18基线.md)）；插话双模式的输入意图选择、排队视图、单项撤回、停止入口（同时终止在跑的计划与它的子运行）、逐项投递证据、工具策略与只读并行（PI-2）及 usage purpose 单列均已落地，当前验证证据与剩余批次见[未完成工作与已知缺口](../plans/active/未完成工作与已知缺口.md)。运行态经 `deskpet-run-state { sessionId, running }` 事件通知界面，按钮与排队视图仍读同一个 lane 快照，前端不持有第二份运行状态。
 
 ## Pi、权限与网络
 
-- [`PermissionKernel`](../../src/services/safety/permission.ts) 收敛 `allow / ask / deny`；MCP `passthrough` 必须在内核终裁。会话授权绑定 session、generation、工具、参数、策略与过期时间，取消或旧代际失效。
+- [`PermissionKernel`](../../src/services/safety/permission.ts) 收敛 `allow / ask / deny`；MCP `passthrough` 必须在内核终裁。会话授权绑定 session、generation、工具、参数、策略与过期时间，取消或旧代际失效。子代理的授权同样绑定父会话与代际（许可借用身份为 `${sessionId}:${generation}:…`，不再落到 `no-session:-1:…`），切会话即清 scope —— 同参 grant 不会跨会话命中，必须重新确认。
 - 计划确认与终止按 `{ sessionId, planId }` 键控（[`plan-confirmation.ts`](../../src/services/engine/plan-confirmation.ts)）：跨会话可并发，同一会话同一时刻只允许一个计划；面板只渲染活跃会话的计划，终止入口只作用于所属会话，计划执行中切会话不取消（只把面板移出视图）。切会话/关闭标签在会话指针移动前取消该会话的待确认计划并写一条系统消息。确认等待上限 5 分钟（`PLAN_CONFIRM_TIMEOUT_MS`，与权限确认 TTL 无关）：超时、会话切换、会话不再活跃、确认事件发射失败四种非确认归宿各写一条系统消息并走同一收尾；确认事件发射失败或面板监听注册失败都立即按归宿结算，不让确认方悬挂。
 - Provider 请求固定在用户配置的 origin，禁用重定向；显式配置的 localhost/private provider 可以使用。该 WebView 边界不提供 DNS pinning、通用 SSRF 防护或 shell 网络沙箱。[`createProviderFetchGuard`](../../src/services/engine/pi/net-guard.ts)
 
