@@ -1,8 +1,9 @@
 // ==========================================
-// Context construction: assemble immutable blocks; kernel owns all selection.
+// Context construction: assemble immutable blocks. The kernel only does budget
+// math and the hard-limit decision — the request view is owned by the Harness.
 // ==========================================
 
-import type { Message, ToolDeclaration, ThinkingEffort } from "@/services/agent/types"
+import type { ToolDeclaration, ThinkingEffort } from "@/services/agent/types"
 import { getToolDeclarations } from "@/services/tool/registry"
 import { MemoryService } from "@/services/agent/memory"
 import { aiConfig } from "@/services/config"
@@ -13,15 +14,12 @@ import type { PersonalityCard } from "@/services/personality/types"
 import type { VariablePool } from "@/services/personality/variable-pool"
 import type { ContextBlock } from "@/services/engine/runtime"
 import type { MemoryProjection } from "@/services/agent/memory"
-import { buildContextKernel } from "./kernel"
-import { contextBudget, estimateContextTokens, toolBudgetSchema, type ContextBudget } from "./budget"
+import { buildPromptBlocks } from "./kernel"
+import type { ContextBudgetAdjustment } from "./kernel"
+import { contextBudget, toolBudgetSchema, type ContextBudget } from "./budget"
 import { createUserProfileProjection, memoryProjectionBlocks, profileProjectionBlock } from "./projection"
 
 export interface BuildContextInput {
-  recentMessages: Message[]
-  /** Durable ingress already contains the current input, including after tool turns. */
-  currentInputInTranscript?: boolean
-  userText: string
   unansweredCount?: number
   thinkingEffort: ThinkingEffort
   isActiveMessage?: boolean
@@ -43,18 +41,15 @@ export interface BuildContextInput {
 export interface BuildContextOutput {
   systemPrompt: string
   tools: ToolDeclaration[]
-  estimatedSystemTokens: number
   estimatedInputTokens: number
   contextMaxTokens: number
   budget: ContextBudget
-  overNormalTarget: boolean
   staticPrefix: string
-  sessionStatic: string
   turnDynamic: string
   blocks: ContextBlock[]
-  recentMessages: Message[]
   inputTokenBudget: number
-  budgetAdjustments: import("./kernel").ContextBudgetAdjustment[]
+  /** 被整块淘汰的可选块（内核产出）：审计与快照读它，不再有第二轮借用计算。 */
+  budgetDrops: ContextBudgetAdjustment[]
   allocations: import("@/services/engine/runtime").ContextAllocation[]
 }
 
@@ -114,7 +109,7 @@ export function buildPrompt(input: BuildContextInput, card: PersonalityCard | nu
   const toolSchemaSnapshot = tools.length ? JSON.stringify(tools.map(toolBudgetSchema)) : ""
   const dynamic = input.dynamicPrompt ?? runtimeDynamicPrompt(pool, input.thinkingEffort)
 
-  const kernel = buildContextKernel([
+  const kernel = buildPromptBlocks([
     { blockId: "static:card", layer: "static", source: "personality-card", text: cardStaticPrompt(card), priority: 100, origin: "system", taint: "system" },
     { blockId: "static:candy", layer: "static", source: "CANDY.md", text: candy, priority: 99, origin: "system", taint: "system" },
     { blockId: "static:tool-protocol", layer: "static", source: "tool-protocol", text: toolProtocol, priority: 98, origin: "system", taint: "system" },
@@ -126,15 +121,14 @@ export function buildPrompt(input: BuildContextInput, card: PersonalityCard | nu
     // Summary remains derived session data; it never inherits CANDY's system-instruction taint.
     { blockId: "memory:session-summary", layer: "memory", source: "session-summary", text: input.sessionSummary ?? "", priority: 70, origin: "assistant", taint: "derived" },
     ...memoryProjectionBlocks(input.memoryProjections ?? []),
-    { blockId: "transcript:history", layer: "transcript", source: "session", text: "", priority: 60, origin: "assistant", taint: "derived" },
     { blockId: `ephemeral:${input.ephemeralOrigin ?? (input.isActiveMessage ? "active" : "none")}`,
       layer: "ephemeral", source: input.ephemeralOrigin ?? (input.isActiveMessage ? "active_monitor" : "none"),
       text: input.ephemeralText ?? "", priority: 50,
       origin: input.ephemeralOrigin ?? (input.isActiveMessage ? "active" : "system"), taint: "derived" },
-  ], input.recentMessages, contextMaxTokens, { budget, currentInput: input.currentInputInTranscript ? undefined : input.userText })
+  ], contextMaxTokens, { budget })
 
-  return { systemPrompt: kernel.systemPrompt, tools, estimatedSystemTokens: estimateContextTokens(kernel.systemPrompt),
-    estimatedInputTokens: kernel.estimatedInputTokens, contextMaxTokens, budget: kernel.budget, overNormalTarget: kernel.overNormalTarget,
-    staticPrefix: kernel.staticPrefix, sessionStatic: kernel.sessionStatic, turnDynamic: kernel.turnDynamic,
-    blocks: kernel.blocks, recentMessages: kernel.messages, inputTokenBudget: kernel.inputTokenBudget, budgetAdjustments: kernel.budgetAdjustments, allocations: kernel.allocations }
+  return { systemPrompt: kernel.systemPrompt, tools,
+    estimatedInputTokens: kernel.estimatedInputTokens, contextMaxTokens, budget: kernel.budget,
+    staticPrefix: kernel.staticPrefix, turnDynamic: kernel.turnDynamic,
+    blocks: kernel.blocks, inputTokenBudget: kernel.inputTokenBudget, budgetDrops: kernel.budgetDrops, allocations: kernel.allocations }
 }

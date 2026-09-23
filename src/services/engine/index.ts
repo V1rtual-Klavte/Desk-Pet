@@ -7,7 +7,7 @@ export { preProcess } from "./preprocessor"
 export type { PreProcessResult, PreProcessState } from "./preprocessor"
 
 // ── Context ──
-export { buildPrompt } from "@/services/context"
+// 构建入口 `buildPrompt` 由 `@/services/context` 直接导出：引擎 barrel 不再转出一份。
 export type { BuildContextInput, BuildContextOutput } from "@/services/context"
 
 // ── Slash ──

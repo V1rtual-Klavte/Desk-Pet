@@ -4,8 +4,15 @@ import { createLogger } from "@/services/logger"
 
 const log = createLogger("ContextBudget")
 
+/**
+ * 各层的软配额比例（normalInputTarget 的份额）。
+ *
+ * 比例是审计/软配额：只有 memory 份额被运行期消费（召回预算），其余只是报表口径，
+ * 不按百分比截字。transcript 不再有份额 —— 请求视图由 Harness 从已提交条目重建，
+ * 内核看不到消息（分配账目里仍保留该行，requested 恒为已选块的 0）。
+ */
+export const CONTEXT_RATIOS = Object.freeze({ static: .12, tools: .08, dynamic: .10, memory: .15, ephemeral: .05 })
 /** All request budgets, including one-shot summaries, use the same units. */
-export const CONTEXT_RATIOS = Object.freeze({ static: .12, tools: .08, dynamic: .10, memory: .15, transcript: .50, ephemeral: .05 })
 /** 上下文窗口默认值（tokens）：CONFIG 与设置页的缺省都取它（128k）。 */
 export const DEFAULT_CONTEXT_WINDOW = 131_072
 /**

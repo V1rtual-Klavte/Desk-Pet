@@ -11,6 +11,7 @@ import { createMessageId } from "@/services/agent/types"
 import { MemoryService, recallMemory, planCheckpointStore } from "@/services/agent/memory"
 import type { StructuredSummary } from "@/services/agent/memory"
 import { buildPrompt, contextBudget, CONTEXT_RATIOS, estimateRequestTokens, estimateContextTokens, estimateMessageTokens, ContextBudgetError, ESTIMATE_DRIFT_WARN_RATIO, estimateDriftRatio, projectMessageContent, projectToolResultText, toolResultAddress } from "@/services/context"
+import type { ContextBudgetAdjustment } from "@/services/context"
 import { bindRunningPlan, clearRunningPlan, notifyPlanEnd, requestPlanConfirm, requestPlanStepDecision } from "@/services/engine/plan-confirmation"
 import type { PlanConfirmResult } from "@/services/engine/plan-confirmation"
 import { executePlan, evaluateComplexity, formatStepResults, generatePlan, normalizePlan, planEffectClassFor, planToRecords, recordsToPlan } from "@/services/engine/planner"
@@ -294,6 +295,8 @@ interface TurnKernel {
   tools: readonly ToolDef[]
   blocks: ContextBlock[]
   allocations?: ContextAllocation[]
+  /** 内核整块淘汰的可选块（审计与快照用），不参与请求视图拼接。 */
+  budgetDrops: ContextBudgetAdjustment[]
   promptTransforms: PromptTransform[]
   skillCatalogFingerprint?: string
   transientUserInput: boolean
@@ -333,6 +336,7 @@ interface TurnKernelOptions {
   tools: readonly ToolDef[]
   blocks?: ContextBlock[]
   allocations?: ContextAllocation[]
+  budgetDrops?: ContextBudgetAdjustment[]
   promptTransforms?: PromptTransform[]
   skillCatalogFingerprint?: string
   transientUserInput: boolean
@@ -350,6 +354,7 @@ function createTurnKernel(options: TurnKernelOptions): TurnKernel {
   const kernel: TurnKernel = {
     ...options,
     blocks: options.blocks ?? [],
+    budgetDrops: options.budgetDrops ?? [],
     promptTransforms: options.promptTransforms ?? [],
     state,
     card: options.card ?? null,
@@ -371,7 +376,7 @@ function createTurnKernel(options: TurnKernelOptions): TurnKernel {
           ? agentMessages.reduce((n, message) => n + estimateMessageTokens(message), 0) - transientTokens
           : kernel.blocks.filter(block => block.layer === "ephemeral" && block.origin !== "active")
               .reduce((n, block) => n + estimateContextTokens(block.text), 0) + transientTokens
-        return { ...allocation, requested: used, used, borrowed: Math.max(0, used - allocation.assigned), dropped: 0 }
+        return { ...allocation, requested: used, used }
       })
       const toolSchemas = await Promise.all(options.tools.map(async tool => ({
         name: tool.name,
@@ -854,8 +859,7 @@ export async function runPiAgentTurn(input: PiAgentTurnInput): Promise<PiAgentTu
   // 会话历史由 Harness 条目承担；buildPrompt 只负责静态/动态/记忆块与预算分配记录。
   const context = buildPrompt({
     ...frozenContext,
-    recentMessages: [], userText, unansweredCount, thinkingEffort, isActiveMessage,
-    currentInputInTranscript: true,
+    unansweredCount, thinkingEffort, isActiveMessage,
     memoryProjections, mode, contextMaxTokens: windowTokens, maxOutputTokens: model.maxTokens,
     tools: frozenTools.map(toToolDeclaration),
     ...(planStepContext ? { ephemeralText: planStepContext, ephemeralOrigin: "plan" as const } : {}),
@@ -882,6 +886,7 @@ export async function runPiAgentTurn(input: PiAgentTurnInput): Promise<PiAgentTu
     tools: frozenTools,
     blocks: context.blocks,
     allocations: context.allocations,
+    budgetDrops: context.budgetDrops,
     promptTransforms,
     skillCatalogFingerprint,
     transientUserInput: isActiveMessage === true,
@@ -1566,15 +1571,14 @@ export async function continueInterruptedRun(sessionId: string): Promise<PiAgent
     // 中断运行的原始冻结快照已随进程丢失：用当前 Card/变量重建只读前缀，不静默改 Card。
     const context = buildPrompt({
       ...{ candyInstructions: MemoryService.getCandyInstructionsSync(), userProfileText: MemoryService.getUserProfileSync() },
-      recentMessages: [], userText: "继续", unansweredCount: 0, thinkingEffort, mode,
-      currentInputInTranscript: true,
+      unansweredCount: 0, thinkingEffort, mode,
       contextMaxTokens: model.contextWindow, maxOutputTokens: model.maxTokens,
       tools: frozenTools.map(toToolDeclaration),
     }, card, pool)
     const kernel = createTurnKernel({
       sessionId, requestId, mode, model,
       thinkingEffort, systemPrompt: context.systemPrompt, tools: frozenTools,
-      blocks: context.blocks, allocations: context.allocations,
+      blocks: context.blocks, allocations: context.allocations, budgetDrops: context.budgetDrops,
       transientUserInput: false, persistSnapshots: false, card,
       toolRun: {
         mode, sessionId, runGeneration: generation,
@@ -1632,8 +1636,7 @@ export async function compactActiveSession(sessionId: string): Promise<ManualCom
   const pool = getPoolSnapshot()
   const context = buildPrompt({
     ...{ candyInstructions: MemoryService.getCandyInstructionsSync(), userProfileText: MemoryService.getUserProfileSync() },
-    recentMessages: [], userText: "", unansweredCount: 0, thinkingEffort: getEffectiveThinkingEffort(), mode,
-    currentInputInTranscript: true,
+    unansweredCount: 0, thinkingEffort: getEffectiveThinkingEffort(), mode,
     contextMaxTokens: model.contextWindow, maxOutputTokens: model.maxTokens,
     tools: [],
   }, card, pool)

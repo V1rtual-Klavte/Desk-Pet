@@ -22,7 +22,6 @@ export const memoryContract: ModuleContract = {
     "src/services/context/kernel.ts",
     "src/services/context/projection.ts",
     "src/services/context/budget.ts",
-    "src/services/context/rounds.ts",
     "src/services/context/tool-output.ts",
     "src/services/debug.ts",
   ],

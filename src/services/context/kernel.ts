@@ -1,39 +1,38 @@
-import type { Message } from "@/services/agent/types"
 import type { ContextBlock, ContextLayer, ContextAllocation } from "@/services/engine/runtime"
-import { CONTEXT_RATIOS, ContextBudgetError, contextBudget, estimateContextTokens, estimateMessageTokens, type ContextBudget } from "./budget"
-import { buildMessageRounds } from "./rounds"
+import { createLogger } from "@/services/logger"
+import { CONTEXT_RATIOS, ContextBudgetError, contextBudget, estimateContextTokens, type ContextBudget } from "./budget"
 
-export const CONTEXT_LAYER_ORDER: readonly ContextLayer[] = ["static", "dynamic", "profile", "memory", "transcript", "ephemeral"]
+const log = createLogger("ContextKernel")
+
+/** 请求块顺序的唯一真相源（static → dynamic → profile → memory → transcript → ephemeral）；模块内使用，不导出。 */
+const CONTEXT_LAYER_ORDER: readonly ContextLayer[] = ["static", "dynamic", "profile", "memory", "transcript", "ephemeral"]
+/** 分配账目覆盖的层。transcript 不再有预算份额（请求视图由 Harness 从已提交条目重建），但审计行保留。 */
+const ALLOCATION_LAYERS = ["static", "tools", "dynamic", "memory", "transcript", "ephemeral"] as const
+
 export interface ContextBlockInput extends Omit<ContextBlock, "tokenBudget"> {}
 
+/** 内核唯一的淘汰原因：可选块整块放不进硬输入上限（绝不截块内文字）。 */
 export interface ContextBudgetAdjustment {
   layer: ContextLayer
   blockId: string
-  reason: "context_budget_exceeded" | "dropped" | "borrowed_budget"
   originalTokens: number
-  retainedTokens: number
-  assignedTokens?: number
-  borrowedTokens?: number
+  reason: "dropped"
 }
 
-export interface ContextKernelOptions {
-  currentInput?: string
+export interface PromptBlocksOptions {
   budget?: ContextBudget
 }
 
-export interface ContextKernelResult {
+export interface PromptBlocks {
   blocks: ContextBlock[]
-  messages: Message[]
   systemPrompt: string
   staticPrefix: string
-  sessionStatic: string
   turnDynamic: string
   estimatedInputTokens: number
   inputTokenBudget: number
   budget: ContextBudget
-  overNormalTarget: boolean
-  budgetAdjustments: ContextBudgetAdjustment[]
   allocations: ContextAllocation[]
+  budgetDrops: ContextBudgetAdjustment[]
 }
 
 function sortBlocks(blocks: ContextBlockInput[]): ContextBlockInput[] {
@@ -43,18 +42,14 @@ function sortBlocks(blocks: ContextBlockInput[]): ContextBlockInput[] {
   })
 }
 
-function isPinned(block: ContextBlockInput): boolean {
+function isCore(block: ContextBlockInput): boolean {
   return block.layer === "static" || block.blockId === "dynamic:runtime" || block.blockId === "memory:session-summary"
 }
 
-function budgetLayer(block: Pick<ContextBlockInput, "layer" | "source">): keyof typeof CONTEXT_RATIOS {
+function budgetLayer(block: Pick<ContextBlockInput, "layer" | "source">): ContextAllocation["layer"] {
   if (block.layer === "profile") return "dynamic"
   if (block.layer === "static" && (block.source === "tool-schema" || block.source === "skill-catalog")) return "tools"
   return block.layer
-}
-
-function layerAllocation(block: Pick<ContextBlockInput, "layer" | "source">, budget: ContextBudget): number {
-  return Math.floor(budget.normalInputTarget * CONTEXT_RATIOS[budgetLayer(block)])
 }
 
 function joinPrompt(blocks: readonly ContextBlock[], predicate: (block: ContextBlock) => boolean): string {
@@ -62,72 +57,50 @@ function joinPrompt(blocks: readonly ContextBlock[], predicate: (block: ContextB
 }
 
 /**
- * Build one request view from complete blocks and transcript rounds. The kernel never
- * slices text: core data or an uncompressed transcript that cannot fit is an explicit
- * ContextBudgetError. A summary covers only a previously compacted prefix, never
- * permission to discard messages in this request view.
+ * Build one request view's blocks under the hard input limit. The kernel never slices text:
+ * a core block that cannot fit is an explicit ContextBudgetError, and an optional block that
+ * cannot fit is dropped whole and recorded in `budgetDrops`.
+ *
+ * 内核只看块，不看消息：请求视图（含 transcript）由 Harness 从已提交条目重建，
+ * 这里只负责块排序、硬上限判定、可选块整块淘汰、拼接与分配账目。
  */
-export function buildContextKernel(
-  inputBlocks: ContextBlockInput[], messages: Message[], contextMaxTokens: number, options: ContextKernelOptions = {},
-): ContextKernelResult {
+export function buildPromptBlocks(inputBlocks: ContextBlockInput[], contextMaxTokens: number, options: PromptBlocksOptions = {}): PromptBlocks {
   const budget = options.budget ?? contextBudget(contextMaxTokens)
   const inputTokenBudget = budget.hardInputLimit
-  const adjustments: ContextBudgetAdjustment[] = []
-  const currentInput = options.currentInput ?? ""
-  const lastMessage = messages[messages.length - 1]
-  const currentInputTokens = currentInput && !(lastMessage?.role === "user" && lastMessage.text === currentInput)
-    ? estimateMessageTokens({ role: "user", text: currentInput })
-    : 0
-  let used = currentInputTokens
+  const drops: ContextBudgetAdjustment[] = []
   const selected: ContextBlock[] = []
   const optional: ContextBlockInput[] = []
-
+  let used = 0
   for (const block of sortBlocks(inputBlocks)) {
     if (!block.text) continue
-    if (!isPinned(block)) { optional.push(block); continue }
+    if (!isCore(block)) { optional.push(block); continue }
     const tokens = estimateContextTokens(block.text)
     if (used + tokens > inputTokenBudget) throw new ContextBudgetError(used + tokens, inputTokenBudget)
     used += tokens
     selected.push({ ...block, tokenBudget: tokens })
   }
-
-  const rounds = buildMessageRounds(messages)
-  const transcriptTokens = rounds.reduce((total, round) => total + round.tokens, 0)
-  if (used + transcriptTokens > inputTokenBudget) throw new ContextBudgetError(used + transcriptTokens, inputTokenBudget)
-  used += transcriptTokens
-  const retainedMessages = messages
-
-  // Ratios are soft quotas. A whole block may consume unclaimed capacity but is never clipped.
   for (const block of optional) {
     const tokens = estimateContextTokens(block.text)
-    const assignedTokens = layerAllocation(block, budget)
     if (used + tokens > inputTokenBudget) {
-      adjustments.push({ layer: block.layer, blockId: block.blockId, reason: "dropped", originalTokens: tokens, retainedTokens: 0, assignedTokens })
+      drops.push({ layer: block.layer, blockId: block.blockId, originalTokens: tokens, reason: "dropped" })
+      log.warn("可选块超出硬输入上限，整块淘汰:", { blockId: block.blockId, layer: block.layer, tokens, used, inputTokenBudget })
       continue
     }
-    const priorLayerTokens = selected
-      .filter(candidate => budgetLayer(candidate) === budgetLayer(block))
-      .reduce((total, candidate) => total + (candidate.tokenBudget ?? 0), 0)
-    const borrowedTokens = Math.max(0, priorLayerTokens + tokens - assignedTokens)
     used += tokens
     selected.push({ ...block, tokenBudget: tokens })
-    if (borrowedTokens) adjustments.push({ layer: block.layer, blockId: block.blockId, reason: "borrowed_budget", originalTokens: tokens, retainedTokens: tokens, assignedTokens, borrowedTokens })
   }
-
-  const allocations = Object.keys(CONTEXT_RATIOS).map(layer => {
-    const bucket = layer as ContextAllocation["layer"]
-    const requested = inputBlocks.filter(block => budgetLayer(block) === bucket).reduce((n, block) => n + estimateContextTokens(block.text), 0)
-      + (bucket === "transcript" ? transcriptTokens : 0) + (bucket === "ephemeral" ? currentInputTokens : 0)
-    const consumed = selected.filter(block => budgetLayer(block) === bucket).reduce((n, block) => n + (block.tokenBudget ?? 0), 0)
-      + (bucket === "transcript" ? transcriptTokens : 0) + (bucket === "ephemeral" ? currentInputTokens : 0)
-    const assigned = Math.floor(budget.normalInputTarget * CONTEXT_RATIOS[bucket])
-    return { layer: bucket, requested, assigned, used: consumed, borrowed: Math.max(0, consumed - assigned), dropped: requested - consumed }
+  // Ratios are an audit/soft quota: only the memory share is consumed at runtime, the rest is a report.
+  const allocations = ALLOCATION_LAYERS.map(layer => {
+    const assigned = Math.floor(budget.normalInputTarget * (CONTEXT_RATIOS[layer as keyof typeof CONTEXT_RATIOS] ?? 0))
+    const requested = inputBlocks.filter(block => budgetLayer(block) === layer).reduce((n, block) => n + estimateContextTokens(block.text), 0)
+    const consumed = selected.filter(block => budgetLayer(block) === layer).reduce((n, block) => n + (block.tokenBudget ?? 0), 0)
+    const dropped = requested - consumed
+    return { layer, requested, assigned, used: consumed, ...(dropped > 0 ? { dropped } : {}) }
   })
   const ordered = sortBlocks(selected)
   const staticPrefix = joinPrompt(ordered, block => block.blockId === "static:card" || block.blockId === "static:candy" || block.blockId === "static:tool-protocol")
-  const sessionStatic = joinPrompt(ordered, block => block.blockId === "static:tool-schema" || block.blockId === "static:skill-catalog")
   const turnDynamic = joinPrompt(ordered, block => block.layer !== "static" && !(block.layer === "ephemeral" && block.origin === "active"))
-  const systemPrompt = joinPrompt(ordered, block => block.blockId !== "static:tool-schema" && block.layer !== "transcript" && !(block.layer === "ephemeral" && block.origin === "active"))
-  return { blocks: ordered, messages: retainedMessages, systemPrompt, staticPrefix, sessionStatic, turnDynamic,
-    estimatedInputTokens: used, inputTokenBudget, budget, overNormalTarget: used > budget.normalInputTarget, budgetAdjustments: adjustments, allocations }
+  const systemPrompt = joinPrompt(ordered, block => block.blockId !== "static:tool-schema" && !(block.layer === "ephemeral" && block.origin === "active"))
+  return { blocks: ordered, systemPrompt, staticPrefix, turnDynamic,
+    estimatedInputTokens: used, inputTokenBudget, budget, allocations, budgetDrops: drops }
 }
