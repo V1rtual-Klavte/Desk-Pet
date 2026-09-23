@@ -7,6 +7,15 @@
  * H-4：宿主队列（QueueEntry/QueueAck）随 RuntimeQueue 退役，投递语义由 Harness lane 承接。
  */
 
+// ── 会话条目的宿主自定义类型（JSONL 条目的 customType）──
+// 值即落盘形态：改名直接换值、不做兼容读取（旧数据可弃，不是缺陷）。
+
+/** 欢迎语条目：宿主生成，读模型投影为聊天视图的 assistant 气泡，不进模型上下文。 */
+export const DESKPET_GREETING_ENTRY = "deskpet.greeting"
+
+/** 系统提示条目：宿主/运行时写的系统消息，读模型投影为 system 气泡，不进模型上下文。 */
+export const DESKPET_SYSTEM_MESSAGE_ENTRY = "deskpet.system_message"
+
 export type MessageOrigin =
   | "user"
   | "assistant"

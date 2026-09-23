@@ -9,7 +9,8 @@ import { pushMessageFor } from "./store"
 import { saveUnanswered } from "./persistence"
 import { updateSessionName } from "./manager"
 import { appendPiSessionCustomEntry } from "./repo"
-import { DESKPET_GREETING_ENTRY } from "./read-model"
+import { DESKPET_GREETING_ENTRY, DESKPET_SYSTEM_MESSAGE_ENTRY } from "@/services/engine/runtime"
+import { harnessSlots } from "@/services/engine/pi"
 import { createLogger } from "@/services/logger"
 import { formatError } from "@/services/error"
 
@@ -55,7 +56,21 @@ export function pushAssistantMessage(text: string, sessionId: string): Message {
 export function pushSystemMessage(text: string, sessionId: string): Message {
   const msg = createSystemMessage(text)
   pushMessageFor(sessionId, msg)
+  persistSystemMessage(sessionId, text)
   return msg
+}
+
+/**
+ * 系统提示落盘（与问候语先例一致）：走槽的空闲队列，避免运行中与 lane 命令锁互等；无槽时直接追加。
+ * 失败只留 error 级证据，不影响已经进视图的消息。
+ */
+function persistSystemMessage(sessionId: string, text: string): void {
+  void (async () => {
+    if (!sessionId) return
+    const slot = harnessSlots.peek(sessionId)
+    if (slot) { slot.queueAuditEntry(DESKPET_SYSTEM_MESSAGE_ENTRY, { text }); return }
+    await appendPiSessionCustomEntry(sessionId, DESKPET_SYSTEM_MESSAGE_ENTRY, { text })
+  })().catch(error => log.error("系统提示落盘失败:", { sessionId }, formatError(error)))
 }
 
 // ═══════════════════════════════════════════════════

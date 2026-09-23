@@ -41,6 +41,8 @@ export type { RuntimeTraceContext, RuntimeTraceEvent, RuntimeTraceKind, RuntimeT
 
 export type { ContextAllocation } from "./types"
 
+export { DESKPET_GREETING_ENTRY, DESKPET_SYSTEM_MESSAGE_ENTRY } from "./types"
+
 export {
   INPUT_SOURCE_FIELD,
   inputEventId,

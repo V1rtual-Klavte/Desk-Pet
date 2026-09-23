@@ -466,7 +466,7 @@ async function dispatchMessage(text: string, options: SendMessageOptions = {}): 
     if (getActiveSessionId() === originSessionId) {
       pushAssistantMessage(fallback, originSessionId)
       // 角色台词会掩盖故障：补一条系统消息，让用户分得清「降级」和「正常回复」。
-      // 该消息随会话持久化，所以用脱敏摘要而非原始错误。
+      // 该消息经 `deskpet.system_message` 条目落盘，重启后可回读，不进模型上下文；所以用脱敏摘要而非原始错误。
       const { pushSystemMessage } = await import("@/services/session/messages")
       pushSystemMessage(`LLM 调用失败，已降级回复：${summarizeError(e)}`, originSessionId)
     } else {

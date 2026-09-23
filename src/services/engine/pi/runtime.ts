@@ -25,7 +25,7 @@ import { getFallbackReply, getSimpleStage } from "@/services/personality/stages-
 import { generateReply, parseRuntimeData } from "@/services/reply"
 import { authorizeToolExecution, invalidatePermissionScope } from "@/services/safety"
 import { getActiveSessionId, pushMessageFor } from "@/services/session/store"
-import { pushSystemMessage } from "@/services/session"
+import { isAssistantEntryVisible, pushSystemMessage } from "@/services/session"
 import { getToolsForMode } from "@/services/tool/registry"
 import { SESSION_TRANSCRIPT_TOOL, toToolDeclaration, createTranscriptTool } from "@/services/tool"
 import { findRetainedToolCall, preservedToolNames, retainedToolNames, toolPolicyHash } from "@/services/tool/policy"
@@ -1766,9 +1766,9 @@ function fromPiMessage(message: AgentMessage, id: string): Message | undefined {
   const identity = { id, eventId: id, timestamp: "timestamp" in message ? message.timestamp : Date.now() }
   if (message.role === "user") return { ...identity, role: "user", text: typeof message.content === "string" ? message.content : contentText(message.content) }
   if (message.role === "assistant") {
-    // §4.2 保留：出错/中止的助手帧没有可展示正文，丢掉是刻意的丢帧判定 —— 放行只会得到
-    // 与正文相反的空气泡；显示与否由实时/读模型两处的口径共同决定，不能只改这一处。
-    if (message.stopReason === "error" || message.stopReason === "aborted") return undefined
+    // 出错/中止的助手帧没有可展示正文，丢掉是刻意的丢帧判定 —— 放行只会得到与正文相反的空气泡。
+    // 与重放路径（读模型）共用 isAssistantEntryVisible 一条判定，不能只改这一处。
+    if (!isAssistantEntryVisible(message)) return undefined
     const toolCalls = message.content.filter(part => part.type === "toolCall").map(call => ({ id: call.id, name: call.name, arguments: JSON.stringify(call.arguments) }))
     return { ...identity, role: "assistant", text: parseRuntimeData(contentText(message.content)).text,
       ...(toolCalls.length ? { toolCalls } : {}) }
