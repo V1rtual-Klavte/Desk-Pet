@@ -13,6 +13,7 @@ import { createActiveMessage, deliverActiveTurn, harnessSlots, isInputCommitted,
 import type { HarnessDeliveryReceipt, PiAgentTurnOutput } from "@/services/engine/pi"
 import type { AgentMessage } from "@earendil-works/pi-agent-core"
 import { preProcess } from "@/services/engine/preprocessor"
+import type { PreProcessState } from "@/services/engine/preprocessor"
 import {
   unansweredCount,
   pushUserMessage, pushAssistantMessage, pushSystemMessage,
@@ -32,7 +33,17 @@ import { applyPendingConversationCapabilities } from "@/services/init"
 
 const log = createLogger("Agent")
 
-const preprocessStates = new Map<string, { lastUserText?: string; lastUserTime?: number }>()
+const preprocessStates = new Map<string, PreProcessState>()
+
+/**
+ * 每会话的预处理去重状态：唯一取用入口，避免调用点各写一份默认对象导致状态丢失。
+ * 忙碌分支与空闲分支必须拿到同一个对象 —— `preProcess` 就地改写去重窗口，临时对象会让 30 秒窗口在任何入口下失效。
+ */
+function preprocessStateFor(sessionId: string): PreProcessState {
+  let state = preprocessStates.get(sessionId)
+  if (!state) { state = {}; preprocessStates.set(sessionId, state) }
+  return state
+}
 
 /** Test isolation hook；运行槽持有 Provider/模型与文件系统句柄，场景之间一并关闭。 */
 export async function resetAgentRuntimeForTest(): Promise<void> {
@@ -334,7 +345,7 @@ async function dispatchMessage(text: string, options: SendMessageOptions = {}): 
   // 那种窗口里没有可投递的回合，投递必然失败，输入不能被当成正常回合放进去。
   let busyPreResult: Awaited<ReturnType<typeof preProcess>> | undefined
   if (await harnessSlots.hasOpenOperation(originSessionId)) {
-    const preResult = await preProcess(text, preprocessStates.get(originSessionId) ?? {}, { busy: true })
+    const preResult = await preProcess(text, preprocessStateFor(originSessionId), { busy: true })
     if (preResult.handled) {
       // 命令已执行（immediate/coordinated）或已被明确拒绝；两种结果都如实呈现，不谎称在思考。
       if (preResult.response) {
@@ -391,9 +402,8 @@ async function dispatchMessage(text: string, options: SendMessageOptions = {}): 
   }
 
   // ── Step 1: 预处理（命令不占用运行槽：/compact 需要看到真实空闲状态）──
-  const preprocessState = preprocessStates.get(originSessionId) ?? {}
-  preprocessStates.set(originSessionId, preprocessState)
-  const preResult = busyPreResult ?? await preProcess(text, preprocessState)
+  const preState = preprocessStateFor(originSessionId)
+  const preResult = busyPreResult ?? await preProcess(text, preState)
 
   if (preResult.handled) {
     if (preResult.response) {
