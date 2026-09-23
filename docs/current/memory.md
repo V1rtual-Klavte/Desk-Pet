@@ -16,7 +16,7 @@
 
 ## 会话真相源
 
-聊天正文以数据根 `sessions/` 的 JSONL 为真相源（JsonlSessionRepo，每会话一个文件，commit 事务写入）；`sessions/index.json` 只保存可丢弃 UI 状态。会话扫描失败会置 `sessionHistoryError` 且不自动建新会话——「读不到」不被伪装成「没有会话」，也不拿空列表覆盖已持久化的标签。条目保存稳定 entryId/seq；工具调用/结果、usage 行与来源标记都落在条目与 usage 记录里——来源按条目形态分字段：用户输入（含空闲发送）在消息上带 `deskpetEventId`（`<requestId>:user` 身份）与 `deskpetSource`（`InputSourceMark`：origin/querySource/priority/taint/eligibleForMemory；`eligibleForMemory=true` 只给用户本人的可信输入），恢复续跑投递的「继续」用 recovery 标记；工具结果在 `details.origin/taint/isError`；主动消息在 `details.*` 且 `eligibleForMemory=false`。没有这两个字段的历史条目按「没有身份 / 没有标记」处理，不猜来源。控制信息用 `deskpet.*` 自定义条目（如 prompt_snapshot、active_message、system_message、plan_checkpoint；`deskpet.compaction_continuation` 记录「压缩续跑在没有宿主回合的情况下已被结算」这一异常收口，`deskpet.compaction_declined` 记录宿主摘要内核失败导致的压缩降级（含 status/reason/error），供审计追溯；计划证据条目 `deskpet.plan_step_result`、`deskpet.plan_recovery_failed` 与 `deskpet.plan_write_failed` 已登记，均为宿主自定义条目，不进模型消息流，因此不受 `resultProjection`（请求层缩短）与 `historyCompaction`（压缩保留策略）约束）；旧 Markdown 会话格式及其解析代码已删除，旧数据可弃。主动上下文不成为用户事实。
+聊天正文以数据根 `sessions/` 的 JSONL 为真相源（JsonlSessionRepo，每会话一个文件，commit 事务写入）；`sessions/index.json` 只保存可丢弃 UI 状态。会话扫描失败会置 `sessionHistoryError` 且不自动建新会话——「读不到」不被伪装成「没有会话」，也不拿空列表覆盖已持久化的标签。条目保存稳定 entryId/seq；工具调用/结果、usage 行与来源标记都落在条目与 usage 记录里——来源按条目形态分字段：用户输入（含空闲发送）在消息上带 `deskpetEventId`（`<requestId>:user` 身份）与 `deskpetSource`（`InputSourceMark`：origin/querySource/priority/taint/eligibleForMemory；`eligibleForMemory=true` 只给用户本人的可信输入），恢复续跑投递的「继续」用 recovery 标记；工具结果在 `details.origin/taint/isError`；主动消息在 `details.*` 且 `eligibleForMemory=false`。没有这两个字段的历史条目按「没有身份 / 没有标记」处理，不猜来源。控制信息用 `deskpet.*` 自定义条目（如 prompt_snapshot、active_message、system_message、plan_checkpoint；`deskpet.prompt_rewrite` 记录一次提示词派生的输入/输出 hash 与派生来源（压缩摘要写 `compaction_summary`，附压缩条目地址），只留 hash 不落派生正文，也不进模型消息流；`deskpet.compaction_continuation` 记录「压缩续跑在没有宿主回合的情况下已被结算」这一异常收口，`deskpet.compaction_declined` 记录宿主摘要内核失败导致的压缩降级（含 status/reason/error），供审计追溯；计划证据条目 `deskpet.plan_step_result`、`deskpet.plan_recovery_failed` 与 `deskpet.plan_write_failed` 已登记，均为宿主自定义条目，不进模型消息流，因此不受 `resultProjection`（请求层缩短）与 `historyCompaction`（压缩保留策略）约束）；旧 Markdown 会话格式及其解析代码已删除，旧数据可弃。主动上下文不成为用户事实。
 
 用户 ingress 先落盘再投递（lane 持久 inbox）；工具调用落盘后才执行；结果落盘后才允许下一次 Provider 请求。切换会话、旧代际回调和后台回复都绑定原 session。
 
@@ -48,7 +48,7 @@
 
 ## 请求快照与长期记忆边界
 
-回合冻结与三阶段 PromptSnapshot 由[运行时契约](runtime-contract.md#快照与人格状态)维护。快照与其它审计条目只入队，落盘由槽的唯一 `flushAudit()` 在 lane 空闲时统一完成（回合收尾、手动压缩收尾、槽关闭前各一次，回合结算前再补一次）；写失败保留待重试、残留记 error，不在槽生命周期结束时静默消失。摘要调用不计为正常聊天回复。
+回合冻结与三阶段 PromptSnapshot 由[运行时契约](runtime-contract.md#快照与人格状态)维护。快照与其它审计条目只入队，落盘由槽的唯一 `flushAudit()` 在 lane 空闲时统一完成（回合收尾、手动压缩收尾、槽关闭前各一次，回合结算前再补一次）；写失败保留待重试、残留记 error，不在槽生命周期结束时静默消失。摘要调用不计为正常聊天回复，但摘要请求同样进快照体系：有会话归属的一次性调用写 payload 与 usage 两档快照（`one-shot:<purpose>` 身份、`request.step = "compaction"`），压缩成功后另写一条 `deskpet.prompt_rewrite`（`compaction_summary`，只含输入/输出 hash、运行来源与压缩条目地址，压缩正文与素材都不落盘）。
 
 `CANDY.md` 是人工指令，`User.md` 通过带来源的只读画像投影进入动态层；两者与摘要分别建块。现有记忆整理接口保留，但应用启动、每五轮和 session 结束不隐式发起记忆 LLM 整理。明确的长期记忆写入闭环在 P6 实施。
 

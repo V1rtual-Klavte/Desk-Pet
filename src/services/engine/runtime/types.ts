@@ -144,9 +144,9 @@ export interface PromptTransform {
 }
 
 /**
- * 宿主压缩钩子的审计槽：一次性调用（摘要内核）把这次压缩的结果/失败写进它，
+ * 宿主压缩钩子的审计槽：一次性调用（摘要内核）把这次压缩的产物/失败写进它，
  * 由运行槽在 `compaction_end` 收口成审计条目（hook 内不能直接写 lane）。
- * T3.36 用 `rewrite`（压缩请求的派生记录），失败路径用 `failure`。
+ * `rewrite` 是压缩摘要的派生记录，失败路径用 `failure`；`rewrite` 用过即由槽清空。
  */
 export interface CompactionAuditSink {
   rewrite?: PromptTransform

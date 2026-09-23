@@ -38,7 +38,7 @@ import type { HarnessToolRun } from "@/services/tool/pi/harness-tool-adapter"
 import { toAgentHarnessTools } from "@/services/tool/pi/harness-tool-adapter"
 import { setToolPermitLimit } from "@/services/tool/execution-permit"
 import { ContextBudgetError, contextBudget, toHarnessEstimateTokens } from "@/services/context"
-import { COMPACTION_DECLINED_ENTRY, laneMessageText, messageRequestId, userInputMessage } from "@/services/engine/runtime"
+import { COMPACTION_DECLINED_ENTRY, PROMPT_REWRITE_ENTRY, laneMessageText, messageRequestId, userInputMessage } from "@/services/engine/runtime"
 import type { CompactionAuditSink, InputSourceMark } from "@/services/engine/runtime"
 import { conversationConfig, loopConfig } from "@/services/config"
 import { PI_LANE } from "@/services/session/repo"
@@ -1494,6 +1494,15 @@ export class HarnessSlot {
             error: audit.failure,
             endedAt: event.endedAt,
           } as unknown as JsonValue)
+        }
+        // 摘要成功后的派生记录：只留 hash 与压缩条目地址，不进模型消息流。
+        if (event.status === "completed" && audit?.rewrite) {
+          this.queueAuditEntry(PROMPT_REWRITE_ENTRY, {
+            ...audit.rewrite,
+            compactionEntryId: event.entryId,
+          } as unknown as JsonValue)
+          // 同一槽可能连续压缩多次：用过即清，下一次压缩不得复用旧 transform。
+          delete audit.rewrite
         }
       }),
       events.on("queue_update", (event) => {

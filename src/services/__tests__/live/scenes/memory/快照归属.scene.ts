@@ -1,11 +1,11 @@
 import type { Context, FauxResponseStep } from "@earendil-works/pi-ai"
-import { compactActiveSession, compactionSettingsFor, harnessSlots, PROMPT_SNAPSHOT_ENTRY } from "@/services/engine/pi"
+import { compactActiveSession, compactionSettingsFor, harnessSlots, PROMPT_REWRITE_ENTRY, PROMPT_SNAPSHOT_ENTRY } from "@/services/engine/pi"
 import { initChat } from "@/services/agent/runner"
 import { getActiveSessionId } from "@/services/session"
 import { aiConfig } from "@/services/config"
 import { getEffectiveSafetyMode } from "@/services/debug"
 import { installFakeProvider, fakeText } from "../../fake-provider"
-import { sessionEntries } from "../../session-entries"
+import { compactionEntries, sessionEntries } from "../../session-entries"
 import type { SceneDef } from "../../types"
 
 // ── 场景口径：快照能回答「这是哪次请求、带什么参数、第几代槽」，一次性请求同样进快照体系 ──
@@ -199,6 +199,35 @@ export const 快照归属: SceneDef = {
           }
           if (JSON.stringify(usageStages[0]!.data).includes(SUMMARY_MARKER)) {
             throw new Error("一次性快照落盘了摘要正文（应只留 hash）")
+          }
+          // 压缩摘要的派生记录：只留 hash 与压缩条目地址，正文（摘要与素材）都不落盘。
+          const rewrites = (await sessionEntries(sessionId))
+            .flatMap(entry => entry.type === "custom" && entry.customType === PROMPT_REWRITE_ENTRY
+              ? [(entry.data ?? {}) as Record<string, unknown>]
+              : [])
+          if (rewrites.length !== 1) throw new Error(`期望恰好一条 prompt_rewrite 条目，实际 ${rewrites.length}`)
+          const rewrite = rewrites[0]!
+          if (rewrite.name !== "compaction_summary") throw new Error(`派生记录 name 不是 compaction_summary: ${String(rewrite.name)}`)
+          if (rewrite.reason !== "compaction") throw new Error(`派生记录 reason 不是 compaction: ${String(rewrite.reason)}`)
+          const compactionEntryId = compactionEntries(await sessionEntries(sessionId)).at(-1)?.id
+          if (rewrite.compactionEntryId !== compactionEntryId) {
+            throw new Error(`派生记录没有指向本次压缩条目: ${String(rewrite.compactionEntryId)} ≠ ${String(compactionEntryId)}`)
+          }
+          const derivedFrom = rewrite.derivedFrom as unknown
+          if (!Array.isArray(derivedFrom) || derivedFrom.length !== 1 || typeof derivedFrom[0] !== "string" || derivedFrom[0].length === 0) {
+            throw new Error(`派生记录缺少唯一的运行来源: ${JSON.stringify(derivedFrom)}`)
+          }
+          // 派生记录与一次性快照必须来自同一次运行（同一条 runId）：证据链不能有两个来源。
+          const runIds = new Set(oneShot.map(entry => entry.data.runId))
+          if (runIds.size !== 1 || !runIds.has(derivedFrom[0])) {
+            throw new Error(`派生记录的来源与摘要请求的运行不一致: ${String(derivedFrom[0])} vs ${JSON.stringify([...runIds])}`)
+          }
+          const serialized = JSON.stringify(rewrite)
+          if (serialized.includes(SUMMARY_MARKER)) throw new Error("派生记录落盘了摘要正文（应只留 hash）")
+          for (const field of ["inputHash", "outputHash", "transformId"]) {
+            if (typeof rewrite[field] !== "string" || (rewrite[field] as string).length === 0) {
+              throw new Error(`派生记录缺少 ${field}`)
+            }
           }
         } },
       ],

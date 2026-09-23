@@ -537,6 +537,17 @@ function createCompactionHook(options: {
         runId,
       })
       options.onSummary?.(outcome.summary)
+      // 压缩摘要的派生记录：只留输入/输出 hash（摘要正文与素材不落盘），由槽在 compaction_end 写条目。
+      if (options.audit) {
+        options.audit.rewrite = await createPromptRewrite({
+          transformId: `compaction-summary:${runId}`,
+          name: "compaction_summary",
+          rawText: outcome.inputText,
+          derivedText: outcome.text,
+          reason: "compaction",
+          derivedFrom: [runId],
+        })
+      }
       return {
         compaction: {
           summary: outcome.text,
