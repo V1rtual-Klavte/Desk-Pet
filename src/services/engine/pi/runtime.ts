@@ -736,8 +736,8 @@ export async function runPiAgentTurn(input: PiAgentTurnInput): Promise<PiAgentTu
             emit("deskpet-plan-progress", { step: step.id, total: normalizedPlan.steps.length, desc: step.description, status: output.success ? "done" : "failed" })
           },
           onStepFailed: requestPlanStepDecision,
-          onToolStart: (step, toolName, toolCallId) => planCheckpointStore.checkpointTool(planId, String(step.id), "tool_start", toolName, toolCallId),
-          onToolDone: (step, toolName, toolCallId, success) => planCheckpointStore.checkpointTool(planId, String(step.id), "tool_end", toolName, toolCallId, success),
+          onToolStart: (step, toolName, toolCallId) => planCheckpointStore.checkpointTool(planId, String(step.id), "tool_start", toolName, toolCallId, planEffectClassFor([toolName])),
+          onToolDone: (step, toolName, toolCallId, success) => planCheckpointStore.checkpointTool(planId, String(step.id), "tool_end", toolName, toolCallId, planEffectClassFor([toolName]), success),
         }).finally(() => clearRunningPlan())
         await planCheckpointStore.transitionPlan(planId, result.overallSuccess ? "done" : "failed")
         // 收起 Plan 面板：没有这个事件时它只在两个按钮里被隐藏，跑完会一直挂着

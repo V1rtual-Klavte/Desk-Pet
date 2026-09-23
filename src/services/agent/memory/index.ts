@@ -35,7 +35,11 @@ import {
 export type { MemoryEntry, ProjectEntry }
 export { parseStructuredSummary, formatStructuredSummary } from "./compaction-store"
 export type { StructuredSummary } from "./compaction-store"
-export { PlanCheckpointStore, planCheckpointStore, PLAN_CHECKPOINT_ENTRY } from "./plan-checkpoint-store"
+export {
+  PlanCheckpointStore, planCheckpointStore,
+  PLAN_CHECKPOINT_ENTRY, PLAN_STEP_RESULT_ENTRY, PLAN_RECOVERY_FAILED_ENTRY, PLAN_WRITE_FAILED_ENTRY,
+} from "./plan-checkpoint-store"
+export type { PlanCheckpointPayload, PlanStepResult, RecoveredPlan } from "./plan-checkpoint-store"
 
 const log = createLogger("Memory")
 

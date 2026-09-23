@@ -5,7 +5,7 @@
 // ==========================================
 
 import { BACKGROUND_CONTEXT } from "@earendil-works/pi-agent-core"
-import type { Entry, JsonValue, JsonlSessionMetadata, Session } from "@earendil-works/pi-agent-core"
+import type { Entry, EntryQuery, JsonValue, JsonlSessionMetadata, Session } from "@earendil-works/pi-agent-core"
 import { createPiSessionRepo } from "@/services/engine/pi"
 import type { PiSessionRepo } from "@/services/engine/pi"
 import { createLogger } from "@/services/logger"
@@ -181,23 +181,24 @@ export async function readPiSessionEntries(sessionId: string): Promise<Entry[]> 
 }
 
 /**
- * 读取会话全部 entry 后释放句柄（调用前未打开时不驻留）。
- * 供启动期批量扫描使用（Plan checkpoint 恢复），避免把所有历史会话都留在句柄缓存里。
+ * 按查询读取会话 entry 后释放句柄（调用前未打开时不驻留）。
+ * 供启动期批量扫描使用（Plan checkpoint 恢复），避免把所有历史会话都留在句柄缓存里；
+ * 扫描方按 `customType` 收窄读取集合，不再全量解析每个会话。
  */
-export async function readPiSessionEntriesOnce(sessionId: string): Promise<Entry[]> {
+export async function readPiSessionEntriesOnce(sessionId: string, query?: EntryQuery): Promise<Entry[]> {
   const alreadyOpen = openSessions.has(sessionId)
   const session = await acquirePiSession(sessionId)
   try {
-    return await session.findEntries({ order: "asc" }, BACKGROUND_CONTEXT)
+    return await session.findEntries(query ?? { order: "asc" }, BACKGROUND_CONTEXT)
   } finally {
     if (!alreadyOpen) await releasePiSession(sessionId)
   }
 }
 
-/** 追加 deskpet 自定义 entry（宿主生成、非模型消息）；lane 分支不存在时按需创建。 */
-export async function appendPiSessionCustomEntry(sessionId: string, customType: string, data?: JsonValue): Promise<void> {
+/** 追加 deskpet 自定义 entry（宿主生成、非模型消息）；lane 分支不存在时按需创建。返回条目 id。 */
+export async function appendPiSessionCustomEntry(sessionId: string, customType: string, data?: JsonValue): Promise<string> {
   const session = await acquirePiSession(sessionId)
   const branch = await session.branch(PI_LANE, BACKGROUND_CONTEXT)
     ?? await session.createBranch(PI_LANE, null, BACKGROUND_CONTEXT)
-  await branch.appendCustomEntry(customType, data, BACKGROUND_CONTEXT)
+  return await branch.appendCustomEntry(customType, data, BACKGROUND_CONTEXT)
 }
