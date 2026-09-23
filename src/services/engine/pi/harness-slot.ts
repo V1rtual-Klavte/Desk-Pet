@@ -46,6 +46,13 @@ const log = createLogger("HarnessSlot")
 /** 会话内唯一 lane：与 session 层共用 PI_LANE，不建第二个定义点。 */
 export { PI_LANE as HARNESS_LANE } from "@/services/session/repo"
 
+/**
+ * 压缩续跑的审计条目：手动压缩后的续跑没有宿主回合（无结算、无 UI 推送），
+ * 上游却仍会驱动它消费 lane inbox。它一旦被结算就不能再报「压缩完成」，
+ * 必须留下可追溯的证据（与 PROMPT_SNAPSHOT_ENTRY 同层，不进模型消息流）。
+ */
+export const COMPACTION_CONTINUATION_ENTRY = "deskpet.compaction_continuation"
+
 /** 回合内共享的聚合状态：由宿主创建，槽在事件处理中填充。 */
 export interface HarnessRunState {
   stoppedAtToolLimit: boolean
@@ -112,6 +119,19 @@ export interface HarnessRunHooks {
     headers?: Record<string, string>
   }) => Promise<SettledAssistantMessage | undefined> | SettledAssistantMessage | undefined
   beforePayload?: (payload: unknown, model: Model<any>) => void
+}
+
+/**
+ * 结构操作（手动压缩与它的续跑）的宿主面。
+ *
+ * 结构操作没有回合身份、没有工具、不进结算 —— 这不是第二套状态机：
+ * 它只承载「systemPrompt + hooks + state」三样，用于让续跑也走宿主的投影/剥离/观测；
+ * 任何回合语义（权限、工具、结算、UI 推送）都不得挂到这里。
+ */
+export interface HarnessStructuralHost {
+  systemPrompt?: string
+  hooks?: HarnessRunHooks
+  state: HarnessRunState
 }
 
 /** 宿主注入的 UI/统计消费点；事件在 Harness 交付线上按序 await。 */
@@ -261,8 +281,13 @@ export class HarnessSlot {
   private drainPromise?: Promise<void>
   private deliveryPhase?: HarnessDeliveryPhase
   private runIdentity?: { requestId: string; turnId?: string }
-  /** 手动压缩期间注入的宿主钩子（before_compaction 摘要内核）。 */
-  private manualHooks?: HarnessRunHooks
+  /**
+   * 结构操作（手动压缩与它的续跑）的宿主面；只在 `compact()` 的驱动窗口内存在。
+   * 它不承载回合语义：权限/工具/结算/UI 推送一律不挂这里（见 HarnessStructuralHost）。
+   */
+  private structuralHost?: HarnessStructuralHost
+  /** 最近一次冻结回合的 systemPrompt：结构操作缺宿主时也绝不用空串充当人格前缀。 */
+  private lastSystemPrompt?: string
   /** 压缩操作进行中：期间的 usage 属于一次性摘要调用，不进主回合统计。 */
   private compactionActive = false
   /** 已提交的压缩次数（compaction entry 数 + 本次会话内新增）。 */
@@ -334,12 +359,13 @@ export class HarnessSlot {
     const created = await AgentHarness.create({
       session: this.session,
       models: createHarnessModels({
+        // 结构操作没有冻结的回合模型：取当前解析值（它与续跑发起时的设置一致）。
         model: () => this.activeRun?.spec.model ?? resolvePiTurnModel(),
         takeBlockedError: () => {
-          const state = this.activeRun?.spec.state
-          const blocked = state?.contextError
-          if (state) state.contextError = undefined
-          if (state && blocked instanceof ContextBudgetError) state.lastBudgetError = blocked.message
+          const state = this.hostSpec().state
+          const blocked = state.contextError
+          state.contextError = undefined
+          if (blocked instanceof ContextBudgetError) state.lastBudgetError = blocked.message
           return blocked instanceof Error ? blocked : undefined
         },
       }),
@@ -354,7 +380,16 @@ export class HarnessSlot {
       // 下一个 run 开始前由 syncQueueModes 与当前配置对齐。
       steeringMode: this.steeringMode,
       followUpMode: this.followUpMode,
-      systemPrompt: () => this.activeRun?.spec.systemPrompt ?? "",
+      // 空串会让模型丢掉人格与协议前缀，绝不能作兜底：回合 → 最近一次冻结 → 结构操作宿主，
+      // 三者都没有才是真的缺少 prompt（如实报错，不上报一个「没人格」的请求）。
+      systemPrompt: () => {
+        const prompt = this.activeRun?.spec.systemPrompt ?? this.lastSystemPrompt ?? this.structuralHost?.systemPrompt
+        if (prompt === undefined) {
+          log.error("手动压缩缺少可用 systemPrompt:", this.sessionId)
+          return ""
+        }
+        return prompt
+      },
       retry: { enabled: loopConfig.maxRetry > 0, maxRetries: loopConfig.maxRetry, baseDelayMs: 1000 },
     }, ctx)
     this.harness = created.harness
@@ -380,7 +415,22 @@ export class HarnessSlot {
     return this.harness !== undefined && this.state !== "closed" && this.state !== "faulted"
   }
 
-  /** lane 持久 inbox 里是否还有未消费的用户消息（steer/followUp/nextRun）。 */
+  /**
+   * 当前宿主面：有冻结回合时是它的 systemPrompt/hooks/state；否则是结构操作宿主
+   * （手动压缩窗口内下发）。两者都没有时只有一份空 state —— 钩子缺失由调用点
+   * 各自判定（before_tool 走 fail-closed），不在这里兜底成「有宿主」。
+   */
+  private hostSpec(): HarnessStructuralHost {
+    const run = this.activeRun
+    if (run) return { systemPrompt: run.spec.systemPrompt, hooks: run.spec.hooks, state: run.spec.state }
+    return this.structuralHost ?? { state: createHarnessRunState() }
+  }
+
+  /**
+   * 宿主镜像里是否还有未消费的用户消息（steer/followUp/nextRun）：**只读视图专用**
+   * （槽被释放重建后镜像从空开始）。`compact()` 的准入改读 lane 真相（laneQueueCounts），
+   * 不用它放行 —— 镜像为空不等于队列为空。
+   */
   private hasQueuedMessages(): boolean {
     return this.pendingQueues.some(item => item.type === "message"
       && (item.kind === "steer" || item.kind === "followUp" || item.kind === "nextRun"))
@@ -405,6 +455,37 @@ export class HarnessSlot {
         ...(requestId ? { requestId } : {}),
       }]
     })
+  }
+
+  /**
+   * lane 真相的排队计数；读失败返回 undefined（fail-closed，不上报空队列）。
+   *
+   * 宿主的 pendingQueues 只是最近一次 queue_update 的镜像：槽被释放重建后它从空开始，
+   * 不能拿它判准入（会把「有排队项」当「没排队」）。
+   */
+  private async laneQueueCounts(): Promise<HarnessQueueCounts | undefined> {
+    const queues = await this.readQueuesOnce()
+    if (queues === undefined) return undefined
+    const count = (kind: "steer" | "followUp" | "nextRun") =>
+      queues.filter(item => item.type === "message" && item.kind === kind).length
+    return { steer: count("steer"), followUp: count("followUp"), nextRun: count("nextRun") }
+  }
+
+  /** 一次性读取 lane 队列初值（watch → 读 snapshot.queues → 立即 unsubscribe）。 */
+  private async readQueuesOnce(): Promise<LaneQueuedItem[] | undefined> {
+    if (!this.lane) return undefined
+    try {
+      const handle = await this.lane.watch(TODO_CONTEXT)
+      try {
+        return handle.snapshot.queues
+      } finally {
+        // 只借初值：watch 句柄不能留在槽上（它是长期的转录订阅，读一次就还）。
+        handle.unsubscribe()
+      }
+    } catch (error) {
+      log.error("lane 队列读取失败:", this.sessionId, formatError(error))
+      return undefined
+    }
   }
 
   /** 压缩阈值由现有预算推导（§7）：窗口 − 正常输入目标 = 输出预留 + 协议开销 + 压缩余量。 */
@@ -696,18 +777,24 @@ export class HarnessSlot {
 
   /**
    * 驱动一次 `manual` 压缩：切点、会话提交与持久化都由 Harness 承担（§7/§8.5），
-   * 摘要生成由调用方经 hooks.beforeCompaction 提供。运行中不抢跑（LaneBusy 同义返回 busy）。
+   * 摘要生成与续跑的投影/剥离由调用方经 host.hooks 提供。运行中不抢跑（LaneBusy 同义返回 busy）。
    *
-   * 注意：压缩完成后 Harness 可能驱动一次续跑消费 lane 持久 inbox。那种续跑经 accept 选中
-   * inbox 里的消息（nextRun 也在内），但没有宿主 spec（权限/结算钩子缺失），
-   * 所以有排队消息时拒绝，并给出按 kind 的明细，由用户决定撤回还是等处理完。
+   * 注意：压缩完成后 Harness 会再驱动一次续跑消费 lane 持久 inbox（nextRun 也在内）。
+   * 那段续跑没有回合身份，但必须走宿主的 systemPrompt/投影/剥离，所以准入读 lane 真相：
+   * 有排队项就拒绝并按 kind 报明细，由用户决定撤回还是等处理完（镜像为空不作为放行理由）。
    */
-  async compact(hooks: HarnessRunHooks, options: { customInstructions?: string } = {}): Promise<HarnessCompactOutcome> {
+  async compact(
+    host: Omit<HarnessStructuralHost, "state"> & { state?: HarnessRunState },
+    options: { customInstructions?: string } = {},
+  ): Promise<HarnessCompactOutcome> {
     await this.open()
     if (!this.isUsable() || !this.lane) return { status: "closed" }
     if (this.isRunning()) return { status: "busy" }
-    if (this.hasQueuedMessages()) return { status: "pending", queued: this.queuedCounts() }
-    this.manualHooks = hooks
+    const live = await this.laneQueueCounts()
+    if (live === undefined) log.error("队列真相读取失败，按存在排队项拒绝手动压缩:", this.sessionId)
+    const counts = live ?? this.queuedCounts()
+    if (live === undefined || counts.steer + counts.followUp + counts.nextRun > 0) return { status: "pending", queued: counts }
+    this.structuralHost = { systemPrompt: host.systemPrompt, hooks: host.hooks, state: host.state ?? createHarnessRunState() }
     try {
       const result = await this.lane.compact(
         options.customInstructions === undefined ? undefined : { customInstructions: options.customInstructions },
@@ -725,11 +812,29 @@ export class HarnessSlot {
       if (record.status === "declined") return { status: "declined" }
       if (record.status === "failed") return { status: "failed", error: record.error?.message ?? "压缩失败" }
       if (record.status === "aborted") return { status: "failed", error: record.error?.message ?? "压缩已取消" }
+      const follow = result.value.run
+      if (follow) {
+        // 续跑没有宿主回合：它若已结算，压缩结果就不可能进入任何回合结算与 UI，
+        // 不能报「压缩完成」。挂起的续跑更糟（不结算的操作会让后续准入恒判忙）：显式结算掉。
+        const suspended = "status" in follow && follow.status === "suspended"
+        if (suspended) {
+          await this.lane.abort(TODO_CONTEXT)
+          log.error("压缩续跑返回了不支持的延迟响应:", { sessionId: this.sessionId, operationId: follow.operationId })
+          return { status: "failed", error: "压缩续跑返回了不支持的延迟响应" }
+        }
+        this.queueAuditEntry(COMPACTION_CONTINUATION_ENTRY, {
+          sessionId: this.sessionId,
+          operationId: follow.operationId,
+          status: follow.status,
+        })
+        log.error("压缩续跑在无宿主回合的情况下已被结算:", { sessionId: this.sessionId, operationId: follow.operationId })
+        return { status: "failed", error: "压缩续跑在无宿主回合的情况下已被结算，压缩结果未纳入回合结算" }
+      }
       return { status: "completed" }
     } catch (error) {
       return { status: "failed", error: formatError(error) }
     } finally {
-      this.manualHooks = undefined
+      this.structuralHost = undefined
     }
   }
 
@@ -784,7 +889,7 @@ export class HarnessSlot {
     this.requeuePending.push(...aborted.value.steer, ...aborted.value.followUp)
     if (!this.activeRun) await this.flushRequeueQueue()
     const undelivered = collectRequestIds(aborted.value.steer).concat(collectRequestIds(aborted.value.followUp))
-    this.activeRun?.spec.state.undelivered.push(...undelivered)
+    this.hostSpec().state.undelivered.push(...undelivered)
     log.info("运行已停止:", { sessionId: this.sessionId, reason, undelivered: undelivered.length })
     return { steer: collectRequestIds(aborted.value.steer), followUp: collectRequestIds(aborted.value.followUp) }
   }
@@ -868,6 +973,9 @@ export class HarnessSlot {
   private async execute(spec: HarnessRunSpec, kind: "prompt" | "resume"): Promise<HarnessRunResult> {
     const run: ActiveRun = { spec }
     this.activeRun = run
+    // 冻结的 systemPrompt 留底：回合结束后若还有结构性驱动（续跑/恢复），人格前缀不因
+    // activeRun 被清而丢成空串。
+    this.lastSystemPrompt = spec.systemPrompt
     this.abortReason = undefined
     this.clearTimer()
     this.timer = setTimeout(() => { void this.abort(ABORT_REASON_TIMEOUT) }, Math.max(1, spec.timeoutMs))
@@ -1010,13 +1118,14 @@ export class HarnessSlot {
     const hooks = this.harness.hooks
     this.unsubscribes.push(
       hooks.on("before_tool", async (event, context) => {
-        const run = this.activeRun
-        if (!run) {
+        const beforeTool = this.hostSpec().hooks?.beforeTool
+        if (!beforeTool) {
           // 没有宿主运行上下文（权限链不可用）时一律拒绝工具：fail-closed，不放行未受管的调用。
+          // 结构操作的续跑没有工具宿主面（决策 §7 #29 A）：它走这条分支，不另开权限链。
           log.warn("无宿主运行上下文，工具调用被拒绝:", { sessionId: this.sessionId, toolName: event.toolName })
           return { block: { reason: "运行上下文不可用，工具调用被拒绝" } }
         }
-        const decision = await run.spec.hooks.beforeTool?.({
+        const decision = await beforeTool({
           toolCallId: event.toolCallId,
           toolName: event.toolName,
           args: event.args,
@@ -1026,9 +1135,7 @@ export class HarnessSlot {
         return decision
       }),
       hooks.on("after_tool", (event) => {
-        const run = this.activeRun
-        if (!run) return undefined
-        return run.spec.hooks.afterTool?.({
+        return this.hostSpec().hooks?.afterTool?.({
           toolCallId: event.toolCallId,
           toolName: event.toolName,
           args: event.args,
@@ -1038,29 +1145,25 @@ export class HarnessSlot {
         })
       }),
       hooks.on("transform_context", async (event) => {
-        const run = this.activeRun
-        if (!run) return undefined
-        return run.spec.hooks.transformContext?.({ messages: event.messages, systemPrompt: event.systemPrompt })
+        return this.hostSpec().hooks?.transformContext?.({ messages: event.messages, systemPrompt: event.systemPrompt })
       }),
       hooks.on("before_compaction", async (event, context) => {
-        // 运行期用回合钩子；/compact 等手动压缩没有 activeRun，用本次下发的宿主钩子。
-        const host = this.activeRun?.spec.hooks.beforeCompaction ?? this.manualHooks?.beforeCompaction
+        // 运行期用回合钩子；/compact 等手动压缩没有 activeRun，用本次下发的结构操作钩子。
+        const host = this.hostSpec().hooks?.beforeCompaction
         if (!host) return undefined
         return host({ reason: event.reason, preparation: event.preparation, signal: context.abortSignal })
       }),
       hooks.on("before_request", (event) => {
-        const host = this.activeRun?.spec.hooks.beforeRequest ?? this.manualHooks?.beforeRequest
+        const host = this.hostSpec().hooks?.beforeRequest
         if (!host) return undefined
         return host({ step: event.step, attempt: event.attempt })
       }),
       hooks.on("after_response", async (event) => {
-        const run = this.activeRun
-        if (!run) return undefined
-        const message = await run.spec.hooks.afterResponse?.(event.message, { status: event.status, headers: event.headers })
+        const message = await this.hostSpec().hooks?.afterResponse?.(event.message, { status: event.status, headers: event.headers })
         return message === undefined ? undefined : { message }
       }),
       hooks.on("before_payload", (event) => {
-        this.activeRun?.spec.hooks.beforePayload?.(event.payload, event.model)
+        this.hostSpec().hooks?.beforePayload?.(event.payload, event.model)
         return undefined
       }),
     )

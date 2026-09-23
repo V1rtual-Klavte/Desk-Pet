@@ -22,7 +22,7 @@ scope: runtime-foundation-before-memory-kernel
 
 ## 请求生命周期
 
-- 宿主 preflight（`runPiAgentTurn`）冻结 Card/变量/配置/能力并构建首个 systemPrompt；此后每个请求由 Harness 从已提交条目重建，宿主在 `transform_context` 只做 L0 工具结果投影与硬预算核对；硬预算超限不直接终止回合，判定经网关按上游溢出判据（length 停止、输出 0）上报，由 Harness 压缩后重试一次。压缩由 Harness 阈值/手动/溢出调度，摘要内核与提交语义见[当前记忆与会话基础](./memory.md#压缩提交与恢复)。
+- 宿主 preflight（`runPiAgentTurn`）冻结 Card/变量/配置/能力并构建首个 systemPrompt；此后每个请求由 Harness 从已提交条目重建，宿主在 `transform_context` 只做 L0 工具结果投影与硬预算核对；硬预算超限不直接终止回合，判定经网关按上游溢出判据（length 停止、输出 0）上报，由 Harness 压缩后重试一次。压缩由 Harness 阈值/手动/溢出调度，摘要内核与提交语义见[当前记忆与会话基础](./memory.md#压缩提交与恢复)。手动 `/compact` 的准入读 lane 持久 inbox 的真相（`lane.watch` 的 snapshot，读失败 fail-closed 按存在排队项拒绝），宿主的事件镜像为空不作为放行理由；有排队项时按 steer/followUp/nextRun 给出明细并拒绝，不把「压缩后再由续跑消费输入」当成已完成。压缩后上游若仍驱动一次续跑，它走宿主的结构操作面（冻结的 systemPrompt + 请求投影 + RUNTIME_DATA 剥离；没有回合身份，工具按 fail-closed 拒绝），已结算的续跑如实报失败并留一条 `deskpet.compaction_continuation` 审计条目，不报「压缩完成」。回合时限由 `turnTimeoutMs`（经 lane 取消收尾）、请求超时 `PROVIDER_TIMEOUT_MS` 与工具 `toolTimeoutMs` 三层兜住；唯一没有回合定时器的是 `compact()` —— 由摘要请求 60s × (1+3 重试) ≈ 4 分钟上限兜住，不为它新增定时器。
 - 主回合与一次性文本请求经 [model-gateway.ts](../../src/services/engine/pi/model-gateway.ts)（createProvider/createModels + Harness Models 薄包装）。配置、认证、取消与增量响应上限共用；SDK 内层重试关闭，生成级重试由 Harness RetryPolicy 承担，有工具执行后的失败不自动重放整个回合。
 - 请求循环由 AgentHarness Lane 承担：`transform_context` 投影、`before_tool` 承担权限/次数门禁、`after_tool` 标注来源与错误、`after_response` 剥离 RUNTIME_DATA 并记录状态/响应头、`before_payload` 采集脱敏快照；主回合逐请求 usage 进入 `main` 分项，压缩/规划等一次性调用经同一模型网关按 purpose 单列（[debug.ts](../../src/services/debug.ts)），总量由分项相加得到。具体权限见[工具系统](tool-system.md#权限终裁)。
 - 项目没有通用 HookBus；宿主 preflight 与观测通道不构成可阻断的 Pi hook，队列驱动由 Lane 持久 inbox 承担。流式正文经 `message_update` 增量事件走 UI 通道，只展示正文、不展示思考内容，`<RUNTIME_DATA>` 跨分片被缓冲。

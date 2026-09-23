@@ -71,6 +71,7 @@ export type {
   HarnessRunStatus,
   HarnessSlotSnapshot,
   HarnessSlotState,
+  HarnessStructuralHost,
 } from "./harness-slot"
 
 export { toAgentHarnessTools } from "@/services/tool/pi/harness-tool-adapter"

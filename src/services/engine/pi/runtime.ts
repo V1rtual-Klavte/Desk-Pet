@@ -468,6 +468,53 @@ function createRequestOptionsPatch(): NonNullable<HarnessRunHooks["beforeRequest
   return () => ({ streamOptions: { timeoutMs: PROVIDER_TIMEOUT_MS } })
 }
 
+/**
+ * 请求视图投影 + 硬预算判定（主回合与手动压缩的续跑共用同一份实现）。
+ *
+ * 判定不在这里 reject：记入宿主 state.contextError，由网关在下一次请求上报
+ * （每次投影按当次视图重算并覆盖，不粘住首条判定）。
+ */
+function createProjectionHook(args: {
+  projectToolResults: boolean
+  toolsByName: ReadonlyMap<string, ToolDef>
+  model: PiModel
+  state: HarnessRunState
+  captureSnapshot: TurnKernel["captureSnapshot"]
+  latestMessages: (messages: AgentMessage[]) => void
+}): NonNullable<HarnessRunHooks["transformContext"]> {
+  const tools = [...args.toolsByName.values()]
+  return ({ messages, systemPrompt }) => {
+    let prepared = messages
+    try {
+      if (args.projectToolResults) {
+        prepared = prepared.map(message => projectToolResultMessage(message, args.model.contextWindow, args.toolsByName))
+      }
+      args.latestMessages(prepared)
+      const budget = contextBudget(args.model.contextWindow, args.model.maxTokens)
+      const used = estimateRequestTokens(systemPrompt, prepared, tools)
+      if (used > budget.hardInputLimit) {
+        args.state.contextError = new ContextBudgetError(used, budget.hardInputLimit)
+      }
+      void args.captureSnapshot("transform_context", prepared, []).catch(error => log.warn("PromptSnapshot 采集失败", formatError(error)))
+    } catch (error) {
+      args.state.contextError ??= error
+    }
+    return { messages: prepared }
+  }
+}
+
+/** RUNTIME_DATA 剥离（主回合与手动压缩的续跑共用）：条目是真相源，但协议块不进后续请求与展示。 */
+function createRuntimeDataStripHook(args: {
+  recordSettledReply?: (raw: string, stripped: string) => void
+}): NonNullable<HarnessRunHooks["afterResponse"]> {
+  return (message) => {
+    // 剥离前先留底原始正文：事件里的最终助手消息已经没有标签，结算时的变量写入要靠它。
+    const stripped = stripRuntimeData(message)
+    args.recordSettledReply?.(contentText(message.content), contentText(stripped.content))
+    return stripped
+  }
+}
+
 /** 每回合的 Harness 运行规格；权限、投影、观测与 UI/统计消费点都在这里接线。 */
 function createTurnSpec(kernel: TurnKernel, options: {
   prompt: string | AgentMessage | AgentMessage[]
@@ -480,6 +527,9 @@ function createTurnSpec(kernel: TurnKernel, options: {
   const state = kernel.state
   const toolsByName = new Map(kernel.tools.map(tool => [tool.name, tool]))
   let toolCallsUsed = 0
+  const stripReply = createRuntimeDataStripHook({
+    recordSettledReply: (raw, stripped) => kernel.recordSettledReply(raw, stripped),
+  })
   const hooks: HarnessRunHooks = {
     beforeTool: async ({ toolCallId, toolName, args, signal }) => {
       const tool = toolsByName.get(toolName)
@@ -519,27 +569,14 @@ function createTurnSpec(kernel: TurnKernel, options: {
       },
       isError,
     }),
-    transformContext: ({ messages, systemPrompt }) => {
-      let prepared = messages
-      try {
-        if (options.projectToolResults) {
-          prepared = prepared.map(message => projectToolResultMessage(message, kernel.model.contextWindow, toolsByName))
-        }
-        kernel.latestMessages = prepared
-        const budget = contextBudget(kernel.model.contextWindow, kernel.model.maxTokens)
-        const used = estimateRequestTokens(systemPrompt, prepared, kernel.tools)
-        if (used > budget.hardInputLimit) {
-          // transform_context 不允许 reject：判定记入回合状态，由网关在下一次请求上报。
-          // 每次投影都按当次视图重算并覆盖（不粘住首条判定）：网关取走判定后，Harness 会压缩
-          // 再重试一次，重试请求要拿到的是压缩后视图的结论；残留旧判定会让恢复永远被挡住。
-          state.contextError = new ContextBudgetError(used, budget.hardInputLimit)
-        }
-        void kernel.captureSnapshot("transform_context", prepared, []).catch(error => log.warn("PromptSnapshot 采集失败", formatError(error)))
-      } catch (error) {
-        state.contextError ??= error
-      }
-      return { messages: prepared }
-    },
+    transformContext: createProjectionHook({
+      projectToolResults: options.projectToolResults,
+      toolsByName,
+      model: kernel.model,
+      state,
+      captureSnapshot: kernel.captureSnapshot,
+      latestMessages: messages => { kernel.latestMessages = messages },
+    }),
     beforeCompaction: createCompactionHook({ mode: kernel.mode, model: kernel.model, tools: kernel.tools }),
     beforeRequest: createRequestOptionsPatch(),
     afterResponse: (message, meta) => {
@@ -550,11 +587,7 @@ function createTurnSpec(kernel: TurnKernel, options: {
         headerNames: Object.keys(meta.headers ?? {}).sort(),
       })
       // 提交前剥离 RUNTIME_DATA：条目是真相源，但正文块不进入后续请求与展示。
-      // 剥离前先留底原始正文：事件里的最终助手消息已经没有标签，
-      // 结算时的 RUNTIME_DATA 变量写入要靠它。
-      const stripped = stripRuntimeData(message)
-      kernel.recordSettledReply(contentText(message.content), contentText(stripped.content))
-      return stripped
+      return stripReply(message, meta)
     },
     beforePayload: (payload, payloadModel) => {
       const safePayload = redactText(stableSerialize(payload))
@@ -1473,17 +1506,51 @@ export type ManualCompactionResult = HarnessCompactOutcome & { intent?: string }
 
 /**
  * 手动压缩一个会话：切点、提交与持久化由 Harness 承担（manual reason），
- * 摘要走陪伴/助手结构化内核。运行中返回 busy，由命令层给出用户可见文案（§3.4）。
+ * 摘要走陪伴/助手结构化内核。运行中返回 busy，有排队项返回 pending（准入读 lane 真相），
+ * 两种情况都由命令层给出用户可见文案（§3.4）。
+ *
+ * 压缩后 Harness 可能驱动一次续跑消费 lane inbox：那段续跑没有回合身份，但仍要有人格
+ * 前缀、投影与 RUNTIME_DATA 剥离，所以这里按当前冻结上下文构造 systemPrompt 并下发
+ * 结构操作宿主面（空工具集：没有回合并发上限的续跑不接工具，见决策 §7 #29 A）。
  */
 export async function compactActiveSession(sessionId: string): Promise<ManualCompactionResult> {
   if (!sessionId.trim()) return { status: "failed", error: "当前没有可压缩的会话" }
   const mode = generalConfig.assistantMode ? "assistant" as const : "pet" as const
   const model = resolvePiTurnModel()
   let intent: string | undefined
-  const outcome = await harnessSlots.get(sessionId).compact({
-    // 手动压缩没有冻结的回合工具集，按当前注册表判定 retain 保护。
-    beforeCompaction: createCompactionHook({ mode, model, tools: getToolsForMode(mode), onSummary: summary => { intent = summary.intent } }),
-    beforeRequest: createRequestOptionsPatch(),
+  const slot = harnessSlots.get(sessionId)
+  // 与 continueInterruptedRun 同形：没有回合上下文时用当前 Card/变量重建只读前缀，
+  // 不静默改 Card。tools 传空集：结构操作不向模型宣告它不能用的工具。
+  const currentCard = getActiveCard()
+  const card = currentCard ? JSON.parse(JSON.stringify(currentCard)) as typeof currentCard : null
+  const pool = getPoolSnapshot()
+  const context = buildPrompt({
+    ...{ candyInstructions: MemoryService.getCandyInstructionsSync(), userProfileText: MemoryService.getUserProfileSync() },
+    recentMessages: [], userText: "", unansweredCount: 0, thinkingEffort: getEffectiveThinkingEffort(), mode,
+    currentInputInTranscript: true,
+    contextMaxTokens: model.contextWindow, maxOutputTokens: model.maxTokens,
+    tools: [],
+  }, card, pool)
+  const state = createHarnessRunState()
+  const outcome = await slot.compact({
+    systemPrompt: context.systemPrompt,
+    state,
+    hooks: {
+      // 手动压缩没有冻结的回合工具集，按当前注册表判定 retain 保护。
+      beforeCompaction: createCompactionHook({ mode, model, tools: getToolsForMode(mode), onSummary: summary => { intent = summary.intent } }),
+      beforeRequest: createRequestOptionsPatch(),
+      // 续跑也走宿主的投影与剥离；工具结果投影按空工具集（安全回退，不开工具）。
+      transformContext: createProjectionHook({
+        projectToolResults: true,
+        toolsByName: new Map(),
+        model,
+        state,
+        // 结构操作没有回合身份：不落 PromptSnapshot，也没有 payload 观测的读者。
+        captureSnapshot: async () => {},
+        latestMessages: () => {},
+      }),
+      afterResponse: createRuntimeDataStripHook({}),
+    },
   })
   return intent === undefined ? outcome : { ...outcome, intent }
 }
