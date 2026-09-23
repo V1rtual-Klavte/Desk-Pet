@@ -58,6 +58,14 @@ Rust [AppPaths](../../src-tauri/src/paths.rs) 依据 `cfg!(debug_assertions)` �
 
 非法值不静默接受：手写 YAML 的非数值按默认值、越界值收拢到最近边界（getter）；设置页保存前用 `parallelToolsError()` 拒绝越界输入；Rust 许可所有者收到 1–8 之外的下发直接报错而不夹边界（上限 0 会让所有读永久排队）。降低上限暂停新获准执行，提高会唤醒有序等待项。
 
+### 复杂度评估字段的语义与生效时机
+
+| 字段 | 取值 | 语义 | 生效 |
+|---|---|---|---|
+| `ai.plan.complexityEval` | keyword / llm，默认 keyword | 未命中关键词时是否再发一次独立模型请求自判复杂度 | 保存后下一次 `sendMessage` 即生效；`--plan` 强制触发不受它影响 |
+
+由 [AITab](../../src/components/settings/AITab.vue) 的「计划模式 · 复杂度判定」读取与回写、经 SettingsPanel 的 setOverrides 落盘，运行期只经 [config.ts](../../src/services/config.ts) 的 `planConfig.complexityEval` 读取。`keyword` 下未命中关键词直接返回低分（不发起请求，复杂度判定只由关键词与 `--plan` 驱动）；`llm` 下未命中关键词再发一次独立请求自判，失败按跳过 Plan 处理并把原因写进判定结果。
+
 ## 路径与文件布局
 
 ```text

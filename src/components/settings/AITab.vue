@@ -58,6 +58,7 @@ const candyInstructions = ref("");
 // ── Plan 设置 ──
 const planEnabled = ref(planConfig.enabled);
 const planComplexityThreshold = ref(planConfig.complexityThreshold);
+const planComplexityEval = ref(planConfig.complexityEval);
 const planMaxSteps = ref(planConfig.maxSteps);
 const planThinkingEffort = ref(planConfig.thinkingEffort);
 const planStepThinkingEffort = ref(planConfig.stepThinkingEffort);
@@ -497,6 +498,7 @@ defineExpose({
   candyInstructions,
   planEnabled,
   planComplexityThreshold,
+  planComplexityEval,
   planMaxSteps,
   planThinkingEffort,
   planStepThinkingEffort,
@@ -706,6 +708,10 @@ defineExpose({
     <div class="s-label">📋 计划模式</div>
     <label class="chk"><input type="checkbox" v-model="planEnabled" /><span>启用任务计划</span></label>
     <div class="fld" style="margin-top:6px"><span class="fn">复杂度阈值</span><input class="inp-num" type="number" v-model.number="planComplexityThreshold" min="1" max="5" style="width:60px" /><span class="s-muted">(1-5, 越高越少触发)</span></div>
+    <div class="s-subtitle" style="margin-top:4px">复杂度判定</div>
+    <div class="radio-row">
+      <label v-for="m in [{v:'keyword',l:'仅关键词（默认）'},{v:'llm',l:'关键词 + 模型自判'}]" :key="'ce'+m.v" class="chk"><input type="radio" v-model="planComplexityEval" :value="m.v" /><span>{{ m.l }}</span></label>
+    </div>
     <div class="fld"><span class="fn">最大步骤</span><input class="inp-num" type="number" v-model.number="planMaxSteps" min="1" max="20" style="width:60px" /></div>
     <div class="s-subtitle" style="margin-top:6px">计划思考强度</div>
     <div class="radio-row">

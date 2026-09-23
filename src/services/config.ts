@@ -113,6 +113,7 @@ interface Config {
     plan: {
       enabled: boolean
       complexityThreshold: number
+      complexityEval: string
       maxSteps: number
       stepTimeoutMs: number
       stepMaxRounds: number
@@ -525,6 +526,8 @@ export const memoryConfig = {
 export const planConfig = {
   get enabled() { return overrideOr("ai.plan.enabled", cfg.ai?.plan?.enabled ?? true); },
   get complexityThreshold() { return overrideOr("ai.plan.complexityThreshold", cfg.ai?.plan?.complexityThreshold ?? 3); },
+  /** 复杂度评估方式：keyword 只用关键词（未命中直接低分，不发请求）；llm 未命中时再发一次独立请求。 */
+  get complexityEval() { return overrideOr("ai.plan.complexityEval", cfg.ai?.plan?.complexityEval || "keyword") as "keyword" | "llm" },
   get maxSteps() { return overrideOr("ai.plan.maxSteps", cfg.ai?.plan?.maxSteps ?? 8); },
   get stepTimeoutMs() { return overrideOr("ai.plan.stepTimeoutMs", cfg.ai?.plan?.stepTimeoutMs ?? 90000); },
   get stepMaxRounds() { return overrideOr("ai.plan.stepMaxRounds", cfg.ai?.plan?.stepMaxRounds ?? 5); },

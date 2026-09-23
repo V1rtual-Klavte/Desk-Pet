@@ -109,10 +109,12 @@ async function doSave() {
     "ai.windowMonitor.samePageCooldownMs": Math.round(a.wmSamePageCool * 1000),
     "ai.lock.safetyTimeoutMs": a.lockTimeout,
     "ai.memory.maxEntries": a.memMax,
-    // Plan 的六个键在 AITab 里都有 UI 和 expose，此前没进这张表 ——
+    // Plan 的七个键在 AITab 里都有 UI 和 expose，此前没进这张表 ——
     // 用户在设置页改完保存会被静默丢弃，且 test:types 抓不到
     "ai.plan.enabled": a.planEnabled,
     "ai.plan.complexityThreshold": a.planComplexityThreshold,
+    // 与 ai.loop.maxParallelTools 同类：界面能改的值必须能落盘，否则设置页的改动只是看起来生效
+    "ai.plan.complexityEval": a.planComplexityEval,
     "ai.plan.maxSteps": a.planMaxSteps,
     "ai.plan.thinkingEffort": a.planThinkingEffort,
     "ai.plan.stepThinkingEffort": a.planStepThinkingEffort,

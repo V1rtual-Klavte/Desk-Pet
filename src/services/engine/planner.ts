@@ -72,7 +72,13 @@ export async function evaluateComplexity(
     return { score: 3, reason: `关键词匹配: "${hitKeyword}"`, triggeredBy: "keyword" }
   }
 
-  // 3. LLM 自判断（轻量 prompt）
+  // 3. 未命中关键词：默认（complexityEval=keyword）不再为它单独打一次模型 ——
+  //    每条助手消息一次评估请求的代价与收益不成比例；--plan 与关键词路径不受影响。
+  if (planConfig.complexityEval === "keyword") {
+    return { score: 1, reason: "未命中关键词（complexityEval=keyword，不发起 LLM 判定）", triggeredBy: "keyword" }
+  }
+
+  // 4. LLM 自判断（轻量 prompt）
   try {
     const { completePiText } = await import("@/services/engine/pi")
     const resp = await completePiText({
@@ -90,8 +96,8 @@ export async function evaluateComplexity(
     const score = Math.max(1, Math.min(5, isNaN(num) ? 1 : num))
     return { score, reason: `LLM 自判断: ${score}/5`, triggeredBy: "llm" }
   } catch (e) {
-    log.warn("LLM 复杂度检测失败，默认跳过 Plan:", e)
-    return { score: 1, reason: "检测失败，跳过 Plan", triggeredBy: "llm" }
+    log.error("LLM 复杂度检测失败，默认跳过 Plan:", formatError(e))
+    return { score: 1, reason: `检测失败，跳过 Plan: ${formatError(e)}`, triggeredBy: "llm" }
   }
 }
 
@@ -385,10 +391,11 @@ export async function executePlan(
         if (decision === "abort") { overallSuccess = false; cancelled = { reason: "declined" }; break }
       }
     } catch (e) {
-      // §4.2 保留：这里不再另打日志 —— 失败原因已 `formatError` 后放进 `output.error`，
-      // 随步骤结果条目落盘并交给 `onStepFailed`/`formatStepResults`，全链路可见；
-      // 再 warn 一次只会和那份证据重复。
+      // §4.2：失败原因仍 `formatError` 后放进 `output.error`（随步骤结果条目落盘并交给
+      // `onStepFailed`/`formatStepResults`）；warn 补定位上下文，日志与证据链按同一
+      // planId/stepId 对齐（planId 由调用方给，缺省回落计划摘要）。
       const errMsg = formatError(e)
+      log.warn("步骤执行失败:", { planId: config.planId ?? plan.summary, stepId: step.id }, errMsg)
       stepResults.push({
         step, durationMs: Date.now() - stepStart,
         output: { reply: "", toolCallsMade: 0, success: false, error: errMsg },

@@ -3,6 +3,7 @@ import { fauxAssistantMessage, fauxText } from "@earendil-works/pi-ai"
 import type { PlanResult } from "@/services/engine/planner"
 import { evaluateComplexity, executePlan, formatStepResults, generatePlan } from "@/services/engine/planner"
 import { getToolsForMode } from "@/services/tool"
+import { planConfig, setOverride } from "@/services/config"
 import { installFakeProvider, fakeText } from "../../fake-provider"
 
 /**
@@ -48,38 +49,55 @@ export const 强制触发评估 = unit("plan-force-trigger", "pl-01", "evaluateC
   if (spaced.triggeredBy === "force") throw new Error("前导空格不该命中 force 分支")
 })
 
-export const 关键词触发评估 = unit("plan-keyword-trigger", "pl-02", "evaluateComplexity 关键词匹配", async () => {
+export const 关键词触发评估 = unit("plan-keyword-trigger", "pl-02", "evaluateComplexity 关键词匹配与默认不发请求", async () => {
   // 显式传关键词，避免断言依赖运行时配置里恰好有哪些词
   const hit = await evaluateComplexity("帮我重构这个模块", ["重构"])
   if (hit.score !== 3) throw new Error(`关键词命中应得 3 分，实际 ${hit.score}`)
   if (hit.triggeredBy !== "keyword") throw new Error(`触发来源应为 keyword，实际 ${hit.triggeredBy}`)
   if (!hit.reason.includes("重构")) throw new Error(`原因里应包含命中的词: ${hit.reason}`)
 
-  // 没命中关键词就必须继续往下走，而不是误判成 keyword
+  // 默认 complexityEval=keyword：未命中关键词直接低分，不再发一次独立请求。
+  // 用「没有任何响应」的 provider 做判据 —— 真发了请求就只能是 llm 分支或超时。
+  installFakeProvider([])
   const miss = await evaluateComplexity("今天天气不错", ["重构"])
-  if (miss.triggeredBy === "keyword") throw new Error("未命中关键词却被判为 keyword")
+  if (miss.score !== 1) throw new Error(`未命中关键词应得 1 分，实际 ${miss.score}`)
+  if (miss.triggeredBy !== "keyword") throw new Error(`默认配置下未命中应记 keyword（发了请求才会是 llm）: ${miss.triggeredBy}`)
+  if (!miss.reason.includes("complexityEval=keyword")) throw new Error(`原因里应说明未发起 LLM 判定: ${miss.reason}`)
 })
 
 export const 简单消息评估 = unit("plan-simple-text", "pl-03", "evaluateComplexity 对简单消息给低分", async () => {
-  // 无关键词 → 落到 LLM 自判断，用 faux provider 固定返回 1
+  // 无关键词 → 需要显式 llm 判定方式才会落到 LLM 自判断（默认 keyword 下不发请求）
   installFakeProvider([fakeText("1")])
-  const result = await evaluateComplexity("你好呀", ["重构"])
-  if (result.score >= 3) throw new Error(`简单问候应低于阈值 3，实际 ${result.score}`)
-  if (result.triggeredBy !== "llm") throw new Error(`应走 LLM 自判断，实际 ${result.triggeredBy}`)
+  const previous = planConfig.complexityEval
+  try {
+    setOverride("ai.plan.complexityEval", "llm")
+    const result = await evaluateComplexity("你好呀", ["重构"])
+    if (result.score >= 3) throw new Error(`简单问候应低于阈值 3，实际 ${result.score}`)
+    if (result.triggeredBy !== "llm") throw new Error(`应走 LLM 自判断，实际 ${result.triggeredBy}`)
+  } finally {
+    setOverride("ai.plan.complexityEval", previous)
+  }
 })
 
 export const 评估失败回退 = unit("plan-eval-fallback", "pl-04", "evaluateComplexity 在 LLM 失败时回退", async () => {
   // provider 以 error 结束流：调用方必须自己识别 stopReason，不能当成正常回复
   installFakeProvider([fauxAssistantMessage(fauxText(""), { stopReason: "error", errorMessage: "boom" })])
 
-  const result = await evaluateComplexity("帮我分析一下", ["重构"])
-  if (result.score !== 1) throw new Error(`失败时应回退为 1，实际 ${result.score}`)
-  if (result.triggeredBy !== "llm") throw new Error(`触发来源应为 llm，实际 ${result.triggeredBy}`)
+  const previous = planConfig.complexityEval
+  try {
+    setOverride("ai.plan.complexityEval", "llm")
+    const result = await evaluateComplexity("帮我分析一下", ["重构"])
+    if (result.score !== 1) throw new Error(`失败时应回退为 1，实际 ${result.score}`)
+    if (result.triggeredBy !== "llm") throw new Error(`触发来源应为 llm，实际 ${result.triggeredBy}`)
+    if (!result.reason.includes("boom")) throw new Error(`失败原因应带上 Provider 错误: ${result.reason}`)
 
-  // 评分超出 1-5 也要被夹回来，否则阈值比较会失真
-  installFakeProvider([fakeText("99")])
-  const clamped = await evaluateComplexity("帮我分析一下", ["重构"])
-  if (clamped.score > 5 || clamped.score < 1) throw new Error(`评分未被夹到 1-5: ${clamped.score}`)
+    // 评分超出 1-5 也要被夹回来，否则阈值比较会失真
+    installFakeProvider([fakeText("99")])
+    const clamped = await evaluateComplexity("帮我分析一下", ["重构"])
+    if (clamped.score > 5 || clamped.score < 1) throw new Error(`评分未被夹到 1-5: ${clamped.score}`)
+  } finally {
+    setOverride("ai.plan.complexityEval", previous)
+  }
 })
 
 export const 计划生成 = unit("plan-generate", "pl-05", "generatePlan 解析模型返回的步骤", async () => {
