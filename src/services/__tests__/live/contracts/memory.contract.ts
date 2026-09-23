@@ -51,6 +51,7 @@ export const memoryContract: ModuleContract = {
     { id: "mm-27", feature: "L0 地址完整性", description: "有地址的工具结果在请求视图里带真实 eventId 且可回读；无地址的不写假 eventId 而标「不可回读」；主请求与摘要素材对同一消息的缩短结果逐字相同", why: "回读地址是模型从缩短结果回到真相源的唯一通道，假地址会让模型读到「当前会话没有此工具结果」", depth: "deep", scenarios: ["memory-l0-address-integrity"] },
     { id: "mm-24", feature: "审计落盘闭环", description: "审计条目只入队、由唯一 flush 入口在 lane 空闲时写入；失败条目保留并重试一次；槽关闭前 flush 且残留非空记 error；transform_context/provider_payload/provider_usage 三档快照在一轮 production 回合里各至少一条且释放槽后集合不变", why: "证据链的组成项不能在槽生命周期结束时静默消失，否则「请求发过什么」这件事在重启后不可查", depth: "deep", scenarios: ["memory-snapshot-audit-closure"] },
     { id: "mm-25", feature: "摘要降级显式 decline", description: "宿主摘要内核失败时钩子返回 decline 而非抛出：/compact 报 failed 并在用户可见文案里给出原因；不提交 compaction 条目；回合路径写 deskpet.compaction_declined 审计条目", why: "上游通用英文摘要一旦提交就成为后续所有回合唯一的历史视图且不可回滚，宁可不压缩也不落违反协议的历史", depth: "deep", scenarios: ["memory-compaction-degrade-declines"] },
+    { id: "mm-28", feature: "上下文换代身份沿分支", description: "context epoch 由 delivery.ts 的 readContextEpoch 沿 lane 分支回溯已提交 compaction 条目得出；槽快照、请求快照与设置页显示共用它；读失败不写 0", why: "换代身份必须按分支算：会话级全量计数会把其它分支的压缩算进来，未知时写 0 会让快照谎称请求视图未换代", depth: "deep", scenarios: ["memory-context-epoch-branch"] },
   ],
   rules: { minScenarios: 6, minDeepScenarios: 2, requireBoundary: true, requireErrorPath: true },
 }

@@ -30,7 +30,7 @@
 
 消息估算走唯一的内容投影（`projectMessageContent`，token 估算与快照 `contentHash` 共用）：按角色表覆盖 `compactionSummary` / `branchSummary` / `bashExecution` / `custom`（摘要只计 `summary` 正文、`excludeFromContext` 的 bash 执行计 0，与上游 `convertToLlm` 一致），未知角色按整条消息估算并去重留痕，绝不退化成空串；`usage`、时间戳、模型名与持久化元数据一律不计费。`provider_usage` 阶段的 PromptSnapshot 带 `tokenDrift`（`estimated`/`actual`/`ratio`）：估算与实际 usage 的比值超过 `ESTIMATE_DRIFT_WARN_RATIO`（1.15）时只 `log.warn` 并在 trace 的 `provider_usage` 事件里带出 `driftRatio`，不改变预算判定。
 
-保留窗口只覆盖消息本体、按上游 chars/4 估算，静态提示词占比过大时会出现无可覆盖范围并 decline，因此窗口有下限：默认 `DEFAULT_CONTEXT_WINDOW` 128k、最低 `MIN_CONTEXT_WINDOW` 64k，低于下限时[设置页](../../src/components/SettingsPanel.vue)拒绝保存、运行期在模型解析处报错，不静默跑在坏预算上。上下文 epoch 在快照中等于已提交 compaction 条目数。
+保留窗口只覆盖消息本体、按上游 chars/4 估算，静态提示词占比过大时会出现无可覆盖范围并 decline，因此窗口有下限：默认 `DEFAULT_CONTEXT_WINDOW` 128k、最低 `MIN_CONTEXT_WINDOW` 64k，低于下限时[设置页](../../src/components/SettingsPanel.vue)拒绝保存、运行期在模型解析处报错，不静默跑在坏预算上。上下文 epoch 在快照中等于**本会话 lane 分支上**已提交的 compaction 条目数，唯一定义点是 `engine/pi/delivery.ts` 的 `readContextEpoch`（槽快照、请求快照与设置页显示共用它），读不到时快照不写该字段（未知不等于 0）。
 
 原始条目始终保留，压缩只改变请求视图；损坏或无效边界不能授权删除历史。摘要是派生历史数据，不能变成系统指令、权限许可、Card 状态或长期事实。
 

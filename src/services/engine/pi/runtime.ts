@@ -40,6 +40,7 @@ import { PROVIDER_TIMEOUT_MS } from "./net-guard"
 import { RuntimeDataStreamFilter } from "./stream-text"
 import { summarizeCompaction } from "../compactor"
 import { createHarnessRunState, harnessSlots, HarnessSlot } from "./harness-slot"
+import { readContextEpoch } from "./delivery"
 import type {
   HarnessCancelQueuedKind,
   HarnessCompactOutcome,
@@ -424,6 +425,12 @@ function createTurnKernel(options: TurnKernelOptions): TurnKernel {
       const tokenDrift: PromptTokenDrift | undefined = ratio === undefined
         ? undefined
         : { estimated: estimatedInputTokens, actual: usage!.input, ratio }
+      // 换代身份取槽内值（它就是 delivery.readContextEpoch 的产物）；未知时不写 compaction 子结构。
+      const sessionEpoch = options.sessionId ? harnessSlots.snapshot(options.sessionId)?.contextEpoch : undefined
+      // 最近一条压缩条目只在确实会写 compaction 时取一次：读失败就不写该字段。
+      const lastCompactionEntryId = options.sessionId && sessionEpoch !== undefined
+        ? (await readContextEpoch(options.sessionId))?.lastCompactionEntryId
+        : undefined
       const snapshot = await createPromptSnapshot({
         snapshotId,
         requestId: options.requestId,
@@ -458,12 +465,17 @@ function createTurnKernel(options: TurnKernelOptions): TurnKernel {
         ...(kernel.plan ? { plan: { ...kernel.plan } } : {}),
         capabilities: kernel.capabilities,
         generation: kernel.generation,
-        compaction: { count: options.sessionId ? harnessSlots.snapshot(options.sessionId)?.contextEpoch ?? 0 : 0 },
         budgetDrops: kernel.budgetDrops,
         actualInputTokens: usage?.input, actualOutputTokens: usage?.output,
         ...(tokenDrift ? { tokenDrift } : {}),
-        // 请求视图换代身份：已提交的压缩次数（旧 contextEpoch 的 Harness 等价物）。
-        contextEpoch: options.sessionId ? harnessSlots.snapshot(options.sessionId)?.contextEpoch ?? 0 : 0,
+        // 请求视图换代身份：本分支已提交的压缩次数。读不到就不写（0 会谎称请求视图未换代）。
+        contextEpoch: options.sessionId ? harnessSlots.snapshot(options.sessionId)?.contextEpoch : undefined,
+        ...(sessionEpoch === undefined ? {} : {
+          compaction: {
+            count: sessionEpoch,
+            ...(lastCompactionEntryId ? { lastCompactionEntryId } : {}),
+          },
+        }),
         budget: contextBudget(options.model.contextWindow, options.model.maxTokens),
         allocations: snapshotAllocations,
         cache: {

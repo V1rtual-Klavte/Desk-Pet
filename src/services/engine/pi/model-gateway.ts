@@ -453,7 +453,10 @@ export async function completePiText(input: PiTextCallInput): Promise<PiTextCall
     },
     requestParams: { maxTokens },
     generation: slotSnapshot?.generation ?? 0,
-    ...(input.purpose === "compaction" ? { compaction: { count: slotSnapshot?.contextEpoch ?? 0 } } : {}),
+    // 未知的换代基数不写 0（那会谎称请求视图未换代）。
+    ...(input.purpose === "compaction" && slotSnapshot?.contextEpoch !== undefined
+      ? { compaction: { count: slotSnapshot.contextEpoch } }
+      : {}),
     ...extra,
   })
   if (audit) {
@@ -502,7 +505,9 @@ export async function completePiText(input: PiTextCallInput): Promise<PiTextCall
           cacheReadTokens: message.usage.cacheRead,
           cacheWriteTokens: message.usage.cacheWrite,
         },
-        ...(summaryHash ? { compaction: { count: slotSnapshot?.contextEpoch ?? 0, summaryHash } } : {}),
+        ...(summaryHash !== undefined && slotSnapshot?.contextEpoch !== undefined
+          ? { compaction: { count: slotSnapshot.contextEpoch, summaryHash } }
+          : {}),
       }))
       await persistAuditSnapshot(audit.sessionId, input.purpose, usageSnapshot)
     }

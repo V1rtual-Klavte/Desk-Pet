@@ -34,8 +34,8 @@ export type {
   TurnFailure,
 } from "./runtime"
 
-export { describeInputDelivery, isInputCommitted } from "./delivery"
-export type { InputCommitState, InputDeliveryEvidence, InputDeliveryLookup, InputDeliveryStage } from "./delivery"
+export { describeInputDelivery, isInputCommitted, readContextEpoch } from "./delivery"
+export type { ContextEpoch, InputCommitState, InputDeliveryEvidence, InputDeliveryLookup, InputDeliveryStage } from "./delivery"
 
 export { COMPACTION_DECLINED_ENTRY, PROMPT_REWRITE_ENTRY, PROMPT_SNAPSHOT_ENTRY } from "@/services/engine/runtime"
 export type {

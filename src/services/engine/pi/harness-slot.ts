@@ -231,8 +231,8 @@ export interface HarnessSlotSnapshot {
   requestId?: string
   turnId?: string
   operationId?: string
-  /** 已提交的压缩次数：请求视图的换代身份（旧 contextEpoch 的等价物，用于快照/审计）。 */
-  contextEpoch: number
+  /** 本分支已提交的压缩次数：请求视图的换代身份；基数未知时省略字段（不写 0）。 */
+  contextEpoch?: number
   /** lane 持久 inbox 的待消费项（真相源在会话文件；这里是最近一次 queue_update 的只读快照）。 */
   queued: HarnessQueuedItem[]
   /**
@@ -330,8 +330,11 @@ export class HarnessSlot {
   private lastSystemPrompt?: string
   /** 压缩操作进行中：期间的 usage 属于一次性摘要调用，不进主回合统计。 */
   private compactionActive = false
-  /** 已提交的压缩次数（compaction entry 数 + 本次会话内新增）。 */
-  private compactionEpoch = 0
+  /**
+   * 会话分支上已提交的压缩次数（请求视图的换代身份）；基数读失败时保持 undefined。
+   * 真相源是 `delivery.ts` 的 `readContextEpoch`，槽只在开槽时取一次基数、压缩成功时递增。
+   */
+  private compactionEpoch?: number
   /** 已下发的压缩阈值去重键（reserveTokens:keepRecentTokens）。 */
   private compactionSettingsKey?: string
   /** 已下发的队列批量策略：按运行生效，运行开始前与配置对齐。 */
@@ -445,7 +448,12 @@ export class HarnessSlot {
     }, ctx)
     this.harness = created.harness
     this.compactionSettingsKey = compaction.key
-    this.compactionEpoch = await this.countCommittedCompactions()
+    // 换代身份沿分支读取（唯一定义点）；读不到就保持未知，不冒充 0。
+    // 动态导入 delivery：它对 harness-slot 有静态依赖，静态回边会形成模块环。
+    if (!this.transient) {
+      const { readContextEpoch } = await import("./delivery")
+      this.compactionEpoch = (await readContextEpoch(this.sessionId))?.count
+    }
     this.registerHooks()
     this.lane = await this.harness.lane(PI_LANE, ctx)
     this.subscribeEvents()
@@ -601,18 +609,6 @@ export class HarnessSlot {
       // 生效的上限；值的权威始终是许可所有者，槽只记下发值以免重复 IPC。调优失败不该让整个
       // run 起不来，所以这里只留痕不抛出。
       log.warn("共享读上限下发失败，沿用所有者当前上限:", { requested: limit, applied: this.toolPermitLimit }, formatError(error))
-    }
-  }
-
-  /** 会话文件里已提交的压缩次数：请求视图换代身份（旧 contextEpoch 的等价物）。 */
-  private async countCommittedCompactions(): Promise<number> {
-    if (!this.session) return 0
-    try {
-      const entries = await this.session.findEntries({ order: "asc" }, BACKGROUND_CONTEXT)
-      return entries.filter(entry => entry.type === "compaction").length
-    } catch (error) {
-      log.warn("压缩次数统计失败，按 0 计:", this.sessionId, formatError(error))
-      return 0
     }
   }
 
@@ -782,7 +778,7 @@ export class HarnessSlot {
       requestId: this.runIdentity?.requestId,
       turnId: this.runIdentity?.turnId,
       operationId: this.activeRun?.operationId,
-      contextEpoch: this.compactionEpoch,
+      ...(this.compactionEpoch === undefined ? {} : { contextEpoch: this.compactionEpoch }),
       queued: this.queuedItems(),
       queueMirrorReady: this.queueMirrorReady,
       interrupted: this.interruptedInfo,
@@ -1479,8 +1475,8 @@ export class HarnessSlot {
       }),
       events.on("compaction_end", (event) => {
         this.compactionActive = false
-        // 已提交的压缩推进请求视图换代身份（旧 contextEpoch 的等价物）。
-        if (event.status === "completed") this.compactionEpoch++
+        // 已提交的压缩推进请求视图换代身份；只有已知基数才 ++（基数未知时保持未知，不伪造 0）。
+        if (event.status === "completed" && this.compactionEpoch !== undefined) this.compactionEpoch++
         // 溢出恢复的终态：declined 表示硬预算超限没有可安全摘要的范围，回合会失败；
         // 结算文案要回到本条判定（否则用户只看到上游的 decline 文案和兜底回复）。
         const run = this.activeRun

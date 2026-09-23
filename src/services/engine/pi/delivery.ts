@@ -13,11 +13,39 @@
 import { TODO_CONTEXT } from "@earendil-works/pi-agent-core"
 import { createLogger } from "@/services/logger"
 import { formatError } from "@/services/error"
-import { acquirePiSession } from "@/services/session/repo"
+import { PI_LANE, acquirePiSession } from "@/services/session/repo"
 import { PROMPT_SNAPSHOT_ENTRY, inputEventId, messageRequestId } from "@/services/engine/runtime"
 import { harnessSlots } from "./harness-slot"
 
 const log = createLogger("Delivery")
+
+/** 请求视图的换代身份：本会话 lane 分支上已提交的压缩次数与最近一条压缩条目。 */
+export interface ContextEpoch {
+  /** 已提交的 compaction 条目数（沿 lane 分支回溯，不看其它分支）。 */
+  count: number
+  /** 最近一条已提交 compaction 条目 id（快照的 compaction.lastEntryId 用它）。 */
+  lastCompactionEntryId?: string
+}
+
+/**
+ * 请求视图换代身份的唯一定义点。读失败返回 undefined（调用方不得当成 0）。
+ *
+ * 沿 lane 的分支回溯已提交的 compaction 条目：会话级全量计数会把其它分支的压缩算进来，
+ * 而写 0 又会把「读不到」说成「没有压缩过」。
+ */
+export async function readContextEpoch(sessionId: string): Promise<ContextEpoch | undefined> {
+  try {
+    const session = await acquirePiSession(sessionId)
+    const branch = await session.branch(PI_LANE, TODO_CONTEXT)
+    if (!branch) return { count: 0 }
+    const entries = await branch.findEntries({ type: "compaction", order: "oldestFirst" }, TODO_CONTEXT)
+    const last = entries[entries.length - 1]
+    return { count: entries.length, ...(last ? { lastCompactionEntryId: last.id } : {}) }
+  } catch (error) {
+    log.error("上下文换代身份读取失败:", { sessionId }, formatError(error))
+    return undefined
+  }
+}
 
 export type InputDeliveryStage = "queued" | "context_committed" | "request_prepared" | "responded"
 

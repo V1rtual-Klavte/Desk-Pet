@@ -438,11 +438,16 @@ onMounted(async () => {
       const entries = sessionId ? await readPiSessionEntriesOnce(sessionId) : [];
       const sessionTurns = messagesFromEntries(entries)
         .filter(message => message.role === "user" || message.role === "assistant").length;
-      const compactions = entries.filter(entry => entry.type === "compaction").length;
+      // 换代身份只有一个定义点（沿 lane 分支回溯）：不与会话条目数抄同一公式。
+      const { readContextEpoch } = await import("@/services/engine/pi");
+      const compactions = sessionId ? (await readContextEpoch(sessionId))?.count : undefined;
       memStatus.value = {
         count: MemoryService.count,
         projectCount: MemoryService.projectCount,
-        lastConsolidation: compactions > 0 ? `已压缩 ${compactions} 次` : "运行中",
+        // 读失败（undefined）保留上一次展示：显示「运行中」会与「确实没压缩过」同形。
+        lastConsolidation: compactions === undefined
+          ? memStatus.value.lastConsolidation
+          : compactions > 0 ? `已压缩 ${compactions} 次` : "运行中",
         mode: generalConfig.assistantMode ? "助手(LLM)" : "轻量(去重)",
         sessionTurns,
         sessionId,
