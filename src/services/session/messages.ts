@@ -5,9 +5,9 @@
 import type { Message } from "@/services/agent/types"
 import { createUserMessage, createAssistantMessage, createSystemMessage } from "@/services/agent/types"
 import { chatHistory, unansweredCount, activeSessionId } from "./store"
-import { pushMessage, clearMessages, deleteMessage as delMsg } from "./store"
+import { pushMessage } from "./store"
 import { saveUnanswered } from "./persistence"
-import { updateSessionName, updateSessionMessageCount } from "./manager"
+import { updateSessionName } from "./manager"
 import { appendPiSessionCustomEntry } from "./repo"
 import { DESKPET_GREETING_ENTRY } from "./read-model"
 import { createLogger } from "@/services/logger"
@@ -42,7 +42,6 @@ export function pushUserMessage(text: string): Message {
   if (userMsgs.length === 1 && activeSessionId.value) {
     updateSessionName(activeSessionId.value, text)
   }
-  updateSessionMessageCount(activeSessionId.value)
 
   return msg
 }
@@ -50,7 +49,6 @@ export function pushUserMessage(text: string): Message {
 export function pushAssistantMessage(text: string): Message {
   const msg = createAssistantMessage(text)
   pushMessage(msg)
-  updateSessionMessageCount(activeSessionId.value)
   return msg
 }
 
@@ -58,19 +56,6 @@ export function pushSystemMessage(text: string): Message {
   const msg = createSystemMessage(text)
   pushMessage(msg)
   return msg
-}
-
-// ═══════════════════════════════════════════════════
-// 清空 / 删除
-// ═══════════════════════════════════════════════════
-
-export function clearHistory(): void {
-  clearMessages()
-}
-
-export function deleteMessage(id: string): boolean {
-  const ok = delMsg(id)
-  return ok
 }
 
 // ═══════════════════════════════════════════════════

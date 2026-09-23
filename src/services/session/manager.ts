@@ -38,7 +38,6 @@ function summaryToMeta(summary: PiSessionSummary): SessionMeta {
     id: summary.id,
     name: summary.name || "新会话",
     createdAt: summary.createdAt,
-    messageCount: summary.messageCount,
     path: summary.path,
   }
 }
@@ -245,20 +244,6 @@ export function updateSessionName(sessionId: string, firstUserMsg: string): void
   saveSessionList([...sessions])
   renameSessionHistory(sessionId, meta.name)
   void persistPiSessionName(sessionId, meta.name)
-}
-
-/** 更新消息计数 */
-export function updateSessionMessageCount(sessionId: string): void {
-  const meta = sessions.find(item => item.id === sessionId)
-  if (!meta) return
-  meta.messageCount = chatHistory.length
-}
-
-/** 异步回复返回时目标会话可能已不活跃，此时不能用当前 chatHistory 覆盖其计数。 */
-export function incrementSessionMessageCount(sessionId: string): void {
-  const meta = sessions.find(item => item.id === sessionId)
-  if (!meta) return
-  meta.messageCount++
 }
 
 /**

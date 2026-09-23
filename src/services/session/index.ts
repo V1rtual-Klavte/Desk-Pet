@@ -10,8 +10,6 @@ export {
   unansweredCount,
   sessions,
   activeSessionId,
-  getContextMessages,
-  getFullHistory,
   getSessions,
   getActiveSessionId,
   pushMessage,
@@ -29,8 +27,6 @@ export {
   openSession,
   deleteSession,
   updateSessionName,
-  updateSessionMessageCount,
-  incrementSessionMessageCount,
   setSessionInterrupted,
 } from "./manager"
 
@@ -85,8 +81,6 @@ export {
   pushUserMessage,
   pushAssistantMessage,
   pushSystemMessage,
-  clearHistory,
-  deleteMessage,
   incrementUnanswered,
   resetUnanswered,
 } from "./messages"

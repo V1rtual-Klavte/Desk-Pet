@@ -5,7 +5,7 @@ import { compactionSettingsFor, harnessSlots, isSessionBusy } from "@/services/e
 import { initChat, sendMessage } from "@/services/agent/runner"
 import { getFallbackReply } from "@/services/personality/stages-cache"
 import type { FallbackReplies } from "@/services/personality/stages-file"
-import { getActiveSessionId, getContextMessages } from "@/services/session/store"
+import { chatHistory, getActiveSessionId } from "@/services/session/store"
 import { fakeText, installFakeProvider } from "../../fake-provider"
 import { assistantTexts, compactionEntries, countTexts, sessionEntries, sessionMessages, userTexts } from "../../session-entries"
 import type { AssertContext, SceneDef } from "../../types"
@@ -274,7 +274,8 @@ async function assertWindowRefusal(ctx: AssertContext): Promise<void> {
   const contaminated = assistants.filter(text => fallbackFamily.includes(text))
   if (contaminated.length > 0) throw new Error(`会话里出现了兜底失败回复: ${JSON.stringify(contaminated)}`)
   // 正面证据：拒绝必须被说出来，而且它不是兜底文案冒充的。
-  const storeTexts = getContextMessages().map(message => message.text)
+  // 读聊天视图本体（`chatHistory`）：界面拿到的就是它，「视图有没有这条说明」不因读取偏移而失真。
+  const storeTexts = chatHistory.map(message => message.text)
   if (!storeTexts.includes(REFUSED_NOTICE)) {
     throw new Error(`界面没有拿到准入说明: ${JSON.stringify(storeTexts.slice(-4))}`)
   }

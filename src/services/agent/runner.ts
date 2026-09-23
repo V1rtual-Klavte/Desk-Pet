@@ -20,7 +20,6 @@ import {
   initWelcome, resetUnanswered,
   initSessions, getActiveSessionId,
 } from "@/services/session"
-import { incrementSessionMessageCount } from "@/services/session/manager"
 import { setAIGenerating } from "@/services/cooldown"
 import { createLogger } from "@/services/logger"
 import { formatError, summarizeError } from "@/services/error"
@@ -447,11 +446,10 @@ async function dispatchMessage(text: string, options: SendMessageOptions = {}): 
       },
     })
 
-    // ★ 会话校验：若等待 AI 回复期间用户切了会话，回复只推进原会话的计数，
-    // 不污染当前 chatHistory（正文已由 Harness 写入原会话条目）。
+    // ★ 会话校验：若等待 AI 回复期间用户切了会话，回复不画进当前 chatHistory
+    //（正文已由 Harness 写入原会话条目）。
     if (getActiveSessionId() !== originSessionId) {
       log.warn("sendMessage: 会话已切换，回复存入原会话", originSessionId)
-      incrementSessionMessageCount(originSessionId)
     } else {
       await pushTurnOutcome(result)
     }

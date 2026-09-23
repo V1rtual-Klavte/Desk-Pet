@@ -16,7 +16,6 @@ export interface SessionMeta {
   id: string
   name: string
   createdAt: number
-  messageCount: number
   /** 会话条目文件路径（sessions/ 下） */
   path?: string
   /**
@@ -47,16 +46,6 @@ export const activeSessionId = ref("")
 // 派生查询
 // ═══════════════════════════════════════════════════
 
-/** 获取最近 N 条上下文消息（给 Agent Loop） */
-export function getContextMessages(count = 50): Message[] {
-  return chatHistory.slice(-count)
-}
-
-/** 获取完整历史 */
-export function getFullHistory(): Message[] {
-  return [...chatHistory]
-}
-
 /** 获取所有会话列表 */
 export function getSessions(): SessionMeta[] {
   return [...sessions]
@@ -78,13 +67,6 @@ export function pushMessage(msg: Message): void {
 
 export function clearMessages(): void {
   chatHistory.splice(0, chatHistory.length)
-}
-
-export function deleteMessage(id: string): boolean {
-  const idx = chatHistory.findIndex(m => m.id === id)
-  if (idx === -1) return false
-  chatHistory.splice(idx, 1)
-  return true
 }
 
 function trimIfNeeded(): void {

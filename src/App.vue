@@ -149,7 +149,6 @@ async function onRestoreSession(item: PiSessionSummary) {
       id: item.id,
       name: item.name || "新会话",
       createdAt: item.createdAt,
-      messageCount: item.messageCount,
       path: item.path,
     })
     await switchToSession(item.id)
