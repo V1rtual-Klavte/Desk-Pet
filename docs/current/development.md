@@ -6,7 +6,7 @@
 
 - 前端脚本与 pnpm 版本以 [package.json](../../package.json) 为准；[CI](../../.github/workflows/ci.yml) 当前使用 Node.js 22，在 macOS 与 Windows 各跑一遍 `pnpm run test:types` 与 `pnpm run test:rust`。
 - 有构建脚本的依赖由 [pnpm-workspace.yaml](../../pnpm-workspace.yaml) 的 allowBuilds 管理；已有 node_modules 的安装成功不能证明干净安装也成功。
-- `node_modules/**` 只读：调试插桩一律进业务代码或临时分支，不修改安装副本。曾有依赖包安装副本被手改注入 `__diag`/`hgdiag` 调试插桩（源项 HN-10），检测命令：`rg -n "__diag|hgdiag" node_modules/.pnpm/@earendil-works+pi-agent-core@*/node_modules/@earendil-works/pi-agent-core/dist/`，0 命中为正常。恢复步骤（顺序不可换）：
+- 依赖树只读：`node_modules/**` 一律不写，调试插桩进业务代码或临时分支，不修改安装副本。曾有依赖包安装副本被手改注入 `__diag`/`hgdiag` 调试插桩（源项 HN-10），检测命令：`rg -n "__diag|hgdiag" node_modules/.pnpm/@earendil-works+pi-agent-core@*/node_modules/@earendil-works/pi-agent-core/dist/`，0 命中为正常。恢复步骤（顺序不可换）：
 
   ```bash
   rm -rf node_modules/.pnpm/@earendil-works+pi-agent-core@0.85.1_ws@8.21.3
@@ -62,6 +62,8 @@ Rust 对应日志宏位于 [macros/](../../src-tauri/src/macros/)，内核是 [l
 `general.errors.overlay` 在报错时求值：auto 为 dev 显示、生产隐藏，always/never 显式覆盖。初始化前错误也能进入同一出口。Rust [AppError](../../src-tauri/src/error.rs) 统一序列化错误，panic hook 记录位置。
 
 音效（[audio/effects/](../../src/services/audio/effects/)）的节点构建失败是有意静默 + 统一一次性留痕：[context.ts](../../src/services/audio/context.ts) 的 `reportEffectFailure`（自动播放策略挂起由 `reportSuspendedOnce`）——新增音效不要各自打日志。
+
+有意静默的判据与标记由 [AGENTS](../../AGENTS.md#日志异常与-ipc) 统一规定，本条是它的实例：就地注释说明为什么并指名统一留痕点，裸 `catch {}` 与只写「ignore」都算违规，可接受的保留项统一标 `[保留已登记 §4.2]`。新增静默点先对照这三类判据，不要各自发明留痕方式。
 
 ## 文档与验证
 

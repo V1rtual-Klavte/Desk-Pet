@@ -27,6 +27,7 @@ Pi Harness Tool → harness-tool-adapter → ToolRouter → 执行许可借用 �
 
 `ToolDef` 携带身份、schema 与风险等级，策略集中在 `policy`（[types.ts](../../src/services/tool/types.ts)）；执行函数**不是公开字段**，经 `defineTool` 进入 [policy.ts](../../src/services/tool/policy.ts) 的模块内 WeakMap（`getToolHandler` 只给 router / registry，不从 barrel 导出）：
 
+- `safetyLevel`（`SAFE` / `NORMAL` / `DANGER` / `NOWAY`，可用 `resolveSafetyLevel(params, ctx)` 按调用动态解析）与 `lightweightPolicy`（`confirm` / `deny`，可省略）留在 ToolDef 顶层：它们是风险维度而不是权限意见——前者供 PermissionKernel 定风险，后者决定工具在陪伴（轻量）模式的可见性（`deny` 直接从清单剔除，`confirm` 保留并走正常权限流）。旧值 `allow`（陪伴模式直接放行 DANGER）已无实现，注册时按非法声明拒绝（`validateRiskDeclaration`）。
 - `permission.defaultDecision` 是工具侧唯一的权限意见（`allow` / `ask` / `deny` / `passthrough`），`passthrough` 不是执行许可，必须由 PermissionKernel 收敛。
 - `execution.effect / isolation / replay / timeoutMs`：效果分类、隔离级别、恢复重放资格与超时；未声明超时时统一取 `loop.toolTimeoutMs`。并发语义只由 `effect` / `isolation` 表达（`shared_read` 必须同时是 `read` 效果；反向不设约束，独占读是合法的保守声明）。
 - `context.resultProjection`：`preserve` 的原样进入请求，`reference` 的可被 L0 缩短并标注 eventId 回读地址；两者都只改请求视图，会话条目存档始终保留全文。Router 的 L1 内联截断已删除：会话条目与请求视图共用同一份工具返回全文，缩短只发生在 L0（[context/tool-output.ts](../../src/services/context/tool-output.ts)）且提示带 eventId 回读地址。
