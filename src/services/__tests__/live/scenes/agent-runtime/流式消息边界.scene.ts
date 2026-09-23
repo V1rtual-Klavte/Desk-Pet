@@ -80,11 +80,18 @@ export const 流式消息边界: SceneDef = {
     try {
       await initChat()
       let toolEntered = false
+      let turnSettled = false
       void blocking.started.then(() => { toolEntered = true })
       const turn = sendMessage(USER_TEXT)
         .then(output => ({ output }), error => ({ error: formatError(error) }))
-      if (!await waitUntil(() => toolEntered, TOOL_ENTER_MS)) {
+        .finally(() => { turnSettled = true })
+      // 工具没进来就提前结束（回合先失败/先结束），别把真实原因埋在 20s 等待后面。
+      if (!await waitUntil(() => toolEntered || turnSettled, TOOL_ENTER_MS)) {
         throw new Error(`工具没有在 ${TOOL_ENTER_MS}ms 内进入执行：fake provider 的脚本没有被取走`)
+      }
+      if (!toolEntered) {
+        const settled = await turn
+        throw new Error(`工具没有进入执行，回合已先行结束: ${"error" in settled ? settled.error : JSON.stringify(settled.output.reply)}`)
       }
       blocking.release()
       const settled = await Promise.race([
