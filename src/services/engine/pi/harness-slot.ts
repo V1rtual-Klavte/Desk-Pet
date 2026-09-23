@@ -33,7 +33,8 @@ import type { HarnessToolRun } from "@/services/tool/pi/harness-tool-adapter"
 import { toAgentHarnessTools } from "@/services/tool/pi/harness-tool-adapter"
 import { setToolPermitLimit } from "@/services/tool/execution-permit"
 import { ContextBudgetError, contextBudget, toHarnessEstimateTokens } from "@/services/context"
-import { messageRequestId } from "@/services/engine/runtime"
+import { messageRequestId, userInputMessage } from "@/services/engine/runtime"
+import type { InputSourceMark } from "@/services/engine/runtime"
 import { conversationConfig, loopConfig } from "@/services/config"
 import { PI_LANE } from "@/services/session/repo"
 import { createLogger } from "@/services/logger"
@@ -664,7 +665,12 @@ export class HarnessSlot {
     return this.deliveryPhase === "settling" ? "followup" : "steer"
   }
 
-  async steer(text: string, deskpetEventId?: string, kindOverride?: "steer" | "followUp" | "nextRun"): Promise<HarnessDeliveryReceipt | undefined> {
+  /**
+   * 投递一条用户输入到 lane 持久 inbox。消息体由 `userInputMessage()` 构造（投递消息的形状
+   * 只有一处定义）：带身份时写 `deskpetEventId`（证据链按它关联输入），来源标记随消息落盘；
+   * 没有 identity 时不带身份，保持「非投递输入」语义。
+   */
+  async steer(text: string, identity?: { eventId: string; mark?: InputSourceMark }, kindOverride?: "steer" | "followUp" | "nextRun"): Promise<HarnessDeliveryReceipt | undefined> {
     // 不要求运行已进入驱动：预检阶段的投递也进入 lane 持久 inbox（先 open 再投递），
     // 由本次或下一次运行消费；宿主不再保留自己的队列副本。
     if (this.state !== "running") return undefined
@@ -678,7 +684,7 @@ export class HarnessSlot {
     }
     if (this.state !== "running" || !this.lane) return undefined
     const kind = kindOverride ?? (this.deliveryPhase === "settling" ? "followUp" : "steer")
-    const message = { role: "user" as const, content: text, timestamp: Date.now(), ...(deskpetEventId ? { deskpetEventId } : {}) }
+    const message = userInputMessage(text, identity?.eventId ?? "", identity?.mark)
     const result = kind === "steer"
       ? await this.lane.steer(message, undefined, TODO_CONTEXT)
       : kind === "followUp"

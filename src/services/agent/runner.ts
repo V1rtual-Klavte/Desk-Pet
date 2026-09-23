@@ -9,7 +9,7 @@ import { getActiveCard, pickActiveGreeting } from "@/services/personality"
 import { getFallbackReply } from "@/services/personality/stages-cache"
 import { conversationConfig } from "@/services/config"
 import type { DeliveryIntent } from "@/services/config"
-import { deliverActiveTurn, harnessSlots, isInputCommitted, pausedInputsText, returnPausedInputs, runPiAgentTurn, takePausedInputs } from "@/services/engine/pi"
+import { createActiveMessage, deliverActiveTurn, harnessSlots, isInputCommitted, pausedInputsText, returnPausedInputs, runPiAgentTurn, takePausedInputs } from "@/services/engine/pi"
 import type { HarnessDeliveryReceipt, PiAgentTurnOutput } from "@/services/engine/pi"
 import type { AgentMessage } from "@earendil-works/pi-agent-core"
 import { preProcess } from "@/services/engine/preprocessor"
@@ -26,7 +26,7 @@ import { createLogger } from "@/services/logger"
 import { formatError, summarizeError } from "@/services/error"
 import { reportError } from "@/services/error"
 import type { IngressEnvelope, MessagePriority } from "@/services/engine/runtime"
-import { inputEventId, messageRequestId } from "@/services/engine/runtime"
+import { inputEventId, inputSourceMark, messageRequestId, userInputMessage } from "@/services/engine/runtime"
 import { planCheckpointStore } from "@/services/agent/memory"
 import { abortRunningPlan } from "@/services/engine/plan-confirmation"
 import { listPiSessionMetadata } from "@/services/session"
@@ -185,6 +185,8 @@ interface TurnInvocation {
   requestId: string
   runGeneration: number
   userText: string
+  /** 本次投递的正文：普通输入带身份与来源标记；继续暂停输入是取回的原文。 */
+  userPrompt: AgentMessage | AgentMessage[]
   ingress?: IngressEnvelope
   /** 停止后继续：暂停输入按原顺序一次性投递（身份不合并、正文不重复追加）。 */
   pausedMessages?: AgentMessage[]
@@ -206,11 +208,9 @@ async function performTurn(invocation: TurnInvocation): Promise<PiAgentTurnOutpu
   const result = await runPiAgentTurn({
     sessionId,
     userText: invocation.userText,
-    chatMessages: [],
+    userPrompt: invocation.userPrompt,
     unansweredCount: unansweredCount.value,
-    messageCount: 0,
     isActiveMessage: false,
-    isRetry: false,
     ...(invocation.ingress ? { ingress: invocation.ingress } : {}),
     ...(invocation.pausedMessages ? { pausedMessages: invocation.pausedMessages } : {}),
     runGeneration,
@@ -271,6 +271,8 @@ export async function resumePausedInputs(sessionId: string = getActiveSessionId(
       requestId,
       runGeneration,
       userText: pausedInputsText(pausedMessages),
+      // 取回的暂停消息按原样投递：身份与来源标记留在消息本身上，不合并、不重新构造。
+      userPrompt: pausedMessages,
       pausedMessages,
     })
     // 正文在排队时就已展示：这里只推回复/停止提示，不重复插入用户气泡。
@@ -315,6 +317,13 @@ async function pausedInputsCommitted(sessionId: string, messages: AgentMessage[]
 async function dispatchMessage(text: string, options: SendMessageOptions = {}): Promise<SendMessageResult> {
   // ★ 入口绑定会话 ID（防止异步回复错位到其他会话）
   const originSessionId = getActiveSessionId()
+  // 输入身份与来源在入口只生成一次：忙碌投递与空闲回合共用同一个 requestId 与 envelope，
+  // 投递证据链（describeInputDelivery）才能对两种路径给出同一套证据（STATE-01 / ar-12）。
+  const requestId = options.requestId ?? makeIngressId("request")
+  const priority = options.priority ?? "now"
+  let ingress: IngressEnvelope | undefined
+  const ingressFor = (pre: { rawText: string; normalizedText: string }): IngressEnvelope =>
+    (ingress ??= makeIngressEnvelope(pre.rawText, pre.normalizedText, originSessionId, requestId, priority))
 
   // 并发入口：生成中把新输入投递到正在运行的 lane（先落盘到持久 inbox，再影响模型）。
   // 命令按 busyPolicy 准入（exclusive 明确拒绝），投递意图由单条显式选择或配置默认决定；
@@ -323,7 +332,6 @@ async function dispatchMessage(text: string, options: SendMessageOptions = {}): 
   // 那种窗口里没有可投递的回合，投递必然失败，输入不能被当成正常回合放进去。
   let busyPreResult: Awaited<ReturnType<typeof preProcess>> | undefined
   if (await harnessSlots.hasOpenOperation(originSessionId)) {
-    const requestId = options.requestId ?? makeIngressId("request")
     const preResult = await preProcess(text, preprocessStates.get(originSessionId) ?? {}, { busy: true })
     if (preResult.handled) {
       // 命令已执行（immediate/coordinated）或已被明确拒绝；两种结果都如实呈现，不谎称在思考。
@@ -340,7 +348,8 @@ async function dispatchMessage(text: string, options: SendMessageOptions = {}): 
       }
     }
     const receipt = await deliverActiveTurn(
-      originSessionId, preResult.normalizedText, inputEventId(requestId),
+      originSessionId, preResult.normalizedText,
+      { eventId: inputEventId(requestId), mark: inputSourceMark(ingressFor(preResult)) },
       resolveDeliveryIntent(options.delivery, text),
     )
     if (receipt) {
@@ -415,14 +424,15 @@ async function dispatchMessage(text: string, options: SendMessageOptions = {}): 
   setAIGenerating(true)
 
   try {
-    const requestId = options.requestId ?? makeIngressId("request")
-    const ingress = makeIngressEnvelope(preResult.rawText, preResult.normalizedText, originSessionId, requestId, options.priority ?? "now")
+    const inputIngress = ingressFor(preResult)
     const result = await performTurn({
       sessionId: originSessionId,
       requestId,
       runGeneration,
       userText: preResult.text,
-      ingress,
+      // 空闲发送不是无身份的裸字符串：正文与忙碌投递同形（身份 + 来源标记随条目落盘）。
+      userPrompt: userInputMessage(preResult.text, inputEventId(requestId), inputSourceMark(inputIngress)),
+      ingress: inputIngress,
       // 投递前记账：用户气泡与未回复计数属于「用户发了这条消息」，继续暂停输入不重复做。
       beforeRun: () => {
         pushUserMessage(preResult.text)
@@ -512,9 +522,10 @@ export async function sendActiveMessage(userText: string): Promise<string> {
     const result = await runPiAgentTurn({
       sessionId,
       userText,
-      chatMessages: [],
+      // 主动消息是自定义条目（不是用户事实）：正文与 isActiveMessage 必须同源 ——
+      // 前者决定落盘的条目形态，后者决定预算口径与工具集（主动消息不带工具）。
+      userPrompt: createActiveMessage(userText, ingress),
       unansweredCount: unansweredCount.value,
-      messageCount: 0,
       isActiveMessage: true,
       ingress,
       runGeneration,

@@ -12,10 +12,11 @@ import type {
 } from "./types"
 import type { PiAgentTurnOutput, TurnFailure } from "@/services/engine/pi"
 import { runPiAgentTurn } from "@/services/engine/pi"
+import { userInputMessage } from "@/services/engine/runtime"
 import { abortAgentRuns, sendMessage, sendActiveMessage, toolCallHistory as productionToolHistory } from "@/services/agent/runner"
 import { getPoolSnapshot } from "@/services/personality/variable-pool"
 import { getSession } from "@/services/engine/session"
-import { getActiveSessionId, getContextMessages } from "@/services/session/store"
+import { getActiveSessionId } from "@/services/session/store"
 import { pushAssistantMessage, pushUserMessage } from "@/services/session/messages"
 import { initSessions } from "@/services/session"
 import { MemoryService } from "@/services/agent/memory"
@@ -245,9 +246,10 @@ async function executeTurn(userText: string, entry: SceneEntry, isActiveMessage 
   const output = await runPiAgentTurn({
     sessionId,
     userText,
-    chatMessages: getContextMessages(),
+    // 这条入口绕过 sendMessage，没有宿主 requestId：投递正文用同一个构造点但不带身份，
+    // 与生产入口的「有身份」形态同形（形状只有一处定义）。
+    userPrompt: userInputMessage(userText, ""),
     unansweredCount: 0,
-    messageCount: getContextMessages().length,
     isActiveMessage,
   })
   pushAssistantMessage(output.reply)

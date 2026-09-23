@@ -12,8 +12,6 @@ export interface Message {
   eventId?: string
   appendSequence?: number
   apiRoundId?: string
-  origin?: import("@/services/engine/runtime").MessageOrigin
-  taint?: import("@/services/engine/runtime").MessageTaint
   /** 工具调用（assistant 消息可能包含） */
   toolCalls?: ToolCallRequest[]
   /** 工具调用结果（tool 消息） */

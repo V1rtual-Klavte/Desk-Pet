@@ -33,7 +33,7 @@ export const 输入证据链: SceneDef = {
     caseId: "runtime-delivery-evidence",
     module: "agent-runtime",
     contractId: "ar-10",
-    description: "忙碌投递的输入身份进入请求快照：阶段查询按既有产物给出 queued → request_prepared（拿到回执则为 responded），不凭空升级",
+    description: "忙碌投递（steer 路径）的输入身份进入请求快照：阶段查询按既有产物给出 queued → request_prepared（拿到回执则为 responded），不凭空升级；空闲路径的身份见 runtime-idle-input-identity",
     depth: "deep",
     suite: "regression",
     entry: "production",

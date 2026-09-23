@@ -4,6 +4,7 @@ export {
   classifyTurnFailure,
   compactActiveSession,
   continueInterruptedRun,
+  createActiveMessage,
   deliverActiveTurn,
   discardPlan,
   discardInterruptedRun,

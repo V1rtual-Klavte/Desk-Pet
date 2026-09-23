@@ -6,7 +6,7 @@ import { contentText } from "@earendil-works/pi-ai"
 import type { AgentMessage, SettledAssistantMessage } from "@earendil-works/pi-agent-core"
 import type { Usage } from "@earendil-works/pi-ai"
 import type { Message, ThinkingEffort } from "@/services/agent/types"
-import type { ContextAllocation, ContextBlock, IngressEnvelope, PlanState, PlanStepRecord, PromptSnapshot, PromptTransform } from "@/services/engine/runtime"
+import type { ContextAllocation, ContextBlock, IngressEnvelope, InputSourceMark, PlanState, PlanStepRecord, PromptSnapshot, PromptTransform } from "@/services/engine/runtime"
 import { createMessageId } from "@/services/agent/types"
 import { MemoryService, recallMemory, planCheckpointStore } from "@/services/agent/memory"
 import type { StructuredSummary } from "@/services/agent/memory"
@@ -54,7 +54,7 @@ import type {
 } from "./harness-slot"
 import { formatError, reportError } from "@/services/error"
 import { createLogger } from "@/services/logger"
-import { createPromptRewrite, createPromptSnapshot, createRuntimeTraceContext, messageEventId, publishRuntimeTrace } from "@/services/engine/runtime"
+import { createPromptRewrite, createPromptSnapshot, createRuntimeTraceContext, inputEventId, messageEventId, publishRuntimeTrace, userInputMessage } from "@/services/engine/runtime"
 import type { RuntimeTraceContext } from "@/services/engine/runtime"
 import { redactText, sha256Text, stableSerialize } from "@/services/engine/runtime"
 
@@ -71,13 +71,13 @@ const log = createLogger("PiRuntime")
 export async function deliverActiveTurn(
   sessionId: string,
   text: string,
-  eventId?: string,
+  identity: { eventId: string; mark?: InputSourceMark },
   kind?: "steer" | "followUp" | "nextRun",
 ): Promise<HarnessDeliveryReceipt | undefined> {
   if (!harnessSlots.isRunning(sessionId)) return undefined
   const slot = harnessSlots.peek(sessionId)
   if (!slot) return undefined
-  const receipt = await slot.steer(text, eventId, kind)
+  const receipt = await slot.steer(text, identity, kind)
   if (!receipt) log.warn("投递未生效:", { sessionId, kind: kind ?? "auto" })
   return receipt
 }
@@ -150,15 +150,17 @@ export interface PiAgentTurnInput {
   sessionId: string
   userText: string
   /**
+   * 本次投递的正文（`userInputMessage()` 或主动消息构造器的产物），随回合落盘。
+   * 空闲发送与忙碌投递共用同一形状，身份与来源标记因此对所有入口一致生效。
+   */
+  userPrompt: AgentMessage | AgentMessage[]
+  /**
    * 停止后继续：把取回的暂停输入按原顺序作为本次投递内容（身份不合并、正文不重复追加）。
    * userText 仍用于规划/召回等按文本工作的环节。
    */
   pausedMessages?: AgentMessage[]
-  chatMessages: Message[]
   unansweredCount: number
-  messageCount: number
   isActiveMessage?: boolean
-  isRetry?: boolean
   ingress?: IngressEnvelope
   runGeneration?: number
   turnId?: string
@@ -738,7 +740,7 @@ export async function runPiAgentTurn(input: PiAgentTurnInput): Promise<PiAgentTu
   if (frozenTools.length) frozenTools.push(createTranscriptTool(entryId => slot.readToolResult(entryId)))
   recordMessage(turnSessionId)
   // 用户正文由 Harness 的 prompt 条目承担落盘（先落盘再投递由 Harness 事务保证）；
-  // 主动消息用 deskpet.active_message 自定义消息投递，保持 origin/taint 且不成为用户事实。
+  // 主动消息用 deskpet.active_message 自定义消息投递，来源标记在 details.* 且不成为用户事实。
   assertCurrent()
   let planStepContext = ""
   let planUserText = userText
@@ -839,9 +841,9 @@ export async function runPiAgentTurn(input: PiAgentTurnInput): Promise<PiAgentTu
     },
   })
   const spec = createTurnSpec(kernel, {
-    prompt: input.pausedMessages?.length
-      ? input.pausedMessages
-      : isActiveMessage ? createActiveMessage(userText, input.ingress) : userText,
+    // 投递正文由调用方构造（用户输入走 userInputMessage、主动消息走 createActiveMessage），
+    // 这里只选路：停止后继续的暂停批次优先，其余按调用方给的 userPrompt 原样投递。
+    prompt: input.pausedMessages?.length ? input.pausedMessages : input.userPrompt,
     timeoutMs: loopConfig.turnTimeoutMs,
     maxToolCalls: loopConfig.maxToolCallsPerTurn,
     projectToolResults: true,
@@ -1456,6 +1458,18 @@ export async function getInterruptedRun(sessionId: string): Promise<InterruptedR
 }
 
 /**
+ * 恢复续跑的来源标记：正文是宿主的「继续」指令，不是用户新输入 ——
+ * `origin`/`querySource` 归 recovery、`eligibleForMemory=false`，绝不冒充用户事实。
+ */
+const RECOVERY_INPUT_MARK: InputSourceMark = {
+  origin: "recovery",
+  querySource: "recovery",
+  priority: "now",
+  taint: "derived",
+  eligibleForMemory: false,
+}
+
+/**
  * 继续上次中断的运行：用当前冻结上下文（Card/工具/预算）驱动未完成的操作。
  * 不重放未知副作用由 Harness 的恢复协议保证（effect gate + 工具 memo）。
  */
@@ -1465,7 +1479,11 @@ export async function continueInterruptedRun(sessionId: string): Promise<PiAgent
   if (!slot.getInterrupted()) return undefined
   const mode = generalConfig.assistantMode ? "assistant" as const : "pet" as const
   const model = resolvePiTurnModel()
-  const generation = harnessSlots.begin(sessionId, { requestId: `resume-${crypto.randomUUID()}` })
+  // 续跑也带输入身份：运行身份、请求快照与投递证据链按同一个 requestId 对齐；
+  // 来源标记是 recovery（见上），因此这条身份不会被读成用户事实。
+  const requestId = `resume-${crypto.randomUUID()}`
+  const recoveryInput = userInputMessage("继续", inputEventId(requestId), RECOVERY_INPUT_MARK)
+  const generation = harnessSlots.begin(sessionId, { requestId })
   if (generation === undefined) throw new Error(`会话已有运行中的 Agent: ${sessionId}`)
   const toolCallHistory: PiAgentTurnOutput["toolCallHistory"] = []
   try {
@@ -1484,7 +1502,7 @@ export async function continueInterruptedRun(sessionId: string): Promise<PiAgent
       tools: frozenTools.map(toToolDeclaration),
     }, card, pool)
     const kernel = createTurnKernel({
-      sessionId, requestId: `resume-${crypto.randomUUID()}`, mode, model,
+      sessionId, requestId, mode, model,
       thinkingEffort, systemPrompt: context.systemPrompt, tools: frozenTools,
       blocks: context.blocks, allocations: context.allocations,
       transientUserInput: false, persistSnapshots: false, card,
@@ -1495,7 +1513,7 @@ export async function continueInterruptedRun(sessionId: string): Promise<PiAgent
       },
     })
     const spec = createTurnSpec(kernel, {
-      prompt: "继续",
+      prompt: recoveryInput,
       timeoutMs: loopConfig.turnTimeoutMs,
       maxToolCalls: loopConfig.maxToolCallsPerTurn,
       projectToolResults: true,
@@ -1503,7 +1521,7 @@ export async function continueInterruptedRun(sessionId: string): Promise<PiAgent
       isPermissionCurrent: () => harnessSlots.isCurrent(sessionId, generation) && getActiveSessionId() === sessionId,
     })
     const result = await slot.resumeInterrupted(spec)
-    return await settleMainTurn({ input: { sessionId, userText: "继续", chatMessages: [], unansweredCount: 0, messageCount: 0 }, kernel, result, toolCallHistory })
+    return await settleMainTurn({ input: { sessionId, userText: "继续", userPrompt: recoveryInput, unansweredCount: 0 }, kernel, result, toolCallHistory })
   } finally {
     harnessSlots.end(sessionId, generation)
   }
@@ -1684,8 +1702,12 @@ function stripRuntimeData(message: SettledAssistantMessage): SettledAssistantMes
   return changed ? { ...message, content } : message
 }
 
-/** 主动搭话以自定义消息投递：模型看到内容，记录里不是用户事实。 */
-function createActiveMessage(text: string, ingress?: IngressEnvelope): AgentMessage {
+/**
+ * 主动搭话以自定义消息投递：模型看到内容，记录里不是用户事实。
+ * 与 `userInputMessage()` 并列的另一种投递条目形状 —— 调用方（runner 的主动消息入口）构造，
+ * 两者各自只有一处定义，不互相复制字段。
+ */
+export function createActiveMessage(text: string, ingress?: IngressEnvelope): AgentMessage {
   return {
     role: "custom",
     customType: "deskpet.active_message",
@@ -1724,15 +1746,15 @@ function providerMessages(payload: unknown): Array<{ role: string; content?: str
 
 function fromPiMessage(message: AgentMessage, id: string, apiRoundId: string): Message | undefined {
   const identity = { id, eventId: id, apiRoundId, timestamp: "timestamp" in message ? message.timestamp : Date.now() }
-  if (message.role === "user") return { ...identity, role: "user", text: typeof message.content === "string" ? message.content : contentText(message.content), origin: "user", taint: "trusted_user" }
+  if (message.role === "user") return { ...identity, role: "user", text: typeof message.content === "string" ? message.content : contentText(message.content) }
   if (message.role === "assistant") {
     if (message.stopReason === "error" || message.stopReason === "aborted") return undefined
     const toolCalls = message.content.filter(part => part.type === "toolCall").map(call => ({ id: call.id, name: call.name, arguments: JSON.stringify(call.arguments) }))
-    return { ...identity, role: "assistant", text: parseRuntimeData(contentText(message.content)).text, origin: "assistant", taint: "derived",
+    return { ...identity, role: "assistant", text: parseRuntimeData(contentText(message.content)).text,
       ...(toolCalls.length ? { toolCalls } : {}) }
   }
   if (message.role === "toolResult") return { ...identity, role: "tool", text: contentText(message.content),
-    toolCallId: message.toolCallId, isError: message.isError, origin: "tool", taint: "untrusted_external" }
+    toolCallId: message.toolCallId, isError: message.isError }
   return undefined
 }
 

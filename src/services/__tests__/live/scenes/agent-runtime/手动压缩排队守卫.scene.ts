@@ -102,7 +102,11 @@ export const 手动压缩排队守卫: SceneDef = {
     // 回合进行中经生产投递入口投递 nextRun（`SendMessageOptions.delivery` 只收用户可选的
     // steer/followUp，nextRun 走同一个 deliverActiveTurn）：先落盘到 lane 持久 inbox，
     // 本回合不消费它。它没有 UI 气泡，证据以 lane 真相与后续消费为准。
-    queuedReceipt = await deliverActiveTurn(sessionId, QUEUED_TEXT, inputEventId("runtime-manual-compact-pending-guard"), "nextRun")
+    queuedReceipt = await deliverActiveTurn(
+      sessionId, QUEUED_TEXT,
+      { eventId: inputEventId("runtime-manual-compact-pending-guard") },
+      "nextRun",
+    )
     gate!.release()
     await firstTurn
 

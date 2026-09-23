@@ -43,7 +43,7 @@ export const FollowUp持久化: SceneDef = {
     // settling 窗口由 Harness 的 turn_end 事件驱动，只存在于 turn_end 与 run_end 之间；
     // 旧内核的 markDeliveryPhase 强行置位入口已随迁移删除，场景无法稳定命中该窗口。
     // 因此用显式 kind 走同一条 lane.followUp 通道，验证 followUp 自身的语义（消费时机与顺序）。
-    const receipt = await slot.steer(FOLLOW_UP_TEXT, `${REQUEST_ID}:user`, "followUp")
+    const receipt = await slot.steer(FOLLOW_UP_TEXT, { eventId: `${REQUEST_ID}:user` }, "followUp")
     if (receipt !== "followup") throw new Error(`followUp 投递未被受理: ${String(receipt)}`)
     queuedFollowUpAfterDelivery = slot.snapshot().queued.some(item => item.kind === "followUp")
     blocking.release()

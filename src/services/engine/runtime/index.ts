@@ -3,6 +3,7 @@ export type {
   ContextBlock,
   ContextLayer,
   IngressEnvelope,
+  InputSourceMark,
   MessageOrigin,
   MessagePriority,
   MessageTaint,
@@ -40,4 +41,12 @@ export type { RuntimeTraceContext, RuntimeTraceEvent, RuntimeTraceKind, RuntimeT
 
 export type { ContextAllocation } from "./types"
 
-export { inputEventId, messageEventId, messageRequestId } from "./input-identity"
+export {
+  INPUT_SOURCE_FIELD,
+  inputEventId,
+  inputSourceMark,
+  inputSourceOf,
+  messageEventId,
+  messageRequestId,
+  userInputMessage,
+} from "./input-identity"

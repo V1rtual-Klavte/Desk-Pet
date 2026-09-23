@@ -49,6 +49,22 @@ export interface IngressEnvelope {
   taint: MessageTaint
 }
 
+/**
+ * 输入条目的来源标记：随用户消息一起落盘的「这条输入从哪来、算不算用户事实」。
+ *
+ * 与 `IngressEnvelope` 的分工：envelope 是入口处的当次形态（含 raw/normalized 正文、
+ * 时间与父子关联），只活在内存里；标记是压进会话条目的稳定词汇，重建请求、投递证据链
+ * 与记忆准入都只读它，不靠第二套来源字段。
+ */
+export interface InputSourceMark {
+  origin: MessageOrigin
+  querySource: QuerySource
+  priority: MessagePriority
+  taint: MessageTaint
+  /** 是否允许进入长期记忆（用户本人可信输入才是；恢复续跑、系统与外部内容都不是）。 */
+  eligibleForMemory: boolean
+}
+
 export type ContextLayer =
   | "static"
   | "dynamic"
