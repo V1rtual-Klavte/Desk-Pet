@@ -8,11 +8,11 @@ import type { Usage } from "@earendil-works/pi-ai"
 import type { Message, ThinkingEffort } from "@/services/agent/types"
 import type { ContextAllocation, ContextBlock, IngressEnvelope, PromptSnapshot, PromptTransform } from "@/services/engine/runtime"
 import { createMessageId } from "@/services/agent/types"
-import { MemoryService, recallMemory, planCheckpointStore, planStepEffectClass } from "@/services/agent/memory"
+import { MemoryService, recallMemory, planCheckpointStore } from "@/services/agent/memory"
 import type { StructuredSummary } from "@/services/agent/memory"
 import { buildPrompt, contextBudget, CONTEXT_RATIOS, estimateRequestTokens, estimateContextTokens, estimateMessageTokens, ContextBudgetError, projectToolMessages } from "@/services/context"
 import { bindRunningPlan, clearRunningPlan, notifyPlanEnd, requestPlanConfirm, requestPlanStepDecision } from "@/services/engine/plan-confirmation"
-import { executePlan, evaluateComplexity, formatStepResults, generatePlan } from "@/services/engine/planner"
+import { executePlan, evaluateComplexity, formatStepResults, generatePlan, normalizePlan, planEffectClassFor, planToRecords } from "@/services/engine/planner"
 import { recordMessage, recordToolCall, transition } from "@/services/engine/session"
 import { getEffectiveThinkingEffort, recordModelUsage, updateRequestStats } from "@/services/debug"
 import { getSkillsPromptBlock, getSkillCatalogFingerprint } from "@/services/skill"
@@ -679,46 +679,34 @@ export async function runPiAgentTurn(input: PiAgentTurnInput): Promise<PiAgentTu
         cardRole: card?.sections.roleSetting ?? "",
         availableTools: getToolsForMode("assistant"),
         thinkingEffort: planConfig.thinkingEffort,
+        maxSteps: planConfig.maxSteps,
       })
       assertCurrent()
-      if (plan.steps.length > 0) {
-        const now = Date.now()
+      // 规范化后的 plan 是唯一进入确认、执行、进度事件与落盘的形态
+      const { plan: normalizedPlan, dropped } = normalizePlan(plan, planConfig.maxSteps)
+      if (normalizedPlan.steps.length > 0) {
         const planId = `plan-${input.ingress?.requestId ?? crypto.randomUUID()}`
         const rootTurnId = input.turnId ?? input.ingress?.parentTurnId ?? `turn-${input.ingress?.requestId ?? crypto.randomUUID()}`
-        await planCheckpointStore.create({
-          schemaVersion: 1,
+        if (dropped > 0) log.warn(`计划步骤被丢弃/截断 ${dropped} 步: ${plan.steps.length} → ${normalizedPlan.steps.length}（${planId}）`)
+        const { record, steps } = planToRecords(normalizedPlan, {
           planId,
           sessionId: turnSessionId,
           rootTurnId,
-          state: "admitting",
-          agentIds: plan.steps.map(step => `${planId}:agent:${step.id}`),
-          version: 1,
-          createdAt: now,
-          updatedAt: now,
-        }, plan.steps.map(step => ({
-          planId,
-          stepId: String(step.id),
-          agentId: `${planId}:agent:${step.id}`,
-          title: step.description,
-          dependsOn: (step.dependsOn ?? []).map(String),
-          state: "pending",
-          attempt: 0,
-          idempotencyKey: `${planId}:step:${step.id}`,
-          effectClass: planStepEffectClass(step.allowedTools),
-          updatedAt: now,
-        })))
+          effectOf: planEffectClassFor,
+        })
+        await planCheckpointStore.create(record, steps)
         let confirmed = safetyConfig.mode === "just_do_it"
         let stepMode: "auto" | "stepByStep" = "auto"
         if (!confirmed) {
           const result = await requestPlanConfirm(
-            plan,
+            normalizedPlan,
             safetyConfig.mode === "let_me_tk" ? { forceStepByStep: true } : undefined,
           )
           confirmed = result.confirmed
           stepMode = result.mode
         }
         if (!confirmed) {
-          for (const step of plan.steps) await planCheckpointStore.transitionStep(planId, String(step.id), "skipped")
+          for (const step of normalizedPlan.steps) await planCheckpointStore.transitionStep(planId, String(step.id), "skipped")
           await planCheckpointStore.transitionPlan(planId, "failed")
           notifyPlanEnd("cancelled")
           transition("WAITING", turnSessionId)
@@ -731,7 +719,7 @@ export async function runPiAgentTurn(input: PiAgentTurnInput): Promise<PiAgentTu
         // `finally` 保证任何退出路径都会清空登记，不给下一次计划留悬空引用
         const planAbort = new AbortController()
         bindRunningPlan(planAbort)
-        const result = await executePlan(plan, {
+        const result = await executePlan(normalizedPlan, {
           stepTimeoutMs: planConfig.stepTimeoutMs,
           stepMaxRounds: planConfig.stepMaxRounds,
           stepThinkingEffort: planConfig.stepThinkingEffort,
@@ -741,11 +729,11 @@ export async function runPiAgentTurn(input: PiAgentTurnInput): Promise<PiAgentTu
         }, {
           async onStepStart(step) {
             await planCheckpointStore.transitionStep(planId, String(step.id), "running")
-            emit("deskpet-plan-progress", { step: step.id, total: plan.steps.length, desc: step.description, status: "running" })
+            emit("deskpet-plan-progress", { step: step.id, total: normalizedPlan.steps.length, desc: step.description, status: "running" })
           },
           async onStepDone(step, output) {
             await planCheckpointStore.transitionStep(planId, String(step.id), output.success ? "done" : "failed")
-            emit("deskpet-plan-progress", { step: step.id, total: plan.steps.length, desc: step.description, status: output.success ? "done" : "failed" })
+            emit("deskpet-plan-progress", { step: step.id, total: normalizedPlan.steps.length, desc: step.description, status: output.success ? "done" : "failed" })
           },
           onStepFailed: requestPlanStepDecision,
           onToolStart: (step, toolName, toolCallId) => planCheckpointStore.checkpointTool(planId, String(step.id), "tool_start", toolName, toolCallId),

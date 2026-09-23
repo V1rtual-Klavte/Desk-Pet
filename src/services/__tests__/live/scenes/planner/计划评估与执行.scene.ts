@@ -92,6 +92,7 @@ export const 计划生成 = unit("plan-generate", "pl-05", "generatePlan 解析�
     cardRole: "助手",
     availableTools: getToolsForMode("assistant"),
     thinkingEffort: "low",
+    maxSteps: 8,
   })
 
   if (plan.steps.length !== 2) throw new Error(`应解析出 2 步，实际 ${plan.steps.length}`)
@@ -108,6 +109,7 @@ export const 计划生成降级 = unit("plan-generate-fallback", "pl-08", "gener
     cardRole: "助手",
     availableTools: getToolsForMode("assistant"),
     thinkingEffort: "low",
+    maxSteps: 8,
   })
 
   if (plan.steps.length === 0) throw new Error("降级计划不能是空的")

@@ -29,8 +29,14 @@ export { summarizeCompaction } from "./compactor"
 export type { CompactionSummaryInput, CompactionSummaryOutcome } from "./compactor"
 
 // ── Planner ──
-export { evaluateComplexity, generatePlan, executePlan, formatStepResults } from "./planner"
-export type { PlanStep, PlanResult, ComplexityResult, PlanExecutionResult } from "./planner"
+export {
+  evaluateComplexity, generatePlan, executePlan, formatStepResults,
+  normalizePlan, planToRecords, recordsToPlan, planEffectClassFor,
+} from "./planner"
+export type {
+  PlanStep, PlanResult, ComplexityResult, PlanExecutionResult,
+  GeneratePlanContext, PlanRecordContext,
+} from "./planner"
 
 // ── Plan 确认桥接 ──
 export { abortRunningPlan, bindRunningPlan, clearRunningPlan, notifyPlanEnd, resolvePlanConfirm, resolvePlanStepDecision } from "./plan-confirmation"

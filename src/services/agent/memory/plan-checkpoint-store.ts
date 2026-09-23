@@ -4,7 +4,7 @@
 // 未知外部副作用进入 unknown_side_effect（不自动重试，等待用户处置）。
 
 import type { Entry, JsonValue } from "@earendil-works/pi-agent-core"
-import type { PlanEffectClass, PlanRecord, PlanState, PlanStepRecord, PlanStepState } from "@/services/engine/runtime"
+import type { PlanRecord, PlanState, PlanStepRecord, PlanStepState } from "@/services/engine/runtime"
 import { appendPiSessionCustomEntry, readPiSessionEntriesOnce } from "@/services/session"
 
 /** Plan checkpoint 条目类型；恢复扫描按它过滤会话条目。 */
@@ -104,11 +104,6 @@ export class PlanCheckpointStore {
     const payload: PlanCheckpointPayload = { action, plan: current.plan, steps: current.steps, ...extra }
     await appendPiSessionCustomEntry(current.plan.sessionId, PLAN_CHECKPOINT_ENTRY, payload as unknown as JsonValue)
   }
-}
-
-export function planStepEffectClass(toolNames?: string[]): PlanEffectClass {
-  if (toolNames?.length && toolNames.every(name => ["read", "pi-read", "system_info", "local-system-info"].includes(name))) return "read_only"
-  return "external_side_effect"
 }
 
 export const planCheckpointStore = new PlanCheckpointStore()

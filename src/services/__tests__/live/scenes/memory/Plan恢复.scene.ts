@@ -24,18 +24,19 @@ export const Plan恢复: SceneDef = {
     const sessionId = getActiveSessionId()
     const now = Date.now()
     await planCheckpointStore.create({
-      schemaVersion: 1,
+      schemaVersion: 2,
       planId: PLAN_ID,
       sessionId,
       rootTurnId: "turn-plan-live-resume",
       state: "running",
-      agentIds: ["agent-read", "agent-write"],
+      summary: "恢复验证计划",
+      estimatedComplexity: 3,
       version: 1,
       createdAt: now,
       updatedAt: now,
     }, [
-      { planId: PLAN_ID, stepId: "read", agentId: "agent-read", title: "读取", dependsOn: [], state: "running", attempt: 1, idempotencyKey: "plan:read", effectClass: "read_only", updatedAt: now },
-      { planId: PLAN_ID, stepId: "write", agentId: "agent-write", title: "外部写入", dependsOn: ["read"], state: "running", attempt: 1, idempotencyKey: "plan:write", effectClass: "external_side_effect", updatedAt: now },
+      { planId: PLAN_ID, stepId: "read", title: "读取", state: "running", attempt: 1, effectClass: "read_only", updatedAt: now },
+      { planId: PLAN_ID, stepId: "write", title: "外部写入", state: "running", attempt: 1, effectClass: "external_side_effect", updatedAt: now },
     ])
     await planCheckpointStore.checkpointTool(PLAN_ID, "write", "tool_start", "external_write", "call-write")
     planCheckpointStore.reset()

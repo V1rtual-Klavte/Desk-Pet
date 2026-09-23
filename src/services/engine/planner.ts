@@ -3,9 +3,10 @@
 // 复杂度检测 → LLM 拆解 → 子代理逐步执行
 // ==========================================
 
-import type { ToolDef } from "@/services/tool/types"
+import { getToolByName, getToolsForMode, type ToolDef } from "@/services/tool"
 import type { PiSubAgentOutput } from "@/services/engine/pi"
 import type { ThinkingEffort } from "@/services/agent/types"
+import type { PlanEffectClass, PlanRecord, PlanStepRecord } from "@/services/engine/runtime"
 import { planConfig } from "@/services/config"
 import { createLogger } from "@/services/logger"
 
@@ -18,8 +19,6 @@ export interface PlanStep {
   description: string
   role?: string
   allowedTools?: string[]
-  dependsOn?: number[]
-  parallel?: boolean
 }
 
 export interface PlanResult {
@@ -42,6 +41,8 @@ export interface PlanExecutionResult {
   }[]
   overallSuccess: boolean
   totalDurationMs: number
+  /** 非完成归宿由各中止通道给出；`declined` 由逐步门产生。 */
+  cancelled?: { reason: "user" | "deadline" | "declined" }
 }
 
 // ── 复杂度检测 ──
@@ -93,13 +94,14 @@ export interface GeneratePlanContext {
   cardRole: string
   availableTools: ToolDef[]
   thinkingEffort: ThinkingEffort
+  maxSteps: number
 }
 
 export async function generatePlan(
   userText: string,
   context: GeneratePlanContext,
 ): Promise<PlanResult> {
-  const { cardRole, availableTools, thinkingEffort } = context
+  const { cardRole, availableTools, thinkingEffort, maxSteps } = context
 
   const toolList = availableTools
     .map(t => `- ${t.name}: ${t.description}`)
@@ -122,9 +124,7 @@ ${toolList}
       "id": 1,
       "description": "步骤描述",
       "role": "子代理角色名（如 文件分析员、代码搜索员）",
-      "allowedTools": ["read", "bash"],
-      "dependsOn": [],
-      "parallel": false
+      "allowedTools": ["read", "bash"]
     }
   ],
   "summary": "一句话概述计划",
@@ -133,9 +133,8 @@ ${toolList}
 
 ## 规则
 - 简单任务只需 1 步
-- 复杂任务最多 8 步
-- 标注每步依赖（dependsOn: [前置步骤 id]）
-- 标注可并行步骤（parallel: true）
+- 复杂任务最多 ${maxSteps} 步
+- 步骤按执行顺序排列
 - allowedTools 为空表示可用所有工具
 - 只输出 JSON，不要其他内容`
 
@@ -168,9 +167,97 @@ ${toolList}
   }
 }
 
+// ── 计划 ⇄ 记录 转换 ──
+
+/**
+ * 规范化模型给出的计划：丢空描述步骤、按数组顺序重排 `id = 1..N`、截断到 `maxSteps`。
+ * 返回的 `plan` 是唯一进入确认、执行与落盘的形态。
+ */
+export function normalizePlan(plan: PlanResult, maxSteps: number): { plan: PlanResult; dropped: number } {
+  const steps = plan.steps
+    .filter(step => (step.description ?? "").trim() !== "")
+    .slice(0, maxSteps)
+    .map((step, index) => ({ ...step, id: index + 1 }))
+  return { plan: { ...plan, steps }, dropped: plan.steps.length - steps.length }
+}
+
+export interface PlanRecordContext {
+  planId: string
+  sessionId: string
+  rootTurnId: string
+  /** 效果类唯一来源：工具注册表 `policy.execution.effect`（见 planEffectClassFor）。 */
+  effectOf: (allowedTools?: string[]) => PlanEffectClass
+}
+
+/** 计划 → 持久记录。`PlanRecord`/`PlanStepRecord` 是计划落盘后的唯一形态，不另存 PlanResult。 */
+export function planToRecords(plan: PlanResult, ctx: PlanRecordContext): { record: PlanRecord; steps: PlanStepRecord[] } {
+  const now = Date.now()
+  return {
+    record: {
+      schemaVersion: 2,
+      planId: ctx.planId,
+      sessionId: ctx.sessionId,
+      rootTurnId: ctx.rootTurnId,
+      state: "admitting",
+      summary: plan.summary,
+      estimatedComplexity: plan.estimatedComplexity,
+      version: 1,
+      createdAt: now,
+      updatedAt: now,
+    },
+    steps: plan.steps.map(step => ({
+      planId: ctx.planId,
+      stepId: String(step.id),
+      title: step.description,
+      ...(step.role ? { role: step.role } : {}),
+      ...(step.allowedTools ? { allowedTools: step.allowedTools } : {}),
+      state: "pending",
+      attempt: 0,
+      effectClass: ctx.effectOf(step.allowedTools),
+      updatedAt: now,
+    })),
+  }
+}
+
+/** 持久记录 → 计划：按 `stepId` 数值升序还原；非数字 stepId 跳过并告警，不静默丢弃。 */
+export function recordsToPlan(plan: PlanRecord, steps: PlanStepRecord[]): PlanResult {
+  const ordered = [...steps].sort((a, b) => Number(a.stepId) - Number(b.stepId))
+  const result: PlanStep[] = []
+  for (const step of ordered) {
+    const id = Number(step.stepId)
+    if (!Number.isFinite(id)) {
+      log.warn("计划步骤 stepId 非数字，已跳过:", step.stepId)
+      continue
+    }
+    result.push({
+      id,
+      description: step.title,
+      ...(step.role ? { role: step.role } : {}),
+      ...(step.allowedTools ? { allowedTools: step.allowedTools } : {}),
+    })
+  }
+  return { steps: result, summary: plan.summary, estimatedComplexity: plan.estimatedComplexity }
+}
+
+/**
+ * 步骤的只读判定：唯一来源是工具注册表的 `policy.execution.effect`，不维护名字名单。
+ * `undefined`/空数组/名字解析不到/任一非 read 都按有外部副作用处理；解析不到时显式告警。
+ */
+export function planEffectClassFor(allowedTools?: string[]): PlanEffectClass {
+  if (!allowedTools || allowedTools.length === 0) return "external_side_effect"
+  for (const name of allowedTools) {
+    const tool = getToolByName(name)
+    if (!tool) {
+      log.warn("计划工具未在注册表声明 effect，按有外部副作用处理:", name)
+      return "external_side_effect"
+    }
+    if (tool.policy.execution.effect !== "read") return "external_side_effect"
+  }
+  return "read_only"
+}
+
 // ── 计划执行 ──
 
-import { getToolsForMode, getToolByName } from "@/services/tool/registry"
 import { formatError } from "@/services/error"
 
 export interface ExecutePlanCallbacks {

@@ -35,7 +35,7 @@ import {
 export type { MemoryEntry, ProjectEntry }
 export { parseStructuredSummary, formatStructuredSummary } from "./compaction-store"
 export type { StructuredSummary } from "./compaction-store"
-export { PlanCheckpointStore, planCheckpointStore, planStepEffectClass, PLAN_CHECKPOINT_ENTRY } from "./plan-checkpoint-store"
+export { PlanCheckpointStore, planCheckpointStore, PLAN_CHECKPOINT_ENTRY } from "./plan-checkpoint-store"
 
 const log = createLogger("Memory")
 

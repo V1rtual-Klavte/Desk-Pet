@@ -166,15 +166,22 @@ export type PlanStepState =
   | "interrupted"
   | "unknown_side_effect"
 
-export type PlanEffectClass = "read_only" | "reversible" | "external_side_effect"
+export type PlanEffectClass = "read_only" | "external_side_effect"
 
+/**
+ * 计划的唯一持久形态（`schemaVersion: 2`）。
+ *
+ * `summary`/`estimatedComplexity` 随记录落盘，恢复时不需要第二份 `PlanResult`。
+ * `schemaVersion: 2` 的形态变更不做数据迁移，存量旧格式计划按不可恢复处理（旧数据可弃）。
+ */
 export interface PlanRecord {
-  schemaVersion: 1
+  schemaVersion: 2
   planId: string
   sessionId: string
   rootTurnId: string
   state: PlanState
-  agentIds: string[]
+  summary: string
+  estimatedComplexity: number
   version: number
   createdAt: number
   updatedAt: number
@@ -183,13 +190,15 @@ export interface PlanRecord {
 export interface PlanStepRecord {
   planId: string
   stepId: string
-  agentId: string
   title: string
-  dependsOn: string[]
+  role?: string
+  allowedTools?: string[]
   state: PlanStepState
   attempt: number
-  idempotencyKey: string
   effectClass: PlanEffectClass
   lastEventId?: string
+  lastEventKind?: "tool_start" | "tool_end"
+  /** 与 `effectClass` 同域：工具侧三档非只读 effect 在计划域塌缩为 external_side_effect。 */
+  lastEventEffect?: PlanEffectClass
   updatedAt: number
 }

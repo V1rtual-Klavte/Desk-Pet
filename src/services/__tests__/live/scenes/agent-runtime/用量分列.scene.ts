@@ -64,6 +64,7 @@ function planInput(): Parameters<typeof generatePlan>[1] {
     cardRole: "助手",
     availableTools: getToolsForMode("assistant"),
     thinkingEffort: "low",
+    maxSteps: 8,
   }
 }
 
