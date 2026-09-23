@@ -56,9 +56,12 @@ class DataRootSessionRepo implements PiSessionRepo {
     return this.repo.open(metadata, context)
   }
 
-  /** options 只为满足 SessionRepo 签名；会话固定归属数据根 cwd，这里不再接受别的 cwd。 */
-  list(_options: JsonlSessionListOptions | undefined, context: Context): Promise<JsonlSessionMetadata[]> {
-    return this.repo.list({ cwd: this.cwd }, context)
+  /**
+   * 列举会话元数据。**不默认按当前 cwd 过滤**：数据根变更（或 `--<cwd>--` 目录编码碰撞）后，
+   * 旧会话仍会被如实列出，由调用方显式处理 —— 不允许出现「index.json 里有 id、仓库列表里静默消失」。
+   */
+  list(options: JsonlSessionListOptions | undefined, context: Context): Promise<JsonlSessionMetadata[]> {
+    return this.repo.list(options, context)
   }
 
   delete(metadata: JsonlSessionMetadata, context: Context): Promise<void> {
