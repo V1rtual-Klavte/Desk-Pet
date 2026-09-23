@@ -49,9 +49,15 @@ export const BASH_NOWAY_PATTERNS: RegExp[] = [
   />\s*\/etc\//,
 ]
 
-/** 私钥与凭据类路径 — 连读取都不允许，内容一旦进模型上下文就等于泄露 */
+/** 私钥与凭据类路径 — 连读取都不允许，内容一旦进模型上下文就等于泄露。
+ *  规则文本（与 Rust `paths.rs::is_credential_path` 同一规则族）：路径中出现 `.ssh` 目录组件，
+ *  或以 `.pem` / `.key` 结尾。首条 `(^|\/)` 覆盖不带前导斜杠的相对形式（`.ssh/id_rsa`）。
+ *  三条都带 `i` 标志：macOS/Windows 文件系统大小写不敏感，`.SSH`/`.PEM` 必须同判（Rust 侧用
+ *  `to_ascii_lowercase()` 达到同一效果）；**不要**改成把整条路径 lower 后再匹配 ——
+ *  `FILE_SENSITIVE_PATTERNS` 里的 `/System/`、`/Windows/` 依赖大写，整体 lower 会让它们失效。
+ *  这里只是同一规则族的分级副本；权威判定在 Rust（`paths.rs` / `bash_policy.rs`）。 */
 export const FILE_NOWAY_PATTERNS: RegExp[] = [
-  /\/\.ssh\//, /\.pem$/, /\.key$/,
+  /(^|\/)\.ssh(\/|$)/i, /\.pem$/i, /\.key$/i,
 ]
 
 /** 敏感但可由用户确认的路径 — 环境变量文件与系统目录 */
@@ -80,6 +86,19 @@ export function maxSafetyLevel(a: SafetyLevel, b: SafetyLevel): SafetyLevel {
   return SAFETY_ORDER.indexOf(a) >= SAFETY_ORDER.indexOf(b) ? a : b
 }
 
+/** 供分级使用的词法归一：`\` → `/`、`$HOME`/`${HOME}`/`~` 视为 home 根、去 `./`、折叠 `..`。
+ *  不解析符号链接、不查磁盘；只为了让相对形式与绝对形式进同一套模式。 */
+function normalizeForGrading(path: string): string {
+  let p = path.replace(/\\/g, "/").replace(/^\$\{HOME\}/, "~").replace(/^\$HOME/, "~")
+  const out: string[] = []
+  for (const seg of p.split("/")) {
+    if (seg === "" || seg === ".") { if (out.length === 0) out.push(""); continue }
+    if (seg === "..") { if (out.length > 1) out.pop(); continue }
+    out.push(seg)
+  }
+  return out.join("/")
+}
+
 /**
  * 按本次调用的路径解析文件风险等级。
  *
@@ -89,11 +108,16 @@ export function maxSafetyLevel(a: SafetyLevel, b: SafetyLevel): SafetyLevel {
  * 返回 `SAFE` 表示「路径本身不额外提级」，由调用方与工具固有等级合并，
  * 因此这个函数可以单独用作只读工具的 `resolveSafetyLevel`。
  *
- * Windows 的反斜杠先归一成 `/`，否则同一份规则在两个平台表现不一致。
+ * 匹配前先做词法归一（反斜杠、`~`/`$HOME`/`${HOME}`、`./`、`..`）：
+ * 上游 `read` 工具的 schema 明示路径可为相对而 cwd 是 home，只认绝对形式的模式
+ * 会让 `.ssh/id_rsa` 完全不命中。
+ *
+ * 归一仅用于**分级**；权威判定在 Rust（`paths.rs` / `bash_policy.rs`），
+ * 这里不看符号链接也不查磁盘，更不是 OS 沙箱。
  */
 export function resolveFilePathLevel(path: unknown): SafetyLevel {
   if (typeof path !== "string" || path.length === 0) return "SAFE"
-  const normalized = path.replace(/\\/g, "/")
+  const normalized = normalizeForGrading(path)
   if (matchesAnyPattern(normalized, FILE_NOWAY_PATTERNS)) return "NOWAY"
   if (matchesAnyPattern(normalized, FILE_SENSITIVE_PATTERNS)) return "DANGER"
   return "SAFE"

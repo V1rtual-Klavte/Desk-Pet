@@ -58,19 +58,35 @@ export const 硬禁止匹配 = scene("safety-noway-pattern", "sf-06", "硬禁止
 export const 敏感路径匹配 = scene("safety-file-pattern", "sf-07", "敏感路径分级", () => {
   if (!matchesAnyPattern("/home/user/.ssh/id_rsa", FILE_DANGEROUS_PATTERNS)) throw new Error("敏感路径未命中")
 
-  // 私钥与凭据：只读也不放行
-  for (const path of ["/home/user/.ssh/id_rsa", "/home/user/cert.pem", "/home/user/server.key"]) {
+  // 下面三组是**共享 fixture 列表**：Rust 侧 `is_credential_path`（T1.08）用逐字相同的输入判同一件事 ——
+  // 凭据路径不带前导斜杠、写成 `~`/`$HOME`/`${HOME}`、用反斜杠、夹 `./` 或 `..`，都不改变档位。
+  // 改动这份列表必须两侧同时改。
+  //
+  // NOWAY: .ssh/id_rsa | ~/.ssh/id_rsa | $HOME/.ssh/id_rsa | ${HOME}/.ssh/id_rsa
+  //        C:\Users\me\.ssh\id_rsa | x/../.ssh/id_rsa | ./cert.pem | ~/server.key | /etc/ssl/private/a.PEM
+  // DANGER: .env | ~/.env | /etc/passwd | /etc/shadow | /System/Library/CoreServices | /Windows/System32/cmd.exe
+  // SAFE:  notes.md | /tmp/out.txt | "" (缺失参数) | /Users/me/.sshnotes/readme.md (`.sshnotes` 不是 `.ssh` 组件)
+
+  // 私钥与凭据：只读也不放行；相对形式与 home 简写必须与绝对形式同档
+  for (const path of [
+    "/home/user/.ssh/id_rsa", "/home/user/cert.pem", "/home/user/server.key",
+    ".ssh/id_rsa", "~/.ssh/id_rsa", "$HOME/.ssh/id_rsa", "${HOME}/.ssh/id_rsa",
+    "x/../.ssh/id_rsa", "./cert.pem", "~/server.key", "/etc/ssl/private/a.PEM",
+  ]) {
     if (resolveFilePathLevel(path) !== "NOWAY") throw new Error(`私钥路径未判为 NOWAY: ${path}`)
   }
-  // .env 与系统目录：可由用户确认
-  for (const path of ["/home/user/.env", "/etc/passwd", "/etc/shadow", "/System/Library/CoreServices", "/Windows/System32/cmd.exe"]) {
+  // .env 与系统目录：可由用户确认（不得升成 NOWAY，否则助手模式「用户确认后放行」的语义失效）
+  for (const path of [
+    "/home/user/.env", "/etc/passwd", "/etc/shadow", "/System/Library/CoreServices", "/Windows/System32/cmd.exe",
+    ".env", "~/.env",
+  ]) {
     if (resolveFilePathLevel(path) !== "DANGER") throw new Error(`敏感路径未判为 DANGER: ${path}`)
   }
-  // 普通路径不额外提级，否则所有文件操作都会被弹窗
-  for (const path of ["/home/user/notes.md", "/tmp/out.txt", ""]) {
+  // 普通路径不额外提级，否则所有文件操作都会被弹窗；`.sshnotes` 不是 `.ssh` 目录组件
+  for (const path of ["/home/user/notes.md", "/tmp/out.txt", "", "notes.md", "/Users/me/.sshnotes/readme.md"]) {
     if (resolveFilePathLevel(path) !== "SAFE") throw new Error(`普通路径被误提级: ${path}`)
   }
-  // Windows 反斜杠先归一再匹配，否则同一份规则在两端表现不一致
+  // Windows 反斜杠先归一再匹配，否则同一份规则在两端表现不一致（fixture 里的 `C:\Users\me\.ssh\id_rsa`）
   if (resolveFilePathLevel("C:\\Users\\me\\.ssh\\id_rsa") !== "NOWAY") throw new Error("Windows 私钥路径未命中")
   // 参数缺失（模型漏填 path）不能顺带提级或抛错
   if (resolveFilePathLevel(undefined) !== "SAFE") throw new Error("缺失 path 参数应保持 SAFE")

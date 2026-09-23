@@ -13,7 +13,7 @@ Pi Harness Tool → harness-tool-adapter → ToolRouter → 执行许可借用 �
 
 | 工具 | 模式 | 当前边界 |
 |---|---|---|
-| read | 两种 | 文本或图片读取；敏感路径仍会提高风险或被拒绝 |
+| read | 两种 | 文本或图片读取；敏感路径仍会提高风险或被拒绝；私钥/凭据路径（含相对形式与 `~`/`$HOME`/`${HOME}`/反斜杠/`..` 归一）在两种模式下都硬拒绝 |
 | write / edit | 两种 | DANGER；配置关闭时硬拒绝 |
 | bash | 两种 | 动态风险；陪伴模式白名单与禁组合符，助手模式仍保留 Rust 硬基线 |
 | system_info | 两种 | 只读系统信息 |
@@ -60,7 +60,8 @@ Harness 以 `toolExecution: parallel` 派发批次，效果之间的并发由 Ru
 
 ## 文件、命令与取消
 
-- 文件路径通过 AppPaths 校验，允许根为用户 Home、系统临时目录，开发构建还包含项目根；凭据等路径仍受上层风险判断。
+- 文件路径通过 AppPaths 校验，允许根为用户 Home、系统临时目录，开发构建还包含项目根；凭据等路径（`.ssh` 目录组件、`*.pem`/`*.key` 后缀）由 Rust 做不可关闭的最终判定，TS 侧的 [resolveFilePathLevel](../../src/services/safety/checker.ts) 是同一规则族的分级副本（相对形式与 `~`/`$HOME`/`${HOME}`/反斜杠/`..` 经词法归一后同判），在进入 ToolRouter 前就提为 NOWAY。
+- 这套路径与命令策略是**同一规则族的两层副本**，不是完备的 OS 沙箱：间接形式（如 `python -c "open('~/.ssh/id_rsa')"`）与「拦实际打开的文件」都不在覆盖内；`.env`、系统目录等可确认路径保持不变，助手模式仍走「用户确认后放行」。
 - Bash 超时、取消和进程回收由 Rust 管理；Router 为调用叠加取消/超时，区分 cancelled、timeout、not_found、failed。
 - 输出上限与 spill 保留数由 [tool_exec.rs](../../src-tauri/src/commands/tool_exec.rs) 管理。Bash 截断会返回 spill 引用，最近文件会淘汰；不能声称任意长的 shell 输出永久存于会话。
 - 会话保存的是**工具实际返回内容**；Context L0 再做请求投影时，原工具结果仍可用 read_session_event 读取。两层截断的范围不能混同。
