@@ -1,4 +1,5 @@
 import { PROMPT_SNAPSHOT_ENTRY, harnessSlots } from "@/services/engine/pi"
+import { initChat } from "@/services/agent/runner"
 import { getActiveSessionId } from "@/services/session"
 import { installFakeProvider, fakeText, fakeToolCall } from "../../fake-provider"
 import { sessionEntries } from "../../session-entries"
@@ -29,6 +30,7 @@ export const 审计闭环: SceneDef = {
     caseId: "memory-snapshot-audit-closure",
     module: "memory",
     contractId: "mm-24",
+    description: "三档快照在一轮 production 回合里各至少一条，flush 与释放槽都不改变条目集合",
     depth: "deep",
     suite: "regression",
     entry: "production",

@@ -550,7 +550,9 @@ function createProjectionHook(args: {
       // 入队等待回收（回合收尾的 Promise.allSettled）：这是从 transform_context 拿到的
       // 请求视图证据，此前悬空到进程结束都没人 await。
       args.snapshotTasks.push(args.captureSnapshot("transform_context", prepared, [])
-        .catch(error => log.error("transform_context 快照采集失败:", formatError(error))))
+        .catch(error => log.error("transform_context 快照采集失败:", formatError(error)))
+        // 快照任务的回收只关心「完成与否」：对账值（tokenDrift）只有 usage 那一档才产出。
+        .then(() => undefined))
     } catch (error) {
       args.state.contextError ??= error
     }
@@ -1784,7 +1786,7 @@ export async function runPiSubAgent(input: PiSubAgentInput): Promise<PiSubAgentO
  *
  * resultProjection=preserve 的工具（分页读取、写类结果）不再二次缩短；
  * 未注册的历史工具没有策略可查，沿用既有缩短行为（条目仍是可回读的真相源）。
- * 回读地址只认详情里的 `deskpetEntryId`：没有地址时按「不可回读」如实标记，不写假 eventId。
+ * 回读地址只认详情里的 `deskpetEntryId`：没有地址时按无地址标记如实标注，不写假 eventId。
  */
 function projectToolResultMessage(message: AgentMessage, windowTokens: number, toolsByName: ReadonlyMap<string, ToolDef>): AgentMessage {
   if (message.role !== "toolResult") return message

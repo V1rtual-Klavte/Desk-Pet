@@ -127,6 +127,7 @@ export const 地址完整性: SceneDef = {
     caseId: "memory-l0-address-integrity",
     module: "memory",
     contractId: "mm-27",
+    description: "有地址的工具结果带真实 eventId 且可回读，无地址的标「不可回读」，主请求与摘要素材投影逐字相同",
     depth: "deep",
     suite: "regression",
     entry: "production",

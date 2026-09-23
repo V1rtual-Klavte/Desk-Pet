@@ -1,6 +1,7 @@
 import type { Context, FauxModelDefinition, FauxResponseStep } from "@earendil-works/pi-ai"
 import { COMPACTION_DECLINED_ENTRY, compactionSettingsFor, compactActiveSession } from "@/services/engine/pi"
 import { compactCommand } from "@/services/engine/slash/commands/compact"
+import { aiConfig } from "@/services/config"
 import { initChat, sendMessage } from "@/services/agent/runner"
 import { getActiveSessionId } from "@/services/session"
 import { installFakeProvider, fakeText } from "../../fake-provider"
@@ -19,6 +20,8 @@ import type { SceneDef } from "../../types"
 //
 // 载荷沿用 保留守卫/摘要投影口径：两段长正文让上游切点落在第二段上，第一轮整体进摘要范围。
 const FAKE_MODEL: FauxModelDefinition = { id: "deskpet-fake", name: "Desk-Pet Fake", contextWindow: 131_072, maxTokens: 16_384 }
+/** 真正生效的窗口与 resolvePiTurnModel 一致：配置值与注入模型窗口取小。 */
+const WINDOW_TOKENS = Math.min(aiConfig.contextMaxTokens, 131_072)
 const KEEP_MARGIN = 1.05
 const UNIT = "压缩降级探针正文必须留在磁盘中。"   // 18 字符
 /** 尾段两段长正文合计 ≈ KEEP_MARGIN 倍保留窗口（上游按 chars/4 计），切点因此落在第二段上。 */
@@ -76,7 +79,7 @@ export const 压缩降级: SceneDef = {
     tags: ["memory", "compaction", "error"],
   },
   setup: async () => {
-    padding = LONG(compactionSettingsFor(FAKE_MODEL.contextWindow).keepRecentTokens)
+    padding = LONG(compactionSettingsFor(WINDOW_TOKENS).keepRecentTokens)
     summaryRequests.length = 0
     provider = installFakeProvider([
       fakeText("第一轮回复完成。"),
@@ -115,7 +118,7 @@ export const 压缩降级: SceneDef = {
       checks: [
         { type: "expectCompactCommandFailure", run: async () => {
           const before = await entryShape()
-          const text = await compactCommand.execute()
+          const text = await compactCommand.execute() ?? ""
           if (!text.startsWith("未压缩")) throw new Error(`/compact 没有报「未压缩」：${text}`)
           if (text.includes("压缩完成")) throw new Error(`/compact 把失败的压缩报成完成：${text}`)
           if (!text.includes("摘要格式无效")) throw new Error(`/compact 的失败文案没有给出原因：${text}`)

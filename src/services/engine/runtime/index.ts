@@ -17,6 +17,7 @@ export type {
   PromptCacheInfo,
   PromptLlmMessage,
   PromptSnapshot,
+  PromptTokenDrift,
   PromptToolSchema,
   PromptTransform,
   PromptTransformReason,

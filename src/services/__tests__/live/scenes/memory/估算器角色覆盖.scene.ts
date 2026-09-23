@@ -37,6 +37,7 @@ export const 估算器角色覆盖: SceneDef = {
     caseId: "memory-estimator-role-coverage",
     module: "memory",
     contractId: "mm-26",
+    description: "估算器按角色表覆盖摘要类与自定义消息，未知角色不静默漏算，provider_usage 快照与 trace 记录估算偏差",
     depth: "deep",
     suite: "regression",
     entry: "runtime",

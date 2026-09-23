@@ -67,7 +67,8 @@ export async function summarizeCompaction(input: CompactionSummaryInput): Promis
       if (!projected) return []
       if (message.role === "toolResult" && preserveToolNames.has(message.toolName)) return [projected]
       if (projected.role !== "tool") return [projected]
-      const text = projectToolResultText(projected.text, toolResultAddress(message), budget.window)
+      // AgentMessage 联合里只有工具结果带 details；地址解析只认它，别的角色一律 undefined。
+      const text = projectToolResultText(projected.text, toolResultAddress(message as { details?: unknown }), budget.window)
       return [text === projected.text ? projected : { ...projected, text }]
     })
   const splitTurnPrefix = project(input.turnPrefixMessages ?? [])
