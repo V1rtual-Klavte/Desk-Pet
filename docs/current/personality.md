@@ -10,7 +10,7 @@
 | card | Card 的 variableDefs 注册表 | VariableState | 仅 updateBy=llm 的已注册字段 |
 | interaction | 系统维护的互动状态 | VariableState | 否 |
 
-精确类型见 [types.ts](../../src/services/personality/types.ts) 的 `CardVariableDef`、`VariableState`。VariableState 保存 value/type/updatedAt/updatedBy；重置游标（`lastDailyResetKey`/`sessionKey`）随 Card 的 `variables` 段持久化，不逐变量记账。
+精确类型见 [types.ts](../../src/services/personality/types.ts) 的 `CardVariableDef`、`VariableState`。VariableState 保存 value/type/updatedAt/updatedBy；重置游标（`lastDailyResetKey`/`sessionKey`）随 Card 的 `variables` 段持久化，不逐变量记账；会话级重置（`reset: session`）的判定键是当前会话的 `createdAt`（`getSessionCreatedAt`，来自 `SessionMeta`，读不到则不做判定），游标随变量区持久化。
 
 card/interaction 状态保存在 `personality/stages/{cardId}.json` 的变量区，两段由 [stages-file.ts](../../src/services/personality/stages-file.ts) 单一读写：段级合并，两个生产者互不抹除；`vars.json` 不再写入。用户长期事实不存入角色变量。
 

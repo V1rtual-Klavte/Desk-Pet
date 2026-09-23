@@ -53,7 +53,7 @@ async function loadMessagesFromSession(sessionId: string): Promise<{ messages: M
 }
 
 /**
- * 激活会话：切换指针、加载正文与未回复数，并对齐记忆模块活跃指针与会话开始时间。
+ * 激活会话：切换指针、加载正文与未回复数，并对齐记忆模块活跃指针。
  * 所有异步读取后都重新校验活跃会话，旧切换不能覆盖新所有者。
  */
 async function activateSession(sessionId: string): Promise<void> {

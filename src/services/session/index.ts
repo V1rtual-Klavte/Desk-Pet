@@ -12,6 +12,7 @@ export {
   activeSessionId,
   getSessions,
   getActiveSessionId,
+  getSessionCreatedAt,
   replaceMessages,
   pushMessageFor,
   clearMessages,

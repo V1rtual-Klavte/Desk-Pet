@@ -62,6 +62,15 @@ export function getActiveSessionId(): string {
   return fallback
 }
 
+/**
+ * 会话创建时间（`reset:session` 的持久会话键）；按 id 精确查找，找不到返回 null。
+ * 返回 null 是「这个会话没有持久时间」的如实答复 —— 不凭空造一个时间让会话判定误判。
+ */
+export function getSessionCreatedAt(sessionId: string): number | null {
+  const meta = sessions.find(item => item.id === sessionId)
+  return meta ? meta.createdAt : null
+}
+
 // ═══════════════════════════════════════════════════
 // 消息操作
 // ═══════════════════════════════════════════════════

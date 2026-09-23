@@ -25,7 +25,7 @@ import { getFallbackReply, getSimpleStage } from "@/services/personality/stages-
 import { generateReply, parseRuntimeData } from "@/services/reply"
 import { authorizeToolExecution, invalidatePermissionScope } from "@/services/safety"
 import { getActiveSessionId, pushMessageFor } from "@/services/session/store"
-import { isAssistantEntryVisible, pushSystemMessage } from "@/services/session"
+import { getSessionCreatedAt, isAssistantEntryVisible, pushSystemMessage } from "@/services/session"
 import { getToolsForMode } from "@/services/tool/registry"
 import { SESSION_TRANSCRIPT_TOOL, toToolDeclaration, createTranscriptTool } from "@/services/tool"
 import { findRetainedToolCall, preservedToolNames, retainedToolNames, toolPolicyHash } from "@/services/tool/policy"
@@ -724,8 +724,9 @@ export async function runPiAgentTurn(input: PiAgentTurnInput): Promise<PiAgentTu
   refreshVariablePool()
   const interactionWrite = updateInteractionVar("unansweredCount", unansweredCount)
   if (!interactionWrite.success) log.debug("interaction 未写入（回合上下文）:", turnSessionId, interactionWrite.error)
-  // 会话键由会话模块提供（SessionMeta.createdAt）；本波不传，session 判定为 inert
-  applyResetPolicies(new Date(), null)
+  // 会话级重置的判定键是当前会话的持久创建时间（`SessionMeta.createdAt`，经 `getSessionCreatedAt`），
+  // 不再依赖进程内 Map：会话不存在（读不到创建时间）时传 null，由 applyResetPolicies 明确不做 session 判定。
+  applyResetPolicies(new Date(), getSessionCreatedAt(turnSessionId))
   const currentCard = getActiveCard()
   const card = currentCard ? JSON.parse(JSON.stringify(currentCard)) as typeof currentCard : null
   const pool = getPoolSnapshot()
