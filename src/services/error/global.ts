@@ -77,12 +77,14 @@ export function reportError(source: string, value: unknown, options: ReportOptio
       message,
       stack: detail,
     }).catch(() => {
-      // Tauri 未注入（例如纯浏览器调试）时忽略，console 已有记录
+      // Tauri 未注入（例如纯浏览器调试）时忽略：根因已由上面的 log.error/warn 记录
+      // （统一留痕点：reportError 自身已写 logger；本处再报会递归）[保留已登记 §4.2]
     })
 
     if (allowOverlay && shouldShowOverlay()) pushEntry({ time: hms(), source, kind, message, detail })
   } catch {
-    // 上报自身失败不能再抛，否则递归
+    // 上报自身失败不能再抛（否则递归）：这里是异常上报链的最后兜底层，
+    // 没有更外层的出口可写 [保留已登记 §4.2]
   }
 }
 
@@ -144,7 +146,8 @@ function pushEntry(entry: Entry): void {
     if (entries.length > MAX_ENTRIES) entries.shift()
     renderOverlay()
   } catch {
-    // 渲染失败不能再抛
+    // 渲染失败不能再抛：条目已进 entries、异常原文已留痕，覆盖层只是展示层
+    // [保留已登记 §4.2]
   }
 }
 
@@ -199,7 +202,7 @@ function ensureOverlay(): HTMLElement {
     const text = entries
       .map((e) => `[${e.time}] ${e.source} · ${e.kind}\n${e.detail}`)
       .join("\n\n")
-    void navigator.clipboard?.writeText(text).catch(() => {})
+    void navigator.clipboard?.writeText(text).catch(error => log.warn("复制异常详情失败:", formatError(error)))
   })
 
   const closeBtn = button("关闭", () => hideOverlay())

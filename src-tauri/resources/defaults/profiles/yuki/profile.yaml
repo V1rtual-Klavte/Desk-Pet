@@ -41,7 +41,6 @@ theme:
     enabled: false
     image: ""
   parallax:
-    intensity: 1.0
     # 五层均使用同一张原图切出的透明 PNG；位置保持 0 偏移。
     # 素材契约遵循现有 Profile：materials/L{n}/<asset>.png。
     layers:

@@ -133,6 +133,9 @@ pnpm run test:release # 类型/编译 + Rust 单测 + 严格 Contract + 三次 t
 - 日志走 `@/services/logger` / Rust 日志宏，错误走 `@/services/error`；禁止直接 `console.*` 或 `String(e)`。
 - 错误判断使用 `formatError()` / `errorCode()`；持久化错误使用脱敏的 `summarizeError()`。
 - 全局异常经 `bootWindow()` 安装拦截、`reportError()` 单一出口，不自行再建覆盖层。
+- 有意静默必须就地留注释说明为什么，并在注释里指名统一留痕点（如「根因留痕在 getCtx / reportEffectFailure」）；
+  裸 `catch {}` 与只写「ignore」的注释都算违规；统一标记为 `[保留已登记 §4.2]`。
+- 已知可接受的保留项记录在《前舞台修复方案》§4.2（归档后位于 `docs/history/implementation/`），复审不重复报。
 - Rust 命令返回 `AppResult<T>`，使用具体 AppError；不退回 `Result<T, String>`。
   锁中毒用 `.unwrap_or_else(|e| e.into_inner())` 恢复，不写 `.lock().unwrap()`。
 - IPC 变更同步 Rust 签名、mod 导出、`lib.rs` 注册与 TS invoke；新增窗口同时核对 HTML/TS 入口、

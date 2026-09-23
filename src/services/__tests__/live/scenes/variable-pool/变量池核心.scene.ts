@@ -20,10 +20,10 @@ import {
  * 「本机 data_root 里恰好是哪张卡」解耦 —— 否则换一台机器就红。
  */
 const DEFS: CardVariableDef[] = [
-  { scope: "card", name: "亲密", type: "number", initial: 0, description: "亲密度", updateBy: "llm", persistent: true, min: 0, max: 10, reset: "never" },
-  { scope: "card", name: "系统写", type: "number", initial: 5, description: "只由系统写", updateBy: "system", persistent: true, min: 0, max: 100, reset: "never" },
-  { scope: "card", name: "心情", type: "string", initial: "平静", description: "枚举变量", updateBy: "llm", persistent: true, enum: ["平静", "开心"], reset: "never" },
-  { scope: "interaction", name: "unansweredCount", type: "number", initial: 0, description: "未回复数", updateBy: "system", persistent: true, min: 0, max: 999, reset: "never" },
+  { scope: "card", name: "亲密", type: "number", initial: 0, description: "亲密度", updateBy: "llm", min: 0, max: 10, reset: "never" },
+  { scope: "card", name: "系统写", type: "number", initial: 5, description: "只由系统写", updateBy: "system", min: 0, max: 100, reset: "never" },
+  { scope: "card", name: "心情", type: "string", initial: "平静", description: "枚举变量", updateBy: "llm", enum: ["平静", "开心"], reset: "never" },
+  { scope: "interaction", name: "unansweredCount", type: "number", initial: 0, description: "未回复数", updateBy: "system", min: 0, max: 999, reset: "never" },
 ]
 
 /**
@@ -91,8 +91,6 @@ export const 变量池初始化 = unit("variable-pool-init", "vp-02", "initVaria
     throw new Error(`card 变量未按 def 初始化: ${JSON.stringify(pool.card["亲密"])}`)
   }
   if (pool.interaction["unansweredCount"]?.value !== 0) throw new Error("interaction 变量未初始化")
-  // 每次重建都必须清空 session：上一场景的会话变量不能渗进来
-  if (Object.keys(pool.session).length !== 0) throw new Error("session 变量未被清空")
   if (getVariableRegistry().length !== DEFS.length) throw new Error("registry 与 defs 不一致")
 })
 
@@ -130,7 +128,7 @@ export const 系统变量只读 = unit("variable-pool-system-readonly", "vp-07",
   if (getPoolSnapshot().card["系统写"]?.value !== 5) throw new Error("只读变量的值被改动")
 })
 
-export const 变量池提示词 = unit("variable-pool-prompt", "vp-15", "formatPoolForPrompt 序列化四类变量", () => {
+export const 变量池提示词 = unit("variable-pool-prompt", "vp-15", "formatPoolForPrompt 序列化三类变量", () => {
   seed()
   const text = formatPoolForPrompt(getPoolSnapshot())
 
@@ -140,8 +138,6 @@ export const 变量池提示词 = unit("variable-pool-prompt", "vp-15", "formatP
   }
   // interaction 非空时才出现；本池里有 unansweredCount，所以这一段必须在
   if (!text.includes("[互动状态")) throw new Error("interaction 非空却没有对应段落")
-  // session 恒为空 → 该段落整段不出现，而不是留一个空标题
-  if (text.includes("[会话状态")) throw new Error("空的 session 不该产生段落")
 
   // Card 变量要把约束写进 prompt，否则模型不知道边界在哪
   if (!text.includes("亲密")) throw new Error("Card 变量未出现在 prompt")
@@ -162,6 +158,16 @@ export const 变量池快照恢复 = unit("variable-pool-snapshot", "vp-16", "sn
   restoreVariablePoolState(snapshot)
   if (getPoolSnapshot().card["亲密"]?.value !== 7) throw new Error("restore 未还原变量值")
   if (getPoolSnapshot().card["亲密"]?.updatedBy !== "llm") throw new Error("restore 未还原写入来源")
+
+  // 人格切换失败的回滚必须连变量注册表一起还原（VAR-02）：
+  // 只还原池会让后续写入按目标卡的 schema 校验、Prompt 里变量元数据整块消失
+  initVariablePool({ cardId: "other-card", variableDefs: [] })
+  restoreVariablePoolState(snapshot)
+  if (getVariableRegistry().map(d => d.name).join(",") !== DEFS.map(d => d.name).join(",")) {
+    throw new Error(`restore 未还原变量注册表: ${getVariableRegistry().map(d => d.name).join(",")}`)
+  }
+  if (getPoolSnapshot().system.activeCardId !== "test-card") throw new Error("restore 未还原卡归属")
+  if (getPoolSnapshot().card["亲密"]?.value !== 7) throw new Error("restore 注册表后变量值被改坏")
 })
 
 export const 变量池销毁 = unit("variable-pool-destroy", "vp-17", "destroyPool 清空全部状态", () => {

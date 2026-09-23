@@ -10,11 +10,11 @@ export {
   unansweredCount,
   sessions,
   activeSessionId,
-  getContextMessages,
-  getFullHistory,
   getSessions,
   getActiveSessionId,
-  pushMessage,
+  getSessionCreatedAt,
+  replaceMessages,
+  pushMessageFor,
   clearMessages,
   addSessionMeta,
   removeSessionMeta,
@@ -29,8 +29,6 @@ export {
   openSession,
   deleteSession,
   updateSessionName,
-  updateSessionMessageCount,
-  incrementSessionMessageCount,
   setSessionInterrupted,
 } from "./manager"
 
@@ -65,9 +63,12 @@ export type { PiSessionSummary } from "./repo"
 export {
   messagesFromEntries,
   registerSessionEntryMapper,
-  DESKPET_GREETING_ENTRY,
+  isAssistantEntryVisible,
 } from "./read-model"
 export type { SessionEntryMapper } from "./read-model"
+
+// 宿主的会话条目类型词汇（值定义在协议模块，这里只转出给会话域消费者）
+export { DESKPET_GREETING_ENTRY, DESKPET_SYSTEM_MESSAGE_ENTRY } from "@/services/engine/runtime"
 
 // ── Persistence ──
 export {
@@ -85,8 +86,6 @@ export {
   pushUserMessage,
   pushAssistantMessage,
   pushSystemMessage,
-  clearHistory,
-  deleteMessage,
   incrementUnanswered,
   resetUnanswered,
 } from "./messages"

@@ -1,7 +1,7 @@
 import type { SceneDef } from "../../types"
 import type { PermitReclaim, ToolDef, ToolPolicy } from "@/services/tool"
 import { defineTool, register, unregister, executeToolDefinition, permitSnapshot, TOOL_POLICY_VERSION } from "@/services/tool"
-import { loopConfig } from "@/services/config"
+import { loopConfig, MAX_PARALLEL_TOOLS, MIN_PARALLEL_TOOLS } from "@/services/config"
 import { invoke } from "@tauri-apps/api/core"
 
 /**
@@ -20,7 +20,7 @@ const tool = (id: string, isolation: "shared_read" | "exclusive_effect", effect:
     policy: {
       version: TOOL_POLICY_VERSION,
       permission: { defaultDecision: "allow" },
-      execution: { effect, mode: "sequential", isolation, replay: "never" },
+      execution: { effect, isolation, replay: "never" },
       context: { resultProjection: "reference", historyCompaction: "summarize" },
     },
   }, async () => {
@@ -178,15 +178,15 @@ export const 执行许可: SceneDef = {
         if (limitedGranted) throw new Error("上限 1 时第二个读越过了额度")
         if ((await permitSnapshot()).maxSharedReaders !== 1) throw new Error("下发的上限没有生效")
 
-        // 提高上限即唤醒有序等待项；越界下发必须被拒绝且不改变生效值（上限 0 会让读永久排队）。
+        // 提高上限即唤醒有序等待项；越界下发必须被拒绝且不改变生效值（下限越界会让读永久排队）。
         await setLimit(2)
         if (!await limitedRead) throw new Error("提高上限后排队的读没有被唤醒")
         await release("limit-hold")
         await release("limit-limited")
-        for (const bad of [0, 9]) {
+        for (const bad of [MIN_PARALLEL_TOOLS - 1, MAX_PARALLEL_TOOLS + 1]) {
           let rejected = false
           try { await setLimit(bad) } catch { rejected = true }
-          if (!rejected) throw new Error(`越界上限 ${bad} 没有被拒绝`)
+          if (!rejected) throw new Error(`越界上限 ${bad} 没有被拒绝（TS 范围常量与 Rust 范围已漂移）`)
         }
         if ((await permitSnapshot()).maxSharedReaders !== 2) throw new Error("越界下发改变了生效上限")
 
@@ -202,6 +202,19 @@ export const 执行许可: SceneDef = {
         await release("inflight-b")
         if (!await inflightThird) throw new Error("占用降到新上限以下后排队读没有被放行")
         await release("inflight-third")
+
+        // 边界钉（TOOL-10）：上限的真相源是 Rust 所有者，TS 的 MIN/MAX 只是 UI 校验副本。
+        // 两端各打一次 —— 上限原值必须被接受，两侧越界必须被拒绝；两份范围常量漂移会在这里被钉住。
+        const upper = await setLimit(MAX_PARALLEL_TOOLS)
+        if (upper !== MAX_PARALLEL_TOOLS) throw new Error(`上限 ${MAX_PARALLEL_TOOLS} 没有被接受: ${upper}`)
+        for (const bad of [MIN_PARALLEL_TOOLS - 1, MAX_PARALLEL_TOOLS + 1]) {
+          let rejected = false
+          try { await setLimit(bad) } catch { rejected = true }
+          if (!rejected) throw new Error(`越界上限 ${bad} 没有被拒绝（TS 范围常量与 Rust 范围已漂移）`)
+        }
+        if ((await permitSnapshot()).maxSharedReaders !== MAX_PARALLEL_TOOLS) {
+          throw new Error("越界下发改变了生效上限")
+        }
 
         // ── 7. 借用者生命周期兜底：页面实例消失后额度被回收，后续读不再被永久卡住 ──
         // 复现热重载现场：旧页面实例借满额度、留下排队项后再也没人归还（它的 JS 上下文

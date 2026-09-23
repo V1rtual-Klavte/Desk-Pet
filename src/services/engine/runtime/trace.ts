@@ -2,8 +2,14 @@
  * Bounded, non-blocking observer bus for Pi runtime lifecycle telemetry.
  *
  * 只做观测：listener 的返回值不参与任何决策，超时与异常都被隔离，永远不能改写 Agent loop 的状态。
+ * 隔离不等于静默：异常按 listener 去重后 `log.debug` 留痕，观测者的坏掉是可查的。
  * 需要「阻断」语义的门禁不要挂在这里 —— 那属于 Pi 原生 hook（`beforeToolCall` / `afterToolCall`）。
  */
+
+import { formatError } from "@/services/error"
+import { createLogger } from "@/services/logger"
+
+const log = createLogger("RuntimeTrace")
 
 export type RuntimeTraceKind =
   | "agent_start"
@@ -45,6 +51,18 @@ export type RuntimeTraceListener = (event: RuntimeTraceEvent) => void | Promise<
 const listeners = new Set<RuntimeTraceListener>()
 const TRACE_LISTENER_TIMEOUT_MS = 250
 
+/**
+ * 已留痕的坏观察者：同一个 listener 只记一次（它每回合都跑，逐次记会刷屏）。
+ * 记的是「谁坏」，不是「坏了几次」—— 隔离语义不变，只是不再无声。
+ */
+const warnedListeners = new Set<RuntimeTraceListener>()
+
+function warnListenerFailure(listener: RuntimeTraceListener, error: unknown): void {
+  if (warnedListeners.has(listener)) return
+  warnedListeners.add(listener)
+  log.debug("trace listener 异常被隔离（同一 listener 只报一次）:", formatError(error))
+}
+
 function createId(prefix: string): string {
   return `${prefix}-${crypto.randomUUID?.() ?? `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`}`
 }
@@ -63,14 +81,14 @@ export function subscribeRuntimeTrace(listener: RuntimeTraceListener): () => voi
   return () => listeners.delete(listener)
 }
 
-function settleListener(result: void | Promise<void>): void {
+function settleListener(listener: RuntimeTraceListener, result: void | Promise<void>): void {
   if (!result || typeof (result as Promise<void>).then !== "function") return
   let timer: ReturnType<typeof setTimeout> | undefined
   const timeout = new Promise<void>(resolve => {
     timer = setTimeout(resolve, TRACE_LISTENER_TIMEOUT_MS)
   })
   void Promise.race([result, timeout])
-    .catch(() => undefined)
+    .catch(error => warnListenerFailure(listener, error))
     .finally(() => { if (timer) clearTimeout(timer) })
 }
 
@@ -92,7 +110,7 @@ export function publishRuntimeTrace(
     payload,
   }
   for (const listener of listeners) {
-    try { settleListener(listener(event)) } catch { /* observer failures are isolated */ }
+    try { settleListener(listener, listener(event)) } catch (error) { warnListenerFailure(listener, error) }
   }
   return event
 }

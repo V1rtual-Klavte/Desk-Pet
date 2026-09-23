@@ -12,15 +12,18 @@ import type {
 } from "./types"
 import type { PiAgentTurnOutput, TurnFailure } from "@/services/engine/pi"
 import { runPiAgentTurn } from "@/services/engine/pi"
-import { abortAgentRuns, sendMessage, sendActiveMessage, toolCallHistory as productionToolHistory } from "@/services/agent/runner"
+import { userInputMessage } from "@/services/engine/runtime"
+import { sendMessage, sendActiveMessage } from "@/services/agent/runner"
 import { getPoolSnapshot } from "@/services/personality/variable-pool"
-import { getSession } from "@/services/engine/session"
-import { getActiveSessionId, getContextMessages } from "@/services/session/store"
+import { harnessSlots } from "@/services/engine/pi"
+import { getActiveSessionId } from "@/services/session/store"
 import { pushAssistantMessage, pushUserMessage } from "@/services/session/messages"
 import { initSessions } from "@/services/session"
 import { MemoryService } from "@/services/agent/memory"
 import { formatError } from "@/services/error"
+import { classifyFailureKind } from "@/services/error/failure-kind"
 import { confirmRecords } from "./confirm-channel"
+import { planRecords } from "./plan-confirm-channel"
 import { sessionMessages } from "./session-entries"
 
 export const DEFAULT_SCENE_TIMEOUT = 120_000
@@ -156,17 +159,16 @@ function heapUsedBytes(): number | undefined {
 }
 
 /**
- * 状态码档位按独立数字匹配（与 `classifyTurnFailure` 同一口径）：
- * 文案里的估算 token 数等长数字串不能把无关失败误分类成认证、限流或 Provider 故障。
+ * 场景失败分类：分类实现与生产共用（`error/failure-kind.ts`），本函数只保留两件测试宿主
+ * 自己的事 —— ① 场景超时有独立语义（`SceneTimeoutError` 是场景级失败，不是回合失败）；
+ * ② 生产分类落到 `unknown` 时，设置页/模型目录相关的本地文案再细分到 `configuration`。
  */
 function classifyError(error: unknown): ErrorKind {
-  const message = (formatError(error)).toLowerCase()
-  if (error instanceof SceneTimeoutError || /timeout|timed out|超时/.test(message)) return "timeout"
-  if (/\b401\b|\b403\b|unauthorized|forbidden|api.?key|认证/.test(message)) return "auth"
-  if (/\b429\b|rate.?limit|限流/.test(message)) return "rate_limit"
-  if (/fetch|network|econn|enotfound|socket|网络/.test(message)) return "network"
-  if (/config|provider|model|配置/.test(message)) return "configuration"
-  if (/\b5\d\d\b|upstream|service unavailable/.test(message)) return "provider"
+  if (error instanceof SceneTimeoutError) return "timeout"
+  const message = formatError(error)
+  const base = classifyFailureKind(message)
+  if (base !== "unknown") return base
+  if (/config|model|配置/.test(message.toLowerCase())) return "configuration"
   return "unknown"
 }
 
@@ -223,12 +225,11 @@ async function executeTurn(userText: string, entry: SceneEntry, isActiveMessage 
   if (!getActiveSessionId()) await initSessions()
 
   if (entry === "production") {
-    // sendMessage clears this after preprocessing; clear here so handled requests cannot leak a prior turn.
-    productionToolHistory.clear()
     const result = await sendMessage(userText)
     return {
       reply: result.reply,
-      toolCallHistory: productionToolHistory.entries.map(item => ({ ...item })),
+      // 本回合的工具调用历史来自回合结果本身，不再有进程内全局历史可漏、可残留。
+      toolCallHistory: result.toolCalls,
       retriesUsed: result.retriesUsed,
       ...(result.failure ? { failure: result.failure } : {}),
     }
@@ -240,17 +241,18 @@ async function executeTurn(userText: string, entry: SceneEntry, isActiveMessage 
   }
 
   // Mirror the production message lifecycle around the lower-level Pi runtime.
-  if (!isActiveMessage) pushUserMessage(userText)
   const sessionId = getActiveSessionId()
+  if (!isActiveMessage) pushUserMessage(userText, sessionId)
   const output = await runPiAgentTurn({
     sessionId,
     userText,
-    chatMessages: getContextMessages(),
+    // 这条入口绕过 sendMessage，没有宿主 requestId：投递正文用同一个构造点但不带身份，
+    // 与生产入口的「有身份」形态同形（形状只有一处定义）。
+    userPrompt: userInputMessage(userText, ""),
     unansweredCount: 0,
-    messageCount: getContextMessages().length,
     isActiveMessage,
   })
-  pushAssistantMessage(output.reply)
+  pushAssistantMessage(output.reply, sessionId)
   return output
 }
 
@@ -299,14 +301,16 @@ async function runSceneInner(
 
     try {
       const output = await executeTurn(turn.userText, entry, turn.isActiveMessage)
-      const session = getSession(getActiveSessionId())
+      const sessionId = getActiveSessionId()
+      // 会话状态改读真实所有者：运行槽（HarnessSlot）与落盘条目，不再有进程内假状态机。
+      const messages = await sessionMessages(sessionId)
       const ctx: AssertContext = {
         output,
         pool: getPoolSnapshot(),
         session: {
-          state: session.agentState,
-          messageCount: session.messageCount,
-          toolCallCount: session.toolCallCount,
+          state: harnessSlots.snapshot(sessionId)?.state ?? "closed",
+          entryCount: messages.length,
+          toolCallCount: messages.filter(message => message.role === "tool").length,
         },
         memory: await takeMemorySnapshot(getActiveSessionId()),
         toolHistory: output.toolCallHistory.map(item => ({
@@ -314,6 +318,7 @@ async function runSceneInner(
           status: item.status,
         })),
         confirms: confirmRecords(),
+        plans: planRecords(),
         trial,
       }
 
@@ -440,7 +445,7 @@ export async function runScene(scene: SceneDef, trial = 1): Promise<SceneResult>
       cancel.cancel()
       const turns = timeoutTurns(progress)
       const stuck = stuckPhase(progress)
-      await abortAgentRuns()
+      await harnessSlots.abortAndWaitAll()
       const settled = await settleWithin(inner, SCENE_CANCEL_GRACE_MS)
       return {
         caseId: scene.meta.caseId,

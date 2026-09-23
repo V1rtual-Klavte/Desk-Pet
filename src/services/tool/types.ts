@@ -6,16 +6,16 @@
 export type SafetyLevel = "SAFE" | "NORMAL" | "DANGER" | "NOWAY"
 
 /** 工具来源 */
-export type ToolSource = "local" | "mcp" | "skill"
+export type ToolSource = "local" | "mcp"
 
 /** 模式限制 */
 export type ToolMode = "pet" | "assistant"
 
-export type LightweightPolicy = "allow" | "confirm" | "deny"
+/** 轻量模式对 DANGER 能力的策略：`allow` 与「未声明即拒绝」是同一件事的两写，已收敛掉。 */
+export type LightweightPolicy = "confirm" | "deny"
 
 /** PermissionKernel 的最终裁决；passthrough 只允许规则层内部使用。 */
 export type PermissionDecision = "allow" | "ask" | "deny"
-export type ToolCheckResult = PermissionDecision | "passthrough"
 
 /** 操作效果分类，风险等级描述影响程度，效果分类描述影响对象。 */
 export type EffectClass = "read" | "local_mutation" | "process" | "external_side_effect"
@@ -27,9 +27,6 @@ export type EffectClass = "read" | "local_mutation" | "process" | "external_side
  * 版本进入 policyHash，策略变化后旧授权失效。
  */
 export const TOOL_POLICY_VERSION = 1
-
-/** 调度模式：parallel 只表示「可与其他调用并发」，不代表权限。 */
-export type ExecutionMode = "parallel" | "sequential"
 
 /**
  * 隔离级别。delegate 只用于宿主编排工具（子运行自己取许可）；
@@ -54,13 +51,10 @@ export interface ToolPolicy {
   version: number
   permission: {
     /** 工具侧静态意见。passthrough 不是执行许可，必须由 PermissionKernel 收敛。 */
-    defaultDecision: ToolCheckResult
-    /** 按本次参数附加的约束，优先级高于 defaultDecision。 */
-    check?: (params: Record<string, unknown>, ctx: ToolContext) => ToolCheckResult | Promise<ToolCheckResult>
+    defaultDecision: PermissionDecision | "passthrough"
   }
   execution: {
     effect: EffectClass
-    mode: ExecutionMode
     isolation: ToolIsolation
     replay: ToolReplay
     /** 未声明时统一取现有 loopConfig.toolTimeoutMs。 */
@@ -141,7 +135,7 @@ export interface ToolDef {
   safetyLevel: SafetyLevel
   /** 根据本次参数动态提升/降低风险，主要用于统一 Bash。 */
   resolveSafetyLevel?: (params: Record<string, unknown>, ctx: ToolContext) => SafetyLevel
-  /** 轻量模式对 DANGER 能力的策略；未设置时保持拒绝。 */
+  /** 轻量模式对 DANGER 能力的策略；未声明在 pet 模式等同于 deny（助手模式不受它影响）。 */
   lightweightPolicy?: LightweightPolicy
   /** 来源 */
   source: ToolSource
@@ -153,8 +147,8 @@ export interface ToolDef {
   actionCategory: ActionCategory
   /** 权限 / 执行 / 投影 / 摘要的统一策略；缺策略视为注册错误。 */
   policy: ToolPolicy
-  /** 执行函数 */
-  handler: (params: Record<string, unknown>, ctx: ToolContext) => Promise<ToolResult>
+  // 执行函数不是公开字段：经 `defineTool` 进入模块内 WeakMap（见 policy.ts），
+  // 使「未经 defineTool 构造的定义」在结构上不可能携带执行体。
 }
 
 // ── 工具声明（给 AI 的 function schema）──

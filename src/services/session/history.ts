@@ -24,12 +24,20 @@ export async function refreshSessionHistory(): Promise<void> {
   try {
     const metadata = await listPiSessionMetadata()
     const items: PiSessionSummary[] = []
+    let failed = 0
     for (const item of metadata) {
       const summary = await readPiSessionSummary(item)
       if (summary) items.push(summary)
+      else failed++
+    }
+    if (failed > 0) {
+      // 单个会话读失败时列表不完整：复用同一个可见位，不把部分列表说成全部。
+      sessionHistoryError.value = true
+      log.error("部分会话读取失败，列表不完整:", failed)
+    } else {
+      sessionHistoryError.value = false
     }
     sessionHistory.value = items
-    sessionHistoryError.value = false
   } catch (error) {
     // 读取失败不能与「确实没有会话」同形：否则用户会以为历史被清空了。
     log.warn("加载历史会话失败:", formatError(error))

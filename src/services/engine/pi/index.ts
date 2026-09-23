@@ -4,11 +4,16 @@ export {
   classifyTurnFailure,
   compactActiveSession,
   continueInterruptedRun,
+  createActiveMessage,
   deliverActiveTurn,
+  discardPlan,
   discardInterruptedRun,
   getInterruptedRun,
+  isSessionBusy,
   listQueuedInputs,
+  listRecoveredPlans,
   pausedInputsText,
+  resumePlan,
   returnPausedInputs,
   runPiAgentTurn,
   runPiSubAgent,
@@ -23,12 +28,25 @@ export type {
   PiAgentTurnOutput,
   PiSubAgentInput,
   PiSubAgentOutput,
+  PiSubAgentScope,
   QueuedInputsView,
+  RecoveredPlanView,
   TurnFailure,
 } from "./runtime"
 
-export { describeInputDelivery, isInputCommitted, PROMPT_SNAPSHOT_ENTRY } from "./delivery"
-export type { InputDeliveryEvidence, InputDeliveryStage } from "./delivery"
+export { describeInputDelivery, isInputCommitted, readContextEpoch } from "./delivery"
+export type { ContextEpoch, InputCommitState, InputDeliveryEvidence, InputDeliveryLookup, InputDeliveryStage } from "./delivery"
+
+export { COMPACTION_DECLINED_ENTRY, PROMPT_REWRITE_ENTRY, PROMPT_SNAPSHOT_ENTRY } from "@/services/engine/runtime"
+export type {
+  CompactionAuditSink,
+  PromptCapabilityContext,
+  PromptCompactionContext,
+  PromptPlanContext,
+  PromptRequestContext,
+  PromptRequestParams,
+  PromptRequestPurpose,
+} from "@/services/engine/runtime"
 
 export { RuntimeDataStreamFilter } from "./stream-text"
 
@@ -40,7 +58,7 @@ export {
   resolvePiTurnModel,
   toPiReasoningLevel,
 } from "./model-gateway"
-export type { HarnessModelsOptions, PiModel, PiRuntimeProviderOverride, PiTextCallInput, PiTextCallResult, PiTextPurpose } from "./model-gateway"
+export type { HarnessModelsOptions, PiModel, PiRuntimeProviderOverride, PiTextCallAudit, PiTextCallInput, PiTextCallResult, PiTextPurpose } from "./model-gateway"
 export { completePiText } from "./model-gateway"
 
 export {
@@ -49,6 +67,7 @@ export {
   compactionSettingsFor,
   createHarnessRunState,
   harnessSlots,
+  retryPolicyFromConfig,
 } from "./harness-slot"
 export type {
   HarnessAbortReason,
@@ -66,10 +85,11 @@ export type {
   HarnessRunStatus,
   HarnessSlotSnapshot,
   HarnessSlotState,
+  HarnessStructuralHost,
 } from "./harness-slot"
 
-export { toAgentHarnessTools } from "@/services/tool/pi/harness-tool-adapter"
-export type { HarnessToolRun } from "@/services/tool/pi/harness-tool-adapter"
+export { toAgentHarnessTools } from "@/services/tool"
+export type { HarnessToolRun } from "@/services/tool"
 
 export {
   MAX_PROVIDER_RESPONSE_BYTES,

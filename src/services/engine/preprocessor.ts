@@ -32,9 +32,6 @@ export interface PreProcessOptions {
   busy?: boolean
 }
 
-/** Kept for Live Test compatibility; deduplication state now belongs to the caller. */
-export function resetPreprocessorForTest(): void {}
-
 /** 忙碌期准入：只有 immediate / coordinated 的命令能执行，其余明确拒绝（§3.4）。 */
 function busyRejection(command: SlashCommand): string | undefined {
   const policy = command.busyPolicy ?? "exclusive"

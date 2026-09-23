@@ -28,7 +28,7 @@ export const 生产入口: SceneDef = {
           if (!context.output.reply.trim()) throw new Error("生产入口没有返回回复")
         } },
         { type: "expectSessionMessage", run: async context => {
-          if (context.session.messageCount < 1) throw new Error(`session messageCount=${context.session.messageCount}`)
+          if (context.session.entryCount < 2) throw new Error(`会话条目数 ${context.session.entryCount}（期望 ≥2：用户正文 + 助手回复）`)
         } },
         { type: "expectDurableSessionEntries", run: async () => {
           // 正文真相源是 pi 会话条目：用户正文与助手回复都能按会话 id 从磁盘读回。

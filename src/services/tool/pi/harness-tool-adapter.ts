@@ -31,8 +31,8 @@ export function toAgentHarnessTools(tools: readonly ToolDef[], run: HarnessToolR
     // Pi validates plain JSON Schema too; Desk-Pet's schemas are already that subset.
     parameters: tool.parameters as never,
     prepareArguments: tool.prepareArguments,
-    // 调度、重放资格都来自策略声明；actionCategory 只负责人格阶段文案。
-    executionMode: tool.policy.execution.mode,
+    // 逐工具调度声明不再下发：批次调度只看 run 级 `toolExecution`，
+    // 互斥由 `execution.isolation` + Rust `can_admit` 保证；重放资格仍来自策略声明。
     replay: tool.policy.execution.replay,
     async execute(toolCallId, params, onUpdate, _toolContext, invocation, context) {
       await run.onToolStart?.(tool.name, toolCallId)

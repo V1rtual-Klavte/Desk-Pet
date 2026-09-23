@@ -1,5 +1,5 @@
 // 中音效 (200-500ms): 琶音/柔波/星尘/共鸣
-import { getCtx } from "../context"
+import { getCtx, reportEffectFailure } from "../context"
 import type { SoundDef } from "../types"
 export const midSounds: SoundDef[] = [
   {
@@ -16,7 +16,7 @@ export const midSounds: SoundDef[] = [
           osc.connect(gain); gain.connect(ctx.destination)
           osc.start(t); osc.stop(t + 0.14)
         })
-      } catch {}
+      } catch (error) { reportEffectFailure(error) }
     },
   },
   {
@@ -35,7 +35,7 @@ export const midSounds: SoundDef[] = [
         osc.connect(gain); gain.connect(ctx.destination)
         lfo.start(ctx.currentTime); osc.start(ctx.currentTime)
         lfo.stop(ctx.currentTime + 0.42); osc.stop(ctx.currentTime + 0.42)
-      } catch {}
+      } catch (error) { reportEffectFailure(error) }
     },
   },
   {
@@ -54,7 +54,7 @@ export const midSounds: SoundDef[] = [
           osc.connect(gain); gain.connect(ctx.destination)
           osc.start(t); osc.stop(t + 0.20)
         }
-      } catch {}
+      } catch (error) { reportEffectFailure(error) }
     },
   },
   {
@@ -70,7 +70,7 @@ export const midSounds: SoundDef[] = [
           osc.connect(gain); gain.connect(ctx.destination)
           osc.start(ctx.currentTime); osc.stop(ctx.currentTime + 0.46)
         })
-      } catch {}
+      } catch (error) { reportEffectFailure(error) }
     },
   },
 ]

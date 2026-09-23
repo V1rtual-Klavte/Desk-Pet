@@ -7,8 +7,12 @@
 //
 // 代际与取消：代际在本槽内单调递增；取消走原生 lane.abort，未消费的 steer/followUp
 // 以 nextRun 重新入队（持久、不丢、不自动继续），并把 requestId 归还给宿主。
+//
+// `TODO_CONTEXT` / `BACKGROUND_CONTEXT` 约定：宿主运行路径（hooks / drive / 槽自身状态变更）
+// 沿用 `TODO_CONTEXT`；纯读取与后台扫描用 `BACKGROUND_CONTEXT`（与 `session/repo.ts` 一致）。
+// 两者都是 `EmptyContext`，这是命名约定不是行为差异。
 
-import { AgentHarness, MemorySessionRepo, TODO_CONTEXT } from "@earendil-works/pi-agent-core"
+import { AgentHarness, BACKGROUND_CONTEXT, MemorySessionRepo, TODO_CONTEXT } from "@earendil-works/pi-agent-core"
 import type {
   AgentHarnessStreamOptionsPatch,
   AgentLane,
@@ -21,19 +25,22 @@ import type {
   JsonlSessionMetadata,
   JsonValue,
   OperationResultRecord,
+  OperationRequest,
   SettledAssistantMessage,
   Session,
   UsageRow,
 } from "@earendil-works/pi-agent-core"
 import { contentText } from "@earendil-works/pi-ai"
-import type { AssistantMessage, Model, ToolResultMessage, Usage } from "@earendil-works/pi-ai"
+import type { AssistantMessage, Model, RetryPolicy, ToolResultMessage, Usage } from "@earendil-works/pi-ai"
 import type { ThinkingEffort } from "@/services/agent/types"
-import type { ToolDef } from "@/services/tool/types"
-import type { HarnessToolRun } from "@/services/tool/pi/harness-tool-adapter"
-import { toAgentHarnessTools } from "@/services/tool/pi/harness-tool-adapter"
-import { setToolPermitLimit } from "@/services/tool/execution-permit"
+import {
+  toAgentHarnessTools,
+  flushPendingReleases, retryBorrowerAttachIfPending, setToolPermitLimit,
+} from "@/services/tool"
+import type { HarnessToolRun, ToolDef } from "@/services/tool"
 import { ContextBudgetError, contextBudget, toHarnessEstimateTokens } from "@/services/context"
-import { messageRequestId } from "@/services/engine/runtime"
+import { COMPACTION_DECLINED_ENTRY, PROMPT_REWRITE_ENTRY, laneMessageText, messageRequestId, userInputMessage } from "@/services/engine/runtime"
+import type { CompactionAuditSink, InputSourceMark } from "@/services/engine/runtime"
 import { conversationConfig, loopConfig } from "@/services/config"
 import { PI_LANE } from "@/services/session/repo"
 import { createLogger } from "@/services/logger"
@@ -45,6 +52,13 @@ const log = createLogger("HarnessSlot")
 
 /** 会话内唯一 lane：与 session 层共用 PI_LANE，不建第二个定义点。 */
 export { PI_LANE as HARNESS_LANE } from "@/services/session/repo"
+
+/**
+ * 压缩续跑的审计条目：手动压缩后的续跑没有宿主回合（无结算、无 UI 推送），
+ * 上游却仍会驱动它消费 lane inbox。它一旦被结算就不能再报「压缩完成」，
+ * 必须留下可追溯的证据（与 PROMPT_SNAPSHOT_ENTRY 同层，不进模型消息流）。
+ */
+export const COMPACTION_CONTINUATION_ENTRY = "deskpet.compaction_continuation"
 
 /** 回合内共享的聚合状态：由宿主创建，槽在事件处理中填充。 */
 export interface HarnessRunState {
@@ -63,7 +77,6 @@ export interface HarnessRunState {
   overflowRecoveryDeclined?: boolean
   /** abort 归还的未消费消息（deskpetEventId → requestId）。 */
   undelivered: string[]
-  usage?: Usage
   finalAssistant?: AssistantMessage
   /** 最近一次不带工具调用的 assistant（结算候选）。 */
   finalPlainAssistant?: AssistantMessage
@@ -95,13 +108,18 @@ export interface HarnessRunHooks {
   }) => Promise<{ messages?: AgentMessage[] } | undefined> | { messages?: AgentMessage[] } | undefined
   /**
    * 压缩决策钩子：返回自定义 CompactResult（宿主摘要内核）或 decline 跳过。
-   * 抛出异常由 Harness 记为 handler_error 并回退其默认摘要；不能在此静默丢覆盖。
+   * 摘要内核失败必须在钩子内转成 decline（宿主不落上游通用摘要）；`compactionAudit`
+   * 承载这次压缩的成败，由槽在 `compaction_end` 收口成审计条目。
    */
   beforeCompaction?: (input: {
     reason: "manual" | "threshold" | "overflow"
     preparation: CompactionPreparation
     signal?: AbortSignal
+    /** 上游 hook 调用带的运行身份（压缩请求归属用）。 */
+    runId: string
   }) => Promise<{ decline?: boolean; compaction?: CompactResult } | undefined> | { decline?: boolean; compaction?: CompactResult } | undefined
+  /** 本回合/本次结构操作的压缩审计槽：钩子工厂的产出写在这里，供 compaction_end 读。 */
+  compactionAudit?: CompactionAuditSink
   /** 逐请求 streamOptions 补丁（超时/请求头）；Harness 的 SDK 内层重试保持关闭。 */
   beforeRequest?: (input: {
     step: "assistant" | "deferred" | "compaction" | "branch_summary"
@@ -114,12 +132,30 @@ export interface HarnessRunHooks {
   beforePayload?: (payload: unknown, model: Model<any>) => void
 }
 
+/**
+ * 结构操作（手动压缩与它的续跑）的宿主面。
+ *
+ * 结构操作没有回合身份、没有工具、不进结算 —— 这不是第二套状态机：
+ * 它只承载「systemPrompt + hooks + state」三样，用于让续跑也走宿主的投影/剥离/观测；
+ * 任何回合语义（权限、工具、结算、UI 推送）都不得挂到这里。
+ */
+export interface HarnessStructuralHost {
+  systemPrompt?: string
+  hooks?: HarnessRunHooks
+  state: HarnessRunState
+}
+
 /** 宿主注入的 UI/统计消费点；事件在 Harness 交付线上按序 await。 */
 export interface HarnessRunSinks {
   onTurnStart?: () => void
   /** 流式正文增量（只含 text_delta 且已去掉 RUNTIME_DATA 起止后的内容）；只更新瞬时展示。 */
   onAssistantDelta?: (delta: string) => void
-  /** 当前 assistant 消息的流式缓冲结束（message_end / 运行收尾）；瞬时展示据此清空。 */
+  /**
+   * 当前 assistant 消息的流式缓冲结束（message_end / 新消息 start 帧 / 运行收尾）。
+   *
+   * 每条 assistant 消息边界都会调用一次，**含没有任何可见增量的消息**：实现方必须幂等，
+   * 并在这里清空过滤状态（只清「没有增量就不上报」会让过滤器永久停在停止态）。
+   */
   onAssistantStreamEnd?: () => void
   onAssistantMessage?: (message: AssistantMessage, entryId: string | undefined) => void | Promise<void>
   onToolResultMessage?: (message: ToolResultMessage, entryId: string | undefined) => void | Promise<void>
@@ -143,8 +179,32 @@ export interface HarnessRunSpec {
   state: HarnessRunState
 }
 
+/**
+ * 预检期准入用的最小运行参数：不含 systemPrompt/压缩钩子（那些随 drive 时的 spec 装配，不伪造写死值）。
+ */
+export interface HarnessAdmitSpec {
+  model: PiModel
+  thinkingEffort: ThinkingEffort
+  tools: readonly ToolDef[]
+  toolRun: HarnessToolRun
+  prompt: HarnessRunSpec["prompt"]
+}
+
+/** 准入结果：通过给出 operationId；未通过带上与 `run()` 同形的终态（调用方按 status 结算）。 */
+export type HarnessAdmissionResult = { ok: true; operationId: string } | { ok: false; result: HarnessRunResult }
+
+/**
+ * 一次驱动的归一结果：三条入口（`run` / `resumeInterrupted` / `driveAdmitted`）共用同一段收尾。
+ * `rejected` 是 lane 未接受或不匹配（tag 供宿主按 busy/closed/invalid 分类）；
+ * `suspended` 是未预期的延迟响应（deferred handle，或未被等待的重试），由收尾段如实结算。
+ */
+type DriveSettlement =
+  | { kind: "settled"; record: OperationResultRecord }
+  | { kind: "suspended"; operationId: string }
+  | { kind: "rejected"; tag: string; status: "busy" | "closed" | "invalid" }
+
 export type HarnessRunStatus =
-  | "completed" | "failed" | "aborted" | "busy" | "invalid" | "closed" | "interrupted" | "faulted" | "deferred"
+  | "completed" | "failed" | "aborted" | "busy" | "invalid" | "closed" | "interrupted" | "faulted"
 
 export interface HarnessRunResult {
   status: HarnessRunStatus
@@ -176,10 +236,15 @@ export interface HarnessSlotSnapshot {
   requestId?: string
   turnId?: string
   operationId?: string
-  /** 已提交的压缩次数：请求视图的换代身份（旧 contextEpoch 的等价物，用于快照/审计）。 */
-  contextEpoch: number
+  /** 本分支已提交的压缩次数：请求视图的换代身份；基数未知时省略字段（不写 0）。 */
+  contextEpoch?: number
   /** lane 持久 inbox 的待消费项（真相源在会话文件；这里是最近一次 queue_update 的只读快照）。 */
   queued: HarnessQueuedItem[]
+  /**
+   * `queued` 镜像是否可信：开槽时用 lane 的一次性读取播种，此后由 queue_update 全量覆盖。
+   * false 表示这个镜像还没有初值（或播种失败），消费者按「未就绪」处理，不把空镜像当「没有排队项」。
+   */
+  queueMirrorReady: boolean
   interrupted?: { operationId: string; kind: "run" | "compaction" | "navigation"; startedAt: number; aborting: boolean }
 }
 
@@ -243,6 +308,16 @@ export function compactionSettingsFor(window: number, maxOutput?: number): Compa
   }
 }
 
+/**
+ * 生成级重试策略的唯一构造点：create 初值与按运行同步（`syncRetryPolicy`）共用它。
+ * SDK 内层重试已在 piStream 关闭，重试预算只由这份策略承担。
+ */
+export function retryPolicyFromConfig(): { value: RetryPolicy; key: string } {
+  const maxRetry = loopConfig.maxRetry
+  const value: RetryPolicy = { enabled: maxRetry > 0, maxRetries: maxRetry, baseDelayMs: 1000 }
+  return { value, key: `${value.enabled}:${value.maxRetries}:${value.baseDelayMs}` }
+}
+
 export class HarnessSlot {
   readonly sessionId: string
   generation = 0
@@ -257,43 +332,65 @@ export class HarnessSlot {
   private interruptedInfo?: { operationId: string; kind: "run" | "compaction" | "navigation"; startedAt: number; aborting: boolean }
   private timer?: ReturnType<typeof setTimeout>
   private abortReason?: HarnessAbortReason
-  private drainGeneration = 0
-  private drainPromise?: Promise<void>
   private deliveryPhase?: HarnessDeliveryPhase
   private runIdentity?: { requestId: string; turnId?: string }
-  /** 手动压缩期间注入的宿主钩子（before_compaction 摘要内核）。 */
-  private manualHooks?: HarnessRunHooks
+  /**
+   * 结构操作（手动压缩与它的续跑）的宿主面；只在 `compact()` 的驱动窗口内存在。
+   * 它不承载回合语义：权限/工具/结算/UI 推送一律不挂这里（见 HarnessStructuralHost）。
+   */
+  private structuralHost?: HarnessStructuralHost
+  /** 最近一次冻结回合的 systemPrompt：结构操作缺宿主时也绝不用空串充当人格前缀。 */
+  private lastSystemPrompt?: string
   /** 压缩操作进行中：期间的 usage 属于一次性摘要调用，不进主回合统计。 */
   private compactionActive = false
-  /** 已提交的压缩次数（compaction entry 数 + 本次会话内新增）。 */
-  private compactionEpoch = 0
+  /**
+   * 会话分支上已提交的压缩次数（请求视图的换代身份）；基数读失败时保持 undefined。
+   * 真相源是 `delivery.ts` 的 `readContextEpoch`，槽只在开槽时取一次基数、压缩成功时递增。
+   */
+  private compactionEpoch?: number
   /** 已下发的压缩阈值去重键（reserveTokens:keepRecentTokens）。 */
   private compactionSettingsKey?: string
+  /** 已下发的重试策略去重键（enabled:maxRetries:baseDelayMs）。 */
+  private retryPolicyKey?: string
   /** 已下发的队列批量策略：按运行生效，运行开始前与配置对齐。 */
   private steeringMode: "all" | "one-at-a-time" = "all"
   private followUpMode: "all" | "one-at-a-time" = "one-at-a-time"
   /** 已下发给许可所有者的共享读上限；未下发过时为 undefined，首次 run 必定对齐。 */
   private toolPermitLimit?: number
-  /** 正在流式输出的 assistant 消息是否已经产生过展示增量。 */
-  private streamActive = false
   /** 最近一次 queue_update 的 lane 队列快照：用于核对「已投递但未消费」的输入。 */
   private pendingQueues: LaneQueuedItem[] = []
+  /** pendingQueues 是否已经拿到初值（开槽时播种，见 seedQueuedMirror）。 */
+  private queueMirrorReady = false
   /** requestId → lane inbox entryId：重投递前用它撤销仍未消费的项，保证用户正文恰好一次。 */
   private readonly pendingDeliveryEntries = new Map<string, string>()
   /** 停止归还的未消费消息：在回合收尾点（或没有在飞 run 时）以 nextRun 重新入队。 */
   private readonly requeuePending: AgentMessage[] = []
   /** 审计条目排队区：hook / 事件处理器只入队，drive 结束后由宿主写入（见 queueAuditEntry）。 */
   private readonly auditPending: Array<{ customType: string; data: JsonValue }> = []
+  /**
+   * 子运行归属（取消域级联）：子槽（计划步骤的子代理）不注册在会话表里，
+   * 父槽是它们唯一的可达句柄 —— 父槽 abort/close/dispose 必须级联到它们。
+   */
+  private readonly children = new Set<HarnessSlot>()
 
   /** transient 槽使用内存会话（子代理/一次性驱动），不写聊天目录。 */
-  constructor(sessionId: string, options: { transient?: boolean; generationSeed?: number } = {}) {
+  constructor(
+    sessionId: string,
+    options: { transient?: boolean; generationSeed?: number; onRunSettled?: (slot: HarnessSlot) => void } = {},
+  ) {
     this.sessionId = sessionId
     this.transient = options.transient === true
+    this.onRunSettled = options.onRunSettled
     // 注册表分配代际起点：槽被释放重建后代际不回退，旧 cleanup 不会命中新 run（ABA）。
     this.generation = options.generationSeed ?? 0
   }
 
   private readonly transient: boolean
+  /**
+   * 运行收尾通知（只有注册表建出来的槽有）：注册表的空闲回收器据此判定是否删除并关闭本槽。
+   * 回调只做通知 —— 真正释放必须由 `end()`（宿主声明的回合终点）收口，见 HarnessSlots.releaseIfIdle。
+   */
+  private readonly onRunSettled?: (slot: HarnessSlot) => void
 
   // ── 生命周期 ──
 
@@ -319,22 +416,33 @@ export class HarnessSlot {
       try {
         this.session = await acquirePiSession(this.sessionId)
       } catch (error) {
-        log.warn("会话层没有该会话句柄，按 id 补建:", this.sessionId, formatError(error))
-        this.session = await (await getPiSessionRepo()).create({ id: this.sessionId }, ctx)
+        // 「仓库里不存在该会话」与「句柄缓存缺失」必须分开：对前者按 id 补建会把已删除的会话复活
+        // （空槽的读也就不再伪造会话文件）。
+        const repo = await getPiSessionRepo()
+        const known = (await repo.list(undefined, BACKGROUND_CONTEXT)).some(item => item.id === this.sessionId)
+        if (!known) {
+          log.error("会话在仓库中不存在，拒绝按 id 伪造会话文件:", this.sessionId, formatError(error))
+          throw error
+        }
+        // 会话仍在仓库里：重走 session 层的打开入口（不新建，句柄仍由该层单一持有）。
+        log.warn("会话句柄缺失，按仓库元数据重新打开:", this.sessionId, formatError(error))
+        this.session = await acquirePiSession(this.sessionId)
       }
     }
     const compaction = this.compactionSettings(resolvePiTurnModel())
+    const retry = retryPolicyFromConfig()
     this.steeringMode = conversationConfig.steeringMode
     this.followUpMode = conversationConfig.followUpMode
     const created = await AgentHarness.create({
       session: this.session,
       models: createHarnessModels({
+        // 结构操作没有冻结的回合模型：取当前解析值（它与续跑发起时的设置一致）。
         model: () => this.activeRun?.spec.model ?? resolvePiTurnModel(),
         takeBlockedError: () => {
-          const state = this.activeRun?.spec.state
-          const blocked = state?.contextError
-          if (state) state.contextError = undefined
-          if (state && blocked instanceof ContextBudgetError) state.lastBudgetError = blocked.message
+          const state = this.hostSpec().state
+          const blocked = state.contextError
+          state.contextError = undefined
+          if (blocked instanceof ContextBudgetError) state.lastBudgetError = blocked.message
           return blocked instanceof Error ? blocked : undefined
         },
       }),
@@ -349,15 +457,31 @@ export class HarnessSlot {
       // 下一个 run 开始前由 syncQueueModes 与当前配置对齐。
       steeringMode: this.steeringMode,
       followUpMode: this.followUpMode,
-      systemPrompt: () => this.activeRun?.spec.systemPrompt ?? "",
-      retry: { enabled: loopConfig.maxRetry > 0, maxRetries: loopConfig.maxRetry, baseDelayMs: 1000 },
+      // 空串会让模型丢掉人格与协议前缀，绝不能作兜底：回合 → 最近一次冻结 → 结构操作宿主，
+      // 三者都没有才是真的缺少 prompt（如实报错，不上报一个「没人格」的请求）。
+      systemPrompt: () => {
+        const prompt = this.activeRun?.spec.systemPrompt ?? this.lastSystemPrompt ?? this.structuralHost?.systemPrompt
+        if (prompt === undefined) {
+          log.error("手动压缩缺少可用 systemPrompt:", this.sessionId)
+          return ""
+        }
+        return prompt
+      },
+      retry: retry.value,
     }, ctx)
     this.harness = created.harness
     this.compactionSettingsKey = compaction.key
-    this.compactionEpoch = await this.countCommittedCompactions()
+    this.retryPolicyKey = retry.key
+    // 换代身份沿分支读取（唯一定义点）；读不到就保持未知，不冒充 0。
+    // 动态导入 delivery：它对 harness-slot 有静态依赖，静态回边会形成模块环。
+    if (!this.transient) {
+      const { readContextEpoch } = await import("./delivery")
+      this.compactionEpoch = (await readContextEpoch(this.sessionId))?.count
+    }
     this.registerHooks()
     this.lane = await this.harness.lane(PI_LANE, ctx)
     this.subscribeEvents()
+    await this.seedQueuedMirror()
     if (created.open.length > 0) {
       // §8.7.3：createAgentHarness 只附着运行时；上次中断的操作默认暂停，由用户选择继续/丢弃。
       const open = created.open[0]!
@@ -375,9 +499,24 @@ export class HarnessSlot {
     return this.harness !== undefined && this.state !== "closed" && this.state !== "faulted"
   }
 
-  /** lane 持久 inbox 里是否还有未消费的用户消息（steer/followUp/nextRun）。 */
+  /**
+   * 当前宿主面：有冻结回合时是它的 systemPrompt/hooks/state；否则是结构操作宿主
+   * （手动压缩窗口内下发）。两者都没有时只有一份空 state —— 钩子缺失由调用点
+   * 各自判定（before_tool 走 fail-closed），不在这里兜底成「有宿主」。
+   */
+  private hostSpec(): HarnessStructuralHost {
+    const run = this.activeRun
+    if (run) return { systemPrompt: run.spec.systemPrompt, hooks: run.spec.hooks, state: run.spec.state }
+    return this.structuralHost ?? { state: createHarnessRunState() }
+  }
+
+  /**
+   * 宿主镜像里是否还有未消费的用户消息（steer/followUp/nextRun）：**只读视图专用**
+   * （槽被释放重建后镜像从空开始）。`compact()` 的准入改读 lane 真相（laneQueueCounts），
+   * 不用它放行 —— 镜像为空不等于队列为空，镜像未就绪（`queueMirrorReady=false`）也不等于没有。
+   */
   private hasQueuedMessages(): boolean {
-    return this.pendingQueues.some(item => item.type === "message"
+    return this.queueMirrorReady && this.pendingQueues.some(item => item.type === "message"
       && (item.kind === "steer" || item.kind === "followUp" || item.kind === "nextRun"))
   }
 
@@ -396,10 +535,57 @@ export class HarnessSlot {
       return [{
         entryId: item.entryId,
         kind: item.kind,
-        text: queuedMessageText(item.message),
+        text: laneMessageText(item.message),
         ...(requestId ? { requestId } : {}),
       }]
     })
+  }
+
+  /**
+   * lane 真相的排队计数；读失败返回 undefined（fail-closed，不上报空队列）。
+   *
+   * 宿主的 pendingQueues 只是最近一次 queue_update 的镜像：槽被释放重建后它从空开始，
+   * 不能拿它判准入（会把「有排队项」当「没排队」）。
+   */
+  private async laneQueueCounts(): Promise<HarnessQueueCounts | undefined> {
+    const queues = await this.readQueuesOnce()
+    if (queues === undefined) return undefined
+    const count = (kind: "steer" | "followUp" | "nextRun") =>
+      queues.filter(item => item.type === "message" && item.kind === kind).length
+    return { steer: count("steer"), followUp: count("followUp"), nextRun: count("nextRun") }
+  }
+
+  /** 一次性读取 lane 队列初值（watch → 读 snapshot.queues → 立即 unsubscribe）。 */
+  private async readQueuesOnce(): Promise<LaneQueuedItem[] | undefined> {
+    if (!this.lane) return undefined
+    try {
+      const handle = await this.lane.watch(TODO_CONTEXT)
+      try {
+        return handle.snapshot.queues
+      } finally {
+        // 只借初值：watch 句柄不能留在槽上（它是长期的转录订阅，读一次就还）。
+        handle.unsubscribe()
+      }
+    } catch (error) {
+      log.error("lane 队列读取失败:", this.sessionId, formatError(error))
+      return undefined
+    }
+  }
+
+  /**
+   * 重开槽后 lane 已把 inbox 装回内存但不发事件：从 lane 读一次初值播种镜像，随后只由 queue_update 更新。
+   * 播种失败按未就绪处理（`queueMirrorReady=false`），后续准入/守卫 fail-closed，不把空镜像当「没有排队项」。
+   */
+  private async seedQueuedMirror(): Promise<void> {
+    if (!this.lane || this.transient) return   // transient 槽没有 UI/压缩消费者，不播种也不标记就绪
+    const queues = await this.readQueuesOnce()
+    if (queues === undefined) {
+      this.queueMirrorReady = false
+      log.error("队列镜像播种失败，暂停输入与压缩守卫将按未就绪处理:", this.sessionId)
+      return
+    }
+    this.pendingQueues = queues
+    this.queueMirrorReady = true
   }
 
   /** 压缩阈值由现有预算推导（§7）：窗口 − 正常输入目标 = 输出预留 + 协议开销 + 压缩余量。 */
@@ -415,6 +601,18 @@ export class HarnessSlot {
     if (key === this.compactionSettingsKey) return
     this.compactionSettingsKey = key
     await this.harness.setCompactionSettings(settings, TODO_CONTEXT)
+  }
+
+  /**
+   * 生成级重试策略按运行生效：与压缩阈值同形，在下一次 run 开始前把新策略下发给 Harness，
+   * 不必重开槽。运行中不改变已冻结的行为（驱动开始时拷贝的策略就是本次运行的策略）。
+   */
+  private async syncRetryPolicy(): Promise<void> {
+    if (!this.harness) return
+    const { value, key } = retryPolicyFromConfig()
+    if (key === this.retryPolicyKey) return
+    this.retryPolicyKey = key
+    await this.harness.setRetryPolicy(value, TODO_CONTEXT)
   }
 
   /**
@@ -443,19 +641,10 @@ export class HarnessSlot {
     try {
       this.toolPermitLimit = await setToolPermitLimit(limit)
     } catch (error) {
-      log.warn("共享读上限下发失败，沿用许可所有者当前上限:", formatError(error))
-    }
-  }
-
-  /** 会话文件里已提交的压缩次数：请求视图换代身份（旧 contextEpoch 的等价物）。 */
-  private async countCommittedCompactions(): Promise<number> {
-    if (!this.session) return 0
-    try {
-      const entries = await this.session.findEntries({ order: "asc" }, TODO_CONTEXT)
-      return entries.filter(entry => entry.type === "compaction").length
-    } catch (error) {
-      log.warn("压缩次数统计失败，按 0 计:", this.sessionId, formatError(error))
-      return 0
+      // §4.2 保留：沿用旧值是对的 —— `toolPermitLimit` 只在成功后更新，失败时它仍代表上一次真正
+      // 生效的上限；值的权威始终是许可所有者，槽只记下发值以免重复 IPC。调优失败不该让整个
+      // run 起不来，所以这里只留痕不抛出 [保留已登记 §4.2]。
+      log.warn("共享读上限下发失败，沿用所有者当前上限:", { requested: limit, applied: this.toolPermitLimit }, formatError(error))
     }
   }
 
@@ -467,14 +656,37 @@ export class HarnessSlot {
       .catch(error => log.warn("中断标记写入失败:", this.sessionId, formatError(error)))
   }
 
+  /**
+   * 子运行归属：注册后父槽的 abort/close 会级联到子槽。返回 detach 函数。
+   * 子槽是父槽取消域的一部分 —— 只挂在会话表上的注册表索引不到它。
+   */
+  attachChild(child: HarnessSlot): () => void {
+    this.children.add(child)
+    return () => { this.children.delete(child) }
+  }
+
+  /** 只读的子槽快照：`abortAndWaitAll`/`dispose` 需要等它们也收尾。 */
+  childSlots(): HarnessSlot[] {
+    return [...this.children]
+  }
+
   /** 显式关闭槽：关闭 Harness 与事件订阅，释放会话句柄。 */
   async close(): Promise<void> {
+    // 取消域级联（子先父后）：父句柄先释放会让子运行在已关闭的会话上收尾。
+    const children = [...this.children]
+    const closed = await Promise.allSettled(children.map(child => child.close()))
+    closed.forEach((result, index) => {
+      if (result.status === "rejected") log.warn("子运行关闭失败:", { sessionId: children[index]!.sessionId }, formatError(result.reason))
+    })
     if (!this.harness) {
       this.state = "closed"
       return
     }
     for (const unsubscribe of this.unsubscribes.splice(0)) unsubscribe()
     this.clearTimer()
+    // 关闭前必须 flush：清空 lane 之后排队中的审计条目就没有落盘通道了（迟到快照的兜底）。
+    await this.flushAudit()
+    if (this.auditPending.length) log.error("槽关闭前仍有审计条目未写入:", { sessionId: this.sessionId, pending: this.auditPending.length })
     const harness = this.harness
     this.harness = undefined
     this.lane = undefined
@@ -484,14 +696,15 @@ export class HarnessSlot {
       // harness.close 会关闭会话句柄；随后让 session 层缓存同步释放，避免留下已关闭句柄。
       await harness.close(TODO_CONTEXT)
     } catch (error) {
-      log.warn("Harness 关闭失败", formatError(error))
+      // 句柄/订阅泄漏是「低内存」要守的点：关闭失败不能只留 warn。
+      log.error("Harness 关闭失败", formatError(error))
     }
     if (!this.transient) {
       try {
         const { releasePiSession } = await import("@/services/session/repo")
         await releasePiSession(this.sessionId)
       } catch (error) {
-        log.warn("会话句柄释放失败:", this.sessionId, formatError(error))
+        log.error("会话句柄释放失败:", this.sessionId, formatError(error))
       }
     }
   }
@@ -527,17 +740,53 @@ export class HarnessSlot {
     return this.state === "running"
   }
 
+  // ── 空闲回收（HN-05）：运行收尾后归还注册表的释放请求 ──
+
+  /** 注册表请求在本次运行收尾后回收本槽（空闲回收器，HN-05）。 */
+  private releaseOnIdle = false
+
+  /** 登记回收请求（注册表在槽不空闲时调用）。 */
+  requestIdleRelease(): void { this.releaseOnIdle = true }
+
+  /** 取出并清空待回收标记：只有真正走到释放路径才消费。 */
+  consumeIdleRelease(): boolean {
+    if (!this.releaseOnIdle) return false
+    this.releaseOnIdle = false
+    return true
+  }
+
+  /**
+   * 槽的 lane 上是否还有未结算的操作（宿主回合之外的压缩、导航等结构操作）。
+   *
+   * `isRunning()` 只表示宿主回合所有权：手动压缩不 `begin`，压缩期间槽仍判空闲，
+   * 单看它会把「压缩在飞」当「空闲」放行新输入。准入判定要用本方法；注册表的
+   * `HarnessSlots.hasOpenOperation(sessionId)` 同时含 `isRunning`（唯一的「忙」定义）。
+   *
+   * 读失败 fail-closed：读不出 lane 真相时按「有操作」处理（宁可拒绝也不静默排队），
+   * 并留下 warn —— 回退只需把 catch 分支改回 `return this.state === "running"`。
+   */
+  async hasOpenOperation(): Promise<boolean> {
+    if (!this.lane) return this.state === "running"
+    try {
+      const info = await this.lane.inspectExecution(TODO_CONTEXT)
+      return info.current !== null
+    } catch (error) {
+      log.warn("lane 操作状态读取失败，按有操作处理:", this.sessionId, formatError(error))
+      return true
+    }
+  }
+
   /** 当前代际仍是所有者（未取消、未失效）。 */
   isCurrent(generation: number): boolean {
     return this.generation === generation && this.state === "running" && this.abortReason === undefined
   }
 
-  deliveryMode(): "steer" | "followup" | undefined {
-    if (this.state !== "running" || !this.lane) return undefined
-    return this.deliveryPhase === "settling" ? "followup" : "steer"
-  }
-
-  async steer(text: string, deskpetEventId?: string, kindOverride?: "steer" | "followUp" | "nextRun"): Promise<HarnessDeliveryReceipt | undefined> {
+  /**
+   * 投递一条用户输入到 lane 持久 inbox。消息体由 `userInputMessage()` 构造（投递消息的形状
+   * 只有一处定义）：带身份时写 `deskpetEventId`（证据链按它关联输入），来源标记随消息落盘；
+   * 没有 identity 时不带身份，保持「非投递输入」语义。
+   */
+  async steer(text: string, identity?: { eventId: string; mark?: InputSourceMark }, kindOverride?: "steer" | "followUp" | "nextRun"): Promise<HarnessDeliveryReceipt | undefined> {
     // 不要求运行已进入驱动：预检阶段的投递也进入 lane 持久 inbox（先 open 再投递），
     // 由本次或下一次运行消费；宿主不再保留自己的队列副本。
     if (this.state !== "running") return undefined
@@ -551,7 +800,7 @@ export class HarnessSlot {
     }
     if (this.state !== "running" || !this.lane) return undefined
     const kind = kindOverride ?? (this.deliveryPhase === "settling" ? "followUp" : "steer")
-    const message = { role: "user" as const, content: text, timestamp: Date.now(), ...(deskpetEventId ? { deskpetEventId } : {}) }
+    const message = userInputMessage(text, identity?.eventId ?? "", identity?.mark)
     const result = kind === "steer"
       ? await this.lane.steer(message, undefined, TODO_CONTEXT)
       : kind === "followUp"
@@ -575,8 +824,9 @@ export class HarnessSlot {
       requestId: this.runIdentity?.requestId,
       turnId: this.runIdentity?.turnId,
       operationId: this.activeRun?.operationId,
-      contextEpoch: this.compactionEpoch,
+      ...(this.compactionEpoch === undefined ? {} : { contextEpoch: this.compactionEpoch }),
       queued: this.queuedItems(),
+      queueMirrorReady: this.queueMirrorReady,
       interrupted: this.interruptedInfo,
     }
   }
@@ -636,6 +886,35 @@ export class HarnessSlot {
     return this.interruptedInfo
   }
 
+  /**
+   * 上次中断运行里尚未结算的工具调用名（按出现顺序去重）。读不到返回 undefined（调用方按「未知」处理）。
+   *
+   * 待重放调用取自 lane 快照的 `operation.runningTools`：上游在重开会话时按持久化的操作状态
+   * 重建它（`batch.calls` 里 `effect_pending` 的项就是 `status: "running"`，`toolName` 即调用名；
+   * 已 staged 但未消费的结果是 `settled`，续跑会直接用结果、不重放）。结论已按
+   * `dist/harness/runtime/lane.js` 的 captureLaneSnapshot 核实，不再从会话条目另推一份。
+   */
+  async pendingInterruptedToolNames(): Promise<string[] | undefined> {
+    await this.open()
+    if (!this.interruptedInfo || !this.lane) return undefined
+    try {
+      const handle = await this.lane.watch(TODO_CONTEXT)
+      try {
+        const operation = handle.snapshot.operation
+        if (!operation || operation.id !== this.interruptedInfo.operationId) return undefined
+        return [...new Set(operation.runningTools
+          .filter(tool => tool.status === "running")
+          .map(tool => tool.toolName))]
+      } finally {
+        // 只借初值：watch 句柄不能留在槽上（读一次就还，与 readQueuesOnce 同一用法）。
+        handle.unsubscribe()
+      }
+    } catch (error) {
+      log.warn("读取中断运行的工具明细失败，按未知处理:", { sessionId: this.sessionId }, formatError(error))
+      return undefined
+    }
+  }
+
   /** 继续：驱动上次未完成的操作用户可见的「继续」入口。 */
   async resumeInterrupted(spec: HarnessRunSpec): Promise<HarnessRunResult> {
     await this.open()
@@ -643,7 +922,19 @@ export class HarnessSlot {
       return { status: "invalid", timedOut: false, undelivered: [], state: spec.state, error: "没有可继续的中断运行" }
     }
     if (!this.isRunning()) this.begin({ requestId: spec.requestId, turnId: spec.turnId })
-    return this.execute(spec, "resume")
+    const lane = this.lane
+    return this.executeDrive(spec, async () => {
+      const resumed = await lane.resume(TODO_CONTEXT)
+      if (!resumed.ok) {
+        return resumed.error._tag === "Closed"
+          ? { kind: "rejected", tag: resumed.error._tag, status: "closed" }
+          : { kind: "rejected", tag: resumed.error._tag, status: "invalid" }
+      }
+      if ("status" in resumed.value && resumed.value.status === "suspended") {
+        return { kind: "suspended", operationId: resumed.value.operationId }
+      }
+      return { kind: "settled", record: resumed.value as OperationResultRecord }
+    })
   }
 
   /** 丢弃：不重放未知副作用，按 aborted 收尾并归还未消费消息（输入仍以 nextRun 保留）。 */
@@ -671,18 +962,26 @@ export class HarnessSlot {
 
   /**
    * 驱动一次 `manual` 压缩：切点、会话提交与持久化都由 Harness 承担（§7/§8.5），
-   * 摘要生成由调用方经 hooks.beforeCompaction 提供。运行中不抢跑（LaneBusy 同义返回 busy）。
+   * 摘要生成与续跑的投影/剥离由调用方经 host.hooks 提供。运行中不抢跑（LaneBusy 同义返回 busy）。
    *
-   * 注意：压缩完成后 Harness 可能驱动一次续跑消费 lane 持久 inbox。那种续跑经 accept 选中
-   * inbox 里的消息（nextRun 也在内），但没有宿主 spec（权限/结算钩子缺失），
-   * 所以有排队消息时拒绝，并给出按 kind 的明细，由用户决定撤回还是等处理完。
+   * 注意：压缩完成后 Harness 会再驱动一次续跑消费 lane 持久 inbox（nextRun 也在内）。
+   * 那段续跑没有回合身份，但必须走宿主的 systemPrompt/投影/剥离，所以准入读 lane 真相：
+   * 有排队项就拒绝并按 kind 报明细，由用户决定撤回还是等处理完（镜像为空不作为放行理由）。
    */
-  async compact(hooks: HarnessRunHooks, options: { customInstructions?: string } = {}): Promise<HarnessCompactOutcome> {
+  async compact(
+    host: Omit<HarnessStructuralHost, "state"> & { state?: HarnessRunState },
+    options: { customInstructions?: string } = {},
+  ): Promise<HarnessCompactOutcome> {
     await this.open()
     if (!this.isUsable() || !this.lane) return { status: "closed" }
     if (this.isRunning()) return { status: "busy" }
-    if (this.hasQueuedMessages()) return { status: "pending", queued: this.queuedCounts() }
-    this.manualHooks = hooks
+    // 队列镜像未就绪时 fail-closed：镜像不是真相（lane 才是），没拿到初值就不放行压缩。
+    if (!this.queueMirrorReady) return { status: "failed", error: "队列状态未就绪，稍后再试" }
+    const live = await this.laneQueueCounts()
+    if (live === undefined) log.error("队列真相读取失败，按存在排队项拒绝手动压缩:", this.sessionId)
+    const counts = live ?? this.queuedCounts()
+    if (live === undefined || counts.steer + counts.followUp + counts.nextRun > 0) return { status: "pending", queued: counts }
+    this.structuralHost = { systemPrompt: host.systemPrompt, hooks: host.hooks, state: host.state ?? createHarnessRunState() }
     try {
       const result = await this.lane.compact(
         options.customInstructions === undefined ? undefined : { customInstructions: options.customInstructions },
@@ -700,15 +999,91 @@ export class HarnessSlot {
       if (record.status === "declined") return { status: "declined" }
       if (record.status === "failed") return { status: "failed", error: record.error?.message ?? "压缩失败" }
       if (record.status === "aborted") return { status: "failed", error: record.error?.message ?? "压缩已取消" }
+      const follow = result.value.run
+      if (follow) {
+        // 续跑没有宿主回合：它若已结算，压缩结果就不可能进入任何回合结算与 UI，
+        // 不能报「压缩完成」。挂起的续跑更糟（不结算的操作会让后续准入恒判忙）：显式结算掉。
+        const suspended = "status" in follow && follow.status === "suspended"
+        if (suspended) {
+          await this.lane.abort(TODO_CONTEXT)
+          log.error("压缩续跑返回了不支持的延迟响应:", { sessionId: this.sessionId, operationId: follow.operationId })
+          return { status: "failed", error: "压缩续跑返回了不支持的延迟响应" }
+        }
+        this.queueAuditEntry(COMPACTION_CONTINUATION_ENTRY, {
+          sessionId: this.sessionId,
+          operationId: follow.operationId,
+          status: follow.status,
+        })
+        log.error("压缩续跑在无宿主回合的情况下已被结算:", { sessionId: this.sessionId, operationId: follow.operationId })
+        return { status: "failed", error: "压缩续跑在无宿主回合的情况下已被结算，压缩结果未纳入回合结算" }
+      }
       return { status: "completed" }
     } catch (error) {
       return { status: "failed", error: formatError(error) }
     } finally {
-      this.manualHooks = undefined
+      this.structuralHost = undefined
+      // 手动压缩不是 execute()：没有别的 flush 点，审计条目（含压缩续跑的收口条目）在这里落盘。
+      await this.flushAudit()
     }
   }
 
   // ── 运行 ──
+
+  /**
+   * 预检前把输入先落盘：装配 lane 运行参数后 `lane.accept({kind:"prompt", prompt})`。
+   * accept 即把用户条目提交进会话文件（此后预检失败或进程被杀都不丢输入），
+   * 模型请求留给 `driveAdmitted`；空 prompt + inbox 有消息是上游允许的形态。
+   */
+  async admitInput(admit: HarnessAdmitSpec): Promise<HarnessAdmissionResult> {
+    await this.open()
+    if (this.interruptedInfo || this.state === "faulted" || !this.isUsable() || !this.lane) {
+      return {
+        ok: false,
+        result: {
+          status: this.state === "faulted" ? "faulted" : this.interruptedInfo ? "interrupted" : "closed",
+          timedOut: false, undelivered: [], state: createHarnessRunState(),
+        },
+      }
+    }
+    await this.assembleLane(admit)
+    // 上游的接受请求是可辨识联合（字符串正文 / 消息或消息数组各一支），两支的请求体字面量相同：
+    // 分支只为让编译器按入参收窄 —— union 形状的 prompt 不能直接塞进其中任何一支。
+    const request: OperationRequest = typeof admit.prompt === "string"
+      ? { kind: "prompt", prompt: admit.prompt }
+      : { kind: "prompt", prompt: admit.prompt }
+    const accepted = await this.lane.accept(request, TODO_CONTEXT)
+    if (!accepted.ok) {
+      const tag = accepted.error._tag
+      log.error("输入未获准入（未落盘）:", { sessionId: this.sessionId, tag })
+      return {
+        ok: false,
+        result: {
+          status: tag === "LaneBusy" ? "busy" : "invalid",
+          timedOut: false, undelivered: [], state: createHarnessRunState(), error: tag,
+        },
+      }
+    }
+    return { ok: true, operationId: accepted.value.operationId }
+  }
+
+  /**
+   * 预检通过后用完整 spec 驱动已接受的操作到终态（收尾与 `run()` 完全一致）。
+   * 只驱动、不重新提交正文：用户条目在 `admitInput` 时已落盘，重复投递会造出第二份用户正文。
+   */
+  async driveAdmitted(spec: HarnessRunSpec, admission: { operationId: string }): Promise<HarnessRunResult> {
+    const lane = this.lane!
+    return this.executeDrive(spec, async () => {
+      // waitForRetry 与上游 prompt() 的驱动口径一致：重试等待在这里就地等完，不把控制权交回宿主。
+      const driven = await lane.drive({ operationId: admission.operationId, waitForRetry: true }, TODO_CONTEXT)
+      if (!driven.ok) {
+        return driven.error._tag === "Closed"
+          ? { kind: "rejected", tag: driven.error._tag, status: "closed" }
+          : { kind: "rejected", tag: driven.error._tag, status: "invalid" }
+      }
+      if (driven.value.kind === "settled") return { kind: "settled", record: driven.value.outcome }
+      return { kind: "suspended", operationId: driven.value.operationId }
+    })
+  }
 
   /** 驱动一个回合直到 run_end；调用方已 begin，槽自身兜底登记代际。 */
   async run(spec: HarnessRunSpec): Promise<HarnessRunResult> {
@@ -727,26 +1102,44 @@ export class HarnessSlot {
       const generation = this.begin({ requestId: spec.requestId, turnId: spec.turnId })
       if (generation === undefined) return { status: "busy", timedOut: false, undelivered: [], state: spec.state }
     }
-    return this.execute(spec, "prompt")
+    const admitted = await this.admitInput(spec)
+    if (!admitted.ok) return admitted.result
+    return this.driveAdmitted(spec, admitted)
   }
 
   /** 宿主显式停止：取消当前操作并归还未消费消息。 */
   async abort(reason: HarnessAbortReason = ABORT_REASON_USER): Promise<{ steer: string[]; followUp: string[] } | undefined> {
-    this.abortReason = reason
+    const aborted = await this.abortSelf(reason)
+    // 取消域级联：父槽停止后子运行不能继续跑（计划步骤的子代理就挂在父槽下）。
+    // 一条失败不阻断其余，也仍然如实返回父槽自己的归还清单。
+    const children = [...this.children]
+    const settled = await Promise.allSettled(children.map(child => child.abort(reason)))
+    settled.forEach((result, index) => {
+      if (result.status === "rejected") log.warn("子运行停止失败:", { sessionId: children[index]!.sessionId }, formatError(result.reason))
+    })
+    return aborted
+  }
+
+  /** 停止自身 lane 上的在飞操作；返回归还清单（无操作或未被接受时为 undefined）。 */
+  private async abortSelf(reason: HarnessAbortReason): Promise<{ steer: string[]; followUp: string[] } | undefined> {
     if (!this.lane) return undefined
     const aborted = await this.lane.abort(TODO_CONTEXT)
     if (!aborted.ok) {
       // 不能伪装成「停止成功但无归还项」：abort 未被接受时中断状态与归还列表都必须如实缺省。
-      log.warn("停止运行未被接受:", { sessionId: this.sessionId, reason, tag: aborted.error._tag })
+      // 停止来源同样缺省 —— 先记 abortReason 再等结果会把槽钉死在「非当前」（isCurrent 恒 false）。
+      log.warn("停止运行未被接受:", { sessionId: this.sessionId, reason, error: formatError(aborted.error) })
       return undefined
     }
+    // 停止被接受后才记来源：它是 execute() 收尾派生 timedOut 的依据（超时路径必然走到这里，
+    // 且 lane.abort 的 awaited 返回先于运行收尾，赋值不会晚于那次读取）。
+    this.abortReason = reason
     // 未消费的 steer/followUp 已被 lane 从 inbox 移出：以 nextRun 重新入队（随会话持久），
     // 保证「停止归还」不丢用户输入、也不自动继续执行（§3.3.5）。
     // 有在飞 run 时由回合收尾点统一入队：否则会被 collectPendingDelivery 的队列清理覆盖。
     this.requeuePending.push(...aborted.value.steer, ...aborted.value.followUp)
     if (!this.activeRun) await this.flushRequeueQueue()
     const undelivered = collectRequestIds(aborted.value.steer).concat(collectRequestIds(aborted.value.followUp))
-    this.activeRun?.spec.state.undelivered.push(...undelivered)
+    this.hostSpec().state.undelivered.push(...undelivered)
     log.info("运行已停止:", { sessionId: this.sessionId, reason, undelivered: undelivered.length })
     return { steer: collectRequestIds(aborted.value.steer), followUp: collectRequestIds(aborted.value.followUp) }
   }
@@ -757,6 +1150,16 @@ export class HarnessSlot {
    */
   async waitForIdle(): Promise<boolean> {
     if (!this.lane) return true
+    // 等待前先读一次 lane 真相：槽已无在飞运行、lane 却还有未结算操作时，等待必然挂死
+    // （它没有任何在飞的东西会把它推到终态）。这里把它变成如实失败，不伪装成「等到了」。
+    const info = await this.lane.inspectExecution(TODO_CONTEXT).catch(error => {
+      log.warn("lane 操作状态读取失败，跳过挂死预检:", { sessionId: this.sessionId }, formatError(error))
+      return undefined
+    })
+    if (info && info.current !== null && !this.activeRun) {
+      log.error("lane 仍有未结算操作但槽已无在飞运行，等待会挂死:", { sessionId: this.sessionId, operationId: info.current.id })
+      return false
+    }
     try {
       await this.lane.waitForIdle(TODO_CONTEXT)
       return true
@@ -772,35 +1175,49 @@ export class HarnessSlot {
   async readToolResult(entryId: string): Promise<string | undefined> {
     await this.open()
     if (!this.session) return undefined
-    const entry = await this.session.getEntry(entryId, TODO_CONTEXT)
+    const entry = await this.session.getEntry(entryId, BACKGROUND_CONTEXT)
     if (entry?.type !== "message" || entry.message.role !== "toolResult") return undefined
     return contentText(entry.message.content)
   }
 
   /**
-   * 排队一条审计条目（customType deskpet.*），等本回 drive 结束后由宿主统一写入。
+   * 排队一条审计条目（customType deskpet.*）。只入队：落盘统一由 flushAudit() 在 lane 空闲时完成。
    *
    * 不能在 Harness 的 hook / 事件处理器里直接 await lane 写入：那些回调运行在 drive 内，
    * drive 提交阶段持有 lane 命令锁，而 drive 又在 await 回调返回，会永久循环等待。
-   * 也不能交给 lane.runWhenIdle 兜底：那条路径与 waitForIdle 争抢 idleOwner，会让回合收尾悬空。
+   * 也不能交给 lane.runWhenIdle 兜底：那条路径与 waitForIdle 争抢 idleOwner，会让回合收尾悬空；
+   * 机会式「入队即落盘」同理不可靠 —— 没有在飞回合时 lane 未必空闲（结构操作），
+   * 而一次性快照（completePiText）之后可能再无 run。
    */
   queueAuditEntry(customType: string, data: JsonValue): void {
     this.auditPending.push({ customType, data })
-    // 没有在飞回合（一次性调用、子代理快照）时 lane 本就空闲，立即写入。
-    if (!this.isRunning()) void this.flushAuditQueue()
   }
 
-  /** 写入排队的审计条目；只在 lane 空闲时调用。失败只记录，不影响回合结算。 */
-  private async flushAuditQueue(): Promise<void> {
+  /** 唯一的 flush 入口。失败条目不丢弃：重试一次后仍失败就保留在本队列。 */
+  async flushAudit(): Promise<void> {
     const lane = this.lane
     if (!lane || !this.auditPending.length) return
-    const queued = this.auditPending.splice(0, this.auditPending.length)
-    for (const item of queued) {
-      try {
-        await lane.appendCustomEntry(item.customType, item.data, TODO_CONTEXT)
-      } catch (error) {
-        log.warn("审计条目写入失败:", item.customType, formatError(error))
-      }
+    const queue = this.auditPending.splice(0, this.auditPending.length)
+    const failed: typeof queue = []
+    for (const item of queue) {
+      if (await this.writeAuditEntry(lane, item)) continue
+      if (await this.writeAuditEntry(lane, item)) continue   // 有界重试一次
+      failed.push(item)
+    }
+    if (failed.length) {
+      this.auditPending.unshift(...failed)
+      log.error("审计条目写入失败，保留待下次 flush:", { sessionId: this.sessionId, pending: this.auditPending.length })
+    }
+  }
+
+  /** 写一条审计条目；成功返回 true，失败只 warn（保留由 flushAudit 决定）。 */
+  private async writeAuditEntry(lane: AgentLane, item: { customType: string; data: JsonValue }): Promise<boolean> {
+    try {
+      await lane.appendCustomEntry(item.customType, item.data, TODO_CONTEXT)
+      return true
+    } catch (error) {
+      log.warn("审计条目写入失败:", { sessionId: this.sessionId, customType: item.customType }, formatError(error))
+      return false
     }
   }
 
@@ -827,39 +1244,70 @@ export class HarnessSlot {
 
   // ── 内部 ──
 
-  private async execute(spec: HarnessRunSpec, kind: "prompt" | "resume"): Promise<HarnessRunResult> {
+  /** 装配 lane 运行参数（工具/压缩/队列/许可上限与补偿/模型/思考档位）；admit 与 drive 共用同一段，不写第二份。 */
+  private async assembleLane(spec: Pick<HarnessAdmitSpec, "model" | "thinkingEffort" | "tools" | "toolRun">): Promise<void> {
+    const tools = toAgentHarnessTools(spec.tools, spec.toolRun)
+    await this.harness!.setTools(tools, TODO_CONTEXT)
+    await this.syncCompactionSettings(spec.model)
+    // 按运行生效：改设置从下一次 run 起作用，不必重开槽（与压缩阈值、队列批量同一条口径）。
+    await this.syncRetryPolicy()
+    await this.syncQueueModes()
+    await this.syncToolPermitLimit()
+    // 许可的补偿重放：上一次 run 遗留的释放失败（额度还卡在所有者手里）与上线声明欠账
+    // 都在这里补上；失败只留痕，不阻断本次 run（与上限下发同一口径）。
+    await retryBorrowerAttachIfPending()
+    await flushPendingReleases()
+    await this.lane!.setModel({ provider: spec.model.provider, modelId: spec.model.id }, TODO_CONTEXT)
+    await this.lane!.setThinkingLevel(toPiAgentThinkingLevel(spec.thinkingEffort), TODO_CONTEXT)
+    await this.lane!.setActiveTools(spec.tools.map(tool => tool.name), TODO_CONTEXT)
+  }
+
+  /**
+   * 驱动与收尾的唯一运行体：`run()`、`resumeInterrupted()` 与 `driveAdmitted()` 都走它，
+   * 只有「怎么驱动」由调用方给的闭包（`drive`）决定，计时器与收尾段完全共用。
+   */
+  private async executeDrive(spec: HarnessRunSpec, drive: () => Promise<DriveSettlement>): Promise<HarnessRunResult> {
     const run: ActiveRun = { spec }
     this.activeRun = run
+    // 冻结的 systemPrompt 留底：回合结束后若还有结构性驱动（续跑/恢复），人格前缀不因
+    // activeRun 被清而丢成空串。
+    this.lastSystemPrompt = spec.systemPrompt
     this.abortReason = undefined
     this.clearTimer()
     this.timer = setTimeout(() => { void this.abort(ABORT_REASON_TIMEOUT) }, Math.max(1, spec.timeoutMs))
     try {
-      const tools = toAgentHarnessTools(spec.tools, spec.toolRun)
-      await this.harness!.setTools(tools, TODO_CONTEXT)
-      await this.syncCompactionSettings(spec.model)
-      await this.syncQueueModes()
-      await this.syncToolPermitLimit()
-      await this.lane!.setModel({ provider: spec.model.provider, modelId: spec.model.id }, TODO_CONTEXT)
-      await this.lane!.setThinkingLevel(toPiAgentThinkingLevel(spec.thinkingEffort), TODO_CONTEXT)
-      await this.lane!.setActiveTools(spec.tools.map(tool => tool.name), TODO_CONTEXT)
-
-      const result = kind === "resume"
-        ? await this.lane!.resume(TODO_CONTEXT)
-        : typeof spec.prompt === "string"
-          ? await this.lane!.prompt(spec.prompt, undefined, TODO_CONTEXT)
-          : await this.lane!.prompt(spec.prompt, TODO_CONTEXT)
-      if (!result.ok) {
-        const tag = result.error._tag
-        log.warn("Harness 操作未被接受:", { sessionId: this.sessionId, tag })
-        if (tag === "LaneBusy") return { status: "busy", timedOut: false, undelivered: [], state: spec.state }
-        if (tag === "Closed") return { status: "closed", timedOut: false, undelivered: [], state: spec.state }
-        return { status: "invalid", timedOut: false, undelivered: [], state: spec.state, error: tag }
+      await this.assembleLane(spec)
+      const settlement = await drive()
+      if (settlement.kind === "rejected") {
+        log.warn("Harness 操作未被接受:", { sessionId: this.sessionId, tag: settlement.tag })
+        return {
+          status: settlement.status,
+          timedOut: false,
+          undelivered: [],
+          state: spec.state,
+          ...(settlement.status === "invalid" ? { error: settlement.tag } : {}),
+        }
       }
-      if ("status" in result.value && result.value.status === "suspended") {
+      if (settlement.kind === "suspended") {
         // 不启用 deferred：出现挂起说明 Provider 返回了未预期的 handle，按失败暴露。
-        return { status: "failed", timedOut: false, undelivered: [], state: spec.state, error: "Provider 返回了不支持的延迟响应" }
+        // 但必须把这个操作结算掉：只返回 failed 会让槽背着永不结算的 lane 操作，
+        // 后续 waitForIdle 挂死、下一次运行永远被判忙。取消是结算（HN-08）。
+        log.error("运行返回了未预期的延迟响应，已取消该操作:", { sessionId: this.sessionId, operationId: settlement.operationId })
+        const cancelled = await this.lane!.abort(TODO_CONTEXT)
+        // 取消未被接受就还是没结算：如实留 warn（收尾的 waitForIdle 预检也会报同一件事）。
+        if (!cancelled.ok) {
+          log.warn("挂起操作的取消未被接受:", { sessionId: this.sessionId, operationId: settlement.operationId, error: formatError(cancelled.error) })
+        }
+        await this.collectPendingDelivery(run)
+        return {
+          status: "failed",
+          timedOut: this.abortReason === ABORT_REASON_TIMEOUT,
+          undelivered: [...spec.state.undelivered],
+          state: spec.state,
+          error: "Provider 返回了不支持的延迟响应（已取消并结算该操作）",
+        }
       }
-      const record = result.value as OperationResultRecord
+      const record = settlement.record
       run.operationId = record.operationId
       this.lastRunResult = record
       await this.collectPendingDelivery(run)
@@ -892,10 +1340,14 @@ export class HarnessSlot {
     } finally {
       this.clearTimer()
       // drive 已结束、lane 空闲，这里才是写审计条目的安全点（hook 内写入必死锁）。
-      await this.flushAuditQueue()
+      await this.flushAudit()
       // 运行收尾（含中止/失败）必须结束瞬时流式展示，不能让半截正文悬在 UI 上。
       this.endAssistantStream()
       this.activeRun = undefined
+      // 运行收尾通知：注册表的空闲回收器在这里判定是否删除并关闭本槽。
+      // 此时宿主可能还没调用 end()（runner 的 end 与 runtime 的兜底落盘都在 run() 返回之后），
+      // 所以注册表只在 !isRunning() 时真正释放，否则把请求归还给槽等 end()。
+      this.onRunSettled?.(this)
     }
   }
 
@@ -906,9 +1358,9 @@ export class HarnessSlot {
   private async collectPendingDelivery(run: ActiveRun): Promise<void> {
     for (const item of this.pendingQueues) {
       if (item.type !== "message" || (item.kind !== "steer" && item.kind !== "followUp")) continue
-      const eventId = (item.message as { deskpetEventId?: string }).deskpetEventId
-      if (typeof eventId !== "string") continue
-      const requestId = eventId.replace(/:user$/, "")
+      // 身份换算只有一处实现：手写后缀剥离在「非投递输入」上会给出错误的 requestId。
+      const requestId = messageRequestId(item.message as { deskpetEventId?: unknown })
+      if (requestId === undefined) continue
       if (!run.spec.state.undelivered.includes(requestId)) run.spec.state.undelivered.push(requestId)
       this.pendingDeliveryEntries.set(requestId, item.entryId)
     }
@@ -923,8 +1375,21 @@ export class HarnessSlot {
     if (pending.length === 0 || !this.lane) return
     let failed = 0
     for (const message of pending) {
-      const result = await this.lane.nextRun(message, undefined, TODO_CONTEXT).catch(() => undefined)
-      if (!result || !result.ok) failed++
+      // 身份取消息自身的宿主 requestId（input-identity）：停止归还时 lane 已把条目移出 inbox，
+      // 失败时就地没有 lane entryId 可报。
+      const requestId = messageRequestId(message as { deskpetEventId?: unknown })
+      // FIX-04：放回失败 = 这条输入既没进正文也没回队列，逐项留下原因（含 throw 出来的 error 对象），
+      // 只记 failed 计数等于用户输入静默丢失。
+      try {
+        const result = await this.lane.nextRun(message, undefined, TODO_CONTEXT)
+        if (!result.ok) {
+          failed++
+          log.warn("停止归还未消费消息失败:", { sessionId: this.sessionId, kind: "nextRun", entryId: requestId ?? "<无身份>", reason: result.error._tag })
+        }
+      } catch (error) {
+        failed++
+        log.warn("停止归还未消费消息失败:", { sessionId: this.sessionId, kind: "nextRun", entryId: requestId ?? "<无身份>", reason: formatError(error) })
+      }
     }
     if (failed > 0) log.warn("停止归还未消费消息失败:", { sessionId: this.sessionId, total: pending.length, failed })
   }
@@ -956,14 +1421,18 @@ export class HarnessSlot {
   /** 转发一条可展示的正文增量；只更新瞬时展示（§6），不落盘、不触发副作用。 */
   private publishAssistantDelta(delta: string): void {
     if (!delta) return
-    this.streamActive = true
     this.activeRun?.spec.sinks?.onAssistantDelta?.(delta)
   }
 
-  /** 结束当前 assistant 消息的瞬时展示；幂等，没有展示过增量时不上报。 */
+  /**
+   * 结束当前 assistant 消息的瞬时展示。
+   *
+   * **每条消息边界都会调用**（含没有任何可见增量的消息）：消费侧（runtime.ts 的
+   * streamFilter）只在这里重置 RUNTIME_DATA 过滤器，早退会让「以 <RUNTIME_DATA>
+   * 开头的消息」把过滤器永久停在 stopped，同回合后续消息的正文全部不再展示。
+   * 实现方必须幂等：没有增量时清空一个空缓冲。
+   */
   private endAssistantStream(): void {
-    if (!this.streamActive) return
-    this.streamActive = false
     this.activeRun?.spec.sinks?.onAssistantStreamEnd?.()
   }
 
@@ -972,13 +1441,14 @@ export class HarnessSlot {
     const hooks = this.harness.hooks
     this.unsubscribes.push(
       hooks.on("before_tool", async (event, context) => {
-        const run = this.activeRun
-        if (!run) {
+        const beforeTool = this.hostSpec().hooks?.beforeTool
+        if (!beforeTool) {
           // 没有宿主运行上下文（权限链不可用）时一律拒绝工具：fail-closed，不放行未受管的调用。
+          // 结构操作的续跑没有工具宿主面（决策 §7 #29 A）：它走这条分支，不另开权限链。
           log.warn("无宿主运行上下文，工具调用被拒绝:", { sessionId: this.sessionId, toolName: event.toolName })
           return { block: { reason: "运行上下文不可用，工具调用被拒绝" } }
         }
-        const decision = await run.spec.hooks.beforeTool?.({
+        const decision = await beforeTool({
           toolCallId: event.toolCallId,
           toolName: event.toolName,
           args: event.args,
@@ -988,9 +1458,7 @@ export class HarnessSlot {
         return decision
       }),
       hooks.on("after_tool", (event) => {
-        const run = this.activeRun
-        if (!run) return undefined
-        return run.spec.hooks.afterTool?.({
+        return this.hostSpec().hooks?.afterTool?.({
           toolCallId: event.toolCallId,
           toolName: event.toolName,
           args: event.args,
@@ -1000,29 +1468,25 @@ export class HarnessSlot {
         })
       }),
       hooks.on("transform_context", async (event) => {
-        const run = this.activeRun
-        if (!run) return undefined
-        return run.spec.hooks.transformContext?.({ messages: event.messages, systemPrompt: event.systemPrompt })
+        return this.hostSpec().hooks?.transformContext?.({ messages: event.messages, systemPrompt: event.systemPrompt })
       }),
       hooks.on("before_compaction", async (event, context) => {
-        // 运行期用回合钩子；/compact 等手动压缩没有 activeRun，用本次下发的宿主钩子。
-        const host = this.activeRun?.spec.hooks.beforeCompaction ?? this.manualHooks?.beforeCompaction
+        // 运行期用回合钩子；/compact 等手动压缩没有 activeRun，用本次下发的结构操作钩子。
+        const host = this.hostSpec().hooks?.beforeCompaction
         if (!host) return undefined
-        return host({ reason: event.reason, preparation: event.preparation, signal: context.abortSignal })
+        return host({ reason: event.reason, preparation: event.preparation, signal: context.abortSignal, runId: event.runId })
       }),
       hooks.on("before_request", (event) => {
-        const host = this.activeRun?.spec.hooks.beforeRequest ?? this.manualHooks?.beforeRequest
+        const host = this.hostSpec().hooks?.beforeRequest
         if (!host) return undefined
         return host({ step: event.step, attempt: event.attempt })
       }),
       hooks.on("after_response", async (event) => {
-        const run = this.activeRun
-        if (!run) return undefined
-        const message = await run.spec.hooks.afterResponse?.(event.message, { status: event.status, headers: event.headers })
+        const message = await this.hostSpec().hooks?.afterResponse?.(event.message, { status: event.status, headers: event.headers })
         return message === undefined ? undefined : { message }
       }),
       hooks.on("before_payload", (event) => {
-        this.activeRun?.spec.hooks.beforePayload?.(event.payload, event.model)
+        this.hostSpec().hooks?.beforePayload?.(event.payload, event.model)
         return undefined
       }),
     )
@@ -1092,7 +1556,6 @@ export class HarnessSlot {
         if (!run || event.row.adjustment) return
         // 压缩摘要是一次性调用：用量已进入会话 totals，但不冒充主回复的逐请求统计（§6/§7）。
         if (this.compactionActive) return
-        run.spec.state.usage = event.row.usage
         await run.spec.sinks?.onUsage?.(event.row, event.totals)
       }),
       events.on("compaction_start", () => {
@@ -1100,18 +1563,42 @@ export class HarnessSlot {
       }),
       events.on("compaction_end", (event) => {
         this.compactionActive = false
-        // 已提交的压缩推进请求视图换代身份（旧 contextEpoch 的等价物）。
-        if (event.status === "completed") this.compactionEpoch++
+        // 已提交的压缩推进请求视图换代身份；只有已知基数才 ++（基数未知时保持未知，不伪造 0）。
+        if (event.status === "completed" && this.compactionEpoch !== undefined) this.compactionEpoch++
         // 溢出恢复的终态：declined 表示硬预算超限没有可安全摘要的范围，回合会失败；
         // 结算文案要回到本条判定（否则用户只看到上游的 decline 文案和兜底回复）。
         const run = this.activeRun
         if (run && event.reason === "overflow") run.spec.state.overflowRecoveryDeclined = event.status === "declined"
+        // 宿主摘要内核失败：压缩没落成的原因必须留下审计条目（只入队，由 flushAudit 落盘）。
+        const audit = run?.spec.hooks.compactionAudit ?? this.structuralHost?.hooks?.compactionAudit
+        if (event.status !== "completed" && audit?.failure) {
+          this.queueAuditEntry(COMPACTION_DECLINED_ENTRY, {
+            status: event.status,
+            reason: event.reason,
+            error: audit.failure,
+            endedAt: event.endedAt,
+          } as unknown as JsonValue)
+        }
+        // 摘要成功后的派生记录：只留 hash 与压缩条目地址，不进模型消息流。
+        if (event.status === "completed" && audit?.rewrite) {
+          this.queueAuditEntry(PROMPT_REWRITE_ENTRY, {
+            ...audit.rewrite,
+            compactionEntryId: event.entryId,
+          } as unknown as JsonValue)
+          // 同一槽可能连续压缩多次：用过即清，下一次压缩不得复用旧 transform。
+          delete audit.rewrite
+        }
       }),
       events.on("queue_update", (event) => {
         this.pendingQueues = event.queues
       }),
+      // 处理器异常按 error 记录，带 handler 名与 stack（事件载荷里 error 是 message 字符串，
+      // stack 是独立字段）。`before_tool` 抛异常是 fail-closed，但 `transform_context` /
+      // `after_response` / `before_payload` 抛异常是静默跳过 —— 后果是 RUNTIME_DATA 不剥离、
+      // 快照缺失，整条链上只有这里能留下可查的痕迹。
       events.on("handler_error", (event) => {
-        log.warn("Harness 处理器异常:", { hook: event.kind === "hook" ? event.hook : event.event, error: event.error })
+        const handler = event.kind === "hook" ? event.hook : event.event
+        log.error("Harness 处理器异常:", { sessionId: this.sessionId, handler }, event.stack ?? event.error)
       }),
       events.on("fault", (event) => {
         this.state = "faulted"
@@ -1120,20 +1607,6 @@ export class HarnessSlot {
     )
   }
 
-  // 供注册表使用的 drain 代际（沿用旧 runner 语义）。
-  startDrain(worker: (generation: number) => Promise<void>): Promise<void> {
-    if (this.drainPromise) return this.drainPromise
-    const generation = ++this.drainGeneration
-    const run = worker(generation)
-    this.drainPromise = run.finally(() => {
-      if (this.drainGeneration === generation && this.drainPromise === run) this.drainPromise = undefined
-    })
-    return this.drainPromise
-  }
-
-  isDrainCurrent(generation: number): boolean {
-    return this.drainGeneration === generation
-  }
 }
 
 /** 从归还的消息里取回宿主 requestId（身份换算见 input-identity）。 */
@@ -1142,13 +1615,6 @@ function collectRequestIds(messages: AgentMessage[]): string[] {
     const requestId = messageRequestId(message as { deskpetEventId?: unknown })
     return requestId ? [requestId] : []
   })
-}
-
-/** 排队项的正文预览：排队消息以字符串正文投递，结构化内容回退到 contentText。 */
-function queuedMessageText(message: AgentMessage): string {
-  const content = (message as { content?: unknown }).content
-  if (typeof content === "string") return content
-  return Array.isArray(content) ? contentText(content as Parameters<typeof contentText>[0]) : ""
 }
 
 const EMPTY_SLOT_USAGE: Usage = {
@@ -1165,12 +1631,21 @@ export class HarnessSlots {
   private readonly slots = new Map<string, HarnessSlot>()
   /** 已分配过的最大代际：新槽（含释放重建）从这里继续，保证单调不回退。 */
   private generationSeed = 0
+  /** 无槽期间排队的审计条目（按 sessionId）：下次 ensure() 转交给新槽，不丢证据。 */
+  private readonly orphanAudits = new Map<string, Array<{ customType: string; data: JsonValue }>>()
 
-  get(sessionId: string): HarnessSlot {
+  /** 唯一的创建入口；读路径一律用 peek()，不得为了读一次状态而把槽建出来。 */
+  ensure(sessionId: string): HarnessSlot {
     let slot = this.slots.get(sessionId)
     if (!slot) {
-      slot = new HarnessSlot(sessionId, { generationSeed: this.generationSeed })
+      slot = new HarnessSlot(sessionId, { generationSeed: this.generationSeed, onRunSettled: settled => this.releaseIfIdle(settled) })
       this.slots.set(sessionId, slot)
+      // 无槽期间挂起的审计条目在这里转交：证据不因槽被释放而丢。
+      const orphans = this.orphanAudits.get(sessionId)
+      if (orphans) {
+        this.orphanAudits.delete(sessionId)
+        for (const item of orphans) slot.queueAuditEntry(item.customType, item.data)
+      }
     }
     this.generationSeed = Math.max(this.generationSeed, slot.generation)
     return slot
@@ -1180,8 +1655,20 @@ export class HarnessSlots {
     return this.slots.get(sessionId)
   }
 
+  /** 唯一 flush 入口的两级转发：没有槽时是 no-op（无槽期间条目挂在 orphanAudits 上）。 */
+  async flushAudit(sessionId: string): Promise<void> {
+    await this.peek(sessionId)?.flushAudit()
+  }
+
+  /** 无槽时把证据条目挂在注册表上（按 sessionId），下次 ensure() 转交给新槽；不丢证据。 */
+  queueAuditWithoutSlot(sessionId: string, customType: string, data: JsonValue): void {
+    const pending = this.orphanAudits.get(sessionId) ?? []
+    pending.push({ customType, data })
+    this.orphanAudits.set(sessionId, pending)
+  }
+
   begin(sessionId: string, identity?: { requestId: string; turnId?: string }): number | undefined {
-    const generation = this.get(sessionId).begin(identity)
+    const generation = this.ensure(sessionId).begin(identity)
     if (generation !== undefined) this.generationSeed = Math.max(this.generationSeed, generation)
     return generation
   }
@@ -1190,12 +1677,28 @@ export class HarnessSlots {
     return this.peek(sessionId)?.bindRun(generation, identity) ?? false
   }
 
+  /**
+   * 宿主声明回合终点：结束代际所有权，并给空闲回收器一次收口机会
+   * （运行收尾时槽还被判忙、或收尾通知早于本调用时，释放请求积压到这里）。
+   */
   end(sessionId: string, generation: number): boolean {
-    return this.peek(sessionId)?.end(generation) ?? false
+    const slot = this.peek(sessionId)
+    const ended = slot?.end(generation) ?? false
+    if (ended && slot) this.releaseIfIdle(slot)
+    return ended
   }
 
   isRunning(sessionId: string): boolean {
     return this.peek(sessionId)?.isRunning() ?? false
+  }
+
+  /**
+   * 唯一的「忙」定义：宿主回合所有权（`isRunning`）或 lane 操作在飞（含手动压缩）。
+   * 没有槽的会话不算忙（还没打开，也就没有在飞操作）；读失败 fail-closed 见槽侧实现。
+   */
+  async hasOpenOperation(sessionId: string): Promise<boolean> {
+    const slot = this.peek(sessionId)
+    return slot ? (slot.isRunning() || await slot.hasOpenOperation()) : false
   }
 
   /** 当前代际仍是所有者（未取消、未失效）。 */
@@ -1205,10 +1708,6 @@ export class HarnessSlots {
 
   isAnyRunning(): boolean {
     return [...this.slots.values()].some(slot => slot.isRunning())
-  }
-
-  deliveryMode(sessionId: string): "steer" | "followup" | undefined {
-    return this.peek(sessionId)?.deliveryMode()
   }
 
   snapshot(sessionId: string): HarnessSlotSnapshot | undefined {
@@ -1230,20 +1729,34 @@ export class HarnessSlots {
     return slot ? await slot.cancelQueued(entryId) : "not_found"
   }
 
-  drain(sessionId: string, worker: (generation: number) => Promise<void>): Promise<void> {
-    return this.get(sessionId).startDrain(worker)
-  }
-
-  isDrainCurrent(sessionId: string, generation: number): boolean {
-    return this.peek(sessionId)?.isDrainCurrent(generation) ?? false
-  }
-
-  /** 释放空闲槽（会话切换/关闭时用）；运行中的槽不释放。 */
-  releaseWhenIdle(sessionId: string): boolean {
-    const slot = this.peek(sessionId)
-    if (!slot || slot.isRunning()) return false
-    this.slots.delete(sessionId)
+  /**
+   * 空闲回收：单一定义点就是本注册表的 Map。
+   * 顺序：ABA 校验 → 消费待回收标记 → 宿主仍持有运行权时归还请求（等 end()）。
+   */
+  private releaseIfIdle(slot: HarnessSlot): void {
+    if (this.slots.get(slot.sessionId) !== slot) return
+    if (!slot.consumeIdleRelease()) return
+    if (slot.isRunning()) { slot.requestIdleRelease(); return }
+    this.slots.delete(slot.sessionId)
     void slot.close()
+  }
+
+  /**
+   * 释放空闲槽（会话切换/关闭时用）；运行中的槽不释放。
+   *
+   * 「不空闲」包含 lane 结构操作在飞（手动压缩）：这类槽此刻不能删，但请求不再丢 ——
+   * 登记到槽上，等运行收尾（`onRunSettled`）或宿主声明回合终点（`end`）时由
+   * `releaseIfIdle` 收口。返回 false 表示「本次没释放」，不代表请求被丢弃。
+   */
+  async releaseWhenIdle(sessionId: string): Promise<boolean> {
+    const slot = this.peek(sessionId)
+    if (!slot) return false
+    if (slot.isRunning() || await slot.hasOpenOperation()) {
+      slot.requestIdleRelease()
+      return false
+    }
+    this.slots.delete(sessionId)
+    await slot.close()
     return true
   }
 
@@ -1256,6 +1769,8 @@ export class HarnessSlots {
       return undefined
     })
     const idle = await slot.waitForIdle()
+    // 子运行不注册在会话表里：abort 已级联到它们，这里再等它们收尾（句柄释放不能反序）。
+    await Promise.allSettled(slot.childSlots().map(child => child.waitForIdle()))
     this.slots.delete(sessionId)
     await slot.close()
     return idle
@@ -1268,12 +1783,21 @@ export class HarnessSlots {
         return undefined
       })
       await slot.waitForIdle()
+      // 子槽（计划步骤的子代理）不在会话表里：不等它们收尾，隔离点会在子运行未结束时
+      // 关掉文件句柄（resetAgentRuntimeForTest 的直接后果）。
+      await Promise.allSettled(slot.childSlots().map(child => child.waitForIdle()))
     }))
   }
 
   async reset(): Promise<void> {
     const slots = [...this.slots.values()]
     this.slots.clear()
+    // 未转交的孤儿审计条目在 reset 时清空：报出条数，不静默当它们已落盘。
+    if (this.orphanAudits.size > 0) {
+      const pending = [...this.orphanAudits.values()].reduce((sum, items) => sum + items.length, 0)
+      log.error("重置运行槽时有审计条目未落盘，已丢弃:", { sessions: this.orphanAudits.size, pending })
+      this.orphanAudits.clear()
+    }
     await Promise.allSettled(slots.map(slot => slot.close()))
   }
 }

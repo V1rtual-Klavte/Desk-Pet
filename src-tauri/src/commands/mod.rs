@@ -38,7 +38,7 @@ pub(crate) use tool_exec::BashPool;
 pub use tool_exec::{
     app_open, bash_cancel, bash_exec, clipboard_read, clipboard_write, dir_create, file_append,
     file_canonical_path, file_exists, file_info, file_list, file_read, file_read_binary,
-    file_remove, file_rename, file_write, system_info,
+    file_remove, file_rename, file_write, file_write_atomic, system_info,
 };
 // 应用级工具执行许可所有者（§5.1）：前端借用/释放，Rust 持有额度。
 pub(crate) use tool_permit::ToolPermitPool;

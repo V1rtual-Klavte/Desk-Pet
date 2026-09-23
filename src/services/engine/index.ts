@@ -6,15 +6,8 @@
 export { preProcess } from "./preprocessor"
 export type { PreProcessResult, PreProcessState } from "./preprocessor"
 
-// ── Session ──
-export {
-  getState, transition, recordMessage, recordToolCall,
-  getSession, resetSession, isSessionStale,
-} from "./session"
-export type { AgentState, SessionState } from "./session"
-
 // ── Context ──
-export { buildPrompt } from "@/services/context"
+// 构建入口 `buildPrompt` 由 `@/services/context` 直接导出：引擎 barrel 不再转出一份。
 export type { BuildContextInput, BuildContextOutput } from "@/services/context"
 
 // ── Slash ──
@@ -29,11 +22,22 @@ export { summarizeCompaction } from "./compactor"
 export type { CompactionSummaryInput, CompactionSummaryOutcome } from "./compactor"
 
 // ── Planner ──
-export { evaluateComplexity, generatePlan, executePlan, formatStepResults } from "./planner"
-export type { PlanStep, PlanResult, ComplexityResult, PlanExecutionResult } from "./planner"
+export {
+  evaluateComplexity, generatePlan, executePlan, formatStepResults,
+  normalizePlan, planToRecords, recordsToPlan, planEffectClassFor,
+} from "./planner"
+export type {
+  PlanStep, PlanResult, ComplexityResult, PlanExecutionResult,
+  GeneratePlanContext, PlanRecordContext,
+} from "./planner"
 
-// ── Plan 确认桥接 ──
-export { abortRunningPlan, bindRunningPlan, clearRunningPlan, notifyPlanEnd, resolvePlanConfirm, resolvePlanStepDecision } from "./plan-confirmation"
+// ── Plan 确认桥接（会话键控）──
+// requestPlanConfirm/requestPlanStepDecision 只由 runtime 调用，不经 barrel；
+// 面板与测试替身按 planId 应答，并读 planConfirmState 的只读视图。
+export {
+  abortRunningPlan, bindRunningPlan, cancelSessionPlans, clearRunningPlan,
+  notifyPlanEnd, planConfirmState, resolvePlanConfirm, resolvePlanStepDecision,
+} from "./plan-confirmation"
 
 // ── Runtime protocol vocabulary ──
 export type {
@@ -78,10 +82,14 @@ export {
   continueInterruptedRun,
   deliverActiveTurn,
   describeInputDelivery,
+  discardPlan,
   discardInterruptedRun,
   getInterruptedRun,
   harnessSlots,
+  isSessionBusy,
   listQueuedInputs,
+  listRecoveredPlans,
+  resumePlan,
   runPiAgentTurn,
   runPiSubAgent,
   withdrawQueuedInput,
@@ -95,4 +103,5 @@ export type {
   PiAgentTurnOutput,
   PiSubAgentOutput,
   QueuedInputsView,
+  RecoveredPlanView,
 } from "./pi"

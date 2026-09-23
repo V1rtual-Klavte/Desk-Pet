@@ -36,11 +36,41 @@ const MAX_SPILL_FILES: usize = 10;
 /// 全量输出文件名前缀；回收时按它识别自己的文件，不碰 temp 目录里的其他内容。
 const SPILL_PREFIX: &str = "deskpet-spill-";
 
+/// 运行中的 bash 槽：子进程句柄可能尚未/不再存在；取消请求可在 spawn 前到达。
+///
+/// `child` 为 `None` 表示「已登记、还没 spawn」——登记被提到 spawn 之前，
+/// 取消落在这个窗口里不再丢失，而是记在 `cancel_requested` 上，由 spawn 后的回填点取走。
+struct BashSlot {
+    child: Option<Arc<Mutex<Child>>>,
+    cancel_requested: bool,
+}
+
 /// 运行中的 bash 子进程表。
 ///
 /// 内层 `Arc` 让命令体能把它搬进 `spawn_blocking`：`State` 的借用撑不到任务结束。
 #[derive(Default, Clone)]
-pub struct BashPool(Arc<Mutex<HashMap<String, Arc<Mutex<Child>>>>>);
+pub struct BashPool(Arc<Mutex<HashMap<String, BashSlot>>>);
+
+/// 池条目守卫：`Drop` 时删条目。
+///
+/// `run_bash` 有多条 `?` 提前返回（cwd 校验、临时文件创建、spawn、超时、读取输出、
+/// spill 构建）——只在成功与超时路径上显式 `remove` 一定会漏，而残条会让后续同 id 的
+/// `bash_exec` 被误判成「已取消」。交给守卫后，条目何时消失只由函数作用域决定。
+struct PoolGuard {
+    pool: BashPool,
+    execution_id: String,
+}
+
+impl Drop for PoolGuard {
+    fn drop(&mut self) {
+        // 守卫不能失败：锁中毒也要恢复出来把条目删掉，否则残条会一直留在池里。
+        self.pool
+            .0
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(&self.execution_id);
+    }
+}
 
 // ── Bash 命令执行 ──
 
@@ -94,6 +124,25 @@ fn run_bash(
         return err("无效的执行 ID");
     }
 
+    // 登记提前到任何阻塞动作（cwd 校验、临时文件创建、spawn）之前：
+    // 取消此刻起就有槽可立，不再因为「id 还没进池」而静默失效；此后无论从哪条
+    // `?` 路径返回，条目都由 `_guard` 在同一作用域收尾，池里不会留残条。
+    //
+    // 已存在的同 id 槽不覆盖（`or_insert`）：槽上可能已经压着一次取消立案，
+    // 覆盖它就是把这枚取消丢回静默状态 —— 正是本任务要消除的失败形态。
+    pool.0
+        .lock()
+        .map_err(|_| "Bash 状态锁损坏")?
+        .entry(execution_id.clone())
+        .or_insert(BashSlot {
+            child: None,
+            cancel_requested: false,
+        });
+    let _guard = PoolGuard {
+        pool: pool.clone(),
+        execution_id: execution_id.clone(),
+    };
+
     // 跨平台 shell 选择
     #[cfg(target_os = "windows")]
     let (shell, shell_arg) = ("cmd", "/C");
@@ -129,10 +178,23 @@ fn run_bash(
         cmd.spawn()
             .map_err(|e| AppError::Io(format!("执行失败: {e}")))?,
     ));
-    pool.0
-        .lock()
-        .map_err(|_| "Bash 状态锁损坏")?
-        .insert(execution_id.clone(), Arc::clone(&child));
+    // 回填句柄并取回取消标记：spawn 前到达的取消在这里收口。
+    let cancel_requested = {
+        let mut slots = pool.0.lock().map_err(|_| "Bash 状态锁损坏")?;
+        match slots.get_mut(&execution_id) {
+            Some(slot) => {
+                slot.child = Some(Arc::clone(&child));
+                std::mem::replace(&mut slot.cancel_requested, false)
+            }
+            // 条目意外消失（同 id 的另一轮运行先收尾）按「已取消」保守处理：
+            // 这里放行就等于让一个已经没人认领的子进程跑到底，deny-first 更安全。
+            None => true,
+        }
+    };
+    if cancel_requested {
+        let _ = child.lock().map_err(|_| "Bash 进程锁损坏")?.kill();
+        return Err(AppError::Cancelled);
+    }
 
     let timeout = Duration::from_millis(timeout_ms.unwrap_or(DEFAULT_BASH_TIMEOUT_MS));
     let started = Instant::now();
@@ -147,19 +209,11 @@ fn run_bash(
         }
         if started.elapsed() >= timeout {
             let _ = child.lock().map_err(|_| "Bash 进程锁损坏")?.kill();
-            pool.0
-                .lock()
-                .map_err(|_| "Bash 状态锁损坏")?
-                .remove(&execution_id);
-            // 临时文件交给 `temps` 守卫清理
-            return err("命令执行超时");
+            // 临时文件交给 `temps` 守卫清理，池条目交给 `_guard`
+            return Err(AppError::Timeout);
         }
         std::thread::sleep(BASH_POLL_INTERVAL);
     };
-    pool.0
-        .lock()
-        .map_err(|_| "Bash 状态锁损坏")?
-        .remove(&execution_id);
 
     let max_bytes = max_bytes.unwrap_or(DEFAULT_MAX_OUTPUT_BYTES);
     let max_lines = max_lines.unwrap_or(DEFAULT_MAX_OUTPUT_LINES);
@@ -198,6 +252,8 @@ fn run_bash(
         truncated_by: captured.truncated_by,
         last_line_partial: captured.last_line_partial,
         spill_path,
+        max_bytes,
+        max_lines,
     })
 }
 
@@ -205,22 +261,43 @@ fn run_bash(
 // 子串匹配（`rm -rf /` 之类）既漏 `rm  -rf  /`、`find ~ -delete`，
 // 又误杀 `rm -rf /Users`，且助手模式整段跳过。
 
-#[command]
-pub fn bash_cancel(pool: State<BashPool>, execution_id: String) -> AppResult<()> {
-    let child = pool
-        .0
-        .lock()
-        .map_err(|_| "Bash 状态锁损坏")?
-        .get(&execution_id)
-        .cloned();
-    if let Some(child) = child {
-        child
-            .lock()
-            .map_err(|_| "Bash 进程锁损坏")?
-            .kill()
-            .map_err(|e| format!("取消命令失败: {e}"))?;
+/// 取消的池内路径。
+///
+/// 抽成独立函数只为可测：`State<BashPool>` 在单测里不可构造，而这条分支
+/// （命中句柄 / 命中空槽 / 未命中）必须能直接驱动。
+///
+/// 返回值语义：`true` = 这次取消确实落到了某个运行上（直接终止或立案待终止），
+/// `false` = 池里没有这个 id 的槽 —— 子进程可能已经结束，调用方据此区分
+/// 「取消成功」与「取消来晚了」，不再把两者混成一个静默的 `Ok(())`。
+fn cancel_in_pool(pool: &BashPool, execution_id: &str) -> AppResult<bool> {
+    let mut slots = pool.0.lock().map_err(|_| "Bash 状态锁损坏")?;
+    match slots.get_mut(execution_id) {
+        Some(slot) => match slot.child.as_ref() {
+            Some(child) => {
+                child
+                    .lock()
+                    .map_err(|_| "Bash 进程锁损坏")?
+                    .kill()
+                    .map_err(|e| format!("取消命令失败: {e}"))?;
+                Ok(true)
+            }
+            // spawn 之前到达：立案。spawn 后的回填点会取走这个标记，
+            // 立即终止刚起来的子进程并让本次运行以 `Cancelled` 结束。
+            None => {
+                slot.cancel_requested = true;
+                Ok(true)
+            }
+        },
+        None => {
+            rust_debug!("bash_cancel 未命中执行中的子进程（可能已结束）: {execution_id}");
+            Ok(false)
+        }
     }
-    Ok(())
+}
+
+#[command]
+pub fn bash_cancel(pool: State<BashPool>, execution_id: String) -> AppResult<bool> {
+    cancel_in_pool(pool.inner(), &execution_id)
 }
 
 fn cleanup_temp_outputs(stdout: &Path, stderr: &Path) {
@@ -303,8 +380,15 @@ fn build_spill(
 
 /// 只保留最近 `MAX_SPILL_FILES` 份全量输出，超出的按时间从旧到新淘汰。
 fn evict_old_spills() {
-    let Ok(entries) = std::fs::read_dir(std::env::temp_dir()) else {
-        return;
+    let entries = match std::fs::read_dir(std::env::temp_dir()) {
+        Ok(entries) => entries,
+        // 跳过本轮的原语义不变（回收失败不影响正确性）；补一条 debug 记录，
+        // 否则 spill 无上限增长时没有任何线索能说明回收没跑成。
+        // [保留已登记 §4.2]
+        Err(e) => {
+            rust_debug!("回收 spill 文件失败，跳过本轮: {e}");
+            return;
+        }
     };
     let mut spills: Vec<PathBuf> = entries
         .flatten()
@@ -539,15 +623,67 @@ pub struct BashResult {
     last_line_partial: bool,
     /// 截断且调用方要求 spill 时，保留完整输出的文件路径；否则为 null。
     spill_path: Option<String>,
+    /// 本次实际生效的输出上限（调用方没传时是这里的兜底值）：回传给调用方，
+    /// 让「上限是多少」只有 Rust 一处定义，前端不复制第二份默认值。
+    max_bytes: usize,
+    max_lines: usize,
 }
 
 // ── 文件操作 ──
+
+/// 操作对象必须是常规文件：FIFO/设备/套接字会让读写无限阻塞或写到设备，
+/// 而许可额度要等 handler 结算才释放（tool_permit.rs 明确不加 TTL）→ 从源头拒绝。
+///
+/// `/dev/null` 类设备目标不豁免（决策 §7 #13）：设备路径本就不在允许根（home/temp）内，
+/// 到不了这里；拒绝没有例外分支，避免「按路径文本网开一面」绕过类型判定。
+/// `metadata` 必须描述**解析后的叶子**：读路径用跟随符号链接的 `fs::metadata`；
+/// 写路径的 `safe_path` 已由 `validate_new_file_path` 解析掉链接叶子，那里取
+/// `symlink_metadata` 只是为了与「叶子是什么就是什么」的语义对齐。链接名可以无害，
+/// 指向 FIFO 时只有真实类型能说明接下来会打开什么。
+fn ensure_regular_file(metadata: &std::fs::Metadata, path: &str) -> AppResult<()> {
+    let file_type = metadata.file_type();
+    if file_type.is_file() {
+        return Ok(());
+    }
+    Err(AppError::Tool(format!(
+        "只允许操作常规文件，目标是{}: {path}",
+        describe_file_type(file_type)
+    )))
+}
+
+/// 非常规文件类型的可读名称，只用于错误文案。
+#[cfg(unix)]
+fn describe_file_type(file_type: std::fs::FileType) -> &'static str {
+    use std::os::unix::fs::FileTypeExt;
+    if file_type.is_fifo() {
+        "命名管道（FIFO）"
+    } else if file_type.is_socket() {
+        "套接字"
+    } else if file_type.is_char_device() {
+        "字符设备"
+    } else if file_type.is_block_device() {
+        "块设备"
+    } else if file_type.is_dir() {
+        "目录"
+    } else {
+        "非常规文件"
+    }
+}
+
+/// Windows 的 `FileType` 不区分 FIFO/设备/套接字（那些类型在 Windows 上要么不存在、
+/// 要么只以句柄形式存在），统一按「非常规文件」报告；拒绝与否不受文案影响。
+#[cfg(not(unix))]
+fn describe_file_type(_file_type: std::fs::FileType) -> &'static str {
+    "非常规文件"
+}
 
 #[command]
 pub fn file_read(path: String, max_bytes: Option<usize>) -> AppResult<FileReadResult> {
     use crate::paths::AppPaths;
     let safe_path = AppPaths::validate_file_path(Path::new(&path))?;
     let metadata = std::fs::metadata(&safe_path).map_err(|e| format!("读取元数据失败: {e}"))?;
+    // 大小判定之前先判类型：FIFO 的 len 通常是 0，过得了 max_bytes 却过不了 open。
+    ensure_regular_file(&metadata, &path)?;
     if max_bytes.is_some_and(|limit| metadata.len() as usize > limit) {
         return err(format!(
             "文件过大，最多读取 {} bytes",
@@ -579,6 +715,13 @@ pub fn file_write(
         ));
     }
     let safe_path = AppPaths::validate_new_file_path(Path::new(&path))?;
+    // 已存在的目标可能是 FIFO/设备/套接字：`fs::write` 的 open 会等到对端或写到设备，
+    // handler 因此永不结算、许可额度也不释放。不存在才按新建处理。
+    // 这里用 `symlink_metadata` 与 `validate_new_file_path` 的叶子语义一致：该函数已把
+    // 符号链接叶子解析成真实目标，返回的 `safe_path` 要么不存在，要么就是最终对象本身。
+    if let Ok(metadata) = std::fs::symlink_metadata(&safe_path) {
+        ensure_regular_file(&metadata, &path)?;
+    }
     let parent = safe_path.parent().ok_or("无效的文件路径")?;
     std::fs::create_dir_all(parent).map_err(|e| format!("创建目录失败: {e}"))?;
     // 建目录之后再确认一次父目录的去向：校验通过到真正写入之间，
@@ -593,6 +736,63 @@ pub struct FileWriteResult {
     success: bool,
 }
 
+/// 原子替换写入：与 `file_write` 同校验，但正文先写同目录临时文件再 `rename` 覆盖目标。
+///
+/// host 服务（Skill 保存、记忆写入）不纳入 ExecutionEnv 的许可域 —— 借用者身份是页面实例，
+/// host 没有那个生命周期 —— 但半写窗口同样不该被读者观察到：同目录 rename 是原子的，
+/// 读者看到的要么是旧正文，要么是完整新正文。
+#[command]
+pub fn file_write_atomic(
+    path: String,
+    content: String,
+    max_bytes: Option<usize>,
+) -> AppResult<FileWriteResult> {
+    use crate::paths::AppPaths;
+    if max_bytes.is_some_and(|limit| content.len() > limit) {
+        return err(format!(
+            "写入内容过大，最多 {} bytes",
+            max_bytes.unwrap_or(0)
+        ));
+    }
+    let safe_path = AppPaths::validate_new_file_path(Path::new(&path))?;
+    // 与 file_write 同口径：已存在的目标可能是 FIFO/设备/套接字，`fs::write` 的 open
+    // 会等到对端或写到设备，handler 永不结算。不存在才按新建处理。
+    if let Ok(metadata) = std::fs::symlink_metadata(&safe_path) {
+        ensure_regular_file(&metadata, &path)?;
+    }
+    let parent = safe_path.parent().ok_or("无效的文件路径")?;
+    std::fs::create_dir_all(parent).map_err(|e| AppError::Io(format!("创建目录失败: {e}")))?;
+    // 建目录之后再确认一次父目录的去向：校验通过到真正写入之间，
+    // 中间目录可能刚被换成指向允许根外的符号链接。
+    AppPaths::revalidate_existing_parent(&safe_path)?;
+
+    // 临时文件必须与目标同目录：跨文件系统的 rename 会被内核拒绝（EXDEV）。
+    let file_name = safe_path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or("无效的文件名")?;
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|elapsed| elapsed.as_nanos())
+        .unwrap_or(0);
+    let temp_path = parent.join(format!("{file_name}.tmp-{}-{nanos}", std::process::id()));
+
+    if let Err(e) = std::fs::write(&temp_path, &content) {
+        let _ = std::fs::remove_file(&temp_path);
+        return Err(AppError::Io(format!("写入失败: {e}")));
+    }
+    // rename 之前再确认一次目标的父目录去向：临时文件已经落盘，失败要清掉。
+    if let Err(e) = AppPaths::revalidate_existing_parent(&safe_path) {
+        let _ = std::fs::remove_file(&temp_path);
+        return Err(e);
+    }
+    if let Err(e) = std::fs::rename(&temp_path, &safe_path) {
+        let _ = std::fs::remove_file(&temp_path);
+        return Err(AppError::Io(format!("写入失败: {e}")));
+    }
+    Ok(FileWriteResult { success: true })
+}
+
 /// 追加写入：文件不存在则创建，存在则追加到末尾（UTF-8）。
 ///
 /// `max_bytes` 与 `file_write` 同口径，约束本次写入的 `content` 字节数，
@@ -605,6 +805,10 @@ pub fn file_append(path: String, content: String, max_bytes: u64) -> AppResult<(
         return err(format!("追加内容过大，最多 {max_bytes} bytes"));
     }
     let safe_path = AppPaths::validate_new_file_path(Path::new(&path))?;
+    // 与 file_write 同口径：已存在的目标必须是常规文件，FIFO 的 open 会无限等下去。
+    if let Ok(metadata) = std::fs::symlink_metadata(&safe_path) {
+        ensure_regular_file(&metadata, &path)?;
+    }
     let parent = safe_path.parent().ok_or("无效的文件路径")?;
     // 与 file_write 一致：父目录缺失时补齐（FileSystem 契约的 creating parent directories）。
     std::fs::create_dir_all(parent).map_err(|e| AppError::Io(format!("创建目录失败: {e}")))?;
@@ -632,6 +836,19 @@ pub fn file_append(path: String, content: String, max_bytes: u64) -> AppResult<(
 pub fn file_rename(source_path: String, destination_path: String) -> AppResult<()> {
     use crate::paths::AppPaths;
     let source = AppPaths::validate_file_path(Path::new(&source_path))?;
+    // 源只拒绝 FIFO/设备/套接字，**允许目录**：`fs::rename` 是元数据操作，不打开内容、
+    // 不会无限阻塞，而「重命名目录」是合法用法（源方案写「source 同理」，
+    // 这里按实际阻塞面收窄，避免把目录改名一并禁掉）。
+    let source_type = std::fs::symlink_metadata(&source)
+        .map_err(|e| AppError::Io(format!("读取元数据失败: {e}")))?
+        .file_type();
+    if !source_type.is_file() && !source_type.is_dir() {
+        return Err(AppError::Tool(format!(
+            "只允许重命名常规文件或目录，源是{}: {}",
+            describe_file_type(source_type),
+            source.display()
+        )));
+    }
     let target = Path::new(&destination_path);
     // 目标已存在按替换处理：canonicalize 后必须仍在允许根内；
     // 目标不存在则走与 file_write 相同的新文件校验（词法路径 + 最近的已存在祖先）。
@@ -774,6 +991,7 @@ pub fn file_read_binary(path: String, max_bytes: Option<usize>) -> AppResult<Vec
     use crate::paths::AppPaths;
     let safe_path = AppPaths::validate_file_path(Path::new(&path))?;
     let metadata = std::fs::metadata(&safe_path).map_err(|e| format!("读取元数据失败: {e}"))?;
+    ensure_regular_file(&metadata, &path)?;
     let limit = max_bytes.unwrap_or(5 * 1024 * 1024);
     if metadata.len() as usize > limit {
         return err(format!("文件过大，最多读取 {} bytes", limit));
@@ -1489,6 +1707,213 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
     }
 
+    // ── 无界 I/O 的源头消除（TOOL-06a / FIX-60）──
+    //
+    // 许可额度没有 TTL（tool_permit.rs 明确不加：超时释放会放开在飞的独占效果），
+    // 所以「handler 永不结算」= 额度永久泄漏。能让 handler 卡住不结算的入口，是让文件命令
+    // 去打开一个不是常规文件的文件系统对象：FIFO 的 open 会一直等到对端，设备/套接字同理。
+    // 这组用例钉两件事：拒绝（`AppError::Tool`）与**不阻塞**（耗时上界）——
+    // 少了时长断言，「无界 I/O 已消除」这个安全修复不可证。
+
+    /// FIFO 用例的临时目录。放在系统 temp 下：它本就在允许根（home/temp）内，
+    /// 用例才有机会走到类型判定，而不是被 `PATH_ESCAPE` 提前拦下。
+    #[cfg(unix)]
+    fn fifo_probe_dir(tag: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "deskpet-fifo-{tag}-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    /// 建一个 FIFO。`mkfifo(1)` 不可用时返回 false 由调用方跳过，与 `paths.rs` 里
+    /// `symlink_file` 的跳过分支同构：环境缺能力时跳过，而不是把跳过当失败。
+    #[cfg(unix)]
+    fn make_fifo(path: &Path) -> bool {
+        matches!(
+            Command::new("mkfifo")
+                .arg(path)
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .status(),
+            Ok(status) if status.success()
+        )
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn file_read_rejects_fifo_without_blocking() {
+        let dir = fifo_probe_dir("read");
+        let fifo = dir.join("probe.fifo");
+        if !make_fifo(&fifo) {
+            let _ = std::fs::remove_dir_all(&dir);
+            return;
+        }
+
+        let started = Instant::now();
+        let result = file_read(fifo.to_string_lossy().to_string(), None);
+        let elapsed = started.elapsed();
+
+        assert!(
+            matches!(result, Err(AppError::Tool(_))),
+            "读 FIFO 必须被拒：放行等于让 read_to_string 一直等对端，额度永不结算"
+        );
+        assert!(
+            elapsed < Duration::from_secs(2),
+            "拒绝 FIFO 不能阻塞：耗时 {elapsed:?}"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn file_read_binary_rejects_fifo() {
+        let dir = fifo_probe_dir("read-binary");
+        let fifo = dir.join("probe.fifo");
+        if !make_fifo(&fifo) {
+            let _ = std::fs::remove_dir_all(&dir);
+            return;
+        }
+
+        let started = Instant::now();
+        let result = file_read_binary(fifo.to_string_lossy().to_string(), None);
+        let elapsed = started.elapsed();
+
+        assert!(
+            matches!(result, Err(AppError::Tool(_))),
+            "二进制读同样必须拒绝 FIFO"
+        );
+        assert!(
+            elapsed < Duration::from_secs(2),
+            "拒绝 FIFO 不能阻塞：耗时 {elapsed:?}"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn file_write_rejects_existing_fifo() {
+        let dir = fifo_probe_dir("write");
+        let fifo = dir.join("probe.fifo");
+        if !make_fifo(&fifo) {
+            let _ = std::fs::remove_dir_all(&dir);
+            return;
+        }
+
+        let started = Instant::now();
+        let result = file_write(fifo.to_string_lossy().to_string(), "x".to_string(), None);
+        let elapsed = started.elapsed();
+
+        // 放行的话 `fs::write` 会一直等有读者打开这个 FIFO，测试套件就此挂住。
+        assert!(
+            matches!(result, Err(AppError::Tool(_))),
+            "写已存在的 FIFO 必须被拒"
+        );
+        assert!(
+            elapsed < Duration::from_secs(2),
+            "拒绝 FIFO 不能阻塞：耗时 {elapsed:?}"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 原子替换写入：覆盖已有正文，且不留临时文件。
+    #[test]
+    fn file_write_atomic_replaces_content_without_leftovers() {
+        let dir = fifo_probe_dir("atomic");
+        let target = dir.join("probe.txt");
+        std::fs::write(&target, "旧正文").unwrap();
+
+        let result = file_write_atomic(target.to_string_lossy().to_string(), "新正文".to_string(), None);
+
+        assert!(result.is_ok(), "原子写入应当成功");
+        assert_eq!(std::fs::read_to_string(&target).unwrap(), "新正文");
+        let leftovers: Vec<String> = std::fs::read_dir(&dir)
+            .unwrap()
+            .filter_map(|entry| entry.ok())
+            .map(|entry| entry.file_name().to_string_lossy().to_string())
+            .filter(|name| name.contains(".tmp-"))
+            .collect();
+        assert!(
+            leftovers.is_empty(),
+            "原子写入不得留下临时文件: {leftovers:?}"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 上限校验与 `file_write` 同口径：超限拒绝且不动目标。
+    #[test]
+    fn file_write_atomic_enforces_max_bytes() {
+        let dir = fifo_probe_dir("atomic-limit");
+        let target = dir.join("probe.txt");
+        std::fs::write(&target, "旧正文").unwrap();
+
+        let result = file_write_atomic(
+            target.to_string_lossy().to_string(),
+            "0123456789".to_string(),
+            Some(4),
+        );
+
+        assert!(result.is_err(), "超过 max_bytes 必须被拒");
+        assert_eq!(std::fs::read_to_string(&target).unwrap(), "旧正文");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn file_write_atomic_rejects_existing_fifo() {
+        let dir = fifo_probe_dir("atomic-fifo");
+        let fifo = dir.join("probe.fifo");
+        if !make_fifo(&fifo) {
+            let _ = std::fs::remove_dir_all(&dir);
+            return;
+        }
+
+        let started = Instant::now();
+        let result = file_write_atomic(fifo.to_string_lossy().to_string(), "x".to_string(), None);
+        let elapsed = started.elapsed();
+
+        // 放行的话 `fs::write`（写临时文件前的目标类型判定缺失）会一直等读者打开这个 FIFO。
+        assert!(
+            matches!(result, Err(AppError::Tool(_))),
+            "写已存在的 FIFO 必须被拒"
+        );
+        assert!(
+            elapsed < Duration::from_secs(2),
+            "拒绝 FIFO 不能阻塞：耗时 {elapsed:?}"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn file_append_rejects_existing_fifo() {
+        let dir = fifo_probe_dir("append");
+        let fifo = dir.join("probe.fifo");
+        if !make_fifo(&fifo) {
+            let _ = std::fs::remove_dir_all(&dir);
+            return;
+        }
+
+        let started = Instant::now();
+        let result = file_append(fifo.to_string_lossy().to_string(), "x".to_string(), 1024);
+        let elapsed = started.elapsed();
+
+        assert!(
+            matches!(result, Err(AppError::Tool(_))),
+            "追加到已存在的 FIFO 必须被拒"
+        );
+        assert!(
+            elapsed < Duration::from_secs(2),
+            "拒绝 FIFO 不能阻塞：耗时 {elapsed:?}"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     /// 二进制输出不该让整段结果退化成空串。
     #[test]
     fn invalid_utf8_degrades_to_lossy_not_empty() {
@@ -1498,5 +1923,203 @@ mod tests {
         let actual = truncate_output(&text, &stats, true, false, 1024, 2000);
         assert!(!actual.output.is_empty());
         assert!(actual.output.contains("tail"));
+    }
+
+    // ── bash 取消与 spawn 的竞态（TOOL-07）──
+    //
+    // 覆盖边界：`run_bash` 的每一条提前返回都必须把池条目交回守卫，漏一条就是残条 ——
+    // 后续同 id 的 `bash_exec` 会读到 `child: None` 的旧槽，被误判成「已取消」。
+    //
+    // 唯一无法在单测里确定性构造的提前返回是 `spawn` 失败（`/bin/sh` 与 `cmd` 恒存在，
+    // 要造失败得先破坏 PATH 或句柄表，代价与收益不成比例）：它与其它提前返回走的是
+    // 同一个 `_guard`，由 `bash_invalid_cwd_leaves_no_pool_entry` 等价覆盖。
+
+    use crate::commands::bash_policy::BashScope;
+
+    /// 本组用例的临时目录：同一条用例的文件都落在这里，结束时整体删除。
+    fn probe_dir(tag: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "deskpet-bash-{tag}-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    /// 池条目的直接视图。锁中毒也恢复出来：断言不该因为别的用例 panic 而误报。
+    fn slots(pool: &BashPool) -> std::sync::MutexGuard<'_, HashMap<String, BashSlot>> {
+        pool.0.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    fn assistant_policy() -> BashPolicy {
+        BashPolicy {
+            scope: BashScope::Assistant,
+            whitelist: Vec::new(),
+        }
+    }
+
+    /// 「先等一段时间、再留下探针文件」的命令：给「spawn 后立即终止」留出可判定的窗口。
+    ///
+    /// 直接用 `touch` 会与 kill 抢时序 —— 子进程完全可能在 kill 生效前就写完文件，
+    /// 断言变成抛硬币。把副作用推到延迟之后，结论只剩两种：子进程活着 → 文件出现；
+    /// 子进程被终止 → 文件永远不出现。Windows 没有 `sleep`/`touch`，用 `ping`/`type` 同义形态。
+    fn delayed_probe(seconds: u32, sentinel: &Path) -> String {
+        let path = sentinel.display();
+        if cfg!(windows) {
+            format!(
+                "ping -n {} 127.0.0.1 > nul && type nul > \"{path}\"",
+                seconds + 1
+            )
+        } else {
+            format!("sleep {seconds}; touch \"{path}\"")
+        }
+    }
+
+    /// TOOL-07 的核心用例：取消在登记之后、spawn 之前到达（槽已立案、句柄尚未回填）。
+    #[test]
+    fn bash_cancel_lands_before_spawn() {
+        let dir = probe_dir("cancel-before-spawn");
+        let pool = BashPool::default();
+
+        // 正对照：同一条命令不加取消时必须跑完并留下探针。缺了它，下面的「文件不存在」
+        // 可能只是因为命令或路径根本走不通，而不是因为取消生效。
+        let control = dir.join("control.sentinel");
+        let control_result = run_bash(
+            pool.clone(),
+            delayed_probe(0, &control),
+            None,
+            Some("control-probe".into()),
+            None,
+            assistant_policy(),
+            None,
+            None,
+            None,
+        );
+        assert!(control_result.is_ok(), "正对照命令没有跑通");
+        assert!(control.exists(), "正对照没有留下探针，后续断言会退化成空断言");
+        assert!(slots(&pool).is_empty(), "正常返回后池里不该有条目");
+
+        let sentinel = dir.join("sentinel");
+        let id = "cancel-before-spawn".to_string();
+        slots(&pool).insert(
+            id.clone(),
+            BashSlot {
+                child: None,
+                cancel_requested: true,
+            },
+        );
+
+        let result = run_bash(
+            pool.clone(),
+            delayed_probe(1, &sentinel),
+            None,
+            Some(id),
+            None,
+            assistant_policy(),
+            None,
+            None,
+            None,
+        );
+        match result {
+            Err(AppError::Cancelled) => {}
+            Err(other) => panic!("取消立案后应返回 Cancelled，实际 {other:?}"),
+            Ok(_) => panic!("取消立案后不该正常返回"),
+        }
+        assert!(slots(&pool).is_empty(), "提前返回在池里留下了残条");
+        // 宽限窗口：探针推到 1s 之后。子进程真被终止则文件永不出现；
+        // 若 kill 只是「返回了」而没生效，这里就会看到文件。
+        std::thread::sleep(Duration::from_millis(1500));
+        assert!(!sentinel.exists(), "取消后子进程仍在运行：探针文件出现了");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 策略拒绝发生在登记之前：这条路径不该在池里留下任何东西。
+    #[test]
+    fn bash_policy_reject_leaves_no_pool_entry() {
+        let pool = BashPool::default();
+        let result = run_bash(
+            pool.clone(),
+            "rm -rf /".into(),
+            None,
+            Some("policy-reject".into()),
+            None,
+            assistant_policy(),
+            None,
+            None,
+            None,
+        );
+        match result {
+            Err(AppError::Tool(message)) => assert!(!message.is_empty(), "策略拒绝应带原因"),
+            Err(other) => panic!("策略拒绝应是 Tool 错误，实际 {other:?}"),
+            Ok(_) => panic!("硬禁止命令不该被执行"),
+        }
+        assert!(slots(&pool).is_empty(), "策略拒绝在池里留下了残条");
+    }
+
+    /// cwd 校验在登记之后、spawn 之前 —— 这条 `?` 路径必须由守卫收尾。
+    #[test]
+    fn bash_invalid_cwd_leaves_no_pool_entry() {
+        let dir = probe_dir("invalid-cwd");
+        let plain = dir.join("plain.txt");
+        std::fs::write(&plain, b"not a directory").unwrap();
+
+        let pool = BashPool::default();
+        let result = run_bash(
+            pool.clone(),
+            "echo probe".into(),
+            Some(plain.to_string_lossy().into_owned()),
+            Some("invalid-cwd".into()),
+            None,
+            assistant_policy(),
+            None,
+            None,
+            None,
+        );
+        match result {
+            Err(AppError::Other(message)) => {
+                assert!(message.contains("目录"), "cwd 拒绝文案不符: {message}")
+            }
+            Err(other) => panic!("cwd 不是目录应是 Other 错误，实际 {other:?}"),
+            Ok(_) => panic!("cwd 不是目录时不该执行命令"),
+        }
+        assert!(slots(&pool).is_empty(), "cwd 校验失败在池里留下了残条");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 未命中的取消要有明确结论：`Ok(false)`（外加一条 debug 日志），不是静默成功。
+    #[test]
+    fn bash_cancel_unknown_id_returns_false() {
+        let pool = BashPool::default();
+        assert!(
+            !cancel_in_pool(&pool, "not-registered").unwrap(),
+            "未命中的取消应返回 false"
+        );
+        assert!(slots(&pool).is_empty(), "未命中不该顺手创建条目");
+    }
+
+    /// 空槽（已登记、尚未 spawn）上的取消必须立案 —— 这是 spawn 后立即终止的唯一依据。
+    #[test]
+    fn bash_cancel_latches_slot_without_child() {
+        let pool = BashPool::default();
+        let id = "pending-spawn".to_string();
+        slots(&pool).insert(
+            id.clone(),
+            BashSlot {
+                child: None,
+                cancel_requested: false,
+            },
+        );
+
+        assert!(cancel_in_pool(&pool, &id).unwrap(), "命中空槽的取消应返回 true");
+        assert!(
+            slots(&pool)
+                .get(&id)
+                .is_some_and(|slot| slot.cancel_requested && slot.child.is_none()),
+            "取消没有在空槽上立案"
+        );
     }
 }

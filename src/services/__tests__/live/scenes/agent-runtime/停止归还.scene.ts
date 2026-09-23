@@ -1,5 +1,5 @@
 import { harnessSlots } from "@/services/engine/pi"
-import { abortAgentRuns, initChat, sendMessage } from "@/services/agent/runner"
+import { initChat, sendMessage } from "@/services/agent/runner"
 import { getActiveSessionId } from "@/services/session"
 import { registerBlockingTool } from "../../blocking-tool"
 import { fakeText, fakeToolCall, installFakeProvider } from "../../fake-provider"
@@ -39,7 +39,7 @@ export const 停止归还: SceneDef = {
     await sendMessage(STOPPED_TEXT, { requestId: "runtime-stop-requeue", priority: "now" })
     // 用户显式停止：工具随 gate signal 结束（不死锁），未消费输入应留在持久 inbox，
     // 不能被吞掉也不能自动继续执行。
-    await abortAgentRuns()
+    await harnessSlots.abortAndWaitAll()
     await firstTurn
     requeuedAfterStop = harnessSlots.snapshot(sessionId)?.queued.some(item => item.kind === "nextRun") ?? false
     consumedBeforeResume = (await sessionMessages()).filter(message => message.role === "user" && message.text === STOPPED_TEXT).length

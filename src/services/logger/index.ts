@@ -15,6 +15,10 @@
 //   log.info("已初始化");    // → [12:34:56.789] INFO  [AI] 已初始化
 //   log.warn("重试中...");  // → [12:34:57.123] WARN  [AI] 重试中...
 //   log.error("失败", e);   // → [12:34:58.456] ERROR [AI] 失败 Error: ...
+//
+// 本文件里的 console.*（flushLogs 的转发失败、createLogger 的 debug/info/warn/error）
+// 是全仓唯一合法的 console 调用点：logger 自身的失败没有第二个日志出口，其它模块
+// 一律经 createLogger（AGENTS.md 禁止直接 console.*）[保留已登记 §4.2]
 // ==========================================
 
 import { invoke } from "@tauri-apps/api/core"
@@ -107,7 +111,7 @@ export function flushLogs(): void {
   if (!pending.length) return
   const msgs = pending.splice(0, pending.length)
   invoke("log_messages", { msgs }).catch((e) => {
-    // 必须用 console：走 logger 会递归
+    // 必须用 console：走 logger 会递归 [保留已登记 §4.2]
     console.warn("[Logger] 转发 Rust 失败 (Tauri 未就绪?)", formatError(e))
   })
 }

@@ -67,6 +67,12 @@ export const 会话重启恢复: SceneDef = {
         if (!path.startsWith(`${sessionsRoot}/`)) throw new Error(`会话文件不在会话根下: ${path}`)
         if (!path.endsWith(".jsonl")) throw new Error(`会话文件不是 .jsonl: ${path}`)
         if (path.includes("/index.json") || path.endsWith(".md")) throw new Error(`会话路径混入 UI 状态或旧格式: ${path}`)
+        // 一层 --cwd-- 目录：list 是按 cwd 目录逐层扫描的，路径少了这层就说明布局变了而 list 仍要能恢复
+        const relative = path.slice(sessionsRoot.length + 1)
+        const directoryName = relative.slice(0, relative.indexOf("/"))
+        if (!directoryName.startsWith("--") || !directoryName.endsWith("--")) {
+          throw new Error(`会话文件不在 --cwd-- 子目录下: ${path}`)
+        }
       },
     }],
   }],

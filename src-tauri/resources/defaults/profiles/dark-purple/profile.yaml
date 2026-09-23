@@ -48,7 +48,6 @@ theme:
     enabled: false
     image: ""
   parallax:
-    intensity: 1.0
     layers:
       - { enabled: true, image: "materials/L0/bg_base.png", sensitivity: 0.2, shadow: 0.25, brightness: 0.93, contrast: 0.96, saturate: 0.92 }
       - { enabled: false, image: "", sensitivity: 0.5, shadow: 0.18, brightness: 0.95, contrast: 0.98, saturate: 0.95 }

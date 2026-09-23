@@ -11,12 +11,7 @@
 
 import { watch } from "vue"
 import { confirmState, resolveConfirm } from "@/services/safety"
-import type { ConfirmPolicy } from "./types"
-
-export interface ConfirmRecord {
-  toolName: string
-  approved: boolean
-}
+import type { ConfirmPolicy, ConfirmRecord } from "./types"
 
 let policy: ConfirmPolicy = "deny"
 let stopResponder: (() => void) | undefined
@@ -37,7 +32,13 @@ export function resetConfirmChannel(next: ConfirmPolicy = "deny"): void {
       pending => {
         if (!pending) return
         const approved = policy === "approve"
-        records.push({ toolName: pending.toolName, approved })
+        // 身份随记录一起留底：场景要断言「授权按哪个会话与代际入账」时只有这份内核身份可信。
+        records.push({
+          toolName: pending.toolName,
+          approved,
+          ...(pending.sessionId ? { sessionId: pending.sessionId } : {}),
+          ...(pending.runGeneration === undefined ? {} : { runGeneration: pending.runGeneration }),
+        })
         resolveConfirm(approved)
       },
       { flush: "sync" },

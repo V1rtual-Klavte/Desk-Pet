@@ -19,6 +19,21 @@ pub enum AppError {
     #[error("工具路径必须是绝对路径: {0}")]
     NotAbsolute(String),
 
+    /// 凭据路径（`.ssh` 目录组件 / `.pem` / `.key`）的最终判定。
+    /// 单元变体、不带路径：错误文案会被回显给用户，不能把敏感路径本身写进去。
+    #[error("凭据路径不允许访问")]
+    SensitivePath,
+
+    /// 取消请求（`bash_cancel`）在子进程 spawn 前就已立案，执行入口据此立即终止本次运行。
+    /// 与「命令执行超时」分开：取消是调用方的意图，不是失败原因不明。
+    #[error("操作已取消")]
+    Cancelled,
+
+    /// 命令执行超时：`timeout_ms` 或兜底上限到点，子进程已被 kill。
+    /// 独立变体是为了让前端按错误码归类（`TIMEOUT` → timeout），不靠 message 文案匹配。
+    #[error("命令执行超时")]
+    Timeout,
+
     #[error("无法获取 home 目录")]
     NoHomeDir,
 
@@ -42,6 +57,9 @@ impl AppError {
             Self::PathEscape => "PATH_ESCAPE",
             Self::PathNotFound(_) => "PATH_NOT_FOUND",
             Self::NotAbsolute(_) => "NOT_ABSOLUTE",
+            Self::SensitivePath => "SENSITIVE_PATH",
+            Self::Cancelled => "CANCELLED",
+            Self::Timeout => "TIMEOUT",
             Self::NoHomeDir => "NO_HOME_DIR",
             Self::Io(_) => "IO",
             Self::Config(_) => "CONFIG",

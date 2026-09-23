@@ -192,7 +192,9 @@ export async function upsertSkill(raw: string): Promise<SkillSource | null> {
   const parsed = parseSkillSource(raw)
   if (!parsed) return null
   const filePath = await runtimePath("data", SKILLS_DIR, parsed.name, SKILL_FILE)
-  await invoke("file_write", { path: filePath, content: raw, maxBytes: MAX_SKILL_BYTES })
+  // host 服务写入不纳入许可域（借用者身份是页面实例，host 没有该生命周期），
+  // 但用原子替换写入消除半写窗口：读者要么看到旧正文，要么看到完整新正文。
+  await invoke("file_write_atomic", { path: filePath, content: raw, maxBytes: MAX_SKILL_BYTES })
   invalidateSkillCatalog("save")
   await ensureSkillCatalog()
   log.info("Skill 已保存:", parsed.name)

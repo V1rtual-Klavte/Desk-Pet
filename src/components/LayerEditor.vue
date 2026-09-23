@@ -24,7 +24,6 @@ const {
   assetLoading,
   pickerPreview,
   selectedLayer,
-  isL2,
   // 景深
   isDof,
   dof,
@@ -349,7 +348,6 @@ const {
             <button class="le-btn le-btn-xs le-btn-d" @click="removeImage()" :disabled="!selectedLayer.config.image">
               ✕ 移除
             </button>
-            <span v-if="isL2" class="le-prop-val" style="font-size:8px;opacity:0.35;margin-left:4px">帧动画/静态图均可</span>
           </div>
         </div>
 

@@ -9,7 +9,7 @@ import type { SessionMeta } from "./store"
 import {
   chatHistory, unansweredCount,
   sessions, activeSessionId,
-  clearMessages, addSessionMeta, removeSessionMeta,
+  clearMessages, replaceMessages, addSessionMeta, removeSessionMeta,
 } from "./store"
 import {
   initSessionPersistence, loadUnanswered, saveUnanswered, deleteUnanswered,
@@ -20,11 +20,12 @@ import {
   readPiSessionEntries, persistPiSessionName,
 } from "./repo"
 import type { PiSessionSummary } from "./repo"
-import { prependSessionHistory, removeSessionHistory, renameSessionHistory } from "./history"
+import { prependSessionHistory, removeSessionHistory, renameSessionHistory, sessionHistoryError } from "./history"
 import { messagesFromEntries } from "./read-model"
 import { createLogger } from "@/services/logger"
-import { formatError } from "@/services/error"
+import { formatError, reportError } from "@/services/error"
 import { harnessSlots } from "@/services/engine/pi"
+import { cancelSessionPlans } from "@/services/engine/plan-confirmation"
 
 const log = createLogger("Session")
 
@@ -37,38 +38,37 @@ function summaryToMeta(summary: PiSessionSummary): SessionMeta {
     id: summary.id,
     name: summary.name || "新会话",
     createdAt: summary.createdAt,
-    messageCount: summary.messageCount,
     path: summary.path,
   }
 }
 
-async function loadMessagesFromSession(sessionId: string): Promise<Message[]> {
+/** 读正文：失败与「确实没有正文」不同形 —— 错误随返回值交给调用方，不只藏在日志里。 */
+async function loadMessagesFromSession(sessionId: string): Promise<{ messages: Message[]; error?: string }> {
   try {
-    return messagesFromEntries(await readPiSessionEntries(sessionId))
+    return { messages: messagesFromEntries(await readPiSessionEntries(sessionId)) }
   } catch (error) {
-    log.warn("加载会话正文失败:", sessionId, formatError(error))
-    return []
+    log.error("加载会话正文失败:", sessionId, formatError(error))
+    return { messages: [], error: formatError(error) }
   }
 }
 
 /**
- * 激活会话：切换指针、加载正文与未回复数，并对齐记忆模块活跃指针与会话开始时间。
+ * 激活会话：切换指针、加载正文与未回复数，并对齐记忆模块活跃指针。
  * 所有异步读取后都重新校验活跃会话，旧切换不能覆盖新所有者。
  */
 async function activateSession(sessionId: string): Promise<void> {
   activeSessionId.value = sessionId
   saveActiveId(sessionId)
 
-  const messages = await loadMessagesFromSession(sessionId)
+  const { messages, error } = await loadMessagesFromSession(sessionId)
   if (activeSessionId.value !== sessionId) return
-  chatHistory.splice(0, chatHistory.length, ...messages)
+  replaceMessages(messages)
   unansweredCount.value = loadUnanswered(sessionId)
-
-  const meta = sessions.find(item => item.id === sessionId)
-  if (meta) {
-    // 变量池对齐真实会话开始时间
-    const { setSessionStart } = await import("@/services/personality")
-    setSessionStart(meta.createdAt)
+  if (error) {
+    // 沿用清空语义，但让用户看到「读取失败」而不是「历史没了」；证据在 log.error（见 loadMessagesFromSession）。
+    // 动态 import 断开 manager ⇄ messages 的静态环（messages 的改名路径要回 import manager）。
+    const { pushSystemMessage } = await import("./messages")
+    pushSystemMessage("会话正文读取失败，界面可能不完整，请查看日志", sessionId)
   }
   log.info(`Session: 已激活 ${sessionId} (${messages.length} 条)`)
 }
@@ -86,11 +86,16 @@ export async function initSessions(): Promise<SessionMeta[]> {
 
   // 1. 从会话仓库扫描（正文真相源）
   let metadata: Awaited<ReturnType<typeof listPiSessionMetadata>> = []
+  let scanFailed = false
   try {
     metadata = await listPiSessionMetadata()
     log.info(`Session: sessions 扫描到 ${metadata.length} 个会话`)
   } catch (error) {
-    log.warn("Session: sessions 扫描失败", formatError(error))
+    // 扫描失败不能与「确实没有会话」同形：否则会拿空列表覆盖已持久化的标签、还会凭空建新会话。
+    scanFailed = true
+    sessionHistoryError.value = true
+    log.error("Session: sessions 扫描失败", formatError(error))
+    reportError("Session", error, { kind: "sessions 扫描失败", overlay: false })
   }
 
   // 2. 首次升级前没有 index.json 时，打开全部历史；之后只恢复上次打开的标签。
@@ -102,24 +107,38 @@ export async function initSessions(): Promise<SessionMeta[]> {
 
   // 3. 读取每个标签会话的展示元数据（名称/消息数）
   const rebuilt: SessionMeta[] = []
+  let failed = 0
   for (const item of selected) {
     const summary = await readPiSessionSummary(item)
     if (summary) rebuilt.push(summaryToMeta(summary))
+    else failed++
+  }
+  if (failed > 0) {
+    // 复用既有可见位（历史面板的失败提示）：列表不完整与「确实没有会话」不同形。
+    sessionHistoryError.value = true
+    log.error("部分会话读取失败，列表不完整:", failed)
   }
 
-  // 4. 确保至少一个会话
+  // 4. 确保至少一个会话（扫描都没成功时不自动建：那会把「读不到」伪装成「没有会话」）
   if (rebuilt.length === 0) {
-    try {
-      rebuilt.push(summaryToMeta(await createPiSession("新会话")))
-    } catch (error) {
-      log.error("Session: 新会话创建失败", formatError(error))
+    if (scanFailed) {
+      log.error("Session: 扫描失败，跳过自动建新会话，保留已持久化的标签列表")
+    } else {
+      try {
+        rebuilt.push(summaryToMeta(await createPiSession("新会话")))
+      } catch (error) {
+        log.error("Session: 新会话创建失败", formatError(error))
+        reportError("Session", error, { kind: "新会话创建失败", overlay: false })
+      }
     }
   }
 
-  // 5. 覆盖内部状态
-  sessions.splice(0, sessions.length, ...rebuilt)
-  saveSessionList(rebuilt)
-  log.info(`Session: 重建完成 ${sessions.length} 个`, sessions.map(item => item.id))
+  // 5. 覆盖内部状态（bootstrap 扫描失败时不覆盖：空列表不是「用户没有会话」的证据）
+  if (!scanFailed) {
+    sessions.splice(0, sessions.length, ...rebuilt)
+    saveSessionList(rebuilt)
+    log.info(`Session: 重建完成 ${sessions.length} 个`, sessions.map(item => item.id))
+  }
 
   // 6. 恢复活跃会话；消息只从 pi 会话 entry 读取。
   const id = activeSessionId.value || loadActiveId()
@@ -150,9 +169,14 @@ export async function switchToSession(sessionId: string): Promise<void> {
   const previousSessionId = activeSessionId.value
   // 保存当前 UI 状态；对话正文由仓库持久化。
   if (previousSessionId) {
+    // 先取消旧会话的待确认计划（PLAN-04/FIX-32）：指针移动之前取消，文案才写进旧会话，
+    // 用户也不会再对不可见的确认负责。执行期计划不受影响（计划继续跑，只是面板移出视图）。
+    cancelSessionPlans(previousSessionId, "session_switched")
     invalidatePermissionScope(previousSessionId)
     saveUnanswered(previousSessionId, unansweredCount.value)
-    harnessSlots.releaseWhenIdle(previousSessionId)
+    // 释放是异步的（空闲回收器要读 lane 真相、可能真的关掉 Harness）：等它收口再切指针，
+    // 否则「切走」与「旧槽还在收尾」会重叠。忙时它返回 false 并把请求登记到槽上，不阻塞切会话。
+    await harnessSlots.releaseWhenIdle(previousSessionId)
   }
 
   await activateSession(sessionId)
@@ -166,9 +190,12 @@ export async function createNewSession(): Promise<SessionMeta> {
   // 保存并归档当前
   const oldId = activeSessionId.value
   if (oldId) {
+    // 与 switchToSession 同款：新会话接管之前先取消旧会话的待确认计划
+    cancelSessionPlans(oldId, "session_switched")
     invalidatePermissionScope(oldId)
     saveUnanswered(oldId, unansweredCount.value)
-    harnessSlots.releaseWhenIdle(oldId)
+    // 同 switchToSession：等释放收口再建新会话，忙时请求登记在槽上由运行收尾回收。
+    await harnessSlots.releaseWhenIdle(oldId)
   }
 
   const summary = await createPiSession("新会话")
@@ -185,16 +212,14 @@ export async function createNewSession(): Promise<SessionMeta> {
   saveSessionList([...sessions])
   prependSessionHistory(summary)
 
-  // 变量池对齐新会话开始时间
-  const { setSessionStart } = await import("@/services/personality")
-  setSessionStart(meta.createdAt)
-
   log.info(`Session: 新会话已创建 ${meta.id} (chatHistory: ${chatHistory.length} 条)`)
   return meta
 }
 
 /** 关闭标签（从列表移除，保留会话文件） */
 export function closeSession(sessionId: string): void {
+  // 会话不再活跃：它的待确认计划按 not_active 取消（不是「切会话」语义，文案与归宿都不同）
+  cancelSessionPlans(sessionId, "not_active")
   invalidatePermissionScope(sessionId)
   const idx = sessions.findIndex(item => item.id === sessionId)
   if (idx === -1) return
@@ -205,7 +230,8 @@ export function closeSession(sessionId: string): void {
   }
 
   removeSessionMeta(sessionId)
-  harnessSlots.releaseWhenIdle(sessionId)
+  // 本函数是同步入口（调用方不等关闭结果）：释放仍照常发起，忙时请求登记在槽上等运行收尾回收。
+  void harnessSlots.releaseWhenIdle(sessionId)
   deleteUnanswered(sessionId)
   saveSessionList([...sessions])
 }
@@ -247,21 +273,9 @@ export function updateSessionName(sessionId: string, firstUserMsg: string): void
   meta.name = firstUserMsg.substring(0, 20).replace(/[\n\r/\\:*?"<>|]/g, "").trim() || "新会话"
   saveSessionList([...sessions])
   renameSessionHistory(sessionId, meta.name)
+  // fire-and-forget：失败证据在 repo.persistPiSessionName（该函数不 reject，只返回 false 并留 error 级日志
+  // + reportError），这里不加 `.catch` 以免留下永不触发的分支。
   void persistPiSessionName(sessionId, meta.name)
-}
-
-/** 更新消息计数 */
-export function updateSessionMessageCount(sessionId: string): void {
-  const meta = sessions.find(item => item.id === sessionId)
-  if (!meta) return
-  meta.messageCount = chatHistory.length
-}
-
-/** 异步回复返回时目标会话可能已不活跃，此时不能用当前 chatHistory 覆盖其计数。 */
-export function incrementSessionMessageCount(sessionId: string): void {
-  const meta = sessions.find(item => item.id === sessionId)
-  if (!meta) return
-  meta.messageCount++
 }
 
 /**

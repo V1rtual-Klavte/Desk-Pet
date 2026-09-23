@@ -1,5 +1,6 @@
 import type { Context, FauxModelDefinition, FauxResponseStep } from "@earendil-works/pi-ai"
 import { compactionSettingsFor, compactActiveSession } from "@/services/engine/pi"
+import { toolResultTokenBudget } from "@/services/context"
 import { aiConfig } from "@/services/config"
 import { initChat } from "@/services/agent/runner"
 import { getActiveSessionId } from "@/services/session"
@@ -24,16 +25,26 @@ const PRESERVE_TOOL_NAME = "summary_preserve_probe"
 const REFERENCE_TOOL_ID = "summary-reference-probe"
 const REFERENCE_TOOL_NAME = "summary_reference_probe"
 
-/** 结果长度必须超过 L0 缩短阈值（当前窗口下为 10000 字符）：中部标记在缩短时被回读标记替换。 */
-const PAYLOAD_CHARS = 6_000
 const PRESERVE_CORE = "-preserve-core-marker-"
 const REFERENCE_CORE = "-reference-core-marker-"
-const PRESERVE_RESULT = "a".repeat(PAYLOAD_CHARS) + PRESERVE_CORE + "b".repeat(PAYLOAD_CHARS)
-const REFERENCE_RESULT = "c".repeat(PAYLOAD_CHARS) + REFERENCE_CORE + "d".repeat(PAYLOAD_CHARS)
 
 const FAKE_MODEL: FauxModelDefinition = { id: "deskpet-fake", name: "Desk-Pet Fake", contextWindow: 131_072, maxTokens: 16_384 }
 /** 真正生效的窗口与 resolvePiTurnModel 一致：配置值与注入模型窗口取小。 */
 const WINDOW_TOKENS = Math.min(aiConfig.contextMaxTokens, 131_072)
+/** L0 缩短阈值（token 推导，判定与裁剪同口径）；sizing() 打印真实数值。 */
+const L0_TOKENS = toolResultTokenBudget(WINDOW_TOKENS)
+/**
+ * 载荷合计的 token 目标：1.15 倍 L0 阈值，保证 overshoot 后中部标记必定落在被裁区域。
+ * 两条结果的合计 ≈ 2.15 × L0_TOKENS（preserve 全量 ≈1.15 阈值、reference 被裁到 ≈1.0 阈值），
+ * 再大就会把主请求与摘要素材推向硬输入上限；131072 窗口下复算：L0_TOKENS = 10435、
+ * 载荷合计 ≈22.4k tokens，加尾段长正文 84k 与系统前缀后仍低于 hardInputLimit = 124354。
+ */
+const PAYLOAD_TOKENS = Math.ceil(L0_TOKENS * 1.15)
+/** 单段重复长度：结果总长 2 × PAYLOAD_CHARS 字符 ≈ PAYLOAD_TOKENS tokens（ASCII 4 字符 ≈ 1 token）。 */
+const PAYLOAD_CHARS = Math.ceil(PAYLOAD_TOKENS / 2) * 4
+const PRESERVE_RESULT = "a".repeat(PAYLOAD_CHARS) + PRESERVE_CORE + "b".repeat(PAYLOAD_CHARS)
+const REFERENCE_RESULT = "c".repeat(PAYLOAD_CHARS) + REFERENCE_CORE + "d".repeat(PAYLOAD_CHARS)
+
 const settings = compactionSettingsFor(WINDOW_TOKENS)
 const KEEP_MARGIN = 1.05
 const UNIT = "摘要投影探针正文必须留在磁盘中。"   // 15 字符
@@ -72,7 +83,8 @@ const summaryStep: FauxResponseStep = context => {
 /** 断言失败时带上真实口径，别让人从「未覆盖」反推载荷问题。 */
 function sizing(): string {
   return `窗口 ${WINDOW_TOKENS}、保留窗口 ${settings.keepRecentTokens}`
-    + `；长正文 ${LONG.length} 字符、尾段合计约 ${KEEP_MARGIN} 倍保留窗口、探针结果 ${PRESERVE_RESULT.length} 字符`
+    + `；长正文 ${LONG.length} 字符、尾段合计约 ${KEEP_MARGIN} 倍保留窗口`
+    + `、L0 阈值 ${L0_TOKENS} tokens / 载荷 ${PAYLOAD_CHARS}×2 字符（探针结果 ${PRESERVE_RESULT.length} 字符）`
 }
 
 /** 声明指定 resultProjection 的只读探针：链路真实，唯一变量就是投影声明。 */
@@ -85,7 +97,7 @@ const probe = (id: string, name: string, projection: "preserve" | "reference", r
     policy: {
       version: TOOL_POLICY_VERSION,
       permission: { defaultDecision: "allow" },
-      execution: { effect: "read", mode: "parallel", isolation: "shared_read", replay: "never" },
+      execution: { effect: "read", isolation: "shared_read", replay: "never" },
       context: { resultProjection: projection, historyCompaction: "summarize" },
     },
   }, async () => ({ success: true, content: result }))

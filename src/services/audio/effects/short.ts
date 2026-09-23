@@ -1,5 +1,5 @@
 // 短音效 (<200ms): 电子弹跳/水滴/风铃/咔哒
-import { getCtx } from "../context"
+import { getCtx, reportEffectFailure } from "../context"
 import type { SoundDef } from "../types"
 export const shortSounds: SoundDef[] = [
   {
@@ -15,7 +15,7 @@ export const shortSounds: SoundDef[] = [
         gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.10)
         osc.connect(gain); gain.connect(ctx.destination)
         osc.start(ctx.currentTime); osc.stop(ctx.currentTime + 0.10)
-      } catch {}
+      } catch (error) { reportEffectFailure(error) }
     },
   },
   {
@@ -31,7 +31,7 @@ export const shortSounds: SoundDef[] = [
         gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.14)
         osc.connect(gain); gain.connect(ctx.destination)
         osc.start(ctx.currentTime); osc.stop(ctx.currentTime + 0.14)
-      } catch {}
+      } catch (error) { reportEffectFailure(error) }
     },
   },
   {
@@ -47,7 +47,7 @@ export const shortSounds: SoundDef[] = [
         osc1.connect(gain); osc2.connect(gain); gain.connect(ctx.destination)
         osc1.start(ctx.currentTime); osc2.start(ctx.currentTime + 0.02)
         osc1.stop(ctx.currentTime + 0.16); osc2.stop(ctx.currentTime + 0.16)
-      } catch {}
+      } catch (error) { reportEffectFailure(error) }
     },
   },
   {
@@ -63,7 +63,7 @@ export const shortSounds: SoundDef[] = [
         gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.05)
         osc.connect(gain); gain.connect(ctx.destination)
         osc.start(ctx.currentTime); osc.stop(ctx.currentTime + 0.05)
-      } catch {}
+      } catch (error) { reportEffectFailure(error) }
     },
   },
 ]

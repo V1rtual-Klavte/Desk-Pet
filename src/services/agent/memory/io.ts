@@ -4,6 +4,7 @@
 
 import { invoke } from "@tauri-apps/api/core"
 import { createLogger } from "@/services/logger"
+import { formatError } from "@/services/error"
 import { runtimePath } from "@/services/paths"
 
 const log = createLogger("MemoryIO")
@@ -33,20 +34,26 @@ export function withLock<T>(keyOrFn: string | (() => Promise<T>), maybeFn?: () =
 
 // ── Memory 文件读写 ──
 
+/** 读记忆文件；返回空串 = 读取失败或文件不存在（调用方按空记忆继续），失败另有 warn 留痕。 */
 export async function readMemoryFile(filename: string): Promise<string> {
   try {
     if (!memoryDir) return ""
     const path = await runtimePath("memory", filename)
     const result = await invoke<{ content: string; size: number }>("file_read", { path })
     return result.content
-  } catch { return "" }
+  } catch (error) {
+    log.warn("记忆文件读取失败:", filename, formatError(error))
+    return ""
+  }
 }
 
 export async function writeMemoryFile(filename: string, content: string): Promise<boolean> {
   try {
     if (!memoryDir) { log.warn("writeMemoryFile: memoryDir 未设置"); return false }
     const path = await runtimePath("memory", filename)
-    await invoke("file_write", { path, content })
+    // host 服务写入不纳入许可域（借用者身份是页面实例，host 没有该生命周期），
+    // 但用原子替换写入消除半写窗口：读者要么看到旧正文，要么看到完整新正文。
+    await invoke("file_write_atomic", { path, content })
     return true
   } catch (e) { log.error(`写入 ${filename} 失败: ${memoryDir}/${filename}`, e instanceof Error ? e : undefined); return false }
 }

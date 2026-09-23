@@ -5,11 +5,11 @@
 // ==========================================
 
 import { BACKGROUND_CONTEXT } from "@earendil-works/pi-agent-core"
-import type { Entry, JsonValue, JsonlSessionMetadata, Session } from "@earendil-works/pi-agent-core"
+import type { Entry, EntryQuery, JsonValue, JsonlSessionMetadata, Session } from "@earendil-works/pi-agent-core"
 import { createPiSessionRepo } from "@/services/engine/pi"
 import type { PiSessionRepo } from "@/services/engine/pi"
 import { createLogger } from "@/services/logger"
-import { formatError } from "@/services/error"
+import { formatError, reportError } from "@/services/error"
 
 const log = createLogger("PiSession")
 
@@ -62,10 +62,30 @@ export async function deleteAllPiSessionsForTest(): Promise<number> {
  */
 const openSessions = new Map<string, Promise<Session<JsonlSessionMetadata>>>()
 
-/** 仓库内的全部会话元数据（创建时间倒序）。 */
+/** 已留过证据的跨根会话 id：同一批跨根项只报一次，不随每次列举刷日志。 */
+const reportedForeignRootIds = new Set<string>()
+
+/**
+ * 仓库内的全部会话元数据（创建时间倒序）。
+ *
+ * 归属按**文件头 `cwd`** 判定，不是按 `--<cwd>--` 目录名猜：数据根变更或目录编码碰撞
+ * 都会让仓库里出现不属于当前数据根的会话。这类项标注并留一次日志，不清除、不改
+ * `index.json` —— 「`index.json` 里有 id、列表里静默消失」正是要修掉的现象。
+ */
 export async function listPiSessionMetadata(): Promise<JsonlSessionMetadata[]> {
   const repo = await getPiSessionRepo()
-  return repo.list(undefined, BACKGROUND_CONTEXT)
+  const metadata = await repo.list(undefined, BACKGROUND_CONTEXT)
+  const foreign = metadata.filter(item => item.cwd !== repo.cwd)
+  if (foreign.length > 0) {
+    const unseen = foreign.filter(item => !reportedForeignRootIds.has(item.id))
+    if (unseen.length > 0) {
+      unseen.forEach(item => reportedForeignRootIds.add(item.id))
+      log.warn("列出不属于当前数据根的会话（数据根变更或目录编码碰撞）:", {
+        cwds: [...new Set(foreign.map(item => item.cwd))], ids: unseen.map(item => item.id),
+      })
+    }
+  }
+  return metadata
 }
 
 /** 打开（或复用）会话句柄；句柄保持打开直到 releasePiSession()。 */
@@ -99,7 +119,7 @@ export async function releasePiSession(sessionId: string): Promise<void> {
     await session.close(BACKGROUND_CONTEXT)
     log.info("已关闭会话:", sessionId)
   } catch (error) {
-    log.warn("关闭会话失败:", sessionId, formatError(error))
+    log.error("关闭会话失败:", sessionId, formatError(error))
   }
 }
 
@@ -132,7 +152,7 @@ export async function readPiSessionSummary(metadata: JsonlSessionMetadata): Prom
       if (!alreadyOpen) await releasePiSession(metadata.id)
     }
   } catch (error) {
-    log.warn("读取会话元数据失败:", metadata.id, formatError(error))
+    log.error("读取会话元数据失败:", metadata.id, formatError(error))
     return null
   }
 }
@@ -148,14 +168,16 @@ export async function createPiSession(name: string): Promise<PiSessionSummary> {
   return summary
 }
 
-/** 重命名会话（展示名持久化在会话文件里）；失败只记日志，不阻断发送流程。 */
+/** 重命名会话（展示名持久化在会话文件里）；失败留证据但不阻断发送流程（不 reject，只返回 false）。 */
 export async function persistPiSessionName(sessionId: string, name: string): Promise<boolean> {
   try {
     const session = await acquirePiSession(sessionId)
     await session.setName(name, BACKGROUND_CONTEXT)
     return true
   } catch (error) {
-    log.warn("会话重命名落盘失败:", sessionId, formatError(error))
+    // 用户数据没落盘：error 级 + reportError 留完整记录，调用方按返回值决定提示。
+    log.error("会话重命名落盘失败:", sessionId, formatError(error))
+    reportError("PiSession", error, { kind: "会话重命名落盘失败", overlay: false })
     return false
   }
 }
@@ -181,23 +203,24 @@ export async function readPiSessionEntries(sessionId: string): Promise<Entry[]> 
 }
 
 /**
- * 读取会话全部 entry 后释放句柄（调用前未打开时不驻留）。
- * 供启动期批量扫描使用（Plan checkpoint 恢复），避免把所有历史会话都留在句柄缓存里。
+ * 按查询读取会话 entry 后释放句柄（调用前未打开时不驻留）。
+ * 供启动期批量扫描使用（Plan checkpoint 恢复），避免把所有历史会话都留在句柄缓存里；
+ * 扫描方按 `customType` 收窄读取集合，不再全量解析每个会话。
  */
-export async function readPiSessionEntriesOnce(sessionId: string): Promise<Entry[]> {
+export async function readPiSessionEntriesOnce(sessionId: string, query?: EntryQuery): Promise<Entry[]> {
   const alreadyOpen = openSessions.has(sessionId)
   const session = await acquirePiSession(sessionId)
   try {
-    return await session.findEntries({ order: "asc" }, BACKGROUND_CONTEXT)
+    return await session.findEntries(query ?? { order: "asc" }, BACKGROUND_CONTEXT)
   } finally {
     if (!alreadyOpen) await releasePiSession(sessionId)
   }
 }
 
-/** 追加 deskpet 自定义 entry（宿主生成、非模型消息）；lane 分支不存在时按需创建。 */
-export async function appendPiSessionCustomEntry(sessionId: string, customType: string, data?: JsonValue): Promise<void> {
+/** 追加 deskpet 自定义 entry（宿主生成、非模型消息）；lane 分支不存在时按需创建。返回条目 id。 */
+export async function appendPiSessionCustomEntry(sessionId: string, customType: string, data?: JsonValue): Promise<string> {
   const session = await acquirePiSession(sessionId)
   const branch = await session.branch(PI_LANE, BACKGROUND_CONTEXT)
     ?? await session.createBranch(PI_LANE, null, BACKGROUND_CONTEXT)
-  await branch.appendCustomEntry(customType, data, BACKGROUND_CONTEXT)
+  return await branch.appendCustomEntry(customType, data, BACKGROUND_CONTEXT)
 }

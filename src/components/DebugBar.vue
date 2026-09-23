@@ -115,7 +115,7 @@ watch(sessionSafety, (v) => {
       </span>
       <span class="db-item db-dim" @click="showDetail = !showDetail">
         📦 工具注册: {{ debug.registeredToolCount }}
-        (技能:{{ debug.registeredSkillCount }} MCP:{{ debug.registeredMcpCount }})
+        (MCP:{{ debug.registeredMcpCount }})
       </span>
     </div>
     <div v-if="showUsage" class="db-tool-list">
@@ -202,7 +202,6 @@ watch(sessionSafety, (v) => {
   gap: 6px;
 }
 .db-tool-item.src-mcp { color: var(--color-debug-mcp); }
-.db-tool-item.src-skill { color: var(--color-debug-skill); }
 .db-tool-empty {
   color: var(--color-debug-empty);
   padding: 2px 4px;

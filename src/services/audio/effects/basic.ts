@@ -1,5 +1,5 @@
 // 基础音效: 弹窗/收回/欢迎/发送/回复
-import { getCtx } from "../context"
+import { getCtx, reportEffectFailure } from "../context"
 import type { SoundDef } from "../types"
 
 export const basicSounds: SoundDef[] = [
@@ -26,7 +26,7 @@ export const basicSounds: SoundDef[] = [
         osc2.connect(gain2); gain2.connect(ctx.destination)
         osc1.start(ctx.currentTime); osc2.start(ctx.currentTime + 0.06)
         osc1.stop(ctx.currentTime + 0.12); osc2.stop(ctx.currentTime + 0.20)
-      } catch {}
+      } catch (error) { reportEffectFailure(error) }
     },
   },
   {
@@ -48,7 +48,7 @@ export const basicSounds: SoundDef[] = [
         osc2.connect(gain2); gain2.connect(ctx.destination)
         osc1.start(ctx.currentTime); osc2.start(ctx.currentTime + 0.06)
         osc1.stop(ctx.currentTime + 0.14); osc2.stop(ctx.currentTime + 0.22)
-      } catch {}
+      } catch (error) { reportEffectFailure(error) }
     },
   },
   {
@@ -65,7 +65,7 @@ export const basicSounds: SoundDef[] = [
           osc.connect(gain); gain.connect(ctx.destination)
           osc.start(t); osc.stop(t + 0.30)
         })
-      } catch {}
+      } catch (error) { reportEffectFailure(error) }
     },
   },
   {
@@ -81,7 +81,7 @@ export const basicSounds: SoundDef[] = [
         gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.08)
         osc.connect(gain); gain.connect(ctx.destination)
         osc.start(ctx.currentTime); osc.stop(ctx.currentTime + 0.08)
-      } catch {}
+      } catch (error) { reportEffectFailure(error) }
     },
   },
   {
@@ -100,7 +100,7 @@ export const basicSounds: SoundDef[] = [
         osc2.connect(gain2); gain2.connect(ctx.destination)
         osc1.start(ctx.currentTime); osc2.start(ctx.currentTime + 0.10)
         osc1.stop(ctx.currentTime + 0.12); osc2.stop(ctx.currentTime + 0.22)
-      } catch {}
+      } catch (error) { reportEffectFailure(error) }
     },
   },
 ]

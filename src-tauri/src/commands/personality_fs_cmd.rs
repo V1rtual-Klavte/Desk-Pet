@@ -3,8 +3,7 @@
 // 目录结构:
 //   {data}/personality/
 //     cards/                   ← 用户导入 Card .md
-//     stages/{cardId}.json      ← per-card 阶段文案
-//     vars.json                 ← 单例变量池
+//     stages/{cardId}.json      ← per-card 阶段文案 + 变量状态（stages 段 / variables 段）
 //
 // 所有 Card 和人格运行时文件都位于 AppPaths.personality。
 // ==========================================
@@ -71,7 +70,7 @@ pub fn personality_file_list(
 // 路径解析（内部）
 // ==========================================
 
-/// 将**域内相对路径**（如 `stages/x.json`、`vars.json`）解析为绝对路径。
+/// 将**域内相对路径**（如 `stages/x.json`、`cards/x.md`）解析为绝对路径。
 ///
 /// base 目录由本模块持有，调用方不得带 `personality/` 前缀 —— 见下方显式拒绝。
 ///

@@ -1,5 +1,5 @@
 import type { ContextBlockInput } from "@/services/context"
-import { buildContextKernel, contextBudget, ContextBudgetError, estimateContextTokens, estimateRequestTokens, messageTokens } from "@/services/context"
+import { buildPromptBlocks, contextBudget, ContextBudgetError, estimateContextTokens, estimateMessageTokens, estimateRequestTokens } from "@/services/context"
 import type { SceneDef } from "../../types"
 
 function staticBlock(blockId: string, source: string, text: string): ContextBlockInput {
@@ -11,7 +11,7 @@ export const 上下文预算: SceneDef = {
     caseId: "memory-context-budget",
     module: "memory",
     contractId: "mm-16",
-    description: "ContextKernel 对完整静态前缀、工具 schema 和会话视图执行硬预算",
+    description: "上下文内核只做预算：块排序、硬上限判定、可选块整块淘汰与分配账目",
     depth: "deep",
     suite: "regression",
     entry: "unit",
@@ -19,7 +19,7 @@ export const 上下文预算: SceneDef = {
   },
   turns: [{
     index: 1,
-    description: "验证窗口预算、静态前缀和不可裁断边界",
+    description: "验证窗口预算、静态前缀、可选块淘汰与不可裁断边界",
     userText: "检查上下文预算。",
     checks: [{ type: "expectContextBudget", run: async () => {
       for (const window of [16_000, 32_000, 128_000]) {
@@ -35,12 +35,12 @@ export const 上下文预算: SceneDef = {
         staticBlock("static:tool-protocol", "tool-protocol", "固定工具协议"),
         staticBlock("static:tool-schema", "tool-schema", "完整工具 schema".repeat(80)),
       ]
-      const first = buildContextKernel([...fixed, {
+      const first = buildPromptBlocks([...fixed, {
         blockId: "dynamic:runtime", layer: "dynamic", source: "runtime", text: "变量状态=A", priority: 90, origin: "system", taint: "system",
-      }], [], 32_000)
-      const second = buildContextKernel([...fixed, {
+      }], 32_000)
+      const second = buildPromptBlocks([...fixed, {
         blockId: "dynamic:runtime", layer: "dynamic", source: "runtime", text: "变量状态=B", priority: 90, origin: "system", taint: "system",
-      }], [], 32_000)
+      }], 32_000)
       if (first.staticPrefix !== second.staticPrefix) throw new Error("动态变量改变了冻结静态前缀")
       if (first.turnDynamic === second.turnDynamic) throw new Error("动态变量没有进入动态层")
 
@@ -48,27 +48,52 @@ export const 上下文预算: SceneDef = {
       const schemaTokens = estimateContextTokens("完整工具 schema".repeat(80))
       if (!schema || schema.tokenBudget !== schemaTokens || first.estimatedInputTokens < schemaTokens) throw new Error("完整工具 schema 没有计入输入预算")
 
+      // 内核与 Provider 用同一个消息估算：durable 与 Pi 的两种消息形态投影必须逐字相同。
       const durable = { id: "same", role: "assistant" as const, text: "正文", timestamp: 1,
         toolCalls: [{ id: "call", name: "read", arguments: '{"path":"x"}' }] }
       const pi = { role: "assistant", content: [{ type: "text", text: "正文" }, { type: "toolCall", id: "call", name: "read", arguments: { path: "x" } }],
         usage: { input: 99_999 }, provider: "ignored", timestamp: 999 }
-      if (messageTokens(durable) !== estimateRequestTokens("", [pi])) throw new Error("Kernel 与 Provider 消息预算算法不一致")
+      if (estimateMessageTokens(durable) !== estimateRequestTokens("", [pi])) throw new Error("durable 与 Pi 消息的估算口径不一致")
 
+      // 核心层放不进硬上限：明确拒绝，不截字。
       let coreOverflow = false
       try {
-        buildContextKernel([staticBlock("static:card", "personality-card", "x".repeat(10_000))], [], 1_200, { currentInput: "当前用户输入" })
+        buildPromptBlocks([staticBlock("static:card", "personality-card", "x".repeat(10_000))], 1_200)
       } catch (error) {
         coreOverflow = error instanceof ContextBudgetError
       }
       if (!coreOverflow) throw new Error("小窗口容不下核心静态层时没有拒绝请求")
 
-      let transcriptOverflow = false
-      try {
-        buildContextKernel(fixed, [{ id: "u1", role: "user", text: "历史输入".repeat(10_000), timestamp: 0 }], 16_000)
-      } catch (error) {
-        transcriptOverflow = error instanceof ContextBudgetError
+      // 可选块放不进硬上限：整块淘汰 + budgetDrops 记录，不抛错也不截块内文字。
+      const small = buildPromptBlocks([
+        staticBlock("static:card", "personality-card", "固定角色规则"),
+        { blockId: "profile:user", layer: "profile", source: "User.md", text: "y".repeat(2_000), priority: 80, origin: "memory", taint: "derived" },
+      ], 1_200)
+      if (small.blocks.some(block => block.blockId === "profile:user")) throw new Error("放不进硬上限的可选块仍被选中")
+      const drop = small.budgetDrops.find(item => item.blockId === "profile:user")
+      if (!drop || drop.reason !== "dropped" || drop.originalTokens !== estimateContextTokens("y".repeat(2_000))) {
+        throw new Error(`可选块淘汰没有被如实记录: ${JSON.stringify(small.budgetDrops)}`)
       }
-      if (!transcriptOverflow) throw new Error("未压缩的会话视图超限时被静默丢弃")
+      if (small.estimatedInputTokens !== estimateContextTokens("固定角色规则")) {
+        throw new Error(`淘汰的块仍计入了输入预算: ${small.estimatedInputTokens}`)
+      }
+
+      // transcript 不再有预算份额（请求视图归 Harness）：账目行保留，requested 恒 0，且没有借用字段。
+      const transcript = small.allocations.find(allocation => allocation.layer === "transcript")
+      if (!transcript) throw new Error("分配账目缺少 transcript 行（审计行必须保留）")
+      if (transcript.requested !== 0 || transcript.used !== 0) throw new Error(`transcript 不该有预算占用: ${JSON.stringify(transcript)}`)
+      if (small.allocations.some(allocation => "borrowed" in allocation)) throw new Error("分配账目回到了借还计算（borrowed 字段）")
+      // profile 计入 dynamic：淘汰量落在该层，没有淘汰的层不写 dropped（不写 0）。
+      const droppedLayer = small.allocations.find(allocation => allocation.layer === "dynamic")
+      if (droppedLayer?.dropped !== estimateContextTokens("y".repeat(2_000))) {
+        throw new Error(`dynamic 层的淘汰量没有如实记录: ${JSON.stringify(droppedLayer ?? null)}`)
+      }
+      if (small.allocations.some(allocation => allocation.dropped !== undefined && allocation.dropped <= 0)) {
+        throw new Error(`没有淘汰的层不该写 dropped: 0：${JSON.stringify(small.allocations)}`)
+      }
+      if (small.budget.window !== 1_200 || small.inputTokenBudget !== small.budget.hardInputLimit) {
+        throw new Error("内核没有按传入窗口计算硬输入上限")
+      }
     } }],
   }],
 }

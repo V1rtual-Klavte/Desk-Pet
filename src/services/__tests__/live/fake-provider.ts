@@ -58,3 +58,13 @@ export function fakeText(text: string): AssistantMessage {
 export function fakeToolCall(name: string, arguments_: Record<string, unknown> = {}, id = "fake-call-1"): AssistantMessage {
   return fauxAssistantMessage(fauxToolCall(name, arguments_, { id }), { stopReason: "toolUse" })
 }
+
+/**
+ * 「正文以 RUNTIME_DATA 开头 + 工具调用」的消息：HN-04 的复现形状 —— 这条消息没有任何
+ * 可见增量（正文整体被瞬时展示过滤器挡下），但仍然是工具轮的一环。
+ */
+export function fakeRuntimeDataHeadToolCall(
+  text: string, name: string, arguments_: Record<string, unknown> = {}, id = "fake-call-1",
+): AssistantMessage {
+  return fauxAssistantMessage([fauxText(text), fauxToolCall(name, arguments_, { id })], { stopReason: "toolUse" })
+}

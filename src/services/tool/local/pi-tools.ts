@@ -9,6 +9,7 @@ import { registerAll } from "../registry"
 import { adaptHarnessTool } from "../pi/harness-adapter"
 import { TauriExecutionEnv } from "../pi/tauri-execution-env"
 import { TOOL_POLICY_VERSION } from "../types"
+import type { SafetyLevel } from "../types"
 import { createLogger } from "@/services/logger"
 import { toolsConfig } from "@/services/config"
 import {
@@ -43,7 +44,7 @@ export async function registerPiBaseTools(): Promise<void> {
       policy: {
         version: TOOL_POLICY_VERSION,
         permission: { defaultDecision: "allow" },
-        execution: { effect: "read", mode: "parallel", isolation: "shared_read", replay: "never" },
+        execution: { effect: "read", isolation: "shared_read", replay: "never" },
         context: { resultProjection: "reference", historyCompaction: "summarize" },
       },
     }),
@@ -55,7 +56,7 @@ export async function registerPiBaseTools(): Promise<void> {
       policy: {
         version: TOOL_POLICY_VERSION,
         permission: { defaultDecision: "passthrough" },
-        execution: { effect: "local_mutation", mode: "sequential", isolation: "exclusive_effect", replay: "never" },
+        execution: { effect: "local_mutation", isolation: "exclusive_effect", replay: "never" },
         context: { resultProjection: "preserve", historyCompaction: "summarize" },
       },
     }),
@@ -66,7 +67,7 @@ export async function registerPiBaseTools(): Promise<void> {
       policy: {
         version: TOOL_POLICY_VERSION,
         permission: { defaultDecision: "passthrough" },
-        execution: { effect: "local_mutation", mode: "sequential", isolation: "exclusive_effect", replay: "never" },
+        execution: { effect: "local_mutation", isolation: "exclusive_effect", replay: "never" },
         context: { resultProjection: "preserve", historyCompaction: "summarize" },
       },
     }),
@@ -78,7 +79,7 @@ export async function registerPiBaseTools(): Promise<void> {
       policy: {
         version: TOOL_POLICY_VERSION,
         permission: { defaultDecision: "passthrough" },
-        execution: { effect: "process", mode: "sequential", isolation: "exclusive_effect", replay: "never" },
+        execution: { effect: "process", isolation: "exclusive_effect", replay: "never" },
         context: { resultProjection: "reference", historyCompaction: "summarize" },
       },
     }),
@@ -86,13 +87,29 @@ export async function registerPiBaseTools(): Promise<void> {
   log.info("Pi 基础工具已注册: read/write/edit/bash")
 }
 
-function classifyBashRisk(params: Record<string, unknown>): "NORMAL" | "DANGER" | "NOWAY" {
+/** 从 bash 命令里切出可能的路径 token 并逐个分级。
+ *  跳过选项（`-x`）与整段单引号包裹的字面量（与 Rust tokenizer 的 single_quoted 语义一致）；
+ *  双引号包裹的仍要判：双引号里可能有 `$()`/反引号展开。 */
+function classifyBashPaths(command: string): SafetyLevel {
+  let level: SafetyLevel = "SAFE"
+  for (const raw of command.split(/\s+/)) {
+    if (/^'.*'$/.test(raw) && !raw.includes("$(") && !raw.includes("`")) continue
+    const token = raw.replace(/^['"`;&|<>()]+/, "").replace(/['"`;&|<>()]+$/, "")
+    if (!token || token.startsWith("-")) continue
+    level = maxSafetyLevel(level, resolveFilePathLevel(token))
+  }
+  return level
+}
+
+/** 实取 NORMAL | DANGER | NOWAY —— 命令模式匹配管「做什么」，路径级检查管「对谁做」。 */
+function classifyBashRisk(params: Record<string, unknown>): SafetyLevel {
   const command = String(params.command ?? "").trim()
   if (!command) return "DANGER"
   if (matchesAnyPattern(command, BASH_NOWAY_PATTERNS)) return "NOWAY"
   if (matchesAnyPattern(command, BASH_DANGEROUS_PATTERNS)) return "DANGER"
-
   const first = command.split(/\s+/)[0]
   const hasShellControl = /[;&|<>`\n]|\$\(|\$\{/.test(command)
-  return !hasShellControl && toolsConfig.bashWhitelist.includes(first) ? "NORMAL" : "DANGER"
+  const base: SafetyLevel = !hasShellControl && toolsConfig.bashWhitelist.includes(first) ? "NORMAL" : "DANGER"
+  // 路径级检查放在模式匹配之后：命中 NOWAY 直接硬拒绝，避免落到陪伴模式的 confirm 分支
+  return maxSafetyLevel(base, classifyBashPaths(command))
 }

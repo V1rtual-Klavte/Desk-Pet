@@ -7,14 +7,25 @@
  */
 
 import type {
+  ContextAllocation,
   ContextBlock,
   PromptAgentMessage,
   PromptCacheInfo,
+  PromptCapabilityContext,
+  PromptCompactionContext,
   PromptLlmMessage,
+  PromptPlanContext,
+  PromptRequestContext,
+  PromptRequestParams,
   PromptSnapshot,
+  PromptTokenDrift,
   PromptToolSchema,
   PromptTransform,
 } from "./types"
+// engine → context 的运行时依赖必须走零依赖叶子（budget.ts）：context/builder.ts 已 import
+// `@/services/agent/memory`，若这里 import `@/services/context` 的 barrel，模块初始化顺序会成环。
+import { estimateContextTokens, estimateMessageTokens } from "@/services/context/budget"
+import { isTransientInputMessage } from "./input-identity"
 
 export interface PromptSnapshotInput {
   snapshotId: string
@@ -33,11 +44,21 @@ export interface PromptSnapshotInput {
   transforms: PromptTransform[]
   estimatedInputTokens: number
   budget?: import("@/services/context").ContextBudget
-  allocations?: import("./types").ContextAllocation[]
+  allocations?: ContextAllocation[]
   contextEpoch?: number
   actualInputTokens?: number
   actualOutputTokens?: number
+  tokenDrift?: PromptTokenDrift
   cache?: PromptCacheInfo
+  request?: PromptRequestContext
+  payloadHash?: string
+  systemPromptHash?: string
+  requestParams?: PromptRequestParams
+  plan?: PromptPlanContext
+  capabilities?: PromptCapabilityContext
+  compaction?: PromptCompactionContext
+  generation?: number
+  budgetDrops?: import("@/services/context").ContextBudgetAdjustment[]
 }
 
 export interface RedactedText {
@@ -77,6 +98,56 @@ export function stableSerialize(value: unknown): string {
 export async function sha256Text(value: string): Promise<string> {
   const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(value))
   return Array.from(new Uint8Array(digest), byte => byte.toString(16).padStart(2, "0")).join("")
+}
+
+/** 消息身份的读取面：谓词按可选字段判定，非对象形态（字符串提示等）按「不是瞬时输入」处理。 */
+function messageIdentityOf(message: unknown): { role?: unknown; customType?: unknown; deskpetEventId?: unknown } | undefined {
+  return message && typeof message === "object" ? message as { role?: unknown; customType?: unknown; deskpetEventId?: unknown } : undefined
+}
+
+/**
+ * 刷新一层的账目：`requested` 改记实际用量，淘汰量按「原 requested − 现 used」重算。
+ *
+ * 只在确实淘汰（> 0）时写 `dropped`：写 0 会让「没有淘汰」和「淘汰了 0」两种账目无法区分。
+ * 上游内核已记下的淘汰不因重算不出正数而被抹掉（沿用原值）。
+ */
+function refreshAllocation(allocation: ContextAllocation, used: number): ContextAllocation {
+  const { dropped: previous, ...rest } = allocation
+  const dropped = allocation.requested - used
+  const effective = dropped > 0 ? dropped : previous !== undefined && previous > 0 ? previous : undefined
+  return { ...rest, requested: used, used, ...(effective === undefined ? {} : { dropped: effective }) }
+}
+
+/**
+ * 按 stage 刷新消息类分配的唯一实现。
+ *
+ * transcript 记请求视图的实际用量（agentMessages 减去瞬时输入），ephemeral 记「非 active 的
+ * ephemeral 块 + 瞬时输入」：主动搭话是 custom 消息、投递的用户输入带 `deskpetEventId`，
+ * 两类都要从 transcript 挪到 ephemeral（判定见 `isTransientInputMessage`），否则主动输入的
+ * token 会被记进会话历史行，ephemeral 行看不到它。
+ *
+ * `options.transientInput` 是「这次请求含瞬时输入」的显式声明（避免没有瞬时输入时白扫一遍消息）；
+ * 具体哪几条算瞬时输入仍按消息身份逐条判定 —— 整轮代传会把历史消息也标成瞬时，transcript 行就废了。
+ */
+export function refreshMessageAllocations(
+  allocations: readonly ContextAllocation[],
+  agentMessages: readonly unknown[],
+  options: { transientInput: boolean; blocks?: readonly { layer: string; origin: string; text: string }[] },
+): ContextAllocation[] {
+  // 显式声明累加器类型：`readonly unknown[]` 下 reduce 的重载会退化成 unknown。[同 `budget.ts` 的写法]
+  const transientTokens = options.transientInput
+    ? agentMessages.filter(message => isTransientInputMessage(messageIdentityOf(message)))
+        .reduce<number>((total, message) => total + estimateMessageTokens(message), 0)
+    : 0
+  const messageTokens = agentMessages.reduce<number>((total, message) => total + estimateMessageTokens(message), 0)
+  const blockTokens = (options.blocks ?? [])
+    .filter(block => block.layer === "ephemeral" && block.origin !== "active")
+    .reduce<number>((total, block) => total + estimateContextTokens(block.text), 0)
+  return allocations.map(allocation => {
+    if (allocation.layer === "transcript") return refreshAllocation(allocation, messageTokens - transientTokens)
+    if (allocation.layer === "ephemeral") return refreshAllocation(allocation, blockTokens + transientTokens)
+    return { ...allocation }
+  })
 }
 
 /** Redact common credentials while retaining a machine-readable redaction list. */
@@ -151,6 +222,19 @@ export async function createPromptSnapshot(input: PromptSnapshotInput): Promise<
     ...(input.contextEpoch === undefined ? {} : { contextEpoch: input.contextEpoch }),
     ...(input.actualInputTokens === undefined ? {} : { actualInputTokens: input.actualInputTokens }),
     ...(input.actualOutputTokens === undefined ? {} : { actualOutputTokens: input.actualOutputTokens }),
+    ...(input.tokenDrift ? { tokenDrift: { ...input.tokenDrift } } : {}),
+    ...(input.request ? { request: { ...input.request } } : {}),
+    ...(input.payloadHash ? { payloadHash: input.payloadHash } : {}),
+    ...(input.systemPromptHash ? { systemPromptHash: input.systemPromptHash } : {}),
+    ...(input.requestParams ? { requestParams: { ...input.requestParams } } : {}),
+    ...(input.plan ? { plan: { ...input.plan } } : {}),
+    ...(input.capabilities ? { capabilities: {
+      ...input.capabilities,
+      toolDecisions: input.capabilities.toolDecisions.map(decision => ({ ...decision })),
+    } } : {}),
+    ...(input.compaction ? { compaction: { ...input.compaction } } : {}),
+    ...(input.generation === undefined ? {} : { generation: input.generation }),
+    ...(input.budgetDrops ? { budgetDrops: input.budgetDrops.map(drop => ({ ...drop })) } : {}),
     cache: { ...(input.cache ?? {}) },
     redactions: [...redactions].sort(),
     createdAt: Date.now(),

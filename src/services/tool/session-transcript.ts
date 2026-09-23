@@ -2,8 +2,10 @@
 //
 // 真相源是 Harness 会话条目（sessions/ 下的 JSONL）：请求投影里的引用地址就是工具结果条目的 id。
 // 分页语义：同名同参、offset/总长。
+//
+// `createTranscriptTool` 是本仓唯一实现；生产调用方在 engine/pi/runtime.ts，用
+// `slot.readToolResult` 作 reader（会话作用域的读取在槽上，工具只认 entryId，不认 session id）。
 
-import { contentText } from "@earendil-works/pi-ai"
 import type { ToolDef } from "./types"
 import { TOOL_POLICY_VERSION } from "./types"
 import { defineTool } from "./policy"
@@ -32,7 +34,7 @@ export function createTranscriptTool(readEntry: ToolResultEntryReader): ToolDef 
       version: TOOL_POLICY_VERSION,
       // 只能读当前会话，且分页大小由统一预算限定；工具侧不额外表态。
       permission: { defaultDecision: "allow" },
-      execution: { effect: "read", mode: "parallel", isolation: "shared_read", replay: "never" },
+      execution: { effect: "read", isolation: "shared_read", replay: "never" },
       // 页本身就是有界投影：请求里不再二次缩短，避免「引用 → 读取 → 又变成引用」的循环。
       context: { resultProjection: "preserve", historyCompaction: "summarize" },
     },
@@ -43,26 +45,4 @@ export function createTranscriptTool(readEntry: ToolResultEntryReader): ToolDef 
     if (text === undefined) return { success: false, content: "", error: "当前会话没有此工具结果", errorCode: "not_found" }
     return { success: true, content: formatTranscriptPage(text, typeof params.offset === "number" ? params.offset : 0) }
   })
-}
-
-/**
- * 按会话读取一条工具结果条目。
- * 动态 import 会话仓库：工具模块被运行内核 barrel 引用，静态依赖会形成
- * tool → session/repo → engine/pi → tool 的初始化环。
- */
-export async function readSessionToolResultEntry(sessionId: string, entryId: string): Promise<string | undefined> {
-  if (!sessionId.trim() || !entryId) return undefined
-  const [{ acquirePiSession }, { BACKGROUND_CONTEXT }] = await Promise.all([
-    import("@/services/session/repo"),
-    import("@earendil-works/pi-agent-core"),
-  ])
-  const session = await acquirePiSession(sessionId)
-  const entry = await session.getEntry(entryId, BACKGROUND_CONTEXT)
-  if (entry?.type !== "message" || entry.message.role !== "toolResult") return undefined
-  return contentText(entry.message.content)
-}
-
-/** Read-only, session-scoped access to retained tool output; 供会话级工具入口使用。 */
-export function createSessionTranscriptTool(sessionId: string): ToolDef {
-  return createTranscriptTool(entryId => readSessionToolResultEntry(sessionId, entryId))
 }

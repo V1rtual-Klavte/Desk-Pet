@@ -1,3 +1,7 @@
+// Live Test 启动脚本（Node 侧，负责构建、起 WebView、汇总报告）。
+// 开发工具直接用 console：改走 logger 会污染 data_root/logs/deskpet.log
+// 并引入 IPC 依赖 [保留已登记 §4.2]
+
 import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync } from "node:fs"
 import { createHash } from "node:crypto"
 import { execFileSync, spawn } from "node:child_process"
@@ -17,7 +21,11 @@ function sha256(parts) {
 
 function currentCommit() {
   try { return execFileSync("git", ["rev-parse", "HEAD"], { cwd: process.cwd(), encoding: "utf8" }).trim() }
-  catch { return "unknown" }
+  catch (error) {
+    // 开发工具不接 logger（会污染 data_root/logs/deskpet.log 并引入 IPC 依赖）
+    console.warn("[live-test] git rev-parse HEAD 失败，报告里的 commit 记为 unknown：", error instanceof Error ? error.message : String(error))
+    return "unknown"
+  }
 }
 
 // 参数要先解析：下面的 Contract 门禁需要知道自己是不是单模块运行

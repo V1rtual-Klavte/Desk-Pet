@@ -5,14 +5,15 @@ export const harnessStorageContract: ModuleContract = {
   sourceFiles: [
     "src/services/engine/pi/session-repo.ts",
     "src/services/tool/pi/tauri-execution-env.ts",
+    "src/services/session/repo.ts",
   ],
-  generatedAt: "2026-09-17",
-  sourceHash: "ec52e19ed1dbf9c3473178b932b3f6c428094704a69316c208e170a548b1d7f9",
+  generatedAt: "2026-09-23",
+  sourceHash: "38aa8f29b2990114f01125fab0750dd6d852e5867173c2a822971f0eae1280ec",
   coverage: [
     {
       id: "hs-01",
       feature: "JsonlSessionRepo 官方一致性",
-      description: "官方一致性套件的 lifecycle/ownership/messages/fork 共 15 条 case 在 TauriExecutionEnv（真实 Rust IPC）上通过：创建、列举、删除、独占打开、消息持久化、fork；fork destination reservation 组依赖「先调用者先占位」的时序，在官方 NodeExecutionEnv 上同样稳定失败（上游竞态），不纳入",
+      description: "官方一致性套件的 lifecycle/ownership/messages/fork 共 15 条 case 在 TauriExecutionEnv（真实 Rust IPC）上通过：创建、列举、删除、独占打开、消息持久化、fork；fork destination reservation 组依赖「先调用者先占位」的时序，在官方 NodeExecutionEnv 上同样稳定失败（上游竞态），不纳入。本覆盖点是 H-1 的存储层边界：只验证存储实现，不经过模型；生产入口的写入路径由 hs-04 承接",
       why: "H-1 用官方协议验证存储实现，重启恢复与 fork 语义不靠自造断言",
       depth: "deep",
       scenarios: ["harness-session-repo-conformance"],
@@ -33,13 +34,19 @@ export const harnessStorageContract: ModuleContract = {
       depth: "deep",
       scenarios: ["harness-session-restart-recovery"],
     },
+    {
+      id: "hs-04",
+      feature: "旁路写入与分支 tip 链",
+      description: "阻塞工具期间经 session/repo 的旁路入口写入自定义条目：条目在会话文件中可读，且回合结束后仍在 lane 分支 tip 链上",
+      why: "lane 的 tip 缓存若挤掉旁路写入，审计条目会静默从证据链里消失",
+      depth: "deep",
+      scenarios: ["harness-branch-tip-bypass"],
+    },
   ],
   rules: {
-    minScenarios: 3,
-    minDeepScenarios: 3,
+    minScenarios: 4,
+    minDeepScenarios: 4,
     requireBoundary: true,
     requireErrorPath: true,
-    unitOnly: true,
-    unitOnlyReason: "H-1 只验证存储层：官方一致性套件与 FileSystem 行为都在应用内通过真实 Rust IPC 执行，但都不经过模型；模型驱动的 Harness 全链路（accept/drive/steer）按 §8.9 属于 H-2，本批次没有可运行的 production/runtime 入口",
   },
 }

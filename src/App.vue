@@ -23,19 +23,31 @@ import { createLogger } from "@/services/logger";
 import { formatError } from "@/services/error";
 import { playEventSound } from "@/services/audio/registry";
 import { emit, listen } from "@tauri-apps/api/event";
-import { stopMemoryConsolidationTimer } from "@/services/agent/memory/consolidate"
 
 const log = createLogger("App");
+
+/**
+ * 高频事件（拖动/缩放）的发送失败只上报一次：逐次打日志会淹没终端，
+ * 但静默会让设置页/图层编辑器的预览冻结得无从解释。
+ */
+const reportedEmitFailures = new Set<string>()
+function reportEmitFailure(event: string, error: unknown): void {
+  if (reportedEmitFailures.has(event)) return
+  reportedEmitFailures.add(event)
+  log.error(`事件 ${event} 发送失败（设置页/图层编辑器预览不会更新；后续同类失败不再重复报告）`, formatError(error))
+}
 
 /** 新建会话后补一条问候语 —— 一律走当前激活 Card，不在调用点写死文案。 */
 async function greetNewSession(): Promise<void> {
   const { pickActiveGreeting } = await import("@/services/personality");
   const greeting = pickActiveGreeting();
-  if (greeting) await initWelcome(greeting);
+  if (greeting) await initWelcome(greeting, getActiveSessionId());
 }
 
 const isWinSim = (() => {
   try { return getCurrentWebviewWindow().label === "windows-sim"; }
+  // 非 Tauri 环境守卫：拿不到窗口对象时按「非仿真窗口」处理，没有静默降级
+  // [保留已登记 §4.2]
   catch { return false; }
 })();
 
@@ -149,7 +161,6 @@ async function onRestoreSession(item: PiSessionSummary) {
       id: item.id,
       name: item.name || "新会话",
       createdAt: item.createdAt,
-      messageCount: item.messageCount,
       path: item.path,
     })
     await switchToSession(item.id)
@@ -199,9 +210,11 @@ async function enhanceWindowWhenReady(
 ): Promise<void> {
   const deadline = Date.now() + 2000;
   for (;;) {
+    // 轮询期间窗口可能还没建出来：null 表示「本轮还没就绪」，不是失败 ——
+    // 超时未就绪的情况已在下面 log.warn 留痕 [保留已登记 §4.2]
     const win = await WebviewWindow.getByLabel(label).catch(() => null);
     if (win) {
-      if (beforeEnhance) await beforeEnhance(win).catch(() => {});
+      if (beforeEnhance) await beforeEnhance(win).catch(error => log.warn("窗口增强前置动作失败（继续尝试提层命令）:", formatError(error)));
       await invoke(command).catch(error => log.warn(`${command} 调用失败:`, formatError(error)));
       return;
     }
@@ -217,7 +230,10 @@ async function openLayerEditor() {
   try {
     const existing = await WebviewWindow.getByLabel("layer-editor");
     if (existing) { await existing.setFocus(); return; }
-  } catch { /* ignore */ }
+  } catch {
+    // 查询失败按「未打开」处理：真存在时下面的 new WebviewWindow 会抛「窗口已存在」，
+    // 由全局异常拦截接住 [保留已登记 §4.2]
+  }
   new WebviewWindow("layer-editor", {
     url: "layer-editor.html",
     title: "图层编辑器 - 糖糖桌宠",
@@ -482,7 +498,7 @@ function onContextMenu(e: MouseEvent) {
 function copySelection() {
   const sel = window.getSelection();
   if (sel && sel.toString().trim()) {
-    navigator.clipboard.writeText(sel.toString()).catch(() => {});
+    navigator.clipboard.writeText(sel.toString()).catch(error => log.warn("复制所选文本失败:", formatError(error)));
   }
   ctxMenu.value.visible = false;
 }
@@ -493,7 +509,8 @@ function hideCtxMenu() {
 
 async function openDevTools() {
   ctxMenu.value.visible = false;
-  invoke("open_devtools").catch(() => {});
+  // 开发调试入口，影响面仅开发者 [保留已登记 §4.2]
+  invoke("open_devtools").catch(error => log.debug("开发调试入口不可用:", formatError(error)));
 }
 
 // ==========================================
@@ -591,7 +608,7 @@ onMounted(async () => {
     pollingIntervalMs: desktopConfig.pollingIntervalMs,
     pauseExtraMs: desktopConfig.pauseExtraMs,
     waitTimeoutMs: desktopConfig.waitTimeoutMs,
-  }).catch(() => {});
+  }).catch(error => log.warn("监控节流参数下发失败，Rust 仍用默认节流参数:", formatError(error)));
   playEventSound("welcome");
   cleanupListener = await initWindowListener(winSize);
 
@@ -622,10 +639,13 @@ onMounted(async () => {
         lastMovedPos.value = lp;
       }
       if (!isRetracted.value && !isAnimating.value) {
-        emit("deskpet-moved", lp).catch(() => {});
+        emit("deskpet-moved", lp).catch(error => reportEmitFailure("deskpet-moved", error));
       }
     });
-  } catch { /* ignore */ }
+  } catch (error) {
+    // 注册失败 = 这条通道整体失效（拖动位置/缩放/预览尺寸/设置保存都不再更新）
+    log.error("deskpet-moved 监听注册失败", formatError(error))
+  }
 
   // 窗口缩放
   try {
@@ -638,16 +658,19 @@ onMounted(async () => {
         && Math.abs(sz.h - exp.h) <= 5
         && Date.now() < ignoreResizeUntil;
       if (isProgrammatic) {
-        emit("deskpet-resized", exp).catch(() => {});
+        emit("deskpet-resized", exp).catch(error => reportEmitFailure("deskpet-resized", error));
         return;
       }
       if (!isRetracted.value && !isAnimating.value && sz.w <= 4000 && sz.h <= 4000) {
         userConfig.popupSize = sz;
-        emit("deskpet-resized", sz).catch(() => {});
+        emit("deskpet-resized", sz).catch(error => reportEmitFailure("deskpet-resized", error));
         log.debug("窗口缩放已保存:", sz);
       }
     });
-  } catch { /* ignore */ }
+  } catch (error) {
+    // 注册失败 = 这条通道整体失效（拖动位置/缩放/预览尺寸/设置保存都不再更新）
+    log.error("deskpet-resized 监听注册失败", formatError(error))
+  }
 
   // 设置面板预览
   try {
@@ -655,7 +678,10 @@ onMounted(async () => {
       setWindowSize(event.payload.w, event.payload.h);
       log.debug("预览大小:", event.payload);
     });
-  } catch { /* ignore */ }
+  } catch (error) {
+    // 注册失败 = 这条通道整体失效（拖动位置/缩放/预览尺寸/设置保存都不再更新）
+    log.error("deskpet-preview-size 监听注册失败", formatError(error))
+  }
 
   // 设置面板保存
   try {
@@ -679,7 +705,10 @@ onMounted(async () => {
       }
       log.debug("配置缓存已刷新 + Debug状态已更新 + 快捷键已重注册 + 光标追踪已按 effectMode 同步");
     });
-  } catch { /* ignore */ }
+  } catch (error) {
+    // 注册失败 = 这条通道整体失效（拖动位置/缩放/预览尺寸/设置保存都不再更新）
+    log.error("deskpet-settings-saved 监听注册失败：设置保存后主窗口不会刷新（快捷键、光标追踪、Skill 目录、assistantMode 仍是旧值）", formatError(error))
+  }
 
   document.addEventListener("click", hideCtxMenu);
 
@@ -695,7 +724,7 @@ onMounted(async () => {
       isDraggingByUser.value = false;
       if (lastMovedPos.value && !isRetracted.value && !isAnimating.value) {
         userConfig.fixedPosition = { x: lastMovedPos.value.x, y: lastMovedPos.value.y };
-        emit("deskpet-moved", { x: lastMovedPos.value.x, y: lastMovedPos.value.y }).catch(() => {});
+        emit("deskpet-moved", { x: lastMovedPos.value.x, y: lastMovedPos.value.y }).catch(error => reportEmitFailure("deskpet-moved", error));
         log.debug("拖动已保存位置:", lastMovedPos.value);
       }
     }
@@ -709,7 +738,6 @@ onMounted(async () => {
 });
 
 onUnmounted(() => {
-  stopMemoryConsolidationTimer()
   void import("@/services/tool/mcp").then(({ disconnectAllMcpServers }) => disconnectAllMcpServers())
   if (cleanupListener) cleanupListener();
   disposeCursorTracker();

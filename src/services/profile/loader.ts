@@ -4,9 +4,10 @@
 // ==========================================
 
 import { createLogger } from "@/services/logger";
-import { appearanceConfig } from "@/services/config";
+import { appearanceConfig, flushConfig, setOverride } from "@/services/config";
 import { DEFAULT_PROFILE } from "@/services/paths";
 import { convertFileSrc, invoke } from "@tauri-apps/api/core";
+import { emit } from "@tauri-apps/api/event";
 import { formatError } from "@/services/error";
 import { ref } from "vue";
 
@@ -81,7 +82,6 @@ export interface ProfileParallaxLayer {
 }
 
 export interface ProfileParallax {
-  intensity: number
   layers: ProfileParallaxLayer[]
 }
 
@@ -208,6 +208,14 @@ export async function getProfileAssetUrl(profileId: string, relativePath: string
 
 // ── Profile 加载 ──
 
+/** 按层取默认值：层数超出缺省表长度时回退到最后一层并留痕，绝不产出 undefined。 */
+function layerDefault<T>(table: readonly T[], index: number, field: string): T {
+  const value = table[index]
+  if (value !== undefined) return value
+  log.warn(`Profile 层数超出默认表长度，${field} 回退最后一层默认值: layer=${index}`)
+  return table[table.length - 1]!
+}
+
 async function loadProfile(id: string): Promise<ProfileData> {
   const basePath = await resolveProfileBaseUrl(id);
 
@@ -217,7 +225,7 @@ async function loadProfile(id: string): Promise<ProfileData> {
     try {
       defaultUiBasePath = await resolveProfileBaseUrl(DEFAULT_PROFILE);
     } catch (error) {
-      log.warn(`默认 UI Profile 不可用，继续使用 ${id} 自身资源`, error);
+      log.warn(`默认 UI Profile 不可用，继续使用 ${id} 自身资源`, formatError(error));
     }
   }
 
@@ -225,7 +233,8 @@ async function loadProfile(id: string): Promise<ProfileData> {
   let charBasePath = basePath; // ★ character.yaml 实际所在 Profile（可能回退到默认）
   try {
     rawChar = await fetchYaml<any>(`${basePath}/character.yaml`);
-  } catch {
+  } catch (e) {
+    log.warn(`character.yaml 缺失，回退默认 Profile: ${id}`, formatError(e));
     charBasePath = await resolveProfileBaseUrl(DEFAULT_PROFILE);
     rawChar = await fetchYaml<any>(`${charBasePath}/character.yaml`);
   }
@@ -244,15 +253,14 @@ async function loadProfile(id: string): Promise<ProfileData> {
       shield: rawProfile?.theme?.shield || { enabled: false, image: "" },
       useDefaultUi: rawProfile?.theme?.useDefaultUi === true,
       parallax: {
-        intensity: rawProfile?.theme?.parallax?.intensity ?? 1.0,
         layers: (rawProfile?.theme?.parallax?.layers || []).map((l: any, i: number) => ({
           enabled: l?.enabled ?? (i === 2),
           image: l?.image ?? (i === 2 ? "materials/L2/body.png" : ""),
-          sensitivity: l?.sensitivity ?? [0.2, 0.5, 0.8, 1.2, 1.6][i],
-          shadow: l?.shadow ?? [0.25, 0.18, 0.12, 0.06, 0.03][i],
-          brightness: l?.brightness ?? [0.93, 0.95, 1.00, 1.02, 1.03][i],
-          contrast: l?.contrast ?? [0.96, 0.98, 1.00, 1.02, 1.03][i],
-          saturate: l?.saturate ?? [0.92, 0.95, 1.00, 1.05, 1.08][i],
+          sensitivity: l?.sensitivity ?? layerDefault([0.2, 0.5, 0.8, 1.2, 1.6], i, "sensitivity"),
+          shadow: l?.shadow ?? layerDefault([0.25, 0.18, 0.12, 0.06, 0.03], i, "shadow"),
+          brightness: l?.brightness ?? layerDefault([0.93, 0.95, 1.00, 1.02, 1.03], i, "brightness"),
+          contrast: l?.contrast ?? layerDefault([0.96, 0.98, 1.00, 1.02, 1.03], i, "contrast"),
+          saturate: l?.saturate ?? layerDefault([0.92, 0.95, 1.00, 1.05, 1.08], i, "saturate"),
           scale: l?.scale ?? 1.0,
           offsetX: l?.offsetX ?? 0,
           offsetY: l?.offsetY ?? 0,
@@ -301,7 +309,7 @@ export async function initProfiles(): Promise<void> {
     profiles.set(targetId, data);
     log.info(`Profile 已加载: "${targetId}" (${data.meta.name})`);
   } catch (e) {
-    log.error(`Profile "${targetId}" 加载失败:`, e);
+    log.error(`Profile "${targetId}" 加载失败:`, formatError(e));
     if (targetId !== DEFAULT_PROFILE) {
       try {
         const fallback = await loadProfile(DEFAULT_PROFILE);
@@ -340,7 +348,7 @@ export async function ensureProfileLoaded(id: string): Promise<ProfileData | nul
     }
   }
   try { const data = await loadProfile(id); profiles.set(id, data); return data; }
-  catch (e) { log.error(`Profile "${id}" 加载失败:`, e); return null; }
+  catch (e) { log.error(`Profile "${id}" 加载失败:`, formatError(e)); return null; }
 }
 
 export function activateProfile(id: string): boolean {
@@ -352,6 +360,22 @@ export function activateProfile(id: string): boolean {
   activeProfileRevision.value++;
   log.info(`Profile 已激活: "${id}" (${p.meta.name})`);
   return true;
+}
+
+/**
+ * 切换活动 Profile 的唯一入口：内存激活 + 持久化 appearance.activeProfile + 通知窗口。
+ *
+ * 返回 false 时保持原状态：`activateProfile` 失败不会改写 `activeId`，调用方
+ * 不要自己再拼 `activateProfile` + `setOverride` + `emit`。
+ */
+export async function switchActiveProfile(id: string): Promise<boolean> {
+  const profile = await ensureProfileLoaded(id)
+  if (!profile) { log.error(`Profile "${id}" 不可用，切换取消`); return false }
+  if (!activateProfile(id)) return false
+  setOverride("appearance.activeProfile", id)
+  await flushConfig()
+  await emit("deskpet-profile-updated", { profileId: id })
+  return true
 }
 
 // ── CSS 变量注入 ──

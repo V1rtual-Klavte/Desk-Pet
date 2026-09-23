@@ -31,7 +31,9 @@ use crate::paths::AppPaths;
 use crate::{rust_debug, rust_warn};
 
 /// 共享读上限的默认值与可配置范围（`ai.loop.maxParallelTools`）。宿主侧唯一的额度定义点：
-/// 默认值就是历史常量，前端不复制一份，只把配置里的数字下发到这里。
+/// 默认值是**无配置可下发时**的兜底（Live Test / 单独启动没有前端），不是「前端不复制一份」——
+/// 前端 `MIN/MAX/DEFAULT_PARALLEL_TOOLS` 是同值副本，供设置页校验用；两者一致性由
+/// `tool-execution-permit` 场景的可执行边界钉保证（上限原值被接受、两侧越界被拒绝）。
 const DEFAULT_MAX_SHARED_READERS: usize = 4;
 const MIN_MAX_SHARED_READERS: usize = 1;
 const MAX_MAX_SHARED_READERS: usize = 8;

@@ -5,11 +5,12 @@
 import type { Message } from "@/services/agent/types"
 import { createUserMessage, createAssistantMessage, createSystemMessage } from "@/services/agent/types"
 import { chatHistory, unansweredCount, activeSessionId } from "./store"
-import { pushMessage, clearMessages, deleteMessage as delMsg } from "./store"
+import { pushMessageFor } from "./store"
 import { saveUnanswered } from "./persistence"
-import { updateSessionName, updateSessionMessageCount } from "./manager"
+import { updateSessionName } from "./manager"
 import { appendPiSessionCustomEntry } from "./repo"
-import { DESKPET_GREETING_ENTRY } from "./read-model"
+import { DESKPET_GREETING_ENTRY, DESKPET_SYSTEM_MESSAGE_ENTRY } from "@/services/engine/runtime"
+import { harnessSlots } from "@/services/engine/pi"
 import { createLogger } from "@/services/logger"
 import { formatError } from "@/services/error"
 
@@ -19,13 +20,12 @@ const log = createLogger("Msg")
 // 欢迎 & 推送
 // ═══════════════════════════════════════════════════
 
-export async function initWelcome(text: string): Promise<void> {
+export async function initWelcome(text: string, sessionId: string): Promise<void> {
   if (chatHistory.length > 0) return
-  pushMessage(createAssistantMessage(text))
+  pushMessageFor(sessionId, createAssistantMessage(text))
 
   // 问候语不经过 Agent 回合，没有别的地方替它落盘。写入 deskpet 自定义 entry，
   // 切走会话/重启后仍能恢复（harness 默认不把它投影进模型上下文）。
-  const sessionId = activeSessionId.value
   if (!sessionId) return
   try {
     await appendPiSessionCustomEntry(sessionId, DESKPET_GREETING_ENTRY, { text })
@@ -34,43 +34,43 @@ export async function initWelcome(text: string): Promise<void> {
   }
 }
 
-export function pushUserMessage(text: string): Message {
+export function pushUserMessage(text: string, sessionId: string): Message {
   const msg = createUserMessage(text)
-  pushMessage(msg)
+  pushMessageFor(sessionId, msg)
 
+  // 改名只在「首条用户消息落进它自己的视图」时发生：跨会话推送不替别人改会话名。
   const userMsgs = chatHistory.filter(m => m.role === "user")
-  if (userMsgs.length === 1 && activeSessionId.value) {
-    updateSessionName(activeSessionId.value, text)
+  if (userMsgs.length === 1 && sessionId === activeSessionId.value) {
+    updateSessionName(sessionId, text)
   }
-  updateSessionMessageCount(activeSessionId.value)
 
   return msg
 }
 
-export function pushAssistantMessage(text: string): Message {
+export function pushAssistantMessage(text: string, sessionId: string): Message {
   const msg = createAssistantMessage(text)
-  pushMessage(msg)
-  updateSessionMessageCount(activeSessionId.value)
+  pushMessageFor(sessionId, msg)
   return msg
 }
 
-export function pushSystemMessage(text: string): Message {
+export function pushSystemMessage(text: string, sessionId: string): Message {
   const msg = createSystemMessage(text)
-  pushMessage(msg)
+  pushMessageFor(sessionId, msg)
+  persistSystemMessage(sessionId, text)
   return msg
 }
 
-// ═══════════════════════════════════════════════════
-// 清空 / 删除
-// ═══════════════════════════════════════════════════
-
-export function clearHistory(): void {
-  clearMessages()
-}
-
-export function deleteMessage(id: string): boolean {
-  const ok = delMsg(id)
-  return ok
+/**
+ * 系统提示落盘（与问候语先例一致）：走槽的空闲队列，避免运行中与 lane 命令锁互等；无槽时直接追加。
+ * 失败只留 error 级证据，不影响已经进视图的消息。
+ */
+function persistSystemMessage(sessionId: string, text: string): void {
+  void (async () => {
+    if (!sessionId) return
+    const slot = harnessSlots.peek(sessionId)
+    if (slot) { slot.queueAuditEntry(DESKPET_SYSTEM_MESSAGE_ENTRY, { text }); return }
+    await appendPiSessionCustomEntry(sessionId, DESKPET_SYSTEM_MESSAGE_ENTRY, { text })
+  })().catch(error => log.error("系统提示落盘失败:", { sessionId }, formatError(error)))
 }
 
 // ═══════════════════════════════════════════════════

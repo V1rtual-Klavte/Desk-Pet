@@ -35,7 +35,7 @@ const appOpenTool: ToolDef = defineTool({
   policy: {
     version: TOOL_POLICY_VERSION,
     permission: { defaultDecision: "passthrough" },
-    execution: { effect: "process", mode: "sequential", isolation: "exclusive_effect", replay: "never" },
+    execution: { effect: "process", isolation: "exclusive_effect", replay: "never" },
     context: { resultProjection: "preserve", historyCompaction: "summarize" },
   },
 }, async (params) => {

@@ -6,7 +6,7 @@
 import type { PersonalityCard, CardSections, CardVariableDef, VariableScope, VariableType, VariableUpdateBy, VariableResetPolicy } from "./types"
 import { parseMustRules } from "./must-rules"
 import { createLogger } from "@/services/logger"
-import { formatError } from "@/services/error"
+import { formatError, reportError } from "@/services/error"
 
 const log = createLogger("Persona")
 
@@ -104,7 +104,6 @@ function parseOldFormatVars(raw: string): ParsedVarSection {
     initial: val,
     description: "",
     updateBy: "llm" as VariableUpdateBy,
-    persistent: true,
     reset: "never" as VariableResetPolicy,
   }))
 
@@ -173,7 +172,6 @@ function buildVarDef(name: string, raw: Record<string, unknown>, scope: Variable
     initial,
     description: String(raw.description ?? ""),
     updateBy: (raw.updateBy as VariableUpdateBy) || defaults.updateBy,
-    persistent: raw.persistent !== undefined ? Boolean(raw.persistent) : true,
     min: typeof raw.min === "number" ? raw.min : undefined,
     max: typeof raw.max === "number" ? raw.max : undefined,
     enum: Array.isArray(raw.enum) ? raw.enum.map(String) : undefined,
@@ -239,8 +237,9 @@ function parseLiteralVal(raw: string): number | string | boolean {
   return !isNaN(n) ? n : t
 }
 
-async function computeHash(content: string): Promise<string> {
-  const data = new TextEncoder().encode(content)
+/** 文本的 SHA-256 十六进制摘要（Card 正文与阶段文案失效键共用） */
+export async function hashCardText(text: string): Promise<string> {
+  const data = new TextEncoder().encode(text)
   const buf = await crypto.subtle.digest("SHA-256", data)
   return Array.from(new Uint8Array(buf)).map(b => b.toString(16).padStart(2, "0")).join("")
 }
@@ -252,7 +251,7 @@ let cards: PersonalityCard[] = []
 async function parseCard(raw: string): Promise<PersonalityCard> {
   const { meta, body } = parseFrontmatter(raw)
   const sections = parseSections(body)
-  const hash = await computeHash(raw)
+  const hash = await hashCardText(raw)
   return { id: meta.id, name: meta.name || meta.id, description: meta.description, version: meta.version, rawContent: raw, sections, hash, source: "runtime" }
 }
 
@@ -267,12 +266,14 @@ async function loadRuntimeCards(): Promise<PersonalityCard[]> {
         const raw = new TextDecoder().decode(new Uint8Array(rawBytes))
         result.push(await parseCard(raw))
       } catch (e) {
-        log.warn("用户 Card 读取失败:", file, e)
+        // 该 Card 会从列表里消失，属用户可见降级 —— 必须留 error 级证据并带卡名
+        log.error("用户 Card 读取失败:", file, formatError(e))
       }
     }
     return result
   } catch (e) {
-    log.debug("用户 Card 目录暂不可用:", e)
+    log.error("Card 目录不可用:", formatError(e))
+    reportError("Personality", e, { kind: "Card 目录不可用", overlay: false })
     return []
   }
 }

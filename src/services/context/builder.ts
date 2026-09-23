@@ -1,8 +1,9 @@
 // ==========================================
-// Context construction: assemble immutable blocks; kernel owns all selection.
+// Context construction: assemble immutable blocks. The kernel only does budget
+// math and the hard-limit decision — the request view is owned by the Harness.
 // ==========================================
 
-import type { Message, ToolDeclaration, ThinkingEffort } from "@/services/agent/types"
+import type { ToolDeclaration, ThinkingEffort } from "@/services/agent/types"
 import { getToolDeclarations } from "@/services/tool/registry"
 import { MemoryService } from "@/services/agent/memory"
 import { aiConfig } from "@/services/config"
@@ -13,15 +14,12 @@ import type { PersonalityCard } from "@/services/personality/types"
 import type { VariablePool } from "@/services/personality/variable-pool"
 import type { ContextBlock } from "@/services/engine/runtime"
 import type { MemoryProjection } from "@/services/agent/memory"
-import { buildContextKernel } from "./kernel"
-import { contextBudget, estimateContextTokens, toolBudgetSchema, type ContextBudget } from "./budget"
+import { buildPromptBlocks } from "./kernel"
+import type { ContextBudgetAdjustment } from "./kernel"
+import { contextBudget, toolBudgetSchema, type ContextBudget } from "./budget"
 import { createUserProfileProjection, memoryProjectionBlocks, profileProjectionBlock } from "./projection"
 
 export interface BuildContextInput {
-  recentMessages: Message[]
-  /** Durable ingress already contains the current input, including after tool turns. */
-  currentInputInTranscript?: boolean
-  userText: string
   unansweredCount?: number
   thinkingEffort: ThinkingEffort
   isActiveMessage?: boolean
@@ -43,18 +41,15 @@ export interface BuildContextInput {
 export interface BuildContextOutput {
   systemPrompt: string
   tools: ToolDeclaration[]
-  estimatedSystemTokens: number
   estimatedInputTokens: number
   contextMaxTokens: number
   budget: ContextBudget
-  overNormalTarget: boolean
   staticPrefix: string
-  sessionStatic: string
   turnDynamic: string
   blocks: ContextBlock[]
-  recentMessages: Message[]
   inputTokenBudget: number
-  budgetAdjustments: import("./kernel").ContextBudgetAdjustment[]
+  /** 被整块淘汰的可选块（内核产出）：审计与快照读它，不再有第二轮借用计算。 */
+  budgetDrops: ContextBudgetAdjustment[]
   allocations: import("@/services/engine/runtime").ContextAllocation[]
 }
 
@@ -86,11 +81,29 @@ function cardStaticPrompt(card: PersonalityCard | null): string {
   return pieces.filter(Boolean).join("\n\n")
 }
 
+/** 聊天回合的思考强度提示（与一次性请求的提示刻意不同，各自用途见常量注释）。 */
+export const CHAT_THINKING_HINTS: Record<"low" | "high", string> = {
+  low: "\n[请快速简要回答]",
+  high: "\n[请仔细深入思考]",
+}
+
+/**
+ * 一次性调用（planner/compaction/memory/stages）在非推理模型 + low 时的兜底提示。
+ *
+ * 它替的是「端点不认 reasoning_effort」这件事，比聊天回合的提示多一句「不需要过多思考」；
+ * 两个用途的文案必须保持不同，合并会让其中一边失去自己的语义。
+ */
+export const ONE_SHOT_LOW_EFFORT_HINT = "\n\n[请快速简要回答，不需要过多思考]"
+
+/** 变量池正文 + 思考强度后缀的唯一拼接点（聊天动态提示与冻结上下文都走它）。 */
+export function composeDynamicPrompt(poolText: string, effort: ThinkingEffort): string {
+  if (effort === "low") return `${poolText}${CHAT_THINKING_HINTS.low}`
+  if (effort === "high") return `${poolText}${CHAT_THINKING_HINTS.high}`
+  return poolText
+}
+
 function runtimeDynamicPrompt(pool: VariablePool, effort: ThinkingEffort): string {
-  let prompt = formatPoolForPrompt(pool)
-  if (effort === "low") prompt += "\n[请快速简要回答]"
-  else if (effort === "high") prompt += "\n[请仔细深入思考]"
-  return prompt
+  return composeDynamicPrompt(formatPoolForPrompt(pool), effort)
 }
 
 function decideTools(input: BuildContextInput): ToolDeclaration[] {
@@ -114,7 +127,7 @@ export function buildPrompt(input: BuildContextInput, card: PersonalityCard | nu
   const toolSchemaSnapshot = tools.length ? JSON.stringify(tools.map(toolBudgetSchema)) : ""
   const dynamic = input.dynamicPrompt ?? runtimeDynamicPrompt(pool, input.thinkingEffort)
 
-  const kernel = buildContextKernel([
+  const kernel = buildPromptBlocks([
     { blockId: "static:card", layer: "static", source: "personality-card", text: cardStaticPrompt(card), priority: 100, origin: "system", taint: "system" },
     { blockId: "static:candy", layer: "static", source: "CANDY.md", text: candy, priority: 99, origin: "system", taint: "system" },
     { blockId: "static:tool-protocol", layer: "static", source: "tool-protocol", text: toolProtocol, priority: 98, origin: "system", taint: "system" },
@@ -126,15 +139,14 @@ export function buildPrompt(input: BuildContextInput, card: PersonalityCard | nu
     // Summary remains derived session data; it never inherits CANDY's system-instruction taint.
     { blockId: "memory:session-summary", layer: "memory", source: "session-summary", text: input.sessionSummary ?? "", priority: 70, origin: "assistant", taint: "derived" },
     ...memoryProjectionBlocks(input.memoryProjections ?? []),
-    { blockId: "transcript:history", layer: "transcript", source: "session", text: "", priority: 60, origin: "assistant", taint: "derived" },
     { blockId: `ephemeral:${input.ephemeralOrigin ?? (input.isActiveMessage ? "active" : "none")}`,
       layer: "ephemeral", source: input.ephemeralOrigin ?? (input.isActiveMessage ? "active_monitor" : "none"),
       text: input.ephemeralText ?? "", priority: 50,
       origin: input.ephemeralOrigin ?? (input.isActiveMessage ? "active" : "system"), taint: "derived" },
-  ], input.recentMessages, contextMaxTokens, { budget, currentInput: input.currentInputInTranscript ? undefined : input.userText })
+  ], contextMaxTokens, { budget })
 
-  return { systemPrompt: kernel.systemPrompt, tools, estimatedSystemTokens: estimateContextTokens(kernel.systemPrompt),
-    estimatedInputTokens: kernel.estimatedInputTokens, contextMaxTokens, budget: kernel.budget, overNormalTarget: kernel.overNormalTarget,
-    staticPrefix: kernel.staticPrefix, sessionStatic: kernel.sessionStatic, turnDynamic: kernel.turnDynamic,
-    blocks: kernel.blocks, recentMessages: kernel.messages, inputTokenBudget: kernel.inputTokenBudget, budgetAdjustments: kernel.budgetAdjustments, allocations: kernel.allocations }
+  return { systemPrompt: kernel.systemPrompt, tools,
+    estimatedInputTokens: kernel.estimatedInputTokens, contextMaxTokens, budget: kernel.budget,
+    staticPrefix: kernel.staticPrefix, turnDynamic: kernel.turnDynamic,
+    blocks: kernel.blocks, inputTokenBudget: kernel.inputTokenBudget, budgetDrops: kernel.budgetDrops, allocations: kernel.allocations }
 }

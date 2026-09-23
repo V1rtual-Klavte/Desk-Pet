@@ -113,6 +113,7 @@ interface Config {
     plan: {
       enabled: boolean
       complexityThreshold: number
+      complexityEval: string
       maxSteps: number
       stepTimeoutMs: number
       stepMaxRounds: number
@@ -193,7 +194,6 @@ export async function initConfig(): Promise<void> {
   cfg = parsed
   leadingComments = extractLeadingComments(text)
   configInitialized = true
-  clearLegacyConfigCache()
 }
 
 export async function reloadConfig(): Promise<void> {
@@ -201,23 +201,6 @@ export async function reloadConfig(): Promise<void> {
   await initConfig()
   // 配置可能改了日志级别，立刻作用到前端与 Rust，不必等重启
   applyLogLevel()
-}
-
-function clearLegacyConfigCache(): void {
-  try {
-    const exact = new Set([
-      "deskpet_user_settings", "deskpet_config_overrides", "deskpet_chat_history",
-      "deskpet_sessions", "deskpet_active_session", "deskpet_parallax_layers",
-      "deskpet_parallax_offset_v2", "deskpet_parallax_dirty", "deskpet_divider_pos",
-      "deskpet_sound_assignments",
-    ])
-    const keys = Array.from({ length: localStorage.length }, (_, index) => localStorage.key(index))
-    for (const key of keys) {
-      if (key && (exact.has(key) || key.startsWith("deskpet_chat_") || key.startsWith("deskpet_unanswered_") || key.startsWith("deskpet_live_test_"))) {
-        localStorage.removeItem(key)
-      }
-    }
-  } catch { /* WebView storage may be unavailable in tests. */ }
 }
 
 // ── 配置写队列 ──
@@ -543,6 +526,8 @@ export const memoryConfig = {
 export const planConfig = {
   get enabled() { return overrideOr("ai.plan.enabled", cfg.ai?.plan?.enabled ?? true); },
   get complexityThreshold() { return overrideOr("ai.plan.complexityThreshold", cfg.ai?.plan?.complexityThreshold ?? 3); },
+  /** 复杂度评估方式：keyword 只用关键词（未命中直接低分，不发请求）；llm 未命中时再发一次独立请求。 */
+  get complexityEval() { return overrideOr("ai.plan.complexityEval", cfg.ai?.plan?.complexityEval || "keyword") as "keyword" | "llm" },
   get maxSteps() { return overrideOr("ai.plan.maxSteps", cfg.ai?.plan?.maxSteps ?? 8); },
   get stepTimeoutMs() { return overrideOr("ai.plan.stepTimeoutMs", cfg.ai?.plan?.stepTimeoutMs ?? 90000); },
   get stepMaxRounds() { return overrideOr("ai.plan.stepMaxRounds", cfg.ai?.plan?.stepMaxRounds ?? 5); },
@@ -555,8 +540,9 @@ export const planConfig = {
 /**
  * 共享读并行上限（`ai.loop.maxParallelTools`）的取值范围与默认值。
  *
- * 默认值等于许可所有者（src-tauri/src/commands/tool_permit.rs）的内置上限：不写这个
- * 字段时行为与引入配置前一致。运行期上限由所有者裁定，这里只定义可配置边界。
+ * Rust 是上限的所有者与默认值来源（src-tauri/src/commands/tool_permit.rs 是宿主侧唯一的
+ * 额度定义点）：这里的常量是 UI 校验副本，不构成第二个所有者；两者一致性由
+ * `tool-execution-permit` 场景的可执行边界钉保证（上限原值被接受、两侧越界被拒绝）。
  */
 export const MIN_PARALLEL_TOOLS = 1
 export const MAX_PARALLEL_TOOLS = 8

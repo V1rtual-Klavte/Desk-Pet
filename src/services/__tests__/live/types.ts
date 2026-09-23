@@ -3,7 +3,7 @@
 // ==========================================
 
 import type { VariablePool } from "@/services/personality/variable-pool"
-import type { PiAgentTurnOutput, TurnFailure } from "@/services/engine/pi"
+import type { HarnessSlotState, PiAgentTurnOutput, TurnFailure } from "@/services/engine/pi"
 
 // ── Scene DSL ──
 
@@ -23,6 +23,14 @@ export type SceneEntry = "runtime" | "production" | "unit"
 /** 测试宿主对 `requestPermissionConfirm()` 的应答策略；默认 "deny"（确定性优先）。 */
 export type ConfirmPolicy = "deny" | "approve"
 
+/**
+ * 测试宿主对「计划确认 / 逐步门」的应答策略；默认 "deny"（与 confirmPolicy 同规）。
+ *
+ * - `deny`：确认按 `{confirmed:false, reason:"user"}` 结算，逐步门按 `"abort"`
+ * - `auto` / `stepByStep`：确认按 `{confirmed:true, mode}` 结算，逐步门按 `"continue"`
+ */
+export type PlanPolicy = "auto" | "stepByStep" | "deny"
+
 export interface SceneMeta {
   /** Stable dataset identifier. The human description is allowed to change. */
   caseId: string
@@ -40,6 +48,11 @@ export interface SceneMeta {
    * 由 confirm-channel 按此策略确定性应答；不声明时为 "deny"。
    */
   confirmPolicy?: ConfirmPolicy
+  /**
+   * 场景对「计划确认 / 逐步门」的显式期望。测试宿主没有 PlanConfirm 面板，
+   * 由 plan-confirm-channel 按此策略确定性应答；不声明时为 "deny"。
+   */
+  planPolicy?: PlanPolicy
 }
 
 export type AssertCheck = {
@@ -47,15 +60,44 @@ export type AssertCheck = {
   run: (ctx: AssertContext) => Promise<void>
 }
 
+/**
+ * 一次权限确认请求的记录（`confirm-channel` 生产、报告与场景消费）。
+ *
+ * `sessionId`/`runGeneration` 是内核写入 `PermissionRequest` 的身份（`safety/confirm.ts` 的
+ * `ConfirmRequest` 同源）—— 授权正是按这份身份入账，所以「授权绑定哪个会话与代际」只能看它，
+ * 不能从场景自己传的参数反推。身份缺省（历史记录）时不写假值。
+ */
+export interface ConfirmRecord {
+  toolName: string
+  approved: boolean
+  sessionId?: string
+  runGeneration?: number
+}
+
 export interface AssertContext {
   output: PiAgentTurnOutput
   pool: VariablePool
-  session: { state: string; messageCount: number; toolCallCount: number }
+  /** 会话的真实状态：运行槽状态 + 落盘条目计数（没有进程内假状态机可读）。 */
+  session: { state: HarnessSlotState; entryCount: number; toolCallCount: number }
   memory: MemorySnapshot
   toolHistory: { toolName: string; status: string }[]
   /** 本场景已发生的确认请求（不含上一场景残留），用于区分「没调用工具」与「调用被拒」。 */
-  confirms: { toolName: string; approved: boolean }[]
+  confirms: ConfirmRecord[]
+  /** 本场景已发生的计划确认（不含上一场景残留），按发生顺序；进度与终态见 plan-confirm-channel。 */
+  plans: PlanConfirmRecord[]
   trial: number
+}
+
+/**
+ * 一次计划确认的记录。字段取确认当时的真实视图：
+ * `steps` 是**截断后**（`maxSteps` 生效后）的计划步数，`mode` 是一次性答复给出的执行方式。
+ */
+export interface PlanConfirmRecord {
+  planId: string
+  sessionId: string
+  confirmed: boolean
+  mode: "auto" | "stepByStep"
+  steps: number
 }
 
 export interface MemorySnapshot {
@@ -178,6 +220,11 @@ export interface TurnResult {
 
 export type SceneStatus = "pass" | "fail" | "skip" | "timeout"
 
+/**
+ * 与 `TurnFailure.kind` 同词表：`admission` 表示准入拒绝（回合没拿到模型回复就被挡下），
+ * 只在回合失败侧出现，不由文案分类产出。`configuration` / `infrastructure` / `assertion`
+ * 是测试宿主自己的档位，生产分类落到 `unknown` 时才由场景侧细分。
+ */
 export type ErrorKind =
   | "assertion"
   | "timeout"
@@ -185,6 +232,7 @@ export type ErrorKind =
   | "rate_limit"
   | "provider"
   | "network"
+  | "admission"
   | "configuration"
   | "infrastructure"
   | "unknown"

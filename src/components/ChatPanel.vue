@@ -21,6 +21,8 @@ import type { HarnessQueuedItem, InterruptedRunInfo, SlashMatch } from "@/servic
 import DebugBar from "./DebugBar.vue";
 import PlanConfirm from "./PlanConfirm.vue";
 import { confirmState, resolvePermissionConfirm } from "@/services/safety";
+import { actionCategoryOf } from "@/services/tool";
+import { getStagePrompt } from "@/services/personality";
 
 // ★ 同步初始化 Slash 命令注册表（下拉补全用；命令执行只在 ingress，见 preProcess）
 initSlashCommands();
@@ -97,6 +99,10 @@ async function refreshInterrupted() {
   } catch (error) {
     log.warn("读取中断运行失败:", formatError(error));
     interrupted.value = undefined;
+  } finally {
+    // getInterruptedRun 会打开运行槽，队列镜像在开槽时才播种：这里补刷一次，
+    // 覆盖「onMounted 先刷队列、后打开槽」的顺序缺口（本函数的调用点都不必再各自补刷）。
+    refreshQueue();
   }
 }
 
@@ -111,13 +117,18 @@ async function resolveInterrupted(action: "continue" | "discard") {
         showDeliveryNote("没有可继续的中断运行");
       } else {
         // 续跑结果不经过 sendMessage 的提交路径：正文由这里补进界面，避免会话文件里有、界面没有。
-        if (getActiveSessionId() === sessionId && result.reply) pushAssistantMessage(result.reply);
+        if (getActiveSessionId() === sessionId && result.reply) pushAssistantMessage(result.reply, sessionId);
         showDeliveryNote("已继续上次未完成的运行");
       }
     } else {
       const returned = await discardInterruptedRun(sessionId);
-      const paused = (returned?.steer.length ?? 0) + (returned?.followUp.length ?? 0);
-      showDeliveryNote(paused > 0 ? `已丢弃中断运行；${paused} 条未处理输入已暂停` : "已丢弃中断运行");
+      if (!returned) {
+        // 没有槽 = 没有可丢弃的中断运行：如实提示，不谎报「已丢弃」。
+        showDeliveryNote("没有可丢弃的中断运行");
+      } else {
+        const paused = returned.steer.length + returned.followUp.length;
+        showDeliveryNote(paused > 0 ? `已丢弃中断运行；${paused} 条未处理输入已暂停` : "已丢弃中断运行");
+      }
     }
   } catch (error) {
     log.warn("处理中断运行失败:", formatError(error));
@@ -246,11 +257,13 @@ async function withdraw(item: HarnessQueuedItem) {
     return;
   }
   // 已被消费：按投递证据说清走到哪一档，不把「已进入请求」说成「已回复」。
-  const evidence = item.requestId ? await describeInputDelivery(sessionId, item.requestId) : undefined;
+  const lookup = item.requestId ? await describeInputDelivery(sessionId, item.requestId) : undefined;
+  const stage = lookup?.ok ? lookup.evidence?.stage : undefined;
   showDeliveryNote(
-    evidence?.stage === "responded" ? "这条消息已进入请求并拿到回复，无法撤回"
-      : evidence?.stage === "request_prepared" ? "这条消息已进入请求，无法撤回"
-        : "这条消息已加入对话，无法撤回",
+    lookup && !lookup.ok ? "这条消息已被消费，无法撤回（投递状态读取失败，无法确认进度）"
+      : stage === "responded" ? "这条消息已进入请求并拿到回复，无法撤回"
+        : stage === "request_prepared" ? "这条消息已进入请求，无法撤回"
+          : "这条消息已加入对话，无法撤回",
   );
 }
 
@@ -510,28 +523,32 @@ onMounted(async () => {
   void refreshInterrupted();
 
   // ── 工具执行状态监听 ──
+  // 注册失败一律 error 级留痕（FIX-04 口径：事件监听注册失败 = 静默行为变化，不是可忽略的降级）。
   listen<{ toolName: string }>("tool-executing", (event) => {
-    const hint = `正在使用 ${event.payload.toolName}...`
+    // 过程提示语来自当前 Card 的阶段文案（按工具类别匹配），界面不写死。
+    const hint = getStagePrompt("executing", actionCategoryOf(event.payload.toolName))
     toolStatus.value = { text: hint, visible: true }
-  }).then(fn => { cleanupToolExec = fn }).catch(() => {})
+  }).then(fn => { cleanupToolExec = fn }).catch(error => log.error("事件监听注册失败，工具状态不再更新:", formatError(error)))
   listen<{ toolName: string; success: boolean }>("tool-completed", (event) => {
-    const hint = event.payload.success ? "完成啦～" : "出错了…"
+    // 成功 → done、失败 → blocked：Card 只为工具结果生成这两族文案（error 是非工具阶段、无类别维度）。
+    const category = actionCategoryOf(event.payload.toolName)
+    const hint = getStagePrompt(event.payload.success ? "done" : "blocked", category)
     toolStatus.value = { text: hint, visible: true }
     // 工具结束是排队项消费/释放的常见时点，顺带刷新排队视图。
     refreshQueue()
     toolCompletedTimer.value = setTimeout(() => { if (toolStatus.value.text === hint) toolStatus.value.visible = false }, 2500)
-  }).then(fn => { cleanupToolDone = fn }).catch(() => {})
+  }).then(fn => { cleanupToolDone = fn }).catch(error => log.error("事件监听注册失败，工具完成状态不再更新:", formatError(error)))
 
   // ── 流式正文（运行内核 message_update → 事件通道）──
   listen<{ sessionId?: string; delta?: string }>("deskpet-assistant-stream", (event) => {
     handleStreamDelta(event.payload)
-  }).then(fn => { cleanupStreamDelta = fn }).catch(() => {})
+  }).then(fn => { cleanupStreamDelta = fn }).catch(error => log.error("事件监听注册失败，流式正文不再显示:", formatError(error)))
   listen<{ sessionId?: string }>("deskpet-assistant-stream-end", (event) => {
     // 真实消息由既有提交路径推送；这里只清掉不会再更新的瞬时文本。
     if (event.payload.sessionId === getActiveSessionId()) streamingText.value = ""
     // 消息边界是 lane 消费排队项的时点：刷新后离开列表的项即可报告「已加入本次对话」。
     refreshQueue()
-  }).then(fn => { cleanupStreamEnd = fn }).catch(() => {})
+  }).then(fn => { cleanupStreamEnd = fn }).catch(error => log.error("事件监听注册失败，流式结束不清屏:", formatError(error)))
 
   // ── 运行态（停止按钮）──
   listen<{ sessionId?: string; running?: boolean }>("deskpet-run-state", (event) => {
@@ -539,7 +556,12 @@ onMounted(async () => {
     if (event.payload.running === false) stopping.value = false
     // 运行开始/收尾都按 lane 快照刷新：按钮与排队视图同源，不靠事件负载记账。
     refreshQueue()
-  }).then(fn => { cleanupRunState = fn }).catch(() => {})
+  }).then(fn => { cleanupRunState = fn }).catch(error => {
+    log.error("事件监听注册失败，运行态与停止按钮不刷新:", formatError(error))
+    // 这一条最要紧：没有它用户既看不到「正在生成」，也拿不到停止按钮。复用既有的工具状态提示位
+    // 如实说明（决策 §7 #35：不新增常驻降级提示位、不引入轮询）。
+    toolStatus.value = { text: "运行状态监听未启动，请重启界面", visible: true }
+  })
 
   // 意图菜单点击外部关闭
   document.addEventListener("click", closeIntentMenu)

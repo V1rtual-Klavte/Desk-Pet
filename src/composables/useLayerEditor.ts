@@ -15,6 +15,7 @@ import { reloadConfig, userConfig, type EffectMode } from "@/services/config";
 import { DEFAULT_LAYERS, LAYER_NAMES, layerDepth, type ParallaxLayerCfg } from "@/composables/useParallax";
 import { useDepthOfField, canvasToImage, imageToCanvas, type DofState } from "@/composables/useDepthOfField";
 import { createLogger } from "@/services/logger";
+import { formatError } from "@/services/error";
 
 function clamp(v: number, lo: number, hi: number): number {
   return v < lo ? lo : v > hi ? hi : v;
@@ -123,7 +124,6 @@ export function useLayerEditor() {
   const fileInput = ref<HTMLInputElement | null>(null);
 
   const selectedLayer = computed(() => layers.value[selectedIndex.value]);
-  const isL2 = computed(() => selectedIndex.value === 2);
   // ── 画布自适应尺寸（维持实际窗口等比例）──
   const canvasWrap = ref<HTMLElement | null>(null);
   const canvasSize = ref({ w: 600, h: 370 });
@@ -475,10 +475,12 @@ export function useLayerEditor() {
    * （取消时 WebView 同样会重新获得焦点）。
    */
   function openFileDialog(): void {
-    invoke("set_picker_window_level", { picking: true }).catch(() => {});
+    invoke("set_picker_window_level", { picking: true })
+      .catch(error => log.warn("编辑器窗口降级失败：原生文件对话框可能被设置窗/主窗口遮挡", formatError(error)));
     const restore = () => {
       window.removeEventListener("focus", restore);
-      invoke("set_picker_window_level", { picking: false }).catch(() => {});
+      invoke("set_picker_window_level", { picking: false })
+        .catch(error => log.warn("窗口层级恢复失败：三个窗口可能停在降级层级，需重启编辑器窗口", formatError(error)));
     };
     window.addEventListener("focus", restore);
     fileInput.value?.click();
@@ -519,7 +521,8 @@ export function useLayerEditor() {
 
   function onFileSelected(e: Event) {
     // 双保险：取完文件立刻恢复窗口层级。取消时 change 可能不触发，那条路由 focus 兜底。
-    invoke("set_picker_window_level", { picking: false }).catch(() => {});
+    invoke("set_picker_window_level", { picking: false })
+      .catch(error => log.warn("窗口层级恢复失败：三个窗口可能停在降级层级，需重启编辑器窗口", formatError(error)));
     const input = e.target as HTMLInputElement;
     const file = input.files?.[0];
     if (!file) return;
@@ -598,6 +601,8 @@ export function useLayerEditor() {
       assetList.value = [...new Set([...files, ...configured])];
       log.info(`素材列表 | ${subdir}/ → ${files.length} 个文件:`, files);
     } catch (e: any) {
+      // 保留 warn（不升 error）：对话框回退到默认素材列表、用户可继续操作，
+      // 失败原因已随这条日志可查 [保留已登记 §4.2]
       log.warn(`素材列表加载失败 | ${subdir}/ | 错误:`, e?.message || e);
       const defaults = [
         "materials/L0/bg_base.png",
@@ -631,6 +636,8 @@ export function useLayerEditor() {
       assetList.value = [...new Set(files)];
       log.info(`素材列表 | materials/ → ${files.length} 个文件`);
     } catch (e: any) {
+      // 保留 warn（不升 error）：对话框留空但仍可用，失败原因已随这条日志可查
+      // [保留已登记 §4.2]
       log.warn("景深素材列表加载失败:", e?.message || e);
       assetList.value = [];
     } finally {
@@ -757,13 +764,15 @@ export function useLayerEditor() {
         saved.value = false;
       }, 2000);
     } catch (e: any) {
+      // 保留 warn（不升 error）：下一行 window.alert 已把失败原因当场告知用户，
+      // warn 足够 [保留已登记 §4.2]
       log.warn(`保存图层失败: ${e?.message || e}`);
       window.alert(e?.message || "保存图层失败");
     }
   }
 
   function closeWindow() {
-    win.close().catch(() => {});
+    win.close().catch(error => log.warn("关闭图层编辑器窗口失败:", formatError(error)));
   }
 
   // ── 生命周期 ──
@@ -782,7 +791,10 @@ export function useLayerEditor() {
       await win.setTitle(
         `🎨 图层编辑器 - ${profile.value?.meta.name || "糖糖桌宠"}`
       );
-    } catch {}
+    } catch {
+      // 标题写入失败仅影响窗口标题文案（主题名异常/非 Tauri 宿主），不影响编辑与保存；
+      // 窗口层级降级已有留痕（:479/:483/:525）[保留已登记 §4.2]
+    }
     if (canvasWrap.value) {
       resizeObs = new ResizeObserver(() => updateCanvasSize());
       resizeObs.observe(canvasWrap.value);
@@ -819,7 +831,6 @@ export function useLayerEditor() {
     pickerPreview,
     // computed
     selectedLayer,
-    isL2,
     // 景深
     effectMode,
     isDof,

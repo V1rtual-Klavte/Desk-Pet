@@ -4,48 +4,13 @@
 // ==========================================
 
 import type { ToolDef, ToolResult, ToolContext } from "./types"
-import { getToolByName } from "./registry"
-import { toolPolicyHash } from "./policy"
+import { getToolHandler, toolPolicyHash } from "./policy"
 import { acquireToolPermit, releaseToolPermit } from "./execution-permit"
 import { loopConfig } from "@/services/config"
 import { createLogger } from "@/services/logger"
 import { formatError } from "@/services/error"
 
 const log = createLogger("ToolRouter")
-
-/** 单个工具结果内联给模型的字符预算。 */
-const MAX_INLINE_CHARS = 50000
-const INLINE_TRUNCATION_NOTICE = "\n...(结果已截断)"
-
-/**
- * 把工具结果压进内联预算。
- *
- * 必须同时处理 `contentParts` 的文本块：Pi 工具总是带 contentParts，
- * 而下游取的是 `contentParts ?? [{ text: content }]`，只截 content 等于没截。
- * 图片块不走字符预算 —— 那是 base64，按字符裁会直接破坏数据。
- */
-function boundInlineOutput(result: ToolResult): ToolResult {
-  const bounded = (text: string): string =>
-    text.length > MAX_INLINE_CHARS ? text.substring(0, MAX_INLINE_CHARS) + INLINE_TRUNCATION_NOTICE : text
-  const contentParts = result.contentParts?.map(part =>
-    part.type === "text" ? { ...part, text: bounded(part.text) } : part,
-  )
-  return { ...result, content: bounded(result.content), ...(contentParts ? { contentParts } : {}) }
-}
-
-/** 执行工具调用 */
-export async function executeTool(
-  toolName: string,
-  params: Record<string, unknown>,
-  ctx: ToolContext,
-): Promise<ToolResult> {
-  const tool = getToolByName(toolName)
-  if (!tool) {
-    return { success: false, content: "", error: `工具未注册: ${toolName}`, errorCode: "not_found" }
-  }
-
-  return executeToolDefinition(tool, params, ctx)
-}
 
 /** Execute the immutable definition selected for this run, even when settings change. */
 export async function executeToolDefinition(tool: ToolDef, params: Record<string, unknown>, ctx: ToolContext): Promise<ToolResult> {
@@ -57,6 +22,16 @@ export async function executeToolDefinition(tool: ToolDef, params: Record<string
     ...result,
     details: { ...(result.details && typeof result.details === "object" ? result.details : {}), audit: { operationId, toolName, outcome, policyHash } },
   })
+
+  // 执行体只在 defineTool 的 WeakMap 里；取不到就是未经唯一构造入口的定义（注册入口已拦一层）。
+  const handler = getToolHandler(tool)
+  if (!handler) {
+    log.error("工具没有执行体:", toolName)
+    return audit({ success: false, content: "", error: `工具没有执行体: ${toolName}`, errorCode: "failed" }, "error")
+  }
+
+  // 超时由本函数的定时器置位：判定不靠错误文案，也不与取消混淆。
+  let timedOut = false
 
   try {
     if (ctx.signal?.aborted) return audit({ success: false, content: "", error: "工具执行已取消", errorCode: "cancelled" }, "cancelled")
@@ -77,40 +52,40 @@ export async function executeToolDefinition(tool: ToolDef, params: Record<string
     const controller = new AbortController()
     const abort = () => controller.abort(ctx.signal?.reason)
     ctx.signal?.addEventListener("abort", abort, { once: true })
-    const timer = setTimeout(() => controller.abort(new Error(`工具执行超时 (${timeout}ms): ${toolName}`)), timeout)
     let result: ToolResult
     try {
       // 许可挂在 handler 的真实结算上：外层超时只结束请求视图，
       // 不能因为等待超时就把仍在运行的写任务放开给下一次调用并发（§5.1）。
-      const handler = (async () => {
+      const settlement = (async () => {
         try {
-          return await tool.handler(params, { ...ctx, signal: controller.signal })
+          return await handler(params, { ...ctx, signal: controller.signal })
         } finally {
           if (lease) await releaseToolPermit(lease)
         }
       })()
-      handler.catch(() => { /* 超时后仍会结算；这里只避免未处理的拒绝 */ })
+      settlement.catch(error => log.error("工具结算失败（超时后仍会结算）:", toolName, formatError(error)))
       let timeoutHandle: ReturnType<typeof setTimeout> | undefined
       const timeoutPromise = new Promise<never>((_, reject) => {
         timeoutHandle = setTimeout(() => {
+          timedOut = true
           controller.abort(new Error(`工具执行超时 (${timeout}ms): ${toolName}`))
           reject(new Error(`工具执行超时 (${timeout}ms): ${toolName}`))
         }, timeout)
       })
       try {
-        result = await Promise.race([handler, timeoutPromise])
+        result = await Promise.race([settlement, timeoutPromise])
       } finally {
         if (timeoutHandle) clearTimeout(timeoutHandle)
       }
     } finally {
-      clearTimeout(timer)
       ctx.signal?.removeEventListener("abort", abort)
     }
 
     if (result.success) {
-      const bounded = boundInlineOutput(result)
-      log.debug("工具完成:", toolName, "| 结果:", bounded.content.substring(0, 100))
-      return audit(bounded, "success")
+      // 结果不在 router 里被裁：条目存全文，缩短只发生在请求层 L0（`context/tool-output.ts`），
+      // 且那里带 eventId 回读地址。
+      log.debug("工具完成:", toolName, "| 结果:", result.content.substring(0, 100))
+      return audit(result, "success")
     }
 
     log.warn("工具失败:", toolName, "|", result.error)
@@ -118,7 +93,8 @@ export async function executeToolDefinition(tool: ToolDef, params: Record<string
   } catch (e) {
     const errMsg = formatError(e)
     log.error("工具异常:", toolName, "|", errMsg)
-    const outcome = ctx.signal?.aborted ? "cancelled" : errMsg.includes("超时") ? "timeout" : "error"
+    // 判定顺序唯一：超时（定时器置位，同时会 abort）→ 取消（外部 signal）→ error。
+    const outcome = timedOut ? "timeout" : ctx.signal?.aborted ? "cancelled" : "error"
     return audit({ success: false, content: "", error: errMsg, errorCode: outcome === "cancelled" ? "cancelled" : outcome === "timeout" ? "timeout" : "failed" }, outcome)
   }
 }

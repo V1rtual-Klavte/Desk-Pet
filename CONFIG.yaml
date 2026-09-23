@@ -85,6 +85,9 @@ ai:
   plan:
     enabled: true
     complexityThreshold: 3
+    # 复杂度评估方式：keyword 只用关键词判定（未命中直接低分，不额外请求模型）；
+    # llm 在未命中关键词时再发一次独立请求自判。--plan 强制触发不受它影响。
+    complexityEval: keyword
     maxSteps: 8
     stepTimeoutMs: 90000
     stepMaxRounds: 5

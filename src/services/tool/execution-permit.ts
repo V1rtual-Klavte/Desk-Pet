@@ -98,12 +98,53 @@ export async function acquireToolPermit(tool: ToolDef, ctx: ToolContext): Promis
   return granted ? { kind: "granted", lease: { requestId: id, kind } } : { kind: "cancelled" }
 }
 
-/** 归还额度。只在真实执行结算后调用，且只有借出它的借用者能归还；释放失败只记录，不改变工具结果。 */
+/**
+ * 释放失败的补偿队列。requestId 是确定量（会话+代际+调用+工具），重放安全：
+ * Rust 对未知 id 返回 Ok（重复释放是空操作），因此「首释放成功但响应丢失」也不会凭空空增额度。
+ */
+const pendingReleases = new Set<string>()
+
+/**
+ * Live Test 注入钩子：只给场景注入释放失败用，不参与生产路径。注入在真实 `invoke` 之前
+ * 抛出，走的是与真实失败完全相同的 catch 路径（入队/保留），不旁路补偿逻辑。
+ */
+let injectedReleaseFailures = 0
+
+export function failNextReleasesForTest(count: number): void {
+  injectedReleaseFailures = count
+}
+
+function throwInjectedReleaseFailureIfPending(): void {
+  if (injectedReleaseFailures <= 0) return
+  injectedReleaseFailures -= 1
+  throw new Error("注入的释放失败（测试）")
+}
+
+/**
+ * 归还额度。只在真实执行结算后调用，且只有借出它的借用者能归还；释放失败不改工具结果，
+ * 但必须入队等下一次 run 开始前补偿 —— 只留日志会让额度永久卡在所有者手里。
+ */
 export async function releaseToolPermit(lease: ToolPermitLease): Promise<void> {
   try {
+    throwInjectedReleaseFailureIfPending()
     await invoke("tool_permit_release", { requestId: lease.requestId, borrowerId })
+    pendingReleases.delete(lease.requestId)
   } catch (error) {
-    log.error("释放工具许可失败:", formatError(error))
+    pendingReleases.add(lease.requestId)
+    log.error("释放工具许可失败，已入队等待补偿:", lease.requestId, formatError(error))
+  }
+}
+
+/** 每个 run 开始前的补偿重放：成功删项，失败保留待下次重试（重放幂等，见 pendingReleases 注释）。 */
+export async function flushPendingReleases(): Promise<void> {
+  for (const requestId of [...pendingReleases]) {
+    try {
+      throwInjectedReleaseFailureIfPending()
+      await invoke("tool_permit_release", { requestId, borrowerId })
+      pendingReleases.delete(requestId)
+    } catch (error) {
+      log.warn("补偿释放失败，保留待下次重试:", requestId, formatError(error))
+    }
   }
 }
 
@@ -140,13 +181,34 @@ async function attachToolPermitBorrower(): Promise<PermitReclaim> {
   return invoke<PermitReclaim>("tool_permit_attach", { borrowerId })
 }
 
+/** 上线声明是否还欠着一次重试（页面加载时声明失败 → 下一次 run 开始前补偿）。 */
+let attachPending = false
+
+/**
+ * 上线声明的补偿：页面加载即声明，失败时（例如 IPC 尚未就绪）记下欠账，
+ * 由运行槽在下一次 run 开始前重试。回收本身幂等 —— 同一实例重复上线是空操作。
+ */
+export async function retryBorrowerAttachIfPending(): Promise<void> {
+  if (!attachPending) return
+  try {
+    const reclaimed = await attachToolPermitBorrower()
+    attachPending = false
+    if (reclaimed.reclaimedActive > 0 || reclaimed.reclaimedQueued > 0) log.info("回收失效借用者的额度:", reclaimed)
+  } catch (error) {
+    log.warn("借用者上线补偿失败，保留待下次重试:", formatError(error))
+  }
+}
+
 // 页面加载即接管：页面被重新加载后，上一个实例的额度在这里回到所有者手里。失败只记录，
-// 不阻断页面 —— 所有者当前的额度与上限仍然有效，工具照常借用。
+// 不阻断页面 —— 所有者当前的额度与上限仍然有效，工具照常借用；欠账由补偿入口重试。
 void attachToolPermitBorrower().then(
   reclaimed => {
     if (reclaimed.reclaimedActive > 0 || reclaimed.reclaimedQueued > 0) {
       log.info("回收失效借用者的额度:", reclaimed)
     }
   },
-  error => log.warn("许可借用者上线失败:", formatError(error)),
+  error => {
+    attachPending = true
+    log.warn("许可借用者上线失败:", formatError(error))
+  },
 )

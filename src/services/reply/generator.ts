@@ -5,6 +5,9 @@
 
 import { batchWriteVars, savePoolToDisk } from "@/services/personality/variable-pool"
 import type { PersonalityCard } from "@/services/personality/types"
+import { createLogger } from "@/services/logger"
+
+const log = createLogger("Reply")
 
 /** 回复后处理结果 */
 export interface ReplyResult {
@@ -76,7 +79,8 @@ export async function generateReply(
 
   // 2. 变量批量写入
   if (options.applyRuntimeData !== false && Object.keys(runtime.vars).length > 0) {
-    batchWriteVars(runtime.vars)
+    const write = batchWriteVars(runtime.vars)
+    if (write.errors.length > 0) log.warn("RUNTIME_DATA 部分写入被拒:", write.errors.join("; "))
   }
 
   // 3. 落盘

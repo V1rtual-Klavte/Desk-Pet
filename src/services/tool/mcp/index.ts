@@ -33,7 +33,7 @@ export {
 export type { McpServerConfig } from "./manager"
 
 // ── 协议栈 ──
-export { McpClient } from "./client"
+export { McpClient, MAX_MCP_RESULT_CHARS } from "./client"
 export type { JsonRpcRequest, JsonRpcResponse } from "./client"
 
 // ── 传输层 ──

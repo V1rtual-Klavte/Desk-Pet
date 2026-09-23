@@ -6,6 +6,7 @@ import { getPiRuntimeProviderOverride, installPiRuntimeProviderForTest } from "@
 import { debug, usageGrandTotal } from "@/services/debug"
 import type { PurposeUsage } from "@/services/debug"
 import { getToolsForMode } from "@/services/tool"
+import { planConfig, setOverride } from "@/services/config"
 import { installFakeProvider, fakeText } from "../../fake-provider"
 import type { SceneDef } from "../../types"
 
@@ -64,6 +65,7 @@ function planInput(): Parameters<typeof generatePlan>[1] {
     cardRole: "助手",
     availableTools: getToolsForMode("assistant"),
     thinkingEffort: "low",
+    maxSteps: 8,
   }
 }
 
@@ -142,8 +144,12 @@ export const 用量分列: SceneDef = {
         // 失败的一次性调用同样产生调用次数；Provider 未回报时不能把全 0 当准确用量
         installUnreportedErrorProvider()
         const beforeError = { ...debug.usage.planner }
-        // 复杂度评估在 LLM 失败时自己回退（generatePlan 不吞 Provider 错误，不适合做失败路径）
+        // 复杂度评估在 LLM 失败时自己回退（generatePlan 不吞 Provider 错误，不适合做失败路径）。
+        // 默认 complexityEval=keyword 时未命中关键词不会发请求，这里显式切成 llm 才是这条一次性调用路径。
+        const previousEval = planConfig.complexityEval
+        setOverride("ai.plan.complexityEval", "llm")
         const fallback = await evaluateComplexity("帮我分析一下", ["重构"])
+          .finally(() => setOverride("ai.plan.complexityEval", previousEval))
         if (fallback.score !== 1 || fallback.triggeredBy !== "llm") throw new Error("一次性调用失败时没有走回退路径")
         const afterError = debug.usage.planner
         if (afterError.calls !== beforeError.calls + 1) throw new Error("失败的一次性调用没有计数")

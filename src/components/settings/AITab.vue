@@ -12,10 +12,11 @@ import {
 import { getPoolSnapshot, formatPoolForPrompt } from "@/services/personality";
 import { getCachedStages } from "@/services/personality";
 import type { PersonalityCard } from "@/services/personality";
-import type { StageMap, StagePrompts } from "@/services/personality";
+import type { StageMap, StagePrompts, StageFileStages, VariablePool, CardVariableDef } from "@/services/personality";
 import { createLogger } from "@/services/logger";
 import { formatError } from "@/services/error"
 import { MIN_CONTEXT_WINDOW } from "@/services/context"
+import { getActiveSessionId } from "@/services/session"
 
 const log = createLogger("Settings");
 
@@ -57,6 +58,7 @@ const candyInstructions = ref("");
 // ── Plan 设置 ──
 const planEnabled = ref(planConfig.enabled);
 const planComplexityThreshold = ref(planConfig.complexityThreshold);
+const planComplexityEval = ref(planConfig.complexityEval);
 const planMaxSteps = ref(planConfig.maxSteps);
 const planThinkingEffort = ref(planConfig.thinkingEffort);
 const planStepThinkingEffort = ref(planConfig.stepThinkingEffort);
@@ -93,9 +95,16 @@ const showVarPool = ref(false);
 const showStages = ref(false);
 
 // ── 变量池 ──
+// 展开任意 Card 只构建局部预览快照，不改动全局变量池所有权（VAR-E1）；
+// 真实切卡成功后必须清掉覆盖，否则界面停在旧预览卡。
 const poolRefreshTick = ref(0);
-const poolSnapshot = computed(() => { poolRefreshTick.value; return getPoolSnapshot(); });
-const poolPromptText = computed(() => { poolRefreshTick.value; return formatPoolForPrompt(); });
+const previewPool = ref<VariablePool | null>(null);
+const previewDefs = ref<CardVariableDef[] | null>(null);
+const poolSnapshot = computed(() => { poolRefreshTick.value; return previewPool.value ?? getPoolSnapshot(); });
+const poolPromptText = computed(() => {
+  poolRefreshTick.value;
+  return formatPoolForPrompt(previewPool.value ?? undefined, previewDefs.value ?? undefined);
+});
 
 // ── 阶段文案 ──
 const stagesData = ref<StagePrompts | null>(null);
@@ -115,7 +124,9 @@ async function checkStagesExists(cardId: string): Promise<boolean> {
       dirPath: "stages",
     });
     return files.some(f => f === `${cardId}.json`);
-  } catch {
+  } catch (e) {
+    // 读取失败被当成「没有 stages 文件」会让 UI 误报「未生成」，必须留痕。
+    log.warn("stages 文件列表读取失败，按未生成处理:", cardId, formatError(e));
     return false;
   }
 }
@@ -156,23 +167,27 @@ async function hydrateRuntimePreview(cardId: string) {
   const card = cardList.value.find(c => c.id === cardId);
   if (!card) return;
 
-  const { loadStagesFromDisk, loadCardVars, initVariablePool, refreshVariablePool } = await import("@/services/personality");
-  const loadedStages = await loadStagesFromDisk(card.id, card.version);
+  const { loadStagesFromDisk, stageSourceHash, loadCardVars, buildPoolFromDefs } = await import("@/services/personality");
+  const loadedStages = await loadStagesFromDisk(card.id, await stageSourceHash(card));
   stagesData.value = loadedStages;
   stagesFileExists.value = Boolean(loadedStages) || await checkStagesExists(card.id);
 
   try {
-    // 从 stages/{cardId}.json 加载 card + interaction 变量
+    // 从 stages/{cardId}.json 加载 card + interaction 变量，只构建局部预览快照（纯函数，不触碰全局池）
     const cardVars = await loadCardVars(card.id)
-    initVariablePool({
+    previewPool.value = buildPoolFromDefs({
       cardId: card.id,
       variableDefs: card.sections.variableDefs,
       prevCardStates: cardVars?.card,
       prevInteractionStates: cardVars?.interaction,
     })
-    refreshVariablePool()
-  } catch {
-    // 设置页只做预览 hydrate，失败时保持当前内存快照。
+    previewDefs.value = card.sections.variableDefs
+  } catch (e) {
+    // 用户可见降级：预览区显示不出来，必须让用户知道，同时退回激活卡状态。
+    log.error("变量池预览读取失败:", cardId, formatError(e))
+    switchError.value = "变量池预览读取失败，显示的是当前激活 Card 的状态"
+    previewPool.value = null
+    previewDefs.value = null
   }
   poolRefreshTick.value++;
 }
@@ -203,19 +218,18 @@ async function persistCurrentStages() {
       : stagesData.value?.stages ?? getCachedStages()?.stages;
     if (!data) return;
 
-    const { invoke } = await import("@tauri-apps/api/core");
-    const content = JSON.stringify({
-      cardId, cardVersion: currentCard.value?.version ?? 1,
-      cardHash: currentCard.value?.hash ?? "",
-      generatedAt: Date.now(), isFallback: false,
+    // 阶段文案段唯一生产者：段级合并写，不碰同文件的变量区（VAR-01）
+    const { updateStagesFile, stageSourceHash, loadStages } = await import("@/services/personality");
+    const stagesEntry: StageFileStages = {
+      cardId,
+      cardVersion: currentCard.value?.version ?? 1,
+      sourceHash: await stageSourceHash(currentCard.value!),
+      generatedAt: Date.now(),
+      isFallback: false,
       stages: data,
-    }, null, 2);
-    await invoke("personality_file_write", {
-      path: `stages/${cardId}.json`,
-      content: Array.from(new TextEncoder().encode(content)),
-    });
-    const { loadStages } = await import("@/services/personality");
-    loadStages(JSON.parse(content) as StagePrompts);
+    };
+    await updateStagesFile(cardId, { stages: stagesEntry });
+    loadStages(stagesEntry);
     stagesData.value = getCachedStages();
     stagesFileExists.value = true;
     const loadedCard = cardList.value.find(c => c.id === cardId);
@@ -255,6 +269,9 @@ async function applySwitch() {
     // 2. 更新 UI
     personalityActive.value = targetId;
     pendingCardId.value = targetId;
+    // 真实切卡成功：清掉局部预览覆盖，变量池面板回到新激活卡
+    previewPool.value = null;
+    previewDefs.value = null;
     poolRefreshTick.value++;
     stagesData.value = getCachedStages();
     stagesFileExists.value = await checkStagesExists(targetId);
@@ -267,7 +284,7 @@ async function applySwitch() {
     const greeting = pickActiveGreeting();
     if (greeting) {
       const { pushAssistantMessage } = await import("@/services/session/messages");
-      pushAssistantMessage(greeting);
+      pushAssistantMessage(greeting, getActiveSessionId());
     }
   } catch (e) {
     const msg = formatError(e);
@@ -293,11 +310,8 @@ async function generateStagesForSelected(card: PersonalityCard) {
   regenerating.value = true;
   switchError.value = "";
   try {
-    const { generateStagesForCard, getCachedStages } = await import("@/services/personality");
-    const result = await generateStagesForCard(
-      card.id, card.sections.roleSetting,
-      card.sections.languageStyle, card.version, card.hash,
-    );
+    const { generateStagesForCard } = await import("@/services/personality");
+    const result = await generateStagesForCard(card);
     if (result) {
       stagesData.value = result;
       stagesFileExists.value = true;
@@ -322,11 +336,8 @@ async function regenerateStages() {
   if (!card) return;
   regenerating.value = true;
   try {
-    const { generateStagesForCard, getCachedStages } = await import("@/services/personality");
-    const result = await generateStagesForCard(
-      card.id, card.sections.roleSetting,
-      card.sections.languageStyle, card.version, card.hash,
-    );
+    const { generateStagesForCard } = await import("@/services/personality");
+    const result = await generateStagesForCard(card);
     if (result) {
       stagesData.value = result;
       stagesFileExists.value = true;
@@ -424,24 +435,36 @@ onMounted(async () => {
     // 会话状态直接读活跃会话的条目（真相源），不再依赖旧的进程内会话工作记忆。
     const { getActiveSessionId, readPiSessionEntriesOnce, messagesFromEntries } = await import("@/services/session");
     const sessionId = getActiveSessionId();
-    const entries = sessionId ? await readPiSessionEntriesOnce(sessionId).catch(() => []) : [];
-    const sessionTurns = messagesFromEntries(entries)
-      .filter(message => message.role === "user" || message.role === "assistant").length;
-    const compactions = entries.filter(entry => entry.type === "compaction").length;
-    memStatus.value = {
-      count: MemoryService.count,
-      projectCount: MemoryService.projectCount,
-      lastConsolidation: compactions > 0 ? `已压缩 ${compactions} 次` : "运行中",
-      mode: generalConfig.assistantMode ? "助手(LLM)" : "轻量(去重)",
-      sessionTurns,
-      sessionId,
-    };
+    try {
+      const entries = sessionId ? await readPiSessionEntriesOnce(sessionId) : [];
+      const sessionTurns = messagesFromEntries(entries)
+        .filter(message => message.role === "user" || message.role === "assistant").length;
+      // 换代身份只有一个定义点（沿 lane 分支回溯）：不与会话条目数抄同一公式。
+      const { readContextEpoch } = await import("@/services/engine/pi");
+      const compactions = sessionId ? (await readContextEpoch(sessionId))?.count : undefined;
+      memStatus.value = {
+        count: MemoryService.count,
+        projectCount: MemoryService.projectCount,
+        // 读失败（undefined）保留上一次展示：显示「运行中」会与「确实没压缩过」同形。
+        lastConsolidation: compactions === undefined
+          ? memStatus.value.lastConsolidation
+          : compactions > 0 ? `已压缩 ${compactions} 次` : "运行中",
+        mode: generalConfig.assistantMode ? "助手(LLM)" : "轻量(去重)",
+        sessionTurns,
+        sessionId,
+      };
+    } catch (e) {
+      // 读取失败时保留上次快照：显示「0 轮 / 运行中」会与「确实没压缩过」同形。
+      log.warn("会话条目读取失败，记忆面板保留上次快照:", formatError(e));
+    }
     const candy = MemoryService.getCandyInstructionsSync();
     if (candy)
       candyInstructions.value = candy
         .replace(/^[\s\S]*?指令\]\n/, "")
         .trim();
-  } catch {}
+  } catch (e) {
+    log.warn("记忆状态读取失败:", formatError(e));
+  }
 
   if (personalityActive.value) {
     await hydrateRuntimePreview(personalityActive.value);
@@ -475,6 +498,7 @@ defineExpose({
   candyInstructions,
   planEnabled,
   planComplexityThreshold,
+  planComplexityEval,
   planMaxSteps,
   planThinkingEffort,
   planStepThinkingEffort,
@@ -684,6 +708,10 @@ defineExpose({
     <div class="s-label">📋 计划模式</div>
     <label class="chk"><input type="checkbox" v-model="planEnabled" /><span>启用任务计划</span></label>
     <div class="fld" style="margin-top:6px"><span class="fn">复杂度阈值</span><input class="inp-num" type="number" v-model.number="planComplexityThreshold" min="1" max="5" style="width:60px" /><span class="s-muted">(1-5, 越高越少触发)</span></div>
+    <div class="s-subtitle" style="margin-top:4px">复杂度判定</div>
+    <div class="radio-row">
+      <label v-for="m in [{v:'keyword',l:'仅关键词（默认）'},{v:'llm',l:'关键词 + 模型自判'}]" :key="'ce'+m.v" class="chk"><input type="radio" v-model="planComplexityEval" :value="m.v" /><span>{{ m.l }}</span></label>
+    </div>
     <div class="fld"><span class="fn">最大步骤</span><input class="inp-num" type="number" v-model.number="planMaxSteps" min="1" max="20" style="width:60px" /></div>
     <div class="s-subtitle" style="margin-top:6px">计划思考强度</div>
     <div class="radio-row">

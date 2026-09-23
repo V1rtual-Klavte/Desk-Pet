@@ -40,6 +40,8 @@ const mcpTestResult = ref("");
 // ── Skill ──
 const skillEnabled = ref(toolsConfig.skillEnabled);
 const skillList = ref<{ id: string; name: string; description: string }[]>([]);
+/** 索引不可用时的状态位（§7 #20）：空列表本身区分不出「失败」与「没有 Skill」 */
+const skillIndexError = ref<string>("");
 
 // ── 内置 MCP ──
 async function loadBuiltinMcpConfig() {
@@ -190,8 +192,13 @@ async function testMcpConnection() {
 
 // ── Skill ──
 async function loadSkillConfig() {
-  const { ensureSkillCatalog, listSkills } = await import("@/services/skill");
+  const { ensureSkillCatalog, listSkills, getSkillCatalogFingerprint } = await import("@/services/skill");
   await ensureSkillCatalog();
+  // 索引读取失败时 loader 会把指纹置为失败哨兵（loader.ts 的 "unavailable"）并返回空列表：
+  // 设置页要把「索引不可用」和「真的没有 Skill」分开显示，不能只留一个「暂无」。
+  skillIndexError.value = getSkillCatalogFingerprint() === "unavailable"
+    ? "Skill 索引不可用：本地元数据读取失败（原因见日志），当前不会注入任何 Skill"
+    : "";
   skillList.value = listSkills().map((s) => ({
     id: s.name,
     name: s.name,
@@ -228,12 +235,15 @@ interface ToolPolicyRow {
   summary: string;
 }
 const toolPolicyRows = ref<ToolPolicyRow[]>([]);
+/** 读取失败时保留原因并替代「读取中…」，避免永久停在加载态 */
+const toolPolicyError = ref<string>("");
 
 const PERMISSION_LABELS: Record<string, string> = { allow: "允许", ask: "询问", deny: "拒绝", passthrough: "交给策略" };
 const ISOLATION_LABELS: Record<string, string> = { shared_read: "只读并行", exclusive_effect: "效果互斥", delegate: "编排串行" };
 
 async function loadToolPolicies() {
   try {
+    toolPolicyError.value = "";
     // 设置窗口有独立的注册表实例：注册内置工具只为读取静态声明，不借用许可、不连接 MCP。
     const { registerDefaultTools, registerAssistantTools, listAll } = await import("@/services/tool/registry");
     await registerDefaultTools();
@@ -252,7 +262,8 @@ async function loadToolPolicies() {
       }))
       .sort((a, b) => a.name.localeCompare(b.name));
   } catch (error) {
-    log.warn("读取工具策略声明失败:", formatError(error));
+    toolPolicyError.value = `读取工具策略声明失败：${formatError(error)}`
+    log.error("读取工具策略声明失败:", formatError(error));
   }
 }
 
@@ -303,7 +314,8 @@ defineExpose({
   <div class="s-section">
     <div class="s-label">🧾 工具策略（声明）</div>
     <div class="s-hint">工具在代码里声明的默认策略，不代表本次运行的有效授权；实际执行仍按本次参数与权限终裁。</div>
-    <div v-if="toolPolicyRows.length === 0" class="s-hint">读取中…</div>
+    <div v-if="toolPolicyError" class="s-error">{{ toolPolicyError }}</div>
+    <div v-else-if="toolPolicyRows.length === 0" class="s-hint">读取中…</div>
     <div v-for="row in toolPolicyRows" :key="row.id" class="li-row">
       <span><b class="mono">{{ row.name }}</b> <span class="s-muted">{{ row.audience }}</span></span>
       <span class="s-muted">{{ row.summary }}</span>
@@ -360,7 +372,8 @@ defineExpose({
       <button class="btn-s" @click="uploadSkillMd()">📤 上传 .md</button>
       <button class="btn-s" @click="loadSkillConfig()">🔄 刷新</button>
     </div>
-    <div v-if="skillList.length === 0" class="s-hint">暂无</div>
+    <div v-if="skillIndexError" class="s-error">{{ skillIndexError }}</div>
+    <div v-else-if="skillList.length === 0" class="s-hint">暂无</div>
     <div v-for="s in skillList" :key="s.id" class="li-row">
       <span><b>{{ s.name }}</b> {{ s.description }}</span>
       <span>

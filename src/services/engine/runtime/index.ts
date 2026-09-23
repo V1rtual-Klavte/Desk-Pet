@@ -1,8 +1,10 @@
 // Runtime protocol vocabulary. Keep this barrel free of business side effects.
 export type {
+  CompactionAuditSink,
   ContextBlock,
   ContextLayer,
   IngressEnvelope,
+  InputSourceMark,
   MessageOrigin,
   MessagePriority,
   MessageTaint,
@@ -13,8 +15,15 @@ export type {
   PlanStepState,
   PromptAgentMessage,
   PromptCacheInfo,
+  PromptCapabilityContext,
+  PromptCompactionContext,
   PromptLlmMessage,
+  PromptPlanContext,
+  PromptRequestContext,
+  PromptRequestParams,
+  PromptRequestPurpose,
   PromptSnapshot,
+  PromptTokenDrift,
   PromptToolSchema,
   PromptTransform,
   PromptTransformReason,
@@ -25,6 +34,7 @@ export {
   createPromptRewrite,
   createPromptSnapshot,
   redactText,
+  refreshMessageAllocations,
   serializePromptSnapshot,
   sha256Text,
   stableSerialize,
@@ -40,4 +50,23 @@ export type { RuntimeTraceContext, RuntimeTraceEvent, RuntimeTraceKind, RuntimeT
 
 export type { ContextAllocation } from "./types"
 
-export { inputEventId, messageEventId, messageRequestId } from "./input-identity"
+export {
+  COMPACTION_DECLINED_ENTRY,
+  DESKPET_GREETING_ENTRY,
+  DESKPET_SYSTEM_MESSAGE_ENTRY,
+  PROMPT_REWRITE_ENTRY,
+  PROMPT_SNAPSHOT_ENTRY,
+  RECALL_FAILED_ENTRY,
+} from "./types"
+
+export {
+  INPUT_SOURCE_FIELD,
+  inputEventId,
+  inputSourceMark,
+  inputSourceOf,
+  isTransientInputMessage,
+  laneMessageText,
+  messageEventId,
+  messageRequestId,
+  userInputMessage,
+} from "./input-identity"

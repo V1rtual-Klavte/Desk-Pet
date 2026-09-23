@@ -1,5 +1,5 @@
 // 恐怖音效: 惊悚短音/心跳/渐近恐惧/鬼魅低语
-import { getCtx } from "../context"
+import { getCtx, reportEffectFailure } from "../context"
 import type { SoundDef } from "../types"
 export const horrorSounds: SoundDef[] = [
   {
@@ -18,7 +18,7 @@ export const horrorSounds: SoundDef[] = [
         osc1.connect(gain); osc2.connect(gain); gain.connect(ctx.destination)
         osc1.start(ctx.currentTime); osc2.start(ctx.currentTime)
         osc1.stop(ctx.currentTime + 0.12); osc2.stop(ctx.currentTime + 0.12)
-      } catch {}
+      } catch (error) { reportEffectFailure(error) }
     },
   },
   {
@@ -36,7 +36,7 @@ export const horrorSounds: SoundDef[] = [
           osc.connect(gain); gain.connect(ctx.destination)
           osc.start(ctx.currentTime + offset); osc.stop(ctx.currentTime + offset + 0.12)
         })
-      } catch {}
+      } catch (error) { reportEffectFailure(error) }
     },
   },
   {
@@ -65,7 +65,7 @@ export const horrorSounds: SoundDef[] = [
         noiseGain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 2.5)
         noise.connect(noiseGain); noiseGain.connect(ctx.destination)
         noise.start(ctx.currentTime); noise.stop(ctx.currentTime + 2.5)
-      } catch {}
+      } catch (error) { reportEffectFailure(error) }
     },
   },
   {
@@ -103,7 +103,7 @@ export const horrorSounds: SoundDef[] = [
         highGain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 2.5)
         highOsc.connect(highGain); highGain.connect(ctx.destination)
         highOsc.start(ctx.currentTime + 0.3); highOsc.stop(ctx.currentTime + 2.5)
-      } catch {}
+      } catch (error) { reportEffectFailure(error) }
     },
   },
 ]

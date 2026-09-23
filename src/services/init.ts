@@ -3,11 +3,11 @@
 // 所有应用启动初始化逻辑集中在此，按顺序执行
 // ==========================================
 
-import { MemoryService, stopMemoryConsolidationTimer } from "@/services/agent/memory"
+import { MemoryService } from "@/services/agent/memory"
 import { initRegistry, initCards } from "@/services/personality"
 import { registerDefaultTools, registerAssistantTools, unregisterAssistantTools } from "@/services/tool"
 import { initDebug } from "@/services/debug"
-import { initSessions, chatHistory, initWelcome } from "@/services/session"
+import { initSessions, chatHistory, initWelcome, getActiveSessionId } from "@/services/session"
 import { getActiveCard } from "@/services/personality"
 import { computeMcpEnabled, generalConfig, toolsConfig } from "@/services/config"
 import { createLogger } from "@/services/logger"
@@ -64,7 +64,7 @@ export async function initApp(): Promise<void> {
   if (chatHistory.length === 0) {
     const { pickActiveGreeting } = await import("@/services/personality")
     const greeting = pickActiveGreeting()
-    if (greeting) await initWelcome(greeting)
+    if (greeting) await initWelcome(greeting, getActiveSessionId())
     log.info("6/7 欢迎语已写入")
   } else {
     log.info("6/7 跳过欢迎语（已有历史消息）")
@@ -74,19 +74,24 @@ export async function initApp(): Promise<void> {
   await initDebug()
   log.info("7/7 Debug 就绪")
 
-  // LLM 记忆整理不属于 Presence 启动路径。清理热更新遗留定时器，后续只由
-  // 已实现的记忆工作流在明确调度点启动，不能由应用启动隐式触发。
-  stopMemoryConsolidationTimer()
+  // LLM 记忆整理不属于 Presence 启动路径；当前没有自动整理定时器，长期记忆闭环在 P6。
 
   log.info("──── 初始化完成 ────")
+}
+
+/** 一次能力准备的结果：启用但本次没能借用成功的 MCP 服务器名。 */
+export interface CapabilityPrepResult {
+  unavailableMcp: string[]
 }
 
 /**
  * 对话前按本轮模式准备能力。调用方必须在 run 结束后才以 pet 调用本函数，不能
  * 在运行中清掉 router 仍可能使用的已冻结工具；root 在 run preflight 冻结 snapshot。
+ * 借用失败的服务器名交回调用方，由它决定是否把「本次能力不全」变成可见结论。
  */
-export async function prepareConversationCapabilities(mode: "pet" | "assistant", owner = "runtime"): Promise<void> {
+export async function prepareConversationCapabilities(mode: "pet" | "assistant", owner = "runtime"): Promise<CapabilityPrepResult> {
   await registerDefaultTools()
+  const unavailableMcp: string[] = []
   if (mode === "assistant") {
     await registerAssistantTools()
     if (computeMcpEnabled()) {
@@ -95,7 +100,10 @@ export async function prepareConversationCapabilities(mode: "pet" | "assistant",
       for (const server of servers) {
         if (!server.enabled) continue
         const acquired = await acquireMcpServer(server.name, owner)
-        if (!acquired.success) log.warn(`MCP 获取失败: ${server.name} | ${acquired.error ?? "未知错误"}`)
+        if (!acquired.success) {
+          unavailableMcp.push(server.name)
+          log.warn(`MCP 获取失败: ${server.name} | ${acquired.error ?? "未知错误"}`)
+        }
       }
     }
   }
@@ -103,6 +111,20 @@ export async function prepareConversationCapabilities(mode: "pet" | "assistant",
     const { ensureSkillCatalog } = await import("@/services/skill")
     await ensureSkillCatalog()
   }
+  return { unavailableMcp }
+}
+
+/**
+ * run 级能力准备：借用 MCP / 预热 Skill 目录，并在借用失败时把不可用的服务器名单交回调用方。
+ * `assertCurrent` 在准备前后各调一次 —— 准备期间回合可能已被取消。
+ */
+export async function prepareRunCapabilities(
+  mode: "pet" | "assistant", owner: string, assertCurrent?: () => void,
+): Promise<CapabilityPrepResult> {
+  assertCurrent?.()
+  const result = await prepareConversationCapabilities(mode, owner)
+  assertCurrent?.()
+  return result
 }
 
 let pendingCapabilityMode: "pet" | "assistant" | null = null

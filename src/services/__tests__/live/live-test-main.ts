@@ -1,3 +1,9 @@
+// ==========================================
+// Live Test 宿主入口（分派与汇总，场景执行在 scene-runner）
+// 开发工具直接用 console：改走 logger 会污染 data_root/logs/deskpet.log
+// 并引入 IPC 依赖 [保留已登记 §4.2]
+// ==========================================
+
 import { invoke } from "@tauri-apps/api/core"
 import { validateDataset, LIVE_DATASET_VERSION } from "./dataset"
 import { runAllScenes, plannedTrialCount } from "./scene-runner"
@@ -62,9 +68,9 @@ function withStandardSetup(scene: SceneDef): SceneDef {
   return {
     ...scene,
     setup: async () => {
-      // 场景声明在这里落到宿主的确认通道上：withStandardSetup 是唯一同时持有
-      // 场景元数据与 setup 包装的位置（确认通道本身由 standard-setup 负责重置）。
-      await standardSetup(scene.meta.confirmPolicy)
+      // 场景声明在这里落到宿主的确认与计划通道上：withStandardSetup 是唯一同时持有
+      // 场景元数据与 setup 包装的位置（两条通道本身由 standard-setup 负责重置）。
+      await standardSetup(scene.meta.confirmPolicy, scene.meta.planPolicy)
       await sceneSetup?.()
     },
   }

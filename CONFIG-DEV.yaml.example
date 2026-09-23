@@ -43,6 +43,7 @@ ai:
   plan:
     enabled: true
     complexityThreshold: 3
+    complexityEval: keyword
     maxSteps: 8
     stepTimeoutMs: 90000
     stepMaxRounds: 5
