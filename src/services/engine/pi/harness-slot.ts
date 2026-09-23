@@ -36,7 +36,7 @@ import type { ThinkingEffort } from "@/services/agent/types"
 import type { ToolDef } from "@/services/tool/types"
 import type { HarnessToolRun } from "@/services/tool/pi/harness-tool-adapter"
 import { toAgentHarnessTools } from "@/services/tool/pi/harness-tool-adapter"
-import { setToolPermitLimit } from "@/services/tool/execution-permit"
+import { flushPendingReleases, retryBorrowerAttachIfPending, setToolPermitLimit } from "@/services/tool/execution-permit"
 import { ContextBudgetError, contextBudget, toHarnessEstimateTokens } from "@/services/context"
 import { COMPACTION_DECLINED_ENTRY, PROMPT_REWRITE_ENTRY, laneMessageText, messageRequestId, userInputMessage } from "@/services/engine/runtime"
 import type { CompactionAuditSink, InputSourceMark } from "@/services/engine/runtime"
@@ -1195,7 +1195,7 @@ export class HarnessSlot {
 
   // ── 内部 ──
 
-  /** 装配 lane 运行参数（工具/压缩/队列/许可上限/模型/思考档位）；admit 与 drive 共用同一段，不写第二份。 */
+  /** 装配 lane 运行参数（工具/压缩/队列/许可上限与补偿/模型/思考档位）；admit 与 drive 共用同一段，不写第二份。 */
   private async assembleLane(spec: Pick<HarnessAdmitSpec, "model" | "thinkingEffort" | "tools" | "toolRun">): Promise<void> {
     const tools = toAgentHarnessTools(spec.tools, spec.toolRun)
     await this.harness!.setTools(tools, TODO_CONTEXT)
@@ -1204,6 +1204,10 @@ export class HarnessSlot {
     await this.syncRetryPolicy()
     await this.syncQueueModes()
     await this.syncToolPermitLimit()
+    // 许可的补偿重放：上一次 run 遗留的释放失败（额度还卡在所有者手里）与上线声明欠账
+    // 都在这里补上；失败只留痕，不阻断本次 run（与上限下发同一口径）。
+    await retryBorrowerAttachIfPending()
+    await flushPendingReleases()
     await this.lane!.setModel({ provider: spec.model.provider, modelId: spec.model.id }, TODO_CONTEXT)
     await this.lane!.setThinkingLevel(toPiAgentThinkingLevel(spec.thinkingEffort), TODO_CONTEXT)
     await this.lane!.setActiveTools(spec.tools.map(tool => tool.name), TODO_CONTEXT)

@@ -54,7 +54,7 @@ Rust [AppPaths](../../src-tauri/src/paths.rs) 依据 `cfg!(debug_assertions)` �
 |---|---|---|---|
 | `ai.loop.maxParallelTools` | 1–8 的整数，默认 4 | 同时执行的只读（`shared_read`）工具数上限；效果类工具始终与其它执行互斥，不受它影响 | 每个 run 开始前下发给 Rust 许可所有者，运行期间不撤销已借出的额度 |
 
-由 [ToolsTab](../../src/components/settings/ToolsTab.vue) 的「工具执行」读取与回写、经 SettingsPanel 的 setOverrides 落盘，保存后由 `deskpet-settings-saved` 触发的 `reloadConfig()` 生效；运行期只经 [config.ts](../../src/services/config.ts) 的 `loopConfig.maxParallelTools` 读取，并发所有权仍在 [tool_permit.rs](../../src-tauri/src/commands/tool_permit.rs)。
+由 [ToolsTab](../../src/components/settings/ToolsTab.vue) 的「工具执行」读取与回写、经 SettingsPanel 的 setOverrides 落盘，保存后由 `deskpet-settings-saved` 触发的 `reloadConfig()` 生效；运行期只经 [config.ts](../../src/services/config.ts) 的 `loopConfig.maxParallelTools` 读取，并发所有权仍在 [tool_permit.rs](../../src-tauri/src/commands/tool_permit.rs)。`MIN/MAX/DEFAULT_PARALLEL_TOOLS` 与所有者的默认值和范围同值，是给设置页校验与 YAML 兜底用的 UI 校验副本，不构成第二个所有者。
 
 非法值不静默接受：手写 YAML 的非数值按默认值、越界值收拢到最近边界（getter）；设置页保存前用 `parallelToolsError()` 拒绝越界输入；Rust 许可所有者收到 1–8 之外的下发直接报错而不夹边界（上限 0 会让所有读永久排队）。降低上限暂停新获准执行，提高会唤醒有序等待项。
 

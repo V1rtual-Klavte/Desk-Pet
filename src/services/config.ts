@@ -537,8 +537,9 @@ export const planConfig = {
 /**
  * 共享读并行上限（`ai.loop.maxParallelTools`）的取值范围与默认值。
  *
- * 默认值等于许可所有者（src-tauri/src/commands/tool_permit.rs）的内置上限：不写这个
- * 字段时行为与引入配置前一致。运行期上限由所有者裁定，这里只定义可配置边界。
+ * Rust 是上限的所有者与默认值来源（src-tauri/src/commands/tool_permit.rs 是宿主侧唯一的
+ * 额度定义点）：这里的常量是 UI 校验副本，不构成第二个所有者；两者一致性由
+ * `tool-execution-permit` 场景的可执行边界钉保证（上限原值被接受、两侧越界被拒绝）。
  */
 export const MIN_PARALLEL_TOOLS = 1
 export const MAX_PARALLEL_TOOLS = 8

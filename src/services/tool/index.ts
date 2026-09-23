@@ -16,7 +16,16 @@ export { defineTool, validateToolPolicy, toolPolicyFingerprint, toolPolicyHash, 
 export type { ToolHandler } from "./policy"
 
 // ── 执行许可（Rust 应用级所有者）──
-export { acquireToolPermit, releaseToolPermit, setToolPermitLimit, permitSnapshot } from "./execution-permit"
+export {
+  acquireToolPermit,
+  releaseToolPermit,
+  setToolPermitLimit,
+  permitSnapshot,
+  // 补偿入口与测试注入：运行槽在每个 run 开始前重放；failNextReleasesForTest 只给 Live Test。
+  flushPendingReleases,
+  retryBorrowerAttachIfPending,
+  failNextReleasesForTest,
+} from "./execution-permit"
 export type { ToolPermitLease, PermitAcquisition, PermitSnapshot, PermitReclaim } from "./execution-permit"
 
 // ── 注册表 ──
