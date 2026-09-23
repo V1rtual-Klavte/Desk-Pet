@@ -24,6 +24,11 @@ pub enum AppError {
     #[error("凭据路径不允许访问")]
     SensitivePath,
 
+    /// 取消请求（`bash_cancel`）在子进程 spawn 前就已立案，执行入口据此立即终止本次运行。
+    /// 与「命令执行超时」分开：取消是调用方的意图，不是失败原因不明。
+    #[error("操作已取消")]
+    Cancelled,
+
     #[error("无法获取 home 目录")]
     NoHomeDir,
 
@@ -48,6 +53,7 @@ impl AppError {
             Self::PathNotFound(_) => "PATH_NOT_FOUND",
             Self::NotAbsolute(_) => "NOT_ABSOLUTE",
             Self::SensitivePath => "SENSITIVE_PATH",
+            Self::Cancelled => "CANCELLED",
             Self::NoHomeDir => "NO_HOME_DIR",
             Self::Io(_) => "IO",
             Self::Config(_) => "CONFIG",

@@ -36,11 +36,41 @@ const MAX_SPILL_FILES: usize = 10;
 /// 全量输出文件名前缀；回收时按它识别自己的文件，不碰 temp 目录里的其他内容。
 const SPILL_PREFIX: &str = "deskpet-spill-";
 
+/// 运行中的 bash 槽：子进程句柄可能尚未/不再存在；取消请求可在 spawn 前到达。
+///
+/// `child` 为 `None` 表示「已登记、还没 spawn」——登记被提到 spawn 之前，
+/// 取消落在这个窗口里不再丢失，而是记在 `cancel_requested` 上，由 spawn 后的回填点取走。
+struct BashSlot {
+    child: Option<Arc<Mutex<Child>>>,
+    cancel_requested: bool,
+}
+
 /// 运行中的 bash 子进程表。
 ///
 /// 内层 `Arc` 让命令体能把它搬进 `spawn_blocking`：`State` 的借用撑不到任务结束。
 #[derive(Default, Clone)]
-pub struct BashPool(Arc<Mutex<HashMap<String, Arc<Mutex<Child>>>>>);
+pub struct BashPool(Arc<Mutex<HashMap<String, BashSlot>>>);
+
+/// 池条目守卫：`Drop` 时删条目。
+///
+/// `run_bash` 有多条 `?` 提前返回（cwd 校验、临时文件创建、spawn、超时、读取输出、
+/// spill 构建）——只在成功与超时路径上显式 `remove` 一定会漏，而残条会让后续同 id 的
+/// `bash_exec` 被误判成「已取消」。交给守卫后，条目何时消失只由函数作用域决定。
+struct PoolGuard {
+    pool: BashPool,
+    execution_id: String,
+}
+
+impl Drop for PoolGuard {
+    fn drop(&mut self) {
+        // 守卫不能失败：锁中毒也要恢复出来把条目删掉，否则残条会一直留在池里。
+        self.pool
+            .0
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(&self.execution_id);
+    }
+}
 
 // ── Bash 命令执行 ──
 
@@ -94,6 +124,25 @@ fn run_bash(
         return err("无效的执行 ID");
     }
 
+    // 登记提前到任何阻塞动作（cwd 校验、临时文件创建、spawn）之前：
+    // 取消此刻起就有槽可立，不再因为「id 还没进池」而静默失效；此后无论从哪条
+    // `?` 路径返回，条目都由 `_guard` 在同一作用域收尾，池里不会留残条。
+    //
+    // 已存在的同 id 槽不覆盖（`or_insert`）：槽上可能已经压着一次取消立案，
+    // 覆盖它就是把这枚取消丢回静默状态 —— 正是本任务要消除的失败形态。
+    pool.0
+        .lock()
+        .map_err(|_| "Bash 状态锁损坏")?
+        .entry(execution_id.clone())
+        .or_insert(BashSlot {
+            child: None,
+            cancel_requested: false,
+        });
+    let _guard = PoolGuard {
+        pool: pool.clone(),
+        execution_id: execution_id.clone(),
+    };
+
     // 跨平台 shell 选择
     #[cfg(target_os = "windows")]
     let (shell, shell_arg) = ("cmd", "/C");
@@ -129,10 +178,23 @@ fn run_bash(
         cmd.spawn()
             .map_err(|e| AppError::Io(format!("执行失败: {e}")))?,
     ));
-    pool.0
-        .lock()
-        .map_err(|_| "Bash 状态锁损坏")?
-        .insert(execution_id.clone(), Arc::clone(&child));
+    // 回填句柄并取回取消标记：spawn 前到达的取消在这里收口。
+    let cancel_requested = {
+        let mut slots = pool.0.lock().map_err(|_| "Bash 状态锁损坏")?;
+        match slots.get_mut(&execution_id) {
+            Some(slot) => {
+                slot.child = Some(Arc::clone(&child));
+                std::mem::replace(&mut slot.cancel_requested, false)
+            }
+            // 条目意外消失（同 id 的另一轮运行先收尾）按「已取消」保守处理：
+            // 这里放行就等于让一个已经没人认领的子进程跑到底，deny-first 更安全。
+            None => true,
+        }
+    };
+    if cancel_requested {
+        let _ = child.lock().map_err(|_| "Bash 进程锁损坏")?.kill();
+        return Err(AppError::Cancelled);
+    }
 
     let timeout = Duration::from_millis(timeout_ms.unwrap_or(DEFAULT_BASH_TIMEOUT_MS));
     let started = Instant::now();
@@ -147,19 +209,11 @@ fn run_bash(
         }
         if started.elapsed() >= timeout {
             let _ = child.lock().map_err(|_| "Bash 进程锁损坏")?.kill();
-            pool.0
-                .lock()
-                .map_err(|_| "Bash 状态锁损坏")?
-                .remove(&execution_id);
-            // 临时文件交给 `temps` 守卫清理
+            // 临时文件交给 `temps` 守卫清理，池条目交给 `_guard`
             return err("命令执行超时");
         }
         std::thread::sleep(BASH_POLL_INTERVAL);
     };
-    pool.0
-        .lock()
-        .map_err(|_| "Bash 状态锁损坏")?
-        .remove(&execution_id);
 
     let max_bytes = max_bytes.unwrap_or(DEFAULT_MAX_OUTPUT_BYTES);
     let max_lines = max_lines.unwrap_or(DEFAULT_MAX_OUTPUT_LINES);
@@ -205,22 +259,43 @@ fn run_bash(
 // 子串匹配（`rm -rf /` 之类）既漏 `rm  -rf  /`、`find ~ -delete`，
 // 又误杀 `rm -rf /Users`，且助手模式整段跳过。
 
-#[command]
-pub fn bash_cancel(pool: State<BashPool>, execution_id: String) -> AppResult<()> {
-    let child = pool
-        .0
-        .lock()
-        .map_err(|_| "Bash 状态锁损坏")?
-        .get(&execution_id)
-        .cloned();
-    if let Some(child) = child {
-        child
-            .lock()
-            .map_err(|_| "Bash 进程锁损坏")?
-            .kill()
-            .map_err(|e| format!("取消命令失败: {e}"))?;
+/// 取消的池内路径。
+///
+/// 抽成独立函数只为可测：`State<BashPool>` 在单测里不可构造，而这条分支
+/// （命中句柄 / 命中空槽 / 未命中）必须能直接驱动。
+///
+/// 返回值语义：`true` = 这次取消确实落到了某个运行上（直接终止或立案待终止），
+/// `false` = 池里没有这个 id 的槽 —— 子进程可能已经结束，调用方据此区分
+/// 「取消成功」与「取消来晚了」，不再把两者混成一个静默的 `Ok(())`。
+fn cancel_in_pool(pool: &BashPool, execution_id: &str) -> AppResult<bool> {
+    let mut slots = pool.0.lock().map_err(|_| "Bash 状态锁损坏")?;
+    match slots.get_mut(execution_id) {
+        Some(slot) => match slot.child.as_ref() {
+            Some(child) => {
+                child
+                    .lock()
+                    .map_err(|_| "Bash 进程锁损坏")?
+                    .kill()
+                    .map_err(|e| format!("取消命令失败: {e}"))?;
+                Ok(true)
+            }
+            // spawn 之前到达：立案。spawn 后的回填点会取走这个标记，
+            // 立即终止刚起来的子进程并让本次运行以 `Cancelled` 结束。
+            None => {
+                slot.cancel_requested = true;
+                Ok(true)
+            }
+        },
+        None => {
+            rust_debug!("bash_cancel 未命中执行中的子进程（可能已结束）: {execution_id}");
+            Ok(false)
+        }
     }
-    Ok(())
+}
+
+#[command]
+pub fn bash_cancel(pool: State<BashPool>, execution_id: String) -> AppResult<bool> {
+    cancel_in_pool(pool.inner(), &execution_id)
 }
 
 fn cleanup_temp_outputs(stdout: &Path, stderr: &Path) {
@@ -1498,5 +1573,203 @@ mod tests {
         let actual = truncate_output(&text, &stats, true, false, 1024, 2000);
         assert!(!actual.output.is_empty());
         assert!(actual.output.contains("tail"));
+    }
+
+    // ── bash 取消与 spawn 的竞态（TOOL-07）──
+    //
+    // 覆盖边界：`run_bash` 的每一条提前返回都必须把池条目交回守卫，漏一条就是残条 ——
+    // 后续同 id 的 `bash_exec` 会读到 `child: None` 的旧槽，被误判成「已取消」。
+    //
+    // 唯一无法在单测里确定性构造的提前返回是 `spawn` 失败（`/bin/sh` 与 `cmd` 恒存在，
+    // 要造失败得先破坏 PATH 或句柄表，代价与收益不成比例）：它与其它提前返回走的是
+    // 同一个 `_guard`，由 `bash_invalid_cwd_leaves_no_pool_entry` 等价覆盖。
+
+    use crate::commands::bash_policy::BashScope;
+
+    /// 本组用例的临时目录：同一条用例的文件都落在这里，结束时整体删除。
+    fn probe_dir(tag: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "deskpet-bash-{tag}-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    /// 池条目的直接视图。锁中毒也恢复出来：断言不该因为别的用例 panic 而误报。
+    fn slots(pool: &BashPool) -> std::sync::MutexGuard<'_, HashMap<String, BashSlot>> {
+        pool.0.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    fn assistant_policy() -> BashPolicy {
+        BashPolicy {
+            scope: BashScope::Assistant,
+            whitelist: Vec::new(),
+        }
+    }
+
+    /// 「先等一段时间、再留下探针文件」的命令：给「spawn 后立即终止」留出可判定的窗口。
+    ///
+    /// 直接用 `touch` 会与 kill 抢时序 —— 子进程完全可能在 kill 生效前就写完文件，
+    /// 断言变成抛硬币。把副作用推到延迟之后，结论只剩两种：子进程活着 → 文件出现；
+    /// 子进程被终止 → 文件永远不出现。Windows 没有 `sleep`/`touch`，用 `ping`/`type` 同义形态。
+    fn delayed_probe(seconds: u32, sentinel: &Path) -> String {
+        let path = sentinel.display();
+        if cfg!(windows) {
+            format!(
+                "ping -n {} 127.0.0.1 > nul && type nul > \"{path}\"",
+                seconds + 1
+            )
+        } else {
+            format!("sleep {seconds}; touch \"{path}\"")
+        }
+    }
+
+    /// TOOL-07 的核心用例：取消在登记之后、spawn 之前到达（槽已立案、句柄尚未回填）。
+    #[test]
+    fn bash_cancel_lands_before_spawn() {
+        let dir = probe_dir("cancel-before-spawn");
+        let pool = BashPool::default();
+
+        // 正对照：同一条命令不加取消时必须跑完并留下探针。缺了它，下面的「文件不存在」
+        // 可能只是因为命令或路径根本走不通，而不是因为取消生效。
+        let control = dir.join("control.sentinel");
+        let control_result = run_bash(
+            pool.clone(),
+            delayed_probe(0, &control),
+            None,
+            Some("control-probe".into()),
+            None,
+            assistant_policy(),
+            None,
+            None,
+            None,
+        );
+        assert!(control_result.is_ok(), "正对照命令没有跑通");
+        assert!(control.exists(), "正对照没有留下探针，后续断言会退化成空断言");
+        assert!(slots(&pool).is_empty(), "正常返回后池里不该有条目");
+
+        let sentinel = dir.join("sentinel");
+        let id = "cancel-before-spawn".to_string();
+        slots(&pool).insert(
+            id.clone(),
+            BashSlot {
+                child: None,
+                cancel_requested: true,
+            },
+        );
+
+        let result = run_bash(
+            pool.clone(),
+            delayed_probe(1, &sentinel),
+            None,
+            Some(id),
+            None,
+            assistant_policy(),
+            None,
+            None,
+            None,
+        );
+        match result {
+            Err(AppError::Cancelled) => {}
+            Err(other) => panic!("取消立案后应返回 Cancelled，实际 {other:?}"),
+            Ok(_) => panic!("取消立案后不该正常返回"),
+        }
+        assert!(slots(&pool).is_empty(), "提前返回在池里留下了残条");
+        // 宽限窗口：探针推到 1s 之后。子进程真被终止则文件永不出现；
+        // 若 kill 只是「返回了」而没生效，这里就会看到文件。
+        std::thread::sleep(Duration::from_millis(1500));
+        assert!(!sentinel.exists(), "取消后子进程仍在运行：探针文件出现了");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 策略拒绝发生在登记之前：这条路径不该在池里留下任何东西。
+    #[test]
+    fn bash_policy_reject_leaves_no_pool_entry() {
+        let pool = BashPool::default();
+        let result = run_bash(
+            pool.clone(),
+            "rm -rf /".into(),
+            None,
+            Some("policy-reject".into()),
+            None,
+            assistant_policy(),
+            None,
+            None,
+            None,
+        );
+        match result {
+            Err(AppError::Tool(message)) => assert!(!message.is_empty(), "策略拒绝应带原因"),
+            Err(other) => panic!("策略拒绝应是 Tool 错误，实际 {other:?}"),
+            Ok(_) => panic!("硬禁止命令不该被执行"),
+        }
+        assert!(slots(&pool).is_empty(), "策略拒绝在池里留下了残条");
+    }
+
+    /// cwd 校验在登记之后、spawn 之前 —— 这条 `?` 路径必须由守卫收尾。
+    #[test]
+    fn bash_invalid_cwd_leaves_no_pool_entry() {
+        let dir = probe_dir("invalid-cwd");
+        let plain = dir.join("plain.txt");
+        std::fs::write(&plain, b"not a directory").unwrap();
+
+        let pool = BashPool::default();
+        let result = run_bash(
+            pool.clone(),
+            "echo probe".into(),
+            Some(plain.to_string_lossy().into_owned()),
+            Some("invalid-cwd".into()),
+            None,
+            assistant_policy(),
+            None,
+            None,
+            None,
+        );
+        match result {
+            Err(AppError::Other(message)) => {
+                assert!(message.contains("目录"), "cwd 拒绝文案不符: {message}")
+            }
+            Err(other) => panic!("cwd 不是目录应是 Other 错误，实际 {other:?}"),
+            Ok(_) => panic!("cwd 不是目录时不该执行命令"),
+        }
+        assert!(slots(&pool).is_empty(), "cwd 校验失败在池里留下了残条");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 未命中的取消要有明确结论：`Ok(false)`（外加一条 debug 日志），不是静默成功。
+    #[test]
+    fn bash_cancel_unknown_id_returns_false() {
+        let pool = BashPool::default();
+        assert!(
+            !cancel_in_pool(&pool, "not-registered").unwrap(),
+            "未命中的取消应返回 false"
+        );
+        assert!(slots(&pool).is_empty(), "未命中不该顺手创建条目");
+    }
+
+    /// 空槽（已登记、尚未 spawn）上的取消必须立案 —— 这是 spawn 后立即终止的唯一依据。
+    #[test]
+    fn bash_cancel_latches_slot_without_child() {
+        let pool = BashPool::default();
+        let id = "pending-spawn".to_string();
+        slots(&pool).insert(
+            id.clone(),
+            BashSlot {
+                child: None,
+                cancel_requested: false,
+            },
+        );
+
+        assert!(cancel_in_pool(&pool, &id).unwrap(), "命中空槽的取消应返回 true");
+        assert!(
+            slots(&pool)
+                .get(&id)
+                .is_some_and(|slot| slot.cancel_requested && slot.child.is_none()),
+            "取消没有在空槽上立案"
+        );
     }
 }

@@ -17,8 +17,11 @@ import type { Context } from "@earendil-works/pi-agent-core"
 import { toolsConfig } from "@/services/config"
 import type { ToolMode } from "../types"
 import { formatError } from "@/services/error"
+import { createLogger } from "@/services/logger"
 
 const MAX_TOOL_FILE_BYTES = 5 * 1024 * 1024
+
+const log = createLogger("ToolEnv")
 
 /** `file_list` / `file_info` 的载荷：与 FileSystem 契约的 FileInfo 逐字段一致。 */
 type FileInfoPayload = {
@@ -252,7 +255,16 @@ export class TauriExecutionEnv implements ExecutionEnv {
   async exec(command: string, options: ShellExecOptions | undefined, context: Context): Promise<Result<ShellExecResult, ExecutionError>> {
     const executionId = crypto.randomUUID()
     const signal = context.abortSignal
-    const cancel = () => { invoke("bash_cancel", { executionId }).catch(() => {}) }
+    // Rust 侧会如实区分三种结果：命中在跑的子进程（true）、在 spawn 前立案（true）、
+    // 没有这个 id 的槽（false，子进程可能已结束）。第二种是取消与 spawn 的竞态，
+    // 之前会被静默丢掉：取消先到、exec 随后 spawn，子进程一直跑到超时。
+    const cancel = () => {
+      invoke<boolean>("bash_cancel", { executionId })
+        .then(cancelled => {
+          if (!cancelled) log.debug("bash_cancel 未命中在跑的子进程（可能已结束）:", executionId)
+        })
+        .catch(e => log.warn("bash_cancel 调用失败，子进程可能仍在运行:", executionId, formatError(e)))
+    }
     signal?.addEventListener("abort", cancel, { once: true })
     try {
       throwIfAborted(context)
