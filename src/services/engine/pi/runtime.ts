@@ -12,6 +12,7 @@ import { MemoryService, recallMemory, planCheckpointStore } from "@/services/age
 import type { StructuredSummary } from "@/services/agent/memory"
 import { buildPrompt, contextBudget, CONTEXT_RATIOS, estimateRequestTokens, estimateContextTokens, estimateMessageTokens, ContextBudgetError, projectToolMessages } from "@/services/context"
 import { bindRunningPlan, clearRunningPlan, notifyPlanEnd, requestPlanConfirm, requestPlanStepDecision } from "@/services/engine/plan-confirmation"
+import type { PlanConfirmResult } from "@/services/engine/plan-confirmation"
 import { executePlan, evaluateComplexity, formatStepResults, generatePlan, normalizePlan, planEffectClassFor, planToRecords } from "@/services/engine/planner"
 import type { PlanExecutionResult, PlanResult } from "@/services/engine/planner"
 import { recordMessage, recordToolCall, transition } from "@/services/engine/session"
@@ -800,10 +801,23 @@ export async function runPiAgentTurn(input: PiAgentTurnInput): Promise<PiAgentTu
 
 // ── 计划相位与统一收尾（PLAN-15 / PLAN-10 / FIX-34 / FIX-35） ──
 
+/** 确认未成立（不是用户拒绝）的归宿说明：进 `PlanPhaseOutcome.context` 供审计与恢复入口使用，不是给用户看的文案。 */
+type PlanConfirmDeclineReason = Exclude<Extract<PlanConfirmResult, { confirmed: false }>["reason"], "user">
+const NON_CONFIRM_CONTEXT: Record<PlanConfirmDeclineReason, string> = {
+  session_switched: "确认时会话已切换",
+  not_active: "确认时会话已不再活跃",
+  timeout: "确认等待超时",
+  emit_failed: "确认事件发射失败",
+  ui_unavailable: "计划面板不可用",
+}
+
+/** 计划取消的原因：用户停止/逐步门、计划级时限，以及确认未成立时由确认域给出的归宿。 */
+type PlanCancelReason = "user" | "session_switched" | "deadline" | "declined" | PlanConfirmDeclineReason
+
 /** 计划段的归宿：三种归宿都回到主路径统一结算，不再各自写一份收尾。 */
 type PlanPhaseOutcome =
   | { kind: "completed"; result: PlanExecutionResult }
-  | { kind: "cancelled"; reason: "user" | "session_switched" | "deadline" | "declined"; context: string }
+  | { kind: "cancelled"; reason: PlanCancelReason; context: string }
   | { kind: "declined"; reply: string }
 
 /**
@@ -880,36 +894,39 @@ async function runPlanPhase(args: {
     stepMode = "auto"
     if (getEffectiveSafetyMode() !== "just_do_it") {
       const decision = await requestPlanConfirm(plan, {
-        ...(getEffectiveSafetyMode() === "let_me_tk" ? { forceStepByStep: true } : {}),
-        signal: args.confirmSignal,
         sessionId,
         planId,
+        ...(getEffectiveSafetyMode() === "let_me_tk" ? { forceStepByStep: true } : {}),
+        signal: args.confirmSignal,
       })
-      if (!decision.confirmed && decision.reason === "session_switched") {
-        // 会话已切换：计划一次都没跑，按取消归宿收尾（不是用户拒绝，不写「已取消计划」）
+      if (!decision.confirmed) {
+        if (decision.reason === "user") {
+          // 用户拒绝：一步都没跑，步骤全部标 skipped，计划落 failed
+          await withPlanWriteDegrade(sessionId, planId, async () => {
+            for (const step of plan.steps) await planCheckpointStore.transitionStep(planId, String(step.id), "skipped")
+          })
+          await finishPlan({ sessionId, planId, state: "failed", reason: "declined", notify: "cancelled" })
+          return { kind: "declined", reply: getSimpleStage("planning") ?? "好的，已取消计划～" }
+        }
+        // 其余非确认归宿（会话切换/会话不再活跃/确认超时/事件发射失败/面板不可用）都不是用户的选择：
+        // 计划一次都没跑，按取消归宿收尾 —— 不写「已取消计划～」的模型回复，也不记成用户拒绝。
+        // 用户可见说明由确认域就地写出：会话切换/关闭在 cancelSessionPlans（那时指针还指向旧会话），
+        // 确认超时/事件发射失败在 plan-confirmation 的结算处；面板不可用由面板 reportError 留痕。
         return await cancelPlanRun({
           sessionId,
           planId,
-          reason: "session_switched",
-          context: "计划未开始执行：确认时会话已切换",
+          reason: decision.reason,
+          context: `计划未开始执行：${NON_CONFIRM_CONTEXT[decision.reason]}`,
         })
-      }
-      if (!decision.confirmed) {
-        // 用户拒绝：一步都没跑，步骤全部标 skipped，计划落 failed
-        await withPlanWriteDegrade(sessionId, planId, async () => {
-          for (const step of plan.steps) await planCheckpointStore.transitionStep(planId, String(step.id), "skipped")
-        })
-        await finishPlan({ sessionId, planId, state: "failed", reason: "declined", notify: "cancelled" })
-        return { kind: "declined", reply: getSimpleStage("planning") ?? "好的，已取消计划～" }
       }
       stepMode = decision.mode
     }
   }
 
   await withPlanWriteDegrade(sessionId, planId, () => planCheckpointStore.transitionPlan(planId, "running"))
-  // 执行期登记中断通道，「终止执行」据此真正停下剩余步骤；
+  // 执行期登记中断通道，「终止执行」据此真正停下剩余步骤（按会话键控：只停本会话的计划）；
   // `finally` 保证任何退出路径都会清空登记，不给下一次计划留悬空引用
-  bindRunningPlan(planAbort)
+  bindRunningPlan(sessionId, planId, planAbort)
   const result = await executePlan(plan, {
     stepTimeoutMs: planConfig.stepTimeoutMs,
     stepMaxRounds: planConfig.stepMaxRounds,
@@ -923,18 +940,25 @@ async function runPlanPhase(args: {
   }, {
     async onStepStart(step) {
       await planCheckpointStore.transitionStep(planId, String(step.id), "running")
-      emit("deskpet-plan-progress", { step: step.id, total: plan.steps.length, desc: step.description, status: "running" })
+      void emitUiEvent("deskpet-plan-progress", { sessionId, planId, step: step.id, total: plan.steps.length, desc: step.description, status: "running" })
     },
     async onStepDone(step, output) {
       await planCheckpointStore.transitionStep(planId, String(step.id), output.success ? "done" : "failed")
-      emit("deskpet-plan-progress", { step: step.id, total: plan.steps.length, desc: step.description, status: output.success ? "done" : "failed" })
+      void emitUiEvent("deskpet-plan-progress", { sessionId, planId, step: step.id, total: plan.steps.length, desc: step.description, status: output.success ? "done" : "failed" })
     },
-    // 失败询问的 `signal` 由 T2.04 接线：现在接上会让「终止执行」把本轮的失败询问结算成 abort，
-    // 于是中止被记成 failed 而不是 user；留到 T2.05 补 `declined` 归宿时一起接。
-    onStepFailed: requestPlanStepDecision,
+    // 失败询问接上会话身份与回合中断信号：会话切换/终止执行时按 `abort` 结算，
+    // 不让计划在没有答复的情况下继续跑。这次中止当前记成步骤失败（`cancelled` 为空），
+    // 归入 `declined` 归宿与对应系统消息由 T2.05 落地。
+    onStepFailed: (step, error) => requestPlanStepDecision(step, error, {
+      sessionId,
+      planId,
+      signal: planAbort.signal,
+      index: plan.steps.findIndex(item => item.id === step.id) + 1,
+      total: plan.steps.length,
+    }),
     onToolStart: (step, toolName, toolCallId) => planCheckpointStore.checkpointTool(planId, String(step.id), "tool_start", toolName, toolCallId, planEffectClassFor([toolName])),
     onToolDone: (step, toolName, toolCallId, success) => planCheckpointStore.checkpointTool(planId, String(step.id), "tool_end", toolName, toolCallId, planEffectClassFor([toolName]), success),
-  }).finally(() => clearRunningPlan())
+  }).finally(() => clearRunningPlan(sessionId, planId))
 
   if (result.cancelled) {
     const reasonText = result.cancelled.reason === "user" ? "用户终止执行"
@@ -964,7 +988,7 @@ async function runPlanPhase(args: {
 async function cancelPlanRun(args: {
   sessionId: string
   planId: string
-  reason: "user" | "session_switched" | "deadline" | "declined"
+  reason: PlanCancelReason
   context: string
 }): Promise<PlanPhaseOutcome> {
   await withPlanWriteDegrade(args.sessionId, args.planId, async () => {
@@ -992,14 +1016,18 @@ async function finishPlan(args: {
   planId: string
   state: "done" | "failed" | "interrupted"
   /** 可见原因（用于系统消息文案；只有 user/completed/failed 不发消息）。 */
-  reason: "completed" | "failed" | "user" | "session_switched" | "deadline" | "declined"
+  reason: "completed" | "failed" | PlanCancelReason
   notify: "done" | "failed" | "cancelled"
 }): Promise<void> {
   await withPlanWriteDegrade(args.sessionId, args.planId, () => planCheckpointStore.transitionPlan(args.planId, args.state))
   // 收起 Plan 面板：没有这个事件时它只在两个按钮里被隐藏，跑完会一直挂着
-  notifyPlanEnd(args.notify)
+  notifyPlanEnd(args.sessionId, args.notify)
+  // 用户可见文案只在这里发「执行期截止」与「用户在逐步门上的选择」两条；
+  // 会话切换/会话关闭的取消文案由 cancelSessionPlans 在切指针之前写出（那时活跃会话才是旧会话），
+  // 确认超时/事件发射失败由 plan-confirmation 在结算处写出 —— 同一桩事不能各发一条。
+  // 消息只写给计划所属会话：执行期切走后回合仍在跑，文案不能落进另一个会话。
+  if (getActiveSessionId() !== args.sessionId) return
   if (args.reason === "deadline") pushSystemMessage("计划超时，已停在当前步骤，剩余步骤未执行")
-  if (args.reason === "session_switched") pushSystemMessage("会话已切换，计划停在当前步骤，剩余步骤未执行")
   if (args.reason === "declined") pushSystemMessage("已按你的选择停在当前步骤，剩余步骤未执行")
 }
 

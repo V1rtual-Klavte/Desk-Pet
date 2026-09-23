@@ -18,7 +18,7 @@ scope: runtime-foundation-before-memory-kernel
 
 投递意图由单条显式选择决定，未选择时取配置 `ai.conversation.defaultDelivery`；运行阶段只决定能否投递，不再替用户选择 steer/followUp。队列批量策略 `ai.conversation.steeringMode` / `followUpMode` 在每次运行开始前与配置对齐（按运行冻结）。steer 等当前响应及整个工具批次结束，followUp 等运行准备自然结束，均不硬中断工具。Slash 执行只有 ingress 一条路径（ChatPanel 只提交输入），命令按声明的 `busyPolicy` 准入：只读查询与独立窗口动作可立即执行，`/compact` 由运行边界报 busy/pending，改会话状态的命令在忙碌时明确拒绝而不是丢弃。
 
-启动恢复隔离未知副作用。Plan 恢复按「步骤状态 + 末事件 + 效果类」定档：只对运行中的步骤判定，末事件为 `tool_end` 或只读工具 `tool_start`（含无事件的只读步骤）回 pending，有 `tool_start` 无 `tool_end` 的非只读步骤进 unknown_side_effect；计划转 paused 且不自动重试，上次恢复产出的 paused 计划在重启后仍直接列出，未处置的未知副作用只能由用户显式选定——标记为已完成（写 `user_confirmed` 凭证、不记新尝试）或重跑此步（记一次新执行尝试）。计划段的暂停语义与这一档一致：`interrupted` 也是「等用户处置」的终态，不由宿主自动续跑；计划记录写盘失败时降级为证据条目 `deskpet.plan_write_failed` 加一条系统消息（「计划执行记录写入失败（计划本身已执行/已取消）」）后继续正常结算，计划超时/会话切换/按用户选择中止各写一条说明停在当前步骤、剩余步骤未执行的系统消息。Harness 重启后以 open 操作暴露中断运行，默认暂停并提示继续/丢弃，不自动重放。
+启动恢复隔离未知副作用。Plan 恢复按「步骤状态 + 末事件 + 效果类」定档：只对运行中的步骤判定，末事件为 `tool_end` 或只读工具 `tool_start`（含无事件的只读步骤）回 pending，有 `tool_start` 无 `tool_end` 的非只读步骤进 unknown_side_effect；计划转 paused 且不自动重试，上次恢复产出的 paused 计划在重启后仍直接列出，未处置的未知副作用只能由用户显式选定——标记为已完成（写 `user_confirmed` 凭证、不记新尝试）或重跑此步（记一次新执行尝试）。计划段的暂停语义与这一档一致：`interrupted` 也是「等用户处置」的终态，不由宿主自动续跑；计划记录写盘失败时降级为证据条目 `deskpet.plan_write_failed` 加一条系统消息（「计划执行记录写入失败（计划本身已执行/已取消）」）后继续正常结算；计划超时与按用户选择中止各写一条说明停在当前步骤、剩余步骤未执行的系统消息，会话切换/会话关闭/确认超时/确认事件发射失败的说明由计划确认域在结算处写出（见「Pi、权限与网络」的计划段）。Harness 重启后以 open 操作暴露中断运行，默认暂停并提示继续/丢弃，不自动重放。
 
 ## 请求生命周期
 
@@ -32,6 +32,7 @@ scope: runtime-foundation-before-memory-kernel
 ## Pi、权限与网络
 
 - [`PermissionKernel`](../../src/services/safety/permission.ts) 收敛 `allow / ask / deny`；MCP `passthrough` 必须在内核终裁。会话授权绑定 session、generation、工具、参数、策略与过期时间，取消或旧代际失效。
+- 计划确认与终止按 `{ sessionId, planId }` 键控（[`plan-confirmation.ts`](../../src/services/engine/plan-confirmation.ts)）：跨会话可并发，同一会话同一时刻只允许一个计划；面板只渲染活跃会话的计划，终止入口只作用于所属会话，计划执行中切会话不取消（只把面板移出视图）。切会话/关闭标签在会话指针移动前取消该会话的待确认计划并写一条系统消息。确认等待上限 5 分钟（`PLAN_CONFIRM_TIMEOUT_MS`，与权限确认 TTL 无关）：超时、会话切换、会话不再活跃、确认事件发射失败四种非确认归宿各写一条系统消息并走同一收尾；确认事件发射失败或面板监听注册失败都立即按归宿结算，不让确认方悬挂。
 - Provider 请求固定在用户配置的 origin，禁用重定向；显式配置的 localhost/private provider 可以使用。该 WebView 边界不提供 DNS pinning、通用 SSRF 防护或 shell 网络沙箱。[`createProviderFetchGuard`](../../src/services/engine/pi/net-guard.ts)
 
 ## 快照与人格状态

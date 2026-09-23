@@ -25,6 +25,7 @@ import { messagesFromEntries } from "./read-model"
 import { createLogger } from "@/services/logger"
 import { formatError } from "@/services/error"
 import { harnessSlots } from "@/services/engine/pi"
+import { cancelSessionPlans } from "@/services/engine/plan-confirmation"
 
 const log = createLogger("Session")
 
@@ -143,6 +144,9 @@ export async function switchToSession(sessionId: string): Promise<void> {
   const previousSessionId = activeSessionId.value
   // 保存当前 UI 状态；对话正文由仓库持久化。
   if (previousSessionId) {
+    // 先取消旧会话的待确认计划（PLAN-04/FIX-32）：指针移动之前取消，文案才写进旧会话，
+    // 用户也不会再对不可见的确认负责。执行期计划不受影响（计划继续跑，只是面板移出视图）。
+    cancelSessionPlans(previousSessionId, "session_switched")
     invalidatePermissionScope(previousSessionId)
     saveUnanswered(previousSessionId, unansweredCount.value)
     harnessSlots.releaseWhenIdle(previousSessionId)
@@ -159,6 +163,8 @@ export async function createNewSession(): Promise<SessionMeta> {
   // 保存并归档当前
   const oldId = activeSessionId.value
   if (oldId) {
+    // 与 switchToSession 同款：新会话接管之前先取消旧会话的待确认计划
+    cancelSessionPlans(oldId, "session_switched")
     invalidatePermissionScope(oldId)
     saveUnanswered(oldId, unansweredCount.value)
     harnessSlots.releaseWhenIdle(oldId)
@@ -184,6 +190,8 @@ export async function createNewSession(): Promise<SessionMeta> {
 
 /** 关闭标签（从列表移除，保留会话文件） */
 export function closeSession(sessionId: string): void {
+  // 会话不再活跃：它的待确认计划按 not_active 取消（不是「切会话」语义，文案与归宿都不同）
+  cancelSessionPlans(sessionId, "not_active")
   invalidatePermissionScope(sessionId)
   const idx = sessions.findIndex(item => item.id === sessionId)
   if (idx === -1) return
