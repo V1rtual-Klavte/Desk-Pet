@@ -81,11 +81,29 @@ function cardStaticPrompt(card: PersonalityCard | null): string {
   return pieces.filter(Boolean).join("\n\n")
 }
 
+/** 聊天回合的思考强度提示（与一次性请求的提示刻意不同，各自用途见常量注释）。 */
+export const CHAT_THINKING_HINTS: Record<"low" | "high", string> = {
+  low: "\n[请快速简要回答]",
+  high: "\n[请仔细深入思考]",
+}
+
+/**
+ * 一次性调用（planner/compaction/memory/stages）在非推理模型 + low 时的兜底提示。
+ *
+ * 它替的是「端点不认 reasoning_effort」这件事，比聊天回合的提示多一句「不需要过多思考」；
+ * 两个用途的文案必须保持不同，合并会让其中一边失去自己的语义。
+ */
+export const ONE_SHOT_LOW_EFFORT_HINT = "\n\n[请快速简要回答，不需要过多思考]"
+
+/** 变量池正文 + 思考强度后缀的唯一拼接点（聊天动态提示与冻结上下文都走它）。 */
+export function composeDynamicPrompt(poolText: string, effort: ThinkingEffort): string {
+  if (effort === "low") return `${poolText}${CHAT_THINKING_HINTS.low}`
+  if (effort === "high") return `${poolText}${CHAT_THINKING_HINTS.high}`
+  return poolText
+}
+
 function runtimeDynamicPrompt(pool: VariablePool, effort: ThinkingEffort): string {
-  let prompt = formatPoolForPrompt(pool)
-  if (effort === "low") prompt += "\n[请快速简要回答]"
-  else if (effort === "high") prompt += "\n[请仔细深入思考]"
-  return prompt
+  return composeDynamicPrompt(formatPoolForPrompt(pool), effort)
 }
 
 function decideTools(input: BuildContextInput): ToolDeclaration[] {

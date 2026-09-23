@@ -10,7 +10,7 @@ import type { CompactionAuditSink, ContextAllocation, ContextBlock, IngressEnvel
 import { createMessageId } from "@/services/agent/types"
 import { MemoryService, recallMemory, planCheckpointStore } from "@/services/agent/memory"
 import type { StructuredSummary } from "@/services/agent/memory"
-import { buildPrompt, contextBudget, CONTEXT_RATIOS, estimateRequestTokens, estimateContextTokens, estimateMessageTokens, ContextBudgetError, ESTIMATE_DRIFT_WARN_RATIO, estimateDriftRatio, projectMessageContent, projectToolResultText, toolResultAddress } from "@/services/context"
+import { buildPrompt, composeDynamicPrompt, contextBudget, CONTEXT_RATIOS, estimateRequestTokens, estimateContextTokens, estimateMessageTokens, ContextBudgetError, ESTIMATE_DRIFT_WARN_RATIO, estimateDriftRatio, projectMessageContent, projectToolResultText, toolResultAddress } from "@/services/context"
 import type { ContextBudgetAdjustment } from "@/services/context"
 import { bindRunningPlan, clearRunningPlan, notifyPlanEnd, requestPlanConfirm, requestPlanStepDecision } from "@/services/engine/plan-confirmation"
 import type { PlanConfirmResult } from "@/services/engine/plan-confirmation"
@@ -897,7 +897,7 @@ export async function runPiAgentTurn(input: PiAgentTurnInput): Promise<PiAgentTu
   const thinkingEffort = getEffectiveThinkingEffort()
   const frozenUserContext = { candyInstructions: MemoryService.getCandyInstructionsSync(),
     userProfileText: MemoryService.getUserProfileSync(),
-    dynamicPrompt: `${formatPoolForPrompt(pool)}${thinkingEffort === "low" ? "\n[请快速简要回答]" : thinkingEffort === "high" ? "\n[请仔细深入思考]" : ""}` }
+    dynamicPrompt: composeDynamicPrompt(formatPoolForPrompt(pool), thinkingEffort) }
   // 准入是否已成立（用户条目已提交进会话文件）：此后每条退出路径都必须结算那条已接受的操作。
   let admittedOnce = false
   try {

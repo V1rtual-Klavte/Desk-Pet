@@ -15,20 +15,13 @@ import { aiConfig } from "@/services/config"
 import { recordModelUsage } from "@/services/debug"
 import { createLogger } from "@/services/logger"
 import { formatError } from "@/services/error"
-import { contextBudget, ContextBudgetError, contextWindowError, estimateDriftRatio, estimateRequestTokens } from "@/services/context"
+import { contextBudget, ContextBudgetError, contextWindowError, estimateDriftRatio, estimateRequestTokens, ONE_SHOT_LOW_EFFORT_HINT } from "@/services/context"
 import { PROMPT_SNAPSHOT_ENTRY, createPromptSnapshot, redactText, sha256Text } from "@/services/engine/runtime"
 import type { PromptSnapshot, PromptSnapshotInput } from "@/services/engine/runtime"
 import type { HarnessSlotSnapshot } from "./harness-slot"
 import { PROVIDER_TIMEOUT_MS, createProviderFetchGuard, validateProviderUrl } from "./net-guard"
 
 const log = createLogger("PiGateway")
-
-/**
- * 非推理模型 + low 思考时的兜底提示。
- * 旧 provider 对 LM Studio / Ollama 这类不认 reasoning_effort 的端点追加过它，
- * 保留是为了不改变这些用户的既有体验。仅对 `model.reasoning === false` 生效。
- */
-const NON_REASONING_LOW_EFFORT_HINT = "\n\n[请快速简要回答，不需要过多思考]"
 
 interface PiGateway {
   signature: string
@@ -419,7 +412,9 @@ export async function completePiText(input: PiTextCallInput): Promise<PiTextCall
   const maxTokens = input.maxTokens === undefined ? outputBudget : Math.min(input.maxTokens, outputBudget)
 
   let systemPrompt = input.systemPrompt
-  if (input.thinkingEffort === "low" && !model.reasoning) systemPrompt += NON_REASONING_LOW_EFFORT_HINT
+  // 非推理模型 + low 时的兜底提示：旧 provider 对 LM Studio / Ollama 这类不认 reasoning_effort
+  // 的端点追加过它，保留是为了不改变这些用户的既有体验。仅对 `model.reasoning === false` 生效。
+  if (input.thinkingEffort === "low" && !model.reasoning) systemPrompt += ONE_SHOT_LOW_EFFORT_HINT
 
   const requestBudget = contextBudget(model.contextWindow, maxTokens)
   const estimatedInput = estimateRequestTokens(systemPrompt, [{ role: "user", content: input.userText }])
