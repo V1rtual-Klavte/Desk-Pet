@@ -39,7 +39,7 @@ const RECALL_TRUNCATION_MARK = "…[召回文本超出预算，已按 token 口�
 /**
  * 按 token 预算裁剪召回正文，与 `estimateContextTokens` 同口径逐单元累加到预算用尽。
  *
- * 旧实现按「4 字符 = 1 token」折算（`slice(0, budget * 4)`）：那个常数是中英通吃的平均值，
+ * 旧实现按「4 字符 = 1 token」折算（字符数 = token 预算 × 4 再切片）：那个常数是中英通吃的平均值，
  * 中文下实际用量可达声明预算的约 4 倍（1 汉字 ≈ 1 token），而预算会计只按声明值扣减 ——
  * P6 接真实 provider 后就是 CJK 场景的预算穿透点。ASCII 与非 ASCII 分列计费后，
  * 裁剪边界与估算器、硬预算守卫重新对齐。
