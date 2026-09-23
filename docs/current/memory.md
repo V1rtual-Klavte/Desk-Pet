@@ -16,7 +16,7 @@
 
 ## 会话真相源
 
-聊天正文以数据根 `sessions/` 的 JSONL 为真相源（JsonlSessionRepo，每会话一个文件，commit 事务写入）；`sessions/index.json` 只保存可丢弃 UI 状态。条目保存稳定 entryId/seq；工具调用/结果、usage 行与来源标记都落在条目与 usage 记录里。控制信息用 `deskpet.*` 自定义条目（如 prompt_snapshot、active_message、plan_checkpoint；计划证据条目 `deskpet.plan_step_result`、`deskpet.plan_recovery_failed` 与 `deskpet.plan_write_failed` 已登记，均为宿主自定义条目，不进模型消息流）；旧 Markdown 会话格式及其解析代码已删除，旧数据可弃。主动上下文不成为用户事实。
+聊天正文以数据根 `sessions/` 的 JSONL 为真相源（JsonlSessionRepo，每会话一个文件，commit 事务写入）；`sessions/index.json` 只保存可丢弃 UI 状态。条目保存稳定 entryId/seq；工具调用/结果、usage 行与来源标记都落在条目与 usage 记录里。控制信息用 `deskpet.*` 自定义条目（如 prompt_snapshot、active_message、plan_checkpoint；计划证据条目 `deskpet.plan_step_result`、`deskpet.plan_recovery_failed` 与 `deskpet.plan_write_failed` 已登记，均为宿主自定义条目，不进模型消息流，因此不受 `resultProjection`（请求层缩短）与 `historyCompaction`（压缩保留策略）约束）；旧 Markdown 会话格式及其解析代码已删除，旧数据可弃。主动上下文不成为用户事实。
 
 用户 ingress 先落盘再投递（lane 持久 inbox）；工具调用落盘后才执行；结果落盘后才允许下一次 Provider 请求。切换会话、旧代际回调和后台回复都绑定原 session。
 
@@ -50,4 +50,4 @@
 
 `CANDY.md` 是人工指令，`User.md` 通过带来源的只读画像投影进入动态层；两者与摘要分别建块。现有记忆整理接口保留，但应用启动、每五轮和 session 结束不隐式发起记忆 LLM 整理。明确的长期记忆写入闭环在 P6 实施。
 
-当前实现入口为 [harness-slot.ts](../../src/services/engine/pi/harness-slot.ts)（运行与压缩调度）、[compactor.ts](../../src/services/engine/compactor.ts)（摘要内核）、[session/repo.ts](../../src/services/session/repo.ts)（会话仓库）与 [provider.ts](../../src/services/agent/memory/provider.ts)（长期记忆只读端口）。当前验证证据只在[未完成工作与已知缺口](../plans/active/未完成工作与已知缺口.md#6-当前验证证据)记录。
+当前实现入口为 [harness-slot.ts](../../src/services/engine/pi/harness-slot.ts)（运行与压缩调度）、[compactor.ts](../../src/services/engine/compactor.ts)（摘要内核）、[session/repo.ts](../../src/services/session/repo.ts)（会话仓库）与 [provider.ts](../../src/services/agent/memory/provider.ts)（长期记忆只读端口）；计划 checkpoint 与恢复扫描入口为 [plan-checkpoint-store.ts](../../src/services/agent/memory/plan-checkpoint-store.ts) 与 [runner.ts](../../src/services/agent/runner.ts) 的 `recoverPlanCheckpoints()`，恢复产出的继续/丢弃消费者 `resumePlan`/`discardPlan` 随 T2.08 落地，尚未接通。当前验证证据只在[未完成工作与已知缺口](../plans/active/未完成工作与已知缺口.md#6-当前验证证据)记录。

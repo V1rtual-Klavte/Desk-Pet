@@ -239,6 +239,12 @@ export interface PiSubAgentOutput {
   toolCallsMade: number
   success: boolean
   error?: string
+  /**
+   * 剥离 RUNTIME_DATA 之前的原始正文；只在确实被剥离过（`raw !== reply`）时才有值。
+   * 唯一的读取者是计划段写 `plan_step_result` 留证（PLAN-09④）——子代理不写变量，
+   * 但「写了却没生效」这件事要能查；不得进入主回合的结算路径（那里用内核留底）。
+   */
+  rawReply?: string
 }
 
 /** 一次运行的宿主侧共享上下文；主回合与子代理复用同一套投影/快照/审计。 */
@@ -829,7 +835,8 @@ type PlanPhaseOutcome =
  * `plan`/`approved`/`stepMode` 与 `planInput` 分别服务两条入口：恢复入口（T2.08 传
  * `existingPlanId`）用落盘记录还原的 `plan`、声明 `approved: true`、`stepMode: "auto"`，
  * 跳过生成/规范化/落盘/确认（用户点「继续」就是那次确认）；新建计划用 `planInput` 生成，
- * `approved`/`stepMode` 由确认段决定。`parentSlot` 供 T2.07 写步骤结果条目使用。
+ * `approved`/`stepMode` 由确认段决定。`parentSlot` 供 T2.07 把子运行挂到父槽（取消域级联）
+ * 使用；步骤结果条目不经过它，按父会话 `sessionId` 落盘。
  */
 async function runPlanPhase(args: {
   sessionId: string
@@ -927,6 +934,12 @@ async function runPlanPhase(args: {
   // 执行期登记中断通道，「终止执行」据此真正停下剩余步骤（按会话键控：只停本会话的计划）；
   // `finally` 保证任何退出路径都会清空登记，不给下一次计划留悬空引用
   bindRunningPlan(sessionId, planId, planAbort)
+  // 步骤产出证据（PLAN-09②）：条目 id 在 `onStepDone` 里随 checkpoint 同一收口落盘，
+  // 按 stepId 收在这里，`executePlan` 返回后回填到 `stepResults[].resultEntryId`。
+  const stepResultEntryIds = new Map<string, string>()
+  // 步骤耗时由相位侧计时（执行是串行的，一个变量够）：条目里的 `durationMs` 要覆盖
+  // `onStepStart` 到 `onStepDone` 这一段，而不是子代理内部的一段。
+  let stepStartedAt = 0
   const result = await executePlan(plan, {
     stepTimeoutMs: planConfig.stepTimeoutMs,
     stepMaxRounds: planConfig.stepMaxRounds,
@@ -940,12 +953,40 @@ async function runPlanPhase(args: {
     stepGate: stepMode === "stepByStep" ? "each" : "none",
   }, {
     async onStepStart(step) {
+      stepStartedAt = Date.now()
       await planCheckpointStore.transitionStep(planId, String(step.id), "running")
       void emitUiEvent("deskpet-plan-progress", { sessionId, planId, stepId: String(step.id), total: plan.steps.length, desc: step.description, status: "running" })
     },
     async onStepDone(step, output) {
       await planCheckpointStore.transitionStep(planId, String(step.id), output.success ? "done" : "failed")
       void emitUiEvent("deskpet-plan-progress", { sessionId, planId, stepId: String(step.id), total: plan.steps.length, desc: step.description, status: output.success ? "done" : "failed" })
+      // PLAN-09②：步骤产出落盘成可回读证据（失败路径同样落，FIX-50 —— 失败原因与工具调用数
+      // 不再只活在返回值里）。与 checkpoint 写入同一收口；`index` 是执行列表中的 0 基位置。
+      // 写盘失败只降级成「原文未落盘」（`formatStepResults` 会如实标注），不拖垮计划结算。
+      const replyText = output.rawReply ?? output.reply
+      const entryId = await planCheckpointStore.writeStepResult(sessionId, {
+        planId,
+        stepId: String(step.id),
+        index: plan.steps.findIndex(item => item.id === step.id),
+        success: output.success,
+        durationMs: Date.now() - stepStartedAt,
+        toolCallsMade: output.toolCallsMade,
+        reply: replyText,
+        ...(output.error ? { error: output.error } : {}),
+        summaryHash: await sha256Text(replyText),
+      }).catch(error => { log.error("步骤结果条目写入失败:", formatError(error)); return undefined })
+      if (entryId) stepResultEntryIds.set(String(step.id), entryId)
+    },
+    // 工具解析报告（FIX-51）：工具名解析不到、或未限定工具而放大到全部助手工具，
+    // 都在进度事件与系统消息里可见 —— 权限面的变化不能只留在日志里。
+    async onStepNotice(step, notice) {
+      const index = plan.steps.findIndex(item => item.id === step.id) + 1
+      void emitUiEvent("deskpet-plan-progress", { sessionId, planId, stepId: String(step.id), total: plan.steps.length, desc: step.description, status: "warning" })
+      if (notice.kind === "missing_tools") {
+        pushSystemMessage(`计划第 ${index} 步指定的工具不存在: ${notice.names.join("、")}（该步未执行）`)
+      } else {
+        pushSystemMessage(`计划第 ${index} 步未限定工具，将使用全部助手工具`)
+      }
     },
     // 失败询问接上会话身份与回合中断信号：会话切换/终止执行时按 `abort` 结算，
     // 不让计划在没有答复的情况下继续跑。用户在中止上落定的归宿是 `declined`（planner 侧给出）。
@@ -968,6 +1009,13 @@ async function runPlanPhase(args: {
     onToolStart: (step, toolName, toolCallId) => planCheckpointStore.checkpointTool(planId, String(step.id), "tool_start", toolName, toolCallId, planEffectClassFor([toolName])),
     onToolDone: (step, toolName, toolCallId, success) => planCheckpointStore.checkpointTool(planId, String(step.id), "tool_end", toolName, toolCallId, planEffectClassFor([toolName]), success),
   }).finally(() => clearRunningPlan(sessionId, planId))
+
+  // 回填回读地址：`onStepDone` 里落盘时只有 stepId，这里按它对齐到执行结果，
+  // `formatStepResults` 与面板据此拿到「这一步的原文在哪」。
+  for (const stepResult of result.stepResults) {
+    const entryId = stepResultEntryIds.get(String(stepResult.step.id))
+    if (entryId !== undefined) stepResult.resultEntryId = entryId
+  }
 
   if (result.cancelled) {
     // `declined` 由逐步门（含失败询问上的中止）给出：与终止执行/超时走同一条取消通道 ——
@@ -1308,13 +1356,22 @@ export async function runPiSubAgent(input: PiSubAgentInput): Promise<PiSubAgentO
     if (result.status === "completed") {
       const finalAssistant = kernel.state.finalPlainAssistant ?? kernel.state.finalAssistant
       const reply = finalAssistant ? contentText(finalAssistant.content) : ""
+      // afterResponse 已在提交前剥离 RUNTIME_DATA，提交的正文里没有标签；
+      // 只有内核留底的原始正文能与它配对比较（子代理不写变量，所以差异就是「写了却没生效」）。
+      const raw = kernel.rawTextForSettledReply(reply)
+      if (raw !== reply) {
+        log.warn("子代理回复含被剥离的 RUNTIME_DATA，变量写入不生效（原始正文已随 plan_step_result 留证）:", input.task.substring(0, 40))
+      }
       return {
         reply: reply || getFallbackReply("subAgentDone"),
         toolCallsMade: kernel.state.toolCallsMade,
         success: true,
+        // PLAN-09④：原始正文交给计划段写进 plan_step_result；不在这里解析变量。
+        ...(raw !== reply ? { rawReply: raw } : {}),
       }
     }
     const error = result.timedOut ? "Agent 执行超时" : result.error ?? "Pi Agent 未返回有效回复"
+    // FIX-50：失败原因与已发生的工具调用数不只进返回值，由计划段写进同一条 plan_step_result。
     return {
       reply: getFallbackReply("subAgentFailed"),
       toolCallsMade: kernel.state.toolCallsMade,

@@ -38,6 +38,8 @@ export interface PlanExecutionResult {
     step: PlanStep
     output: PiSubAgentOutput
     durationMs: number
+    /** 步骤结果条目的 id（可回读地址）；写盘失败时为 undefined。 */
+    resultEntryId?: string
   }[]
   overallSuccess: boolean
   totalDurationMs: number
@@ -260,10 +262,20 @@ export function planEffectClassFor(allowedTools?: string[]): PlanEffectClass {
 
 import { formatError } from "@/services/error"
 
+/** 步骤工具解析报告（FIX-51）：工具名解析不到，或步骤未限定工具而放大到全部助手工具。 */
+export type StepToolNotice =
+  | { kind: "missing_tools"; names: string[] }
+  | { kind: "unbounded_tools" }
+
 export interface ExecutePlanCallbacks {
   onStepStart(step: PlanStep): Promise<void> | void
   onStepDone(step: PlanStep, result: PiSubAgentOutput): Promise<void> | void
   onStepFailed(step: PlanStep, error: string): Promise<"continue" | "abort">
+  /**
+   * 步骤开工前的工具解析报告：解析不到工具名、或未限定 `allowedTools` 时各调一次。
+   * 权限面变化必须可见（不静默）——由宿主据此写计划进度事件与系统消息。
+   */
+  onStepNotice?(step: PlanStep, notice: StepToolNotice): Promise<void> | void
   /**
    * 逐步门：在 signal 检查之后、`onStepStart` 之前调用；返回 `"abort"` 与信号中止同款
    * （`cancelled.reason = "declined"`）。`index` 是该步在本次执行列表中的 0 基位置。
@@ -382,22 +394,29 @@ async function executeStep(
   const stepPrompt = `你是糖糖桌宠的子代理，角色: ${step.role || "执行员"}。
 正在执行计划第 ${step.id} 步: ${step.description}
 
-可用工具由系统注入。Card 状态变量通过回复末尾的 RUNTIME_DATA 更新，不使用变量工具。
+可用工具由系统注入。
 
 请完成此步骤并返回结果。`
 
   const tools: ToolDef[] = []
   if (step.allowedTools && step.allowedTools.length > 0) {
+    const missing: string[] = []
     for (const name of step.allowedTools) {
       const tool = getToolByName(name)
-      if (tool) {
-        tools.push(tool)
-      } else {
-        log.warn(`步骤 ${step.id} 指定的工具不存在: ${name}`)
-      }
+      if (tool) tools.push(tool)
+      else missing.push(name)
+    }
+    if (missing.length > 0) {
+      // 指定的工具不存在就不开工：拿剩下的工具跑等于这一步的权限面既不可信也不可复现。
+      // 报告交给宿主写计划进度事件与系统消息（FIX-51），不静默。
+      log.warn(`步骤 ${step.id} 指定的工具不存在: ${missing.join("、")}`)
+      await callbacks.onStepNotice?.(step, { kind: "missing_tools", names: missing })
+      return { reply: "", toolCallsMade: 0, success: false, error: `指定的工具不存在: ${missing.join("、")}` }
     }
   } else {
+    // 未限定工具 = 放大到全部助手工具，必须可见（FIX-51）
     log.warn(`步骤 ${step.id} 未指定 allowedTools，使用全部助手工具`)
+    await callbacks.onStepNotice?.(step, { kind: "unbounded_tools" })
     tools.push(...getToolsForMode("assistant"))
   }
 
@@ -418,13 +437,22 @@ async function executeStep(
 
 export function formatStepResults(result: PlanExecutionResult): string {
   const lines = ["[计划执行结果]"]
-  for (const { step, output, durationMs } of result.stepResults) {
+  for (const { step, output, durationMs, resultEntryId } of result.stepResults) {
     const icon = output.success ? "OK" : "FAIL"
     const time = (durationMs / 1000).toFixed(1) + "s"
     lines.push(`${icon} 步骤 ${step.id} "${step.description}" - ${output.success ? "完成" : "失败"} (${time})`)
     if (output.reply) {
-      lines.push(`   结果: ${output.reply.substring(0, 100)}${output.reply.length > 100 ? "..." : ""}`)
+      // 正文按 ephemeral 预算截到 100 字符，但标注回读地址（PLAN-09③）；
+      // 没有地址就是没落盘，如实说明，不假称正文可回读。
+      const preview = output.reply.substring(0, 100) + (output.reply.length > 100 ? "..." : "")
+      if (resultEntryId) {
+        lines.push(`   结果: ${preview}（原文见 plan_step_result 条目 ${resultEntryId}）`)
+      } else {
+        log.warn("步骤结果未落盘，正文只保留截断前缀:", step.id)
+        lines.push(`   结果: ${preview}（原文未落盘）`)
+      }
     }
+    // 错误不截断：全文只在这里与 plan_step_result 条目里出现，不在会话正文里。
     if (output.error) lines.push(`   错误: ${output.error}`)
   }
   lines.push("\n请基于以上结果生成最终回复。")
