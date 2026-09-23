@@ -7,6 +7,9 @@
 import { reactive, ref } from "vue"
 import type { Message } from "@/services/agent/types"
 import { loopConfig, memoryConfig } from "@/services/config"
+import { createLogger } from "@/services/logger"
+
+const log = createLogger("Store")
 
 // ═══════════════════════════════════════════════════
 // SessionMeta
@@ -51,16 +54,33 @@ export function getSessions(): SessionMeta[] {
   return [...sessions]
 }
 
-/** 获取活跃会话 ID */
+/** 获取活跃会话 ID：显式指针优先；指针为空按列表首项兜底（兜底要留痕，不静默选一个会话）。 */
 export function getActiveSessionId(): string {
-  return activeSessionId.value || sessions[0]?.id || ""
+  if (activeSessionId.value) return activeSessionId.value
+  const fallback = sessions[0]?.id ?? ""
+  if (fallback) log.warn("活跃会话指针为空，按列表首项兜底:", fallback)
+  return fallback
 }
 
 // ═══════════════════════════════════════════════════
 // 消息操作
 // ═══════════════════════════════════════════════════
 
-export function pushMessage(msg: Message): void {
+/** 整份替换聊天视图 —— 视图装载的唯一入口（切换会话 / 重放读模型都经这里）。 */
+export function replaceMessages(messages: readonly Message[]): void {
+  chatHistory.splice(0, chatHistory.length, ...messages)
+  trimIfNeeded()
+}
+
+/**
+ * 把一条消息推给它的所属会话：只有该会话仍是活跃会话才进视图。
+ * 跨会话推送静默不画（留 debug 便于排查），避免回复落进别的会话的气泡里。
+ */
+export function pushMessageFor(sessionId: string, msg: Message): void {
+  if (sessionId !== activeSessionId.value) {
+    log.debug("非活跃会话的消息不进视图:", sessionId, msg.role)
+    return
+  }
   chatHistory.push(msg)
   trimIfNeeded()
 }

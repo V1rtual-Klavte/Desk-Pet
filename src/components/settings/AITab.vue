@@ -16,6 +16,7 @@ import type { StageMap, StagePrompts, StageFileStages, VariablePool, CardVariabl
 import { createLogger } from "@/services/logger";
 import { formatError } from "@/services/error"
 import { MIN_CONTEXT_WINDOW } from "@/services/context"
+import { getActiveSessionId } from "@/services/session"
 
 const log = createLogger("Settings");
 
@@ -282,7 +283,7 @@ async function applySwitch() {
     const greeting = pickActiveGreeting();
     if (greeting) {
       const { pushAssistantMessage } = await import("@/services/session/messages");
-      pushAssistantMessage(greeting);
+      pushAssistantMessage(greeting, getActiveSessionId());
     }
   } catch (e) {
     const msg = formatError(e);

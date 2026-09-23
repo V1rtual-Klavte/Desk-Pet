@@ -5,7 +5,7 @@
 import type { Message } from "@/services/agent/types"
 import { createUserMessage, createAssistantMessage, createSystemMessage } from "@/services/agent/types"
 import { chatHistory, unansweredCount, activeSessionId } from "./store"
-import { pushMessage } from "./store"
+import { pushMessageFor } from "./store"
 import { saveUnanswered } from "./persistence"
 import { updateSessionName } from "./manager"
 import { appendPiSessionCustomEntry } from "./repo"
@@ -19,13 +19,12 @@ const log = createLogger("Msg")
 // 欢迎 & 推送
 // ═══════════════════════════════════════════════════
 
-export async function initWelcome(text: string): Promise<void> {
+export async function initWelcome(text: string, sessionId: string): Promise<void> {
   if (chatHistory.length > 0) return
-  pushMessage(createAssistantMessage(text))
+  pushMessageFor(sessionId, createAssistantMessage(text))
 
   // 问候语不经过 Agent 回合，没有别的地方替它落盘。写入 deskpet 自定义 entry，
   // 切走会话/重启后仍能恢复（harness 默认不把它投影进模型上下文）。
-  const sessionId = activeSessionId.value
   if (!sessionId) return
   try {
     await appendPiSessionCustomEntry(sessionId, DESKPET_GREETING_ENTRY, { text })
@@ -34,27 +33,28 @@ export async function initWelcome(text: string): Promise<void> {
   }
 }
 
-export function pushUserMessage(text: string): Message {
+export function pushUserMessage(text: string, sessionId: string): Message {
   const msg = createUserMessage(text)
-  pushMessage(msg)
+  pushMessageFor(sessionId, msg)
 
+  // 改名只在「首条用户消息落进它自己的视图」时发生：跨会话推送不替别人改会话名。
   const userMsgs = chatHistory.filter(m => m.role === "user")
-  if (userMsgs.length === 1 && activeSessionId.value) {
-    updateSessionName(activeSessionId.value, text)
+  if (userMsgs.length === 1 && sessionId === activeSessionId.value) {
+    updateSessionName(sessionId, text)
   }
 
   return msg
 }
 
-export function pushAssistantMessage(text: string): Message {
+export function pushAssistantMessage(text: string, sessionId: string): Message {
   const msg = createAssistantMessage(text)
-  pushMessage(msg)
+  pushMessageFor(sessionId, msg)
   return msg
 }
 
-export function pushSystemMessage(text: string): Message {
+export function pushSystemMessage(text: string, sessionId: string): Message {
   const msg = createSystemMessage(text)
-  pushMessage(msg)
+  pushMessageFor(sessionId, msg)
   return msg
 }
 

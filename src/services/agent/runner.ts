@@ -116,7 +116,7 @@ export async function initChat(): Promise<void> {
   log.info("Plan checkpoint 恢复:", { recovered, failed })
 
   const greeting = pickActiveGreeting()
-  if (greeting) await initWelcome(greeting)
+  if (greeting) await initWelcome(greeting, getActiveSessionId())
 }
 
 /**
@@ -213,14 +213,14 @@ async function performTurn(invocation: TurnInvocation): Promise<PiAgentTurnOutpu
  * 回合结果的界面呈现：用户主动停止不写兜底回复（运行内核已按「停止不是失败」结算），
  * 只如实说明剩余输入的归宿，不暗示已撤销写入。
  */
-async function pushTurnOutcome(result: PiAgentTurnOutput): Promise<void> {
+async function pushTurnOutcome(result: PiAgentTurnOutput, sessionId: string): Promise<void> {
   if (result.abortedByStop) {
     const paused = result.undelivered?.length ?? 0
     const { pushSystemMessage } = await import("@/services/session/messages")
-    pushSystemMessage(paused > 0 ? `已停止本次回复；${paused} 条未处理的输入已暂停，可选择继续或丢弃` : "已停止本次回复")
+    pushSystemMessage(paused > 0 ? `已停止本次回复；${paused} 条未处理的输入已暂停，可选择继续或丢弃` : "已停止本次回复", sessionId)
     return
   }
-  pushAssistantMessage(result.reply)
+  pushAssistantMessage(result.reply, sessionId)
 }
 
 /**
@@ -263,7 +263,7 @@ export async function resumePausedInputs(sessionId: string = getActiveSessionId(
       pausedMessages,
     })
     // 正文在排队时就已展示：这里只推回复/停止提示，不重复插入用户气泡。
-    if (getActiveSessionId() === sessionId) await pushTurnOutcome(result)
+    if (getActiveSessionId() === sessionId) await pushTurnOutcome(result, sessionId)
     return {
       reply: result.reply,
       toolCallsMade: result.toolCallHistory.length,
@@ -284,11 +284,11 @@ export async function resumePausedInputs(sessionId: string = getActiveSessionId(
           // 走 reportError 留完整记录（overlay:false，不弹覆盖层），当前会话再补一条可见提示。
           log.error("暂停输入回滚失败:", formatError(error))
           reportError("Agent", error, { kind: "暂停输入回滚失败", overlay: false })
-          if (getActiveSessionId() === sessionId) pushSystemMessage("刚才那条暂停输入没能放回队列，请重新发送～")
+          if (getActiveSessionId() === sessionId) pushSystemMessage("刚才那条暂停输入没能放回队列，请重新发送～", sessionId)
         })
     }
     const fallback = e instanceof ContextBudgetError ? e.message : getFallbackReply("llmUnavailable")
-    if (getActiveSessionId() === sessionId) pushAssistantMessage(fallback)
+    if (getActiveSessionId() === sessionId) pushAssistantMessage(fallback, sessionId)
     return { reply: fallback, toolCallsMade: 0, retriesUsed: 0, outcome: "failed", toolCalls: [], failure: { kind: "unknown", message: summarizeError(e) } }
   } finally {
     harnessSlots.end(sessionId, runGeneration)
@@ -329,7 +329,7 @@ async function dispatchMessage(text: string, options: SendMessageOptions = {}): 
       // 命令已执行（immediate/coordinated）或已被明确拒绝；两种结果都如实呈现，不谎称在思考。
       if (preResult.response) {
         const { pushSystemMessage } = await import("@/services/session/messages")
-        pushSystemMessage(preResult.response)
+        pushSystemMessage(preResult.response, originSessionId)
       }
       log.info("AI 生成中，命令已按 busyPolicy 处理:", text.split(/\s/)[0])
       return {
@@ -346,7 +346,7 @@ async function dispatchMessage(text: string, options: SendMessageOptions = {}): 
       resolveDeliveryIntent(options.delivery, text),
     )
     if (receipt) {
-      pushUserMessage(preResult.normalizedText)
+      pushUserMessage(preResult.normalizedText, originSessionId)
       log.info(`AI 生成中，用户消息已投递为 ${receipt}:`, requestId)
       return {
         reply: "",
@@ -364,7 +364,7 @@ async function dispatchMessage(text: string, options: SendMessageOptions = {}): 
     // 由用户决定等压缩跑完还是撤回。
     if (await harnessSlots.hasOpenOperation(originSessionId)) {
       const { pushSystemMessage } = await import("@/services/session/messages")
-      pushSystemMessage("正在压缩这个会话，等它跑完再发哦～")
+      pushSystemMessage("正在压缩这个会话，等它跑完再发哦～", originSessionId)
       log.warn("会话正在执行结构操作，输入未发送:", { sessionId: originSessionId, requestId })
       return {
         reply: "",
@@ -389,7 +389,7 @@ async function dispatchMessage(text: string, options: SendMessageOptions = {}): 
     if (preResult.response) {
       // slash 命令输出 → 以系统消息推送
       const { pushSystemMessage } = await import("@/services/session/messages");
-      pushSystemMessage(preResult.response)
+      pushSystemMessage(preResult.response, originSessionId)
     }
     // 命令没有运行槽可用，但延后的能力模式切换仍要走同一出口释放。
     await applyPendingConversationCapabilities()
@@ -407,7 +407,7 @@ async function dispatchMessage(text: string, options: SendMessageOptions = {}): 
     // 罕见竞态（投递失败后槽仍被占用）或槽已 fault：不抛给 UI，按「未发送」如实告知。
     log.warn("会话已有运行中的 Agent，输入未发送:", originSessionId)
     const notice = "（糖糖还在处理上一条消息呢，稍等一下再发哦～）"
-    pushAssistantMessage(notice)
+    pushAssistantMessage(notice, originSessionId)
     return {
       reply: notice,
       toolCallsMade: 0,
@@ -431,7 +431,7 @@ async function dispatchMessage(text: string, options: SendMessageOptions = {}): 
       ingress: inputIngress,
       // 投递前记账：用户气泡与未回复计数属于「用户发了这条消息」，继续暂停输入不重复做。
       beforeRun: () => {
-        pushUserMessage(preResult.text)
+        pushUserMessage(preResult.text, originSessionId)
         resetUnanswered()
       },
     })
@@ -441,7 +441,7 @@ async function dispatchMessage(text: string, options: SendMessageOptions = {}): 
     if (getActiveSessionId() !== originSessionId) {
       log.warn("sendMessage: 会话已切换，回复存入原会话", originSessionId)
     } else {
-      await pushTurnOutcome(result)
+      await pushTurnOutcome(result, originSessionId)
     }
 
     return {
@@ -458,11 +458,11 @@ async function dispatchMessage(text: string, options: SendMessageOptions = {}): 
     if (!(e instanceof ContextBudgetError)) reportError("runner", e, { kind: "LLM 调用失败" })
     const fallback = e instanceof ContextBudgetError ? e.message : getFallbackReply("llmUnavailable")
     if (getActiveSessionId() === originSessionId) {
-      pushAssistantMessage(fallback)
+      pushAssistantMessage(fallback, originSessionId)
       // 角色台词会掩盖故障：补一条系统消息，让用户分得清「降级」和「正常回复」。
       // 该消息随会话持久化，所以用脱敏摘要而非原始错误。
       const { pushSystemMessage } = await import("@/services/session/messages")
-      pushSystemMessage(`LLM 调用失败，已降级回复：${summarizeError(e)}`)
+      pushSystemMessage(`LLM 调用失败，已降级回复：${summarizeError(e)}`, originSessionId)
     } else {
       // 会话已切换：原会话没有 UI 通道，兜底回复按会话条目落盘（旧 recordTurnToSession 的替代）。
       const slot = harnessSlots.peek(originSessionId)

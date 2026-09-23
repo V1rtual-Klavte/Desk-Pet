@@ -31,7 +31,7 @@ const log = createLogger("App");
 async function greetNewSession(): Promise<void> {
   const { pickActiveGreeting } = await import("@/services/personality");
   const greeting = pickActiveGreeting();
-  if (greeting) await initWelcome(greeting);
+  if (greeting) await initWelcome(greeting, getActiveSessionId());
 }
 
 const isWinSim = (() => {

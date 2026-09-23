@@ -119,7 +119,7 @@ async function emitUiEvent(event: string, payload: Record<string, unknown>): Pro
  */
 function writeNotice(sessionId: string, reason: keyof typeof NON_CONFIRM_NOTICE): void {
   if (getActiveSessionId() !== sessionId) return
-  pushSystemMessage(NON_CONFIRM_NOTICE[reason])
+  pushSystemMessage(NON_CONFIRM_NOTICE[reason], sessionId)
 }
 
 /**

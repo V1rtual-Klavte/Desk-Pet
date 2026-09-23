@@ -3,7 +3,7 @@
 // 使用统一 Agent Loop
 // ==========================================
 
-import { unansweredCount } from "@/services/session"
+import { getActiveSessionId, unansweredCount } from "@/services/session"
 import { isCoolingDown, isAIGenerating, setAIGenerating } from "@/services/cooldown"
 import { windowMonitorConfig } from "@/services/config"
 import { createLogger } from "@/services/logger"
@@ -67,7 +67,7 @@ if (typeof window !== "undefined") {
   (window as any).__testAI = async (title?: string) => {
     const { pushAssistantMessage } = await import("@/services/session/messages")
     const msg = await generateActiveMessage({ title: title || "哔哩哔哩", content: title || "", timestamp: Date.now() })
-    if (msg) pushAssistantMessage(msg)
+    if (msg) pushAssistantMessage(msg, getActiveSessionId())
     return msg
   }
   log.info("__testAI('标题') 就绪")

@@ -27,7 +27,7 @@ scope: runtime-foundation-before-memory-kernel
 - 请求循环由 AgentHarness Lane 承担：`transform_context` 投影、`before_tool` 承担权限/次数门禁、`after_tool` 标注来源与错误、`after_response` 剥离 RUNTIME_DATA 并记录状态/响应头、`before_payload` 采集脱敏快照；主回合逐请求 usage 进入 `main` 分项，压缩/规划等一次性调用经同一模型网关按 purpose 单列（[debug.ts](../../src/services/debug.ts)），总量由分项相加得到。具体权限见[工具系统](tool-system.md#权限终裁)。
 - 项目没有通用 HookBus；宿主 preflight 与观测通道不构成可阻断的 Pi hook，队列驱动由 Lane 持久 inbox 承担。流式正文经 `message_update` 增量事件走 UI 通道，只展示正文、不展示思考内容，`<RUNTIME_DATA>` 跨分片被缓冲。
 
-0.85.1 的 AgentHarness、JsonlSessionRepo 与压缩调度已接入为运行内核（§8 迁移已实施并通过 2026-09-18 集中验证，协议正文见[归档基线](../history/implementation/AgentHarness迁移方案-2026-09-18基线.md)）；插话双模式的输入意图选择、排队视图、单项撤回、停止入口（同时终止在跑的计划与它的子运行）、逐项投递证据、工具策略与只读并行（PI-2）及 usage purpose 单列均已落地，当前验证证据与剩余批次见[未完成工作与已知缺口](../plans/active/未完成工作与已知缺口.md)。运行态经 `deskpet-run-state { sessionId, running }` 事件通知界面，按钮与排队视图仍读同一个 lane 快照，前端不持有第二份运行状态。
+0.85.1 的 AgentHarness、JsonlSessionRepo 与压缩调度已接入为运行内核（§8 迁移已实施并通过 2026-09-18 集中验证，协议正文见[归档基线](../history/implementation/AgentHarness迁移方案-2026-09-18基线.md)）；插话双模式的输入意图选择、排队视图、单项撤回、停止入口（同时终止在跑的计划与它的子运行）、逐项投递证据、工具策略与只读并行（PI-2）及 usage purpose 单列均已落地，当前验证证据与剩余批次见[未完成工作与已知缺口](../plans/active/未完成工作与已知缺口.md)。运行态经 `deskpet-run-state { sessionId, running }` 事件通知界面，按钮与排队视图仍读同一个 lane 快照，前端不持有第二份运行状态。消息气泡按**入参会话**写入（`pushMessageFor(sessionId, msg)`），仅当该会话仍是活跃会话时才进视图 —— 跨会话推送不画进别的会话。
 
 ## Pi、权限与网络
 

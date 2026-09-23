@@ -4,7 +4,7 @@
 
 import { type Ref } from "vue"
 import { listen } from "@tauri-apps/api/event"
-import { pushAssistantMessage, incrementUnanswered } from "@/services/agent"
+import { pushAssistantMessage, incrementUnanswered, getActiveSessionId } from "@/services/agent"
 import { checkWindowTiming, processTrigger } from "./monitor"
 import { generateActiveMessage } from "@/services/agent"
 import { playNotificationByBoundary } from "@/services/audio/registry"
@@ -38,7 +38,7 @@ export async function initWindowListener(
 
       generateActiveMessage({ title, content: content || title, timestamp: Date.now() }).then((reply) => {
         if (reply) {
-          pushAssistantMessage(reply)
+          pushAssistantMessage(reply, getActiveSessionId())
           // 把递增后的未回复数传进去，否则分级提示音恒为 surface 级。
           playNotificationByBoundary(incrementUnanswered())
         }

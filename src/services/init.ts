@@ -7,7 +7,7 @@ import { MemoryService, stopMemoryConsolidationTimer } from "@/services/agent/me
 import { initRegistry, initCards } from "@/services/personality"
 import { registerDefaultTools, registerAssistantTools, unregisterAssistantTools } from "@/services/tool"
 import { initDebug } from "@/services/debug"
-import { initSessions, chatHistory, initWelcome } from "@/services/session"
+import { initSessions, chatHistory, initWelcome, getActiveSessionId } from "@/services/session"
 import { getActiveCard } from "@/services/personality"
 import { computeMcpEnabled, generalConfig, toolsConfig } from "@/services/config"
 import { createLogger } from "@/services/logger"
@@ -64,7 +64,7 @@ export async function initApp(): Promise<void> {
   if (chatHistory.length === 0) {
     const { pickActiveGreeting } = await import("@/services/personality")
     const greeting = pickActiveGreeting()
-    if (greeting) await initWelcome(greeting)
+    if (greeting) await initWelcome(greeting, getActiveSessionId())
     log.info("6/7 欢迎语已写入")
   } else {
     log.info("6/7 跳过欢迎语（已有历史消息）")

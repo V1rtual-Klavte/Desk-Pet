@@ -9,7 +9,7 @@ import type { SessionMeta } from "./store"
 import {
   chatHistory, unansweredCount,
   sessions, activeSessionId,
-  clearMessages, addSessionMeta, removeSessionMeta,
+  clearMessages, replaceMessages, addSessionMeta, removeSessionMeta,
 } from "./store"
 import {
   initSessionPersistence, loadUnanswered, saveUnanswered, deleteUnanswered,
@@ -61,7 +61,7 @@ async function activateSession(sessionId: string): Promise<void> {
 
   const messages = await loadMessagesFromSession(sessionId)
   if (activeSessionId.value !== sessionId) return
-  chatHistory.splice(0, chatHistory.length, ...messages)
+  replaceMessages(messages)
   unansweredCount.value = loadUnanswered(sessionId)
   log.info(`Session: 已激活 ${sessionId} (${messages.length} 条)`)
 }

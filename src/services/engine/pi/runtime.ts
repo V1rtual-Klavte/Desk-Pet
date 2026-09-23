@@ -24,7 +24,7 @@ import { getPoolSnapshot, applyResetPolicies, refreshVariablePool, updateInterac
 import { getFallbackReply, getSimpleStage } from "@/services/personality/stages-cache"
 import { generateReply, parseRuntimeData } from "@/services/reply"
 import { authorizeToolExecution, invalidatePermissionScope } from "@/services/safety"
-import { getActiveSessionId, pushMessage } from "@/services/session/store"
+import { getActiveSessionId, pushMessageFor } from "@/services/session/store"
 import { pushSystemMessage } from "@/services/session"
 import { getToolsForMode } from "@/services/tool/registry"
 import { SESSION_TRANSCRIPT_TOOL, toToolDeclaration, createTranscriptTool } from "@/services/tool"
@@ -659,12 +659,12 @@ function createTurnSinks(kernel: TurnKernel): HarnessRunSinks {
       const appMessage = fromPiMessage(message, `${kernel.traceContext.runId}:${apiRound}:assistant:${createMessageId()}`)
       // 带 toolCall 的过程消息与工具结果进 UI；纯文本回复由入口统一推送。
       if (appMessage && sessionId && getActiveSessionId() === sessionId && (appMessage.role === "tool" || appMessage.toolCalls?.length)) {
-        pushMessage(appMessage)
+        pushMessageFor(sessionId, appMessage)
       }
     },
     onToolResultMessage: message => {
       const appMessage = fromPiMessage(message, `${kernel.traceContext.runId}:${apiRound}:tool:${message.toolCallId}`)
-      if (appMessage && sessionId && getActiveSessionId() === sessionId) pushMessage(appMessage)
+      if (appMessage && sessionId && getActiveSessionId() === sessionId) pushMessageFor(sessionId, appMessage)
     },
     onToolEnd: (toolName, isError) => {
       emitUiEvent("tool-completed", { toolId: toolName, toolName, success: !isError })
@@ -941,7 +941,7 @@ async function runPlanPhase(args: {
     // FIX-02(b)：JSON 解析失败时 `generatePlan` 已降级为单步直接执行 —— 这是用户可见的行为变化，
     // 必须在计划段发出。只发给计划所属会话（与 finishPlan 同口径）：执行期切走后文案不落进别的会话。
     if (generated.degradedReason === "json_parse_failed" && getActiveSessionId() === sessionId) {
-      pushSystemMessage("计划解析失败，已改为单步直接执行")
+      pushSystemMessage("计划解析失败，已改为单步直接执行", sessionId)
     }
     // 规范化后的 plan 是唯一进入确认、执行、进度事件与落盘的形态
     const normalized = normalizePlan(generated, planConfig.maxSteps)
@@ -949,7 +949,7 @@ async function runPlanPhase(args: {
     if (normalized.dropped > 0) {
       log.warn(`计划步骤被丢弃/截断 ${normalized.dropped} 步: ${generated.steps.length} → ${plan.steps.length}（${planId}）`)
       // PLAN-13：截断必须可见，不能只留在日志里
-      pushSystemMessage(`计划被截断：仅执行前 ${plan.steps.length} 步（模型给了 ${generated.steps.length} 步）`)
+      pushSystemMessage(`计划被截断：仅执行前 ${plan.steps.length} 步（模型给了 ${generated.steps.length} 步）`, sessionId)
     }
     if (plan.steps.length === 0) {
       // 模型没给出可执行步骤：不落记录、不确认，与原路径一致地直接走主回合
@@ -1062,9 +1062,9 @@ async function runPlanPhase(args: {
       const index = plan.steps.findIndex(item => item.id === step.id) + 1
       void emitUiEvent("deskpet-plan-progress", { sessionId, planId, stepId: String(step.id), total: plan.steps.length, desc: step.description, status: "warning" })
       if (notice.kind === "missing_tools") {
-        pushSystemMessage(`计划第 ${index} 步指定的工具不存在: ${notice.names.join("、")}（该步未执行）`)
+        pushSystemMessage(`计划第 ${index} 步指定的工具不存在: ${notice.names.join("、")}（该步未执行）`, sessionId)
       } else {
-        pushSystemMessage(`计划第 ${index} 步未限定工具，将使用全部助手工具`)
+        pushSystemMessage(`计划第 ${index} 步未限定工具，将使用全部助手工具`, sessionId)
       }
     },
     // 失败询问接上会话身份与回合中断信号：会话切换/终止执行时按 `abort` 结算，
@@ -1175,8 +1175,8 @@ async function finishPlan(args: {
   // 确认超时/事件发射失败由 plan-confirmation 在结算处写出 —— 同一桩事不能各发一条。
   // 消息只写给计划所属会话：执行期切走后回合仍在跑，文案不能落进另一个会话。
   if (getActiveSessionId() !== args.sessionId) return
-  if (args.reason === "deadline") pushSystemMessage("计划超时，已停在当前步骤，剩余步骤未执行")
-  if (args.reason === "declined") pushSystemMessage("已按你的选择停在当前步骤，剩余步骤未执行")
+  if (args.reason === "deadline") pushSystemMessage("计划超时，已停在当前步骤，剩余步骤未执行", args.sessionId)
+  if (args.reason === "declined") pushSystemMessage("已按你的选择停在当前步骤，剩余步骤未执行", args.sessionId)
 }
 
 /**
@@ -1191,7 +1191,7 @@ async function withPlanWriteDegrade(sessionId: string, planId: string, write: ()
     log.error("计划执行记录写入失败:", formatError(error))
     await planCheckpointStore.writeWriteFailure(sessionId, planId, formatError(error))
       .catch(evidenceError => log.error("计划写盘失败证据条目写入失败:", formatError(evidenceError)))
-    pushSystemMessage("计划执行记录写入失败（计划本身已执行/已取消）")
+    pushSystemMessage("计划执行记录写入失败（计划本身已执行/已取消）", sessionId)
   }
 }
 
@@ -1264,24 +1264,24 @@ export async function resumePlan(sessionId: string, planId: string): Promise<PiA
   const busyMessage = "这个会话正在忙，稍后再继续计划哦～"
   // guard：该会话没有任何未结算的操作（宿主回合或 lane 结构操作，统一「忙」判定）
   if (await harnessSlots.hasOpenOperation(sessionId)) {
-    pushSystemMessage(busyMessage)
+    pushSystemMessage(busyMessage, sessionId)
     return undefined
   }
   const recovered = planCheckpointStore.snapshot(planId)
   if (!recovered || recovered.plan.sessionId !== sessionId || !RESOLVABLE_PLAN_STATES.has(recovered.plan.state)) {
     log.warn("继续计划失败，没有这个待处置计划:", { sessionId, planId })
-    pushSystemMessage("没有找到这个待恢复的计划")
+    pushSystemMessage("没有找到这个待恢复的计划", sessionId)
     return undefined
   }
   // 未知副作用步骤必须先由用户处置（标记为已完成 / 重跑此步）：既不许自动重放，也不许静默跳过
   if (recovered.steps.some(step => step.state === "unknown_side_effect")) {
-    pushSystemMessage("有未处置的未知副作用步骤，请先标记或重跑")
+    pushSystemMessage("有未处置的未知副作用步骤，请先标记或重跑", sessionId)
     return undefined
   }
   const requestId = `plan-resume-${crypto.randomUUID()}`
   const generation = harnessSlots.begin(sessionId, { requestId })
   if (generation === undefined) {
-    pushSystemMessage(busyMessage)
+    pushSystemMessage(busyMessage, sessionId)
     return undefined
   }
   const slot = harnessSlots.get(sessionId)
@@ -1304,7 +1304,7 @@ export async function resumePlan(sessionId: string, planId: string): Promise<PiA
       runIsCurrent: () => harnessSlots.isCurrent(sessionId, generation),
     })
     if (outcome.kind === "completed") {
-      pushSystemMessage("计划剩余步骤已执行完成")
+      pushSystemMessage("计划剩余步骤已执行完成", sessionId)
       const output = await finishWithoutTurn({ sessionId, slot, reply: getSimpleStage("planning") ?? "计划完成啦～" })
       return { ...output, abortedByStop: false }
     }
@@ -1315,7 +1315,7 @@ export async function resumePlan(sessionId: string, planId: string): Promise<PiA
     // 边界入口：异常不静默、不冒充成功；计划状态留在盘上，用户可稍后重试同一条计划
     log.error("继续计划失败:", formatError(error))
     reportError("PiRuntime", error, { kind: "计划继续失败", overlay: false })
-    pushSystemMessage("继续计划失败，计划状态保持不变，可稍后再试")
+    pushSystemMessage("继续计划失败，计划状态保持不变，可稍后再试", sessionId)
     return undefined
   } finally {
     harnessSlots.end(sessionId, generation)
@@ -1338,7 +1338,7 @@ export async function discardPlan(sessionId: string, planId: string): Promise<bo
   }
   await planCheckpointStore.transitionPlan(planId, "failed")
   notifyPlanEnd(sessionId, "cancelled")
-  pushSystemMessage("计划已丢弃")
+  pushSystemMessage("计划已丢弃", sessionId)
   return true
 }
 

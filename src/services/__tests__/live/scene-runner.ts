@@ -241,8 +241,8 @@ async function executeTurn(userText: string, entry: SceneEntry, isActiveMessage 
   }
 
   // Mirror the production message lifecycle around the lower-level Pi runtime.
-  if (!isActiveMessage) pushUserMessage(userText)
   const sessionId = getActiveSessionId()
+  if (!isActiveMessage) pushUserMessage(userText, sessionId)
   const output = await runPiAgentTurn({
     sessionId,
     userText,
@@ -252,7 +252,7 @@ async function executeTurn(userText: string, entry: SceneEntry, isActiveMessage 
     unansweredCount: 0,
     isActiveMessage,
   })
-  pushAssistantMessage(output.reply)
+  pushAssistantMessage(output.reply, sessionId)
   return output
 }
 

@@ -111,7 +111,7 @@ async function resolveInterrupted(action: "continue" | "discard") {
         showDeliveryNote("没有可继续的中断运行");
       } else {
         // 续跑结果不经过 sendMessage 的提交路径：正文由这里补进界面，避免会话文件里有、界面没有。
-        if (getActiveSessionId() === sessionId && result.reply) pushAssistantMessage(result.reply);
+        if (getActiveSessionId() === sessionId && result.reply) pushAssistantMessage(result.reply, sessionId);
         showDeliveryNote("已继续上次未完成的运行");
       }
     } else {
