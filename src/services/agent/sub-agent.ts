@@ -1,5 +1,8 @@
 // ==========================================
 // 子代理 —— Fork（单代理）/ Team（多角色并行）
+//
+// 注意：runPiSubAgent 的 `maxRounds` 是工具轮上限（工具调用次数），映射到
+// createTurnSpec 的 maxToolCalls；它不是重试次数，取值为 loopConfig.maxToolCallsPerTurn。
 // ==========================================
 
 import type { ToolDef } from "@/services/tool/types"
@@ -40,7 +43,7 @@ export async function runForkAgent(input: ForkAgentInput): Promise<PiSubAgentOut
     task,
     tools,
     systemPrompt,
-    maxRounds: loopConfig.maxRetry,
+    maxRounds: loopConfig.maxToolCallsPerTurn,
     timeoutMs: 90000,
   })
 }
