@@ -36,6 +36,10 @@ card/interaction 状态保存在 `personality/stages/{cardId}.json` 的变量区
 
 主 run 捕获 Card ID、版本和 hash；返回时若当前 Card 已变，旧文本仍可保存到所属会话，但旧 RUNTIME_DATA 不写入新角色变量。流式增量和工具中间消息不直接写入 Card 变量。
 
+结算只解析**结算正文**自己的 RUNTIME_DATA：结算取 `state.finalPlainAssistant ?? state.finalAssistant`（本回合最后一条无 toolCall 的助手消息；没有它时才退回最后一条助手消息），再用 Harness 的 afterResponse 留底的「原始正文 ↔ 剥离后正文」配对取回原始正文（剥离先于提交，提交的条目里已经没有协议块）。因此本回合其他助手消息（含带 toolCall 的过程消息）里的 RUNTIME_DATA 只被剥离、不写变量。计划步骤的子代理（`runPiSubAgent`）不解析变量：其原始正文随父会话的 `deskpet.plan_step_result` 条目留证（PLAN-09），变量解析入口只有主回合的 `generateReply` 一处。
+
 ## 验证入口
 
 相关 Contract：`personality-card`、`variable-pool`；运行命令见[测试 README](../../src/services/__tests__/live/README.md)。格式解析的确定性断言与模型是否主动写入变量是不同验证目标，不能相互代替。
+
+计划回合的写入路径（主回合写入、步骤子代理只留证）由 `agent-runtime` 的 `runtime-plan-step-variable-write` production 场景承接；该场景关于带 toolCall 回合的实测结论在其首跑后回填本节。
