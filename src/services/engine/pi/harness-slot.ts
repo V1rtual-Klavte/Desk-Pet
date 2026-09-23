@@ -1532,8 +1532,13 @@ export class HarnessSlot {
       events.on("queue_update", (event) => {
         this.pendingQueues = event.queues
       }),
+      // 处理器异常按 error 记录，带 handler 名与 stack（事件载荷里 error 是 message 字符串，
+      // stack 是独立字段）。`before_tool` 抛异常是 fail-closed，但 `transform_context` /
+      // `after_response` / `before_payload` 抛异常是静默跳过 —— 后果是 RUNTIME_DATA 不剥离、
+      // 快照缺失，整条链上只有这里能留下可查的痕迹。
       events.on("handler_error", (event) => {
-        log.warn("Harness 处理器异常:", { hook: event.kind === "hook" ? event.hook : event.event, error: event.error })
+        const handler = event.kind === "hook" ? event.hook : event.event
+        log.error("Harness 处理器异常:", { sessionId: this.sessionId, handler }, event.stack ?? event.error)
       }),
       events.on("fault", (event) => {
         this.state = "faulted"

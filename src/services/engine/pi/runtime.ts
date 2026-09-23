@@ -3,7 +3,7 @@
 // variables, and reply processing.
 
 import { contentText } from "@earendil-works/pi-ai"
-import type { AgentMessage, SettledAssistantMessage } from "@earendil-works/pi-agent-core"
+import type { AgentMessage, JsonValue, SettledAssistantMessage } from "@earendil-works/pi-agent-core"
 import type { Usage } from "@earendil-works/pi-ai"
 import type { Message, ThinkingEffort } from "@/services/agent/types"
 import type { CompactionAuditSink, ContextAllocation, ContextBlock, IngressEnvelope, InputSourceMark, PlanState, PlanStepRecord, PromptCapabilityContext, PromptPlanContext, PromptRequestContext, PromptRequestParams, PromptSnapshot, PromptTokenDrift, PromptTransform } from "@/services/engine/runtime"
@@ -55,7 +55,7 @@ import type {
 } from "./harness-slot"
 import { formatError, reportError } from "@/services/error"
 import { createLogger } from "@/services/logger"
-import { createPromptRewrite, createPromptSnapshot, createRuntimeTraceContext, inputEventId, laneMessageText, messageEventId, PROMPT_SNAPSHOT_ENTRY, publishRuntimeTrace, userInputMessage } from "@/services/engine/runtime"
+import { createPromptRewrite, createPromptSnapshot, createRuntimeTraceContext, inputEventId, laneMessageText, messageEventId, PROMPT_SNAPSHOT_ENTRY, publishRuntimeTrace, RECALL_FAILED_ENTRY, userInputMessage } from "@/services/engine/runtime"
 import type { RuntimeTraceContext } from "@/services/engine/runtime"
 import { redactText, sha256Text, stableSerialize } from "@/services/engine/runtime"
 
@@ -653,7 +653,10 @@ function createProjectionHook(args: {
         // 快照任务的回收只关心「完成与否」：对账值（tokenDrift）只有 usage 那一档才产出。
         .then(() => undefined))
     } catch (error) {
-      args.state.contextError ??= error
+      // 第一个错误交给网关判定（硬预算超限要触发溢出恢复，不能被后来的错误顶掉）；
+      // 但被顶掉的那个不能静默消失，否则「本回合为什么按这条错误结算」无从解释。
+      if (args.state.contextError === undefined) args.state.contextError = error
+      else log.warn("transform_context 判定记录被更早的错误占用，本次错误仅记录:", formatError(error))
     }
     return { messages: prepared }
   }
@@ -866,7 +869,7 @@ export async function runPiAgentTurn(input: PiAgentTurnInput): Promise<PiAgentTu
   const toolCallHistory: PiAgentTurnOutput["toolCallHistory"] = []
 
   const turnSessionId = input.sessionId
-  const requestId = input.ingress?.requestId ?? `runtime-${input.turnId ?? crypto.randomUUID()}`
+  const requestId = input.ingress?.requestId ?? `runtime-${crypto.randomUUID()}`
   const mode = generalConfig.assistantMode ? "assistant" as const : "pet" as const
   const model = resolvePiTurnModel()
   const windowTokens = model.contextWindow
@@ -993,7 +996,14 @@ export async function runPiAgentTurn(input: PiAgentTurnInput): Promise<PiAgentTu
       tokenBudget: Math.floor(contextBudget(windowTokens, model.maxTokens).normalInputTarget * CONTEXT_RATIOS.memory),
     })
   } catch (error) {
-    log.warn("MemoryProvider 召回失败，按空召回继续", formatError(error))
+    // 按空召回继续是对的（长期记忆缺席不该让整轮起不来），但它改变了模型看到的上下文：
+    // 除了日志，还要在会话里留一条可查的审计条目。
+    log.warn("MemoryProvider 召回失败，按空召回继续:", { sessionId: turnSessionId, requestId }, formatError(error))
+    harnessSlots.peek(turnSessionId)?.queueAuditEntry(RECALL_FAILED_ENTRY, {
+      requestId,
+      error: formatError(error),
+      at: Date.now(),
+    } as unknown as JsonValue)
   }
   assertCurrent()
   const frozenContext = { ...frozenUserContext, skillsPromptBlock: getSkillsPromptBlock({ mode }) }

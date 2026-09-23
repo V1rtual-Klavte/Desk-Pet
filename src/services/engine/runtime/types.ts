@@ -33,6 +33,14 @@ export const PROMPT_REWRITE_ENTRY = "deskpet.prompt_rewrite"
  */
 export const COMPACTION_DECLINED_ENTRY = "deskpet.compaction_declined"
 
+/**
+ * 召回失败条目：MemoryProvider 召回抛错、回合按空召回继续时写的审计条目。
+ *
+ * 降级继续是对的（长期记忆缺席不该让整轮对话起不来），但它改变了模型看到的上下文，
+ * 必须留下可查的证据：否则「这轮为什么像失忆」既没有日志归属也没有持久痕迹。
+ */
+export const RECALL_FAILED_ENTRY = "deskpet.recall_failed"
+
 export type MessageOrigin =
   | "user"
   | "assistant"
