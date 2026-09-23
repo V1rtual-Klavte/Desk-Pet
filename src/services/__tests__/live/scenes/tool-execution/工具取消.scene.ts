@@ -1,5 +1,6 @@
 import type { SceneDef } from "../../types"
-import { executeTool } from "@/services/tool/router"
+import { executeToolDefinition } from "@/services/tool/router"
+import { getToolByName } from "@/services/tool/registry"
 import { defineTool, register, unregister, TOOL_POLICY_VERSION } from "@/services/tool"
 
 const scene: SceneDef = {
@@ -20,7 +21,7 @@ const scene: SceneDef = {
     try {
       const controller = new AbortController()
       controller.abort()
-      const result = await executeTool(id, {}, { mode: "pet", signal: controller.signal })
+      const result = await executeToolDefinition(getToolByName(id)!, {}, { mode: "pet", signal: controller.signal })
       if (called || result.success || result.errorCode !== "cancelled") throw new Error("取消工具未返回 cancelled")
     } finally {
       unregister(id)

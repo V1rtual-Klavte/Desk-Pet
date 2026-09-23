@@ -37,7 +37,8 @@ export {
   } from "./registry"
 
 // ── 路由器 ──
-export { executeTool, executeToolDefinition } from "./router"
+// 按名字重查注册表的旧执行入口已删除：执行入口只收回合冻结的 ToolDef。
+export { executeToolDefinition } from "./router"
 
 export { releaseMcpOwner } from "./mcp"
 export {

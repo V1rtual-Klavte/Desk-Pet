@@ -29,7 +29,7 @@ Pi Harness Tool → harness-tool-adapter → ToolRouter → 执行许可借用 �
 
 - `permission.defaultDecision` / `permission.check` 是工具侧权限意见，`passthrough` 不是执行许可。
 - `execution.effect / mode / isolation / replay / timeoutMs`：效果分类、调度声明、隔离级别、恢复重放资格与超时；未声明超时时统一取 `loop.toolTimeoutMs`。
-- `context.resultProjection`：`preserve` 的原样进入请求，`reference` 的可被 L0 缩短并标注 eventId 回读地址；两者都只改请求视图，会话条目存档始终保留全文。
+- `context.resultProjection`：`preserve` 的原样进入请求，`reference` 的可被 L0 缩短并标注 eventId 回读地址；两者都只改请求视图，会话条目存档始终保留全文。Router 的 L1 内联截断已删除：会话条目与请求视图共用同一份工具返回全文，缩短只发生在 L0（[context/tool-output.ts](../../src/services/context/tool-output.ts)）且提示带 eventId 回读地址。
 - `context.historyCompaction`：`retain` 的调用配对必须保留原文，压缩覆盖边界不得越过（连续完整轮下命中即 decline，由预算守卫报告上下文不足）。
 
 [defineTool](../../src/services/tool/policy.ts) 是唯一构造入口（手写、Pi 适配、MCP 都经它产出 ToolDef），注册入口再次校验：缺策略、`parallel` 搭配非只读效果、`exclusive_effect`/`delegate` 非串行都是注册错误，不做缺省猜测；未经它构造的定义在注册时直接抛错（结构上没有执行体），不会进入注册表。`actionCategory` 只用于人格阶段文案，不再决定并行、权限或压缩。`replay` 由 Harness 恢复路径消费：只有持久化调用与当前工具都声明 `safe` 才会重放效果，当前全部工具为 `never`。
@@ -66,7 +66,7 @@ Harness 以 `toolExecution: parallel` 派发批次，效果之间的并发由 Ru
 - 文件路径通过 AppPaths 校验，允许根为用户 Home、系统临时目录，开发构建还包含项目根；凭据等路径（规则文本 = 「`.ssh` 目录组件或 `.pem`/`.key` 后缀」）由 Rust [paths.rs::is_credential_path](../../src-tauri/src/paths.rs) 做不可关闭的最终判定（`SENSITIVE_PATH`），接入点是 `validate_file_path`/`validate_new_file_path` 的词法形态**与** canonicalize 结果两侧 —— 不存在的路径也先得凭据结论而不是 `PATH_NOT_FOUND`，符号链接与 Windows 短名解析后仍会被判；TS 侧的 [resolveFilePathLevel](../../src/services/safety/checker.ts) 是同一规则族的分级副本（相对形式与 `~`/`$HOME`/`${HOME}`/反斜杠/`..` 经词法归一后同判），在进入 ToolRouter 前就提为 NOWAY。
 - 读写目标只接受**常规文件**（[tool_exec.rs](../../src-tauri/src/commands/tool_exec.rs) 的 `ensure_regular_file`）：`file_read`/`file_read_binary` 在取元数据后立刻判类型，`file_write`/`file_append` 对已存在的目标判，`file_rename` 的源拒绝 FIFO/设备/套接字但**允许目录**（重命名目录是合法用法，且 `rename` 是元数据操作、不打开内容）。FIFO/套接字/字符设备/块设备的 open 会一直等对端或直接写到设备，handler 因此永不结算、许可额度也不释放，只能在源头拒绝。`/dev/null` 类设备目标**不豁免**：设备路径本就不在允许根（Home/系统临时目录/开发项目根）内，到不了类型判定这一步。
 - 这套路径与命令策略是**同一规则族的两层副本**，不是完备的 OS 沙箱：间接形式（如 `python -c "open('~/.ssh/id_rsa')"`）与「拦实际打开的文件」都不在覆盖内；`.env`、系统目录等可确认路径保持不变，助手模式仍走「用户确认后放行」。
-- Bash 超时、取消和进程回收由 Rust 管理；Router 为调用叠加取消/超时，区分 cancelled、timeout、not_found、failed。取消可以在子进程 spawn 前到达：`bash_exec` 的登记先于任何阻塞动作，命中在案槽位的取消会立案并在 spawn 后立即终止（稳定码 `CANCELLED`）；池里没有该 execution_id 时 `bash_cancel` 返回 `false` 并留一条 debug 记录，不再是静默成功 —— 调用方据此区分「取消成功」与「取消来晚了（子进程可能已结束）」。
+- Bash 超时、取消和进程回收由 Rust 管理；Router 为调用叠加取消/超时，区分 cancelled、timeout、not_found、failed。判定顺序唯一：超时（定时器置位）→ 取消（外部 signal）→ error，不做错误文案匹配，一次调用只有一条审计账。取消可以在子进程 spawn 前到达：`bash_exec` 的登记先于任何阻塞动作，命中在案槽位的取消会立案并在 spawn 后立即终止（稳定码 `CANCELLED`）；池里没有该 execution_id 时 `bash_cancel` 返回 `false` 并留一条 debug 记录，不再是静默成功 —— 调用方据此区分「取消成功」与「取消来晚了（子进程可能已结束）」。
 - 输出上限与 spill 保留数由 [tool_exec.rs](../../src-tauri/src/commands/tool_exec.rs) 管理。Bash 截断会返回 spill 引用，最近文件会淘汰；不能声称任意长的 shell 输出永久存于会话。
 - 会话保存的是**工具实际返回内容**；Context L0 再做请求投影时，原工具结果仍可用 read_session_event 读取。两层截断的范围不能混同。
 
