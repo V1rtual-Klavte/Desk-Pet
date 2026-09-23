@@ -13,8 +13,9 @@ import type { StructuredSummary } from "@/services/agent/memory"
 import { buildPrompt, contextBudget, CONTEXT_RATIOS, estimateRequestTokens, estimateContextTokens, estimateMessageTokens, ContextBudgetError, projectToolMessages } from "@/services/context"
 import { bindRunningPlan, clearRunningPlan, notifyPlanEnd, requestPlanConfirm, requestPlanStepDecision } from "@/services/engine/plan-confirmation"
 import { executePlan, evaluateComplexity, formatStepResults, generatePlan, normalizePlan, planEffectClassFor, planToRecords } from "@/services/engine/planner"
+import type { PlanExecutionResult, PlanResult } from "@/services/engine/planner"
 import { recordMessage, recordToolCall, transition } from "@/services/engine/session"
-import { getEffectiveThinkingEffort, recordModelUsage, updateRequestStats } from "@/services/debug"
+import { getEffectiveSafetyMode, getEffectiveThinkingEffort, recordModelUsage, updateRequestStats } from "@/services/debug"
 import { getSkillsPromptBlock, getSkillCatalogFingerprint } from "@/services/skill"
 import { formatPoolForPrompt } from "@/services/personality/variable-pool"
 import { getActiveCard } from "@/services/personality/registry"
@@ -24,12 +25,13 @@ import { getFallbackReply, getSimpleStage } from "@/services/personality/stages-
 import { generateReply, parseRuntimeData } from "@/services/reply"
 import { authorizeToolExecution, invalidatePermissionScope } from "@/services/safety"
 import { getActiveSessionId, pushMessage } from "@/services/session/store"
+import { pushSystemMessage } from "@/services/session"
 import { getToolsForMode } from "@/services/tool/registry"
 import { SESSION_TRANSCRIPT_TOOL, toToolDeclaration, createTranscriptTool } from "@/services/tool"
 import { findRetainedToolCall, preservedToolNames, retainedToolNames, toolPolicyHash } from "@/services/tool/policy"
 import type { HarnessToolRun } from "@/services/tool/pi/harness-tool-adapter"
 import type { ToolDef } from "@/services/tool/types"
-import { generalConfig, loopConfig, planConfig, safetyConfig } from "@/services/config"
+import { generalConfig, loopConfig, planConfig } from "@/services/config"
 import { emit } from "@tauri-apps/api/event"
 import { resolvePiTurnModel } from "./model-gateway"
 import type { PiModel } from "./model-gateway"
@@ -49,7 +51,7 @@ import type {
   HarnessRunSpec,
   HarnessRunState,
 } from "./harness-slot"
-import { formatError } from "@/services/error"
+import { formatError, reportError } from "@/services/error"
 import { createLogger } from "@/services/logger"
 import { createPromptRewrite, createPromptSnapshot, createRuntimeTraceContext, messageEventId, publishRuntimeTrace } from "@/services/engine/runtime"
 import type { RuntimeTraceContext } from "@/services/engine/runtime"
@@ -174,6 +176,11 @@ export interface PiAgentTurnOutput {
   undelivered?: string[]
   /** 回合因显式停止（不是超时）结束；宿主不得在停止后自动继续剩余输入。 */
   abortedByStop?: boolean
+  /**
+   * 兜底/中断文案没能写进会话文件（只显示过，没有持久正文）——
+   * 宿主据此区分「已持久化」与「界面看到过」，不要当成同一件事。
+   */
+  persistFailed?: boolean
 }
 
 /**
@@ -673,77 +680,39 @@ export async function runPiAgentTurn(input: PiAgentTurnInput): Promise<PiAgentTu
     const complexity = await evaluateComplexity(planUserText, planConfig.keywords)
     assertCurrent()
     if (complexity.score >= planConfig.complexityThreshold) {
-      transition("PLANNING", turnSessionId)
-      const plan = await generatePlan(planUserText, {
-        cardId: card?.id ?? "neutral",
-        cardRole: card?.sections.roleSetting ?? "",
-        availableTools: getToolsForMode("assistant"),
-        thinkingEffort: planConfig.thinkingEffort,
-        maxSteps: planConfig.maxSteps,
+      // 中断通道先于确认建立：确认等待期与会话切换都要能把它断掉
+      const planAbort = new AbortController()
+      const outcome = await runPlanPhase({
+        sessionId: turnSessionId,
+        planId: `plan-${input.ingress?.requestId ?? crypto.randomUUID()}`,
+        rootTurnId: input.turnId ?? input.ingress?.parentTurnId ?? `turn-${input.ingress?.requestId ?? crypto.randomUUID()}`,
+        approved: false,
+        stepMode: "auto",
+        confirmSignal: planAbort.signal,
+        parentSlot: slot,
+        planAbort,
+        runIsCurrent,
+        // 规划 prompt 用回合开始时的 Card 快照，与冻结的变量/配置同代
+        planInput: {
+          userText: planUserText,
+          cardId: card?.id ?? "neutral",
+          cardRole: card?.sections.roleSetting ?? "",
+        },
       })
-      assertCurrent()
-      // 规范化后的 plan 是唯一进入确认、执行、进度事件与落盘的形态
-      const { plan: normalizedPlan, dropped } = normalizePlan(plan, planConfig.maxSteps)
-      if (normalizedPlan.steps.length > 0) {
-        const planId = `plan-${input.ingress?.requestId ?? crypto.randomUUID()}`
-        const rootTurnId = input.turnId ?? input.ingress?.parentTurnId ?? `turn-${input.ingress?.requestId ?? crypto.randomUUID()}`
-        if (dropped > 0) log.warn(`计划步骤被丢弃/截断 ${dropped} 步: ${plan.steps.length} → ${normalizedPlan.steps.length}（${planId}）`)
-        const { record, steps } = planToRecords(normalizedPlan, {
-          planId,
+      // 三种归宿都在这里结算（PLAN-15）：completed 进主回合；cancelled / declined 经
+      // finishWithoutTurn 收尾 —— 取消不写兜底失败回复、不标 failure，也不再有绕过结算出口的第二条落盘路径。
+      if (outcome.kind !== "completed") {
+        const output = await finishWithoutTurn({
           sessionId: turnSessionId,
-          rootTurnId,
-          effectOf: planEffectClassFor,
+          slot,
+          reply: outcome.kind === "declined" ? outcome.reply : "",
         })
-        await planCheckpointStore.create(record, steps)
-        let confirmed = safetyConfig.mode === "just_do_it"
-        let stepMode: "auto" | "stepByStep" = "auto"
-        if (!confirmed) {
-          const result = await requestPlanConfirm(
-            normalizedPlan,
-            safetyConfig.mode === "let_me_tk" ? { forceStepByStep: true } : undefined,
-          )
-          confirmed = result.confirmed
-          stepMode = result.mode
-        }
-        if (!confirmed) {
-          for (const step of normalizedPlan.steps) await planCheckpointStore.transitionStep(planId, String(step.id), "skipped")
-          await planCheckpointStore.transitionPlan(planId, "failed")
-          notifyPlanEnd("cancelled")
-          transition("WAITING", turnSessionId)
-          const reply = getSimpleStage("planning") ?? "好的，已取消计划～"
-          await slot.appendAssistantMessage(reply)
-          return { reply, toolCallHistory, retriesUsed: 0 }
-        }
-        await planCheckpointStore.transitionPlan(planId, "running")
-        // 执行期登记中断通道，「终止执行」据此真正停下剩余步骤；
-        // `finally` 保证任何退出路径都会清空登记，不给下一次计划留悬空引用
-        const planAbort = new AbortController()
-        bindRunningPlan(planAbort)
-        const result = await executePlan(normalizedPlan, {
-          stepTimeoutMs: planConfig.stepTimeoutMs,
-          stepMaxRounds: planConfig.stepMaxRounds,
-          stepThinkingEffort: planConfig.stepThinkingEffort,
-          maxSteps: planConfig.maxSteps,
-          onStepFailure: stepMode === "stepByStep" ? "ask" : planConfig.onStepFailure,
-          signal: planAbort.signal,
-        }, {
-          async onStepStart(step) {
-            await planCheckpointStore.transitionStep(planId, String(step.id), "running")
-            emit("deskpet-plan-progress", { step: step.id, total: normalizedPlan.steps.length, desc: step.description, status: "running" })
-          },
-          async onStepDone(step, output) {
-            await planCheckpointStore.transitionStep(planId, String(step.id), output.success ? "done" : "failed")
-            emit("deskpet-plan-progress", { step: step.id, total: normalizedPlan.steps.length, desc: step.description, status: output.success ? "done" : "failed" })
-          },
-          onStepFailed: requestPlanStepDecision,
-          onToolStart: (step, toolName, toolCallId) => planCheckpointStore.checkpointTool(planId, String(step.id), "tool_start", toolName, toolCallId, planEffectClassFor([toolName])),
-          onToolDone: (step, toolName, toolCallId, success) => planCheckpointStore.checkpointTool(planId, String(step.id), "tool_end", toolName, toolCallId, planEffectClassFor([toolName]), success),
-        }).finally(() => clearRunningPlan())
-        await planCheckpointStore.transitionPlan(planId, result.overallSuccess ? "done" : "failed")
-        // 收起 Plan 面板：没有这个事件时它只在两个按钮里被隐藏，跑完会一直挂着
-        notifyPlanEnd(result.overallSuccess ? "done" : "failed")
-        planStepContext = formatStepResults(result)
+        // declined 是用户看得到的正常收尾（有助手正文），不当成停止 ——
+        // 标 abortedByStop 会让宿主用「已停止本次回复」顶替这条正文，界面与持久正文就分裂了。
+        return outcome.kind === "declined" ? { ...output, abortedByStop: false } : output
       }
+      // 空计划（模型没给出可执行步骤）与原路径一致：不进 ephemeral 上下文，直接走正常回合
+      if (outcome.result.stepResults.length > 0) planStepContext = formatStepResults(outcome.result)
     }
   }
 
@@ -829,6 +798,251 @@ export async function runPiAgentTurn(input: PiAgentTurnInput): Promise<PiAgentTu
   }
 }
 
+// ── 计划相位与统一收尾（PLAN-15 / PLAN-10 / FIX-34 / FIX-35） ──
+
+/** 计划段的归宿：三种归宿都回到主路径统一结算，不再各自写一份收尾。 */
+type PlanPhaseOutcome =
+  | { kind: "completed"; result: PlanExecutionResult }
+  | { kind: "cancelled"; reason: "user" | "session_switched" | "deadline" | "declined"; context: string }
+  | { kind: "declined"; reply: string }
+
+/**
+ * 计划执行相位：生成 → 规范化 → 落盘 → 确认 → 执行 → 收尾，返回结构化归宿。
+ *
+ * 相位不写助手正文：`declined` 的可见回复由调用方经 `finishWithoutTurn` 落盘，
+ * `cancelled` 完全不写正文（取消不是模型回复，也不该被记成失败）。
+ *
+ * `plan`/`approved`/`stepMode` 与 `planInput` 分别服务两条入口：恢复入口（T2.08 传
+ * `existingPlanId`）用落盘记录还原的 `plan`、声明 `approved: true`、`stepMode: "auto"`，
+ * 跳过生成/规范化/落盘/确认（用户点「继续」就是那次确认）；新建计划用 `planInput` 生成，
+ * `approved`/`stepMode` 由确认段决定。`parentSlot` 供 T2.07 写步骤结果条目使用。
+ */
+async function runPlanPhase(args: {
+  sessionId: string
+  planId: string
+  rootTurnId: string
+  plan?: PlanResult
+  approved: boolean
+  stepMode: "auto" | "stepByStep"
+  confirmSignal: AbortSignal
+  parentSlot: HarnessSlot
+  planAbort: AbortController
+  runIsCurrent: () => boolean
+  existingPlanId?: string
+  /** 新建计划的生成输入：用户请求文本与回合冻结的 Card 信息（恢复入口不需要）。 */
+  planInput?: { userText: string; cardId: string; cardRole: string }
+}): Promise<PlanPhaseOutcome> {
+  const { sessionId, planAbort } = args
+  const planId = args.existingPlanId ?? args.planId
+  let plan: PlanResult
+  let stepMode: "auto" | "stepByStep"
+
+  if (args.existingPlanId !== undefined) {
+    // 恢复入口：记录已在盘上，计划与「已确认」都来自它；跑哪些步骤由调用方筛好
+    if (!args.plan) throw new Error("计划恢复入口缺少 plan（应由 recordsToPlan 从落盘记录还原）")
+    // 没声明「已确认」就不许走恢复：否则等于在没有用户确认的情况下执行落盘计划
+    if (!args.approved) throw new Error("计划恢复入口必须声明 approved: true（用户点「继续」就是那次确认）")
+    plan = args.plan
+    stepMode = args.stepMode
+  } else {
+    if (!args.planInput) throw new Error("计划段缺少生成输入（planInput）")
+    transition("PLANNING", sessionId)
+    const generated = await generatePlan(args.planInput.userText, {
+      cardId: args.planInput.cardId,
+      cardRole: args.planInput.cardRole,
+      availableTools: getToolsForMode("assistant"),
+      thinkingEffort: planConfig.thinkingEffort,
+      maxSteps: planConfig.maxSteps,
+    })
+    if (!args.runIsCurrent()) throw new Error("回合已取消或运行代际已失效")
+    // 规范化后的 plan 是唯一进入确认、执行、进度事件与落盘的形态
+    const normalized = normalizePlan(generated, planConfig.maxSteps)
+    plan = normalized.plan
+    if (normalized.dropped > 0) {
+      log.warn(`计划步骤被丢弃/截断 ${normalized.dropped} 步: ${generated.steps.length} → ${plan.steps.length}（${planId}）`)
+      // PLAN-13：截断必须可见，不能只留在日志里
+      pushSystemMessage(`计划被截断：仅执行前 ${plan.steps.length} 步（模型给了 ${generated.steps.length} 步）`)
+    }
+    if (plan.steps.length === 0) {
+      // 模型没给出可执行步骤：不落记录、不确认，与原路径一致地直接走主回合
+      log.warn("计划没有可执行步骤，跳过确认与执行:", planId)
+      return { kind: "completed", result: { stepResults: [], overallSuccess: true, totalDurationMs: 0 } }
+    }
+    const { record, steps } = planToRecords(plan, {
+      planId,
+      sessionId,
+      rootTurnId: args.rootTurnId,
+      effectOf: planEffectClassFor,
+    })
+    // create 失败直接上抛：计划还没跑、没有任何副作用，此时「降级继续」会让没有记录的计划真的执行起来
+    await planCheckpointStore.create(record, steps)
+    // PLAN-12：确认读权限终裁用的同一个有效模式（会话覆盖优先），不再读原始 safetyConfig.mode
+    stepMode = "auto"
+    if (getEffectiveSafetyMode() !== "just_do_it") {
+      const decision = await requestPlanConfirm(plan, {
+        ...(getEffectiveSafetyMode() === "let_me_tk" ? { forceStepByStep: true } : {}),
+        signal: args.confirmSignal,
+        sessionId,
+        planId,
+      })
+      if (!decision.confirmed && decision.reason === "session_switched") {
+        // 会话已切换：计划一次都没跑，按取消归宿收尾（不是用户拒绝，不写「已取消计划」）
+        return await cancelPlanRun({
+          sessionId,
+          planId,
+          reason: "session_switched",
+          context: "计划未开始执行：确认时会话已切换",
+        })
+      }
+      if (!decision.confirmed) {
+        // 用户拒绝：一步都没跑，步骤全部标 skipped，计划落 failed
+        await withPlanWriteDegrade(sessionId, planId, async () => {
+          for (const step of plan.steps) await planCheckpointStore.transitionStep(planId, String(step.id), "skipped")
+        })
+        await finishPlan({ sessionId, planId, state: "failed", reason: "declined", notify: "cancelled" })
+        return { kind: "declined", reply: getSimpleStage("planning") ?? "好的，已取消计划～" }
+      }
+      stepMode = decision.mode
+    }
+  }
+
+  await withPlanWriteDegrade(sessionId, planId, () => planCheckpointStore.transitionPlan(planId, "running"))
+  // 执行期登记中断通道，「终止执行」据此真正停下剩余步骤；
+  // `finally` 保证任何退出路径都会清空登记，不给下一次计划留悬空引用
+  bindRunningPlan(planAbort)
+  const result = await executePlan(plan, {
+    stepTimeoutMs: planConfig.stepTimeoutMs,
+    stepMaxRounds: planConfig.stepMaxRounds,
+    stepThinkingEffort: planConfig.stepThinkingEffort,
+    maxSteps: planConfig.maxSteps,
+    onStepFailure: stepMode === "stepByStep" ? "ask" : planConfig.onStepFailure,
+    signal: planAbort.signal,
+    // §7 #33：计划级时限由步骤配置派生（`stepTimeoutMs × maxSteps`），不新增 YAML 字段
+    deadlineAt: Date.now() + planConfig.stepTimeoutMs * planConfig.maxSteps,
+    stepGate: stepMode === "stepByStep" ? "each" : "none",
+  }, {
+    async onStepStart(step) {
+      await planCheckpointStore.transitionStep(planId, String(step.id), "running")
+      emit("deskpet-plan-progress", { step: step.id, total: plan.steps.length, desc: step.description, status: "running" })
+    },
+    async onStepDone(step, output) {
+      await planCheckpointStore.transitionStep(planId, String(step.id), output.success ? "done" : "failed")
+      emit("deskpet-plan-progress", { step: step.id, total: plan.steps.length, desc: step.description, status: output.success ? "done" : "failed" })
+    },
+    // 失败询问的 `signal` 由 T2.04 接线：现在接上会让「终止执行」把本轮的失败询问结算成 abort，
+    // 于是中止被记成 failed 而不是 user；留到 T2.05 补 `declined` 归宿时一起接。
+    onStepFailed: requestPlanStepDecision,
+    onToolStart: (step, toolName, toolCallId) => planCheckpointStore.checkpointTool(planId, String(step.id), "tool_start", toolName, toolCallId, planEffectClassFor([toolName])),
+    onToolDone: (step, toolName, toolCallId, success) => planCheckpointStore.checkpointTool(planId, String(step.id), "tool_end", toolName, toolCallId, planEffectClassFor([toolName]), success),
+  }).finally(() => clearRunningPlan())
+
+  if (result.cancelled) {
+    const reasonText = result.cancelled.reason === "user" ? "用户终止执行"
+      : result.cancelled.reason === "deadline" ? "超过计划时限" : "按用户选择中止"
+    return await cancelPlanRun({
+      sessionId,
+      planId,
+      reason: result.cancelled.reason,
+      context: `${result.stepResults.length}/${plan.steps.length} 步已执行，${reasonText}`,
+    })
+  }
+  await finishPlan({
+    sessionId,
+    planId,
+    state: result.overallSuccess ? "done" : "failed",
+    reason: result.overallSuccess ? "completed" : "failed",
+    notify: result.overallSuccess ? "done" : "failed",
+  })
+  return { kind: "completed", result }
+}
+
+/**
+ * 取消归宿的唯一走法（FIX-37 + PLAN-10）：仍在 `running` 的步骤落 `interrupted`，
+ * 计划落 `interrupted`，剩余步骤保持 `pending`（用户停止 / 会话切换 / 超时都走这里）。
+ * 用户可见文案由 `finishPlan` 按 reason 统一发，不在这里另发一份。
+ */
+async function cancelPlanRun(args: {
+  sessionId: string
+  planId: string
+  reason: "user" | "session_switched" | "deadline" | "declined"
+  context: string
+}): Promise<PlanPhaseOutcome> {
+  await withPlanWriteDegrade(args.sessionId, args.planId, async () => {
+    for (const step of planCheckpointStore.snapshot(args.planId)?.steps ?? []) {
+      if (step.state === "running") await planCheckpointStore.transitionStep(args.planId, step.stepId, "interrupted")
+    }
+  })
+  await finishPlan({
+    sessionId: args.sessionId,
+    planId: args.planId,
+    state: "interrupted",
+    reason: args.reason,
+    notify: "cancelled",
+  })
+  return { kind: "cancelled", reason: args.reason, context: args.context }
+}
+
+/**
+ * 计划收尾的唯一出口（FIX-34 / PLAN-15）：写盘 → 收起面板 → 用户可见文案。
+ * 四种归宿（completed / cancelled-user / cancelled-other / declined）都经它，不各写一份收尾。
+ * 只有 user / completed / failed 不发系统消息：前者是用户自己的动作，后两者由面板与主回复承担。
+ */
+async function finishPlan(args: {
+  sessionId: string
+  planId: string
+  state: "done" | "failed" | "interrupted"
+  /** 可见原因（用于系统消息文案；只有 user/completed/failed 不发消息）。 */
+  reason: "completed" | "failed" | "user" | "session_switched" | "deadline" | "declined"
+  notify: "done" | "failed" | "cancelled"
+}): Promise<void> {
+  await withPlanWriteDegrade(args.sessionId, args.planId, () => planCheckpointStore.transitionPlan(args.planId, args.state))
+  // 收起 Plan 面板：没有这个事件时它只在两个按钮里被隐藏，跑完会一直挂着
+  notifyPlanEnd(args.notify)
+  if (args.reason === "deadline") pushSystemMessage("计划超时，已停在当前步骤，剩余步骤未执行")
+  if (args.reason === "session_switched") pushSystemMessage("会话已切换，计划停在当前步骤，剩余步骤未执行")
+  if (args.reason === "declined") pushSystemMessage("已按你的选择停在当前步骤，剩余步骤未执行")
+}
+
+/**
+ * 计划写盘失败的降级（PLAN-15 / FIX-63①）：日志 + `deskpet.plan_write_failed` 证据条目 +
+ * 用户可见提示，然后继续正常结算 —— 计划本身已经执行/已取消，把它报成模型故障会让用户
+ * 以为副作用没发生。证据条目自身写失败只记日志：它是尽力而为，不能再把结算拖住。
+ */
+async function withPlanWriteDegrade(sessionId: string, planId: string, write: () => Promise<void>): Promise<void> {
+  try {
+    await write()
+  } catch (error) {
+    log.error("计划执行记录写入失败:", formatError(error))
+    await planCheckpointStore.writeWriteFailure(sessionId, planId, formatError(error))
+      .catch(evidenceError => log.error("计划写盘失败证据条目写入失败:", formatError(evidenceError)))
+    pushSystemMessage("计划执行记录写入失败（计划本身已执行/已取消）")
+  }
+}
+
+/**
+ * 计划段与恢复入口（T2.08）共用的收尾出口（FIX-35）：助手正文只有这一条路径与
+ * `settleMainTurn` 两个出处，不再有第二条落盘路径。
+ * `reply === ""` 时只结算相位不写正文（取消没有可见正文）。
+ */
+async function finishWithoutTurn(args: { sessionId: string; slot: HarnessSlot; reply: string }): Promise<PiAgentTurnOutput> {
+  transition("WAITING", args.sessionId)
+  let persistFailed = false
+  if (args.reply !== "") {
+    await args.slot.appendAssistantMessage(args.reply).catch(error => {
+      persistFailed = true
+      log.error("计划收尾文案落盘失败:", formatError(error))
+      reportError("PiRuntime", error, { kind: "回合文案落盘失败", overlay: false })
+    })
+  }
+  return {
+    reply: args.reply,
+    toolCallHistory: [],
+    retriesUsed: 0,
+    abortedByStop: true,
+    ...(persistFailed ? { persistFailed: true } : {}),
+  }
+}
+
 /** 结算主回合：失败分类、超时、上限终止、最终回复校验与 RUNTIME_DATA 提交。 */
 async function settleMainTurn(args: {
   input: PiAgentTurnInput
@@ -845,8 +1059,19 @@ async function settleMainTurn(args: {
     transition("WAITING", turnSessionId)
     // 失败分类保留上游文案（decline 不改写成预算错误），只有展示文案回到硬预算判定。
     const reply = turnFailureReply(message, state)
-    await slot.appendAssistantMessage(reply).catch(error => log.warn("兜底回复落盘失败", formatError(error)))
-    return { reply, toolCallHistory, retriesUsed: state.retriesUsed, failure: { kind, message } }
+    let persistFailed = false
+    await slot.appendAssistantMessage(reply).catch(error => {
+      persistFailed = true
+      log.error("兜底回复落盘失败:", formatError(error))
+      reportError("PiRuntime", error, { kind: "回合文案落盘失败", overlay: false })
+    })
+    return {
+      reply,
+      toolCallHistory,
+      retriesUsed: state.retriesUsed,
+      failure: { kind, message },
+      ...(persistFailed ? { persistFailed: true } : {}),
+    }
   }
 
   if (result.status === "interrupted") {
@@ -854,8 +1079,19 @@ async function settleMainTurn(args: {
     // 产品文案直接说明下一步，不套兜底回复。
     const reply = "上次运行中断啦，请先选择继续或丢弃这次未完成的运行～"
     transition("WAITING", turnSessionId)
-    await slot.appendAssistantMessage(reply).catch(error => log.warn("中断提示落盘失败", formatError(error)))
-    return { reply, toolCallHistory, retriesUsed: 0, failure: { kind: "unknown", message: reply } }
+    let persistFailed = false
+    await slot.appendAssistantMessage(reply).catch(error => {
+      persistFailed = true
+      log.error("中断提示落盘失败:", formatError(error))
+      reportError("PiRuntime", error, { kind: "回合文案落盘失败", overlay: false })
+    })
+    return {
+      reply,
+      toolCallHistory,
+      retriesUsed: 0,
+      failure: { kind: "unknown", message: reply },
+      ...(persistFailed ? { persistFailed: true } : {}),
+    }
   }
   if (result.status === "busy") {
     return failTurn(`会话已有运行中的 Agent: ${turnSessionId}`, "unknown")

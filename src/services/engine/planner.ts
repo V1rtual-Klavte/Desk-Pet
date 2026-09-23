@@ -276,6 +276,13 @@ export interface ExecutePlanConfig {
   onStepFailure: "continue" | "abort" | "ask"
   /** 外部终止通道：每一步开始前检查，已中止则不再执行剩余步骤 */
   signal?: AbortSignal
+  /**
+   * 计划级时限（FIX-34）：由调用方派生（`stepTimeoutMs × maxSteps`，§7 #33），
+   * 在每步开始前与 `onStepDone` 之后各检查一次，命中按 `deadline` 中止。
+   */
+  deadlineAt?: number
+  /** 逐步门（T2.05 消费）：`each` 时每步执行前经 `onStepGate` 取得继续/中止。 */
+  stepGate?: "each" | "none"
 }
 
 export async function executePlan(
@@ -286,6 +293,7 @@ export async function executePlan(
   const startTime = Date.now()
   const stepResults: PlanExecutionResult["stepResults"] = []
   let overallSuccess = true
+  let cancelled: PlanExecutionResult["cancelled"]
   if (plan.steps.length > config.maxSteps) {
     log.warn(`计划步骤被截断: ${plan.steps.length} → ${config.maxSteps}`)
   }
@@ -297,6 +305,14 @@ export async function executePlan(
     if (config.signal?.aborted) {
       log.info("计划被外部终止，剩余步骤不再执行")
       overallSuccess = false
+      cancelled = { reason: "user" }
+      break
+    }
+    // 计划级时限（FIX-34 的第一处检查）：剩余步骤整体超时就不再开工。
+    if (config.deadlineAt !== undefined && Date.now() > config.deadlineAt) {
+      overallSuccess = false
+      cancelled = { reason: "deadline" }
+      log.error("计划超过时限，已停在当前步骤:", step.id)
       break
     }
     await callbacks.onStepStart(step)
@@ -307,6 +323,13 @@ export async function executePlan(
       const durationMs = Date.now() - stepStart
       stepResults.push({ step, output, durationMs })
       await callbacks.onStepDone(step, output)
+      // FIX-34 的第二处检查：这一步已记账完毕，再对一次时钟
+      if (config.deadlineAt !== undefined && Date.now() > config.deadlineAt) {
+        overallSuccess = false
+        cancelled = { reason: "deadline" }
+        log.error("计划超过时限，已停在当前步骤:", step.id)
+        break
+      }
 
       if (!output.success && config.onStepFailure === "abort") {
         overallSuccess = false
@@ -330,7 +353,7 @@ export async function executePlan(
     }
   }
 
-  return { stepResults, overallSuccess, totalDurationMs: Date.now() - startTime }
+  return { stepResults, overallSuccess, totalDurationMs: Date.now() - startTime, ...(cancelled ? { cancelled } : {}) }
 }
 
 async function executeStep(
