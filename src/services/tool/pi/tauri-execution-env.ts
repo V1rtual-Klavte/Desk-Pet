@@ -1,3 +1,11 @@
+// ==========================================
+// Pi ExecutionEnv 的 Tauri 实现 —— 文件/命令全部经 Rust 命令边界
+//
+// 本文件里成排的 `try/catch` 都是 `return err(...)`：`ExecutionEnv` 契约要求把失败作为
+// Result 返回，调用方（Harness / 模型）看得到 —— 这是「显式向上抛」的等价形态，
+// 不是静默吞异常。真正需要留痕的分支（拿不到类别的失败）另有日志。
+// ==========================================
+
 import { invoke } from "@tauri-apps/api/core"
 import { homeDir, isAbsolute, join, resolve, tempDir } from "@tauri-apps/api/path"
 import {
@@ -8,6 +16,8 @@ import {
 } from "@earendil-works/pi-agent-core"
 import type {
   ExecutionEnv,
+  ExecutionErrorCode,
+  FileErrorCode,
   FileInfo,
   Result,
   ShellExecOptions,
@@ -16,7 +26,7 @@ import type {
 import type { Context } from "@earendil-works/pi-agent-core"
 import { toolsConfig } from "@/services/config"
 import type { ToolMode } from "../types"
-import { formatError } from "@/services/error"
+import { errorCode, formatError } from "@/services/error"
 import { createLogger } from "@/services/logger"
 
 const MAX_TOOL_FILE_BYTES = 5 * 1024 * 1024
@@ -44,26 +54,36 @@ type BashPayload = {
   lastLinePartial: boolean
   /** 截断且请求了 spill 时，Rust 侧保留的完整输出文件路径 */
   spillPath: string | null
+  /** 本次实际生效的输出上限（Rust 的兜底值也在这里回传）：前端不复制第二份默认值。 */
+  maxBytes: number
+  maxLines: number
+}
+
+/** Rust 错误码 → FileErrorCode；未列出的码保持 unknown（不猜类别）。 */
+const FILE_ERROR_BY_RUST_CODE: Record<string, FileErrorCode> = {
+  PATH_ESCAPE: "permission_denied",
+  SENSITIVE_PATH: "permission_denied",
+  PATH_NOT_FOUND: "not_found",
+  NOT_ABSOLUTE: "invalid",
+}
+
+function isAbortError(error: unknown): boolean {
+  return error instanceof Error && error.name === "AbortError"
 }
 
 function fileFailure(error: unknown, path?: string): FileError {
-  const message = formatError(error)
-  const lower = message.toLowerCase()
-  const code = /不存在|not found|no such/.test(lower)
-    ? "not_found"
-    : /越权|不在允许范围|permission|denied/.test(lower)
-      ? "permission_denied"
-      : /目录|directory/.test(lower)
-        ? "not_directory"
-        : "unknown"
-  return new FileError(code, message, path)
+  // 取消优先：AbortError 不得退化成 unknown。
+  if (isAbortError(error)) return new FileError("aborted", formatError(error), path)
+  const code = FILE_ERROR_BY_RUST_CODE[errorCode(error) ?? ""] ?? "unknown"
+  return new FileError(code, formatError(error), path)
 }
 
 function executionFailure(error: unknown): ExecutionError {
-  const message = formatError(error)
-  const lower = message.toLowerCase()
-  const code = /取消|abort/.test(lower) ? "aborted" : /超时|timeout/.test(lower) ? "timeout" : "unknown"
-  return new ExecutionError(code, message)
+  // 取消优先：AbortError 与 CANCELLED 都不得退化成 unknown；Other/Io 保持 unknown 是诚实的。
+  if (isAbortError(error)) return new ExecutionError("aborted", formatError(error))
+  const rustCode = errorCode(error)
+  const code: ExecutionErrorCode = rustCode === "TIMEOUT" ? "timeout" : rustCode === "CANCELLED" ? "aborted" : "unknown"
+  return new ExecutionError(code, formatError(error))
 }
 
 function unsupported(operation: string, path?: string): Result<never, FileError> {
@@ -276,8 +296,9 @@ export class TauriExecutionEnv implements ExecutionEnv {
         cwd: options?.cwd ?? this.cwd,
         timeoutMs: options?.timeout === undefined ? null : Math.round(options.timeout * 1000),
         policy: { scope: this.mode, whitelist: toolsConfig.bashWhitelist },
-        maxBytes: limits?.maxBytes ?? 50 * 1024,
-        maxLines: limits?.maxLines ?? 2000,
+        // 上限的真相源是 Rust：这里只在调用方给了 limits 时转发，缺省交给 Rust 的兜底值。
+        maxBytes: limits?.maxBytes ?? null,
+        maxLines: limits?.maxLines ?? null,
         spill,
       })
       throwIfAborted(context)
@@ -290,8 +311,9 @@ export class TauriExecutionEnv implements ExecutionEnv {
         outputBytes: result.outputBytes,
         lastLinePartial: result.lastLinePartial,
         firstLineExceedsLimit: false,
-        maxLines: limits?.maxLines ?? 2000,
-        maxBytes: limits?.maxBytes ?? 50 * 1024,
+        // 生效值来自 Rust 的回传：前端不再复制一份 2000 / 50*1024 的默认值。
+        maxLines: result.maxLines,
+        maxBytes: result.maxBytes,
       }
       // bash 工具会把 spillPath 拼进给模型的文本（「Full output: <path>」），
       // 所以它必须同时出现在流式更新和最终结果里，缺一个模型都会看到字面量 undefined。

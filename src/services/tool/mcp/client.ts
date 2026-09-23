@@ -12,6 +12,15 @@ import { formatError } from "@/services/error"
 
 const log = createLogger("MCPClient")
 
+/**
+ * 单条 MCP 结果的字符上限。
+ *
+ * MCP 没有回读通道（ToolDef 只有一个工具调用出口，非 `read_session_event` 那种按 eventId
+ * 回取的引用地址），所以超限时只能截断，且必须在结果里如实标记 —— 不写假 eventId、
+ * 不假装全文还能取回。
+ */
+export const MAX_MCP_RESULT_CHARS = 50_000
+
 // ── JSON-RPC 类型 ──
 
 export interface JsonRpcRequest {
@@ -162,10 +171,12 @@ export class McpClient {
           if (result && typeof result === "object" && "error" in (result as any)) {
             return { success: false, content: "", error: String((result as any).error) }
           }
-          return {
-            success: true,
-            content: typeof result === "string" ? result : JSON.stringify(result),
-          }
+          const text = typeof result === "string" ? result : JSON.stringify(result)
+          const truncated = text.length > MAX_MCP_RESULT_CHARS
+          const content = truncated
+            ? text.slice(0, MAX_MCP_RESULT_CHARS) + `\n...(MCP 结果已截断：共 ${text.length} 字符，MCP 没有回读通道，不保留全文)`
+            : text
+          return { success: true, content, ...(truncated ? { details: { truncated: true, totalChars: text.length } } : {}) }
         } catch (e) {
           return { success: false, content: "", error: formatError(e) }
         }

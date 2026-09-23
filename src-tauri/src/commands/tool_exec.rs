@@ -210,7 +210,7 @@ fn run_bash(
         if started.elapsed() >= timeout {
             let _ = child.lock().map_err(|_| "Bash 进程锁损坏")?.kill();
             // 临时文件交给 `temps` 守卫清理，池条目交给 `_guard`
-            return err("命令执行超时");
+            return Err(AppError::Timeout);
         }
         std::thread::sleep(BASH_POLL_INTERVAL);
     };
@@ -252,6 +252,8 @@ fn run_bash(
         truncated_by: captured.truncated_by,
         last_line_partial: captured.last_line_partial,
         spill_path,
+        max_bytes,
+        max_lines,
     })
 }
 
@@ -620,6 +622,10 @@ pub struct BashResult {
     last_line_partial: bool,
     /// 截断且调用方要求 spill 时，保留完整输出的文件路径；否则为 null。
     spill_path: Option<String>,
+    /// 本次实际生效的输出上限（调用方没传时是这里的兜底值）：回传给调用方，
+    /// 让「上限是多少」只有 Rust 一处定义，前端不复制第二份默认值。
+    max_bytes: usize,
+    max_lines: usize,
 }
 
 // ── 文件操作 ──

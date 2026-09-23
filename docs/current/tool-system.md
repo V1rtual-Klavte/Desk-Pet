@@ -67,7 +67,7 @@ Harness 以 `toolExecution: parallel` 派发批次，效果之间的并发由 Ru
 - 读写目标只接受**常规文件**（[tool_exec.rs](../../src-tauri/src/commands/tool_exec.rs) 的 `ensure_regular_file`）：`file_read`/`file_read_binary` 在取元数据后立刻判类型，`file_write`/`file_append` 对已存在的目标判，`file_rename` 的源拒绝 FIFO/设备/套接字但**允许目录**（重命名目录是合法用法，且 `rename` 是元数据操作、不打开内容）。FIFO/套接字/字符设备/块设备的 open 会一直等对端或直接写到设备，handler 因此永不结算、许可额度也不释放，只能在源头拒绝。`/dev/null` 类设备目标**不豁免**：设备路径本就不在允许根（Home/系统临时目录/开发项目根）内，到不了类型判定这一步。
 - 这套路径与命令策略是**同一规则族的两层副本**，不是完备的 OS 沙箱：间接形式（如 `python -c "open('~/.ssh/id_rsa')"`）与「拦实际打开的文件」都不在覆盖内；`.env`、系统目录等可确认路径保持不变，助手模式仍走「用户确认后放行」。
 - Bash 超时、取消和进程回收由 Rust 管理；Router 为调用叠加取消/超时，区分 cancelled、timeout、not_found、failed。判定顺序唯一：超时（定时器置位）→ 取消（外部 signal）→ error，不做错误文案匹配，一次调用只有一条审计账。取消可以在子进程 spawn 前到达：`bash_exec` 的登记先于任何阻塞动作，命中在案槽位的取消会立案并在 spawn 后立即终止（稳定码 `CANCELLED`）；池里没有该 execution_id 时 `bash_cancel` 返回 `false` 并留一条 debug 记录，不再是静默成功 —— 调用方据此区分「取消成功」与「取消来晚了（子进程可能已结束）」。
-- 输出上限与 spill 保留数由 [tool_exec.rs](../../src-tauri/src/commands/tool_exec.rs) 管理。Bash 截断会返回 spill 引用，最近文件会淘汰；不能声称任意长的 shell 输出永久存于会话。
+- 输出上限与 spill 保留数由 [tool_exec.rs](../../src-tauri/src/commands/tool_exec.rs) 管理。Bash 截断会返回 spill 引用，最近文件会淘汰；不能声称任意长的 shell 输出永久存于会话。生效上限只在 Rust 定义并随结果回传（`maxBytes`/`maxLines`），前端不再复制一份默认值；超时返回结构化错误码 `TIMEOUT`，前端据此归类而不匹配文案。
 - 会话保存的是**工具实际返回内容**；Context L0 再做请求投影时，原工具结果仍可用 read_session_event 读取。两层截断的范围不能混同。
 
 [bash_policy.rs](../../src-tauri/src/commands/bash_policy.rs) 是不可关闭的最终门禁。`bash_exec` 必须接收 `{scope, whitelist}`，两种模式均拒绝删根/家目录、设备破坏、系统电源命令、危险 shell 链、受限参数以及命令里的凭据路径 token（`deny_credential_paths`，与 `deny_destructive_flags` 并列，嵌套脚本按展开后的 token 判）；陪伴模式再限制首词和组合符，助手模式的系统路径保护也继续生效。策略基于 Shell token，不以简单子串代替；这是一套命令策略，不是完备的 OS 沙箱：间接形式（如 `python -c "open('~/.ssh/id_rsa')"`）不在覆盖内。
@@ -86,6 +86,8 @@ Skill 不注册 ToolDef，不占工具声明槽，也不授予权限。[skill/lo
 ## MCP 生命周期
 
 [manager.ts](../../src/services/tool/mcp/manager.ts) 按助手运行 owner 借用连接；应用启动不连接 MCP。并发 acquire 串行化，最后 owner 释放时关闭进程并注销工具。includeTools/excludeTools 过滤发现结果；工具定义在回合内冻结，设置变化不无声杀掉在飞回合的借用。
+
+单条 MCP 结果有自身上限（`MAX_MCP_RESULT_CHARS = 50000`，[client.ts](../../src/services/tool/mcp/client.ts)）：MCP 没有回读通道（没有 `read_session_event` 那样的按 eventId 回取），超限时只截断一次，并在文本与 `details.truncated` 上都如实标记「不保留全文」——不写假 eventId、不假装全文还能取回。
 
 Rust [mcp_bridge.rs](../../src-tauri/src/commands/mcp_bridge.rs) 托管 stdio 进程：按 JSON-RPC id 配对响应，跳过 notification 和非 JSON 输出，常驻 stdout 读取线程与有界等待避免请求无限阻塞。应用退出回收 server；Windows 结束进程树，避免派生进程遗留。
 

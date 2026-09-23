@@ -29,6 +29,11 @@ pub enum AppError {
     #[error("操作已取消")]
     Cancelled,
 
+    /// 命令执行超时：`timeout_ms` 或兜底上限到点，子进程已被 kill。
+    /// 独立变体是为了让前端按错误码归类（`TIMEOUT` → timeout），不靠 message 文案匹配。
+    #[error("命令执行超时")]
+    Timeout,
+
     #[error("无法获取 home 目录")]
     NoHomeDir,
 
@@ -54,6 +59,7 @@ impl AppError {
             Self::NotAbsolute(_) => "NOT_ABSOLUTE",
             Self::SensitivePath => "SENSITIVE_PATH",
             Self::Cancelled => "CANCELLED",
+            Self::Timeout => "TIMEOUT",
             Self::NoHomeDir => "NO_HOME_DIR",
             Self::Io(_) => "IO",
             Self::Config(_) => "CONFIG",

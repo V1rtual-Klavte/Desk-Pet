@@ -66,9 +66,13 @@ export class StdioTransport {
 
   async disconnect(): Promise<void> {
     if (this.serverId) {
+      const serverId = this.serverId
       try {
-        await invoke("mcp_kill", { serverId: this.serverId })
-      } catch { /* ignore */ }
+        await invoke("mcp_kill", { serverId })
+      } catch (error) {
+        // 杀不掉就是孤儿进程：留痕，别让调用方以为子进程已经收干净了。
+        log.warn("mcp_kill 失败，Rust 侧子进程可能成为孤儿:", serverId, formatError(error))
+      }
     }
     this.serverId = null
     this.connected = false
