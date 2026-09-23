@@ -45,8 +45,10 @@ Harness 以 `toolExecution: parallel` 派发批次，效果之间的并发由 Ru
 - 等待可取消（取消会移出排队项），没有超时自动释放；拿到额度后重新核对取消与代际，排队不能成为绕过检查的通道。
 - `tool_permit_release` 与 `tool_permit_cancel` 同样绑定借用者：其它窗口/页面即使拿到 requestId 也不能释放在飞额度或取消他人的排队项，被拒绝的调用不改变额度状态。
 - 借用者身份 = Rust 提供的窗口标签 + 前端页面实例 id（[execution-permit.ts](../../src/services/tool/execution-permit.ts) 在模块加载时声明上线）。同一窗口同一时刻只有一个活着的页面实例：新实例上线（Vite 全量热重载、WebView 重建）时一次性回收同窗口其它实例的在飞额度与排队项，并以回收数量作为证据。回收只由「借用者已经不存在」触发，不看时间：同一实例重复上线是空操作，其它窗口的借用者与在飞的 `exclusive_effect` 都不受影响；窗口关闭且不再重新加载时，它留下的额度仍要等下一次同窗口上线或进程退出才回收。
-- 上限由前端在每个 run 开始前下发给所有者并按运行生效（与队列批量策略同一模式）：降低上限不撤销在飞许可，只是暂停新获准执行；提高会唤醒有序等待项。越界值三处处理不同（见[运行时数据](runtime-data.md#工具并行上限字段的语义与生效时机)）：getter 收拢到最近边界，设置页保存拒绝，Rust 下发直接报错。
+- 「声明上线的窗口」比「能持额度的窗口」大，判断残留影响只看后者：`windows-sim` 窗口同样加载主入口，模块加载时即声明上线，但它不启动回合、从不借用工具，因此不可能留下额度；`settings`、`layer-editor` 是独立 HTML 入口，根本不经过借用者声明。**能持额度的窗口 = 会启动回合的窗口 = `main` 与 Live Test 窗口**，二者由 `lib.rs` 按构建形态二选一创建、从不共存（Live Test 宿主不建 main）。窗口销毁残留因此没有可阻塞的对象，维持「不修」。
+- 上限由前端在每个 run 开始前下发给所有者并按运行生效（与队列批量策略同一模式）：降低上限不撤销在飞许可，只是暂停新获准执行；提高会唤醒有序等待项。越界值三处处理不同（见[运行时数据](runtime-data.md#工具并行上限字段的语义与生效时机)）：getter 收拢到最近边界，设置页保存拒绝，Rust 下发直接报错。**共享读上限的所有者是 Rust**（[tool_permit.rs](../../src-tauri/src/commands/tool_permit.rs) 持有默认值与 1–8 范围，是宿主侧唯一的额度定义点）：前端不下发时不复制一份数字，只用内置默认值。
 - 许可域按数据根区分，Live Test 的临时根自带隔离域；多个 WebView 共用同一所有者。许可只约束 Desk-Pet 托管的调用，不承诺阻止外部进程改文件；这套执行许可与下面的路径/命令策略一样不是完备的 OS 沙箱，间接形式（如 `python -c "open('~/.ssh/id_rsa')"`）不在覆盖内。
+- 额度没有 TTL、也不加看门狗：超时释放会放开在飞的 `exclusive_effect`，与「写互斥不许被时间条件打开」直接冲突。写互斥是工具路径（声明 + 额度层）的性质，不会因为某个 handler 卡住而被绕过，但会因 handler 永不结算而不归还 —— 这个入口已从源头消除：文件读写只接受常规文件，FIFO/设备/套接字在调用前就被拒绝（见下节），不再有「永远打不开的 open 占着额度」这条路径。
 
 薄 `BaseTool` 仍未实施（当前零消费者）；设置页「工具策略（声明）」区从同一 ToolDef 展示权限意见、隔离级别、结果投影与历史摘要，不复制第二份策略定义。
 
@@ -61,6 +63,7 @@ Harness 以 `toolExecution: parallel` 派发批次，效果之间的并发由 Ru
 ## 文件、命令与取消
 
 - 文件路径通过 AppPaths 校验，允许根为用户 Home、系统临时目录，开发构建还包含项目根；凭据等路径（规则文本 = 「`.ssh` 目录组件或 `.pem`/`.key` 后缀」）由 Rust [paths.rs::is_credential_path](../../src-tauri/src/paths.rs) 做不可关闭的最终判定（`SENSITIVE_PATH`），接入点是 `validate_file_path`/`validate_new_file_path` 的词法形态**与** canonicalize 结果两侧 —— 不存在的路径也先得凭据结论而不是 `PATH_NOT_FOUND`，符号链接与 Windows 短名解析后仍会被判；TS 侧的 [resolveFilePathLevel](../../src/services/safety/checker.ts) 是同一规则族的分级副本（相对形式与 `~`/`$HOME`/`${HOME}`/反斜杠/`..` 经词法归一后同判），在进入 ToolRouter 前就提为 NOWAY。
+- 读写目标只接受**常规文件**（[tool_exec.rs](../../src-tauri/src/commands/tool_exec.rs) 的 `ensure_regular_file`）：`file_read`/`file_read_binary` 在取元数据后立刻判类型，`file_write`/`file_append` 对已存在的目标判，`file_rename` 的源拒绝 FIFO/设备/套接字但**允许目录**（重命名目录是合法用法，且 `rename` 是元数据操作、不打开内容）。FIFO/套接字/字符设备/块设备的 open 会一直等对端或直接写到设备，handler 因此永不结算、许可额度也不释放，只能在源头拒绝。`/dev/null` 类设备目标**不豁免**：设备路径本就不在允许根（Home/系统临时目录/开发项目根）内，到不了类型判定这一步。
 - 这套路径与命令策略是**同一规则族的两层副本**，不是完备的 OS 沙箱：间接形式（如 `python -c "open('~/.ssh/id_rsa')"`）与「拦实际打开的文件」都不在覆盖内；`.env`、系统目录等可确认路径保持不变，助手模式仍走「用户确认后放行」。
 - Bash 超时、取消和进程回收由 Rust 管理；Router 为调用叠加取消/超时，区分 cancelled、timeout、not_found、failed。取消可以在子进程 spawn 前到达：`bash_exec` 的登记先于任何阻塞动作，命中在案槽位的取消会立案并在 spawn 后立即终止（稳定码 `CANCELLED`）；池里没有该 execution_id 时 `bash_cancel` 返回 `false` 并留一条 debug 记录，不再是静默成功 —— 调用方据此区分「取消成功」与「取消来晚了（子进程可能已结束）」。
 - 输出上限与 spill 保留数由 [tool_exec.rs](../../src-tauri/src/commands/tool_exec.rs) 管理。Bash 截断会返回 spill 引用，最近文件会淘汰；不能声称任意长的 shell 输出永久存于会话。

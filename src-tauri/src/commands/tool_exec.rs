@@ -378,8 +378,14 @@ fn build_spill(
 
 /// 只保留最近 `MAX_SPILL_FILES` 份全量输出，超出的按时间从旧到新淘汰。
 fn evict_old_spills() {
-    let Ok(entries) = std::fs::read_dir(std::env::temp_dir()) else {
-        return;
+    let entries = match std::fs::read_dir(std::env::temp_dir()) {
+        Ok(entries) => entries,
+        // 跳过本轮的原语义不变（回收失败不影响正确性）；补一条 debug 记录，
+        // 否则 spill 无上限增长时没有任何线索能说明回收没跑成。
+        Err(e) => {
+            rust_debug!("回收 spill 文件失败，跳过本轮: {e}");
+            return;
+        }
     };
     let mut spills: Vec<PathBuf> = entries
         .flatten()
@@ -618,11 +624,59 @@ pub struct BashResult {
 
 // ── 文件操作 ──
 
+/// 操作对象必须是常规文件：FIFO/设备/套接字会让读写无限阻塞或写到设备，
+/// 而许可额度要等 handler 结算才释放（tool_permit.rs 明确不加 TTL）→ 从源头拒绝。
+///
+/// `/dev/null` 类设备目标不豁免（决策 §7 #13）：设备路径本就不在允许根（home/temp）内，
+/// 到不了这里；拒绝没有例外分支，避免「按路径文本网开一面」绕过类型判定。
+/// `metadata` 必须描述**解析后的叶子**：读路径用跟随符号链接的 `fs::metadata`；
+/// 写路径的 `safe_path` 已由 `validate_new_file_path` 解析掉链接叶子，那里取
+/// `symlink_metadata` 只是为了与「叶子是什么就是什么」的语义对齐。链接名可以无害，
+/// 指向 FIFO 时只有真实类型能说明接下来会打开什么。
+fn ensure_regular_file(metadata: &std::fs::Metadata, path: &str) -> AppResult<()> {
+    let file_type = metadata.file_type();
+    if file_type.is_file() {
+        return Ok(());
+    }
+    Err(AppError::Tool(format!(
+        "只允许操作常规文件，目标是{}: {path}",
+        describe_file_type(file_type)
+    )))
+}
+
+/// 非常规文件类型的可读名称，只用于错误文案。
+#[cfg(unix)]
+fn describe_file_type(file_type: std::fs::FileType) -> &'static str {
+    use std::os::unix::fs::FileTypeExt;
+    if file_type.is_fifo() {
+        "命名管道（FIFO）"
+    } else if file_type.is_socket() {
+        "套接字"
+    } else if file_type.is_char_device() {
+        "字符设备"
+    } else if file_type.is_block_device() {
+        "块设备"
+    } else if file_type.is_dir() {
+        "目录"
+    } else {
+        "非常规文件"
+    }
+}
+
+/// Windows 的 `FileType` 不区分 FIFO/设备/套接字（那些类型在 Windows 上要么不存在、
+/// 要么只以句柄形式存在），统一按「非常规文件」报告；拒绝与否不受文案影响。
+#[cfg(not(unix))]
+fn describe_file_type(_file_type: std::fs::FileType) -> &'static str {
+    "非常规文件"
+}
+
 #[command]
 pub fn file_read(path: String, max_bytes: Option<usize>) -> AppResult<FileReadResult> {
     use crate::paths::AppPaths;
     let safe_path = AppPaths::validate_file_path(Path::new(&path))?;
     let metadata = std::fs::metadata(&safe_path).map_err(|e| format!("读取元数据失败: {e}"))?;
+    // 大小判定之前先判类型：FIFO 的 len 通常是 0，过得了 max_bytes 却过不了 open。
+    ensure_regular_file(&metadata, &path)?;
     if max_bytes.is_some_and(|limit| metadata.len() as usize > limit) {
         return err(format!(
             "文件过大，最多读取 {} bytes",
@@ -654,6 +708,13 @@ pub fn file_write(
         ));
     }
     let safe_path = AppPaths::validate_new_file_path(Path::new(&path))?;
+    // 已存在的目标可能是 FIFO/设备/套接字：`fs::write` 的 open 会等到对端或写到设备，
+    // handler 因此永不结算、许可额度也不释放。不存在才按新建处理。
+    // 这里用 `symlink_metadata` 与 `validate_new_file_path` 的叶子语义一致：该函数已把
+    // 符号链接叶子解析成真实目标，返回的 `safe_path` 要么不存在，要么就是最终对象本身。
+    if let Ok(metadata) = std::fs::symlink_metadata(&safe_path) {
+        ensure_regular_file(&metadata, &path)?;
+    }
     let parent = safe_path.parent().ok_or("无效的文件路径")?;
     std::fs::create_dir_all(parent).map_err(|e| format!("创建目录失败: {e}"))?;
     // 建目录之后再确认一次父目录的去向：校验通过到真正写入之间，
@@ -680,6 +741,10 @@ pub fn file_append(path: String, content: String, max_bytes: u64) -> AppResult<(
         return err(format!("追加内容过大，最多 {max_bytes} bytes"));
     }
     let safe_path = AppPaths::validate_new_file_path(Path::new(&path))?;
+    // 与 file_write 同口径：已存在的目标必须是常规文件，FIFO 的 open 会无限等下去。
+    if let Ok(metadata) = std::fs::symlink_metadata(&safe_path) {
+        ensure_regular_file(&metadata, &path)?;
+    }
     let parent = safe_path.parent().ok_or("无效的文件路径")?;
     // 与 file_write 一致：父目录缺失时补齐（FileSystem 契约的 creating parent directories）。
     std::fs::create_dir_all(parent).map_err(|e| AppError::Io(format!("创建目录失败: {e}")))?;
@@ -707,6 +772,19 @@ pub fn file_append(path: String, content: String, max_bytes: u64) -> AppResult<(
 pub fn file_rename(source_path: String, destination_path: String) -> AppResult<()> {
     use crate::paths::AppPaths;
     let source = AppPaths::validate_file_path(Path::new(&source_path))?;
+    // 源只拒绝 FIFO/设备/套接字，**允许目录**：`fs::rename` 是元数据操作，不打开内容、
+    // 不会无限阻塞，而「重命名目录」是合法用法（源方案写「source 同理」，
+    // 这里按实际阻塞面收窄，避免把目录改名一并禁掉）。
+    let source_type = std::fs::symlink_metadata(&source)
+        .map_err(|e| AppError::Io(format!("读取元数据失败: {e}")))?
+        .file_type();
+    if !source_type.is_file() && !source_type.is_dir() {
+        return Err(AppError::Tool(format!(
+            "只允许重命名常规文件或目录，源是{}: {}",
+            describe_file_type(source_type),
+            source.display()
+        )));
+    }
     let target = Path::new(&destination_path);
     // 目标已存在按替换处理：canonicalize 后必须仍在允许根内；
     // 目标不存在则走与 file_write 相同的新文件校验（词法路径 + 最近的已存在祖先）。
@@ -849,6 +927,7 @@ pub fn file_read_binary(path: String, max_bytes: Option<usize>) -> AppResult<Vec
     use crate::paths::AppPaths;
     let safe_path = AppPaths::validate_file_path(Path::new(&path))?;
     let metadata = std::fs::metadata(&safe_path).map_err(|e| format!("读取元数据失败: {e}"))?;
+    ensure_regular_file(&metadata, &path)?;
     let limit = max_bytes.unwrap_or(5 * 1024 * 1024);
     if metadata.len() as usize > limit {
         return err(format!("文件过大，最多读取 {} bytes", limit));
@@ -1562,6 +1641,145 @@ mod tests {
         assert_eq!(kinds, sorted, "kind 应有序（directory < file < symlink）");
 
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    // ── 无界 I/O 的源头消除（TOOL-06a / FIX-60）──
+    //
+    // 许可额度没有 TTL（tool_permit.rs 明确不加：超时释放会放开在飞的独占效果），
+    // 所以「handler 永不结算」= 额度永久泄漏。能让 handler 卡住不结算的入口，是让文件命令
+    // 去打开一个不是常规文件的文件系统对象：FIFO 的 open 会一直等到对端，设备/套接字同理。
+    // 这组用例钉两件事：拒绝（`AppError::Tool`）与**不阻塞**（耗时上界）——
+    // 少了时长断言，「无界 I/O 已消除」这个安全修复不可证。
+
+    /// FIFO 用例的临时目录。放在系统 temp 下：它本就在允许根（home/temp）内，
+    /// 用例才有机会走到类型判定，而不是被 `PATH_ESCAPE` 提前拦下。
+    #[cfg(unix)]
+    fn fifo_probe_dir(tag: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "deskpet-fifo-{tag}-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    /// 建一个 FIFO。`mkfifo(1)` 不可用时返回 false 由调用方跳过，与 `paths.rs` 里
+    /// `symlink_file` 的跳过分支同构：环境缺能力时跳过，而不是把跳过当失败。
+    #[cfg(unix)]
+    fn make_fifo(path: &Path) -> bool {
+        matches!(
+            Command::new("mkfifo")
+                .arg(path)
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .status(),
+            Ok(status) if status.success()
+        )
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn file_read_rejects_fifo_without_blocking() {
+        let dir = fifo_probe_dir("read");
+        let fifo = dir.join("probe.fifo");
+        if !make_fifo(&fifo) {
+            let _ = std::fs::remove_dir_all(&dir);
+            return;
+        }
+
+        let started = Instant::now();
+        let result = file_read(fifo.to_string_lossy().to_string(), None);
+        let elapsed = started.elapsed();
+
+        assert!(
+            matches!(result, Err(AppError::Tool(_))),
+            "读 FIFO 必须被拒：放行等于让 read_to_string 一直等对端，额度永不结算"
+        );
+        assert!(
+            elapsed < Duration::from_secs(2),
+            "拒绝 FIFO 不能阻塞：耗时 {elapsed:?}"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn file_read_binary_rejects_fifo() {
+        let dir = fifo_probe_dir("read-binary");
+        let fifo = dir.join("probe.fifo");
+        if !make_fifo(&fifo) {
+            let _ = std::fs::remove_dir_all(&dir);
+            return;
+        }
+
+        let started = Instant::now();
+        let result = file_read_binary(fifo.to_string_lossy().to_string(), None);
+        let elapsed = started.elapsed();
+
+        assert!(
+            matches!(result, Err(AppError::Tool(_))),
+            "二进制读同样必须拒绝 FIFO"
+        );
+        assert!(
+            elapsed < Duration::from_secs(2),
+            "拒绝 FIFO 不能阻塞：耗时 {elapsed:?}"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn file_write_rejects_existing_fifo() {
+        let dir = fifo_probe_dir("write");
+        let fifo = dir.join("probe.fifo");
+        if !make_fifo(&fifo) {
+            let _ = std::fs::remove_dir_all(&dir);
+            return;
+        }
+
+        let started = Instant::now();
+        let result = file_write(fifo.to_string_lossy().to_string(), "x".to_string(), None);
+        let elapsed = started.elapsed();
+
+        // 放行的话 `fs::write` 会一直等有读者打开这个 FIFO，测试套件就此挂住。
+        assert!(
+            matches!(result, Err(AppError::Tool(_))),
+            "写已存在的 FIFO 必须被拒"
+        );
+        assert!(
+            elapsed < Duration::from_secs(2),
+            "拒绝 FIFO 不能阻塞：耗时 {elapsed:?}"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn file_append_rejects_existing_fifo() {
+        let dir = fifo_probe_dir("append");
+        let fifo = dir.join("probe.fifo");
+        if !make_fifo(&fifo) {
+            let _ = std::fs::remove_dir_all(&dir);
+            return;
+        }
+
+        let started = Instant::now();
+        let result = file_append(fifo.to_string_lossy().to_string(), "x".to_string(), 1024);
+        let elapsed = started.elapsed();
+
+        assert!(
+            matches!(result, Err(AppError::Tool(_))),
+            "追加到已存在的 FIFO 必须被拒"
+        );
+        assert!(
+            elapsed < Duration::from_secs(2),
+            "拒绝 FIFO 不能阻塞：耗时 {elapsed:?}"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// 二进制输出不该让整段结果退化成空串。
