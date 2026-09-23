@@ -36,7 +36,7 @@ import { defineTool, register, unregister, TOOL_POLICY_VERSION } from "@/service
 import type { ToolDef } from "@/services/tool"
 import { confirmRecords } from "../../confirm-channel"
 import { fakeText, fakeToolCall, installFakeProvider } from "../../fake-provider"
-import type { AssertCheck, SceneDef } from "../../types"
+import type { AssertCheck, AssertContext, SceneDef } from "../../types"
 
 const TOOL_ID = "live-sf20-scope-tool"
 const TOOL_NAME = "live_sf20_scope_tool"
@@ -129,7 +129,10 @@ async function stepResults(sessionId: string): Promise<PlanStepResult[]> {
   return results
 }
 
-/** 只在断言阶段清理：注销工具 + 恢复配置（setOverride 会连带写盘，不能把测试值留在配置里）。 */
+/**
+ * 只在断言阶段清理：注销工具 + 恢复配置（setOverride 会连带写盘，不能把测试值留在配置里）。
+ * 幂等：重复调用只会再写一次相同的值，注销已注销的工具与已经换回的 provider 都是空操作。
+ */
 function cleanup(): void {
   unregister(TOOL_ID)
   probeTool = undefined
@@ -137,6 +140,28 @@ function cleanup(): void {
   if (planEnabledBefore !== undefined) setOverride("ai.plan.enabled", planEnabledBefore)
   provider?.restore()
   provider = undefined
+}
+
+/**
+ * 断言失败时的立即收尾。
+ *
+ * 运行器遇到失败的断言会 `break` 掉本场景的后续断言（scene-runner），
+ * 清理挂在「最后一条断言」的 `finally` 上就永远等不到执行 —— 助手模式与计划开关会跟着
+ * 泄漏进同一个进程里后面的场景，并被 setOverride 的落盘写进开发配置。
+ * 所以每条断言自己兜底：任何退出路径都不留配置覆盖。
+ */
+function cleanupOnFailure(check: AssertCheck): AssertCheck {
+  return {
+    type: check.type,
+    run: async (ctx: AssertContext) => {
+      try {
+        await check.run(ctx)
+      } catch (error) {
+        cleanup()
+        throw error
+      }
+    },
+  }
 }
 
 /** 会话 A 侧：授权按父会话与代际入账（而不是合成 run id），同参第二次命中 grant。 */
@@ -279,24 +304,30 @@ export const 子代理授权范围: SceneDef = {
     setOverride("general.mode.assistant", true)
     setOverride("ai.plan.enabled", true)
 
-    registerProbeTool()
-    provider = installFakeProvider(turnScript(STEP_DONE_A, MAIN_DONE_A, "sf20-a"))
-    await initChat()
-    sessionA = getActiveSessionId()
-    if (!sessionA) throw new Error("initChat 之后没有活跃会话")
+    // setup 抛错时运行器直接结束本场景（后面的断言一个都不跑），覆盖必须在这里就收尾
+    try {
+      registerProbeTool()
+      provider = installFakeProvider(turnScript(STEP_DONE_A, MAIN_DONE_A, "sf20-a"))
+      await initChat()
+      sessionA = getActiveSessionId()
+      if (!sessionA) throw new Error("initChat 之后没有活跃会话")
+    } catch (error) {
+      cleanup()
+      throw error
+    }
   },
   turns: [
     {
       index: 1,
       description: "会话 A：子代理的 allow_session 授权按父会话与代际入账，同参第二次命中 grant",
       userText: USER_TEXT,
-      checks: [checkGrantBoundToSessionA],
+      checks: [cleanupOnFailure(checkGrantBoundToSessionA)],
     },
     {
       index: 2,
       description: "切到会话 B 后同工具同参数：不得命中旧 grant，必须重新确认",
       userText: USER_TEXT,
-      checks: [checkGrantNotReusedAcrossSessions],
+      checks: [cleanupOnFailure(checkGrantNotReusedAcrossSessions)],
     },
   ],
 }
