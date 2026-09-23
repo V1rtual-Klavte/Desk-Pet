@@ -1,6 +1,6 @@
 import type { SceneDef } from "../../types"
 import { fakeText, fakeToolCall, installFakeProvider } from "../../fake-provider"
-import { register, createSessionTranscriptTool, executeToolDefinition, TOOL_POLICY_VERSION } from "@/services/tool"
+import { defineTool, register, createSessionTranscriptTool, executeToolDefinition, TOOL_POLICY_VERSION } from "@/services/tool"
 import { getActiveSessionId } from "@/services/session"
 import { sessionEntries } from "../../session-entries"
 import type { Entry } from "@earendil-works/pi-agent-core"
@@ -18,7 +18,7 @@ export const 工具结果恢复: SceneDef = {
     description: "生产工具回合把完整结果保留为会话条目，read_session_event 按条目 id 分页回读", depth: "deep", suite: "regression", entry: "production",
     tags: ["tool-execution", "compaction", "boundary", "error"] },
   setup: async () => {
-    register({ id: "test-durable-output", name: "durable_test_output", description: "测试完整工具结果", source: "local", sourceId: "",
+    register(defineTool({ id: "test-durable-output", name: "durable_test_output", description: "测试完整工具结果", source: "local", sourceId: "",
       safetyLevel: "SAFE", actionCategory: "fs.read", mode: "pet", parameters: { type: "object", properties: {} },
       policy: {
         version: TOOL_POLICY_VERSION,
@@ -26,7 +26,7 @@ export const 工具结果恢复: SceneDef = {
         execution: { effect: "read", mode: "parallel", isolation: "shared_read", replay: "never" },
         context: { resultProjection: "reference", historyCompaction: "summarize" },
       },
-      handler: async () => ({ success: true, content: BODY }) })
+    }, async () => ({ success: true, content: BODY })))
     installFakeProvider([fakeToolCall("durable_test_output", {}, "durable-call"), fakeText("结果已保存，可以继续。"), fakeText("仍能回查完整结果。")])
   },
   turns: [{ index: 1, description: "长结果经过真实工具循环并落成会话条目", userText: "请调用测试工具读取结果。", checks: [{ type: "expectDurableToolRound", run: async ctx => {

@@ -51,7 +51,9 @@ export async function writeMemoryFile(filename: string, content: string): Promis
   try {
     if (!memoryDir) { log.warn("writeMemoryFile: memoryDir 未设置"); return false }
     const path = await runtimePath("memory", filename)
-    await invoke("file_write", { path, content })
+    // host 服务写入不纳入许可域（借用者身份是页面实例，host 没有该生命周期），
+    // 但用原子替换写入消除半写窗口：读者要么看到旧正文，要么看到完整新正文。
+    await invoke("file_write_atomic", { path, content })
     return true
   } catch (e) { log.error(`写入 ${filename} 失败: ${memoryDir}/${filename}`, e instanceof Error ? e : undefined); return false }
 }

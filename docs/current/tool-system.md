@@ -9,7 +9,7 @@ Pi Harness Tool → harness-tool-adapter → ToolRouter → 执行许可借用 �
                         ↑ beforeToolCall / PermissionKernel 先完成门禁
 ```
 
-文件与命令工具来自 Pi 的 ExecutionEnv 抽象，通过 [harness-adapter](../../src/services/tool/pi/harness-adapter.ts) 和 [TauriExecutionEnv](../../src/services/tool/pi/tauri-execution-env.ts) 接入 WebView。内部 IPC 的 file_read/file_write/bash_exec 仍可被宿主服务使用；它们不是另一个模型工具集。
+文件与命令工具来自 Pi 的 ExecutionEnv 抽象，通过 [harness-adapter](../../src/services/tool/pi/harness-adapter.ts) 和 [TauriExecutionEnv](../../src/services/tool/pi/tauri-execution-env.ts) 接入 WebView。内部 IPC 的 file_read/file_write/file_write_atomic/bash_exec 仍可被宿主服务（Skill 保存、记忆写入）使用；host 写入不纳入许可域（借用者身份是页面实例，host 没有该生命周期），但走 `file_write_atomic` 的同目录 rename 原子替换，消除半写可观测窗口。它们不是另一个模型工具集。
 
 | 工具 | 模式 | 当前边界 |
 |---|---|---|
@@ -25,14 +25,14 @@ Pi Harness Tool → harness-tool-adapter → ToolRouter → 执行许可借用 �
 
 ## 工具策略
 
-`ToolDef` 仍携带身份、schema、风险等级与 handler，策略集中在 `policy`（[types.ts](../../src/services/tool/types.ts)）：
+`ToolDef` 携带身份、schema 与风险等级，策略集中在 `policy`（[types.ts](../../src/services/tool/types.ts)）；执行函数**不是公开字段**，经 `defineTool` 进入 [policy.ts](../../src/services/tool/policy.ts) 的模块内 WeakMap（`getToolHandler` 只给 router / registry，不从 barrel 导出）：
 
 - `permission.defaultDecision` / `permission.check` 是工具侧权限意见，`passthrough` 不是执行许可。
 - `execution.effect / mode / isolation / replay / timeoutMs`：效果分类、调度声明、隔离级别、恢复重放资格与超时；未声明超时时统一取 `loop.toolTimeoutMs`。
 - `context.resultProjection`：`preserve` 的原样进入请求，`reference` 的可被 L0 缩短并标注 eventId 回读地址；两者都只改请求视图，会话条目存档始终保留全文。
 - `context.historyCompaction`：`retain` 的调用配对必须保留原文，压缩覆盖边界不得越过（连续完整轮下命中即 decline，由预算守卫报告上下文不足）。
 
-[defineTool](../../src/services/tool/policy.ts) 是唯一构造入口（手写、Pi 适配、MCP 都经它产出 ToolDef），注册入口再次校验：缺策略、`parallel` 搭配非只读效果、`exclusive_effect`/`delegate` 非串行都是注册错误，不做缺省猜测。`actionCategory` 只用于人格阶段文案，不再决定并行、权限或压缩。`replay` 由 Harness 恢复路径消费：只有持久化调用与当前工具都声明 `safe` 才会重放效果，当前全部工具为 `never`。
+[defineTool](../../src/services/tool/policy.ts) 是唯一构造入口（手写、Pi 适配、MCP 都经它产出 ToolDef），注册入口再次校验：缺策略、`parallel` 搭配非只读效果、`exclusive_effect`/`delegate` 非串行都是注册错误，不做缺省猜测；未经它构造的定义在注册时直接抛错（结构上没有执行体），不会进入注册表。`actionCategory` 只用于人格阶段文案，不再决定并行、权限或压缩。`replay` 由 Harness 恢复路径消费：只有持久化调用与当前工具都声明 `safe` 才会重放效果，当前全部工具为 `never`。
 
 Pi 适配器按策略设置 `executionMode`；当前 Harness 的批次调度只看 run 级 `toolExecution`（现为 `parallel`），逐工具 `executionMode` 在 Harness 路径上没有消费者，实际互斥由下面的执行许可保证。
 

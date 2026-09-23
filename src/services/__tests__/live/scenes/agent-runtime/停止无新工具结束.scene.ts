@@ -2,7 +2,7 @@ import type { Entry } from "@earendil-works/pi-agent-core"
 import { harnessSlots } from "@/services/engine/pi"
 import { initChat, sendMessage, stopActiveRun } from "@/services/agent/runner"
 import { getActiveSessionId } from "@/services/session"
-import { permitSnapshot, register, TOOL_POLICY_VERSION, unregister } from "@/services/tool"
+import { defineTool, permitSnapshot, register, TOOL_POLICY_VERSION, unregister } from "@/services/tool"
 import type { PermitSnapshot } from "@/services/tool"
 import { fakeText, fakeToolCall, installFakeProvider } from "../../fake-provider"
 import { assistantTexts, sessionEntries, sessionMessages } from "../../session-entries"
@@ -114,7 +114,7 @@ function registerExclusiveBlockingTool(): void {
   const started = new Promise<void>(resolve => { markStarted = resolve })
   let releaseAll!: () => void
   const released = new Promise<void>(resolve => { releaseAll = resolve })
-  register({
+  register(defineTool({
     id: BLOCK_TOOL_ID,
     name: BLOCK_TOOL,
     description: `Live Test blocking tool ${BLOCK_TOOL}`,
@@ -130,18 +130,17 @@ function registerExclusiveBlockingTool(): void {
       execution: { effect: "local_mutation", mode: "sequential", isolation: "exclusive_effect", replay: "never" },
       context: { resultProjection: "reference", historyCompaction: "summarize" },
     },
-    handler: async (_params, ctx) => {
-      markStarted()
-      await new Promise<void>(resolve => {
-        void released.then(resolve)
-        const signal = ctx.signal
-        if (signal?.aborted) resolve()
-        else signal?.addEventListener("abort", () => resolve(), { once: true })
-      })
-      if (ctx.signal?.aborted) return { success: false, content: "", error: "工具已取消", errorCode: "cancelled" }
-      return { success: true, content: RELEASE_TEXT }
-    },
-  })
+  }, async (_params, ctx) => {
+    markStarted()
+    await new Promise<void>(resolve => {
+      void released.then(resolve)
+      const signal = ctx.signal
+      if (signal?.aborted) resolve()
+      else signal?.addEventListener("abort", () => resolve(), { once: true })
+    })
+    if (ctx.signal?.aborted) return { success: false, content: "", error: "工具已取消", errorCode: "cancelled" }
+    return { success: true, content: RELEASE_TEXT }
+  }))
   blocking = { started, release: releaseAll }
 }
 

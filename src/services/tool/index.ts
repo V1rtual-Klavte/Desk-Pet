@@ -12,7 +12,8 @@ export { toToolDeclaration, TOOL_POLICY_VERSION } from "./types"
 
 // ── 策略：唯一构造入口与派生判定 ──
 export { defineTool, validateToolPolicy, toolPolicyFingerprint, toolPolicyHash, retainedToolNames, findRetainedToolCall } from "./policy"
-export type { ToolSpec, ToolHandler } from "./policy"
+// getToolHandler 不在这里：执行函数只给 router / registry（见 policy.ts）。
+export type { ToolHandler } from "./policy"
 
 // ── 执行许可（Rust 应用级所有者）──
 export { acquireToolPermit, releaseToolPermit, setToolPermitLimit, permitSnapshot } from "./execution-permit"

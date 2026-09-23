@@ -12,8 +12,7 @@ import type {
 import { TOOL_POLICY_VERSION } from "./types"
 import { sha256Text, stableSerialize } from "@/services/engine/runtime"
 
-/** 去掉 handler 的描述部分；ToolSpec 不是第二份注册模型。 */
-export type ToolSpec = Omit<ToolDef, "handler">
+/** 执行函数形状：只经 `defineTool` 进入模块内 WeakMap，不是 ToolDef 的公开字段。 */
 export type ToolHandler = (params: Record<string, unknown>, ctx: ToolContext) => Promise<ToolResult>
 
 const EFFECTS: ReadonlySet<string> = new Set<EffectClass>(["read", "local_mutation", "process", "external_side_effect"])
@@ -70,10 +69,24 @@ export function validateToolPolicy(policy: ToolPolicy | undefined, toolId: strin
   })
 }
 
-/** 唯一构造点：校验、冻结并冻结整个描述。 */
-export function defineTool(spec: ToolSpec, handler: ToolHandler): ToolDef {
-  const policy = validateToolPolicy(spec.policy, spec.id)
-  return Object.freeze({ ...spec, policy, handler })
+/**
+ * 工具定义 → 执行函数。执行体不进 `ToolDef` 的公开字段，是为了让「未经 `defineTool`
+ * 构造的工具」结构上不可能带执行体：注册入口据此直接拒绝，不必靠约定。
+ * 身份是对象引用，所以注册表不得克隆定义（克隆会丢这份映射）。
+ */
+const handlers = new WeakMap<ToolDef, ToolHandler>()
+
+/** 唯一构造点：校验、冻结描述，并把执行体登记进模块内 WeakMap。 */
+export function defineTool(definition: ToolDef, handler: ToolHandler): ToolDef {
+  const policy = validateToolPolicy(definition.policy, definition.id)
+  const tool = Object.freeze({ ...definition, policy })
+  handlers.set(tool, handler)
+  return tool
+}
+
+/** 执行函数只给 router / registry：不从 `@/services/tool` barrel 导出。 */
+export function getToolHandler(tool: ToolDef): ToolHandler | undefined {
+  return handlers.get(tool)
 }
 
 /**

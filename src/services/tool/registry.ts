@@ -5,7 +5,7 @@
 
 import type { ToolDef, ToolDeclaration, ToolMode } from "./types"
 import { toToolDeclaration } from "./types"
-import { validateToolPolicy } from "./policy"
+import { getToolHandler, validateToolPolicy } from "./policy"
 import { generalConfig } from "@/services/config"
 import { createLogger } from "@/services/logger"
 
@@ -18,16 +18,20 @@ const tools = new Map<string, ToolDef>()
 
 /** 注册工具。缺少或不一致的策略是注册错误，不做缺省猜测；入库的是校验后的冻结定义。 */
 export function register(tool: ToolDef): void {
-  const policy = validateToolPolicy(tool.policy, tool.id)
+  if (!getToolHandler(tool)) {
+    throw new Error(`工具未经 defineTool 构造（缺少执行体），拒绝注册: ${tool.id || "<未知工具>"}`)
+  }
+  validateToolPolicy(tool.policy, tool.id)
   const conflicting = getToolByName(tool.name)
   if (conflicting && conflicting.id !== tool.id) {
     throw new Error(`工具名称冲突: ${tool.name} (${conflicting.id} / ${tool.id})`)
   }
   if (tools.has(tool.id)) {
+    // 同 id 重复注册是覆盖语义，不是错误：Live Test 用它把探针换成具体实现。
     log.warn("工具已存在，覆盖:", tool.id)
   }
-  // 绕过 defineTool 直接注册时也要拿到同一份冻结描述，注册表不与调用方的可变对象共享。
-  tools.set(tool.id, tool.policy === policy ? tool : Object.freeze({ ...tool, policy }))
+  // 直接入库、不克隆：defineTool 的产物已冻结，克隆还会丢 WeakMap 里的执行体身份。
+  tools.set(tool.id, tool)
   log.debug("注册工具:", tool.id, "|", tool.mode)
 }
 

@@ -5,7 +5,7 @@
 
 import type { ToolDef, ToolResult, ToolContext } from "./types"
 import { getToolByName } from "./registry"
-import { toolPolicyHash } from "./policy"
+import { getToolHandler, toolPolicyHash } from "./policy"
 import { acquireToolPermit, releaseToolPermit } from "./execution-permit"
 import { loopConfig } from "@/services/config"
 import { createLogger } from "@/services/logger"
@@ -58,6 +58,13 @@ export async function executeToolDefinition(tool: ToolDef, params: Record<string
     details: { ...(result.details && typeof result.details === "object" ? result.details : {}), audit: { operationId, toolName, outcome, policyHash } },
   })
 
+  // 执行体只在 defineTool 的 WeakMap 里；取不到就是未经唯一构造入口的定义（注册入口已拦一层）。
+  const handler = getToolHandler(tool)
+  if (!handler) {
+    log.error("工具没有执行体:", toolName)
+    return audit({ success: false, content: "", error: `工具没有执行体: ${toolName}`, errorCode: "failed" }, "error")
+  }
+
   try {
     if (ctx.signal?.aborted) return audit({ success: false, content: "", error: "工具执行已取消", errorCode: "cancelled" }, "cancelled")
     log.debug("执行工具:", toolName, "| params:", JSON.stringify(params).substring(0, 100))
@@ -82,14 +89,14 @@ export async function executeToolDefinition(tool: ToolDef, params: Record<string
     try {
       // 许可挂在 handler 的真实结算上：外层超时只结束请求视图，
       // 不能因为等待超时就把仍在运行的写任务放开给下一次调用并发（§5.1）。
-      const handler = (async () => {
+      const settlement = (async () => {
         try {
-          return await tool.handler(params, { ...ctx, signal: controller.signal })
+          return await handler(params, { ...ctx, signal: controller.signal })
         } finally {
           if (lease) await releaseToolPermit(lease)
         }
       })()
-      handler.catch(() => { /* 超时后仍会结算；这里只避免未处理的拒绝 */ })
+      settlement.catch(() => { /* 超时后仍会结算；这里只避免未处理的拒绝 */ })
       let timeoutHandle: ReturnType<typeof setTimeout> | undefined
       const timeoutPromise = new Promise<never>((_, reject) => {
         timeoutHandle = setTimeout(() => {
@@ -98,7 +105,7 @@ export async function executeToolDefinition(tool: ToolDef, params: Record<string
         }, timeout)
       })
       try {
-        result = await Promise.race([handler, timeoutPromise])
+        result = await Promise.race([settlement, timeoutPromise])
       } finally {
         if (timeoutHandle) clearTimeout(timeoutHandle)
       }

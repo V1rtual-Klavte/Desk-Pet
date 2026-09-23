@@ -5,7 +5,7 @@ import { aiConfig } from "@/services/config"
 import { initChat } from "@/services/agent/runner"
 import { getActiveSessionId } from "@/services/session"
 import { defineTool, register, unregister, SESSION_TRANSCRIPT_TOOL, TOOL_POLICY_VERSION } from "@/services/tool"
-import type { ToolDef } from "@/services/tool"
+import type { ToolDef, ToolHandler } from "@/services/tool"
 import { installFakeProvider, fakeText, fakeToolCall } from "../../fake-provider"
 import { compactionEntries, sessionEntries } from "../../session-entries"
 import type { SceneDef } from "../../types"
@@ -82,7 +82,7 @@ const summaryStep: FauxResponseStep = context => {
 }
 
 /** 声明 resultProjection=reference 的探针：链路真实，唯一变量就是结果里有没有回读地址。 */
-const probe = (id: string, name: string, handler: ToolDef["handler"]): ToolDef =>
+const probe = (id: string, name: string, handler: ToolHandler): ToolDef =>
   defineTool({
     id, name,
     description: `地址完整性探针 ${name}：长结果的 L0 投影与回读地址`,

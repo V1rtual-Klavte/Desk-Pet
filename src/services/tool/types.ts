@@ -153,8 +153,8 @@ export interface ToolDef {
   actionCategory: ActionCategory
   /** 权限 / 执行 / 投影 / 摘要的统一策略；缺策略视为注册错误。 */
   policy: ToolPolicy
-  /** 执行函数 */
-  handler: (params: Record<string, unknown>, ctx: ToolContext) => Promise<ToolResult>
+  // 执行函数不是公开字段：经 `defineTool` 进入模块内 WeakMap（见 policy.ts），
+  // 使「未经 defineTool 构造的定义」在结构上不可能携带执行体。
 }
 
 // ── 工具声明（给 AI 的 function schema）──

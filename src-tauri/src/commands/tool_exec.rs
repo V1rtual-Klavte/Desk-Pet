@@ -729,6 +729,63 @@ pub struct FileWriteResult {
     success: bool,
 }
 
+/// 原子替换写入：与 `file_write` 同校验，但正文先写同目录临时文件再 `rename` 覆盖目标。
+///
+/// host 服务（Skill 保存、记忆写入）不纳入 ExecutionEnv 的许可域 —— 借用者身份是页面实例，
+/// host 没有那个生命周期 —— 但半写窗口同样不该被读者观察到：同目录 rename 是原子的，
+/// 读者看到的要么是旧正文，要么是完整新正文。
+#[command]
+pub fn file_write_atomic(
+    path: String,
+    content: String,
+    max_bytes: Option<usize>,
+) -> AppResult<FileWriteResult> {
+    use crate::paths::AppPaths;
+    if max_bytes.is_some_and(|limit| content.len() > limit) {
+        return err(format!(
+            "写入内容过大，最多 {} bytes",
+            max_bytes.unwrap_or(0)
+        ));
+    }
+    let safe_path = AppPaths::validate_new_file_path(Path::new(&path))?;
+    // 与 file_write 同口径：已存在的目标可能是 FIFO/设备/套接字，`fs::write` 的 open
+    // 会等到对端或写到设备，handler 永不结算。不存在才按新建处理。
+    if let Ok(metadata) = std::fs::symlink_metadata(&safe_path) {
+        ensure_regular_file(&metadata, &path)?;
+    }
+    let parent = safe_path.parent().ok_or("无效的文件路径")?;
+    std::fs::create_dir_all(parent).map_err(|e| AppError::Io(format!("创建目录失败: {e}")))?;
+    // 建目录之后再确认一次父目录的去向：校验通过到真正写入之间，
+    // 中间目录可能刚被换成指向允许根外的符号链接。
+    AppPaths::revalidate_existing_parent(&safe_path)?;
+
+    // 临时文件必须与目标同目录：跨文件系统的 rename 会被内核拒绝（EXDEV）。
+    let file_name = safe_path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or("无效的文件名")?;
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|elapsed| elapsed.as_nanos())
+        .unwrap_or(0);
+    let temp_path = parent.join(format!("{file_name}.tmp-{}-{nanos}", std::process::id()));
+
+    if let Err(e) = std::fs::write(&temp_path, &content) {
+        let _ = std::fs::remove_file(&temp_path);
+        return Err(AppError::Io(format!("写入失败: {e}")));
+    }
+    // rename 之前再确认一次目标的父目录去向：临时文件已经落盘，失败要清掉。
+    if let Err(e) = AppPaths::revalidate_existing_parent(&safe_path) {
+        let _ = std::fs::remove_file(&temp_path);
+        return Err(e);
+    }
+    if let Err(e) = std::fs::rename(&temp_path, &safe_path) {
+        let _ = std::fs::remove_file(&temp_path);
+        return Err(AppError::Io(format!("写入失败: {e}")));
+    }
+    Ok(FileWriteResult { success: true })
+}
+
 /// 追加写入：文件不存在则创建，存在则追加到末尾（UTF-8）。
 ///
 /// `max_bytes` 与 `file_write` 同口径，约束本次写入的 `content` 字节数，
@@ -1746,6 +1803,74 @@ mod tests {
         let elapsed = started.elapsed();
 
         // 放行的话 `fs::write` 会一直等有读者打开这个 FIFO，测试套件就此挂住。
+        assert!(
+            matches!(result, Err(AppError::Tool(_))),
+            "写已存在的 FIFO 必须被拒"
+        );
+        assert!(
+            elapsed < Duration::from_secs(2),
+            "拒绝 FIFO 不能阻塞：耗时 {elapsed:?}"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 原子替换写入：覆盖已有正文，且不留临时文件。
+    #[test]
+    fn file_write_atomic_replaces_content_without_leftovers() {
+        let dir = fifo_probe_dir("atomic");
+        let target = dir.join("probe.txt");
+        std::fs::write(&target, "旧正文").unwrap();
+
+        let result = file_write_atomic(target.to_string_lossy().to_string(), "新正文".to_string(), None);
+
+        assert!(result.is_ok(), "原子写入应当成功");
+        assert_eq!(std::fs::read_to_string(&target).unwrap(), "新正文");
+        let leftovers: Vec<String> = std::fs::read_dir(&dir)
+            .unwrap()
+            .filter_map(|entry| entry.ok())
+            .map(|entry| entry.file_name().to_string_lossy().to_string())
+            .filter(|name| name.contains(".tmp-"))
+            .collect();
+        assert!(
+            leftovers.is_empty(),
+            "原子写入不得留下临时文件: {leftovers:?}"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 上限校验与 `file_write` 同口径：超限拒绝且不动目标。
+    #[test]
+    fn file_write_atomic_enforces_max_bytes() {
+        let dir = fifo_probe_dir("atomic-limit");
+        let target = dir.join("probe.txt");
+        std::fs::write(&target, "旧正文").unwrap();
+
+        let result = file_write_atomic(
+            target.to_string_lossy().to_string(),
+            "0123456789".to_string(),
+            Some(4),
+        );
+
+        assert!(result.is_err(), "超过 max_bytes 必须被拒");
+        assert_eq!(std::fs::read_to_string(&target).unwrap(), "旧正文");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn file_write_atomic_rejects_existing_fifo() {
+        let dir = fifo_probe_dir("atomic-fifo");
+        let fifo = dir.join("probe.fifo");
+        if !make_fifo(&fifo) {
+            let _ = std::fs::remove_dir_all(&dir);
+            return;
+        }
+
+        let started = Instant::now();
+        let result = file_write_atomic(fifo.to_string_lossy().to_string(), "x".to_string(), None);
+        let elapsed = started.elapsed();
+
+        // 放行的话 `fs::write`（写临时文件前的目标类型判定缺失）会一直等读者打开这个 FIFO。
         assert!(
             matches!(result, Err(AppError::Tool(_))),
             "写已存在的 FIFO 必须被拒"

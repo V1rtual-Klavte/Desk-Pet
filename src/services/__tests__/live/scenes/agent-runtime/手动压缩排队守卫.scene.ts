@@ -2,7 +2,7 @@ import { deliverActiveTurn, harnessSlots, listQueuedInputs } from "@/services/en
 import { initChat, sendMessage } from "@/services/agent/runner"
 import { getActiveSessionId } from "@/services/session"
 import { inputEventId } from "@/services/engine/runtime/input-identity"
-import { register, unregister, TOOL_POLICY_VERSION } from "@/services/tool"
+import { defineTool, register, unregister, TOOL_POLICY_VERSION } from "@/services/tool"
 import { fakeText, fakeToolCall, installFakeProvider } from "../../fake-provider"
 import { assistantTexts, compactionEntries, countTexts, sessionEntries, sessionMessages, userTexts } from "../../session-entries"
 import type { SceneDef } from "../../types"
@@ -49,7 +49,7 @@ function registerGateTool(): void {
   const started = new Promise<void>(resolve => { markStarted = resolve })
   let releaseAll!: () => void
   const released = new Promise<void>(resolve => { releaseAll = resolve })
-  register({
+  register(defineTool({
     id: GUARD_TOOL_ID,
     name: GUARD_TOOL,
     description: `Live Test gate tool ${GUARD_TOOL}`,
@@ -65,19 +65,18 @@ function registerGateTool(): void {
       execution: { effect: "read", mode: "sequential", isolation: "shared_read", replay: "never" },
       context: { resultProjection: "reference", historyCompaction: "summarize" },
     },
-    handler: async (_params, ctx) => {
-      markStarted()
-      // 取消也要结束等待，否则场景收尾会挂在这条工具上。
-      await new Promise<void>(resolve => {
-        void released.then(resolve)
-        const signal = ctx.signal
-        if (signal?.aborted) resolve()
-        else signal?.addEventListener("abort", () => resolve(), { once: true })
-      })
-      if (ctx.signal?.aborted) return { success: false, content: "", error: "工具已取消", errorCode: "cancelled" }
-      return { success: true, content: GATE_RESULT }
-    },
-  })
+  }, async (_params, ctx) => {
+    markStarted()
+    // 取消也要结束等待，否则场景收尾会挂在这条工具上。
+    await new Promise<void>(resolve => {
+      void released.then(resolve)
+      const signal = ctx.signal
+      if (signal?.aborted) resolve()
+      else signal?.addEventListener("abort", () => resolve(), { once: true })
+    })
+    if (ctx.signal?.aborted) return { success: false, content: "", error: "工具已取消", errorCode: "cancelled" }
+    return { success: true, content: GATE_RESULT }
+  }))
   gate = { started, release: releaseAll }
 }
 

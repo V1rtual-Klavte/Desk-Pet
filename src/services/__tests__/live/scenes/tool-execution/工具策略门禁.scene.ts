@@ -45,8 +45,9 @@ export const 工具策略门禁: SceneDef = {
     checks: [{
       type: "expectPolicyGate",
       run: async () => {
-        // 缺策略：注册入口必须拒绝，不留下半个工具。
-        if (!await throws(() => register({ ...base } as unknown as ToolDef))) throw new Error("缺少 policy 的工具被注册")
+        // 未经 defineTool 的原始定义：注册入口必须拒绝，不留下半个工具
+        //（缺策略在 T4.02 之后由 defineTool 的校验兜住，注册入口这一层拦的是「没有执行体」）。
+        if (!await throws(() => register({ ...base, policy: policy() } as unknown as ToolDef))) throw new Error("未经 defineTool 构造的定义被注册")
         if (getToolByName(base.name)) throw new Error("被拒绝的工具仍进入注册表")
 
         // parallel 不是只读能力：必须报错，而不是被当成可并行。
