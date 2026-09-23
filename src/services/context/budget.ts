@@ -1,3 +1,9 @@
+import { bashExecutionToText, BRANCH_SUMMARY_PREFIX, BRANCH_SUMMARY_SUFFIX, COMPACTION_SUMMARY_PREFIX, COMPACTION_SUMMARY_SUFFIX } from "@earendil-works/pi-agent-core"
+import type { AgentMessage } from "@earendil-works/pi-agent-core"
+import { createLogger } from "@/services/logger"
+
+const log = createLogger("ContextBudget")
+
 /** All request budgets, including one-shot summaries, use the same units. */
 export const CONTEXT_RATIOS = Object.freeze({ static: .12, tools: .08, dynamic: .10, memory: .15, transcript: .50, ephemeral: .05 })
 /** 上下文窗口默认值（tokens）：CONFIG 与设置页的缺省都取它（128k）。 */
@@ -57,25 +63,95 @@ function record(value: unknown): Record<string, unknown> {
   return value && typeof value === "object" ? value as Record<string, unknown> : {}
 }
 
-/** Same content projection for durable messages and Pi messages; never charge usage,
- * timestamps, model IDs, or persistence metadata as conversational input. */
-export function estimateMessageTokens(value: unknown): number {
-  const message = record(value)
-  const parts = Array.isArray(message.content) ? message.content.map(record) : []
-  const text = typeof message.text === "string" ? message.text : typeof message.content === "string" ? message.content
-    : parts.filter(part => part.type === "text").map(part => part.text).join("\n")
-  const rawCalls = Array.isArray(message.toolCalls) ? message.toolCalls : parts.filter(part => part.type === "toolCall")
-  const calls = rawCalls.map(value => {
-    const call = record(value)
-    let args = call.arguments
-    if (typeof args === "string") { try { args = JSON.parse(args) } catch { args = {} } }
-    return { id: call.id, name: call.name, arguments: args }
-  })
-  const extra = parts.filter(part => part.type !== "text" && part.type !== "toolCall")
-  return estimateValueTokens({ role: message.role === "toolResult" ? "tool" : message.role, text,
-    ...(calls.length ? { toolCalls: calls } : {}), ...(message.toolCallId ? { toolCallId: message.toolCallId } : {}),
-    ...(extra.length ? { extra } : {}) }) + 8
+/** 每消息的固定结构开销（角色包装、分隔符等）：与正文长度无关的那一份。 */
+const MESSAGE_STRUCTURE_TOKENS = 8
+
+function join(parts: readonly string[]): string {
+  return parts.filter(part => part.length > 0).join("\n")
 }
+
+type MessageRecord = Record<string, unknown>
+
+/** 正文字段：durable 消息用 text，Pi 消息用 content（字符串或块数组）。 */
+const textOf = (message: MessageRecord): string =>
+  typeof message.text === "string" ? message.text
+    : typeof message.content === "string" ? message.content
+      : (Array.isArray(message.content) ? message.content.map(record) : [])
+          .filter(part => part.type === "text").map(part => typeof part.text === "string" ? part.text : "").join("\n")
+
+/**
+ * 工具调用投影：durable 消息的参数是 JSON 字符串、Pi 消息是对象，两侧必须归一化到同一形态，
+ * 否则同一调用在两种消息形态下算出不同的估算（`上下文预算` 场景钉住这条不变量）。
+ */
+const toolCallsOf = (message: MessageRecord): string => {
+  const parts = Array.isArray(message.content) ? message.content.map(record) : []
+  const raw = Array.isArray(message.toolCalls) ? message.toolCalls : parts.filter(part => part.type === "toolCall")
+  return raw.map(entry => {
+    const call = record(entry)
+    let args: unknown = call.arguments
+    if (typeof args === "string") { try { args = JSON.parse(args) } catch { log.debug("工具参数不是合法 JSON，按原始字符串估算"); args = args } }
+    return `${typeof call.name === "string" ? call.name : ""}${JSON.stringify(args ?? {}) ?? "{}"}`
+  }).join("\n")
+}
+
+/** 非文本、非工具调用的块（图片等）按原样计费，与旧估算器一致。 */
+const extraPartsOf = (message: MessageRecord): string => {
+  const parts = Array.isArray(message.content) ? message.content.map(record) : []
+  return parts.filter(part => part.type !== "text" && part.type !== "toolCall")
+    .map(part => JSON.stringify(part) ?? "").join("\n")
+}
+
+const summaryOf = (message: MessageRecord): string => typeof message.summary === "string" ? message.summary : ""
+
+export type AgentMessageRole = AgentMessage["role"]
+
+/**
+ * 角色覆盖表：穷举 AgentMessageRole，上游新增角色时这里编译失败（而不是静默漏算）。
+ * 摘要类消息只计 summary 正文：上游 convertToLlm 会再加 <summary> 框架（约 30 tokens），
+ * 该偏差落在估算器允许的余量内，不为它引入第二处口径。
+ */
+const MESSAGE_CONTENT_PROJECTION: Record<AgentMessageRole, (message: MessageRecord) => string> = {
+  user: message => textOf(message),
+  assistant: message => join([textOf(message), toolCallsOf(message)]),
+  toolResult: message => join([textOf(message), extraPartsOf(message)]),
+  custom: message => textOf(message),
+  branchSummary: message => `${BRANCH_SUMMARY_PREFIX}${summaryOf(message)}${BRANCH_SUMMARY_SUFFIX}`,
+  compactionSummary: message => `${COMPACTION_SUMMARY_PREFIX}${summaryOf(message)}${COMPACTION_SUMMARY_SUFFIX}`,
+  // 与 convertToLlm 一致：显式排除出上下文的 bash 执行计 0。
+  bashExecution: message => message.excludeFromContext === true ? "" : bashExecutionToText(message as never),
+}
+
+const warnedUnknownRoles = new Set<string>()
+
+/**
+ * 唯一的内容投影：把一条消息投影成它进入请求视图时携带的正文（不含 usage/时间戳/模型名/id）。
+ * token 估算与快照 contentHash 共用它，跨运行可复现。
+ */
+export function projectMessageContent(value: unknown): string {
+  const message = record(value)
+  const role = typeof message.role === "string" ? message.role : ""
+  const projection = MESSAGE_CONTENT_PROJECTION[role as AgentMessageRole]
+  if (projection) return projection(message)
+  if (!warnedUnknownRoles.has(role)) {
+    warnedUnknownRoles.add(role)
+    log.warn("未知消息角色，按整条消息估算（不再退化成空串）:", role || "(无 role)")
+  }
+  return JSON.stringify(message) ?? ""
+}
+
+/** 与本投影同口径的消息估算；绝不把 usage、时间戳、模型名或持久化元数据算作会话输入。 */
+export function estimateMessageTokens(value: unknown): number {
+  return estimateContextTokens(projectMessageContent(value)) + MESSAGE_STRUCTURE_TOKENS
+}
+
+/**
+ * 估算与真实 usage 的比值（actual 为 0 时返回 undefined）。保留全精度。
+ * `ESTIMATE_DRIFT_WARN_RATIO` 是估算与真实 usage 的允许偏差；超出只 warn + trace，不改变预算判定。
+ */
+export function estimateDriftRatio(estimated: number, actual: number): number | undefined {
+  return actual > 0 ? estimated / actual : undefined
+}
+export const ESTIMATE_DRIFT_WARN_RATIO = 1.15
 
 /** ToolDef, Pi Tool and OpenAI function declarations share one schema projection. */
 export function toolBudgetSchema(value: unknown): { name: unknown; description: unknown; parameters: unknown } {

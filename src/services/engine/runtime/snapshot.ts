@@ -12,6 +12,7 @@ import type {
   PromptCacheInfo,
   PromptLlmMessage,
   PromptSnapshot,
+  PromptTokenDrift,
   PromptToolSchema,
   PromptTransform,
 } from "./types"
@@ -37,6 +38,7 @@ export interface PromptSnapshotInput {
   contextEpoch?: number
   actualInputTokens?: number
   actualOutputTokens?: number
+  tokenDrift?: PromptTokenDrift
   cache?: PromptCacheInfo
 }
 
@@ -151,6 +153,7 @@ export async function createPromptSnapshot(input: PromptSnapshotInput): Promise<
     ...(input.contextEpoch === undefined ? {} : { contextEpoch: input.contextEpoch }),
     ...(input.actualInputTokens === undefined ? {} : { actualInputTokens: input.actualInputTokens }),
     ...(input.actualOutputTokens === undefined ? {} : { actualOutputTokens: input.actualOutputTokens }),
+    ...(input.tokenDrift ? { tokenDrift: { ...input.tokenDrift } } : {}),
     cache: { ...(input.cache ?? {}) },
     redactions: [...redactions].sort(),
     createdAt: Date.now(),

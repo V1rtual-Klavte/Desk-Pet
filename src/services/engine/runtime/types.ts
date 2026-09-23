@@ -145,6 +145,16 @@ export interface PromptLlmMessage {
   toolCallId?: string
 }
 
+/**
+ * 估算与实际 usage 的对账：同一请求在 provider_usage 快照上留下估算偏差。
+ * 只留痕（超阈值 warn + trace），不改变任何预算判定。
+ */
+export interface PromptTokenDrift {
+  estimated: number
+  actual: number
+  ratio: number
+}
+
 export interface PromptCacheInfo {
   sessionId?: string
   prefixHash?: string
@@ -175,6 +185,8 @@ export interface PromptSnapshot {
   contextEpoch?: number
   actualInputTokens?: number
   actualOutputTokens?: number
+  /** provider_usage 阶段的估算偏差对账；没有 usage 回执时不写。 */
+  tokenDrift?: PromptTokenDrift
   cache: PromptCacheInfo
   redactions: string[]
   createdAt: number

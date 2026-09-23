@@ -6,11 +6,11 @@ import { contentText } from "@earendil-works/pi-ai"
 import type { AgentMessage, SettledAssistantMessage } from "@earendil-works/pi-agent-core"
 import type { Usage } from "@earendil-works/pi-ai"
 import type { Message, ThinkingEffort } from "@/services/agent/types"
-import type { ContextAllocation, ContextBlock, IngressEnvelope, InputSourceMark, PlanState, PlanStepRecord, PromptSnapshot, PromptTransform } from "@/services/engine/runtime"
+import type { ContextAllocation, ContextBlock, IngressEnvelope, InputSourceMark, PlanState, PlanStepRecord, PromptSnapshot, PromptTokenDrift, PromptTransform } from "@/services/engine/runtime"
 import { createMessageId } from "@/services/agent/types"
 import { MemoryService, recallMemory, planCheckpointStore } from "@/services/agent/memory"
 import type { StructuredSummary } from "@/services/agent/memory"
-import { buildPrompt, contextBudget, CONTEXT_RATIOS, estimateRequestTokens, estimateContextTokens, estimateMessageTokens, ContextBudgetError, projectToolMessages } from "@/services/context"
+import { buildPrompt, contextBudget, CONTEXT_RATIOS, estimateRequestTokens, estimateContextTokens, estimateMessageTokens, ContextBudgetError, ESTIMATE_DRIFT_WARN_RATIO, estimateDriftRatio, projectMessageContent, projectToolMessages } from "@/services/context"
 import { bindRunningPlan, clearRunningPlan, notifyPlanEnd, requestPlanConfirm, requestPlanStepDecision } from "@/services/engine/plan-confirmation"
 import type { PlanConfirmResult } from "@/services/engine/plan-confirmation"
 import { executePlan, evaluateComplexity, formatStepResults, generatePlan, normalizePlan, planEffectClassFor, planToRecords, recordsToPlan } from "@/services/engine/planner"
@@ -305,12 +305,13 @@ interface TurnKernel {
   latestMessages: AgentMessage[]
   snapshotTasks: Promise<void>[]
   snapshotSequence: number
+  /** 采集一档请求快照；带 usage 的一档同时给出估算偏差（provider_usage 的对账值）。 */
   captureSnapshot: (
     captureStage: PromptSnapshot["captureStage"],
     agentMessages: AgentMessage[],
     llmMessages: Array<{ role: string; content?: string; toolCallId?: string }>,
     usage?: Usage,
-  ) => Promise<void>
+  ) => Promise<PromptTokenDrift | undefined>
   /**
    * 记录「原始正文 ↔ 剥离 RUNTIME_DATA 后正文」的配对。
    * afterResponse 会先剥离再提交，事件里拿到的最终助手消息已经没有标签，
@@ -377,6 +378,15 @@ function createTurnKernel(options: TurnKernelOptions): TurnKernel {
         schemaHash: await sha256Text(stableSerialize({ name: tool.name, description: tool.description, parameters: tool.parameters })),
         policyHash: await toolPolicyHash(tool),
       })))
+      // 估算偏差的唯一计算点：这里同时拿到请求视图的估算与 Provider 回执的 usage。
+      const estimatedInputTokens = estimateRequestTokens(options.systemPrompt, agentMessages, options.tools)
+      const ratio = usage ? estimateDriftRatio(estimatedInputTokens, usage.input) : undefined
+      if (ratio !== undefined && ratio > ESTIMATE_DRIFT_WARN_RATIO) {
+        log.warn("估算与实际 usage 偏差超过阈值:", { ratio, estimated: estimatedInputTokens, actual: usage!.input })
+      }
+      const tokenDrift: PromptTokenDrift | undefined = ratio === undefined
+        ? undefined
+        : { estimated: estimatedInputTokens, actual: usage!.input, ratio }
       const snapshot = await createPromptSnapshot({
         snapshotId,
         requestId: options.requestId,
@@ -398,11 +408,13 @@ function createTurnKernel(options: TurnKernelOptions): TurnKernel {
           id: messageEventId(message as { deskpetEventId?: unknown }) ?? `agent:${index}`,
           origin: options.transientUserInput ? "active" : message.role === "toolResult" ? "tool" : message.role === "assistant" ? "assistant" : "user",
           role: message.role,
-          content: stableSerialize(message),
+          // 与 token 估算共用同一投影：hash 只覆盖消息进入请求视图时携带的正文。
+          content: projectMessageContent(message),
         })),
         llmMessages,
         transforms: kernel.promptTransforms,
         actualInputTokens: usage?.input, actualOutputTokens: usage?.output,
+        ...(tokenDrift ? { tokenDrift } : {}),
         // 请求视图换代身份：已提交的压缩次数（旧 contextEpoch 的 Harness 等价物）。
         contextEpoch: options.sessionId ? harnessSlots.snapshot(options.sessionId)?.contextEpoch ?? 0 : 0,
         budget: contextBudget(options.model.contextWindow, options.model.maxTokens),
@@ -416,7 +428,7 @@ function createTurnKernel(options: TurnKernelOptions): TurnKernel {
           })),
           cacheReadTokens: usage?.cacheRead, cacheWriteTokens: usage?.cacheWrite,
         },
-        estimatedInputTokens: estimateRequestTokens(options.systemPrompt, agentMessages, options.tools),
+        estimatedInputTokens,
       })
       publishRuntimeTrace(traceContext, "prompt_snapshot", {
         snapshotId,
@@ -433,6 +445,7 @@ function createTurnKernel(options: TurnKernelOptions): TurnKernel {
         if (slot) slot.queueAuditEntry(PROMPT_SNAPSHOT_ENTRY, snapshot as unknown as import("@earendil-works/pi-agent-core").JsonValue)
         else harnessSlots.queueAuditWithoutSlot(options.sessionId, PROMPT_SNAPSHOT_ENTRY, snapshot as unknown as import("@earendil-works/pi-agent-core").JsonValue)
       }
+      return tokenDrift
     },
   }
   return kernel
@@ -687,13 +700,16 @@ function createTurnSinks(kernel: TurnKernel): HarnessRunSinks {
       // 主回合逐请求用量记进分列统计；压缩等一次性调用不走这个 sink，
       // 由 completePiText 按自己的 purpose 单独记录。
       recordModelUsage("main", row.usage)
+      // 先采集带 usage 的快照：估算偏差在这条返回里给出，trace 与快照带的是同一个值。
+      const drift = await kernel.captureSnapshot("provider_usage", kernel.latestMessages, [], row.usage)
+        .catch(error => { log.warn("usage 快照写入失败", formatError(error)); return undefined })
       publishRuntimeTrace(kernel.traceContext, "provider_usage", {
         inputTokens: row.usage.input,
         outputTokens: row.usage.output,
         cacheRead: row.usage.cacheRead,
         cacheWrite: row.usage.cacheWrite,
+        ...(drift === undefined ? {} : { driftRatio: drift.ratio }),
       })
-      await kernel.captureSnapshot("provider_usage", kernel.latestMessages, [], row.usage).catch(error => log.warn("usage 快照写入失败", formatError(error)))
     },
   }
 }
@@ -1636,7 +1652,7 @@ export async function compactActiveSession(sessionId: string): Promise<ManualCom
         model,
         state,
         // 结构操作没有回合身份：不落 PromptSnapshot，也没有 payload 观测的读者。
-        captureSnapshot: async () => {},
+        captureSnapshot: async () => undefined,
         latestMessages: () => {},
       }),
       afterResponse: createRuntimeDataStripHook({}),

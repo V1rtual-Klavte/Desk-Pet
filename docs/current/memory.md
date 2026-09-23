@@ -24,9 +24,11 @@
 
 压缩由 Harness 调度（阈值 / 手动 `/compact`→`lane.compact()` / 一次性溢出恢复），`/compact` 绑定调用时的会话与运行。宿主硬预算超限同属这条恢复：`transform_context` 的判定由 model-gateway 作为 Provider 响应上报（length 停止、输出 0，命中上游 `isRecoverableLength`），Harness 压缩后带 `overflowRecoveryUsed` 重试一次；超限请求不发给 Provider，判定按当次请求视图重算（网关取走即清空），恢复用尽时按这条判定失败；上游因没有可安全摘要的范围 declined 时，失败分类保留上游文案，回复仍回落这条判定。失败分类（`TurnFailure.kind`）只能从失败文案派生（Harness 把运行失败降维成一条 message），状态码按独立数字匹配，判定文案里的估算 token 数不会把本地预算失败变成 Provider/认证/限流故障；目前只有 Live Test 的 `expectFailure` 与报告按 `kind` 分流。陪伴/助手双模式结构化摘要在 `before_compaction` 钩子内生成——复用 [compactor.ts](../../src/services/engine/compactor.ts) 的摘要内核，经 model-gateway `completePiText` 发送——以 `CompactResult`（summary + retainedTail）返回，由 Harness 单事务提交为 compaction 条目；提交成功前不报告完成，摘要失败或无可覆盖时 decline/报错，切分回合的 turn-prefix 另段摘要。摘要素材的 L0 投影与主请求同口径：`resultProjection=preserve` 的工具结果完整进入摘要请求，只有 `reference` 的会被缩短并留下回读标记；存档条目不受两者影响。压缩调用不计为正常聊天回复，其 usage 落会话 totals 但不进主回合统计；摘要调用的用量按 purpose 单列到用量统计的 `compaction` 分项，与主回合分项相加得到总消耗。
 
-压缩设置（reserve/keepRecent）由 `contextBudget()` 推导并按模型窗口同步，不套用 Pi 默认值（默认窗口下会退化为每个检查点都压缩）；推导值还要经 `toHarnessEstimateTokens()` 换算到 Harness 的计数口径。Harness 的 `shouldCompact` 在会话存在 provider usage 时按真实 usage 计，本仓估算同为目标真实 token 口径，所以换算因子是 1，阈值正好落在本仓 `normalInputTarget` 上。
+压缩设置（reserve/keepRecent）由 `contextBudget()` 推导并按模型窗口同步，不套用 Pi 默认值（默认窗口下会退化为每个检查点都压缩）；推导值还要经 `toHarnessEstimateTokens()` 换算到 Harness 的计数口径。Harness 的 `shouldCompact` 在会话存在 provider usage 时按真实 usage 计，本仓估算同为目标真实 token 口径，所以换算因子只在「会话已有有效 provider usage **且**尾随消息近似 ASCII」时是 1；纯中文且无 usage 时上游按 `chars/4` 计数，两边相差约 4 倍（该差异由 `provider_usage` 快照的 `tokenDrift` 留痕，见下）。
 
 上下文估算按字符类别分列：ASCII 约 4 字符 1 token、非 ASCII 每 UTF-16 单元约 1 token，**刻意不留余量**——余量已由 `compactionHeadroom` 承担，估算偏差 k 一旦超过 `hardInputLimit` 与 `normalInputTarget` 的比值（该比值随窗口增大逼近 1），硬预算就会先于压缩报错，压缩永远轮不到触发。调整估算常数前先跑 `memory-compaction-threshold-calibration` 场景。
+
+消息估算走唯一的内容投影（`projectMessageContent`，token 估算与快照 `contentHash` 共用）：按角色表覆盖 `compactionSummary` / `branchSummary` / `bashExecution` / `custom`（摘要只计 `summary` 正文、`excludeFromContext` 的 bash 执行计 0，与上游 `convertToLlm` 一致），未知角色按整条消息估算并去重留痕，绝不退化成空串；`usage`、时间戳、模型名与持久化元数据一律不计费。`provider_usage` 阶段的 PromptSnapshot 带 `tokenDrift`（`estimated`/`actual`/`ratio`）：估算与实际 usage 的比值超过 `ESTIMATE_DRIFT_WARN_RATIO`（1.15）时只 `log.warn` 并在 trace 的 `provider_usage` 事件里带出 `driftRatio`，不改变预算判定。
 
 保留窗口只覆盖消息本体、按上游 chars/4 估算，静态提示词占比过大时会出现无可覆盖范围并 decline，因此窗口有下限：默认 `DEFAULT_CONTEXT_WINDOW` 128k、最低 `MIN_CONTEXT_WINDOW` 64k，低于下限时[设置页](../../src/components/SettingsPanel.vue)拒绝保存、运行期在模型解析处报错，不静默跑在坏预算上。上下文 epoch 在快照中等于已提交 compaction 条目数。
 
