@@ -42,6 +42,7 @@ export {
   registerAll,
   getTool,
   getToolByName,
+  actionCategoryOf,
   getToolsForMode,
   getToolDeclarations,
   listAll,

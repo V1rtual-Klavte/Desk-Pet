@@ -32,7 +32,7 @@ Pi Harness Tool → harness-tool-adapter → ToolRouter → 执行许可借用 �
 - `context.resultProjection`：`preserve` 的原样进入请求，`reference` 的可被 L0 缩短并标注 eventId 回读地址；两者都只改请求视图，会话条目存档始终保留全文。Router 的 L1 内联截断已删除：会话条目与请求视图共用同一份工具返回全文，缩短只发生在 L0（[context/tool-output.ts](../../src/services/context/tool-output.ts)）且提示带 eventId 回读地址。
 - `context.historyCompaction`：`retain` 的调用配对必须保留原文，压缩覆盖边界不得越过（连续完整轮下命中即 decline，由预算守卫报告上下文不足）。
 
-[defineTool](../../src/services/tool/policy.ts) 是唯一构造入口（手写、Pi 适配、MCP 都经它产出 ToolDef），注册入口再次校验：缺策略、`shared_read` 搭配非只读效果、未知策略版本、非法权限意见都是注册错误，不做缺省猜测；未经它构造的定义在注册时直接抛错（结构上没有执行体），不会进入注册表。`actionCategory` 只用于人格阶段文案，不再决定并行、权限或压缩。`replay` 由 Harness 恢复路径消费：只有持久化调用与当前工具都声明 `safe` 才会重放效果，当前全部工具为 `never`。
+[defineTool](../../src/services/tool/policy.ts) 是唯一构造入口（手写、Pi 适配、MCP 都经它产出 ToolDef），注册入口再次校验：缺策略、`shared_read` 搭配非只读效果、未知策略版本、非法权限意见都是注册错误，不做缺省猜测；未经它构造的定义在注册时直接抛错（结构上没有执行体），不会进入注册表。`actionCategory` 由 ToolDef 唯一声明，经 `actionCategoryOf`（[registry.ts](../../src/services/tool/registry.ts)）解析后驱动人格阶段文案（`getStagePrompt`）；不再决定并行、权限或压缩。`replay` 由 Harness 恢复路径消费：只有持久化调用与当前工具都声明 `safe` 才会重放效果，当前全部工具为 `never`。
 
 工具策略不再声明逐工具调度模式：Harness 的批次调度只看 run 级 `toolExecution`（现为 `parallel`），互斥由 `execution.isolation` 与下面的执行许可保证。
 

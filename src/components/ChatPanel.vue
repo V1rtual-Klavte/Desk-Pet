@@ -21,6 +21,8 @@ import type { HarnessQueuedItem, InterruptedRunInfo, SlashMatch } from "@/servic
 import DebugBar from "./DebugBar.vue";
 import PlanConfirm from "./PlanConfirm.vue";
 import { confirmState, resolvePermissionConfirm } from "@/services/safety";
+import { actionCategoryOf } from "@/services/tool";
+import { getStagePrompt } from "@/services/personality";
 
 // ★ 同步初始化 Slash 命令注册表（下拉补全用；命令执行只在 ingress，见 preProcess）
 initSlashCommands();
@@ -523,11 +525,14 @@ onMounted(async () => {
   // ── 工具执行状态监听 ──
   // 注册失败一律 error 级留痕（FIX-04 口径：事件监听注册失败 = 静默行为变化，不是可忽略的降级）。
   listen<{ toolName: string }>("tool-executing", (event) => {
-    const hint = `正在使用 ${event.payload.toolName}...`
+    // 过程提示语来自当前 Card 的阶段文案（按工具类别匹配），界面不写死。
+    const hint = getStagePrompt("executing", actionCategoryOf(event.payload.toolName))
     toolStatus.value = { text: hint, visible: true }
   }).then(fn => { cleanupToolExec = fn }).catch(error => log.error("事件监听注册失败，工具状态不再更新:", formatError(error)))
   listen<{ toolName: string; success: boolean }>("tool-completed", (event) => {
-    const hint = event.payload.success ? "完成啦～" : "出错了…"
+    // 成功 → done、失败 → blocked：Card 只为工具结果生成这两族文案（error 是非工具阶段、无类别维度）。
+    const category = actionCategoryOf(event.payload.toolName)
+    const hint = getStagePrompt(event.payload.success ? "done" : "blocked", category)
     toolStatus.value = { text: hint, visible: true }
     // 工具结束是排队项消费/释放的常见时点，顺带刷新排队视图。
     refreshQueue()

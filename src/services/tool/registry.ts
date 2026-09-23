@@ -60,6 +60,15 @@ export function getToolByName(name: string): ToolDef | undefined {
   return undefined
 }
 
+/**
+ * 工具过程文案的类别解析入口：唯一声明点是 ToolDef.actionCategory，
+ * UI（ChatPanel 的工具状态提示）与阶段文案（getStagePrompt）经它对齐。
+ * 未注册的工具（已释放的 MCP、Skill 或不存在的名字）按 `_default` 处理。
+ */
+export function actionCategoryOf(toolName: string): string {
+  return getToolByName(toolName)?.actionCategory ?? "_default"
+}
+
 /** 获取当前模式下的所有工具 */
 export function getToolsForMode(mode?: ToolMode): ToolDef[] {
   const m = mode ?? (generalConfig.assistantMode ? "assistant" : "pet")
