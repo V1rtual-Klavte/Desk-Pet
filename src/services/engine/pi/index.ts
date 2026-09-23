@@ -35,7 +35,7 @@ export type {
 } from "./runtime"
 
 export { describeInputDelivery, isInputCommitted, PROMPT_SNAPSHOT_ENTRY } from "./delivery"
-export type { InputDeliveryEvidence, InputDeliveryStage } from "./delivery"
+export type { InputCommitState, InputDeliveryEvidence, InputDeliveryLookup, InputDeliveryStage } from "./delivery"
 
 export { RuntimeDataStreamFilter } from "./stream-text"
 

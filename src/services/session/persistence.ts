@@ -25,7 +25,10 @@ export async function initSessionPersistence(): Promise<void> {
     try {
       const parsed = JSON.parse(raw) as Partial<SessionUiState>
       if (parsed.version === 1) state = { version: 1, activeSessionId: parsed.activeSessionId || "", openSessionIds: parsed.openSessionIds || [], unanswered: parsed.unanswered || {} }
-    } catch { /* Invalid UI state is disposable; session markdown remains intact. */ }
+    } catch (error) {
+      // 内容可丢弃（会话正文不受影响），但解析失败要留痕：坏文件与「首次运行没有文件」不同形。
+      log.warn("UI 状态文件解析失败，已按空状态继续:", formatError(error))
+    }
   }
   loaded = true
 }

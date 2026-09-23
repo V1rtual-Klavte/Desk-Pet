@@ -19,11 +19,16 @@ let snapshotStages: string[] = []
 let snapshotIds: string[] = []
 let transcriptCount = 0
 
+/** 读一次阶段；读取失败（`ok:false`）在本场景按「读不到」处理（等待循环会重试）。 */
+async function readStage(sessionId: string): Promise<string | undefined> {
+  const lookup = await describeInputDelivery(sessionId, REQUEST_ID)
+  return lookup.ok ? lookup.evidence?.stage : undefined
+}
+
 /** 快照在回合收尾后异步落盘：等一小会儿再核对，不把写入时序当成能力缺失。 */
 async function waitForStage(sessionId: string, expected: (stage: string | undefined) => boolean): Promise<void> {
   for (let attempt = 0; attempt < 40; attempt++) {
-    const evidence = await describeInputDelivery(sessionId, REQUEST_ID)
-    if (expected(evidence?.stage)) return
+    if (expected(await readStage(sessionId))) return
     await new Promise(resolve => setTimeout(resolve, 25))
   }
 }
@@ -53,15 +58,15 @@ export const 输入证据链: SceneDef = {
     await sendMessage(STEER_TEXT, { requestId: REQUEST_ID, delivery: "steer" })
 
     // 还在 inbox 里：这一档只能说「已排队」，不能说已进入请求。
-    queuedStage = (await describeInputDelivery(sessionId, REQUEST_ID))?.stage
+    queuedStage = await readStage(sessionId)
 
     blocking.release()
     await firstTurn
     // 输入被消费并进入请求后，阶段与快照证据都应可核对。
     await waitForStage(sessionId, stage => stage === "request_prepared" || stage === "responded")
     const final = await describeInputDelivery(sessionId, REQUEST_ID)
-    finalStage = final?.stage
-    finalEvidenceId = final?.evidenceId
+    finalStage = final.ok ? final.evidence?.stage : undefined
+    finalEvidenceId = final.ok ? final.evidence?.evidenceId : undefined
 
     // 原始证据：落盘的请求快照里确实有这条输入的身份。
     const entries = await sessionEntries(sessionId)

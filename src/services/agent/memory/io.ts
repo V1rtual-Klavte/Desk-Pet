@@ -33,13 +33,17 @@ export function withLock<T>(keyOrFn: string | (() => Promise<T>), maybeFn?: () =
 
 // ── Memory 文件读写 ──
 
+/** 读记忆文件；返回空串 = 读取失败或文件不存在（调用方按空记忆继续），失败另有 warn 留痕。 */
 export async function readMemoryFile(filename: string): Promise<string> {
   try {
     if (!memoryDir) return ""
     const path = await runtimePath("memory", filename)
     const result = await invoke<{ content: string; size: number }>("file_read", { path })
     return result.content
-  } catch { return "" }
+  } catch (error) {
+    log.warn("记忆文件读取失败:", filename, formatError(error))
+    return ""
+  }
 }
 
 export async function writeMemoryFile(filename: string, content: string): Promise<boolean> {

@@ -9,7 +9,7 @@ import type { Entry, EntryQuery, JsonValue, JsonlSessionMetadata, Session } from
 import { createPiSessionRepo } from "@/services/engine/pi"
 import type { PiSessionRepo } from "@/services/engine/pi"
 import { createLogger } from "@/services/logger"
-import { formatError } from "@/services/error"
+import { formatError, reportError } from "@/services/error"
 
 const log = createLogger("PiSession")
 
@@ -99,7 +99,7 @@ export async function releasePiSession(sessionId: string): Promise<void> {
     await session.close(BACKGROUND_CONTEXT)
     log.info("已关闭会话:", sessionId)
   } catch (error) {
-    log.warn("关闭会话失败:", sessionId, formatError(error))
+    log.error("关闭会话失败:", sessionId, formatError(error))
   }
 }
 
@@ -132,7 +132,7 @@ export async function readPiSessionSummary(metadata: JsonlSessionMetadata): Prom
       if (!alreadyOpen) await releasePiSession(metadata.id)
     }
   } catch (error) {
-    log.warn("读取会话元数据失败:", metadata.id, formatError(error))
+    log.error("读取会话元数据失败:", metadata.id, formatError(error))
     return null
   }
 }
@@ -148,14 +148,16 @@ export async function createPiSession(name: string): Promise<PiSessionSummary> {
   return summary
 }
 
-/** 重命名会话（展示名持久化在会话文件里）；失败只记日志，不阻断发送流程。 */
+/** 重命名会话（展示名持久化在会话文件里）；失败留证据但不阻断发送流程（不 reject，只返回 false）。 */
 export async function persistPiSessionName(sessionId: string, name: string): Promise<boolean> {
   try {
     const session = await acquirePiSession(sessionId)
     await session.setName(name, BACKGROUND_CONTEXT)
     return true
   } catch (error) {
-    log.warn("会话重命名落盘失败:", sessionId, formatError(error))
+    // 用户数据没落盘：error 级 + reportError 留完整记录，调用方按返回值决定提示。
+    log.error("会话重命名落盘失败:", sessionId, formatError(error))
+    reportError("PiSession", error, { kind: "会话重命名落盘失败", overlay: false })
     return false
   }
 }

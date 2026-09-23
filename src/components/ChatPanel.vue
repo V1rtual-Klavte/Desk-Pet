@@ -246,11 +246,13 @@ async function withdraw(item: HarnessQueuedItem) {
     return;
   }
   // 已被消费：按投递证据说清走到哪一档，不把「已进入请求」说成「已回复」。
-  const evidence = item.requestId ? await describeInputDelivery(sessionId, item.requestId) : undefined;
+  const lookup = item.requestId ? await describeInputDelivery(sessionId, item.requestId) : undefined;
+  const stage = lookup?.ok ? lookup.evidence?.stage : undefined;
   showDeliveryNote(
-    evidence?.stage === "responded" ? "这条消息已进入请求并拿到回复，无法撤回"
-      : evidence?.stage === "request_prepared" ? "这条消息已进入请求，无法撤回"
-        : "这条消息已加入对话，无法撤回",
+    lookup && !lookup.ok ? "这条消息已被消费，无法撤回（投递状态读取失败，无法确认进度）"
+      : stage === "responded" ? "这条消息已进入请求并拿到回复，无法撤回"
+        : stage === "request_prepared" ? "这条消息已进入请求，无法撤回"
+          : "这条消息已加入对话，无法撤回",
   );
 }
 

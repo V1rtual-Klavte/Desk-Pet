@@ -90,6 +90,9 @@ export async function recoverPlanCheckpoints(): Promise<{ recovered: number; fai
       reportError("Agent", error, { kind: "Plan 恢复失败", overlay: false })
       await planCheckpointStore.writeRecoveryFailure(item.id, formatError(error))
         .catch(writeError => log.error("Plan 恢复失败证据条目写入失败:", item.id, formatError(writeError)))
+      // 失败计入 failed 之后还要让该会话的用户看得见：日志与证据条目之外补一条系统提示，
+      // 否则用户只看到「计划没了」，不知道是读取失败而不是计划不存在。
+      pushSystemMessage("上一个计划的状态读取失败，未自动恢复；请检查日志", item.id)
     }
   }
   if (recovered || failed) log.info("Plan checkpoint 恢复完成:", { recovered, failed })
@@ -297,11 +300,14 @@ export async function resumePausedInputs(sessionId: string = getActiveSessionId(
   }
 }
 
-/** 暂停输入是否已有条目落盘：逐条按身份核对，任一条成为正文就不再放回。 */
+/** 暂停输入是否已有条目落盘：逐条按身份核对，任一条成为正文或状态未知就不再放回。 */
 async function pausedInputsCommitted(sessionId: string, messages: AgentMessage[]): Promise<boolean> {
   for (const message of messages) {
     const requestId = messageRequestId(message as { deskpetEventId?: unknown })
-    if (requestId && await isInputCommitted(sessionId, requestId)) return true
+    if (!requestId) continue
+    // "unknown"（读取失败）按「不重复追加用户正文」处理：宁可少投也不能造出第二份用户正文，
+    // 提示与证据由 delivery.isInputCommitted 一处给出。
+    if (await isInputCommitted(sessionId, requestId) !== "pending") return true
   }
   return false
 }

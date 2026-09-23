@@ -12,6 +12,12 @@ const INPUT_EVENT_ID = `${REQUEST_ID}:user`
 
 let idleStage: string | undefined
 
+/** 读一次阶段；读取失败（`ok:false`）在本场景按「读不到」处理（等待循环会重试）。 */
+async function readStage(sessionId: string): Promise<string | undefined> {
+  const lookup = await describeInputDelivery(sessionId, REQUEST_ID)
+  return lookup.ok ? lookup.evidence?.stage : undefined
+}
+
 export const 空闲输入身份: SceneDef = {
   meta: {
     caseId: "runtime-idle-input-identity",
@@ -30,11 +36,11 @@ export const 空闲输入身份: SceneDef = {
     await sendMessage(IDLE_TEXT, { requestId: REQUEST_ID })
     // 快照在回合收尾后异步落盘：等一小会儿再核对，不把写入时序当成能力缺失。
     for (let attempt = 0; attempt < 40; attempt++) {
-      const stage = (await describeInputDelivery(sessionId, REQUEST_ID))?.stage
+      const stage = await readStage(sessionId)
       if (stage === "request_prepared" || stage === "responded") break
       await new Promise(resolve => setTimeout(resolve, 25))
     }
-    idleStage = (await describeInputDelivery(sessionId, REQUEST_ID))?.stage
+    idleStage = await readStage(sessionId)
   },
   turns: [{
     index: 1,
