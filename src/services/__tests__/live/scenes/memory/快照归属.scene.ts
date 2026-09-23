@@ -209,7 +209,8 @@ export const 快照归属: SceneDef = {
           const rewrite = rewrites[0]!
           if (rewrite.name !== "compaction_summary") throw new Error(`派生记录 name 不是 compaction_summary: ${String(rewrite.name)}`)
           if (rewrite.reason !== "compaction") throw new Error(`派生记录 reason 不是 compaction: ${String(rewrite.reason)}`)
-          const compactionEntryId = compactionEntries(await sessionEntries(sessionId)).at(-1)?.id
+          const compactionList = compactionEntries(await sessionEntries(sessionId))
+          const compactionEntryId = compactionList[compactionList.length - 1]?.id
           if (rewrite.compactionEntryId !== compactionEntryId) {
             throw new Error(`派生记录没有指向本次压缩条目: ${String(rewrite.compactionEntryId)} ≠ ${String(compactionEntryId)}`)
           }

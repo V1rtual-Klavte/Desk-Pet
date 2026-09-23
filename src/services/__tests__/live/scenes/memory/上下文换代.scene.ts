@@ -86,7 +86,7 @@ export const 上下文换代: SceneDef = {
             throw new Error(`首轮换代身份应为 0 且无压缩条目: ${JSON.stringify(epoch)}`)
           }
           const snapshots = await usageSnapshots(sessionId)
-          const latest = snapshots.at(-1)
+          const latest = snapshots[snapshots.length - 1]
           if (latest?.contextEpoch !== 0) throw new Error(`首轮 provider_usage 快照的 contextEpoch 不是 0: ${String(latest?.contextEpoch)}`)
         } },
       ],
@@ -132,7 +132,8 @@ export const 上下文换代: SceneDef = {
         { type: "expectEpochSingleSource", run: async () => {
           const sessionId = getActiveSessionId()
           const epoch = await readContextEpoch(sessionId)
-          const latest = (await usageSnapshots(sessionId)).at(-1)
+          const usage = await usageSnapshots(sessionId)
+          const latest = usage[usage.length - 1]
           if (latest?.contextEpoch !== 1) throw new Error(`新一轮 provider_usage 快照的 contextEpoch 不是 1: ${String(latest?.contextEpoch)}`)
           if (latest.compaction === undefined || (latest.compaction as { count?: unknown }).count !== epoch?.count) {
             throw new Error(`快照的 compaction.count 与 readContextEpoch 不一致: ${JSON.stringify(latest.compaction)} vs ${JSON.stringify(epoch)}`)
