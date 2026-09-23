@@ -58,7 +58,7 @@ export const 恢复能力准备: SceneDef = {
 
     // 冷目录：主回合的准备已经把 catalog 预热过，这里再失效一次，
     // 恢复返回后仍能列出 Skill 就只能来自恢复路径自己的准备。
-    invalidateSkillCatalog("live-test-resume")
+    invalidateSkillCatalog("refresh")
     const resumed = await continueInterruptedRun(sessionId)
     resumedReply = resumed?.reply
     resumedFailure = resumed?.failure

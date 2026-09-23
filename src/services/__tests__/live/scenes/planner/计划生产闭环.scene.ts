@@ -36,11 +36,18 @@ const CANCEL_PLAN_JSON = `\`\`\`json\n{"summary":"取消回归两步","steps":[{
 let provider: ReturnType<typeof installFakeProvider> | undefined
 let blocking: ReturnType<typeof registerBlockingTool> | undefined
 
+type CustomEntry = Extract<Entry, { type: "custom" }>
+
+/** 按 customType 取宿主自定义条目（`Entry` 的联合不会因 filter 收窄，这里显式收）。 */
+function customEntries(entries: Entry[], customType: string): CustomEntry[] {
+  return entries.filter((entry): entry is CustomEntry =>
+    entry.type === "custom" && entry.customType === customType)
+}
+
 /** 计划 checkpoint 的终态：按 planId 取最后一条 checkpoint 的 plan.state。 */
 function planStateOf(entries: Entry[], planId: string): string | undefined {
   let state: string | undefined
-  for (const entry of entries) {
-    if (entry.type !== "custom" || entry.customType !== PLAN_CHECKPOINT_ENTRY) continue
+  for (const entry of customEntries(entries, PLAN_CHECKPOINT_ENTRY)) {
     const payload = entry.data as { plan?: { planId?: string; state?: string } } | undefined
     if (payload?.plan?.planId !== planId) continue
     state = payload.plan.state
@@ -115,8 +122,7 @@ export const 计划生产闭环: SceneDef = {
           if (state !== "done") throw new Error(`计划终态条目不是 done: ${String(state)}`)
 
           // ④ 步骤结果条目恰为计划步数，且属于同一个计划
-          const stepResults = entries.filter(entry =>
-            entry.type === "custom" && entry.customType === PLAN_STEP_RESULT_ENTRY)
+          const stepResults = customEntries(entries, PLAN_STEP_RESULT_ENTRY)
           if (stepResults.length !== 2) throw new Error(`步骤结果条目应为 2 条，实际 ${stepResults.length}`)
           if (!stepResults.every(entry => (entry.data as { planId?: string }).planId === confirmed.planId)) {
             throw new Error("步骤结果条目里混进了别的计划")
@@ -153,9 +159,8 @@ export const 计划生产闭环: SceneDef = {
             const confirmedPlans = planRecords()
             const cancelledPlanId = confirmedPlans.length > 0 ? confirmedPlans[confirmedPlans.length - 1]!.planId : undefined
             if (!cancelledPlanId) throw new Error("取消回归没有产生计划确认记录")
-            const cancelledResults = entries.filter(entry =>
-              entry.type === "custom" && entry.customType === PLAN_STEP_RESULT_ENTRY
-              && (entry.data as { planId?: string }).planId === cancelledPlanId)
+            const cancelledResults = customEntries(entries, PLAN_STEP_RESULT_ENTRY)
+              .filter(entry => (entry.data as { planId?: string }).planId === cancelledPlanId)
             if (cancelledResults.length >= 2) {
               throw new Error(`取消后第二个计划仍有 ${cancelledResults.length} 条步骤结果，第 2 步不该执行`)
             }
