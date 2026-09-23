@@ -15,7 +15,10 @@ import { aiConfig } from "@/services/config"
 import { recordModelUsage } from "@/services/debug"
 import { createLogger } from "@/services/logger"
 import { formatError } from "@/services/error"
-import { contextBudget, ContextBudgetError, contextWindowError, estimateRequestTokens } from "@/services/context"
+import { contextBudget, ContextBudgetError, contextWindowError, estimateDriftRatio, estimateRequestTokens } from "@/services/context"
+import { PROMPT_SNAPSHOT_ENTRY, createPromptSnapshot, redactText, sha256Text } from "@/services/engine/runtime"
+import type { PromptSnapshot, PromptSnapshotInput } from "@/services/engine/runtime"
+import type { HarnessSlotSnapshot } from "./harness-slot"
 import { PROVIDER_TIMEOUT_MS, createProviderFetchGuard, validateProviderUrl } from "./net-guard"
 
 const log = createLogger("PiGateway")
@@ -315,6 +318,15 @@ export function getPiRuntimeProviderOverride(): PiRuntimeProviderOverride | unde
 /** 一次性调用的用途；用量统计按它单列，不从主回合统计里消失。 */
 export type PiTextPurpose = "planner" | "compaction" | "memory" | "stages"
 
+/** 一次性调用的审计归属：给出后请求快照与派生记录按会话落盘（不入模型消息流）。 */
+export interface PiTextCallAudit {
+  sessionId: string
+  turnId?: string
+  requestId?: string
+  /** 派生来源（如触发这次一次性调用的 runId/planId）。 */
+  derivedFrom?: string[]
+}
+
 export interface PiTextCallInput {
   /** 调用用途：进入按 purpose 分列的用量统计，也用于日志。 */
   purpose: PiTextPurpose
@@ -328,6 +340,8 @@ export interface PiTextCallInput {
   maxTokens?: number
   /** 总时限，默认 PROVIDER_TIMEOUT_MS */
   timeoutMs?: number
+  /** 审计归属：有会话可归属时给出，这次请求就进快照体系（无归属的调用不落证据）。 */
+  audit?: PiTextCallAudit
 }
 
 export interface PiTextCallResult {
@@ -337,6 +351,39 @@ export interface PiTextCallResult {
   usage: Usage
   stopReason: StopReason
   durationMs: number
+}
+
+/**
+ * 槽的只读快照（代际与换代身份）。
+ *
+ * 动态导入 harness-slot：静态导入会形成 `harness-slot → model-gateway → harness-slot` 的模块环
+ * （槽在 create 时要用本模块的 createHarnessModels）。
+ */
+async function readSlotSnapshot(sessionId: string): Promise<HarnessSlotSnapshot | undefined> {
+  const { harnessSlots } = await import("./harness-slot")
+  return harnessSlots.peek(sessionId)?.snapshot()
+}
+
+/**
+ * 一次性请求快照的落盘。
+ *
+ * 槽存在时只入队（本函数在 Provider 调用线程上被 await，而 drive 提交阶段持有 lane 命令锁，
+ * 直接写 lane 会与其互等）；槽未打开时（此时 lane 空闲、没有在飞 drive）直接落盘，
+ * 不因「没人 flush」丢掉一次性请求的证据。
+ */
+async function persistAuditSnapshot(sessionId: string, purpose: PiTextPurpose, snapshot: PromptSnapshot): Promise<void> {
+  const { harnessSlots } = await import("./harness-slot")
+  const slot = harnessSlots.peek(sessionId)
+  if (slot) {
+    slot.queueAuditEntry(PROMPT_SNAPSHOT_ENTRY, snapshot as unknown as import("@earendil-works/pi-agent-core").JsonValue)
+    return
+  }
+  try {
+    const { appendPiSessionCustomEntry } = await import("@/services/session/repo")
+    await appendPiSessionCustomEntry(sessionId, PROMPT_SNAPSHOT_ENTRY, snapshot as unknown as import("@earendil-works/pi-agent-core").JsonValue)
+  } catch (error) {
+    log.error("一次性请求快照落盘失败:", { sessionId, purpose }, formatError(error))
+  }
 }
 
 function thinkingText(content: AssistantMessage["content"]): string {
@@ -354,9 +401,10 @@ function thinkingText(content: AssistantMessage["content"]): string {
  *    不检查就会把失败当成空回复交给调用方。
  * 2. 自己用 AbortController 兜总时限：`timeoutMs` 只是 SDK 的请求超时（收到响应头就清），
  *    SSE 断在半路不会触发。abort 文案沿用旧 provider 的「Provider 请求超时或已取消」。
- * 3. 不写 PromptSnapshot、不写 updateRequestStats：这是一次性旁路调用，不属于 transcript，
- *    混进主回合的 last/上下文统计只会污染主链路的 token/工具计数。用量按 purpose 记进
- *    分列统计（含失败响应），既不冒充主回复统计，也不从总消耗里消失。
+ * 3. 不写 updateRequestStats：这是一次性旁路调用，不属于 transcript，混进主回合的 last/上下文统计
+ *    只会污染主链路的 token/工具计数。用量按 purpose 记进分列统计（含失败响应），既不冒充主回复
+ *    统计，也不从总消耗里消失。给出 `audit` 归属后请求前后各写一档 PromptSnapshot（条目落在
+ *    归属会话里，`one-shot:<purpose>` 身份与主回合的可区分），没给归属就不落证据。
  */
 export async function completePiText(input: PiTextCallInput): Promise<PiTextCallResult> {
   const startedAt = Date.now()
@@ -376,6 +424,43 @@ export async function completePiText(input: PiTextCallInput): Promise<PiTextCall
   const requestBudget = contextBudget(model.contextWindow, maxTokens)
   const estimatedInput = estimateRequestTokens(systemPrompt, [{ role: "user", content: input.userText }])
   if (estimatedInput > requestBudget.hardInputLimit) throw new ContextBudgetError(estimatedInput, requestBudget.hardInputLimit)
+
+  // 一次性请求的审计归属：purpose/step 进 request，块与消息用 one-shot:* 身份
+  // （比笼统的 "one_shot" 更细，审计可按用途分组）。
+  const audit = input.audit
+  const slotSnapshot = audit ? await readSlotSnapshot(audit.sessionId) : undefined
+  const oneShot = (captureStage: PromptSnapshot["captureStage"], extra: Partial<PromptSnapshotInput> = {}): PromptSnapshotInput => ({
+    snapshotId: `one-shot:${input.purpose}:${startedAt}:${captureStage}`,
+    requestId: audit!.requestId ?? `one-shot-${startedAt}`,
+    sessionId: audit!.sessionId,
+    turnId: audit!.turnId ?? `one-shot-${startedAt}`,
+    runId: audit!.derivedFrom?.[0] ?? `one-shot-${startedAt}`,
+    captureStage,
+    model: model.id,
+    provider: model.provider,
+    systemBlocks: [{
+      blockId: `one-shot:${input.purpose}`, layer: "static", source: input.purpose,
+      text: systemPrompt, priority: 100, origin: "system", taint: "system",
+    }],
+    toolSchemas: [],
+    agentMessages: [{ id: `one-shot:${input.purpose}:0`, role: "user", content: input.userText }],
+    llmMessages: [{ role: "user", content: input.userText }],
+    transforms: [],
+    estimatedInputTokens: estimatedInput,
+    request: {
+      purpose: input.purpose === "compaction" ? "compaction" : "one_shot",
+      ...(input.purpose === "compaction" ? { step: "compaction" as const } : {}),
+    },
+    requestParams: { maxTokens },
+    generation: slotSnapshot?.generation ?? 0,
+    ...(input.purpose === "compaction" ? { compaction: { count: slotSnapshot?.contextEpoch ?? 0 } } : {}),
+    ...extra,
+  })
+  if (audit) {
+    // 请求前先落一档 payload 快照：一次性调用没有回合，证据只能由自己留下。
+    const payloadSnapshot = await createPromptSnapshot(oneShot("provider_payload"))
+    await persistAuditSnapshot(audit.sessionId, input.purpose, payloadSnapshot)
+  }
 
   const controller = new AbortController()
   const abortFromCaller = () => controller.abort(input.signal?.reason ?? new Error("Provider 请求已取消"))
@@ -399,6 +484,28 @@ export async function completePiText(input: PiTextCallInput): Promise<PiTextCall
     // 响应一到就记用量：失败/截断的响应同样产生成本，不能只计成功调用。
     // Provider 未回报时这里只累加次数（recordModelUsage 不把全 0 当准确值）。
     recordModelUsage(input.purpose, message.usage)
+    // 第二档证据（provider_usage）同样在失败响应上采集：估算偏差与实际 usage 的对账不能只在成功路径存在。
+    if (audit) {
+      const text = contentText(message.content)
+      const ratio = estimateDriftRatio(estimatedInput, message.usage.input)
+      const summaryHash = input.purpose === "compaction" && text.length > 0
+        ? await sha256Text(redactText(text).text)
+        : undefined
+      const usageSnapshot = await createPromptSnapshot(oneShot("provider_usage", {
+        actualInputTokens: message.usage.input,
+        actualOutputTokens: message.usage.output,
+        ...(ratio === undefined ? {} : {
+          tokenDrift: { estimated: estimatedInput, actual: message.usage.input, ratio },
+        }),
+        cache: {
+          sessionId: audit.sessionId,
+          cacheReadTokens: message.usage.cacheRead,
+          cacheWriteTokens: message.usage.cacheWrite,
+        },
+        ...(summaryHash ? { compaction: { count: slotSnapshot?.contextEpoch ?? 0, summaryHash } } : {}),
+      }))
+      await persistAuditSnapshot(audit.sessionId, input.purpose, usageSnapshot)
+    }
 
     if (message.stopReason === "error" || message.stopReason === "aborted") {
       throw new Error(controller.signal.aborted

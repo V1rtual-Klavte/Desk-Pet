@@ -16,6 +16,15 @@ export const DESKPET_GREETING_ENTRY = "deskpet.greeting"
 /** 系统提示条目：宿主/运行时写的系统消息，读模型投影为 system 气泡，不进模型上下文。 */
 export const DESKPET_SYSTEM_MESSAGE_ENTRY = "deskpet.system_message"
 
+/** 请求快照条目：三档 PromptSnapshot 的落盘形态（快照协议见 PromptSnapshot）。 */
+export const PROMPT_SNAPSHOT_ENTRY = "deskpet.prompt_snapshot"
+
+/**
+ * 提示词派生记录条目：一次派生（如压缩摘要）只留输入/输出 hash 与派生来源，
+ * 不进模型消息流，也不落派生正文。
+ */
+export const PROMPT_REWRITE_ENTRY = "deskpet.prompt_rewrite"
+
 /**
  * 压缩降级条目：宿主摘要内核失败（或压缩未完成）时写的审计条目。
  *
@@ -181,6 +190,33 @@ export interface PromptCacheInfo {
   cacheWriteTokens?: number
 }
 
+/** 请求用途：回合、压缩、分支摘要、一次性文本请求。 */
+export type PromptRequestPurpose = "turn" | "compaction" | "branch_summary" | "one_shot"
+
+/** 本次请求的用途与上游 step/attempt；快照无法只靠 runId 回答「这是哪次请求」。 */
+export interface PromptRequestContext {
+  purpose: PromptRequestPurpose
+  /** 上游 before_request 的 step（回合 "assistant"/"deferred"，压缩 "compaction"）。 */
+  step?: "assistant" | "deferred" | "compaction" | "branch_summary"
+  attempt?: number
+}
+
+/** Provider 请求参数（脱敏快照）：取不到的参数不写字段，不写假值。 */
+export interface PromptRequestParams { maxTokens?: number; temperature?: number }
+
+/** 计划步骤归属：步骤执行中把 stepId 更新进去。 */
+export interface PromptPlanContext { planId: string; stepId?: string; version: number }
+
+/** 回合开始冻结的能力：冻结值只来自 preflight，工具裁决逐请求累积。 */
+export interface PromptCapabilityContext {
+  skillsFingerprint?: string
+  safetyMode: string
+  toolDecisions: Array<{ toolName: string; decision: "allow" | "ask" | "deny"; reason?: string }>
+}
+
+/** 请求视图的换代归属：本分支已提交的压缩次数与最近一条压缩条目。 */
+export interface PromptCompactionContext { count: number; lastEntryId?: string; summaryHash?: string }
+
 export interface PromptSnapshot {
   schemaVersion: 1
   snapshotId: string
@@ -205,6 +241,20 @@ export interface PromptSnapshot {
   actualOutputTokens?: number
   /** provider_usage 阶段的估算偏差对账；没有 usage 回执时不写。 */
   tokenDrift?: PromptTokenDrift
+  /** 本次请求的用途与上游 step/attempt。 */
+  request?: PromptRequestContext
+  /** Provider payload 的稳定 hash（脱敏后序列化的 sha256）。 */
+  payloadHash?: string
+  /** systemPrompt 的脱敏 hash（跨阶段可比）。 */
+  systemPromptHash?: string
+  requestParams?: PromptRequestParams
+  plan?: PromptPlanContext
+  capabilities?: PromptCapabilityContext
+  compaction?: PromptCompactionContext
+  /** 槽代际：区分「同一会话被释放重建」前后的请求。 */
+  generation?: number
+  /** 内核整块淘汰的可选块（预算降级记录，T3.32 的内核产出）。 */
+  budgetDrops?: import("@/services/context").ContextBudgetAdjustment[]
   cache: PromptCacheInfo
   redactions: string[]
   createdAt: number

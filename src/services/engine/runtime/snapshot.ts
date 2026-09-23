@@ -10,7 +10,12 @@ import type {
   ContextBlock,
   PromptAgentMessage,
   PromptCacheInfo,
+  PromptCapabilityContext,
+  PromptCompactionContext,
   PromptLlmMessage,
+  PromptPlanContext,
+  PromptRequestContext,
+  PromptRequestParams,
   PromptSnapshot,
   PromptTokenDrift,
   PromptToolSchema,
@@ -40,6 +45,15 @@ export interface PromptSnapshotInput {
   actualOutputTokens?: number
   tokenDrift?: PromptTokenDrift
   cache?: PromptCacheInfo
+  request?: PromptRequestContext
+  payloadHash?: string
+  systemPromptHash?: string
+  requestParams?: PromptRequestParams
+  plan?: PromptPlanContext
+  capabilities?: PromptCapabilityContext
+  compaction?: PromptCompactionContext
+  generation?: number
+  budgetDrops?: import("@/services/context").ContextBudgetAdjustment[]
 }
 
 export interface RedactedText {
@@ -154,6 +168,18 @@ export async function createPromptSnapshot(input: PromptSnapshotInput): Promise<
     ...(input.actualInputTokens === undefined ? {} : { actualInputTokens: input.actualInputTokens }),
     ...(input.actualOutputTokens === undefined ? {} : { actualOutputTokens: input.actualOutputTokens }),
     ...(input.tokenDrift ? { tokenDrift: { ...input.tokenDrift } } : {}),
+    ...(input.request ? { request: { ...input.request } } : {}),
+    ...(input.payloadHash ? { payloadHash: input.payloadHash } : {}),
+    ...(input.systemPromptHash ? { systemPromptHash: input.systemPromptHash } : {}),
+    ...(input.requestParams ? { requestParams: { ...input.requestParams } } : {}),
+    ...(input.plan ? { plan: { ...input.plan } } : {}),
+    ...(input.capabilities ? { capabilities: {
+      ...input.capabilities,
+      toolDecisions: input.capabilities.toolDecisions.map(decision => ({ ...decision })),
+    } } : {}),
+    ...(input.compaction ? { compaction: { ...input.compaction } } : {}),
+    ...(input.generation === undefined ? {} : { generation: input.generation }),
+    ...(input.budgetDrops ? { budgetDrops: input.budgetDrops.map(drop => ({ ...drop })) } : {}),
     cache: { ...(input.cache ?? {}) },
     redactions: [...redactions].sort(),
     createdAt: Date.now(),

@@ -6,7 +6,7 @@ import { contentText } from "@earendil-works/pi-ai"
 import type { AgentMessage, SettledAssistantMessage } from "@earendil-works/pi-agent-core"
 import type { Usage } from "@earendil-works/pi-ai"
 import type { Message, ThinkingEffort } from "@/services/agent/types"
-import type { CompactionAuditSink, ContextAllocation, ContextBlock, IngressEnvelope, InputSourceMark, PlanState, PlanStepRecord, PromptSnapshot, PromptTokenDrift, PromptTransform } from "@/services/engine/runtime"
+import type { CompactionAuditSink, ContextAllocation, ContextBlock, IngressEnvelope, InputSourceMark, PlanState, PlanStepRecord, PromptCapabilityContext, PromptPlanContext, PromptRequestContext, PromptRequestParams, PromptSnapshot, PromptTokenDrift, PromptTransform } from "@/services/engine/runtime"
 import { createMessageId } from "@/services/agent/types"
 import { MemoryService, recallMemory, planCheckpointStore } from "@/services/agent/memory"
 import type { StructuredSummary } from "@/services/agent/memory"
@@ -40,7 +40,6 @@ import { PROVIDER_TIMEOUT_MS } from "./net-guard"
 import { RuntimeDataStreamFilter } from "./stream-text"
 import { summarizeCompaction } from "../compactor"
 import { createHarnessRunState, harnessSlots, HarnessSlot } from "./harness-slot"
-import { PROMPT_SNAPSHOT_ENTRY } from "./delivery"
 import type {
   HarnessCancelQueuedKind,
   HarnessCompactOutcome,
@@ -54,7 +53,7 @@ import type {
 } from "./harness-slot"
 import { formatError, reportError } from "@/services/error"
 import { createLogger } from "@/services/logger"
-import { createPromptRewrite, createPromptSnapshot, createRuntimeTraceContext, inputEventId, laneMessageText, messageEventId, publishRuntimeTrace, userInputMessage } from "@/services/engine/runtime"
+import { createPromptRewrite, createPromptSnapshot, createRuntimeTraceContext, inputEventId, laneMessageText, messageEventId, PROMPT_SNAPSHOT_ENTRY, publishRuntimeTrace, userInputMessage } from "@/services/engine/runtime"
 import type { RuntimeTraceContext } from "@/services/engine/runtime"
 import { redactText, sha256Text, stableSerialize } from "@/services/engine/runtime"
 
@@ -268,6 +267,11 @@ export interface PiSubAgentInput {
   onToolDone?: (toolName: string, toolCallId: string, success: boolean) => Promise<void> | void
   /** 子运行归属：存在时填进 HarnessToolRun 与 createTurnSpec，并挂到父槽下随父取消。 */
   scope?: PiSubAgentScope
+  /**
+   * 审计归属：有计划身份的子运行提供它，请求快照就落进父会话（步骤的请求视图可查）。
+   * 缺省（fork/team 的独立子代理）不落快照 —— 没有会话可归属。
+   */
+  audit?: { sessionId: string; planId?: string; stepId?: string }
 }
 
 export interface PiSubAgentOutput {
@@ -308,6 +312,20 @@ interface TurnKernel {
   latestMessages: AgentMessage[]
   snapshotTasks: Promise<void>[]
   snapshotSequence: number
+  /** 本次请求的用途（默认回合；压缩/一次性请求在各自入口给出）。 */
+  request: PromptRequestContext
+  /** before_payload 从 Provider payload 取到的请求参数（脱敏快照用）。 */
+  requestParams?: PromptRequestParams
+  /** Provider payload 的稳定 hash；由 before_payload 采集后写进快照。 */
+  payloadHash?: string
+  /** 计划步骤归属（子代理按步骤传）。 */
+  plan?: PromptPlanContext
+  /** 回合开始冻结的能力：skillsFingerprint/safetyMode 冻结一次，工具裁决逐请求累积。 */
+  capabilities: PromptCapabilityContext
+  /** 槽代际：区分「同一会话被释放重建」前后的请求。 */
+  generation: number
+  /** 上游 before_request 的当次 step/attempt；由它回答「这次 payload 属于哪次请求」。 */
+  currentRequest?: { step: PromptRequestContext["step"]; attempt: number }
   /** 采集一档请求快照；带 usage 的一档同时给出估算偏差（provider_usage 的对账值）。 */
   captureSnapshot: (
     captureStage: PromptSnapshot["captureStage"],
@@ -343,6 +361,12 @@ interface TurnKernelOptions {
   persistSnapshots: boolean
   toolRun: HarnessToolRun
   card?: PersonalityCard | null
+  /** 请求用途（缺省为回合）。 */
+  request?: PromptRequestContext
+  /** 计划步骤归属（子代理按步骤传）。 */
+  plan?: PromptPlanContext
+  /** 槽代际（调用方在 preflight 冻结）。 */
+  generation?: number
 }
 
 function createTurnKernel(options: TurnKernelOptions): TurnKernel {
@@ -362,6 +386,14 @@ function createTurnKernel(options: TurnKernelOptions): TurnKernel {
     latestMessages,
     snapshotTasks,
     snapshotSequence: 0,
+    // 能力在 preflight 冻结一次：回合中改设置不改变本次请求的能力身份（T3.40 起与权限策略同一份快照）。
+    request: options.request ?? { purpose: "turn" },
+    capabilities: {
+      ...(options.skillCatalogFingerprint ? { skillsFingerprint: options.skillCatalogFingerprint } : {}),
+      safetyMode: getEffectiveSafetyMode(),
+      toolDecisions: [],
+    },
+    generation: options.generation ?? 0,
     recordSettledReply: (raw, stripped) => { settledReply = { raw, stripped } },
     rawTextForSettledReply: stripped => settledReply?.stripped === stripped ? settledReply.raw : stripped,
     captureSnapshot: async (captureStage, agentMessages, llmMessages, usage) => {
@@ -418,6 +450,16 @@ function createTurnKernel(options: TurnKernelOptions): TurnKernel {
         })),
         llmMessages,
         transforms: kernel.promptTransforms,
+        // 「这是哪次请求」：用途取内核冻结值，step/attempt 取上游逐请求（before_request）的当次值。
+        request: { ...kernel.request, ...(kernel.currentRequest ?? {}) },
+        systemPromptHash: await sha256Text(redactText(options.systemPrompt).text),
+        ...(kernel.payloadHash ? { payloadHash: kernel.payloadHash } : {}),
+        ...(kernel.requestParams ? { requestParams: { ...kernel.requestParams } } : {}),
+        ...(kernel.plan ? { plan: { ...kernel.plan } } : {}),
+        capabilities: kernel.capabilities,
+        generation: kernel.generation,
+        compaction: { count: options.sessionId ? harnessSlots.snapshot(options.sessionId)?.contextEpoch ?? 0 : 0 },
+        budgetDrops: kernel.budgetDrops,
         actualInputTokens: usage?.input, actualOutputTokens: usage?.output,
         ...(tokenDrift ? { tokenDrift } : {}),
         // 请求视图换代身份：已提交的压缩次数（旧 contextEpoch 的 Harness 等价物）。
@@ -462,6 +504,8 @@ function createCompactionHook(options: {
   mode: "pet" | "assistant"
   model: PiModel
   tools: readonly ToolDef[]
+  /** 压缩请求的归属会话；一次性摘要请求的快照与派生记录按它落盘。 */
+  sessionId?: string
   onSummary?: (summary: StructuredSummary) => void
   /** 宿主摘要内核失败（decline 原因）；调用方据此给出可见失败与审计。 */
   audit?: CompactionAuditSink
@@ -469,7 +513,7 @@ function createCompactionHook(options: {
 }): NonNullable<HarnessRunHooks["beforeCompaction"]> {
   const retained = retainedToolNames(options.tools)
   const preserved = preservedToolNames(options.tools)
-  return async ({ preparation, signal }) => {
+  return async ({ preparation, signal, runId }) => {
     try {
       // 全量都在保留窗口内时没有可安全摘要的覆盖范围：decline 让 Harness 原样收尾。
       if (!preparation.messagesToSummarize.length && !preparation.turnPrefixMessages.length) return { decline: true }
@@ -489,6 +533,8 @@ function createCompactionHook(options: {
         model: options.model,
         signal,
         preserveToolNames: preserved,
+        ...(options.sessionId ? { sessionId: options.sessionId } : {}),
+        runId,
       })
       options.onSummary?.(outcome.summary)
       return {
@@ -514,9 +560,33 @@ function createCompactionHook(options: {
 /**
  * 逐请求 streamOptions：HTTP 请求超时用现有 PROVIDER_TIMEOUT_MS（SDK 默认约 10 分钟，项目口径更紧）。
  * 不在此处重复 SDK 重试开关：piStream 已统一为 maxRetries 0，重试预算归 Harness RetryPolicy。
+ *
+ * `onRequest` 把上游的当次 step/attempt 交给调用方（回合路径记进内核），
+ * `before_payload` 才能回答「这份 payload 属于哪次请求」。
  */
-function createRequestOptionsPatch(): NonNullable<HarnessRunHooks["beforeRequest"]> {
-  return () => ({ streamOptions: { timeoutMs: PROVIDER_TIMEOUT_MS } })
+function createRequestOptionsPatch(
+  onRequest?: (step: PromptRequestContext["step"], attempt: number) => void,
+): NonNullable<HarnessRunHooks["beforeRequest"]> {
+  return ({ step, attempt }) => {
+    onRequest?.(step, attempt)
+    return { streamOptions: { timeoutMs: PROVIDER_TIMEOUT_MS } }
+  }
+}
+
+/**
+ * 从 Provider payload 取回请求参数（脱敏快照用）。
+ * OpenAI-compatible 的两个字段名都可能在：`max_tokens` 或 `max_completion_tokens`；
+ * 取不到的参数不写字段 —— 快照不写假值。
+ */
+function extractRequestParams(payload: unknown): PromptRequestParams {
+  const params: PromptRequestParams = {}
+  if (payload && typeof payload === "object") {
+    const record = payload as Record<string, unknown>
+    const maxTokens = record.max_tokens ?? record.max_completion_tokens
+    if (typeof maxTokens === "number" && Number.isFinite(maxTokens)) params.maxTokens = maxTokens
+    if (typeof record.temperature === "number" && Number.isFinite(record.temperature)) params.temperature = record.temperature
+  }
+  return params
 }
 
 /**
@@ -612,6 +682,12 @@ function createTurnSpec(kernel: TurnKernel, options: {
         signal,
         isCurrent: options.isPermissionCurrent,
       })
+      // 能力冻结的逐请求一半：本次裁决（含拒绝理由）折进快照的 capabilities.toolDecisions。
+      kernel.capabilities.toolDecisions.push({
+        toolName: tool.name,
+        decision: permission.decision,
+        ...(permission.reason ? { reason: permission.reason } : {}),
+      })
       if (permission.decision !== "allow") {
         const reason = permission.reason ?? "操作未获授权"
         kernel.toolRun.history.push({ toolName: tool.name, status: permission.request ? "denied" : "blocked", personalityMsg: reason })
@@ -635,9 +711,13 @@ function createTurnSpec(kernel: TurnKernel, options: {
       snapshotTasks: kernel.snapshotTasks,
       latestMessages: messages => { kernel.latestMessages = messages },
     }),
-    beforeCompaction: createCompactionHook({ mode: kernel.mode, model: kernel.model, tools: kernel.tools, audit: compactionAudit }),
+    beforeCompaction: createCompactionHook({
+      mode: kernel.mode, model: kernel.model, tools: kernel.tools,
+      sessionId: kernel.sessionId, audit: compactionAudit,
+    }),
     compactionAudit,
-    beforeRequest: createRequestOptionsPatch(),
+    // 记当次请求归属：payload 采集据此区分「本回合的请求」与「压缩/分支摘要的一次性请求」。
+    beforeRequest: createRequestOptionsPatch((step, attempt) => { kernel.currentRequest = { step, attempt } }),
     afterResponse: (message, meta) => {
       publishRuntimeTrace(kernel.traceContext, "provider_response", {
         model: kernel.model.id,
@@ -649,9 +729,14 @@ function createTurnSpec(kernel: TurnKernel, options: {
       return stripReply(message, meta)
     },
     beforePayload: (payload, payloadModel) => {
+      const step = kernel.currentRequest?.step
+      // 压缩/分支摘要的 payload 属于一次性摘要请求，不是本回合的对话请求：不写归属错误的 provider_payload。
+      if (step === "compaction" || step === "branch_summary") return
       const safePayload = redactText(stableSerialize(payload))
+      kernel.requestParams = extractRequestParams(payload)
       const task = sha256Text(safePayload.text)
         .then(async payloadHash => {
+          kernel.payloadHash = payloadHash
           await kernel.captureSnapshot("provider_payload", kernel.latestMessages, providerMessages(payload))
           publishRuntimeTrace(kernel.traceContext, "provider_payload", {
             model: payloadModel.id,
@@ -826,7 +911,9 @@ export async function runPiAgentTurn(input: PiAgentTurnInput): Promise<PiAgentTu
   if (mode === "assistant" && planConfig.enabled) {
     const forcePlan = userText.startsWith("--plan")
     if (forcePlan) planUserText = userText.replace(/^--plan\s*/, "")
-    const complexity = await evaluateComplexity(planUserText, planConfig.keywords)
+    const complexity = await evaluateComplexity(planUserText, planConfig.keywords, {
+      sessionId: turnSessionId, derivedFrom: [requestId],
+    })
     assertCurrent()
     if (complexity.score >= planConfig.complexityThreshold) {
       // 中断通道先于确认建立：确认等待期与会话切换都要能把它断掉
@@ -917,6 +1004,7 @@ export async function runPiAgentTurn(input: PiAgentTurnInput): Promise<PiAgentTu
     persistSnapshots: true,
     card,
     toolRun,
+    generation,
   })
   const spec = createTurnSpec(kernel, {
     // 正文在准入时已提交（与 toolRun 一起装配），spec 只承载驱动面。
@@ -1026,6 +1114,8 @@ async function runPlanPhase(args: {
       availableTools: getToolsForMode("assistant"),
       thinkingEffort: planConfig.thinkingEffort,
       maxSteps: planConfig.maxSteps,
+      // 规划是一次性请求：快照按会话归属落盘（证据链可查「这次规划问了什么」）。
+      audit: { sessionId, derivedFrom: [planId] },
     })
     if (!args.runIsCurrent()) throw new Error("回合已取消或运行代际已失效")
     // FIX-02(b)：JSON 解析失败时 `generatePlan` 已降级为单步直接执行 —— 这是用户可见的行为变化，
@@ -1102,6 +1192,9 @@ async function runPlanPhase(args: {
     stepMaxRounds: planConfig.stepMaxRounds,
     stepThinkingEffort: planConfig.stepThinkingEffort,
     maxSteps: planConfig.maxSteps,
+    // 步骤子运行的请求快照按计划身份落进父会话（快照能回答「哪一步的请求」）。
+    planId,
+    sessionId,
     // 逐步确认：每步开工前都要用户在面板放行（逐步门），步骤失败也停下来问 —— 面板不再自动放行
     onStepFailure: stepMode === "stepByStep" ? "ask" : planConfig.onStepFailure,
     signal: planAbort.signal,
@@ -1606,7 +1699,7 @@ export async function continueInterruptedRun(sessionId: string): Promise<PiAgent
       sessionId, requestId, mode, model,
       thinkingEffort, systemPrompt: context.systemPrompt, tools: frozenTools,
       blocks: context.blocks, allocations: context.allocations, budgetDrops: context.budgetDrops,
-      transientUserInput: false, persistSnapshots: false, card,
+      transientUserInput: false, persistSnapshots: false, card, generation,
       toolRun: {
         mode, sessionId, runGeneration: generation,
         isCurrent: () => harnessSlots.isCurrent(sessionId, generation),
@@ -1675,7 +1768,10 @@ export async function compactActiveSession(sessionId: string): Promise<ManualCom
     state,
     hooks: {
       // 手动压缩没有冻结的回合工具集，按当前注册表判定 retain 保护。
-      beforeCompaction: createCompactionHook({ mode, model, tools: getToolsForMode(mode), onSummary: summary => { intent = summary.intent }, audit: compactionAudit }),
+      beforeCompaction: createCompactionHook({
+        mode, model, tools: getToolsForMode(mode),
+        sessionId, onSummary: summary => { intent = summary.intent }, audit: compactionAudit,
+      }),
       compactionAudit,
       beforeRequest: createRequestOptionsPatch(),
       // 续跑也走宿主的投影与剥离；工具结果投影按空工具集（安全回退，不开工具）。
@@ -1715,7 +1811,8 @@ export async function runPiSubAgent(input: PiSubAgentInput): Promise<PiSubAgentO
     onToolDone: input.onToolDone,
   }
   const kernel = createTurnKernel({
-    sessionId: scope?.sessionId,
+    // 快照归属以 audit 为准（有计划身份的步骤请求落进父会话）；没有 audit 时沿用运行归属。
+    sessionId: input.audit?.sessionId ?? scope?.sessionId,
     requestId: `sub-agent-${crypto.randomUUID()}`,
     mode: "pet",
     model,
@@ -1723,7 +1820,12 @@ export async function runPiSubAgent(input: PiSubAgentInput): Promise<PiSubAgentO
     systemPrompt: input.systemPrompt,
     tools: input.tools,
     transientUserInput: false,
-    persistSnapshots: false,
+    // 有计划身份的子运行把请求快照落进父会话；没有归属就不落（fork/team 的独立子代理）。
+    persistSnapshots: input.audit !== undefined,
+    ...(input.audit?.planId
+      ? { plan: { planId: input.audit.planId, ...(input.audit.stepId ? { stepId: input.audit.stepId } : {}), version: 1 } }
+      : {}),
+    generation: scope?.runGeneration ?? 0,
     toolRun,
   })
   // 子代理使用内存会话的一次性槽：不写聊天记录，也不占用 App 会话代际。

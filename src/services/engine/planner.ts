@@ -4,7 +4,7 @@
 // ==========================================
 
 import { getToolByName, getToolsForMode, type ToolDef } from "@/services/tool"
-import type { PiSubAgentOutput, PiSubAgentScope } from "@/services/engine/pi"
+import type { PiSubAgentOutput, PiSubAgentScope, PiTextCallAudit } from "@/services/engine/pi"
 import type { ThinkingEffort } from "@/services/agent/types"
 import type { PlanEffectClass, PlanRecord, PlanStepRecord } from "@/services/engine/runtime"
 import { planConfig } from "@/services/config"
@@ -55,6 +55,8 @@ export interface PlanExecutionResult {
 export async function evaluateComplexity(
   userText: string,
   keywords?: string[],
+  /** 审计归属：有会话的调用传它，复杂度判定这次请求进快照体系。 */
+  audit?: PiTextCallAudit,
 ): Promise<ComplexityResult> {
   // 1. --plan 强制触发
   if (userText.startsWith("--plan")) {
@@ -82,6 +84,7 @@ export async function evaluateComplexity(
 
 复杂度评分 (1-5):`,
       thinkingEffort: "low",
+      ...(audit ? { audit } : {}),
     })
     const num = parseInt(resp.text?.trim() || "1", 10)
     const score = Math.max(1, Math.min(5, isNaN(num) ? 1 : num))
@@ -100,6 +103,8 @@ export interface GeneratePlanContext {
   availableTools: ToolDef[]
   thinkingEffort: ThinkingEffort
   maxSteps: number
+  /** 审计归属：规划是一次性请求，给出会话后这次请求进快照体系。 */
+  audit?: PiTextCallAudit
 }
 
 export async function generatePlan(
@@ -150,6 +155,7 @@ ${toolList}
     systemPrompt,
     userText: `用户请求: ${userText}`,
     thinkingEffort,
+    ...(context.audit ? { audit: context.audit } : {}),
   })
 
   try {
@@ -306,6 +312,9 @@ export interface ExecutePlanConfig {
   stepGate?: "each" | "none"
   /** 子运行归属：透传给 `runPiSubAgent`（许可身份绑定父会话与代际、挂到父槽下随父取消）。 */
   scope?: PiSubAgentScope
+  /** 计划身份：与 `sessionId` 一起给出时，步骤子运行的请求快照按计划步骤归属落盘。 */
+  planId?: string
+  sessionId?: string
 }
 
 export async function executePlan(
@@ -430,6 +439,9 @@ async function executeStep(
   }
 
   const { runPiSubAgent } = await import("@/services/engine/pi")
+  const audit = config.sessionId
+    ? { sessionId: config.sessionId, ...(config.planId ? { planId: config.planId } : {}), stepId: String(step.id) }
+    : undefined
   return runPiSubAgent({
     task: step.description,
     tools,
@@ -438,6 +450,7 @@ async function executeStep(
     timeoutMs: config.stepTimeoutMs,
     thinkingEffort: config.stepThinkingEffort,
     ...(config.scope ? { scope: config.scope } : {}),
+    ...(audit ? { audit } : {}),
     onToolStart: (toolName, toolCallId) => callbacks.onToolStart?.(step, toolName, toolCallId),
     onToolDone: (toolName, toolCallId, success) => callbacks.onToolDone?.(step, toolName, toolCallId, success),
   })

@@ -34,11 +34,19 @@ export type {
   TurnFailure,
 } from "./runtime"
 
-export { describeInputDelivery, isInputCommitted, PROMPT_SNAPSHOT_ENTRY } from "./delivery"
+export { describeInputDelivery, isInputCommitted } from "./delivery"
 export type { InputCommitState, InputDeliveryEvidence, InputDeliveryLookup, InputDeliveryStage } from "./delivery"
 
-export { COMPACTION_DECLINED_ENTRY } from "@/services/engine/runtime"
-export type { CompactionAuditSink } from "@/services/engine/runtime"
+export { COMPACTION_DECLINED_ENTRY, PROMPT_REWRITE_ENTRY, PROMPT_SNAPSHOT_ENTRY } from "@/services/engine/runtime"
+export type {
+  CompactionAuditSink,
+  PromptCapabilityContext,
+  PromptCompactionContext,
+  PromptPlanContext,
+  PromptRequestContext,
+  PromptRequestParams,
+  PromptRequestPurpose,
+} from "@/services/engine/runtime"
 
 export { RuntimeDataStreamFilter } from "./stream-text"
 
@@ -50,7 +58,7 @@ export {
   resolvePiTurnModel,
   toPiReasoningLevel,
 } from "./model-gateway"
-export type { HarnessModelsOptions, PiModel, PiRuntimeProviderOverride, PiTextCallInput, PiTextCallResult, PiTextPurpose } from "./model-gateway"
+export type { HarnessModelsOptions, PiModel, PiRuntimeProviderOverride, PiTextCallAudit, PiTextCallInput, PiTextCallResult, PiTextPurpose } from "./model-gateway"
 export { completePiText } from "./model-gateway"
 
 export {

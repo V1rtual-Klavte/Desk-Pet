@@ -14,13 +14,10 @@ import { TODO_CONTEXT } from "@earendil-works/pi-agent-core"
 import { createLogger } from "@/services/logger"
 import { formatError } from "@/services/error"
 import { acquirePiSession } from "@/services/session/repo"
-import { inputEventId, messageRequestId } from "@/services/engine/runtime"
+import { PROMPT_SNAPSHOT_ENTRY, inputEventId, messageRequestId } from "@/services/engine/runtime"
 import { harnessSlots } from "./harness-slot"
 
 const log = createLogger("Delivery")
-
-/** 请求快照的审计条目类型：写入方在 runtime.ts 的 queueAuditEntry，读取方（本模块）按它核对。 */
-export const PROMPT_SNAPSHOT_ENTRY = "deskpet.prompt_snapshot"
 
 export type InputDeliveryStage = "queued" | "context_committed" | "request_prepared" | "responded"
 

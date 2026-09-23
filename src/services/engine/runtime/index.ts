@@ -15,7 +15,13 @@ export type {
   PlanStepState,
   PromptAgentMessage,
   PromptCacheInfo,
+  PromptCapabilityContext,
+  PromptCompactionContext,
   PromptLlmMessage,
+  PromptPlanContext,
+  PromptRequestContext,
+  PromptRequestParams,
+  PromptRequestPurpose,
   PromptSnapshot,
   PromptTokenDrift,
   PromptToolSchema,
@@ -43,7 +49,13 @@ export type { RuntimeTraceContext, RuntimeTraceEvent, RuntimeTraceKind, RuntimeT
 
 export type { ContextAllocation } from "./types"
 
-export { COMPACTION_DECLINED_ENTRY, DESKPET_GREETING_ENTRY, DESKPET_SYSTEM_MESSAGE_ENTRY } from "./types"
+export {
+  COMPACTION_DECLINED_ENTRY,
+  DESKPET_GREETING_ENTRY,
+  DESKPET_SYSTEM_MESSAGE_ENTRY,
+  PROMPT_REWRITE_ENTRY,
+  PROMPT_SNAPSHOT_ENTRY,
+} from "./types"
 
 export {
   INPUT_SOURCE_FIELD,

@@ -39,6 +39,10 @@ export interface CompactionSummaryInput {
   /** 调用方冻结的模型；缺省回退到配置窗口。 */
   model?: import("./pi").PiModel
   signal?: AbortSignal
+  /** 压缩请求的归属会话；给出后摘要请求进快照体系（没有会话可归属时不传）。 */
+  sessionId?: string
+  /** 触发这次压缩的运行 id：作为摘要请求的派生来源写进快照与派生记录。 */
+  runId?: string
   /** resultProjection=preserve 的工具名：素材与主请求投影同口径，不做 L0 二次缩短。 */
   preserveToolNames?: ReadonlySet<string>
 }
@@ -88,6 +92,10 @@ export async function summarizeCompaction(input: CompactionSummaryInput): Promis
     purpose: "compaction", systemPrompt: SUMMARY_SYSTEM, userText,
     thinkingEffort: "low", maxTokens: budget.summaryMaxTokens,
     signal: input.signal, model: input.model,
+    // 有归属才落快照：摘要是一次性请求，但「这次压缩问了什么」必须可查。
+    ...(input.sessionId
+      ? { audit: { sessionId: input.sessionId, ...(input.runId ? { derivedFrom: [input.runId] } : {}) } }
+      : {}),
   })
   const summary = parseStructuredSummary(response.text)
   if (!summary) throw new Error("摘要格式无效：未返回可校验的结构化 JSON")
