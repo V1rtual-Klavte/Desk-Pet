@@ -1,7 +1,7 @@
 import type { SceneDef } from "../../types"
 import { checkSafety, matchesAnyPattern, BASH_DANGEROUS_PATTERNS, BASH_NOWAY_PATTERNS, FILE_DANGEROUS_PATTERNS, resolveFilePathLevel, trustToolInSession, resetSessionTrust, isToolTrusted } from "@/services/safety"
 import type { ToolDef, SafetyLevel } from "@/services/tool"
-import { TOOL_POLICY_VERSION } from "@/services/tool"
+import { getTool, TOOL_POLICY_VERSION } from "@/services/tool"
 
 /** 风险等级场景只关心 safetyLevel，策略用最小合法声明。 */
 const tool = (safetyLevel: SafetyLevel): ToolDef => ({
@@ -90,6 +90,28 @@ export const 敏感路径匹配 = scene("safety-file-pattern", "sf-07", "敏感�
   if (resolveFilePathLevel("C:\\Users\\me\\.ssh\\id_rsa") !== "NOWAY") throw new Error("Windows 私钥路径未命中")
   // 参数缺失（模型漏填 path）不能顺带提级或抛错
   if (resolveFilePathLevel(undefined) !== "SAFE") throw new Error("缺失 path 参数应保持 SAFE")
+
+  // 分级必须真的挂在注册过的生产工具上，而不是只存在于 checker 里：
+  // 直接取注册表里的工具声明调 resolveSafetyLevel（不执行命令、不读文件）。
+  const readTool = getTool("pi-read")
+  const bashTool = getTool("pi-bash")
+  if (!readTool?.resolveSafetyLevel || !bashTool?.resolveSafetyLevel) {
+    throw new Error("Pi 基础工具未注册 resolveSafetyLevel，分级没有接在生产工具上")
+  }
+  const ctx = { mode: "pet" as const }
+  if (readTool.resolveSafetyLevel({ path: "~/.ssh/id_rsa" }, ctx) !== "NOWAY") {
+    throw new Error("pi-read 没有把私钥路径提级为 NOWAY")
+  }
+  if (readTool.resolveSafetyLevel({ path: "/tmp/notes.md" }, ctx) !== "SAFE") {
+    throw new Error("pi-read 对普通路径多提了一级")
+  }
+  // bash 的路径级检查管「对谁做」：命令模式本身不危险，参数指向凭据路径也要硬禁止
+  if (bashTool.resolveSafetyLevel({ command: "cat ~/.ssh/id_rsa" }, ctx) !== "NOWAY") {
+    throw new Error("pi-bash 没有把凭据路径提级为 NOWAY")
+  }
+  if (bashTool.resolveSafetyLevel({ command: "cat /tmp/notes.md" }, ctx) === "NOWAY") {
+    throw new Error("pi-bash 把普通路径误判为硬禁止")
+  }
 })
 export const 信任周期 = scene("safety-trust-lifecycle", "sf-08", "会话信任按调用生效、可清除且不越过动态禁止", () => {
   trustToolInSession("test_safety")

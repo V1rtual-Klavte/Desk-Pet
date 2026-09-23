@@ -6,8 +6,8 @@ export const harnessStorageContract: ModuleContract = {
     "src/services/engine/pi/session-repo.ts",
     "src/services/tool/pi/tauri-execution-env.ts",
   ],
-  generatedAt: "2026-09-17",
-  sourceHash: "ec52e19ed1dbf9c3473178b932b3f6c428094704a69316c208e170a548b1d7f9",
+  generatedAt: "2026-09-23",
+  sourceHash: "38aa8f29b2990114f01125fab0750dd6d852e5867173c2a822971f0eae1280ec",
   coverage: [
     {
       id: "hs-01",
