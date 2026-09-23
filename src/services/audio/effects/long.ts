@@ -1,5 +1,5 @@
 // 长音效 (2-3s): 风潮/水晶/暖阳/余韵
-import { getCtx } from "../context"
+import { getCtx, reportEffectFailure } from "../context"
 import type { SoundDef } from "../types"
 export const longSounds: SoundDef[] = [
   {
@@ -17,7 +17,7 @@ export const longSounds: SoundDef[] = [
           osc.connect(gain); gain.connect(ctx.destination)
           osc.start(ctx.currentTime + i * 0.15); osc.stop(ctx.currentTime + 2.5)
         })
-      } catch {}
+      } catch (error) { reportEffectFailure(error) }
     },
   },
   {
@@ -35,7 +35,7 @@ export const longSounds: SoundDef[] = [
           osc.connect(gain); gain.connect(ctx.destination)
           osc.start(t); osc.stop(t + 0.50)
         })
-      } catch {}
+      } catch (error) { reportEffectFailure(error) }
     },
   },
   {
@@ -59,7 +59,7 @@ export const longSounds: SoundDef[] = [
         gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 2.3)
         osc.connect(filter); filter.connect(gain); gain.connect(ctx.destination)
         osc.start(ctx.currentTime); osc.stop(ctx.currentTime + 2.3)
-      } catch {}
+      } catch (error) { reportEffectFailure(error) }
     },
   },
   {
@@ -75,7 +75,7 @@ export const longSounds: SoundDef[] = [
           osc.connect(gainNode); gainNode.connect(ctx.destination)
           osc.start(ctx.currentTime); osc.stop(ctx.currentTime + 2.8)
         })
-      } catch {}
+      } catch (error) { reportEffectFailure(error) }
     },
   },
 ]

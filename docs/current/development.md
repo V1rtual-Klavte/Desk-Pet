@@ -59,6 +59,8 @@ Rust 对应日志宏位于 [macros/](../../src-tauri/src/macros/)，内核是 [l
 
 `general.errors.overlay` 在报错时求值：auto 为 dev 显示、生产隐藏，always/never 显式覆盖。初始化前错误也能进入同一出口。Rust [AppError](../../src-tauri/src/error.rs) 统一序列化错误，panic hook 记录位置。
 
+音效（[audio/effects/](../../src/services/audio/effects/)）的节点构建失败是有意静默 + 统一一次性留痕：[context.ts](../../src/services/audio/context.ts) 的 `reportEffectFailure`（自动播放策略挂起由 `reportSuspendedOnce`）——新增音效不要各自打日志。
+
 ## 文档与验证
 
 测试运行/编写流程归[测试 README](../../src/services/__tests__/live/README.md)，验证边界归[testing.md](testing.md)。Rust 单测与实现同文件内联（`#[cfg(test)]`），由 `pnpm run test:rust`（`cargo test --lib`）执行，随 CI 双平台运行；它只覆盖纯 Rust 逻辑，不替代 Live Test。修改文档时检查：相对链接和锚点可达、提到的源码符号存在、当前/未来/历史状态分明、没有把旧验证或授权当作本轮结论。

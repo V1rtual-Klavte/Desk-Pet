@@ -1,5 +1,5 @@
 // 提示音效: 表层/中层/深层
-import { getCtx } from "../context"
+import { getCtx, reportEffectFailure } from "../context"
 import type { SoundDef } from "../types"
 
 export const surfaceSounds: SoundDef[] = [
@@ -16,7 +16,7 @@ export const surfaceSounds: SoundDef[] = [
         osc1.connect(gain); osc2.connect(gain); gain.connect(ctx.destination)
         osc1.start(ctx.currentTime); osc2.start(ctx.currentTime + 0.08)
         osc1.stop(ctx.currentTime + 0.08); osc2.stop(ctx.currentTime + 0.16)
-      } catch {}
+      } catch (error) { reportEffectFailure(error) }
     },
   },
   {
@@ -35,7 +35,7 @@ export const surfaceSounds: SoundDef[] = [
         osc.connect(gain); gain.connect(ctx.destination)
         lfo.start(ctx.currentTime); osc.start(ctx.currentTime)
         lfo.stop(ctx.currentTime + 0.21); osc.stop(ctx.currentTime + 0.21)
-      } catch {}
+      } catch (error) { reportEffectFailure(error) }
     },
   },
   {
@@ -64,7 +64,7 @@ export const surfaceSounds: SoundDef[] = [
         noise.connect(noiseGain); noiseGain.connect(ctx.destination)
         noise.start(ctx.currentTime)
         lfo.stop(ctx.currentTime + 0.26); osc.stop(ctx.currentTime + 0.26); noise.stop(ctx.currentTime + 0.26)
-      } catch {}
+      } catch (error) { reportEffectFailure(error) }
     },
   },
 ]

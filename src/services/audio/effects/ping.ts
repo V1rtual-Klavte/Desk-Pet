@@ -1,5 +1,5 @@
 // 短提醒单音 (余韵风格): 金铎/银铃/玉磬/铜磬
-import { getCtx } from "../context"
+import { getCtx, reportEffectFailure } from "../context"
 import type { SoundDef } from "../types"
 export const pingSounds: SoundDef[] = [
   {
@@ -15,7 +15,7 @@ export const pingSounds: SoundDef[] = [
           osc.connect(gainNode); gainNode.connect(ctx.destination)
           osc.start(ctx.currentTime); osc.stop(ctx.currentTime + 2.8)
         })
-      } catch {}
+      } catch (error) { reportEffectFailure(error) }
     },
   },
   {
@@ -33,7 +33,7 @@ export const pingSounds: SoundDef[] = [
           osc.connect(gainNode); gainNode.connect(ctx.destination)
           osc.start(t); osc.stop(t + 2.0)
         })
-      } catch {}
+      } catch (error) { reportEffectFailure(error) }
     },
   },
   {
@@ -49,7 +49,7 @@ export const pingSounds: SoundDef[] = [
           osc.connect(gainNode); gainNode.connect(ctx.destination)
           osc.start(ctx.currentTime); osc.stop(ctx.currentTime + 2.5)
         })
-      } catch {}
+      } catch (error) { reportEffectFailure(error) }
     },
   },
   {
@@ -69,7 +69,7 @@ export const pingSounds: SoundDef[] = [
           lfo.start(ctx.currentTime); osc.start(ctx.currentTime)
           lfo.stop(ctx.currentTime + 3.0); osc.stop(ctx.currentTime + 3.0)
         })
-      } catch {}
+      } catch (error) { reportEffectFailure(error) }
     },
   },
 ]

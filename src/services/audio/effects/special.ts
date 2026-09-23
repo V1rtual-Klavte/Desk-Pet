@@ -1,5 +1,5 @@
 // 特色长音效: 宇宙飘浮/脉冲/雨滴/八音盒
-import { getCtx } from "../context"
+import { getCtx, reportEffectFailure } from "../context"
 import type { SoundDef } from "../types"
 export const specialSounds: SoundDef[] = [
   {
@@ -29,7 +29,7 @@ export const specialSounds: SoundDef[] = [
           h.connect(g); g.connect(ctx.destination)
           h.start(t); h.stop(t + 0.40)
         })
-      } catch {}
+      } catch (error) { reportEffectFailure(error) }
     },
   },
   {
@@ -55,7 +55,7 @@ export const specialSounds: SoundDef[] = [
           osc.connect(gain); gain.connect(ctx.destination)
           osc.start(ctx.currentTime + offset); osc.stop(ctx.currentTime + offset + 0.06)
         })
-      } catch {}
+      } catch (error) { reportEffectFailure(error) }
     },
   },
   {
@@ -82,7 +82,7 @@ export const specialSounds: SoundDef[] = [
         padGain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 2.2)
         pad.connect(padGain); padGain.connect(ctx.destination)
         pad.start(ctx.currentTime); pad.stop(ctx.currentTime + 2.2)
-      } catch {}
+      } catch (error) { reportEffectFailure(error) }
     },
   },
   {
@@ -108,7 +108,7 @@ export const specialSounds: SoundDef[] = [
         ringGain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 2.8)
         ring.connect(ringGain); ringGain.connect(ctx.destination)
         ring.start(ctx.currentTime + 1.8); ring.stop(ctx.currentTime + 2.8)
-      } catch {}
+      } catch (error) { reportEffectFailure(error) }
     },
   },
 ]
