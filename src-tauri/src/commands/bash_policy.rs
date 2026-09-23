@@ -9,12 +9,14 @@
 //      「首词合法、参数致命」的命令全链路放行（白名单默认含 `find`）。
 //
 // 现在改成分层模型，调用方只能**叠加**规则，不能关闭基线：
-//   层 1 硬基线（两种 scope 共用）：deny_hard_floor + deny_destructive_flags
+//   层 1 硬基线（两种 scope 共用）：deny_hard_floor + deny_destructive_flags + deny_credential_paths
 //   层 2 按 scope 叠加：Pet → 白名单 + 禁 Shell 组合符；Assistant → 禁系统路径破坏
 //
 // 所有判定基于 Shell 级 token 分析，不做子串 contains，避免空格/引号导致的
 // 漏判（`rm  -rf  /`）与误杀（`rm -rf /Users`）。
 // ==========================================
+
+use std::path::Path;
 
 use crate::error::{AppError, AppResult};
 
@@ -60,6 +62,7 @@ pub(crate) fn enforce_bash_policy(
     // 层 1：无条件硬基线 —— 两种 scope 都跑，调用方不可关闭
     deny_hard_floor(command, &tokens)?;
     deny_destructive_flags(&tokens)?;
+    deny_credential_paths(&tokens)?;
 
     // 层 2：按 scope 叠加
     match scope {
@@ -194,6 +197,29 @@ fn deny_destructive_flags(tokens: &[Token]) -> AppResult<()> {
                 "禁止重定向写入系统路径: {}",
                 target.text
             )));
+        }
+    }
+    Ok(())
+}
+
+/// 与 `deny_destructive_flags` 并列的硬基线：命令行里出现凭据路径 token 就拒绝。
+///
+/// **两种 scope 共用且调用方不可关闭** —— 凭据泄露与「命令做什么」无关，
+/// 读一次就足够，没有可确认的余地，所以走层 1 而不是层 2 的确认通道。
+///
+/// 判定用 `paths.rs::is_credential_path`，与文件工具共享同一条规则文本。
+/// token 来自 `expand_tokens`，`sh -c '…'`、`eval`、`$()` 的内容已经是独立 token，
+/// 嵌套形式因此天然覆盖；整段单引号的 token 跳过（引号内是字面量，与
+/// `first_control_syntax`、`collect_nested_scripts` 的既有语义一致），双引号内仍要判。
+fn deny_credential_paths(tokens: &[Token]) -> AppResult<()> {
+    for token in tokens {
+        if token.operator || token.single_quoted {
+            continue;
+        }
+        if crate::paths::is_credential_path(Path::new(&token.text)) {
+            // 回显的是用户自己写下的那个 token，不是任何解析出来的真实路径：
+            // 用户输入本身不是秘密，需要看见它才能理解命令为什么被拒。
+            return Err(AppError::Tool(format!("命令包含凭据路径: {}", token.text)));
         }
     }
     Ok(())
@@ -1057,6 +1083,38 @@ mod tests {
     #[test]
     fn empty_command_is_rejected() {
         denied_both("   ");
+    }
+
+    // ── 层 1：凭据路径 ──
+
+    #[test]
+    fn blocks_credential_paths_in_any_scope() {
+        for command in [
+            "cat ~/.ssh/id_rsa",
+            "cat /Users/me/.ssh/id_rsa",
+            "cat ./cert.pem",
+            "cat /tmp/server.key",
+            // 嵌套脚本展开后的 token 同样覆盖，不需要各自再写一条规则
+            "sh -c \"cat ~/.ssh/id_rsa\"",
+            // 写入方向也要拦：authorized_keys 是凭据目录里唯一的「写」入口
+            "echo x > ~/.ssh/authorized_keys",
+        ] {
+            denied_both(command);
+        }
+    }
+
+    #[test]
+    fn allows_credential_lookalikes() {
+        for command in [
+            "cat notes.md",
+            "ls -la",
+            // 整段单引号是字面量：这条命令打印字符串，不读私钥
+            "echo '~/.ssh/id_rsa'",
+        ] {
+            assert!(assistant(command), "Assistant 应放行: {command}");
+        }
+        // 注意 `grep -rn "\\.ssh" docs/` 不在放行列表里：双引号 token 的形状与真实
+        // 路径无法区分，按规则文本会被判为凭据路径（已知误杀，见 TOOL-01 风险）。
     }
 
     /// 前端 `invoke("bash_exec", { policy: { scope, whitelist } })` 的载荷契约。

@@ -19,6 +19,11 @@ pub enum AppError {
     #[error("工具路径必须是绝对路径: {0}")]
     NotAbsolute(String),
 
+    /// 凭据路径（`.ssh` 目录组件 / `.pem` / `.key`）的最终判定。
+    /// 单元变体、不带路径：错误文案会被回显给用户，不能把敏感路径本身写进去。
+    #[error("凭据路径不允许访问")]
+    SensitivePath,
+
     #[error("无法获取 home 目录")]
     NoHomeDir,
 
@@ -42,6 +47,7 @@ impl AppError {
             Self::PathEscape => "PATH_ESCAPE",
             Self::PathNotFound(_) => "PATH_NOT_FOUND",
             Self::NotAbsolute(_) => "NOT_ABSOLUTE",
+            Self::SensitivePath => "SENSITIVE_PATH",
             Self::NoHomeDir => "NO_HOME_DIR",
             Self::Io(_) => "IO",
             Self::Config(_) => "CONFIG",

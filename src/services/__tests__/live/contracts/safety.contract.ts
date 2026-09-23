@@ -21,6 +21,9 @@ export const safetyContract: ModuleContract = {
     { id: "sf-13", feature: "确认身份与失效", description: "权限评估要求 sessionId、runGeneration、toolCallId 与当前代际；缺失、取消或旧代际一律拒绝", why: "旧确认不得授权新回合", depth: "deep", scenarios: ["permission-identity-invalid"] },
     { id: "sf-14", feature: "精确会话授权", description: "allow_session 仅复用相同 session、generation、tool、参数与策略指纹的未过期授权；策略指纹由工具策略（含策略版本与执行维度）、本次解析的风险等级与安全模式共同决定，任何一项变化都不复用旧授权", why: "一次确认不能扩大到其他输入、回合或已改变的策略", depth: "deep", scenarios: ["permission-session-grant"] },
     { id: "sf-15", feature: "取消确认", description: "已取消 signal 的确认立即按拒绝结算，不遗留 pending UI", why: "取消不能让旧确认继续授权", depth: "deep", scenarios: ["permission-aborted-confirm"] },
+    { id: "sf-16", feature: "凭据路径的 Rust 终判", description: "经 IPC 直连 file_read 与 bash_exec：凭据路径（`.ssh` 目录组件、`.pem`/`.key` 后缀）在两种 scope 下都被拒绝，不存在与 `..` 形态返回 SENSITIVE_PATH 而不是 PATH_NOT_FOUND（判定先于 canonicalize），拒绝原因是凭据规则而非白名单或超时", why: "TS 分级副本可被绕过，凭据泄露的最终判定必须在 Rust 且不可关闭", depth: "deep", scenarios: ["safety-credential-paths"] },
+    { id: "sf-17", feature: "私钥读取被拦", description: "模型请求 read .ssh/id_rsa 时工具不以 done 收场、不经确认通道放行，会话条目里不出现 OpenSSH 私钥正文", why: "私钥只读一次就足以泄露，且泄露会持久化进会话文件", depth: "deep", scenarios: ["safety-credential-read-blocked"] },
+    { id: "sf-18", feature: "凭据命令的子进程边界", description: "模型请求 bash 把私钥重定向到文件时工具不以 done 收场，重定向产物不存在（策略在 spawn 之前拒绝，子进程从未产生）", why: "bash 是绕过文件工具读取凭据的另一条入口，拦截必须发生在执行之前", depth: "deep", scenarios: ["safety-credential-bash-blocked"] },
   ],
   rules: { minScenarios: 7, minDeepScenarios: 3, requireBoundary: true, requireErrorPath: true },
 }

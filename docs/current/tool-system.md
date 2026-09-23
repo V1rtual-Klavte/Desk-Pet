@@ -13,9 +13,9 @@ Pi Harness Tool → harness-tool-adapter → ToolRouter → 执行许可借用 �
 
 | 工具 | 模式 | 当前边界 |
 |---|---|---|
-| read | 两种 | 文本或图片读取；敏感路径仍会提高风险或被拒绝；私钥/凭据路径（含相对形式与 `~`/`$HOME`/`${HOME}`/反斜杠/`..` 归一）在两种模式下都硬拒绝 |
+| read | 两种 | 文本或图片读取；敏感路径仍会提高风险或被拒绝；私钥/凭据路径（含相对形式与 `~`/`$HOME`/`${HOME}`/反斜杠/`..` 归一）在两种模式下都硬拒绝，Rust 侧 `is_credential_path` 是不可关闭的最终判定（规则文本 = 「`.ssh` 目录组件或 `.pem`/`.key` 后缀」） |
 | write / edit | 两种 | DANGER；配置关闭时硬拒绝 |
-| bash | 两种 | 动态风险；陪伴模式白名单与禁组合符，助手模式仍保留 Rust 硬基线 |
+| bash | 两种 | 动态风险；陪伴模式白名单与禁组合符，助手模式仍保留 Rust 硬基线；命令里的凭据路径 token 在两种模式下同样被硬拒绝 |
 | system_info | 两种 | 只读系统信息 |
 | read_session_event | 回合内 | 按 eventId 分页读取当前会话保存的完整工具结果 |
 | app_open / clipboard_read / clipboard_write / agent_spawn | 助手 | 按需注册，受各自策略约束 |
@@ -46,7 +46,7 @@ Harness 以 `toolExecution: parallel` 派发批次，效果之间的并发由 Ru
 - `tool_permit_release` 与 `tool_permit_cancel` 同样绑定借用者：其它窗口/页面即使拿到 requestId 也不能释放在飞额度或取消他人的排队项，被拒绝的调用不改变额度状态。
 - 借用者身份 = Rust 提供的窗口标签 + 前端页面实例 id（[execution-permit.ts](../../src/services/tool/execution-permit.ts) 在模块加载时声明上线）。同一窗口同一时刻只有一个活着的页面实例：新实例上线（Vite 全量热重载、WebView 重建）时一次性回收同窗口其它实例的在飞额度与排队项，并以回收数量作为证据。回收只由「借用者已经不存在」触发，不看时间：同一实例重复上线是空操作，其它窗口的借用者与在飞的 `exclusive_effect` 都不受影响；窗口关闭且不再重新加载时，它留下的额度仍要等下一次同窗口上线或进程退出才回收。
 - 上限由前端在每个 run 开始前下发给所有者并按运行生效（与队列批量策略同一模式）：降低上限不撤销在飞许可，只是暂停新获准执行；提高会唤醒有序等待项。越界值三处处理不同（见[运行时数据](runtime-data.md#工具并行上限字段的语义与生效时机)）：getter 收拢到最近边界，设置页保存拒绝，Rust 下发直接报错。
-- 许可域按数据根区分，Live Test 的临时根自带隔离域；多个 WebView 共用同一所有者。许可只约束 Desk-Pet 托管的调用，不承诺阻止外部进程改文件。
+- 许可域按数据根区分，Live Test 的临时根自带隔离域；多个 WebView 共用同一所有者。许可只约束 Desk-Pet 托管的调用，不承诺阻止外部进程改文件；这套执行许可与下面的路径/命令策略一样不是完备的 OS 沙箱，间接形式（如 `python -c "open('~/.ssh/id_rsa')"`）不在覆盖内。
 
 薄 `BaseTool` 仍未实施（当前零消费者）；设置页「工具策略（声明）」区从同一 ToolDef 展示权限意见、隔离级别、结果投影与历史摘要，不复制第二份策略定义。
 
@@ -60,13 +60,13 @@ Harness 以 `toolExecution: parallel` 派发批次，效果之间的并发由 Ru
 
 ## 文件、命令与取消
 
-- 文件路径通过 AppPaths 校验，允许根为用户 Home、系统临时目录，开发构建还包含项目根；凭据等路径（`.ssh` 目录组件、`*.pem`/`*.key` 后缀）由 Rust 做不可关闭的最终判定，TS 侧的 [resolveFilePathLevel](../../src/services/safety/checker.ts) 是同一规则族的分级副本（相对形式与 `~`/`$HOME`/`${HOME}`/反斜杠/`..` 经词法归一后同判），在进入 ToolRouter 前就提为 NOWAY。
+- 文件路径通过 AppPaths 校验，允许根为用户 Home、系统临时目录，开发构建还包含项目根；凭据等路径（规则文本 = 「`.ssh` 目录组件或 `.pem`/`.key` 后缀」）由 Rust [paths.rs::is_credential_path](../../src-tauri/src/paths.rs) 做不可关闭的最终判定（`SENSITIVE_PATH`），接入点是 `validate_file_path`/`validate_new_file_path` 的词法形态**与** canonicalize 结果两侧 —— 不存在的路径也先得凭据结论而不是 `PATH_NOT_FOUND`，符号链接与 Windows 短名解析后仍会被判；TS 侧的 [resolveFilePathLevel](../../src/services/safety/checker.ts) 是同一规则族的分级副本（相对形式与 `~`/`$HOME`/`${HOME}`/反斜杠/`..` 经词法归一后同判），在进入 ToolRouter 前就提为 NOWAY。
 - 这套路径与命令策略是**同一规则族的两层副本**，不是完备的 OS 沙箱：间接形式（如 `python -c "open('~/.ssh/id_rsa')"`）与「拦实际打开的文件」都不在覆盖内；`.env`、系统目录等可确认路径保持不变，助手模式仍走「用户确认后放行」。
 - Bash 超时、取消和进程回收由 Rust 管理；Router 为调用叠加取消/超时，区分 cancelled、timeout、not_found、failed。
 - 输出上限与 spill 保留数由 [tool_exec.rs](../../src-tauri/src/commands/tool_exec.rs) 管理。Bash 截断会返回 spill 引用，最近文件会淘汰；不能声称任意长的 shell 输出永久存于会话。
 - 会话保存的是**工具实际返回内容**；Context L0 再做请求投影时，原工具结果仍可用 read_session_event 读取。两层截断的范围不能混同。
 
-[bash_policy.rs](../../src-tauri/src/commands/bash_policy.rs) 是不可关闭的最终门禁。`bash_exec` 必须接收 `{scope, whitelist}`，两种模式均拒绝删根/家目录、设备破坏、系统电源命令、危险 shell 链及受限参数；陪伴模式再限制首词和组合符，助手模式的系统路径保护也继续生效。策略基于 Shell token，不以简单子串代替；这是一套命令策略，不是完备的 OS 沙箱。
+[bash_policy.rs](../../src-tauri/src/commands/bash_policy.rs) 是不可关闭的最终门禁。`bash_exec` 必须接收 `{scope, whitelist}`，两种模式均拒绝删根/家目录、设备破坏、系统电源命令、危险 shell 链、受限参数以及命令里的凭据路径 token（`deny_credential_paths`，与 `deny_destructive_flags` 并列，嵌套脚本按展开后的 token 判）；陪伴模式再限制首词和组合符，助手模式的系统路径保护也继续生效。策略基于 Shell token，不以简单子串代替；这是一套命令策略，不是完备的 OS 沙箱：间接形式（如 `python -c "open('~/.ssh/id_rsa')"`）不在覆盖内。
 
 Provider 网络边界独立于 MCP/shell：配置 origin、禁止 redirect、超时和响应上限见[运行时契约](runtime-contract.md#pi权限与网络)。不能把 Provider fetch guard 当作所有联网工具的控制层。
 

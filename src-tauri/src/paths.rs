@@ -8,6 +8,7 @@ use std::path::{Component, Path, PathBuf};
 use tauri::Manager;
 
 use crate::error::{AppError, AppResult};
+use crate::rust_debug;
 
 pub struct AppPaths {
     pub data_root: PathBuf,   // 统一读写根
@@ -126,9 +127,19 @@ impl AppPaths {
 
     /// 校验文件路径在 home / temp 内（用于 tool_exec file_read/write）
     pub fn validate_file_path(path: &Path) -> AppResult<PathBuf> {
+        // 词法优先：不存在的路径也要先得到凭据结论，而不是 PATH_NOT_FOUND ——
+        // 调用方读不存在的私钥与读存在的私钥都是「不该发生」，错误码不该随磁盘状态变。
+        if is_credential_path(path) {
+            return Err(AppError::SensitivePath);
+        }
         let resolved = path
             .canonicalize()
             .map_err(|_| AppError::PathNotFound(path.to_string_lossy().to_string()))?;
+        // canonicalize 之后再判一次：符号链接与 Windows 短名会把 `.ssh`/`.pem` 藏在解析结果里，
+        // 只看请求文本会漏掉「链接名无害、指向私钥」这一形态。
+        if is_credential_path(&resolved) {
+            return Err(AppError::SensitivePath);
+        }
         if !is_allowed_file_path(&resolved)? {
             return Err(AppError::PathEscape);
         }
@@ -138,6 +149,10 @@ impl AppPaths {
     /// 校验尚不存在的文件路径。返回规范化绝对路径，不创建任何目录。
     pub fn validate_new_file_path(path: &Path) -> AppResult<PathBuf> {
         let normalized = normalize_absolute(path)?;
+        // 词法优先（在归一化路径上判，`./`、`..` 已被折叠），先于允许根判定
+        if is_credential_path(&normalized) {
+            return Err(AppError::SensitivePath);
+        }
         if !is_allowed_file_path(&normalized)? {
             return Err(AppError::PathEscape);
         }
@@ -162,6 +177,10 @@ impl AppPaths {
         let canonical_ancestor = ancestor
             .canonicalize()
             .map_err(|_| AppError::PathNotFound(ancestor.to_string_lossy().to_string()))?;
+        // 祖先的 canonicalize 结果同样要过凭据判定：目标是新文件，凭据形态只能藏在父目录上
+        if is_credential_path(&canonical_ancestor) {
+            return Err(AppError::SensitivePath);
+        }
         if !is_allowed_file_path(&canonical_ancestor)? {
             return Err(AppError::PathEscape);
         }
@@ -175,6 +194,10 @@ impl AppPaths {
                 let resolved = normalized
                     .canonicalize()
                     .map_err(|_| AppError::PathEscape)?;
+                // 叶子链接解析后的真实目标：链接名可以任意，凭据形态只在这里现形
+                if is_credential_path(&resolved) {
+                    return Err(AppError::SensitivePath);
+                }
                 if !is_allowed_file_path(&resolved)? {
                     return Err(AppError::PathEscape);
                 }
@@ -222,10 +245,18 @@ fn allowed_file_roots() -> AppResult<Vec<PathBuf>> {
     }
     // canonicalize 后的形态也各留一份：macOS 的 /var → /private/var、Windows 的短名都走这条
     for root in roots.clone() {
-        if let Ok(canonical) = root.canonicalize() {
-            if !roots.contains(&canonical) {
-                roots.push(canonical);
+        match root.canonicalize() {
+            Ok(canonical) => {
+                if !roots.contains(&canonical) {
+                    roots.push(canonical);
+                }
             }
+            // 解析失败只是少一个候选根，语义与之前一致；但路径被拒时报的是 PATH_ESCAPE，
+            // 没有这条日志就无法区分「真的越权」与「根没解析出来」。
+            Err(error) => rust_debug!(
+                "允许根 canonicalize 失败，跳过候选: root={} error={error}",
+                root.display()
+            ),
         }
     }
     Ok(roots)
@@ -235,6 +266,23 @@ fn is_allowed_file_path(path: &Path) -> AppResult<bool> {
     Ok(allowed_file_roots()?
         .iter()
         .any(|root| path.starts_with(root)))
+}
+
+/// 凭据路径规则（与 TS `checker.ts` 的 `FILE_NOWAY_PATTERNS` 同一规则族）：
+/// 路径中出现 `.ssh` 目录组件，或后缀为 `.pem` / `.key`。只看路径文本，不查磁盘。
+///
+/// 先做词法归一（`\` → `/`、整体小写）：macOS/Windows 文件系统本身不区分大小写，
+/// `.SSH`/`.PEM` 与 `C:\Users\me\.ssh\id_rsa` 必须与 POSIX 写法同判 —— TS 侧靠正则
+/// 的 `i` 标志达到同一效果。归一只用于判定形态，权威结论在本函数。
+///
+/// 规则文本的任何改动都必须与 `src/services/safety/checker.ts` 同时进行。
+pub fn is_credential_path(path: &Path) -> bool {
+    let lowered = path.to_string_lossy().replace('\\', "/").to_ascii_lowercase();
+    if lowered.ends_with(".pem") || lowered.ends_with(".key") {
+        return true;
+    }
+    // 按 `/` 切组件：`.sshnotes` 是普通目录名，只有整段等于 `.ssh` 才算目录组件
+    lowered.split('/').any(|segment| segment == ".ssh")
 }
 
 fn normalize_absolute(path: &Path) -> AppResult<PathBuf> {
@@ -583,6 +631,85 @@ mod tests {
         let root = symlink_test_root("parent");
         assert!(AppPaths::revalidate_existing_parent(&root.join("ok.json")).is_ok());
         assert!(AppPaths::revalidate_existing_parent(&root.join("missing/ok.json")).is_err());
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    // ── 凭据路径（与 TS `checker.ts` 的共享 fixture 列表）──
+    // NOWAY / SAFE 两组逐字对应 `src/services/__tests__/live/scenes/safety/安全等级边界.scene.ts`
+    // 的断言输入；规则文本或列表改动必须两侧同时改。
+
+    /// NOWAY 组：`.ssh` 目录组件或 `.pem`/`.key` 后缀，写成相对/`~`/`$HOME`/带反斜杠/夹 `..` 都不改变结论。
+    const CREDENTIAL_PATHS: [&str; 9] = [
+        ".ssh/id_rsa",
+        "~/.ssh/id_rsa",
+        "$HOME/.ssh/id_rsa",
+        "${HOME}/.ssh/id_rsa",
+        r"C:\Users\me\.ssh\id_rsa",
+        "x/../.ssh/id_rsa",
+        "./cert.pem",
+        "~/server.key",
+        "/etc/ssl/private/a.PEM",
+    ];
+
+    /// SAFE 组：普通路径；`.sshnotes` 不是 `.ssh` 目录组件，不能连坐。
+    /// 末项是 Rust 侧特有的反斜杠归一对照：`\` → `/` 不能把普通 Windows 路径变成命中。
+    const ORDINARY_PATHS: [&str; 5] = [
+        "notes.md",
+        "/tmp/out.txt",
+        "",
+        "/Users/me/.sshnotes/readme.md",
+        "C:\\Users\\me\\notes.md",
+    ];
+
+    #[test]
+    fn credential_paths_are_rejected_lexically() {
+        for raw in CREDENTIAL_PATHS {
+            assert!(
+                is_credential_path(Path::new(raw)),
+                "凭据路径未被识别: {raw}"
+            );
+        }
+        for raw in ORDINARY_PATHS {
+            assert!(
+                !is_credential_path(Path::new(raw)),
+                "普通路径被误判为凭据路径: {raw}"
+            );
+        }
+    }
+
+    /// 词法优先：路径不存在时也必须得到 SENSITIVE_PATH，而不是 PATH_NOT_FOUND。
+    /// 判定若只在 canonicalize 之后，这条会拿到 PathNotFound —— 两条断言一起把顺序钉死。
+    #[test]
+    fn validate_file_path_rejects_credential_path_before_resolving() {
+        let root = symlink_test_root("credential-lexical");
+        let missing = root.join(".ssh").join("id_rsa");
+        assert!(!missing.exists(), "探针路径必须是「不存在」的");
+        assert!(matches!(
+            AppPaths::validate_file_path(&missing),
+            Err(AppError::SensitivePath)
+        ));
+
+        // 夹了 `..` 的形态同样在词法阶段就被拦下，不依赖磁盘上是否真有这一层
+        let dotted = root.join("x").join("..").join(".ssh").join("id_rsa");
+        assert!(matches!(
+            AppPaths::validate_file_path(&dotted),
+            Err(AppError::SensitivePath)
+        ));
+
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn validate_new_file_path_rejects_credential_target() {
+        let root = symlink_test_root("credential-new-file");
+        let target = root.join("x").join("cert.pem");
+        assert!(matches!(
+            AppPaths::validate_new_file_path(&target),
+            Err(AppError::SensitivePath)
+        ));
+
+        // 收尾：整棵探针目录都没有被创建（校验不产生副作用）
+        assert!(!root.join("x").exists());
         fs::remove_dir_all(&root).unwrap();
     }
 }
