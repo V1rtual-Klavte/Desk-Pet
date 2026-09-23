@@ -21,6 +21,6 @@ export const plannerContract: ModuleContract = {
     requireBoundary: true,
     requireErrorPath: true,
     unitOnly: true,
-    unitOnlyReason: "Plan 入口在 runtime 里由 generalConfig.assistantMode && planConfig.enabled 双重把守，而 Live Test 恒以 pet 模式运行，production/runtime 场景触达不到它；真实模型下的完整 Plan 闭环又只能断言「有步骤」这种降级路径也满足的弱条件。因此本契约当前只覆盖判定、解析与降级规则，Planner 的运行时接线属未覆盖项（见计划 §3.5）。",
+    unitOnlyReason: "Plan 入口在 runtime 里由 generalConfig.assistantMode && planConfig.enabled 双重把守，而 Live Test 恒以 pet 模式运行，production/runtime 场景触达不到它；真实模型下的完整 Plan 闭环又只能断言「有步骤」这种降级路径也满足的弱条件。因此本契约当前只覆盖判定、解析与降级规则，Planner 的运行时接线属未覆盖项（见计划 §3.5）。W2 已交付 plan-confirm-channel.ts 测试替身（planPolicy），production 场景与本理由的重做归 W4（PLAN-17）。",
   },
 }

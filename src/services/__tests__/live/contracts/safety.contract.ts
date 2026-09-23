@@ -24,6 +24,7 @@ export const safetyContract: ModuleContract = {
     { id: "sf-16", feature: "凭据路径的 Rust 终判", description: "经 IPC 直连 file_read 与 bash_exec：凭据路径（`.ssh` 目录组件、`.pem`/`.key` 后缀，`.sshnotes` 这类前缀不算）被拒绝 —— 文件入口返回 SENSITIVE_PATH 而不是 PATH_NOT_FOUND（判定先于 canonicalize，不存在的路径也一样），bash 入口返回 TOOL 且文案指明凭据路径（两种 scope 共用层 1 硬基线，白名单里放了 `cat` 也照样拒绝，所以拒绝不可能来自白名单或超时）", why: "TS 分级副本可被绕过，凭据泄露的最终判定必须在 Rust 且不可关闭", depth: "deep", scenarios: ["safety-credential-paths"] },
     { id: "sf-17", feature: "私钥读取被拦", description: "模型请求 read .ssh/id_rsa 时工具不以 done 收场、不经确认通道放行（确认被批准也不能把它放行），会话条目里不出现 OpenSSH 私钥正文", why: "私钥只读一次就足以泄露，且泄露会持久化进会话文件", depth: "deep", scenarios: ["safety-credential-read-blocked"] },
     { id: "sf-18", feature: "凭据命令的子进程边界", description: "模型请求 bash 把私钥重定向到文件时工具不以 done 收场；策略在 spawn 之前拒绝（被拦回合的耗时远早于命令自然时长），重定向产物不存在 —— 子进程从未产生", why: "bash 是绕过文件工具读取凭据的另一条入口，拦截必须发生在执行之前", depth: "deep", scenarios: ["safety-credential-bash-blocked"] },
+    { id: "sf-20", feature: "子代理授权的会话与代际绑定", description: "子代理内的 allow_session 授权绑定父会话与代际：切会话后同参 grant 不得命中，必须重新确认", why: "授权不绑定会话与代际会让用户在不知情的新会话里被放行", depth: "deep", scenarios: ["safety-subagent-grant-scope"] },
   ],
   rules: { minScenarios: 7, minDeepScenarios: 3, requireBoundary: true, requireErrorPath: true },
 }
