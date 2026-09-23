@@ -1,7 +1,7 @@
 import type { Context, FauxModelDefinition, FauxProviderState, FauxResponseStep } from "@earendil-works/pi-ai"
 import { aiConfig } from "@/services/config"
 import { contextBudget } from "@/services/context"
-import { compactionSettingsFor, harnessSlots, isSessionBusy } from "@/services/engine/pi"
+import { compactionSettingsFor, harnessSlots, isSessionBusy, listQueuedInputs } from "@/services/engine/pi"
 import { initChat, sendMessage } from "@/services/agent/runner"
 import { getFallbackReply } from "@/services/personality/stages-cache"
 import type { FallbackReplies } from "@/services/personality/stages-file"
@@ -164,11 +164,24 @@ export const 压缩期准入: SceneDef = {
       compactionDone = true
       markCompactionSettled()
     })
-    if (await bounded(summaryStarted, 30_000) === undefined) {
-      throw new Error(`摘要请求没有在 30s 内开始，压缩窗口造不出来｜${sizing()}`)
-    }
-    if (compactionDone) {
-      throw new Error(`压缩在摘要请求在飞之前就结算了（${String(compactOutcome)}）｜${sizing()}`)
+    const started = await bounded(summaryStarted, 30_000)
+    if (started === undefined || compactionDone) {
+      // 诊断口径：30s 没等到摘要请求时，只有 `/compact` 的终态能指出是哪道门拒绝了它 ——
+      // 准入拒绝（pending / 队列未就绪 / closed / busy）、没有可摘要范围（nothing / declined），
+      // 以及「摘要请求被别的请求取走了脚本」（setup 请求数会多出来，回执里带摘要内核的失败原因）。
+      // 只报「窗口造不出来」会把这些路径混成一条，本轮已因此无法定位。
+      const view = listQueuedInputs(sessionId)
+      const detail = [
+        `窗口 ${WINDOW_TOKENS}`,
+        `/compact=${compactionDone ? String(compactOutcome) : "未结算"}`,
+        `回执=${JSON.stringify(compactReply)}`,
+        `队列镜像 loaded=${view.loaded}/items=${view.items.length}`,
+        `忙=${await isSessionBusy(sessionId)}`,
+        `provider 请求数 setup=${requestsBeforeRefusal}/now=${fakeState?.callCount ?? -1}`,
+      ].join("，")
+      throw new Error(compactionDone
+        ? `压缩在摘要请求在飞之前就结算了（${detail}）｜${sizing()}`
+        : `摘要请求没有在 30s 内开始，压缩窗口造不出来（${detail}）｜${sizing()}`)
     }
   },
   turns: [
