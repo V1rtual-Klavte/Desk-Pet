@@ -77,7 +77,6 @@ export interface HarnessRunState {
   overflowRecoveryDeclined?: boolean
   /** abort 归还的未消费消息（deskpetEventId → requestId）。 */
   undelivered: string[]
-  usage?: Usage
   finalAssistant?: AssistantMessage
   /** 最近一次不带工具调用的 assistant（结算候选）。 */
   finalPlainAssistant?: AssistantMessage
@@ -333,8 +332,6 @@ export class HarnessSlot {
   private interruptedInfo?: { operationId: string; kind: "run" | "compaction" | "navigation"; startedAt: number; aborting: boolean }
   private timer?: ReturnType<typeof setTimeout>
   private abortReason?: HarnessAbortReason
-  private drainGeneration = 0
-  private drainPromise?: Promise<void>
   private deliveryPhase?: HarnessDeliveryPhase
   private runIdentity?: { requestId: string; turnId?: string }
   /**
@@ -782,11 +779,6 @@ export class HarnessSlot {
   /** 当前代际仍是所有者（未取消、未失效）。 */
   isCurrent(generation: number): boolean {
     return this.generation === generation && this.state === "running" && this.abortReason === undefined
-  }
-
-  deliveryMode(): "steer" | "followup" | undefined {
-    if (this.state !== "running" || !this.lane) return undefined
-    return this.deliveryPhase === "settling" ? "followup" : "steer"
   }
 
   /**
@@ -1564,7 +1556,6 @@ export class HarnessSlot {
         if (!run || event.row.adjustment) return
         // 压缩摘要是一次性调用：用量已进入会话 totals，但不冒充主回复的逐请求统计（§6/§7）。
         if (this.compactionActive) return
-        run.spec.state.usage = event.row.usage
         await run.spec.sinks?.onUsage?.(event.row, event.totals)
       }),
       events.on("compaction_start", () => {
@@ -1616,20 +1607,6 @@ export class HarnessSlot {
     )
   }
 
-  // 供注册表使用的 drain 代际（沿用旧 runner 语义）。
-  startDrain(worker: (generation: number) => Promise<void>): Promise<void> {
-    if (this.drainPromise) return this.drainPromise
-    const generation = ++this.drainGeneration
-    const run = worker(generation)
-    this.drainPromise = run.finally(() => {
-      if (this.drainGeneration === generation && this.drainPromise === run) this.drainPromise = undefined
-    })
-    return this.drainPromise
-  }
-
-  isDrainCurrent(generation: number): boolean {
-    return this.drainGeneration === generation
-  }
 }
 
 /** 从归还的消息里取回宿主 requestId（身份换算见 input-identity）。 */
@@ -1733,10 +1710,6 @@ export class HarnessSlots {
     return [...this.slots.values()].some(slot => slot.isRunning())
   }
 
-  deliveryMode(sessionId: string): "steer" | "followup" | undefined {
-    return this.peek(sessionId)?.deliveryMode()
-  }
-
   snapshot(sessionId: string): HarnessSlotSnapshot | undefined {
     return this.peek(sessionId)?.snapshot()
   }
@@ -1754,14 +1727,6 @@ export class HarnessSlots {
   async cancelQueued(sessionId: string, entryId: string): Promise<HarnessCancelQueuedKind> {
     const slot = this.peek(sessionId)
     return slot ? await slot.cancelQueued(entryId) : "not_found"
-  }
-
-  drain(sessionId: string, worker: (generation: number) => Promise<void>): Promise<void> {
-    return this.ensure(sessionId).startDrain(worker)
-  }
-
-  isDrainCurrent(sessionId: string, generation: number): boolean {
-    return this.peek(sessionId)?.isDrainCurrent(generation) ?? false
   }
 
   /**

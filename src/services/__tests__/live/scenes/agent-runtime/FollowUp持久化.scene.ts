@@ -1,4 +1,4 @@
-import { harnessSlots } from "@/services/engine/pi"
+import { deliverActiveTurn, harnessSlots } from "@/services/engine/pi"
 import { initChat, sendMessage } from "@/services/agent/runner"
 import { getActiveSessionId } from "@/services/session"
 import { registerBlockingTool } from "../../blocking-tool"
@@ -7,11 +7,12 @@ import { assistantTexts, sessionEntries, sessionMessages, userTexts } from "../.
 import type { SceneDef } from "../../types"
 
 const FOLLOW_UP_TEXT = "这是自然结束后的后续任务。"
+const STEER_PROBE_TEXT = "工具执行期的补充输入。"
 const REQUEST_ID = "memory-followup-after-turn"
 const TOOL_NAME = "live_p2_followup_wait"
 let blocking: ReturnType<typeof registerBlockingTool> | undefined
 let queuedFollowUpAfterDelivery = false
-let streamingMode: string | undefined
+let probeReceipt: string | undefined
 
 export const FollowUp持久化: SceneDef = {
   meta: {
@@ -38,8 +39,9 @@ export const FollowUp持久化: SceneDef = {
     await blocking.started
     const slot = harnessSlots.ensure(sessionId)
     // 工具执行期属于 streaming：此刻的补充输入必须按 steer 投递，不能冒充 followUp。
-    streamingMode = slot.deliveryMode()
-    if (streamingMode !== "steer") throw new Error(`工具期投递模式应为 steer，实际 ${String(streamingMode)}`)
+    // 这一条走**生产投递入口**（不带 kind，验证默认通道），不再读槽上的展示用派生值。
+    probeReceipt = await deliverActiveTurn(sessionId, STEER_PROBE_TEXT, { eventId: `${REQUEST_ID}:probe` })
+    if (probeReceipt !== "steered") throw new Error(`工具期默认投递应为 steered，实际 ${String(probeReceipt)}`)
     // settling 窗口由 Harness 的 turn_end 事件驱动，只存在于 turn_end 与 run_end 之间；
     // 旧内核的 markDeliveryPhase 强行置位入口已随迁移删除，场景无法稳定命中该窗口。
     // 因此用显式 kind 走同一条 lane.followUp 通道，验证 followUp 自身的语义（消费时机与顺序）。
@@ -57,7 +59,7 @@ export const FollowUp持久化: SceneDef = {
       type: "expectFollowUpConsumedOnce",
       run: async () => {
         blocking?.dispose()
-        if (streamingMode !== "steer") throw new Error(`工具期投递模式不是 steer: ${String(streamingMode)}`)
+        if (probeReceipt !== "steered") throw new Error(`工具期默认投递不是 steered: ${String(probeReceipt)}`)
         if (!queuedFollowUpAfterDelivery) throw new Error("投递后 lane inbox 没有 followUp 待消费项")
         const entries = await sessionEntries()
         const messages = await sessionMessages()

@@ -13,7 +13,7 @@ import type {
 import type { PiAgentTurnOutput, TurnFailure } from "@/services/engine/pi"
 import { runPiAgentTurn } from "@/services/engine/pi"
 import { userInputMessage } from "@/services/engine/runtime"
-import { abortAgentRuns, sendMessage, sendActiveMessage } from "@/services/agent/runner"
+import { sendMessage, sendActiveMessage } from "@/services/agent/runner"
 import { getPoolSnapshot } from "@/services/personality/variable-pool"
 import { harnessSlots } from "@/services/engine/pi"
 import { getActiveSessionId } from "@/services/session/store"
@@ -445,7 +445,7 @@ export async function runScene(scene: SceneDef, trial = 1): Promise<SceneResult>
       cancel.cancel()
       const turns = timeoutTurns(progress)
       const stuck = stuckPhase(progress)
-      await abortAgentRuns()
+      await harnessSlots.abortAndWaitAll()
       const settled = await settleWithin(inner, SCENE_CANCEL_GRACE_MS)
       return {
         caseId: scene.meta.caseId,

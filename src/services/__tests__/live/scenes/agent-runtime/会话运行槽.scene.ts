@@ -54,16 +54,6 @@ export const 会话运行槽: SceneDef = {
         if (harnessSlots.end(sessionId, nextGeneration)) throw new Error("重建前的旧代际错误结束了新 run")
         if (!harnessSlots.end(sessionId, recreatedGeneration)) throw new Error("重建后的代际无法正常结束")
 
-        // drain 代际：同一槽上并发 drain 只保留一个 worker，旧 finally 不清空新 drain。
-        let releaseFirst!: () => void
-        const firstGate = new Promise<void>(resolve => { releaseFirst = resolve })
-        const firstDrain = harnessSlots.drain(sessionId, async () => { await firstGate })
-        if (harnessSlots.drain(sessionId, async () => {}) !== firstDrain) {
-          throw new Error("并发 drain 未复用同一 worker")
-        }
-        releaseFirst()
-        await firstDrain
-
         // 空闲槽上的停止请求必须如实失败：不能返回「已停止、无归还项」的空成功，
         // 否则一次从未发生的停止会被上报成成功（lane.abort 的 NoActiveOperation 分支）。
         const openSlot = harnessSlots.ensure(sessionId)

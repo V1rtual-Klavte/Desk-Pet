@@ -49,7 +49,7 @@ export const agentRuntimeContract: ModuleContract = {
     {
       id: "ar-04",
       feature: "会话运行槽代际所有权",
-      description: "主回合按 sessionId 持有运行槽；代际单调，旧代际不能结束新 run，槽被释放重建后代际也不回退（ABA），并发 drain 复用同一 worker",
+      description: "主回合按 sessionId 持有运行槽；代际单调，旧代际不能结束新 run，槽被释放重建后代际也不回退（ABA）",
       why: "没有代际守卫时迟到的 cleanup 会结束或清空重建后的新运行",
       depth: "deep",
       scenarios: ["session-harness-slot-generation"],

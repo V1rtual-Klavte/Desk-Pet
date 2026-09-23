@@ -52,11 +52,10 @@ export async function resetAgentRuntimeForTest(): Promise<void> {
   preprocessStates.clear()
   planCheckpointStore.reset()
 }
-export async function abortAgentRuns(): Promise<void> { await harnessSlots.abortAndWaitAll() }
 
 /**
  * 用户显式停止：取消指定会话的运行，返回本次归还未消费输入的 requestId 清单。
- * 与 `abortAgentRuns()`（释放全部槽的进程级入口）不同，这是聊天界面的停止按钮入口：
+ * 与 `harnessSlots.abortAndWaitAll()`（释放全部槽的进程级入口）不同，这是聊天界面的停止按钮入口：
  * 只作用于一条会话，未消费输入以 nextRun 留在 lane 持久 inbox，等用户选择继续或丢弃。
  *
  * 先终止在跑的计划再停回合：计划执行期父 lane 上没有在飞操作，只停回合停不住步骤
