@@ -13,4 +13,4 @@ export type { ContextBudget } from "./budget"
 export { buildMessageRounds, selectRecentRounds, messageTokens } from "./rounds"
 export type { MessageRound } from "./rounds"
 
-export { projectToolMessages, toolResultTokenBudget, L0_TOOL_RESULT_SHARE } from "./tool-output"
+export { projectToolMessages, projectToolResultText, toolResultAddress, toolResultTokenBudget, L0_NO_ADDRESS_NOTICE, L0_TOOL_RESULT_SHARE } from "./tool-output"

@@ -10,7 +10,7 @@ import type { ContextAllocation, ContextBlock, IngressEnvelope, InputSourceMark,
 import { createMessageId } from "@/services/agent/types"
 import { MemoryService, recallMemory, planCheckpointStore } from "@/services/agent/memory"
 import type { StructuredSummary } from "@/services/agent/memory"
-import { buildPrompt, contextBudget, CONTEXT_RATIOS, estimateRequestTokens, estimateContextTokens, estimateMessageTokens, ContextBudgetError, ESTIMATE_DRIFT_WARN_RATIO, estimateDriftRatio, projectMessageContent, projectToolMessages } from "@/services/context"
+import { buildPrompt, contextBudget, CONTEXT_RATIOS, estimateRequestTokens, estimateContextTokens, estimateMessageTokens, ContextBudgetError, ESTIMATE_DRIFT_WARN_RATIO, estimateDriftRatio, projectMessageContent, projectToolResultText, toolResultAddress } from "@/services/context"
 import { bindRunningPlan, clearRunningPlan, notifyPlanEnd, requestPlanConfirm, requestPlanStepDecision } from "@/services/engine/plan-confirmation"
 import type { PlanConfirmResult } from "@/services/engine/plan-confirmation"
 import { executePlan, evaluateComplexity, formatStepResults, generatePlan, normalizePlan, planEffectClassFor, planToRecords, recordsToPlan } from "@/services/engine/planner"
@@ -1750,17 +1750,15 @@ export async function runPiSubAgent(input: PiSubAgentInput): Promise<PiSubAgentO
  *
  * resultProjection=preserve 的工具（分页读取、写类结果）不再二次缩短；
  * 未注册的历史工具没有策略可查，沿用既有缩短行为（条目仍是可回读的真相源）。
+ * 回读地址只认详情里的 `deskpetEntryId`：没有地址时按「不可回读」如实标记，不写假 eventId。
  */
 function projectToolResultMessage(message: AgentMessage, windowTokens: number, toolsByName: ReadonlyMap<string, ToolDef>): AgentMessage {
   if (message.role !== "toolResult") return message
   if (toolsByName.get(message.toolName)?.policy.context.resultProjection === "preserve") return message
-  const details = message.details && typeof message.details === "object" ? message.details as Record<string, unknown> : {}
-  const entryId = typeof details.deskpetEntryId === "string" ? details.deskpetEntryId : message.toolCallId
   const text = contentText(message.content)
-  const source: Message = { id: entryId, eventId: entryId, role: "tool", text, timestamp: message.timestamp }
-  const projected = projectToolMessages([source], windowTokens, SESSION_TRANSCRIPT_TOOL)[0]!
-  if (projected === source) return message
-  return { ...message, content: [{ type: "text" as const, text: projected.text }] }
+  const projected = projectToolResultText(text, toolResultAddress(message), windowTokens, SESSION_TRANSCRIPT_TOOL)
+  if (projected === text) return message
+  return { ...message, content: [{ type: "text" as const, text: projected }] }
 }
 
 /** 提交前剥离 RUNTIME_DATA；thinking 等其它块保持原样。 */
