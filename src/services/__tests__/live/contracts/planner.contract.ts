@@ -2,9 +2,12 @@ import type { ModuleContract } from "../types"
 
 export const plannerContract: ModuleContract = {
   module: "planner",
-  sourceFiles: ["src/services/engine/pi/runtime.ts", "src/services/engine/planner.ts"],
+  // `plan-confirmation.ts` 是计划域的确认/逐步门通道（会话键控的待确认表、执行期中断登记、
+  // 步骤门裁决）—— 本契约的 unitOnlyReason 把它记为未覆盖的运行时接线，但它是 Plan 行为
+  // 所在的源码，改它就该触发本契约重审（W2 大改过它）。
+  sourceFiles: ["src/services/engine/pi/runtime.ts", "src/services/engine/planner.ts", "src/services/engine/plan-confirmation.ts"],
   generatedAt: "2026-09-23",
-  sourceHash: "491fa194b48434c3cac44ebce7b253a54ac619ecad8667108679bc0212873a47",
+  sourceHash: "f796282a48bb4734e9c57b457e9fba12e563d10ed5d041c29ce4919d8cb2415d",
   coverage: [
     { id: "pl-01", feature: "evaluateComplexity force触发", description: "--plan 前缀强制触发评分=5", why: "用户手动触发 Plan", depth: "shallow", scenarios: ["plan-force-trigger"] },
     { id: "pl-02", feature: "evaluateComplexity 关键词匹配", description: "关键词列表匹配 → 评分 >= 3", why: "自动检测复杂任务", depth: "shallow", scenarios: ["plan-keyword-trigger"] },

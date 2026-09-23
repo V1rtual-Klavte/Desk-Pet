@@ -3,20 +3,23 @@ import type { ModuleContract } from "../types"
 export const agentRuntimeContract: ModuleContract = {
   module: "agent-runtime",
   sourceFiles: [
+    "src/services/agent/memory/plan-checkpoint-store.ts",
     "src/services/agent/runner.ts",
     "src/services/debug.ts",
     "src/services/engine/pi/delivery.ts",
     "src/services/engine/pi/harness-slot.ts",
     "src/services/engine/pi/model-gateway.ts",
     "src/services/engine/pi/runtime.ts",
+    "src/services/engine/plan-confirmation.ts",
     "src/services/engine/preprocessor.ts",
     "src/services/engine/runtime/input-identity.ts",
+    "src/services/engine/runtime/types.ts",
     "src/services/session/manager.ts",
     "src/services/session/persistence.ts",
     "src/services/session/repo.ts",
   ],
   generatedAt: "2026-09-23",
-  sourceHash: "dbaa549110669e6e3b94da6fb495b3d8246998e06f3fd433cf3fcbeea92d09f7",
+  sourceHash: "fcbda4d9f9718b078dfe1ab297fb83d2fc7126d3b1d35427c27927cda071614f",
   coverage: [
     {
       id: "ar-01",
@@ -125,7 +128,7 @@ export const agentRuntimeContract: ModuleContract = {
     {
       id: "ar-17",
       feature: "取消域级联",
-      description: "工具执行中停止：停止同时终止在跑的计划与它的子运行（子槽随父槽级联取消），归还清单如实，停止后不再产生新的工具结果条目，独占额度回到空闲，下一回合照常可用",
+      description: "工具执行中停止：停止同时终止在跑的计划与它的子运行（子槽随父槽级联取消），归还清单如实，停止后不再产生新的工具结果条目，独占额度回到空闲，下一回合照常可用。注：本覆盖点的场景不驱动计划，级联本身（计划与子运行同时停）未由场景断言 —— 断言的是同一条父槽停止通道上的不变量（无新工具结果条目、额度回空闲、归还清单如实、没有计划在跑时 planAborted 如实为 false）",
       why: "「停止」必须真的停下正在跑的计划与子代理：否则用户点了停止，界面说没有正在进行的回复，步骤却还在继续执行",
       depth: "deep",
       scenarios: ["runtime-stop-no-new-tool-end"],

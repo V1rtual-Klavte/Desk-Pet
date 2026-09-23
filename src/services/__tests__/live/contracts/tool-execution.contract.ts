@@ -26,7 +26,7 @@ export const toolExecutionContract: ModuleContract = {
     "src/services/tool/mcp/manager.ts",
   ],
   generatedAt: "2026-09-23",
-  sourceHash: "ec1286b2be0361eb835a2f19668353c71ab4b390e814526fd2ecedc967b297a7",
+  sourceHash: "7c2bd7433fd638e864252faf2325a5e34691ba8550a244fa6580732af09fbdad",
   coverage: [
     { id: "te-13", feature: "工具结果持久化与回读", description: "生产工具配对作为会话条目持久化，完整工具文本保留（L0只改请求视图），read_session_event 按条目 id 分页回读并限定当前 session", why: "短请求不能以丢失工具证据为代价", depth: "deep", scenarios: ["tool-transcript-recovery"] },
     { id: "te-08", feature: "真 LLM 多工具调用", description: "真实 LLM 对话中先后调用多个工具", why: "端到端工具链验证", depth: "deep", scenarios: ["tool-system-info"] },
