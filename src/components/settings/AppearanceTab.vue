@@ -2,7 +2,7 @@
 import { ref, onMounted } from "vue";
 import { emit } from "@tauri-apps/api/event";
 import { WebviewWindow } from "@tauri-apps/api/webviewWindow";
-import { flushConfig, userConfig, setOverride, type EffectMode } from "@/services/config";
+import { userConfig, type EffectMode } from "@/services/config";
 import {
   getSoundLibrary,
   getSoundAssignments,
@@ -13,6 +13,7 @@ import {
   getActiveProfile,
   getBodyUrl,
   activateProfile,
+  switchActiveProfile,
   initProfiles,
   exportProfileZip,
   importProfileZip,
@@ -25,6 +26,7 @@ import {
   type ProfileThemeColors,
 } from "@/services/profile";
 import { showSuccess, showFailure, confirmDialog } from "@/services/dialog";
+import { formatError } from "@/services/error";
 import { BaseDirs } from "@/services/paths";
 import { createLogger } from "@/services/logger";
 
@@ -48,8 +50,10 @@ async function openLayerEditor() {
       await existing.setFocus();
       return;
     }
-  } catch {
-    /* ignore */
+  } catch (e) {
+    // 查询失败按「未打开」处理：窗口真存在（或 setFocus 失败）时，下面的
+    // new WebviewWindow 会抛「窗口已存在」，由全局异常拦截接住。
+    log.debug("查询图层编辑器窗口失败，按未打开处理:", formatError(e));
   }
   const win = new WebviewWindow("layer-editor", {
     url: "layer-editor.html",
@@ -63,12 +67,18 @@ async function openLayerEditor() {
   setTimeout(async () => {
     try {
       await win.setAlwaysOnTop(true);
-    } catch {}
+    } catch (e) {
+      log.warn("图层编辑器窗口置顶失败：编辑器可能被主窗口遮挡", formatError(e));
+    }
     try {
       await win.setFocus();
-    } catch {}
+    } catch (e) {
+      log.warn("图层编辑器窗口聚焦失败：原生文件对话框可能被主窗口遮挡", formatError(e));
+    }
     const { invoke } = await import("@tauri-apps/api/core");
-    invoke("enhance_layer_editor_window").catch(() => {});
+    invoke("enhance_layer_editor_window").catch((e) => {
+      log.warn("enhance_layer_editor_window 失败：编辑器窗口保持默认层级", formatError(e));
+    });
   }, 300);
 }
 
@@ -114,18 +124,20 @@ async function refreshProfileList() {
   initColorEditor();
 }
 
+/**
+ * 切换活动 Profile：激活、落盘、通知其它窗口都由 switchActiveProfile 完成，
+ * 这里只把设置页自己的展示状态（高亮、详情、两个编辑器）跟上。
+ */
 async function switchProfile(id: string) {
-  const { ensureProfileLoaded } = await import("@/services/profile");
-  await ensureProfileLoaded(id);
-  if (activateProfile(id)) {
-    activeProfileId.value = id;
-    profileDetail.value = getActiveProfile();
-    initColorEditor();
-    initFontEditor();
-    setOverride("appearance.activeProfile", id);
-    await flushConfig();
-    await emit("deskpet-profile-updated", { profileId: id });
+  const ok = await switchActiveProfile(id);
+  if (!ok) {
+    await showFailure(`切换 Profile「${id}」失败，请确认它还存在`);
+    return;
   }
+  activeProfileId.value = id;
+  profileDetail.value = getActiveProfile();
+  initColorEditor();
+  initFontEditor();
 }
 
 /**
@@ -173,7 +185,11 @@ async function doDeleteProfile(profileId: string): Promise<void> {
     detail: `${BaseDirs.profiles()}/${profileId}`,
   });
   if (!accepted) return;
-  await reportResult(await deleteProfile(profileId), "删除成功");
+  // deleteProfile 已含「拒绝删除内置默认 Profile」与「删后回退」两条策略，
+  // 结果消息里带着结论；reportResult 成功后刷新列表，activeProfileId 与
+  // profileDetail 会跟到真实的活动 Profile。
+  const r = await deleteProfile(profileId);
+  await reportResult(r, "删除成功");
 }
 
 async function doRestoreDefaults(): Promise<void> {
@@ -314,6 +330,7 @@ async function saveColorsToProfile() {
     log.info("颜色已保存");
   } catch (e: any) {
     log.error("保存失败:", e);
+    await showFailure("颜色保存失败: " + formatError(e));
   }
 }
 
@@ -362,6 +379,7 @@ async function saveFontsToProfile() {
     log.info("字体已保存");
   } catch (e: any) {
     log.error("字体保存失败:", e);
+    await showFailure("字体保存失败: " + formatError(e));
   }
 }
 
