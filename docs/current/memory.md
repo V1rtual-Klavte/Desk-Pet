@@ -1,6 +1,6 @@
 # 当前记忆与会话基础
 
-长期记忆仍通过 `MemoryProvider` 只读端口进入 Runtime，默认返回空集合，召回时限为 1.5 秒。SQLite、自动事实提取、画像候选、纠正/遗忘和 dreaming 属于下一阶段。Card 变量与用户长期事实分别管理。
+长期记忆仍通过 `MemoryProvider` 只读端口进入 Runtime，默认返回空集合，召回时限为 1.5 秒；召回文本按 `estimateContextTokens` 裁剪并在超配时显式标记（不再用「4 字符 = 1 token」的通吃常数）。SQLite、自动事实提取、画像候选、纠正/遗忘和 dreaming 属于下一阶段。Card 变量与用户长期事实分别管理。
 
 ## 当前文件职责
 
