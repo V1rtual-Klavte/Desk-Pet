@@ -57,6 +57,8 @@ Rust 对应日志宏位于 [macros/](../../src-tauri/src/macros/)，内核是 [l
 
 [error/format.ts](../../src/services/error/format.ts) 处理 JS Error 与 Rust `{code,message}`。formatError 用于读取错误，errorCode 用于分支，summarizeError 用于持久化脱敏摘要；裸 String(e) 会丢失结构化信息。
 
+失败分类的唯一定义点是 [error/failure-kind.ts](../../src/services/error/failure-kind.ts)：生产回合（runtime.ts 以 `classifyTurnFailure` 名字 re-export）与 Live Test 的场景失败分类共用同一条正则表，状态码按独立数字匹配，测试侧只在结果落到 `unknown` 时叠加自己的 `configuration` 档。`admission` 由调用点写入（回合准入拒绝、lane 结构操作在飞），不来自文案分类。
+
 `general.errors.overlay` 在报错时求值：auto 为 dev 显示、生产隐藏，always/never 显式覆盖。初始化前错误也能进入同一出口。Rust [AppError](../../src-tauri/src/error.rs) 统一序列化错误，panic hook 记录位置。
 
 音效（[audio/effects/](../../src/services/audio/effects/)）的节点构建失败是有意静默 + 统一一次性留痕：[context.ts](../../src/services/audio/context.ts) 的 `reportEffectFailure`（自动播放策略挂起由 `reportSuspendedOnce`）——新增音效不要各自打日志。

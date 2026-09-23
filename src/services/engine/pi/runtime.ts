@@ -53,6 +53,8 @@ import type {
   HarnessRunSpec,
   HarnessRunState,
 } from "./harness-slot"
+import { classifyFailureKind } from "@/services/error/failure-kind"
+import type { FailureKind } from "@/services/error/failure-kind"
 import { formatError, reportError } from "@/services/error"
 import { createLogger } from "@/services/logger"
 import { createPromptRewrite, createPromptSnapshot, createRuntimeTraceContext, inputEventId, isTransientInputMessage, laneMessageText, messageEventId, PROMPT_SNAPSHOT_ENTRY, publishRuntimeTrace, RECALL_FAILED_ENTRY, refreshMessageAllocations, userInputMessage } from "@/services/engine/runtime"
@@ -181,7 +183,7 @@ export interface PiAgentTurnInput {
  * `kind` 与 Live Test 的 `ErrorKind` 同名，报告可直接照搬。
  */
 export interface TurnFailure {
-  kind: "timeout" | "auth" | "rate_limit" | "network" | "provider" | "unknown"
+  kind: FailureKind
   message: string
 }
 
@@ -221,26 +223,10 @@ export function turnFailureReply(
 }
 
 /**
- * 把 Provider 的失败文案收敛成稳定分类。
- *
- * 状态码必须按**独立数字**匹配（`\b`）：HTTP 状态码在文案里前后一定不是数字，而本仓
- * 预算判定这类本地文案带的是估算 token 数那样的长数字串。无边界的老写法会让
- * `130523` 里的 `523`、`104031` 里的 `403`、`142900` 里的 `429` 命中，
- * 把本地预算失败记成 provider / auth / rate_limit —— 数字的形态因此污染了分类。
- *
- * 分类只能从文案反推：Harness 把运行失败降维成一条 message，没有结构化状态码通道
- * （记录里的 `code` 只有 assistant_error 一档），所以边界必须在这里钉死。
- * 稳定性由 `memory` 的 预算溢出判定 场景按多种数字形态断言。
+ * 失败分类的唯一定义点在 `@/services/error/failure-kind`（生产回合与 Live Test 共用）。
+ * 这里的别名只为兼容既有消费者（`engine/pi` barrel、预算场景）：名字不变，实现只有一份。
  */
-export function classifyTurnFailure(message: string): TurnFailure["kind"] {
-  const lower = message.toLowerCase()
-  if (/timeout|timed out|超时/.test(lower)) return "timeout"
-  if (/\b401\b|\b403\b|unauthor|invalid api key|api key/.test(lower)) return "auth"
-  if (/\b429\b|rate limit|too many requests/.test(lower)) return "rate_limit"
-  if (/enotfound|econnrefused|econnreset|network|fetch failed|dns/.test(lower)) return "network"
-  if (/\b5\d\d\b|upstream|service unavailable|provider/.test(lower)) return "provider"
-  return "unknown"
-}
+export { classifyFailureKind as classifyTurnFailure } from "@/services/error/failure-kind"
 
 /**
  * 子运行归属（PLAN-02 / PLAN-03）：子代理的许可身份绑定父会话与代际，并挂到父槽下随父取消。
@@ -1630,7 +1616,8 @@ async function settleMainTurn(args: {
     }
   }
   if (result.status === "busy") {
-    return failTurn(`会话已有运行中的 Agent: ${turnSessionId}`, "unknown")
+    // 准入拒绝（会话已有在飞运行），不是模型/Provider 故障：独立档让报告能把它与真实故障分开。
+    return failTurn(`会话已有运行中的 Agent: ${turnSessionId}`, "admission")
   }
   if (result.status === "aborted") {
     if (result.abortReason === "user") {
@@ -1652,7 +1639,7 @@ async function settleMainTurn(args: {
   }
   if (result.status !== "completed") {
     const reason = result.error ?? "Pi Agent 未返回有效回复"
-    const failed = await failTurn(reason, classifyTurnFailure(reason))
+    const failed = await failTurn(reason, classifyFailureKind(reason))
     return { ...failed, undelivered: result.undelivered }
   }
   const finalAssistant = state.finalPlainAssistant ?? state.finalAssistant

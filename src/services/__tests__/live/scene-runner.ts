@@ -21,6 +21,7 @@ import { pushAssistantMessage, pushUserMessage } from "@/services/session/messag
 import { initSessions } from "@/services/session"
 import { MemoryService } from "@/services/agent/memory"
 import { formatError } from "@/services/error"
+import { classifyFailureKind } from "@/services/error/failure-kind"
 import { confirmRecords } from "./confirm-channel"
 import { planRecords } from "./plan-confirm-channel"
 import { sessionMessages } from "./session-entries"
@@ -158,17 +159,16 @@ function heapUsedBytes(): number | undefined {
 }
 
 /**
- * 状态码档位按独立数字匹配（与 `classifyTurnFailure` 同一口径）：
- * 文案里的估算 token 数等长数字串不能把无关失败误分类成认证、限流或 Provider 故障。
+ * 场景失败分类：分类实现与生产共用（`error/failure-kind.ts`），本函数只保留两件测试宿主
+ * 自己的事 —— ① 场景超时有独立语义（`SceneTimeoutError` 是场景级失败，不是回合失败）；
+ * ② 生产分类落到 `unknown` 时，设置页/模型目录相关的本地文案再细分到 `configuration`。
  */
 function classifyError(error: unknown): ErrorKind {
-  const message = (formatError(error)).toLowerCase()
-  if (error instanceof SceneTimeoutError || /timeout|timed out|超时/.test(message)) return "timeout"
-  if (/\b401\b|\b403\b|unauthorized|forbidden|api.?key|认证/.test(message)) return "auth"
-  if (/\b429\b|rate.?limit|限流/.test(message)) return "rate_limit"
-  if (/fetch|network|econn|enotfound|socket|网络/.test(message)) return "network"
-  if (/config|provider|model|配置/.test(message)) return "configuration"
-  if (/\b5\d\d\b|upstream|service unavailable/.test(message)) return "provider"
+  if (error instanceof SceneTimeoutError) return "timeout"
+  const message = formatError(error)
+  const base = classifyFailureKind(message)
+  if (base !== "unknown") return base
+  if (/config|model|配置/.test(message.toLowerCase())) return "configuration"
   return "unknown"
 }
 

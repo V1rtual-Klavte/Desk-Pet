@@ -206,6 +206,11 @@ export interface TurnResult {
 
 export type SceneStatus = "pass" | "fail" | "skip" | "timeout"
 
+/**
+ * 与 `TurnFailure.kind` 同词表：`admission` 表示准入拒绝（回合没拿到模型回复就被挡下），
+ * 只在回合失败侧出现，不由文案分类产出。`configuration` / `infrastructure` / `assertion`
+ * 是测试宿主自己的档位，生产分类落到 `unknown` 时才由场景侧细分。
+ */
 export type ErrorKind =
   | "assertion"
   | "timeout"
@@ -213,6 +218,7 @@ export type ErrorKind =
   | "rate_limit"
   | "provider"
   | "network"
+  | "admission"
   | "configuration"
   | "infrastructure"
   | "unknown"

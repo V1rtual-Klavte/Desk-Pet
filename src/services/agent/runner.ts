@@ -266,7 +266,7 @@ export async function resumePausedInputs(sessionId: string = getActiveSessionId(
   if (runGeneration === undefined) {
     // 已有在飞运行：把取出的暂停项放回，绝不扣在手里（放回是持久 nextRun，不自动继续）。
     await returnPausedInputs(sessionId, pausedMessages)
-    return { reply: "", toolCallsMade: 0, retriesUsed: 0, outcome: "failed", toolCalls: [], failure: { kind: "unknown", message: "会话已有运行中的运行槽" } }
+    return { reply: "", toolCallsMade: 0, retriesUsed: 0, outcome: "failed", toolCalls: [], failure: { kind: "admission", message: "会话已有运行中的运行槽" } }
   }
   setAIGenerating(true)
 
@@ -434,7 +434,7 @@ async function dispatchMessage(text: string, options: SendMessageOptions = {}): 
       retriesUsed: 0,
       outcome: "failed",
       toolCalls: [],
-      failure: { kind: "unknown", message: "会话已有运行中的运行槽" },
+      failure: { kind: "admission", message: "会话已有运行中的运行槽" },
     }
   }
   setAIGenerating(true)
