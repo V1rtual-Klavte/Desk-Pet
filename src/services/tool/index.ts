@@ -42,9 +42,7 @@ export { executeToolDefinition } from "./router"
 
 export { releaseMcpOwner } from "./mcp"
 export {
-  createSessionTranscriptTool,
   createTranscriptTool,
-  readSessionToolResultEntry,
   SESSION_TRANSCRIPT_TOOL,
   SESSION_EVENT_PAGE_CHARS,
 } from "./session-transcript"

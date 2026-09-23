@@ -71,8 +71,6 @@ export interface DebugState {
   registeredToolCount: number
   /** 当前已注册工具列表 */
   registeredTools: { name: string; source: string; mode: string }[]
-  /** 已注册 Skill 数 */
-  registeredSkillCount: number
   /** 已注册 MCP 工具数 */
   registeredMcpCount: number
 }
@@ -115,7 +113,6 @@ export const debug = reactive<DebugState>({
 
   registeredToolCount: 0,
   registeredTools: [],
-  registeredSkillCount: 0,
   registeredMcpCount: 0,
 })
 
@@ -181,7 +178,6 @@ export async function refreshToolStats() {
   const all = listAll()
   debug.registeredToolCount = toolCount()
   debug.registeredTools = all.map(t => ({ name: t.name, source: t.source, mode: t.mode }))
-  debug.registeredSkillCount = all.filter(t => t.source === "skill").length
   debug.registeredMcpCount = all.filter(t => t.source === "mcp").length
 }
 

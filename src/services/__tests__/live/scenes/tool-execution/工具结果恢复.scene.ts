@@ -1,7 +1,8 @@
 import type { SceneDef } from "../../types"
 import { fakeText, fakeToolCall, installFakeProvider } from "../../fake-provider"
-import { defineTool, register, createSessionTranscriptTool, executeToolDefinition, TOOL_POLICY_VERSION } from "@/services/tool"
+import { defineTool, register, createTranscriptTool, executeToolDefinition, TOOL_POLICY_VERSION } from "@/services/tool"
 import { getActiveSessionId } from "@/services/session"
+import { harnessSlots } from "@/services/engine/pi"
 import { sessionEntries } from "../../session-entries"
 import type { Entry } from "@earendil-works/pi-agent-core"
 
@@ -38,7 +39,9 @@ export const 工具结果恢复: SceneDef = {
     // 条目是真相源：完整正文没有被请求投影缩短。
     if (toolResultText(resultEntry) !== BODY) throw new Error("工具结果条目没有保留完整正文")
     resultEntryId = resultEntry.id
-    const tool = createSessionTranscriptTool(getActiveSessionId())
+    // 回读用生产调用链的那一份：reader 是槽上的 readToolResult（runtime.ts 同款）。
+    const slot = harnessSlots.peek(getActiveSessionId())
+    const tool = createTranscriptTool(entryId => slot ? slot.readToolResult(entryId) : Promise.resolve(undefined))
     const page = await executeToolDefinition(tool, { eventId: resultEntryId, offset: 8000 }, { mode: "pet" })
     if (!page.success || !page.content.endsWith(BODY.slice(8000, 16000))) throw new Error("分页结果不可恢复")
     const denied = await executeToolDefinition(tool, { eventId: "another-session-event" }, { mode: "pet" })

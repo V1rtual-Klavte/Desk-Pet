@@ -6,7 +6,7 @@
 export type SafetyLevel = "SAFE" | "NORMAL" | "DANGER" | "NOWAY"
 
 /** 工具来源 */
-export type ToolSource = "local" | "mcp" | "skill"
+export type ToolSource = "local" | "mcp"
 
 /** 模式限制 */
 export type ToolMode = "pet" | "assistant"
