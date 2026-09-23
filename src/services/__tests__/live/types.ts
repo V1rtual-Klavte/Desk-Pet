@@ -23,6 +23,14 @@ export type SceneEntry = "runtime" | "production" | "unit"
 /** 测试宿主对 `requestPermissionConfirm()` 的应答策略；默认 "deny"（确定性优先）。 */
 export type ConfirmPolicy = "deny" | "approve"
 
+/**
+ * 测试宿主对「计划确认 / 逐步门」的应答策略；默认 "deny"（与 confirmPolicy 同规）。
+ *
+ * - `deny`：确认按 `{confirmed:false, reason:"user"}` 结算，逐步门按 `"abort"`
+ * - `auto` / `stepByStep`：确认按 `{confirmed:true, mode}` 结算，逐步门按 `"continue"`
+ */
+export type PlanPolicy = "auto" | "stepByStep" | "deny"
+
 export interface SceneMeta {
   /** Stable dataset identifier. The human description is allowed to change. */
   caseId: string
@@ -40,6 +48,11 @@ export interface SceneMeta {
    * 由 confirm-channel 按此策略确定性应答；不声明时为 "deny"。
    */
   confirmPolicy?: ConfirmPolicy
+  /**
+   * 场景对「计划确认 / 逐步门」的显式期望。测试宿主没有 PlanConfirm 面板，
+   * 由 plan-confirm-channel 按此策略确定性应答；不声明时为 "deny"。
+   */
+  planPolicy?: PlanPolicy
 }
 
 export type AssertCheck = {

@@ -65,7 +65,7 @@ Node 启动预检会校验 `sourceHash`；源码变更后应先按 SKILL 重新�
 
 要验证「本回合以某类失败结束」时用 `turns[].expectFailure` 声明，而不是删掉断言：`kind` 必须命中 `output.failure.kind`（允许声明一组），`message` 是失败正文的匹配器（字符串按子串、正则按 `test`，空匹配器在数据集校验时被拒绝），两者都命中才算预期失败，回合的其余断言照常执行。回合正常完成、以别的分类失败或文案不匹配都判失败 —— 它只覆盖 `output.failure`，回合抛出异常仍是系统错误。报告把这类回合标为 `expected failure`（errorKind 照常记录真实分类）。
 
-测试宿主没有 ChatPanel。涉及确认请求的 Scene 用 `meta.confirmPolicy` 声明 `deny`（默认）或 `approve`，由 `confirm-channel.ts` 确定性应答。
+测试宿主没有 ChatPanel。涉及确认请求的 Scene 用 `meta.confirmPolicy` 声明 `deny`（默认）或 `approve`，由 `confirm-channel.ts` 确定性应答；涉及计划确认或逐步门的 Scene 用 `meta.planPolicy` 声明 `auto`、`stepByStep` 或 `deny`（默认），由 `plan-confirm-channel.ts` 确定性应答（`deny` 下确认按用户取消、门按中止结算）。
 
 ## 隔离、报告与失败
 
