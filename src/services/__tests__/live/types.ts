@@ -60,6 +60,20 @@ export type AssertCheck = {
   run: (ctx: AssertContext) => Promise<void>
 }
 
+/**
+ * 一次权限确认请求的记录（`confirm-channel` 生产、报告与场景消费）。
+ *
+ * `sessionId`/`runGeneration` 是内核写入 `PermissionRequest` 的身份（`safety/confirm.ts` 的
+ * `ConfirmRequest` 同源）—— 授权正是按这份身份入账，所以「授权绑定哪个会话与代际」只能看它，
+ * 不能从场景自己传的参数反推。身份缺省（历史记录）时不写假值。
+ */
+export interface ConfirmRecord {
+  toolName: string
+  approved: boolean
+  sessionId?: string
+  runGeneration?: number
+}
+
 export interface AssertContext {
   output: PiAgentTurnOutput
   pool: VariablePool
@@ -68,7 +82,7 @@ export interface AssertContext {
   memory: MemorySnapshot
   toolHistory: { toolName: string; status: string }[]
   /** 本场景已发生的确认请求（不含上一场景残留），用于区分「没调用工具」与「调用被拒」。 */
-  confirms: { toolName: string; approved: boolean }[]
+  confirms: ConfirmRecord[]
   /** 本场景已发生的计划确认（不含上一场景残留），按发生顺序；进度与终态见 plan-confirm-channel。 */
   plans: PlanConfirmRecord[]
   trial: number

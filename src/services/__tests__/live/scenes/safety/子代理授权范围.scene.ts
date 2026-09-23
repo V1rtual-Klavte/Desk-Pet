@@ -17,9 +17,14 @@
 // 断言（对应 PLAN-03 与 T2.17 的定稿）：
 //   ① 会话 A：两次同参调用都以 done 收场（探针 handler 只在权限放行后执行），确认请求只有一次；
 //      探针拿到的 sessionId/runGeneration 就是父会话与父槽代际（不是合成 run id / 0），
-//      且同参用父身份重新评估仍是 allow —— 授权确实按父会话与代际入账。
-//   ② 切到会话 B 后同工具同参数再调用：确认通道必须收到一次新请求（旧 grant 不得跨会话命中）。
-//   ③ 会话 A 的 grant 已随切会话清 scope：同参用 (会话 A, 父代际) 重新评估必须回到 ask。
+//      且确认请求的**内核身份**与之逐字段一致 —— 授权确实按 (父会话, 父代际) 入账。
+//   ② 回合结束后同参同身份重新评估必须回到 ask：授权绑定的是活着的代际，回合收尾的
+//      `invalidatePermissionScope(会话, 代际)` 会释放本代际的全部 grant（docs/current/tool-system.md
+//      「授权在运行结束释放」）。这不是缺陷，而是代际绑定的一半 —— PLAN-03 要的正是「清得掉」：
+//      旧实现把子代理的 grant 落在合成 run id 上，那次清 scope 清不掉它。
+//      **不能**用「回合结束后重评估仍是 allow」举证入账：那时 grant 已按设计释放。
+//   ③ 切到会话 B 后同工具同参数再调用：确认通道必须收到一次新请求（旧 grant 不得跨会话命中），
+//      且该请求的身份是会话 B 与它自己的代际。
 //
 // 切会话用产品路径的「新建并切换」（`createNewSession`）：与 `switchToSession` 是同一个
 // 清 scope 点（会话指针移动前 `invalidatePermissionScope(旧会话)`），且不需要先造出
@@ -194,6 +199,11 @@ const checkGrantBoundToSessionA: AssertCheck = {
     if (confirmsA.length !== 1 || !confirmsA[0]!.approved) {
       throw new Error(`会话 A 的确认请求不是恰好一次（实际 ${confirmsA.length} 次，${JSON.stringify(confirmsA)}）：第二次同参调用没有命中 allow_session grant`)
     }
+    // ① 授权入账的身份：确认请求由内核按裁决上下文写入（`PermissionRequest.sessionId/runGeneration`），
+    // 必须与探针读到的父会话、父槽代际一致 —— 授权就是按这份身份存的。
+    if (confirmsA[0]!.sessionId !== sessionA || confirmsA[0]!.runGeneration !== generationA) {
+      throw new Error(`确认请求的身份不是父会话与父代际: ${JSON.stringify(confirmsA[0])}，期望 (${sessionA}, ${generationA})`)
+    }
 
     // 步骤证据：步骤子代理成功且确实调用了两次工具。
     const stepsA = await stepResults(sessionA)
@@ -202,17 +212,20 @@ const checkGrantBoundToSessionA: AssertCheck = {
       throw new Error(`会话 A 的步骤子代理没有以两次工具调用成功收场: ${JSON.stringify(stepsA[0])}`)
     }
 
-    // 授权确实以 (父会话, 父代际) 入账：同工具同参数用父身份重新评估仍是 allow。
+    // ② 回合结束后授权随代际释放：同参同身份重新评估必须回到 ask。
+    //    grant 绑定的是活着的代际；回合收尾的 `invalidatePermissionScope(turnSessionId, generation)`
+    //    清掉本代际的全部 grant —— 子代理的 grant 用真实身份入账才会被这次清理命中（PLAN-03）。
     if (!probeTool) throw new Error("探针工具在断言阶段已注销，场景状态异常")
-    const rebound = await evaluateToolPermission(probeTool, PARAMS, {
-      mode: "pet", sessionId: sessionA, runGeneration: generationA, toolCallId: "sf20-rebind-a",
+    const releasedAfterTurn = await evaluateToolPermission(probeTool, PARAMS, {
+      mode: "pet", sessionId: sessionA, runGeneration: generationA, toolCallId: "sf20-after-turn-a",
       policy: freezePermissionPolicy(),
     })
-    if (rebound.decision !== "allow") {
-      throw new Error(`子代理的 allow_session 授权没有按父会话与代际入账：同参重评估得到 ${rebound.decision}${rebound.reason ? `（${rebound.reason}）` : ""}`)
+    if (releasedAfterTurn.decision !== "ask" || !releasedAfterTurn.request) {
+      throw new Error(`回合结束后同参同身份重评估得到 ${releasedAfterTurn.decision}（应为 ask 且带新的确认请求）：授权没有随运行结束释放`)
     }
 
-    // ② 切到会话 B（新建并切换，与 switchToSession 同一个清 scope 点）；③ 会话 A 的 grant 必须已被清掉。
+    // ③ 切到会话 B（新建并切换，与 switchToSession 同一个清 scope 点）；此后同参用 (会话 A, 父代际)
+    // 重新评估同样不得命中 —— 旧 grant 不能在任何后续路径上复活。
     const meta = await createNewSession()
     sessionB = meta.id
     if (!sessionB || sessionB === sessionA) throw new Error("新建会话没有切换活跃会话")
@@ -221,7 +234,7 @@ const checkGrantBoundToSessionA: AssertCheck = {
       policy: freezePermissionPolicy(),
     })
     if (afterSwitch.decision !== "ask" || !afterSwitch.request) {
-      throw new Error(`会话 A 的授权没有随切会话清 scope：同参重评估得到 ${afterSwitch.decision}（应为 ask 且带新的确认请求）`)
+      throw new Error(`切换会话后同参重评估得到 ${afterSwitch.decision}（应为 ask 且带新的确认请求）`)
     }
 
     // 会话 B 的回合脚本：下一个 turn 驱动会话 B，同工具同参数必须重新确认。
@@ -251,7 +264,8 @@ const checkGrantNotReusedAcrossSessions: AssertCheck = {
         throw new Error(`会话 B 的子代理许可代际与父槽代际不一致: ${JSON.stringify(callsB)}`)
       }
 
-      // ② 旧 grant 不得跨会话命中：会话 B 的同参调用必须产生一次新的确认请求（总计 2 次）。
+      // ③ 旧 grant 不得跨会话命中：会话 B 的同参调用必须产生一次新的确认请求（总计 2 次），
+      //    且这次请求的身份是会话 B 与它自己的代际（不是会话 A 的旧身份）。
       const confirms = confirmRecords().filter(record => record.toolName === TOOL_NAME)
       if (confirms.length !== 2) {
         throw new Error(`会话 B 的同工具同参调用没有重新确认：确认请求共 ${confirms.length} 次（应为 2 —— 会话 A、B 各一次）：${JSON.stringify(confirms)}`)
@@ -259,15 +273,17 @@ const checkGrantNotReusedAcrossSessions: AssertCheck = {
       if (!confirms.every(record => record.approved)) {
         throw new Error(`确认通道的应答不是全部放行: ${JSON.stringify(confirms)}`)
       }
-
-      // 会话 B 的第二次同参调用命中 B 自己的 grant（而不是 A 的）。
+      if (confirms[1]!.sessionId !== sessionB || confirms[1]!.runGeneration !== generationB) {
+        throw new Error(`会话 B 的确认请求身份不是会话 B 与它自己的代际: ${JSON.stringify(confirms[1])}，期望 (${sessionB}, ${generationB})`)
+      }
+      // 会话 B 的第二次同参调用命中 B 自己的 grant；回合结束后它也随代际释放（与 ① 同口径）。
       if (!probeTool) throw new Error("探针工具在断言阶段已注销，场景状态异常")
-      const reboundB = await evaluateToolPermission(probeTool, PARAMS, {
-        mode: "pet", sessionId: sessionB, runGeneration: generationB, toolCallId: "sf20-rebind-b",
+      const releasedAfterTurnB = await evaluateToolPermission(probeTool, PARAMS, {
+        mode: "pet", sessionId: sessionB, runGeneration: generationB, toolCallId: "sf20-after-turn-b",
         policy: freezePermissionPolicy(),
       })
-      if (reboundB.decision !== "allow") {
-        throw new Error(`会话 B 的 allow_session 授权没有按会话 B 入账：同参重评估得到 ${reboundB.decision}`)
+      if (releasedAfterTurnB.decision !== "ask" || !releasedAfterTurnB.request) {
+        throw new Error(`会话 B 的回合结束后同参同身份重评估得到 ${releasedAfterTurnB.decision}（应为 ask 且带新的确认请求）：授权没有随运行结束释放`)
       }
 
       const stepsB = await stepResults(sessionB)
