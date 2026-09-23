@@ -3,8 +3,8 @@
  * 这是「这一条输入」在持久层的唯一主键 —— 会话条目、lane inbox 项与请求快照都按它对齐；
  * 同一条消息可带 `deskpetSource`（`InputSourceMark`），来源因此随输入一起落盘。
  *
- * 零依赖叶子：ingress、运行槽与投递证据查询共用，避免各处手写同一段字符串拼接/截取。
- * 这里只做身份换算与消息构造，不做归属判断（「是否已进入请求」由投递证据查询回答）。
+ * 零依赖叶子：ingress、运行槽、投递证据查询与 token 分配共用，避免各处手写同一段字符串拼接/截取。
+ * 这里只做身份换算、消息构造与消息形状判定；「是否已进入请求」这类归属仍由投递证据查询回答。
  *
  * `userInputMessage()` 是投递消息形状的唯一构造点：空闲回合的 prompt 与忙碌投递的 inbox
  * 消息都由它构造，所有入口的身份与标记口径一致（不再有无身份的裸字符串）。
@@ -99,4 +99,23 @@ export function inputSourceOf(message: { deskpetSource?: unknown }): InputSource
     taint: record.taint as MessageTaint,
     eligibleForMemory: record.eligibleForMemory,
   }
+}
+
+/** 主动搭话的自定义消息类型：投递形状的唯一构造点是 pi/runtime.ts 的 `createActiveMessage`。 */
+const ACTIVE_MESSAGE_CUSTOM_TYPE = "deskpet.active_message"
+
+/**
+ * 是否为「瞬时输入」消息：主动搭话（custom 消息）与带投递身份的用户输入。
+ *
+ * 这两类都是「这一回合投进来的输入」，不是会话历史的持久正文；transcript/ephemeral 的归属、
+ * 以及跨这两个口径的 token 估算共用这一处判定（调用方不再各写一份 `role === "user"`）。
+ * `options.isActiveMessage` 给「整轮都是主动搭话」的调用方一个显式声明（消息形状本身认不出来时用）。
+ */
+export function isTransientInputMessage(
+  message: { role?: unknown; customType?: unknown; deskpetEventId?: unknown } | undefined,
+  options?: { isActiveMessage?: boolean },
+): boolean {
+  if (message && message.role === "custom" && message.customType === ACTIVE_MESSAGE_CUSTOM_TYPE) return true
+  if (message && message.role === "user" && typeof message.deskpetEventId === "string") return true
+  return options?.isActiveMessage === true
 }

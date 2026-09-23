@@ -55,7 +55,7 @@ import type {
 } from "./harness-slot"
 import { formatError, reportError } from "@/services/error"
 import { createLogger } from "@/services/logger"
-import { createPromptRewrite, createPromptSnapshot, createRuntimeTraceContext, inputEventId, laneMessageText, messageEventId, PROMPT_SNAPSHOT_ENTRY, publishRuntimeTrace, RECALL_FAILED_ENTRY, userInputMessage } from "@/services/engine/runtime"
+import { createPromptRewrite, createPromptSnapshot, createRuntimeTraceContext, inputEventId, isTransientInputMessage, laneMessageText, messageEventId, PROMPT_SNAPSHOT_ENTRY, publishRuntimeTrace, RECALL_FAILED_ENTRY, refreshMessageAllocations, userInputMessage } from "@/services/engine/runtime"
 import type { RuntimeTraceContext } from "@/services/engine/runtime"
 import { redactText, sha256Text, stableSerialize } from "@/services/engine/runtime"
 
@@ -406,16 +406,11 @@ function createTurnKernel(options: TurnKernelOptions): TurnKernel {
     captureSnapshot: async (captureStage, agentMessages, llmMessages, usage) => {
       const snapshotId = `${traceContext.runId}:${captureStage}:${++kernel.snapshotSequence}`
       // 工具轮会追加消息；用准确请求投影刷新分配，不计入 Pi usage/时间戳。
-      const transientTokens = agentMessages
-        .filter(message => options.transientUserInput && message.role === "user")
-        .reduce((n, message) => n + estimateMessageTokens(message), 0)
-      const snapshotAllocations = options.allocations?.map(allocation => {
-        if (allocation.layer !== "transcript" && allocation.layer !== "ephemeral") return { ...allocation }
-        const used = allocation.layer === "transcript"
-          ? agentMessages.reduce((n, message) => n + estimateMessageTokens(message), 0) - transientTokens
-          : kernel.blocks.filter(block => block.layer === "ephemeral" && block.origin !== "active")
-              .reduce((n, block) => n + estimateContextTokens(block.text), 0) + transientTokens
-        return { ...allocation, requested: used, used }
+      // 瞬时输入的判定与归属只写在 refreshMessageAllocations 一处：主动消息（custom 消息）
+      // 与投递的用户输入（带 deskpetEventId）都不属于会话历史行，要归到 ephemeral。
+      const snapshotAllocations = options.allocations && refreshMessageAllocations(options.allocations, agentMessages, {
+        transientInput: options.transientUserInput === true || agentMessages.some(message => isTransientInputMessage(message)),
+        blocks: kernel.blocks,
       })
       const toolSchemas = await Promise.all(options.tools.map(async tool => ({
         name: tool.name,
