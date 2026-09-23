@@ -377,14 +377,23 @@ export class HarnessSlot {
   private readonly children = new Set<HarnessSlot>()
 
   /** transient 槽使用内存会话（子代理/一次性驱动），不写聊天目录。 */
-  constructor(sessionId: string, options: { transient?: boolean; generationSeed?: number } = {}) {
+  constructor(
+    sessionId: string,
+    options: { transient?: boolean; generationSeed?: number; onRunSettled?: (slot: HarnessSlot) => void } = {},
+  ) {
     this.sessionId = sessionId
     this.transient = options.transient === true
+    this.onRunSettled = options.onRunSettled
     // 注册表分配代际起点：槽被释放重建后代际不回退，旧 cleanup 不会命中新 run（ABA）。
     this.generation = options.generationSeed ?? 0
   }
 
   private readonly transient: boolean
+  /**
+   * 运行收尾通知（只有注册表建出来的槽有）：注册表的空闲回收器据此判定是否删除并关闭本槽。
+   * 回调只做通知 —— 真正释放必须由 `end()`（宿主声明的回合终点）收口，见 HarnessSlots.releaseIfIdle。
+   */
+  private readonly onRunSettled?: (slot: HarnessSlot) => void
 
   // ── 生命周期 ──
 
@@ -732,6 +741,21 @@ export class HarnessSlot {
 
   isRunning(): boolean {
     return this.state === "running"
+  }
+
+  // ── 空闲回收（HN-05）：运行收尾后归还注册表的释放请求 ──
+
+  /** 注册表请求在本次运行收尾后回收本槽（空闲回收器，HN-05）。 */
+  private releaseOnIdle = false
+
+  /** 登记回收请求（注册表在槽不空闲时调用）。 */
+  requestIdleRelease(): void { this.releaseOnIdle = true }
+
+  /** 取出并清空待回收标记：只有真正走到释放路径才消费。 */
+  consumeIdleRelease(): boolean {
+    if (!this.releaseOnIdle) return false
+    this.releaseOnIdle = false
+    return true
   }
 
   /**
@@ -1328,6 +1352,10 @@ export class HarnessSlot {
       // 运行收尾（含中止/失败）必须结束瞬时流式展示，不能让半截正文悬在 UI 上。
       this.endAssistantStream()
       this.activeRun = undefined
+      // 运行收尾通知：注册表的空闲回收器在这里判定是否删除并关闭本槽。
+      // 此时宿主可能还没调用 end()（runner 的 end 与 runtime 的兜底落盘都在 run() 返回之后），
+      // 所以注册表只在 !isRunning() 时真正释放，否则把请求归还给槽等 end()。
+      this.onRunSettled?.(this)
     }
   }
 
@@ -1633,7 +1661,7 @@ export class HarnessSlots {
   ensure(sessionId: string): HarnessSlot {
     let slot = this.slots.get(sessionId)
     if (!slot) {
-      slot = new HarnessSlot(sessionId, { generationSeed: this.generationSeed })
+      slot = new HarnessSlot(sessionId, { generationSeed: this.generationSeed, onRunSettled: settled => this.releaseIfIdle(settled) })
       this.slots.set(sessionId, slot)
       // 无槽期间挂起的审计条目在这里转交：证据不因槽被释放而丢。
       const orphans = this.orphanAudits.get(sessionId)
@@ -1672,8 +1700,15 @@ export class HarnessSlots {
     return this.peek(sessionId)?.bindRun(generation, identity) ?? false
   }
 
+  /**
+   * 宿主声明回合终点：结束代际所有权，并给空闲回收器一次收口机会
+   * （运行收尾时槽还被判忙、或收尾通知早于本调用时，释放请求积压到这里）。
+   */
   end(sessionId: string, generation: number): boolean {
-    return this.peek(sessionId)?.end(generation) ?? false
+    const slot = this.peek(sessionId)
+    const ended = slot?.end(generation) ?? false
+    if (ended && slot) this.releaseIfIdle(slot)
+    return ended
   }
 
   isRunning(sessionId: string): boolean {
@@ -1729,12 +1764,34 @@ export class HarnessSlots {
     return this.peek(sessionId)?.isDrainCurrent(generation) ?? false
   }
 
-  /** 释放空闲槽（会话切换/关闭时用）；运行中的槽不释放。 */
-  releaseWhenIdle(sessionId: string): boolean {
-    const slot = this.peek(sessionId)
-    if (!slot || slot.isRunning()) return false
-    this.slots.delete(sessionId)
+  /**
+   * 空闲回收：单一定义点就是本注册表的 Map。
+   * 顺序：ABA 校验 → 消费待回收标记 → 宿主仍持有运行权时归还请求（等 end()）。
+   */
+  private releaseIfIdle(slot: HarnessSlot): void {
+    if (this.slots.get(slot.sessionId) !== slot) return
+    if (!slot.consumeIdleRelease()) return
+    if (slot.isRunning()) { slot.requestIdleRelease(); return }
+    this.slots.delete(slot.sessionId)
     void slot.close()
+  }
+
+  /**
+   * 释放空闲槽（会话切换/关闭时用）；运行中的槽不释放。
+   *
+   * 「不空闲」包含 lane 结构操作在飞（手动压缩）：这类槽此刻不能删，但请求不再丢 ——
+   * 登记到槽上，等运行收尾（`onRunSettled`）或宿主声明回合终点（`end`）时由
+   * `releaseIfIdle` 收口。返回 false 表示「本次没释放」，不代表请求被丢弃。
+   */
+  async releaseWhenIdle(sessionId: string): Promise<boolean> {
+    const slot = this.peek(sessionId)
+    if (!slot) return false
+    if (slot.isRunning() || await slot.hasOpenOperation()) {
+      slot.requestIdleRelease()
+      return false
+    }
+    this.slots.delete(sessionId)
+    await slot.close()
     return true
   }
 

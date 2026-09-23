@@ -46,7 +46,7 @@ export const 会话运行槽: SceneDef = {
         if (!harnessSlots.end(sessionId, nextGeneration)) throw new Error("当前代际无法正常结束")
 
         // 释放空闲槽后重建：代际在注册表层继续单调，旧 cleanup 的 end 不能命中新 run（ABA）。
-        if (!harnessSlots.releaseWhenIdle(sessionId)) throw new Error("空闲槽未释放")
+        if (!await harnessSlots.releaseWhenIdle(sessionId)) throw new Error("空闲槽未释放")
         const recreatedGeneration = harnessSlots.begin(sessionId)
         if (recreatedGeneration === undefined || recreatedGeneration <= nextGeneration) {
           throw new Error(`槽重建后代际回退: ${String(nextGeneration)} -> ${String(recreatedGeneration)}`)
@@ -72,7 +72,7 @@ export const 会话运行槽: SceneDef = {
         }
         if (harnessSlots.isRunning(sessionId)) throw new Error("空闲槽停止后不应处于运行态")
 
-        harnessSlots.releaseWhenIdle(sessionId)
+        await harnessSlots.releaseWhenIdle(sessionId)
       },
     }],
   }],

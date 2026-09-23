@@ -111,7 +111,7 @@ export const 手动压缩排队守卫: SceneDef = {
 
     // 用户切走：槽被释放（镜像随槽消失，lane 持久 inbox 不受影响）——
     // 这正是「镜像空、真相非空」的现场，场景的前提就是它成立。
-    releasedWhenIdle = harnessSlots.releaseWhenIdle(sessionId)
+    releasedWhenIdle = await harnessSlots.releaseWhenIdle(sessionId)
     assistantBeforeCompact = assistantTexts(await sessionMessages()).length
     compactReply = (await sendMessage("/compact")).reply
 

@@ -174,7 +174,9 @@ export async function switchToSession(sessionId: string): Promise<void> {
     cancelSessionPlans(previousSessionId, "session_switched")
     invalidatePermissionScope(previousSessionId)
     saveUnanswered(previousSessionId, unansweredCount.value)
-    harnessSlots.releaseWhenIdle(previousSessionId)
+    // 释放是异步的（空闲回收器要读 lane 真相、可能真的关掉 Harness）：等它收口再切指针，
+    // 否则「切走」与「旧槽还在收尾」会重叠。忙时它返回 false 并把请求登记到槽上，不阻塞切会话。
+    await harnessSlots.releaseWhenIdle(previousSessionId)
   }
 
   await activateSession(sessionId)
@@ -192,7 +194,8 @@ export async function createNewSession(): Promise<SessionMeta> {
     cancelSessionPlans(oldId, "session_switched")
     invalidatePermissionScope(oldId)
     saveUnanswered(oldId, unansweredCount.value)
-    harnessSlots.releaseWhenIdle(oldId)
+    // 同 switchToSession：等释放收口再建新会话，忙时请求登记在槽上由运行收尾回收。
+    await harnessSlots.releaseWhenIdle(oldId)
   }
 
   const summary = await createPiSession("新会话")
@@ -227,7 +230,8 @@ export function closeSession(sessionId: string): void {
   }
 
   removeSessionMeta(sessionId)
-  harnessSlots.releaseWhenIdle(sessionId)
+  // 本函数是同步入口（调用方不等关闭结果）：释放仍照常发起，忙时请求登记在槽上等运行收尾回收。
+  void harnessSlots.releaseWhenIdle(sessionId)
   deleteUnanswered(sessionId)
   saveSessionList([...sessions])
 }
