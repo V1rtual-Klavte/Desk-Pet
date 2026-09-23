@@ -239,8 +239,9 @@ function parseLiteralVal(raw: string): number | string | boolean {
   return !isNaN(n) ? n : t
 }
 
-async function computeHash(content: string): Promise<string> {
-  const data = new TextEncoder().encode(content)
+/** 文本的 SHA-256 十六进制摘要（Card 正文与阶段文案失效键共用） */
+export async function hashCardText(text: string): Promise<string> {
+  const data = new TextEncoder().encode(text)
   const buf = await crypto.subtle.digest("SHA-256", data)
   return Array.from(new Uint8Array(buf)).map(b => b.toString(16).padStart(2, "0")).join("")
 }
@@ -252,7 +253,7 @@ let cards: PersonalityCard[] = []
 async function parseCard(raw: string): Promise<PersonalityCard> {
   const { meta, body } = parseFrontmatter(raw)
   const sections = parseSections(body)
-  const hash = await computeHash(raw)
+  const hash = await hashCardText(raw)
   return { id: meta.id, name: meta.name || meta.id, description: meta.description, version: meta.version, rawContent: raw, sections, hash, source: "runtime" }
 }
 

@@ -156,8 +156,8 @@ async function hydrateRuntimePreview(cardId: string) {
   const card = cardList.value.find(c => c.id === cardId);
   if (!card) return;
 
-  const { loadStagesFromDisk, loadCardVars, initVariablePool, refreshVariablePool } = await import("@/services/personality");
-  const loadedStages = await loadStagesFromDisk(card.id, card.version);
+  const { loadStagesFromDisk, stageSourceHash, loadCardVars, initVariablePool, refreshVariablePool } = await import("@/services/personality");
+  const loadedStages = await loadStagesFromDisk(card.id, await stageSourceHash(card));
   stagesData.value = loadedStages;
   stagesFileExists.value = Boolean(loadedStages) || await checkStagesExists(card.id);
 
@@ -293,11 +293,8 @@ async function generateStagesForSelected(card: PersonalityCard) {
   regenerating.value = true;
   switchError.value = "";
   try {
-    const { generateStagesForCard, getCachedStages } = await import("@/services/personality");
-    const result = await generateStagesForCard(
-      card.id, card.sections.roleSetting,
-      card.sections.languageStyle, card.version, card.hash,
-    );
+    const { generateStagesForCard } = await import("@/services/personality");
+    const result = await generateStagesForCard(card);
     if (result) {
       stagesData.value = result;
       stagesFileExists.value = true;
@@ -322,11 +319,8 @@ async function regenerateStages() {
   if (!card) return;
   regenerating.value = true;
   try {
-    const { generateStagesForCard, getCachedStages } = await import("@/services/personality");
-    const result = await generateStagesForCard(
-      card.id, card.sections.roleSetting,
-      card.sections.languageStyle, card.version, card.hash,
-    );
+    const { generateStagesForCard } = await import("@/services/personality");
+    const result = await generateStagesForCard(card);
     if (result) {
       stagesData.value = result;
       stagesFileExists.value = true;

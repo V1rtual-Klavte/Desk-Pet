@@ -23,5 +23,6 @@ export type { VariablePool, VariablePoolRuntimeState } from "./variable-pool"
 export { parseMustRules, formatAllRules } from "./must-rules"
 export type { MustRules } from "./must-rules"
 
-export { loadStages, getCachedStages, snapshotStagesCache, restoreStagesCache, clearStagesCache, getStagePrompt, getSimpleStage, getFallbackReply, getGreetings, pickActiveGreeting, FALLBACK_STAGES, generateStagesForCard, loadStagesFromDisk, buildStagesPrompt, parseStagesResponse, serializeStages, deserializeStages, validateStages, validateStagesForCard } from "./stages-cache"
-export type { StagePrompts, StageMap, FallbackReplies } from "./stages-cache"
+export { loadStages, getCachedStages, snapshotStagesCache, restoreStagesCache, clearStagesCache, getStagePrompt, getSimpleStage, getFallbackReply, getGreetings, pickActiveGreeting, FALLBACK_STAGES, generateStagesForCard, loadStagesFromDisk, buildStagesPrompt, parseStagesResponse, validateStages, validateStagesForCard, stageSourceHash } from "./stages-cache"
+export { readStagesFile, updateStagesFile } from "./stages-file"
+export type { StagePrompts, StageMap, FallbackReplies, StagesFile, StageFileStages, StageFileVariables } from "./stages-file"

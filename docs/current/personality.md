@@ -13,7 +13,7 @@
 
 精确类型见 [types.ts](../../src/services/personality/types.ts) 的 `CardVariableDef`、`VariableState`。VariableState 保存 value/type/updatedAt/updatedBy 和可选 lastResetAt；这些元数据参与状态恢复，不能在保存时退回裸值。
 
-card/interaction 状态保存在 `personality/stages/{cardId}.json` 的变量区；vars.json 只保存 system 数据，session 不进入 Card 持久化。序列化由[变量池](../../src/services/personality/variable-pool.ts)和[阶段缓存](../../src/services/personality/stages-cache.ts)维护。用户长期事实不存入角色变量。
+card/interaction 状态保存在 `personality/stages/{cardId}.json` 的变量区；vars.json 只保存 system 数据，session 不进入 Card 持久化。`stages/{cardId}.json` 的 stages 段与 variables 段由 [stages-file.ts](../../src/services/personality/stages-file.ts) 单一读写：段级合并，两个生产者互不抹除。用户长期事实不存入角色变量。
 
 ## Card 加载与切换
 
@@ -21,7 +21,7 @@ card/interaction 状态保存在 `personality/stages/{cardId}.json` 的变量区
 
 默认种子提供 neutral 中性选择；没有可用 Card 时允许无活动 Card 降级运行。`whenText` 是自然语言语气指引；mustRules 参与 Prompt 构建，不是一套任意执行脚本。
 
-阶段文案先读持久化缓存，缺失时可经模型生成。`getFallbackReply()` 提供角色化兜底并有中性回退。
+阶段文案先读持久化缓存，缺失时可经模型生成；任一 Card 首次激活或角色设定/语言风格变化时会重新生成一次（一次 LLM 调用/卡）。失效判定键是生成输入 `sourceHash`（`SHA-256(roleSetting + "\n" + languageStyle)`），`version:` 只作元数据、不参与判定；重新生成只覆写 stages 段，不清空变量区。`getFallbackReply()` 提供角色化兜底并有中性回退。
 
 ## 回复与写入
 

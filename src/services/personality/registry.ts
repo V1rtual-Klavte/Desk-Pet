@@ -12,7 +12,7 @@ import {
   updateInteractionVar,
 } from "./variable-pool"
 import {
-  generateStagesForCard, loadStagesFromDisk,
+  generateStagesForCard, loadStagesFromDisk, stageSourceHash,
   snapshotStagesCache, restoreStagesCache, clearStagesCache,
 } from "./stages-cache"
 import { createLogger } from "@/services/logger"
@@ -83,17 +83,15 @@ export function getActivePersonalityId(): string | null { return activeId }
 
 export function isPersonalityRuntimeReady(): boolean { return runtimeReady }
 
+// 顺序固定：先用 Card 现算一次 sourceHash → 先 load（命中即零 LLM 调用）→ 失败才 generate。
+// 不能反：generate 会覆写 stages 段，先 load 才保得住既有缓存（FIX-38③）。
 async function ensureStagesReady(card: PersonalityCard): Promise<void> {
-  const loaded = await loadStagesFromDisk(card.id, card.version)
+  const sourceHash = await stageSourceHash(card)
+
+  const loaded = await loadStagesFromDisk(card.id, sourceHash)
   if (loaded) return
 
-  const generated = await generateStagesForCard(
-    card.id,
-    card.sections.roleSetting,
-    card.sections.languageStyle,
-    card.version,
-    card.hash,
-  )
+  const generated = await generateStagesForCard(card)
   if (!generated) throw new Error("阶段文案生成失败")
 }
 

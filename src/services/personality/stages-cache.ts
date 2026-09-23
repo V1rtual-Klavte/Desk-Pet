@@ -1,9 +1,15 @@
 // ==========================================
-// 阶段文案缓存 — per-card 生成/加载/持久化
-// §7: 读模板 → 调 LLM → 写入 stages/{cardId}.json
+// 阶段文案缓存 — per-card 生成/加载
+// §7: 读模板 → 调 LLM → 经 stages-file 写入 stages/{cardId}.json
+// 本文件是 stages 段的唯一生产者；变量区由 variable-pool 负责，两者互不抹除。
 // ==========================================
 
+import type { PersonalityCard } from "./types"
+import { hashCardText } from "./loader"
+import type { FallbackReplies, StageMap, StagePrompts } from "./stages-file"
+import { readStagesFile, updateStagesFile } from "./stages-file"
 import { createLogger } from "@/services/logger"
+import { formatError } from "@/services/error"
 
 const log = createLogger("Stages")
 
@@ -15,54 +21,8 @@ for (const [, mod] of Object.entries(templateModules)) {
 }
 
 // ── 类型 ──
-
-export interface StagePrompts {
-  cardId: string
-  cardVersion: number
-  cardHash: string
-  generatedAt: number
-  isFallback: boolean
-  stages: StageMap
-  /** Card + interaction 变量运行时状态，持久化到 stages/{cardId}.json */
-  variables?: StageVariables
-}
-
-/** 持久化在 stages/{cardId}.json 中的变量状态 */
-export interface StageVariables {
-  schemaVersion: number
-  updatedAt: number
-  card: Record<string, import("./types").VariableState>
-  interaction: Record<string, import("./types").VariableState>
-}
-
-export interface StageMap {
-  thinking: string | null
-  planning: string | null
-  idle: string | null
-  executing: Record<string, string>
-  done: Record<string, string>
-  blocked: Record<string, string>
-  error: string
-  timeout: string
-  retry: string
-  /** 系统兜底回复，每个 Card 有自己的角色化版本 */
-  fallbacks: FallbackReplies
-  /** 首次激活的问候语，每个 Card 有自己的角色化版本；运行时随机选一条 */
-  greetings: string[]
-}
-
-/** 系统兜底回复类型 — 替代硬编码中文 */
-export interface FallbackReplies {
-  concurrentRejected: string
-  maxRetriesExhausted: string
-  turnTimeout: string
-  toolLoopMaxRounds: string
-  llmUnavailable: string[]        // 数组，运行时随机选一条
-  subAgentDone: string
-  subAgentFailed: string
-  subAgentNoResult: string
-  compactionFailed: string
-}
+// 文件形态（StagePrompts / StageMap / FallbackReplies）由 stages-file 拥有，
+// 这里只消费；下面的 FALLBACK_* 是运行时兜底常量，不是文件形态。
 
 /** 极简中性兜底 — 只在 Card stages 完全不可用时使用 */
 const FALLBACK_FALLBACKS: FallbackReplies = {
@@ -172,14 +132,6 @@ export function pickActiveGreeting(): string | null {
   return greetings[Math.floor(Math.random() * greetings.length)]
 }
 
-export function serializeStages(prompts: StagePrompts): string {
-  return JSON.stringify(prompts, null, 2)
-}
-
-export function deserializeStages(json: string): StagePrompts | null {
-  try { return JSON.parse(json) as StagePrompts } catch { return null }
-}
-
 export function validateStages(data: unknown): data is StagePrompts {
   if (!data || typeof data !== "object") return false
   const d = data as Record<string, unknown>
@@ -194,23 +146,32 @@ export function validateStages(data: unknown): data is StagePrompts {
 export function validateStagesForCard(
   data: StagePrompts,
   cardId: string,
-  cardVersion: number,
+  sourceHash: string,
 ): boolean {
-  return data.cardId === cardId && data.cardVersion === cardVersion && validateStages(data)
+  // 失效只看「生成输入」：cardId 归属 + sourceHash。cardVersion 是元数据，不参与判定。
+  return data.cardId === cardId && data.sourceHash === sourceHash && validateStages(data)
+}
+
+/**
+ * 阶段文案的失效键 —— 与生成输入严格同源（buildStagesPrompt 只用这两段），
+ * 是全仓唯一定义点。分隔符固定为 "\n"：改它等于让所有 Card 的缓存失效一次。
+ */
+export async function stageSourceHash(
+  card: { sections: { roleSetting: string; languageStyle: string } },
+): Promise<string> {
+  return hashCardText(`${card.sections.roleSetting}\n${card.sections.languageStyle}`)
 }
 
 export async function loadStagesFromDisk(
   cardId: string,
-  cardVersion: number,
+  sourceHash: string,
 ): Promise<StagePrompts | null> {
   try {
-    const { invoke } = await import("@tauri-apps/api/core")
-    const raw = await invoke<number[]>("personality_file_read", {
-      path: `stages/${cardId}.json`,
-    })
-    const json = new TextDecoder().decode(new Uint8Array(raw))
-    const data = deserializeStages(json)
-    if (!data || !validateStagesForCard(data, cardId, cardVersion)) {
+    const file = await readStagesFile(cardId)
+    if (!file) return null
+
+    const data = file.stages
+    if (!data || !validateStagesForCard(data, cardId, sourceHash)) {
       log.warn("stages 校验失败:", cardId)
       return null
     }
@@ -218,7 +179,8 @@ export async function loadStagesFromDisk(
     log.info("stages 从持久化恢复:", `personality/stages/${cardId}.json`)
     return data
   } catch (e) {
-    log.info("stages 持久化文件不可用:", `personality/stages/${cardId}.json`, e)
+    // readStagesFile 已就损坏留证；这里显式降级为「无缓存」，由调用方重生成。
+    log.error("stages 持久化文件不可用:", `personality/stages/${cardId}.json`, formatError(e))
     return null
   }
 }
@@ -420,21 +382,18 @@ function readLooseFallbacks(text: string, defaults: FallbackReplies): FallbackRe
 /**
  * 为指定 Card 生成阶段文案（阻塞 LLM 调用）
  * 请求走 engine/pi 的 completePiText，复用主链路的模型解析与网络边界
+ * 写盘经 stages-file 的段级合并，只覆写 stages 段、不动变量区
  * @returns 成功的 StagePrompts，失败返回 null
  */
-export async function generateStagesForCard(
-  cardId: string,
-  roleSetting: string,
-  languageStyle: string,
-  cardVersion: number,
-  cardHash: string,
-): Promise<StagePrompts | null> {
+export async function generateStagesForCard(card: PersonalityCard): Promise<StagePrompts | null> {
+  const { id: cardId, sections } = card
   if (!stagesTemplate) {
     log.error("stages 模板未加载")
     return null
   }
 
-  const prompt = buildStagesPrompt(stagesTemplate, roleSetting, languageStyle)
+  const sourceHash = await stageSourceHash(card)
+  const prompt = buildStagesPrompt(stagesTemplate, sections.roleSetting, sections.languageStyle)
   log.info("开始生成 stages:", cardId)
 
   try {
@@ -466,19 +425,14 @@ export async function generateStagesForCard(
 
     const result: StagePrompts = {
       cardId,
-      cardVersion,
-      cardHash,
+      cardVersion: card.version,   // 仅元数据/诊断，不参与失效判定
+      sourceHash,
       generatedAt: Date.now(),
       isFallback: false,
       stages: stageMap,
     }
 
-    const { invoke } = await import("@tauri-apps/api/core")
-    const path = `stages/${cardId}.json`
-    const absolutePath = await invoke<string>("personality_file_write", {
-      path,
-      content: Array.from(new TextEncoder().encode(serializeStages(result))),
-    })
+    const absolutePath = await updateStagesFile(cardId, { stages: result })
     log.info("stages 已持久化:", absolutePath)
 
     // 加载到内存缓存
@@ -486,7 +440,7 @@ export async function generateStagesForCard(
     log.info("stages 生成成功:", cardId)
     return result
   } catch (e) {
-    log.error("stages 生成异常:", e)
+    log.error("stages 生成异常:", formatError(e))
     return null
   }
 }
