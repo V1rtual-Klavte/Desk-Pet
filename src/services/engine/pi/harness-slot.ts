@@ -168,6 +168,30 @@ export interface HarnessRunSpec {
   state: HarnessRunState
 }
 
+/**
+ * 预检期准入用的最小运行参数：不含 systemPrompt/压缩钩子（那些随 drive 时的 spec 装配，不伪造写死值）。
+ */
+export interface HarnessAdmitSpec {
+  model: PiModel
+  thinkingEffort: ThinkingEffort
+  tools: readonly ToolDef[]
+  toolRun: HarnessToolRun
+  prompt: HarnessRunSpec["prompt"]
+}
+
+/** 准入结果：通过给出 operationId；未通过带上与 `run()` 同形的终态（调用方按 status 结算）。 */
+export type HarnessAdmissionResult = { ok: true; operationId: string } | { ok: false; result: HarnessRunResult }
+
+/**
+ * 一次驱动的归一结果：三条入口（`run` / `resumeInterrupted` / `driveAdmitted`）共用同一段收尾。
+ * `rejected` 是 lane 未接受或不匹配（tag 供宿主按 busy/closed/invalid 分类）；
+ * `suspended` 是未预期的延迟响应（deferred handle，或未被等待的重试），由收尾段如实结算。
+ */
+type DriveSettlement =
+  | { kind: "settled"; record: OperationResultRecord }
+  | { kind: "suspended"; operationId: string }
+  | { kind: "rejected"; tag: string; status: "busy" | "closed" | "invalid" }
+
 export type HarnessRunStatus =
   | "completed" | "failed" | "aborted" | "busy" | "invalid" | "closed" | "interrupted" | "faulted"
 
@@ -817,7 +841,19 @@ export class HarnessSlot {
       return { status: "invalid", timedOut: false, undelivered: [], state: spec.state, error: "没有可继续的中断运行" }
     }
     if (!this.isRunning()) this.begin({ requestId: spec.requestId, turnId: spec.turnId })
-    return this.execute(spec, "resume")
+    const lane = this.lane
+    return this.executeDrive(spec, async () => {
+      const resumed = await lane.resume(TODO_CONTEXT)
+      if (!resumed.ok) {
+        return resumed.error._tag === "Closed"
+          ? { kind: "rejected", tag: resumed.error._tag, status: "closed" }
+          : { kind: "rejected", tag: resumed.error._tag, status: "invalid" }
+      }
+      if ("status" in resumed.value && resumed.value.status === "suspended") {
+        return { kind: "suspended", operationId: resumed.value.operationId }
+      }
+      return { kind: "settled", record: resumed.value as OperationResultRecord }
+    })
   }
 
   /** 丢弃：不重放未知副作用，按 aborted 收尾并归还未消费消息（输入仍以 nextRun 保留）。 */
@@ -910,6 +946,57 @@ export class HarnessSlot {
 
   // ── 运行 ──
 
+  /**
+   * 预检前把输入先落盘：装配 lane 运行参数后 `lane.accept({kind:"prompt", prompt})`。
+   * accept 即把用户条目提交进会话文件（此后预检失败或进程被杀都不丢输入），
+   * 模型请求留给 `driveAdmitted`；空 prompt + inbox 有消息是上游允许的形态。
+   */
+  async admitInput(admit: HarnessAdmitSpec): Promise<HarnessAdmissionResult> {
+    await this.open()
+    if (this.interruptedInfo || this.state === "faulted" || !this.isUsable() || !this.lane) {
+      return {
+        ok: false,
+        result: {
+          status: this.state === "faulted" ? "faulted" : this.interruptedInfo ? "interrupted" : "closed",
+          timedOut: false, undelivered: [], state: createHarnessRunState(),
+        },
+      }
+    }
+    await this.assembleLane(admit)
+    const accepted = await this.lane.accept({ kind: "prompt", prompt: admit.prompt }, TODO_CONTEXT)
+    if (!accepted.ok) {
+      const tag = accepted.error._tag
+      log.error("输入未获准入（未落盘）:", { sessionId: this.sessionId, tag })
+      return {
+        ok: false,
+        result: {
+          status: tag === "LaneBusy" ? "busy" : "invalid",
+          timedOut: false, undelivered: [], state: createHarnessRunState(), error: tag,
+        },
+      }
+    }
+    return { ok: true, operationId: accepted.value.operationId }
+  }
+
+  /**
+   * 预检通过后用完整 spec 驱动已接受的操作到终态（收尾与 `run()` 完全一致）。
+   * 只驱动、不重新提交正文：用户条目在 `admitInput` 时已落盘，重复投递会造出第二份用户正文。
+   */
+  async driveAdmitted(spec: HarnessRunSpec, admission: { operationId: string }): Promise<HarnessRunResult> {
+    const lane = this.lane!
+    return this.executeDrive(spec, async () => {
+      // waitForRetry 与上游 prompt() 的驱动口径一致：重试等待在这里就地等完，不把控制权交回宿主。
+      const driven = await lane.drive({ operationId: admission.operationId, waitForRetry: true }, TODO_CONTEXT)
+      if (!driven.ok) {
+        return driven.error._tag === "Closed"
+          ? { kind: "rejected", tag: driven.error._tag, status: "closed" }
+          : { kind: "rejected", tag: driven.error._tag, status: "invalid" }
+      }
+      if (driven.value.kind === "settled") return { kind: "settled", record: driven.value.outcome }
+      return { kind: "suspended", operationId: driven.value.operationId }
+    })
+  }
+
   /** 驱动一个回合直到 run_end；调用方已 begin，槽自身兜底登记代际。 */
   async run(spec: HarnessRunSpec): Promise<HarnessRunResult> {
     await this.open()
@@ -927,7 +1014,9 @@ export class HarnessSlot {
       const generation = this.begin({ requestId: spec.requestId, turnId: spec.turnId })
       if (generation === undefined) return { status: "busy", timedOut: false, undelivered: [], state: spec.state }
     }
-    return this.execute(spec, "prompt")
+    const admitted = await this.admitInput(spec)
+    if (!admitted.ok) return admitted.result
+    return this.driveAdmitted(spec, admitted)
   }
 
   /** 宿主显式停止：取消当前操作并归还未消费消息。 */
@@ -1053,7 +1142,23 @@ export class HarnessSlot {
 
   // ── 内部 ──
 
-  private async execute(spec: HarnessRunSpec, kind: "prompt" | "resume"): Promise<HarnessRunResult> {
+  /** 装配 lane 运行参数（工具/压缩/队列/许可上限/模型/思考档位）；admit 与 drive 共用同一段，不写第二份。 */
+  private async assembleLane(spec: Pick<HarnessAdmitSpec, "model" | "thinkingEffort" | "tools" | "toolRun">): Promise<void> {
+    const tools = toAgentHarnessTools(spec.tools, spec.toolRun)
+    await this.harness!.setTools(tools, TODO_CONTEXT)
+    await this.syncCompactionSettings(spec.model)
+    await this.syncQueueModes()
+    await this.syncToolPermitLimit()
+    await this.lane!.setModel({ provider: spec.model.provider, modelId: spec.model.id }, TODO_CONTEXT)
+    await this.lane!.setThinkingLevel(toPiAgentThinkingLevel(spec.thinkingEffort), TODO_CONTEXT)
+    await this.lane!.setActiveTools(spec.tools.map(tool => tool.name), TODO_CONTEXT)
+  }
+
+  /**
+   * 驱动与收尾的唯一运行体：`run()`、`resumeInterrupted()` 与 `driveAdmitted()` 都走它，
+   * 只有「怎么驱动」由调用方给的闭包（`drive`）决定，计时器与收尾段完全共用。
+   */
+  private async executeDrive(spec: HarnessRunSpec, drive: () => Promise<DriveSettlement>): Promise<HarnessRunResult> {
     const run: ActiveRun = { spec }
     this.activeRun = run
     // 冻结的 systemPrompt 留底：回合结束后若还有结构性驱动（续跑/恢复），人格前缀不因
@@ -1063,36 +1168,27 @@ export class HarnessSlot {
     this.clearTimer()
     this.timer = setTimeout(() => { void this.abort(ABORT_REASON_TIMEOUT) }, Math.max(1, spec.timeoutMs))
     try {
-      const tools = toAgentHarnessTools(spec.tools, spec.toolRun)
-      await this.harness!.setTools(tools, TODO_CONTEXT)
-      await this.syncCompactionSettings(spec.model)
-      await this.syncQueueModes()
-      await this.syncToolPermitLimit()
-      await this.lane!.setModel({ provider: spec.model.provider, modelId: spec.model.id }, TODO_CONTEXT)
-      await this.lane!.setThinkingLevel(toPiAgentThinkingLevel(spec.thinkingEffort), TODO_CONTEXT)
-      await this.lane!.setActiveTools(spec.tools.map(tool => tool.name), TODO_CONTEXT)
-
-      const result = kind === "resume"
-        ? await this.lane!.resume(TODO_CONTEXT)
-        : typeof spec.prompt === "string"
-          ? await this.lane!.prompt(spec.prompt, undefined, TODO_CONTEXT)
-          : await this.lane!.prompt(spec.prompt, TODO_CONTEXT)
-      if (!result.ok) {
-        const tag = result.error._tag
-        log.warn("Harness 操作未被接受:", { sessionId: this.sessionId, tag })
-        if (tag === "LaneBusy") return { status: "busy", timedOut: false, undelivered: [], state: spec.state }
-        if (tag === "Closed") return { status: "closed", timedOut: false, undelivered: [], state: spec.state }
-        return { status: "invalid", timedOut: false, undelivered: [], state: spec.state, error: tag }
+      await this.assembleLane(spec)
+      const settlement = await drive()
+      if (settlement.kind === "rejected") {
+        log.warn("Harness 操作未被接受:", { sessionId: this.sessionId, tag: settlement.tag })
+        return {
+          status: settlement.status,
+          timedOut: false,
+          undelivered: [],
+          state: spec.state,
+          ...(settlement.status === "invalid" ? { error: settlement.tag } : {}),
+        }
       }
-      if ("status" in result.value && result.value.status === "suspended") {
+      if (settlement.kind === "suspended") {
         // 不启用 deferred：出现挂起说明 Provider 返回了未预期的 handle，按失败暴露。
         // 但必须把这个操作结算掉：只返回 failed 会让槽背着永不结算的 lane 操作，
         // 后续 waitForIdle 挂死、下一次运行永远被判忙。取消是结算（HN-08）。
-        log.error("运行返回了未预期的延迟响应，已取消该操作:", { sessionId: this.sessionId, operationId: result.value.operationId })
+        log.error("运行返回了未预期的延迟响应，已取消该操作:", { sessionId: this.sessionId, operationId: settlement.operationId })
         const cancelled = await this.lane!.abort(TODO_CONTEXT)
         // 取消未被接受就还是没结算：如实留 warn（收尾的 waitForIdle 预检也会报同一件事）。
         if (!cancelled.ok) {
-          log.warn("挂起操作的取消未被接受:", { sessionId: this.sessionId, operationId: result.value.operationId, error: formatError(cancelled.error) })
+          log.warn("挂起操作的取消未被接受:", { sessionId: this.sessionId, operationId: settlement.operationId, error: formatError(cancelled.error) })
         }
         await this.collectPendingDelivery(run)
         return {
@@ -1103,7 +1199,7 @@ export class HarnessSlot {
           error: "Provider 返回了不支持的延迟响应（已取消并结算该操作）",
         }
       }
-      const record = result.value as OperationResultRecord
+      const record = settlement.record
       run.operationId = record.operationId
       this.lastRunResult = record
       await this.collectPendingDelivery(run)

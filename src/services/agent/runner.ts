@@ -187,18 +187,21 @@ interface TurnInvocation {
   ingress?: IngressEnvelope
   /** 停止后继续：暂停输入按原顺序一次性投递（身份不合并、正文不重复追加）。 */
   pausedMessages?: AgentMessage[]
-  /** 投递前记账（普通输入推用户气泡、清未回复计数）；继续暂停输入不需要。 */
-  beforeRun?: () => void
+  /**
+   * 输入已落盘后的记账（普通输入推用户气泡、清未回复计数）；继续暂停输入不需要
+   * （暂停输入在排队时已展示）。记账晚于落盘：未获准入时不会先画一条不存在于会话里的气泡。
+   */
+  onInputAdmitted?: () => void
 }
 
 /**
- * 两个入口共用的回合体：状态推进 → 绑定运行身份 → 投递前记账 → 驱动运行内核。
+ * 两个入口共用的回合体：状态推进 → 绑定运行身份 → 驱动运行内核（输入先落盘，界面记账由
+ * 内核在条目提交后经 `onInputAdmitted` 回调）。
  * 抛出的异常交给调用方按各自的降级策略处理（普通发送与继续的兜底文案不同）。
  */
 async function performTurn(invocation: TurnInvocation): Promise<PiAgentTurnOutput> {
   const { sessionId, requestId, runGeneration } = invocation
   harnessSlots.bindRun(sessionId, runGeneration, { requestId })
-  invocation.beforeRun?.()
   const result = await runPiAgentTurn({
     sessionId,
     userText: invocation.userText,
@@ -207,6 +210,7 @@ async function performTurn(invocation: TurnInvocation): Promise<PiAgentTurnOutpu
     isActiveMessage: false,
     ...(invocation.ingress ? { ingress: invocation.ingress } : {}),
     ...(invocation.pausedMessages ? { pausedMessages: invocation.pausedMessages } : {}),
+    ...(invocation.onInputAdmitted ? { onInputAdmitted: invocation.onInputAdmitted } : {}),
     runGeneration,
   })
   return result
@@ -435,8 +439,9 @@ async function dispatchMessage(text: string, options: SendMessageOptions = {}): 
       // 空闲发送不是无身份的裸字符串：正文与忙碌投递同形（身份 + 来源标记随条目落盘）。
       userPrompt: userInputMessage(preResult.text, inputEventId(requestId), inputSourceMark(inputIngress)),
       ingress: inputIngress,
-      // 投递前记账：用户气泡与未回复计数属于「用户发了这条消息」，继续暂停输入不重复做。
-      beforeRun: () => {
+      // 输入落盘后的记账：用户气泡与未回复计数属于「用户发了这条消息」，继续暂停输入不重复做。
+      // 回调由运行内核在 `lane.accept` 提交条目之后调用（不在这里抢先画）。
+      onInputAdmitted: () => {
         pushUserMessage(preResult.text, originSessionId)
         resetUnanswered()
       },

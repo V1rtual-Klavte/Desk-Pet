@@ -159,6 +159,11 @@ export interface PiAgentTurnInput {
    * userText 仍用于规划/召回等按文本工作的环节。
    */
   pausedMessages?: AgentMessage[]
+  /**
+   * 输入已落盘（lane.accept 提交用户条目成立）之后的 UI 记账钩子：用户气泡与未回复计数
+   * 只在条目提交进会话文件之后更新，预检失败、未获准入时不会先画一条不存在于会话里的气泡。
+   */
+  onInputAdmitted?: () => void
   unansweredCount: number
   isActiveMessage?: boolean
   ingress?: IngressEnvelope
@@ -728,6 +733,8 @@ export async function runPiAgentTurn(input: PiAgentTurnInput): Promise<PiAgentTu
   const frozenUserContext = { candyInstructions: MemoryService.getCandyInstructionsSync(),
     userProfileText: MemoryService.getUserProfileSync(),
     dynamicPrompt: `${formatPoolForPrompt(pool)}${thinkingEffort === "low" ? "\n[请快速简要回答]" : thinkingEffort === "high" ? "\n[请仔细深入思考]" : ""}` }
+  // 准入是否已成立（用户条目已提交进会话文件）：此后每条退出路径都必须结算那条已接受的操作。
+  let admittedOnce = false
   try {
   // 运行态信号：ChatPanel 据此显示/收起停止按钮。真相仍是 harnessSlots 的运行槽，
   // 事件只是通知通道，UI 不因此持有第二份运行状态。
@@ -742,6 +749,32 @@ export async function runPiAgentTurn(input: PiAgentTurnInput): Promise<PiAgentTu
   // 用户正文由 Harness 的 prompt 条目承担落盘（先落盘再投递由 Harness 事务保证）；
   // 主动消息用 deskpet.active_message 自定义消息投递，来源标记在 details.* 且不成为用户事实。
   assertCurrent()
+  // 工具运行面与投递正文在准入前装配一次：它们既是准入的入参，也是本回合 spec 的组成部分，
+  // 不因「准入提前」写第二份定义。
+  const toolRun: HarnessToolRun = {
+    mode, sessionId: turnSessionId, runGeneration: generation,
+    isCurrent: () => runIsCurrent(),
+    history: toolCallHistory,
+  }
+  // 投递正文由调用方构造（用户输入走 userInputMessage、主动消息走 createActiveMessage）：
+  // 停止后继续的暂停批次优先，其余按调用方给的 userPrompt 原样投递。
+  const promptInput: HarnessRunSpec["prompt"] = input.pausedMessages?.length ? input.pausedMessages : input.userPrompt
+  // ── 输入先落盘（STATE-04）：准入在计划与预检之前 ──
+  // 命中失败（未获准入）时输入没有条目、也没有操作要在之后结算；成功则条目已进会话文件，
+  // 后续无论走到哪条退出路径都保留它（预检失败不丢输入）。
+  const admitted = await slot.admitInput({ model, thinkingEffort, tools: frozenTools, toolRun, prompt: promptInput })
+  if (!admitted.ok) {
+    log.error("输入未获准入，回合未开始:", { sessionId: turnSessionId, status: admitted.result.status })
+    const reply = getFallbackReply("llmUnavailable")
+    await slot.appendAssistantMessage(reply).catch(error => log.error("兜底回复落盘失败", formatError(error)))
+    return {
+      reply, toolCallHistory, retriesUsed: 0,
+      failure: { kind: "unknown", message: `输入未获准入: ${admitted.result.error ?? admitted.result.status}` },
+    }
+  }
+  admittedOnce = true
+  // 记账晚于落盘（STATE-04 的共同改动）：用户气泡与未回复计数在条目已进会话文件之后才更新。
+  input.onInputAdmitted?.()
   let planStepContext = ""
   let planUserText = userText
   if (mode === "assistant" && planConfig.enabled) {
@@ -770,6 +803,9 @@ export async function runPiAgentTurn(input: PiAgentTurnInput): Promise<PiAgentTu
       // 三种归宿都在这里结算（PLAN-15）：completed 进主回合；cancelled / declined 经
       // finishWithoutTurn 收尾 —— 取消不写兜底失败回复、不标 failure，也不再有绕过结算出口的第二条落盘路径。
       if (outcome.kind !== "completed") {
+        // 计划不进主回合时，准入时接受的那条操作必须在这里结算：不驱动就 return 会留下
+        // 永不结算的 lane 操作，后续准入恒判忙、收尾的 waitForIdle 也会挂死。
+        await slot.abort("user").catch(error => log.warn("计划未进主回合，结算已接受操作失败:", formatError(error)))
         const output = await finishWithoutTurn({
           sessionId: turnSessionId,
           slot,
@@ -834,16 +870,11 @@ export async function runPiAgentTurn(input: PiAgentTurnInput): Promise<PiAgentTu
     transientUserInput: isActiveMessage === true,
     persistSnapshots: true,
     card,
-    toolRun: {
-      mode, sessionId: turnSessionId, runGeneration: generation,
-      isCurrent: () => runIsCurrent(),
-      history: toolCallHistory,
-    },
+    toolRun,
   })
   const spec = createTurnSpec(kernel, {
-    // 投递正文由调用方构造（用户输入走 userInputMessage、主动消息走 createActiveMessage），
-    // 这里只选路：停止后继续的暂停批次优先，其余按调用方给的 userPrompt 原样投递。
-    prompt: input.pausedMessages?.length ? input.pausedMessages : input.userPrompt,
+    // 正文在准入时已提交（与 toolRun 一起装配），spec 只承载驱动面。
+    prompt: promptInput,
     timeoutMs: loopConfig.turnTimeoutMs,
     maxToolCalls: loopConfig.maxToolCallsPerTurn,
     projectToolResults: true,
@@ -851,10 +882,18 @@ export async function runPiAgentTurn(input: PiAgentTurnInput): Promise<PiAgentTu
     // 权限确认绑定当前会话：等待确认期间用户切走会话，旧回合不再取得授权。
     isPermissionCurrent: () => runIsCurrent() && getActiveSessionId() === turnSessionId,
   })
-  const result = await slot.run(spec)
+  const result = await slot.driveAdmitted(spec, admitted)
   await slot.waitForIdle()
   await Promise.allSettled(kernel.snapshotTasks)
   return settleMainTurn({ input, kernel, result, toolCallHistory })
+  } catch (error) {
+    // 准入之后、驱动之前失败（计划段抛错、断言失效、装配失败）：已提交的输入条目保留在会话里
+    //（预检失败不丢输入），但那条已接受的操作必须结算 —— 否则它永不结算，后续准入恒判忙。
+    if (admittedOnce) {
+      await slot.abort("user").catch(abortError => log.warn("预检失败后结算已接受操作失败:", formatError(abortError)))
+    }
+    // 兜底回复与系统提示仍交回 runner 既有路径处理（照现状），这里只负责结算。
+    throw error
   } finally {
     if (ownedGeneration) harnessSlots.end(turnSessionId, generation)
     invalidatePermissionScope(turnSessionId, generation)
