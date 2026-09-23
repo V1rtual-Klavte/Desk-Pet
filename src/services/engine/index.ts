@@ -6,13 +6,6 @@
 export { preProcess } from "./preprocessor"
 export type { PreProcessResult, PreProcessState } from "./preprocessor"
 
-// ── Session ──
-export {
-  getState, transition, recordMessage, recordToolCall,
-  getSession, resetSession, isSessionStale,
-} from "./session"
-export type { AgentState, SessionState } from "./session"
-
 // ── Context ──
 export { buildPrompt } from "@/services/context"
 export type { BuildContextInput, BuildContextOutput } from "@/services/context"

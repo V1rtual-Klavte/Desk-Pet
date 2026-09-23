@@ -3,7 +3,6 @@
 // ==========================================
 
 import { destroyPool, initVariablePool } from "@/services/personality/variable-pool"
-import { resetSession } from "@/services/engine/session"
 import { clearMessages } from "@/services/session/store"
 import { activeSessionId, sessions, unansweredCount } from "@/services/session/store"
 import { resetSessionPersistenceForTest } from "@/services/session/persistence"
@@ -14,7 +13,6 @@ import { getActiveCard, initRegistry } from "@/services/personality/registry"
 import { initCards } from "@/services/personality/loader"
 import { registerDefaultTools } from "@/services/tool/registry"
 import { resetCooldown, setAIGenerating } from "@/services/cooldown"
-import { resetPreprocessorForTest } from "@/services/engine/preprocessor"
 import { resetPiRuntimeProviderForTest } from "@/services/engine/pi"
 import { resetAgentRuntimeForTest } from "@/services/agent/runner"
 import { resetConfirmChannel } from "./confirm-channel"
@@ -51,9 +49,7 @@ export async function standardSetup(
   // 会话正文真相源是 sessions/ 下的 JSONL：先关句柄再逐个删除，场景之间不共享会话。
   await deleteAllPiSessionsForTest()
 
-  // 1. 重置会话状态
-  resetSession()
-
+  // 1. 重置会话状态：运行槽与条目由上面的删句柄 + resetAgentRuntimeForTest 收敛，没有进程内状态机
   // 2. 重置变量池
   const card = getActiveCard()
   if (card) {
@@ -75,7 +71,6 @@ export async function standardSetup(
   unansweredCount.value = 0
   resetCooldown()
   setAIGenerating(false)
-  resetPreprocessorForTest()
   resetPiRuntimeProviderForTest()
   resetMemoryProvider()
   await resetAgentRuntimeForTest()

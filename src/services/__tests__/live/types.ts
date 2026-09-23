@@ -3,7 +3,7 @@
 // ==========================================
 
 import type { VariablePool } from "@/services/personality/variable-pool"
-import type { PiAgentTurnOutput, TurnFailure } from "@/services/engine/pi"
+import type { HarnessSlotState, PiAgentTurnOutput, TurnFailure } from "@/services/engine/pi"
 
 // ── Scene DSL ──
 
@@ -63,7 +63,8 @@ export type AssertCheck = {
 export interface AssertContext {
   output: PiAgentTurnOutput
   pool: VariablePool
-  session: { state: string; messageCount: number; toolCallCount: number }
+  /** 会话的真实状态：运行槽状态 + 落盘条目计数（没有进程内假状态机可读）。 */
+  session: { state: HarnessSlotState; entryCount: number; toolCallCount: number }
   memory: MemorySnapshot
   toolHistory: { toolName: string; status: string }[]
   /** 本场景已发生的确认请求（不含上一场景残留），用于区分「没调用工具」与「调用被拒」。 */

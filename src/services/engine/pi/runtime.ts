@@ -15,7 +15,6 @@ import { bindRunningPlan, clearRunningPlan, notifyPlanEnd, requestPlanConfirm, r
 import type { PlanConfirmResult } from "@/services/engine/plan-confirmation"
 import { executePlan, evaluateComplexity, formatStepResults, generatePlan, normalizePlan, planEffectClassFor, planToRecords, recordsToPlan } from "@/services/engine/planner"
 import type { PlanExecutionResult, PlanResult } from "@/services/engine/planner"
-import { recordMessage, recordToolCall, transition } from "@/services/engine/session"
 import { getEffectiveSafetyMode, getEffectiveThinkingEffort, recordModelUsage, updateRequestStats } from "@/services/debug"
 import { getSkillsPromptBlock, getSkillCatalogFingerprint } from "@/services/skill"
 import { formatPoolForPrompt } from "@/services/personality/variable-pool"
@@ -558,8 +557,6 @@ function createTurnSpec(kernel: TurnKernel, options: {
         kernel.toolRun.history.push({ toolName, status: "error" })
         return { block: { reason: `工具 ${toolName} 不可用` } }
       }
-      recordToolCall(kernel.sessionId)
-      transition("EXECUTING", kernel.sessionId)
       emitUiEvent("tool-executing", { toolId: tool.name, toolName: tool.name })
       const permission = await authorizeToolExecution(tool, args as Record<string, unknown>, {
         mode: kernel.mode,
@@ -659,14 +656,14 @@ function createTurnSinks(kernel: TurnKernel): HarnessRunSinks {
       if (sessionId) void emitUiEvent("deskpet-assistant-stream-end", { sessionId })
     },
     onAssistantMessage: message => {
-      const appMessage = fromPiMessage(message, `${kernel.traceContext.runId}:${apiRound}:assistant:${createMessageId()}`, `${kernel.requestId}:${apiRound}`)
+      const appMessage = fromPiMessage(message, `${kernel.traceContext.runId}:${apiRound}:assistant:${createMessageId()}`)
       // 带 toolCall 的过程消息与工具结果进 UI；纯文本回复由入口统一推送。
       if (appMessage && sessionId && getActiveSessionId() === sessionId && (appMessage.role === "tool" || appMessage.toolCalls?.length)) {
         pushMessage(appMessage)
       }
     },
     onToolResultMessage: message => {
-      const appMessage = fromPiMessage(message, `${kernel.traceContext.runId}:${apiRound}:tool:${message.toolCallId}`, `${kernel.requestId}:${apiRound}`)
+      const appMessage = fromPiMessage(message, `${kernel.traceContext.runId}:${apiRound}:tool:${message.toolCallId}`)
       if (appMessage && sessionId && getActiveSessionId() === sessionId) pushMessage(appMessage)
     },
     onToolEnd: (toolName, isError) => {
@@ -740,7 +737,6 @@ export async function runPiAgentTurn(input: PiAgentTurnInput): Promise<PiAgentTu
   const frozenTools: ToolDef[] = isActiveMessage ? [] : [...getToolsForMode(mode)]
   // 工具结果回读：请求投影里标注的 eventId 就是 Harness 条目 id，按条目分页读取。
   if (frozenTools.length) frozenTools.push(createTranscriptTool(entryId => slot.readToolResult(entryId)))
-  recordMessage(turnSessionId)
   // 用户正文由 Harness 的 prompt 条目承担落盘（先落盘再投递由 Harness 事务保证）；
   // 主动消息用 deskpet.active_message 自定义消息投递，来源标记在 details.* 且不成为用户事实。
   assertCurrent()
@@ -853,7 +849,6 @@ export async function runPiAgentTurn(input: PiAgentTurnInput): Promise<PiAgentTu
     // 权限确认绑定当前会话：等待确认期间用户切走会话，旧回合不再取得授权。
     isPermissionCurrent: () => runIsCurrent() && getActiveSessionId() === turnSessionId,
   })
-  transition("GENERATING", turnSessionId)
   const result = await slot.run(spec)
   await slot.waitForIdle()
   await Promise.allSettled(kernel.snapshotTasks)
@@ -925,9 +920,6 @@ async function runPlanPhase(args: {
     planId = args.existingPlanId
     // 没声明「已确认」就不许走恢复：否则等于在没有用户确认的情况下执行落盘计划
     if (!args.approved) throw new Error("计划恢复入口必须声明 approved: true（用户点「继续」就是那次确认）")
-    // 恢复入口不进生成段，但同样要从 PLANNING 起跑：步骤子代理会把会话状态推到 EXECUTING，
-    // 而 `WAITING → EXECUTING` 不在允许迁移表内；`PLANNING → EXECUTING` 才是合法前态。
-    transition("PLANNING", sessionId)
     const recovered = planCheckpointStore.snapshot(planId)
     if (!recovered) throw new Error(`计划恢复入口找不到落盘记录: ${planId}`)
     // 只跑还能跑的步骤：`pending`，以及「重跑此步」（FIX-30⑤）重新武装成 `running` 的那一步。
@@ -938,7 +930,6 @@ async function runPlanPhase(args: {
     stepMode = "auto"
   } else {
     planId = args.planId
-    transition("PLANNING", sessionId)
     const generated = await generatePlan(args.planInput.userText, {
       cardId: args.planInput.cardId,
       cardRole: args.planInput.cardRole,
@@ -1210,7 +1201,6 @@ async function withPlanWriteDegrade(sessionId: string, planId: string, write: ()
  * `reply === ""` 时只结算相位不写正文（取消没有可见正文）。
  */
 async function finishWithoutTurn(args: { sessionId: string; slot: HarnessSlot; reply: string }): Promise<PiAgentTurnOutput> {
-  transition("WAITING", args.sessionId)
   let persistFailed = false
   if (args.reply !== "") {
     await args.slot.appendAssistantMessage(args.reply).catch(error => {
@@ -1365,7 +1355,6 @@ async function settleMainTurn(args: {
   const slot = harnessSlots.get(turnSessionId)
 
   const failTurn = async (message: string, kind: TurnFailure["kind"]): Promise<PiAgentTurnOutput> => {
-    transition("WAITING", turnSessionId)
     // 失败分类保留上游文案（decline 不改写成预算错误），只有展示文案回到硬预算判定。
     const reply = turnFailureReply(message, state)
     let persistFailed = false
@@ -1387,7 +1376,6 @@ async function settleMainTurn(args: {
     // §8.7.3：中断运行默认暂停；继续/丢弃入口见 getInterruptedRun / continueInterruptedRun。
     // 产品文案直接说明下一步，不套兜底回复。
     const reply = "上次运行中断啦，请先选择继续或丢弃这次未完成的运行～"
-    transition("WAITING", turnSessionId)
     let persistFailed = false
     await slot.appendAssistantMessage(reply).catch(error => {
       persistFailed = true
@@ -1410,7 +1398,6 @@ async function settleMainTurn(args: {
       // 用户主动停止不是故障：不写兜底失败回复、不标 failure —— 否则「我点了停止」会被
       // 记成模型失败，还会往会话里塞一条与事实相反的降级文案。归还的未消费输入交给
       // 用户决定继续或丢弃（宿主入口 stopActiveRun / resumePausedInputs）。
-      transition("WAITING", turnSessionId)
       return { reply: "", toolCallHistory, retriesUsed: state.retriesUsed, undelivered: result.undelivered, abortedByStop: true }
     }
     const reason = result.timedOut ? "Agent 执行超时" : result.error ?? "回合已取消"
@@ -1439,7 +1426,6 @@ async function settleMainTurn(args: {
   // 卡片快照不一致（运行中切换 Card）时只展示文本，不写变量：变量写入必须归属本回合冻结的快照。
   const cardIsCurrent = liveCard?.id === kernel.card?.id && liveCard?.hash === kernel.card?.hash && liveCard?.version === kernel.card?.version
   const processed = await generateReply(rawReply, kernel.card, { applyRuntimeData: cardIsCurrent })
-  transition("WAITING", turnSessionId)
   return { reply: processed.text, toolCallHistory, retriesUsed: state.retriesUsed, runtimeData: processed.runtimeData }
 }
 
@@ -1751,8 +1737,8 @@ function providerMessages(payload: unknown): Array<{ role: string; content?: str
   })
 }
 
-function fromPiMessage(message: AgentMessage, id: string, apiRoundId: string): Message | undefined {
-  const identity = { id, eventId: id, apiRoundId, timestamp: "timestamp" in message ? message.timestamp : Date.now() }
+function fromPiMessage(message: AgentMessage, id: string): Message | undefined {
+  const identity = { id, eventId: id, timestamp: "timestamp" in message ? message.timestamp : Date.now() }
   if (message.role === "user") return { ...identity, role: "user", text: typeof message.content === "string" ? message.content : contentText(message.content) }
   if (message.role === "assistant") {
     // §4.2 保留：出错/中止的助手帧没有可展示正文，丢掉是刻意的丢帧判定 —— 放行只会得到

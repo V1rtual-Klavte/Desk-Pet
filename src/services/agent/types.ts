@@ -10,8 +10,6 @@ export interface Message {
   timestamp: number
   /** Durable transcript identity; old sessions receive stable compatibility IDs. */
   eventId?: string
-  appendSequence?: number
-  apiRoundId?: string
   /** 工具调用（assistant 消息可能包含） */
   toolCalls?: ToolCallRequest[]
   /** 工具调用结果（tool 消息） */

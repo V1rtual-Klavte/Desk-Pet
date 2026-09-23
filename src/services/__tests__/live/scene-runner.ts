@@ -13,9 +13,10 @@ import type {
 import type { PiAgentTurnOutput, TurnFailure } from "@/services/engine/pi"
 import { runPiAgentTurn } from "@/services/engine/pi"
 import { userInputMessage } from "@/services/engine/runtime"
-import { abortAgentRuns, sendMessage, sendActiveMessage, toolCallHistory as productionToolHistory } from "@/services/agent/runner"
+import { abortAgentRuns, sendMessage, sendActiveMessage } from "@/services/agent/runner"
 import { getPoolSnapshot } from "@/services/personality/variable-pool"
-import { getSession } from "@/services/engine/session"
+import { harnessSlots } from "@/services/engine/pi"
+import type { HarnessSlotState } from "@/services/engine/pi"
 import { getActiveSessionId } from "@/services/session/store"
 import { pushAssistantMessage, pushUserMessage } from "@/services/session/messages"
 import { initSessions } from "@/services/session"
@@ -224,12 +225,11 @@ async function executeTurn(userText: string, entry: SceneEntry, isActiveMessage 
   if (!getActiveSessionId()) await initSessions()
 
   if (entry === "production") {
-    // sendMessage clears this after preprocessing; clear here so handled requests cannot leak a prior turn.
-    productionToolHistory.clear()
     const result = await sendMessage(userText)
     return {
       reply: result.reply,
-      toolCallHistory: productionToolHistory.entries.map(item => ({ ...item })),
+      // 本回合的工具调用历史来自回合结果本身，不再有进程内全局历史可漏、可残留。
+      toolCallHistory: result.toolCalls,
       retriesUsed: result.retriesUsed,
       ...(result.failure ? { failure: result.failure } : {}),
     }
@@ -301,14 +301,16 @@ async function runSceneInner(
 
     try {
       const output = await executeTurn(turn.userText, entry, turn.isActiveMessage)
-      const session = getSession(getActiveSessionId())
+      const sessionId = getActiveSessionId()
+      // 会话状态改读真实所有者：运行槽（HarnessSlot）与落盘条目，不再有进程内假状态机。
+      const messages = await sessionMessages(sessionId)
       const ctx: AssertContext = {
         output,
         pool: getPoolSnapshot(),
         session: {
-          state: session.agentState,
-          messageCount: session.messageCount,
-          toolCallCount: session.toolCallCount,
+          state: harnessSlots.snapshot(sessionId)?.state ?? "closed",
+          entryCount: messages.length,
+          toolCallCount: messages.filter(message => message.role === "tool").length,
         },
         memory: await takeMemorySnapshot(getActiveSessionId()),
         toolHistory: output.toolCallHistory.map(item => ({

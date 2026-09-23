@@ -29,7 +29,7 @@ export const DESKPET_GREETING_ENTRY = "deskpet-greeting"
 registerSessionEntryMapper(DESKPET_GREETING_ENTRY, (entry) => {
   const text = dataText(entry.data)
   if (!text) return undefined
-  return { id: entry.id, role: "assistant", text, timestamp: entry.timestamp }
+  return { id: entry.id, eventId: entry.id, role: "assistant", text, timestamp: entry.timestamp }
 })
 
 function dataText(data: JsonValue | undefined): string {
@@ -62,7 +62,7 @@ function messageFromEntry(entry: MessageEntry): Message | undefined {
   switch (raw.role) {
     case "user": {
       const text = typeof raw.content === "string" ? raw.content : textFromParts(raw.content)
-      return { id: entry.id, role: "user", text, timestamp }
+      return { id: entry.id, eventId: entry.id, role: "user", text, timestamp }
     }
     case "assistant": {
       const thinking = raw.content
@@ -74,6 +74,7 @@ function messageFromEntry(entry: MessageEntry): Message | undefined {
         .map(call => ({ id: call.id, name: call.name, arguments: safeStringify(call.arguments) }))
       return {
         id: entry.id,
+        eventId: entry.id,
         role: "assistant",
         text: textFromParts(raw.content),
         timestamp,
@@ -83,7 +84,7 @@ function messageFromEntry(entry: MessageEntry): Message | undefined {
     }
     case "toolResult": {
       const text = textFromParts(raw.content)
-      return { id: entry.id, role: "tool", text, timestamp, toolCallId: raw.toolCallId, isError: raw.isError }
+      return { id: entry.id, eventId: entry.id, role: "tool", text, timestamp, toolCallId: raw.toolCallId, isError: raw.isError }
     }
     default:
       return undefined

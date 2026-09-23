@@ -13,7 +13,6 @@ import { createActiveMessage, deliverActiveTurn, harnessSlots, isInputCommitted,
 import type { HarnessDeliveryReceipt, PiAgentTurnOutput } from "@/services/engine/pi"
 import type { AgentMessage } from "@earendil-works/pi-agent-core"
 import { preProcess } from "@/services/engine/preprocessor"
-import { transition } from "@/services/engine/session"
 import {
   unansweredCount,
   pushUserMessage, pushAssistantMessage, pushSystemMessage,
@@ -102,13 +101,6 @@ function makeIngressId(prefix: string): string {
   return uuid ? `${prefix}-${uuid}` : `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2)}`
 }
 
-/** 工具调用历史（供 UI 展示人格化过程） */
-export const toolCallHistory = {
-  entries: [] as { toolName: string; status: string; personalityMsg?: string }[],
-  clear() { this.entries.splice(0, this.entries.length) },
-  push(e: { toolName: string; status: string; personalityMsg?: string }) { this.entries.push(e) },
-}
-
 /**
  * 轻量聊天初始化：恢复会话列表并写入激活 Card 的问候语。
  *
@@ -145,6 +137,8 @@ export interface SendMessageResult {
   toolCallsMade: number
   retriesUsed: number
   outcome: "queued" | "succeeded" | "failed"
+  /** 本回合的工具调用历史（名称 + 结算状态）；没有回合发生时为空数组。 */
+  toolCalls: { toolName: string; status: string }[]
   /** 忙碌投递给当前运行的准确回执；空闲回合与直接拒绝不返回。 */
   delivery?: HarnessDeliveryReceipt
   failure?: import("@/services/engine/pi").TurnFailure
@@ -200,11 +194,8 @@ interface TurnInvocation {
  */
 async function performTurn(invocation: TurnInvocation): Promise<PiAgentTurnOutput> {
   const { sessionId, requestId, runGeneration } = invocation
-  transition("PRE", sessionId)
   harnessSlots.bindRun(sessionId, runGeneration, { requestId })
   invocation.beforeRun?.()
-  transition("GENERATING", sessionId)
-  toolCallHistory.clear()
   const result = await runPiAgentTurn({
     sessionId,
     userText: invocation.userText,
@@ -215,10 +206,6 @@ async function performTurn(invocation: TurnInvocation): Promise<PiAgentTurnOutpu
     ...(invocation.pausedMessages ? { pausedMessages: invocation.pausedMessages } : {}),
     runGeneration,
   })
-  // 记录工具调用历史（供 UI 展示人格化过程）
-  if (result.toolCallHistory.length > 0) {
-    toolCallHistory.entries.push(...result.toolCallHistory)
-  }
   return result
 }
 
@@ -253,7 +240,7 @@ export async function resumePausedInputs(sessionId: string = getActiveSessionId(
   if (await harnessSlots.hasOpenOperation(sessionId)) {
     await returnPausedInputs(sessionId, pausedMessages)
     return {
-      reply: "", toolCallsMade: 0, retriesUsed: 0, outcome: "failed",
+      reply: "", toolCallsMade: 0, retriesUsed: 0, outcome: "failed", toolCalls: [],
       failure: { kind: "unknown", message: "会话正在执行结构操作（压缩），暂停输入未投递" },
     }
   }
@@ -261,7 +248,7 @@ export async function resumePausedInputs(sessionId: string = getActiveSessionId(
   if (runGeneration === undefined) {
     // 已有在飞运行：把取出的暂停项放回，绝不扣在手里（放回是持久 nextRun，不自动继续）。
     await returnPausedInputs(sessionId, pausedMessages)
-    return { reply: "", toolCallsMade: 0, retriesUsed: 0, outcome: "failed", failure: { kind: "unknown", message: "会话已有运行中的运行槽" } }
+    return { reply: "", toolCallsMade: 0, retriesUsed: 0, outcome: "failed", toolCalls: [], failure: { kind: "unknown", message: "会话已有运行中的运行槽" } }
   }
   setAIGenerating(true)
 
@@ -277,12 +264,12 @@ export async function resumePausedInputs(sessionId: string = getActiveSessionId(
     })
     // 正文在排队时就已展示：这里只推回复/停止提示，不重复插入用户气泡。
     if (getActiveSessionId() === sessionId) await pushTurnOutcome(result)
-    transition("WAITING", sessionId)
     return {
       reply: result.reply,
       toolCallsMade: result.toolCallHistory.length,
       retriesUsed: result.retriesUsed,
       outcome: result.failure ? "failed" : "succeeded",
+      toolCalls: result.toolCallHistory.map(({ toolName, status }) => ({ toolName, status })),
       ...(result.failure ? { failure: result.failure } : {}),
     }
   } catch (e) {
@@ -302,8 +289,7 @@ export async function resumePausedInputs(sessionId: string = getActiveSessionId(
     }
     const fallback = e instanceof ContextBudgetError ? e.message : getFallbackReply("llmUnavailable")
     if (getActiveSessionId() === sessionId) pushAssistantMessage(fallback)
-    transition("WAITING", sessionId)
-    return { reply: fallback, toolCallsMade: 0, retriesUsed: 0, outcome: "failed", failure: { kind: "unknown", message: summarizeError(e) } }
+    return { reply: fallback, toolCallsMade: 0, retriesUsed: 0, outcome: "failed", toolCalls: [], failure: { kind: "unknown", message: summarizeError(e) } }
   } finally {
     harnessSlots.end(sessionId, runGeneration)
     setAIGenerating(harnessSlots.isAnyRunning())
@@ -351,6 +337,7 @@ async function dispatchMessage(text: string, options: SendMessageOptions = {}): 
         toolCallsMade: 0,
         retriesUsed: 0,
         outcome: "succeeded",
+        toolCalls: [],
       }
     }
     const receipt = await deliverActiveTurn(
@@ -366,6 +353,7 @@ async function dispatchMessage(text: string, options: SendMessageOptions = {}): 
         toolCallsMade: 0,
         retriesUsed: 0,
         outcome: "queued",
+        toolCalls: [],
         delivery: receipt,
       }
     }
@@ -383,6 +371,7 @@ async function dispatchMessage(text: string, options: SendMessageOptions = {}): 
         toolCallsMade: 0,
         retriesUsed: 0,
         outcome: "failed",
+        toolCalls: [],
         failure: { kind: "unknown", message: "会话正在执行结构操作（压缩），输入未发送" },
       }
     }
@@ -402,7 +391,6 @@ async function dispatchMessage(text: string, options: SendMessageOptions = {}): 
       const { pushSystemMessage } = await import("@/services/session/messages");
       pushSystemMessage(preResult.response)
     }
-    transition("WAITING", originSessionId)
     // 命令没有运行槽可用，但延后的能力模式切换仍要走同一出口释放。
     await applyPendingConversationCapabilities()
     return {
@@ -410,6 +398,7 @@ async function dispatchMessage(text: string, options: SendMessageOptions = {}): 
       toolCallsMade: 0,
       retriesUsed: 0,
       outcome: "succeeded",
+      toolCalls: [],
     }
   }
 
@@ -424,6 +413,7 @@ async function dispatchMessage(text: string, options: SendMessageOptions = {}): 
       toolCallsMade: 0,
       retriesUsed: 0,
       outcome: "failed",
+      toolCalls: [],
       failure: { kind: "unknown", message: "会话已有运行中的运行槽" },
     }
   }
@@ -454,12 +444,12 @@ async function dispatchMessage(text: string, options: SendMessageOptions = {}): 
       await pushTurnOutcome(result)
     }
 
-    transition("WAITING", originSessionId)
     return {
       reply: result.reply,
       toolCallsMade: result.toolCallHistory.length,
       retriesUsed: result.retriesUsed,
       outcome: result.failure ? "failed" : "succeeded",
+      toolCalls: result.toolCallHistory.map(({ toolName, status }) => ({ toolName, status })),
       ...(result.failure ? { failure: result.failure } : {}),
     }
   } catch (e) {
@@ -483,12 +473,12 @@ async function dispatchMessage(text: string, options: SendMessageOptions = {}): 
         reportError("Agent", error, { kind: "兜底回复落盘失败", overlay: false })
       })
     }
-    transition("WAITING", originSessionId)
     return {
       reply: fallback,
       toolCallsMade: 0,
       retriesUsed: 0,
       outcome: "failed",
+      toolCalls: [],
       failure: { kind: "unknown", message: summarizeError(e) },
     }
   } finally {

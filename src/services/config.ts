@@ -193,7 +193,6 @@ export async function initConfig(): Promise<void> {
   cfg = parsed
   leadingComments = extractLeadingComments(text)
   configInitialized = true
-  clearLegacyConfigCache()
 }
 
 export async function reloadConfig(): Promise<void> {
@@ -201,23 +200,6 @@ export async function reloadConfig(): Promise<void> {
   await initConfig()
   // 配置可能改了日志级别，立刻作用到前端与 Rust，不必等重启
   applyLogLevel()
-}
-
-function clearLegacyConfigCache(): void {
-  try {
-    const exact = new Set([
-      "deskpet_user_settings", "deskpet_config_overrides", "deskpet_chat_history",
-      "deskpet_sessions", "deskpet_active_session", "deskpet_parallax_layers",
-      "deskpet_parallax_offset_v2", "deskpet_parallax_dirty", "deskpet_divider_pos",
-      "deskpet_sound_assignments",
-    ])
-    const keys = Array.from({ length: localStorage.length }, (_, index) => localStorage.key(index))
-    for (const key of keys) {
-      if (key && (exact.has(key) || key.startsWith("deskpet_chat_") || key.startsWith("deskpet_unanswered_") || key.startsWith("deskpet_live_test_"))) {
-        localStorage.removeItem(key)
-      }
-    }
-  } catch { /* WebView storage may be unavailable in tests. */ }
 }
 
 // ── 配置写队列 ──
