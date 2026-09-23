@@ -16,7 +16,7 @@ import { preProcess } from "@/services/engine/preprocessor"
 import { transition } from "@/services/engine/session"
 import {
   unansweredCount,
-  pushUserMessage, pushAssistantMessage,
+  pushUserMessage, pushAssistantMessage, pushSystemMessage,
   initWelcome, resetUnanswered,
   initSessions, getActiveSessionId,
 } from "@/services/session"
@@ -60,7 +60,8 @@ export async function stopActiveRun(
   // 停回合会经父槽级联到子运行（计划步骤的子代理挂在父槽下），正在跑的那一步也停下。
   const slot = harnessSlots.peek(sessionId)
   const aborted = slot && slot.isRunning() ? await slot.abort("user") : undefined
-  // 两者都没命中时「没有正在进行的回复」才是真话。
+  // §4.2 保留：没有槽 / 槽不忙 = 没有正在进行的回复（计划也没在跑），返回 `undefined` 是如实答复 ——
+  // UI（ChatPanel.stopRun）据此提示「当前没有正在进行的回复」，不假装已停止、也不抛错。
   if (!aborted && !planAborted) return undefined
   return { steer: aborted?.steer ?? [], followUp: aborted?.followUp ?? [], planAborted }
 }
@@ -292,7 +293,13 @@ export async function resumePausedInputs(sessionId: string = getActiveSessionId(
     // 所以只在「一条都没成为正文」时放回（宁可少投也不能造出第二份用户正文）。
     if (!(await pausedInputsCommitted(sessionId, pausedMessages))) {
       await returnPausedInputs(sessionId, pausedMessages)
-        .catch(error => log.warn("暂停输入回滚失败，需用户重新发送:", formatError(error)))
+        .catch(error => {
+          // 回滚失败 = 这条暂停输入既没成为正文、也没回队列（用户重发也没有原文）：运行期失败，
+          // 走 reportError 留完整记录（overlay:false，不弹覆盖层），当前会话再补一条可见提示。
+          log.error("暂停输入回滚失败:", formatError(error))
+          reportError("Agent", error, { kind: "暂停输入回滚失败", overlay: false })
+          if (getActiveSessionId() === sessionId) pushSystemMessage("刚才那条暂停输入没能放回队列，请重新发送～")
+        })
     }
     const fallback = e instanceof ContextBudgetError ? e.message : getFallbackReply("llmUnavailable")
     if (getActiveSessionId() === sessionId) pushAssistantMessage(fallback)
@@ -471,7 +478,12 @@ async function dispatchMessage(text: string, options: SendMessageOptions = {}): 
     } else {
       // 会话已切换：原会话没有 UI 通道，兜底回复按会话条目落盘（旧 recordTurnToSession 的替代）。
       const slot = harnessSlots.peek(originSessionId)
-      if (slot) await slot.appendAssistantMessage(fallback).catch(error => log.warn("兜底回复落盘失败", formatError(error)))
+      if (slot) await slot.appendAssistantMessage(fallback).catch(error => {
+        // 正文落盘失败 = 原会话静默无记录（用户切回来只看到用户消息，不知道回复去了哪）：
+        // 是证据/正文落盘失败，按 error 级上报，不降级成 warn（FIX-04 统一口径）。
+        log.error("兜底回复落盘失败:", formatError(error))
+        reportError("Agent", error, { kind: "兜底回复落盘失败", overlay: false })
+      })
     }
     transition("WAITING", originSessionId)
     return {

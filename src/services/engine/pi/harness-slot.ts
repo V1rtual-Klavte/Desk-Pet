@@ -530,6 +530,9 @@ export class HarnessSlot {
     try {
       this.toolPermitLimit = await setToolPermitLimit(limit)
     } catch (error) {
+      // §4.2 保留：沿用旧值是对的 —— `toolPermitLimit` 只在成功后更新，失败时它仍代表上一次真正
+      // 生效的上限；值的权威始终是许可所有者，槽只记下发值以免重复 IPC。调优失败不该让整个
+      // run 起不来，所以这里只留痕不抛出。
       log.warn("共享读上限下发失败，沿用许可所有者当前上限:", formatError(error))
     }
   }
@@ -1124,8 +1127,21 @@ export class HarnessSlot {
     if (pending.length === 0 || !this.lane) return
     let failed = 0
     for (const message of pending) {
-      const result = await this.lane.nextRun(message, undefined, TODO_CONTEXT).catch(() => undefined)
-      if (!result || !result.ok) failed++
+      // 身份取消息自身的宿主 requestId（input-identity）：停止归还时 lane 已把条目移出 inbox，
+      // 失败时就地没有 lane entryId 可报。
+      const requestId = messageRequestId(message as { deskpetEventId?: unknown })
+      // FIX-04：放回失败 = 这条输入既没进正文也没回队列，逐项留下原因（含 throw 出来的 error 对象），
+      // 只记 failed 计数等于用户输入静默丢失。
+      try {
+        const result = await this.lane.nextRun(message, undefined, TODO_CONTEXT)
+        if (!result.ok) {
+          failed++
+          log.warn("停止归还未消费消息失败:", { sessionId: this.sessionId, kind: "nextRun", entryId: requestId ?? "<无身份>", reason: result.error._tag })
+        }
+      } catch (error) {
+        failed++
+        log.warn("停止归还未消费消息失败:", { sessionId: this.sessionId, kind: "nextRun", entryId: requestId ?? "<无身份>", reason: formatError(error) })
+      }
     }
     if (failed > 0) log.warn("停止归还未消费消息失败:", { sessionId: this.sessionId, total: pending.length, failed })
   }

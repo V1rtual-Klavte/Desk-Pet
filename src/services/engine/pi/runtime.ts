@@ -74,6 +74,8 @@ export async function deliverActiveTurn(
   identity: { eventId: string; mark?: InputSourceMark },
   kind?: "steer" | "followUp" | "nextRun",
 ): Promise<HarnessDeliveryReceipt | undefined> {
+  // §4.2 保留：没有运行槽 = 没有可投递的回合，`undefined` 是如实答复（调用方据此收起/改走正常回合），
+  // 不是静默失败；「有 lane 操作但不是宿主回合（压缩在飞）」的区分见 isSessionBusy。
   if (!harnessSlots.isRunning(sessionId)) return undefined
   const slot = harnessSlots.peek(sessionId)
   if (!slot) return undefined
@@ -945,6 +947,11 @@ async function runPlanPhase(args: {
       maxSteps: planConfig.maxSteps,
     })
     if (!args.runIsCurrent()) throw new Error("回合已取消或运行代际已失效")
+    // FIX-02(b)：JSON 解析失败时 `generatePlan` 已降级为单步直接执行 —— 这是用户可见的行为变化，
+    // 必须在计划段发出。只发给计划所属会话（与 finishPlan 同口径）：执行期切走后文案不落进别的会话。
+    if (generated.degradedReason === "json_parse_failed" && getActiveSessionId() === sessionId) {
+      pushSystemMessage("计划解析失败，已改为单步直接执行")
+    }
     // 规范化后的 plan 是唯一进入确认、执行、进度事件与落盘的形态
     const normalized = normalizePlan(generated, planConfig.maxSteps)
     plan = normalized.plan
@@ -1748,6 +1755,8 @@ function fromPiMessage(message: AgentMessage, id: string, apiRoundId: string): M
   const identity = { id, eventId: id, apiRoundId, timestamp: "timestamp" in message ? message.timestamp : Date.now() }
   if (message.role === "user") return { ...identity, role: "user", text: typeof message.content === "string" ? message.content : contentText(message.content) }
   if (message.role === "assistant") {
+    // §4.2 保留：出错/中止的助手帧没有可展示正文，丢掉是刻意的丢帧判定 —— 放行只会得到
+    // 与正文相反的空气泡；显示与否由实时/读模型两处的口径共同决定，不能只改这一处。
     if (message.stopReason === "error" || message.stopReason === "aborted") return undefined
     const toolCalls = message.content.filter(part => part.type === "toolCall").map(call => ({ id: call.id, name: call.name, arguments: JSON.stringify(call.arguments) }))
     return { ...identity, role: "assistant", text: parseRuntimeData(contentText(message.content)).text,
@@ -1755,6 +1764,7 @@ function fromPiMessage(message: AgentMessage, id: string, apiRoundId: string): M
   }
   if (message.role === "toolResult") return { ...identity, role: "tool", text: contentText(message.content),
     toolCallId: message.toolCallId, isError: message.isError }
+  // §4.2 保留：未知角色同样丢弃 —— 只有 user/assistant/toolResult 三种能映射成应用消息。
   return undefined
 }
 

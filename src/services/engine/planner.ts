@@ -9,6 +9,7 @@ import type { ThinkingEffort } from "@/services/agent/types"
 import type { PlanEffectClass, PlanRecord, PlanStepRecord } from "@/services/engine/runtime"
 import { planConfig } from "@/services/config"
 import { createLogger } from "@/services/logger"
+import { formatError } from "@/services/error"
 
 const log = createLogger("Planner")
 
@@ -25,6 +26,8 @@ export interface PlanResult {
   steps: PlanStep[]
   summary: string
   estimatedComplexity: number
+  /** 降级原因：模型输出不可解析时为 "json_parse_failed"（系统消息据此发；不进 PlanRecord —— 它是瞬态信息）。 */
+  degradedReason?: "json_parse_failed"
 }
 
 export interface ComplexityResult {
@@ -160,11 +163,14 @@ ${toolList}
       estimatedComplexity: parsed.estimatedComplexity || 3,
     }
   } catch (e) {
-    log.error("Plan JSON 解析失败:", e)
+    // FIX-02(b)：降级为单步是用户可见的行为变化（模型这次没给出可拆解的计划），所以不只留日志：
+    // `degradedReason` 交给计划段（runPlanPhase）发系统消息，别让用户以为计划正常生成过。
+    log.error("Plan JSON 解析失败:", formatError(e))
     return {
       steps: [{ id: 1, description: userText, role: "执行员" }],
       summary: "直接执行",
       estimatedComplexity: 1,
+      degradedReason: "json_parse_failed",
     }
   }
 }
@@ -259,8 +265,6 @@ export function planEffectClassFor(allowedTools?: string[]): PlanEffectClass {
 }
 
 // ── 计划执行 ──
-
-import { formatError } from "@/services/error"
 
 /** 步骤工具解析报告（FIX-51）：工具名解析不到，或步骤未限定工具而放大到全部助手工具。 */
 export type StepToolNotice =
@@ -372,6 +376,9 @@ export async function executePlan(
         if (decision === "abort") { overallSuccess = false; cancelled = { reason: "declined" }; break }
       }
     } catch (e) {
+      // §4.2 保留：这里不再另打日志 —— 失败原因已 `formatError` 后放进 `output.error`，
+      // 随步骤结果条目落盘并交给 `onStepFailed`/`formatStepResults`，全链路可见；
+      // 再 warn 一次只会和那份证据重复。
       const errMsg = formatError(e)
       stepResults.push({
         step, durationMs: Date.now() - stepStart,
