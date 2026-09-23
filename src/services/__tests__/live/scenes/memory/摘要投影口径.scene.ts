@@ -97,7 +97,7 @@ const probe = (id: string, name: string, projection: "preserve" | "reference", r
     policy: {
       version: TOOL_POLICY_VERSION,
       permission: { defaultDecision: "allow" },
-      execution: { effect: "read", mode: "parallel", isolation: "shared_read", replay: "never" },
+      execution: { effect: "read", isolation: "shared_read", replay: "never" },
       context: { resultProjection: projection, historyCompaction: "summarize" },
     },
   }, async () => ({ success: true, content: result }))

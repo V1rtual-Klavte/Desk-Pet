@@ -20,7 +20,7 @@ const tool = (id: string, isolation: "shared_read" | "exclusive_effect", effect:
     policy: {
       version: TOOL_POLICY_VERSION,
       permission: { defaultDecision: "allow" },
-      execution: { effect, mode: "sequential", isolation, replay: "never" },
+      execution: { effect, isolation, replay: "never" },
       context: { resultProjection: "reference", historyCompaction: "summarize" },
     },
   }, async () => {

@@ -158,7 +158,7 @@ export class McpClient {
         policy: {
           version: TOOL_POLICY_VERSION,
           permission: { defaultDecision: "passthrough" },
-          execution: { effect: "external_side_effect", mode: "sequential", isolation: "exclusive_effect", replay: "never" },
+          execution: { effect: "external_side_effect", isolation: "exclusive_effect", replay: "never" },
           context: { resultProjection: "reference", historyCompaction: "summarize" },
         },
         source: "mcp" as const,

@@ -23,7 +23,7 @@ function probeTool(name: string, projection: "preserve" | "reference", body: str
     policy: {
       version: TOOL_POLICY_VERSION,
       permission: { defaultDecision: "allow" },
-      execution: { effect: "read", mode: "parallel", isolation: "shared_read", replay: "never" },
+      execution: { effect: "read", isolation: "shared_read", replay: "never" },
       context: { resultProjection: projection, historyCompaction: "summarize" },
     },
   }, async () => ({ success: true, content: body }))

@@ -23,7 +23,7 @@ const declaration = {
   policy: {
     version: TOOL_POLICY_VERSION,
     permission: { defaultDecision: "allow" as const },
-    execution: { effect: "read" as const, mode: "parallel" as const, isolation: "shared_read" as const, replay: "never" as const },
+    execution: { effect: "read" as const, isolation: "shared_read" as const, replay: "never" as const },
     context: { resultProjection: "reference" as const, historyCompaction: "summarize" as const },
   },
 }

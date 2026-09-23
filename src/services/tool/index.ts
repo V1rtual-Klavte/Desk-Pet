@@ -5,7 +5,7 @@
 // ── 类型 ──
 export type {
   ToolDef, ToolResult, SafetyLevel, ToolSource, ToolMode, ToolContext, ActionCategory, ToolDeclaration,
-  PermissionDecision, ToolCheckResult, EffectClass, ToolPolicy, ExecutionMode, ToolIsolation, ToolReplay,
+  PermissionDecision, EffectClass, ToolPolicy, ToolIsolation, ToolReplay,
   ResultProjection, HistoryCompaction,
 } from "./types"
 export { toToolDeclaration, TOOL_POLICY_VERSION } from "./types"

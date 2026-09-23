@@ -44,7 +44,7 @@ export async function registerPiBaseTools(): Promise<void> {
       policy: {
         version: TOOL_POLICY_VERSION,
         permission: { defaultDecision: "allow" },
-        execution: { effect: "read", mode: "parallel", isolation: "shared_read", replay: "never" },
+        execution: { effect: "read", isolation: "shared_read", replay: "never" },
         context: { resultProjection: "reference", historyCompaction: "summarize" },
       },
     }),
@@ -56,7 +56,7 @@ export async function registerPiBaseTools(): Promise<void> {
       policy: {
         version: TOOL_POLICY_VERSION,
         permission: { defaultDecision: "passthrough" },
-        execution: { effect: "local_mutation", mode: "sequential", isolation: "exclusive_effect", replay: "never" },
+        execution: { effect: "local_mutation", isolation: "exclusive_effect", replay: "never" },
         context: { resultProjection: "preserve", historyCompaction: "summarize" },
       },
     }),
@@ -67,7 +67,7 @@ export async function registerPiBaseTools(): Promise<void> {
       policy: {
         version: TOOL_POLICY_VERSION,
         permission: { defaultDecision: "passthrough" },
-        execution: { effect: "local_mutation", mode: "sequential", isolation: "exclusive_effect", replay: "never" },
+        execution: { effect: "local_mutation", isolation: "exclusive_effect", replay: "never" },
         context: { resultProjection: "preserve", historyCompaction: "summarize" },
       },
     }),
@@ -79,7 +79,7 @@ export async function registerPiBaseTools(): Promise<void> {
       policy: {
         version: TOOL_POLICY_VERSION,
         permission: { defaultDecision: "passthrough" },
-        execution: { effect: "process", mode: "sequential", isolation: "exclusive_effect", replay: "never" },
+        execution: { effect: "process", isolation: "exclusive_effect", replay: "never" },
         context: { resultProjection: "reference", historyCompaction: "summarize" },
       },
     }),

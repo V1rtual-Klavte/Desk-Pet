@@ -20,7 +20,7 @@ const probe = defineTool({
   policy: {
     version: TOOL_POLICY_VERSION,
     permission: { defaultDecision: "allow" },
-    execution: { effect: "process", mode: "sequential", isolation: "exclusive_effect", replay: "never", timeoutMs: 50 },
+    execution: { effect: "process", isolation: "exclusive_effect", replay: "never", timeoutMs: 50 },
     context: { resultProjection: "reference", historyCompaction: "summarize" },
   },
 }, async (_params, ctx) => {

@@ -24,7 +24,7 @@ export const 工具结果恢复: SceneDef = {
       policy: {
         version: TOOL_POLICY_VERSION,
         permission: { defaultDecision: "allow" },
-        execution: { effect: "read", mode: "parallel", isolation: "shared_read", replay: "never" },
+        execution: { effect: "read", isolation: "shared_read", replay: "never" },
         context: { resultProjection: "reference", historyCompaction: "summarize" },
       },
     }, async () => ({ success: true, content: BODY })))

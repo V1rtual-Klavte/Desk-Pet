@@ -37,7 +37,7 @@ function probeTool(name: string): ToolDef {
     policy: {
       version: TOOL_POLICY_VERSION,
       permission: { defaultDecision: "passthrough" },
-      execution: { effect: "external_side_effect", mode: "sequential", isolation: "exclusive_effect", replay: "never" },
+      execution: { effect: "external_side_effect", isolation: "exclusive_effect", replay: "never" },
       context: { resultProjection: "reference", historyCompaction: "summarize" },
     },
   }, async (): Promise<{ success: boolean; content: string }> => ({ success: true, content: `${name} 执行完成` }))

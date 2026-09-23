@@ -34,7 +34,7 @@ export function createTranscriptTool(readEntry: ToolResultEntryReader): ToolDef 
       version: TOOL_POLICY_VERSION,
       // 只能读当前会话，且分页大小由统一预算限定；工具侧不额外表态。
       permission: { defaultDecision: "allow" },
-      execution: { effect: "read", mode: "parallel", isolation: "shared_read", replay: "never" },
+      execution: { effect: "read", isolation: "shared_read", replay: "never" },
       // 页本身就是有界投影：请求里不再二次缩短，避免「引用 → 读取 → 又变成引用」的循环。
       context: { resultProjection: "preserve", historyCompaction: "summarize" },
     },

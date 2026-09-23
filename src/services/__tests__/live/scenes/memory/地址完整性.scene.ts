@@ -91,7 +91,7 @@ const probe = (id: string, name: string, handler: ToolHandler): ToolDef =>
     policy: {
       version: TOOL_POLICY_VERSION,
       permission: { defaultDecision: "allow" },
-      execution: { effect: "read", mode: "parallel", isolation: "shared_read", replay: "never" },
+      execution: { effect: "read", isolation: "shared_read", replay: "never" },
       context: { resultProjection: "reference", historyCompaction: "summarize" },
     },
   }, handler)

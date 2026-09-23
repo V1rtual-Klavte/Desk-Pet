@@ -6,7 +6,7 @@
 // ==========================================
 
 import type {
-  EffectClass, ExecutionMode, HistoryCompaction, ResultProjection, ToolContext, ToolDef,
+  EffectClass, HistoryCompaction, ResultProjection, ToolContext, ToolDef,
   ToolIsolation, ToolPolicy, ToolReplay, ToolResult,
 } from "./types"
 import { TOOL_POLICY_VERSION } from "./types"
@@ -16,20 +16,20 @@ import { sha256Text, stableSerialize } from "@/services/engine/runtime"
 export type ToolHandler = (params: Record<string, unknown>, ctx: ToolContext) => Promise<ToolResult>
 
 const EFFECTS: ReadonlySet<string> = new Set<EffectClass>(["read", "local_mutation", "process", "external_side_effect"])
-const MODES: ReadonlySet<string> = new Set<ExecutionMode>(["parallel", "sequential"])
 const ISOLATIONS: ReadonlySet<string> = new Set<ToolIsolation>(["shared_read", "exclusive_effect", "delegate"])
 const REPLAYS: ReadonlySet<string> = new Set<ToolReplay>(["never", "safe"])
 const PROJECTIONS: ReadonlySet<string> = new Set<ResultProjection>(["preserve", "reference"])
 const COMPACTIONS: ReadonlySet<string> = new Set<HistoryCompaction>(["summarize", "retain"])
 const DECISIONS: ReadonlySet<string> = new Set(["allow", "ask", "deny", "passthrough"])
+const SAFETY_LEVELS: ReadonlySet<string> = new Set(["SAFE", "NORMAL", "DANGER", "NOWAY"])
+const LIGHTWEIGHT_POLICIES: ReadonlySet<string> = new Set(["confirm", "deny"])
 
 function fail(toolId: string, reason: string): never {
   throw new Error(`工具策略不完整: ${toolId || "<未知工具>"} — ${reason}`)
 }
 
 /**
- * 校验并冻结策略。约束来自设计协议 §4.1：
- * parallel 必须是只读能力，exclusive_effect 与 delegate 必须 sequential。
+ * 校验并冻结策略。约束来自设计协议 §4.1：并发语义只由 `isolation` / `effect` 表达。
  */
 export function validateToolPolicy(policy: ToolPolicy | undefined, toolId: string): ToolPolicy {
   if (!policy || typeof policy !== "object") fail(toolId, "缺少 policy")
@@ -38,9 +38,7 @@ export function validateToolPolicy(policy: ToolPolicy | undefined, toolId: strin
   const { permission, execution, context } = policy
   if (!permission || !execution || !context) fail(toolId, "permission / execution / context 必须齐全")
   if (!DECISIONS.has(permission.defaultDecision)) fail(toolId, `defaultDecision 无效: ${String(permission.defaultDecision)}`)
-  if (permission.check !== undefined && typeof permission.check !== "function") fail(toolId, "permission.check 必须是函数")
   if (!EFFECTS.has(execution.effect)) fail(toolId, `execution.effect 无效: ${String(execution.effect)}`)
-  if (!MODES.has(execution.mode)) fail(toolId, `execution.mode 无效: ${String(execution.mode)}`)
   if (!ISOLATIONS.has(execution.isolation)) fail(toolId, `execution.isolation 无效: ${String(execution.isolation)}`)
   if (!REPLAYS.has(execution.replay)) fail(toolId, `execution.replay 无效: ${String(execution.replay)}`)
   if (execution.timeoutMs !== undefined && !(Number.isFinite(execution.timeoutMs) && execution.timeoutMs > 0)) {
@@ -49,12 +47,10 @@ export function validateToolPolicy(policy: ToolPolicy | undefined, toolId: strin
   if (!PROJECTIONS.has(context.resultProjection)) fail(toolId, `context.resultProjection 无效: ${String(context.resultProjection)}`)
   if (!COMPACTIONS.has(context.historyCompaction)) fail(toolId, `context.historyCompaction 无效: ${String(context.historyCompaction)}`)
 
-  // 并行只能是经宿主确认的只读能力；独占效果与委派必须串行。
-  if (execution.mode === "parallel" && (execution.effect !== "read" || execution.isolation !== "shared_read")) {
-    fail(toolId, "parallel 必须同时是 read + shared_read")
-  }
-  if (execution.isolation !== "shared_read" && execution.mode !== "sequential") {
-    fail(toolId, `${execution.isolation} 必须 sequential`)
+  // 并发语义只由 isolation/effect 表达：共享读必须真的是只读能力。
+  // 反向（exclusive_effect ⇒ effect !== "read"）刻意不加：独占读是合法的保守声明，收紧会改现有语义。
+  if (execution.isolation === "shared_read" && execution.effect !== "read") {
+    fail(toolId, "shared_read 必须同时是 read 效果")
   }
 
   // 已经冻结说明通过过同一份校验：保持对象身份，注册表不与调用方共享可变副本。
@@ -70,6 +66,18 @@ export function validateToolPolicy(policy: ToolPolicy | undefined, toolId: strin
 }
 
 /**
+ * 校验风险声明。`safetyLevel` 与 `lightweightPolicy` 在类型上已收窄，这里守的是
+ * 未经类型检查的调用方（适配器转换、`as unknown as ToolDef` 的声明）：`lightweightPolicy`
+ * 只允许 `confirm` / `deny` 或省略，旧值 `allow`（pet 模式直接放行 DANGER）已无实现。
+ */
+export function validateRiskDeclaration(tool: Pick<ToolDef, "id" | "safetyLevel" | "lightweightPolicy">): void {
+  if (!SAFETY_LEVELS.has(tool.safetyLevel)) fail(tool.id, `safetyLevel 无效: ${String(tool.safetyLevel)}`)
+  if (tool.lightweightPolicy !== undefined && !LIGHTWEIGHT_POLICIES.has(tool.lightweightPolicy)) {
+    fail(tool.id, `lightweightPolicy 无效: ${String(tool.lightweightPolicy)}`)
+  }
+}
+
+/**
  * 工具定义 → 执行函数。执行体不进 `ToolDef` 的公开字段，是为了让「未经 `defineTool`
  * 构造的工具」结构上不可能带执行体：注册入口据此直接拒绝，不必靠约定。
  * 身份是对象引用，所以注册表不得克隆定义（克隆会丢这份映射）。
@@ -79,6 +87,7 @@ const handlers = new WeakMap<ToolDef, ToolHandler>()
 /** 唯一构造点：校验、冻结描述，并把执行体登记进模块内 WeakMap。 */
 export function defineTool(definition: ToolDef, handler: ToolHandler): ToolDef {
   const policy = validateToolPolicy(definition.policy, definition.id)
+  validateRiskDeclaration(definition)
   const tool = Object.freeze({ ...definition, policy })
   handlers.set(tool, handler)
   return tool
@@ -104,9 +113,7 @@ export function toolPolicyFingerprint(tool: ToolDef): string {
     mode: tool.mode,
     policyVersion: policy.version,
     defaultDecision: policy.permission.defaultDecision,
-    hasCheck: policy.permission.check !== undefined,
     effect: policy.execution.effect,
-    executionMode: policy.execution.mode,
     isolation: policy.execution.isolation,
     replay: policy.execution.replay,
     resultProjection: policy.context.resultProjection,

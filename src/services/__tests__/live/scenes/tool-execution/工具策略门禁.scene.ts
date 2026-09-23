@@ -16,7 +16,7 @@ const base = {
 const policy = (over: Partial<ToolPolicy> = {}): ToolPolicy => ({
   version: TOOL_POLICY_VERSION,
   permission: { defaultDecision: "allow" },
-  execution: { effect: "read", mode: "parallel", isolation: "shared_read", replay: "never" },
+  execution: { effect: "read", isolation: "shared_read", replay: "never" },
   context: { resultProjection: "reference", historyCompaction: "summarize" },
   ...over,
 })
@@ -35,7 +35,7 @@ async function throws(run: () => unknown): Promise<boolean> {
 export const 工具策略门禁: SceneDef = {
   meta: {
     caseId: "tool-policy-registration-gate", module: "tool-execution", contractId: "te-15",
-    description: "工具策略必须在构造与注册时完整一致，缺策略或非只读并行视为注册错误",
+    description: "工具策略必须在构造与注册时完整一致，缺策略、shared_read 搭配非只读效果、未知版本或非法权限意见都视为注册错误",
     depth: "deep", suite: "safety", entry: "unit", tags: ["tool-execution", "safety", "error"],
   },
   turns: [{
@@ -50,13 +50,9 @@ export const 工具策略门禁: SceneDef = {
         if (!await throws(() => register({ ...base, policy: policy() } as unknown as ToolDef))) throw new Error("未经 defineTool 构造的定义被注册")
         if (getToolByName(base.name)) throw new Error("被拒绝的工具仍进入注册表")
 
-        // parallel 不是只读能力：必须报错，而不是被当成可并行。
-        if (!await throws(() => defineTool({ ...base, policy: policy({ execution: { effect: "local_mutation", mode: "parallel", isolation: "shared_read", replay: "never" } }) }, handler))) {
-          throw new Error("parallel + 写效果被接受")
-        }
-        // 独占效果必须串行。
-        if (!await throws(() => defineTool({ ...base, policy: policy({ execution: { effect: "local_mutation", mode: "parallel", isolation: "exclusive_effect", replay: "never" } }) }, handler))) {
-          throw new Error("parallel + exclusive_effect 被接受")
+        // shared_read 必须是只读能力：写效果配共享读必须报错，而不是被当成可并行。
+        if (!await throws(() => defineTool({ ...base, policy: policy({ execution: { effect: "local_mutation", isolation: "shared_read", replay: "never" } }) }, handler))) {
+          throw new Error("shared_read + 写效果被接受")
         }
         // 未知策略版本不能按当前语义执行。
         if (!await throws(() => defineTool({ ...base, policy: policy({ version: TOOL_POLICY_VERSION + 1 }) }, handler))) {
@@ -74,7 +70,7 @@ export const 工具策略门禁: SceneDef = {
         }
         register(tool)
         try {
-          if (getToolByName(base.name)?.policy.execution.mode !== "parallel") throw new Error("注册后的策略不可读")
+          if (getToolByName(base.name)?.policy.execution.isolation !== "shared_read") throw new Error("注册后的策略不可读")
         } finally {
           unregister(tool.id)
         }

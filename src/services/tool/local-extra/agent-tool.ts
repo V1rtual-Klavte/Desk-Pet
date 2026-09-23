@@ -40,7 +40,7 @@ const agentSpawnTool: ToolDef = defineTool({
   policy: {
     version: TOOL_POLICY_VERSION,
     permission: { defaultDecision: "passthrough" },
-    execution: { effect: "external_side_effect", mode: "sequential", isolation: "delegate", replay: "never", timeoutMs: loopConfig.toolTimeoutMs * 4 },
+    execution: { effect: "external_side_effect", isolation: "delegate", replay: "never", timeoutMs: loopConfig.toolTimeoutMs * 4 },
     context: { resultProjection: "reference", historyCompaction: "summarize" },
   },
 }, async (params) => {

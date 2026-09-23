@@ -10,7 +10,7 @@ const tool = (safetyLevel: SafetyLevel): ToolDef => defineTool({
   policy: {
     version: TOOL_POLICY_VERSION,
     permission: { defaultDecision: "passthrough" },
-    execution: { effect: "read", mode: "parallel", isolation: "shared_read", replay: "never" },
+    execution: { effect: "read", isolation: "shared_read", replay: "never" },
     context: { resultProjection: "reference", historyCompaction: "summarize" },
   },
 }, async () => ({ success: true, content: "ok" }))
@@ -21,7 +21,7 @@ const tool = (safetyLevel: SafetyLevel): ToolDef => defineTool({
  * Provider 抖不抖，对断言本身没有任何增量。真正「门禁是否接在运行时上」
  * 由 sf-03 / sf-09 / sf-10 这些非 unit 场景负责。
  */
-const scene = (caseId: string, contractId: string, description: string, run: () => Promise<void>, depth: "shallow" | "deep" = "shallow"): SceneDef => ({
+const scene = (caseId: string, contractId: string, description: string, run: () => void | Promise<void>, depth: "shallow" | "deep" = "shallow"): SceneDef => ({
   meta: { caseId, module: "safety", contractId, description, depth, suite: "safety", entry: "unit", tags: ["safety", "boundary", "error"] },
   turns: [{ index: 1, description, userText: "检查安全策略。", checks: [{ type: "expectSafety", run: async () => run() }] }],
 })

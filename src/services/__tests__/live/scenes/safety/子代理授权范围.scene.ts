@@ -104,7 +104,7 @@ function registerProbeTool(): void {
     policy: {
       version: TOOL_POLICY_VERSION,
       permission: { defaultDecision: "allow" },
-      execution: { effect: "external_side_effect", mode: "sequential", isolation: "exclusive_effect", replay: "never" },
+      execution: { effect: "external_side_effect", isolation: "exclusive_effect", replay: "never" },
       context: { resultProjection: "reference", historyCompaction: "summarize" },
     },
   }, async (_params, ctx) => {

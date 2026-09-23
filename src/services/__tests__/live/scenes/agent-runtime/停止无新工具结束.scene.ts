@@ -127,7 +127,7 @@ function registerExclusiveBlockingTool(): void {
     policy: {
       version: TOOL_POLICY_VERSION,
       permission: { defaultDecision: "allow" },
-      execution: { effect: "local_mutation", mode: "sequential", isolation: "exclusive_effect", replay: "never" },
+      execution: { effect: "local_mutation", isolation: "exclusive_effect", replay: "never" },
       context: { resultProjection: "reference", historyCompaction: "summarize" },
     },
   }, async (_params, ctx) => {

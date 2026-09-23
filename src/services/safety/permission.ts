@@ -3,7 +3,7 @@
 // ==========================================
 
 import type {
-  EffectClass, PermissionDecision, ToolCheckResult, ToolContext, ToolDef,
+  EffectClass, PermissionDecision, ToolContext, ToolDef,
 } from "@/services/tool/types"
 import { safetyConfig } from "@/services/config"
 import { getEffectiveSafetyMode } from "@/services/debug"
@@ -14,7 +14,7 @@ import { requestPermissionConfirm, cancelPermissionConfirm } from "./confirm"
 
 const log = createLogger("Permission")
 
-export type { EffectClass, PermissionDecision, ToolCheckResult }
+export type { EffectClass, PermissionDecision }
 export type PermissionConfirmation = "allow_once" | "allow_session" | "deny"
 
 /** 回合内冻结的权限策略：回合开始时取一次，回合中改设置从下一回合生效。 */
@@ -104,9 +104,9 @@ function standardDecision(tool: ToolDef, params: Record<string, unknown>, ctx: P
   const safetyMode = ctx.policy.safetyMode
   if (ctx.mode === "pet") {
     if (level === "NORMAL") return { decision: "allow" }
-    return tool.lightweightPolicy === "confirm"
-      ? { decision: "ask", reason: "轻量模式需要用户确认" }
-      : { decision: "deny", reason: "轻量模式不支持该风险操作" }
+    if (tool.lightweightPolicy === "confirm") return { decision: "ask", reason: "轻量模式需要用户确认" }
+    log.info("pet 模式非 confirm 的 DANGER 一律拒绝:", tool.name)
+    return { decision: "deny", reason: "轻量模式不支持该风险操作" }
   }
   if (safetyMode === "let_me_tk") return { decision: "ask", reason: "保守安全策略要求确认" }
   if (level === "DANGER" && safetyMode === "just_do_it") return { decision: "allow" }
@@ -146,14 +146,8 @@ export async function evaluateToolPermission(
   const base = standardDecision(tool, params, ctx)
   if (base.decision === "deny") return base
 
-  // 工具侧意见：策略里的静态表态，或按本次参数附加的约束（后者优先）。
-  let toolDecision: ToolCheckResult = tool.policy.permission.defaultDecision
-  try {
-    if (tool.policy.permission.check) toolDecision = await tool.policy.permission.check(params, ctx)
-  } catch (error) {
-    log.error("工具权限规则异常，按拒绝处理", error)
-    return { decision: "deny", reason: "工具权限规则失败" }
-  }
+  // 工具侧意见只有策略里的静态表态这一处来源。
+  const toolDecision: PermissionDecision | "passthrough" = tool.policy.permission.defaultDecision
   if (toolDecision !== "allow" && toolDecision !== "ask" && toolDecision !== "deny" && toolDecision !== "passthrough") {
     return { decision: "deny", reason: "工具返回了无效权限结果" }
   }

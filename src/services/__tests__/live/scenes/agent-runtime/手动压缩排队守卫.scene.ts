@@ -62,7 +62,7 @@ function registerGateTool(): void {
     policy: {
       version: TOOL_POLICY_VERSION,
       permission: { defaultDecision: "allow" },
-      execution: { effect: "read", mode: "sequential", isolation: "shared_read", replay: "never" },
+      execution: { effect: "read", isolation: "shared_read", replay: "never" },
       context: { resultProjection: "reference", historyCompaction: "summarize" },
     },
   }, async (_params, ctx) => {
