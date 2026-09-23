@@ -82,7 +82,12 @@ let activeProvider: MemoryProvider = emptyMemoryProvider
 
 export function getMemoryProvider(): MemoryProvider { return activeProvider }
 
-/** Installs one recall strategy and restores only if it is still current. */
+/**
+ * Installs one recall strategy and restores only if it is still current.
+ *
+ * 本函数是长期记忆只读端口的唯一注入接缝（默认空实现；Live 场景 `画像投影` 用它注入探针）
+ * ——不是死导出，P6 的 recall 仍从这里接。
+ */
 export function installMemoryProvider(provider: MemoryProvider): () => void {
   const previous = activeProvider
   activeProvider = provider

@@ -12,7 +12,7 @@
 | MEMORY.md | 当前长期记忆注册表，尚未迁移到 SQLite |
 | Project.md | 会话归档索引（写入链路已随旧格式清理删除） |
 
-这些文件的读取/整理接口仍在 [memory-entries.ts](../../src/services/agent/memory/memory-entries.ts)；接口存在不表示自动链路已接通，不能声称 MemoryService.search() 已自动注入或 forkMemorySupplement() 已被每轮调用。未来 SQLite 迁移的写入与投影边界见 [P6 目标](../plans/active/记忆系统运行时契约.md)。
+这些文件的读取/整理接口仍在 [memory-entries.ts](../../src/services/agent/memory/memory-entries.ts)；接口存在不表示自动链路已接通，不能声称 `MemoryService.search()` 已自动注入。未来 SQLite 迁移的写入与投影边界见 [P6 目标](../plans/active/记忆系统运行时契约.md)。
 
 ## 会话真相源
 
@@ -50,6 +50,6 @@
 
 回合冻结与三阶段 PromptSnapshot 由[运行时契约](runtime-contract.md#快照与人格状态)维护。快照与其它审计条目只入队，落盘由槽的唯一 `flushAudit()` 在 lane 空闲时统一完成（回合收尾、手动压缩收尾、槽关闭前各一次，回合结算前再补一次）；写失败保留待重试、残留记 error，不在槽生命周期结束时静默消失。摘要调用不计为正常聊天回复，但摘要请求同样进快照体系：有会话归属的一次性调用写 payload 与 usage 两档快照（`one-shot:<purpose>` 身份、`request.step = "compaction"`），压缩成功后另写一条 `deskpet.prompt_rewrite`（`compaction_summary`，只含输入/输出 hash、运行来源与压缩条目地址，压缩正文与素材都不落盘）。
 
-`CANDY.md` 是人工指令，`User.md` 通过带来源的只读画像投影进入动态层；两者与摘要分别建块。现有记忆整理接口保留，但应用启动、每五轮和 session 结束不隐式发起记忆 LLM 整理。明确的长期记忆写入闭环在 P6 实施。
+`CANDY.md` 是人工指令，`User.md` 通过带来源的只读画像投影进入动态层；两者与摘要分别建块。记忆 LLM 整理的入口与本地去重定时器已删除（零生产调用者）；应用启动、每五轮与 session 结束都不隐式发起记忆整理，明确的长期记忆写入闭环在 P6 实施。
 
 当前实现入口为 [harness-slot.ts](../../src/services/engine/pi/harness-slot.ts)（运行与压缩调度）、[compactor.ts](../../src/services/engine/compactor.ts)（摘要内核）、[session/repo.ts](../../src/services/session/repo.ts)（会话仓库）与 [provider.ts](../../src/services/agent/memory/provider.ts)（长期记忆只读端口）；计划 checkpoint 与恢复扫描入口为 [plan-checkpoint-store.ts](../../src/services/agent/memory/plan-checkpoint-store.ts) 与 [runner.ts](../../src/services/agent/runner.ts) 的 `recoverPlanCheckpoints()`，恢复产出的继续/丢弃消费者 `resumePlan`/`discardPlan` 由 [runtime.ts](../../src/services/engine/pi/runtime.ts) 消费。当前验证证据只在[未完成工作与已知缺口](../plans/active/未完成工作与已知缺口.md#6-当前验证证据)记录。

@@ -33,8 +33,6 @@ export {
 // ── 记忆 ──
 export {
   MemoryService,
-  startMemoryConsolidationTimer,
-  stopMemoryConsolidationTimer,
   onSessionEnd,
 } from "./memory"
 export type { MemoryEntry, ProjectEntry } from "./memory"

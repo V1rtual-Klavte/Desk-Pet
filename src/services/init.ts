@@ -3,7 +3,7 @@
 // 所有应用启动初始化逻辑集中在此，按顺序执行
 // ==========================================
 
-import { MemoryService, stopMemoryConsolidationTimer } from "@/services/agent/memory"
+import { MemoryService } from "@/services/agent/memory"
 import { initRegistry, initCards } from "@/services/personality"
 import { registerDefaultTools, registerAssistantTools, unregisterAssistantTools } from "@/services/tool"
 import { initDebug } from "@/services/debug"
@@ -74,9 +74,7 @@ export async function initApp(): Promise<void> {
   await initDebug()
   log.info("7/7 Debug 就绪")
 
-  // LLM 记忆整理不属于 Presence 启动路径。清理热更新遗留定时器，后续只由
-  // 已实现的记忆工作流在明确调度点启动，不能由应用启动隐式触发。
-  stopMemoryConsolidationTimer()
+  // LLM 记忆整理不属于 Presence 启动路径；当前没有自动整理定时器，长期记忆闭环在 P6。
 
   log.info("──── 初始化完成 ────")
 }

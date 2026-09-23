@@ -26,10 +26,7 @@ import {
 } from "./memory-entries"
 
 // Consolidate
-import {
-  consolidateWithLLM, checkAndConsolidate, forkMemorySupplement,
-  startMemoryConsolidationTimer, stopMemoryConsolidationTimer, onSessionEnd,
-} from "./consolidate"
+import { onSessionEnd } from "./consolidate"
 
 // Re-export types
 export type { MemoryEntry, ProjectEntry }
@@ -112,14 +109,11 @@ export const MemoryService = {
 
   // ── 整理 ──
   consolidate(): { removed: number; kept: number } { return consolidateLocal() },
-  async consolidateWithLLM(): Promise<{ removed: number; kept: number; report: string }> { return consolidateWithLLM() },
-  checkAndConsolidate(): boolean { return checkAndConsolidate() },
-  async forkMemorySupplement(dialogueSummary: string): Promise<void> { return forkMemorySupplement(dialogueSummary) },
 }
 
-// ── 定时器 + 调试 ──
+// ── 会话结束 + 调试 ──
 
-export { startMemoryConsolidationTimer, stopMemoryConsolidationTimer, onSessionEnd }
+export { onSessionEnd }
 
 if (typeof window !== "undefined") {
   (window as any).__memory = MemoryService

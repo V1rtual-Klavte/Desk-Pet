@@ -23,7 +23,6 @@ import { createLogger } from "@/services/logger";
 import { formatError } from "@/services/error";
 import { playEventSound } from "@/services/audio/registry";
 import { emit, listen } from "@tauri-apps/api/event";
-import { stopMemoryConsolidationTimer } from "@/services/agent/memory/consolidate"
 
 const log = createLogger("App");
 
@@ -731,7 +730,6 @@ onMounted(async () => {
 });
 
 onUnmounted(() => {
-  stopMemoryConsolidationTimer()
   void import("@/services/tool/mcp").then(({ disconnectAllMcpServers }) => disconnectAllMcpServers())
   if (cleanupListener) cleanupListener();
   disposeCursorTracker();
