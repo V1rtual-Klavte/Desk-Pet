@@ -192,7 +192,12 @@ async function doSave() {
 
   saved.value = true;
   log.info("设置已保存");
-  emit("deskpet-settings-saved").catch(() => {});
+  emit("deskpet-settings-saved").catch((error) => {
+    // 面板刚显示「已保存」，但主窗口没收到广播：快捷键/光标追踪/Skill 目录/assistantMode 仍是旧值。
+    saved.value = false;
+    saveError.value = "设置已写入，但主窗口未收到刷新通知；部分改动可能要重启后生效。";
+    log.error("deskpet-settings-saved 事件发送失败:", formatError(error));
+  });
   setTimeout(() => {
     saved.value = false;
   }, 3000);
@@ -202,7 +207,7 @@ async function doSave() {
 }
 
 function doCancel() {
-  win.close().catch(() => {});
+  win.close().catch(error => log.warn("关闭设置窗口失败:", formatError(error)));
 }
 
 /**

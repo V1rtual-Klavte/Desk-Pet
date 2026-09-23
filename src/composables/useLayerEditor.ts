@@ -15,6 +15,7 @@ import { reloadConfig, userConfig, type EffectMode } from "@/services/config";
 import { DEFAULT_LAYERS, LAYER_NAMES, layerDepth, type ParallaxLayerCfg } from "@/composables/useParallax";
 import { useDepthOfField, canvasToImage, imageToCanvas, type DofState } from "@/composables/useDepthOfField";
 import { createLogger } from "@/services/logger";
+import { formatError } from "@/services/error";
 
 function clamp(v: number, lo: number, hi: number): number {
   return v < lo ? lo : v > hi ? hi : v;
@@ -474,10 +475,12 @@ export function useLayerEditor() {
    * （取消时 WebView 同样会重新获得焦点）。
    */
   function openFileDialog(): void {
-    invoke("set_picker_window_level", { picking: true }).catch(() => {});
+    invoke("set_picker_window_level", { picking: true })
+      .catch(error => log.warn("编辑器窗口降级失败：原生文件对话框可能被设置窗/主窗口遮挡", formatError(error)));
     const restore = () => {
       window.removeEventListener("focus", restore);
-      invoke("set_picker_window_level", { picking: false }).catch(() => {});
+      invoke("set_picker_window_level", { picking: false })
+        .catch(error => log.warn("窗口层级恢复失败：三个窗口可能停在降级层级，需重启编辑器窗口", formatError(error)));
     };
     window.addEventListener("focus", restore);
     fileInput.value?.click();
@@ -518,7 +521,8 @@ export function useLayerEditor() {
 
   function onFileSelected(e: Event) {
     // 双保险：取完文件立刻恢复窗口层级。取消时 change 可能不触发，那条路由 focus 兜底。
-    invoke("set_picker_window_level", { picking: false }).catch(() => {});
+    invoke("set_picker_window_level", { picking: false })
+      .catch(error => log.warn("窗口层级恢复失败：三个窗口可能停在降级层级，需重启编辑器窗口", formatError(error)));
     const input = e.target as HTMLInputElement;
     const file = input.files?.[0];
     if (!file) return;
@@ -762,7 +766,7 @@ export function useLayerEditor() {
   }
 
   function closeWindow() {
-    win.close().catch(() => {});
+    win.close().catch(error => log.warn("关闭图层编辑器窗口失败:", formatError(error)));
   }
 
   // ── 生命周期 ──
