@@ -53,6 +53,7 @@ export const memoryContract: ModuleContract = {
     { id: "mm-25", feature: "摘要降级显式 decline", description: "宿主摘要内核失败时钩子返回 decline 而非抛出：/compact 报 failed 并在用户可见文案里给出原因；不提交 compaction 条目；回合路径写 deskpet.compaction_declined 审计条目", why: "上游通用英文摘要一旦提交就成为后续所有回合唯一的历史视图且不可回滚，宁可不压缩也不落违反协议的历史", depth: "deep", scenarios: ["memory-compaction-degrade-declines"] },
     { id: "mm-28", feature: "上下文换代身份沿分支", description: "context epoch 由 delivery.ts 的 readContextEpoch 沿 lane 分支回溯已提交 compaction 条目得出；槽快照、请求快照与设置页显示共用它；读失败不写 0", why: "换代身份必须按分支算：会话级全量计数会把其它分支的压缩算进来，未知时写 0 会让快照谎称请求视图未换代", depth: "deep", scenarios: ["memory-context-epoch-branch"] },
     { id: "mm-29", feature: "动态提示与思考强度文案", description: "聊天动态提示由 composeDynamicPrompt + CHAT_THINKING_HINTS 唯一拼接；一次性调用的低强度兜底提示是 ONE_SHOT_LOW_EFFORT_HINT；两者刻意不同", why: "文案散落三处时改一处就分叉，且没有任何断言拦它", depth: "shallow", scenarios: ["memory-prompt-composition"] },
+    { id: "mm-30", feature: "窗口下限错误的归因", description: "模型解析处报出的窗口下限错误区分「模型目录窗口与配置取小」：指出模型 id 与配置值并建议换模型；设置页校验文案不变", why: "把模型能力问题报成配置问题会让用户去改一个本来合法的值（无可修旋钮）", depth: "shallow", scenarios: ["memory-context-window-message"] },
   ],
   rules: { minScenarios: 6, minDeepScenarios: 2, requireBoundary: true, requireErrorPath: true },
 }

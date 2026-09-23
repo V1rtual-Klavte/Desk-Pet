@@ -156,8 +156,9 @@ export function resolvePiTurnModel(): PiModel {
     model = getPiModel()
   }
   // 低于下限的窗口没有可用的压缩切点：在模型解析这个唯一入口报错，
-  // 不让回合静默跑在坏预算上（设置页保存时同样会拒绝）。
-  const issue = contextWindowError(model.contextWindow)
+  // 不让回合静默跑在坏预算上（设置页保存时同样会拒绝）。这里的窗口是
+  // `min(模型目录窗口, 配置窗口)`，所以带上模型 id 与配置值 —— 用户该换模型，不是改配置。
+  const issue = contextWindowError(model.contextWindow, { configured: aiConfig.contextMaxTokens, modelId: model.id })
   if (issue) throw new Error(issue)
   return model
 }

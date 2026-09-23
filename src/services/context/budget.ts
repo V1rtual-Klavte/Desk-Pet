@@ -208,10 +208,23 @@ export function toHarnessEstimateTokens(ourTokens: number): number {
   return Math.max(1, Math.floor(ourTokens))
 }
 
-/** 窗口校验：合法返回 undefined，低于下限返回用户可读文案（设置页保存与模型解析共用）。 */
-export function contextWindowError(window: number): string | undefined {
+/**
+ * 窗口校验：合法返回 undefined，低于下限返回用户可读文案（设置页保存与模型解析共用）。
+ *
+ * 同一条下限，两个调用点的归因不同：设置页保存时，`window` 就是用户刚填的数字，改配置能修；
+ * 模型解析处拿到的是 `min(模型目录窗口, 配置窗口)`，配置本身可能完全合法 —— 报成「配置太低」
+ * 会让用户去改一个没有错的旋钮。带 `options` 时按「模型能力」口径给出可修方向（换窗口更大的
+ * 模型）；不带 options 时文案逐字不变（设置页的保存校验依赖它）。
+ */
+export function contextWindowError(window: number, options?: { configured?: number; modelId?: string }): string | undefined {
   const value = Number.isFinite(window) ? Math.floor(window) : 0
-  return value >= MIN_CONTEXT_WINDOW
-    ? undefined
-    : `上下文窗口配置最低 ${MIN_CONTEXT_WINDOW} tokens（当前 ${value}），再低会让压缩找不到可摘要范围`
+  if (value >= MIN_CONTEXT_WINDOW) return undefined
+  if (options?.modelId === undefined) {
+    return `上下文窗口配置最低 ${MIN_CONTEXT_WINDOW} tokens（当前 ${value}），再低会让压缩找不到可摘要范围`
+  }
+  // 配置值与生效值相等时省略括注：那时它确实只是配置值，没有「取小」这件事要说。
+  const configured = options.configured === undefined || !Number.isFinite(options.configured) || Math.floor(options.configured) === value
+    ? ""
+    : `（配置为 ${options.configured}）`
+  return `模型「${options.modelId}」的已知上下文窗口 ${value} 低于最低 ${MIN_CONTEXT_WINDOW} tokens：该值由模型目录与配置窗口取小得到${configured}，请改用窗口更大的模型`
 }
