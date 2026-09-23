@@ -932,6 +932,7 @@ async function runPlanPhase(args: {
     stepMaxRounds: planConfig.stepMaxRounds,
     stepThinkingEffort: planConfig.stepThinkingEffort,
     maxSteps: planConfig.maxSteps,
+    // 逐步确认：每步开工前都要用户在面板放行（逐步门），步骤失败也停下来问 —— 面板不再自动放行
     onStepFailure: stepMode === "stepByStep" ? "ask" : planConfig.onStepFailure,
     signal: planAbort.signal,
     // §7 #33：计划级时限由步骤配置派生（`stepTimeoutMs × maxSteps`），不新增 YAML 字段
@@ -940,15 +941,14 @@ async function runPlanPhase(args: {
   }, {
     async onStepStart(step) {
       await planCheckpointStore.transitionStep(planId, String(step.id), "running")
-      void emitUiEvent("deskpet-plan-progress", { sessionId, planId, step: step.id, total: plan.steps.length, desc: step.description, status: "running" })
+      void emitUiEvent("deskpet-plan-progress", { sessionId, planId, stepId: String(step.id), total: plan.steps.length, desc: step.description, status: "running" })
     },
     async onStepDone(step, output) {
       await planCheckpointStore.transitionStep(planId, String(step.id), output.success ? "done" : "failed")
-      void emitUiEvent("deskpet-plan-progress", { sessionId, planId, step: step.id, total: plan.steps.length, desc: step.description, status: output.success ? "done" : "failed" })
+      void emitUiEvent("deskpet-plan-progress", { sessionId, planId, stepId: String(step.id), total: plan.steps.length, desc: step.description, status: output.success ? "done" : "failed" })
     },
     // 失败询问接上会话身份与回合中断信号：会话切换/终止执行时按 `abort` 结算，
-    // 不让计划在没有答复的情况下继续跑。这次中止当前记成步骤失败（`cancelled` 为空），
-    // 归入 `declined` 归宿与对应系统消息由 T2.05 落地。
+    // 不让计划在没有答复的情况下继续跑。用户在中止上落定的归宿是 `declined`（planner 侧给出）。
     onStepFailed: (step, error) => requestPlanStepDecision(step, error, {
       sessionId,
       planId,
@@ -956,11 +956,22 @@ async function runPlanPhase(args: {
       index: plan.steps.findIndex(item => item.id === step.id) + 1,
       total: plan.steps.length,
     }),
+    // 逐步门：`stepGate === "each"` 时每步开工前等用户决定，`error` 传 undefined 即「审批」语义
+    // （失败询问是上面那条）。`index` 由 planner 给 0 基位置，这里换算成面板与 PendingStepGate 约定的 1 基位置。
+    onStepGate: (step, index) => requestPlanStepDecision(step, undefined, {
+      sessionId,
+      planId,
+      signal: planAbort.signal,
+      index: index + 1,
+      total: plan.steps.length,
+    }),
     onToolStart: (step, toolName, toolCallId) => planCheckpointStore.checkpointTool(planId, String(step.id), "tool_start", toolName, toolCallId, planEffectClassFor([toolName])),
     onToolDone: (step, toolName, toolCallId, success) => planCheckpointStore.checkpointTool(planId, String(step.id), "tool_end", toolName, toolCallId, planEffectClassFor([toolName]), success),
   }).finally(() => clearRunningPlan(sessionId, planId))
 
   if (result.cancelled) {
+    // `declined` 由逐步门（含失败询问上的中止）给出：与终止执行/超时走同一条取消通道 ——
+    // 计划落 `interrupted`、剩余步骤保持 `pending`；「停在当前步骤」的系统消息由 finishPlan 的 declined 分支发
     const reasonText = result.cancelled.reason === "user" ? "用户终止执行"
       : result.cancelled.reason === "deadline" ? "超过计划时限" : "按用户选择中止"
     return await cancelPlanRun({

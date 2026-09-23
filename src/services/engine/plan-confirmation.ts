@@ -36,7 +36,7 @@ export interface RunningPlan {
 }
 
 /**
- * 待裁决的步骤门：失败询问（`kind: "failed"`）与逐步前置门（`kind: "approval"`，T2.05）共用。
+ * 待裁决的步骤门：失败询问（`kind: "failed"`）与逐步前置门（`kind: "approval"`）共用。
  * `index`/`total` 是步骤在计划中的 1 基位置与计划总步数；调用方没有位置信息时为 0（未知）。
  */
 export interface PendingStepGate {
@@ -222,6 +222,9 @@ export function resolvePlanConfirm(planId: string, result: PlanConfirmResult): v
 /**
  * 步骤门/失败询问的用户裁决（会话键控）。
  *
+ * 裁决请求经 `deskpet-plan-step-gate` 事件交给面板（`kind` 决定按钮语义）；返回 `"abort"` 时
+ * 调用方在 planner 侧按下一个归宿停下（`cancelled.reason = "declined"`），不复用失败标记路径。
+ *
  * `signal` 的 abort 结算为 `"abort"`：调用方已经不再有资格等用户答复（会话切换/回合已失效），
  * 继续往下跑会把计划带进错误的会话。超时与事件发射失败同样按 `"abort"` 结算 —— 问不到用户时
  * 不能把没有答复的门当成放行。
@@ -263,7 +266,15 @@ export function requestPlanStepDecision(step: PlanStep, error: string | undefine
 
     planConfirmState.stepGate = gate
 
-    void emitUiEvent("deskpet-plan-step-failed", { sessionId, planId, step, error }).then(delivered => {
+    void emitUiEvent("deskpet-plan-step-gate", {
+      sessionId,
+      planId,
+      kind: gate.kind,
+      step: gate.step,
+      index: gate.index,
+      total: gate.total,
+      ...(gate.error === undefined ? {} : { error: gate.error }),
+    }).then(delivered => {
       if (delivered) return
       if (!settleStepGate(planId, "abort")) return
       log.error("步骤裁决事件发射失败，已按中止结算:", planId, sessionId, step.id)

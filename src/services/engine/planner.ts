@@ -264,6 +264,11 @@ export interface ExecutePlanCallbacks {
   onStepStart(step: PlanStep): Promise<void> | void
   onStepDone(step: PlanStep, result: PiSubAgentOutput): Promise<void> | void
   onStepFailed(step: PlanStep, error: string): Promise<"continue" | "abort">
+  /**
+   * 逐步门：在 signal 检查之后、`onStepStart` 之前调用；返回 `"abort"` 与信号中止同款
+   * （`cancelled.reason = "declined"`）。`index` 是该步在本次执行列表中的 0 基位置。
+   */
+  onStepGate?(step: PlanStep, index: number): Promise<"continue" | "abort">
   onToolStart?(step: PlanStep, toolName: string, toolCallId: string): Promise<void> | void
   onToolDone?(step: PlanStep, toolName: string, toolCallId: string, success: boolean): Promise<void> | void
 }
@@ -281,7 +286,7 @@ export interface ExecutePlanConfig {
    * 在每步开始前与 `onStepDone` 之后各检查一次，命中按 `deadline` 中止。
    */
   deadlineAt?: number
-  /** 逐步门（T2.05 消费）：`each` 时每步执行前经 `onStepGate` 取得继续/中止。 */
+  /** 逐步门：`each` 时每步执行前经 `onStepGate` 取得继续/中止；`none` 或缺该回调时不做门。 */
   stepGate?: "each" | "none"
 }
 
@@ -299,7 +304,7 @@ export async function executePlan(
   }
   const steps = plan.steps.slice(0, config.maxSteps)
 
-  for (const step of steps) {
+  for (const [index, step] of steps.entries()) {
     // 外部终止（用户在 Plan 面板点「终止执行」）：每一步开始前检查。
     // 不打断正在跑的那一步，但不会继续往下走 —— 没有这个检查的话终止按钮就是摆设。
     if (config.signal?.aborted) {
@@ -314,6 +319,18 @@ export async function executePlan(
       cancelled = { reason: "deadline" }
       log.error("计划超过时限，已停在当前步骤:", step.id)
       break
+    }
+    // 逐步门：每步开工前等用户决定。此时步骤还是 pending（不标 failed），
+    // 所以不能与 `onStepFailed` 的失败询问共用标记路径；用户拒绝与信号中止同款停下，
+    // 归宿是 `declined`（不是用户按了停止按钮）。
+    if (config.stepGate === "each" && callbacks.onStepGate) {
+      const decision = await callbacks.onStepGate(step, index)
+      if (decision === "abort") {
+        log.info("逐步门中止，剩余步骤不再执行:", step.id)
+        overallSuccess = false
+        cancelled = { reason: "declined" }
+        break
+      }
     }
     await callbacks.onStepStart(step)
     const stepStart = Date.now()
@@ -336,8 +353,9 @@ export async function executePlan(
         break
       }
       if (!output.success && config.onStepFailure === "ask") {
+        // 失败询问上用户选择中止：与逐步门同款归宿 —— 是用户在当下停住计划，不是计划自己失败
         const decision = await callbacks.onStepFailed(step, output.error || "未知错误")
-        if (decision === "abort") { overallSuccess = false; break }
+        if (decision === "abort") { overallSuccess = false; cancelled = { reason: "declined" }; break }
       }
     } catch (e) {
       const errMsg = formatError(e)
@@ -348,7 +366,7 @@ export async function executePlan(
       if (config.onStepFailure === "abort") { overallSuccess = false; break }
       if (config.onStepFailure === "ask") {
         const decision = await callbacks.onStepFailed(step, errMsg)
-        if (decision === "abort") { overallSuccess = false; break }
+        if (decision === "abort") { overallSuccess = false; cancelled = { reason: "declined" }; break }
       }
     }
   }

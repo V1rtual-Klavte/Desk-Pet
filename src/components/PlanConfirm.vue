@@ -5,6 +5,9 @@ import type { PlanStep } from "@/services/engine"
 import { abortRunningPlan, planConfirmState, resolvePlanConfirm, resolvePlanStepDecision } from "@/services/engine"
 import { getActiveSessionId } from "@/services/session/store"
 import { reportError } from "@/services/error"
+import { createLogger } from "@/services/logger"
+
+const log = createLogger("PlanConfirm")
 
 interface StepStatus {
   step: PlanStep
@@ -20,6 +23,8 @@ const steps = ref<StepStatus[]>([])
 const complexity = ref(0)
 const executing = ref(false)
 const currentStep = ref(0)
+/** 进度分母取事件里的 `total`（执行列表截断后的步数），不按面板收到的步骤数自算。 */
+const total = ref(0)
 /** 面板当前展示的计划身份：确认与终止都按它转发，不跨会话误操作。 */
 const planId = ref("")
 const sessionId = ref("")
@@ -27,6 +32,12 @@ const sessionId = ref("")
 const activeId = computed(() => getActiveSessionId())
 /** 该计划是否仍有待确认的确认（渲染门）：会话切换会取消旧确认，取消后按钮不得再出现。 */
 const pendingHere = computed(() => planConfirmState.pending?.planId === planId.value)
+/** 待裁决的步骤门（逐步门/失败询问）：会话与计划都对上才呈现；真相源在确认域，面板不另存一份。 */
+const gateHere = computed(() => {
+  const gate = planConfirmState.stepGate
+  if (!gate || gate.sessionId !== activeId.value || gate.planId !== planId.value) return null
+  return gate
+})
 /** 确认态需要活着的确认；执行态只需要面板自己知道在跑（plan-confirm 域的执行期登记在模块里）。 */
 const showPanel = computed(() => visible.value && sessionId.value === activeId.value && (executing.value || pendingHere.value))
 
@@ -46,25 +57,35 @@ onMounted(async () => {
           complexity.value = e.payload.complexity
           forceStepByStep.value = e.payload.forceStepByStep || false
           executing.value = false
+          currentStep.value = 0
+          total.value = e.payload.steps.length
           visible.value = true
         },
       ),
-      listen<PlanEventIdentity & { step: number; status: string }>(
+      listen<PlanEventIdentity & { stepId: string; total: number; status: string }>(
         "deskpet-plan-progress", (e) => {
           if (e.payload.sessionId !== getActiveSessionId() || e.payload.planId !== planId.value) return
-          const s = steps.value[e.payload.step - 1]
-          if (!s) return
-          currentStep.value = e.payload.step
+          // 按 stepId 定位：步骤 id 不由 1 起或不连续时（恢复入口只跑剩余步骤），
+          // 按下标 `step - 1` 取会指到别的步骤上
+          const s = steps.value.find(x => String(x.step.id) === e.payload.stepId)
+          if (!s) {
+            log.warn("计划进度事件找不到对应步骤", e.payload)
+            return
+          }
+          currentStep.value = steps.value.indexOf(s) + 1
+          total.value = e.payload.total
           s.status = e.payload.status as StepStatus["status"]
         },
       ),
-      listen<PlanEventIdentity & { step: PlanStep; error: string }>(
-        "deskpet-plan-step-failed", (e) => {
+      listen<PlanEventIdentity & { kind: "approval" | "failed"; step: PlanStep; error?: string; index: number; total: number }>(
+        "deskpet-plan-step-gate", (e) => {
           if (e.payload.sessionId !== getActiveSessionId() || e.payload.planId !== planId.value) return
           const s = steps.value.find(x => x.step.id === e.payload.step.id)
-          if (s) s.status = "failed"
-          // Auto-continue to avoid blocking the loop indefinitely
-          resolvePlanStepDecision(e.payload.planId, "continue")
+          // 找不到也不能吞掉这道门：裁决按钮按 planConfirmState.stepGate 渲染，面板只记一条线索
+          if (!s) log.warn("计划步骤门事件找不到对应步骤", e.payload)
+          if (e.payload.kind === "failed" && s) s.status = "failed"
+          // 这里不自动应答：逐步门就是要等用户在「继续 / 中止」上落定，
+          // 原来在这无条件 `resolvePlanStepDecision("continue")` 的假放行已删（PLAN-05）。
         },
       ),
       listen<{ sessionId: string; reason: string }>("deskpet-plan-end", (e) => {
@@ -92,6 +113,8 @@ onUnmounted(() => unlistens.forEach(fn => fn()))
 function confirmAutoAll() { if (planId.value) resolvePlanConfirm(planId.value, { confirmed: true, mode: "auto" }); executing.value = true }
 function confirmStepByStep() { if (planId.value) resolvePlanConfirm(planId.value, { confirmed: true, mode: "stepByStep" }); executing.value = true }
 function cancel() { if (planId.value) resolvePlanConfirm(planId.value, { confirmed: false, reason: "user" }); visible.value = false }
+/** 步骤门应答：结算后确认域会清掉 stepGate，按钮随之消失（重复点击是空操作）。 */
+function decideStepGate(decision: "continue" | "abort") { if (planId.value) resolvePlanStepDecision(planId.value, decision) }
 function abortExecution() {
   // 执行期终止：走真正的中断通道，按活跃会话取身份 —— 会话 A 的面板终止不了会话 B 的计划。
   // 原先这里调 resolvePlanConfirm，而确认早在「全部执行/逐步确认」时就被消费掉了，
@@ -122,6 +145,10 @@ function abortExecution() {
       </div>
     </div>
 
+    <div v-if="gateHere" class="gate-hint" :class="gateHere.kind">
+      {{ gateHere.kind === "failed" ? `步骤失败：${gateHere.error ?? "未知错误"}` : `下一步：${gateHere.step.description}` }}
+    </div>
+
     <div class="actions">
       <template v-if="!executing">
         <button v-if="!forceStepByStep" class="btn-auto" @click="confirmAutoAll">全部执行</button>
@@ -129,8 +156,14 @@ function abortExecution() {
         <button class="btn-cancel" @click="cancel">取消</button>
       </template>
       <template v-else>
-        <span class="progress">({{ currentStep }}/{{ steps.length }})</span>
-        <button class="btn-abort" @click="abortExecution">终止执行</button>
+        <span class="progress">({{ currentStep }}/{{ total }})</span>
+        <template v-if="gateHere">
+          <button class="btn-auto" @click="decideStepGate('continue')">
+            {{ gateHere.kind === "failed" ? "继续" : "执行下一步" }}
+          </button>
+          <button class="btn-abort" @click="decideStepGate('abort')">中止</button>
+        </template>
+        <button v-else class="btn-abort" @click="abortExecution">终止执行</button>
       </template>
     </div>
   </div>
@@ -165,6 +198,8 @@ function abortExecution() {
 .step-icon { font-size: 10px; font-family: var(--font-mono, monospace); min-width: 18px; color: var(--color-text-muted, #6c7086); }
 .step-error-msg { font-size: 9px; color: #f38ba8; margin-left: auto; }
 .step-desc { flex: 1; }
+.gate-hint { margin-bottom: 8px; font-size: 10px; color: var(--color-text-muted, #6c7086); }
+.gate-hint.failed { color: #f9e2af; }
 .actions { display: flex; gap: 6px; align-items: center; }
 button { padding: 4px 12px; border-radius: 6px; border: none; font-size: 11px; cursor: pointer; font-family: inherit; }
 button:hover { opacity: 0.85; }
