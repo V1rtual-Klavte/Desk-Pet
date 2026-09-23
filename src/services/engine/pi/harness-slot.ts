@@ -25,6 +25,7 @@ import type {
   JsonlSessionMetadata,
   JsonValue,
   OperationResultRecord,
+  OperationRequest,
   SettledAssistantMessage,
   Session,
   UsageRow,
@@ -963,7 +964,12 @@ export class HarnessSlot {
       }
     }
     await this.assembleLane(admit)
-    const accepted = await this.lane.accept({ kind: "prompt", prompt: admit.prompt }, TODO_CONTEXT)
+    // 上游的接受请求是可辨识联合（字符串正文 / 消息或消息数组各一支），两支的请求体字面量相同：
+    // 分支只为让编译器按入参收窄 —— union 形状的 prompt 不能直接塞进其中任何一支。
+    const request: OperationRequest = typeof admit.prompt === "string"
+      ? { kind: "prompt", prompt: admit.prompt }
+      : { kind: "prompt", prompt: admit.prompt }
+    const accepted = await this.lane.accept(request, TODO_CONTEXT)
     if (!accepted.ok) {
       const tag = accepted.error._tag
       log.error("输入未获准入（未落盘）:", { sessionId: this.sessionId, tag })
