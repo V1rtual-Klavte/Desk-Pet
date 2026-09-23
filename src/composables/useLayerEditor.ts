@@ -123,7 +123,6 @@ export function useLayerEditor() {
   const fileInput = ref<HTMLInputElement | null>(null);
 
   const selectedLayer = computed(() => layers.value[selectedIndex.value]);
-  const isL2 = computed(() => selectedIndex.value === 2);
   // ── 画布自适应尺寸（维持实际窗口等比例）──
   const canvasWrap = ref<HTMLElement | null>(null);
   const canvasSize = ref({ w: 600, h: 370 });
@@ -819,7 +818,6 @@ export function useLayerEditor() {
     pickerPreview,
     // computed
     selectedLayer,
-    isL2,
     // 景深
     effectMode,
     isDof,
