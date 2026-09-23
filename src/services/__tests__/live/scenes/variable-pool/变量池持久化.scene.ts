@@ -86,7 +86,8 @@ export const 变量池恢复 = unit("variable-pool-load", "vp-14", "loadCardVars
 
   const loaded = await loadCardVars(CARD_ID)
   if (!loaded) throw new Error("读不到已持久化的 stages 文件")
-  if (loaded.lastDailyResetKey !== "2099-03-01" || loaded.sessionKey !== SESSION_A) {
+  // new Date(2099, 3, 1) 是本地 2099-04-01（月份 0-based），游标键与传入日期自洽
+  if (loaded.lastDailyResetKey !== "2099-04-01" || loaded.sessionKey !== SESSION_A) {
     throw new Error(`重置游标未落盘: ${JSON.stringify({ lastDailyResetKey: loaded.lastDailyResetKey, sessionKey: loaded.sessionKey })}`)
   }
   const restored = initVariablePool({
@@ -113,7 +114,8 @@ export const 变量池恢复 = unit("variable-pool-load", "vp-14", "loadCardVars
   if (getPoolSnapshot().card["会话"]?.value !== 9) throw new Error("换日不该重置 session 变量")
   await savePoolToDiskStrict()
   const afterDaily = await loadCardVars(CARD_ID)
-  if (afterDaily?.lastDailyResetKey !== "2099-03-02") {
+  // new Date(2099, 3, 2) 是本地 2099-04-02，同一自洽规则（月份 0-based）
+  if (afterDaily?.lastDailyResetKey !== "2099-04-02") {
     throw new Error(`换日后的游标未落盘: ${afterDaily?.lastDailyResetKey}`)
   }
 
