@@ -62,10 +62,30 @@ export async function deleteAllPiSessionsForTest(): Promise<number> {
  */
 const openSessions = new Map<string, Promise<Session<JsonlSessionMetadata>>>()
 
-/** 仓库内的全部会话元数据（创建时间倒序）。 */
+/** 已留过证据的跨根会话 id：同一批跨根项只报一次，不随每次列举刷日志。 */
+const reportedForeignRootIds = new Set<string>()
+
+/**
+ * 仓库内的全部会话元数据（创建时间倒序）。
+ *
+ * 归属按**文件头 `cwd`** 判定，不是按 `--<cwd>--` 目录名猜：数据根变更或目录编码碰撞
+ * 都会让仓库里出现不属于当前数据根的会话。这类项标注并留一次日志，不清除、不改
+ * `index.json` —— 「`index.json` 里有 id、列表里静默消失」正是要修掉的现象。
+ */
 export async function listPiSessionMetadata(): Promise<JsonlSessionMetadata[]> {
   const repo = await getPiSessionRepo()
-  return repo.list(undefined, BACKGROUND_CONTEXT)
+  const metadata = await repo.list(undefined, BACKGROUND_CONTEXT)
+  const foreign = metadata.filter(item => item.cwd !== repo.cwd)
+  if (foreign.length > 0) {
+    const unseen = foreign.filter(item => !reportedForeignRootIds.has(item.id))
+    if (unseen.length > 0) {
+      unseen.forEach(item => reportedForeignRootIds.add(item.id))
+      log.warn("列出不属于当前数据根的会话（数据根变更或目录编码碰撞）:", {
+        cwds: [...new Set(foreign.map(item => item.cwd))], ids: unseen.map(item => item.id),
+      })
+    }
+  }
+  return metadata
 }
 
 /** 打开（或复用）会话句柄；句柄保持打开直到 releasePiSession()。 */

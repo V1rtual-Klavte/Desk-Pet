@@ -64,7 +64,7 @@ Rust [AppPaths](../../src-tauri/src/paths.rs) 依据 `cfg!(debug_assertions)` �
 data_root/
 ├── settings/       生产 CONFIG 与默认资源初始化标记
 ├── memory/         CANDY.md、User.md、Outside.md、MEMORY.md、Project.md
-├── sessions/       聊天正文 JSONL（JsonlSessionRepo，每会话一个文件）与 index.json 可丢弃 UI 状态
+├── sessions/       聊天正文 JSONL（JsonlSessionRepo，每会话一个文件，归属按文件头 cwd）与 index.json 可丢弃 UI 状态
 ├── personality/    cards/、stages/{cardId}.json
 ├── profiles/       {profileId}/ 下的 Profile 与素材
 ├── skills/         {name}/SKILL.md
@@ -75,7 +75,7 @@ TS 先执行 `initPaths()`；`BaseDirs` 只给目录，需要完整路径时用 
 
 Rust 持有 base 的命令接收域内相对路径，例如 personality 命令接收 `stages/x.json`，不能传 `personality/stages/x.json`。通用文件 API 接收绝对路径时由 runtimePath 生成。写入需校验目标/父目录与符号链接边界，不能在 canonicalize 失败后静默退回原路径。
 
-聊天正文以 `sessions/` 的 JSONL 保存（条目 + commit 事务，JsonlSessionRepo）；启动经会话仓库列出恢复，再用 index.json 恢复标签和未回复数；丢失 index 不丢正文。格式细节见[当前记忆](memory.md)。
+聊天正文以 `sessions/` 的 JSONL 保存（条目 + commit 事务，JsonlSessionRepo）；启动经会话仓库列出恢复，再用 index.json 恢复标签和未回复数；丢失 index 不丢正文。会话归属按文件头 `cwd` 判定（不是按 `--<cwd>--` 目录名猜）：数据根变更或目录编码碰撞会产生不属于当前数据根的会话，列举结果里 `cwd` 与当前数据根不同的项由列举方记一次日志（去重）留证，不静默清除 index.json 里的旧 id。格式细节见[当前记忆](memory.md)。
 
 Live Test 在 debug 且 `DESKPET_LIVE_TEST=1` 时使用测试脚本在用户 Home 下创建的临时数据根，结束后清理。隔离边界与报告位置见[测试 README](../../src/services/__tests__/live/README.md)，不把测试目录当作正常用户数据位置。
 
