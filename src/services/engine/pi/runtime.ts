@@ -1396,9 +1396,6 @@ async function settleMainTurn(args: {
   if (result.status === "busy") {
     return failTurn(`会话已有运行中的 Agent: ${turnSessionId}`, "unknown")
   }
-  if (state.stoppedAtToolLimit) {
-    return { reply: getFallbackReply("toolLoopMaxRounds"), toolCallHistory, retriesUsed: state.retriesUsed }
-  }
   if (result.status === "aborted") {
     if (result.abortReason === "user") {
       // 用户主动停止不是故障：不写兜底失败回复、不标 failure —— 否则「我点了停止」会被
@@ -1410,6 +1407,13 @@ async function settleMainTurn(args: {
     const reason = result.timedOut ? "Agent 执行超时" : result.error ?? "回合已取消"
     const failed = await failTurn(reason, result.timedOut ? "timeout" : "unknown")
     return { ...failed, undelivered: result.undelivered, abortedByStop: false }
+  }
+  // 停止晚于工具上限时，停止是更晚、更可见的事实，按停止结算：反过来先判上限早退，会把
+  // 「用户已经点了停止」说成「工具轮超限」，还丢掉归还的未消费输入。
+  // 这条早退也不补 abortedByStop —— 那会让宿主丢弃 reply，「工具轮超限」文案再也看不到；
+  // 停止与上限同时发生的情形已由上面的 aborted 分支覆盖。
+  if (state.stoppedAtToolLimit) {
+    return { reply: getFallbackReply("toolLoopMaxRounds"), toolCallHistory, retriesUsed: state.retriesUsed }
   }
   if (result.status !== "completed") {
     const reason = result.error ?? "Pi Agent 未返回有效回复"

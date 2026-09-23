@@ -164,7 +164,7 @@ export interface HarnessRunSpec {
 }
 
 export type HarnessRunStatus =
-  | "completed" | "failed" | "aborted" | "busy" | "invalid" | "closed" | "interrupted" | "faulted" | "deferred"
+  | "completed" | "failed" | "aborted" | "busy" | "invalid" | "closed" | "interrupted" | "faulted"
 
 export interface HarnessRunResult {
   status: HarnessRunStatus
@@ -883,7 +883,6 @@ export class HarnessSlot {
 
   /** 宿主显式停止：取消当前操作并归还未消费消息。 */
   async abort(reason: HarnessAbortReason = ABORT_REASON_USER): Promise<{ steer: string[]; followUp: string[] } | undefined> {
-    this.abortReason = reason
     const aborted = await this.abortSelf(reason)
     // 取消域级联：父槽停止后子运行不能继续跑（计划步骤的子代理就挂在父槽下）。
     // 一条失败不阻断其余，也仍然如实返回父槽自己的归还清单。
@@ -901,9 +900,13 @@ export class HarnessSlot {
     const aborted = await this.lane.abort(TODO_CONTEXT)
     if (!aborted.ok) {
       // 不能伪装成「停止成功但无归还项」：abort 未被接受时中断状态与归还列表都必须如实缺省。
-      log.warn("停止运行未被接受:", { sessionId: this.sessionId, reason, tag: aborted.error._tag })
+      // 停止来源同样缺省 —— 先记 abortReason 再等结果会把槽钉死在「非当前」（isCurrent 恒 false）。
+      log.warn("停止运行未被接受:", { sessionId: this.sessionId, reason, error: formatError(aborted.error) })
       return undefined
     }
+    // 停止被接受后才记来源：它是 execute() 收尾派生 timedOut 的依据（超时路径必然走到这里，
+    // 且 lane.abort 的 awaited 返回先于运行收尾，赋值不会晚于那次读取）。
+    this.abortReason = reason
     // 未消费的 steer/followUp 已被 lane 从 inbox 移出：以 nextRun 重新入队（随会话持久），
     // 保证「停止归还」不丢用户输入、也不自动继续执行（§3.3.5）。
     // 有在飞 run 时由回合收尾点统一入队：否则会被 collectPendingDelivery 的队列清理覆盖。
@@ -921,6 +924,16 @@ export class HarnessSlot {
    */
   async waitForIdle(): Promise<boolean> {
     if (!this.lane) return true
+    // 等待前先读一次 lane 真相：槽已无在飞运行、lane 却还有未结算操作时，等待必然挂死
+    // （它没有任何在飞的东西会把它推到终态）。这里把它变成如实失败，不伪装成「等到了」。
+    const info = await this.lane.inspectExecution(TODO_CONTEXT).catch(error => {
+      log.warn("lane 操作状态读取失败，跳过挂死预检:", { sessionId: this.sessionId }, formatError(error))
+      return undefined
+    })
+    if (info && info.current !== null && !this.activeRun) {
+      log.error("lane 仍有未结算操作但槽已无在飞运行，等待会挂死:", { sessionId: this.sessionId, operationId: info.current.id })
+      return false
+    }
     try {
       await this.lane.waitForIdle(TODO_CONTEXT)
       return true
@@ -1024,7 +1037,22 @@ export class HarnessSlot {
       }
       if ("status" in result.value && result.value.status === "suspended") {
         // 不启用 deferred：出现挂起说明 Provider 返回了未预期的 handle，按失败暴露。
-        return { status: "failed", timedOut: false, undelivered: [], state: spec.state, error: "Provider 返回了不支持的延迟响应" }
+        // 但必须把这个操作结算掉：只返回 failed 会让槽背着永不结算的 lane 操作，
+        // 后续 waitForIdle 挂死、下一次运行永远被判忙。取消是结算（HN-08）。
+        log.error("运行返回了未预期的延迟响应，已取消该操作:", { sessionId: this.sessionId, operationId: result.value.operationId })
+        const cancelled = await this.lane!.abort(TODO_CONTEXT)
+        // 取消未被接受就还是没结算：如实留 warn（收尾的 waitForIdle 预检也会报同一件事）。
+        if (!cancelled.ok) {
+          log.warn("挂起操作的取消未被接受:", { sessionId: this.sessionId, operationId: result.value.operationId, error: formatError(cancelled.error) })
+        }
+        await this.collectPendingDelivery(run)
+        return {
+          status: "failed",
+          timedOut: this.abortReason === ABORT_REASON_TIMEOUT,
+          undelivered: [...spec.state.undelivered],
+          state: spec.state,
+          error: "Provider 返回了不支持的延迟响应（已取消并结算该操作）",
+        }
       }
       const record = result.value as OperationResultRecord
       run.operationId = record.operationId
