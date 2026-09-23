@@ -4,6 +4,7 @@ export {
   discoverAllProfiles,
   ensureProfileLoaded,
   activateProfile,
+  switchActiveProfile,
   getActiveProfile,
   getActivePreset,
   listProfiles,

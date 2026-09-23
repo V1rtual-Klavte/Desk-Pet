@@ -8,8 +8,14 @@
 
 import JSZip from "jszip";
 import { invoke } from "@tauri-apps/api/core";
-import { invalidateAllProfileCaches, invalidateProfileCache } from "./loader";
-import { BaseDirs } from "@/services/paths";
+import {
+  getActiveProfile,
+  invalidateAllProfileCaches,
+  invalidateProfileCache,
+  listProfiles,
+  switchActiveProfile,
+} from "./loader";
+import { BaseDirs, DEFAULT_PROFILE } from "@/services/paths";
 import { createLogger } from "@/services/logger";
 import { formatError } from "@/services/error";
 
@@ -126,10 +132,21 @@ export async function importProfileZip(file: File): Promise<ProfileOpResult & { 
     if (!profileId) return fail("无法从文件名推导出合法的 Profile ID")
 
     let count = 0
+    // 同路径判定按文件系统的口径：分隔符归一、去掉 `./`、不区分大小写
+    // （macOS / Windows 默认大小写不敏感，两个条目会互相覆盖）
+    const seen = new Map<string, string>()
+    const collisions: string[] = []
     for (const [path, entry] of Object.entries(zip.files)) {
       if (entry.dir) continue
       // 跳过 macOS 打包产生的隐藏文件
       if (path.startsWith("__MACOSX") || path.includes("/._")) continue
+      const key = path.replace(/\\/g, "/").replace(/^\.\//, "").toLowerCase()
+      const previous = seen.get(key)
+      if (previous !== undefined && previous !== path) {
+        collisions.push(`${previous} ← ${path}`)
+        log.warn("导入包内两个条目指向同一路径，后者覆盖前者:", previous, path)
+      }
+      seen.set(key, path)
       const data = await entry.async("uint8array")
       await invoke("profile_file_write", {
         profileId,
@@ -140,8 +157,20 @@ export async function importProfileZip(file: File): Promise<ProfileOpResult & { 
     }
 
     invalidateProfileCache(profileId)
-    log.info(`已导入 ${profileId}（${count} 个文件）`)
-    return { ...ok(`已导入 ${count} 个文件`, `${BaseDirs.profiles()}/${profileId}`), profileId }
+    log.info(
+      `已导入 ${profileId}（${count} 个文件${collisions.length ? `，${collisions.length} 个条目被同路径条目覆盖` : ""}）`,
+    )
+    return {
+      ...ok(
+        collisions.length
+          ? `已导入 ${count} 个文件，其中 ${collisions.length} 个条目被同路径的后续条目覆盖（去重后 ${count - collisions.length} 个路径）`
+          : `已导入 ${count} 个文件`,
+        collisions.length
+          ? `被覆盖的条目: ${collisions.join(", ")}`
+          : `${BaseDirs.profiles()}/${profileId}`,
+      ),
+      profileId,
+    }
   } catch (e) {
     log.error("导入失败", formatError(e))
     return fail(formatError(e))
@@ -150,12 +179,35 @@ export async function importProfileZip(file: File): Promise<ProfileOpResult & { 
 
 // ── 删除 ──
 
+/**
+ * 删除运行时 Profile。
+ *
+ * 内置默认 Profile 是 `character.yaml` 与 `useDefaultUi` 的兜底来源，删掉会让整条
+ * 回退链断掉，所以在这里前置拒绝（Rust 的 `profile_delete` 只删目录，不加同名常量，
+ * 避免出现第二定义点）。被删的正好是当前活动 Profile 时，删完必须换一个可用的，
+ * 否则 `activeId` 会悬空。
+ */
 export async function deleteProfile(profileId: string): Promise<ProfileOpResult> {
+  if (profileId === DEFAULT_PROFILE) {
+    return fail(`内置默认 Profile「${DEFAULT_PROFILE}」不能删除；如需还原请用「恢复默认资源」`)
+  }
+  const wasActive = getActiveProfile()?.id === profileId
   try {
     await invoke("profile_delete", { profileId })
     invalidateProfileCache(profileId)
     log.info(`已删除 Profile: ${profileId}`)
-    return ok(`已删除 ${profileId}`, profileLabel(profileId))
+
+    if (!wasActive) return ok(`已删除 ${profileId}`, profileLabel(profileId))
+
+    if (await switchActiveProfile(DEFAULT_PROFILE)) {
+      return ok(`已删除 ${profileId}，已切回默认 Profile`, profileLabel(profileId))
+    }
+    const fallback = listProfiles().find((p) => p.id !== profileId)
+    if (fallback && await switchActiveProfile(fallback.id)) {
+      return ok(`已删除 ${profileId}，已切换到 ${fallback.id}`, profileLabel(profileId))
+    }
+    log.error(`已删除 ${profileId}，但没有可切换的 Profile（默认 Profile 不可用，内存中也无其他 Profile）`)
+    return fail(`已删除 ${profileId}，但当前没有可用的 Profile，请重启应用或恢复默认资源`)
   } catch (e) {
     log.error("删除失败", formatError(e))
     return fail(formatError(e))

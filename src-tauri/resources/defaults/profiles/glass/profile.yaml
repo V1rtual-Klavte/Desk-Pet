@@ -50,7 +50,6 @@ theme:
     enabled: false
     image: ""
   parallax:
-    intensity: 1.0
     layers:
       - {
           enabled: true,
