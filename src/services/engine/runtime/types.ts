@@ -16,6 +16,14 @@ export const DESKPET_GREETING_ENTRY = "deskpet.greeting"
 /** 系统提示条目：宿主/运行时写的系统消息，读模型投影为 system 气泡，不进模型上下文。 */
 export const DESKPET_SYSTEM_MESSAGE_ENTRY = "deskpet.system_message"
 
+/**
+ * 压缩降级条目：宿主摘要内核失败（或压缩未完成）时写的审计条目。
+ *
+ * 它证明的是「这次压缩为什么没落成」：上游通用英文摘要一旦提交就成为后续所有回合唯一的历史
+ * 视图且不可回滚，宿主的取舍是显式 decline，代价必须留下可追溯的证据。
+ */
+export const COMPACTION_DECLINED_ENTRY = "deskpet.compaction_declined"
+
 export type MessageOrigin =
   | "user"
   | "assistant"
@@ -124,6 +132,16 @@ export interface PromptTransform {
   reason: PromptTransformReason
   derivedFrom: string[]
   createdAt: number
+}
+
+/**
+ * 宿主压缩钩子的审计槽：一次性调用（摘要内核）把这次压缩的结果/失败写进它，
+ * 由运行槽在 `compaction_end` 收口成审计条目（hook 内不能直接写 lane）。
+ * T3.36 用 `rewrite`（压缩请求的派生记录），失败路径用 `failure`。
+ */
+export interface CompactionAuditSink {
+  rewrite?: PromptTransform
+  failure?: string
 }
 
 export interface PromptToolSchema {

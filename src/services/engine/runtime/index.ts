@@ -1,5 +1,6 @@
 // Runtime protocol vocabulary. Keep this barrel free of business side effects.
 export type {
+  CompactionAuditSink,
   ContextBlock,
   ContextLayer,
   IngressEnvelope,
@@ -41,7 +42,7 @@ export type { RuntimeTraceContext, RuntimeTraceEvent, RuntimeTraceKind, RuntimeT
 
 export type { ContextAllocation } from "./types"
 
-export { DESKPET_GREETING_ENTRY, DESKPET_SYSTEM_MESSAGE_ENTRY } from "./types"
+export { COMPACTION_DECLINED_ENTRY, DESKPET_GREETING_ENTRY, DESKPET_SYSTEM_MESSAGE_ENTRY } from "./types"
 
 export {
   INPUT_SOURCE_FIELD,

@@ -37,6 +37,9 @@ export type {
 export { describeInputDelivery, isInputCommitted, PROMPT_SNAPSHOT_ENTRY } from "./delivery"
 export type { InputCommitState, InputDeliveryEvidence, InputDeliveryLookup, InputDeliveryStage } from "./delivery"
 
+export { COMPACTION_DECLINED_ENTRY } from "@/services/engine/runtime"
+export type { CompactionAuditSink } from "@/services/engine/runtime"
+
 export { RuntimeDataStreamFilter } from "./stream-text"
 
 export {

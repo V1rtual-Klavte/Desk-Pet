@@ -50,6 +50,7 @@ export const memoryContract: ModuleContract = {
     { id: "mm-26", feature: "估算器角色覆盖与偏差对账", description: "内容投影按角色表覆盖 compactionSummary/branchSummary/bashExecution/custom（摘要只计 summary 正文、excludeFromContext 的 bash 执行计 0），未知角色按整条估算并留痕；provider_usage 快照记录 tokenDrift（estimated/actual/ratio），超 ESTIMATE_DRIFT_WARN_RATIO 只 warn 与 trace 带 driftRatio，不改变预算判定", why: "估算器系统性漏算某类消息会让硬预算与压缩触发点整体漂移，估算与真实 usage 的偏差必须可见才能定位", depth: "deep", scenarios: ["memory-estimator-role-coverage"] },
     { id: "mm-27", feature: "L0 地址完整性", description: "有地址的工具结果在请求视图里带真实 eventId 且可回读；无地址的不写假 eventId 而标「不可回读」；主请求与摘要素材对同一消息的缩短结果逐字相同", why: "回读地址是模型从缩短结果回到真相源的唯一通道，假地址会让模型读到「当前会话没有此工具结果」", depth: "deep", scenarios: ["memory-l0-address-integrity"] },
     { id: "mm-24", feature: "审计落盘闭环", description: "审计条目只入队、由唯一 flush 入口在 lane 空闲时写入；失败条目保留并重试一次；槽关闭前 flush 且残留非空记 error；transform_context/provider_payload/provider_usage 三档快照在一轮 production 回合里各至少一条且释放槽后集合不变", why: "证据链的组成项不能在槽生命周期结束时静默消失，否则「请求发过什么」这件事在重启后不可查", depth: "deep", scenarios: ["memory-snapshot-audit-closure"] },
+    { id: "mm-25", feature: "摘要降级显式 decline", description: "宿主摘要内核失败时钩子返回 decline 而非抛出：/compact 报 failed 并在用户可见文案里给出原因；不提交 compaction 条目；回合路径写 deskpet.compaction_declined 审计条目", why: "上游通用英文摘要一旦提交就成为后续所有回合唯一的历史视图且不可回滚，宁可不压缩也不落违反协议的历史", depth: "deep", scenarios: ["memory-compaction-degrade-declines"] },
   ],
   rules: { minScenarios: 6, minDeepScenarios: 2, requireBoundary: true, requireErrorPath: true },
 }

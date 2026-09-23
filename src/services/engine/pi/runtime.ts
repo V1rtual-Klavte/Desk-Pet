@@ -6,7 +6,7 @@ import { contentText } from "@earendil-works/pi-ai"
 import type { AgentMessage, SettledAssistantMessage } from "@earendil-works/pi-agent-core"
 import type { Usage } from "@earendil-works/pi-ai"
 import type { Message, ThinkingEffort } from "@/services/agent/types"
-import type { ContextAllocation, ContextBlock, IngressEnvelope, InputSourceMark, PlanState, PlanStepRecord, PromptSnapshot, PromptTokenDrift, PromptTransform } from "@/services/engine/runtime"
+import type { CompactionAuditSink, ContextAllocation, ContextBlock, IngressEnvelope, InputSourceMark, PlanState, PlanStepRecord, PromptSnapshot, PromptTokenDrift, PromptTransform } from "@/services/engine/runtime"
 import { createMessageId } from "@/services/agent/types"
 import { MemoryService, recallMemory, planCheckpointStore } from "@/services/agent/memory"
 import type { StructuredSummary } from "@/services/agent/memory"
@@ -463,37 +463,50 @@ function createCompactionHook(options: {
   model: PiModel
   tools: readonly ToolDef[]
   onSummary?: (summary: StructuredSummary) => void
+  /** 宿主摘要内核失败（decline 原因）；调用方据此给出可见失败与审计。 */
+  audit?: CompactionAuditSink
+  onFailure?: (reason: string) => void
 }): NonNullable<HarnessRunHooks["beforeCompaction"]> {
   const retained = retainedToolNames(options.tools)
   const preserved = preservedToolNames(options.tools)
   return async ({ preparation, signal }) => {
-    // 全量都在保留窗口内时没有可安全摘要的覆盖范围：decline 让 Harness 原样收尾。
-    if (!preparation.messagesToSummarize.length && !preparation.turnPrefixMessages.length) return { decline: true }
-    // historyCompaction=retain 的调用配对必须保留原文：连续完整轮下不能把覆盖边界推进越过它，
-    // 宁可 decline（由宿主预算守卫报告上下文不足），也不默默丢掉未覆盖历史。
-    const retainedTool = findRetainedToolCall(preparation.messagesToSummarize, retained)
-      ?? findRetainedToolCall(preparation.turnPrefixMessages, retained)
-    if (retainedTool) {
-      log.warn("摘要范围覆盖了必须保留原文的工具调用，本轮不压缩:", retainedTool)
+    try {
+      // 全量都在保留窗口内时没有可安全摘要的覆盖范围：decline 让 Harness 原样收尾。
+      if (!preparation.messagesToSummarize.length && !preparation.turnPrefixMessages.length) return { decline: true }
+      // historyCompaction=retain 的调用配对必须保留原文：连续完整轮下不能把覆盖边界推进越过它，
+      // 宁可 decline（由宿主预算守卫报告上下文不足），也不默默丢掉未覆盖历史。
+      const retainedTool = findRetainedToolCall(preparation.messagesToSummarize, retained)
+        ?? findRetainedToolCall(preparation.turnPrefixMessages, retained)
+      if (retainedTool) {
+        log.warn("摘要范围覆盖了必须保留原文的工具调用，本轮不压缩:", retainedTool)
+        return { decline: true }
+      }
+      const outcome = await summarizeCompaction({
+        mode: options.mode,
+        messages: preparation.messagesToSummarize,
+        turnPrefixMessages: preparation.turnPrefixMessages,
+        previousSummary: preparation.previousSummary,
+        model: options.model,
+        signal,
+        preserveToolNames: preserved,
+      })
+      options.onSummary?.(outcome.summary)
+      return {
+        compaction: {
+          summary: outcome.text,
+          retainedTail: preparation.retainedTail,
+          tokensBefore: preparation.tokensBefore,
+          usage: outcome.usage,
+        },
+      }
+    } catch (error) {
+      // 显式 decline：钩子抛错会被上游记为 handler_error 后继续（回退通用英文摘要），
+      // 而那个摘要一旦提交就成为后续所有回合唯一的历史视图且不可回滚 —— 宁可不压缩。
+      const reason = formatError(error)
+      if (options.audit) options.audit.failure = reason
+      options.onFailure?.(reason)
+      log.error("摘要内核失败，本轮压缩 decline:", reason)
       return { decline: true }
-    }
-    const outcome = await summarizeCompaction({
-      mode: options.mode,
-      messages: preparation.messagesToSummarize,
-      turnPrefixMessages: preparation.turnPrefixMessages,
-      previousSummary: preparation.previousSummary,
-      model: options.model,
-      signal,
-      preserveToolNames: preserved,
-    })
-    options.onSummary?.(outcome.summary)
-    return {
-      compaction: {
-        summary: outcome.text,
-        retainedTail: preparation.retainedTail,
-        tokensBefore: preparation.tokensBefore,
-        usage: outcome.usage,
-      },
     }
   }
 }
@@ -568,6 +581,8 @@ function createTurnSpec(kernel: TurnKernel, options: {
 }): HarnessRunSpec {
   const state = kernel.state
   const toolsByName = new Map(kernel.tools.map(tool => [tool.name, tool]))
+  // 压缩审计槽：摘要内核的成败写在这里，由槽在 compaction_end 收口成 deskpet.* 条目。
+  const compactionAudit: CompactionAuditSink = {}
   let toolCallsUsed = 0
   const stripReply = createRuntimeDataStripHook({
     recordSettledReply: (raw, stripped) => kernel.recordSettledReply(raw, stripped),
@@ -618,7 +633,8 @@ function createTurnSpec(kernel: TurnKernel, options: {
       snapshotTasks: kernel.snapshotTasks,
       latestMessages: messages => { kernel.latestMessages = messages },
     }),
-    beforeCompaction: createCompactionHook({ mode: kernel.mode, model: kernel.model, tools: kernel.tools }),
+    beforeCompaction: createCompactionHook({ mode: kernel.mode, model: kernel.model, tools: kernel.tools, audit: compactionAudit }),
+    compactionAudit,
     beforeRequest: createRequestOptionsPatch(),
     afterResponse: (message, meta) => {
       publishRuntimeTrace(kernel.traceContext, "provider_response", {
@@ -1650,12 +1666,15 @@ export async function compactActiveSession(sessionId: string): Promise<ManualCom
     tools: [],
   }, card, pool)
   const state = createHarnessRunState()
+  // 压缩审计槽：宿主内核失败时给出可见原因（/compact 报 failed），并让槽写降级条目。
+  const compactionAudit: CompactionAuditSink = {}
   const outcome = await slot.compact({
     systemPrompt: context.systemPrompt,
     state,
     hooks: {
       // 手动压缩没有冻结的回合工具集，按当前注册表判定 retain 保护。
-      beforeCompaction: createCompactionHook({ mode, model, tools: getToolsForMode(mode), onSummary: summary => { intent = summary.intent } }),
+      beforeCompaction: createCompactionHook({ mode, model, tools: getToolsForMode(mode), onSummary: summary => { intent = summary.intent }, audit: compactionAudit }),
+      compactionAudit,
       beforeRequest: createRequestOptionsPatch(),
       // 续跑也走宿主的投影与剥离；工具结果投影按空工具集（安全回退，不开工具）。
       transformContext: createProjectionHook({
@@ -1665,11 +1684,14 @@ export async function compactActiveSession(sessionId: string): Promise<ManualCom
         state,
         // 结构操作没有回合身份：不落 PromptSnapshot，也没有 payload 观测的读者。
         captureSnapshot: async () => undefined,
+        snapshotTasks: [],
         latestMessages: () => {},
       }),
       afterResponse: createRuntimeDataStripHook({}),
     },
   })
+  // 宿主内核失败 → 明确失败并带上原因（用户看到「未压缩：<原因>」），不报「压缩完成」。
+  if (outcome.status === "declined" && compactionAudit.failure) return { status: "failed", error: compactionAudit.failure }
   return intent === undefined ? outcome : { ...outcome, intent }
 }
 

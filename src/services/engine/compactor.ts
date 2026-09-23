@@ -49,6 +49,8 @@ export interface CompactionSummaryOutcome {
   /** 结构化摘要本体；手动压缩的完成提示用它展示 intent。 */
   summary: StructuredSummary
   usage: Usage
+  /** 发给模型的摘要素材正文（T3.36 用它算 prompt_rewrite 的 inputHash）。 */
+  inputText: string
 }
 
 /** 生成一次结构化压缩摘要；失败抛错，由 Harness 按 handler_error 上报并可回退默认摘要。 */
@@ -89,7 +91,7 @@ export async function summarizeCompaction(input: CompactionSummaryInput): Promis
   const summary = parseStructuredSummary(response.text)
   if (!summary) throw new Error("摘要格式无效：未返回可校验的结构化 JSON")
   if (estimateValueTokens(summary) > budget.summaryMaxTokens) throw new Error("摘要超过预算上限")
-  return { text: formatStructuredSummary(summary), summary, usage: response.usage }
+  return { text: formatStructuredSummary(summary), summary, usage: response.usage, inputText: userText }
 }
 
 /**

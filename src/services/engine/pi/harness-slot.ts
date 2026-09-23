@@ -38,8 +38,8 @@ import type { HarnessToolRun } from "@/services/tool/pi/harness-tool-adapter"
 import { toAgentHarnessTools } from "@/services/tool/pi/harness-tool-adapter"
 import { setToolPermitLimit } from "@/services/tool/execution-permit"
 import { ContextBudgetError, contextBudget, toHarnessEstimateTokens } from "@/services/context"
-import { laneMessageText, messageRequestId, userInputMessage } from "@/services/engine/runtime"
-import type { InputSourceMark } from "@/services/engine/runtime"
+import { COMPACTION_DECLINED_ENTRY, laneMessageText, messageRequestId, userInputMessage } from "@/services/engine/runtime"
+import type { CompactionAuditSink, InputSourceMark } from "@/services/engine/runtime"
 import { conversationConfig, loopConfig } from "@/services/config"
 import { PI_LANE } from "@/services/session/repo"
 import { createLogger } from "@/services/logger"
@@ -108,13 +108,18 @@ export interface HarnessRunHooks {
   }) => Promise<{ messages?: AgentMessage[] } | undefined> | { messages?: AgentMessage[] } | undefined
   /**
    * 压缩决策钩子：返回自定义 CompactResult（宿主摘要内核）或 decline 跳过。
-   * 抛出异常由 Harness 记为 handler_error 并回退其默认摘要；不能在此静默丢覆盖。
+   * 摘要内核失败必须在钩子内转成 decline（宿主不落上游通用摘要）；`compactionAudit`
+   * 承载这次压缩的成败，由槽在 `compaction_end` 收口成审计条目。
    */
   beforeCompaction?: (input: {
     reason: "manual" | "threshold" | "overflow"
     preparation: CompactionPreparation
     signal?: AbortSignal
+    /** 上游 hook 调用带的运行身份（压缩请求归属用）。 */
+    runId: string
   }) => Promise<{ decline?: boolean; compaction?: CompactResult } | undefined> | { decline?: boolean; compaction?: CompactResult } | undefined
+  /** 本回合/本次结构操作的压缩审计槽：钩子工厂的产出写在这里，供 compaction_end 读。 */
+  compactionAudit?: CompactionAuditSink
   /** 逐请求 streamOptions 补丁（超时/请求头）；Harness 的 SDK 内层重试保持关闭。 */
   beforeRequest?: (input: {
     step: "assistant" | "deferred" | "compaction" | "branch_summary"
@@ -1384,7 +1389,7 @@ export class HarnessSlot {
         // 运行期用回合钩子；/compact 等手动压缩没有 activeRun，用本次下发的结构操作钩子。
         const host = this.hostSpec().hooks?.beforeCompaction
         if (!host) return undefined
-        return host({ reason: event.reason, preparation: event.preparation, signal: context.abortSignal })
+        return host({ reason: event.reason, preparation: event.preparation, signal: context.abortSignal, runId: event.runId })
       }),
       hooks.on("before_request", (event) => {
         const host = this.hostSpec().hooks?.beforeRequest
@@ -1480,6 +1485,16 @@ export class HarnessSlot {
         // 结算文案要回到本条判定（否则用户只看到上游的 decline 文案和兜底回复）。
         const run = this.activeRun
         if (run && event.reason === "overflow") run.spec.state.overflowRecoveryDeclined = event.status === "declined"
+        // 宿主摘要内核失败：压缩没落成的原因必须留下审计条目（只入队，由 flushAudit 落盘）。
+        const audit = run?.spec.hooks.compactionAudit ?? this.structuralHost?.hooks?.compactionAudit
+        if (event.status !== "completed" && audit?.failure) {
+          this.queueAuditEntry(COMPACTION_DECLINED_ENTRY, {
+            status: event.status,
+            reason: event.reason,
+            error: audit.failure,
+            endedAt: event.endedAt,
+          } as unknown as JsonValue)
+        }
       }),
       events.on("queue_update", (event) => {
         this.pendingQueues = event.queues
