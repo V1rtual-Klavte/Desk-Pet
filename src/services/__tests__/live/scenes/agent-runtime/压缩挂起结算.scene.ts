@@ -119,7 +119,7 @@ export const 压缩挂起结算: SceneDef = {
           if (ctx.output.reply.includes(NEXT_REPLY)) throw new Error("挂起结算把下一条脚本响应当成本次回复")
 
           // ② waitForIdle 有界返回：挂死路径会在这里一直等一个永不结算的操作。
-          const slot = harnessSlots.get(sessionId)
+          const slot = harnessSlots.ensure(sessionId)
           const idle = await bounded(slot.waitForIdle(), IDLE_BUDGET_MS)
           if (idle === undefined) {
             throw new Error(`waitForIdle 没有在 ${IDLE_BUDGET_MS}ms 内有界返回：挂死路径回归了`)

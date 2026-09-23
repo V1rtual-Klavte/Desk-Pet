@@ -420,8 +420,10 @@ function createTurnKernel(options: TurnKernelOptions): TurnKernel {
         // 只排队，不在此写入：本函数在 Harness hook / 事件处理器内被 await，
         // 那里直接写 lane 会与 drive 持有的命令锁循环等待（usage 事件必现死锁）。
         // 宿主在回合 drive 结束后统一 flush（HarnessSlot.flushAuditQueue）。
-        harnessSlots.get(options.sessionId)
-          .queueAuditEntry(PROMPT_SNAPSHOT_ENTRY, snapshot as unknown as import("@earendil-works/pi-agent-core").JsonValue)
+        // 读路径不得创建槽：没有槽时把快照挂在注册表上，下次开槽转交（peek + queueAuditWithoutSlot）。
+        const slot = harnessSlots.peek(options.sessionId)
+        if (slot) slot.queueAuditEntry(PROMPT_SNAPSHOT_ENTRY, snapshot as unknown as import("@earendil-works/pi-agent-core").JsonValue)
+        else harnessSlots.queueAuditWithoutSlot(options.sessionId, PROMPT_SNAPSHOT_ENTRY, snapshot as unknown as import("@earendil-works/pi-agent-core").JsonValue)
       }
     },
   }
@@ -707,7 +709,8 @@ export async function runPiAgentTurn(input: PiAgentTurnInput): Promise<PiAgentTu
     if (generation === undefined) throw new Error(`会话已有运行中的 Agent: ${turnSessionId}`)
     ownedGeneration = true
   }
-  const slot = harnessSlots.get(turnSessionId)
+  // 建用点：回合所有权需要槽存在（代际在 begin 时已确定）。
+  const slot = harnessSlots.ensure(turnSessionId)
   const runIsCurrent = () => harnessSlots.isCurrent(turnSessionId, generation)
   const assertCurrent = () => { if (!runIsCurrent()) throw new Error("回合已取消或运行代际已失效") }
   refreshVariablePool()
@@ -1280,7 +1283,7 @@ export async function resumePlan(sessionId: string, planId: string): Promise<PiA
     pushSystemMessage(busyMessage, sessionId)
     return undefined
   }
-  const slot = harnessSlots.get(sessionId)
+  const slot = harnessSlots.ensure(sessionId)
   harnessSlots.bindRun(sessionId, generation, { requestId })
   const planAbort = new AbortController()
   // 恢复没有主回合，但同样是一次真实的运行：界面按运行态通知显示停止入口，
@@ -1348,11 +1351,26 @@ async function settleMainTurn(args: {
   const { kernel, result, toolCallHistory } = args
   const turnSessionId = args.input.sessionId
   const state = kernel.state
-  const slot = harnessSlots.get(turnSessionId)
+  // 读路径：收尾只需要既有槽（谁创建谁释放），不得因为读一次状态把槽建出来。
+  const slot = harnessSlots.peek(turnSessionId)
+
+  /**
+   * 槽被并发释放（会话删除/重置）时收尾文案没有落点：如实记录并给用户可见提示，
+   * 不静默丢弃，也不谎报「已写入会话记录」。
+   */
+  const reportMissingSlot = (kind: string): void => {
+    log.error("回合收尾时运行槽已不存在，兜底回复未落盘:", turnSessionId)
+    reportError("PiRuntime", new Error("回合收尾时运行槽已不存在"), { kind, overlay: false })
+    pushSystemMessage("本次回复未能写入会话记录（运行槽已不存在），重启后不会保留", turnSessionId)
+  }
 
   const failTurn = async (message: string, kind: TurnFailure["kind"]): Promise<PiAgentTurnOutput> => {
     // 失败分类保留上游文案（decline 不改写成预算错误），只有展示文案回到硬预算判定。
     const reply = turnFailureReply(message, state)
+    if (!slot) {
+      reportMissingSlot("兜底回复未落盘")
+      return { reply, toolCallHistory, retriesUsed: state.retriesUsed, failure: { kind, message } }
+    }
     let persistFailed = false
     await slot.appendAssistantMessage(reply).catch(error => {
       persistFailed = true
@@ -1372,6 +1390,10 @@ async function settleMainTurn(args: {
     // §8.7.3：中断运行默认暂停；继续/丢弃入口见 getInterruptedRun / continueInterruptedRun。
     // 产品文案直接说明下一步，不套兜底回复。
     const reply = "上次运行中断啦，请先选择继续或丢弃这次未完成的运行～"
+    if (!slot) {
+      reportMissingSlot("中断提示未落盘")
+      return { reply, toolCallHistory, retriesUsed: 0, failure: { kind: "unknown", message: reply } }
+    }
     let persistFailed = false
     await slot.appendAssistantMessage(reply).catch(error => {
       persistFailed = true
@@ -1440,7 +1462,7 @@ export interface InterruptedRunInfo {
 
 /** 打开会话槽并读取「上次运行中断」状态；无中断返回 undefined。 */
 export async function getInterruptedRun(sessionId: string): Promise<InterruptedRunInfo | undefined> {
-  const slot = harnessSlots.get(sessionId)
+  const slot = harnessSlots.ensure(sessionId)
   await slot.open()
   const interrupted = slot.getInterrupted()
   return interrupted ? { sessionId, ...interrupted } : undefined
@@ -1463,7 +1485,7 @@ const RECOVERY_INPUT_MARK: InputSourceMark = {
  * 不重放未知副作用由 Harness 的恢复协议保证（effect gate + 工具 memo）。
  */
 export async function continueInterruptedRun(sessionId: string): Promise<PiAgentTurnOutput | undefined> {
-  const slot = harnessSlots.get(sessionId)
+  const slot = harnessSlots.ensure(sessionId)
   await slot.open()
   if (!slot.getInterrupted()) return undefined
   const mode = generalConfig.assistantMode ? "assistant" as const : "pet" as const
@@ -1518,7 +1540,11 @@ export async function continueInterruptedRun(sessionId: string): Promise<PiAgent
 
 /** 丢弃上次中断的运行：按 aborted 收尾，不重放未知副作用，并归还未消费消息。 */
 export async function discardInterruptedRun(sessionId: string): Promise<{ steer: string[]; followUp: string[] } | undefined> {
-  return harnessSlots.get(sessionId).discardInterrupted()
+  // 读路径：没有槽 = 没有中断操作，如实返回 undefined（UI 按「没有可丢弃的中断运行」提示），
+  // 不为此创建槽、也不谎报「已丢弃」。
+  const slot = harnessSlots.peek(sessionId)
+  if (!slot) return undefined
+  return await slot.discardInterrupted()
 }
 
 // ── 手动压缩入口（/compact） ──
@@ -1539,7 +1565,7 @@ export async function compactActiveSession(sessionId: string): Promise<ManualCom
   const mode = generalConfig.assistantMode ? "assistant" as const : "pet" as const
   const model = resolvePiTurnModel()
   let intent: string | undefined
-  const slot = harnessSlots.get(sessionId)
+  const slot = harnessSlots.ensure(sessionId)
   // 与 continueInterruptedRun 同形：没有回合上下文时用当前 Card/变量重建只读前缀，
   // 不静默改 Card。tools 传空集：结构操作不向模型宣告它不能用的工具。
   const currentCard = getActiveCard()

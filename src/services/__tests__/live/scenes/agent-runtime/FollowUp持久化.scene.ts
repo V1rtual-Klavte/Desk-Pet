@@ -36,7 +36,7 @@ export const FollowUp持久化: SceneDef = {
     blocking = registerBlockingTool(TOOL_NAME)
     const firstTurn = sendMessage("开始执行第一个任务。")
     await blocking.started
-    const slot = harnessSlots.get(sessionId)
+    const slot = harnessSlots.ensure(sessionId)
     // 工具执行期属于 streaming：此刻的补充输入必须按 steer 投递，不能冒充 followUp。
     streamingMode = slot.deliveryMode()
     if (streamingMode !== "steer") throw new Error(`工具期投递模式应为 steer，实际 ${String(streamingMode)}`)

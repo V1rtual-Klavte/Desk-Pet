@@ -354,8 +354,17 @@ export class HarnessSlot {
       try {
         this.session = await acquirePiSession(this.sessionId)
       } catch (error) {
-        log.warn("会话层没有该会话句柄，按 id 补建:", this.sessionId, formatError(error))
-        this.session = await (await getPiSessionRepo()).create({ id: this.sessionId }, ctx)
+        // 「仓库里不存在该会话」与「句柄缓存缺失」必须分开：对前者按 id 补建会把已删除的会话复活
+        // （空槽的读也就不再伪造会话文件）。
+        const repo = await getPiSessionRepo()
+        const known = (await repo.list(undefined, BACKGROUND_CONTEXT)).some(item => item.id === this.sessionId)
+        if (!known) {
+          log.error("会话在仓库中不存在，拒绝按 id 伪造会话文件:", this.sessionId, formatError(error))
+          throw error
+        }
+        // 会话仍在仓库里：重走 session 层的打开入口（不新建，句柄仍由该层单一持有）。
+        log.warn("会话句柄缺失，按仓库元数据重新打开:", this.sessionId, formatError(error))
+        this.session = await acquirePiSession(this.sessionId)
       }
     }
     const compaction = this.compactionSettings(resolvePiTurnModel())
@@ -1374,12 +1383,21 @@ export class HarnessSlots {
   private readonly slots = new Map<string, HarnessSlot>()
   /** 已分配过的最大代际：新槽（含释放重建）从这里继续，保证单调不回退。 */
   private generationSeed = 0
+  /** 无槽期间排队的审计条目（按 sessionId）：下次 ensure() 转交给新槽，不丢证据。 */
+  private readonly orphanAudits = new Map<string, Array<{ customType: string; data: JsonValue }>>()
 
-  get(sessionId: string): HarnessSlot {
+  /** 唯一的创建入口；读路径一律用 peek()，不得为了读一次状态而把槽建出来。 */
+  ensure(sessionId: string): HarnessSlot {
     let slot = this.slots.get(sessionId)
     if (!slot) {
       slot = new HarnessSlot(sessionId, { generationSeed: this.generationSeed })
       this.slots.set(sessionId, slot)
+      // 无槽期间挂起的审计条目在这里转交：证据不因槽被释放而丢。
+      const orphans = this.orphanAudits.get(sessionId)
+      if (orphans) {
+        this.orphanAudits.delete(sessionId)
+        for (const item of orphans) slot.queueAuditEntry(item.customType, item.data)
+      }
     }
     this.generationSeed = Math.max(this.generationSeed, slot.generation)
     return slot
@@ -1389,8 +1407,15 @@ export class HarnessSlots {
     return this.slots.get(sessionId)
   }
 
+  /** 无槽时把证据条目挂在注册表上（按 sessionId），下次 ensure() 转交给新槽；不丢证据。 */
+  queueAuditWithoutSlot(sessionId: string, customType: string, data: JsonValue): void {
+    const pending = this.orphanAudits.get(sessionId) ?? []
+    pending.push({ customType, data })
+    this.orphanAudits.set(sessionId, pending)
+  }
+
   begin(sessionId: string, identity?: { requestId: string; turnId?: string }): number | undefined {
-    const generation = this.get(sessionId).begin(identity)
+    const generation = this.ensure(sessionId).begin(identity)
     if (generation !== undefined) this.generationSeed = Math.max(this.generationSeed, generation)
     return generation
   }
@@ -1449,7 +1474,7 @@ export class HarnessSlots {
   }
 
   drain(sessionId: string, worker: (generation: number) => Promise<void>): Promise<void> {
-    return this.get(sessionId).startDrain(worker)
+    return this.ensure(sessionId).startDrain(worker)
   }
 
   isDrainCurrent(sessionId: string, generation: number): boolean {
@@ -1497,6 +1522,12 @@ export class HarnessSlots {
   async reset(): Promise<void> {
     const slots = [...this.slots.values()]
     this.slots.clear()
+    // 未转交的孤儿审计条目在 reset 时清空：报出条数，不静默当它们已落盘。
+    if (this.orphanAudits.size > 0) {
+      const pending = [...this.orphanAudits.values()].reduce((sum, items) => sum + items.length, 0)
+      log.error("重置运行槽时有审计条目未落盘，已丢弃:", { sessions: this.orphanAudits.size, pending })
+      this.orphanAudits.clear()
+    }
     await Promise.allSettled(slots.map(slot => slot.close()))
   }
 }

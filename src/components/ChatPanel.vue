@@ -116,8 +116,13 @@ async function resolveInterrupted(action: "continue" | "discard") {
       }
     } else {
       const returned = await discardInterruptedRun(sessionId);
-      const paused = (returned?.steer.length ?? 0) + (returned?.followUp.length ?? 0);
-      showDeliveryNote(paused > 0 ? `已丢弃中断运行；${paused} 条未处理输入已暂停` : "已丢弃中断运行");
+      if (!returned) {
+        // 没有槽 = 没有可丢弃的中断运行：如实提示，不谎报「已丢弃」。
+        showDeliveryNote("没有可丢弃的中断运行");
+      } else {
+        const paused = returned.steer.length + returned.followUp.length;
+        showDeliveryNote(paused > 0 ? `已丢弃中断运行；${paused} 条未处理输入已暂停` : "已丢弃中断运行");
+      }
     }
   } catch (error) {
     log.warn("处理中断运行失败:", formatError(error));
