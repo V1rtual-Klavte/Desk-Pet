@@ -1,5 +1,8 @@
 // ==========================================
 // 工具系统 —— 统一导出
+//
+// 跨域消费者只走本 barrel，不深入模块内部文件；唯一例外是 `getToolHandler`
+// （执行函数只给 router / registry，见 policy.ts），它不在这里。
 // ==========================================
 
 // ── 类型 ──
@@ -11,9 +14,13 @@ export type {
 export { toToolDeclaration, TOOL_POLICY_VERSION } from "./types"
 
 // ── 策略：唯一构造入口与派生判定 ──
-export { defineTool, validateToolPolicy, toolPolicyFingerprint, toolPolicyHash, retainedToolNames, findRetainedToolCall } from "./policy"
+export { defineTool, validateToolPolicy, toolPolicyFingerprint, toolPolicyHash, retainedToolNames, preservedToolNames, findRetainedToolCall } from "./policy"
 // getToolHandler 不在这里：执行函数只给 router / registry（见 policy.ts）。
 export type { ToolHandler } from "./policy"
+
+// ── Harness 适配（引擎域把冻结的工具集转成 Harness 原生工具）──
+export { toAgentHarnessTools } from "./pi/harness-tool-adapter"
+export type { HarnessToolRun } from "./pi/harness-tool-adapter"
 
 // ── 执行许可（Rust 应用级所有者）──
 export {

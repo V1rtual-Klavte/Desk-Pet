@@ -33,10 +33,11 @@ import type {
 import { contentText } from "@earendil-works/pi-ai"
 import type { AssistantMessage, Model, RetryPolicy, ToolResultMessage, Usage } from "@earendil-works/pi-ai"
 import type { ThinkingEffort } from "@/services/agent/types"
-import type { ToolDef } from "@/services/tool/types"
-import type { HarnessToolRun } from "@/services/tool/pi/harness-tool-adapter"
-import { toAgentHarnessTools } from "@/services/tool/pi/harness-tool-adapter"
-import { flushPendingReleases, retryBorrowerAttachIfPending, setToolPermitLimit } from "@/services/tool/execution-permit"
+import {
+  toAgentHarnessTools,
+  flushPendingReleases, retryBorrowerAttachIfPending, setToolPermitLimit,
+} from "@/services/tool"
+import type { HarnessToolRun, ToolDef } from "@/services/tool"
 import { ContextBudgetError, contextBudget, toHarnessEstimateTokens } from "@/services/context"
 import { COMPACTION_DECLINED_ENTRY, PROMPT_REWRITE_ENTRY, laneMessageText, messageRequestId, userInputMessage } from "@/services/engine/runtime"
 import type { CompactionAuditSink, InputSourceMark } from "@/services/engine/runtime"
@@ -864,6 +865,35 @@ export class HarnessSlot {
 
   getInterrupted(): HarnessSlotSnapshot["interrupted"] {
     return this.interruptedInfo
+  }
+
+  /**
+   * 上次中断运行里尚未结算的工具调用名（按出现顺序去重）。读不到返回 undefined（调用方按「未知」处理）。
+   *
+   * 待重放调用取自 lane 快照的 `operation.runningTools`：上游在重开会话时按持久化的操作状态
+   * 重建它（`batch.calls` 里 `effect_pending` 的项就是 `status: "running"`，`toolName` 即调用名；
+   * 已 staged 但未消费的结果是 `settled`，续跑会直接用结果、不重放）。结论已按
+   * `dist/harness/runtime/lane.js` 的 captureLaneSnapshot 核实，不再从会话条目另推一份。
+   */
+  async pendingInterruptedToolNames(): Promise<string[] | undefined> {
+    await this.open()
+    if (!this.interruptedInfo || !this.lane) return undefined
+    try {
+      const handle = await this.lane.watch(TODO_CONTEXT)
+      try {
+        const operation = handle.snapshot.operation
+        if (!operation || operation.id !== this.interruptedInfo.operationId) return undefined
+        return [...new Set(operation.runningTools
+          .filter(tool => tool.status === "running")
+          .map(tool => tool.toolName))]
+      } finally {
+        // 只借初值：watch 句柄不能留在槽上（读一次就还，与 readQueuesOnce 同一用法）。
+        handle.unsubscribe()
+      }
+    } catch (error) {
+      log.warn("读取中断运行的工具明细失败，按未知处理:", { sessionId: this.sessionId }, formatError(error))
+      return undefined
+    }
   }
 
   /** 继续：驱动上次未完成的操作用户可见的「继续」入口。 */

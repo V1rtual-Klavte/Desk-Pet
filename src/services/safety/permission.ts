@@ -2,12 +2,12 @@
 // PermissionKernel —— 统一权限裁决与有身份的确认生命周期
 // ==========================================
 
+import { toolPolicyFingerprint } from "@/services/tool"
 import type {
   EffectClass, PermissionDecision, ToolContext, ToolDef,
-} from "@/services/tool/types"
+} from "@/services/tool"
 import { safetyConfig } from "@/services/config"
 import { getEffectiveSafetyMode } from "@/services/debug"
-import { toolPolicyFingerprint } from "@/services/tool/policy"
 import { createLogger } from "@/services/logger"
 import { redactText, sha256Text, stableSerialize } from "@/services/engine/runtime"
 import { requestPermissionConfirm, cancelPermissionConfirm } from "./confirm"

@@ -28,11 +28,11 @@ import { authorizeToolExecution, freezePermissionPolicy, invalidatePermissionSco
 import type { PermissionPolicySnapshot } from "@/services/safety"
 import { getActiveSessionId, pushMessageFor } from "@/services/session/store"
 import { getSessionCreatedAt, isAssistantEntryVisible, pushSystemMessage } from "@/services/session"
-import { getToolsForMode } from "@/services/tool/registry"
-import { SESSION_TRANSCRIPT_TOOL, toToolDeclaration, createTranscriptTool } from "@/services/tool"
-import { findRetainedToolCall, preservedToolNames, retainedToolNames, toolPolicyHash } from "@/services/tool/policy"
-import type { HarnessToolRun } from "@/services/tool/pi/harness-tool-adapter"
-import type { ToolDef } from "@/services/tool/types"
+import {
+  SESSION_TRANSCRIPT_TOOL, toToolDeclaration, createTranscriptTool,
+  getToolsForMode, findRetainedToolCall, preservedToolNames, retainedToolNames, toolPolicyHash,
+} from "@/services/tool"
+import type { HarnessToolRun, ToolDef } from "@/services/tool"
 import { generalConfig, loopConfig, planConfig } from "@/services/config"
 import { emit } from "@tauri-apps/api/event"
 import { resolvePiTurnModel } from "./model-gateway"
@@ -900,8 +900,9 @@ export async function runPiAgentTurn(input: PiAgentTurnInput): Promise<PiAgentTu
   // 事件只是通知通道，UI 不因此持有第二份运行状态。
   void emitUiEvent("deskpet-run-state", { sessionId: turnSessionId, running: true })
   assertCurrent()
-  const { prepareConversationCapabilities } = await import("@/services/init")
-  await prepareConversationCapabilities(mode, requestId)
+  const { prepareRunCapabilities } = await import("@/services/init")
+  // 主回合不使用返回的不可用名单：借用失败已由各自的工具报告；这里只保留取消守卫语义。
+  await prepareRunCapabilities(mode, requestId, assertCurrent)
   assertCurrent()
   const frozenTools: ToolDef[] = isActiveMessage ? [] : [...getToolsForMode(mode)]
   // 工具结果回读：请求投影里标注的 eventId 就是 Harness 条目 id，按条目分页读取。
@@ -1701,6 +1702,14 @@ const RECOVERY_INPUT_MARK: InputSourceMark = {
 }
 
 /**
+ * 恢复运行的 MCP 借用身份：中断运行原来的借用身份（旧 requestId）已随进程/旧回合丢失，
+ * 不能拿它归还；续跑按会话确定性借用，收尾按同一 owner 释放（与主回合的 requestId 同口径）。
+ */
+function resumeOwner(sessionId: string): string {
+  return `resume-${sessionId}`
+}
+
+/**
  * 继续上次中断的运行：用当前冻结上下文（Card/工具/预算）驱动未完成的操作。
  * 不重放未知副作用由 Harness 的恢复协议保证（effect gate + 工具 memo）。
  */
@@ -1718,6 +1727,24 @@ export async function continueInterruptedRun(sessionId: string): Promise<PiAgent
   if (generation === undefined) throw new Error(`会话已有运行中的 Agent: ${sessionId}`)
   const toolCallHistory: PiAgentTurnOutput["toolCallHistory"] = []
   try {
+    // 恢复路径与主回合走同一个能力准备入口（不再绕过 MCP / Skill 准备）：中断期间能力可能
+    // 已经漂移（模式切换、服务器不可用），续跑前的准备结果就是本次运行的真实能力面。
+    const { prepareRunCapabilities } = await import("@/services/init")
+    const capabilities = await prepareRunCapabilities(mode, resumeOwner(sessionId), () => harnessSlots.isCurrent(sessionId, generation))
+    // 待重放工具名与不可用 MCP 的交集：有交集就不能继续 —— 重放会失败成上游的通用文案，
+    // 这里给用户一条明确原因（不落「Tool … is unavailable」），也不假装续跑成功。
+    const pendingTools = await slot.pendingInterruptedToolNames()
+    const unavailable = capabilities.unavailableMcp
+    const blocked = pendingTools?.filter(name =>
+      name.startsWith("mcp_") && unavailable.some(server => name.startsWith(`mcp_${server}_`))) ?? []
+    if (blocked.length > 0) {
+      const servers = [...new Set(blocked.map(name => unavailable.find(server => name.startsWith(`mcp_${server}_`))!))]
+      const reply = `上次运行的 MCP 服务器 ${servers.join("、")} 不可用，继续将无法重放其工具调用。`
+      log.error("恢复所需能力不可用:", { sessionId, servers, blocked })
+      await slot.appendAssistantMessage(reply)
+      // failure.kind 用 "unknown"：能力不足失败的分类待 HN-03 的 FailureKind 落地后复核。
+      return { reply, toolCallHistory: [], retriesUsed: 0, failure: { kind: "unknown", message: reply } }
+    }
     const currentCard = getActiveCard()
     const card = currentCard ? JSON.parse(JSON.stringify(currentCard)) as typeof currentCard : null
     const pool = getPoolSnapshot()
@@ -1754,6 +1781,9 @@ export async function continueInterruptedRun(sessionId: string): Promise<PiAgent
     return await settleMainTurn({ input: { sessionId, userText: "继续", userPrompt: recoveryInput, unansweredCount: 0 }, kernel, result, toolCallHistory })
   } finally {
     harnessSlots.end(sessionId, generation)
+    // 恢复路径借用过能力，收尾按同一 owner 释放（与主回合的 requestId 释放同一口径）。
+    const { releaseMcpOwner } = await import("@/services/tool")
+    await releaseMcpOwner(resumeOwner(sessionId))
   }
 }
 

@@ -88,8 +88,8 @@ export type {
   HarnessStructuralHost,
 } from "./harness-slot"
 
-export { toAgentHarnessTools } from "@/services/tool/pi/harness-tool-adapter"
-export type { HarnessToolRun } from "@/services/tool/pi/harness-tool-adapter"
+export { toAgentHarnessTools } from "@/services/tool"
+export type { HarnessToolRun } from "@/services/tool"
 
 export {
   MAX_PROVIDER_RESPONSE_BYTES,
