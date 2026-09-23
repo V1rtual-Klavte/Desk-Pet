@@ -444,8 +444,9 @@ function createTurnKernel(options: TurnKernelOptions): TurnKernel {
       if (options.persistSnapshots && options.sessionId) {
         // 只排队，不在此写入：本函数在 Harness hook / 事件处理器内被 await，
         // 那里直接写 lane 会与 drive 持有的命令锁循环等待（usage 事件必现死锁）。
-        // 宿主在回合 drive 结束后统一 flush（HarnessSlot.flushAuditQueue）。
-        // 读路径不得创建槽：没有槽时把快照挂在注册表上，下次开槽转交（peek + queueAuditWithoutSlot）。
+        // 宿主在回合 drive 结束后统一 flush（HarnessSlot.flushAudit）。
+        // 读路径不得创建槽（get() 会建槽并可能复活已删除的会话）：没有槽时把快照挂在
+        // 注册表上，下次开槽转交（peek + queueAuditWithoutSlot），不丢证据。
         const slot = harnessSlots.peek(options.sessionId)
         if (slot) slot.queueAuditEntry(PROMPT_SNAPSHOT_ENTRY, snapshot as unknown as import("@earendil-works/pi-agent-core").JsonValue)
         else harnessSlots.queueAuditWithoutSlot(options.sessionId, PROMPT_SNAPSHOT_ENTRY, snapshot as unknown as import("@earendil-works/pi-agent-core").JsonValue)
@@ -517,6 +518,7 @@ function createProjectionHook(args: {
   model: PiModel
   state: HarnessRunState
   captureSnapshot: TurnKernel["captureSnapshot"]
+  snapshotTasks: TurnKernel["snapshotTasks"]
   latestMessages: (messages: AgentMessage[]) => void
 }): NonNullable<HarnessRunHooks["transformContext"]> {
   const tools = [...args.toolsByName.values()]
@@ -532,7 +534,10 @@ function createProjectionHook(args: {
       if (used > budget.hardInputLimit) {
         args.state.contextError = new ContextBudgetError(used, budget.hardInputLimit)
       }
-      void args.captureSnapshot("transform_context", prepared, []).catch(error => log.warn("PromptSnapshot 采集失败", formatError(error)))
+      // 入队等待回收（回合收尾的 Promise.allSettled）：这是从 transform_context 拿到的
+      // 请求视图证据，此前悬空到进程结束都没人 await。
+      args.snapshotTasks.push(args.captureSnapshot("transform_context", prepared, [])
+        .catch(error => log.error("transform_context 快照采集失败:", formatError(error))))
     } catch (error) {
       args.state.contextError ??= error
     }
@@ -610,6 +615,7 @@ function createTurnSpec(kernel: TurnKernel, options: {
       model: kernel.model,
       state,
       captureSnapshot: kernel.captureSnapshot,
+      snapshotTasks: kernel.snapshotTasks,
       latestMessages: messages => { kernel.latestMessages = messages },
     }),
     beforeCompaction: createCompactionHook({ mode: kernel.mode, model: kernel.model, tools: kernel.tools }),
@@ -636,7 +642,7 @@ function createTurnSpec(kernel: TurnKernel, options: {
             redactions: safePayload.redactions,
           })
         })
-        .catch(() => undefined)
+        .catch(error => log.error("provider_payload 快照采集失败:", formatError(error)))
       kernel.snapshotTasks.push(task)
     },
   }
@@ -707,7 +713,7 @@ function createTurnSinks(kernel: TurnKernel): HarnessRunSinks {
       recordModelUsage("main", row.usage)
       // 先采集带 usage 的快照：估算偏差在这条返回里给出，trace 与快照带的是同一个值。
       const drift = await kernel.captureSnapshot("provider_usage", kernel.latestMessages, [], row.usage)
-        .catch(error => { log.warn("usage 快照写入失败", formatError(error)); return undefined })
+        .catch(error => { log.error("responded 证据写入失败:", formatError(error)); return undefined })
       publishRuntimeTrace(kernel.traceContext, "provider_usage", {
         inputTokens: row.usage.input,
         outputTokens: row.usage.output,
@@ -907,6 +913,9 @@ export async function runPiAgentTurn(input: PiAgentTurnInput): Promise<PiAgentTu
   const result = await slot.driveAdmitted(spec, admitted)
   await slot.waitForIdle()
   await Promise.allSettled(kernel.snapshotTasks)
+  // 快照任务在 execute 的 finally flush 之后才完成：这里补一次唯一 flush 入口，
+  // 保证本轮证据（transform_context / provider_payload / provider_usage）在结算前已入队并落盘。
+  await slot.flushAudit()
   return settleMainTurn({ input, kernel, result, toolCallHistory })
   } catch (error) {
     // 准入之后、驱动之前失败（计划段抛错、断言失效、装配失败）：已提交的输入条目保留在会话里

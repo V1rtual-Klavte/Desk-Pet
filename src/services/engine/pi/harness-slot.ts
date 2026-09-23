@@ -647,6 +647,9 @@ export class HarnessSlot {
     }
     for (const unsubscribe of this.unsubscribes.splice(0)) unsubscribe()
     this.clearTimer()
+    // 关闭前必须 flush：清空 lane 之后排队中的审计条目就没有落盘通道了（迟到快照的兜底）。
+    await this.flushAudit()
+    if (this.auditPending.length) log.error("槽关闭前仍有审计条目未写入:", { sessionId: this.sessionId, pending: this.auditPending.length })
     const harness = this.harness
     this.harness = undefined
     this.lane = undefined
@@ -656,14 +659,15 @@ export class HarnessSlot {
       // harness.close 会关闭会话句柄；随后让 session 层缓存同步释放，避免留下已关闭句柄。
       await harness.close(TODO_CONTEXT)
     } catch (error) {
-      log.warn("Harness 关闭失败", formatError(error))
+      // 句柄/订阅泄漏是「低内存」要守的点：关闭失败不能只留 warn。
+      log.error("Harness 关闭失败", formatError(error))
     }
     if (!this.transient) {
       try {
         const { releasePiSession } = await import("@/services/session/repo")
         await releasePiSession(this.sessionId)
       } catch (error) {
-        log.warn("会话句柄释放失败:", this.sessionId, formatError(error))
+        log.error("会话句柄释放失败:", this.sessionId, formatError(error))
       }
     }
   }
@@ -942,6 +946,8 @@ export class HarnessSlot {
       return { status: "failed", error: formatError(error) }
     } finally {
       this.structuralHost = undefined
+      // 手动压缩不是 execute()：没有别的 flush 点，审计条目（含压缩续跑的收口条目）在这里落盘。
+      await this.flushAudit()
     }
   }
 
@@ -1099,29 +1105,43 @@ export class HarnessSlot {
   }
 
   /**
-   * 排队一条审计条目（customType deskpet.*），等本回 drive 结束后由宿主统一写入。
+   * 排队一条审计条目（customType deskpet.*）。只入队：落盘统一由 flushAudit() 在 lane 空闲时完成。
    *
    * 不能在 Harness 的 hook / 事件处理器里直接 await lane 写入：那些回调运行在 drive 内，
    * drive 提交阶段持有 lane 命令锁，而 drive 又在 await 回调返回，会永久循环等待。
-   * 也不能交给 lane.runWhenIdle 兜底：那条路径与 waitForIdle 争抢 idleOwner，会让回合收尾悬空。
+   * 也不能交给 lane.runWhenIdle 兜底：那条路径与 waitForIdle 争抢 idleOwner，会让回合收尾悬空；
+   * 机会式「入队即落盘」同理不可靠 —— 没有在飞回合时 lane 未必空闲（结构操作），
+   * 而一次性快照（completePiText）之后可能再无 run。
    */
   queueAuditEntry(customType: string, data: JsonValue): void {
     this.auditPending.push({ customType, data })
-    // 没有在飞回合（一次性调用、子代理快照）时 lane 本就空闲，立即写入。
-    if (!this.isRunning()) void this.flushAuditQueue()
   }
 
-  /** 写入排队的审计条目；只在 lane 空闲时调用。失败只记录，不影响回合结算。 */
-  private async flushAuditQueue(): Promise<void> {
+  /** 唯一的 flush 入口。失败条目不丢弃：重试一次后仍失败就保留在本队列。 */
+  async flushAudit(): Promise<void> {
     const lane = this.lane
     if (!lane || !this.auditPending.length) return
-    const queued = this.auditPending.splice(0, this.auditPending.length)
-    for (const item of queued) {
-      try {
-        await lane.appendCustomEntry(item.customType, item.data, TODO_CONTEXT)
-      } catch (error) {
-        log.warn("审计条目写入失败:", item.customType, formatError(error))
-      }
+    const queue = this.auditPending.splice(0, this.auditPending.length)
+    const failed: typeof queue = []
+    for (const item of queue) {
+      if (await this.writeAuditEntry(lane, item)) continue
+      if (await this.writeAuditEntry(lane, item)) continue   // 有界重试一次
+      failed.push(item)
+    }
+    if (failed.length) {
+      this.auditPending.unshift(...failed)
+      log.error("审计条目写入失败，保留待下次 flush:", { sessionId: this.sessionId, pending: this.auditPending.length })
+    }
+  }
+
+  /** 写一条审计条目；成功返回 true，失败只 warn（保留由 flushAudit 决定）。 */
+  private async writeAuditEntry(lane: AgentLane, item: { customType: string; data: JsonValue }): Promise<boolean> {
+    try {
+      await lane.appendCustomEntry(item.customType, item.data, TODO_CONTEXT)
+      return true
+    } catch (error) {
+      log.warn("审计条目写入失败:", { sessionId: this.sessionId, customType: item.customType }, formatError(error))
+      return false
     }
   }
 
@@ -1238,7 +1258,7 @@ export class HarnessSlot {
     } finally {
       this.clearTimer()
       // drive 已结束、lane 空闲，这里才是写审计条目的安全点（hook 内写入必死锁）。
-      await this.flushAuditQueue()
+      await this.flushAudit()
       // 运行收尾（含中止/失败）必须结束瞬时流式展示，不能让半截正文悬在 UI 上。
       this.endAssistantStream()
       this.activeRun = undefined
@@ -1534,6 +1554,11 @@ export class HarnessSlots {
 
   peek(sessionId: string): HarnessSlot | undefined {
     return this.slots.get(sessionId)
+  }
+
+  /** 唯一 flush 入口的两级转发：没有槽时是 no-op（无槽期间条目挂在 orphanAudits 上）。 */
+  async flushAudit(sessionId: string): Promise<void> {
+    await this.peek(sessionId)?.flushAudit()
   }
 
   /** 无槽时把证据条目挂在注册表上（按 sessionId），下次 ensure() 转交给新槽；不丢证据。 */
