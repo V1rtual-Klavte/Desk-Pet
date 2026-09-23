@@ -4,6 +4,7 @@
 
 import { invoke } from "@tauri-apps/api/core"
 import { createLogger } from "@/services/logger"
+import { formatError } from "@/services/error"
 import { runtimePath } from "@/services/paths"
 
 const log = createLogger("MemoryIO")
