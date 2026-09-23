@@ -151,7 +151,12 @@ export interface HarnessRunSinks {
   onTurnStart?: () => void
   /** 流式正文增量（只含 text_delta 且已去掉 RUNTIME_DATA 起止后的内容）；只更新瞬时展示。 */
   onAssistantDelta?: (delta: string) => void
-  /** 当前 assistant 消息的流式缓冲结束（message_end / 运行收尾）；瞬时展示据此清空。 */
+  /**
+   * 当前 assistant 消息的流式缓冲结束（message_end / 新消息 start 帧 / 运行收尾）。
+   *
+   * 每条 assistant 消息边界都会调用一次，**含没有任何可见增量的消息**：实现方必须幂等，
+   * 并在这里清空过滤状态（只清「没有增量就不上报」会让过滤器永久停在停止态）。
+   */
   onAssistantStreamEnd?: () => void
   onAssistantMessage?: (message: AssistantMessage, entryId: string | undefined) => void | Promise<void>
   onToolResultMessage?: (message: ToolResultMessage, entryId: string | undefined) => void | Promise<void>
@@ -355,8 +360,6 @@ export class HarnessSlot {
   private followUpMode: "all" | "one-at-a-time" = "one-at-a-time"
   /** 已下发给许可所有者的共享读上限；未下发过时为 undefined，首次 run 必定对齐。 */
   private toolPermitLimit?: number
-  /** 正在流式输出的 assistant 消息是否已经产生过展示增量。 */
-  private streamActive = false
   /** 最近一次 queue_update 的 lane 队列快照：用于核对「已投递但未消费」的输入。 */
   private pendingQueues: LaneQueuedItem[] = []
   /** pendingQueues 是否已经拿到初值（开槽时播种，见 seedQueuedMirror）。 */
@@ -1398,14 +1401,18 @@ export class HarnessSlot {
   /** 转发一条可展示的正文增量；只更新瞬时展示（§6），不落盘、不触发副作用。 */
   private publishAssistantDelta(delta: string): void {
     if (!delta) return
-    this.streamActive = true
     this.activeRun?.spec.sinks?.onAssistantDelta?.(delta)
   }
 
-  /** 结束当前 assistant 消息的瞬时展示；幂等，没有展示过增量时不上报。 */
+  /**
+   * 结束当前 assistant 消息的瞬时展示。
+   *
+   * **每条消息边界都会调用**（含没有任何可见增量的消息）：消费侧（runtime.ts 的
+   * streamFilter）只在这里重置 RUNTIME_DATA 过滤器，早退会让「以 <RUNTIME_DATA>
+   * 开头的消息」把过滤器永久停在 stopped，同回合后续消息的正文全部不再展示。
+   * 实现方必须幂等：没有增量时清空一个空缓冲。
+   */
   private endAssistantStream(): void {
-    if (!this.streamActive) return
-    this.streamActive = false
     this.activeRun?.spec.sinks?.onAssistantStreamEnd?.()
   }
 
