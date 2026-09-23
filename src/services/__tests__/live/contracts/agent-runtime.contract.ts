@@ -134,6 +134,14 @@ export const agentRuntimeContract: ModuleContract = {
       scenarios: ["runtime-stop-no-new-tool-end"],
     },
     {
+      id: "ar-18",
+      feature: "生成级重试策略按运行同步",
+      description: "改 ai.loop.maxRetry 后，同一次运行槽在下一次 run 前把新 RetryPolicy 下发给 Harness：无需重开槽，重试次数按新值生效",
+      why: "策略只在 create 时下发会让设置页的改动看起来生效、实际要重开会话才起作用",
+      depth: "deep",
+      scenarios: ["memory-retry-policy-sync"],
+    },
+    {
       id: "ar-15",
       feature: "结构操作（手动压缩）的准入与续跑收口",
       description: "手动压缩按 lane 真相判准入：lane 持久 inbox 里有排队项时回执按 kind 列出排队明细并拒绝，宿主队列镜像为空不作为放行理由；被拒时压缩与其后的续跑都不发生（无 compaction 条目、无新增 assistant 条目），排队正文不进会话正文并仍留在 lane 里，由下一个显式回合恰好消费一次；结构操作遇到上游未预期的延迟响应（suspended）时按失败如实结算，不挂死：waitForIdle 有界返回、下一次运行不被判忙",

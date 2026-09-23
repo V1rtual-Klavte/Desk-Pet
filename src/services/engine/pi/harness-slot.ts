@@ -31,7 +31,7 @@ import type {
   UsageRow,
 } from "@earendil-works/pi-agent-core"
 import { contentText } from "@earendil-works/pi-ai"
-import type { AssistantMessage, Model, ToolResultMessage, Usage } from "@earendil-works/pi-ai"
+import type { AssistantMessage, Model, RetryPolicy, ToolResultMessage, Usage } from "@earendil-works/pi-ai"
 import type { ThinkingEffort } from "@/services/agent/types"
 import type { ToolDef } from "@/services/tool/types"
 import type { HarnessToolRun } from "@/services/tool/pi/harness-tool-adapter"
@@ -303,6 +303,16 @@ export function compactionSettingsFor(window: number, maxOutput?: number): Compa
   }
 }
 
+/**
+ * 生成级重试策略的唯一构造点：create 初值与按运行同步（`syncRetryPolicy`）共用它。
+ * SDK 内层重试已在 piStream 关闭，重试预算只由这份策略承担。
+ */
+export function retryPolicyFromConfig(): { value: RetryPolicy; key: string } {
+  const maxRetry = loopConfig.maxRetry
+  const value: RetryPolicy = { enabled: maxRetry > 0, maxRetries: maxRetry, baseDelayMs: 1000 }
+  return { value, key: `${value.enabled}:${value.maxRetries}:${value.baseDelayMs}` }
+}
+
 export class HarnessSlot {
   readonly sessionId: string
   generation = 0
@@ -337,6 +347,8 @@ export class HarnessSlot {
   private compactionEpoch?: number
   /** 已下发的压缩阈值去重键（reserveTokens:keepRecentTokens）。 */
   private compactionSettingsKey?: string
+  /** 已下发的重试策略去重键（enabled:maxRetries:baseDelayMs）。 */
+  private retryPolicyKey?: string
   /** 已下发的队列批量策略：按运行生效，运行开始前与配置对齐。 */
   private steeringMode: "all" | "one-at-a-time" = "all"
   private followUpMode: "all" | "one-at-a-time" = "one-at-a-time"
@@ -408,6 +420,7 @@ export class HarnessSlot {
       }
     }
     const compaction = this.compactionSettings(resolvePiTurnModel())
+    const retry = retryPolicyFromConfig()
     this.steeringMode = conversationConfig.steeringMode
     this.followUpMode = conversationConfig.followUpMode
     const created = await AgentHarness.create({
@@ -444,10 +457,11 @@ export class HarnessSlot {
         }
         return prompt
       },
-      retry: { enabled: loopConfig.maxRetry > 0, maxRetries: loopConfig.maxRetry, baseDelayMs: 1000 },
+      retry: retry.value,
     }, ctx)
     this.harness = created.harness
     this.compactionSettingsKey = compaction.key
+    this.retryPolicyKey = retry.key
     // 换代身份沿分支读取（唯一定义点）；读不到就保持未知，不冒充 0。
     // 动态导入 delivery：它对 harness-slot 有静态依赖，静态回边会形成模块环。
     if (!this.transient) {
@@ -577,6 +591,18 @@ export class HarnessSlot {
     if (key === this.compactionSettingsKey) return
     this.compactionSettingsKey = key
     await this.harness.setCompactionSettings(settings, TODO_CONTEXT)
+  }
+
+  /**
+   * 生成级重试策略按运行生效：与压缩阈值同形，在下一次 run 开始前把新策略下发给 Harness，
+   * 不必重开槽。运行中不改变已冻结的行为（驱动开始时拷贝的策略就是本次运行的策略）。
+   */
+  private async syncRetryPolicy(): Promise<void> {
+    if (!this.harness) return
+    const { value, key } = retryPolicyFromConfig()
+    if (key === this.retryPolicyKey) return
+    this.retryPolicyKey = key
+    await this.harness.setRetryPolicy(value, TODO_CONTEXT)
   }
 
   /**
@@ -1174,6 +1200,8 @@ export class HarnessSlot {
     const tools = toAgentHarnessTools(spec.tools, spec.toolRun)
     await this.harness!.setTools(tools, TODO_CONTEXT)
     await this.syncCompactionSettings(spec.model)
+    // 按运行生效：改设置从下一次 run 起作用，不必重开槽（与压缩阈值、队列批量同一条口径）。
+    await this.syncRetryPolicy()
     await this.syncQueueModes()
     await this.syncToolPermitLimit()
     await this.lane!.setModel({ provider: spec.model.provider, modelId: spec.model.id }, TODO_CONTEXT)

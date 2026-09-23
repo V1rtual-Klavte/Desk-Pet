@@ -67,6 +67,7 @@ export {
   compactionSettingsFor,
   createHarnessRunState,
   harnessSlots,
+  retryPolicyFromConfig,
 } from "./harness-slot"
 export type {
   HarnessAbortReason,
