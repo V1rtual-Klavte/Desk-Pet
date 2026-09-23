@@ -46,6 +46,7 @@ export {
   inputEventId,
   inputSourceMark,
   inputSourceOf,
+  laneMessageText,
   messageEventId,
   messageRequestId,
   userInputMessage,

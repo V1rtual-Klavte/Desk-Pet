@@ -7,8 +7,12 @@
 //
 // 代际与取消：代际在本槽内单调递增；取消走原生 lane.abort，未消费的 steer/followUp
 // 以 nextRun 重新入队（持久、不丢、不自动继续），并把 requestId 归还给宿主。
+//
+// `TODO_CONTEXT` / `BACKGROUND_CONTEXT` 约定：宿主运行路径（hooks / drive / 槽自身状态变更）
+// 沿用 `TODO_CONTEXT`；纯读取与后台扫描用 `BACKGROUND_CONTEXT`（与 `session/repo.ts` 一致）。
+// 两者都是 `EmptyContext`，这是命名约定不是行为差异。
 
-import { AgentHarness, MemorySessionRepo, TODO_CONTEXT } from "@earendil-works/pi-agent-core"
+import { AgentHarness, BACKGROUND_CONTEXT, MemorySessionRepo, TODO_CONTEXT } from "@earendil-works/pi-agent-core"
 import type {
   AgentHarnessStreamOptionsPatch,
   AgentLane,
@@ -33,7 +37,7 @@ import type { HarnessToolRun } from "@/services/tool/pi/harness-tool-adapter"
 import { toAgentHarnessTools } from "@/services/tool/pi/harness-tool-adapter"
 import { setToolPermitLimit } from "@/services/tool/execution-permit"
 import { ContextBudgetError, contextBudget, toHarnessEstimateTokens } from "@/services/context"
-import { messageRequestId, userInputMessage } from "@/services/engine/runtime"
+import { laneMessageText, messageRequestId, userInputMessage } from "@/services/engine/runtime"
 import type { InputSourceMark } from "@/services/engine/runtime"
 import { conversationConfig, loopConfig } from "@/services/config"
 import { PI_LANE } from "@/services/session/repo"
@@ -452,7 +456,7 @@ export class HarnessSlot {
       return [{
         entryId: item.entryId,
         kind: item.kind,
-        text: queuedMessageText(item.message),
+        text: laneMessageText(item.message),
         ...(requestId ? { requestId } : {}),
       }]
     })
@@ -541,7 +545,7 @@ export class HarnessSlot {
   private async countCommittedCompactions(): Promise<number> {
     if (!this.session) return 0
     try {
-      const entries = await this.session.findEntries({ order: "asc" }, TODO_CONTEXT)
+      const entries = await this.session.findEntries({ order: "asc" }, BACKGROUND_CONTEXT)
       return entries.filter(entry => entry.type === "compaction").length
     } catch (error) {
       log.warn("压缩次数统计失败，按 0 计:", this.sessionId, formatError(error))
@@ -958,7 +962,7 @@ export class HarnessSlot {
   async readToolResult(entryId: string): Promise<string | undefined> {
     await this.open()
     if (!this.session) return undefined
-    const entry = await this.session.getEntry(entryId, TODO_CONTEXT)
+    const entry = await this.session.getEntry(entryId, BACKGROUND_CONTEXT)
     if (entry?.type !== "message" || entry.message.role !== "toolResult") return undefined
     return contentText(entry.message.content)
   }
@@ -1110,9 +1114,9 @@ export class HarnessSlot {
   private async collectPendingDelivery(run: ActiveRun): Promise<void> {
     for (const item of this.pendingQueues) {
       if (item.type !== "message" || (item.kind !== "steer" && item.kind !== "followUp")) continue
-      const eventId = (item.message as { deskpetEventId?: string }).deskpetEventId
-      if (typeof eventId !== "string") continue
-      const requestId = eventId.replace(/:user$/, "")
+      // 身份换算只有一处实现：手写后缀剥离在「非投递输入」上会给出错误的 requestId。
+      const requestId = messageRequestId(item.message as { deskpetEventId?: unknown })
+      if (requestId === undefined) continue
       if (!run.spec.state.undelivered.includes(requestId)) run.spec.state.undelivered.push(requestId)
       this.pendingDeliveryEntries.set(requestId, item.entryId)
     }
@@ -1354,13 +1358,6 @@ function collectRequestIds(messages: AgentMessage[]): string[] {
     const requestId = messageRequestId(message as { deskpetEventId?: unknown })
     return requestId ? [requestId] : []
   })
-}
-
-/** 排队项的正文预览：排队消息以字符串正文投递，结构化内容回退到 contentText。 */
-function queuedMessageText(message: AgentMessage): string {
-  const content = (message as { content?: unknown }).content
-  if (typeof content === "string") return content
-  return Array.isArray(content) ? contentText(content as Parameters<typeof contentText>[0]) : ""
 }
 
 const EMPTY_SLOT_USAGE: Usage = {

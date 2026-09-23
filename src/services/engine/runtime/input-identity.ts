@@ -11,6 +11,7 @@
  */
 
 import type { AgentMessage } from "@earendil-works/pi-agent-core"
+import { contentText } from "@earendil-works/pi-ai"
 import type {
   IngressEnvelope,
   InputSourceMark,
@@ -41,6 +42,16 @@ export function messageRequestId(message: { deskpetEventId?: unknown }): string 
 
 /** 来源标记在消息上的字段名：与 `deskpetEventId` 并列，随条目一起持久化。 */
 export const INPUT_SOURCE_FIELD = "deskpetSource"
+
+/**
+ * lane 消息的纯文本：字符串正文原样；结构化内容走 `contentText`；非文本形态返回 ""。
+ * 排队视图与暂停输入的正文预览共用这一处实现，不再各自写一份分支。
+ */
+export function laneMessageText(message: AgentMessage): string {
+  const content = (message as { content?: unknown }).content
+  if (typeof content === "string") return content
+  return Array.isArray(content) ? contentText(content as Parameters<typeof contentText>[0]) : ""
+}
 
 /** 由入口 ingress 投影出随消息落盘的来源标记（ingress 是唯一真相源）。 */
 export function inputSourceMark(ingress: IngressEnvelope): InputSourceMark {

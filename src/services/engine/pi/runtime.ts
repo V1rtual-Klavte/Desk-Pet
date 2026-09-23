@@ -53,7 +53,7 @@ import type {
 } from "./harness-slot"
 import { formatError, reportError } from "@/services/error"
 import { createLogger } from "@/services/logger"
-import { createPromptRewrite, createPromptSnapshot, createRuntimeTraceContext, inputEventId, messageEventId, publishRuntimeTrace, userInputMessage } from "@/services/engine/runtime"
+import { createPromptRewrite, createPromptSnapshot, createRuntimeTraceContext, inputEventId, laneMessageText, messageEventId, publishRuntimeTrace, userInputMessage } from "@/services/engine/runtime"
 import type { RuntimeTraceContext } from "@/services/engine/runtime"
 import { redactText, sha256Text, stableSerialize } from "@/services/engine/runtime"
 
@@ -140,11 +140,7 @@ export async function returnPausedInputs(sessionId: string, messages: AgentMessa
 
 /** 取回的暂停消息拼成文本（规划/召回按文本工作）；身份留在消息本身上，不靠这段文本。 */
 export function pausedInputsText(messages: AgentMessage[]): string {
-  return messages.flatMap(message => {
-    const content = (message as { content?: unknown }).content
-    if (typeof content === "string") return [content]
-    return Array.isArray(content) ? [contentText(content as Parameters<typeof contentText>[0])] : []
-  }).join("\n")
+  return messages.map(laneMessageText).filter(text => text.length > 0).join("\n")
 }
 
 export interface PiAgentTurnInput {
