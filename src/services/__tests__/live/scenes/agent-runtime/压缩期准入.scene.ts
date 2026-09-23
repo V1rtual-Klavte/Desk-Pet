@@ -176,9 +176,10 @@ export const 压缩期准入: SceneDef = {
       index: 1,
       description: "压缩窗口内的新输入被如实拒绝，且拒绝没有留下任何正文与模型请求",
       userText: REFUSED_TEXT,
-      // 准入拒绝是这条输入的正确结局：分类先用 "unknown"（HN-03 的 "admission" 档归 W4，
-      // 落地时这里要一并改成 ["unknown", "admission"]）。
-      expectFailure: { kind: "unknown", message: "输入未发送" },
+      // 准入拒绝是这条输入的正确结局：HN-03 的 "admission" 档已落地（runner.ts 压缩期
+      // 拒绝站点按调用点写入 admission，不经过文案分类）。仍容 unknown：分类只圈粗桶，
+      // 真正钉住「哪条失败路径」的是 message。
+      expectFailure: { kind: ["unknown", "admission"], message: "输入未发送" },
       checks: [{
         type: "expectCompactWindowAdmissionRefusal",
         run: async (ctx) => {

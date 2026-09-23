@@ -268,7 +268,7 @@ export async function resumePausedInputs(sessionId: string = getActiveSessionId(
     await returnPausedInputs(sessionId, pausedMessages)
     return {
       reply: "", toolCallsMade: 0, retriesUsed: 0, outcome: "failed", toolCalls: [],
-      failure: { kind: "unknown", message: "会话正在执行结构操作（压缩），暂停输入未投递" },
+      failure: { kind: "admission", message: "会话正在执行结构操作（压缩），暂停输入未投递" },
     }
   }
   const runGeneration = harnessSlots.begin(sessionId, { requestId })
@@ -402,7 +402,7 @@ async function dispatchMessage(text: string, options: SendMessageOptions = {}): 
         retriesUsed: 0,
         outcome: "failed",
         toolCalls: [],
-        failure: { kind: "unknown", message: "会话正在执行结构操作（压缩），输入未发送" },
+        failure: { kind: "admission", message: "会话正在执行结构操作（压缩），输入未发送" },
       }
     }
     // 槽刚好结束（投递窗口内没有别的操作了）：不丢输入，继续走下面的正常回合。

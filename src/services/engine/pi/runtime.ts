@@ -916,7 +916,7 @@ export async function runPiAgentTurn(input: PiAgentTurnInput): Promise<PiAgentTu
     await slot.appendAssistantMessage(reply).catch(error => log.error("兜底回复落盘失败", formatError(error)))
     return {
       reply, toolCallHistory, retriesUsed: 0,
-      failure: { kind: "unknown", message: `输入未获准入: ${admitted.result.error ?? admitted.result.status}` },
+      failure: { kind: "admission", message: `输入未获准入: ${admitted.result.error ?? admitted.result.status}` },
     }
   }
   admittedOnce = true
