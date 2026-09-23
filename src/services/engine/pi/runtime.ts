@@ -82,6 +82,16 @@ export async function deliverActiveTurn(
   return receipt
 }
 
+/**
+ * 会话是否忙：宿主回合或 lane 结构操作在飞。唯一「忙」判定的对外出口。
+ *
+ * `deliverActiveTurn` 的 `undefined` 有两条原因 —— 真没有可投递的回合，与「有 lane 操作
+ * 但不是宿主回合（压缩在飞）」。调用方用本方法区分：后者是准入拒绝，不是「改走正常回合」。
+ */
+export async function isSessionBusy(sessionId: string): Promise<boolean> {
+  return await harnessSlots.hasOpenOperation(sessionId)
+}
+
 // ── 排队视图与单项撤回（PI-1：UI 不再自建队列状态） ──
 
 export interface QueuedInputsView {
@@ -1253,8 +1263,8 @@ export function listRecoveredPlans(sessionId?: string): RecoveredPlanView[] {
  */
 export async function resumePlan(sessionId: string, planId: string): Promise<PiAgentTurnOutput | undefined> {
   const busyMessage = "这个会话正在忙，稍后再继续计划哦～"
-  // guard：该会话没有在飞槽（T2.10 起统一走 hasOpenOperation，本波先按运行态判定）
-  if (harnessSlots.peek(sessionId)?.isRunning() === true) {
+  // guard：该会话没有任何未结算的操作（宿主回合或 lane 结构操作，统一「忙」判定）
+  if (await harnessSlots.hasOpenOperation(sessionId)) {
     pushSystemMessage(busyMessage)
     return undefined
   }

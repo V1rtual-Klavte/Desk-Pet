@@ -248,6 +248,15 @@ export async function resumePausedInputs(sessionId: string = getActiveSessionId(
   if (pausedMessages.length === 0) return undefined
 
   const requestId = makeIngressId("request")
+  // 忙判定统一走 hasOpenOperation：压缩等 lane 结构操作在飞时同样不能抢跑。
+  // 判定与 begin 之间仍可能有竞态（本任务不改 begin 语义），由 begin 的守卫与投递失败回滚兜住。
+  if (await harnessSlots.hasOpenOperation(sessionId)) {
+    await returnPausedInputs(sessionId, pausedMessages)
+    return {
+      reply: "", toolCallsMade: 0, retriesUsed: 0, outcome: "failed",
+      failure: { kind: "unknown", message: "会话正在执行结构操作（压缩），暂停输入未投递" },
+    }
+  }
   const runGeneration = harnessSlots.begin(sessionId, { requestId })
   if (runGeneration === undefined) {
     // 已有在飞运行：把取出的暂停项放回，绝不扣在手里（放回是持久 nextRun，不自动继续）。
@@ -309,10 +318,11 @@ async function dispatchMessage(text: string, options: SendMessageOptions = {}): 
 
   // 并发入口：生成中把新输入投递到正在运行的 lane（先落盘到持久 inbox，再影响模型）。
   // 命令按 busyPolicy 准入（exclusive 明确拒绝），投递意图由单条显式选择或配置默认决定；
-  // 未识别的 slash 文本按下一次运行排队（nextRun）。投递失败说明运行槽刚好结束或不可用：
-  // 不丢输入，继续走下面的正常回合。
+  // 未识别的 slash 文本按下一次运行排队（nextRun）。
+  // 「忙」的唯一判定是 hasOpenOperation：宿主回合之外，压缩等 lane 结构操作也算忙 ——
+  // 那种窗口里没有可投递的回合，投递必然失败，输入不能被当成正常回合放进去。
   let busyPreResult: Awaited<ReturnType<typeof preProcess>> | undefined
-  if (harnessSlots.isRunning(originSessionId)) {
+  if (await harnessSlots.hasOpenOperation(originSessionId)) {
     const requestId = options.requestId ?? makeIngressId("request")
     const preResult = await preProcess(text, preprocessStates.get(originSessionId) ?? {}, { busy: true })
     if (preResult.handled) {
@@ -344,6 +354,24 @@ async function dispatchMessage(text: string, options: SendMessageOptions = {}): 
         delivery: receipt,
       }
     }
+    // 投递失败不等于会话空闲：还有 lane 结构操作在飞（手动压缩）时必须如实拒绝。
+    // 压缩期间没有宿主回合可投递，落到下面的正常回合只会 begin 成功、驱动拿到 LaneBusy，
+    // 用户拿到的是一条兜底失败回复 —— 那既不解释原因，也把「没发出去」说成了「聊过了」。
+    // 宁可拒绝也不静默排队（fail-closed）：拒绝的输入不进会话、不进 lane inbox，
+    // 由用户决定等压缩跑完还是撤回。
+    if (await harnessSlots.hasOpenOperation(originSessionId)) {
+      const { pushSystemMessage } = await import("@/services/session/messages")
+      pushSystemMessage("正在压缩这个会话，等它跑完再发哦～")
+      log.warn("会话正在执行结构操作，输入未发送:", { sessionId: originSessionId, requestId })
+      return {
+        reply: "",
+        toolCallsMade: 0,
+        retriesUsed: 0,
+        outcome: "failed",
+        failure: { kind: "unknown", message: "会话正在执行结构操作（压缩），输入未发送" },
+      }
+    }
+    // 槽刚好结束（投递窗口内没有别的操作了）：不丢输入，继续走下面的正常回合。
     log.warn("运行槽不可投递，改走正常回合:", requestId)
     busyPreResult = preResult
   }
@@ -470,6 +498,11 @@ export async function sendActiveMessage(userText: string): Promise<string> {
     receivedAt: Date.now(),
     priority: "later",
     taint: "derived",
+  }
+  // 压缩等结构操作在飞时同样算忙：主动搭话不抢跑，也不排队（它是可再生的，静默排队毫无意义）。
+  if (await harnessSlots.hasOpenOperation(sessionId)) {
+    log.info("会话正在执行结构操作，主动消息未发送:", sessionId)
+    return ""
   }
   const runGeneration = harnessSlots.begin(sessionId, { requestId: ingress.requestId })
   if (runGeneration === undefined) return ""

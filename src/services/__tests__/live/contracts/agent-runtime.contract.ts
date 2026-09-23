@@ -120,7 +120,7 @@ export const agentRuntimeContract: ModuleContract = {
       description: "手动压缩按 lane 真相判准入：lane 持久 inbox 里有排队项时回执按 kind 列出排队明细并拒绝，宿主队列镜像为空不作为放行理由；被拒时压缩与其后的续跑都不发生（无 compaction 条目、无新增 assistant 条目），排队正文不进会话正文并仍留在 lane 里，由下一个显式回合恰好消费一次",
       why: "压缩后的续跑没有回合身份（人格前缀、请求投影、RUNTIME_DATA 剥离与结算都不在），把它的消费报成「压缩完成」会让用户以为排队输入已被处理",
       depth: "deep",
-      scenarios: ["runtime-manual-compact-pending-guard"],
+      scenarios: ["runtime-manual-compact-pending-guard", "runtime-compact-admission"],
     },
   ],
   rules: { minScenarios: 6, minDeepScenarios: 6, requireBoundary: true, requireErrorPath: false },

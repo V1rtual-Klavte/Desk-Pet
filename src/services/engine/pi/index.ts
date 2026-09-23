@@ -8,6 +8,7 @@ export {
   discardPlan,
   discardInterruptedRun,
   getInterruptedRun,
+  isSessionBusy,
   listQueuedInputs,
   listRecoveredPlans,
   pausedInputsText,

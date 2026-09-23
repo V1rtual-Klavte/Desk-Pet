@@ -633,6 +633,27 @@ export class HarnessSlot {
     return this.state === "running"
   }
 
+  /**
+   * 槽的 lane 上是否还有未结算的操作（宿主回合之外的压缩、导航等结构操作）。
+   *
+   * `isRunning()` 只表示宿主回合所有权：手动压缩不 `begin`，压缩期间槽仍判空闲，
+   * 单看它会把「压缩在飞」当「空闲」放行新输入。准入判定要用本方法；注册表的
+   * `HarnessSlots.hasOpenOperation(sessionId)` 同时含 `isRunning`（唯一的「忙」定义）。
+   *
+   * 读失败 fail-closed：读不出 lane 真相时按「有操作」处理（宁可拒绝也不静默排队），
+   * 并留下 warn —— 回退只需把 catch 分支改回 `return this.state === "running"`。
+   */
+  async hasOpenOperation(): Promise<boolean> {
+    if (!this.lane) return this.state === "running"
+    try {
+      const info = await this.lane.inspectExecution(TODO_CONTEXT)
+      return info.current !== null
+    } catch (error) {
+      log.warn("lane 操作状态读取失败，按有操作处理:", this.sessionId, formatError(error))
+      return true
+    }
+  }
+
   /** 当前代际仍是所有者（未取消、未失效）。 */
   isCurrent(generation: number): boolean {
     return this.generation === generation && this.state === "running" && this.abortReason === undefined
@@ -1337,6 +1358,15 @@ export class HarnessSlots {
 
   isRunning(sessionId: string): boolean {
     return this.peek(sessionId)?.isRunning() ?? false
+  }
+
+  /**
+   * 唯一的「忙」定义：宿主回合所有权（`isRunning`）或 lane 操作在飞（含手动压缩）。
+   * 没有槽的会话不算忙（还没打开，也就没有在飞操作）；读失败 fail-closed 见槽侧实现。
+   */
+  async hasOpenOperation(sessionId: string): Promise<boolean> {
+    const slot = this.peek(sessionId)
+    return slot ? (slot.isRunning() || await slot.hasOpenOperation()) : false
   }
 
   /** 当前代际仍是所有者（未取消、未失效）。 */

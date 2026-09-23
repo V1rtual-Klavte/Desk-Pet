@@ -93,6 +93,7 @@ export {
   discardInterruptedRun,
   getInterruptedRun,
   harnessSlots,
+  isSessionBusy,
   listQueuedInputs,
   listRecoveredPlans,
   resumePlan,
