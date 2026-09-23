@@ -384,6 +384,7 @@ fn evict_old_spills() {
         Ok(entries) => entries,
         // 跳过本轮的原语义不变（回收失败不影响正确性）；补一条 debug 记录，
         // 否则 spill 无上限增长时没有任何线索能说明回收没跑成。
+        // [保留已登记 §4.2]
         Err(e) => {
             rust_debug!("回收 spill 文件失败，跳过本轮: {e}");
             return;

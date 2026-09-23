@@ -1,3 +1,9 @@
+// ==========================================
+// Live Test 宿主入口（分派与汇总，场景执行在 scene-runner）
+// 开发工具直接用 console：改走 logger 会污染 data_root/logs/deskpet.log
+// 并引入 IPC 依赖 [保留已登记 §4.2]
+// ==========================================
+
 import { invoke } from "@tauri-apps/api/core"
 import { validateDataset, LIVE_DATASET_VERSION } from "./dataset"
 import { runAllScenes, plannedTrialCount } from "./scene-runner"

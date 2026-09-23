@@ -601,6 +601,8 @@ export function useLayerEditor() {
       assetList.value = [...new Set([...files, ...configured])];
       log.info(`素材列表 | ${subdir}/ → ${files.length} 个文件:`, files);
     } catch (e: any) {
+      // 保留 warn（不升 error）：对话框回退到默认素材列表、用户可继续操作，
+      // 失败原因已随这条日志可查 [保留已登记 §4.2]
       log.warn(`素材列表加载失败 | ${subdir}/ | 错误:`, e?.message || e);
       const defaults = [
         "materials/L0/bg_base.png",
@@ -634,6 +636,8 @@ export function useLayerEditor() {
       assetList.value = [...new Set(files)];
       log.info(`素材列表 | materials/ → ${files.length} 个文件`);
     } catch (e: any) {
+      // 保留 warn（不升 error）：对话框留空但仍可用，失败原因已随这条日志可查
+      // [保留已登记 §4.2]
       log.warn("景深素材列表加载失败:", e?.message || e);
       assetList.value = [];
     } finally {
@@ -760,6 +764,8 @@ export function useLayerEditor() {
         saved.value = false;
       }, 2000);
     } catch (e: any) {
+      // 保留 warn（不升 error）：下一行 window.alert 已把失败原因当场告知用户，
+      // warn 足够 [保留已登记 §4.2]
       log.warn(`保存图层失败: ${e?.message || e}`);
       window.alert(e?.message || "保存图层失败");
     }
@@ -785,7 +791,10 @@ export function useLayerEditor() {
       await win.setTitle(
         `🎨 图层编辑器 - ${profile.value?.meta.name || "糖糖桌宠"}`
       );
-    } catch {}
+    } catch {
+      // 标题写入失败仅影响窗口标题文案（主题名异常/非 Tauri 宿主），不影响编辑与保存；
+      // 窗口层级降级已有留痕（:479/:483/:525）[保留已登记 §4.2]
+    }
     if (canvasWrap.value) {
       resizeObs = new ResizeObserver(() => updateCanvasSize());
       resizeObs.observe(canvasWrap.value);

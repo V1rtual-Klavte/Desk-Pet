@@ -1,3 +1,7 @@
+// Live Test 启动脚本（Node 侧，负责构建、起 WebView、汇总报告）。
+// 开发工具直接用 console：改走 logger 会污染 data_root/logs/deskpet.log
+// 并引入 IPC 依赖 [保留已登记 §4.2]
+
 import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync } from "node:fs"
 import { createHash } from "node:crypto"
 import { execFileSync, spawn } from "node:child_process"

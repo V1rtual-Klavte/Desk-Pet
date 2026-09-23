@@ -46,6 +46,8 @@ async function greetNewSession(): Promise<void> {
 
 const isWinSim = (() => {
   try { return getCurrentWebviewWindow().label === "windows-sim"; }
+  // 非 Tauri 环境守卫：拿不到窗口对象时按「非仿真窗口」处理，没有静默降级
+  // [保留已登记 §4.2]
   catch { return false; }
 })();
 
@@ -208,6 +210,8 @@ async function enhanceWindowWhenReady(
 ): Promise<void> {
   const deadline = Date.now() + 2000;
   for (;;) {
+    // 轮询期间窗口可能还没建出来：null 表示「本轮还没就绪」，不是失败 ——
+    // 超时未就绪的情况已在下面 log.warn 留痕 [保留已登记 §4.2]
     const win = await WebviewWindow.getByLabel(label).catch(() => null);
     if (win) {
       if (beforeEnhance) await beforeEnhance(win).catch(error => log.warn("窗口增强前置动作失败（继续尝试提层命令）:", formatError(error)));
@@ -226,7 +230,10 @@ async function openLayerEditor() {
   try {
     const existing = await WebviewWindow.getByLabel("layer-editor");
     if (existing) { await existing.setFocus(); return; }
-  } catch { /* ignore */ }
+  } catch {
+    // 查询失败按「未打开」处理：真存在时下面的 new WebviewWindow 会抛「窗口已存在」，
+    // 由全局异常拦截接住 [保留已登记 §4.2]
+  }
   new WebviewWindow("layer-editor", {
     url: "layer-editor.html",
     title: "图层编辑器 - 糖糖桌宠",
@@ -502,7 +509,8 @@ function hideCtxMenu() {
 
 async function openDevTools() {
   ctxMenu.value.visible = false;
-  invoke("open_devtools").catch(() => {});
+  // 开发调试入口，影响面仅开发者 [保留已登记 §4.2]
+  invoke("open_devtools").catch(error => log.debug("开发调试入口不可用:", formatError(error)));
 }
 
 // ==========================================

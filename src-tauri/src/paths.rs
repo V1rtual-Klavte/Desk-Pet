@@ -253,6 +253,7 @@ fn allowed_file_roots() -> AppResult<Vec<PathBuf>> {
             }
             // 解析失败只是少一个候选根，语义与之前一致；但路径被拒时报的是 PATH_ESCAPE，
             // 没有这条日志就无法区分「真的越权」与「根没解析出来」。
+            // [保留已登记 §4.2]
             Err(error) => rust_debug!(
                 "允许根 canonicalize 失败，跳过候选: root={} error={error}",
                 root.display()

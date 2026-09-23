@@ -63,7 +63,7 @@ Rust 对应日志宏位于 [macros/](../../src-tauri/src/macros/)，内核是 [l
 
 音效（[audio/effects/](../../src/services/audio/effects/)）的节点构建失败是有意静默 + 统一一次性留痕：[context.ts](../../src/services/audio/context.ts) 的 `reportEffectFailure`（自动播放策略挂起由 `reportSuspendedOnce`）——新增音效不要各自打日志。
 
-有意静默的判据与标记由 [AGENTS](../../AGENTS.md#日志异常与-ipc) 统一规定，本条是它的实例：就地注释说明为什么并指名统一留痕点，裸 `catch {}` 与只写「ignore」都算违规，可接受的保留项统一标 `[保留已登记 §4.2]`。新增静默点先对照这三类判据，不要各自发明留痕方式。
+有意静默只有三类可接受：① 应走 `log`/`reportError`（失败掩盖问题、用户可见降级无痕迹）；② 应显式向上抛（含 `ExecutionEnv` 这种把失败作为 `Result` 返回的等价形态）；③ 可接受的静默（有据可依 + 就地注释说明为什么 + 在注释里指名统一留痕点）。判据与标记由 [AGENTS](../../AGENTS.md#日志异常与-ipc) 统一规定，本条是它的实例：就地注释说明为什么并指名统一留痕点，裸 `catch {}` 与只写「ignore」都算违规，可接受的保留项统一标 `[保留已登记 §4.2]`。新增静默点先对照这三类判据，不要各自发明留痕方式。
 
 ## 文档与验证
 

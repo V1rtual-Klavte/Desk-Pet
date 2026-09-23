@@ -393,7 +393,8 @@ export async function executePlan(
     } catch (e) {
       // §4.2：失败原因仍 `formatError` 后放进 `output.error`（随步骤结果条目落盘并交给
       // `onStepFailed`/`formatStepResults`）；warn 补定位上下文，日志与证据链按同一
-      // planId/stepId 对齐（planId 由调用方给，缺省回落计划摘要）。
+      // planId/stepId 对齐（planId 由调用方给，缺省回落计划摘要）。保留 warn（不升 error）：
+      // 失败原因已格式化并写进步骤结果（随条目落盘）[保留已登记 §4.2]。
       const errMsg = formatError(e)
       log.warn("步骤执行失败:", { planId: config.planId ?? plan.summary, stepId: step.id }, errMsg)
       stepResults.push({

@@ -101,6 +101,8 @@ onMounted(async () => {
       }
     );
   } catch (e) {
+    // 与上面同一判据：注册失败只让位置预览停在旧值，warn 足够（不升 error）
+    // [保留已登记 §4.2]
     log.warn("deskpet-moved 监听注册失败", formatError(e));
   }
 });

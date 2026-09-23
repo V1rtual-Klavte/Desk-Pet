@@ -52,7 +52,7 @@ async function openLayerEditor() {
     }
   } catch (e) {
     // 查询失败按「未打开」处理：窗口真存在（或 setFocus 失败）时，下面的
-    // new WebviewWindow 会抛「窗口已存在」，由全局异常拦截接住。
+    // new WebviewWindow 会抛「窗口已存在」，由全局异常拦截接住 [保留已登记 §4.2]。
     log.debug("查询图层编辑器窗口失败，按未打开处理:", formatError(e));
   }
   const win = new WebviewWindow("layer-editor", {
