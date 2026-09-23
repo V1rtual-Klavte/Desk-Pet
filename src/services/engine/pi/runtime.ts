@@ -24,7 +24,8 @@ import type { PersonalityCard } from "@/services/personality/types"
 import { getPoolSnapshot, applyResetPolicies, refreshVariablePool, updateInteractionVar } from "@/services/personality/variable-pool"
 import { getFallbackReply, getSimpleStage } from "@/services/personality/stages-cache"
 import { generateReply, parseRuntimeData } from "@/services/reply"
-import { authorizeToolExecution, invalidatePermissionScope } from "@/services/safety"
+import { authorizeToolExecution, freezePermissionPolicy, invalidatePermissionScope } from "@/services/safety"
+import type { PermissionPolicySnapshot } from "@/services/safety"
 import { getActiveSessionId, pushMessageFor } from "@/services/session/store"
 import { getSessionCreatedAt, isAssistantEntryVisible, pushSystemMessage } from "@/services/session"
 import { getToolsForMode } from "@/services/tool/registry"
@@ -323,6 +324,8 @@ interface TurnKernel {
   plan?: PromptPlanContext
   /** 回合开始冻结的能力：skillsFingerprint/safetyMode 冻结一次，工具裁决逐请求累积。 */
   capabilities: PromptCapabilityContext
+  /** 回合开始冻结的权限策略：本回合所有裁决与 policyHash 只用它（改设置从下一回合生效）。 */
+  policy: PermissionPolicySnapshot
   /** 槽代际：区分「同一会话被释放重建」前后的请求。 */
   generation: number
   /** 上游 before_request 的当次 step/attempt；由它回答「这次 payload 属于哪次请求」。 */
@@ -373,6 +376,8 @@ interface TurnKernelOptions {
 function createTurnKernel(options: TurnKernelOptions): TurnKernel {
   const traceContext = createRuntimeTraceContext(options.sessionId, options.requestId, options.turnId)
   const state = createHarnessRunState()
+  // 权限策略在 preflight 冻结一次：裁决、授权哈希与快照的 capabilities 共用这一份快照。
+  const policy = freezePermissionPolicy()
   const latestMessages: AgentMessage[] = []
   const snapshotTasks: Promise<void>[] = []
   let settledReply: { raw: string; stripped: string } | undefined
@@ -387,11 +392,12 @@ function createTurnKernel(options: TurnKernelOptions): TurnKernel {
     latestMessages,
     snapshotTasks,
     snapshotSequence: 0,
-    // 能力在 preflight 冻结一次：回合中改设置不改变本次请求的能力身份（T3.40 起与权限策略同一份快照）。
+    // 能力在 preflight 冻结一次：回合中改设置不改变本次请求的能力身份；safetyMode 与权限裁决同一份快照。
     request: options.request ?? { purpose: "turn" },
+    policy,
     capabilities: {
       ...(options.skillCatalogFingerprint ? { skillsFingerprint: options.skillCatalogFingerprint } : {}),
-      safetyMode: getEffectiveSafetyMode(),
+      safetyMode: policy.safetyMode,
       toolDecisions: [],
     },
     generation: options.generation ?? 0,
@@ -704,6 +710,8 @@ function createTurnSpec(kernel: TurnKernel, options: {
         toolCallId,
         signal,
         isCurrent: options.isPermissionCurrent,
+        // 回合冻结的策略：回合中改安全模式不改变本回合的裁决与 policyHash。
+        policy: kernel.policy,
       })
       // 能力冻结的逐请求一半：本次裁决（含拒绝理由）折进快照的 capabilities.toolDecisions。
       kernel.capabilities.toolDecisions.push({

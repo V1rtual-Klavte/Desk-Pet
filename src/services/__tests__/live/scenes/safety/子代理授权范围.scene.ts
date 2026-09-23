@@ -30,7 +30,7 @@ import { PLAN_STEP_RESULT_ENTRY, type PlanStepResult } from "@/services/agent/me
 import { initChat } from "@/services/agent/runner"
 import { generalConfig, planConfig, setOverride } from "@/services/config"
 import { harnessSlots } from "@/services/engine/pi"
-import { evaluateToolPermission } from "@/services/safety"
+import { evaluateToolPermission, freezePermissionPolicy } from "@/services/safety"
 import { createNewSession, getActiveSessionId, readPiSessionEntriesOnce } from "@/services/session"
 import { defineTool, register, unregister, TOOL_POLICY_VERSION } from "@/services/tool"
 import type { ToolDef } from "@/services/tool"
@@ -206,6 +206,7 @@ const checkGrantBoundToSessionA: AssertCheck = {
     if (!probeTool) throw new Error("探针工具在断言阶段已注销，场景状态异常")
     const rebound = await evaluateToolPermission(probeTool, PARAMS, {
       mode: "pet", sessionId: sessionA, runGeneration: generationA, toolCallId: "sf20-rebind-a",
+      policy: freezePermissionPolicy(),
     })
     if (rebound.decision !== "allow") {
       throw new Error(`子代理的 allow_session 授权没有按父会话与代际入账：同参重评估得到 ${rebound.decision}${rebound.reason ? `（${rebound.reason}）` : ""}`)
@@ -217,6 +218,7 @@ const checkGrantBoundToSessionA: AssertCheck = {
     if (!sessionB || sessionB === sessionA) throw new Error("新建会话没有切换活跃会话")
     const afterSwitch = await evaluateToolPermission(probeTool, PARAMS, {
       mode: "pet", sessionId: sessionA, runGeneration: generationA, toolCallId: "sf20-after-switch",
+      policy: freezePermissionPolicy(),
     })
     if (afterSwitch.decision !== "ask" || !afterSwitch.request) {
       throw new Error(`会话 A 的授权没有随切会话清 scope：同参重评估得到 ${afterSwitch.decision}（应为 ask 且带新的确认请求）`)
@@ -262,6 +264,7 @@ const checkGrantNotReusedAcrossSessions: AssertCheck = {
       if (!probeTool) throw new Error("探针工具在断言阶段已注销，场景状态异常")
       const reboundB = await evaluateToolPermission(probeTool, PARAMS, {
         mode: "pet", sessionId: sessionB, runGeneration: generationB, toolCallId: "sf20-rebind-b",
+        policy: freezePermissionPolicy(),
       })
       if (reboundB.decision !== "allow") {
         throw new Error(`会话 B 的 allow_session 授权没有按会话 B 入账：同参重评估得到 ${reboundB.decision}`)

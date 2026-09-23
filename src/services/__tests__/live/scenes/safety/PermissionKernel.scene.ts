@@ -1,13 +1,15 @@
 import type { SceneDef } from "../../types"
-import { authorizeToolExecution, awaitPermission, confirmState, evaluateToolPermission, invalidatePermissionScope, resolvePermissionConfirm } from "@/services/safety"
+import { authorizeToolExecution, awaitPermission, confirmState, evaluateToolPermission, freezePermissionPolicy, invalidatePermissionScope, resolvePermissionConfirm } from "@/services/safety"
 import type { ToolCheckResult, ToolDef, ToolPolicy } from "@/services/tool"
-import { TOOL_POLICY_VERSION } from "@/services/tool"
+import { defineTool, TOOL_POLICY_VERSION } from "@/services/tool"
 
 const context = (overrides: Partial<Parameters<typeof evaluateToolPermission>[2]> = {}) => ({
   mode: "assistant" as const,
   sessionId: "permission-test-session",
   runGeneration: 7,
   toolCallId: "permission-test-call",
+  // 裁决与 policyHash 只认回合冻结的策略快照（真回合由 preflight 取，测试宿主按当前值取）。
+  policy: freezePermissionPolicy(),
   ...overrides,
 })
 
@@ -19,14 +21,13 @@ const policy = (permission: ToolPolicy["permission"]): ToolPolicy => ({
   context: { resultProjection: "reference", historyCompaction: "summarize" },
 })
 
-const tool = (overrides: Partial<ToolDef> = {}): ToolDef => ({
+const tool = (overrides: Partial<ToolDef> = {}): ToolDef => defineTool({
   id: "permission-test", name: "permission_test", description: "permission test",
   parameters: { type: "object", properties: {} }, safetyLevel: "NORMAL",
   source: "local", sourceId: "", mode: "assistant", actionCategory: "_default",
   policy: policy({ defaultDecision: "passthrough" }),
-  handler: async () => ({ success: true, content: "ok" }),
   ...overrides,
-})
+}, async () => ({ success: true, content: "ok" }))
 
 const scene = (caseId: string, contractId: string, description: string, run: () => Promise<void>): SceneDef => ({
   meta: { caseId, module: "safety", contractId, description, depth: "deep", suite: "safety", entry: "unit", tags: ["safety", "boundary", "error"] },

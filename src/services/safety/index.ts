@@ -23,9 +23,10 @@ export {
   authorizeToolExecution,
   awaitPermission,
   evaluateToolPermission,
+  freezePermissionPolicy,
   invalidatePermissionScope,
 } from "./permission"
-export type { PermissionConfirmation, PermissionContext, PermissionRequest, PermissionResult } from "./permission"
+export type { PermissionConfirmation, PermissionContext, PermissionPolicySnapshot, PermissionRequest, PermissionResult } from "./permission"
 export type { PermissionDecision, ToolCheckResult, EffectClass } from "@/services/tool/types"
 
 export { confirmState, requestPermissionConfirm, resolveConfirm, resolvePermissionConfirm } from "./confirm"

@@ -17,10 +17,27 @@ const log = createLogger("Permission")
 export type { EffectClass, PermissionDecision, ToolCheckResult }
 export type PermissionConfirmation = "allow_once" | "allow_session" | "deny"
 
+/** 回合内冻结的权限策略：回合开始时取一次，回合中改设置从下一回合生效。 */
+export interface PermissionPolicySnapshot {
+  safetyMode: ReturnType<typeof getEffectiveSafetyMode>
+  sessionTrustEnabled: boolean
+}
+
+/**
+ * preflight 取一次策略快照；回合内所有裁决与 policyHash 只用它。
+ *
+ * 冻结的理由是身份一致：同一次确认的裁决与授权哈希必须来自同一份策略，
+ * 否则回合中途改设置会让「确认时看到的风险」与「复用授权时的策略」不是同一件事。
+ */
+export function freezePermissionPolicy(): PermissionPolicySnapshot {
+  return { safetyMode: getEffectiveSafetyMode(), sessionTrustEnabled: safetyConfig.sessionTrustEnabled }
+}
+
 export interface PermissionContext extends ToolContext {
   sessionId: string
   runGeneration: number
   toolCallId: string
+  policy: PermissionPolicySnapshot
 }
 
 export interface PermissionRequest {
@@ -84,7 +101,7 @@ function standardDecision(tool: ToolDef, params: Record<string, unknown>, ctx: P
   if (tool.mode === "assistant" && ctx.mode !== "assistant") return { decision: "deny", reason: "当前模式不允许该工具" }
   if (level === "SAFE") return { decision: "allow" }
 
-  const safetyMode = getEffectiveSafetyMode()
+  const safetyMode = ctx.policy.safetyMode
   if (ctx.mode === "pet") {
     if (level === "NORMAL") return { decision: "allow" }
     return tool.lightweightPolicy === "confirm"
@@ -98,10 +115,11 @@ function standardDecision(tool: ToolDef, params: Record<string, unknown>, ctx: P
 
 async function policyHash(tool: ToolDef, params: Record<string, unknown>, ctx: PermissionContext): Promise<string> {
   // 静态策略身份与本次解析结果一起入 hash：策略或风险变化后旧授权自然失效。
+  // 安全模式与信任开关取回合冻结值 —— hash 与裁决必须来自同一份策略快照。
   return sha256Text(stableSerialize({
     policy: toolPolicyFingerprint(tool),
     resolvedSafetyLevel: tool.resolveSafetyLevel?.(params, ctx) ?? tool.safetyLevel,
-    safetyMode: getEffectiveSafetyMode(), sessionTrustEnabled: safetyConfig.sessionTrustEnabled,
+    safetyMode: ctx.policy.safetyMode, sessionTrustEnabled: ctx.policy.sessionTrustEnabled,
   }))
 }
 
@@ -159,7 +177,7 @@ export async function evaluateToolPermission(
     parameterSummary: parameterSummary(params),
     effectClass: effectClass(tool),
   }
-  if (safetyConfig.sessionTrustEnabled && getEffectiveSafetyMode() !== "let_me_tk" && validGrant(request)) return { decision: "allow" }
+  if (ctx.policy.sessionTrustEnabled && ctx.policy.safetyMode !== "let_me_tk" && validGrant(request)) return { decision: "allow" }
   return { decision: "ask", reason: base.reason, request }
 }
 
@@ -186,7 +204,7 @@ export async function authorizeToolExecution(
   if (!rechecked.request || rechecked.request.inputHash !== first.request.inputHash || rechecked.request.policyHash !== first.request.policyHash) {
     return { decision: "deny", reason: "确认期间参数或权限策略已变化" }
   }
-  if (response === "allow_session" && safetyConfig.sessionTrustEnabled && getEffectiveSafetyMode() !== "let_me_tk") {
+  if (response === "allow_session" && ctx.policy.sessionTrustEnabled && ctx.policy.safetyMode !== "let_me_tk") {
     const grant: PermissionGrant = {
       sessionId: first.request.sessionId, runGeneration: first.request.runGeneration,
       toolName: first.request.toolName, inputHash: first.request.inputHash,
