@@ -33,7 +33,7 @@ scope: runtime-foundation-before-memory-kernel
 
 ## Pi、权限与网络
 
-- [`PermissionKernel`](../../src/services/safety/permission.ts) 收敛 `allow / ask / deny`；MCP `passthrough` 必须在内核终裁。会话授权绑定 session、generation、工具、参数、策略与过期时间，取消或旧代际失效。权限策略（安全模式与会话信任开关）在回合开始时冻结一次（`freezePermissionPolicy`），本回合所有裁决与授权哈希只用这一份快照：回合中改设置从下一回合生效，不允许「确认时按旧策略询问、复用授权时按新策略放行」。子代理的授权同样绑定父会话与代际（许可借用身份为 `${sessionId}:${generation}:…`，不再落到 `no-session:-1:…`），切会话即清 scope —— 同参 grant 不会跨会话命中，必须重新确认。
+- [`PermissionKernel`](../../src/services/safety/permission.ts) 收敛 `allow / ask / deny`；MCP `passthrough` 必须在内核终裁。会话授权绑定 session、generation、工具、参数、策略与过期时间，取消或旧代际失效。会话信任只有 [`permission.ts`](../../src/services/safety/permission.ts) 一份实现（`grants` + `invalidatePermissionScope`）；`checker.ts` 的第二套会话信任与 `resetSessionTrust` 已删除。权限策略（安全模式与会话信任开关）在回合开始时冻结一次（`freezePermissionPolicy`），本回合所有裁决与授权哈希只用这一份快照：回合中改设置从下一回合生效，不允许「确认时按旧策略询问、复用授权时按新策略放行」。子代理的授权同样绑定父会话与代际（许可借用身份为 `${sessionId}:${generation}:…`，不再落到 `no-session:-1:…`），切会话即清 scope —— 同参 grant 不会跨会话命中，必须重新确认。
 - 计划确认与终止按 `{ sessionId, planId }` 键控（[`plan-confirmation.ts`](../../src/services/engine/plan-confirmation.ts)）：跨会话可并发，同一会话同一时刻只允许一个计划；面板只渲染活跃会话的计划，终止入口只作用于所属会话，计划执行中切会话不取消（只把面板移出视图）。切会话/关闭标签在会话指针移动前取消该会话的待确认计划并写一条系统消息。确认等待上限 5 分钟（`PLAN_CONFIRM_TIMEOUT_MS`，与权限确认 TTL 无关）：超时、会话切换、会话不再活跃、确认事件发射失败四种非确认归宿各写一条系统消息并走同一收尾；确认事件发射失败或面板监听注册失败都立即按归宿结算，不让确认方悬挂。
 - Provider 请求固定在用户配置的 origin，禁用重定向；显式配置的 localhost/private provider 可以使用。该 WebView 边界不提供 DNS pinning、通用 SSRF 防护或 shell 网络沙箱。[`createProviderFetchGuard`](../../src/services/engine/pi/net-guard.ts)
 

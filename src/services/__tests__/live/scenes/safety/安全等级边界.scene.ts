@@ -1,5 +1,5 @@
 import type { SceneDef } from "../../types"
-import { checkSafety, matchesAnyPattern, BASH_DANGEROUS_PATTERNS, BASH_NOWAY_PATTERNS, FILE_DANGEROUS_PATTERNS, resolveFilePathLevel, trustToolInSession, resetSessionTrust, isToolTrusted } from "@/services/safety"
+import { matchesAnyPattern, BASH_DANGEROUS_PATTERNS, BASH_NOWAY_PATTERNS, FILE_DANGEROUS_PATTERNS, resolveFilePathLevel, evaluateToolPermission, freezePermissionPolicy } from "@/services/safety"
 import type { ToolDef, SafetyLevel } from "@/services/tool"
 import { defineTool, getTool, TOOL_POLICY_VERSION } from "@/services/tool"
 
@@ -21,22 +21,32 @@ const tool = (safetyLevel: SafetyLevel): ToolDef => defineTool({
  * Provider 抖不抖，对断言本身没有任何增量。真正「门禁是否接在运行时上」
  * 由 sf-03 / sf-09 / sf-10 这些非 unit 场景负责。
  */
-const scene = (caseId: string, contractId: string, description: string, run: () => void, depth: "shallow" | "deep" = "shallow"): SceneDef => ({
+const scene = (caseId: string, contractId: string, description: string, run: () => Promise<void>, depth: "shallow" | "deep" = "shallow"): SceneDef => ({
   meta: { caseId, module: "safety", contractId, description, depth, suite: "safety", entry: "unit", tags: ["safety", "boundary", "error"] },
   turns: [{ index: 1, description, userText: "检查安全策略。", checks: [{ type: "expectSafety", run: async () => run() }] }],
 })
 
-export const SAFE放行 = scene("safety-safe", "sf-01", "SAFE 放行", () => { if (!checkSafety(tool("SAFE"), {}, { mode: "pet" }).allowed) throw new Error("SAFE 未放行") })
-export const NORMAL检查 = scene("safety-normal", "sf-02", "NORMAL 轻量模式检查", () => { if (!checkSafety(tool("NORMAL"), {}, { mode: "pet" }).allowed) throw new Error("NORMAL 未放行") })
-export const DANGER拒绝 = scene("safety-danger", "sf-03", "DANGER 轻量模式拒绝", () => { if (checkSafety(tool("DANGER"), {}, { mode: "pet" }).allowed) throw new Error("DANGER 被放行") }, "deep")
-export const NOWAY拒绝 = scene("safety-noway", "sf-04", "NOWAY 即使信任也拒绝", () => {
-  // 先真的把工具标成已信任，再断言 NOWAY 不因信任而放行
-  trustToolInSession("test_safety")
-  try {
-    if (checkSafety(tool("NOWAY"), {}, { mode: "assistant" }).allowed) throw new Error("NOWAY 被放行")
-  } finally {
-    resetSessionTrust()
-  }
+// 会话信任与安全裁决只有 `permission.ts` 一份实现：这里的断言直接打生产裁决入口。
+const context = (overrides: Partial<Parameters<typeof evaluateToolPermission>[2]> = {}) => ({
+  mode: "pet" as const, sessionId: "safety-boundary-session", runGeneration: 1,
+  toolCallId: "safety-boundary-call", policy: freezePermissionPolicy(), ...overrides,
+})
+
+export const SAFE放行 = scene("safety-safe", "sf-01", "SAFE 放行", async () => {
+  const result = await evaluateToolPermission(tool("SAFE"), {}, context())
+  if (result.decision !== "allow") throw new Error(`SAFE 未放行: ${result.decision}`)
+})
+export const NORMAL检查 = scene("safety-normal", "sf-02", "NORMAL 轻量模式检查", async () => {
+  const result = await evaluateToolPermission(tool("NORMAL"), {}, context())
+  if (result.decision !== "allow") throw new Error(`pet 模式 NORMAL 未放行: ${result.decision}`)
+}, "deep")
+export const DANGER拒绝 = scene("safety-danger", "sf-03", "DANGER 轻量模式拒绝", async () => {
+  const result = await evaluateToolPermission(tool("DANGER"), {}, context())
+  if (result.decision !== "deny") throw new Error(`pet 模式 DANGER 未拒绝: ${result.decision}`)
+}, "deep")
+export const NOWAY拒绝 = scene("safety-noway", "sf-04", "NOWAY 直接拒绝（与信任无关）", async () => {
+  const result = await evaluateToolPermission(tool("NOWAY"), {}, context({ mode: "assistant" }))
+  if (result.decision !== "deny") throw new Error(`NOWAY 被放行: ${result.decision}`)
 })
 export const 危险命令匹配 = scene("safety-danger-pattern", "sf-05", "危险命令匹配", () => {
   if (!matchesAnyPattern("sudo echo test", BASH_DANGEROUS_PATTERNS)) throw new Error("危险命令未命中")
@@ -112,18 +122,3 @@ export const 敏感路径匹配 = scene("safety-file-pattern", "sf-07", "敏感�
     throw new Error("pi-bash 把普通路径误判为硬禁止")
   }
 })
-export const 信任周期 = scene("safety-trust-lifecycle", "sf-08", "会话信任按调用生效、可清除且不越过动态禁止", () => {
-  trustToolInSession("test_safety")
-  if (!isToolTrusted("test_safety")) throw new Error("信任未记录")
-  const dynamic = { ...tool("NORMAL"), resolveSafetyLevel: () => "NOWAY" as const }
-  if (checkSafety(dynamic, {}, { mode: "assistant" }).allowed) throw new Error("信任绕过动态禁止")
-  resetSessionTrust()
-  if (isToolTrusted("test_safety")) throw new Error("信任未清除")
-
-  // 调用级信任只覆盖那一组参数：这是信任粒度收窄的核心断言
-  trustToolInSession("test_safety", "signature-a")
-  if (!isToolTrusted("test_safety", "signature-a")) throw new Error("调用级信任未记录")
-  if (isToolTrusted("test_safety", "signature-b")) throw new Error("调用级信任越界到别的参数")
-  if (isToolTrusted("test_safety")) throw new Error("调用级信任不应升级成整个工具")
-  resetSessionTrust()
-}, "deep")

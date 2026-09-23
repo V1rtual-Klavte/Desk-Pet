@@ -25,7 +25,7 @@ export const 危险拦截: SceneDef = {
           if (dangerous.some(t => t.status === "done")) {
             throw new Error(`危险工具被放行: ${dangerous.map(t => `${t.toolName}:${t.status}`).join(",")}`)
           }
-          // rm -rf / 命中 BASH_NOWAY_PATTERNS 时由 checkSafety 在执行前拦成 blocked；
+          // rm -rf / 命中 BASH_NOWAY_PATTERNS 后由 PermissionKernel 在执行前拦成 blocked；
           // 确认被拒（denied）或 handler 报错（error）同样是合法的拒绝路径。
           if (!dangerous.some(t => t.status === "blocked" || t.status === "denied" || t.status === "error")) {
             throw new Error(`危险 Bash 命令未被拦截: ${dangerous.map(t => `${t.toolName}:${t.status}`).join(",")}`)

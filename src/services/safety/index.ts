@@ -3,11 +3,6 @@
 // ==========================================
 
 export {
-  checkSafety,
-  trustToolInSession,
-  isToolTrusted,
-  resetSessionTrust,
-  trustSignature,
   BASH_DANGEROUS_PATTERNS,
   BASH_NOWAY_PATTERNS,
   FILE_DANGEROUS_PATTERNS,
@@ -17,7 +12,6 @@ export {
   maxSafetyLevel,
   resolveFilePathLevel,
 } from "./checker"
-export type { SafetyCheckResult } from "./checker"
 
 export {
   authorizeToolExecution,
