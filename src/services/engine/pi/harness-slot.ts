@@ -594,7 +594,7 @@ export class HarnessSlot {
       // §4.2 保留：沿用旧值是对的 —— `toolPermitLimit` 只在成功后更新，失败时它仍代表上一次真正
       // 生效的上限；值的权威始终是许可所有者，槽只记下发值以免重复 IPC。调优失败不该让整个
       // run 起不来，所以这里只留痕不抛出。
-      log.warn("共享读上限下发失败，沿用许可所有者当前上限:", formatError(error))
+      log.warn("共享读上限下发失败，沿用所有者当前上限:", { requested: limit, applied: this.toolPermitLimit }, formatError(error))
     }
   }
 

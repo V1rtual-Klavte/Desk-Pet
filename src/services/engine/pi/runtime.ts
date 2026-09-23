@@ -1819,7 +1819,11 @@ function fromPiMessage(message: AgentMessage, id: string): Message | undefined {
   return undefined
 }
 
-/** UI 事件（工具状态、流式增量等）统一 best-effort：失败不影响回合。 */
+/**
+ * UI 事件（工具状态、流式增量等）统一 best-effort：失败不影响回合，
+ * 但保留 best-effort 语义的同时必须留下事件名 —— 界面少刷新一次与「这条事件从没发出」
+ * 在日志里要能分清（§4.1 就地留痕）。
+ */
 async function emitUiEvent(event: string, payload: Record<string, unknown>): Promise<void> {
-  try { await emit(event, payload) } catch { /* UI event is best effort */ }
+  try { await emit(event, payload) } catch (error) { log.warn("UI 事件发送失败（best-effort）:", event, formatError(error)) }
 }

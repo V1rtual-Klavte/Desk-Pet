@@ -521,28 +521,29 @@ onMounted(async () => {
   void refreshInterrupted();
 
   // ── 工具执行状态监听 ──
+  // 注册失败一律 error 级留痕（FIX-04 口径：事件监听注册失败 = 静默行为变化，不是可忽略的降级）。
   listen<{ toolName: string }>("tool-executing", (event) => {
     const hint = `正在使用 ${event.payload.toolName}...`
     toolStatus.value = { text: hint, visible: true }
-  }).then(fn => { cleanupToolExec = fn }).catch(() => {})
+  }).then(fn => { cleanupToolExec = fn }).catch(error => log.error("事件监听注册失败，工具状态不再更新:", formatError(error)))
   listen<{ toolName: string; success: boolean }>("tool-completed", (event) => {
     const hint = event.payload.success ? "完成啦～" : "出错了…"
     toolStatus.value = { text: hint, visible: true }
     // 工具结束是排队项消费/释放的常见时点，顺带刷新排队视图。
     refreshQueue()
     toolCompletedTimer.value = setTimeout(() => { if (toolStatus.value.text === hint) toolStatus.value.visible = false }, 2500)
-  }).then(fn => { cleanupToolDone = fn }).catch(() => {})
+  }).then(fn => { cleanupToolDone = fn }).catch(error => log.error("事件监听注册失败，工具完成状态不再更新:", formatError(error)))
 
   // ── 流式正文（运行内核 message_update → 事件通道）──
   listen<{ sessionId?: string; delta?: string }>("deskpet-assistant-stream", (event) => {
     handleStreamDelta(event.payload)
-  }).then(fn => { cleanupStreamDelta = fn }).catch(() => {})
+  }).then(fn => { cleanupStreamDelta = fn }).catch(error => log.error("事件监听注册失败，流式正文不再显示:", formatError(error)))
   listen<{ sessionId?: string }>("deskpet-assistant-stream-end", (event) => {
     // 真实消息由既有提交路径推送；这里只清掉不会再更新的瞬时文本。
     if (event.payload.sessionId === getActiveSessionId()) streamingText.value = ""
     // 消息边界是 lane 消费排队项的时点：刷新后离开列表的项即可报告「已加入本次对话」。
     refreshQueue()
-  }).then(fn => { cleanupStreamEnd = fn }).catch(() => {})
+  }).then(fn => { cleanupStreamEnd = fn }).catch(error => log.error("事件监听注册失败，流式结束不清屏:", formatError(error)))
 
   // ── 运行态（停止按钮）──
   listen<{ sessionId?: string; running?: boolean }>("deskpet-run-state", (event) => {
@@ -550,7 +551,12 @@ onMounted(async () => {
     if (event.payload.running === false) stopping.value = false
     // 运行开始/收尾都按 lane 快照刷新：按钮与排队视图同源，不靠事件负载记账。
     refreshQueue()
-  }).then(fn => { cleanupRunState = fn }).catch(() => {})
+  }).then(fn => { cleanupRunState = fn }).catch(error => {
+    log.error("事件监听注册失败，运行态与停止按钮不刷新:", formatError(error))
+    // 这一条最要紧：没有它用户既看不到「正在生成」，也拿不到停止按钮。复用既有的工具状态提示位
+    // 如实说明（决策 §7 #35：不新增常驻降级提示位、不引入轮询）。
+    toolStatus.value = { text: "运行状态监听未启动，请重启界面", visible: true }
+  })
 
   // 意图菜单点击外部关闭
   document.addEventListener("click", closeIntentMenu)
