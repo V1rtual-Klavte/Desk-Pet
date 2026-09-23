@@ -16,7 +16,7 @@ import {
   snapshotStagesCache, restoreStagesCache, clearStagesCache,
 } from "./stages-cache"
 import { createLogger } from "@/services/logger"
-import { formatError } from "@/services/error"
+import { formatError, reportError } from "@/services/error"
 
 const log = createLogger("Registry")
 
@@ -62,6 +62,7 @@ export async function initRegistry(): Promise<void> {
     clearStagesCache()
     runtimeReady = true
     log.error("启动人格激活失败:", result.error)
+    reportError("Registry", new Error(result.error), { kind: "启动人格激活失败", overlay: false })
     return
   }
   runtimeReady = true
@@ -108,6 +109,9 @@ async function prepareVariablePool(card: PersonalityCard): Promise<void> {
     variableDefs: card.sections.variableDefs,
     prevCardStates: prevVars?.card,
     prevInteractionStates: prevVars?.interaction,
+    // 游标必须透传：缺了这段，reset 游标只写不读，daily 跨重启仍不生效（FIX-38②）
+    lastDailyResetKey: prevVars?.lastDailyResetKey,
+    sessionKey: prevVars?.sessionKey,
   })
   await savePoolToDiskStrict()
 }

@@ -63,13 +63,6 @@ async function activateSession(sessionId: string): Promise<void> {
   if (activeSessionId.value !== sessionId) return
   chatHistory.splice(0, chatHistory.length, ...messages)
   unansweredCount.value = loadUnanswered(sessionId)
-
-  const meta = sessions.find(item => item.id === sessionId)
-  if (meta) {
-    // 变量池对齐真实会话开始时间
-    const { setSessionStart } = await import("@/services/personality")
-    setSessionStart(meta.createdAt)
-  }
   log.info(`Session: 已激活 ${sessionId} (${messages.length} 条)`)
 }
 
@@ -184,10 +177,6 @@ export async function createNewSession(): Promise<SessionMeta> {
   addSessionMeta(meta)
   saveSessionList([...sessions])
   prependSessionHistory(summary)
-
-  // 变量池对齐新会话开始时间
-  const { setSessionStart } = await import("@/services/personality")
-  setSessionStart(meta.createdAt)
 
   log.info(`Session: 新会话已创建 ${meta.id} (chatHistory: ${chatHistory.length} 条)`)
   return meta

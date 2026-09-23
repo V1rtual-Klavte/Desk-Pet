@@ -19,7 +19,7 @@ import { getSkillsPromptBlock, getSkillCatalogFingerprint } from "@/services/ski
 import { formatPoolForPrompt } from "@/services/personality/variable-pool"
 import { getActiveCard } from "@/services/personality/registry"
 import type { PersonalityCard } from "@/services/personality/types"
-import { getPoolSnapshot, getSessionStart, applyResetPolicies, refreshVariablePool, updateInteractionVar } from "@/services/personality/variable-pool"
+import { getPoolSnapshot, applyResetPolicies, refreshVariablePool, updateInteractionVar } from "@/services/personality/variable-pool"
 import { getFallbackReply, getSimpleStage } from "@/services/personality/stages-cache"
 import { generateReply, parseRuntimeData } from "@/services/reply"
 import { authorizeToolExecution, invalidatePermissionScope } from "@/services/safety"
@@ -56,8 +56,6 @@ import type { RuntimeTraceContext } from "@/services/engine/runtime"
 import { redactText, sha256Text, stableSerialize } from "@/services/engine/runtime"
 
 const log = createLogger("PiRuntime")
-
-const lastSeenSessionStarts = new Map<string, number>()
 
 /**
  * 向正在执行的回合投递新输入，先落盘（lane 持久 inbox）再影响模型。
@@ -641,11 +639,10 @@ export async function runPiAgentTurn(input: PiAgentTurnInput): Promise<PiAgentTu
   const runIsCurrent = () => harnessSlots.isCurrent(turnSessionId, generation)
   const assertCurrent = () => { if (!runIsCurrent()) throw new Error("回合已取消或运行代际已失效") }
   refreshVariablePool()
-  updateInteractionVar("unansweredCount", unansweredCount)
-  const currentSessionStart = getSessionStart()
-  const isNewSession = currentSessionStart !== lastSeenSessionStarts.get(turnSessionId)
-  lastSeenSessionStarts.set(turnSessionId, currentSessionStart)
-  applyResetPolicies(new Date(), isNewSession)
+  const interactionWrite = updateInteractionVar("unansweredCount", unansweredCount)
+  if (!interactionWrite.success) log.debug("interaction 未写入（回合上下文）:", turnSessionId, interactionWrite.error)
+  // 会话键由会话模块提供（SessionMeta.createdAt）；本波不传，session 判定为 inert
+  applyResetPolicies(new Date(), null)
   const currentCard = getActiveCard()
   const card = currentCard ? JSON.parse(JSON.stringify(currentCard)) as typeof currentCard : null
   const pool = getPoolSnapshot()

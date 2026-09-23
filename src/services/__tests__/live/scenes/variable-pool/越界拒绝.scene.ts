@@ -3,8 +3,8 @@ import type { CardVariableDef } from "@/services/personality/types"
 import { batchWriteVars, destroyPool, getPoolSnapshot, initVariablePool } from "@/services/personality/variable-pool"
 
 const DEFS: CardVariableDef[] = [
-  { scope: "card", name: "亲密度", type: "number", initial: 0, description: "亲密度", updateBy: "llm", persistent: true, min: 0, max: 10, reset: "never" },
-  { scope: "card", name: "心情", type: "string", initial: "平静", description: "心情", updateBy: "llm", persistent: true, enum: ["平静", "开心"], reset: "never" },
+  { scope: "card", name: "亲密度", type: "number", initial: 0, description: "亲密度", updateBy: "llm", min: 0, max: 10, reset: "never" },
+  { scope: "card", name: "心情", type: "string", initial: "平静", description: "心情", updateBy: "llm", enum: ["平静", "开心"], reset: "never" },
 ]
 
 /**

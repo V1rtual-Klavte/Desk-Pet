@@ -163,10 +163,10 @@ export const 激活卡驱动提示词 = unit("card-active-prompt", "pc-07", "激
 
 export const 切卡重置变量池 = unit("card-switch-resets-pool", "pc-06", "换一套 defs 后旧变量消失", () => {
   const FIRST: CardVariableDef[] = [
-    { scope: "card", name: "只属于A", type: "number", initial: 1, description: "", updateBy: "llm", persistent: true, min: 0, max: 9, reset: "never" },
+    { scope: "card", name: "只属于A", type: "number", initial: 1, description: "", updateBy: "llm", min: 0, max: 9, reset: "never" },
   ]
   const SECOND: CardVariableDef[] = [
-    { scope: "card", name: "只属于B", type: "string", initial: "x", description: "", updateBy: "llm", persistent: true, enum: ["x", "y"], reset: "never" },
+    { scope: "card", name: "只属于B", type: "string", initial: "x", description: "", updateBy: "llm", enum: ["x", "y"], reset: "never" },
   ]
 
   destroyPool()

@@ -20,7 +20,6 @@ export interface CardVariableDef {
   initial: VariablePrimitive
   description: string
   updateBy: VariableUpdateBy
-  persistent: boolean
   min?: number
   max?: number
   enum?: string[]
@@ -33,7 +32,6 @@ export interface VariableState {
   type: VariableType
   updatedAt: number
   updatedBy: "llm" | "manual" | "system" | "migration"
-  lastResetAt?: number
 }
 
 /** Card 的解析后 sections */

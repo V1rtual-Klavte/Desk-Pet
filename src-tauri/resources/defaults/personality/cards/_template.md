@@ -120,7 +120,6 @@ version: 1
   initial:     初始值（必填）
   description: 变量含义，LLM 据此判断何时更新（必填）
   updateBy:    "llm" | "manual" | "system"（card 默认 llm，interaction 默认 system）
-  persistent:  true | false（默认 true，跨会话持久化）
   min/max:     仅 number 类型可用
   enum:        仅 string 类型可用，可选值列表
   reset:       "never" | "daily" | "session"（默认 never）
@@ -146,8 +145,9 @@ version: 1
   isWeekend    boolean  dayOfWeek=0 或 dayOfWeek=6
   activeCardId string   当前启用的 Card ID
 
-  系统变量和所有 card/interaction 变量都可在 When 表达式中直接使用。
-  会话变量（topic/turnCount/tokenCount）第一版只进 Prompt，不进 When。
+  会话级重置请用 reset: session。
+
+  改角色设定/语言风格会使阶段文案在下次激活时重新生成，变量不受影响。
 -->
 
 ## card
@@ -158,7 +158,6 @@ version: 1
   initial: {初始值}
   description: {变量含义，LLM 据此判断何时更新}
   # updateBy: llm       # 可选，card 默认 llm
-  # persistent: true     # 可选，默认 true
   # min: {最小值}         # 可选，仅 number 类型
   # max: {最大值}         # 可选，仅 number 类型
   # enum: [{选项1}, {选项2}] # 可选，仅 string 类型

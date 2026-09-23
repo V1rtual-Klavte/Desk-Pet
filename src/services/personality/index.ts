@@ -17,7 +17,7 @@ export {
 export type { SwitchResult } from "./registry"
 
 // ── 人格运行时模块 ──
-export { initVariablePool, refreshVariablePool, getPoolSnapshot, formatPoolForPrompt, batchWriteVars, saveVariablePoolAsync, savePoolToDisk, savePoolToDiskStrict, loadCardVars, updateInteractionVar, setSessionVars, applyResetPolicies, computeSystemVariables, destroyPool, setSessionStart, getSessionStart, getVariableRegistry } from "./variable-pool"
+export { initVariablePool, buildPoolFromDefs, refreshVariablePool, getPoolSnapshot, formatPoolForPrompt, batchWriteVars, saveVariablePoolAsync, savePoolToDisk, savePoolToDiskStrict, loadCardVars, updateInteractionVar, applyResetPolicies, computeSystemVariables, destroyPool, getVariableRegistry } from "./variable-pool"
 export type { VariablePool, VariablePoolRuntimeState } from "./variable-pool"
 
 export { parseMustRules, formatAllRules } from "./must-rules"

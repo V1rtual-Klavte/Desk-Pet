@@ -65,7 +65,7 @@ data_root/
 ├── settings/       生产 CONFIG 与默认资源初始化标记
 ├── memory/         CANDY.md、User.md、Outside.md、MEMORY.md、Project.md
 ├── sessions/       聊天正文 JSONL（JsonlSessionRepo，每会话一个文件）与 index.json 可丢弃 UI 状态
-├── personality/    cards/、stages/{cardId}.json、vars.json
+├── personality/    cards/、stages/{cardId}.json
 ├── profiles/       {profileId}/ 下的 Profile 与素材
 ├── skills/         {name}/SKILL.md
 └── logs/           运行日志
