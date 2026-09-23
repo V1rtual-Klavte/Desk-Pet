@@ -6,6 +6,15 @@
 
 - 前端脚本与 pnpm 版本以 [package.json](../../package.json) 为准；[CI](../../.github/workflows/ci.yml) 当前使用 Node.js 22，在 macOS 与 Windows 各跑一遍 `pnpm run test:types` 与 `pnpm run test:rust`。
 - 有构建脚本的依赖由 [pnpm-workspace.yaml](../../pnpm-workspace.yaml) 的 allowBuilds 管理；已有 node_modules 的安装成功不能证明干净安装也成功。
+- `node_modules/**` 只读：调试插桩一律进业务代码或临时分支，不修改安装副本。曾有依赖包安装副本被手改注入 `__diag`/`hgdiag` 调试插桩（源项 HN-10），检测命令：`rg -n "__diag|hgdiag" node_modules/.pnpm/@earendil-works+pi-agent-core@*/node_modules/@earendil-works/pi-agent-core/dist/`，0 命中为正常。恢复步骤（顺序不可换）：
+
+  ```bash
+  rm -rf node_modules/.pnpm/@earendil-works+pi-agent-core@0.85.1_ws@8.21.3
+  pnpm install --frozen-lockfile
+  rm -rf node_modules/.vite
+  ```
+
+  最后一步必须做：`.vite/deps` 的失效键是 lockfile/config 摘要，不感知依赖文件被改；依赖安装或缓存失效会重新预打包，要么把插桩打进 bundle（每次 assistant 结束写 localStorage），要么在打包器作用域摊平不成立时于 `observer.end` 直接 `ReferenceError`。若第二步输出 `Already up to date` 而副本未恢复（pnpm 只比对状态摘要，不检查 `.pnpm` 目录是否完整），先删 `node_modules/.pnpm-workspace-state-v1.json` 再重跑同一命令。本约束只落文档、不加 CI 检查（CI 只跑双平台 `test:types`/`test:rust`，grep `node_modules` 的检查价值低且易漏），裁定理由见[前舞台修复方案](../plans/active/前舞台修复方案.md) §10。
 - `pnpm dev` 仅 Vite；完整 IPC/桌面行为通过 `pnpm tauri dev` 或 Live Test 宿主运行。
 - [tauri.conf.json](../../src-tauri/tauri.conf.json) 管理基础配置并默认构建 Windows NSIS；[macOS 配置](../../src-tauri/tauri.macos.conf.json) 覆盖为 app/dmg。macOS 签名、公证与 Windows 体验未完成项见[未完成工作与已知缺口](../plans/active/未完成工作与已知缺口.md)。
 - 本机 macOS 类型/编译检查不能覆盖 Windows 条件代码；Windows CI 的原生 check 与 `cargo test` 才能提供对应编译与单测证据，仍不替代 UI 验收。
