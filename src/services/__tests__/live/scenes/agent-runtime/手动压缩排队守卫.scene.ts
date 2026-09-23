@@ -10,15 +10,18 @@ import type { SceneDef } from "../../types"
 /**
  * 手动压缩的准入与续跑收口（HN-01 / FIX-71 / §7 #29）。
  *
- * 现场刻意制造「宿主镜像空、lane 真相非空」：首回合结束后槽被释放（用户切走），
- * 再发 `/compact` 时拿到的是新建的槽 —— 它的队列镜像从空开始（还没收到 queue_update），
- * 而 lane 持久 inbox 里仍留着一条 nextRun。旧实现按镜像判准入 → 放行 → 压缩后的续跑
- * 消费掉那条输入，而那段续跑没有宿主 spec（无人格前缀、无投影、RUNTIME_DATA 不剥离、
- * 结果不进 UI，还会把已结算的续跑报成「压缩完成」）。
+ * 现场：首回合结束后槽被释放（用户切走，镜像随槽消失），lane 持久 inbox 里仍留着一条 nextRun；
+ * 再发 `/compact` 时拿到的是新建的槽。旧实现按宿主镜像判准入 → 镜像为空 → 放行 → 压缩后的续跑
+ * 消费掉那条输入，而那段续跑没有宿主 spec（无人格前缀、无投影、RUNTIME_DATA 不剥离、结果不进 UI，
+ * 还会把已结算的续跑报成「压缩完成」）。
  *
- * 四条断言：① 准入回执是 pending 并带按 kind 的排队明细；② 压缩后没有新增 assistant 条目
- * （压缩与续跑都没发生）；③ 排队正文没有进 transcript；④ 那条 nextRun 仍在，由下一个
- * 显式回合恰好消费一次（不再是隐藏续跑）。镜像为空是场景前提，也是本场景要证明的判定依据。
+ * 镜像语义已随 STATE-02（T3.07）改变：开槽时 `seedQueuedMirror()` 会用 lane.watch() 的一次性读取
+ * 播种，镜像不再是「从空开始」。因此本场景**不再**能靠「镜像空」证明准入读的是 lane 真相 ——
+ * 播种后镜像与真相一致，两种实现都会拒绝。仍然成立且仍然要钉的是：① 准入回执是 pending 并带按
+ * kind 的排队明细（数字来自 lane 真相）；② 压缩后没有新增 assistant 条目（压缩与续跑都没发生）；
+ * ③ 排队正文没有进 transcript；④ 那条 nextRun 仍在，由下一个显式回合恰好消费一次（不再是隐藏
+ * 续跑）。另加一条对播种本身的正向断言：重建后的镜像 `loaded` 为真且恰好是那条 nextRun ——
+ * 镜像不可信时（播种未完成/失败）本场景的判定依据不成立，必须显式失败而不是静默通过。
  */
 const GUARD_TOOL = "live_t209_compact_guard"
 const GUARD_TOOL_ID = "live-t209-compact-guard"
@@ -38,7 +41,7 @@ let releasedWhenIdle = false
 let assistantBeforeCompact = -1
 let assistantAfterCompact = -1
 let queuedTextBeforeNextTurn = -1
-let queuedMirrorAfterCompact = -1
+let queuedMirrorAfterCompact: { length: number; loaded: boolean; kinds: string[] } = { length: -1, loaded: false, kinds: [] }
 let compactionCountAfterCompact = -1
 let compactReply = ""
 let queuedDeliveredToModel = false
@@ -109,8 +112,10 @@ export const 手动压缩排队守卫: SceneDef = {
     gate!.release()
     await firstTurn
 
-    // 用户切走：槽被释放（镜像随槽消失，lane 持久 inbox 不受影响）——
-    // 这正是「镜像空、真相非空」的现场，场景的前提就是它成立。
+    // 用户切走：槽被释放，镜像随槽消失，lane 持久 inbox 不受影响（真相在 lane 不在槽）——
+    // `/compact` 用到的槽是这次重建出来的，它的镜像由开槽播种给出（见文件头）。
+    // 必须 await：释放包含「关 Harness（连同会话句柄）」的收尾，不等它收口就复用会话，
+    // 拿到的是正在关闭/已关闭的句柄（Session is closed），后面每一步都会失败。
     releasedWhenIdle = await harnessSlots.releaseWhenIdle(sessionId)
     assistantBeforeCompact = assistantTexts(await sessionMessages()).length
     compactReply = (await sendMessage("/compact")).reply
@@ -118,7 +123,8 @@ export const 手动压缩排队守卫: SceneDef = {
     const messagesAfterCompact = await sessionMessages()
     assistantAfterCompact = assistantTexts(messagesAfterCompact).length
     queuedTextBeforeNextTurn = countTexts(userTexts(messagesAfterCompact), QUEUED_TEXT)
-    queuedMirrorAfterCompact = listQueuedInputs(sessionId).items.length
+    const queueView = listQueuedInputs(sessionId)
+    queuedMirrorAfterCompact = { length: queueView.items.length, loaded: queueView.loaded, kinds: queueView.items.map(item => item.kind) }
     compactionCountAfterCompact = compactionEntries(await sessionEntries()).length
 
     // 显式回合的回复在压缩被拒之后才入队：压缩阶段不该消费任何 provider 响应。
@@ -149,9 +155,13 @@ export const 手动压缩排队守卫: SceneDef = {
         if (!compactReply.includes("下一次运行 1 条")) {
           throw new Error(`/compact 回执没有报出 nextRun 明细: ${JSON.stringify(compactReply)}`)
         }
-        // 判准入时宿主镜像确实是空的（新槽未收到 queue_update）：这就是「镜像空不再放行」。
-        if (queuedMirrorAfterCompact !== 0) {
-          throw new Error(`压缩阶段宿主队列镜像不为空（${queuedMirrorAfterCompact} 项）：镜像播种路径变了，本场景的判定依据需要复核`)
+        // 重建槽后镜像必须可信且与 lane 真相一致（STATE-02 的开槽播种）：镜像未就绪时准入判据
+        // 已按 fail-closed 拒绝，本场景的「pending 明细」就不再是 lane 真相的证据。
+        if (!queuedMirrorAfterCompact.loaded) {
+          throw new Error("压缩阶段宿主队列镜像未就绪：播种路径变了或读失败，本场景的判定依据不成立")
+        }
+        if (queuedMirrorAfterCompact.length !== 1 || queuedMirrorAfterCompact.kinds[0] !== "nextRun") {
+          throw new Error(`重建槽的队列镜像不是恰好一条 nextRun: ${JSON.stringify(queuedMirrorAfterCompact)}`)
         }
 
         // ② 压缩后没有新增 assistant 条目：压缩与它的隐藏续跑都没有发生。
