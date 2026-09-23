@@ -1,8 +1,9 @@
 <script setup lang="ts">
-import { computed, ref, onMounted, onUnmounted } from "vue"
+import { computed, ref, onMounted, onUnmounted, watch } from "vue"
 import { listen } from "@tauri-apps/api/event"
-import type { PlanStep } from "@/services/engine"
-import { abortRunningPlan, planConfirmState, resolvePlanConfirm, resolvePlanStepDecision } from "@/services/engine"
+import type { PlanStep, PlanStepState, RecoveredPlanView } from "@/services/engine"
+import { abortRunningPlan, discardPlan, listRecoveredPlans, planConfirmState, resolvePlanConfirm, resolvePlanStepDecision, resumePlan } from "@/services/engine"
+import { planCheckpointStore } from "@/services/agent/memory"
 import { getActiveSessionId } from "@/services/session/store"
 import { reportError } from "@/services/error"
 import { createLogger } from "@/services/logger"
@@ -17,6 +18,17 @@ interface StepStatus {
 /** 四个计划事件的公共身份段（PLAN-04）：面板只消费当前活跃会话的载荷。 */
 interface PlanEventIdentity { sessionId: string; planId: string }
 
+/** 待处置计划的步骤展示（恢复视图）：`unknown_side_effect` 是唯一需要用户逐个处置的状态。 */
+const RECOVERED_STEP_VIEW: Record<PlanStepState, { icon: string; label: string }> = {
+  pending: { icon: "--", label: "待执行" },
+  running: { icon: "..", label: "待重跑" },
+  done: { icon: "OK", label: "已完成" },
+  failed: { icon: "XX", label: "失败" },
+  skipped: { icon: "--", label: "已跳过" },
+  interrupted: { icon: "..", label: "已中断" },
+  unknown_side_effect: { icon: "??", label: "未知副作用" },
+}
+
 const visible = ref(false)
 const forceStepByStep = ref(false)
 const steps = ref<StepStatus[]>([])
@@ -28,6 +40,10 @@ const total = ref(0)
 /** 面板当前展示的计划身份：确认与终止都按它转发，不跨会话误操作。 */
 const planId = ref("")
 const sessionId = ref("")
+/** 待处置计划（paused / interrupted）：只读视图，真相源在 planCheckpointStore。 */
+const recovered = ref<RecoveredPlanView[]>([])
+/** 处置请求在飞时按钮禁用：重复点「继续/丢弃」不产生第二次执行。 */
+const recoverBusy = ref(false)
 
 const activeId = computed(() => getActiveSessionId())
 /** 该计划是否仍有待确认的确认（渲染门）：会话切换会取消旧确认，取消后按钮不得再出现。 */
@@ -40,10 +56,26 @@ const gateHere = computed(() => {
 })
 /** 确认态需要活着的确认；执行态只需要面板自己知道在跑（plan-confirm 域的执行期登记在模块里）。 */
 const showPanel = computed(() => visible.value && sessionId.value === activeId.value && (executing.value || pendingHere.value))
+/** 恢复条上的动作在飞或该会话的计划正在执行时一律禁用。 */
+const recoverDisabled = computed(() => recoverBusy.value || executing.value)
 
 let unlistens: (() => void)[] = []
 
+/** 读当前会话的待处置计划：面板只渲染这份只读视图，不另存计划状态。 */
+function refreshRecovered(): void {
+  const activeSession = getActiveSessionId()
+  try {
+    // 没有活跃会话就没有可处置的对象（也不该把别的会话的计划摆出来）
+    recovered.value = activeSession ? listRecoveredPlans(activeSession) : []
+  } catch (error) {
+    // 读不到清单不该拖垮面板：报告后按空清单收起，不摆出按不了或按错的按钮
+    reportError("PlanConfirm", error, { kind: "待处置计划读取失败", overlay: false })
+    recovered.value = []
+  }
+}
+
 onMounted(async () => {
+  refreshRecovered()
   try {
     // 四个监听要么一起成功要么一起失败：注册失败 = 确认永远等不到答复（§4.1），
     // 由下面的 catch 立即结算，不能让计划段悬挂。
@@ -89,6 +121,8 @@ onMounted(async () => {
         },
       ),
       listen<{ sessionId: string; reason: string }>("deskpet-plan-end", (e) => {
+        // 待处置清单跟着结束事件刷新：被终止的计划重新变成「继续 / 丢弃」的一条
+        refreshRecovered()
         // 结束事件不带 planId（notifyPlanEnd 的签名只有 sessionId/reason），按会话身份收：
         // 同一会话同一时刻只有一个计划，属于本会话的结束事件就是本面板该收起的信号 ——
         // 用户切走期间也照收，回来时不会看到已经结束的僵尸面板。
@@ -107,6 +141,41 @@ onMounted(async () => {
     if (pending) resolvePlanConfirm(pending.planId, { confirmed: false, reason: "ui_unavailable" })
   }
 })
+
+/** 切会话就重读待处置清单：上个会话的计划不能留在这一条的按钮后面。 */
+watch(activeId, refreshRecovered)
+
+/** 处置动作的统一包装：禁用重复提交、异常上报、无论成败都重读清单（真相源在 store）。 */
+async function withRecoverAction(kind: string, action: () => Promise<unknown>): Promise<void> {
+  if (recoverDisabled.value) return
+  recoverBusy.value = true
+  try {
+    await action()
+  } catch (error) {
+    reportError("PlanConfirm", error, { kind, overlay: false })
+  } finally {
+    recoverBusy.value = false
+    refreshRecovered()
+  }
+}
+
+/** 继续：只跑剩余步骤（不重新生成、不重新确认）；拒绝与失败的系统消息由恢复入口写出。 */
+function continueRecoveredPlan(planIdValue: string): void {
+  void withRecoverAction("计划继续失败", () => resumePlan(getActiveSessionId(), planIdValue))
+}
+
+/** 丢弃：剩余待执行步骤作废、计划落失败并收起面板。 */
+function discardRecoveredPlan(planIdValue: string): void {
+  void withRecoverAction("计划丢弃失败", () => discardPlan(getActiveSessionId(), planIdValue))
+}
+
+/**
+ * 未知副作用步骤的显式处置：标记为已完成（副作用确已生效）/ 重跑此步（记一次新执行尝试）。
+ * 未处置的步骤不会在任何一条出口里自动重跑 —— 这是必须由用户做的选择。
+ */
+function resolveRecoveredStep(planIdValue: string, stepId: string, resolution: "already_applied" | "retry"): void {
+  void withRecoverAction("未知副作用步骤处置失败", () => planCheckpointStore.resolveUnknownSideEffect(planIdValue, stepId, resolution))
+}
 
 onUnmounted(() => unlistens.forEach(fn => fn()))
 
@@ -167,6 +236,32 @@ function abortExecution() {
       </template>
     </div>
   </div>
+
+  <!-- 恢复待处置条（T2.08）：paused / interrupted 计划的两条出口，与 #ch-interrupted 同款决策条 -->
+  <div v-if="recovered.length" id="ch-plans" class="plan-recover">
+    <div v-for="plan in recovered" :key="plan.planId" class="recover-plan">
+      <div class="recover-head">
+        上次的计划还没跑完：{{ plan.summary }}。继续只跑剩下的步骤，未知副作用步骤不会自动重跑 —— 需要你先标记或选择重跑。
+      </div>
+
+      <div class="plan-steps">
+        <div v-for="step in plan.steps" :key="step.stepId" class="step" :class="step.state">
+          <span class="step-icon">{{ RECOVERED_STEP_VIEW[step.state].icon }}</span>
+          <span class="step-desc">{{ step.title }}</span>
+          <span class="step-state">{{ RECOVERED_STEP_VIEW[step.state].label }}</span>
+          <template v-if="step.state === 'unknown_side_effect'">
+            <button class="btn-step" :disabled="recoverDisabled" @click="resolveRecoveredStep(plan.planId, step.stepId, 'already_applied')">标记为已完成</button>
+            <button class="btn-abort" :disabled="recoverDisabled" @click="resolveRecoveredStep(plan.planId, step.stepId, 'retry')">重跑此步</button>
+          </template>
+        </div>
+      </div>
+
+      <div class="actions">
+        <button class="btn-auto" :disabled="recoverDisabled" @click="continueRecoveredPlan(plan.planId)">继续</button>
+        <button class="btn-cancel" :disabled="recoverDisabled" @click="discardRecoveredPlan(plan.planId)">丢弃</button>
+      </div>
+    </div>
+  </div>
 </template>
 
 <style scoped>
@@ -203,6 +298,21 @@ function abortExecution() {
 .actions { display: flex; gap: 6px; align-items: center; }
 button { padding: 4px 12px; border-radius: 6px; border: none; font-size: 11px; cursor: pointer; font-family: inherit; }
 button:hover { opacity: 0.85; }
+button:disabled { opacity: 0.45; cursor: default; }
+.plan-recover {
+  background: var(--color-surface-darker, #1e1e2e);
+  border: 1px solid var(--color-border-light, #313244);
+  border-radius: 12px;
+  padding: 12px;
+  margin: 6px 8px;
+  max-width: 420px;
+  font-size: 11px;
+}
+.recover-plan + .recover-plan { margin-top: 10px; border-top: 1px solid var(--color-border-light, #313244); padding-top: 10px; }
+.recover-head { margin-bottom: 10px; font-size: 10px; line-height: 1.5; color: var(--color-text-bright, #cdd6f4); }
+.step.unknown_side_effect { border-left: 3px solid #f9e2af; }
+.step.interrupted { border-left: 3px solid #f38ba8; opacity: 0.7; }
+.step-state { font-size: 9px; color: var(--color-text-muted, #6c7086); flex: 0 0 auto; }
 .btn-auto { background: var(--color-accent, #cba6f7); color: var(--color-tab-active-text, #1e1e2e); }
 .btn-step { background: var(--color-surface-dark, #45475a); color: var(--color-text-bright, #cdd6f4); border: 1px solid var(--color-border-light, #313244); }
 .btn-cancel, .btn-abort { background: transparent; color: var(--color-text-muted, #6c7086); border: 1px solid var(--color-border-light, #313244); }

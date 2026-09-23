@@ -65,25 +65,36 @@ export async function stopActiveRun(
   return { steer: aborted?.steer ?? [], followUp: aborted?.followUp ?? [], planAborted }
 }
 
-/** 启动期恢复扫描：逐会话读 `deskpet.plan_checkpoint` 条目；单个会话失败不阻断其余恢复。 */
-export async function recoverPlanCheckpoints(): Promise<number> {
+/**
+ * 启动期恢复扫描：逐会话读 `deskpet.plan_checkpoint` 条目；单个会话失败不阻断其余恢复。
+ * 失败不静默（FIX-30④）：日志 + `reportError` + 该会话的 `deskpet.plan_recovery_failed` 证据条目，
+ * 返回 `{ recovered, failed }` 供调用方如实上报两个数字。
+ */
+export async function recoverPlanCheckpoints(): Promise<{ recovered: number; failed: number }> {
   let recovered = 0
+  let failed = 0
   let metadata: Awaited<ReturnType<typeof listPiSessionMetadata>>
   try {
     metadata = await listPiSessionMetadata()
   } catch (error) {
-    log.warn("Plan checkpoint 恢复扫描失败:", formatError(error))
-    return 0
+    // 列不出会话清单就一条都扫不到：如实上报失败，不静默当成「没有计划需要恢复」
+    log.error("Plan checkpoint 恢复扫描失败:", formatError(error))
+    reportError("Agent", error, { kind: "Plan 恢复扫描失败", overlay: false })
+    return { recovered: 0, failed: 0 }
   }
   for (const item of metadata) {
     try {
       recovered += (await planCheckpointStore.recover(item.id)).length
     } catch (error) {
-      log.warn("Plan checkpoint 恢复失败:", item.id, formatError(error))
+      failed++
+      log.error("Plan checkpoint 恢复失败:", item.id, formatError(error))
+      reportError("Agent", error, { kind: "Plan 恢复失败", overlay: false })
+      await planCheckpointStore.writeRecoveryFailure(item.id, formatError(error))
+        .catch(writeError => log.error("Plan 恢复失败证据条目写入失败:", item.id, formatError(writeError)))
     }
   }
-  if (recovered) log.info("Plan checkpoint 恢复完成:", recovered)
-  return recovered
+  if (recovered || failed) log.info("Plan checkpoint 恢复完成:", { recovered, failed })
+  return { recovered, failed }
 }
 
 function makeIngressId(prefix: string): string {
@@ -109,7 +120,8 @@ export async function initChat(): Promise<void> {
 
   const sessions = await initSessions()
   log.info("会话已恢复:", sessions.length, "个, 活跃:", getActiveSessionId())
-  await recoverPlanCheckpoints()
+  const { recovered, failed } = await recoverPlanCheckpoints()
+  log.info("Plan checkpoint 恢复:", { recovered, failed })
 
   const greeting = pickActiveGreeting()
   if (greeting) await initWelcome(greeting)

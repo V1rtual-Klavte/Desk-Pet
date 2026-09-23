@@ -5,10 +5,13 @@ export {
   compactActiveSession,
   continueInterruptedRun,
   deliverActiveTurn,
+  discardPlan,
   discardInterruptedRun,
   getInterruptedRun,
   listQueuedInputs,
+  listRecoveredPlans,
   pausedInputsText,
+  resumePlan,
   returnPausedInputs,
   runPiAgentTurn,
   runPiSubAgent,
@@ -25,6 +28,7 @@ export type {
   PiSubAgentOutput,
   PiSubAgentScope,
   QueuedInputsView,
+  RecoveredPlanView,
   TurnFailure,
 } from "./runtime"
 

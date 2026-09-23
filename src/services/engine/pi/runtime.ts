@@ -6,14 +6,14 @@ import { contentText } from "@earendil-works/pi-ai"
 import type { AgentMessage, SettledAssistantMessage } from "@earendil-works/pi-agent-core"
 import type { Usage } from "@earendil-works/pi-ai"
 import type { Message, ThinkingEffort } from "@/services/agent/types"
-import type { ContextAllocation, ContextBlock, IngressEnvelope, PromptSnapshot, PromptTransform } from "@/services/engine/runtime"
+import type { ContextAllocation, ContextBlock, IngressEnvelope, PlanState, PlanStepRecord, PromptSnapshot, PromptTransform } from "@/services/engine/runtime"
 import { createMessageId } from "@/services/agent/types"
 import { MemoryService, recallMemory, planCheckpointStore } from "@/services/agent/memory"
 import type { StructuredSummary } from "@/services/agent/memory"
 import { buildPrompt, contextBudget, CONTEXT_RATIOS, estimateRequestTokens, estimateContextTokens, estimateMessageTokens, ContextBudgetError, projectToolMessages } from "@/services/context"
 import { bindRunningPlan, clearRunningPlan, notifyPlanEnd, requestPlanConfirm, requestPlanStepDecision } from "@/services/engine/plan-confirmation"
 import type { PlanConfirmResult } from "@/services/engine/plan-confirmation"
-import { executePlan, evaluateComplexity, formatStepResults, generatePlan, normalizePlan, planEffectClassFor, planToRecords } from "@/services/engine/planner"
+import { executePlan, evaluateComplexity, formatStepResults, generatePlan, normalizePlan, planEffectClassFor, planToRecords, recordsToPlan } from "@/services/engine/planner"
 import type { PlanExecutionResult, PlanResult } from "@/services/engine/planner"
 import { recordMessage, recordToolCall, transition } from "@/services/engine/session"
 import { getEffectiveSafetyMode, getEffectiveThinkingEffort, recordModelUsage, updateRequestStats } from "@/services/debug"
@@ -711,8 +711,6 @@ export async function runPiAgentTurn(input: PiAgentTurnInput): Promise<PiAgentTu
         sessionId: turnSessionId,
         planId: `plan-${input.ingress?.requestId ?? crypto.randomUUID()}`,
         rootTurnId: input.turnId ?? input.ingress?.parentTurnId ?? `turn-${input.ingress?.requestId ?? crypto.randomUUID()}`,
-        approved: false,
-        stepMode: "auto",
         confirmSignal: planAbort.signal,
         parentSlot: slot,
         planAbort,
@@ -850,46 +848,49 @@ type PlanPhaseOutcome =
  * 相位不写助手正文：`declined` 的可见回复由调用方经 `finishWithoutTurn` 落盘，
  * `cancelled` 完全不写正文（取消不是模型回复，也不该被记成失败）。
  *
- * `plan`/`approved`/`stepMode` 与 `planInput` 分别服务两条入口：恢复入口（T2.08 传
- * `existingPlanId`）用落盘记录还原的 `plan`、声明 `approved: true`、`stepMode: "auto"`，
- * 跳过生成/规范化/落盘/确认（用户点「继续」就是那次确认）；新建计划用 `planInput` 生成，
- * `approved`/`stepMode` 由确认段决定。`parentSlot` 供 T2.07 把子运行挂到父槽（取消域级联）
- * 使用；步骤结果条目不经过它，按父会话 `sessionId` 落盘。
+ * 两条入口共用「执行段」（`transitionPlan("running")` 之后）：
+ * - 新建（`planInput`）：生成 → 规范化 → 落盘 → 确认，`approved`/`stepMode` 由确认段给出；
+ * - 恢复（`existingPlanId`，T2.08）：计划与「已确认」都来自落盘记录（用户点「继续」就是那次确认），
+ *   跳过生成/规范化/落盘/确认，只按 record 顺序跑还能跑的步骤。
+ * `parentSlot` 供 T2.07 把子运行挂到父槽（取消域级联）使用；步骤结果条目不经过它，按父会话 `sessionId` 落盘。
  */
 async function runPlanPhase(args: {
   sessionId: string
-  planId: string
-  rootTurnId: string
-  plan?: PlanResult
-  approved: boolean
-  stepMode: "auto" | "stepByStep"
   confirmSignal: AbortSignal
   parentSlot: HarnessSlot
   planAbort: AbortController
   runIsCurrent: () => boolean
-  existingPlanId?: string
-  /** 新建计划的生成输入：用户请求文本与回合冻结的 Card 信息（恢复入口不需要）。 */
-  planInput?: { userText: string; cardId: string; cardRole: string }
-}): Promise<PlanPhaseOutcome> {
+} & (
+  | { planId: string; rootTurnId: string; planInput: { userText: string; cardId: string; cardRole: string } }
+  | { existingPlanId: string; approved: boolean }
+)): Promise<PlanPhaseOutcome> {
   const { sessionId, planAbort } = args
-  const planId = args.existingPlanId ?? args.planId
   // 子运行的代际身份：父槽的当前代际就是本回合的代际（计划段在回合内，槽不会被再次 begin）。
   const parentGeneration = args.parentSlot.generation
   // 计划段的事件回调与终态写盘都按回合代际核对：取消后不再写计划状态、不再发进度。
   // 只认代际（`runIsCurrent`）——切会话不取消执行中的计划，只把面板移出视图（FIX-32）。
   const assertCurrent = () => { if (!args.runIsCurrent()) throw new Error("回合已取消或运行代际已失效") }
+  let planId: string
   let plan: PlanResult
   let stepMode: "auto" | "stepByStep"
 
-  if (args.existingPlanId !== undefined) {
-    // 恢复入口：记录已在盘上，计划与「已确认」都来自它；跑哪些步骤由调用方筛好
-    if (!args.plan) throw new Error("计划恢复入口缺少 plan（应由 recordsToPlan 从落盘记录还原）")
+  if ("existingPlanId" in args) {
+    planId = args.existingPlanId
     // 没声明「已确认」就不许走恢复：否则等于在没有用户确认的情况下执行落盘计划
     if (!args.approved) throw new Error("计划恢复入口必须声明 approved: true（用户点「继续」就是那次确认）")
-    plan = args.plan
-    stepMode = args.stepMode
+    // 恢复入口不进生成段，但同样要从 PLANNING 起跑：步骤子代理会把会话状态推到 EXECUTING，
+    // 而 `WAITING → EXECUTING` 不在允许迁移表内；`PLANNING → EXECUTING` 才是合法前态。
+    transition("PLANNING", sessionId)
+    const recovered = planCheckpointStore.snapshot(planId)
+    if (!recovered) throw new Error(`计划恢复入口找不到落盘记录: ${planId}`)
+    // 只跑还能跑的步骤：`pending`，以及「重跑此步」（FIX-30⑤）重新武装成 `running` 的那一步。
+    // 恢复扫描已保证崩溃残留的 `running` 步骤都被定档，这里出现的 `running` 只来自用户的显式选择。
+    // 已 `done`/`skipped` 的步骤保留在 checkpoint 里，不进本次执行与结果段。
+    plan = recordsToPlan(recovered.plan, recovered.steps.filter(step => step.state === "pending" || step.state === "running"))
+    // 恢复即已确认：不再问一次「全部执行/逐步确认」，也不重新生成
+    stepMode = "auto"
   } else {
-    if (!args.planInput) throw new Error("计划段缺少生成输入（planInput）")
+    planId = args.planId
     transition("PLANNING", sessionId)
     const generated = await generatePlan(args.planInput.userText, {
       cardId: args.planInput.cardId,
@@ -1173,6 +1174,130 @@ async function finishWithoutTurn(args: { sessionId: string; slot: HarnessSlot; r
     abortedByStop: true,
     ...(persistFailed ? { persistFailed: true } : {}),
   }
+}
+
+// ── 计划恢复入口（T2.08：PLAN-01 / FIX-30①②） ──
+//
+// `paused`（上次恢复的产物）与 `interrupted`（用户终止）计划只有两条出口：继续（只跑剩余步骤，
+// 不重新生成、不重新确认）与丢弃（剩余 `pending` 落 `skipped`、计划落 `failed`）。
+// `unknown_side_effect` 步骤两条路都不自动重跑：继续会被明确拒绝，丢弃只把它记成未处置。
+
+/** 待处置计划的只读视图；面板按它渲染继续/丢弃，不为同一状态另存一份。 */
+export interface RecoveredPlanView {
+  planId: string
+  sessionId: string
+  state: PlanState
+  summary: string
+  steps: PlanStepRecord[]
+}
+
+/**
+ * 待处置（有继续/丢弃出口）的计划态：恢复产出的 `paused` 与用户终止留下的 `interrupted`。
+ * store 的内存 map 里还留着本进程内已跑完的计划（`done`/`failed`），它们没有出口，不算待处置。
+ */
+const RESOLVABLE_PLAN_STATES: ReadonlySet<PlanState> = new Set<PlanState>(["paused", "interrupted"])
+
+/** 待处置计划清单（`planCheckpointStore.recover()` 的内存产出）；带 `sessionId` 时只看该会话。 */
+export function listRecoveredPlans(sessionId?: string): RecoveredPlanView[] {
+  return planCheckpointStore.listRecovered(sessionId)
+    .filter(item => RESOLVABLE_PLAN_STATES.has(item.plan.state))
+    .map(item => ({
+      planId: item.plan.planId,
+      sessionId: item.plan.sessionId,
+      state: item.plan.state,
+      summary: item.plan.summary,
+      steps: item.steps,
+    }))
+}
+
+/**
+ * 继续一个待处置计划：只跑剩余步骤（`pending` 与用户已选择重跑的步骤），不重新生成、不重新确认。
+ *
+ * 收尾与主回合同一条归宿，但不追加模型总结（省一次调用与 token）：完成只写系统消息与阶段文案，
+ * 因此这次恢复不构造步骤上下文 —— 将来若要「继续后给一句话总结」，用户可见的步骤结果必须由
+ * 落盘的 `PLAN_STEP_RESULT_ENTRY` 条目重建（FIX-30②），不能复用内存里的 `PlanExecutionResult`。
+ * 拒绝与失败都写系统消息并返回 undefined —— 面板据此只做刷新，不需要自造文案。
+ */
+export async function resumePlan(sessionId: string, planId: string): Promise<PiAgentTurnOutput | undefined> {
+  const busyMessage = "这个会话正在忙，稍后再继续计划哦～"
+  // guard：该会话没有在飞槽（T2.10 起统一走 hasOpenOperation，本波先按运行态判定）
+  if (harnessSlots.peek(sessionId)?.isRunning() === true) {
+    pushSystemMessage(busyMessage)
+    return undefined
+  }
+  const recovered = planCheckpointStore.snapshot(planId)
+  if (!recovered || recovered.plan.sessionId !== sessionId || !RESOLVABLE_PLAN_STATES.has(recovered.plan.state)) {
+    log.warn("继续计划失败，没有这个待处置计划:", { sessionId, planId })
+    pushSystemMessage("没有找到这个待恢复的计划")
+    return undefined
+  }
+  // 未知副作用步骤必须先由用户处置（标记为已完成 / 重跑此步）：既不许自动重放，也不许静默跳过
+  if (recovered.steps.some(step => step.state === "unknown_side_effect")) {
+    pushSystemMessage("有未处置的未知副作用步骤，请先标记或重跑")
+    return undefined
+  }
+  const requestId = `plan-resume-${crypto.randomUUID()}`
+  const generation = harnessSlots.begin(sessionId, { requestId })
+  if (generation === undefined) {
+    pushSystemMessage(busyMessage)
+    return undefined
+  }
+  const slot = harnessSlots.get(sessionId)
+  harnessSlots.bindRun(sessionId, generation, { requestId })
+  const planAbort = new AbortController()
+  // 恢复没有主回合，但同样是一次真实的运行：界面按运行态通知显示停止入口，
+  // 停止经 `bindRunningPlan` 的中断通道（runPlanPhase 内登记）真正停在步骤边界。
+  void emitUiEvent("deskpet-run-state", { sessionId, running: true })
+  try {
+    // 步骤子代理可能用助手工具与 MCP：按主回合同款准备能力，收尾再释放
+    const { prepareConversationCapabilities } = await import("@/services/init")
+    await prepareConversationCapabilities("assistant", requestId)
+    const outcome = await runPlanPhase({
+      sessionId,
+      existingPlanId: planId,
+      approved: true,
+      confirmSignal: planAbort.signal,
+      parentSlot: slot,
+      planAbort,
+      runIsCurrent: () => harnessSlots.isCurrent(sessionId, generation),
+    })
+    if (outcome.kind === "completed") {
+      pushSystemMessage("计划剩余步骤已执行完成")
+      const output = await finishWithoutTurn({ sessionId, slot, reply: getSimpleStage("planning") ?? "计划完成啦～" })
+      return { ...output, abortedByStop: false }
+    }
+    // `declined`（逐步门/失败询问上中止）带自己的可见回复；`cancelled` 不写正文
+    const output = await finishWithoutTurn({ sessionId, slot, reply: outcome.kind === "declined" ? outcome.reply : "" })
+    return outcome.kind === "declined" ? { ...output, abortedByStop: false } : output
+  } catch (error) {
+    // 边界入口：异常不静默、不冒充成功；计划状态留在盘上，用户可稍后重试同一条计划
+    log.error("继续计划失败:", formatError(error))
+    reportError("PiRuntime", error, { kind: "计划继续失败", overlay: false })
+    pushSystemMessage("继续计划失败，计划状态保持不变，可稍后再试")
+    return undefined
+  } finally {
+    harnessSlots.end(sessionId, generation)
+    invalidatePermissionScope(sessionId, generation)
+    void emitUiEvent("deskpet-run-state", { sessionId, running: false })
+    const { releaseMcpOwner } = await import("@/services/tool")
+    await releaseMcpOwner(requestId)
+  }
+}
+
+/**
+ * 丢弃一个待处置计划：剩余 `pending` 步骤落 `skipped`、计划落 `failed`、收起面板并写系统消息。
+ * 未知副作用步骤保持原状（丢弃不等于替用户确认副作用已生效），计划不再可继续。
+ */
+export async function discardPlan(sessionId: string, planId: string): Promise<boolean> {
+  const recovered = planCheckpointStore.snapshot(planId)
+  if (!recovered || recovered.plan.sessionId !== sessionId || !RESOLVABLE_PLAN_STATES.has(recovered.plan.state)) return false
+  for (const step of recovered.steps) {
+    if (step.state === "pending") await planCheckpointStore.transitionStep(planId, step.stepId, "skipped")
+  }
+  await planCheckpointStore.transitionPlan(planId, "failed")
+  notifyPlanEnd(sessionId, "cancelled")
+  pushSystemMessage("计划已丢弃")
+  return true
 }
 
 /** 结算主回合：失败分类、超时、上限终止、最终回复校验与 RUNTIME_DATA 提交。 */
