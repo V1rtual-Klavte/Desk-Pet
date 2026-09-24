@@ -4,7 +4,7 @@
 
 general:
   mode: { assistant: false }
-  popup: { mode: cursor, autoPopupOnMessage: false, defaultSize: { w: 448, h: 272 } }
+  popup: { mode: cursor, autoPopupOnMessage: false, defaultSize: { w: 448, h: 272 }, fixedPosition: null, chatWidth: 220 }
   shortcut: { key: "P", macModifiers: ["Control", "Command"], winModifiers: ["Control", "Alt"] }
   logging: { level: debug }
   # 错误覆盖层：auto(dev 弹/生产不弹) | always | never
@@ -71,8 +71,8 @@ tools:
     servers: []
     builtin:
       filesystem:  { enabled: true,  command: npx, args: ["-y", "@modelcontextprotocol/server-filesystem", "/"], description: "📁 文件系统操作" }
-      brave-search: { enabled: false, command: npx, args: ["-y", "@anthropic/mcp-brave-search"], env: { BRAVE_API_KEY: "" }, description: "🔍 Brave Search" }
-      playwright:   { enabled: true,  command: npx, args: ["-y", "@anthropic/mcp-playwright"], description: "🎭 Playwright" }
+      brave-search: { enabled: false, command: npx, args: ["-y", "@brave/brave-search-mcp-server"], env: { BRAVE_API_KEY: "" }, description: "🔍 Brave Search" }
+      playwright:   { enabled: true,  command: npx, args: ["-y", "@executeautomation/playwright-mcp-server"], description: "🎭 Playwright" }
       git:          { enabled: false, command: npx, args: ["-y", "@anthropic/mcp-git", "/"], description: "📝 Git" }
       github:       { enabled: false, command: npx, args: ["-y", "@anthropic/mcp-github"], env: { GITHUB_PERSONAL_ACCESS_TOKEN: "" }, description: "🐙 GitHub" }
   # 首回合只读取 Skill 元数据；frontmatter 的 invocationPolicy: pet|assistant|both 决定模式可见性。
