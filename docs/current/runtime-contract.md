@@ -44,7 +44,7 @@ Provider 返回未预期的延迟响应（suspended）时按失败结算并取�
 
 ## 快照与人格状态
 
-- [`PromptSnapshot`](../../src/services/engine/runtime/snapshot.ts) 在 `transform_context`、`provider_payload` 和 `provider_usage` 阶段记录关联 ID、预算、分配、hash 与 usage，并记录「这是哪次请求」：`request`（用途与上游 step/attempt）、`payloadHash`、`systemPromptHash`、`requestParams`（provider payload 的参数，取不到就不写）、`plan`/`capabilities`（预检冻结：skillsFingerprint、safetyMode、逐请求累积的工具裁决）、`compaction`（换代次数、最近压缩条目与摘要 hash）、`generation`（槽代际）与 `budgetDrops`（整块淘汰）。一次性文本请求（planner/compaction/stages）在有会话归属时同样写 payload 与 usage 两档快照，块与消息用 `one-shot:<purpose>` 身份，与主回合的请求可区分；压缩/分支摘要的 payload 不写成主回合快照。system block、消息和工具 schema 不持久化原始正文；快照只保留脱敏 hash，`agentMessages[].contentHash` 走内容投影（不含 usage/时间戳），跨运行可复现。
+- [`PromptSnapshot`](../../src/services/engine/runtime/snapshot.ts) 在 `transform_context`、`provider_payload` 和 `provider_usage` 阶段记录关联 ID、预算、分配、hash 与 usage，并记录「这是哪次请求」：`request`（用途与上游 step/attempt）、`systemPromptHash`（三档可比）、`payloadHash` 与 `requestParams`（`provider_payload` 档由 `before_payload` 从实际 payload 采集，取不到就不写，不粘到同回合其它档）、`plan`/`capabilities`（预检冻结：skillsFingerprint、safetyMode、逐请求累积的工具裁决）、`compaction`（换代次数、最近压缩条目与摘要 hash）、`generation`（槽代际）与 `budgetDrops`（整块淘汰）。一次性文本请求（planner/compaction/stages）在有会话归属时同样写 payload 与 usage 两档快照，块与消息用 `one-shot:<purpose>` 身份，与主回合的请求可区分；压缩/分支摘要的 payload 不写成主回合快照。system block、消息和工具 schema 不持久化原始正文；快照只保留脱敏 hash，`agentMessages[].contentHash` 走内容投影（不含 usage/时间戳），跨运行可复现。
 - Card 和变量在回合开始冻结。回复中的 `RUNTIME_DATA` 只在当前 Card 的 id、hash、version 仍一致时写回；写入仍由变量注册表验证。[`generateReply`](../../src/services/reply/generator.ts) 与 [`batchWriteVars`](../../src/services/personality/variable-pool.ts)
 
 ## 尚未形成当前能力

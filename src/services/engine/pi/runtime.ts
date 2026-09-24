@@ -447,8 +447,14 @@ function createTurnKernel(options: TurnKernelOptions): TurnKernel {
         // 「这是哪次请求」：用途取内核冻结值，step/attempt 取上游逐请求（before_request）的当次值。
         request: { ...kernel.request, ...(kernel.currentRequest ?? {}) },
         systemPromptHash: await sha256Text(redactText(options.systemPrompt).text),
-        ...(kernel.payloadHash ? { payloadHash: kernel.payloadHash } : {}),
-        ...(kernel.requestParams ? { requestParams: { ...kernel.requestParams } } : {}),
+        // payload 的身份与参数只落在采集它的那一档（provider_payload）：内核字段跨档存活，
+        // 无差别展开会让 provider_usage 声称自己带参数，更会让下一轮请求的 transform_context
+        // 顶着上一份 payload 的 hash —— 它是「这次 payload 属于哪次请求」的答案，不能张冠李戴。
+        // 取不到参数就不写（不写空对象冒充「参数已记录」）。
+        ...(captureStage === "provider_payload" && kernel.payloadHash ? { payloadHash: kernel.payloadHash } : {}),
+        ...(captureStage === "provider_payload" && kernel.requestParams && Object.keys(kernel.requestParams).length
+          ? { requestParams: { ...kernel.requestParams } }
+          : {}),
         ...(kernel.plan ? { plan: { ...kernel.plan } } : {}),
         capabilities: kernel.capabilities,
         generation: kernel.generation,
