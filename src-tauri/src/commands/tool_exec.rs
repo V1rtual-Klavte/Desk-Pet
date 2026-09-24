@@ -1715,21 +1715,8 @@ mod tests {
     // 这组用例钉两件事：拒绝（`AppError::Tool`）与**不阻塞**（耗时上界）——
     // 少了时长断言，「无界 I/O 已消除」这个安全修复不可证。
 
-    /// FIFO 用例的临时目录。放在系统 temp 下：它本就在允许根（home/temp）内，
-    /// 用例才有机会走到类型判定，而不是被 `PATH_ESCAPE` 提前拦下。
-    #[cfg(unix)]
-    fn fifo_probe_dir(tag: &str) -> PathBuf {
-        let dir = std::env::temp_dir().join(format!(
-            "deskpet-fifo-{tag}-{}-{}",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_nanos()
-        ));
-        std::fs::create_dir_all(&dir).unwrap();
-        dir
-    }
+    // 本模块用例的临时目录统一走下面的 `probe_dir`（跨平台）；FIFO 相关的**用例**才按
+    // unix 收窄（`make_fifo` 与各 `#[cfg(unix)]` 测试），临时目录本身不是平台专有物。
 
     /// 建一个 FIFO。`mkfifo(1)` 不可用时返回 false 由调用方跳过，与 `paths.rs` 里
     /// `symlink_file` 的跳过分支同构：环境缺能力时跳过，而不是把跳过当失败。
@@ -1748,7 +1735,7 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn file_read_rejects_fifo_without_blocking() {
-        let dir = fifo_probe_dir("read");
+        let dir = probe_dir("read");
         let fifo = dir.join("probe.fifo");
         if !make_fifo(&fifo) {
             let _ = std::fs::remove_dir_all(&dir);
@@ -1773,7 +1760,7 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn file_read_binary_rejects_fifo() {
-        let dir = fifo_probe_dir("read-binary");
+        let dir = probe_dir("read-binary");
         let fifo = dir.join("probe.fifo");
         if !make_fifo(&fifo) {
             let _ = std::fs::remove_dir_all(&dir);
@@ -1798,7 +1785,7 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn file_write_rejects_existing_fifo() {
-        let dir = fifo_probe_dir("write");
+        let dir = probe_dir("write");
         let fifo = dir.join("probe.fifo");
         if !make_fifo(&fifo) {
             let _ = std::fs::remove_dir_all(&dir);
@@ -1824,7 +1811,7 @@ mod tests {
     /// 原子替换写入：覆盖已有正文，且不留临时文件。
     #[test]
     fn file_write_atomic_replaces_content_without_leftovers() {
-        let dir = fifo_probe_dir("atomic");
+        let dir = probe_dir("atomic");
         let target = dir.join("probe.txt");
         std::fs::write(&target, "旧正文").unwrap();
 
@@ -1848,7 +1835,7 @@ mod tests {
     /// 上限校验与 `file_write` 同口径：超限拒绝且不动目标。
     #[test]
     fn file_write_atomic_enforces_max_bytes() {
-        let dir = fifo_probe_dir("atomic-limit");
+        let dir = probe_dir("atomic-limit");
         let target = dir.join("probe.txt");
         std::fs::write(&target, "旧正文").unwrap();
 
@@ -1866,7 +1853,7 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn file_write_atomic_rejects_existing_fifo() {
-        let dir = fifo_probe_dir("atomic-fifo");
+        let dir = probe_dir("atomic-fifo");
         let fifo = dir.join("probe.fifo");
         if !make_fifo(&fifo) {
             let _ = std::fs::remove_dir_all(&dir);
@@ -1892,7 +1879,7 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn file_append_rejects_existing_fifo() {
-        let dir = fifo_probe_dir("append");
+        let dir = probe_dir("append");
         let fifo = dir.join("probe.fifo");
         if !make_fifo(&fifo) {
             let _ = std::fs::remove_dir_all(&dir);
@@ -1936,10 +1923,13 @@ mod tests {
 
     use crate::commands::bash_policy::BashScope;
 
-    /// 本组用例的临时目录：同一条用例的文件都落在这里，结束时整体删除。
+    /// 本模块用例的临时目录（跨平台）：同一条用例的文件都落在这里，结束时整体删除。
+    /// 放在系统 temp 下：它本就在允许根（home/temp）内，用例才有机会走到类型判定，
+    /// 而不是被 `PATH_ESCAPE` 提前拦下。FIFO 用例同样用它 —— 平台专有的是 FIFO 本身，
+    /// 不是临时目录。
     fn probe_dir(tag: &str) -> PathBuf {
         let dir = std::env::temp_dir().join(format!(
-            "deskpet-bash-{tag}-{}-{}",
+            "deskpet-{tag}-{}-{}",
             std::process::id(),
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
