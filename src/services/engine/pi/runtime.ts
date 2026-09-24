@@ -933,7 +933,10 @@ export async function runPiAgentTurn(input: PiAgentTurnInput): Promise<PiAgentTu
   if (mode === "assistant" && planConfig.enabled) {
     const forcePlan = userText.startsWith("--plan")
     if (forcePlan) planUserText = userText.replace(/^--plan\s*/, "")
-    const complexity = await evaluateComplexity(planUserText, planConfig.keywords, {
+    // 复杂度判定看**原文本**：`--plan` 的强制触发是 `evaluateComplexity` 的 startsWith 分支，
+    // 前缀只从交给规划 prompt 的正文（planUserText）里剥掉。剥早了 force 分支不命中，
+    // 计划在 `complexityEval=keyword` 下就永远不会被强制触发（2026-09-24 W5 整轮实测）。
+    const complexity = await evaluateComplexity(userText, planConfig.keywords, {
       sessionId: turnSessionId, derivedFrom: [requestId],
     })
     assertCurrent()
