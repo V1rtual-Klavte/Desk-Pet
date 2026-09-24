@@ -11,7 +11,7 @@ import { DEFAULT_PROFILE } from "@/services/paths";
 // 零依赖叶子：窗口语义的唯一定义点（默认 128k / 下限 64k），config 只做缺省引用。
 import { DEFAULT_CONTEXT_WINDOW } from "./context/budget";
 import { createLogger, LEVELS, LEVEL_ORDER, setLogLevel, type Level } from "@/services/logger";
-import { reportError } from "@/services/error";
+import { formatError, reportError } from "@/services/error";
 
 const log = createLogger("Config");
 
@@ -433,7 +433,10 @@ export function applyLogLevel(): Level {
   const level = computeLogLevel();
   setLogLevel(level);
   // 推给 Rust，保持两端过滤一致；Rust 未就绪时忽略（它有各自的构建默认值）
-  invoke("set_log_config", { level: LEVEL_ORDER[level] }).catch(() => {});
+  // 有意降级不是掩盖：日志级别下发失败时两端过滤级别不一致，Rust 侧会按其构建默认值过滤，
+  // 所以留 debug 级并写明后果（T4.41）。
+  invoke("set_log_config", { level: LEVEL_ORDER[level] }).catch(error =>
+    log.debug("日志级别下发 Rust 失败：两端过滤级别不一致，Rust 侧日志会按其构建默认值过滤", formatError(error)));
   return level;
 }
 

@@ -13,7 +13,8 @@ export const winCommands: SlashCommand[] = [
     // 只控制独立窗口，不涉及会话与运行状态。
     busyPolicy: "immediate",
     async execute() {
-      await invoke("open_windows_sim").catch(() => {})
+      // 失败不在这里吞：preprocessor 已把抛出的错误转成 log.error 与用户可见提示
+      await invoke("open_windows_sim")
       return null
     },
   },
@@ -23,7 +24,8 @@ export const winCommands: SlashCommand[] = [
     category: "easteregg" as const,
     busyPolicy: "immediate",
     async execute() {
-      await invoke("close_windows_sim").catch(() => {})
+      // 同上：处置链在 preprocessor 的 cmd.execute() catch 里
+      await invoke("close_windows_sim")
       return null
     },
   },
