@@ -1344,6 +1344,13 @@ export class HarnessSlot {
       // 运行收尾（含中止/失败）必须结束瞬时流式展示，不能让半截正文悬在 UI 上。
       this.endAssistantStream()
       this.activeRun = undefined
+      // 停止归还的入队是异步到达的：`abortSelf` 要等 lane.abort 返回后才 push，而那次返回
+      // 可能落在「本次收尾的 collectPendingDelivery 已经跑完、activeRun 还没清」的窗口里 ——
+      // 那个窗口里 abortSelf 按设计不自行入队（避免被在飞运行的队列收尾覆盖），push 就会
+      // 一直躺在 requeuePending 里，直到下一次运行的收尾才入队（本次停止等于没归还输入，
+      // 用户既看不到暂停项、也无法继续/丢弃）。activeRun 已清，这里补一次：晚到的 push
+      // 要么被这里收走，要么由 abortSelf 的即时 flush 处理，不再有丢失窗口。
+      await this.flushRequeueQueue()
       // 运行收尾通知：注册表的空闲回收器在这里判定是否删除并关闭本槽。
       // 此时宿主可能还没调用 end()（runner 的 end 与 runtime 的兜底落盘都在 run() 返回之后），
       // 所以注册表只在 !isRunning() 时真正释放，否则把请求归还给槽等 end()。
