@@ -69,7 +69,15 @@ let compactionSettled: Promise<true> | undefined
 let compactionDone = false
 let compactReply = ""
 let compactOutcome: string | undefined
-let requestsBeforeRefusal = -1
+let requestsAfterSetup = -1
+/**
+ * 「窗口开着」那一刻的 provider 请求数（摘要请求已计入）。
+ *
+ * 基线必须在这里取，而不是 `/compact` 发出之前：摘要请求**本身就是一次 provider 请求**
+ * （上游 `faux.js` 的 `callCount++` 在 `stream()` 入口同步发生，早于 step 回调），
+ * 拿 setup 后的计数当基线会把摘要请求自己算成「拒绝发了请求」（W5 第三轮实测 `2 → 3`）。
+ */
+let requestsAtWindowOpen = -1
 let assistantBeforeRefusal = -1
 let compactionCountAfterCompletion = -1
 
@@ -116,8 +124,14 @@ export const 压缩期准入: SceneDef = {
     compactReply = ""
     compactOutcome = undefined
     compactionCountAfterCompletion = -1
+    requestsAfterSetup = -1
+    requestsAtWindowOpen = -1
     let markSummaryStarted!: () => void
-    const summaryStarted = new Promise<void>(resolve => { markSummaryStarted = resolve })
+    // 完成值必须是可区分的真值：`bounded` 用 undefined 表示超时，而 Promise<void> 的完成值也是
+    // undefined —— 把两者混同会把「窗口已经造出来」判成「30s 没等到摘要请求」（W5 整轮的实测现场：
+    // setup 在 40ms 就抛这条，而同一现场是 忙=true、/compact 未结算、provider 请求数 setup=2/now=3，
+    // 也就是摘要请求已经进 provider 挂着 —— 窗口本来就是好的）。
+    const summaryStarted = new Promise<boolean>(resolve => { markSummaryStarted = () => resolve(true) })
     let markCompactionSettled!: () => void
     const settled = new Promise<true>(resolve => { markCompactionSettled = () => resolve(true) })
     compactionSettled = settled
@@ -131,6 +145,9 @@ export const 压缩期准入: SceneDef = {
       const text = lastRequestText(context)
       if (!text.includes("\"instructions\"")) throw new Error(`摘要脚本被非摘要请求取走: ${text.slice(0, 60)}`)
       summaryRequestInFlight = true
+      // 窗口开启的定位点：这一条请求已经计入 callCount（见字段注释），后续任何增长
+      // 都只能来自被拒绝的输入 —— 那才是本场景要挡的事。
+      requestsAtWindowOpen = fakeState?.callCount ?? -1
       markSummaryStarted()
       return (async () => {
         await gate
@@ -150,7 +167,7 @@ export const 压缩期准入: SceneDef = {
     await sendMessage(FIRST_USER)
     await sendMessage(PAD_USER)
     assistantBeforeRefusal = assistantTexts(await sessionMessages()).length
-    requestsBeforeRefusal = fakeState.callCount
+    requestsAfterSetup = fakeState.callCount
 
     // 手动压缩：不 await —— 它的摘要请求要一直挂着，窗口才存在。
     const compactPromise = sendMessage("/compact")
@@ -165,7 +182,9 @@ export const 压缩期准入: SceneDef = {
       markCompactionSettled()
     })
     const started = await bounded(summaryStarted, 30_000)
-    if (started === undefined || compactionDone) {
+    // `started !== true` 才是真超时（bounded 超时返回 undefined）；这里是与 `bounded` 的约定，
+    // 不是可选判断 —— 窗口没造出来时逐字给出拒绝它的那道门（见下方 detail）。
+    if (started !== true || compactionDone) {
       // 诊断口径：30s 没等到摘要请求时，只有 `/compact` 的终态能指出是哪道门拒绝了它 ——
       // 准入拒绝（pending / 队列未就绪 / closed / busy）、没有可摘要范围（nothing / declined），
       // 以及「摘要请求被别的请求取走了脚本」（setup 请求数会多出来，回执里带摘要内核的失败原因）。
@@ -177,7 +196,7 @@ export const 压缩期准入: SceneDef = {
         `回执=${JSON.stringify(compactReply)}`,
         `队列镜像 loaded=${view.loaded}/items=${view.items.length}`,
         `忙=${await isSessionBusy(sessionId)}`,
-        `provider 请求数 setup=${requestsBeforeRefusal}/now=${fakeState?.callCount ?? -1}`,
+        `provider 请求数 setup后=${requestsAfterSetup}/窗口开启=${requestsAtWindowOpen}/now=${fakeState?.callCount ?? -1}`,
       ].join("，")
       throw new Error(compactionDone
         ? `压缩在摘要请求在飞之前就结算了（${detail}）｜${sizing()}`
@@ -299,8 +318,9 @@ async function assertWindowRefusal(ctx: AssertContext): Promise<void> {
   if (countTexts(userTexts(messages), REFUSED_TEXT) !== 0) throw new Error("被拒绝的输入进了会话正文")
   const queued = harnessSlots.snapshot(sessionId)?.queued ?? []
   if (queued.length !== 0) throw new Error(`被拒绝的输入被静默排队: ${JSON.stringify(queued)}`)
-  if (state.callCount !== requestsBeforeRefusal) {
-    throw new Error(`准入拒绝仍向模型发了请求: ${requestsBeforeRefusal} → ${state.callCount}`)
+  if (requestsAtWindowOpen < 0) throw new Error("场景前置状态缺失：窗口开启时的请求数基线没有记录")
+  if (state.callCount !== requestsAtWindowOpen) {
+    throw new Error(`准入拒绝仍向模型发了请求: 窗口开启=${requestsAtWindowOpen} → ${state.callCount}`)
   }
 
   // ③ 同一窗口的 /clear：exclusive 命令必须被明确拒绝，且不能关掉还在飞的 Harness。

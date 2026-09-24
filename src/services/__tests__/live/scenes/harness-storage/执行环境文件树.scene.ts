@@ -14,6 +14,14 @@ function fileOk<T>(result: Result<T, FileError>): T {
   return result.value
 }
 
+/** 断言失败结果落在指定 FileErrorCode 上（按 Rust 结构化错误码归类，不按 message 文案猜）。 */
+function fileErrCode<T>(result: Result<T, FileError>, expected: FileError["code"], label: string): void {
+  if (result.ok) throw new Error(`${label}: 期望被拒绝，实际成功`)
+  if (result.error.code !== expected) {
+    throw new Error(`${label}: 期望 code=${expected}，实际 code=${result.error.code}（${result.error.message}）`)
+  }
+}
+
 export const 执行环境文件树: SceneDef = {
   meta: {
     caseId: "harness-execution-env-filetree",
@@ -108,6 +116,33 @@ export const 执行环境文件树: SceneDef = {
             const info = fileOk(await env.fileInfo(root, context))
             if (info.kind !== "directory") throw new Error(`createTempDir 应产出目录，实际 ${info.kind}`)
             if (root.startsWith(BaseDirs.sessions())) throw new Error("临时目录不应落在会话目录下")
+          } finally {
+            await env.remove(root, { recursive: true, force: true }, context)
+          }
+        },
+      },
+      {
+        // 失败归类按 Rust 结构化错误码（`error.rs` 的 code），不再拿 message 做正则：
+        // 旧实现按文案猜，凭据路径（「凭据路径不允许访问」）与相对路径（「工具路径必须是
+        // 绝对路径」）都会落成 unknown，目录目标（「目标是目录」）会落成 not_directory。
+        // 四条断言各钉一条映射，右列是旧实现下的结果，可见回归会被抓住。
+        type: "expectFileErrorsCarryStructuredCodes",
+        run: async () => {
+          const env = await createEnv()
+          const context = BACKGROUND_CONTEXT
+          const root = fileOk(await env.createTempDir("deskpet-live-err-", context))
+          try {
+            // PATH_NOT_FOUND → not_found（旧：not_found，按文案也能猜对）
+            fileErrCode(await env.remove(`${root}/missing.txt`, undefined, context), "not_found", "缺失路径 remove(force=false)")
+
+            // SENSITIVE_PATH → permission_denied（词法先于存在性：探针不指向真实凭据，也不需要它存在）
+            fileErrCode(await env.readTextFile(`${root}/.ssh/probe`, context), "permission_denied", "凭据路径 readTextFile")
+
+            // NOT_ABSOLUTE → invalid（旧：unknown，旧文案里没有可命中的关键词）
+            fileErrCode(await env.writeFile("deskpet-live-relative-probe.txt", "x", context), "invalid", "相对路径 writeFile")
+
+            // TOOL（「只允许操作常规文件」）不在映射表里 → 如实保持 unknown，不猜成 not_directory
+            fileErrCode(await env.readTextFile(root, context), "unknown", "目录作为文件 readTextFile")
           } finally {
             await env.remove(root, { recursive: true, force: true }, context)
           }

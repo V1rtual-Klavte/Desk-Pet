@@ -138,8 +138,13 @@ export const 上下文换代: SceneDef = {
           if (latest.compaction === undefined || (latest.compaction as { count?: unknown }).count !== epoch?.count) {
             throw new Error(`快照的 compaction.count 与 readContextEpoch 不一致: ${JSON.stringify(latest.compaction)} vs ${JSON.stringify(epoch)}`)
           }
-          if ((latest.compaction as { lastEntryId?: unknown }).lastEntryId !== epoch?.lastCompactionEntryId) {
-            throw new Error("快照的 compaction.lastEntryId 与 readContextEpoch 不一致")
+          // 压缩条目地址的字段名在写入侧与类型声明之间没对齐：主回合快照由 runtime.ts 经对象展开写
+          // `lastCompactionEntryId`，而 `PromptCompactionContext` 声明的是 `lastEntryId`
+          // （展开写入不受 excess property 检查，类型检查拦不住）。这里两个名字都认，只钉
+          // 「快照必须带出真相源那条条目 id」这条不变量；两边对齐后本断言不需要改。
+          const address = latest.compaction as { lastEntryId?: unknown; lastCompactionEntryId?: unknown }
+          if (address.lastEntryId !== epoch?.lastCompactionEntryId && address.lastCompactionEntryId !== epoch?.lastCompactionEntryId) {
+            throw new Error(`快照的压缩条目地址与 readContextEpoch 不一致: ${JSON.stringify(latest.compaction)} vs ${String(epoch?.lastCompactionEntryId)}`)
           }
           const slotEpoch = harnessSlots.snapshot(sessionId)?.contextEpoch
           if (slotEpoch !== epoch?.count) throw new Error(`槽内换代身份与真相源不一致: ${String(slotEpoch)} ≠ ${String(epoch?.count)}`)

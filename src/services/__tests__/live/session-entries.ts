@@ -20,6 +20,17 @@ export async function sessionMessages(sessionId?: string): Promise<Message[]> {
   return messagesFromEntries(await sessionEntries(sessionId))
 }
 
+/**
+ * 原始条目内消息的正文（字符串正文，或按读模型同口径拼接 text 块）。
+ *
+ * 读模型之外的断言需要它：「条目里有、视图里没有」这类对比必须看原始条目，
+ * 不能拿投影后的 `Message[]` 反推。
+ */
+export function entryMessageText(message: { content: string | readonly { type?: string; text?: string }[] }): string {
+  if (typeof message.content === "string") return message.content
+  return message.content.filter(part => part.type === "text").map(part => part.text ?? "").join("")
+}
+
 /** 用户消息正文（按条目顺序）。 */
 export function userTexts(messages: Message[]): string[] {
   return messages.filter(message => message.role === "user").map(message => message.text)

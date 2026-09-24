@@ -74,6 +74,46 @@ export const 会话重启恢复: SceneDef = {
           throw new Error(`会话文件不在 --cwd-- 子目录下: ${path}`)
         }
       },
+    },
+    {
+      // 列举归属（W1–W4：`list` 不再强制 `{ cwd: 本实例 cwd }`）。数据根变更或
+      // `--<cwd>--` 目录编码碰撞后，同一会话根里会有不属于当前数据根的会话 ——
+      // 它们必须被如实列出（消费侧再按 metadata.cwd 判别），而不是从列表里静默消失；
+      // 同时显式传入的 cwd 要被如实透传，不能被忽略后回退成本实例的 cwd。
+      type: "expectCrossRootSessionsStayListed",
+      run: async () => {
+        const env = new TauriExecutionEnv(await runtimePath("data"), "pet")
+        const sessionsRoot = await runtimePath("data", `cross-root-${crypto.randomUUID()}`)
+        const otherCwd = `${sessionsRoot}-other-cwd`
+        const here = await createPiSessionRepo({ sessionsRoot })
+        const elsewhere = await createPiSessionRepo({ sessionsRoot, cwd: otherCwd })
+        try {
+          await (await here.create({ id: "root-a" }, BACKGROUND_CONTEXT)).close(BACKGROUND_CONTEXT)
+          await (await elsewhere.create({ id: "root-b" }, BACKGROUND_CONTEXT)).close(BACKGROUND_CONTEXT)
+
+          // ① 不带 options：两个 cwd 目录里的会话都要在（旧实现只列本实例 cwd 的那一个）。
+          const all = await elsewhere.list(undefined, BACKGROUND_CONTEXT)
+          const ids = all.map(item => item.id).sort()
+          if (JSON.stringify(ids) !== JSON.stringify(["root-a", "root-b"])) {
+            throw new Error(`跨根会话未被如实列出: ${JSON.stringify(all.map(item => ({ id: item.id, cwd: item.cwd })))}`)
+          }
+          // ② 显式 cwd 被如实透传：指向别的归属时只列它，指向本实例归属时只列 root-b。
+          const rootA = all.find(item => item.id === "root-a")
+          if (!rootA) throw new Error("root-a 不在列举结果里")
+          const onlyA = await elsewhere.list({ cwd: rootA.cwd }, BACKGROUND_CONTEXT)
+          if (onlyA.length !== 1 || onlyA[0]?.id !== "root-a") {
+            throw new Error(`显式 cwd 未被如实透传（应只列 root-a）: ${JSON.stringify(onlyA.map(item => item.id))}`)
+          }
+          const onlyB = await elsewhere.list({ cwd: otherCwd }, BACKGROUND_CONTEXT)
+          if (onlyB.length !== 1 || onlyB[0]?.id !== "root-b") {
+            throw new Error(`显式 cwd 未被如实透传（应只列 root-b）: ${JSON.stringify(onlyB.map(item => item.id))}`)
+          }
+        } finally {
+          await here.close(BACKGROUND_CONTEXT)
+          await elsewhere.close(BACKGROUND_CONTEXT)
+          await env.remove(sessionsRoot, { recursive: true, force: true }, BACKGROUND_CONTEXT)
+        }
+      },
     }],
   }],
 }
