@@ -1957,15 +1957,16 @@ mod tests {
     /// 直接用 `touch` 会与 kill 抢时序 —— 子进程完全可能在 kill 生效前就写完文件，
     /// 断言变成抛硬币。把副作用推到延迟之后，结论只剩两种：子进程活着 → 文件出现；
     /// 子进程被终止 → 文件永远不出现。Windows 没有 `sleep`/`touch`，用 `ping`/`type` 同义形态。
-    fn delayed_probe(seconds: u32, sentinel: &Path) -> String {
-        let path = sentinel.display();
+    ///
+    /// 探针用**裸文件名**、靠 `run_bash` 的 `cwd` 落在用例目录里：`cmd /C` 不认 Rust 为参数
+    /// 做的 `\"` 转义（cmd 只认 `""`/`^"`），命令里带引号的绝对路径会被拆坏 —— 重定向目标
+    /// 变成 `\C:\…` 这种不存在的路径，探针根本写不出来（CI windows-latest 实测）。
+    /// 零引号的命令同时躲开「用户名带空格」的机器。
+    fn delayed_probe(seconds: u32, file: &str) -> String {
         if cfg!(windows) {
-            format!(
-                "ping -n {} 127.0.0.1 > nul && type nul > \"{path}\"",
-                seconds + 1
-            )
+            format!("ping -n {} 127.0.0.1 > nul && type nul > {file}", seconds + 1)
         } else {
-            format!("sleep {seconds}; touch \"{path}\"")
+            format!("sleep {seconds}; touch {file}")
         }
     }
 
@@ -1980,8 +1981,8 @@ mod tests {
         let control = dir.join("control.sentinel");
         let control_result = run_bash(
             pool.clone(),
-            delayed_probe(0, &control),
-            None,
+            delayed_probe(0, "control.sentinel"),
+            Some(dir.to_string_lossy().to_string()),
             Some("control-probe".into()),
             None,
             assistant_policy(),
@@ -2005,8 +2006,8 @@ mod tests {
 
         let result = run_bash(
             pool.clone(),
-            delayed_probe(1, &sentinel),
-            None,
+            delayed_probe(1, "sentinel"),
+            Some(dir.to_string_lossy().to_string()),
             Some(id),
             None,
             assistant_policy(),

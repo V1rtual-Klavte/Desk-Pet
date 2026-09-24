@@ -28,7 +28,7 @@ export const toolExecutionContract: ModuleContract = {
     "src/services/tool/types.ts",
   ],
   generatedAt: "2026-09-24",
-  sourceHash: "ca87feefb15d866f3e07e1591503d788bd1b9174d2de1b79312e6716c2c3bf23",
+  sourceHash: "1b87ad2892416c1f80f71e5ab1f03d22caf3101b98d70e9ea0acfeef26c54d98",
   coverage: [
     { id: "te-13", feature: "工具结果持久化与回读", description: "生产工具配对作为会话条目持久化，完整工具文本保留（L0只改请求视图，Router 无 L1 内联截断），read_session_event 按条目 id 分页回读并限定当前 session（reader 是槽上的 readToolResult，工具只认 entryId）；超上限边界上条目仍为全文、请求视图带真 eventId 地址、bash 截断带 spill 回读路径（实际生效上限由 Rust 回传）。注：MCP 结果限幅（`mcp/client.ts`：超过 MAX_MCP_RESULT_CHARS 截断，正文里如实标记「不保留全文」，不写假 eventId）未由本点的两个场景断言 —— 它们覆盖的是会话条目全文 / 请求视图缩短 / bash spill 三条路径", why: "短请求不能以丢失工具证据为代价", depth: "deep", scenarios: ["tool-transcript-recovery", "tool-archive-beyond-inline-limit"] },
     { id: "te-08", feature: "真 LLM 多工具调用", description: "真实 LLM 对话中先后调用多个工具", why: "端到端工具链验证", depth: "deep", scenarios: ["tool-system-info"] },
