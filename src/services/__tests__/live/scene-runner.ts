@@ -303,7 +303,9 @@ async function runSceneInner(
       const output = await executeTurn(turn.userText, entry, turn.isActiveMessage)
       const sessionId = getActiveSessionId()
       // 会话状态改读真实所有者：运行槽（HarnessSlot）与落盘条目，不再有进程内假状态机。
-      const messages = await sessionMessages(sessionId)
+      // unit 场景不建会话（executeTurn 直接返回空输出），此时按「无会话」退化：
+      // 空条目 + 槽状态 closed —— 不能把「没有活跃会话」记成 unit 场景的断言失败。
+      const messages = sessionId ? await sessionMessages(sessionId) : []
       const ctx: AssertContext = {
         output,
         pool: getPoolSnapshot(),

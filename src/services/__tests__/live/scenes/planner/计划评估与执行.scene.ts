@@ -1,6 +1,6 @@
 import type { SceneDef } from "../../types"
 import { fauxAssistantMessage, fauxText } from "@earendil-works/pi-ai"
-import type { PlanResult } from "@/services/engine/planner"
+import type { PlanResult, StepToolNotice } from "@/services/engine/planner"
 import { evaluateComplexity, executePlan, formatStepResults, generatePlan } from "@/services/engine/planner"
 import { getToolsForMode } from "@/services/tool"
 import { planConfig, setOverride } from "@/services/config"
@@ -133,19 +133,22 @@ export const 计划生成降级 = unit("plan-generate-fallback", "pl-08", "gener
   if (plan.steps.length === 0) throw new Error("降级计划不能是空的")
   if (plan.estimatedComplexity !== 1) throw new Error(`降级计划的复杂度应为 1，实际 ${plan.estimatedComplexity}`)
   if (!plan.steps[0]?.description) throw new Error("降级步骤缺少描述")
+  // 降级是用户可见的行为变化：生产段按这个标记发系统消息，丢了它用户会以为计划正常生成过
+  if (plan.degradedReason !== "json_parse_failed") throw new Error(`降级原因缺失: ${String(plan.degradedReason)}`)
 }, "deep")
 
-export const 步骤结果格式化 = unit("plan-format-steps", "pl-07", "formatStepResults 输出可读文本", () => {
+export const 步骤结果格式化 = unit("plan-format-steps", "pl-07", "formatStepResults 输出可读文本与回读地址", () => {
   const result = {
     stepResults: [
       {
         step: { id: 1, description: "读取配置" },
         output: { reply: "配置已读取" },
         durationMs: 1234,
+        resultEntryId: "entry-plan-step-1",
       },
       {
         step: { id: 2, description: "改写配置" },
-        output: { reply: "写失败：权限不足" },
+        output: { reply: "写失败：权限不足", error: "权限不足" },
         durationMs: 500,
       },
     ],
@@ -158,6 +161,12 @@ export const 步骤结果格式化 = unit("plan-format-steps", "pl-07", "formatS
   if (!text.includes("读取配置")) throw new Error("未包含步骤描述")
   if (!text.includes("配置已读取")) throw new Error("未包含步骤输出")
   if (!text.trim().length) throw new Error("格式化结果为空")
+
+  // 正文是截断预览，回读地址是模型与用户回到原文的唯一通道：有地址要标明、没有地址要如实说
+  if (!text.includes("entry-plan-step-1")) throw new Error(`已落盘的步骤结果没带可回读地址: ${text}`)
+  if (!text.includes("原文见")) throw new Error("可回读地址没有标注成可读形态")
+  if (!text.includes("原文未落盘")) throw new Error("没落盘的步骤结果被说成可回读")
+  if (!text.includes("权限不足")) throw new Error("错误正文被截掉或丢失")
 })
 
 export const 计划执行闭环 = unit("plan-execute-loop", "pl-06", "executePlan 逐步执行并回调", async () => {
@@ -175,6 +184,7 @@ export const 计划执行闭环 = unit("plan-execute-loop", "pl-06", "executePla
 
   const started: number[] = []
   const done: number[] = []
+  const notices: StepToolNotice[] = []
   const execution = await executePlan(
     plan,
     { stepTimeoutMs: 10_000, stepMaxRounds: 1, stepThinkingEffort: "low", maxSteps: 5, onStepFailure: "abort" },
@@ -182,6 +192,7 @@ export const 计划执行闭环 = unit("plan-execute-loop", "pl-06", "executePla
       onStepStart: step => { started.push(step.id) },
       onStepDone: step => { done.push(step.id) },
       onStepFailed: async () => "abort" as const,
+      onStepNotice: (_step, notice) => { notices.push(notice) },
     },
   )
 
@@ -191,4 +202,54 @@ export const 计划执行闭环 = unit("plan-execute-loop", "pl-06", "executePla
   if (execution.stepResults.length !== 2) throw new Error(`步骤结果数不对: ${execution.stepResults.length}`)
   if (!execution.overallSuccess) throw new Error("全部成功的计划被判为失败")
   if (formatStepResults(execution).length === 0) throw new Error("执行结果无法格式化")
+
+  // 未限定 allowedTools = 工具面放大到全部助手工具，必须逐步骤报告（不静默）
+  if (notices.length !== 2 || notices.some(notice => notice.kind !== "unbounded_tools")) {
+    throw new Error(`未限定工具的步骤没有被如实报告: ${JSON.stringify(notices)}`)
+  }
+
+  // 指定的工具不存在就不开工：拿剩下的工具跑等于这一步的权限面既不可信也不可复现。
+  // 「不开工」不等于 onStepStart 不触发 —— 它表示「步骤进入执行、计时开始」（planner.ts:368），
+  // 工具解析发生在那之后、runPiSubAgent 之前（executeStep，planner.ts:428-441），失败在括号内结账。
+  // 真正的判据是一次模型请求都没发出去：一个响应都不给，真跑起来就只能拿到 Provider 的
+  // 「No more faux responses queued」，而不是带工具名的解析错误。
+  const missingProvider = installFakeProvider([])
+  const missingNotices: StepToolNotice[] = []
+  const missingStarted: number[] = []
+  const missingDone: number[] = []
+  const blocked = await executePlan(
+    { steps: [{ id: 1, description: "用不存在的工具干活", allowedTools: ["live_missing_tool_probe"] }], summary: "缺工具", estimatedComplexity: 1 },
+    { stepTimeoutMs: 10_000, stepMaxRounds: 1, stepThinkingEffort: "low", maxSteps: 5, onStepFailure: "abort" },
+    {
+      onStepStart: step => { missingStarted.push(step.id) },
+      onStepDone: step => { missingDone.push(step.id) },
+      onStepFailed: async () => "abort" as const,
+      onStepNotice: (_step, notice) => { missingNotices.push(notice) },
+    },
+  )
+
+  if (missingNotices.length !== 1 || missingNotices[0]?.kind !== "missing_tools") {
+    throw new Error(`工具缺失没有被如实报告: ${JSON.stringify(missingNotices)}`)
+  }
+  if (missingNotices[0].kind === "missing_tools" && !missingNotices[0].names.includes("live_missing_tool_probe")) {
+    throw new Error(`报告里没带缺失的工具名: ${JSON.stringify(missingNotices[0])}`)
+  }
+  // 零请求 = 子代理一次都没起：没有请求就不可能跑出工具调用或正文。
+  if (missingProvider.payloads.length !== 0) {
+    throw new Error(`工具缺失的步骤仍向 Provider 发了 ${missingProvider.payloads.length} 次请求`)
+  }
+  // 步骤仍要走完 onStepStart→onStepDone 的括号：宿主靠这一段写进度事件与耗时，
+  // 失败证据（FIX-50 的 plan_step_result）就在 onStepDone 里落盘 —— 缺了它用户看不到产出。
+  if (missingStarted.join(",") !== "1" || missingDone.join(",") !== "1") {
+    throw new Error(`工具缺失的步骤没走完开工/完成回调: started=${missingStarted.join(",")} done=${missingDone.join(",")}`)
+  }
+  if (blocked.overallSuccess) throw new Error("工具缺失的步骤被判为成功")
+  const blockedOutput = blocked.stepResults[0]?.output
+  if (!blockedOutput?.error?.includes("live_missing_tool_probe")) {
+    throw new Error(`工具缺失的步骤没有留下带工具名的失败产出: ${JSON.stringify(blocked.stepResults[0])}`)
+  }
+  if (blockedOutput.reply !== "" || blockedOutput.toolCallsMade !== 0) {
+    throw new Error(`工具缺失的步骤留下了子代理产出: ${JSON.stringify(blockedOutput)}`)
+  }
+  if (blocked.cancelled !== undefined) throw new Error(`工具缺失被记成了取消归宿: ${JSON.stringify(blocked.cancelled)}`)
 }, "deep")

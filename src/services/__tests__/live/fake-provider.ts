@@ -38,7 +38,16 @@ export function installFakeProvider(responses: FauxResponseStep[], definition?: 
     model,
     streamFn: ((requestModel: Model<any>, context: Context, options?: SimpleStreamOptions): AssistantMessageEventStream => {
       payloads.push({ messages: context.messages, tools: context.tools })
-      options?.onPayload?.({ model: requestModel.id, messages: context.messages, tools: context.tools }, requestModel)
+      // 交出的 payload 要和真实 provider 的请求体同形：pi-ai 的 base options 会把生效的
+      // maxTokens（调用方没给就用模型能力值）落成 max_tokens/max_completion_tokens，
+      // 宿主 before_payload 才可能采集到请求参数（快照的 requestParams）。替身漏掉它，
+      // 「payload 参数 → 快照」这条链路在 Live 宿主里就永远不可达。
+      options?.onPayload?.({
+        model: requestModel.id,
+        messages: context.messages,
+        tools: context.tools,
+        max_tokens: options?.maxTokens ?? requestModel.maxTokens,
+      }, requestModel)
       return fake.provider.streamSimple(requestModel, context, options)
     }) as StreamFn,
   })

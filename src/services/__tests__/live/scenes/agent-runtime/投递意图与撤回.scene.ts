@@ -64,6 +64,10 @@ export const 投递意图与撤回: SceneDef = {
     steerReceipt = steer.delivery
 
     const queued = await waitForQueue(sessionId, items => items.length >= 2, "两条显式投递")
+    // 排队视图的 loaded 反映镜像是否可信：条目可见时镜像必须已就绪，否则「空列表」会被误当成「没有排队项」。
+    if (!listQueuedInputs(sessionId).loaded) {
+      throw new Error("排队项可见但队列镜像未就绪：loaded 不能反映镜像状态，排队视图不可信")
+    }
     queuedKinds = queued.map(item => item.kind)
     consumedSteerEntryId = queued.find(item => item.kind === "steer")?.entryId
 

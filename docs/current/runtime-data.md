@@ -114,4 +114,4 @@ Profile 导入、复制和编辑写入 `profiles/{profileId}/`；选择保存在
 
 ## 浏览器缓存边界
 
-localStorage 不保存配置、会话正文/列表、Profile 编辑结果、分割线位置或音效分配。配置初始化后清理已知旧缓存 key，避免缓存覆盖文件真相源；测试 keyspace 的清理由测试宿主管理。
+localStorage 不保存配置、会话正文/列表、Profile 编辑结果、分割线位置或音效分配。清理已知旧缓存 key 的兼容入口已随兼容层删除（`9d44e8f`，连同 `standard-setup.ts` 的调用），不再清理历史 key —— 配置真相源只有 CONFIG 文件，缓存不构成覆盖路径；测试 keyspace 的清理由测试宿主管理。

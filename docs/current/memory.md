@@ -22,9 +22,9 @@
 
 ## 压缩提交与恢复
 
-压缩由 Harness 调度（阈值 / 手动 `/compact`→`lane.compact()` / 一次性溢出恢复），`/compact` 绑定调用时的会话与运行。宿主硬预算超限同属这条恢复：`transform_context` 的判定由 model-gateway 作为 Provider 响应上报（length 停止、输出 0，命中上游 `isRecoverableLength`），Harness 压缩后带 `overflowRecoveryUsed` 重试一次；超限请求不发给 Provider，判定按当次请求视图重算（网关取走即清空），恢复用尽时按这条判定失败；上游因没有可安全摘要的范围 declined 时，失败分类保留上游文案，回复仍回落这条判定。失败分类（`TurnFailure.kind`）只能从失败文案派生（Harness 把运行失败降维成一条 message），状态码按独立数字匹配，判定文案里的估算 token 数不会把本地预算失败变成 Provider/认证/限流故障；目前只有 Live Test 的 `expectFailure` 与报告按 `kind` 分流。陪伴/助手双模式结构化摘要在 `before_compaction` 钩子内生成——复用 [compactor.ts](../../src/services/engine/compactor.ts) 的摘要内核，经 model-gateway `completePiText` 发送——以 `CompactResult`（summary + retainedTail）返回，由 Harness 单事务提交为 compaction 条目；提交成功前不报告完成，摘要失败或无可覆盖时 decline/报错：宿主摘要内核失败走显式 decline（钩子内 catch 后返回 decline，不把上游通用英文摘要落进历史）+ 可见失败（`/compact` 报「未压缩：<原因>」、`compactActiveSession` 返回 `failed`）+ 一条 `deskpet.compaction_declined` 审计条目（`{status, reason, error, endedAt}`），切分回合的 turn-prefix 另段摘要。摘要素材的 L0 投影与主请求同口径（同一个 `projectToolResultText`，回读地址同样只认 `details.deskpetEntryId`）：`resultProjection=preserve` 的工具结果完整进入摘要请求，只有 `reference` 的会被缩短并留下回读标记；没有回读地址的结果不写假 eventId，改标「该结果的原始条目没有回读地址，中间段不可恢复」；存档条目不受两者影响。压缩调用不计为正常聊天回复，其 usage 落会话 totals 但不进主回合统计；摘要调用的用量按 purpose 单列到用量统计的 `compaction` 分项，与主回合分项相加得到总消耗。
+压缩由 Harness 调度（阈值 / 手动 `/compact`→`lane.compact()` / 一次性溢出恢复），`/compact` 绑定调用时的会话与运行。宿主硬预算超限同属这条恢复：`transform_context` 的判定由 model-gateway 作为 Provider 响应上报（length 停止、输出 0，命中上游 `isRecoverableLength`），Harness 压缩后带 `overflowRecoveryUsed` 重试一次；超限请求不发给 Provider，判定按当次请求视图重算（网关取走即清空），恢复用尽时按这条判定失败；上游因没有可安全摘要的范围 declined 时，失败分类保留上游文案，回复仍回落这条判定。失败分类（`TurnFailure.kind`）除 `admission` 外只能从失败文案派生（Harness 把运行失败降维成一条 message）；`admission` 由调用点写入（回合准入拒绝、lane 结构操作在飞），分类函数不返回它。状态码按独立数字匹配，判定文案里的估算 token 数不会把本地预算失败变成 Provider/认证/限流故障；目前只有 Live Test 的 `expectFailure` 与报告按 `kind` 分流。陪伴/助手双模式结构化摘要在 `before_compaction` 钩子内生成——复用 [compactor.ts](../../src/services/engine/compactor.ts) 的摘要内核，经 model-gateway `completePiText` 发送——以 `CompactResult`（summary + retainedTail）返回，由 Harness 单事务提交为 compaction 条目；提交成功前不报告完成，摘要失败或无可覆盖时 decline/报错：宿主摘要内核失败走显式 decline（钩子内 catch 后返回 decline，不把上游通用英文摘要落进历史）+ 可见失败（`/compact` 报当前 Card 的 `commands.compactFailed` 并附上技术原因、`compactActiveSession` 返回 `failed`）+ 一条 `deskpet.compaction_declined` 审计条目（`{status, reason, error, endedAt}`），切分回合的 turn-prefix 另段摘要。摘要素材的 L0 投影与主请求同口径（同一个 `projectToolResultText`，回读地址同样只认 `details.deskpetEntryId`）：`resultProjection=preserve` 的工具结果完整进入摘要请求，只有 `reference` 的会被缩短并留下回读标记；没有回读地址的结果不写假 eventId，改标「该结果的原始条目没有回读地址，中间段不可恢复」；存档条目不受两者影响。压缩调用不计为正常聊天回复，其 usage 落会话 totals 但不进主回合统计；摘要调用的用量按 purpose 单列到用量统计的 `compaction` 分项，与主回合分项相加得到总消耗。
 
-压缩设置（reserve/keepRecent）由 `contextBudget()` 推导并按模型窗口同步，不套用 Pi 默认值（默认窗口下会退化为每个检查点都压缩）；推导值还要经 `toHarnessEstimateTokens()` 换算到 Harness 的计数口径。Harness 的 `shouldCompact` 在会话存在 provider usage 时按真实 usage 计，本仓估算同为目标真实 token 口径，所以换算因子只在「会话已有有效 provider usage **且**尾随消息近似 ASCII」时是 1；纯中文且无 usage 时上游按 `chars/4` 计数，两边相差约 4 倍（该差异由 `provider_usage` 快照的 `tokenDrift` 留痕，见下）。
+压缩设置（reserve/keepRecent）由 `contextBudget()` 推导并按模型窗口同步，不套用 Pi 默认值（默认窗口下会退化为每个检查点都压缩）；推导值还要经 `toHarnessEstimateTokens()` 换算到 Harness 的计数口径。Harness 的 `shouldCompact` 比的是它自己的 `estimateContextTokens`：有 provider usage 时前缀按真实 usage 计，本仓预算同为目标真实 token 口径，因此换算因子**恒为 1**（`toHarnessEstimateTokens()` 现为恒等函数，不要再按 `chars/4` 反推因子）；纯中文且无 usage 时上游仍按 `chars/4` 计数，两边相差约 4 倍（该差异由 `provider_usage` 快照的 `tokenDrift` 留痕，见下）。
 
 上下文估算按字符类别分列：ASCII 约 4 字符 1 token、非 ASCII 每 UTF-16 单元约 1 token，**刻意不留余量**——余量已由 `compactionHeadroom` 承担，估算偏差 k 一旦超过 `hardInputLimit` 与 `normalInputTarget` 的比值（该比值随窗口增大逼近 1），硬预算就会先于压缩报错，压缩永远轮不到触发。调整估算常数前先跑 `memory-compaction-threshold-calibration` 场景。
 
@@ -38,9 +38,9 @@
 
 预算由 [context/budget.ts](../../src/services/context/budget.ts) 统一，估算会计入标准化消息和完整工具 schema，不把估算值当成 Provider usage；主请求与一次性文本请求共享输出预留。正常目标在硬输入上限下留 `min(20,000, 16% 窗口)` 余量（极小窗口另有限制）；保留原文尾部和摘要输出各有独立上限。设置中的窗口还受已知模型上限约束。
 
-请求层顺序为 static → dynamic → profile → memory → transcript → ephemeral，稳定静态前缀先放。预算桶比例是 static 12%、tools 8%、dynamic 10%、memory 15%、transcript 50%、ephemeral 5%；profile 计入 dynamic，schema/Skill 清单计入 tools。它们是可借用空闲容量的软配额，不是按百分比强行截字；设置页调整总窗口，比例由预算模块定义。
+请求层顺序为 static → dynamic → profile → memory → transcript → ephemeral，稳定静态前缀先放。预算桶比例是 static 12%、tools 8%、dynamic 10%、memory 15%、ephemeral 5%（**transcript 不再有份额** —— 请求视图由 Harness 从已提交条目重建、内核看不到消息 —— 只保留审计行而 `assigned` 按 0 计，因此合计不再是 100%）；profile 计入 dynamic，schema/Skill 清单计入 tools。它们是可借用空闲容量的软配额，不是按百分比强行截字；设置页调整总窗口，比例由预算模块定义。
 
-- L0：请求内缩短大工具结果，保留头尾和 eventId；阈值由 `contextBudget().normalInputTarget × L0_TOOL_RESULT_SHARE`（10%）推导，判定与裁剪都用 token 口径（中文 ≈1 token/字符，头尾各半按 token 切），随窗口单调。工具实际返回的完整文本仍在会话条目，`read_session_event` 按当前会话条目分页读取。Bash 在返回前可能已截断并生成会淘汰的 spill 文件，不能把这些文件等同于持久会话原文；见[工具输出边界](tool-system.md#文件命令与取消)。
+- L0：请求内缩短大工具结果，保留头尾和 eventId；阈值由 `contextBudget().normalInputTarget × L0_TOOL_RESULT_SHARE`（10%）推导，判定与裁剪都用 token 口径（中文 ≈1 token/字符，头尾各半按 token 切），随窗口单调。Bash 在返回前可能已截断并生成会淘汰的 spill 文件，不能把这些文件等同于持久会话原文；见[工具输出边界](tool-system.md#文件命令与取消)。
 - L1：对最旧的连续完整用户意图轮生成结构化摘要。工具批次不能拆开，最后一轮与未完成调用保留；大历史分多次有界提交。
 - L2：在无法再安全压缩时保留原文；如果核心输入仍超过硬上限，先走 Harness 的一次性溢出恢复（压缩后重试一次，见上），恢复用尽或没有可摘要范围时才返回可解释的上下文不足错误，不用占位文案伪装压缩成功。
 
@@ -48,7 +48,7 @@
 
 ## 请求快照与长期记忆边界
 
-回合冻结与三阶段 PromptSnapshot 由[运行时契约](runtime-contract.md#快照与人格状态)维护。快照与其它审计条目只入队，落盘由槽的唯一 `flushAudit()` 在 lane 空闲时统一完成（回合收尾、手动压缩收尾、槽关闭前各一次，回合结算前再补一次）；写失败保留待重试、残留记 error，不在槽生命周期结束时静默消失。摘要调用不计为正常聊天回复，但摘要请求同样进快照体系：有会话归属的一次性调用写 payload 与 usage 两档快照（`one-shot:<purpose>` 身份、`request.step = "compaction"`），压缩成功后另写一条 `deskpet.prompt_rewrite`（`compaction_summary`，只含输入/输出 hash、运行来源与压缩条目地址，压缩正文与素材都不落盘）。
+回合冻结与三阶段 PromptSnapshot 由[运行时契约](runtime-contract.md#快照与人格状态)维护（审计条目的入队与 `flushAudit()` 的落盘边界同见该节）。摘要调用不计为正常聊天回复，但摘要请求同样进快照体系：有会话归属的一次性调用写 payload 与 usage 两档快照（`one-shot:<purpose>` 身份、`request.step = "compaction"`），压缩成功后另写一条 `deskpet.prompt_rewrite`（`compaction_summary`，只含输入/输出 hash、运行来源与压缩条目地址，压缩正文与素材都不落盘）。
 
 `CANDY.md` 是人工指令，`User.md` 通过带来源的只读画像投影进入动态层；两者与摘要分别建块。记忆 LLM 整理的入口与本地去重定时器已删除（零生产调用者）；应用启动、每五轮与 session 结束都不隐式发起记忆整理，明确的长期记忆写入闭环在 P6 实施。
 

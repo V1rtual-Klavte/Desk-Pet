@@ -19,16 +19,19 @@
 // 注意第 1 条：计划生成本身也是一次 provider 请求，不先喂计划 JSON 就会拿到空计划，
 // 计划段直接跳过（原任务草案的 3 条响应脚本缺这一条）。
 //
-// ⚠️ 断言 A 的实测结论（FIX-10 是否成立）由 T2.17 在 `analyze → generate` 之后回填：
-//    `pnpm test -- --case runtime-plan-step-variable-write`
-//    本任务的 Live 被 scripts/live-test.mjs 的 sourceHash 预检挡住（硬失败），不先跑。
-//    若 A 失败（= 带 toolCall 回合的 RUNTIME_DATA 被静默丢弃），回到 T2.14 按任务原文的候选补改
-//    （结论未定前不得先改结算逻辑）：
-//     (i) `recordSettledReply` 保留本回合全部 {raw, stripped} 配对，`rawTextForSettledReply`
-//         取「与结算正文匹配的那一对」；
-//     (ii) 只承认最后一条回复的 RUNTIME_DATA 时，在剥离点对「本回合存在未结算的 RUNTIME_DATA」
-//         补 log.warn 留证，并在 personality.md 写明该边界。
-//    改法必须单一定义点，不得在 `settleMainTurn` 再建一份解析。
+// ⚠️ 断言 A 的实测结论（FIX-10 / T2.14）：
+//    A **不成立**，但不成立的原因不是「带 toolCall 回合的 RUNTIME_DATA 被静默丢弃」，而是
+//    这条断言读的是**生产入口拿不到的投影**：`ctx.output.runtimeData` 只在 `entry: "runtime"`
+//    的路径上存在（`executeTurn` 直接返回 `runPiAgentTurn` 的输出）；`entry: "production"` 走
+//    `sendMessage()`，其 `SendMessageResult` 不带 runtimeData（消费方是变量池，不是宿主），
+//    `executeTurn` 的 production 分支也没有构造它 —— 于是 `ctx.output.runtimeData` 恒为
+//    undefined，与「变量到底写没写」无关。实测（W2/W5 两轮）失败点都停在这里，池与 stages
+//    两条子断言根本没被执行过。
+//    处置：A 改按**可观测的写入事实**判（展示正文无协议块 + 变量池值/updatedBy + stages 回读），
+//    不再断言解析投影；FIX-10 的「变量静默丢失」假设按现有源码与上游实跑探针不成立
+//    （结算取 `state.finalPlainAssistant ?? state.finalAssistant`，带 toolCall 的过程消息不进
+//    结算，最终无 toolCall 的回复仍经 afterResponse 留底的原始正文配对解析），不需要改结算逻辑。
+//    场景头部的 B 断言（步骤子代理不写变量、原始正文留证）保持不变。
 
 import { initChat } from "@/services/agent/runner"
 import { PLAN_STEP_RESULT_ENTRY, type PlanStepResult } from "@/services/agent/memory"
@@ -49,6 +52,10 @@ const USER_TEXT = "--plan 帮我分析一下配置文件"
 const MAIN_VALUE = "计划写入值"
 /** 步骤载荷值：只允许出现在 plan_step_result 里，不得进变量池。 */
 const STEP_VALUE = "步骤写入值"
+/** 主回合脚本的可见正文：剥离协议块后就是展示正文（断言 A 的展示口径）。 */
+const REPLY_TEXT = "计划完成啦"
+/** 步骤子代理脚本的可见正文：只随 plan_step_result 留证，不参与展示断言。 */
+const STEP_REPLY_TEXT = "步骤做完了"
 
 let targetVar: CardVariableDef | undefined
 /** 回合前的 card 段投影：断言 B 用它证明「除 A 允许的那次写入外没有别的变量变化」。 */
@@ -142,7 +149,13 @@ const expectStepRawEvidence: AssertCheck = {
   },
 }
 
-/** 断言 A：主回合（带 toolCall）的最终回复带 RUNTIME_DATA → 变量被写入，且 stages 文件可回读。 */
+/**
+ * 断言 A：主回合（带 toolCall）的最终回复带 RUNTIME_DATA → 变量被写入，且 stages 文件可回读。
+ *
+ * 观测面：生产入口只回传「用户看得见/可回读」的事实（展示正文、变量池、stages 文件）；
+ * 解析投影（`runtimeData.variables`）是引擎内部中间量，`SendMessageResult` 不带它，
+ * 因此这里按写入事实判 —— 写入只可能来自那次解析，两者不是彼此独立的证据。
+ */
 const expectMainTurnWrite: AssertCheck = {
   type: "expectMainTurnWrite",
   run: async (ctx) => {
@@ -152,10 +165,11 @@ const expectMainTurnWrite: AssertCheck = {
     }
     const def = targetVar
     if (!def) throw new Error("场景 setup 没有选出变量（setup 本应先失败）")
-    // 载荷确实从回复里解析出来（parseRuntimeData 的结果），且协议块没有泄漏进展示正文
-    const parsed = ctx.output.runtimeData?.variables?.[def.name]
-    if (parsed !== MAIN_VALUE) throw new Error(`回复里的 RUNTIME_DATA 未解析出期望值: ${String(parsed)}（期望 ${MAIN_VALUE}）`)
+    // 协议块没有泄漏进展示正文，且展示正文就是脚本正文去掉协议块后的样子（剥离发生在展示之前）
     if (ctx.output.reply.includes("RUNTIME_DATA")) throw new Error(`RUNTIME_DATA 块泄漏进了展示正文: ${ctx.output.reply}`)
+    if (!ctx.output.reply.includes(REPLY_TEXT)) {
+      throw new Error(`主回合的展示正文不含脚本正文: ${JSON.stringify(ctx.output.reply)}`)
+    }
 
     const state = getPoolSnapshot().card[def.name]
     if (state?.value !== MAIN_VALUE) throw new Error(`变量池未写入: ${def.name}=${String(state?.value)}（期望 ${MAIN_VALUE}）`)
@@ -207,9 +221,9 @@ export const 计划步骤变量写入: SceneDef = {
     installFakeProvider([
       fakeText(planJson()),
       fakeToolCall(TOOL_NAME, {}, "plan-step-call"),
-      fakeText(`步骤做完了 ${runtimeDataBlock(name, STEP_VALUE)}`),
+      fakeText(`${STEP_REPLY_TEXT} ${runtimeDataBlock(name, STEP_VALUE)}`),
       fakeToolCall(TOOL_NAME, {}, "main-turn-call"),
-      fakeText(`计划完成啦 ${runtimeDataBlock(name, MAIN_VALUE)}`),
+      fakeText(`${REPLY_TEXT} ${runtimeDataBlock(name, MAIN_VALUE)}`),
     ])
     await initChat()
 

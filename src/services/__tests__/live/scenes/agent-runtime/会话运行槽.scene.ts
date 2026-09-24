@@ -62,7 +62,15 @@ export const 会话运行槽: SceneDef = {
         }
         if (harnessSlots.isRunning(sessionId)) throw new Error("空闲槽停止后不应处于运行态")
 
-        await harnessSlots.releaseWhenIdle(sessionId)
+        // 空闲回收的请求位（HN-05）：忙槽上的释放请求不被丢弃 —— 本次返回 false 且槽仍在，
+        // 由宿主声明的回合终点 end() 收口后才真正删除并关闭（放在停止断言之后：
+        // 那一条要的是「槽有 lane 但没有在飞操作」的现场，本段会把槽删掉）。
+        const busyGeneration = harnessSlots.begin(sessionId)
+        if (busyGeneration === undefined) throw new Error("begin 未分配新代际")
+        if (await harnessSlots.releaseWhenIdle(sessionId)) throw new Error("运行中的槽不应被立即释放")
+        if (!harnessSlots.snapshot(sessionId)) throw new Error("忙槽上的释放请求把槽丢掉了（应登记到槽上等收口）")
+        if (!harnessSlots.end(sessionId, busyGeneration)) throw new Error("运行中的槽不能按本代际结束")
+        if (harnessSlots.snapshot(sessionId)) throw new Error("回合终点收口后空闲槽仍未被释放")
       },
     }],
   }],

@@ -4,7 +4,8 @@ import { contextBudget } from "@/services/context"
 import { compactionSettingsFor, harnessSlots, isSessionBusy, listQueuedInputs } from "@/services/engine/pi"
 import { initChat, sendMessage } from "@/services/agent/runner"
 import { getFallbackReply } from "@/services/personality/stages-cache"
-import type { FallbackReplies } from "@/services/personality/stages-file"
+import { FALLBACK_KEYS } from "@/services/personality"
+import type { FallbackReplies } from "@/services/personality"
 import { chatHistory, getActiveSessionId } from "@/services/session/store"
 import { fakeText, installFakeProvider } from "../../fake-provider"
 import { assistantTexts, compactionEntries, countTexts, sessionEntries, sessionMessages, userTexts } from "../../session-entries"
@@ -41,7 +42,18 @@ const PAD_REPLY = "第二轮完成"
 const REFUSED_TEXT = "压缩期间发出的这条输入不该被当成正常回合。"
 const AFTER_TEXT = "压缩结束后这条输入应该正常送达。"
 const AFTER_REPLY = "压缩后的回合完成"
-const REFUSED_NOTICE = "正在压缩这个会话，等它跑完再发哦～"
+/**
+ * 拒绝提示的真相源是当前 Card 的 `fallbacks.compactionRejected`，不是常量：场景硬编码旧文案
+ * 会在文案搬家时假失败。必须**断言时**取值 —— 模块级求值跑在 Card 激活之前，只会拿到中性兜底。
+ */
+const refusedNotice = (): string => getFallbackReply("compactionRejected")
+
+/**
+ * 失败兜底族：旧实现（NH-02）的症状是把「没发出去」写成这一族里的回复。
+ * 判别力因此靠「拒绝提示是 compactionRejected、且这一族一条都没出现」，不能靠「不在全部 fallbacks 里」——
+ * 拒绝提示本身就是 Card 的一条 fallback，那条件永远为假。
+ */
+const FAILURE_NOTICE_KEYS: ReadonlyArray<keyof FallbackReplies> = ["maxRetriesExhausted", "turnTimeout", "llmUnavailable"]
 const REFUSAL_MESSAGE = "会话正在执行结构操作（压缩），输入未发送"
 const SUMMARY_INTENT = "压缩期准入：摘要请求在飞时输入被如实拒绝"
 const SUMMARY = JSON.stringify({
@@ -54,10 +66,7 @@ const SUMMARY = JSON.stringify({
 })
 
 /** `getFallbackReply` 系列文案：兜底失败回复的真相源，按运行时取值比对（Card 文案会覆盖常量）。 */
-const FALLBACK_KEYS: ReadonlyArray<keyof FallbackReplies> = [
-  "concurrentRejected", "maxRetriesExhausted", "turnTimeout", "toolLoopMaxRounds",
-  "llmUnavailable", "subAgentDone", "subAgentFailed", "subAgentNoResult", "compactionFailed",
-]
+// 兜底文案族取自模块导出的唯一清单：手写副本会在新增 key 时静默漏检（污染断言就失效了）。
 
 let sessionId = ""
 let fakeState: FauxProviderState | undefined
@@ -69,7 +78,15 @@ let compactionSettled: Promise<true> | undefined
 let compactionDone = false
 let compactReply = ""
 let compactOutcome: string | undefined
-let requestsBeforeRefusal = -1
+let requestsAfterSetup = -1
+/**
+ * 「窗口开着」那一刻的 provider 请求数（摘要请求已计入）。
+ *
+ * 基线必须在这里取，而不是 `/compact` 发出之前：摘要请求**本身就是一次 provider 请求**
+ * （上游 `faux.js` 的 `callCount++` 在 `stream()` 入口同步发生，早于 step 回调），
+ * 拿 setup 后的计数当基线会把摘要请求自己算成「拒绝发了请求」（W5 第三轮实测 `2 → 3`）。
+ */
+let requestsAtWindowOpen = -1
 let assistantBeforeRefusal = -1
 let compactionCountAfterCompletion = -1
 
@@ -116,8 +133,14 @@ export const 压缩期准入: SceneDef = {
     compactReply = ""
     compactOutcome = undefined
     compactionCountAfterCompletion = -1
+    requestsAfterSetup = -1
+    requestsAtWindowOpen = -1
     let markSummaryStarted!: () => void
-    const summaryStarted = new Promise<void>(resolve => { markSummaryStarted = resolve })
+    // 完成值必须是可区分的真值：`bounded` 用 undefined 表示超时，而 Promise<void> 的完成值也是
+    // undefined —— 把两者混同会把「窗口已经造出来」判成「30s 没等到摘要请求」（W5 整轮的实测现场：
+    // setup 在 40ms 就抛这条，而同一现场是 忙=true、/compact 未结算、provider 请求数 setup=2/now=3，
+    // 也就是摘要请求已经进 provider 挂着 —— 窗口本来就是好的）。
+    const summaryStarted = new Promise<boolean>(resolve => { markSummaryStarted = () => resolve(true) })
     let markCompactionSettled!: () => void
     const settled = new Promise<true>(resolve => { markCompactionSettled = () => resolve(true) })
     compactionSettled = settled
@@ -131,6 +154,9 @@ export const 压缩期准入: SceneDef = {
       const text = lastRequestText(context)
       if (!text.includes("\"instructions\"")) throw new Error(`摘要脚本被非摘要请求取走: ${text.slice(0, 60)}`)
       summaryRequestInFlight = true
+      // 窗口开启的定位点：这一条请求已经计入 callCount（见字段注释），后续任何增长
+      // 都只能来自被拒绝的输入 —— 那才是本场景要挡的事。
+      requestsAtWindowOpen = fakeState?.callCount ?? -1
       markSummaryStarted()
       return (async () => {
         await gate
@@ -150,7 +176,7 @@ export const 压缩期准入: SceneDef = {
     await sendMessage(FIRST_USER)
     await sendMessage(PAD_USER)
     assistantBeforeRefusal = assistantTexts(await sessionMessages()).length
-    requestsBeforeRefusal = fakeState.callCount
+    requestsAfterSetup = fakeState.callCount
 
     // 手动压缩：不 await —— 它的摘要请求要一直挂着，窗口才存在。
     const compactPromise = sendMessage("/compact")
@@ -165,7 +191,9 @@ export const 压缩期准入: SceneDef = {
       markCompactionSettled()
     })
     const started = await bounded(summaryStarted, 30_000)
-    if (started === undefined || compactionDone) {
+    // `started !== true` 才是真超时（bounded 超时返回 undefined）；这里是与 `bounded` 的约定，
+    // 不是可选判断 —— 窗口没造出来时逐字给出拒绝它的那道门（见下方 detail）。
+    if (started !== true || compactionDone) {
       // 诊断口径：30s 没等到摘要请求时，只有 `/compact` 的终态能指出是哪道门拒绝了它 ——
       // 准入拒绝（pending / 队列未就绪 / closed / busy）、没有可摘要范围（nothing / declined），
       // 以及「摘要请求被别的请求取走了脚本」（setup 请求数会多出来，回执里带摘要内核的失败原因）。
@@ -177,7 +205,7 @@ export const 压缩期准入: SceneDef = {
         `回执=${JSON.stringify(compactReply)}`,
         `队列镜像 loaded=${view.loaded}/items=${view.items.length}`,
         `忙=${await isSessionBusy(sessionId)}`,
-        `provider 请求数 setup=${requestsBeforeRefusal}/now=${fakeState?.callCount ?? -1}`,
+        `provider 请求数 setup后=${requestsAfterSetup}/窗口开启=${requestsAtWindowOpen}/now=${fakeState?.callCount ?? -1}`,
       ].join("，")
       throw new Error(compactionDone
         ? `压缩在摘要请求在飞之前就结算了（${detail}）｜${sizing()}`
@@ -290,17 +318,25 @@ async function assertWindowRefusal(ctx: AssertContext): Promise<void> {
   // 正面证据：拒绝必须被说出来，而且它不是兜底文案冒充的。
   // 读聊天视图本体（`chatHistory`）：界面拿到的就是它，「视图有没有这条说明」不因读取偏移而失真。
   const storeTexts = chatHistory.map(message => message.text)
-  if (!storeTexts.includes(REFUSED_NOTICE)) {
+  const notice = refusedNotice()
+  if (!storeTexts.includes(notice)) {
     throw new Error(`界面没有拿到准入说明: ${JSON.stringify(storeTexts.slice(-4))}`)
   }
-  if (fallbackFamily.includes(REFUSED_NOTICE)) throw new Error("准入说明与兜底文案撞了，本场景的判定依据需要复核")
+  // 判别力：拒绝提示不能与失败兜底同文，否则「没发出去」与「聊过了但失败了」在证据上分不开。
+  const failureFamily = FAILURE_NOTICE_KEYS.map(key => getFallbackReply(key)).filter(text => text.trim().length > 0)
+  if (failureFamily.includes(notice)) throw new Error("准入说明与失败兜底文案撞了，本场景的判定依据需要复核")
+  const misframed = storeTexts.filter(text => failureFamily.includes(text))
+  if (misframed.length > 0) {
+    throw new Error(`界面出现了失败兜底文案冒充准入说明: ${JSON.stringify(misframed)}`)
+  }
 
   // ② 不静默排队、不偷跑模型：正文既不进会话也不进 lane inbox，全程没有新的 provider 请求。
   if (countTexts(userTexts(messages), REFUSED_TEXT) !== 0) throw new Error("被拒绝的输入进了会话正文")
   const queued = harnessSlots.snapshot(sessionId)?.queued ?? []
   if (queued.length !== 0) throw new Error(`被拒绝的输入被静默排队: ${JSON.stringify(queued)}`)
-  if (state.callCount !== requestsBeforeRefusal) {
-    throw new Error(`准入拒绝仍向模型发了请求: ${requestsBeforeRefusal} → ${state.callCount}`)
+  if (requestsAtWindowOpen < 0) throw new Error("场景前置状态缺失：窗口开启时的请求数基线没有记录")
+  if (state.callCount !== requestsAtWindowOpen) {
+    throw new Error(`准入拒绝仍向模型发了请求: 窗口开启=${requestsAtWindowOpen} → ${state.callCount}`)
   }
 
   // ③ 同一窗口的 /clear：exclusive 命令必须被明确拒绝，且不能关掉还在飞的 Harness。

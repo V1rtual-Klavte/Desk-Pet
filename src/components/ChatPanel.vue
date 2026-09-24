@@ -22,7 +22,8 @@ import DebugBar from "./DebugBar.vue";
 import PlanConfirm from "./PlanConfirm.vue";
 import { confirmState, resolvePermissionConfirm } from "@/services/safety";
 import { actionCategoryOf } from "@/services/tool";
-import { getStagePrompt } from "@/services/personality";
+import { getFallbackReply, getSimpleStage, getStagePrompt } from "@/services/personality";
+import type { SimpleStageKey } from "@/services/personality";
 
 // ★ 同步初始化 Slash 命令注册表（下拉补全用；命令执行只在 ingress，见 preProcess）
 initSlashCommands();
@@ -39,7 +40,14 @@ const thumb = ref<HTMLElement | null>(null);
 const toolStatus = ref<{ text: string; visible: boolean }>({ text: "", visible: false });
 let cleanupToolExec: (() => void) | null = null;
 let cleanupToolDone: (() => void) | null = null;
+let cleanupStageHint: (() => void) | null = null;
 const toolCompletedTimer = ref<ReturnType<typeof setTimeout> | null>(null);
+
+/** 收起工具状态提示，并取消可能仍在跑的上一条自动隐藏定时器 */
+function hideToolStatus() {
+  if (toolCompletedTimer.value) { clearTimeout(toolCompletedTimer.value); toolCompletedTimer.value = null; }
+  toolStatus.value = { text: "", visible: false };
+}
 
 /**
  * 流式正文的瞬时展示（H-3）：
@@ -88,7 +96,14 @@ const resuming = ref(false);
 const interrupted = ref<InterruptedRunInfo | undefined>(undefined);
 const interruptedBusy = ref(false);
 
+/**
+ * 中断运行提示与主回合写下的正文同源（fallbacks.runInterrupted），界面不另写第二份台词；
+ * 每次刷新时重取：Card 可能在界面挂载之后才切换或首次生成。
+ */
+const interruptedText = ref(getFallbackReply("runInterrupted"));
+
 async function refreshInterrupted() {
+  interruptedText.value = getFallbackReply("runInterrupted");
   const sessionId = getActiveSessionId();
   if (!sessionId) {
     interrupted.value = undefined;
@@ -538,6 +553,19 @@ onMounted(async () => {
     refreshQueue()
     toolCompletedTimer.value = setTimeout(() => { if (toolStatus.value.text === hint) toolStatus.value.visible = false }, 2500)
   }).then(fn => { cleanupToolDone = fn }).catch(error => log.error("事件监听注册失败，工具完成状态不再更新:", formatError(error)))
+  // ── 阶段状态提示（思考中 / 规划中 / 重试中）──
+  // 内核只发语义 key，文案同样按当前 Card 取，与工具提示共用同一个展示位。
+  listen<{ sessionId?: string; stage?: SimpleStageKey }>("deskpet-stage-hint", (event) => {
+    if (event.payload.sessionId !== getActiveSessionId()) return;
+    const stage = event.payload.stage;
+    if (!stage) return;
+    const text = getSimpleStage(stage);
+    // 没有文案就等于没有提示位（Card 给了空串）：收起而不是显示一个空框。
+    if (!text) { hideToolStatus(); return; }
+    // 新阶段作废上一条的自动隐藏定时器，否则旧定时器会把刚出现的新提示提前收掉。
+    if (toolCompletedTimer.value) { clearTimeout(toolCompletedTimer.value); toolCompletedTimer.value = null; }
+    toolStatus.value = { text, visible: true };
+  }).then(fn => { cleanupStageHint = fn }).catch(error => log.error("事件监听注册失败，阶段状态提示不再更新:", formatError(error)))
 
   // ── 流式正文（运行内核 message_update → 事件通道）──
   listen<{ sessionId?: string; delta?: string }>("deskpet-assistant-stream", (event) => {
@@ -553,7 +581,12 @@ onMounted(async () => {
   // ── 运行态（停止按钮）──
   listen<{ sessionId?: string; running?: boolean }>("deskpet-run-state", (event) => {
     if (event.payload.sessionId !== getActiveSessionId()) return
-    if (event.payload.running === false) stopping.value = false
+    if (event.payload.running === false) {
+      stopping.value = false
+      // 回合收尾：阶段提示（思考中/规划中/重试中）没有续期者，必须在这里收起，
+      // 否则「思考中…」会挂到下一次运行开始。
+      hideToolStatus()
+    }
     // 运行开始/收尾都按 lane 快照刷新：按钮与排队视图同源，不靠事件负载记账。
     refreshQueue()
   }).then(fn => { cleanupRunState = fn }).catch(error => {
@@ -579,6 +612,7 @@ watch(() => getActiveSessionId(), () => {
 onUnmounted(() => {
   if (cleanupToolExec) cleanupToolExec()
   if (cleanupToolDone) cleanupToolDone()
+  if (cleanupStageHint) cleanupStageHint()
   if (cleanupStreamDelta) cleanupStreamDelta()
   if (cleanupStreamEnd) cleanupStreamEnd()
   if (cleanupRunState) cleanupRunState()
@@ -640,7 +674,7 @@ onUnmounted(() => {
 
     <!-- 中断运行（崩溃恢复）：内核默认暂停，继续/丢弃由用户显式决定 -->
     <div v-if="interrupted" id="ch-interrupted">
-      <span id="ch-interrupted-text">上次运行中断啦，还有一次没跑完的运行在等你决定～</span>
+      <span id="ch-interrupted-text">{{ interruptedText }}</span>
       <div id="ch-interrupted-actions">
         <button type="button" class="ch-queue-action" :disabled="interruptedBusy" @click="resolveInterrupted('continue')">
           {{ interruptedBusy ? "处理中…" : "继续" }}

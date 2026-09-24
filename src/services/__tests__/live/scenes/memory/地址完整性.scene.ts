@@ -224,16 +224,33 @@ export const 地址完整性: SceneDef = {
           throw new Error(`手动压缩没有完成: status=${completed.status}${completed.error ? ` (${completed.error})` : ""}｜${sizing()}`)
         }
         if (summaryRequests.length !== 1) throw new Error(`摘要请求应为 1 次，实际 ${summaryRequests.length} 次`)
-        const material = JSON.parse(summaryRequests[0] ?? "{}") as { messages?: Array<{ role?: unknown; text?: unknown }> }
-        const summaryTexts = (material.messages ?? []).map(message => typeof message.text === "string" ? message.text : "")
-        if (!summaryTexts.some(text => text.includes("上下文缩短"))) {
-          throw new Error(`摘要素材里没有 L0 缩短标记：第一轮工具结果没有进入摘要范围｜${sizing()}`)
+        const material = JSON.parse(summaryRequests[0] ?? "{}") as {
+          messages?: Array<{ role?: unknown; text?: unknown }>
+          splitTurnPrefix?: Array<{ role?: unknown; text?: unknown }>
         }
+        // 摘要范围 = messagesToSummarize + turnPrefixMessages：切点落在回合中间时，被切开的
+        // 前半段进 splitTurnPrefix —— 两段都是素材，观测面必须合起来看，不能把断言绑在
+        // 「切点恰好停在第一轮之后」这个上游调度细节上（切点是 Harness 算的，不是本场景的契约）。
+        const inMessages = material.messages ?? []
+        const inPrefix = material.splitTurnPrefix ?? []
+        const summaryTexts = [...inMessages, ...inPrefix]
+          .map(message => typeof message.text === "string" ? message.text : "")
+        // 断言失败时指出每一段落点：素材条数区分「没进范围」与「进了另一段」。
+        const materialShape = `素材 ${inMessages.length + inPrefix.length} 条`
+          + `（messages ${inMessages.length} / splitTurnPrefix ${inPrefix.length}）`
+        const landedAt = (label: string, expected: string): string =>
+          inMessages.some(message => message.text === expected) ? `${label}@messages`
+            : inPrefix.some(message => message.text === expected) ? `${label}@splitTurnPrefix`
+              : `${label}缺失`
         // 两路投影逐字相等：各自与同一入参下的唯一实现比对（主请求侧已在第一轮证明）。
         const expectedAddress = projectToolResultText(address.text, addressId, WINDOW_TOKENS, SESSION_TRANSCRIPT_TOOL)
         const expectedFailed = projectToolResultText(failed.text, undefined, WINDOW_TOKENS, SESSION_TRANSCRIPT_TOOL)
-        if (!summaryTexts.includes(expectedAddress)) throw new Error("摘要素材里的有地址投影与主请求不同｜" + sizing())
-        if (!summaryTexts.includes(expectedFailed)) throw new Error("摘要素材里的无地址投影与主请求不同｜" + sizing())
+        const parity = `有地址 ${landedAt("有地址", expectedAddress)} / 无地址 ${landedAt("无地址", expectedFailed)}`
+        if (!summaryTexts.some(text => text.includes("上下文缩短"))) {
+          throw new Error(`摘要素材里没有 L0 缩短标记：第一轮工具结果没有进入摘要范围｜${parity}｜${materialShape}｜${sizing()}`)
+        }
+        if (!summaryTexts.includes(expectedAddress)) throw new Error(`摘要素材里的有地址投影与主请求不同｜${parity}｜${materialShape}｜${sizing()}`)
+        if (!summaryTexts.includes(expectedFailed)) throw new Error(`摘要素材里的无地址投影与主请求不同｜${parity}｜${materialShape}｜${sizing()}`)
         if (sentToolResultTexts().every(text => text !== expectedAddress)) throw new Error("主请求侧没有同一段文本可对照")
 
         const compactions = compactionEntries(await sessionEntries(sessionId))

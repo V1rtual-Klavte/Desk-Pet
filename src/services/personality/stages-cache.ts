@@ -6,7 +6,7 @@
 
 import type { PersonalityCard } from "./types"
 import { hashCardText } from "./loader"
-import type { FallbackReplies, StageMap, StagePrompts } from "./stages-file"
+import type { CommandReplies, FallbackReplies, StageMap, StagePrompts } from "./stages-file"
 import { readStagesFile, updateStagesFile } from "./stages-file"
 import { createLogger } from "@/services/logger"
 import { formatError } from "@/services/error"
@@ -26,7 +26,7 @@ for (const [, mod] of Object.entries(templateModules)) {
 
 /** 极简中性兜底 — 只在 Card stages 完全不可用时使用 */
 const FALLBACK_FALLBACKS: FallbackReplies = {
-  concurrentRejected: "请稍后再试",
+  concurrentRejected: "上一条还在处理中，请稍后再发",
   maxRetriesExhausted: "重试失败，请稍后再试",
   turnTimeout: "处理超时",
   toolLoopMaxRounds: "处理完成",
@@ -34,11 +34,29 @@ const FALLBACK_FALLBACKS: FallbackReplies = {
   subAgentDone: "完成",
   subAgentFailed: "执行失败",
   subAgentNoResult: "无结果",
-  compactionFailed: "压缩失败",
+  runInterrupted: "上次运行中断，请选择继续或丢弃",
+  compactionRejected: "正在压缩，请稍后再发",
+  pausedReturnFailed: "暂停输入未能放回队列，请重新发送",
+  planCancelled: "计划已取消",
+  planCompleted: "计划已完成",
+  planResumeBusy: "会话正忙，请稍后再继续计划",
+}
+
+/** slash 命令输出的中性兜底：与 COMPACT_MESSAGES 时代同文，只是改由 Card 覆盖 */
+const FALLBACK_COMMANDS: CommandReplies = {
+  clear: "对话已清空，原会话保留在历史记录里",
+  memoryCleared: "记忆已清理",
+  compactCompleted: "压缩完成，原始对话已保留。",
+  compactDeclined: "未压缩：没有可安全摘要的完整旧轮次。",
+  compactNothing: "未压缩：当前没有可压缩的历史。",
+  compactBusy: "当前回合仍在进行，请稍后再压缩。",
+  compactClosed: "会话运行不可用，无法压缩。",
+  compactPending: "还有消息在排队，先处理完再压缩。",
+  compactFailed: "压缩失败",
 }
 
 export const FALLBACK_STAGES: StageMap = {
-  thinking: null, planning: "让我想想怎么帮你规划～", idle: null,
+  thinking: "思考中...", planning: "正在规划...",
   executing: { _default: "处理中..." },
   done: {
     "fs.read": "读取完成",
@@ -59,8 +77,8 @@ export const FALLBACK_STAGES: StageMap = {
     _default: "操作已拦截",
   },
   error: "出了点问题，请重试",
-  timeout: "操作超时",
   retry: "正在重试...",
+  commands: FALLBACK_COMMANDS,
   fallbacks: FALLBACK_FALLBACKS,
   greetings: ["你好，有什么可以帮你的吗？"],
 }
@@ -93,11 +111,21 @@ export function getStagePrompt(
   return map[actionCategory] || map["_default"] || (FALLBACK_STAGES[stage]?._default ?? "")
 }
 
+/** 无类别维度的标量阶段 —— commands/executing/done/blocked 等映射型字段不在其中 */
+export type SimpleStageKey = "thinking" | "planning" | "error" | "retry"
+
 /** 获取非工具阶段文案（空串回退 FALLBACK） */
-export function getSimpleStage(stage: keyof StageMap): string | null {
+export function getSimpleStage(stage: SimpleStageKey): string | null {
   const val = cache?.stages[stage] ?? FALLBACK_STAGES[stage]
   if (typeof val === "string") return val || (FALLBACK_STAGES[stage] as string) || null
   return null
+}
+
+/** 获取 slash 命令的 Card 输出；缺该 key 或为空串时回退中性常量 */
+export function getCommandReply(key: keyof CommandReplies): string {
+  const val = cache?.stages.commands?.[key]
+  if (typeof val === "string" && val.length > 0) return val
+  return FALLBACK_COMMANDS[key]
 }
 
 /** 获取系统兜底回复，card 文案 → FALLBACK_FALLBACKS 多级降级 */
@@ -132,15 +160,41 @@ export function pickActiveGreeting(): string | null {
   return greetings[Math.floor(Math.random() * greetings.length)]
 }
 
+/** slash 命令输出的全部键 —— 生成、归一化、失效判定与场景共用这一份清单 */
+export const COMMAND_KEYS: ReadonlyArray<keyof CommandReplies> = [
+  "clear", "memoryCleared", "compactCompleted", "compactDeclined",
+  "compactNothing", "compactBusy", "compactClosed", "compactPending", "compactFailed",
+]
+
+/** 系统兜底回复的全部键 —— 同上，单一清单 */
+export const FALLBACK_KEYS: ReadonlyArray<keyof FallbackReplies> = [
+  "concurrentRejected", "maxRetriesExhausted", "turnTimeout", "toolLoopMaxRounds",
+  "llmUnavailable", "subAgentDone", "subAgentFailed", "subAgentNoResult",
+  "runInterrupted", "compactionRejected", "pausedReturnFailed",
+  "planCancelled", "planCompleted", "planResumeBusy",
+]
+
+/** 原始文件形态的键齐备性检查：每个键都必须是非空字符串（llmUnavailable 单列，是数组） */
+function hasAllNonEmpty(source: unknown, keys: ReadonlyArray<string>): boolean {
+  if (typeof source !== "object" || source === null) return false
+  const record = source as Record<string, unknown>
+  return keys.every(key => typeof record[key] === "string" && (record[key] as string).length > 0)
+}
+
 export function validateStages(data: unknown): data is StagePrompts {
   if (!data || typeof data !== "object") return false
   const d = data as Record<string, unknown>
   if (typeof d.cardId !== "string" || !d.stages) return false
   const s = d.stages as Record<string, unknown>
-  // greetings 是后加的字段：旧 stages 文件缺它时判为过期，触发按新模板重新生成。
-  return typeof s.error === "string"
-    && typeof s.timeout === "string"
-    && Array.isArray(s.greetings) && s.greetings.length > 0
+  // 后加的键一律在这里要求：旧 stages 文件缺它们时判为过期，触发按新模板重新生成。
+  // 判定必须看**原始文件形态**，不能先过 normalize —— normalize 会把缺失的键补成中性默认值，
+  // 补完就再也分不清「旧模板产物」和「新模板产物」，Card 的定制语气会永久停在系统默认文案上。
+  if (typeof s.error !== "string" || typeof s.retry !== "string") return false
+  if (!Array.isArray(s.greetings) || s.greetings.length === 0) return false
+  if (!hasAllNonEmpty(s.commands, COMMAND_KEYS)) return false
+  const fallbacks = s.fallbacks as Record<string, unknown> | undefined
+  if (!hasAllNonEmpty(fallbacks, FALLBACK_KEYS.filter(key => key !== "llmUnavailable"))) return false
+  return Array.isArray(fallbacks?.llmUnavailable) && (fallbacks.llmUnavailable as unknown[]).length > 0
 }
 
 export function validateStagesForCard(
@@ -238,34 +292,44 @@ function extractJSONCandidates(text: string): string[] {
   return results
 }
 
+/** 逐键回填：模型漏给或给了空串的键退回中性常量，保证内存形态永远键齐 */
 function normalizeFallbacks(raw: unknown): FallbackReplies {
-  const defaults = FALLBACK_FALLBACKS
-  if (!raw || typeof raw !== "object") return defaults
+  const out: FallbackReplies = { ...FALLBACK_FALLBACKS, llmUnavailable: [...FALLBACK_FALLBACKS.llmUnavailable] }
+  if (!raw || typeof raw !== "object") return out
   const r = raw as Record<string, unknown>
-  return {
-    concurrentRejected: typeof r.concurrentRejected === "string" && r.concurrentRejected ? r.concurrentRejected : defaults.concurrentRejected,
-    maxRetriesExhausted: typeof r.maxRetriesExhausted === "string" && r.maxRetriesExhausted ? r.maxRetriesExhausted : defaults.maxRetriesExhausted,
-    turnTimeout: typeof r.turnTimeout === "string" && r.turnTimeout ? r.turnTimeout : defaults.turnTimeout,
-    toolLoopMaxRounds: typeof r.toolLoopMaxRounds === "string" && r.toolLoopMaxRounds ? r.toolLoopMaxRounds : defaults.toolLoopMaxRounds,
-    llmUnavailable: Array.isArray(r.llmUnavailable) && r.llmUnavailable.length > 0 ? r.llmUnavailable : defaults.llmUnavailable,
-    subAgentDone: typeof r.subAgentDone === "string" && r.subAgentDone ? r.subAgentDone : defaults.subAgentDone,
-    subAgentFailed: typeof r.subAgentFailed === "string" && r.subAgentFailed ? r.subAgentFailed : defaults.subAgentFailed,
-    subAgentNoResult: typeof r.subAgentNoResult === "string" && r.subAgentNoResult ? r.subAgentNoResult : defaults.subAgentNoResult,
-    compactionFailed: typeof r.compactionFailed === "string" && r.compactionFailed ? r.compactionFailed : defaults.compactionFailed,
+  for (const key of FALLBACK_KEYS) {
+    if (key === "llmUnavailable") {
+      const value = r.llmUnavailable
+      if (Array.isArray(value) && value.length > 0) out.llmUnavailable = value as string[]
+      continue
+    }
+    const value = r[key]
+    if (typeof value === "string" && value.length > 0) out[key] = value
   }
+  return out
+}
+
+function normalizeCommands(raw: unknown): CommandReplies {
+  const out: CommandReplies = { ...FALLBACK_COMMANDS }
+  if (!raw || typeof raw !== "object") return out
+  const r = raw as Record<string, unknown>
+  for (const key of COMMAND_KEYS) {
+    const value = r[key]
+    if (typeof value === "string" && value.length > 0) out[key] = value
+  }
+  return out
 }
 
 function normalizeStageMap(raw: Partial<StageMap>): StageMap {
   return {
     thinking: typeof raw.thinking === "string" ? raw.thinking : FALLBACK_STAGES.thinking,
     planning: typeof raw.planning === "string" ? raw.planning : FALLBACK_STAGES.planning,
-    idle: null,
     executing: { ...FALLBACK_STAGES.executing, ...(raw.executing || {}) },
     done: { ...FALLBACK_STAGES.done, ...(raw.done || {}) },
     blocked: { ...FALLBACK_STAGES.blocked, ...(raw.blocked || {}) },
     error: typeof raw.error === "string" ? raw.error : FALLBACK_STAGES.error,
-    timeout: typeof raw.timeout === "string" ? raw.timeout : FALLBACK_STAGES.timeout,
     retry: typeof raw.retry === "string" ? raw.retry : FALLBACK_STAGES.retry,
+    commands: normalizeCommands(raw.commands),
     fallbacks: normalizeFallbacks(raw.fallbacks),
     greetings: Array.isArray(raw.greetings) && raw.greetings.length > 0
       ? raw.greetings
@@ -281,7 +345,6 @@ function parseLooseStagesResponse(raw: string): StageMap | null {
   result.thinking = readLooseScalar(text, "thinking") ?? readLeadingThinking(text) ?? result.thinking
   result.planning = readLooseScalar(text, "planning") ?? result.planning
   result.error = readLooseScalar(text, "error") ?? result.error
-  result.timeout = readLooseScalar(text, "timeout") ?? result.timeout
   result.retry = readLooseScalar(text, "retry") ?? result.retry
 
   result.executing = { ...result.executing, ...readLooseMap(text, "executing") }
@@ -300,7 +363,7 @@ function readLeadingThinking(text: string): string | null {
 }
 
 function readLooseScalar(text: string, key: string): string | null {
-  const keys = ["thinking", "planning", "idle", "executing", "done", "blocked", "error", "timeout", "retry"]
+  const keys = ["thinking", "planning", "executing", "done", "blocked", "error", "retry", "commands"]
   const next = keys.filter(k => k !== key).join("|")
   const re = new RegExp(`${key}:\\s*([\\s\\S]*?)(?=,?\\s*(?:${next}):|$)`)
   const match = text.match(re)
@@ -309,7 +372,7 @@ function readLooseScalar(text: string, key: string): string | null {
 }
 
 function readLooseMap(text: string, section: "executing" | "done" | "blocked"): Record<string, string> {
-  const sections = ["executing", "done", "blocked", "error", "timeout", "retry"]
+  const sections = ["executing", "done", "blocked", "error", "retry", "commands"]
   const next = sections.filter(s => s !== section).join("|")
   const sectionMatch = text.match(new RegExp(`${section}:([\\s\\S]*?)(?=,?\\s*(?:${next}):|$)`))
   const body = sectionMatch?.[1]
@@ -410,9 +473,9 @@ export async function generateStagesForCard(card: PersonalityCard): Promise<Stag
     const stageMap = parseStagesResponse(combinedText || "")
     if (!stageMap) return null
 
-    // 校验：确保 error/timeout/retry 是字符串（允许空串，空串走 FALLBACK）
-    if (typeof stageMap.error !== "string" || typeof stageMap.timeout !== "string" || typeof stageMap.retry !== "string") {
-      log.error("stages 校验失败: 缺少 error/timeout/retry 字段", JSON.stringify(stageMap).slice(0, 200))
+    // 校验：确保 error/retry 是字符串（允许空串，空串走 FALLBACK）
+    if (typeof stageMap.error !== "string" || typeof stageMap.retry !== "string") {
+      log.error("stages 校验失败: 缺少 error/retry 字段", JSON.stringify(stageMap).slice(0, 200))
       return null
     }
 
@@ -421,6 +484,12 @@ export async function generateStagesForCard(card: PersonalityCard): Promise<Stag
     if (!Array.isArray(stageMap.greetings) || stageMap.greetings.length === 0) {
       log.warn("stages 缺少 greetings，回退中性问候:", cardId)
       stageMap.greetings = [...FALLBACK_STAGES.greetings]
+    }
+
+    // 归一化已把漏给的 commands 补成中性常量，所以「模型整段漏了」只能靠比对默认值发现。
+    // 补值的理由与 greetings 相同：写盘后必须键齐，判过期会变成反复重生成。
+    if (COMMAND_KEYS.every(key => stageMap.commands[key] === FALLBACK_COMMANDS[key])) {
+      log.warn("stages 未提供 commands，命令输出回退中性文案:", cardId)
     }
 
     const result: StagePrompts = {

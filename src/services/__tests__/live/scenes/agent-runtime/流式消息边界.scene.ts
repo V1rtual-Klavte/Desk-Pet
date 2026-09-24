@@ -7,12 +7,22 @@
 //
 // 本场景用 fake provider 的**工具轮**造这个形状：消息 1 = 协议块开头的正文 + 工具调用，
 // 消息 2 = 正常正文。断言两条：① 消息 2 的正文进入流式通道；② 协议块之后的内容没有泄漏。
+//
+// ⚠️ provider 必须有节奏（tokensPerSecond）：上游的帧编码器按「块已覆盖字符数」去重，
+// 整条响应在一个微任务里推完的瞬时流会让生产侧跑在消费侧（帧落盘 + 事件投递）前面，
+// `text_delta` 帧被全部丢掉（实测帧序列只剩 text_start/text_end）—— 那时不管过滤器重置
+// 是否成立，流式通道都收不到任何增量，断言观测不到被测行为。节奏让消费侧跟得上，
+// 断言才是在考「消息边界重置后消息 2 的正文能不能展示」。
 
+import type { StreamFn } from "@earendil-works/pi-agent-core"
+import { fauxProvider } from "@earendil-works/pi-ai"
+import type { AssistantMessageEventStream, Context, FauxResponseStep, Model, SimpleStreamOptions } from "@earendil-works/pi-ai"
 import { listen } from "@tauri-apps/api/event"
+import { installPiRuntimeProviderForTest } from "@/services/engine/pi"
 import { initChat, sendMessage } from "@/services/agent/runner"
 import { formatError } from "@/services/error"
 import { registerBlockingTool } from "../../blocking-tool"
-import { fakeRuntimeDataHeadToolCall, fakeText, installFakeProvider } from "../../fake-provider"
+import { fakeRuntimeDataHeadToolCall, fakeText } from "../../fake-provider"
 import type { SceneDef } from "../../types"
 
 const TOOL_NAME = "live_hn04_stream_probe"
@@ -23,6 +33,31 @@ const HIDDEN_TEXT = "第一段不应该被展示"
 /** 消息 2 的正文：修复前过滤器停在 stopped，这段一个字都进不了流式通道。 */
 const VISIBLE_TEXT = "第二段正文必须可见。"
 const SETTLE_REPLY = "核对上一回合的流式证据。"
+/**
+ * 生成节奏（token/秒）：约 0.3–1 秒一块增量。够慢让消费侧逐块处理（上游按块偏移去重，
+ * 生产侧跑在前面就什么都不剩），又够快让本场景整体仍在秒级完成。
+ */
+const TOKENS_PER_SECOND = 6
+
+/** 有节奏的 fake provider；其余场景需要的投递形状与 `installFakeProvider` 一致。 */
+function installPacedProvider(responses: FauxResponseStep[]): void {
+  const fake = fauxProvider({
+    api: "faux",
+    provider: "deskpet-fake",
+    models: [{ id: "deskpet-fake", name: "Desk-Pet Fake" }],
+    tokensPerSecond: TOKENS_PER_SECOND,
+  })
+  fake.setResponses(responses)
+  const model = fake.getModel()
+  if (!model) throw new Error("fake provider 未创建 model")
+  installPiRuntimeProviderForTest({
+    model,
+    streamFn: ((requestModel: Model<any>, context: Context, options?: SimpleStreamOptions): AssistantMessageEventStream => {
+      options?.onPayload?.({ model: requestModel.id, messages: context.messages, tools: context.tools }, requestModel)
+      return fake.provider.streamSimple(requestModel, context, options)
+    }) as StreamFn,
+  })
+}
 
 /**
  * 事件经 IPC 回环投递，断言前有界等待它落地（不赌「resolve 时事件已经排空」）。
@@ -65,7 +100,7 @@ export const 流式消息边界: SceneDef = {
     outputReply = ""
     turnError = undefined
     blocking = registerBlockingTool(TOOL_NAME)
-    installFakeProvider([
+    installPacedProvider([
       // 消息 1：RUNTIME_DATA 开头（没有可见正文）+ 工具调用 —— 修复前 streamActive 保持 false
       fakeRuntimeDataHeadToolCall(`<RUNTIME_DATA>{}</RUNTIME_DATA>${HIDDEN_TEXT}`, TOOL_NAME),
       // 消息 2：工具轮之后的正文，必须进入流式通道

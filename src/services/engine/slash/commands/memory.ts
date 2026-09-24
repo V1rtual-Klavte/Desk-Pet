@@ -3,6 +3,7 @@
 // ==========================================
 
 import type { SlashCommand } from "../types"
+import { getCommandReply } from "@/services/personality"
 
 export const memoryCommand: SlashCommand = {
   name: "memory clean",
@@ -13,6 +14,6 @@ export const memoryCommand: SlashCommand = {
   async execute() {
     const { MemoryService } = await import("@/services/agent/memory")
     MemoryService.clear()
-    return "记忆已清理～"
+    return getCommandReply("memoryCleared")
   },
 }

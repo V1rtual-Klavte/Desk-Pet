@@ -8,10 +8,10 @@
 |---|---|---|
 | 前端窗口入口 | 主窗口、设置、图层编辑与模拟器；统一启动拦截和配置加载 | [boot.ts](../../src/services/boot.ts)、[main.ts](../../src/main.ts)、[vite.config.ts](../../vite.config.ts) |
 | Vue 界面 | 会话、聊天、角色、设置和确认的投影 | [App.vue](../../src/App.vue)、[components/](../../src/components/) |
-| agent | 用户输入、Provider 适配调用、子代理和主动消息入口 | [runner.ts](../../src/services/agent/runner.ts)、[agent/](../../src/services/agent/) |
+| agent | 用户输入、子代理与主动消息入口（Provider 调用归 `engine/pi/model-gateway.ts`，`agent/pi/` 已随 Harness 迁移删除） | [runner.ts](../../src/services/agent/runner.ts)、[agent/](../../src/services/agent/) |
 | engine | 预处理、Plan、Slash、Harness 运行槽、会话仓库与压缩接线 | [engine/](../../src/services/engine/)、[pi/harness-slot.ts](../../src/services/engine/pi/harness-slot.ts)、[pi/runtime.ts](../../src/services/engine/pi/runtime.ts)、[pi/session-repo.ts](../../src/services/engine/pi/session-repo.ts) |
-| engine/runtime | trace、快照协议（Queue/AgentSlot 已退役） | [runtime/](../../src/services/engine/runtime/) |
-| context | 分层构建、共享预算、完整轮与工具输出请求投影 | [context/](../../src/services/context/) |
+| engine/runtime | trace、快照协议与输入事件身份（`deskpetEventId`/`deskpetSource`；Queue/AgentSlot 已退役） | [runtime/](../../src/services/engine/runtime/)、[input-identity.ts](../../src/services/engine/runtime/input-identity.ts) |
+| context | 分层构建、共享预算（块排序与可选块整块淘汰）与工具输出请求投影 | [context/](../../src/services/context/) |
 | agent/memory | Plan checkpoint、记忆文件与只读 MemoryProvider（会话正文在 `sessions/` JSONL） | [memory/](../../src/services/agent/memory/) |
 | session | 会话仓库访问层、会话列表与消息读模型、切换与恢复 | [session/](../../src/services/session/) |
 | personality / reply | Card、变量与阶段文案；回复元数据解析和效果 | [personality/](../../src/services/personality/)、[reply/](../../src/services/reply/) |
@@ -21,7 +21,7 @@
 | window / cooldown | 前台窗口监控、主动消息与共享冷却 | [window/](../../src/services/window/)、[cooldown.ts](../../src/services/cooldown.ts) |
 | config / paths | 类型化配置与 Rust 路径桥接 | [config.ts](../../src/services/config.ts)、[paths.ts](../../src/services/paths.ts) |
 | logger / error / dialog | 统一日志、异常出口与通用交互提示 | [logger/](../../src/services/logger/)、[error/](../../src/services/error/)、[dialog/](../../src/services/dialog/) |
-| Rust App / commands | AppPaths、IPC 注册、文件/工具与平台能力 | [lib.rs](../../src-tauri/src/lib.rs)、[commands/](../../src-tauri/src/commands/) |
+| Rust App / commands | AppPaths（数据根、允许根与凭据路径终判）、IPC 注册、文件/工具与平台能力 | [lib.rs](../../src-tauri/src/lib.rs)、[paths.rs](../../src-tauri/src/paths.rs)、[commands/](../../src-tauri/src/commands/) |
 | Rust window / monitor | Windows/macOS 窗口与前台应用监控 | [window/](../../src-tauri/src/window/)、[monitor/](../../src-tauri/src/monitor/) |
 | Live Test | Contract、Scene、隔离宿主与报告 | [测试 README](../../src/services/__tests__/live/README.md) |
 
@@ -31,7 +31,7 @@
 
 ```text
 sendMessage → preprocessor / Slash
-  → 空闲 lane.prompt / 忙碌 lane 持久 inbox（steer / followUp）
+  → 空闲 slot.admitInput() → driveAdmitted()（先 lane.accept 落盘再驱动，不走上游 lane.prompt）/ 忙碌 lane 持久 inbox（steer / followUp）
   → runPiAgentTurn：捕获会话与运行身份、Card/变量/模型快照（preflight）
       → 准备当前模式工具与 Skill 元数据
       → 助手模式按配置执行可选 Plan，取得步骤结果

@@ -115,6 +115,13 @@ pnpm run test:release # 类型/编译 + Rust 单测 + 严格 Contract + 三次 t
 - Card、互动状态、用户长期事实分开。RUNTIME_DATA 由回复模块剥离、验证、持久化，不能重新塞回 Loop。
   card/interaction 保存 VariableState；system/session 使用原始只读值。LLM 只写注册且允许更新的 card 变量。
 - `whenText` 是自然语言指引；不恢复旧变量工具、情绪前缀或可执行 When DSL。
+- 用户可见的阶段提示、过程提示与兜底台词一律由当前 Card 生成，源码不留硬编码文案：
+  取用只经 `getStagePrompt` / `getSimpleStage` / `getCommandReply` / `getFallbackReply`，
+  引擎按语义 key 发事件、界面取文案，两边都不各存一份台词。
+  新增一个用户可见场景时，先在 `StageMap` / `FallbackReplies` / `CommandReplies` 加 key，
+  同步 `stages-prompt.md` 与 `validateStages`（旧缓存必须判过期重生成，否则新 key 永远取不到
+  Card 文案），再接消费点；`FALLBACK_*` 常量只是 Card 完全不可用时的中性兜底。
+  系统消息与错误诊断保持中性：角色台词会掩盖故障，用户要能分清「角色在说话」和「出问题了」。
 - 主请求与一次性文本请求统一走模型网关，共享配置、认证、取消和 deadline；不叠加 SDK 内层重试。
 - 长期记忆只经 MemoryProvider 进入 Runtime；默认空实现。不得把压缩摘要、工具结果、主动消息
   或助手台词晋升为用户事实，不宣称尚未接通的自动提取、召回、画像写入或 dreaming 已完成。
@@ -135,7 +142,7 @@ pnpm run test:release # 类型/编译 + Rust 单测 + 严格 Contract + 三次 t
 - 全局异常经 `bootWindow()` 安装拦截、`reportError()` 单一出口，不自行再建覆盖层。
 - 有意静默必须就地留注释说明为什么，并在注释里指名统一留痕点（如「根因留痕在 getCtx / reportEffectFailure」）；
   裸 `catch {}` 与只写「ignore」的注释都算违规；统一标记为 `[保留已登记 §4.2]`。
-- 已知可接受的保留项记录在《前舞台修复方案》§4.2（归档后位于 `docs/history/implementation/`），复审不重复报。
+- 已知可接受的保留项记录在《前舞台修复方案》§4.2（已归档：`docs/history/implementation/前舞台修复方案-2026-09-24基线.md`），复审不重复报。
 - Rust 命令返回 `AppResult<T>`，使用具体 AppError；不退回 `Result<T, String>`。
   锁中毒用 `.unwrap_or_else(|e| e.into_inner())` 恢复，不写 `.lock().unwrap()`。
 - IPC 变更同步 Rust 签名、mod 导出、`lib.rs` 注册与 TS invoke；新增窗口同时核对 HTML/TS 入口、
