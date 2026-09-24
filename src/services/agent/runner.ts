@@ -311,7 +311,7 @@ export async function resumePausedInputs(sessionId: string = getActiveSessionId(
           // 走 reportError 留完整记录（overlay:false，不弹覆盖层），当前会话再补一条可见提示。
           log.error("暂停输入回滚失败:", formatError(error))
           reportError("Agent", error, { kind: "暂停输入回滚失败", overlay: false })
-          if (getActiveSessionId() === sessionId) pushSystemMessage("刚才那条暂停输入没能放回队列，请重新发送～", sessionId)
+          if (getActiveSessionId() === sessionId) pushSystemMessage(getFallbackReply("pausedReturnFailed"), sessionId)
         })
     }
     const fallback = e instanceof ContextBudgetError ? e.message : getFallbackReply("llmUnavailable")
@@ -394,7 +394,7 @@ async function dispatchMessage(text: string, options: SendMessageOptions = {}): 
     // 由用户决定等压缩跑完还是撤回。
     if (await harnessSlots.hasOpenOperation(originSessionId)) {
       const { pushSystemMessage } = await import("@/services/session/messages")
-      pushSystemMessage("正在压缩这个会话，等它跑完再发哦～", originSessionId)
+      pushSystemMessage(getFallbackReply("compactionRejected"), originSessionId)
       log.warn("会话正在执行结构操作，输入未发送:", { sessionId: originSessionId, requestId })
       return {
         reply: "",
@@ -435,7 +435,7 @@ async function dispatchMessage(text: string, options: SendMessageOptions = {}): 
   if (runGeneration === undefined) {
     // 罕见竞态（投递失败后槽仍被占用）或槽已 fault：不抛给 UI，按「未发送」如实告知。
     log.warn("会话已有运行中的 Agent，输入未发送:", originSessionId)
-    const notice = "（糖糖还在处理上一条消息呢，稍等一下再发哦～）"
+    const notice = getFallbackReply("concurrentRejected")
     pushAssistantMessage(notice, originSessionId)
     return {
       reply: notice,

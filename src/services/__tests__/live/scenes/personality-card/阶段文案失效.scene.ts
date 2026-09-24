@@ -1,6 +1,6 @@
 import type { SceneDef } from "../../types"
 import { importUserCard } from "@/services/personality/loader"
-import { FALLBACK_STAGES, stageSourceHash, validateStagesForCard } from "@/services/personality/stages-cache"
+import { COMMAND_KEYS, FALLBACK_STAGES, stageSourceHash, validateStagesForCard } from "@/services/personality/stages-cache"
 
 /**
  * 阶段文案的失效判定。
@@ -60,7 +60,7 @@ const scene: SceneDef = {
     caseId: "card-stages-staleness",
     module: "personality-card",
     contractId: "pc-10",
-    description: "阶段文案按 sourceHash 判过期，version 不参与；失效键与生成输入同源",
+    description: "阶段文案按 sourceHash 判过期，version 不参与；缺后加段/键的旧文件也判过期",
     depth: "shallow",
     suite: "regression",
     entry: "unit",
@@ -68,7 +68,7 @@ const scene: SceneDef = {
   },
   turns: [{
     index: 1,
-    description: "判定键只认 sourceHash 与 cardId 归属",
+    description: "判定键只认 sourceHash 与 cardId 归属，且后加的段/键缺失判过期",
     userText: "检查阶段文案失效判定。",
     checks: [{ type: "expectStagesStaleness", run: async () => {
       const card = await importUserCard(BASE)
@@ -103,6 +103,30 @@ const scene: SceneDef = {
       const brokenStages = { ...FALLBACK_STAGES, greetings: [] as string[] }
       if (validateStagesForCard({ ...data, stages: brokenStages }, card.id, hash)) {
         throw new Error("缺 greetings 的旧缓存被判有效")
+      }
+
+      // ④b 后加的段/键同样判过期 —— 这是新 key 唯一能被 Card 覆盖的机制：
+      // 若旧文件被判有效，getCommandReply/getFallbackReply 会永远返回中性常量，界面看起来"正常"却没角色语气。
+      const withoutCommands = { ...FALLBACK_STAGES } as Record<string, unknown>
+      delete withoutCommands.commands
+      if (validateStagesForCard({ ...data, stages: withoutCommands as unknown as typeof FALLBACK_STAGES }, card.id, hash)) {
+        throw new Error("缺 commands 段的旧缓存被判有效")
+      }
+      // 旧模板产物：commands 整个键不存在（不是内容为空），同样必须判过期
+      const emptyCommands = {
+        ...FALLBACK_STAGES,
+        commands: Object.fromEntries(COMMAND_KEYS.map(key => [key, ""])) as unknown as typeof FALLBACK_STAGES.commands,
+      }
+      if (validateStagesForCard({ ...data, stages: emptyCommands }, card.id, hash)) {
+        throw new Error("commands 全为空串的旧缓存被判有效")
+      }
+      // fallbacks 缺后加的键（旧文件只有前 9 个）也必须判过期
+      const legacyFallbacks = { ...FALLBACK_STAGES }
+      const prunedFallbacks = Object.fromEntries(
+        Object.entries(legacyFallbacks.fallbacks).filter(([key]) => key !== "runInterrupted"),
+      ) as typeof FALLBACK_STAGES.fallbacks
+      if (validateStagesForCard({ ...data, stages: { ...legacyFallbacks, fallbacks: prunedFallbacks } }, card.id, hash)) {
+        throw new Error("fallbacks 缺新增键的旧缓存被判有效")
       }
 
       // ⑤ 失效键与生成输入严格同源：只改非生成输入（行为进阶、变量定义）不变，

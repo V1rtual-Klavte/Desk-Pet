@@ -3,6 +3,7 @@ import { initChat, sendMessage } from "@/services/agent/runner"
 import { getActiveSessionId } from "@/services/session"
 import { inputEventId } from "@/services/engine/runtime/input-identity"
 import { defineTool, register, unregister, TOOL_POLICY_VERSION } from "@/services/tool"
+import { getCommandReply } from "@/services/personality"
 import { fakeText, fakeToolCall, installFakeProvider } from "../../fake-provider"
 import { assistantTexts, compactionEntries, countTexts, sessionEntries, sessionMessages, userTexts } from "../../session-entries"
 import type { SceneDef } from "../../types"
@@ -150,7 +151,10 @@ export const 手动压缩排队守卫: SceneDef = {
 
         // ① 准入回执：pending + 按 kind 的排队明细（用户可见文案）。
         if (queuedReceipt !== "deferred") throw new Error(`排队输入没有被投递为 nextRun: ${String(queuedReceipt)}`)
-        if (!compactReply.includes("未压缩")) throw new Error(`/compact 没有按未压缩回执: ${JSON.stringify(compactReply)}`)
+        // 指引句的真相源是当前 Card 的 commands.compactPending（文案搬家不该让断言假失败）；
+        // 其后的条数明细是中性诊断，仍按原文断言。
+        const pendingHeadline = getCommandReply("compactPending")
+        if (!compactReply.includes(pendingHeadline)) throw new Error(`/compact 没有按未压缩回执: ${JSON.stringify(compactReply)}`)
         if (!compactReply.includes("排队")) throw new Error(`/compact 回执缺少排队明细: ${JSON.stringify(compactReply)}`)
         if (!compactReply.includes("下一次运行 1 条")) {
           throw new Error(`/compact 回执没有报出 nextRun 明细: ${JSON.stringify(compactReply)}`)

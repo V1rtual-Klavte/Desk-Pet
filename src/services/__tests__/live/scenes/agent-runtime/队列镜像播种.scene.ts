@@ -2,6 +2,7 @@ import { getInterruptedRun, harnessSlots, listQueuedInputs } from "@/services/en
 import type { HarnessQueuedItem } from "@/services/engine/pi"
 import { initChat, sendMessage } from "@/services/agent/runner"
 import { getActiveSessionId } from "@/services/session"
+import { getCommandReply } from "@/services/personality"
 import { registerBlockingTool } from "../../blocking-tool"
 import { fakeText, fakeToolCall, installFakeProvider } from "../../fake-provider"
 import type { SceneDef } from "../../types"
@@ -125,7 +126,8 @@ export const 队列镜像播种: SceneDef = {
           throw new Error(`排队视图条数不对: ${JSON.stringify(queueViewAfter.items.length)}`)
         }
         // ② 压缩守卫按 lane 真相拒绝：镜像已就绪且确有排队项时，/compact 不压缩、不续跑。
-        if (!compactReply.includes("未压缩")) {
+        // 指引句的真相源是当前 Card 的 commands.compactPending（文案搬家不该让断言假失败）。
+        if (!compactReply.includes(getCommandReply("compactPending"))) {
           throw new Error(`/compact 没有按未压缩回执: ${JSON.stringify(compactReply)}`)
         }
         if (!compactReply.includes("排队")) {

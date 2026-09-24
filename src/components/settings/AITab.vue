@@ -403,7 +403,7 @@ const stageRows = computed<StageRow[]>(() => {
     }
   }
 
-  for (const stage of ["thinking", "planning", "idle", "error", "timeout", "retry"] as const) {
+  for (const stage of ["thinking", "planning", "error", "retry"] as const) {
     const val = stages[stage];
     if (val !== null && val !== undefined) {
       rows.push({ stage, category: "—", text: val as string });

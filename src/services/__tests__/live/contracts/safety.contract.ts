@@ -4,7 +4,7 @@ export const safetyContract: ModuleContract = {
   module: "safety",
   sourceFiles: ["src/services/engine/pi/runtime.ts", "src/services/engine/pi/harness-slot.ts", "src/services/safety/checker.ts", "src/services/safety/permission.ts", "src/services/safety/confirm.ts", "src/services/tool/types.ts", "src/services/tool/policy.ts", "src/services/tool/local/pi-tools.ts", "src/services/tool/mcp/client.ts", "src/services/session/manager.ts", "src-tauri/src/paths.rs", "src-tauri/src/commands/bash_policy.rs"],
   generatedAt: "2026-09-24",
-  sourceHash: "9c2c035bb36f54ba960441dbffb55d240619372c690845e3cc0514b95df3ec6f",
+  sourceHash: "a668e626865b7114ae30f214002dd094e946bda76f557f81cde0ef6807c3adb2",
   coverage: [
     { id: "sf-01", feature: "SAFE 级别放行", description: "safetyLevel=SAFE 的工具经生产裁决入口 evaluateToolPermission（标准决策层即 allow）直接放行，不生成确认请求；会话信任与安全裁决只有 permission.ts 一份实现", why: "安全等级体系基础，且放行结论必须来自唯一裁决点", depth: "shallow", scenarios: ["safety-safe"] },
     { id: "sf-02", feature: "NORMAL 级别检查", description: "safetyLevel=NORMAL 的工具在轻量模式的标准决策是放行（kernel 里不放行的分支只留给 DANGER / NOWAY），助手模式的标准决策是 ask；命令内容的白名单等二次校验在工具执行链路里（Rust bash_policy 层 2），不取代这次裁决", why: "常规工具需要安全评估", depth: "shallow", scenarios: ["safety-normal"] },

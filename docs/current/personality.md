@@ -20,7 +20,22 @@ card/interaction 状态保存在 `personality/stages/{cardId}.json` 的变量区
 
 默认种子提供 neutral 中性选择；没有可用 Card 时允许无活动 Card 降级运行。`whenText` 是自然语言语气指引；mustRules 参与 Prompt 构建，不是一套任意执行脚本。
 
-阶段文案先读持久化缓存，缺失时可经模型生成；任一 Card 首次激活或角色设定/语言风格变化时会重新生成一次（一次 LLM 调用/卡）。失效判定键是生成输入 `sourceHash`（`SHA-256(roleSetting + "\n" + languageStyle)`），`version:` 只作元数据、不参与判定；重新生成只覆写 stages 段，不清空变量区。`getFallbackReply()` 提供角色化兜底并有中性回退。
+阶段文案先读持久化缓存，缺失时可经模型生成；任一 Card 首次激活或角色设定/语言风格变化时会重新生成一次（一次 LLM 调用/卡）。失效判定键是生成输入 `sourceHash`（`SHA-256(roleSetting + "\n" + languageStyle)`），`version:` 只作元数据、不参与判定；重新生成只覆写 stages 段，不清空变量区。
+
+**用户可见的阶段与兜底文案只有 Card 一个来源**，取用点固定为四个 getter：
+
+| getter | 覆盖面 | 消费点 |
+|---|---|---|
+| `getStagePrompt(stage, category)` | `executing` / `done` / `blocked` 的工具类别映射 | ChatPanel 的工具状态提示位 |
+| `getSimpleStage(key)` | `thinking` / `planning` / `error` / `retry` 状态行 | 同上（`thinking` 来自每轮 `turn_start`，`planning` 来自计划阶段入口，`retry` 来自 Harness `retry_start`） |
+| `getCommandReply(key)` | `commands` 段的 slash 命令输出 | `/clear`、`/memory clean`、`/compact` |
+| `getFallbackReply(key)` | `fallbacks` 段的异常兜底正文 | 运行内核各失败出口 |
+
+引擎只经 `deskpet-stage-hint { sessionId, stage }` 发语义 key，文案由界面按当前 Card 取 —— 与 `tool-executing` 同一条口径，引擎不持有第二份台词。`commands` 里带计数与错误插值的明细行保持中性：插值内容是诊断事实，角色化会让用户分不清「真的排了几条」和「角色在说话」。系统消息与错误诊断同样保持中性（角色台词会掩盖故障）。
+
+新增一个用户可见场景的联动清单：`StageMap` / `FallbackReplies` / `CommandReplies` 加 key → `stages-prompt.md` 补说明与 JSON 模板 → `validateStages` 把它列为必需（旧缓存判过期才会重生成，否则新 key 永远取不到 Card 文案）→ 接消费点。`FALLBACK_STAGES` / `FALLBACK_FALLBACKS` / `FALLBACK_COMMANDS` 只是 Card 完全不可用时的中性兜底，不是第二份产品文案。
+
+`thinking` / `planning` / `retry` 是状态行不是对话回复，`error` 供工具错误前缀；`timeout` 无处安放，超时是**终态**且已有专属于它的 `fallbacks.turnTimeout`，不再保留第二个同名阶段字段。`idle` 已删除（生成侧强制为 null 的死字段）。
 
 ## 回复与写入
 

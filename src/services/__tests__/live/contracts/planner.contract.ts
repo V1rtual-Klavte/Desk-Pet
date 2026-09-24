@@ -10,7 +10,7 @@ export const plannerContract: ModuleContract = {
   // 这里只从计划域的相位与通道出发断言它们落成的结果。
   sourceFiles: ["src/services/engine/pi/runtime.ts", "src/services/engine/planner.ts", "src/services/engine/plan-confirmation.ts"],
   generatedAt: "2026-09-24",
-  sourceHash: "3fd510feb9a5f781fcc6c5989448c3431ad8d18660395f90ad291a8b2094e6cd",
+  sourceHash: "ebcd61a16d666aefac1ed73eb1dd152257d6f74888668ce3a16c573c678b3995",
   coverage: [
     { id: "pl-01", feature: "evaluateComplexity force触发", description: "--plan 前缀强制触发评分=5；判定是 startsWith，行首之外的 --plan 不命中 force 分支", why: "用户手动触发 Plan", depth: "shallow", scenarios: ["plan-force-trigger"] },
     { id: "pl-02", feature: "evaluateComplexity 关键词匹配", description: "关键词列表匹配 → 评分 3、原因里带回命中的词；默认 complexityEval=keyword 时未命中关键词直接给低分，不为它单独发一次模型请求（判据用没有任何响应的 Provider：真发了请求就只能是 llm 分支或超时）", why: "自动检测复杂任务，同时不让每条助手消息都付一次判定请求的成本", depth: "shallow", scenarios: ["plan-keyword-trigger"] },

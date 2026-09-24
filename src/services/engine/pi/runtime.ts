@@ -22,7 +22,8 @@ import { formatPoolForPrompt } from "@/services/personality/variable-pool"
 import { getActiveCard } from "@/services/personality/registry"
 import type { PersonalityCard } from "@/services/personality/types"
 import { getPoolSnapshot, applyResetPolicies, refreshVariablePool, updateInteractionVar } from "@/services/personality/variable-pool"
-import { getFallbackReply, getSimpleStage } from "@/services/personality/stages-cache"
+import { getFallbackReply } from "@/services/personality/stages-cache"
+import type { SimpleStageKey } from "@/services/personality/stages-cache"
 import { generateReply, parseRuntimeData } from "@/services/reply"
 import { authorizeToolExecution, freezePermissionPolicy, invalidatePermissionScope } from "@/services/safety"
 import type { PermissionPolicySnapshot } from "@/services/safety"
@@ -216,9 +217,13 @@ export interface PiAgentTurnOutput {
 export function turnFailureReply(
   message: string,
   state: Pick<HarnessRunState, "lastBudgetError" | "overflowRecoveryDeclined">,
+  /** 失败分类；缺省表示非超时。预算判定优先于它 —— 溢出恢复的结论比等待时长更可操作。 */
+  kind?: TurnFailure["kind"],
 ): string {
   if (message.includes("上下文需要约")) return message
   if (state.overflowRecoveryDeclined && state.lastBudgetError) return state.lastBudgetError
+  // 超时有自己的文案：落到 maxRetriesExhausted 会把「等了太久」说成「重试失败」，用户据此做的处置是两回事。
+  if (kind === "timeout") return getFallbackReply("turnTimeout")
   return getFallbackReply("maxRetriesExhausted")
 }
 
@@ -786,6 +791,17 @@ function createTurnSpec(kernel: TurnKernel, options: {
   }
 }
 
+/**
+ * 阶段状态行事件的唯一发送点（thinking / planning / retry）。
+ *
+ * 只发语义 key，文案由界面按当前 Card 取 —— 与 tool-executing 同一条口径，
+ * 引擎不持有第二份台词，加一个阶段也不需要改事件协议。
+ */
+function emitStageHint(sessionId: string | undefined, stage: SimpleStageKey): void {
+  if (!sessionId || getActiveSessionId() !== sessionId) return
+  void emitUiEvent("deskpet-stage-hint", { sessionId, stage })
+}
+
 /** 主回合消费点：流式正文按消息落 UI，usage 按请求进统计。 */
 function createTurnSinks(kernel: TurnKernel): HarnessRunSinks {
   let apiRound = 0
@@ -797,7 +813,12 @@ function createTurnSinks(kernel: TurnKernel): HarnessRunSinks {
     void emitUiEvent("deskpet-assistant-stream", { sessionId, delta })
   }
   return {
-    onTurnStart: () => { apiRound++ },
+    onTurnStart: () => {
+      apiRound++
+      // 每轮 API 起点（含工具轮之间）都回到「思考中」：上一轮的 done/blocked 提示此时已经过期。
+      emitStageHint(sessionId, "thinking")
+    },
+    onRetry: () => emitStageHint(sessionId, "retry"),
     onAssistantDelta: delta => {
       streamFilter ??= new RuntimeDataStreamFilter()
       publishStreamDelta(streamFilter.push(delta))
@@ -931,6 +952,9 @@ export async function runPiAgentTurn(input: PiAgentTurnInput): Promise<PiAgentTu
   let planStepContext = ""
   let planUserText = userText
   if (mode === "assistant" && planConfig.enabled) {
+    // 计划判定与生成都发生在 Harness 驱动之前（此时还没有 turn_start 的「思考中」），
+    // 这段等待必须有提示，否则界面在复杂度判定 + 规划调用期间一片空白。
+    emitStageHint(turnSessionId, "planning")
     const forcePlan = userText.startsWith("--plan")
     if (forcePlan) planUserText = userText.replace(/^--plan\s*/, "")
     // 复杂度判定看**原文本**：`--plan` 的强制触发是 `evaluateComplexity` 的 startsWith 分支，
@@ -1192,7 +1216,7 @@ async function runPlanPhase(args: {
             for (const step of plan.steps) await planCheckpointStore.transitionStep(planId, String(step.id), "skipped")
           })
           await finishPlan({ sessionId, planId, state: "failed", reason: "declined", notify: "cancelled" })
-          return { kind: "declined", reply: getSimpleStage("planning") ?? "好的，已取消计划～" }
+          return { kind: "declined", reply: getFallbackReply("planCancelled") }
         }
         // 其余非确认归宿（会话切换/会话不再活跃/确认超时/事件发射失败/面板不可用）都不是用户的选择：
         // 计划一次都没跑，按取消归宿收尾 —— 不写「已取消计划～」的模型回复，也不记成用户拒绝。
@@ -1476,7 +1500,7 @@ export function listRecoveredPlans(sessionId?: string): RecoveredPlanView[] {
  * 拒绝与失败都写系统消息并返回 undefined —— 面板据此只做刷新，不需要自造文案。
  */
 export async function resumePlan(sessionId: string, planId: string): Promise<PiAgentTurnOutput | undefined> {
-  const busyMessage = "这个会话正在忙，稍后再继续计划哦～"
+  const busyMessage = getFallbackReply("planResumeBusy")
   // guard：该会话没有任何未结算的操作（宿主回合或 lane 结构操作，统一「忙」判定）
   if (await harnessSlots.hasOpenOperation(sessionId)) {
     pushSystemMessage(busyMessage, sessionId)
@@ -1520,7 +1544,7 @@ export async function resumePlan(sessionId: string, planId: string): Promise<PiA
     })
     if (outcome.kind === "completed") {
       pushSystemMessage("计划剩余步骤已执行完成", sessionId)
-      const output = await finishWithoutTurn({ sessionId, slot, reply: getSimpleStage("planning") ?? "计划完成啦～" })
+      const output = await finishWithoutTurn({ sessionId, slot, reply: getFallbackReply("planCompleted") })
       return { ...output, abortedByStop: false }
     }
     // `declined`（逐步门/失败询问上中止）带自己的可见回复；`cancelled` 不写正文
@@ -1582,7 +1606,7 @@ async function settleMainTurn(args: {
 
   const failTurn = async (message: string, kind: TurnFailure["kind"]): Promise<PiAgentTurnOutput> => {
     // 失败分类保留上游文案（decline 不改写成预算错误），只有展示文案回到硬预算判定。
-    const reply = turnFailureReply(message, state)
+    const reply = turnFailureReply(message, state, kind)
     if (!slot) {
       reportMissingSlot("兜底回复未落盘")
       return { reply, toolCallHistory, retriesUsed: state.retriesUsed, failure: { kind, message } }
@@ -1604,8 +1628,8 @@ async function settleMainTurn(args: {
 
   if (result.status === "interrupted") {
     // §8.7.3：中断运行默认暂停；继续/丢弃入口见 getInterruptedRun / continueInterruptedRun。
-    // 产品文案直接说明下一步，不套兜底回复。
-    const reply = "上次运行中断啦，请先选择继续或丢弃这次未完成的运行～"
+    // 文案直接说明下一步，不套兜底回复；ChatPanel 的中断提示用同一个 key，界面与正文同源。
+    const reply = getFallbackReply("runInterrupted")
     if (!slot) {
       reportMissingSlot("中断提示未落盘")
       return { reply, toolCallHistory, retriesUsed: 0, failure: { kind: "unknown", message: reply } }
@@ -1923,7 +1947,9 @@ export async function runPiSubAgent(input: PiSubAgentInput): Promise<PiSubAgentO
         log.warn("子代理回复含被剥离的 RUNTIME_DATA，变量写入不生效（原始正文已随 plan_step_result 留证）:", input.task.substring(0, 40))
       }
       return {
-        reply: reply || getFallbackReply("subAgentDone"),
+        // 子代理跑完但没有可见正文时说「无结果」，不是「已完成」：
+        // 步骤结果会原样进 plan_step_result 与后续步骤上下文，两种语义不能互相顶替。
+        reply: reply || getFallbackReply("subAgentNoResult"),
         toolCallsMade: kernel.state.toolCallsMade,
         success: true,
         // PLAN-09④：原始正文交给计划段写进 plan_step_result；不在这里解析变量。

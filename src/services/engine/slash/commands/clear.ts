@@ -3,6 +3,7 @@
 // ==========================================
 
 import type { SlashCommand } from "../types"
+import { getCommandReply } from "@/services/personality"
 
 export const clearCommand: SlashCommand = {
   name: "clear",
@@ -15,6 +16,6 @@ export const clearCommand: SlashCommand = {
     const { onSessionEnd } = await import("@/services/agent/memory")
     await createNewSession()
     onSessionEnd()
-    return "对话已清空，原会话保留在历史记录里～"
+    return getCommandReply("clear")
   },
 }

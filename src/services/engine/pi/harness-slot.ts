@@ -160,6 +160,8 @@ export interface HarnessRunSinks {
   onAssistantMessage?: (message: AssistantMessage, entryId: string | undefined) => void | Promise<void>
   onToolResultMessage?: (message: ToolResultMessage, entryId: string | undefined) => void | Promise<void>
   onToolEnd?: (toolName: string, isError: boolean) => void
+  /** Harness RetryPolicy 开始一次重试等待；`attempt` 是从 1 起算的序号。 */
+  onRetry?: (attempt: number) => void
   onUsage?: (row: UsageRow, totals: Usage) => void | Promise<void>
 }
 
@@ -1554,9 +1556,11 @@ export class HarnessSlot {
       events.on("tool_end", (event) => {
         this.activeRun?.spec.sinks?.onToolEnd?.(event.toolName, event.isError)
       }),
-      events.on("retry_start", () => {
+      events.on("retry_start", (event) => {
         const run = this.activeRun
-        if (run) run.spec.state.retriesUsed++
+        if (!run) return
+        run.spec.state.retriesUsed++
+        run.spec.sinks?.onRetry?.(event.attempt)
       }),
       events.on("usage", async (event) => {
         const run = this.activeRun

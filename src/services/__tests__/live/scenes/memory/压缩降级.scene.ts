@@ -2,6 +2,7 @@ import type { Context, FauxModelDefinition, FauxResponseStep } from "@earendil-w
 import type { Entry } from "@earendil-works/pi-agent-core"
 import { COMPACTION_DECLINED_ENTRY, PROMPT_SNAPSHOT_ENTRY, compactionSettingsFor, compactActiveSession } from "@/services/engine/pi"
 import { compactCommand } from "@/services/engine/slash/commands/compact"
+import { getCommandReply } from "@/services/personality"
 import { aiConfig } from "@/services/config"
 import { initChat, sendMessage } from "@/services/agent/runner"
 import { getActiveSessionId } from "@/services/session"
@@ -14,7 +15,7 @@ import type { SceneDef } from "../../types"
 // 宿主 before_compaction 内核抛错时，钩子返回 {decline:true}：上游据此 publishStructuralOutcome
 // (kind:"declined")，既不提交 compaction 条目、也不回退它自己的通用摘要（那条摘要一旦提交就是
 // 后续所有回合唯一的历史视图且不可回滚）。代价与原因都要可见：
-// - /compact 报「未压缩：<原因>」；
+// - /compact 报当前 Card 的 commands.compactFailed，并附上技术原因；
 // - compactActiveSession 返回 {status:"failed"}；
 // - 会话里留一条 deskpet.compaction_declined 审计条目；
 // - 原文条目与正常回合都不受影响。「不受影响」的口径是**原文条目一条不少且逐字不变**，
@@ -180,11 +181,15 @@ export const 压缩降级: SceneDef = {
         { type: "expectCompactCommandFailure", run: async () => {
           const before = await entryShape()
           const text = await compactCommand.execute() ?? ""
-          if (!text.startsWith("未压缩")) throw new Error(`/compact 没有报「未压缩」：${text}`)
-          if (text.includes("压缩完成")) throw new Error(`/compact 把失败的压缩报成完成：${text}`)
+          // 命令输出的真相源是当前 Card 的 commands 段（getCommandReply）：硬编码前缀/措辞
+          // 会在文案搬家时假失败，而文案搬家正是本场景要能跟着走的变化。
+          const failedText = getCommandReply("compactFailed")
+          if (!text.startsWith(failedText)) throw new Error(`/compact 没有报压缩失败：${text}`)
+          const completedText = getCommandReply("compactCompleted")
+          if (text.includes(completedText)) throw new Error(`/compact 把失败的压缩报成完成：${text}`)
           // 「没有可安全摘要的完整旧轮次」是上游/宿主在**摘要内核之前**的空范围拒绝，不是内核失败：
           // 走到这条说明本场景没验证到 mm-25 的失败可见性，单独给出口径，不混进产品断言。
-          if (text.includes("没有可安全摘要的完整旧轮次")) {
+          if (text.includes(getCommandReply("compactDeclined"))) {
             throw new Error(`压缩没有到达摘要内核就被空范围拒绝（/compact=${text}）：载荷/切点前提不成立｜${sizing()}`)
           }
           if (!text.includes("摘要格式无效")) throw new Error(`/compact 的失败文案没有给出原因：${text}`)

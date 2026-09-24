@@ -4,7 +4,8 @@ import { contextBudget } from "@/services/context"
 import { compactionSettingsFor, harnessSlots, isSessionBusy, listQueuedInputs } from "@/services/engine/pi"
 import { initChat, sendMessage } from "@/services/agent/runner"
 import { getFallbackReply } from "@/services/personality/stages-cache"
-import type { FallbackReplies } from "@/services/personality/stages-file"
+import { FALLBACK_KEYS } from "@/services/personality"
+import type { FallbackReplies } from "@/services/personality"
 import { chatHistory, getActiveSessionId } from "@/services/session/store"
 import { fakeText, installFakeProvider } from "../../fake-provider"
 import { assistantTexts, compactionEntries, countTexts, sessionEntries, sessionMessages, userTexts } from "../../session-entries"
@@ -41,7 +42,18 @@ const PAD_REPLY = "第二轮完成"
 const REFUSED_TEXT = "压缩期间发出的这条输入不该被当成正常回合。"
 const AFTER_TEXT = "压缩结束后这条输入应该正常送达。"
 const AFTER_REPLY = "压缩后的回合完成"
-const REFUSED_NOTICE = "正在压缩这个会话，等它跑完再发哦～"
+/**
+ * 拒绝提示的真相源是当前 Card 的 `fallbacks.compactionRejected`，不是常量：场景硬编码旧文案
+ * 会在文案搬家时假失败。必须**断言时**取值 —— 模块级求值跑在 Card 激活之前，只会拿到中性兜底。
+ */
+const refusedNotice = (): string => getFallbackReply("compactionRejected")
+
+/**
+ * 失败兜底族：旧实现（NH-02）的症状是把「没发出去」写成这一族里的回复。
+ * 判别力因此靠「拒绝提示是 compactionRejected、且这一族一条都没出现」，不能靠「不在全部 fallbacks 里」——
+ * 拒绝提示本身就是 Card 的一条 fallback，那条件永远为假。
+ */
+const FAILURE_NOTICE_KEYS: ReadonlyArray<keyof FallbackReplies> = ["maxRetriesExhausted", "turnTimeout", "llmUnavailable"]
 const REFUSAL_MESSAGE = "会话正在执行结构操作（压缩），输入未发送"
 const SUMMARY_INTENT = "压缩期准入：摘要请求在飞时输入被如实拒绝"
 const SUMMARY = JSON.stringify({
@@ -54,10 +66,7 @@ const SUMMARY = JSON.stringify({
 })
 
 /** `getFallbackReply` 系列文案：兜底失败回复的真相源，按运行时取值比对（Card 文案会覆盖常量）。 */
-const FALLBACK_KEYS: ReadonlyArray<keyof FallbackReplies> = [
-  "concurrentRejected", "maxRetriesExhausted", "turnTimeout", "toolLoopMaxRounds",
-  "llmUnavailable", "subAgentDone", "subAgentFailed", "subAgentNoResult", "compactionFailed",
-]
+// 兜底文案族取自模块导出的唯一清单：手写副本会在新增 key 时静默漏检（污染断言就失效了）。
 
 let sessionId = ""
 let fakeState: FauxProviderState | undefined
@@ -309,10 +318,17 @@ async function assertWindowRefusal(ctx: AssertContext): Promise<void> {
   // 正面证据：拒绝必须被说出来，而且它不是兜底文案冒充的。
   // 读聊天视图本体（`chatHistory`）：界面拿到的就是它，「视图有没有这条说明」不因读取偏移而失真。
   const storeTexts = chatHistory.map(message => message.text)
-  if (!storeTexts.includes(REFUSED_NOTICE)) {
+  const notice = refusedNotice()
+  if (!storeTexts.includes(notice)) {
     throw new Error(`界面没有拿到准入说明: ${JSON.stringify(storeTexts.slice(-4))}`)
   }
-  if (fallbackFamily.includes(REFUSED_NOTICE)) throw new Error("准入说明与兜底文案撞了，本场景的判定依据需要复核")
+  // 判别力：拒绝提示不能与失败兜底同文，否则「没发出去」与「聊过了但失败了」在证据上分不开。
+  const failureFamily = FAILURE_NOTICE_KEYS.map(key => getFallbackReply(key)).filter(text => text.trim().length > 0)
+  if (failureFamily.includes(notice)) throw new Error("准入说明与失败兜底文案撞了，本场景的判定依据需要复核")
+  const misframed = storeTexts.filter(text => failureFamily.includes(text))
+  if (misframed.length > 0) {
+    throw new Error(`界面出现了失败兜底文案冒充准入说明: ${JSON.stringify(misframed)}`)
+  }
 
   // ② 不静默排队、不偷跑模型：正文既不进会话也不进 lane inbox，全程没有新的 provider 请求。
   if (countTexts(userTexts(messages), REFUSED_TEXT) !== 0) throw new Error("被拒绝的输入进了会话正文")

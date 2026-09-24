@@ -49,32 +49,65 @@ export interface StagesFile {
 export type StagePrompts = StageFileStages
 
 export interface StageMap {
+  /** 回合开始、尚未产出可见内容时的状态行提示 */
   thinking: string | null
   planning: string | null
-  idle: string | null
   executing: Record<string, string>
   done: Record<string, string>
   blocked: Record<string, string>
   error: string
-  timeout: string
+  /** Harness RetryPolicy 重试等待中的状态行提示（不是重试耗尽后的兜底回复，那是 fallbacks.maxRetriesExhausted） */
   retry: string
+  /** slash 命令的用户可见输出，每个 Card 有自己的角色化版本 */
+  commands: CommandReplies
   /** 系统兜底回复，每个 Card 有自己的角色化版本 */
   fallbacks: FallbackReplies
   /** 首次激活的问候语，每个 Card 有自己的角色化版本；运行时随机选一条 */
   greetings: string[]
 }
 
+/**
+ * slash 命令输出 —— 只覆盖语义固定的终态句。
+ * 带计数/错误插值的拼接句（如「还有 N 条排队消息」）留中性：插值内容本身是诊断事实，
+ * 角色化只会让用户分不清「命令没跑成」和「角色在说话」。
+ */
+export interface CommandReplies {
+  clear: string
+  memoryCleared: string
+  compactCompleted: string
+  compactDeclined: string
+  compactNothing: string
+  compactBusy: string
+  compactClosed: string
+  /** 排队项未清空时的指引句；条数与投递意图分类由命令层作中性明细附在其后 */
+  compactPending: string
+  /** 压缩失败（上游内核报错）。技术原因由命令层附在其后，不在这里顶替 */
+  compactFailed: string
+}
+
 /** 系统兜底回复类型 — 替代硬编码中文 */
 export interface FallbackReplies {
   concurrentRejected: string
   maxRetriesExhausted: string
+  /** 回合超时的展示文案；超时是终态，由它承担（没有第二个 StageMap.timeout） */
   turnTimeout: string
   toolLoopMaxRounds: string
   llmUnavailable: string[]        // 数组，运行时随机选一条
   subAgentDone: string
   subAgentFailed: string
   subAgentNoResult: string
-  compactionFailed: string
+  /** 上次运行中断，等待用户选择继续或丢弃 */
+  runInterrupted: string
+  /** 压缩进行中拒绝投递新输入 */
+  compactionRejected: string
+  /** 停止归还的暂停输入没能放回队列 */
+  pausedReturnFailed: string
+  /** 计划被用户/确认通道取消 */
+  planCancelled: string
+  /** 计划剩余步骤执行完成 */
+  planCompleted: string
+  /** 继续计划时会话正忙 */
+  planResumeBusy: string
 }
 
 // ── 读写 ──

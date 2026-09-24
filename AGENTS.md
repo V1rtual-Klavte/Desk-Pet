@@ -115,6 +115,13 @@ pnpm run test:release # 类型/编译 + Rust 单测 + 严格 Contract + 三次 t
 - Card、互动状态、用户长期事实分开。RUNTIME_DATA 由回复模块剥离、验证、持久化，不能重新塞回 Loop。
   card/interaction 保存 VariableState；system/session 使用原始只读值。LLM 只写注册且允许更新的 card 变量。
 - `whenText` 是自然语言指引；不恢复旧变量工具、情绪前缀或可执行 When DSL。
+- 用户可见的阶段提示、过程提示与兜底台词一律由当前 Card 生成，源码不留硬编码文案：
+  取用只经 `getStagePrompt` / `getSimpleStage` / `getCommandReply` / `getFallbackReply`，
+  引擎按语义 key 发事件、界面取文案，两边都不各存一份台词。
+  新增一个用户可见场景时，先在 `StageMap` / `FallbackReplies` / `CommandReplies` 加 key，
+  同步 `stages-prompt.md` 与 `validateStages`（旧缓存必须判过期重生成，否则新 key 永远取不到
+  Card 文案），再接消费点；`FALLBACK_*` 常量只是 Card 完全不可用时的中性兜底。
+  系统消息与错误诊断保持中性：角色台词会掩盖故障，用户要能分清「角色在说话」和「出问题了」。
 - 主请求与一次性文本请求统一走模型网关，共享配置、认证、取消和 deadline；不叠加 SDK 内层重试。
 - 长期记忆只经 MemoryProvider 进入 Runtime；默认空实现。不得把压缩摘要、工具结果、主动消息
   或助手台词晋升为用户事实，不宣称尚未接通的自动提取、召回、画像写入或 dreaming 已完成。

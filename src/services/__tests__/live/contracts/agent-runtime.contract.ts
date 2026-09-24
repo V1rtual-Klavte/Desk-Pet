@@ -24,7 +24,7 @@ export const agentRuntimeContract: ModuleContract = {
     "src/services/session/store.ts",
   ],
   generatedAt: "2026-09-24",
-  sourceHash: "8504518b7c2a9a67088cf0a925adce48500af7c2f43603d360aa611b1b7b62f8",
+  sourceHash: "0a40cc511017733ec57992f8dd5964a3a19284700f5617d73bd1cc5347e47aad",
   coverage: [
     {
       id: "ar-01",
@@ -177,6 +177,14 @@ export const agentRuntimeContract: ModuleContract = {
       why: "过滤器不重置会让同回合后续正文全部静默消失",
       depth: "deep",
       scenarios: ["runtime-stream-reset-tool-round"],
+    },
+    {
+      id: "ar-20",
+      feature: "阶段状态行的语义 key 事件",
+      description: "回合开始（含工具轮之间的每一次 turn_start）经 deskpet-stage-hint 事件发出 thinking 语义 key，负载不含任何文案 —— 文案由界面按当前 Card 取（引擎不持有第二份台词）。事件只发给发起回合的会话，非活动会话收不到",
+      why: "引擎一旦改成发硬编码文本，Card 的定制语气就静默失效且界面看不出差别；反过来，不发事件会让状态行永远停在上一条工具提示上",
+      depth: "shallow",
+      scenarios: ["runtime-stage-hint-thinking"],
     },
   ],
   rules: { minScenarios: 6, minDeepScenarios: 6, requireBoundary: true, requireErrorPath: false },
