@@ -47,7 +47,7 @@ Rust 对应日志宏位于 [macros/](../../src-tauri/src/macros/)，内核是 [l
 
 前端按时间/条数批量转发到 Rust；当前批量阈值在 logger 模块，文件大小与备份数在 Rust 日志内核。改参数直接定位这些定义，不在配置或其他模块复制常量。
 
-生效级别由 [config.ts](../../src/services/config.ts) 的 computeLogLevel 计算：VITE_LOG_LEVEL 显式覆盖 → 前端 dev 的 debug → 生产配置值。Rust 启动时有自己的构建默认值与 DESKPET_LOG_LEVEL，前端初始化后推送统一级别。
+生效级别由 [config.ts](../../src/services/config.ts) 的 computeLogLevel 计算：VITE_LOG_LEVEL 显式覆盖 → 前端 dev 的 debug → 生产配置值。Rust 启动时有自己的构建默认值与 DESKPET_LOG_LEVEL，前端初始化后推送统一级别。下发失败只 `log.debug` 留痕、不阻断启动：后果是两端过滤级别不一致，Rust 侧按其构建默认值过滤（根因留痕在 `applyLogLevel`，T4.41）。
 
 `generalConfig.loggingLevel` 是设置读写接口；`computeLogLevel()` 是运行期派生值。保存设置时使用前者，避免把 dev 强制 debug 误写入用户 YAML。`.env.example` 给出临时日志覆盖方式。
 
