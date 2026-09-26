@@ -69,26 +69,42 @@ export function formatEnvText(env: Record<string, string> | undefined): string {
 // ── 服务器列表 ──
 
 let mcpServers: McpServerConfig[] = []
-let mcpServersLoaded = false
+/**
+ * 已加载来源的快照（`tools.mcp.servers` 的序列化）。这里不能用「加载过一次」的布尔位：
+ * 设置窗口是独立 JS 上下文，它保存时写盘并广播 `deskpet-settings-saved`，主窗口只会重读
+ * 配置模块，本模块的列表不跟着变 —— 于是新增/删除自定义服务器要重启才生效（`init.ts` 按实时的
+ * `enabledMcpServerNames()` 借用，`findServer()` 却只认这份旧列表，两边分叉）。改成内容比对：
+ * CONFIG 一变就重建列表，没有 TTL，也不需要重启。
+ */
+let mcpServersSource = ""
+
+/** 配置里 `tools.mcp.servers` 的当前序列化；写入面同步后也用它刷新快照 */
+function configServersSource(): string {
+  return JSON.stringify(toolsConfig.mcpServers ?? [])
+}
+
+function toServerConfig(s: any): McpServerConfig {
+  return {
+    name: String(s.name || ""),
+    transport: (s.transport === "sse" ? "sse" : "stdio") as "stdio" | "sse",
+    command: s.command ? String(s.command) : undefined,
+    args: s.args ? (Array.isArray(s.args) ? s.args.map(String) : [String(s.args)]) : undefined,
+    url: s.url ? String(s.url) : undefined,
+    env: normalizeEnv(s.env),
+    includeTools: Array.isArray(s.includeTools) ? s.includeTools.map(String) : undefined,
+    excludeTools: Array.isArray(s.excludeTools) ? s.excludeTools.map(String) : undefined,
+    enabled: s.enabled !== false,
+  }
+}
 
 function ensureServersLoaded(): void {
-  if (mcpServersLoaded) return
+  const source = configServersSource()
+  if (source === mcpServersSource) return
+  mcpServersSource = source
   const fromConfig = toolsConfig.mcpServers
-  if (Array.isArray(fromConfig) && fromConfig.length > 0) {
-    mcpServers = fromConfig.map((s: any) => ({
-      name: String(s.name || ""),
-      transport: (s.transport === "sse" ? "sse" : "stdio") as "stdio" | "sse",
-      command: s.command ? String(s.command) : undefined,
-      args: s.args ? (Array.isArray(s.args) ? s.args.map(String) : [String(s.args)]) : undefined,
-      url: s.url ? String(s.url) : undefined,
-      env: normalizeEnv(s.env),
-      includeTools: Array.isArray(s.includeTools) ? s.includeTools.map(String) : undefined,
-      excludeTools: Array.isArray(s.excludeTools) ? s.excludeTools.map(String) : undefined,
-      enabled: s.enabled !== false,
-    }))
-    log.info("MCP 服务器列表已从 CONFIG 加载:", mcpServers.length, "个")
-  }
-  mcpServersLoaded = true
+  // 空列表是有效状态（自定义服务器被删光）：照实清空，不能沿用上一次的列表
+  mcpServers = Array.isArray(fromConfig) ? fromConfig.map(toServerConfig) : []
+  if (mcpServers.length > 0) log.info("MCP 服务器列表已从 CONFIG 加载:", mcpServers.length, "个")
 }
 
 // ── 内置 MCP 服务器 ──
@@ -170,7 +186,6 @@ export async function setMcpServers(servers: McpServerConfig[]): Promise<void> {
   // No run owns these clients; disconnect them before replacing their source config.
   for (const name of affected) await disconnectMcpServer(name)
   mcpServers = next
-  mcpServersLoaded = true
   syncServersToConfig()
   log.info("MCP 服务器列表已更新:", mcpServers.length, "个")
 }
@@ -217,6 +232,8 @@ function syncServersToConfig(): void {
     excludeTools: s.excludeTools,
     enabled: s.enabled,
   })))
+  // setOverride 同步写入 cfg：立刻刷新来源快照，下一步的比对不会把刚改的列表当成过期配置
+  mcpServersSource = configServersSource()
 }
 
 /**
@@ -326,6 +343,10 @@ async function connectMcpServerUnlocked(server: McpServerConfig): Promise<McpCon
 
     const toolDefs = client.toToolDefs(server.name, toolSchemas)
     const { registerAll } = await import("@/services/tool/registry")
+    // 决策 8 的口径：MCP 工具按服务器 enabled 入库，没有模式或回合过滤 —— 借用期间
+    // 此后每个回合的冻结工具集都含它们，子代理与计划步骤同样拿得到（决策 16 的剥离点
+    // 只认 isolation: "delegate"，现只有 agent_spawn，不覆盖 MCP）。注销走
+    // disconnectMcpServerUnlocked 的 listAll() + unregister()，与这里的注册配对。
     registerAll(toolDefs)
     connectedClients.set(server.name, client)
     client = undefined // ownership moved to connectedClients
