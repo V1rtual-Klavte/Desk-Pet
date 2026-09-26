@@ -2,7 +2,7 @@
 import { ref, onMounted, computed } from "vue";
 import {
   aiConfig, windowMonitorConfig, aiLockConfig,
-  memoryConfig, personalityConfig, generalConfig,
+  memoryConfig, personalityConfig,
   safetyConfig, planConfig, conversationConfig,
 } from "@/services/config";
 import {
@@ -66,14 +66,12 @@ const planOnStepFailure = ref(planConfig.onStepFailure);
 const memStatus = ref<{
   count: number;
   lastConsolidation: string;
-  mode: string;
   sessionTurns?: number;
   sessionId?: string;
   projectCount?: number;
 }>({
   count: 0,
   lastConsolidation: "从未",
-  mode: generalConfig.assistantMode ? "助手(LLM)" : "轻量(去重)",
 });
 
 // ═══════════════════════════════════
@@ -449,7 +447,6 @@ onMounted(async () => {
         lastConsolidation: compactions === undefined
           ? memStatus.value.lastConsolidation
           : compactions > 0 ? `已压缩 ${compactions} 次` : "运行中",
-        mode: generalConfig.assistantMode ? "助手(LLM)" : "轻量(去重)",
         sessionTurns,
         sessionId,
       };

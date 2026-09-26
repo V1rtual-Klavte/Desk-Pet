@@ -2,7 +2,7 @@
 import { ref, onMounted, onUnmounted } from "vue";
 import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
 import {
-  userConfig, generalConfig, toolsConfig,
+  userConfig, toolsConfig,
   setOverrides, setOverride, getAllOverrides, flushConfig, parallelToolsError,
 } from "@/services/config";
 import {
@@ -38,9 +38,6 @@ const generalTabRef = ref<InstanceType<typeof GeneralTab>>();
 const aiTabRef = ref<InstanceType<typeof AITab>>();
 const toolsTabRef = ref<InstanceType<typeof ToolsTab>>();
 const appearanceTabRef = ref<InstanceType<typeof AppearanceTab>>();
-
-// ── 助手模式（ToolsTab 需要）──
-const assistantMode = ref(generalConfig.assistantMode);
 
 // ═══════════════════════════════════
 // 保存/取消
@@ -124,7 +121,6 @@ async function doSave() {
     "general.desktop.waitTimeoutMs": g.deskWait,
     "general.logging.level": g.logLevel,
     "general.errors.overlay": g.errOverlay,
-    "general.mode.assistant": g.assistantMode,
     "ai.safety.mode": a.safetyMode,
     "ai.safety.sessionTrustEnabled": a.sessionTrustEnabled,
     // 共享读并行上限：并发所有权在 Rust 许可池，这里只落配置值
@@ -195,7 +191,7 @@ async function doSave() {
   saved.value = true;
   log.info("设置已保存");
   emit("deskpet-settings-saved").catch((error) => {
-    // 面板刚显示「已保存」，但主窗口没收到广播：快捷键/光标追踪/Skill 目录/assistantMode 仍是旧值。
+    // 面板刚显示「已保存」，但主窗口没收到广播：快捷键/光标追踪/Skill 目录仍是旧值。
     saved.value = false;
     saveError.value = "设置已写入，但主窗口未收到刷新通知；部分改动可能要重启后生效。";
     log.error("deskpet-settings-saved 事件发送失败:", formatError(error));
@@ -310,7 +306,7 @@ onUnmounted(() => {
       <div id="s-body">
         <GeneralTab ref="generalTabRef" v-show="activeTab === 'general'" />
         <AITab ref="aiTabRef" v-show="activeTab === 'ai'" />
-        <ToolsTab ref="toolsTabRef" v-show="activeTab === 'tools'" :assistant-mode="assistantMode" />
+        <ToolsTab ref="toolsTabRef" v-show="activeTab === 'tools'" />
         <AppearanceTab ref="appearanceTabRef" v-show="activeTab === 'appearance'" />
       </div>
     </div>

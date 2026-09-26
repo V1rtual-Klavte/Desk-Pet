@@ -29,7 +29,6 @@ import { inputEventId, inputSourceMark, messageRequestId, userInputMessage } fro
 import { planCheckpointStore } from "@/services/agent/memory"
 import { abortRunningPlan } from "@/services/engine/plan-confirmation"
 import { listPiSessionMetadata } from "@/services/session"
-import { applyPendingConversationCapabilities } from "@/services/init"
 
 const log = createLogger("Agent")
 
@@ -320,7 +319,6 @@ export async function resumePausedInputs(sessionId: string = getActiveSessionId(
   } finally {
     harnessSlots.end(sessionId, runGeneration)
     setAIGenerating(harnessSlots.isAnyRunning())
-    await applyPendingConversationCapabilities()
   }
 }
 
@@ -420,8 +418,6 @@ async function dispatchMessage(text: string, options: SendMessageOptions = {}): 
       const { pushSystemMessage } = await import("@/services/session/messages");
       pushSystemMessage(preResult.response, originSessionId)
     }
-    // 命令没有运行槽可用，但延后的能力模式切换仍要走同一出口释放。
-    await applyPendingConversationCapabilities()
     return {
       reply: preResult.response ?? "",
       toolCallsMade: 0,
@@ -516,7 +512,6 @@ async function dispatchMessage(text: string, options: SendMessageOptions = {}): 
   } finally {
     harnessSlots.end(originSessionId, runGeneration)
     setAIGenerating(harnessSlots.isAnyRunning())
-    await applyPendingConversationCapabilities()
   }
 }
 
@@ -566,7 +561,6 @@ export async function sendActiveMessage(userText: string): Promise<string> {
   } finally {
     harnessSlots.end(sessionId, runGeneration)
     setAIGenerating(harnessSlots.isAnyRunning())
-    await applyPendingConversationCapabilities()
   }
 }
 

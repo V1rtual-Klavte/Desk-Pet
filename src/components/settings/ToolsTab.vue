@@ -8,9 +8,6 @@ import { parseEnvText, formatEnvText } from "@/services/tool/mcp";
 
 const log = createLogger("Settings");
 
-// Props: 父组件传入的 assistantMode，用于显示扩展能力状态
-const props = defineProps<{ assistantMode: boolean }>();
-
 // ── Bash ──
 const bashWhitelist = ref(toolsConfig.bashWhitelist.join("\n"));
 
@@ -231,7 +228,6 @@ async function uploadSkillMd() {
 interface ToolPolicyRow {
   id: string;
   name: string;
-  audience: string;
   summary: string;
 }
 const toolPolicyRows = ref<ToolPolicyRow[]>([]);
@@ -245,14 +241,13 @@ async function loadToolPolicies() {
   try {
     toolPolicyError.value = "";
     // 设置窗口有独立的注册表实例：注册内置工具只为读取静态声明，不借用许可、不连接 MCP。
-    const { registerDefaultTools, registerAssistantTools, listAll } = await import("@/services/tool/registry");
+    // 该实例从不释放，registerDefaultTools 的幂等位保证重复进入本页不重复注册。
+    const { registerDefaultTools, listAll } = await import("@/services/tool/registry");
     await registerDefaultTools();
-    await registerAssistantTools();
     toolPolicyRows.value = listAll()
       .map(tool => ({
         id: tool.id,
         name: tool.name,
-        audience: tool.mode === "pet" ? "两模式" : "仅助手",
         summary: [
           PERMISSION_LABELS[tool.policy.permission.defaultDecision] ?? tool.policy.permission.defaultDecision,
           ISOLATION_LABELS[tool.policy.execution.isolation] ?? tool.policy.execution.isolation,
@@ -317,14 +312,14 @@ defineExpose({
     <div v-if="toolPolicyError" class="s-error">{{ toolPolicyError }}</div>
     <div v-else-if="toolPolicyRows.length === 0" class="s-hint">读取中…</div>
     <div v-for="row in toolPolicyRows" :key="row.id" class="li-row">
-      <span><b class="mono">{{ row.name }}</b> <span class="s-muted">{{ row.audience }}</span></span>
+      <span><b class="mono">{{ row.name }}</b></span>
       <span class="s-muted">{{ row.summary }}</span>
     </div>
   </div>
 
   <div class="s-section">
     <div class="s-label">🔌 MCP <span class="tag-tip">需重启</span></div>
-    <label class="chk"><input type="checkbox" v-model="mcpEnabled" :disabled="!assistantMode" /><span>启用 MCP（仅助手模式）</span></label>
+    <label class="chk"><input type="checkbox" v-model="mcpEnabled" /><span>启用 MCP（仅助手模式）</span></label>
     <div class="s-hint">内置 {{ builtinMcpList.length }} + 自定义 {{ mcpServerList.length }} 个</div>
     <!-- 内置 MCP -->
     <div class="s-subtitle">📦 内置</div>

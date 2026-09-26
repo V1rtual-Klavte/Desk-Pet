@@ -5,13 +5,12 @@
 
 import { MemoryService } from "@/services/agent/memory"
 import { initRegistry, initCards } from "@/services/personality"
-import { registerDefaultTools, registerAssistantTools, unregisterAssistantTools } from "@/services/tool"
+import { registerDefaultTools } from "@/services/tool"
 import { initDebug } from "@/services/debug"
 import { initSessions, chatHistory, initWelcome, getActiveSessionId } from "@/services/session"
 import { getActiveCard } from "@/services/personality"
-import { computeMcpEnabled, generalConfig, toolsConfig } from "@/services/config"
+import { computeMcpEnabled } from "@/services/config"
 import { createLogger } from "@/services/logger"
-import { harnessSlots } from "@/services/engine/pi"
 
 const log = createLogger("Init")
 
@@ -50,7 +49,7 @@ export async function initApp(): Promise<void> {
   log.info("4a/7 基础工具就绪")
 
   const { toolCount } = await import("@/services/tool/registry")
-  log.info(`4/7 Presence 工具就绪 (${toolCount()} 个) | 助手配置:${generalConfig.assistantMode} MCP:${computeMcpEnabled()} Skill:${toolsConfig.skillEnabled}`)
+  log.info(`4/7 Presence 工具就绪 (${toolCount()} 个) | MCP:${computeMcpEnabled()}`)
 
   // ── 5. 会话初始化 ──
   // 崩溃恢复不再扫描旧队列事件：Harness 在打开会话时报告未完成操作（§8.7.3），
@@ -85,32 +84,29 @@ export interface CapabilityPrepResult {
 }
 
 /**
- * 对话前按本轮模式准备能力。调用方必须在 run 结束后才以 pet 调用本函数，不能
- * 在运行中清掉 router 仍可能使用的已冻结工具；root 在 run preflight 冻结 snapshot。
+ * 对话前准备本轮能力：借用启用的 MCP 服务器、预热 Skill 目录。调用方必须在
+ * run 结束后才调用本函数，不能在运行中清掉 router 仍可能使用的已冻结工具；
+ * root 在 run preflight 冻结 snapshot。
  * 借用失败的服务器名交回调用方，由它决定是否把「本次能力不全」变成可见结论。
  */
-export async function prepareConversationCapabilities(mode: "pet" | "assistant", owner = "runtime"): Promise<CapabilityPrepResult> {
+export async function prepareConversationCapabilities(owner = "runtime"): Promise<CapabilityPrepResult> {
   await registerDefaultTools()
   const unavailableMcp: string[] = []
-  if (mode === "assistant") {
-    await registerAssistantTools()
-    if (computeMcpEnabled()) {
-      const { acquireMcpServer, getBuiltinServers, getMcpServers } = await import("@/services/tool/mcp")
-      const servers = [...getBuiltinServers(), ...getMcpServers()]
-      for (const server of servers) {
-        if (!server.enabled) continue
-        const acquired = await acquireMcpServer(server.name, owner)
-        if (!acquired.success) {
-          unavailableMcp.push(server.name)
-          log.warn(`MCP 获取失败: ${server.name} | ${acquired.error ?? "未知错误"}`)
-        }
+  if (computeMcpEnabled()) {
+    const { acquireMcpServer, getBuiltinServers, getMcpServers } = await import("@/services/tool/mcp")
+    const servers = [...getBuiltinServers(), ...getMcpServers()]
+    for (const server of servers) {
+      if (!server.enabled) continue
+      const acquired = await acquireMcpServer(server.name, owner)
+      if (!acquired.success) {
+        unavailableMcp.push(server.name)
+        log.warn(`MCP 获取失败: ${server.name} | ${acquired.error ?? "未知错误"}`)
       }
     }
   }
-  if (toolsConfig.skillEnabled) {
-    const { ensureSkillCatalog } = await import("@/services/skill")
-    await ensureSkillCatalog()
-  }
+  // 决策 8 删 Skill 总开关：本入口不再把关，只负责把目录准备好（指纹核对后续接到这里）。
+  const { ensureSkillCatalog } = await import("@/services/skill")
+  await ensureSkillCatalog()
   return { unavailableMcp }
 }
 
@@ -119,44 +115,10 @@ export async function prepareConversationCapabilities(mode: "pet" | "assistant",
  * `assertCurrent` 在准备前后各调一次 —— 准备期间回合可能已被取消。
  */
 export async function prepareRunCapabilities(
-  mode: "pet" | "assistant", owner: string, assertCurrent?: () => void,
+  owner: string, assertCurrent?: () => void,
 ): Promise<CapabilityPrepResult> {
   assertCurrent?.()
-  const result = await prepareConversationCapabilities(mode, owner)
+  const result = await prepareConversationCapabilities(owner)
   assertCurrent?.()
   return result
-}
-
-let pendingCapabilityMode: "pet" | "assistant" | null = null
-
-/**
- * 设置保存时请求模式收敛。运行中的回合继续使用其冻结快照，最后一个回合 settled
- * 后由 runner 调用 applyPendingConversationCapabilities() 释放助手资源。
- */
-export async function requestConversationCapabilityMode(mode: "pet" | "assistant"): Promise<boolean> {
-  pendingCapabilityMode = mode
-  if (harnessSlots.isAnyRunning()) {
-    log.info("能力模式变更已延后到当前回合结束:", mode)
-    return false
-  }
-  await applyPendingConversationCapabilities()
-  return true
-}
-
-/** runner 在 harnessSlots.end() 后调用，避免模式切换破坏在飞工具调用。 */
-export async function applyPendingConversationCapabilities(): Promise<void> {
-  const mode = pendingCapabilityMode
-  if (!mode || harnessSlots.isAnyRunning()) return
-  pendingCapabilityMode = null
-  if (mode === "pet") {
-    // 仅在没有任何 run 时全局卸载助手本地工具；普通轻量 run 的 preflight 不做此事，
-    // 避免并行助手 run 的 router 找不到已冻结的定义。
-    unregisterAssistantTools()
-    const { invalidateSkillCatalog } = await import("@/services/skill")
-    invalidateSkillCatalog("mode-change")
-    const { releaseMcpOwner } = await import("@/services/tool/mcp")
-    await releaseMcpOwner("runtime")
-    log.info("已切回轻量对话能力")
-  }
-  await prepareConversationCapabilities(mode)
 }

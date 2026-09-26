@@ -16,7 +16,7 @@ import { initWindowListener } from "./services/window";
 import { switchToSession, createNewSession, closeSession, openSession, deleteSession, getSessions, getActiveSessionId, initWelcome } from "@/services/agent";
 import type { PiSessionSummary } from "@/services/session";
 import { initApp } from "@/services/init";
-import { desktopConfig, generalConfig, shortcutConfig, userConfig, reloadConfig } from "@/services/config";
+import { desktopConfig, shortcutConfig, userConfig, reloadConfig } from "@/services/config";
 import { isMacOS } from "@/services/env";
 import { getUiUrl } from "@/services/profile";
 import { createLogger } from "@/services/logger";
@@ -686,9 +686,8 @@ onMounted(async () => {
   // 设置面板保存
   try {
     cleanupSettingsSaved = await listen("deskpet-settings-saved", async () => {
-      const previousAssistantMode = generalConfig.assistantMode;
       await reloadConfig();
-      // 效果模式可能刚被改：紧跟配置刷新重判光标追踪的注册态，不拖到能力收敛之后
+      // 效果模式可能刚被改：紧跟配置刷新重判光标追踪的注册态
       await syncCursorTracker();
       const { initDebug } = await import("@/services/debug");
       await initDebug();
@@ -697,17 +696,11 @@ onMounted(async () => {
       // 配置快照变化不能复用旧 catalog；在飞回合仍持有自己的已冻结 prompt。
       const { invalidateSkillCatalog } = await import("@/services/skill");
       invalidateSkillCatalog("config");
-      // 进入助手模式仍等下一轮对话预检按需加载；退出请求会等在飞 run settled，
-      // 再释放 MCP 连接、助手工具和 Skill 元数据缓存。
-      if (previousAssistantMode && !generalConfig.assistantMode) {
-        const { requestConversationCapabilityMode } = await import("@/services/init");
-        await requestConversationCapabilityMode("pet");
-      }
       log.debug("配置缓存已刷新 + Debug状态已更新 + 快捷键已重注册 + 光标追踪已按 effectMode 同步");
     });
   } catch (error) {
     // 注册失败 = 这条通道整体失效（拖动位置/缩放/预览尺寸/设置保存都不再更新）
-    log.error("deskpet-settings-saved 监听注册失败：设置保存后主窗口不会刷新（快捷键、光标追踪、Skill 目录、assistantMode 仍是旧值）", formatError(error))
+    log.error("deskpet-settings-saved 监听注册失败：设置保存后主窗口不会刷新（快捷键、光标追踪、Skill 目录仍是旧值）", formatError(error))
   }
 
   document.addEventListener("click", hideCtxMenu);

@@ -57,7 +57,6 @@ export interface BuiltinMcpServer {
 
 interface Config {
   general: {
-    mode: { assistant: boolean }
     popup: {
       mode: "cursor" | "fixed"
       autoPopupOnMessage: boolean
@@ -398,7 +397,6 @@ function overrideOr<T>(key: string, fallback: T): T {
 // 1. 通用配置 (General)
 // ══════════════════════════════════════════
 export const generalConfig = {
-  get assistantMode() { return overrideOr("general.mode.assistant", cfg.general?.mode?.assistant ?? false); },
   get popupMode() { return overrideOr("general.popup.mode", cfg.general?.popup?.mode ?? "cursor") as "cursor" | "fixed"; },
   get autoPopupOnMessage() { return overrideOr("general.popup.autoPopupOnMessage", cfg.general?.popup?.autoPopupOnMessage ?? false); },
   get defaultPopupSize() { return overrideOr("general.popup.defaultSize", cfg.general?.popup?.defaultSize ?? { w: 730, h: 450 }); },
@@ -600,12 +598,12 @@ export const toolsConfig = {
 };
 
 /**
- * 运行期 MCP 是否生效：助手模式与配置读写值的合取。
- * 派生值只服务运行期消费者，不得回流设置页读写——否则宠物模式下打开设置再保存，
+ * 运行期 MCP 是否生效：配置读写值（模式维度已随 pet/assistant 一并移除）。
+ * 派生值只服务运行期消费者，不得回流设置页读写——否则打开设置再保存，
  * 会把用户配置里的 true 静默改写成 false（同 generalConfig.loggingLevel 与 computeLogLevel 的分工）。
  */
 export function computeMcpEnabled(): boolean {
-  return generalConfig.assistantMode && toolsConfig.mcpEnabled;
+  return toolsConfig.mcpEnabled;
 }
 
 // ══════════════════════════════════════════
