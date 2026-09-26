@@ -91,24 +91,34 @@ let configSnapshot: ConfigTree | undefined
 /**
  * 运行开始时的配置快照，场景之间的还原目标。
  *
- * 计划门禁在这里按基线钉死为关闭：计划入口只看 `planConfig.enabled`（模式已在收敛中删除），
- * 而 `ai.plan.enabled` 出厂即 `true` —— 不钉住它，任何命中复杂度关键词的 production 场景文本
- * 都会静默走进真实计划段。场景要跑计划段必须在自己的 setup 里显式打开
- * （`计划生产闭环` 等场景都这么做）。
+ * 两个钉位的理由都是「不钉住就会静默改变被测行为」：
+ *
+ * - **计划门禁**：计划入口只看 `planConfig.enabled`（模式已在收敛中删除），而 `ai.plan.enabled`
+ *   出厂即 `true` —— 不钉住它，任何命中复杂度关键词的 production 场景文本都会静默走进真实
+ *   计划段。场景要跑计划段必须在自己的 setup 里显式打开（`计划生产闭环` 等场景都这么做）。
+ * - **安全模式**：`DANGER` 的裁决完全由 `ai.safety.mode` 决定（`let_me_tk` → ask、
+ *   `just_do_it` → allow、其余含出厂默认 `tell_me` → ask）。需要确认通道的场景（`子代理授权范围`、
+ *   `确认通道`、`工具结果存档边界`）靠 `tell_me` 才有 ask；开发者本地若是 `just_do_it`，
+ *   这些场景会**静默失去确认请求**，本该拦下它们的断言变成真空断言（门禁假通过）。
+ *   `let_me_tk` 也产出 ask，这里只钉一个确定的出厂值，让裁决输入不随本机配置漂移。
+ *
+ * 注意：`setOverride` 没有「只改内存」的通道，还原必然写一次运行时 CONFIG ——
+ * 与既有的计划钉位同量级（详见 `restoreConfigBaseline`）。
  */
 function configBaseline(): ConfigTree {
   if (!configSnapshot) {
     const snapshot = structuredClone(getAllOverrides() as ConfigTree)
     const ai = isConfigTree(snapshot.ai) ? snapshot.ai : {}
     const plan = isConfigTree(ai.plan) ? ai.plan : {}
-    snapshot.ai = { ...ai, plan: { ...plan, enabled: false } }
+    const safety = isConfigTree(ai.safety) ? ai.safety : {}
+    snapshot.ai = { ...ai, plan: { ...plan, enabled: false }, safety: { ...safety, mode: "tell_me" } }
     configSnapshot = snapshot
   }
   return configSnapshot
 }
 
 /**
- * 场景间配置隔离：把配置拉回运行快照 + 计划门禁基线。
+ * 场景间配置隔离：把配置拉回运行快照 + 计划门禁与安全模式基线。
  *
  * 这是结构性兜底，不依赖场景自己写清理：断言失败会让运行器 `break` 掉后续断言
  * （scene-runner.ts），清理挂在最后一条断言 `finally` 上的场景就再也执行不到；

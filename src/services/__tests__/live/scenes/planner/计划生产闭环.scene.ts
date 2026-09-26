@@ -154,6 +154,10 @@ export const 计划生产闭环: SceneDef = {
               throw new Error(`进度里出现了被截断的步骤: ${JSON.stringify(progress)}`)
             }
 
+            // ②b 工具面放大的用户可见报告：本计划的步骤都没限定 allowedTools，宿主逐步写一条系统
+            //     消息，口径是子代理实际拿到的那一份（派生型工具在子代理入口被剥掉，所以不是「全部」）。
+            await waitSystemMessage(sessionId, "将使用除派生型工具外的全部已注册工具")
+
             // ③ 终态条目：checkpoint 的 terminal 快照是 done，且全量步骤基线里两步都 done
             const entries = await sessionEntries(sessionId)
             const terminal = planTerminalOf(entries, confirmed.planId)

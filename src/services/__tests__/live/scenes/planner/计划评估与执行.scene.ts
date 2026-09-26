@@ -170,8 +170,9 @@ export const 步骤结果格式化 = unit("plan-format-steps", "pl-07", "formatS
 })
 
 export const 计划执行闭环 = unit("plan-execute-loop", "pl-06", "executePlan 逐步执行并回调", async () => {
-  // 每一步的子代理都要一次模型回复；两步就准备两条
-  installFakeProvider([fakeText("第一步完成"), fakeText("第二步完成")])
+  // 每一步的子代理都要一次模型回复；两步就准备两条。provider 句柄留着：工具面放大是不是真的
+  // 发生，只能从发出去的请求里看
+  const stepProvider = installFakeProvider([fakeText("第一步完成"), fakeText("第二步完成")])
 
   const plan: PlanResult = {
     steps: [
@@ -203,12 +204,39 @@ export const 计划执行闭环 = unit("plan-execute-loop", "pl-06", "executePla
   if (!execution.overallSuccess) throw new Error("全部成功的计划被判为失败")
   if (formatStepResults(execution).length === 0) throw new Error("执行结果无法格式化")
 
-  // 未限定 allowedTools = 工具面放大到全部助手工具，必须逐步骤报告（不静默）
+  // 未限定 allowedTools = 工具面放大到全部已注册工具，必须逐步骤报告（不静默）
   if (notices.length !== 2 || notices.some(notice => notice.kind !== "unbounded_tools")) {
     throw new Error(`未限定工具的步骤没有被如实报告: ${JSON.stringify(notices)}`)
   }
+  // 放大是真的发生，不是只发了一条 notice：两步的子代理请求都要带上「除派生型工具外的
+  // 全部已注册工具」。期望集合按注册表现取（判定读每个工具自己的 isolation，不写死名单），
+  // 派生型工具到不了子代理（runPiSubAgent 是唯一剥离点），请求里出现即放大面被说错。
+  if (stepProvider.payloads.length !== 2) {
+    throw new Error(`两步计划应各发一次子代理请求，实际 ${stepProvider.payloads.length} 次`)
+  }
+  const registered = listAll()
+  const derived = registered.filter(tool => tool.policy.execution.isolation === "delegate").map(tool => tool.name)
+  if (derived.length === 0) {
+    throw new Error("注册表里没有派生型工具（isolation=delegate），本场景的剥离前提不成立")
+  }
+  const amplified = registered.filter(tool => !derived.includes(tool.name)).map(tool => tool.name)
+  for (const [index, payload] of stepProvider.payloads.entries()) {
+    const sent = (payload.tools ?? []).map(tool => tool.name)
+    const leaked = sent.filter(name => derived.includes(name))
+    if (leaked.length > 0) {
+      throw new Error(`第 ${index + 1} 步的请求里出现了派生型工具: ${leaked.join("、")}`)
+    }
+    const absent = amplified.filter(name => !sent.includes(name))
+    if (absent.length > 0) {
+      throw new Error(`第 ${index + 1} 步的请求缺少已注册工具（工具面没有真的放大）: ${absent.join("、")}`)
+    }
+  }
 
-  // 指定的工具不存在就不开工：拿剩下的工具跑等于这一步的权限面既不可信也不可复现。
+  // 指定的工具解析不到就不开工：拿剩下的工具跑等于这一步的权限面既不可信也不可复现。
+  // 「解析不到」包含两种名字 —— 根本没注册，以及注册了但到不了子代理（派生型工具，
+  // `isolation=delegate`，现只有 agent_spawn）：后者在 runPiSubAgent 会被剥掉，等同于不存在，
+  // 走同一条硬失败（planner.ts:428-443）。这里用的是前一种。（指定派生型工具的那一条用例
+  // 由 T20 的覆盖点补，见 planner 契约 pl-06 的注。）
   // 「不开工」不等于 onStepStart 不触发 —— 它表示「步骤进入执行、计时开始」（planner.ts:368），
   // 工具解析发生在那之后、runPiSubAgent 之前（executeStep，planner.ts:428-441），失败在括号内结账。
   // 真正的判据是一次模型请求都没发出去：一个响应都不给，真跑起来就只能拿到 Provider 的
