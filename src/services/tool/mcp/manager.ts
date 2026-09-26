@@ -266,6 +266,9 @@ export async function importMcpServersFromJson(json: string): Promise<{ success:
 
 /** 导出 MCP 服务器列表为 JSON */
 export function exportMcpServersToJson(): string {
+  // 与其余读取路径一致：设置窗口是独立 JS 上下文，缓存与主窗口写盘后的 CONFIG 可能已分叉，
+  // 不核对就会把上次加载的旧列表导出成「当前配置」。
+  ensureServersLoaded()
   return JSON.stringify(mcpServers, null, 2)
 }
 
