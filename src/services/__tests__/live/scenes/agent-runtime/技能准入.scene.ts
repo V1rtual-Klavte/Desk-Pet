@@ -5,7 +5,7 @@ import { getActiveSessionId } from "@/services/session"
 import { runPiAgentTurn } from "@/services/engine/pi"
 import { DESKPET_SYSTEM_MESSAGE_ENTRY, messageEventId } from "@/services/engine/runtime"
 import { preProcess } from "@/services/engine"
-import { getCommandReply, getFallbackReply } from "@/services/personality"
+import { FALLBACK_STAGES, getCachedStages, getCommandReply, getFallbackReply } from "@/services/personality"
 import { deleteSkill, upsertSkill } from "@/services/skill"
 import { registerBlockingTool } from "../../blocking-tool"
 import { fakeText, fakeToolCall, installFakeProvider } from "../../fake-provider"
@@ -94,6 +94,19 @@ function assistantTextLanded(entries: Entry[], text: string): boolean {
   return false
 }
 
+/**
+ * `fallbacks.llmUnavailable` 这一 key 可能返回的全部文案。
+ *
+ * 该 key 是数组、运行时随机取一条（stages-cache 的 `getFallbackReply`），所以断言不能是
+ * 「再抽一次比对」（那是在比两个独立随机数），只能是判定成员资格 —— 判定依据必须取与
+ * 运行时同一份候选集：当前 Card 的数组，Card 不可用时才是中性兜底常量。
+ */
+function llmUnavailableCandidates(): string[] {
+  const fromCard = getCachedStages()?.stages.fallbacks.llmUnavailable
+  if (Array.isArray(fromCard) && fromCard.length > 0) return fromCard
+  return FALLBACK_STAGES.fallbacks.llmUnavailable
+}
+
 function systemMessageText(entry: CustomEntry): string {
   return String((entry.data as { text?: unknown } | undefined)?.text ?? "")
 }
@@ -118,7 +131,7 @@ let skillFilePath = ""
 /** 删除坐标是域内相对路径，取 Pi loader 给出的那一份，不按名字反推。 */
 let skillRelativePath = ""
 let busyAttempt: Awaited<ReturnType<typeof sendMessage>> | undefined
-let skillTurnFailure: unknown
+let skillTurnFailure: Awaited<ReturnType<typeof sendMessage>>["failure"]
 
 export const 技能准入: SceneDef = {
   meta: {
@@ -249,7 +262,9 @@ export const 技能准入: SceneDef = {
         type: "expectUnknownSkillAdmissionSettled",
         run: async () => {
           // ⑤ 边界失败：名字在启动瞬间从生效清单里消失（这里用不存在的名字驱动同一条准入入口）。
-          if (skillTurnFailure) throw new Error(`空闲期的技能回合失败: ${String(skillTurnFailure)}`)
+          if (skillTurnFailure) {
+            throw new Error(`空闲期的技能回合失败: ${skillTurnFailure.kind}: ${skillTurnFailure.message}`)
+          }
           const before = await sessionEntries(sessionId)
           const denied = await runPiAgentTurn({
             sessionId,
@@ -264,8 +279,12 @@ export const 技能准入: SceneDef = {
           if (!denied.failure.message.includes("UnknownSkill")) {
             throw new Error(`未知技能的失败正文没有带原始 tag: ${denied.failure.message}`)
           }
-          if (denied.reply !== getFallbackReply("llmUnavailable")) {
-            throw new Error(`未获准入时没有交出兜底文案: ${JSON.stringify(denied.reply)}`)
+          // 未获准入的兜底必须出自 `llmUnavailable` 这一 key：该 key 是数组、运行时随机取一条，
+          // 断言只能判成员资格（再抽一次比对是两个独立随机数，会按 1−1/n 的概率假失败）。
+          // 它确实来自那个 key，而不只是「非空正文」，由候选集判定。
+          const candidates = llmUnavailableCandidates()
+          if (!candidates.includes(denied.reply)) {
+            throw new Error(`未获准入时没有交出 llmUnavailable 兜底文案: ${JSON.stringify(denied.reply)}；候选集 ${JSON.stringify(candidates)}`)
           }
           // 兜底文案必须有内容：空串会让下面的落盘断言变成「找一个空正文条目」。
           if (!denied.reply.trim()) throw new Error("未获准入的兜底文案是空的，断言判据失效")

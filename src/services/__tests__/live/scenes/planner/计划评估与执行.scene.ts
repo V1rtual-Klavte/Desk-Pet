@@ -235,8 +235,8 @@ export const 计划执行闭环 = unit("plan-execute-loop", "pl-06", "executePla
   // 指定的工具解析不到就不开工：拿剩下的工具跑等于这一步的权限面既不可信也不可复现。
   // 「解析不到」包含两种名字 —— 根本没注册，以及注册了但到不了子代理（派生型工具，
   // `isolation=delegate`，现只有 agent_spawn）：后者在 runPiSubAgent 会被剥掉，等同于不存在，
-  // 走同一条硬失败（planner.ts:428-443）。这里用的是前一种。（指定派生型工具的那一条用例
-  // 由 T20 的覆盖点补，见 planner 契约 pl-06 的注。）
+  // 走同一条硬失败（planner.ts:428-443）。这里用的是前一种；后一种（真实的派生型工具名）
+  // 在本场景末尾补齐。
   // 「不开工」不等于 onStepStart 不触发 —— 它表示「步骤进入执行、计时开始」（planner.ts:368），
   // 工具解析发生在那之后、runPiSubAgent 之前（executeStep，planner.ts:428-441），失败在括号内结账。
   // 真正的判据是一次模型请求都没发出去：一个响应都不给，真跑起来就只能拿到 Provider 的
@@ -280,4 +280,50 @@ export const 计划执行闭环 = unit("plan-execute-loop", "pl-06", "executePla
     throw new Error(`工具缺失的步骤留下了子代理产出: ${JSON.stringify(blockedOutput)}`)
   }
   if (blocked.cancelled !== undefined) throw new Error(`工具缺失被记成了取消归宿: ${JSON.stringify(blocked.cancelled)}`)
+
+  // 第二种「解析不到」：名字能解析到工具，但它是派生型工具（`isolation=delegate`），
+  // runPiSubAgent 是唯一剥离点 —— 到不了子代理手里，在这一步等同于不存在，必须和「根本没注册」
+  // 走同一条硬失败，而不是拿剩下的工具开工（planner.ts 的 executeStep：判定读工具自己的策略
+  // 声明，不在这里维护名单）。名字解析是 `getToolByName`，驱动的是 AI 调用的函数名
+  // `agent_spawn`，不是工具 id `local-agent-spawn`。
+  if (!derived.includes("agent_spawn")) {
+    throw new Error(`agent_spawn 不在派生型工具清单里（注册表或 isolation 变了），本段断言没有前提: ${JSON.stringify(derived)}`)
+  }
+  const derivedProvider = installFakeProvider([])
+  const derivedNotices: StepToolNotice[] = []
+  const derivedStarted: number[] = []
+  const derivedDone: number[] = []
+  const derivedBlocked = await executePlan(
+    { steps: [{ id: 1, description: "派个子代理去干活", allowedTools: ["agent_spawn"] }], summary: "派生工具", estimatedComplexity: 1 },
+    { stepTimeoutMs: 10_000, stepMaxRounds: 1, stepThinkingEffort: "low", maxSteps: 5, onStepFailure: "abort" },
+    {
+      onStepStart: step => { derivedStarted.push(step.id) },
+      onStepDone: step => { derivedDone.push(step.id) },
+      onStepFailed: async () => "abort" as const,
+      onStepNotice: (_step, notice) => { derivedNotices.push(notice) },
+    },
+  )
+
+  // 判据与上一段同款：如实报 missing_tools 且带上工具名；零请求 = 子代理一次都没起。
+  if (derivedNotices.length !== 1 || derivedNotices[0]?.kind !== "missing_tools") {
+    throw new Error(`派生型工具没有被如实报告: ${JSON.stringify(derivedNotices)}`)
+  }
+  if (derivedNotices[0].kind === "missing_tools" && !derivedNotices[0].names.includes("agent_spawn")) {
+    throw new Error(`报告里没带被拦下的派生型工具名: ${JSON.stringify(derivedNotices[0])}`)
+  }
+  if (derivedProvider.payloads.length !== 0) {
+    throw new Error(`指定派生型工具的步骤仍向 Provider 发了 ${derivedProvider.payloads.length} 次请求`)
+  }
+  if (derivedStarted.join(",") !== "1" || derivedDone.join(",") !== "1") {
+    throw new Error(`被拦下的步骤没走完开工/完成回调: started=${derivedStarted.join(",")} done=${derivedDone.join(",")}`)
+  }
+  if (derivedBlocked.overallSuccess) throw new Error("指定派生型工具的步骤被判为成功")
+  const derivedOutput = derivedBlocked.stepResults[0]?.output
+  if (!derivedOutput?.error?.includes("agent_spawn")) {
+    throw new Error(`被拦下的步骤没有留下带工具名的失败产出: ${JSON.stringify(derivedBlocked.stepResults[0])}`)
+  }
+  if (derivedOutput.reply !== "" || derivedOutput.toolCallsMade !== 0) {
+    throw new Error(`被拦下的步骤留下了子代理产出: ${JSON.stringify(derivedOutput)}`)
+  }
+  if (derivedBlocked.cancelled !== undefined) throw new Error(`派生型工具缺失被记成了取消归宿: ${JSON.stringify(derivedBlocked.cancelled)}`)
 }, "deep")
