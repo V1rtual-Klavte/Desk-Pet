@@ -1,15 +1,20 @@
 import type { SceneDef } from "../../types"
 import { matchesAnyPattern, BASH_DANGEROUS_PATTERNS, BASH_NOWAY_PATTERNS, FILE_DANGEROUS_PATTERNS, resolveFilePathLevel, evaluateToolPermission, freezePermissionPolicy } from "@/services/safety"
+import type { PermissionPolicySnapshot } from "@/services/safety"
 import type { ToolDef, SafetyLevel, ToolContext } from "@/services/tool"
 import { defineTool, getTool, TOOL_POLICY_VERSION } from "@/services/tool"
+import { toolsConfig } from "@/services/config"
 
-/** 风险等级场景只关心 safetyLevel，策略用最小合法声明；执行体不进公开字段。 */
-const tool = (safetyLevel: SafetyLevel): ToolDef => defineTool({
+/** 风险等级场景只关心 safetyLevel；工具侧意见按需给出，执行体不进公开字段。 */
+const tool = (
+  safetyLevel: SafetyLevel,
+  defaultDecision: "passthrough" | "allow" | "ask" | "deny" = "passthrough",
+): ToolDef => defineTool({
   id: "test-safety", name: "test_safety", description: "test", parameters: { type: "object", properties: {} },
   safetyLevel, source: "local", sourceId: "", actionCategory: "_default",
   policy: {
     version: TOOL_POLICY_VERSION,
-    permission: { defaultDecision: "passthrough" },
+    permission: { defaultDecision },
     execution: { effect: "read", isolation: "shared_read", replay: "never" },
     context: { resultProjection: "reference", historyCompaction: "summarize" },
   },
@@ -27,26 +32,88 @@ const scene = (caseId: string, contractId: string, description: string, run: () 
 })
 
 // 会话信任与安全裁决只有 `permission.ts` 一份实现：这里的断言直接打生产裁决入口。
+// 裁决表相关的探针显式给出回合冻结快照，钉住的是映射本身，不跟开发者本地的
+// `ai.safety.mode` / 信任开关漂移；分级类断言仍用真实冻结值（它们与安全模式无关）。
 const context = (overrides: Partial<Parameters<typeof evaluateToolPermission>[2]> = {}) => ({
   sessionId: "safety-boundary-session", runGeneration: 1,
   toolCallId: "safety-boundary-call", policy: freezePermissionPolicy(), ...overrides,
 })
 
+/** 回合冻结快照的字面值。信任开关按关闭给：本文件断言的是裁决表，不是授权复用。 */
+const snapshot = (safetyMode: PermissionPolicySnapshot["safetyMode"]): PermissionPolicySnapshot => ({
+  safetyMode, sessionTrustEnabled: false,
+})
+
 export const SAFE放行 = scene("safety-safe", "sf-01", "SAFE 放行", async () => {
   const result = await evaluateToolPermission(tool("SAFE"), {}, context())
   if (result.decision !== "allow") throw new Error(`SAFE 未放行: ${result.decision}`)
+  // 放行不是「确认后放行」：这条分支不生成待确认项。
+  if (result.request) throw new Error("SAFE 放行却生成了确认请求")
 })
-export const NORMAL检查 = scene("safety-normal", "sf-02", "NORMAL 轻量模式检查", async () => {
-  const result = await evaluateToolPermission(tool("NORMAL"), {}, context())
-  if (result.decision !== "allow") throw new Error(`pet 模式 NORMAL 未放行: ${result.decision}`)
+export const NORMAL放行 = scene("safety-normal", "sf-02", "NORMAL 一律放行（与安全模式、白名单无关）", async () => {
+  // 统一裁决表：SAFE 与 NORMAL 同为 allow，三种安全模式的结论必须一致。
+  for (const safetyMode of ["just_do_it", "tell_me", "let_me_tk"] as const) {
+    const result = await evaluateToolPermission(tool("NORMAL"), {}, context({
+      policy: snapshot(safetyMode), toolCallId: `safety-normal-${safetyMode}`,
+    }))
+    if (result.decision !== "allow" || result.request) {
+      throw new Error(`${safetyMode} 下 NORMAL 没有直接放行: ${result.decision}`)
+    }
+  }
+  // 白名单只决定 NORMAL / DANGER 的归属（免确认通道），不是拒绝依据。它已经不在裁决里，
+  // 只挂在生产 pi-bash 的分级上：白名单命令 NORMAL、白名单外 DANGER、带 shell 组合符也 DANGER。
+  const bash = getTool("pi-bash")
+  if (!bash?.resolveSafetyLevel) throw new Error("pi-bash 未注册 resolveSafetyLevel，分级没有接在生产工具上")
+  const ctx: ToolContext = {}
+  const whitelisted = toolsConfig.bashWhitelist[0]
+  if (!whitelisted) throw new Error("bash 白名单为空，白名单分级断言无法成立")
+  if (bash.resolveSafetyLevel({ command: whitelisted }, ctx) !== "NORMAL") {
+    throw new Error(`白名单命令未评为 NORMAL: ${whitelisted}`)
+  }
+  if (bash.resolveSafetyLevel({ command: "deskpet-not-whitelisted-command" }, ctx) !== "DANGER") {
+    throw new Error("白名单外命令未评为 DANGER")
+  }
+  if (bash.resolveSafetyLevel({ command: `${whitelisted} -la; true` }, ctx) !== "DANGER") {
+    throw new Error("带 shell 组合符的白名单命令没有降为 DANGER")
+  }
+}, "shallow")
+export const DANGER按安全模式裁决 = scene("safety-danger", "sf-03", "DANGER 由安全模式裁决（无 deny 归宿）", async () => {
+  // 分支一：默认（tell_me）→ ask，并生成带身份的确认请求。
+  const ask = await evaluateToolPermission(tool("DANGER"), {}, context({
+    policy: snapshot("tell_me"), toolCallId: "safety-danger-ask",
+  }))
+  if (ask.decision !== "ask" || !ask.request) throw new Error(`默认安全模式下 DANGER 未走确认: ${ask.decision}`)
+  const request = ask.request
+  if (request.sessionId !== "safety-boundary-session" || request.runGeneration !== 1 || request.toolCallId !== "safety-danger-ask") {
+    throw new Error(`确认请求的身份不是本次裁决上下文: ${JSON.stringify(request)}`)
+  }
+  // 哈希是「确认后重新评估」的判据，必须随请求一起给出：参数哈希与策略哈希都非空。
+  if (!request.inputHash || !request.policyHash) throw new Error("确认请求缺少参数或策略哈希")
+
+  // 分支二：let_me_tk → ask。
+  const conservative = await evaluateToolPermission(tool("DANGER"), {}, context({
+    policy: snapshot("let_me_tk"), toolCallId: "safety-danger-conservative",
+  }))
+  if (conservative.decision !== "ask" || !conservative.request) {
+    throw new Error(`let_me_tk 下 DANGER 未走确认: ${conservative.decision}`)
+  }
+
+  // 分支三：just_do_it → allow（放行不生成确认请求）。
+  const permissive = await evaluateToolPermission(tool("DANGER"), {}, context({
+    policy: snapshot("just_do_it"), toolCallId: "safety-danger-permissive",
+  }))
+  if (permissive.decision !== "allow" || permissive.request) {
+    throw new Error(`just_do_it 下 DANGER 未被放行: ${permissive.decision}`)
+  }
 }, "deep")
-export const DANGER拒绝 = scene("safety-danger", "sf-03", "DANGER 轻量模式拒绝", async () => {
-  const result = await evaluateToolPermission(tool("DANGER"), {}, context())
-  if (result.decision !== "deny") throw new Error(`pet 模式 DANGER 未拒绝: ${result.decision}`)
-}, "deep")
-export const NOWAY拒绝 = scene("safety-noway", "sf-04", "NOWAY 直接拒绝（与信任无关）", async () => {
-  const result = await evaluateToolPermission(tool("NOWAY"), {}, context())
+export const NOWAY拒绝 = scene("safety-noway", "sf-04", "NOWAY 直接拒绝（先于安全模式与工具侧策略）", async () => {
+  // 最宽松的组合也放不出去：安全模式 just_do_it + 工具侧声明 allow。
+  const result = await evaluateToolPermission(tool("NOWAY", "allow"), {}, context({
+    policy: snapshot("just_do_it"), toolCallId: "safety-noway-permissive",
+  }))
   if (result.decision !== "deny") throw new Error(`NOWAY 被放行: ${result.decision}`)
+  // 硬拒绝没有可确认的余地，不走确认通道。
+  if (result.request) throw new Error("NOWAY 硬拒绝却生成了确认请求")
 })
 export const 危险命令匹配 = scene("safety-danger-pattern", "sf-05", "危险命令匹配", () => {
   if (!matchesAnyPattern("sudo echo test", BASH_DANGEROUS_PATTERNS)) throw new Error("危险命令未命中")

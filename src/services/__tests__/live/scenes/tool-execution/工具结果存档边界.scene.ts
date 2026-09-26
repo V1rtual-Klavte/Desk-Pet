@@ -10,12 +10,15 @@ import type { Entry } from "@earendil-works/pi-agent-core"
 /**
  * 工具结果的存档边界（Router 不再做 L1 内联截断之后的边界口径）。
  *
- * 超上限的结果只有两条如实路径，都不允许「看起来完整、实际取不回」：
+ * 本场景覆盖两条如实路径，都不允许「看起来完整、实际取不回」：
  * ① 探针（resultProjection=reference，60000 字符）：条目存全文，请求视图被 L0 缩短并标注
  *    eventId 回读地址，`read_session_event` 按 offset 能读回尾段；
  * ② bash（上游 50KB / 2000 行上限，spill 保留全量）：结果文本自带 `Full output: <path>`
  *    的 spill 回读路径，不假装全文还在会话里。
- * MCP 是第三条：没有回读通道，只能如实标记「已截断、不保留全文」（mcp/client.ts）。
+ *
+ * MCP 结果走的是同一条回读链（决策 11 删掉了一次性截断）：全文原样落条目、缩短只由 L0
+ * 投影按 `details.deskpetEntryId` 完成，所以旧注释「MCP 没有回读通道所以只能截断」已反转；
+ * 那条链（含 5 MB 的 `MAX_TOOL_FILE_BYTES` 物理上限）由 te-13 的另一条场景举证，不在这里重复。
  */
 const LARGE_TOOL = "archive_large_output"
 const LARGE_CALL = "archive-large-call"
@@ -69,8 +72,9 @@ export const 工具结果存档边界: SceneDef = {
     confirmPolicy: "approve",
   },
   setup: async () => {
-    // 非白名单命令由安全模式裁决（默认 `tell_me` → 确认），场景声明 confirmPolicy=approve：
-    // 本场景要的是「命令真的跑起来并产出 spill」，确认通道放行即达。
+    // `seq` 不在 bash 白名单里 → `classifyBashRisk` 判 DANGER → 由安全模式裁决；
+    // 场景声明 confirmPolicy=approve，确认通道放行后命令真的跑起来并产出 spill。
+    // 旧的「助手模式绕开 pet 白名单」前提随模式删除一起消失，这里不再有任何模式 override。
     setOverride("ai.plan.enabled", false)
     register(defineTool({
       id: "live-archive-large", name: LARGE_TOOL, description: "存档边界探针：超内联上限的长结果",

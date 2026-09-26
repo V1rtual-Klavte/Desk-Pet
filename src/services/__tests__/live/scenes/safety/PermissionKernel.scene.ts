@@ -1,5 +1,6 @@
 import type { SceneDef } from "../../types"
 import { authorizeToolExecution, awaitPermission, confirmState, evaluateToolPermission, freezePermissionPolicy, invalidatePermissionScope, resolvePermissionConfirm } from "@/services/safety"
+import type { PermissionPolicySnapshot } from "@/services/safety"
 import type { ToolDef, ToolPolicy } from "@/services/tool"
 import { defineTool, TOOL_POLICY_VERSION } from "@/services/tool"
 
@@ -10,6 +11,14 @@ const context = (overrides: Partial<Parameters<typeof evaluateToolPermission>[2]
   // 裁决与 policyHash 只认回合冻结的策略快照（真回合由 preflight 取，测试宿主按当前值取）。
   policy: freezePermissionPolicy(),
   ...overrides,
+})
+
+/**
+ * 回合冻结快照的字面值：ask 探针要钉住的是裁决表，不跟本机 `ai.safety.mode` 漂移。
+ * 信任开关按关闭给 —— 本文件断言的是裁决与交集，不是 allow_session 的复用（那是 sf-14）。
+ */
+const snapshot = (safetyMode: PermissionPolicySnapshot["safetyMode"]): PermissionPolicySnapshot => ({
+  safetyMode, sessionTrustEnabled: false,
 })
 
 /** 策略默认只用最小合法声明；权限场景按需覆盖 permission 段。 */
@@ -34,25 +43,69 @@ const scene = (caseId: string, contractId: string, description: string, run: () 
 })
 
 export const passthrough终裁 = scene("permission-passthrough-final", "sf-11", "MCP passthrough 必须由 PermissionKernel 终裁", async () => {
-  const result = await evaluateToolPermission(tool({
-    source: "mcp", sourceId: "remote",
-    policy: policy({ defaultDecision: "passthrough" }),
-  }), { target: "remote" }, context())
-  if (result.decision !== "ask" || !result.request) throw new Error("MCP passthrough 未收敛为 ask")
+  // 发现侧把 MCP 工具声明为 DANGER（sf-21），所以默认安全模式下的收敛结果是 ask；
+  // NORMAL 探针在新裁决表下会先被放行，证明不了「passthrough 被收敛」。
+  const mcp = tool({ source: "mcp", sourceId: "remote", safetyLevel: "DANGER", policy: policy({ defaultDecision: "passthrough" }) })
+  // 探针前提：工具自己确实只表态 passthrough —— 下面的收敛不是工具换了个意见。
+  if (mcp.policy.permission.defaultDecision !== "passthrough") throw new Error("探针工具的权限意见不是 passthrough")
+  const result = await evaluateToolPermission(mcp, { target: "remote" }, context({
+    policy: snapshot("tell_me"), toolCallId: "mcp-passthrough-ask",
+  }))
+  if (result.decision !== "ask" || !result.request) throw new Error(`MCP passthrough 未收敛为 ask: ${result.decision}`)
+
+  // 收敛走的是裁决表而不是「passthrough 一律 ask」：同一份意见在 just_do_it 下收敛为 allow。
+  const permissive = await evaluateToolPermission(mcp, { target: "remote" }, context({
+    policy: snapshot("just_do_it"), toolCallId: "mcp-passthrough-allow",
+  }))
+  if (permissive.decision !== "allow") throw new Error(`just_do_it 下 MCP passthrough 未收敛为 allow: ${permissive.decision}`)
 })
 
-export const deny优先 = scene("permission-deny-first", "sf-12", "硬禁止优先于来源 allow", async () => {
+export const deny优先 = scene("permission-deny-first", "sf-12", "硬禁止优先、ask 取交集、工具侧 deny 与表外意见一律拒绝", async () => {
+  // ① NOWAY 优先于工具侧 allow。
   const result = await evaluateToolPermission(tool({
     safetyLevel: "NOWAY", policy: policy({ defaultDecision: "allow" }),
   }), { path: "/" }, context())
   if (result.decision !== "deny") throw new Error("NOWAY 被工具 allow 绕过")
 
-  // 工具侧静态 allow 是「一条意见」，不是许可：只读工具对每个路径都声明 allow，
-  // 参数级风险仍必须由标准决策兜住（NORMAL 在助手模式下无论安全模式如何都是 ask）。
+  // ② 工具侧静态 allow 是「一条意见」，不是许可：DANGER 在默认安全模式下仍必须 ask
+  //    （统一裁决表删掉了「NORMAL 在助手模式下必为 ask」这条旧路径，ask 只剩 DANGER
+  //    与工具侧显式 ask 两个来源）。
   const downgraded = await evaluateToolPermission(tool({
-    safetyLevel: "NORMAL", policy: policy({ defaultDecision: "allow" }),
-  }), { path: "/tmp/notes.md" }, context({ toolCallId: "allow-cannot-downgrade" }))
-  if (downgraded.decision !== "ask") throw new Error("工具策略 allow 把标准决策的 ask 降级为放行")
+    safetyLevel: "DANGER", policy: policy({ defaultDecision: "allow" }),
+  }), { path: "/tmp/notes.md" }, context({ policy: snapshot("tell_me"), toolCallId: "allow-cannot-downgrade" }))
+  if (downgraded.decision !== "ask" || !downgraded.request) {
+    throw new Error(`工具策略 allow 把标准决策的 ask 降级为放行: ${downgraded.decision}`)
+  }
+
+  // ③ 交集的反向：工具自己声明 ask 时，标准决策的 allow 不能把它吞成放行。
+  const toolAsks = await evaluateToolPermission(tool({
+    safetyLevel: "SAFE", policy: policy({ defaultDecision: "ask" }),
+  }), {}, context({ policy: snapshot("just_do_it"), toolCallId: "tool-ask-wins" }))
+  if (toolAsks.decision !== "ask" || !toolAsks.request) {
+    throw new Error(`工具声明的独立 ask 被标准决策 allow 吞掉: ${toolAsks.decision}`)
+  }
+
+  // ④ 工具侧 deny 直接拒绝（安全等级更低的 SAFE 也一样），且不生成确认请求。
+  const toolDenies = await evaluateToolPermission(tool({
+    safetyLevel: "SAFE", policy: policy({ defaultDecision: "deny" }),
+  }), {}, context({ policy: snapshot("just_do_it"), toolCallId: "tool-deny-wins" }))
+  if (toolDenies.decision !== "deny" || toolDenies.request) {
+    throw new Error(`工具侧 deny 没有被直接执行: ${toolDenies.decision}`)
+  }
+
+  // ⑤ 表外意见按 deny 处理：这条守的是未经类型检查的适配器（as 断言绕过 ToolDef），
+  //    所以这里刻意绕开 defineTool（它的校验会先一步拒绝），手工拼一份带表外意见的定义。
+  const outOfTable = {
+    ...tool({ safetyLevel: "SAFE" }),
+    policy: {
+      ...policy({ defaultDecision: "passthrough" }),
+      permission: { defaultDecision: "maybe" as unknown as ToolPolicy["permission"]["defaultDecision"] },
+    },
+  } as unknown as ToolDef
+  const invalid = await evaluateToolPermission(outOfTable, {}, context({ toolCallId: "out-of-table" }))
+  if (invalid.decision !== "deny" || invalid.request) {
+    throw new Error(`表外权限意见没有被按 deny 处理: ${invalid.decision}`)
+  }
 })
 
 export const 身份失效拒绝 = scene("permission-identity-invalid", "sf-13", "缺失或已失效会话身份时 fail closed", async () => {

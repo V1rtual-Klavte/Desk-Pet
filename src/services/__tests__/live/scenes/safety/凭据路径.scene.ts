@@ -12,6 +12,14 @@ import { BaseDirs } from "@/services/paths"
  * **Rust 是最终判定**：即使门禁被绕过、或路径形态在 TS 归一时不命中，经 IPC 直连
  * 文件与 bash 两个入口仍然会得到 `SENSITIVE_PATH` / 硬拒绝。三个场景分别覆盖
  * 「两个入口」「读私钥的模型回合」「bash 写私钥的模型回合」。
+ *
+ * 「拒绝来自哪一层」现在是结构性结论，不再靠反证：两个入口的入参面已收窄到只剩内容本身 ——
+ *   · `file_read` / `file_write` 只收路径，凭据判定在 `paths.rs` 的词法阶段
+ *     （`validate_file_path` / `validate_new_file_path`，先于 canonicalize 与允许根判定）；
+ *   · `bash_exec` 只收命令，凭据规则是层 1 的 `deny_credential_paths`，与 `deny_hard_floor`、
+ *     `deny_destructive_flags` 并列（层 2 才是系统路径保护）。
+ * 白名单与策略强度都是**调用方参数**，而这两个参数已经不存在（决策 7）：入口根本收不到
+ * 可以传弱的旋钮，所以拒绝不可能来自白名单、策略强度或超时。
  */
 
 /** OpenSSH 私钥文件头：任何一段真实私钥正文里都必须出现它。 */
@@ -30,7 +38,7 @@ async function rejection(work: () => Promise<unknown>): Promise<{ code: string |
 export const 凭据路径终判: SceneDef = {
   meta: {
     caseId: "safety-credential-paths", module: "safety", contractId: "sf-16",
-    description: "Rust 终判：文件与 bash 两个入口都拒绝凭据路径，且判定先于 canonicalize",
+    description: "Rust 终判：文件读、文件写与 bash 三个入口都拒绝凭据路径，且判定先于 canonicalize",
     depth: "deep", suite: "safety", entry: "unit", tags: ["safety", "boundary", "error"],
   },
   turns: [{
@@ -60,7 +68,14 @@ export const 凭据路径终判: SceneDef = {
           throw new Error(`.. 形态的私钥路径未被拒绝: ${dotted.code ?? dotted.message}`)
         }
 
-        // ③ bash 层 1：凭据规则在调用方不可关闭（`bash_exec` 已无策略入参）。
+        // ③ 写入侧同一入口：目标不存在时走 `validate_new_file_path`，判定仍在归一化路径的词法阶段。
+        // 结论必须是凭据而不是 PATH_NOT_FOUND —— 不能因为「文件还不存在」就跳过凭据判定。
+        const write = await rejection(() => invoke("file_write", { path: `${probe}/.ssh/id_rsa`, content: "x" }))
+        if (write.code !== "SENSITIVE_PATH") {
+          throw new Error(`写入侧未按凭据拒绝: ${write.code ?? write.message}`)
+        }
+
+        // ④ bash 层 1：凭据规则在调用方不可关闭（`bash_exec` 已无策略入参）。
         // 码只认 TOOL + 文案含「凭据路径」，超时（OTHER/超时文案）与 spawn 失败（IO）都不算通过。
         const result = await rejection(() => invoke("bash_exec", {
           executionId: "credential-probe-bash",

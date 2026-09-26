@@ -29,6 +29,12 @@
 // 切会话用产品路径的「新建并切换」（`createNewSession`）：与 `switchToSession` 是同一个
 // 清 scope 点（会话指针移动前 `invalidatePermissionScope(旧会话)`），且不需要先造出
 // 已存在的会话 B 再二次切换。
+//
+// 决策 16 复核（子代理不派生）：剥离点是 `runPiSubAgent` 对 `input.tools` 按
+// `policy.execution.isolation !== "delegate"` 过滤，计划步骤侧再由 `executeStep`
+// 用同一判定把派生型工具当成「不存在」（missing_tools）。本场景的探针是
+// `exclusive_effect`，仍在子代理的工具面里，因此本场景的断言不受该收窄影响；
+// 「派生型工具真的到不了子代理手里」由 te-23 的场景举证，这里不重复。
 
 import type { FauxResponseStep } from "@earendil-works/pi-ai"
 import { PLAN_STEP_RESULT_ENTRY, type PlanStepResult } from "@/services/agent/memory"
