@@ -4,7 +4,7 @@
 // ==========================================
 
 import type { ToolDeclaration, ThinkingEffort } from "@/services/agent/types"
-import { getToolDeclarations } from "@/services/tool/registry"
+import { listAll, toToolDeclaration } from "@/services/tool"
 import { MemoryService } from "@/services/agent/memory"
 import { aiConfig } from "@/services/config"
 import { getSkillsPromptBlock } from "@/services/skill"
@@ -28,7 +28,6 @@ export interface BuildContextInput {
   ephemeralText?: string
   ephemeralOrigin?: "active" | "hook" | "recovery" | "plan"
   /** Run-preflight 冻结快照；调用方未提供时回退到当前配置与注册表。 */
-  mode?: "pet" | "assistant"
   contextMaxTokens?: number
   maxOutputTokens?: number
   tools?: ToolDeclaration[]
@@ -108,12 +107,11 @@ function runtimeDynamicPrompt(pool: VariablePool, effort: ThinkingEffort): strin
 
 function decideTools(input: BuildContextInput): ToolDeclaration[] {
   if (input.isActiveMessage) return []
-  return input.tools ?? getToolDeclarations(input.mode)
+  return input.tools ?? listAll().map(toToolDeclaration)
 }
 
 /** Builds complete, taint-preserving blocks. It never clips Card/CANDY/User/schema text. */
 export function buildPrompt(input: BuildContextInput, card: PersonalityCard | null, pool: VariablePool): BuildContextOutput {
-  const mode = input.mode ?? "assistant"
   const contextMaxTokens = input.contextMaxTokens ?? aiConfig.contextMaxTokens
   const budget = contextBudget(contextMaxTokens, input.maxOutputTokens)
   const tools = decideTools(input)
@@ -123,7 +121,7 @@ export function buildPrompt(input: BuildContextInput, card: PersonalityCard | nu
   const toolProtocol = tools.length
     ? "你可以使用工具完成任务。需要工具时只输出工具调用。完成后基于结果简短回复。"
     : "请简短口语化回复。"
-  const skillCatalog = tools.length ? (input.skillsPromptBlock ?? getSkillsPromptBlock({ mode })) : ""
+  const skillCatalog = tools.length ? (input.skillsPromptBlock ?? getSkillsPromptBlock()) : ""
   const toolSchemaSnapshot = tools.length ? JSON.stringify(tools.map(toolBudgetSchema)) : ""
   const dynamic = input.dynamicPrompt ?? runtimeDynamicPrompt(pool, input.thinkingEffort)
 

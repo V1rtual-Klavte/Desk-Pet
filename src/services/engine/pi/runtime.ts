@@ -31,10 +31,10 @@ import { getActiveSessionId, pushMessageFor } from "@/services/session/store"
 import { getSessionCreatedAt, isAssistantEntryVisible, pushSystemMessage } from "@/services/session"
 import {
   SESSION_TRANSCRIPT_TOOL, toToolDeclaration, createTranscriptTool,
-  getToolsForMode, findRetainedToolCall, preservedToolNames, retainedToolNames, toolPolicyHash,
+  findRetainedToolCall, listAll, preservedToolNames, retainedToolNames, toolPolicyHash,
 } from "@/services/tool"
 import type { HarnessToolRun, ToolDef } from "@/services/tool"
-import { generalConfig, loopConfig, planConfig } from "@/services/config"
+import { loopConfig, planConfig } from "@/services/config"
 import { emit } from "@tauri-apps/api/event"
 import { resolvePiTurnModel } from "./model-gateway"
 import type { PiModel } from "./model-gateway"
@@ -285,7 +285,6 @@ interface TurnKernel {
   sessionId?: string
   requestId: string
   turnId?: string
-  mode: "pet" | "assistant"
   model: PiModel
   thinkingEffort: ThinkingEffort
   systemPrompt: string
@@ -342,7 +341,6 @@ interface TurnKernelOptions {
   sessionId?: string
   requestId: string
   turnId?: string
-  mode: "pet" | "assistant"
   model: PiModel
   thinkingEffort: ThinkingEffort
   systemPrompt: string
@@ -509,9 +507,8 @@ function createTurnKernel(options: TurnKernelOptions): TurnKernel {
   return kernel
 }
 
-/** 陪伴/助手结构化摘要的 before_compaction 钩子；主回合与手动 /compact 共用同一内核（H-3/§7）。 */
+/** 结构化摘要的 before_compaction 钩子；主回合与手动 /compact 共用同一内核（H-3/§7）。 */
 function createCompactionHook(options: {
-  mode: "pet" | "assistant"
   model: PiModel
   tools: readonly ToolDef[]
   /** 压缩请求的归属会话；一次性摘要请求的快照与派生记录按它落盘。 */
@@ -536,7 +533,6 @@ function createCompactionHook(options: {
         return { decline: true }
       }
       const outcome = await summarizeCompaction({
-        mode: options.mode,
         messages: preparation.messagesToSummarize,
         turnPrefixMessages: preparation.turnPrefixMessages,
         previousSummary: preparation.previousSummary,
@@ -699,7 +695,6 @@ function createTurnSpec(kernel: TurnKernel, options: {
       }
       emitUiEvent("tool-executing", { toolId: tool.name, toolName: tool.name })
       const permission = await authorizeToolExecution(tool, args as Record<string, unknown>, {
-        mode: kernel.mode,
         sessionId: kernel.sessionId ?? kernel.traceContext.runId,
         runGeneration: options.runGeneration,
         toolCallId,
@@ -738,7 +733,7 @@ function createTurnSpec(kernel: TurnKernel, options: {
       latestMessages: messages => { kernel.latestMessages = messages },
     }),
     beforeCompaction: createCompactionHook({
-      mode: kernel.mode, model: kernel.model, tools: kernel.tools,
+      model: kernel.model, tools: kernel.tools,
       sessionId: kernel.sessionId, audit: compactionAudit,
     }),
     compactionAudit,
@@ -878,7 +873,6 @@ export async function runPiAgentTurn(input: PiAgentTurnInput): Promise<PiAgentTu
 
   const turnSessionId = input.sessionId
   const requestId = input.ingress?.requestId ?? `runtime-${crypto.randomUUID()}`
-  const mode = generalConfig.assistantMode ? "assistant" as const : "pet" as const
   const model = resolvePiTurnModel()
   const windowTokens = model.contextWindow
   // 代际：runner 已 begin 时复用其代际；Live Test 直连路径由本函数自持。
@@ -915,9 +909,9 @@ export async function runPiAgentTurn(input: PiAgentTurnInput): Promise<PiAgentTu
   assertCurrent()
   const { prepareRunCapabilities } = await import("@/services/init")
   // 主回合不使用返回的不可用名单：借用失败已由各自的工具报告；这里只保留取消守卫语义。
-  await prepareRunCapabilities(mode, requestId, assertCurrent)
+  await prepareRunCapabilities(requestId, assertCurrent)
   assertCurrent()
-  const frozenTools: ToolDef[] = isActiveMessage ? [] : [...getToolsForMode(mode)]
+  const frozenTools: ToolDef[] = isActiveMessage ? [] : [...listAll()]
   // 工具结果回读：请求投影里标注的 eventId 就是 Harness 条目 id，按条目分页读取。
   if (frozenTools.length) frozenTools.push(createTranscriptTool(entryId => slot.readToolResult(entryId)))
   // 用户正文由 Harness 的 prompt 条目承担落盘（先落盘再投递由 Harness 事务保证）；
@@ -926,7 +920,7 @@ export async function runPiAgentTurn(input: PiAgentTurnInput): Promise<PiAgentTu
   // 工具运行面与投递正文在准入前装配一次：它们既是准入的入参，也是本回合 spec 的组成部分，
   // 不因「准入提前」写第二份定义。
   const toolRun: HarnessToolRun = {
-    mode, sessionId: turnSessionId, runGeneration: generation,
+    sessionId: turnSessionId, runGeneration: generation,
     isCurrent: () => runIsCurrent(),
     history: toolCallHistory,
   }
@@ -951,7 +945,7 @@ export async function runPiAgentTurn(input: PiAgentTurnInput): Promise<PiAgentTu
   input.onInputAdmitted?.()
   let planStepContext = ""
   let planUserText = userText
-  if (mode === "assistant" && planConfig.enabled) {
+  if (planConfig.enabled) {
     // 计划判定与生成都发生在 Harness 驱动之前（此时还没有 turn_start 的「思考中」），
     // 这段等待必须有提示，否则界面在复杂度判定 + 规划调用期间一片空白。
     emitStageHint(turnSessionId, "planning")
@@ -1021,13 +1015,13 @@ export async function runPiAgentTurn(input: PiAgentTurnInput): Promise<PiAgentTu
     } as unknown as JsonValue)
   }
   assertCurrent()
-  const frozenContext = { ...frozenUserContext, skillsPromptBlock: getSkillsPromptBlock({ mode }) }
+  const frozenContext = { ...frozenUserContext, skillsPromptBlock: getSkillsPromptBlock() }
   const skillCatalogFingerprint = getSkillCatalogFingerprint() ?? undefined
   // 会话历史由 Harness 条目承担；buildPrompt 只负责静态/动态/记忆块与预算分配记录。
   const context = buildPrompt({
     ...frozenContext,
     unansweredCount, thinkingEffort, isActiveMessage,
-    memoryProjections, mode, contextMaxTokens: windowTokens, maxOutputTokens: model.maxTokens,
+    memoryProjections, contextMaxTokens: windowTokens, maxOutputTokens: model.maxTokens,
     tools: frozenTools.map(toToolDeclaration),
     ...(planStepContext ? { ephemeralText: planStepContext, ephemeralOrigin: "plan" as const } : {}),
   }, card, pool)
@@ -1046,7 +1040,6 @@ export async function runPiAgentTurn(input: PiAgentTurnInput): Promise<PiAgentTu
     sessionId: turnSessionId,
     requestId,
     turnId: input.turnId,
-    mode,
     model,
     thinkingEffort,
     systemPrompt: context.systemPrompt,
@@ -1167,7 +1160,7 @@ async function runPlanPhase(args: {
     const generated = await generatePlan(args.planInput.userText, {
       cardId: args.planInput.cardId,
       cardRole: args.planInput.cardRole,
-      availableTools: getToolsForMode("assistant"),
+      availableTools: listAll(),
       thinkingEffort: planConfig.thinkingEffort,
       maxSteps: planConfig.maxSteps,
       // 规划是一次性请求：快照按会话归属落盘（证据链可查「这次规划问了什么」）。
@@ -1295,7 +1288,7 @@ async function runPlanPhase(args: {
       }).catch(error => { log.error("步骤结果条目写入失败:", formatError(error)); return undefined })
       if (entryId) stepResultEntryIds.set(String(step.id), entryId)
     },
-    // 工具解析报告（FIX-51）：工具名解析不到、或未限定工具而放大到全部助手工具，
+    // 工具解析报告（FIX-51）：工具名解析不到、或未限定工具而放大到全部已注册工具，
     // 都在进度事件与系统消息里可见 —— 权限面的变化不能只留在日志里。
     async onStepNotice(step, notice) {
       const index = plan.steps.findIndex(item => item.id === step.id) + 1
@@ -1303,7 +1296,7 @@ async function runPlanPhase(args: {
       if (notice.kind === "missing_tools") {
         pushSystemMessage(`计划第 ${index} 步指定的工具不存在: ${notice.names.join("、")}（该步未执行）`, sessionId)
       } else {
-        pushSystemMessage(`计划第 ${index} 步未限定工具，将使用全部助手工具`, sessionId)
+        pushSystemMessage(`计划第 ${index} 步未限定工具，将使用全部已注册工具`, sessionId)
       }
     },
     // 失败询问接上会话身份与回合中断信号：会话切换/终止执行时按 `abort` 结算，
@@ -1530,9 +1523,9 @@ export async function resumePlan(sessionId: string, planId: string): Promise<PiA
   // 停止经 `bindRunningPlan` 的中断通道（runPlanPhase 内登记）真正停在步骤边界。
   void emitUiEvent("deskpet-run-state", { sessionId, running: true })
   try {
-    // 步骤子代理可能用助手工具与 MCP：按主回合同款准备能力，收尾再释放
+    // 步骤子代理可能用内置工具与 MCP：按主回合同款准备能力，收尾再释放
     const { prepareConversationCapabilities } = await import("@/services/init")
-    await prepareConversationCapabilities("assistant", requestId)
+    await prepareConversationCapabilities(requestId)
     const outcome = await runPlanPhase({
       sessionId,
       existingPlanId: planId,
@@ -1737,7 +1730,6 @@ export async function continueInterruptedRun(sessionId: string): Promise<PiAgent
   const slot = harnessSlots.ensure(sessionId)
   await slot.open()
   if (!slot.getInterrupted()) return undefined
-  const mode = generalConfig.assistantMode ? "assistant" as const : "pet" as const
   const model = resolvePiTurnModel()
   // 续跑也带输入身份：运行身份、请求快照与投递证据链按同一个 requestId 对齐；
   // 来源标记是 recovery（见上），因此这条身份不会被读成用户事实。
@@ -1748,9 +1740,9 @@ export async function continueInterruptedRun(sessionId: string): Promise<PiAgent
   const toolCallHistory: PiAgentTurnOutput["toolCallHistory"] = []
   try {
     // 恢复路径与主回合走同一个能力准备入口（不再绕过 MCP / Skill 准备）：中断期间能力可能
-    // 已经漂移（模式切换、服务器不可用），续跑前的准备结果就是本次运行的真实能力面。
+    // 已经漂移（服务器不可用、设置变更），续跑前的准备结果就是本次运行的真实能力面。
     const { prepareRunCapabilities } = await import("@/services/init")
-    const capabilities = await prepareRunCapabilities(mode, resumeOwner(sessionId), () => harnessSlots.isCurrent(sessionId, generation))
+    const capabilities = await prepareRunCapabilities(resumeOwner(sessionId), () => harnessSlots.isCurrent(sessionId, generation))
     // 待重放工具名与不可用 MCP 的交集：有交集就不能继续 —— 重放会失败成上游的通用文案，
     // 这里给用户一条明确原因（不落「Tool … is unavailable」），也不假装续跑成功。
     const pendingTools = await slot.pendingInterruptedToolNames()
@@ -1768,23 +1760,23 @@ export async function continueInterruptedRun(sessionId: string): Promise<PiAgent
     const currentCard = getActiveCard()
     const card = currentCard ? JSON.parse(JSON.stringify(currentCard)) as typeof currentCard : null
     const pool = getPoolSnapshot()
-    const frozenTools = [...getToolsForMode(mode)]
+    const frozenTools = [...listAll()]
     frozenTools.push(createTranscriptTool(entryId => slot.readToolResult(entryId)))
     const thinkingEffort = getEffectiveThinkingEffort()
     // 中断运行的原始冻结快照已随进程丢失：用当前 Card/变量重建只读前缀，不静默改 Card。
     const context = buildPrompt({
       ...{ candyInstructions: MemoryService.getCandyInstructionsSync(), userProfileText: MemoryService.getUserProfileSync() },
-      unansweredCount: 0, thinkingEffort, mode,
+      unansweredCount: 0, thinkingEffort,
       contextMaxTokens: model.contextWindow, maxOutputTokens: model.maxTokens,
       tools: frozenTools.map(toToolDeclaration),
     }, card, pool)
     const kernel = createTurnKernel({
-      sessionId, requestId, mode, model,
+      sessionId, requestId, model,
       thinkingEffort, systemPrompt: context.systemPrompt, tools: frozenTools,
       blocks: context.blocks, allocations: context.allocations, budgetDrops: context.budgetDrops,
       transientUserInput: false, persistSnapshots: false, card, generation,
       toolRun: {
-        mode, sessionId, runGeneration: generation,
+        sessionId, runGeneration: generation,
         isCurrent: () => harnessSlots.isCurrent(sessionId, generation),
         history: toolCallHistory,
       },
@@ -1822,7 +1814,7 @@ export type ManualCompactionResult = HarnessCompactOutcome & { intent?: string }
 
 /**
  * 手动压缩一个会话：切点、提交与持久化由 Harness 承担（manual reason），
- * 摘要走陪伴/助手结构化内核。运行中返回 busy，有排队项返回 pending（准入读 lane 真相），
+ * 摘要走结构化摘要内核。运行中返回 busy，有排队项返回 pending（准入读 lane 真相），
  * 两种情况都由命令层给出用户可见文案（§3.4）。
  *
  * 压缩后 Harness 可能驱动一次续跑消费 lane inbox：那段续跑没有回合身份，但仍要有人格
@@ -1831,7 +1823,6 @@ export type ManualCompactionResult = HarnessCompactOutcome & { intent?: string }
  */
 export async function compactActiveSession(sessionId: string): Promise<ManualCompactionResult> {
   if (!sessionId.trim()) return { status: "failed", error: "当前没有可压缩的会话" }
-  const mode = generalConfig.assistantMode ? "assistant" as const : "pet" as const
   const model = resolvePiTurnModel()
   let intent: string | undefined
   const slot = harnessSlots.ensure(sessionId)
@@ -1842,7 +1833,7 @@ export async function compactActiveSession(sessionId: string): Promise<ManualCom
   const pool = getPoolSnapshot()
   const context = buildPrompt({
     ...{ candyInstructions: MemoryService.getCandyInstructionsSync(), userProfileText: MemoryService.getUserProfileSync() },
-    unansweredCount: 0, thinkingEffort: getEffectiveThinkingEffort(), mode,
+    unansweredCount: 0, thinkingEffort: getEffectiveThinkingEffort(),
     contextMaxTokens: model.contextWindow, maxOutputTokens: model.maxTokens,
     tools: [],
   }, card, pool)
@@ -1855,7 +1846,7 @@ export async function compactActiveSession(sessionId: string): Promise<ManualCom
     hooks: {
       // 手动压缩没有冻结的回合工具集，按当前注册表判定 retain 保护。
       beforeCompaction: createCompactionHook({
-        mode, model, tools: getToolsForMode(mode),
+        model, tools: listAll(),
         sessionId, onSummary: summary => { intent = summary.intent }, audit: compactionAudit,
       }),
       compactionAudit,
@@ -1886,7 +1877,6 @@ export async function runPiSubAgent(input: PiSubAgentInput): Promise<PiSubAgentO
   const history: PiAgentTurnOutput["toolCallHistory"] = []
   const scope = input.scope
   const toolRun: HarnessToolRun = {
-    mode: "pet",
     // 有 scope 时工具上下文带上父会话与代际：许可借用 requestId 从 `no-session:-1:…`
     // 变成 `${sessionId}:${generation}:…`，会话内 grant 也随之按会话与代际失效（PLAN-03）。
     sessionId: scope?.sessionId,
@@ -1900,7 +1890,6 @@ export async function runPiSubAgent(input: PiSubAgentInput): Promise<PiSubAgentO
     // 快照归属以 audit 为准（有计划身份的步骤请求落进父会话）；没有 audit 时沿用运行归属。
     sessionId: input.audit?.sessionId ?? scope?.sessionId,
     requestId: `sub-agent-${crypto.randomUUID()}`,
-    mode: "pet",
     model,
     thinkingEffort,
     systemPrompt: input.systemPrompt,

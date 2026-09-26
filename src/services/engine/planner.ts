@@ -1,9 +1,9 @@
 // ==========================================
-// Plan 模块 — 助手模式复杂任务编排器
+// Plan 模块 — 复杂任务编排器
 // 复杂度检测 → LLM 拆解 → 子代理逐步执行
 // ==========================================
 
-import { getToolByName, getToolsForMode, type ToolDef } from "@/services/tool"
+import { getToolByName, listAll, type ToolDef } from "@/services/tool"
 import type { PiSubAgentOutput, PiSubAgentScope, PiTextCallAudit } from "@/services/engine/pi"
 import type { ThinkingEffort } from "@/services/agent/types"
 import type { PlanEffectClass, PlanRecord, PlanStepRecord } from "@/services/engine/runtime"
@@ -278,7 +278,7 @@ export function planEffectClassFor(allowedTools?: string[]): PlanEffectClass {
 
 // ── 计划执行 ──
 
-/** 步骤工具解析报告（FIX-51）：工具名解析不到，或步骤未限定工具而放大到全部助手工具。 */
+/** 步骤工具解析报告（FIX-51）：工具名解析不到，或步骤未限定工具而放大到全部已注册工具。 */
 export type StepToolNotice =
   | { kind: "missing_tools"; names: string[] }
   | { kind: "unbounded_tools" }
@@ -440,10 +440,10 @@ async function executeStep(
       return { reply: "", toolCallsMade: 0, success: false, error: `指定的工具不存在: ${missing.join("、")}` }
     }
   } else {
-    // 未限定工具 = 放大到全部助手工具，必须可见（FIX-51）
-    log.warn(`步骤 ${step.id} 未指定 allowedTools，使用全部助手工具`)
+    // 未限定工具 = 放大到全部已注册工具，必须可见（FIX-51）
+    log.warn(`步骤 ${step.id} 未指定 allowedTools，使用全部已注册工具`)
     await callbacks.onStepNotice?.(step, { kind: "unbounded_tools" })
-    tools.push(...getToolsForMode("assistant"))
+    tools.push(...listAll())
   }
 
   const { runPiSubAgent } = await import("@/services/engine/pi")
