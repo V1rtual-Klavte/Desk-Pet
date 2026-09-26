@@ -32,7 +32,7 @@ pub use profile_cmd::{
     profile_delete, profile_file_read, profile_file_write,
 };
 pub use resources_cmd::{restore_default_resources, skill_delete};
-pub use skill_cmd::skill_list_metadata;
+pub use skill_cmd::skill_catalog_fingerprint;
 pub use sim::{close_windows_sim, open_windows_sim};
 pub(crate) use tool_exec::BashPool;
 pub use tool_exec::{
