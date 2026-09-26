@@ -66,6 +66,14 @@ Rust [AppPaths](../../src-tauri/src/paths.rs) 依据 `cfg!(debug_assertions)` �
 
 由 [AITab](../../src/components/settings/AITab.vue) 的「计划模式 · 复杂度判定」读取与回写、经 SettingsPanel 的 setOverrides 落盘，运行期只经 [config.ts](../../src/services/config.ts) 的 `planConfig.complexityEval` 读取。`keyword` 下未命中关键词直接返回低分（不发起请求，复杂度判定只由关键词与 `--plan` 驱动）；`llm` 下未命中关键词再发一次独立请求自判，失败按跳过 Plan 处理并把原因写进判定结果。
 
+### Bash 白名单字段的语义与生效时机
+
+| 字段 | 取值 | 语义 | 生效 |
+|---|---|---|---|
+| `tools.bash.whitelist` | 命令名数组，出厂 CONFIG 18 项（getter 另留 15 项兜底，同值子集） | 命令首词命中、不含 shell 组合符且未命中危险/硬禁止模式时判 `NORMAL`、免确认；它是**免确认通道**而不是硬墙 —— 不在名单只意味着要走确认，命令仍可执行 | 每次风险分级即时读取；设置页保存后经 `deskpet-settings-saved` 触发的 `reloadConfig()` 生效 |
+
+由 [ToolsTab](../../src/components/settings/ToolsTab.vue) 的「Bash 白名单」逐行读取与回写、经 SettingsPanel 的 setOverrides 落盘；运行期只经 [config.ts](../../src/services/config.ts) 的 `toolsConfig.bashWhitelist` 读取，分级消费点是 [pi-tools.ts](../../src/services/tool/local/pi-tools.ts) 的 `classifyBashRisk`。Rust 侧不再看白名单：[bash_policy.rs](../../src-tauri/src/commands/bash_policy.rs) 的 `enforce_bash_policy` 只有层 1 硬基线与层 2 系统路径保护，也不接收 scope / whitelist 入参，拒绝结论与名单无关。
+
 ## 路径与文件布局
 
 ```text
@@ -75,7 +83,7 @@ data_root/
 ├── sessions/       聊天正文 JSONL（JsonlSessionRepo，每会话一个文件，归属按文件头 cwd）与 index.json 可丢弃 UI 状态
 ├── personality/    cards/、stages/{cardId}.json
 ├── profiles/       {profileId}/ 下的 Profile 与素材
-├── skills/         {name}/SKILL.md
+├── skills/         {name}/SKILL.md（per-skill `enabled` 开关；Pi 递归遍历、根级 `.md` 也算技能、name 可缺省取父目录名）
 └── logs/           运行日志
 ```
 
@@ -91,7 +99,7 @@ Live Test 在 debug 且 `DESKPET_LIVE_TEST=1` 时使用测试脚本在用户 Hom
 
 [随包资源](../../src-tauri/resources/defaults/) 只作首次种子，复制后写入 `settings/.default-resources-seeded`。运行时只读写 data_root；默认和用户 Card/Profile/Skill 没有两套编辑权限。标记存在后删除资源不会自动恢复。
 
-设置页“恢复默认资源”调用 [restore_default_resources](../../src-tauri/src/commands/resources_cmd.rs)，**覆盖运行时同名种子文件**，会丢弃这些文件的用户改动；种子之外的用户自建文件保留。
+设置页“恢复默认资源”调用 [restore_default_resources](../../src-tauri/src/commands/resources_cmd.rs)，**覆盖运行时同名种子文件**，会丢弃这些文件的用户改动；种子之外的用户自建文件保留。同步是「种子里有的文件逐个覆盖或补齐」，不删除种子外的条目；Skill 的 per-skill `enabled` 就写在种子 SKILL.md 的 frontmatter 里，所以种子技能上的开关会随恢复一起回到种子值。
 
 Profile 导入、复制和编辑写入 `profiles/{profileId}/`；选择保存在 `appearance.activeProfile`。效果所有权为：
 

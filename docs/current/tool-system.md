@@ -2,7 +2,7 @@
 
 本文维护工具能力、权限和 Skill/MCP 生命周期。Pi hook 的整体接线、请求快照与会话代际见[运行时契约](runtime-contract.md)，历史修复记录见[加固基线](../history/analysis/运行时加固与清理计划-2026-09-17基线.md)。
 
-## 执行链与模式
+## 执行链
 
 ```text
 Pi Harness Tool → harness-tool-adapter → ToolRouter → 执行许可借用 → TauriExecutionEnv → Rust tool_exec
@@ -11,15 +11,16 @@ Pi Harness Tool → harness-tool-adapter → ToolRouter → 执行许可借用 �
 
 文件与命令工具来自 Pi 的 ExecutionEnv 抽象，通过 [harness-adapter](../../src/services/tool/pi/harness-adapter.ts) 和 [TauriExecutionEnv](../../src/services/tool/pi/tauri-execution-env.ts) 接入 WebView。内部 IPC 的 file_read/file_write/file_write_atomic/bash_exec 仍可被宿主服务（Skill 保存、记忆写入）使用；host 写入不纳入许可域（借用者身份是页面实例，host 没有该生命周期），但走 `file_write_atomic` 的同目录 rename 原子替换，消除半写可观测窗口。它们不是另一个模型工具集。
 
-| 工具 | 模式 | 当前边界 |
-|---|---|---|
-| read | 两种 | 文本或图片读取；敏感路径仍会提高风险或被拒绝；私钥/凭据路径（含相对形式与 `~`/`$HOME`/`${HOME}`/反斜杠/`..` 归一）在两种模式下都硬拒绝，Rust 侧 `is_credential_path` 是不可关闭的最终判定（规则文本 = 「`.ssh` 目录组件或 `.pem`/`.key` 后缀」） |
-| write / edit | 两种 | DANGER；配置关闭时硬拒绝 |
-| bash | 两种 | 动态风险；陪伴模式白名单与禁组合符，助手模式仍保留 Rust 硬基线；命令里的凭据路径 token 在两种模式下同样被硬拒绝 |
-| system_info | 两种 | 只读系统信息 |
-| read_session_event | 回合内 | 按 eventId 分页读取当前会话保存的完整工具结果 |
-| app_open / clipboard_read / clipboard_write / agent_spawn | 助手 | 按需注册，受各自策略约束 |
-| MCP 工具 | 助手 | 仅启用且成功借用的 server，受工具发现过滤与权限终裁 |
+| 工具 | 当前边界 |
+|---|---|
+| read | 文本或图片读取；图片长边超过 1568 时等比缩放、BMP 一律转 PNG，处理失败回退原图（[image-processor.ts](../../src/services/tool/local/image-processor.ts)）；敏感路径仍会提高风险或被拒绝；私钥/凭据路径（含相对形式与 `~`/`$HOME`/`${HOME}`/反斜杠/`..` 归一）硬拒绝，Rust 侧 `is_credential_path` 是不可关闭的最终判定（规则文本 = 「`.ssh` 目录组件或 `.pem`/`.key` 后缀」） |
+| write / edit | DANGER（凭据路径升 NOWAY 硬拒绝）；写能力恒暴露、不做配置开关，风险与确认只由安全模式裁决 |
+| bash | 动态风险：首词命中白名单、无 shell 组合符且未命中危险/硬禁止模式为 NORMAL（免确认通道），其余为 DANGER；Rust 侧层 1 硬基线与系统路径保护不可关闭；命令里的凭据路径 token 硬拒绝 |
+| system_info | 只读运行环境：操作系统、架构、CPU 核心数、内存（总量 / 已用 / 可用）与 bash 默认工作目录 |
+| window_info | 只读最近一次窗口变化（标题 / 内容 / 观测时间）；窗口监控未开启或尚无事件时如实说明 |
+| read_session_event | 回合内按 eventId 分页读取当前会话保存的完整工具结果 |
+| app_open / clipboard_read / clipboard_write / agent_spawn | 恒暴露，受各自策略约束；四者都是 DANGER，`agent_spawn` 另声明 `delegate` 隔离，运行入口（`runPiSubAgent`）按这一判定把派生型工具从子代理工具面里剥离 |
+| MCP 工具 | 仅启用且成功借用的 server；借用期间进入此后每个回合的冻结工具集（计划步骤的未限定工具面拿得到；`agent_spawn` 的 fork/team 子代理按固定白名单收窄 —— 只有 read / system_info / bash，不在其列），受工具发现过滤与权限终裁 |
 
 实际清单由 [registry.ts](../../src/services/tool/registry.ts)、[pi-tools.ts](../../src/services/tool/local/pi-tools.ts) 和回合冻结快照决定。目录列举使用 bash ls；不再注册独立 ls/file_search/http_get。Pi CLI 的 Node 工具不能直接移入 WebView，需要现有 ExecutionEnv 边界。
 
@@ -27,7 +28,7 @@ Pi Harness Tool → harness-tool-adapter → ToolRouter → 执行许可借用 �
 
 `ToolDef` 携带身份、schema 与风险等级，策略集中在 `policy`（[types.ts](../../src/services/tool/types.ts)）；执行函数**不是公开字段**，经 `defineTool` 进入 [policy.ts](../../src/services/tool/policy.ts) 的模块内 WeakMap（`getToolHandler` 只给 router / registry，不从 barrel 导出）：
 
-- `safetyLevel`（`SAFE` / `NORMAL` / `DANGER` / `NOWAY`，可用 `resolveSafetyLevel(params, ctx)` 按调用动态解析）与 `lightweightPolicy`（`confirm` / `deny`，可省略）留在 ToolDef 顶层：它们是风险维度而不是权限意见——前者供 PermissionKernel 定风险，后者决定工具在陪伴（轻量）模式的可见性（**显式** `deny` 直接从清单剔除，`confirm` 保留并走正常权限流；**省略**在陪伴模式下按内核的 DANGER 规则拒绝，等效 `deny` 但不走清单剔除路径）。旧值 `allow`（陪伴模式直接放行 DANGER）已无实现，注册时按非法声明拒绝（`validateRiskDeclaration`）。
+- `safetyLevel`（`SAFE` / `NORMAL` / `DANGER` / `NOWAY`，可用 `resolveSafetyLevel(params, ctx)` 按调用动态解析）留在 ToolDef 顶层：它是风险维度而不是权限意见，供 PermissionKernel 定风险。等级到裁决的映射只有 [permission.ts](../../src/services/safety/permission.ts) 的 `standardDecision` 一处：`NOWAY` 一律 deny，`SAFE` / `NORMAL` 一律 allow，`DANGER` 交给安全模式（`just_do_it` 放行，`let_me_tk` 与默认档都要确认）。工具没有各自的可见性开关，`validateRiskDeclaration` 只守未经类型检查的 `safetyLevel` 声明。
 - `permission.defaultDecision` 是工具侧唯一的权限意见（`allow` / `ask` / `deny` / `passthrough`），`passthrough` 不是执行许可，必须由 PermissionKernel 收敛。
 - `execution.effect / isolation / replay / timeoutMs`：效果分类、隔离级别、恢复重放资格与超时；未声明超时时统一取 `loop.toolTimeoutMs`。并发语义只由 `effect` / `isolation` 表达（`shared_read` 必须同时是 `read` 效果；反向不设约束，独占读是合法的保守声明）。
 - `context.resultProjection`：`preserve` 的原样进入请求，`reference` 的可被 L0 缩短并标注 eventId 回读地址；两者都只改请求视图，会话条目存档始终保留全文。Router 的 L1 内联截断已删除：会话条目与请求视图共用同一份工具返回全文，缩短只发生在 L0（[context/tool-output.ts](../../src/services/context/tool-output.ts)）且提示带 eventId 回读地址。
@@ -67,29 +68,29 @@ Harness 以 `toolExecution: parallel` 派发批次，效果之间的并发由 Ru
 
 - 文件路径通过 AppPaths 校验，允许根为用户 Home、系统临时目录，开发构建还包含项目根；凭据等路径（规则文本 = 「`.ssh` 目录组件或 `.pem`/`.key` 后缀」）由 Rust [paths.rs::is_credential_path](../../src-tauri/src/paths.rs) 做不可关闭的最终判定（`SENSITIVE_PATH`），接入点是 `validate_file_path`/`validate_new_file_path` 的词法形态**与** canonicalize 结果两侧 —— 不存在的路径也先得凭据结论而不是 `PATH_NOT_FOUND`，符号链接与 Windows 短名解析后仍会被判；TS 侧的 [resolveFilePathLevel](../../src/services/safety/checker.ts) 是同一规则族的分级副本（相对形式与 `~`/`$HOME`/`${HOME}`/反斜杠/`..` 经词法归一后同判），在进入 ToolRouter 前就提为 NOWAY。
 - 读写目标只接受**常规文件**（[tool_exec.rs](../../src-tauri/src/commands/tool_exec.rs) 的 `ensure_regular_file`）：`file_read`/`file_read_binary` 在取元数据后立刻判类型，`file_write`/`file_write_atomic`/`file_append` 对已存在的目标判，`file_rename` 的源拒绝 FIFO/设备/套接字但**允许目录**（重命名目录是合法用法，且 `rename` 是元数据操作、不打开内容）。FIFO/套接字/字符设备/块设备的 open 会一直等对端或直接写到设备，handler 因此永不结算、许可额度也不释放，只能在源头拒绝。`/dev/null` 类设备目标**不豁免**：设备路径本就不在允许根（Home/系统临时目录/开发项目根）内，到不了类型判定这一步。
-- 这套路径与命令策略是**同一规则族的两层副本**，不是完备的 OS 沙箱：间接形式（如 `python -c "open('~/.ssh/id_rsa')"`）与「拦实际打开的文件」都不在覆盖内；`.env`、系统目录等可确认路径保持不变，助手模式仍走「用户确认后放行」。
+- 这套路径与命令策略是**同一规则族的两层副本**，不是完备的 OS 沙箱：间接形式（如 `python -c "open('~/.ssh/id_rsa')"`）与「拦实际打开的文件」都不在覆盖内；`.env`、系统目录等可确认路径不受影响 —— 它们按风险等级走确认（DANGER 由安全模式裁决），不再按模式分层。
 - Bash 超时、取消和进程回收由 Rust 管理；Router 为调用叠加取消/超时，区分 cancelled、timeout、not_found、failed。判定顺序唯一：超时（定时器置位）→ 取消（外部 signal）→ error，不做错误文案匹配，一次调用只有一条审计账。取消可以在子进程 spawn 前到达：`bash_exec` 的登记先于任何阻塞动作，命中在案槽位的取消会立案并在 spawn 后立即终止（稳定码 `CANCELLED`）；池里没有该 execution_id 时 `bash_cancel` 返回 `false` 并留一条 debug 记录，不再是静默成功 —— 调用方据此区分「取消成功」与「取消来晚了（子进程可能已结束）」。
 - 输出上限与 spill 保留数由 [tool_exec.rs](../../src-tauri/src/commands/tool_exec.rs) 管理。Bash 截断会返回 spill 引用，最近文件会淘汰；不能声称任意长的 shell 输出永久存于会话。生效上限只在 Rust 定义并随结果回传（`maxBytes`/`maxLines`），前端不再复制一份默认值；超时返回结构化错误码 `TIMEOUT`，前端据此归类而不匹配文案。
 - 会话保存的是**工具实际返回内容**；Context L0 再做请求投影时，原工具结果仍可用 read_session_event 读取。两层截断的范围不能混同。
 
-[bash_policy.rs](../../src-tauri/src/commands/bash_policy.rs) 是不可关闭的最终门禁。`bash_exec` 必须接收 `{scope, whitelist}`，两种模式均拒绝删根/家目录、设备破坏、系统电源命令、危险 shell 链、受限参数以及命令里的凭据路径 token（`deny_credential_paths`，与 `deny_destructive_flags` 并列，嵌套脚本按展开后的 token 判）；陪伴模式再限制首词和组合符，助手模式的系统路径保护也继续生效。策略基于 Shell token，不以简单子串代替（沙箱边界同本节开头的两层副本说明）。
+[bash_policy.rs](../../src-tauri/src/commands/bash_policy.rs) 是不可关闭的最终门禁，`enforce_bash_policy` 只接收命令本身 —— 没有 scope / whitelist 这类可传弱的旋钮。层 1 硬基线拒绝：删根/家目录、设备破坏（mkfs / dd）、系统电源命令、下载即执行、危险参数（`-delete` / `-exec` 等，按 token 对全体命令生效）、重定向写系统路径、递归 chmod/chown 到根或 777，以及命令里的凭据路径 token（`deny_credential_paths`，与 `deny_destructive_flags` 并列，嵌套脚本按展开后的 token 判）；层 2 只有一条 —— 写/删类命令指向固定系统路径即拒绝。白名单与 shell 组合符属于**分级**问题而不是拒绝问题，归 TS 的 `classifyBashRisk`：白名单只是**免确认通道**，不在白名单只意味着要走确认。策略基于 Shell token，不以简单子串代替（沙箱边界同本节开头的两层副本说明）。
 
 Provider 网络边界独立于 MCP/shell：配置 origin、禁止 redirect、超时和响应上限见[运行时契约](runtime-contract.md#pi权限与网络)。不能把 Provider fetch guard 当作所有联网工具的控制层。
 
 ## Skill 渐进披露
 
-Skill 不注册 ToolDef，不占工具声明槽，也不授予权限。[skill/loader.ts](../../src/services/skill/loader.ts) 通过 Rust [skill_list_metadata](../../src-tauri/src/commands/skill_cmd.rs) 读取有界 frontmatter；`getSkillsPromptBlock()` 只注入 name/description/location，正文由模型用 read 按需加载。
+Skill 不注册 ToolDef、不占工具声明槽，也不授予权限：它只提供指令文本。清单的唯一所有者是 [skill/store.ts](../../src/services/skill/store.ts)，来源是 Pi 原生 `loadSkills`（递归遍历 `data_root/skills/`，收录 `SKILL.md` 与根级 `.md`，缺 description 的不收录；loader 会读全文，`Skill.content` 是 `/skill` 显式调用与 `setResources` 的素材，不构成请求投影）。披露块由 [loader.ts](../../src/services/skill/loader.ts) 的 `getSkillsPromptBlock()` 给出：用 Pi `formatSkillsForSystemPrompt` 只输出 name/description/location，外面套 `MAX_PROMPT_CHARS`（8192 字符）预算，超限丢**整条**技能并告警（不截断单条）；正文不进请求视图，模型需要时按 `location` 用 read 取。
 
-- name 为与目录一致的 kebab-case，description 必填；无效条目跳过并记录。
-- invocationPolicy 支持 pet/assistant/both，默认 assistant；capabilityTags 供过滤使用。skill 开关可在两种模式启用，但清单需要可用的 read 工具。
-- catalog 由 TTL、保存/删除、配置/模式变化等失效；generation 防止旧读取复活缓存，同代际并发合并。回合冻结清单与 fingerprint。
+- 每技能 frontmatter `enabled` 控制披露与 `/skill` 显式调用（缺省与非法取值都算启用，只有显式 `false` 才关闭）；`disable-model-invocation` 由 Pi 自己从披露里排除。
+- `/skill <技能名> [额外指示]` 是显式调用入口，正文由 Pi 在 `accept` 内按技能文件构造并落盘（先落盘再投递）；启用清单在 accept 之前经 `setResources` 下发给 Harness。
+- 刷新由**每回合一次 Rust 目录指纹核对**驱动（`skill_catalog_fingerprint` 只取 mtime/size，不读正文）：指纹变了才重载，没有 TTL、不需要重启。保存 / 删除 / 逐项开关 / Profile 重种子与每回合能力准备都汇到 `syncSkillCatalog()` 这一个入口；核对或重载失败保留上一份清单并记错误（`getSkillCatalogError()`），与「确实没有技能」不同形。
 - `data_root/skills/{name}/SKILL.md` 是运行时资源；随包种子及恢复覆盖语义见[运行时数据](runtime-data.md#默认资源与-profile)。
 
 ## MCP 生命周期
 
-[manager.ts](../../src/services/tool/mcp/manager.ts) 按助手运行 owner 借用连接；应用启动不连接 MCP。并发 acquire 串行化，最后 owner 释放时关闭进程并注销工具。includeTools/excludeTools 过滤发现结果；工具定义在回合内冻结，设置变化不无声杀掉在飞回合的借用。
+[manager.ts](../../src/services/tool/mcp/manager.ts) 按运行 owner 借用连接（owner = 本轮 requestId 或 `resumeOwner(sessionId)`）；应用启动不连接 MCP。并发 acquire 串行化，最后 owner 释放时关闭进程并注销工具。includeTools/excludeTools 过滤发现结果；借来的工具进全局注册表、没有模式或回合过滤 —— 借用期间此后每个回合的冻结工具集都含它们（fork/team 子代理按固定白名单（read / system_info / bash）收窄，不在其列）。工具定义在回合内冻结，设置变化不无声杀掉在飞回合的借用。
 
-单条 MCP 结果有自身上限（`MAX_MCP_RESULT_CHARS = 50000`，[client.ts](../../src/services/tool/mcp/client.ts)）：MCP 没有回读通道（没有 `read_session_event` 那样的按 eventId 回取），超限时只截断一次，并在文本与 `details.truncated` 上都如实标记「不保留全文」——不写假 eventId、不假装全文还能取回。
+MCP 结果与内置工具走同一条回读链（[client.ts](../../src/services/tool/mcp/client.ts) 的一次性截断已删）：全文原样落会话条目，请求视图由 L0 投影按 `details.deskpetEntryId` 缩短并标注 eventId 回读地址，模型随后用 `read_session_event` 取回全文。唯一的物理上限在条目写盘链上（[tauri-execution-env.ts](../../src/services/tool/pi/tauri-execution-env.ts) 的 `MAX_TOOL_FILE_BYTES`，5 MB）：超过时写盘如实报错，不静默截断。
 
 Rust [mcp_bridge.rs](../../src-tauri/src/commands/mcp_bridge.rs) 托管 stdio 进程：按 JSON-RPC id 配对响应，跳过 notification 和非 JSON 输出，常驻 stdout 读取线程与有界等待避免请求无限阻塞。应用退出回收 server；Windows 结束进程树，避免派生进程遗留。
 
