@@ -1085,7 +1085,7 @@ pub fn system_info() -> SystemInfoResult {
     let cpu_count = num_cpus::get() as u32;
 
     // 内存信息（跨平台）
-    let (mem_total, mem_used) = get_memory_info();
+    let (mem_total, mem_used, mem_available) = get_memory_info();
 
     SystemInfoResult {
         os,
@@ -1093,11 +1093,15 @@ pub fn system_info() -> SystemInfoResult {
         cpu_count,
         mem_total,
         mem_used,
+        mem_available,
     }
 }
 
-// 前端按 camelCase 读取（cpuCount / memTotal / memUsed）。
-// 漏掉这行属性不会报错，只会让三个字段在 TS 侧全是 undefined —— 显示成 NaNGB。
+// 前端按 camelCase 读取（cpuCount / memTotal / memUsed / memAvailable）。
+// 漏掉这行属性不会报错，只会让数值字段在 TS 侧全是 undefined —— 显示成 NaNGB。
+//
+// `mem_available` 是「不用换页就能分配出去的量」，与 `mem_used` 不是互补关系：
+// 两个口径来自各平台不同的计数（见 get_memory_info），前端不要把 used + available 当成总量。
 #[derive(serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SystemInfoResult {
@@ -1106,9 +1110,11 @@ pub struct SystemInfoResult {
     cpu_count: u32,
     mem_total: u64,
     mem_used: u64,
+    mem_available: u64,
 }
 
-fn get_memory_info() -> (u64, u64) {
+/// 返回 `(总内存, 已用内存, 可用内存)`，单位字节；取不到时该位为 0。
+fn get_memory_info() -> (u64, u64, u64) {
     #[cfg(target_os = "macos")]
     {
         use std::process::Command;
@@ -1121,43 +1127,54 @@ fn get_memory_info() -> (u64, u64) {
             .and_then(|s| s.trim().parse::<u64>().ok())
             .unwrap_or(0);
 
-        // 已用内存: vm_stat 计算 (page size * (active + wired + compressed))
-        let used = {
-            let page_size = Command::new("sysctl")
-                .args(["-n", "hw.pagesize"])
-                .output()
-                .ok()
-                .and_then(|o| String::from_utf8(o.stdout).ok())
-                .and_then(|s| s.trim().parse::<u64>().ok())
-                .unwrap_or(16384);
+        // 已用与可用都从同一次 vm_stat 读数里算（页大小经 hw.pagesize 取得）
+        let page_size = Command::new("sysctl")
+            .args(["-n", "hw.pagesize"])
+            .output()
+            .ok()
+            .and_then(|o| String::from_utf8(o.stdout).ok())
+            .and_then(|s| s.trim().parse::<u64>().ok())
+            .unwrap_or(16384);
 
-            let vm_stat = Command::new("vm_stat")
-                .output()
-                .ok()
-                .and_then(|o| String::from_utf8(o.stdout).ok())
-                .unwrap_or_default();
+        let vm_stat = Command::new("vm_stat")
+            .output()
+            .ok()
+            .and_then(|o| String::from_utf8(o.stdout).ok())
+            .unwrap_or_default();
 
-            let mut active = 0u64;
-            let mut wired = 0u64;
-            let mut compressed = 0u64;
-            for line in vm_stat.lines() {
-                let parts: Vec<&str> = line.split(':').collect();
-                if parts.len() < 2 {
-                    continue;
-                }
-                let key = parts[0].trim().trim_matches('"');
-                let val = parts[1].trim().trim_end_matches('.');
-                match key {
-                    "Pages active" => active = val.parse().unwrap_or(0),
-                    "Pages wired down" => wired = val.parse().unwrap_or(0),
-                    "Pages occupied by compressor" => compressed = val.parse().unwrap_or(0),
-                    _ => {}
-                }
+        let mut active = 0u64;
+        let mut wired = 0u64;
+        let mut compressed = 0u64;
+        let mut free = 0u64;
+        let mut inactive = 0u64;
+        let mut speculative = 0u64;
+        for line in vm_stat.lines() {
+            let parts: Vec<&str> = line.split(':').collect();
+            if parts.len() < 2 {
+                continue;
             }
-            (active + wired + compressed) * page_size
-        };
+            let key = parts[0].trim().trim_matches('"');
+            let val = parts[1].trim().trim_end_matches('.');
+            match key {
+                "Pages active" => active = val.parse().unwrap_or(0),
+                "Pages wired down" => wired = val.parse().unwrap_or(0),
+                "Pages occupied by compressor" => compressed = val.parse().unwrap_or(0),
+                "Pages free" => free = val.parse().unwrap_or(0),
+                "Pages inactive" => inactive = val.parse().unwrap_or(0),
+                "Pages speculative" => speculative = val.parse().unwrap_or(0),
+                _ => {}
+            }
+        }
 
-        (total, used)
+        // 已用内存: page size * (active + wired + compressed)，沿用原有口径
+        let used = (active + wired + compressed) * page_size;
+
+        // 可用内存: macOS 没有 Linux 的 MemAvailable；用「空闲 + 非活跃 + speculative(可回收)」
+        // 页近似「不用换页即可分配」的量（Activity Monitor 的可用口径）。
+        // 这三类与 used 的三类在 vm_stat 里互斥，所以它是独立口径而不是 total - used。
+        let available = (free + inactive + speculative) * page_size;
+
+        (total, used, available)
     }
 
     #[cfg(target_os = "windows")]
@@ -1180,9 +1197,10 @@ fn get_memory_info() -> (u64, u64) {
                 ullAvailExtendedVirtual: 0,
             };
             if GlobalMemoryStatusEx(&mut mem) != 0 {
-                (mem.ullTotalPhys, mem.ullTotalPhys - mem.ullAvailPhys)
+                // ullAvailPhys 直接就是「可用」；已用由总量减可用推得（同一次读数，不再调 API）
+                (mem.ullTotalPhys, mem.ullTotalPhys - mem.ullAvailPhys, mem.ullAvailPhys)
             } else {
-                (0, 0)
+                (0, 0, 0)
             }
         }
     }
@@ -1203,7 +1221,7 @@ fn get_memory_info() -> (u64, u64) {
         };
         let total = read_mem("MemTotal:").unwrap_or(0);
         let available = read_mem("MemAvailable:").unwrap_or(0);
-        (total, total.saturating_sub(available))
+        (total, total.saturating_sub(available), available)
     }
 }
 
@@ -1624,7 +1642,7 @@ mod tests {
         }
     }
 
-    /// `system_info` 曾因漏掉 `rename_all = "camelCase"` 让前端三个字段全读到 undefined，
+    /// `system_info` 曾因漏掉 `rename_all = "camelCase"` 让前端数值字段全读到 undefined，
     /// 界面上显示成 `NaNGB / NaNGB`。类型检查两边都发现不了，只能钉住线上载荷的字段名。
     #[test]
     fn system_info_payload_uses_camel_case() {
@@ -1634,9 +1652,10 @@ mod tests {
             cpu_count: 8,
             mem_total: 16 * 1024 * 1024 * 1024,
             mem_used: 8 * 1024 * 1024 * 1024,
+            mem_available: 6 * 1024 * 1024 * 1024,
         })
         .unwrap();
-        for field in ["cpuCount", "memTotal", "memUsed"] {
+        for field in ["cpuCount", "memTotal", "memUsed", "memAvailable"] {
             assert!(
                 payload.get(field).is_some(),
                 "载荷缺少 {field}（前端按 camelCase 读取）: {payload}"

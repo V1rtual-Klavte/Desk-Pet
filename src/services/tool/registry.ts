@@ -97,12 +97,14 @@ export async function registerDefaultTools(): Promise<void> {
   // 动态导入避免循环依赖
   const { registerPiBaseTools } = await import("./local/pi-tools")
   const { registerSystemTool } = await import("./local/system")
+  const { registerWindowInfoTool } = await import("./local/window")
   const { registerAppOpenTool } = await import("./local-extra/app")
   const { registerClipboardTools } = await import("./local-extra/clipboard")
   const { registerAgentSpawnTool } = await import("./local-extra/agent-tool")
 
   await registerPiBaseTools()
   registerSystemTool()
+  registerWindowInfoTool()
   registerAppOpenTool()
   registerClipboardTools()
   registerAgentSpawnTool()
