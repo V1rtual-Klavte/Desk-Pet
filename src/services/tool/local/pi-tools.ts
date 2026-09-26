@@ -5,6 +5,7 @@ import {
   createWriteTool,
 } from "@earendil-works/pi-agent-core"
 import type { ExecutionEnv } from "@earendil-works/pi-agent-core"
+import { readImageProcessor } from "./image-processor"
 import { registerAll } from "../registry"
 import { adaptHarnessTool } from "../pi/harness-adapter"
 import { TauriExecutionEnv } from "../pi/tauri-execution-env"
@@ -25,7 +26,7 @@ const log = createLogger("PiTools")
 export async function registerPiBaseTools(): Promise<void> {
   const cwd = await TauriExecutionEnv.defaultCwd()
   const createEnv = () => new TauriExecutionEnv(cwd)
-  const read = createReadTool<{ env: ExecutionEnv }>()
+  const read = createReadTool<{ env: ExecutionEnv }>({ imageProcessor: readImageProcessor, autoResizeImages: true })
   const write = createWriteTool<{ env: ExecutionEnv }>()
   const edit = createEditTool<{ env: ExecutionEnv }>()
   const bash = createBashTool<{ env: ExecutionEnv }>()
