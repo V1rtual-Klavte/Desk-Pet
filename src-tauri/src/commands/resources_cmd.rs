@@ -39,20 +39,48 @@ pub fn skill_delete(relative_path: String, paths: State<AppPaths>) -> AppResult<
     remove_skill_entry(&relative_path, &paths.skills)
 }
 
-/// 校验并按类型删除：目录递归删除，文件与符号链接按文件删除（只移除链接本身）。
+/// 校验并按类型删除：真目录递归删除；符号链接只删链接本身（不跟随、不递归进链接目标）；
+/// 其余条目（普通文件等）按文件删除。
 fn remove_skill_entry(relative_path: &str, skills_root: &Path) -> AppResult<()> {
     let target = resolve_skill_target(relative_path, skills_root)?;
-    // 存在性已在 resolve 里校验过；这里再取一次元数据只为分流，`symlink_metadata` 不跟随链接，
-    // 所以指向目录的链接走文件分支、只删链接，不会连带删掉链接的目标。
+    // 存在性已在 resolve 里校验过；这里再取一次元数据只为分流。`symlink_metadata` 不跟随链接，
+    // 所以指向目录的链接不会被 `is_dir()` 报成目录，一定落到链接分支 —— 只删链接，不连带删目标。
     let metadata = fs::symlink_metadata(&target)
         .map_err(|_| AppError::PathNotFound(relative_path.to_string()))?;
-    if metadata.is_dir() {
-        fs::remove_dir_all(&target).map_err(|e| AppError::Io(format!("删除 Skill 失败: {e}")))?;
+    let file_type = metadata.file_type();
+    let removed = if metadata.is_dir() {
+        fs::remove_dir_all(&target)
+    } else if file_type.is_symlink() {
+        remove_symlink_entry(&target, file_type)
     } else {
-        fs::remove_file(&target).map_err(|e| AppError::Io(format!("删除 Skill 失败: {e}")))?;
-    }
+        fs::remove_file(&target)
+    };
+    removed.map_err(|e| AppError::Io(format!("删除 Skill 失败: {e}")))?;
     rust_info!("Skill 已删除: {relative_path}");
     Ok(())
+}
+
+/// 删除一个符号链接条目：只删链接本身，绝不进入链接目标。
+///
+/// Windows 的链接分目录型与文件型，且两端各只认一个原语：目录链接必须用 `fs::remove_dir`
+/// （→ `RemoveDirectoryW`，删的是重解析点本身，与链接目标是否为空无关），改用
+/// `fs::remove_file`（→ `DeleteFileW`）会得到 `Access is denied. (os error 5)`；文件链接相反。
+/// 判据取链接**自身**的类型标记（`is_symlink_dir` 不解析目标，悬空链接也能正确分流）。
+#[cfg(windows)]
+fn remove_symlink_entry(path: &Path, file_type: fs::FileType) -> std::io::Result<()> {
+    use std::os::windows::fs::FileTypeExt;
+    if file_type.is_symlink_dir() {
+        fs::remove_dir(path)
+    } else {
+        fs::remove_file(path)
+    }
+}
+
+/// 非 Windows：`unlink(2)` 本就不跟随符号链接，删的就是链接本身；
+/// 在这里改用 `remove_dir`（`rmdir(2)`）反而会对符号链接报 `ENOTDIR`，所以维持 `remove_file`。
+#[cfg(not(windows))]
+fn remove_symlink_entry(path: &Path, _file_type: fs::FileType) -> std::io::Result<()> {
+    fs::remove_file(path)
 }
 
 /// 把域内相对路径解析为 skills 根内的目标路径。
