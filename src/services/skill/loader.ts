@@ -168,8 +168,8 @@ export function getSkillsPromptBlock(options: { maxChars?: number } = {}): strin
   // 超限时丢**整条**技能（不截断单条，否则模型拿到的是半条指令）。
   const kept = largestFittingPrefix(skills, limit)
   const dropped = skills.length - kept
-  // 8KB 预算装得下约 31 条（Pi 的格式每条约 97 tokens）；以前从第 32 条起静默丢弃，
-  // 现在把「丢了几条」报出来。
+  // 8KB 预算装得下约 48 条（Pi 五行格式每条固定 97 字符 + 自身的 name/description/location；
+  // 条目越大装得越少）；以前超限静默丢弃，现在把「丢了几条」报出来。
   log.warn(
     `Skill 披露块超出 ${limit} 字符预算：保留 ${kept} 条、丢弃末尾 ${dropped} 条`,
     "（可在设置页关闭不常用的 Skill，或提高预算）",

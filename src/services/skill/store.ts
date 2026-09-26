@@ -102,6 +102,9 @@ async function runSync(): Promise<Skill[]> {
   if (snapshot.truncated) {
     log.warn("Skill 目录扫描达到上限：指纹只覆盖已扫描部分，上限之外的改动要等目录再变化才会被发现")
   }
+  // 指纹核对成功即清空上次失败原因：早退（复用缓存）与重载同为成功路径，清在分支之前让两条
+  // 路径共用这一处。只清在早退分支里会漏掉 reload，只清在 reload 里会漏掉早退。
+  if (state.error !== null) state = { ...state, error: null }
   if (state.synced && snapshot.fingerprint === state.fingerprint) return enabledSkills()
   try {
     return await reload(snapshot.fingerprint)
@@ -128,7 +131,8 @@ async function reload(fingerprint: string): Promise<Skill[]> {
     })
   }
   // 指纹记的是**加载前**读到的值：加载期间磁盘再变，下一次核对必然发现（只是多一次重载）。
-  state = { skills: managed, diagnostics, fingerprint, synced: true, error: null }
+  // `error` 不在这里清：核对成功的清空只在 runSync 的指纹核对之后那一处（reload 只从那里被调用）。
+  state = { ...state, skills: managed, diagnostics, fingerprint, synced: true }
   for (const diagnostic of diagnostics) {
     log.warn(`Skill 告警[${diagnostic.code}] ${diagnostic.path}: ${diagnostic.message}`)
   }
@@ -169,7 +173,7 @@ export function getSkillCatalogFingerprint(): string | null {
   return state.synced ? state.fingerprint : null
 }
 
-/** 最近一次失败原因；成功核对后为 null。 */
+/** 最近一次失败原因；任何一次成功核对后为 null（命中缓存的早退与重载都算成功）。 */
 export function getSkillCatalogError(): string | null {
   return state.error
 }
