@@ -119,21 +119,27 @@ fn scan_skills(skills_root: &Path) -> AppResult<SkillScan> {
             budget -= 1;
             let entry = match entry {
                 Ok(entry) => entry,
-                // 条目可能在扫描期间消失或不可读（与上面的目录分支同类）：单条失败不该让
-                // 整次指纹核对失败，跳过即可。本模块统一留痕点是 rust_warn!，但 `Err(_)`
-                // 丢掉了错误值，这一条没有可留痕的证据，只表现为候选集少一条。
-                Err(_) => continue,
+                Err(e) => {
+                    // 条目可能在扫描期间消失或不可读（与上面的目录分支同类）：单条失败不该让
+                    // 整次指纹核对失败，但根因仍要留痕，本模块统一留痕点是 rust_warn!。
+                    // readdir 条目拿不到出错条目的名字，只能记下所在目录。
+                    rust_warn!("Skill 扫描跳过不可读条目（目录 {}）: {}", dir.display(), e);
+                    continue;
+                }
             };
             let name = entry.file_name().to_string_lossy().to_string();
             if name.starts_with('.') || name == "node_modules" {
                 continue;
             }
-            // 跟随符号链接取类型与时间戳；悬空链接/已删除条目取不到元数据，跳过。
-            // 与上面的 readdir 分支同理：单条失败不该让整次指纹核对失败，本模块统一留痕点
-            // 是 rust_warn!，但 `Err(_)` 丢掉了错误值，该条目没有可留痕的证据。
+            // 跟随符号链接取类型与时间戳；悬空链接/已删除条目取不到元数据（与上面的 readdir
+            // 分支同理）：单条失败不该让整次指纹核对失败，但根因仍要留痕，本模块统一留痕点
+            // 是 rust_warn!。
             let metadata = match fs::metadata(entry.path()) {
                 Ok(metadata) => metadata,
-                Err(_) => continue,
+                Err(e) => {
+                    rust_warn!("Skill 扫描跳过不可读条目 {}: {}", entry.path().display(), e);
+                    continue;
+                }
             };
             entries.push((name, entry.path(), metadata));
         }

@@ -37,7 +37,7 @@ export const toolExecutionContract: ModuleContract = {
     "src-tauri/src/commands/tool_exec.rs",
   ],
   generatedAt: "2026-09-26",
-  sourceHash: "83c032f29ee461e34740a87c041e898538ea0414b86425e3d6453a6220d97137",
+  sourceHash: "80b964a898072da1f2f1e3914392a7d7e43917ae2c1cfd700ee86562aa581b8e",
   coverage: [
     { id: "te-13", feature: "工具结果持久化与回读", description: "生产工具配对作为会话条目持久化，完整工具文本保留（L0 只改请求视图，Router 无 L1 内联截断），read_session_event 按条目 id 分页回读并限定当前 session（reader 是槽上的 readToolResult，工具只认 entryId）；超上限边界上条目仍为全文、请求视图带真 eventId 地址、bash 截断带 spill 回读路径（实际生效上限由 Rust 回传）。MCP 结果与内置工具走同一条回读链，**一次性截断已删**（旧 MAX_MCP_RESULT_CHARS 的「正文里如实标记不保留全文、不写假 eventId」前提随决策 11 反转）：全文原样落会话条目，缩短只由 L0 投影按 details.deskpetEntryId 完成，模型随后用 read_session_event 取回 —— 因此超过旧 50,000 字符的结果仍可回读。唯一的物理上限在条目写盘链上（tauri-execution-env 的 MAX_TOOL_FILE_BYTES，5 MB）：超过时写盘如实失败，**不做静默截断**（§8.8 的裁定，边界本身未由本点场景断言，见 harness-storage 的 hs-02）", why: "短请求不能以丢失工具证据为代价；删掉截断后「大结果仍能取回」正是这条链唯一的可观测结论", depth: "deep", scenarios: ["tool-transcript-recovery", "tool-archive-beyond-inline-limit", "tool-mcp-large-result-readback"] },
     { id: "te-08", feature: "真 LLM 多工具调用", description: "真实 LLM 对话中先后调用多个工具。场景点名的 system_info 已按决策 13 改写为「运行环境」：五行输出（操作系统、架构、CPU 核心数、内存「已用 / 总 (百分比)，可用」、bash 默认工作目录），其中三个内存口径来自 Rust system_info（新增 memAvailable 字段，used 与 available 是各自独立的计数口径、不是互补关系），bash 默认 cwd 由 TS 侧 TauriExecutionEnv.defaultCwd() 提供而不是 Rust 返回值，因此不重复永不变的信息（旧实现里的「永不变」条目已删）。注：场景只断言工具调用成功与非空回复、不绑字段名，所以这五行的字段级形状未由本点断言（Rust 侧 SystemInfoResult 由单测覆盖）", why: "端到端工具链验证", depth: "deep", scenarios: ["tool-system-info"] },
