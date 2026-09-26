@@ -42,6 +42,7 @@ import { ContextBudgetError, contextBudget, toHarnessEstimateTokens } from "@/se
 import { COMPACTION_DECLINED_ENTRY, PROMPT_REWRITE_ENTRY, laneMessageText, messageRequestId, userInputMessage } from "@/services/engine/runtime"
 import type { CompactionAuditSink, InputSourceMark } from "@/services/engine/runtime"
 import { conversationConfig, loopConfig } from "@/services/config"
+import { getSkillCatalogFingerprint, listEnabledSkills, syncSkillCatalog } from "@/services/skill"
 import { PI_LANE } from "@/services/session/repo"
 import { createLogger } from "@/services/logger"
 import { formatError } from "@/services/error"
@@ -183,14 +184,42 @@ export interface HarnessRunSpec {
 
 /**
  * 预检期准入用的最小运行参数：不含 systemPrompt/压缩钩子（那些随 drive 时的 spec 装配，不伪造写死值）。
+ *
+ * 两支由 `kind` 判别：
+ * - 用户输入（省略 `kind` 等价于 `"prompt"`）：正文由调用方构造，`accept` 落盘后进会话；
+ * - 技能启动（`kind: "skill"`）：正文由 Pi 在 `accept` 内按技能文件构造，宿主只给目标技能名。
+ *
+ * 两支互斥的字段用 `never` 钉死（`prompt` 只属于用户输入支，技能字段只属于技能支）：
+ * 一条命令只能落一条用户正文，传错支要在编译期就拦下，不留运行期约定。
  */
-export interface HarnessAdmitSpec {
+interface HarnessAdmitBase {
   model: PiModel
   thinkingEffort: ThinkingEffort
   tools: readonly ToolDef[]
   toolRun: HarnessToolRun
-  prompt: HarnessRunSpec["prompt"]
 }
+
+/** 用户输入准入（现状形态，调用点不必写 `kind`）。 */
+export interface HarnessAdmitInputSpec extends HarnessAdmitBase {
+  kind?: "prompt"
+  prompt: HarnessRunSpec["prompt"]
+  name?: never
+  additionalInstructions?: never
+}
+
+/**
+ * 技能启动准入：`name` 必须出现在 lane 的 `resources.skills` 里（该清单由 `assembleLane` 从
+ * `listEnabledSkills()` 下发，早于 `accept`；不在清单里的名字会在 accept 里拿到 `UnknownSkill`）。
+ */
+export interface HarnessAdmitSkillSpec extends HarnessAdmitBase {
+  kind: "skill"
+  name: string
+  /** 跟在技能正文后的附加指示（`/skill <name> [额外指示]` 的余下文本）。 */
+  additionalInstructions?: string
+  prompt?: never
+}
+
+export type HarnessAdmitSpec = HarnessAdmitInputSpec | HarnessAdmitSkillSpec
 
 /** 准入结果：通过给出 operationId；未通过带上与 `run()` 同形的终态（调用方按 status 结算）。 */
 export type HarnessAdmissionResult = { ok: true; operationId: string } | { ok: false; result: HarnessRunResult }
@@ -1032,9 +1061,14 @@ export class HarnessSlot {
   // ── 运行 ──
 
   /**
-   * 预检前把输入先落盘：装配 lane 运行参数后 `lane.accept({kind:"prompt", prompt})`。
-   * accept 即把用户条目提交进会话文件（此后预检失败或进程被杀都不丢输入），
-   * 模型请求留给 `driveAdmitted`；空 prompt + inbox 有消息是上游允许的形态。
+   * 预检前把输入先落盘：装配 lane 运行参数后按 `kind` 构造准入请求交给 `lane.accept`。
+   *
+   * - 用户输入（省略 `kind` 等价于 `"prompt"`）：accept 即把用户条目提交进会话文件
+   *   （此后预检失败或进程被杀都不丢输入），模型请求留给 `driveAdmitted`；
+   *   空 prompt + inbox 有消息是上游允许的形态。
+   * - 技能启动（`kind: "skill"`）：那条 `role:"user"` 消息由 Pi 在 accept 内用技能文件构造并提交
+   *   （`formatSkillInvocation`，含技能文件的绝对路径），与用户输入同样「先落盘再投递」；
+   *   宿主不提供正文，准入形态里也没有 `prompt` 字段。
    */
   async admitInput(admit: HarnessAdmitSpec): Promise<HarnessAdmissionResult> {
     await this.open()
@@ -1048,11 +1082,15 @@ export class HarnessSlot {
       }
     }
     await this.assembleLane(admit)
-    // 上游的接受请求是可辨识联合（字符串正文 / 消息或消息数组各一支），两支的请求体字面量相同：
-    // 分支只为让编译器按入参收窄 —— union 形状的 prompt 不能直接塞进其中任何一支。
-    const request: OperationRequest = typeof admit.prompt === "string"
-      ? { kind: "prompt", prompt: admit.prompt }
-      : { kind: "prompt", prompt: admit.prompt }
+    // 上游的接受请求是可辨识联合：用户输入支的两种正文形态（字符串 / 消息或消息数组）请求体字面量
+    // 相同，分支只为让编译器按入参收窄。
+    // 技能支不补正文：`kind:"skill"` 的请求里没有 prompt 字段（准入形态也用 `never` 钉死），
+    // 那条用户条目由 Pi 在 accept 内按技能文件构造 —— 一次命令只能落一条正文。
+    const request: OperationRequest = admit.kind === "skill"
+      ? { kind: "skill", name: admit.name, additionalInstructions: admit.additionalInstructions }
+      : typeof admit.prompt === "string"
+        ? { kind: "prompt", prompt: admit.prompt }
+        : { kind: "prompt", prompt: admit.prompt }
     const accepted = await this.lane.accept(request, TODO_CONTEXT)
     if (!accepted.ok) {
       const tag = accepted.error._tag
@@ -1246,10 +1284,25 @@ export class HarnessSlot {
 
   // ── 内部 ──
 
-  /** 装配 lane 运行参数（工具/压缩/队列/许可上限与补偿/模型/思考档位）；admit 与 drive 共用同一段，不写第二份。 */
-  private async assembleLane(spec: Pick<HarnessAdmitSpec, "model" | "thinkingEffort" | "tools" | "toolRun">): Promise<void> {
+  /**
+   * 装配 lane 运行参数（工具/资源/压缩/队列/许可上限与补偿/模型/思考档位）；admit 与 drive 共用同一段，不写第二份。
+   *
+   * 参数面与准入形态对齐（含技能支的 `kind`/`name`/`additionalInstructions`；`prompt` 不参与装配，
+   * 正文由 `accept` 落盘）：调用方直接透传准入参数，不在这里做二次拼装 —— 准入形态不影响装配口径。
+   */
+  private async assembleLane(
+    spec: Pick<HarnessAdmitSpec, "model" | "thinkingEffort" | "tools" | "toolRun" | "kind" | "name" | "additionalInstructions">,
+  ): Promise<void> {
     const tools = toAgentHarnessTools(spec.tools, spec.toolRun)
     await this.harness!.setTools(tools, TODO_CONTEXT)
+    // 技能清单的唯一所有者是 skill/store（每回合指纹核对挂在能力准备 `prepareRunCapabilities`）：这里只
+    // 取用启用清单，不在 lane 组装里另开缓存或强制刷新；从未核对成功过（首次运行 / 核对入口尚未接线）
+    // 才按 store 的唯一入口补一次同步，成功后不再走到这一支。
+    // **资源必须先于 accept 下发**：Pi 的 skill 分支只查 lane 的 `resources.skills`，晚于 accept 会让
+    // 显式调用拿到 UnknownSkill（admitInput 在 accept 之前 await 本函数）。resources 是 Harness 的内存
+    // 配置（`setResources` 不写会话条目），本仓只有 skills 一项，整体下发即最终形态。
+    const skills = getSkillCatalogFingerprint() === null ? await syncSkillCatalog() : listEnabledSkills()
+    await this.harness!.setResources({ skills }, TODO_CONTEXT)
     await this.syncCompactionSettings(spec.model)
     // 按运行生效：改设置从下一次 run 起作用，不必重开槽（与压缩阈值、队列批量同一条口径）。
     await this.syncRetryPolicy()
