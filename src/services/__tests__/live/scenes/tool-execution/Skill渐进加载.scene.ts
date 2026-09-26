@@ -1,5 +1,5 @@
 import type { SceneDef } from "../../types"
-import { deleteSkill, ensureSkillCatalog, getSkillsPromptBlock, getSkillCatalogFingerprint, listSkills, upsertSkill } from "@/services/skill"
+import { deleteSkill, syncSkillCatalog, getSkillsPromptBlock, getSkillCatalogFingerprint, listSkills, upsertSkill } from "@/services/skill"
 import { setOverride, toolsConfig } from "@/services/config"
 
 const PET = "live-skill-pet"
@@ -38,7 +38,7 @@ export const Skill元数据渐进加载: SceneDef = {
           setOverride("tools.skill.enabled", true)
           await upsertSkill(source(PET, "轻量陪伴用 Skill", "pet", LONG_BODY))
           await upsertSkill(source(ASSISTANT, "助手专用 Skill", "assistant"))
-          const entries = await ensureSkillCatalog()
+          const entries = await syncSkillCatalog()
           const pet = entries.find(skill => skill.name === PET)
           if (!pet || Object.prototype.hasOwnProperty.call(pet, "body") || Object.prototype.hasOwnProperty.call(pet, "raw")) {
             throw new Error("catalog 保存了 Skill 正文或缺少 pet 元数据")
@@ -46,8 +46,11 @@ export const Skill元数据渐进加载: SceneDef = {
           if (JSON.stringify(pet).includes("FULL_SKILL_BODY_MUST_NOT_ENTER_CATALOG")) {
             throw new Error("Skill 正文进入了 metadata catalog")
           }
-          const petPrompt = getSkillsPromptBlock({ mode: "pet" })
-          const assistantPrompt = getSkillsPromptBlock({ mode: "assistant" })
+          // 决策 2/3 删除 mode 过滤与 invocationPolicy，下面两条 mode 断言在 Task 7 后不成立：
+          // 两次调用不再有模式差异，pet/assistant 的「只看到各自 policy」互斥断言必失败，
+          // 待 T19 按方案 §6 :461 重写（此处只做编译面收敛）。
+          const petPrompt = getSkillsPromptBlock()
+          const assistantPrompt = getSkillsPromptBlock()
           if (!petPrompt.includes(`name=\"${PET}\"`) || petPrompt.includes(`name=\"${ASSISTANT}\"`)) {
             throw new Error("pet Skill policy 筛选错误")
           }

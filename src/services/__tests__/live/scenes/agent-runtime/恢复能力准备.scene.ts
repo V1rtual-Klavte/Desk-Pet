@@ -2,7 +2,7 @@ import { continueInterruptedRun, harnessSlots } from "@/services/engine/pi"
 import { initChat, sendMessage } from "@/services/agent/runner"
 import { getActiveSessionId } from "@/services/session"
 import { setOverride, toolsConfig } from "@/services/config"
-import { deleteSkill, getSkillsPromptBlock, invalidateSkillCatalog, upsertSkill } from "@/services/skill"
+import { deleteSkill, getSkillsPromptBlock, upsertSkill } from "@/services/skill"
 import { registerBlockingTool } from "../../blocking-tool"
 import { fakeText, fakeToolCall, installFakeProvider } from "../../fake-provider"
 import { assistantTexts, sessionMessages } from "../../session-entries"
@@ -56,13 +56,13 @@ export const 恢复能力准备: SceneDef = {
     await firstTurn.catch(() => undefined)
     blocking.release()
 
-    // 冷目录：主回合的准备已经把 catalog 预热过，这里再失效一次，
-    // 恢复返回后仍能列出 Skill 就只能来自恢复路径自己的准备。
-    invalidateSkillCatalog("refresh")
+    // 冷目录前置已移除：原本靠「主回合预热过 catalog、这里再显式失效」使「恢复返回后仍能列出
+    // Skill」只可能来自恢复路径自己的准备。Task 7 删除 invalidateSkillCatalog、改每回合指纹核对，
+    // 没有对应的「再失效一次」入口，本场景当前无法再证明该语义（语义重写归 T19，方案 §6 :439）。
     const resumed = await continueInterruptedRun(sessionId)
     resumedReply = resumed?.reply
     resumedFailure = resumed?.failure
-    skillBlockAfterResume = getSkillsPromptBlock({ mode: "pet" })
+    skillBlockAfterResume = getSkillsPromptBlock()
   },
   turns: [{
     index: 1,

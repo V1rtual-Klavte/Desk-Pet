@@ -189,8 +189,8 @@ async function testMcpConnection() {
 
 // ── Skill ──
 async function loadSkillConfig() {
-  const { ensureSkillCatalog, listSkills, getSkillCatalogFingerprint } = await import("@/services/skill");
-  await ensureSkillCatalog();
+  const { syncSkillCatalog, listSkills, getSkillCatalogFingerprint } = await import("@/services/skill");
+  await syncSkillCatalog();
   // 索引读取失败时 loader 会把指纹置为失败哨兵（loader.ts 的 "unavailable"）并返回空列表：
   // 设置页要把「索引不可用」和「真的没有 Skill」分开显示，不能只留一个「暂无」。
   skillIndexError.value = getSkillCatalogFingerprint() === "unavailable"

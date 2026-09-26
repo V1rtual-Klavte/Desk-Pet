@@ -105,8 +105,8 @@ export async function prepareConversationCapabilities(owner = "runtime"): Promis
     }
   }
   // 决策 8 删 Skill 总开关：本入口不再把关，只负责把目录准备好（指纹核对后续接到这里）。
-  const { ensureSkillCatalog } = await import("@/services/skill")
-  await ensureSkillCatalog()
+  const { syncSkillCatalog } = await import("@/services/skill")
+  await syncSkillCatalog()
   return { unavailableMcp }
 }
 
