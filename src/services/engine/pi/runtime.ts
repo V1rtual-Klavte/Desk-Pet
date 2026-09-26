@@ -890,7 +890,7 @@ function createTurnSinks(kernel: TurnKernel): HarnessRunSinks {
   }
 }
 
-/** Main pet turn. This replaces the hand-written Agent Loop with the harness lane. */
+/** 主对话回合：接替手写 Agent Loop 的 harness lane 入口。 */
 export async function runPiAgentTurn(input: PiAgentTurnInput): Promise<PiAgentTurnOutput> {
   if (!input.sessionId.trim()) throw new Error("Pi Agent 回合缺少 sessionId")
   const { userText, unansweredCount, isActiveMessage } = input

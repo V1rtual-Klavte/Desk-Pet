@@ -11,17 +11,12 @@ const log = createLogger("Settings");
 // ── Bash ──
 const bashWhitelist = ref(toolsConfig.bashWhitelist.join("\n"));
 
-// ── 文件 ──
-const fileWriteEnabled = ref(toolsConfig.fileWriteEnabled);
-
 // ── 工具执行并发 ──
 // 共享读上限：范围校验在 SettingsPanel.doSave 里按 parallelToolsError 拒绝越界值，
 // 这里只做初值读取与控件提示。
 const maxParallelTools = ref(loopConfig.maxParallelTools);
 
 // ── MCP ──
-const mcpEnabled = ref(toolsConfig.mcpEnabled);
-
 const mcpServerList = ref<
   { name: string; transport: string; command: string; args: string; url: string; envStr: string; enabled: boolean }[]
 >([]);
@@ -341,9 +336,7 @@ onMounted(async () => {
 
 defineExpose({
   bashWhitelist,
-  fileWriteEnabled,
   maxParallelTools,
-  mcpEnabled,
   mcpServerList,
   builtinMcpList,
   loadMcpConfig,
@@ -357,11 +350,6 @@ defineExpose({
     <div class="s-label">💻 Bash 白名单</div>
     <textarea class="inp txa mono" v-model="bashWhitelist" rows="4" placeholder="ls&#10;cat&#10;grep..."></textarea>
     <div class="s-hint">{{ bashWhitelist.split('\n').filter(l => l.trim()).length }} 个命令</div>
-  </div>
-
-  <div class="s-section">
-    <div class="s-label">📁 文件工作流</div>
-    <label class="chk"><input type="checkbox" v-model="fileWriteEnabled" /><span>允许写入/编辑文件（两个模式均可用，执行时按策略确认）</span></label>
   </div>
 
   <div class="s-section">
@@ -386,9 +374,11 @@ defineExpose({
   </div>
 
   <div class="s-section">
-    <div class="s-label">🔌 MCP <span class="tag-tip">需重启</span></div>
-    <label class="chk"><input type="checkbox" v-model="mcpEnabled" /><span>启用 MCP（仅助手模式）</span></label>
-    <div class="s-hint">内置 {{ builtinMcpList.length }} + 自定义 {{ mcpServerList.length }} 个</div>
+    <div class="s-label">🔌 MCP</div>
+    <div class="s-hint">
+      按每服务器开关控制，全部关闭即不使用 MCP；启用的服务器在运行开始时借用、结束即释放。
+      内置 {{ builtinMcpList.length }} + 自定义 {{ mcpServerList.length }} 个
+    </div>
     <!-- 内置 MCP -->
     <div class="s-subtitle">📦 内置</div>
     <div v-for="(b, i) in builtinMcpList" :key="b.name" class="li-row">

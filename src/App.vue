@@ -697,7 +697,8 @@ onMounted(async () => {
     });
   } catch (error) {
     // 注册失败 = 这条通道整体失效（拖动位置/缩放/预览尺寸/设置保存都不再更新）
-    log.error("deskpet-settings-saved 监听注册失败：设置保存后主窗口不会刷新（快捷键、光标追踪、Skill 目录仍是旧值）", formatError(error))
+    // Skill 目录不在此列：清单由每回合的指纹核对刷新，与这条广播无关
+    log.error("deskpet-settings-saved 监听注册失败：设置保存后主窗口不会刷新（配置缓存、快捷键、光标追踪、调试状态仍是旧值）", formatError(error))
   }
 
   document.addEventListener("click", hideCtxMenu);

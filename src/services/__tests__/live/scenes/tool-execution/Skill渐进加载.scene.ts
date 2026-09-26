@@ -1,6 +1,5 @@
 import type { SceneDef } from "../../types"
 import { deleteSkill, syncSkillCatalog, getSkillsPromptBlock, getSkillCatalogFingerprint, listSkills, upsertSkill } from "@/services/skill"
-import { setOverride, toolsConfig } from "@/services/config"
 
 const PET = "live-skill-pet"
 const ASSISTANT = "live-skill-assistant"
@@ -32,10 +31,10 @@ export const Skill元数据渐进加载: SceneDef = {
     checks: [{
       type: "expectMetadataOnlySkillCatalog",
       run: async () => {
-        const previousEnabled = toolsConfig.skillEnabled
+        // 决策 8 删掉了 tools.skill.enabled 总闸，这里原本的开关切换已是空动作，随 getter 一并去掉
+        // （只做编译面收敛；mode/policy 断言的语义重写归 T19）。
         try {
           await clean()
-          setOverride("tools.skill.enabled", true)
           await upsertSkill(source(PET, "轻量陪伴用 Skill", "pet", LONG_BODY))
           await upsertSkill(source(ASSISTANT, "助手专用 Skill", "assistant"))
           const entries = await syncSkillCatalog()
@@ -61,7 +60,6 @@ export const Skill元数据渐进加载: SceneDef = {
             throw new Error("Skill prompt 注入了正文或未声明的 frontmatter")
           }
         } finally {
-          setOverride("tools.skill.enabled", previousEnabled)
           await clean()
         }
       },

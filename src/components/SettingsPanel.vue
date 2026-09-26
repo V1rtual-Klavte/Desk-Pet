@@ -126,8 +126,6 @@ async function doSave() {
     // 共享读并行上限：并发所有权在 Rust 许可池，这里只落配置值
     "ai.loop.maxParallelTools": t.maxParallelTools,
     "tools.bash.whitelist": t.bashWhitelist.split("\n").map(s => s.trim()).filter(Boolean),
-    "tools.file.writeEnabled": t.fileWriteEnabled,
-    "tools.mcp.enabled": t.mcpEnabled,
   });
 
   // MCP 内置
@@ -190,7 +188,8 @@ async function doSave() {
   saved.value = true;
   log.info("设置已保存");
   emit("deskpet-settings-saved").catch((error) => {
-    // 面板刚显示「已保存」，但主窗口没收到广播：快捷键/光标追踪/Skill 目录仍是旧值。
+    // 面板刚显示「已保存」，但主窗口没收到广播：配置缓存/快捷键/光标追踪/调试状态仍是旧值。
+    // Skill 目录不在此列：清单由每回合的指纹核对刷新，与这条广播无关。
     saved.value = false;
     saveError.value = "设置已写入，但主窗口未收到刷新通知；部分改动可能要重启后生效。";
     log.error("deskpet-settings-saved 事件发送失败:", formatError(error));
@@ -311,7 +310,6 @@ onUnmounted(() => {
     </div>
 
     <div id="s-foot">
-      <span class="s-hint" style="margin-right:auto">⚠️ 标记"需重启"的设置在保存后需重启生效</span>
       <button class="btn-s" @click="importConfigYaml()">📥 导入配置</button>
       <button class="btn-s" @click="exportConfigYaml()">📤 导出配置</button>
       <button class="btn-s btn-d" @click="restartApp()">🔄 重启</button>

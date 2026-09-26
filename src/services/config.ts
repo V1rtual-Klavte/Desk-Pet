@@ -134,13 +134,10 @@ interface Config {
   }
   tools: {
     bash: { whitelist: string[] }
-    file: { writeEnabled: boolean }
     mcp: {
-      enabled: boolean
       servers: Record<string, unknown>[]
       builtin: Record<string, BuiltinMcpServer>
     }
-    skill: { enabled: boolean }
   }
   appearance: {
     activeProfile: string
@@ -587,23 +584,42 @@ export const safetyConfig = {
 // ══════════════════════════════════════════
 export const toolsConfig = {
   get bashWhitelist() { return overrideOr("tools.bash.whitelist", cfg.tools?.bash?.whitelist || ["ls", "cat", "head", "tail", "grep", "find", "which", "echo", "pwd", "date", "whoami", "uname", "df", "du", "ps"]); },
-  get fileWriteEnabled() { return overrideOr("tools.file.writeEnabled", cfg.tools?.file?.writeEnabled ?? true); },
-  // 读写值：设置页勾选框的初值与回写都读它，宠物模式下也如实反映用户配置。
-  get mcpEnabled() { return overrideOr("tools.mcp.enabled", cfg.tools?.mcp?.enabled ?? false); },
   get mcpServers() { return overrideOr("tools.mcp.servers", cfg.tools?.mcp?.servers || []); },
   get builtinMcpServers() { return overrideOr("tools.mcp.builtin", cfg.tools?.mcp?.builtin || {}) as Record<string, BuiltinMcpServer>; },
-  // Skill 是按 invocationPolicy 过滤的对话说明，不等同于助手工具；轻量模式可使用
-  // 明确声明 pet/both 的 Skill，但不能因此获得 bash、MCP 或写入权限。
-  get skillEnabled() { return overrideOr("tools.skill.enabled", cfg.tools?.skill?.enabled ?? false); },
 };
 
+/** CONFIG 里每服务器条目的最小读面：只取名字与启用位，其余字段由工具层归一化。 */
+type McpServerEntry = { name?: unknown; enabled?: unknown };
+
+/** 单条 MCP 服务器配置是否启用：缺省即启用，只有显式 `enabled: false` 才算关闭。 */
+function mcpServerEnabled(entry: McpServerEntry | null | undefined): boolean {
+  return entry?.enabled !== false;
+}
+
 /**
- * 运行期 MCP 是否生效：配置读写值（模式维度已随 pet/assistant 一并移除）。
- * 派生值只服务运行期消费者，不得回流设置页读写——否则打开设置再保存，
- * 会把用户配置里的 true 静默改写成 false（同 generalConfig.loggingLevel 与 computeLogLevel 的分工）。
+ * 启用的 MCP 服务器名（内置在前、自定义在后）。
+ *
+ * 这是「MCP 是否生效」与「本轮该借用哪些服务器」的唯一口径：`computeMcpEnabled()`
+ * 与 `init.ts` 的按 run 借用遍历都读本函数，两处不再各自判一遍（决策 8：控制面在
+ * 每服务器的 `enabled`，没有总闸；全部关掉即为未启用）。
+ */
+export function enabledMcpServerNames(): string[] {
+  const builtin = Object.entries(toolsConfig.builtinMcpServers)
+    .filter(([, def]) => mcpServerEnabled(def))
+    .map(([name]) => name);
+  const custom = (toolsConfig.mcpServers as McpServerEntry[])
+    .filter(mcpServerEnabled)
+    .map(entry => String(entry.name || ""));
+  return [...builtin, ...custom];
+}
+
+/**
+ * 运行期 MCP 是否生效：至少一个服务器启用。
+ * 派生值只服务运行期消费者，不回写设置页读写 —— 否则打开设置再保存会把用户配置
+ * 静默改写成派生结果（同 generalConfig.loggingLevel 与 computeLogLevel 的分工）。
  */
 export function computeMcpEnabled(): boolean {
-  return toolsConfig.mcpEnabled;
+  return enabledMcpServerNames().length > 0;
 }
 
 // ══════════════════════════════════════════

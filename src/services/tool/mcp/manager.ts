@@ -371,8 +371,8 @@ export async function disconnectMcpServer(name: string): Promise<void> {
   })
 }
 
-/** 按需取得一个 MCP server；同一 owner 重复取得不会重复 spawn。 */
-export async function acquireMcpServer(name: string, owner = "runtime"): Promise<McpConnectResult> {
+/** 按需取得一个 MCP server；同一 owner 重复取得不会重复 spawn。owner 必填：借用与释放要用同一个运行标识配对。 */
+export async function acquireMcpServer(name: string, owner: string): Promise<McpConnectResult> {
   markPendingOwner(name, owner)
   try {
     return await withServerLock(name, async () => {

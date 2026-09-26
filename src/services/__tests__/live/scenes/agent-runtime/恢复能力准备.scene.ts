@@ -1,7 +1,6 @@
 import { continueInterruptedRun, harnessSlots } from "@/services/engine/pi"
 import { initChat, sendMessage } from "@/services/agent/runner"
 import { getActiveSessionId } from "@/services/session"
-import { setOverride, toolsConfig } from "@/services/config"
 import { deleteSkill, getSkillsPromptBlock, upsertSkill } from "@/services/skill"
 import { registerBlockingTool } from "../../blocking-tool"
 import { fakeText, fakeToolCall, installFakeProvider } from "../../fake-provider"
@@ -24,7 +23,6 @@ const SKILL_NAME = "live-resume-capability-skill"
 const UNAVAILABLE_MARKER = "is unavailable"
 
 let blocking: ReturnType<typeof registerBlockingTool> | undefined
-let previousSkillEnabled = false
 let resumedReply: string | undefined
 let resumedFailure: unknown
 let skillBlockAfterResume = ""
@@ -44,8 +42,8 @@ export const 恢复能力准备: SceneDef = {
     ])
     await initChat()
     const sessionId = getActiveSessionId()
-    previousSkillEnabled = toolsConfig.skillEnabled
-    setOverride("tools.skill.enabled", true)
+    // 决策 8 删掉了 tools.skill.enabled 总闸，这里原本的开关切换已是空动作，随 getter 一并去掉
+    // （只做编译面收敛；本场景的语义重写归 T19，见下方「冷目录前置已移除」）。
     await upsertSkill(`---\nname: ${SKILL_NAME}\ndescription: 恢复路径能力准备探针\ninvocationPolicy: pet\ncapabilityTags: [memory, test]\n---\n\n按需读取这份 Skill 的正文。`)
 
     // 模拟进程被杀：不 abort，直接关闭运行槽 —— 会话文件里留下未完成的操作。
@@ -85,7 +83,6 @@ export const 恢复能力准备: SceneDef = {
             throw new Error(`会话里落了上游的通用不可用文案: ${JSON.stringify(texts)}`)
           }
         } finally {
-          setOverride("tools.skill.enabled", previousSkillEnabled)
           await deleteSkill(SKILL_NAME)
           blocking?.dispose()
         }

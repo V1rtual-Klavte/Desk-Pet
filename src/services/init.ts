@@ -9,7 +9,7 @@ import { registerDefaultTools } from "@/services/tool"
 import { initDebug } from "@/services/debug"
 import { initSessions, chatHistory, initWelcome, getActiveSessionId } from "@/services/session"
 import { getActiveCard } from "@/services/personality"
-import { computeMcpEnabled } from "@/services/config"
+import { computeMcpEnabled, enabledMcpServerNames } from "@/services/config"
 import { createLogger } from "@/services/logger"
 
 const log = createLogger("Init")
@@ -89,19 +89,18 @@ export interface CapabilityPrepResult {
  * root 在 run preflight 冻结 snapshot。
  * 借用失败的服务器名交回调用方，由它决定是否把「本次能力不全」变成可见结论。
  */
-export async function prepareConversationCapabilities(owner = "runtime"): Promise<CapabilityPrepResult> {
+export async function prepareConversationCapabilities(owner: string): Promise<CapabilityPrepResult> {
   await registerDefaultTools()
   const unavailableMcp: string[] = []
-  if (computeMcpEnabled()) {
-    const { acquireMcpServer, getBuiltinServers, getMcpServers } = await import("@/services/tool/mcp")
-    const servers = [...getBuiltinServers(), ...getMcpServers()]
-    for (const server of servers) {
-      if (!server.enabled) continue
-      const acquired = await acquireMcpServer(server.name, owner)
-      if (!acquired.success) {
-        unavailableMcp.push(server.name)
-        log.warn(`MCP 获取失败: ${server.name} | ${acquired.error ?? "未知错误"}`)
-      }
+  // 借用面与「MCP 是否生效」同源（config 的 enabledMcpServerNames）：总闸已删，控制面在
+  // 每服务器的 enabled，全部关掉即无人可借。owner 必填：调用方一律给本轮的 requestId 或
+  // resumeOwner(sessionId)，默认值会让「谁借的」失去唯一来源，也让释放失去配对。
+  const { acquireMcpServer } = await import("@/services/tool/mcp")
+  for (const name of enabledMcpServerNames()) {
+    const acquired = await acquireMcpServer(name, owner)
+    if (!acquired.success) {
+      unavailableMcp.push(name)
+      log.warn(`MCP 获取失败: ${name} | ${acquired.error ?? "未知错误"}`)
     }
   }
   // 每回合的 Skill 目录指纹核对挂在这里：主回合（runtime.ts 的 runPiAgentTurn）、续跑与 Plan 恢复
