@@ -347,9 +347,10 @@ async function connectMcpServerUnlocked(server: McpServerConfig): Promise<McpCon
     const toolDefs = client.toToolDefs(server.name, toolSchemas)
     const { registerAll } = await import("@/services/tool/registry")
     // 决策 8 的口径：MCP 工具按服务器 enabled 入库，没有模式或回合过滤 —— 借用期间
-    // 此后每个回合的冻结工具集都含它们，子代理与计划步骤同样拿得到（决策 16 的剥离点
-    // 只认 isolation: "delegate"，现只有 agent_spawn，不覆盖 MCP）。注销走
-    // disconnectMcpServerUnlocked 的 listAll() + unregister()，与这里的注册配对。
+    // 此后每个回合的冻结工具集都含它们：计划步骤的未限定工具面拿得到；agent_spawn 的
+    // fork/team 子代理按固定白名单（pi-read / local-system-info / pi-bash）收窄，不在其列
+    // （决策 16 的剥离点只认 isolation: "delegate"，只管派生型工具，与 MCP 无关）。
+    // 注销走 disconnectMcpServerUnlocked 的 listAll() + unregister()，与这里的注册配对。
     registerAll(toolDefs)
     connectedClients.set(server.name, client)
     client = undefined // ownership moved to connectedClients

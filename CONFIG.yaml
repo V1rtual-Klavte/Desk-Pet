@@ -129,7 +129,7 @@ tools:
 
   mcp:
     # 无总闸：按每服务器 enabled 控制，全部关闭即不使用 MCP。
-    # 内置两项默认关闭：总闸删除前它们由 mcp.enabled 关住，默认值必须保持今天实际生效的状态。
+    # 内置五项默认关闭：总闸删除前它们由 mcp.enabled 关住，默认值必须保持今天实际生效的状态。
     servers: []
     builtin:
       filesystem:
