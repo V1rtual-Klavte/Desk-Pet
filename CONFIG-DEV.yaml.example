@@ -65,7 +65,7 @@ tools:
   bash:
     whitelist: ["ls", "cat", "head", "tail", "grep", "find", "which", "echo", "pwd", "date", "whoami", "uname", "df", "du", "ps", "tasklist", "system_profiler", "ifconfig"]
   mcp:
-    # 无总闸：按每服务器 enabled 控制，全部关闭即不使用 MCP；两个内置项默认关闭
+    # 无总闸：按每服务器 enabled 控制，全部关闭即不使用 MCP；五个内置项默认关闭
     servers: []
     builtin:
       filesystem:  { enabled: false, command: npx, args: ["-y", "@modelcontextprotocol/server-filesystem", "/"], description: "📁 文件系统操作" }
