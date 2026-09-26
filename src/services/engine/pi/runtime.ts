@@ -1332,15 +1332,16 @@ async function runPlanPhase(args: {
       }).catch(error => { log.error("步骤结果条目写入失败:", formatError(error)); return undefined })
       if (entryId) stepResultEntryIds.set(String(step.id), entryId)
     },
-    // 工具解析报告（FIX-51）：工具名解析不到、或未限定工具而放大到全部已注册工具，
-    // 都在进度事件与系统消息里可见 —— 权限面的变化不能只留在日志里。
+    // 工具解析报告（FIX-51）：工具名解析不到、或未限定工具而放大工具面，都在进度事件与系统消息
+    // 里可见 —— 权限面的变化不能只留在日志里。放大到子代理时派生型工具会被剥离（runPiSubAgent），
+    // 所以文案按子代理实际拿到的集合写，不写成「全部」。
     async onStepNotice(step, notice) {
       const index = plan.steps.findIndex(item => item.id === step.id) + 1
       void emitUiEvent("deskpet-plan-progress", { sessionId, planId, stepId: String(step.id), total: plan.steps.length, desc: step.description, status: "warning" })
       if (notice.kind === "missing_tools") {
         pushSystemMessage(`计划第 ${index} 步指定的工具不存在: ${notice.names.join("、")}（该步未执行）`, sessionId)
       } else {
-        pushSystemMessage(`计划第 ${index} 步未限定工具，将使用全部已注册工具`, sessionId)
+        pushSystemMessage(`计划第 ${index} 步未限定工具，将使用除派生型工具外的全部已注册工具`, sessionId)
       }
     },
     // 失败询问接上会话身份与回合中断信号：会话切换/终止执行时按 `abort` 结算，
@@ -1920,6 +1921,11 @@ export async function runPiSubAgent(input: PiSubAgentInput): Promise<PiSubAgentO
   const model = resolvePiTurnModel()
   const history: PiAgentTurnOutput["toolCallHistory"] = []
   const scope = input.scope
+  // 决策 16「子代理不派生」的唯一剥离点：派生型工具不下放到子代理，计划步骤与 fork/team
+  // 各自传什么都过这一道，不在调用点维护第二份名单。判定读工具自己声明的策略字段
+  // （`isolation: "delegate"` 只用于宿主编排工具，现只有 agent_spawn）—— 写死名字会把
+  // 工具身份抄成第二个定义点，也漏掉将来的派生型工具。
+  const tools = input.tools.filter(tool => tool.policy.execution.isolation !== "delegate")
   const toolRun: HarnessToolRun = {
     // 有 scope 时工具上下文带上父会话与代际：许可借用 requestId 从 `no-session:-1:…`
     // 变成 `${sessionId}:${generation}:…`，会话内 grant 也随之按会话与代际失效（PLAN-03）。
@@ -1937,7 +1943,7 @@ export async function runPiSubAgent(input: PiSubAgentInput): Promise<PiSubAgentO
     model,
     thinkingEffort,
     systemPrompt: input.systemPrompt,
-    tools: input.tools,
+    tools,
     transientUserInput: false,
     // 有计划身份的子运行把请求快照落进父会话；没有归属就不落（fork/team 的独立子代理）。
     persistSnapshots: input.audit !== undefined,

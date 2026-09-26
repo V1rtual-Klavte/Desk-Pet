@@ -429,11 +429,14 @@ async function executeStep(
     const missing: string[] = []
     for (const name of step.allowedTools) {
       const tool = getToolByName(name)
-      if (tool) tools.push(tool)
+      // 派生型工具到不了子代理手里（剥离点是 runPiSubAgent，用同一判定：isolation=delegate，
+      // 现只有 agent_spawn），在这一步等同于不存在 —— 与下面的硬失败同一条理由。
+      // 判定读工具自己的策略声明，不在这里维护名单（与 planEffectClassFor 同款）。
+      if (tool && tool.policy.execution.isolation !== "delegate") tools.push(tool)
       else missing.push(name)
     }
     if (missing.length > 0) {
-      // 指定的工具不存在就不开工：拿剩下的工具跑等于这一步的权限面既不可信也不可复现。
+      // 指定的工具不存在（或到不了子代理）就不开工：拿剩下的工具跑等于这一步的权限面既不可信也不可复现。
       // 报告交给宿主写计划进度事件与系统消息（FIX-51），不静默。
       log.warn(`步骤 ${step.id} 指定的工具不存在: ${missing.join("、")}`)
       await callbacks.onStepNotice?.(step, { kind: "missing_tools", names: missing })
