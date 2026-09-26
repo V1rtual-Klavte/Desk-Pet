@@ -283,9 +283,24 @@ export const Skill显式调用: SceneDef = {
               throw new Error(`${label}的终态句不是恰好一条系统消息条目: ${hits.length}（已落盘: ${JSON.stringify(texts)}）`)
             }
           }
-          // 四态互相可辨：三条终态句两两不同（Card 文案若把它们写成同一句，这条先失败）。
-          const distinct = new Set(wanted.map(([, text]) => text))
-          if (distinct.size !== wanted.length) throw new Error("四条终态句在落盘面上不可辨（当前 Card 的 commands 文案有重复）")
+          // 四态互相可辨：判据取**落盘观察到的**条目，不取上面那张场景自己拼的期望表 ——
+          // 期望串里嵌着彼此不同的技能名，Card 就算把三态写成同一句，它们也永远互不相同，那样的判据是空转。
+          // 三条带名终态去掉回显行后剩下的就是 Card 为各自写的终态句（可多行，按整段取）；
+          // 「未知名 / 空正文 / 被关闭」被写成同一句时，这里先失败。
+          const namedStates: ReadonlyArray<readonly [string, string]> = [
+            ["未知名", ABSENT],
+            ["空正文", EMPTY_BODY],
+            ["被关闭", DISABLED],
+          ]
+          const observedSentences = namedStates.map(([label, name]) => {
+            const suffix = `\n技能名：${name}`
+            const hits = texts.filter(text => text.endsWith(suffix))
+            if (hits.length !== 1) throw new Error(`${label}的终态条目不是恰好一条: ${hits.length}（已落盘: ${JSON.stringify(texts)}）`)
+            return [label, hits[0]!.slice(0, -suffix.length)] as const
+          })
+          if (new Set(observedSentences.map(([, sentence]) => sentence)).size !== namedStates.length) {
+            throw new Error(`三条终态句在落盘面上不可辨（当前 Card 把它们写成了同一句）: ${JSON.stringify(observedSentences)}`)
+          }
         },
       }],
     },
