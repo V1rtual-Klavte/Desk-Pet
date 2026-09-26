@@ -4,7 +4,6 @@ import type { ToolDef, ToolPolicy } from "@/services/tool"
 import { defineTool, TOOL_POLICY_VERSION } from "@/services/tool"
 
 const context = (overrides: Partial<Parameters<typeof evaluateToolPermission>[2]> = {}) => ({
-  mode: "assistant" as const,
   sessionId: "permission-test-session",
   runGeneration: 7,
   toolCallId: "permission-test-call",
@@ -24,7 +23,7 @@ const policy = (permission: ToolPolicy["permission"]): ToolPolicy => ({
 const tool = (overrides: Partial<ToolDef> = {}): ToolDef => defineTool({
   id: "permission-test", name: "permission_test", description: "permission test",
   parameters: { type: "object", properties: {} }, safetyLevel: "NORMAL",
-  source: "local", sourceId: "", mode: "assistant", actionCategory: "_default",
+  source: "local", sourceId: "", actionCategory: "_default",
   policy: policy({ defaultDecision: "passthrough" }),
   ...overrides,
 }, async () => ({ success: true, content: "ok" }))

@@ -18,9 +18,8 @@ import type { SceneDef } from "../../types"
  *   保持未执行、停止不按失败结算）；
  * - `plan-step-gate-each-step`（pl-11）：`stepByStep` 下逐步前置门每步都真的问一次。
  *
- * 三个场景都在自己的 setup 里显式打开助手模式与计划开关：本套 Live 的配置基线把
- * `general.mode.assistant` 钉在 pet（见 standard-setup.ts），而计划入口由
- * `assistant && planConfig.enabled` 双重把守。
+ * 三个场景都在自己的 setup 里显式打开计划开关：本套 Live 的配置基线把 `ai.plan.enabled`
+ * 钉在 `false`（见 standard-setup.ts），而计划入口只看这一个开关。
  *
  * 2026-09-24 W5 整轮：pl-10（`timeout`，卡在 setup）与 pl-11（「应恰好一次计划确认，实际 0」）同因失败，
  * 根因在生产段而非场景 —— `runPiAgentTurn` 先把 `--plan` 前缀剥掉、再把剥后的正文交给
@@ -110,7 +109,6 @@ export const 计划生产闭环: SceneDef = {
     planPolicy: "auto",
   },
   setup: async () => {
-    setOverride("general.mode.assistant", true)
     setOverride("ai.plan.enabled", true)
     // 关键词命中给 3 分：阈值钉在 3 才等价于「命中即触发」，免得开发配置把阈值抬高后
     // 本场景落进「计划根本没启动」的另一种失败里。
@@ -176,7 +174,7 @@ export const 计划生产闭环: SceneDef = {
           } finally {
             setOverride("ai.plan.maxSteps", restore.maxSteps)
             setOverride("ai.plan.complexityThreshold", restore.complexityThreshold)
-            setOverride("general.mode.assistant", false)
+            setOverride("ai.plan.enabled", false)
           }
         },
       },
@@ -211,7 +209,6 @@ export const 计划取消结算: SceneDef = {
     // 收尾回合（turns[0]）走的是普通助手回合：钉住评估方式，免得开发配置改成 llm 后
     // 它多打一次模型请求、把脚本里的响应提前取走。
     setOverride("ai.plan.complexityEval", "keyword")
-    setOverride("general.mode.assistant", true)
     setOverride("ai.plan.enabled", true)
     installFakeProvider([
       fakeText(CANCEL_PLAN_JSON),
@@ -305,7 +302,7 @@ export const 计划取消结算: SceneDef = {
             setOverride("ai.plan.maxSteps", restoreConfig.maxSteps)
             restoreConfig = undefined
           }
-          setOverride("general.mode.assistant", false)
+          setOverride("ai.plan.enabled", false)
         }
       },
     }],
@@ -330,7 +327,6 @@ export const 计划逐步门: SceneDef = {
     planPolicy: "stepByStep",
   },
   setup: async () => {
-    setOverride("general.mode.assistant", true)
     setOverride("ai.plan.enabled", true)
     installFakeProvider([
       fakeText(GATE_PLAN_JSON),
@@ -380,7 +376,7 @@ export const 计划逐步门: SceneDef = {
           }
           await waitRecords(() => planEndRecords(), records => records.some(record => record.reason === "done"), "计划终态事件 done")
         } finally {
-          setOverride("general.mode.assistant", false)
+          setOverride("ai.plan.enabled", false)
         }
       },
     }],

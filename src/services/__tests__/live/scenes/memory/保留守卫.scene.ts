@@ -87,7 +87,6 @@ const probeTool = defineTool({
   safetyLevel: "SAFE",
   source: "local",
   sourceId: "",
-  mode: "pet",
   actionCategory: "_default",
   policy: {
     version: TOOL_POLICY_VERSION,

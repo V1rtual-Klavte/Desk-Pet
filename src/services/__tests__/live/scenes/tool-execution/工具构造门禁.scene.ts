@@ -18,7 +18,7 @@ const NAME = "tool_construction_gate_probe"
 const declaration = {
   id: "tool-construction-gate", name: NAME, description: "构造门禁探针",
   parameters: { type: "object" as const, properties: {} },
-  safetyLevel: "SAFE" as const, source: "local" as const, sourceId: "", mode: "pet" as const,
+  safetyLevel: "SAFE" as const, source: "local" as const, sourceId: "",
   actionCategory: "os.info" as const,
   policy: {
     version: TOOL_POLICY_VERSION,

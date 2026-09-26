@@ -9,7 +9,7 @@ import { defineTool, register, unregister, getToolByName, TOOL_POLICY_VERSION } 
 const base = {
   id: "policy-gate-probe", name: "policy_gate_probe", description: "策略门禁探针",
   parameters: { type: "object" as const, properties: {} },
-  safetyLevel: "SAFE" as const, source: "local" as const, sourceId: "", mode: "pet" as const,
+  safetyLevel: "SAFE" as const, source: "local" as const, sourceId: "",
   actionCategory: "os.info" as const,
 }
 

@@ -2,7 +2,7 @@ import type { SceneDef } from "../../types"
 import { fauxAssistantMessage, fauxText } from "@earendil-works/pi-ai"
 import type { PlanResult, StepToolNotice } from "@/services/engine/planner"
 import { evaluateComplexity, executePlan, formatStepResults, generatePlan } from "@/services/engine/planner"
-import { getToolsForMode } from "@/services/tool"
+import { listAll } from "@/services/tool"
 import { planConfig, setOverride } from "@/services/config"
 import { installFakeProvider, fakeText } from "../../fake-provider"
 
@@ -108,7 +108,7 @@ export const 计划生成 = unit("plan-generate", "pl-05", "generatePlan 解析�
   const plan = await generatePlan("改一下配置", {
     cardId: "test-card",
     cardRole: "助手",
-    availableTools: getToolsForMode("assistant"),
+    availableTools: listAll(),
     thinkingEffort: "low",
     maxSteps: 8,
   })
@@ -125,7 +125,7 @@ export const 计划生成降级 = unit("plan-generate-fallback", "pl-08", "gener
   const plan = await generatePlan("随便看看", {
     cardId: "test-card",
     cardRole: "助手",
-    availableTools: getToolsForMode("assistant"),
+    availableTools: listAll(),
     thinkingEffort: "low",
     maxSteps: 8,
   })

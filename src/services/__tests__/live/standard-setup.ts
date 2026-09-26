@@ -91,28 +91,24 @@ let configSnapshot: ConfigTree | undefined
 /**
  * 运行开始时的配置快照，场景之间的还原目标。
  *
- * 助手模式在这里按 pet 基线钉死：Live Test 默认恒以 pet 模式运行，这个键就是那句约定的
- * 代码依据 —— 计划入口由 `generalConfig.assistantMode && planConfig.enabled` 双重把守，
- * 钉住助手模式就走不到计划段；场景要跑计划段必须在自己的 setup 里显式打开
+ * 计划门禁在这里按基线钉死为关闭：计划入口只看 `planConfig.enabled`（模式已在收敛中删除），
+ * 而 `ai.plan.enabled` 出厂即 `true` —— 不钉住它，任何命中复杂度关键词的 production 场景文本
+ * 都会静默走进真实计划段。场景要跑计划段必须在自己的 setup 里显式打开
  * （`计划生产闭环` 等场景都这么做）。
- * `ai.plan.enabled` 不在钉住之列：pet 模式下它不生效，钉住它只会把开发配置里出厂即 `true`
- * 的值改写成 false，而它在场景之间的漂移由快照还原兜住。
  */
 function configBaseline(): ConfigTree {
   if (!configSnapshot) {
     const snapshot = structuredClone(getAllOverrides() as ConfigTree)
-    const general = isConfigTree(snapshot.general) ? snapshot.general : {}
-    snapshot.general = {
-      ...general,
-      mode: { ...(isConfigTree(general.mode) ? general.mode : {}), assistant: false },
-    }
+    const ai = isConfigTree(snapshot.ai) ? snapshot.ai : {}
+    const plan = isConfigTree(ai.plan) ? ai.plan : {}
+    snapshot.ai = { ...ai, plan: { ...plan, enabled: false } }
     configSnapshot = snapshot
   }
   return configSnapshot
 }
 
 /**
- * 场景间配置隔离：把配置拉回运行快照 + pet 基线。
+ * 场景间配置隔离：把配置拉回运行快照 + 计划门禁基线。
  *
  * 这是结构性兜底，不依赖场景自己写清理：断言失败会让运行器 `break` 掉后续断言
  * （scene-runner.ts），清理挂在最后一条断言 `finally` 上的场景就再也执行不到；
@@ -142,7 +138,7 @@ export async function standardSetup(
   confirmPolicy: ConfirmPolicy = "deny",
   planPolicy: PlanPolicy = "deny",
 ): Promise<void> {
-  // 配置隔离排在最前：本函数之后的一切（含场景自己的 setup）都该在 pet 基线上运行
+  // 配置隔离排在最前：本函数之后的一切（含场景自己的 setup）都该在计划门禁关闭的基线上运行
   await restoreConfigBaseline()
   await bootstrapOnce()
   resetConfirmChannel(confirmPolicy)

@@ -61,7 +61,6 @@ function registerGateTool(): void {
     safetyLevel: "SAFE",
     source: "local",
     sourceId: "",
-    mode: "pet",
     actionCategory: "os.info",
     policy: {
       version: TOOL_POLICY_VERSION,

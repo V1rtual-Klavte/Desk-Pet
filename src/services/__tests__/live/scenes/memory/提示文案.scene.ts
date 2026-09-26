@@ -53,7 +53,6 @@ export const 提示文案: SceneDef = {
         // 3. 接线：常量被真实消费（不是死导出）—— 不传 dynamicPrompt 时由 buildPrompt 自己拼。
         const built = buildPrompt({
           thinkingEffort: "high",
-          mode: "pet",
           tools: [],
           contextMaxTokens: 131_072,
           candyInstructions: "",

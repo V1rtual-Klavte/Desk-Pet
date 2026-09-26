@@ -16,7 +16,7 @@ const NAME = "live_timeout_probe"
 const probe = defineTool({
   id: ID, name: NAME, description: "超时判定探针",
   parameters: { type: "object", properties: {} },
-  safetyLevel: "SAFE", source: "local", sourceId: "", mode: "pet", actionCategory: "os.info",
+  safetyLevel: "SAFE", source: "local", sourceId: "", actionCategory: "os.info",
   policy: {
     version: TOOL_POLICY_VERSION,
     permission: { defaultDecision: "allow" },
@@ -55,7 +55,7 @@ export const 工具超时判定: SceneDef = {
         register(probe)
         try {
           // ① 50ms 超时：调用失败，账记 timeout —— 探针自己返回的 cancelled 错误码不改写这条账。
-          const timedOut = await executeToolDefinition(probe, {}, { mode: "pet", toolCallId: "timeout-probe" })
+          const timedOut = await executeToolDefinition(probe, {}, { toolCallId: "timeout-probe" })
           const timeoutAudit = auditOf(timedOut)
           if (timedOut.success) throw new Error("超时的调用被判成功")
           if (timeoutAudit.outcome !== "timeout") throw new Error(`超时的账不是 timeout: ${String(timeoutAudit.outcome)}`)
@@ -69,7 +69,7 @@ export const 工具超时判定: SceneDef = {
           // ③ 外部已取消的 signal：账记 cancelled，取消不得被判成超时。
           const controller = new AbortController()
           controller.abort()
-          const cancelled = await executeToolDefinition(probe, {}, { mode: "pet", toolCallId: "cancelled-probe", signal: controller.signal })
+          const cancelled = await executeToolDefinition(probe, {}, { toolCallId: "cancelled-probe", signal: controller.signal })
           const cancelledAudit = auditOf(cancelled)
           if (cancelledAudit.outcome !== "cancelled") throw new Error(`取消的账不是 cancelled: ${String(cancelledAudit.outcome)}`)
           if (cancelledAudit.operationId !== "cancelled-probe") throw new Error("取消的审计 operationId 不是本次调用")

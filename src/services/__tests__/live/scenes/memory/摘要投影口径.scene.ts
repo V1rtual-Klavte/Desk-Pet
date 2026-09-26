@@ -93,7 +93,7 @@ const probe = (id: string, name: string, projection: "preserve" | "reference", r
     id, name,
     description: `摘要投影探针 ${name}：声明 resultProjection=${projection} 的长结果工具`,
     parameters: { type: "object", properties: {} },
-    safetyLevel: "SAFE", source: "local", sourceId: "", mode: "pet", actionCategory: "_default",
+    safetyLevel: "SAFE", source: "local", sourceId: "", actionCategory: "_default",
     policy: {
       version: TOOL_POLICY_VERSION,
       permission: { defaultDecision: "allow" },

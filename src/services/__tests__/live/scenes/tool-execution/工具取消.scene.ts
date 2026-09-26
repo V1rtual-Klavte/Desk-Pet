@@ -10,7 +10,7 @@ const scene: SceneDef = {
     const id = "live-cancelled-tool"
     register(defineTool({
       id, name: id, description: "test", parameters: { type: "object", properties: {} },
-      safetyLevel: "SAFE", source: "local", sourceId: "", mode: "pet", actionCategory: "_default",
+      safetyLevel: "SAFE", source: "local", sourceId: "", actionCategory: "_default",
       policy: {
         version: TOOL_POLICY_VERSION,
         permission: { defaultDecision: "allow" },
@@ -21,7 +21,7 @@ const scene: SceneDef = {
     try {
       const controller = new AbortController()
       controller.abort()
-      const result = await executeToolDefinition(getToolByName(id)!, {}, { mode: "pet", signal: controller.signal })
+      const result = await executeToolDefinition(getToolByName(id)!, {}, { signal: controller.signal })
       if (called || result.success || result.errorCode !== "cancelled") throw new Error("取消工具未返回 cancelled")
     } finally {
       unregister(id)

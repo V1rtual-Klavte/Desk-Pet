@@ -28,7 +28,7 @@ export const 会话重启恢复: SceneDef = {
     checks: [{
       type: "expectSessionRecoveredFromFreshRepo",
       run: async () => {
-        const env = new TauriExecutionEnv(await runtimePath("data"), "pet")
+        const env = new TauriExecutionEnv(await runtimePath("data"))
         const sessionsRoot = await runtimePath("data", `restart-${crypto.randomUUID()}`)
         // 与真实数据根同形：sessions 根同时存放可丢弃 UI 状态与旧 .md 残留。
         fileOk(await env.createDir(sessionsRoot, undefined, BACKGROUND_CONTEXT))
@@ -82,7 +82,7 @@ export const 会话重启恢复: SceneDef = {
       // 同时显式传入的 cwd 要被如实透传，不能被忽略后回退成本实例的 cwd。
       type: "expectCrossRootSessionsStayListed",
       run: async () => {
-        const env = new TauriExecutionEnv(await runtimePath("data"), "pet")
+        const env = new TauriExecutionEnv(await runtimePath("data"))
         const sessionsRoot = await runtimePath("data", `cross-root-${crypto.randomUUID()}`)
         const otherCwd = `${sessionsRoot}-other-cwd`
         const here = await createPiSessionRepo({ sessionsRoot })

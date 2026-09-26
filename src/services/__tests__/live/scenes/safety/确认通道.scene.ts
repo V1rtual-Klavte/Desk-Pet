@@ -4,8 +4,8 @@ import { requestPermissionConfirm } from "@/services/safety"
 import { confirmRecords } from "../../confirm-channel"
 
 /**
- * pet 模式下 bash 的白名单外命令（带 shell 组合符）会被 classifyBashRisk 判为 DANGER，
- * 而 pi-bash 声明了 `lightweightPolicy: "confirm"` —— 所以它必定走确认通道。
+ * 带 shell 组合符的命令不进白名单免确认通道：`classifyBashRisk` 判为 DANGER，
+ * DANGER 由安全模式裁决，默认 `tell_me` 下走确认通道 —— 所以它必定产生确认请求。
  * 命令本身无害：即使被误放行也只写一个临时文件。
  */
 const PROBE_COMMAND = "echo deskpet-confirm-probe > /tmp/deskpet-confirm-probe.txt"

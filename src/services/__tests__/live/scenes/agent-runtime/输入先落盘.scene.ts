@@ -66,7 +66,6 @@ function planStep(): FauxResponseStep {
 
 /** 场景自己改的配置：按「原始覆盖值」（未必存在）还原，不把开发配置的当前值当默认值。 */
 interface OverrideSnapshot {
-  assistantMode: boolean | undefined
   planEnabled: boolean | undefined
   safetyMode: string | undefined
 }
@@ -77,7 +76,6 @@ let planned: Awaited<ReturnType<typeof sendMessage>> | undefined
 
 function captureOverrides(): OverrideSnapshot {
   return {
-    assistantMode: getOverride<boolean>("general.mode.assistant"),
     planEnabled: getOverride<boolean>("ai.plan.enabled"),
     safetyMode: getOverride<string>("ai.safety.mode"),
   }
@@ -85,7 +83,6 @@ function captureOverrides(): OverrideSnapshot {
 
 function restoreOverrides(previous: OverrideSnapshot): void {
   setSessionSafetyMode(null)
-  setOverride("general.mode.assistant", previous.assistantMode)
   setOverride("ai.plan.enabled", previous.planEnabled)
   // `safetyConfig.mode` 读的是 `ai.safety.mode`（不是 `safety.mode`）：写错 key 等于没改全局值。
   setOverride("ai.safety.mode", previous.safetyMode)
@@ -113,17 +110,16 @@ export const 输入先落盘: SceneDef = {
       fakeText(MAIN_REPLY),
       fakeText(TURN_REPLY),
     ], FAKE_MODEL)
-    // 计划入口由 assistant && planConfig.enabled 双重把守；安全模式给 just_do_it，计划段不额外等确认。
-    setOverride("general.mode.assistant", true)
+    // 计划入口只看 planConfig.enabled（基线把它钉在 false）；安全模式给 just_do_it，计划段不额外等确认。
     setOverride("ai.plan.enabled", true)
     setOverride("ai.safety.mode", "just_do_it")
     setSessionSafetyMode("just_do_it")
     await initChat()
     sessionId = getActiveSessionId()
     planned = await sendMessage(PLAN_REQUEST)
-    // 计划回合之后就把助手模式关回 pet：场景自己的回合与后面的超限路径都不该再进计划段
-    //（开发配置把 complexityEval 设成 llm 时，助手模式下会多打一次评估请求、把脚本响应提前取走）。
-    setOverride("general.mode.assistant", false)
+    // 计划回合之后就把计划入口关回去：场景自己的回合与后面的超限路径都不该再进计划段
+    //（开发配置把 complexityEval 设成 llm 时，计划段会多打一次评估请求、把脚本响应提前取走）。
+    setOverride("ai.plan.enabled", false)
   },
   turns: [{
     index: 1,
@@ -164,7 +160,8 @@ export const 输入先落盘: SceneDef = {
           }
 
           // ④ 预检失败（硬预算超限）：输入已落盘，回合按失败结算但条目必须保留、恰好一条。
-          setOverride("general.mode.assistant", false)
+          // 计划入口保持关闭：超限正文不该被当成一次规划请求。
+          setOverride("ai.plan.enabled", false)
           const failed = await sendMessage(GIANT)
           if (failed.outcome !== "failed") {
             throw new Error(`超限输入没有按失败结算: ${failed.outcome}｜窗口 ${WINDOW_TOKENS}、硬上限 ${BUDGET.hardInputLimit}、正文 ${GIANT.length} 字符`)

@@ -11,7 +11,7 @@ import { BaseDirs } from "@/services/paths"
  * TS 侧（`checker.ts`）是同一规则族的分级副本，先按 NOWAY 拦一道；这里要证明的是
  * **Rust 是最终判定**：即使门禁被绕过、或路径形态在 TS 归一时不命中，经 IPC 直连
  * 文件与 bash 两个入口仍然会得到 `SENSITIVE_PATH` / 硬拒绝。三个场景分别覆盖
- * 「两个入口 × 两种 scope」「读私钥的模型回合」「bash 写私钥的模型回合」。
+ * 「两个入口」「读私钥的模型回合」「bash 写私钥的模型回合」。
  */
 
 /** OpenSSH 私钥文件头：任何一段真实私钥正文里都必须出现它。 */
@@ -30,7 +30,7 @@ async function rejection(work: () => Promise<unknown>): Promise<{ code: string |
 export const 凭据路径终判: SceneDef = {
   meta: {
     caseId: "safety-credential-paths", module: "safety", contractId: "sf-16",
-    description: "Rust 终判：文件与 bash 两个入口、两种 scope 都拒绝凭据路径，且判定先于 canonicalize",
+    description: "Rust 终判：文件与 bash 两个入口都拒绝凭据路径，且判定先于 canonicalize",
     depth: "deep", suite: "safety", entry: "unit", tags: ["safety", "boundary", "error"],
   },
   turns: [{
@@ -60,21 +60,15 @@ export const 凭据路径终判: SceneDef = {
           throw new Error(`.. 形态的私钥路径未被拒绝: ${dotted.code ?? dotted.message}`)
         }
 
-        // ③④ bash 层 1：两种 scope 共用同一条规则，调用方不可关闭。
-        // 拒绝必须来自凭据规则本身：陪伴模式的白名单里显式放进 `cat`，被拒就不可能是白名单；
+        // ③ bash 层 1：凭据规则在调用方不可关闭（`bash_exec` 已无策略入参）。
         // 码只认 TOOL + 文案含「凭据路径」，超时（OTHER/超时文案）与 spawn 失败（IO）都不算通过。
-        const bashRejected = async (scope: "pet" | "assistant", whitelist: string[]) => {
-          const result = await rejection(() => invoke("bash_exec", {
-            executionId: `credential-probe-${scope}`,
-            command: "cat ~/.ssh/id_rsa",
-            policy: { scope, whitelist },
-          }))
-          if (result.code !== "TOOL" || !result.message.includes("凭据路径")) {
-            throw new Error(`${scope}: 拒绝原因不是凭据路径: ${result.code ?? "无码"} ${result.message}`)
-          }
+        const result = await rejection(() => invoke("bash_exec", {
+          executionId: "credential-probe-bash",
+          command: "cat ~/.ssh/id_rsa",
+        }))
+        if (result.code !== "TOOL" || !result.message.includes("凭据路径")) {
+          throw new Error(`拒绝原因不是凭据路径: ${result.code ?? "无码"} ${result.message}`)
         }
-        await bashRejected("assistant", [])
-        await bashRejected("pet", ["cat"])
       },
     }],
   }],

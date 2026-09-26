@@ -19,7 +19,7 @@ function probeTool(name: string, projection: "preserve" | "reference", body: str
   return defineTool({
     id: `live-${name}`, name, description: `投影探针 ${name}`,
     parameters: { type: "object", properties: {} },
-    safetyLevel: "SAFE", source: "local", sourceId: "", mode: "pet", actionCategory: "fs.read",
+    safetyLevel: "SAFE", source: "local", sourceId: "", actionCategory: "fs.read",
     policy: {
       version: TOOL_POLICY_VERSION,
       permission: { defaultDecision: "allow" },

@@ -87,7 +87,7 @@ const probe = (id: string, name: string, handler: ToolHandler): ToolDef =>
     id, name,
     description: `地址完整性探针 ${name}：长结果的 L0 投影与回读地址`,
     parameters: { type: "object", properties: {} },
-    safetyLevel: "SAFE", source: "local", sourceId: "", mode: "pet", actionCategory: "_default",
+    safetyLevel: "SAFE", source: "local", sourceId: "", actionCategory: "_default",
     policy: {
       version: TOOL_POLICY_VERSION,
       permission: { defaultDecision: "allow" },

@@ -33,7 +33,7 @@
 import type { FauxResponseStep } from "@earendil-works/pi-ai"
 import { PLAN_STEP_RESULT_ENTRY, type PlanStepResult } from "@/services/agent/memory"
 import { initChat } from "@/services/agent/runner"
-import { generalConfig, planConfig, setOverride } from "@/services/config"
+import { planConfig, setOverride } from "@/services/config"
 import { harnessSlots } from "@/services/engine/pi"
 import { evaluateToolPermission, freezePermissionPolicy } from "@/services/safety"
 import { createNewSession, getActiveSessionId, readPiSessionEntriesOnce } from "@/services/session"
@@ -67,7 +67,6 @@ let sessionA = ""
 let sessionB = ""
 let provider: ReturnType<typeof installFakeProvider> | undefined
 // 原值只捕获一次：上一 trial 若在清理前失败，不能把本场景自己的测试值当成「原值」。
-let assistantBefore: boolean | undefined
 let planEnabledBefore: boolean | undefined
 
 function planJson(): string {
@@ -91,7 +90,7 @@ function turnScript(stepDone: string, mainDone: string, tag: string): FauxRespon
 }
 
 /**
- * 探针工具：轻量模式（pet）下 DANGER 只有声明 `confirm` 才会走确认通道 —— 本场景要的正是
+ * 探针工具：DANGER 由安全模式裁决，默认安全模式（`tell_me`）下走确认通道 —— 本场景要的正是
  * 那条通道（宿主 approve → `allow_session`）。handler 只记录执行事实，不做别的副作用。
  */
 function registerProbeTool(): void {
@@ -101,10 +100,8 @@ function registerProbeTool(): void {
     description: `Live Test danger probe ${TOOL_NAME}`,
     parameters: { type: "object", properties: { target: { type: "string" } }, required: ["target"] },
     safetyLevel: "DANGER",
-    lightweightPolicy: "confirm",
     source: "local",
     sourceId: "",
-    mode: "pet",
     actionCategory: "os.info",
     policy: {
       version: TOOL_POLICY_VERSION,
@@ -141,7 +138,6 @@ async function stepResults(sessionId: string): Promise<PlanStepResult[]> {
 function cleanup(): void {
   unregister(TOOL_ID)
   probeTool = undefined
-  if (assistantBefore !== undefined) setOverride("general.mode.assistant", assistantBefore)
   if (planEnabledBefore !== undefined) setOverride("ai.plan.enabled", planEnabledBefore)
   provider?.restore()
   provider = undefined
@@ -151,7 +147,7 @@ function cleanup(): void {
  * 断言失败时的立即收尾。
  *
  * 运行器遇到失败的断言会 `break` 掉本场景的后续断言（scene-runner），
- * 清理挂在「最后一条断言」的 `finally` 上就永远等不到执行 —— 助手模式与计划开关会跟着
+ * 清理挂在「最后一条断言」的 `finally` 上就永远等不到执行 —— 计划开关会跟着
  * 泄漏进同一个进程里后面的场景，并被 setOverride 的落盘写进开发配置。
  * 所以每条断言自己兜底：任何退出路径都不留配置覆盖。
  */
@@ -217,7 +213,7 @@ const checkGrantBoundToSessionA: AssertCheck = {
     //    清掉本代际的全部 grant —— 子代理的 grant 用真实身份入账才会被这次清理命中（PLAN-03）。
     if (!probeTool) throw new Error("探针工具在断言阶段已注销，场景状态异常")
     const releasedAfterTurn = await evaluateToolPermission(probeTool, PARAMS, {
-      mode: "pet", sessionId: sessionA, runGeneration: generationA, toolCallId: "sf20-after-turn-a",
+      sessionId: sessionA, runGeneration: generationA, toolCallId: "sf20-after-turn-a",
       policy: freezePermissionPolicy(),
     })
     if (releasedAfterTurn.decision !== "ask" || !releasedAfterTurn.request) {
@@ -230,7 +226,7 @@ const checkGrantBoundToSessionA: AssertCheck = {
     sessionB = meta.id
     if (!sessionB || sessionB === sessionA) throw new Error("新建会话没有切换活跃会话")
     const afterSwitch = await evaluateToolPermission(probeTool, PARAMS, {
-      mode: "pet", sessionId: sessionA, runGeneration: generationA, toolCallId: "sf20-after-switch",
+      sessionId: sessionA, runGeneration: generationA, toolCallId: "sf20-after-switch",
       policy: freezePermissionPolicy(),
     })
     if (afterSwitch.decision !== "ask" || !afterSwitch.request) {
@@ -279,7 +275,7 @@ const checkGrantNotReusedAcrossSessions: AssertCheck = {
       // 会话 B 的第二次同参调用命中 B 自己的 grant；回合结束后它也随代际释放（与 ① 同口径）。
       if (!probeTool) throw new Error("探针工具在断言阶段已注销，场景状态异常")
       const releasedAfterTurnB = await evaluateToolPermission(probeTool, PARAMS, {
-        mode: "pet", sessionId: sessionB, runGeneration: generationB, toolCallId: "sf20-after-turn-b",
+        sessionId: sessionB, runGeneration: generationB, toolCallId: "sf20-after-turn-b",
         policy: freezePermissionPolicy(),
       })
       if (releasedAfterTurnB.decision !== "ask" || !releasedAfterTurnB.request) {
@@ -316,11 +312,9 @@ export const 子代理授权范围: SceneDef = {
     probeCalls = []
     sessionA = ""
     sessionB = ""
-    // 计划段只认助手模式（runtime 的计划分支入口条件）；enabled 让场景不依赖用户配置。
-    // 两者都在断言阶段恢复 —— setOverride 会连带写盘，不能把测试值留在开发配置里。
-    assistantBefore ??= generalConfig.assistantMode
+    // 计划段只看 planConfig.enabled（基线把它钉在 false）；显式打开让场景不依赖用户配置。
+    // 原值在断言阶段恢复 —— setOverride 会连带写盘，不能把测试值留在开发配置里。
     planEnabledBefore ??= planConfig.enabled
-    setOverride("general.mode.assistant", true)
     setOverride("ai.plan.enabled", true)
 
     // setup 抛错时运行器直接结束本场景（后面的断言一个都不跑），覆盖必须在这里就收尾

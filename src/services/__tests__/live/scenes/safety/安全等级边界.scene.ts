@@ -1,12 +1,12 @@
 import type { SceneDef } from "../../types"
 import { matchesAnyPattern, BASH_DANGEROUS_PATTERNS, BASH_NOWAY_PATTERNS, FILE_DANGEROUS_PATTERNS, resolveFilePathLevel, evaluateToolPermission, freezePermissionPolicy } from "@/services/safety"
-import type { ToolDef, SafetyLevel } from "@/services/tool"
+import type { ToolDef, SafetyLevel, ToolContext } from "@/services/tool"
 import { defineTool, getTool, TOOL_POLICY_VERSION } from "@/services/tool"
 
 /** 风险等级场景只关心 safetyLevel，策略用最小合法声明；执行体不进公开字段。 */
 const tool = (safetyLevel: SafetyLevel): ToolDef => defineTool({
   id: "test-safety", name: "test_safety", description: "test", parameters: { type: "object", properties: {} },
-  safetyLevel, source: "local", sourceId: "", mode: "pet", actionCategory: "_default",
+  safetyLevel, source: "local", sourceId: "", actionCategory: "_default",
   policy: {
     version: TOOL_POLICY_VERSION,
     permission: { defaultDecision: "passthrough" },
@@ -28,7 +28,7 @@ const scene = (caseId: string, contractId: string, description: string, run: () 
 
 // 会话信任与安全裁决只有 `permission.ts` 一份实现：这里的断言直接打生产裁决入口。
 const context = (overrides: Partial<Parameters<typeof evaluateToolPermission>[2]> = {}) => ({
-  mode: "pet" as const, sessionId: "safety-boundary-session", runGeneration: 1,
+  sessionId: "safety-boundary-session", runGeneration: 1,
   toolCallId: "safety-boundary-call", policy: freezePermissionPolicy(), ...overrides,
 })
 
@@ -45,7 +45,7 @@ export const DANGER拒绝 = scene("safety-danger", "sf-03", "DANGER 轻量模式
   if (result.decision !== "deny") throw new Error(`pet 模式 DANGER 未拒绝: ${result.decision}`)
 }, "deep")
 export const NOWAY拒绝 = scene("safety-noway", "sf-04", "NOWAY 直接拒绝（与信任无关）", async () => {
-  const result = await evaluateToolPermission(tool("NOWAY"), {}, context({ mode: "assistant" }))
+  const result = await evaluateToolPermission(tool("NOWAY"), {}, context())
   if (result.decision !== "deny") throw new Error(`NOWAY 被放行: ${result.decision}`)
 })
 export const 危险命令匹配 = scene("safety-danger-pattern", "sf-05", "危险命令匹配", () => {
@@ -84,7 +84,7 @@ export const 敏感路径匹配 = scene("safety-file-pattern", "sf-07", "敏感�
   ]) {
     if (resolveFilePathLevel(path) !== "NOWAY") throw new Error(`私钥路径未判为 NOWAY: ${path}`)
   }
-  // .env 与系统目录：可由用户确认（不得升成 NOWAY，否则助手模式「用户确认后放行」的语义失效）
+  // .env 与系统目录：可由用户确认（不得升成 NOWAY，否则「用户确认后放行」的语义失效）
   for (const path of [
     "/home/user/.env", "/etc/passwd", "/etc/shadow", "/System/Library/CoreServices", "/Windows/System32/cmd.exe",
     ".env", "~/.env",
@@ -107,7 +107,7 @@ export const 敏感路径匹配 = scene("safety-file-pattern", "sf-07", "敏感�
   if (!readTool?.resolveSafetyLevel || !bashTool?.resolveSafetyLevel) {
     throw new Error("Pi 基础工具未注册 resolveSafetyLevel，分级没有接在生产工具上")
   }
-  const ctx = { mode: "pet" as const }
+  const ctx: ToolContext = {}
   if (readTool.resolveSafetyLevel({ path: "~/.ssh/id_rsa" }, ctx) !== "NOWAY") {
     throw new Error("pi-read 没有把私钥路径提级为 NOWAY")
   }

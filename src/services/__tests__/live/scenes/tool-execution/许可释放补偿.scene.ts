@@ -21,7 +21,7 @@ const TOOL_NAME = "permit_compensation_probe"
 const probe = defineTool({
   id: ID, name: TOOL_NAME, description: "许可补偿探针：独占效果，一次调用即结算",
   parameters: { type: "object", properties: {} },
-  safetyLevel: "SAFE", source: "local", sourceId: "", mode: "pet", actionCategory: "os.info",
+  safetyLevel: "SAFE", source: "local", sourceId: "", actionCategory: "os.info",
   policy: {
     version: TOOL_POLICY_VERSION,
     permission: { defaultDecision: "allow" },

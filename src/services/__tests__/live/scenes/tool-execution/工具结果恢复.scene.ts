@@ -20,7 +20,7 @@ export const 工具结果恢复: SceneDef = {
     tags: ["tool-execution", "compaction", "boundary", "error"] },
   setup: async () => {
     register(defineTool({ id: "test-durable-output", name: "durable_test_output", description: "测试完整工具结果", source: "local", sourceId: "",
-      safetyLevel: "SAFE", actionCategory: "fs.read", mode: "pet", parameters: { type: "object", properties: {} },
+      safetyLevel: "SAFE", actionCategory: "fs.read", parameters: { type: "object", properties: {} },
       policy: {
         version: TOOL_POLICY_VERSION,
         permission: { defaultDecision: "allow" },
@@ -42,9 +42,9 @@ export const 工具结果恢复: SceneDef = {
     // 回读用生产调用链的那一份：reader 是槽上的 readToolResult（runtime.ts 同款）。
     const slot = harnessSlots.peek(getActiveSessionId())
     const tool = createTranscriptTool(entryId => slot ? slot.readToolResult(entryId) : Promise.resolve(undefined))
-    const page = await executeToolDefinition(tool, { eventId: resultEntryId, offset: 8000 }, { mode: "pet" })
+    const page = await executeToolDefinition(tool, { eventId: resultEntryId, offset: 8000 }, {})
     if (!page.success || !page.content.endsWith(BODY.slice(8000, 16000))) throw new Error("分页结果不可恢复")
-    const denied = await executeToolDefinition(tool, { eventId: "another-session-event" }, { mode: "pet" })
+    const denied = await executeToolDefinition(tool, { eventId: "another-session-event" }, {})
     if (denied.success || denied.errorCode !== "not_found") throw new Error("错误 eventId 未被限定在当前会话")
   } }] }, { index: 2, description: "后续回合继续使用完整工具配对", userText: "继续刚才的话题。", checks: [{ type: "expectToolReplay", run: async ctx => {
     if (ctx.output.failure || !ctx.output.reply.includes("回查")) throw new Error("恢复后的上下文无法继续")

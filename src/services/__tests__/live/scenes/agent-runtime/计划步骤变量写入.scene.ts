@@ -35,7 +35,7 @@
 
 import { initChat } from "@/services/agent/runner"
 import { PLAN_STEP_RESULT_ENTRY, type PlanStepResult } from "@/services/agent/memory"
-import { generalConfig, planConfig, setOverride } from "@/services/config"
+import { planConfig, setOverride } from "@/services/config"
 import { getActiveCard, listPersonalities, switchPersonality } from "@/services/personality/registry"
 import { readStagesFile } from "@/services/personality/stages-file"
 import type { CardVariableDef, PersonalityCard } from "@/services/personality/types"
@@ -62,7 +62,6 @@ let targetVar: CardVariableDef | undefined
 let poolBefore: Record<string, string> = {}
 let blocking: ReturnType<typeof registerBlockingTool> | undefined
 // 原值只捕获一次：上一 trial 若在清理前失败，不能把本场景自己设的测试值当成「原值」记下来。
-let assistantBefore: boolean | undefined
 let planEnabledBefore: boolean | undefined
 
 /** card 段的「名字 → 类型 + 值」投影；用 JSON 区分 false 与 "false"。 */
@@ -112,7 +111,6 @@ function runtimeDataBlock(name: string, value: string): string {
 function cleanup(): void {
   blocking?.dispose()
   blocking = undefined
-  if (assistantBefore !== undefined) setOverride("general.mode.assistant", assistantBefore)
   if (planEnabledBefore !== undefined) setOverride("ai.plan.enabled", planEnabledBefore)
 }
 
@@ -210,11 +208,9 @@ export const 计划步骤变量写入: SceneDef = {
     }
     if (!targetVar) throw new Error("切换后仍找不到可写入的 card 段字符串变量")
 
-    // 计划段只认助手模式（runtime 的 plan 分支入口条件）；enabled 让场景不依赖用户配置。
-    // 两者都在首个断言里恢复 —— setOverride 会连带写盘，不能把测试值留在开发配置里。
-    assistantBefore ??= generalConfig.assistantMode
+    // 计划段只看 planConfig.enabled（基线把它钉在 false）；显式打开让场景不依赖用户配置。
+    // 原值在首个断言里恢复 —— setOverride 会连带写盘，不能把测试值留在开发配置里。
     planEnabledBefore ??= planConfig.enabled
-    setOverride("general.mode.assistant", true)
     setOverride("ai.plan.enabled", true)
 
     const name = targetVar.name

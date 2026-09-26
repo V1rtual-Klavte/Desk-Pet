@@ -69,13 +69,13 @@ export const 工具结果存档边界: SceneDef = {
     confirmPolicy: "approve",
   },
   setup: async () => {
-    // 助手模式：pet 模式的首词白名单会把 `seq` 硬拒，本场景要的是「命令真的跑起来并产出 spill」。
-    setOverride("general.mode.assistant", true)
+    // 非白名单命令由安全模式裁决（默认 `tell_me` → 确认），场景声明 confirmPolicy=approve：
+    // 本场景要的是「命令真的跑起来并产出 spill」，确认通道放行即达。
     setOverride("ai.plan.enabled", false)
     register(defineTool({
       id: "live-archive-large", name: LARGE_TOOL, description: "存档边界探针：超内联上限的长结果",
       parameters: { type: "object", properties: {} },
-      safetyLevel: "SAFE", source: "local", sourceId: "", mode: "pet", actionCategory: "fs.read",
+      safetyLevel: "SAFE", source: "local", sourceId: "", actionCategory: "fs.read",
       policy: {
         version: TOOL_POLICY_VERSION,
         permission: { defaultDecision: "allow" },
@@ -116,7 +116,7 @@ export const 工具结果存档边界: SceneDef = {
         // ③ 尾段可回读：offset=56000 必须读到条目尾段（地址是真的，不是装饰）。
         const slot = harnessSlots.peek(getActiveSessionId())
         const tool = createTranscriptTool(entryId => slot ? slot.readToolResult(entryId) : Promise.resolve(undefined))
-        const page = await executeToolDefinition(tool, { eventId: largeEntry.id, offset: 56000 }, { mode: "pet" })
+        const page = await executeToolDefinition(tool, { eventId: largeEntry.id, offset: 56000 }, {})
         if (!page.success) throw new Error(`尾段回读失败: ${page.error ?? page.errorCode}`)
         if (!page.content.endsWith(BODY.slice(56000))) throw new Error("offset=56000 没有读到条目尾段")
 
