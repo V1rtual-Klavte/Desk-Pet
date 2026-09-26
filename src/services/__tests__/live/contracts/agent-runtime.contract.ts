@@ -23,8 +23,8 @@ export const agentRuntimeContract: ModuleContract = {
     "src/services/session/repo.ts",
     "src/services/session/store.ts",
   ],
-  generatedAt: "2026-09-24",
-  sourceHash: "0a40cc511017733ec57992f8dd5964a3a19284700f5617d73bd1cc5347e47aad",
+  generatedAt: "2026-09-26",
+  sourceHash: "12c4a08c8e2f20ffe5469a594a048638575dc1d97c60e4c8f990e05e239fdba6",
   coverage: [
     {
       id: "ar-01",
@@ -109,7 +109,7 @@ export const agentRuntimeContract: ModuleContract = {
     {
       id: "ar-11",
       feature: "中断运行的继续与丢弃",
-      description: "未完成操作在重新附着后默认暂停并暴露中断态：用户选择继续时由未完成操作续跑并产出回复、中断态清除，且续跑前与主回合走同一能力准备入口（重新借用 MCP、预热 Skill 目录），能力不足不以上游「Tool … is unavailable」通用文案上报；选择丢弃时按 aborted 收尾、不重放未知副作用，之后会话照常可用。注：助手下「待重放的工具引用了本次借不到的 MCP 服务器 → 以显式原因失败」这条用户可见路径在 Live 宿主不可验证（恒为 pet 模式且不渲染 UI），场景覆盖的是同一准备入口的 pet 侧代理",
+      description: "未完成操作在重新附着后默认暂停并暴露中断态：用户选择继续时由未完成操作续跑并产出回复、中断态清除，且续跑前与主回合走同一能力准备入口（重新借用 MCP、按目录指纹核对 Skill 清单），能力不足不以上游「Tool … is unavailable」通用文案上报；选择丢弃时按 aborted 收尾、不重放未知副作用，之后会话照常可用。注：「待重放的工具引用了本次借不到的 MCP 服务器 → 以显式原因失败」这条用户可见路径在 Live 宿主不可验证（宿主不渲染 UI，也构造不出「借不到 MCP」的运行），场景覆盖的是同一准备入口的代理；场景另断言恢复后披露块仍含探针技能，但「只有恢复路径自己的准备才能重新加载它」在指纹核对模型下已不可证明（原先的冷目录前置已移除，语义重写归 T19）",
       why: "进程被杀后无人决定的运行既不能自动重放（未知副作用），也不能把用户卡在一个没有出口的中断态里；恢复前能力面必须重新准备，否则续跑会拿中断前的旧能力面去重放",
       depth: "deep",
       scenarios: ["runtime-interrupt-resume", "runtime-interrupt-discard", "runtime-resume-capability-prep"],
@@ -117,7 +117,7 @@ export const agentRuntimeContract: ModuleContract = {
     {
       id: "ar-12",
       feature: "空闲输入的持久身份与来源标记",
-      description: "空闲路径的用户输入同样带 `deskpetEventId` 身份并进入投递证据链；输入在计划与预检之前提交为会话条目（用户条目 `seq` 早于其 `deskpet.plan_checkpoint`），预检失败时输入条目保留、已接受操作按取消结算。规划回合经生产入口的 `--plan` 强制触发进入 —— 该路径同时验证前缀剥离不得先于复杂度判定（2026-09-24 W5 修正 `runPiAgentTurn` 的剥离时机）",
+      description: "空闲路径的用户输入同样带 `deskpetEventId` 身份并进入投递证据链；输入在计划与预检之前提交为会话条目（用户条目 `seq` 早于其 `deskpet.plan_checkpoint`），预检失败时输入条目保留、已接受操作按取消结算。规划回合经生产入口的 `--plan` 强制触发进入 —— 该路径同时验证前缀剥离不得先于复杂度判定（2026-09-24 W5 修正 `runPiAgentTurn` 的剥离时机）；计划段由 `planConfig.enabled` 单独把守（模式已删除、该开关出厂为 true），Live 基线把它钉在 false，要走计划段的场景在 setup 里显式打开",
       why: "P6 的 memory_source 追溯要求用户输入条目自带身份与 eligibleForMemory/taint 标记；裸字符串输入让证据链对空闲发送永远返回 undefined",
       depth: "deep",
       scenarios: ["runtime-idle-input-identity", "runtime-input-durable-before-plan"],
@@ -185,6 +185,14 @@ export const agentRuntimeContract: ModuleContract = {
       why: "引擎一旦改成发硬编码文本，Card 的定制语气就静默失效且界面看不出差别；反过来，不发事件会让状态行永远停在上一条工具提示上",
       depth: "shallow",
       scenarios: ["runtime-stage-hint-thinking"],
+    },
+    {
+      id: "ar-21",
+      feature: "技能显式调用的准入回合",
+      description: "`/skill <技能名> [额外指示]` 走同一条生产入口启动技能：命令层只交出准入意图（预处理返回 `handled:false` + `skillAdmission`，不当成「已处理的文本」短路），落盘与驱动由运行入口完成 —— lane 的技能资源清单先于 `accept` 下发（清单取自技能目录指纹核对入口的生效快照），那条 `role:\"user\"` 正文由 Pi 在 `accept` 内按技能文件构造并提交，所以这条回合不给 `deskpetEventId` 身份、不再追加第二份宿主正文与用户气泡、也不产生投递证据（条目不是宿主构造的，套一份身份只会造出查不到的假证据）；条目提交成立后才按当前 Card 报一次 skillStarted 系统消息。忙碌（lane 上还有未结算操作）时启动不了技能：按并发拒绝如实回复、不谎称已启动、也不把字面 `/skill …` 当普通文本投进 lane，且不落任何条目；准入在边界上失败（清单在启动瞬间变化 → UnknownSkill）按 admission 失败 + llmUnavailable 兜底结算，留痕带技能名。命令层的参数解析与「未知名 / 被关闭 / 无正文」三种终态句不在本覆盖点（属斜杠命令面，且该面暂无契约覆盖）",
+      why: "技能是用户显式启动的一次输入，但它的正文不由宿主提供：把「已启动」当成一条文本命令的回复、或给 Pi 构造的条目套一份查不到的身份，都会让证据链与用户看到的东西对不上；而忙碌期把它当普通文本投进 lane 会让模型看到命令行而不是技能正文",
+      depth: "deep",
+      scenarios: ["runtime-skill-admission"],
     },
   ],
   rules: { minScenarios: 6, minDeepScenarios: 6, requireBoundary: true, requireErrorPath: false },
