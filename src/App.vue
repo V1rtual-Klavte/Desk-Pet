@@ -693,9 +693,6 @@ onMounted(async () => {
       await initDebug();
       await unregisterShortcut();
       await registerShortcut();
-      // 配置快照变化不能复用旧 catalog；在飞回合仍持有自己的已冻结 prompt。
-      const { invalidateSkillCatalog } = await import("@/services/skill");
-      invalidateSkillCatalog("config");
       log.debug("配置缓存已刷新 + Debug状态已更新 + 快捷键已重注册 + 光标追踪已按 effectMode 同步");
     });
   } catch (error) {
