@@ -23,6 +23,6 @@ Desk-Pet 的运行时验证以 [Live Test 使用规范](../../src/services/__tes
 
 ## 未验证边界
 
-- 恢复中断运行时「MCP 不可用 → 显式提示」的异常路径（FIX-61）：无法由现有场景直接验证的前提是**测试宿主不渲染 UI**（与运行模式无关），这条用户可见失败因此没有可直接断言的观测面。代理由 `runtime-resume-capability-prep` 覆盖：恢复路径确实重新执行能力准备（Skill 目录在恢复后可用），且会话里不落上游「Tool … is unavailable」通用文案。
+- 恢复中断运行时「MCP 不可用 → 显式提示」的异常路径（FIX-61）：无法由现有场景直接验证，缺的是**前提不可构造**——它要求中断运行里待重放的工具是 `mcp_*` 且其服务器本次借不到（`pendingInterruptedToolNames` 与本次能力准备的 `unavailableMcp` 取交集），而 Live 场景没有连接真实 stdio MCP 服务器（`MCP大结果回读` 只在传输边界替换 `callTool`）。这条失败不是「只存在于界面呈现」：运行入口先 `appendAssistantMessage` 落成普通助手条目（`stopReason: "stop"`，读模型可见），再把它作为 `reply` 返回，观测面存在。代理由 `runtime-resume-capability-prep` 覆盖：恢复路径确实重新执行能力准备（Skill 目录在恢复后可用），且会话里不落上游「Tool … is unavailable」通用文案。
 
 最新集中验证证据与仍存缺口记录在[未完成工作与已知缺口](../plans/active/未完成工作与已知缺口.md#6-当前验证证据)。
