@@ -131,9 +131,11 @@ pnpm run test:release # 类型/编译 + Rust 单测 + 严格 Contract + 三次 t
 - 使用 Pi AgentHarness 原生 hook（`before_tool` / `after_tool` / `transform_context` / `before_compaction` 等）；不重建无消费者的 HookBus。
 - PermissionKernel 终裁 allow/ask/deny；passthrough 只能继续策略链，不能直接执行。MCP 走 passthrough。
 - deny-first；确认与授权绑定会话、代际、精确参数、策略和有效期，变更后重审；摘要不能恢复授权。
-- Rust 保留最终路径与 Bash 安全基线，助手模式不能关闭；网络边界不得夸大为通用沙箱。
-- Skill 初始只读有界元数据，正文经 read 按需读取；Skill 不提升权限。MCP 按运行借用并释放。
-  启动不加载 Skill 正文、不连接 MCP、不隐式启动记忆 LLM 整理。
+- Rust 保留最终路径裁决与 Bash 安全基线（层 1 硬基线 + 系统路径保护 + 凭据拦截），调用方不可关闭；
+  网络边界不得夸大为通用沙箱。
+- Skill 清单由 Pi loader 维护：每回合核对一次目录指纹（不读正文），指纹变了才重载（重载时读入
+  正文）；进请求的只有 name/description/location 披露块，正文在 `/skill` 显式调用或模型 read
+  时才进入对话；Skill 不提升权限。MCP 按运行借用并释放；启动不连接 MCP、不隐式启动记忆 LLM 整理。
 
 ## 日志、异常与 IPC
 

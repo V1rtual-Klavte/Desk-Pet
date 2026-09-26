@@ -40,7 +40,7 @@ AGENTS 维持全局规则入口，CLAUDE 只导入它；模块细节通过任务
 
 - [未完成工作与已知缺口](plans/active/未完成工作与已知缺口.md)：**唯一未完成工作总表**——Pi 剩余批次、平台与发布、已知代码缺口、验证缺口、P6 与当前验证证据。
 - [P6 目标契约](plans/active/记忆系统运行时契约.md)：候选、来源、受控召回、纠正/遗忘与评测要求；这些目标尚未成为运行时能力。
-- [Skill 与 Tool 收敛及模式统一方案](plans/active/Skill与Tool收敛及模式统一方案.md)：把 skill 换成 Pi 原生三层、tool 面优化与补齐、移除 pet/assistant 双模式的实施前方案（决策已定，尚未实施）。
+- [Skill 与 Tool 收敛及模式统一方案](plans/active/Skill与Tool收敛及模式统一方案.md)：把 skill 换成 Pi 原生三层、tool 面优化与补齐、移除 pet/assistant 双模式的方案；2026-09-26 已实施，归档后入口移至 `history/implementation/`。
 
 ## 历史入口
 
