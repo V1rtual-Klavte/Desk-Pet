@@ -8,7 +8,7 @@
 // 白名单与 Shell 组合语法属于**分级**问题（免确认还是走确认），不是拒绝问题，
 // 已归 TS 侧的 `classifyBashRisk`：不在白名单只意味着要走确认，不是拒绝。
 // 所以这里既没有 scope 也没有 whitelist 入参 —— 旧实现把「策略强度」编码成
-// 前端传入的 scope/白名单，助手侧能整段跳过校验；而 `bash_exec` 是注册过的 IPC
+// 前端传入的 scope/白名单，调用方能整段跳过校验；而 `bash_exec` 是注册过的 IPC
 // 命令，任何 WebView 侧代码都能自证弱化。`enforce_bash_policy` 现在只接收命令
 // 本身，没有可传弱的旋钮。
 //
@@ -51,7 +51,7 @@ fn deny(reason: impl std::fmt::Display) -> AppResult<()> {
 // ─────────────────────────────────────────────
 
 /// 绝不执行的操作：递归删除根/家目录、磁盘格式化、dd 直接读写设备、
-/// 系统电源命令、fork bomb。与 scope 无关。
+/// 系统电源命令、fork bomb。无条件拒绝。
 fn deny_hard_floor(command: &str, tokens: &[Token]) -> AppResult<()> {
     let parts = split_segments(tokens);
     for (index, (_, segment)) in parts.iter().enumerate() {
@@ -111,8 +111,8 @@ fn deny_hard_floor(command: &str, tokens: &[Token]) -> AppResult<()> {
 /// 参数级破坏性开关。
 ///
 /// **关键设计**：这些禁项不与「哪个二进制」绑定，而是对全体 token 生效，
-/// 所以 `find`、`fd`、`xargs`、`rsync` 一并覆盖；未来白名单里加任何命令
-/// 都不需要重新审一遍参数。
+/// 所以 `find`、`fd`、`xargs`、`rsync` 一并覆盖；将来往免确认通道（TS 的
+/// `tools.bash.whitelist`）里加任何命令，都不需要重新审一遍参数。
 fn deny_destructive_flags(tokens: &[Token]) -> AppResult<()> {
     for token in tokens {
         if token.operator {
@@ -174,8 +174,8 @@ fn deny_destructive_flags(tokens: &[Token]) -> AppResult<()> {
 
 /// 与 `deny_destructive_flags` 并列的硬基线：命令行里出现凭据路径 token 就拒绝。
 ///
-/// **两种 scope 共用且调用方不可关闭** —— 凭据泄露与「命令做什么」无关，
-/// 读一次就足够，没有可确认的余地，所以走层 1 而不是层 2 的确认通道。
+/// **无条件且调用方不可关闭** —— 凭据泄露与「命令做什么」无关，
+/// 读一次就足够，没有可确认的余地，所以归层 1 硬基线，不参与分级确认。
 ///
 /// 判定用 `paths.rs::is_credential_path`，与文件工具共享同一条规则文本。
 /// token 来自 `expand_tokens`，`sh -c '…'`、`eval`、`$()` 的内容已经是独立 token，

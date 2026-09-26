@@ -278,7 +278,7 @@ export function planEffectClassFor(allowedTools?: string[]): PlanEffectClass {
 
 // ── 计划执行 ──
 
-/** 步骤工具解析报告（FIX-51）：工具名解析不到，或步骤未限定工具而放大到全部已注册工具。 */
+/** 步骤工具解析报告（FIX-51）：工具名解析不到（含解析到但到不了子代理的派生型工具），或步骤未限定工具而放大到全部已注册工具。 */
 export type StepToolNotice =
   | { kind: "missing_tools"; names: string[] }
   | { kind: "unbounded_tools" }
@@ -288,7 +288,8 @@ export interface ExecutePlanCallbacks {
   onStepDone(step: PlanStep, result: PiSubAgentOutput): Promise<void> | void
   onStepFailed(step: PlanStep, error: string): Promise<"continue" | "abort">
   /**
-   * 步骤开工前的工具解析报告：解析不到工具名、或未限定 `allowedTools` 时各调一次。
+   * 步骤开工前的工具解析报告：工具名解析不到（含解析到但到不了子代理的派生型工具）、
+   * 或未限定 `allowedTools` 时各调一次。
    * 权限面变化必须可见（不静默）——由宿主据此写计划进度事件与系统消息。
    */
   onStepNotice?(step: PlanStep, notice: StepToolNotice): Promise<void> | void

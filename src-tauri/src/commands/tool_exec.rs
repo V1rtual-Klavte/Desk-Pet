@@ -1170,7 +1170,9 @@ fn get_memory_info() -> (u64, u64, u64) {
         let used = (active + wired + compressed) * page_size;
 
         // 可用内存: macOS 没有 Linux 的 MemAvailable；用「空闲 + 非活跃 + speculative(可回收)」
-        // 页近似「不用换页即可分配」的量（Activity Monitor 的可用口径）。
+        // 页近似「不用换页即可分配」的页集（reclaimed-without-paging）。
+        // 刻意不按 Activity Monitor 的 Cached Files 口径：它还含 `Pages purgeable`，而 purgeable
+        // 是 active/inactive 的子集，再加一遍会重复计。
         // 这三类与 used 的三类在 vm_stat 里互斥，所以它是独立口径而不是 total - used。
         let available = (free + inactive + speculative) * page_size;
 
