@@ -7,8 +7,8 @@ export const harnessStorageContract: ModuleContract = {
     "src/services/tool/pi/tauri-execution-env.ts",
     "src/services/session/repo.ts",
   ],
-  generatedAt: "2026-09-24",
-  sourceHash: "e7661c6ded0c314cddc64bdb697c74ea3fd639d5e263ac11ac4e93947d553e65",
+  generatedAt: "2026-09-26",
+  sourceHash: "6a9bb8106b78717ccb12d170fc151c6b46dd35830c2eb966689f37b98e300350",
   coverage: [
     {
       id: "hs-01",
@@ -21,7 +21,7 @@ export const harnessStorageContract: ModuleContract = {
     {
       id: "hs-02",
       feature: "TauriExecutionEnv FileSystem 补全",
-      description: "readTextFile/writeFile/appendFile/renameFile/createDir/remove/createTempDir/listDir 经真实 Rust 命令完成且不 throw（失败以 Result 返回）；失败按 Rust 结构化错误码归类而不是拿 message 猜：PATH_NOT_FOUND→not_found、SENSITIVE_PATH 与 PATH_ESCAPE→permission_denied、NOT_ABSOLUTE→invalid，未列出的码（如 TOOL/IO，如「目标不是常规文件」）如实保持 unknown；rename 原子替换已存在目标；remove 遵守 recursive/force（force 时缺失算成功，目录需 recursive）；createDir 默认递归；listDir 直接返回绝对 path、size、mtimeMs 与 file/directory/symlink 三值 kind",
+      description: "readTextFile/writeFile/appendFile/renameFile/createDir/remove/createTempDir/listDir 经真实 Rust 命令完成且不 throw（失败以 Result 返回）；失败按 Rust 结构化错误码归类而不是拿 message 猜：PATH_NOT_FOUND→not_found、SENSITIVE_PATH 与 PATH_ESCAPE→permission_denied、NOT_ABSOLUTE→invalid，未列出的码（如 TOOL/IO，如「目标不是常规文件」）如实保持 unknown；rename 原子替换已存在目标；remove 遵守 recursive/force（force 时缺失算成功，目录需 recursive）；createDir 默认递归；listDir 直接返回绝对 path、size、mtimeMs 与 file/directory/symlink 三值 kind。构造签名是 new TauriExecutionEnv(cwd)（模式参数已删，决策 5）。所有读写都下发 MAX_TOOL_FILE_BYTES = 5 MB 的硬上限（readTextFile/readBinaryFile 的读上限，writeFile/file_append 的单次写上限）—— 它是会话条目写盘的**唯一物理上限**，MCP 的一次性截断删除后大结果全靠它兜底：超限时 Rust 如实报错、**不做静默截断**（§8.8 的裁定。注：正好超限被拒这条边界未由本点的场景断言）",
       why: "JsonlSessionRepo 的原子发布依赖 append+rename，list 依赖完整 FileInfo 字段，能力缺口会让会话无法落盘或无法恢复；错误码是调用方唯一的分类依据，文案随实现漂移",
       depth: "deep",
       scenarios: ["harness-execution-env-filetree"],

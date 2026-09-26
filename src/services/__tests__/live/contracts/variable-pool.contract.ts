@@ -3,10 +3,10 @@ import type { ModuleContract } from "../types"
 export const variablePoolContract: ModuleContract = {
   module: "variable-pool",
   sourceFiles: ["src/services/engine/pi/runtime.ts", "src/services/personality/variable-pool.ts", "src/services/personality/types.ts", "src/services/personality/stages-file.ts", "src/services/reply/generator.ts", "src/services/session/store.ts"],
-  generatedAt: "2026-09-24",
-  sourceHash: "6e4adba2c4533402eeb41a6a80ef2a8583fe91da18f04187ef314ee1083d8be3",
+  generatedAt: "2026-09-26",
+  sourceHash: "edf74ef0707fb988fc898b709138885507c91f2e1b32e8c86f9dc0fb7b96327f",
   coverage: [
-    { id: "vp-01", feature: "系统变量计算", description: "computeSystemVariables 计算6个系统变量", why: "Prompt 注入基础", depth: "shallow", scenarios: ["variable-system-vars"] },
+    { id: "vp-01", feature: "系统变量计算", description: "computeSystemVariables(now, activeCardId) 产出 6 个系统变量：5 个由本地时间派生（hour / minute / dayOfWeek / isNightTime / isWeekend）+ activeCardId。**没有模式派生变量** —— pet/assistant 双模式与 general.mode 已全链删除，系统变量集合与删除前逐项一致，这是本轮重分析专门核对过的负向结论（含模式字段的注入点只剩 Card 变量与互动状态）", why: "Prompt 注入基础；模式面删除后必须确认系统变量集合没有跟着漂移，否则 Prompt 里会留下已不存在的维度", depth: "shallow", scenarios: ["variable-system-vars"] },
     { id: "vp-02", feature: "变量池初始化", description: "initVariablePool 从Card variableDefs初始化", why: "Card切换和重启时正确构建", depth: "deep", scenarios: ["variable-pool-init"] },
     { id: "vp-03", feature: "变量池刷新", description: "refreshVariablePool 重新计算系统变量", why: "每轮对话前刷新", depth: "deep", scenarios: ["variable-pool-refresh"] },
     { id: "vp-04", feature: "RUNTIME_DATA 写入变量池", description: "真实模型按提示发出 RUNTIME_DATA 后，池里的值与请求一致（字符串按 coerceValue 规则去引号比较）且 updatedBy=llm；模型未请求写入的那一轮放过，但整场至少要有一次，否则视为链路未被验证", why: "回复生成器拥有变量写入边界；断言模型自发每轮都写属于模型行为而非引擎契约", depth: "deep", scenarios: ["variable-affection-praise"] },
