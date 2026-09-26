@@ -31,7 +31,7 @@ export function registerAll(cmds: RegisteredSlashCommand[]): void {
  * 命令名之后是否直接跟着分隔空白，并返回余下的参数文本。
  *
  * `skill foo` / `skill  foo` / `skill\tfoo` → "foo"；光秃秃的 `skill` 与把命令名当普通单词
- * 一部分的 `skillfoo` → undefined（都不是带参调用）。拆参数只有这一处：`find()` 与 `search()` 共用。
+ * 一部分的 `skillfoo` → undefined（都不是带参调用）。拆参数只有这一处，只有 `find()` 用它。
  */
 function argsAfter(input: string, name: string): string | undefined {
   if (!input.startsWith(name)) return undefined
@@ -67,8 +67,12 @@ export function find(input: string): SlashInvocation | undefined {
  * 模糊搜索命令（用于下拉框提示）。
  * 返回按匹配度排序的结果：
  *  - score=3: 完全匹配
- *  - score=2: 命令名以输入开头；或输入已经进入可带参数命令的参数段（`/skill foo`）
+ *  - score=2: 命令名以输入开头
  *  - score=1: 命令名或描述包含输入
+ *
+ * 已进入参数段的输入（`/skill foo`）一律不给候选：ChatPanel 只要下拉框非空就会拦下 Enter，
+ * 用命令名覆盖输入框（`autofillSlashCommand` 的 `input.value = "/" + name`），
+ * 挂住同一个名字只会把用户已经打好的参数抹掉。命令名的发现职责在参数段之前就已完成。
  */
 export function search(partial: string): SlashMatch[] {
   const lower = partial.toLowerCase()
@@ -78,9 +82,6 @@ export function search(partial: string): SlashMatch[] {
     if (cmd.name === lower) {
       results.push({ command: cmd, score: 3 })
     } else if (cmd.name.startsWith(lower)) {
-      results.push({ command: cmd, score: 2 })
-    } else if (cmd.acceptsArgs && argsAfter(lower, cmd.name) !== undefined) {
-      // 输入已在写参数：命令仍是当前候选，不让下拉框在打字中途消失。
       results.push({ command: cmd, score: 2 })
     } else if (cmd.name.includes(lower) || cmd.description.toLowerCase().includes(lower)) {
       results.push({ command: cmd, score: 1 })

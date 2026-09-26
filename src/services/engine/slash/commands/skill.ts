@@ -7,6 +7,7 @@
 // ==========================================
 
 import type { SlashCommand, SlashCommandResult } from "../types"
+import { summarizeError } from "@/services/error"
 import { getCommandReply } from "@/services/personality"
 import { getSkillCatalogError, listSkills, syncSkillCatalog } from "@/services/skill"
 
@@ -43,7 +44,8 @@ export const skillCommand: SlashCommand<SlashCommandResult> = {
     const catalogError = getSkillCatalogError()
     if (catalogError) {
       // 系统故障中性报出：不套 Card 的终态句（「未找到该技能」会把读取失败说成技能不存在）。
-      return `技能索引不可用，技能没有启动：${catalogError}`
+      // 这条回复由 runner 经 pushSystemMessage 落盘（deskpet.system_message），按落盘口径用脱敏摘要。
+      return `技能索引不可用，技能没有启动：${summarizeError(catalogError)}`
     }
 
     const skill = listSkills().find(candidate => candidate.name === name)
