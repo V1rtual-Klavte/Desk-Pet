@@ -53,6 +53,11 @@ const FALLBACK_COMMANDS: CommandReplies = {
   compactClosed: "会话运行不可用，无法压缩。",
   compactPending: "还有消息在排队，先处理完再压缩。",
   compactFailed: "压缩失败",
+  // /skill 的终态句只说终态，技能名与诊断事实由命令层作中性明细附在其后
+  skillStarted: "技能已加入本次对话",
+  skillUnknown: "未找到该技能",
+  skillEmpty: "该技能没有可用的正文内容",
+  skillDisabled: "该技能已被关闭",
 }
 
 export const FALLBACK_STAGES: StageMap = {
@@ -164,6 +169,7 @@ export function pickActiveGreeting(): string | null {
 export const COMMAND_KEYS: ReadonlyArray<keyof CommandReplies> = [
   "clear", "memoryCleared", "compactCompleted", "compactDeclined",
   "compactNothing", "compactBusy", "compactClosed", "compactPending", "compactFailed",
+  "skillStarted", "skillUnknown", "skillEmpty", "skillDisabled",
 ]
 
 /** 系统兜底回复的全部键 —— 同上，单一清单 */

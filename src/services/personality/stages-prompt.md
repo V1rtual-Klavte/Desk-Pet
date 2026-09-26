@@ -41,6 +41,10 @@
 - compactClosed: 会话运行不可用，无法压缩
 - compactPending: 队列里还有没处理完的消息，要先处理完才能压缩
 - compactFailed: 压缩失败
+- skillStarted: /skill 显式调用成功，这个技能的正文已经加入本次对话
+- skillUnknown: 用户指定的技能名不存在，命令没能执行
+- skillEmpty: 技能存在但正文为空，没有可加载的内容
+- skillDisabled: 技能存在但被用户关掉了，命令没能执行
 
 [系统兜底提示语 (fallbacks)]
 当系统遇到异常情况时，会用这些文案告知用户。请在保持角色语气的前提下生成。
@@ -72,6 +76,7 @@
 - fallbacks 中 llmUnavailable 必须是字符串数组（2-3 条），其他 key 为字符串。
 - greetings 必须是字符串数组（2-3 条），每条都应是完整的招呼句。
 - commands 的每个 key 都必须是字符串。
+- commands 的 skill* 三条失败句里不要写技能名：技能名由命令层作中性明细附在句后。
 - 不要省略字段，不要输出空字符串。
 
 必须严格输出以下 JSON 结构，并重写所有字符串 value：
@@ -120,7 +125,11 @@
     "compactBusy": "",
     "compactClosed": "",
     "compactPending": "",
-    "compactFailed": ""
+    "compactFailed": "",
+    "skillStarted": "",
+    "skillUnknown": "",
+    "skillEmpty": "",
+    "skillDisabled": ""
   },
   "fallbacks": {
     "concurrentRejected": "",

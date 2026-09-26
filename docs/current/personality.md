@@ -28,7 +28,7 @@ card/interaction 状态保存在 `personality/stages/{cardId}.json` 的变量区
 |---|---|---|
 | `getStagePrompt(stage, category)` | `executing` / `done` / `blocked` 的工具类别映射 | ChatPanel 的工具状态提示位 |
 | `getSimpleStage(key)` | `thinking` / `planning` / `error` / `retry` 状态行 | 同上（`thinking` 来自每轮 `turn_start`，`planning` 来自计划阶段入口，`retry` 来自 Harness `retry_start`） |
-| `getCommandReply(key)` | `commands` 段的 slash 命令输出 | `/clear`、`/memory clean`、`/compact` |
+| `getCommandReply(key)` | `commands` 段的 slash 命令输出 | `/clear`、`/memory clean`、`/compact`、`/skill` |
 | `getFallbackReply(key)` | `fallbacks` 段的异常兜底正文 | 运行内核各失败出口 |
 
 引擎只经 `deskpet-stage-hint { sessionId, stage }` 发语义 key，文案由界面按当前 Card 取 —— 与 `tool-executing` 同一条口径，引擎不持有第二份台词。`commands` 里带计数与错误插值的明细行保持中性：插值内容是诊断事实，角色化会让用户分不清「真的排了几条」和「角色在说话」。系统消息与错误诊断同样保持中性（角色台词会掩盖故障）。

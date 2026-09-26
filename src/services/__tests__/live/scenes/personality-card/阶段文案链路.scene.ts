@@ -17,6 +17,8 @@ const PROBE_STAGES: StageMap = {
     compactCompleted: "探针压缩完成", compactDeclined: "探针未压缩", compactNothing: "探针无可压缩",
     compactBusy: "探针压缩忙", compactClosed: "探针会话不可用", compactPending: "探针排队未清空",
     compactFailed: "探针压缩失败",
+    skillStarted: "探针技能已加入", skillUnknown: "探针技能不存在", skillEmpty: "探针技能无正文",
+    skillDisabled: "探针技能已关闭",
   },
   fallbacks: {
     concurrentRejected: "探针忙", maxRetriesExhausted: "探针重试失败", turnTimeout: "探针超时",
