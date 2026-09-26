@@ -3,7 +3,7 @@
 // 所有系统级工具调用通过此模块桥接到 OS
 // ==========================================
 
-use super::bash_policy::{enforce_bash_policy, BashPolicy};
+use super::bash_policy::enforce_bash_policy;
 use crate::error::{err, AppError, AppResult};
 use crate::rust_debug;
 use std::collections::HashMap;
@@ -76,8 +76,9 @@ impl Drop for PoolGuard {
 
 /// 执行 bash 命令
 ///
-/// `policy` 必填：策略强度不再由前端「是否受限」的布尔值决定，
-/// scope 只能叠加层 2 规则，硬基线（bash_policy 的层 1）恒定执行。
+/// 不含策略入参：Rust 只跑固定的安全基线（bash_policy 的层 1 + 系统路径保护 +
+/// 凭据拦截），调用方没有可传弱或可关闭的旋钮。「哪些命令要确认」是分级问题，
+/// 由 TS 的 `classifyBashRisk` 决定，与这里的拒绝判定无关。
 ///
 /// 命令体是同步阻塞的（等子进程 + 轮询），必须搬进 `spawn_blocking`：
 /// 直接挂在 async worker 上，等待期间会把运行时的调度线程占死。
@@ -89,14 +90,13 @@ pub async fn bash_exec(
     cwd: Option<String>,
     execution_id: Option<String>,
     timeout_ms: Option<u64>,
-    policy: BashPolicy,
     max_bytes: Option<usize>,
     max_lines: Option<usize>,
     spill: Option<bool>,
 ) -> AppResult<BashResult> {
     let pool = pool.inner().clone();
     tauri::async_runtime::spawn_blocking(move || {
-        run_bash(pool, command, cwd, execution_id, timeout_ms, policy, max_bytes, max_lines, spill)
+        run_bash(pool, command, cwd, execution_id, timeout_ms, max_bytes, max_lines, spill)
     })
     .await
     .map_err(|e| AppError::Io(format!("bash 执行任务失败: {e}")))?
@@ -109,12 +109,11 @@ fn run_bash(
     cwd: Option<String>,
     execution_id: Option<String>,
     timeout_ms: Option<u64>,
-    policy: BashPolicy,
     max_bytes: Option<usize>,
     max_lines: Option<usize>,
     spill: Option<bool>,
 ) -> AppResult<BashResult> {
-    enforce_bash_policy(&command, policy.scope, &policy.whitelist)?;
+    enforce_bash_policy(&command)?;
     // 调用方未提供执行 ID 时按进程号生成一个临时 ID（仅用于进程表登记与临时文件名）。
     let execution_id = execution_id.unwrap_or_else(|| format!("adhoc-{}", std::process::id()));
     if !execution_id
@@ -259,7 +258,7 @@ fn run_bash(
 
 // 旧的内联策略已移入 bash_policy.rs：
 // 子串匹配（`rm -rf /` 之类）既漏 `rm  -rf  /`、`find ~ -delete`，
-// 又误杀 `rm -rf /Users`，且助手模式整段跳过。
+// 又误杀 `rm -rf /Users`。
 
 /// 取消的池内路径。
 ///
@@ -1921,8 +1920,6 @@ mod tests {
     // 要造失败得先破坏 PATH 或句柄表，代价与收益不成比例）：它与其它提前返回走的是
     // 同一个 `_guard`，由 `bash_invalid_cwd_leaves_no_pool_entry` 等价覆盖。
 
-    use crate::commands::bash_policy::BashScope;
-
     /// 本模块用例的临时目录（跨平台）：同一条用例的文件都落在这里，结束时整体删除。
     /// 放在系统 temp 下：它本就在允许根（home/temp）内，用例才有机会走到类型判定，
     /// 而不是被 `PATH_ESCAPE` 提前拦下。FIFO 用例同样用它 —— 平台专有的是 FIFO 本身，
@@ -1943,13 +1940,6 @@ mod tests {
     /// 池条目的直接视图。锁中毒也恢复出来：断言不该因为别的用例 panic 而误报。
     fn slots(pool: &BashPool) -> std::sync::MutexGuard<'_, HashMap<String, BashSlot>> {
         pool.0.lock().unwrap_or_else(|e| e.into_inner())
-    }
-
-    fn assistant_policy() -> BashPolicy {
-        BashPolicy {
-            scope: BashScope::Assistant,
-            whitelist: Vec::new(),
-        }
     }
 
     /// 「先等一段时间、再留下探针文件」的命令：给「spawn 后立即终止」留出可判定的窗口。
@@ -1985,7 +1975,6 @@ mod tests {
             Some(dir.to_string_lossy().to_string()),
             Some("control-probe".into()),
             None,
-            assistant_policy(),
             None,
             None,
             None,
@@ -2010,7 +1999,6 @@ mod tests {
             Some(dir.to_string_lossy().to_string()),
             Some(id),
             None,
-            assistant_policy(),
             None,
             None,
             None,
@@ -2038,7 +2026,6 @@ mod tests {
             None,
             Some("policy-reject".into()),
             None,
-            assistant_policy(),
             None,
             None,
             None,
@@ -2065,7 +2052,6 @@ mod tests {
             Some(plain.to_string_lossy().into_owned()),
             Some("invalid-cwd".into()),
             None,
-            assistant_policy(),
             None,
             None,
             None,
