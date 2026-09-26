@@ -94,11 +94,33 @@ export const CHAT_THINKING_HINTS: Record<"low" | "high", string> = {
  */
 export const ONE_SHOT_LOW_EFFORT_HINT = "\n\n[请快速简要回答，不需要过多思考]"
 
-/** 变量池正文 + 思考强度后缀的唯一拼接点（聊天动态提示与冻结上下文都走它）。 */
+/** 星期文案的唯一取用点，下标即 `Date.getDay()` 的口径（0 = 周日）。 */
+const WEEKDAY_LABELS = ["周日", "周一", "周二", "周三", "周四", "周五", "周六"] as const
+
+/**
+ * 当前日期与时间的唯一取用点。**定长**：`[当前时间] YYYY-MM-DD HH:mm 周X`，恒为 26 字符
+ * （约 11 tokens：非 ASCII 1 token/字符、ASCII 1/4 token），不随输入或窗口变化。
+ *
+ * 分钟精度足够：秒级不给出额外信息，只会让每个回合的请求视图都不同。
+ */
+function currentTimeNote(now: Date = new Date()): string {
+  const pad = (value: number) => String(value).padStart(2, "0")
+  return `[当前时间] ${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())} `
+    + `${pad(now.getHours())}:${pad(now.getMinutes())} ${WEEKDAY_LABELS[now.getDay()]}`
+}
+
+/**
+ * 变量池正文 + 思考强度后缀 + 当前时间的唯一拼接点（聊天动态提示与冻结上下文都走它）。
+ *
+ * 时间片段排在末尾：它每回合都变，排在它之后的内容会一起失去 Provider 的前缀缓存收益，
+ * 而变量池正文在变量没变时是稳定的。它落在 dynamic 层的 `dynamic:runtime` 核心块里
+ * （`buildPrompt`），定长规模，不会把核心块撑爆；也不进 static 前缀与 `cache.prefixHash`。
+ */
 export function composeDynamicPrompt(poolText: string, effort: ThinkingEffort): string {
-  if (effort === "low") return `${poolText}${CHAT_THINKING_HINTS.low}`
-  if (effort === "high") return `${poolText}${CHAT_THINKING_HINTS.high}`
-  return poolText
+  const withEffort = effort === "low" ? `${poolText}${CHAT_THINKING_HINTS.low}`
+    : effort === "high" ? `${poolText}${CHAT_THINKING_HINTS.high}`
+      : poolText
+  return `${withEffort}\n${currentTimeNote()}`
 }
 
 function runtimeDynamicPrompt(pool: VariablePool, effort: ThinkingEffort): string {

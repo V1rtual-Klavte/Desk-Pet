@@ -13,13 +13,16 @@ import { formatError } from "@/services/error"
 const log = createLogger("MCPClient")
 
 /**
- * 单条 MCP 结果的字符上限。
+ * MCP 结果不做一次性截断。
  *
- * MCP 没有回读通道（ToolDef 只有一个工具调用出口，非 `read_session_event` 那种按 eventId
- * 回取的引用地址），所以超限时只能截断，且必须在结果里如实标记 —— 不写假 eventId、
- * 不假装全文还能取回。
+ * MCP 结果与内置工具走同一条回读链：全文原样落会话条目，请求视图由 L0 投影按
+ * `details.deskpetEntryId` 缩短并标注回读地址（`context/tool-output.ts`），模型随后可用
+ * `read_session_event` 按条目取回全文 —— 旧注释「MCP 没有回读通道所以只能截断」的前提已反转。
+ *
+ * 唯一的物理上限在会话条目写盘链上（`tool/pi/tauri-execution-env.ts` 的
+ * `MAX_TOOL_FILE_BYTES`，5 MB，约束单次 `file_append` 的正文）：超过时写盘如实报错，
+ * 不静默截断 —— 砍掉正文再声称成功，等于让模型拿半份证据当结论。
  */
-export const MAX_MCP_RESULT_CHARS = 50_000
 
 // ── JSON-RPC 类型 ──
 
@@ -170,12 +173,8 @@ export class McpClient {
           if (result && typeof result === "object" && "error" in (result as any)) {
             return { success: false, content: "", error: String((result as any).error) }
           }
-          const text = typeof result === "string" ? result : JSON.stringify(result)
-          const truncated = text.length > MAX_MCP_RESULT_CHARS
-          const content = truncated
-            ? text.slice(0, MAX_MCP_RESULT_CHARS) + `\n...(MCP 结果已截断：共 ${text.length} 字符，MCP 没有回读通道，不保留全文)`
-            : text
-          return { success: true, content, ...(truncated ? { details: { truncated: true, totalChars: text.length } } : {}) }
+          // 全文回传：缩短只发生在请求视图（L0 投影），条目里始终是原样结果。
+          return { success: true, content: typeof result === "string" ? result : JSON.stringify(result) }
         } catch (e) {
           return { success: false, content: "", error: formatError(e) }
         }
