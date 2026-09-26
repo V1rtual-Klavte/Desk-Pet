@@ -6,7 +6,8 @@ import { ContextBudgetError } from "@/services/context"
 // ==========================================
 
 import { getActiveCard, pickActiveGreeting } from "@/services/personality"
-import { getFallbackReply } from "@/services/personality/stages-cache"
+import { getCommandReply, getFallbackReply } from "@/services/personality/stages-cache"
+import type { SlashSkillAdmission } from "@/services/engine/slash"
 import { conversationConfig } from "@/services/config"
 import type { DeliveryIntent } from "@/services/config"
 import { createActiveMessage, deliverActiveTurn, harnessSlots, isInputCommitted, pausedInputsText, returnPausedInputs, runPiAgentTurn, takePausedInputs } from "@/services/engine/pi"
@@ -196,11 +197,16 @@ interface TurnInvocation {
   requestId: string
   runGeneration: number
   userText: string
-  /** 本次投递的正文：普通输入带身份与来源标记；继续暂停输入是取回的原文。 */
-  userPrompt: AgentMessage | AgentMessage[]
+  /** 本次投递的正文：普通输入带身份与来源标记；继续暂停输入是取回的原文。技能准入不投递正文。 */
+  userPrompt?: AgentMessage | AgentMessage[]
   ingress?: IngressEnvelope
   /** 停止后继续：暂停输入按原顺序一次性投递（身份不合并、正文不重复追加）。 */
   pausedMessages?: AgentMessage[]
+  /**
+   * 技能准入（`/skill <技能名> [额外指示]`）：宿主只给要启动的技能名，
+   * 正文与那条 `role:"user"` 条目由 Harness 在 `accept` 内按技能文件构造并提交。
+   */
+  skillAdmission?: SlashSkillAdmission
   /**
    * 输入已落盘后的记账（普通输入推用户气泡、清未回复计数）；继续暂停输入不需要
    * （暂停输入在排队时已展示）。记账晚于落盘：未获准入时不会先画一条不存在于会话里的气泡。
@@ -216,17 +222,26 @@ interface TurnInvocation {
 async function performTurn(invocation: TurnInvocation): Promise<PiAgentTurnOutput> {
   const { sessionId, requestId, runGeneration } = invocation
   harnessSlots.bindRun(sessionId, runGeneration, { requestId })
-  const result = await runPiAgentTurn({
+  const common = {
     sessionId,
     userText: invocation.userText,
-    userPrompt: invocation.userPrompt,
     unansweredCount: unansweredCount.value,
     isActiveMessage: false,
-    ...(invocation.ingress ? { ingress: invocation.ingress } : {}),
-    ...(invocation.pausedMessages ? { pausedMessages: invocation.pausedMessages } : {}),
-    ...(invocation.onInputAdmitted ? { onInputAdmitted: invocation.onInputAdmitted } : {}),
     runGeneration,
-  })
+    ...(invocation.onInputAdmitted ? { onInputAdmitted: invocation.onInputAdmitted } : {}),
+  }
+  // 两支互斥（技能准入没有宿主正文，正文由 Harness 按技能文件构造）：分开构造运行入参，
+  // 不把两支的字段混进同一个字面量 —— 混合形态在类型上就应当不成立。
+  const result = await runPiAgentTurn(
+    invocation.skillAdmission
+      ? { ...common, skillAdmission: invocation.skillAdmission }
+      : {
+          ...common,
+          userPrompt: invocation.userPrompt!,
+          ...(invocation.ingress ? { ingress: invocation.ingress } : {}),
+          ...(invocation.pausedMessages ? { pausedMessages: invocation.pausedMessages } : {}),
+        },
+  )
   return result
 }
 
@@ -368,6 +383,21 @@ async function dispatchMessage(text: string, options: SendMessageOptions = {}): 
         toolCalls: [],
       }
     }
+    if (preResult.skillAdmission) {
+      // 忙碌期启动不了技能：准入要一次运行代际（Harness 在 accept 内落盘），这里给不了。
+      // 不谎称已启动，也不把它当普通文本投递 —— 投进 lane 的会是一条字面 `/skill …`，
+      // 模型看到的是命令行而不是技能正文。按并发拒绝如实回复（与 begin 失败同一条 Card 文案）。
+      const notice = getFallbackReply("concurrentRejected")
+      pushSystemMessage(notice, originSessionId)
+      log.info("AI 生成中，技能未启动:", { skill: preResult.skillAdmission.name, sessionId: originSessionId })
+      return {
+        reply: notice,
+        toolCallsMade: 0,
+        retriesUsed: 0,
+        outcome: "succeeded",
+        toolCalls: [],
+      }
+    }
     const receipt = await deliverActiveTurn(
       originSessionId, preResult.normalizedText,
       { eventId: inputEventId(requestId), mark: inputSourceMark(ingressFor(preResult)) },
@@ -444,22 +474,40 @@ async function dispatchMessage(text: string, options: SendMessageOptions = {}): 
   }
   setAIGenerating(true)
 
-  try {
+  /**
+   * 回合的投递面（两支不同源，这里是唯一构造点）：
+   * - 用户输入：宿主正文 + 投递身份，与忙碌投递同形（身份 + 来源标记随条目落盘）；
+   * - 技能准入：只有准入意图 —— 正文与那条 `role:"user"` 条目由 Pi 在 `accept` 内按技能文件构造
+   *   （含技能文件的绝对路径），套上我们的 deskpetEventId 只会造出查不到的假投递证据。
+   * 记账一律晚于落盘：回调由运行内核在 `lane.accept` 提交条目之后调用（不在这里抢先画）。
+   */
+  function turnDelivery(): Pick<TurnInvocation, "userPrompt" | "ingress" | "skillAdmission" | "onInputAdmitted"> {
+    if (preResult.skillAdmission) {
+      return {
+        skillAdmission: preResult.skillAdmission,
+        // 技能准入没有用户气泡（条目不是用户敲的原文），落盘成立后只按当前 Card 的终态句报一次。
+        onInputAdmitted: () => pushSystemMessage(getCommandReply("skillStarted"), originSessionId),
+      }
+    }
     const inputIngress = ingressFor(preResult)
+    return {
+      // 空闲发送不是无身份的裸字符串：正文与忙碌投递同形（身份 + 来源标记随条目落盘）。
+      userPrompt: userInputMessage(preResult.text, inputEventId(requestId), inputSourceMark(inputIngress)),
+      ingress: inputIngress,
+      onInputAdmitted: () => {
+        pushUserMessage(preResult.text, originSessionId)
+        resetUnanswered()
+      },
+    }
+  }
+
+  try {
     const result = await performTurn({
       sessionId: originSessionId,
       requestId,
       runGeneration,
       userText: preResult.text,
-      // 空闲发送不是无身份的裸字符串：正文与忙碌投递同形（身份 + 来源标记随条目落盘）。
-      userPrompt: userInputMessage(preResult.text, inputEventId(requestId), inputSourceMark(inputIngress)),
-      ingress: inputIngress,
-      // 输入落盘后的记账：用户气泡与未回复计数属于「用户发了这条消息」，继续暂停输入不重复做。
-      // 回调由运行内核在 `lane.accept` 提交条目之后调用（不在这里抢先画）。
-      onInputAdmitted: () => {
-        pushUserMessage(preResult.text, originSessionId)
-        resetUnanswered()
-      },
+      ...turnDelivery(),
     })
 
     // ★ 会话校验：若等待 AI 回复期间用户切了会话，回复不画进当前 chatHistory

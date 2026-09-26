@@ -6,6 +6,7 @@ import { contentText } from "@earendil-works/pi-ai"
 import type { AgentMessage, JsonValue, SettledAssistantMessage } from "@earendil-works/pi-agent-core"
 import type { Usage } from "@earendil-works/pi-ai"
 import type { Message, ThinkingEffort } from "@/services/agent/types"
+import type { SlashSkillAdmission } from "@/services/engine/slash"
 import type { CompactionAuditSink, ContextAllocation, ContextBlock, IngressEnvelope, InputSourceMark, PlanState, PlanStepRecord, PromptCapabilityContext, PromptPlanContext, PromptRequestContext, PromptRequestParams, PromptSnapshot, PromptTokenDrift, PromptTransform } from "@/services/engine/runtime"
 import { createMessageId } from "@/services/agent/types"
 import { MemoryService, recallMemory, planCheckpointStore } from "@/services/agent/memory"
@@ -151,19 +152,14 @@ export function pausedInputsText(messages: AgentMessage[]): string {
   return messages.map(laneMessageText).filter(text => text.length > 0).join("\n")
 }
 
-export interface PiAgentTurnInput {
+/** 回合入参的公共面：两支（用户输入 / 技能准入）共用，正文来源不同。 */
+interface PiAgentTurnBase {
   sessionId: string
+  /**
+   * 按文本工作的环节（复杂度判定、记忆召回）用它。技能准入传用户敲下的原文：
+   * 正文由 Harness 从技能文件构造，宿主这里没有别的东西可以代表「这次输入是什么」。
+   */
   userText: string
-  /**
-   * 本次投递的正文（`userInputMessage()` 或主动消息构造器的产物），随回合落盘。
-   * 空闲发送与忙碌投递共用同一形状，身份与来源标记因此对所有入口一致生效。
-   */
-  userPrompt: AgentMessage | AgentMessage[]
-  /**
-   * 停止后继续：把取回的暂停输入按原顺序作为本次投递内容（身份不合并、正文不重复追加）。
-   * userText 仍用于规划/召回等按文本工作的环节。
-   */
-  pausedMessages?: AgentMessage[]
   /**
    * 输入已落盘（lane.accept 提交用户条目成立）之后的 UI 记账钩子：用户气泡与未回复计数
    * 只在条目提交进会话文件之后更新，预检失败、未获准入时不会先画一条不存在于会话里的气泡。
@@ -171,10 +167,39 @@ export interface PiAgentTurnInput {
   onInputAdmitted?: () => void
   unansweredCount: number
   isActiveMessage?: boolean
-  ingress?: IngressEnvelope
   runGeneration?: number
   turnId?: string
 }
+
+/** 用户输入支（现状形态）：正文与投递身份由调用方构造，空闲发送与忙碌投递共用同一形状。 */
+export interface PiAgentInputTurn extends PiAgentTurnBase {
+  /**
+   * 本次投递的正文（`userInputMessage()` 或主动消息构造器的产物），随回合落盘。
+   * 身份与来源标记因此对所有入口一致生效。
+   */
+  userPrompt: AgentMessage | AgentMessage[]
+  /**
+   * 停止后继续：把取回的暂停输入按原顺序作为本次投递内容（身份不合并、正文不重复追加）。
+   */
+  pausedMessages?: AgentMessage[]
+  ingress?: IngressEnvelope
+  skillAdmission?: undefined
+}
+
+/**
+ * 技能准入支（`/skill <技能名> [额外指示]`）：宿主不提供正文 —— 那条 `role:"user"` 消息由 Pi 在
+ * `accept` 内按技能文件构造（含技能文件的绝对路径）并提交，所以宿主也不再投递第二条正文，
+ * 更不给它套 `deskpetEventId`：条目不是我们构造的，套一份身份只会造出查不到的假投递证据。
+ * 互斥字段用 `undefined` 钉死（与 `HarnessAdmitSkillSpec` 的 `?: never` 同一口径）。
+ */
+export interface PiAgentSkillTurn extends PiAgentTurnBase {
+  skillAdmission: SlashSkillAdmission
+  userPrompt?: undefined
+  pausedMessages?: undefined
+  ingress?: undefined
+}
+
+export type PiAgentTurnInput = PiAgentInputTurn | PiAgentSkillTurn
 
 /**
  * 回合在拿到模型回复之前就失败的结构化原因。
@@ -926,13 +951,32 @@ export async function runPiAgentTurn(input: PiAgentTurnInput): Promise<PiAgentTu
   }
   // 投递正文由调用方构造（用户输入走 userInputMessage、主动消息走 createActiveMessage）：
   // 停止后继续的暂停批次优先，其余按调用方给的 userPrompt 原样投递。
-  const promptInput: HarnessRunSpec["prompt"] = input.pausedMessages?.length ? input.pausedMessages : input.userPrompt
+  // 技能准入支没有宿主正文：那条用户条目由 Pi 在 accept 内按技能文件构造，空串只落在 drive 面的
+  // `spec.prompt`（驱动不读正文，准入时已落盘），不是第二份用户正文。
+  const promptInput: HarnessRunSpec["prompt"] = input.skillAdmission
+    ? ""
+    : input.pausedMessages?.length ? input.pausedMessages : input.userPrompt
   // ── 输入先落盘（STATE-04）：准入在计划与预检之前 ──
   // 命中失败（未获准入）时输入没有条目、也没有操作要在之后结算；成功则条目已进会话文件，
   // 后续无论走到哪条退出路径都保留它（预检失败不丢输入）。
-  const admitted = await slot.admitInput({ model, thinkingEffort, tools: frozenTools, toolRun, prompt: promptInput })
+  // 技能支不给正文：`kind:"skill"` 的请求里没有 prompt 字段（准入形态也用 `never` 钉死），
+  // 那条用户条目由 Pi 在 accept 内按技能文件构造 —— 一条命令只能落一条正文。
+  const admitted = input.skillAdmission
+    ? await slot.admitInput({
+        model, thinkingEffort, tools: frozenTools, toolRun,
+        kind: "skill",
+        name: input.skillAdmission.name,
+        additionalInstructions: input.skillAdmission.additionalInstructions,
+      })
+    : await slot.admitInput({ model, thinkingEffort, tools: frozenTools, toolRun, prompt: promptInput })
   if (!admitted.ok) {
-    log.error("输入未获准入，回合未开始:", { sessionId: turnSessionId, status: admitted.result.status })
+    // 技能准入在边界上失败（清单在启动瞬间变化 → UnknownSkill）与前置判定的四态不同：留痕带上技能名，
+    // 不把它混进「技能不存在」的报告里（`failure.kind` 仍是 admission，`failure.message` 带原始 tag）。
+    log.error("输入未获准入，回合未开始:", {
+      sessionId: turnSessionId,
+      status: admitted.result.status,
+      ...(input.skillAdmission ? { skill: input.skillAdmission.name, tag: admitted.result.error } : {}),
+    })
     const reply = getFallbackReply("llmUnavailable")
     await slot.appendAssistantMessage(reply).catch(error => log.error("兜底回复落盘失败", formatError(error)))
     return {
