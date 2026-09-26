@@ -15,7 +15,7 @@ import type {
   ExecutionEnv,
 } from "@earendil-works/pi-agent-core"
 import type {
-  ActionCategory, LightweightPolicy, SafetyLevel, ToolContext, ToolDef, ToolParameters, ToolPolicy, ToolResult,
+  ActionCategory, SafetyLevel, ToolContext, ToolDef, ToolParameters, ToolPolicy, ToolResult,
 } from "../types"
 import { defineTool } from "../policy"
 
@@ -26,7 +26,6 @@ export interface HarnessToolMetadata {
   actionCategory: ActionCategory
   policy: ToolPolicy
   resolveSafetyLevel?: ToolDef["resolveSafetyLevel"]
-  lightweightPolicy?: LightweightPolicy
 }
 
 function toToolResult(result: AgentToolResult<unknown>): ToolResult {
@@ -64,11 +63,9 @@ export function adaptHarnessTool(
     prepareArguments: tool.prepareArguments as ((args: unknown) => Record<string, unknown>) | undefined,
     source: "local",
     sourceId: "pi-harness",
-    mode: "pet",
     safetyLevel: metadata.safetyLevel,
     actionCategory: metadata.actionCategory,
     resolveSafetyLevel: metadata.resolveSafetyLevel,
-    lightweightPolicy: metadata.lightweightPolicy,
     policy: metadata.policy,
   }, async (params, ctx) => {
     const toolCallId = ctx.toolCallId ?? crypto.randomUUID()

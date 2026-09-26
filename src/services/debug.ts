@@ -70,7 +70,7 @@ export interface DebugState {
   /** 当前已注册工具总数 */
   registeredToolCount: number
   /** 当前已注册工具列表 */
-  registeredTools: { name: string; source: string; mode: string }[]
+  registeredTools: { name: string; source: string }[]
   /** 已注册 MCP 工具数 */
   registeredMcpCount: number
 }
@@ -174,10 +174,10 @@ export function updateRequestStats(opts: {
 
 /** 刷新已注册工具统计 */
 export async function refreshToolStats() {
-  const { listAll, toolCount, getToolsForMode } = await import("@/services/tool/registry")
+  const { listAll, toolCount } = await import("@/services/tool/registry")
   const all = listAll()
   debug.registeredToolCount = toolCount()
-  debug.registeredTools = all.map(t => ({ name: t.name, source: t.source, mode: t.mode }))
+  debug.registeredTools = all.map(t => ({ name: t.name, source: t.source }))
   debug.registeredMcpCount = all.filter(t => t.source === "mcp").length
 }
 

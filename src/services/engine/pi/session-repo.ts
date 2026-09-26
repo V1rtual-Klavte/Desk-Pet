@@ -86,11 +86,11 @@ class DataRootSessionRepo implements PiSessionRepo {
  *   只用于会话归属与相对路径解析，不拿它区分业务。
  * - 目录不在这里预建：repo 首次 `create` 会按需对会话目录 `createDir`（recursive）。
  * - `fileSystem.cwd` 也取数据根（FileSystem 只拿它解析相对路径）；工厂只经文件系统
- *   能力读写，`exec` 走不到，mode 固定 pet 是最小权限基线，将来复用也不会放宽。
+ *   能力读写，`exec` 走不到，将来复用也不会放宽。
  */
 export async function createPiSessionRepo(options: PiSessionRepoOptions = {}): Promise<PiSessionRepo> {
   const cwd = options.cwd ?? (await runtimePath("data"))
-  const fileSystem = options.fileSystem ?? new TauriExecutionEnv(cwd, "pet")
+  const fileSystem = options.fileSystem ?? new TauriExecutionEnv(cwd)
   const sessionsRoot = options.sessionsRoot ?? (await runtimePath("sessions"))
   log.info("JsonlSessionRepo 就绪:", sessionsRoot)
   return new DataRootSessionRepo(new JsonlSessionRepo({ fileSystem, sessionsRoot }), sessionsRoot, cwd)

@@ -1,5 +1,5 @@
 // ==========================================
-// 助手模式工具：打开应用 (DANGER)
+// 本地工具：打开应用 (DANGER)
 //
 // 这是唯一把用户可控字符串交给操作系统去执行的工具（macOS 走 `open`，
 // Windows 走 ShellExecuteW），路径可指向任意已存在文件，所以按 DANGER 走确认。
@@ -18,7 +18,7 @@ const log = createLogger("ToolApp")
 const appOpenTool: ToolDef = defineTool({
   id: "local-app-open",
   name: "app_open",
-  description: "打开指定路径的应用程序或文件。助手模式专用。",
+  description: "打开指定路径的应用程序或文件。",
   parameters: {
     type: "object",
     properties: {
@@ -29,7 +29,6 @@ const appOpenTool: ToolDef = defineTool({
   safetyLevel: "DANGER",
   source: "local",
   sourceId: "",
-  mode: "assistant",
   actionCategory: "app.launch",
   // 拉起外部程序是效果操作：不与其它执行并发，超时取 loop.toolTimeoutMs。
   policy: {

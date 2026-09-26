@@ -8,12 +8,6 @@ export type SafetyLevel = "SAFE" | "NORMAL" | "DANGER" | "NOWAY"
 /** 工具来源 */
 export type ToolSource = "local" | "mcp"
 
-/** 模式限制 */
-export type ToolMode = "pet" | "assistant"
-
-/** 轻量模式对 DANGER 能力的策略：`allow` 与「未声明即拒绝」是同一件事的两写，已收敛掉。 */
-export type LightweightPolicy = "confirm" | "deny"
-
 /** PermissionKernel 的最终裁决；passthrough 只允许规则层内部使用。 */
 export type PermissionDecision = "allow" | "ask" | "deny"
 
@@ -25,8 +19,9 @@ export type EffectClass = "read" | "local_mutation" | "process" | "external_side
 /**
  * 策略语义版本。策略字段含义变化时递增；恢复旧调用时按低版本保守读取，
  * 版本进入 policyHash，策略变化后旧授权失效。
+ * 2：安全等级到裁决结果的映射变化（SAFE 与 NORMAL 一律放行，不再按模式区分）。
  */
-export const TOOL_POLICY_VERSION = 1
+export const TOOL_POLICY_VERSION = 2
 
 /**
  * 隔离级别。delegate 只用于宿主编排工具（子运行自己取许可）；
@@ -44,8 +39,8 @@ export type ResultProjection = "preserve" | "reference"
 export type HistoryCompaction = "summarize" | "retain"
 
 /**
- * 工具完整策略。风险等级（safetyLevel / resolveSafetyLevel）与轻量模式策略
- * （lightweightPolicy）继续留在 ToolDef 顶层：那是风险维度，不是权限意见。
+ * 工具完整策略。风险等级（safetyLevel / resolveSafetyLevel）继续留在 ToolDef 顶层：
+ * 那是风险维度，不是权限意见。
  */
 export interface ToolPolicy {
   version: number
@@ -78,8 +73,6 @@ export type ActionCategory =
 
 /** 工具执行上下文 */
 export interface ToolContext {
-  /** 当前模式 */
-  mode: "pet" | "assistant"
   /** 当前 Pi 工具调用 ID */
   toolCallId?: string
   /** 稳定的单次操作标识，用于审计和幂等关联。 */
@@ -135,14 +128,10 @@ export interface ToolDef {
   safetyLevel: SafetyLevel
   /** 根据本次参数动态提升/降低风险，主要用于统一 Bash。 */
   resolveSafetyLevel?: (params: Record<string, unknown>, ctx: ToolContext) => SafetyLevel
-  /** 轻量模式对 DANGER 能力的策略；未声明在 pet 模式等同于 deny（助手模式不受它影响）。 */
-  lightweightPolicy?: LightweightPolicy
   /** 来源 */
   source: ToolSource
   /** 来源 ID（local → 空, mcp/skill → server/skill ID） */
   sourceId: string
-  /** 哪个模式可用 */
-  mode: ToolMode
   /** 操作类别，只用于阶段文案匹配（§7.1），不决定并行、权限或压缩 */
   actionCategory: ActionCategory
   /** 权限 / 执行 / 投影 / 摘要的统一策略；缺策略视为注册错误。 */

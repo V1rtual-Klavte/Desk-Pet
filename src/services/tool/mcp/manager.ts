@@ -257,7 +257,7 @@ export function exportMcpServersToJson(): string {
 type McpConnectResult = { success: boolean; toolCount: number; error?: string }
 
 const connectedClients = new Map<string, import("./client").McpClient>()
-/** 一个 server 可被多个 session/mode owner 借用；最后一个释放时才终止子进程。 */
+/** 一个 server 可被多个 run/session owner 借用；最后一个释放时才终止子进程。 */
 const connectionOwners = new Map<string, Set<string>>()
 /** 每个 server 的所有连接、释放、配置断开共享一条串行尾巴。 */
 const serverOperationTails = new Map<string, Promise<void>>()

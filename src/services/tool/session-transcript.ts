@@ -28,7 +28,7 @@ export function createTranscriptTool(readEntry: ToolResultEntryReader): ToolDef 
   return defineTool({
     id: "local-session-event", name: SESSION_TRANSCRIPT_TOOL,
     description: "按 eventId 分页读取当前会话中保留的完整工具结果。被上下文缩短的结果可由此恢复。",
-    source: "local", sourceId: "", mode: "pet", actionCategory: "fs.read", safetyLevel: "SAFE",
+    source: "local", sourceId: "", actionCategory: "fs.read", safetyLevel: "SAFE",
     parameters: { type: "object", properties: { eventId: { type: "string" }, offset: { type: "integer", minimum: 0 } }, required: ["eventId"] },
     policy: {
       version: TOOL_POLICY_VERSION,

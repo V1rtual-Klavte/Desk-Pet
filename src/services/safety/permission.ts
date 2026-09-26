@@ -8,11 +8,8 @@ import type {
 } from "@/services/tool"
 import { safetyConfig } from "@/services/config"
 import { getEffectiveSafetyMode } from "@/services/debug"
-import { createLogger } from "@/services/logger"
 import { redactText, sha256Text, stableSerialize } from "@/services/engine/runtime"
 import { requestPermissionConfirm, cancelPermissionConfirm } from "./confirm"
-
-const log = createLogger("Permission")
 
 export type { EffectClass, PermissionDecision }
 export type PermissionConfirmation = "allow_once" | "allow_session" | "deny"
@@ -95,21 +92,18 @@ function isUsableContext(ctx: PermissionContext): boolean {
   return Boolean(ctx.sessionId && ctx.toolCallId) && Number.isSafeInteger(ctx.runGeneration) && ctx.runGeneration >= 0 && !ctx.signal?.aborted && (ctx.isCurrent?.() ?? true)
 }
 
+/**
+ * 安全等级到裁决结果的统一映射：NOWAY 硬拒绝；SAFE / NORMAL 一律放行；
+ * DANGER 交给安全模式裁决。工具与运行模式不再参与裁决，风险等级是唯一入口。
+ */
 function standardDecision(tool: ToolDef, params: Record<string, unknown>, ctx: PermissionContext): PermissionResult {
   const level = tool.resolveSafetyLevel?.(params, ctx) ?? tool.safetyLevel
   if (level === "NOWAY") return { decision: "deny", reason: "硬禁止操作" }
-  if (tool.mode === "assistant" && ctx.mode !== "assistant") return { decision: "deny", reason: "当前模式不允许该工具" }
-  if (level === "SAFE") return { decision: "allow" }
+  if (level === "SAFE" || level === "NORMAL") return { decision: "allow" }
 
   const safetyMode = ctx.policy.safetyMode
-  if (ctx.mode === "pet") {
-    if (level === "NORMAL") return { decision: "allow" }
-    if (tool.lightweightPolicy === "confirm") return { decision: "ask", reason: "轻量模式需要用户确认" }
-    log.info("pet 模式非 confirm 的 DANGER 一律拒绝:", tool.name)
-    return { decision: "deny", reason: "轻量模式不支持该风险操作" }
-  }
   if (safetyMode === "let_me_tk") return { decision: "ask", reason: "保守安全策略要求确认" }
-  if (level === "DANGER" && safetyMode === "just_do_it") return { decision: "allow" }
+  if (safetyMode === "just_do_it") return { decision: "allow" }
   return { decision: "ask", reason: `${level} 风险操作需要确认` }
 }
 

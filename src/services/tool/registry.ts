@@ -1,12 +1,10 @@
 // ==========================================
-// 统一工具注册表 —— 按模式注册/查询/注销
+// 统一工具注册表 —— 注册/查询/注销
 // 所有工具（Local / MCP / Skill）在此统一管理
 // ==========================================
 
-import type { ToolDef, ToolDeclaration, ToolMode } from "./types"
-import { toToolDeclaration } from "./types"
+import type { ToolDef } from "./types"
 import { getToolHandler, validateToolPolicy } from "./policy"
-import { generalConfig } from "@/services/config"
 import { createLogger } from "@/services/logger"
 
 const log = createLogger("ToolReg")
@@ -32,7 +30,7 @@ export function register(tool: ToolDef): void {
   }
   // 直接入库、不克隆：defineTool 的产物已冻结，克隆还会丢 WeakMap 里的执行体身份。
   tools.set(tool.id, tool)
-  log.debug("注册工具:", tool.id, "|", tool.mode)
+  log.debug("注册工具:", tool.id)
 }
 
 /** 注销工具 */
@@ -69,24 +67,6 @@ export function actionCategoryOf(toolName: string): string {
   return getToolByName(toolName)?.actionCategory ?? "_default"
 }
 
-/** 获取当前模式下的所有工具 */
-export function getToolsForMode(mode?: ToolMode): ToolDef[] {
-  const m = mode ?? (generalConfig.assistantMode ? "assistant" : "pet")
-  const result: ToolDef[] = []
-  for (const t of tools.values()) {
-    if (t.mode === "pet" || t.mode === m) {
-      if (m === "pet" && t.lightweightPolicy === "deny") continue
-      result.push(t)
-    }
-  }
-  return result
-}
-
-/** 获取当前模式下的工具声明（给 AI） */
-export function getToolDeclarations(mode?: ToolMode): ToolDeclaration[] {
-  return getToolsForMode(mode).map(toToolDeclaration)
-}
-
 /** 列出所有工具 */
 export function listAll(): ToolDef[] {
   return [...tools.values()]
@@ -103,44 +83,30 @@ export function toolCount(): number {
   return tools.size
 }
 
-// ── 初始化轻量模式工具 ──
+// ── 初始化基础工具 ──
 
 let defaultToolsRegistered = false
 
-/** 注册轻量模式基础工具（应用启动时调用一次） */
+/**
+ * 注册全部内置基础工具（应用启动时调用一次）。内置工具恒暴露、不做开关，
+ * 边界一律交给权限裁决，因此这里不按能力分组，也不再提供局部注销入口。
+ */
 export async function registerDefaultTools(): Promise<void> {
   if (defaultToolsRegistered) return
 
   // 动态导入避免循环依赖
   const { registerPiBaseTools } = await import("./local/pi-tools")
   const { registerSystemTool } = await import("./local/system")
-
-  await registerPiBaseTools()
-  registerSystemTool()
-
-  defaultToolsRegistered = true
-  log.info("轻量模式工具已注册:", toolCount(), "个")
-}
-
-/** 注册助手模式工具（动态懒加载） */
-export async function registerAssistantTools(): Promise<void> {
   const { registerAppOpenTool } = await import("./local-extra/app")
   const { registerClipboardTools } = await import("./local-extra/clipboard")
   const { registerAgentSpawnTool } = await import("./local-extra/agent-tool")
 
+  await registerPiBaseTools()
+  registerSystemTool()
   registerAppOpenTool()
   registerClipboardTools()
   registerAgentSpawnTool()
-  log.info("助手模式工具已注册, 总计:", toolCount(), "个")
-}
 
-/**
- * 释放仅属于助手模式的本地工具。调用方必须在对应 run 已 settled 后执行，避免
- * router 在一轮工具调用中失去已冻结的工具定义。
- */
-export function unregisterAssistantTools(): void {
-  for (const id of ["local-app-open", "local-clipboard-read", "local-clipboard-write", "local-agent-spawn"]) {
-    unregister(id)
-  }
-  log.info("助手模式本地工具已释放, 总计:", toolCount(), "个")
+  defaultToolsRegistered = true
+  log.info("基础工具已注册:", toolCount(), "个")
 }
