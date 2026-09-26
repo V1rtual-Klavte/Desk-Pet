@@ -128,7 +128,6 @@ async function doSave() {
     "tools.bash.whitelist": t.bashWhitelist.split("\n").map(s => s.trim()).filter(Boolean),
     "tools.file.writeEnabled": t.fileWriteEnabled,
     "tools.mcp.enabled": t.mcpEnabled,
-    "tools.skill.enabled": t.skillEnabled,
   });
 
   // MCP 内置

@@ -2,7 +2,7 @@
 import { ref, onMounted } from "vue";
 import { toolsConfig, loopConfig, MIN_PARALLEL_TOOLS, MAX_PARALLEL_TOOLS } from "@/services/config";
 import { createLogger } from "@/services/logger";
-import { formatError } from "@/services/error";
+import { errorCode, formatError } from "@/services/error";
 // 纯文本工具函数，同步使用；其余 MCP 生命周期 API 仍按需动态 import
 import { parseEnvText, formatEnvText } from "@/services/tool/mcp";
 
@@ -35,10 +35,25 @@ const mcpTesting = ref(false);
 const mcpTestResult = ref("");
 
 // ── Skill ──
-const skillEnabled = ref(toolsConfig.skillEnabled);
-const skillList = ref<{ id: string; name: string; description: string }[]>([]);
-/** 索引不可用时的状态位（§7 #20）：空列表本身区分不出「失败」与「没有 Skill」 */
+/**
+ * 逐项开关的显示面：只投影设置页要用的四个字段，不把技能正文带进本窗口的响应式状态。
+ * 清单口径是 store 里 Pi 实际收录的技能（含被关闭者），不是 Rust 指纹回执的 count
+ * —— 后者是扫描到的候选条目数（含未收录的）。
+ */
+interface SkillRow {
+  /** 开关与删除的坐标（域内相对路径）；Pi 只会从技能目录取文件，null 是防御分支。 */
+  relativePath: string | null;
+  name: string;
+  description: string;
+  enabled: boolean;
+}
+const skillList = ref<SkillRow[]>([]);
+/** 索引核对失败的原因：空列表本身区分不出「核对失败」与「真的没有 Skill」 */
 const skillIndexError = ref<string>("");
+/** 上传/删除/开关的失败原因：一律如实展示，不静默吞掉 */
+const skillActionError = ref<string>("");
+/** 有写操作在飞：同一时刻只写一个条目，避免连点并发写同一个文件 */
+const skillWriting = ref(false);
 
 // ── 内置 MCP ──
 async function loadBuiltinMcpConfig() {
@@ -189,23 +204,66 @@ async function testMcpConnection() {
 
 // ── Skill ──
 async function loadSkillConfig() {
-  const { syncSkillCatalog, listSkills, getSkillCatalogFingerprint } = await import("@/services/skill");
+  const { syncSkillCatalog, listSkills, getSkillCatalogError } = await import("@/services/skill");
   await syncSkillCatalog();
-  // 索引读取失败时 loader 会把指纹置为失败哨兵（loader.ts 的 "unavailable"）并返回空列表：
-  // 设置页要把「索引不可用」和「真的没有 Skill」分开显示，不能只留一个「暂无」。
-  skillIndexError.value = getSkillCatalogFingerprint() === "unavailable"
-    ? "Skill 索引不可用：本地元数据读取失败（原因见日志），当前不会注入任何 Skill"
-    : "";
+  // 核对失败时 store 保留上一份清单、把原因记在 getSkillCatalogError()：
+  // 设置页要把「索引不可用」与「真的没有 Skill」分开显示，并说明列表是最近一次成功读取的结果。
+  const reason = getSkillCatalogError();
+  skillIndexError.value = reason ? `Skill 索引不可用：${reason}（列表为最近一次成功读取的结果）` : "";
   skillList.value = listSkills().map((s) => ({
-    id: s.name,
+    relativePath: s.relativePath,
     name: s.name,
     description: s.description,
+    enabled: s.enabled,
   }));
 }
 
-async function removeSkill(skillId: string) {
-  const { deleteSkill } = await import("@/services/skill");
-  await deleteSkill(skillId);
+/** 写操作前置：坐标可用且当前没有别的写入在飞。返回可写坐标，否则就地给出原因并返回 null。 */
+function beginSkillWrite(skill: SkillRow): string | null {
+  if (!skill.relativePath) {
+    skillActionError.value = `${skill.name}：条目在技能目录里没有可用坐标，无法开关或删除`;
+    return null;
+  }
+  if (skillWriting.value) return null;
+  skillWriting.value = true;
+  skillActionError.value = "";
+  return skill.relativePath;
+}
+
+/** 逐项开关：写文件后立刻核对清单，本窗口马上看到新状态；主窗口由每回合的指纹核对跟上。 */
+async function toggleSkill(skill: SkillRow) {
+  const relativePath = beginSkillWrite(skill);
+  if (!relativePath) return;
+  try {
+    const { setSkillEnabled } = await import("@/services/skill");
+    if (!(await setSkillEnabled(relativePath, !skill.enabled))) {
+      skillActionError.value = `${skill.name} 的开关未写入：SKILL.md 里没有可用的 frontmatter 块`;
+      log.warn("Skill 开关未写入:", skill.name);
+    }
+  } catch (error) {
+    skillActionError.value = `${skill.name} 的开关写入失败：${formatError(error)}`;
+    log.error("Skill 开关写入失败:", skill.name, formatError(error));
+  }
+  skillWriting.value = false;
+  await loadSkillConfig();
+}
+
+async function removeSkill(skill: SkillRow) {
+  const relativePath = beginSkillWrite(skill);
+  if (!relativePath) return;
+  try {
+    const { deleteSkill } = await import("@/services/skill");
+    await deleteSkill(relativePath);
+  } catch (error) {
+    // 经根外符号链接可达的条目「列得出、删不掉」：skill_delete 按路径边界拒绝（PATH_ESCAPE）。
+    // 这条错误必须让用户看见，否则条目一直列着而用户只看到什么都没发生。
+    const reason = formatError(error);
+    skillActionError.value = errorCode(error) === "PATH_ESCAPE"
+      ? `${skill.name} 删除被拒绝：条目解析后落在技能目录之外（通常是根外符号链接），要删除请直接在磁盘上处理（${reason}）`
+      : `${skill.name} 删除失败：${reason}`;
+    log.error("Skill 删除失败:", skill.name, reason);
+  }
+  skillWriting.value = false;
   await loadSkillConfig();
 }
 
@@ -215,10 +273,21 @@ async function uploadSkillMd() {
   input.accept = ".md";
   input.onchange = async () => {
     const file = input.files?.[0];
-    if (!file) return;
-    const text = await file.text();
-    const { upsertSkill } = await import("@/services/skill");
-    await upsertSkill(text);
+    if (!file || skillWriting.value) return;
+    skillWriting.value = true;
+    skillActionError.value = "";
+    try {
+      const text = await file.text();
+      const { upsertSkill } = await import("@/services/skill");
+      // upsertSkill 返回 null 就是没收下（校验未过 / 写入后仍未被收录）：不谎报上传成功。
+      if (!(await upsertSkill(text))) {
+        skillActionError.value = `${file.name} 未被收录：frontmatter 不合要求或没通过校验（原因见日志）`;
+      }
+    } catch (error) {
+      skillActionError.value = `${file.name} 上传失败：${formatError(error)}`;
+      log.error("Skill 上传失败:", file.name, formatError(error));
+    }
+    skillWriting.value = false;
     await loadSkillConfig();
   };
   input.click();
@@ -277,7 +346,6 @@ defineExpose({
   mcpEnabled,
   mcpServerList,
   builtinMcpList,
-  skillEnabled,
   loadMcpConfig,
   loadSkillConfig,
 });
@@ -361,18 +429,23 @@ defineExpose({
 
   <div class="s-section">
     <div class="s-label">📦 Skill</div>
-    <label class="chk"><input type="checkbox" v-model="skillEnabled" /><span>启用 Skill（按声明支持轻量或助手模式）</span></label>
-    <div class="s-hint">首回合只列名称、说明和位置；正文由模型按需读取。Skill 不会额外授予工具权限。</div>
+    <div class="s-hint">
+      技能 {{ skillList.length }} 个（含已关闭；关闭只是停用，删除才会从磁盘移除）。
+      开关直接写入该技能 SKILL.md 的 enabled 字段，下一个回合生效，无需重启；关闭的技能既不披露给模型，也不能用 /skill 调用。
+      请求里只注入名称、说明和位置，正文由模型按需读取；Skill 不会额外授予工具权限。
+    </div>
     <div class="row-gap" style="margin-top:4px">
       <button class="btn-s" @click="uploadSkillMd()">📤 上传 .md</button>
       <button class="btn-s" @click="loadSkillConfig()">🔄 刷新</button>
     </div>
     <div v-if="skillIndexError" class="s-error">{{ skillIndexError }}</div>
-    <div v-else-if="skillList.length === 0" class="s-hint">暂无</div>
-    <div v-for="s in skillList" :key="s.id" class="li-row">
+    <div v-if="skillActionError" class="s-error">{{ skillActionError }}</div>
+    <div v-if="skillList.length === 0" class="s-hint">暂无</div>
+    <div v-for="s in skillList" :key="s.relativePath ?? s.name" class="li-row">
       <span><b>{{ s.name }}</b> {{ s.description }}</span>
       <span>
-        <button class="btn-s btn-d" @click="removeSkill(s.id)">✕</button>
+        <button class="btn-s" :disabled="skillWriting" title="点击切换启用状态" @click="toggleSkill(s)">{{ s.enabled ? '✅ 已启用' : '❌ 已关闭' }}</button>
+        <button class="btn-s btn-d" :disabled="skillWriting" title="从磁盘删除这个技能" @click="removeSkill(s)">✕</button>
       </span>
     </div>
   </div>

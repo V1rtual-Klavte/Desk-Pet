@@ -1,6 +1,7 @@
 ---
 name: summarize-code
 description: 分析代码文件或目录，生成结构化摘要。当用户说帮我看看代码、分析这个项目、这段代码做什么时使用。
+enabled: true
 ---
 
 # 代码摘要

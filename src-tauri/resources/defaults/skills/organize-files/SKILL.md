@@ -1,6 +1,7 @@
 ---
 name: organize-files
 description: 整理目录下的文件，按类型归类到子文件夹。当用户说整理文件、归类、整理桌面、帮我把文件移一下时使用。
+enabled: true
 ---
 
 # 文件整理
