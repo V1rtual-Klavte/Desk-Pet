@@ -189,7 +189,7 @@ export const agentRuntimeContract: ModuleContract = {
     {
       id: "ar-21",
       feature: "技能显式调用的准入回合",
-      description: "`/skill <技能名> [额外指示]` 走同一条生产入口启动技能：命令层只交出准入意图（预处理返回 `handled:false` + `skillAdmission`，不当成「已处理的文本」短路），落盘与驱动由运行入口完成 —— lane 的技能资源清单先于 `accept` 下发（清单取自技能目录指纹核对入口的生效快照），那条 `role:\"user\"` 正文由 Pi 在 `accept` 内按技能文件构造并提交，所以这条回合不给 `deskpetEventId` 身份、不再追加第二份宿主正文与用户气泡、也不产生投递证据（条目不是宿主构造的，套一份身份只会造出查不到的假证据）；条目提交成立后才按当前 Card 报一次 skillStarted 系统消息。忙碌（lane 上还有未结算操作）时启动不了技能：按并发拒绝如实回复、不谎称已启动、也不把字面 `/skill …` 当普通文本投进 lane，且不落任何条目；准入在边界上失败（清单在启动瞬间变化 → UnknownSkill）按 admission 失败 + llmUnavailable 兜底结算，留痕带技能名。命令层的参数解析与「未知名 / 被关闭 / 无正文」三种终态句不在本覆盖点（属斜杠命令面，且该面暂无契约覆盖）",
+      description: "`/skill <技能名> [额外指示]` 走同一条生产入口启动技能：命令层只交出准入意图（预处理返回 `handled:false` + `skillAdmission`，不当成「已处理的文本」短路），落盘与驱动由运行入口完成 —— lane 的技能资源清单先于 `accept` 下发（清单取自技能目录指纹核对入口的生效快照），那条 `role:\"user\"` 正文由 Pi 在 `accept` 内按技能文件构造并提交，所以这条回合不给 `deskpetEventId` 身份、不再追加第二份宿主正文与用户气泡、也不产生投递证据（条目不是宿主构造的，套一份身份只会造出查不到的假证据）；条目提交成立后才按当前 Card 报一次 skillStarted 系统消息。忙碌（lane 上还有未结算操作）时启动不了技能：按并发拒绝如实回复、不谎称已启动、也不把字面 `/skill …` 当普通文本投进 lane，且不落技能输入条目 —— 运行入口不为技能支构造宿主正文、Pi 那条按技能文件构造的用户条目也不会提交，会话里只新增一条并发拒绝的系统消息（`deskpet.system_message`）；准入在边界上失败（清单在启动瞬间变化 → UnknownSkill）按 admission 失败 + llmUnavailable 兜底结算，留痕带技能名。命令层的参数解析与「未知名 / 被关闭 / 无正文」三种终态句不在本覆盖点（属斜杠命令面，且该面暂无契约覆盖）。注：本点的 caseId `runtime-skill-admission`（T20 新建）当前不存在于 `scenes/`，本点尚无场景覆盖",
       why: "技能是用户显式启动的一次输入，但它的正文不由宿主提供：把「已启动」当成一条文本命令的回复、或给 Pi 构造的条目套一份查不到的身份，都会让证据链与用户看到的东西对不上；而忙碌期把它当普通文本投进 lane 会让模型看到命令行而不是技能正文",
       depth: "deep",
       scenarios: ["runtime-skill-admission"],
