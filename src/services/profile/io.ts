@@ -234,11 +234,13 @@ export async function restoreDefaultResources(): Promise<ProfileOpResult> {
     const r = await invoke<RestoreResult>("restore_default_resources")
 
     // 磁盘上的内置资源已被覆盖：Profile 丢弃缓存，Card 与 Skill 重新读盘。
+    // Skill 走唯一的指纹核对入口：重种子必然改动 mtime/size，指纹变了就会重载，
+    // 不另开一条「强制刷新」路径，也不在两处各存一份缓存。
     invalidateAllProfileCaches()
     const { initCards } = await import("@/services/personality")
     await initCards()
-    const { refreshSkills } = await import("@/services/skill")
-    await refreshSkills()
+    const { syncSkillCatalog } = await import("@/services/skill")
+    await syncSkillCatalog()
 
     log.info(
       `默认资源已恢复: Profile ${r.profiles} 个文件, Card ${r.cards} 个文件, Skill ${r.skills} 个文件`,
