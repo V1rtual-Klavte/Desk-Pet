@@ -7,7 +7,7 @@ import { DEFAULT_SCENE_TIMEOUT, UNIT_SCENE_TIMEOUT } from "./scene-runner"
  * 报告里的 pass@k 只在同一版本内可比：场景集合变了，分母就变了。
  * 格式由 `validateDataset` 强制，写错了会在启动前直接报错。
  */
-export const LIVE_DATASET_VERSION = "2026-09-24.5"
+export const LIVE_DATASET_VERSION = "2026-09-26.1"
 
 export function validateDataset(scenes: SceneDef[], contracts: ModuleContract[]): string[] {
   const errors: string[] = []
