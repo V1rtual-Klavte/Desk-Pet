@@ -49,8 +49,45 @@ export function toolResultAddress(message: { details?: unknown } | undefined): s
   return typeof address === "string" ? address : undefined
 }
 
-/** 已按「无地址」留痕过的结果长度：同长结果只报一次，避免逐条刷屏。 */
-const warnedWithoutAddress = new Set<number>()
+/** 内容指纹取的前缀字符数（D-W2-7）：只取首段是为了让键有界且零成本，不做全串 hash。 */
+export const NO_ADDRESS_WARN_KEY_CHARS = 32
+
+/** 留痕去重集合的键数上限（D-W2-7）：长会话里内存不随工具结果条数增长。 */
+export const NO_ADDRESS_WARN_KEYS = 64
+
+/**
+ * 无地址留痕键：`长度:首32字符` 的内容指纹（D-W2-7）。
+ * 旧键是裸 `text.length`，会把「不同内容、同长度」的结果误判成已留痕而漏报；
+ * 差异落在首 32 字符之后仍会合并——这是刻意的既定代价（留痕是诊断信号，不是审计）。
+ * 键串里的第一个 `:` 必是分隔符（长度段只含数字），因此不会与正文里的 `:` 混淆。
+ */
+export function noAddressWarnKey(text: string): string {
+  return `${text.length}:${text.slice(0, NO_ADDRESS_WARN_KEY_CHARS)}`
+}
+
+/** 已留痕的键；Set 迭代序 = 插入序，满员淘汰取最旧即取首项。 */
+const warnedNoAddressKeys = new Set<string>()
+
+/**
+ * 无地址留痕去重：同键只报一次（首次 `true` 并登记，之后 `false`），避免逐条刷屏。
+ *
+ * 有界策略：`Set` 满 `NO_ADDRESS_WARN_KEYS` 键时**按插入序淘汰最旧键**再登记新键（FIFO）。
+ * 不选「满员后不再新增」：那样长会话前 64 类形态之后要么永久静默（丢掉后续诊断信号）、
+ * 要么对每个新键都报一次（退回刷屏）；FIFO 保住「最近 64 类新内容各留痕一次」的信号，
+ * 代价是被淘汰的键再出现时会重新留痕一次——对诊断信号可接受。
+ *
+ * 纯判定无 I/O；模块级状态无重置入口（场景断言须每 trial 用唯一 key，见 T2.07）。
+ */
+export function shouldWarnNoAddress(key: string): boolean {
+  if (warnedNoAddressKeys.has(key)) return false
+  if (warnedNoAddressKeys.size >= NO_ADDRESS_WARN_KEYS) {
+    const oldest = warnedNoAddressKeys.values().next().value
+    // size 已保证非空；undefined 只是迭代器类型形态，无键可淘汰时直接跳过。
+    if (oldest !== undefined) warnedNoAddressKeys.delete(oldest)
+  }
+  warnedNoAddressKeys.add(key)
+  return true
+}
 
 /**
  * 地址通知的唯一模板（A-2）：级 1 缩短 / 级 2 清空 / 未缩短三种形态只是同一模板的不同实参。
@@ -88,9 +125,9 @@ export function annotateToolResultText(text: string, address: string | undefined
 export function projectToolResultText(text: string, address: string | undefined, window: number, readToolName = DEFAULT_READ_TOOL_NAME): string {
   const budget = toolResultTokenBudget(window)
   if (estimateContextTokens(text) <= budget) return annotateToolResultText(text, address, readToolName)
-  if (!address && !warnedWithoutAddress.has(text.length)) {
-    warnedWithoutAddress.add(text.length)
-    log.warn("工具结果没有回读地址，按不可回读标记投影:", { chars: text.length })
+  if (!address) {
+    const key = noAddressWarnKey(text)
+    if (shouldWarnNoAddress(key)) log.warn("工具结果没有回读地址，按不可回读标记投影:", { chars: text.length })
   }
   const half = Math.floor(budget / 2)
   const notice = toolResultNotice(address, readToolName, "shortened")
