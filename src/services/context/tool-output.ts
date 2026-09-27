@@ -24,7 +24,7 @@ export const LADDER_PROTECTION_TURNS = 3
  * `toolResultNotice` 这一份模板，两路投影（主请求与摘要素材）都不许另拼一份文案。
  */
 export const L0_SHORTENED_TAG = "上下文缩短"
-/** W3 的级 2 使用，本波只固化常量。 */
+/** 级 2（清空）的标记；与 `L0_SHORTENED_TAG` 同住 `toolResultNotice` 的 `cleared` 分支。 */
 export const L0_CLEARED_TAG = "上下文清空"
 
 /**
@@ -130,10 +130,26 @@ export function annotateToolResultText(text: string, address: string | undefined
 }
 
 /**
- * L0 缩短的唯一实现：头尾各半 + 地址通知（有地址给回读提示，无地址给不可回读标记）。
- * 未超阈值时不再原样返回，而走同一份未缩短形态（`annotateToolResultText`，A-1）。
+ * 请求视图投影的唯一实现。`level = 1`：头尾切片 + 占位串；`level = 2`：正文只剩占位串（清空）。
+ * 两级的占位串模板只有一个定义点（`toolResultNotice`），只有正文部分不同 —— 禁止第二套文案。
+ *
+ * **级 2（清空）的硬前提是「有地址」**（源方案 §3.2）：正文被清空后，地址是唯一能把模型
+ * 带回原文的路径；无地址的结果被清空即不可恢复，因此**永远停在级 1**。
+ * 判据就是 `address === undefined`：`level === 2 && !address` 不返回级 2 形态，落进下面的
+ * 级 1 分支（规划器 `planToolResultLadder` 已保证级 2 的候选必有地址，这里是防御性降级）。
+ * 该降级不在投影热点里逐条留痕，根因由下面无地址分支的一次性 warn
+ * （`noAddressWarnKey` / `shouldWarnNoAddress`）覆盖。
+ *
+ * 未超阈值时不再原样返回，而走同一份未缩短形态（`annotateToolResultText`，A-1）；
+ * 级 2 是显式请求的清空，不重复判阈值 —— 单条上限的判定归规划器（`toolResultTokenBudget` 仍是唯一阈值）。
  */
-export function projectToolResultText(text: string, address: string | undefined, window: number, readToolName = DEFAULT_READ_TOOL_NAME): string {
+export function projectToolResultText(
+  text: string, address: string | undefined, window: number,
+  readToolName = DEFAULT_READ_TOOL_NAME, level: 1 | 2 = 1,
+): string {
+  // 级 2 且**有地址**：正文整体换成清空占位串，地址行仍是同一份模板的 `cleared` 变体。
+  if (level === 2 && address) return toolResultNotice(address, readToolName, "cleared")
+
   const budget = toolResultTokenBudget(window)
   if (estimateContextTokens(text) <= budget) return annotateToolResultText(text, address, readToolName)
   if (!address) {
