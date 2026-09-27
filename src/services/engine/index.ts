@@ -18,8 +18,8 @@ export type { SlashCommand, SlashMatch } from "./slash"
 
 // ── Compactor ──
 // 摘要内核经 before_compaction 钩子使用；旧调度入口（compactSession）随 H-4 退役。
-export { summarizeCompaction } from "./compactor"
-export type { CompactionSummaryInput, CompactionSummaryOutcome } from "./compactor"
+export { summarizeCompaction, planCompactionShards, COMPACTION_SLICE_RATIO, MAX_COMPACTION_SLICES } from "./compactor"
+export type { CompactionSummaryInput, CompactionSummaryOutcome, CompactionShardPlan } from "./compactor"
 
 // ── Planner ──
 export {
