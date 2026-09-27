@@ -11,6 +11,7 @@ import type { ToolResultLadderEntry, ToolResultLevelMeasure } from "@/services/c
 import { aiConfig } from "@/services/config"
 import { formatError } from "@/services/error"
 import { createLogger } from "@/services/logger"
+import { SESSION_TRANSCRIPT_TOOL } from "@/services/tool/session-transcript"
 
 const log = createLogger("Compactor")
 
@@ -84,7 +85,7 @@ export interface CompactionMaterial {
   readonly userText: string
   /** `SUMMARY_SYSTEM + userText` 的请求估算：硬上限判定与分片预算共用的那个量。 */
   readonly used: number
-  /** `userText` 里的 `splitTurnPrefix` 投影（含 L0 缩短），供观测面与 instructions 切换对照。 */
+  /** `userText` 里的 `splitTurnPrefix` 投影（含阶梯升档后的形态），供观测面与 instructions 切换对照。 */
   readonly splitTurnPrefix: Message[]
   /** 分片原料：与 userText 同源的原始消息（只读，不改内容），供 T4.02 按范围切片。 */
   readonly messages: readonly AgentMessage[]
@@ -97,6 +98,11 @@ export interface CompactionMaterial {
    * `planCompactionShards` 的 `overhead` 只许取这里，不许调用方另算一份。
    */
   readonly overhead: number
+  /**
+   * 本次素材实际采用的最激进层级（`planToolResultLadder` 的 `level`）：0 = 无候选、1 = 只缩短、
+   * 2 = 有清空。**只进日志与场景断言，不进任何持久化结构** —— 升档不引入第二份状态。
+   */
+  readonly level: 0 | 1 | 2
 }
 
 /** 按 `planCompactionShards` 给出的范围取原料（含 turnPrefix 的拼接语义由本函数统一）。 */
@@ -105,12 +111,32 @@ export function sliceMaterial(material: CompactionMaterial, from: number, to: nu
 }
 
 /**
- * 摘要素材的唯一度量点：一次投影同时产出 `userText`、成本与分片原料。
+ * 摘要素材没有保护区（**显式空集**，不是漏传）：保护区是主请求视图的概念 —— 它保住「最近 N 轮」
+ * 的现场感；摘要素材按定义是正在离开请求视图、即将被摘要覆盖的历史（最近几轮通常落在上游切点
+ * 之外的 retainedTail 里，根本不进素材）。素材侧级 2 的前提因此只有「有地址 + 非 preserve」：
+ * 被清空的原文仍在 `sessions/` JSONL 里、可经 `read_session_event` 回读，摘要真正不能失真的
+ * 那类结果由 `preserve` 保护（T4.03 的三条理由见执行方案）。
+ * `planToolResultLadder` 把「省略」与「空集」当两种形态（省略会留一条 warn），故必须显式传空集。
+ */
+const EMPTY_PROTECTED_INDEXES: ReadonlySet<number> = new Set<number>()
+
+/**
+ * 摘要素材的唯一度量点：一次投影（含阶梯升档）同时产出 `userText`、成本与分片原料。
+ *
+ * **素材自己也走同一条阶梯**（T4.03，源方案 §6.1）：级 0 不动 → 级 1 缩短 → 级 2 清空，与主请求
+ * 共用 `projectToolResultText` 的唯一实现与 `planToolResultLadder` 的唯一判定链 —— 本函数不另写
+ * 「装得下」判据、不另拼占位串。级 2 的两个硬前提（有地址、非 preserve）由候选集保证：
+ * 无地址的结果清空即不可回读，`preserve` 全程停在级 0（地址尾行照给，D-W2-5 的 2026-09-27 裁定）。
+ *
+ * 升档判据是 `contextBudget(window).hardInputLimit`：素材是一次性独立请求，它的上限就是硬上限；
+ * 主请求视图的 `normalInputTarget` 比硬上限小一个 compactionHeadroom，拿它当素材判据只会把素材
+ * 过度清空、白降摘要质量。调用方冻结 `window`，这里由同一个纯函数派生该上限 —— 与
+ * `summarizeCompaction` 的硬上限守卫同一次取值，不产生第二份口径。升到装得下就停（规划器第 4 步），
+ * 不做无谓升档。
  *
  * 「素材超硬上限」这条判定（`summarizeCompaction`）与分片规划（`planCompactionShards` 的
  * `costOf` / `overhead`）、场景断言都必须复用本函数，不得各自重算。分工：本函数管「素材是什么、
- * 多大」；上限（`contextBudget(...)`）由调用方冻结后传入，本函数不读配置。纯函数：不落盘、不记
- * 日志，同一输入两次调用逐字相同。
+ * 多大」；超限时抛不抛错由调用方按 `used` 决定。纯函数：不落盘、不记日志，同一输入两次调用逐字相同。
  */
 export function measureCompactionMaterial(input: {
   /** 待摘要历史（Harness preparation.messagesToSummarize）。 */
@@ -133,54 +159,90 @@ export function measureCompactionMaterial(input: {
   readonly addressRefs?: ReadonlyMap<string, string>
 }): CompactionMaterial {
   const preserveToolNames = input.preserveToolNames ?? new Set<string>()
-  // 工具结果先进 L0 投影（附回读地址），与主请求共用同一份缩短实现与同一份地址来源
-  // （details.deskpetEntryId + 同一份前缀目录）——两路投影对同一条结果必须逐字相同；
-  // 但 resultProjection=preserve 的工具与主请求同口径**禁止二次处理：不缩短、不清空** ——
-  // 摘要素材不能二次缩短分页读取或写类成败这类关键结果（条目仍是可回读的真相源）；
-  // 地址标注不在此列，preserve 结果同样带地址尾行（D-W2-5 的 2026-09-27 裁定）。
-  // W4 把阶梯接到素材侧时，preserve 继续走同一集合：素材侧跳过全部阶梯，候选集过滤不在
-  // 素材侧另判。
-  // 投影与逐条成本出自同一次遍历：`costs[i]` 就是原始素材第 i 条在 userText 里的那份字符，
-  // 不进摘要的消息（custom / compactionSummary）计 0。
-  const project = (messages: readonly AgentMessage[]): { projected: Message[]; costs: number[] } => {
-    const projected: Message[] = []
-    const costs: number[] = []
-    messages.forEach((message, index) => {
-      // AgentMessage 联合里只有工具结果带 details；地址解析只认它，别的角色一律 undefined。
-      // 一次解析供两处用（正文通知与 eventId 字段）：同一结果在素材里不会同时出现前缀与完整 id。
-      const address = resolveAddress(message, input.addressRefs)
-      const entry = summaryMessage(message, index, address)
-      if (!entry) { costs.push(0); return }
-      const preserved = message.role === "toolResult" && preserveToolNames.has(message.toolName)
-      // preserve 结果与主请求同口径：不缩短、不清空，但同样带地址尾行（D-W2-5 的 2026-09-27 裁定）。
-      const text = entry.role === "tool"
-        ? (preserved
-          ? annotateToolResultText(entry.text, address)
-          : projectToolResultText(entry.text, address, input.window))
-        : entry.text
-      const final = text === entry.text ? entry : { ...entry, text }
-      projected.push(final)
-      costs.push(estimateValueTokens(final))
+  const turnPrefixMessages = input.turnPrefixMessages ?? []
+  // 阶梯与投影共用同一套下标：素材的完整数组 = messages + turnPrefixMessages（同 `sliceMaterial`，
+  // 故 turnPrefix 与 messages 天然用同一级别，同一批结果在一条请求里不会出现两种形态）。
+  const all = [...input.messages, ...turnPrefixMessages]
+  // AgentMessage 联合里只有工具结果带 details；地址解析只认它，别的角色一律 undefined。
+  // 一次解析供三处用（阶梯条目、正文通知与 eventId 字段）：同一结果在素材里不会同时出现前缀与完整 id。
+  const addresses = all.map(message => resolveAddress(message, input.addressRefs))
+  // 阶梯条目与主请求**同形同源**（runtime.ts 的适配器是同一件事在那边的一份）：index / toolName /
+  // text 与主请求逐字段一致，`planToolResultLadder` 的候选集因此两路永远同判。
+  // preserve 的条目同样在这里取地址（它们不进候选集，但地址标注照走）。
+  const entries: ToolResultLadderEntry[] = []
+  all.forEach((message, index) => {
+    if (message.role !== "toolResult") return
+    const address = addresses[index]
+    entries.push({
+      index, toolName: message.toolName, text: contentText(message.content),
+      ...(address === undefined ? {} : { address }),
     })
-    return { projected, costs }
-  }
-  const { projected: messages, costs: messageCosts } = project(input.messages)
-  const { projected: splitTurnPrefix, costs: prefixCosts } = project(input.turnPrefixMessages ?? [])
-  const userText = JSON.stringify({
-    instructions: splitTurnPrefix.length
-      ? `${SUMMARY_INSTRUCTIONS}${SPLIT_TURN_INSTRUCTION}`
-      : SUMMARY_INSTRUCTIONS,
-    previousSummary: input.previousSummary ?? null,
-    messages,
-    ...(splitTurnPrefix.length ? { splitTurnPrefix } : {}),
   })
-  // 与真正发出去的正文同源：JSON 转义已计入，判超限用的就是这条字符串。
-  const used = estimateRequestTokens(SUMMARY_SYSTEM, [{ role: "user", content: userText }])
-  const costs = [...messageCosts, ...prefixCosts]
+
+  /**
+   * 给定分级方案下的完整素材视图：`userText`、`used` 与逐条成本出自同一次投影 ——
+   * 「发出去的正文」与「判超限的读数」不可能是两份量。
+   *
+   * 级 0（未进计划 / preserve）只标地址不缩短（A-1：未缩短的结果同样要能被回读）；
+   * 级 1/2 走 `projectToolResultText` 的唯一实现（占位串与地址行都只在 `tool-output.ts` 里定义，
+   * 本文件不拼第二份文案）。投影与逐条成本出自同一次遍历：`costs[i]` 就是原始素材第 i 条在
+   * userText 里的那份字符，不进摘要的消息（custom / compactionSummary）计 0。
+   */
+  const render = (levels: ReadonlyMap<number, 1 | 2>): { userText: string; used: number; splitTurnPrefix: Message[]; costs: number[] } => {
+    const project = (messages: readonly AgentMessage[], offset: number): { projected: Message[]; costs: number[] } => {
+      const projected: Message[] = []
+      const costs: number[] = []
+      messages.forEach((message, index) => {
+        const address = addresses[offset + index]
+        const entry = summaryMessage(message, index, address)
+        if (!entry) { costs.push(0); return }
+        // preserve 结果与主请求同口径：不缩短、不清空，但同样带地址尾行（D-W2-5 的 2026-09-27 裁定）。
+        const level = message.role === "toolResult" && preserveToolNames.has(message.toolName)
+          ? 0
+          : levels.get(offset + index) ?? 0
+        let text = entry.text
+        if (entry.role === "tool") {
+          text = level === 0
+            ? annotateToolResultText(entry.text, address, SESSION_TRANSCRIPT_TOOL)
+            : projectToolResultText(entry.text, address, input.window, SESSION_TRANSCRIPT_TOOL, level)
+        }
+        const final = text === entry.text ? entry : { ...entry, text }
+        projected.push(final)
+        costs.push(estimateValueTokens(final))
+      })
+      return { projected, costs }
+    }
+    const { projected: messages, costs: messageCosts } = project(input.messages, 0)
+    const { projected: splitTurnPrefix, costs: prefixCosts } = project(turnPrefixMessages, input.messages.length)
+    const userText = JSON.stringify({
+      instructions: splitTurnPrefix.length
+        ? `${SUMMARY_INSTRUCTIONS}${SPLIT_TURN_INSTRUCTION}`
+        : SUMMARY_INSTRUCTIONS,
+      previousSummary: input.previousSummary ?? null,
+      messages,
+      ...(splitTurnPrefix.length ? { splitTurnPrefix } : {}),
+    })
+    // 与真正发出去的正文同源：JSON 转义已计入，判超限用的就是这条字符串。
+    return { userText, used: estimateRequestTokens(SUMMARY_SYSTEM, [{ role: "user", content: userText }]), splitTurnPrefix, costs: [...messageCosts, ...prefixCosts] }
+  }
+
+  // 升档只来自这一条判定链（本文件不另判）：判据 = 素材自己的硬上限，preserve 由候选集过滤
+  // （停在级 0），级 2 的「有地址」硬前提在规划器内，升到装得下就停。
+  const plan = planToolResultLadder({
+    entries,
+    measure: levels => render(levels).used,
+    window: input.window,
+    target: contextBudget(input.window).hardInputLimit,
+    preserveToolNames,
+    protectedIndexes: EMPTY_PROTECTED_INDEXES,
+  })
+  // 最终视图按计划实际采用的级别投影：`used` 就是这次 `contextBudget(window)` 口径下真正会发出去的读数。
+  const view = render(plan.levels)
   return {
-    userText, used, splitTurnPrefix,
-    messages: input.messages, turnPrefixMessages: input.turnPrefixMessages ?? [],
-    costs, overhead: used - costs.reduce((total, cost) => total + cost, 0),
+    userText: view.userText, used: view.used, splitTurnPrefix: view.splitTurnPrefix,
+    messages: input.messages, turnPrefixMessages,
+    costs: view.costs, overhead: view.used - view.costs.reduce((total, cost) => total + cost, 0),
+    level: plan.level,
   }
 }
 
@@ -262,6 +324,9 @@ async function callOnce(input: {
     preserveToolNames: input.preserveToolNames,
     ...(input.addressRefs ? { addressRefs: input.addressRefs } : {}),
   })
+  // 级 1（缩短）是素材既有的默认投影（超单条上限就缩短），不是为适应硬上限做的升档；
+  // 只有级 2（清空）是「级 1 装不下」才加码出来的，值得一条 info（规划器另有工具结果侧的 debug/info）。
+  if (material.level === 2) log.info("摘要素材升到级 2 以适应硬上限:", { used: material.used, limit: input.hardInputLimit })
   // 不截字也不静默丢覆盖：单片超过硬上限时明确失败（§5.2），由调用方决定回退或放弃。
   if (material.used > input.hardInputLimit) throw new ContextBudgetError(material.used, input.hardInputLimit)
   const { completePiText } = await import("./pi")
