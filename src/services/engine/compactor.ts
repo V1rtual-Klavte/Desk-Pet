@@ -46,7 +46,10 @@ export interface CompactionSummaryInput {
   sessionId?: string
   /** 触发这次压缩的运行 id：作为摘要请求的派生来源写进快照与派生记录。 */
   runId?: string
-  /** resultProjection=preserve 的工具名：素材与主请求投影同口径，不做 L0 二次缩短。 */
+  /**
+   * resultProjection=preserve 的工具名：素材与主请求投影同口径，**禁止二次处理**
+   * —— 不缩短、不清空（但同样带地址，D-W2-5 的 2026-09-27 裁定）。
+   */
   preserveToolNames?: ReadonlySet<string>
   /**
    * 地址目录 thunk（id → 展示用前缀），与主请求投影是**同一份**来源（同一回合的同一个槽）。
@@ -117,7 +120,10 @@ export function measureCompactionMaterial(input: {
   readonly previousSummary?: string
   /** 上下文窗口：取 `contextBudget(...).window`，L0 缩短宽度与判超限的上限必须出自同一次取值。 */
   readonly window: number
-  /** resultProjection=preserve 的工具名：素材与主请求投影同口径，不做 L0 二次缩短。 */
+  /**
+   * resultProjection=preserve 的工具名：素材与主请求投影同口径，**禁止二次处理**
+   * —— 不缩短、不清空（但同样带地址，D-W2-5 的 2026-09-27 裁定）。
+   */
   readonly preserveToolNames?: ReadonlySet<string>
   /**
    * 地址目录（id → 展示用前缀），与主请求投影**同一份**取值结果：素材里同一条结果的前缀
@@ -128,9 +134,11 @@ export function measureCompactionMaterial(input: {
   const preserveToolNames = input.preserveToolNames ?? new Set<string>()
   // 工具结果先进 L0 投影（附回读地址），与主请求共用同一份缩短实现与同一份地址来源
   // （details.deskpetEntryId + 同一份前缀目录）——两路投影对同一条结果必须逐字相同；
-  // 但 resultProjection=preserve 的工具与主请求同口径跳过缩短 —— 摘要素材不能二次缩短
-  // 分页读取或写类成败这类关键结果（条目仍是可回读的真相源）。preserve 只挡缩短/清空，
-  // 不挡地址尾行（D-W2-5 的 2026-09-27 裁定）。
+  // 但 resultProjection=preserve 的工具与主请求同口径**禁止二次处理：不缩短、不清空** ——
+  // 摘要素材不能二次缩短分页读取或写类成败这类关键结果（条目仍是可回读的真相源）；
+  // 地址标注不在此列，preserve 结果同样带地址尾行（D-W2-5 的 2026-09-27 裁定）。
+  // W4 把阶梯接到素材侧时，preserve 继续走同一集合：素材侧跳过全部阶梯，候选集过滤不在
+  // 素材侧另判。
   // 投影与逐条成本出自同一次遍历：`costs[i]` 就是原始素材第 i 条在 userText 里的那份字符，
   // 不进摘要的消息（custom / compactionSummary）计 0。
   const project = (messages: readonly AgentMessage[]): { projected: Message[]; costs: number[] } => {

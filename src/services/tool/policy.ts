@@ -127,7 +127,10 @@ export function retainedToolNames(tools: readonly ToolDef[]): Set<string> {
   return new Set(tools.filter(tool => tool.policy.context.historyCompaction === "retain").map(tool => tool.name))
 }
 
-/** 声明了 resultProjection=preserve 的工具名集合：结果在请求与摘要素材里都不得二次缩短。 */
+/**
+ * 声明了 resultProjection=preserve 的工具名集合：结果在请求视图与摘要素材里都**禁止二次处理**
+ * —— 不缩短、不清空（但同样带地址，D-W2-5 的 2026-09-27 裁定）。
+ */
 export function preservedToolNames(tools: readonly ToolDef[]): Set<string> {
   return new Set(tools.filter(tool => tool.policy.context.resultProjection === "preserve").map(tool => tool.name))
 }

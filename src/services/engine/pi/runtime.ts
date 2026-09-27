@@ -681,7 +681,7 @@ function extractRequestParams(payload: unknown): PromptRequestParams {
 function createProjectionHook(args: {
   projectToolResults: boolean
   toolsByName: ReadonlyMap<string, ToolDef>
-  /** `resultProjection: "preserve"` 的工具名；与 `toolsByName` 出自同一份 `kernel.tools`。 */
+  /** `resultProjection: "preserve"` 的工具名（不缩短、不清空，地址照走）；与 `toolsByName` 出自同一份 `kernel.tools`。 */
   preserveToolNames: ReadonlySet<string>
   model: PiModel
   state: HarnessRunState
@@ -1984,7 +1984,8 @@ export async function compactActiveSession(sessionId: string): Promise<ManualCom
       compactionAudit,
       beforeRequest: createRequestOptionsPatch(),
       // 续跑也走宿主的投影与剥离；工具结果投影按空工具集（安全回退，不开工具）——
-      // 没有工具声明就没有 preserve 名单，历史结果照常走阶梯（与投影 hook 的旧口径一致）。
+      // 没有工具声明就没有 preserve 名单，历史结果照常进候选集走阶梯（与投影 hook 对未注册
+      // 工具的口径一致）。
       transformContext: createProjectionHook({
         projectToolResults: true,
         toolsByName: new Map(),
@@ -2101,7 +2102,11 @@ export async function runPiSubAgent(input: PiSubAgentInput): Promise<PiSubAgentO
 }
 
 /**
- * 回读地址解析（投影期唯一一处）：条目保持全文，只有请求视图被缩短/清空并标注回读地址。
+ * 回读地址解析（投影期唯一一处）：条目保持全文，缩短/清空只改视图、不动存档
+ * （请求视图与摘要素材同口径）；地址无条件标注（A-1）。
+ *
+ * `resultProjection=preserve` 的结果**禁止二次处理：不缩短、不清空，但同样带地址** —— 地址
+ * 标注不在此列（D-W2-5 的 2026-09-27 裁定：preserve 只挡升档处理，不挡地址标注）。
  *
  * `addressRefs` 给的是展示用前缀，目录里没有该 id 时退回完整条目 id（完整 id 永远可读，A-4）；
  * 取不到 `details.deskpetEntryId` 的结果按无地址形态如实投影，不写假 eventId。
@@ -2115,6 +2120,9 @@ function resolveToolResultAddress(message: { details?: unknown }, addressRefs?: 
 /**
  * 阶梯条目的 Pi 消息形态适配器：只取 `role === "toolResult"` 的消息，正文用 `contentText`
  * （与投影改写的正文同一份），地址用 `resolveToolResultAddress`。
+ *
+ * `resultProjection=preserve` 的条目同样在这里取地址：它们不进候选集（判定侧过滤），
+ * 但地址标注照走 —— 不缩短、不清空，但同样带地址（D-W2-5 的 2026-09-27 裁定）。
  *
  * 消息形态适配只有这一处 —— 投影 hook 与级 3 闸门（T3.05）共用同一份产出，
  * `compactor.ts` 不抽第二份（durable `Message` 形态在 W4 的素材投影里）。
@@ -2140,8 +2148,9 @@ function toolResultLadderEntries(
  *
  * 级 1/2 经 `projectToolResultText` 的唯一实现（无第二套文案；级 2 的「有地址」硬前提
  * 由它兜底，这里不重判）。未进计划的条目（级 0）与 `resultProjection=preserve` 的工具
- * （分页读取、写类结果）**不缩短、不清空，但地址无条件标注**（A-1）—— 写入回执被摘要
- * 吃掉后也需要可捞的地址（D-W2-5 的 2026-09-27 裁定：preserve 只挡升档处理，不挡地址标注）。
+ * （分页读取、写类结果）**禁止二次处理：不缩短、不清空，但地址无条件标注**（A-1）—— 写入
+ * 回执被摘要吃掉后也需要可捞的地址（D-W2-5 的 2026-09-27 裁定：preserve 只挡升档处理，
+ * 不挡地址标注）。
  * 未注册的历史工具不在 `preserveToolNames` 里，按可处理结果对待（与投影 hook 的候选集同一口径）。
  *
  * 改写只作用于 text 块：图片等非 text 块按原顺序留在原位（整块重建会丢掉 `pi-read` 的

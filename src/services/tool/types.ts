@@ -32,7 +32,10 @@ export type ToolIsolation = "shared_read" | "exclusive_effect" | "delegate"
 /** 副作用未知时的恢复重放资格；safe 不自动启用重试，由 Harness 恢复路径判定。 */
 export type ToolReplay = "never" | "safe"
 
-/** 请求视图投影：preserve 表示源结果按原样进入请求，不再被 L0 二次缩短。 */
+/**
+ * 请求视图投影：`preserve` 表示**禁止二次处理** —— 请求视图与摘要素材都不缩短、不清空
+ * （地址标注不在此列，照旧同样带地址；D-W2-5 的 2026-09-27 裁定）。`reference` 才可被阶梯处理。
+ */
 export type ResultProjection = "preserve" | "reference"
 
 /** 历史摘要：retain 表示该调用配对必须保留原文，压缩边界不得越过它。 */

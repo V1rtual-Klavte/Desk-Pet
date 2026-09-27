@@ -315,7 +315,7 @@ async function loadToolPolicies() {
         summary: [
           PERMISSION_LABELS[tool.policy.permission.defaultDecision] ?? tool.policy.permission.defaultDecision,
           ISOLATION_LABELS[tool.policy.execution.isolation] ?? tool.policy.execution.isolation,
-          tool.policy.context.resultProjection === "preserve" ? "结果原样" : "结果可引用",
+          tool.policy.context.resultProjection === "preserve" ? "结果原样（不缩短、不清空）" : "结果可引用",
           tool.policy.context.historyCompaction === "retain" ? "历史保留原文" : "历史随轮摘要",
         ].join(" · "),
       }))
