@@ -106,5 +106,5 @@ export type { PiSessionRepo, PiSessionRepoOptions } from "./session-repo"
 
 export { FRAME_BUFFER_MAX_BYTES, FRAME_FLUSH_FAILURE_MARK, FrameBufferingFileSystem, flushSessionFrameWrites } from "./session-frame-buffer"
 
-export { FOLD_POLICY, prepareFold, readFoldLog } from "./session-fold"
-export type { FoldLog, FoldPlan, FoldSkipReason } from "./session-fold"
+export { FOLD_POLICY, logStateDigest, prepareFold, readFoldLog, replayLogState } from "./session-fold"
+export type { FoldLog, FoldPlan, FoldSkipReason, LogState } from "./session-fold"

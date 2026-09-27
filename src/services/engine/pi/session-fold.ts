@@ -1,5 +1,5 @@
 // ==========================================
-// 会话 JSONL 日志的纯删除式折叠：log → log'（执行方案 W5 的 T5.00 核心；源方案 §7.1 方案一）
+// 会话 JSONL 日志的纯删除式折叠：log → log'（执行方案 W5：T5.00 折叠核心 + T5.01 状态摘要；源方案 §7.1 方案一）
 //
 // 会话文件是 append-only：帧（`pi.pending.assistant_frame`）的每次流式增量追加一行，而
 // `list/delete` / `value/delete` 只追加一条删除记录 —— 被删 key 的历史 append 不会从盘上
@@ -21,21 +21,39 @@
 //       header 里的 nextSeq 高水位原样保留。
 //   X-1 entry 集合不变 ⇒ 折叠前后展示地址（shortenAddresses 的取值）逐字相同。
 //
+// 第四条是**可验证性**（源方案 §7.1「折叠安全要求 3」= S-1，T5.01 交付）：把「折叠前后逻辑状态
+// 完全等价」变成可执行、可留痕的检查 —— replayLogState 从日志文本重放出完整逻辑状态，
+// logStateDigest 给出稳定摘要，**两侧摘要必须相同**：
+//   · 摘要（SHA-256 over UTF-8）只依赖逻辑状态：行序、行数、字节数、行排版都不参与 —— 这些正是
+//     折叠必然改变的东西，掺进去会让校验恒失败（字段表见 LogState）。
+//   · **先算后写**（顺序写死）：先算原日志摘要、再算折叠结果摘要，一致才允许落盘。不一致时
+//     磁盘上什么都没发生、原文件保持原样，调用方返回 skip("hash-mismatch") 并 warn 留痕
+//     （含两侧摘要与统计；驱动见 T5.02 的 foldSessionFile）。
+//   · **诚实边界（不许当成唯一防线）**：两侧用的是本模块自己的重放，若重放本身抄错了上游
+//     `InMemoryStorageState.applyValidated` 的语义，两侧会「一致地错」。所以它必须与上面那条
+//     局部判据（只丢「该 key 最后一次 delete 之前」的写入）以及 T5.07 的逐字比对**同时存在** ——
+//     两条一起才有意义，不允许只保留其中一条。
+//
 // 单位口径（本波唯一的单位陷阱）：字节一律是 **UTF-8 字节**（TextEncoder），与 Rust 侧
 // `file_write` 判上限用的 `content.len()` 同口径；禁用 `String.length`（UTF-16 长度，中文
 // 内容下差约 3 倍，且 ASCII 夹具查不出来）。
 //
 // 上游耦合（O-8 的登记点）：白名单逐条对齐 `harness/session/jsonl/storage.js:20-45`
-// （parseCommittedWrite）与 `commit.js:7-22`（commitWrite）；`v: 4` 来自 `jsonl/types.d.ts:3`。
+// （parseCommittedWrite）与 `commit.js:7-22`（commitWrite）；`v: 4` 来自 `jsonl/types.d.ts:3`；
+// 重放逐条对齐 `harness/session/in-memory-storage-state.js:53-108`（applyValidated）与
+// `storage.js:141-142`（header.nextSeq 取 max）。
 // 上游升版本 ⇒ 先看 `pnpm run test:types` 的绊线报错（T5.02 落在本文件的 STORAGE_VERSION_GUARD），
 // 再重核白名单与「单写行 vs 数组行」的序列化规则（`storage.js:56-58`）。
 //
 // 本文件是**纯函数**模块：不碰 FileSystem、无副作用、不落任何日志 —— 所有「不折叠」的结论都以
 // FoldSkipReason 返回给调用方，没有一条失败被吞掉。留痕的唯一出口是 T5.02 的 foldSessionFile
 // （createLogger("SessionFold")），等级按执行方案 T5.02 步骤 4 的表。
+// 外部依赖只有两处：上游的 `JSONL_STORAGE_VERSION`，以及 `@/services/engine/runtime` 的
+// `sha256Text` / `stableSerialize`（`engine/runtime` 不 import `engine/pi`，不成环）。
 // ==========================================
 
 import { JSONL_STORAGE_VERSION } from "@earendil-works/pi-agent-core/harness/session"
+import { sha256Text, stableSerialize } from "@/services/engine/runtime"
 
 /**
  * 折叠策略（O-6 的裁定口径；本模块是这三个阈值的**唯一**定义点，不建大一统 constants 文件）。
@@ -72,6 +90,8 @@ export type FoldSkipReason =
   | "nothing-to-reclaim"
   /** 原文或折叠结果超过 MAX_TOOL_FILE_BYTES（由 T5.02 的驱动按文件上限产生，纯函数不看文件大小）。 */
   | "too-large"
+  /** 折叠前后重放出的状态摘要不一致（S-1）：由 T5.02 的驱动产生，**此时不写任何文件**、原文件保持原样。 */
+  | "hash-mismatch"
 
 export type FoldPlan =
   | {
@@ -123,12 +143,16 @@ function isSafeIntegerAtLeast(value: unknown, minimum: number): value is number 
   return typeof value === "number" && Number.isSafeInteger(value) && value >= minimum
 }
 
-/** 白名单解析的结果：判定只关心「这条写是不是候选」与它归属哪个物理 key。 */
+/**
+ * 白名单解析的结果。判定（prepareFold）只关心 `role` 与 `physicalKey`；重放（replayLogState）
+ * 还要 `raw`（按 kind 解构出整对象）与 `seq` —— 两者由同一次解析产出，白名单与 JSON 解析都
+ * 只有一个定义点，重放不再自己解一遍日志。
+ */
 type ParsedWrite =
-  | { role: "append"; physicalKey: string }
-  | { role: "set"; physicalKey: string }
-  | { role: "delete"; target: "list" | "value"; physicalKey: string }
-  | { role: "keep" }
+  | { role: "append"; seq: number; raw: Record<string, unknown>; physicalKey: string }
+  | { role: "set"; seq: number; raw: Record<string, unknown>; physicalKey: string }
+  | { role: "delete"; seq: number; raw: Record<string, unknown>; target: "list" | "value"; physicalKey: string }
+  | { role: "keep"; seq: number; raw: Record<string, unknown> }
 
 /**
  * 物理 key = namespace + ADDRESS_SEPARATOR + key（抄自上游 `in-memory-storage-state.js:4-6`）。
@@ -161,17 +185,17 @@ function parseWrite(value: unknown): ParsedWrite | null {
   if (!isSafeIntegerAtLeast(write.seq, 1)) return null
   switch (write.kind) {
     case "entry":
-      return isSafeIntegerAtLeast(write.timestamp, 0) ? { role: "keep" } : null
+      return isSafeIntegerAtLeast(write.timestamp, 0) ? { role: "keep", seq: write.seq, raw: write } : null
     case "usage":
-      return { role: "keep" }
+      return { role: "keep", seq: write.seq, raw: write }
     case "value":
     case "list": {
       const physicalKey = physicalKeyOf(write)
       if (physicalKey === null) return null
-      if (write.op === "delete") return { role: "delete", target: write.kind, physicalKey }
+      if (write.op === "delete") return { role: "delete", seq: write.seq, raw: write, target: write.kind, physicalKey }
       // append 只属于 list、set 只属于 value；错配组合不在白名单里（storage.js:30-41）。
-      if (write.op === "append" && write.kind === "list") return { role: "append", physicalKey }
-      if (write.op === "set" && write.kind === "value") return { role: "set", physicalKey }
+      if (write.op === "append" && write.kind === "list") return { role: "append", seq: write.seq, raw: write, physicalKey }
+      if (write.op === "set" && write.kind === "value") return { role: "set", seq: write.seq, raw: write, physicalKey }
       return null
     }
     default:
@@ -204,28 +228,31 @@ function parseTransaction(line: string): ParsedWrite[] | null {
 }
 
 /**
- * header 必须是本模块认得的 v4 + `storageVersion: 1` 头。
+ * header 必须是本模块认得的 v4 + `storageVersion: 1` 头；认得就返回 header 对象，否则 null。
  *
  * 空串 = 文件一个换行都没有（上游 splitCompleteLines 返回 `lines: []`，open 按「missing
  * header」拒绝，`storage.js:117-119`）；v3-legacy 头（`type: "session"` / `version: 3`）也在这里
  * 被挡下 —— 折叠只对 v1 的字段白名单成立，认不出就跳过（安全降级，不影响会话功能）。
+ *
+ * 返回对象而不是布尔：重放要从同一个 header 取 `nextSeq` 高水位，判定与取值共用这一次解析
+ * （header 形状只有一个定义点）。
  */
-function isSupportedHeader(headerLine: string): boolean {
-  if (headerLine === "") return false
+function parseSupportedHeader(headerLine: string): Record<string, unknown> | null {
+  if (headerLine === "") return null
   let value: unknown
   try {
     value = JSON.parse(headerLine)
   } catch {
     // 同上：不是被吞掉的失败，是 skip("unknown-format") 的判据（留痕在 foldSessionFile）。
-    return false
+    return null
   }
-  if (typeof value !== "object" || value === null || Array.isArray(value)) return false
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return null
   const header = value as Record<string, unknown>
-  return (
+  const supported =
     header.kind === "header" &&
     header.v === SUPPORTED_FORMAT_VERSION &&
     header.storageVersion === JSONL_STORAGE_VERSION
-  )
+  return supported ? header : null
 }
 
 /**
@@ -285,7 +312,7 @@ export function readFoldLog(text: string): FoldLog {
  * 值不值得重写」是 T5.02 的闸门 2/2b，纯函数不掺和）。
  */
 export function prepareFold(log: FoldLog): FoldPlan {
-  if (!isSupportedHeader(log.headerLine)) return { kind: "skip", reason: "unknown-format" }
+  if (parseSupportedHeader(log.headerLine) === null) return { kind: "skip", reason: "unknown-format" }
 
   const lines = log.lines
   const parsed: ParsedWrite[][] = []
@@ -336,4 +363,145 @@ export function prepareFold(log: FoldLog): FoldPlan {
     bytesBefore: utf8ByteLength(serializeCompleteLines(log.headerLine, lines)),
     bytesAfter: utf8ByteLength(serializeCompleteLines(log.headerLine, kept)),
   }
+}
+
+// ---------------------------------------------------------------------------
+// S-1：状态重放与摘要（折叠安全要求 3）
+// ---------------------------------------------------------------------------
+
+/**
+ * 重放出来的逻辑状态 —— S-1 的比较对象，**字段表即契约**。
+ *
+ * 刻意**不纳入**：
+ *   · `stats`：`messageCount` 是 entries 的纯函数、usage 合计是 usage 的纯函数（且是浮点累加、
+ *     对写入顺序敏感），纳入不增加鉴别力，只会多一个假失败面；
+ *   · `entriesBySeq`：恒等于 entries 按 seq 升序，重复。
+ */
+export interface LogState {
+  /** seq 高水位：每条写入 apply 后 `nextSeq = max(nextSeq, seq + 1)`，再与 header.nextSeq 取 max（storage.js:141-142）。 */
+  nextSeq: number
+  /** entry：id → 去掉 `kind` 之后的整个对象（含 seq / parentId / timestamp / type / customType / data / message），按 seq 升序。 */
+  entries: Array<[string, unknown]>
+  /** value：物理 key → { seq, value }（delete 后该 key 不存在）。 */
+  scalarValues: Array<[string, { seq: number; value: unknown }]>
+  /** list：物理 key → [{ seq, value }, …]（**元素**按出现顺序 —— 它是语义，上游 readList 不重排）。 */
+  listValues: Array<[string, Array<{ seq: number; value: unknown }>]>
+  /** usage：id → 去掉 `kind` 之后的整个对象。 */
+  usage: Array<[string, unknown]>
+}
+
+/**
+ * entry / usage 的 id 不在本模块的白名单校验范围内（折叠不动这两类行），但摘要需要**稳定**的
+ * 字符串键：统一 `String(id)` 归一，两侧同一份代码。实践中 id 是 uuidv7 字符串，这一步恒等。
+ */
+function idKeyOf(id: unknown): string {
+  return String(id)
+}
+
+/**
+ * header.nextSeq 是快照重写留下的高水位：上游在 open 末尾取它与重放结果的较大者
+ * （`storage.js:141-142` → `advanceNextSeq`，`in-memory-storage-state.js:109-114`）。
+ *
+ * 只在 header 认得（v4 + storageVersion 1）时吸收 —— 折叠只在这种文件上发生，且折叠前后 header
+ * 逐字相同，吸收与否不影响两侧比较。非法值（上游 advanceNextSeq 会抛）**不吸收**：本函数对畸形
+ * header 不抛，那样的文件在上游 open 阶段本来就打不开。
+ */
+function nextSeqWithHeader(nextSeq: number, headerLine: string): number {
+  const headerNextSeq = parseSupportedHeader(headerLine)?.nextSeq
+  return isSafeIntegerAtLeast(headerNextSeq, 1) ? Math.max(nextSeq, headerNextSeq) : nextSeq
+}
+
+/** 字符串键（物理 key 与 entry/usage id）的字典序，按 UTF-16 码元、与宿主 locale 无关。 */
+function byStringKey(left: string, right: string): number {
+  return left < right ? -1 : left > right ? 1 : 0
+}
+
+/**
+ * 把日志文本重放成逻辑状态 —— 逐条对齐上游 `InMemoryStorageState.applyValidated`
+ * （`in-memory-storage-state.js:53-108`：4 个 case 的 switch + 每条写入之后推进 seq 高水位）：
+ *   entry → `entries.set(id, 去掉 kind 的整对象)`；usage → `usage.set(id, …)`；
+ *   value/delete → `scalarValues.delete(pk)`；value/set → `scalarValues.set(pk, { value, seq })`；
+ *   list/delete → `listValues.delete(pk)`；list/append → 对应数组 push `{ seq, value }`。
+ * 物理 key 与判定侧同源（`physicalKeyOf` 用的 `ADDRESS_SEPARATOR`）；scalarValues 与 listValues 是两张
+ * 独立的表（同一个 key 串可以同时存在于两边，因此 delete 必须按 target 分表）。
+ *
+ * **只对 prepareFold 认得的日志成立**：某一行不是合法事务时抛错，而**不是**返回残缺状态 ——
+ * 残缺状态会让两侧摘要「一致地错」，把失败伪装成通过（正是文件头写明的诚实边界要防的事）。
+ * 正常路径不会触到它：摘要只在 `prepareFold` 返回 fold 之后才算，那时每一行都已过白名单。
+ */
+export function replayLogState(log: FoldLog): LogState {
+  const entries = new Map<string, { seq: number; entry: unknown }>()
+  const scalarValues = new Map<string, { seq: number; value: unknown }>()
+  const listValues = new Map<string, Array<{ seq: number; value: unknown }>>()
+  const usage = new Map<string, unknown>()
+  let nextSeq = 1
+
+  for (let index = 0; index < log.lines.length; index++) {
+    const writes = parseTransaction(log.lines[index])
+    if (writes === null) {
+      throw new Error(`会话日志第 ${index + 2} 行不是合法事务（未知格式），无法重放逻辑状态`)
+    }
+    for (const write of writes) {
+      switch (write.role) {
+        case "keep": {
+          // `keep` 只覆盖 entry / usage 两种 kind（其余 kind 在 parseWrite 的白名单里被挡下）。
+          const { kind, ...rest } = write.raw
+          if (kind === "entry") entries.set(idKeyOf(rest.id), { seq: write.seq, entry: rest })
+          else usage.set(idKeyOf(rest.id), rest)
+          break
+        }
+        case "set":
+          scalarValues.set(write.physicalKey, { seq: write.seq, value: write.raw.value })
+          break
+        case "append": {
+          const element = { seq: write.seq, value: write.raw.value }
+          const stored = listValues.get(write.physicalKey)
+          if (stored === undefined) listValues.set(write.physicalKey, [element])
+          else stored.push(element)
+          break
+        }
+        case "delete": {
+          const table = write.target === "list" ? listValues : scalarValues
+          table.delete(write.physicalKey)
+          break
+        }
+      }
+      // 上游逐写推进 `nextSeq = write.seq + 1`（最后一行写赢），在本模块里等价于 **max(seq) + 1**：
+      // 上游 `validateCommittedWrites` 要求 seq 在文件里严格递增（不满足就 open 失败，`commit.js:33-40`），
+      // 合法文件里「最后一行的 seq」就是 max(seq)，两种写法结果逐位相同。
+      // 取 max 是刻意的：摘要必须只依赖**逻辑状态** —— 行序不是状态的一部分（同一份状态可以来自
+      // 不同行序，摘要必须相同），而「最后一行」是行序的函数。
+      nextSeq = Math.max(nextSeq, write.seq + 1)
+    }
+  }
+
+  return {
+    nextSeq: nextSeqWithHeader(nextSeq, log.headerLine),
+    // 四张表都按**键**排序（entries 按 seq，其余按字符串键的字典序）：Map 的插入顺序是重放路径的副产品，不是逻辑状态的一部分 ——
+    // 同一份状态可以来自不同的行序（探针的「交换两行」用例），摘要必须相同。
+    // listValues 的**元素**顺序不排：它是语义（上游 readList 按出现顺序切片）。
+    entries: [...entries]
+      .sort((left, right) => left[1].seq - right[1].seq)
+      .map(([id, held]): [string, unknown] => [id, held.entry]),
+    scalarValues: [...scalarValues]
+      .sort(([left], [right]) => byStringKey(left, right))
+      .map(([key, held]): [string, { seq: number; value: unknown }] => [key, held]),
+    listValues: [...listValues]
+      .sort(([left], [right]) => byStringKey(left, right))
+      .map(([key, elements]): [string, Array<{ seq: number; value: unknown }>] => [key, elements]),
+    usage: [...usage].sort(([left], [right]) => byStringKey(left, right)),
+  }
+}
+
+/**
+ * 逻辑状态的稳定摘要：`sha256Text(stableSerialize(replayLogState(log)))`。
+ *
+ * 输入只依赖重放出的状态（LogState 的字段表）：行序、行数、字节数、行排版一律不参与 —— 它们是
+ * 折叠必然改变的东西，掺进来会让校验恒失败。序列化用 `stableSerialize`（递归按 key 排序、
+ * 非有限数归一为 `null`），因此不依赖字段写入顺序。
+ *
+ * **先算后写**：调用方必须先算两侧摘要再动盘，不一致就返回 skip("hash-mismatch") 并保留原文件。
+ */
+export async function logStateDigest(log: FoldLog): Promise<string> {
+  return sha256Text(stableSerialize(replayLogState(log)))
 }
