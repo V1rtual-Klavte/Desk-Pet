@@ -9,8 +9,10 @@ import { DEFAULT_SCENE_TIMEOUT, UNIT_SCENE_TIMEOUT } from "./scene-runner"
  *
  * `2026-09-27.1`：W1（帧节流）新增 hs-05/hs-06 两个场景（harness-storage），
  * 由 T1.05 与 T1.06 共用这一次 bump。
+ * `2026-09-27.2`：W2（判据与地址）新增 te-25 场景（tool-execution）并改写多条既有场景的
+ * 断言口径，全波共用这一次 bump。
  */
-export const LIVE_DATASET_VERSION = "2026-09-27.1"
+export const LIVE_DATASET_VERSION = "2026-09-27.2"
 
 export function validateDataset(scenes: SceneDef[], contracts: ModuleContract[]): string[] {
   const errors: string[] = []
