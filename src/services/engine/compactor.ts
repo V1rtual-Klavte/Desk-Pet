@@ -175,6 +175,130 @@ export function measureCompactionMaterial(input: {
   }
 }
 
+// ── 第二层（消费侧）：串行分片摘要 —— 单片等价现状，超硬上限才分片 ──
+//
+// 分片只改「素材怎么喂」，不改「提交几次」：K 片的产出在这里合成**一份** CompactionSummaryOutcome
+// 交给调用方，提交仍只有一次（AgentHarness 收到钩子返回的 compaction 后单次提交，钩子无第二条路径）。
+// 逐片**串行**（不并行发多个摘要请求）：第 N 片的 `previousSummary` 就是第 N−1 片的产出 —— 迭代合并，
+// 中间片的结果只以摘要形态前进，不旁落、不要求调用方保存。任何一片失败或被取消即整体抛错
+// （→ 钩子 decline、零提交），不允许留下半成品状态。
+
+/** 素材分段后仍无法在一次压缩里覆盖：明确失败，绝不降级为部分覆盖（源方案 §2.1）。 */
+export class CompactionOverflowError extends Error {
+  readonly code = "COMPACTION_MATERIAL_OVER_CAP"
+  constructor(readonly detail: { readonly reason: "over_cap" | "oversized_unit"; readonly needed: number; readonly used: number; readonly limit: number }) {
+    // 文案按 T4.04 的执行契约原样落地（用户可见面复用 `/compact` 的既有失败链路，本类只提供可判定的 code）。
+    super(detail.reason === "over_cap"
+      ? `压缩素材需要 ${detail.needed} 片，超过单次上限 ${detail.limit} 片`
+      : `压缩素材里有不可再分的片段（约 ${detail.used} tokens）超过单片上限 ${detail.limit} tokens`)
+    this.name = "CompactionOverflowError"
+  }
+}
+
+/**
+ * 单片摘要调用：现有单次路径的逐字封装（`completePiText` + `parseStructuredSummary` + 摘要预算校验）。
+ *
+ * `messages` 与 `turnPrefixMessages` 是**本片**素材的两个分区，互不重复、也不缺斤少两：
+ * `turnPrefixMessages` 只装本片中属于 in-progress 回合前缀的那一段（`measureCompactionMaterial`
+ * 据它切 instructions 与 userText 的 `splitTurnPrefix` 字段 —— 保留单次路径既有的条件形状），
+ * 其余素材一律走 `messages`。片内仍走唯一的素材度量出口，硬上限与摘要预算**逐片各校验一遍**，
+ * 不为中间片放宽。
+ *
+ * 与 `completePiText` 的入口参数同形、不新增也不省略：`signal` 必须逐片透传，漏掉就等于只有第一片
+ * 可取消（取消传导是逐片生效的）。
+ */
+async function callOnce(input: {
+  /** 本片的普通素材（非 in-progress 前缀段）。 */
+  messages: readonly AgentMessage[]
+  /** 本片中属于 in-progress 回合前缀的那一段；没有就是 undefined。 */
+  turnPrefixMessages?: readonly AgentMessage[]
+  /** 迭代摘要素材（第 1 片来自调用方，第 N>1 片来自第 N−1 片的产出）。 */
+  previousSummary?: string
+  /** 本次压缩冻结的预算份额（调用方一次取值，K 片共用同一口径）。 */
+  window: number
+  hardInputLimit: number
+  summaryMaxTokens: number
+  preserveToolNames?: ReadonlySet<string>
+  addressRefs?: ReadonlyMap<string, string>
+  signal?: AbortSignal
+  model?: import("./pi").PiModel
+  sessionId?: string
+  runId?: string
+}): Promise<{ summary: StructuredSummary; inputText: string; usage: Usage }> {
+  const material = measureCompactionMaterial({
+    messages: input.messages,
+    turnPrefixMessages: input.turnPrefixMessages,
+    previousSummary: input.previousSummary,
+    window: input.window,
+    preserveToolNames: input.preserveToolNames,
+    ...(input.addressRefs ? { addressRefs: input.addressRefs } : {}),
+  })
+  // 不截字也不静默丢覆盖：单片超过硬上限时明确失败（§5.2），由调用方决定回退或放弃。
+  if (material.used > input.hardInputLimit) throw new ContextBudgetError(material.used, input.hardInputLimit)
+  const { completePiText } = await import("./pi")
+  const response = await completePiText({
+    purpose: "compaction", systemPrompt: SUMMARY_SYSTEM, userText: material.userText,
+    thinkingEffort: "low", maxTokens: input.summaryMaxTokens,
+    signal: input.signal, model: input.model,
+    // 有归属才落快照：摘要是一次性请求，但「这次压缩问了什么」必须可查。K 片各写各的快照。
+    ...(input.sessionId
+      ? { audit: { sessionId: input.sessionId, ...(input.runId ? { derivedFrom: [input.runId] } : {}) } }
+      : {}),
+  })
+  const summary = parseStructuredSummary(response.text)
+  if (!summary) throw new Error("摘要格式无效：未返回可校验的结构化 JSON")
+  if (estimateValueTokens(summary) > input.summaryMaxTokens) throw new Error("摘要超过预算上限")
+  return { summary, inputText: material.userText, usage: response.usage }
+}
+
+/** 缺失 `cost` 的 `Usage` 按全 0 计（见 `mergeUsage` 的取舍说明）。 */
+const EMPTY_COST: Usage["cost"] = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 }
+
+/**
+ * K 片 usage 的合并：压缩条目只落一条，它的 `usage` 必须是 K 次调用的合计（账要一次记全）。
+ *
+ * 为什么自建而不复用上游：`addUsage` 在 `@earendil-works/pi-agent-core@0.85.1` 的 `exports` 映射
+ * 里够不着 —— 映射只有 `.` / `./node` / `./harness/context` / `./harness/env/nodejs` /
+ * `./harness/runtime/reducer` / `./harness/session` / `./harness/session/testing`，`addUsage`
+ * 只在该包内部 `compaction.js` 自用（本仓零使用）；`debug.ts` 的 `recordModelUsage` 则是按 purpose
+ * 分桶的**计数器累加**，不是合并 `Usage` 对象，拿它当合并会丢掉分项。语义与包内实现一致：可选分项
+ * （`cacheWrite1h` / `reasoning`）两侧都缺省时不落字段，任一侧有值就按 0 补齐相加。
+ *
+ * 一处比上游宽松的取舍：**缺失的分项（含整个 `cost`）按 0 计**。`Usage` 各分项类型上必填，pi-ai 各
+ * provider（openai-completions / anthropic-messages / google-generative-ai / bedrock 等）也确实都填，
+ * 但本仓 `completePiText` 把 `message.usage` **原样透传** —— 测试替身或未回报成本的端点可能只给
+ * input/output。若照上游直接相加，`undefined + 数` 会算出 NaN 并写进 compaction 条目的 usage 明细；
+ * 按 0 计既不产生 NaN、也不把一次已经付过费的压缩拖成 decline，口径同 `recordModelUsage` 对
+ * 「未回报」的处理（0 表示未知，不当作准确值）。
+ */
+function mergeUsage(left: Usage, right: Usage): Usage {
+  const a = left as Partial<Usage>
+  const b = right as Partial<Usage>
+  const num = (value: number | undefined): number => value ?? 0
+  const costLeft = a.cost ?? EMPTY_COST
+  const costRight = b.cost ?? EMPTY_COST
+  return {
+    input: num(a.input) + num(b.input),
+    output: num(a.output) + num(b.output),
+    cacheRead: num(a.cacheRead) + num(b.cacheRead),
+    cacheWrite: num(a.cacheWrite) + num(b.cacheWrite),
+    ...(a.cacheWrite1h === undefined && b.cacheWrite1h === undefined
+      ? {}
+      : { cacheWrite1h: num(a.cacheWrite1h) + num(b.cacheWrite1h) }),
+    ...(a.reasoning === undefined && b.reasoning === undefined
+      ? {}
+      : { reasoning: num(a.reasoning) + num(b.reasoning) }),
+    totalTokens: num(a.totalTokens) + num(b.totalTokens),
+    cost: {
+      input: num(costLeft.input) + num(costRight.input),
+      output: num(costLeft.output) + num(costRight.output),
+      cacheRead: num(costLeft.cacheRead) + num(costRight.cacheRead),
+      cacheWrite: num(costLeft.cacheWrite) + num(costRight.cacheWrite),
+      total: num(costLeft.total) + num(costRight.total),
+    },
+  }
+}
+
 /** 生成一次结构化压缩摘要；失败抛错，由 Harness 按 handler_error 上报并可回退默认摘要。 */
 export async function summarizeCompaction(input: CompactionSummaryInput): Promise<CompactionSummaryOutcome> {
   const budget = contextBudget(input.model?.contextWindow ?? aiConfig.contextMaxTokens)
@@ -196,22 +320,79 @@ export async function summarizeCompaction(input: CompactionSummaryInput): Promis
     preserveToolNames: input.preserveToolNames,
     ...(addressRefs ? { addressRefs } : {}),
   })
-  // 不截字也不静默丢覆盖：输入超过硬上限时明确失败（§5.2），由调用方决定回退或放弃。
-  if (material.used > budget.hardInputLimit) throw new ContextBudgetError(material.used, budget.hardInputLimit)
-  const { completePiText } = await import("./pi")
-  const response = await completePiText({
-    purpose: "compaction", systemPrompt: SUMMARY_SYSTEM, userText: material.userText,
-    thinkingEffort: "low", maxTokens: budget.summaryMaxTokens,
-    signal: input.signal, model: input.model,
-    // 有归属才落快照：摘要是一次性请求，但「这次压缩问了什么」必须可查。
-    ...(input.sessionId
-      ? { audit: { sessionId: input.sessionId, ...(input.runId ? { derivedFrom: [input.runId] } : {}) } }
-      : {}),
+  // 两条分支共用的实参：预算份额在这里冻结一次（同一份 used 的量纲），signal/model 原样透传。
+  const shared = {
+    window: budget.window,
+    hardInputLimit: budget.hardInputLimit,
+    summaryMaxTokens: budget.summaryMaxTokens,
+    signal: input.signal,
+    model: input.model,
+    sessionId: input.sessionId,
+    runId: input.runId,
+    preserveToolNames: input.preserveToolNames,
+    ...(addressRefs ? { addressRefs } : {}),
+  }
+
+  // ── 现状路径：素材装得下就是一次调用、一份摘要（`previousSummary` 仍只进这一次请求）──
+  if (material.used <= budget.hardInputLimit) {
+    const single = await callOnce({
+      ...shared,
+      messages: input.messages,
+      turnPrefixMessages: input.turnPrefixMessages,
+      previousSummary: input.previousSummary,
+    })
+    return { text: formatStructuredSummary(single.summary), summary: single.summary, usage: single.usage, inputText: single.inputText }
+  }
+
+  // ── 第二层：素材超硬上限 → 串行分片（不再整次失败）──
+  // 规划器读的 `costOf` / `overhead` 必须来自上面同一次投影（唯一度量出口），不得重算。
+  const all = sliceMaterial(material, 0, material.messages.length + material.turnPrefixMessages.length)
+  const prefixFrom = material.messages.length
+  const plan = planCompactionShards({
+    material: all,
+    turnPrefixFrom: prefixFrom,
+    costOf: index => material.costs[index],
+    overhead: material.overhead,
+    // sliceBudget 与 hardInputLimit 同量纲：都取这一次 `contextBudget(window)`（不传 maxOutput）。
+    sliceBudget: Math.floor(budget.hardInputLimit * COMPACTION_SLICE_RATIO),
+    hardInputLimit: budget.hardInputLimit,
+    maxSlices: MAX_COMPACTION_SLICES,
   })
-  const summary = parseStructuredSummary(response.text)
-  if (!summary) throw new Error("摘要格式无效：未返回可校验的结构化 JSON")
-  if (estimateValueTokens(summary) > budget.summaryMaxTokens) throw new Error("摘要超过预算上限")
-  return { text: formatStructuredSummary(summary), summary, usage: response.usage, inputText: material.userText }
+  // 判片数必须先判 fatal：`fatal` 存在时 `ranges` 恒为 `[]`（T4.00 的返回形态），反过来读会把
+  // 「片数超上限」误判成「没有可规划对象」。明确失败，不是尽力而为：一个请求都不发。
+  if (plan.fatal) throw new CompactionOverflowError(plan.fatal)
+  // 理论不可达：能走到这里说明素材超硬上限，而 0/1 片意味着没有可分对象（例如素材为空、只有
+  // `previousSummary` 自身超限 —— 它每片都要带，切不掉）。保守留在原行为：明确失败。
+  if (plan.ranges.length <= 1) throw new ContextBudgetError(material.used, budget.hardInputLimit)
+
+  const texts: string[] = []
+  let previous = input.previousSummary
+  let usage: Usage | undefined
+  let last: StructuredSummary | undefined
+  for (const [from, to] of plan.ranges) {
+    // 片间取消检查：每片结束后、下一片发出前看一眼 signal。不吞 —— 取消经 signal 传导，
+    // 由钩子的 catch 收尾成 decline（根因留痕在 summarizeCompaction 的抛错点 / 钩子 catch）。
+    input.signal?.throwIfAborted()
+    // prefix 段只可能落在最后一片（规划器的 prefixUnit 恒为最后一个单元且永不切分），但它可能与
+    // 前面的普通素材同片（贪心装箱把 prefix 塞进上一片的余量里）。两段按 prefixFrom 切开、各进一个
+    // 字段：任何一条素材都不会重复出现，形状与单次路径的 `messages` + `splitTurnPrefix` 一致。
+    const normalPart = all.slice(from, Math.min(to, prefixFrom))
+    const prefixPart = to > prefixFrom ? all.slice(Math.max(from, prefixFrom), to) : []
+    const slice = await callOnce({
+      ...shared,
+      messages: normalPart,
+      ...(prefixPart.length ? { turnPrefixMessages: prefixPart } : {}),
+      previousSummary: previous,
+    })
+    // 迭代合并的唯一回填点：第 N 片的 previousSummary 就是第 N−1 片的产出（串行，不并行发请求）。
+    previous = formatStructuredSummary(slice.summary)
+    texts.push(slice.inputText)
+    usage = usage ? mergeUsage(usage, slice.usage) : slice.usage
+    last = slice.summary
+  }
+  // 正文只由最后一片产出：前面的片都已被它合并进 previousSummary，再拼一次等于把同一段历史说两遍。
+  // `usage` 是 K 次调用的合计。`ranges.length ≥ 2`（上面的守卫）保证至少跑过一轮，故两者必非空。
+  return { text: formatStructuredSummary(last!), summary: last!, usage: usage!, inputText: texts.join("\n---\n") }
 }
 
 // ── 第二层：摘要素材分片规划（纯函数）──
