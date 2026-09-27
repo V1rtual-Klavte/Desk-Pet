@@ -45,15 +45,25 @@
 // 上游升版本 ⇒ 先看 `pnpm run test:types` 的绊线报错（T5.02 落在本文件的 STORAGE_VERSION_GUARD），
 // 再重核白名单与「单写行 vs 数组行」的序列化规则（`storage.js:56-58`）。
 //
-// 本文件是**纯函数**模块：不碰 FileSystem、无副作用、不落任何日志 —— 所有「不折叠」的结论都以
-// FoldSkipReason 返回给调用方，没有一条失败被吞掉。留痕的唯一出口是 T5.02 的 foldSessionFile
-// （createLogger("SessionFold")），等级按执行方案 T5.02 步骤 4 的表。
-// 外部依赖只有两处：上游的 `JSONL_STORAGE_VERSION`，以及 `@/services/engine/runtime` 的
-// `sha256Text` / `stableSerialize`（`engine/runtime` 不 import `engine/pi`，不成环）。
+// 文件分两半，边界写死：
+//   · 上半（readFoldLog / prepareFold / replayLogState / logStateDigest）是**纯函数**：不碰
+//     FileSystem、无副作用、不落任何日志 —— 所有「不折叠」的结论都以 FoldSkipReason 返回给
+//     调用方，没有一条失败被吞掉。
+//   · 下半（T5.02 的 foldSessionFile）是**唯一驱动**：唯一碰 FileSystem、唯一留痕的地方
+//     （createLogger("SessionFold")，等级按执行方案 T5.02 步骤 4 的表）。它读一次 → 判定 →
+//     摘要校验 → 写同目录临时文件 → renameFile 覆盖；任何一步失败都保留原文件、返回 skipped，
+//     绝不抛错、绝不影响会话功能。
+// 外部依赖：上游的 `JSONL_STORAGE_VERSION`；`@/services/engine/runtime` 的 `sha256Text` /
+// `stableSerialize`（`engine/runtime` 不 import `engine/pi`，不成环）；`@/services/logger` 与
+// `@/services/error`（同目录的 `session-frame-buffer.ts` 已是同样的依赖方向）。
 // ==========================================
 
 import { JSONL_STORAGE_VERSION } from "@earendil-works/pi-agent-core/harness/session"
+import type { Context, FileSystem } from "@earendil-works/pi-agent-core"
 import { sha256Text, stableSerialize } from "@/services/engine/runtime"
+import { MAX_TOOL_FILE_BYTES } from "@/services/tool/pi/tauri-execution-env"
+import { formatError } from "@/services/error"
+import { createLogger } from "@/services/logger"
 
 /**
  * 折叠策略（O-6 的裁定口径；本模块是这三个阈值的**唯一**定义点，不建大一统 constants 文件）。
@@ -228,6 +238,27 @@ function parseTransaction(line: string): ParsedWrite[] | null {
 }
 
 /**
+ * header 行的**唯一解析点**：可解析且是普通对象时返回该对象，否则 null（空串、JSON 失败、
+ * 数组/标量都算「认不出」）。判定（parseSupportedHeader）与留痕（reportUnknownFormat 要拿
+ * `storageVersion` 值做去重键）共用它，header 的形状知识不散成两处。
+ *
+ * 解析失败不是被吞掉的失败，而是让整个文件走 skip("unknown-format") 并保持原样的判据 ——
+ * 留痕由调用方（T5.02 的 foldSessionFile）按 unknown-format 的口径统一做。
+ */
+function parseHeaderObject(headerLine: string): Record<string, unknown> | null {
+  if (headerLine === "") return null
+  let value: unknown
+  try {
+    value = JSON.parse(headerLine)
+  } catch {
+    // 同上：不是被吞掉的失败，是 skip("unknown-format") 的判据（留痕在 foldSessionFile）。
+    return null
+  }
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return null
+  return value as Record<string, unknown>
+}
+
+/**
  * header 必须是本模块认得的 v4 + `storageVersion: 1` 头；认得就返回 header 对象，否则 null。
  *
  * 空串 = 文件一个换行都没有（上游 splitCompleteLines 返回 `lines: []`，open 按「missing
@@ -238,16 +269,8 @@ function parseTransaction(line: string): ParsedWrite[] | null {
  * （header 形状只有一个定义点）。
  */
 function parseSupportedHeader(headerLine: string): Record<string, unknown> | null {
-  if (headerLine === "") return null
-  let value: unknown
-  try {
-    value = JSON.parse(headerLine)
-  } catch {
-    // 同上：不是被吞掉的失败，是 skip("unknown-format") 的判据（留痕在 foldSessionFile）。
-    return null
-  }
-  if (typeof value !== "object" || value === null || Array.isArray(value)) return null
-  const header = value as Record<string, unknown>
+  const header = parseHeaderObject(headerLine)
+  if (header === null) return null
   const supported =
     header.kind === "header" &&
     header.v === SUPPORTED_FORMAT_VERSION &&
@@ -504,4 +527,233 @@ export function replayLogState(log: FoldLog): LogState {
  */
 export async function logStateDigest(log: FoldLog): Promise<string> {
   return sha256Text(stableSerialize(replayLogState(log)))
+}
+
+// ---------------------------------------------------------------------------
+// T5.02：折叠驱动 —— 唯一碰 FileSystem、唯一留痕的地方（源方案 §7.1「折叠安全要求 1：原子替换」）
+// ---------------------------------------------------------------------------
+
+const log = createLogger("SessionFold")
+
+/**
+ * 单次 `file_read` / `file_write` 的字节上限，用于两个「动手前就判死」的守卫：
+ *   ① 文件本身就超过它 ⇒ 连读都读不回来，折叠无从谈起（先别做无用功）；
+ *   ② 折叠结果超过它 ⇒ 单次 `file_write` 必然失败，守卫写全，不靠「折叠只会变小」的推理。
+ *
+ * 常量本身定义在 `tauri-execution-env.ts`（它是这条上限的物理来源），这里只 import ——
+ * 不给它第二个定义点。`engine/pi/session-repo.ts` 也是从同一模块取 `TauriExecutionEnv`。
+ */
+
+/**
+ * 上游 storageVersion 升级绊线（O-8 第一层，唯一「不靠人记得」的一环）：本模块的白名单解析
+ * 只对 `1` 成立。依赖升级改了常量值 ⇒ `pnpm run test:types` 立即报错；届时先重核
+ * `jsonl/storage.js:20-45`（parseCommittedWrite）的白名单与「单写行 vs 数组行」的序列化规则，
+ * 再改下面这行显式比较。
+ */
+const STORAGE_VERSION_GUARD: 1 = JSONL_STORAGE_VERSION
+
+/**
+ * 已留过痕的 `storageVersion` 值（字符串化的原值）：同一版本只 warn 一次，之后降为 debug。
+ *
+ * 跳过折叠本身不影响会话功能（折叠是优化不是正确性要求），所以常态跳过只记 debug；但「格式
+ * 不认识」意味着 `storageVersion` 变了、本层的持续成本被触发，必须有一次醒目的信号。去重先例：
+ * `src/services/session/repo.ts` 的 `reportedForeignRootIds`。
+ */
+const reportedStorageVersions = new Set<string>()
+
+/**
+ * 折叠结果（**执行契约**，T5.03/T5.04 的挂点按它判成败）。
+ *
+ * `skipped` 是**正常路径**：折叠是优化不是正确性要求，调用方拿 reason 记一笔就照常继续，
+ * 不需要也不得因此中断会话。
+ */
+export type FoldOutcome =
+  | {
+      kind: "folded"
+      path: string
+      /** 参与折叠的完整行部分的 UTF-8 字节（撕裂文件不含被丢弃的半行；非撕裂文件 = 文件字节数）。 */
+      bytesBefore: number
+      /** 折叠后正文的 UTF-8 字节。 */
+      bytesAfter: number
+      /** 完整行数（含 header）。 */
+      linesBefore: number
+      linesAfter: number
+      droppedLines: number
+      /** 折叠前后的逻辑状态摘要（两侧相同才允许落盘）。 */
+      digest: string
+    }
+  | {
+      kind: "skipped"
+      /**
+       * `FoldSkipReason`（纯函数的判定结论：unknown-format / nothing-to-reclaim / too-large /
+       * hash-mismatch）加上驱动侧的四类：`probe-too-small`（闸门 1）、`write-failed`、
+       * `read-failed`。`hash-mismatch` 本已在 `FoldSkipReason` 里，此处按 T5.02 的执行契约逐字保留。
+       */
+      reason: FoldSkipReason | "probe-too-small" | "hash-mismatch" | "write-failed" | "read-failed"
+    }
+
+/**
+ * 与目标**同目录**的唯一临时路径：`${path}.tmp-<base36 时间>-<8 位随机>`。
+ *
+ * 为什么不用上游的固定名 `${path}.tmp`（`jsonl/storage.js:71` 的 publishFileAtomically 用它）：
+ * 固定名在同进程并发折叠时会互撞；Rust 自己的 `file_write_atomic` 用
+ * `{name}.tmp-{pid}-{nanos}`（`tool_exec.rs:777`），本函数取后者风格。
+ *
+ * 同目录不是风格问题：`renameFile` 不跨文件系统（`types.d.ts:189`「Does not copy across
+ * filesystems」），用 `createTempFile` 会落到系统 temp 而被内核拒绝。
+ */
+function tempPathFor(path: string): string {
+  const nonce = globalThis.crypto?.randomUUID?.().slice(0, 8) ?? Math.random().toString(36).slice(2, 10)
+  return `${path}.tmp-${Date.now().toString(36)}-${nonce}`
+}
+
+/**
+ * 失败路径的临时文件清理：尽力而为。
+ * 清理失败**不改返回值**（原文件不受影响），但绝不静默 —— 统一留痕点就是本函数。
+ */
+async function discardTempFile(fileSystem: FileSystem, tempPath: string, context: Context): Promise<void> {
+  const removed = await fileSystem.remove(tempPath, { force: true }, context)
+  if (!removed.ok) log.warn("折叠的临时文件清理不掉（原文件未受影响）:", tempPath, formatError(removed.error))
+}
+
+/**
+ * `unknown-format` 的留痕：按 `storageVersion` 值去重，首次 warn、之后 debug。
+ *
+ * 认不出的两种形态共用一条留痕：header 不是 v4 + `storageVersion: 1`（上游升版本，或 v3-legacy
+ * 头），以及某一行不是白名单事务（内容异常）。两种都意味着「本层在这个文件上不工作」，第一次
+ * 必须醒目；去重键取 header 里的版本原值（解析不出 header 时是 `undefined` 的字符串化）。
+ */
+function reportUnknownFormat(path: string, headerLine: string): void {
+  const version = parseHeaderObject(headerLine)?.storageVersion
+  const versionKey = String(version)
+  if (reportedStorageVersions.has(versionKey)) {
+    log.debug("折叠跳过：日志格式不在本层白名单内（该版本已报过）:", path, version)
+    return
+  }
+  reportedStorageVersions.add(versionKey)
+  log.warn("折叠跳过：会话日志格式不在本层白名单内（上游可能已升 storageVersion）:", {
+    path,
+    storageVersion: version,
+    supportedStorageVersion: JSONL_STORAGE_VERSION,
+    supportedFormatVersion: SUPPORTED_FORMAT_VERSION,
+  })
+}
+
+/**
+ * 折叠一个会话日志文件：读一次 → 判定 → 摘要校验 → 写同目录临时文件 → `renameFile` 覆盖。
+ *
+ * **幂等**：无可回收内容时不做任何写入（第二次调用会落在闸门 1 或 skip("nothing-to-reclaim")）。
+ * **前置条件**：该文件当前没有写入者 —— open 前，或 `releasePiSession` 里 `await session.close()`
+ * 之后（挂点是 T5.03/T5.04 的活，本函数不认识它们）。
+ * **全程经调用方传入的 `fileSystem`**（`session-repo.ts` 里是 W1 装饰过的那个实例），不绕开它
+ * 直连底层 FS —— 折叠重写与帧缓冲里的帧靠装饰器的「同路径先 flush」排开，绕开就会互相盖掉
+ * （W5 接口约定第 2 条）。`context` 只向 FileSystem 转发，本函数不读它的任何字段。
+ * **失败一律不抛**：返回 `skipped` 并留痕，调用方照常继续。
+ *
+ * 顺序即契约（执行方案 T5.02 步骤 2）：闸门 1（一次 stat）→ 尺寸守卫 → 读全文 → 白名单判定
+ * → 闸门 2（可回收量）→ 尺寸守卫 → 摘要校验 → **此处之前磁盘上什么都没发生** → 写临时文件
+ * → rename 覆盖。
+ */
+export async function foldSessionFile(fileSystem: FileSystem, path: string, context: Context): Promise<FoldOutcome> {
+  // 1. 闸门 1：一次 stat 就能判死小文件，不读正文（Read 一次全文比 stat 贵得多）
+  const probe = await fileSystem.fileInfo(path, context)
+  if (!probe.ok) {
+    log.warn("折叠前探测会话文件失败，跳过折叠:", path, formatError(probe.error))
+    return { kind: "skipped", reason: "read-failed" }
+  }
+  if (probe.value.size <= FOLD_POLICY.minFileBytes) {
+    log.debug("折叠跳过：文件未过闸门 1（体积 ≤ minFileBytes）:", path, probe.value.size)
+    return { kind: "skipped", reason: "probe-too-small" }
+  }
+  if (probe.value.size > MAX_TOOL_FILE_BYTES) {
+    log.warn("折叠跳过：文件超过单次读写上限，读都读不回来:", path, probe.value.size, MAX_TOOL_FILE_BYTES)
+    return { kind: "skipped", reason: "too-large" }
+  }
+
+  // 2. 读一次全文：闸门 1 与闸门 2 之间只读这一次
+  const read = await fileSystem.readTextFile(path, context)
+  if (!read.ok) {
+    log.warn("折叠前读取会话文件失败，跳过折叠:", path, formatError(read.error))
+    return { kind: "skipped", reason: "read-failed" }
+  }
+
+  // 3. 判定（纯函数）：header 的版本降级与行级白名单都在 prepareFold 里，结论只有 skip reason。
+  //    在它之前不解析 header、之后不重复解析 —— 一次判定即一次结论（本条 = O-8 的运行期绊线）。
+  const foldLog = readFoldLog(read.value)
+  const plan = prepareFold(foldLog)
+  if (plan.kind === "skip") {
+    if (plan.reason === "unknown-format") reportUnknownFormat(path, foldLog.headerLine)
+    else log.debug("折叠跳过：没有整行可回收:", path)
+    return { kind: "skipped", reason: plan.reason }
+  }
+
+  // 4. 闸门 2：可回收字节的两个下界（AND）；口径一律 UTF-8 字节，与闸门 1、与 Rust 侧同口径。
+  //    省下的字节不够一次 write + rename 的成本与风险，就不重写。
+  const reclaimed = plan.bytesBefore - plan.bytesAfter
+  if (reclaimed < FOLD_POLICY.minReclaimBytes || reclaimed < plan.bytesBefore * FOLD_POLICY.minReclaimRatio) {
+    log.debug("折叠跳过：可回收量未过闸门 2:", {
+      path,
+      reclaimed,
+      bytesBefore: plan.bytesBefore,
+      minReclaimBytes: FOLD_POLICY.minReclaimBytes,
+      minReclaimRatio: FOLD_POLICY.minReclaimRatio,
+    })
+    return { kind: "skipped", reason: "nothing-to-reclaim" }
+  }
+
+  // 5. 兜底：绝不折叠出一个超过单次写上限的文件（折叠只会变小，但守卫写全、不靠推理）
+  if (plan.bytesAfter > MAX_TOOL_FILE_BYTES) {
+    log.warn("折叠跳过：折叠结果仍超过单次写上限:", path, plan.bytesAfter, MAX_TOOL_FILE_BYTES)
+    return { kind: "skipped", reason: "too-large" }
+  }
+
+  // 6. S-1：**先算后写**。两侧重放摘要一致才允许动盘；不一致时磁盘上什么都没发生、原文件保持
+  //    原样 —— 这是正确性告警（折叠器在这份数据上不安全），每次都报，不按版本去重。
+  const digestBefore = await logStateDigest(foldLog)
+  const digestAfter = await logStateDigest(readFoldLog(plan.text))
+  if (digestBefore !== digestAfter) {
+    log.warn("折叠放弃：折叠前后重放状态摘要不一致（磁盘未改动，原文件保持原样）:", {
+      path,
+      digestBefore,
+      digestAfter,
+      droppedLines: plan.droppedLines,
+      droppedWrites: plan.droppedWrites,
+    })
+    return { kind: "skipped", reason: "hash-mismatch" }
+  }
+
+  // 7. 原子替换：写同目录临时文件 → renameFile 覆盖。任何一步失败都清掉临时文件、保留原文件。
+  const tempPath = tempPathFor(path)
+  const written = await fileSystem.writeFile(tempPath, plan.text, context)
+  if (!written.ok) {
+    log.warn("折叠写入临时文件失败，原文件未改动:", tempPath, formatError(written.error))
+    await discardTempFile(fileSystem, tempPath, context)
+    return { kind: "skipped", reason: "write-failed" }
+  }
+  const renamed = await fileSystem.renameFile(tempPath, path, context)
+  if (!renamed.ok) {
+    // rename 是原子操作：失败时原文件必然逐字完好，没有「写了一部分」的中间态
+    log.warn("折叠替换失败（rename），原文件逐字完好:", path, formatError(renamed.error))
+    await discardTempFile(fileSystem, tempPath, context)
+    return { kind: "skipped", reason: "write-failed" }
+  }
+
+  log.info("会话日志已折叠:", {
+    path,
+    bytes: `${plan.bytesBefore} → ${plan.bytesAfter}`,
+    lines: `${plan.linesBefore} → ${plan.linesAfter}`,
+    droppedLines: plan.droppedLines,
+    droppedWrites: plan.droppedWrites,
+    digest: digestAfter,
+  })
+  return {
+    kind: "folded",
+    path,
+    bytesBefore: plan.bytesBefore,
+    bytesAfter: plan.bytesAfter,
+    linesBefore: plan.linesBefore,
+    linesAfter: plan.linesAfter,
+    droppedLines: plan.droppedLines,
+    digest: digestAfter,
+  }
 }

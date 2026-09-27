@@ -28,7 +28,11 @@ import type { Context } from "@earendil-works/pi-agent-core"
 import { errorCode, formatError } from "@/services/error"
 import { createLogger } from "@/services/logger"
 
-const MAX_TOOL_FILE_BYTES = 5 * 1024 * 1024
+/**
+ * 单次 `file_read` / `file_write` / `file_append` 的字节上限（Rust 侧 `content.len()` 同口径）。
+ * 唯一真相源：会话存储的折叠守卫（`engine/pi/session-fold.ts`）也读它，不再各存一份。
+ */
+export const MAX_TOOL_FILE_BYTES = 5 * 1024 * 1024
 
 const log = createLogger("ToolEnv")
 
