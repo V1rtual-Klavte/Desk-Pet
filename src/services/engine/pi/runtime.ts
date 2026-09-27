@@ -3,7 +3,8 @@
 // variables, and reply processing.
 
 import { contentText } from "@earendil-works/pi-ai"
-import type { AgentMessage, CompactResult, JsonValue, SettledAssistantMessage } from "@earendil-works/pi-agent-core"
+import { createCompactionSummaryMessage } from "@earendil-works/pi-agent-core"
+import type { AgentMessage, CompactResult, CompactionPreparation, JsonValue, SettledAssistantMessage } from "@earendil-works/pi-agent-core"
 import type { Usage } from "@earendil-works/pi-ai"
 import type { Message, ThinkingEffort } from "@/services/agent/types"
 import type { SlashSkillAdmission } from "@/services/engine/slash"
@@ -12,7 +13,7 @@ import { createMessageId } from "@/services/agent/types"
 import { MemoryService, recallMemory, planCheckpointStore } from "@/services/agent/memory"
 import type { StructuredSummary } from "@/services/agent/memory"
 import { buildPrompt, composeDynamicPrompt, contextBudget, CONTEXT_RATIOS, estimateRequestTokens, estimateContextTokens, estimateMessageTokens, ContextBudgetError, ESTIMATE_DRIFT_WARN_RATIO, estimateDriftRatio, planToolResultLadder, projectMessageContent, projectToolResultText, annotateToolResultText, protectedMessageIndexes, toolResultAddress } from "@/services/context"
-import type { ContextBudgetAdjustment, ToolResultLadderEntry, ToolResultLadderPlan } from "@/services/context"
+import type { ContextBudgetAdjustment, ToolResultLadderEntry, ToolResultLadderPlan, ToolResultLevelMeasure } from "@/services/context"
 import { bindRunningPlan, clearRunningPlan, notifyPlanEnd, requestPlanConfirm, requestPlanStepDecision } from "@/services/engine/plan-confirmation"
 import type { PlanConfirmResult } from "@/services/engine/plan-confirmation"
 import { executePlan, evaluateComplexity, formatStepResults, generatePlan, normalizePlan, planEffectClassFor, planToRecords, recordsToPlan } from "@/services/engine/planner"
@@ -41,7 +42,8 @@ import { resolvePiTurnModel } from "./model-gateway"
 import type { PiModel } from "./model-gateway"
 import { PROVIDER_TIMEOUT_MS } from "./net-guard"
 import { RuntimeDataStreamFilter } from "./stream-text"
-import { summarizeCompaction } from "../compactor"
+import { ladderGate, summarizeCompaction } from "../compactor"
+import type { LadderGateInput } from "../compactor"
 import { createHarnessRunState, harnessSlots, HarnessSlot } from "./harness-slot"
 import { readContextEpoch } from "./delivery"
 import type {
@@ -532,14 +534,110 @@ function createTurnKernel(options: TurnKernelOptions): TurnKernel {
   return kernel
 }
 
+// ── 级 3 闸门的消息形态适配（T3.05）：级 1/2 是纯函数、零成本，压完装得下就不花摘要调用 ──
+//
+// 判定核在 compactor.ts 的 `ladderGate()`。本文件只负责「Pi 消息形态」这一侧的装配：
+// entries / measure / 保护区。消息形态适配器只有 `toolResultLadderEntries` 与 `applyLevels` 一份
+// （T3.03 的产出），投影 hook 与闸门共用 —— `compactor.ts` 不抽同名实现：它反向 import 本文件会成环。
+
+/** 级 3 闸门的视图：压缩覆盖范围拼出的 Pi 消息数组（不引入新形态，仍是 AgentMessage）。 */
+type PiView = readonly AgentMessage[]
+
+/**
+ * 闸门的视图：与 Harness 提交摘要时的覆盖范围同源（`prepareCompaction` 的三段拼接，
+ * `compaction.js:441-463`）—— previousSummary 存在时前置一条 compactionSummary 消息
+ * （估算的角色表已覆盖它，见 budget.ts 的 `MESSAGE_CONTENT_PROJECTION`），再接
+ * `messagesToSummarize + turnPrefixMessages + retainedTail`：时间序、无重叠，三段相加即这次
+ * 压缩覆盖的全部消息。
+ *
+ * 与真实请求视图的差量只有「检查点同时落位的 lane inbox 消息」，量级是单条用户输入：
+ * 判 false 的方向是照常摘要（照现状），判 true 的方向是本次不摘要且下一个检查点重算，
+ * 偏差自愈，不会卡死在错的一侧（§1.5）。
+ */
+function compactionGateView(preparation: CompactionPreparation): PiView {
+  return [
+    // 时间戳不参与估算（`estimateMessageTokens` 不计时间戳），这里只补齐上游消息形态。
+    ...(preparation.previousSummary === undefined
+      ? []
+      : [createCompactionSummaryMessage(preparation.previousSummary, preparation.tokensBefore, Date.now())]),
+    ...preparation.messagesToSummarize,
+    ...preparation.turnPrefixMessages,
+    ...preparation.retainedTail,
+  ]
+}
+
+/**
+ * 地址目录 thunk 的唯一取值点（投影 hook 与级 3 闸门共用）：读取失败不让调用方失败 ——
+ * 退化为「无前缀」（地址退回完整条目 id，完整 id 永远可读，A-4），留痕一次。
+ * `where` 只用来分辨调用点，两处的兜底语义一致。
+ */
+async function readAddressRefs(
+  addressRefs: (() => Promise<ReadonlyMap<string, string>>) | undefined,
+  where: string,
+): Promise<ReadonlyMap<string, string> | undefined> {
+  if (!addressRefs) return undefined
+  return addressRefs().catch(error => {
+    log.warn(`地址目录读取失败，${where}退回完整条目 id:`, formatError(error))
+    return undefined
+  })
+}
+
+/**
+ * 阶梯 measure 的唯一构造点（投影 hook 与级 3 闸门共用同一个实现）：
+ * systemPrompt / tools / 消息形态与地址目录都关在这个闭包里，两处不可能各拼一份判据。
+ *
+ * 必须是纯函数闭包（规划器最多调 3 次，`ToolResultLevelMeasure` 的要求）；读数恒等于
+ * 「按 levels 投影后的请求视图」—— 分级后的视图走 `applyLevels`（投影的唯一实现）。
+ */
+function createLadderMeasure(args: {
+  systemPrompt: string
+  view: PiView
+  model: PiModel
+  preserveToolNames: ReadonlySet<string>
+  tools: readonly ToolDef[]
+  addressRefs?: ReadonlyMap<string, string>
+}): ToolResultLevelMeasure {
+  return levels => estimateRequestTokens(
+    args.systemPrompt,
+    applyLevels(args.view, levels, args.model.contextWindow, args.preserveToolNames, args.addressRefs),
+    args.tools,
+  )
+}
+
+/**
+ * 级 3 闸门构造器的唯一实现（两个调用点共用）：把视图 + 投影同一份地址目录装配成
+ * `LadderGateInput` —— entries、measure、保护区都走投影 hook 的同一份实现与同一份名单。
+ * 工具面与 preserve 名单由调用方按各自的投影 hook 传入（回合路径是冻结工具集，
+ * 结构操作是空工具面），闸门估的就是那条路径的投影会做的那件事。
+ */
+function createLadderGateBuilder(args: {
+  systemPrompt: string
+  model: PiModel
+  tools: readonly ToolDef[]
+  preserveToolNames: ReadonlySet<string>
+}): (view: PiView, addressRefs?: ReadonlyMap<string, string>) => LadderGateInput {
+  return (view, addressRefs) => ({
+    entries: toolResultLadderEntries(view, addressRefs),
+    measure: createLadderMeasure({
+      systemPrompt: args.systemPrompt, view, model: args.model,
+      preserveToolNames: args.preserveToolNames, tools: args.tools, addressRefs,
+    }),
+    window: args.model.contextWindow,
+    preserveToolNames: args.preserveToolNames,
+    // 保护区与主请求同一份口径（口径 B：只挡级 2），不是闸门里的第二道过滤。
+    protectedIndexes: protectedMessageIndexes(view),
+  })
+}
+
 /**
  * 结构化摘要的 before_compaction 钩子；主回合与手动 /compact 共用同一内核（H-3/§7）。
  *
  * **X-4（本函数的核心不变量）：只有两种结局 —— 成功产出恰好一个 `compaction`，其余一律
  * `{ decline: true }`。** 返回路径穷举（全部落在下面的 try/catch 内，本函数没有别的出口）：
  * ① 没有可摘要范围、② 覆盖范围含 retain 保护调用 → decline（都不是失败，不写 audit）；
- * ③ 宿主摘要内核成功 → 恰好一条 `compaction`（提交是上游收到它之后的单事务，宿主没有第二条提交路径）；
- * ④ catch：内核抛错/被取消 → 唯一带原因文案的 decline。
+ * ③ 阈值压缩的级 3 闸门判定「级 1/2 压完装得下」→ decline（策略性不花 LLM，同样不写 audit）；
+ * ④ 宿主摘要内核成功 → 恰好一条 `compaction`（提交是上游收到它之后的单事务，宿主没有第二条提交路径）；
+ * ⑤ catch：内核抛错/被取消 → 唯一带原因文案的 decline。
  *
  * **红线：失败必须走 decline，绝不把异常抛回上游。** 上游 `HookRegistry.firstStructural`
  * （`pi-agent-core/dist/harness/hooks.js`）对抛出的处理器只记 handler_error 就继续，于是
@@ -560,6 +658,16 @@ function createCompactionHook(options: {
   tools: readonly ToolDef[]
   /** 压缩请求的归属会话；一次性摘要请求的快照与派生记录按它落盘。 */
   sessionId?: string
+  /**
+   * 级 3 闸门估算所需的系统前缀（调用方冻结的 systemPrompt）。缺失 ⇒ 不跑闸门、照常摘要：
+   * 宁可花一次 LLM，也不按缺了系统前缀的估算误判「装得下」（§1.5 的保守方向）。
+   */
+  systemPrompt?: string
+  /**
+   * 级 3 闸门的构造器（`createLadderGateBuilder` 的产出）：hook 用「当次压缩覆盖范围」的视图
+   * 与投影同一份地址目录调它。缺失（如子代理不投影工具结果）⇒ 不跑闸门、照常摘要。
+   */
+  buildGate?: (view: PiView, addressRefs?: ReadonlyMap<string, string>) => LadderGateInput
   onSummary?: (summary: StructuredSummary) => void
   /** 宿主摘要内核失败（decline 原因）；调用方据此给出可见失败与审计。 */
   audit?: CompactionAuditSink
@@ -575,7 +683,7 @@ function createCompactionHook(options: {
   const preserved = preservedToolNames(options.tools)
   // 返回类型显式收窄到「两种结局」（不含空返回）：日后再加一条空返回就编译不过 ——
   // X-4 的「没有兜底出口」由类型保证，不靠注释维持。
-  return async ({ preparation, signal, runId }): Promise<{ decline: true } | { compaction: CompactResult }> => {
+  return async ({ reason, preparation, signal, runId }): Promise<{ decline: true } | { compaction: CompactResult }> => {
     try {
       // 结局①（decline）：全量都在保留窗口内时没有可安全摘要的覆盖范围，让 Harness 原样收尾。
       if (!preparation.messagesToSummarize.length && !preparation.turnPrefixMessages.length) return { decline: true }
@@ -587,6 +695,28 @@ function createCompactionHook(options: {
         log.warn("摘要范围覆盖了必须保留原文的工具调用，本轮不压缩:", retainedTool)
         // 结局②（decline）：策略性不压缩，不是内核失败 —— 不写 audit.failure，避免污染失败面。
         return { decline: true }
+      }
+      // ── 结局③（decline）：级 3 闸门（源方案 §3.2 要点 3 / 执行方案 §1.5）──
+      // 级 1/2 是纯函数、零成本，先跑它们：压完请求视图装得下就不必花这次摘要 LLM。
+      //
+      // 只对 `reason === "threshold"` 生效：manual（用户显式要求压缩）与 overflow（Harness 已按
+      // 硬上限实测超限）都必须照常摘要。`systemPrompt` 或 `buildGate` 缺失 ⇒ 不跑闸门、安全回退为
+      // 照常摘要（缺了系统前缀/工具面的估算会偏小，保守方向宁可花一次 LLM）。
+      if (reason === "threshold" && options.systemPrompt !== undefined && options.buildGate) {
+        // 闸门是省钱的优化，不是正确性闸门：估算链路自身出错时照常摘要（保守方向），原因就地留痕。
+        // 这里**不写 audit.failure** —— 那不是压缩内核失败，写出去会让手动路径（读同一审计槽）
+        // 报 failed、并落一条误导性的 deskpet.compaction_declined。
+        try {
+          const refs = await readAddressRefs(options.addressRefs, "级 3 闸门")
+          const gate = ladderGate(options.buildGate(compactionGateView(preparation), refs))
+          if (gate.fits) {
+            log.info("级 1/2 投影后请求视图装得下，本轮不做摘要:", { tokens: gate.tokens, target: gate.target, level: gate.level })
+            return { decline: true }
+          }
+          log.debug("级 1/2 之后仍超目标，照常摘要:", { tokens: gate.tokens, target: gate.target, level: gate.level })
+        } catch (error) {
+          log.warn("级 3 闸门估算失败，本轮照常摘要:", formatError(error))
+        }
       }
       const outcome = await summarizeCompaction({
         messages: preparation.messagesToSummarize,
@@ -698,21 +828,14 @@ function createProjectionHook(args: {
     try {
       if (args.projectToolResults) {
         // 目录读取失败不能抛出去：上游对钩子抛错是 fail-open 静默，投影会整份退回未投影的
-        // 原消息。这里兜底成「无前缀」，地址退回完整条目 id（完整 id 永远可读，A-4）——
-        // 留痕点就是下面这条 warn。
-        const refs = args.addressRefs
-          ? await args.addressRefs().catch(error => {
-            log.warn("地址目录读取失败，投影退回完整条目 id:", formatError(error))
-            return undefined
-          })
-          : undefined
+        // 原消息。兜底语义见 `readAddressRefs`（退回完整条目 id，完整 id 永远可读，A-4）。
+        const refs = await readAddressRefs(args.addressRefs, "投影")
         // 阶梯的输入是投影前的原始视图：entries 与 measure 都基于它，应用计划后才得到请求视图。
         const view = prepared
-        // measure 必须是纯函数闭包（规划器最多调 3 次），且与实际采用的视图走同一个
-        // `applyLevels` —— 读数因此恒等于投影后的视图，不是第二个判据。
         const plan: ToolResultLadderPlan = planToolResultLadder({
           entries: toolResultLadderEntries(view, refs),
-          measure: levels => estimateRequestTokens(systemPrompt, applyLevels(view, levels, args.model.contextWindow, args.preserveToolNames, refs), tools),
+          // measure 与级 3 闸门同一个实现（`createLadderMeasure`）：读数恒等于投影后的视图。
+          measure: createLadderMeasure({ systemPrompt, view, model: args.model, preserveToolNames: args.preserveToolNames, tools, addressRefs: refs }),
           window: args.model.contextWindow,
           preserveToolNames: args.preserveToolNames,
           // 保护区是阶梯的输入（口径 B：只挡级 2），不是投影后的第二道过滤。
@@ -775,6 +898,8 @@ function createTurnSpec(kernel: TurnKernel, options: {
 }): HarnessRunSpec {
   const state = kernel.state
   const toolsByName = new Map(kernel.tools.map(tool => [tool.name, tool]))
+  // preserve 名单：投影 hook 与级 3 闸门/retain 判定同一份来源（`kernel.tools`），只算一次。
+  const preserveToolNames = preservedToolNames(kernel.tools)
   // 压缩审计槽：摘要内核的成败写在这里，由槽在 compaction_end 收口成 deskpet.* 条目。
   const compactionAudit: CompactionAuditSink = {}
   let toolCallsUsed = 0
@@ -828,8 +953,7 @@ function createTurnSpec(kernel: TurnKernel, options: {
     transformContext: createProjectionHook({
       projectToolResults: options.projectToolResults,
       toolsByName,
-      // 与压缩 hook 的 retain/preserve 判定同一份来源（`kernel.tools`），只在这里算一次。
-      preserveToolNames: preservedToolNames(kernel.tools),
+      preserveToolNames,
       model: kernel.model,
       state,
       captureSnapshot: kernel.captureSnapshot,
@@ -840,6 +964,16 @@ function createTurnSpec(kernel: TurnKernel, options: {
     beforeCompaction: createCompactionHook({
       model: kernel.model, tools: kernel.tools,
       sessionId: kernel.sessionId, audit: compactionAudit,
+      // 闸门只在投影开着（工具结果走阶梯）时接：子代理不投影工具结果（projectToolResults:
+      // false），按「级 1/2 会压下去」的前提估算会误判「装得下」。
+      ...(options.projectToolResults ? {
+        systemPrompt: kernel.systemPrompt,
+        // 与投影 hook 同一个 measure（`createLadderGateBuilder` 内部走 `createLadderMeasure`）。
+        buildGate: createLadderGateBuilder({
+          systemPrompt: kernel.systemPrompt, model: kernel.model,
+          tools: kernel.tools, preserveToolNames,
+        }),
+      } : {}),
       ...(options.addressRefs ? { addressRefs: options.addressRefs } : {}),
     }),
     compactionAudit,
@@ -1970,6 +2104,9 @@ export async function compactActiveSession(sessionId: string): Promise<ManualCom
   const state = createHarnessRunState()
   // 压缩审计槽：宿主内核失败时给出可见原因（/compact 报 failed），并让槽写降级条目。
   const compactionAudit: CompactionAuditSink = {}
+  // 结构操作的工具面是空的：投影与级 3 闸门共用同一份 —— 闸门估的就是续跑投影会做的那件事。
+  const structureTools: readonly ToolDef[] = []
+  const structurePreserveToolNames: ReadonlySet<string> = new Set<string>()
   const outcome = await slot.compact({
     systemPrompt: context.systemPrompt,
     state,
@@ -1978,6 +2115,13 @@ export async function compactActiveSession(sessionId: string): Promise<ManualCom
       beforeCompaction: createCompactionHook({
         model, tools: listAll(),
         sessionId, onSummary: summary => { intent = summary.intent }, audit: compactionAudit,
+        // reason === "manual" 不跑闸门（用户显式要求压缩）；续跑期间的阈值压缩照跑 ——
+        // 系统前缀取结构操作下发的这一份，与 `slot.compact` 的 systemPrompt 同源。
+        systemPrompt: context.systemPrompt,
+        buildGate: createLadderGateBuilder({
+          systemPrompt: context.systemPrompt, model,
+          tools: structureTools, preserveToolNames: structurePreserveToolNames,
+        }),
         // 摘要素材与随后的续跑投影共用同一份地址目录 thunk（与主回合同一通道）。
         addressRefs: () => slot.addressRefs(),
       }),
@@ -1989,7 +2133,7 @@ export async function compactActiveSession(sessionId: string): Promise<ManualCom
       transformContext: createProjectionHook({
         projectToolResults: true,
         toolsByName: new Map(),
-        preserveToolNames: new Set<string>(),
+        preserveToolNames: structurePreserveToolNames,
         model,
         state,
         // 结构操作没有回合身份：不落 PromptSnapshot，也没有 payload 观测的读者。

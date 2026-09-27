@@ -6,7 +6,8 @@ import { contentText } from "@earendil-works/pi-ai"
 import type { Message } from "@/services/agent/types"
 import { parseStructuredSummary, formatStructuredSummary } from "@/services/agent/memory"
 import type { StructuredSummary } from "@/services/agent/memory"
-import { contextBudget, estimateValueTokens, estimateRequestTokens, annotateToolResultText, projectToolResultText, toolResultAddress, ContextBudgetError } from "@/services/context"
+import { contextBudget, estimateValueTokens, estimateRequestTokens, annotateToolResultText, planToolResultLadder, projectToolResultText, toolResultAddress, ContextBudgetError } from "@/services/context"
+import type { ToolResultLadderEntry, ToolResultLevelMeasure } from "@/services/context"
 import { aiConfig } from "@/services/config"
 import { formatError } from "@/services/error"
 import { createLogger } from "@/services/logger"
@@ -439,6 +440,71 @@ export async function summarizeCompaction(input: CompactionSummaryInput): Promis
   // 成功的审计面 = 每片的 2K 条快照 + 1 条 prompt_rewrite（钩子用这里返回的 `inputText` 拼 inputHash）
   // + 恰好 1 条 compaction 条目（上游收到钩子的 compaction 后单事务提交）。
   return { text: formatStructuredSummary(last!), summary: last!, usage: usage!, inputText: texts.join("\n---\n") }
+}
+
+// ── 级 3 闸门（纯函数，零 I/O）：级 1/2 压完装得下就不花摘要调用 ──
+//
+// 源方案 §3.2 要点 3：级 1（缩短）与级 2（清空）都是纯函数、零成本，级 3（摘要）才要花一次 LLM。
+// 所以 `before_compaction` 必须先跑级 1/2，只有压完仍装不下才走级 3。本函数就是这道闸门，
+// 判定链只有一条：直接消费 `planToolResultLadder()` 的计划，不另写「装得下」或候选集策略。
+
+/**
+ * 闸门输入：与主请求**同源**的阶梯输入。
+ *
+ * **形态无关**：判定核不收消息数组，也不自带消息形态适配器 —— entries 与 measure 都由调用方
+ * （`runtime.ts`，Pi 消息形态适配的唯一落点）装配，`measure` 与主请求投影是同一个闭包。
+ */
+export interface LadderGateInput {
+  /**
+   * 与主请求同源的候选条目（调用方从 Pi 消息构建；覆盖范围 = messagesToSummarize +
+   * turnPrefixMessages + retainedTail，previousSummary 存在时前置 compactionSummary 消息后取 entries）。
+   */
+  entries: readonly ToolResultLadderEntry[]
+  /** 与主请求**同一个** measure 闭包：systemPrompt / tools / 消息形态都由调用方关在里面。 */
+  measure: ToolResultLevelMeasure
+  window: number
+  /** `resultProjection: "preserve"` 的工具名：命中不进候选集（与主请求投影同一口径）。 */
+  preserveToolNames?: ReadonlySet<string>
+  /**
+   * 与主请求同一份保护区（口径 B：只挡级 2）。省略的语义与 `planToolResultLadder` 一致
+   * （= 级 2 不受保护限制），调用方必须显式传入，漏传由那里的 warn 留痕。
+   */
+  protectedIndexes?: ReadonlySet<number>
+}
+
+export interface LadderGateResult {
+  /** 级 1/2 压完请求视图装得下：这次阈值压缩不必花 LLM。 */
+  fits: boolean
+  /** 生效读数：级 2 未生效时等于级 1 的读数；级 1 也没跑时是级 0 视图的读数。 */
+  tokens: number
+  /** 判据：`contextBudget(window).normalInputTarget`（与主请求同一判据，取自计划的 `target`）。 */
+  target: number
+  /** 实际应用的最高层级：0 = 无候选；1 = 只缩短；2 = 有清空。 */
+  level: 0 | 1 | 2
+}
+
+/**
+ * 级 3 的闸门：级 1/2 压完请求视图还装得下就不必花摘要调用（源方案 §3.2 要点 3）。
+ *
+ * 判据与主请求投影**同一个**：`planToolResultLadder()` 的 `target`（未传 target 时即
+ * `contextBudget(window).normalInputTarget`）、同一份单条上限、同一份保护区与 preserve 跳过；
+ * `tokens` 取实际生效的那次读数（级 2 未生效时两次读数相同），`fits = tokens <= target`。
+ *
+ * 纯函数：不落盘、不记日志、不读配置（window 由调用方传入），同一输入两次调用结果相同。
+ * 只回答「够不够」，不做任何压缩副作用 —— 真的装不下时由调用方照常走级 3。
+ */
+export function ladderGate(input: LadderGateInput): LadderGateResult {
+  const plan = planToolResultLadder({
+    entries: input.entries,
+    measure: input.measure,
+    window: input.window,
+    ...(input.preserveToolNames ? { preserveToolNames: input.preserveToolNames } : {}),
+    ...(input.protectedIndexes ? { protectedIndexes: input.protectedIndexes } : {}),
+  })
+  // 读数取法与投影 hook 的硬预算判定同一口径：级 2 未生效时规划器的两次读数完全相同，
+  // 取实际生效的那次（`plan.level` 是计划自己给的「实际应用的最高层级」）。
+  const tokens = plan.level === 2 ? plan.tokensAfterLevel2 : plan.tokensAfterLevel1
+  return { fits: tokens <= plan.target, tokens, target: plan.target, level: plan.level }
 }
 
 // ── 第二层：摘要素材分片规划（纯函数）──
