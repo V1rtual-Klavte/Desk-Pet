@@ -1,12 +1,16 @@
 import type { SceneDef } from "../../types"
 import { fakeText, fakeToolCall, installFakeProvider } from "../../fake-provider"
-import { register, defineTool, TOOL_POLICY_VERSION } from "@/services/tool"
+import { register, defineTool, SESSION_TRANSCRIPT_TOOL, TOOL_POLICY_VERSION } from "@/services/tool"
+import { isUniqueAddressRef, toolResultNotice } from "@/services/context"
+import { harnessSlots } from "@/services/engine/pi"
+import { getActiveSessionId } from "@/services/session"
 import { sessionEntries } from "../../session-entries"
 import type { Entry } from "@earendil-works/pi-agent-core"
 
 /**
- * resultProjection 决定请求视图：preserve 的原样进请求（分页/有界由源工具负责），
- * reference 的可被 L0 缩短并标注 eventId 回读地址。存档两者都不受影响。
+ * resultProjection 决定请求视图：preserve 的正文逐字进请求（分页/有界由源工具负责），
+ * reference 的可被 L0 缩短；两种形态都带地址尾行（D-W2-5：preserve 只挡升档处理）。
+ * 存档两者都不受影响。
  */
 const PRESERVE_TOOL = "projection_preserve_output"
 const REFERENCE_TOOL = "projection_reference_output"
@@ -14,6 +18,8 @@ const BODY_CHARS = 30000
 const PRESERVE_BODY = `保留原样${"甲".repeat(BODY_CHARS)}`
 const REFERENCE_BODY = `允许缩短${"乙".repeat(BODY_CHARS)}`
 const SHORTEN_MARKER = "上下文缩短；原结果 eventId="
+/** 两种地址尾行（未缩短的 `回读地址 eventId=` 与缩短的 `原结果 eventId=`）共有的字段名。 */
+const ADDRESS_MARKER = "eventId="
 
 function probeTool(name: string, projection: "preserve" | "reference", body: string) {
   return defineTool({
@@ -60,12 +66,21 @@ function archivedToolText(entry: Entry, toolCallId: string): string | undefined 
   return entry.message.content.map(part => (part.type === "text" ? part.text : "")).join("\n")
 }
 
+/** 地址尾行里的回读地址（最短唯一前缀，或目录里没有该 id 时退回的完整条目 id）。 */
+function addressInView(view: string, toolName: string): string {
+  const marker = view.indexOf(ADDRESS_MARKER)
+  if (marker < 0) throw new Error(`请求视图的回读地址缺失（${toolName}）: ${JSON.stringify(view.slice(0, 200))}`)
+  const ref = /^[^，\]\s]+/.exec(view.slice(marker + ADDRESS_MARKER.length))?.[0]
+  if (!ref) throw new Error(`回读地址不是可解析的形态: ${JSON.stringify(view.slice(marker, marker + 120))}`)
+  return ref
+}
+
 let provider: ReturnType<typeof installFakeProvider> | undefined
 
 export const 工具结果投影: SceneDef = {
   meta: {
     caseId: "tool-result-projection", module: "tool-execution", contractId: "te-17",
-    description: "preserve 的工具结果原样进请求，reference 的被 L0 缩短且标注 eventId 回读地址，存档都保留全文",
+    description: "preserve 的工具结果正文不缩短、不清空但同样带地址尾行，reference 的被 L0 缩短且标注回读地址，存档都保留全文",
     depth: "deep", suite: "regression", entry: "production", tags: ["tool-execution", "compaction", "boundary"],
   },
   setup: async () => {
@@ -92,20 +107,37 @@ export const 工具结果投影: SceneDef = {
 
           const preserved = last.get(PRESERVE_TOOL)
           if (preserved === undefined) throw new Error("最终请求缺少保留型工具结果")
-          if (preserved !== PRESERVE_BODY) throw new Error(`preserve 结果被二次投影: ${preserved.length} 字符`)
-          if (preserved.includes(SHORTEN_MARKER)) throw new Error("preserve 结果被标注成缩短引用")
+          // D-W2-5（2026-09-27 裁定）：地址标注无条件 —— preserve 只挡升档处理（缩短/清空），
+          // 不挡地址行。所以 preserve 结果的请求形态是「正文逐字 + 地址尾行」：
+          // **不缩短、不清空**，但同样带地址。
+          if (!preserved.startsWith(PRESERVE_BODY)) throw new Error(`preserve 结果的正文被缩短或改写: ${preserved.length} 字符`)
+          const preserveRef = addressInView(preserved, PRESERVE_TOOL)
+          const preserveTail = preserved.slice(PRESERVE_BODY.length)
+          // 尾行由唯一模板（toolResultNotice）生成：场景不另拼一份文案，也不接受手写装饰。
+          if (preserveTail !== `\n${toolResultNotice(preserveRef, SESSION_TRANSCRIPT_TOOL)}`) {
+            throw new Error(`preserve 结果不是「不缩短、不清空 + 地址尾行」的形态: ${JSON.stringify(preserveTail.slice(0, 120))}`)
+          }
 
           const referenced = last.get(REFERENCE_TOOL)
           if (referenced === undefined) throw new Error("最终请求缺少可缩短工具结果")
           if (!referenced.includes(SHORTEN_MARKER)) throw new Error("reference 结果没有被 L0 缩短并标注回读地址")
           if (referenced.length >= REFERENCE_BODY.length) throw new Error("reference 结果没有变短")
 
-          // 请求视图的缩短不改存档：两条工具结果条目仍是全文。
+          // 请求视图的缩短不改存档：两条工具结果条目仍是全文；preserve 的地址是这条条目的前缀。
           const entries = await sessionEntries()
-          const archivedPreserve = entries.map(entry => archivedToolText(entry, "projection-preserve-call")).find(text => text !== undefined)
-          const archivedReference = entries.map(entry => archivedToolText(entry, "projection-reference-call")).find(text => text !== undefined)
-          if (archivedPreserve !== PRESERVE_BODY) throw new Error("保留型工具结果条目不是全文")
-          if (archivedReference !== REFERENCE_BODY) throw new Error("可缩短工具结果条目被改写")
+          const preserveEntry = entries.find(entry => archivedToolText(entry, "projection-preserve-call") !== undefined)
+          const referenceEntry = entries.find(entry => archivedToolText(entry, "projection-reference-call") !== undefined)
+          if (!preserveEntry) throw new Error("会话条目缺少保留型工具结果")
+          if (!referenceEntry) throw new Error("会话条目缺少可缩短工具结果")
+          if (!preserveEntry.id.startsWith(preserveRef)) throw new Error(`preserve 结果的回读地址不是本条目的前缀: ${preserveRef}`)
+          const slot = harnessSlots.peek(getActiveSessionId())
+          if (!slot) throw new Error("当前会话没有运行槽，回读地址目录不可用")
+          const ids = [...(await slot.addressRefs()).keys()]
+          if (!isUniqueAddressRef(preserveRef, preserveEntry.id, ids)) {
+            throw new Error(`preserve 结果的回读地址在当次 id 全集里不唯一: ${preserveRef}`)
+          }
+          if (archivedToolText(preserveEntry, "projection-preserve-call") !== PRESERVE_BODY) throw new Error("保留型工具结果条目不是全文")
+          if (archivedToolText(referenceEntry, "projection-reference-call") !== REFERENCE_BODY) throw new Error("可缩短工具结果条目被改写")
         },
       }],
     },

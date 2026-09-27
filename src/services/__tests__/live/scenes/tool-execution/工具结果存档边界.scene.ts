@@ -1,6 +1,7 @@
 import type { SceneDef } from "../../types"
 import { fakeText, fakeToolCall, installFakeProvider } from "../../fake-provider"
-import { register, defineTool, createTranscriptTool, executeToolDefinition, TOOL_POLICY_VERSION } from "@/services/tool"
+import { register, defineTool, createTranscriptTool, executeToolDefinition, transcriptPageTokens, TOOL_POLICY_VERSION } from "@/services/tool"
+import { isUniqueAddressRef, sliceByTokenBudget } from "@/services/context"
 import { getActiveSessionId } from "@/services/session"
 import { harnessSlots, resolvePiTurnModel } from "@/services/engine/pi"
 import { setOverride } from "@/services/config"
@@ -12,7 +13,7 @@ import type { Entry } from "@earendil-works/pi-agent-core"
  *
  * 本场景覆盖两条如实路径，都不允许「看起来完整、实际取不回」：
  * ① 探针（resultProjection=reference，60000 字符）：条目存全文，请求视图被 L0 缩短并标注
- *    eventId 回读地址，`read_session_event` 按 offset 能读回尾段；
+ *    唯一前缀回读地址，`read_session_event` 按页预算推导的 offset 能读回尾段；
  * ② bash（上游 50KB / 2000 行上限，spill 保留全量）：结果文本自带 `Full output: <path>`
  *    的 spill 回读路径，不假装全文还在会话里。
  *
@@ -33,6 +34,19 @@ function archivedToolText(entry: Entry, toolCallId: string): string | undefined 
   if (entry.type !== "message" || entry.message.role !== "toolResult") return undefined
   if (entry.message.toolCallId !== toolCallId) return undefined
   return entry.message.content.map(part => (part.type === "text" ? part.text : "")).join("\n")
+}
+
+/**
+ * 请求视图里的回读地址：地址行是唯一模板（`…原结果 eventId=<地址>，可用 … 分页读取`），
+ * 取到的是**展示用地址**（最短唯一前缀，或目录里没有该 id 时退回的完整条目 id）。
+ * 这里只解析出引用本身，与 id 的关系由 `startsWith` + `isUniqueAddressRef` 判定。
+ */
+function addressInView(view: string, toolName: string): string {
+  const marker = view.indexOf(ADDRESS_MARKER)
+  if (marker < 0) throw new Error(`请求视图的回读地址缺失（${toolName}）: ${JSON.stringify(view.slice(0, 200))}`)
+  const ref = /^[^，\]\s]+/.exec(view.slice(marker + ADDRESS_MARKER.length))?.[0]
+  if (!ref) throw new Error(`回读地址不是可解析的形态: ${JSON.stringify(view.slice(marker, marker + 120))}`)
+  return ref
 }
 
 function payloadToolTexts(messages: readonly unknown[]): Map<string, string> {
@@ -66,7 +80,7 @@ function lastPayloadText(toolName: string): string | undefined {
 export const 工具结果存档边界: SceneDef = {
   meta: {
     caseId: "tool-archive-beyond-inline-limit", module: "tool-execution", contractId: "te-13",
-    description: "超内联上限的结果：会话条目存全文、请求视图缩短并带 eventId 回读地址（按 offset 可读回尾段）；bash 截断带 spill 回读路径",
+    description: "超内联上限的结果：会话条目存全文、请求视图缩短并带唯一前缀回读地址（按页预算推导的 offset 可读回尾段）；bash 截断带 spill 回读路径",
     depth: "deep", suite: "regression", entry: "runtime",
     tags: ["tool-execution", "compaction", "boundary", "error"],
     confirmPolicy: "approve",
@@ -111,20 +125,30 @@ export const 工具结果存档边界: SceneDef = {
         const archived = archivedToolText(largeEntry, LARGE_CALL)
         if (archived !== BODY) throw new Error(`条目正文不是 60000 字符全文: ${archived?.length ?? 0}`)
 
-        // ② 请求视图：被 L0 缩短且带真回读地址，不是把 60000 字符原样送出去。
+        // ② 请求视图：被 L0 缩短且带真回读地址（本条条目 id 的唯一前缀），不是把 60000 字符原样送出去。
         const view = lastPayloadText(LARGE_TOOL)
         if (view === undefined) throw new Error("请求视图缺少大结果")
-        if (!view.includes(ADDRESS_MARKER)) throw new Error("请求视图的大结果没有回读地址")
+        const ref = addressInView(view, LARGE_TOOL)
+        if (!largeEntry.id.startsWith(ref)) throw new Error(`回读地址不是本条目的前缀: ${ref}`)
+        const slot = harnessSlots.peek(getActiveSessionId())
+        if (!slot) throw new Error("当前会话没有运行槽，回读地址目录不可用")
+        const ids = [...(await slot.addressRefs()).keys()]
+        if (!ids.includes(largeEntry.id)) throw new Error(`地址目录缺少大结果条目: ${largeEntry.id}`)
+        if (!isUniqueAddressRef(ref, largeEntry.id, ids)) throw new Error(`回读地址在当次 id 全集里不唯一: ${ref}`)
         if (view.length >= BODY_CHARS) throw new Error(`请求视图没有缩短: ${view.length} 字符`)
 
-        // ③ 尾段可回读：offset=56000 必须读到条目尾段（地址是真的，不是装饰）。
-        const slot = harnessSlots.peek(getActiveSessionId())
-        // 窗口取生产同款（T2.02 把页宽从固定 8000 字符改成 token 预算）。
-        // 下面的 offset: 56000 与尾段比对仍是旧页宽口径，改写归 T2.09。
-        const tool = createTranscriptTool(entryId => slot ? slot.readToolResult(entryId) : Promise.resolve({ kind: "not_found" } as const), { windowTokens: resolvePiTurnModel().contextWindow })
-        const page = await executeToolDefinition(tool, { eventId: largeEntry.id, offset: 56000 }, {})
+        // ③ 尾段可回读：offset 由页预算推导（旧的 56000 字符常数已删）—— 尾段 = 从条目末尾按
+        //    页预算取一整页（`sliceByTokenBudget` 的取件方向相反，仍是同一份实现）；
+        //    从该 offset 正向切出的页正好等于这段尾段，两者必须逐字一致。
+        const windowTokens = resolvePiTurnModel().contextWindow
+        const pageTokens = transcriptPageTokens(windowTokens)
+        const tail = sliceByTokenBudget(BODY, pageTokens, true)
+        const offset = BODY.length - tail.length
+        const tool = createTranscriptTool(entryRef => slot.readToolResult(entryRef), { windowTokens })
+        const page = await executeToolDefinition(tool, { eventId: largeEntry.id, offset }, {})
         if (!page.success) throw new Error(`尾段回读失败: ${page.error ?? page.errorCode}`)
-        if (!page.content.endsWith(BODY.slice(56000))) throw new Error("offset=56000 没有读到条目尾段")
+        if (!page.content.startsWith(`[${offset}-`)) throw new Error(`尾段回读没有按 offset 定位: ${JSON.stringify(page.content.slice(0, 40))}`)
+        if (!page.content.endsWith(tail)) throw new Error(`offset=${offset} 没有读到条目尾段`)
 
         // ④ bash 截断：结果自带 spill 回读路径，模型侧文本里也是这条路径。
         const bashEntry = entries.find(entry => entry.type === "message" && entry.message.role === "toolResult"

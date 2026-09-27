@@ -1,7 +1,7 @@
 import type { SceneDef } from "../../types"
 import type { Entry } from "@earendil-works/pi-agent-core"
 import { fakeText, fakeToolCall, installFakeProvider } from "../../fake-provider"
-import { sliceByTokenBudget } from "@/services/context"
+import { isUniqueAddressRef, sliceByTokenBudget } from "@/services/context"
 import { createTranscriptTool, executeToolDefinition, register, unregister, transcriptPageTokens } from "@/services/tool"
 import { McpClient } from "@/services/tool/mcp"
 import { harnessSlots, resolvePiTurnModel } from "@/services/engine/pi"
@@ -13,7 +13,7 @@ import { sessionEntries } from "../../session-entries"
  *
  * 决策 11 删掉了一次性截断：MCP 结果与内置工具走同一条回读链 —— 全文原样落会话条目，
  * 缩短只由 L0 请求投影按 `details.deskpetEntryId` 完成，模型随后用 `read_session_event`
- * 按条目 id 分页取回。唯一的物理上限是条目写盘链上的 5 MB（`MAX_TOOL_FILE_BYTES`）。
+ * 按条目 id 或其唯一前缀分页取回（页宽 = token 口径的页预算）。唯一的物理上限是条目写盘链上的 5 MB（`MAX_TOOL_FILE_BYTES`）。
  *
  * 探针走生产的 MCP 通路：`McpClient.toToolDefs` 把服务器发现的工具转成 ToolDef
  * （DANGER + passthrough + resultProjection=reference），只在传输边界替换 `callTool`
@@ -44,6 +44,19 @@ function archivedToolText(entry: Entry, toolCallId: string): string | undefined 
   if (entry.type !== "message" || entry.message.role !== "toolResult") return undefined
   if (entry.message.toolCallId !== toolCallId) return undefined
   return entry.message.content.map(part => (part.type === "text" ? part.text : "")).join("\n")
+}
+
+/**
+ * 请求视图里的回读地址：地址行是唯一模板（`…原结果 eventId=<地址>，可用 … 分页读取`），
+ * 取到的是**展示用地址**（最短唯一前缀，或目录里没有该 id 时退回的完整条目 id）。
+ * 这里只解析出引用本身，与 id 的关系由 `startsWith` + `isUniqueAddressRef` 判定。
+ */
+function addressInView(view: string, toolName: string): string {
+  const marker = view.indexOf(ADDRESS_MARKER)
+  if (marker < 0) throw new Error(`请求视图的回读地址缺失（${toolName}）: ${JSON.stringify(view.slice(0, 200))}`)
+  const ref = /^[^，\]\s]+/.exec(view.slice(marker + ADDRESS_MARKER.length))?.[0]
+  if (!ref) throw new Error(`回读地址不是可解析的形态: ${JSON.stringify(view.slice(marker, marker + 120))}`)
+  return ref
 }
 
 function payloadToolTexts(messages: readonly unknown[]): Map<string, string> {
@@ -80,7 +93,7 @@ export const MCP大结果回读: SceneDef = {
     caseId: "tool-mcp-large-result-readback",
     module: "tool-execution",
     contractId: "te-13",
-    description: "超旧 50,000 字符上限的 MCP 结果条目里仍是全文、请求视图按条目 id 缩短，可用 read_session_event 分页取回",
+    description: "超旧 50,000 字符上限的 MCP 结果条目里仍是全文、请求视图按条目 id 的唯一前缀缩短，可用 read_session_event 分页取回",
     depth: "deep",
     suite: "regression",
     entry: "runtime",
@@ -135,24 +148,31 @@ export const MCP大结果回读: SceneDef = {
             throw new Error(`条目正文不是 MCP 全文: ${archived?.length ?? 0} 字符（应为 ${EXPECTED_TEXT.length}）`)
           }
 
-          // ③ 请求视图：被 L0 缩短，且地址是这条真实条目的 id（不是装饰、也不是假 eventId）。
+          // ③ 请求视图：被 L0 缩短，且地址是这条真实条目的**唯一前缀**（不是装饰、也不是假 eventId）。
+          //    「地址是前缀」这件事本身由 `地址前缀解析`(te-25) 举证；这里只钉这条链发出去的地址
+          //    确实指向本条条目（前缀 + 在当次 id 全集里唯一）。
           const view = lastPayloadText(TOOL_NAME)
           if (view === undefined) throw new Error("请求视图缺少这条 MCP 结果")
-          if (!view.includes(`${ADDRESS_MARKER}${entry.id}`)) {
-            throw new Error(`请求视图的回读地址不是本条目的 id: ${JSON.stringify(view.slice(0, 200))}`)
+          const ref = addressInView(view, TOOL_NAME)
+          if (!entry.id.startsWith(ref)) throw new Error(`回读地址不是本条目的前缀: ${ref}`)
+          const slot = harnessSlots.peek(getActiveSessionId())
+          if (!slot) throw new Error("当前会话没有运行槽，回读地址目录不可用")
+          const ids = [...(await slot.addressRefs()).keys()]
+          if (!ids.includes(entry.id)) throw new Error(`地址目录缺少这条 MCP 结果: ${entry.id}`)
+          if (!isUniqueAddressRef(ref, entry.id, ids)) {
+            throw new Error(`回读地址在当次 id 全集里不唯一: ${ref}`)
           }
           if (view.length >= archived.length) throw new Error(`请求视图没有缩短: ${view.length} 字符`)
 
           // ④ 按条目 id 分页回读超限之后的尾段：页宽由 token 预算推导（与 L0 单条结果同一份额），
-          //    读回的窗口必须逐字等于条目里的原文。
+          //    读回的窗口必须逐字等于条目里的原文 —— 期望页用同一份切分实现推导，不复刻公式。
           const windowTokens = resolvePiTurnModel().contextWindow
           const pageTokens = transcriptPageTokens(windowTokens)
-          const slot = harnessSlots.peek(getActiveSessionId())
-          const tool = createTranscriptTool(entryId => slot ? slot.readToolResult(entryId) : Promise.resolve({ kind: "not_found" } as const), { windowTokens })
+          const tool = createTranscriptTool(entryRef => slot.readToolResult(entryRef), { windowTokens })
           const page = await executeToolDefinition(tool, { eventId: entry.id, offset: READ_OFFSET }, {})
           if (!page.success) throw new Error(`按 eventId 回读失败: ${page.error ?? page.errorCode}`)
           const expectedPage = sliceByTokenBudget(EXPECTED_TEXT.slice(READ_OFFSET), pageTokens, false)
-          if (!page.content.includes(expectedPage)) {
+          if (!page.content.endsWith(expectedPage)) {
             throw new Error(`回读窗口不是条目原文: ${page.content.length} 字符`)
           }
           if (!page.content.startsWith(`[${READ_OFFSET}-`)) {
