@@ -18,8 +18,10 @@ export type { SlashCommand, SlashMatch } from "./slash"
 
 // ── Compactor ──
 // 摘要内核经 before_compaction 钩子使用；旧调度入口（compactSession）随 H-4 退役。
-export { summarizeCompaction, planCompactionShards, COMPACTION_SLICE_RATIO, MAX_COMPACTION_SLICES } from "./compactor"
-export type { CompactionSummaryInput, CompactionSummaryOutcome, CompactionShardPlan } from "./compactor"
+// `measureCompactionMaterial` 是摘要素材的**唯一度量出口**：场景断言与分片规划读它的产物，
+// 不得对同一份素材另拼 JSON 重算 token。
+export { summarizeCompaction, planCompactionShards, measureCompactionMaterial, COMPACTION_SLICE_RATIO, MAX_COMPACTION_SLICES } from "./compactor"
+export type { CompactionSummaryInput, CompactionSummaryOutcome, CompactionShardPlan, CompactionMaterial } from "./compactor"
 
 // ── Planner ──
 export {

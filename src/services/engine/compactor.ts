@@ -56,39 +56,119 @@ export interface CompactionSummaryOutcome {
   inputText: string
 }
 
-/** 生成一次结构化压缩摘要；失败抛错，由 Harness 按 handler_error 上报并可回退默认摘要。 */
-export async function summarizeCompaction(input: CompactionSummaryInput): Promise<CompactionSummaryOutcome> {
-  const budget = contextBudget(input.model?.contextWindow ?? aiConfig.contextMaxTokens)
+// ── 摘要素材的唯一度量出口 ──
+//
+// 「素材要多少 token」只有这一个定义点：硬上限守卫（summarizeCompaction）、分片规划
+// （planCompactionShards 的 costOf / overhead）与场景断言都复用本函数的产物，谁都不许对同一份
+// 素材另拼一次 JSON 或另估一次 token —— 素材成本对 JSON 转义敏感（正文里的 ASCII `"` 在
+// userText 里变成 `\"`，字符数翻倍），第二处重算只要漏掉一个转义细节，判据就会与真正发出去的
+// 正文分家。
+
+/** 素材的完整度量：投影、`userText`、token 成本与分片原料全部出自同一次调用。 */
+export interface CompactionMaterial {
+  /** 真正发给模型的摘要素材正文（`completePiText` 的 userText）：素材文本形态的唯一真相源。 */
+  readonly userText: string
+  /** `SUMMARY_SYSTEM + userText` 的请求估算：硬上限判定与分片预算共用的那个量。 */
+  readonly used: number
+  /** `userText` 里的 `splitTurnPrefix` 投影（含 L0 缩短），供观测面与 instructions 切换对照。 */
+  readonly splitTurnPrefix: Message[]
+  /** 分片原料：与 userText 同源的原始消息（只读，不改内容），供 T4.02 按范围切片。 */
+  readonly messages: readonly AgentMessage[]
+  readonly turnPrefixMessages: readonly AgentMessage[]
+  /** 逐条成本（下标对齐 `[...messages, ...turnPrefixMessages]`）：分片规划的 `costOf` 只读它。 */
+  readonly costs: readonly number[]
+  /**
+   * 每片固定开销：SUMMARY_SYSTEM、instructions / previousSummary / JSON 框架，以及逐条估算取整的
+   * 系统性高估（可为负）。定义即 `used − Σcosts`，故 `overhead + Σcosts === used` 恒等成立；
+   * `planCompactionShards` 的 `overhead` 只许取这里，不许调用方另算一份。
+   */
+  readonly overhead: number
+}
+
+/** 按 `planCompactionShards` 给出的范围取原料（含 turnPrefix 的拼接语义由本函数统一）。 */
+export function sliceMaterial(material: CompactionMaterial, from: number, to: number): AgentMessage[] {
+  return [...material.messages, ...material.turnPrefixMessages].slice(from, to)
+}
+
+/**
+ * 摘要素材的唯一度量点：一次投影同时产出 `userText`、成本与分片原料。
+ *
+ * 「素材超硬上限」这条判定（`summarizeCompaction`）与分片规划（`planCompactionShards` 的
+ * `costOf` / `overhead`）、场景断言都必须复用本函数，不得各自重算。分工：本函数管「素材是什么、
+ * 多大」；上限（`contextBudget(...)`）由调用方冻结后传入，本函数不读配置。纯函数：不落盘、不记
+ * 日志，同一输入两次调用逐字相同。
+ */
+export function measureCompactionMaterial(input: {
+  /** 待摘要历史（Harness preparation.messagesToSummarize）。 */
+  readonly messages: readonly AgentMessage[]
+  /** 切分回合时被切开的 in-progress 回合前缀（preparation.turnPrefixMessages）。 */
+  readonly turnPrefixMessages?: readonly AgentMessage[]
+  /** 迭代摘要素材（preparation.previousSummary）；undefined 在 userText 里序列化为 null。 */
+  readonly previousSummary?: string
+  /** 上下文窗口：取 `contextBudget(...).window`，L0 缩短宽度与判超限的上限必须出自同一次取值。 */
+  readonly window: number
+  /** resultProjection=preserve 的工具名：素材与主请求投影同口径，不做 L0 二次缩短。 */
+  readonly preserveToolNames?: ReadonlySet<string>
+}): CompactionMaterial {
   const preserveToolNames = input.preserveToolNames ?? new Set<string>()
   // 工具结果先进 L0 投影（保留 eventId 回读地址），与主请求共用同一份缩短实现与同一份
   // 地址来源（details.deskpetEntryId）——两路投影对同一条结果必须逐字相同；
   // 但 resultProjection=preserve 的工具与主请求同口径跳过缩短 —— 摘要素材不能二次缩短
   // 分页读取或写类成败这类关键结果（条目仍是可回读的真相源）。
-  const project = (messages: readonly AgentMessage[]): Message[] =>
-    messages.flatMap((message, index) => {
-      const projected = summaryMessage(message, index)
-      if (!projected) return []
-      if (message.role === "toolResult" && preserveToolNames.has(message.toolName)) return [projected]
-      if (projected.role !== "tool") return [projected]
+  // 投影与逐条成本出自同一次遍历：`costs[i]` 就是原始素材第 i 条在 userText 里的那份字符，
+  // 不进摘要的消息（custom / compactionSummary）计 0。
+  const project = (messages: readonly AgentMessage[]): { projected: Message[]; costs: number[] } => {
+    const projected: Message[] = []
+    const costs: number[] = []
+    messages.forEach((message, index) => {
+      const entry = summaryMessage(message, index)
+      if (!entry) { costs.push(0); return }
       // AgentMessage 联合里只有工具结果带 details；地址解析只认它，别的角色一律 undefined。
-      const text = projectToolResultText(projected.text, toolResultAddress(message as { details?: unknown }), budget.window)
-      return [text === projected.text ? projected : { ...projected, text }]
+      const text = entry.role === "tool" && !(message.role === "toolResult" && preserveToolNames.has(message.toolName))
+        ? projectToolResultText(entry.text, toolResultAddress(message as { details?: unknown }), input.window)
+        : entry.text
+      const final = text === entry.text ? entry : { ...entry, text }
+      projected.push(final)
+      costs.push(estimateValueTokens(final))
     })
-  const splitTurnPrefix = project(input.turnPrefixMessages ?? [])
+    return { projected, costs }
+  }
+  const { projected: messages, costs: messageCosts } = project(input.messages)
+  const { projected: splitTurnPrefix, costs: prefixCosts } = project(input.turnPrefixMessages ?? [])
   const userText = JSON.stringify({
     instructions: splitTurnPrefix.length
       ? `${SUMMARY_INSTRUCTIONS}${SPLIT_TURN_INSTRUCTION}`
       : SUMMARY_INSTRUCTIONS,
     previousSummary: input.previousSummary ?? null,
-    messages: project(input.messages),
+    messages,
     ...(splitTurnPrefix.length ? { splitTurnPrefix } : {}),
   })
+  // 与真正发出去的正文同源：JSON 转义已计入，判超限用的就是这条字符串。
   const used = estimateRequestTokens(SUMMARY_SYSTEM, [{ role: "user", content: userText }])
+  const costs = [...messageCosts, ...prefixCosts]
+  return {
+    userText, used, splitTurnPrefix,
+    messages: input.messages, turnPrefixMessages: input.turnPrefixMessages ?? [],
+    costs, overhead: used - costs.reduce((total, cost) => total + cost, 0),
+  }
+}
+
+/** 生成一次结构化压缩摘要；失败抛错，由 Harness 按 handler_error 上报并可回退默认摘要。 */
+export async function summarizeCompaction(input: CompactionSummaryInput): Promise<CompactionSummaryOutcome> {
+  const budget = contextBudget(input.model?.contextWindow ?? aiConfig.contextMaxTokens)
+  // 素材度量只有一处（measureCompactionMaterial）：这条硬上限守卫与下游分片规划读同一份产物。
+  const material = measureCompactionMaterial({
+    messages: input.messages,
+    turnPrefixMessages: input.turnPrefixMessages,
+    previousSummary: input.previousSummary,
+    window: budget.window,
+    preserveToolNames: input.preserveToolNames,
+  })
   // 不截字也不静默丢覆盖：输入超过硬上限时明确失败（§5.2），由调用方决定回退或放弃。
-  if (used > budget.hardInputLimit) throw new ContextBudgetError(used, budget.hardInputLimit)
+  if (material.used > budget.hardInputLimit) throw new ContextBudgetError(material.used, budget.hardInputLimit)
   const { completePiText } = await import("./pi")
   const response = await completePiText({
-    purpose: "compaction", systemPrompt: SUMMARY_SYSTEM, userText,
+    purpose: "compaction", systemPrompt: SUMMARY_SYSTEM, userText: material.userText,
     thinkingEffort: "low", maxTokens: budget.summaryMaxTokens,
     signal: input.signal, model: input.model,
     // 有归属才落快照：摘要是一次性请求，但「这次压缩问了什么」必须可查。
@@ -99,7 +179,7 @@ export async function summarizeCompaction(input: CompactionSummaryInput): Promis
   const summary = parseStructuredSummary(response.text)
   if (!summary) throw new Error("摘要格式无效：未返回可校验的结构化 JSON")
   if (estimateValueTokens(summary) > budget.summaryMaxTokens) throw new Error("摘要超过预算上限")
-  return { text: formatStructuredSummary(summary), summary, usage: response.usage, inputText: userText }
+  return { text: formatStructuredSummary(summary), summary, usage: response.usage, inputText: material.userText }
 }
 
 // ── 第二层：摘要素材分片规划（纯函数）──
@@ -139,7 +219,8 @@ export interface CompactionShardPlan {
  *
  * 调用方的量纲：`costOf` / `overhead` / `sliceBudget` / `hardInputLimit` 必须取自**同一次投影**
  * （128k 窗口运行期口径：`hardInputLimit 124354`、`sliceBudget = floor(124354 × .8) = 99483`），
- * 预算一律用 `contextBudget(window)`（不传 `maxOutput`）。
+ * 预算一律用 `contextBudget(window)`（不传 `maxOutput`）。`costOf` / `overhead` 只许读
+ * `measureCompactionMaterial` 的 `costs` / `overhead`（唯一度量出口），不得在下游重算。
  */
 export function planCompactionShards(input: {
   /** preparation.messagesToSummarize + preparation.turnPrefixMessages，顺序拼接。 */
@@ -148,7 +229,7 @@ export function planCompactionShards(input: {
   readonly turnPrefixFrom: number
   /** 单条素材在投影后的成本（由调用方用同一次投影的估算给出）。 */
   readonly costOf: (index: number) => number
-  /** 每片固定开销：SUMMARY_SYSTEM + instructions + previousSummary + JSON 框架。 */
+  /** 每片固定开销：SUMMARY_SYSTEM + instructions + previousSummary + JSON 框架（取 `CompactionMaterial.overhead`）。 */
   readonly overhead: number
   readonly sliceBudget: number
   readonly hardInputLimit: number
