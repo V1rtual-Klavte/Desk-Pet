@@ -6,6 +6,29 @@
 // 消失（W1 的帧节流只降写入频率，不动体积）。折叠把「确定可丢」的整行**纯删除**掉，是
 // write + rename 之外唯一的物理回收手段。
 //
+// D3 残余成本（2026-09-27 登记；用户裁定「有意接受（够用）」，**不追加任务**；不得误读为已解决）：
+//   · 折叠**只解决体积，不解决读取复杂度**：它把实测文件 792,898 → 293,879 字节，于是
+//     `JsonlStorage.open` 的「全量读 + 逐行重放」（`storage.js:114-146`）少读 62.9% 的字节、
+//     少重放 94.9% 的行（2,187 → 112），**但仍然是 O(全文件)**；残量 245,126 字节是**正文条目**
+//     （真相源本身），删不掉。
+//   · 接受的理由（三条）：(a) 残量的主体就是真相源本身，任何进一步的压缩都只能改「真相源怎么
+//     存」，那是另一个量级的决定；(b) `readTextLines({maxLines})` 这条路**对 open 无效** —— open
+//     必须拿到全部行才能重放出完整状态，分块读只会把一次读变成 N 次读；能受益的只有 `list`，而
+//     它**已经**在用 `{maxLines: 1}`（`jsonl/repo.js:194`）；(c) 真要解 D3 只有两条路：把日志换成
+//     「快照 + 增量」（上游 header 的 `nextSeq` 注释已暗示存在这种重写，`jsonl/types.d.ts:14`），
+//     或请上游支持增量打开 —— **两条都超出源方案范围**，前者正是源方案 §7.1 `:366` 明确否决的
+//     「全量折叠」（需要重新生成 seq）。
+//   · 将来若会话规模真的上来，周期状态快照是明确的下一个候选 —— 届时应**另立方案**，不是本执行
+//     的追加任务。
+//   · **尚未被本波规则覆盖的一类可回收对象**（本波只登记、不扩规则）：被反复覆盖但**从未
+//     `delete`** 的 `value/set`（实测参考会话 4 个 key、144 条写入：`pi.lane.config` 43 /
+//     `pi.lane.state` 51 / `pi.branch.tip` 48 / `pi.session.name` 2）。现有规则只回收「最后一次
+//     delete 之前」的写入，碰不到它们 ⇒ 这类会话的可回收量恒小于 `minReclaimBytes`，闸门 2 永远
+//     拒绝折叠，而文件仍会越过 `minFileBytes`，每次 close/open 前都**白做一次 stat**。将来要收时
+//     把规则扩成「同一 key 只保留最后一次写入」，replay 等价性证明与状态摘要校验都不变。
+//   · **成功折叠不可逆**：被删行的原字节随 rename 覆盖消失，**不保留 `.bak`、没有回滚路径**；
+//     安全防线只有「提交前的状态摘要比对 + 原子替换」，且这两条只在**失败**时保住原文件。
+//
 // 判定规则（唯一两条；只删 append/set，delete 行本身永远保留）：
 //   · `list`  key = namespace + U+0000 + key：设 d = 该 key **最后一次** `list/delete` 的行号，
 //     行号 < d 的 `list/append` 可丢；行号 ≥ d 的写入（含 d 自己）一律保留。
@@ -42,8 +65,9 @@
 // （parseCommittedWrite）与 `commit.js:7-22`（commitWrite）；`v: 4` 来自 `jsonl/types.d.ts:3`；
 // 重放逐条对齐 `harness/session/in-memory-storage-state.js:53-108`（applyValidated）与
 // `storage.js:141-142`（header.nextSeq 取 max）。
-// 上游升版本 ⇒ 先看 `pnpm run test:types` 的绊线报错（T5.02 落在本文件的 STORAGE_VERSION_GUARD），
-// 再重核白名单与「单写行 vs 数组行」的序列化规则（`storage.js:56-58`）。
+// 上游 `storageVersion` 升级 ⇒ 先看 `pnpm run test:types` 的绊线报错，再按 `jsonl/storage.js:20-45`
+// 重核白名单与「单写行 vs 数组行」的序列化规则（`storage.js:56-58`）；三层机制（编译期绊线 /
+// 运行期 unknown-format 降级 / 人读登记）在 STORAGE_VERSION_GUARD 旁列全。
 //
 // 文件分两半，边界写死：
 //   · 上半（readFoldLog / prepareFold / replayLogState / logStateDigest）是**纯函数**：不碰
@@ -546,9 +570,22 @@ const log = createLogger("SessionFold")
 
 /**
  * 上游 storageVersion 升级绊线（O-8 第一层，唯一「不靠人记得」的一环）：本模块的白名单解析
- * 只对 `1` 成立。依赖升级改了常量值 ⇒ `pnpm run test:types` 立即报错；届时先重核
- * `jsonl/storage.js:20-45`（parseCommittedWrite）的白名单与「单写行 vs 数组行」的序列化规则，
- * 再改下面这行显式比较。
+ * 只对 `1` 成立。`JSONL_STORAGE_VERSION` 在包里的声明是字面量类型（`jsonl/types.d.ts:4`），
+ * 依赖升级改了常量值 ⇒ 这一行赋值类型不匹配、`pnpm run test:types`（vue-tsc）立即报错。
+ *
+ * **升级处置路径（先看报错、再核对、最后才改下面这行显式比较）**：上游 `storageVersion` 升级
+ * ⇒ 先看 `pnpm run test:types` 的绊线报错，再按 `jsonl/storage.js:20-45`（parseCommittedWrite）
+ * 重核白名单与「单写行 vs 数组行」的序列化规则（`storage.js:56-58`）。
+ *
+ * O-8 的三层机制（T5.02 步骤 5 的落地；全部无新增文档、无常驻物）：
+ *   ① 编译期绊线＝本行：捕捉「依赖已升级」，升级只能手动（`package.json` 精确锁版本、仓库无
+ *      renovate/dependabot），这一层是唯一自动的一环；
+ *   ② 运行期绊线：`prepareFold` 对 `storageVersion ≠ 1`（或 `v ≠ 4`）的头、与任何非白名单行，
+ *      一律 `skip("unknown-format")`，`reportUnknownFormat` 按版本值去重留痕（首次 warn、之后
+ *      debug）—— 捕捉「本地没重新构建、用户盘上却已有新版本文件」，只降级、不抛错、不影响会话
+ *      功能；
+ *   ③ 人读的登记点：本文件头的「上游耦合（O-8 的登记点）」段（依赖的字段白名单出处 + 升级处置
+ *      路径）；文档侧由 W6 落进 `docs/current/runtime-data.md`。
  */
 const STORAGE_VERSION_GUARD: 1 = JSONL_STORAGE_VERSION
 
