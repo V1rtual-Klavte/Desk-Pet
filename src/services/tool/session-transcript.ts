@@ -4,7 +4,7 @@
 // 分页语义：同名同参、offset/总长。
 //
 // `createTranscriptTool` 是本仓唯一实现；生产调用方在 engine/pi/runtime.ts，用
-// `slot.readToolResult` 作 reader（会话作用域的读取在槽上，工具只认 entryId，不认 session id）。
+// `slot.readToolResult` 作 reader（会话作用域的读取在槽上，工具只认地址引用，不认 session id）。
 
 import { sliceByTokenBudget } from "@/services/context/budget"
 import { toolResultTokenBudget } from "@/services/context/tool-output"
@@ -36,8 +36,27 @@ export function formatTranscriptPage(text: string, offset: number, pageTokens: n
   return `[${start}-${end}/${text.length}]\n${body}`
 }
 
-/** 读取一条工具结果条目全文；不存在或不是工具结果时返回 undefined。 */
-export type ToolResultEntryReader = (entryId: string) => Promise<string | undefined>
+/**
+ * 读取一条工具结果的判别联合：三种形态各自明确，歧义**绝不任选**（A-3）。
+ * `ref` 可以是完整条目 id（永远有效）或它在当前会话里的唯一前缀。
+ */
+export type ToolResultLookup =
+  | { kind: "found"; entryId: string; text: string }
+  | { kind: "not_found" }
+  | { kind: "ambiguous"; matches: string[] }
+
+/** 读取端：`ref` 为完整条目 id 或唯一前缀。 */
+export type ToolResultEntryReader = (ref: string) => Promise<ToolResultLookup>
+
+/** 歧义错误里最多列出的候选数（D-W2-6）；其余以「等 N 条」收口。 */
+const MAX_AMBIGUOUS_CANDIDATES = 3
+
+/** 歧义错误的唯一文案（中性诊断，不带角色台词、不写「稍后重试」这类拟人话术）。 */
+function ambiguousRefError(matches: readonly string[]): string {
+  const shown = matches.slice(0, MAX_AMBIGUOUS_CANDIDATES).join("、")
+  const rest = matches.length > MAX_AMBIGUOUS_CANDIDATES ? ` 等 ${matches.length} 条` : ""
+  return `地址前缀不唯一：匹配到 ${matches.length} 条工具结果（${shown}${rest}），请用更长的前缀重试`
+}
 
 /** Read-only run-scoped access to retained tool output; no model-supplied path or session id. */
 export function createTranscriptTool(readEntry: ToolResultEntryReader, options: { windowTokens: number }): ToolDef {
@@ -45,7 +64,7 @@ export function createTranscriptTool(readEntry: ToolResultEntryReader, options: 
   const pageTokens = transcriptPageTokens(options.windowTokens)
   return defineTool({
     id: "local-session-event", name: SESSION_TRANSCRIPT_TOOL,
-    description: "按 eventId 分页读取当前会话中保留的完整工具结果。被上下文缩短的结果可由此恢复。",
+    description: "按 eventId（完整条目 id 或其唯一前缀）分页读取当前会话中保留的完整工具结果；被上下文缩短的结果可由此恢复。前缀不唯一时会返回歧义错误，请用更长的前缀重试。",
     source: "local", sourceId: "", actionCategory: "fs.read", safetyLevel: "SAFE",
     parameters: { type: "object", properties: { eventId: { type: "string" }, offset: { type: "integer", minimum: 0 } }, required: ["eventId"] },
     policy: {
@@ -58,9 +77,10 @@ export function createTranscriptTool(readEntry: ToolResultEntryReader, options: 
     },
   }, async (params, ctx) => {
     if (ctx.signal?.aborted || (ctx.isCurrent && !ctx.isCurrent())) return { success: false, content: "", error: "回合已取消", errorCode: "cancelled" }
-    const entryId = typeof params.eventId === "string" ? params.eventId : ""
-    const text = await readEntry(entryId)
-    if (text === undefined) return { success: false, content: "", error: "当前会话没有此工具结果", errorCode: "not_found" }
-    return { success: true, content: formatTranscriptPage(text, typeof params.offset === "number" ? params.offset : 0, pageTokens) }
+    const ref = typeof params.eventId === "string" ? params.eventId : ""
+    const lookup = await readEntry(ref)
+    if (lookup.kind === "not_found") return { success: false, content: "", error: "当前会话没有此工具结果", errorCode: "not_found" }
+    if (lookup.kind === "ambiguous") return { success: false, content: "", error: ambiguousRefError(lookup.matches), errorCode: "ambiguous" }
+    return { success: true, content: formatTranscriptPage(lookup.text, typeof params.offset === "number" ? params.offset : 0, pageTokens) }
   })
 }

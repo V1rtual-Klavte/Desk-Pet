@@ -96,7 +96,7 @@ export interface ToolResult {
   success: boolean
   content: string
   error?: string
-  errorCode?: "not_found" | "denied" | "timeout" | "cancelled" | "failed"
+  errorCode?: "not_found" | "denied" | "timeout" | "cancelled" | "failed" | "ambiguous"
   /** Pi 原生文本/图片结果；未提供时由 content 生成文本结果。 */
   contentParts?: Array<
     | { type: "text"; text: string }

@@ -121,7 +121,7 @@ export const 工具结果存档边界: SceneDef = {
         const slot = harnessSlots.peek(getActiveSessionId())
         // 窗口取生产同款（T2.02 把页宽从固定 8000 字符改成 token 预算）。
         // 下面的 offset: 56000 与尾段比对仍是旧页宽口径，改写归 T2.09。
-        const tool = createTranscriptTool(entryId => slot ? slot.readToolResult(entryId) : Promise.resolve(undefined), { windowTokens: resolvePiTurnModel().contextWindow })
+        const tool = createTranscriptTool(entryId => slot ? slot.readToolResult(entryId) : Promise.resolve({ kind: "not_found" } as const), { windowTokens: resolvePiTurnModel().contextWindow })
         const page = await executeToolDefinition(tool, { eventId: largeEntry.id, offset: 56000 }, {})
         if (!page.success) throw new Error(`尾段回读失败: ${page.error ?? page.errorCode}`)
         if (!page.content.endsWith(BODY.slice(56000))) throw new Error("offset=56000 没有读到条目尾段")

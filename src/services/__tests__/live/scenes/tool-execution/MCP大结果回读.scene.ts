@@ -148,7 +148,7 @@ export const MCP大结果回读: SceneDef = {
           const windowTokens = resolvePiTurnModel().contextWindow
           const pageTokens = transcriptPageTokens(windowTokens)
           const slot = harnessSlots.peek(getActiveSessionId())
-          const tool = createTranscriptTool(entryId => slot ? slot.readToolResult(entryId) : Promise.resolve(undefined), { windowTokens })
+          const tool = createTranscriptTool(entryId => slot ? slot.readToolResult(entryId) : Promise.resolve({ kind: "not_found" } as const), { windowTokens })
           const page = await executeToolDefinition(tool, { eventId: entry.id, offset: READ_OFFSET }, {})
           if (!page.success) throw new Error(`按 eventId 回读失败: ${page.error ?? page.errorCode}`)
           const expectedPage = sliceByTokenBudget(EXPECTED_TEXT.slice(READ_OFFSET), pageTokens, false)

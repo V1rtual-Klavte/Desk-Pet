@@ -173,8 +173,11 @@ export const 地址完整性: SceneDef = {
         if (!addressId) throw new Error(`成功结果的条目里没有 details.deskpetEntryId：${JSON.stringify(Object.keys(details))}`)
         if (failedDetails.deskpetEntryId !== undefined) throw new Error("错误分支不该写回读地址（上游只用 error.message）")
         // 地址是能读出全文的真地址：read_session_event 的实现就是这个读取入口。
-        const readBack = await harnessSlots.peek(getActiveSessionId())?.readToolResult(addressId)
-        if (!readBack?.includes(ADDRESS_CORE)) throw new Error(`回读地址 ${addressId} 读不出全文（含中部标记）`)
+        // 读取端是判别联合（完整 id 或唯一前缀命中 → found），这里钉「读得回全文含中部标记」。
+        const lookup = await harnessSlots.peek(getActiveSessionId())?.readToolResult(addressId)
+        if (lookup?.kind !== "found" || !lookup.text.includes(ADDRESS_CORE)) {
+          throw new Error(`回读地址 ${addressId} 读不出全文（含中部标记）：${lookup?.kind ?? "无会话槽"}`)
+        }
 
         const sent = sentToolResultTexts()
         // 逐字等于纯函数在同样入参下的产出：地址来源、窗口口径与缩短实现三者任一漂移都会红。

@@ -43,7 +43,7 @@ export const 工具结果恢复: SceneDef = {
     const slot = harnessSlots.peek(getActiveSessionId())
     // 窗口取生产同款（T2.02 把页宽从固定 8000 字符改成 token 预算）。
     // 下面的 offset: 8000 与 slice(8000, 16000) 仍是旧页宽口径，改写归 T2.09。
-    const tool = createTranscriptTool(entryId => slot ? slot.readToolResult(entryId) : Promise.resolve(undefined), { windowTokens: resolvePiTurnModel().contextWindow })
+    const tool = createTranscriptTool(entryId => slot ? slot.readToolResult(entryId) : Promise.resolve({ kind: "not_found" } as const), { windowTokens: resolvePiTurnModel().contextWindow })
     const page = await executeToolDefinition(tool, { eventId: resultEntryId, offset: 8000 }, {})
     if (!page.success || !page.content.endsWith(BODY.slice(8000, 16000))) throw new Error("分页结果不可恢复")
     const denied = await executeToolDefinition(tool, { eventId: "another-session-event" }, {})

@@ -37,8 +37,10 @@ import {
   toAgentHarnessTools,
   flushPendingReleases, retryBorrowerAttachIfPending, setToolPermitLimit,
 } from "@/services/tool"
-import type { HarnessToolRun, ToolDef } from "@/services/tool"
-import { ContextBudgetError, contextBudget, toHarnessEstimateTokens } from "@/services/context"
+import type { HarnessToolRun, ToolDef, ToolResultLookup } from "@/services/tool"
+import {
+  ContextBudgetError, contextBudget, isUniqueAddressRef, resolveAddressRef, shortenAddresses, toHarnessEstimateTokens,
+} from "@/services/context"
 import { COMPACTION_DECLINED_ENTRY, PROMPT_REWRITE_ENTRY, laneMessageText, messageRequestId, userInputMessage } from "@/services/engine/runtime"
 import type { CompactionAuditSink, InputSourceMark } from "@/services/engine/runtime"
 import { conversationConfig, loopConfig } from "@/services/config"
@@ -394,6 +396,12 @@ export class HarnessSlot {
   private queueMirrorReady = false
   /** requestId → lane inbox entryId：重投递前用它撤销仍未消费的项，保证用户正文恰好一次。 */
   private readonly pendingDeliveryEntries = new Map<string, string>()
+  /**
+   * 工具结果条目 id → 已发出的展示地址（D-W2-8：地址跨请求稳定）。
+   * 槽级缓存，跟会话句柄同生命周期（close 时随 `this.session` 一并清空）——不做模块级全局表，
+   * 否则跨会话串味、也会泄漏已释放的槽。
+   */
+  private addressRefCache = new Map<string, string>()
   /** 停止归还的未消费消息：在回合收尾点（或没有在飞 run 时）以 nextRun 重新入队。 */
   private readonly requeuePending: AgentMessage[] = []
   /** 审计条目排队区：hook / 事件处理器只入队，drive 结束后由宿主写入（见 queueAuditEntry）。 */
@@ -722,6 +730,8 @@ export class HarnessSlot {
     this.harness = undefined
     this.lane = undefined
     this.session = undefined
+    // 地址目录跟会话句柄走：句柄释放后旧地址没有意义，留着只会让重开的会话继承过期前缀。
+    this.addressRefCache.clear()
     this.state = "closed"
     try {
       // harness.close 会关闭会话句柄；随后让 session 层缓存同步释放，避免留下已关闭句柄。
@@ -1211,11 +1221,67 @@ export class HarnessSlot {
 
   // ── 会话数据读取（供 deskpet 工具与恢复核对） ──
 
-  /** 读取一条工具结果条目的全文；条目不是 toolResult 时返回 undefined。 */
-  async readToolResult(entryId: string): Promise<string | undefined> {
+  /**
+   * 当前会话可解析的工具结果条目 id 全集（内存扫描，无 I/O）。
+   * 槽上唯一的扫描入口：不建倒排索引、不落盘（性能方针），量级与 session/repo.ts 的读模型同阶。
+   */
+  private async toolResultEntryIds(): Promise<string[]> {
     await this.open()
-    if (!this.session) return undefined
-    const entry = await this.session.getEntry(entryId, BACKGROUND_CONTEXT)
+    const session = this.session
+    if (!session) return []
+    const entries = await session.findEntries({ type: "message" }, BACKGROUND_CONTEXT)
+    const ids: string[] = []
+    for (const entry of entries) {
+      if (entry.type === "message" && entry.message.role === "toolResult") ids.push(entry.id)
+    }
+    return ids
+  }
+
+  /**
+   * 地址目录：id → 展示用前缀。已发出的形态优先复用（D-W2-8），只在「仍是最短唯一」被打破时重算
+   * —— 模型手里的地址跨请求稳定，主请求与摘要素材才对同一条结果给出逐字相同的投影。
+   */
+  async addressRefs(): Promise<ReadonlyMap<string, string>> {
+    const ids = await this.toolResultEntryIds()
+    const fresh = shortenAddresses(ids)
+    const refs = new Map<string, string>()
+    for (const id of ids) {
+      const cached = this.addressRefCache.get(id)
+      const ref = cached !== undefined && isUniqueAddressRef(cached, id, ids) ? cached : fresh.get(id)
+      if (ref !== undefined) refs.set(id, ref)
+    }
+    // 缓存收敛到当次 id 全集：已不在全集里的条目不继续占位。
+    this.addressRefCache = refs
+    return refs
+  }
+
+  /** 读取一条工具结果：ref 可以是完整条目 id（永远有效）或其唯一前缀。 */
+  async readToolResult(ref: string): Promise<ToolResultLookup> {
+    await this.open()
+    const session = this.session
+    if (!session) return { kind: "not_found" }
+    let ids: string[] | undefined
+    try {
+      ids = await this.toolResultEntryIds()
+    } catch (error) {
+      // 没有 id 全集就无从判定前缀唯一性：降级为「只认完整 id」并如实留痕，
+      // 不能让「扫描失败」静默变成「前缀未命中」。留痕点就是下面这条 error。
+      log.error("工具结果 id 全集扫描失败，回读降级为只认完整条目 id:", { sessionId: this.sessionId }, formatError(error))
+    }
+    if (!ids) {
+      const text = await this.readToolResultText(session, ref)
+      return text === undefined ? { kind: "not_found" } : { kind: "found", entryId: ref, text }
+    }
+    const resolution = resolveAddressRef(ref, ids)
+    if (resolution.kind === "ambiguous") return { kind: "ambiguous", matches: resolution.matches }
+    if (resolution.kind === "none") return { kind: "not_found" }
+    const text = await this.readToolResultText(session, resolution.id)
+    return text === undefined ? { kind: "not_found" } : { kind: "found", entryId: resolution.id, text }
+  }
+
+  /** 按条目 id 取工具结果正文；条目不存在、不是工具结果或没有正文时返回 undefined。 */
+  private async readToolResultText(session: Session, entryId: string): Promise<string | undefined> {
+    const entry = await session.getEntry(entryId, BACKGROUND_CONTEXT)
     if (entry?.type !== "message" || entry.message.role !== "toolResult") return undefined
     return contentText(entry.message.content)
   }

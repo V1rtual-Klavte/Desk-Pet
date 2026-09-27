@@ -59,4 +59,4 @@ export {
   transcriptPageTokens,
   SESSION_TRANSCRIPT_TOOL,
 } from "./session-transcript"
-export type { ToolResultEntryReader } from "./session-transcript"
+export type { ToolResultEntryReader, ToolResultLookup } from "./session-transcript"
