@@ -182,6 +182,22 @@ export function measureCompactionMaterial(input: {
 // 逐片**串行**（不并行发多个摘要请求）：第 N 片的 `previousSummary` 就是第 N−1 片的产出 —— 迭代合并，
 // 中间片的结果只以摘要形态前进，不旁落、不要求调用方保存。任何一片失败或被取消即整体抛错
 // （→ 钩子 decline、零提交），不允许留下半成品状态。
+//
+// ── 审计归属（账目按「片」记，不按「压缩」记）──
+//
+// - **每片各 2 条快照**：provider_payload（请求发出前落）+ provider_usage（响应到达后落；失败/截断的
+//   响应同样落 —— 成本不能只计成功调用），由 `model-gateway.ts` 的一次性通路写，`purpose` 与
+//   `step` 都是 `"compaction"`、`derivedFrom = [runId]`、`compaction.count` = 槽的 contextEpoch。
+//   K 片成功的审计面因此是 **2K 条快照**。
+// - **失败片**：连响应都没拿到（超时/取消/传输错误）时只落 payload 那一档；已落的快照与已记的用量
+//   **不回滚、不清账**（AGENTS.md「已提交的写入不因取消回滚」），用量留在 `purpose: "compaction"` 分列。
+// - **失败原因不在这里留痕**：本模块只负责抛错；原因由钩子的 catch 写进 `CompactionAuditSink.failure`，
+//   槽在 `compaction_end` 收口成 `deskpet.compaction_declined` 条目的 `error` 字段（另有钩子的
+//   `log.error`）。所以失败时的审计面是「2k 条快照 + 1 条降级条目 + **0 条 compaction 条目**」。
+// - **成功才写派生记录**：钩子用这份 outcome 写 `audit.rewrite`（1 条 `deskpet.prompt_rewrite`，
+//   `inputHash` 取下面 K 片拼接的 `inputText`），同样由槽在 `compaction_end` 落盘。
+// - **compaction 条目恒为 0 或 1 条**，绝无多条：提交在 AgentHarness（收到钩子返回的 compaction 后
+//   单事务），本模块中途抛错就是 0 条，素材与正文一条不动。
 
 /** 素材分段后仍无法在一次压缩里覆盖：明确失败，绝不降级为部分覆盖（源方案 §2.1）。 */
 export class CompactionOverflowError extends Error {
@@ -206,6 +222,10 @@ export class CompactionOverflowError extends Error {
  *
  * 与 `completePiText` 的入口参数同形、不新增也不省略：`signal` 必须逐片透传，漏掉就等于只有第一片
  * 可取消（取消传导是逐片生效的）。
+ *
+ * **审计归属（单片）**：这次调用自己的两档快照由 `completePiText` 写（见函数头注释的「审计归属」），
+ * 成败都写、失败也不清账；本函数对失败**只抛不留痕** —— 原因文案的落点在钩子的 catch（审计槽 + 日志），
+ * 这里不写第二份。
  */
 async function callOnce(input: {
   /** 本片的普通素材（非 in-progress 前缀段）。 */
@@ -240,7 +260,10 @@ async function callOnce(input: {
     purpose: "compaction", systemPrompt: SUMMARY_SYSTEM, userText: material.userText,
     thinkingEffort: "low", maxTokens: input.summaryMaxTokens,
     signal: input.signal, model: input.model,
-    // 有归属才落快照：摘要是一次性请求，但「这次压缩问了什么」必须可查。K 片各写各的快照。
+    // 有归属才落快照：摘要是一次性请求，但「这次压缩问了什么」必须可查。K 片各写各的快照 ——
+    // 每片由 model-gateway 落 1 条 provider_payload（请求前）+ 1 条 provider_usage（响应到达后，
+    // 失败响应也落），归属字段 purpose/step = "compaction"、derivedFrom = [runId]、
+    // compaction.count = 槽的 contextEpoch。没有 sessionId 就没有快照（无归属不写假归属）。
     ...(input.sessionId
       ? { audit: { sessionId: input.sessionId, ...(input.runId ? { derivedFrom: [input.runId] } : {}) } }
       : {}),
@@ -299,7 +322,11 @@ function mergeUsage(left: Usage, right: Usage): Usage {
   }
 }
 
-/** 生成一次结构化压缩摘要；失败抛错，由 Harness 按 handler_error 上报并可回退默认摘要。 */
+/**
+ * 生成一次结构化压缩摘要；失败/取消一律抛错，**由钩子 `createCompactionHook` catch 成 decline**
+ * （X-4：绝不让异常冒到上游 —— 上游会回退它自己的通用英文摘要，那条路径不受地址/投影阶梯约束）。
+ * 本函数不吞错、不降级、不部分覆盖：抛出的原因文案归钩子的审计槽与日志（见文件头的「审计归属」）。
+ */
 export async function summarizeCompaction(input: CompactionSummaryInput): Promise<CompactionSummaryOutcome> {
   const budget = contextBudget(input.model?.contextWindow ?? aiConfig.contextMaxTokens)
   // 地址目录在这里（真正投影前）取一次，与主请求投影共用同一份 thunk：两路对同一条结果
@@ -334,6 +361,8 @@ export async function summarizeCompaction(input: CompactionSummaryInput): Promis
   }
 
   // ── 现状路径：素材装得下就是一次调用、一份摘要（`previousSummary` 仍只进这一次请求）──
+  // 审计面与分片路径同口径只是 K=1：2 条快照（payload + usage），失败时同样只留下快照、
+  // 零 compaction 条目。
   if (material.used <= budget.hardInputLimit) {
     const single = await callOnce({
       ...shared,
@@ -359,10 +388,11 @@ export async function summarizeCompaction(input: CompactionSummaryInput): Promis
     maxSlices: MAX_COMPACTION_SLICES,
   })
   // 判片数必须先判 fatal：`fatal` 存在时 `ranges` 恒为 `[]`（T4.00 的返回形态），反过来读会把
-  // 「片数超上限」误判成「没有可规划对象」。明确失败，不是尽力而为：一个请求都不发。
+  // 「片数超上限」误判成「没有可规划对象」。明确失败，不是尽力而为：一个请求都不发 ——
+  // 审计面因此是 **0 条 provider_* 快照**（原因由钩子的 catch 落成 1 条 compaction_declined）。
   if (plan.fatal) throw new CompactionOverflowError(plan.fatal)
   // 理论不可达：能走到这里说明素材超硬上限，而 0/1 片意味着没有可分对象（例如素材为空、只有
-  // `previousSummary` 自身超限 —— 它每片都要带，切不掉）。保守留在原行为：明确失败。
+  // `previousSummary` 自身超限 —— 它每片都要带，切不掉）。保守留在原行为：明确失败，同样零请求。
   if (plan.ranges.length <= 1) throw new ContextBudgetError(material.used, budget.hardInputLimit)
 
   const texts: string[] = []
@@ -372,6 +402,7 @@ export async function summarizeCompaction(input: CompactionSummaryInput): Promis
   for (const [from, to] of plan.ranges) {
     // 片间取消检查：每片结束后、下一片发出前看一眼 signal。不吞 —— 取消经 signal 传导，
     // 由钩子的 catch 收尾成 decline（根因留痕在 summarizeCompaction 的抛错点 / 钩子 catch）。
+    // 此刻已发出的片各自的 provider_* 快照都留在会话里（照实记账，不回滚）。
     input.signal?.throwIfAborted()
     // prefix 段只可能落在最后一片（规划器的 prefixUnit 恒为最后一个单元且永不切分），但它可能与
     // 前面的普通素材同片（贪心装箱把 prefix 塞进上一片的余量里）。两段按 prefixFrom 切开、各进一个
@@ -387,11 +418,18 @@ export async function summarizeCompaction(input: CompactionSummaryInput): Promis
     // 迭代合并的唯一回填点：第 N 片的 previousSummary 就是第 N−1 片的产出（串行，不并行发请求）。
     previous = formatStructuredSummary(slice.summary)
     texts.push(slice.inputText)
+    // 账目合并的唯一回填点：compaction 条目只落一条，`usage` 因此必须是 K 次调用的**合计**
+    // （逐片 usage 另有各自的 provider_usage 快照，两者不是一份账：一个是条目字段，一个是证据）。
     usage = usage ? mergeUsage(usage, slice.usage) : slice.usage
     last = slice.summary
   }
+  // 最后一片结束后、返回前再查一次：取消落在「末片响应已回、结果还没交出去」这一段时同样按取消
+  // 处置（decline、零提交），不把已作废的结果当成「压缩成功」交出去。
+  input.signal?.throwIfAborted()
   // 正文只由最后一片产出：前面的片都已被它合并进 previousSummary，再拼一次等于把同一段历史说两遍。
   // `usage` 是 K 次调用的合计。`ranges.length ≥ 2`（上面的守卫）保证至少跑过一轮，故两者必非空。
+  // 成功的审计面 = 每片的 2K 条快照 + 1 条 prompt_rewrite（钩子用这里返回的 `inputText` 拼 inputHash）
+  // + 恰好 1 条 compaction 条目（上游收到钩子的 compaction 后单事务提交）。
   return { text: formatStructuredSummary(last!), summary: last!, usage: usage!, inputText: texts.join("\n---\n") }
 }
 

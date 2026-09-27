@@ -3,7 +3,7 @@
 // variables, and reply processing.
 
 import { contentText } from "@earendil-works/pi-ai"
-import type { AgentMessage, JsonValue, SettledAssistantMessage } from "@earendil-works/pi-agent-core"
+import type { AgentMessage, CompactResult, JsonValue, SettledAssistantMessage } from "@earendil-works/pi-agent-core"
 import type { Usage } from "@earendil-works/pi-ai"
 import type { Message, ThinkingEffort } from "@/services/agent/types"
 import type { SlashSkillAdmission } from "@/services/engine/slash"
@@ -532,7 +532,29 @@ function createTurnKernel(options: TurnKernelOptions): TurnKernel {
   return kernel
 }
 
-/** 结构化摘要的 before_compaction 钩子；主回合与手动 /compact 共用同一内核（H-3/§7）。 */
+/**
+ * 结构化摘要的 before_compaction 钩子；主回合与手动 /compact 共用同一内核（H-3/§7）。
+ *
+ * **X-4（本函数的核心不变量）：只有两种结局 —— 成功产出恰好一个 `compaction`，其余一律
+ * `{ decline: true }`。** 返回路径穷举（全部落在下面的 try/catch 内，本函数没有别的出口）：
+ * ① 没有可摘要范围、② 覆盖范围含 retain 保护调用 → decline（都不是失败，不写 audit）；
+ * ③ 宿主摘要内核成功 → 恰好一条 `compaction`（提交是上游收到它之后的单事务，宿主没有第二条提交路径）；
+ * ④ catch：内核抛错/被取消 → 唯一带原因文案的 decline。
+ *
+ * **红线：失败必须走 decline，绝不把异常抛回上游。** 上游 `HookRegistry.firstStructural`
+ * （`pi-agent-core/dist/harness/hooks.js`）对抛出的处理器只记 handler_error 就继续，于是
+ * `runStructuralDecision` 落到 `publishStructuralReady`（`harness/runtime/drive/structural.js`）
+ * —— 那是上游自己的摘要效应：用它的通用英文提示词（`compaction.js` 的 `SUMMARIZATION_SYSTEM_PROMPT`）
+ * 重新摘要。那条路径不受本方案的地址目录与投影阶梯约束，产出的摘要却会提交成后续所有回合唯一的
+ * 历史视图且不可回滚：用户以为压缩成功，用的却是另一套语义。宁可不压缩。
+ * 同理**不得返回 `undefined`**（空返回）：`harness-slot.ts` 的 before_compaction 桥接里那条
+ * `if (!host)` 早退是上游唯一的兜底入口 —— 宿主一旦空返回，等于放行上游摘要。
+ *
+ * 失败的可见面（现状口径，改那条接线不属本函数职责）：decline 在上游的 `declined` 终态里**不带
+ * error**，原因只走两处 —— `options.audit.failure`（槽在 `compaction_end` 收口成
+ * `deskpet.compaction_declined` 条目的 `error` 字段）与下面的 `log.error`；回合路径没有用户可见行，
+ * 手动 `/compact` 由 `compactActiveSession` 读同一审计槽把 declined 重标为 failed 才带上原因。
+ */
 function createCompactionHook(options: {
   model: PiModel
   tools: readonly ToolDef[]
@@ -551,9 +573,11 @@ function createCompactionHook(options: {
 }): NonNullable<HarnessRunHooks["beforeCompaction"]> {
   const retained = retainedToolNames(options.tools)
   const preserved = preservedToolNames(options.tools)
-  return async ({ preparation, signal, runId }) => {
+  // 返回类型显式收窄到「两种结局」（不含空返回）：日后再加一条空返回就编译不过 ——
+  // X-4 的「没有兜底出口」由类型保证，不靠注释维持。
+  return async ({ preparation, signal, runId }): Promise<{ decline: true } | { compaction: CompactResult }> => {
     try {
-      // 全量都在保留窗口内时没有可安全摘要的覆盖范围：decline 让 Harness 原样收尾。
+      // 结局①（decline）：全量都在保留窗口内时没有可安全摘要的覆盖范围，让 Harness 原样收尾。
       if (!preparation.messagesToSummarize.length && !preparation.turnPrefixMessages.length) return { decline: true }
       // historyCompaction=retain 的调用配对必须保留原文：连续完整轮下不能把覆盖边界推进越过它，
       // 宁可 decline（由宿主预算守卫报告上下文不足），也不默默丢掉未覆盖历史。
@@ -561,6 +585,7 @@ function createCompactionHook(options: {
         ?? findRetainedToolCall(preparation.turnPrefixMessages, retained)
       if (retainedTool) {
         log.warn("摘要范围覆盖了必须保留原文的工具调用，本轮不压缩:", retainedTool)
+        // 结局②（decline）：策略性不压缩，不是内核失败 —— 不写 audit.failure，避免污染失败面。
         return { decline: true }
       }
       const outcome = await summarizeCompaction({
@@ -586,6 +611,8 @@ function createCompactionHook(options: {
           derivedFrom: [runId],
         })
       }
+      // 结局③（成功）：恰好一条 compaction —— K 片的合并在 summarizeCompaction 内完成，
+      // 到这里只剩一份 outcome，不存在「多片多次提交」的形态。
       return {
         compaction: {
           summary: outcome.text,
@@ -595,8 +622,11 @@ function createCompactionHook(options: {
         },
       }
     } catch (error) {
-      // 显式 decline：钩子抛错会被上游记为 handler_error 后继续（回退通用英文摘要），
-      // 而那个摘要一旦提交就成为后续所有回合唯一的历史视图且不可回滚 —— 宁可不压缩。
+      // 结局④（decline）/ X-4 的红线：**必须转 decline，绝不 rethrow**。上游对抛出的处理器只记
+      // handler_error 后继续，最终走 publishStructuralReady 用上游通用英文摘要补压（见函数头注释）——
+      // 那条路径不受本方案地址目录/投影阶梯约束，却会提交成唯一历史视图且不可回滚。
+      // 失败原因的留痕点就在下面三行：审计槽（槽在 compaction_end 写 deskpet.compaction_declined
+      // 的 error 字段）+ log.error；本函数不制造任何静默。
       const reason = formatError(error)
       if (options.audit) options.audit.failure = reason
       options.onFailure?.(reason)
