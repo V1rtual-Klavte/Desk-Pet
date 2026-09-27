@@ -1,9 +1,10 @@
 import type { SceneDef } from "../../types"
 import type { Entry } from "@earendil-works/pi-agent-core"
 import { fakeText, fakeToolCall, installFakeProvider } from "../../fake-provider"
-import { SESSION_EVENT_PAGE_CHARS, createTranscriptTool, executeToolDefinition, register, unregister } from "@/services/tool"
+import { sliceByTokenBudget } from "@/services/context"
+import { createTranscriptTool, executeToolDefinition, register, unregister, transcriptPageTokens } from "@/services/tool"
 import { McpClient } from "@/services/tool/mcp"
-import { harnessSlots } from "@/services/engine/pi"
+import { harnessSlots, resolvePiTurnModel } from "@/services/engine/pi"
 import { getActiveSessionId } from "@/services/session"
 import { sessionEntries } from "../../session-entries"
 
@@ -142,12 +143,15 @@ export const MCP大结果回读: SceneDef = {
           }
           if (view.length >= archived.length) throw new Error(`请求视图没有缩短: ${view.length} 字符`)
 
-          // ④ 按条目 id 分页回读超限之后的尾段：读回的窗口必须逐字等于条目里的原文。
+          // ④ 按条目 id 分页回读超限之后的尾段：页宽由 token 预算推导（与 L0 单条结果同一份额），
+          //    读回的窗口必须逐字等于条目里的原文。
+          const windowTokens = resolvePiTurnModel().contextWindow
+          const pageTokens = transcriptPageTokens(windowTokens)
           const slot = harnessSlots.peek(getActiveSessionId())
-          const tool = createTranscriptTool(entryId => slot ? slot.readToolResult(entryId) : Promise.resolve(undefined))
+          const tool = createTranscriptTool(entryId => slot ? slot.readToolResult(entryId) : Promise.resolve(undefined), { windowTokens })
           const page = await executeToolDefinition(tool, { eventId: entry.id, offset: READ_OFFSET }, {})
           if (!page.success) throw new Error(`按 eventId 回读失败: ${page.error ?? page.errorCode}`)
-          const expectedPage = EXPECTED_TEXT.slice(READ_OFFSET, READ_OFFSET + SESSION_EVENT_PAGE_CHARS)
+          const expectedPage = sliceByTokenBudget(EXPECTED_TEXT.slice(READ_OFFSET), pageTokens, false)
           if (!page.content.includes(expectedPage)) {
             throw new Error(`回读窗口不是条目原文: ${page.content.length} 字符`)
           }

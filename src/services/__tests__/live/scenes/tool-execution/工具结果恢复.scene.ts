@@ -2,7 +2,7 @@ import type { SceneDef } from "../../types"
 import { fakeText, fakeToolCall, installFakeProvider } from "../../fake-provider"
 import { defineTool, register, createTranscriptTool, executeToolDefinition, TOOL_POLICY_VERSION } from "@/services/tool"
 import { getActiveSessionId } from "@/services/session"
-import { harnessSlots } from "@/services/engine/pi"
+import { harnessSlots, resolvePiTurnModel } from "@/services/engine/pi"
 import { sessionEntries } from "../../session-entries"
 import type { Entry } from "@earendil-works/pi-agent-core"
 
@@ -41,7 +41,9 @@ export const 工具结果恢复: SceneDef = {
     resultEntryId = resultEntry.id
     // 回读用生产调用链的那一份：reader 是槽上的 readToolResult（runtime.ts 同款）。
     const slot = harnessSlots.peek(getActiveSessionId())
-    const tool = createTranscriptTool(entryId => slot ? slot.readToolResult(entryId) : Promise.resolve(undefined))
+    // 窗口取生产同款（T2.02 把页宽从固定 8000 字符改成 token 预算）。
+    // 下面的 offset: 8000 与 slice(8000, 16000) 仍是旧页宽口径，改写归 T2.09。
+    const tool = createTranscriptTool(entryId => slot ? slot.readToolResult(entryId) : Promise.resolve(undefined), { windowTokens: resolvePiTurnModel().contextWindow })
     const page = await executeToolDefinition(tool, { eventId: resultEntryId, offset: 8000 }, {})
     if (!page.success || !page.content.endsWith(BODY.slice(8000, 16000))) throw new Error("分页结果不可恢复")
     const denied = await executeToolDefinition(tool, { eventId: "another-session-event" }, {})

@@ -938,7 +938,7 @@ export async function runPiAgentTurn(input: PiAgentTurnInput): Promise<PiAgentTu
   assertCurrent()
   const frozenTools: ToolDef[] = isActiveMessage ? [] : [...listAll()]
   // 工具结果回读：请求投影里标注的 eventId 就是 Harness 条目 id，按条目分页读取。
-  if (frozenTools.length) frozenTools.push(createTranscriptTool(entryId => slot.readToolResult(entryId)))
+  if (frozenTools.length) frozenTools.push(createTranscriptTool(entryId => slot.readToolResult(entryId), { windowTokens }))
   // 用户正文由 Harness 的 prompt 条目承担落盘（先落盘再投递由 Harness 事务保证）；
   // 主动消息用 deskpet.active_message 自定义消息投递，来源标记在 details.* 且不成为用户事实。
   assertCurrent()
@@ -1806,7 +1806,7 @@ export async function continueInterruptedRun(sessionId: string): Promise<PiAgent
     const card = currentCard ? JSON.parse(JSON.stringify(currentCard)) as typeof currentCard : null
     const pool = getPoolSnapshot()
     const frozenTools = [...listAll()]
-    frozenTools.push(createTranscriptTool(entryId => slot.readToolResult(entryId)))
+    frozenTools.push(createTranscriptTool(entryId => slot.readToolResult(entryId), { windowTokens: model.contextWindow }))
     const thinkingEffort = getEffectiveThinkingEffort()
     // 中断运行的原始冻结快照已随进程丢失：用当前 Card/变量重建只读前缀，不静默改 Card。
     const context = buildPrompt({

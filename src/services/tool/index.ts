@@ -56,7 +56,7 @@ export { executeToolDefinition } from "./router"
 export { releaseMcpOwner } from "./mcp"
 export {
   createTranscriptTool,
+  transcriptPageTokens,
   SESSION_TRANSCRIPT_TOOL,
-  SESSION_EVENT_PAGE_CHARS,
 } from "./session-transcript"
 export type { ToolResultEntryReader } from "./session-transcript"

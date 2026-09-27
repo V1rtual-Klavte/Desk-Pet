@@ -2,7 +2,7 @@ import type { SceneDef } from "../../types"
 import { fakeText, fakeToolCall, installFakeProvider } from "../../fake-provider"
 import { register, defineTool, createTranscriptTool, executeToolDefinition, TOOL_POLICY_VERSION } from "@/services/tool"
 import { getActiveSessionId } from "@/services/session"
-import { harnessSlots } from "@/services/engine/pi"
+import { harnessSlots, resolvePiTurnModel } from "@/services/engine/pi"
 import { setOverride } from "@/services/config"
 import { sessionEntries } from "../../session-entries"
 import type { Entry } from "@earendil-works/pi-agent-core"
@@ -119,7 +119,9 @@ export const 工具结果存档边界: SceneDef = {
 
         // ③ 尾段可回读：offset=56000 必须读到条目尾段（地址是真的，不是装饰）。
         const slot = harnessSlots.peek(getActiveSessionId())
-        const tool = createTranscriptTool(entryId => slot ? slot.readToolResult(entryId) : Promise.resolve(undefined))
+        // 窗口取生产同款（T2.02 把页宽从固定 8000 字符改成 token 预算）。
+        // 下面的 offset: 56000 与尾段比对仍是旧页宽口径，改写归 T2.09。
+        const tool = createTranscriptTool(entryId => slot ? slot.readToolResult(entryId) : Promise.resolve(undefined), { windowTokens: resolvePiTurnModel().contextWindow })
         const page = await executeToolDefinition(tool, { eventId: largeEntry.id, offset: 56000 }, {})
         if (!page.success) throw new Error(`尾段回读失败: ${page.error ?? page.errorCode}`)
         if (!page.content.endsWith(BODY.slice(56000))) throw new Error("offset=56000 没有读到条目尾段")
