@@ -286,3 +286,121 @@ export function protectedMessageIndexes(messages: readonly { role: string }[], t
   for (let i = boundary; i < messages.length; i++) indexes.add(i)
   return indexes
 }
+
+// ==========================================
+// 阶梯规划器（纯函数，零 I/O）
+// 顺序按激进度排，不按成本排：级 0 不动 → 级 1 缩短 → 级 2 清空 → 级 3 摘要。
+// 「装得下」的唯一判据 = 请求视图估算 ≤ contextBudget(window).normalInputTarget（源方案 §3.2）；
+// 唯一单条上限 = toolResultTokenBudget(window)（O-4：级 1 与级 2 共用，校准时只调一个旋钮）。
+// 级 3（摘要）是调用方在本计划的读数上另判的闸门，不在本函数内。
+// ==========================================
+
+/** 一个工具结果在阶梯里的判定输入。 */
+export interface ToolResultLadderEntry {
+  /** 该条在调用方数组里的下标；也是 `levels` 的键。 */
+  index: number
+  toolName: string
+  /** 条目正文全文（未投影）。 */
+  text: string
+  /** 回读地址；无地址 = 永远不允许进级 2（安全阀，C-2）。 */
+  address?: string
+}
+
+/**
+ * 判据的测量面：给定分级方案返回整请求估算（systemPrompt + 工具 schema + 全部消息）。
+ *
+ * **必须纯函数**：`planToolResultLadder` 只在三个测量点上各调一次、**绝不逐条循环调用**；
+ * 三点互斥链式（无候选 / 级 1 / 级 2），单次调用实际最多 2 次（计划文档给的「最多 3 次」是这三点的上界）。
+ * 同一入参必得同一结果：闭包里带副作用或读外部可变状态会让计划与实际请求视图漂移。
+ */
+export type ToolResultLevelMeasure = (levels: ReadonlyMap<number, 1 | 2>) => number
+
+/** 阶梯判定输入；与消息形态无关（主请求视图与摘要素材共用同一份判定）。 */
+export interface ToolResultLadderInput {
+  entries: readonly ToolResultLadderEntry[]
+  measure: ToolResultLevelMeasure
+  window: number
+  /** 判据目标；未传时取 `contextBudget(window).normalInputTarget`（主请求视图口径）。摘要素材语境由 W4 传 `hardInputLimit`。 */
+  target?: number
+  /** `resultProjection: "preserve"` 的工具名：命中不进候选集，级 1/级 2 都不做。 */
+  preserveToolNames?: ReadonlySet<string>
+  /**
+   * 保护区的消息下标（`protectedMessageIndexes()` 的产出）。**只在级 2 候选集里读**（口径 B）：
+   * 保护区只挡级 2/级 3，不挡级 1 —— 超阈的保护区条目照常缩短。
+   *
+   * **省略 ≠ 空集**：省下它就等于级 2 不受保护区限制（`protectedMessageIndexes` 返回的空集
+   * 是「无保护」的另一种形态）。调用方必须显式传入；漏传会有一条 warn，不做静默降级。
+   */
+  protectedIndexes?: ReadonlySet<number>
+}
+
+export interface ToolResultLadderPlan {
+  /** 判据阈值：`input.target`，或 `contextBudget(window).normalInputTarget`。 */
+  target: number
+  tokensAfterLevel1: number
+  /** 未升级到级 2（`level <= 1`）时等于 `tokensAfterLevel1` —— 级 2 既未测量也未应用。 */
+  tokensAfterLevel2: number
+  /** 实际应用的最高层级：0 = 无候选；1 = 只缩短；2 = 有清空。 */
+  level: 0 | 1 | 2
+  /** index → 1 | 2，只含被处理的项；未进候选的结果不在其中。 */
+  levels: ReadonlyMap<number, 1 | 2>
+}
+
+/**
+ * 阶梯规划器：给定工具结果条目、测量闭包与窗口，产出级 0/1/2 的提升方案。
+ *
+ * 六步算法（执行方案 W3 §1.2，照抄）：
+ * 1. `target = input.target ?? contextBudget(window).normalInputTarget`；
+ * 2. 候选 = 非 preserve **且**单条超 `toolResultTokenBudget(window)` 的条目；
+ *    **保护区不在这里排除** —— 级 1 对保护区照常生效（口径 B）；
+ * 3. 无候选 ⇒ 级 0（`levels` 为空，两次读数是同一次无条件测量）；
+ * 4. 候选全置级 1 后测量；装得下（≤ `target`）⇒ 停在级 1，不做无谓升档；
+ * 5. 仍超 ⇒ 候选中**有地址且不在保护区**的置级 2，其余保持级 1（保护区只挡这一步）；
+ * 6. `level` = 有级 2 则 2，否则 1（全部无地址时停在级 1，C-2；此时两读数相同）。
+ *
+ * 单条上限只算一次并两处共用（O-4）：级 2 的处理集是级 1 候选集的子集，不存在第二个阈值旋钮。
+ * 本函数只判定到级 2；级 3（摘要）由调用方按本计划的读数另判，不是这里的一项「level 3」。
+ */
+export function planToolResultLadder(input: ToolResultLadderInput): ToolResultLadderPlan {
+  if (input.protectedIndexes === undefined) {
+    // T3.00 的告警落点：拿不到保护区集合时级 2 会静默失去保护。空集是「无保护」的显式形态，
+    // 省略则是调用方漏传 —— 留痕一次（不是逐条），让漏传在运行期可见。
+    log.warn("阶梯缺少保护区集合，级 2 将不受保护区限制:", { entries: input.entries.length })
+  }
+  const target = input.target ?? contextBudget(input.window).normalInputTarget
+  // O-4：单条上限只算一次，级 1 的候选判定与级 2 的处理集共用同一个结果。
+  const singleEntryBudget = toolResultTokenBudget(input.window)
+  const candidates = input.entries.filter(entry =>
+    !(input.preserveToolNames?.has(entry.toolName) ?? false)
+    && estimateContextTokens(entry.text) > singleEntryBudget)
+
+  if (candidates.length === 0) {
+    // 第 3 步：无条件的一次测量（级 0 视图）。无候选 ⇒ 级 1/级 2 不做任何改动，读数必然相同，
+    // 不再多调 measure。
+    const tokens = input.measure(new Map())
+    return { target, tokensAfterLevel1: tokens, tokensAfterLevel2: tokens, level: 0, levels: new Map() }
+  }
+
+  const levels = new Map<number, 1 | 2>()
+  for (const entry of candidates) levels.set(entry.index, 1)
+  const tokensAfterLevel1 = input.measure(levels)
+
+  let level2Count = 0
+  let tokensAfterLevel2 = tokensAfterLevel1
+  if (tokensAfterLevel1 > target) {
+    // 第 5 步：级 2 的两个附加条件（有地址、不在保护区）只在这里生效；不满足的保持级 1。
+    for (const entry of candidates) {
+      if (entry.address === undefined) continue
+      if (input.protectedIndexes?.has(entry.index) ?? false) continue
+      levels.set(entry.index, 2)
+      level2Count += 1
+    }
+    tokensAfterLevel2 = input.measure(levels)
+  }
+
+  log.debug("阶梯候选:", { count: candidates.length, level1: candidates.length - level2Count, level2: level2Count, target })
+  if (level2Count > 0) {
+    log.info("级 1 之后仍超目标，清空可回读的工具结果（级 2）:", { level2: level2Count, tokensAfterLevel1, tokensAfterLevel2, target })
+  }
+  return { target, tokensAfterLevel1, tokensAfterLevel2, level: level2Count > 0 ? 2 : 1, levels }
+}

@@ -12,6 +12,8 @@ export { contextBudget, estimateContextTokens, estimateValueTokens, estimateMess
 export type { ContextBudget } from "./budget"
 
 export { projectToolResultText, annotateToolResultText, toolResultNotice, toolResultAddress, toolResultTokenBudget, LADDER_PROTECTION_TURNS, protectedMessageIndexes } from "./tool-output"
+export { planToolResultLadder } from "./tool-output"
+export type { ToolResultLadderEntry, ToolResultLevelMeasure, ToolResultLadderInput, ToolResultLadderPlan } from "./tool-output"
 export { L0_NO_ADDRESS_NOTICE, L0_SHORTENED_TAG, L0_CLEARED_TAG, L0_TOOL_RESULT_SHARE } from "./tool-output"
 export { MIN_ADDRESS_PREFIX, shortenAddresses, resolveAddressRef, isUniqueAddressRef } from "./tool-output"
 export type { AddressResolution } from "./tool-output"
