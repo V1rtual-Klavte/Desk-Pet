@@ -103,3 +103,5 @@ export {
 
 export { createPiSessionRepo } from "./session-repo"
 export type { PiSessionRepo, PiSessionRepoOptions } from "./session-repo"
+
+export { FRAME_BUFFER_MAX_BYTES, FrameBufferingFileSystem } from "./session-frame-buffer"
