@@ -65,3 +65,82 @@ export function projectToolMessages(messages: readonly Message[], window: number
     return projected === message.text ? message : { ...message, text: projected }
   })
 }
+
+// ==========================================
+// 地址前缀（纯函数，零 I/O）
+// 唯一真相源：`toolResultAddress` 读 details，本组函数读 id 集合，两者同住本模块。
+// ==========================================
+
+/**
+ * 展示用地址的最小长度：投影端发射与读取端受理共用同一下界，防止 1–2 字符的偶然命中。
+ * 唯一性只在「当次给定的 id 全集」内判定：同一批 id 与目标必得同一结果，
+ * 不依赖 seq / 行号 / 顺序（折叠只删行、不改 id，地址因此对折叠不敏感）。
+ */
+export const MIN_ADDRESS_PREFIX = 8
+
+/** 两个字符串的最长公共前缀长度（字典序相邻项之间的唯一性判定只需这一个量）。 */
+function longestCommonPrefixLength(a: string, b: string): number {
+  const max = Math.min(a.length, b.length)
+  let i = 0
+  while (i < max && a.charCodeAt(i) === b.charCodeAt(i)) i++
+  return i
+}
+
+/**
+ * 地址前缀目录：入参是当前会话可解析的工具结果条目 id 全集（完整 id），出参 id → 展示用前缀。
+ * 只依赖 id 字符串集合：内部先排序再取「与相邻 id 的最长公共前缀 + 1」，不读 seq/行号/顺序。
+ * 重复 id 按集合去重；前缀下界为 `minLength`（与读取端 `resolveAddressRef` 共用同一语义）。
+ * 纯函数：无副作用、不读配置、无模块级可变状态；跨请求的复用缓存由调用方（槽）持有。
+ */
+export function shortenAddresses(ids: readonly string[], minLength = MIN_ADDRESS_PREFIX): Map<string, string> {
+  const sorted = [...new Set(ids)].sort()
+  const prefixes = new Map<string, string>()
+  for (let i = 0; i < sorted.length; i++) {
+    const id = sorted[i]
+    // 字典序下，与 id 公共前缀最长的邻居必落在前后相邻位置，故只需比较这两个邻居。
+    let lcp = i > 0 ? longestCommonPrefixLength(sorted[i - 1], id) : 0
+    if (i + 1 < sorted.length) lcp = Math.max(lcp, longestCommonPrefixLength(id, sorted[i + 1]))
+    const length = Math.max(minLength, Math.min(id.length, lcp + 1))
+    prefixes.set(id, id.slice(0, length))
+  }
+  return prefixes
+}
+
+/**
+ * 读取端解析结果：`exact`（给的是全集里的完整 id，永远有效）/ `unique`（前缀唯一命中）/
+ * `ambiguous`（前缀命中多条，返回全部候选，绝不任选）/ `none`（不匹配或未达前缀下界）。
+ */
+export type AddressResolution =
+  | { kind: "exact"; id: string }
+  | { kind: "unique"; id: string }
+  | { kind: "ambiguous"; matches: string[] }
+  | { kind: "none" }
+
+/**
+ * 解析地址引用（完整 id 或其唯一前缀）：精确命中优先（A-4），否则前缀匹配。
+ * `ref` 为空串或短于 `MIN_ADDRESS_PREFIX` 时不参与前缀匹配（`none`），防偶然命中。
+ * 候选按字面入参收集（不静默去重）：同一个 id 在集合里出现两次也算歧义，由调用方修数据。
+ * `matches` 按字典序返回，调用方自行截断展示。
+ */
+export function resolveAddressRef(ref: string, ids: readonly string[]): AddressResolution {
+  if (ref.length === 0) return { kind: "none" }
+  if (ids.includes(ref)) return { kind: "exact", id: ref }
+  if (ref.length < MIN_ADDRESS_PREFIX) return { kind: "none" }
+  const matches = ids.filter(id => id.startsWith(ref)).sort()
+  if (matches.length > 1) return { kind: "ambiguous", matches }
+  if (matches.length === 1) {
+    const [id] = matches
+    return { kind: "unique", id }
+  }
+  return { kind: "none" }
+}
+
+/**
+ * D-W2-8 的复用校验：`ref` 仍在给定 id 全集里唯一命中且是目标 id 的前缀。
+ * 供槽侧决定已发出的地址能否沿用（失效才重算），不做前缀是否最短以外的任何判定。
+ */
+export function isUniqueAddressRef(ref: string, targetId: string, ids: readonly string[]): boolean {
+  if (!targetId.startsWith(ref)) return false
+  const resolution = resolveAddressRef(ref, ids)
+  return (resolution.kind === "exact" || resolution.kind === "unique") && resolution.id === targetId
+}

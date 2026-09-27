@@ -12,3 +12,5 @@ export { contextBudget, estimateContextTokens, estimateValueTokens, estimateMess
 export type { ContextBudget } from "./budget"
 
 export { projectToolMessages, projectToolResultText, toolResultAddress, toolResultTokenBudget, L0_NO_ADDRESS_NOTICE, L0_TOOL_RESULT_SHARE } from "./tool-output"
+export { MIN_ADDRESS_PREFIX, shortenAddresses, resolveAddressRef, isUniqueAddressRef } from "./tool-output"
+export type { AddressResolution } from "./tool-output"
