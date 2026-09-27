@@ -6,8 +6,11 @@ import { DEFAULT_SCENE_TIMEOUT, UNIT_SCENE_TIMEOUT } from "./scene-runner"
  *
  * 报告里的 pass@k 只在同一版本内可比：场景集合变了，分母就变了。
  * 格式由 `validateDataset` 强制，写错了会在启动前直接报错。
+ *
+ * `2026-09-27.1`：W1（帧节流）新增 hs-05/hs-06 两个场景（harness-storage），
+ * 由 T1.05 与 T1.06 共用这一次 bump。
  */
-export const LIVE_DATASET_VERSION = "2026-09-26.2"
+export const LIVE_DATASET_VERSION = "2026-09-27.1"
 
 export function validateDataset(scenes: SceneDef[], contracts: ModuleContract[]): string[] {
   const errors: string[] = []
