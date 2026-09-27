@@ -15,6 +15,7 @@ import type {
 import { runtimePath } from "@/services/paths"
 import { TauriExecutionEnv } from "@/services/tool/pi/tauri-execution-env"
 import { createLogger } from "@/services/logger"
+import { FrameBufferingFileSystem } from "./session-frame-buffer"
 
 const log = createLogger("PiSessionRepo")
 
@@ -43,6 +44,8 @@ export interface PiSessionRepoOptions {
   sessionsRoot?: string
   /** 会话 cwd；默认数据根（§8.1）。注入 fileSystem 时一并注入，避免依赖路径模块。 */
   cwd?: string
+  /** 帧写入合并（O-9）：缺省开启。**仅供测试与诊断**显式关闭；生产路径不传。 */
+  frameThrottle?: boolean
 }
 
 class DataRootSessionRepo implements PiSessionRepo {
@@ -87,10 +90,20 @@ class DataRootSessionRepo implements PiSessionRepo {
  * - 目录不在这里预建：repo 首次 `create` 会按需对会话目录 `createDir`（recursive）。
  * - `fileSystem.cwd` 也取数据根（FileSystem 只拿它解析相对路径）；工厂只经文件系统
  *   能力读写，`exec` 走不到，将来复用也不会放宽。
+ * - 注入与默认的 `fileSystem` 都再包一层帧写入缓冲装饰器（O-9，默认开）：只合并
+ *   `pi.pending.assistant_frame` 的帧 append，其余读写逐字节透传（见 session-frame-buffer.ts）。
  */
 export async function createPiSessionRepo(options: PiSessionRepoOptions = {}): Promise<PiSessionRepo> {
   const cwd = options.cwd ?? (await runtimePath("data"))
-  const fileSystem = options.fileSystem ?? new TauriExecutionEnv(cwd)
+  const base = options.fileSystem ?? new TauriExecutionEnv(cwd)
+  // O-9 裁定：帧写入合并是全局开关、默认开，`=== false` 是本文件唯一的旁路点。
+  //   · 不做按会话粒度 —— 缓冲本身已按文件路径分桶，「按会话开关」只会多一个状态点而没有
+  //     消费者；排查真正需要的是「整体关掉看现象」。
+  //   · 不新增 CONFIG.yaml 字段 —— 它会牵出 YAML → 模板 → getter → 设置 Tab → 保存映射的
+  //     整条链（AGENTS.md 配置同步清单），而这一项没有用户可见语义。
+  //   · 默认与注入两条路都包：否则注入路径的测试与生产走两套行为（装饰器只认 FileSystem
+  //     接口，包在谁外面不影响其余语义）。
+  const fileSystem = options.frameThrottle === false ? base : new FrameBufferingFileSystem(base)
   const sessionsRoot = options.sessionsRoot ?? (await runtimePath("sessions"))
   log.info("JsonlSessionRepo 就绪:", sessionsRoot)
   return new DataRootSessionRepo(new JsonlSessionRepo({ fileSystem, sessionsRoot }), sessionsRoot, cwd)
