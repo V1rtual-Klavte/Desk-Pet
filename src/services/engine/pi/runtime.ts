@@ -11,8 +11,8 @@ import type { CompactionAuditSink, ContextAllocation, ContextBlock, IngressEnvel
 import { createMessageId } from "@/services/agent/types"
 import { MemoryService, recallMemory, planCheckpointStore } from "@/services/agent/memory"
 import type { StructuredSummary } from "@/services/agent/memory"
-import { buildPrompt, composeDynamicPrompt, contextBudget, CONTEXT_RATIOS, estimateRequestTokens, estimateContextTokens, estimateMessageTokens, ContextBudgetError, ESTIMATE_DRIFT_WARN_RATIO, estimateDriftRatio, projectMessageContent, projectToolResultText, annotateToolResultText, toolResultAddress } from "@/services/context"
-import type { ContextBudgetAdjustment } from "@/services/context"
+import { buildPrompt, composeDynamicPrompt, contextBudget, CONTEXT_RATIOS, estimateRequestTokens, estimateContextTokens, estimateMessageTokens, ContextBudgetError, ESTIMATE_DRIFT_WARN_RATIO, estimateDriftRatio, planToolResultLadder, projectMessageContent, projectToolResultText, annotateToolResultText, protectedMessageIndexes, toolResultAddress } from "@/services/context"
+import type { ContextBudgetAdjustment, ToolResultLadderEntry, ToolResultLadderPlan } from "@/services/context"
 import { bindRunningPlan, clearRunningPlan, notifyPlanEnd, requestPlanConfirm, requestPlanStepDecision } from "@/services/engine/plan-confirmation"
 import type { PlanConfirmResult } from "@/services/engine/plan-confirmation"
 import { executePlan, evaluateComplexity, formatStepResults, generatePlan, normalizePlan, planEffectClassFor, planToRecords, recordsToPlan } from "@/services/engine/planner"
@@ -671,12 +671,18 @@ function extractRequestParams(payload: unknown): PromptRequestParams {
 /**
  * 请求视图投影 + 硬预算判定（主回合与手动压缩的续跑共用同一份实现）。
  *
+ * 工具结果走**阶梯**：候选集、保护区与升降档只来自 `planToolResultLadder()`（本文件不另判），
+ * 投影层把 `plan.levels` 应用成请求视图（`applyLevels`），硬预算的读数也取同一份计划的判据值
+ * —— 判据唯一，不存在「先判一次再算一次」的第二条链。
+ *
  * 判定不在这里 reject：记入宿主 state.contextError，由网关在下一次请求上报
  * （每次投影按当次视图重算并覆盖，不粘住首条判定）。
  */
 function createProjectionHook(args: {
   projectToolResults: boolean
   toolsByName: ReadonlyMap<string, ToolDef>
+  /** `resultProjection: "preserve"` 的工具名；与 `toolsByName` 出自同一份 `kernel.tools`。 */
+  preserveToolNames: ReadonlySet<string>
   model: PiModel
   state: HarnessRunState
   captureSnapshot: TurnKernel["captureSnapshot"]
@@ -688,6 +694,7 @@ function createProjectionHook(args: {
   const tools = [...args.toolsByName.values()]
   return async ({ messages, systemPrompt }) => {
     let prepared = messages
+    let used: number
     try {
       if (args.projectToolResults) {
         // 目录读取失败不能抛出去：上游对钩子抛错是 fail-open 静默，投影会整份退回未投影的
@@ -699,11 +706,28 @@ function createProjectionHook(args: {
             return undefined
           })
           : undefined
-        prepared = prepared.map(message => projectToolResultMessage(message, args.model.contextWindow, args.toolsByName, refs))
+        // 阶梯的输入是投影前的原始视图：entries 与 measure 都基于它，应用计划后才得到请求视图。
+        const view = prepared
+        // measure 必须是纯函数闭包（规划器最多调 3 次），且与实际采用的视图走同一个
+        // `applyLevels` —— 读数因此恒等于投影后的视图，不是第二个判据。
+        const plan: ToolResultLadderPlan = planToolResultLadder({
+          entries: toolResultLadderEntries(view, refs),
+          measure: levels => estimateRequestTokens(systemPrompt, applyLevels(view, levels, args.model.contextWindow, args.preserveToolNames, refs), tools),
+          window: args.model.contextWindow,
+          preserveToolNames: args.preserveToolNames,
+          // 保护区是阶梯的输入（口径 B：只挡级 2），不是投影后的第二道过滤。
+          protectedIndexes: protectedMessageIndexes(view),
+        })
+        prepared = applyLevels(view, plan.levels, args.model.contextWindow, args.preserveToolNames, refs)
+        // 级 2 未生效时规划器的两次读数完全相同，取实际生效的那次；这就是硬预算判定的唯一读数。
+        used = plan.level === 2 ? plan.tokensAfterLevel2 : plan.tokensAfterLevel1
+      } else {
+        // 子代理路径不投影工具结果（`projectToolResults: false`）：读数就是原始视图的估算。
+        used = estimateRequestTokens(systemPrompt, prepared, tools)
       }
       args.latestMessages(prepared)
-      const budget = contextBudget(args.model.contextWindow, args.model.maxTokens)
-      const used = estimateRequestTokens(systemPrompt, prepared, tools)
+      // 运行期预算口径：与阶梯的 target、单条上限同一份 `contextBudget(window)`（不传 maxOutput）。
+      const budget = contextBudget(args.model.contextWindow)
       if (used > budget.hardInputLimit) {
         args.state.contextError = new ContextBudgetError(used, budget.hardInputLimit)
       }
@@ -804,6 +828,8 @@ function createTurnSpec(kernel: TurnKernel, options: {
     transformContext: createProjectionHook({
       projectToolResults: options.projectToolResults,
       toolsByName,
+      // 与压缩 hook 的 retain/preserve 判定同一份来源（`kernel.tools`），只在这里算一次。
+      preserveToolNames: preservedToolNames(kernel.tools),
       model: kernel.model,
       state,
       captureSnapshot: kernel.captureSnapshot,
@@ -1957,10 +1983,12 @@ export async function compactActiveSession(sessionId: string): Promise<ManualCom
       }),
       compactionAudit,
       beforeRequest: createRequestOptionsPatch(),
-      // 续跑也走宿主的投影与剥离；工具结果投影按空工具集（安全回退，不开工具）。
+      // 续跑也走宿主的投影与剥离；工具结果投影按空工具集（安全回退，不开工具）——
+      // 没有工具声明就没有 preserve 名单，历史结果照常走阶梯（与投影 hook 的旧口径一致）。
       transformContext: createProjectionHook({
         projectToolResults: true,
         toolsByName: new Map(),
+        preserveToolNames: new Set<string>(),
         model,
         state,
         // 结构操作没有回合身份：不落 PromptSnapshot，也没有 payload 观测的读者。
@@ -2073,40 +2101,77 @@ export async function runPiSubAgent(input: PiSubAgentInput): Promise<PiSubAgentO
 }
 
 /**
- * 工具结果请求投影：条目保持全文，只有请求视图被缩短并标注回读地址。
+ * 回读地址解析（投影期唯一一处）：条目保持全文，只有请求视图被缩短/清空并标注回读地址。
  *
- * 地址无条件标注（A-1）：不论是否超阈值都带地址。`addressRefs` 给的是展示用前缀，
- * 目录里没有该 id 时退回完整条目 id（完整 id 永远可读，A-4）；取不到
- * `details.deskpetEntryId` 的结果按无地址形态如实投影，不写假 eventId。
+ * `addressRefs` 给的是展示用前缀，目录里没有该 id 时退回完整条目 id（完整 id 永远可读，A-4）；
+ * 取不到 `details.deskpetEntryId` 的结果按无地址形态如实投影，不写假 eventId。
+ * 目录读取失败的兜底在投影 hook（退回完整 id）——契约是「拒绝时一致」，见那里的一次性 warn。
+ */
+function resolveToolResultAddress(message: { details?: unknown }, addressRefs?: ReadonlyMap<string, string>): string | undefined {
+  const entryId = toolResultAddress(message)
+  return entryId ? addressRefs?.get(entryId) ?? entryId : undefined
+}
+
+/**
+ * 阶梯条目的 Pi 消息形态适配器：只取 `role === "toolResult"` 的消息，正文用 `contentText`
+ * （与投影改写的正文同一份），地址用 `resolveToolResultAddress`。
  *
- * resultProjection=preserve 的工具（分页读取、写类结果）**不缩短、不清空，但同样带地址**
- * —— 写入回执被摘要吃掉后也需要可捞的地址（D-W2-5 的 2026-09-27 裁定：preserve 只挡
- * 升档处理，不挡地址标注）。未注册的历史工具没有策略可查，沿用既有缩短行为。
+ * 消息形态适配只有这一处 —— 投影 hook 与级 3 闸门（T3.05）共用同一份产出，
+ * `compactor.ts` 不抽第二份（durable `Message` 形态在 W4 的素材投影里）。
+ */
+function toolResultLadderEntries(
+  messages: readonly AgentMessage[],
+  addressRefs?: ReadonlyMap<string, string>,
+): ToolResultLadderEntry[] {
+  const entries: ToolResultLadderEntry[] = []
+  messages.forEach((message, index) => {
+    if (message.role !== "toolResult") return
+    const address = resolveToolResultAddress(message, addressRefs)
+    entries.push({
+      index, toolName: message.toolName, text: contentText(message.content),
+      ...(address === undefined ? {} : { address }),
+    })
+  })
+  return entries
+}
+
+/**
+ * 阶梯分级方案在 Pi 消息数组上的唯一投影实现：把 `plan.levels` 应用成请求视图。
+ *
+ * 级 1/2 经 `projectToolResultText` 的唯一实现（无第二套文案；级 2 的「有地址」硬前提
+ * 由它兜底，这里不重判）。未进计划的条目（级 0）与 `resultProjection=preserve` 的工具
+ * （分页读取、写类结果）**不缩短、不清空，但地址无条件标注**（A-1）—— 写入回执被摘要
+ * 吃掉后也需要可捞的地址（D-W2-5 的 2026-09-27 裁定：preserve 只挡升档处理，不挡地址标注）。
+ * 未注册的历史工具不在 `preserveToolNames` 里，按可处理结果对待（与投影 hook 的候选集同一口径）。
  *
  * 改写只作用于 text 块：图片等非 text 块按原顺序留在原位（整块重建会丢掉 `pi-read` 的
- * 图片结果，且回读也救不回）。
+ * 图片结果，且回读也救不回）。纯函数：不改入参，未改动的消息原样返回；判据的 `measure`
+ * 也走本函数，估算因此恒等于最终请求视图，不存在第二份投影口径。
  */
-function projectToolResultMessage(
-  message: AgentMessage,
+function applyLevels(
+  messages: readonly AgentMessage[],
+  levels: ReadonlyMap<number, 1 | 2>,
   windowTokens: number,
-  toolsByName: ReadonlyMap<string, ToolDef>,
+  preserveToolNames: ReadonlySet<string>,
   addressRefs?: ReadonlyMap<string, string>,
-): AgentMessage {
-  if (message.role !== "toolResult") return message
-  const entryId = toolResultAddress(message)
-  const address = entryId ? addressRefs?.get(entryId) ?? entryId : undefined
-  const preserve = toolsByName.get(message.toolName)?.policy.context.resultProjection === "preserve"
-  let changed = false
-  const content = message.content.map(part => {
-    if (part.type !== "text") return part
-    const text = preserve
-      ? annotateToolResultText(part.text, address, SESSION_TRANSCRIPT_TOOL)
-      : projectToolResultText(part.text, address, windowTokens, SESSION_TRANSCRIPT_TOOL)
-    if (text === part.text) return part
-    changed = true
-    return { ...part, text }
+): AgentMessage[] {
+  return messages.map((message, index) => {
+    if (message.role !== "toolResult") return message
+    const level = levels.get(index) ?? 0
+    const preserve = preserveToolNames.has(message.toolName)
+    const address = resolveToolResultAddress(message, addressRefs)
+    let changed = false
+    const content = message.content.map(part => {
+      if (part.type !== "text") return part
+      const text = preserve || level === 0
+        ? annotateToolResultText(part.text, address, SESSION_TRANSCRIPT_TOOL)
+        : projectToolResultText(part.text, address, windowTokens, SESSION_TRANSCRIPT_TOOL, level)
+      if (text === part.text) return part
+      changed = true
+      return { ...part, text }
+    })
+    return changed ? { ...message, content } : message
   })
-  return changed ? { ...message, content } : message
 }
 
 /** 提交前剥离 RUNTIME_DATA；thinking 等其它块保持原样。 */
