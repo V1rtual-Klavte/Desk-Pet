@@ -1,5 +1,5 @@
 import type { AgentMessage, Entry } from "@earendil-works/pi-agent-core"
-import type { Context, FauxModelDefinition, FauxResponseStep } from "@earendil-works/pi-ai"
+import type { Context, FauxModelDefinition, FauxResponseFactory, FauxResponseStep } from "@earendil-works/pi-ai"
 import { contentText } from "@earendil-works/pi-ai"
 import { formatStructuredSummary, parseStructuredSummary } from "@/services/agent/memory"
 import { initChat, sendMessage } from "@/services/agent/runner"
@@ -7,7 +7,7 @@ import { aiConfig } from "@/services/config"
 import { contextBudget, estimateRequestTokens } from "@/services/context"
 import { COMPACTION_SLICE_RATIO, MAX_COMPACTION_SLICES, measureCompactionMaterial } from "@/services/engine"
 import type { CompactionMaterial } from "@/services/engine"
-import { compactActiveSession, compactionSettingsFor } from "@/services/engine/pi"
+import { compactActiveSession, compactionSettingsFor, harnessSlots } from "@/services/engine/pi"
 import { getActiveSessionId } from "@/services/session"
 import { TOOL_POLICY_VERSION, defineTool, getToolByName, register, unregister } from "@/services/tool"
 import type { ToolDef } from "@/services/tool"
@@ -22,8 +22,8 @@ import type { SceneDef } from "../../types"
 // + 真实 `completePiText`（每片一次一次性请求）+ 真实 `before_compaction` 钩子 + 真实 compaction
 // 条目提交（恰好一条、`fromHook`）。内核与规划器的 unit 面在 `摘要分片规划`（`mm-33`，
 // caseId `memory-compaction-shard-plan`）—— 分片不变式、两类 fatal、X-4 都在那边，
-// 本场景不重复规划器断言，只钉「生产入口上它真的这么跑」。同一 caseId 的 turn 3（连续第二次
-// 分片压缩与跨压缩迭代）由 T4.08 在本文件追加。
+// 本场景不重复规划器断言，只钉「生产入口上它真的这么跑」。轮 3/轮 4（同一 caseId：连续第二次
+// 分片压缩与跨压缩迭代）由 T4.08 在本文件追加，见下面「跨压缩迭代（轮 3/轮 4）」一节。
 //
 // ── 载荷（源方案 §1.4 的可执行版，全部由预算常量推导）──
 //
@@ -60,11 +60,41 @@ import type { SceneDef } from "../../types"
 // 「preserve 让第一层无效、只能靠第二层」的对照由**同一份实发素材**上的两次测量给出
 // （带 / 不带 `preserveToolNames`），不靠多烧一次探针调用。
 
+// ── 跨压缩迭代（轮 3/轮 4，T4.08）：第二次压缩看到的是第一次压缩后的历史 ──
+//
+// 本段证的是 B-3「不会进入永久无法压缩状态」：第一次分片压缩之后会话**仍然可压**，且迭代链不断。
+// `prepareCompaction` 在存在前序 compaction 条目时把 compactableEntries 拼成「前序 `retainedTail`
+// 的虚拟条目 + 该条目之后的真实条目」（`compaction.js` 的 426-437 行），`previousSummary` 取前一条
+// compaction 条目的 `summary`（424-428 行）。于是第二次压缩的四条事实就是本段的断言对象：
+//
+//   ① 素材 = 第一次的保留段（轮 2 正文 + 它的回复，走虚拟保留条目）+ 轮 3 的两条新探针结果；
+//   ② 第 1 片的 `previousSummary` 是**第一条 compaction 条目的摘要**（不再是 null）——
+//      「跨压缩的迭代链」没有断；
+//   ③ `contextEpoch` 两次推进（每次提交 +1，`harness-slot.ts` 的 compaction_end）；
+//   ④ 两次压缩之后**原文条目仍逐字不变**（压缩只改请求视图，4 条探针结果全在）。
+//
+// ── 轮 3/轮 4 的载荷（与轮 1/轮 2 同构，但两侧各多一段保留段正文）──
+//
+// 轮 3 再连续调用 preserve 探针两次（新的两条长结果），轮 4 的正文自己越过保留窗口（切点落在它身上）。
+// 与轮 1/轮 2 的差别只有一处**必须**小心的量：第二次压缩的视图里同时挂着**两段**尾正文
+// （保留段里的轮 2 正文 + 轮 4 自己的正文），而阈值压缩先于硬预算触发 —— 视图越过
+// `normalInputTarget` 就会在轮 4 回合内先压一次，第二次手动压缩面对的是已被压过的会话。
+// 于是新探针的尺寸取「素材侧仍超硬上限」与「视图侧留在阈值以内」两个前提的中点，
+// 推导与余量见 `SECOND_PROBE_VIEW_TOKENS`；轮 4 断言里另有两条前提自证（视图不越阈值、正文越过保留窗口）。
+
 const PRESERVE_TOOL_ID = "shard-preserve-probe"
 const PRESERVE_TOOL_NAME = "shard_preserve_probe"
 const REFERENCE_TOOL_ID = "shard-reference-probe"
 const REFERENCE_TOOL_NAME = "shard_reference_probe"
-const PRESERVE_TOOL_NAMES: ReadonlySet<string> = new Set([PRESERVE_TOOL_NAME])
+/**
+ * 轮 3 的第二批 preserve 探针：与轮 1 的探针同声明、**不同结果长度** ——
+ * 第二次压缩的素材里已经带着第一次的保留段（轮 2 正文），视图侧还要同时装下两段尾正文，
+ * 沿用轮 1 的尺寸会把轮 4 的请求视图顶过阈值（推导见 `SECOND_PROBE_VIEW_TOKENS`）。
+ */
+const SECOND_PRESERVE_TOOL_ID = "shard-second-preserve-probe"
+const SECOND_PRESERVE_TOOL_NAME = "shard_second_preserve_probe"
+/** 本场景声明的全部 preserve 工具名：素材度量（`measured`）与投影前提共用这一份名单。 */
+const PRESERVE_TOOL_NAMES: ReadonlySet<string> = new Set([PRESERVE_TOOL_NAME, SECOND_PRESERVE_TOOL_NAME])
 
 const FAKE_MODEL: FauxModelDefinition = { id: "deskpet-fake", name: "Desk-Pet Fake", contextWindow: 131_072, maxTokens: 16_384 }
 /** 真正生效的窗口与 `resolvePiTurnModel` 一致：配置值与注入模型窗口取小（maxTokens 由预算覆盖）。 */
@@ -96,14 +126,38 @@ const PROBE_VIEW_TOKENS = Math.floor((BUDGET.hardInputLimit / 4 + (BUDGET.normal
 const PROBE_CHARS = PROBE_VIEW_TOKENS * 4
 const PROBE_RESULT = "\"".repeat(PROBE_CHARS)
 
+/**
+ * 轮 3 的探针视图成本（第二次压缩的载荷）。两侧前提比轮 1 各多一段保留段正文：
+ *
+ * - 素材侧：两条新结果的素材 = 4 × 本值，加上前序保留段里的轮 2 正文（≈ `TAIL_TOKENS`）与框架，
+ *   必须**仍超硬上限** ⇒ 本值 > (hardInputLimit − TAIL_TOKENS − 框架) / 4；
+ * - 视图侧：轮 4 的请求视图 = 2 × 本值 + 轮 2 正文 + 轮 4 正文 + 系统前缀，
+ *   必须**留在阈值以内** ⇒ 本值 ≤ (normalInputTarget − 2 × TAIL_TOKENS − 前缀余量) / 2。
+ *
+ * 取两侧中点（轮 1 的取法同源）。`SECOND_VIEW_SLACK` 是给系统前缀、工具 schema、压缩摘要条目与
+ * 逐条结构开销留的定量余量：轮 1 的 10,590 余量实测只被这段吃掉 ≈1,100（见轮 2 的 `latest.used`），
+ * 这里按它的量级取整留 4,000，抵消宿主卡片/技能目录的体量变化。
+ */
+const SECOND_VIEW_SLACK = 4_000
+const SECOND_PROBE_VIEW_TOKENS = Math.floor((
+  (BUDGET.hardInputLimit - TAIL_TOKENS) / 4
+  + (BUDGET.normalInputTarget - 2 * TAIL_TOKENS - SECOND_VIEW_SLACK) / 2
+) / 2)
+const SECOND_PROBE_CHARS = SECOND_PROBE_VIEW_TOKENS * 4
+const SECOND_PROBE_RESULT = "\"".repeat(SECOND_PROBE_CHARS)
+
 const FIRST_TEXT = `第一轮：连续调用 ${PRESERVE_TOOL_NAME} 两次，然后回复我。`
 const SECOND_TEXT = `第二轮：${"a".repeat(TAIL_CHARS)}`
+const THIRD_TEXT = `第三轮：再连续调用 ${SECOND_PRESERVE_TOOL_NAME} 两次，然后回复我。`
+/** 轮 4：正文自己越过保留窗口（与轮 2 同一条推导），切点才落在它身上而不是落进轮 3。 */
+const FOURTH_TEXT = `第四轮：${"b".repeat(TAIL_CHARS)}`
 
 /** 断言失败时带上真实口径，不让人从「未覆盖」反推载荷问题。 */
 function sizing(): string {
   return `窗口 ${WINDOW_TOKENS}、hardInputLimit ${BUDGET.hardInputLimit}、阈值 ${BUDGET.normalInputTarget}`
     + `、sliceBudget ${SLICE_BUDGET}、单条探针 ${PROBE_CHARS} 字符（视图 ${PROBE_VIEW_TOKENS} tokens）`
-    + `、保留窗口 ${SETTINGS.keepRecentTokens}、轮 2 正文 ${TAIL_CHARS} 字符（${TAIL_TOKENS} tokens）`
+    + `、保留窗口 ${SETTINGS.keepRecentTokens}、轮 2/轮 4 正文各 ${TAIL_CHARS} 字符（${TAIL_TOKENS} tokens）`
+    + `、第二批探针 ${SECOND_PROBE_CHARS} 字符（视图 ${SECOND_PROBE_VIEW_TOKENS} tokens）`
 }
 
 /**
@@ -128,6 +182,29 @@ function assertPayloadPremise(): void {
   }
   if (!(2 * PROBE_VIEW_TOKENS < SLICE_BUDGET)) {
     throw new Error(`场景载荷前提不成立：单个工具批次 ${2 * PROBE_VIEW_TOKENS} 装不进单片预算 ${SLICE_BUDGET}（不可分片）｜${sizing()}`)
+  }
+}
+
+/**
+ * 第二次压缩（跨压缩迭代）的载荷前提（与 `assertPayloadPremise` 同构、同一批常量推导）：
+ * ① 两条新探针 + 前序保留段里的轮 2 正文仍要超硬上限（否则第二次压缩不走分片）；
+ * ② 轮 4 的请求视图（两条新探针 + **两段**尾正文 + 前缀余量）必须留在阈值以内（否则轮 4
+ *    回合内先发生阈值压缩，第二次手动压缩面对的是已被压过的会话）；
+ * ③ 每个工具批次仍装得进单片预算。
+ */
+function assertSecondPayloadPremise(): void {
+  // 素材成本 = 视图成本 × 2（JSON 转义）+ 保留段里的轮 2 正文（虚拟保留条目）。
+  const material = 4 * SECOND_PROBE_VIEW_TOKENS + TAIL_TOKENS
+  if (!(material > BUDGET.hardInputLimit)) {
+    throw new Error(`第二次压缩的载荷前提不成立：两条新探针 + 保留段的素材 ${material} 不超过硬上限 ${BUDGET.hardInputLimit}｜${sizing()}`)
+  }
+  const view = 2 * SECOND_PROBE_VIEW_TOKENS + 2 * TAIL_TOKENS + SECOND_VIEW_SLACK
+  if (!(view <= BUDGET.normalInputTarget)) {
+    throw new Error(`第二次压缩的载荷前提不成立：轮 4 请求视图 ${view}（含前缀余量 ${SECOND_VIEW_SLACK}）越过压缩阈值 `
+      + `${BUDGET.normalInputTarget}：回合内会先发生阈值压缩，第二次手动压缩面对的是已被压过的会话｜${sizing()}`)
+  }
+  if (!(2 * SECOND_PROBE_VIEW_TOKENS < SLICE_BUDGET)) {
+    throw new Error(`第二次压缩的载荷前提不成立：单个工具批次 ${2 * SECOND_PROBE_VIEW_TOKENS} 装不进单片预算 ${SLICE_BUDGET}（不可分片）｜${sizing()}`)
   }
 }
 
@@ -187,15 +264,48 @@ function summaryResponse(slice: number): string {
 /** 每片请求的正文快照（断言从中读 `previousSummary` 与逐片消息）。 */
 const summaryRequests: string[] = []
 
-/** 摘要请求脚本：被非摘要请求取走就是脚本错位，立即报错（同 `压缩降级` 的做派）。 */
-const summaryStep: FauxResponseStep = context => {
+/** 一次请求的最后一条消息正文：摘要请求与主请求都从这里分辨（摘要素材的 JSON 才有 `"instructions"`）。 */
+function lastRequestText(context: Context): string {
   const last = context.messages[context.messages.length - 1]
-  const text = typeof last?.content === "string"
+  return typeof last?.content === "string"
     ? last.content
     : (last?.content ?? []).map(part => (part.type === "text" ? part.text : "")).join("")
+}
+
+/** 摘要请求脚本：被非摘要请求取走就是脚本错位，立即报错（同 `压缩降级` 的做派）。 */
+const summaryStep: FauxResponseFactory = context => {
+  const text = lastRequestText(context)
   if (!text.includes("\"instructions\"")) throw new Error(`摘要脚本被非摘要请求取走: ${text.slice(0, 60)}`)
   summaryRequests.push(text)
   return fakeText(summaryResponse(summaryRequests.length))
+}
+
+/** 轮 3/轮 4 的会话步骤队列（setup 每次重建）：路由步按需取走，摘要请求不消耗它。 */
+let trailingQueue: FauxResponseStep[] = []
+
+/** 轮 3 的两次探针调用与收尾回复、轮 4 的回复 —— 队列顺序即请求顺序。 */
+function trailingScript(): FauxResponseStep[] {
+  return [
+    recorded("轮 3 / 第 1 次探针调用", fakeToolCall(SECOND_PRESERVE_TOOL_NAME, {}, "shard-second-call-1")),
+    recorded("轮 3 / 第 2 次探针调用", fakeToolCall(SECOND_PRESERVE_TOOL_NAME, {}, "shard-second-call-2")),
+    recorded("轮 3 / 收尾回复", fakeText("第三轮回复完成。")),
+    recorded("轮 4 / 本轮回复", fakeText("第四轮回复完成。")),
+  ]
+}
+
+/**
+ * 尾部路由步：这一次请求是摘要还是会话，由请求正文自己说 —— 摘要片数（K₁/K₂）由载荷决定、
+ * 不在场景里写死，「第 N 步必是摘要」的固定脚本在片数漂移时会把会话步骤喂给摘要请求。
+ * 摘要请求就地应答（与 `summaryStep` 同一份账、同一份正文），会话请求按顺序取走 `trailingQueue`；
+ * 队列空了还来会话请求才是脚本错位。多备的步骤不会被取走（每个请求只弹一步）。
+ */
+const routedStep: FauxResponseStep = (context, options, state, model) => {
+  if (lastRequestText(context).includes("\"instructions\"")) return summaryStep(context, options, state, model)
+  const next = trailingQueue.shift()
+  if (!next) {
+    throw new Error(`尾部会话脚本已耗尽（第 ${state.callCount} 次请求）：既不是摘要请求，队列里也没有剩余的会话步骤`)
+  }
+  return typeof next === "function" ? next(context, options, state, model) : next
 }
 
 // ── 会话条目 → 素材（messagesToSummarize 的等价重建）──
@@ -225,10 +335,7 @@ function messageText(message: AgentMessage): string {
 async function summaryInput(): Promise<{ messages: AgentMessage[]; cutTokens: number }> {
   const entries = await sessionEntries()
   const messages = entries.flatMap(entry => entry.type === "message" ? [entry.message] : [])
-  let cut = -1
-  for (let index = messages.length - 1; index >= 0; index--) {
-    if (messages[index]!.role === "user") { cut = index; break }
-  }
+  const cut = lastUserIndex(messages)
   if (cut < 0) throw new Error(`会话里没有用户消息：轮 2 正文没有进入会话条目｜${sizing()}`)
   const cutTokens = Math.ceil(messageText(messages[cut]!).length / 4)
   if (cutTokens < SETTINGS.keepRecentTokens) {
@@ -236,6 +343,49 @@ async function summaryInput(): Promise<{ messages: AgentMessage[]; cutTokens: nu
       + `切点会落进轮 1 ⇒ 探针进 turnPrefixMessages ⇒ 规划直接 fatal oversized_unit｜${sizing()}`)
   }
   return { messages: messages.slice(0, cut), cutTokens }
+}
+
+/**
+ * 最后一个用户消息的下标：两次压缩的切点前提都落在它身上（上游 `findCutPoint` 在用户消息上
+ * 是 `isSplitTurn = false`，故 `turnPrefixMessages` 为空），取法只有这一处。
+ */
+function lastUserIndex(messages: readonly AgentMessage[]): number {
+  for (let index = messages.length - 1; index >= 0; index--) {
+    if (messages[index]!.role === "user") return index
+  }
+  return -1
+}
+
+/**
+ * 第二次压缩的素材等价重建：与 `prepareCompaction` 的三段拼接同源 —— 存在前序 compaction 条目时
+ * `compactableEntries = 前序 retainedTail 的虚拟条目 + 该条目之后的真实条目`（`compaction.js` 的
+ * 426-437 行），`previousSummary` 取该条目的 `summary`（424-428 行）；切点仍落在最后一个用户消息上。
+ *
+ * 切点前提每次重算（理由与 `summaryInput` 相同）：轮 4 正文若不越过保留窗口，切点会落进轮 3，
+ * 两条新探针进 turnPrefixMessages 前缀单元（永不切分）⇒ 规划直接 `fatal{oversized_unit}`。
+ */
+async function secondCompactionInput(sessionId: string): Promise<{ material: AgentMessage[]; cutTokens: number }> {
+  const entries = await sessionEntries(sessionId)
+  const compactions = compactionEntries(entries)
+  if (compactions.length !== 1) {
+    throw new Error(`跨压缩重建要求恰好 1 条前序 compaction 条目，实际 ${compactions.length} 条：`
+      + `保留段无从取得（第二次压缩的素材会重建失真）｜${sizing()}`)
+  }
+  const previous = compactions[0]!
+  const previousIndex = entries.findIndex(entry => entry.id === previous.id)
+  if (previousIndex < 0) throw new Error(`前序 compaction 条目不在会话条目里（读取口径漂了）｜${sizing()}`)
+  const messages: AgentMessage[] = [
+    ...previous.retainedTail,
+    ...entries.slice(previousIndex + 1).flatMap(entry => entry.type === "message" ? [entry.message] : []),
+  ]
+  const cut = lastUserIndex(messages)
+  if (cut < 0) throw new Error(`跨压缩的条目序列里没有用户消息：切点前提不成立｜${sizing()}`)
+  const cutTokens = Math.ceil(messageText(messages[cut]!).length / 4)
+  if (cutTokens < SETTINGS.keepRecentTokens) {
+    throw new Error(`轮 4 正文自己 ${cutTokens} tokens 没有越过保留窗口 ${SETTINGS.keepRecentTokens}：`
+      + `切点会落进轮 3 ⇒ 两条新探针进 turnPrefixMessages ⇒ 规划直接 fatal oversized_unit｜${sizing()}`)
+  }
+  return { material: messages.slice(0, cut), cutTokens }
 }
 
 /** 素材投影里的一条消息（`measureCompactionMaterial` 的 `Message` 形态）。 */
@@ -248,7 +398,10 @@ interface ProjectedMessage {
   toolCalls?: unknown
 }
 
-function projectedMessages(body: { messages?: unknown[]; splitTurnPrefix?: unknown[] }): ProjectedMessage[] {
+/** 片请求正文的解析形态：断言与覆盖对照共用（`previousSummary` + 两段素材分区）。 */
+type SummaryBody = { previousSummary?: unknown; messages?: unknown[]; splitTurnPrefix?: unknown[] }
+
+function projectedMessages(body: SummaryBody): ProjectedMessage[] {
   return [...(body.messages ?? []), ...(body.splitTurnPrefix ?? [])] as ProjectedMessage[]
 }
 
@@ -325,19 +478,24 @@ export const 压缩分片: SceneDef = {
   },
   setup: async () => {
     assertPayloadPremise()
+    assertSecondPayloadPremise()
     summaryRequests.length = 0
     viewSamples.length = 0
+    trailingQueue = trailingScript()
     unregister(PRESERVE_TOOL_ID)
     unregister(REFERENCE_TOOL_ID)
+    unregister(SECOND_PRESERVE_TOOL_ID)
     register(probe(PRESERVE_TOOL_ID, PRESERVE_TOOL_NAME, "preserve", PROBE_RESULT))
     register(probe(REFERENCE_TOOL_ID, REFERENCE_TOOL_NAME, "reference", PROBE_RESULT))
+    register(probe(SECOND_PRESERVE_TOOL_ID, SECOND_PRESERVE_TOOL_NAME, "preserve", SECOND_PROBE_RESULT))
     installFakeProvider([
       recorded("轮 1 / 第 1 次探针调用", fakeToolCall(PRESERVE_TOOL_NAME, {}, "shard-preserve-call-1")),
       recorded("轮 1 / 第 2 次探针调用", fakeToolCall(PRESERVE_TOOL_NAME, {}, "shard-preserve-call-2")),
       recorded("轮 1 / 收尾回复", fakeText("第一轮回复完成。")),
       recorded("轮 2 / 本轮回复", fakeText("第二轮回复完成。")),
-      // 摘要脚本按片数上限备足：多出来的步骤不会被取走（被非摘要请求取走会立刻报错）。
-      ...Array.from({ length: MAX_COMPACTION_SLICES }, () => summaryStep),
+      // 之后全是路由步：摘要请求就地应答、会话请求取走 `trailingQueue`（轮 3 三次 + 轮 4 一次）。
+      // 备足「两次压缩各自的片数上限 + 尾部会话步骤」——每个请求只弹一步，多出来的不会被取走。
+      ...Array.from({ length: 2 * MAX_COMPACTION_SLICES + trailingQueue.length }, () => routedStep),
     ], FAKE_MODEL)
     await initChat()
   },
@@ -470,7 +628,7 @@ export const 压缩分片: SceneDef = {
             throw new Error(`手动压缩没有完成：status=${outcome.status}`
               + `${outcome.error ? ` (${outcome.error})` : ""}｜${sizing()}`)
           }
-          const bodies = summaryRequests.map(text => JSON.parse(text) as { previousSummary?: unknown; messages?: unknown[]; splitTurnPrefix?: unknown[] })
+          const bodies = summaryRequests.map(text => JSON.parse(text) as SummaryBody)
           // K ≥ 2：分片真的发生了（K = 1 是单次路径，B-1 没有成立）。上限取实现常量，不另写数字。
           if (bodies.length < 2) {
             throw new Error(`摘要请求只有 ${bodies.length} 次：素材没有分片（单次路径会一次失败或一次成功）｜${sizing()}`)
@@ -501,7 +659,7 @@ export const 压缩分片: SceneDef = {
             throw new Error("片请求正文里没有回读地址：基线无法与实发形态同源，覆盖对照会因地址尾行不同而假失败")
           }
           const baseline = measured(messages, PRESERVE_TOOL_NAMES, refs)
-          const full = projectedMessages(JSON.parse(baseline.userText) as { messages?: unknown[]; splitTurnPrefix?: unknown[] })
+          const full = projectedMessages(JSON.parse(baseline.userText) as SummaryBody)
           const flattened = slices.flat()
           if (flattened.length !== full.length) {
             throw new Error(`分片覆盖不全：K=${bodies.length} 片合计 ${flattened.length} 条素材消息，完整素材 ${full.length} 条`
@@ -544,6 +702,212 @@ export const 压缩分片: SceneDef = {
           // 探针只属于本场景：观测完成后移出注册表（同 `摘要投影口径`）。
           unregister(PRESERVE_TOOL_ID)
           unregister(REFERENCE_TOOL_ID)
+        } },
+      ],
+    },
+    {
+      index: 3,
+      description: "第二批 preserve 探针再连续执行两次：结果全文落盘，三次请求视图仍装得进硬上限",
+      userText: THIRD_TEXT,
+      checks: [{ type: "expectSecondProbeResultsStored", run: async context => {
+        if (context.output.failure) throw new Error(`第三轮失败：${context.output.failure.message}`)
+        // 载荷声明先自证（与轮 1 同款）：第二批探针的投影声明也在册。
+        const declared = getToolByName(SECOND_PRESERVE_TOOL_NAME)?.policy.context.resultProjection
+        if (declared !== "preserve") {
+          throw new Error(`第二批探针的投影声明漂了：${SECOND_PRESERVE_TOOL_NAME}=${String(declared)}`)
+        }
+        // 探针真实执行：存档里恰好两条第二批结果，且都是**全文**（缩短只发生在投影上）。
+        // 对照探针不参与载荷：它一旦被调用就说明脚本错位。
+        const results = toolResults(await sessionEntries())
+        const second = results.filter(result => result.toolName === SECOND_PRESERVE_TOOL_NAME)
+        const reference = results.filter(result => result.toolName === REFERENCE_TOOL_NAME)
+        if (reference.length !== 0) {
+          throw new Error(`对照探针被调用（${reference.length} 条结果）：载荷被改动，素材与视图的数字不再同源｜${sizing()}`)
+        }
+        if (second.length !== 2) {
+          throw new Error(`${SECOND_PRESERVE_TOOL_NAME} 的结果应为 2 条（同轮连续两次），实际 ${second.length} 条`
+            + `（现有工具结果：${JSON.stringify(results.map(result => result.toolName))}）｜${sizing()}`)
+        }
+        for (const result of second) {
+          if (result.text.length < SECOND_PROBE_CHARS) {
+            throw new Error(`第二批探针 ${result.id} 的存档结果不是全文（长度 ${result.text.length}，应 ≥ ${SECOND_PROBE_CHARS}）：`
+              + `缩短只能发生在投影上`)
+          }
+        }
+        // 视图前提：轮 3 的三次请求都由真链路发出且都未被硬预算闸门拦下（被拦下就不会有工具执行）。
+        // 末次请求（收尾回复）同时带着两条新结果：它就是「新结果以全文进视图」的证据。
+        if (viewSamples.length !== 7) {
+          throw new Error(`到轮 3 断言为止的请求采样应为 7 次（轮 1 三次 + 轮 2 一次 + 轮 3 三次），`
+            + `实际 ${viewSamples.length} 次（脚本与真实循环不同步）｜${sizing()}`)
+        }
+        for (const sample of viewSamples.slice(viewSamples.length - 3)) {
+          if (sample.used > BUDGET.hardInputLimit) {
+            throw new Error(`请求视图「${sample.label}」${sample.used} tokens 超过硬上限 ${BUDGET.hardInputLimit}：`
+              + `视图会被闸门拦下（要么改走溢出恢复、要么探针根本不会执行）｜${sizing()}`)
+          }
+        }
+        const withBoth = viewSamples[viewSamples.length - 1]!
+        if (!(withBoth.used >= 2 * SECOND_PROBE_VIEW_TOKENS)) {
+          throw new Error(`两条新探针结果都进了上下文的请求视图只有 ${withBoth.used} tokens，`
+            + `小于两条新探针的视图成本 ${2 * SECOND_PROBE_VIEW_TOKENS}：preserve 结果没有以全文进视图（载荷机制不成立）｜${sizing()}`)
+        }
+      } }],
+    },
+    {
+      index: 4,
+      description: "第二次手动分片压缩（跨压缩迭代）：第 1 片带上前一条 compaction 的摘要，contextEpoch 推进到 2，原文逐字不变",
+      userText: FOURTH_TEXT,
+      checks: [
+        { type: "expectNoCompactionBeforeSecondManual", run: async context => {
+          if (context.output.failure) throw new Error(`第四轮失败：${context.output.failure.message}`)
+          // 第二次手动压缩必须面对**跨压缩迭代的那份素材**：只允许存在第一次提交的 1 条 compaction 条目。
+          // 轮 3/轮 4 的视图若被阈值命中，回合内会先压一次，随后 /compact 面对的是已被压过的会话
+          // （素材缩水、previousSummary 链换成阈值压缩的产出）。如实失败，不让 B-3 断言以别的原因红。
+          const compactions = compactionEntries(await sessionEntries())
+          if (compactions.length !== 1) {
+            throw new Error(`第二次手动压缩前应恰好 1 条 compaction 条目（第一次分片的产出），实际 ${compactions.length} 条：`
+              + `轮 3/轮 4 里又发生了压缩，跨压缩迭代的素材已被压过｜${sizing()}`)
+          }
+          // 轮 4 的请求视图：两段尾正文（保留段里的轮 2 正文 + 轮 4 自己的）与两条新探针结果都要在里面。
+          if (viewSamples.length !== 8) {
+            throw new Error(`到轮 4 断言为止的请求采样应为 8 次（轮 1 三次 + 轮 2 一次 + 轮 3 三次 + 轮 4 一次），`
+              + `实际 ${viewSamples.length} 次（脚本与真实循环不同步）｜${sizing()}`)
+          }
+          const latest = viewSamples[viewSamples.length - 1]!
+          if (latest.used > BUDGET.hardInputLimit) {
+            throw new Error(`轮 4 的请求视图「${latest.label}」${latest.used} tokens 超过硬上限 ${BUDGET.hardInputLimit}｜${sizing()}`)
+          }
+          if (!(latest.used >= 2 * SECOND_PROBE_VIEW_TOKENS + 2 * TAIL_TOKENS)) {
+            throw new Error(`轮 4 的请求视图「${latest.label}」只有 ${latest.used} tokens，小于「两条新探针 + 两段尾正文」`
+              + `的视图成本 ${2 * SECOND_PROBE_VIEW_TOKENS + 2 * TAIL_TOKENS}：跨压缩的载荷没有完整进请求｜${sizing()}`)
+          }
+          // 阈值前提：手动压缩能面对未压过素材，靠的是回合内**没有**先被阈值命中。本仓估算对非 ASCII
+          // 按 1 token/字符计、比上游的 chars/4 保守，这条只会比 Harness 的判定更严，不会假绿。
+          if (latest.used > BUDGET.normalInputTarget) {
+            throw new Error(`轮 4 的请求视图「${latest.label}」${latest.used} tokens 越过压缩阈值 ${BUDGET.normalInputTarget}：`
+              + `回合内会先发生阈值压缩，第二次手动压缩面对的是已被压过的会话（载荷或宿主前缀变大了）｜${sizing()}`)
+          }
+        } },
+        { type: "expectSecondShardCompactionCompletes", run: async () => {
+          const sessionId = getActiveSessionId()
+          const before = await sessionEntries(sessionId)
+          const first = compactionEntries(before)
+          if (first.length !== 1) {
+            throw new Error(`跨压缩链的前序应恰好 1 条 compaction 条目，实际 ${first.length} 条｜${sizing()}`)
+          }
+          const previous = first[0]!
+          const { material } = await secondCompactionInput(sessionId)
+          const requestsBefore = summaryRequests.length
+          // B-3 主断言：跨压缩迭代的那份素材**仍能分片压缩完成**（会话没有进入永久无法压缩状态）。
+          const outcome = await compactActiveSession(sessionId)
+          if (outcome.status !== "completed") {
+            throw new Error(`第二次手动压缩没有完成：status=${outcome.status}`
+              + `${outcome.error ? ` (${outcome.error})` : ""}｜${sizing()}`)
+          }
+          const bodies = summaryRequests.slice(requestsBefore).map(text => JSON.parse(text) as SummaryBody)
+          // 片数不写死（brief 风险段）：保留段的切法会影响 K₂。上限取实现常量，下界只要求「发过请求」。
+          if (bodies.length < 1) {
+            throw new Error(`第二次压缩一次摘要请求都没发出（K₂ = 0）：压缩没有真的发生｜${sizing()}`)
+          }
+          if (bodies.length > MAX_COMPACTION_SLICES) {
+            throw new Error(`第二次压缩的摘要请求 ${bodies.length} 次超过片数上限 ${MAX_COMPACTION_SLICES}｜${sizing()}`)
+          }
+          // 切点前提（从实发请求上核对）：这一次不该切开回合 —— 切点落在轮 4 的用户消息上，
+          // turnPrefixMessages 为空（否则两条新探针会进永不切分的前缀单元，规划会 fatal）。
+          if (bodies.some(body => (body.splitTurnPrefix ?? []).length > 0)) {
+            throw new Error(`第二次压缩的素材里带了 splitTurnPrefix：切点没有落在轮 4 的用户消息上`
+              + `（各片 prefix ${JSON.stringify(bodies.map(body => (body.splitTurnPrefix ?? []).length))}）｜${sizing()}`)
+          }
+          // 覆盖对照（与轮 2 同款比法，基线换成跨压缩重建的素材）：地址从实发的片请求正文里取回，
+          // 两路同源才能比出「缺失、重复、顺序变化」。
+          const slices = bodies.map(body => projectedMessages(body))
+          const refs = issuedAddressRefs(slices, toolResults(before).map(result => result.id))
+          if (refs.size === 0) {
+            throw new Error("第二次压缩的片请求正文里没有回读地址：基线无法与实发形态同源，覆盖对照会因地址尾行不同而假失败")
+          }
+          // 素材前提：第二次压缩的素材（前序保留段 + 两条新探针）仍超硬上限。单次路径只在素材
+          // ≤ 硬上限时发生，故「completed + 素材超上限」即证明这次走的仍是分片路径。
+          const materialNow = measured(material, PRESERVE_TOOL_NAMES, refs)
+          if (!(materialNow.used > BUDGET.hardInputLimit)) {
+            throw new Error(`第二次压缩的素材只有 ${materialNow.used} tokens，未超硬上限 ${BUDGET.hardInputLimit}：`
+              + `前序保留段 + 两条新探针没有凑成超限素材（跨压缩迭代的载荷前提不成立）｜${sizing()}`)
+          }
+          // 跨压缩迭代链：第 1 片的 previousSummary 是**第一条 compaction 条目的摘要**
+          // （`prepareCompaction` 取 `prevCompaction.summary`，compaction.js 的 424-428 行），不再是 null。
+          const chained = bodies[0]!.previousSummary
+          if (typeof chained !== "string" || chained !== previous.summary) {
+            throw new Error(`第二次压缩第 1 片的 previousSummary 不是前一条 compaction 条目的摘要（跨压缩链断了）：`
+              + `实际 ${JSON.stringify(chained)?.slice(0, 120)}、应有 ${JSON.stringify(previous.summary)?.slice(0, 120)}`)
+          }
+          // 片内迭代：第 N 片带的是本次第 N−1 片的产出（脚本正文按全局请求序号推导，不依赖片内编号）。
+          for (let index = 1; index < bodies.length; index++) {
+            const summary = parseStructuredSummary(summaryResponse(requestsBefore + index))
+            if (!summary) throw new Error(`场景脚本第 ${requestsBefore + index} 片的摘要不可解析（脚本自身有问题）`)
+            const expected = formatStructuredSummary(summary)
+            const actual = bodies[index]!.previousSummary
+            if (actual !== expected) {
+              throw new Error(`第二次压缩第 ${index + 1} 片的 previousSummary 不是本次第 ${index} 片的产出（迭代链断了）：`
+                + `实际 ${JSON.stringify(actual)?.slice(0, 120)}、应有 ${JSON.stringify(expected).slice(0, 120)}`)
+            }
+          }
+          // 全量覆盖：K₂ 片的 messages（prefix 走 splitTurnPrefix）按顺序拼接 === 跨压缩素材的同一投影。
+          const baseline = measured(material, PRESERVE_TOOL_NAMES, refs)
+          const full = projectedMessages(JSON.parse(baseline.userText) as SummaryBody)
+          const flattened = slices.flat()
+          if (flattened.length !== full.length) {
+            throw new Error(`第二次压缩的分片覆盖不全：K₂=${bodies.length} 片合计 ${flattened.length} 条素材消息，`
+              + `跨压缩素材 ${full.length} 条（各片 ${JSON.stringify(slices.map(slice => slice.length))}）｜${sizing()}`)
+          }
+          for (let index = 0; index < full.length; index++) {
+            if (contentOf(flattened[index]!) !== contentOf(full[index]!)) {
+              throw new Error(`第二次压缩的覆盖在第 ${index} 条素材上不一致（缺失、重复或顺序变化）：`
+                + `分片=${briefOf(flattened[index]!)}、完整素材=${briefOf(full[index]!)}｜${sizing()}`)
+            }
+          }
+          // 提交面：两条 compaction 条目、都由钩子提交，第二条的正文是本次末片产出。
+          const after = await sessionEntries(sessionId)
+          const compactions = compactionEntries(after)
+          if (compactions.length !== 2) {
+            throw new Error(`两次分片压缩应提交 2 条 compaction 条目，实际 ${compactions.length} 条｜${sizing()}`)
+          }
+          if (compactions.some(entry => entry.fromHook !== true)) {
+            throw new Error(`compaction 条目里有非钩子产出（fromHook=${JSON.stringify(compactions.map(entry => entry.fromHook))}）`)
+          }
+          const lastIntent = `第 ${summaryRequests.length} 片`
+          const latestCompaction = compactions[compactions.length - 1]!
+          if (!latestCompaction.summary.includes(lastIntent)) {
+            throw new Error(`第二条 compaction 条目的正文不是本次末片产出（找不到「${lastIntent}」）：${latestCompaction.summary.slice(0, 120)}`)
+          }
+          // 换代身份：两次提交各推进一次（槽在 compaction_end 上 ++，harness-slot 的 1697 行）。
+          const snapshot = harnessSlots.snapshot(sessionId)
+          if (snapshot?.contextEpoch !== 2) {
+            throw new Error(`contextEpoch 应为 2（两次提交各推进一次），实际 ${String(snapshot?.contextEpoch)}`
+              + `${snapshot === undefined ? "（槽不在注册表：读数不可得）" : ""}｜${sizing()}`)
+          }
+          // 原文条目一条不少、逐字不变（按 id 对齐；这一轮的对照集合里已经包含第一条 compaction 条目本身）。
+          const beforeIds = new Set(before.map(item => item.id))
+          const afterById = new Map(after.map(item => [item.id, item]))
+          for (const item of before) {
+            const kept = afterById.get(item.id)
+            if (kept === undefined) throw new Error(`第二次压缩丢掉了原文条目 ${entryBrief(item)}｜${sizing()}`)
+            const [was, now] = [JSON.stringify(item), JSON.stringify(kept)]
+            if (was !== now) throw new Error(`第二次压缩改写了原文条目 ${entryBrief(item)}：${divergence(was, now)}`)
+          }
+          // 4 条探针结果一条不少：两次压缩只改请求视图，存档正文逐字保留（压缩不许删会话真相源）。
+          const probes = toolResults(after).filter(result =>
+            result.toolName === PRESERVE_TOOL_NAME || result.toolName === SECOND_PRESERVE_TOOL_NAME)
+          if (probes.length !== 4) {
+            throw new Error(`两次压缩后存档里应有 4 条探针结果（两批各 2 条），实际 ${probes.length} 条`
+              + `（现有工具结果：${JSON.stringify(toolResults(after).map(result => result.toolName))}）｜${sizing()}`)
+          }
+          // 新增条目只能是证据类：压缩不许把摘要或任何东西写成新的**消息**条目（同轮 2 的口径）。
+          const added = after.filter(item => !beforeIds.has(item.id))
+          const addedMessages = added.filter(item => item.type === "message")
+          if (addedMessages.length !== 0) {
+            throw new Error(`第二次压缩新增了消息条目（不应有任何一条）：${JSON.stringify(addedMessages.map(entryBrief))}`)
+          }
+          // 第二批探针只属于本场景：观测完成后移出注册表（第一批在轮 2 末尾已注销）。
+          unregister(SECOND_PRESERVE_TOOL_ID)
         } },
       ],
     },
