@@ -1,10 +1,13 @@
 import type { Context, FauxModelDefinition, FauxResponseStep } from "@earendil-works/pi-ai"
 import { compactionSettingsFor, compactActiveSession } from "@/services/engine/pi"
-import { toolResultTokenBudget } from "@/services/context"
+import {
+  L0_SHORTENED_TAG, MIN_ADDRESS_PREFIX, annotateToolResultText, isUniqueAddressRef,
+  projectToolResultText, toolResultNotice, toolResultTokenBudget,
+} from "@/services/context"
 import { aiConfig } from "@/services/config"
 import { initChat } from "@/services/agent/runner"
 import { getActiveSessionId } from "@/services/session"
-import { defineTool, register, unregister, TOOL_POLICY_VERSION } from "@/services/tool"
+import { defineTool, register, unregister, SESSION_TRANSCRIPT_TOOL, TOOL_POLICY_VERSION } from "@/services/tool"
 import type { ToolDef } from "@/services/tool"
 import { installFakeProvider, fakeText, fakeToolCall } from "../../fake-provider"
 import { compactionEntries, sessionEntries } from "../../session-entries"
@@ -12,10 +15,13 @@ import type { SceneDef } from "../../types"
 
 // ── 场景口径：摘要素材的 L0 投影必须尊重 resultProjection ──
 //
-// 主请求的 L0 投影（runtime.ts 的 projectToolResultMessage）对 preserve 工具跳过缩短；
-// 摘要素材此前对所有工具结果一律缩短 —— 本场景用两个同长度的探针把这条口径钉住：
-// preserve 的结果完整进入摘要请求，reference 的结果被缩短并留下回读标记（对照），
-// 两者在会话条目里都保持全文。
+// 主请求的 L0 投影（runtime.ts 的 projectToolResultMessage）对 preserve 工具跳过缩短、
+// 但**同样附地址尾行**（D-W2-5 的 2026-09-27 裁定：preserve 只挡升档处理，不挡地址标注）；
+// 摘要素材（compactor.ts 的 measureCompactionMaterial）与主请求同口径 —— 本场景用两个同长度的
+// 探针把这条口径钉住：preserve 的结果以「正文逐字未变 + 地址尾行」进入摘要请求，
+// reference 的结果被缩短并留下回读标记（对照），两者在会话条目里都保持全文。
+// 两路发出的地址都是「条目 id 的最短唯一前缀」（shortenAddresses 的取值）：断言从素材正文里
+// 抽回地址，只钉它仍是该条目的唯一前缀，不钉长度。
 //
 // 载荷结构沿用 保留守卫：第一轮调用探针（工具与权限链路都是真的，只有模型输出由
 // fake provider 固定），第 2、3 轮各垫一段长正文，让上游 findCutPoint 的切点
@@ -102,12 +108,82 @@ const probe = (id: string, name: string, projection: "preserve" | "reference", r
     },
   }, async () => ({ success: true, content: result }))
 
+/** 工具结果条目（存档侧）：正文、工具名与 id 一起取；id 全集用来核对地址前缀的唯一性。 */
+async function resultEntries() {
+  const sessionId = getActiveSessionId()
+  const entries = await sessionEntries(sessionId)
+  return entries.flatMap(entry => entry.type === "message" && entry.message.role === "toolResult"
+    ? [{ id: entry.id, toolName: entry.message.toolName ?? "", text: textOfContent(entry.message.content) }]
+    : [])
+}
+
+/** 条目正文（字符串或块数组两种形态）。 */
+function textOfContent(content: unknown): string {
+  if (typeof content === "string") return content
+  if (!Array.isArray(content)) return ""
+  return content.map(part => {
+    const block = part as { type?: unknown; text?: unknown } | null
+    return block?.type === "text" && typeof block.text === "string" ? block.text : ""
+  }).filter(Boolean).join("\n")
+}
+
+/**
+ * 地址通知模板的两端：模板本身由唯一实现（toolResultNotice）给出，场景不复制这类字面量 ——
+ * 未缩短形态是 `[回读地址 eventId=<前缀>，可用 read_session_event 分页读取]`，缩短形态是
+ * `[上下文缩短；原结果 eventId=<前缀>，可用 read_session_event 分页读取]`。
+ * 传入一个探针地址（长度取受理下界）后，它的左右两侧就是「地址值的边界」：模板一改，
+ * 从它推导的边界跟着改，断言不会因为「抄的模板过期」而假绿。
+ */
+function noticeBounds(disposition?: "shortened" | "cleared"): { head: string; tail: string } {
+  const probeRef = "0".repeat(MIN_ADDRESS_PREFIX)
+  const notice = toolResultNotice(probeRef, SESSION_TRANSCRIPT_TOOL, disposition)
+  const at = notice.indexOf(probeRef)
+  if (at < 0) throw new Error(`地址通知模板不再回显传入的地址：${notice}（场景自身的断言前提被破坏）`)
+  return { head: notice.slice(0, at), tail: notice.slice(at + probeRef.length) }
+}
+
+/** 从素材的消息正文里抽出该形态的全部回读地址（模板对不上就是空数组）。 */
+function addressesIn(texts: readonly string[], disposition?: "shortened" | "cleared"): string[] {
+  const { head, tail } = noticeBounds(disposition)
+  const found: string[] = []
+  for (const text of texts) {
+    let from = 0
+    for (;;) {
+      const start = text.indexOf(head, from)
+      if (start < 0) break
+      const rest = text.slice(start + head.length)
+      const end = rest.indexOf(tail)
+      if (end < 0) break
+      found.push(rest.slice(0, end))
+      from = start + head.length
+    }
+  }
+  return found
+}
+
+/**
+ * 素材的消息正文里属于 `entryId` 的回读地址：必须是该条目 id 的前缀、不短于受理下界，且在当次
+ * id 全集里唯一命中（`isUniqueAddressRef`）。**不**断言它等于当下重算的最短前缀：已发出的
+ * 前缀只要仍唯一就照旧复用（D-W2-8），长度不是契约。
+ */
+function addressRefIn(texts: readonly string[], entryId: string, ids: readonly string[], disposition?: "shortened" | "cleared"): string {
+  const candidates = addressesIn(texts, disposition)
+  const ref = candidates.find(candidate =>
+    entryId.startsWith(candidate)
+    && candidate.length >= MIN_ADDRESS_PREFIX
+    && isUniqueAddressRef(candidate, entryId, ids))
+  if (ref === undefined) {
+    throw new Error(`素材里没有 ${entryId} 的回读地址（或它不再是该条目的唯一前缀）：${candidates.join(",") || "(无地址行)"}`)
+  }
+  return ref
+}
+
 export const 摘要投影口径: SceneDef = {
   meta: {
     caseId: "memory-summary-preserve-projection",
     module: "memory",
     contractId: "mm-19",
-    description: "摘要素材尊重 resultProjection：preserve 结果完整进入摘要请求，reference 结果被缩短并留下回读标记",
+    description: "摘要素材尊重 resultProjection：preserve 结果正文逐字原样并带唯一前缀地址，reference 结果被缩短并留回读标记",
     depth: "deep",
     suite: "regression",
     entry: "production",
@@ -165,7 +241,7 @@ export const 摘要投影口径: SceneDef = {
     },
     {
       index: 3,
-      description: "手动压缩：摘要请求里 preserve 结果完整、reference 结果被缩短",
+      description: "手动压缩：摘要请求里 preserve 正文逐字未变且带地址，reference 被缩短且带唯一前缀地址",
       userText: `第三轮：${LONG}`,
       checks: [{ type: "expectSummaryProjection", run: async () => {
         const sessionId = getActiveSessionId()
@@ -173,6 +249,12 @@ export const 摘要投影口径: SceneDef = {
         if (compactionEntries(before).length !== 0) {
           throw new Error(`压缩前已有 compaction 条目，无法单独观测投影｜${sizing()}`)
         }
+        // 存档条目给的是「正文真相源 + id 全集」：地址前缀的唯一性只能在全集里判定。
+        const results = await resultEntries()
+        const preserve = results.find(result => result.toolName === PRESERVE_TOOL_NAME)
+        const reference = results.find(result => result.toolName === REFERENCE_TOOL_NAME)
+        if (!preserve || !reference) throw new Error("压缩前找不到探针结果条目")
+        const ids = results.map(result => result.id)
 
         const completed = await compactActiveSession(sessionId)
         if (completed.status !== "completed") {
@@ -181,17 +263,36 @@ export const 摘要投影口径: SceneDef = {
         }
         const requests = [...summaryRequests]
         if (requests.length !== 1) throw new Error(`摘要请求应为 1 次，实际 ${requests.length} 次`)
-        const text = requests[0] ?? ""
+        const body = requests[0] ?? ""
 
         // 前置：摘要范围确实覆盖了第一轮的两个探针结果 —— 否则后面的断言可能因「没覆盖」而假通过。
-        if (!text.includes(PRESERVE_CORE) && !text.includes("上下文缩短")) {
+        if (!body.includes(PRESERVE_CORE) && !body.includes(L0_SHORTENED_TAG)) {
           throw new Error(`摘要请求既不含 preserve 正文也不含缩短标记：第一轮工具结果没有进入摘要范围｜${sizing()}`)
         }
-        // preserve：结果完整进入素材（中部标记必须在，说明没有被二次缩短）。
-        if (!text.includes(PRESERVE_CORE)) throw new Error("preserve 工具的结果在摘要素材里被二次缩短")
-        // 对照：reference 的结果被缩短，中部标记被 L0 回读标记替换。
-        if (text.includes(REFERENCE_CORE)) throw new Error("对照失效：reference 工具的结果没有被 L0 缩短")
-        if (!text.includes("上下文缩短")) throw new Error("对照失效：摘要素材里没有 L0 缩短标记")
+        // 逐字比对必须先解 JSON：素材正文里的换行在序列化形态里是 `\n` 两个字面字符，
+        // 拿原串比对会把「模板里的换行」误判成「投影不同」。解出的每条 text 就是投影后的正文。
+        const material = JSON.parse(body) as {
+          messages?: Array<{ text?: unknown }>
+          splitTurnPrefix?: Array<{ text?: unknown }>
+        }
+        const materialTexts = [...(material.messages ?? []), ...(material.splitTurnPrefix ?? [])]
+          .map(message => typeof message.text === "string" ? message.text : "")
+        // preserve：正文**逐字未变**（含中部标记）+ 地址尾行。原「逐字原样 = 不含任何附加行」的
+        // 口径已按 D-W2-5 作废：preserve 只挡缩短/清空，回读地址照给。
+        const preserveRef = addressRefIn(materialTexts, preserve.id, ids)
+        const expectedPreserve = annotateToolResultText(preserve.text, preserveRef, SESSION_TRANSCRIPT_TOOL)
+        if (!materialTexts.includes(expectedPreserve)) {
+          throw new Error(`preserve 结果没有以「正文逐字原样 + 地址尾行」进入素材（前缀 ${preserveRef}）｜${sizing()}`)
+        }
+        if (!expectedPreserve.startsWith(preserve.text)) throw new Error("preserve 的正文没有逐字原样")
+        // 对照：reference 的结果被缩短，中部标记被 L0 回读标记替换，且同样带唯一前缀地址。
+        const referenceRef = addressRefIn(materialTexts, reference.id, ids, "shortened")
+        const expectedReference = projectToolResultText(reference.text, referenceRef, WINDOW_TOKENS, SESSION_TRANSCRIPT_TOOL)
+        if (!materialTexts.includes(expectedReference)) {
+          throw new Error(`reference 结果不是「缩短 + 地址尾行」的唯一实现产出（前缀 ${referenceRef}）｜${sizing()}`)
+        }
+        if (body.includes(REFERENCE_CORE)) throw new Error("对照失效：reference 工具的结果没有被 L0 缩短")
+        if (!body.includes(L0_SHORTENED_TAG)) throw new Error("对照失效：摘要素材里没有 L0 缩短标记")
 
         // 压缩只改请求视图：compact 条目已提交，两个探针的原文标记仍留在会话条目里。
         const compactions = compactionEntries(await sessionEntries(sessionId))
