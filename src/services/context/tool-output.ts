@@ -9,6 +9,17 @@ const log = createLogger("ToolOutput")
 export const L0_TOOL_RESULT_SHARE = .10
 
 /**
+ * 阶梯保护区轮数：最近 N 个用户意图轮内的工具结果**只挡级 2（清空）/级 3（摘要）**，
+ * **不挡级 1（缩短）**（W3-D1 口径 B，2026-09-27 裁定）：级 1 是无损信息的缩短，保护区内照做；
+ * 级 2/3 会丢正文内容，才需要保护区挡住。保护区内超阈的候选因此照常按级 1 缩短。
+ *
+ * 「轮」的口径与保护集合的判定唯一落在 `protectedMessageIndexes()`。
+ * N 是可调旋钮：3 只是 O-2 的起步值，K=3/4/5 的校准读数由 T3.09 产出，
+ * 最终定值在 W6 前由用户裁定。
+ */
+export const LADDER_PROTECTION_TURNS = 3
+
+/**
  * 正文被替换成占位串时的两个字面标记（级 1 缩短 / 级 2 清空）；与地址尾行共用
  * `toolResultNotice` 这一份模板，两路投影（主请求与摘要素材）都不许另拼一份文案。
  */
@@ -211,4 +222,51 @@ export function isUniqueAddressRef(ref: string, targetId: string, ids: readonly 
   if (!targetId.startsWith(ref)) return false
   const resolution = resolveAddressRef(ref, ids)
   return (resolution.kind === "exact" || resolution.kind === "unique") && resolution.id === targetId
+}
+
+// ==========================================
+// 阶梯保护区（纯函数，零 I/O）
+// 「轮」的唯一一处定义点：与上游 findTurnStartIndex（compaction.js:237-251）同义。
+// 保护区只挡级 2（清空）/级 3（摘要），不挡级 1（缩短）—— W3-D1 口径 B。
+// ==========================================
+
+/**
+ * 保护区下标：最近 `turns` 个用户意图轮覆盖的消息下标。
+ *
+ * **「轮」的口径**：一条 `role === "user"`（或 `"bashExecution"`）的消息开一轮，直到下一条
+ * 开轮消息之前。`toolResult` / `assistant` / `custom`（主动消息）/ `compactionSummary` 都**不开轮**：
+ * 与上游 `findTurnStartIndex`（compaction.js:237-251）同义（上游还有 `branch_summary` 条目开轮，
+ * 请求视图没有条目形态，故只剩这一条判据）；`custom` 在上游是合法切点（compaction.js:205-235）
+ * 却不是轮首，主动消息因此落在「当前轮」内，**不得当轮首**。
+ * （`bashExecution` 在本仓生产路径不产生，保留判据只为与上游对齐。）
+ *
+ * **边界**：从尾部向前数到第 `turns` 条开轮消息，取其下标到数组末尾的全部下标；
+ * 不足 `turns` 条时从**第一条**开轮消息起全保护；一条开轮消息都没有 → 空集；
+ * `turns <= 0` → 空集（关掉保护区的唯一合法方式）。
+ *
+ * **只挡级 2（清空）与级 3（摘要），不挡级 1（缩短）**（W3-D1 口径 B）：级 1 是无损信息的缩短，
+ * 保护区内照做；级 2/3 会丢正文内容，才需要保护区挡住。本函数的产出是阶梯的 `protectedIndexes`
+ * 输入，唯一落点是级 2 的候选过滤，不是级 1 的候选过滤。
+ *
+ * **索引基数是请求视图消息数组**（`transform_context` 拿到的 `messages`），不是会话条目数组：
+ * 投影钩子里就地可算，不读会话、不引入第二份状态。
+ *
+ * 纯函数：无副作用、不读配置、无模块级可变状态；返回的 Set 按下标升序迭代（从边界向末尾追加），
+ * 顺序稳定、不越界。
+ */
+export function protectedMessageIndexes(messages: readonly { role: string }[], turns = LADDER_PROTECTION_TURNS): Set<number> {
+  const indexes = new Set<number>()
+  if (turns <= 0) return indexes
+  let boundary = -1
+  let remaining = turns
+  for (let i = messages.length - 1; i >= 0 && remaining > 0; i--) {
+    const role = messages[i].role
+    if (role !== "user" && role !== "bashExecution") continue
+    boundary = i
+    remaining--
+  }
+  // 不足 turns 条时循环走到底，boundary 停在第一条开轮消息上；一条都没有则仍是 -1。
+  if (boundary < 0) return indexes
+  for (let i = boundary; i < messages.length; i++) indexes.add(i)
+  return indexes
 }
