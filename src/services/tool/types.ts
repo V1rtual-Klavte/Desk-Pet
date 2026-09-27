@@ -38,7 +38,10 @@ export type ToolReplay = "never" | "safe"
  */
 export type ResultProjection = "preserve" | "reference"
 
-/** 历史摘要：retain 表示该调用配对必须保留原文，压缩边界不得越过它。 */
+/**
+ * 历史摘要：retain 表示该调用配对必须保留原文，压缩边界不得越过它。
+ * 生产工具目前全部声明 `summarize`；`retain` 由测试驱动（`memory-retain-guard`），无生产消费者。
+ */
 export type HistoryCompaction = "summarize" | "retain"
 
 /**

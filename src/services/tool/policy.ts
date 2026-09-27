@@ -122,7 +122,10 @@ export async function toolPolicyHash(tool: ToolDef): Promise<string> {
   return sha256Text(toolPolicyFingerprint(tool))
 }
 
-/** 声明了 historyCompaction=retain 的工具名集合。 */
+/**
+ * 声明了 historyCompaction=retain 的工具名集合。
+ * 生产工具目前全部声明 `summarize`；`retain` 由测试驱动（`memory-retain-guard`），无生产消费者。
+ */
 export function retainedToolNames(tools: readonly ToolDef[]): Set<string> {
   return new Set(tools.filter(tool => tool.policy.context.historyCompaction === "retain").map(tool => tool.name))
 }
@@ -147,6 +150,7 @@ interface PolicyMessageLike {
  *
  * 连续完整轮 checkpoint 下，retain 轮次不能落在覆盖边界内；
  * 命中即不能推进边界，调用方必须 decline 或明确报告上下文不足。
+ * 生产工具目前全部声明 `summarize`；`retain` 由测试驱动（`memory-retain-guard`），无生产消费者。
  */
 export function findRetainedToolCall(
   messages: readonly PolicyMessageLike[],

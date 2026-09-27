@@ -689,6 +689,7 @@ function createCompactionHook(options: {
       if (!preparation.messagesToSummarize.length && !preparation.turnPrefixMessages.length) return { decline: true }
       // historyCompaction=retain 的调用配对必须保留原文：连续完整轮下不能把覆盖边界推进越过它，
       // 宁可 decline（由宿主预算守卫报告上下文不足），也不默默丢掉未覆盖历史。
+      // 当前生产路径不可达：无工具声明 `retain`，由测试场景驱动（`memory-retain-guard`）。
       const retainedTool = findRetainedToolCall(preparation.messagesToSummarize, retained)
         ?? findRetainedToolCall(preparation.turnPrefixMessages, retained)
       if (retainedTool) {
