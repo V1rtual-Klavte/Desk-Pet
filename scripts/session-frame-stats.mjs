@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // 会话帧写入基线复算（离线、只读、零依赖；不启动应用、不碰 IPC）。
 //
-// 三条必须随文件一起维护的约定：
+// 四条必须随文件一起维护的约定：
 // 1) 口径来源：源方案 §11.2《测量方法（可复现，供 W1 复用）》
 //    docs/history/implementation/会话压缩与存储瘦身方案-2026-09-27基线.md
 //    · 必须先把事务数组行展开成多条写（漏展开会丢 delete，曾据此误判「零删除」）；
@@ -13,6 +13,12 @@
 // 3) --calibrate 的模拟规则必须与装饰器实现保持一致：每文件一个缓冲 / 体积触发 /
 //    非帧触发清空（见 src/services/engine/pi/session-frame-buffer.ts，T1.01/T1.02）。
 //    改装饰器的触发规则就要同步改这里的模拟，否则校准表立刻失真。
+// 4) --fold-preview 的行级判定与 src/services/engine/pi/session-fold.ts 的 prepareFold **同源**：
+//    只删「该行全部写都是死 key（行号小于该物理 key 最后一次 delete 的行号）的 append/set」的整行；
+//    delete 行、entry/usage 行与任何含保留写的多写行永远保留；保留行是原文子串（不重新序列化）。
+//    改折叠规则要同步这里；两者不一致时以 session-fold.ts 为准。
+//    字节一律 UTF-8（Buffer.byteLength），禁用 String.length（UTF-16 长度，中文差约 3 倍）。
+//    该模式只用于选阈值（O-6 的三常量），不作门禁证据。
 //
 // 本目录是独立 Node CLI，直接用 console（与 scripts/live-test.mjs 同理：
 // 应用侧的 logger 只在应用运行期可用，这里没有 IPC，也写不进 data_root 的日志）。
@@ -28,7 +34,8 @@ const FRAME_NAMESPACE = "pi.pending.assistant_frame"
 const DEFAULT_ROOT = fileURLToPath(new URL("../data/desk-pet/sessions", import.meta.url))
 /** --calibrate 的扫描阈值；这里只是扫描参数，生产定义点在 session-frame-buffer.ts（O-5 裁定 16 KiB）。 */
 const CALIBRATION_THRESHOLDS_KIB = [8, 16, 32, 64]
-const USAGE = "用法: node scripts/session-frame-stats.mjs [路径…] [--root <会话根>] [--calibrate] [--json] [--selftest]"
+const USAGE =
+  "用法: node scripts/session-frame-stats.mjs [路径…] [--root <会话根>] [--calibrate] [--fold-preview] [--json] [--selftest]"
 
 // ── 事务与帧的纯函数（--selftest 直接跑这一批，不依赖用户数据）──
 
@@ -395,6 +402,295 @@ function renderCalibration(calibration, baselinePerSecond) {
   return out.join("\n")
 }
 
+// ── 折叠收益预览（--fold-preview；判定同源 src/services/engine/pi/session-fold.ts）──
+//
+// 判定规则与 session-fold.ts 的 prepareFold 同源；改折叠规则要同步这里；两者不一致时以
+// session-fold.ts 为准。本模式只用于选阈值（O-6），不作门禁证据。
+//
+// 行级规则（与 prepareFold 逐条一致，函数名与那边一一对应是刻意的）：
+//   · 只删「该行全部写都可丢」的整行；delete 行、entry/usage 行、含保留写的多写行一律保留；
+//     保留行是原文子串，从不重新序列化（S-2）。
+//   · 可丢 = 该写的物理 key（`${namespace}<U+0000>${key}`）在**最后一次** delete 之后没有再现，
+//     且本行行号**严格小于**那次 delete 的行号；list 与 value 是两张独立的表，不合并。
+// 字节口径：全部 UTF-8（Buffer.byteLength，与 session-fold.ts 的 TextEncoder 同口径）；
+// 禁用 String.length（UTF-16 长度，中文内容下差约 3 倍）。
+
+/** O-6 三常量；**唯一可调点是 session-fold.ts 的 FOLD_POLICY**，这里只是同值镜像，不反向平移。 */
+const FOLD_POLICY = {
+  minFileBytes: 512 * 1024,
+  minReclaimBytes: 128 * 1024,
+  minReclaimRatio: 0.15,
+}
+/** 物理 key 分隔符 U+0000（上游 in-memory-storage-state 的拼法）；写死避免源码里藏不可见控制字符。 */
+const FOLD_ADDRESS_SEPARATOR = String.fromCharCode(0)
+/** 与 session-fold.ts 的 SUPPORTED_FORMAT_VERSION / JSONL_STORAGE_VERSION(1) 对齐；上游升版本先改那边。 */
+const FOLD_SUPPORTED_FORMAT_VERSION = 4
+const FOLD_SUPPORTED_STORAGE_VERSION = 1
+
+/** 镜像 session-fold.ts 的 readFoldLog：结尾有换行 = 无撕裂；没有换行 = 尾行不完整（丢弃并置 torn）。 */
+function readFoldLog(text) {
+  if (text.endsWith("\n")) {
+    const lines = text.slice(0, -1).split("\n")
+    return { headerLine: lines[0] ?? "", lines: lines.slice(1), torn: false }
+  }
+  const lastNewline = text.lastIndexOf("\n")
+  if (lastNewline === -1) return { headerLine: "", lines: [], torn: true }
+  const lines = text.slice(0, lastNewline).split("\n")
+  return { headerLine: lines[0] ?? "", lines: lines.slice(1), torn: true }
+}
+
+/** 镜像 session-fold.ts 的 serializeCompleteLines：规范形状 `header\n…\n`，bytesBefore/After 都由它度量。 */
+function serializeCompleteLines(headerLine, lines) {
+  return lines.length === 0 ? `${headerLine}\n` : `${headerLine}\n${lines.join("\n")}\n`
+}
+
+const utf8ByteLength = text => Buffer.byteLength(text, "utf8")
+
+function foldIsSafeIntegerAtLeast(value, minimum) {
+  return typeof value === "number" && Number.isSafeInteger(value) && value >= minimum
+}
+
+/** 镜像 session-fold.ts 的 isSupportedHeader：只认 v4 + storageVersion 1 的头，认不出就跳过。 */
+function foldIsSupportedHeader(headerLine) {
+  if (headerLine === "") return false
+  let value
+  try {
+    value = JSON.parse(headerLine)
+  } catch {
+    return false
+  }
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return false
+  return (
+    value.kind === "header" && value.v === FOLD_SUPPORTED_FORMAT_VERSION && value.storageVersion === FOLD_SUPPORTED_STORAGE_VERSION
+  )
+}
+
+/** 镜像 session-fold.ts 的 parseWrite：白名单不宽容未知 kind/op，对不上 = 整个文件 skip("unknown-format")。 */
+function foldParseWrite(value) {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return null
+  if (!foldIsSafeIntegerAtLeast(value.seq, 1)) return null
+  if (value.kind === "entry") return foldIsSafeIntegerAtLeast(value.timestamp, 0) ? { role: "keep" } : null
+  if (value.kind === "usage") return { role: "keep" }
+  if (value.kind === "value" || value.kind === "list") {
+    if (typeof value.namespace !== "string" || typeof value.key !== "string") return null
+    const physicalKey = `${value.namespace}${FOLD_ADDRESS_SEPARATOR}${value.key}`
+    if (value.op === "delete") return { role: "delete", target: value.kind, physicalKey }
+    if (value.op === "append" && value.kind === "list") return { role: "append", physicalKey }
+    if (value.op === "set" && value.kind === "value") return { role: "set", physicalKey }
+    return null
+  }
+  return null
+}
+
+/** 镜像 session-fold.ts 的 parseTransaction：顶层数组 = 批量事务，逐条展开；任一条不合法整行不合法。 */
+function foldParseTransaction(line) {
+  let value
+  try {
+    value = JSON.parse(line)
+  } catch {
+    return null
+  }
+  const rawWrites = Array.isArray(value) ? value : [value]
+  const writes = []
+  for (const raw of rawWrites) {
+    const write = foldParseWrite(raw)
+    if (write === null) return null
+    writes.push(write)
+  }
+  return writes
+}
+
+/** 镜像 session-fold.ts 的 isDroppable：只有 append/set 是候选，且行号严格小于该表最后一次 delete 的行号。 */
+function foldIsDroppable(write, lineIndex, lastListDelete, lastValueDelete) {
+  if (write.role === "append") {
+    const lastDelete = lastListDelete.get(write.physicalKey)
+    return lastDelete !== undefined && lineIndex < lastDelete
+  }
+  if (write.role === "set") {
+    const lastDelete = lastValueDelete.get(write.physicalKey)
+    return lastDelete !== undefined && lineIndex < lastDelete
+  }
+  return false
+}
+
+/**
+ * 镜像 session-fold.ts 的 prepareFold（判定字段逐条同值；本预览多算一个 bytesBefore 用于展示，
+ * skip 的 reason 与 kind 口径不变）。返回 invalidLine 是该模式独有的诊断信息，不影响判定。
+ */
+function prepareFold(log) {
+  if (!foldIsSupportedHeader(log.headerLine)) return { kind: "skip", reason: "unknown-format", invalidLine: 1 }
+  const lines = log.lines
+  const parsed = []
+  for (let index = 0; index < lines.length; index++) {
+    const writes = foldParseTransaction(lines[index])
+    // 空行、半行、非白名单形状都在这里被挡下 —— 与上游 open 的口径一致，不猜字段。
+    if (writes === null) return { kind: "skip", reason: "unknown-format", invalidLine: index + 2 }
+    parsed.push(writes)
+  }
+  const lastListDelete = new Map()
+  const lastValueDelete = new Map()
+  for (let index = 0; index < parsed.length; index++) {
+    for (const write of parsed[index]) {
+      if (write.role !== "delete") continue
+      const table = write.target === "list" ? lastListDelete : lastValueDelete
+      table.set(write.physicalKey, index)
+    }
+  }
+  const kept = []
+  let droppedLines = 0
+  let droppedWrites = 0
+  for (let index = 0; index < lines.length; index++) {
+    const writes = parsed[index]
+    // 空数组行不算「全部可丢」（与 prepareFold 一致：删它零收益）。
+    if (writes.length > 0 && writes.every(write => foldIsDroppable(write, index, lastListDelete, lastValueDelete))) {
+      droppedLines += 1
+      droppedWrites += writes.length
+      continue
+    }
+    kept.push(lines[index])
+  }
+  if (droppedLines === 0) return { kind: "skip", reason: "nothing-to-reclaim", invalidLine: null }
+  return {
+    kind: "fold",
+    invalidLine: null,
+    linesBefore: lines.length + 1,
+    linesAfter: kept.length + 1,
+    droppedLines,
+    droppedWrites,
+    bytesBefore: utf8ByteLength(serializeCompleteLines(log.headerLine, lines)),
+    bytesAfter: utf8ByteLength(serializeCompleteLines(log.headerLine, kept)),
+  }
+}
+
+/**
+ * 单个样本的折叠收益分析（纯计算，不写盘）。
+ * fileBytes 必须来自 statSync(file).size —— 与 T5.02 闸门 1 的 fileInfo.size 同口径。
+ * 非撕裂文件的规范形状逐字节等于文件本身，对不上说明口径错了：直接抛错，不打印不可信的数字。
+ */
+function analyzeFoldSample(text, fileBytes, samplePath) {
+  const log = readFoldLog(text)
+  const bytesBefore = utf8ByteLength(serializeCompleteLines(log.headerLine, log.lines))
+  const bytesEqualsFileSize = !log.torn && bytesBefore === fileBytes
+  if (!bytesEqualsFileSize && !log.torn) {
+    throw new Error(
+      `字节口径断言失败（${samplePath}）: bytesBefore=${bytesBefore} !== statSync(file).size=${fileBytes}；拒绝输出不可信的数字`,
+    )
+  }
+  const plan = prepareFold(log)
+  const bytesAfter = plan.kind === "fold" ? plan.bytesAfter : bytesBefore
+  const reclaimBytes = bytesBefore - bytesAfter
+  const reclaimRatio = bytesBefore > 0 ? reclaimBytes / bytesBefore : 0
+  // 三闸门（字节口径，三者 AND）；与 T5.02 步骤 7 的式子一致：reclaimed < before × ratio 即不重写。
+  // unknown-format 时根本没有折叠计划，闸门 2/2b 的前提不成立：只报闸门 1，不拿 0 冒充「可回收量」。
+  const gates = [
+    {
+      id: "minFileBytes",
+      limit: FOLD_POLICY.minFileBytes,
+      value: fileBytes,
+      passed: fileBytes > FOLD_POLICY.minFileBytes,
+    },
+  ]
+  if (plan.reason !== "unknown-format") {
+    gates.push(
+      {
+        id: "minReclaimBytes",
+        limit: FOLD_POLICY.minReclaimBytes,
+        value: reclaimBytes,
+        passed: reclaimBytes >= FOLD_POLICY.minReclaimBytes,
+      },
+      {
+        id: "minReclaimRatio",
+        limit: FOLD_POLICY.minReclaimRatio,
+        value: reclaimRatio,
+        passed: reclaimRatio >= FOLD_POLICY.minReclaimRatio,
+      },
+    )
+  }
+  const blockedBy = gates.filter(gate => !gate.passed).map(gate => gate.id)
+  const foldable = plan.kind === "fold" && blockedBy.length === 0
+  const conclusion =
+    plan.kind === "skip"
+      ? `不会被折叠（prepareFold 跳过：${plan.reason}${plan.invalidLine === null ? "" : `，首个不合法行 = 第 ${plan.invalidLine} 行`}）`
+      : foldable
+        ? "会被折叠（prepareFold=fold，且三个闸门 AND 全过）"
+        : `不会被折叠（未通过闸门: ${blockedBy.join(" / ")}）`
+  return {
+    path: samplePath,
+    fileBytes,
+    bytesEqualsFileSize,
+    torn: log.torn,
+    kind: plan.kind,
+    skipReason: plan.kind === "skip" ? plan.reason : null,
+    invalidLine: plan.invalidLine ?? null,
+    linesBefore: plan.kind === "fold" ? plan.linesBefore : log.lines.length + 1,
+    linesAfter: plan.kind === "fold" ? plan.linesAfter : log.lines.length + 1,
+    droppedLines: plan.kind === "fold" ? plan.droppedLines : 0,
+    droppedWrites: plan.kind === "fold" ? plan.droppedWrites : 0,
+    bytesBefore,
+    bytesAfter,
+    reclaimBytes,
+    reclaimRatio,
+    gates,
+    blockedBy,
+    foldable,
+    conclusion,
+  }
+}
+
+function buildFoldPreview(samples) {
+  return {
+    policy: {
+      minFileBytes: FOLD_POLICY.minFileBytes,
+      minReclaimBytes: FOLD_POLICY.minReclaimBytes,
+      minReclaimRatio: FOLD_POLICY.minReclaimRatio,
+      sourceOfTruth: "src/services/engine/pi/session-fold.ts:FOLD_POLICY",
+    },
+    samples: samples.map(sample => analyzeFoldSample(sample.text, sample.bytes, sample.path)),
+  }
+}
+
+function renderFoldGate(gate) {
+  if (gate.id === "minFileBytes") {
+    return `      闸门 1 minFileBytes（口径 = statSync(file).size，T5.02 的一次 stat）：文件 ${gate.value} B ${gate.passed ? ">" : "≤"} ${gate.limit} B → ${gate.passed ? "通过" : "未通过"}`
+  }
+  if (gate.id === "minReclaimBytes") {
+    return `      闸门 2 minReclaimBytes（可回收 = bytesBefore - bytesAfter）：可回收 ${gate.value} B ${gate.passed ? "≥" : "<"} ${gate.limit} B → ${gate.passed ? "通过" : "未通过"}`
+  }
+  return `      闸门 2b minReclaimRatio（与 T5.02 同式：reclaimed < bytesBefore × ratio 即不重写）：可回收比例 ${fixed(gate.value, 4)} ${gate.passed ? "≥" : "<"} ${gate.limit} → ${gate.passed ? "通过" : "未通过"}`
+}
+
+function renderFoldPreview(foldPreview) {
+  const out = []
+  out.push("[frame-stats] --fold-preview（判定同源 src/services/engine/pi/session-fold.ts 的 prepareFold；只用于 O-6 选阈值，不作门禁证据）")
+  out.push(
+    `  FOLD_POLICY（唯一可调点在 session-fold.ts，本脚本是只读镜像）: minFileBytes=${FOLD_POLICY.minFileBytes} B（512 KiB） · minReclaimBytes=${FOLD_POLICY.minReclaimBytes} B（128 KiB） · minReclaimRatio=${FOLD_POLICY.minReclaimRatio}（字节口径，三者 AND）`,
+  )
+  for (const sample of foldPreview.samples) {
+    out.push(`  ${sample.path}`)
+    out.push(
+      `    文件字节(statSync)=${sample.fileBytes} · 完整行=${sample.linesBefore} · 撕裂=${sample.torn} · bytesBefore 校验=${
+        sample.bytesEqualsFileSize ? `${sample.bytesBefore} === ${sample.fileBytes}` : "n/a（撕裂文件只保证 ≤）"
+      }`,
+    )
+    if (sample.kind === "fold" || sample.skipReason === "nothing-to-reclaim") {
+      out.push(
+        `    bytesBefore=${sample.bytesBefore} droppedLines=${sample.droppedLines} linesAfter=${sample.linesAfter} bytesAfter=${sample.bytesAfter} droppedWrites=${sample.droppedWrites} linesBefore=${sample.linesBefore} reclaimRatio=${fixed(sample.reclaimRatio, 4)}`,
+      )
+    } else {
+      out.push(
+        `    prepareFold 判定: skip（${sample.skipReason}）· 首个不合法行 = 第 ${sample.invalidLine} 行（本文件一行都不可动）`,
+      )
+    }
+    for (const gate of sample.gates) out.push(renderFoldGate(gate))
+    if (sample.skipReason === "unknown-format") {
+      out.push("      闸门 2 minReclaimBytes / 闸门 2b minReclaimRatio: 不适用（没有折叠计划，无从计算可回收量）")
+    }
+    out.push(`    结论: ${sample.conclusion}`)
+    out.push("    注: 本预览只对照 FOLD_POLICY 三闸门；T5.02 步骤 8 的 MAX_TOOL_FILE_BYTES 上限守卫不在对照范围内")
+  }
+  return out.join("\n")
+}
+
 // ── 样本解析 ──
 
 function collectJsonl(dir) {
@@ -457,6 +753,57 @@ function buildSelftestLines() {
     frame(10, "op-2:entry-assistant-b", "z"),
     JSON.stringify({ kind: "entry", id: "entry-assistant-b", parentId: "entry-user-b", type: "message", message: { role: "assistant", content: "done" }, seq: 11, timestamp: 3000 }),
   ]
+}
+
+// --fold-preview 的合成样本构造（只进系统 temp 与内存，不碰用户数据）。
+const foldHeaderLine = JSON.stringify({ v: 4, kind: "header", storageVersion: 1, id: "selftest-fold", createdAt: 0, cwd: "/tmp" })
+const foldFrameWrite = (seq, key, delta) => ({ kind: "list", op: "append", seq, namespace: FRAME_NAMESPACE, key, value: { type: "text_delta", contentIndex: 0, delta } })
+const foldDeleteWrite = (seq, key) => ({ kind: "list", op: "delete", seq, namespace: FRAME_NAMESPACE, key })
+const foldEntryWrite = (id, seq, timestamp, content) => ({ kind: "entry", id, parentId: null, type: "message", message: { role: "assistant", content }, seq, timestamp })
+const foldValueSetWrite = (seq, namespace, key, value) => ({ kind: "value", op: "set", seq, namespace, key, value })
+const foldValueDeleteWrite = (seq, namespace, key) => ({ kind: "value", op: "delete", seq, namespace, key })
+
+/**
+ * 15 行（含 header）的折叠样本，覆盖四条边界：
+ *   · 死 key 的 append 要丢（index 2、3）；delete 行与含 entry 的多写行要留（index 4、10）；
+ *   · list 与 value 是两张独立的表（index 5 的 value/set 与 index 2 的 append 同物理 key，
+ *     但 value 表没有 delete ⇒ 必须留下）；
+ *   · 「最后一次 delete 之后又被 append」的 key 不能误判（index 11）；
+ *   · 整行多写且全部可丢要整行丢、按写数计（index 12，droppedWrites 因此是 6 而不是 5）；
+ *   · index 8 含中文，钉住「字节 ≠ String.length」的口径。
+ */
+function buildFoldSelftestLines() {
+  const frameKeyA = "op-1:entry-assistant-a"
+  const frameKeyB = "op-2:entry-assistant-b"
+  const frameKeyC = "op-3:entry-assistant-c"
+  const frameKeyD = "op-4:entry-assistant-d"
+  return [
+    foldHeaderLine,                                                                          // 0 header
+    JSON.stringify(foldEntryWrite("entry-user-a", 1, 1000, "hi")),                            // 1 keep
+    JSON.stringify(foldFrameWrite(2, frameKeyA, "a")),                                        // 2 drop
+    JSON.stringify(foldFrameWrite(3, frameKeyA, "b")),                                        // 3 drop
+    JSON.stringify(foldDeleteWrite(4, frameKeyA)),                                            // 4 keep（delete 行）
+    JSON.stringify(foldValueSetWrite(5, FRAME_NAMESPACE, frameKeyA, { doomed: true })),       // 5 keep（value 表无 delete）
+    JSON.stringify(foldValueSetWrite(6, "pi.lane.state", "main", { currentOperationId: null })), // 6 drop
+    JSON.stringify(foldValueDeleteWrite(7, "pi.lane.state", "main")),                         // 7 keep
+    JSON.stringify(foldEntryWrite("entry-assistant-a", 8, 1500, "中文正文：这条保留行必须按 UTF-8 字节计")),  // 8 keep（中文）
+    JSON.stringify(foldFrameWrite(9, frameKeyB, "x")),                                        // 9 drop（delete 在 10）
+    JSON.stringify([
+      foldEntryWrite("entry-assistant-b", 10, 2000, "ok"),
+      foldDeleteWrite(11, frameKeyB),
+      foldValueSetWrite(12, "pi.lane.state", "side", { currentOperationId: null }),
+    ]),                                                                                       // 10 keep（多写行含 entry/delete）
+    JSON.stringify(foldFrameWrite(13, frameKeyB, "y")),                                       // 11 keep（最后一次 delete 之后）
+    JSON.stringify([foldFrameWrite(14, frameKeyD, "p"), foldFrameWrite(15, frameKeyD, "q")]), // 12 drop（整行两写）
+    JSON.stringify(foldDeleteWrite(16, frameKeyD)),                                           // 13 keep
+    JSON.stringify(foldFrameWrite(17, frameKeyC, "z")),                                       // 14 keep（该 key 从未 delete）
+  ]
+}
+
+/** 合成文本不落盘：Buffer.byteLength(text) 就是它写到盘上的字节数（与 statSync(file).size 同值）。 */
+function analyzeFoldSynthetic(lines, name) {
+  const text = `${lines.join("\n")}\n`
+  return analyzeFoldSample(text, Buffer.byteLength(text, "utf8"), `synthetic://${name}`)
 }
 
 function runSelftest(json) {
@@ -525,6 +872,87 @@ function runSelftest(json) {
     assertEqual(lazy.nonFrameFlushes, 2, "1 MiB 阈值的非帧触发")
     assertEqual(lazy.mergedPerFlush, 2.5, "1 MiB 阈值的合并帧/次")
     checks.push("simulateBuffer: 1 B → 5（5/0）；1 MiB → 2（0/2）")
+
+    // --fold-preview：合成样本（含中文）走与真实文件相同的入口，钉住折叠口径与 UTF-8 字节口径。
+    const foldLines = buildFoldSelftestLines()
+    const foldText = `${foldLines.join("\n")}\n`
+    const foldFile = join(dir, "synthetic-fold.jsonl")
+    const foldFd = openSync(foldFile, "w")
+    try {
+      writeSync(foldFd, foldText)
+    } finally {
+      closeSync(foldFd)
+    }
+    const fold = analyzeFoldSample(foldText, statSync(foldFile).size, foldFile)
+    assertEqual(fold.droppedLines, 5, "fold 丢弃行数")
+    assertEqual(fold.droppedWrites, 6, "fold 丢弃写条数（含一条整行两写的多写行）")
+    assertEqual(fold.linesBefore, 15, "fold 完整行数（含 header）")
+    assertEqual(fold.linesAfter, 10, "fold 保留行数（含 header）")
+    assertEqual(fold.bytesBefore, statSync(foldFile).size, "fold bytesBefore === statSync(file).size")
+    assertEqual(fold.bytesEqualsFileSize, true, "fold 字节口径断言（非撕裂文件必须逐字节相等）")
+    // bytesAfter 用「原字节 - 被删行的字节（含行尾换行）」独立重算，不经过被测算的实现。
+    const droppedByteTotal = [2, 3, 6, 9, 12].reduce((total, index) => total + Buffer.byteLength(foldLines[index], "utf8") + 1, 0)
+    assertEqual(fold.bytesAfter, fold.bytesBefore - droppedByteTotal, "fold bytesAfter = 原字节 - 被删行字节")
+    assertEqual(foldLines[8].includes("中文正文"), true, "样本必须含中文行")
+    assertEqual(fold.bytesBefore > foldText.length, true, "中文样本：UTF-8 字节必须大于 String.length（口径分叉）")
+    assertEqual(fold.kind, "fold", "小样本仍应产出 fold 计划")
+    assertEqual(fold.foldable, false, "小文件不会被折叠")
+    // 小文件同时过不了闸门 1（体量）与闸门 2（3 KB 的文件不可能回收 128 KiB），但比例闸门过。
+    assertEqual(fold.blockedBy.join(","), "minFileBytes,minReclaimBytes", "小文件由闸门 1（以及绝对回收量）拦下")
+    checks.push("foldPreview: 合成 15 行含中文 → 丢 5 行 / 6 写、保留 9 行；bytesBefore===文件字节；bytesAfter 与逐行重算一致")
+
+    // 阈值方向：三闸门都各有一个「单独拦下」的合成样本，最后一个是病灶形态（会被折叠）。
+    const lesionKey = "op-big:entry-assistant-big"
+    const lesion = analyzeFoldSynthetic(
+      [
+        foldHeaderLine,
+        JSON.stringify(foldEntryWrite("entry-user-big", 1, 1000, "开始")),
+        ...Array.from({ length: 6200 }, (_, index) => JSON.stringify(foldFrameWrite(2 + index, lesionKey, `中文增量内容片段${index}`))),
+        JSON.stringify(foldEntryWrite("entry-assistant-big", 7000, 2000, "结束")),
+        JSON.stringify(foldDeleteWrite(7001, lesionKey)),
+      ],
+      "lesion",
+    )
+    assertEqual(lesion.fileBytes > FOLD_POLICY.minFileBytes, true, "病灶形态必须过闸门 1")
+    assertEqual(lesion.droppedLines, 6200, "病灶形态丢弃行数")
+    assertEqual(lesion.linesAfter, 4, "病灶形态保留行数")
+    assertEqual(lesion.foldable, true, "病灶形态会被折叠")
+    assertEqual(lesion.blockedBy.length, 0, "病灶形态三闸门全过")
+
+    const lowReclaimKey = "op-low:entry-assistant-low"
+    const lowReclaim = analyzeFoldSynthetic(
+      [
+        foldHeaderLine,
+        JSON.stringify(foldEntryWrite("entry-fat", 1, 1000, "x".repeat(450 * 1024))),
+        ...Array.from({ length: 480 }, (_, index) => JSON.stringify(foldFrameWrite(2 + index, lowReclaimKey, `增量${index}`))),
+        JSON.stringify(foldEntryWrite("entry-assistant-low", 900, 2000, "ok")),
+        JSON.stringify(foldDeleteWrite(901, lowReclaimKey)),
+      ],
+      "low-reclaim",
+    )
+    assertEqual(lowReclaim.fileBytes > FOLD_POLICY.minFileBytes, true, "低回收样本必须过闸门 1")
+    assertEqual(lowReclaim.reclaimBytes < FOLD_POLICY.minReclaimBytes, true, "低回收样本的可回收字节必须低于闸门 2")
+    assertEqual(lowReclaim.reclaimRatio >= FOLD_POLICY.minReclaimRatio, true, "低回收样本的比例必须过闸门 2b（只留闸门 2 拦它）")
+    assertEqual(lowReclaim.blockedBy.join(","), "minReclaimBytes", "低回收样本由闸门 2 拦下")
+    assertEqual(lowReclaim.foldable, false, "低回收样本不会被折叠")
+
+    const ratioKey = "op-ratio:entry-assistant-ratio"
+    const lowRatio = analyzeFoldSynthetic(
+      [
+        foldHeaderLine,
+        JSON.stringify(foldEntryWrite("entry-wide", 1, 1000, "x".repeat(970 * 1024))),
+        ...Array.from({ length: 800 }, (_, index) => JSON.stringify(foldFrameWrite(2 + index, ratioKey, `中文增量内容片段${index}`))),
+        JSON.stringify(foldEntryWrite("entry-assistant-ratio", 1200, 2000, "ok")),
+        JSON.stringify(foldDeleteWrite(1201, ratioKey)),
+      ],
+      "low-ratio",
+    )
+    assertEqual(lowRatio.fileBytes > FOLD_POLICY.minFileBytes, true, "低比例样本必须过闸门 1")
+    assertEqual(lowRatio.reclaimBytes >= FOLD_POLICY.minReclaimBytes, true, "低比例样本的可回收字节必须过闸门 2")
+    assertEqual(lowRatio.reclaimRatio < FOLD_POLICY.minReclaimRatio, true, "低比例样本的比例必须低于闸门 2b")
+    assertEqual(lowRatio.blockedBy.join(","), "minReclaimRatio", "低比例样本由闸门 2b 拦下")
+    assertEqual(lowRatio.foldable, false, "低比例样本不会被折叠")
+    checks.push("foldPreview 阈值方向: 小文件→闸门 1 / 回收不足→闸门 2 / 比例不足→闸门 2b / 病灶形态 6200 行中文→会被折叠")
   } finally {
     rmSync(dir, { recursive: true, force: true })
   }
@@ -541,7 +969,7 @@ function runSelftest(json) {
 // ── CLI ──
 
 function parseArgs(argv) {
-  const options = { paths: [], root: null, calibrate: false, json: false, selftest: false }
+  const options = { paths: [], root: null, calibrate: false, foldPreview: false, json: false, selftest: false }
   for (let index = 0; index < argv.length; index++) {
     const arg = argv[index]
     if (arg === "--root") {
@@ -549,6 +977,7 @@ function parseArgs(argv) {
       if (!value) throw new Error(`--root 需要一个目录参数\n${USAGE}`)
       options.root = value
     } else if (arg === "--calibrate") options.calibrate = true
+    else if (arg === "--fold-preview") options.foldPreview = true
     else if (arg === "--json") options.json = true
     else if (arg === "--selftest") options.selftest = true
     else if (arg.startsWith("-")) throw new Error(`未知参数 ${arg}\n${USAGE}`)
@@ -678,6 +1107,26 @@ function main() {
   }
 
   const baseline = report.totals.avgPerSecond ?? 0
+  if (options.foldPreview) {
+    let foldPreview
+    try {
+      foldPreview = buildFoldPreview(samples)
+    } catch (error) {
+      console.error(`[frame-stats] ${error instanceof Error ? error.message : String(error)}`)
+      process.exitCode = 2
+      return
+    }
+    report.foldPreview = foldPreview
+    if (options.calibrate) report.calibration = buildCalibration(samples, baseline, report.totals.durationSeconds)
+    if (options.json) {
+      console.log(JSON.stringify(report, null, 2))
+      return
+    }
+    const blocks = [renderFoldPreview(foldPreview)]
+    if (report.calibration) blocks.push(renderCalibration(report.calibration, baseline))
+    console.log(blocks.join("\n"))
+    return
+  }
   if (options.calibrate) {
     report.calibration = buildCalibration(samples, baseline, report.totals.durationSeconds)
     if (options.json) console.log(JSON.stringify(report, null, 2))
