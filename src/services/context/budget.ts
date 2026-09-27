@@ -66,6 +66,34 @@ export function estimateValueTokens(value: unknown): number {
   return estimateContextTokens(JSON.stringify(value) ?? "")
 }
 
+/**
+ * 按 token 预算从一端切出片段（与 `estimateContextTokens` 共用同一对常量：ASCII 1/4 token、
+ * 其余每个 UTF-16 单元 1 token）。
+ *
+ * 为什么落位在 budget.ts：切分与估算必须由同一对常量派生，否则「切出来的片段装不装得下」
+ * 会在两套 token 换算之间漂移——改了一处漏另一处时，中文（≈1 token/字符）会先出问题。
+ * L0 缩短（头尾各半）与回读分页（见《会话压缩与存储瘦身方案-2026-09-27基线》§4.4）切的是
+ * 同一个预算，`fromEnd` 只决定取件方向，不影响计费。
+ *
+ * 不超预算：加入下一个 UTF-16 单元会超过 tokenBudget 时在它之前停止，因此
+ * `estimateContextTokens(结果) <= tokenBudget` 恒成立（本仓预算都是 floor 后的整数；
+ * 旧私有实现累计 `>= limit` 才 break，最后一个单元最多可把预算顶超 1 token）。
+ * tokenBudget < 1 时按 1 处理：至少返回 1 个单元，空串返回空串。
+ */
+export function sliceByTokenBudget(text: string, tokenBudget: number, fromEnd = false): string {
+  const limit = Math.max(1, tokenBudget)
+  let tokens = 0
+  let taken = 0
+  for (let index = 0; index < text.length; index += 1) {
+    const unit = fromEnd ? text[text.length - 1 - index]! : text[index]!
+    const cost = unit.charCodeAt(0) <= 0x7f ? 1 / ASCII_CHARS_PER_TOKEN : NON_ASCII_TOKENS_PER_UNIT
+    if (tokens + cost > limit) break
+    tokens += cost
+    taken += 1
+  }
+  return fromEnd ? text.slice(text.length - taken) : text.slice(0, taken)
+}
+
 function record(value: unknown): Record<string, unknown> {
   return value && typeof value === "object" ? value as Record<string, unknown> : {}
 }

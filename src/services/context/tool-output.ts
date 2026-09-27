@@ -1,6 +1,6 @@
 import type { Message } from "@/services/agent/types"
 import { createLogger } from "@/services/logger"
-import { contextBudget, estimateContextTokens } from "./budget"
+import { contextBudget, estimateContextTokens, sliceByTokenBudget } from "./budget"
 
 const log = createLogger("ToolOutput")
 
@@ -16,8 +16,9 @@ export const L0_TOOL_RESULT_SHARE = .10
 export const L0_NO_ADDRESS_NOTICE = "该结果的原始条目没有回读地址，中间段不可恢复"
 
 /**
- * L0 缩短阈值（token）。判定与裁剪都用 `estimateContextTokens`：ASCII 与非 ASCII 的差异
- * 由估算器吸收（中文 ≈1 token/字符），阈值随窗口单调（64k ≈4.9k tokens、128k ≈10.4k tokens）。
+ * L0 缩短阈值（token）。判定与裁剪共用 budget.ts 的同一 token 口径（判定 `estimateContextTokens`、
+ * 切片 `sliceByTokenBudget`）：ASCII 与非 ASCII 的差异由该口径吸收（中文 ≈1 token/字符），
+ * 阈值随窗口单调（64k ≈4.9k tokens、128k ≈10.4k tokens）。
  *
  * 旧实现是字符常数：按 `normalInputTarget` 的 15% 取字符数、再乘一个字符/token 比率，且该值被
  * 一个小上限截断，于是 64k 以上的所有合法窗口都得到同一个 10000 字符阈值（按 chars/4 只值
@@ -25,20 +26,6 @@ export const L0_NO_ADDRESS_NOTICE = "该结果的原始条目没有回读地址�
  */
 export function toolResultTokenBudget(window: number): number {
   return Math.max(1, Math.floor(contextBudget(window).normalInputTarget * L0_TOOL_RESULT_SHARE))
-}
-
-/** 按 token 预算从一端切出片段（逐字符累加：ASCII 1/4 token、其余 1 token，至少 1 个字符）。 */
-function sliceByTokens(text: string, tokenBudget: number, fromEnd: boolean): string {
-  const limit = Math.max(1, tokenBudget)
-  let tokens = 0
-  let taken = 0
-  for (let index = 0; index < text.length; index += 1) {
-    const char = fromEnd ? text[text.length - 1 - index]! : text[index]!
-    tokens += char.charCodeAt(0) <= 0x7f ? .25 : 1
-    taken += 1
-    if (tokens >= limit) break
-  }
-  return fromEnd ? text.slice(text.length - taken) : text.slice(0, taken)
 }
 
 /**
@@ -67,7 +54,7 @@ export function projectToolResultText(text: string, address: string | undefined,
     warnedWithoutAddress.add(text.length)
     log.warn("工具结果没有回读地址，按不可回读标记投影:", { chars: text.length })
   }
-  return `${sliceByTokens(text, half, false)}\n${notice}\n${sliceByTokens(text, half, true)}`
+  return `${sliceByTokenBudget(text, half, false)}\n${notice}\n${sliceByTokenBudget(text, half, true)}`
 }
 
 /** 数组入口的薄包装（保留现有调用形态，内部只调 projectToolResultText）。 */
