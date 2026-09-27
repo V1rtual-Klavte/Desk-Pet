@@ -15,7 +15,7 @@ import type { SceneDef } from "../../types"
 
 // ── 场景口径：摘要素材的 L0 投影必须尊重 resultProjection ──
 //
-// 主请求的 L0 投影（runtime.ts 的 projectToolResultMessage）对 preserve 工具跳过缩短、
+// 主请求的 L0 投影（runtime.ts 的 toolResultLadderEntries / applyLevels）对 preserve 工具跳过缩短、
 // 但**同样附地址尾行**（D-W2-5 的 2026-09-27 裁定：preserve 只挡升档处理，不挡地址标注）；
 // 摘要素材（compactor.ts 的 measureCompactionMaterial）与主请求同口径 —— 本场景用两个同长度的
 // 探针把这条口径钉住：preserve 的结果以「正文逐字未变 + 地址尾行」进入摘要请求，

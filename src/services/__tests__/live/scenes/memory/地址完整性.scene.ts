@@ -17,7 +17,7 @@ import type { SceneDef } from "../../types"
 
 // ── 场景口径：L0 地址完整性（有地址给真回读提示、无地址如实标记、短结果也带地址、两路投影同函数） ──
 //
-// 主请求投影（runtime.ts 的 projectToolResultMessage）与摘要素材投影（compactor.ts 的 measureCompactionMaterial）
+// 主请求投影（runtime.ts 的 toolResultLadderEntries / applyLevels）与摘要素材投影（compactor.ts 的 measureCompactionMaterial）
 // 必须对同一条工具结果产出逐字相同的投影，且回读地址只认宿主写入的 details.deskpetEntryId。
 // 地址的形态是**条目 id 的最短唯一前缀**（shortenAddresses 的取值），不再是完整条目 id：
 // 断言因此从请求正文里抽回地址，只钉「它仍是该条目的唯一前缀」，不钉前缀的具体长度。
