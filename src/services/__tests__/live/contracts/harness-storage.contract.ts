@@ -4,6 +4,7 @@ export const harnessStorageContract: ModuleContract = {
   module: "harness-storage",
   sourceFiles: [
     "src/services/engine/pi/session-repo.ts",
+    "src/services/engine/pi/session-frame-buffer.ts",
     "src/services/tool/pi/tauri-execution-env.ts",
     "src/services/session/repo.ts",
   ],
