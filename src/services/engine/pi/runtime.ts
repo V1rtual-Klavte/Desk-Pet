@@ -11,7 +11,7 @@ import type { CompactionAuditSink, ContextAllocation, ContextBlock, IngressEnvel
 import { createMessageId } from "@/services/agent/types"
 import { MemoryService, recallMemory, planCheckpointStore } from "@/services/agent/memory"
 import type { StructuredSummary } from "@/services/agent/memory"
-import { buildPrompt, composeDynamicPrompt, contextBudget, CONTEXT_RATIOS, estimateRequestTokens, estimateContextTokens, estimateMessageTokens, ContextBudgetError, ESTIMATE_DRIFT_WARN_RATIO, estimateDriftRatio, projectMessageContent, projectToolResultText, toolResultAddress } from "@/services/context"
+import { buildPrompt, composeDynamicPrompt, contextBudget, CONTEXT_RATIOS, estimateRequestTokens, estimateContextTokens, estimateMessageTokens, ContextBudgetError, ESTIMATE_DRIFT_WARN_RATIO, estimateDriftRatio, projectMessageContent, projectToolResultText, annotateToolResultText, toolResultAddress } from "@/services/context"
 import type { ContextBudgetAdjustment } from "@/services/context"
 import { bindRunningPlan, clearRunningPlan, notifyPlanEnd, requestPlanConfirm, requestPlanStepDecision } from "@/services/engine/plan-confirmation"
 import type { PlanConfirmResult } from "@/services/engine/plan-confirmation"
@@ -542,6 +542,12 @@ function createCompactionHook(options: {
   /** 宿主摘要内核失败（decline 原因）；调用方据此给出可见失败与审计。 */
   audit?: CompactionAuditSink
   onFailure?: (reason: string) => void
+  /**
+   * 地址目录 thunk，与投影 hook 是**同一份来源**（`slot.addressRefs()`），摘要素材的地址前缀
+   * 因此与主请求对同一结果逐字相同。这里只透传、不提前取值 —— 阈值压缩发生在回合中途，
+   * 构造期取到的目录不含本回合刚产生的工具结果，会让它们退回完整 id 而破坏「逐字相同」。
+   */
+  addressRefs?: () => Promise<ReadonlyMap<string, string>>
 }): NonNullable<HarnessRunHooks["beforeCompaction"]> {
   const retained = retainedToolNames(options.tools)
   const preserved = preservedToolNames(options.tools)
@@ -565,6 +571,7 @@ function createCompactionHook(options: {
         signal,
         preserveToolNames: preserved,
         ...(options.sessionId ? { sessionId: options.sessionId } : {}),
+        ...(options.addressRefs ? { addressRefs: options.addressRefs } : {}),
         runId,
       })
       options.onSummary?.(outcome.summary)
@@ -645,13 +652,24 @@ function createProjectionHook(args: {
   captureSnapshot: TurnKernel["captureSnapshot"]
   snapshotTasks: TurnKernel["snapshotTasks"]
   latestMessages: (messages: AgentMessage[]) => void
+  /** 地址目录 thunk（`slot.addressRefs()`）：投影期取值，槽的稳定缓存保证跨请求同形前缀。 */
+  addressRefs?: () => Promise<ReadonlyMap<string, string>>
 }): NonNullable<HarnessRunHooks["transformContext"]> {
   const tools = [...args.toolsByName.values()]
-  return ({ messages, systemPrompt }) => {
+  return async ({ messages, systemPrompt }) => {
     let prepared = messages
     try {
       if (args.projectToolResults) {
-        prepared = prepared.map(message => projectToolResultMessage(message, args.model.contextWindow, args.toolsByName))
+        // 目录读取失败不能抛出去：上游对钩子抛错是 fail-open 静默，投影会整份退回未投影的
+        // 原消息。这里兜底成「无前缀」，地址退回完整条目 id（完整 id 永远可读，A-4）——
+        // 留痕点就是下面这条 warn。
+        const refs = args.addressRefs
+          ? await args.addressRefs().catch(error => {
+            log.warn("地址目录读取失败，投影退回完整条目 id:", formatError(error))
+            return undefined
+          })
+          : undefined
+        prepared = prepared.map(message => projectToolResultMessage(message, args.model.contextWindow, args.toolsByName, refs))
       }
       args.latestMessages(prepared)
       const budget = contextBudget(args.model.contextWindow, args.model.maxTokens)
@@ -695,6 +713,11 @@ function createTurnSpec(kernel: TurnKernel, options: {
   projectToolResults: boolean
   isPermissionCurrent: () => boolean
   runGeneration: number
+  /**
+   * 地址目录 thunk：投影 hook 与压缩 hook 共用同一份（`() => slot.addressRefs()`），
+   * 两个消费点各自在需要的时刻 await，任何一处都不在构造期提前取值。
+   */
+  addressRefs?: () => Promise<ReadonlyMap<string, string>>
 }): HarnessRunSpec {
   const state = kernel.state
   const toolsByName = new Map(kernel.tools.map(tool => [tool.name, tool]))
@@ -756,10 +779,12 @@ function createTurnSpec(kernel: TurnKernel, options: {
       captureSnapshot: kernel.captureSnapshot,
       snapshotTasks: kernel.snapshotTasks,
       latestMessages: messages => { kernel.latestMessages = messages },
+      ...(options.addressRefs ? { addressRefs: options.addressRefs } : {}),
     }),
     beforeCompaction: createCompactionHook({
       model: kernel.model, tools: kernel.tools,
       sessionId: kernel.sessionId, audit: compactionAudit,
+      ...(options.addressRefs ? { addressRefs: options.addressRefs } : {}),
     }),
     compactionAudit,
     // 记当次请求归属：payload 采集据此区分「本回合的请求」与「压缩/分支摘要的一次性请求」。
@@ -1106,6 +1131,8 @@ export async function runPiAgentTurn(input: PiAgentTurnInput): Promise<PiAgentTu
     maxToolCalls: loopConfig.maxToolCallsPerTurn,
     projectToolResults: true,
     runGeneration: generation,
+    // 投影与压缩共用同一份地址目录 thunk：两路投影对同一条结果逐字相同（槽内有稳定缓存）。
+    addressRefs: () => slot.addressRefs(),
     // 权限确认绑定当前会话：等待确认期间用户切走会话，旧回合不再取得授权。
     isPermissionCurrent: () => runIsCurrent() && getActiveSessionId() === turnSessionId,
   })
@@ -1832,6 +1859,8 @@ export async function continueInterruptedRun(sessionId: string): Promise<PiAgent
       maxToolCalls: loopConfig.maxToolCallsPerTurn,
       projectToolResults: true,
       runGeneration: generation,
+      // 续跑与主回合同口径：同一份地址目录 thunk 同时供给投影与压缩。
+      addressRefs: () => slot.addressRefs(),
       isPermissionCurrent: () => harnessSlots.isCurrent(sessionId, generation) && getActiveSessionId() === sessionId,
     })
     const result = await slot.resumeInterrupted(spec)
@@ -1893,6 +1922,8 @@ export async function compactActiveSession(sessionId: string): Promise<ManualCom
       beforeCompaction: createCompactionHook({
         model, tools: listAll(),
         sessionId, onSummary: summary => { intent = summary.intent }, audit: compactionAudit,
+        // 摘要素材与随后的续跑投影共用同一份地址目录 thunk（与主回合同一通道）。
+        addressRefs: () => slot.addressRefs(),
       }),
       compactionAudit,
       beforeRequest: createRequestOptionsPatch(),
@@ -1906,6 +1937,7 @@ export async function compactActiveSession(sessionId: string): Promise<ManualCom
         captureSnapshot: async () => undefined,
         snapshotTasks: [],
         latestMessages: () => {},
+        addressRefs: () => slot.addressRefs(),
       }),
       afterResponse: createRuntimeDataStripHook({}),
     },
@@ -2013,17 +2045,38 @@ export async function runPiSubAgent(input: PiSubAgentInput): Promise<PiSubAgentO
 /**
  * 工具结果请求投影：条目保持全文，只有请求视图被缩短并标注回读地址。
  *
- * resultProjection=preserve 的工具（分页读取、写类结果）不再二次缩短；
- * 未注册的历史工具没有策略可查，沿用既有缩短行为（条目仍是可回读的真相源）。
- * 回读地址只认详情里的 `deskpetEntryId`：没有地址时按无地址标记如实标注，不写假 eventId。
+ * 地址无条件标注（A-1）：不论是否超阈值都带地址。`addressRefs` 给的是展示用前缀，
+ * 目录里没有该 id 时退回完整条目 id（完整 id 永远可读，A-4）；取不到
+ * `details.deskpetEntryId` 的结果按无地址形态如实投影，不写假 eventId。
+ *
+ * resultProjection=preserve 的工具（分页读取、写类结果）**不缩短、不清空，但同样带地址**
+ * —— 写入回执被摘要吃掉后也需要可捞的地址（D-W2-5 的 2026-09-27 裁定：preserve 只挡
+ * 升档处理，不挡地址标注）。未注册的历史工具没有策略可查，沿用既有缩短行为。
+ *
+ * 改写只作用于 text 块：图片等非 text 块按原顺序留在原位（整块重建会丢掉 `pi-read` 的
+ * 图片结果，且回读也救不回）。
  */
-function projectToolResultMessage(message: AgentMessage, windowTokens: number, toolsByName: ReadonlyMap<string, ToolDef>): AgentMessage {
+function projectToolResultMessage(
+  message: AgentMessage,
+  windowTokens: number,
+  toolsByName: ReadonlyMap<string, ToolDef>,
+  addressRefs?: ReadonlyMap<string, string>,
+): AgentMessage {
   if (message.role !== "toolResult") return message
-  if (toolsByName.get(message.toolName)?.policy.context.resultProjection === "preserve") return message
-  const text = contentText(message.content)
-  const projected = projectToolResultText(text, toolResultAddress(message), windowTokens, SESSION_TRANSCRIPT_TOOL)
-  if (projected === text) return message
-  return { ...message, content: [{ type: "text" as const, text: projected }] }
+  const entryId = toolResultAddress(message)
+  const address = entryId ? addressRefs?.get(entryId) ?? entryId : undefined
+  const preserve = toolsByName.get(message.toolName)?.policy.context.resultProjection === "preserve"
+  let changed = false
+  const content = message.content.map(part => {
+    if (part.type !== "text") return part
+    const text = preserve
+      ? annotateToolResultText(part.text, address, SESSION_TRANSCRIPT_TOOL)
+      : projectToolResultText(part.text, address, windowTokens, SESSION_TRANSCRIPT_TOOL)
+    if (text === part.text) return part
+    changed = true
+    return { ...part, text }
+  })
+  return changed ? { ...message, content } : message
 }
 
 /** 提交前剥离 RUNTIME_DATA；thinking 等其它块保持原样。 */

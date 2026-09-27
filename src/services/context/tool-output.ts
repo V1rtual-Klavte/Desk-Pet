@@ -1,4 +1,3 @@
-import type { Message } from "@/services/agent/types"
 import { createLogger } from "@/services/logger"
 import { contextBudget, estimateContextTokens, sliceByTokenBudget } from "./budget"
 
@@ -10,10 +9,21 @@ const log = createLogger("ToolOutput")
 export const L0_TOOL_RESULT_SHARE = .10
 
 /**
- * L0 无地址时的固定标记；两路投影（主请求与摘要素材）共用这一份文案。
+ * 正文被替换成占位串时的两个字面标记（级 1 缩短 / 级 2 清空）；与地址尾行共用
+ * `toolResultNotice` 这一份模板，两路投影（主请求与摘要素材）都不许另拼一份文案。
+ */
+export const L0_SHORTENED_TAG = "上下文缩短"
+/** W3 的级 2 使用，本波只固化常量。 */
+export const L0_CLEARED_TAG = "上下文清空"
+
+/**
+ * 无地址时的固定标记；两路投影共用这一份文案。
  * 有地址才写 eventId 回读提示：假地址会让模型读到「当前会话没有此工具结果」。
  */
 export const L0_NO_ADDRESS_NOTICE = "该结果的原始条目没有回读地址，中间段不可恢复"
+
+/** 缺省回读工具名；所有调用方（两路投影）都显式传 `SESSION_TRANSCRIPT_TOOL`，这里只作兜底。 */
+const DEFAULT_READ_TOOL_NAME = "read_session_event"
 
 /**
  * L0 缩短阈值（token）。判定与裁剪共用 budget.ts 的同一 token 口径（判定 `estimateContextTokens`、
@@ -42,28 +52,49 @@ export function toolResultAddress(message: { details?: unknown } | undefined): s
 /** 已按「无地址」留痕过的结果长度：同长结果只报一次，避免逐条刷屏。 */
 const warnedWithoutAddress = new Set<number>()
 
-/** L0 缩短的唯一实现：头尾各半 + 地址标记（有地址给回读提示，无地址给不可回读标记）。 */
-export function projectToolResultText(text: string, address: string | undefined, window: number, readToolName = "read_session_event"): string {
+/**
+ * 地址通知的唯一模板（A-2）：级 1 缩短 / 级 2 清空 / 未缩短三种形态只是同一模板的不同实参。
+ *
+ * `disposition` 省略 = 正文未被改动（未缩短）：有地址给回读尾行，无地址返回空串
+ * （无可恢复内容，不写任何假 eventId 打扰模型）。`"shortened"` / `"cleared"` = 正文已被
+ * 替换成占位串：无地址时用 `L0_NO_ADDRESS_NOTICE` 说明中间段不可恢复。
+ */
+export function toolResultNotice(address: string | undefined, readToolName: string, disposition?: "shortened" | "cleared"): string {
+  if (disposition === undefined) {
+    return address ? `[回读地址 eventId=${address}，可用 ${readToolName} 分页读取]` : ""
+  }
+  const tag = disposition === "cleared" ? L0_CLEARED_TAG : L0_SHORTENED_TAG
+  return address
+    ? `[${tag}；原结果 eventId=${address}，可用 ${readToolName} 分页读取]`
+    : `[${tag}；${L0_NO_ADDRESS_NOTICE}]`
+}
+
+/**
+ * 未缩短结果的地址标注：正文 + 尾行地址通知（无地址时正文原样返回）。
+ *
+ * A-1 的落点：地址不再等「超阈值」才给 —— 未缩短的结果同样要能被回读，
+ * preserve 的写入回执（`pi-write` / `pi-edit` / `app` / `clipboard_write`）也走这里
+ * （D-W2-5 的 2026-09-27 裁定：preserve 只挡升档处理，不挡地址标注）。
+ */
+export function annotateToolResultText(text: string, address: string | undefined, readToolName = DEFAULT_READ_TOOL_NAME): string {
+  const notice = toolResultNotice(address, readToolName)
+  return notice ? `${text}\n${notice}` : text
+}
+
+/**
+ * L0 缩短的唯一实现：头尾各半 + 地址通知（有地址给回读提示，无地址给不可回读标记）。
+ * 未超阈值时不再原样返回，而走同一份未缩短形态（`annotateToolResultText`，A-1）。
+ */
+export function projectToolResultText(text: string, address: string | undefined, window: number, readToolName = DEFAULT_READ_TOOL_NAME): string {
   const budget = toolResultTokenBudget(window)
-  if (estimateContextTokens(text) <= budget) return text
-  const half = Math.floor(budget / 2)
-  const notice = address
-    ? `[上下文缩短；原结果 eventId=${address}，可用 ${readToolName} 分页读取]`
-    : `[上下文缩短；${L0_NO_ADDRESS_NOTICE}]`
+  if (estimateContextTokens(text) <= budget) return annotateToolResultText(text, address, readToolName)
   if (!address && !warnedWithoutAddress.has(text.length)) {
     warnedWithoutAddress.add(text.length)
     log.warn("工具结果没有回读地址，按不可回读标记投影:", { chars: text.length })
   }
+  const half = Math.floor(budget / 2)
+  const notice = toolResultNotice(address, readToolName, "shortened")
   return `${sliceByTokenBudget(text, half, false)}\n${notice}\n${sliceByTokenBudget(text, half, true)}`
-}
-
-/** 数组入口的薄包装（保留现有调用形态，内部只调 projectToolResultText）。 */
-export function projectToolMessages(messages: readonly Message[], window: number, readToolName?: string): Message[] {
-  return messages.map(message => {
-    if (message.role !== "tool") return message
-    const projected = projectToolResultText(message.text, message.eventId, window, readToolName)
-    return projected === message.text ? message : { ...message, text: projected }
-  })
 }
 
 // ==========================================
