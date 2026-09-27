@@ -6,7 +6,7 @@
 
 import { BACKGROUND_CONTEXT } from "@earendil-works/pi-agent-core"
 import type { Entry, EntryQuery, JsonValue, JsonlSessionMetadata, Session } from "@earendil-works/pi-agent-core"
-import { createPiSessionRepo } from "@/services/engine/pi"
+import { createPiSessionRepo, flushSessionFrameWrites } from "@/services/engine/pi"
 import type { PiSessionRepo } from "@/services/engine/pi"
 import { createLogger } from "@/services/logger"
 import { formatError, reportError } from "@/services/error"
@@ -43,6 +43,9 @@ export async function resetPiSessionLayerForTest(): Promise<void> {
     await releasePiSession(sessionId)
   }
   repoPromise = null
+  // 句柄循环可能一次都没走（本 trial 没打开过仓库）：仍要冲一次 —— 帧缓冲挂在模块级
+  // 注册表上，不跨 trial 残留（测试隔离；T-6 的测试侧）。
+  await flushSessionFrameWrites(BACKGROUND_CONTEXT)
 }
 
 /** 测试隔离：清空数据根下的全部 pi 会话文件（先释放句柄再删除）。 */
@@ -109,7 +112,26 @@ export async function acquirePiSession(sessionId: string): Promise<Session<Jsonl
   }
 }
 
-/** 关闭并移出句柄缓存；调用方须先确认该会话没有运行中的回合。 */
+/**
+ * 关闭并移出句柄缓存；调用方须先确认该会话没有运行中的回合。
+ *
+ * T-6（关闭 / 退出前缓冲被 flush）在本仓的挂点就在这里：上游
+ * `HarnessSlot.close → harness.close → session.close → storage.close` 全链路一次 `FileSystem`
+ * 调用都没有（执行方案 §0.3），句柄一关就没有别的触发点，只能在此显式冲掉帧缓冲。
+ * 直接调用方（`repo.ts` 内部、`harness-slot.ts`）无需各自改动即获得 flush。
+ *
+ * 顺序必须是「先 close 再 flush」：`session.close()` 会等 mutation line 与 `commitQueue`
+ * 排干，即所有帧写入都已进过装饰器；反过来会与在飞提交赛跑，漏掉最后一帧。
+ * flush 自身不抛（`session-frame-buffer.ts`），放进 `finally` 是为了 close 抛错时也冲。
+ *
+ * 边界（不扩大实施范围）：
+ * - 「退出前」在本任务的口径是「会话句柄关闭 / 槽关闭前」；**应用级强制退出不覆盖** ——
+ *   托盘 `app.exit(0)` 不经前端、`CloseRequested` 只隐藏到托盘，本仓没有可挂的应用级
+ *   teardown。因此**不**补窗口卸载钩子（在卸载前事件上做异步 IPC 与 `app.exit` 有竞态；
+ *   该边界已登记在《未完成工作与已知缺口》「不修/暂不修边界」的「退出钩子」条目）。
+ * - 可接受损失：进程被强杀，或托盘 `app.exit` 且仍在流式中时，缓冲里最多 16 KiB 的
+ *   **进度快照**丢失；正文 entry 走非帧路径（T-3），已在盘上。
+ */
 export async function releasePiSession(sessionId: string): Promise<void> {
   const handle = openSessions.get(sessionId)
   if (!handle) return
@@ -120,6 +142,9 @@ export async function releasePiSession(sessionId: string): Promise<void> {
     log.info("已关闭会话:", sessionId)
   } catch (error) {
     log.error("关闭会话失败:", sessionId, formatError(error))
+  } finally {
+    // 句柄一关就再没有别的触发点：缓冲里剩下的帧只能在这里落地（T-6）。
+    await flushSessionFrameWrites(BACKGROUND_CONTEXT)
   }
 }
 
