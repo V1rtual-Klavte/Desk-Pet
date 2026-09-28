@@ -1,6 +1,6 @@
 import type { Context, FauxModelDefinition, FauxResponseStep } from "@earendil-works/pi-ai"
 import type { Entry } from "@earendil-works/pi-agent-core"
-import { COMPACTION_DECLINED_ENTRY, PROMPT_SNAPSHOT_ENTRY, compactionSettingsFor, compactActiveSession } from "@/services/engine/pi"
+import { COMPACTION_DECLINED_ENTRY, PROMPT_SNAPSHOT_ENTRY, compactionSettingsFor, compactActiveSession, harnessSlots, readContextEpoch } from "@/services/engine/pi"
 import { compactCommand } from "@/services/engine/slash/commands/compact"
 import { getCommandReply } from "@/services/personality"
 import { aiConfig } from "@/services/config"
@@ -18,6 +18,7 @@ import type { SceneDef } from "../../types"
 // - /compact 报当前 Card 的 commands.compactFailed，并附上技术原因；
 // - compactActiveSession 返回 {status:"failed"}；
 // - 会话里留一条 deskpet.compaction_declined 审计条目；
+// - 换代身份原地不动：readContextEpoch 计数 0 且无地址，槽快照同源为 0（decline 不是提交）；
 // - 原文条目与正常回合都不受影响。「不受影响」的口径是**原文条目一条不少且逐字不变**，
 //   不是「条目集合一模一样」—— 失败压缩自己会新增证据条目（这次一次性摘要请求的
 //   deskpet.prompt_snapshot 两档 + 上面那条降级审计），它们不是对原文的改动。
@@ -252,6 +253,24 @@ export const 压缩降级: SceneDef = {
             throw new Error(`降级条目没有带上内核失败原因: ${JSON.stringify(data.error)}`)
           }
           if (compactionEntries(entries).length !== 0) throw new Error("decline 之后出现了 compaction 条目")
+        } },
+        { type: "expectEpochNotAdvancedOnDecline", run: async () => {
+          // decline 只否掉这次压缩，不动请求视图的换代身份：真相源是 delivery.readContextEpoch
+          // （沿 lane 分支回溯已提交 compaction），槽快照是同源镜像（开槽取基数、仅提交成功时递增）。
+          // 两处读不到（undefined）同样失败 —— 「核对不了」不能被当成「没有推进」。
+          const sessionId = getActiveSessionId()
+          const epoch = await readContextEpoch(sessionId)
+          if (epoch === undefined) {
+            throw new Error(`上下文换代身份读取失败（真相源不可读），无法证明 decline 没有推进它｜${sizing()}`)
+          }
+          if (epoch.count !== 0 || epoch.lastCompactionEntryId !== undefined) {
+            throw new Error(`decline 推进了上下文换代身份: ${JSON.stringify(epoch)}｜${sizing()}`)
+          }
+          const slotEpoch = harnessSlots.snapshot(sessionId)?.contextEpoch
+          if (slotEpoch === undefined) {
+            throw new Error(`槽内换代身份不可读（槽已释放或基数未知），无法证明 decline 没有推进它｜${sizing()}`)
+          }
+          if (slotEpoch !== 0) throw new Error(`decline 推进了槽内换代身份: ${String(slotEpoch)}｜${sizing()}`)
         } },
         { type: "expectTurnStillWorks", run: async () => {
           // 对照：decline 只影响压缩，不污染正常回合。
