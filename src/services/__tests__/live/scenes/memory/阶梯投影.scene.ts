@@ -52,6 +52,10 @@ import type { SceneDef } from "../../types"
 // - 校准的判据是**重放**：用导入的 `estimateRequestTokens` + `projectToolResultText`
 //   在观测到的请求视图上重建 `planToolResultLadder` 的输入，直接读它的两次读数与 levels，
 //   而不是拿估算常数去近似（原方案的「用单条上限夹住每条」只是这套重放的近似写法）。
+//   **重建的正文取存档原文**：观测面本身已经是投影后的形态（第 4 轮那笔请求里三条地址探针
+//   已被级 2 清空、其余也各自落档），拿它当输入等于「对投影结果再投影一次」——清空形态再走
+//   级 1 只会得到「清空 + 地址尾行」（约 62 token），再也回不到全量，级 1 读数因此被系统性
+//   低估（128k 口径下三条探针差 ≈31k，见 `replayPlan` 的 measure）。
 //
 // 探针（真注册、真执行、真过权限链路，唯一变量是投影声明、地址有无与所在轮次）：
 // - `ladder_address_probe` ×3（第 1 轮，`reference`，成功 ⇒ 有地址）：第 4 轮在保护区外 ⇒ 级 2；
@@ -141,6 +145,12 @@ interface RecordedRequest {
 const requests: RecordedRequest[] = []
 /** 第 4 轮的校准载荷块（按调用顺序出队）；尺寸在场景准备阶段由实测读数决定。 */
 let loadChunks: string[] = []
+/**
+ * 校准载荷的快照：`loadChunks` 会被校准探针的 handler 逐次 `shift()` 抽空（出队即消费），
+ * 断言期只能靠这份副本回答「校准了几块、每块是什么」—— 拿 `loadChunks.length` 当块数会恒为 0，
+ * 让「载荷一块都没进请求」也判过（空数组的 `.every()` 恒真）。
+ */
+let calibratedChunks: readonly string[] = []
 let calibratedFrame = 0
 let calibratedNeeded = 0
 
@@ -148,7 +158,7 @@ let calibratedNeeded = 0
 function sizing(): string {
   return `窗口 ${WINDOW_TOKENS}、目标 ${TARGET_TOKENS}、硬上限 ${BUDGET.hardInputLimit}、单条上限 ${SINGLE_ENTRY_TOKENS}`
     + `、保护区 ${LADDER_PROTECTION_TURNS} 轮；探针 ${PROBE_SIDE_CHARS}×2 字符、短结果 ${SHORT_RESULT.length} 字符`
-    + `；第 3 轮实测视图 ${calibratedFrame}、校准载荷 ${calibratedNeeded} tokens / ${loadChunks.length} 块`
+    + `；第 3 轮实测视图 ${calibratedFrame}、校准载荷 ${calibratedNeeded} tokens / ${calibratedChunks.length} 块`
     + `、越线量 ±${MARGIN_TOKENS}`
 }
 
@@ -265,6 +275,10 @@ function referenceIn(text: string): string | undefined {
  * 该视图正文是这条存档结果的哪一档形态：0 = 未处理（`preserve` / 未超阈），1 = 缩短，2 = 清空。
  * 逐字比对由**投影的唯一实现**产出，场景只从正文里抽回读地址（形态里的地址是当次发出的前缀，
  * 不是存档里的完整条目 id）。无地址的条目在级 1 与级 2 下同形（硬前提），因此返回 1 而不报歧义。
+ *
+ * **只比形态不构成身份**：判据里的地址取自候选正文，所以正文相同或「裁掉的部分不同、剩下的
+ * 部分相同」的兄弟条目会互相满足（清空形态更是与正文无关）。跨条目身份由 `addressBelongsTo`
+ * 单独判，两个判据都成立才算一条视图正文属于这条存档结果。
  */
 function projectionLevelOf(entry: StoredResult, viewText: string): 0 | 1 | 2 | undefined {
   const address = referenceIn(viewText)
@@ -276,12 +290,28 @@ function projectionLevelOf(entry: StoredResult, viewText: string): 0 | 1 | 2 | u
   return undefined
 }
 
-/** 该条在这一笔请求视图里的正文（每条探针正文都带自己的标记，不会认错）。 */
-function viewTextFor(request: RecordedRequest, entry: StoredResult): string {
+/**
+ * 该视图正文里的回读地址是否**属于这条存档结果**：是它的条目 id 前缀，且在当次 id 全集里唯一
+ * 命中（`isUniqueAddressRef`）；无地址的条目（错误分支）只认「这段正文里也没有地址行」。
+ *
+ * 为什么识别必须带这一步：三条地址探针是同一工具的兄弟调用，正文只在中段的调用标记上不同，
+ * 而级 1 恰好把中段裁掉 —— 只比形态时，`projectionLevelOf` 会用**候选正文里的地址**重建期望值
+ * （地址取自正文是必须的：运行期发的是前缀），于是任一兄弟的形态都能被另一条的正文满足；
+ * 级 2 更彻底（清空形态与正文无关，任何带地址的条目都会被三条清空正文同时满足）。
+ * 跨条目身份的唯一凭据就是地址行，识别必须把它算进去。
+ */
+function addressBelongsTo(entry: StoredResult, viewText: string, ids: readonly string[]): boolean {
+  const ref = referenceIn(viewText)
+  if (ref === undefined) return entry.address === undefined
+  return isUniqueAddressRef(ref, entry.id, ids)
+}
+
+/** 该条在这一笔请求视图里的正文：形态由投影的唯一实现逐字判定、身份由地址行判定，命中数必须恰好 1。 */
+function viewTextFor(request: RecordedRequest, entry: StoredResult, ids: readonly string[]): string {
   const matched = request.messages
     .filter(message => message.role === "toolResult")
     .map(message => textOfContent(message.content))
-    .filter(text => projectionLevelOf(entry, text) !== undefined)
+    .filter(text => projectionLevelOf(entry, text) !== undefined && addressBelongsTo(entry, text, ids))
   if (matched.length !== 1) {
     throw new Error(`${entry.toolName} 在请求视图里有 ${matched.length} 段正文能被认成它的形态（应恰好 1 段）｜${sizing()}`)
   }
@@ -296,7 +326,7 @@ function viewTextFor(request: RecordedRequest, entry: StoredResult): string {
 function expectLevel(
   request: RecordedRequest, entry: StoredResult, expectedLevel: 0 | 1 | 2, ids: readonly string[], label: string,
 ): void {
-  const viewText = viewTextFor(request, entry)
+  const viewText = viewTextFor(request, entry, ids)
   const actual = projectionLevelOf(entry, viewText)
   if (actual !== expectedLevel) {
     throw new Error(`${label} 的形态应为级 ${expectedLevel}，实际为 ${actual ?? "对不上任何形态"}｜${sizing()}`)
@@ -331,7 +361,8 @@ function expectClearedBody(entry: StoredResult, viewText: string, label: string)
  *
  * - entries 的下标 = 该条在**请求视图数组**里的下标（`protectedMessageIndexes` 的下标基数同此）；
  * - measure 用导入的 `estimateRequestTokens` / `projectToolResultText` / `annotateToolResultText`
- *   复算每一档的视图估算 —— 与 runtime 的 `createLadderMeasure` / `applyLevels` 同一份口径；
+ *   在**存档原文**上复算每一档的视图估算 —— 与 runtime 的 `createLadderMeasure` / `applyLevels`
+ *   同一份口径（那两处拿到的都是投影前的视图；观测面是投影后的形态，只能用来定消息骨架）；
  *   形态里的地址用完整条目 id（运行期发的是它的前缀，只差几十 token，落在校准余量内）。
  *
  * 这是「保护区、preserve、无地址」三条过滤在真实视图上的重放：plan 的 levels 应与投影出来的
@@ -339,6 +370,7 @@ function expectClearedBody(entry: StoredResult, viewText: string, label: string)
  */
 function replayPlan(request: RecordedRequest, stored: readonly StoredResult[]): ToolResultLadderPlan {
   const view = request.messages
+  const ids = stored.map(entry => entry.id)
   const viewIndexes = view.flatMap((message, index) => (message.role === "toolResult" ? [index] : []))
   if (viewIndexes.length !== stored.length) {
     throw new Error(`请求视图里的工具结果 ${viewIndexes.length} 条与存档 ${stored.length} 条对不上（发生压缩？）｜${sizing()}`)
@@ -349,7 +381,7 @@ function replayPlan(request: RecordedRequest, stored: readonly StoredResult[]): 
     const entry = stored[at]!
     // 配对自检：视图里的这段正文必须能被认成这条存档结果的某一档形态（认错就报，不静默错配）。
     const viewText = textOfContent(view[index]!.content)
-    if (projectionLevelOf(entry, viewText) === undefined) {
+    if (projectionLevelOf(entry, viewText) === undefined || !addressBelongsTo(entry, viewText, ids)) {
       throw new Error(`视图第 ${index} 条与存档第 ${at} 条（${entry.toolName}）对不上：${viewText.slice(0, 40)}…｜${sizing()}`)
     }
     if (entry.toolName.length === 0) throw new Error(`存档第 ${at} 条没有工具名，preserve 名单会判错｜${sizing()}`)
@@ -367,10 +399,16 @@ function replayPlan(request: RecordedRequest, stored: readonly StoredResult[]): 
       const entry = storedByIndex.get(index)
       if (entry === undefined) return message
       const level = levels.get(index) ?? 0
-      // 与 `applyLevels` 同形：逐 text 块处理，未改动的块原样留下。
-      const project = (text: string): string => level === 0
-        ? annotateToolResultText(text, entry.address, SESSION_TRANSCRIPT_TOOL)
-        : projectToolResultText(text, entry.address, WINDOW_TOKENS, SESSION_TRANSCRIPT_TOOL, level)
+      // 与 `applyLevels` 同形：逐 text 块处理（工具结果是单 text 块，上面的配对自检已确认
+      // 每条视图正文都能被认成这条存档结果的某一档形态）。**投影的输入取存档原文**
+      // （`entry.text`），不取观测面的正文：观测到的请求视图本身已经是投影后的形态，
+      // 拿它当输入等于「对投影结果再投影一次」——第 4 轮那笔里三条地址探针已是级 2 清空形态，
+      // 再走级 1 只会得到「清空 + 地址尾行」（约 62 token），全量回不来，级 1 读数因此被
+      // 系统性低估（实跑把 114,5xx 的量级读成 83,466）。运行期 `createLadderMeasure` 拿到的
+      // 是投影前的视图，这里补上的就是同一个前提。
+      const project = (): string => level === 0
+        ? annotateToolResultText(entry.text, entry.address, SESSION_TRANSCRIPT_TOOL)
+        : projectToolResultText(entry.text, entry.address, WINDOW_TOKENS, SESSION_TRANSCRIPT_TOOL, level)
       return { ...message, content: projectTextBlocks(message.content, project) }
     }),
     request.tools ?? [],
@@ -450,20 +488,31 @@ async function expectProjectionShapes(): Promise<void> {
   const shortEntry = stored.find(entry => entry.toolName === SHORT_TOOL_NAME)
   const loadEntries = stored.filter(entry => entry.toolName === LOAD_TOOL_NAME)
   if (!errorEntry || !preserveEntry || !protectedEntry || !shortEntry
-    || addressEntries.length !== ADDRESS_CALL_TAGS.length || loadEntries.length !== loadChunks.length) {
-    throw new Error(`第 4 轮的探针条目不齐（地址 ${addressEntries.length} / 载荷 ${loadEntries.length}）｜${sizing()}`)
+    || addressEntries.length !== ADDRESS_CALL_TAGS.length || calibratedChunks.length === 0
+    || loadEntries.length !== calibratedChunks.length) {
+    throw new Error(`第 4 轮的探针条目不齐（地址 ${addressEntries.length} / 载荷 ${loadEntries.length}，`
+      + `校准 ${calibratedChunks.length} 块）｜${sizing()}`)
   }
+  // 校准载荷的存档必须是原文（X-2）：条数相等只是计数，这条才保证「视图里那块载荷 = 完整一块
+  // 校准载荷」。少了它，载荷被上游换成指针/被裁过时，越线量会静默变小、断言面测的是另一件事。
+  loadEntries.forEach((entry, at) => {
+    const chunk = calibratedChunks[at]!
+    if (entry.text !== chunk) {
+      throw new Error(`${LOAD_TOOL_NAME} 第 ${at + 1} 块的存档不是校准载荷原文`
+        + `（${entry.text.length} ≠ ${chunk.length} 字符）｜${sizing()}`)
+    }
+  })
 
   // 级 2 清空 + 地址仍在（C-3）：正文只剩占位串，中部标记必须消失。
   for (const entry of addressEntries) {
     expectLevel(last, entry, 2, ids, `${entry.toolName}（保护区外，第 4 轮）`)
-    expectClearedBody(entry, viewTextFor(last, entry), `${entry.toolName}（保护区外，第 4 轮）`)
+    expectClearedBody(entry, viewTextFor(last, entry, ids), `${entry.toolName}（保护区外，第 4 轮）`)
   }
   // 保护区挡住的是升级，不是缩短：同一条探针的兄弟在保护区内 ⇒ 级 1（C-1 的 W3-D1 对照）。
   expectLevel(last, protectedEntry, 1, ids, `${PROTECTED_TOOL_NAME}（保护区内，第 4 轮）`)
   // 无地址 ⇒ 停在级 1；级 2 的**硬前提**就是这条等式：无地址时两档输出逐字相等（C-2）。
   expectLevel(last, errorEntry, 1, ids, `${ERROR_TOOL_NAME}（无地址，第 4 轮）`)
-  const errorText = viewTextFor(last, errorEntry)
+  const errorText = viewTextFor(last, errorEntry, ids)
   const levelTwoWithoutAddress = projectToolResultText(errorEntry.text, undefined, WINDOW_TOKENS, SESSION_TRANSCRIPT_TOOL, 2)
   if (levelTwoWithoutAddress !== projectToolResultText(errorEntry.text, undefined, WINDOW_TOKENS, SESSION_TRANSCRIPT_TOOL, 1)) {
     throw new Error("无地址时级 2 与级 1 不再是同一形态（级 2 的「必须有地址」硬前提被破坏）")
@@ -478,13 +527,13 @@ async function expectProjectionShapes(): Promise<void> {
   // preserve：不缩短、不清空、但同样带地址（D-W2-5）；校准载荷（巨量正文）同样保持全量。
   for (const entry of [preserveEntry, ...loadEntries]) {
     expectLevel(last, entry, 0, ids, `${entry.toolName}（preserve，第 4 轮）`)
-    if (!viewTextFor(last, entry).startsWith(entry.text)) {
+    if (!viewTextFor(last, entry, ids).startsWith(entry.text)) {
       throw new Error(`${entry.toolName} 的正文没有逐字原样进入请求｜${sizing()}`)
     }
   }
   // 未超阈 ⇒ 级 0 不动（正文逐字 + 地址尾行）。
   expectLevel(last, shortEntry, 0, ids, `${SHORT_TOOL_NAME}（未超阈，第 4 轮）`)
-  if (!viewTextFor(last, shortEntry).includes(SHORT_CORE)) throw new Error("短结果的中部标记被裁掉")
+  if (!viewTextFor(last, shortEntry, ids).includes(SHORT_CORE)) throw new Error("短结果的中部标记被裁掉")
 
   // 存档不变量（X-2）：投影与可能的压缩都不改真相源，每条探针仍是全文。
   for (const marker of [ADDRESS_CORE, ERROR_CORE, PRESERVE_CORE, PROTECTED_CORE, SHORT_CORE]) {
@@ -509,6 +558,7 @@ export const 阶梯投影: SceneDef = {
   setup: async () => {
     requests.length = 0
     loadChunks = []
+    calibratedChunks = []
     calibratedFrame = 0
     calibratedNeeded = 0
     // 前置：第 1 轮要一次调完全部长探针（三个地址 + 无地址错误 + preserve），
@@ -676,6 +726,8 @@ export const 阶梯投影: SceneDef = {
           throw new Error(`校准载荷需要 ${chunks.length} 次调用，超过单轮上限 ${loopConfig.maxToolCallsPerTurn}：越线量 ${calibratedNeeded} tokens 超出可加载范围｜${sizing()}`)
         }
         loadChunks = chunks
+        // 断言期读这份快照：`loadChunks` 会被校准探针的 handler 逐次 `shift()` 消费到空。
+        calibratedChunks = [...chunks]
         provider?.appendResponses([
           ...chunks.map((_, at) => step(fakeToolCall(LOAD_TOOL_NAME, {}, `ladder-load-call-${at + 1}`), expectRoundText(ROUND4_TEXT))),
           step(fakeText(ROUND4_REPLY_TEXT), expectRoundText(ROUND4_TEXT)),
@@ -690,12 +742,22 @@ export const 阶梯投影: SceneDef = {
         { type: "expectLadderPlanEscalated", run: async () => {
           const stored = await resultEntries()
           const last = requests[requests.length - 1]!
-          const texts = last.messages
-            .filter(message => message.role === "toolResult")
-            .map(message => textOfContent(message.content))
           // 观测面必须是含校准载荷的那一笔请求（脚本错位时这里就断）。
-          if (!loadChunks.every(chunk => texts.some(text => text.startsWith(chunk)))) {
-            throw new Error("最后一笔请求里没有校准载荷：第 4 轮的脚本没有按校准结果落位｜" + sizing())
+          // 载荷的观测面按工具名取：`loadChunks` 已被 handler 抽空，**空数组的 `.every()` 恒真**
+          // —— 拿它当守卫，载荷一块都没进这笔请求也会静默放行（第 4 轮实跑正是如此）。
+          const loadTexts = last.messages
+            .filter(message => message.role === "toolResult" && message.toolName === LOAD_TOOL_NAME)
+            .map(message => textOfContent(message.content))
+          if (calibratedChunks.length === 0) {
+            throw new Error(`第 3 轮没有产出校准载荷块：第 4 轮的越线断言不成立｜${sizing()}`)
+          }
+          if (loadTexts.length !== calibratedChunks.length) {
+            throw new Error(`最后一笔请求里的校准载荷为 ${loadTexts.length} 块，`
+              + `与校准结果 ${calibratedChunks.length} 块不符：第 4 轮的脚本没有按校准结果落位｜${sizing()}`)
+          }
+          const missingChunks = calibratedChunks.filter(chunk => !loadTexts.some(text => text.startsWith(chunk)))
+          if (missingChunks.length > 0) {
+            throw new Error(`最后一笔请求里少了 ${missingChunks.length}/${calibratedChunks.length} 块校准载荷｜${sizing()}`)
           }
           const plan = replayPlan(last, stored)
           const viewIndexes = last.messages.flatMap((message, index) => (message.role === "toolResult" ? [index] : []))

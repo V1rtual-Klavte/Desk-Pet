@@ -20,8 +20,10 @@ import { DEFAULT_SCENE_TIMEOUT, UNIT_SCENE_TIMEOUT } from "./scene-runner"
  * `2026-09-28.2`：W6 首次真跑 Live 暴露的 4 条 memory 场景失败修复
  * （`压缩分片` / `地址完整性` / `阶梯投影` / `阶梯闸门`）—— 全部为场景前提失效
  * （载荷与判据推导错误），非产品回归；四次改写共用这一次 bump。
+ * `2026-09-28.3`：同一批修复的**迭代 2**（`压缩分片` 切点改由工具结果承载、绕开 5 MiB 会话
+ * 文件上限；`阶梯投影` 修掉被 `shift()` 抽空的载荷数组与「对投影结果再投影」的重放输入）。
  */
-export const LIVE_DATASET_VERSION = "2026-09-28.2"
+export const LIVE_DATASET_VERSION = "2026-09-28.3"
 
 export function validateDataset(scenes: SceneDef[], contracts: ModuleContract[]): string[] {
   const errors: string[] = []
