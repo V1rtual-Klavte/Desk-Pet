@@ -3,8 +3,8 @@ import type { ModuleContract } from "../types"
 export const variablePoolContract: ModuleContract = {
   module: "variable-pool",
   sourceFiles: ["src/services/engine/pi/runtime.ts", "src/services/personality/variable-pool.ts", "src/services/personality/types.ts", "src/services/personality/stages-file.ts", "src/services/reply/generator.ts", "src/services/session/store.ts"],
-  generatedAt: "2026-09-26",
-  sourceHash: "edf74ef0707fb988fc898b709138885507c91f2e1b32e8c86f9dc0fb7b96327f",
+  generatedAt: "2026-09-28",
+  sourceHash: "4a6d82e836f1873f436c536e8425138107f7e0222fc34197424650f51c334b4e",
   coverage: [
     { id: "vp-01", feature: "系统变量计算", description: "computeSystemVariables(now, activeCardId) 产出 6 个系统变量：5 个由本地时间派生（hour / minute / dayOfWeek / isNightTime / isWeekend）+ activeCardId。**没有模式派生变量** —— pet/assistant 双模式与 general.mode 已全链删除，系统变量集合与删除前逐项一致，这是本轮重分析专门核对过的负向结论（含模式字段的注入点只剩 Card 变量与互动状态）", why: "Prompt 注入基础；模式面删除后必须确认系统变量集合没有跟着漂移，否则 Prompt 里会留下已不存在的维度", depth: "shallow", scenarios: ["variable-system-vars"] },
     { id: "vp-02", feature: "变量池初始化", description: "initVariablePool 从Card variableDefs初始化", why: "Card切换和重启时正确构建", depth: "deep", scenarios: ["variable-pool-init"] },
