@@ -18,7 +18,7 @@ Pi Harness Tool → harness-tool-adapter → ToolRouter → 执行许可借用 �
 | bash | 动态风险：首词命中白名单、无 shell 组合符且未命中危险/硬禁止模式为 NORMAL（免确认通道），其余为 DANGER；Rust 侧层 1 硬基线与系统路径保护不可关闭；命令里的凭据路径 token 硬拒绝 |
 | system_info | 只读运行环境：操作系统、架构、CPU 核心数、内存（总量 / 已用 / 可用）与 bash 默认工作目录 |
 | window_info | 只读最近一次窗口变化（标题 / 内容 / 观测时间）；窗口监控未开启或尚无事件时如实说明 |
-| read_session_event | 回合内按 eventId 分页读取当前会话保存的完整工具结果 |
+| read_session_event | 按 `eventId` 回读地址分页读取当前会话保存的完整工具结果（被 L0 缩短或清空的结果由此恢复）：地址是完整 36 位条目 id 或**会话内最短唯一前缀**，前缀命中多条返回明确错误（`errorCode: "ambiguous"`，提示用更长前缀）而不任选；页大小按 token 预算推导、随窗口单调（旧的固定 8000 字符页宽已删除；`offset` 仍是字符下标）；前缀解析只由条目 id 集合决定，折叠不改条目 id，地址因此对折叠不敏感 |
 | app_open / clipboard_read / clipboard_write / agent_spawn | 恒暴露，受各自策略约束；四者都是 DANGER，`agent_spawn` 另声明 `delegate` 隔离，运行入口（`runPiSubAgent`）按这一判定把派生型工具从子代理工具面里剥离 |
 | MCP 工具 | 仅启用且成功借用的 server；借用期间进入此后每个回合的冻结工具集（计划步骤的未限定工具面拿得到；`agent_spawn` 的 fork/team 子代理按固定白名单收窄 —— 只有 read / system_info / bash，不在其列），受工具发现过滤与权限终裁 |
 
@@ -31,8 +31,8 @@ Pi Harness Tool → harness-tool-adapter → ToolRouter → 执行许可借用 �
 - `safetyLevel`（`SAFE` / `NORMAL` / `DANGER` / `NOWAY`，可用 `resolveSafetyLevel(params, ctx)` 按调用动态解析）留在 ToolDef 顶层：它是风险维度而不是权限意见，供 PermissionKernel 定风险。等级到裁决的映射只有 [permission.ts](../../src/services/safety/permission.ts) 的 `standardDecision` 一处：`NOWAY` 一律 deny，`SAFE` / `NORMAL` 一律 allow，`DANGER` 交给安全模式（`just_do_it` 放行，`let_me_tk` 与默认档都要确认）。工具没有各自的可见性开关，`validateRiskDeclaration` 只守未经类型检查的 `safetyLevel` 声明。
 - `permission.defaultDecision` 是工具侧唯一的权限意见（`allow` / `ask` / `deny` / `passthrough`），`passthrough` 不是执行许可，必须由 PermissionKernel 收敛。
 - `execution.effect / isolation / replay / timeoutMs`：效果分类、隔离级别、恢复重放资格与超时；未声明超时时统一取 `loop.toolTimeoutMs`。并发语义只由 `effect` / `isolation` 表达（`shared_read` 必须同时是 `read` 效果；反向不设约束，独占读是合法的保守声明）。
-- `context.resultProjection`：`preserve` 的原样进入请求，`reference` 的可被 L0 缩短并标注 eventId 回读地址；两者都只改请求视图，会话条目存档始终保留全文。Router 的 L1 内联截断已删除：会话条目与请求视图共用同一份工具返回全文，缩短只发生在 L0（[context/tool-output.ts](../../src/services/context/tool-output.ts)）且提示带 eventId 回读地址。
-- `context.historyCompaction`：`retain` 的调用配对必须保留原文，压缩覆盖边界不得越过（连续完整轮下命中即 decline，由预算守卫报告上下文不足）；当前无生产工具声明 `retain`（能力预留，由 `memory-retain-guard` 场景驱动）。
+- `context.resultProjection`：`preserve` 是**禁止二次处理**，不缩短、不清空（地址标注不在此列，照旧带），避免「引用 → 读取 → 又变引用」的循环 —— 回读工具 `read_session_event` 自身即声明 `preserve`；`reference` 的结果可被 L0 缩短或清空，且**无条件带地址**（不论是否超阈值）。两者都只改请求视图，会话条目存档始终保留全文。Router 的 L1 内联截断已删除：会话条目与请求视图共用同一份工具返回全文，请求视图里工具结果的改动只发生在 L0（[context/tool-output.ts](../../src/services/context/tool-output.ts)）且提示带 eventId 回读地址。
+- `context.historyCompaction`：`retain` 的调用配对必须保留原文，压缩覆盖边界不得越过（连续完整轮下命中即 decline，由预算守卫报告上下文不足）；该取值维持保留（裁定 B）：生产无消费者（全部生产工具声明 `summarize`），由 `memory-retain-guard` 场景驱动，不删。
 
 [defineTool](../../src/services/tool/policy.ts) 是唯一构造入口（手写、Pi 适配、MCP 都经它产出 ToolDef），注册入口再次校验：缺策略、`shared_read` 搭配非只读效果、未知策略版本、非法权限意见都是注册错误，不做缺省猜测；未经它构造的定义在注册时直接抛错（结构上没有执行体），不会进入注册表。`actionCategory` 由 ToolDef 唯一声明，经 `actionCategoryOf`（[registry.ts](../../src/services/tool/registry.ts)）解析后驱动人格阶段文案（`getStagePrompt`）；不再决定并行、权限或压缩。`replay` 由 Harness 恢复路径消费：只有持久化调用与当前工具都声明 `safe` 才会重放效果，当前全部工具为 `never`。
 
