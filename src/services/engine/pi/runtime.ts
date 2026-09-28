@@ -1098,7 +1098,7 @@ function createTurnSinks(kernel: TurnKernel): HarnessRunSinks {
       // 主回合逐请求用量记进分列统计；压缩等一次性调用不走这个 sink，
       // 由 completePiText 按自己的 purpose 单独记录。
       recordModelUsage("main", row.usage)
-      // 先采集带 usage 的快照：估算偏差在这条返回里给出，trace 与快照带的是同一个值。
+      // 先采集带 usage 的快照：估算偏差在这条返回里给出。
       const drift = await kernel.captureSnapshot("provider_usage", kernel.latestMessages, [], row.usage)
         .catch(error => { log.error("responded 证据写入失败:", formatError(error)); return undefined })
       publishRuntimeTrace(kernel.traceContext, "provider_usage", {
@@ -1106,7 +1106,10 @@ function createTurnSinks(kernel: TurnKernel): HarnessRunSinks {
         outputTokens: row.usage.output,
         cacheRead: row.usage.cacheRead,
         cacheWrite: row.usage.cacheWrite,
-        ...(drift === undefined ? {} : { driftRatio: drift.ratio }),
+        // **只在偏差超阈值时带出**（mm-26）：正常轮次缺省，读 trace 的人不必在一堆
+        // 正常读数里筛异常。完整读数（estimated/actual/ratio）始终在 provider_usage
+        // 快照里，异常排查不靠 trace 承担 —— 两边不是同一份投影。
+        ...(drift === undefined || drift.ratio <= ESTIMATE_DRIFT_WARN_RATIO ? {} : { driftRatio: drift.ratio }),
       })
     },
   }

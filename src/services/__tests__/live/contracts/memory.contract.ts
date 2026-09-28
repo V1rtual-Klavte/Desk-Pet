@@ -32,7 +32,7 @@ export const memoryContract: ModuleContract = {
     "src/services/debug.ts",
   ],
   generatedAt: "2026-09-28",
-  sourceHash: "e6bbe82e2907b78f75f041c6ac25cb70beb1423b0c545cd6fea15c7f8f638d65",
+  sourceHash: "eff31fcacf4b3147c2a144b8976772ebc4bf8ef5e2451ef20e077c83e432ad50",
   coverage: [
     { id: "mm-01", feature: "Memory 添加条目", description: "MemoryService.append() 创建记忆", why: "记忆系统基础 CRUD", depth: "shallow", scenarios: ["memory-append"] },
     { id: "mm-02", feature: "Memory 搜索", description: "MemoryService.search(query, limit) 按内容搜索", why: "LLM 需检索相关记忆", depth: "shallow", scenarios: ["memory-search"] },
