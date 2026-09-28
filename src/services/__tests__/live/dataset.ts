@@ -17,8 +17,11 @@ import { DEFAULT_SCENE_TIMEOUT, UNIT_SCENE_TIMEOUT } from "./scene-runner"
  * `2026-09-28.1`：W6（文档与终验）新增 mm-19 的压缩×折叠组合场景
  * （`memory-compaction-fold-integrity`）并改写 mm-25 的 `压缩降级`（X-3/X-4 断言），
  * 全波共用这一次 bump。
+ * `2026-09-28.2`：W6 首次真跑 Live 暴露的 4 条 memory 场景失败修复
+ * （`压缩分片` / `地址完整性` / `阶梯投影` / `阶梯闸门`）—— 全部为场景前提失效
+ * （载荷与判据推导错误），非产品回归；四次改写共用这一次 bump。
  */
-export const LIVE_DATASET_VERSION = "2026-09-28.1"
+export const LIVE_DATASET_VERSION = "2026-09-28.2"
 
 export function validateDataset(scenes: SceneDef[], contracts: ModuleContract[]): string[] {
   const errors: string[] = []

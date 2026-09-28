@@ -544,10 +544,22 @@ export const 阶梯投影: SceneDef = {
       userText: ROUND1_TEXT,
       checks: [{ type: "expectLadderProbesExecuted", run: async context => {
         if (context.output.failure) throw new Error(`第一轮就失败: ${context.output.failure.message}`)
-        for (const [, tool] of PROBE_TOOLS) {
-          if (tool.name === LOAD_TOOL_NAME) continue
-          if (!context.toolHistory.some(item => item.toolName === tool.name && item.status === "done")) {
-            throw new Error(`探针 ${tool.name} 没有执行：${context.toolHistory.map(item => `${item.toolName}:${item.status}`).join(",")}`)
+        // 观测面是**第 1 轮**的工具历史（`context.toolHistory` = 该回合的结算记录），所以只要求
+        // 第 1 轮脚本里的三个工具：受保护/短结果探针在第 3 轮、校准载荷探针在第 4 轮，它们的
+        // 执行证据在各自回合的断言里（第 3 轮要求条目落进会话，第 4 轮逐条比对形态）。
+        // 每条探针的合格证据是**它自己的结算状态**：`ladder_error_probe` 的设计就是抛错
+        // （见上方口径：抛错 ⇒ 无地址 ⇒ 永停级 1），失败分支只写 `error`
+        // （harness-tool-adapter.ts:68 的 `run.history.push`）；工具未注册/未被派发时历史里
+        // 根本没有这条，仍会被这里拦下。「真的按设计抛错」由本 check 后半段的存档标记钉住：
+        // ERROR_CORE（抛出的正是探针正文）、全文长度 ≥ 两段填充、且没有回读地址 ——
+        // 放行的不是「随便一个错误」，是这一条。
+        const round1Probes: Array<[string, string]> = [
+          [ADDRESS_TOOL_NAME, "done"], [ERROR_TOOL_NAME, "error"], [PRESERVE_TOOL_NAME, "done"],
+        ]
+        for (const [name, expectedStatus] of round1Probes) {
+          if (!context.toolHistory.some(item => item.toolName === name && item.status === expectedStatus)) {
+            throw new Error(`探针 ${name} 没有按设计执行（应结算为 ${expectedStatus}）：`
+              + context.toolHistory.map(item => `${item.toolName}:${item.status}`).join(","))
           }
         }
         const stored = await resultEntries()

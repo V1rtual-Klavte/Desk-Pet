@@ -1,15 +1,15 @@
 import type { Context, FauxModelDefinition, FauxResponseStep } from "@earendil-works/pi-ai"
 import { prepareCompaction, shouldCompact } from "@earendil-works/pi-agent-core"
 import {
-  L0_SHORTENED_TAG, contextBudget, estimateContextTokens, estimateMessageTokens, estimateValueTokens,
-  toolBudgetSchema, toolResultTokenBudget,
+  L0_SHORTENED_TAG, MIN_ADDRESS_PREFIX, contextBudget, estimateContextTokens, estimateMessageTokens,
+  estimateValueTokens, projectToolResultText, toolBudgetSchema, toolResultNotice, toolResultTokenBudget,
 } from "@/services/context"
 import { aiConfig } from "@/services/config"
 import { debug } from "@/services/debug"
 import { compactionSettingsFor, harnessSlots } from "@/services/engine/pi"
 import { initChat } from "@/services/agent/runner"
 import { getActiveSessionId } from "@/services/session"
-import { defineTool, register, unregister, TOOL_POLICY_VERSION } from "@/services/tool"
+import { SESSION_TRANSCRIPT_TOOL, TOOL_POLICY_VERSION, defineTool, register, unregister } from "@/services/tool"
 import { installFakeProvider, fakeText, fakeToolCall } from "../../fake-provider"
 import { compactionEntries, sessionEntries } from "../../session-entries"
 import type { SceneDef, TurnDef } from "../../types"
@@ -31,7 +31,7 @@ import type { SceneDef, TurnDef } from "../../types"
 //
 // ── 阶段 1（省钱）：级 1 压完装得下 ──
 // 第 1 轮调用一个成功探针，返回单条就超过 `normalInputTarget` 的 ASCII 结果（1.3 倍），
-// 它进请求视图时被级 1 压到单条上限以下。断言链：
+// 它进请求视图时被级 1 压到头尾各 `floor(单条上限/2)` token + 一行占位提示的形态。断言链：
 //   · 阈值的判据成立：工具结果刚落盘的那个检查点，`tokensBefore`（= 上一次请求的 usage +
 //     尾随消息的 chars/4，上游口径）必然超阈值 —— 用上游 `prepareCompaction` 在**那一刻的
 //     条目**上复算，钉住「阈值压缩路径真的被走到」，否则后面的 0 次调用只是没触发而已；
@@ -59,6 +59,9 @@ import type { SceneDef, TurnDef } from "../../types"
 // 一律运行期：`contextBudget(window)`（**不传 maxOutput**，128k 窗口 ⇒ hardInputLimit 124354 /
 // normalInputTarget 104354 / 单条上限 10435 / 摘要预算 2048）。系统前缀与工具面的 token 不写死，
 // 全部由第 1 轮请求的实测值推导 —— 带宽只有 compactionHeadroom = 20000，写死一定漂移。
+// 级 1 形态 = 头段 + 占位提示行 + 尾段（`projectToolResultText` 的唯一产出）：头尾各
+// `floor(单条上限/2)` token，**提示行与两侧换行是额外开销**。所以「级 1 形态 ≤ 单条上限」
+// 不是产品契约（单条上限只判候选资格），判据取「与本场景载荷经唯一实现重算后逐字相等」。
 // ==========================================
 
 const FAKE_MODEL: FauxModelDefinition = { id: "deskpet-fake", name: "Desk-Pet Fake", contextWindow: 131_072, maxTokens: 16_384 }
@@ -137,6 +140,70 @@ function textOfContent(content: unknown): string {
     .filter(part => part.type === "text")
     .map(part => part.text ?? "")
     .join("")
+}
+
+/**
+ * 级 1（缩短）形态在请求视图里的期望值：`projectToolResultText` 的唯一产出 ——
+ * 头段 + 占位提示行 + 尾段（`tool-output.ts:159-161`）。用真实函数重算，场景不复制切法与模板。
+ */
+function level1Shape(text: string, address: string): string {
+  return projectToolResultText(text, address, WINDOW_TOKENS, SESSION_TRANSCRIPT_TOOL, 1)
+}
+
+/**
+ * 级 1 形态里的回读地址：模板边界取自唯一实现 `toolResultNotice`（传入受理下界长度的占位地址，
+ * 取其左右两侧为地址值的边界）—— 模板一改，边界跟着改，不会因为抄的模板过期而假绿。
+ * 抽不到（没有地址行 / 不是缩短形态）返回 undefined，由调用点如实失败。
+ */
+function level1AddressOf(text: string): string | undefined {
+  const probeRef = "0".repeat(MIN_ADDRESS_PREFIX)
+  const notice = toolResultNotice(probeRef, SESSION_TRANSCRIPT_TOOL, "shortened")
+  const at = notice.indexOf(probeRef)
+  if (at < 0) throw new Error(`地址通知模板不再回显传入的地址：${notice}（场景自身的断言前提被破坏）`)
+  const head = notice.slice(0, at)
+  const tail = notice.slice(at + probeRef.length)
+  const start = text.indexOf(head)
+  if (start < 0) return undefined
+  const rest = text.slice(start + head.length)
+  const end = rest.indexOf(tail)
+  return end < 0 ? undefined : rest.slice(0, end)
+}
+
+/** 探针结果的存档正文（投影的**真实输入**：投影只改请求视图，存档恒为全文，X-2）。 */
+async function storedProbeText(): Promise<string> {
+  const entries = await sessionEntries(getActiveSessionId())
+  const stored = entries.find(entry => entry.type === "message" && entry.message.role === "toolResult"
+    && entry.message.toolName === PROBE_TOOL_NAME)
+  if (!stored || stored.type !== "message" || stored.message.role !== "toolResult") {
+    throw new Error("会话条目里没有探针结果：请求视图的形态无法按存档推导")
+  }
+  return textOfContent(stored.message.content)
+}
+
+/**
+ * 请求视图里的探针结果必须与级 1 的唯一产出**逐字相等**，返回这份视图正文。
+ *
+ * 为什么判据不是「≤ 单条上限」：单条上限只判**候选资格**（原始正文超它才进阶梯），裁剪预算
+ * 只约束头尾两段（各 ≤ `floor(单条上限/2)` token），占位提示行与两侧换行是**额外**开销 ——
+ * 「级 1 形态 ≤ 单条上限」从来不是产品契约：128k 窗口下实测 5217 + 5217 + 27 = **10461**
+ * 对单条上限 10435，超出的正是这一行（地址 8–11 字符时逐字可复现）。
+ * 逐字相等同时钉住三件事：切法是头尾各半、提示行来自唯一模板、地址是当次真实发出的前缀。
+ */
+async function expectLevel1ProbeResult(): Promise<string> {
+  const sent = sentProbeResults()
+  if (sent.length !== 1) throw new Error(`请求视图里的探针结果应为 1 条，实际 ${sent.length} 条｜${sizing()}`)
+  const sentText = sent[0]!
+  const address = level1AddressOf(sentText)
+  if (address === undefined) {
+    throw new Error(`请求视图里的探针结果不是级 1 形态（抽不到回读地址行）：`
+      + `${JSON.stringify(sentText.slice(0, 120))}｜${sizing()}`)
+  }
+  const expected = level1Shape(await storedProbeText(), address)
+  if (sentText !== expected) {
+    throw new Error(`请求视图里的探针结果不是级 1 的逐字产出：视图 ${estimateContextTokens(sentText)} token / ${sentText.length} 字符，`
+      + `重算 ${estimateContextTokens(expected)} token / ${expected.length} 字符（地址 ${address}）｜${sizing()}`)
+  }
+  return sentText
 }
 
 /** 发出去的探针结果正文（请求视图形态）：按顺序收集所有请求里的同一条工具结果。 */
@@ -274,13 +341,9 @@ export const 阶梯闸门: SceneDef = {
             const messageTokens = payload.messages.reduce((total, message) => total + estimateMessageTokens(message), 0)
             measuredBase = debug.lastSystemTokens + toolTokens + messageTokens
 
-            const sent = sentProbeResults()
-            if (sent.length !== 1) throw new Error(`请求视图里的探针结果应为 1 条，实际 ${sent.length} 条｜${sizing()}`)
-            level1ResultTokens = estimateContextTokens(sent[0]!)
-            if (level1ResultTokens > L0_TOKENS) {
-              throw new Error(`请求视图里的探针结果不是级 1 形态（${level1ResultTokens} > 单条上限 ${L0_TOKENS}）：`
-                + "对照相载荷无法推导（上限项要用级 1 之后的读数）")
-            }
+            // 级 1 形态与唯一实现的产出逐字相等（详见 `expectLevel1ProbeResult`）：上限项取的是
+            // **实测**的级 1 读数，它不是「≤ 单条上限」（头尾各半的裁剪预算之外还有提示行开销）。
+            level1ResultTokens = estimateContextTokens(await expectLevel1ProbeResult())
 
             // 垫入量 = 让「压缩后的请求视图」贴住硬上限：压缩把被覆盖的工具结果换成摘要，
             // 其余（含垫入的用户正文）留在视图里。贴住硬上限同时把上游 `tokensBefore`
@@ -348,9 +411,9 @@ export const 阶梯闸门: SceneDef = {
             if (!storedText.includes(CORE_MARKER) || storedText.length < PROBE_RESULT.length) {
               throw new Error(`存档的探针结果不是全文（${storedText.length} 字符）：缩短只能发生在请求视图上`)
             }
-            const sent = sentProbeResults()
-            if (sent.length !== 1) throw new Error(`请求视图里的探针结果应为 1 条，实际 ${sent.length} 条｜${sizing()}`)
-            const sentText = sent[0]!
+            // 视图正文 = 级 1 的唯一产出（逐字相等）：判据不是「≤ 单条上限」——单条上限只判候选
+            // 资格，头尾各半的裁剪预算之外还有占位提示行的固定开销（128k 下实测 10461 > 10435）。
+            const sentText = await expectLevel1ProbeResult()
             if (sentText === PROBE_RESULT) {
               throw new Error("请求视图里的探针结果等于原文：级 1 没有投影，本场景的「装得下」不成立")
             }
@@ -358,9 +421,6 @@ export const 阶梯闸门: SceneDef = {
               throw new Error(`请求视图里的探针结果没有级 1 缩短标记: ${JSON.stringify(sentText.slice(0, 120))}｜${sizing()}`)
             }
             if (sentText.includes(CORE_MARKER)) throw new Error("请求视图里仍能看到被裁掉的正文中段：投影不是级 1 形态")
-            if (estimateContextTokens(sentText) > L0_TOKENS) {
-              throw new Error(`级 1 之后的探针结果仍超单条上限：${estimateContextTokens(sentText)} > ${L0_TOKENS}｜${sizing()}`)
-            }
             // ⑤ 非空性（C-4 的前提）：**实测的请求视图**（级 1 之后）装得下 —— 这是「级 1/2 压完
             //    装得下」这句断言的全部证据；原文装不下由 ④ 的 rawTokens 钉住。
             if (measuredBase <= 0) throw new Error(`没有量到第 1 轮的请求视图（对照相载荷推导也没跑成）｜${sizing()}`)

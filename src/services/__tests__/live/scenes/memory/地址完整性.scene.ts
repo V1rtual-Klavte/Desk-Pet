@@ -27,7 +27,7 @@ import type { SceneDef } from "../../types"
 // - l0_address_probe 成功返回长结果（超 L0 阈值）→ 适配器写入 details.deskpetEntryId → 缩短形态里
 //   带真地址，且该地址能经 read_session_event 读回全文；
 // - l0_short_probe 成功返回短结果（远小于 L0 阈值）→ **同样带地址**（A-1：地址无条件标注，
-//   未超阈值也要留回读通道），正文与中部标记都不被裁；
+//   未超阈值也要留回读通道）→ 未缩短形态是「正文原样 + 一行地址尾行」，正文与中部标记都不被裁；
 // - l0_error_probe 抛出长错误 → 上游错误分支只搬 error.message（没有地址可搬）→ 缩短形态里
 //   不写假 eventId，改标「不可回读」，中部标记同样被裁掉；
 // - l0_short_error_probe 抛出短错误 → 未缩短形态：正文原样，既不追加地址行，也不写假 eventId。
@@ -49,7 +49,9 @@ const SHORT_ERROR_TOOL_NAME = "l0_short_error_probe"
 const ADDRESS_CORE = "-address-core-marker-"
 const ERROR_CORE = "-error-core-marker-"
 const SHORT_CORE = "-short-core-marker-"
-const SHORT_ERROR_CORE = "-short-error-core-marker-"
+// 四个中部标记必须互不为子串：`-short-error-core-marker-` 内嵌了 `-error-core-marker-`，
+// 于是「长结果的中部标记不许留在请求视图」会被短结果**自己的**标记误判成「长结果没被裁」。
+const SHORT_ERROR_CORE = "-short-err-core-marker-"
 
 const FAKE_MODEL: FauxModelDefinition = { id: "deskpet-fake", name: "Desk-Pet Fake", contextWindow: 131_072, maxTokens: 16_384 }
 /** 真正生效的窗口与 resolvePiTurnModel 一致：配置值与注入模型窗口取小。 */
@@ -301,7 +303,17 @@ export const 地址完整性: SceneDef = {
             throw new Error(`未缩短的无地址结果被追加了内容：尾部「${expectedShortFailed.slice(shortFailed.text.length) || "(被改写)"}」`)
           }
           if (!sent.includes(shortFailed.text)) throw new Error("未缩短的无地址结果没有原样进入请求")
-          // 只有超阈值的长结果会被裁：短结果的中部标记必须还在请求视图里。
+          // 只有超阈值的长结果会被裁：长结果的中部标记不许出现在请求视图里。判据只在四个标记
+          // 互不为子串时成立 —— 短错误标记曾内嵌 `-error-core-marker-`，长结果明明被裁掉，
+          // 循环却被短结果（未缩短、按上一条断言必须原样在视图里）自己的标记误触发。
+          const cores = { ADDRESS_CORE, ERROR_CORE, SHORT_CORE, SHORT_ERROR_CORE }
+          for (const [label, outer] of Object.entries(cores)) {
+            for (const [inner, text] of Object.entries(cores)) {
+              if (label !== inner && outer.includes(text)) {
+                throw new Error(`场景自身的断言前提被破坏：${label} 内嵌 ${inner}，中部标记不再能指认具体结果`)
+              }
+            }
+          }
           for (const marker of [ADDRESS_CORE, ERROR_CORE]) {
             if (sent.some(text => text.includes(marker))) throw new Error(`请求视图里还留着中部标记 ${marker}（没有被裁掉）`)
           }
@@ -314,17 +326,22 @@ export const 地址完整性: SceneDef = {
           if (!addressId) throw new Error("短结果没有 details.deskpetEntryId：A-1 要求不论是否超阈值都带地址")
           const ids = results.map(result => result.id)
           const sent = sentToolResultTexts()
-          // 正文逐字（含中部标记）进入请求：没超阈值就不该被裁。
-          if (!sent.includes(short.text)) throw new Error("短结果的正文没有原样进入请求（被裁或被改写）")
           const ref = addressRefIn(sent, short.id, ids)
           const expected = projectToolResultText(short.text, ref, WINDOW_TOKENS, SESSION_TRANSCRIPT_TOOL)
+          // 「没超阈值」不等于「原样进请求」：地址无条件标注（A-1/D-W2-5），短结果的未缩短形态是
+          // 「正文 + 一行地址尾行」。逐字比对的是这条完整投影 —— 正文被裁或被改写仍然会红。
           if (!sent.includes(expected)) {
-            throw new Error(`短结果的投影与唯一实现不一致（前缀 ${ref}）｜${sizing()}`)
+            throw new Error(`短结果的投影（正文 + 地址尾行）没有逐字进入请求（前缀 ${ref}）｜${sizing()}`)
           }
           if (!expected.startsWith(short.text)) {
             throw new Error(`短结果的正文没有逐字原样（前 40 字符：${expected.slice(0, 40)}）`)
           }
           if (!expected.includes(SHORT_CORE)) throw new Error("短结果的中部标记被裁掉")
+          // 正文之后只允许那一行地址通知：多一字、少一字都算「被改写」。
+          const tail = expected.slice(short.text.length)
+          if (tail !== `\n${toolResultNotice(ref, SESSION_TRANSCRIPT_TOOL)}`) {
+            throw new Error(`短结果正文之后的内容不是唯一的一行地址通知：尾部「${tail || "(无)"}」`)
+          }
           // 短结果同样走唯一读取端：投影里发出的前缀能读回全文。
           const lookup = await harnessSlots.peek(getActiveSessionId())?.readToolResult(ref)
           if (lookup?.kind !== "found" || !lookup.text.includes(SHORT_CORE)) {
