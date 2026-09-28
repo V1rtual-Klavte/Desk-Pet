@@ -2,7 +2,7 @@
 
 糖糖桌宠（Desk-Pet）是可自定义角色与外观的桌面陪伴应用。角色常驻桌面，能聊天、感知前台窗口并主动搭话，也能调用工具完成文件读写、命令执行与任务编排。
 
-[![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20macOS-blue)](https://github.com/Klavte/Desk-Pet)
+[![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20macOS-blue)](https://github.com/V1rtual-Klavte/Desk-Pet)
 [![Tauri](https://img.shields.io/badge/Tauri-v2-ffc131)](https://tauri.app)
 [![Vue](https://img.shields.io/badge/Vue-3-4fc08d)](https://vuejs.org)
 
@@ -33,7 +33,7 @@ pnpm 版本由 [package.json](package.json) 的 `packageManager` 指定。
 ## 快速开始
 
 ```bash
-git clone https://github.com/Klavte/Desk-Pet.git
+git clone https://github.com/V1rtual-Klavte/Desk-Pet.git
 cd Desk-Pet
 pnpm install
 
