@@ -7,7 +7,7 @@ import { aiConfig } from "@/services/config"
 import { initChat, sendMessage } from "@/services/agent/runner"
 import { getActiveSessionId } from "@/services/session"
 import { installFakeProvider, fakeText } from "../../fake-provider"
-import { assistantTexts, compactionEntries, countTexts, sessionEntries, sessionMessages } from "../../session-entries"
+import { assistantTexts, compactionEntries, countTexts, entryMessageText, sessionEntries, sessionMessages } from "../../session-entries"
 import type { SceneDef } from "../../types"
 
 // ── 场景口径：摘要内核失败必须显式 decline（不落上游通用英文摘要） ──
@@ -19,6 +19,8 @@ import type { SceneDef } from "../../types"
 // - compactActiveSession 返回 {status:"failed"}；
 // - 会话里留一条 deskpet.compaction_declined 审计条目；
 // - 换代身份原地不动：readContextEpoch 计数 0 且无地址，槽快照同源为 0（decline 不是提交）；
+// - 不产生任何宿主之外的摘要正文：失败压缩前后 assistantTexts 序列逐字不变，失败路径上的 provider
+//   请求增量恰好等于内核摘要请求数（上游回退会多发一次请求，并提交一条上游通用摘要）；
 // - 原文条目与正常回合都不受影响。「不受影响」的口径是**原文条目一条不少且逐字不变**，
 //   不是「条目集合一模一样」—— 失败压缩自己会新增证据条目（这次一次性摘要请求的
 //   deskpet.prompt_snapshot 两档 + 上面那条降级审计），它们不是对原文的改动。
@@ -44,7 +46,25 @@ const FIRST = "第一轮：记住这句话，之后压缩如果失败原文必�
 /** 摘要请求收到非 JSON 正文 → parseStructuredSummary 失败 → 摘要内核抛「摘要格式无效」。 */
 const BAD_SUMMARY = "这不是 JSON"
 
+// ── X-4 的直接判据（失败路径上不产生宿主之外的摘要正文） ──
+//
+// 「没有 compaction 条目」区分不了两个世界：本实现是摘要内核 catch 后返回 {decline:true}（上游据此
+// 落 declined，不提交任何东西、也不再发请求）；若钩子把内核异常抛回上游，钩子注册表的 firstStructural
+// 只记 handler_error 就继续，runStructuralDecision 落到 publishStructuralReady，用上游自己的通用英文
+// 提示词再审一遍 —— 那条路会**多发一次摘要请求**，并提交上游通用摘要。所以判据取两条直接信号：
+// 助手正文序列是否逐字未变、失败路径上的 provider 请求增量是否恰好等于内核摘要请求数。
+
+/** 正常回合的助手回复（setup 脚本顺序）：据此把「本回合正常回复」与外来摘要正文区分开。 */
+const NORMAL_REPLIES = ["第一轮回复完成。", "第二轮回复完成。", "第三轮回复完成。"]
+
 const summaryRequests: string[] = []
+
+/**
+ * 失败压缩路径的基线（第一次 /compact 之前采集）：助手正文序列 + provider 累计请求数。
+ * `expectNoUpstreamFallbackSummary` 在两次失败之后据此做逐字/增量对照。
+ * undefined = 前置断言没跑到 —— 核对不了不能被当成通过。
+ */
+let preFailureBaseline: { assistants: string[]; calls: number } | undefined
 
 function lastRequestText(context: Context): string {
   const last = context.messages[context.messages.length - 1]
@@ -132,10 +152,9 @@ export const 压缩降级: SceneDef = {
   setup: async () => {
     assertPayloadPremise()
     summaryRequests.length = 0
+    preFailureBaseline = undefined
     provider = installFakeProvider([
-      fakeText("第一轮回复完成。"),
-      fakeText("第二轮回复完成。"),
-      fakeText("第三轮回复完成。"),
+      ...NORMAL_REPLIES.map(reply => fakeText(reply)),
       badSummaryStep,
       badSummaryStep,
       fakeText("压缩降级后的正常回复。"),
@@ -181,6 +200,9 @@ export const 压缩降级: SceneDef = {
         } },
         { type: "expectCompactCommandFailure", run: async () => {
           const before = await entryShape()
+          // X-4 基线：失败压缩之前的助手正文序列与 provider 请求计数（本检查是两次失败里第一次的起点）。
+          if (provider === undefined) throw new Error("fake provider 未安装，无法记录失败压缩前的请求计数基线")
+          preFailureBaseline = { assistants: before.assistants, calls: provider.state.callCount }
           const text = await compactCommand.execute() ?? ""
           // 命令输出的真相源是当前 Card 的 commands 段（getCommandReply）：硬编码前缀/措辞
           // 会在文案搬家时假失败，而文案搬家正是本场景要能跟着走的变化。
@@ -232,6 +254,52 @@ export const 压缩降级: SceneDef = {
           if (outcome.status !== "failed") throw new Error(`compactActiveSession 没有报 failed：${outcome.status}`)
           if (!outcome.error?.includes("摘要格式无效")) throw new Error(`失败没有带上内核原因：${outcome.error ?? "(空)"}`)
           if (summaryRequests.length !== 2) throw new Error(`坏摘要请求应为 2 次，实际 ${summaryRequests.length} 次`)
+        } },
+        { type: "expectNoUpstreamFallbackSummary", run: async () => {
+          // X-4 的**直接口径**：失败路径上不存在任何宿主之外的摘要正文。只判「没有 compaction 条目」
+          // 不够 —— 它区分不了两个世界：本实现是摘要内核 catch 后返回 {decline:true}，上游据此
+          // publishStructuralOutcome(kind:"declined")，不提交任何东西、也不再发请求；若钩子把内核异常
+          // 抛回上游（pi-agent-core 的 hooks.js 里 firstStructural 只记 handler_error 就继续），
+          // runStructuralDecision 落到 publishStructuralReady，用上游自己的通用英文提示词
+          // （compaction.js 的 SUMMARIZATION_SYSTEM_PROMPT）再审一遍：那条路**多发一次摘要请求**，
+          // 产出的摘要提交成 compaction 条目，成为后续所有回合唯一的历史视图且不可回滚。
+          const entries = await sessionEntries()
+          // ① 助手正文序列与失败压缩前逐字不变（顺序 + 内容）：decline 不产生任何助手正文。
+          if (preFailureBaseline === undefined) {
+            throw new Error("失败压缩前的基线没有采集到（前置断言未跑到），核对不了不能被当成通过")
+          }
+          const texts = assistantTexts(await sessionMessages())
+          if (JSON.stringify(texts) !== JSON.stringify(preFailureBaseline.assistants)) {
+            throw new Error(`失败的压缩改动了助手正文序列（上游回退通用摘要的迹象）：`
+              + `${JSON.stringify(preFailureBaseline.assistants)} → ${JSON.stringify(texts)}`)
+          }
+          // ② 条目口径同样干净：全量 sessionEntries() 里没有「正文非空、且不属于正常回合回复」的
+          //    assistant 消息条目。读模型会按可见性过滤条目，所以这层直接看条目，不信聊天视图。
+          //    判据用「包含」而不是全等：正常回复可能带运行期装饰（场景既有断言同为 contains 口径）。
+          const strays = entries
+            .flatMap(entry => entry.type === "message" && entry.message.role === "assistant"
+              ? [entryMessageText(entry.message)]
+              : [])
+            .filter(text => text.length > 0 && !NORMAL_REPLIES.some(reply => text.includes(reply)))
+          if (strays.length > 0) {
+            throw new Error(`失败路径上出现了非正常回合回复的助手正文（疑似上游通用摘要）：`
+              + `${JSON.stringify(strays.map(text => text.slice(0, 120)))}`)
+          }
+          // ③ 坏摘要请求与失败一一对应，且没有回退多出来的一次请求：失败路径上的 provider 请求增量
+          //    必须恰好等于内核摘要请求数 —— 回退世界上游会用它自己的提示词再发一次，增量必然更大。
+          const declined = entries.filter(entry => entry.type === "custom" && entry.customType === COMPACTION_DECLINED_ENTRY)
+          if (summaryRequests.length !== declined.length) {
+            throw new Error(`摘要请求数与降级审计条目数不一致：${summaryRequests.length} 次 vs ${declined.length} 条`
+              + `（回退世界会多发一次摘要请求）`)
+          }
+          if (provider === undefined) throw new Error("fake provider 不在位，无法核对失败路径上的请求增量")
+          const calls = provider.state.callCount - preFailureBaseline.calls
+          if (calls !== summaryRequests.length) {
+            throw new Error(`失败路径上的 provider 请求增量是 ${calls}，与 ${summaryRequests.length} 次摘要请求不一致`
+              + `（多出来的那次就是上游回退摘要）`)
+          }
+          // ④ 兜底口径：整份条目里没有 compaction —— 回退世界唯一的历史视图正是在这里提交的。
+          if (compactionEntries(entries).length !== 0) throw new Error("decline 的失败路径提交了 compaction 条目")
         } },
         { type: "expectDeclinedAuditEntry", run: async () => {
           const entries = await sessionEntries()
