@@ -9,7 +9,7 @@ import { initChat } from "@/services/agent/runner"
 import { getActiveSessionId } from "@/services/session"
 import { defineTool, register, unregister, SESSION_TRANSCRIPT_TOOL, TOOL_POLICY_VERSION } from "@/services/tool"
 import type { ToolDef } from "@/services/tool"
-import { installFakeProvider, fakeText, fakeToolCall } from "../../fake-provider"
+import { installFakeProvider, fakeText, fakeToolCall, lastRequestText } from "../../fake-provider"
 import { compactionEntries, sessionEntries } from "../../session-entries"
 import type { SceneDef } from "../../types"
 
@@ -70,13 +70,6 @@ const SUMMARY = JSON.stringify({
 
 /** 摘要请求的正文快照：用来观察摘要素材里两个探针结果各自的形态。 */
 const summaryRequests: string[] = []
-
-function lastRequestText(context: Context): string {
-  const last = context.messages[context.messages.length - 1]
-  return typeof last?.content === "string"
-    ? last.content
-    : (last?.content ?? []).map(part => (part.type === "text" ? part.text : "")).join("")
-}
 
 /** 最后一条脚本响应专供 before_compaction 的摘要请求；被别的请求取走就是脚本错位，立即报错。 */
 const summaryStep: FauxResponseStep = context => {

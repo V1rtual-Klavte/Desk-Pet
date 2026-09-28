@@ -7,7 +7,7 @@ import { debug, usageGrandTotal } from "@/services/debug"
 import type { PurposeUsage } from "@/services/debug"
 import { listAll } from "@/services/tool"
 import { planConfig, setOverride } from "@/services/config"
-import { installFakeProvider, fakeText } from "../../fake-provider"
+import { installFakeProvider, fakeText, lastRequestText } from "../../fake-provider"
 import type { SceneDef } from "../../types"
 
 // 一次性调用（压缩/规划/记忆整理/阶段文案）与主回合共用同一份分列统计：
@@ -17,13 +17,6 @@ import type { SceneDef } from "../../types"
 const PLAN_USER_TEXT = "顺手把配置改一下"
 
 const PLAN_JSON = '```json\n{"summary":"两步","steps":[{"id":1,"description":"读取配置"},{"id":2,"description":"改写配置"}]}\n```'
-
-function lastRequestText(context: Context): string {
-  const last = context.messages[context.messages.length - 1]
-  return typeof last?.content === "string"
-    ? last.content
-    : (last?.content ?? []).map(part => (part.type === "text" ? part.text : "")).join("")
-}
 
 /** 规划脚本响应：被别的请求取走就是脚本错位，立即报错。 */
 function planStep(): FauxResponseStep {

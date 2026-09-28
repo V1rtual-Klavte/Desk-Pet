@@ -105,9 +105,18 @@ export function inputSourceOf(message: { deskpetSource?: unknown }): InputSource
 const ACTIVE_MESSAGE_CUSTOM_TYPE = "deskpet.active_message"
 
 /**
- * 是否为「瞬时输入」消息：主动搭话（custom 消息）与带投递身份的用户输入。
+ * 尾随瞬时注记的自定义消息类型：构造点是 pi/runtime.ts 的 `createTurnNoteMessage`。
  *
- * 这两类都是「这一回合投进来的输入」，不是会话历史的持久正文；transcript/ephemeral 的归属、
+ * 它由宿主在 `transform_context` 逐请求附加，**只存在于请求视图**，不落会话条目 ——
+ * 因此必须与主动搭话一样归到瞬时输入，否则它的 token 会被记进 transcript 行，
+ * 让「会话历史用了多少」这个读数虚高。
+ */
+export const TURN_NOTE_CUSTOM_TYPE = "deskpet.turn_note"
+
+/**
+ * 是否为「瞬时输入」消息：主动搭话、尾随瞬时注记（custom 消息）与带投递身份的用户输入。
+ *
+ * 这几类都是「这一回合投进来的输入」，不是会话历史的持久正文；transcript/ephemeral 的归属、
  * 以及跨这两个口径的 token 估算共用这一处判定（调用方不再各写一份 `role === "user"`）。
  * `options.isActiveMessage` 给「整轮都是主动搭话」的调用方一个显式声明（消息形状本身认不出来时用）。
  */
@@ -115,7 +124,8 @@ export function isTransientInputMessage(
   message: { role?: unknown; customType?: unknown; deskpetEventId?: unknown } | undefined,
   options?: { isActiveMessage?: boolean },
 ): boolean {
-  if (message && message.role === "custom" && message.customType === ACTIVE_MESSAGE_CUSTOM_TYPE) return true
+  if (message && message.role === "custom"
+    && (message.customType === ACTIVE_MESSAGE_CUSTOM_TYPE || message.customType === TURN_NOTE_CUSTOM_TYPE)) return true
   if (message && message.role === "user" && typeof message.deskpetEventId === "string") return true
   return options?.isActiveMessage === true
 }

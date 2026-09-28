@@ -5,7 +5,7 @@ import { initChat } from "@/services/agent/runner"
 import { getActiveSessionId } from "@/services/session"
 import { aiConfig } from "@/services/config"
 import { compactionSettingsFor } from "@/services/engine/pi"
-import { installFakeProvider, fakeText } from "../../fake-provider"
+import { installFakeProvider, fakeText, lastRequestText } from "../../fake-provider"
 import { compactionEntries, sessionEntries, sessionMessages } from "../../session-entries"
 import type { SceneDef } from "../../types"
 
@@ -33,13 +33,6 @@ const SUMMARY = JSON.stringify({
   continuity: ["本次使用 fake provider"],
   nextSteps: ["检查 contextEpoch 是否推进"],
 })
-
-function lastRequestText(context: Context): string {
-  const last = context.messages[context.messages.length - 1]
-  return typeof last?.content === "string"
-    ? last.content
-    : (last?.content ?? []).map(part => (part.type === "text" ? part.text : "")).join("")
-}
 
 /** 第 4 条脚本响应专供 before_compaction 的摘要请求；被别的请求取走就是脚本错位，立即报错。 */
 function summaryStep(): FauxResponseStep {

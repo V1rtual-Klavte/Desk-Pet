@@ -13,7 +13,7 @@ import {
   SESSION_TRANSCRIPT_TOOL, TOOL_POLICY_VERSION, defineTool, listAll, preservedToolNames, register, unregister,
 } from "@/services/tool"
 import type { ToolDef, ToolHandler } from "@/services/tool"
-import { fakeText, fakeToolCall, installFakeProvider } from "../../fake-provider"
+import { fakeText, fakeToolCall, installFakeProvider, lastRequestText } from "../../fake-provider"
 import { compactionEntries, sessionEntries } from "../../session-entries"
 import type { SceneDef } from "../../types"
 
@@ -160,11 +160,6 @@ function sizing(): string {
     + `、保护区 ${LADDER_PROTECTION_TURNS} 轮；探针 ${PROBE_SIDE_CHARS}×2 字符、短结果 ${SHORT_RESULT.length} 字符`
     + `；第 3 轮实测视图 ${calibratedFrame}、校准载荷 ${calibratedNeeded} tokens / ${calibratedChunks.length} 块`
     + `、越线量 ±${MARGIN_TOKENS}`
-}
-
-function lastRequestText(context: Context): string {
-  const last = context.messages[context.messages.length - 1]
-  return textOfContent(last?.content)
 }
 
 /** 请求观测：记录状态后按脚本作答；`expect` 用于就地把「脚本错位」暴露成场景失败。 */

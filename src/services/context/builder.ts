@@ -102,25 +102,31 @@ const WEEKDAY_LABELS = ["周日", "周一", "周二", "周三", "周四", "周�
  * （约 11 tokens：非 ASCII 1 token/字符、ASCII 1/4 token），不随输入或窗口变化。
  *
  * 分钟精度足够：秒级不给出额外信息，只会让每个回合的请求视图都不同。
+ *
+ * 消费者是 `engine/pi` 的 `createTurnNoteMessage`（尾随瞬时注记）——不在 `buildPrompt` 的
+ * 块里。放那里的原因见 `composeDynamicPrompt` 的注释：它每回合都变，进 system prompt
+ * 就会把前缀缓存断在会话正文之前。
  */
-function currentTimeNote(now: Date = new Date()): string {
+export function currentTimeNote(now: Date = new Date()): string {
   const pad = (value: number) => String(value).padStart(2, "0")
   return `[当前时间] ${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())} `
     + `${pad(now.getHours())}:${pad(now.getMinutes())} ${WEEKDAY_LABELS[now.getDay()]}`
 }
 
 /**
- * 变量池正文 + 思考强度后缀 + 当前时间的唯一拼接点（聊天动态提示与冻结上下文都走它）。
+ * 变量池正文 + 思考强度后缀的唯一拼接点（聊天动态提示与冻结上下文都走它）。
  *
- * 时间片段排在末尾：它每回合都变，排在它之后的内容会一起失去 Provider 的前缀缓存收益，
- * 而变量池正文在变量没变时是稳定的。它落在 dynamic 层的 `dynamic:runtime` 核心块里
- * （`buildPrompt`），定长规模，不会把核心块撑爆；也不进 static 前缀与 `cache.prefixHash`。
+ * **当前时间不在这里。** 前缀缓存只在第一个差异处之前命中，而 system prompt 整体排在
+ * 会话正文之前 —— 时间片段每回合都变，留在 system prompt 里就会把缓存断在正文上游，
+ * 使整个会话正文每轮重新计费。它改由 `createTurnNoteMessage` 作为尾随瞬时消息附在
+ * 消息数组最末：那里的差异点落在「本来就是新的」那一段，不额外损失缓存。
+ *
+ * 变量池正文在变量没变时是稳定的，留在 `dynamic:runtime` 核心块里（`buildPrompt`）。
  */
 export function composeDynamicPrompt(poolText: string, effort: ThinkingEffort): string {
-  const withEffort = effort === "low" ? `${poolText}${CHAT_THINKING_HINTS.low}`
+  return effort === "low" ? `${poolText}${CHAT_THINKING_HINTS.low}`
     : effort === "high" ? `${poolText}${CHAT_THINKING_HINTS.high}`
       : poolText
-  return `${withEffort}\n${currentTimeNote()}`
 }
 
 function runtimeDynamicPrompt(pool: VariablePool, effort: ThinkingEffort): string {

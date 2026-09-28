@@ -3,7 +3,7 @@ import type { Context, DeferredHandle, FauxModelDefinition, FauxResponseStep } f
 import { harnessSlots } from "@/services/engine/pi"
 import { initChat } from "@/services/agent/runner"
 import { getActiveSessionId } from "@/services/session/store"
-import { fakeText, installFakeProvider } from "../../fake-provider"
+import { fakeText, installFakeProvider, lastRequestText } from "../../fake-provider"
 import { assistantTexts, countTexts, sessionEntries, sessionMessages } from "../../session-entries"
 import type { SceneDef } from "../../types"
 
@@ -46,13 +46,6 @@ function bounded<T>(work: Promise<T>, ms: number): Promise<T | undefined> {
 function deferredAssistantEntries(entries: Awaited<ReturnType<typeof sessionEntries>>): number {
   return entries.filter(entry =>
     entry.type === "message" && entry.message.role === "assistant" && entry.message.stopReason === "deferred").length
-}
-
-function lastRequestText(context: Context): string {
-  const last = context.messages[context.messages.length - 1]
-  return typeof last?.content === "string"
-    ? last.content
-    : (last?.content ?? []).map(part => (part.type === "text" ? part.text : "")).join("")
 }
 
 export const 压缩挂起结算: SceneDef = {

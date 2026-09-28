@@ -12,7 +12,7 @@ import {
 } from "@/services/engine"
 import type { CompactionMaterial, CompactionShardPlan } from "@/services/engine"
 import { formatError } from "@/services/error"
-import { fakeText, installFakeProvider } from "../../fake-provider"
+import { fakeText, installFakeProvider, lastRequestText } from "../../fake-provider"
 import type { SceneDef } from "../../types"
 
 // ==========================================
@@ -210,13 +210,6 @@ function sizing(material: CompactionMaterial, plan?: CompactionShardPlan): strin
 const summaryText = (slice: number): string => JSON.stringify({
   intent: `第 ${slice} 片`, facts: [], corrections: [], pending: [], continuity: [], nextSteps: [],
 })
-
-function lastRequestText(context: Context): string {
-  const last = context.messages[context.messages.length - 1]
-  return typeof last?.content === "string"
-    ? last.content
-    : (last?.content ?? []).map(part => (part.type === "text" ? part.text : "")).join("")
-}
 
 /** 摘要请求脚本：记录真正发出去的素材正文，并按调用序号产出结构化摘要。 */
 function summaryStep(requests: string[]): FauxResponseStep {

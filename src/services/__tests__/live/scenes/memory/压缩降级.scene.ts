@@ -6,7 +6,7 @@ import { getCommandReply } from "@/services/personality"
 import { aiConfig } from "@/services/config"
 import { initChat, sendMessage } from "@/services/agent/runner"
 import { getActiveSessionId } from "@/services/session"
-import { installFakeProvider, fakeText } from "../../fake-provider"
+import { installFakeProvider, fakeText, lastRequestText } from "../../fake-provider"
 import { assistantTexts, compactionEntries, countTexts, entryMessageText, sessionEntries, sessionMessages } from "../../session-entries"
 import type { SceneDef } from "../../types"
 
@@ -65,13 +65,6 @@ const summaryRequests: string[] = []
  * undefined = 前置断言没跑到 —— 核对不了不能被当成通过。
  */
 let preFailureBaseline: { assistants: string[]; calls: number } | undefined
-
-function lastRequestText(context: Context): string {
-  const last = context.messages[context.messages.length - 1]
-  return typeof last?.content === "string"
-    ? last.content
-    : (last?.content ?? []).map(part => (part.type === "text" ? part.text : "")).join("")
-}
 
 /** 坏摘要脚本专供 before_compaction 的摘要请求；被别的请求取走就是脚本错位，立即报错。 */
 const badSummaryStep: FauxResponseStep = context => {

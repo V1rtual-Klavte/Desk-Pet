@@ -12,7 +12,7 @@ import type { CompactionAuditSink, ContextAllocation, ContextBlock, IngressEnvel
 import { createMessageId } from "@/services/agent/types"
 import { MemoryService, recallMemory, planCheckpointStore } from "@/services/agent/memory"
 import type { StructuredSummary } from "@/services/agent/memory"
-import { buildPrompt, composeDynamicPrompt, contextBudget, CONTEXT_RATIOS, estimateRequestTokens, estimateContextTokens, estimateMessageTokens, ContextBudgetError, ESTIMATE_DRIFT_WARN_RATIO, estimateDriftRatio, planToolResultLadder, projectMessageContent, projectToolResultText, annotateToolResultText, protectedMessageIndexes, toolResultAddress } from "@/services/context"
+import { buildPrompt, composeDynamicPrompt, currentTimeNote, contextBudget, CONTEXT_RATIOS, estimateRequestTokens, estimateContextTokens, estimateMessageTokens, ContextBudgetError, ESTIMATE_DRIFT_WARN_RATIO, estimateDriftRatio, planToolResultLadder, projectMessageContent, projectToolResultText, annotateToolResultText, protectedMessageIndexes, toolResultAddress } from "@/services/context"
 import type { ContextBudgetAdjustment, ToolResultLadderEntry, ToolResultLadderPlan, ToolResultLevelMeasure } from "@/services/context"
 import { bindRunningPlan, clearRunningPlan, notifyPlanEnd, requestPlanConfirm, requestPlanStepDecision } from "@/services/engine/plan-confirmation"
 import type { PlanConfirmResult } from "@/services/engine/plan-confirmation"
@@ -61,7 +61,7 @@ import { classifyFailureKind } from "@/services/error/failure-kind"
 import type { FailureKind } from "@/services/error/failure-kind"
 import { formatError, reportError } from "@/services/error"
 import { createLogger } from "@/services/logger"
-import { createPromptRewrite, createPromptSnapshot, createRuntimeTraceContext, inputEventId, isTransientInputMessage, laneMessageText, messageEventId, PROMPT_SNAPSHOT_ENTRY, publishRuntimeTrace, RECALL_FAILED_ENTRY, refreshMessageAllocations, userInputMessage } from "@/services/engine/runtime"
+import { createPromptRewrite, createPromptSnapshot, createRuntimeTraceContext, inputEventId, isTransientInputMessage, laneMessageText, messageEventId, PROMPT_SNAPSHOT_ENTRY, publishRuntimeTrace, RECALL_FAILED_ENTRY, refreshMessageAllocations, TURN_NOTE_CUSTOM_TYPE, userInputMessage } from "@/services/engine/runtime"
 import type { RuntimeTraceContext } from "@/services/engine/runtime"
 import { redactText, sha256Text, stableSerialize } from "@/services/engine/runtime"
 
@@ -800,16 +800,20 @@ function extractRequestParams(payload: unknown): PromptRequestParams {
 }
 
 /**
- * 请求视图投影 + 硬预算判定（主回合与手动压缩的续跑共用同一份实现）。
+ * 请求视图构建 + 硬预算判定（主回合与手动压缩的续跑共用同一份实现）。
  *
- * 工具结果走**阶梯**：候选集、保护区与升降档只来自 `planToolResultLadder()`（本文件不另判），
- * 投影层把 `plan.levels` 应用成请求视图（`applyLevels`），硬预算的读数也取同一份计划的判据值
- * —— 判据唯一，不存在「先判一次再算一次」的第二条链。
+ * 构建分两步，顺序不可换：
+ *
+ * 1. **尾随瞬时注记**贴在消息数组最末（`createTurnNoteMessage`）。必须在测量之前贴 ——
+ *    它要计入 `used`，贴晚了硬上限核对会漏算它，超出的请求就能绕过守卫发出去。
+ * 2. 工具结果走**阶梯**：候选集、保护区与升降档只来自 `planToolResultLadder()`（本文件不另判），
+ *    投影层把 `plan.levels` 应用成请求视图（`applyLevels`），硬预算的读数也取同一份计划的判据值
+ *    —— 判据唯一，不存在「先判一次再算一次」的第二条链。
  *
  * 判定不在这里 reject：记入宿主 state.contextError，由网关在下一次请求上报
- * （每次投影按当次视图重算并覆盖，不粘住首条判定）。
+ * （每次构建按当次视图重算并覆盖，不粘住首条判定）。
  */
-function createProjectionHook(args: {
+function createRequestViewHook(args: {
   projectToolResults: boolean
   toolsByName: ReadonlyMap<string, ToolDef>
   /** `resultProjection: "preserve"` 的工具名（不缩短、不清空，地址照走）；与 `toolsByName` 出自同一份 `kernel.tools`。 */
@@ -824,7 +828,9 @@ function createProjectionHook(args: {
 }): NonNullable<HarnessRunHooks["transformContext"]> {
   const tools = [...args.toolsByName.values()]
   return async ({ messages, systemPrompt }) => {
-    let prepared = messages
+    // 注记逐请求重算而不是回合级冻结：它承载的就是「当前时间」，取当次更准；且它贴在末尾，
+    // 同回合内多次请求之间的分钟漂移不损失任何缓存。
+    let prepared = [...messages, createTurnNoteMessage(currentTimeNote())]
     let used: number
     try {
       if (args.projectToolResults) {
@@ -951,7 +957,7 @@ function createTurnSpec(kernel: TurnKernel, options: {
       },
       isError,
     }),
-    transformContext: createProjectionHook({
+    transformContext: createRequestViewHook({
       projectToolResults: options.projectToolResults,
       toolsByName,
       preserveToolNames,
@@ -2131,7 +2137,7 @@ export async function compactActiveSession(sessionId: string): Promise<ManualCom
       // 续跑也走宿主的投影与剥离；工具结果投影按空工具集（安全回退，不开工具）——
       // 没有工具声明就没有 preserve 名单，历史结果照常进候选集走阶梯（与投影 hook 对未注册
       // 工具的口径一致）。
-      transformContext: createProjectionHook({
+      transformContext: createRequestViewHook({
         projectToolResults: true,
         toolsByName: new Map(),
         preserveToolNames: structurePreserveToolNames,
@@ -2359,6 +2365,33 @@ export function createActiveMessage(text: string, ingress?: IngressEnvelope): Ag
       querySource: ingress?.querySource ?? "active_monitor",
       priority: ingress?.priority ?? "later",
       taint: ingress?.taint ?? "derived",
+      visibleToUser: false,
+      eligibleForTranscript: false,
+      eligibleForMemory: false,
+    },
+    timestamp: Date.now(),
+  }
+}
+
+/**
+ * 尾随瞬时注记：附在请求视图**最末**，不进 system prompt、不落会话条目。
+ *
+ * 落点由前缀缓存决定：缓存只在第一个差异处之前命中，而 system prompt 整体排在会话正文
+ * 之前 —— 每回合变化的内容（当前时间；将来的召回）留在 system prompt 里，就会把缓存断在
+ * 正文上游，让整个会话正文每轮重新计费。贴在消息数组末尾时，差异点落在「本来就是新的」
+ * 那一段，不额外损失任何缓存。
+ *
+ * `eligibleForTranscript` / `eligibleForMemory` 与主动搭话同口径：模型看得到内容，
+ * 但它既不是会话历史，也不能成为用户事实（`isTransientInputMessage` 据此把它归到 ephemeral）。
+ */
+export function createTurnNoteMessage(text: string): AgentMessage {
+  return {
+    role: "custom",
+    customType: TURN_NOTE_CUSTOM_TYPE,
+    content: text,
+    display: false,
+    details: {
+      taint: "derived",
       visibleToUser: false,
       eligibleForTranscript: false,
       eligibleForMemory: false,

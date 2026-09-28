@@ -6,7 +6,7 @@ import { initChat, sendMessage } from "@/services/agent/runner"
 import { getActiveSessionId } from "@/services/session"
 import { PLAN_CHECKPOINT_ENTRY } from "@/services/agent/memory"
 import { entryMessageText, sessionEntries } from "../../session-entries"
-import { fakeText, installFakeProvider } from "../../fake-provider"
+import { fakeText, installFakeProvider, lastRequestText } from "../../fake-provider"
 import type { SceneDef } from "../../types"
 
 /**
@@ -47,13 +47,6 @@ const STEP_REPLY = "步骤完成"
 const MAIN_REPLY = "计划执行完成"
 /** 场景自己的回合（核对用）的脚本响应；它跑在计划回合之后。 */
 const TURN_REPLY = "核对完成"
-
-function lastRequestText(context: Context): string {
-  const last = context.messages[context.messages.length - 1]
-  return typeof last?.content === "string"
-    ? last.content
-    : (last?.content ?? []).map(part => (part.type === "text" ? part.text : "")).join("")
-}
 
 /** 规划脚本响应：被别的请求取走就是脚本错位，立即报错。 */
 function planStep(): FauxResponseStep {

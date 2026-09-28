@@ -10,7 +10,7 @@ import { compactionSettingsFor, harnessSlots } from "@/services/engine/pi"
 import { initChat } from "@/services/agent/runner"
 import { getActiveSessionId } from "@/services/session"
 import { SESSION_TRANSCRIPT_TOOL, TOOL_POLICY_VERSION, defineTool, register, unregister } from "@/services/tool"
-import { installFakeProvider, fakeText, fakeToolCall } from "../../fake-provider"
+import { installFakeProvider, fakeText, fakeToolCall, lastRequestText } from "../../fake-provider"
 import { compactionEntries, sessionEntries } from "../../session-entries"
 import type { SceneDef, TurnDef } from "../../types"
 
@@ -115,13 +115,6 @@ let padText = "对照相载荷未推导。"
 /** `debug.usage.main.total` 的本场景起点：上游口径的记账读数，比差值不比绝对值。 */
 let mainTotalBefore = 0
 const summaryRequests: string[] = []
-
-function lastRequestText(context: Context): string {
-  const last = context.messages[context.messages.length - 1]
-  return typeof last?.content === "string"
-    ? last.content
-    : (last?.content ?? []).map(part => (part.type === "text" ? part.text : "")).join("")
-}
 
 /** 对照相才该被消费的脚本段：被非摘要请求取走就是脚本错位，立即报错。 */
 const summaryStep: FauxResponseStep = context => {

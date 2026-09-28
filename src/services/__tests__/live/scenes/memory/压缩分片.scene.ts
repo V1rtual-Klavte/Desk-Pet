@@ -13,7 +13,7 @@ import { compactActiveSession, compactionSettingsFor, harnessSlots } from "@/ser
 import { getActiveSessionId } from "@/services/session"
 import { TOOL_POLICY_VERSION, defineTool, getToolByName, register, unregister } from "@/services/tool"
 import type { ToolDef } from "@/services/tool"
-import { fakeText, fakeToolCall, installFakeProvider } from "../../fake-provider"
+import { fakeText, fakeToolCall, installFakeProvider, lastRequestText } from "../../fake-provider"
 import { compactionEntries, sessionEntries } from "../../session-entries"
 import type { SceneDef } from "../../types"
 
@@ -322,13 +322,6 @@ function summaryResponse(slice: number): string {
 const summaryRequests: string[] = []
 
 /** 一次请求的最后一条消息正文：摘要请求与主请求都从这里分辨（摘要素材的 JSON 才有 `"instructions"`）。 */
-function lastRequestText(context: Context): string {
-  const last = context.messages[context.messages.length - 1]
-  return typeof last?.content === "string"
-    ? last.content
-    : (last?.content ?? []).map(part => (part.type === "text" ? part.text : "")).join("")
-}
-
 /** 摘要请求脚本：被非摘要请求取走就是脚本错位，立即报错（同 `压缩降级` 的做派）。 */
 const summaryStep: FauxResponseFactory = context => {
   const text = lastRequestText(context)

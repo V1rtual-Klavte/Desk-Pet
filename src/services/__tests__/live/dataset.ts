@@ -22,8 +22,13 @@ import { DEFAULT_SCENE_TIMEOUT, UNIT_SCENE_TIMEOUT } from "./scene-runner"
  * （载荷与判据推导错误），非产品回归；四次改写共用这一次 bump。
  * `2026-09-28.3`：同一批修复的**迭代 2**（`压缩分片` 切点改由工具结果承载、绕开 5 MiB 会话
  * 文件上限；`阶梯投影` 修掉被 `shift()` 抽空的载荷数组与「对投影结果再投影」的重放输入）。
+ * `2026-09-28.4`：当前时间移出 system prompt（改由 `createTurnNoteMessage` 作尾随瞬时注记）——
+ * 改写 `提示文案`（memory-prompt-composition）的断言口径，并把 **16 个场景各自复制**的
+ * `lastRequestText` 收敛为 `fake-provider.ts` 的唯一实现（它从末尾跳过尾随注记）。
+ * 不收敛的话，注记落地后这 16 处每一处都得记得跳过它，漏一处就是一条难查的假失败
+ * （`压缩挂起结算` 正是这么红过一次）。
  */
-export const LIVE_DATASET_VERSION = "2026-09-28.3"
+export const LIVE_DATASET_VERSION = "2026-09-28.4"
 
 export function validateDataset(scenes: SceneDef[], contracts: ModuleContract[]): string[] {
   const errors: string[] = []

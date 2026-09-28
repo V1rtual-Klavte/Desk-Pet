@@ -7,7 +7,7 @@ import { getFallbackReply } from "@/services/personality/stages-cache"
 import { FALLBACK_KEYS } from "@/services/personality"
 import type { FallbackReplies } from "@/services/personality"
 import { chatHistory, getActiveSessionId } from "@/services/session/store"
-import { fakeText, installFakeProvider } from "../../fake-provider"
+import { fakeText, installFakeProvider, lastRequestText } from "../../fake-provider"
 import { assistantTexts, compactionEntries, countTexts, sessionEntries, sessionMessages, userTexts } from "../../session-entries"
 import type { AssertContext, SceneDef } from "../../types"
 
@@ -89,13 +89,6 @@ let requestsAfterSetup = -1
 let requestsAtWindowOpen = -1
 let assistantBeforeRefusal = -1
 let compactionCountAfterCompletion = -1
-
-function lastRequestText(context: Context): string {
-  const last = context.messages[context.messages.length - 1]
-  return typeof last?.content === "string"
-    ? last.content
-    : (last?.content ?? []).map(part => (part.type === "text" ? part.text : "")).join("")
-}
 
 /** 有界等待：超时返回 undefined，由场景给出可读原因，绝不把失败拖成场景超时。 */
 function bounded<T>(work: Promise<T>, ms: number): Promise<T | undefined> {

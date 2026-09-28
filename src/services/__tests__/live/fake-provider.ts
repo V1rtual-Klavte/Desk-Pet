@@ -14,6 +14,31 @@ import {
 import type { StreamFn } from "@earendil-works/pi-agent-core"
 import { installPiRuntimeProviderForTest } from "@/services/engine/pi"
 
+/** 时间片段的形态：与生产同形，但按形态写死、不复用生产实现（不用被测代码验证被测代码）。 */
+const TURN_NOTE_PATTERN = /^\[当前时间\] \d{4}-\d{2}-\d{2} \d{2}:\d{2} 周[日一二三四五六]$/
+
+/**
+ * 请求视图里「最后一条真实输入」的文本：跳过宿主逐请求附加的尾随瞬时注记（当前时间）。
+ *
+ * 注记落在消息数组最末（`createTurnNoteMessage`），而脚本按文本判别请求时依赖的是
+ * 「最后一条就是这次投进来的输入」这条隐式约定 —— 不跳过它，判别会全部错位。
+ * 注记在 Provider 层已经是 user 消息（`custom` 被投影掉了、`customType` 不再可见），
+ * 所以这里只能按内容形态识别。
+ *
+ * 本函数是这条判读的**唯一实现**：此前 16 个场景各自写了一份「取最后一条」，注记落地后
+ * 每一份都得记得跳过它 —— 同一处知识散在 16 个地方，漏一个就是一条难查的假失败。
+ */
+export function lastRequestText(context: Context): string {
+  for (let index = context.messages.length - 1; index >= 0; index -= 1) {
+    const content = context.messages[index]?.content
+    const text = typeof content === "string"
+      ? content
+      : (content ?? []).map(part => (part.type === "text" ? part.text : "")).join("")
+    if (!TURN_NOTE_PATTERN.test(text)) return text
+  }
+  return ""
+}
+
 /**
  * 可重复、无网络的 Pi provider。场景只提供响应脚本，真实 Agent/Tool loop 仍照常执行。
  *

@@ -68,5 +68,6 @@ export {
   laneMessageText,
   messageEventId,
   messageRequestId,
+  TURN_NOTE_CUSTOM_TYPE,
   userInputMessage,
 } from "./input-identity"

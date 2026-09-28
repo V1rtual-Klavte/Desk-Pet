@@ -11,7 +11,7 @@ import { initChat } from "@/services/agent/runner"
 import { getActiveSessionId } from "@/services/session"
 import { defineTool, register, unregister, SESSION_TRANSCRIPT_TOOL, TOOL_POLICY_VERSION } from "@/services/tool"
 import type { ToolDef, ToolHandler } from "@/services/tool"
-import { installFakeProvider, fakeText, fakeToolCall } from "../../fake-provider"
+import { installFakeProvider, fakeText, fakeToolCall, lastRequestText } from "../../fake-provider"
 import { compactionEntries, sessionEntries } from "../../session-entries"
 import type { SceneDef } from "../../types"
 
@@ -92,13 +92,6 @@ function sizing(): string {
   return `窗口 ${WINDOW_TOKENS}、保留窗口 ${settings.keepRecentTokens}`
     + `；长正文 ${LONG.length} 字符、L0 阈值 ${L0_TOKENS} tokens / 长载荷 ${SIDE_CHARS}×2 字符`
     + `、短载荷 ${SHORT_RESULT.length} 字符`
-}
-
-function lastRequestText(context: Context): string {
-  const last = context.messages[context.messages.length - 1]
-  return typeof last?.content === "string"
-    ? last.content
-    : (last?.content ?? []).map(part => (part.type === "text" ? part.text : "")).join("")
 }
 
 /** 最后一条脚本响应专供 before_compaction 的摘要请求；被别的请求取走就是脚本错位，立即报错。 */

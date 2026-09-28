@@ -3,7 +3,7 @@ import { compactActiveSession, compactionSettingsFor, harnessSlots, PROMPT_SNAPS
 import { initChat } from "@/services/agent/runner"
 import { getActiveSessionId } from "@/services/session"
 import { aiConfig } from "@/services/config"
-import { installFakeProvider, fakeText } from "../../fake-provider"
+import { installFakeProvider, fakeText, lastRequestText } from "../../fake-provider"
 import { compactionEntries, sessionEntries } from "../../session-entries"
 import type { SceneDef } from "../../types"
 
@@ -26,13 +26,6 @@ const UNIT = "压缩候选正文必须保留在磁盘中。"   // 15 字符
 const settings = compactionSettingsFor(aiConfig.contextMaxTokens)
 const LONG = UNIT.repeat(Math.ceil(settings.keepRecentTokens * 4 * KEEP_MARGIN / 2 / UNIT.length))
 const FIRST = `用户第一轮：${UNIT.repeat(133)}`
-
-function lastRequestText(context: Context): string {
-  const last = context.messages[context.messages.length - 1]
-  return typeof last?.content === "string"
-    ? last.content
-    : (last?.content ?? []).map(part => (part.type === "text" ? part.text : "")).join("")
-}
 
 /** 第 4 条脚本响应专供 before_compaction 的摘要请求；被别的请求取走就是脚本错位，立即报错。 */
 function summaryStep(): FauxResponseStep {

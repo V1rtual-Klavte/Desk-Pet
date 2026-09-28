@@ -5,6 +5,7 @@ export {
   compactActiveSession,
   continueInterruptedRun,
   createActiveMessage,
+  createTurnNoteMessage,
   deliverActiveTurn,
   discardPlan,
   discardInterruptedRun,
