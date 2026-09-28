@@ -32,38 +32,60 @@ import type { SceneDef } from "../../types"
 // 光靠正文体量到不了硬上限：主请求视图被宿主硬预算闸门封在 `hardInputLimit` 以内，摘要素材
 // 是它的子集。真正可达的机制是**素材的 JSON 序列化放大**——`measureCompactionMaterial` 的估算
 // 跑在 `JSON.stringify` 之后，ASCII 的双引号在正文里变成 `\"`，字符数翻倍，于是
-// **素材成本 = 视图成本 × 2**。`resultProjection: "preserve"` 在此是必需条件：素材侧阶梯会把
-// 非 preserve 的长结果缩到单条上限（≈10.4k tokens），两块合计 ≈21k，第一层就消化掉了，
-// 永远到不了第二层 —— 这正是 `expectPreserveGatesFirstLayer` 的一对断言。
+// **素材成本 = 视图成本 × 2**（每条探针的素材 = 字符数 / 2、视图 = 字符数 / 4）。
+// `resultProjection: "preserve"` 在此是必需条件：素材侧阶梯会把非 preserve 的长结果缩到单条
+// 上限（≈10.4k tokens），第一层就消化掉了，永远到不了第二层 —— 这正是
+// `expectPreserveGatesFirstLayer` 的一对断言。
 //
 // 用户轮 1 连续调用 preserve 探针两次（`maxToolCallsPerTurn` 默认 5，够）：
-// 视图 ≈ 2 × PROBE_VIEW_TOKENS、素材 ≈ 4 × PROBE_VIEW_TOKENS > hardInputLimit，
-// 而每个工具批次（assistant + 其 toolResult）单独 ≈ 2 × PROBE_VIEW_TOKENS、低于单片预算
-// ⇒ 可分片、不是 oversized_unit。探针大小取「素材侧刚过硬上限」与「视图侧留在阈值以内」
-// 两个前提的中点（见下面的 `PROBE_VIEW_TOKENS`），两边各留 ≈1 万 token 余量。
+// 视图 ≈ 2 × PROBE_VIEW_TOKENS、素材 ≈ PROBE_CHARS > hardInputLimit，而每个工具批次
+// （assistant + 其 toolResult）的素材只有 PROBE_CHARS / 2、低于单片预算 ⇒ 可分片、不是
+// oversized_unit；两批合起来 PROBE_CHARS > 单片预算 ⇒ K ≥ 2 是构造性的。探针大小夹在
+// 「素材侧下界 / 视图侧上界 / 会话文件字节」之间，取靠下界的 1/8 处（见 `PROBE_CHARS` 的推导）。
 //
 // ── 切点由哪条消息承载（实跑修正，2026-09-28）──
 //
 // 能分片的那部分素材必须是 `messagesToSummarize`：`turnPrefixFrom..end` 合成**永不切分**的
-// 前缀单元（T4.00 的 prefixUnit），两段探针一旦落进去，合计 4 × PROBE_VIEW_TOKENS > `hardInputLimit`
+// 前缀单元（T4.00 的 prefixUnit），两段探针一旦落进去，合计 PROBE_CHARS / 2 × 2 就超硬上限
 // ⇒ 规划直接返回 `fatal{oversized_unit}`。
 //
 // 上游 `findCutPoint`（`compaction.js` 的 253-294 行）从末尾回收 ≈`keepRecentTokens`：
 // **从最后一条消息往回累加**，撞上哪条消息把累计顶过保留窗口，切点就取它（或其后的第一个
-// 合法切点）。此前载荷让**用户正文**承载这个量 —— 在**带审计快照的链表**上不成立：
-// `deskpet.prompt_snapshot` 条目落在每条助手消息之后（W1 的按回合 flush），切点随后还要走
-// 一段回退循环（`while (cutIndex > startIndex)`，遇非消息条目就前移），把落在 user 消息上的
-// 切点推回「上一条消息之后」⇒ 切点变成快照条目、`isSplitTurn = true`，而 `findTurnStartIndex`
-// 找到的回合起点是**轮 1 的用户消息**：轮 1 整轮（含两段探针）成了前缀单元，规划 fatal。
-// 实测（2026-09-28 W6 首跑）：`不可再分的片段（约 146108 tokens）超过单片上限 124354`。
+// 合法切点）；随后还有一段回退循环（`while (cutIndex > startIndex)`，遇非消息条目就前移）。
+// 审计快照（`deskpet.prompt_snapshot`）落在每条助手消息之后（按回合 flush），所以：
+// **让「用户正文」承载切点是坏铺法**（W6 首跑实测）：切点落在正文上后被回退循环推回
+// 「上一条消息之后」⇒ 切点变成快照条目、`isSplitTurn = true`，回合起点成了**探针那一轮**的
+// 用户消息：整轮（含两段探针）成前缀单元 ⇒ `不可再分的片段（约 146108 tokens）超过单片上限
+// 124354`，手动压缩 failed。
 //
-// 现在让**该回合的回复**承载它：回复 84000 字符（`REPLY_*`），是回合的最后一条消息，从末尾
-// 累加第一步就顶过保留窗口 ⇒ 切点落在回复上、`isSplitTurn = true`，而回合起点是该回合的
-// **用户正文**：`turnPrefixMessages` = 正文一条（素材 ≈21000，装得进单片预算），
-// `messagesToSummarize` = 其前的整轮（两段探针 + 收尾回复），探针因此整体可分片。
-// **正文长、回复短的旧形态恰好是最坏情况**（切点被回退循环推回轮 1 之后），不要改回去。
+// 现在由**该回合里的一条长工具结果**（`HOLD_RESULT`，轮 2 / 轮 4 各一条）承载：它是回合里
+// 最后一条消息之外**唯一的**长消息，上游从末尾累加第一步就在它身上顶过保留窗口，切点随即落
+// 在它的**后继助手消息**（回合收尾回复）上 —— 而那条回复前面正是这条结果是**消息**，
+// 回退循环不再前移 ⇒ 该回合的前半段（正文 + toolCall + 这条结果）成前缀单元（永不切分，但
+// 素材 ≈ HOLD_TOKENS，装得进单片预算），两段探针整体留在 `messagesToSummarize` 里。
+// **承载量不能放在助手回复上**：助手消息走流式，每 ~16 字符一帧、实测 ≈248 字节/帧
+// ⇒ 8.4 万字符的回复 ≈1.3 MB 只帧开销；工具结果不产生帧（见「会话文件字节账」）。
 // 切点的真实形态不再由场景自己推导：每次断言前用上游真件 `prepareCompaction` 复核
 // （`preparation()`），它是唯一重建点。
+//
+// ── 会话文件字节账（5 MiB 硬上限；W6 第二次实跑被它击穿）──
+//
+// 宿主临时数据根的会话 JSONL 有一条**整文件大小门**（Rust `file_read`：
+// `metadata.len() > MAX_TOOL_FILE_BYTES` 直接报「文件过大」），上游读会话头也走它
+// （`jsonl/repo.js` 的 `readTextLines(path, {maxLines: 1})`）⇒ 文件一旦越过 5 MiB，**整个模块**
+// 的后续场景都会在 setup 失败（隔离重置要读会话头）。这不是本波引入的缺陷，修它不在本方案范围，
+// 场景只能自己适配。逐项字节（每次 trial，按 harness 真实写入形态实测/折算）：
+//
+//   探针结果 ×4（两条一批 × 两批）  暂存 payload + 提交条目，各 2 × PROBE_CHARS 字节 ≈ 0.43 MiB
+//   切点承载结果 ×2                  暂存 + 条目，各 HOLD_CHARS 字节                ≈ 0.16 MiB
+//   助手流式帧                       回复都是短句 ⇒ 每回合 1–2 帧                    < 0.01 MiB
+//   `pi.op.preparation` ×2           每次压缩一份、素材原样进盘（≈ 两条探针 + 承载结果）≈ 1.0 MiB
+//   快照/状态/小条目/压缩条目        审计是哈希投影、不含正文（实测 09-24 会话量级）  ≈ 0.25 MiB
+//   ────────────────────────────────────────────────────────────────────────  合计 ≈ 1.9 MiB
+//
+// 对照被击穿的旧形态：两条 84,000 字符的**助手回复**（各 ≈1.3 MB 帧）+ 两条 84,000 字符的
+// **用户正文** + 更大的探针（145,528 字符）+ 更长的保留段进 `compaction` 条目
+// ⇒ 实测越过 5 MiB。**改载荷时先按这张表算一遍**。
 //
 // ── 探针的对照声明与载荷口径 ──
 //
@@ -81,35 +103,34 @@ import type { SceneDef } from "../../types"
 // 的虚拟条目 + 该条目之后的真实条目」（`compaction.js` 的 426-437 行），`previousSummary` 取前一条
 // compaction 条目的 `summary`（424-428 行）。于是第二次压缩的四条事实就是本段的断言对象：
 //
-//   ① 素材 = 第一次的保留段（轮 2 的回复，走虚拟保留条目）+ 轮 3 的探针结果 + 轮 4 的正文（前缀）；
+//   ① 素材 = 第一次的保留段（轮 2 的**收尾回复**，一条短句，走虚拟保留条目）+ 轮 3 的两条探针
+//      + 轮 4 的前缀单元（正文 + toolCall + 承载结果）；
 //   ② 第 1 片的 `previousSummary` 是**第一条 compaction 条目的摘要**（不再是 null）——
 //      「跨压缩的迭代链」没有断；
 //   ③ `contextEpoch` 两次推进（每次提交 +1，`harness-slot.ts` 的 compaction_end）；
 //   ④ 两次压缩之后**原文条目仍逐字不变**（压缩只改请求视图，4 条探针结果全在）。
 //
-// ── 轮 3/轮 4 的载荷（与轮 1/轮 2 同构，但两侧各多一段保留段）──
+// ── 轮 3/轮 4 的载荷（与轮 1/轮 2 同构）──
 //
-// 轮 3 再连续调用 preserve 探针两次（新的两条长结果），轮 4 的正文/回复越过保留窗口（切点落在回复上，
-// 与轮 2 同一条推导；正文进前缀单元）。与轮 1/轮 2 的差别只有一处**必须**小心的量：第二次压缩的视图里
-// 同时挂着**两段**尾正文（保留段里的轮 2 回复 + 轮 4 自己的正文），而阈值压缩先于硬预算触发 ——
-// 视图越过 `normalInputTarget` 就会在轮 4 回合内先压一次，第二次手动压缩面对的是已被压过的会话。
-// 于是新探针的尺寸取「素材侧仍超硬上限」与「视图侧留在阈值以内」两个前提的中点，
-// 推导与余量见 `SECOND_PROBE_VIEW_TOKENS`；轮 4 断言里另有前提自证（视图不越阈值）。
+// 轮 3 再连续调用 preserve 探针两次（同样的两条长结果），轮 4 再取一份承载结果（同样越过保留
+// 窗口，切点落在轮 4 的收尾回复上）。与轮 1/轮 2 的差别只有一处**必须**小心的量：第二次压缩的
+// 视图里同时挂着**两段**内容（保留段里的短回复 + 轮 4 的承载结果），而阈值压缩先于硬预算触发
+// —— 视图越过 `normalInputTarget` 就会在轮 4 回合内先压一次，第二次手动压缩面对的是已被压过的
+// 会话。探针与承载结果的尺寸按同一组前提推导（见 `PROBE_CHARS` / `HOLD_TOKENS`），
+// `assertSecondPayloadPremise` 在 setup 里把这组前提再钉一遍（含「视图不越阈值」）。
 
 const PRESERVE_TOOL_ID = "shard-preserve-probe"
 const PRESERVE_TOOL_NAME = "shard_preserve_probe"
 const REFERENCE_TOOL_ID = "shard-reference-probe"
 const REFERENCE_TOOL_NAME = "shard_reference_probe"
-/**
- * 轮 3 的第二批 preserve 探针：与轮 1 的探针同声明、**不同结果长度** ——
- * 第二次压缩的素材里已经带着第一次的保留段（轮 2 的回复），视图侧还要同时装下两段尾内容
- * （保留段里的轮 2 回复 + 轮 4 自己的正文），沿用轮 1 的尺寸会把轮 4 的请求视图顶过阈值
- * （推导见 `SECOND_PROBE_VIEW_TOKENS`）。
- */
+/** 轮 3 的第二批探针：与轮 1 同声明、同结果长度，只有名字不同（两次压缩的探针在断言里各数各的）。 */
 const SECOND_PRESERVE_TOOL_ID = "shard-second-preserve-probe"
 const SECOND_PRESERVE_TOOL_NAME = "shard_second_preserve_probe"
+/** 承载切点的工具：轮 2 / 轮 4 各调用一次，结果与探针同量级地长（preserve ⇒ 尺寸确定）。 */
+const HOLD_TOOL_ID = "shard-cut-hold"
+const HOLD_TOOL_NAME = "shard_cut_hold"
 /** 本场景声明的全部 preserve 工具名：素材度量（`measured`）与投影前提共用这一份名单。 */
-const PRESERVE_TOOL_NAMES: ReadonlySet<string> = new Set([PRESERVE_TOOL_NAME, SECOND_PRESERVE_TOOL_NAME])
+const PRESERVE_TOOL_NAMES: ReadonlySet<string> = new Set([PRESERVE_TOOL_NAME, SECOND_PRESERVE_TOOL_NAME, HOLD_TOOL_NAME])
 
 const FAKE_MODEL: FauxModelDefinition = { id: "deskpet-fake", name: "Desk-Pet Fake", contextWindow: 131_072, maxTokens: 16_384 }
 /** 真正生效的窗口与 `resolvePiTurnModel` 一致：配置值与注入模型窗口取小（maxTokens 由预算覆盖）。 */
@@ -120,139 +141,135 @@ const SETTINGS = compactionSettingsFor(WINDOW_TOKENS, BUDGET.outputReserve)
 /** 单片素材预算：与 `summarizeCompaction` 传给规划器的实参同一条表达式，不另写一份口径。 */
 const SLICE_BUDGET = Math.floor(BUDGET.hardInputLimit * COMPACTION_SLICE_RATIO)
 
-/** 正文/回复的余量：「≥ 保留窗口」留 5%，防估算取整与配置漂移。 */
-const TAIL_MARGIN = 1.05
-/** 轮 2 的 ASCII 正文长度：上游对 user 正文按 ceil(chars / 4) 估算（`findCutPoint` 的累加口径）。 */
-const TAIL_CHARS = Math.ceil(SETTINGS.keepRecentTokens * 4 * TAIL_MARGIN)
-const TAIL_TOKENS = Math.ceil(TAIL_CHARS / 4)
+/** 切点承载结果的余量：「≥ 保留窗口」留 5%，防估算取整与配置漂移。 */
+const HOLD_MARGIN = 1.05
+/**
+ * 承载切点的**工具结果**（轮 2 / 轮 4 各一条，preserve ⇒ 不缩短、不清空）。两个硬约束逼它这么铺：
+ *
+ * ① **切点必须落在一条「最后的消息」能被它顶过 `keepRecentTokens` 的位置**：上游从末尾累加，
+ *    撞上它（80,000+ 字符 = 20,000+ tokens，见下）就断在它身上，切点随即落在其后的助手消息上 ——
+ *    而那条助手消息**前面正是这条结果**（是消息）⇒ 切点不再被审计快照的回退循环推走（文件头的
+ *    「切点由哪条消息承载」），该回合的前半段（user + toolCall + 这条结果）成前缀单元、两段探针
+ *    整体留在 `messagesToSummarize` 里。
+ * ② **它不能用助手回复承载**：助手消息走 faux 的流式，每 ~16 字符一帧、实测每帧 ≈248 字节
+ *    （帧行 JSON 开销）⇒ 8.4 万字符的回复 ≈ 1.3 MB 只帧开销；工具结果不产生帧，同样的 token 量
+ *    只要 ≈ 80 KB（ASCII 1 字节/字符）。W6 第二次实跑正是被这条击穿：会话必须 < 5 MiB
+ *    （Rust `file_read` 的整文件门，超了连会话头都读不出），见文件头的「会话文件字节账」。
+ */
+const HOLD_CHARS = Math.ceil(SETTINGS.keepRecentTokens * 4 * HOLD_MARGIN)
+const HOLD_TOKENS = Math.ceil(HOLD_CHARS / 4)
+const HOLD_RESULT = "a".repeat(HOLD_CHARS)
+
+/** 视图余量：系统前缀、工具 schema 与逐条结构开销的定量预留（轮 2 实测只被吃掉 ≈1,100）。 */
+const VIEW_SLACK = 4_000
 
 /**
- * 单条探针的**视图**成本（ASCII 4 字符 ≈ 1 token）。夹在两侧前提之间，取容许区间的中点：
+ * 单条探针的字符数（ASCII 引号 ⇒ 素材成本 = 字符数 ÷ 2，视图成本 = 字符数 ÷ 4）。
  *
- * - 素材侧：两条结果的素材 = 4 × 本值（JSON 转义翻倍）必须**超过硬上限** ⇒ 本值 > hardInputLimit / 4；
- * - 视图侧：两条结果的视图 + 轮 2 正文（2 × 本值 + 尾段）必须留在**阈值**（normalInputTarget）
- *   以内 —— 阈值压缩先于硬预算触发，回合内的 checkpoint 一旦越过它，第一次压缩就发生在轮 2 里，
- *   随后 /compact 面对的是已被压过的素材（本场景的分片前提被破坏）。
- *
- * 中点在两侧各留 ≈1 万 token 余量：两边都吃系统前缀与估算偏差（源方案 §1.4 的 160,000 是按**硬上限**
- * 单侧留余量推的，用在阈值侧只剩 ≈3,300 token，会被宿主卡片/工具集的体量吃掉）。
+ * 三条前提把取值夹成一个区间，取靠下界的 1/8 处（不取中点，理由在第三条）：
+ * - **素材侧下界**：两条探针的素材（各 探针字符数 / 2）+ 承载结果必须**超过硬上限**
+ *   ⇒ 探针字符数 > hardInputLimit − HOLD_TOKENS；
+ * - **视图侧上界**：两条探针的视图（各 探针字符数 / 4）+ 承载结果 + 余量必须留在**阈值**
+ *   （normalInputTarget）以内 —— 阈值压缩先于硬预算触发，一旦在回合内压过，/compact 面对的是
+ *   已被压过的会话（分片前提被破坏）⇒ 探针字符数 ≤ 2 × (normalInputTarget − HOLD_TOKENS − VIEW_SLACK)；
+ * - **会话文件预算**：每条探针的字符在盘上会出现 6 遍（暂存 payload、提交条目、它所属那次压缩的
+ *   `pi.op.preparation`，各 2 字节/字符 —— 引号转义成 `\"`）⇒ 四条合计 ≈ 24 × 探针字符数字节、
+ *   是文件里最大的一块（见文件头的「会话文件字节账」）；素材侧是确定性估算（纯 ASCII 引号，
+ *   无漂移），所以取值从下界只往上取 1/8，不取中点。
  */
-const PROBE_VIEW_TOKENS = Math.floor((BUDGET.hardInputLimit / 4 + (BUDGET.normalInputTarget - TAIL_TOKENS) / 2) / 2)
-const PROBE_CHARS = PROBE_VIEW_TOKENS * 4
+const PROBE_LOWER_CHARS = BUDGET.hardInputLimit - HOLD_TOKENS
+const PROBE_UPPER_CHARS = (BUDGET.normalInputTarget - HOLD_TOKENS - VIEW_SLACK) * 2
+const PROBE_CHARS = PROBE_LOWER_CHARS + Math.floor((PROBE_UPPER_CHARS - PROBE_LOWER_CHARS) / 8)
+/** 单条探针的视图成本（ASCII 4 字符 ≈ 1 token）：断言里按它给载荷下限。 */
+const PROBE_VIEW_TOKENS = Math.floor(PROBE_CHARS / 4)
 const PROBE_RESULT = "\"".repeat(PROBE_CHARS)
 
-/**
- * 轮 3 的探针视图成本（第二次压缩的载荷）。两侧前提比轮 1 各多一段保留段内容：
- *
- * - 素材侧：两条新结果的素材 = 4 × 本值，加上前序保留段里的轮 2 回复（≈ `TAIL_TOKENS`）与框架，
- *   必须**仍超硬上限** ⇒ 本值 > (hardInputLimit − TAIL_TOKENS − 框架) / 4；
- * - 视图侧：轮 4 的请求视图 = 2 × 本值 + 轮 2 回复 + 轮 4 正文 + 系统前缀，
- *   必须**留在阈值以内** ⇒ 本值 ≤ (normalInputTarget − 2 × TAIL_TOKENS − 前缀余量) / 2。
- *
- * 取两侧中点（轮 1 的取法同源）。`SECOND_VIEW_SLACK` 是给系统前缀、工具 schema、压缩摘要条目与
- * 逐条结构开销留的定量余量：轮 1 的 10,590 余量实测只被这段吃掉 ≈1,100（见轮 2 的 `latest.used`），
- * 这里按它的量级取整留 4,000，抵消宿主卡片/技能目录的体量变化。
- */
-const SECOND_VIEW_SLACK = 4_000
-const SECOND_PROBE_VIEW_TOKENS = Math.floor((
-  (BUDGET.hardInputLimit - TAIL_TOKENS) / 4
-  + (BUDGET.normalInputTarget - 2 * TAIL_TOKENS - SECOND_VIEW_SLACK) / 2
-) / 2)
-const SECOND_PROBE_CHARS = SECOND_PROBE_VIEW_TOKENS * 4
-const SECOND_PROBE_RESULT = "\"".repeat(SECOND_PROBE_CHARS)
-
 const FIRST_TEXT = `第一轮：连续调用 ${PRESERVE_TOOL_NAME} 两次，然后回复我。`
-const SECOND_TEXT = `第二轮：${"a".repeat(TAIL_CHARS)}`
+/** 轮 2 / 轮 4 的正文只负责起回合：切点承载量全在工具结果上（它自己越长越费盘，没有别的作用）。 */
+const SECOND_TEXT = "第二轮：再取一份保留样本，然后回复我。"
 const THIRD_TEXT = `第三轮：再连续调用 ${SECOND_PRESERVE_TOOL_NAME} 两次，然后回复我。`
-/** 轮 4 的正文（与轮 2 同一条推导）：它是切点所在回合的前半段，压缩时进前缀单元。 */
-const FOURTH_TEXT = `第四轮：${"b".repeat(TAIL_CHARS)}`
-
-/**
- * 承载切点的**回复**（轮 2 / 轮 4）：自己越过保留窗口，是回合的最后一条消息。
- *
- * 上游 `findCutPoint` 从末尾累加，撞上它第一步就顶过 `keepRecentTokens` ⇒ 切点落在回复上、
- * `isSplitTurn = true`，回合起点则是该回合的用户正文：正文成前缀单元一条（永不切分但装得进
- * 单片预算），两段探针整体留在 `messagesToSummarize` 里。实跑证据与旧形态的反例见文件头的
- * 「切点由哪条消息承载」。
- */
-const SECOND_REPLY = `第二轮回复完成。${"c".repeat(TAIL_CHARS)}`
-const FOURTH_REPLY = `第四轮回复完成。${"d".repeat(TAIL_CHARS)}`
-/** 回复的 token 估算（上游对 assistant 正文按 ceil(chars / 4) 计）：切点前提就靠它。 */
-const REPLY_TOKENS = Math.ceil(SECOND_REPLY.length / 4)
+const FOURTH_TEXT = "第四轮：再取一份保留样本，然后回复我。"
 
 /** 断言失败时带上真实口径，不让人从「未覆盖」反推载荷问题。 */
 function sizing(): string {
   return `窗口 ${WINDOW_TOKENS}、hardInputLimit ${BUDGET.hardInputLimit}、阈值 ${BUDGET.normalInputTarget}`
-    + `、sliceBudget ${SLICE_BUDGET}、单条探针 ${PROBE_CHARS} 字符（视图 ${PROBE_VIEW_TOKENS} tokens）`
-    + `、保留窗口 ${SETTINGS.keepRecentTokens}、轮 2/轮 4 正文各 ${TAIL_CHARS} 字符（${TAIL_TOKENS} tokens）`
-    + `、轮 2/轮 4 回复各 ${SECOND_REPLY.length} 字符（${REPLY_TOKENS} tokens）`
-    + `、第二批探针 ${SECOND_PROBE_CHARS} 字符（视图 ${SECOND_PROBE_VIEW_TOKENS} tokens）`
+    + `、sliceBudget ${SLICE_BUDGET}、单条探针 ${PROBE_CHARS} 字符（视图 ${PROBE_VIEW_TOKENS} tokens，两次压缩共用）`
+    + `、保留窗口 ${SETTINGS.keepRecentTokens}、切点承载结果 ${HOLD_CHARS} 字符（${HOLD_TOKENS} tokens）×2`
 }
 
 /**
- * 载荷前提（setup 里显式失败）：素材必须真的超硬上限、视图（未计系统前缀）必须留在阈值以内、
- * 轮 2 的**回复**必须自己越过保留窗口（切点承载者）、每个工具批次必须装得进单片预算。
- * 四条都由上面同一批预算常量推导 —— 窗口或估算器口径漂移时先在这里给出可读原因，
+ * 载荷前提（setup 里显式失败）：素材必须真的超硬上限、视图（含系统前缀余量）必须留在阈值以内、
+ * 轮 2 的**切点承载结果**必须自己越过保留窗口、单个工具批次装得进单片预算而两批合起来装不进
+ * （前者防一个批次独占整片 / 再大就是 oversized_unit fatal，后者保 K ≥ 2）。
+ * 五条都由上面同一批预算常量推导 —— 窗口或估算器口径漂移时先在这里给出可读原因，
  * 不让断言在错误载荷上空转（同 `压缩降级` 的 `assertPayloadPremise`）。
  * 切点的真实形态另有基于**上游真件**的复核（`preparation()` + `assertPreparationShape`）。
  */
 function assertPayloadPremise(): void {
-  // 素材成本 = 视图成本 × 2（JSON 转义）：两条探针的素材 ≈ 4 × PROBE_VIEW_TOKENS tokens。
-  const material = 4 * PROBE_VIEW_TOKENS
+  // 素材成本（token）：两条探针各 PROBE_CHARS / 2（JSON 转义把字符数翻倍、再按 4 字符/token）
+  // + 切点承载结果 HOLD_TOKENS（纯 ASCII，不放大）+ 逐条结构开销（离线实测 ≈750，这里滚进余量）。
+  const material = PROBE_CHARS + HOLD_TOKENS
   if (!(material > BUDGET.hardInputLimit)) {
-    throw new Error(`场景载荷前提不成立：两条探针的素材 ${material} 不超过硬上限 ${BUDGET.hardInputLimit}｜${sizing()}`)
+    throw new Error(`场景载荷前提不成立：两条探针 + 承载结果的素材 ${material} 不超过硬上限 ${BUDGET.hardInputLimit}｜${sizing()}`)
   }
-  const view = 2 * PROBE_VIEW_TOKENS + TAIL_TOKENS
+  const view = 2 * PROBE_VIEW_TOKENS + HOLD_TOKENS + VIEW_SLACK
   if (!(view < BUDGET.normalInputTarget)) {
-    throw new Error(`场景载荷前提不成立：请求视图 ${view}（未计系统前缀）越过压缩阈值 ${BUDGET.normalInputTarget}：`
+    throw new Error(`场景载荷前提不成立：请求视图 ${view}（含系统前缀余量 ${VIEW_SLACK}）越过压缩阈值 ${BUDGET.normalInputTarget}：`
       + `回合内会先发生阈值压缩，手动 /compact 面对的是已被压过的素材｜${sizing()}`)
   }
-  if (!(REPLY_TOKENS >= SETTINGS.keepRecentTokens)) {
-    throw new Error(`场景载荷前提不成立：轮 2 回复 ${REPLY_TOKENS} tokens 没有越过保留窗口 ${SETTINGS.keepRecentTokens}：`
-      + `切点不会被它顶过阈值，反而会落进轮 1（两段探针进永不切分的前缀单元 ⇒ 规划 fatal）｜${sizing()}`)
+  if (!(HOLD_TOKENS >= SETTINGS.keepRecentTokens)) {
+    throw new Error(`场景载荷前提不成立：切点承载结果 ${HOLD_TOKENS} tokens 没有越过保留窗口 ${SETTINGS.keepRecentTokens}：`
+      + `切点不会被它顶过阈值，反而会落进探针所在回合（两段探针进永不切分的前缀单元 ⇒ 规划 fatal）｜${sizing()}`)
   }
-  if (!(TAIL_TOKENS >= SETTINGS.keepRecentTokens)) {
-    throw new Error(`场景载荷前提不成立：轮 2 正文 ${TAIL_TOKENS} tokens 没有越过保留窗口 ${SETTINGS.keepRecentTokens}：`
-      + `正文与回复同量级是载荷口径的一部分（正文是切点所在回合的前半段，压缩时成前缀单元一条）｜${sizing()}`)
+  // 单片装得下：一个工具批次的**素材**（token）必须留在单片预算内 —— 超预算它就只能独占一片，
+  // 再超过硬上限就是 oversized_unit fatal。左侧是 token，不是字符（引号结果 1 字符 = 1/2 素材 token）。
+  const batch = PROBE_CHARS / 2
+  if (!(batch <= SLICE_BUDGET)) {
+    throw new Error(`场景载荷前提不成立：单个工具批次的素材 ${batch} 装不进单片预算 ${SLICE_BUDGET}（不可分片）｜${sizing()}`)
   }
-  if (!(2 * PROBE_VIEW_TOKENS < SLICE_BUDGET)) {
-    throw new Error(`场景载荷前提不成立：单个工具批次 ${2 * PROBE_VIEW_TOKENS} 装不进单片预算 ${SLICE_BUDGET}（不可分片）｜${sizing()}`)
+  // 合起来装不下：两个批次（各 batch）的素材合计超过单片预算 ⇒ 贪心装箱必分两片（K ≥ 2 构造性成立）。
+  if (!(2 * batch > SLICE_BUDGET)) {
+    throw new Error(`场景载荷前提不成立：两个工具批次的素材合计 ${2 * batch} 装得进单片预算 ${SLICE_BUDGET}（K 会退化成 1）｜${sizing()}`)
   }
 }
 
 /**
  * 第二次压缩（跨压缩迭代）的载荷前提（与 `assertPayloadPremise` 同构、同一批常量推导）：
- * ① 两条新探针 + 前序保留段（轮 2 的回复）仍要超硬上限（否则第二次压缩不走分片）；
- * ② 轮 4 的请求视图（两条新探针 + **两段**尾正文 + 前缀余量）必须留在阈值以内（否则轮 4
+ * ① 两条新探针 + 轮 4 的承载结果仍要超硬上限（否则第二次压缩不走分片）；
+ * ② 轮 4 的请求视图（两条新探针 + 轮 4 的承载结果 + 余量）必须留在阈值以内（否则轮 4
  *    回合内先发生阈值压缩，第二次手动压缩面对的是已被压过的会话）；
- * ③ 轮 4 的回复同样越过保留窗口（切点承载者，理由同轮 2）；
- * ④ 每个工具批次仍装得进单片预算。
+ * ③ 轮 4 的承载结果同样越过保留窗口（切点承载者，理由同轮 2）；
+ * ④ 每个工具批次仍装得进单片预算、且两批仍必分家（K₂ ≥ 2）。
  */
 function assertSecondPayloadPremise(): void {
-  // 素材成本 = 视图成本 × 2（JSON 转义）+ 保留段里的轮 2 回复（虚拟保留条目）。
-  const material = 4 * SECOND_PROBE_VIEW_TOKENS + REPLY_TOKENS
+  // 素材成本（token）= 两条新探针（各 PROBE_CHARS / 2）+ 轮 4 的承载结果（保留段是短回复，不计量）。
+  const material = PROBE_CHARS + HOLD_TOKENS
   if (!(material > BUDGET.hardInputLimit)) {
-    throw new Error(`第二次压缩的载荷前提不成立：两条新探针 + 保留段的素材 ${material} 不超过硬上限 ${BUDGET.hardInputLimit}｜${sizing()}`)
+    throw new Error(`第二次压缩的载荷前提不成立：两条新探针 + 轮 4 承载结果的素材 ${material} 不超过硬上限 ${BUDGET.hardInputLimit}｜${sizing()}`)
   }
-  const view = 2 * SECOND_PROBE_VIEW_TOKENS + 2 * TAIL_TOKENS + SECOND_VIEW_SLACK
+  const view = 2 * PROBE_VIEW_TOKENS + HOLD_TOKENS + VIEW_SLACK
   if (!(view <= BUDGET.normalInputTarget)) {
-    throw new Error(`第二次压缩的载荷前提不成立：轮 4 请求视图 ${view}（含前缀余量 ${SECOND_VIEW_SLACK}）越过压缩阈值 `
+    throw new Error(`第二次压缩的载荷前提不成立：轮 4 请求视图 ${view}（含前缀余量 ${VIEW_SLACK}）越过压缩阈值 `
       + `${BUDGET.normalInputTarget}：回合内会先发生阈值压缩，第二次手动压缩面对的是已被压过的会话｜${sizing()}`)
   }
-  if (!(REPLY_TOKENS >= SETTINGS.keepRecentTokens)) {
-    throw new Error(`第二次压缩的载荷前提不成立：轮 4 回复 ${REPLY_TOKENS} tokens 没有越过保留窗口 ${SETTINGS.keepRecentTokens}：`
+  if (!(HOLD_TOKENS >= SETTINGS.keepRecentTokens)) {
+    throw new Error(`第二次压缩的载荷前提不成立：轮 4 承载结果 ${HOLD_TOKENS} tokens 没有越过保留窗口 ${SETTINGS.keepRecentTokens}：`
       + `切点会落进轮 3（两条新探针进永不切分的前缀单元 ⇒ 规划 fatal）｜${sizing()}`)
   }
-  if (!(2 * SECOND_PROBE_VIEW_TOKENS < SLICE_BUDGET)) {
-    throw new Error(`第二次压缩的载荷前提不成立：单个工具批次 ${2 * SECOND_PROBE_VIEW_TOKENS} 装不进单片预算 ${SLICE_BUDGET}（不可分片）｜${sizing()}`)
+  const batch = PROBE_CHARS / 2
+  if (!(batch <= SLICE_BUDGET)) {
+    throw new Error(`第二次压缩的载荷前提不成立：单个工具批次的素材 ${batch} 装不进单片预算 ${SLICE_BUDGET}（不可分片）｜${sizing()}`)
+  }
+  if (!(2 * batch > SLICE_BUDGET)) {
+    throw new Error(`第二次压缩的载荷前提不成立：两个工具批次的素材合计 ${2 * batch} 装得进单片预算 ${SLICE_BUDGET}（K₂ 会退化成 1）｜${sizing()}`)
   }
 }
 
-/** 声明指定 `resultProjection` 的只读探针：链路真实，唯一变量就是投影声明（同 `摘要投影口径`）。 */
+/** 声明指定 `resultProjection` 的只读工具（探针与切点承载结果共用）：唯一变量就是投影声明。 */
 const probe = (id: string, name: string, projection: "preserve" | "reference", result: string): ToolDef =>
   defineTool({
     id, name,
-    description: `分片探针 ${name}：声明 resultProjection=${projection} 的长结果工具`,
+    description: `分片载荷工具 ${name}：声明 resultProjection=${projection} 的长结果工具`,
     parameters: { type: "object", properties: {} },
     safetyLevel: "SAFE", source: "local", sourceId: "", actionCategory: "_default",
     policy: {
@@ -329,8 +346,9 @@ function trailingScript(): FauxResponseStep[] {
     recorded("轮 3 / 第 1 次探针调用", fakeToolCall(SECOND_PRESERVE_TOOL_NAME, {}, "shard-second-call-1")),
     recorded("轮 3 / 第 2 次探针调用", fakeToolCall(SECOND_PRESERVE_TOOL_NAME, {}, "shard-second-call-2")),
     recorded("轮 3 / 收尾回复", fakeText("第三轮回复完成。")),
-    // 轮 4 的回复自己越过保留窗口：切点的承载者（见 `FOURTH_REPLY` 与文件头）。
-    recorded("轮 4 / 本轮回复", fakeText(FOURTH_REPLY)),
+    // 轮 4 的承载结果调用 + 收尾回复：切点落在轮 4 的回复上（见 `HOLD_RESULT` 与文件头）。
+    recorded("轮 4 / 承载结果调用", fakeToolCall(HOLD_TOOL_NAME, {}, "shard-hold-call-2")),
+    recorded("轮 4 / 本轮回复", fakeText("第四轮回复完成。")),
   ]
 }
 
@@ -380,19 +398,23 @@ async function preparation(): Promise<CompactionPreparation> {
 }
 
 /**
- * 切点前提（用上游真件核对，不靠场景的常量推导）：两段探针必须整体落在 `messagesToSummarize`
- * 里 —— 前缀单元永不切分，探针落进去就是 `fatal{oversized_unit}`（一个工具批次的素材
- * 2 × PROBE_VIEW_TOKENS 加上另一段就超过硬上限）。前提不成立时给出可读原因，不让后面的断言
- * 在错误素材上空转。
+ * 切点前提（用上游真件核对，不靠场景的常量推导）：两段**探针结果**必须整体落在
+ * `messagesToSummarize` 里 —— 前缀单元永不切分，探针落进去就是 `fatal{oversized_unit}`
+ * （一个工具批次的素材 PROBE_CHARS / 2，两批合起来 PROBE_CHARS > 硬上限）。前缀里允许有
+ * 别的东西（本轮正是那条切点承载结果 + 起回合的 user/assistant），只禁止探针。
+ * 前提不成立时给出可读原因，不让后面的断言在错误素材上空转。
  */
 function assertPreparationShape(input: CompactionPreparation, label: string): void {
-  const results = input.messagesToSummarize.filter(message => message.role === "toolResult")
+  const isProbe = (message: AgentMessage): boolean =>
+    message.role === "toolResult"
+    && (message.toolName === PRESERVE_TOOL_NAME || message.toolName === SECOND_PRESERVE_TOOL_NAME)
+  const results = input.messagesToSummarize.filter(isProbe)
   if (results.length !== 2) {
-    throw new Error(`${label}的 messagesToSummarize 里应恰好 2 条工具结果（两段探针），实际 ${results.length} 条：`
+    throw new Error(`${label}的 messagesToSummarize 里应恰好 2 条探针结果，实际 ${results.length} 条：`
       + `切点落进了探针所在回合 ⇒ 探针进永不切分的前缀单元 ⇒ 规划直接 fatal oversized_unit｜${sizing()}`)
   }
-  if (input.turnPrefixMessages.some(message => message.role === "toolResult")) {
-    throw new Error(`${label}的 turnPrefixMessages 里出现了工具结果：探针批次落进永不切分的前缀单元｜${sizing()}`)
+  if (input.turnPrefixMessages.some(isProbe)) {
+    throw new Error(`${label}的 turnPrefixMessages 里出现了探针结果：探针批次落进永不切分的前缀单元｜${sizing()}`)
   }
 }
 
@@ -507,16 +529,19 @@ export const 压缩分片: SceneDef = {
     unregister(PRESERVE_TOOL_ID)
     unregister(REFERENCE_TOOL_ID)
     unregister(SECOND_PRESERVE_TOOL_ID)
+    unregister(HOLD_TOOL_ID)
     register(probe(PRESERVE_TOOL_ID, PRESERVE_TOOL_NAME, "preserve", PROBE_RESULT))
     register(probe(REFERENCE_TOOL_ID, REFERENCE_TOOL_NAME, "reference", PROBE_RESULT))
-    register(probe(SECOND_PRESERVE_TOOL_ID, SECOND_PRESERVE_TOOL_NAME, "preserve", SECOND_PROBE_RESULT))
+    register(probe(SECOND_PRESERVE_TOOL_ID, SECOND_PRESERVE_TOOL_NAME, "preserve", PROBE_RESULT))
+    register(probe(HOLD_TOOL_ID, HOLD_TOOL_NAME, "preserve", HOLD_RESULT))
     installFakeProvider([
       recorded("轮 1 / 第 1 次探针调用", fakeToolCall(PRESERVE_TOOL_NAME, {}, "shard-preserve-call-1")),
       recorded("轮 1 / 第 2 次探针调用", fakeToolCall(PRESERVE_TOOL_NAME, {}, "shard-preserve-call-2")),
       recorded("轮 1 / 收尾回复", fakeText("第一轮回复完成。")),
-      // 轮 2 的回复自己越过保留窗口：切点的承载者（见 `SECOND_REPLY` 与文件头）。
-      recorded("轮 2 / 本轮回复", fakeText(SECOND_REPLY)),
-      // 之后全是路由步：摘要请求就地应答、会话请求取走 `trailingQueue`（轮 3 三次 + 轮 4 一次）。
+      // 轮 2 的承载结果调用 + 收尾回复：切点落在轮 2 的回复上（见 `HOLD_RESULT` 与文件头）。
+      recorded("轮 2 / 承载结果调用", fakeToolCall(HOLD_TOOL_NAME, {}, "shard-hold-call-1")),
+      recorded("轮 2 / 本轮回复", fakeText("第二轮回复完成。")),
+      // 之后全是路由步：摘要请求就地应答、会话请求取走 `trailingQueue`（轮 3 四次 + 轮 4 两次）。
       // 备足「两次压缩各自的片数上限 + 尾部会话步骤」——每个请求只弹一步，多出来的不会被取走。
       ...Array.from({ length: 2 * MAX_COMPACTION_SLICES + trailingQueue.length }, () => routedStep),
     ], FAKE_MODEL)
@@ -590,20 +615,27 @@ export const 压缩分片: SceneDef = {
           if (summaryRequests.length !== 0) {
             throw new Error(`手动压缩前已经发出过 ${summaryRequests.length} 次摘要请求：回合内发生过压缩｜${sizing()}`)
           }
-          // 轮 2 的请求视图（带着两条探针结果与轮 2 正文）：它必须装得进硬上限，且真的带着载荷。
+          // 载荷声明自证：承载结果的投影必须是 preserve —— 素材尺寸靠它确定（被 L0 缩短就少了
+          // HOLD_TOKENS − 单条上限 ≈10.5k，素材会跌回硬上限以内，分片路径根本不会发生）。
+          const holdProjection = getToolByName(HOLD_TOOL_NAME)?.policy.context.resultProjection
+          if (holdProjection !== "preserve") {
+            throw new Error(`切点承载结果的投影声明漂了：${HOLD_TOOL_NAME}=${String(holdProjection)}｜${sizing()}`)
+          }
+          // 轮 2 的请求视图（带着两条探针结果与切点承载结果）：它必须装得进硬上限，且真的带着载荷。
           // 阈值（`normalInputTarget`）那边不在这里断言：那是 Harness 自己的读数（有 usage 时按
           // provider 的真实用量计），本仓估算在中文字符上更保守，拿它硬比会误红。载荷侧把
-          // 「2 × 探针视图 + 尾段」压在阈值以下留出的余量，就是上面第一条断言成立的前提。
-          if (viewSamples.length !== 4) {
-            throw new Error(`到轮 2 断言为止的请求采样应为 4 次，实际 ${viewSamples.length} 次（脚本与真实循环不同步）｜${sizing()}`)
+          // 「2 × 探针视图 + 承载结果」压在阈值以下留出的余量，就是上面第一条断言成立的前提。
+          if (viewSamples.length !== 5) {
+            throw new Error(`到轮 2 断言为止的请求采样应为 5 次（轮 1 三次 + 轮 2 两次：承载结果调用与收尾回复），`
+              + `实际 ${viewSamples.length} 次（脚本与真实循环不同步）｜${sizing()}`)
           }
           const latest = viewSamples[viewSamples.length - 1]!
           if (latest.used > BUDGET.hardInputLimit) {
             throw new Error(`轮 2 的请求视图「${latest.label}」${latest.used} tokens 超过硬上限 ${BUDGET.hardInputLimit}｜${sizing()}`)
           }
-          if (!(latest.used >= 2 * PROBE_VIEW_TOKENS + TAIL_TOKENS)) {
+          if (!(latest.used >= 2 * PROBE_VIEW_TOKENS + HOLD_TOKENS)) {
             throw new Error(`轮 2 的请求视图「${latest.label}」只有 ${latest.used} tokens，`
-              + `小于「两条探针 + 轮 2 正文」的视图成本 ${2 * PROBE_VIEW_TOKENS + TAIL_TOKENS}：载荷没有完整进请求｜${sizing()}`)
+              + `小于「两条探针 + 切点承载结果」的视图成本 ${2 * PROBE_VIEW_TOKENS + HOLD_TOKENS}：载荷没有完整进请求｜${sizing()}`)
           }
         } },
         { type: "expectPreserveGatesFirstLayer", run: async () => {
@@ -723,7 +755,7 @@ export const 压缩分片: SceneDef = {
           if (addedMessages.length !== 0) {
             throw new Error(`分片压缩新增了消息条目（不应有任何一条）：${JSON.stringify(addedMessages.map(entryBrief))}`)
           }
-          // 探针只属于本场景：观测完成后移出注册表（同 `摘要投影口径`）。
+          // 第一批探针只属于本场景：观测完成后移出注册表（同 `摘要投影口径`）。
           unregister(PRESERVE_TOOL_ID)
           unregister(REFERENCE_TOOL_ID)
         } },
@@ -753,15 +785,15 @@ export const 压缩分片: SceneDef = {
             + `（现有工具结果：${JSON.stringify(results.map(result => result.toolName))}）｜${sizing()}`)
         }
         for (const result of second) {
-          if (result.text.length < SECOND_PROBE_CHARS) {
-            throw new Error(`第二批探针 ${result.id} 的存档结果不是全文（长度 ${result.text.length}，应 ≥ ${SECOND_PROBE_CHARS}）：`
+          if (result.text.length < PROBE_CHARS) {
+            throw new Error(`第二批探针 ${result.id} 的存档结果不是全文（长度 ${result.text.length}，应 ≥ ${PROBE_CHARS}）：`
               + `缩短只能发生在投影上`)
           }
         }
         // 视图前提：轮 3 的三次请求都由真链路发出且都未被硬预算闸门拦下（被拦下就不会有工具执行）。
         // 末次请求（收尾回复）同时带着两条新结果：它就是「新结果以全文进视图」的证据。
-        if (viewSamples.length !== 7) {
-          throw new Error(`到轮 3 断言为止的请求采样应为 7 次（轮 1 三次 + 轮 2 一次 + 轮 3 三次），`
+        if (viewSamples.length !== 8) {
+          throw new Error(`到轮 3 断言为止的请求采样应为 8 次（轮 1 三次 + 轮 2 两次 + 轮 3 三次），`
             + `实际 ${viewSamples.length} 次（脚本与真实循环不同步）｜${sizing()}`)
         }
         for (const sample of viewSamples.slice(viewSamples.length - 3)) {
@@ -771,9 +803,9 @@ export const 压缩分片: SceneDef = {
           }
         }
         const withBoth = viewSamples[viewSamples.length - 1]!
-        if (!(withBoth.used >= 2 * SECOND_PROBE_VIEW_TOKENS)) {
+        if (!(withBoth.used >= 2 * PROBE_VIEW_TOKENS)) {
           throw new Error(`两条新探针结果都进了上下文的请求视图只有 ${withBoth.used} tokens，`
-            + `小于两条新探针的视图成本 ${2 * SECOND_PROBE_VIEW_TOKENS}：preserve 结果没有以全文进视图（载荷机制不成立）｜${sizing()}`)
+            + `小于两条新探针的视图成本 ${2 * PROBE_VIEW_TOKENS}：preserve 结果没有以全文进视图（载荷机制不成立）｜${sizing()}`)
         }
       } }],
     },
@@ -792,18 +824,18 @@ export const 压缩分片: SceneDef = {
             throw new Error(`第二次手动压缩前应恰好 1 条 compaction 条目（第一次分片的产出），实际 ${compactions.length} 条：`
               + `轮 3/轮 4 里又发生了压缩，跨压缩迭代的素材已被压过｜${sizing()}`)
           }
-          // 轮 4 的请求视图：两段尾内容（保留段里的轮 2 回复 + 轮 4 自己的正文）与两条新探针结果都要在里面。
-          if (viewSamples.length !== 8) {
-            throw new Error(`到轮 4 断言为止的请求采样应为 8 次（轮 1 三次 + 轮 2 一次 + 轮 3 三次 + 轮 4 一次），`
+          // 轮 4 的请求视图：轮 4 的切点承载结果与两条新探针结果都要在里面（保留段只有一条短回复）。
+          if (viewSamples.length !== 10) {
+            throw new Error(`到轮 4 断言为止的请求采样应为 10 次（轮 1 三次 + 轮 2 两次 + 轮 3 三次 + 轮 4 两次），`
               + `实际 ${viewSamples.length} 次（脚本与真实循环不同步）｜${sizing()}`)
           }
           const latest = viewSamples[viewSamples.length - 1]!
           if (latest.used > BUDGET.hardInputLimit) {
             throw new Error(`轮 4 的请求视图「${latest.label}」${latest.used} tokens 超过硬上限 ${BUDGET.hardInputLimit}｜${sizing()}`)
           }
-          if (!(latest.used >= 2 * SECOND_PROBE_VIEW_TOKENS + 2 * TAIL_TOKENS)) {
-            throw new Error(`轮 4 的请求视图「${latest.label}」只有 ${latest.used} tokens，小于「两条新探针 + 两段尾内容」`
-              + `的视图成本 ${2 * SECOND_PROBE_VIEW_TOKENS + 2 * TAIL_TOKENS}：跨压缩的载荷没有完整进请求｜${sizing()}`)
+          if (!(latest.used >= 2 * PROBE_VIEW_TOKENS + HOLD_TOKENS)) {
+            throw new Error(`轮 4 的请求视图「${latest.label}」只有 ${latest.used} tokens，小于「两条新探针 + 轮 4 承载结果」`
+              + `的视图成本 ${2 * PROBE_VIEW_TOKENS + HOLD_TOKENS}：跨压缩的载荷没有完整进请求｜${sizing()}`)
           }
           // 阈值前提：手动压缩能面对未压过素材，靠的是回合内**没有**先被阈值命中。本仓估算对非 ASCII
           // 按 1 token/字符计、比上游的 chars/4 保守，这条只会比 Harness 的判定更严，不会假绿。
@@ -843,8 +875,8 @@ export const 压缩分片: SceneDef = {
             throw new Error(`第二次压缩的摘要请求 ${bodies.length} 次超过片数上限 ${MAX_COMPACTION_SLICES}｜${sizing()}`)
           }
           // 切点形态已在压缩前用上游真件核对（`assertPreparationShape`）：两段新探针在
-          // messagesToSummarize 里，前缀（轮 4 的正文，1 条）里没有工具结果 —— 各片的
-          // messages + splitTurnPrefix 拼接与真素材逐项相等，由下面的覆盖对照正面证明。
+          // messagesToSummarize 里，前缀（轮 4 的正文 + 承载结果，3 条）里没有**探针**结果 ——
+          // 各片的 messages + splitTurnPrefix 拼接与真素材逐项相等，由下面的覆盖对照正面证明。
           // 覆盖对照（与轮 2 同款比法，基线换成跨压缩重建的素材）：地址从实发的片请求正文里取回，
           // 两路同源才能比出「缺失、重复、顺序变化」。
           const slices = bodies.map(body => projectedMessages(body))
@@ -933,8 +965,9 @@ export const 压缩分片: SceneDef = {
           if (addedMessages.length !== 0) {
             throw new Error(`第二次压缩新增了消息条目（不应有任何一条）：${JSON.stringify(addedMessages.map(entryBrief))}`)
           }
-          // 第二批探针只属于本场景：观测完成后移出注册表（第一批在轮 2 末尾已注销）。
+          // 第二批探针与切点承载工具只属于本场景：观测完成后移出注册表（第一批在轮 2 末尾已注销）。
           unregister(SECOND_PRESERVE_TOOL_ID)
+          unregister(HOLD_TOOL_ID)
         } },
       ],
     },
