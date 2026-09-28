@@ -96,4 +96,4 @@ Rust [mcp_bridge.rs](../../src-tauri/src/commands/mcp_bridge.rs) 托管 stdio �
 
 设置页测试连接后恢复原连接状态。env 只透传给子进程，日志不打印 env；配置导出含 env 时需要确认明文凭据。MCP 工具一律声明 `passthrough` + `external_side_effect` + `exclusive_effect`，既不能凭发现结果自动获得执行许可，也不能与其它执行并发。
 
-验证规则见[测试边界](testing.md)，集中执行证据只在[未完成工作与已知缺口](../plans/active/未完成工作与已知缺口.md#6-当前验证证据)记录。
+验证规则见[测试边界](testing.md)。
