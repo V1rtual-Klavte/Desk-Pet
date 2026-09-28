@@ -6,7 +6,7 @@
 
 import { BACKGROUND_CONTEXT } from "@earendil-works/pi-agent-core"
 import type { Entry, EntryQuery, JsonValue, JsonlSessionMetadata, Session } from "@earendil-works/pi-agent-core"
-import { createPiSessionRepo } from "@/services/engine/pi"
+import { createPiSessionRepo, flushSessionFrameWrites } from "@/services/engine/pi"
 import type { PiSessionRepo } from "@/services/engine/pi"
 import { createLogger } from "@/services/logger"
 import { formatError, reportError } from "@/services/error"
@@ -43,6 +43,9 @@ export async function resetPiSessionLayerForTest(): Promise<void> {
     await releasePiSession(sessionId)
   }
   repoPromise = null
+  // 句柄循环可能一次都没走（本 trial 没打开过仓库）：仍要冲一次 —— 帧缓冲挂在模块级
+  // 注册表上，不跨 trial 残留（测试隔离；T-6 的测试侧）。
+  await flushSessionFrameWrites(BACKGROUND_CONTEXT)
 }
 
 /** 测试隔离：清空数据根下的全部 pi 会话文件（先释放句柄再删除）。 */
@@ -109,17 +112,65 @@ export async function acquirePiSession(sessionId: string): Promise<Session<Jsonl
   }
 }
 
-/** 关闭并移出句柄缓存；调用方须先确认该会话没有运行中的回合。 */
+/**
+ * 关闭并移出句柄缓存；调用方须先确认该会话没有运行中的回合。
+ *
+ * T-6（关闭 / 退出前缓冲被 flush）在本仓的挂点就在这里：上游
+ * `HarnessSlot.close → harness.close → session.close → storage.close` 全链路一次 `FileSystem`
+ * 调用都没有（执行方案 §0.3），句柄一关就没有别的触发点，只能在此显式冲掉帧缓冲。
+ * 直接调用方（`repo.ts` 内部、`harness-slot.ts`）无需各自改动即获得 flush。
+ *
+ * 顺序必须是「先 close 再 flush」：`session.close()` 会等 mutation line 与 `commitQueue`
+ * 排干，即所有帧写入都已进过装饰器；反过来会与在飞提交赛跑，漏掉最后一帧。
+ * flush 自身不抛（`session-frame-buffer.ts`），放进 `finally` 是为了 close 抛错时也冲。
+ *
+ * 边界（不扩大实施范围）：
+ * - 「退出前」在本任务的口径是「会话句柄关闭 / 槽关闭前」；**应用级强制退出不覆盖** ——
+ *   托盘 `app.exit(0)` 不经前端、`CloseRequested` 只隐藏到托盘，本仓没有可挂的应用级
+ *   teardown。因此**不**补窗口卸载钩子（在卸载前事件上做异步 IPC 与 `app.exit` 有竞态；
+ *   该边界已登记在《未完成工作与已知缺口》「不修/暂不修边界」的「退出钩子」条目）。
+ * - 可接受损失：进程被强杀，或托盘 `app.exit` 且仍在流式中时，缓冲里最多 16 KiB 的
+ *   **进度快照**丢失；正文 entry 走非帧路径（T-3），已在盘上。
+ *
+ * T5.04（折叠的回收主路径）同样挂在这里：`try/catch/finally` **整体之后**调一次
+ * `foldSession`。顺序不可反 —— 折叠的读/写/rename 会命中 W1 装饰器的「同路径先 flush」规则，
+ * 所以必须**先 flush 填满文件、再折叠回收**；把折叠塞进 `try` 内（close 之后、flush 之前）
+ * 就是与在飞帧赛跑，缓冲里的帧会被追加到折叠结果之后。
+ * 为什么不用上游 `onClose`：它由上游在 `.finally()` 里调用且不 await，挂上去必然是浮动
+ * Promise。这里 `await` 是必须的（不能 fire-and-forget，否则进程退出时折叠还在飞）；
+ * 用户可感知成本只有一次 stat（文件未超闸门时）。
+ * 折叠失败只留痕、不影响关闭语义；`deletePiSession`、`readPiSessionSummary`、
+ * `readPiSessionEntriesOnce` 等调用方也走这条释放路径并同样折叠 —— 这是**已接受**的行为
+ * （> `minFileBytes` 的会话多一次 stat，超过回收闸门的会读全文并可能重写）。若实测在历史
+ * 面板刷新时有可见开销，上调 `FOLD_POLICY` 常量（单点可调），不要按调用方加旁路分支。
+ */
 export async function releasePiSession(sessionId: string): Promise<void> {
   const handle = openSessions.get(sessionId)
   if (!handle) return
   openSessions.delete(sessionId)
+  // 折叠要用 metadata 定位文件，而它只能从 `await handle` 得到的句柄上取（不另存一份，
+  // 不给 openSessions 加第二种值形态）；因此先在这里声明、在 try 内赋值。
+  let metadata: JsonlSessionMetadata | undefined
   try {
     const session = await handle
+    metadata = session.metadata
     await session.close(BACKGROUND_CONTEXT)
     log.info("已关闭会话:", sessionId)
   } catch (error) {
     log.error("关闭会话失败:", sessionId, formatError(error))
+  } finally {
+    // 句柄一关就再没有别的触发点：缓冲里剩下的帧只能在这里落地（T-6）。
+    await flushSessionFrameWrites(BACKGROUND_CONTEXT)
+  }
+  // metadata 缺 = 句柄从未打开成功（open 的失败已在上面的 catch 里留痕），没有可折叠的文件。
+  if (!metadata) return
+  // 折叠窗口：句柄已关闭、上面的 flush 也已收尾，此刻该文件没有写入者。失败只留痕，
+  // 绝不让释放抛出（getPiSessionRepo 的 rejection 也一起吃下，释放语义不依赖折叠）。
+  try {
+    const repo = await getPiSessionRepo()
+    await repo.foldSession(metadata, BACKGROUND_CONTEXT)
+  } catch (error) {
+    log.warn("关闭会话后折叠失败，保留原文件:", sessionId, formatError(error))
   }
 }
 

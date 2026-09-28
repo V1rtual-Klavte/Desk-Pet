@@ -1,5 +1,5 @@
 // ==========================================
-// 助手模式工具：剪贴板 (NORMAL/DANGER)
+// 本地工具：剪贴板 (DANGER)
 // ==========================================
 
 import type { ToolDef } from "../types"
@@ -15,16 +15,15 @@ const log = createLogger("ToolClip")
 const clipboardReadTool: ToolDef = defineTool({
   id: "local-clipboard-read",
   name: "clipboard_read",
-  description: "读取系统剪贴板的文本内容。助手模式专用。",
+  description: "读取系统剪贴板的文本内容。",
   parameters: {
     type: "object",
     properties: {},
     required: [],
   },
-  safetyLevel: "NORMAL",
+  safetyLevel: "DANGER",
   source: "local",
   sourceId: "",
-  mode: "assistant",
   actionCategory: "clip.read",
   // 隐私边界由风险维度与总策略给出：工具侧不额外表态。
   // 读取对象易变，只共享慢读取的并发额度，不做任何重放。
@@ -47,7 +46,7 @@ const clipboardReadTool: ToolDef = defineTool({
 const clipboardWriteTool: ToolDef = defineTool({
   id: "local-clipboard-write",
   name: "clipboard_write",
-  description: "将文本写入系统剪贴板。助手模式专用，每次需确认。",
+  description: "将文本写入系统剪贴板。",
   parameters: {
     type: "object",
     properties: {
@@ -58,7 +57,6 @@ const clipboardWriteTool: ToolDef = defineTool({
   safetyLevel: "DANGER",
   source: "local",
   sourceId: "",
-  mode: "assistant",
   actionCategory: "clip.write",
   policy: {
     version: TOOL_POLICY_VERSION,

@@ -16,7 +16,7 @@ const WAIT_BUDGET_MS = 3000
 const tool = (id: string, isolation: "shared_read" | "exclusive_effect", effect: "read" | "local_mutation", run: () => Promise<void>): ToolDef =>
   defineTool({
     id, name: id, description: `许可探针 ${id}`, parameters: { type: "object", properties: {} },
-    safetyLevel: "SAFE", source: "local", sourceId: "", mode: "pet", actionCategory: "os.info",
+    safetyLevel: "SAFE", source: "local", sourceId: "", actionCategory: "os.info",
     policy: {
       version: TOOL_POLICY_VERSION,
       permission: { defaultDecision: "allow" },
@@ -66,8 +66,8 @@ export const 执行许可: SceneDef = {
         register(readA)
         register(readB)
         await Promise.all([
-          executeToolDefinition(readA, {}, { mode: "pet", toolCallId: "permit-read-a" }),
-          executeToolDefinition(readB, {}, { mode: "pet", toolCallId: "permit-read-b" }),
+          executeToolDefinition(readA, {}, { toolCallId: "permit-read-a" }),
+          executeToolDefinition(readB, {}, { toolCallId: "permit-read-b" }),
         ])
         if (!overlapped) throw new Error("两个只读工具没有并发执行")
 
@@ -87,8 +87,8 @@ export const 执行许可: SceneDef = {
         })
         register(holdingRead)
         register(waitingWrite)
-        const readJob = settle(executeToolDefinition(holdingRead, {}, { mode: "pet", toolCallId: "permit-read-hold" }))
-        const writeJob = settle(executeToolDefinition(waitingWrite, {}, { mode: "pet", toolCallId: "permit-write-wait" }))
+        const readJob = settle(executeToolDefinition(holdingRead, {}, { toolCallId: "permit-read-hold" }))
+        const writeJob = settle(executeToolDefinition(waitingWrite, {}, { toolCallId: "permit-write-wait" }))
         if (!await waitForQueued(1)) throw new Error("独占效果没有进入许可队列")
         if (writeStarted) throw new Error("独占效果与进行中的读并发执行")
         readReleased = true
@@ -112,14 +112,14 @@ export const 执行许可: SceneDef = {
         })
         register(holdingWrite)
         register(lateRead)
-        const effectJob = settle(executeToolDefinition(holdingWrite, {}, { mode: "pet", toolCallId: "permit-write-hold" }))
+        const effectJob = settle(executeToolDefinition(holdingWrite, {}, { toolCallId: "permit-write-hold" }))
         // 先确认独占已经拿到额度，再发起读，避免读抢在效果之前。
         const deadline = Date.now() + WAIT_BUDGET_MS
         while ((await permitSnapshot()).exclusiveActive !== true && Date.now() < deadline) {
           await new Promise(resolve => setTimeout(resolve, 10))
         }
         if ((await permitSnapshot()).exclusiveActive !== true) throw new Error("独占效果没有取得额度")
-        const readJob2 = settle(executeToolDefinition(lateRead, {}, { mode: "pet", toolCallId: "permit-read-late" }))
+        const readJob2 = settle(executeToolDefinition(lateRead, {}, { toolCallId: "permit-read-late" }))
         if (!await waitForQueued(1)) throw new Error("独占期间的读没有进入许可队列")
         if (lateReadStarted) throw new Error("独占效果进行中仍开出了新的读")
         effectReleased = true

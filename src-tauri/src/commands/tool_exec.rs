@@ -3,7 +3,7 @@
 // 所有系统级工具调用通过此模块桥接到 OS
 // ==========================================
 
-use super::bash_policy::{enforce_bash_policy, BashPolicy};
+use super::bash_policy::enforce_bash_policy;
 use crate::error::{err, AppError, AppResult};
 use crate::rust_debug;
 use std::collections::HashMap;
@@ -76,8 +76,9 @@ impl Drop for PoolGuard {
 
 /// 执行 bash 命令
 ///
-/// `policy` 必填：策略强度不再由前端「是否受限」的布尔值决定，
-/// scope 只能叠加层 2 规则，硬基线（bash_policy 的层 1）恒定执行。
+/// 不含策略入参：Rust 只跑固定的安全基线（bash_policy 的层 1 + 系统路径保护 +
+/// 凭据拦截），调用方没有可传弱或可关闭的旋钮。「哪些命令要确认」是分级问题，
+/// 由 TS 的 `classifyBashRisk` 决定，与这里的拒绝判定无关。
 ///
 /// 命令体是同步阻塞的（等子进程 + 轮询），必须搬进 `spawn_blocking`：
 /// 直接挂在 async worker 上，等待期间会把运行时的调度线程占死。
@@ -89,14 +90,13 @@ pub async fn bash_exec(
     cwd: Option<String>,
     execution_id: Option<String>,
     timeout_ms: Option<u64>,
-    policy: BashPolicy,
     max_bytes: Option<usize>,
     max_lines: Option<usize>,
     spill: Option<bool>,
 ) -> AppResult<BashResult> {
     let pool = pool.inner().clone();
     tauri::async_runtime::spawn_blocking(move || {
-        run_bash(pool, command, cwd, execution_id, timeout_ms, policy, max_bytes, max_lines, spill)
+        run_bash(pool, command, cwd, execution_id, timeout_ms, max_bytes, max_lines, spill)
     })
     .await
     .map_err(|e| AppError::Io(format!("bash 执行任务失败: {e}")))?
@@ -109,12 +109,11 @@ fn run_bash(
     cwd: Option<String>,
     execution_id: Option<String>,
     timeout_ms: Option<u64>,
-    policy: BashPolicy,
     max_bytes: Option<usize>,
     max_lines: Option<usize>,
     spill: Option<bool>,
 ) -> AppResult<BashResult> {
-    enforce_bash_policy(&command, policy.scope, &policy.whitelist)?;
+    enforce_bash_policy(&command)?;
     // 调用方未提供执行 ID 时按进程号生成一个临时 ID（仅用于进程表登记与临时文件名）。
     let execution_id = execution_id.unwrap_or_else(|| format!("adhoc-{}", std::process::id()));
     if !execution_id
@@ -259,7 +258,7 @@ fn run_bash(
 
 // 旧的内联策略已移入 bash_policy.rs：
 // 子串匹配（`rm -rf /` 之类）既漏 `rm  -rf  /`、`find ~ -delete`，
-// 又误杀 `rm -rf /Users`，且助手模式整段跳过。
+// 又误杀 `rm -rf /Users`。
 
 /// 取消的池内路径。
 ///
@@ -1086,7 +1085,7 @@ pub fn system_info() -> SystemInfoResult {
     let cpu_count = num_cpus::get() as u32;
 
     // 内存信息（跨平台）
-    let (mem_total, mem_used) = get_memory_info();
+    let (mem_total, mem_used, mem_available) = get_memory_info();
 
     SystemInfoResult {
         os,
@@ -1094,11 +1093,15 @@ pub fn system_info() -> SystemInfoResult {
         cpu_count,
         mem_total,
         mem_used,
+        mem_available,
     }
 }
 
-// 前端按 camelCase 读取（cpuCount / memTotal / memUsed）。
-// 漏掉这行属性不会报错，只会让三个字段在 TS 侧全是 undefined —— 显示成 NaNGB。
+// 前端按 camelCase 读取（cpuCount / memTotal / memUsed / memAvailable）。
+// 漏掉这行属性不会报错，只会让数值字段在 TS 侧全是 undefined —— 显示成 NaNGB。
+//
+// `mem_available` 是「不用换页就能分配出去的量」，与 `mem_used` 不是互补关系：
+// 两个口径来自各平台不同的计数（见 get_memory_info），前端不要把 used + available 当成总量。
 #[derive(serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SystemInfoResult {
@@ -1107,9 +1110,11 @@ pub struct SystemInfoResult {
     cpu_count: u32,
     mem_total: u64,
     mem_used: u64,
+    mem_available: u64,
 }
 
-fn get_memory_info() -> (u64, u64) {
+/// 返回 `(总内存, 已用内存, 可用内存)`，单位字节；取不到时该位为 0。
+fn get_memory_info() -> (u64, u64, u64) {
     #[cfg(target_os = "macos")]
     {
         use std::process::Command;
@@ -1122,43 +1127,56 @@ fn get_memory_info() -> (u64, u64) {
             .and_then(|s| s.trim().parse::<u64>().ok())
             .unwrap_or(0);
 
-        // 已用内存: vm_stat 计算 (page size * (active + wired + compressed))
-        let used = {
-            let page_size = Command::new("sysctl")
-                .args(["-n", "hw.pagesize"])
-                .output()
-                .ok()
-                .and_then(|o| String::from_utf8(o.stdout).ok())
-                .and_then(|s| s.trim().parse::<u64>().ok())
-                .unwrap_or(16384);
+        // 已用与可用都从同一次 vm_stat 读数里算（页大小经 hw.pagesize 取得）
+        let page_size = Command::new("sysctl")
+            .args(["-n", "hw.pagesize"])
+            .output()
+            .ok()
+            .and_then(|o| String::from_utf8(o.stdout).ok())
+            .and_then(|s| s.trim().parse::<u64>().ok())
+            .unwrap_or(16384);
 
-            let vm_stat = Command::new("vm_stat")
-                .output()
-                .ok()
-                .and_then(|o| String::from_utf8(o.stdout).ok())
-                .unwrap_or_default();
+        let vm_stat = Command::new("vm_stat")
+            .output()
+            .ok()
+            .and_then(|o| String::from_utf8(o.stdout).ok())
+            .unwrap_or_default();
 
-            let mut active = 0u64;
-            let mut wired = 0u64;
-            let mut compressed = 0u64;
-            for line in vm_stat.lines() {
-                let parts: Vec<&str> = line.split(':').collect();
-                if parts.len() < 2 {
-                    continue;
-                }
-                let key = parts[0].trim().trim_matches('"');
-                let val = parts[1].trim().trim_end_matches('.');
-                match key {
-                    "Pages active" => active = val.parse().unwrap_or(0),
-                    "Pages wired down" => wired = val.parse().unwrap_or(0),
-                    "Pages occupied by compressor" => compressed = val.parse().unwrap_or(0),
-                    _ => {}
-                }
+        let mut active = 0u64;
+        let mut wired = 0u64;
+        let mut compressed = 0u64;
+        let mut free = 0u64;
+        let mut inactive = 0u64;
+        let mut speculative = 0u64;
+        for line in vm_stat.lines() {
+            let parts: Vec<&str> = line.split(':').collect();
+            if parts.len() < 2 {
+                continue;
             }
-            (active + wired + compressed) * page_size
-        };
+            let key = parts[0].trim().trim_matches('"');
+            let val = parts[1].trim().trim_end_matches('.');
+            match key {
+                "Pages active" => active = val.parse().unwrap_or(0),
+                "Pages wired down" => wired = val.parse().unwrap_or(0),
+                "Pages occupied by compressor" => compressed = val.parse().unwrap_or(0),
+                "Pages free" => free = val.parse().unwrap_or(0),
+                "Pages inactive" => inactive = val.parse().unwrap_or(0),
+                "Pages speculative" => speculative = val.parse().unwrap_or(0),
+                _ => {}
+            }
+        }
 
-        (total, used)
+        // 已用内存: page size * (active + wired + compressed)，沿用原有口径
+        let used = (active + wired + compressed) * page_size;
+
+        // 可用内存: macOS 没有 Linux 的 MemAvailable；用「空闲 + 非活跃 + speculative(可回收)」
+        // 页近似「不用换页即可分配」的页集（reclaimed-without-paging）。
+        // 刻意不按 Activity Monitor 的 Cached Files 口径：它还含 `Pages purgeable`，而 purgeable
+        // 是 active/inactive 的子集，再加一遍会重复计。
+        // 这三类与 used 的三类在 vm_stat 里互斥，所以它是独立口径而不是 total - used。
+        let available = (free + inactive + speculative) * page_size;
+
+        (total, used, available)
     }
 
     #[cfg(target_os = "windows")]
@@ -1181,9 +1199,10 @@ fn get_memory_info() -> (u64, u64) {
                 ullAvailExtendedVirtual: 0,
             };
             if GlobalMemoryStatusEx(&mut mem) != 0 {
-                (mem.ullTotalPhys, mem.ullTotalPhys - mem.ullAvailPhys)
+                // ullAvailPhys 直接就是「可用」；已用由总量减可用推得（同一次读数，不再调 API）
+                (mem.ullTotalPhys, mem.ullTotalPhys - mem.ullAvailPhys, mem.ullAvailPhys)
             } else {
-                (0, 0)
+                (0, 0, 0)
             }
         }
     }
@@ -1204,7 +1223,7 @@ fn get_memory_info() -> (u64, u64) {
         };
         let total = read_mem("MemTotal:").unwrap_or(0);
         let available = read_mem("MemAvailable:").unwrap_or(0);
-        (total, total.saturating_sub(available))
+        (total, total.saturating_sub(available), available)
     }
 }
 
@@ -1625,7 +1644,7 @@ mod tests {
         }
     }
 
-    /// `system_info` 曾因漏掉 `rename_all = "camelCase"` 让前端三个字段全读到 undefined，
+    /// `system_info` 曾因漏掉 `rename_all = "camelCase"` 让前端数值字段全读到 undefined，
     /// 界面上显示成 `NaNGB / NaNGB`。类型检查两边都发现不了，只能钉住线上载荷的字段名。
     #[test]
     fn system_info_payload_uses_camel_case() {
@@ -1635,9 +1654,10 @@ mod tests {
             cpu_count: 8,
             mem_total: 16 * 1024 * 1024 * 1024,
             mem_used: 8 * 1024 * 1024 * 1024,
+            mem_available: 6 * 1024 * 1024 * 1024,
         })
         .unwrap();
-        for field in ["cpuCount", "memTotal", "memUsed"] {
+        for field in ["cpuCount", "memTotal", "memUsed", "memAvailable"] {
             assert!(
                 payload.get(field).is_some(),
                 "载荷缺少 {field}（前端按 camelCase 读取）: {payload}"
@@ -1921,8 +1941,6 @@ mod tests {
     // 要造失败得先破坏 PATH 或句柄表，代价与收益不成比例）：它与其它提前返回走的是
     // 同一个 `_guard`，由 `bash_invalid_cwd_leaves_no_pool_entry` 等价覆盖。
 
-    use crate::commands::bash_policy::BashScope;
-
     /// 本模块用例的临时目录（跨平台）：同一条用例的文件都落在这里，结束时整体删除。
     /// 放在系统 temp 下：它本就在允许根（home/temp）内，用例才有机会走到类型判定，
     /// 而不是被 `PATH_ESCAPE` 提前拦下。FIFO 用例同样用它 —— 平台专有的是 FIFO 本身，
@@ -1943,13 +1961,6 @@ mod tests {
     /// 池条目的直接视图。锁中毒也恢复出来：断言不该因为别的用例 panic 而误报。
     fn slots(pool: &BashPool) -> std::sync::MutexGuard<'_, HashMap<String, BashSlot>> {
         pool.0.lock().unwrap_or_else(|e| e.into_inner())
-    }
-
-    fn assistant_policy() -> BashPolicy {
-        BashPolicy {
-            scope: BashScope::Assistant,
-            whitelist: Vec::new(),
-        }
     }
 
     /// 「先等一段时间、再留下探针文件」的命令：给「spawn 后立即终止」留出可判定的窗口。
@@ -1985,7 +1996,6 @@ mod tests {
             Some(dir.to_string_lossy().to_string()),
             Some("control-probe".into()),
             None,
-            assistant_policy(),
             None,
             None,
             None,
@@ -2010,7 +2020,6 @@ mod tests {
             Some(dir.to_string_lossy().to_string()),
             Some(id),
             None,
-            assistant_policy(),
             None,
             None,
             None,
@@ -2038,7 +2047,6 @@ mod tests {
             None,
             Some("policy-reject".into()),
             None,
-            assistant_policy(),
             None,
             None,
             None,
@@ -2065,7 +2073,6 @@ mod tests {
             Some(plain.to_string_lossy().into_owned()),
             Some("invalid-cwd".into()),
             None,
-            assistant_policy(),
             None,
             None,
             None,

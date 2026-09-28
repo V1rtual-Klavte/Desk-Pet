@@ -13,6 +13,7 @@ import { getActiveCard, initRegistry } from "@/services/personality/registry"
 import { initCards } from "@/services/personality/loader"
 import { registerDefaultTools } from "@/services/tool/registry"
 import { resetCooldown, setAIGenerating } from "@/services/cooldown"
+import { resetSessionSafetyMode } from "@/services/debug"
 import { resetPiRuntimeProviderForTest } from "@/services/engine/pi"
 import { initSlashCommands } from "@/services/engine"
 import { resetAgentRuntimeForTest } from "@/services/agent/runner"
@@ -91,28 +92,36 @@ let configSnapshot: ConfigTree | undefined
 /**
  * 运行开始时的配置快照，场景之间的还原目标。
  *
- * 助手模式在这里按 pet 基线钉死：Live Test 默认恒以 pet 模式运行，这个键就是那句约定的
- * 代码依据 —— 计划入口由 `generalConfig.assistantMode && planConfig.enabled` 双重把守，
- * 钉住助手模式就走不到计划段；场景要跑计划段必须在自己的 setup 里显式打开
- * （`计划生产闭环` 等场景都这么做）。
- * `ai.plan.enabled` 不在钉住之列：pet 模式下它不生效，钉住它只会把开发配置里出厂即 `true`
- * 的值改写成 false，而它在场景之间的漂移由快照还原兜住。
+ * 两个钉位的理由都是「不钉住就会静默改变被测行为」：
+ *
+ * - **计划门禁**：计划入口只看 `planConfig.enabled`（模式已在收敛中删除），而 `ai.plan.enabled`
+ *   出厂即 `true` —— 不钉住它，任何命中复杂度关键词的 production 场景文本都会静默走进真实
+ *   计划段。场景要跑计划段必须在自己的 setup 里显式打开（`计划生产闭环` 等场景都这么做）。
+ * - **安全模式**：`DANGER` 的裁决完全由 `ai.safety.mode` 决定（`let_me_tk` → ask、
+ *   `just_do_it` → allow、其余含出厂默认 `tell_me` → ask）。需要确认通道的场景（`子代理授权范围`、
+ *   `确认通道`、`工具结果存档边界`）靠 `tell_me` 才有 ask；开发者本地若是 `just_do_it`，
+ *   这些场景会**静默失去确认请求**，本该拦下它们的断言变成真空断言（门禁假通过）。
+ *   `let_me_tk` 也产出 ask，这里只钉一个确定的出厂值，让裁决输入不随本机配置漂移。
+ *   钉位只覆盖配置这条轴：会话级覆盖优先级更高（`getEffectiveSafetyMode()` = 会话覆盖 ?? 配置），
+ *   由 `standardSetup` 开头的 `resetSessionSafetyMode()` 无条件收回。
+ *
+ * 注意：`setOverride` 没有「只改内存」的通道，还原必然写一次运行时 CONFIG ——
+ * 与既有的计划钉位同量级（详见 `restoreConfigBaseline`）。
  */
 function configBaseline(): ConfigTree {
   if (!configSnapshot) {
     const snapshot = structuredClone(getAllOverrides() as ConfigTree)
-    const general = isConfigTree(snapshot.general) ? snapshot.general : {}
-    snapshot.general = {
-      ...general,
-      mode: { ...(isConfigTree(general.mode) ? general.mode : {}), assistant: false },
-    }
+    const ai = isConfigTree(snapshot.ai) ? snapshot.ai : {}
+    const plan = isConfigTree(ai.plan) ? ai.plan : {}
+    const safety = isConfigTree(ai.safety) ? ai.safety : {}
+    snapshot.ai = { ...ai, plan: { ...plan, enabled: false }, safety: { ...safety, mode: "tell_me" } }
     configSnapshot = snapshot
   }
   return configSnapshot
 }
 
 /**
- * 场景间配置隔离：把配置拉回运行快照 + pet 基线。
+ * 场景间配置隔离：把配置拉回运行快照 + 计划门禁与安全模式基线。
  *
  * 这是结构性兜底，不依赖场景自己写清理：断言失败会让运行器 `break` 掉后续断言
  * （scene-runner.ts），清理挂在最后一条断言 `finally` 上的场景就再也执行不到；
@@ -142,7 +151,14 @@ export async function standardSetup(
   confirmPolicy: ConfirmPolicy = "deny",
   planPolicy: PlanPolicy = "deny",
 ): Promise<void> {
-  // 配置隔离排在最前：本函数之后的一切（含场景自己的 setup）都该在 pet 基线上运行
+  // 安全裁决输入的第二条轴：会话级覆盖优先级高于 `ai.safety.mode` 钉位
+  // （`getEffectiveSafetyMode()` = 会话覆盖 ?? 配置），却只挂在场景自己的清理上 ——
+  // `输入先落盘` 的还原在断言 finally 里（setup 抛错就到不了），`权限策略冻结` 的还原在
+  // 最后一条检查上（前序断言失败会被运行器 break 掉）。残留的 `just_do_it` 会让需要
+  // `DANGER → ask` 的场景静默失去确认请求，正是钉位要挡的假通过，因此和配置漂移一样
+  // 在隔离点无条件收回。放在第一句、不跨 await：后面的配置还原可能抛错，这条兜底不能被跳过。
+  resetSessionSafetyMode()
+  // 配置隔离紧随其后：本函数之后的一切（含场景自己的 setup）都该在计划门禁关闭的基线上运行
   await restoreConfigBaseline()
   await bootstrapOnce()
   resetConfirmChannel(confirmPolicy)

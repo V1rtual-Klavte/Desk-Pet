@@ -5,8 +5,7 @@
 // createTurnSpec 的 maxToolCalls；它不是重试次数，取值为 loopConfig.maxToolCallsPerTurn。
 // ==========================================
 
-import type { ToolDef } from "@/services/tool/types"
-import { getToolsForMode } from "@/services/tool/registry"
+import { listAll, type ToolDef } from "@/services/tool"
 import { runPiSubAgent } from "@/services/engine/pi"
 import type { PiSubAgentOutput } from "@/services/engine/pi"
 import { loopConfig } from "@/services/config"
@@ -26,7 +25,7 @@ export interface ForkAgentInput {
 
 /**
  * 创建并运行一个 Fork 子代理。
- * 子代理拥有精简的工具集（只读文件+系统信息+Bash白名单+HTTP），
+ * 子代理的工具面在此收窄为文件读取、系统信息与 Bash（SUB_AGENT_TOOL_IDS），
  * 独立上下文，不干扰主 Agent 状态。
  */
 export async function runForkAgent(input: ForkAgentInput): Promise<PiSubAgentOutput> {
@@ -35,7 +34,7 @@ export async function runForkAgent(input: ForkAgentInput): Promise<PiSubAgentOut
   const tools = getSafeTools()
   const systemPrompt = role
     ? `你是糖糖桌宠的子代理，角色: ${role}。用简短中文回复，可以调用工具获取信息。`
-    : "你是糖糖桌宠的子代理。用简短中文回复，可以调用工具获取信息。只做查询类操作，不要修改文件。"
+    : "你是糖糖桌宠的子代理。用简短中文回复，可以调用工具获取信息。工具面限于文件读取、系统信息与 Bash，以只读查询为主。"
 
   log.info("Fork 启动:", role || "通用", "| task:", task.substring(0, 80))
 
@@ -137,9 +136,9 @@ const SUB_AGENT_TOOL_IDS = new Set([
   "pi-bash",
 ])
 
-/** 获取子代理的可用工具 */
+/** 获取子代理的可用工具：全部已注册工具按固定白名单收窄。 */
 function getSafeTools(): ToolDef[] {
-  const allTools = getToolsForMode("pet") // 轻量模式工具
+  const allTools = listAll()
   return allTools.filter(t => SUB_AGENT_TOOL_IDS.has(t.id))
 }
 

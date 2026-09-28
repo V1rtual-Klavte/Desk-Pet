@@ -1,9 +1,9 @@
 // ==========================================
-// Plan 模块 — 助手模式复杂任务编排器
+// Plan 模块 — 复杂任务编排器
 // 复杂度检测 → LLM 拆解 → 子代理逐步执行
 // ==========================================
 
-import { getToolByName, getToolsForMode, type ToolDef } from "@/services/tool"
+import { getToolByName, listAll, type ToolDef } from "@/services/tool"
 import type { PiSubAgentOutput, PiSubAgentScope, PiTextCallAudit } from "@/services/engine/pi"
 import type { ThinkingEffort } from "@/services/agent/types"
 import type { PlanEffectClass, PlanRecord, PlanStepRecord } from "@/services/engine/runtime"
@@ -278,7 +278,7 @@ export function planEffectClassFor(allowedTools?: string[]): PlanEffectClass {
 
 // ── 计划执行 ──
 
-/** 步骤工具解析报告（FIX-51）：工具名解析不到，或步骤未限定工具而放大到全部助手工具。 */
+/** 步骤工具解析报告（FIX-51）：工具名解析不到（含解析到但到不了子代理的派生型工具），或步骤未限定工具而放大到全部已注册工具。 */
 export type StepToolNotice =
   | { kind: "missing_tools"; names: string[] }
   | { kind: "unbounded_tools" }
@@ -288,7 +288,8 @@ export interface ExecutePlanCallbacks {
   onStepDone(step: PlanStep, result: PiSubAgentOutput): Promise<void> | void
   onStepFailed(step: PlanStep, error: string): Promise<"continue" | "abort">
   /**
-   * 步骤开工前的工具解析报告：解析不到工具名、或未限定 `allowedTools` 时各调一次。
+   * 步骤开工前的工具解析报告：工具名解析不到（含解析到但到不了子代理的派生型工具）、
+   * 或未限定 `allowedTools` 时各调一次。
    * 权限面变化必须可见（不静默）——由宿主据此写计划进度事件与系统消息。
    */
   onStepNotice?(step: PlanStep, notice: StepToolNotice): Promise<void> | void
@@ -429,21 +430,24 @@ async function executeStep(
     const missing: string[] = []
     for (const name of step.allowedTools) {
       const tool = getToolByName(name)
-      if (tool) tools.push(tool)
+      // 派生型工具到不了子代理手里（剥离点是 runPiSubAgent，用同一判定：isolation=delegate，
+      // 现只有 agent_spawn），在这一步等同于不存在 —— 与下面的硬失败同一条理由。
+      // 判定读工具自己的策略声明，不在这里维护名单（与 planEffectClassFor 同款）。
+      if (tool && tool.policy.execution.isolation !== "delegate") tools.push(tool)
       else missing.push(name)
     }
     if (missing.length > 0) {
-      // 指定的工具不存在就不开工：拿剩下的工具跑等于这一步的权限面既不可信也不可复现。
+      // 指定的工具不存在（或到不了子代理）就不开工：拿剩下的工具跑等于这一步的权限面既不可信也不可复现。
       // 报告交给宿主写计划进度事件与系统消息（FIX-51），不静默。
       log.warn(`步骤 ${step.id} 指定的工具不存在: ${missing.join("、")}`)
       await callbacks.onStepNotice?.(step, { kind: "missing_tools", names: missing })
       return { reply: "", toolCallsMade: 0, success: false, error: `指定的工具不存在: ${missing.join("、")}` }
     }
   } else {
-    // 未限定工具 = 放大到全部助手工具，必须可见（FIX-51）
-    log.warn(`步骤 ${step.id} 未指定 allowedTools，使用全部助手工具`)
+    // 未限定工具 = 放大到全部已注册工具，必须可见（FIX-51）
+    log.warn(`步骤 ${step.id} 未指定 allowedTools，使用全部已注册工具`)
     await callbacks.onStepNotice?.(step, { kind: "unbounded_tools" })
-    tools.push(...getToolsForMode("assistant"))
+    tools.push(...listAll())
   }
 
   const { runPiSubAgent } = await import("@/services/engine/pi")

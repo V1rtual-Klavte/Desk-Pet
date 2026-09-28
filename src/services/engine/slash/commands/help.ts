@@ -2,12 +2,14 @@
 // /help — 显示所有可用命令（按分类分组，结构化输出）
 // ==========================================
 
-import type { SlashCommand } from "../types"
+import type { RegisteredSlashCommand, SlashCommand } from "../types"
 import { listAll } from "../registry"
 
 const CATEGORY_CONFIG: Record<string, { emoji: string; label: string }> = {
   session:     { emoji: "💬", label: "会话" },
   memory:      { emoji: "🧠", label: "记忆" },
+  // 与设置页的「📦 Skill」同一标记，用户在两处看到的是同一个东西。
+  skill:       { emoji: "📦", label: "技能" },
   easteregg:   { emoji: "🕹️", label: "彩蛋" },
   general:     { emoji: "⚙️", label: "通用" },
 }
@@ -16,7 +18,7 @@ function formatHelp(): string {
   const cmds = listAll()
 
   // 按分类分组
-  const groups = new Map<string, SlashCommand[]>()
+  const groups = new Map<string, RegisteredSlashCommand[]>()
   for (const c of cmds) {
     const cat = c.category || "general"
     if (!groups.has(cat)) groups.set(cat, [])
@@ -24,7 +26,7 @@ function formatHelp(): string {
   }
 
   // 按分类顺序排列
-  const order = ["session", "memory", "easteregg", "general"]
+  const order = ["session", "memory", "skill", "easteregg", "general"]
 
   const lines: string[] = []
   lines.push(`📋 可用命令 (共 ${cmds.length} 个)`)

@@ -37,11 +37,14 @@ import {
   toAgentHarnessTools,
   flushPendingReleases, retryBorrowerAttachIfPending, setToolPermitLimit,
 } from "@/services/tool"
-import type { HarnessToolRun, ToolDef } from "@/services/tool"
-import { ContextBudgetError, contextBudget, toHarnessEstimateTokens } from "@/services/context"
+import type { HarnessToolRun, ToolDef, ToolResultLookup } from "@/services/tool"
+import {
+  ContextBudgetError, contextBudget, isUniqueAddressRef, resolveAddressRef, shortenAddresses, toHarnessEstimateTokens,
+} from "@/services/context"
 import { COMPACTION_DECLINED_ENTRY, PROMPT_REWRITE_ENTRY, laneMessageText, messageRequestId, userInputMessage } from "@/services/engine/runtime"
 import type { CompactionAuditSink, InputSourceMark } from "@/services/engine/runtime"
 import { conversationConfig, loopConfig } from "@/services/config"
+import { getSkillCatalogFingerprint, listEnabledSkills, syncSkillCatalog } from "@/services/skill"
 import { PI_LANE } from "@/services/session/repo"
 import { createLogger } from "@/services/logger"
 import { formatError } from "@/services/error"
@@ -183,14 +186,42 @@ export interface HarnessRunSpec {
 
 /**
  * 预检期准入用的最小运行参数：不含 systemPrompt/压缩钩子（那些随 drive 时的 spec 装配，不伪造写死值）。
+ *
+ * 两支由 `kind` 判别：
+ * - 用户输入（省略 `kind` 等价于 `"prompt"`）：正文由调用方构造，`accept` 落盘后进会话；
+ * - 技能启动（`kind: "skill"`）：正文由 Pi 在 `accept` 内按技能文件构造，宿主只给目标技能名。
+ *
+ * 两支互斥的字段用 `never` 钉死（`prompt` 只属于用户输入支，技能字段只属于技能支）：
+ * 一条命令只能落一条用户正文，传错支要在编译期就拦下，不留运行期约定。
  */
-export interface HarnessAdmitSpec {
+interface HarnessAdmitBase {
   model: PiModel
   thinkingEffort: ThinkingEffort
   tools: readonly ToolDef[]
   toolRun: HarnessToolRun
-  prompt: HarnessRunSpec["prompt"]
 }
+
+/** 用户输入准入（现状形态，调用点不必写 `kind`）。 */
+export interface HarnessAdmitInputSpec extends HarnessAdmitBase {
+  kind?: "prompt"
+  prompt: HarnessRunSpec["prompt"]
+  name?: never
+  additionalInstructions?: never
+}
+
+/**
+ * 技能启动准入：`name` 必须出现在 lane 的 `resources.skills` 里（该清单由 `assembleLane` 从
+ * `listEnabledSkills()` 下发，早于 `accept`；不在清单里的名字会在 accept 里拿到 `UnknownSkill`）。
+ */
+export interface HarnessAdmitSkillSpec extends HarnessAdmitBase {
+  kind: "skill"
+  name: string
+  /** 跟在技能正文后的附加指示（`/skill <name> [额外指示]` 的余下文本）。 */
+  additionalInstructions?: string
+  prompt?: never
+}
+
+export type HarnessAdmitSpec = HarnessAdmitInputSpec | HarnessAdmitSkillSpec
 
 /** 准入结果：通过给出 operationId；未通过带上与 `run()` 同形的终态（调用方按 status 结算）。 */
 export type HarnessAdmissionResult = { ok: true; operationId: string } | { ok: false; result: HarnessRunResult }
@@ -365,6 +396,12 @@ export class HarnessSlot {
   private queueMirrorReady = false
   /** requestId → lane inbox entryId：重投递前用它撤销仍未消费的项，保证用户正文恰好一次。 */
   private readonly pendingDeliveryEntries = new Map<string, string>()
+  /**
+   * 工具结果条目 id → 已发出的展示地址（D-W2-8：地址跨请求稳定）。
+   * 槽级缓存，跟会话句柄同生命周期（close 时随 `this.session` 一并清空）——不做模块级全局表，
+   * 否则跨会话串味、也会泄漏已释放的槽。
+   */
+  private addressRefCache = new Map<string, string>()
   /** 停止归还的未消费消息：在回合收尾点（或没有在飞 run 时）以 nextRun 重新入队。 */
   private readonly requeuePending: AgentMessage[] = []
   /** 审计条目排队区：hook / 事件处理器只入队，drive 结束后由宿主写入（见 queueAuditEntry）。 */
@@ -693,6 +730,8 @@ export class HarnessSlot {
     this.harness = undefined
     this.lane = undefined
     this.session = undefined
+    // 地址目录跟会话句柄走：句柄释放后旧地址没有意义，留着只会让重开的会话继承过期前缀。
+    this.addressRefCache.clear()
     this.state = "closed"
     try {
       // harness.close 会关闭会话句柄；随后让 session 层缓存同步释放，避免留下已关闭句柄。
@@ -1032,9 +1071,14 @@ export class HarnessSlot {
   // ── 运行 ──
 
   /**
-   * 预检前把输入先落盘：装配 lane 运行参数后 `lane.accept({kind:"prompt", prompt})`。
-   * accept 即把用户条目提交进会话文件（此后预检失败或进程被杀都不丢输入），
-   * 模型请求留给 `driveAdmitted`；空 prompt + inbox 有消息是上游允许的形态。
+   * 预检前把输入先落盘：装配 lane 运行参数后按 `kind` 构造准入请求交给 `lane.accept`。
+   *
+   * - 用户输入（省略 `kind` 等价于 `"prompt"`）：accept 即把用户条目提交进会话文件
+   *   （此后预检失败或进程被杀都不丢输入），模型请求留给 `driveAdmitted`；
+   *   空 prompt + inbox 有消息是上游允许的形态。
+   * - 技能启动（`kind: "skill"`）：那条 `role:"user"` 消息由 Pi 在 accept 内用技能文件构造并提交
+   *   （`formatSkillInvocation`，含技能文件的绝对路径），与用户输入同样「先落盘再投递」；
+   *   宿主不提供正文，准入形态里也没有 `prompt` 字段。
    */
   async admitInput(admit: HarnessAdmitSpec): Promise<HarnessAdmissionResult> {
     await this.open()
@@ -1048,11 +1092,15 @@ export class HarnessSlot {
       }
     }
     await this.assembleLane(admit)
-    // 上游的接受请求是可辨识联合（字符串正文 / 消息或消息数组各一支），两支的请求体字面量相同：
-    // 分支只为让编译器按入参收窄 —— union 形状的 prompt 不能直接塞进其中任何一支。
-    const request: OperationRequest = typeof admit.prompt === "string"
-      ? { kind: "prompt", prompt: admit.prompt }
-      : { kind: "prompt", prompt: admit.prompt }
+    // 上游的接受请求是可辨识联合：用户输入支的两种正文形态（字符串 / 消息或消息数组）请求体字面量
+    // 相同，分支只为让编译器按入参收窄。
+    // 技能支不补正文：`kind:"skill"` 的请求里没有 prompt 字段（准入形态也用 `never` 钉死），
+    // 那条用户条目由 Pi 在 accept 内按技能文件构造 —— 一次命令只能落一条正文。
+    const request: OperationRequest = admit.kind === "skill"
+      ? { kind: "skill", name: admit.name, additionalInstructions: admit.additionalInstructions }
+      : typeof admit.prompt === "string"
+        ? { kind: "prompt", prompt: admit.prompt }
+        : { kind: "prompt", prompt: admit.prompt }
     const accepted = await this.lane.accept(request, TODO_CONTEXT)
     if (!accepted.ok) {
       const tag = accepted.error._tag
@@ -1173,11 +1221,67 @@ export class HarnessSlot {
 
   // ── 会话数据读取（供 deskpet 工具与恢复核对） ──
 
-  /** 读取一条工具结果条目的全文；条目不是 toolResult 时返回 undefined。 */
-  async readToolResult(entryId: string): Promise<string | undefined> {
+  /**
+   * 当前会话可解析的工具结果条目 id 全集（内存扫描，无 I/O）。
+   * 槽上唯一的扫描入口：不建倒排索引、不落盘（性能方针），量级与 session/repo.ts 的读模型同阶。
+   */
+  private async toolResultEntryIds(): Promise<string[]> {
     await this.open()
-    if (!this.session) return undefined
-    const entry = await this.session.getEntry(entryId, BACKGROUND_CONTEXT)
+    const session = this.session
+    if (!session) return []
+    const entries = await session.findEntries({ type: "message" }, BACKGROUND_CONTEXT)
+    const ids: string[] = []
+    for (const entry of entries) {
+      if (entry.type === "message" && entry.message.role === "toolResult") ids.push(entry.id)
+    }
+    return ids
+  }
+
+  /**
+   * 地址目录：id → 展示用前缀。已发出的形态优先复用（D-W2-8），只在「仍是最短唯一」被打破时重算
+   * —— 模型手里的地址跨请求稳定，主请求与摘要素材才对同一条结果给出逐字相同的投影。
+   */
+  async addressRefs(): Promise<ReadonlyMap<string, string>> {
+    const ids = await this.toolResultEntryIds()
+    const fresh = shortenAddresses(ids)
+    const refs = new Map<string, string>()
+    for (const id of ids) {
+      const cached = this.addressRefCache.get(id)
+      const ref = cached !== undefined && isUniqueAddressRef(cached, id, ids) ? cached : fresh.get(id)
+      if (ref !== undefined) refs.set(id, ref)
+    }
+    // 缓存收敛到当次 id 全集：已不在全集里的条目不继续占位。
+    this.addressRefCache = refs
+    return refs
+  }
+
+  /** 读取一条工具结果：ref 可以是完整条目 id（永远有效）或其唯一前缀。 */
+  async readToolResult(ref: string): Promise<ToolResultLookup> {
+    await this.open()
+    const session = this.session
+    if (!session) return { kind: "not_found" }
+    let ids: string[] | undefined
+    try {
+      ids = await this.toolResultEntryIds()
+    } catch (error) {
+      // 没有 id 全集就无从判定前缀唯一性：降级为「只认完整 id」并如实留痕，
+      // 不能让「扫描失败」静默变成「前缀未命中」。留痕点就是下面这条 error。
+      log.error("工具结果 id 全集扫描失败，回读降级为只认完整条目 id:", { sessionId: this.sessionId }, formatError(error))
+    }
+    if (!ids) {
+      const text = await this.readToolResultText(session, ref)
+      return text === undefined ? { kind: "not_found" } : { kind: "found", entryId: ref, text }
+    }
+    const resolution = resolveAddressRef(ref, ids)
+    if (resolution.kind === "ambiguous") return { kind: "ambiguous", matches: resolution.matches }
+    if (resolution.kind === "none") return { kind: "not_found" }
+    const text = await this.readToolResultText(session, resolution.id)
+    return text === undefined ? { kind: "not_found" } : { kind: "found", entryId: resolution.id, text }
+  }
+
+  /** 按条目 id 取工具结果正文；条目不存在、不是工具结果或没有正文时返回 undefined。 */
+  private async readToolResultText(session: Session, entryId: string): Promise<string | undefined> {
+    const entry = await session.getEntry(entryId, BACKGROUND_CONTEXT)
     if (entry?.type !== "message" || entry.message.role !== "toolResult") return undefined
     return contentText(entry.message.content)
   }
@@ -1246,10 +1350,25 @@ export class HarnessSlot {
 
   // ── 内部 ──
 
-  /** 装配 lane 运行参数（工具/压缩/队列/许可上限与补偿/模型/思考档位）；admit 与 drive 共用同一段，不写第二份。 */
-  private async assembleLane(spec: Pick<HarnessAdmitSpec, "model" | "thinkingEffort" | "tools" | "toolRun">): Promise<void> {
+  /**
+   * 装配 lane 运行参数（工具/资源/压缩/队列/许可上限与补偿/模型/思考档位）；admit 与 drive 共用同一段，不写第二份。
+   *
+   * 参数面与准入形态对齐（含技能支的 `kind`/`name`/`additionalInstructions`；`prompt` 不参与装配，
+   * 正文由 `accept` 落盘）：调用方直接透传准入参数，不在这里做二次拼装 —— 准入形态不影响装配口径。
+   */
+  private async assembleLane(
+    spec: Pick<HarnessAdmitSpec, "model" | "thinkingEffort" | "tools" | "toolRun" | "kind" | "name" | "additionalInstructions">,
+  ): Promise<void> {
     const tools = toAgentHarnessTools(spec.tools, spec.toolRun)
     await this.harness!.setTools(tools, TODO_CONTEXT)
+    // 技能清单的唯一所有者是 skill/store（每回合指纹核对挂在能力准备 `prepareRunCapabilities`）：这里只
+    // 取用启用清单，不在 lane 组装里另开缓存或强制刷新；从未核对成功过（首次运行 / 核对入口尚未接线）
+    // 才按 store 的唯一入口补一次同步，成功后不再走到这一支。
+    // **资源必须先于 accept 下发**：Pi 的 skill 分支只查 lane 的 `resources.skills`，晚于 accept 会让
+    // 显式调用拿到 UnknownSkill（admitInput 在 accept 之前 await 本函数）。resources 是 Harness 的内存
+    // 配置（`setResources` 不写会话条目），本仓只有 skills 一项，整体下发即最终形态。
+    const skills = getSkillCatalogFingerprint() === null ? await syncSkillCatalog() : listEnabledSkills()
+    await this.harness!.setResources({ skills }, TODO_CONTEXT)
     await this.syncCompactionSettings(spec.model)
     // 按运行生效：改设置从下一次 run 起作用，不必重开槽（与压缩阈值、队列批量同一条口径）。
     await this.syncRetryPolicy()

@@ -22,7 +22,6 @@ const PROJECTIONS: ReadonlySet<string> = new Set<ResultProjection>(["preserve", 
 const COMPACTIONS: ReadonlySet<string> = new Set<HistoryCompaction>(["summarize", "retain"])
 const DECISIONS: ReadonlySet<string> = new Set(["allow", "ask", "deny", "passthrough"])
 const SAFETY_LEVELS: ReadonlySet<string> = new Set(["SAFE", "NORMAL", "DANGER", "NOWAY"])
-const LIGHTWEIGHT_POLICIES: ReadonlySet<string> = new Set(["confirm", "deny"])
 
 function fail(toolId: string, reason: string): never {
   throw new Error(`工具策略不完整: ${toolId || "<未知工具>"} — ${reason}`)
@@ -66,15 +65,11 @@ export function validateToolPolicy(policy: ToolPolicy | undefined, toolId: strin
 }
 
 /**
- * 校验风险声明。`safetyLevel` 与 `lightweightPolicy` 在类型上已收窄，这里守的是
- * 未经类型检查的调用方（适配器转换、`as unknown as ToolDef` 的声明）：`lightweightPolicy`
- * 只允许 `confirm` / `deny` 或省略，旧值 `allow`（pet 模式直接放行 DANGER）已无实现。
+ * 校验风险声明。`safetyLevel` 在类型上已收窄，这里守的是未经类型检查的调用方
+ * （适配器转换、`as unknown as ToolDef` 的声明）。
  */
-export function validateRiskDeclaration(tool: Pick<ToolDef, "id" | "safetyLevel" | "lightweightPolicy">): void {
+export function validateRiskDeclaration(tool: Pick<ToolDef, "id" | "safetyLevel">): void {
   if (!SAFETY_LEVELS.has(tool.safetyLevel)) fail(tool.id, `safetyLevel 无效: ${String(tool.safetyLevel)}`)
-  if (tool.lightweightPolicy !== undefined && !LIGHTWEIGHT_POLICIES.has(tool.lightweightPolicy)) {
-    fail(tool.id, `lightweightPolicy 无效: ${String(tool.lightweightPolicy)}`)
-  }
 }
 
 /**
@@ -110,7 +105,6 @@ export function toolPolicyFingerprint(tool: ToolDef): string {
     toolId: tool.id,
     source: tool.source,
     sourceId: tool.sourceId,
-    mode: tool.mode,
     policyVersion: policy.version,
     defaultDecision: policy.permission.defaultDecision,
     effect: policy.execution.effect,
@@ -128,12 +122,18 @@ export async function toolPolicyHash(tool: ToolDef): Promise<string> {
   return sha256Text(toolPolicyFingerprint(tool))
 }
 
-/** 声明了 historyCompaction=retain 的工具名集合。 */
+/**
+ * 声明了 historyCompaction=retain 的工具名集合。
+ * 生产工具目前全部声明 `summarize`；`retain` 由测试驱动（`memory-retain-guard`），无生产消费者。
+ */
 export function retainedToolNames(tools: readonly ToolDef[]): Set<string> {
   return new Set(tools.filter(tool => tool.policy.context.historyCompaction === "retain").map(tool => tool.name))
 }
 
-/** 声明了 resultProjection=preserve 的工具名集合：结果在请求与摘要素材里都不得二次缩短。 */
+/**
+ * 声明了 resultProjection=preserve 的工具名集合：结果在请求视图与摘要素材里都**禁止二次处理**
+ * —— 不缩短、不清空（但同样带地址，D-W2-5 的 2026-09-27 裁定）。
+ */
 export function preservedToolNames(tools: readonly ToolDef[]): Set<string> {
   return new Set(tools.filter(tool => tool.policy.context.resultProjection === "preserve").map(tool => tool.name))
 }
@@ -150,6 +150,7 @@ interface PolicyMessageLike {
  *
  * 连续完整轮 checkpoint 下，retain 轮次不能落在覆盖边界内；
  * 命中即不能推进边界，调用方必须 decline 或明确报告上下文不足。
+ * 生产工具目前全部声明 `summarize`；`retain` 由测试驱动（`memory-retain-guard`），无生产消费者。
  */
 export function findRetainedToolCall(
   messages: readonly PolicyMessageLike[],

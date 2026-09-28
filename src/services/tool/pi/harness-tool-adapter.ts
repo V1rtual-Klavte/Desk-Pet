@@ -11,7 +11,6 @@ import { getSimpleStage } from "@/services/personality/stages-cache"
 
 /** 一次工具调用所属回合的执行上下文；主回合与子代理共用。 */
 export interface HarnessToolRun {
-  mode: "pet" | "assistant"
   sessionId?: string
   runGeneration?: number
   /** 当前回合仍是代际所有者且未取消。 */
@@ -40,7 +39,6 @@ export function toAgentHarnessTools(tools: readonly ToolDef[], run: HarnessToolR
       let result: Awaited<ReturnType<typeof executeToolDefinition>>
       try {
         result = await executeToolDefinition(tool, params as Record<string, unknown>, {
-          mode: run.mode,
           sessionId: run.sessionId,
           runGeneration: run.runGeneration,
           isCurrent: run.isCurrent,

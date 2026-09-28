@@ -2,7 +2,7 @@
 import { ref, onMounted, onUnmounted } from "vue";
 import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
 import {
-  userConfig, generalConfig, toolsConfig,
+  userConfig, toolsConfig,
   setOverrides, setOverride, getAllOverrides, flushConfig, parallelToolsError,
 } from "@/services/config";
 import {
@@ -38,9 +38,6 @@ const generalTabRef = ref<InstanceType<typeof GeneralTab>>();
 const aiTabRef = ref<InstanceType<typeof AITab>>();
 const toolsTabRef = ref<InstanceType<typeof ToolsTab>>();
 const appearanceTabRef = ref<InstanceType<typeof AppearanceTab>>();
-
-// ── 助手模式（ToolsTab 需要）──
-const assistantMode = ref(generalConfig.assistantMode);
 
 // ═══════════════════════════════════
 // 保存/取消
@@ -124,15 +121,11 @@ async function doSave() {
     "general.desktop.waitTimeoutMs": g.deskWait,
     "general.logging.level": g.logLevel,
     "general.errors.overlay": g.errOverlay,
-    "general.mode.assistant": g.assistantMode,
     "ai.safety.mode": a.safetyMode,
     "ai.safety.sessionTrustEnabled": a.sessionTrustEnabled,
     // 共享读并行上限：并发所有权在 Rust 许可池，这里只落配置值
     "ai.loop.maxParallelTools": t.maxParallelTools,
     "tools.bash.whitelist": t.bashWhitelist.split("\n").map(s => s.trim()).filter(Boolean),
-    "tools.file.writeEnabled": t.fileWriteEnabled,
-    "tools.mcp.enabled": t.mcpEnabled,
-    "tools.skill.enabled": t.skillEnabled,
   });
 
   // MCP 内置
@@ -160,22 +153,34 @@ async function doSave() {
   }
 
   const { setMcpServers } = await import("@/services/tool/mcp");
-  setMcpServers(
-    t.mcpServerList.map((s) => {
-      // 面板用一行一条的文本编辑 env，落盘前还原成对象；
-      // 全空时给 undefined，让 manager 的 inheritEnv 决定是否沿用旧值
-      const env = parseEnvText(s.envStr);
-      return {
-        name: s.name,
-        transport: s.transport as "stdio" | "sse",
-        command: s.command || undefined,
-        args: s.args ? s.args.split(/\s+/).filter(Boolean) : undefined,
-        url: s.url || undefined,
-        env: Object.keys(env).length > 0 ? env : undefined,
-        enabled: s.enabled,
-      };
-    })
-  );
+  // 必须 await：setMcpServers 先断开受影响服务器（内部对 registry 的动态 import 在刚打开的
+  // 设置窗口是冷的），之后才把列表写进 CONFIG 覆盖层。不等它，后面的 flushConfig 与
+  // deskpet-settings-saved 就可能先跑，主窗口重读到的仍是旧列表 —— 新增/删除服务器第一次
+  // 保存会表现为「保存成功但没生效」。
+  try {
+    await setMcpServers(
+      t.mcpServerList.map((s) => {
+        // 面板用一行一条的文本编辑 env，落盘前还原成对象；
+        // 全空时给 undefined，让 manager 的 inheritEnv 决定是否沿用旧值
+        const env = parseEnvText(s.envStr);
+        return {
+          name: s.name,
+          transport: s.transport as "stdio" | "sse",
+          command: s.command || undefined,
+          args: s.args ? s.args.split(/\s+/).filter(Boolean) : undefined,
+          url: s.url || undefined,
+          env: Object.keys(env).length > 0 ? env : undefined,
+          enabled: s.enabled,
+        };
+      })
+    );
+  } catch (error) {
+    // 与人格切换失败同样中止保存：MCP 列表没写进 CONFIG，就不能继续写盘并广播「已保存」，
+    // 否则面板显示成功、主窗口拿到的还是旧列表。失败原因（如服务器正被回合占用）直接摆给用户。
+    saveError.value = "MCP 服务器保存失败：" + formatError(error);
+    log.error("设置保存失败:", saveError.value);
+    return;
+  }
 
   const switchResult = await switchPersonality(a.personalityActive);
   if (!switchResult.ok) {
@@ -195,7 +200,8 @@ async function doSave() {
   saved.value = true;
   log.info("设置已保存");
   emit("deskpet-settings-saved").catch((error) => {
-    // 面板刚显示「已保存」，但主窗口没收到广播：快捷键/光标追踪/Skill 目录/assistantMode 仍是旧值。
+    // 面板刚显示「已保存」，但主窗口没收到广播：配置缓存/快捷键/光标追踪/调试状态仍是旧值。
+    // Skill 目录不在此列：清单由每回合的指纹核对刷新，与这条广播无关。
     saved.value = false;
     saveError.value = "设置已写入，但主窗口未收到刷新通知；部分改动可能要重启后生效。";
     log.error("deskpet-settings-saved 事件发送失败:", formatError(error));
@@ -310,13 +316,12 @@ onUnmounted(() => {
       <div id="s-body">
         <GeneralTab ref="generalTabRef" v-show="activeTab === 'general'" />
         <AITab ref="aiTabRef" v-show="activeTab === 'ai'" />
-        <ToolsTab ref="toolsTabRef" v-show="activeTab === 'tools'" :assistant-mode="assistantMode" />
+        <ToolsTab ref="toolsTabRef" v-show="activeTab === 'tools'" />
         <AppearanceTab ref="appearanceTabRef" v-show="activeTab === 'appearance'" />
       </div>
     </div>
 
     <div id="s-foot">
-      <span class="s-hint" style="margin-right:auto">⚠️ 标记"需重启"的设置在保存后需重启生效</span>
       <button class="btn-s" @click="importConfigYaml()">📥 导入配置</button>
       <button class="btn-s" @click="exportConfigYaml()">📤 导出配置</button>
       <button class="btn-s btn-d" @click="restartApp()">🔄 重启</button>

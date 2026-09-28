@@ -7,19 +7,33 @@
 import { createLogger } from "@/services/logger"
 import { loopConfig } from "@/services/config"
 import { find } from "./slash/registry"
-import type { SlashCommand } from "./slash/types"
+import type { RegisteredSlashCommand, SlashCommandResult, SlashSkillAdmission } from "./slash/types"
 
 const log = createLogger("PreProc")
 
 export interface PreProcessResult {
-  /** 是否为 slash 命令并已处理 */
+  /**
+   * 是否为 slash 命令并已处理。
+   * 带 `skillAdmission` 时为 false：命令已被识别，但这次输入还没结束 —— 正文由 Harness 落盘
+   * （见下），由运行入口在拿到运行代际后接手。
+   */
   handled: boolean
   /** 处理后应直接返回给用户的消息（slash 命令结果） */
   response?: string
+  /**
+   * 技能准入意图（`/skill <技能名> [额外指示]`）：命令层只声明要启动哪个技能，
+   * 正文与那条 `role:"user"` 条目由 Harness 在 `accept` 内按技能文件构造并提交（先落盘再投递）。
+   */
+  skillAdmission?: SlashSkillAdmission
   /** 经过过滤的用户文本（空 = 跳过） */
   text: string
   rawText: string
   normalizedText: string
+}
+
+/** 命令结果里的非文本形态只有技能准入（`SlashCommandResult` 是一个联合）。 */
+function isSkillAdmission(result: SlashCommandResult): result is SlashSkillAdmission {
+  return typeof result === "object" && result !== null
 }
 
 export interface PreProcessState {
@@ -33,7 +47,7 @@ export interface PreProcessOptions {
 }
 
 /** 忙碌期准入：只有 immediate / coordinated 的命令能执行，其余明确拒绝（§3.4）。 */
-function busyRejection(command: SlashCommand): string | undefined {
+function busyRejection(command: RegisteredSlashCommand): string | undefined {
   const policy = command.busyPolicy ?? "exclusive"
   if (policy === "immediate" || policy === "coordinated") return undefined
   return `/${command.name} 需要等当前回合结束再执行。`
@@ -56,18 +70,24 @@ export async function preProcess(rawText: string, state: PreProcessState = {}, o
   // ── Slash 命令 ──
   if (text.startsWith("/")) {
     const cmdText = text.slice(1) // 去掉开头的 /
-    const cmd = find(cmdText)
+    const hit = find(cmdText)
 
-    if (cmd) {
+    if (hit) {
+      const command = hit.command
       if (options.busy) {
-        const rejection = busyRejection(cmd)
+        const rejection = busyRejection(command)
         if (rejection) {
-          log.info("忙碌期拒绝命令:", cmd.name)
+          log.info("忙碌期拒绝命令:", command.name)
           return { handled: true, response: rejection, text: "", rawText, normalizedText: text }
         }
       }
       try {
-        const result = await cmd.execute()
+        const result = await command.execute(hit.args)
+        if (isSkillAdmission(result)) {
+          // 技能准入不是「已处理的文本」：它要一次运行代际才能落盘（`accept` 在准入内提交正文），
+          // 这里只把意图交出去，由运行入口接手；命令层不写会话条目、也不自己投递正文。
+          return { handled: false, skillAdmission: result, text, rawText, normalizedText: text }
+        }
         if (result !== null) {
           return { handled: true, response: result, text: "", rawText, normalizedText: text }
         }

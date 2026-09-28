@@ -1,10 +1,14 @@
 ---
-document_type: implementation_plan
-status: pending_implementation
-updated_at: 2026-09-24
+document_type: archived_plan
+status: archived
+archived_at: 2026-09-26
+superseded_by: ../../plans/active/未完成工作与已知缺口.md
+updated_at: 2026-09-26
 reviewed_at: 2026-09-24
 scope: skill-pi-migration, tool-surface, dual-mode-removal
 ---
+
+> **归档（2026-09-26 完成并通过发布门禁）。** 检查点证据：dataset `2026-09-26.2`、8 份契约、`pnpm run test:release` 严格模式 + `repeat: 3` 得 **441/441 trial，0 failed / skipped / timeout**；真实本地 `CONFIG-DEV.yaml` 的同步在用户明确授权下完成。替代入口：**当前行为以源码与 `docs/current/` 为准**（运行时契约、工具系统、运行时数据等），剩余未完成工作见[未完成工作与已知缺口](../../plans/active/未完成工作与已知缺口.md)。正文与当时证据原样保留，不再作为待办入口。
 
 # Skill 与 Tool 收敛及模式统一方案
 
@@ -517,7 +521,7 @@ scope: skill-pi-migration, tool-surface, dual-mode-removal
 | `docs/DES.md` | `:7`/`:14`/`:88-95`（命令表）/`:117-125`（`## 7. 助手能力与安全呈现`，含 `:119`/`:121` Plan 说明）/`:129` | 改：`:123`/`:129` 不含模式措辞、删模式后仍成立，可只做核对 |
 | `docs/INDEX.md` | `:43` 本方案入口 | 改：归档后更新指针 |
 | `docs/plans/active/未完成工作与已知缺口.md` | `:36`/`:62`/`:14` FIX-13 | 改：撤销登记并改批次批注 |
-| | `:74` FIX-61 | 改：**理由错位**——其原文理由是「Live 宿主无法构造 MCP 借不到的运行」，与模式无关；应改成「前提仍是宿主不渲染 UI，与模式无关」，不要写成「助手侧路径消失」。真正失效的是 `testing.md:26` |
+| | `:74` FIX-61 | 改：**理由错位**——其原文理由是「Live 宿主无法构造 MCP 借不到的运行」，与模式无关；结论「无法由现有场景直接验证」保留，理由改为**前提不可构造**（待重放工具须为 `mcp_*` 且服务器借不到，Live 无真实 stdio MCP 连接），不要写成「只存在于界面呈现 / 宿主不渲染 UI」：提示经 `appendAssistantMessage` 落成助手条目并作为 `reply` 返回，会话文本可断言。真正失效的是 `testing.md:26` 的旧模式前提（该条本身保留） |
 | | `:70` 「UI 未经人工查看」清单（含「工具策略声明区」） | 改：本批改了 ToolsTab 的 `audience` 列与三个开关，该清单不再准确 |
 
 ---

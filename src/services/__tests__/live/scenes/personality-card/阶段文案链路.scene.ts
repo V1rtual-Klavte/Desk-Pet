@@ -17,6 +17,8 @@ const PROBE_STAGES: StageMap = {
     compactCompleted: "探针压缩完成", compactDeclined: "探针未压缩", compactNothing: "探针无可压缩",
     compactBusy: "探针压缩忙", compactClosed: "探针会话不可用", compactPending: "探针排队未清空",
     compactFailed: "探针压缩失败",
+    skillStarted: "探针技能已加入", skillUnknown: "探针技能不存在", skillEmpty: "探针技能无正文",
+    skillDisabled: "探针技能已关闭",
   },
   fallbacks: {
     concurrentRejected: "探针忙", maxRetriesExhausted: "探针重试失败", turnTimeout: "探针超时",
@@ -31,7 +33,7 @@ const PROBE_STAGES: StageMap = {
 export const 阶段文案链路: SceneDef = {
   meta: {
     caseId: "stage-prompt-link", module: "personality-card", contractId: "pc-09",
-    description: "工具类别由 ToolDef.actionCategory 解析，四类用户可见文案都到达各自的取用点",
+    description: "工具类别由 ToolDef.actionCategory 解析，四类用户可见文案都到达各自的取用点；commands 段 13 个键（含 /skill 四个终态键）逐个取到 Card 文案",
     depth: "shallow", suite: "capability", entry: "unit", tags: ["personality", "card", "tool"],
   },
   turns: [{
@@ -59,7 +61,13 @@ export const 阶段文案链路: SceneDef = {
             const text = getSimpleStage(key)
             if (text !== PROBE_STAGES[key]) throw new Error(`${key} 未取到 Card 文案: ${JSON.stringify(text)}`)
           }
-          // 5) 命令输出：每个 key 都必须来自 Card，不能有 key 落到中性常量
+          // 5) 命令输出：每个 key 都必须来自 Card，不能有 key 落到中性常量。
+          //    先钉住 `/skill` 的四个终态键仍在清单里：下面的循环按 COMMAND_KEYS 动态跑，
+          //    键从清单里掉了它只会静默少跑四轮，不会有任何断言失败（同目录的
+          //    `阶段文案失效` 场景同样是动态构造，拦不住这类遗漏）。
+          for (const key of ["skillStarted", "skillUnknown", "skillEmpty", "skillDisabled"] as const) {
+            if (!COMMAND_KEYS.includes(key)) throw new Error(`COMMAND_KEYS 缺少 /skill 的终态键: ${key}`)
+          }
           for (const key of COMMAND_KEYS) {
             if (getCommandReply(key) !== PROBE_STAGES.commands[key]) {
               throw new Error(`commands.${key} 未取到 Card 文案: ${JSON.stringify(getCommandReply(key))}`)

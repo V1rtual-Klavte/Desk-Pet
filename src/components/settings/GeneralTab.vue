@@ -1,15 +1,12 @@
 <script setup lang="ts">
 import { ref, computed, onMounted, onUnmounted } from "vue";
 import { emit, listen } from "@tauri-apps/api/event";
-import { userConfig, generalConfig, loggingConfig, desktopConfig, errorsConfig } from "@/services/config";
+import { userConfig, loggingConfig, desktopConfig, errorsConfig } from "@/services/config";
 import { createLogger } from "@/services/logger";
 import { formatError } from "@/services/error";
 import { isMacOS } from "@/services/env";
 
 const log = createLogger("Settings");
-
-// ── 模式 ──
-const assistantMode = ref(generalConfig.assistantMode);
 
 // ── 弹窗 ──
 const popupMode = ref(userConfig.popupMode);
@@ -114,7 +111,6 @@ onUnmounted(() => {
 });
 
 defineExpose({
-  assistantMode,
   popupMode,
   autoPopup,
   popupW,
@@ -131,12 +127,6 @@ defineExpose({
 
 <template>
   <div>
-  <div class="s-section">
-    <div class="s-label">⚙️ 模式 <span class="tag-tip">需重启</span></div>
-    <label class="chk"><input type="checkbox" v-model="assistantMode" /><span>助手模式 — 解锁写文件/MCP/Skill等高级能力</span></label>
-    <div class="s-hint">当前: {{ assistantMode ? '🔓 助手模式' : '🔒 轻量模式' }}</div>
-  </div>
-
   <div class="s-section">
     <div class="s-label">📍 弹窗</div>
     <div class="radio-row">

@@ -1,5 +1,5 @@
 // ==========================================
-// 助手模式工具：子代理 (NORMAL)
+// 本地工具：子代理 (DANGER)
 // Fork: 单个子代理独立执行任务
 // Team: 多角色并行工作 + lead 汇总
 // ==========================================
@@ -18,7 +18,7 @@ const agentSpawnTool: ToolDef = defineTool({
   id: "local-agent-spawn",
   name: "agent_spawn",
   description:
-    "创建子代理执行独立任务。mode=fork 时创建一个子代理独立工作；mode=team 时创建多个角色并行分析后汇总。子代理只能使用只读工具（文件读取/列表/搜索/系统信息/安全Bash/HTTP），不可写文件。",
+    "创建子代理执行独立任务。mode=fork 时创建一个子代理独立工作；mode=team 时创建多个角色并行分析后汇总。子代理只拿到受限工具集（文件读取、系统信息与 Bash），不继承父代理的其余工具。",
   parameters: {
     type: "object",
     properties: {
@@ -31,10 +31,9 @@ const agentSpawnTool: ToolDef = defineTool({
     },
     required: ["task"],
   },
-  safetyLevel: "NORMAL",
+  safetyLevel: "DANGER",
   source: "local",
   sourceId: "",
-  mode: "assistant",
   actionCategory: "agent.call",
   // delegate：子运行各自取执行许可，父批次不占额度；重放与投影都不在父层处理。
   policy: {

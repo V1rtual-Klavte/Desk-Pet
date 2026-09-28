@@ -29,10 +29,8 @@ function probeTool(name: string): ToolDef {
     description: `Live Test permission-freeze probe ${name}`,
     parameters: { type: "object", properties: {} },
     safetyLevel: "DANGER",
-    lightweightPolicy: "confirm",
     source: "local",
     sourceId: "",
-    mode: "assistant",
     actionCategory: "_default",
     policy: {
       version: TOOL_POLICY_VERSION,
@@ -62,9 +60,7 @@ export const 权限策略冻结: SceneDef = {
     confirmPolicy: "deny",
   },
   setup: async () => {
-    // 助手模式：DANGER 的 just_do_it 放行分支只在助手模式下参与（pet 模式恒 ask/deny）。
-    setOverride("general.mode.assistant", true)
-    // 计划段会让这一轮先去规划（并消费脚本响应）：本场景只验证权限策略，显式关掉。
+    // 计划段会让这一轮先去规划（并消费脚本响应）：本场景只验证权限策略，显式关掉（基线同值）。
     setOverride("ai.plan.enabled", false)
     register(probeTool(PROBE_A))
     register(probeTool(PROBE_B))

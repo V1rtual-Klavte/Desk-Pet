@@ -5,7 +5,7 @@ import { evaluateComplexity, generatePlan } from "@/services/engine/planner"
 import { getPiRuntimeProviderOverride, installPiRuntimeProviderForTest } from "@/services/engine/pi"
 import { debug, usageGrandTotal } from "@/services/debug"
 import type { PurposeUsage } from "@/services/debug"
-import { getToolsForMode } from "@/services/tool"
+import { listAll } from "@/services/tool"
 import { planConfig, setOverride } from "@/services/config"
 import { installFakeProvider, fakeText } from "../../fake-provider"
 import type { SceneDef } from "../../types"
@@ -63,7 +63,7 @@ function planInput(): Parameters<typeof generatePlan>[1] {
   return {
     cardId: "usage-scene",
     cardRole: "助手",
-    availableTools: getToolsForMode("assistant"),
+    availableTools: listAll(),
     thinkingEffort: "low",
     maxSteps: 8,
   }

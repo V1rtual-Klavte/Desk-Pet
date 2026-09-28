@@ -1,6 +1,6 @@
 // ==========================================
 // MCP 桥接模块 —— stdio 子进程管理 + JSON-RPC 通信
-// 助手模式: 通过 Rust spawn MCP Server 子进程并桥接 stdin/stdout
+// 通过 Rust spawn MCP Server 子进程并桥接 stdin/stdout
 // ==========================================
 
 use crate::error::{AppError, AppResult};

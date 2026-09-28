@@ -1,6 +1,7 @@
 ---
 name: check-weather
 description: 查询指定城市的天气。当用户问天气、气温、是否下雨下雪、要不要带伞时使用。
+enabled: true
 ---
 
 # 天气查询

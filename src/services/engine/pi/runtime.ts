@@ -3,15 +3,17 @@
 // variables, and reply processing.
 
 import { contentText } from "@earendil-works/pi-ai"
-import type { AgentMessage, JsonValue, SettledAssistantMessage } from "@earendil-works/pi-agent-core"
+import { createCompactionSummaryMessage } from "@earendil-works/pi-agent-core"
+import type { AgentMessage, CompactResult, CompactionPreparation, JsonValue, SettledAssistantMessage } from "@earendil-works/pi-agent-core"
 import type { Usage } from "@earendil-works/pi-ai"
 import type { Message, ThinkingEffort } from "@/services/agent/types"
+import type { SlashSkillAdmission } from "@/services/engine/slash"
 import type { CompactionAuditSink, ContextAllocation, ContextBlock, IngressEnvelope, InputSourceMark, PlanState, PlanStepRecord, PromptCapabilityContext, PromptPlanContext, PromptRequestContext, PromptRequestParams, PromptSnapshot, PromptTokenDrift, PromptTransform } from "@/services/engine/runtime"
 import { createMessageId } from "@/services/agent/types"
 import { MemoryService, recallMemory, planCheckpointStore } from "@/services/agent/memory"
 import type { StructuredSummary } from "@/services/agent/memory"
-import { buildPrompt, composeDynamicPrompt, contextBudget, CONTEXT_RATIOS, estimateRequestTokens, estimateContextTokens, estimateMessageTokens, ContextBudgetError, ESTIMATE_DRIFT_WARN_RATIO, estimateDriftRatio, projectMessageContent, projectToolResultText, toolResultAddress } from "@/services/context"
-import type { ContextBudgetAdjustment } from "@/services/context"
+import { buildPrompt, composeDynamicPrompt, contextBudget, CONTEXT_RATIOS, estimateRequestTokens, estimateContextTokens, estimateMessageTokens, ContextBudgetError, ESTIMATE_DRIFT_WARN_RATIO, estimateDriftRatio, planToolResultLadder, projectMessageContent, projectToolResultText, annotateToolResultText, protectedMessageIndexes, toolResultAddress } from "@/services/context"
+import type { ContextBudgetAdjustment, ToolResultLadderEntry, ToolResultLadderPlan, ToolResultLevelMeasure } from "@/services/context"
 import { bindRunningPlan, clearRunningPlan, notifyPlanEnd, requestPlanConfirm, requestPlanStepDecision } from "@/services/engine/plan-confirmation"
 import type { PlanConfirmResult } from "@/services/engine/plan-confirmation"
 import { executePlan, evaluateComplexity, formatStepResults, generatePlan, normalizePlan, planEffectClassFor, planToRecords, recordsToPlan } from "@/services/engine/planner"
@@ -31,16 +33,17 @@ import { getActiveSessionId, pushMessageFor } from "@/services/session/store"
 import { getSessionCreatedAt, isAssistantEntryVisible, pushSystemMessage } from "@/services/session"
 import {
   SESSION_TRANSCRIPT_TOOL, toToolDeclaration, createTranscriptTool,
-  getToolsForMode, findRetainedToolCall, preservedToolNames, retainedToolNames, toolPolicyHash,
+  findRetainedToolCall, listAll, preservedToolNames, retainedToolNames, toolPolicyHash,
 } from "@/services/tool"
 import type { HarnessToolRun, ToolDef } from "@/services/tool"
-import { generalConfig, loopConfig, planConfig } from "@/services/config"
+import { loopConfig, planConfig } from "@/services/config"
 import { emit } from "@tauri-apps/api/event"
 import { resolvePiTurnModel } from "./model-gateway"
 import type { PiModel } from "./model-gateway"
 import { PROVIDER_TIMEOUT_MS } from "./net-guard"
 import { RuntimeDataStreamFilter } from "./stream-text"
-import { summarizeCompaction } from "../compactor"
+import { ladderGate, summarizeCompaction } from "../compactor"
+import type { LadderGateInput } from "../compactor"
 import { createHarnessRunState, harnessSlots, HarnessSlot } from "./harness-slot"
 import { readContextEpoch } from "./delivery"
 import type {
@@ -151,19 +154,14 @@ export function pausedInputsText(messages: AgentMessage[]): string {
   return messages.map(laneMessageText).filter(text => text.length > 0).join("\n")
 }
 
-export interface PiAgentTurnInput {
+/** 回合入参的公共面：两支（用户输入 / 技能准入）共用，正文来源不同。 */
+interface PiAgentTurnBase {
   sessionId: string
+  /**
+   * 按文本工作的环节（复杂度判定、记忆召回）用它。技能准入传用户敲下的原文：
+   * 正文由 Harness 从技能文件构造，宿主这里没有别的东西可以代表「这次输入是什么」。
+   */
   userText: string
-  /**
-   * 本次投递的正文（`userInputMessage()` 或主动消息构造器的产物），随回合落盘。
-   * 空闲发送与忙碌投递共用同一形状，身份与来源标记因此对所有入口一致生效。
-   */
-  userPrompt: AgentMessage | AgentMessage[]
-  /**
-   * 停止后继续：把取回的暂停输入按原顺序作为本次投递内容（身份不合并、正文不重复追加）。
-   * userText 仍用于规划/召回等按文本工作的环节。
-   */
-  pausedMessages?: AgentMessage[]
   /**
    * 输入已落盘（lane.accept 提交用户条目成立）之后的 UI 记账钩子：用户气泡与未回复计数
    * 只在条目提交进会话文件之后更新，预检失败、未获准入时不会先画一条不存在于会话里的气泡。
@@ -171,10 +169,39 @@ export interface PiAgentTurnInput {
   onInputAdmitted?: () => void
   unansweredCount: number
   isActiveMessage?: boolean
-  ingress?: IngressEnvelope
   runGeneration?: number
   turnId?: string
 }
+
+/** 用户输入支（现状形态）：正文与投递身份由调用方构造，空闲发送与忙碌投递共用同一形状。 */
+export interface PiAgentInputTurn extends PiAgentTurnBase {
+  /**
+   * 本次投递的正文（`userInputMessage()` 或主动消息构造器的产物），随回合落盘。
+   * 身份与来源标记因此对所有入口一致生效。
+   */
+  userPrompt: AgentMessage | AgentMessage[]
+  /**
+   * 停止后继续：把取回的暂停输入按原顺序作为本次投递内容（身份不合并、正文不重复追加）。
+   */
+  pausedMessages?: AgentMessage[]
+  ingress?: IngressEnvelope
+  skillAdmission?: undefined
+}
+
+/**
+ * 技能准入支（`/skill <技能名> [额外指示]`）：宿主不提供正文 —— 那条 `role:"user"` 消息由 Pi 在
+ * `accept` 内按技能文件构造（含技能文件的绝对路径）并提交，所以宿主也不再投递第二条正文，
+ * 更不给它套 `deskpetEventId`：条目不是我们构造的，套一份身份只会造出查不到的假投递证据。
+ * 互斥字段用 `undefined` 钉死（与 `HarnessAdmitSkillSpec` 的 `?: never` 同一口径）。
+ */
+export interface PiAgentSkillTurn extends PiAgentTurnBase {
+  skillAdmission: SlashSkillAdmission
+  userPrompt?: undefined
+  pausedMessages?: undefined
+  ingress?: undefined
+}
+
+export type PiAgentTurnInput = PiAgentInputTurn | PiAgentSkillTurn
 
 /**
  * 回合在拿到模型回复之前就失败的结构化原因。
@@ -285,7 +312,6 @@ interface TurnKernel {
   sessionId?: string
   requestId: string
   turnId?: string
-  mode: "pet" | "assistant"
   model: PiModel
   thinkingEffort: ThinkingEffort
   systemPrompt: string
@@ -342,7 +368,6 @@ interface TurnKernelOptions {
   sessionId?: string
   requestId: string
   turnId?: string
-  mode: "pet" | "assistant"
   model: PiModel
   thinkingEffort: ThinkingEffort
   systemPrompt: string
@@ -509,34 +534,192 @@ function createTurnKernel(options: TurnKernelOptions): TurnKernel {
   return kernel
 }
 
-/** 陪伴/助手结构化摘要的 before_compaction 钩子；主回合与手动 /compact 共用同一内核（H-3/§7）。 */
+// ── 级 3 闸门的消息形态适配（T3.05）：级 1/2 是纯函数、零成本，压完装得下就不花摘要调用 ──
+//
+// 判定核在 compactor.ts 的 `ladderGate()`。本文件只负责「Pi 消息形态」这一侧的装配：
+// entries / measure / 保护区。消息形态适配器只有 `toolResultLadderEntries` 与 `applyLevels` 一份
+// （T3.03 的产出），投影 hook 与闸门共用 —— `compactor.ts` 不抽同名实现：它反向 import 本文件会成环。
+
+/** 级 3 闸门的视图：压缩覆盖范围拼出的 Pi 消息数组（不引入新形态，仍是 AgentMessage）。 */
+type PiView = readonly AgentMessage[]
+
+/**
+ * 闸门的视图：与 Harness 提交摘要时的覆盖范围同源（`prepareCompaction` 的三段拼接，
+ * `compaction.js:441-463`）—— previousSummary 存在时前置一条 compactionSummary 消息
+ * （估算的角色表已覆盖它，见 budget.ts 的 `MESSAGE_CONTENT_PROJECTION`），再接
+ * `messagesToSummarize + turnPrefixMessages + retainedTail`：时间序、无重叠，三段相加即这次
+ * 压缩覆盖的全部消息。
+ *
+ * 与真实请求视图的差量只有「检查点同时落位的 lane inbox 消息」，量级是单条用户输入：
+ * 判 false 的方向是照常摘要（照现状），判 true 的方向是本次不摘要且下一个检查点重算，
+ * 偏差自愈，不会卡死在错的一侧（§1.5）。
+ */
+function compactionGateView(preparation: CompactionPreparation): PiView {
+  return [
+    // 时间戳不参与估算（`estimateMessageTokens` 不计时间戳），这里只补齐上游消息形态。
+    ...(preparation.previousSummary === undefined
+      ? []
+      : [createCompactionSummaryMessage(preparation.previousSummary, preparation.tokensBefore, Date.now())]),
+    ...preparation.messagesToSummarize,
+    ...preparation.turnPrefixMessages,
+    ...preparation.retainedTail,
+  ]
+}
+
+/**
+ * 地址目录 thunk 的唯一取值点（投影 hook 与级 3 闸门共用）：读取失败不让调用方失败 ——
+ * 退化为「无前缀」（地址退回完整条目 id，完整 id 永远可读，A-4），留痕一次。
+ * `where` 只用来分辨调用点，两处的兜底语义一致。
+ */
+async function readAddressRefs(
+  addressRefs: (() => Promise<ReadonlyMap<string, string>>) | undefined,
+  where: string,
+): Promise<ReadonlyMap<string, string> | undefined> {
+  if (!addressRefs) return undefined
+  return addressRefs().catch(error => {
+    log.warn(`地址目录读取失败，${where}退回完整条目 id:`, formatError(error))
+    return undefined
+  })
+}
+
+/**
+ * 阶梯 measure 的唯一构造点（投影 hook 与级 3 闸门共用同一个实现）：
+ * systemPrompt / tools / 消息形态与地址目录都关在这个闭包里，两处不可能各拼一份判据。
+ *
+ * 必须是纯函数闭包（规划器最多调 3 次，`ToolResultLevelMeasure` 的要求）；读数恒等于
+ * 「按 levels 投影后的请求视图」—— 分级后的视图走 `applyLevels`（投影的唯一实现）。
+ */
+function createLadderMeasure(args: {
+  systemPrompt: string
+  view: PiView
+  model: PiModel
+  preserveToolNames: ReadonlySet<string>
+  tools: readonly ToolDef[]
+  addressRefs?: ReadonlyMap<string, string>
+}): ToolResultLevelMeasure {
+  return levels => estimateRequestTokens(
+    args.systemPrompt,
+    applyLevels(args.view, levels, args.model.contextWindow, args.preserveToolNames, args.addressRefs),
+    args.tools,
+  )
+}
+
+/**
+ * 级 3 闸门构造器的唯一实现（两个调用点共用）：把视图 + 投影同一份地址目录装配成
+ * `LadderGateInput` —— entries、measure、保护区都走投影 hook 的同一份实现与同一份名单。
+ * 工具面与 preserve 名单由调用方按各自的投影 hook 传入（回合路径是冻结工具集，
+ * 结构操作是空工具面），闸门估的就是那条路径的投影会做的那件事。
+ */
+function createLadderGateBuilder(args: {
+  systemPrompt: string
+  model: PiModel
+  tools: readonly ToolDef[]
+  preserveToolNames: ReadonlySet<string>
+}): (view: PiView, addressRefs?: ReadonlyMap<string, string>) => LadderGateInput {
+  return (view, addressRefs) => ({
+    entries: toolResultLadderEntries(view, addressRefs),
+    measure: createLadderMeasure({
+      systemPrompt: args.systemPrompt, view, model: args.model,
+      preserveToolNames: args.preserveToolNames, tools: args.tools, addressRefs,
+    }),
+    window: args.model.contextWindow,
+    preserveToolNames: args.preserveToolNames,
+    // 保护区与主请求同一份口径（口径 B：只挡级 2），不是闸门里的第二道过滤。
+    protectedIndexes: protectedMessageIndexes(view),
+  })
+}
+
+/**
+ * 结构化摘要的 before_compaction 钩子；主回合与手动 /compact 共用同一内核（H-3/§7）。
+ *
+ * **X-4（本函数的核心不变量）：只有两种结局 —— 成功产出恰好一个 `compaction`，其余一律
+ * `{ decline: true }`。** 返回路径穷举（全部落在下面的 try/catch 内，本函数没有别的出口）：
+ * ① 没有可摘要范围、② 覆盖范围含 retain 保护调用 → decline（都不是失败，不写 audit）；
+ * ③ 阈值压缩的级 3 闸门判定「级 1/2 压完装得下」→ decline（策略性不花 LLM，同样不写 audit）；
+ * ④ 宿主摘要内核成功 → 恰好一条 `compaction`（提交是上游收到它之后的单事务，宿主没有第二条提交路径）；
+ * ⑤ catch：内核抛错/被取消 → 唯一带原因文案的 decline。
+ *
+ * **红线：失败必须走 decline，绝不把异常抛回上游。** 上游 `HookRegistry.firstStructural`
+ * （`pi-agent-core/dist/harness/hooks.js`）对抛出的处理器只记 handler_error 就继续，于是
+ * `runStructuralDecision` 落到 `publishStructuralReady`（`harness/runtime/drive/structural.js`）
+ * —— 那是上游自己的摘要效应：用它的通用英文提示词（`compaction.js` 的 `SUMMARIZATION_SYSTEM_PROMPT`）
+ * 重新摘要。那条路径不受本方案的地址目录与投影阶梯约束，产出的摘要却会提交成后续所有回合唯一的
+ * 历史视图且不可回滚：用户以为压缩成功，用的却是另一套语义。宁可不压缩。
+ * 同理**不得返回 `undefined`**（空返回）：`harness-slot.ts` 的 before_compaction 桥接里那条
+ * `if (!host)` 早退是上游唯一的兜底入口 —— 宿主一旦空返回，等于放行上游摘要。
+ *
+ * 失败的可见面（现状口径，改那条接线不属本函数职责）：decline 在上游的 `declined` 终态里**不带
+ * error**，原因只走两处 —— `options.audit.failure`（槽在 `compaction_end` 收口成
+ * `deskpet.compaction_declined` 条目的 `error` 字段）与下面的 `log.error`；回合路径没有用户可见行，
+ * 手动 `/compact` 由 `compactActiveSession` 读同一审计槽把 declined 重标为 failed 才带上原因。
+ */
 function createCompactionHook(options: {
-  mode: "pet" | "assistant"
   model: PiModel
   tools: readonly ToolDef[]
   /** 压缩请求的归属会话；一次性摘要请求的快照与派生记录按它落盘。 */
   sessionId?: string
+  /**
+   * 级 3 闸门估算所需的系统前缀（调用方冻结的 systemPrompt）。缺失 ⇒ 不跑闸门、照常摘要：
+   * 宁可花一次 LLM，也不按缺了系统前缀的估算误判「装得下」（§1.5 的保守方向）。
+   */
+  systemPrompt?: string
+  /**
+   * 级 3 闸门的构造器（`createLadderGateBuilder` 的产出）：hook 用「当次压缩覆盖范围」的视图
+   * 与投影同一份地址目录调它。缺失（如子代理不投影工具结果）⇒ 不跑闸门、照常摘要。
+   */
+  buildGate?: (view: PiView, addressRefs?: ReadonlyMap<string, string>) => LadderGateInput
   onSummary?: (summary: StructuredSummary) => void
   /** 宿主摘要内核失败（decline 原因）；调用方据此给出可见失败与审计。 */
   audit?: CompactionAuditSink
   onFailure?: (reason: string) => void
+  /**
+   * 地址目录 thunk，与投影 hook 是**同一份来源**（`slot.addressRefs()`），摘要素材的地址前缀
+   * 因此与主请求对同一结果逐字相同。这里只透传、不提前取值 —— 阈值压缩发生在回合中途，
+   * 构造期取到的目录不含本回合刚产生的工具结果，会让它们退回完整 id 而破坏「逐字相同」。
+   */
+  addressRefs?: () => Promise<ReadonlyMap<string, string>>
 }): NonNullable<HarnessRunHooks["beforeCompaction"]> {
   const retained = retainedToolNames(options.tools)
   const preserved = preservedToolNames(options.tools)
-  return async ({ preparation, signal, runId }) => {
+  // 返回类型显式收窄到「两种结局」（不含空返回）：日后再加一条空返回就编译不过 ——
+  // X-4 的「没有兜底出口」由类型保证，不靠注释维持。
+  return async ({ reason, preparation, signal, runId }): Promise<{ decline: true } | { compaction: CompactResult }> => {
     try {
-      // 全量都在保留窗口内时没有可安全摘要的覆盖范围：decline 让 Harness 原样收尾。
+      // 结局①（decline）：全量都在保留窗口内时没有可安全摘要的覆盖范围，让 Harness 原样收尾。
       if (!preparation.messagesToSummarize.length && !preparation.turnPrefixMessages.length) return { decline: true }
       // historyCompaction=retain 的调用配对必须保留原文：连续完整轮下不能把覆盖边界推进越过它，
       // 宁可 decline（由宿主预算守卫报告上下文不足），也不默默丢掉未覆盖历史。
+      // 当前生产路径不可达：无工具声明 `retain`，由测试场景驱动（`memory-retain-guard`）。
       const retainedTool = findRetainedToolCall(preparation.messagesToSummarize, retained)
         ?? findRetainedToolCall(preparation.turnPrefixMessages, retained)
       if (retainedTool) {
         log.warn("摘要范围覆盖了必须保留原文的工具调用，本轮不压缩:", retainedTool)
+        // 结局②（decline）：策略性不压缩，不是内核失败 —— 不写 audit.failure，避免污染失败面。
         return { decline: true }
       }
+      // ── 结局③（decline）：级 3 闸门（源方案 §3.2 要点 3 / 执行方案 §1.5）──
+      // 级 1/2 是纯函数、零成本，先跑它们：压完请求视图装得下就不必花这次摘要 LLM。
+      //
+      // 只对 `reason === "threshold"` 生效：manual（用户显式要求压缩）与 overflow（Harness 已按
+      // 硬上限实测超限）都必须照常摘要。`systemPrompt` 或 `buildGate` 缺失 ⇒ 不跑闸门、安全回退为
+      // 照常摘要（缺了系统前缀/工具面的估算会偏小，保守方向宁可花一次 LLM）。
+      if (reason === "threshold" && options.systemPrompt !== undefined && options.buildGate) {
+        // 闸门是省钱的优化，不是正确性闸门：估算链路自身出错时照常摘要（保守方向），原因就地留痕。
+        // 这里**不写 audit.failure** —— 那不是压缩内核失败，写出去会让手动路径（读同一审计槽）
+        // 报 failed、并落一条误导性的 deskpet.compaction_declined。
+        try {
+          const refs = await readAddressRefs(options.addressRefs, "级 3 闸门")
+          const gate = ladderGate(options.buildGate(compactionGateView(preparation), refs))
+          if (gate.fits) {
+            log.info("级 1/2 投影后请求视图装得下，本轮不做摘要:", { tokens: gate.tokens, target: gate.target, level: gate.level })
+            return { decline: true }
+          }
+          log.debug("级 1/2 之后仍超目标，照常摘要:", { tokens: gate.tokens, target: gate.target, level: gate.level })
+        } catch (error) {
+          log.warn("级 3 闸门估算失败，本轮照常摘要:", formatError(error))
+        }
+      }
       const outcome = await summarizeCompaction({
-        mode: options.mode,
         messages: preparation.messagesToSummarize,
         turnPrefixMessages: preparation.turnPrefixMessages,
         previousSummary: preparation.previousSummary,
@@ -544,6 +727,7 @@ function createCompactionHook(options: {
         signal,
         preserveToolNames: preserved,
         ...(options.sessionId ? { sessionId: options.sessionId } : {}),
+        ...(options.addressRefs ? { addressRefs: options.addressRefs } : {}),
         runId,
       })
       options.onSummary?.(outcome.summary)
@@ -558,6 +742,8 @@ function createCompactionHook(options: {
           derivedFrom: [runId],
         })
       }
+      // 结局③（成功）：恰好一条 compaction —— K 片的合并在 summarizeCompaction 内完成，
+      // 到这里只剩一份 outcome，不存在「多片多次提交」的形态。
       return {
         compaction: {
           summary: outcome.text,
@@ -567,8 +753,11 @@ function createCompactionHook(options: {
         },
       }
     } catch (error) {
-      // 显式 decline：钩子抛错会被上游记为 handler_error 后继续（回退通用英文摘要），
-      // 而那个摘要一旦提交就成为后续所有回合唯一的历史视图且不可回滚 —— 宁可不压缩。
+      // 结局④（decline）/ X-4 的红线：**必须转 decline，绝不 rethrow**。上游对抛出的处理器只记
+      // handler_error 后继续，最终走 publishStructuralReady 用上游通用英文摘要补压（见函数头注释）——
+      // 那条路径不受本方案地址目录/投影阶梯约束，却会提交成唯一历史视图且不可回滚。
+      // 失败原因的留痕点就在下面三行：审计槽（槽在 compaction_end 写 deskpet.compaction_declined
+      // 的 error 字段）+ log.error；本函数不制造任何静默。
       const reason = formatError(error)
       if (options.audit) options.audit.failure = reason
       options.onFailure?.(reason)
@@ -613,28 +802,56 @@ function extractRequestParams(payload: unknown): PromptRequestParams {
 /**
  * 请求视图投影 + 硬预算判定（主回合与手动压缩的续跑共用同一份实现）。
  *
+ * 工具结果走**阶梯**：候选集、保护区与升降档只来自 `planToolResultLadder()`（本文件不另判），
+ * 投影层把 `plan.levels` 应用成请求视图（`applyLevels`），硬预算的读数也取同一份计划的判据值
+ * —— 判据唯一，不存在「先判一次再算一次」的第二条链。
+ *
  * 判定不在这里 reject：记入宿主 state.contextError，由网关在下一次请求上报
  * （每次投影按当次视图重算并覆盖，不粘住首条判定）。
  */
 function createProjectionHook(args: {
   projectToolResults: boolean
   toolsByName: ReadonlyMap<string, ToolDef>
+  /** `resultProjection: "preserve"` 的工具名（不缩短、不清空，地址照走）；与 `toolsByName` 出自同一份 `kernel.tools`。 */
+  preserveToolNames: ReadonlySet<string>
   model: PiModel
   state: HarnessRunState
   captureSnapshot: TurnKernel["captureSnapshot"]
   snapshotTasks: TurnKernel["snapshotTasks"]
   latestMessages: (messages: AgentMessage[]) => void
+  /** 地址目录 thunk（`slot.addressRefs()`）：投影期取值，槽的稳定缓存保证跨请求同形前缀。 */
+  addressRefs?: () => Promise<ReadonlyMap<string, string>>
 }): NonNullable<HarnessRunHooks["transformContext"]> {
   const tools = [...args.toolsByName.values()]
-  return ({ messages, systemPrompt }) => {
+  return async ({ messages, systemPrompt }) => {
     let prepared = messages
+    let used: number
     try {
       if (args.projectToolResults) {
-        prepared = prepared.map(message => projectToolResultMessage(message, args.model.contextWindow, args.toolsByName))
+        // 目录读取失败不能抛出去：上游对钩子抛错是 fail-open 静默，投影会整份退回未投影的
+        // 原消息。兜底语义见 `readAddressRefs`（退回完整条目 id，完整 id 永远可读，A-4）。
+        const refs = await readAddressRefs(args.addressRefs, "投影")
+        // 阶梯的输入是投影前的原始视图：entries 与 measure 都基于它，应用计划后才得到请求视图。
+        const view = prepared
+        const plan: ToolResultLadderPlan = planToolResultLadder({
+          entries: toolResultLadderEntries(view, refs),
+          // measure 与级 3 闸门同一个实现（`createLadderMeasure`）：读数恒等于投影后的视图。
+          measure: createLadderMeasure({ systemPrompt, view, model: args.model, preserveToolNames: args.preserveToolNames, tools, addressRefs: refs }),
+          window: args.model.contextWindow,
+          preserveToolNames: args.preserveToolNames,
+          // 保护区是阶梯的输入（口径 B：只挡级 2），不是投影后的第二道过滤。
+          protectedIndexes: protectedMessageIndexes(view),
+        })
+        prepared = applyLevels(view, plan.levels, args.model.contextWindow, args.preserveToolNames, refs)
+        // 级 2 未生效时规划器的两次读数完全相同，取实际生效的那次；这就是硬预算判定的唯一读数。
+        used = plan.level === 2 ? plan.tokensAfterLevel2 : plan.tokensAfterLevel1
+      } else {
+        // 子代理路径不投影工具结果（`projectToolResults: false`）：读数就是原始视图的估算。
+        used = estimateRequestTokens(systemPrompt, prepared, tools)
       }
       args.latestMessages(prepared)
-      const budget = contextBudget(args.model.contextWindow, args.model.maxTokens)
-      const used = estimateRequestTokens(systemPrompt, prepared, tools)
+      // 运行期预算口径：与阶梯的 target、单条上限同一份 `contextBudget(window)`（不传 maxOutput）。
+      const budget = contextBudget(args.model.contextWindow)
       if (used > budget.hardInputLimit) {
         args.state.contextError = new ContextBudgetError(used, budget.hardInputLimit)
       }
@@ -674,9 +891,16 @@ function createTurnSpec(kernel: TurnKernel, options: {
   projectToolResults: boolean
   isPermissionCurrent: () => boolean
   runGeneration: number
+  /**
+   * 地址目录 thunk：投影 hook 与压缩 hook 共用同一份（`() => slot.addressRefs()`），
+   * 两个消费点各自在需要的时刻 await，任何一处都不在构造期提前取值。
+   */
+  addressRefs?: () => Promise<ReadonlyMap<string, string>>
 }): HarnessRunSpec {
   const state = kernel.state
   const toolsByName = new Map(kernel.tools.map(tool => [tool.name, tool]))
+  // preserve 名单：投影 hook 与级 3 闸门/retain 判定同一份来源（`kernel.tools`），只算一次。
+  const preserveToolNames = preservedToolNames(kernel.tools)
   // 压缩审计槽：摘要内核的成败写在这里，由槽在 compaction_end 收口成 deskpet.* 条目。
   const compactionAudit: CompactionAuditSink = {}
   let toolCallsUsed = 0
@@ -699,7 +923,6 @@ function createTurnSpec(kernel: TurnKernel, options: {
       }
       emitUiEvent("tool-executing", { toolId: tool.name, toolName: tool.name })
       const permission = await authorizeToolExecution(tool, args as Record<string, unknown>, {
-        mode: kernel.mode,
         sessionId: kernel.sessionId ?? kernel.traceContext.runId,
         runGeneration: options.runGeneration,
         toolCallId,
@@ -731,15 +954,28 @@ function createTurnSpec(kernel: TurnKernel, options: {
     transformContext: createProjectionHook({
       projectToolResults: options.projectToolResults,
       toolsByName,
+      preserveToolNames,
       model: kernel.model,
       state,
       captureSnapshot: kernel.captureSnapshot,
       snapshotTasks: kernel.snapshotTasks,
       latestMessages: messages => { kernel.latestMessages = messages },
+      ...(options.addressRefs ? { addressRefs: options.addressRefs } : {}),
     }),
     beforeCompaction: createCompactionHook({
-      mode: kernel.mode, model: kernel.model, tools: kernel.tools,
+      model: kernel.model, tools: kernel.tools,
       sessionId: kernel.sessionId, audit: compactionAudit,
+      // 闸门只在投影开着（工具结果走阶梯）时接：子代理不投影工具结果（projectToolResults:
+      // false），按「级 1/2 会压下去」的前提估算会误判「装得下」。
+      ...(options.projectToolResults ? {
+        systemPrompt: kernel.systemPrompt,
+        // 与投影 hook 同一个 measure（`createLadderGateBuilder` 内部走 `createLadderMeasure`）。
+        buildGate: createLadderGateBuilder({
+          systemPrompt: kernel.systemPrompt, model: kernel.model,
+          tools: kernel.tools, preserveToolNames,
+        }),
+      } : {}),
+      ...(options.addressRefs ? { addressRefs: options.addressRefs } : {}),
     }),
     compactionAudit,
     // 记当次请求归属：payload 采集据此区分「本回合的请求」与「压缩/分支摘要的一次性请求」。
@@ -870,7 +1106,7 @@ function createTurnSinks(kernel: TurnKernel): HarnessRunSinks {
   }
 }
 
-/** Main pet turn. This replaces the hand-written Agent Loop with the harness lane. */
+/** 主对话回合：接替手写 Agent Loop 的 harness lane 入口。 */
 export async function runPiAgentTurn(input: PiAgentTurnInput): Promise<PiAgentTurnOutput> {
   if (!input.sessionId.trim()) throw new Error("Pi Agent 回合缺少 sessionId")
   const { userText, unansweredCount, isActiveMessage } = input
@@ -878,7 +1114,6 @@ export async function runPiAgentTurn(input: PiAgentTurnInput): Promise<PiAgentTu
 
   const turnSessionId = input.sessionId
   const requestId = input.ingress?.requestId ?? `runtime-${crypto.randomUUID()}`
-  const mode = generalConfig.assistantMode ? "assistant" as const : "pet" as const
   const model = resolvePiTurnModel()
   const windowTokens = model.contextWindow
   // 代际：runner 已 begin 时复用其代际；Live Test 直连路径由本函数自持。
@@ -915,30 +1150,49 @@ export async function runPiAgentTurn(input: PiAgentTurnInput): Promise<PiAgentTu
   assertCurrent()
   const { prepareRunCapabilities } = await import("@/services/init")
   // 主回合不使用返回的不可用名单：借用失败已由各自的工具报告；这里只保留取消守卫语义。
-  await prepareRunCapabilities(mode, requestId, assertCurrent)
+  await prepareRunCapabilities(requestId, assertCurrent)
   assertCurrent()
-  const frozenTools: ToolDef[] = isActiveMessage ? [] : [...getToolsForMode(mode)]
+  const frozenTools: ToolDef[] = isActiveMessage ? [] : [...listAll()]
   // 工具结果回读：请求投影里标注的 eventId 就是 Harness 条目 id，按条目分页读取。
-  if (frozenTools.length) frozenTools.push(createTranscriptTool(entryId => slot.readToolResult(entryId)))
+  if (frozenTools.length) frozenTools.push(createTranscriptTool(entryId => slot.readToolResult(entryId), { windowTokens }))
   // 用户正文由 Harness 的 prompt 条目承担落盘（先落盘再投递由 Harness 事务保证）；
   // 主动消息用 deskpet.active_message 自定义消息投递，来源标记在 details.* 且不成为用户事实。
   assertCurrent()
   // 工具运行面与投递正文在准入前装配一次：它们既是准入的入参，也是本回合 spec 的组成部分，
   // 不因「准入提前」写第二份定义。
   const toolRun: HarnessToolRun = {
-    mode, sessionId: turnSessionId, runGeneration: generation,
+    sessionId: turnSessionId, runGeneration: generation,
     isCurrent: () => runIsCurrent(),
     history: toolCallHistory,
   }
   // 投递正文由调用方构造（用户输入走 userInputMessage、主动消息走 createActiveMessage）：
   // 停止后继续的暂停批次优先，其余按调用方给的 userPrompt 原样投递。
-  const promptInput: HarnessRunSpec["prompt"] = input.pausedMessages?.length ? input.pausedMessages : input.userPrompt
+  // 技能准入支没有宿主正文：那条用户条目由 Pi 在 accept 内按技能文件构造，空串只落在 drive 面的
+  // `spec.prompt`（驱动不读正文，准入时已落盘），不是第二份用户正文。
+  const promptInput: HarnessRunSpec["prompt"] = input.skillAdmission
+    ? ""
+    : input.pausedMessages?.length ? input.pausedMessages : input.userPrompt
   // ── 输入先落盘（STATE-04）：准入在计划与预检之前 ──
   // 命中失败（未获准入）时输入没有条目、也没有操作要在之后结算；成功则条目已进会话文件，
   // 后续无论走到哪条退出路径都保留它（预检失败不丢输入）。
-  const admitted = await slot.admitInput({ model, thinkingEffort, tools: frozenTools, toolRun, prompt: promptInput })
+  // 技能支不给正文：`kind:"skill"` 的请求里没有 prompt 字段（准入形态也用 `never` 钉死），
+  // 那条用户条目由 Pi 在 accept 内按技能文件构造 —— 一条命令只能落一条正文。
+  const admitted = input.skillAdmission
+    ? await slot.admitInput({
+        model, thinkingEffort, tools: frozenTools, toolRun,
+        kind: "skill",
+        name: input.skillAdmission.name,
+        additionalInstructions: input.skillAdmission.additionalInstructions,
+      })
+    : await slot.admitInput({ model, thinkingEffort, tools: frozenTools, toolRun, prompt: promptInput })
   if (!admitted.ok) {
-    log.error("输入未获准入，回合未开始:", { sessionId: turnSessionId, status: admitted.result.status })
+    // 技能准入在边界上失败（清单在启动瞬间变化 → UnknownSkill）与前置判定的四态不同：留痕带上技能名，
+    // 不把它混进「技能不存在」的报告里（`failure.kind` 仍是 admission，`failure.message` 带原始 tag）。
+    log.error("输入未获准入，回合未开始:", {
+      sessionId: turnSessionId,
+      status: admitted.result.status,
+      ...(input.skillAdmission ? { skill: input.skillAdmission.name, tag: admitted.result.error } : {}),
+    })
     const reply = getFallbackReply("llmUnavailable")
     await slot.appendAssistantMessage(reply).catch(error => log.error("兜底回复落盘失败", formatError(error)))
     return {
@@ -951,7 +1205,7 @@ export async function runPiAgentTurn(input: PiAgentTurnInput): Promise<PiAgentTu
   input.onInputAdmitted?.()
   let planStepContext = ""
   let planUserText = userText
-  if (mode === "assistant" && planConfig.enabled) {
+  if (planConfig.enabled) {
     // 计划判定与生成都发生在 Harness 驱动之前（此时还没有 turn_start 的「思考中」），
     // 这段等待必须有提示，否则界面在复杂度判定 + 规划调用期间一片空白。
     emitStageHint(turnSessionId, "planning")
@@ -1021,13 +1275,13 @@ export async function runPiAgentTurn(input: PiAgentTurnInput): Promise<PiAgentTu
     } as unknown as JsonValue)
   }
   assertCurrent()
-  const frozenContext = { ...frozenUserContext, skillsPromptBlock: getSkillsPromptBlock({ mode }) }
+  const frozenContext = { ...frozenUserContext, skillsPromptBlock: getSkillsPromptBlock() }
   const skillCatalogFingerprint = getSkillCatalogFingerprint() ?? undefined
   // 会话历史由 Harness 条目承担；buildPrompt 只负责静态/动态/记忆块与预算分配记录。
   const context = buildPrompt({
     ...frozenContext,
     unansweredCount, thinkingEffort, isActiveMessage,
-    memoryProjections, mode, contextMaxTokens: windowTokens, maxOutputTokens: model.maxTokens,
+    memoryProjections, contextMaxTokens: windowTokens, maxOutputTokens: model.maxTokens,
     tools: frozenTools.map(toToolDeclaration),
     ...(planStepContext ? { ephemeralText: planStepContext, ephemeralOrigin: "plan" as const } : {}),
   }, card, pool)
@@ -1046,7 +1300,6 @@ export async function runPiAgentTurn(input: PiAgentTurnInput): Promise<PiAgentTu
     sessionId: turnSessionId,
     requestId,
     turnId: input.turnId,
-    mode,
     model,
     thinkingEffort,
     systemPrompt: context.systemPrompt,
@@ -1069,6 +1322,8 @@ export async function runPiAgentTurn(input: PiAgentTurnInput): Promise<PiAgentTu
     maxToolCalls: loopConfig.maxToolCallsPerTurn,
     projectToolResults: true,
     runGeneration: generation,
+    // 投影与压缩共用同一份地址目录 thunk：两路投影对同一条结果逐字相同（槽内有稳定缓存）。
+    addressRefs: () => slot.addressRefs(),
     // 权限确认绑定当前会话：等待确认期间用户切走会话，旧回合不再取得授权。
     isPermissionCurrent: () => runIsCurrent() && getActiveSessionId() === turnSessionId,
   })
@@ -1167,7 +1422,7 @@ async function runPlanPhase(args: {
     const generated = await generatePlan(args.planInput.userText, {
       cardId: args.planInput.cardId,
       cardRole: args.planInput.cardRole,
-      availableTools: getToolsForMode("assistant"),
+      availableTools: listAll(),
       thinkingEffort: planConfig.thinkingEffort,
       maxSteps: planConfig.maxSteps,
       // 规划是一次性请求：快照按会话归属落盘（证据链可查「这次规划问了什么」）。
@@ -1295,15 +1550,16 @@ async function runPlanPhase(args: {
       }).catch(error => { log.error("步骤结果条目写入失败:", formatError(error)); return undefined })
       if (entryId) stepResultEntryIds.set(String(step.id), entryId)
     },
-    // 工具解析报告（FIX-51）：工具名解析不到、或未限定工具而放大到全部助手工具，
-    // 都在进度事件与系统消息里可见 —— 权限面的变化不能只留在日志里。
+    // 工具解析报告（FIX-51）：工具名解析不到、或未限定工具而放大工具面，都在进度事件与系统消息
+    // 里可见 —— 权限面的变化不能只留在日志里。放大到子代理时派生型工具会被剥离（runPiSubAgent），
+    // 所以文案按子代理实际拿到的集合写，不写成「全部」。
     async onStepNotice(step, notice) {
       const index = plan.steps.findIndex(item => item.id === step.id) + 1
       void emitUiEvent("deskpet-plan-progress", { sessionId, planId, stepId: String(step.id), total: plan.steps.length, desc: step.description, status: "warning" })
       if (notice.kind === "missing_tools") {
         pushSystemMessage(`计划第 ${index} 步指定的工具不存在: ${notice.names.join("、")}（该步未执行）`, sessionId)
       } else {
-        pushSystemMessage(`计划第 ${index} 步未限定工具，将使用全部助手工具`, sessionId)
+        pushSystemMessage(`计划第 ${index} 步未限定工具，将使用除派生型工具外的全部已注册工具`, sessionId)
       }
     },
     // 失败询问接上会话身份与回合中断信号：会话切换/终止执行时按 `abort` 结算，
@@ -1530,9 +1786,9 @@ export async function resumePlan(sessionId: string, planId: string): Promise<PiA
   // 停止经 `bindRunningPlan` 的中断通道（runPlanPhase 内登记）真正停在步骤边界。
   void emitUiEvent("deskpet-run-state", { sessionId, running: true })
   try {
-    // 步骤子代理可能用助手工具与 MCP：按主回合同款准备能力，收尾再释放
+    // 步骤子代理可能用内置工具与 MCP：按主回合同款准备能力，收尾再释放
     const { prepareConversationCapabilities } = await import("@/services/init")
-    await prepareConversationCapabilities("assistant", requestId)
+    await prepareConversationCapabilities(requestId)
     const outcome = await runPlanPhase({
       sessionId,
       existingPlanId: planId,
@@ -1737,7 +1993,6 @@ export async function continueInterruptedRun(sessionId: string): Promise<PiAgent
   const slot = harnessSlots.ensure(sessionId)
   await slot.open()
   if (!slot.getInterrupted()) return undefined
-  const mode = generalConfig.assistantMode ? "assistant" as const : "pet" as const
   const model = resolvePiTurnModel()
   // 续跑也带输入身份：运行身份、请求快照与投递证据链按同一个 requestId 对齐；
   // 来源标记是 recovery（见上），因此这条身份不会被读成用户事实。
@@ -1748,9 +2003,9 @@ export async function continueInterruptedRun(sessionId: string): Promise<PiAgent
   const toolCallHistory: PiAgentTurnOutput["toolCallHistory"] = []
   try {
     // 恢复路径与主回合走同一个能力准备入口（不再绕过 MCP / Skill 准备）：中断期间能力可能
-    // 已经漂移（模式切换、服务器不可用），续跑前的准备结果就是本次运行的真实能力面。
+    // 已经漂移（服务器不可用、设置变更），续跑前的准备结果就是本次运行的真实能力面。
     const { prepareRunCapabilities } = await import("@/services/init")
-    const capabilities = await prepareRunCapabilities(mode, resumeOwner(sessionId), () => harnessSlots.isCurrent(sessionId, generation))
+    const capabilities = await prepareRunCapabilities(resumeOwner(sessionId), () => harnessSlots.isCurrent(sessionId, generation))
     // 待重放工具名与不可用 MCP 的交集：有交集就不能继续 —— 重放会失败成上游的通用文案，
     // 这里给用户一条明确原因（不落「Tool … is unavailable」），也不假装续跑成功。
     const pendingTools = await slot.pendingInterruptedToolNames()
@@ -1768,23 +2023,23 @@ export async function continueInterruptedRun(sessionId: string): Promise<PiAgent
     const currentCard = getActiveCard()
     const card = currentCard ? JSON.parse(JSON.stringify(currentCard)) as typeof currentCard : null
     const pool = getPoolSnapshot()
-    const frozenTools = [...getToolsForMode(mode)]
-    frozenTools.push(createTranscriptTool(entryId => slot.readToolResult(entryId)))
+    const frozenTools = [...listAll()]
+    frozenTools.push(createTranscriptTool(entryId => slot.readToolResult(entryId), { windowTokens: model.contextWindow }))
     const thinkingEffort = getEffectiveThinkingEffort()
     // 中断运行的原始冻结快照已随进程丢失：用当前 Card/变量重建只读前缀，不静默改 Card。
     const context = buildPrompt({
       ...{ candyInstructions: MemoryService.getCandyInstructionsSync(), userProfileText: MemoryService.getUserProfileSync() },
-      unansweredCount: 0, thinkingEffort, mode,
+      unansweredCount: 0, thinkingEffort,
       contextMaxTokens: model.contextWindow, maxOutputTokens: model.maxTokens,
       tools: frozenTools.map(toToolDeclaration),
     }, card, pool)
     const kernel = createTurnKernel({
-      sessionId, requestId, mode, model,
+      sessionId, requestId, model,
       thinkingEffort, systemPrompt: context.systemPrompt, tools: frozenTools,
       blocks: context.blocks, allocations: context.allocations, budgetDrops: context.budgetDrops,
       transientUserInput: false, persistSnapshots: false, card, generation,
       toolRun: {
-        mode, sessionId, runGeneration: generation,
+        sessionId, runGeneration: generation,
         isCurrent: () => harnessSlots.isCurrent(sessionId, generation),
         history: toolCallHistory,
       },
@@ -1795,6 +2050,8 @@ export async function continueInterruptedRun(sessionId: string): Promise<PiAgent
       maxToolCalls: loopConfig.maxToolCallsPerTurn,
       projectToolResults: true,
       runGeneration: generation,
+      // 续跑与主回合同口径：同一份地址目录 thunk 同时供给投影与压缩。
+      addressRefs: () => slot.addressRefs(),
       isPermissionCurrent: () => harnessSlots.isCurrent(sessionId, generation) && getActiveSessionId() === sessionId,
     })
     const result = await slot.resumeInterrupted(spec)
@@ -1822,7 +2079,7 @@ export type ManualCompactionResult = HarnessCompactOutcome & { intent?: string }
 
 /**
  * 手动压缩一个会话：切点、提交与持久化由 Harness 承担（manual reason），
- * 摘要走陪伴/助手结构化内核。运行中返回 busy，有排队项返回 pending（准入读 lane 真相），
+ * 摘要走结构化摘要内核。运行中返回 busy，有排队项返回 pending（准入读 lane 真相），
  * 两种情况都由命令层给出用户可见文案（§3.4）。
  *
  * 压缩后 Harness 可能驱动一次续跑消费 lane inbox：那段续跑没有回合身份，但仍要有人格
@@ -1831,7 +2088,6 @@ export type ManualCompactionResult = HarnessCompactOutcome & { intent?: string }
  */
 export async function compactActiveSession(sessionId: string): Promise<ManualCompactionResult> {
   if (!sessionId.trim()) return { status: "failed", error: "当前没有可压缩的会话" }
-  const mode = generalConfig.assistantMode ? "assistant" as const : "pet" as const
   const model = resolvePiTurnModel()
   let intent: string | undefined
   const slot = harnessSlots.ensure(sessionId)
@@ -1842,34 +2098,50 @@ export async function compactActiveSession(sessionId: string): Promise<ManualCom
   const pool = getPoolSnapshot()
   const context = buildPrompt({
     ...{ candyInstructions: MemoryService.getCandyInstructionsSync(), userProfileText: MemoryService.getUserProfileSync() },
-    unansweredCount: 0, thinkingEffort: getEffectiveThinkingEffort(), mode,
+    unansweredCount: 0, thinkingEffort: getEffectiveThinkingEffort(),
     contextMaxTokens: model.contextWindow, maxOutputTokens: model.maxTokens,
     tools: [],
   }, card, pool)
   const state = createHarnessRunState()
   // 压缩审计槽：宿主内核失败时给出可见原因（/compact 报 failed），并让槽写降级条目。
   const compactionAudit: CompactionAuditSink = {}
+  // 结构操作的工具面是空的：投影与级 3 闸门共用同一份 —— 闸门估的就是续跑投影会做的那件事。
+  const structureTools: readonly ToolDef[] = []
+  const structurePreserveToolNames: ReadonlySet<string> = new Set<string>()
   const outcome = await slot.compact({
     systemPrompt: context.systemPrompt,
     state,
     hooks: {
       // 手动压缩没有冻结的回合工具集，按当前注册表判定 retain 保护。
       beforeCompaction: createCompactionHook({
-        mode, model, tools: getToolsForMode(mode),
+        model, tools: listAll(),
         sessionId, onSummary: summary => { intent = summary.intent }, audit: compactionAudit,
+        // reason === "manual" 不跑闸门（用户显式要求压缩）；续跑期间的阈值压缩照跑 ——
+        // 系统前缀取结构操作下发的这一份，与 `slot.compact` 的 systemPrompt 同源。
+        systemPrompt: context.systemPrompt,
+        buildGate: createLadderGateBuilder({
+          systemPrompt: context.systemPrompt, model,
+          tools: structureTools, preserveToolNames: structurePreserveToolNames,
+        }),
+        // 摘要素材与随后的续跑投影共用同一份地址目录 thunk（与主回合同一通道）。
+        addressRefs: () => slot.addressRefs(),
       }),
       compactionAudit,
       beforeRequest: createRequestOptionsPatch(),
-      // 续跑也走宿主的投影与剥离；工具结果投影按空工具集（安全回退，不开工具）。
+      // 续跑也走宿主的投影与剥离；工具结果投影按空工具集（安全回退，不开工具）——
+      // 没有工具声明就没有 preserve 名单，历史结果照常进候选集走阶梯（与投影 hook 对未注册
+      // 工具的口径一致）。
       transformContext: createProjectionHook({
         projectToolResults: true,
         toolsByName: new Map(),
+        preserveToolNames: structurePreserveToolNames,
         model,
         state,
         // 结构操作没有回合身份：不落 PromptSnapshot，也没有 payload 观测的读者。
         captureSnapshot: async () => undefined,
         snapshotTasks: [],
         latestMessages: () => {},
+        addressRefs: () => slot.addressRefs(),
       }),
       afterResponse: createRuntimeDataStripHook({}),
     },
@@ -1885,8 +2157,12 @@ export async function runPiSubAgent(input: PiSubAgentInput): Promise<PiSubAgentO
   const model = resolvePiTurnModel()
   const history: PiAgentTurnOutput["toolCallHistory"] = []
   const scope = input.scope
+  // 决策 16「子代理不派生」的唯一剥离点：派生型工具不下放到子代理，计划步骤与 fork/team
+  // 各自传什么都过这一道，不在调用点维护第二份名单。判定读工具自己声明的策略字段
+  // （`isolation: "delegate"` 只用于宿主编排工具，现只有 agent_spawn）—— 写死名字会把
+  // 工具身份抄成第二个定义点，也漏掉将来的派生型工具。
+  const tools = input.tools.filter(tool => tool.policy.execution.isolation !== "delegate")
   const toolRun: HarnessToolRun = {
-    mode: "pet",
     // 有 scope 时工具上下文带上父会话与代际：许可借用 requestId 从 `no-session:-1:…`
     // 变成 `${sessionId}:${generation}:…`，会话内 grant 也随之按会话与代际失效（PLAN-03）。
     sessionId: scope?.sessionId,
@@ -1900,11 +2176,10 @@ export async function runPiSubAgent(input: PiSubAgentInput): Promise<PiSubAgentO
     // 快照归属以 audit 为准（有计划身份的步骤请求落进父会话）；没有 audit 时沿用运行归属。
     sessionId: input.audit?.sessionId ?? scope?.sessionId,
     requestId: `sub-agent-${crypto.randomUUID()}`,
-    mode: "pet",
     model,
     thinkingEffort,
     systemPrompt: input.systemPrompt,
-    tools: input.tools,
+    tools,
     transientUserInput: false,
     // 有计划身份的子运行把请求快照落进父会话；没有归属就不落（fork/team 的独立子代理）。
     persistSnapshots: input.audit !== undefined,
@@ -1972,19 +2247,85 @@ export async function runPiSubAgent(input: PiSubAgentInput): Promise<PiSubAgentO
 }
 
 /**
- * 工具结果请求投影：条目保持全文，只有请求视图被缩短并标注回读地址。
+ * 回读地址解析（投影期唯一一处）：条目保持全文，缩短/清空只改视图、不动存档
+ * （请求视图与摘要素材同口径）；地址无条件标注（A-1）。
  *
- * resultProjection=preserve 的工具（分页读取、写类结果）不再二次缩短；
- * 未注册的历史工具没有策略可查，沿用既有缩短行为（条目仍是可回读的真相源）。
- * 回读地址只认详情里的 `deskpetEntryId`：没有地址时按无地址标记如实标注，不写假 eventId。
+ * `resultProjection=preserve` 的结果**禁止二次处理：不缩短、不清空，但同样带地址** —— 地址
+ * 标注不在此列（D-W2-5 的 2026-09-27 裁定：preserve 只挡升档处理，不挡地址标注）。
+ *
+ * `addressRefs` 给的是展示用前缀，目录里没有该 id 时退回完整条目 id（完整 id 永远可读，A-4）；
+ * 取不到 `details.deskpetEntryId` 的结果按无地址形态如实投影，不写假 eventId。
+ * 目录读取失败的兜底在投影 hook（退回完整 id）——契约是「拒绝时一致」，见那里的一次性 warn。
  */
-function projectToolResultMessage(message: AgentMessage, windowTokens: number, toolsByName: ReadonlyMap<string, ToolDef>): AgentMessage {
-  if (message.role !== "toolResult") return message
-  if (toolsByName.get(message.toolName)?.policy.context.resultProjection === "preserve") return message
-  const text = contentText(message.content)
-  const projected = projectToolResultText(text, toolResultAddress(message), windowTokens, SESSION_TRANSCRIPT_TOOL)
-  if (projected === text) return message
-  return { ...message, content: [{ type: "text" as const, text: projected }] }
+function resolveToolResultAddress(message: { details?: unknown }, addressRefs?: ReadonlyMap<string, string>): string | undefined {
+  const entryId = toolResultAddress(message)
+  return entryId ? addressRefs?.get(entryId) ?? entryId : undefined
+}
+
+/**
+ * 阶梯条目的 Pi 消息形态适配器：只取 `role === "toolResult"` 的消息，正文用 `contentText`
+ * （与投影改写的正文同一份），地址用 `resolveToolResultAddress`。
+ *
+ * `resultProjection=preserve` 的条目同样在这里取地址：它们不进候选集（判定侧过滤），
+ * 但地址标注照走 —— 不缩短、不清空，但同样带地址（D-W2-5 的 2026-09-27 裁定）。
+ *
+ * 消息形态适配只有这一处 —— 投影 hook 与级 3 闸门（T3.05）共用同一份产出，
+ * `compactor.ts` 不抽第二份（durable `Message` 形态在 W4 的素材投影里）。
+ */
+function toolResultLadderEntries(
+  messages: readonly AgentMessage[],
+  addressRefs?: ReadonlyMap<string, string>,
+): ToolResultLadderEntry[] {
+  const entries: ToolResultLadderEntry[] = []
+  messages.forEach((message, index) => {
+    if (message.role !== "toolResult") return
+    const address = resolveToolResultAddress(message, addressRefs)
+    entries.push({
+      index, toolName: message.toolName, text: contentText(message.content),
+      ...(address === undefined ? {} : { address }),
+    })
+  })
+  return entries
+}
+
+/**
+ * 阶梯分级方案在 Pi 消息数组上的唯一投影实现：把 `plan.levels` 应用成请求视图。
+ *
+ * 级 1/2 经 `projectToolResultText` 的唯一实现（无第二套文案；级 2 的「有地址」硬前提
+ * 由它兜底，这里不重判）。未进计划的条目（级 0）与 `resultProjection=preserve` 的工具
+ * （分页读取、写类结果）**禁止二次处理：不缩短、不清空，但地址无条件标注**（A-1）—— 写入
+ * 回执被摘要吃掉后也需要可捞的地址（D-W2-5 的 2026-09-27 裁定：preserve 只挡升档处理，
+ * 不挡地址标注）。
+ * 未注册的历史工具不在 `preserveToolNames` 里，按可处理结果对待（与投影 hook 的候选集同一口径）。
+ *
+ * 改写只作用于 text 块：图片等非 text 块按原顺序留在原位（整块重建会丢掉 `pi-read` 的
+ * 图片结果，且回读也救不回）。纯函数：不改入参，未改动的消息原样返回；判据的 `measure`
+ * 也走本函数，估算因此恒等于最终请求视图，不存在第二份投影口径。
+ */
+function applyLevels(
+  messages: readonly AgentMessage[],
+  levels: ReadonlyMap<number, 1 | 2>,
+  windowTokens: number,
+  preserveToolNames: ReadonlySet<string>,
+  addressRefs?: ReadonlyMap<string, string>,
+): AgentMessage[] {
+  return messages.map((message, index) => {
+    if (message.role !== "toolResult") return message
+    const level = levels.get(index) ?? 0
+    const preserve = preserveToolNames.has(message.toolName)
+    const address = resolveToolResultAddress(message, addressRefs)
+    let changed = false
+    const content = message.content.map(part => {
+      if (part.type !== "text") return part
+      const text = preserve || level === 0
+        ? annotateToolResultText(part.text, address, SESSION_TRANSCRIPT_TOOL)
+        : projectToolResultText(part.text, address, windowTokens, SESSION_TRANSCRIPT_TOOL, level)
+      if (text === part.text) return part
+      changed = true
+      return { ...part, text }
+    })
+    return changed ? { ...message, content } : message
+  })
 }
 
 /** 提交前剥离 RUNTIME_DATA；thinking 等其它块保持原样。 */

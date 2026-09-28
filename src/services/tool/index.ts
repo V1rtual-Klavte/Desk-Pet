@@ -7,7 +7,7 @@
 
 // ── 类型 ──
 export type {
-  ToolDef, ToolResult, SafetyLevel, ToolSource, ToolMode, ToolContext, ActionCategory, ToolDeclaration,
+  ToolDef, ToolResult, SafetyLevel, ToolSource, ToolContext, ActionCategory, ToolDeclaration,
   PermissionDecision, EffectClass, ToolPolicy, ToolIsolation, ToolReplay,
   ResultProjection, HistoryCompaction,
 } from "./types"
@@ -43,14 +43,10 @@ export {
   getTool,
   getToolByName,
   actionCategoryOf,
-  getToolsForMode,
-  getToolDeclarations,
   listAll,
   clearAll,
   toolCount,
   registerDefaultTools,
-  registerAssistantTools,
-  unregisterAssistantTools,
   } from "./registry"
 
 // ── 路由器 ──
@@ -60,7 +56,7 @@ export { executeToolDefinition } from "./router"
 export { releaseMcpOwner } from "./mcp"
 export {
   createTranscriptTool,
+  transcriptPageTokens,
   SESSION_TRANSCRIPT_TOOL,
-  SESSION_EVENT_PAGE_CHARS,
 } from "./session-transcript"
-export type { ToolResultEntryReader } from "./session-transcript"
+export type { ToolResultEntryReader, ToolResultLookup } from "./session-transcript"

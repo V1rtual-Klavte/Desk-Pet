@@ -6,7 +6,7 @@ import { BaseDirs, runtimePath } from "@/services/paths"
 
 /** 每个 check 自建临时根，失败互不污染；临时目录在系统 temp 下，不触碰用户数据根。 */
 async function createEnv(): Promise<TauriExecutionEnv> {
-  return new TauriExecutionEnv(await runtimePath("data"), "pet")
+  return new TauriExecutionEnv(await runtimePath("data"))
 }
 
 function fileOk<T>(result: Result<T, FileError>): T {

@@ -1,6 +1,5 @@
-import type { Message } from "@/services/agent/types"
 import { createLogger } from "@/services/logger"
-import { contextBudget, estimateContextTokens } from "./budget"
+import { contextBudget, estimateContextTokens, sliceByTokenBudget } from "./budget"
 
 const log = createLogger("ToolOutput")
 
@@ -10,14 +9,37 @@ const log = createLogger("ToolOutput")
 export const L0_TOOL_RESULT_SHARE = .10
 
 /**
- * L0 无地址时的固定标记；两路投影（主请求与摘要素材）共用这一份文案。
+ * 阶梯保护区轮数：最近 N 个用户意图轮内的工具结果**只挡级 2（清空）/级 3（摘要）**，
+ * **不挡级 1（缩短）**（W3-D1 口径 B，2026-09-27 裁定）：级 1 是无损信息的缩短，保护区内照做；
+ * 级 2/3 会丢正文内容，才需要保护区挡住。保护区内超阈的候选因此照常按级 1 缩短。
+ *
+ * 「轮」的口径与保护集合的判定唯一落在 `protectedMessageIndexes()`。
+ * N 是可调旋钮：3 只是 O-2 的起步值，K=3/4/5 的校准读数由 T3.09 产出，
+ * 最终定值在 W6 前由用户裁定。
+ */
+export const LADDER_PROTECTION_TURNS = 3
+
+/**
+ * 正文被替换成占位串时的两个字面标记（级 1 缩短 / 级 2 清空）；与地址尾行共用
+ * `toolResultNotice` 这一份模板，两路投影（主请求与摘要素材）都不许另拼一份文案。
+ */
+export const L0_SHORTENED_TAG = "上下文缩短"
+/** 级 2（清空）的标记；与 `L0_SHORTENED_TAG` 同住 `toolResultNotice` 的 `cleared` 分支。 */
+export const L0_CLEARED_TAG = "上下文清空"
+
+/**
+ * 无地址时的固定标记；两路投影共用这一份文案。
  * 有地址才写 eventId 回读提示：假地址会让模型读到「当前会话没有此工具结果」。
  */
 export const L0_NO_ADDRESS_NOTICE = "该结果的原始条目没有回读地址，中间段不可恢复"
 
+/** 缺省回读工具名；所有调用方（两路投影）都显式传 `SESSION_TRANSCRIPT_TOOL`，这里只作兜底。 */
+const DEFAULT_READ_TOOL_NAME = "read_session_event"
+
 /**
- * L0 缩短阈值（token）。判定与裁剪都用 `estimateContextTokens`：ASCII 与非 ASCII 的差异
- * 由估算器吸收（中文 ≈1 token/字符），阈值随窗口单调（64k ≈4.9k tokens、128k ≈10.4k tokens）。
+ * L0 缩短阈值（token）。判定与裁剪共用 budget.ts 的同一 token 口径（判定 `estimateContextTokens`、
+ * 切片 `sliceByTokenBudget`）：ASCII 与非 ASCII 的差异由该口径吸收（中文 ≈1 token/字符），
+ * 阈值随窗口单调（64k ≈4.9k tokens、128k ≈10.4k tokens）。
  *
  * 旧实现是字符常数：按 `normalInputTarget` 的 15% 取字符数、再乘一个字符/token 比率，且该值被
  * 一个小上限截断，于是 64k 以上的所有合法窗口都得到同一个 10000 字符阈值（按 chars/4 只值
@@ -25,20 +47,6 @@ export const L0_NO_ADDRESS_NOTICE = "该结果的原始条目没有回读地址�
  */
 export function toolResultTokenBudget(window: number): number {
   return Math.max(1, Math.floor(contextBudget(window).normalInputTarget * L0_TOOL_RESULT_SHARE))
-}
-
-/** 按 token 预算从一端切出片段（逐字符累加：ASCII 1/4 token、其余 1 token，至少 1 个字符）。 */
-function sliceByTokens(text: string, tokenBudget: number, fromEnd: boolean): string {
-  const limit = Math.max(1, tokenBudget)
-  let tokens = 0
-  let taken = 0
-  for (let index = 0; index < text.length; index += 1) {
-    const char = fromEnd ? text[text.length - 1 - index]! : text[index]!
-    tokens += char.charCodeAt(0) <= 0x7f ? .25 : 1
-    taken += 1
-    if (tokens >= limit) break
-  }
-  return fromEnd ? text.slice(text.length - taken) : text.slice(0, taken)
 }
 
 /**
@@ -52,29 +60,347 @@ export function toolResultAddress(message: { details?: unknown } | undefined): s
   return typeof address === "string" ? address : undefined
 }
 
-/** 已按「无地址」留痕过的结果长度：同长结果只报一次，避免逐条刷屏。 */
-const warnedWithoutAddress = new Set<number>()
+/** 内容指纹取的前缀字符数（D-W2-7）：只取首段是为了让键有界且零成本，不做全串 hash。 */
+export const NO_ADDRESS_WARN_KEY_CHARS = 32
 
-/** L0 缩短的唯一实现：头尾各半 + 地址标记（有地址给回读提示，无地址给不可回读标记）。 */
-export function projectToolResultText(text: string, address: string | undefined, window: number, readToolName = "read_session_event"): string {
-  const budget = toolResultTokenBudget(window)
-  if (estimateContextTokens(text) <= budget) return text
-  const half = Math.floor(budget / 2)
-  const notice = address
-    ? `[上下文缩短；原结果 eventId=${address}，可用 ${readToolName} 分页读取]`
-    : `[上下文缩短；${L0_NO_ADDRESS_NOTICE}]`
-  if (!address && !warnedWithoutAddress.has(text.length)) {
-    warnedWithoutAddress.add(text.length)
-    log.warn("工具结果没有回读地址，按不可回读标记投影:", { chars: text.length })
-  }
-  return `${sliceByTokens(text, half, false)}\n${notice}\n${sliceByTokens(text, half, true)}`
+/** 留痕去重集合的键数上限（D-W2-7）：长会话里内存不随工具结果条数增长。 */
+export const NO_ADDRESS_WARN_KEYS = 64
+
+/**
+ * 无地址留痕键：`长度:首32字符` 的内容指纹（D-W2-7）。
+ * 旧键是裸 `text.length`，会把「不同内容、同长度」的结果误判成已留痕而漏报；
+ * 差异落在首 32 字符之后仍会合并——这是刻意的既定代价（留痕是诊断信号，不是审计）。
+ * 键串里的第一个 `:` 必是分隔符（长度段只含数字），因此不会与正文里的 `:` 混淆。
+ */
+export function noAddressWarnKey(text: string): string {
+  return `${text.length}:${text.slice(0, NO_ADDRESS_WARN_KEY_CHARS)}`
 }
 
-/** 数组入口的薄包装（保留现有调用形态，内部只调 projectToolResultText）。 */
-export function projectToolMessages(messages: readonly Message[], window: number, readToolName?: string): Message[] {
-  return messages.map(message => {
-    if (message.role !== "tool") return message
-    const projected = projectToolResultText(message.text, message.eventId, window, readToolName)
-    return projected === message.text ? message : { ...message, text: projected }
-  })
+/** 已留痕的键；Set 迭代序 = 插入序，满员淘汰取最旧即取首项。 */
+const warnedNoAddressKeys = new Set<string>()
+
+/**
+ * 无地址留痕去重：同键只报一次（首次 `true` 并登记，之后 `false`），避免逐条刷屏。
+ *
+ * 有界策略：`Set` 满 `NO_ADDRESS_WARN_KEYS` 键时**按插入序淘汰最旧键**再登记新键（FIFO）。
+ * 不选「满员后不再新增」：那样长会话前 64 类形态之后要么永久静默（丢掉后续诊断信号）、
+ * 要么对每个新键都报一次（退回刷屏）；FIFO 保住「最近 64 类新内容各留痕一次」的信号，
+ * 代价是被淘汰的键再出现时会重新留痕一次——对诊断信号可接受。
+ *
+ * 纯判定无 I/O；模块级状态无重置入口（场景断言须每 trial 用唯一 key，见 T2.07）。
+ */
+export function shouldWarnNoAddress(key: string): boolean {
+  if (warnedNoAddressKeys.has(key)) return false
+  if (warnedNoAddressKeys.size >= NO_ADDRESS_WARN_KEYS) {
+    const oldest = warnedNoAddressKeys.values().next().value
+    // size 已保证非空；undefined 只是迭代器类型形态，无键可淘汰时直接跳过。
+    if (oldest !== undefined) warnedNoAddressKeys.delete(oldest)
+  }
+  warnedNoAddressKeys.add(key)
+  return true
+}
+
+/**
+ * 地址通知的唯一模板（A-2）：级 1 缩短 / 级 2 清空 / 未缩短三种形态只是同一模板的不同实参。
+ *
+ * `disposition` 省略 = 正文未被改动（未缩短）：有地址给回读尾行，无地址返回空串
+ * （无可恢复内容，不写任何假 eventId 打扰模型）。`"shortened"` / `"cleared"` = 正文已被
+ * 替换成占位串：无地址时用 `L0_NO_ADDRESS_NOTICE` 说明中间段不可恢复。
+ */
+export function toolResultNotice(address: string | undefined, readToolName: string, disposition?: "shortened" | "cleared"): string {
+  if (disposition === undefined) {
+    return address ? `[回读地址 eventId=${address}，可用 ${readToolName} 分页读取]` : ""
+  }
+  const tag = disposition === "cleared" ? L0_CLEARED_TAG : L0_SHORTENED_TAG
+  return address
+    ? `[${tag}；原结果 eventId=${address}，可用 ${readToolName} 分页读取]`
+    : `[${tag}；${L0_NO_ADDRESS_NOTICE}]`
+}
+
+/**
+ * 未缩短结果的地址标注：正文 + 尾行地址通知（无地址时正文原样返回）。
+ *
+ * A-1 的落点：地址不再等「超阈值」才给 —— 未缩短的结果同样要能被回读，
+ * preserve 的写入回执（`pi-write` / `pi-edit` / `app` / `clipboard_write`）也走这里
+ * （D-W2-5 的 2026-09-27 裁定：preserve 只挡升档处理，不挡地址标注）。
+ */
+export function annotateToolResultText(text: string, address: string | undefined, readToolName = DEFAULT_READ_TOOL_NAME): string {
+  const notice = toolResultNotice(address, readToolName)
+  return notice ? `${text}\n${notice}` : text
+}
+
+/**
+ * 请求视图投影的唯一实现。`level = 1`：头尾切片 + 占位串；`level = 2`：正文只剩占位串（清空）。
+ * 两级的占位串模板只有一个定义点（`toolResultNotice`），只有正文部分不同 —— 禁止第二套文案。
+ *
+ * **级 2（清空）的硬前提是「有地址」**（源方案 §3.2）：正文被清空后，地址是唯一能把模型
+ * 带回原文的路径；无地址的结果被清空即不可恢复，因此**永远停在级 1**。
+ * 判据就是 `address === undefined`：`level === 2 && !address` 不返回级 2 形态，落进下面的
+ * 级 1 分支（规划器 `planToolResultLadder` 已保证级 2 的候选必有地址，这里是防御性降级）。
+ * 该降级不在投影热点里逐条留痕，根因由下面无地址分支的一次性 warn
+ * （`noAddressWarnKey` / `shouldWarnNoAddress`）覆盖。
+ *
+ * 未超阈值时不再原样返回，而走同一份未缩短形态（`annotateToolResultText`，A-1）；
+ * 级 2 是显式请求的清空，不重复判阈值 —— 单条上限的判定归规划器（`toolResultTokenBudget` 仍是唯一阈值）。
+ */
+export function projectToolResultText(
+  text: string, address: string | undefined, window: number,
+  readToolName = DEFAULT_READ_TOOL_NAME, level: 1 | 2 = 1,
+): string {
+  // 级 2 且**有地址**：正文整体换成清空占位串，地址行仍是同一份模板的 `cleared` 变体。
+  if (level === 2 && address) return toolResultNotice(address, readToolName, "cleared")
+
+  const budget = toolResultTokenBudget(window)
+  if (estimateContextTokens(text) <= budget) return annotateToolResultText(text, address, readToolName)
+  if (!address) {
+    const key = noAddressWarnKey(text)
+    if (shouldWarnNoAddress(key)) log.warn("工具结果没有回读地址，按不可回读标记投影:", { chars: text.length })
+  }
+  const half = Math.floor(budget / 2)
+  const notice = toolResultNotice(address, readToolName, "shortened")
+  return `${sliceByTokenBudget(text, half, false)}\n${notice}\n${sliceByTokenBudget(text, half, true)}`
+}
+
+// ==========================================
+// 地址前缀（纯函数，零 I/O）
+// 唯一真相源：`toolResultAddress` 读 details，本组函数读 id 集合，两者同住本模块。
+// ==========================================
+
+/**
+ * 展示用地址的最小长度：投影端发射与读取端受理共用同一下界，防止 1–2 字符的偶然命中。
+ * 唯一性只在「当次给定的 id 全集」内判定：同一批 id 与目标必得同一结果，
+ * 不依赖 seq / 行号 / 顺序（折叠只删行、不改 id，地址因此对折叠不敏感）。
+ */
+export const MIN_ADDRESS_PREFIX = 8
+
+/** 两个字符串的最长公共前缀长度（字典序相邻项之间的唯一性判定只需这一个量）。 */
+function longestCommonPrefixLength(a: string, b: string): number {
+  const max = Math.min(a.length, b.length)
+  let i = 0
+  while (i < max && a.charCodeAt(i) === b.charCodeAt(i)) i++
+  return i
+}
+
+/**
+ * 地址前缀目录：入参是当前会话可解析的工具结果条目 id 全集（完整 id），出参 id → 展示用前缀。
+ * 只依赖 id 字符串集合：内部先排序再取「与相邻 id 的最长公共前缀 + 1」，不读 seq/行号/顺序。
+ * 重复 id 按集合去重；前缀下界为 `minLength`（与读取端 `resolveAddressRef` 共用同一语义）。
+ * 纯函数：无副作用、不读配置、无模块级可变状态；跨请求的复用缓存由调用方（槽）持有。
+ */
+export function shortenAddresses(ids: readonly string[], minLength = MIN_ADDRESS_PREFIX): Map<string, string> {
+  const sorted = [...new Set(ids)].sort()
+  const prefixes = new Map<string, string>()
+  for (let i = 0; i < sorted.length; i++) {
+    const id = sorted[i]
+    // 字典序下，与 id 公共前缀最长的邻居必落在前后相邻位置，故只需比较这两个邻居。
+    let lcp = i > 0 ? longestCommonPrefixLength(sorted[i - 1], id) : 0
+    if (i + 1 < sorted.length) lcp = Math.max(lcp, longestCommonPrefixLength(id, sorted[i + 1]))
+    const length = Math.max(minLength, Math.min(id.length, lcp + 1))
+    prefixes.set(id, id.slice(0, length))
+  }
+  return prefixes
+}
+
+/**
+ * 读取端解析结果：`exact`（给的是全集里的完整 id，永远有效）/ `unique`（前缀唯一命中）/
+ * `ambiguous`（前缀命中多条，返回全部候选，绝不任选）/ `none`（不匹配或未达前缀下界）。
+ */
+export type AddressResolution =
+  | { kind: "exact"; id: string }
+  | { kind: "unique"; id: string }
+  | { kind: "ambiguous"; matches: string[] }
+  | { kind: "none" }
+
+/**
+ * 解析地址引用（完整 id 或其唯一前缀）：精确命中优先（A-4），否则前缀匹配。
+ * `ref` 为空串或短于 `MIN_ADDRESS_PREFIX` 时不参与前缀匹配（`none`），防偶然命中。
+ * 候选按字面入参收集（不静默去重）：同一个 id 在集合里出现两次也算歧义，由调用方修数据。
+ * `matches` 按字典序返回，调用方自行截断展示。
+ */
+export function resolveAddressRef(ref: string, ids: readonly string[]): AddressResolution {
+  if (ref.length === 0) return { kind: "none" }
+  if (ids.includes(ref)) return { kind: "exact", id: ref }
+  if (ref.length < MIN_ADDRESS_PREFIX) return { kind: "none" }
+  const matches = ids.filter(id => id.startsWith(ref)).sort()
+  if (matches.length > 1) return { kind: "ambiguous", matches }
+  if (matches.length === 1) {
+    const [id] = matches
+    return { kind: "unique", id }
+  }
+  return { kind: "none" }
+}
+
+/**
+ * D-W2-8 的复用校验：`ref` 仍在给定 id 全集里唯一命中且是目标 id 的前缀。
+ * 供槽侧决定已发出的地址能否沿用（失效才重算），不做前缀是否最短以外的任何判定。
+ */
+export function isUniqueAddressRef(ref: string, targetId: string, ids: readonly string[]): boolean {
+  if (!targetId.startsWith(ref)) return false
+  const resolution = resolveAddressRef(ref, ids)
+  return (resolution.kind === "exact" || resolution.kind === "unique") && resolution.id === targetId
+}
+
+// ==========================================
+// 阶梯保护区（纯函数，零 I/O）
+// 「轮」的唯一一处定义点：与上游 findTurnStartIndex（compaction.js:237-251）同义。
+// 保护区只挡级 2（清空）/级 3（摘要），不挡级 1（缩短）—— W3-D1 口径 B。
+// ==========================================
+
+/**
+ * 保护区下标：最近 `turns` 个用户意图轮覆盖的消息下标。
+ *
+ * **「轮」的口径**：一条 `role === "user"`（或 `"bashExecution"`）的消息开一轮，直到下一条
+ * 开轮消息之前。`toolResult` / `assistant` / `custom`（主动消息）/ `compactionSummary` 都**不开轮**：
+ * 与上游 `findTurnStartIndex`（compaction.js:237-251）同义（上游还有 `branch_summary` 条目开轮，
+ * 请求视图没有条目形态，故只剩这一条判据）；`custom` 在上游是合法切点（compaction.js:205-235）
+ * 却不是轮首，主动消息因此落在「当前轮」内，**不得当轮首**。
+ * （`bashExecution` 在本仓生产路径不产生，保留判据只为与上游对齐。）
+ *
+ * **边界**：从尾部向前数到第 `turns` 条开轮消息，取其下标到数组末尾的全部下标；
+ * 不足 `turns` 条时从**第一条**开轮消息起全保护；一条开轮消息都没有 → 空集；
+ * `turns <= 0` → 空集（关掉保护区的唯一合法方式）。
+ *
+ * **只挡级 2（清空）与级 3（摘要），不挡级 1（缩短）**（W3-D1 口径 B）：级 1 是无损信息的缩短，
+ * 保护区内照做；级 2/3 会丢正文内容，才需要保护区挡住。本函数的产出是阶梯的 `protectedIndexes`
+ * 输入，唯一落点是级 2 的候选过滤，不是级 1 的候选过滤。
+ *
+ * **索引基数是请求视图消息数组**（`transform_context` 拿到的 `messages`），不是会话条目数组：
+ * 投影钩子里就地可算，不读会话、不引入第二份状态。
+ *
+ * 纯函数：无副作用、不读配置、无模块级可变状态；返回的 Set 按下标升序迭代（从边界向末尾追加），
+ * 顺序稳定、不越界。
+ */
+export function protectedMessageIndexes(messages: readonly { role: string }[], turns = LADDER_PROTECTION_TURNS): Set<number> {
+  const indexes = new Set<number>()
+  if (turns <= 0) return indexes
+  let boundary = -1
+  let remaining = turns
+  for (let i = messages.length - 1; i >= 0 && remaining > 0; i--) {
+    const role = messages[i].role
+    if (role !== "user" && role !== "bashExecution") continue
+    boundary = i
+    remaining--
+  }
+  // 不足 turns 条时循环走到底，boundary 停在第一条开轮消息上；一条都没有则仍是 -1。
+  if (boundary < 0) return indexes
+  for (let i = boundary; i < messages.length; i++) indexes.add(i)
+  return indexes
+}
+
+// ==========================================
+// 阶梯规划器（纯函数，零 I/O）
+// 顺序按激进度排，不按成本排：级 0 不动 → 级 1 缩短 → 级 2 清空 → 级 3 摘要。
+// 「装得下」的唯一判据 = 请求视图估算 ≤ contextBudget(window).normalInputTarget（源方案 §3.2）；
+// 唯一单条上限 = toolResultTokenBudget(window)（O-4：级 1 与级 2 共用，校准时只调一个旋钮）。
+// 级 3（摘要）是调用方在本计划的读数上另判的闸门，不在本函数内。
+// ==========================================
+
+/** 一个工具结果在阶梯里的判定输入。 */
+export interface ToolResultLadderEntry {
+  /** 该条在调用方数组里的下标；也是 `levels` 的键。 */
+  index: number
+  toolName: string
+  /** 条目正文全文（未投影）。 */
+  text: string
+  /** 回读地址；无地址 = 永远不允许进级 2（安全阀，C-2）。 */
+  address?: string
+}
+
+/**
+ * 判据的测量面：给定分级方案返回整请求估算（systemPrompt + 工具 schema + 全部消息）。
+ *
+ * **必须纯函数**：`planToolResultLadder` 只在三个测量点上各调一次、**绝不逐条循环调用**；
+ * 三点互斥链式（无候选 / 级 1 / 级 2），单次调用实际最多 2 次（计划文档给的「最多 3 次」是这三点的上界）。
+ * 同一入参必得同一结果：闭包里带副作用或读外部可变状态会让计划与实际请求视图漂移。
+ */
+export type ToolResultLevelMeasure = (levels: ReadonlyMap<number, 1 | 2>) => number
+
+/** 阶梯判定输入；与消息形态无关（主请求视图与摘要素材共用同一份判定）。 */
+export interface ToolResultLadderInput {
+  entries: readonly ToolResultLadderEntry[]
+  measure: ToolResultLevelMeasure
+  window: number
+  /** 判据目标；未传时取 `contextBudget(window).normalInputTarget`（主请求视图口径）。摘要素材语境由 W4 传 `hardInputLimit`。 */
+  target?: number
+  /** `resultProjection: "preserve"` 的工具名：命中不进候选集，级 1/级 2 都不做。 */
+  preserveToolNames?: ReadonlySet<string>
+  /**
+   * 保护区的消息下标（`protectedMessageIndexes()` 的产出）。**只在级 2 候选集里读**（口径 B）：
+   * 保护区只挡级 2/级 3，不挡级 1 —— 超阈的保护区条目照常缩短。
+   *
+   * **省略 ≠ 空集**：省下它就等于级 2 不受保护区限制（`protectedMessageIndexes` 返回的空集
+   * 是「无保护」的另一种形态）。调用方必须显式传入；漏传会有一条 warn，不做静默降级。
+   */
+  protectedIndexes?: ReadonlySet<number>
+}
+
+export interface ToolResultLadderPlan {
+  /** 判据阈值：`input.target`，或 `contextBudget(window).normalInputTarget`。 */
+  target: number
+  tokensAfterLevel1: number
+  /** 未升级到级 2（`level <= 1`）时等于 `tokensAfterLevel1` —— 级 2 既未测量也未应用。 */
+  tokensAfterLevel2: number
+  /** 实际应用的最高层级：0 = 无候选；1 = 只缩短；2 = 有清空。 */
+  level: 0 | 1 | 2
+  /** index → 1 | 2，只含被处理的项；未进候选的结果不在其中。 */
+  levels: ReadonlyMap<number, 1 | 2>
+}
+
+/**
+ * 阶梯规划器：给定工具结果条目、测量闭包与窗口，产出级 0/1/2 的提升方案。
+ *
+ * 六步算法（执行方案 W3 §1.2，照抄）：
+ * 1. `target = input.target ?? contextBudget(window).normalInputTarget`；
+ * 2. 候选 = 非 preserve **且**单条超 `toolResultTokenBudget(window)` 的条目；
+ *    **保护区不在这里排除** —— 级 1 对保护区照常生效（口径 B）；
+ * 3. 无候选 ⇒ 级 0（`levels` 为空，两次读数是同一次无条件测量）；
+ * 4. 候选全置级 1 后测量；装得下（≤ `target`）⇒ 停在级 1，不做无谓升档；
+ * 5. 仍超 ⇒ 候选中**有地址且不在保护区**的置级 2，其余保持级 1（保护区只挡这一步）；
+ * 6. `level` = 有级 2 则 2，否则 1（全部无地址时停在级 1，C-2；此时两读数相同）。
+ *
+ * 单条上限只算一次并两处共用（O-4）：级 2 的处理集是级 1 候选集的子集，不存在第二个阈值旋钮。
+ * 本函数只判定到级 2；级 3（摘要）由调用方按本计划的读数另判，不是这里的一项「level 3」。
+ */
+export function planToolResultLadder(input: ToolResultLadderInput): ToolResultLadderPlan {
+  if (input.protectedIndexes === undefined) {
+    // T3.00 的告警落点：拿不到保护区集合时级 2 会静默失去保护。空集是「无保护」的显式形态，
+    // 省略则是调用方漏传 —— 留痕一次（不是逐条），让漏传在运行期可见。
+    log.warn("阶梯缺少保护区集合，级 2 将不受保护区限制:", { entries: input.entries.length })
+  }
+  const target = input.target ?? contextBudget(input.window).normalInputTarget
+  // O-4：单条上限只算一次，级 1 的候选判定与级 2 的处理集共用同一个结果。
+  const singleEntryBudget = toolResultTokenBudget(input.window)
+  const candidates = input.entries.filter(entry =>
+    !(input.preserveToolNames?.has(entry.toolName) ?? false)
+    && estimateContextTokens(entry.text) > singleEntryBudget)
+
+  if (candidates.length === 0) {
+    // 第 3 步：无条件的一次测量（级 0 视图）。无候选 ⇒ 级 1/级 2 不做任何改动，读数必然相同，
+    // 不再多调 measure。
+    const tokens = input.measure(new Map())
+    return { target, tokensAfterLevel1: tokens, tokensAfterLevel2: tokens, level: 0, levels: new Map() }
+  }
+
+  const levels = new Map<number, 1 | 2>()
+  for (const entry of candidates) levels.set(entry.index, 1)
+  const tokensAfterLevel1 = input.measure(levels)
+
+  let level2Count = 0
+  let tokensAfterLevel2 = tokensAfterLevel1
+  if (tokensAfterLevel1 > target) {
+    // 第 5 步：级 2 的两个附加条件（有地址、不在保护区）只在这里生效；不满足的保持级 1。
+    for (const entry of candidates) {
+      if (entry.address === undefined) continue
+      if (input.protectedIndexes?.has(entry.index) ?? false) continue
+      levels.set(entry.index, 2)
+      level2Count += 1
+    }
+    tokensAfterLevel2 = input.measure(levels)
+  }
+
+  log.debug("阶梯候选:", { count: candidates.length, level1: candidates.length - level2Count, level2: level2Count, target })
+  if (level2Count > 0) {
+    log.info("级 1 之后仍超目标，清空可回读的工具结果（级 2）:", { level2: level2Count, tokensAfterLevel1, tokensAfterLevel2, target })
+  }
+  return { target, tokensAfterLevel1, tokensAfterLevel2, level: level2Count > 0 ? 2 : 1, levels }
 }

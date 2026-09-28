@@ -83,6 +83,16 @@ export interface CommandReplies {
   compactPending: string
   /** 压缩失败（上游内核报错）。技术原因由命令层附在其后，不在这里顶替 */
   compactFailed: string
+  // /skill 的终态句 —— 技能名与「未知 / 无正文 / 被关闭」的诊断事实由命令层作中性明细附在句后，
+  // 不写进这几个 key：插值内容是诊断事实，角色化会让用户分不清「角色在说话」和「命令没跑成」
+  /** 显式调用成功：技能已加入本次对话 */
+  skillStarted: string
+  /** 指定的技能名不存在 */
+  skillUnknown: string
+  /** 技能存在但没有可用的正文内容 */
+  skillEmpty: string
+  /** 技能存在但被用户关闭（frontmatter enabled: false） */
+  skillDisabled: string
 }
 
 /** 系统兜底回复类型 — 替代硬编码中文 */

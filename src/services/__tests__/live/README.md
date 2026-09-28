@@ -37,6 +37,8 @@ pnpm run test:release
 
 默认在启动时检查全部 Contract；聚焦单模块可用 `--module memory --contracts selected`，这不替代跨模块或发布前全量门禁。源码或 Contract 改动完成后再集中执行受影响模块和必要的全量验证；纯文档修改不运行 Live Test。
 
+**环境注意**：macOS 锁屏时 WebKit 会把窗口判为遮挡并挂起页面 JS（实测每个 scene 约 6 秒后整体停摆，进程存活但无进展）。跑 Live 门禁前必须解锁屏幕并保持点亮；`always_on_top`/`caffeinate` 无效。
+
 ## Contract 与 sourceHash
 
 `contracts/*.contract.ts` 是模块行为契约。每个 coverage point 的 `scenarios` 必须写 Scene 的稳定 **`caseId`**，不是文件名、描述或导出名。每个 caseId 只能归属一个 Scene，且 Scene 的 `meta.module`、`meta.contractId` 必须与其 Contract coverage point 一致。
@@ -45,7 +47,7 @@ Node 启动预检会校验 `sourceHash`；源码变更后应先按 SKILL 重新�
 
 浏览器侧不做也不假装做独立校验：预检通过时把「模块 → sourceHash」的证明交给运行中的测试窗口，契约声明与证明不一致、或根本没有证明（例如绕过启动脚本直接开 Tauri）时该 Contract 记为 `stale`，严格模式据此失败。
 
-`sourceHash` 只覆盖 Contract 声明的 `sourceFiles`，不是依赖闭包；两者的差异清单与是否收紧门禁见[未完成工作与已知缺口](../../../../docs/plans/active/未完成工作与已知缺口.md) 的已决策小节。
+`sourceHash` 只覆盖 Contract 声明的 `sourceFiles`，不是依赖闭包；两者的差异清单与是否收紧门禁见[未完成工作与已知缺口](../../../../docs/plans/active/未完成工作与已知缺口.md) 的「不修/暂不修边界」小节。
 
 ## Scene 规范
 

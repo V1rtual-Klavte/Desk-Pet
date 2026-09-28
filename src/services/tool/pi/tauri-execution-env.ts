@@ -25,12 +25,14 @@ import type {
   ShellExecResult,
 } from "@earendil-works/pi-agent-core"
 import type { Context } from "@earendil-works/pi-agent-core"
-import { toolsConfig } from "@/services/config"
-import type { ToolMode } from "../types"
 import { errorCode, formatError } from "@/services/error"
 import { createLogger } from "@/services/logger"
 
-const MAX_TOOL_FILE_BYTES = 5 * 1024 * 1024
+/**
+ * 单次 `file_read` / `file_write` / `file_append` 的字节上限（Rust 侧 `content.len()` 同口径）。
+ * 唯一真相源：会话存储的折叠守卫（`engine/pi/session-fold.ts`）也读它，不再各存一份。
+ */
+export const MAX_TOOL_FILE_BYTES = 5 * 1024 * 1024
 
 const log = createLogger("ToolEnv")
 
@@ -96,7 +98,7 @@ function throwIfAborted(context: Context): void {
 }
 
 export class TauriExecutionEnv implements ExecutionEnv {
-  constructor(public cwd: string, private readonly mode: ToolMode) {}
+  constructor(public cwd: string) {}
 
   static async defaultCwd(): Promise<string> {
     return homeDir()
@@ -296,7 +298,6 @@ export class TauriExecutionEnv implements ExecutionEnv {
         command,
         cwd: options?.cwd ?? this.cwd,
         timeoutMs: options?.timeout === undefined ? null : Math.round(options.timeout * 1000),
-        policy: { scope: this.mode, whitelist: toolsConfig.bashWhitelist },
         // 上限的真相源是 Rust：这里只在调用方给了 limits 时转发，缺省交给 Rust 的兜底值。
         maxBytes: limits?.maxBytes ?? null,
         maxLines: limits?.maxLines ?? null,

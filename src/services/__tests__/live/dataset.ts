@@ -6,8 +6,24 @@ import { DEFAULT_SCENE_TIMEOUT, UNIT_SCENE_TIMEOUT } from "./scene-runner"
  *
  * 报告里的 pass@k 只在同一版本内可比：场景集合变了，分母就变了。
  * 格式由 `validateDataset` 强制，写错了会在启动前直接报错。
+ *
+ * `2026-09-27.1`：W1（帧节流）新增 hs-05/hs-06 两个场景（harness-storage），
+ * 由 T1.05 与 T1.06 共用这一次 bump。
+ * `2026-09-27.2`：W2（判据与地址）新增 te-25 场景（tool-execution）并改写多条既有场景的
+ * 断言口径，全波共用这一次 bump。
+ * `2026-09-27.3`：W5（日志折叠）新增 hs-07/hs-08 三个场景（harness-storage），全波共用。
+ * `2026-09-27.4`：W3（手段阶梯）新增 mm-32 的三个场景（memory），全波共用。
+ * `2026-09-27.5`：W4（问题 B）新增 mm-33 场景与 mm-19 追加的分片迭代场景（memory），全波共用。
+ * `2026-09-28.1`：W6（文档与终验）新增 mm-19 的压缩×折叠组合场景
+ * （`memory-compaction-fold-integrity`）并改写 mm-25 的 `压缩降级`（X-3/X-4 断言），
+ * 全波共用这一次 bump。
+ * `2026-09-28.2`：W6 首次真跑 Live 暴露的 4 条 memory 场景失败修复
+ * （`压缩分片` / `地址完整性` / `阶梯投影` / `阶梯闸门`）—— 全部为场景前提失效
+ * （载荷与判据推导错误），非产品回归；四次改写共用这一次 bump。
+ * `2026-09-28.3`：同一批修复的**迭代 2**（`压缩分片` 切点改由工具结果承载、绕开 5 MiB 会话
+ * 文件上限；`阶梯投影` 修掉被 `shift()` 抽空的载荷数组与「对投影结果再投影」的重放输入）。
  */
-export const LIVE_DATASET_VERSION = "2026-09-24.5"
+export const LIVE_DATASET_VERSION = "2026-09-28.3"
 
 export function validateDataset(scenes: SceneDef[], contracts: ModuleContract[]): string[] {
   const errors: string[] = []

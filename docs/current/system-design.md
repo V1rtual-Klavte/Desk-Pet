@@ -16,7 +16,7 @@
 | session | 会话仓库访问层、会话列表与消息读模型、切换与恢复 | [session/](../../src/services/session/) |
 | personality / reply | Card、变量与阶段文案；回复元数据解析和效果 | [personality/](../../src/services/personality/)、[reply/](../../src/services/reply/) |
 | tool / safety | 工具注册和路由、Pi 文件工具、MCP；权限与确认 | [tool/](../../src/services/tool/)、[safety/](../../src/services/safety/) |
-| skill | 有界元数据索引与按需正文读取的 Prompt 目录 | [skill/](../../src/services/skill/) |
+| skill | Pi 原生 Skill 清单（目录指纹驱动刷新）与披露块 | [skill/](../../src/services/skill/) |
 | profile / audio | 外观资源、导入导出与系统音效 | [profile/](../../src/services/profile/)、[audio/](../../src/services/audio/) |
 | window / cooldown | 前台窗口监控、主动消息与共享冷却 | [window/](../../src/services/window/)、[cooldown.ts](../../src/services/cooldown.ts) |
 | config / paths | 类型化配置与 Rust 路径桥接 | [config.ts](../../src/services/config.ts)、[paths.ts](../../src/services/paths.ts) |
@@ -25,7 +25,7 @@
 | Rust window / monitor | Windows/macOS 窗口与前台应用监控 | [window/](../../src-tauri/src/window/)、[monitor/](../../src-tauri/src/monitor/) |
 | Live Test | Contract、Scene、隔离宿主与报告 | [测试 README](../../src/services/__tests__/live/README.md) |
 
-图层和景深的共享计算位于 [composables/](../../src/composables/)，展示入口是 [StreamView.vue](../../src/components/StreamView.vue)。[init.ts](../../src/services/init.ts) 负责能力准备和模式资源生命周期。
+图层和景深的共享计算位于 [composables/](../../src/composables/)，展示入口是 [StreamView.vue](../../src/components/StreamView.vue)。[init.ts](../../src/services/init.ts) 负责启动初始化与能力准备（借用启用的 MCP 服务器、核对 Skill 目录指纹）。
 
 ## 主消息链路
 
@@ -33,8 +33,8 @@
 sendMessage → preprocessor / Slash
   → 空闲 slot.admitInput() → driveAdmitted()（先 lane.accept 落盘再驱动，不走上游 lane.prompt）/ 忙碌 lane 持久 inbox（steer / followUp）
   → runPiAgentTurn：捕获会话与运行身份、Card/变量/模型快照（preflight）
-      → 准备当前模式工具与 Skill 元数据
-      → 助手模式按配置执行可选 Plan，取得步骤结果
+      → 准备本轮工具与 Skill 清单（每回合核对目录指纹）
+      → 按 `ai.plan.enabled` 执行可选 Plan（复杂度评估决定是否触发），取得步骤结果
       → recallMemory（默认空）→ Harness Lane：transform_context 投影 → Provider → before_tool 权限与执行
       → 条目提交、逐请求 usage、流式正文事件
       → ReplyGenerator：RUNTIME_DATA、变量与显示文本
@@ -59,6 +59,6 @@ sendMessage → preprocessor / Slash
 
 窗口共用 `bootWindow()`：安装异常拦截 → 初始化路径和配置 → 设置日志级别 → 挂载 Vue。主应用再由 `init.ts` 初始化对应能力。
 
-MCP 不随应用启动连接；助手回合按 owner 借用，最后释放时关闭。Skill 缓存元数据，正文经工具按需读。记忆 LLM 整理不挂启动定时器；Card 阶段文案的加载/缺失生成属于另一条人格准备路径。
+MCP 不随应用启动连接；按运行 owner 借用，最后释放时关闭。Skill 按目录指纹刷新清单，披露块只含名称/说明/位置，正文不进请求。记忆 LLM 整理不挂启动定时器；Card 阶段文案的加载/缺失生成属于另一条人格准备路径。
 
 Profile 与默认资源的位置见[运行时数据](runtime-data.md)，构建/平台/日志诊断见[工程参考](development.md)。不要从旧方案的候选类名推导必须存在同名“全局状态内核”。

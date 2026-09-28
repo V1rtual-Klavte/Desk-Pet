@@ -4,7 +4,7 @@
 // 四级安全（等级词汇由 `SAFETY_ORDER` 定义；判定与放行在 `permission.ts`）:
 //   SAFE    — 路径与命令都不额外提级
 //   NORMAL  — 常规系统操作
-//   DANGER  — 危险命令或敏感路径，助手模式可经确认执行
+//   DANGER  — 危险命令或敏感路径，按安全模式裁决（确认后放行）
 //   NOWAY   — 凭据路径与硬禁止命令，永不放行
 //
 // 会话信任与安全裁决的唯一实现是 `permission.ts`；本文件只保留风险模式与
@@ -26,7 +26,7 @@ export const BASH_DANGEROUS_PATTERNS: RegExp[] = [
   /\bmkfs\b/, /\bdd\s+if=/,
 ]
 
-/** Bash 命令硬禁止模式 — 所有模式永远拦截 */
+/** Bash 命令硬禁止模式 — 永不放行 */
 export const BASH_NOWAY_PATTERNS: RegExp[] = [
   // 递归删除根目录：目标必须是 "/" 本身（后接空白或行尾）才算硬禁止，避免误杀 "rm -rf /home"。
   // 旧写法把 \b 放在 "/" 之后，而 "/" 与行尾之间不存在单词边界，断言恒为假 ——
