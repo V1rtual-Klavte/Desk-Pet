@@ -9,8 +9,8 @@ export const harnessStorageContract: ModuleContract = {
     "src/services/tool/pi/tauri-execution-env.ts",
     "src/services/session/repo.ts",
   ],
-  generatedAt: "2026-09-26",
-  sourceHash: "6a9bb8106b78717ccb12d170fc151c6b46dd35830c2eb966689f37b98e300350",
+  generatedAt: "2026-09-28",
+  sourceHash: "5b9c125fa904153924b2cfd0864cef23e06e62c65a36e54bde3b80e98d7f1028",
   coverage: [
     {
       id: "hs-01",
@@ -23,7 +23,7 @@ export const harnessStorageContract: ModuleContract = {
     {
       id: "hs-02",
       feature: "TauriExecutionEnv FileSystem 补全",
-      description: "readTextFile/writeFile/appendFile/renameFile/createDir/remove/createTempDir/listDir 经真实 Rust 命令完成且不 throw（失败以 Result 返回）；失败按 Rust 结构化错误码归类而不是拿 message 猜：PATH_NOT_FOUND→not_found、SENSITIVE_PATH 与 PATH_ESCAPE→permission_denied、NOT_ABSOLUTE→invalid，未列出的码（如 TOOL/IO，如「目标不是常规文件」）如实保持 unknown；rename 原子替换已存在目标；remove 遵守 recursive/force（force 时缺失算成功，目录需 recursive）；createDir 默认递归；listDir 直接返回绝对 path、size、mtimeMs 与 file/directory/symlink 三值 kind。构造签名是 new TauriExecutionEnv(cwd)（模式参数已删，决策 5）。所有读写都下发 MAX_TOOL_FILE_BYTES = 5 MB 的硬上限（readTextFile/readBinaryFile 的读上限，writeFile/file_append 的单次写上限）—— 它是会话条目写盘的**唯一物理上限**，MCP 的一次性截断删除后大结果全靠它兜底：超限时 Rust 如实报错、**不做静默截断**（§8.8 的裁定。注：正好超限被拒这条边界未由本点的场景断言）",
+      description: "readTextFile/writeFile/appendFile/renameFile/createDir/remove/createTempDir/listDir 经真实 Rust 命令完成且不 throw（失败以 Result 返回）；失败按 Rust 结构化错误码归类而不是拿 message 猜：PATH_NOT_FOUND→not_found、SENSITIVE_PATH 与 PATH_ESCAPE→permission_denied、NOT_ABSOLUTE→invalid，未列出的码（如 TOOL/IO，如「目标不是常规文件」）如实保持 unknown；rename 原子替换已存在目标；remove 遵守 recursive/force（force 时缺失算成功，目录需 recursive）；createDir 默认递归；listDir 直接返回绝对 path、size、mtimeMs 与 file/directory/symlink 三值 kind。构造签名是 new TauriExecutionEnv(cwd)（模式参数已删，决策 5）。所有读写都下发 MAX_TOOL_FILE_BYTES = 5 MB 的硬上限（readTextFile/readBinaryFile 的读上限，writeFile/file_append 的单次写上限）—— 它是会话条目写盘的**唯一物理上限**，MCP 的一次性截断删除后大结果全靠它兜底：超限时 Rust 如实报错、**不做静默截断**（§8.8 的裁定。注：正好超限被拒这条边界未由本点的场景断言）。该常量的唯一定义点就在 `tool/pi/tauri-execution-env.ts`，`engine/pi/session-fold.ts` 的折叠尺寸守卫读同一份，不另存一份",
       why: "JsonlSessionRepo 的原子发布依赖 append+rename，list 依赖完整 FileInfo 字段，能力缺口会让会话无法落盘或无法恢复；错误码是调用方唯一的分类依据，文案随实现漂移",
       depth: "deep",
       scenarios: ["harness-execution-env-filetree"],
@@ -47,7 +47,7 @@ export const harnessStorageContract: ModuleContract = {
     {
       id: "hs-05",
       feature: "帧写入合并与触发时机",
-      description: "帧写入缓冲装饰器（session-frame-buffer.ts）在真实 commit 路径上的五种行为：① 合并——200 条真实帧 append（thinking_delta，单条约 370 B）的底层 appendFile 调用数 ≤ ⌈实收字节/16 KiB⌉+1 且 ≥1（合并率 50× 量级），会话读路径按序读回 200 条内容逐项一致；② 非帧写入永远立即落盘——流式中以 value/set 收尾时先冲干净同路径缓冲再转发，未包装的 env 直读原始文件同刻能看到该 value/set 行与全部缓冲帧（帧行排在其前）；③ 读前 flush——装饰器读同一路径前先落缓冲，且底层调用顺序是 appendFile→readTextFile（顺序证据）；④ 关闭前 flush——会话句柄释放（releasePiSession）经模块级 flushSessionFrameWrites 把残留帧落盘，文件末行即最后一条帧；⑤ 失败留痕——注入落盘失败时 console.error 留痕含 FRAME_FLUSH_FAILURE_MARK、缓冲被丢弃（不重试、失败批不重放）、下一批只带自己那一帧。另有 FIFO 逐字节等价（推入内容与底层实收拼接相等）、体积阈值触发（未达阈值不落盘 / 跨阈值整批落盘一次）与 O-9 旁路（关闭合并后 8 帧 → 8 次 appendFile，同一批字节走合并路径后调用数更少而字节流与直写逐字节相等）。判别一律用生产判别器 isFrameAppendTransaction（解析后要求恰好单写 + kind/op/namespace 三字段），不用子串匹配。**未覆盖**：真实流式回合下的帧数与读回归属 hs-06；应用级强制退出（托盘 app.exit）不在此口径内——「退出前」= 会话句柄关闭前",
+      description: "帧写入缓冲装饰器（session-frame-buffer.ts）在真实 commit 路径上的五种行为：① 合并——200 条真实帧 append（thinking_delta，单条约 370 B）的底层 appendFile 调用数 ≤ ⌈实收字节/16 KiB⌉+1 且 ≥1（合并率 50× 量级），会话读路径按序读回 200 条内容逐项一致；② 非帧写入永远立即落盘——流式中以 value/set 收尾时先冲干净同路径缓冲再转发，未包装的 env 直读原始文件同刻能看到该 value/set 行与全部缓冲帧（帧行排在其前）；③ 读前 flush——装饰器读同一路径前先落缓冲，且底层调用顺序是 appendFile→readTextFile（顺序证据）；④ 关闭前 flush——会话句柄释放（releasePiSession）经模块级 flushSessionFrameWrites 把残留帧落盘，文件末行即最后一条帧；⑤ 失败留痕——注入落盘失败时经 logger（通道 `FrameBuffer`）的 error 级留痕（logger 的 error 无条件走 `console.error`，场景据此捕获）含 FRAME_FLUSH_FAILURE_MARK、缓冲被丢弃（不重试、失败批不重放）、下一批只带自己那一帧。另有 FIFO 逐字节等价（推入内容与底层实收拼接相等）、体积阈值触发（未达阈值不落盘 / 跨阈值整批落盘一次）与 O-9 旁路（关闭合并后 8 帧 → 8 次 appendFile，同一批字节走合并路径后调用数更少而字节流与直写逐字节相等）。判别一律用生产判别器 isFrameAppendTransaction（解析后要求恰好单写 + kind/op/namespace 三字段），不用子串匹配。**未覆盖**：真实流式回合下的帧数与读回归属 hs-06；应用级强制退出（托盘 app.exit）不在此口径内——「退出前」= 会话句柄关闭前",
       why: "帧是每个流式 delta 一行的进度快照，基线实测 124.8 次/秒写盘；合并若漏（不合并/丢帧/顺序错乱）或非帧写入被推迟，轻则磁盘抖动重则正文 entry 持久性受影响；失败若静默（上游 progress.js 把帧写失败吞掉）或重试重放，会既无痕迹又无界增长。本覆盖点是 T-1..T-6 的唯一机制出口，O-9 开关「写反或恒真」也由它的旁路 check 挡住",
       depth: "deep",
       scenarios: ["harness-frame-write-buffer"],
@@ -63,7 +63,7 @@ export const harnessStorageContract: ModuleContract = {
     {
       id: "hs-07",
       feature: "会话日志折叠的正确性（纯删除式回收）",
-      description: "在临时会话根上跑一次**真实折叠**（真仓库提交造条目 + raw append 造帧的夹具），逐条钉住：① 已 delete 的 key 的全部 append/set 行被删；② **保留行必须是原文子串**（折叠只做行级纯删除，不重编号、不重写任何保留行、不重新序列化）；③ 折叠前后 `logStateDigest(replayLogState(...))` **逐字相同**（S-1：摘要只依赖逻辑状态，不含行序/字节数/时间戳）；④ 折叠后文件仍可被上游重放读回；⑤ **幂等**——折叠结果再折叠不再有可回收行。夹具的字节/字符比经离线实跑量测（1.809）后定阈值，不按估算写。折叠触发是**两级闸门**（`fileInfo().size <= minFileBytes` 只看不读；再读一次全文算可回收量，`minReclaimBytes` 与 `minReclaimRatio` 三者字节口径 AND）。**未覆盖**：中断安全与地址交界属 hs-08；上游 `JsonlStorage.open` 的正面确认属 hs-01 —— 本点对 raw 行的上游合法性只有「seq 严格递增 + 重放不抛」两条侧证",
+      description: "在临时会话根上跑一次**真实折叠**（真仓库提交造条目 + raw append 造帧的夹具），逐条钉住：① 已 delete 的 key 的全部 append/set 行被删（`list/append` 与 `value/set`，行号**严格小于**该 key 最后一次对应 `delete` 的行号；delete 行自身与其后的写入一律保留）；② **保留行必须是原文子串**（折叠只做行级纯删除，不重编号、不重写任何保留行、不重新序列化，且整行粒度 —— 一行里只要有一个保留写入就整行原样留下）；③ 折叠前后 `logStateDigest()` **逐字相同**（= `sha256Text(stableSerialize(replayLogState(log)))`；S-1：摘要只依赖逻辑状态，不含行序/字节数/时间戳）；④ 折叠后文件仍可被上游重放读回；⑤ **幂等**——折叠结果再折叠不再有可回收行；⑥ **版本白名单降级（S-6）**——header 不是 v4 + `storageVersion: 1`（`JSONL_STORAGE_VERSION`）时 `skip(\"unknown-format\")`、原文件逐字未动，`storageVersion` 变值与 `v: 3` 两个变体各验一遍（探针文件必须先超闸门 1，否则断言会退化成闸门 1）。夹具的字节/字符比经离线实跑量测（1.809）后定阈值，不按估算写。折叠驱动 `foldSessionFile` 的判定顺序写死（**先判定后动盘**）：闸门 1（`fileInfo().size <= minFileBytes`，只看不读）→ 尺寸守卫（超 `MAX_TOOL_FILE_BYTES` 不读）→ 读一次全文 → 白名单判定 → 闸门 2（`minReclaimBytes` 与 `minReclaimRatio` 字节口径 AND）→ 结果尺寸守卫 → 先算两侧摘要再写。触发挂点（**未由本点场景断言**——本点直接驱动 `foldSession`）：`releasePiSession` 的 `try/catch/finally` **整体之后**（主路径：先 `close`、再冲帧缓冲、最后折叠）与 `open` 前按需兜底（`maybeFoldBeforeOpen`，仅当文件超 `minFileBytes` 才真的折叠，常态只花一次 stat）；两处失败都只留痕，不影响会话功能。**未覆盖**：中断安全与地址交界属 hs-08；上游 `JsonlStorage.open` 的正面确认属 hs-01 —— 本点对 raw 行的上游合法性只有「seq 严格递增 + 重放不抛」两条侧证",
       why: "折叠是这个批次里唯一**重写用户文件**的动作，一旦保留行被重写或逻辑状态被改动，损害是不可逆的（会话历史被静默篡改）。本覆盖点是 S-1..S-4/S-6 的唯一出口：它同时证明「回收真的发生」与「除了该删的行，一个字节都没动」",
       depth: "deep",
       scenarios: ["harness-session-log-fold"],
