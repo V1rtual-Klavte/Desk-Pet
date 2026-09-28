@@ -137,14 +137,15 @@ export const 凭据读取被拦: SceneDef = {
   ],
 }
 
-/**
- * 被拦回合的计时起点。
- *
- * 断言在回合结算之后才跑，所以起点取「上一回合断言完成的时刻」——它把被拦回合的
- * 整轮耗时夹在中间。真正的判据是产物文件：策略在 spawn 之前拒绝时子进程从未产生，
- * 耗时只是一个粗粒度旁证（真实命令要拉起 /bin/sh 并等它退出）。
- */
-let blockedTurnStartedAt = 0
+// 本条场景**没有耗时断言**，这是裁定过的，别再补一条更紧的。
+//
+// 曾经的 1000ms 预算理由是「真实命令要拉起 /bin/sh 并等它退出」，站不住：跑一条
+// `cat > file` 只要几十毫秒，比宿主一整个回合的开销（lane 操作、快照采集、落盘、审计
+// flush、两次 fake 响应）还小 —— 后者在本机实测 1.7–5.6s，方差 3.3 倍，且波动来自回合内
+// 的其它机关而非这条命令。这个预算分辨不出「有没有 spawn」，只会在干净树与负载下随机红。
+//
+// 真正的判据是产物文件与工具状态：策略在 spawn 之前拒绝时子进程从未产生。真正的挂死由
+// contract-checker / runner 的 120s 场景超时兜住，不需要在这里再设一个更紧的预算。
 
 export const 凭据命令被拦: SceneDef = {
   meta: {
@@ -166,7 +167,6 @@ export const 凭据命令被拦: SceneDef = {
       index: 1, description: "正常问候", userText: "你好呀",
       checks: [
         { type: "expectReply", run: async ctx => { if (!ctx.output.reply?.length) throw new Error("reply 为空") } },
-        { type: "markTurnBoundary", run: async () => { blockedTurnStartedAt = Date.now() } },
       ],
     },
     {
@@ -189,8 +189,7 @@ export const 凭据命令被拦: SceneDef = {
           if (await invoke<boolean>("file_exists", { path: leakPath })) {
             throw new Error("泄漏产物存在：bash 子进程被真的拉起来了")
           }
-          const elapsed = Date.now() - blockedTurnStartedAt
-          if (elapsed >= 1000) throw new Error(`被拦回合耗时 ${elapsed}ms，超出 1000ms 预算`)
+          // 不在这里断言耗时 —— 理由见文件顶部「本条场景没有耗时断言」。
         },
       }],
     },
