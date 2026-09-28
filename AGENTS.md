@@ -103,6 +103,7 @@ pnpm run test:release # 类型/编译 + Rust 单测 + 严格 Contract + 三次 t
 ## 运行时不变量
 
 - 会话正文以数据根 `sessions/` 的 JSONL 为真相源（JsonlSessionRepo，commit 事务写入）；
+  写入以追加为主，已回收 key 的写入行可被折叠清理，逻辑状态不变；
   `sessions/index.json` 仅保存可丢弃 UI 状态。
 - 正文条目保存稳定 entryId/seq 与运行关联；用户 ingress 先落盘再投递（lane 持久 inbox）；
   工具调用先落盘再执行，结果落盘后才进入下一次 Provider 请求。
