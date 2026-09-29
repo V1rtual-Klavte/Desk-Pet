@@ -69,7 +69,7 @@ macOS 的窗口监控需要在「系统设置 → 隐私与安全性 → 辅助�
 
 类型与编译检查不代表运行时通过。Live Test 在独立 Tauri WebView 与临时数据根中执行真实前端服务、Rust IPC 与完整的会话、工具、持久化链路，Provider 可以是真实服务或确定性 fake；发布门禁执行严格契约校验与三次重复试验，跳过与超时的场景不得报通过。命令细节与场景规范见 [测试 README](test/README.md)。
 
-[CI](.github/workflows/ci.yml) 在 macOS 与 Windows 上执行编译检查与 Rust 单测，不执行 Live Test。
+[CI](.github/workflows/ci.yml) 在 macOS 与 Windows 上执行编译检查、Rust 单测与 L2 / L3 快层（经重试入口，附测试纪律扫描与 FLAKY 棘轮），不执行 L4 Live Test。
 
 ## 数据与配置
 

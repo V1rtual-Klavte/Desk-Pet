@@ -10,7 +10,7 @@
 // `test/integration/**`，放在别处的测试不会被执行。
 import { mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, writeFileSync } from "node:fs"
 import { homedir, tmpdir } from "node:os"
-import { join } from "node:path"
+import { basename as pathBasename, join } from "node:path"
 import { beforeEach, describe, expect, it } from "vitest"
 
 import { UnsupportedInNodeError, RUST_ONLY_COMMANDS } from "../../host/unsupported"
@@ -461,6 +461,8 @@ describe("node-path / node-event 适配", () => {
     expect(getTestDataRoot()).toBe(root)
     expect(root.startsWith(tmpdir())).toBe(true)
     rmSync(root, { recursive: true, force: true })
-    expect(readdirSync(tmpdir()).includes(root.split("/").pop() as string)).toBe(false)
+    // 用 node:path 的 basename 而不是 split("/")：Windows 的分隔符是反斜杠，
+    // split 取不到末段会让断言恒真（假绿），而不是失败。
+    expect(readdirSync(tmpdir()).includes(pathBasename(root))).toBe(false)
   })
 })

@@ -2,6 +2,15 @@ import { defineConfig } from "vitest/config";
 import { resolve } from "node:path";
 import { yamlPlugin } from "./vite-yaml-plugin";
 
+/**
+ * 重试入口（scripts/run-vitest-with-retry.mjs）需要**机器可读**的逐用例结果才能
+ * 比对两次运行、定位波动用例，因此经这个环境变量注入 json reporter 的输出路径。
+ * 为什么不在入口脚本里用 CLI `--reporter=json`：CLI 会**整体替换** reporters 清单，
+ * 把 caseId 收集器（即 L2/L3 各层的契约门禁）一起挤掉；在这里按需追加，reporter
+ * 清单只有一份定义，普通运行（不设置该变量）的行为一个字都不变。
+ */
+const retryJsonOutput = process.env.DESKPET_VITEST_JSON_OUT;
+
 export default defineConfig({
   // 快层测试会 import `@/services/config` 等产品链路模块，它们直接 import `.yaml`。
   // 缺这个插件时 YAML 解析失败，表现是「一 import 配置就红」。
@@ -27,7 +36,11 @@ export default defineConfig({
     // （vitest 5 的 NonProjectOptions，project 配置不接受它）。收集器按
     // `testCase.project.name` 分桶，两个 project（unit / integration）各写各的
     // `test/reports/caseids-<project>.json`。
-    reporters: ["default", resolve(__dirname, "test/host/caseid-reporter.ts")],
+    reporters: [
+      "default",
+      resolve(__dirname, "test/host/caseid-reporter.ts"),
+      ...(retryJsonOutput ? [["json", { outputFile: retryJsonOutput }]] : []),
+    ],
     projects: [
       {
         extends: true,

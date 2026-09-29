@@ -46,6 +46,11 @@ pnpm test
 pnpm run test:unit
 pnpm run test:integration
 
+# 波动重试入口（CI 门禁用的就是它）：首跑失败重试一次，重试才通过的标 ⚠ FLAKY；
+# 本地也可以追加 vitest 过滤参数，如 node scripts/run-vitest-with-retry.mjs unit test/unit/variable-pool
+node scripts/run-vitest-with-retry.mjs unit
+node scripts/run-vitest-with-retry.mjs integration
+
 # 快层过滤：追加 vitest 参数（文件路径，或 -t 按测试名）
 pnpm run test:unit -- test/unit/variable-pool
 pnpm run test:unit -- -t "拒绝未注册变量"
@@ -101,6 +106,15 @@ L2 / L3 可并行、不占端口；**L4 不能并行跑**（占用同一 Vite/Ta
 可判项由 `scripts/check-test-rules.mjs` 扫描 `test/` 实施，命中即失败。它是守卫，因此**守卫自身要有测试**（照 hermes 的做法：断言「访问真实网络／真实 Provider 会抛错」这类守卫真的生效，而不是假定生效）。
 
 规则落位：本文件持完整规则表；`SKILL.md` 写生成测试时的硬约束与禁令；`AGENTS.md` 的测试段落指三层入口与扫描器。生成时的自查清单（D1–D10 缺陷分类法与本仓已确认的例子）在 [SKILL.md](./SKILL.md)。
+
+## 波动与假绿（FLAKY）
+
+纪律 8「跳过与超时不得计为通过」在快层由入口脚本机械保证，不靠自觉：
+
+- **重试一次**：CI 门禁经 `scripts/run-vitest-with-retry.mjs unit|integration` 运行。首跑失败会原样重试一次：重试仍失败 = 真失败（退出码 1）；首跑以非零退出却没有可归因的失败用例（进程级 / 收集器错误）同样判失败 —— 这类失败没有名字可进棘轮，静默放行等于让它下次以同样方式消失。
+- **重试才通过的测试标 `⚠ FLAKY`**，并**累计**写进 `test/reports/flaky.json`（`test/reports/` 已 gitignore）。恢复的唯一判据是重试运行里 `status === "passed"`：**被跳过（skipped / pending / todo）或被超时判失败的用例不算恢复**，重试逻辑不会把任何非通过洗成通过。
+- **只缩不放的棘轮**：`test/flaky-baseline.json`（提交进仓库）是已接受清单；`node scripts/check-flaky-ratchet.mjs` 在 CI 里拦截「观测到基线之外的新 FLAKY」。新增项要么把波动修掉，要么在下一次提交里显式写进基线（把 `flaky.json` 里的条目抄进基线对象即可，值保留累计次数）—— 不允许「标了 FLAKY 就没人管」。基线条目在不再复现后可随下一次提交回收（脚本会提示，不判失败）。
+- 重试只包 L2 / L3：L4 的重复试验与预期失败走它自己的 `--repeat` 与 `expectFailure` 机制。
 
 ## 报告在哪、怎么看
 

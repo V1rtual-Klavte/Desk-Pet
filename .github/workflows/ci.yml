@@ -2,6 +2,8 @@ name: CI
 
 # 目标平台是 Windows + macOS，两端各跑一次原生 `cargo check` 与 `cargo test --lib`：
 # 本机（macOS）永远看不到 `#[cfg(target_os = "windows")]` 分支，Windows job 才是唯一可靠验证器。
+# 快层 L2 / L3（vitest · node）与测试纪律扫描、FLAKY 棘轮同样双端门禁：L2/L3 不触网、
+# 不用真实 Provider，夹具一律走 `os.tmpdir()` 与 node:path，不依赖某一端的 shell 或分隔符。
 on:
   push:
   pull_request:
@@ -45,3 +47,16 @@ jobs:
       # = cargo test --manifest-path src-tauri/Cargo.toml --lib
       # 单测与 check 一样按平台原生编译运行；`#[cfg(unix)]`/`#[cfg(windows)]` 分支只在对应 job 生效。
       - run: pnpm run test:rust
+
+      # = vitest run --project unit（scripts/run-vitest-with-retry.mjs 包一层：失败重试一次、
+      # 重试才通过的标 ⚠ FLAKY；跳过与超时永远不算通过 —— 契约「测试纪律」规则 8）
+      - run: node scripts/run-vitest-with-retry.mjs unit
+
+      # = vitest run --project integration：L3 走临时数据根 + fake Provider，不触网
+      - run: node scripts/run-vitest-with-retry.mjs integration
+
+      # 测试纪律扫描（契约规则 3 / 4 / 5 / 6 / 7），命中即失败
+      - run: node scripts/check-test-rules.mjs
+
+      # FLAKY 棘轮：只缩不放，观测到基线（test/flaky-baseline.json）之外的新 FLAKY 即失败
+      - run: node scripts/check-flaky-ratchet.mjs
