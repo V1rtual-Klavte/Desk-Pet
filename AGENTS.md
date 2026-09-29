@@ -59,6 +59,13 @@ pnpm run test:release # 类型/编译 + Rust 单测 + L2/L3 + 严格 Contract + 
 - 新测试按 [测试 README](test/README.md) 的判定顺序选层（需要真 Rust 边界 → L4；真 JSONL 落盘与
   agent loop → L3；否则 L2）；可判测试纪律由 `node scripts/check-test-rules.mjs` 扫描 `test/`
   实施，命中即失败，新测试须零命中。
+- **写断言前必须对照 [测试 SKILL](test/SKILL.md) 的 D1–D10 自查。判据只有一句：把产品实现改坏
+  （条件反转 / 常数替换 / 分支删除），这条断言还会红吗？不会红就不合格。**
+  扫描器只能判「有没有 `expect`」这类形状，**判不了「这个 `expect` 能不能区分对错实现」** ——
+  那一层靠这一步。恒真子句、拿被测函数的输出当期望值、断言测试自己构造的值，都属于此类。
+- **L2 / L3 进 CI 双端门禁；L4 不进 CI**（要起 Tauri、占端口、macOS 锁屏会挂起页面 JS），
+  只能靠本地 `pnpm run test:e2e` 与发布门禁 `test:release` 覆盖。**L4 场景没有自动门禁，
+  改完必须手工跑一次**，否则会烂掉而无人察觉。
 - 先完成授权范围内的实现与 Contract/Scene，再按影响范围集中验证；修复失败后重验。
 - 源码或行为契约变化须按 [测试 SKILL](test/SKILL.md) 重新 analyze → generate；不能只改 sourceHash 过门禁。
 - 类型/编译不能代替运行验证。非 unit 场景需实际 Provider 或 fake Provider 响应；

@@ -26,7 +26,10 @@
 层的硬边界：
 
 - L2 / L3 一律朴素 vitest（`describe` / `it` / `expect`）；`SceneDef` DSL 只留在 L4 —— 只有 L4 需要在非 Node 宿主里声明式地枚举并执行场景。
-- L2 不得 import 带 IPC 的模块（`@/services/engine/pi`、`@/services/session`、`@/services/tool`）；L3 不得使用真实 Provider。两条都是可判规则（规则 6 / 7），由扫描器执行。
+- **L2 不得 import `@/services/engine/pi`、`@/services/session`、`@/services/tool`**（规则 6，可判，扫描器执行）。
+  **这条的理由是「L2 不依赖 pi runtime / 工具系统 / 会话存储」，不是「L2 里 IPC 跑不了」** —— Node 适配层（`test/host/node-ipc.ts`）本来就能等价复现 31 条 IPC 命令。判层的实操口径是「这份测试需要真 agent loop / 真 JSONL 落盘吗」，需要就归 L3。
+  清单常量在 `scripts/check-test-rules.mjs` 的 `IPC_MODULES`。**往清单里加一条 = 把受影响的 L2 测试改判 L3**，改前先确认它们确实需要该模块，而不是为了消一个扫描告警。
+- **L3 不得使用真实 Provider**（规则 7，可判，扫描器执行）。
 - L4 的 `entry: "unit"` 是分层前留在宿主里的化石：新的纯逻辑测试一律写 L2，不再新增 unit 场景；该枚举值只剩少数撞上 Rust 专属命令 / WebView 能力、无法迁出的存量场景在用（见「Scene 规范（L4）」的表），最后一个消费者消失后再删除。
 - L2 / L3 的 **caseId 锚在 vitest 测试全名末尾的 `[caseId]` 标记上**（`test/host/caseids.ts` 的 `extractCaseId`），例如 `it("拒绝未注册变量 [variable-pool-unregistered]", …)`。标记形状与 L4 的 caseId 校验同一字母表；没有标记时返回 `undefined`，不从文件名或描述猜。
 - Node 适配层（`test/host/node-ipc.ts`）遇到 Rust 专属命令抛 `UnsupportedInNodeError`，不返回 null 冒充成功；撞上它的场景留在 L4。适配层即自动分层器 —— 归属由跑起来的结果决定，不靠猜。
