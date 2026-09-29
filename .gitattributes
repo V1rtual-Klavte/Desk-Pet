@@ -1,0 +1,13 @@
+# 统一 LF 检出。
+#
+# GitHub Actions 的 Windows runner 默认 core.autocrlf=true，检出时会把 LF 转成 CRLF。
+# 带 shebang（`#!...`）的脚本一旦变成 CRLF，vitest 解析它会直接 SyntaxError ——
+# 2026-09-29 CI 实测：`test/unit/check-test-rules.test.ts` 在 windows-latest 上
+# 报 `SyntaxError: Invalid or unexpected token`，本机（macOS，LF）完全看不到。
+#
+# 本仓有 5 个带 shebang 的脚本（scripts/ 下 4 个 + 一个统计工具），任何一个被测试
+# import 都会踩同一个坑，所以按仓库级策略统一，而不是逐个去掉 shebang。
+#
+# `text=auto` 让 git 自行识别文本与二进制；二进制文件不受 eol 影响。
+# 新增需要 CRLF 的文件时，在这里为它单独加一行例外。
+* text=auto eol=lf
