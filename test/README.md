@@ -2,7 +2,7 @@
 
 `test/` 是仓库唯一的测试根：三层测试、契约、宿主设施、场景与报告都在这一棵树下。L4 端到端（E2E）在独立 Tauri WebView 中执行真实前端服务、Rust IPC、临时数据根和 Agent/Tool 链路；测试数据不会写入正常用户数据根。L2 / L3 是不启动 Tauri 的快层（vitest · node）。
 
-- 分层目标、波次与诚实边界：[测试分层重构契约](../docs/plans/active/测试分层重构契约.md)
+- 分层目标、波次与诚实边界：[测试分层重构契约](../docs/history/implementation/测试分层重构契约-2026-09-29基线.md)（已归档；未完成项见[未完成工作与已知缺口](../docs/plans/active/未完成工作与已知缺口.md)）
 - 当前验证边界与未验证项：[测试边界](../docs/current/testing.md)
 - 代码代理的 Contract 分析、生成与覆盖审查流程：[SKILL.md](./SKILL.md)
 
@@ -96,7 +96,7 @@ pnpm run test:mutation
 
 - **当前只有 2 个目标文件**（`src/services/personality/variable-pool.ts`、`src/services/context/budget.ts`）。首轮观测为 **5/7 = 71.4%** —— 这是这两个文件上的数字，**不代表快层整体命中率**；扩大目标面后才更新。
 - 结果先作为**观测**记录，**不设阈值**，不进每 PR 门禁；稳定后再按只缩不放的棘轮设阈值。
-- 口径与已知收窄（语法解析不过的注入不计入分母、算子只在代码区匹配等）见[测试分层重构契约](../docs/plans/active/测试分层重构契约.md) 的「首轮观测」一节。
+- 口径与已知收窄（语法解析不过的注入不计入分母、算子只在代码区匹配等）见[测试分层重构契约](../docs/history/implementation/测试分层重构契约-2026-09-29基线.md) 的「首轮观测」一节。
 
 L2 / L3 可并行、不占端口；**L4 不能并行跑**（占用同一 Vite/Tauri 端口），也不要与 `pnpm tauri dev` 的开发实例同时运行。
 

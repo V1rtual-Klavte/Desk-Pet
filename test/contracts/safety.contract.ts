@@ -4,7 +4,7 @@ export const safetyContract: ModuleContract = {
   module: "safety",
   sourceFiles: ["src/services/engine/pi/runtime.ts", "src/services/engine/pi/harness-slot.ts", "src/services/safety/checker.ts", "src/services/safety/permission.ts", "src/services/safety/confirm.ts", "src/services/tool/types.ts", "src/services/tool/policy.ts", "src/services/tool/local/pi-tools.ts", "src/services/tool/local-extra/clipboard.ts", "src/services/tool/local-extra/agent-tool.ts", "src/services/tool/local-extra/app.ts", "src/services/tool/mcp/client.ts", "src/services/session/manager.ts", "src-tauri/src/paths.rs", "src-tauri/src/commands/bash_policy.rs", "src-tauri/src/commands/tool_exec.rs"],
   generatedAt: "2026-09-28",
-  sourceHash: "42af398d41162517acdb7338de620d6f33e343ffda6356e43fcdc0c06ff0b6dc",
+  sourceHash: "4d41f081961c6d5a30e94415d1f2da6ed29110ff23df9b883f36492eb9a9d00a",
   coverage: [
     { id: "sf-01", feature: "SAFE 级别放行", description: "safetyLevel=SAFE 的工具经生产裁决入口 evaluateToolPermission（标准决策层即 allow）直接放行，不生成确认请求；同一分支现在也接住 NORMAL，会话信任与安全裁决只有 permission.ts 一份实现", why: "安全等级体系基础，且放行结论必须来自唯一裁决点", layer: "integration", depth: "shallow", scenarios: ["safety-safe"] },
     { id: "sf-02", feature: "统一裁决表（SAFE / NORMAL 一律放行）", description: "标准决策是安全等级到裁决结果的唯一映射：NOWAY → deny（最前置，先于安全模式与工具侧策略）；SAFE 与 NORMAL → allow（与安全模式无关，也不看命令是否在白名单里 —— 白名单只决定 NORMAL/DANGER 的归属，是免确认通道而不是拒绝依据）；DANGER → 交给回合冻结的安全模式（let_me_tk → ask、just_do_it → allow、其余含缺省 → ask）。工具与运行模式不再参与裁决：pet/assistant 双模式、lightweightPolicy、`ToolDef.mode`/`ToolContext.mode` 已全链删除，而旧助手下 NORMAL 没有任何 allow 路径、一律 ask —— 这条收紧的消失正是 sf-21 必须逐工具重定级的原因", why: "常规工具需要安全评估，且裁决表必须唯一：NORMAL 的归属翻转后若仍留旧描述，重定级与确认通道的场景会照着已不存在的分支写断言", layer: "integration", depth: "shallow", scenarios: ["safety-normal"] },
@@ -31,7 +31,9 @@ export const safetyContract: ModuleContract = {
     { id: "sf-20", feature: "子代理授权的会话与代际绑定", description: "计划步骤子代理内的 allow_session 授权按父会话与父槽代际入账：运行内确认请求的身份与工具上下文读到的父会话/父代际逐字段一致，同参第二次命中 grant 不再确认；回合结束后 grant 随 invalidatePermissionScope(会话, 代际) 释放，同参同身份重评估回到 ask；切会话后同参 grant 同样不得命中，必须重新确认", why: "授权不绑定会话与代际会让用户在不知情的新会话里被放行，或让旧代际的授权在运行结束后继续生效", layer: "e2e", depth: "deep", scenarios: ["safety-subagent-grant-scope"] },
     { id: "sf-21", feature: "逐工具重定级", description: "决策 6 的「统一裁决表」与「逐工具重定级」是同一枚硬币：NORMAL 从「助手模式下必 ask」变成「一律 allow」之后，必须同时把隐私与远端能力的声明等级提上去 —— clipboard_read 与 agent_spawn 由 NORMAL 提为 DANGER，MCP 工具（发现侧 client.ts）声明为 DANGER，因此三者在默认安全模式下走 ask（just_do_it 下 allow）而不是被 NORMAL 静默放行；pi-bash 的白名单命令保持 NORMAL 并因此变成免确认（白名单只是免确认通道），app_open 与 clipboard_write 本来就是 DANGER、本次不变。注：本点钉的是注册表里读到的声明等级（可直接断言），实际确认动作由 sf-03 与 /skill、子代理的准入路径覆盖；本点由 L3 测试 `test/integration/safety/工具重定级.test.ts` 覆盖（caseId `safety-regraded-tools`，W2 从 L4 场景迁入）", why: "「统一后 NORMAL 一律放行」本身是放宽，提级是它的唯一补偿；漏掉任一项都会让剪贴板读取、子代理或远端 MCP 调用从「每次都问」变成「从不问」", layer: "integration", depth: "shallow", scenarios: ["safety-regraded-tools"] },
   ],
-  // 20 = 每个覆盖点至少一条已归属场景（该模块 20 条必覆盖行为）；13 = 必须由 deep 场景证明的必覆盖行为数
-  // （sf-03/09/10/11/12/13/14/15/16/17/18/19/20）。
-  rules: { minScenarios: 20, minDeepScenarios: 13, requireBoundary: true, requireErrorPath: true },
+  // W0–W7 把 16 个场景迁出 L4 后按 L4 侧当前值重标定：6 = 本契约 e2e 层有效场景数
+  // （sf-03 `safety-confirm-denied`、sf-16/17/18 的 `safety-credential-*` 三条、
+  // sf-19 `memory-permission-freeze`、sf-20 `safety-subagent-grant-scope`）、6 = 其中 deep 数
+  // （门槛=当前值，一个都不许掉）；跨层完整性由 checkLayerCoverage 负责。
+  rules: { minScenarios: 6, minDeepScenarios: 6, requireBoundary: true, requireErrorPath: true },
 }

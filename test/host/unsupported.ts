@@ -11,7 +11,7 @@
  *
  * 判据是「复现它需要 Rust 侧的安全基线或桌面能力」，不是「暂时懒得写」：
  * 把这些命令做成空实现，场景会在假适配下「假装通过」，那比直接失败更糟。
- * 目录见 docs/plans/active/测试分层重构契约.md「宿主分层」的不可复现表。
+ * 目录见 docs/history/implementation/测试分层重构契约-2026-09-29基线.md「宿主分层」的不可复现表。
  */
 export const RUST_ONLY_COMMANDS = [
   // tool_exec.rs / bash_policy.rs：层 1 硬基线 + 系统路径保护 + 凭据拦截，调用方不可关闭

@@ -32,7 +32,7 @@ export const memoryContract: ModuleContract = {
     "src/services/debug.ts",
   ],
   generatedAt: "2026-09-28",
-  sourceHash: "eff31fcacf4b3147c2a144b8976772ebc4bf8ef5e2451ef20e077c83e432ad50",
+  sourceHash: "1e2d6c343d8c4245360b341d54166967b547fcad5eee9ddf2c2d7cd708e21e9c",
   coverage: [
     { id: "mm-01", feature: "Memory 添加条目", description: "MemoryService.append() 创建记忆", why: "记忆系统基础 CRUD", layer: "unit", depth: "shallow", scenarios: ["memory-append"] },
     { id: "mm-02", feature: "Memory 搜索", description: "MemoryService.search(query, limit) 按内容搜索", why: "LLM 需检索相关记忆", layer: "unit", depth: "shallow", scenarios: ["memory-search"] },
@@ -70,5 +70,7 @@ export const memoryContract: ModuleContract = {
     // mm-32 原把「阶梯/闸门 + 保护区」合成一点（跨层混搭）；按层拆开：保护区侧为 mm-36（L2），阶梯与闸门侧留在 mm-32（L4）。
     { id: "mm-36", feature: "工具结果阶梯的保护区", description: "**保护区**（LADDER_PROTECTION_TURNS = 3，轮口径取上游 findTurnStartIndex：user/bashExecution 开轮，toolResult/assistant/custom/compactionSummary 不开轮，不足 N 轮全保护）**只挡级 2 与级 3，不挡级 1**——级 1 是无损缩短，保护区内照做", why: "没有保护区的清空会把用户刚说的话也清掉；轮口径必须与上游 findTurnStartIndex 同源，否则保护边界整体错位", layer: "unit", depth: "deep", scenarios: ["memory-ladder-protection-zone"] },
   ],
-  rules: { minScenarios: 6, minDeepScenarios: 2, requireBoundary: true, requireErrorPath: true },
+  // W0–W7 把 20 个场景迁出 L4 后按 L4 侧当前值重标定：16 = 本契约 e2e 层有效场景数、
+  // 16 = 其中 deep 数（门槛=当前值，一个都不许掉）；跨层完整性由 checkLayerCoverage 负责。
+  rules: { minScenarios: 16, minDeepScenarios: 16, requireBoundary: true, requireErrorPath: true },
 }

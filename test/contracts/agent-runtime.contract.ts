@@ -24,7 +24,7 @@ export const agentRuntimeContract: ModuleContract = {
     "src/services/session/store.ts",
   ],
   generatedAt: "2026-09-28",
-  sourceHash: "f82147f7307a9c54d268c2aeb45f6daf6dce44a89b81fdd0ea092fde47e386ec",
+  sourceHash: "eba0e61687ffc63e61bc6ee8b1db03b61bcb58a750ed3bd088956de2613a03f5",
   coverage: [
     {
       id: "ar-01",
@@ -226,7 +226,11 @@ export const agentRuntimeContract: ModuleContract = {
       scenarios: ["runtime-skill-admission"],
     },
   ],
-  rules: { minScenarios: 6, minDeepScenarios: 6, requireBoundary: true, requireErrorPath: false },
+  // W0–W7 把 2 个场景（ar-18 / ar-22 的 memory-retry-policy-sync、
+  // runtime-compaction-suspended-settles）迁出 L4 后按 L4 侧当前值重标定：25 = 本契约
+  // e2e 层有效场景数、24 = 其中 deep 数（门槛=当前值，一个都不许掉）；
+  // 跨层完整性（迁出点有没有被声明层真的跑着）由 checkLayerCoverage 负责。
+  rules: { minScenarios: 25, minDeepScenarios: 24, requireBoundary: true, requireErrorPath: false },
 }
 
 export default agentRuntimeContract

@@ -41,7 +41,17 @@ function staleReason(contract: ModuleContract, attestation?: HashAttestation): s
   return undefined
 }
 
-/** 检查单个 contract */
+/**
+ * 检查单个 contract。
+ *
+ * **分工：本函数是 L4（e2e）路径的校验器，只管 `layer === "e2e"` 的 coverage point。**
+ * `scenes` 是 L4 场景集的视图，因此 `layer` 为 `unit` / `integration` 的覆盖点在这里
+ * **不核对、也不计入任何计数**：它们的 caseId 已在 W0–W7 各波迁到 L2/L3，不在场景集里，
+ * 拿场景集去查只会得到假的 `GAP:REFERENCE`（L4 因此一个场景都跑不起来）。
+ * 那些点的跨层完整性由快层路径的 `checkLayerCoverage` 负责（声明层的集合里有没有该
+ * caseId、有没有同层无人认领的孤儿、有没有两层同时收集）；两个校验器的并集 = 全部
+ * 覆盖点，没有点被两边同时漏掉 —— 改这里之前先确认那条链还在。
+ */
 export function checkContract(
   contract: ModuleContract,
   scenes: ContractSceneView[],
@@ -57,8 +67,10 @@ export function checkContract(
   const staleMessage = staleReason(contract, attestation)
   const stale = staleMessage !== undefined
 
-  // 2. MISSING: 每个 coverage point 必须指向已发现、同模块且同 point 的场景。
+  // 2. MISSING: 本层的每个 coverage point 必须指向已发现、同模块且同 point 的场景。
+  // 非 e2e 的点直接跳过（见函数注释）：它们的场景在快层，由 checkLayerCoverage 核对。
   for (const point of contract.coverage) {
+    if (point.layer !== "e2e") continue
     if (point.scenarios.length === 0) {
       missing.push(`${point.id}: ${point.feature}`)
       continue
@@ -75,7 +87,9 @@ export function checkContract(
     }
   }
 
-  // 3. COUNT: only real, correctly linked scenes count toward the contract.
+  // 3. COUNT: 只数「已发现 + 归属正确」的 L4 场景（= e2e 层覆盖点带来的那批，
+  // 上面的 skip 之后 validScenarioIds 里不会再有别的层）。门槛是「不许再少」：
+  // 各契约的 minScenarios 已按 W0–W7 迁移后的当前值重标定。
   const validScenes = [...validScenarioIds]
     .map(caseId => scenesByCaseId.get(caseId))
     .filter((scene): scene is ContractSceneView => Boolean(scene))
@@ -85,12 +99,14 @@ export function checkContract(
   }
 
   // 4. DEPTH: scene metadata, not a Contract string, is the source of truth.
+  // 同上：口径是 L4 场景集里的 deep 数，快层的 deep 不在这里数。
   const deepCount = validScenes.filter(scene => scene.meta.depth === "deep").length
   if (deepCount < contract.rules.minDeepScenarios) {
     issues.push(`[GAP:DEPTH] deep 场景数 ${deepCount} < ${contract.rules.minDeepScenarios}`)
   }
 
   // 5. BOUNDARY: actual scenario tags are machine-checkable; feature prose is not.
+  // 标签口径同样落在 L4 场景集上（快层的 boundary/error 标签不在这里判定）。
   if (contract.rules.requireBoundary) {
     const hasBoundary = validScenes.some(scene => scene.meta.tags?.includes("boundary"))
     if (!hasBoundary) {

@@ -25,8 +25,11 @@ export const plannerContract: ModuleContract = {
     { id: "pl-11", feature: "逐步确认的真前置门", description: "用户以 `--plan` 强制触发进入计划段（生产入口的 force 路径，`complexityEval=keyword` 下同样生效）且确认给出的 mode=stepByStep 传进计划段：2 步计划每步开工前各问一次步骤门（恰好 2 次 kind=step_gate 的 continue 裁决），门没有把计划卡住 —— 每步都执行、终态与终态事件都是 done、进度 total 是计划步数；门选择中止的 declined 归宿不在本场景（宿主通道对确认与门共用一套 planPolicy，给不出「确认自动 + 门中止」）", why: "逐步门此前没有任何运行时证据：它是否真的成为每步的前置门、确认的 mode 是否被采纳，只能在运行时接线里看", layer: "e2e", depth: "deep", scenarios: ["plan-step-gate-each-step"] },
   ],
   rules: {
-    minScenarios: 11,
-    minDeepScenarios: 6,
+    // W0–W7 把 8 个场景迁出 L4 后按 L4 侧当前值重标定：3 = 本契约 e2e 层有效场景数
+    // （pl-09/10/11 各一条）、3 = 其中 deep 数（门槛=当前值，一个都不许掉）；
+    // 跨层完整性由 checkLayerCoverage 负责。
+    minScenarios: 3,
+    minDeepScenarios: 3,
     requireBoundary: true,
     requireErrorPath: true,
   },

@@ -86,8 +86,12 @@ export const harnessStorageContract: ModuleContract = {
     },
   ],
   rules: {
-    minScenarios: 9,
-    minDeepScenarios: 9,
+    // W0–W7 把 7 个场景迁出 L4 后按 L4 侧当前值重标定：2 = 本契约 e2e 层有效场景数
+    // （hs-04 `harness-branch-tip-bypass`、hs-06 `harness-frame-throttle-live`），
+    // 2 = 其中 deep 数（门槛=当前值，一个都不许掉）；迁出的 7 个（hs-01/02/03/05/07/08
+    // 的 7 个 caseId）由 L2/L3 承担，跨层完整性由 checkLayerCoverage 负责。
+    minScenarios: 2,
+    minDeepScenarios: 2,
     requireBoundary: true,
     requireErrorPath: true,
   },

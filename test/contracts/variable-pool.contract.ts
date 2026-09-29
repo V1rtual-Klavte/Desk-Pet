@@ -28,5 +28,10 @@ export const variablePoolContract: ModuleContract = {
     { id: "vp-20", feature: "daily 游标跨重启", description: "daily 重置游标随 variables 段落盘：destroy → 重新 init（透传磁盘游标）后同一天不重置、跨日重置一次并把新游标落盘；游标缺失时视为陈旧重置一次；不存在的 Card 由 loadCardVars 返回 null 交给调用方重建", why: "游标只写不读会让 daily 变量每次重启都重新判定一次，跨天的语义整个失效", layer: "unit", depth: "deep", scenarios: ["variable-pool-daily-cursor-restart"] },
     { id: "vp-21", feature: "session 游标按持久化键判定", description: "session 重置只按持久化的 sessionKey 判定：键为 null 不做判定（旧数据缺会话游标时同样什么都不做）、同一键（含跨重启）幂等、换键重置一次并把新键落盘；缺游标但键非 null 按新会话重置一次", why: "没有持久化键时凭空认定「新会话」会让变量被反复清空，键不落盘则重启后判定失去依据", layer: "unit", depth: "deep", scenarios: ["variable-pool-session-cursor"] },
   ],
-  rules: { minScenarios: 15, minDeepScenarios: 9, requireBoundary: true, requireErrorPath: true },
+  // W0–W7 把本契约全部 21 个场景迁出 L4 后重标定：L4 侧已无任何 layer=e2e 的覆盖点，
+  // 有效场景数与 deep 数都是 0，门槛因此是 0（门槛=当前值，不是「放宽」）。
+  // 两个 0 表示本契约在 L4 路径上已无可核对内容 —— 是否继续留在 L4 校验里（并因此
+  // 需要处理下面两条只在 L4 场景集上判定的 tag 规则）由收口方决定。
+  // 跨层完整性由 checkLayerCoverage 负责（21 个 caseId 的声明层都是 unit/integration）。
+  rules: { minScenarios: 0, minDeepScenarios: 0, requireBoundary: true, requireErrorPath: true },
 }
