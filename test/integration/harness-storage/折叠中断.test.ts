@@ -37,7 +37,7 @@
 
 import { mkdtempSync, rmSync } from "node:fs"
 import { tmpdir } from "node:os"
-import { join } from "node:path"
+import { dirname, join } from "node:path"
 import { BACKGROUND_CONTEXT, err, FileError } from "@earendil-works/pi-agent-core"
 import type { Context, JsonlSessionMetadata, Result, Session } from "@earendil-works/pi-agent-core"
 import { pendingAssistantFrames } from "@earendil-works/pi-agent-core/harness/session"
@@ -203,7 +203,10 @@ async function buildFixture(): Promise<FoldCrashFixture> {
     plain,
     root,
     path,
-    sessionDir: path.slice(0, path.lastIndexOf("/")),
+    // 用 node:path 的 dirname，**不按 "/" 硬切**：`metadata.path` 是产品给的路径，
+    // Windows 上它是反斜杠分隔的，`lastIndexOf("/")` 会返回 -1 并切出一个不存在的目录。
+    // （2026-09-29 CI windows-latest 实测：`listDir(sessionDir): not_found`。）
+    sessionDir: dirname(path),
     metadata: metadata!,
     pristine,
     entryIds,
