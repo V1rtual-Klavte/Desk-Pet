@@ -44,3 +44,5 @@ data/
 
 # 测试报告：单份可达 11 MB，只按份数上限不封顶磁盘占用
 test/reports/
+# E2E 临时数据根：跑的时候承载整个 data_root，启动时自动清理上次残留
+test/.tmp/

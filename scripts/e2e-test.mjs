@@ -5,7 +5,6 @@
 import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync } from "node:fs"
 import { createHash } from "node:crypto"
 import { execFileSync, spawn } from "node:child_process"
-import { homedir } from "node:os"
 import { extname, join, relative } from "node:path"
 
 const args = process.argv.slice(2)
@@ -165,7 +164,29 @@ function computeSeedHash() {
 const seedHash = computeSeedHash()
 if (seedHash) env.DESKPET_E2E_SEED_HASH = seedHash
 
-const dataRoot = mkdtempSync(join(homedir(), ".deskpet-e2e-"))
+/**
+ * 临时数据根落在 `test/.tmp/` 下，**不放仓库外**。
+ *
+ * 契约规定「测试只有一个根目录 `test/`：不把任何一层的产物放到仓库外」—— 临时数据根
+ * 也是这一层的产物（它承载整个 data_root：sessions/ logs/ personality/ …）。
+ * 放在仓库内还有个实际好处：跑挂了（被 kill、被窗口挂起）留下的残留在 `git status`
+ * 与目录里看得见，不会像以前那样默默堆在家目录 —— 2026-09-29 实测：窗口最小化冻住后
+ * 杀进程，`~/.deskpet-e2e-nGiEOq` 就留在那儿没人知道。
+ */
+const TEMP_ROOT_DIR = join(process.cwd(), "test", ".tmp")
+mkdirSync(TEMP_ROOT_DIR, { recursive: true })
+/**
+ * L4 不能并行跑（占同一个 Vite/Tauri 端口），所以启动时已存在的 `e2e-*` 一律是上次的残留。
+ * 直接清掉：异常退出（SIGKILL、进程被挂起后杀掉）不会执行 finally，靠正常路径清理不住。
+ */
+function pruneStaleTempRoots() {
+  for (const name of readdirSync(TEMP_ROOT_DIR)) {
+    if (name.startsWith("e2e-")) rmSync(join(TEMP_ROOT_DIR, name), { recursive: true, force: true })
+  }
+}
+pruneStaleTempRoots()
+
+const dataRoot = mkdtempSync(join(TEMP_ROOT_DIR, "e2e-"))
 const resultPath = join(dataRoot, "e2e-result.txt")
 env.DESKPET_E2E_DATA_ROOT = dataRoot
 env.DESKPET_E2E_COMMIT = currentCommit()
