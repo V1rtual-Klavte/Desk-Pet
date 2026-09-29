@@ -1,4 +1,4 @@
-import type { SceneDef } from "../../../host/types"
+import type { SceneDef } from "../../../e2e/types"
 import { Agent } from "@earendil-works/pi-agent-core"
 import type { AgentTool, BeforeToolCallContext, BeforeToolCallResult, StreamFn } from "@earendil-works/pi-agent-core"
 import { contentText, fauxAssistantMessage, fauxProvider, fauxText, fauxToolCall } from "@earendil-works/pi-ai"

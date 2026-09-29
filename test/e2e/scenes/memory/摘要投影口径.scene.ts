@@ -11,7 +11,7 @@ import { defineTool, register, unregister, SESSION_TRANSCRIPT_TOOL, TOOL_POLICY_
 import type { ToolDef } from "@/services/tool"
 import { installFakeProvider, fakeText, fakeToolCall, lastRequestText } from "../../../host/fake-provider"
 import { compactionEntries, sessionEntries } from "../../../host/session-entries"
-import type { SceneDef } from "../../../host/types"
+import type { SceneDef } from "../../../e2e/types"
 
 // ── 场景口径：摘要素材的 L0 投影必须尊重 resultProjection ──
 //

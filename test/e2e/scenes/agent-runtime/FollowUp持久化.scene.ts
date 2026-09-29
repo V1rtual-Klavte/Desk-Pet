@@ -4,7 +4,7 @@ import { getActiveSessionId } from "@/services/session"
 import { registerBlockingTool } from "../../../host/blocking-tool"
 import { fakeText, fakeToolCall, installFakeProvider } from "../../../host/fake-provider"
 import { assistantTexts, sessionEntries, sessionMessages, userTexts } from "../../../host/session-entries"
-import type { SceneDef } from "../../../host/types"
+import type { SceneDef } from "../../../e2e/types"
 
 const FOLLOW_UP_TEXT = "这是自然结束后的后续任务。"
 const STEER_PROBE_TEXT = "工具执行期的补充输入。"

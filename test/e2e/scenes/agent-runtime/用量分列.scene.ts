@@ -8,7 +8,7 @@ import type { PurposeUsage } from "@/services/debug"
 import { listAll } from "@/services/tool"
 import { planConfig, setOverride } from "@/services/config"
 import { installFakeProvider, fakeText, lastRequestText } from "../../../host/fake-provider"
-import type { SceneDef } from "../../../host/types"
+import type { SceneDef } from "../../../e2e/types"
 
 // 一次性调用（压缩/规划/记忆整理/阶段文案）与主回合共用同一份分列统计：
 // 主回合逐请求 usage 记 main，一次性调用经 completePiText 按自己的 purpose 记账。

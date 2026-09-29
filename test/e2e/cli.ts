@@ -10,7 +10,7 @@ export interface CLIOptions {
   suite?: "regression" | "capability" | "safety" | "stress"
   repeat: number
   strictContracts: boolean
-  report: "terminal" | "json" | "markdown"
+  report: "terminal" | "json" | "markdown" | "html"
 }
 
 export function parseArgs(args: string[]): CLIOptions {
@@ -38,7 +38,7 @@ export function parseArgs(args: string[]): CLIOptions {
       opts.strictContracts = true
     } else if (a === "--report" && args[i + 1]) {
       const fmt = args[++i]
-      if (fmt === "json" || fmt === "markdown" || fmt === "terminal") {
+      if (fmt === "json" || fmt === "markdown" || fmt === "terminal" || fmt === "html") {
         opts.report = fmt
       }
     }

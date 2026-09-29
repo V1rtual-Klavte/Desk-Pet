@@ -5,7 +5,7 @@ import { initChat } from "@/services/agent/runner"
 import { getActiveSessionId } from "@/services/session/store"
 import { fakeText, installFakeProvider, lastRequestText } from "../../../host/fake-provider"
 import { assistantTexts, countTexts, sessionEntries, sessionMessages } from "../../../host/session-entries"
-import type { SceneDef } from "../../../host/types"
+import type { SceneDef } from "../../../e2e/types"
 
 // ── 场景口径：Provider 返回未预期的延迟响应（deferred handle）时按失败结算，且必须把该操作结算掉 ──
 //

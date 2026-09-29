@@ -1,4 +1,4 @@
-import type { SceneDef } from "../../../host/types"
+import type { SceneDef } from "../../../e2e/types"
 import { fakeText, fakeToolCall, installFakeProvider } from "../../../host/fake-provider"
 import { requestPermissionConfirm } from "@/services/safety"
 import { toolsConfig } from "@/services/config"

@@ -6,7 +6,7 @@ import { defineTool, permitSnapshot, register, TOOL_POLICY_VERSION, unregister }
 import type { PermitSnapshot } from "@/services/tool"
 import { fakeText, fakeToolCall, installFakeProvider } from "../../../host/fake-provider"
 import { assistantTexts, sessionEntries, sessionMessages } from "../../../host/session-entries"
-import type { SceneDef } from "../../../host/types"
+import type { SceneDef } from "../../../e2e/types"
 
 /**
  * 取消域级联的回归网（FIX-62④ / PLAN-02）：停止发生在工具执行中时，

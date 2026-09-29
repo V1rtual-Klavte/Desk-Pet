@@ -7,7 +7,7 @@ import {
   createSessionRepoOwnershipConformance,
 } from "@earendil-works/pi-agent-core/harness/session/testing"
 import type { JsonlSessionMetadata, SessionRepo } from "@earendil-works/pi-agent-core"
-import type { SceneDef } from "../../../host/types"
+import type { SceneDef } from "../../../e2e/types"
 import { createPiSessionRepo } from "@/services/engine/pi"
 import type { PiSessionRepo } from "@/services/engine/pi"
 import { runtimePath } from "@/services/paths"

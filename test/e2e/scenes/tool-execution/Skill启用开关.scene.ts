@@ -1,4 +1,4 @@
-import type { SceneDef } from "../../../host/types"
+import type { SceneDef } from "../../../e2e/types"
 import { invoke } from "@tauri-apps/api/core"
 import { getSkillsPromptBlock, deleteSkill, listEnabledSkills, listSkills, setSkillEnabled, syncSkillCatalog, upsertSkill } from "@/services/skill"
 import { preProcess } from "@/services/engine"

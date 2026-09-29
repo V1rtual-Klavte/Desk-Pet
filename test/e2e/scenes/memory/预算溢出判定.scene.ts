@@ -3,7 +3,7 @@ import { isRecoverableLength } from "@earendil-works/pi-ai"
 import { ContextBudgetError } from "@/services/context"
 import { classifyTurnFailure, createHarnessModels, turnFailureReply } from "@/services/engine/pi"
 import type { TurnFailure } from "@/services/engine/pi"
-import type { SceneDef } from "../../../host/types"
+import type { SceneDef } from "../../../e2e/types"
 
 // ── 判定口径：硬预算拒绝必须以「上游认得出」的响应上报 ──
 //

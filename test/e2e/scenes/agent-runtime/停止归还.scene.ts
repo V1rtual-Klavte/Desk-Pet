@@ -4,7 +4,7 @@ import { getActiveSessionId } from "@/services/session"
 import { registerBlockingTool } from "../../../host/blocking-tool"
 import { fakeText, fakeToolCall, installFakeProvider } from "../../../host/fake-provider"
 import { assistantTexts, sessionMessages, userTexts } from "../../../host/session-entries"
-import type { SceneDef } from "../../../host/types"
+import type { SceneDef } from "../../../e2e/types"
 
 const STOPPED_TEXT = "停止前的补充，别丢。"
 const RESUME_TEXT = "继续刚才的任务。"

@@ -3,7 +3,7 @@ import { aiConfig, setOverride } from "@/services/config"
 import { resolvePiTurnModel } from "@/services/engine/pi"
 import { formatError } from "@/services/error"
 import { installFakeProvider } from "../../../host/fake-provider"
-import type { SceneDef } from "../../../host/types"
+import type { SceneDef } from "../../../e2e/types"
 
 // 低于下限的窗口没有可用的压缩切点：设置页保存被拒（复用同一个 contextWindowError），
 // 运行期在模型解析这一唯一入口报错 —— 这里验证运行期路径，避免"保存能过、回合静默跑坏"。

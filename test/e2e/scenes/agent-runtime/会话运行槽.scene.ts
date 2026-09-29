@@ -2,7 +2,7 @@ import { harnessSlots } from "@/services/engine/pi"
 import { initChat } from "@/services/agent/runner"
 import { getActiveSessionId } from "@/services/session"
 import { fakeText, installFakeProvider } from "../../../host/fake-provider"
-import type { SceneDef } from "../../../host/types"
+import type { SceneDef } from "../../../e2e/types"
 
 let provider: ReturnType<typeof installFakeProvider> | undefined
 

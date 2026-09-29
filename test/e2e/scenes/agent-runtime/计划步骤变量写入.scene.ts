@@ -44,7 +44,7 @@ import { getActiveSessionId } from "@/services/session"
 import { readPiSessionEntriesOnce } from "@/services/session/repo"
 import { registerBlockingTool } from "../../../host/blocking-tool"
 import { fakeText, fakeToolCall, installFakeProvider } from "../../../host/fake-provider"
-import type { AssertCheck, SceneDef } from "../../../host/types"
+import type { AssertCheck, SceneDef } from "../../../e2e/types"
 
 const TOOL_NAME = "live_plan_write_tool"
 const USER_TEXT = "--plan 帮我分析一下配置文件"

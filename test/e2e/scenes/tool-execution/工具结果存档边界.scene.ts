@@ -1,4 +1,4 @@
-import type { SceneDef } from "../../../host/types"
+import type { SceneDef } from "../../../e2e/types"
 import { fakeText, fakeToolCall, installFakeProvider } from "../../../host/fake-provider"
 import { register, defineTool, createTranscriptTool, executeToolDefinition, transcriptPageTokens, TOOL_POLICY_VERSION } from "@/services/tool"
 import { isUniqueAddressRef, sliceByTokenBudget } from "@/services/context"

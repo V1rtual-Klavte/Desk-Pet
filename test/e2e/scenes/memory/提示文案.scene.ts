@@ -3,7 +3,7 @@ import { createTurnNoteMessage } from "@/services/engine/pi"
 import { isTransientInputMessage, TURN_NOTE_CUSTOM_TYPE } from "@/services/engine/runtime"
 import { formatPoolForPrompt } from "@/services/personality/variable-pool"
 import type { VariablePool } from "@/services/personality/variable-pool"
-import type { SceneDef } from "../../../host/types"
+import type { SceneDef } from "../../../e2e/types"
 
 /** 最小变量池：这里校验的是拼接口径，池正文内容不参与断言。 */
 const POOL: VariablePool = { system: {}, card: {}, interaction: {} }

@@ -1,4 +1,4 @@
-import type { SceneDef } from "../../../host/types"
+import type { SceneDef } from "../../../e2e/types"
 import { MAX_PROVIDER_RESPONSE_BYTES, capProviderResponseBody, createProviderFetchGuard, validateProviderUrl } from "@/services/engine/pi"
 
 export const Provider网络边界: SceneDef = {

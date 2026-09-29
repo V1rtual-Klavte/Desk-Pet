@@ -13,7 +13,7 @@ import { defineTool, register, unregister, SESSION_TRANSCRIPT_TOOL, TOOL_POLICY_
 import type { ToolDef, ToolHandler } from "@/services/tool"
 import { installFakeProvider, fakeText, fakeToolCall, lastRequestText } from "../../../host/fake-provider"
 import { compactionEntries, sessionEntries } from "../../../host/session-entries"
-import type { SceneDef } from "../../../host/types"
+import type { SceneDef } from "../../../e2e/types"
 
 // ── 场景口径：L0 地址完整性（有地址给真回读提示、无地址如实标记、短结果也带地址、两路投影同函数） ──
 //

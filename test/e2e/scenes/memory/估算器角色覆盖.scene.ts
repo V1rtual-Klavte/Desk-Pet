@@ -4,7 +4,7 @@ import { initChat } from "@/services/agent/runner"
 import { installFakeProvider, fakeText } from "../../../host/fake-provider"
 import { captureRuntimeTrace } from "../../../host/trace-observer"
 import { sessionEntries } from "../../../host/session-entries"
-import type { SceneDef } from "../../../host/types"
+import type { SceneDef } from "../../../e2e/types"
 
 // ── 场景口径：估算器覆盖全部消息角色 + 内容投影唯一 + tokenDrift 对账 ──
 //

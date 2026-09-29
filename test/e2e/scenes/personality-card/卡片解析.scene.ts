@@ -1,4 +1,4 @@
-import type { SceneDef } from "../../../host/types"
+import type { SceneDef } from "../../../e2e/types"
 import { importUserCard } from "@/services/personality/loader"
 import { getActiveCard, getActivePersonalityId, getSystemPrompt, switchPersonality } from "@/services/personality/registry"
 import { destroyPool, getPoolSnapshot, initVariablePool } from "@/services/personality/variable-pool"

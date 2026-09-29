@@ -6,7 +6,7 @@ import type { ToolDef } from "@/services/tool"
 import { registerBlockingTool } from "../../../host/blocking-tool"
 import { confirmRecords } from "../../../host/confirm-channel"
 import { fakeText, fakeToolCall, installFakeProvider } from "../../../host/fake-provider"
-import type { SceneDef } from "../../../host/types"
+import type { SceneDef } from "../../../e2e/types"
 
 // ── 场景口径：权限策略按回合冻结 ──
 //

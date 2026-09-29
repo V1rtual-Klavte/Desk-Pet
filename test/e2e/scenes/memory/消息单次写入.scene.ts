@@ -1,7 +1,7 @@
 import { initChat } from "@/services/agent/runner"
 import { installFakeProvider, fakeText } from "../../../host/fake-provider"
 import { assistantTexts, countTexts, sessionMessages, userTexts } from "../../../host/session-entries"
-import type { SceneDef } from "../../../host/types"
+import type { SceneDef } from "../../../e2e/types"
 
 // 会话消息只落一条 pi 条目：一句用户正文、一条助手回复各自恰好一次，
 // 后续回合不得把历史消息重复追加（重复会表现为会话被重放两次）。

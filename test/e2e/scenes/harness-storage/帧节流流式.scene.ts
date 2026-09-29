@@ -44,7 +44,7 @@ import { acquirePiSession, getActiveSessionId, getPiSessionRepo } from "@/servic
 import { runtimePath } from "@/services/paths"
 import { TauriExecutionEnv } from "@/services/tool/pi/tauri-execution-env"
 import { fakeText, installFakeProvider } from "../../../host/fake-provider"
-import type { SceneDef } from "../../../host/types"
+import type { SceneDef } from "../../../e2e/types"
 
 // ── 判别锚点（从上游公开 API 派生，不复制实现里的字面量）──
 

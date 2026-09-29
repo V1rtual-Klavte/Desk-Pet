@@ -1,4 +1,4 @@
-import type { SceneDef } from "../../../host/types"
+import type { SceneDef } from "../../../e2e/types"
 import type { PermissionPolicySnapshot } from "@/services/safety"
 import { evaluateToolPermission } from "@/services/safety"
 import { getTool, getToolByName } from "@/services/tool"

@@ -1,4 +1,4 @@
-import type { SceneDef } from "../../../host/types"
+import type { SceneDef } from "../../../e2e/types"
 import { executeToolDefinition, getToolByName } from "@/services/tool"
 import { getLastWindowChange } from "@/services/window"
 import { getOverride, setOverride } from "@/services/config"

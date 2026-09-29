@@ -3,7 +3,7 @@ import { aiConfig } from "@/services/config"
 import { installFakeProvider } from "../../../host/fake-provider"
 import { resolvePiTurnModel } from "@/services/engine/pi"
 import { formatError } from "@/services/error"
-import type { SceneDef } from "../../../host/types"
+import type { SceneDef } from "../../../e2e/types"
 
 /** 原设置页文案里的那句话：两个调用点共用下限，但归因不能共用。 */
 const CONFIG_FLAVOR = "上下文窗口配置最低"

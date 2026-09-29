@@ -66,7 +66,7 @@ import type { FoldOutcome, PiSessionRepo } from "@/services/engine/pi"
 import { PI_LANE } from "@/services/session"
 import { runtimePath } from "@/services/paths"
 import { TauriExecutionEnv } from "@/services/tool/pi/tauri-execution-env"
-import type { SceneDef } from "../../../host/types"
+import type { SceneDef } from "../../../e2e/types"
 
 const textEncoder = new TextEncoder()
 

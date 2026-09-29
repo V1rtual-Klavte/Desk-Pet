@@ -13,7 +13,7 @@ import {
 } from "@/services/context"
 import type { ToolResultLadderEntry, ToolResultLevelMeasure } from "@/services/context"
 import { createLogger } from "@/services/logger"
-import type { SceneDef } from "../../../host/types"
+import type { SceneDef } from "../../../e2e/types"
 
 // ==========================================
 // O-2 阶梯保护区：轮口径、口径 B 的判定侧与 N 的校准读数（unit，不跑模型）

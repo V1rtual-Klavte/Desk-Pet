@@ -6,7 +6,7 @@ import { deleteSkill, getSkillsPromptBlock, upsertSkill } from "@/services/skill
 import { registerBlockingTool } from "../../../host/blocking-tool"
 import { fakeText, fakeToolCall, installFakeProvider } from "../../../host/fake-provider"
 import { assistantTexts, sessionMessages } from "../../../host/session-entries"
-import type { SceneDef } from "../../../host/types"
+import type { SceneDef } from "../../../e2e/types"
 
 /**
  * 恢复路径重新准备能力（TOOL-13 / FIX-61 的代理）。

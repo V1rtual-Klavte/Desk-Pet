@@ -1,4 +1,4 @@
-import type { SceneDef } from "../../../host/types"
+import type { SceneDef } from "../../../e2e/types"
 import { installFakeProvider, fakeText } from "../../../host/fake-provider"
 import { emptyMemoryProvider, getMemoryProvider, installMemoryProvider, recallMemory } from "@/services/agent/memory"
 import { createUserProfileProjection, estimateContextTokens, memoryProjectionBlocks, profileProjectionBlock } from "@/services/context"

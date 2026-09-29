@@ -44,7 +44,7 @@ import { PI_LANE } from "@/services/session/repo"
 import { SESSION_TRANSCRIPT_TOOL } from "@/services/tool"
 import { runtimePath } from "@/services/paths"
 import { TauriExecutionEnv } from "@/services/tool/pi/tauri-execution-env"
-import type { SceneDef } from "../../../host/types"
+import type { SceneDef } from "../../../e2e/types"
 
 type JsonlSession = Session<JsonlSessionMetadata>
 

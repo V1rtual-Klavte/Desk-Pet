@@ -2,7 +2,7 @@
 // Contract Checker — hash 验证 + 完整性检查
 // ==========================================
 
-import type { ModuleContract, ContractCheckResult, SceneDef } from "./types"
+import type { ModuleContract, ContractCheckResult } from "./types"
 
 /**
  * Node 启动预检留下的证明：模块 → 预检通过时的 sourceHash。
@@ -10,6 +10,25 @@ import type { ModuleContract, ContractCheckResult, SceneDef } from "./types"
  * 缺失或不一致都表示这次运行没有经过预检，不能声称源码版本已验证。
  */
 export type HashAttestation = Record<string, string>
+
+/**
+ * 契约校验读到的场景视图：只取 `meta` 里的身份与标记字段（caseId / module /
+ * contractId / depth / tags / entry），`SceneDef` 结构上满足它。
+ *
+ * 校验器只声明自己需要的形状，不去 import 场景 DSL（`../e2e/types.ts`）——
+ * 契约校验要被两层的场景来源共用，不能被 DSL 绑架。
+ */
+export interface ContractSceneView {
+  meta: {
+    caseId: string
+    module: string
+    contractId: string
+    depth: "shallow" | "deep"
+    /** 与场景 DSL 的 `SceneEntry` 同词表；这里只区分是不是 "unit"。 */
+    entry?: string
+    tags?: string[]
+  }
+}
 
 function staleReason(contract: ModuleContract, attestation?: HashAttestation): string | undefined {
   const attested = attestation?.[contract.module]
@@ -25,7 +44,7 @@ function staleReason(contract: ModuleContract, attestation?: HashAttestation): s
 /** 检查单个 contract */
 export function checkContract(
   contract: ModuleContract,
-  scenes: SceneDef[],
+  scenes: ContractSceneView[],
   attestation?: HashAttestation,
 ): ContractCheckResult {
   const issues: string[] = []
@@ -59,7 +78,7 @@ export function checkContract(
   // 3. COUNT: only real, correctly linked scenes count toward the contract.
   const validScenes = [...validScenarioIds]
     .map(caseId => scenesByCaseId.get(caseId))
-    .filter((scene): scene is SceneDef => Boolean(scene))
+    .filter((scene): scene is ContractSceneView => Boolean(scene))
   const totalScenes = validScenes.length
   if (totalScenes < contract.rules.minScenarios) {
     issues.push(`[GAP:COUNT] 场景数 ${totalScenes} < ${contract.rules.minScenarios}`)
@@ -114,7 +133,7 @@ export function checkContract(
 /** 浏览器内运行的真实 Tauri runner：合同通过 Vite import.meta.glob 注入。 */
 export function checkAllContracts(
   contracts: ModuleContract[],
-  scenes: SceneDef[],
+  scenes: ContractSceneView[],
   attestation?: HashAttestation,
 ): ContractCheckResult[] {
   return contracts.map(contract => checkContract(contract, scenes, attestation))

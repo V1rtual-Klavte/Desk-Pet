@@ -1,4 +1,4 @@
-import type { SceneDef } from "../../../host/types"
+import type { SceneDef } from "../../../e2e/types"
 import { initChat } from "@/services/agent/runner"
 import { getActiveCard, getActivePersonalityId } from "@/services/personality/registry"
 

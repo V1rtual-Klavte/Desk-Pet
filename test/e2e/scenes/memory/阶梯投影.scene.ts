@@ -15,7 +15,7 @@ import {
 import type { ToolDef, ToolHandler } from "@/services/tool"
 import { fakeText, fakeToolCall, installFakeProvider, lastRequestText } from "../../../host/fake-provider"
 import { compactionEntries, sessionEntries } from "../../../host/session-entries"
-import type { SceneDef } from "../../../host/types"
+import type { SceneDef } from "../../../e2e/types"
 
 // ── 场景口径：工具结果阶梯在主请求视图里的「形态」 ──
 //

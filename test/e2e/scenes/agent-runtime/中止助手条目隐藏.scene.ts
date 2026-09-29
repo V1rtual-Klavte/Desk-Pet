@@ -12,7 +12,7 @@ import { chatHistory } from "@/services/session/store"
 import { registerBlockingTool } from "../../../host/blocking-tool"
 import { fakeText, fakeToolCall } from "../../../host/fake-provider"
 import { assistantTexts, entryMessageText, sessionEntries, sessionMessages, userTexts } from "../../../host/session-entries"
-import type { SceneDef } from "../../../host/types"
+import type { SceneDef } from "../../../e2e/types"
 
 /**
  * 回合读模型显示语义（STATE-03 / FIX-48）：中止/出错的助手条目不进聊天视图；系统提示落盘可回读。

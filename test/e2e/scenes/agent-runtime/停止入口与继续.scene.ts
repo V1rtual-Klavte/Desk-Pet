@@ -4,7 +4,7 @@ import { getActiveSessionId } from "@/services/session"
 import { registerBlockingTool } from "../../../host/blocking-tool"
 import { fakeText, fakeToolCall, installFakeProvider } from "../../../host/fake-provider"
 import { assistantTexts, sessionMessages, userTexts } from "../../../host/session-entries"
-import type { SceneDef } from "../../../host/types"
+import type { SceneDef } from "../../../e2e/types"
 
 const PAUSED_TEXT = "停止前留下的补充，别丢。"
 const TOOL_NAME = "live_p1_stop_entry_wait"

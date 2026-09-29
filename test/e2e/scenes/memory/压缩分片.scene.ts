@@ -15,7 +15,7 @@ import { TOOL_POLICY_VERSION, defineTool, getToolByName, register, unregister } 
 import type { ToolDef } from "@/services/tool"
 import { fakeText, fakeToolCall, installFakeProvider, lastRequestText } from "../../../host/fake-provider"
 import { compactionEntries, sessionEntries } from "../../../host/session-entries"
-import type { SceneDef } from "../../../host/types"
+import type { SceneDef } from "../../../e2e/types"
 
 // ==========================================
 // B-1 / B-2 / 问题 B 的生产场景：超硬上限的摘要素材**不 decline**，而是分片产出摘要并一次性提交

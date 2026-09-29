@@ -1,4 +1,4 @@
-import type { SceneDef } from "../../../host/types"
+import type { SceneDef } from "../../../e2e/types"
 import { importUserCard } from "@/services/personality/loader"
 import { COMMAND_KEYS, FALLBACK_STAGES, stageSourceHash, validateStagesForCard } from "@/services/personality/stages-cache"
 

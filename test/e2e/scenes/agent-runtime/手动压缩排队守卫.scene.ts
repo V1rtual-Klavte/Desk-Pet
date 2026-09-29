@@ -6,7 +6,7 @@ import { defineTool, register, unregister, TOOL_POLICY_VERSION } from "@/service
 import { getCommandReply } from "@/services/personality"
 import { fakeText, fakeToolCall, installFakeProvider } from "../../../host/fake-provider"
 import { assistantTexts, compactionEntries, countTexts, sessionEntries, sessionMessages, userTexts } from "../../../host/session-entries"
-import type { SceneDef } from "../../../host/types"
+import type { SceneDef } from "../../../e2e/types"
 
 /**
  * 手动压缩的准入与续跑收口（HN-01 / FIX-71 / §7 #29）。

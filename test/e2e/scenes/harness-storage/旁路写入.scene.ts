@@ -3,7 +3,7 @@ import { initChat, sendMessage } from "@/services/agent/runner"
 import { acquirePiSession, appendPiSessionCustomEntry, getActiveSessionId, PI_LANE } from "@/services/session"
 import { registerBlockingTool } from "../../../host/blocking-tool"
 import { fakeText, fakeToolCall, installFakeProvider } from "../../../host/fake-provider"
-import type { SceneDef } from "../../../host/types"
+import type { SceneDef } from "../../../e2e/types"
 
 /** 旁路写入用的自定义条目类型（宿主证据条目，不进模型上下文）。 */
 const BYPASS_CUSTOM_TYPE = "deskpet.bypass_probe"

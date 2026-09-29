@@ -4,7 +4,7 @@ import { getActiveSessionId } from "@/services/session"
 import { registerBlockingTool } from "../../../host/blocking-tool"
 import { fakeText, fakeToolCall, installFakeProvider } from "../../../host/fake-provider"
 import { assistantTexts, sessionMessages, userTexts } from "../../../host/session-entries"
-import type { SceneDef } from "../../../host/types"
+import type { SceneDef } from "../../../e2e/types"
 
 const QUEUED_TEXT = "/queue-this 排队处理。"
 const TOOL_NAME = "live_p4_nextrun_wait"

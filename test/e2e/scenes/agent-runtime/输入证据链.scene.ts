@@ -4,7 +4,7 @@ import { getActiveSessionId } from "@/services/session"
 import { registerBlockingTool } from "../../../host/blocking-tool"
 import { fakeText, fakeToolCall, installFakeProvider } from "../../../host/fake-provider"
 import { sessionEntries, sessionMessages, userTexts } from "../../../host/session-entries"
-import type { SceneDef } from "../../../host/types"
+import type { SceneDef } from "../../../e2e/types"
 
 const STEER_TEXT = "把方向改成先检查配置。"
 const REQUEST_ID = "runtime-delivery-evidence"

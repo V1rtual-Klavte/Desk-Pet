@@ -2,7 +2,7 @@ import { initChat } from "@/services/agent/runner"
 import { getActiveSessionId } from "@/services/session"
 import { installFakeProvider, fakeText } from "../../../host/fake-provider"
 import { assistantTexts, sessionEntries, sessionMessages, userTexts } from "../../../host/session-entries"
-import type { SceneDef } from "../../../host/types"
+import type { SceneDef } from "../../../e2e/types"
 
 const USER_TEXT = "你好，简单和我打个招呼。"
 

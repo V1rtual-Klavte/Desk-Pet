@@ -1,5 +1,5 @@
 import type { Entry } from "@earendil-works/pi-agent-core"
-import type { SceneDef } from "../../../host/types"
+import type { SceneDef } from "../../../e2e/types"
 import { initChat, sendMessage } from "@/services/agent/runner"
 import { getActiveSessionId } from "@/services/session"
 import { runPiAgentTurn } from "@/services/engine/pi"

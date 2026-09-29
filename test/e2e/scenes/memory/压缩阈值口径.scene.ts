@@ -1,6 +1,6 @@
 import { MIN_CONTEXT_WINDOW, contextBudget, estimateContextTokens, toHarnessEstimateTokens } from "@/services/context"
 import { compactionSettingsFor } from "@/services/engine/pi"
-import type { SceneDef } from "../../../host/types"
+import type { SceneDef } from "../../../e2e/types"
 
 // 上游 shouldCompact 比的是它的 estimateContextTokens：会话里存在有效 provider usage 时
 // 前缀按真实 usage 计，只有尾随消息按 chars/4 估。本仓估算同样以真实 token 为目标口径，

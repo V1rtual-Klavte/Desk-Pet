@@ -4,7 +4,7 @@ import { initChat, sendMessage } from "@/services/agent/runner"
 import { getActiveSessionId } from "@/services/session"
 import { fakeText, installFakeProvider } from "../../../host/fake-provider"
 import { sessionEntries } from "../../../host/session-entries"
-import type { SceneDef } from "../../../host/types"
+import type { SceneDef } from "../../../e2e/types"
 
 const IDLE_TEXT = "空闲路径的一句话"
 const REQUEST_ID = "runtime-idle-input-identity"

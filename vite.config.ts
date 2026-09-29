@@ -1,24 +1,7 @@
 import vue from "@vitejs/plugin-vue";
 import { resolve } from "node:path";
-import { readFileSync } from "node:fs";
-import { load } from "js-yaml";
-import { defineConfig, type Plugin } from "vite";
-
-function yamlPlugin(): Plugin {
-  return {
-    name: "vite-plugin-yaml",
-    transform(_code: string, id: string) {
-      if (!id.endsWith(".yaml") && !id.endsWith(".yml")) return;
-
-      const raw = readFileSync(id, "utf-8");
-      const parsed = load(raw) as any;
-      return {
-        code: `export default ${JSON.stringify(parsed)}`,
-        map: null,
-      };
-    },
-  };
-}
+import { defineConfig } from "vite";
+import { yamlPlugin } from "./vite-yaml-plugin";
 
 export default defineConfig({
   plugins: [vue(), yamlPlugin()],

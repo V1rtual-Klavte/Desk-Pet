@@ -7,7 +7,7 @@ import { aiConfig } from "@/services/config"
 import { compactionSettingsFor } from "@/services/engine/pi"
 import { installFakeProvider, fakeText, lastRequestText } from "../../../host/fake-provider"
 import { compactionEntries, sessionEntries, sessionMessages } from "../../../host/session-entries"
-import type { SceneDef } from "../../../host/types"
+import type { SceneDef } from "../../../e2e/types"
 
 // ── 场景前置：载荷按当前窗口预算推导 ──
 //

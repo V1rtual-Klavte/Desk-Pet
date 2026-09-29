@@ -1,4 +1,4 @@
-import type { SceneDef } from "../../../host/types"
+import type { SceneDef } from "../../../e2e/types"
 import { computeMcpEnabled, enabledMcpServerNames, getOverride, setOverride, toolsConfig } from "@/services/config"
 import { listAll } from "@/services/tool"
 import { formatError } from "@/services/error"

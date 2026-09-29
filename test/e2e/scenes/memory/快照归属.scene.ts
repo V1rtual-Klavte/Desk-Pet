@@ -6,7 +6,7 @@ import { aiConfig } from "@/services/config"
 import { getEffectiveSafetyMode } from "@/services/debug"
 import { installFakeProvider, fakeText, lastRequestText } from "../../../host/fake-provider"
 import { compactionEntries, sessionEntries } from "../../../host/session-entries"
-import type { SceneDef } from "../../../host/types"
+import type { SceneDef } from "../../../e2e/types"
 
 // ── 场景口径：快照能回答「这是哪次请求、带什么参数、第几代槽」，一次性请求同样进快照体系 ──
 //

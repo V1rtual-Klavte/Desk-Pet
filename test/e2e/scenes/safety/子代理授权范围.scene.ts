@@ -47,7 +47,7 @@ import { defineTool, register, unregister, TOOL_POLICY_VERSION } from "@/service
 import type { ToolDef } from "@/services/tool"
 import { confirmRecords } from "../../../host/confirm-channel"
 import { fakeText, fakeToolCall, installFakeProvider } from "../../../host/fake-provider"
-import type { AssertCheck, AssertContext, SceneDef } from "../../../host/types"
+import type { AssertCheck, AssertContext, SceneDef } from "../../../e2e/types"
 
 const TOOL_ID = "live-sf20-scope-tool"
 const TOOL_NAME = "live_sf20_scope_tool"

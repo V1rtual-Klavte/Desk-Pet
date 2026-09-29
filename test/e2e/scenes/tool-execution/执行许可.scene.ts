@@ -1,4 +1,4 @@
-import type { SceneDef } from "../../../host/types"
+import type { SceneDef } from "../../../e2e/types"
 import type { PermitReclaim, ToolDef, ToolPolicy } from "@/services/tool"
 import { defineTool, register, unregister, executeToolDefinition, permitSnapshot, TOOL_POLICY_VERSION } from "@/services/tool"
 import { loopConfig, MAX_PARALLEL_TOOLS, MIN_PARALLEL_TOOLS } from "@/services/config"

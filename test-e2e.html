@@ -1,5 +1,103 @@
 <!doctype html>
 <html lang="zh">
-  <head><meta charset="UTF-8" /><title>Desk-Pet E2E</title></head>
-  <body><pre id="status">E2E starting…</pre><script type="module" src="/test/e2e/e2e-main.ts"></script></body>
+  <head>
+    <meta charset="UTF-8" />
+    <title>Desk-Pet E2E</title>
+    <style>
+      /* L4 宿主窗口的观测面样式：只在本页生效，不进产品样式表。 */
+      :root { color-scheme: dark; }
+      * { box-sizing: border-box; }
+      body {
+        margin: 0;
+        background: #14161a;
+        color: #d7dae0;
+        font: 13px/1.5 "SF Mono", Menlo, Consolas, "PingFang SC", monospace;
+      }
+      #e2e-progress { padding-bottom: 12px; }
+
+      .e2e-summary {
+        position: sticky;
+        top: 0;
+        z-index: 1;
+        display: flex;
+        align-items: center;
+        flex-wrap: wrap;
+        gap: 10px;
+        padding: 10px 14px;
+        background: #1c1f26;
+        border-bottom: 1px solid #2c313a;
+      }
+      .e2e-verdict { font-weight: 700; color: #e3b341; }
+      .e2e-verdict[data-verdict="pass"] { color: #3fb950; }
+      .e2e-verdict[data-verdict="fail"] { color: #f85149; }
+      .e2e-counts { color: #d7dae0; }
+      .e2e-report-path {
+        margin-left: auto;
+        max-width: 60%;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+        color: #8b949e;
+        user-select: text;
+      }
+      .e2e-open {
+        flex: none;
+        padding: 3px 10px;
+        border: 1px solid #3a4150;
+        border-radius: 4px;
+        background: #23272f;
+        color: #d7dae0;
+        font: inherit;
+        cursor: pointer;
+      }
+      .e2e-open:disabled { opacity: 0.45; cursor: default; }
+
+      .e2e-case { border-bottom: 1px solid #21242b; }
+      .e2e-case > summary {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        padding: 5px 14px;
+        cursor: pointer;
+        list-style: none;
+      }
+      .e2e-case > summary::-webkit-details-marker { display: none; }
+      .e2e-icon { width: 1.2em; text-align: center; }
+      .e2e-id { color: #c9d1d9; }
+      .e2e-ms { color: #8b949e; min-width: 4.5em; }
+      .e2e-title { color: #6e7681; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+      .e2e-case[data-status="pending"] { color: #6e7681; }
+      .e2e-case[data-status="running"] .e2e-icon { color: #58a6ff; }
+      .e2e-case[data-status="pass"] .e2e-icon { color: #3fb950; }
+      .e2e-case[data-status="expected-failure"] .e2e-icon { color: #d29922; }
+      .e2e-case[data-status="fail"] { background: #2b1416; }
+      .e2e-case[data-status="fail"] .e2e-icon { color: #f85149; }
+      .e2e-case[data-status="skip"] { color: #6e7681; }
+      .e2e-case[data-status="skip"] .e2e-icon { color: #8b949e; }
+
+      .e2e-detail { padding: 2px 14px 8px 38px; }
+      .e2e-line {
+        white-space: pre-wrap;
+        word-break: break-all;
+        color: #c9d1d9;
+      }
+      .e2e-case[data-status="fail"] .e2e-line:first-child { color: #ffa198; }
+
+      .e2e-finish {
+        margin-top: 10px;
+        padding: 10px 14px;
+        border-top: 1px solid #2c313a;
+        display: flex;
+        flex-direction: column;
+        gap: 4px;
+      }
+      .e2e-finish-note { font-weight: 700; }
+      .e2e-finish-path { color: #8b949e; user-select: text; word-break: break-all; }
+    </style>
+  </head>
+  <body>
+    <div id="e2e-progress"></div>
+    <script type="module" src="/test/e2e/e2e-main.ts"></script>
+  </body>
 </html>

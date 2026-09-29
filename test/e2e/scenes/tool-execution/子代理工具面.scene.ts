@@ -1,4 +1,4 @@
-import type { SceneDef } from "../../../host/types"
+import type { SceneDef } from "../../../e2e/types"
 import { runForkAgent } from "@/services/agent/sub-agent"
 import { getTool, listAll } from "@/services/tool"
 import { initChat } from "@/services/agent/runner"

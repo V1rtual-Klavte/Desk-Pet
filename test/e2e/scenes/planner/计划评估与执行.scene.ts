@@ -1,4 +1,4 @@
-import type { SceneDef } from "../../../host/types"
+import type { SceneDef } from "../../../e2e/types"
 import { fauxAssistantMessage, fauxText } from "@earendil-works/pi-ai"
 import type { PlanResult, StepToolNotice } from "@/services/engine/planner"
 import { evaluateComplexity, executePlan, formatStepResults, generatePlan } from "@/services/engine/planner"

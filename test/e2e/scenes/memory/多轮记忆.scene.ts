@@ -1,4 +1,4 @@
-import type { SceneDef } from "../../../host/types"
+import type { SceneDef } from "../../../e2e/types"
 import { fakeText, installFakeProvider } from "../../../host/fake-provider"
 import { assistantTexts, countTexts, sessionMessages, userTexts } from "../../../host/session-entries"
 

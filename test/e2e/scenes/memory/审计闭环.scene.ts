@@ -4,7 +4,7 @@ import { getActiveSessionId } from "@/services/session"
 import { estimateContextTokens } from "@/services/context"
 import { installFakeProvider, fakeText, fakeToolCall } from "../../../host/fake-provider"
 import { sessionEntries } from "../../../host/session-entries"
-import type { SceneDef } from "../../../host/types"
+import type { SceneDef } from "../../../e2e/types"
 
 // ── 场景口径：审计落盘闭环（三档快照各至少一条，且集合不因 flush / 释放槽而变） ──
 //

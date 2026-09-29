@@ -60,7 +60,7 @@ import { runtimePath } from "@/services/paths"
 import { TauriExecutionEnv } from "@/services/tool/pi/tauri-execution-env"
 import { installFakeProvider, fakeText, lastRequestText } from "../../../host/fake-provider"
 import { assistantTexts, compactionEntries, sessionEntries, sessionMessages, userTexts } from "../../../host/session-entries"
-import type { AssertContext, SceneDef } from "../../../host/types"
+import type { AssertContext, SceneDef } from "../../../e2e/types"
 
 const utf8 = new TextEncoder()
 

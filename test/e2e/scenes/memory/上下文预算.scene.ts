@@ -1,6 +1,6 @@
 import type { ContextBlockInput } from "@/services/context"
 import { buildPromptBlocks, contextBudget, ContextBudgetError, estimateContextTokens, estimateMessageTokens, estimateRequestTokens } from "@/services/context"
-import type { SceneDef } from "../../../host/types"
+import type { SceneDef } from "../../../e2e/types"
 
 function staticBlock(blockId: string, source: string, text: string): ContextBlockInput {
   return { blockId, layer: "static", source, text, priority: 100, origin: "system", taint: "system" }

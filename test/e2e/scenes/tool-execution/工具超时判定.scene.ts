@@ -1,4 +1,4 @@
-import type { SceneDef } from "../../../host/types"
+import type { SceneDef } from "../../../e2e/types"
 import type { ToolResult } from "@/services/tool"
 import { defineTool, register, unregister, TOOL_POLICY_VERSION } from "@/services/tool"
 import { executeToolDefinition } from "@/services/tool/router"

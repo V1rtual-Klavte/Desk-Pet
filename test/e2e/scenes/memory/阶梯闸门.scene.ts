@@ -12,7 +12,7 @@ import { getActiveSessionId } from "@/services/session"
 import { SESSION_TRANSCRIPT_TOOL, TOOL_POLICY_VERSION, defineTool, register, unregister } from "@/services/tool"
 import { installFakeProvider, fakeText, fakeToolCall, lastRequestText } from "../../../host/fake-provider"
 import { compactionEntries, sessionEntries } from "../../../host/session-entries"
-import type { SceneDef, TurnDef } from "../../../host/types"
+import type { SceneDef, TurnDef } from "../../../e2e/types"
 
 // ==========================================
 // 级 3 闸门：级 1/2 压完装得下 ⇒ 一次摘要 LLM 都不花（源方案 §3.2 要点 3 / C-4）

@@ -4,7 +4,7 @@ import { initChat } from "@/services/agent/runner"
 import { getActiveSessionId } from "@/services/session/store"
 import { readPiSessionEntriesOnce } from "@/services/session/repo"
 import { fakeText, installFakeProvider } from "../../../host/fake-provider"
-import type { SceneDef } from "../../../host/types"
+import type { SceneDef } from "../../../e2e/types"
 
 const PLAN_ID = "plan-live-resume"
 

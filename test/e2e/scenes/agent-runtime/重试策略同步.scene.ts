@@ -4,7 +4,7 @@ import type { HarnessSlot } from "@/services/engine/pi"
 import { loopConfig, setOverride } from "@/services/config"
 import { getActiveSessionId } from "@/services/session"
 import { installFakeProvider } from "../../../host/fake-provider"
-import type { SceneDef } from "../../../host/types"
+import type { SceneDef } from "../../../e2e/types"
 
 // ── 场景口径：生成级重试策略按运行下发，不重开槽 ──
 //

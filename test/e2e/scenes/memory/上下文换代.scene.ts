@@ -5,7 +5,7 @@ import { getActiveSessionId } from "@/services/session"
 import { aiConfig } from "@/services/config"
 import { installFakeProvider, fakeText, lastRequestText } from "../../../host/fake-provider"
 import { compactionEntries, sessionEntries } from "../../../host/session-entries"
-import type { SceneDef } from "../../../host/types"
+import type { SceneDef } from "../../../e2e/types"
 
 // ── 场景口径：换代身份沿 lane 分支读取，未知时不写 0 ──
 //

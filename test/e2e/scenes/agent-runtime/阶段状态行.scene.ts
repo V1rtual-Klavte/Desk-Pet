@@ -12,7 +12,7 @@ import { listen } from "@tauri-apps/api/event"
 import { initChat, sendMessage } from "@/services/agent/runner"
 import { formatError } from "@/services/error"
 import { fakeText, installFakeProvider } from "../../../host/fake-provider"
-import type { SceneDef } from "../../../host/types"
+import type { SceneDef } from "../../../e2e/types"
 
 const STAGE_EVENT = "deskpet-stage-hint"
 const USER_TEXT = "随便聊一句。"

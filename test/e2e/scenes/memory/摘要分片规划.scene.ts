@@ -13,7 +13,7 @@ import {
 import type { CompactionMaterial, CompactionShardPlan } from "@/services/engine"
 import { formatError } from "@/services/error"
 import { fakeText, installFakeProvider, lastRequestText } from "../../../host/fake-provider"
-import type { SceneDef } from "../../../host/types"
+import type { SceneDef } from "../../../e2e/types"
 
 // ==========================================
 // W4 问题 B 的内核侧：分片规划器的不变式 + 超硬上限素材确实分片产出摘要 + 片数超上限明确失败

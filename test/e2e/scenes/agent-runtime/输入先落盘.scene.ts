@@ -7,7 +7,7 @@ import { getActiveSessionId } from "@/services/session"
 import { PLAN_CHECKPOINT_ENTRY } from "@/services/agent/memory"
 import { entryMessageText, sessionEntries } from "../../../host/session-entries"
 import { fakeText, installFakeProvider, lastRequestText } from "../../../host/fake-provider"
-import type { SceneDef } from "../../../host/types"
+import type { SceneDef } from "../../../e2e/types"
 
 /**
  * 输入先落盘（STATE-04 / §7 决策 #16 方案 B）：用户条目在计划与预检之前就提交进会话文件。

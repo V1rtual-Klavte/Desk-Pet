@@ -1,6 +1,6 @@
 import { emptyMemoryProvider, getMemoryProvider, installMemoryProvider, recallMemory } from "@/services/agent/memory"
 import { estimateContextTokens } from "@/services/context"
-import type { SceneDef } from "../../../host/types"
+import type { SceneDef } from "../../../e2e/types"
 
 // ── 场景口径：召回文本的 token 口径（MISS-05，P6 的预算穿透点） ──
 //

@@ -1,4 +1,4 @@
-import type { SceneDef } from "../../../host/types"
+import type { SceneDef } from "../../../e2e/types"
 import { actionCategoryOf } from "@/services/tool"
 import { COMMAND_KEYS, FALLBACK_KEYS, clearStagesCache, getCommandReply, getFallbackReply, getSimpleStage, getStagePrompt, loadStages, restoreStagesCache, snapshotStagesCache } from "@/services/personality"
 import type { StageMap } from "@/services/personality"

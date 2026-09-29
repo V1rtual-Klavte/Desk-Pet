@@ -1,4 +1,4 @@
-import type { SceneDef } from "../../../host/types"
+import type { SceneDef } from "../../../e2e/types"
 import { deleteSkill, getSkillCatalogError, getSkillCatalogFingerprint, getSkillsPromptBlock, listSkills, syncSkillCatalog, upsertSkill } from "@/services/skill"
 import { errorCode } from "@/services/error"
 

@@ -6,7 +6,7 @@ import { aiConfig } from "@/services/config"
 import { initChat } from "@/services/agent/runner"
 import { installFakeProvider, fakeText } from "../../../host/fake-provider"
 import { compactionEntries, sessionEntries, sessionMessages } from "../../../host/session-entries"
-import type { SceneDef } from "../../../host/types"
+import type { SceneDef } from "../../../e2e/types"
 
 // ── 场景口径：硬预算超限走 Harness 的一次性溢出恢复 ──
 //

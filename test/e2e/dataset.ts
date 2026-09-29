@@ -1,4 +1,5 @@
-import type { ModuleContract, SceneDef } from "../host/types"
+import type { ModuleContract } from "../host/types"
+import type { SceneDef } from "./types"
 import { DEFAULT_SCENE_TIMEOUT, UNIT_SCENE_TIMEOUT } from "./scene-runner"
 
 /**
@@ -27,8 +28,13 @@ import { DEFAULT_SCENE_TIMEOUT, UNIT_SCENE_TIMEOUT } from "./scene-runner"
  * `lastRequestText` 收敛为 `fake-provider.ts` 的唯一实现（它从末尾跳过尾随注记）。
  * 不收敛的话，注记落地后这 16 处每一处都得记得跳过它，漏一处就是一条难查的假失败
  * （`压缩挂起结算` 正是这么红过一次）。
+ * `2026-09-29.1`：W0 改名：夹具标识符 `live-test-*` → `e2e-*`，caseId 集合与断言口径未变。
+ * 夹具字符串会进报告，不 bump 的话改名前后两份报告对比会看到差异却无从解释。
+ * `2026-09-29.2`：W1 Task 17：`variable-pool` 的 20 个 `entry: "unit"` 场景迁到 L2
+ * （`test/unit/variable-pool/`，caseId 原样带走），L4 侧只留 1 个未声明 entry 的场景
+ * （`亲密度提升`）。之后的迁移批次各自 bump。
  */
-export const LIVE_DATASET_VERSION = "2026-09-28.4"
+export const LIVE_DATASET_VERSION = "2026-09-29.2"
 
 export function validateDataset(scenes: SceneDef[], contracts: ModuleContract[]): string[] {
   const errors: string[] = []

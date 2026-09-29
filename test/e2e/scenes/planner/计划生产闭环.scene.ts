@@ -8,7 +8,7 @@ import { registerBlockingTool } from "../../../host/blocking-tool"
 import { fakeText, fakeToolCall, installFakeProvider } from "../../../host/fake-provider"
 import { planEndRecords, planInteractionRecords, planProgressRecords, planRecords } from "../../../host/plan-confirm-channel"
 import { sessionEntries } from "../../../host/session-entries"
-import type { SceneDef } from "../../../host/types"
+import type { SceneDef } from "../../../e2e/types"
 
 /**
  * 计划域的运行时接线场景。一个场景的 `meta.contractId` 只能挂一个覆盖点，所以按行为拆成三个：

@@ -9,7 +9,7 @@ import type { FallbackReplies } from "@/services/personality"
 import { chatHistory, getActiveSessionId } from "@/services/session/store"
 import { fakeText, installFakeProvider, lastRequestText } from "../../../host/fake-provider"
 import { assistantTexts, compactionEntries, countTexts, sessionEntries, sessionMessages, userTexts } from "../../../host/session-entries"
-import type { AssertContext, SceneDef } from "../../../host/types"
+import type { AssertContext, SceneDef } from "../../../e2e/types"
 
 // ── 场景口径：摘要请求在飞时的新输入按准入如实拒绝，不写兜底失败回复、不静默排队 ──
 //

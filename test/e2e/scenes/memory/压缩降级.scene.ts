@@ -8,7 +8,7 @@ import { initChat, sendMessage } from "@/services/agent/runner"
 import { getActiveSessionId } from "@/services/session"
 import { installFakeProvider, fakeText, lastRequestText } from "../../../host/fake-provider"
 import { assistantTexts, compactionEntries, countTexts, entryMessageText, sessionEntries, sessionMessages } from "../../../host/session-entries"
-import type { SceneDef } from "../../../host/types"
+import type { SceneDef } from "../../../e2e/types"
 
 // ── 场景口径：摘要内核失败必须显式 decline（不落上游通用英文摘要） ──
 //

@@ -1,7 +1,11 @@
 import { defineConfig } from "vitest/config";
 import { resolve } from "node:path";
+import { yamlPlugin } from "./vite-yaml-plugin";
 
 export default defineConfig({
+  // 快层测试会 import `@/services/config` 等产品链路模块，它们直接 import `.yaml`。
+  // 缺这个插件时 YAML 解析失败，表现是「一 import 配置就红」。
+  plugins: [yamlPlugin()],
   resolve: {
     alias: {
       "@": resolve(__dirname, "src"),

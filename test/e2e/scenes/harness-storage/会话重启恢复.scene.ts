@@ -1,6 +1,6 @@
 import { BACKGROUND_CONTEXT } from "@earendil-works/pi-agent-core"
 import type { FileError, Result } from "@earendil-works/pi-agent-core"
-import type { SceneDef } from "../../../host/types"
+import type { SceneDef } from "../../../e2e/types"
 import { createPiSessionRepo } from "@/services/engine/pi"
 import { TauriExecutionEnv } from "@/services/tool/pi/tauri-execution-env"
 import { runtimePath } from "@/services/paths"

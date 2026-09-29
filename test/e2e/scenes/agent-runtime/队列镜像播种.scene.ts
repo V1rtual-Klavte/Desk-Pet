@@ -5,7 +5,7 @@ import { getActiveSessionId } from "@/services/session"
 import { getCommandReply } from "@/services/personality"
 import { registerBlockingTool } from "../../../host/blocking-tool"
 import { fakeText, fakeToolCall, installFakeProvider } from "../../../host/fake-provider"
-import type { SceneDef } from "../../../host/types"
+import type { SceneDef } from "../../../e2e/types"
 
 /**
  * 队列镜像播种（STATE-02 / FIX-71）：会话槽重开后，lane 持久 inbox 的未消费项必须立刻可见。

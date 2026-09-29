@@ -1,4 +1,4 @@
-import type { SceneDef } from "../../../host/types"
+import type { SceneDef } from "../../../e2e/types"
 import { installFakeProvider, fakeText, fakeToolCall } from "../../../host/fake-provider"
 import { sessionEntries } from "../../../host/session-entries"
 import { invoke } from "@tauri-apps/api/core"

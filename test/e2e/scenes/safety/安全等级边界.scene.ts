@@ -1,4 +1,4 @@
-import type { SceneDef } from "../../../host/types"
+import type { SceneDef } from "../../../e2e/types"
 import { matchesAnyPattern, BASH_DANGEROUS_PATTERNS, BASH_NOWAY_PATTERNS, FILE_DANGEROUS_PATTERNS, resolveFilePathLevel, evaluateToolPermission, freezePermissionPolicy } from "@/services/safety"
 import type { PermissionPolicySnapshot } from "@/services/safety"
 import type { ToolDef, SafetyLevel, ToolContext } from "@/services/tool"

@@ -1,4 +1,4 @@
-import type { SceneDef } from "../../../host/types"
+import type { SceneDef } from "../../../e2e/types"
 import type { Entry } from "@earendil-works/pi-agent-core"
 import { fakeText, fakeToolCall, installFakeProvider } from "../../../host/fake-provider"
 import { MIN_ADDRESS_PREFIX, estimateContextTokens, isUniqueAddressRef, resolveAddressRef, shortenAddresses, toolResultTokenBudget } from "@/services/context"

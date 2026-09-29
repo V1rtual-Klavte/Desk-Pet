@@ -48,7 +48,7 @@ import type { PiSessionRepo } from "@/services/engine/pi"
 import { acquirePiSession, createPiSession, deletePiSession, releasePiSession } from "@/services/session"
 import { runtimePath } from "@/services/paths"
 import { TauriExecutionEnv } from "@/services/tool/pi/tauri-execution-env"
-import type { SceneDef } from "../../../host/types"
+import type { SceneDef } from "../../../e2e/types"
 
 type JsonlSession = Session<JsonlSessionMetadata>
 

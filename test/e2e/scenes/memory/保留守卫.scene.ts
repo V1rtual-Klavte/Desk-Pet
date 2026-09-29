@@ -7,7 +7,7 @@ import { getActiveSessionId } from "@/services/session"
 import { defineTool, getToolByName, register, unregister, TOOL_POLICY_VERSION } from "@/services/tool"
 import { installFakeProvider, fakeText, fakeToolCall, lastRequestText } from "../../../host/fake-provider"
 import { compactionEntries, sessionEntries, sessionMessages } from "../../../host/session-entries"
-import type { SceneDef } from "../../../host/types"
+import type { SceneDef } from "../../../e2e/types"
 
 // ── 场景口径：摘要范围覆盖 retain 工具调用时，压缩必须拒绝推进边界 ──
 //

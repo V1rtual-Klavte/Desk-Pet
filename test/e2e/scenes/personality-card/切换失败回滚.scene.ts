@@ -1,4 +1,4 @@
-import type { SceneDef } from "../../../host/types"
+import type { SceneDef } from "../../../e2e/types"
 import type { StreamFn } from "@earendil-works/pi-agent-core"
 import { installFakeProvider, fakeText } from "../../../host/fake-provider"
 import { invoke } from "@tauri-apps/api/core"

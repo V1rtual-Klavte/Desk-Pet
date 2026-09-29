@@ -23,7 +23,7 @@ import { initChat, sendMessage } from "@/services/agent/runner"
 import { formatError } from "@/services/error"
 import { registerBlockingTool } from "../../../host/blocking-tool"
 import { fakeRuntimeDataHeadToolCall, fakeText } from "../../../host/fake-provider"
-import type { SceneDef } from "../../../host/types"
+import type { SceneDef } from "../../../e2e/types"
 
 const TOOL_NAME = "live_hn04_stream_probe"
 const STREAM_EVENT = "deskpet-assistant-stream"

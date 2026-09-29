@@ -9,7 +9,7 @@ import type {
   SceneResult,
   TurnDef,
   TurnResult,
-} from "../host/types"
+} from "./types"
 import type { PiAgentTurnOutput, TurnFailure } from "@/services/engine/pi"
 import { runPiAgentTurn } from "@/services/engine/pi"
 import { userInputMessage } from "@/services/engine/runtime"

@@ -1,9 +1,11 @@
-import type { SceneResult, TestReport } from "../host/types"
+import type { SceneResult, TestReport } from "./types"
+import { renderHtmlReport } from "./report-html"
 
-export function formatReport(report: TestReport, format: "terminal" | "json" | "markdown"): string {
+export function formatReport(report: TestReport, format: "terminal" | "json" | "markdown" | "html"): string {
   switch (format) {
     case "json": return JSON.stringify(report, null, 2)
     case "markdown": return formatMarkdown(report)
+    case "html": return renderHtmlReport(report)
     default: return formatTerminal(report)
   }
 }
