@@ -116,7 +116,7 @@ function makeSummary(results: TestReport["scenes"], plannedTrials: number): Test
 async function main(): Promise<void> {
   await initPaths()
   await initConfig()
-  const raw = await invoke<RuntimeOptions>("get_live_test_options")
+  const raw = await invoke<RuntimeOptions>("e2e_options")
   const opts = parseArgs([
     ...(raw.module ? ["--module", raw.module] : []),
     ...(raw.scene ? ["--scene", raw.scene] : []),
@@ -169,7 +169,7 @@ async function main(): Promise<void> {
     const report: TestReport = { ...reportBase, scenes: [], summary: makeSummary([], 0) }
     const formatted = formatReport(report, opts.report)
     console.error(formatted)
-    await invoke("live_test_complete", { passed: false, report: formatted })
+    await invoke("e2e_complete", { passed: false, report: formatted })
     return
   }
 
@@ -182,7 +182,7 @@ async function main(): Promise<void> {
     && report.summary.total > 0
     && report.datasetErrors.length === 0
     && (!opts.strictContracts || report.contracts.every(contract => contract.valid))
-  await invoke("live_test_complete", { passed, report: formatted })
+  await invoke("e2e_complete", { passed, report: formatted })
 }
 
 // 测试报告本身走 console（见上方 formatReport），这里只补「未捕获异常也要有出口」。
@@ -192,5 +192,5 @@ installGlobalHandlers("live-test", { overlay: false })
 main().catch(async error => {
   const message = error instanceof Error ? error.stack || error.message : String(error)
   reportError("live-test", error, { kind: "启动或执行失败" })
-  try { await invoke("live_test_complete", { passed: false, report: message }) } catch { /* app may not be ready */ }
+  try { await invoke("e2e_complete", { passed: false, report: message }) } catch { /* app may not be ready */ }
 })

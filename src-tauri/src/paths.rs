@@ -34,9 +34,9 @@ impl AppPaths {
 
         // 唯一环境判断：开发→项目工作区，生产→Tauri 应用专属数据目录。
         let data_root = if cfg!(debug_assertions) {
-            // 临时根只允许由 Live Test runner 启用，普通 `tauri dev` 不受遗留环境变量影响。
-            if is_live_test() {
-                std::env::var("DESKPET_LIVE_TEST_DATA_ROOT")
+            // 临时根只允许由 E2E runner 启用，普通 `tauri dev` 不受遗留环境变量影响。
+            if is_e2e() {
+                std::env::var("DESKPET_E2E_DATA_ROOT")
                     .map(PathBuf::from)
                     .unwrap_or_else(|_| development_data_root())
             } else {
@@ -96,8 +96,8 @@ impl AppPaths {
 
         seed_default_resources(&paths)?;
 
-        if cfg!(debug_assertions) && is_live_test() {
-            seed_live_test_stages(&paths)?;
+        if cfg!(debug_assertions) && is_e2e() {
+            seed_e2e_stages(&paths)?;
         }
 
         if !cfg!(debug_assertions) && !paths.config_file.exists() {
@@ -329,12 +329,12 @@ fn development_data_root() -> PathBuf {
     project_root().join("data").join("desk-pet")
 }
 
-pub(crate) fn is_live_test() -> bool {
-    std::env::var("DESKPET_LIVE_TEST").ok().as_deref() == Some("1")
+pub(crate) fn is_e2e() -> bool {
+    std::env::var("DESKPET_E2E").ok().as_deref() == Some("1")
 }
 
-/// Live Test 只从由 AppPaths 定义的开发根复制阶段种子，避免测试脚本另行维护路径布局。
-fn seed_live_test_stages(paths: &AppPaths) -> AppResult<()> {
+/// E2E 只从由 AppPaths 定义的开发根复制阶段种子，避免测试脚本另行维护路径布局。
+fn seed_e2e_stages(paths: &AppPaths) -> AppResult<()> {
     let source = development_data_root().join("personality").join("stages");
     let target = paths.personality.join("stages");
     if !source.is_dir() || source == target {

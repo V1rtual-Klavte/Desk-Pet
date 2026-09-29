@@ -131,7 +131,7 @@ fn write_session_ui_state(paths: tauri::State<AppPaths>, content: String) -> App
 
 #[derive(serde::Serialize)]
 #[serde(rename_all = "camelCase")]
-struct LiveTestOptions {
+struct E2eOptions {
     module: Option<String>,
     scene: Option<String>,
     #[serde(rename = "case")]
@@ -147,9 +147,9 @@ struct LiveTestOptions {
 }
 
 #[tauri::command]
-fn get_live_test_options() -> LiveTestOptions {
+fn e2e_options() -> E2eOptions {
     if !cfg!(debug_assertions) {
-        return LiveTestOptions {
+        return E2eOptions {
             module: None,
             scene: None,
             case_id: None,
@@ -164,36 +164,36 @@ fn get_live_test_options() -> LiveTestOptions {
         };
     }
     let env_value = |key: &str| std::env::var(key).ok().filter(|v| !v.is_empty());
-    LiveTestOptions {
-        module: env_value("DESKPET_LIVE_TEST_MODULE"),
-        scene: env_value("DESKPET_LIVE_TEST_SCENE"),
-        case_id: env_value("DESKPET_LIVE_TEST_CASE"),
-        tag: env_value("DESKPET_LIVE_TEST_TAG"),
-        suite: env_value("DESKPET_LIVE_TEST_SUITE"),
-        repeat: env_value("DESKPET_LIVE_TEST_REPEAT"),
-        strict: env_value("DESKPET_LIVE_TEST_STRICT"),
-        report: env_value("DESKPET_LIVE_TEST_REPORT"),
-        seed_hash: env_value("DESKPET_LIVE_TEST_SEED_HASH"),
-        source_hashes: env_value("DESKPET_LIVE_TEST_SOURCE_HASHES"),
-        commit: env_value("DESKPET_LIVE_TEST_COMMIT"),
+    E2eOptions {
+        module: env_value("DESKPET_E2E_MODULE"),
+        scene: env_value("DESKPET_E2E_SCENE"),
+        case_id: env_value("DESKPET_E2E_CASE"),
+        tag: env_value("DESKPET_E2E_TAG"),
+        suite: env_value("DESKPET_E2E_SUITE"),
+        repeat: env_value("DESKPET_E2E_REPEAT"),
+        strict: env_value("DESKPET_E2E_STRICT"),
+        report: env_value("DESKPET_E2E_REPORT"),
+        seed_hash: env_value("DESKPET_E2E_SEED_HASH"),
+        source_hashes: env_value("DESKPET_E2E_SOURCE_HASHES"),
+        commit: env_value("DESKPET_E2E_COMMIT"),
     }
 }
 
 #[tauri::command]
-fn live_test_complete(
+fn e2e_complete(
     app: tauri::AppHandle,
     paths: tauri::State<AppPaths>,
     passed: bool,
     report: String,
 ) -> AppResult<()> {
     if !cfg!(debug_assertions) {
-        return err("Live Test 仅允许 debug 构建");
+        return err("E2E 仅允许 debug 构建");
     }
     // 报告是多行结构，原样转发（不套 Rust 前缀），但要经过统一出口才能落盘
-    logger::emit_frontend(&format!("[LiveTest] completed passed={passed}\n{report}"));
+    logger::emit_frontend(&format!("[E2E] completed passed={passed}\n{report}"));
     let result = format!("{}\n{}", if passed { "PASS" } else { "FAIL" }, report);
-    if let Err(error) = std::fs::write(paths.data_root.join("live-test-result.txt"), result) {
-        eprintln!("[LiveTest] 无法写入测试结果: {error}");
+    if let Err(error) = std::fs::write(paths.data_root.join("e2e-result.txt"), result) {
+        eprintln!("[E2E] 无法写入测试结果: {error}");
     }
     app.exit(0);
     Ok(())
@@ -247,7 +247,7 @@ pub fn run() {
                 rust_info!("macOS: ActivationPolicy::Accessory 已设置");
             }
 
-            let live_test = cfg!(debug_assertions) && crate::paths::is_live_test();
+            let e2e = cfg!(debug_assertions) && crate::paths::is_e2e();
             let paths = match AppPaths::init(app.handle()) {
                 Ok(p) => p,
                 Err(e) => {
@@ -262,22 +262,22 @@ pub fn run() {
             logger::init_file_sink(&paths.logs);
             app.manage(paths);
 
-            if live_test {
+            if e2e {
                 let window = WebviewWindowBuilder::new(
                     app,
-                    "live-test",
-                    WebviewUrl::App(PathBuf::from("live-test.html")),
+                    "e2e",
+                    WebviewUrl::App(PathBuf::from("test-e2e.html")),
                 )
-                .title("Desk-Pet Live Test")
+                .title("Desk-Pet E2E")
                 .inner_size(900.0, 700.0)
                 .visible(true)
                 .build();
                 match window {
                     Ok(_) => {
-                        rust_info!("Live Test 窗口已创建");
+                        rust_info!("E2E 窗口已创建");
                     }
                     Err(e) => {
-                        rust_warn!("Live Test 窗口创建失败: {e}");
+                        rust_warn!("E2E 窗口创建失败: {e}");
                     }
                 }
                 return Ok(());
@@ -420,8 +420,8 @@ pub fn run() {
             restore_default_resources,
             skill_catalog_fingerprint,
             skill_delete,
-            get_live_test_options,
-            live_test_complete,
+            e2e_options,
+            e2e_complete,
             personality_file_read,
             personality_file_write,
             personality_file_list,
