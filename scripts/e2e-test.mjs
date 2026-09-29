@@ -1,4 +1,4 @@
-// Live Test 启动脚本（Node 侧，负责构建、起 WebView、汇总报告）。
+// E2E 启动脚本（Node 侧，负责构建、起 WebView、汇总报告）。
 // 开发工具直接用 console：改走 logger 会污染 data_root/logs/deskpet.log
 // 并引入 IPC 依赖 [保留已登记 §4.2]
 
@@ -11,7 +11,7 @@ import { extname, join, relative } from "node:path"
 const args = process.argv.slice(2)
 const valueOptions = new Set(["--module", "--scene", "--case", "--tag", "--suite", "--repeat", "--report", "--contracts"])
 const flagOptions = new Set(["--strict"])
-const env = { ...process.env, DESKPET_LIVE_TEST: "1" }
+const env = { ...process.env, DESKPET_E2E: "1" }
 
 function sha256(parts) {
   const hash = createHash("sha256")
@@ -23,7 +23,7 @@ function currentCommit() {
   try { return execFileSync("git", ["rev-parse", "HEAD"], { cwd: process.cwd(), encoding: "utf8" }).trim() }
   catch (error) {
     // 开发工具不接 logger（会污染 data_root/logs/deskpet.log 并引入 IPC 依赖）
-    console.warn("[live-test] git rev-parse HEAD 失败，报告里的 commit 记为 unknown：", error instanceof Error ? error.message : String(error))
+    console.warn("[e2e] git rev-parse HEAD 失败，报告里的 commit 记为 unknown：", error instanceof Error ? error.message : String(error))
     return "unknown"
   }
 }
@@ -32,11 +32,11 @@ function currentCommit() {
 for (let index = 0; index < args.length; index++) {
   const option = args[index]
   if (flagOptions.has(option)) {
-    env[`DESKPET_LIVE_TEST_${option.slice(2).toUpperCase()}`] = "1"
+    env[`DESKPET_E2E_${option.slice(2).toUpperCase()}`] = "1"
     continue
   }
   if (!valueOptions.has(option) || !args[index + 1]) continue
-  env[`DESKPET_LIVE_TEST_${option.slice(2).toUpperCase().replace(/-/g, "_")}`] = args[++index]
+  env[`DESKPET_E2E_${option.slice(2).toUpperCase().replace(/-/g, "_")}`] = args[++index]
 }
 
 /**
@@ -47,8 +47,8 @@ for (let index = 0; index < args.length; index++) {
  * 所以留一个显式开关，而不是把门禁默认放松。
  */
 function selectedContractFile() {
-  if ((env.DESKPET_LIVE_TEST_CONTRACTS ?? "all") !== "selected") return null
-  const module = env.DESKPET_LIVE_TEST_MODULE
+  if ((env.DESKPET_E2E_CONTRACTS ?? "all") !== "selected") return null
+  const module = env.DESKPET_E2E_MODULE
   if (!module) return null
   return `${module}.contract.ts`
 }
@@ -61,7 +61,7 @@ function selectedContractFile() {
  * 所以绕过本脚本直接跑 Tauri 不会得到一份看起来通过的报告。
  */
 function checkContractHashes() {
-  const directory = join(process.cwd(), "src/services/__tests__/live/contracts")
+  const directory = join(process.cwd(), "test/contracts")
   const only = selectedContractFile()
   const targets = readdirSync(directory).filter(name => name.endsWith(".contract.ts") && (!only || name === only))
   if (only && targets.length === 0) {
@@ -90,10 +90,10 @@ let hashAttestation
 try {
   hashAttestation = checkContractHashes()
 } catch (error) {
-  console.error(`[LiveTest] Contract 校验失败: ${error instanceof Error ? error.message : String(error)}`)
+  console.error(`[E2E] Contract 校验失败: ${error instanceof Error ? error.message : String(error)}`)
   process.exit(1)
 }
-env.DESKPET_LIVE_TEST_SOURCE_HASHES = JSON.stringify(hashAttestation)
+env.DESKPET_E2E_SOURCE_HASHES = JSON.stringify(hashAttestation)
 
 // ── 种子与配置摘要（报告 environment.seedHash）──
 
@@ -156,19 +156,19 @@ function computeSeedHash() {
     }
   }
   if (parts.length === 0) {
-    console.error(`[LiveTest] seedHash 未生成：${SEED_DIR} 与 ${CONFIG_FILES.join(" / ")} 都不存在`)
+    console.error(`[E2E] seedHash 未生成：${SEED_DIR} 与 ${CONFIG_FILES.join(" / ")} 都不存在`)
     return undefined
   }
   return sha256(parts.sort())
 }
 
 const seedHash = computeSeedHash()
-if (seedHash) env.DESKPET_LIVE_TEST_SEED_HASH = seedHash
+if (seedHash) env.DESKPET_E2E_SEED_HASH = seedHash
 
-const dataRoot = mkdtempSync(join(homedir(), ".deskpet-live-test-"))
-const resultPath = join(dataRoot, "live-test-result.txt")
-env.DESKPET_LIVE_TEST_DATA_ROOT = dataRoot
-env.DESKPET_LIVE_TEST_COMMIT = currentCommit()
+const dataRoot = mkdtempSync(join(homedir(), ".deskpet-e2e-"))
+const resultPath = join(dataRoot, "e2e-result.txt")
+env.DESKPET_E2E_DATA_ROOT = dataRoot
+env.DESKPET_E2E_COMMIT = currentCommit()
 
 let child
 let finalized = false
@@ -185,7 +185,7 @@ function stopChild(signal = "SIGTERM") {
  * 放用户主目录而不是仓库内：仓库侧要为此改 .gitignore，而报告是运行产物，
  * 不该出现在工作树里。保留最近 MAX_REPORTS 份，避免无限堆积。
  */
-const REPORTS_DIR = join(homedir(), ".deskpet-live-test-reports")
+const REPORTS_DIR = join(homedir(), ".deskpet-e2e-reports")
 const MAX_REPORTS = 20
 
 function preserveReport() {
@@ -199,10 +199,10 @@ function preserveReport() {
     for (const stale of kept.slice(0, Math.max(0, kept.length - MAX_REPORTS))) {
       rmSync(join(REPORTS_DIR, stale), { force: true })
     }
-    console.error(`[LiveTest] 报告已留存: ${REPORTS_DIR}`)
+    console.error(`[E2E] 报告已留存: ${REPORTS_DIR}`)
   } catch (error) {
     // 留存失败不该影响测试结论本身
-    console.error(`[LiveTest] 报告留存失败: ${error.message}`)
+    console.error(`[E2E] 报告留存失败: ${error.message}`)
   }
 }
 
@@ -210,7 +210,7 @@ function finalize(exitCode, reason) {
   if (finalized) return
   finalized = true
   if (timeout) clearTimeout(timeout)
-  if (reason) console.error(`[LiveTest] ${reason}`)
+  if (reason) console.error(`[E2E] ${reason}`)
   preserveReport()
   rmSync(dataRoot, { recursive: true, force: true })
   process.exit(exitCode)
