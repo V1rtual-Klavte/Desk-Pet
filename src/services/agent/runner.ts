@@ -400,7 +400,8 @@ async function dispatchMessage(text: string, options: SendMessageOptions = {}): 
     }
     const receipt = await deliverActiveTurn(
       originSessionId, preResult.normalizedText,
-      { eventId: inputEventId(requestId), mark: inputSourceMark(ingressFor(preResult)) },
+      // Card 身份与输入同刻冻结：记忆整理据此把经历归到当时的 Card，而不是事后正在显示的那个。
+      { eventId: inputEventId(requestId), mark: inputSourceMark(ingressFor(preResult), getActiveCard()?.id) },
       resolveDeliveryIntent(options.delivery, text),
     )
     if (receipt) {
@@ -492,7 +493,7 @@ async function dispatchMessage(text: string, options: SendMessageOptions = {}): 
     const inputIngress = ingressFor(preResult)
     return {
       // 空闲发送不是无身份的裸字符串：正文与忙碌投递同形（身份 + 来源标记随条目落盘）。
-      userPrompt: userInputMessage(preResult.text, inputEventId(requestId), inputSourceMark(inputIngress)),
+      userPrompt: userInputMessage(preResult.text, inputEventId(requestId), inputSourceMark(inputIngress, getActiveCard()?.id)),
       ingress: inputIngress,
       onInputAdmitted: () => {
         pushUserMessage(preResult.text, originSessionId)

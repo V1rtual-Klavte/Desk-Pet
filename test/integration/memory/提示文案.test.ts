@@ -101,7 +101,6 @@ describe("提示文案", () => {
       tools: [],
       contextMaxTokens: 131_072,
       candyInstructions: "",
-      userProfileText: "",
       skillsPromptBlock: "",
     }, null, POOL)
     expect(built.systemPrompt, "buildPrompt 的系统提示没有消费 CHAT_THINKING_HINTS.high").toContain(CHAT_THINKING_HINTS.high)

@@ -101,6 +101,7 @@ export async function registerDefaultTools(): Promise<void> {
   const { registerAppOpenTool } = await import("./local-extra/app")
   const { registerClipboardTools } = await import("./local-extra/clipboard")
   const { registerAgentSpawnTool } = await import("./local-extra/agent-tool")
+  const { registerMemoryTools } = await import("./local-extra/memory")
 
   await registerPiBaseTools()
   registerSystemTool()
@@ -108,6 +109,7 @@ export async function registerDefaultTools(): Promise<void> {
   registerAppOpenTool()
   registerClipboardTools()
   registerAgentSpawnTool()
+  registerMemoryTools()
 
   defaultToolsRegistered = true
   log.info("基础工具已注册:", toolCount(), "个")

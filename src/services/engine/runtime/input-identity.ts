@@ -53,8 +53,13 @@ export function laneMessageText(message: AgentMessage): string {
   return Array.isArray(content) ? contentText(content as Parameters<typeof contentText>[0]) : ""
 }
 
-/** 由入口 ingress 投影出随消息落盘的来源标记（ingress 是唯一真相源）。 */
-export function inputSourceMark(ingress: IngressEnvelope): InputSourceMark {
+/**
+ * 由入口 ingress 投影出随消息落盘的来源标记（ingress 是唯一真相源）。
+ *
+ * `cardId` 是投递时刻冻结的 Card 身份：事后从「当前正在显示的 Card」反推会把
+ * 切卡后的经历算到旧 Card 名下，所以它必须与输入同刻落盘。
+ */
+export function inputSourceMark(ingress: IngressEnvelope, cardId?: string): InputSourceMark {
   return {
     origin: ingress.origin,
     querySource: ingress.querySource,
@@ -62,6 +67,7 @@ export function inputSourceMark(ingress: IngressEnvelope): InputSourceMark {
     taint: ingress.taint,
     // 只有用户本人的可信输入能成为长期事实：主动消息、恢复续跑与外部内容都不行。
     eligibleForMemory: ingress.origin === "user" && ingress.taint === "trusted_user",
+    ...(cardId ? { cardId } : {}),
   }
 }
 
@@ -98,6 +104,7 @@ export function inputSourceOf(message: { deskpetSource?: unknown }): InputSource
     priority: record.priority as MessagePriority,
     taint: record.taint as MessageTaint,
     eligibleForMemory: record.eligibleForMemory,
+    ...(typeof record.cardId === "string" ? { cardId: record.cardId } : {}),
   }
 }
 
@@ -113,6 +120,35 @@ const ACTIVE_MESSAGE_CUSTOM_TYPE = "deskpet.active_message"
  */
 export const TURN_NOTE_CUSTOM_TYPE = "deskpet.turn_note"
 
+/** 请求视图中的记忆数据，不落 transcript，也不能再次提取为用户事实。 */
+export const MEMORY_RECALL_CUSTOM_TYPE = "deskpet.memory_recall"
+
+export function isMemoryRecallMessage(message: { role?: unknown; customType?: unknown } | undefined): boolean {
+  return message?.role === "custom" && message.customType === MEMORY_RECALL_CUSTOM_TYPE
+}
+
+/**
+ * 记忆召回块的唯一构造点（请求视图专用，不落会话条目）。
+ *
+ * 它带 `role: "custom"` 而不是 system：记忆是 derived 数据，不能升级成系统指令；
+ * `eligibleForMemory=false` 保证召回内容不会被下一次整理当成用户事实重新提取。
+ */
+export function createMemoryRecallMessage(text: string): AgentMessage {
+  return {
+    role: "custom",
+    customType: MEMORY_RECALL_CUSTOM_TYPE,
+    content: text,
+    display: false,
+    details: {
+      taint: "derived",
+      visibleToUser: false,
+      eligibleForTranscript: false,
+      eligibleForMemory: false,
+    },
+    timestamp: Date.now(),
+  }
+}
+
 /**
  * 是否为「瞬时输入」消息：主动搭话、尾随瞬时注记（custom 消息）与带投递身份的用户输入。
  *
@@ -125,7 +161,8 @@ export function isTransientInputMessage(
   options?: { isActiveMessage?: boolean },
 ): boolean {
   if (message && message.role === "custom"
-    && (message.customType === ACTIVE_MESSAGE_CUSTOM_TYPE || message.customType === TURN_NOTE_CUSTOM_TYPE)) return true
+    && (message.customType === ACTIVE_MESSAGE_CUSTOM_TYPE || message.customType === TURN_NOTE_CUSTOM_TYPE
+      || message.customType === MEMORY_RECALL_CUSTOM_TYPE)) return true
   if (message && message.role === "user" && typeof message.deskpetEventId === "string") return true
   return options?.isActiveMessage === true
 }

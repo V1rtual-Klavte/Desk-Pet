@@ -25,7 +25,7 @@ import type {
 // engine → context 的运行时依赖必须走零依赖叶子（budget.ts）：context/builder.ts 已 import
 // `@/services/agent/memory`，若这里 import `@/services/context` 的 barrel，模块初始化顺序会成环。
 import { estimateContextTokens, estimateMessageTokens } from "@/services/context/budget"
-import { isTransientInputMessage } from "./input-identity"
+import { isMemoryRecallMessage, isTransientInputMessage } from "./input-identity"
 
 export interface PromptSnapshotInput {
   snapshotId: string
@@ -135,6 +135,8 @@ export function refreshMessageAllocations(
   options: { transientInput: boolean; blocks?: readonly { layer: string; origin: string; text: string }[] },
 ): ContextAllocation[] {
   // 显式声明累加器类型：`readonly unknown[]` 下 reduce 的重载会退化成 unknown。[同 `budget.ts` 的写法]
+  const memoryTokens = agentMessages.filter(message => isMemoryRecallMessage(messageIdentityOf(message)))
+    .reduce<number>((total, message) => total + estimateMessageTokens(message), 0)
   const transientTokens = options.transientInput
     ? agentMessages.filter(message => isTransientInputMessage(messageIdentityOf(message)))
         .reduce<number>((total, message) => total + estimateMessageTokens(message), 0)
@@ -145,7 +147,8 @@ export function refreshMessageAllocations(
     .reduce<number>((total, block) => total + estimateContextTokens(block.text), 0)
   return allocations.map(allocation => {
     if (allocation.layer === "transcript") return refreshAllocation(allocation, messageTokens - transientTokens)
-    if (allocation.layer === "ephemeral") return refreshAllocation(allocation, blockTokens + transientTokens)
+    if (allocation.layer === "ephemeral") return refreshAllocation(allocation, blockTokens + transientTokens - memoryTokens)
+    if (allocation.layer === "memory") return refreshAllocation(allocation, allocation.used + memoryTokens)
     return { ...allocation }
   })
 }

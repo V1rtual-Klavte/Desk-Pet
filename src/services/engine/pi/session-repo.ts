@@ -13,7 +13,7 @@ import type {
   SessionCreateOptions,
 } from "@earendil-works/pi-agent-core"
 import { runtimePath } from "@/services/paths"
-import { TauriExecutionEnv } from "@/services/tool/pi/tauri-execution-env"
+import { SessionFileSystem } from "./session-file-system"
 import { createLogger } from "@/services/logger"
 import { formatError } from "@/services/error"
 import { FrameBufferingFileSystem } from "./session-frame-buffer"
@@ -150,7 +150,7 @@ class DataRootSessionRepo implements PiSessionRepo {
  */
 export async function createPiSessionRepo(options: PiSessionRepoOptions = {}): Promise<PiSessionRepo> {
   const cwd = options.cwd ?? (await runtimePath("data"))
-  const base = options.fileSystem ?? new TauriExecutionEnv(cwd)
+  const base = options.fileSystem ?? new SessionFileSystem(cwd, await runtimePath("sessions"))
   // O-9 裁定：帧写入合并是全局开关、默认开，`=== false` 是本文件唯一的旁路点。
   //   · 不做按会话粒度 —— 缓冲本身已按文件路径分桶，「按会话开关」只会多一个状态点而没有
   //     消费者；排查真正需要的是「整体关掉看现象」。

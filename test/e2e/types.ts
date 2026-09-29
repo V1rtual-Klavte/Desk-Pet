@@ -68,10 +68,14 @@ export interface AssertContext {
 }
 
 export interface MemorySnapshot {
+  /** 记忆库里 status=active 的条目数；读取失败时保持上一次可见的读数并带 memoryError。 */
   totalEntries: number
   /** 会话条目中的用户/助手消息条数（与 UI 同一读模型，不读进程内工作记忆）。 */
   sessionTurnCount: number
-  entriesByCategory: Record<string, number>
+  /** 按 kind 统计的已接受条目数（fact / preference / episode / working）。 */
+  entriesByKind: Record<string, number>
+  /** 记忆库读取失败的原因：0 条与「读不到」必须能分开。 */
+  memoryError?: string
   sessionTurns: { role: "user" | "assistant"; text: string }[]
 }
 

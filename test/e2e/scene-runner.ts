@@ -19,7 +19,7 @@ import { harnessSlots } from "@/services/engine/pi"
 import { getActiveSessionId } from "@/services/session/store"
 import { pushAssistantMessage, pushUserMessage } from "@/services/session/messages"
 import { initSessions } from "@/services/session"
-import { MemoryService } from "@/services/agent/memory"
+import { memoryList, memoryStatus } from "@/services/agent/memory"
 import { formatError } from "@/services/error"
 import { classifyFailureKind } from "@/services/error/failure-kind"
 import { confirmRecords } from "../host/confirm-channel"
@@ -143,13 +143,28 @@ async function takeMemorySnapshot(sessionId: string): Promise<MemorySnapshot> {
       message.role === "user" || message.role === "assistant")
     .map(message => ({ role: message.role, text: message.text }))
   return {
-    totalEntries: MemoryService.count,
+    ...await readMemoryCounts(),
     sessionTurnCount: turns.length,
-    entriesByCategory: MemoryService.list().reduce((acc, entry) => {
-      acc[entry.category] = (acc[entry.category] || 0) + 1
-      return acc
-    }, {} as Record<string, number>),
     sessionTurns: turns,
+  }
+}
+
+/**
+ * 记忆库读数：0 条与「读不到」必须能分开 —— 读取失败返回 `memoryError`，
+ * 不让一个坏掉的库在报告里显示成「没有记忆」。
+ */
+async function readMemoryCounts(): Promise<Pick<MemorySnapshot, "totalEntries" | "entriesByKind" | "memoryError">> {
+  try {
+    const [status, items] = await Promise.all([memoryStatus(), memoryList(undefined, undefined, 500)])
+    return {
+      totalEntries: status.itemCount,
+      entriesByKind: items.reduce<Record<string, number>>((acc, item) => {
+        acc[item.draft.kind] = (acc[item.draft.kind] || 0) + 1
+        return acc
+      }, {}),
+    }
+  } catch (error) {
+    return { totalEntries: 0, entriesByKind: {}, memoryError: formatError(error) }
   }
 }
 

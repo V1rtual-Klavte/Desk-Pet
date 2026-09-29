@@ -3,7 +3,7 @@ import { ref, onMounted, onUnmounted } from "vue";
 import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
 import {
   userConfig, toolsConfig,
-  setOverrides, setOverride, getAllOverrides, flushConfig, parallelToolsError,
+  setOverrides, setOverride, getAllOverrides, flushConfig, parallelToolsError, memoryConfigError,
 } from "@/services/config";
 import {
   saveSoundAssignments,
@@ -17,6 +17,7 @@ import { contextWindowError } from "@/services/context";
 import { emit } from "@tauri-apps/api/event";
 import GeneralTab from "@/components/settings/GeneralTab.vue";
 import AITab from "@/components/settings/AITab.vue";
+import MemoryTab from "@/components/settings/MemoryTab.vue";
 import ToolsTab from "@/components/settings/ToolsTab.vue";
 import AppearanceTab from "@/components/settings/AppearanceTab.vue";
 import AppDialog from "@/components/AppDialog.vue";
@@ -28,10 +29,11 @@ const win = getCurrentWebviewWindow();
 const tabs = [
   { id: "general", label: "🏠 通用", icon: "G" },
   { id: "ai", label: "🤖 AI", icon: "A" },
+  { id: "memory", label: "🧠 记忆", icon: "M" },
   { id: "tools", label: "🔧 工具", icon: "T" },
   { id: "appearance", label: "🎨 外观", icon: "P" },
 ] as const;
-const activeTab = ref<"general" | "ai" | "tools" | "appearance">("general");
+const activeTab = ref<"general" | "ai" | "memory" | "tools" | "appearance">("general");
 
 // ── 子组件引用 ──
 const generalTabRef = ref<InstanceType<typeof GeneralTab>>();
@@ -72,6 +74,20 @@ async function doSave() {
     log.error("设置保存失败:", parallelIssue);
     return;
   }
+  const memoryIssue = memoryConfigError({
+    coreTokenBudget: a.coreTokenBudget,
+    recallTokenBudget: a.recallTokenBudget,
+    recallTimeoutMs: a.recallTimeoutMs,
+    rerankTimeoutMs: a.rerankTimeoutMs,
+    dreamingIdleSeconds: a.dreamingIdleSeconds,
+    dreamingMinIntervalMinutes: a.dreamingMinIntervalMinutes,
+    dreamingMaxDailyTokens: a.dreamingMaxDailyTokens,
+  });
+  if (memoryIssue) {
+    saveError.value = memoryIssue;
+    log.error("设置保存失败:", memoryIssue);
+    return;
+  }
   const previousPersonalityActive = getActivePersonalityId();
 
   userConfig.popupMode = g.popupMode;
@@ -105,7 +121,16 @@ async function doSave() {
     "ai.windowMonitor.cooldownMs": Math.round(a.wmCooldownSec * 1000),
     "ai.windowMonitor.samePageCooldownMs": Math.round(a.wmSamePageCool * 1000),
     "ai.lock.safetyTimeoutMs": a.lockTimeout,
-    "ai.memory.maxEntries": a.memMax,
+    "ai.memory.enabled": a.memoryEnabled,
+    "ai.memory.coreTokenBudget": a.coreTokenBudget,
+    "ai.memory.recallTokenBudget": a.recallTokenBudget,
+    "ai.memory.rerank": a.memoryRerank,
+    "ai.memory.recallTimeoutMs": a.recallTimeoutMs,
+    "ai.memory.rerankTimeoutMs": a.rerankTimeoutMs,
+    "ai.memory.dreaming.mode": a.dreamingMode,
+    "ai.memory.dreaming.idleSeconds": a.dreamingIdleSeconds,
+    "ai.memory.dreaming.minIntervalMinutes": a.dreamingMinIntervalMinutes,
+    "ai.memory.dreaming.maxDailyTokens": a.dreamingMaxDailyTokens,
     // Plan 的七个键在 AITab 里都有 UI 和 expose，此前没进这张表 ——
     // 用户在设置页改完保存会被静默丢弃，且 test:types 抓不到
     "ai.plan.enabled": a.planEnabled,
@@ -316,6 +341,7 @@ onUnmounted(() => {
       <div id="s-body">
         <GeneralTab ref="generalTabRef" v-show="activeTab === 'general'" />
         <AITab ref="aiTabRef" v-show="activeTab === 'ai'" />
+        <MemoryTab v-show="activeTab === 'memory'" />
         <ToolsTab ref="toolsTabRef" v-show="activeTab === 'tools'" />
         <AppearanceTab ref="appearanceTabRef" v-show="activeTab === 'appearance'" />
       </div>

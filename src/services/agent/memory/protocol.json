@@ -14,6 +14,7 @@
         "sourceId": { "type": "string", "minLength": 1 }, "sessionId": { "type": "string", "minLength": 1 },
         "entryId": { "type": "string", "minLength": 1 }, "eventId": { "type": "string" }, "seq": { "type": "integer", "minimum": 0 },
         "contentHash": { "type": "string", "minLength": 1 }, "evidence": { "type": "string" },
+        "cardId": { "type": "string" },
         "eligibleForMemory": { "type": "boolean" }, "taint": { "type": "string", "enum": ["trusted_user", "derived", "untrusted", "system"] },
         "origin": { "type": "string", "enum": ["user", "assistant", "tool", "system", "import"] }, "observedAt": { "type": "integer" }
       }

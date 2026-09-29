@@ -108,7 +108,21 @@ interface Config {
       /** 同时执行的只读（shared_read）工具数上限；运行期所有者是 Rust 许可池 */
       maxParallelTools: number
     }
-    memory: { maxEntries: number; maxSessions: number }
+    memory: {
+      enabled: boolean
+      coreTokenBudget: number
+      recallTokenBudget: number
+      rerank: "off" | "adaptive"
+      recallTimeoutMs: number
+      rerankTimeoutMs: number
+      dreaming: {
+        mode: "manual" | "idle"
+        idleSeconds: number
+        minIntervalMinutes: number
+        maxDailyTokens: number
+      }
+      maxSessions: number
+    }
     plan: {
       enabled: boolean
       complexityThreshold: number
@@ -517,9 +531,40 @@ export const aiLockConfig = {
 };
 
 export const memoryConfig = {
-  get maxEntries() { return overrideOr("ai.memory.maxEntries", cfg.ai?.memory?.maxEntries || 200); },
+  get enabled() { return overrideOr("ai.memory.enabled", cfg.ai?.memory?.enabled ?? true); },
+  get coreTokenBudget() { return overrideOr("ai.memory.coreTokenBudget", cfg.ai?.memory?.coreTokenBudget ?? 320); },
+  get recallTokenBudget() { return overrideOr("ai.memory.recallTokenBudget", cfg.ai?.memory?.recallTokenBudget ?? 1000); },
+  get rerank() { return overrideOr("ai.memory.rerank", cfg.ai?.memory?.rerank || "off") as "off" | "adaptive"; },
+  get recallTimeoutMs() { return overrideOr("ai.memory.recallTimeoutMs", cfg.ai?.memory?.recallTimeoutMs ?? 4000); },
+  get rerankTimeoutMs() { return overrideOr("ai.memory.rerankTimeoutMs", cfg.ai?.memory?.rerankTimeoutMs ?? 2500); },
+  get dreamingMode() { return overrideOr("ai.memory.dreaming.mode", cfg.ai?.memory?.dreaming?.mode || "manual") as "manual" | "idle"; },
+  get dreamingIdleSeconds() { return overrideOr("ai.memory.dreaming.idleSeconds", cfg.ai?.memory?.dreaming?.idleSeconds ?? 120); },
+  get dreamingMinIntervalMinutes() { return overrideOr("ai.memory.dreaming.minIntervalMinutes", cfg.ai?.memory?.dreaming?.minIntervalMinutes ?? 60); },
+  get dreamingMaxDailyTokens() { return overrideOr("ai.memory.dreaming.maxDailyTokens", cfg.ai?.memory?.dreaming?.maxDailyTokens ?? 12000); },
   get maxSessions() { return overrideOr("ai.memory.maxSessions", cfg.ai?.memory?.maxSessions ?? 20); },
 };
+
+export function memoryConfigError(values: {
+  coreTokenBudget: number; recallTokenBudget: number; recallTimeoutMs: number;
+  rerankTimeoutMs: number; dreamingIdleSeconds: number;
+  dreamingMinIntervalMinutes: number; dreamingMaxDailyTokens: number;
+}): string | undefined {
+  const ranges: Array<[string, number, number, number]> = [
+    ["核心画像预算", values.coreTokenBudget, 0, 2000],
+    ["召回预算", values.recallTokenBudget, 0, 4000],
+    ["召回时限", values.recallTimeoutMs, 100, 10000],
+    ["重排时限", values.rerankTimeoutMs, 100, 10000],
+    ["空闲等待", values.dreamingIdleSeconds, 30, 3600],
+    ["最小间隔", values.dreamingMinIntervalMinutes, 1, 1440],
+    ["每日模型预算", values.dreamingMaxDailyTokens, 0, 100000],
+  ];
+  for (const [label, value, min, max] of ranges) {
+    if (!Number.isInteger(value) || value < min || value > max) {
+      return `${label}必须是 ${min}-${max} 的整数（当前 ${value}）`;
+    }
+  }
+  return undefined;
+}
 
 export const planConfig = {
   get enabled() { return overrideOr("ai.plan.enabled", cfg.ai?.plan?.enabled ?? true); },

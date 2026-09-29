@@ -51,8 +51,17 @@ const wmSamePageCool = ref(Math.round(windowMonitorConfig.samePageCooldownMs / 1
 // ── 并发锁 ──
 const lockTimeout = ref(aiLockConfig.safetyTimeoutMs);
 
-// ── 记忆 ──
-const memMax = ref(memoryConfig.maxEntries);
+// ── 记忆策略（数据治理操作在 MemoryTab 独立提交）──
+const memoryEnabled = ref(memoryConfig.enabled);
+const coreTokenBudget = ref(memoryConfig.coreTokenBudget);
+const recallTokenBudget = ref(memoryConfig.recallTokenBudget);
+const memoryRerank = ref(memoryConfig.rerank);
+const recallTimeoutMs = ref(memoryConfig.recallTimeoutMs);
+const rerankTimeoutMs = ref(memoryConfig.rerankTimeoutMs);
+const dreamingMode = ref(memoryConfig.dreamingMode);
+const dreamingIdleSeconds = ref(memoryConfig.dreamingIdleSeconds);
+const dreamingMinIntervalMinutes = ref(memoryConfig.dreamingMinIntervalMinutes);
+const dreamingMaxDailyTokens = ref(memoryConfig.dreamingMaxDailyTokens);
 const candyInstructions = ref("");
 
 // ── Plan 设置 ──
@@ -63,17 +72,6 @@ const planMaxSteps = ref(planConfig.maxSteps);
 const planThinkingEffort = ref(planConfig.thinkingEffort);
 const planStepThinkingEffort = ref(planConfig.stepThinkingEffort);
 const planOnStepFailure = ref(planConfig.onStepFailure);
-const memStatus = ref<{
-  count: number;
-  lastConsolidation: string;
-  sessionTurns?: number;
-  sessionId?: string;
-  projectCount?: number;
-}>({
-  count: 0,
-  lastConsolidation: "从未",
-});
-
 // ═══════════════════════════════════
 // 🎭 Card 系统
 // ═══════════════════════════════════
@@ -430,37 +428,10 @@ onMounted(async () => {
   try {
     const { MemoryService } = await import("@/services/agent/memory");
     await MemoryService.init();
-    // 会话状态直接读活跃会话的条目（真相源），不再依赖旧的进程内会话工作记忆。
-    const { getActiveSessionId, readPiSessionEntriesOnce, messagesFromEntries } = await import("@/services/session");
-    const sessionId = getActiveSessionId();
-    try {
-      const entries = sessionId ? await readPiSessionEntriesOnce(sessionId) : [];
-      const sessionTurns = messagesFromEntries(entries)
-        .filter(message => message.role === "user" || message.role === "assistant").length;
-      // 换代身份只有一个定义点（沿 lane 分支回溯）：不与会话条目数抄同一公式。
-      const { readContextEpoch } = await import("@/services/engine/pi");
-      const compactions = sessionId ? (await readContextEpoch(sessionId))?.count : undefined;
-      memStatus.value = {
-        count: MemoryService.count,
-        projectCount: MemoryService.projectCount,
-        // 读失败（undefined）保留上一次展示：显示「运行中」会与「确实没压缩过」同形。
-        lastConsolidation: compactions === undefined
-          ? memStatus.value.lastConsolidation
-          : compactions > 0 ? `已压缩 ${compactions} 次` : "运行中",
-        sessionTurns,
-        sessionId,
-      };
-    } catch (e) {
-      // 读取失败时保留上次快照：显示「0 轮 / 运行中」会与「确实没压缩过」同形。
-      log.warn("会话条目读取失败，记忆面板保留上次快照:", formatError(e));
-    }
     const candy = MemoryService.getCandyInstructionsSync();
-    if (candy)
-      candyInstructions.value = candy
-        .replace(/^[\s\S]*?指令\]\n/, "")
-        .trim();
+    if (candy) candyInstructions.value = candy.replace(/^[\s\S]*?指令\]\n/, "").trim();
   } catch (e) {
-    log.warn("记忆状态读取失败:", formatError(e));
+    log.warn("记忆指令读取失败:", formatError(e));
   }
 
   if (personalityActive.value) {
@@ -490,7 +461,16 @@ defineExpose({
   wmCooldownSec,
   wmSamePageCool,
   lockTimeout,
-  memMax,
+  memoryEnabled,
+  coreTokenBudget,
+  recallTokenBudget,
+  memoryRerank,
+  recallTimeoutMs,
+  rerankTimeoutMs,
+  dreamingMode,
+  dreamingIdleSeconds,
+  dreamingMinIntervalMinutes,
+  dreamingMaxDailyTokens,
   personalityActive,
   candyInstructions,
   planEnabled,
@@ -727,8 +707,22 @@ defineExpose({
   <!-- ═══ 🧠 记忆 ═══ -->
   <div class="s-section">
     <div class="s-label">🧠 记忆</div>
-    <div class="fld"><span class="fn">上限</span><input class="inp-num" type="number" v-model.number="memMax" min="10" max="1000" /> 条</div>
-    <div class="s-hint">{{ memStatus.count }} 条记忆 | 归档 {{ memStatus.projectCount ?? 0 }} | 会话 {{ memStatus.sessionTurns ?? 0 }} 轮 | {{ memStatus.lastConsolidation }}</div>
+    <label class="chk"><input type="checkbox" v-model="memoryEnabled" /><span>启用长期记忆召回与候选收集</span></label>
+    <div class="fld"><span class="fn">核心画像预算</span><input class="inp-num" type="number" v-model.number="coreTokenBudget" min="0" max="2000" /> tokens</div>
+    <div class="fld"><span class="fn">召回预算</span><input class="inp-num" type="number" v-model.number="recallTokenBudget" min="0" max="4000" /> tokens</div>
+    <div class="s-subtitle" style="margin-top:6px">召回重排</div>
+    <div class="radio-row">
+      <label v-for="m in [{v:'off',l:'关闭'},{v:'adaptive',l:'按需重排'}]" :key="'mr'+m.v" class="chk"><input type="radio" v-model="memoryRerank" :value="m.v" /><span>{{ m.l }}</span></label>
+    </div>
+    <div class="fld"><span class="fn">召回时限</span><input class="inp-num" type="number" v-model.number="recallTimeoutMs" min="100" max="10000" /> ms</div>
+    <div class="fld"><span class="fn">重排时限</span><input class="inp-num" type="number" v-model.number="rerankTimeoutMs" min="100" max="10000" /> ms</div>
+    <div class="s-subtitle" style="margin-top:6px">后台整理</div>
+    <div class="radio-row">
+      <label v-for="m in [{v:'manual',l:'手动'},{v:'idle',l:'空闲自动'}]" :key="'dm'+m.v" class="chk"><input type="radio" v-model="dreamingMode" :value="m.v" /><span>{{ m.l }}</span></label>
+    </div>
+    <div class="fld"><span class="fn">空闲等待</span><input class="inp-num" type="number" v-model.number="dreamingIdleSeconds" min="30" max="3600" /> 秒</div>
+    <div class="fld"><span class="fn">最小间隔</span><input class="inp-num" type="number" v-model.number="dreamingMinIntervalMinutes" min="1" max="1440" /> 分钟</div>
+    <div class="fld"><span class="fn">每日模型预算</span><input class="inp-num" type="number" v-model.number="dreamingMaxDailyTokens" min="0" max="100000" /> tokens</div>
     <div class="fld-col" style="margin-top:4px"><span class="fn">CANDY.md 指令</span><textarea class="inp txa mono" v-model="candyInstructions" rows="2" placeholder="例如：叫我小明、用日语回复..."></textarea></div>
   </div>
 </div>

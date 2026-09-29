@@ -4,7 +4,7 @@
 //
 // 场景口径：召回文本的 token 口径（MISS-05，P6 的预算穿透点）。
 //
-// 召回预算的消费者是 buildPrompt 的 memory 块（`memoryProjectionBlocks` 按 `projection.tokenBudget`
+// 召回预算的消费者是请求视图里的尾随记忆块（`renderMemoryRecall` 按 `projection.tokenBudget`
 // 记账），所以「声明的预算」必须真的是「实际占用的 token」。旧的 `text.slice(0, budget * 4)` 用
 // 「4 字符 = 1 token」这个中英通吃常数：中文下 1 字符 ≈ 1 token，声明 128 token 的召回实际能塞进
 // 约 512 token，预算会计与请求用量直接脱钩。本场景注入超长中文召回文本，断言裁剪后的正文落在
@@ -28,7 +28,7 @@ const BUDGET = 128
 const MARK_TOKENS = estimateContextTokens(TRUNCATION_MARK)
 
 function projectionOf(text: string, tokenBudget: number) {
-  return { sourceId: "recall-budget", memoryVersion: "1", provenance: "e2e", taint: "derived" as const, text, tokenBudget }
+  return { sourceId: "recall-budget", memoryVersion: "1", provenance: "e2e", taint: "derived" as const, text, tokenBudget, tier: "recall" as const }
 }
 
 const request = (tokenBudget: number) => ({ requestId: "recall-budget", sessionId: "recall-budget", query: "预算", tokenBudget })

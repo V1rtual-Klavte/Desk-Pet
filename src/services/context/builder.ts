@@ -13,17 +13,14 @@ import { formatAllRules } from "@/services/personality/must-rules"
 import type { PersonalityCard } from "@/services/personality/types"
 import type { VariablePool } from "@/services/personality/variable-pool"
 import type { ContextBlock } from "@/services/engine/runtime"
-import type { MemoryProjection } from "@/services/agent/memory"
 import { buildPromptBlocks } from "./kernel"
 import type { ContextBudgetAdjustment } from "./kernel"
 import { contextBudget, toolBudgetSchema, type ContextBudget } from "./budget"
-import { createUserProfileProjection, memoryProjectionBlocks, profileProjectionBlock } from "./projection"
 
 export interface BuildContextInput {
   unansweredCount?: number
   thinkingEffort: ThinkingEffort
   isActiveMessage?: boolean
-  memoryProjections?: MemoryProjection[]
   sessionSummary?: string
   ephemeralText?: string
   ephemeralOrigin?: "active" | "hook" | "recovery" | "plan"
@@ -33,7 +30,6 @@ export interface BuildContextInput {
   tools?: ToolDeclaration[]
   dynamicPrompt?: string
   candyInstructions?: string
-  userProfileText?: string
   skillsPromptBlock?: string
 }
 
@@ -144,8 +140,6 @@ export function buildPrompt(input: BuildContextInput, card: PersonalityCard | nu
   const budget = contextBudget(contextMaxTokens, input.maxOutputTokens)
   const tools = decideTools(input)
   const candy = input.candyInstructions ?? MemoryService.getCandyInstructionsSync()
-  const userProfile = input.userProfileText ?? MemoryService.getUserProfileSync()
-  const profileProjection = createUserProfileProjection(userProfile)
   const toolProtocol = tools.length
     ? "你可以使用工具完成任务。需要工具时只输出工具调用。完成后基于结果简短回复。"
     : "请简短口语化回复。"
@@ -161,10 +155,8 @@ export function buildPrompt(input: BuildContextInput, card: PersonalityCard | nu
     { blockId: "static:tool-schema", layer: "static", source: "tool-schema", text: toolSchemaSnapshot, priority: 97, origin: "system", taint: "system" },
     { blockId: "static:skill-catalog", layer: "static", source: "skill-catalog", text: skillCatalog, priority: 96, origin: "system", taint: "system" },
     { blockId: "dynamic:runtime", layer: "dynamic", source: "runtime", text: dynamic, priority: 90, origin: "system", taint: "system" },
-    profileProjectionBlock(profileProjection),
     // Summary remains derived session data; it never inherits CANDY's system-instruction taint.
     { blockId: "memory:session-summary", layer: "memory", source: "session-summary", text: input.sessionSummary ?? "", priority: 70, origin: "assistant", taint: "derived" },
-    ...memoryProjectionBlocks(input.memoryProjections ?? []),
     { blockId: `ephemeral:${input.ephemeralOrigin ?? (input.isActiveMessage ? "active" : "none")}`,
       layer: "ephemeral", source: input.ephemeralOrigin ?? (input.isActiveMessage ? "active_monitor" : "none"),
       text: input.ephemeralText ?? "", priority: 50,

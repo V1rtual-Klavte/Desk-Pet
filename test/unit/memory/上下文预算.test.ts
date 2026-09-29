@@ -79,10 +79,10 @@ describe("上下文预算", () => {
     // 可选块放不进硬上限：整块淘汰 + budgetDrops 记录，不抛错也不截块内文字。
     const small = buildPromptBlocks([
       staticBlock("static:card", "personality-card", "固定角色规则"),
-      { blockId: "profile:user", layer: "profile", source: "User.md", text: "y".repeat(2_000), priority: 80, origin: "memory", taint: "derived" },
+      { blockId: "memory:optional", layer: "memory", source: "MemoryProvider", text: "y".repeat(2_000), priority: 65, origin: "memory", taint: "derived" },
     ], 1_200)
-    expect(small.blocks.some(block => block.blockId === "profile:user"), "放不进硬上限的可选块仍被选中").toBe(false)
-    const drop = small.budgetDrops.find(item => item.blockId === "profile:user")
+    expect(small.blocks.some(block => block.blockId === "memory:optional"), "放不进硬上限的可选块仍被选中").toBe(false)
+    const drop = small.budgetDrops.find(item => item.blockId === "memory:optional")
     expect(drop, `可选块淘汰没有被如实记录: ${JSON.stringify(small.budgetDrops)}`).toBeDefined()
     expect(drop?.reason).toBe("dropped")
     expect(drop?.originalTokens).toBe(estimateContextTokens("y".repeat(2_000)))
@@ -94,9 +94,9 @@ describe("上下文预算", () => {
     expect(transcript?.requested, `transcript 不该有预算占用: ${JSON.stringify(transcript)}`).toBe(0)
     expect(transcript?.used).toBe(0)
     expect(small.allocations.some(allocation => "borrowed" in allocation), "分配账目回到了借还计算（borrowed 字段）").toBe(false)
-    // profile 计入 dynamic：淘汰量落在该层，没有淘汰的层不写 dropped（不写 0）。
-    const droppedLayer = small.allocations.find(allocation => allocation.layer === "dynamic")
-    expect(droppedLayer?.dropped, `dynamic 层的淘汰量没有如实记录: ${JSON.stringify(droppedLayer ?? null)}`)
+    // 淘汰量落在块自己所属的层（memory），没有淘汰的层不写 dropped（不写 0）。
+    const droppedLayer = small.allocations.find(allocation => allocation.layer === "memory")
+    expect(droppedLayer?.dropped, `memory 层的淘汰量没有如实记录: ${JSON.stringify(droppedLayer ?? null)}`)
       .toBe(estimateContextTokens("y".repeat(2_000)))
     expect(small.allocations.some(allocation => allocation.dropped !== undefined && allocation.dropped <= 0),
       `没有淘汰的层不该写 dropped: 0：${JSON.stringify(small.allocations)}`).toBe(false)

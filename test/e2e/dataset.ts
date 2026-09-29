@@ -41,8 +41,10 @@ import { DEFAULT_SCENE_TIMEOUT, UNIT_SCENE_TIMEOUT } from "./scene-runner"
  * `2026-09-29.4`：W3 把 30 个非 production 场景（12 个 `runtime` + 18 个未声明 entry）按
  * 适配层实测分流：**20 迁 L2/L3、10 留 L4**（逐个有归属登记，不按声明猜）。
  * 场景集合与报告分母再次改变，全波共用这一次 bump。
+ * `2026-09-29.5`：B 方案记忆重构：新增 `memory-store-lifecycle`（真 Rust 记忆库生命周期），
+ * 并把记忆来源准入与重排校验分别落到 L3/L2；场景集合与判据口径一起变，故 bump。
  */
-export const LIVE_DATASET_VERSION = "2026-09-29.4"
+export const LIVE_DATASET_VERSION = "2026-09-29.5"
 
 export function validateDataset(scenes: SceneDef[], contracts: ModuleContract[]): string[] {
   const errors: string[] = []

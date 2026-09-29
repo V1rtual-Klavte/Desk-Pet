@@ -1,20 +1,12 @@
 // ==========================================
-// 画像投影 —— 从 test/e2e/scenes/memory/画像投影.scene.ts 迁到 L2
+// 记忆投影形态 —— 从 test/e2e/scenes/memory/画像投影.scene.ts 迁到 L2
 // ==========================================
 //
-// 被测：User.md 只读投影的来源标记，空 MemoryProvider 的边界，以及注入端口的
-// 「单条预算取请求与声明的严格者」。全部是进程内行为（投影构造 + 召回端口），归 L2。
-//
-// 审视结论（修正后搬，两条线索都已复核）：
-//   ① `:42`（D1）：`recalled.length !== 0 || memoryProjectionBlocks(recalled).length !== 0`
-//      的第二子句只在 `recalled.length === 0` 时求值，`memoryProjectionBlocks([])` 恒空
-//      —— 死子句删除，保留「空实现召回 0 条」。
-//   ② `:54-68`（D10）：裁剪段与 `test/unit/memory/召回预算.test.ts` 断言同一段逻辑
-//      （那一侧还多出紧 token 上界与「正文是原正文前缀」两条）—— 这里删掉重复的裁剪段，
-//      只保留本场景独有的「单条预算取请求与声明的严格者」。
-//
-// 另外删掉的子句：`fake provider 未被调用` —— 它断言的是 L4 宿主替场景跑了回合，
-// 不是产品行为（场景的画像/召回断言都不经过它）。同一件事在 L2 无意义。
+// B 方案把画像从「User.md 只读投影」换成记忆库里的 pinned 条目：画像与按需召回同属一个
+// 尾随记忆块，不再有独立的 profile 系统块。这个用例钉住三件事：
+//   ① 记忆块的投递形态是 custom 消息（不是 system 消息）：记忆是派生数据，不能升级成指令；
+//   ② 它带 eligibleForMemory=false —— 召回内容不能被下一轮整理当成用户新事实重新提取；
+//   ③ 召回端口的单条预算取「请求预算」与「投影声明」的严格者，注入必须能原样收回。
 import { mkdtempSync, rmSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
@@ -22,7 +14,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest"
 
 import { setTestDataRoot } from "../../host/node-ipc"
 import { emptyMemoryProvider, getMemoryProvider, installMemoryProvider, recallMemory } from "@/services/agent/memory"
-import { createUserProfileProjection, profileProjectionBlock } from "@/services/context"
+import { createMemoryRecallMessage, isMemoryRecallMessage, MEMORY_RECALL_CUSTOM_TYPE } from "@/services/engine/runtime"
 
 /** 注入探针的正文：中文按 token 口径估算（1 汉字 ≈ 1 token），5 个汉字 ≈ 5 token。 */
 const INJECTED_TEXT = "可注入记忆"
@@ -41,19 +33,24 @@ afterAll(() => {
   rmSync(root, { recursive: true, force: true })
 })
 
-describe("画像投影", () => {
-  it("User.md 只读投影、空 MemoryProvider 边界，以及注入端口的 token 口径裁剪与恢复 [memory-profile-rewrite]", async () => {
-    // 画像来源：User.md 只读投影，缺来源/派生标记/版本都要红。
-    const projection = createUserProfileProjection("用户偏好简短回复")
-    const block = profileProjectionBlock(projection)
+describe("记忆投影形态", () => {
+  it("记忆块是尾随 custom 消息、不可回灌，且召回端口注入可收回 [memory-profile-rewrite]", async () => {
+    // ① 投递形态：custom 消息 + 不进 transcript + 不参与长期记忆 + 派生 taint。
+    // AgentMessage 是判别联合，custom 分支的字段只能从结构面读；这里读的就是落盘袋子里那几个字段。
+    const message = createMemoryRecallMessage("用户偏好简短回复") as unknown as {
+      role: unknown
+      customType?: unknown
+      details?: { taint?: unknown; eligibleForMemory?: unknown; visibleToUser?: unknown }
+    }
+    expect(message.role, "记忆块被当成系统消息投递（它会变成指令）").toBe("custom")
+    expect(message.customType, "记忆块缺少专用 customType").toBe(MEMORY_RECALL_CUSTOM_TYPE)
+    expect(isMemoryRecallMessage(message), "记忆块形状与判定函数不一致").toBe(true)
+    expect(isMemoryRecallMessage({ role: "custom", customType: "deskpet.turn_note" }), "尾随注记被误判成记忆块").toBe(false)
+    const details = message.details ?? {}
     expect(
-      { layer: block.layer, sourceId: block.sourceId, provenance: block.provenance },
-      `画像投影来源不完整: ${JSON.stringify(block)}`,
-    ).toEqual({ layer: "profile", sourceId: "User.md", provenance: "user_profile_file" })
-    expect(
-      { taint: block.taint, projectionVersion: block.projectionVersion },
-      "画像投影缺少派生标记或版本",
-    ).toEqual({ taint: "derived", projectionVersion: 1 })
+      { taint: details.taint, eligibleForMemory: details.eligibleForMemory, visibleToUser: details.visibleToUser },
+      "记忆块没有派生标记、可回灌或对用户可见",
+    ).toEqual({ taint: "derived", eligibleForMemory: false, visibleToUser: false })
 
     // 空 MemoryProvider：默认实现不产生任何自动召回。
     const recalled = await emptyMemoryProvider.recall({ requestId: "profile-test", sessionId: "profile-test", query: "秘密查询", tokenBudget: 128, signal: new AbortController().signal })
@@ -63,7 +60,7 @@ describe("画像投影", () => {
     const injected = {
       recall: async () => [{
         sourceId: "test", memoryVersion: "1", provenance: "e2e", taint: "derived" as const,
-        text: INJECTED_TEXT, tokenBudget: PROJECTION_BUDGET,
+        text: INJECTED_TEXT, tokenBudget: PROJECTION_BUDGET, tier: "recall" as const,
       }],
     }
     const restore = installMemoryProvider(injected)
