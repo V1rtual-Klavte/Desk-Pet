@@ -41,7 +41,7 @@ export const 画像投影: SceneDef = {
       const recalled = await emptyMemoryProvider.recall({ requestId: "profile-test", sessionId: "profile-test", query: "秘密查询", tokenBudget: 128, signal: new AbortController().signal })
       if (recalled.length !== 0 || memoryProjectionBlocks(recalled).length !== 0) throw new Error("空 MemoryProvider 产生了自动召回")
       const injected = { recall: async () => [{
-        sourceId: "test", memoryVersion: "1", provenance: "live-test", taint: "derived" as const,
+        sourceId: "test", memoryVersion: "1", provenance: "e2e", taint: "derived" as const,
         text: INJECTED_TEXT, tokenBudget: 16,
       }] }
       const restore = installMemoryProvider(injected)

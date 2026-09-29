@@ -13,7 +13,7 @@
 | 配置、路径、Profile 持久化 | [运行时数据](current/runtime-data.md) | Config getter、AppPaths 和目标设置 Tab |
 | 工具权限、MCP、Skill | [工具系统](current/tool-system.md) | PermissionKernel、Router、对应工具实现 |
 | 查 Pi 协议与 Harness 迁移的原设计 | [Pi 方案 2026-09-20 基线](history/implementation/Pi运行时与工具协议建设方案-2026-09-20基线.md)对应章节 | 当前 runtime/tool/memory 契约与源码 |
-| 测试执行/验证边界 | [测试边界](current/testing.md) | [Live README](../src/services/__tests__/live/README.md)；生成契约时再读 [SKILL](../src/services/__tests__/live/SKILL.md) |
+| 测试执行/验证边界 | [测试边界](current/testing.md) | [测试 README](../test/README.md)；生成契约时再读 [测试 SKILL](../test/SKILL.md) |
 | 查看还剩哪些未完成工作、继续记忆重构 | [未完成工作与已知缺口](plans/active/未完成工作与已知缺口.md) | [P6 目标契约](plans/active/记忆系统运行时契约.md)、[执行手册基线](history/implementation/记忆系统重构执行手册-2026-09-20基线.md)及相关源码 |
 | 追溯旧方案、比较项目与实施证据 | 下方历史入口 | 只读关联章节，历史命令与授权不自动生效 |
 

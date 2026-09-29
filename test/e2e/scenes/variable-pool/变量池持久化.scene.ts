@@ -12,10 +12,10 @@ import {
 
 /**
  * 用测试专属 cardId，避免踩到真实 Card 的 `stages/{id}.json`。
- * Live Test 的 data_root 本身就是一次性临时目录（`$HOME/.deskpet-live-test-*`），
+ * Live Test 的 data_root 本身就是一次性临时目录（`$HOME/.deskpet-e2e-*`），
  * 场景之间也不会互相看见这个文件。
  */
-const CARD_ID = "live-test-vars"
+const CARD_ID = "e2e-vars"
 
 const DEFS: CardVariableDef[] = [
   { scope: "card", name: "亲密", type: "number", initial: 0, description: "亲密度", updateBy: "llm", min: 0, max: 10, reset: "never" },
@@ -147,7 +147,7 @@ export const 变量池恢复 = unit("variable-pool-load", "vp-14", "loadCardVars
   if (finalState?.sessionKey !== SESSION_B) throw new Error(`会话游标未落盘: ${finalState?.sessionKey}`)
 
   // 不存在的 cardId 必须返回 null，而不是抛错 —— 首次启动就是这条路径
-  if (await loadCardVars("live-test-never-written") !== null) {
+  if (await loadCardVars("e2e-never-written") !== null) {
     throw new Error("不存在的 cardId 应返回 null")
   }
 })

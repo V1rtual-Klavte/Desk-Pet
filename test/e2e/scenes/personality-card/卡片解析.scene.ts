@@ -37,7 +37,7 @@ const unit = (
 
 /** 一份最小但结构完整的 Card：frontmatter + 六个区块 + 两组变量定义 */
 const CARD_MD = `---
-id: live-test-card
+id: e2e-card
 name: 测试卡
 description: 解析用
 version: 3
@@ -90,7 +90,7 @@ unansweredCount:
 export const 卡片解析 = unit("card-parse", "pc-01", "importUserCard 解析 markdown 为 Card", async () => {
   const card = await importUserCard(CARD_MD)
 
-  if (card.id !== "live-test-card") throw new Error(`id 未解析: ${card.id}`)
+  if (card.id !== "e2e-card") throw new Error(`id 未解析: ${card.id}`)
   if (card.name !== "测试卡") throw new Error(`name 未解析: ${card.name}`)
   if (card.version !== 3) throw new Error(`version 未解析: ${card.version}`)
   // 来源只有 runtime 一种：默认资源在首次启动就被复制成运行时可编辑文件
@@ -138,7 +138,7 @@ export const 注册表拒绝非法切换 = unit("card-registry-guard", "pc-02", 
   if (!nullResult.error) throw new Error("拒绝时没有给出原因")
 
   // 不存在的人格不能改动 activeId —— 拒绝必须是原子的
-  const missing = await switchPersonality("live-test-不存在的卡")
+  const missing = await switchPersonality("e2e-不存在的卡")
   if (missing.ok) throw new Error("切换到不存在的人格被放行")
   if (getActivePersonalityId() !== before) {
     throw new Error(`失败的切换改动了 activeId: ${before} -> ${getActivePersonalityId()}`)

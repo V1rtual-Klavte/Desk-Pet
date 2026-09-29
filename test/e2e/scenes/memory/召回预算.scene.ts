@@ -18,7 +18,7 @@ const CJK_TEXT = UNIT.repeat(Math.ceil(5_000 / UNIT.length))
 const BUDGET = 128
 
 function projectionOf(text: string, tokenBudget: number) {
-  return { sourceId: "recall-budget", memoryVersion: "1", provenance: "live-test", taint: "derived" as const, text, tokenBudget }
+  return { sourceId: "recall-budget", memoryVersion: "1", provenance: "e2e", taint: "derived" as const, text, tokenBudget }
 }
 
 const request = (tokenBudget: number) => ({ requestId: "recall-budget", sessionId: "recall-budget", query: "预算", tokenBudget })

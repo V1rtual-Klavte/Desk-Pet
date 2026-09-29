@@ -23,7 +23,7 @@
 | logger / error / dialog | 统一日志、异常出口与通用交互提示 | [logger/](../../src/services/logger/)、[error/](../../src/services/error/)、[dialog/](../../src/services/dialog/) |
 | Rust App / commands | AppPaths（数据根、允许根与凭据路径终判）、IPC 注册、文件/工具与平台能力 | [lib.rs](../../src-tauri/src/lib.rs)、[paths.rs](../../src-tauri/src/paths.rs)、[commands/](../../src-tauri/src/commands/) |
 | Rust window / monitor | Windows/macOS 窗口与前台应用监控 | [window/](../../src-tauri/src/window/)、[monitor/](../../src-tauri/src/monitor/) |
-| Live Test | Contract、Scene、隔离宿主与报告 | [测试 README](../../src/services/__tests__/live/README.md) |
+| Live Test | Contract、Scene、隔离宿主与报告 | [测试 README](../../test/README.md) |
 
 图层和景深的共享计算位于 [composables/](../../src/composables/)，展示入口是 [StreamView.vue](../../src/components/StreamView.vue)。[init.ts](../../src/services/init.ts) 负责启动初始化与能力准备（借用启用的 MCP 服务器、核对 Skill 目录指纹）。
 

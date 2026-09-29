@@ -1,6 +1,6 @@
 ---
-name: live-test
-description: Desk-Pet Live Test 的 Contract 分析、Scene 生成与覆盖审查流程。
+name: test
+description: Desk-Pet 测试树的 Contract 分析、Scene 生成与覆盖审查流程。
 ---
 
 # Live Test 工作流

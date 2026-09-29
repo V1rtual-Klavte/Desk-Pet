@@ -7,7 +7,7 @@ import {
   initVariablePool,
 } from "@/services/personality/variable-pool"
 
-const CARD_ID = "live-test-runtime-data"
+const CARD_ID = "e2e-runtime-data"
 
 const DEFS: CardVariableDef[] = [
   { scope: "card", name: "亲密", type: "number", initial: 0, description: "亲密度", updateBy: "llm", min: 0, max: 10, reset: "never" },

@@ -18,7 +18,7 @@ import {
  * 则完全失去判定依据。两个场景都把重启做真：destroy → loadCardVars →
  * initVariablePool（与 registry.prepareVariablePool 的透传同形）。
  */
-const CARD_ID = "live-test-reset-cursors"
+const CARD_ID = "e2e-reset-cursors"
 
 const DEFS: CardVariableDef[] = [
   { scope: "card", name: "永久", type: "number", initial: 0, description: "永不重置", updateBy: "llm", min: 0, max: 100, reset: "never" },
@@ -112,7 +112,7 @@ export const 每日游标跨重启 = unit("variable-pool-daily-cursor-restart", 
   if (getPoolSnapshot().card["永久"]?.value !== 9) throw new Error("reset=never 的变量被重置")
 
   // ④ 从未写过的 Card 必须给 null（按 Card 初始值重建）而不是抛错
-  if (await loadCardVars("live-test-cursors-never-written") !== null) {
+  if (await loadCardVars("e2e-cursors-never-written") !== null) {
     throw new Error("不存在的 cardId 应返回 null")
   }
 })

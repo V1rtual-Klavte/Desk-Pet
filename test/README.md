@@ -2,7 +2,7 @@
 
 Live Test 是 Desk-Pet 的运行时验证入口。它在独立 Tauri WebView 中执行真实前端服务、Rust IPC、临时数据根和 Agent/Tool 链路；测试数据不会写入正常用户数据根。
 
-Contract/Scene 的代码代理工作流见 [SKILL.md](./SKILL.md)。当前验证边界与证据索引见 [docs/current/testing.md](../../../../docs/current/testing.md)。
+Contract/Scene 的代码代理工作流见 [SKILL.md](./SKILL.md)。当前验证边界与证据索引见 [docs/current/testing.md](../docs/current/testing.md)。
 
 ## 运行命令
 
@@ -16,17 +16,17 @@ pnpm run test:types
 pnpm run test:rust
 
 # 全部 Live Scene
-pnpm test
+pnpm run test:e2e
 
 # 模块、稳定 caseId、描述、标签或套件筛选
-pnpm test -- --module memory
-pnpm test -- --case memory-compaction-checkpoint
-pnpm test -- --scene "压缩检查点"
-pnpm test -- --tag boundary
-pnpm test -- --suite safety
+pnpm run test:e2e -- --module memory
+pnpm run test:e2e -- --case memory-compaction-checkpoint
+pnpm run test:e2e -- --scene "压缩检查点"
+pnpm run test:e2e -- --tag boundary
+pnpm run test:e2e -- --suite safety
 
 # 严格 Contract 门禁与重复试验
-pnpm test -- --strict --repeat 3 --report json
+pnpm run test:e2e -- --strict --repeat 3 --report json
 
 # 生产入口 smoke 与发布门禁
 pnpm run test:smoke
@@ -47,7 +47,7 @@ Node 启动预检会校验 `sourceHash`；源码变更后应先按 SKILL 重新�
 
 浏览器侧不做也不假装做独立校验：预检通过时把「模块 → sourceHash」的证明交给运行中的测试窗口，契约声明与证明不一致、或根本没有证明（例如绕过启动脚本直接开 Tauri）时该 Contract 记为 `stale`，严格模式据此失败。
 
-`sourceHash` 只覆盖 Contract 声明的 `sourceFiles`，不是依赖闭包；两者的差异清单与是否收紧门禁见[未完成工作与已知缺口](../../../../docs/plans/active/未完成工作与已知缺口.md) 的「不修/暂不修边界」小节。
+`sourceHash` 只覆盖 Contract 声明的 `sourceFiles`，不是依赖闭包；两者的差异清单与是否收紧门禁见[未完成工作与已知缺口](../docs/plans/active/未完成工作与已知缺口.md) 的「不修/暂不修边界」小节。
 
 ## Scene 规范
 
@@ -75,7 +75,7 @@ Node 启动预检会校验 `sourceHash`；源码变更后应先按 SKILL 重新�
 
 取消是协作式的：JS 不能强杀任意 await，Scene 自己发起、不经过框架边界的等待只能靠上述宽限时间收尾。Provider、网络、认证和断言等错误会分类，兜底回复不把失败改写为成功。
 
-测试脚本在用户 Home 下创建 `.deskpet-live-test-*` 临时目录，退出时清理；清理前将报告复制到 `~/.deskpet-live-test-reports/`，按脚本保留数量淘汰。
+测试脚本在用户 Home 下创建 `.deskpet-e2e-*` 临时目录，退出时清理；清理前将报告复制到 `~/.deskpet-e2e-reports/`，按脚本保留数量淘汰。
 
 JSON 报告使用 `desk-pet-live/v2`，包含数据集版本、筛选项、trial 指标、错误分类与 `pass@k`/`pass^k`。前者表示至少一次试验通过，后者表示全部已执行试验通过；回归或发布结论使用后者及严格 Contract 结果。`environment.seedHash` 由启动脚本生成：覆盖 `src-tauri/resources/defaults` 下的文本种子与开发构建实际加载的 CONFIG，凭据按 key 名脱敏后不参与摘要，二进制素材与摘要无关。
 
@@ -84,14 +84,10 @@ JSON 报告使用 `desk-pet-live/v2`，包含数据集版本、筛选项、trial
 ## 目录职责
 
 ```text
-live/
+test/
 ├── README.md             # 命令、运行边界和 Scene 规范
 ├── SKILL.md              # Contract 分析、Scene 生成与覆盖审查流程
 ├── contracts/            # 模块行为 Contract 与 sourceHash
-├── scenes/               # SceneDef 场景
-├── standard-setup.ts     # 状态隔离
-├── scene-runner.ts       # Scene 执行与断言
-├── contract-checker.ts   # Contract 引用与覆盖规则
-├── dataset.ts            # 数据集版本和 caseId 校验
-└── reporter.ts           # terminal/json/markdown 报告
+├── host/                 # 宿主设施：状态隔离、确认通道、断言辅助、契约校验
+└── e2e/                  # 宿主入口与执行器：scenes/、scene-runner、dataset、reporter、cli
 ```

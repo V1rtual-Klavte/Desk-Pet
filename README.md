@@ -62,12 +62,12 @@ macOS 的窗口监控需要在「系统设置 → 隐私与安全性 → 辅助�
 | `pnpm tauri build` | 构建安装产物 |
 | `pnpm run test:types` | TypeScript 类型检查与 Rust 编译检查 |
 | `pnpm run test:rust` | Rust 单元测试 |
-| `pnpm test -- --module <模块>` | 运行指定模块的 Live Test |
-| `pnpm run test:release` | 发布门禁：类型与编译 + Rust 单测 + 严格 Live Test |
+| `pnpm run test:e2e -- --module <模块>` | 运行指定模块的 E2E 场景 |
+| `pnpm run test:release` | 发布门禁：类型与编译 + Rust 单测 + 严格 E2E 场景 |
 
 ## 测试
 
-类型与编译检查不代表运行时通过。Live Test 在独立 Tauri WebView 与临时数据根中执行真实前端服务、Rust IPC 与完整的会话、工具、持久化链路，Provider 可以是真实服务或确定性 fake；发布门禁执行严格契约校验与三次重复试验，跳过与超时的场景不得报通过。命令细节与场景规范见 [Live Test README](src/services/__tests__/live/README.md)。
+类型与编译检查不代表运行时通过。Live Test 在独立 Tauri WebView 与临时数据根中执行真实前端服务、Rust IPC 与完整的会话、工具、持久化链路，Provider 可以是真实服务或确定性 fake；发布门禁执行严格契约校验与三次重复试验，跳过与超时的场景不得报通过。命令细节与场景规范见 [测试 README](test/README.md)。
 
 [CI](.github/workflows/ci.yml) 在 macOS 与 Windows 上执行编译检查与 Rust 单测，不执行 Live Test。
 

@@ -20,7 +20,7 @@ import { FALLBACK_STAGES } from "@/services/personality/stages-cache"
  * 用户下次激活 Card 时才可见（变量回退到 initial）。写入次序刻意排成
  * 「变量 → 阶段文案 → 变量」：任何一步覆写掉另一段都会红。
  */
-const CARD_ID = "live-test-stages-coexist"
+const CARD_ID = "e2e-stages-coexist"
 
 const DEFS: CardVariableDef[] = [
   { scope: "card", name: "亲密", type: "number", initial: 0, description: "亲密度", updateBy: "llm", min: 0, max: 10, reset: "never" },
@@ -32,7 +32,7 @@ const DEFS: CardVariableDef[] = [
 const SESSION_KEY = 1758000123000
 
 /** 阶段文案段的探针值：它必须与变量区共存于同一文件 */
-const STAGE_SOURCE_HASH = "live-test-stage-hash"
+const STAGE_SOURCE_HASH = "e2e-stage-hash"
 
 const scene: SceneDef = {
   meta: {

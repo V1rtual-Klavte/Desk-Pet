@@ -187,10 +187,10 @@ async function main(): Promise<void> {
 
 // 测试报告本身走 console（见上方 formatReport），这里只补「未捕获异常也要有出口」。
 // overlay: false —— 独立测试窗口不需要弹覆盖层，日志与报告已足够。
-installGlobalHandlers("live-test", { overlay: false })
+installGlobalHandlers("e2e", { overlay: false })
 
 main().catch(async error => {
   const message = error instanceof Error ? error.stack || error.message : String(error)
-  reportError("live-test", error, { kind: "启动或执行失败" })
+  reportError("e2e", error, { kind: "启动或执行失败" })
   try { await invoke("e2e_complete", { passed: false, report: message }) } catch { /* app may not be ready */ }
 })

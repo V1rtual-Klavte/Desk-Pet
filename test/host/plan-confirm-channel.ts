@@ -1,7 +1,7 @@
 // ==========================================
 // Live Test 计划确认通道 —— 测试宿主的确定性应答
 //
-// live-test.html 是裸页，没有 ChatPanel / PlanConfirm 面板：`requestPlanConfirm()` 写入的
+// test-e2e.html 是裸页，没有 ChatPanel / PlanConfirm 面板：`requestPlanConfirm()` 写入的
 // `planConfirmState.pending` 与 `requestPlanStepDecision()` 写入的 `stepGate` 无人 resolve，
 // 一旦计划走到确认或门就会挂到 PLAN_CONFIRM_TIMEOUT_MS（5 分钟）或场景超时。
 //

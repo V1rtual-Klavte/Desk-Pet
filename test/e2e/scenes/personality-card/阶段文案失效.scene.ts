@@ -31,9 +31,9 @@ ${extraSection}`
 const ROLE = "你是测试用的助手，说话简短。"
 const STYLE = "简短、直接。"
 
-const BASE = cardMarkdown("live-test-staleness", ROLE, STYLE, "")
+const BASE = cardMarkdown("e2e-staleness", ROLE, STYLE, "")
 // 只改「行为进阶」与变量定义：生成输入没变，失效键就不该变
-const OTHER_SECTIONS = cardMarkdown("live-test-staleness", ROLE, STYLE, `
+const OTHER_SECTIONS = cardMarkdown("e2e-staleness", ROLE, STYLE, `
 # 行为进阶
 - 用户着急时：先给结论
 
@@ -52,8 +52,8 @@ const OTHER_SECTIONS = cardMarkdown("live-test-staleness", ROLE, STYLE, `
   description: 亲密度
 \`\`\`
 `)
-const OTHER_ROLE = cardMarkdown("live-test-staleness", "你是另一张测试卡。", STYLE, "")
-const OTHER_STYLE = cardMarkdown("live-test-staleness", ROLE, "热情、爱用语气词。", "")
+const OTHER_ROLE = cardMarkdown("e2e-staleness", "你是另一张测试卡。", STYLE, "")
+const OTHER_STYLE = cardMarkdown("e2e-staleness", ROLE, "热情、爱用语气词。", "")
 
 const scene: SceneDef = {
   meta: {
@@ -95,7 +95,7 @@ const scene: SceneDef = {
       }
 
       // ③ 归属：别的 Card 的缓存不能被当成自己的
-      if (validateStagesForCard(data, "live-test-other-card", hash)) {
+      if (validateStagesForCard(data, "e2e-other-card", hash)) {
         throw new Error("换了 cardId 仍判有效")
       }
 

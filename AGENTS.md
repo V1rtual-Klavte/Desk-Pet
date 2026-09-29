@@ -33,7 +33,7 @@ Desk-Pet 是可自定义 Card/Profile 的 Tauri v2 桌宠，优先做好轻量�
 | 配置、路径、Profile 资源、持久化 | [运行时数据](docs/current/runtime-data.md) |
 | 人格变量、阶段文案、回复元数据 | [人格与回复](docs/current/personality.md) |
 | 日志、异常、IPC、构建排查 | [工程参考](docs/current/development.md) |
-| 测试执行与场景 | [测试 README](src/services/__tests__/live/README.md)；生成契约时再读同目录 SKILL |
+| 测试执行与场景 | [测试 README](test/README.md)；生成契约时再读同目录 SKILL |
 | 继续记忆重构 | [未完成工作与已知缺口](docs/plans/active/未完成工作与已知缺口.md) 的 P6 章节，再读 [P6 目标契约](docs/plans/active/记忆系统运行时契约.md) |
 
 完整目录见 [docs/INDEX.md](docs/INDEX.md)。当前行为由源码和对应 `docs/current/` 说明；
@@ -47,7 +47,7 @@ pnpm tauri dev        # 完整桌面应用
 pnpm dev              # 仅前端，不能验证 Rust IPC
 pnpm run test:types   # Vue 类型 + Rust 编译
 pnpm run test:rust    # Rust 单测（cargo test --lib）
-pnpm test -- --module <module>
+pnpm run test:e2e -- --module <module>
 pnpm run test:release # 类型/编译 + Rust 单测 + 严格 Contract + 三次 trial
 ```
 

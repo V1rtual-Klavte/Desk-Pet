@@ -38,7 +38,7 @@ interface Entry {
 }
 
 const entries: Entry[] = []
-/** 显式覆写（如 live-test 传 `overlay: false`）；null = 走配置 */
+/** 显式覆写（如 e2e 传 `overlay: false`）；null = 走配置 */
 let overlayOverride: boolean | null = null
 let overlayEl: HTMLElement | null = null
 
