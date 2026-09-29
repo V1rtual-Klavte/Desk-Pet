@@ -14,6 +14,7 @@
         "test:rust": "cargo test --manifest-path src-tauri/Cargo.toml --lib",
         "test:unit": "vitest run --project unit",
         "test:integration": "vitest run --project integration",
+        "test:mutation": "node scripts/mutate.mjs",
         "test:e2e": "node scripts/e2e-test.mjs",
         "test:smoke": "pnpm run test:e2e -- --module agent-runtime --case production-chat-entry --strict --repeat 2",
         "test:release": "pnpm run test:types && pnpm run test:rust && pnpm run test:unit && pnpm run test:integration && pnpm run test:e2e -- --strict --repeat 3 --report json"
