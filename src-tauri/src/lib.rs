@@ -5,6 +5,7 @@ mod commands;
 pub mod error;
 pub mod logger;
 mod macros;
+mod memory;
 mod monitor;
 mod paths;
 mod window;
@@ -25,11 +26,12 @@ use crate::commands::{
     mcp_spawn, open_devtools, open_windows_sim, pause_monitor, personality_file_list, personality_file_read, personality_file_write, profile_asset_base,
     profile_clone, profile_delete, profile_file_read, profile_file_write, report_frontend_error,
     restore_default_resources, resume_monitor, set_log_config, set_monitor_config, skill_catalog_fingerprint, skill_delete,
-    spawn_cursor_tracker, system_info, tool_permit_acquire, tool_permit_attach, tool_permit_cancel,
+    spawn_cursor_tracker, system_info, session_read_text, tool_permit_acquire, tool_permit_attach, tool_permit_cancel,
     tool_permit_release, tool_permit_set_max_shared_readers, tool_permit_snapshot, BashPool, McpPool,
     ToolPermitPool,
 };
 use crate::monitor::MonitorState;
+use crate::memory::MemoryState;
 use crate::window::{
     create_main_window, enhance_layer_editor_window, enhance_settings_window, set_picker_window_level,
 };
@@ -276,6 +278,12 @@ pub fn run() {
                 .allow_directory(&paths.profiles, true)?;
             // 文件 sink 必须在 paths 就绪后初始化；此处之前的日志只进终端
             logger::init_file_sink(&paths.logs);
+            // 记忆库在路径就绪后立刻打开（建表 + 版本校验）：schema 不兼容要在启动时就说清楚，
+            // 不能让第一轮召回才发现库是坏的。打开失败不阻断聊天，命令层会以 MEMORY 错误如实上报。
+            match crate::memory::MemoryStore::open(&paths) {
+                Ok(store) => { app.manage(MemoryState::new(store)); }
+                Err(error) => rust_error!("记忆库打开失败，记忆相关能力不可用: {error}"),
+            }
             app.manage(paths);
 
             if e2e {
@@ -427,6 +435,7 @@ pub fn run() {
             read_runtime_config,
             write_runtime_config,
             read_session_ui_state,
+            session_read_text,
             write_session_ui_state,
             profile_file_write,
             profile_file_read,
@@ -450,6 +459,25 @@ pub fn run() {
             tool_permit_cancel,
             tool_permit_set_max_shared_readers,
             tool_permit_snapshot,
+            crate::memory::commands::memory_status,
+            crate::memory::commands::memory_list,
+            crate::memory::commands::memory_detail,
+            crate::memory::commands::memory_register_sources,
+            crate::memory::commands::memory_query,
+            crate::memory::commands::memory_get_items,
+            crate::memory::commands::memory_apply_change,
+            crate::memory::commands::memory_job_start,
+            crate::memory::commands::memory_job_checkpoint,
+            crate::memory::commands::memory_job_cancel,
+            crate::memory::commands::memory_job_resume,
+            crate::memory::commands::memory_job_sources,
+            crate::memory::commands::memory_candidates_add,
+            crate::memory::commands::memory_review_batch,
+            crate::memory::commands::memory_publish_batch,
+            crate::memory::commands::memory_export,
+            crate::memory::commands::memory_backup,
+            crate::memory::commands::memory_rebuild,
+            crate::memory::commands::memory_restore,
             ])
         .build(tauri::generate_context!())
         .unwrap_or_else(|e| {

@@ -27,6 +27,8 @@ thiserror = "1"
 # 默认特性会拉入 zstd/bzip2/lzma/aes/sha2/ppmd 等一大串，而 `deflate` 本身还额外捆绑
 # 了编译极慢的 zopfli。Profile 里绝大多数是已压缩的 PNG/WAV，多算法收益极低。
 zip = { version = "8", default-features = false, features = ["deflate-flate2-zlib-rs"] }
+# Bundled SQLite keeps macOS and Windows on the same SQLite/FTS5 runtime.
+rusqlite = { version = "0.40", features = ["bundled", "backup"] }
 
 [target.'cfg(windows)'.dependencies]
 # feature 必须覆盖每个符号所属模块，缺一个就只在 Windows 目标上编译失败。
