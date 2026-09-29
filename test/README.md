@@ -2,6 +2,22 @@
 
 `test/` 是仓库唯一的测试根：三层测试、契约、宿主设施、场景与报告都在这一棵树下。L4 端到端（E2E）在独立 Tauri WebView 中执行真实前端服务、Rust IPC、临时数据根和 Agent/Tool 链路；测试数据不会写入正常用户数据根。L2 / L3 是不启动 Tauri 的快层（vitest · node）。
 
+## 快速开始
+
+**跑 E2E 前先解锁屏幕并保持点亮**（锁屏时 macOS WebKit 会挂起页面 JS，场景会集体卡死）。
+
+```bash
+pnpm test                              # 快层 L2 + L3，几秒，每 PR 必过的那一组
+pnpm run test:e2e                      # 全量端到端，约 5 分钟；窗口里有实时进度
+pnpm run test:e2e -- --module memory   # 只跑一个模块
+pnpm run test:e2e -- --report html     # 顺便出一份可双击打开的 HTML
+pnpm run test:mutation                 # 缺陷注入观测（先记录，不设阈值）
+```
+
+结果：**终端**给结论，**窗口**给实时进度，**报告**落在 `test/reports/`。
+
+下面的章节是架构理由、分层判定与规则表 —— 只想跑测试的话到这里就够了。
+
 - 分层目标、波次与诚实边界：[测试分层重构契约](../docs/history/implementation/测试分层重构契约-2026-09-29基线.md)（已归档；未完成项见[未完成工作与已知缺口](../docs/plans/active/未完成工作与已知缺口.md)）
 - 当前验证边界与未验证项：[测试边界](../docs/current/testing.md)
 - 代码代理的 Contract 分析、生成与覆盖审查流程：[SKILL.md](./SKILL.md)
