@@ -239,15 +239,31 @@ pub fn run() {
         .setup(move |app| {
             rust_info!("糖糖桌宠已启动");
 
-            // macOS: 必须先设置 ActivationPolicy，再创建窗口
+            let e2e = cfg!(debug_assertions) && crate::paths::is_e2e();
+
+            // macOS: 必须先设置 ActivationPolicy，再创建窗口。
+            //
+            // 产品是桌宠，不该占 Dock —— Accessory 无 Dock 图标、不进 Cmd+Tab、无应用菜单。
+            // 但 **E2E 宿主窗口是给人看的开发者工具**，Accessory 下它一旦被最小化就再也
+            // 找不回来（三种入口全都没有），而窗口只要被判定为遮挡，WebKit 就会冻结页面
+            // JS —— 整轮测试静默停摆，使用者既看不到进度，也不知道它已经停了。
+            // 实测：2026-09-29 最小化后 7 分钟只耗 0.6% CPU、零产出，与「同样规模 4 分 37 秒
+            // 跑完」的正常运行完全不符。
+            // E2E 用 Regular：出现在 Dock 与 Cmd+Tab，随时能唤回。
             #[cfg(target_os = "macos")]
             {
                 use tauri::ActivationPolicy;
-                let _ = app.set_activation_policy(ActivationPolicy::Accessory);
-                rust_info!("macOS: ActivationPolicy::Accessory 已设置");
+                let policy = if e2e {
+                    ActivationPolicy::Regular
+                } else {
+                    ActivationPolicy::Accessory
+                };
+                let _ = app.set_activation_policy(policy);
+                rust_info!(
+                    "macOS: ActivationPolicy::{} 已设置",
+                    if e2e { "Regular" } else { "Accessory" }
+                );
             }
-
-            let e2e = cfg!(debug_assertions) && crate::paths::is_e2e();
             let paths = match AppPaths::init(app.handle()) {
                 Ok(p) => p,
                 Err(e) => {
@@ -271,6 +287,9 @@ pub fn run() {
                 .title("Desk-Pet E2E")
                 .inner_size(900.0, 700.0)
                 .visible(true)
+                // 不让最小化：窗口被遮挡（含最小化）时 WebKit 会冻结页面 JS，
+                // 整轮测试静默停摆。Dock 能唤回是兜底，这里从源头堵掉误操作。
+                .minimizable(false)
                 .build();
                 match window {
                     Ok(_) => {

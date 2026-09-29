@@ -116,7 +116,11 @@ pnpm run test:mutation
 
 L2 / L3 可并行、不占端口；**L4 不能并行跑**（占用同一 Vite/Tauri 端口），也不要与 `pnpm tauri dev` 的开发实例同时运行。
 
-**环境注意**：macOS 锁屏时 WebKit 会把窗口判为遮挡并挂起页面 JS（实测每个 scene 约 6 秒后整体停摆，进程存活但无进展）。跑 E2E 门禁前必须解锁屏幕并保持点亮；`always_on_top` / `caffeinate` 无效。
+**环境注意**：macOS 锁屏、**窗口被最小化**、或被别的窗口完全盖住时，WebKit 会把窗口判为遮挡并挂起页面 JS（实测每个 scene 约 6 秒后整体停摆，进程存活但无进展）。跑 E2E 门禁前必须解锁屏幕并保持点亮；`always_on_top` / `caffeinate` 无效。
+
+**判据**：正常整轮约 4–5 分钟。若进程活着但 `ps -o time= -p <pid>` 的 CPU 累计几乎不涨（实测最小化那次：7 分钟只耗 0.6% CPU），就是被挂起了 —— **杀进程重跑，别等**。
+
+窗口本身已经做了两层防护：E2E 时 macOS 的 `ActivationPolicy` 用 `Regular`（出现在 Dock 与 Cmd+Tab，随时能唤回；产品运行仍是 `Accessory` 不占 Dock），并且窗口**禁止最小化**。
 
 ## 测试纪律（10 条规则）
 
