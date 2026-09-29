@@ -1,7 +1,7 @@
 // ==========================================
 // Live Test Scene: RUNTIME_DATA 变量写入 → 变量池
 // ==========================================
-import type { AssertContext, SceneDef } from "../../../host/types"
+import type { AssertContext, SceneDef } from "../../../e2e/types"
 import { getActiveCard, listPersonalities, switchPersonality } from "@/services/personality/registry"
 
 /** 本场景断言的变量名 */
