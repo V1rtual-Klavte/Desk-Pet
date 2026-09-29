@@ -44,6 +44,7 @@ export default defineConfig({
         main: resolve(__dirname, "index.html"),
         settings: resolve(__dirname, "settings.html"),
         "layer-editor": resolve(__dirname, "layer-editor.html"),
+        "test-e2e": resolve(__dirname, "test-e2e.html"),
       },
     },
   },
