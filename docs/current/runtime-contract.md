@@ -1,7 +1,7 @@
 ---
 document_type: current_contract
 status: code_checked
-updated_at: 2026-09-17
+updated_at: 2026-09-29
 scope: runtime-foundation-before-memory-kernel
 ---
 
@@ -47,6 +47,8 @@ Provider 返回未预期的延迟响应（suspended）时按失败结算并取�
 - [`PromptSnapshot`](../../src/services/engine/runtime/snapshot.ts) 在 `transform_context`、`provider_payload` 和 `provider_usage` 阶段记录关联 ID、预算、分配、hash 与 usage，并记录「这是哪次请求」：`request`（用途与上游 step/attempt）、`systemPromptHash`（三档可比）、`payloadHash` 与 `requestParams`（`provider_payload` 档由 `before_payload` 从实际 payload 采集，取不到就不写，不粘到同回合其它档）、`plan`/`capabilities`（预检冻结：`skillsFingerprint`（技能目录指纹，扫描条目的 mtime/size 摘要，变了下一回合重载；从未核对成功时不写该字段）、`safetyMode`、逐请求累积的工具裁决）、`compaction`（换代次数、最近压缩条目与摘要 hash）、`generation`（槽代际）与 `budgetDrops`（整块淘汰）。一次性文本请求（planner/compaction/stages）在有会话归属时同样写 payload 与 usage 两档快照，块与消息用 `one-shot:<purpose>` 身份，与主回合的请求可区分；压缩/分支摘要的 payload 不写成主回合快照。system block、消息和工具 schema 不持久化原始正文；快照只保留脱敏 hash，`agentMessages[].contentHash` 走内容投影（不含 usage/时间戳），跨运行可复现。
 - Card 和变量在回合开始冻结。回复中的 `RUNTIME_DATA` 只在当前 Card 的 id、hash、version 仍一致时写回；写入仍由变量注册表验证。[`generateReply`](../../src/services/reply/generator.ts) 与 [`batchWriteVars`](../../src/services/personality/variable-pool.ts)
 
-## 尚未形成当前能力
+## 长期记忆接线点
 
-默认 `MemoryProvider` 为空。没有 SQLite `MemoryStore`、自动长期事实提取、每轮长期召回、画像写入、dreaming 或 Memory Eval；这些属于 P6。
+`MemoryProvider` 已接真实实现：每个用户回合在主请求前取一次投影，本回合写过记忆时下一次请求前重取；投影以尾随 custom 消息进入请求视图，不写会话条目。事实存储、来源、候选与治理决定的真相源是 Rust 侧 SQLite（`数据根/memory/memory.sqlite3`），经[当前记忆](memory.md)描述的命令面读写。
+
+未完成的是**验证**而非能力：真实模型质量对照、资源账目实测、Windows 证据与真实设置窗口的人工验收见[未完成工作与已知缺口](../plans/active/未完成工作与已知缺口.md) §3。

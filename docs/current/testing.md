@@ -19,7 +19,7 @@ Desk-Pet 的运行时验证以 [Live Test 使用规范](../../test/README.md) �
 - Contract 所需的 `boundary`、`error` 由实际 Scene tag 满足；
 - 除显式且有理由的 `unitOnly` 外，每个 Contract 至少有一个非 unit 场景。
 
-通过结果只证明当次配置、Provider 与已覆盖 Scene 下的行为；长期记忆自动检索、未覆盖平台路径或尚未接通的规划能力不能由已有场景推断为已验证。
+通过结果只证明当次配置、Provider 与已覆盖 Scene 下的行为；真实模型下的记忆召回质量、记忆库的资源开销、未覆盖的平台路径与尚未接通的规划能力不能由已有场景推断为已验证（记忆模块已有 L4 `memory-store-lifecycle` 等确定性场景，它们证明协议与存储，不证明模型效果）。
 
 ## 未验证边界
 
