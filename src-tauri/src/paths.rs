@@ -636,8 +636,8 @@ mod tests {
     }
 
     // ── 凭据路径（与 TS `checker.ts` 的共享 fixture 列表）──
-    // NOWAY / SAFE 两组逐字对应 `test/e2e/scenes/safety/安全等级边界.scene.ts`
-    // 的断言输入；规则文本或列表改动必须两侧同时改。
+    // NOWAY / SAFE 两组逐字对应 `test/integration/safety/安全等级边界.test.ts`
+    // 的断言输入（W2 从 L4 场景迁到 L3）；规则文本或列表改动必须两侧同时改。
 
     /// NOWAY 组：`.ssh` 目录组件或 `.pem`/`.key` 后缀，写成相对/`~`/`$HOME`/带反斜杠/夹 `..` 都不改变结论。
     const CREDENTIAL_PATHS: [&str; 9] = [

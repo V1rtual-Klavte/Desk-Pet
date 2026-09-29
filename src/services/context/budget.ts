@@ -32,7 +32,8 @@ export const MIN_CONTEXT_WINDOW = 65_536
  * 真实 token），一旦 k 超过 hardInputLimit 与 normalInputTarget 的比值，硬预算就会先于
  * Harness 压缩报错，压缩永远轮不到触发。该比值随窗口增大逼近 1（compactionHeadroom 被
  * MAX_HEADROOM 封顶），128k 窗口下约 1.19，200k 窗口下只剩约 1.12，所以 k 必须贴近 1。
- * 调这两个常数前先跑 `memory/压缩阈值口径` 场景，它按这条不等式把关。
+ * 调这两个常数前先跑 `test/integration/memory/压缩阈值口径.test.ts`（W2 从 L4 场景迁入），
+ * 它按这条不等式把关。
  *
  * ASCII 取 4 是散文实测值；JSON 与代码 token 密度更高（约 3 字符/token），这里会低估——
  * 方向安全：低估只让本仓硬预算晚触发，上游 side 仍由 Harness 压缩与溢出恢复兜底。
@@ -116,7 +117,8 @@ const textOf = (message: MessageRecord): string =>
 
 /**
  * 工具调用投影：durable 消息的参数是 JSON 字符串、Pi 消息是对象，两侧必须归一化到同一形态，
- * 否则同一调用在两种消息形态下算出不同的估算（`上下文预算` 场景钉住这条不变量）。
+ * 否则同一调用在两种消息形态下算出不同的估算（`test/unit/memory/上下文预算.test.ts`
+ * 钉住这条不变量，W2 从 L4 场景迁入）。
  */
 const toolCallsOf = (message: MessageRecord): string => {
   const parts = Array.isArray(message.content) ? message.content.map(record) : []

@@ -105,11 +105,10 @@ L2 / L3 可并行、不占端口；**L4 不能并行跑**（占用同一 Vite/Ta
 ## 报告在哪、怎么看
 
 - **终端**：默认 `--report terminal`，全局结论与逐 case 结果直接打在运行终端；`--report markdown` 是终端文本的 markdown 版。
-- **文件**：浏览器侧把结果经 `e2e_complete` 交给 Rust，写入数据根的 `e2e-result.txt`（首行 `PASS` / `FAIL`，也是启动脚本判断进程退出码的依据）；启动脚本在清理临时数据根之前把它复制成 `~/.deskpet-e2e-reports/<ISO 时间戳>.txt`。`--report` 改的是文件内容的格式（terminal / json / markdown），扩展名不变。目录按文件名（ISO 时间戳）保留最近 20 份，更旧的先淘汰。
+- **文件**：浏览器侧把结果经 `e2e_complete` 交给 Rust，写入数据根的 `e2e-result.txt`（首行 `PASS` / `FAIL`，也是启动脚本判断进程退出码的依据）；启动脚本在清理临时数据根之前把它复制进仓库内的 `test/reports/`（已在 `.gitignore` 排除），文件名是 ISO 时间戳。`--report` 决定副本的扩展名：`json`→`.json`、`html`→`.html`、其余（terminal / markdown）→`.txt`。保留策略按**体积**：按 mtime 从新到旧累加，超过 200 MB 即淘汰更旧的，最新一份始终保留。
 - **报告内容**：`desk-pet-live/v2` 结构，包含数据集版本、筛选项、trial 指标、错误分类与 `pass@k` / `pass^k`。前者表示至少一次试验通过，后者表示全部已执行试验通过；回归或发布结论使用后者及严格 Contract 结果。`environment.seedHash` 由启动脚本生成：覆盖 `src-tauri/resources/defaults` 下的文本种子与开发构建实际加载的 CONFIG，凭据按 key 名脱敏后不参与摘要，二进制素材与摘要无关。
 - **宿主窗口**：`test-e2e.html` 提供**实时进度** —— 顶部 sticky 汇总条（已跑 / 通过 / 失败 / 预期失败 / 剩余 / 耗时），逐 case 一行；**失败行立即展开**，内含断言差异与该场景的事件序列。汇总条常驻显示报告的绝对路径与「打开结果目录」入口。
   **窗口不驻留**：`e2e_complete` 后 Rust 直接 `app.exit(0)` 关窗，结束横幅实际可见时间极短 —— 这也是报告路径与打开入口被做成**运行期常驻**而非只在结束时出现的原因。要让它结束后长驻需改结果协议（Rust + 启动器），不在当前范围。
-- **当前限制**：报告仍落在 `~/.deskpet-e2e-reports/`（仓库外、按文件名保留最近 20 份）；迁入 `test/reports/` 并改按体积保留尚未实施（见契约「报告落位与保留策略」）。自包含单文件 HTML 报告已有渲染实现，但 `--report html` 的载荷目前仍被存成 `.txt`（启动器按扩展名推断所致），双击打不开浏览器 —— 随报告落位一并修。
 - **别拿文件名当证据**：归档文档引用报告时写可核对标识（runId / commit / dataset 版本 / cases 与 trials 计数），不写文件名 —— 报告目录的保留策略会淘汰旧文件，按路径引用会悬空。
 
 ## Contract 与 sourceHash
@@ -150,7 +149,7 @@ Node 启动预检会校验 `sourceHash`；源码变更后应先按 SKILL 重新�
 
 取消是协作式的：JS 不能强杀任意 await，Scene 自己发起、不经过框架边界的等待只能靠上述宽限时间收尾。Provider、网络、认证和断言等错误会分类，兜底回复不把失败改写为成功。
 
-E2E 启动脚本在用户 Home 下创建 `.deskpet-e2e-*` 临时数据根，退出时删除；删除前把结果文件复制到 `~/.deskpet-e2e-reports/`（保留策略见「报告在哪、怎么看」）。
+E2E 启动脚本在用户 Home 下创建 `.deskpet-e2e-*` 临时数据根，退出时删除；删除前把结果文件复制到仓库内的 `test/reports/`（保留策略见「报告在哪、怎么看」）。
 
 ## 目录职责
 

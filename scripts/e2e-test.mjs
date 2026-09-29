@@ -180,25 +180,48 @@ function stopChild(signal = "SIGTERM") {
 
 /**
  * 报告原先只写在一次性临时数据根里，随根一起删掉：CI 拿不到产物，
- * 也没法 diff 两次运行。清理之前先复制到稳定目录。
- *
- * 放用户主目录而不是仓库内：仓库侧要为此改 .gitignore，而报告是运行产物，
- * 不该出现在工作树里。保留最近 MAX_REPORTS 份，避免无限堆积。
+ * 也没法 diff 两次运行。清理之前先复制到仓库内的稳定目录（已在 .gitignore 忽略）。
  */
-const REPORTS_DIR = join(homedir(), ".deskpet-e2e-reports")
-const MAX_REPORTS = 20
+const REPORTS_DIR = join(process.cwd(), "test", "reports")
+/**
+ * 保留策略按体积而不是份数：单份报告可达 11 MB，只按份数上限不封顶磁盘占用。
+ * 按 mtime 从新到旧累加，超过上限即淘汰更旧的。
+ */
+const REPORTS_MAX_BYTES = 200 * 1024 * 1024
+
+/**
+ * 目标扩展名按 --report 声明的格式显式决定，不做内容嗅探。
+ * WebView 侧经 `e2e_complete` 落盘的载荷固定是 `e2e-result.txt`，
+ * 若按它推断，`--report html` 会被存成 `.txt`，双击进编辑器而不是浏览器。
+ */
+const REPORT_EXTENSIONS = { json: "json", html: "html" }
+
+function pruneReportsBySize() {
+  const entries = readdirSync(REPORTS_DIR)
+    .filter(name => /\.(json|txt|html)$/.test(name))
+    .map(name => {
+      const stats = statSync(join(REPORTS_DIR, name))
+      return { name, size: stats.size, mtimeMs: stats.mtimeMs }
+    })
+    .sort((a, b) => b.mtimeMs - a.mtimeMs)
+  let totalBytes = 0
+  for (const [index, entry] of entries.entries()) {
+    totalBytes += entry.size
+    // 最新一份始终保留：哪怕它单独就超过上限，也不能删掉刚跑出来的报告
+    if (index > 0 && totalBytes > REPORTS_MAX_BYTES) {
+      rmSync(join(REPORTS_DIR, entry.name), { force: true })
+    }
+  }
+}
 
 function preserveReport() {
   if (!existsSync(resultPath)) return
   try {
     mkdirSync(REPORTS_DIR, { recursive: true })
     const stamp = new Date().toISOString().replace(/[:.]/g, "-")
-    const extension = /\.json$/.test(resultPath) ? "json" : "txt"
+    const extension = REPORT_EXTENSIONS[env.DESKPET_E2E_REPORT] ?? "txt"
     copyFileSync(resultPath, join(REPORTS_DIR, `${stamp}.${extension}`))
-    const kept = readdirSync(REPORTS_DIR).filter(name => /\.(json|txt)$/.test(name)).sort()
-    for (const stale of kept.slice(0, Math.max(0, kept.length - MAX_REPORTS))) {
-      rmSync(join(REPORTS_DIR, stale), { force: true })
-    }
+    pruneReportsBySize()
     console.error(`[E2E] 报告已留存: ${REPORTS_DIR}`)
   } catch (error) {
     // 留存失败不该影响测试结论本身

@@ -30,10 +30,12 @@ export const 危险拦截: SceneDef = {
           if (!dangerous.some(t => t.status === "blocked" || t.status === "denied" || t.status === "error")) {
             throw new Error(`危险 Bash 命令未被拦截: ${dangerous.map(t => `${t.toolName}:${t.status}`).join(",")}`)
           }
-          // 硬禁止命令不得走「确认后放行」这条路。
-          if (ctx.confirms.some(confirm => confirm.toolName === "bash" && confirm.approved)) {
-            throw new Error("硬禁止命令经确认通道被放行")
-          }
+          // 硬禁止命令不得走「确认后放行」这条路 —— 判据是工具最终 status（上面已断言
+          // 「无一 done、且有 blocked/denied/error」），不再断言确认记录。
+          //
+          // 原断言 `ctx.confirms.some(c => c.toolName === "bash" && c.approved)` 已删：
+          // `approved` 由**测试宿主**的 policy 写入（host/confirm-channel.ts），deny 策略下
+          // 恒为 false，产品改坏它也不会红 —— 是恒不触发的断言（契约审计线索 D2，已复核）。
         }},
       ] },
   ],

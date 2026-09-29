@@ -33,8 +33,13 @@ import { DEFAULT_SCENE_TIMEOUT, UNIT_SCENE_TIMEOUT } from "./scene-runner"
  * `2026-09-29.2`：W1 Task 17：`variable-pool` 的 20 个 `entry: "unit"` 场景迁到 L2
  * （`test/unit/variable-pool/`，caseId 原样带走），L4 侧只留 1 个未声明 entry 的场景
  * （`亲密度提升`）。之后的迁移批次各自 bump。
+ * `2026-09-29.3`：W2 迁移收口：本批 58 个 `entry: "unit"` 场景（planner 8 / personality-card 9 /
+ * safety 14 / harness-storage 7 / memory 9 / tool-execution 11）里 **52 个迁到 L2/L3**，
+ * **1 个因审视结论删除**（`card-active-prompt`，断言对无生产消费者的同义反复），
+ * **5 个留 L4**（撞 Rust 专属命令 / WebView 能力：`凭据路径` 的 unit 部分、`窗口信息三态`、
+ * `执行许可`、`工具超时判定`、`图片读取处理`）。场景集合变了报告分母就变，全波共用这一次 bump。
  */
-export const LIVE_DATASET_VERSION = "2026-09-29.2"
+export const LIVE_DATASET_VERSION = "2026-09-29.3"
 
 export function validateDataset(scenes: SceneDef[], contracts: ModuleContract[]): string[] {
   const errors: string[] = []

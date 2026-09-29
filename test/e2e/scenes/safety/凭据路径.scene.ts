@@ -124,10 +124,12 @@ export const 凭据读取被拦: SceneDef = {
           if (!reads.some(item => item.status === "blocked" || item.status === "denied" || item.status === "error")) {
             throw new Error(`私钥读取未被拦截: ${reads.map(item => item.status).join(",")}`)
           }
-          // 硬禁止不得走「确认后放行」这条路。
-          if (ctx.confirms.some(confirm => confirm.toolName === "read" && confirm.approved)) {
-            throw new Error("私钥读取经确认通道被放行")
-          }
+          // 硬禁止不得走「确认后放行」这条路 —— 判据是工具最终 status（上面已断言
+          // 「无一 done、且有 blocked/denied/error」），不再断言确认记录。
+          //
+          // 原断言 `ctx.confirms.some(c => c.toolName === "read" && c.approved)` 已删：
+          // `approved` 由**测试宿主**的 policy 写入（host/confirm-channel.ts），deny 策略下
+          // 恒为 false，产品改坏它也不会红 —— 是恒不触发的断言（契约审计线索 D2，已复核）。
           // 会话条目是正文真相源：泄露与否以落盘内容为准，不看进程内状态。
           const dump = JSON.stringify(await sessionEntries())
           if (dump.includes(OPENSSH_MARKER)) throw new Error("会话条目里出现了私钥正文")

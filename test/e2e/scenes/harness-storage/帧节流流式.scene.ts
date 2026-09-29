@@ -2,7 +2,7 @@
 // 帧节流流式场景（T1.06）—— 真实流式回合里的帧落盘、entry 立即落盘与新仓库读回
 //
 // 补的空白（与 hs-05 的分工）：
-//   hs-05（`帧写缓冲.scene.ts`，entry: "unit"）证明**机制与调用次数** —— 它把可注入计数器的
+//   hs-05（`test/integration/harness-storage/帧写缓冲.test.ts`，L3）证明**机制与调用次数** —— 它把可注入计数器的
 //   `CountingEnv` 注入自建仓库，能断言「N 帧合并成 ≤ ⌈总字节 / 16 KiB⌉ + 1 次 appendFile」。
 //   本场景证明**真实链路不回归**：生产单例仓库（`getPiSessionRepo()`）不传任何 options、
 //   注入不进计数器，所以这里只证「帧没丢、顺序对、非帧 entry 提交后文件完备、另一个仓库

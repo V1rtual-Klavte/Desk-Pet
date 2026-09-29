@@ -110,8 +110,11 @@ export const 权限策略冻结: SceneDef = {
           if (probeB[0]!.status !== "denied") {
             throw new Error(`下一回合的同一探针没有进入确认并被拒绝: ${JSON.stringify(probeB)}`)
           }
+          // 「一次、被拒」里可判的是「一次」：同一探针在对照回合必须重新走确认（grant 未跨回合）。
+          // （原先并列断言 `confirms[0].approved === false`，已删：该值由**测试宿主的 policy**
+          // 写入，deny 下恒 false，产品改坏它也不会红 —— 拒绝的产品侧证据是上面已断言的 denied。）
           const confirms = confirmRecords().filter(record => record.toolName === PROBE_B)
-          if (confirms.length !== 1 || confirms[0]!.approved) {
+          if (confirms.length !== 1) {
             throw new Error(`对照回合的确认记录不是「一次、被拒」: ${JSON.stringify(confirms)}`)
           }
         } },

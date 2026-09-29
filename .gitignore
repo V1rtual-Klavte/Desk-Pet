@@ -41,3 +41,6 @@ DESIGN_ORIGIN.docx
 
 # Runtime data (Phase G — unified data_root)
 data/
+
+# 测试报告：单份可达 11 MB，只按份数上限不封顶磁盘占用
+test/reports/

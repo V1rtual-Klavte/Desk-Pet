@@ -57,9 +57,13 @@ export const 确认被拒: SceneDef = {
           if (!calls.some(t => t.status === "denied")) {
             throw new Error(`未观察到 denied 状态: ${calls.map(t => `${t.toolName}:${t.status}`).join(",")}`)
           }
+          // 到达通道的证据是本轮唯一要断言的通道事实：请求确实被宿主记录，
+          // 「denied」才不是「未调用」的另一种写法（在调用侧状态之外提供独立见证）。
           const confirms = ctx.confirms.filter(confirm => confirm.toolName === "bash")
           if (confirms.length === 0) throw new Error("确认请求未被宿主记录，无法区分「未调用」与「被拒绝」")
-          if (confirms.some(confirm => confirm.approved)) throw new Error("默认策略不应放行确认请求")
+          // 原断言 `confirms.some(c => c.approved)` 已删：`approved` 由**测试宿主**的 policy
+          // 写入（host/confirm-channel.ts），deny 策略下恒为 false，产品改坏它也不会红（D2，
+          // 已复核）。放行与否的产品侧证据是工具的最终 status（上面已断言 denied）。
         }},
       ] },
     { index: 3, description: "白名单命令不经过确认通道", userText: `再看一眼当前目录：用 bash 执行 ${WHITELIST_COMMAND}。`,
@@ -77,8 +81,10 @@ export const 确认被拒: SceneDef = {
             throw new Error(`白名单命令没有直接执行: ${JSON.stringify(calls)}`)
           }
           // 本场景累计只有第 2 轮那一次确认请求：第 3 轮没有产生新的待确认项。
+          // （原先还并列断言 `confirms[0].approved === false`，已删：该值由**测试宿主的 policy**
+          // 写入，deny 下恒 false，产品改坏它也不会红 —— 与本条声称的「没有额外确认请求」无关。）
           const confirms = ctx.confirms.filter(confirm => confirm.toolName === "bash")
-          if (confirms.length !== 1 || confirms[0]!.approved) {
+          if (confirms.length !== 1) {
             throw new Error(`白名单命令产生了额外确认请求，或第一轮的拒绝记录丢失: ${JSON.stringify(confirms)}`)
           }
         }},

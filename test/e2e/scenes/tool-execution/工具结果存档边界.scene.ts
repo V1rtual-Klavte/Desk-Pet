@@ -5,6 +5,7 @@ import { isUniqueAddressRef, sliceByTokenBudget } from "@/services/context"
 import { getActiveSessionId } from "@/services/session"
 import { harnessSlots, resolvePiTurnModel } from "@/services/engine/pi"
 import { setOverride } from "@/services/config"
+import { isWindows } from "@/services/env"
 import { sessionEntries } from "../../../host/session-entries"
 import type { Entry } from "@earendil-works/pi-agent-core"
 
@@ -24,7 +25,20 @@ import type { Entry } from "@earendil-works/pi-agent-core"
 const LARGE_TOOL = "archive_large_output"
 const LARGE_CALL = "archive-large-call"
 const BASH_CALL = "archive-bash-call"
-const BASH_COMMAND = "seq 1 20000"
+/**
+ * 大输出夹具：需要 ≥2000 行（或 ≥50KB）才会触发上游截断与 spill 回读路径。
+ *
+ * POSIX 侧是 `seq`；Windows 的 `cmd /C` 里**没有** `seq`（产品在 Windows 走
+ * `("cmd","/C")`，见 `src-tauri/src/commands/tool_exec.rs`），照抄这条夹具在 Windows
+ * 上必然为红 —— Windows 侧换成 cmd 内建的 `for /L`，同样打印 20000 行。
+ *
+ * 两条都**零引号**：`cmd /C` 不认 Rust 参数转义的 `\"`（只认 `""`/`^"`），带引号的
+ * 命令会被拆坏（tool_exec.rs 的用例注释有 CI windows-latest 实测结论），所以
+ * `node -e "…"` 这类带引号的写法在这里不可用。
+ */
+const BASH_COMMAND = isWindows
+  ? "for /L %i in (1,1,20000) do @echo %i"
+  : "seq 1 20000"
 const BODY_CHARS = 60000
 const BODY = `存档边界${"丙".repeat(BODY_CHARS - 4)}`
 const ADDRESS_MARKER = "原结果 eventId="
@@ -86,9 +100,9 @@ export const 工具结果存档边界: SceneDef = {
     confirmPolicy: "approve",
   },
   setup: async () => {
-    // `seq` 不在 bash 白名单里 → `classifyBashRisk` 判 DANGER → 由安全模式裁决；
-    // 场景声明 confirmPolicy=approve，确认通道放行后命令真的跑起来并产出 spill。
-    // 旧的「助手模式绕开 pet 白名单」前提随模式删除一起消失，这里不再有任何模式 override。
+    // 夹具命令（POSIX 的 `seq` / Windows 的 `for`）都不在 bash 白名单里 → `classifyBashRisk`
+    // 判 DANGER → 由安全模式裁决；场景声明 confirmPolicy=approve，确认通道放行后命令真的跑起来
+    // 并产出 spill。旧的「助手模式绕开 pet 白名单」前提随模式删除一起消失，这里不再有任何模式 override。
     setOverride("ai.plan.enabled", false)
     register(defineTool({
       id: "live-archive-large", name: LARGE_TOOL, description: "存档边界探针：超内联上限的长结果",

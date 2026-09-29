@@ -24,8 +24,9 @@ export type FailureKind =
  *
  * 分类只能从文案反推：Harness 把运行失败降维成一条 message，没有结构化状态码通道
  * （记录里的 `code` 只有 assistant_error 一档），所以边界必须在这里钉死。
- * 稳定性由 Live Test 的 `预算溢出判定`（caseId `memory-budget-overflow-classification`，
- * 契约 `mm-22`，8 条 `samples`）与 `预算溢出恢复` 两处断言钉住。
+ * 稳定性由 L3 测试 `test/integration/memory/预算溢出判定.test.ts`（caseId
+ * `memory-budget-overflow-classification`，契约 `mm-22`，8 条 `samples`；W2 从 L4 场景迁入）
+ * 与 L4 场景 `预算溢出恢复`（`test/e2e/scenes/memory/预算溢出恢复.scene.ts`）两处断言钉住。
  */
 export function classifyFailureKind(message: string): FailureKind {
   const lower = message.toLowerCase()
