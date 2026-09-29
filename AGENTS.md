@@ -33,7 +33,7 @@ Desk-Pet 是可自定义 Card/Profile 的 Tauri v2 桌宠，优先做好轻量�
 | 配置、路径、Profile 资源、持久化 | [运行时数据](docs/current/runtime-data.md) |
 | 人格变量、阶段文案、回复元数据 | [人格与回复](docs/current/personality.md) |
 | 日志、异常、IPC、构建排查 | [工程参考](docs/current/development.md) |
-| 测试执行与场景 | [测试 README](test/README.md)；生成契约时再读同目录 SKILL |
+| 测试分层、执行与场景 | [测试 README](test/README.md)（三层职责、规则表、命令与报告）；生成或审查测试时再读 [测试 SKILL](test/SKILL.md) |
 | 继续记忆重构 | [未完成工作与已知缺口](docs/plans/active/未完成工作与已知缺口.md) 的 P6 章节，再读 [P6 目标契约](docs/plans/active/记忆系统运行时契约.md) |
 
 完整目录见 [docs/INDEX.md](docs/INDEX.md)。当前行为由源码和对应 `docs/current/` 说明；
@@ -45,22 +45,26 @@ Desk-Pet 是可自定义 Card/Profile 的 Tauri v2 桌宠，优先做好轻量�
 pnpm install
 pnpm tauri dev        # 完整桌面应用
 pnpm dev              # 仅前端，不能验证 Rust IPC
+pnpm test             # L2 单元 + L3 集成（每 PR 必过的一组，不指向 L4）
 pnpm run test:types   # Vue 类型 + Rust 编译
 pnpm run test:rust    # Rust 单测（cargo test --lib）
-pnpm run test:e2e -- --module <module>
-pnpm run test:release # 类型/编译 + Rust 单测 + 严格 Contract + 三次 trial
+pnpm run test:e2e -- --module <module>   # L4 端到端（真 Tauri 与 Rust IPC）
+pnpm run test:release # 类型/编译 + Rust 单测 + L2/L3 + 严格 Contract + 三次 trial
 ```
 
 - Rust 单测内联在 `src-tauri/src/**`，`pnpm run test:rust` 执行；CI 在 macOS 与 Windows
   两端都跑，缺少执行的测试不算门禁。
 - pnpm 版本以 `package.json` 的 `packageManager` 为准；新增有构建脚本的依赖须在
   `pnpm-workspace.yaml` 的 `allowBuilds` 显式声明运行或跳过，避免干净安装失败。
+- 新测试按 [测试 README](test/README.md) 的判定顺序选层（需要真 Rust 边界 → L4；真 JSONL 落盘与
+  agent loop → L3；否则 L2）；可判测试纪律由 `node scripts/check-test-rules.mjs` 扫描 `test/`
+  实施，命中即失败，新测试须零命中。
 - 先完成授权范围内的实现与 Contract/Scene，再按影响范围集中验证；修复失败后重验。
-- 源码或行为契约变化须按 Live Test SKILL 重新 analyze → generate；不能只改 sourceHash 过门禁。
+- 源码或行为契约变化须按 [测试 SKILL](test/SKILL.md) 重新 analyze → generate；不能只改 sourceHash 过门禁。
 - 类型/编译不能代替运行验证。非 unit 场景需实际 Provider 或 fake Provider 响应；
   `entry: production` 须经过 `sendMessage()`，fake 只替换 Provider，工具和 IPC 行为仍需场景断言。
-- 跨模块改动运行完整 Live Test；发布门禁为严格 Contract 与至少三次 trial，跳过/超时不得报通过。
-- 文档改动只检查链接、事实、引用及格式，不因文案变化重跑完整 Live Test。
+- 跨模块改动运行完整 E2E；发布门禁为严格 Contract 与至少三次 trial，跳过/超时不得报通过。
+- 文档改动只检查链接、事实、引用及格式，不因文案变化重跑完整 E2E。
 - 平台代码同时考虑 Windows/macOS；修改 Windows 条件代码或依赖后须检查 Windows CI。
   本机 macOS check 不证明 Windows 分支，现有本机交叉构建也不能替代 Windows job。
 - Rust 平台专有实现须使用条件编译和对应平台依赖，不能让另一平台的编译路径引用它。
