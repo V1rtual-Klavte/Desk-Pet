@@ -23,6 +23,11 @@ export default defineConfig({
     },
   },
   test: {
+    // caseId 收集器接在**根级**而不是 project 上：`reporters` 是 vitest 的运行级选项
+    // （vitest 5 的 NonProjectOptions，project 配置不接受它）。收集器按
+    // `testCase.project.name` 分桶，两个 project（unit / integration）各写各的
+    // `test/reports/caseids-<project>.json`。
+    reporters: ["default", resolve(__dirname, "test/host/caseid-reporter.ts")],
     projects: [
       {
         extends: true,

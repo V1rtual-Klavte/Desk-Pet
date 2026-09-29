@@ -5,8 +5,9 @@
 // 覆盖 RUNTIME_DATA 的完整写入链路：解析 → 校验 → batchWriteVars → 落盘。
 //
 // 没有走模型：`generateReply(raw, card?)` 是纯后处理入口，喂一段带 RUNTIME_DATA
-// 的回复文本就能确定性跑完整条链路。模型那一半由 vp-04 的
-// `variable-affection-praise`（真实 LLM，仍在 L4）负责。
+// 的回复文本就能确定性跑完整条链路。模型那一半（回复经完整 Pi loop 落池）
+// 由 vp-04 的 `variable-affection-praise` 负责，见 `test/integration/variable-pool/亲密度提升.test.ts`
+// （W3 迁到 L3：fake provider 驱动真 loop）。
 import { mkdtempSync, rmSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"

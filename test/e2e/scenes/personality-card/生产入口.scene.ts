@@ -6,8 +6,8 @@ import { getActiveCard, getActivePersonalityId } from "@/services/personality/re
  * 真·生产入口：走 `sendMessage()` 跑完整链路（预处理 → Card → Prompt → Pi → 回复生成）。
  *
  * 这条是 personality-card 契约里唯一驱动真实模型与生产入口的场景。
- * Card 的解析细节由 `卡片解析.scene.ts` 的 unit 场景覆盖，这里负责回答
- * 那些 unit 场景回答不了的问题：**加载好的 Card 是否真的接进了生产回合**。
+ * Card 的解析细节由 `test/unit/personality-card/卡片解析.test.ts`（W2 从 `卡片解析.scene.ts` 迁入 L2）覆盖，这里负责回答
+ * 那些 L2 测试回答不了的问题：**加载好的 Card 是否真的接进了生产回合**。
  */
 const scene: SceneDef = {
   meta: {

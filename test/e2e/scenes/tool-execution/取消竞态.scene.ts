@@ -2,7 +2,6 @@ import type { SceneDef } from "../../../e2e/types"
 import { installFakeProvider, fakeText } from "../../../host/fake-provider"
 import { invoke } from "@tauri-apps/api/core"
 import { errorCode, formatError } from "@/services/error"
-import { permitSnapshot } from "@/services/tool"
 import { BaseDirs } from "@/services/paths"
 import { isWindows } from "@/services/env"
 
@@ -17,7 +16,11 @@ import { isWindows } from "@/services/env"
  * 「取消正好落在登记与 spawn 之间」这个窗口无法从 JS 侧确定性复现（它在 Rust 函数体内，
  * 宽度是几十微秒），由 Rust 单测 `bash_cancel_lands_before_spawn` 用同一种槽状态直接钉住。
  * 本场景证明经真实 IPC 可见的部分：未命中的取消有明确结论；取消先发出、exec 后发出时
- * 这次运行被终止并很快收口（而不是跑到 120s 兜底超时）；被终止的运行不留副作用，额度回空闲。
+ * 这次运行被终止并很快收口（而不是跑到 120s 兜底超时）；被终止的运行不留副作用。
+ *
+ * 「额度回空闲」不在本场景的观测面内：本场景直接走 IPC、不经许可域，原 `permitSnapshot()`
+ * 断言恒真（只会被其他场景的残留点亮），产品改坏它也不会红 —— 契约审计线索 D1，已复核，
+ * 该断言已删。额度归还的覆盖面在许可场景与 Rust 单测，不在这里。
  */
 
 /** `bash_exec` 载荷里本场景用得到的字段。 */
@@ -28,6 +31,9 @@ type BashPayload = { exitCode: number; output: string }
  *
  * 命令的自然时长是 30s、Rust 兜底超时是 120s：收口只可能来自取消，3s 与两者都差一个量级，
  * 既不会被机器抖动穿透，又足以区分「被终止」与「跑到底」。
+ *
+ * 计时从「取消命中槽」起量，不把到达命中之前的重试等待算进来：重试最多自耗 2s，算进来的话
+ * 预算会被吃成 1s，慢机器就会假红（契约审计线索 D7 的修正；「被终止」与「跑到底」仍差一个量级）。
  */
 const SETTLE_BUDGET_MS = 3_000
 
@@ -87,7 +93,6 @@ export const 取消竞态: SceneDef = {
         // ③ 竞态顺序：取消先发出（不 await，与 TS 侧 abort 监听器的顺序一致），exec 后发出。
         const id = crypto.randomUUID()
         const sentinel = `${BaseDirs.sessions()}/deskpet-cancel-race-${id}`
-        const startedAt = Date.now()
         const cancelled = invoke<boolean>("bash_cancel", { executionId: id })
         let settled = false
         const run = invoke<BashPayload>("bash_exec", {
@@ -111,11 +116,12 @@ export const 取消竞态: SceneDef = {
           if (!terminated) await delay(20)
         }
 
+        const settleStartedAt = Date.now()
         const outcome = await run
-        const elapsed = Date.now() - startedAt
+        const settleElapsed = Date.now() - settleStartedAt
         if (!terminated) throw new Error("取消始终没有命中在跑的槽，竞态未被覆盖")
-        if (elapsed >= SETTLE_BUDGET_MS) {
-          throw new Error(`取消后运行没有及时收口: ${elapsed}ms（命令自然时长 ${PROBE_SECONDS}s、兜底超时 120s）`)
+        if (settleElapsed >= SETTLE_BUDGET_MS) {
+          throw new Error(`取消命中后运行没有及时收口: ${settleElapsed}ms（命令自然时长 ${PROBE_SECONDS}s、兜底超时 120s）`)
         }
         if (outcome.kind === "error") {
           // 取消产生的错误必须是稳定码：冒出的 IO/OTHER（超时、spawn 失败）说明中止走了别的路径。
@@ -131,11 +137,8 @@ export const 取消竞态: SceneDef = {
           throw new Error("取消后子进程仍留下探针：运行没有被终止")
         }
 
-        // 额度回空闲。本场景直接走 IPC、不经许可域，这里证明的是取消没有把额度留在占用态。
-        const idle = await permitSnapshot()
-        if (idle.exclusiveActive || idle.sharedActive !== 0 || idle.queued !== 0) {
-          throw new Error(`取消后额度没有回空闲: shared=${idle.sharedActive} exclusive=${idle.exclusiveActive} queued=${idle.queued}`)
-        }
+        // 原 `permitSnapshot()` 三项全空闲断言已删：本场景直接走 IPC、不经许可域，该断言
+        // 恒真（只能被其他场景的残留点亮），产品改坏它也不会红 —— 契约审计线索 D1，已复核。
       },
     }],
   }],

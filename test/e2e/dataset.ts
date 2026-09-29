@@ -38,8 +38,11 @@ import { DEFAULT_SCENE_TIMEOUT, UNIT_SCENE_TIMEOUT } from "./scene-runner"
  * **1 个因审视结论删除**（`card-active-prompt`，断言对无生产消费者的同义反复），
  * **5 个留 L4**（撞 Rust 专属命令 / WebView 能力：`凭据路径` 的 unit 部分、`窗口信息三态`、
  * `执行许可`、`工具超时判定`、`图片读取处理`）。场景集合变了报告分母就变，全波共用这一次 bump。
+ * `2026-09-29.4`：W3 把 30 个非 production 场景（12 个 `runtime` + 18 个未声明 entry）按
+ * 适配层实测分流：**20 迁 L2/L3、10 留 L4**（逐个有归属登记，不按声明猜）。
+ * 场景集合与报告分母再次改变，全波共用这一次 bump。
  */
-export const LIVE_DATASET_VERSION = "2026-09-29.3"
+export const LIVE_DATASET_VERSION = "2026-09-29.4"
 
 export function validateDataset(scenes: SceneDef[], contracts: ModuleContract[]): string[] {
   const errors: string[] = []

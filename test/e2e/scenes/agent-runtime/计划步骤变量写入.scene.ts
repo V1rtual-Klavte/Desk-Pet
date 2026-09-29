@@ -196,7 +196,8 @@ export const 计划步骤变量写入: SceneDef = {
   },
   setup: async () => {
     // 变量名来自 Card 定义，而激活 Card 取决于当前用的是哪份配置 ——
-    // 激活 Card 没有可写的 card 段字符串变量时，按 variable-pool/亲密度提升.scene.ts 的先例
+    // 激活 Card 没有可写的 card 段字符串变量时，按 `variable-pool/亲密度提升` 的先例
+    // （W3 已迁 `test/integration/variable-pool/亲密度提升.test.ts`）
     // 切到定义了该变量的 Card；任何 Card 都没有就显式失败，不臆造变量名。
     targetVar = findWritableStringVar(getActiveCard())
     if (!targetVar) {

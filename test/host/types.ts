@@ -46,11 +46,29 @@ export interface PlanConfirmRecord {
 
 // ── Contract ──
 
+/**
+ * 测试层：`unit` = L2（vitest 纯逻辑），`integration` = L3（vitest + fake Provider
+ * 走真 loop），`e2e` = L4（Tauri WebView + 真 Rust IPC）。
+ *
+ * 与命令名（`test:unit` / `test:integration` / `test:e2e`）同一套词表；L0/L1/L5
+ * 不是 caseId 的宿主层，不进这个类型。
+ */
+export type TestLayer = "unit" | "integration" | "e2e"
+
 export interface CoveragePoint {
   id: string
   feature: string
   description: string
   why: string
+  /**
+   * 该覆盖点由哪一层的测试承担。`scenarios[]` 里的每个 caseId 都必须出现在这一层
+   * 的 caseId 集合里 —— L2/L3 侧由 `caseid-reporter.ts` 从测试名末尾的 `[caseId]`
+   * 标记收集，L4 侧是场景集的 `meta.caseId`。
+   *
+   * 单值字段：一个 caseId 同时被两层承担（或某一层只承担部分 scenarios）是
+   * `CROSS-LAYER` / `MISSING` 的判定对象，不是用层列表抹平的状态。
+   */
+  layer: TestLayer
   depth: "shallow" | "deep"
   scenarios: string[]
 }

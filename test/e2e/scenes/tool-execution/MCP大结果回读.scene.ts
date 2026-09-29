@@ -134,7 +134,10 @@ export const MCP大结果回读: SceneDef = {
           // ① MCP 工具经过内核裁决：DANGER → 默认安全模式下是 ask，场景声明 approve 放行。
           const call = ctx.toolHistory.find(item => item.toolName === TOOL_NAME)
           if (!call || call.status !== "done") throw new Error(`MCP 工具没有被执行: ${JSON.stringify(ctx.toolHistory)}`)
-          if (!ctx.confirms.some(record => record.toolName === TOOL_NAME && record.approved)) {
+          // 唯一有区分力的通道事实是「请求真的到达了通道」。原 `record.approved` 子句已删：
+          // `approved` 由**测试宿主**的 policy 写入（host/confirm-channel.ts），approve 策略下
+          // 恒为 true，产品改坏它也不会红（契约审计线索 D2 的统一处置，W2 safety 批次同规则）。
+          if (!ctx.confirms.some(record => record.toolName === TOOL_NAME)) {
             throw new Error(`MCP 工具没有留下确认记录: ${JSON.stringify(ctx.confirms)}`)
           }
 
@@ -177,6 +180,16 @@ export const MCP大结果回读: SceneDef = {
           }
           if (!page.content.startsWith(`[${READ_OFFSET}-`)) {
             throw new Error(`回读没有按 offset 定位: ${JSON.stringify(page.content.slice(0, 40))}`)
+          }
+          // 独立见证（契约审计线索 D4，已复核）：上面的 expectedPage 与被测的
+          // transcriptPageTokens/sliceByTokenBudget 同源，页预算改坏时两侧同变、断不出来。
+          // 手工推导：最小支持窗口 64k 的页预算 ≈4.9k tokens，offset 起的正文全是中文
+          //（≈1 token/字符），因此页正文必然逐字以 offset 起 4000 个字符开头；页预算被
+          // 显著改小时这条先红。
+          const HAND_DERIVED_HEAD_CHARS = 4_000
+          const pageBody = page.content.slice(page.content.indexOf("\n") + 1)
+          if (!pageBody.startsWith(EXPECTED_TEXT.slice(READ_OFFSET, READ_OFFSET + HAND_DERIVED_HEAD_CHARS))) {
+            throw new Error(`回读页没有覆盖 offset 起的手工推导头段: 页正文 ${pageBody.length} 字符`)
           }
         } finally {
           if (registeredId) unregister(registeredId)

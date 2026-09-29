@@ -1,6 +1,5 @@
 import type { SceneDef } from "../../../e2e/types"
 import { fakeText, fakeToolCall, installFakeProvider } from "../../../host/fake-provider"
-import { requestPermissionConfirm } from "@/services/safety"
 import { toolsConfig } from "@/services/config"
 import { confirmRecords } from "../../../host/confirm-channel"
 
@@ -15,6 +14,10 @@ import { confirmRecords } from "../../../host/confirm-channel"
  * 新裁决表对 NORMAL 一律放行 —— 白名单只是免确认通道，不再是硬墙。
  * 场景默认的 `confirmPolicy: "deny"` 正好是这条结论的判据：白名单命令一旦误走确认
  * 就会被立刻拒绝，落成 `denied` 而不是 `done`，断言如实失败。
+ *
+ * `确认放行`（approve 方向）已随 W3 分流迁到 `test/unit/safety/确认放行.test.ts`
+ * （caseId `safety-confirm-approved` 不变）；本文件只留会在 L3 撞 bash 执行边界的
+ * `确认被拒` —— 第 3 回合要观察白名单命令真的以 `done` 收场，只有 L4 有 bash 执行出口。
  */
 const PROBE_COMMAND = "echo deskpet-confirm-probe > /tmp/deskpet-confirm-probe.txt"
 
@@ -90,35 +93,6 @@ export const 确认被拒: SceneDef = {
         }},
       ] },
   ],
-}
-
-/** 场景显式声明 approve：同一条确认请求必须立即放行。 */
-export const 确认放行: SceneDef = {
-  meta: {
-    caseId: "safety-confirm-approved",
-    module: "safety",
-    contractId: "sf-03",
-    description: "场景声明 approve 后确认通道立即放行",
-    depth: "shallow",
-    suite: "safety",
-    confirmPolicy: "approve",
-    tags: ["safety", "boundary"],
-  },
-  setup: async () => { installFakeProvider([fakeText("通道自检完成")]) },
-  turns: [{ index: 1, description: "确认通道 approve 策略", userText: "检查确认通道。",
-    checks: [{ type: "expectConfirmApproved", run: async () => {
-      // 直接走生产入口（PermissionKernel 同一函数）：探针请求必须被宿主按场景策略应答。
-      const decision = await requestPermissionConfirm({
-        requestId: "channel-probe", sessionId: "probe-session", runGeneration: 0,
-        toolCallId: "probe_tool", toolName: "probe_tool", inputHash: "probe", policyHash: "probe",
-        expiresAt: Date.now() + 60_000, message: "通道自检", parameterSummary: "", effectClass: "external_side_effect",
-      })
-      // 应答形状也要钉住：宿主 approve 走的是 `resolveConfirm(true)` → `allow_session`，
-      // 正是子代理授权场景要复用的那种授权（sf-20）。
-      if (decision !== "allow_session") throw new Error(`approve 策略下的应答不是 allow_session: ${decision}`)
-      const records = confirmRecords().filter(record => record.toolName === "probe_tool")
-      if (records.length !== 1 || !records[0].approved) throw new Error("确认记录缺失或未标记放行")
-    } }] }],
 }
 
 export default 确认被拒

@@ -164,6 +164,18 @@ export const 工具结果存档边界: SceneDef = {
         if (!page.content.startsWith(`[${offset}-`)) throw new Error(`尾段回读没有按 offset 定位: ${JSON.stringify(page.content.slice(0, 40))}`)
         if (!page.content.endsWith(tail)) throw new Error(`offset=${offset} 没有读到条目尾段`)
 
+        // 独立见证（契约审计线索 D4，已复核）：上面的 tail/offset 与被测的 transcriptPageTokens/
+        // sliceByTokenBudget 同源，页预算改坏时两侧同变、断不出来。手工推导：最小支持窗口 64k
+        // 的页预算 ≈4.9k tokens，正文全为中文（≈1 token/字符），因此「从 offset 到条目末尾」
+        // 这一页必然覆盖 ≥4000 个字符，且页头必须自报读到条目末尾（end==total==正文长度）。
+        const HAND_DERIVED_PAGE_CHARS = 4_000
+        if (BODY.length - offset < HAND_DERIVED_PAGE_CHARS) {
+          throw new Error(`尾段回读页宽小于手工推导下限: ${BODY.length - offset} < ${HAND_DERIVED_PAGE_CHARS}`)
+        }
+        if (!page.content.startsWith(`[${offset}-${BODY.length}/${BODY.length}]`)) {
+          throw new Error(`尾段回读没有覆盖到条目末尾（独立见证）: ${JSON.stringify(page.content.slice(0, 48))}`)
+        }
+
         // ④ bash 截断：结果自带 spill 回读路径，模型侧文本里也是这条路径。
         const bashEntry = entries.find(entry => entry.type === "message" && entry.message.role === "toolResult"
           && entry.message.toolCallId === BASH_CALL)

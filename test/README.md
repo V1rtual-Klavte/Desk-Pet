@@ -27,12 +27,12 @@
 
 - L2 / L3 一律朴素 vitest（`describe` / `it` / `expect`）；`SceneDef` DSL 只留在 L4 —— 只有 L4 需要在非 Node 宿主里声明式地枚举并执行场景。
 - L2 不得 import 带 IPC 的模块（`@/services/engine/pi`、`@/services/session`、`@/services/tool`）；L3 不得使用真实 Provider。两条都是可判规则（规则 6 / 7），由扫描器执行。
-- L4 的 `entry: "unit"` 是分层前留在宿主里的化石：新的纯逻辑测试一律写 L2，不再新增 unit 场景；该枚举值在 L4 的 unit 场景迁完后删除。
+- L4 的 `entry: "unit"` 是分层前留在宿主里的化石：新的纯逻辑测试一律写 L2，不再新增 unit 场景；该枚举值只剩少数撞上 Rust 专属命令 / WebView 能力、无法迁出的存量场景在用（见「Scene 规范（L4）」的表），最后一个消费者消失后再删除。
 - L2 / L3 的 **caseId 锚在 vitest 测试全名末尾的 `[caseId]` 标记上**（`test/host/caseids.ts` 的 `extractCaseId`），例如 `it("拒绝未注册变量 [variable-pool-unregistered]", …)`。标记形状与 L4 的 caseId 校验同一字母表；没有标记时返回 `undefined`，不从文件名或描述猜。
 - Node 适配层（`test/host/node-ipc.ts`）遇到 Rust 专属命令抛 `UnsupportedInNodeError`，不返回 null 冒充成功；撞上它的场景留在 L4。适配层即自动分层器 —— 归属由跑起来的结果决定，不靠猜。
 - 证据强度分层：L2 / L3 与 L4 + fake Provider 是**确定性证据**（同输入同结果，红了必须定位到产品回归或测试错误之一）；L4 + 真实 Provider 是**观测性证据**（`pass^k < 1` 本身不构成回归结论）。报告分开统计，不得混算。
 
-现状：L2 已可运行（`test/unit/`）；L3 的 vitest project 与别名映射已就位但尚无案例 —— `test:integration` 会以「No test files found」非零退出，这是空层信号，不是通过。
+现状：L2（`test/unit/`）与 L3（`test/integration/`）都已可运行，并承载了 W1–W3 从 L4 逐批实测迁出的案例；L4 只留需要真 Rust 边界的场景。某层一个测试文件都没有时，vitest 会以「No test files found」非零退出 —— 那是空层信号，不是通过。
 
 ## 运行命令与过滤
 
@@ -133,7 +133,7 @@ Node 启动预检会校验 `sourceHash`；源码变更后应先按 SKILL 重新�
 | --- | --- | --- |
 | `production` | 经过 `sendMessage()` 的真实聊天入口 | 验证预处理、队列、会话/UI 消息与完整产品链路 |
 | `runtime` | 直接调用 Pi runtime，并镜像必要的会话消息生命周期 | 验证 Agent、上下文、工具、持久化等运行时适配 |
-| `unit` | 不调用模型，只运行进程内断言 | 仅限尚未迁往 L2 的存量场景；新增纯逻辑测试写 `test/unit/` |
+| `unit` | 不调用模型，只运行进程内断言 | 只在无法迁出的存量场景上残留 —— 现为 5 个：`图片读取处理`、`执行许可`、`工具超时判定`、`窗口信息三态`、`凭据路径` 的 Rust 终判（都撞 Rust 专属命令 / WebView 能力，`窗口信息三态` 另依赖 Live 宿主没有的窗口监听初始化）；**新增纯逻辑测试一律写 L2**。枚举值暂不删除，因为上述场景仍占着它 |
 
 `runtime` 与 `production` 可使用真实 Provider，也可由场景安装 fake Provider：fake Provider 只替换模型响应，保留真实 Agent/Tool 执行路径；是否发生工具调用或 Rust IPC 由具体 Scene 的断言证明。`unit` 不证明模型、Provider 或桌面入口行为；非 `unitOnly` Contract 至少保留一个非 unit Scene。
 

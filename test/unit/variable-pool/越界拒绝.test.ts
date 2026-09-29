@@ -7,7 +7,8 @@
 // 而它真正要验证的（引擎拒绝越界）压根没被稳定测到。
 //
 // 现在直接调 `batchWriteVars`：拒绝逻辑是纯函数，不需要模型配合。
-// 「模型确实会发来 RUNTIME_DATA」由 vp-04 的 `variable-affection-praise` 覆盖。
+// 「模型发来的 RUNTIME_DATA 经完整 loop 会被原样写对」由 vp-04 的
+// `variable-affection-praise` 覆盖，见 `test/integration/variable-pool/亲密度提升.test.ts`。
 import { mkdtempSync, rmSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"

@@ -85,7 +85,8 @@ export function getMemoryProvider(): MemoryProvider { return activeProvider }
 /**
  * Installs one recall strategy and restores only if it is still current.
  *
- * 本函数是长期记忆只读端口的唯一注入接缝（默认空实现；Live 场景 `画像投影` 用它注入探针）
+ * 本函数是长期记忆只读端口的唯一注入接缝（默认空实现；测试 `test/unit/memory/画像投影.test.ts`
+ * 用它注入探针，W2 从 L4 场景 `画像投影` 迁入）
  * ——不是死导出，P6 的 recall 仍从这里接。
  */
 export function installMemoryProvider(provider: MemoryProvider): () => void {
