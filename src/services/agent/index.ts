@@ -31,11 +31,8 @@ export {
 } from "@/services/session/messages"
 
 // ── 记忆 ──
-export {
-  MemoryService,
-  onSessionEnd,
-} from "./memory"
-export type { MemoryEntry, ProjectEntry } from "./memory"
+export { MemoryService, refreshMemoryCount } from "./memory"
+export type { MemoryItem, MemoryKind, MemoryScope, MemorySource } from "./memory"
 
 // ── Agent 运行器 ──
 export { sendMessage, initChat, sendActiveMessage, stopActiveRun, resumePausedInputs, resetAgentRuntimeForTest } from "./runner"

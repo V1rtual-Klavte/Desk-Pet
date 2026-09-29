@@ -13,9 +13,8 @@ export const clearCommand: SlashCommand = {
   busyPolicy: "exclusive",
   async execute() {
     const { createNewSession } = await import("@/services/session/manager")
-    const { onSessionEnd } = await import("@/services/agent/memory")
+    // 会话结束不再隐式触发记忆整理：长期记忆是独立能力，整理由记忆面板显式发起。
     await createNewSession()
-    onSessionEnd()
     return getCommandReply("clear")
   },
 }

@@ -68,5 +68,9 @@ export {
   laneMessageText,
   messageEventId,
   messageRequestId,
+  TURN_NOTE_CUSTOM_TYPE,
+  MEMORY_RECALL_CUSTOM_TYPE,
+  isMemoryRecallMessage,
+  createMemoryRecallMessage,
   userInputMessage,
 } from "./input-identity"

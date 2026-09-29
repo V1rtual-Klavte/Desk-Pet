@@ -97,12 +97,13 @@ export interface InputSourceMark {
   taint: MessageTaint
   /** 是否允许进入长期记忆（用户本人可信输入才是；恢复续跑、系统与外部内容都不是）。 */
   eligibleForMemory: boolean
+  /** 输入准入时冻结的 Card 身份；历史记录缺失时不能事后反推。 */
+  cardId?: string
 }
 
 export type ContextLayer =
   | "static"
   | "dynamic"
-  | "profile"
   | "memory"
   | "transcript"
   | "ephemeral"

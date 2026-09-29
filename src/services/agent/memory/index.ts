@@ -1,35 +1,36 @@
 // ==========================================
 // 记忆系统 — 统一入口
-// 从 memory/ 子模块组装 MemoryService
 // ==========================================
+//
+// 事实存储归 Rust（memory.sqlite3），会话正文归 sessions/ 的 JSONL。
+// 这里只组装三件事：类型化 IPC 客户端、召回端口、dreaming 编排。
+// 不再有第二份内存数组，也不再有 Markdown 注册表。
 
-import { invoke } from "@tauri-apps/api/core"
-import { createLogger } from "@/services/logger"
-
-export { emptyMemoryProvider, getMemoryProvider, installMemoryProvider, recallMemory, resetMemoryProvider } from "./provider"
-export type { MemoryProvider, MemoryProjection, MemoryRecallRequest } from "./provider"
-import type { MemoryEntry, ProjectEntry } from "./types"
-
-// IO
-import { setMemoryDir } from "./io"
-
-// Paths — unified path management
 import { initPaths } from "@/services/paths"
+import { createLogger } from "@/services/logger"
+import { getCandyInstructionsSync, loadCandy, updateCandy } from "./candy"
+import { installMemoryProvider, sqliteMemoryProvider, recallMemory } from "./provider"
+import { memoryList, memoryStatus, applyMemoryChange } from "./ipc"
 
-// Memory entries
-import {
-  listMemory, listByCategory, getMemoryCount, appendMemory, searchMemory,
-  importantMemory, updateMemory, removeMemory, clearMemory, consolidateLocal,
-  getCandyInstructionsSync, updateCandy, getUserProfileSync,
-  syncUserProfile, addOutsideRef, loadMemoryFiles,
-  getProjectEntries, getProjectCount,
-} from "./memory-entries"
-
-// Consolidate
-import { onSessionEnd } from "./consolidate"
-
-// Re-export types
-export type { MemoryEntry, ProjectEntry }
+export { loadCandy, getCandyInstructionsSync, updateCandy } from "./candy"
+export { parseRerankIds } from "./rerank"
+export {
+  emptyMemoryProvider, getMemoryProvider, installMemoryProvider, recallMemory, resetMemoryProvider,
+  sqliteMemoryProvider,
+} from "./provider"
+export type { MemoryProvider, MemoryProjection, MemoryRecallRequest } from "./provider"
+export {
+  addMemoryCandidates, applyMemoryChange, backupMemory, cancelMemoryJob, checkpointMemoryJob, exportMemory,
+  getMemoryItems, memoryDetail, memoryJobSources, memoryList, memoryStatus, publishMemoryBatch,
+  queryMemory, rebuildMemory, registerMemorySources, restoreMemory, resumeMemoryJob, reviewMemoryBatch,
+  startMemoryJob,
+} from "./ipc"
+export type {
+  CandidateStatus, MemoryCandidate, MemoryCandidateDraft, MemoryChangeRequest, MemoryDraft, MemoryItem,
+  MemoryJob, MemoryKind, MemoryScope, MemorySource, MemoryStatus, MemoryStatusSnapshot,
+} from "./ipc"
+export { collectAllMemorySources, collectMemorySources, trustedSourcesFromEntries } from "./sources"
+export { runDreamingSweep, type DreamingOutcome } from "./dreaming"
 export { parseStructuredSummary, formatStructuredSummary } from "./compaction-store"
 export type { StructuredSummary } from "./compaction-store"
 export {
@@ -40,12 +41,10 @@ export type { PlanCheckpointPayload, PlanStepResult, RecoveredPlan } from "./pla
 
 const log = createLogger("Memory")
 
-// ═══════════════════════════════════════════════════
-// 初始化
-// ═══════════════════════════════════════════════════
-
 let initialized = false
 let initPromise: Promise<void> | null = null
+/** 已接受条目数：同步 getter 的读模型，由 init/写操作/显式刷新更新。 */
+let cachedCount = 0
 
 async function ensureInit(): Promise<void> {
   if (initialized) return
@@ -56,66 +55,65 @@ async function ensureInit(): Promise<void> {
 }
 
 async function _doInit(): Promise<void> {
+  await initPaths()
+  await loadCandy()
+  // 记忆库不可用时保留空实现：聊天照常，管理界面会以 MEMORY 错误如实上报。
+  installMemoryProvider(sqliteMemoryProvider)
   try {
-    // 统一路径初始化
-    await initPaths()
-
-    const memDir = await invoke<string>("init_memory_files")
-    setMemoryDir(memDir)
-    log.info("Memory:", memDir)
-
-    await loadMemoryFiles()
-
-    initialized = true
-    log.info(`Memory 就绪: ${getMemoryCount()} 记忆, ${getProjectCount()} 归档`)
-  } catch (e) {
-    log.error("Memory 初始化失败", e instanceof Error ? e : undefined)
-    throw e
+    cachedCount = (await memoryStatus()).itemCount
+  } catch (error) {
+    log.warn("记忆库状态读取失败，计数保持 0:", error)
   }
+  initialized = true
+  log.info(`Memory 就绪（SQLite）: ${cachedCount} 条已接受记忆`)
 }
 
-// ═══════════════════════════════════════════════════
-// MemoryService
-// ═══════════════════════════════════════════════════
+/** 重新读取已接受条目数：写操作之后由调用方触发，避免高频轮询。 */
+export async function refreshMemoryCount(): Promise<number> {
+  try {
+    cachedCount = (await memoryStatus()).itemCount
+  } catch (error) {
+    log.warn("记忆计数刷新失败:", error)
+  }
+  return cachedCount
+}
 
 export const MemoryService = {
   async init(): Promise<void> { await ensureInit() },
 
-  // ── 长期记忆 CRUD ──
-  list(): MemoryEntry[] { return listMemory() },
-  listByCategory(cat: string): MemoryEntry[] { return listByCategory(cat) },
-  get count(): number { return getMemoryCount() },
-  append(content: string, category = "general", importance = 5, file?: string): MemoryEntry {
-    return appendMemory(content, category, importance, file)
-  },
-  search(keyword: string, limit = 5): MemoryEntry[] { return searchMemory(keyword, limit) },
-  important(threshold = 8): MemoryEntry[] { return importantMemory(threshold) },
-  update(id: string, patch: Partial<Pick<MemoryEntry, "content" | "category" | "importance" | "file">>): boolean {
-    return updateMemory(id, patch)
-  },
-  remove(id: string): boolean { return removeMemory(id) },
-  clear(): void { clearMemory() },
+  get count(): number { return cachedCount },
 
-  // ── 系统文件管理 ──
-  getCandyInstructionsSync(): string { return getCandyInstructionsSync() },
+  async list(scope?: import("./ipc").MemoryScope, scopeId?: string, limit = 200) {
+    await ensureInit()
+    return memoryList(scope, scopeId, limit)
+  },
+
+  /**
+   * 清空全部记忆：走治理清空（递增遗忘代 + 挡住全部已知来源），
+   * 只有事务提交成功才返回 true —— 场景隔离与 `/memory clean` 都以它为准。
+   */
+  async clear(): Promise<boolean> {
+    await ensureInit()
+    const { revision } = await memoryStatus()
+    try {
+      await applyMemoryChange({
+        operationId: `clear-${crypto.randomUUID()}`,
+        baseRevision: revision,
+        action: "clear",
+      })
+    } catch (error) {
+      log.error("清空记忆失败:", error instanceof Error ? error : undefined)
+      return false
+    }
+    await refreshMemoryCount()
+    return true
+  },
+
+  getCandyInstructionsSync,
   async updateCandy(instructions: string): Promise<boolean> { return updateCandy(instructions) },
-  getUserProfileSync(): string { return getUserProfileSync() },
-  async syncUserProfile(): Promise<void> { return syncUserProfile() },
-  async addOutsideRef(url: string, description: string): Promise<void> { return addOutsideRef(url, description) },
-
-  // ── Project 归档索引（旧归档链路的只读残留）──
-  get projectCount(): number { return getProjectCount() },
-  getProjectEntries(): ProjectEntry[] { return getProjectEntries() },
-
-  // ── 整理 ──
-  consolidate(): { removed: number; kept: number } { return consolidateLocal() },
+  refreshCount: refreshMemoryCount,
 }
 
-// ── 会话结束 + 调试 ──
-
-export { onSessionEnd }
-
 if (typeof window !== "undefined") {
-  (window as any).__memory = MemoryService
-  log.info("__memory 就绪 (MEMORY.md 双块)")
+  (window as unknown as { __memory?: unknown }).__memory = MemoryService
 }

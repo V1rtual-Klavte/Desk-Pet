@@ -13,8 +13,8 @@
 | 配置、路径、Profile 持久化 | [运行时数据](current/runtime-data.md) | Config getter、AppPaths 和目标设置 Tab |
 | 工具权限、MCP、Skill | [工具系统](current/tool-system.md) | PermissionKernel、Router、对应工具实现 |
 | 查 Pi 协议与 Harness 迁移的原设计 | [Pi 方案 2026-09-20 基线](history/implementation/Pi运行时与工具协议建设方案-2026-09-20基线.md)对应章节 | 当前 runtime/tool/memory 契约与源码 |
-| 测试执行/验证边界 | [测试边界](current/testing.md) | [Live README](../src/services/__tests__/live/README.md)；生成契约时再读 [SKILL](../src/services/__tests__/live/SKILL.md) |
-| 查看还剩哪些未完成工作、继续记忆重构 | [未完成工作与已知缺口](plans/active/未完成工作与已知缺口.md) | [P6 目标契约](plans/active/记忆系统运行时契约.md)、[执行手册基线](history/implementation/记忆系统重构执行手册-2026-09-20基线.md)及相关源码 |
+| 测试执行/验证边界 | [测试边界](current/testing.md) | [测试 README](../test/README.md)；生成契约时再读 [测试 SKILL](../test/SKILL.md) |
+| 查看还剩哪些未完成工作、继续记忆重构 | [未完成工作与已知缺口](plans/active/未完成工作与已知缺口.md) | [B 方案目标契约与执行计划（已实施，剩余验证边界）](plans/active/记忆系统运行时契约.md)、[执行手册基线](history/implementation/记忆系统重构执行手册-2026-09-20基线.md)及相关源码 |
 | 追溯旧方案、比较项目与实施证据 | 下方历史入口 | 只读关联章节，历史命令与授权不自动生效 |
 
 ## 文档职责与维护
@@ -39,10 +39,11 @@ AGENTS 维持全局规则入口，CLAUDE 只导入它；模块细节通过任务
 ## 未完成工作
 
 - [未完成工作与已知缺口](plans/active/未完成工作与已知缺口.md)：**唯一未完成工作总表**——Pi 剩余批次、平台与发布、长期记忆 P6、已知代码缺口、验证缺口与不修边界。
-- [P6 目标契约](plans/active/记忆系统运行时契约.md)：候选、来源、受控召回、纠正/遗忘与评测要求；这些目标尚未成为运行时能力。
+- [记忆系统 B 方案](plans/active/记忆系统运行时契约.md)：无向量分层记忆的设计口径、SQLite/来源/治理协议、dreaming、UI/配置接线与验收矩阵。主路径已实施，剩余验证边界见未完成总表 §3。
 
 ## 历史入口
 
+- [测试分层重构契约 2026-09-29 基线](history/implementation/测试分层重构契约-2026-09-29基线.md)：推翻单一 Live 层的论证、L0–L5 目标分层、观测性与证据强度要求、测试树落位 `test/` 与跨层契约门禁；W0–W7 已实施后归档，三处未完成项（L4 端到端实跑、Windows CI job 真实触发、`entry: "unit"` 枚举值删除）已转登记到未完成总表。
 - [Skill 与 Tool 收敛及模式统一方案 2026-09-26 基线](history/implementation/Skill与Tool收敛及模式统一方案-2026-09-26基线.md)：把 skill 换成 Pi 原生三层、tool 面优化与补齐、移除 pet/assistant 双模式的方案正文、决策定稿、覆盖矩阵与实测证据（2026-09-26 实施并通过严格门禁后归档）。
 - [会话压缩与存储瘦身方案 2026-09-27 基线](history/implementation/会话压缩与存储瘦身方案-2026-09-27基线.md)：压缩分级重构与存储瘦身的设计真相源——六个问题的实测证据、唯一压缩判据、手段阶梯与日志折叠的改法论证（**设计冻结归档；实施由执行方案承接**）。
 - [会话压缩与存储瘦身执行方案 2026-09-28 基线](history/implementation/会话压缩与存储瘦身执行方案-2026-09-28基线.md)：W1–W6 波次分解、跨波交接契约、覆盖矩阵与 §0.6 进度台账及终局门禁证据（2026-09-28 实施并通过严格门禁后归档）。

@@ -15,7 +15,7 @@
 - **工具与扩展**：文件读写、Bash、系统信息、剪贴板、计划与子代理；Skill 按需加载，MCP 按服务器在运行期借用。所有执行受统一权限策略约束。
 - **对话连续性**：多会话切换与历史恢复；长会话按预算压缩上下文，完整正文保留在本地。
 
-启动时不连接 MCP，也不启动后台记忆整理。工具执行不等于无条件授权：Rust 保留路径裁决与命令安全基线。长期记忆的自动提取、跨会话召回、画像写入与 dreaming 尚未接通，当前提供会话记录、上下文压缩与只读用户画像入口。
+启动时不连接 MCP；记忆整理也不在启动时自动发起（只按用户操作或显式开启的空闲策略运行）。工具执行不等于无条件授权：Rust 保留路径裁决与命令安全基线。长期记忆由本地 SQLite 承载：跨会话召回、显式记住/纠正/忘记与「整理产出待审候选、用户批准后才生效」的 dreaming 已接通；记忆管理在设置页的「记忆」标签里。
 
 ## 技术栈
 
@@ -62,14 +62,14 @@ macOS 的窗口监控需要在「系统设置 → 隐私与安全性 → 辅助�
 | `pnpm tauri build` | 构建安装产物 |
 | `pnpm run test:types` | TypeScript 类型检查与 Rust 编译检查 |
 | `pnpm run test:rust` | Rust 单元测试 |
-| `pnpm test -- --module <模块>` | 运行指定模块的 Live Test |
-| `pnpm run test:release` | 发布门禁：类型与编译 + Rust 单测 + 严格 Live Test |
+| `pnpm run test:e2e -- --module <模块>` | 运行指定模块的 E2E 场景 |
+| `pnpm run test:release` | 发布门禁：类型与编译 + Rust 单测 + 严格 E2E 场景 |
 
 ## 测试
 
-类型与编译检查不代表运行时通过。Live Test 在独立 Tauri WebView 与临时数据根中执行真实前端服务、Rust IPC 与完整的会话、工具、持久化链路，Provider 可以是真实服务或确定性 fake；发布门禁执行严格契约校验与三次重复试验，跳过与超时的场景不得报通过。命令细节与场景规范见 [Live Test README](src/services/__tests__/live/README.md)。
+类型与编译检查不代表运行时通过。Live Test 在独立 Tauri WebView 与临时数据根中执行真实前端服务、Rust IPC 与完整的会话、工具、持久化链路，Provider 可以是真实服务或确定性 fake；发布门禁执行严格契约校验与三次重复试验，跳过与超时的场景不得报通过。命令细节与场景规范见 [测试 README](test/README.md)。
 
-[CI](.github/workflows/ci.yml) 在 macOS 与 Windows 上执行编译检查与 Rust 单测，不执行 Live Test。
+[CI](.github/workflows/ci.yml) 在 macOS 与 Windows 上执行编译检查、Rust 单测与 L2 / L3 快层（经重试入口，附测试纪律扫描与 FLAKY 棘轮），不执行 L4 Live Test。
 
 ## 数据与配置
 

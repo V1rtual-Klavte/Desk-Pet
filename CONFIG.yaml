@@ -76,7 +76,17 @@ ai:
     maxParallelTools: 4
 
   memory:
-    maxEntries: 200
+    enabled: true
+    coreTokenBudget: 320
+    recallTokenBudget: 1000
+    rerank: off
+    recallTimeoutMs: 4000
+    rerankTimeoutMs: 2500
+    dreaming:
+      mode: manual
+      idleSeconds: 120
+      minIntervalMinutes: 60
+      maxDailyTokens: 12000
     maxSessions: 20
 
   plan:

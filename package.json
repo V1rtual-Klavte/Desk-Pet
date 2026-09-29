@@ -9,12 +9,15 @@
         "build": "vite build",
         "tauri-dev": "tauri dev",
         "tauri-build": "tauri build",
-        "test": "pnpm run test:live",
+        "test": "pnpm run test:unit && pnpm run test:integration",
         "test:types": "vue-tsc --noEmit && cargo check --manifest-path src-tauri/Cargo.toml",
         "test:rust": "cargo test --manifest-path src-tauri/Cargo.toml --lib",
-        "test:live": "node scripts/live-test.mjs",
-        "test:smoke": "pnpm run test:live -- --module agent-runtime --case production-chat-entry --strict --repeat 2",
-        "test:release": "pnpm run test:types && pnpm run test:rust && pnpm run test:live -- --strict --repeat 3 --report json"
+        "test:unit": "vitest run --project unit",
+        "test:integration": "vitest run --project integration",
+        "test:mutation": "node scripts/mutate.mjs",
+        "test:e2e": "node scripts/e2e-test.mjs",
+        "test:smoke": "pnpm run test:e2e -- --module agent-runtime --case production-chat-entry --strict --repeat 2",
+        "test:release": "pnpm run test:types && pnpm run test:rust && pnpm run test:unit && pnpm run test:integration && pnpm run test:e2e -- --strict --repeat 3 --report json"
     },
     "dependencies": {
         "@earendil-works/pi-agent-core": "0.85.1",
@@ -34,6 +37,7 @@
         "eslint-plugin-vue": "^10.9.2",
         "typescript": "^5.9.3",
         "vite": "^6.4.2",
+        "vitest": "^5.0.2",
         "vue-tsc": "^3.3.5"
     }
 }

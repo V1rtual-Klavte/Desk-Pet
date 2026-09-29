@@ -1,0 +1,78 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Desk-Pet memory IPC protocol",
+  "version": 1,
+  "definitions": {
+    "MemoryScope": { "type": "string", "enum": ["user", "card", "session"] },
+    "MemoryKind": { "type": "string", "enum": ["fact", "preference", "episode", "working"] },
+    "MemoryStatus": { "type": "string", "enum": ["active", "superseded", "expired", "forgotten"] },
+    "CandidateStatus": { "type": "string", "enum": ["pending_review", "accepted", "rejected", "stale"] },
+    "MemorySource": {
+      "type": "object", "additionalProperties": false,
+      "required": ["sourceId", "sessionId", "entryId", "seq", "contentHash", "eligibleForMemory", "taint", "origin", "observedAt"],
+      "properties": {
+        "sourceId": { "type": "string", "minLength": 1 }, "sessionId": { "type": "string", "minLength": 1 },
+        "entryId": { "type": "string", "minLength": 1 }, "eventId": { "type": "string" }, "seq": { "type": "integer", "minimum": 0 },
+        "contentHash": { "type": "string", "minLength": 1 }, "evidence": { "type": "string" },
+        "cardId": { "type": "string" },
+        "eligibleForMemory": { "type": "boolean" }, "taint": { "type": "string", "enum": ["trusted_user", "derived", "untrusted", "system"] },
+        "origin": { "type": "string", "enum": ["user", "assistant", "tool", "system", "import"] }, "observedAt": { "type": "integer" }
+      }
+    },
+    "MemoryDraft": {
+      "type": "object", "additionalProperties": false,
+      "required": ["content", "summary", "kind", "scope", "aliases", "pinned", "importance", "confidence", "sourceIds"],
+      "properties": {
+        "content": { "type": "string", "minLength": 1 }, "summary": { "type": "string" },
+        "kind": { "$ref": "#/definitions/MemoryKind" }, "scope": { "$ref": "#/definitions/MemoryScope" },
+        "scopeId": { "type": "string" }, "aliases": { "type": "array", "items": { "type": "string" } },
+        "pinned": { "type": "boolean" }, "importance": { "type": "number", "minimum": 0, "maximum": 10 },
+        "confidence": { "type": "number", "minimum": 0, "maximum": 1 }, "observedAt": { "type": "integer" },
+        "validFrom": { "type": ["integer", "null"] }, "validTo": { "type": ["integer", "null"] },
+        "expiresAt": { "type": ["integer", "null"] }, "supersedesId": { "type": ["string", "null"] },
+        "sourceIds": { "type": "array", "items": { "type": "string" }, "minItems": 1 }
+      }
+    },
+    "MemoryItem": {
+      "type": "object", "additionalProperties": false,
+      "required": ["id", "version", "status", "draft", "createdAt", "updatedAt"],
+      "properties": { "id": { "type": "string" }, "version": { "type": "integer", "minimum": 1 }, "status": { "$ref": "#/definitions/MemoryStatus" }, "draft": { "$ref": "#/definitions/MemoryDraft" }, "createdAt": { "type": "integer" }, "updatedAt": { "type": "integer" } }
+    },
+    "MemoryCandidate": {
+      "type": "object", "additionalProperties": false,
+      "required": ["id", "jobId", "status", "draft", "baseRevision", "payloadHash", "createdAt"],
+      "properties": { "id": { "type": "string" }, "jobId": { "type": "string" }, "status": { "$ref": "#/definitions/CandidateStatus" }, "draft": { "$ref": "#/definitions/MemoryDraft" }, "baseRevision": { "type": "integer" }, "payloadHash": { "type": "string" }, "createdAt": { "type": "integer" }, "reason": { "type": "string" } }
+    },
+    "MemoryJob": {
+      "type": "object", "additionalProperties": false,
+      "required": ["id", "phase", "status", "revision", "forgetEpoch", "createdAt", "updatedAt"],
+      "properties": { "id": { "type": "string" }, "phase": { "type": "string", "enum": ["light", "review", "publish"] }, "status": { "type": "string", "enum": ["queued", "running", "paused", "cancelled", "completed", "failed"] }, "revision": { "type": "integer" }, "forgetEpoch": { "type": "integer" }, "leaseOwner": { "type": ["string", "null"] }, "leaseUntil": { "type": ["integer", "null"] }, "cursor": { "type": "string" }, "processed": { "type": "integer" }, "createdAt": { "type": "integer" }, "updatedAt": { "type": "integer" }, "error": { "type": "string" } }
+    },
+    "MemoryCandidateDraft": {
+      "type": "object", "additionalProperties": false,
+      "required": ["draft", "payloadHash"],
+      "properties": { "id": { "type": "string" }, "draft": { "$ref": "#/definitions/MemoryDraft" }, "payloadHash": { "type": "string" }, "baseRevision": { "type": "integer" }, "reason": { "type": "string" } }
+    }
+  },
+  "commands": {
+    "memory_status": { "request": {}, "response": { "type": "object", "required": ["revision", "forgetEpoch", "schemaVersion", "itemCount", "candidateCount", "jobCount"], "properties": { "revision": { "type": "integer" }, "forgetEpoch": { "type": "integer" }, "schemaVersion": { "type": "integer" }, "itemCount": { "type": "integer" }, "candidateCount": { "type": "integer" }, "jobCount": { "type": "integer" } } } },
+    "memory_list": { "request": { "scope": { "$ref": "#/definitions/MemoryScope" }, "scopeId": { "type": "string" }, "limit": { "type": "integer" } }, "response": { "type": "array", "items": { "$ref": "#/definitions/MemoryItem" } } },
+    "memory_detail": { "request": { "id": { "type": "string" } }, "response": { "$ref": "#/definitions/MemoryItem" } },
+    "memory_register_sources": { "request": { "sources": { "type": "array", "items": { "$ref": "#/definitions/MemorySource" } } }, "response": { "type": "integer" } },
+    "memory_query": { "request": { "query": { "type": "string" }, "scope": { "$ref": "#/definitions/MemoryScope" }, "scopeId": { "type": "string" }, "limit": { "type": "integer" }, "tokenBudget": { "type": "integer" } }, "response": { "type": "array", "items": { "$ref": "#/definitions/MemoryItem" } } },
+    "memory_get_items": { "request": { "ids": { "type": "array", "items": { "type": "string" } } }, "response": { "type": "array", "items": { "$ref": "#/definitions/MemoryItem" } } },
+    "memory_apply_change": { "request": { "operationId": { "type": "string" }, "baseRevision": { "type": "integer" }, "action": { "type": "string", "enum": ["add", "update", "supersede", "forget", "clear"] }, "itemId": { "type": "string" }, "expectedVersion": { "type": "integer" }, "draft": { "$ref": "#/definitions/MemoryDraft" } }, "response": { "type": "integer" } },
+    "memory_job_start": { "request": { "phase": { "type": "string", "enum": ["light", "review", "publish"] } }, "response": { "$ref": "#/definitions/MemoryJob" } },
+    "memory_job_checkpoint": { "request": { "jobId": { "type": "string" }, "cursor": { "type": "string" }, "leaseOwner": { "type": "string" }, "leaseMs": { "type": "integer" } }, "response": { "$ref": "#/definitions/MemoryJob" } },
+    "memory_job_cancel": { "request": { "jobId": { "type": "string" }, "leaseOwner": { "type": "string" } }, "response": { "$ref": "#/definitions/MemoryJob" } },
+    "memory_job_resume": { "request": { "jobId": { "type": "string" }, "leaseOwner": { "type": "string" } }, "response": { "$ref": "#/definitions/MemoryJob" } },
+    "memory_job_sources": { "request": { "jobId": { "type": "string" } }, "response": { "type": "array", "items": { "$ref": "#/definitions/MemorySource" } } },
+    "memory_candidates_add": { "request": { "jobId": { "type": "string" }, "candidates": { "type": "array", "items": { "$ref": "#/definitions/MemoryCandidateDraft" } } }, "response": { "type": "integer" } },
+    "memory_review_batch": { "request": { "jobId": { "type": "string" } }, "response": { "type": "array", "items": { "$ref": "#/definitions/MemoryCandidate" } } },
+    "memory_publish_batch": { "request": { "jobId": { "type": "string" }, "candidateIds": { "type": "array", "items": { "type": "string" } }, "baseRevision": { "type": "integer" } }, "response": { "type": "integer" } },
+    "memory_export": { "request": {}, "response": { "type": "string" } },
+    "memory_backup": { "request": {}, "response": { "type": "string" } },
+    "memory_rebuild": { "request": {}, "response": { "type": "integer" } },
+    "memory_restore": { "request": { "backupPath": { "type": "string" } }, "response": { "type": "integer" } }
+  }
+}

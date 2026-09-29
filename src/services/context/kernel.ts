@@ -4,8 +4,8 @@ import { CONTEXT_RATIOS, ContextBudgetError, contextBudget, estimateContextToken
 
 const log = createLogger("ContextKernel")
 
-/** 请求块顺序的唯一真相源（static → dynamic → profile → memory → transcript → ephemeral）；模块内使用，不导出。 */
-const CONTEXT_LAYER_ORDER: readonly ContextLayer[] = ["static", "dynamic", "profile", "memory", "transcript", "ephemeral"]
+/** 请求块顺序的唯一真相源（static → dynamic → memory → transcript → ephemeral）；模块内使用，不导出。 */
+const CONTEXT_LAYER_ORDER: readonly ContextLayer[] = ["static", "dynamic", "memory", "transcript", "ephemeral"]
 /** 分配账目覆盖的层。transcript 不再有预算份额（请求视图由 Harness 从已提交条目重建），但审计行保留。 */
 const ALLOCATION_LAYERS = ["static", "tools", "dynamic", "memory", "transcript", "ephemeral"] as const
 
@@ -47,7 +47,6 @@ function isCore(block: ContextBlockInput): boolean {
 }
 
 function budgetLayer(block: Pick<ContextBlockInput, "layer" | "source">): ContextAllocation["layer"] {
-  if (block.layer === "profile") return "dynamic"
   if (block.layer === "static" && (block.source === "tool-schema" || block.source === "skill-catalog")) return "tools"
   return block.layer
 }

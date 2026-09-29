@@ -53,8 +53,13 @@ export function laneMessageText(message: AgentMessage): string {
   return Array.isArray(content) ? contentText(content as Parameters<typeof contentText>[0]) : ""
 }
 
-/** 由入口 ingress 投影出随消息落盘的来源标记（ingress 是唯一真相源）。 */
-export function inputSourceMark(ingress: IngressEnvelope): InputSourceMark {
+/**
+ * 由入口 ingress 投影出随消息落盘的来源标记（ingress 是唯一真相源）。
+ *
+ * `cardId` 是投递时刻冻结的 Card 身份：事后从「当前正在显示的 Card」反推会把
+ * 切卡后的经历算到旧 Card 名下，所以它必须与输入同刻落盘。
+ */
+export function inputSourceMark(ingress: IngressEnvelope, cardId?: string): InputSourceMark {
   return {
     origin: ingress.origin,
     querySource: ingress.querySource,
@@ -62,6 +67,7 @@ export function inputSourceMark(ingress: IngressEnvelope): InputSourceMark {
     taint: ingress.taint,
     // 只有用户本人的可信输入能成为长期事实：主动消息、恢复续跑与外部内容都不行。
     eligibleForMemory: ingress.origin === "user" && ingress.taint === "trusted_user",
+    ...(cardId ? { cardId } : {}),
   }
 }
 
@@ -98,6 +104,7 @@ export function inputSourceOf(message: { deskpetSource?: unknown }): InputSource
     priority: record.priority as MessagePriority,
     taint: record.taint as MessageTaint,
     eligibleForMemory: record.eligibleForMemory,
+    ...(typeof record.cardId === "string" ? { cardId: record.cardId } : {}),
   }
 }
 
@@ -105,9 +112,47 @@ export function inputSourceOf(message: { deskpetSource?: unknown }): InputSource
 const ACTIVE_MESSAGE_CUSTOM_TYPE = "deskpet.active_message"
 
 /**
- * 是否为「瞬时输入」消息：主动搭话（custom 消息）与带投递身份的用户输入。
+ * 尾随瞬时注记的自定义消息类型：构造点是 pi/runtime.ts 的 `createTurnNoteMessage`。
  *
- * 这两类都是「这一回合投进来的输入」，不是会话历史的持久正文；transcript/ephemeral 的归属、
+ * 它由宿主在 `transform_context` 逐请求附加，**只存在于请求视图**，不落会话条目 ——
+ * 因此必须与主动搭话一样归到瞬时输入，否则它的 token 会被记进 transcript 行，
+ * 让「会话历史用了多少」这个读数虚高。
+ */
+export const TURN_NOTE_CUSTOM_TYPE = "deskpet.turn_note"
+
+/** 请求视图中的记忆数据，不落 transcript，也不能再次提取为用户事实。 */
+export const MEMORY_RECALL_CUSTOM_TYPE = "deskpet.memory_recall"
+
+export function isMemoryRecallMessage(message: { role?: unknown; customType?: unknown } | undefined): boolean {
+  return message?.role === "custom" && message.customType === MEMORY_RECALL_CUSTOM_TYPE
+}
+
+/**
+ * 记忆召回块的唯一构造点（请求视图专用，不落会话条目）。
+ *
+ * 它带 `role: "custom"` 而不是 system：记忆是 derived 数据，不能升级成系统指令；
+ * `eligibleForMemory=false` 保证召回内容不会被下一次整理当成用户事实重新提取。
+ */
+export function createMemoryRecallMessage(text: string): AgentMessage {
+  return {
+    role: "custom",
+    customType: MEMORY_RECALL_CUSTOM_TYPE,
+    content: text,
+    display: false,
+    details: {
+      taint: "derived",
+      visibleToUser: false,
+      eligibleForTranscript: false,
+      eligibleForMemory: false,
+    },
+    timestamp: Date.now(),
+  }
+}
+
+/**
+ * 是否为「瞬时输入」消息：主动搭话、尾随瞬时注记（custom 消息）与带投递身份的用户输入。
+ *
+ * 这几类都是「这一回合投进来的输入」，不是会话历史的持久正文；transcript/ephemeral 的归属、
  * 以及跨这两个口径的 token 估算共用这一处判定（调用方不再各写一份 `role === "user"`）。
  * `options.isActiveMessage` 给「整轮都是主动搭话」的调用方一个显式声明（消息形状本身认不出来时用）。
  */
@@ -115,7 +160,9 @@ export function isTransientInputMessage(
   message: { role?: unknown; customType?: unknown; deskpetEventId?: unknown } | undefined,
   options?: { isActiveMessage?: boolean },
 ): boolean {
-  if (message && message.role === "custom" && message.customType === ACTIVE_MESSAGE_CUSTOM_TYPE) return true
+  if (message && message.role === "custom"
+    && (message.customType === ACTIVE_MESSAGE_CUSTOM_TYPE || message.customType === TURN_NOTE_CUSTOM_TYPE
+      || message.customType === MEMORY_RECALL_CUSTOM_TYPE)) return true
   if (message && message.role === "user" && typeof message.deskpetEventId === "string") return true
   return options?.isActiveMessage === true
 }

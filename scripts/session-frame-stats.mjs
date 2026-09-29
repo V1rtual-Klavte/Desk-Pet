@@ -20,7 +20,7 @@
 //    字节一律 UTF-8（Buffer.byteLength），禁用 String.length（UTF-16 长度，中文差约 3 倍）。
 //    该模式只用于选阈值（O-6 的三常量），不作门禁证据。
 //
-// 本目录是独立 Node CLI，直接用 console（与 scripts/live-test.mjs 同理：
+// 本目录是独立 Node CLI，直接用 console（与 scripts/e2e-test.mjs 同理：
 // 应用侧的 logger 只在应用运行期可用，这里没有 IPC，也写不进 data_root 的日志）。
 
 import { closeSync, existsSync, mkdtempSync, openSync, readdirSync, readFileSync, rmSync, statSync, writeSync } from "node:fs"

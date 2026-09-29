@@ -365,6 +365,10 @@ export class HarnessSlot {
   private interruptedInfo?: { operationId: string; kind: "run" | "compaction" | "navigation"; startedAt: number; aborting: boolean }
   private timer?: ReturnType<typeof setTimeout>
   private abortReason?: HarnessAbortReason
+  private runAbortController = new AbortController()
+
+  /** 预检/召回与 lane 共用的取消身份；代际结束后旧请求也会被停止。 */
+  get runSignal(): AbortSignal { return this.runAbortController.signal }
   private deliveryPhase?: HarnessDeliveryPhase
   private runIdentity?: { requestId: string; turnId?: string }
   /**
@@ -760,6 +764,7 @@ export class HarnessSlot {
     this.deliveryPhase = "streaming"
     this.runIdentity = identity
     this.abortReason = undefined
+    this.runAbortController = new AbortController()
     return generation
   }
 
@@ -772,6 +777,7 @@ export class HarnessSlot {
 
   end(generation: number): boolean {
     if (this.generation !== generation) return false
+    this.runAbortController.abort(new Error("运行已结束"))
     if (this.state === "running") this.state = this.interruptedInfo ? "interrupted" : this.harness ? "idle" : "closed"
     this.deliveryPhase = undefined
     return true
@@ -1183,6 +1189,7 @@ export class HarnessSlot {
     // 停止被接受后才记来源：它是 execute() 收尾派生 timedOut 的依据（超时路径必然走到这里，
     // 且 lane.abort 的 awaited 返回先于运行收尾，赋值不会晚于那次读取）。
     this.abortReason = reason
+    this.runAbortController.abort(new Error("运行已取消"))
     // 未消费的 steer/followUp 已被 lane 从 inbox 移出：以 nextRun 重新入队（随会话持久），
     // 保证「停止归还」不丢用户输入、也不自动继续执行（§3.3.5）。
     // 有在飞 run 时由回合收尾点统一入队：否则会被 collectPendingDelivery 的队列清理覆盖。

@@ -1,18 +1,53 @@
 # 当前记忆与会话基础
 
-长期记忆仍通过 `MemoryProvider` 只读端口进入 Runtime，默认返回空集合，召回时限为 1.5 秒；召回文本按 `estimateContextTokens` 裁剪并在超配时显式标记（不再用「4 字符 = 1 token」的通吃常数）。SQLite、自动事实提取、画像候选、纠正/遗忘和 dreaming 属于下一阶段。Card 变量与用户长期事实分别管理。
+长期记忆由 Rust 侧 SQLite（`数据根/memory/memory.sqlite3`）承载，经 `MemoryProvider` 只读端口进入 Runtime。召回是「本地检索 + 可关闭的 adaptive 重排」两段：本地结果先算出来并随时可用，重排失败、超时或被取消都退回同一份本地顺序。召回文本按 `estimateContextTokens` 裁剪并在超配时显式标记（不用「4 字符 = 1 token」的通吃常数）。Card 变量与用户长期事实分别管理。
+
+## 记忆的五层与两条链路
+
+| 层 | 承载 |
+|---|---|
+| 真相层 | `sessions/` 的 JSONL 会话正文，永久保留、不迁移、不替代 |
+| 记忆层 | Rust SQLite：已接受条目 + 来源 + 治理记录 + 可重建的 FTS5 索引 |
+| 投影层 | `memory/exports/` 下的只读 Markdown；模型不能直接写 |
+| 作业层 | dreaming（Light → Review → 人工 Publish），离线整理、产出待审候选 |
+| 端口层 | `MemoryProvider` 是唯一召回入口，连核心画像也走它 |
+
+记忆语义分四类：核心画像（用户确认并置顶的称呼与稳定偏好）、事实/偏好、经历、短期事项（带有效期，到期自动退出召回）。`kind = fact | preference | episode | working`，`scope = user | card | session`。
+
+**准入判据是「谁说的」**：只有 `origin=user` + `taint=trusted_user` + `eligibleForMemory=true` 的已提交条目能成为候选。助手台词、工具结果、压缩摘要、主动搭话与缺来源标记的历史条目一律出局 —— 它们都可能又长又具体，但没有一条能证明是用户本人说的。投递时刻冻结的 `cardId` 随来源落盘，事后不从「当前正在显示的 Card」反推。
+
+**检索链路**：同一库版本下先过滤 scope、状态、有效期与遗忘 → 本地合并 FTS5 trigram、主题/别名与**短词 LIKE 回退** → 顺序为「本地候选 → 可选重排 → 按预算取全文」。FTS5 trigram 的 `MATCH` 不匹配少于三个 Unicode 字符的查询（「咖啡」这类两字词在它下面恒零命中），所以两字中文查询靠短词回退兜住。重排只接收 id 与一行摘要，只能返回候选白名单内的 id；未知 id、坏 JSON、散文一律判无效并回退本地顺序。
+
+**请求落位**：核心画像与动态召回合成一个记忆块，作为**尾随 custom 消息**贴在请求视图末尾（不是 system prompt）：记忆每回合都可能变，留在 system prompt 里会把前缀缓存断在会话正文上游。记忆块带 `eligibleForMemory=false`，因此召回内容不会被下一轮整理当成用户新事实重新提取。额度先按「当前视图已用量」算出真实可用量，再逐条按预算追加；空间不足只丢可选记忆并记录 `budgetDrops`，不截断块内文字。
+
+## 记忆库的治理不变量
+
+- **一次写入一个事务**：条目/版本、来源关联、FTS 与 revision 一起提交，失败全回滚，不对 UI 报成功。
+- **operation_id 幂等**：提交结果未知时先查这条操作记录，绝不盲重放。
+- **基准版本**：写入与发布都带 `baseRevision`，不匹配返回 `MEMORY_CONFLICT`，由调用方重新读取后再决定；不静默覆盖。
+- **候选隔离**：Review 的产物一律是 `pending_review`，不进 FTS、不进召回；只有用户批准后的 Publish 才把它们变成 active。
+- **遗忘闭包**：遗忘写 `memory_tombstones`（稳定事件身份 session+entry+content_hash），同时清正文、FTS 与候选，并递增 `forget_epoch`。之后**索引重建、旧水位补扫、旧批次发布都不会让内容复活**；抑制匹配的是稳定身份而不是可重建的行号。
+- **范围隔离**：`card` 范围的记忆绑定 Card id（外观 Profile 切换不改变归属）；跨 scope 不隐式 supersede。
+- **删除范围分开讲**：「记住/忘记」只清应用管理的记忆与它的回灌资格；原始聊天正文、已导出的文件和外部备份各自有独立的删除入口，界面必须分别说明。当前会话正文里仍然存在的被忘内容无法追回，不能宣称模型已经完全不知道。
+
+## 显式写入与整理
+
+模型写入只经 `memory_change` 工具（`local_mutation` / `exclusive_effect` / `replay: never`，权限意见固定为 `ask`）：模型提出的「用户说了要记住」永远需要用户当场确认，且确认绑定会话、代际、精确参数 hash 与库版本。只读查询走 `memory_query`（`shared_read`，结果 `preserve`）。
+
+自然语言显式写入不等待下一轮 dreaming；成功的判据是 Rust 返回的已提交 revision，而不是模型说「记住了」。本回合写过记忆时，**下一次请求前会重新召回一次** —— 用户刚纠正的事实要在同一回合的下一次请求里生效。
+
+dreaming 分三阶段：Light 固定输入范围（来源登记 + 水位）、Review 产出带证据引用的候选、Publish 在复核来源/版本/抑制后单事务提交。每批来源数与正文长度有界，单条过大整条跳过交给用户挑选片段，不做静默截断；模型来源 id 必须落在本批内，否则整条丢弃。
 
 ## 当前文件职责
 
 | 文件 | 当前用途 |
 |---|---|
-| CANDY.md | 用户手写系统指令 |
-| User.md | 重要用户事实的文件视图，作为只读 profile projection 进入上下文 |
-| Outside.md | 外部知识指针，不自动成为用户事实 |
-| MEMORY.md | 当前长期记忆注册表，尚未迁移到 SQLite |
-| Project.md | 会话归档索引（写入链路已随旧格式清理删除） |
+| CANDY.md | 用户手写系统指令（人工入口，不是记忆数据） |
+| memory.sqlite3 | 已接受记忆、来源与治理决定的真相源（Rust 管理） |
+| exports/ | 只读 Markdown 投影，不可回写 |
+| backups/ | 一致性备份（走 SQLite 备份接口，不复制写入中的主文件） |
 
-这些文件的读取/整理接口仍在 [memory-entries.ts](../../src/services/agent/memory/memory-entries.ts)；接口存在不表示自动链路已接通，不能声称 `MemoryService.search()` 已自动注入。未来 SQLite 迁移的写入与投影边界见 [P6 目标](../plans/active/记忆系统运行时契约.md)。
+旧的 MEMORY.md / User.md / Outside.md / Project.md 注册表**不再创建、不再读取**：记忆主路径已换成 SQLite。磁盘上的旧文件保持原样，由用户自行决定是否清理；没有隐式回退到旧文件的路径。
 
 ## 会话真相源
 
@@ -50,6 +85,6 @@
 
 回合冻结与三阶段 PromptSnapshot 由[运行时契约](runtime-contract.md#快照与人格状态)维护（审计条目的入队与 `flushAudit()` 的落盘边界同见该节）。摘要调用不计为正常聊天回复，但摘要请求同样进快照体系：有会话归属的一次性调用写 payload 与 usage 两档快照（`one-shot:<purpose>` 身份、`request.step = "compaction"`），压缩成功后另写一条 `deskpet.prompt_rewrite`（`compaction_summary`，只含输入/输出 hash、运行来源与压缩条目地址，压缩正文与素材都不落盘）。
 
-`CANDY.md` 是人工指令，`User.md` 通过带来源的只读画像投影进入动态层；两者与摘要分别建块。记忆 LLM 整理的入口与本地去重定时器已删除（零生产调用者）；应用启动、每五轮与 session 结束都不隐式发起记忆整理，明确的长期记忆写入闭环在 P6 实施。
+`CANDY.md` 是人工指令，与摘要分别建块；用户画像不再有独立文件，它就是记忆库里置顶的条目。应用启动、每五轮与 session 结束都不隐式发起记忆整理：整理只能由记忆面板手动触发（或在用户显式开启 idle 整理后按空闲条件运行），且只产出待审候选。
 
-当前实现入口为 [harness-slot.ts](../../src/services/engine/pi/harness-slot.ts)（运行与压缩调度）、[compactor.ts](../../src/services/engine/compactor.ts)（摘要内核）、[session/repo.ts](../../src/services/session/repo.ts)（会话仓库）与 [provider.ts](../../src/services/agent/memory/provider.ts)（长期记忆只读端口）、[tool-output.ts](../../src/services/context/tool-output.ts)（L0 工具结果投影与回读地址）与 [delivery.ts](../../src/services/engine/pi/delivery.ts)（投递证据与上下文 epoch）；计划 checkpoint 与恢复扫描入口为 [plan-checkpoint-store.ts](../../src/services/agent/memory/plan-checkpoint-store.ts) 与 [runner.ts](../../src/services/agent/runner.ts) 的 `recoverPlanCheckpoints()`，恢复产出的继续/丢弃消费者 `resumePlan`/`discardPlan` 由 [runtime.ts](../../src/services/engine/pi/runtime.ts) 消费。
+当前实现入口为 [harness-slot.ts](../../src/services/engine/pi/harness-slot.ts)（运行与压缩调度）、[compactor.ts](../../src/services/engine/compactor.ts)（摘要内核）、[session/repo.ts](../../src/services/session/repo.ts)（会话仓库）、[memory/](../../src/services/agent/memory/)（召回端口、来源收集、dreaming、CANDY）、[src-tauri/src/memory/](../../src-tauri/src/memory/)（SQLite 存储与治理命令）、[tool-output.ts](../../src/services/context/tool-output.ts)（L0 工具结果投影与回读地址）与 [delivery.ts](../../src/services/engine/pi/delivery.ts)（投递证据与上下文 epoch）；计划 checkpoint 与恢复扫描入口为 [plan-checkpoint-store.ts](../../src/services/agent/memory/plan-checkpoint-store.ts) 与 [runner.ts](../../src/services/agent/runner.ts) 的 `recoverPlanCheckpoints()`，恢复产出的继续/丢弃消费者 `resumePlan`/`discardPlan` 由 [runtime.ts](../../src/services/engine/pi/runtime.ts) 消费。

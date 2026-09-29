@@ -1,0 +1,7 @@
+{
+  "note": "缺陷注入的目标文件。只收快层（test/unit + test/integration）实际 import 到的 @/services/** 模块；快层覆盖范围变了就同步这里。每条的注入点由 scripts/mutate.mjs 的四个算子各自取「文件里第一个可注入处」，--dry-run 可先核对。",
+  "files": [
+    "src/services/personality/variable-pool.ts",
+    "src/services/context/budget.ts"
+  ]
+}

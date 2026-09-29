@@ -79,7 +79,7 @@ Rust [AppPaths](../../src-tauri/src/paths.rs) 依据 `cfg!(debug_assertions)` �
 ```text
 data_root/
 ├── settings/       生产 CONFIG 与默认资源初始化标记
-├── memory/         CANDY.md、User.md、Outside.md、MEMORY.md、Project.md
+├── memory/         memory.sqlite3（记忆库）、CANDY.md（人工指令）、exports/ 与 backups/
 ├── sessions/       聊天正文 JSONL（JsonlSessionRepo，每会话一个文件，归属按文件头 cwd；写入以追加为主，已回收 key 的写入行由折叠清理）与 index.json 可丢弃 UI 状态
 ├── personality/    cards/、stages/{cardId}.json
 ├── profiles/       {profileId}/ 下的 Profile 与素材
@@ -99,7 +99,7 @@ Rust 持有 base 的命令接收域内相对路径，例如 personality 命令�
 
 折叠阈值是源码常量 `FOLD_POLICY`（与 `foldSessionFile` 同在 [session-fold.ts](../../src/services/engine/pi/session-fold.ts)，唯一可调点），**不是** YAML 运行时 CONFIG 字段，不适用上面的配置同步清单：`minFileBytes = 512 KiB`（不超过它不探测）、`minReclaimBytes = 128 KiB` 与 `minReclaimRatio = 0.15`（可回收字节须同时达到二者），三者 AND，维持现值（用户 2026-09-28 定稿）。
 
-Live Test 在 debug 且 `DESKPET_LIVE_TEST=1` 时使用测试脚本在用户 Home 下创建的临时数据根，结束后清理。隔离边界与报告位置见[测试 README](../../src/services/__tests__/live/README.md)，不把测试目录当作正常用户数据位置。
+Live Test 在 debug 且 `DESKPET_E2E=1` 时使用测试脚本在用户 Home 下创建的临时数据根，结束后清理。隔离边界与报告位置见[测试 README](../../test/README.md)，不把测试目录当作正常用户数据位置。
 
 ## 默认资源与 Profile
 

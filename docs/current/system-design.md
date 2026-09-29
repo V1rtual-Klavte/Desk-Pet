@@ -12,7 +12,7 @@
 | engine | 预处理、Plan、Slash、Harness 运行槽、会话仓库与压缩接线 | [engine/](../../src/services/engine/)、[pi/harness-slot.ts](../../src/services/engine/pi/harness-slot.ts)、[pi/runtime.ts](../../src/services/engine/pi/runtime.ts)、[pi/session-repo.ts](../../src/services/engine/pi/session-repo.ts) |
 | engine/runtime | trace、快照协议与输入事件身份（`deskpetEventId`/`deskpetSource`；Queue/AgentSlot 已退役） | [runtime/](../../src/services/engine/runtime/)、[input-identity.ts](../../src/services/engine/runtime/input-identity.ts) |
 | context | 分层构建、共享预算（块排序与可选块整块淘汰）与工具输出请求投影 | [context/](../../src/services/context/) |
-| agent/memory | Plan checkpoint、记忆文件与只读 MemoryProvider（会话正文在 `sessions/` JSONL） | [memory/](../../src/services/agent/memory/) |
+| agent/memory | 召回端口、来源收集、dreaming 编排、CANDY 与 Plan checkpoint；记忆库本体在 Rust `src-tauri/src/memory/` | [memory/](../../src/services/agent/memory/) |
 | session | 会话仓库访问层、会话列表与消息读模型、切换与恢复 | [session/](../../src/services/session/) |
 | personality / reply | Card、变量与阶段文案；回复元数据解析和效果 | [personality/](../../src/services/personality/)、[reply/](../../src/services/reply/) |
 | tool / safety | 工具注册和路由、Pi 文件工具、MCP；权限与确认 | [tool/](../../src/services/tool/)、[safety/](../../src/services/safety/) |
@@ -23,7 +23,7 @@
 | logger / error / dialog | 统一日志、异常出口与通用交互提示 | [logger/](../../src/services/logger/)、[error/](../../src/services/error/)、[dialog/](../../src/services/dialog/) |
 | Rust App / commands | AppPaths（数据根、允许根与凭据路径终判）、IPC 注册、文件/工具与平台能力 | [lib.rs](../../src-tauri/src/lib.rs)、[paths.rs](../../src-tauri/src/paths.rs)、[commands/](../../src-tauri/src/commands/) |
 | Rust window / monitor | Windows/macOS 窗口与前台应用监控 | [window/](../../src-tauri/src/window/)、[monitor/](../../src-tauri/src/monitor/) |
-| Live Test | Contract、Scene、隔离宿主与报告 | [测试 README](../../src/services/__tests__/live/README.md) |
+| Live Test | Contract、Scene、隔离宿主与报告 | [测试 README](../../test/README.md) |
 
 图层和景深的共享计算位于 [composables/](../../src/composables/)，展示入口是 [StreamView.vue](../../src/components/StreamView.vue)。[init.ts](../../src/services/init.ts) 负责启动初始化与能力准备（借用启用的 MCP 服务器、核对 Skill 目录指纹）。
 

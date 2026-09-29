@@ -13,6 +13,7 @@ pub mod personality_fs_cmd;
 pub mod profile_cmd;
 pub mod resources_cmd;
 pub mod sim;
+pub mod session_fs;
 pub mod skill_cmd;
 pub mod tool_exec;
 pub mod tool_permit;
@@ -34,6 +35,7 @@ pub use profile_cmd::{
 pub use resources_cmd::{restore_default_resources, skill_delete};
 pub use skill_cmd::skill_catalog_fingerprint;
 pub use sim::{close_windows_sim, open_windows_sim};
+pub use session_fs::session_read_text;
 pub(crate) use tool_exec::BashPool;
 pub use tool_exec::{
     app_open, bash_cancel, bash_exec, clipboard_read, clipboard_write, dir_create, file_append,

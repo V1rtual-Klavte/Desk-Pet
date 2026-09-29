@@ -46,6 +46,15 @@ pub enum AppError {
     #[error("工具执行失败: {0}")]
     Tool(String),
 
+    #[error("记忆数据库不可用: {0}")]
+    Memory(String),
+
+    #[error("记忆路径受保护")]
+    MemoryProtectedPath,
+
+    #[error("记忆版本冲突")]
+    MemoryConflict,
+
     #[error("{0}")]
     Other(String),
 }
@@ -64,6 +73,9 @@ impl AppError {
             Self::Io(_) => "IO",
             Self::Config(_) => "CONFIG",
             Self::Tool(_) => "TOOL",
+            Self::Memory(_) => "MEMORY",
+            Self::MemoryProtectedPath => "MEMORY_PROTECTED_PATH",
+            Self::MemoryConflict => "MEMORY_CONFLICT",
             Self::Other(_) => "OTHER",
         }
     }

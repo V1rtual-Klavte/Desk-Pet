@@ -1,0 +1,55 @@
+// ==========================================
+// 压缩阈值口径 —— 从 test/e2e/scenes/memory/压缩阈值口径.scene.ts 迁到 L3
+// ==========================================
+//
+// 上游 shouldCompact 比的是它的 estimateContextTokens：会话里存在有效 provider usage 时
+// 前缀按真实 usage 计，只有尾随消息按 chars/4 估。本仓估算同样以真实 token 为目标口径，
+// 两边可以直接相比，换算因子是 1（见 toHarnessEstimateTokens）。
+//
+// 真正要守的不变量是「压缩先于硬预算报错」。硬预算触发点会被估算器偏差 k
+// （本仓估算 / 真实 token）提前到 hardInputLimit / k，所以 k 必须小于 hardInputLimit 与
+// normalInputTarget 的比值。该比值随窗口增大逼近 1（compactionHeadroom 被 MAX_HEADROOM
+// 封顶），是这里最容易被改坏的一处。
+//
+// 归 L3 的理由：阈值换算的唯一出口 `compactionSettingsFor` 住在 `@/services/engine/pi`。
+import { describe, expect, it } from "vitest"
+
+import { MIN_CONTEXT_WINDOW, contextBudget, estimateContextTokens, toHarnessEstimateTokens } from "@/services/context"
+import { compactionSettingsFor } from "@/services/engine/pi"
+
+describe("压缩阈值口径", () => {
+  it("阈值落在本仓正常输入目标上并先于硬预算触发，估算器偏差不越过硬预算余量 [memory-compaction-threshold-calibration]", () => {
+    // 各类正文的真实 token 密度取实测值，不复制本仓常数：拉丁散文约 4 字符 1 token，
+    // 中文约 1 字符 1 token。偏差 = 本仓估算 / 真实 token，1 表示对齐。
+    const probeChars = 1_000
+    const biases = [
+      { label: "纯 ASCII", bias: estimateContextTokens("a".repeat(probeChars)) / (probeChars / 4) },
+      { label: "纯中文", bias: estimateContextTokens("字".repeat(probeChars)) / probeChars },
+    ]
+
+    for (const window of [MIN_CONTEXT_WINDOW, 131_072, 200_000]) {
+      const budget = contextBudget(window)
+      const settings = compactionSettingsFor(window)
+      const threshold = window - settings.reserveTokens
+
+      expect(settings.keepRecentTokens, `${window} 窗口的保留窗口没有换算到上游口径`)
+        .toBe(toHarnessEstimateTokens(budget.keepRecentTokens))
+      expect(threshold, `${window} 窗口的阈值没有落在本仓正常输入目标上: ${threshold}`)
+        .toBe(toHarnessEstimateTokens(budget.normalInputTarget))
+      // 同口径直接比较：压缩阈值必须先于宿主硬预算触发。
+      expect(threshold, `${window} 窗口的压缩阈值晚于宿主硬预算: ${threshold} >= ${budget.hardInputLimit}`)
+        .toBeLessThan(budget.hardInputLimit)
+      // 保留窗口必须放得进消息可用空间，切点才有机会存在。
+      expect(settings.keepRecentTokens, `${window} 窗口的保留窗口超过消息可用空间: ${settings.keepRecentTokens} >= ${budget.hardInputLimit}`)
+        .toBeLessThan(budget.hardInputLimit)
+      // 估算器偏差一旦吃掉硬预算与正常输入目标的差额，硬预算就会先于压缩报错。
+      const headroomRatio = budget.hardInputLimit / budget.normalInputTarget
+      for (const { label, bias } of biases) {
+        expect(bias, `${window} 窗口下${label}的估算偏差 ${bias} 达到硬预算余量上限 ${headroomRatio}，硬预算会先于压缩报错`)
+          .toBeLessThan(headroomRatio)
+      }
+    }
+
+    expect(toHarnessEstimateTokens(0), "空预算的换算没有下限保护").toBeGreaterThanOrEqual(1)
+  })
+})
