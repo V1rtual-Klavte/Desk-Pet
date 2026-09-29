@@ -9,7 +9,7 @@
 // 审视结论：照搬（含 `approved` 断言 —— 契约 W2 safety 登记里明确保留的唯一 approve 例外：
 // 该场景声称的就是「声明 approve 后确认通道放行」本身，记录由宿主按场景策略写入，
 // 是这条声称的直接证据而不是自证；`allow_session` 则是产品 `resolveConfirm(true)` 的
-// 应答形状，子代理授权场景复用的正是它，sf-03/sf-20 靠这条钉住形状）。
+// 应答形状，子代理授权场景复用的正是它，sf-23/sf-20 靠这条钉住形状）。
 import { afterEach, beforeEach, describe, expect, it } from "vitest"
 
 import { requestPermissionConfirm } from "@/services/safety"

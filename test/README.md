@@ -78,9 +78,22 @@ pnpm run test:e2e -- --strict --repeat 3 --report json
 # 生产入口 smoke 与发布门禁
 pnpm run test:smoke
 pnpm run test:release
+
+# W7 缺陷注入观测（先记录观测值，不设阈值；不进每 PR 门禁）
+pnpm run test:mutation
 ```
 
 可组合的筛选参数为 `--module`、`--scene`、`--case`、`--tag`、`--suite`、`--repeat`、`--strict`、`--report`、`--contracts`。`--repeat` 范围为 1–20，且不会低于 Scene 的 `meta.repetitions`。`test:release` 执行类型检查、Rust 单测、L2 / L3 与严格三次 E2E 试验。
+
+### 缺陷注入观测（`test:mutation`，W7）
+
+`pnpm run test:mutation`（`scripts/mutate.mjs`）把 `test/mutation-baseline.json` 列出的目标源码逐个注入缺陷（四个算子：条件反转 / 边界值偏移 / 分支删除 / 返回常数，各取文件里第一个可注入点），每注入一条跑一遍快层（L2 + L3），最后打印两样东西：**命中率**（多少注入被快层判红，即「这套测试有牙齿」的比例）与**漏掉的注入清单**（哪条注入、注入在哪个文件的哪一行、改成了什么）—— 漏掉的那几条就是测试没有区分力的具体位置。注入在同一进程内还原，运行前后 `git status --short src/` 应保持为空。`node scripts/mutate.mjs --dry-run` 只打印注入点（含被代码区掩码收窄的记录），不跑测试。
+
+读法与边界：
+
+- **当前只有 2 个目标文件**（`src/services/personality/variable-pool.ts`、`src/services/context/budget.ts`）。首轮观测为 **5/7 = 71.4%** —— 这是这两个文件上的数字，**不代表快层整体命中率**；扩大目标面后才更新。
+- 结果先作为**观测**记录，**不设阈值**，不进每 PR 门禁；稳定后再按只缩不放的棘轮设阈值。
+- 口径与已知收窄（语法解析不过的注入不计入分母、算子只在代码区匹配等）见[测试分层重构契约](../docs/plans/active/测试分层重构契约.md) 的「首轮观测」一节。
 
 L2 / L3 可并行、不占端口；**L4 不能并行跑**（占用同一 Vite/Tauri 端口），也不要与 `pnpm tauri dev` 的开发实例同时运行。
 

@@ -11,7 +11,7 @@
 //
 // 取消判定的两条通道在 Node 下的可辨形态：router 的 abort 早退（本用例覆盖）之外，
 // `acquireToolPermit` 也会把已 abort 的等待直接判 cancelled —— 后者依赖 Rust 许可内核，
-// 只在 L4 侧有覆盖（执行许可场景）。本文件钉的是契约 te-10 的「不进入 handler + 稳定错误码」。
+// 只在 L4 侧有覆盖（执行许可场景）。本文件钉的是契约 te-26 的「不进入 handler + 稳定错误码」。
 import { afterAll, beforeAll, describe, expect, it } from "vitest"
 import { mkdtempSync, rmSync } from "node:fs"
 import { tmpdir } from "node:os"
