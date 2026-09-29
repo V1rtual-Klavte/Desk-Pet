@@ -10,7 +10,7 @@ export const harnessStorageContract: ModuleContract = {
     "src/services/session/repo.ts",
   ],
   generatedAt: "2026-09-28",
-  sourceHash: "5b9c125fa904153924b2cfd0864cef23e06e62c65a36e54bde3b80e98d7f1028",
+  sourceHash: "16f612397def60260c73819de1996160020b72af6c80f1033f81a25457cc3212",
   coverage: [
     {
       id: "hs-01",

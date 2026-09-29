@@ -6,7 +6,7 @@ export const personalityCardContract: ModuleContract = {
   // 两边漂移会让新 key 永远取不到 Card 文案，所以提示词纳入 sourceFiles，改动必须触发重审。
   sourceFiles: ["src/services/personality/registry.ts", "src/services/personality/loader.ts", "src/services/personality/stages-cache.ts", "src/services/personality/stages-file.ts", "src/services/personality/stages-prompt.md", "src/services/tool/registry.ts"],
   generatedAt: "2026-09-26",
-  sourceHash: "25ba679341549cea42e5d0afd84cc481e0072ff69dc14d3ce3782f0ce0fea9d2",
+  sourceHash: "8144ffc7ec3580ee41b0ecac2a0e0871c631f1aa4ec97fc3885bbf3c30f1998b",
   coverage: [
     { id: "pc-01", feature: "Card 解析", description: "importUserCard 把 Card markdown 解析成 PersonalityCard：frontmatter 的 id/name/version 与各区块的 sections 都要落到字段上，source 恒为 runtime，hash 非空", why: "人格卡系统基础", layer: "unit", depth: "shallow", scenarios: ["card-parse"] },
     { id: "pc-02", feature: "注册表的非法切换守卫", description: "switchPersonality(null) 与切换到不存在的人格都返回 ok:false 并给出原因，且失败的切换不得改动 activeId（拒绝必须原子）", why: "人格切换失败回滚是运行时核心约束", layer: "unit", depth: "shallow", scenarios: ["card-registry-guard"] },
