@@ -63,6 +63,11 @@ let poolBefore: Record<string, string> = {}
 let blocking: ReturnType<typeof registerBlockingTool> | undefined
 // 原值只捕获一次：上一 trial 若在清理前失败，不能把本场景自己设的测试值当成「原值」记下来。
 let planEnabledBefore: boolean | undefined
+/**
+ * setup 若为了拿到「可写入的 card 段字符串变量」换过 Card，记下原值供收尾切回。
+ * 不切回的话后续场景的 Card/变量基线会被本场景改掉（契约登记的 D8）。
+ */
+let cardIdBefore: string | undefined
 
 /** card 段的「名字 → 类型 + 值」投影；用 JSON 区分 false 与 "false"。 */
 function cardValues(): Record<string, string> {
@@ -114,6 +119,16 @@ function cleanup(): void {
   if (planEnabledBefore !== undefined) setOverride("ai.plan.enabled", planEnabledBefore)
 }
 
+/**
+ * 切回 setup 之前激活的 Card。**只能在最后一个断言里调用** —— 断言 A（`expectStepRawEvidence`）
+ * 结束时会跑 `cleanup()`，那时还轮不到它：变量是写在切换后那张卡的 stages 文件里的，
+ * 提前切回会让断言 B 回读到另一张卡的文件，反而制造出 `stages 文件回读不一致: undefined`。
+ */
+async function restoreCard(): Promise<void> {
+  if (cardIdBefore === undefined || getActiveCard()?.id === cardIdBefore) return
+  await switchPersonality(cardIdBefore)
+}
+
 /** 断言 B：步骤子代理的 RUNTIME_DATA 不写变量，但原始正文必须留证（PLAN-09④）。 */
 const expectStepRawEvidence: AssertCheck = {
   type: "expectStepRawEvidence",
@@ -157,28 +172,34 @@ const expectStepRawEvidence: AssertCheck = {
 const expectMainTurnWrite: AssertCheck = {
   type: "expectMainTurnWrite",
   run: async (ctx) => {
-    // 前提：主回合确实调用过工具，否则这条断言对 FIX-10 没有意义
-    if (!ctx.toolHistory.some(item => item.toolName === TOOL_NAME)) {
-      throw new Error(`主回合没有调用 ${TOOL_NAME}，「带 toolCall 的回合」前提不成立: ${JSON.stringify(ctx.toolHistory)}`)
-    }
-    const def = targetVar
-    if (!def) throw new Error("场景 setup 没有选出变量（setup 本应先失败）")
-    // 协议块没有泄漏进展示正文，且展示正文就是脚本正文去掉协议块后的样子（剥离发生在展示之前）
-    if (ctx.output.reply.includes("RUNTIME_DATA")) throw new Error(`RUNTIME_DATA 块泄漏进了展示正文: ${ctx.output.reply}`)
-    if (!ctx.output.reply.includes(REPLY_TEXT)) {
-      throw new Error(`主回合的展示正文不含脚本正文: ${JSON.stringify(ctx.output.reply)}`)
-    }
+    // 这是最后一条断言：无论成败都要把 setup 可能换掉的 Card 切回来（见 restoreCard 的注释 ——
+    // 不能提前到 cleanup 里做，那会让本断言回读到另一张卡的 stages 文件）。
+    try {
+      // 前提：主回合确实调用过工具，否则这条断言对 FIX-10 没有意义
+      if (!ctx.toolHistory.some(item => item.toolName === TOOL_NAME)) {
+        throw new Error(`主回合没有调用 ${TOOL_NAME}，「带 toolCall 的回合」前提不成立: ${JSON.stringify(ctx.toolHistory)}`)
+      }
+      const def = targetVar
+      if (!def) throw new Error("场景 setup 没有选出变量（setup 本应先失败）")
+      // 协议块没有泄漏进展示正文，且展示正文就是脚本正文去掉协议块后的样子（剥离发生在展示之前）
+      if (ctx.output.reply.includes("RUNTIME_DATA")) throw new Error(`RUNTIME_DATA 块泄漏进了展示正文: ${ctx.output.reply}`)
+      if (!ctx.output.reply.includes(REPLY_TEXT)) {
+        throw new Error(`主回合的展示正文不含脚本正文: ${JSON.stringify(ctx.output.reply)}`)
+      }
 
-    const state = getPoolSnapshot().card[def.name]
-    if (state?.value !== MAIN_VALUE) throw new Error(`变量池未写入: ${def.name}=${String(state?.value)}（期望 ${MAIN_VALUE}）`)
-    if (state.updatedBy !== "llm") throw new Error(`${def.name} 的 updatedBy=${state.updatedBy}，应为 llm`)
+      const state = getPoolSnapshot().card[def.name]
+      if (state?.value !== MAIN_VALUE) throw new Error(`变量池未写入: ${def.name}=${String(state?.value)}（期望 ${MAIN_VALUE}）`)
+      if (state.updatedBy !== "llm") throw new Error(`${def.name} 的 updatedBy=${state.updatedBy}，应为 llm`)
 
-    // 磁盘回读：stages/{cardId}.json 的 variables 段（持久化不在内存里自证）
-    const cardId = getActiveCard()?.id
-    if (!cardId) throw new Error("没有激活的 Card，无法回读 stages 文件")
-    const file = await readStagesFile(cardId)
-    const persisted = file?.variables?.card?.[def.name]?.value
-    if (persisted !== MAIN_VALUE) throw new Error(`stages 文件回读不一致: ${String(persisted)}（期望 ${MAIN_VALUE}）`)
+      // 磁盘回读：stages/{cardId}.json 的 variables 段（持久化不在内存里自证）
+      const cardId = getActiveCard()?.id
+      if (!cardId) throw new Error("没有激活的 Card，无法回读 stages 文件")
+      const file = await readStagesFile(cardId)
+      const persisted = file?.variables?.card?.[def.name]?.value
+      if (persisted !== MAIN_VALUE) throw new Error(`stages 文件回读不一致: ${String(persisted)}（期望 ${MAIN_VALUE}）`)
+    } finally {
+      await restoreCard()
+    }
   },
 }
 
@@ -199,6 +220,8 @@ export const 计划步骤变量写入: SceneDef = {
     // 激活 Card 没有可写的 card 段字符串变量时，按 `variable-pool/亲密度提升` 的先例
     // （W3 已迁 `test/integration/variable-pool/亲密度提升.test.ts`）
     // 切到定义了该变量的 Card；任何 Card 都没有就显式失败，不臆造变量名。
+    // 先记下原 Card：下面可能为了拿到可写变量而换卡，最后一个断言里要切回来。
+    cardIdBefore ??= getActiveCard()?.id
     targetVar = findWritableStringVar(getActiveCard())
     if (!targetVar) {
       const target = listPersonalities().find(card => findWritableStringVar(card))
