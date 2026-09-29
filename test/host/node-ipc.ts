@@ -875,6 +875,14 @@ const handlers: Record<string, (args: Args) => unknown> = {
     return readdirSync(dir).sort(compareBytes)
   },
 
+  /** session_fs.rs: Node 只等价读文件，Rust 路径与有界读取由 Rust/L4 验证。 */
+  session_read_text: (args) => {
+    const relative = arg<string>(args, "path")
+    const content = readFileSync(join(paths().sessions, relative), "utf8")
+    const maxLines = args.maxLines as number | undefined
+    return maxLines === undefined ? content : content.split(/(?<=\n)/).slice(0, maxLines).join("")
+  },
+
   // ── 记忆与日志（memory_cmd.rs / logging.rs）──
 
   /** init_memory_files() -> String（memory 目录绝对路径） */

@@ -18,7 +18,14 @@ import { installPiRuntimeProviderForTest } from "@/services/engine/pi"
 const TURN_NOTE_PATTERN = /^\[当前时间\] \d{4}-\d{2}-\d{2} \d{2}:\d{2} 周[日一二三四五六]$/
 
 /**
- * 请求视图里「最后一条真实输入」的文本：跳过宿主逐请求附加的尾随瞬时注记（当前时间）。
+ * 记忆召回块的表头：与生产同形、按形态写死。它排在尾随注记之前，也是「这一回合新加的」
+ * 内容之一，所以同样是场景判读「最后一条真实输入」时应当跳过的部分。
+ */
+const MEMORY_RECALL_HEADER = "[长期记忆]"
+
+/**
+ * 请求视图里「最后一条真实输入」的文本：跳过宿主逐请求附加的尾随瞬时注记（当前时间）
+ * 与记忆召回块。
  *
  * 注记落在消息数组最末（`createTurnNoteMessage`），而脚本按文本判别请求时依赖的是
  * 「最后一条就是这次投进来的输入」这条隐式约定 —— 不跳过它，判别会全部错位。
@@ -34,7 +41,7 @@ export function lastRequestText(context: Context): string {
     const text = typeof content === "string"
       ? content
       : (content ?? []).map(part => (part.type === "text" ? part.text : "")).join("")
-    if (!TURN_NOTE_PATTERN.test(text)) return text
+    if (!TURN_NOTE_PATTERN.test(text) && !text.startsWith(MEMORY_RECALL_HEADER)) return text
   }
   return ""
 }

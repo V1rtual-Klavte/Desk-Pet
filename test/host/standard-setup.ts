@@ -7,7 +7,6 @@ import { clearMessages } from "@/services/session/store"
 import { activeSessionId, sessions, unansweredCount } from "@/services/session/store"
 import { resetSessionPersistenceForTest } from "@/services/session/persistence"
 import { MemoryService, resetMemoryProvider } from "@/services/agent/memory"
-import { flushMemory } from "@/services/agent/memory/memory-entries"
 import { deleteAllPiSessionsForTest } from "@/services/session/repo"
 import { getActiveCard, initRegistry } from "@/services/personality/registry"
 import { initCards } from "@/services/personality/loader"
@@ -180,9 +179,19 @@ export async function standardSetup(
     })
   }
 
-  // 3. 清空记忆
-  MemoryService.clear()
-  await flushMemory()
+  // 3. 清空记忆：走治理清空（与 UI 同一条提交路径 + 递增遗忘代），E2E 宿主跑真 Rust。
+  //    提交失败不静默：场景之间共享一份脏记忆比直接报错更难查。
+  //    唯一例外是「这个宿主根本没有记忆后端」（L3 的 Node 适配层）：那时没有状态要隔离，
+  //    与「有库但清空失败」是两回事，不能混成同一条静默分支。
+  try {
+    if (!await MemoryService.clear()) throw new Error("记忆库清空未提交")
+  } catch (error) {
+    if ((error as { name?: string })?.name === "UnsupportedInNodeError") {
+      // Node 适配层没有记忆库：这里没有第二份状态，跳过清空是准确的，不是放行。
+    } else {
+      throw error
+    }
+  }
 
   // 4. 清空聊天历史
   clearMessages()

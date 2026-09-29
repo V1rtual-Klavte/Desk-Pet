@@ -34,7 +34,7 @@ Desk-Pet 是可自定义 Card/Profile 的 Tauri v2 桌宠，优先做好轻量�
 | 人格变量、阶段文案、回复元数据 | [人格与回复](docs/current/personality.md) |
 | 日志、异常、IPC、构建排查 | [工程参考](docs/current/development.md) |
 | 测试分层、执行与场景 | [测试 README](test/README.md)（三层职责、规则表、命令与报告）；生成或审查测试时再读 [测试 SKILL](test/SKILL.md) |
-| 继续记忆重构 | [未完成工作与已知缺口](docs/plans/active/未完成工作与已知缺口.md) 的 P6 章节，再读 [P6 目标契约](docs/plans/active/记忆系统运行时契约.md) |
+| 记忆系统设计与剩余验证 | [当前记忆](docs/current/memory.md)，再读 [B 方案契约](docs/plans/active/记忆系统运行时契约.md) 与 [未完成工作与已知缺口](docs/plans/active/未完成工作与已知缺口.md) §3 |
 
 完整目录见 [docs/INDEX.md](docs/INDEX.md)。当前行为由源码和对应 `docs/current/` 说明；
 `plans/active/` 只维护未完成工作，`history/` 保存过去的方案与证据。
@@ -135,8 +135,11 @@ pnpm run test:release # 类型/编译 + Rust 单测 + L2/L3 + 严格 Contract + 
   Card 文案），再接消费点；`FALLBACK_*` 常量只是 Card 完全不可用时的中性兜底。
   系统消息与错误诊断保持中性：角色台词会掩盖故障，用户要能分清「角色在说话」和「出问题了」。
 - 主请求与一次性文本请求统一走模型网关，共享配置、认证、取消和 deadline；不叠加 SDK 内层重试。
-- 长期记忆只经 MemoryProvider 进入 Runtime；默认空实现。不得把压缩摘要、工具结果、主动消息
-  或助手台词晋升为用户事实，不宣称尚未接通的自动提取、召回、画像写入或 dreaming 已完成。
+- 长期记忆只经 MemoryProvider 进入 Runtime（核心画像也走它）；事实与治理决定归 Rust 侧 SQLite
+  （`数据根/memory/`），JSONL 只是会话证据源。只有 `origin=user` + `taint=trusted_user` +
+  `eligibleForMemory=true` 的已提交条目能成为候选：不得把压缩摘要、工具结果、主动消息、助手台词
+  或已召回的记忆晋升为用户事实。候选必须经用户批准才进入 active；遗忘要覆盖正文、索引、候选与
+  补扫回灌，且不把「忘记记忆」说成删除了聊天原文或外部备份。
 
 ## 工具与权限
 

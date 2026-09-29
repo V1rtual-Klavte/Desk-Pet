@@ -12,7 +12,7 @@
 | engine | 预处理、Plan、Slash、Harness 运行槽、会话仓库与压缩接线 | [engine/](../../src/services/engine/)、[pi/harness-slot.ts](../../src/services/engine/pi/harness-slot.ts)、[pi/runtime.ts](../../src/services/engine/pi/runtime.ts)、[pi/session-repo.ts](../../src/services/engine/pi/session-repo.ts) |
 | engine/runtime | trace、快照协议与输入事件身份（`deskpetEventId`/`deskpetSource`；Queue/AgentSlot 已退役） | [runtime/](../../src/services/engine/runtime/)、[input-identity.ts](../../src/services/engine/runtime/input-identity.ts) |
 | context | 分层构建、共享预算（块排序与可选块整块淘汰）与工具输出请求投影 | [context/](../../src/services/context/) |
-| agent/memory | Plan checkpoint、记忆文件与只读 MemoryProvider（会话正文在 `sessions/` JSONL） | [memory/](../../src/services/agent/memory/) |
+| agent/memory | 召回端口、来源收集、dreaming 编排、CANDY 与 Plan checkpoint；记忆库本体在 Rust `src-tauri/src/memory/` | [memory/](../../src/services/agent/memory/) |
 | session | 会话仓库访问层、会话列表与消息读模型、切换与恢复 | [session/](../../src/services/session/) |
 | personality / reply | Card、变量与阶段文案；回复元数据解析和效果 | [personality/](../../src/services/personality/)、[reply/](../../src/services/reply/) |
 | tool / safety | 工具注册和路由、Pi 文件工具、MCP；权限与确认 | [tool/](../../src/services/tool/)、[safety/](../../src/services/safety/) |
