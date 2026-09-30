@@ -266,7 +266,7 @@ impl MemoryStore {
     pub fn detail(&self, id: &str) -> AppResult<Option<Value>> {
         let conn = self.lock()?;
         let sql = format!(
-            "SELECT {} FROM memory_items i WHERE i.id=?1 ORDER BY i.version DESC LIMIT 1",
+            "SELECT {} FROM memory_items i WHERE i.id=?1 AND i.status='active' ORDER BY i.version DESC LIMIT 1",
             Self::ITEM_COLUMNS
         );
         let item = conn.query_row(&sql, [id], Self::row_to_item).optional().map_err(db_err)?;
@@ -292,6 +292,7 @@ impl MemoryStore {
             }
             let session_id = s(source, "sessionId");
             let entry_id = s(source, "entryId");
+            let event_id = opt_s(source, "eventId").ok_or_else(|| AppError::Memory("来源缺少稳定 eventId".into()))?;
             let content_hash = s(source, "contentHash");
             let blocked: Option<i64> = conn
                 .query_row(
@@ -314,7 +315,7 @@ impl MemoryStore {
                         source_id,
                         session_id,
                         entry_id,
-                        opt_s(source, "eventId"),
+                        event_id,
                         i(source, "seq").unwrap_or(0),
                         content_hash,
                         opt_s(source, "evidence"),
@@ -333,7 +334,7 @@ impl MemoryStore {
     ///
     /// 中文短词必须走 LIKE 回退：FTS5 trigram 不匹配少于三个 Unicode 字符的查询
     /// （「咖啡」这类两字词在 MATCH 下永远零命中），只靠 FTS 会让最常见的中文短查询整体失聪。
-    pub fn query(&self, query: &str, scope: Option<&str>, scope_id: Option<&str>, limit: i64) -> AppResult<Vec<Value>> {
+    pub fn query(&self, query: &str, scope: Option<&str>, scope_id: Option<&str>, session_id: Option<&str>, limit: i64) -> AppResult<Vec<Value>> {
         let conn = self.lock()?;
         let text = query.trim();
         if text.is_empty() {
@@ -343,9 +344,11 @@ impl MemoryStore {
         let like = format!("%{}%", escape_like(text));
         let mut sql = format!(
             "SELECT {} FROM memory_items i WHERE i.status='active' \
+             AND (i.valid_from IS NULL OR i.valid_from <= ?1) \
+             AND (i.valid_to IS NULL OR i.valid_to > ?1) \
              AND (i.expires_at IS NULL OR i.expires_at > ?1) \
              AND (i.content LIKE ?2 ESCAPE '\\' OR i.summary LIKE ?2 ESCAPE '\\' OR i.aliases_json LIKE ?2 ESCAPE '\\' \
-                  OR i.id IN (SELECT item_id FROM memory_fts WHERE memory_fts MATCH ?3))",
+                  OR EXISTS (SELECT 1 FROM memory_fts WHERE memory_fts.item_id=i.id AND memory_fts.item_version=i.version AND memory_fts MATCH ?3))",
             Self::ITEM_COLUMNS
         );
         let mut args: Vec<Value> = vec![json!(now_ms()), json!(like), json!(fts_phrase(text))];
@@ -356,6 +359,10 @@ impl MemoryStore {
         if let Some(scope_id) = scope_id {
             args.push(json!(scope_id));
             sql.push_str(&format!(" AND i.scope_id=?{}", args.len()));
+        }
+        if let Some(session_id) = session_id {
+            args.push(json!(session_id));
+            sql.push_str(&format!(" AND (?{} IS NULL OR i.scope <> 'session' OR i.scope_id=?{})", args.len(), args.len()));
         }
         sql.push_str(" ORDER BY i.pinned DESC, i.importance DESC, i.updated_at DESC, i.id LIMIT ?");
         args.push(json!(limit));
@@ -371,7 +378,9 @@ impl MemoryStore {
                 Err(_) => {
                     let mut fallback = format!(
                         "SELECT {} FROM memory_items i WHERE i.status='active' \
-                         AND (i.expires_at IS NULL OR i.expires_at > ?1) \
+                         AND (i.valid_from IS NULL OR i.valid_from <= ?1) \
+             AND (i.valid_to IS NULL OR i.valid_to > ?1) \
+             AND (i.expires_at IS NULL OR i.expires_at > ?1) \
                          AND (i.content LIKE ?2 ESCAPE '\\' OR i.summary LIKE ?2 ESCAPE '\\' OR i.aliases_json LIKE ?2 ESCAPE '\\')",
                         Self::ITEM_COLUMNS
                     );
@@ -383,6 +392,10 @@ impl MemoryStore {
                     if let Some(scope_id) = scope_id {
                         fallback_args.push(json!(scope_id));
                         fallback.push_str(&format!(" AND i.scope_id=?{}", fallback_args.len()));
+                    }
+                    if let Some(session_id) = session_id {
+                        fallback_args.push(json!(session_id));
+                        fallback.push_str(&format!(" AND (?{} IS NULL OR i.scope <> 'session' OR i.scope_id=?{})", fallback_args.len(), fallback_args.len()));
                     }
                     fallback.push_str(" ORDER BY i.pinned DESC, i.importance DESC, i.updated_at DESC, i.id LIMIT ?");
                     fallback_args.push(json!(limit));
@@ -456,9 +469,8 @@ impl MemoryStore {
         match action {
             "clear" => {
                 transaction.execute("DELETE FROM memory_fts", []).map_err(db_err)?;
-                transaction
-                    .execute("UPDATE memory_items SET status='forgotten',updated_at=?1 WHERE status='active'", [now_ms()])
-                    .map_err(db_err)?;
+                transaction.execute("DELETE FROM memory_item_sources", []).map_err(db_err)?;
+                transaction.execute("DELETE FROM memory_items", []).map_err(db_err)?;
                 transaction
                     .execute("UPDATE memory_candidates SET status='stale',decided_at=?1 WHERE status='pending_review'", [now_ms()])
                     .map_err(db_err)?;
@@ -486,13 +498,6 @@ impl MemoryStore {
                     .map_err(db_err)?;
                 let version = active.ok_or_else(|| AppError::Memory("该记忆条目不存在或已被遗忘".into()))?;
                 touched_version = Some(version);
-                transaction
-                    .execute("UPDATE memory_items SET status='forgotten',updated_at=?2 WHERE id=?1", params![id, now_ms()])
-                    .map_err(db_err)?;
-                transaction.execute("DELETE FROM memory_fts WHERE item_id=?1", [&id]).map_err(db_err)?;
-                transaction
-                    .execute("UPDATE memory_candidates SET status='stale',decided_at=?1 WHERE status='pending_review'", [now_ms()])
-                    .map_err(db_err)?;
                 let epoch = Self::meta(&transaction, "forget_epoch")? + 1;
                 // 只抑制这条事实自己的来源事件，不牵连同一句话里的其它事实。
                 transaction
@@ -503,6 +508,12 @@ impl MemoryStore {
                          WHERE link.item_id=?3 AND link.item_version=?4 ON CONFLICT DO NOTHING",
                         params![epoch, now_ms(), id, version],
                     )
+                    .map_err(db_err)?;
+                transaction.execute("DELETE FROM memory_item_sources WHERE item_id=?1", [&id]).map_err(db_err)?;
+                transaction.execute("DELETE FROM memory_items WHERE id=?1", [&id]).map_err(db_err)?;
+                transaction.execute("DELETE FROM memory_fts WHERE item_id=?1", [&id]).map_err(db_err)?;
+                transaction
+                    .execute("UPDATE memory_candidates SET status='stale',decided_at=?1 WHERE status='pending_review'", [now_ms()])
                     .map_err(db_err)?;
                 Self::bump(&transaction, "forget_epoch")?;
             }
@@ -585,7 +596,7 @@ impl MemoryStore {
                             draft.get("validFrom").and_then(Value::as_i64),
                             draft.get("validTo").and_then(Value::as_i64),
                             draft.get("expiresAt").and_then(Value::as_i64),
-                            draft.get("supersedesId").and_then(Value::as_str),
+                            draft.get("supersedesId").and_then(Value::as_str).or_else(|| if action == "add" { None } else { Some(id.as_str()) }),
                             now_ms(),
                         ],
                     )
@@ -621,7 +632,7 @@ impl MemoryStore {
         Ok(new_revision)
     }
 
-    pub fn job_start(&self, phase: &str) -> AppResult<Value> {
+    pub fn job_start(&self, phase: &str, lease_owner: &str) -> AppResult<Value> {
         if !matches!(phase, "light" | "review" | "publish") {
             return Err(AppError::Memory(format!("未知作业阶段: {phase}")));
         }
@@ -631,8 +642,8 @@ impl MemoryStore {
         let id = format!("job-{}-{}", now_ms(), rand_suffix());
         conn.execute(
             "INSERT INTO memory_jobs(id,phase,status,revision,forget_epoch,lease_owner,lease_until,cursor,processed,created_at,updated_at) \
-             VALUES (?1,?2,'running',?3,?4,'host',?5,'',0,?6,?6)",
-            params![id, phase, revision, epoch, now_ms() + 60_000, now_ms()],
+             VALUES (?1,?2,'running',?3,?4,?5,?6,'',0,?7,?7)",
+            params![id, phase, revision, epoch, lease_owner, now_ms() + 60_000, now_ms()],
         )
         .map_err(db_err)?;
         Self::read_job(&conn, &id)
@@ -678,15 +689,27 @@ impl MemoryStore {
         if changed == 0 {
             return Err(AppError::MemoryConflict);
         }
+        // cursor 是 source_id；推进对应会话水位，下一批不会重新读同一来源。
+        if let Some((session_id, entry_id)) = cursor.split_once(':') {
+            let source_seq: Option<i64> = conn.query_row(
+                "SELECT seq FROM memory_sources WHERE session_id=?1 AND entry_id=?2 LIMIT 1",
+                params![session_id, entry_id], |row| row.get(0)).optional().map_err(db_err)?;
+            if let Some(seq) = source_seq {
+                conn.execute(
+                    "INSERT INTO memory_watermarks(session_id,seq,rule_version,updated_at) VALUES (?1,?2,?3,?4) \
+                     ON CONFLICT(session_id) DO UPDATE SET seq=MAX(memory_watermarks.seq,excluded.seq),updated_at=excluded.updated_at",
+                    params![session_id, seq, WATERMARK_RULE_VERSION, now_ms()]).map_err(db_err)?;
+            }
+        }
         Self::read_job(&conn, job_id)
     }
 
-    pub fn job_cancel(&self, job_id: &str) -> AppResult<Value> {
+    pub fn job_cancel(&self, job_id: &str, lease_owner: &str) -> AppResult<Value> {
         let conn = self.lock()?;
         conn.execute(
             "UPDATE memory_jobs SET status='cancelled',lease_owner=NULL,lease_until=NULL,updated_at=?2 \
-             WHERE id=?1 AND status IN ('running','queued','paused')",
-            params![job_id, now_ms()],
+             WHERE id=?1 AND lease_owner=?3 AND status IN ('running','queued','paused')",
+            params![job_id, now_ms(), lease_owner],
         )
         .map_err(db_err)?;
         Self::read_job(&conn, job_id)
@@ -706,18 +729,19 @@ impl MemoryStore {
     }
 
     /// Light 的输入：尚未被水位覆盖的可信来源，按会话与序号稳定排序。
-    pub fn job_sources(&self, _job_id: &str) -> AppResult<Vec<Value>> {
+    pub fn job_sources(&self, job_id: &str) -> AppResult<Vec<Value>> {
         let conn = self.lock()?;
+        let cursor: String = conn.query_row("SELECT cursor FROM memory_jobs WHERE id=?1", [job_id], |row| row.get(0)).map_err(db_err)?;
         let mut statement = conn
             .prepare(
                 "SELECT s.source_id,s.session_id,s.entry_id,s.event_id,s.seq,s.content_hash,s.evidence,s.card_id,s.taint,s.origin,s.observed_at \
                  FROM memory_sources s LEFT JOIN memory_watermarks w ON w.session_id=s.session_id \
-                 WHERE w.seq IS NULL OR s.seq > w.seq \
-                 ORDER BY s.session_id, s.seq LIMIT ?1",
+                 WHERE (w.seq IS NULL OR s.seq > w.seq) AND (?1 = '' OR s.source_id > ?1) \
+                 ORDER BY s.session_id, s.seq LIMIT ?2",
             )
             .map_err(db_err)?;
         let rows = statement
-            .query_map([JOB_SOURCE_BATCH], |row| {
+            .query_map(params![cursor, JOB_SOURCE_BATCH], |row| {
                 Ok(json!({
                     "sourceId": row.get::<_, String>(0)?,
                     "sessionId": row.get::<_, String>(1)?,
@@ -836,6 +860,14 @@ impl MemoryStore {
             }
             let draft: Value = serde_json::from_str(&draft_json).map_err(|e| AppError::Memory(e.to_string()))?;
             validate_draft(&draft)?;
+            // 发布前重新检查来源墓碑：评审期间可能发生了 forget/clear，旧候选不能复活事实。
+            for source_id in strings(&draft, "sourceIds") {
+                let blocked: Option<i64> = transaction.query_row(
+                    "SELECT 1 FROM memory_item_sources l JOIN memory_sources s ON s.source_id=l.source_id \
+                     WHERE l.source_id=?1 AND EXISTS (SELECT 1 FROM memory_tombstones t WHERE t.session_id=s.session_id AND t.entry_id=s.entry_id AND t.content_hash=s.content_hash AND t.effect='block_extraction') LIMIT 1",
+                    [&source_id], |row| row.get(0)).optional().map_err(db_err)?;
+                if blocked.is_some() { return Err(AppError::MemoryConflict); }
+            }
             let scope = s(&draft, "scope");
             let scope_id = opt_s(&draft, "scopeId");
             let id = format!("mem-{}-{}", now_ms(), rand_suffix());
@@ -887,25 +919,7 @@ impl MemoryStore {
                 .map_err(db_err)?;
             published += 1;
         }
-        // 水位推进与发布同一事务：提交成功才算「这批来源处理完了」。
-        let mut statement = transaction
-            .prepare("SELECT session_id, MAX(seq) FROM memory_sources GROUP BY session_id")
-            .map_err(db_err)?;
-        let marks = statement
-            .query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?)))
-            .map_err(db_err)?
-            .collect::<Result<Vec<_>, _>>()
-            .map_err(db_err)?;
-        drop(statement);
-        for (session_id, seq) in marks {
-            transaction
-                .execute(
-                    "INSERT INTO memory_watermarks(session_id,seq,rule_version,updated_at) VALUES (?1,?2,?3,?4) \
-                     ON CONFLICT(session_id) DO UPDATE SET seq=MAX(memory_watermarks.seq,excluded.seq),updated_at=excluded.updated_at",
-                    params![session_id, seq, WATERMARK_RULE_VERSION, now_ms()],
-                )
-                .map_err(db_err)?;
-        }
+        // 水位由 job_checkpoint 按实际完成的来源推进；发布只提交已审候选，不能把其它来源一并标成完成。
         let revision = if published > 0 { Self::bump(&transaction, "revision")? } else { revision };
         transaction
             .execute(
@@ -990,7 +1004,7 @@ impl MemoryStore {
         conn.execute(
             "INSERT INTO memory_fts(item_id,item_version,content,summary,aliases) \
              SELECT i.id,i.version,i.content,i.summary,i.aliases_json FROM memory_items i \
-             WHERE i.status='active' AND NOT EXISTS (SELECT 1 FROM memory_fts f WHERE f.item_id=i.id AND f.item_version=i.version)",
+             WHERE i.status='active'",
             [],
         )
         .map_err(db_err)?;

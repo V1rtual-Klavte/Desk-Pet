@@ -1,6 +1,7 @@
 import { invoke } from "@tauri-apps/api/core"
 import { runtimePath } from "@/services/paths"
 import { createLogger } from "@/services/logger"
+import { formatError } from "@/services/error"
 
 const log = createLogger("Candy")
 let candyInstructions = ""
@@ -19,7 +20,7 @@ export async function loadCandy(): Promise<string> {
       return value.length > 0 && !value.startsWith("<!--")
     }).join("\n").trim()
   } catch (error) {
-    log.warn("CANDY.md 读取失败:", error)
+    log.warn("CANDY.md 读取失败:", formatError(error))
     candyInstructions = ""
   }
   return candyInstructions

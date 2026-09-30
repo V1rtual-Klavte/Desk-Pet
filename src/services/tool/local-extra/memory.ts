@@ -49,7 +49,7 @@ const memoryQueryTool: ToolDef = defineTool({
     // 查询结果要原样交给模型判断，不能被阶梯缩短成半句话。
     context: { resultProjection: "preserve", historyCompaction: "summarize" },
   },
-}, async params => {
+}, async (params, ctx) => {
   const query = text(params.query)
   if (!query) return { success: false, content: "", error: "查询内容不能为空" }
   const limit = typeof params.limit === "number" && Number.isFinite(params.limit) ? params.limit : 8
@@ -94,7 +94,7 @@ const memoryChangeTool: ToolDef = defineTool({
     execution: { effect: "local_mutation", isolation: "exclusive_effect", replay: "never" },
     context: { resultProjection: "preserve", historyCompaction: "summarize" },
   },
-}, async params => {
+}, async (params, ctx) => {
   const action = text(params.action)
   if (!["remember", "correct", "forget"].includes(action)) {
     return { success: false, content: "", error: `未知记忆操作: ${action}` }
@@ -105,7 +105,7 @@ const memoryChangeTool: ToolDef = defineTool({
       const itemId = text(params.itemId)
       if (!itemId) return { success: false, content: "", error: "忘记必须给出目标条目 id" }
       const revision = await applyMemoryChange({
-        operationId: crypto.randomUUID(), baseRevision: status.revision, action: "forget", itemId,
+        operationId: ctx.operationId ?? ctx.toolCallId ?? crypto.randomUUID(), baseRevision: status.revision, action: "forget", itemId,
       })
       return { success: true, content: `已忘记该记忆（库版本 revision=${revision}）。原始聊天不受影响。` }
     }
@@ -132,7 +132,7 @@ const memoryChangeTool: ToolDef = defineTool({
       return { success: false, content: "", error: "记住一条新事实必须带来源消息 id（sourceIds）" }
     }
     const revision = await applyMemoryChange({
-      operationId: crypto.randomUUID(),
+      operationId: ctx.operationId ?? ctx.toolCallId ?? crypto.randomUUID(),
       baseRevision: status.revision,
       action: action === "remember" ? "add" : "update",
       ...(text(params.itemId) ? { itemId: text(params.itemId) } : {}),

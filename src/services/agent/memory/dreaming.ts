@@ -200,7 +200,7 @@ export async function runDreamingSweep(options: { signal?: AbortSignal } = {}): 
             id: `cand-${payloadHash.slice(0, 24)}`,
             draft: candidate.draft,
             payloadHash,
-            ...(candidate.reason ? { reason: candidate.reason } : {}),
+        ...(candidate.reason ? { reason: candidate.reason } : {}),
           })
         }
         candidatesAdded += await addMemoryCandidates(jobId, payloads)

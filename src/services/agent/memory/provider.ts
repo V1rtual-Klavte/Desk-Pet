@@ -13,6 +13,7 @@ import { estimateContextTokens } from "@/services/context/budget"
 import { completePiText } from "@/services/engine/pi"
 import { memoryConfig } from "@/services/config"
 import { createLogger } from "@/services/logger"
+import { formatError } from "@/services/error"
 import { queryMemory } from "./ipc"
 import type { MemoryItem } from "./ipc"
 import { parseRerankIds } from "./rerank"
@@ -121,7 +122,7 @@ async function rerank(items: MemoryItem[], request: MemoryRecallRequest, timeout
     ]
   } catch (error) {
     // 重排是增强不是前置：任何失败都退回已经算好的本地顺序。
-    log.warn("记忆重排失败，使用本地顺序:", error)
+    log.warn("记忆重排失败，使用本地顺序:", formatError(error))
     return items
   } finally {
     clearTimeout(timer)
@@ -133,8 +134,15 @@ export const sqliteMemoryProvider: MemoryProvider = {
   async recall(request) {
     const candidates = await queryMemory(request.query, {
       limit: LOCAL_CANDIDATE_LIMIT,
+      sessionId: request.sessionId,
+      scope: "user",
     })
-    const ranked = await rerank(candidates, request, memoryConfig.rerankTimeoutMs)
+    const cardCandidates = request.cardId
+      ? await queryMemory(request.query, { limit: LOCAL_CANDIDATE_LIMIT, scope: "card", scopeId: request.cardId, sessionId: request.sessionId })
+      : []
+    const sessionCandidates = await queryMemory(request.query, { limit: LOCAL_CANDIDATE_LIMIT, scope: "session", scopeId: request.sessionId, sessionId: request.sessionId })
+    const merged = [...new Map([...candidates, ...cardCandidates, ...sessionCandidates].map(item => [item.id, item])).values()]
+    const ranked = await rerank(merged, request, memoryConfig.rerankTimeoutMs)
     let remaining = Math.max(0, request.tokenBudget)
     const result: MemoryProjection[] = []
     for (const item of ranked) {
@@ -186,7 +194,12 @@ export async function recallMemory(
     Math.max(1, memoryConfig.recallTimeoutMs),
   )
   try {
-    const recalled = await activeProvider.recall({ ...request, signal: controller.signal })
+    const recalled = await Promise.race([
+      activeProvider.recall({ ...request, signal: controller.signal }),
+      new Promise<MemoryProjection[]>((resolve) => {
+        controller.signal.addEventListener("abort", () => resolve([]), { once: true })
+      }),
+    ])
     // 预算裁决留在端口这一层：provider 可以有自己的取舍，但「声明的预算」必须真的是
     // 「实际占用的 token」—— 单条取「请求剩余」与「该条声明」的严格者，逐条扣减。
     let remaining = Math.max(0, request.tokenBudget)

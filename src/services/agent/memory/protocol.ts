@@ -12,7 +12,7 @@ export interface MemorySource {
   sourceId: string
   sessionId: string
   entryId: string
-  eventId?: string
+  eventId: string
   seq: number
   contentHash: string
   evidence?: string

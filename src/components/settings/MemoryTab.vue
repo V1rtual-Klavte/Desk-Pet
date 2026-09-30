@@ -140,7 +140,8 @@ async function loadCandidates(): Promise<void> {
   if (!lastJobId.value) return
   try {
     candidates.value = await reviewMemoryBatch(lastJobId.value)
-    approved.value = new Set(candidates.value.map(candidate => candidate.id))
+    // 评审默认不批准任何候选：用户必须逐条看过正文、范围和来源后再勾选。
+    approved.value = new Set()
   } catch (e) {
     error.value = formatError(e)
   }

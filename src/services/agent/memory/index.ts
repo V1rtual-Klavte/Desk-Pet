@@ -7,7 +7,9 @@
 // 不再有第二份内存数组，也不再有 Markdown 注册表。
 
 import { initPaths } from "@/services/paths"
+import { invoke } from "@tauri-apps/api/core"
 import { createLogger } from "@/services/logger"
+import { formatError } from "@/services/error"
 import { getCandyInstructionsSync, loadCandy, updateCandy } from "./candy"
 import { installMemoryProvider, sqliteMemoryProvider, recallMemory } from "./provider"
 import { memoryList, memoryStatus, applyMemoryChange } from "./ipc"
@@ -56,13 +58,14 @@ async function ensureInit(): Promise<void> {
 
 async function _doInit(): Promise<void> {
   await initPaths()
+  await invoke("init_memory_files")
   await loadCandy()
   // 记忆库不可用时保留空实现：聊天照常，管理界面会以 MEMORY 错误如实上报。
   installMemoryProvider(sqliteMemoryProvider)
   try {
     cachedCount = (await memoryStatus()).itemCount
   } catch (error) {
-    log.warn("记忆库状态读取失败，计数保持 0:", error)
+    log.warn("记忆库状态读取失败，计数保持 0:", formatError(error))
   }
   initialized = true
   log.info(`Memory 就绪（SQLite）: ${cachedCount} 条已接受记忆`)
@@ -73,7 +76,7 @@ export async function refreshMemoryCount(): Promise<number> {
   try {
     cachedCount = (await memoryStatus()).itemCount
   } catch (error) {
-    log.warn("记忆计数刷新失败:", error)
+    log.warn("记忆计数刷新失败:", formatError(error))
   }
   return cachedCount
 }
