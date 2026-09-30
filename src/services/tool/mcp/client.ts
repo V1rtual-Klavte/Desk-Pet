@@ -51,6 +51,16 @@ interface McpToolSchema {
   }
 }
 
+function containsManagedMemoryPath(value: unknown): boolean {
+  if (typeof value === "string") {
+    const normalized = value.replaceAll("\\", "/").toLowerCase()
+    return /(?:^|\/)memory\/memory\.sqlite3(?:-|$)/.test(normalized)
+  }
+  if (Array.isArray(value)) return value.some(containsManagedMemoryPath)
+  if (value && typeof value === "object") return Object.values(value).some(containsManagedMemoryPath)
+  return false
+}
+
 // ── 客户端 ──
 
 export class McpClient {
@@ -169,6 +179,9 @@ export class McpClient {
         actionCategory: "_default",
       }, async (params: Record<string, unknown>) => {
         try {
+          if (containsManagedMemoryPath(params)) {
+            return { success: false, content: "", error: "MEMORY_PROTECTED_PATH" }
+          }
           const result = await client.callTool(t.name, params)
           if (result && typeof result === "object" && "error" in (result as any)) {
             return { success: false, content: "", error: String((result as any).error) }

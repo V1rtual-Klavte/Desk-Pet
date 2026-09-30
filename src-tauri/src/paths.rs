@@ -132,6 +132,9 @@ impl AppPaths {
         if is_credential_path(path) {
             return Err(AppError::SensitivePath);
         }
+        if is_managed_memory_path(path) {
+            return Err(AppError::MemoryProtectedPath);
+        }
         let resolved = path
             .canonicalize()
             .map_err(|_| AppError::PathNotFound(path.to_string_lossy().to_string()))?;
@@ -139,6 +142,9 @@ impl AppPaths {
         // 只看请求文本会漏掉「链接名无害、指向私钥」这一形态。
         if is_credential_path(&resolved) {
             return Err(AppError::SensitivePath);
+        }
+        if is_managed_memory_path(&resolved) {
+            return Err(AppError::MemoryProtectedPath);
         }
         if !is_allowed_file_path(&resolved)? {
             return Err(AppError::PathEscape);
@@ -152,6 +158,9 @@ impl AppPaths {
         // 词法优先（在归一化路径上判，`./`、`..` 已被折叠），先于允许根判定
         if is_credential_path(&normalized) {
             return Err(AppError::SensitivePath);
+        }
+        if is_managed_memory_path(&normalized) {
+            return Err(AppError::MemoryProtectedPath);
         }
         if !is_allowed_file_path(&normalized)? {
             return Err(AppError::PathEscape);
@@ -197,6 +206,9 @@ impl AppPaths {
                 // 叶子链接解析后的真实目标：链接名可以任意，凭据形态只在这里现形
                 if is_credential_path(&resolved) {
                     return Err(AppError::SensitivePath);
+                }
+                if is_managed_memory_path(&resolved) {
+                    return Err(AppError::MemoryProtectedPath);
                 }
                 if !is_allowed_file_path(&resolved)? {
                     return Err(AppError::PathEscape);
@@ -284,6 +296,16 @@ pub fn is_credential_path(path: &Path) -> bool {
     }
     // 按 `/` 切组件：`.sshnotes` 是普通目录名，只有整段等于 `.ssh` 才算目录组件
     lowered.split('/').any(|segment| segment == ".ssh")
+}
+
+/// SQLite 的主库与 WAL/SHM 同属 Rust 记忆边界，通用文件工具不能绕过 MemoryStore 直接改写。
+/// CANDY、只读导出和备份仍可通过各自的显式入口访问。
+pub fn is_managed_memory_path(path: &Path) -> bool {
+    let lowered = path.to_string_lossy().replace('\\', "/").to_ascii_lowercase();
+    lowered.ends_with("/memory/memory.sqlite3")
+        || lowered.ends_with("/memory/memory.sqlite3-wal")
+        || lowered.ends_with("/memory/memory.sqlite3-shm")
+        || lowered.ends_with("/memory/memory.sqlite3-journal")
 }
 
 fn normalize_absolute(path: &Path) -> AppResult<PathBuf> {
@@ -711,6 +733,23 @@ mod tests {
 
         // 收尾：整棵探针目录都没有被创建（校验不产生副作用）
         assert!(!root.join("x").exists());
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn generic_file_tools_cannot_reach_managed_memory_database() {
+        let root = symlink_test_root("memory-protected");
+        let database = root.join("memory").join("memory.sqlite3");
+        assert!(matches!(
+            AppPaths::validate_file_path(&database),
+            Err(AppError::MemoryProtectedPath)
+        ));
+        assert!(matches!(
+            AppPaths::validate_new_file_path(&database),
+            Err(AppError::MemoryProtectedPath)
+        ));
+        assert!(is_managed_memory_path(&root.join("memory/memory.sqlite3-wal")));
+        assert!(!is_managed_memory_path(&root.join("memory/CANDY.md")));
         fs::remove_dir_all(&root).unwrap();
     }
 }

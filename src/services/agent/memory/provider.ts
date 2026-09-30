@@ -143,17 +143,22 @@ export const sqliteMemoryProvider: MemoryProvider = {
     const sessionCandidates = await queryMemory(request.query, { limit: LOCAL_CANDIDATE_LIMIT, scope: "session", scopeId: request.sessionId, sessionId: request.sessionId })
     const merged = [...new Map([...candidates, ...cardCandidates, ...sessionCandidates].map(item => [item.id, item])).values()]
     const ranked = await rerank(merged, request, memoryConfig.rerankTimeoutMs)
-    let remaining = Math.max(0, request.tokenBudget)
+    let coreRemaining = Math.max(0, memoryConfig.coreTokenBudget)
+    let recallRemaining = Math.max(0, memoryConfig.recallTokenBudget)
     const result: MemoryProjection[] = []
-    for (const item of ranked) {
-      if (remaining <= 0) break
+    const prioritized = [...ranked].sort((left, right) => Number(right.draft.pinned) - Number(left.draft.pinned))
+    for (const item of prioritized) {
+      const tier = item.draft.pinned ? "core" : "recall"
+      const remaining = tier === "core" ? coreRemaining : recallRemaining
+      if (remaining <= 0) continue
       const budget = Math.min(remaining, Math.max(1, estimateContextTokens(item.draft.content)))
       const text = clipToTokenBudget(item.draft.content, budget)
       if (!text) continue
       const projectionResult = projection(item, budget)
       projectionResult.text = text
       result.push(projectionResult)
-      remaining -= estimateContextTokens(text)
+      if (tier === "core") coreRemaining -= estimateContextTokens(text)
+      else recallRemaining -= estimateContextTokens(text)
     }
     return result
   },
@@ -202,17 +207,23 @@ export async function recallMemory(
     ])
     // 预算裁决留在端口这一层：provider 可以有自己的取舍，但「声明的预算」必须真的是
     // 「实际占用的 token」—— 单条取「请求剩余」与「该条声明」的严格者，逐条扣减。
-    let remaining = Math.max(0, request.tokenBudget)
+    let coreRemaining = Math.max(0, memoryConfig.coreTokenBudget)
+    let recallRemaining = Math.max(0, memoryConfig.recallTokenBudget)
+    let totalRemaining = Math.max(0, request.tokenBudget)
     const projections: MemoryProjection[] = []
     for (const projection of recalled) {
-      if (remaining <= 0) break
       if (!projection || typeof projection.text !== "string") continue
+      const tierRemaining = projection.tier === "core" ? coreRemaining : recallRemaining
+      const remaining = Math.min(tierRemaining, totalRemaining)
+      if (remaining <= 0) continue
       const budget = Math.min(remaining, Math.max(0, projection.tokenBudget))
       if (budget <= 0) continue
       const text = clipToTokenBudget(projection.text, budget)
       if (!text) continue
       projections.push({ ...projection, text, tokenBudget: budget })
-      remaining -= budget
+      if (projection.tier === "core") coreRemaining -= budget
+      else recallRemaining -= budget
+      totalRemaining -= budget
     }
     return projections
   } finally {

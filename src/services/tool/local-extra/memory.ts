@@ -14,7 +14,7 @@ import { defineTool } from "../policy"
 import { register } from "../registry"
 import { createLogger } from "@/services/logger"
 import { formatError } from "@/services/error"
-import { applyMemoryChange, memoryStatus, queryMemory } from "@/services/agent/memory"
+import { applyMemoryChange, collectMemorySources, memoryStatus, queryMemory } from "@/services/agent/memory"
 import type { MemoryDraft, MemoryKind, MemoryScope } from "@/services/agent/memory"
 
 const log = createLogger("ToolMemory")
@@ -54,10 +54,10 @@ const memoryQueryTool: ToolDef = defineTool({
   if (!query) return { success: false, content: "", error: "查询内容不能为空" }
   const limit = typeof params.limit === "number" && Number.isFinite(params.limit) ? params.limit : 8
   try {
-    const items = await queryMemory(query, { limit })
+    const items = await queryMemory(query, { limit, sessionId: ctx.sessionId })
     if (items.length === 0) return { success: true, content: "没有查到相关记忆。" }
     const lines = items.map(item =>
-      `- [${item.draft.kind} · ${item.draft.scope} · v${item.version}] ${item.draft.content}`)
+      `- [id=${item.id} · ${item.draft.kind} · ${item.draft.scope} · v${item.version} · sourceIds=${item.draft.sourceIds.join(",")}] ${item.draft.content}`)
     return { success: true, content: lines.join("\n") }
   } catch (error) {
     return { success: false, content: "", error: formatError(error) }
@@ -116,6 +116,16 @@ const memoryChangeTool: ToolDef = defineTool({
     const sourceIds = Array.isArray(params.sourceIds)
       ? params.sourceIds.filter((id): id is string => typeof id === "string" && id.trim().length > 0)
       : []
+    if (action === "remember" && sourceIds.length === 0 && ctx.sessionId) {
+      // 当前用户消息已在进入模型前落盘；缺省时只取该会话最新的可信用户事件，
+      // 让显式「记住这件事」仍能留下可审计来源，而不是凭空接受模型正文。
+      const currentSources = await collectMemorySources(ctx.sessionId)
+      const latest = currentSources.reduce<typeof currentSources[number] | undefined>(
+        (best, source) => !best || source.seq > best.seq ? source : best,
+        undefined,
+      )
+      if (latest) sourceIds.push(latest.sourceId)
+    }
     const draft: MemoryDraft = {
       content,
       summary: content.slice(0, 120),

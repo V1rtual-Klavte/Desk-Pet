@@ -36,7 +36,7 @@ export const memoryContract: ModuleContract = {
     "src/services/debug.ts",
   ],
   generatedAt: "2026-09-28",
-  sourceHash: "5f66db7e3a1e91a1a5295f9e5e5401ee27d728324d0879515423ad352d78a9f2",
+  sourceHash: "37a1adb26bf0cfaf014452d0e2cc9b5ac2f66c0d8c5a037cec823f578f3a64a4",
   coverage: [
     { id: "mm-01", feature: "记忆来源准入", description: "只有 origin=user 且 taint=trusted_user 且 eligibleForMemory=true 的已提交条目能成为候选：助手台词、工具结果、压缩摘要、主动搭话、缺来源标记与 custom 控制条目一律出局；投递时刻冻结的 cardId 随来源落盘", why: "「谁说的」是记忆的唯一准入判据：把这些来源放进去，模型的一次措辞就会被当成用户长期事实", layer: "integration", depth: "deep", scenarios: ["memory-source-admission"] },
     { id: "mm-02", feature: "重排结果校验", description: "重排只接受候选白名单内的 id：未知 id、重复 id、非字符串元素、坏 JSON、散文与空输出一律判无效并回退本地顺序，对象形态取 ids 字段，空数组是合法答案", why: "模型可以决定「用哪几条」，但不能决定「还有哪些」——白名单外的 id 会让不存在的记忆进入请求", layer: "unit", depth: "shallow", scenarios: ["memory-rerank-fallback"] },

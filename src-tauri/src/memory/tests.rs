@@ -3,6 +3,7 @@
 use super::protocol::{MEMORY_COMMANDS, MEMORY_SCHEMA_VERSION};
 use super::schema::SCHEMA_VERSION;
 use super::MemoryStore;
+use super::store::payload_hash;
 use crate::error::AppError;
 use serde_json::{json, Value};
 use std::path::PathBuf;
@@ -125,7 +126,6 @@ fn query_filters_scope_and_expiry() {
 fn future_and_closed_validity_intervals_are_not_recalled() {
     let (_fixture, store) = Fixture::new();
     store.register_sources(&[source("src-1", "entry-1", "hash-1")]).unwrap();
-    let now = 1_700_000_000_000i64;
     let mut future = draft("未来才生效的偏好", vec!["src-1"]);
     future["validFrom"] = json!(4_102_444_800_000i64);
     add(&store, "op-future", 0, &future);
@@ -168,7 +168,7 @@ fn pending_candidates_stay_out_of_recall_until_published() {
     let written = store
         .candidates_add(
             &job_id,
-            &[json!({"draft": draft("用户喜欢喝拿铁", vec!["src-1"]), "payloadHash": "hash-a"})],
+            &[json!({"draft": draft("用户喜欢喝拿铁", vec!["src-1"]), "payloadHash": payload_hash(&draft("用户喜欢喝拿铁", vec!["src-1"]))})],
         )
         .unwrap();
     assert_eq!(written, 1);

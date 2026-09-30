@@ -16,6 +16,7 @@ export interface MemorySource {
   seq: number
   contentHash: string
   evidence?: string
+  sourceLength?: number
   cardId?: string
   eligibleForMemory: boolean
   taint: "trusted_user" | "derived" | "untrusted" | "system"

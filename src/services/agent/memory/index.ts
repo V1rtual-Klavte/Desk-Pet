@@ -32,7 +32,7 @@ export type {
   MemoryJob, MemoryKind, MemoryScope, MemorySource, MemoryStatus, MemoryStatusSnapshot,
 } from "./ipc"
 export { collectAllMemorySources, collectMemorySources, trustedSourcesFromEntries } from "./sources"
-export { runDreamingSweep, type DreamingOutcome } from "./dreaming"
+export { runDreamingSweep, startIdleDreamingScheduler, stopIdleDreamingScheduler, type DreamingOutcome } from "./dreaming"
 export { parseStructuredSummary, formatStructuredSummary } from "./compaction-store"
 export type { StructuredSummary } from "./compaction-store"
 export {

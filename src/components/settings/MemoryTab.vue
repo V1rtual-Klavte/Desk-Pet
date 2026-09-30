@@ -9,8 +9,8 @@
 
 import { computed, onMounted, ref } from "vue"
 import {
-  addMemoryCandidates, applyMemoryChange, backupMemory, cancelMemoryJob, exportMemory, memoryDetail,
-  memoryList, memoryStatus, publishMemoryBatch, rebuildMemory, reviewMemoryBatch,
+  applyMemoryChange, backupMemory, exportMemory, memoryDetail,
+  memoryJobSources, memoryList, memoryStatus, publishMemoryBatch, rebuildMemory, reviewMemoryBatch,
 } from "@/services/agent/memory/ipc"
 import type { MemoryCandidate, MemoryItem, MemoryScope, MemoryStatusSnapshot } from "@/services/agent/memory/ipc"
 import { runDreamingSweep } from "@/services/agent/memory/dreaming"
@@ -31,6 +31,8 @@ const error = ref("")
 const notice = ref("")
 const lastJobId = ref("")
 const sweeping = ref(false)
+const sourceEvidence = ref<Record<string, string>>({})
+let sweepController: AbortController | null = null
 
 const pendingCount = computed(() => status.value?.candidateCount ?? 0)
 
@@ -118,8 +120,9 @@ async function forgetSelected(): Promise<void> {
 async function runSweep(): Promise<void> {
   clearMessage()
   sweeping.value = true
+  sweepController = new AbortController()
   try {
-    const outcome = await runDreamingSweep()
+    const outcome = await runDreamingSweep({ signal: sweepController.signal })
     lastJobId.value = outcome.jobId ?? ""
     if (outcome.status === "failed") error.value = `整理失败：${outcome.message ?? "未知原因"}`
     else if (outcome.status === "empty") notice.value = "没有新的可信用户输入需要整理。"
@@ -133,13 +136,23 @@ async function runSweep(): Promise<void> {
     error.value = formatError(e)
   } finally {
     sweeping.value = false
+    sweepController = null
   }
+}
+
+function cancelSweep(): void {
+  sweepController?.abort()
 }
 
 async function loadCandidates(): Promise<void> {
   if (!lastJobId.value) return
   try {
-    candidates.value = await reviewMemoryBatch(lastJobId.value)
+    const [reviewed, sources] = await Promise.all([
+      reviewMemoryBatch(lastJobId.value),
+      memoryJobSources(lastJobId.value),
+    ])
+    candidates.value = reviewed
+    sourceEvidence.value = Object.fromEntries(sources.map(source => [source.sourceId, source.evidence ?? ""]))
     // 评审默认不批准任何候选：用户必须逐条看过正文、范围和来源后再勾选。
     approved.value = new Set()
   } catch (e) {
@@ -237,6 +250,7 @@ onMounted(() => { void refresh() })
       <div class="s-label">整理与待评审</div>
       <div class="memory-toolbar">
         <button class="btn-s" :disabled="sweeping || busy" @click="runSweep">整理新增对话</button>
+        <button v-if="sweeping" class="btn-s" :disabled="busy" @click="cancelSweep">取消整理</button>
         <button class="btn-s" :disabled="busy || !lastJobId || pendingCount === 0" @click="loadCandidates">载入待审</button>
         <button class="btn-s" :disabled="busy || approved.size === 0" @click="publishApproved">发布勾选（{{ approved.size }}）</button>
       </div>
@@ -246,6 +260,7 @@ onMounted(() => { void refresh() })
         <label class="memory-row-main">
           <span><input type="checkbox" :checked="approved.has(candidate.id)" @change="toggleApproved(candidate.id)" /> {{ candidate.draft.content }}</span>
           <small>{{ candidate.draft.kind }} · {{ candidate.draft.scope }} · 来源 {{ candidate.draft.sourceIds.join(", ") }}</small>
+          <small v-for="sourceId in candidate.draft.sourceIds" :key="sourceId" class="memory-evidence">证据：{{ sourceEvidence[sourceId] || "来源正文不可用" }}</small>
           <small v-if="candidate.reason">理由：{{ candidate.reason }}</small>
         </label>
       </div>
@@ -275,6 +290,7 @@ onMounted(() => { void refresh() })
 .memory-row-main { min-width: 0; display: flex; flex-direction: column; gap: 2px; }
 .memory-row-main strong, .memory-row-main span { overflow: hidden; text-overflow: ellipsis; }
 .memory-row-main small, .memory-row-meta { opacity: .65; font-size: 9px; }
+.memory-evidence { opacity: .8; white-space: normal; overflow-wrap: anywhere; }
 .memory-detail { padding: 6px; line-height: 1.6; background: rgba(0, 0, 0, .12); white-space: pre-wrap; overflow-wrap: anywhere; }
 .memory-editor { width: 100%; margin-top: 4px; }
 </style>

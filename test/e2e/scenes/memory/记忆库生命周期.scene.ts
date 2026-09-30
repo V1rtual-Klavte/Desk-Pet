@@ -38,6 +38,18 @@ function draft(content: string): MemoryDraft {
   }
 }
 
+function stable(value: unknown): string {
+  if (value === null || typeof value !== "object") return JSON.stringify(value) ?? "null"
+  if (Array.isArray(value)) return `[${value.map(stable).join(",")}]`
+  const record = value as Record<string, unknown>
+  return `{${Object.keys(record).sort().map(key => `${JSON.stringify(key)}:${stable(record[key])}`).join(",")}}`
+}
+
+async function payloadHash(value: unknown): Promise<string> {
+  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(stable(value)))
+  return [...new Uint8Array(digest)].map(byte => byte.toString(16).padStart(2, "0")).join("")
+}
+
 export const 记忆库生命周期: SceneDef = {
   meta: {
     caseId: "memory-store-lifecycle",
@@ -80,10 +92,11 @@ export const 记忆库生命周期: SceneDef = {
 
             // 待审候选不进召回，发布后才可见。
             const job = await startMemoryJob("review")
+            const candidateDraft = draft("用户喜欢别人叫他老板")
             await addMemoryCandidates(job.id, [{
               id: "e2e-candidate-1",
-              draft: draft("用户喜欢别人叫他老板"),
-              payloadHash: "e2e-payload-1",
+              draft: candidateDraft,
+              payloadHash: await payloadHash({ draft: candidateDraft }),
               reason: "用户在自我介绍里提到称呼偏好",
             }])
             const beforePublish = await queryMemory("老板", { limit: 10 })
