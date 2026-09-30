@@ -27,6 +27,11 @@ export const RUST_ONLY_COMMANDS = [
   "open_windows_sim", "close_windows_sim", "pause_monitor", "resume_monitor",
   // 桌面副作用
   "app_open", "export_profile_zip", "restore_default_resources",
+  // MemoryStore/FTS/transactions are Rust-owned; Node must not fake them.
+  "memory_status", "memory_list", "memory_detail", "memory_register_sources", "memory_query", "memory_get_items",
+  "memory_apply_change", "memory_job_start", "memory_job_checkpoint", "memory_job_cancel", "memory_job_resume",
+  "memory_job_sources", "memory_candidates_add", "memory_review_batch", "memory_publish_batch", "memory_export",
+  "memory_backup", "memory_rebuild", "memory_restore",
 ] as const
 
 export type RustOnlyCommand = (typeof RUST_ONLY_COMMANDS)[number]

@@ -778,6 +778,13 @@ impl MemoryStore {
                 return Err(AppError::Memory("候选缺少 payloadHash".into()));
             }
             let id = opt_s(candidate, "id").unwrap_or_else(|| format!("cand-{}-{}", now_ms(), rand_suffix()));
+            if let Some((existing_hash, existing_revision)) = conn.query_row::<(String, i64), _, _>(
+                "SELECT payload_hash,base_revision FROM memory_candidates WHERE id=?1",
+                [&id], |row| Ok((row.get(0)?, row.get(1)?))).optional().map_err(db_err)? {
+                if existing_hash != payload_hash || existing_revision != revision {
+                    return Err(AppError::MemoryConflict);
+                }
+            }
             written += conn
                 .execute(
                     "INSERT INTO memory_candidates(id,job_id,status,draft_json,source_ids_json,payload_hash,base_revision,reason,created_at) \
