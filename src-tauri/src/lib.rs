@@ -266,6 +266,12 @@ pub fn run() {
                     if e2e { "Regular" } else { "Accessory" }
                 );
             }
+            // 自动更新与进程重启。桌面目标都支持；这里不写 cfg(desktop) 分支，
+            // 因为本项目只构建 Windows/macOS（`tauri.conf.json` 的 bundle.targets 不含移动端）
+            app.handle()
+                .plugin(tauri_plugin_updater::Builder::new().build())?;
+            app.handle().plugin(tauri_plugin_process::init())?;
+
             let paths = match AppPaths::init(app.handle()) {
                 Ok(p) => p,
                 Err(e) => {

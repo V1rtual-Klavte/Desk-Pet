@@ -26,6 +26,8 @@
         "@earendil-works/pi-ai": "0.85.1",
         "@tauri-apps/api": "^2.10.1",
         "@tauri-apps/plugin-global-shortcut": "^2.3.2",
+        "@tauri-apps/plugin-process": "^2.4.0",
+        "@tauri-apps/plugin-updater": "^2.13.1",
         "js-yaml": "^4.2.0",
         "jszip": "^3.10.1",
         "vue": "^3.5.32"

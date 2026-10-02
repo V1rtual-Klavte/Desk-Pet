@@ -5,6 +5,8 @@
   "windows": ["main", "windows-sim", "settings", "layer-editor", "e2e"],
   "permissions": [
     "core:default",
+    "updater:default",
+    "process:allow-restart",
     "core:webview:allow-create-webview-window",
     "core:window:allow-start-dragging",
     "core:window:allow-set-size",

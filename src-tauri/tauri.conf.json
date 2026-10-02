@@ -17,8 +17,17 @@
       "assetProtocol": { "enable": true, "scope": [] }
     }
   },
+  "plugins": {
+    "updater": {
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDhCQzk2RDM0NkI1OTRCMDEKUldRQlMxbHJORzNKaTFJbHhmY0wzN2dTQ1pBZ3o4WnF4Q09JR3VXTVlLb0NLRmdOcGFXMnVBV0UK",
+      "endpoints": [
+        "https://github.com/V1rtual-Klavte/Desk-Pet/releases/latest/download/latest.json"
+      ]
+    }
+  },
   "bundle": {
     "active": true,
+    "createUpdaterArtifacts": true,
     "targets": "all",
     "resources": {
       "resources/defaults": "defaults"
