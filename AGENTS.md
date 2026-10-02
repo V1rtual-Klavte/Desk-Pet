@@ -114,6 +114,8 @@ pnpm run version:set <x.y.z>  # 发版：统一三处版本号
   初始化标记存在后删除不自动恢复；恢复默认资源是明确的覆盖操作。
 - `appearance.effectMode` 单字段裁定 off/parallax/dof；逐层素材、取景、焦点等属于当前 Profile，
   全局 CONFIG 不覆盖 Profile 的效果参数。
+- 字体是全局设置（`appearance.font`），不随 Profile：取值为用户系统已安装的字体名
+  （Rust `list_system_fonts` 枚举），Profile 不携带字体资源；消费点统一走 `@/services/font` 注入。
 - localStorage 不保存配置、会话正文或 Profile 编辑状态。
 
 ## 运行时不变量

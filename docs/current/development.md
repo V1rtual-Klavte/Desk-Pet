@@ -26,7 +26,7 @@
 - 流水线：[ci.yml](../../.github/workflows/ci.yml)（双平台验证 + `bundle-config` 配置校验，不做构建）与 [release.yml](../../.github/workflows/release.yml)（tag `v*` 或手动触发的双平台打包发布）。
 - 配置守卫：`pnpm run check:bundle`，失败项逐条给出修法；它在 release 构建之前跑，拦住版本号与 tag 分叉。
 - 产物位置：CI 在 GitHub Release；本地 `pnpm tauri build` 落在仓库根 workspace 的 `target/release/bundle/`。
-- 实测体积（v0.15.0，2026-10-02）：macOS `.dmg` 27.1 MiB、`app.tar.gz`（updater 包）27.2 MiB、Windows `x64-setup.exe` 10.6 MiB。产物名由 `productName` 决定，**必须是 ASCII**（中文会被 GitHub 剥掉并让 updater 的 `latest.json` 静默缺失）。
+- 实测体积（2026-10-02）：macOS `.dmg` 9.1 MiB、`app.tar.gz`（updater 包）8.9 MiB——字体全局化（删除随包 zpix，共 57MB）之后的实测，同日改前为 27.1 / 27.2 MiB；Windows `x64-setup.exe` 10.6 MiB 为改前实测，待重新测量。产物名由 `productName` 决定，**必须是 ASCII**（中文会被 GitHub 剥掉并让 updater 的 `latest.json` 静默缺失）。
 - 发布验收：Release 资产中必须存在 `latest.json`，且其 `platforms` 同时含 `darwin-aarch64` 与 `windows-x86_64`；缺它时 CI 仍是绿的，但客户端检查更新会 404。
 - 本地构建：`createUpdaterArtifacts: true` 要求环境里有 `TAURI_SIGNING_PRIVATE_KEY`；只想要未签名的本地产物时加 `--no-sign`（`pnpm tauri build --no-sign`）。
 - 常见失败：`TAURI_SIGNING_PRIVATE_KEY` 未配置（updater 产物签不出来）；tag 与 `tauri.conf.json` 的 version 不一致（跑 `pnpm run version:set`）。
