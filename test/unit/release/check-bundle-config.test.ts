@@ -5,10 +5,7 @@ import { describe, expect, it } from "vitest"
 // 脚本是 Node 侧 ESM 工具（scripts/*.mjs）：不在 tsconfig 的 include 里，也没有 .d.ts。
 // 按运行期契约导入，形状由下面的 CheckBundleConfig 钉住。
 // @ts-expect-error TS7016 —— 只抑制「找不到模块声明」，断言与形状检查照常生效。
-import {
-  checkBundleConfig as checkBundleConfigSource,
-  resolveTag as resolveTagSource,
-} from "../../../scripts/check-bundle-config.mjs"
+import { checkBundleConfig as checkBundleConfigSource, resolveTag as resolveTagSource } from "../../../scripts/check-bundle-config.mjs"
 
 /** 校验器的运行期契约（与 scripts/check-bundle-config.mjs 的导出一致）。 */
 type CheckBundleConfig = (rootDir: string, options?: { tag?: string | null }) => string[]
