@@ -23,6 +23,10 @@ const REPO_ROOT = resolve(fileURLToPath(new URL("..", import.meta.url)))
 const CONF = "src-tauri/tauri.conf.json"
 const NPM_PACKAGE = "package.json"
 const CARGO_MANIFEST = "src-tauri/Cargo.toml"
+const CARGO_LOCK = "Cargo.lock"
+const PNPM_LOCK = "pnpm-lock.yaml"
+const TAURI_CRATE = "tauri"
+const TAURI_API_PACKAGE = "@tauri-apps/api"
 const SEMVER = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/
 const IDENTIFIER = /^[A-Za-z][A-Za-z0-9-]*(\.[A-Za-z0-9-]+)+$/
 
@@ -87,6 +91,67 @@ function readCargoVersion(rootDir, problems) {
     return null
   }
   return match[1]
+}
+
+/** 取 semver 的 major.minor；解析不出来时返回 null。 */
+function majorMinor(version) {
+  const match = /^(\d+)\.(\d+)\./.exec(version)
+  return match ? `${match[1]}.${match[2]}` : null
+}
+
+/**
+ * 读取根 Cargo.lock 里名为 name 的 crate 的**解析**版本集合。
+ * 不能查 src-tauri/Cargo.toml：那里是 `"2.11"` 这类 caret range，看不出锁文件实际解析到哪，
+ * 而 `tauri build` 校验的正是解析结果。
+ */
+function readCargoLockVersions(rootDir, name, problems) {
+  const path = join(rootDir, CARGO_LOCK)
+  if (!existsSync(path)) {
+    problems.push(`${CARGO_LOCK} 不存在：无法确认 ${name} crate 的解析版本`)
+    return new Set()
+  }
+  const lines = readFileSync(path, "utf8").replace(/\r\n/g, "\n").split("\n")
+  const versions = new Set()
+  for (let i = 0; i < lines.length; i += 1) {
+    // 每个 [[package]] 块以 name 行起始、version 紧随其后；只认块首的 name，避免别处同名文本。
+    if (lines[i] !== `name = "${name}"` || lines[i - 1] !== "[[package]]") continue
+    const match = /^version = "([^"]+)"$/.exec(lines[i + 1] ?? "")
+    if (match) versions.add(match[1])
+  }
+  if (versions.size === 0) {
+    problems.push(`${CARGO_LOCK} 里找不到 crate ${JSON.stringify(name)} 的解析版本`)
+  }
+  return versions
+}
+
+/**
+ * 读取根 pnpm-lock.yaml 里 @tauri-apps/api 的**解析**版本集合。
+ * 不能只看 package.json 的 caret range —— 本次发布事故正是 range 允许、锁文件漂移。
+ * pnpm v9 lockfile 里同一解析结果有三处足迹：根 importer 的 `specifier`/`version` 对、
+ * packages 与 snapshots 段的 `'@tauri-apps/api@X.Y.Z':` 键。收集全部足迹，既拿到项目
+ * 实际安装的版本，也能发现同一包被锁成两个版本（插件子依赖各锁一份的漂移）。
+ */
+function readTauriApiVersions(rootDir, problems) {
+  const path = join(rootDir, PNPM_LOCK)
+  if (!existsSync(path)) {
+    problems.push(`${PNPM_LOCK} 不存在：无法确认 ${TAURI_API_PACKAGE} 的解析版本`)
+    return new Set()
+  }
+  const text = readFileSync(path, "utf8").replace(/\r\n/g, "\n")
+  const versions = new Set()
+  // importer 段（缩进 6/8 空格）：`'@tauri-apps/api':` 后紧跟 specifier 与 version 两行。
+  // 版本可能带 peer 后缀（如 `2.12.1(react@18)`），截到 `(` 为止。
+  for (const match of text.matchAll(/^ {6}'@tauri-apps\/api':\n {8}specifier: [^\n]*\n {8}version: ([^\s(]+)/gm)) {
+    versions.add(match[1])
+  }
+  // packages / snapshots 段（缩进 2 空格）：每个解析结果一条 `'@tauri-apps/api@X.Y.Z':` 键。
+  for (const match of text.matchAll(/^ {2}'@tauri-apps\/api@([^\s(']+)/gm)) {
+    versions.add(match[1])
+  }
+  if (versions.size === 0) {
+    problems.push(`${PNPM_LOCK} 里找不到 ${TAURI_API_PACKAGE} 的解析版本`)
+  }
+  return versions
 }
 
 /**
@@ -158,6 +223,30 @@ export function checkBundleConfig(rootDir, options = {}) {
           `先跑 pnpm run version:set ${conf.version} 再打 tag`,
         )
       }
+    }
+  }
+
+  // tauri crate 与 @tauri-apps/api 必须同 major.minor：分叉时 `tauri build` 会硬失败
+  // （v0.15.0 发布事故：crate 已升到 2.12.1，JS 侧仍锁在 2.11.1，推到 tag 才发现）。
+  // 两边都读锁文件的解析结果：声明处的 caret range 看不出实际解析到哪。
+  const crateVersions = readCargoLockVersions(rootDir, TAURI_CRATE, problems)
+  const apiVersions = readTauriApiVersions(rootDir, problems)
+  if (apiVersions.size > 1) {
+    problems.push(
+      `${PNPM_LOCK} 里 ${TAURI_API_PACKAGE} 解析出多个版本（${[...apiVersions].sort().join(" / ")}）：` +
+      `根依赖与插件子依赖各锁一份，tauri build 只认其中一份。跑 pnpm dedupe 收敛到单一版本`,
+    )
+  }
+  for (const crateVersion of crateVersions) {
+    const crateMinor = majorMinor(crateVersion)
+    for (const apiVersion of apiVersions) {
+      if (crateMinor !== null && crateMinor === majorMinor(apiVersion)) continue
+      problems.push(
+        `${CARGO_LOCK} 里 tauri crate 的解析版本是 ${crateVersion}，` +
+        `${PNPM_LOCK} 里 ${TAURI_API_PACKAGE} 的解析版本是 ${apiVersion}：` +
+        `tauri build 要求两者同 major.minor，分叉会直接失败。` +
+        `跑 pnpm add '${TAURI_API_PACKAGE}@^${crateMinor ?? crateVersion}' 对齐后再打 tag`,
+      )
     }
   }
 
