@@ -18,7 +18,8 @@
         "test:e2e": "node scripts/e2e-test.mjs",
         "test:smoke": "pnpm run test:e2e -- --module agent-runtime --case production-chat-entry --strict --repeat 2",
         "test:release": "pnpm run test:types && pnpm run test:rust && pnpm run test:unit && pnpm run test:integration && pnpm run test:e2e -- --strict --repeat 3 --report json",
-        "version:set": "node scripts/set-version.mjs"
+        "version:set": "node scripts/set-version.mjs",
+        "check:bundle": "node scripts/check-bundle-config.mjs"
     },
     "dependencies": {
         "@earendil-works/pi-agent-core": "0.85.1",
