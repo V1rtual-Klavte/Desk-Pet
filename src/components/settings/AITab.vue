@@ -737,7 +737,7 @@ defineExpose({
 }
 
 .card-item {
-  border: 1px solid rgba(255,255,255,0.06);
+  border: 1px solid var(--color-divider, rgba(255,255,255,0.06));
   border-radius: 5px;
   overflow: hidden;
   transition: border-color .15s;
@@ -756,9 +756,9 @@ defineExpose({
   justify-content: space-between;
   padding: 4px 6px;
   cursor: pointer;
-  background: rgba(255,255,255,0.02);
+  background: var(--color-surface-dark, rgba(255,255,255,0.02));
 }
-.card-header:hover { background: rgba(255,255,255,0.04); }
+.card-header:hover { background: var(--color-surface-darker, rgba(255,255,255,0.04)); }
 
 .card-select { font-size: 11px; flex: 1; cursor: pointer; display: flex; align-items: center; gap: 4px; }
 .card-radio-dot { font-size: 13px; opacity: 0.5; min-width: 16px; }
@@ -780,15 +780,15 @@ defineExpose({
   gap: 8px;
   margin-top: 6px;
   padding: 6px;
-  background: rgba(255,255,255,0.03);
+  background: var(--color-surface-dark, rgba(255,255,255,0.03));
   border-radius: 5px;
-  border: 1px solid rgba(255,255,255,0.06);
+  border: 1px solid var(--color-divider, rgba(255,255,255,0.06));
 }
 
 /* ── Card 详情 ── */
 .card-detail {
   padding: 4px 8px 6px;
-  border-top: 1px solid rgba(255,255,255,0.04);
+  border-top: 1px solid var(--color-divider, rgba(255,255,255,0.04));
   display: flex;
   flex-direction: column;
   gap: 3px;
@@ -803,10 +803,10 @@ defineExpose({
   margin-bottom: 1px;
 }
 .card-text {
-  color: rgba(255,255,255,0.6);
+  color: var(--color-text-muted, rgba(255,255,255,0.6));
   line-height: 1.3;
   padding-left: 4px;
-  border-left: 1px solid rgba(255,255,255,0.1);
+  border-left: 1px solid var(--color-divider, rgba(255,255,255,0.1));
 }
 
 .card-stats {
@@ -834,12 +834,12 @@ defineExpose({
 
 /* ── 变量池 ── */
 .pool-preview {
-  background: rgba(0,0,0,0.3);
-  border: 1px solid rgba(255,255,255,0.06);
+  background: var(--color-surface-dark, rgba(0,0,0,0.3));
+  border: 1px solid var(--color-divider, rgba(255,255,255,0.06));
   border-radius: 4px;
   padding: 6px 8px;
   font-size: 10px;
-  color: rgba(255,255,255,0.7);
+  color: var(--color-text-bright, rgba(255,255,255,0.7));
   white-space: pre-wrap;
   line-height: 1.4;
   max-height: 160px;
@@ -850,7 +850,7 @@ defineExpose({
 /* ── 阶段文案表 ── */
 .stage-table {
   font-size: 10px;
-  border: 1px solid rgba(255,255,255,0.06);
+  border: 1px solid var(--color-divider, rgba(255,255,255,0.06));
   border-radius: 4px;
   overflow: hidden;
 }
@@ -863,17 +863,17 @@ defineExpose({
 }
 
 .stage-th {
-  background: rgba(255,255,255,0.04);
+  background: var(--color-surface-dark, rgba(255,255,255,0.04));
   font-size: 9px;
   opacity: 0.5;
 }
 
 .stage-tr {
-  border-top: 1px solid rgba(255,255,255,0.03);
+  border-top: 1px solid var(--color-divider, rgba(255,255,255,0.03));
 }
 
 .stage-text {
-  color: rgba(255,255,255,0.7);
+  color: var(--color-text-bright, rgba(255,255,255,0.7));
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;

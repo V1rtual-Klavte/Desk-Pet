@@ -471,11 +471,11 @@ defineExpose({
 .preset-row { display: flex; gap: 6px; margin-top: 4px; }
 .preset-btn {
   padding: 6px 14px; font-size: 11px; font-family: inherit;
-  background: rgba(255,255,255,0.04); color: rgba(255,255,255,0.5);
-  border: 1px solid rgba(255,255,255,0.08); border-radius: 10px;
+  background: var(--color-surface-dark, rgba(255,255,255,0.04)); color: var(--color-text-muted, rgba(255,255,255,0.5));
+  border: 1px solid var(--color-border-input, rgba(255,255,255,0.08)); border-radius: 10px;
   cursor: pointer; transition: all .15s;
 }
-.preset-btn:hover { background: rgba(255,255,255,0.08); color: rgba(255,255,255,0.8); }
+.preset-btn:hover { background: var(--color-surface-darker, rgba(255,255,255,0.08)); color: var(--color-text-bright, rgba(255,255,255,0.8)); }
 .preset-btn.active { background: var(--color-accent,#c4276f); color: #fff; border-color: var(--color-accent,#c4276f); }
 
 /* ── 颜色编辑 ── */
@@ -484,7 +484,7 @@ defineExpose({
 .color-label { font-size: 9px; opacity: 0.55; min-width: 48px; text-align: right; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .color-picker { width: 22px; height: 20px; border: none; border-radius: 3px; cursor: pointer; padding: 0; background: none; flex-shrink: 0; }
 .color-picker::-webkit-color-swatch-wrapper { padding: 0; }
-.color-picker::-webkit-color-swatch { border: 1px solid rgba(255,255,255,0.2); border-radius: 3px; }
+.color-picker::-webkit-color-swatch { border: 1px solid var(--color-border-input, rgba(255,255,255,0.2)); border-radius: 3px; }
 .color-val { flex: 1; min-width: 60px; font-size: 9px !important; padding: 1px 3px !important; }
 
 /* ── 灵动图层 ── */
@@ -505,11 +505,11 @@ defineExpose({
   padding: 5px 8px;
   border-radius: 6px;
   border: 1px solid transparent;
-  background: rgba(0, 0, 0, 0.15);
+  background: var(--color-surface-dark, rgba(0, 0, 0, 0.15));
   cursor: pointer;
   transition: background 0.15s, border-color 0.15s;
 }
-.pf-row:hover { background: rgba(255, 255, 255, 0.06); }
+.pf-row:hover { background: var(--color-surface-darker, rgba(255, 255, 255, 0.06)); }
 .pf-row.active { border-color: var(--color-accent, #c4276f); }
 .pf-row-main { display: flex; align-items: baseline; gap: 6px; min-width: 0; }
 .pf-row-name { font-weight: 700; }
@@ -517,7 +517,7 @@ defineExpose({
   font-size: 9px;
   padding: 1px 5px;
   border-radius: 4px;
-  background: rgba(255, 255, 255, 0.12);
+  background: var(--color-surface-dark, rgba(255, 255, 255, 0.12));
   opacity: 0.8;
 }
 /* 副本沿用原名（显示名不改），靠 ID 区分 */
@@ -525,8 +525,8 @@ defineExpose({
 .pf-row-current { font-size: 10px; color: var(--color-accent, #c4276f); }
 .pf-row-actions { display: flex; gap: 4px; flex-shrink: 0; }
 
-.profile-preview { display: flex; gap: 8px; padding: 6px; background: rgba(0,0,0,0.15); border-radius: 8px; align-items: flex-start; }
-.preview-body { width: 48px; height: 48px; object-fit: contain; image-rendering: pixelated; border-radius: 4px; border: 2px solid rgba(255,255,255,0.1); flex-shrink: 0; background: rgba(0,0,0,0.2); }
+.profile-preview { display: flex; gap: 8px; padding: 6px; background: var(--color-surface-dark, rgba(0,0,0,0.15)); border-radius: 8px; align-items: flex-start; }
+.preview-body { width: 48px; height: 48px; object-fit: contain; image-rendering: pixelated; border-radius: 4px; border: 2px solid var(--color-divider, rgba(255,255,255,0.1)); flex-shrink: 0; background: var(--color-surface-dark, rgba(0,0,0,0.2)); }
 .preview-info { flex: 1; min-width: 0; }
 .preview-name { font-size: 12px; color: var(--color-accent,#c4276f); font-weight: bold; }
 .preview-meta { font-size: 10px; opacity: 0.5; margin-top: 2px; }

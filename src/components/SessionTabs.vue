@@ -231,7 +231,7 @@ function onWheel(e: WheelEvent) {
 }
 .st-close:hover {
   opacity: 1;
-  background: rgba(255,255,255,0.15);
+  background: var(--color-surface-dark, rgba(255,255,255,0.15));
 }
 .st-tab.active .st-close:hover {
   background: rgba(0,0,0,0.2);

@@ -718,7 +718,7 @@ onUnmounted(() => {
         <textarea
           ref="inputRef"
           v-model="input"
-          placeholder="消息... 输入 / 查看命令"
+          placeholder="说点什么…"
           @keydown="key"
           @compositionstart="onCompositionStart"
           @compositionend="onCompositionEnd"

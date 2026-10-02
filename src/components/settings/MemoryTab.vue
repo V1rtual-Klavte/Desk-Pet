@@ -284,13 +284,13 @@ onMounted(() => { void refresh() })
 <style scoped>
 .memory-tab { display: flex; flex-direction: column; gap: 4px; }
 .memory-toolbar { display: flex; gap: 4px; align-items: center; flex-wrap: wrap; }
-.memory-row { width: 100%; display: flex; justify-content: space-between; gap: 8px; text-align: left; padding: 5px 6px; margin-top: 3px; border: 1px solid rgba(255, 255, 255, .08); background: rgba(0, 0, 0, .12); color: inherit; cursor: pointer; }
+.memory-row { width: 100%; display: flex; justify-content: space-between; gap: 8px; text-align: left; padding: 5px 6px; margin-top: 3px; border: 1px solid var(--color-divider, rgba(255, 255, 255, .08)); background: var(--color-surface-dark, rgba(0, 0, 0, .12)); color: inherit; cursor: pointer; }
 .memory-row:hover { border-color: var(--color-accent, #c4276f); }
 .memory-candidate { cursor: default; }
 .memory-row-main { min-width: 0; display: flex; flex-direction: column; gap: 2px; }
 .memory-row-main strong, .memory-row-main span { overflow: hidden; text-overflow: ellipsis; }
 .memory-row-main small, .memory-row-meta { opacity: .65; font-size: 9px; }
 .memory-evidence { opacity: .8; white-space: normal; overflow-wrap: anywhere; }
-.memory-detail { padding: 6px; line-height: 1.6; background: rgba(0, 0, 0, .12); white-space: pre-wrap; overflow-wrap: anywhere; }
+.memory-detail { padding: 6px; line-height: 1.6; background: var(--color-surface-dark, rgba(0, 0, 0, .12)); white-space: pre-wrap; overflow-wrap: anywhere; }
 .memory-editor { width: 100%; margin-top: 4px; }
 </style>
