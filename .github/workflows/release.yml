@@ -1,0 +1,80 @@
+name: Release
+
+# 只有 tag 与手动触发会打包：Release 模式的 Rust 构建在 macOS runner 上按 10 倍计费，
+# 放进每次 push/PR 不划算。平时的配置漂移由 ci.yml 的 bundle-config job 守住。
+on:
+  push:
+    # 历史里混过 `Ver0.0.x` 前缀，这里用大小写敏感的小写 v 把它们排除在外
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: '要发布的 tag（如 v0.15.0，需已存在）'
+        required: true
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    name: publish (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    permissions:
+      # tauri-action 要创建/更新 Release 并上传产物
+      contents: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-latest
+            bundles: app,dmg
+          - os: windows-latest
+            bundles: nsis
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.tag || github.ref }}
+
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - run: pnpm install --frozen-lockfile
+
+      # 打包前先过配置守卫：tag 与 tauri.conf.json 的 version 不一致会在这里失败，
+      # 而不是产出一个版本号错的安装包。
+      # GITHUB_REF_TYPE 必须显式置为 tag —— 脚本按它判定「本次是否 tag 触发」，
+      # 只给 GITHUB_REF_NAME 的话这个校验会被静默跳过（workflow_dispatch 下 runner 的
+      # GITHUB_REF_TYPE 是 branch）。
+      - run: pnpm run check:bundle
+        env:
+          GITHUB_REF_TYPE: tag
+          GITHUB_REF_NAME: ${{ github.event.inputs.tag || github.ref_name }}
+
+      # Apple/Windows 代码签名本次未交付（契约 D2）：对应的 secrets 现在不存在，展开后是空串，
+      # 签名与公证步骤因此自然不会触发，工作流无需任何 if 分支。将来补账号时只加 secrets，
+      # 再按契约 §3.3 补上 macOS 的钥匙串导入步骤即可。
+      - uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+        with:
+          tagName: ${{ github.event.inputs.tag || github.ref_name }}
+          releaseName: ${{ github.event.inputs.tag || github.ref_name }}
+          releaseDraft: false
+          # 含 `-` 的 tag（如 v0.15.0-rc.1）只作预发布，不会被 updater 端点选中
+          prerelease: ${{ contains(github.event.inputs.tag || github.ref_name, '-') }}
+          includeUpdaterJson: true
+          args: --bundles ${{ matrix.bundles }}
