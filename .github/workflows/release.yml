@@ -13,7 +13,9 @@ on:
         required: true
 
 concurrency:
-  group: release-${{ github.ref }}
+  # 按解析后的 tag 而不是 github.ref：手动触发与同 tag 的 push 才能互斥
+  # （手动触发时 github.ref 是分支，两者会被当成不同组而并发跑同一个 Release）
+  group: release-${{ github.event.inputs.tag || github.ref_name }}
   cancel-in-progress: false
 
 jobs:
