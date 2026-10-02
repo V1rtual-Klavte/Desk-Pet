@@ -12,6 +12,7 @@ import { initSessions, chatHistory, initWelcome, getActiveSessionId } from "@/se
 import { getActiveCard } from "@/services/personality"
 import { computeMcpEnabled, enabledMcpServerNames } from "@/services/config"
 import { createLogger } from "@/services/logger"
+import { startUpdateCheck } from "@/services/update"
 
 const log = createLogger("Init")
 
@@ -77,6 +78,9 @@ export async function initApp(): Promise<void> {
   log.info("7/7 Debug 就绪")
 
   log.info("──── 初始化完成 ────")
+
+  // 更新检查放在最后且不 await：它延迟 30 秒才动作，失败也不影响启动（见 services/update.ts）
+  startUpdateCheck()
 }
 
 /** 一次能力准备的结果：启用但本次没能借用成功的 MCP 服务器名。 */
