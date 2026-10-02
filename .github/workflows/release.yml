@@ -59,17 +59,18 @@ jobs:
           GITHUB_REF_TYPE: tag
           GITHUB_REF_NAME: ${{ github.event.inputs.tag || github.ref_name }}
 
-      # Apple/Windows 代码签名本次未交付（契约 D2）：对应的 secrets 现在不存在，展开后是空串，
-      # 签名与公证步骤因此自然不会触发，工作流无需任何 if 分支。将来补账号时只加 secrets，
-      # 再按契约 §3.3 补上 macOS 的钥匙串导入步骤即可。
+      # Apple/Windows 代码签名本次未交付（契约 D2）。不要提前声明 APPLE_* 环境变量：GitHub 会把
+      # 未设置的 secret 展开成「已定义但为空」的值，Tauri CLI 用 var_os 读取并不做空值过滤，
+      # macOS 侧一旦发现 cert 变量为 Some 就会走钥匙串导入、对空 p12 执行 security import 而失败，
+      # 结果是 Release 只剩 Windows 产物、macOS 客户端收不到更新。将来补签名时按契约 §3.3 加步骤：
+      # 用 `env: HAS_APPLE_CERT: ${{ secrets.APPLE_CERTIFICATE != '' }}` 配 `if:`，
+      # 或直接加钥匙串导入步骤。TAURI_SIGNING_* 是 updater 自己的密钥（不是 Apple 签名），
+      # secrets 已存在且必需，必须保留。
       - uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
-          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
-          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
-          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
         with:
           tagName: ${{ github.event.inputs.tag || github.ref_name }}
           releaseName: ${{ github.event.inputs.tag || github.ref_name }}
