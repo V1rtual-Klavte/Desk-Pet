@@ -5,11 +5,18 @@ import { describe, expect, it } from "vitest"
 // 脚本是 Node 侧 ESM 工具（scripts/*.mjs）：不在 tsconfig 的 include 里，也没有 .d.ts。
 // 按运行期契约导入，形状由下面的 CheckBundleConfig 钉住。
 // @ts-expect-error TS7016 —— 只抑制「找不到模块声明」，断言与形状检查照常生效。
-import { checkBundleConfig as checkBundleConfigSource } from "../../../scripts/check-bundle-config.mjs"
+import {
+  checkBundleConfig as checkBundleConfigSource,
+  resolveTag as resolveTagSource,
+} from "../../../scripts/check-bundle-config.mjs"
 
 /** 校验器的运行期契约（与 scripts/check-bundle-config.mjs 的导出一致）。 */
 type CheckBundleConfig = (rootDir: string, options?: { tag?: string | null }) => string[]
 const checkBundleConfig: CheckBundleConfig = checkBundleConfigSource
+
+/** tag 解析器的运行期契约。 */
+type ResolveTag = (env: Record<string, string | undefined>, argv: string[]) => string | null
+const resolveTag: ResolveTag = resolveTagSource
 
 interface FixtureOptions {
   config?: unknown
@@ -97,5 +104,21 @@ describe("checkBundleConfig", () => {
     const problems = checkBundleConfig(root)
     expect(problems).toHaveLength(1)
     expect(problems[0]).toContain("tauri.conf.json")
+  })
+})
+
+describe("resolveTag", () => {
+  it("GITHUB_REF_TYPE 是 branch 时忽略 GITHUB_REF_NAME —— 否则每次 push/PR 都会误报版本不一致", () => {
+    expect(resolveTag({ GITHUB_REF_TYPE: "branch", GITHUB_REF_NAME: "master" }, ["node", "script.mjs"])).toBe(null)
+    expect(resolveTag({ GITHUB_REF_TYPE: "branch", GITHUB_REF_NAME: "123/merge" }, ["node", "script.mjs"])).toBe(null)
+  })
+
+  it("GITHUB_REF_TYPE 是 tag 时取 GITHUB_REF_NAME", () => {
+    expect(resolveTag({ GITHUB_REF_TYPE: "tag", GITHUB_REF_NAME: "v0.15.0" }, ["node", "script.mjs"])).toBe("v0.15.0")
+  })
+
+  it("没有 GITHUB_REF_TYPE 时回退到位置参数；两者都没有则为 null", () => {
+    expect(resolveTag({}, ["node", "script.mjs", "v0.15.0"])).toBe("v0.15.0")
+    expect(resolveTag({}, ["node", "script.mjs"])).toBe(null)
   })
 })

@@ -107,9 +107,23 @@ export function checkBundleConfig(rootDir, options = {}) {
   return problems
 }
 
+/**
+ * 解析本次运行要校验的 tag。
+ *
+ * GitHub Actions 在任何触发下都会设置 `GITHUB_REF_NAME`（push 时是分支名、pull_request 时是
+ * `123/merge`），所以**不能**直接把它当 tag —— 只有 `GITHUB_REF_TYPE === "tag"` 时它才是 tag。
+ * 本地手动跑可用第一个位置参数指定 tag。
+ * @param {Record<string, string | undefined>} env
+ * @param {string[]} argv
+ * @returns {string | null}
+ */
+export function resolveTag(env, argv) {
+  if (env.GITHUB_REF_TYPE === "tag" && env.GITHUB_REF_NAME) return env.GITHUB_REF_NAME
+  return argv[2] ?? null
+}
+
 function main() {
-  // tag 由 CI 传入（GITHUB_REF_NAME）；本地默认校验 VERSION 之外的静态项
-  const tag = process.env.GITHUB_REF_NAME ?? process.argv[2] ?? null
+  const tag = resolveTag(process.env, process.argv)
   const problems = checkBundleConfig(REPO_ROOT, { tag })
   if (problems.length === 0) {
     console.log(`打包配置校验通过${tag ? `（tag ${tag}）` : ""}`)
