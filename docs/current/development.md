@@ -43,6 +43,8 @@ Rust 命令集中在 [commands/](../../src-tauri/src/commands/)，由 [mod.rs](.
 
 进程级重启走 `app_restart`（[app_lifecycle.rs](../../src-tauri/src/commands/app_lifecycle.rs)）。它用 `AppHandle::request_restart()` 而不是 `restart()`：后者在调用线程就是事件循环线程时直接 `process::restart()`，**不发 `RunEvent::Exit`**，[lib.rs](../../src-tauri/src/lib.rs) 那条回收 MCP 子进程的钩子不会执行，每次重启漏下一批 npx/node。前端在 invoke 前先 `flushConfig()`——设置改动先进写盘队列，直接重启会把未落盘的配置丢掉。
 
+开发模式（debug 构建）下 `app_restart` 不走进程重启，改为关闭其他窗口并重载主窗口：`pnpm tauri dev` 的 CLI 把 app 当子进程，子进程一退出就结束整个 dev 会话并关掉 Vite，`process::restart()` 拉起的孤儿进程没有页面可加载，只剩一个空白窗口（终端 Ctrl+C 也因 CLI 已退出而失效）。重载后前端从零 boot，设置同样从磁盘重新读取；打包版仍走真进程重启。
+
 ## 日志
 
 TS 入口为 [logger/index.ts](../../src/services/logger/index.ts) 的 createLogger：
