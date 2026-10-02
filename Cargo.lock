@@ -4270,7 +4270,7 @@ dependencies = [
 
 [[package]]
 name = "v1rtual-desk-pet"
-version = "0.1.0"
+version = "0.14.5"
 dependencies = [
  "chrono",
  "num_cpus",

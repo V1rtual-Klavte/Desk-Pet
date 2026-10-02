@@ -1,6 +1,6 @@
 [package]
 name = "v1rtual-desk-pet"
-version = "0.1.0"
+version = "0.14.5"
 description = "虚拟桌宠"
 edition = "2021"
 
