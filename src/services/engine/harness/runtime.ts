@@ -1,5 +1,5 @@
-// Desk-Pet's only multi-turn agent runtime. Pi AgentHarness owns the model/tool loop,
-// durable queues, and session entries; Desk-Pet owns product state, safety, Card
+// V1rtual-Desk-Pet's only multi-turn agent runtime. Pi AgentHarness owns the model/tool loop,
+// durable queues, and session entries; V1rtual-Desk-Pet owns product state, safety, Card
 // variables, and reply processing.
 
 import { contentText } from "@earendil-works/pi-ai"
@@ -14,7 +14,7 @@ import { MemoryService, recallMemory } from "@/services/agent/memory"
 import type { MemoryProjection } from "@/services/agent/memory"
 import { planCheckpointStore } from "@/services/engine/plan/checkpoint-store"
 import type { StructuredSummary } from "@/services/engine/compaction/structured-summary"
-import { getCandyInstructionsSync } from "@/services/context/instructions"
+import { getV1rtualInstructionsSync } from "@/services/context/instructions"
 import { buildPrompt, composeDynamicPrompt, currentTimeNote, contextBudget, estimateRequestTokens, estimateContextTokens, estimateMessageTokens, ContextBudgetError, ESTIMATE_DRIFT_WARN_RATIO, estimateDriftRatio, planToolResultLadder, projectMessageContent, projectToolResultText, annotateToolResultText, protectedMessageIndexes, toolResultAddress } from "@/services/context"
 import type { ContextBudgetAdjustment, ToolResultLadderEntry, ToolResultLadderPlan, ToolResultLevelMeasure } from "@/services/context"
 import { bindRunningPlan, clearRunningPlan, notifyPlanEnd, requestPlanConfirm, requestPlanStepDecision } from "@/services/engine/plan-confirmation"
@@ -1213,7 +1213,7 @@ export async function runPiAgentTurn(input: PiAgentTurnInput): Promise<PiAgentTu
   const card = currentCard ? JSON.parse(JSON.stringify(currentCard)) as typeof currentCard : null
   const pool = getPoolSnapshot()
   const thinkingEffort = getEffectiveThinkingEffort()
-  const frozenUserContext = { candyInstructions: getCandyInstructionsSync(),
+  const frozenUserContext = { v1rtualInstructions: getV1rtualInstructionsSync(),
     dynamicPrompt: composeDynamicPrompt(formatPoolForPrompt(pool), thinkingEffort) }
   // 准入是否已成立（用户条目已提交进会话文件）：此后每条退出路径都必须结算那条已接受的操作。
   let admittedOnce = false
@@ -2122,7 +2122,7 @@ export async function continueInterruptedRun(sessionId: string): Promise<PiAgent
     const thinkingEffort = getEffectiveThinkingEffort()
     // 中断运行的原始冻结快照已随进程丢失：用当前 Card/变量重建只读前缀，不静默改 Card。
     const context = buildPrompt({
-      ...{ candyInstructions: getCandyInstructionsSync() },
+      ...{ v1rtualInstructions: getV1rtualInstructionsSync() },
       unansweredCount: 0, thinkingEffort,
       contextMaxTokens: model.contextWindow, maxOutputTokens: model.maxTokens,
       tools: frozenTools.map(toToolDeclaration),
@@ -2191,7 +2191,7 @@ export async function compactActiveSession(sessionId: string): Promise<ManualCom
   const card = currentCard ? JSON.parse(JSON.stringify(currentCard)) as typeof currentCard : null
   const pool = getPoolSnapshot()
   const context = buildPrompt({
-    ...{ candyInstructions: getCandyInstructionsSync() },
+    ...{ v1rtualInstructions: getV1rtualInstructionsSync() },
     unansweredCount: 0, thinkingEffort: getEffectiveThinkingEffort(),
     contextMaxTokens: model.contextWindow, maxOutputTokens: model.maxTokens,
     tools: [],

@@ -1,4 +1,4 @@
-# Desk-Pet E2E 测试树（test/）
+# V1rtual-Desk-Pet E2E 测试树（test/）
 
 `test/` 是仓库唯一的测试根：三层测试、契约、宿主设施、场景与报告都在这一棵树下。L4 端到端（E2E）在独立 Tauri WebView 中执行真实前端服务、Rust IPC、临时数据根和 Agent/Tool 链路；测试数据不会写入正常用户数据根。L2 / L3 是不启动 Tauri 的快层（vitest · node）。
 

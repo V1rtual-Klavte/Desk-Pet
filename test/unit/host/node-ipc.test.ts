@@ -395,15 +395,15 @@ describe("skill 目录指纹", () => {
 })
 
 describe("记忆文件与日志", () => {
-  it("init_memory_files 只生成 CANDY 指令文件并返回 memory 目录", async () => {
+  it("init_memory_files 只生成 V1RTUAL 指令文件并返回 memory 目录", async () => {
     const memory = await invoke<string>("init_memory_files")
     expect(memory).toBe(join(root, "memory"))
-    expect(readdirSync(memory).sort()).toEqual(["CANDY.md"])
-    expect(readFileSync(join(memory, "CANDY.md"), "utf8")).toContain("## 指令")
+    expect(readdirSync(memory).sort()).toEqual(["V1RTUAL.md"])
+    expect(readFileSync(join(memory, "V1RTUAL.md"), "utf8")).toContain("## 指令")
     // 已存在的人工指令不被覆盖（模板只在缺失时写）。
-    await invoke("file_write", { path: join(memory, "CANDY.md"), content: "我的指令" })
+    await invoke("file_write", { path: join(memory, "V1RTUAL.md"), content: "我的指令" })
     await invoke("init_memory_files")
-    expect(readFileSync(join(memory, "CANDY.md"), "utf8")).toBe("我的指令")
+    expect(readFileSync(join(memory, "V1RTUAL.md"), "utf8")).toBe("我的指令")
   })
 
   it("log_messages 原样落到 {logs}/deskpet.log", async () => {

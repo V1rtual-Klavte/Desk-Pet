@@ -123,7 +123,7 @@ export async function generatePlan(
     .map(t => `- ${t.name}: ${t.description}`)
     .join("\n")
 
-  const systemPrompt = `你是糖糖桌宠的任务规划器。${cardRole}
+  const systemPrompt = `你是虚拟桌宠的任务规划器。${cardRole}
 
 用户的请求可能很复杂，需要拆解为多个步骤执行。
 
@@ -418,7 +418,7 @@ async function executeStep(
   config: ExecutePlanConfig,
   callbacks: ExecutePlanCallbacks,
 ): Promise<PiSubAgentOutput> {
-  const stepPrompt = `你是糖糖桌宠的子代理，角色: ${step.role || "执行员"}。
+  const stepPrompt = `你是虚拟桌宠的子代理，角色: ${step.role || "执行员"}。
 正在执行计划第 ${step.id} 步: ${step.description}
 
 可用工具由系统注入。

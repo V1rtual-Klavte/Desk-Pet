@@ -789,7 +789,7 @@ export function useLayerEditor() {
     });
     try {
       await win.setTitle(
-        `🎨 图层编辑器 - ${profile.value?.meta.name || "糖糖桌宠"}`
+        `🎨 图层编辑器 - ${profile.value?.meta.name || "虚拟桌宠"}`
       );
     } catch {
       // 标题写入失败仅影响窗口标题文案（主题名异常/非 Tauri 宿主），不影响编辑与保存；

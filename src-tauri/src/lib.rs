@@ -239,7 +239,7 @@ pub fn run() {
         .manage(BashPool::default())
         .manage(ToolPermitPool::default())
         .setup(move |app| {
-            rust_info!("糖糖桌宠已启动");
+            rust_info!("虚拟桌宠已启动");
 
             let e2e = cfg!(debug_assertions) && crate::paths::is_e2e();
 

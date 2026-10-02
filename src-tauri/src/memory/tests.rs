@@ -104,7 +104,7 @@ fn query_filters_scope_and_expiry() {
     add(&store, "op-1", 0, &draft("用户养了一只叫团子的猫", vec!["src-1"]));
     let mut card_draft = draft("用户在糖糖这里喜欢被叫老板", vec!["src-2"]);
     card_draft["scope"] = json!("card");
-    card_draft["scopeId"] = json!("candy");
+    card_draft["scopeId"] = json!("v1rtual");
     add(&store, "op-2", 1, &card_draft);
     let mut expiring = draft("用户这周在出差", vec!["src-1"]);
     expiring["expiresAt"] = json!(1_000i64);
@@ -115,7 +115,7 @@ fn query_filters_scope_and_expiry() {
         store.query("老板", Some("user"), None, None, 10).unwrap().is_empty(),
         "user 范围查询返回了 card 范围的记忆"
     );
-    assert_eq!(store.query("老板", Some("card"), Some("candy"), None, 10).unwrap().len(), 1);
+    assert_eq!(store.query("老板", Some("card"), Some("v1rtual"), None, 10).unwrap().len(), 1);
     assert!(
         store.query("出差", None, None, None, 10).unwrap().is_empty(),
         "已过有效期的记忆仍被召回"

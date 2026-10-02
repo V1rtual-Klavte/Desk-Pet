@@ -42,7 +42,7 @@ dreaming 分三阶段：Light 固定输入范围（来源登记 + 水位）、Re
 
 | 文件 | 当前用途 |
 |---|---|
-| CANDY.md | 用户手写系统指令（人工入口，不是记忆数据） |
+| V1RTUAL.md | 用户手写系统指令（人工入口，不是记忆数据） |
 | memory.sqlite3 | 已接受记忆、来源与治理决定的真相源（Rust 管理） |
 | exports/ | 只读 Markdown 投影，不可回写 |
 | backups/ | 一致性备份（走 SQLite 备份接口，不复制写入中的主文件） |
@@ -79,12 +79,12 @@ dreaming 分三阶段：Light 固定输入范围（来源登记 + 水位）、Re
 - L1：整段摘要。切分范围不由本仓决定：「最旧的连续完整用户意图轮、工具批次不拆、保留窗口」都是上游 `findCutPoint` 的执行结果（`@earendil-works/pi-agent-core` 的 `harness/compaction/compaction.js`）；宿主只提供摘要内核（`before_compaction`，[compactor.ts](../../src/services/engine/compactor.ts)）与提交后的可解释结果。切分回合时上游把当前未完成回合的前半段单列（`turnPrefixMessages`），宿主用 `SPLIT_TURN_INSTRUCTION` 另段摘要。素材超硬上限时切成 K 片，逐片串行调摘要、以 `previousSummary` 迭代合并，最终一次提交一份摘要（提交仍只有一次）；片数上限 `MAX_COMPACTION_SLICES = 8`，超上限或存在不可再分且自身超硬上限的片段则 `CompactionOverflowError`（`code = "COMPACTION_MATERIAL_OVER_CAP"`）明确失败——零请求、零提交，不存在静默丢弃。
 - L2：在无法再安全压缩时保留原文；如果核心输入仍超过硬上限，先走 Harness 的一次性溢出恢复（压缩后重试一次，见上），恢复用尽或没有可摘要范围时才返回可解释的上下文不足错误，不用占位文案伪装压缩成功。
 
-静态 Card、CANDY、完整工具 schema 和当前输入不按字符截断。画像/召回可以整块淘汰并记录预算原因（淘汰结果进快照的 `budgetDrops`，见[运行时契约](runtime-contract.md#快照与人格状态)）；未被摘要覆盖的 transcript 不得静默删除。`loop.contextCompactAt` 已从默认配置与 getter 移除，旧文件保留该键不影响新预算。
+静态 Card、V1RTUAL、完整工具 schema 和当前输入不按字符截断。画像/召回可以整块淘汰并记录预算原因（淘汰结果进快照的 `budgetDrops`，见[运行时契约](runtime-contract.md#快照与人格状态)）；未被摘要覆盖的 transcript 不得静默删除。`loop.contextCompactAt` 已从默认配置与 getter 移除，旧文件保留该键不影响新预算。
 
 ## 请求快照与长期记忆边界
 
 回合冻结与三阶段 PromptSnapshot 由[运行时契约](runtime-contract.md#快照与人格状态)维护（审计条目的入队与 `flushAudit()` 的落盘边界同见该节）。摘要调用不计为正常聊天回复，但摘要请求同样进快照体系：有会话归属的一次性调用写 payload 与 usage 两档快照（`one-shot:<purpose>` 身份、`request.step = "compaction"`），压缩成功后另写一条 `deskpet.prompt_rewrite`（`compaction_summary`，只含输入/输出 hash、运行来源与压缩条目地址，压缩正文与素材都不落盘）。
 
-`CANDY.md` 是人工指令，与摘要分别建块；用户画像不再有独立文件，它就是记忆库里置顶的条目。应用启动、每五轮与 session 结束都不隐式发起记忆整理：整理只能由记忆面板手动触发（或在用户显式开启 idle 整理后按空闲条件运行），且只产出待审候选。
+`V1RTUAL.md` 是人工指令，与摘要分别建块；用户画像不再有独立文件，它就是记忆库里置顶的条目。应用启动、每五轮与 session 结束都不隐式发起记忆整理：整理只能由记忆面板手动触发（或在用户显式开启 idle 整理后按空闲条件运行），且只产出待审候选。
 
-当前实现入口为 [harness-slot.ts](../../src/services/engine/harness/harness-slot.ts)（运行与压缩调度）、[compactor.ts](../../src/services/engine/compactor.ts)（摘要内核）、[session/repo.ts](../../src/services/session/repo.ts)（会话仓库）、[memory/](../../src/services/agent/memory/)（召回端口、来源收集、dreaming）、[instructions/](../../src/services/context/instructions/)（CANDY）、[src-tauri/src/memory/](../../src-tauri/src/memory/)（SQLite 存储与治理命令）、[tool-output.ts](../../src/services/context/tool-output.ts)（L0 工具结果投影与回读地址）与 [delivery.ts](../../src/services/engine/harness/delivery.ts)（投递证据与上下文 epoch）；计划 checkpoint 与恢复扫描入口为 [checkpoint-store.ts](../../src/services/engine/plan/checkpoint-store.ts) 与 [runner.ts](../../src/services/agent/runner.ts) 的 `recoverPlanCheckpoints()`，恢复产出的继续/丢弃消费者 `resumePlan`/`discardPlan` 由 [runtime.ts](../../src/services/engine/harness/runtime.ts) 消费。
+当前实现入口为 [harness-slot.ts](../../src/services/engine/harness/harness-slot.ts)（运行与压缩调度）、[compactor.ts](../../src/services/engine/compactor.ts)（摘要内核）、[session/repo.ts](../../src/services/session/repo.ts)（会话仓库）、[memory/](../../src/services/agent/memory/)（召回端口、来源收集、dreaming）、[instructions/](../../src/services/context/instructions/)（V1RTUAL）、[src-tauri/src/memory/](../../src-tauri/src/memory/)（SQLite 存储与治理命令）、[tool-output.ts](../../src/services/context/tool-output.ts)（L0 工具结果投影与回读地址）与 [delivery.ts](../../src/services/engine/harness/delivery.ts)（投递证据与上下文 epoch）；计划 checkpoint 与恢复扫描入口为 [checkpoint-store.ts](../../src/services/engine/plan/checkpoint-store.ts) 与 [runner.ts](../../src/services/agent/runner.ts) 的 `recoverPlanCheckpoints()`，恢复产出的继续/丢弃消费者 `resumePlan`/`discardPlan` 由 [runtime.ts](../../src/services/engine/harness/runtime.ts) 消费。

@@ -4,7 +4,7 @@
 //
 // 归属（按 import + 实测）：被测对象是 Pi 原生 `beforeToolCall` 契约本身 ——
 // 用例自建 faux provider 驱动 `pi-agent-core` 的 Agent，运行内核的工具门禁复用同一语义
-// （Harness `before_tool` ← Agent `beforeToolCall`）。全程没有 Desk-Pet 服务参与
+// （Harness `before_tool` ← Agent `beforeToolCall`）。全程没有 V1rtual-Desk-Pet 服务参与
 // （原场景 setup 里的宿主 fake provider 只是场景 DSL 驱动回合的脚手架，迁走后不再需要），
 // 不撞任何 IPC 命令，实测在 L2 跑通。
 //

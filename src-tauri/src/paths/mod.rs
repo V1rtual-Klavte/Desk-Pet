@@ -538,7 +538,7 @@ mod tests {
             Err(AppError::MemoryProtectedPath)
         ));
         assert!(is_managed_memory_path(&root.join("memory/memory.sqlite3-wal")));
-        assert!(!is_managed_memory_path(&root.join("memory/CANDY.md")));
+        assert!(!is_managed_memory_path(&root.join("memory/V1RTUAL.md")));
         fs::remove_dir_all(&root).unwrap();
     }
 }

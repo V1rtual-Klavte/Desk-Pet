@@ -32,7 +32,7 @@ function messageEntry(id: string, seq: number, message: unknown) {
 
 describe("记忆来源准入", () => {
   it("可信用户输入入选，工具结果/助手台词/摘要/缺身份一律出局 [memory-source-admission]", () => {
-    const trusted = userInputMessage("我叫小明，是个程序员", "req-1:user", inputSourceMark(INGRESS, "candy"))
+    const trusted = userInputMessage("我叫小明，是个程序员", "req-1:user", inputSourceMark(INGRESS, "v1rtual"))
     const entries = [
       messageEntry("entry-user", 1, trusted),
       // 助手台词：再具体也不是用户说的。
@@ -56,7 +56,7 @@ describe("记忆来源准入", () => {
     const selected = trustedSourcesFromEntries("session-1", entries)
     expect(selected.map(source => source.entryId), "准入结果与「只有用户本人的可信输入」不一致").toEqual(["entry-user"])
     expect(selected[0]!.sourceId).toBe("session-1:entry-user")
-    expect(selected[0]!.cardId, "投递时刻冻结的 Card 身份没有随来源落盘").toBe("candy")
+    expect(selected[0]!.cardId, "投递时刻冻结的 Card 身份没有随来源落盘").toBe("v1rtual")
     expect(selected[0]!.evidence, "证据片段丢失了用户原话").toContain("程序员")
     expect(selected[0]!.taint).toBe("trusted_user")
   })

@@ -1,4 +1,4 @@
-// Desk-Pet ToolDef → AgentHarnessTool 适配器（H-2 运行内核替换）。
+// V1rtual-Desk-Pet ToolDef → AgentHarnessTool 适配器（H-2 运行内核替换）。
 //
 // 权限终裁不在这里：before_tool 钩子（runtime 侧）负责 PermissionKernel / 次数上限，
 // execute 只执行已放行的工具；工具结果映射与失败语义由本适配器统一表达。
@@ -27,7 +27,7 @@ export function toAgentHarnessTools(tools: readonly ToolDef[], run: HarnessToolR
     name: tool.name,
     label: tool.name,
     description: tool.description,
-    // Pi validates plain JSON Schema too; Desk-Pet's schemas are already that subset.
+    // Pi validates plain JSON Schema too; V1rtual-Desk-Pet's schemas are already that subset.
     parameters: tool.parameters as never,
     prepareArguments: tool.prepareArguments,
     // 逐工具调度声明不再下发：批次调度只看 run 级 `toolExecution`，

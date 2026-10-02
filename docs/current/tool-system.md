@@ -9,7 +9,7 @@ Pi Harness Tool → harness-tool-adapter → ToolRouter → 执行许可借用 �
                         ↑ beforeToolCall / PermissionKernel 先完成门禁
 ```
 
-文件与命令工具来自 Pi 的 ExecutionEnv 抽象，通过 [harness-adapter](../../src/services/tool/pi/harness-adapter.ts) 和 [TauriExecutionEnv](../../src/services/tool/pi/tauri-execution-env.ts) 接入 WebView。内部 IPC 的 file_read/file_write/file_write_atomic/bash_exec 仍可被宿主服务（Skill 保存、CANDY.md 写入）使用；host 写入不纳入许可域（借用者身份是页面实例，host 没有该生命周期），但走 `file_write_atomic` 的同目录 rename 原子替换，消除半写可观测窗口。它们不是另一个模型工具集。
+文件与命令工具来自 Pi 的 ExecutionEnv 抽象，通过 [harness-adapter](../../src/services/tool/pi/harness-adapter.ts) 和 [TauriExecutionEnv](../../src/services/tool/pi/tauri-execution-env.ts) 接入 WebView。内部 IPC 的 file_read/file_write/file_write_atomic/bash_exec 仍可被宿主服务（Skill 保存、V1RTUAL.md 写入）使用；host 写入不纳入许可域（借用者身份是页面实例，host 没有该生命周期），但走 `file_write_atomic` 的同目录 rename 原子替换，消除半写可观测窗口。它们不是另一个模型工具集。
 
 | 工具 | 当前边界 |
 |---|---|
@@ -45,14 +45,14 @@ Harness 以 `toolExecution: parallel` 派发批次，效果之间的并发由 Ru
 
 - `shared_read` 走有界共享额度（默认 4，由 [`ai.loop.maxParallelTools`](runtime-data.md#工具并行上限字段的语义与生效时机) 配置，范围 1–8），两个只读可真正重叠；`exclusive_effect`（write/edit/bash/app_open/clipboard_write/MCP）与进行中的读写互斥，效果按借用顺序串行。
 - `delegate`（agent_spawn）不占父批次额度，子运行的工具各自取许可；编排入口不自行执行文件写入。子代理运行随父运行取消（取消域级联：子槽挂到父槽下，父槽停止/关闭/释放都会级联到子运行），许可借用身份绑定父会话 + 代际 —— 计划步骤的子代理不再落到 `no-session:-1:…` 这一档。
-- Harness 的工具 memo 持久位（`invocation.getMemo` / `setMemo`）维持不实现：没有任何 Desk-Pet 工具把中间状态放进 memo（[harness-adapter.ts](../../src/services/tool/pi/harness-adapter.ts) 是空实现），恢复判定只按会话条目与工具结果条目这一份证据；`replay: "never"` 已保证不重放，恢复位无消费者（FIX-16）。
+- Harness 的工具 memo 持久位（`invocation.getMemo` / `setMemo`）维持不实现：没有任何 V1rtual-Desk-Pet 工具把中间状态放进 memo（[harness-adapter.ts](../../src/services/tool/pi/harness-adapter.ts) 是空实现），恢复判定只按会话条目与工具结果条目这一份证据；`replay: "never"` 已保证不重放，恢复位无消费者（FIX-16）。
 - 等待可取消（取消会移出排队项），没有超时自动释放；拿到额度后重新核对取消与代际，排队不能成为绕过检查的通道。
 - `tool_permit_release` 与 `tool_permit_cancel` 同样绑定借用者：其它窗口/页面即使拿到 requestId 也不能释放在飞额度或取消他人的排队项，被拒绝的调用不改变额度状态。
 - 释放与上线声明的 IPC 失败不再只留日志：失败的释放按 requestId 入队（请求标识是确定量，Rust 对未知 id 返回 Ok，重放幂等），由运行槽在**下一次 run 开始前**补偿重放；上线声明失败同样记欠账并在同一时机重试。补偿失败只留痕、不阻断本次 run。
 - 借用者身份 = Rust 提供的窗口标签 + 前端页面实例 id（[execution-permit.ts](../../src/services/tool/execution-permit.ts) 在模块加载时声明上线）。同一窗口同一时刻只有一个活着的页面实例：新实例上线（Vite 全量热重载、WebView 重建）时一次性回收同窗口其它实例的在飞额度与排队项，并以回收数量作为证据。回收只由「借用者已经不存在」触发，不看时间：同一实例重复上线是空操作，其它窗口的借用者与在飞的 `exclusive_effect` 都不受影响；窗口关闭且不再重新加载时，它留下的额度仍要等下一次同窗口上线或进程退出才回收。
 - 「声明上线的窗口」比「能持额度的窗口」大，判断残留影响只看后者：`windows-sim` 窗口同样加载主入口，模块加载时即声明上线，但它不启动回合、从不借用工具，因此不可能留下额度；`settings`、`layer-editor` 是独立 HTML 入口，根本不经过借用者声明。**能持额度的窗口 = 会启动回合的窗口 = `main` 与 Live Test 窗口**，二者由 `lib.rs` 按构建形态二选一创建、从不共存（Live Test 宿主不建 main）。窗口销毁残留因此没有可阻塞的对象，维持「不修」。
 - 上限由前端在每个 run 开始前下发给所有者并按运行生效（与队列批量策略同一模式）：降低上限不撤销在飞许可，只是暂停新获准执行；提高会唤醒有序等待项。越界值三处处理不同（见[运行时数据](runtime-data.md#工具并行上限字段的语义与生效时机)）（三处处理各不相同，口径见该节）。**共享读上限的所有者是 Rust**（[tool_permit.rs](../../src-tauri/src/commands/tool_permit.rs) 持有默认值与 1–8 范围，是宿主侧唯一的额度定义点）：默认值是**无配置可下发时**的兜底（Live Test / 单独启动没有前端），前端 `MIN/MAX/DEFAULT_PARALLEL_TOOLS` 是同值副本，只做设置页校验与 YAML 兜底，不构成第二个所有者；两份范围的一致性由 `tool-execution-permit` 场景的可执行边界钉保证（上限原值被接受、两侧越界被拒绝）。
-- 许可域按数据根区分，Live Test 的临时根自带隔离域；多个 WebView 共用同一所有者。许可只约束 Desk-Pet 托管的调用，不承诺阻止外部进程改文件（沙箱边界见下节）。
+- 许可域按数据根区分，Live Test 的临时根自带隔离域；多个 WebView 共用同一所有者。许可只约束 V1rtual-Desk-Pet 托管的调用，不承诺阻止外部进程改文件（沙箱边界见下节）。
 - 额度没有 TTL、也不加看门狗：超时释放会放开在飞的 `exclusive_effect`，与「写互斥不许被时间条件打开」直接冲突。写互斥是工具路径（声明 + 额度层）的性质，不会因为某个 handler 卡住而被绕过，但会因 handler 永不结算而不归还 —— 这个入口已从源头消除：文件读写只接受常规文件，FIFO/设备/套接字在调用前就被拒绝（见下节），不再有「永远打不开的 open 占着额度」这条路径。
 
 薄 `BaseTool` 仍未实施（当前零消费者）；设置页「工具策略（声明）」区从同一 ToolDef 展示权限意见、隔离级别、结果投影与历史摘要，不复制第二份策略定义。

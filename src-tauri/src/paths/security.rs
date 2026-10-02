@@ -66,7 +66,7 @@ pub fn is_credential_path(path: &Path) -> bool {
 }
 
 /// SQLite 的主库与 WAL/SHM 同属 Rust 记忆边界，通用文件工具不能绕过 MemoryStore 直接改写。
-/// CANDY、只读导出和备份仍可通过各自的显式入口访问。
+/// V1RTUAL、只读导出和备份仍可通过各自的显式入口访问。
 pub fn is_managed_memory_path(path: &Path) -> bool {
     let lowered = path.to_string_lossy().replace('\\', "/").to_ascii_lowercase();
     lowered.ends_with("/memory/memory.sqlite3")

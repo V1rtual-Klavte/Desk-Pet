@@ -1,5 +1,5 @@
 {
-    "name": "deskpet",
+    "name": "v1rtual-desk-pet",
     "private": true,
     "version": "0.7.1",
     "packageManager": "pnpm@11.5.2",

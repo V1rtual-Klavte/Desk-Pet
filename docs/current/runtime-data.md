@@ -79,7 +79,7 @@ Rust [AppPaths](../../src-tauri/src/paths/mod.rs) 依据 `cfg!(debug_assertions)
 ```text
 data_root/
 ├── settings/       生产 CONFIG 与默认资源初始化标记
-├── memory/         memory.sqlite3（记忆库）、CANDY.md（人工指令）、exports/ 与 backups/
+├── memory/         memory.sqlite3（记忆库）、V1RTUAL.md（人工指令）、exports/ 与 backups/
 ├── sessions/       聊天正文 JSONL（JsonlSessionRepo，每会话一个文件，归属按文件头 cwd；写入以追加为主，已回收 key 的写入行由折叠清理）与 index.json 可丢弃 UI 状态
 ├── personality/    cards/、stages/{cardId}.json
 ├── profiles/       {profileId}/ 下的 Profile 与素材

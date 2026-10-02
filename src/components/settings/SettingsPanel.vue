@@ -5,7 +5,7 @@ import {
   userConfig, toolsConfig,
   setOverrides, setOverride, getAllOverrides, flushConfig, parallelToolsError, memoryConfigError,
 } from "@/services/config";
-import { updateCandy } from "@/services/context/instructions";
+import { updateV1rtualInstructions } from "@/services/context/instructions";
 import {
   saveSoundAssignments,
 } from "@/services/audio/registry";
@@ -216,8 +216,8 @@ async function doSave() {
     return;
   }
 
-  if (a.candyInstructions.trim()) {
-    await updateCandy(a.candyInstructions.trim());
+  if (a.v1rtualInstructions.trim()) {
+    await updateV1rtualInstructions(a.v1rtualInstructions.trim());
   }
 
   await flushConfig()

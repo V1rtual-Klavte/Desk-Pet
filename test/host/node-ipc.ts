@@ -836,9 +836,9 @@ const handlers: Record<string, (args: Args) => unknown> = {
     const p = paths()
     mkdirSync(p.sessions, { recursive: true })
     mkdirSync(p.memory, { recursive: true })
-    // CANDY 是人工指令的文件入口，保持 Node/L4 初始化的唯一共享文件。
-    const candy = join(p.memory, "CANDY.md")
-    if (!existsSync(candy)) writeFileSync(candy, "# CANDY.md — 用户系统指令\n\n## 指令\n", "utf8")
+    // V1RTUAL 是人工指令的文件入口，保持 Node/L4 初始化的唯一共享文件。
+    const v1rtual = join(p.memory, "V1RTUAL.md")
+    if (!existsSync(v1rtual)) writeFileSync(v1rtual, "# V1RTUAL.md — 用户系统指令\n\n## 指令\n", "utf8")
     // 开发构建才写 .gitkeep（L4 跑的是 dev 构建，这里同口径）。
     const gitkeep = join(p.sessions, ".gitkeep")
     if (!existsSync(gitkeep)) writeFileSync(gitkeep, "")

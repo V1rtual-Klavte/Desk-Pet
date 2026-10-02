@@ -5,7 +5,7 @@
 //   {data_root}/
 //     memory/               长期记忆数据目录
 //       memory.sqlite3      ★ 已接受记忆、来源与治理决定的真相源（Rust 管理）
-//       CANDY.md            用户手写系统指令（人工入口，不是记忆数据）
+//       V1RTUAL.md          用户手写系统指令（人工入口，不是记忆数据）
 //       exports/            只读 Markdown 投影
 //       backups/            一致性备份
 //     sessions/             会话 JSONL 存储（JsonlSessionRepo 经通用文件命令读写）
@@ -19,7 +19,7 @@ use crate::paths::AppPaths;
 use std::fs;
 use tauri::command;
 
-const CANDY_TEMPLATE: &str = "# CANDY.md — 用户系统指令\n\n\
+const V1RTUAL_TEMPLATE: &str = "# V1RTUAL.md — 用户系统指令\n\n\
     > 此文件中的指令会作为 System Prompt 的一部分注入。\n\
     > 你可以在此写入对糖糖的行为要求。\n\n\
     ---\n\n\
@@ -27,7 +27,7 @@ const CANDY_TEMPLATE: &str = "# CANDY.md — 用户系统指令\n\n\
     <!-- 在此添加你的自定义指令，例如：叫我小明、用日语回复、喜欢简短回答等 -->\n\
     ";
 
-/// 初始化 memory/ 与 sessions/ 目录与 CANDY.md 种子。
+/// 初始化 memory/ 与 sessions/ 目录与 V1RTUAL.md 种子。
 /// 数据库由 Rust 的 MemoryStore 在启动时建表，这里不重复建库。
 #[command]
 pub fn init_memory_files(paths: tauri::State<AppPaths>) -> AppResult<String> {
@@ -35,9 +35,9 @@ pub fn init_memory_files(paths: tauri::State<AppPaths>) -> AppResult<String> {
     fs::create_dir_all(&paths.sessions).map_err(|e| format!("无法创建 sessions 目录: {e}"))?;
     fs::create_dir_all(memory_dir).map_err(|e| format!("无法创建 memory 目录: {e}"))?;
 
-    let candy = memory_dir.join("CANDY.md");
-    if !candy.exists() {
-        fs::write(&candy, CANDY_TEMPLATE).map_err(|e| format!("无法创建 CANDY.md: {e}"))?;
+    let v1rtual = memory_dir.join("V1RTUAL.md");
+    if !v1rtual.exists() {
+        fs::write(&v1rtual, V1RTUAL_TEMPLATE).map_err(|e| format!("无法创建 V1RTUAL.md: {e}"))?;
     }
 
     if cfg!(debug_assertions) {

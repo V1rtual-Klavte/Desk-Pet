@@ -187,7 +187,7 @@ async function openSettings() {
 
   new WebviewWindow("settings", {
     url: "settings.html",
-    title: "设置 - 糖糖桌宠",
+    title: "设置 - 虚拟桌宠",
     width: 440,
     height: 560,
     resizable: true,
@@ -236,7 +236,7 @@ async function openLayerEditor() {
   }
   new WebviewWindow("layer-editor", {
     url: "layer-editor.html",
-    title: "图层编辑器 - 糖糖桌宠",
+    title: "图层编辑器 - 虚拟桌宠",
     width: 820,
     height: 580,
     resizable: true,

@@ -1,6 +1,6 @@
 # AGENTS.md
 
-Desk-Pet 是可自定义 Card/Profile 的 Tauri v2 桌宠，优先做好轻量陪伴与聊天。
+V1rtual-Desk-Pet 是可自定义 Card/Profile 的 Tauri v2 桌宠，优先做好轻量陪伴与聊天。
 技术栈：Vue 3、TypeScript、Rust、Pi Agent Core；目标平台为 Windows 与 macOS。
 核心方针：轻量化、低内存、高性能、节省 token、保持功能完整。
 
