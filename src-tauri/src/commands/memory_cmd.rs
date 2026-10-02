@@ -21,7 +21,7 @@ use tauri::command;
 
 const V1RTUAL_TEMPLATE: &str = "# V1RTUAL.md — 用户系统指令\n\n\
     > 此文件中的指令会作为 System Prompt 的一部分注入。\n\
-    > 你可以在此写入对糖糖的行为要求。\n\n\
+    > 你可以在此写入对桌宠的行为要求。\n\n\
     ---\n\n\
     ## 指令\n\n\
     <!-- 在此添加你的自定义指令，例如：叫我小明、用日语回复、喜欢简短回答等 -->\n\

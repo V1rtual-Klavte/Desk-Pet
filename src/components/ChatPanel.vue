@@ -23,7 +23,7 @@ import DebugBar from "./DebugBar.vue";
 import PlanConfirm from "./PlanConfirm.vue";
 import { confirmState, resolvePermissionConfirm } from "@/services/safety";
 import { actionCategoryOf } from "@/services/tool";
-import { getFallbackReply, getSimpleStage, getStagePrompt } from "@/services/personality";
+import { activeCardName, getFallbackReply, getSimpleStage, getStagePrompt } from "@/services/personality";
 import type { SimpleStageKey } from "@/services/personality";
 
 // ★ 同步初始化 Slash 命令注册表（下拉补全用；命令执行只在 ingress，见 preProcess）
@@ -36,6 +36,9 @@ const input = ref("");
 const inputRef = ref<HTMLTextAreaElement | null>(null);
 const msgContainer = ref<HTMLElement | null>(null);
 const thumb = ref<HTMLElement | null>(null);
+
+/** 聊天气泡的说话人标签：取当前 Card 的名字（源码不留硬编码角色名，切卡后自动更新）。 */
+const cardName = computed(() => activeCardName.value || "桌宠");
 
 /** 工具执行状态提示（agent-loop 事件驱动） */
 const toolStatus = ref<{ text: string; visible: boolean }>({ text: "", visible: false });
@@ -631,12 +634,12 @@ onUnmounted(() => {
     <div id="ch-body">
       <div id="ch-msgs" ref="msgContainer" @scroll="checkBottom">
         <div v-for="m in chatHistory" :key="m.id" class="cm" :class="m.role">
-          <span class="cn">{{ m.role === "system" ? "📋" : m.role === "assistant" ? "糖糖" : "你" }}</span>
+          <span class="cn">{{ m.role === "system" ? "📋" : m.role === "assistant" ? cardName : "你" }}</span>
           <span class="ct">{{ m.text }}</span>
         </div>
         <!-- 流式正文：只做瞬时展示，回合结束后由提交路径推送的完整消息取代 -->
         <div v-if="streamingText" class="cm assistant stream">
-          <span class="cn">糖糖</span>
+          <span class="cn">{{ cardName }}</span>
           <span class="ct">{{ streamingText }}<span class="ct-cursor">▍</span></span>
         </div>
       </div>

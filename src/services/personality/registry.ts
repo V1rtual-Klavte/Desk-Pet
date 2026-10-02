@@ -3,6 +3,7 @@
 // neutral 默认兜底，替代旧 personality.enabled 开关
 // ==========================================
 
+import { computed, ref } from "vue"
 import type { PersonalityCard } from "./types"
 import { getCards, getCard } from "./loader"
 import { personalityConfig } from "@/services/config"
@@ -21,7 +22,8 @@ import { formatError, reportError } from "@/services/error"
 const log = createLogger("Registry")
 
 // ── 状态 ──
-let activeId: string | null = null
+// activeId 用 ref：界面显示的角色名（activeCardName）由它派生，切卡/回滚后必须自动刷新。
+const activeId = ref<string | null>(null)
 let runtimeReady = false
 
 export interface SwitchResult {
@@ -46,7 +48,7 @@ export async function initRegistry(): Promise<void> {
     : allCards[0]?.id ?? null
 
   if (!target) {
-    activeId = null
+    activeId.value = null
     destroyPool()
     clearStagesCache()
     runtimeReady = true
@@ -57,7 +59,7 @@ export async function initRegistry(): Promise<void> {
   log.info("准备激活 Card:", target)
   const result = await switchPersonality(target)
   if (!result.ok) {
-    activeId = null
+    activeId.value = null
     destroyPool()
     clearStagesCache()
     runtimeReady = true
@@ -66,7 +68,7 @@ export async function initRegistry(): Promise<void> {
     return
   }
   runtimeReady = true
-  log.info("人格模块启动完毕: activeCard=", activeId)
+  log.info("人格模块启动完毕: activeCard=", activeId.value)
 }
 
 /** 列出所有已注册人格 */
@@ -76,11 +78,19 @@ export function listPersonalities(): PersonalityCard[] {
 
 /** 获取当前激活的人格卡（neutral 兜底） */
 export function getActiveCard(): PersonalityCard | null {
-  if (!activeId) return null
-  return getCard(activeId) ?? null
+  if (!activeId.value) return null
+  return getCard(activeId.value) ?? null
 }
 
-export function getActivePersonalityId(): string | null { return activeId }
+export function getActivePersonalityId(): string | null { return activeId.value }
+
+/**
+ * 当前 Card 的显示名（响应式）：供界面显示角色名（如聊天气泡的说话人标签）。
+ * 从 activeId 派生，切卡、回滚、启动初始化后自动更新 —— 界面不硬编码角色名。
+ */
+export const activeCardName = computed<string>(() =>
+  activeId.value ? (getCard(activeId.value)?.name ?? activeId.value) : ""
+)
 
 export function isPersonalityRuntimeReady(): boolean { return runtimeReady }
 
@@ -118,7 +128,7 @@ async function prepareVariablePool(card: PersonalityCard): Promise<void> {
 
 /** 切换人格：阻塞完成 stages + 变量池加载/生成；任一失败则回滚 */
 export async function switchPersonality(id: string | null): Promise<SwitchResult> {
-  const prevActiveId = activeId
+  const prevActiveId = activeId.value
   const prevPool = snapshotVariablePoolState()
   const prevStages = snapshotStagesCache()
 
@@ -138,11 +148,11 @@ export async function switchPersonality(id: string | null): Promise<SwitchResult
   try {
     await ensureStagesReady(card)
     await prepareVariablePool(card)
-    activeId = id
+    activeId.value = id
     log.info("已切换人格:", card.name)
     return { ok: true, card }
   } catch (e) {
-    activeId = prevActiveId
+    activeId.value = prevActiveId
     restoreVariablePoolState(prevPool)
     restoreStagesCache(prevStages)
     const msg = formatError(e)
@@ -155,8 +165,8 @@ export async function switchPersonality(id: string | null): Promise<SwitchResult
 
 /** 获取当前 System Prompt（调试用） */
 export function getSystemPrompt(): string {
-  if (!activeId) return ""
-  const card = getCard(activeId)
+  if (!activeId.value) return ""
+  const card = getCard(activeId.value)
   return card?.sections.roleSetting ?? ""
 }
 

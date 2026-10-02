@@ -11,7 +11,7 @@ export { getCards, getCard, initCards, importUserCard, saveUserCard } from "./lo
 // ── 注册表 ──
 export {
   initRegistry, listPersonalities, getActiveCard, getActivePersonalityId,
-  switchPersonality,
+  switchPersonality, activeCardName,
   isPersonalityRuntimeReady, getSystemPrompt,
 } from "./registry"
 export type { SwitchResult } from "./registry"
