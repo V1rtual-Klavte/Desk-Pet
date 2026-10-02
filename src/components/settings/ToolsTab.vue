@@ -166,11 +166,11 @@ async function exportMcpJson() {
 async function testMcpConnection() {
   const s = mcpForm.value;
   if (!s.name.trim() || !s.command.trim()) {
-    mcpTestResult.value = "❌ 请先填写名称和命令";
+    mcpTestResult.value = "请先填写名称和命令";
     return;
   }
   mcpTesting.value = true;
-  mcpTestResult.value = "⏳ 连接中...";
+  mcpTestResult.value = "连接中...";
   const name = s.name.trim();
   try {
     const { connectMcpServer, disconnectMcpServer, isMcpServerConnected } = await import("@/services/tool/mcp");
@@ -189,10 +189,10 @@ async function testMcpConnection() {
     });
     if (!wasConnected && r.success) await disconnectMcpServer(name);
     mcpTestResult.value = r.success
-      ? `✅ 连接成功！${r.toolCount} 个工具`
-      : `❌ 失败: ${r.error}`;
+      ? `连接成功！${r.toolCount} 个工具`
+      : `失败: ${r.error}`;
   } catch (e) {
-    mcpTestResult.value = `❌ 异常: ${formatError(e)}`;
+    mcpTestResult.value = `异常: ${formatError(e)}`;
   }
   mcpTesting.value = false;
 }
@@ -347,13 +347,13 @@ defineExpose({
 <template>
   <div>
   <div class="s-section">
-    <div class="s-label">💻 Bash 白名单</div>
+    <div class="s-label">Bash 白名单</div>
     <textarea class="inp txa mono" v-model="bashWhitelist" rows="4" placeholder="ls&#10;cat&#10;grep..."></textarea>
     <div class="s-hint">{{ bashWhitelist.split('\n').filter(l => l.trim()).length }} 个命令</div>
   </div>
 
   <div class="s-section">
-    <div class="s-label">🔀 工具执行</div>
+    <div class="s-label">工具执行</div>
     <div class="fld">
       <span class="fn">只读并行</span>
       <input class="inp-num" type="number" :min="MIN_PARALLEL_TOOLS" :max="MAX_PARALLEL_TOOLS" v-model.number="maxParallelTools" />
@@ -363,7 +363,7 @@ defineExpose({
   </div>
 
   <div class="s-section">
-    <div class="s-label">🧾 工具策略（声明）</div>
+    <div class="s-label">工具策略（声明）</div>
     <div class="s-hint">工具在代码里声明的默认策略，不代表本次运行的有效授权；实际执行仍按本次参数与权限终裁。</div>
     <div v-if="toolPolicyError" class="s-error">{{ toolPolicyError }}</div>
     <div v-else-if="toolPolicyRows.length === 0" class="s-hint">读取中…</div>
@@ -374,18 +374,18 @@ defineExpose({
   </div>
 
   <div class="s-section">
-    <div class="s-label">🔌 MCP</div>
+    <div class="s-label">MCP</div>
     <div class="s-hint">
       按每服务器开关控制，全部关闭即不使用 MCP；启用的服务器在运行开始时借用、结束即释放。
       内置 {{ builtinMcpList.length }} + 自定义 {{ mcpServerList.length }} 个
     </div>
     <!-- 内置 MCP -->
-    <div class="s-subtitle">📦 内置</div>
+    <div class="s-subtitle">内置</div>
     <div v-for="(b, i) in builtinMcpList" :key="b.name" class="li-row">
       <span>{{ b.description || b.name }} <code>{{ b.name }}</code></span>
       <span>
-        <button class="btn-s" :class="{ 'btn-d': !b.enabled }" @click="toggleBuiltinMcp(i)">{{ b.enabled ? '✅' : '❌' }}</button>
-        <button class="btn-s" @click="startEditBuiltin(i)">✏</button>
+        <button class="btn-s" :class="{ 'btn-d': !b.enabled }" @click="toggleBuiltinMcp(i)">{{ b.enabled ? '已启用' : '已关闭' }}</button>
+        <button class="btn-s" @click="startEditBuiltin(i)">编辑</button>
       </span>
     </div>
     <div v-if="editingBuiltinIdx >= 0" class="edit-box">
@@ -395,12 +395,12 @@ defineExpose({
       <button class="btn-s btn-d" @click="cancelEditBuiltin()">取消</button>
     </div>
     <!-- 自定义 MCP -->
-    <div class="s-subtitle" style="margin-top:6px">🔧 自定义</div>
-    <div class="row-gap"><button class="btn-s" @click="importMcpJson()">📥 导入</button><button class="btn-s" @click="exportMcpJson()">📤 导出</button></div>
+    <div class="s-subtitle" style="margin-top:6px">自定义</div>
+    <div class="row-gap"><button class="btn-s" @click="importMcpJson()">导入</button><button class="btn-s" @click="exportMcpJson()">导出</button></div>
     <div v-if="mcpServerList.length === 0" class="s-hint">暂无</div>
     <div v-for="(s, i) in mcpServerList" :key="i" class="li-row">
       <span><b>{{ s.name }}</b> [{{ s.transport }}] {{ s.command }}</span>
-      <span><button class="btn-s" @click="editMcpServer(i)">✏</button><button class="btn-s btn-d" @click="removeMcpServer(i)">✕</button></span>
+      <span><button class="btn-s" @click="editMcpServer(i)">编辑</button><button class="btn-s btn-d" @click="removeMcpServer(i)">✕</button></span>
     </div>
     <div class="edit-box" style="margin-top:4px">
       <div class="fld"><label>名称</label><input class="inp" v-model="mcpForm.name" style="width:90px" /></div>
@@ -411,22 +411,22 @@ defineExpose({
       <div class="row-gap">
         <button class="btn-s" @click="addOrUpdateMcpServer()">{{ editingMcpIdx >= 0 ? '更新' : '添加' }}</button>
         <button v-if="editingMcpIdx >= 0" class="btn-s btn-d" @click="cancelMcpEdit()">取消</button>
-        <button class="btn-s" @click="testMcpConnection()">{{ mcpTesting ? '⏳' : '🔌' }} 测试</button>
+        <button class="btn-s" @click="testMcpConnection()">{{ mcpTesting ? '测试中…' : '测试' }}</button>
       </div>
       <div v-if="mcpTestResult" class="s-hint">{{ mcpTestResult }}</div>
     </div>
   </div>
 
   <div class="s-section">
-    <div class="s-label">📦 Skill</div>
+    <div class="s-label">Skill</div>
     <div class="s-hint">
       技能 {{ skillList.length }} 个（含已关闭；关闭只是停用，删除才会从磁盘移除）。
       开关直接写入该技能 SKILL.md 的 enabled 字段，下一个回合生效，无需重启；关闭的技能既不披露给模型，也不能用 /skill 调用。
       请求里只注入名称、说明和位置，正文由模型按需读取；Skill 不会额外授予工具权限。
     </div>
     <div class="row-gap" style="margin-top:4px">
-      <button class="btn-s" @click="uploadSkillMd()">📤 上传 .md</button>
-      <button class="btn-s" @click="loadSkillConfig()">🔄 刷新</button>
+      <button class="btn-s" @click="uploadSkillMd()">上传 .md</button>
+      <button class="btn-s" @click="loadSkillConfig()">刷新</button>
     </div>
     <div v-if="skillIndexError" class="s-error">{{ skillIndexError }}</div>
     <div v-if="skillActionError" class="s-error">{{ skillActionError }}</div>
@@ -434,7 +434,7 @@ defineExpose({
     <div v-for="s in skillList" :key="s.relativePath ?? s.name" class="li-row">
       <span><b>{{ s.name }}</b> {{ s.description }}</span>
       <span>
-        <button class="btn-s" :disabled="skillWriting" title="点击切换启用状态" @click="toggleSkill(s)">{{ s.enabled ? '✅ 已启用' : '❌ 已关闭' }}</button>
+        <button class="btn-s" :disabled="skillWriting" title="点击切换启用状态" @click="toggleSkill(s)">{{ s.enabled ? '已启用' : '已关闭' }}</button>
         <button class="btn-s btn-d" :disabled="skillWriting" title="从磁盘删除这个技能" @click="removeSkill(s)">✕</button>
       </span>
     </div>

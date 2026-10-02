@@ -85,25 +85,25 @@ const {
             @click="selectedIndex = i">
             <span class="le-dot" :class="`ldot-${i}`"></span>
             <span class="le-tab-name">{{ l.name }}</span>
-            <span v-if="l.config.locked" class="le-tag">🔒</span>
+            <span v-if="l.config.locked" class="le-tag">锁</span>
             <span v-else-if="!l.config.enabled" class="le-tag off">关</span>
-            <span v-if="l.loadFailed" class="le-tag err">⚠</span>
+            <span v-if="l.loadFailed" class="le-tag err">缺</span>
           </button>
         </template>
       </div>
       <div class="le-actions">
         <template v-if="!isDof">
           <button class="le-btn" @click="toggleLock()" :title="selectedLayer.config.locked?'解锁':'锁定'">
-            {{ selectedLayer.config.locked ? '🔒 已锁' : '🔓 解锁' }}
+            {{ selectedLayer.config.locked ? '已锁' : '解锁' }}
           </button>
           <button class="le-btn" @click="toggleEnabled()">
-            {{ selectedLayer.config.enabled ? '👁 可见' : '🚫 隐藏' }}
+            {{ selectedLayer.config.enabled ? '可见' : '隐藏' }}
           </button>
           <button class="le-btn le-btn-d" @click="resetLayer()">↺ 重置</button>
         </template>
         <span class="le-spacer"></span>
-        <span v-if="saved" class="le-saved">✅ 已保存</span>
-        <button class="le-btn le-btn-primary" @click="save()">💾 保存</button>
+        <span v-if="saved" class="le-saved">已保存</span>
+        <button class="le-btn le-btn-primary" @click="save()">保存</button>
         <button class="le-btn le-btn-d" @click="closeWindow()">✕ 关闭</button>
       </div>
     </div>
@@ -178,7 +178,7 @@ const {
                 @error="(e: Event) => onImgError(i, e)"
               />
               <span v-else class="le-no-img">
-                {{ l.loadFailed ? '⚠' : i === 2 ? '🎯' : '' }}
+                {{ l.loadFailed ? '缺失' : i === 2 ? '角色本体' : '' }}
               </span>
             </div>
           </template>
@@ -203,9 +203,9 @@ const {
               <span class="le-prop-val" :class="{ empty: !dof.image }">{{ dof.image || '未设置' }}</span>
             </div>
             <div class="le-prop-row" style="gap:3px;flex-wrap:wrap">
-              <button class="le-btn le-btn-xs" @click="openDofPicker()">🖼 选择素材</button>
+              <button class="le-btn le-btn-xs" @click="openDofPicker()">选择素材</button>
               <button class="le-btn le-btn-xs" @click="uploadDofImage()" :disabled="dofUploading">
-                {{ dofUploading ? '⏳' : '📤 上传' }}
+                {{ dofUploading ? '上传中…' : '上传' }}
               </button>
             </div>
           </div>
@@ -282,7 +282,7 @@ const {
             <div class="le-prop-row" style="gap:3px;flex-wrap:wrap">
               <button class="le-btn le-btn-xs" @click="addFocusRegion()">＋ 添加</button>
               <button class="le-btn le-btn-xs le-btn-d" @click="removeFocusRegion()" :disabled="selectedFocus < 0">✕ 删除</button>
-              <button class="le-btn le-btn-xs le-btn-d" @click="clearFocus()" :disabled="!dof.focus.length">🗑 全清</button>
+              <button class="le-btn le-btn-xs le-btn-d" @click="clearFocus()" :disabled="!dof.focus.length">全清</button>
             </div>
 
             <label class="le-check-row">
@@ -326,8 +326,8 @@ const {
         <div class="le-panel-head">
           <span class="le-dot" :class="`ldot-${selectedIndex}`"></span>
           <span class="le-panel-title">{{ selectedLayer.name }}</span>
-          <span v-if="selectedLayer.config.locked" class="le-tag">🔒</span>
-          <span v-if="selectedLayer.loadFailed" class="le-tag err">⚠ 素材缺失</span>
+          <span v-if="selectedLayer.config.locked" class="le-tag">锁</span>
+          <span v-if="selectedLayer.loadFailed" class="le-tag err">素材缺失</span>
         </div>
 
         <!-- 素材管理 — 所有层通用 -->
@@ -340,10 +340,10 @@ const {
           </div>
           <div class="le-prop-row" style="gap:3px;flex-wrap:wrap">
             <button class="le-btn le-btn-xs" @click="openPicker()">
-              🖼 更换
+              更换
             </button>
             <button class="le-btn le-btn-xs" @click="uploadImage()" :disabled="uploading === selectedIndex">
-              {{ uploading === selectedIndex ? '⏳' : '📤 上传' }}
+              {{ uploading === selectedIndex ? '上传中…' : '上传' }}
             </button>
             <button class="le-btn le-btn-xs le-btn-d" @click="removeImage()" :disabled="!selectedLayer.config.image">
               ✕ 移除
@@ -362,7 +362,7 @@ const {
           <input type="range" class="le-range" min="0.2" max="3" step="0.05" v-model.number="selectedLayer.config.scale" />
           <span class="le-prop-num">{{ (selectedLayer.config.scale ?? 1).toFixed(2) }}</span>
           <button class="le-btn le-btn-d le-btn-xs" @click="selectedLayer.config.scale = 1" :disabled="(selectedLayer.config.scale ?? 1) === 1">↺</button>
-          <span class="le-prop-val" style="flex:1;font-size:8px;text-align:right">🖱 滚轮</span>
+          <span class="le-prop-val" style="flex:1;font-size:8px;text-align:right">滚轮</span>
         </div>
 
         <div class="le-prop-row">
@@ -409,7 +409,7 @@ const {
       <div v-if="showPicker" class="picker-overlay" @click.self="closePicker()">
         <div class="picker-dialog">
           <div class="picker-head">
-            <span>🖼 选择素材 — {{ profile?.meta.name }}</span>
+            <span>选择素材 — {{ profile?.meta.name }}</span>
             <button class="le-btn le-btn-d" @click="closePicker()">✕</button>
           </div>
           <div class="picker-body">
@@ -418,7 +418,7 @@ const {
               <img :src="pickerPreview" @error="($event.target as HTMLImageElement).style.display='none'" />
             </div>
             <div class="picker-preview picker-preview-empty" v-else>
-              <span>👆 悬停预览</span>
+              <span>悬停预览</span>
             </div>
             <!-- 列表 -->
             <div class="picker-list">
@@ -431,7 +431,6 @@ const {
                 @click="selectAsset(f)"
                 @mouseenter="previewAsset(f)"
               >
-                <span class="picker-icon">🖼</span>
                 <span class="picker-name">{{ f }}</span>
               </button>
             </div>
@@ -519,9 +518,10 @@ html, body {
 }
 
 /* ── ☆ WYSIWYG 画布 — JS 显式宽高，维持等比例 ── */
+/* 画布底白：与实际舞台的兜底白一致，图层直接盖在白底上 */
 #le-canvas {
   flex-shrink: 0;
-  background: rgba(0,0,0,0.4);
+  background: #ffffff;
   border-radius: 6px;
   position: relative; overflow: hidden;
   cursor: grab;
@@ -530,7 +530,7 @@ html, body {
 #le-canvas:active { cursor: grabbing; }
 .le-grid-h, .le-grid-v {
   position: absolute; pointer-events: none; z-index: 99;
-  border-color: rgba(255,255,255,0.06); border-style: dashed;
+  border-color: rgba(0,0,0,0.12); border-style: dashed;
 }
 .le-grid-h { left: 0; right: 0; border-top-width: 1px; }
 .le-grid-v { top: 0; bottom: 0; border-left-width: 1px; }
@@ -538,19 +538,19 @@ html, body {
 /* 窗口边框指示 */
 .le-win-border {
   position: absolute; inset: 0;
-  border: 1px solid rgba(255,255,255,0.1);
+  border: 1px solid rgba(0,0,0,0.15);
   pointer-events: none; z-index: 100;
   border-radius: 6px;
 }
 .le-win-label {
   position: absolute; bottom: 3px; right: 6px;
-  font-size: 8px; opacity: 0.25; pointer-events: none;
+  font-size: 8px; color: rgba(0,0,0,0.35); pointer-events: none;
 }
 
 .le-loading {
   position: absolute; inset: 0;
   display: flex; align-items: center; justify-content: center;
-  color: rgba(255,255,255,0.3); font-size: 14px;
+  color: rgba(0,0,0,0.35); font-size: 14px;
 }
 .le-preview-layer {
   position: absolute; inset: 0;
@@ -566,7 +566,7 @@ html, body {
   image-rendering: pixelated; cursor: move;
 }
 .le-no-img {
-  font-size: 11px; color: rgba(255,255,255,0.2); pointer-events: none;
+  font-size: 11px; color: rgba(0,0,0,0.3); pointer-events: none;
 }
 
 /* ── 景深 ── */
@@ -583,14 +583,14 @@ html, body {
   pointer-events: none;
 }
 .le-focus-ring.active {
-  border-color: #fff;
+  border-color: #c4276f;
   border-style: solid;
-  box-shadow: 0 0 0 1px rgba(0,0,0,0.6);
+  box-shadow: 0 0 0 1px rgba(0,0,0,0.35);
 }
 .le-dof-empty {
   position: absolute; inset: 0;
   display: flex; align-items: center; justify-content: center;
-  font-size: 11px; color: rgba(255,255,255,0.35);
+  font-size: 11px; color: rgba(0,0,0,0.4);
 }
 .le-hint {
   font-size: 9px; line-height: 1.5;
@@ -730,7 +730,6 @@ html, body {
 }
 .picker-item:hover { background: rgba(255,255,255,0.06); color: #e0d0f0; }
 .picker-item.active { background: rgba(196,39,111,0.2); color: #f0a0c0; }
-.picker-icon { font-size: 14px; flex-shrink: 0; }
 .picker-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
 .picker-fade-enter-active, .picker-fade-leave-active { transition: opacity 0.15s; }

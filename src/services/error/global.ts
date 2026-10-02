@@ -189,7 +189,7 @@ function ensureOverlay(): HTMLElement {
     "display:flex;align-items:center;gap:8px;margin-bottom:8px;font-weight:700;flex-shrink:0;"
 
   const title = document.createElement("span")
-  title.textContent = "⚠️ 运行时异常"
+  title.textContent = "运行时异常"
 
   const count = document.createElement("span")
   count.id = "global-error-count"

@@ -9,10 +9,10 @@
 import JSZip from "jszip";
 import { invoke } from "@tauri-apps/api/core";
 import {
+  discoverAllProfiles,
   getActiveProfile,
   invalidateAllProfileCaches,
   invalidateProfileCache,
-  listProfiles,
   switchActiveProfile,
 } from "./loader";
 import { BaseDirs, DEFAULT_PROFILE } from "@/services/paths";
@@ -99,7 +99,6 @@ export async function cloneProfile(
     const doc = jsYaml.load(new TextDecoder().decode(new Uint8Array(raw))) as Record<string, any>
     doc.meta = { ...(doc.meta || {}) }
     delete doc.meta.builtin
-    delete doc.meta.preset
     await invoke("profile_file_write", {
       profileId: newId,
       relativePath: "profile.yaml",
@@ -182,10 +181,10 @@ export async function importProfileZip(file: File): Promise<ProfileOpResult & { 
 /**
  * 删除运行时 Profile。
  *
- * 内置默认 Profile 是 `character.yaml` 与 `useDefaultUi` 的兜底来源，删掉会让整条
- * 回退链断掉，所以在这里前置拒绝（Rust 的 `profile_delete` 只删目录，不加同名常量，
- * 避免出现第二定义点）。被删的正好是当前活动 Profile 时，删完必须换一个可用的，
- * 否则 `activeId` 会悬空。
+ * 内置默认 Profile 是 `appearance.activeProfile` 的默认值、首启种子与「恢复默认资源」
+ * 的覆盖目标，删除会让配置默认值悬空，所以在这里前置拒绝（Rust 的 `profile_delete`
+ * 只删目录，不加同名常量，避免出现第二定义点）。被删的正好是当前活动 Profile 时，
+ * 删完必须换一个可用的，否则 `activeId` 会悬空。
  */
 export async function deleteProfile(profileId: string): Promise<ProfileOpResult> {
   if (profileId === DEFAULT_PROFILE) {
@@ -202,11 +201,11 @@ export async function deleteProfile(profileId: string): Promise<ProfileOpResult>
     if (await switchActiveProfile(DEFAULT_PROFILE)) {
       return ok(`已删除 ${profileId}，已切回默认 Profile`, profileLabel(profileId))
     }
-    const fallback = listProfiles().find((p) => p.id !== profileId)
-    if (fallback && await switchActiveProfile(fallback.id)) {
-      return ok(`已删除 ${profileId}，已切换到 ${fallback.id}`, profileLabel(profileId))
+    const fallbackId = (await discoverAllProfiles()).find(id => id !== profileId)
+    if (fallbackId && await switchActiveProfile(fallbackId)) {
+      return ok(`已删除 ${profileId}，已切换到 ${fallbackId}`, profileLabel(profileId))
     }
-    log.error(`已删除 ${profileId}，但没有可切换的 Profile（默认 Profile 不可用，内存中也无其他 Profile）`)
+    log.error(`已删除 ${profileId}，但没有可切换的 Profile（默认 Profile 不可用，磁盘上也别无可用项）`)
     return fail(`已删除 ${profileId}，但当前没有可用的 Profile，请重启应用或恢复默认资源`)
   } catch (e) {
     log.error("删除失败", formatError(e))

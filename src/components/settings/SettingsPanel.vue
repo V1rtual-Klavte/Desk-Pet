@@ -29,11 +29,11 @@ const win = getCurrentWebviewWindow();
 
 // ── Tab 控制 ──
 const tabs = [
-  { id: "general", label: "🏠 通用", icon: "G" },
-  { id: "ai", label: "🤖 AI", icon: "A" },
-  { id: "memory", label: "🧠 记忆", icon: "M" },
-  { id: "tools", label: "🔧 工具", icon: "T" },
-  { id: "appearance", label: "🎨 外观", icon: "P" },
+  { id: "general", label: "通用", icon: "G" },
+  { id: "ai", label: "AI", icon: "A" },
+  { id: "memory", label: "记忆", icon: "M" },
+  { id: "tools", label: "工具", icon: "T" },
+  { id: "appearance", label: "外观", icon: "P" },
 ] as const;
 const activeTab = ref<"general" | "ai" | "memory" | "tools" | "appearance">("general");
 
@@ -333,7 +333,7 @@ onUnmounted(() => {
 <template>
   <div id="s-root">
     <div id="s-head">
-      <span>⚙ 设置</span>
+      <span>设置</span>
       <span class="s-hint">修改后点击保存，部分配置需重启生效</span>
       <button class="s-close" @click="doCancel">✕</button>
     </div>
@@ -363,13 +363,13 @@ onUnmounted(() => {
     </div>
 
     <div id="s-foot">
-      <button class="btn-s" @click="importConfigYaml()">📥 导入配置</button>
-      <button class="btn-s" @click="exportConfigYaml()">📤 导出配置</button>
-      <button class="btn-s btn-d" @click="restartApp()">🔄 重启</button>
+      <button class="btn-s" @click="importConfigYaml()">导入配置</button>
+      <button class="btn-s" @click="exportConfigYaml()">导出配置</button>
+      <button class="btn-s btn-d" @click="restartApp()">重启</button>
       <div v-if="saveError" class="s-error">{{ saveError }}</div>
-      <div v-if="saved" class="s-saved">✅ 已保存！</div>
+      <div v-if="saved" class="s-saved">已保存！</div>
       <button class="btn" @click="doCancel">取消</button>
-      <button class="btn btn-primary" @click="doSave">💾 保存</button>
+      <button class="btn btn-primary" @click="doSave">保存</button>
     </div>
 
     <AppDialog />

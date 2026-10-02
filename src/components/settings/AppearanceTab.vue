@@ -104,18 +104,19 @@ function restoreSoundDefaults() {
 
 // ── Profile ──
 const profileList = ref<
-  { id: string; meta: { name: string; description: string; preset?: string } }[]
+  { id: string; meta: { name: string; description: string } }[]
 >([]);
 const activeProfileId = ref("");
 const profileDetail = ref<ProfileData | null>(null);
 
 async function refreshProfileList() {
-  const { discoverAllProfiles, ensureProfileLoaded } = await import("@/services/profile");
+  // 轻量读 meta：只建列表、不进内存缓存（内存里只留激活 Profile）
+  const { discoverAllProfiles, readProfileMeta } = await import("@/services/profile");
   const ids = await discoverAllProfiles();
-  const list: any[] = [];
+  const list: { id: string; meta: { name: string; description: string } }[] = [];
   for (const id of ids) {
-    const p = await ensureProfileLoaded(id);
-    if (p) list.push({ id: p.id, meta: p.meta });
+    const meta = await readProfileMeta(id);
+    if (meta) list.push({ id, meta });
   }
   profileList.value = list;
   const active = getActiveProfile();
@@ -280,7 +281,7 @@ function resetColors() {
   if (p) activateProfile(p.id);
 }
 
-async function saveColorsToProfile() {
+async function saveAppearanceToProfile() {
   const p = getActiveProfile();
   if (!p) {
     const message = "没有激活的 Profile，无法保存。";
@@ -312,10 +313,10 @@ async function saveColorsToProfile() {
     activateProfile(p.id);
     profileDetail.value = getActiveProfile();
     await emit("deskpet-profile-updated", { profileId: p.id });
-    log.info("颜色已保存");
+    log.info("外观设置已保存（颜色）");
   } catch (e: any) {
     log.error("保存失败:", e);
-    await showFailure("颜色保存失败: " + formatError(e));
+    await showFailure("外观保存失败: " + formatError(e));
   }
 }
 
@@ -346,7 +347,7 @@ defineExpose({
   <div>
   <!-- 角色展示效果：灵动图层与景深互斥，只能选一个 -->
   <div class="s-section">
-    <div class="s-label">✨ 角色展示效果</div>
+    <div class="s-label">角色展示效果</div>
     <div class="preset-row">
       <button
         v-for="m in EFFECT_MODES" :key="m.id"
@@ -364,7 +365,7 @@ defineExpose({
     </div>
 
     <div class="row-gap" style="margin-top:6px" v-if="effectMode !== 'off'">
-      <button class="btn-s" style="background:rgba(196,39,111,0.2);border-color:rgba(196,39,111,0.4);color:#f0a0c0" @click="openLayerEditor()">🎨 打开图层编辑器</button>
+      <button class="btn-s" style="background:rgba(196,39,111,0.2);border-color:rgba(196,39,111,0.4);color:#f0a0c0" @click="openLayerEditor()">打开图层编辑器</button>
     </div>
     <div class="s-hint">{{ EFFECT_MODES.find(m => m.id === effectMode)?.hint }}</div>
   </div>
@@ -372,11 +373,11 @@ defineExpose({
   <!-- Profile + 预览 -->
   <div class="s-section">
     <div class="pf-head">
-      <span class="s-label" style="margin:0">📦 Profile</span>
+      <span class="s-label" style="margin:0">Profile</span>
       <span class="pf-head-actions">
         <button class="btn-s btn-d" @click="doRestoreDefaults()">↺ 恢复默认</button>
-        <button class="btn-s" @click="refreshProfileList()">🔄 刷新</button>
-        <button class="btn-s" @click="doImportProfile()">📥 导入</button>
+        <button class="btn-s" @click="refreshProfileList()">刷新</button>
+        <button class="btn-s" @click="doImportProfile()">导入</button>
       </span>
     </div>
 
@@ -396,7 +397,7 @@ defineExpose({
         <div class="pf-row-actions" @click.stop>
           <button class="btn-s" @click="doCloneProfile(p.id)">复制</button>
           <button class="btn-s" @click="doExportProfile(p.id)">导出</button>
-          <button class="btn-s btn-d" @click="doDeleteProfile(p.id)">🗑</button>
+          <button class="btn-s btn-d" @click="doDeleteProfile(p.id)">删除</button>
         </div>
       </div>
       <div v-if="!profileList.length" class="s-hint">未发现任何 Profile</div>
@@ -415,7 +416,7 @@ defineExpose({
 
   <!-- 颜色编辑 -->
   <div class="s-section">
-    <div class="s-label">🎨 颜色调整</div>
+    <div class="s-label">颜色</div>
     <div class="color-grid-simple">
       <div v-for="f in colorFields" :key="f.key" class="color-row">
         <span class="color-label">{{ f.label }}</span>
@@ -426,13 +427,13 @@ defineExpose({
     <div class="row-gap" style="margin-top:6px">
       <button class="btn-s" @click="applyColors()">应用</button>
       <button class="btn-s btn-d" @click="resetColors()">恢复</button>
-      <button class="btn-s" @click="saveColorsToProfile()">💾 保存</button>
+      <button class="btn-s" @click="saveAppearanceToProfile()">保存</button>
     </div>
   </div>
 
   <!-- 字体（全局设置，不随 Profile） -->
   <div class="s-section">
-    <div class="s-label">✏️ 字体</div>
+    <div class="s-label">字体</div>
     <div class="fld"><span class="fn">字体</span>
       <select class="inp" v-model="fontFamily">
         <option value="">跟随系统默认</option>
@@ -447,7 +448,7 @@ defineExpose({
 
   <!-- 音效 -->
   <div class="s-section">
-    <div class="s-label">🔊 音效事件</div>
+    <div class="s-label">音效事件</div>
     <div class="sound-list">
       <div v-for="ev in soundEvents" :key="ev.key" class="sound-row">
         <span class="sound-name">{{ ev.label }}</span>

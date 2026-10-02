@@ -493,7 +493,7 @@ export function useLayerEditor() {
     openFileDialog();
   }
 
-  /** 景深素材上传：写进 materials/ 根，不与任何层绑定 */
+  /** 景深素材上传：写进 materials/dof/ 专目录，不与任何层绑定 */
   function uploadDofImage() {
     _uploadDof = true;
     openFileDialog();
@@ -503,7 +503,7 @@ export function useLayerEditor() {
     const p = profile.value!;
     dofUploading.value = true;
     const ext = file.name.split(".").pop() || "png";
-    const relativePath = `materials/dof_${Date.now()}.${ext}`;
+    const relativePath = `materials/dof/dof_${Date.now()}.${ext}`;
     dof.value.image = relativePath;
     dof.value.url = URL.createObjectURL(file);
     ensureDefaultFocus();
@@ -621,21 +621,21 @@ export function useLayerEditor() {
   /**
    * 景深素材选择器。
    *
-   * 列整个 materials/ 目录（含子目录）—— 景深只用一张图，不该被限制在某个 L{n} 里。
+   * 列 materials/dof/ 专目录 —— 景深素材有固定归宿，不与视差层混放。
    */
   async function openDofPicker() {
     pickerTarget.value = "dof";
-    log.info("打开素材选择器 | 景深素材 | 查询目录: materials/");
+    log.info("打开素材选择器 | 景深素材 | 查询目录: materials/dof/");
     showPicker.value = true;
     assetList.value = [];
     assetLoading.value = true;
     try {
       const files: string[] = await invoke("list_profile_files", {
         profileId: profile.value!.id,
-        subdir: "materials",
+        subdir: "materials/dof",
       });
       assetList.value = [...new Set(files)];
-      log.info(`素材列表 | materials/ → ${files.length} 个文件`);
+      log.info(`素材列表 | materials/dof/ → ${files.length} 个文件`);
     } catch (e: any) {
       // 保留 warn（不升 error）：对话框留空但仍可用，失败原因已随这条日志可查
       // [保留已登记 §4.2]
@@ -792,7 +792,7 @@ export function useLayerEditor() {
     });
     try {
       await win.setTitle(
-        `🎨 图层编辑器 - ${profile.value?.meta.name || "虚拟桌宠"}`
+        `图层编辑器 - ${profile.value?.meta.name || "虚拟桌宠"}`
       );
     } catch {
       // 标题写入失败仅影响窗口标题文案（主题名异常/非 Tauri 宿主），不影响编辑与保存；

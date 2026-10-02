@@ -114,8 +114,13 @@ pnpm run version:set <x.y.z>  # 发版：统一三处版本号
   初始化标记存在后删除不自动恢复；恢复默认资源是明确的覆盖操作。
 - `appearance.effectMode` 单字段裁定 off/parallax/dof；逐层素材、取景、焦点等属于当前 Profile，
   全局 CONFIG 不覆盖 Profile 的效果参数。
+- Profile 是自包含闭包：主题色、UI 位图与素材只从 Profile 自身目录读取，
+  导入即用，不跨 Profile 回退（图层素材在 `materials/L{n}/`、景深素材在 `materials/dof/`）。
+  内存只保留激活 Profile；设置页列 Profile 用 `readProfileMeta()` 轻量读 meta，不进缓存。
 - 字体是全局设置（`appearance.font`），不随 Profile：取值为用户系统已安装的字体名
   （Rust `list_system_fonts` 枚举），Profile 不携带字体资源；消费点统一走 `@/services/font` 注入。
+- 顶栏文案（缺省「配信中」）是窗口运行时状态，唯一真值点在 `@/services/titlebar`：
+  不随 Profile、不持久化，重启回到缺省；暂未开放界面编辑，保留接口供联动功能改写。
 - localStorage 不保存配置、会话正文或 Profile 编辑状态。
 
 ## 运行时不变量

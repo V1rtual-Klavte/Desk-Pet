@@ -16,7 +16,7 @@ const pending = computed(() => dialogState.pending)
 const icon = computed(() => {
   switch (pending.value?.kind) {
     case "success": return "✓"
-    case "error": return "⚠"
+    case "error": return "!"
     default: return "ℹ"
   }
 })

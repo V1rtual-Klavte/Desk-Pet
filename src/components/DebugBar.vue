@@ -74,31 +74,31 @@ watch(sessionSafety, (v) => {
         v-model="sessionEffort"
         title="会话思考强度（覆盖全局默认）"
       >
-        <option value="_default">🗂 默认</option>
-        <option value="auto">🧠 auto</option>
-        <option value="low">🧠 low</option>
-        <option value="medium">🧠 medium</option>
-        <option value="high">🧠 high</option>
+        <option value="_default">默认</option>
+        <option value="auto">auto</option>
+        <option value="low">low</option>
+        <option value="medium">medium</option>
+        <option value="high">high</option>
       </select>
       <select
         class="db-thinking-select"
         v-model="sessionSafety"
         title="会话安全策略（覆盖全局默认）"
       >
-        <option value="_default">🛡 默认</option>
-        <option value="just_do_it">⚡ 全放行</option>
-        <option value="tell_me">📋 告知</option>
-        <option value="let_me_tk">🔒 全确认</option>
+        <option value="_default">默认</option>
+        <option value="just_do_it">全放行</option>
+        <option value="tell_me">告知</option>
+        <option value="let_me_tk">全确认</option>
       </select>
       <span class="db-item" :style="{ color: ctxColor }">
-        📐 {{ debug.lastContextUsage }}%
+        上下文 {{ debug.lastContextUsage }}%
       </span>
-      <span class="db-item">🔤 {{ lastTokens }}</span>
+      <span class="db-item">Token {{ lastTokens }}</span>
       <span
         class="db-item db-tools"
         @click="showTools = !showTools"
       >
-        🔧 {{ toolsLabel }}
+        工具 {{ toolsLabel }}
       </span>
     </div>
     <div v-if="showTools" class="db-tool-list">
@@ -114,7 +114,7 @@ watch(sessionSafety, (v) => {
         Σ 用量: {{ usageLabel }}
       </span>
       <span class="db-item db-dim" @click="showDetail = !showDetail">
-        📦 工具注册: {{ debug.registeredToolCount }}
+        工具注册: {{ debug.registeredToolCount }}
         (MCP:{{ debug.registeredMcpCount }})
       </span>
     </div>

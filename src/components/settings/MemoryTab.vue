@@ -206,7 +206,7 @@ onMounted(() => { void refresh() })
 <template>
   <div class="memory-tab">
     <div class="s-section">
-      <div class="s-label">🧠 已记住</div>
+      <div class="s-label">已记住</div>
       <div class="memory-toolbar">
         <select class="inp" v-model="scope" @change="refresh">
           <option value="">全部范围</option>

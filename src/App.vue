@@ -16,7 +16,6 @@ import type { PiSessionSummary } from "@/services/session";
 import { initApp } from "@/services/init";
 import { desktopConfig, shortcutConfig, userConfig, reloadConfig } from "@/services/config";
 import { isMacOS } from "@/services/env";
-import { getUiUrl } from "@/services/profile";
 import { applyFontVars } from "@/services/font";
 import { createLogger } from "@/services/logger";
 import { formatError } from "@/services/error";
@@ -737,10 +736,9 @@ onUnmounted(() => {
 
 <template>
   <div id="root" ref="rootRef" @contextmenu="onContextMenu">
-    <TitleBar :height="30" title="配信中" @toggle-chat="showChat = !showChat" @toggle-settings="openSettings" @toggle-layer-editor="openLayerEditor" />
+    <TitleBar :height="30" @toggle-chat="showChat = !showChat" @toggle-settings="openSettings" @toggle-layer-editor="openLayerEditor" />
     <div id="body">
       <div id="stream-col">
-        <img id="bg" :src="getUiUrl('windows/operation_base.png')" alt="" />
         <StreamView />
       </div>
       <div
@@ -768,8 +766,21 @@ onUnmounted(() => {
         :style="{ left: ctxMenu.x + 'px', top: ctxMenu.y + 'px' }"
         @click.stop
       >
-        <button class="ctx-item" @click="copySelection">📋 复制</button>
-        <button class="ctx-item" @click="openDevTools">🔧 控制台</button>
+        <button class="ctx-item" @click="copySelection">
+          <svg width="11" height="11" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.2" aria-hidden="true">
+            <rect x="4" y="1" width="7" height="8" rx="1" />
+            <rect x="1" y="4" width="7" height="7" rx="1" />
+          </svg>
+          复制
+        </button>
+        <button class="ctx-item" @click="openDevTools">
+          <svg width="11" height="11" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.2" aria-hidden="true">
+            <rect x="1" y="2" width="10" height="8" rx="1" />
+            <path d="M3 5l1.5 1.5L3 8" />
+            <path d="M6.5 8h2.5" />
+          </svg>
+          控制台
+        </button>
       </div>
     </Transition>
 
@@ -791,7 +802,9 @@ onUnmounted(() => {
   min-width: 80px;
 }
 .ctx-item {
-  display: block;
+  display: flex;
+  align-items: center;
+  gap: 6px;
   width: 100%;
   padding: 4px 12px;
   font-size: 12px;
@@ -804,6 +817,7 @@ onUnmounted(() => {
   text-align: left;
   white-space: nowrap;
 }
+.ctx-item svg { flex-shrink: 0; opacity: 0.8; }
 .ctx-item:hover {
   background: var(--color-contextmenu-hover-bg);
   color: var(--color-contextmenu-hover-text);

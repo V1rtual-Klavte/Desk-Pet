@@ -19,7 +19,6 @@ export interface ProfileMeta {
   name: string
   description: string
   version: number
-  preset?: string
 }
 
 export interface ProfileThemeColors {
@@ -35,8 +34,6 @@ export interface ProfileThemeColors {
 export interface ProfileTheme {
   colors: ProfileThemeColors
   shield: { enabled: boolean; image: string }
-  /** 当前 Profile 未携带 UI 位图时，使用默认 Profile 的 UI。 */
-  useDefaultUi: boolean
   parallax: ProfileParallax
   depthOfField: ProfileDepthOfField
 }
@@ -104,7 +101,7 @@ export interface ProfileCharacter {
 export interface ProfileData {
   id: string; meta: ProfileMeta; theme: ProfileTheme
   character: ProfileCharacter
-  basePath: string; defaultUiBasePath?: string
+  basePath: string
 }
 
 // ── 内部状态 ──
@@ -187,23 +184,14 @@ async function loadProfile(id: string): Promise<ProfileData> {
   const basePath = await resolveProfileBaseUrl(id);
 
   const rawProfile = await fetchYaml<any>(`${basePath}/profile.yaml`);
-  let defaultUiBasePath: string | undefined;
-  if (rawProfile?.theme?.useDefaultUi === true && id !== DEFAULT_PROFILE) {
-    try {
-      defaultUiBasePath = await resolveProfileBaseUrl(DEFAULT_PROFILE);
-    } catch (error) {
-      log.warn(`默认 UI Profile 不可用，继续使用 ${id} 自身资源`, formatError(error));
-    }
-  }
 
+  // character.yaml 缺失不再跨 Profile 回退：Profile 是自包含闭包，
+  // 缺失时走下面的中立默认，不依赖另一个 Profile 存在。
   let rawChar: any;
-  let charBasePath = basePath; // ★ character.yaml 实际所在 Profile（可能回退到默认）
   try {
     rawChar = await fetchYaml<any>(`${basePath}/character.yaml`);
   } catch (e) {
-    log.warn(`character.yaml 缺失，回退默认 Profile: ${id}`, formatError(e));
-    charBasePath = await resolveProfileBaseUrl(DEFAULT_PROFILE);
-    rawChar = await fetchYaml<any>(`${charBasePath}/character.yaml`);
+    log.warn(`character.yaml 缺失，使用中立默认: ${id}`, formatError(e));
   }
 
   return {
@@ -212,12 +200,10 @@ async function loadProfile(id: string): Promise<ProfileData> {
       name: rawProfile?.meta?.name || id,
       description: rawProfile?.meta?.description || "",
       version: rawProfile?.meta?.version || 1,
-      preset: rawProfile?.meta?.preset,
     },
     theme: {
       colors: rawProfile?.theme?.colors || {},
       shield: rawProfile?.theme?.shield || { enabled: false, image: "" },
-      useDefaultUi: rawProfile?.theme?.useDefaultUi === true,
       parallax: {
         layers: (rawProfile?.theme?.parallax?.layers || []).map((l: any, i: number) => ({
           enabled: l?.enabled ?? (i === 2),
@@ -261,7 +247,6 @@ async function loadProfile(id: string): Promise<ProfileData> {
       scaleMode: rawChar?.character?.scaleMode || "pixelated",
     },
     basePath,
-    defaultUiBasePath,
   };
 }
 
@@ -302,18 +287,18 @@ export async function discoverAllProfiles(): Promise<string[]> {
 
 export async function ensureProfileLoaded(id: string): Promise<ProfileData | null> {
   if (profiles.has(id)) return profiles.get(id)!;
-  const MAX_PROFILES = 20
-  if (profiles.size >= MAX_PROFILES) {
-    // 淘汰最旧的**非激活**项。Map 按插入序，而激活的 Profile 恰恰是最先插入的那个
-    // （initProfiles 先 set 再 activate），所以直接取第一个等于把当前角色删掉 ——
-    // Profile 满 20 个之后打开外观 Tab 就可能让角色消失。
-    const victim = [...profiles.keys()].find(id => id !== activeId)
-    if (victim) {
-      profiles.delete(victim)
-      log.info("profile 已达上限，淘汰最旧:", victim)
+  try {
+    const data = await loadProfile(id);
+    profiles.set(id, data);
+    // 内存只留「激活的 + 刚加载的」这一瞬过渡；切换完成后由 activateProfile 收敛到只剩激活
+    for (const key of [...profiles.keys()]) {
+      if (key !== id && key !== activeId) {
+        profiles.delete(key);
+        profileBaseUrls.delete(key);
+      }
     }
+    return data;
   }
-  try { const data = await loadProfile(id); profiles.set(id, data); return data; }
   catch (e) { log.error(`Profile "${id}" 加载失败:`, formatError(e)); return null; }
 }
 
@@ -321,6 +306,13 @@ export function activateProfile(id: string): boolean {
   if (!profiles.has(id)) { log.error(`Profile "${id}" 未加载`); return false; }
   activeId = id;
   const p = profiles.get(id)!;
+  // 内存只留激活 Profile：切换成功即淘汰其余缓存（数据 + 资产目录 URL）
+  for (const key of [...profiles.keys()]) {
+    if (key !== id) {
+      profiles.delete(key);
+      profileBaseUrls.delete(key);
+    }
+  }
   injectCssVars(p);
   activeProfileRevision.value++;
   log.info(`Profile 已激活: "${id}" (${p.meta.name})`);
@@ -349,13 +341,13 @@ let _cssVarStyleEl: HTMLStyleElement | null = null;
 function injectCssVars(profile: ProfileData): void {
   if (_cssVarStyleEl) _cssVarStyleEl.remove();
   const c = profile.theme.colors as unknown as Record<string, string>;
-  const preset = profile.meta.preset || "pink";
   const v = (key: string, fb: string) => c[key] || fb;
   const accentLight = v("强调色", "#c4276f").replace(")", ",0.35)").replace("rgb", "rgba");
   const textPinkLight = v("粉色文字", "#f0a0c0").replace(")", ",0.3)").replace("rgb", "rgba");
-  const isGlass = preset === "glass";
+  // 玻璃由数据驱动：模糊度 > 0 即生效，不再按 preset 名做代码特判 —— Profile 只靠 yaml 说话
   const glassBg = v("透明背景", "rgba(252,228,236,0.25)");
   const glassBlur = v("模糊度", "0px");
+  const glassActive = glassBlur !== "0px" && glassBlur !== "0";
 
   const css = `:root {
   --color-bg: ${v("背景", "#fce4ec")};
@@ -440,7 +432,7 @@ function injectCssVars(profile: ProfileData): void {
   --font-line-height: 1.6;
 }`;
 
-  if (isGlass && glassBlur !== "0px") {
+  if (glassActive) {
     const glassCss = `
 #root, #s-root { backdrop-filter: blur(${glassBlur}); -webkit-backdrop-filter: blur(${glassBlur}); }
 #root { background: ${glassBg}; } #s-root { background: ${glassBg}; }`;
@@ -465,13 +457,13 @@ function injectCssVars(profile: ProfileData): void {
 const PENDING_IMAGE =
   "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==";
 
-/** Profile 自带 UI 位图的 URL；Profile 未就绪时返回透明占位图。 */
+/**
+ * Profile 自带 UI 位图的 URL；Profile 未就绪时返回透明占位图。
+ * 一律从 Profile 自身的 ui/ 取 —— 自包含闭包，不再借用默认 Profile 的位图。
+ */
 export function getUiUrl(relativePath: string): string {
   const p = getActiveProfile();
   if (!p) return PENDING_IMAGE;
-  if (p.theme.useDefaultUi && p.defaultUiBasePath) {
-    return `${p.defaultUiBasePath}/ui/${relativePath.replace(/^\/+/, "")}`;
-  }
   return resolveProfileAssetUrl(p, `ui/${relativePath}`);
 }
 
@@ -480,10 +472,6 @@ export function getActiveProfile(): ProfileData | null {
   void activeProfileRevision.value;
   if (!activeId) return null;
   return profiles.get(activeId) || null;
-}
-
-export function listProfiles(): { id: string; meta: ProfileMeta }[] {
-  return Array.from(profiles.entries()).map(([id, p]) => ({ id, meta: { ...p.meta } }));
 }
 
 export function getProfile(id: string): ProfileData | undefined {
@@ -506,8 +494,20 @@ export function getCharacterScaleMode(): string {
   return getActiveProfile()?.character.scaleMode || "pixelated";
 }
 
-export function getActivePreset(): string {
-  return getActiveProfile()?.meta.preset || "pink";
+/** 轻量读 meta（设置页列 Profile 用）：只取 meta、不进缓存 —— 内存里只留激活 Profile。 */
+export async function readProfileMeta(id: string): Promise<ProfileMeta | null> {
+  try {
+    const base = await resolveProfileBaseUrl(id)
+    const raw = await fetchYaml<any>(`${base}/profile.yaml`)
+    return {
+      name: raw?.meta?.name || id,
+      description: raw?.meta?.description || "",
+      version: raw?.meta?.version || 1,
+    }
+  } catch (e) {
+    log.warn(`读取 Profile meta 失败: ${id}`, formatError(e))
+    return null
+  }
 }
 
 /** 获取灵动图层素材 URL，从 profile parallax.image 字段解析 */

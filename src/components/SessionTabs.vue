@@ -96,7 +96,7 @@ function onWheel(e: WheelEvent) {
       <div id="st-actions">
         <button id="st-new" @click="newSession" title="新建会话">+</button>
         <button id="st-history" @click="toggleHistory" title="会话历史" :class="{ active: showHistory }">
-          📋
+          历史
         </button>
       </div>
     </div>
@@ -125,7 +125,7 @@ function onWheel(e: WheelEvent) {
             class="history-delete"
             @click.stop="deleteHistorySession(item.id)"
             title="删除此会话"
-          >🗑</button>
+          >删除</button>
         </div>
       </div>
     </div>
@@ -256,13 +256,13 @@ function onWheel(e: WheelEvent) {
   border-color: var(--color-tab-active-bg);
 }
 
-/* ★ 会话历史按钮 */
+/* ★ 会话历史按钮（文字按钮：自适应宽度胶囊，容纳「历史」两字） */
 #st-history {
   flex-shrink: 0;
-  width: 22px; height: 22px;
-  padding: 0;
+  min-width: 22px; height: 22px;
+  padding: 0 7px;
   border: 1px solid var(--color-border-input);
-  border-radius: 50%;
+  border-radius: 11px;
   background: var(--color-tab-inactive-bg);
   color: var(--color-tab-inactive-text);
   font-size: 11px;

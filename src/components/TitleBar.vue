@@ -1,8 +1,9 @@
 <script setup lang="ts">
 import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
 import { getUiUrl } from "@/services/profile";
+import { titlebarLogo } from "@/services/titlebar";
 
-defineProps<{ height: number; title: string }>();
+defineProps<{ height: number }>();
 const emit = defineEmits<{ "toggle-chat": []; "toggle-settings": []; "toggle-layer-editor": [] }>();
 
 const win = getCurrentWebviewWindow();
@@ -12,14 +13,17 @@ const win = getCurrentWebviewWindow();
   <div id="bar" :style="{ height: height + 'px' }" data-tauri-drag-region>
     <div class="left" data-tauri-drag-region>
       <img class="win-icon" :src="getUiUrl('windows/icon_desktop_yapoo.png')" alt="" data-tauri-drag-region draggable="false" />
-      <span class="title" data-tauri-drag-region>{{ title }}</span>
+      <span class="title" :style="{ color: titlebarLogo.color || undefined }" data-tauri-drag-region>{{ titlebarLogo.text }}</span>
       <span class="dots"><span class="d1"></span><span class="d2"></span><span class="d3"></span></span>
     </div>
     <div class="right">
+      <!-- 暂时注掉：头像按钮（聊天面板的开合入口）。恢复时同时启用下方 .btn-chat 样式，
+           emit 声明与 App.vue 的 toggle-chat 绑定保留，icon_status_* 资源留在 Profile 里。
       <button class="btn-chat" @click="$emit('toggle-chat')" title="chat">
         <img class="ic-default" :src="getUiUrl('windows/icon_status_follower.png')" alt="" />
         <img class="ic-hover" :src="getUiUrl('windows/icon_status_love.png')" alt="" />
       </button>
+      -->
       <button class="btn" @click="$emit('toggle-settings')" title="settings">
         <svg class="pixel-gear" width="14" height="14" viewBox="0 0 7 7" shape-rendering="crispEdges">
           <rect x="3" y="0" width="1" height="2" fill="#3355aa"/>
@@ -32,7 +36,18 @@ const win = getCurrentWebviewWindow();
           <rect x="5" y="5" width="1" height="1" fill="#3355aa" opacity="0.5"/>
         </svg>
       </button>
-      <button class="btn" @click="$emit('toggle-layer-editor')" title="图层编辑器">🎨</button>
+      <button class="btn" @click="$emit('toggle-layer-editor')" title="图层编辑器">
+        <svg class="pixel-layers" width="14" height="14" viewBox="0 0 7 7" shape-rendering="crispEdges" aria-hidden="true">
+          <rect x="2" y="0" width="5" height="1" fill="#3355aa"/>
+          <rect x="2" y="1" width="1" height="3" fill="#3355aa"/>
+          <rect x="6" y="1" width="1" height="3" fill="#3355aa"/>
+          <rect x="2" y="4" width="5" height="1" fill="#3355aa"/>
+          <rect x="0" y="2" width="5" height="1" fill="#3355aa"/>
+          <rect x="0" y="3" width="1" height="3" fill="#3355aa"/>
+          <rect x="4" y="3" width="1" height="3" fill="#3355aa"/>
+          <rect x="0" y="6" width="5" height="1" fill="#3355aa"/>
+        </svg>
+      </button>
       <button class="btn close" @click="win.hide()" title="hide to tray">
         <img :src="getUiUrl('windows/button_close.png')" alt="" />
       </button>
@@ -78,6 +93,7 @@ const win = getCurrentWebviewWindow();
 }
 .btn-win img { width: 18px; height: 18px; image-rendering: pixelated; }
 .btn-win:hover { background: var(--color-titlebar-btn-hover-bg); border-color: var(--color-titlebar-btn-hover-border); }
+/* 暂时注掉：头像按钮样式（与模板中的按钮一起恢复）
 .btn-chat {
   width: 28px; height: 28px;
   border: none; background: none;
@@ -95,6 +111,7 @@ const win = getCurrentWebviewWindow();
 .btn-chat .ic-hover { display: none; }
 .btn-chat:hover .ic-default { display: none; }
 .btn-chat:hover .ic-hover { display: block; }
+*/
 .btn {
   width: 24px; height: 22px;
   border: 1px solid var(--color-titlebar-btn-border);
@@ -106,7 +123,7 @@ const win = getCurrentWebviewWindow();
 .btn img { width: 14px; height: 14px; image-rendering: pixelated; }
 .btn:hover { background: var(--color-titlebar-btn-hover-bg); border-color: var(--color-titlebar-btn-hover-border); }
 .btn.close:hover { background: var(--color-titlebar-close-hover); border-color: var(--color-titlebar-close-hover); }
-.pixel-gear {
+.pixel-gear, .pixel-layers {
   image-rendering: pixelated;
   display: block;
 }

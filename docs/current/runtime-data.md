@@ -115,9 +115,11 @@ Profile 导入、复制和编辑写入 `profiles/{profileId}/`；选择保存在
 | 灵动图层全局强度 | CONFIG 的 `appearance.parallax` |
 | 全局字体（家族与字号） | CONFIG 的 `appearance.font`（系统已安装字体，不随 Profile） |
 | 每层素材和参数 | 当前 Profile 的 `theme.parallax.layers` |
-| 景深素材、取景和焦点参数 | 当前 Profile 的 `theme.depthOfField` |
+| 景深素材、取景和焦点参数 | 当前 Profile 的 `theme.depthOfField`（素材放 `materials/dof/` 专目录，上传与素材选择器默认落在这里） |
 
 旧 CONFIG 的 parallax.layers/enabled 不覆盖 Profile。Profile 保存/切换通过 `deskpet-profile-updated` 通知 WebView，设置变化通过 `deskpet-settings-saved` 生效，入口见 [profile/](../../src/services/profile/)。
+
+顶栏文案（缺省「配信中」，颜色留空跟随顶栏文字色）是窗口运行时状态，唯一真值点在 [services/titlebar.ts](../../src/services/titlebar.ts)：不随 Profile、不持久化，重启回到缺省；暂未开放界面编辑，保留接口供联动功能改写。
 
 内置默认 Profile（`DEFAULT_PROFILE = "sugar-pink"`）禁止删除：拒绝发生在 TS 的 `deleteProfile`，文案指向「恢复默认资源」，Rust 的 `profile_delete` 只删目录、不加同名常量。删除当前活动 Profile 时会切回默认 Profile，默认不可用则回退到内存中其他 Profile，都没有时明确失败并提示重启应用或恢复默认资源。
 
@@ -125,7 +127,9 @@ Profile 导入、复制和编辑写入 `profiles/{profileId}/`；选择保存在
 
 导入 zip 时，归一化后指向同一路径的条目（含大小写不敏感文件系统下的同名不同大小写）按后写覆盖前者，被覆盖的条目列在导入结果的详情里。
 
-`theme.useDefaultUi=true` 允许窗口 UI 位图回退到默认 Profile；图层素材不跨 Profile 回退，缺失时停止对应层并在编辑器提示。默认 yuki 的五层 PNG 位于 `materials/L0/bg_base.png`、`L1/rain_mid.png`、`L2/body.png`、`L3/highlights.png`、`L4/rain_front.png`，应保持相同画布与主体位置；实际资源以[默认 Profile 目录](../../src-tauri/resources/defaults/profiles/)为准。
+Profile 是自包含闭包：窗口 UI 位图（`ui/windows/`）与图层素材都只从 Profile 自身目录读取，不跨 Profile 回退；缺失时窗口位图用透明占位、图层停止渲染对应层并在编辑器提示。`character.yaml` 缺失时同样走中立默认，不借其他 Profile。默认 yuki 的五层 PNG 位于 `materials/L0/bg_base.png`、`L1/rain_mid.png`、`L2/body.png`、`L3/highlights.png`、`L4/rain_front.png`，应保持相同画布与主体位置；景深素材统一放 `materials/dof/`；实际资源以[默认 Profile 目录](../../src-tauri/resources/defaults/profiles/)为准。
+
+内存只保留当前激活 Profile（含资产目录 URL）：`activateProfile()` 与 `ensureProfileLoaded()` 都会淘汰非激活缓存；设置页列 Profile 用 `readProfileMeta()` 轻量读 meta，不进缓存。
 
 ## 浏览器缓存边界
 

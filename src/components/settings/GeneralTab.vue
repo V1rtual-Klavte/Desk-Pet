@@ -128,7 +128,7 @@ defineExpose({
 <template>
   <div>
   <div class="s-section">
-    <div class="s-label">📍 弹窗</div>
+    <div class="s-label">弹窗</div>
     <div class="radio-row">
       <label class="chk"><input type="radio" v-model="popupMode" value="cursor" /><span>跟随光标</span></label>
       <label class="chk"><input type="radio" v-model="popupMode" value="fixed" /><span>固定位置</span></label>
@@ -138,18 +138,18 @@ defineExpose({
   </div>
 
   <div class="s-section">
-    <div class="s-label">📐 弹窗大小</div>
+    <div class="s-label">弹窗大小</div>
     <div class="row-gap">
       <label>宽 <input class="inp-num" type="number" v-model.number="popupW" min="200" /></label>
       <span class="s-muted">×</span>
       <label>高 <input class="inp-num" type="number" v-model.number="popupH" min="150" /></label>
-      <button class="btn-s" @click="previewSize">👁 预览</button>
+      <button class="btn-s" @click="previewSize">预览</button>
       <button class="btn-s btn-d" @click="restoreDefaultSize">↺ 默认</button>
     </div>
   </div>
 
   <div class="s-section">
-    <div class="s-label">⌨ 快捷键</div>
+    <div class="s-label">快捷键</div>
     <div class="row-gap">
       <span class="shortcut-display">{{ shortcutDisplay }}</span>
       <button class="btn-s" :class="{ recording }" @click="startRecording">{{ recording ? "按下组合键..." : "录制" }}</button>
@@ -157,21 +157,21 @@ defineExpose({
   </div>
 
   <div class="s-section">
-    <div class="s-label">📝 日志</div>
+    <div class="s-label">日志</div>
     <div class="radio-row">
       <label v-for="lv in ['debug','info','warn','error']" :key="lv" class="chk"><input type="radio" v-model="logLevel" :value="lv" /><span>{{ lv }}</span></label>
     </div>
   </div>
 
   <div class="s-section">
-    <div class="s-label">⚠️ 错误弹窗</div>
+    <div class="s-label">错误弹窗</div>
     <div class="radio-row">
       <label v-for="m in ['auto','always','never']" :key="m" class="chk"><input type="radio" v-model="errOverlay" :value="m" /><span>{{ m }}</span></label>
     </div>
   </div>
 
   <div class="s-section">
-    <div class="s-label">🖥 桌面轮询</div>
+    <div class="s-label">桌面轮询</div>
     <div class="row-gap">
       <label>轮询 <input class="inp-num" type="number" v-model.number="deskPoll" /> ms</label>
       <label>暂停额外 <input class="inp-num" type="number" v-model.number="deskPause" /> ms</label>

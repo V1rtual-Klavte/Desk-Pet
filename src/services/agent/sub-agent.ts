@@ -115,11 +115,11 @@ export async function runTeamAgent(input: TeamAgentInput): Promise<string> {
     role: "团队负责人",
   })
 
-  const header = `🤝 Team 结果 (${reports.length} 位成员)\n`
+  const header = `Team 结果 (${reports.length} 位成员)\n`
   const body = reports.map((r, i) =>
     `${i + 1}. **${r.role}**: ${r.reply.substring(0, 150)}`
   ).join("\n")
-  const footer = `\n\n📋 综合结论:\n${leadResult.reply}`
+  const footer = `\n\n综合结论:\n${leadResult.reply}`
 
   log.info("Team 完成:", reports.length, "成员")
   return header + body + (body.length + footer.length < 2000 ? footer : "\n\n(结论过长已截断)")

@@ -5,12 +5,12 @@
 import type { RegisteredSlashCommand, SlashCommand } from "../types"
 import { listAll } from "../registry"
 
-const CATEGORY_CONFIG: Record<string, { emoji: string; label: string }> = {
-  session:     { emoji: "💬", label: "会话" },
-  memory:      { emoji: "🧠", label: "记忆" },
-  // 与设置页的「📦 Skill」同一标记，用户在两处看到的是同一个东西。
-  skill:       { emoji: "📦", label: "技能" },
-  general:     { emoji: "⚙️", label: "通用" },
+const CATEGORY_CONFIG: Record<string, { label: string }> = {
+  session:     { label: "会话" },
+  memory:      { label: "记忆" },
+  // 与设置页的「Skill」板块是同一批技能，用户在两处看到的是同一个东西。
+  skill:       { label: "技能" },
+  general:     { label: "通用" },
 }
 
 function formatHelp(): string {
@@ -28,15 +28,15 @@ function formatHelp(): string {
   const order = ["session", "memory", "skill", "general"]
 
   const lines: string[] = []
-  lines.push(`📋 可用命令 (共 ${cmds.length} 个)`)
+  lines.push(`可用命令 (共 ${cmds.length} 个)`)
   lines.push("")
 
   for (const cat of order) {
     const group = groups.get(cat)
     if (!group || group.length === 0) continue
-    const cfg = CATEGORY_CONFIG[cat] || { emoji: "📌", label: cat }
+    const cfg = CATEGORY_CONFIG[cat] || { label: cat }
 
-    lines.push(`${cfg.emoji}  ${cfg.label}`)
+    lines.push(`${cfg.label}:`)
     for (const c of group) {
       const label = c.args ? `/${c.name} ${c.args}` : `/${c.name}`
       lines.push(`    ${label.padEnd(22)}${c.description}`)
@@ -44,7 +44,7 @@ function formatHelp(): string {
     lines.push("")
   }
 
-  lines.push("💡 输入 / 查看下拉框，↑↓ 选择，Enter 确认")
+  lines.push("输入 / 查看下拉框，↑↓ 选择，Enter 确认")
   return lines.join("\n")
 }
 
