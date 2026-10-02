@@ -71,6 +71,11 @@ describe("checkForUpdate", () => {
     // 中性文案：不能出现角色口吻的招呼词
     expect(text).not.toMatch(/主人|人家|～|~/)
     expect(confirmDialog).toHaveBeenCalledTimes(1)
+    // 更新可用是正常事件，不是故障：必须显式关掉 confirmDialog 的默认危险样式
+    expect(confirmDialog).toHaveBeenCalledWith(
+      expect.any(String),
+      expect.objectContaining({ danger: false }),
+    )
     expect(downloadAndInstall).toHaveBeenCalledTimes(1)
     expect(relaunch).toHaveBeenCalledTimes(1)
   })

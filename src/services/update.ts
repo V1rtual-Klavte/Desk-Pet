@@ -62,6 +62,8 @@ export async function checkForUpdate(): Promise<"none" | "skipped" | "updated" |
     const accepted = await confirmDialog(`发现新版本 v${update.version}`, {
       title: "软件更新",
       okLabel: "下载并安装",
+      // 正常可用的更新不是故障，显式关掉危险样式（confirmDialog 不传 danger 时默认按 error + 危险按钮渲染）
+      danger: false,
     })
     if (!accepted) return "skipped"
 
