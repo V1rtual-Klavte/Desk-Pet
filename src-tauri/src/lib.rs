@@ -239,7 +239,7 @@ pub fn run() {
         .manage(BashPool::default())
         .manage(ToolPermitPool::default())
         .setup(move |app| {
-            rust_info!("糖糖桌宠已启动");
+            rust_info!("虚拟桌宠已启动");
 
             let e2e = cfg!(debug_assertions) && crate::paths::is_e2e();
 
@@ -282,7 +282,7 @@ pub fn run() {
             // 不能让第一轮召回才发现库是坏的。打开失败不阻断聊天，命令层会以 MEMORY 错误如实上报。
             match crate::memory::MemoryStore::open(&paths) {
                 Ok(store) => { app.manage(MemoryState::new(store)); }
-                Err(error) => rust_error!("记忆库打开失败，记忆相关能力不可用: {error}"),
+                Err(error) => return Err(format!("记忆库打开失败，应用无法初始化记忆状态: {error}").into()),
             }
             app.manage(paths);
 

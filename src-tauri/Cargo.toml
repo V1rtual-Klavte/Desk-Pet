@@ -1,11 +1,11 @@
 [package]
-name = "deskpet"
+name = "v1rtual-desk-pet"
 version = "0.1.0"
-description = "糖糖桌宠"
+description = "虚拟桌宠"
 edition = "2021"
 
 [lib]
-name = "deskpet_lib"
+name = "v1rtual_desk_pet_lib"
 crate-type = ["rlib"]
 
 [build-dependencies]
@@ -29,6 +29,7 @@ thiserror = "1"
 zip = { version = "8", default-features = false, features = ["deflate-flate2-zlib-rs"] }
 # Bundled SQLite keeps macOS and Windows on the same SQLite/FTS5 runtime.
 rusqlite = { version = "0.40", features = ["bundled", "backup"] }
+sha2 = "0.10"
 
 [target.'cfg(windows)'.dependencies]
 # feature 必须覆盖每个符号所属模块，缺一个就只在 Windows 目标上编译失败。

@@ -1,5 +1,5 @@
 /**
- * Desk-Pet runtime protocol types.
+ * V1rtual-Desk-Pet runtime protocol types.
  *
  * This module intentionally has no business imports.  It is the shared
  * vocabulary for ingress, prompt snapshots and plans;

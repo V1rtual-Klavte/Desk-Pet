@@ -10,7 +10,7 @@ import { saveUnanswered } from "./persistence"
 import { updateSessionName } from "./manager"
 import { appendPiSessionCustomEntry } from "./repo"
 import { DESKPET_GREETING_ENTRY, DESKPET_SYSTEM_MESSAGE_ENTRY } from "@/services/engine/runtime"
-import { harnessSlots } from "@/services/engine/pi"
+import { harnessSlots } from "@/services/engine/harness"
 import { createLogger } from "@/services/logger"
 import { formatError } from "@/services/error"
 

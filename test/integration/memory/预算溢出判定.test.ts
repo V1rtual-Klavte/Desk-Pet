@@ -10,14 +10,14 @@
 // 这条耦合是本测试存在的唯一理由 —— 上游改判据时这里必须先红，而不是悄悄退回到
 // 「硬预算超限直接终止回合」。成功路径与提交顺序由 `预算溢出恢复` 场景覆盖（L4）。
 //
-// 归 L3 的理由：判定入口 `createHarnessModels` / `turnFailureReply` 住在 `@/services/engine/pi`。
+// 归 L3 的理由：判定入口 `createHarnessModels` / `turnFailureReply` 住在 `@/services/engine/harness`。
 import type { Context, Model } from "@earendil-works/pi-ai"
 import { isRecoverableLength } from "@earendil-works/pi-ai"
 import { describe, expect, it } from "vitest"
 
 import { ContextBudgetError } from "@/services/context"
-import { classifyTurnFailure, createHarnessModels, turnFailureReply } from "@/services/engine/pi"
-import type { TurnFailure } from "@/services/engine/pi"
+import { classifyTurnFailure, createHarnessModels, turnFailureReply } from "@/services/engine/harness"
+import type { TurnFailure } from "@/services/engine/harness"
 
 const FAKE_MODEL = {
   id: "deskpet-fake", name: "Desk-Pet Fake", api: "faux", provider: "deskpet-fake",

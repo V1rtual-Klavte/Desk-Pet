@@ -1,5 +1,5 @@
 #![cfg_attr(target_os = "windows", windows_subsystem = "windows")]
 
 fn main() {
-    deskpet_lib::run()
+    v1rtual_desk_pet_lib::run()
 }

@@ -1,5 +1,5 @@
-// Desk-Pet's only multi-turn agent runtime. Pi AgentHarness owns the model/tool loop,
-// durable queues, and session entries; Desk-Pet owns product state, safety, Card
+// V1rtual-Desk-Pet's only multi-turn agent runtime. Pi AgentHarness owns the model/tool loop,
+// durable queues, and session entries; V1rtual-Desk-Pet owns product state, safety, Card
 // variables, and reply processing.
 
 import { contentText } from "@earendil-works/pi-ai"
@@ -10,8 +10,11 @@ import type { Message, ThinkingEffort } from "@/services/agent/types"
 import type { SlashSkillAdmission } from "@/services/engine/slash"
 import type { CompactionAuditSink, ContextAllocation, ContextBlock, IngressEnvelope, InputSourceMark, PlanState, PlanStepRecord, PromptCapabilityContext, PromptPlanContext, PromptRequestContext, PromptRequestParams, PromptSnapshot, PromptTokenDrift, PromptTransform } from "@/services/engine/runtime"
 import { createMessageId } from "@/services/agent/types"
-import { MemoryService, recallMemory, planCheckpointStore } from "@/services/agent/memory"
-import type { MemoryProjection, StructuredSummary } from "@/services/agent/memory"
+import { MemoryService, recallMemory } from "@/services/agent/memory"
+import type { MemoryProjection } from "@/services/agent/memory"
+import { planCheckpointStore } from "@/services/engine/plan/checkpoint-store"
+import type { StructuredSummary } from "@/services/engine/compaction/structured-summary"
+import { getV1rtualInstructionsSync } from "@/services/context/instructions"
 import { buildPrompt, composeDynamicPrompt, currentTimeNote, contextBudget, estimateRequestTokens, estimateContextTokens, estimateMessageTokens, ContextBudgetError, ESTIMATE_DRIFT_WARN_RATIO, estimateDriftRatio, planToolResultLadder, projectMessageContent, projectToolResultText, annotateToolResultText, protectedMessageIndexes, toolResultAddress } from "@/services/context"
 import type { ContextBudgetAdjustment, ToolResultLadderEntry, ToolResultLadderPlan, ToolResultLevelMeasure } from "@/services/context"
 import { bindRunningPlan, clearRunningPlan, notifyPlanEnd, requestPlanConfirm, requestPlanStepDecision } from "@/services/engine/plan-confirmation"
@@ -262,7 +265,7 @@ export function turnFailureReply(
 
 /**
  * 失败分类的唯一定义点在 `@/services/error/failure-kind`（生产回合与 Live Test 共用）。
- * 这里的别名只为兼容既有消费者（`engine/pi` barrel、预算场景）：名字不变，实现只有一份。
+ * 这里的别名只为兼容既有消费者（`engine/harness` barrel、预算场景）：名字不变，实现只有一份。
  */
 export { classifyFailureKind as classifyTurnFailure } from "@/services/error/failure-kind"
 
@@ -1210,7 +1213,7 @@ export async function runPiAgentTurn(input: PiAgentTurnInput): Promise<PiAgentTu
   const card = currentCard ? JSON.parse(JSON.stringify(currentCard)) as typeof currentCard : null
   const pool = getPoolSnapshot()
   const thinkingEffort = getEffectiveThinkingEffort()
-  const frozenUserContext = { candyInstructions: MemoryService.getCandyInstructionsSync(),
+  const frozenUserContext = { v1rtualInstructions: getV1rtualInstructionsSync(),
     dynamicPrompt: composeDynamicPrompt(formatPoolForPrompt(pool), thinkingEffort) }
   // 准入是否已成立（用户条目已提交进会话文件）：此后每条退出路径都必须结算那条已接受的操作。
   let admittedOnce = false
@@ -2119,7 +2122,7 @@ export async function continueInterruptedRun(sessionId: string): Promise<PiAgent
     const thinkingEffort = getEffectiveThinkingEffort()
     // 中断运行的原始冻结快照已随进程丢失：用当前 Card/变量重建只读前缀，不静默改 Card。
     const context = buildPrompt({
-      ...{ candyInstructions: MemoryService.getCandyInstructionsSync() },
+      ...{ v1rtualInstructions: getV1rtualInstructionsSync() },
       unansweredCount: 0, thinkingEffort,
       contextMaxTokens: model.contextWindow, maxOutputTokens: model.maxTokens,
       tools: frozenTools.map(toToolDeclaration),
@@ -2188,7 +2191,7 @@ export async function compactActiveSession(sessionId: string): Promise<ManualCom
   const card = currentCard ? JSON.parse(JSON.stringify(currentCard)) as typeof currentCard : null
   const pool = getPoolSnapshot()
   const context = buildPrompt({
-    ...{ candyInstructions: MemoryService.getCandyInstructionsSync() },
+    ...{ v1rtualInstructions: getV1rtualInstructionsSync() },
     unansweredCount: 0, thinkingEffort: getEffectiveThinkingEffort(),
     contextMaxTokens: model.contextWindow, maxOutputTokens: model.maxTokens,
     tools: [],

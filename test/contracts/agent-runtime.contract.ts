@@ -3,15 +3,15 @@ import type { ModuleContract } from "../host/types"
 export const agentRuntimeContract: ModuleContract = {
   module: "agent-runtime",
   sourceFiles: [
-    "src/services/agent/memory/plan-checkpoint-store.ts",
+    "src/services/engine/plan/checkpoint-store.ts",
     "src/services/agent/runner.ts",
     "src/services/debug.ts",
     "src/services/error/failure-kind.ts",
-    "src/services/engine/pi/delivery.ts",
-    "src/services/engine/pi/harness-slot.ts",
-    "src/services/engine/pi/model-gateway.ts",
-    "src/services/engine/pi/runtime.ts",
-    "src/services/engine/pi/stream-text.ts",
+    "src/services/engine/harness/delivery.ts",
+    "src/services/engine/harness/harness-slot.ts",
+    "src/services/engine/harness/model-gateway.ts",
+    "src/services/engine/harness/runtime.ts",
+    "src/services/engine/harness/stream-text.ts",
     "src/services/engine/plan-confirmation.ts",
     "src/services/engine/preprocessor.ts",
     "src/services/engine/runtime/input-identity.ts",
@@ -24,7 +24,7 @@ export const agentRuntimeContract: ModuleContract = {
     "src/services/session/store.ts",
   ],
   generatedAt: "2026-09-28",
-  sourceHash: "14880d628857f1aab8f9938357006a3b9e4ae1e59584aba37ccaeec0ab83d1a0",
+  sourceHash: "2cefb93fa8b24b980f22dceb3c2863e52047aeb71d05ef9195a24a87860c776e",
   coverage: [
     {
       id: "ar-01",

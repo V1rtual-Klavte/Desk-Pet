@@ -6,8 +6,8 @@
 // ==========================================
 
 import { listAll, type ToolDef } from "@/services/tool"
-import { runPiSubAgent } from "@/services/engine/pi"
-import type { PiSubAgentOutput } from "@/services/engine/pi"
+import { runPiSubAgent } from "@/services/engine/harness"
+import type { PiSubAgentOutput } from "@/services/engine/harness"
 import { loopConfig } from "@/services/config"
 import { createLogger } from "@/services/logger"
 
@@ -33,8 +33,8 @@ export async function runForkAgent(input: ForkAgentInput): Promise<PiSubAgentOut
 
   const tools = getSafeTools()
   const systemPrompt = role
-    ? `你是糖糖桌宠的子代理，角色: ${role}。用简短中文回复，可以调用工具获取信息。`
-    : "你是糖糖桌宠的子代理。用简短中文回复，可以调用工具获取信息。工具面限于文件读取、系统信息与 Bash，以只读查询为主。"
+    ? `你是虚拟桌宠的子代理，角色: ${role}。用简短中文回复，可以调用工具获取信息。`
+    : "你是虚拟桌宠的子代理。用简短中文回复，可以调用工具获取信息。工具面限于文件读取、系统信息与 Bash，以只读查询为主。"
 
   log.info("Fork 启动:", role || "通用", "| task:", task.substring(0, 80))
 

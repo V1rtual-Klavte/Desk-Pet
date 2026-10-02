@@ -1,8 +1,8 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "糖糖桌宠",
+  "productName": "虚拟桌宠",
   "version": "0.1.0",
-  "identifier": "com.deskpet.tangtang",
+  "identifier": "com.v1rtual.deskpet",
   "build": {
     "beforeDevCommand": "pnpm run dev",
     "devUrl": "http://localhost:1420",

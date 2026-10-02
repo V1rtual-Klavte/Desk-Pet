@@ -1,6 +1,6 @@
 ---
 name: test
-description: Desk-Pet 测试树的 Contract 分析、测试生成与覆盖审查流程。
+description: V1rtual-Desk-Pet 测试树的 Contract 分析、测试生成与覆盖审查流程。
 ---
 
 # 测试工作流（/analyze /generate /audit）

@@ -97,7 +97,7 @@ export function buildPromptBlocks(inputBlocks: ContextBlockInput[], contextMaxTo
     return { layer, requested, assigned, used: consumed, ...(dropped > 0 ? { dropped } : {}) }
   })
   const ordered = sortBlocks(selected)
-  const staticPrefix = joinPrompt(ordered, block => block.blockId === "static:card" || block.blockId === "static:candy" || block.blockId === "static:tool-protocol")
+  const staticPrefix = joinPrompt(ordered, block => block.blockId === "static:card" || block.blockId === "static:v1rtual" || block.blockId === "static:tool-protocol")
   const turnDynamic = joinPrompt(ordered, block => block.layer !== "static" && !(block.layer === "ephemeral" && block.origin === "active"))
   const systemPrompt = joinPrompt(ordered, block => block.blockId !== "static:tool-schema" && !(block.layer === "ephemeral" && block.origin === "active"))
   return { blocks: ordered, systemPrompt, staticPrefix, turnDynamic,

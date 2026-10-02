@@ -11,11 +11,11 @@
 // normalInputTarget 的比值。该比值随窗口增大逼近 1（compactionHeadroom 被 MAX_HEADROOM
 // 封顶），是这里最容易被改坏的一处。
 //
-// 归 L3 的理由：阈值换算的唯一出口 `compactionSettingsFor` 住在 `@/services/engine/pi`。
+// 归 L3 的理由：阈值换算的唯一出口 `compactionSettingsFor` 住在 `@/services/engine/harness`。
 import { describe, expect, it } from "vitest"
 
 import { MIN_CONTEXT_WINDOW, contextBudget, estimateContextTokens, toHarnessEstimateTokens } from "@/services/context"
-import { compactionSettingsFor } from "@/services/engine/pi"
+import { compactionSettingsFor } from "@/services/engine/harness"
 
 describe("压缩阈值口径", () => {
   it("阈值落在本仓正常输入目标上并先于硬预算触发，估算器偏差不越过硬预算余量 [memory-compaction-threshold-calibration]", () => {

@@ -28,7 +28,7 @@ pub fn ensure(conn: &Connection) -> AppResult<()> {
           source_id TEXT PRIMARY KEY NOT NULL,
           session_id TEXT NOT NULL,
           entry_id TEXT NOT NULL,
-          event_id TEXT,
+          event_id TEXT NOT NULL,
           seq INTEGER NOT NULL,
           content_hash TEXT NOT NULL,
           evidence TEXT,

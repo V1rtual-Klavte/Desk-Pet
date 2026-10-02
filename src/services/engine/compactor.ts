@@ -4,8 +4,8 @@ import type { AgentMessage } from "@earendil-works/pi-agent-core"
 import type { Usage } from "@earendil-works/pi-ai"
 import { contentText } from "@earendil-works/pi-ai"
 import type { Message } from "@/services/agent/types"
-import { parseStructuredSummary, formatStructuredSummary } from "@/services/agent/memory"
-import type { StructuredSummary } from "@/services/agent/memory"
+import { parseStructuredSummary, formatStructuredSummary } from "./compaction/structured-summary"
+import type { StructuredSummary } from "./compaction/structured-summary"
 import { contextBudget, estimateValueTokens, estimateRequestTokens, annotateToolResultText, planToolResultLadder, projectToolResultText, toolResultAddress, ContextBudgetError } from "@/services/context"
 import type { ToolResultLadderEntry, ToolResultLevelMeasure } from "@/services/context"
 import { aiConfig } from "@/services/config"
@@ -42,7 +42,7 @@ export interface CompactionSummaryInput {
   /** 迭代摘要素材（preparation.previousSummary）。 */
   previousSummary?: string
   /** 调用方冻结的模型；缺省回退到配置窗口。 */
-  model?: import("./pi").PiModel
+  model?: import("./harness").PiModel
   signal?: AbortSignal
   /** 压缩请求的归属会话；给出后摘要请求进快照体系（没有会话可归属时不传）。 */
   sessionId?: string
@@ -312,7 +312,7 @@ async function callOnce(input: {
   preserveToolNames?: ReadonlySet<string>
   addressRefs?: ReadonlyMap<string, string>
   signal?: AbortSignal
-  model?: import("./pi").PiModel
+  model?: import("./harness").PiModel
   sessionId?: string
   runId?: string
 }): Promise<{ summary: StructuredSummary; inputText: string; usage: Usage }> {
@@ -329,7 +329,7 @@ async function callOnce(input: {
   if (material.level === 2) log.info("摘要素材升到级 2 以适应硬上限:", { used: material.used, limit: input.hardInputLimit })
   // 不截字也不静默丢覆盖：单片超过硬上限时明确失败（§5.2），由调用方决定回退或放弃。
   if (material.used > input.hardInputLimit) throw new ContextBudgetError(material.used, input.hardInputLimit)
-  const { completePiText } = await import("./pi")
+  const { completePiText } = await import("./harness")
   const response = await completePiText({
     purpose: "compaction", systemPrompt: SUMMARY_SYSTEM, userText: material.userText,
     thinkingEffort: "low", maxTokens: input.summaryMaxTokens,
@@ -768,4 +768,3 @@ function summaryMessage(message: AgentMessage, index: number, address?: string):
   }
   return undefined
 }
-

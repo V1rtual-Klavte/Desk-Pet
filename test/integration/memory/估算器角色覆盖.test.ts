@@ -8,7 +8,7 @@
 // 归属 L3（不是 L2）的理由：第二条断言必须走真实 agent loop（fake Provider 只替换 Provider），
 // 估算偏差要落在真实回合落盘的快照与 trace 上。
 //
-// 归 L3 的 import 判据：场景 import `@/services/engine/pi`（PROMPT_SNAPSHOT_ENTRY）。
+// 归 L3 的 import 判据：场景 import `@/services/engine/harness`（PROMPT_SNAPSHOT_ENTRY）。
 //
 // 审视结论（修正后搬，两条线索都已复核）：
 //   ① `:59` D1：compactionSummary 只有上界（`ratio > 1.10`），正文估成 0 时比值 0 照样通过
@@ -28,7 +28,7 @@ import { captureRuntimeTrace } from "../../host/trace-observer"
 import { sessionEntries } from "../../host/session-entries"
 import { runRuntimeTurn } from "./回合夹具"
 import { ESTIMATE_DRIFT_WARN_RATIO, estimateMessageTokens } from "@/services/context"
-import { PROMPT_SNAPSHOT_ENTRY } from "@/services/engine/pi"
+import { PROMPT_SNAPSHOT_ENTRY } from "@/services/engine/harness"
 
 /** ≈414 字符的中文摘要正文：估算口径是「1 汉字 ≈ 1 token」，够大才断得出漏算。 */
 const SUMMARY_BODY = "这是一段用于估算器角色覆盖断言的中文摘要正文，".repeat(18)

@@ -10,10 +10,11 @@
 // - 单条来源过大不截断内容，直接标记 oversized 交给用户挑选片段；
 // - 模型调用走 completePiText(purpose="memory")，与主回合共用认证、取消与用量口径。
 
-import { completePiText } from "@/services/engine/pi"
+import { completePiText } from "@/services/engine/harness"
 import { createLogger } from "@/services/logger"
 import { formatError } from "@/services/error"
 import { memoryConfig } from "@/services/config"
+import { isAIGenerating } from "@/services/cooldown"
 import { refreshMemoryCount } from "./index"
 import {
   addMemoryCandidates, cancelMemoryJob, checkpointMemoryJob, publishMemoryBatch, memoryJobSources,
@@ -31,6 +32,26 @@ const MAX_BATCHES_PER_RUN = 3
 const REVIEW_TIMEOUT_MS = 30_000
 const REVIEW_MAX_TOKENS = 1_200
 const LEASE_OWNER = "memory-dreaming"
+const IDLE_TICK_MS = 15_000
+
+let idleTimer: ReturnType<typeof setInterval> | null = null
+let idleSince = 0
+let lastIdleRunAt = 0
+let usageDay = ""
+let usageTokensToday = 0
+
+function refreshUsageDay(): void {
+  const day = new Date().toISOString().slice(0, 10)
+  if (usageDay !== day) {
+    usageDay = day
+    usageTokensToday = 0
+  }
+}
+
+function idleBudgetAvailable(): boolean {
+  refreshUsageDay()
+  return memoryConfig.dreamingMaxDailyTokens > 0 && usageTokensToday < memoryConfig.dreamingMaxDailyTokens
+}
 
 export interface DreamingOutcome {
   status: "completed" | "empty" | "cancelled" | "failed"
@@ -174,7 +195,7 @@ export async function runDreamingSweep(options: { signal?: AbortSignal } = {}): 
       const batchSources = pending.slice(0, MAX_SOURCES_PER_BATCH)
       const usable = batchSources.filter(source => {
         const text = source.evidence ?? ""
-        if (text.length > MAX_SOURCE_CHARS * 4) {
+        if ((source.sourceLength ?? text.length) > MAX_SOURCE_CHARS * 4) {
           oversized.push(source.sourceId)
           return false
         }
@@ -190,17 +211,19 @@ export async function runDreamingSweep(options: { signal?: AbortSignal } = {}): 
         timeoutMs: REVIEW_TIMEOUT_MS,
         ...(options.signal ? { signal: options.signal } : {}),
       })
+      refreshUsageDay()
+      usageTokensToday += result.usage.input + result.usage.output
       const parsed = parseReviewCandidates(result.text, usable)
       if (parsed.length > 0) {
         const payloads: MemoryCandidateDraft[] = []
         for (const candidate of parsed) {
-          const payloadHash = await sha256(stable({ draft: candidate.draft, jobId }))
+          const payloadHash = await sha256(stable({ draft: candidate.draft }))
           payloads.push({
             // 指纹即 id：同一条提案重跑时原地更新，不会堆积重复候选。
             id: `cand-${payloadHash.slice(0, 24)}`,
             draft: candidate.draft,
             payloadHash,
-            ...(candidate.reason ? { reason: candidate.reason } : {}),
+        ...(candidate.reason ? { reason: candidate.reason } : {}),
           })
         }
         candidatesAdded += await addMemoryCandidates(jobId, payloads)
@@ -217,6 +240,40 @@ export async function runDreamingSweep(options: { signal?: AbortSignal } = {}): 
     await cancelMemoryJob(jobId).catch(cancelError => log.warn("失败后取消作业也失败:", formatError(cancelError)))
     return { status: "failed", jobId, sourcesProcessed, candidatesAdded, oversized, message: formatError(error) }
   }
+}
+
+/**
+ * 空闲模式的轻量调度器：只负责触发可取消的离线作业，发布仍必须经过面板审批。
+ * 状态保存在本模块仅作为节流；真正的租约、游标和候选正文都在 Rust 库里。
+ */
+export function startIdleDreamingScheduler(): () => void {
+  if (idleTimer) return () => stopIdleDreamingScheduler()
+  const tick = (): void => {
+    if (memoryConfig.dreamingMode !== "idle" || !memoryConfig.enabled) {
+      idleSince = 0
+      return
+    }
+    if (isAIGenerating()) {
+      idleSince = 0
+      return
+    }
+    idleSince ||= Date.now()
+    const idleReady = Date.now() - idleSince >= Math.max(30, memoryConfig.dreamingIdleSeconds) * 1000
+    const intervalReady = Date.now() - lastIdleRunAt >= Math.max(1, memoryConfig.dreamingMinIntervalMinutes) * 60_000
+    if (!idleReady || !intervalReady || !idleBudgetAvailable()) return
+    lastIdleRunAt = Date.now()
+    idleSince = Date.now()
+    void runDreamingSweep().catch(error => log.warn("空闲记忆整理失败:", formatError(error)))
+  }
+  idleTimer = setInterval(tick, IDLE_TICK_MS)
+  tick()
+  return () => stopIdleDreamingScheduler()
+}
+
+export function stopIdleDreamingScheduler(): void {
+  if (idleTimer) clearInterval(idleTimer)
+  idleTimer = null
+  idleSince = 0
 }
 
 /**

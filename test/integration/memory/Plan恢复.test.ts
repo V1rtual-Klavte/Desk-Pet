@@ -17,8 +17,8 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest"
 
 import { setTestDataRoot } from "../../host/node-ipc"
 import { ensureSession } from "./回合夹具"
-import { PLAN_CHECKPOINT_ENTRY, planCheckpointStore } from "@/services/agent/memory"
-import type { PlanCheckpointPayload } from "@/services/agent/memory"
+import { PLAN_CHECKPOINT_ENTRY, planCheckpointStore } from "@/services/engine/plan/checkpoint-store"
+import type { PlanCheckpointPayload } from "@/services/engine/plan/checkpoint-store"
 import { initPaths } from "@/services/paths"
 import { readPiSessionEntriesOnce } from "@/services/session/repo"
 

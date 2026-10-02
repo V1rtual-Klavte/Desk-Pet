@@ -4,7 +4,7 @@ import { defineTool, register, createTranscriptTool, executeToolDefinition, tran
 import type { ToolResultEntryReader } from "@/services/tool"
 import { DEFAULT_CONTEXT_WINDOW, MIN_ADDRESS_PREFIX, MIN_CONTEXT_WINDOW, estimateContextTokens, resolveAddressRef, sliceByTokenBudget } from "@/services/context"
 import { getActiveSessionId } from "@/services/session"
-import { harnessSlots, resolvePiTurnModel } from "@/services/engine/pi"
+import { harnessSlots, resolvePiTurnModel } from "@/services/engine/harness"
 import { sessionEntries } from "../../../host/session-entries"
 import type { Entry } from "@earendil-works/pi-agent-core"
 

@@ -7,6 +7,7 @@
 // 读取条目（需要真 JSONL）、哈希与登记 IPC 都留在外层，纯选择器只认已读到的条目。
 
 import { createLogger } from "@/services/logger"
+import { formatError } from "@/services/error"
 import { listPiSessionMetadata, readPiSessionEntriesOnce } from "@/services/session/repo"
 import { inputSourceOf, laneMessageText, messageEventId } from "@/services/engine/runtime"
 import { registerMemorySources } from "./ipc"
@@ -43,8 +44,8 @@ function isMessageEntry(entry: UnknownRecord): boolean {
 export function trustedSourcesFromEntries(
   sessionId: string,
   entries: readonly unknown[],
-): Omit<MemorySource, "contentHash">[] {
-  const sources: Omit<MemorySource, "contentHash">[] = []
+): (Omit<MemorySource, "contentHash"> & { rawText: string })[] {
+  const sources: (Omit<MemorySource, "contentHash"> & { rawText: string })[] = []
   for (const raw of entries) {
     const entry = asRecord(raw)
     if (!entry || !isMessageEntry(entry)) continue
@@ -59,13 +60,18 @@ export function trustedSourcesFromEntries(
     // 没有稳定身份与序号的条目不能当水位与幂等键，直接跳过而不是编一个。
     if (!entryId || !Number.isSafeInteger(seq) || seq < 0) continue
     const eventId = messageEventId(message as { deskpetEventId?: unknown })
+    if (!eventId) continue
     sources.push({
       sourceId: `${sessionId}:${entryId}`,
       sessionId,
       entryId,
-      ...(eventId ? { eventId } : {}),
+      eventId,
       seq,
+      // 当前 protocol 只承载 bounded evidence；完整 hash 在 collectMemorySources 中
+      // 直接对原文计算，不能对截断片段 hash，否则同前缀的两条消息会被误认为同一来源。
       evidence: text.slice(0, EVIDENCE_CHARS),
+      sourceLength: text.length,
+      rawText: text,
       // 投递时刻冻结的 Card 身份：缺了它这段经历只能留在 user 范围，不能事后反推。
       ...(mark.cardId ? { cardId: mark.cardId } : {}),
       eligibleForMemory: true,
@@ -81,12 +87,12 @@ export function trustedSourcesFromEntries(
 export async function collectMemorySources(sessionId: string): Promise<MemorySource[]> {
   const entries = await readPiSessionEntriesOnce(sessionId)
   const selected = trustedSourcesFromEntries(sessionId, entries as unknown as unknown[])
-  const sources: MemorySource[] = []
+  const sources: (MemorySource & { rawText: string })[] = []
   for (const partial of selected) {
-    sources.push({ ...partial, contentHash: await sha256(partial.evidence ?? "") })
+    sources.push({ ...partial, contentHash: await sha256(partial.rawText) })
   }
   await registerMemorySources(sources)
-  return sources
+  return sources.map(({ rawText: _rawText, ...source }) => source)
 }
 
 export async function collectAllMemorySources(): Promise<MemorySource[]> {
@@ -97,7 +103,7 @@ export async function collectAllMemorySources(): Promise<MemorySource[]> {
       all.push(...(await collectMemorySources(session.id)))
     } catch (error) {
       // 读不到的会话不推进水位、也不冒充「这个会话没有记忆」：把范围如实交回调用方。
-      log.warn("记忆来源收集失败:", { sessionId: session.id }, error)
+      log.warn("记忆来源收集失败:", { sessionId: session.id }, formatError(error))
     }
   }
   return all

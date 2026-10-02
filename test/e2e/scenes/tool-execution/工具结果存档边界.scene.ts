@@ -3,7 +3,7 @@ import { fakeText, fakeToolCall, installFakeProvider } from "../../../host/fake-
 import { register, defineTool, createTranscriptTool, executeToolDefinition, transcriptPageTokens, TOOL_POLICY_VERSION } from "@/services/tool"
 import { isUniqueAddressRef, sliceByTokenBudget } from "@/services/context"
 import { getActiveSessionId } from "@/services/session"
-import { harnessSlots, resolvePiTurnModel } from "@/services/engine/pi"
+import { harnessSlots, resolvePiTurnModel } from "@/services/engine/harness"
 import { setOverride } from "@/services/config"
 import { isWindows } from "@/services/env"
 import { sessionEntries } from "../../../host/session-entries"
@@ -29,11 +29,11 @@ const BASH_CALL = "archive-bash-call"
  * 大输出夹具：需要 ≥2000 行（或 ≥50KB）才会触发上游截断与 spill 回读路径。
  *
  * POSIX 侧是 `seq`；Windows 的 `cmd /C` 里**没有** `seq`（产品在 Windows 走
- * `("cmd","/C")`，见 `src-tauri/src/commands/tool_exec.rs`），照抄这条夹具在 Windows
+ * `("cmd","/C")`，见 `src-tauri/src/commands/tool_exec/bash.rs`），照抄这条夹具在 Windows
  * 上必然为红 —— Windows 侧换成 cmd 内建的 `for /L`，同样打印 20000 行。
  *
  * 两条都**零引号**：`cmd /C` 不认 Rust 参数转义的 `\"`（只认 `""`/`^"`），带引号的
- * 命令会被拆坏（tool_exec.rs 的用例注释有 CI windows-latest 实测结论），所以
+ * 命令会被拆坏（tool_exec/mod.rs 的用例注释有 CI windows-latest 实测结论），所以
  * `node -e "…"` 这类带引号的写法在这里不可用。
  */
 const BASH_COMMAND = isWindows

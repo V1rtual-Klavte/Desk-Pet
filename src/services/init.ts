@@ -3,7 +3,8 @@
 // 所有应用启动初始化逻辑集中在此，按顺序执行
 // ==========================================
 
-import { MemoryService } from "@/services/agent/memory"
+import { MemoryService, startIdleDreamingScheduler } from "@/services/agent/memory"
+import { loadV1rtualInstructions } from "@/services/context/instructions"
 import { initRegistry, initCards } from "@/services/personality"
 import { registerDefaultTools } from "@/services/tool"
 import { initDebug } from "@/services/debug"
@@ -31,6 +32,8 @@ export async function initApp(): Promise<void> {
 
   // ── 1. Memory 文件系统 ──
   await MemoryService.init()
+  await loadV1rtualInstructions()
+  startIdleDreamingScheduler()
   log.info("1/7 Memory 就绪")
 
   // ── 2. Profile 系统 ──
@@ -72,8 +75,6 @@ export async function initApp(): Promise<void> {
   // ── 7. Debug ──
   await initDebug()
   log.info("7/7 Debug 就绪")
-
-  // LLM 记忆整理不属于 Presence 启动路径；当前没有自动整理定时器，长期记忆闭环在 P6。
 
   log.info("──── 初始化完成 ────")
 }

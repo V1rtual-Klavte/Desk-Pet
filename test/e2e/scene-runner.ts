@@ -10,12 +10,12 @@ import type {
   TurnDef,
   TurnResult,
 } from "./types"
-import type { PiAgentTurnOutput, TurnFailure } from "@/services/engine/pi"
-import { runPiAgentTurn } from "@/services/engine/pi"
+import type { PiAgentTurnOutput, TurnFailure } from "@/services/engine/harness"
+import { runPiAgentTurn } from "@/services/engine/harness"
 import { userInputMessage } from "@/services/engine/runtime"
 import { sendMessage, sendActiveMessage } from "@/services/agent/runner"
 import { getPoolSnapshot } from "@/services/personality/variable-pool"
-import { harnessSlots } from "@/services/engine/pi"
+import { harnessSlots } from "@/services/engine/harness"
 import { getActiveSessionId } from "@/services/session/store"
 import { pushAssistantMessage, pushUserMessage } from "@/services/session/messages"
 import { initSessions } from "@/services/session"

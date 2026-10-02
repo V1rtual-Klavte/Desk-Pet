@@ -12,10 +12,11 @@ export interface MemorySource {
   sourceId: string
   sessionId: string
   entryId: string
-  eventId?: string
+  eventId: string
   seq: number
   contentHash: string
   evidence?: string
+  sourceLength?: number
   cardId?: string
   eligibleForMemory: boolean
   taint: "trusted_user" | "derived" | "untrusted" | "system"

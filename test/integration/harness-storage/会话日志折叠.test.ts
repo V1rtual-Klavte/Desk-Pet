@@ -9,7 +9,7 @@
 //   · **不重复上游的拒绝行为** —— `JsonlStorage.open` 对 storageVersion ≠ 1 的既有拒绝由
 //     hs-01 的官方一致性套件覆盖；S-6 在存储层唯一可观测的形态是「文件没被动过」。
 //
-// 被测规则（`src/services/engine/pi/session-fold.ts` 是唯一真相源）：
+// 被测规则（`src/services/engine/harness/session-fold.ts` 是唯一真相源）：
 //   · **死 key**：该 key 有 `delete`，且**最后一次 delete 之后没有同 key 的其它写** ——
 //     只有「行号严格小于最后一次 delete 行号」的 `list/append` / `value/set` 可丢。
 //   · **整行粒度**：仅当一行的**全部**写入都可丢时才删整行 —— 一行里只要有一个保留写入，
@@ -60,8 +60,8 @@ import {
   logStateDigest,
   prepareFold,
   readFoldLog,
-} from "@/services/engine/pi"
-import type { FoldOutcome, PiSessionRepo } from "@/services/engine/pi"
+} from "@/services/engine/harness"
+import type { FoldOutcome, PiSessionRepo } from "@/services/engine/harness"
 import { PI_LANE } from "@/services/session"
 import { initPaths, runtimePath } from "@/services/paths"
 import { TauriExecutionEnv } from "@/services/tool/pi/tauri-execution-env"

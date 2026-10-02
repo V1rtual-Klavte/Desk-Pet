@@ -57,7 +57,7 @@ async function openLayerEditor() {
   }
   const win = new WebviewWindow("layer-editor", {
     url: "layer-editor.html",
-    title: "图层编辑器 - 糖糖桌宠",
+    title: "图层编辑器 - 虚拟桌宠",
     width: 820,
     height: 580,
     resizable: true,

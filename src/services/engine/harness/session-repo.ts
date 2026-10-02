@@ -23,7 +23,7 @@ import type { FoldOutcome } from "./session-fold"
 const log = createLogger("PiSessionRepo")
 
 /**
- * Desk-Pet 的会话仓库门面。
+ * V1rtual-Desk-Pet 的会话仓库门面。
  *
  * 与 `JsonlSessionRepo` 的差别只有一处：会话 `cwd` 统一取数据根（§8.1），
  * 不再由每次调用传参决定 —— 官方一致性套件的 `create` 就不带 cwd，

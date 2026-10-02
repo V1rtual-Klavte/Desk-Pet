@@ -6,7 +6,7 @@ import {
 } from "@/services/context"
 import { aiConfig } from "@/services/config"
 import { debug } from "@/services/debug"
-import { compactionSettingsFor, harnessSlots } from "@/services/engine/pi"
+import { compactionSettingsFor, harnessSlots } from "@/services/engine/harness"
 import { initChat } from "@/services/agent/runner"
 import { getActiveSessionId } from "@/services/session"
 import { SESSION_TRANSCRIPT_TOOL, TOOL_POLICY_VERSION, defineTool, register, unregister } from "@/services/tool"

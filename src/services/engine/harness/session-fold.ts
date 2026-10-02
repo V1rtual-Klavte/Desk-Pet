@@ -78,7 +78,7 @@
 //     摘要校验 → 写同目录临时文件 → renameFile 覆盖；任何一步失败都保留原文件、返回 skipped，
 //     绝不抛错、绝不影响会话功能。
 // 外部依赖：上游的 `JSONL_STORAGE_VERSION`；`@/services/engine/runtime` 的 `sha256Text` /
-// `stableSerialize`（`engine/runtime` 不 import `engine/pi`，不成环）；`@/services/logger` 与
+// `stableSerialize`（`engine/runtime` 不 import `engine/harness`，不成环）；`@/services/logger` 与
 // `@/services/error`（同目录的 `session-frame-buffer.ts` 已是同样的依赖方向）。
 // ==========================================
 
@@ -565,7 +565,7 @@ const log = createLogger("SessionFold")
  *   ② 折叠结果超过它 ⇒ 单次 `file_write` 必然失败，守卫写全，不靠「折叠只会变小」的推理。
  *
  * 常量本身定义在 `tauri-execution-env.ts`（它是这条上限的物理来源），这里只 import ——
- * 不给它第二个定义点。`engine/pi/session-repo.ts` 也是从同一模块取 `TauriExecutionEnv`。
+ * 不给它第二个定义点。`engine/harness/session-repo.ts` 也是从同一模块取 `TauriExecutionEnv`。
  */
 
 /**
@@ -634,7 +634,7 @@ export type FoldOutcome =
  *
  * 为什么不用上游的固定名 `${path}.tmp`（`jsonl/storage.js:71` 的 publishFileAtomically 用它）：
  * 固定名在同进程并发折叠时会互撞；Rust 自己的 `file_write_atomic` 用
- * `{name}.tmp-{pid}-{nanos}`（`tool_exec.rs:777`），本函数取后者风格。
+ * `{name}.tmp-{pid}-{nanos}`（`tool_exec/mod.rs:777`），本函数取后者风格。
  *
  * 同目录不是风格问题：`renameFile` 不跨文件系统（`types.d.ts:189`「Does not copy across
  * filesystems」），用 `createTempFile` 会落到系统 temp 而被内核拒绝。

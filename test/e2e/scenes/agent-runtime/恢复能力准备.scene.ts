@@ -1,5 +1,5 @@
 import { invoke } from "@tauri-apps/api/core"
-import { continueInterruptedRun, harnessSlots } from "@/services/engine/pi"
+import { continueInterruptedRun, harnessSlots } from "@/services/engine/harness"
 import { initChat, sendMessage } from "@/services/agent/runner"
 import { getActiveSessionId } from "@/services/session"
 import { deleteSkill, getSkillsPromptBlock, upsertSkill } from "@/services/skill"

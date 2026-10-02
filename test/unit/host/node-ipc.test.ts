@@ -395,21 +395,15 @@ describe("skill 目录指纹", () => {
 })
 
 describe("记忆文件与日志", () => {
-  it("init_memory_files 生成 5 个模板并返回 memory 目录", async () => {
+  it("init_memory_files 只生成 V1RTUAL 指令文件并返回 memory 目录", async () => {
     const memory = await invoke<string>("init_memory_files")
     expect(memory).toBe(join(root, "memory"))
-    expect(readdirSync(memory).sort()).toEqual([
-      "CANDY.md",
-      "MEMORY.md",
-      "Outside.md",
-      "Project.md",
-      "User.md",
-    ])
-    expect(readFileSync(join(memory, "MEMORY.md"), "utf8")).toContain("## 长期记忆")
-    // 已存在的内容不被覆盖（模板只在缺失时写）。
-    await invoke("file_write", { path: join(memory, "User.md"), content: "我的画像" })
+    expect(readdirSync(memory).sort()).toEqual(["V1RTUAL.md"])
+    expect(readFileSync(join(memory, "V1RTUAL.md"), "utf8")).toContain("## 指令")
+    // 已存在的人工指令不被覆盖（模板只在缺失时写）。
+    await invoke("file_write", { path: join(memory, "V1RTUAL.md"), content: "我的指令" })
     await invoke("init_memory_files")
-    expect(readFileSync(join(memory, "User.md"), "utf8")).toBe("我的画像")
+    expect(readFileSync(join(memory, "V1RTUAL.md"), "utf8")).toBe("我的指令")
   })
 
   it("log_messages 原样落到 {logs}/deskpet.log", async () => {

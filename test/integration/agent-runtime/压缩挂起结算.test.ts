@@ -5,7 +5,7 @@
 // lane 操作取消（=结算）—— 只返回 failed 会让槽背上一个永不结算的操作：`waitForIdle`
 // 挂死、下一次运行永远被判定 busy（HN-08）。
 //
-// 归 L3 的理由（按 import 判定 + 实测）：场景 import `@/services/engine/pi`（HarnessSlot）
+// 归 L3 的理由（按 import 判定 + 实测）：场景 import `@/services/engine/harness`（HarnessSlot）
 // 与 `@/services/session/store`，命中规则 6 的 L2 禁入清单；deferred 分支与 waitForIdle /
 // hasOpenOperation 都在进程内（pi-agent-core 的 lane），Node 适配层下实测跑通。
 //
@@ -30,7 +30,7 @@ import { fakeText, installFakeProvider, lastRequestText } from "../../host/fake-
 import { setTestDataRoot } from "../../host/node-ipc"
 import { assistantTexts, countTexts, sessionEntries, sessionMessages } from "../../host/session-entries"
 import { standardSetup } from "../../host/standard-setup"
-import { harnessSlots } from "@/services/engine/pi"
+import { harnessSlots } from "@/services/engine/harness"
 import { initChat } from "@/services/agent/runner"
 import { initPaths } from "@/services/paths"
 import { getActiveSessionId } from "@/services/session/store"

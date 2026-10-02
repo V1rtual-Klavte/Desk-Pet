@@ -62,7 +62,7 @@ const dreamingMode = ref(memoryConfig.dreamingMode);
 const dreamingIdleSeconds = ref(memoryConfig.dreamingIdleSeconds);
 const dreamingMinIntervalMinutes = ref(memoryConfig.dreamingMinIntervalMinutes);
 const dreamingMaxDailyTokens = ref(memoryConfig.dreamingMaxDailyTokens);
-const candyInstructions = ref("");
+const v1rtualInstructions = ref("");
 
 // ── Plan 设置 ──
 const planEnabled = ref(planConfig.enabled);
@@ -426,10 +426,10 @@ onMounted(async () => {
     : false;
 
   try {
-    const { MemoryService } = await import("@/services/agent/memory");
-    await MemoryService.init();
-    const candy = MemoryService.getCandyInstructionsSync();
-    if (candy) candyInstructions.value = candy.replace(/^[\s\S]*?指令\]\n/, "").trim();
+    const { loadV1rtualInstructions, getV1rtualInstructionsSync } = await import("@/services/context/instructions");
+    await loadV1rtualInstructions();
+    const loaded = getV1rtualInstructionsSync();
+    if (loaded) v1rtualInstructions.value = loaded.replace(/^[\s\S]*?指令\]\n/, "").trim();
   } catch (e) {
     log.warn("记忆指令读取失败:", formatError(e));
   }
@@ -472,7 +472,7 @@ defineExpose({
   dreamingMinIntervalMinutes,
   dreamingMaxDailyTokens,
   personalityActive,
-  candyInstructions,
+  v1rtualInstructions,
   planEnabled,
   planComplexityThreshold,
   planComplexityEval,
@@ -723,7 +723,7 @@ defineExpose({
     <div class="fld"><span class="fn">空闲等待</span><input class="inp-num" type="number" v-model.number="dreamingIdleSeconds" min="30" max="3600" /> 秒</div>
     <div class="fld"><span class="fn">最小间隔</span><input class="inp-num" type="number" v-model.number="dreamingMinIntervalMinutes" min="1" max="1440" /> 分钟</div>
     <div class="fld"><span class="fn">每日模型预算</span><input class="inp-num" type="number" v-model.number="dreamingMaxDailyTokens" min="0" max="100000" /> tokens</div>
-    <div class="fld-col" style="margin-top:4px"><span class="fn">CANDY.md 指令</span><textarea class="inp txa mono" v-model="candyInstructions" rows="2" placeholder="例如：叫我小明、用日语回复..."></textarea></div>
+    <div class="fld-col" style="margin-top:4px"><span class="fn">V1RTUAL.md 指令</span><textarea class="inp txa mono" v-model="v1rtualInstructions" rows="2" placeholder="例如：叫我小明、用日语回复..."></textarea></div>
   </div>
 </div>
 </template>

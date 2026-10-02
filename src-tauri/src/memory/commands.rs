@@ -39,9 +39,10 @@ pub fn memory_query(
     query: String,
     scope: Option<String>,
     scope_id: Option<String>,
+    session_id: Option<String>,
     limit: Option<i64>,
 ) -> AppResult<Vec<Value>> {
-    state.0.query(&query, scope.as_deref(), scope_id.as_deref(), limit.unwrap_or(12))
+    state.0.query(&query, scope.as_deref(), scope_id.as_deref(), session_id.as_deref(), limit.unwrap_or(12))
 }
 
 #[tauri::command]
@@ -71,8 +72,8 @@ pub fn memory_apply_change(
 }
 
 #[tauri::command]
-pub fn memory_job_start(state: tauri::State<'_, MemoryState>, phase: String) -> AppResult<Value> {
-    state.0.job_start(&phase)
+pub fn memory_job_start(state: tauri::State<'_, MemoryState>, phase: String, lease_owner: String) -> AppResult<Value> {
+    state.0.job_start(&phase, &lease_owner)
 }
 
 #[tauri::command]
@@ -87,8 +88,8 @@ pub fn memory_job_checkpoint(
 }
 
 #[tauri::command]
-pub fn memory_job_cancel(state: tauri::State<'_, MemoryState>, job_id: String) -> AppResult<Value> {
-    state.0.job_cancel(&job_id)
+pub fn memory_job_cancel(state: tauri::State<'_, MemoryState>, job_id: String, lease_owner: String) -> AppResult<Value> {
+    state.0.job_cancel(&job_id, &lease_owner)
 }
 
 #[tauri::command]
@@ -145,6 +146,17 @@ pub fn memory_rebuild(state: tauri::State<'_, MemoryState>) -> AppResult<i64> {
 }
 
 #[tauri::command]
-pub fn memory_restore(state: tauri::State<'_, MemoryState>, backup_path: String) -> AppResult<i64> {
-    state.0.restore(std::path::Path::new(&backup_path))
+pub fn memory_restore(
+    state: tauri::State<'_, MemoryState>,
+    paths: tauri::State<'_, crate::paths::AppPaths>,
+    backup_path: String,
+) -> AppResult<i64> {
+    let requested = std::path::Path::new(&backup_path);
+    let backups = paths.memory.join("backups");
+    let resolved = requested.canonicalize().map_err(|_| crate::error::AppError::PathNotFound(backup_path.clone()))?;
+    let base = backups.canonicalize().map_err(|_| crate::error::AppError::PathNotFound(backups.to_string_lossy().to_string()))?;
+    if !resolved.starts_with(&base) || resolved.is_dir() {
+        return Err(crate::error::AppError::PathEscape);
+    }
+    state.0.restore(&resolved)
 }

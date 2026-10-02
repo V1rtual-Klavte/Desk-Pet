@@ -1,6 +1,6 @@
-// Pi AI gateway for Desk-Pet's OpenAI-compatible provider configuration.
+// Pi AI gateway for V1rtual-Desk-Pet's OpenAI-compatible provider configuration.
 //
-// 这里是「Desk-Pet 配置 → pi-ai 调用」的唯一出口：主链路（runtime.ts）用
+// 这里是「V1rtual-Desk-Pet 配置 → pi-ai 调用」的唯一出口：主链路（runtime.ts）用
 // piStream，一次性文本调用（planner / 压缩 / 记忆 / 阶段文案）用 completePiText。
 // 两者共用同一套模型解析、reasoning 映射与网络防护。
 
@@ -116,7 +116,7 @@ export function toPiAgentThinkingLevel(effort: ThinkingEffort | undefined): "off
 }
 
 /**
- * Desk-Pet 的思考强度 → pi-ai 的 `reasoning` 档位。
+ * V1rtual-Desk-Pet 的思考强度 → pi-ai 的 `reasoning` 档位。
  * `auto` 返回 undefined：不指定档位，由模型自己决定（对齐旧 provider 不传 reasoning_effort 的行为）。
  */
 export function toPiReasoningLevel(effort: ThinkingEffort | undefined): ThinkingLevel | undefined {

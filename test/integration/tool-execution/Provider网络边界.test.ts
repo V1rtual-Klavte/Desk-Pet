@@ -6,7 +6,7 @@
 // 取消向上游传播 —— 不驱动模型、不碰 IPC。原场景未声明 entry（默认 runtime），会白跑
 // 一次真实模型；迁到 L3 后这些断言以朴素 vitest 直接执行。
 //
-// 归属 L3（不是 L2）的理由：import `@/services/engine/pi`（pi barrel 会带出 runtime.ts，
+// 归属 L3（不是 L2）的理由：import `@/services/engine/harness`（pi barrel 会带出 runtime.ts，
 // 规则 6 的 L2 禁入清单）；本文件实际只调用其中的零依赖网络防护叶子。
 import { describe, expect, it } from "vitest"
 
@@ -15,7 +15,7 @@ import {
   capProviderResponseBody,
   createProviderFetchGuard,
   validateProviderUrl,
-} from "@/services/engine/pi"
+} from "@/services/engine/harness"
 
 describe("Provider 网络边界", () => {
   it("Provider URL 协议边界与响应体上限 [tool-provider-network-boundary]", async () => {

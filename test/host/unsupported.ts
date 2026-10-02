@@ -14,7 +14,7 @@
  * 目录见 docs/history/implementation/测试分层重构契约-2026-09-29基线.md「宿主分层」的不可复现表。
  */
 export const RUST_ONLY_COMMANDS = [
-  // tool_exec.rs / bash_policy.rs：层 1 硬基线 + 系统路径保护 + 凭据拦截，调用方不可关闭
+  // tool_exec/mod.rs / bash_policy.rs：层 1 硬基线 + 系统路径保护 + 凭据拦截，调用方不可关闭
   "bash_exec", "bash_cancel",
   // mcp_bridge.rs：stdio 子进程
   "mcp_spawn", "mcp_send", "mcp_kill",
@@ -27,6 +27,11 @@ export const RUST_ONLY_COMMANDS = [
   "open_windows_sim", "close_windows_sim", "pause_monitor", "resume_monitor",
   // 桌面副作用
   "app_open", "export_profile_zip", "restore_default_resources",
+  // MemoryStore/FTS/transactions are Rust-owned; Node must not fake them.
+  "memory_status", "memory_list", "memory_detail", "memory_register_sources", "memory_query", "memory_get_items",
+  "memory_apply_change", "memory_job_start", "memory_job_checkpoint", "memory_job_cancel", "memory_job_resume",
+  "memory_job_sources", "memory_candidates_add", "memory_review_batch", "memory_publish_batch", "memory_export",
+  "memory_backup", "memory_rebuild", "memory_restore",
 ] as const
 
 export type RustOnlyCommand = (typeof RUST_ONLY_COMMANDS)[number]

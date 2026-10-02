@@ -1,4 +1,4 @@
-import { harnessSlots } from "@/services/engine/pi"
+import { harnessSlots } from "@/services/engine/harness"
 import { initChat } from "@/services/agent/runner"
 import { getActiveSessionId } from "@/services/session"
 import { fakeText, installFakeProvider } from "../../../host/fake-provider"

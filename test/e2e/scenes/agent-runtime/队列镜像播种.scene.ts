@@ -1,5 +1,5 @@
-import { getInterruptedRun, harnessSlots, listQueuedInputs } from "@/services/engine/pi"
-import type { HarnessQueuedItem } from "@/services/engine/pi"
+import { getInterruptedRun, harnessSlots, listQueuedInputs } from "@/services/engine/harness"
+import type { HarnessQueuedItem } from "@/services/engine/harness"
 import { initChat, sendMessage } from "@/services/agent/runner"
 import { getActiveSessionId } from "@/services/session"
 import { getCommandReply } from "@/services/personality"

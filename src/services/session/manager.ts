@@ -24,7 +24,7 @@ import { prependSessionHistory, removeSessionHistory, renameSessionHistory, sess
 import { messagesFromEntries } from "./read-model"
 import { createLogger } from "@/services/logger"
 import { formatError, reportError } from "@/services/error"
-import { harnessSlots } from "@/services/engine/pi"
+import { harnessSlots } from "@/services/engine/harness"
 import { cancelSessionPlans } from "@/services/engine/plan-confirmation"
 
 const log = createLogger("Session")

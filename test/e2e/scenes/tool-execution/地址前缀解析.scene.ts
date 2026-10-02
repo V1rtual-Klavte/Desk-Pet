@@ -3,7 +3,7 @@ import type { Entry } from "@earendil-works/pi-agent-core"
 import { fakeText, fakeToolCall, installFakeProvider } from "../../../host/fake-provider"
 import { MIN_ADDRESS_PREFIX, estimateContextTokens, isUniqueAddressRef, resolveAddressRef, shortenAddresses, toolResultTokenBudget } from "@/services/context"
 import { TOOL_POLICY_VERSION, createTranscriptTool, defineTool, executeToolDefinition, register, unregister } from "@/services/tool"
-import { harnessSlots, resolvePiTurnModel } from "@/services/engine/pi"
+import { harnessSlots, resolvePiTurnModel } from "@/services/engine/harness"
 import { getActiveSessionId } from "@/services/session"
 import { sessionEntries } from "../../../host/session-entries"
 

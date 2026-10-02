@@ -1,4 +1,4 @@
-import { describeInputDelivery, PROMPT_SNAPSHOT_ENTRY } from "@/services/engine/pi"
+import { describeInputDelivery, PROMPT_SNAPSHOT_ENTRY } from "@/services/engine/harness"
 import { initChat, sendMessage } from "@/services/agent/runner"
 import { getActiveSessionId } from "@/services/session"
 import { registerBlockingTool } from "../../../host/blocking-tool"

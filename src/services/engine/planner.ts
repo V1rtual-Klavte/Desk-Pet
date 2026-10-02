@@ -4,7 +4,7 @@
 // ==========================================
 
 import { getToolByName, listAll, type ToolDef } from "@/services/tool"
-import type { PiSubAgentOutput, PiSubAgentScope, PiTextCallAudit } from "@/services/engine/pi"
+import type { PiSubAgentOutput, PiSubAgentScope, PiTextCallAudit } from "@/services/engine/harness"
 import type { ThinkingEffort } from "@/services/agent/types"
 import type { PlanEffectClass, PlanRecord, PlanStepRecord } from "@/services/engine/runtime"
 import { planConfig } from "@/services/config"
@@ -80,7 +80,7 @@ export async function evaluateComplexity(
 
   // 4. LLM 自判断（轻量 prompt）
   try {
-    const { completePiText } = await import("@/services/engine/pi")
+    const { completePiText } = await import("@/services/engine/harness")
     const resp = await completePiText({
       purpose: "planner",
       systemPrompt: "你是一个复杂度评估器。只回复1-5的数字，不要任何解释。",
@@ -123,7 +123,7 @@ export async function generatePlan(
     .map(t => `- ${t.name}: ${t.description}`)
     .join("\n")
 
-  const systemPrompt = `你是糖糖桌宠的任务规划器。${cardRole}
+  const systemPrompt = `你是虚拟桌宠的任务规划器。${cardRole}
 
 用户的请求可能很复杂，需要拆解为多个步骤执行。
 
@@ -154,7 +154,7 @@ ${toolList}
 - allowedTools 为空表示可用所有工具
 - 只输出 JSON，不要其他内容`
 
-  const { completePiText } = await import("@/services/engine/pi")
+  const { completePiText } = await import("@/services/engine/harness")
 
   const resp = await completePiText({
     purpose: "planner",
@@ -418,7 +418,7 @@ async function executeStep(
   config: ExecutePlanConfig,
   callbacks: ExecutePlanCallbacks,
 ): Promise<PiSubAgentOutput> {
-  const stepPrompt = `你是糖糖桌宠的子代理，角色: ${step.role || "执行员"}。
+  const stepPrompt = `你是虚拟桌宠的子代理，角色: ${step.role || "执行员"}。
 正在执行计划第 ${step.id} 步: ${step.description}
 
 可用工具由系统注入。
@@ -450,7 +450,7 @@ async function executeStep(
     tools.push(...listAll())
   }
 
-  const { runPiSubAgent } = await import("@/services/engine/pi")
+  const { runPiSubAgent } = await import("@/services/engine/harness")
   const audit = config.sessionId
     ? { sessionId: config.sessionId, ...(config.planId ? { planId: config.planId } : {}), stepId: String(step.id) }
     : undefined

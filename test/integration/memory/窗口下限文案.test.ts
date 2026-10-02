@@ -5,7 +5,7 @@
 // 同一条下限有两个归因：设置页报的是「你填的值太低」（可改配置），模型解析报的是
 // 「模型目录的已知窗口太小」（改配置没用）。归因错了，用户会去改一个本来合法的值。
 //
-// 归 L3 的理由：接线断言经 `resolvePiTurnModel`（`@/services/engine/pi` 会带出 runtime 的 IPC 依赖）。
+// 归 L3 的理由：接线断言经 `resolvePiTurnModel`（`@/services/engine/harness` 会带出 runtime 的 IPC 依赖）。
 import { mkdtempSync, rmSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
@@ -15,7 +15,7 @@ import { setTestDataRoot } from "../../host/node-ipc"
 import { installFakeProvider } from "../../host/fake-provider"
 import { MIN_CONTEXT_WINDOW, contextWindowError } from "@/services/context"
 import { aiConfig, getOverride, setOverride } from "@/services/config"
-import { resetPiRuntimeProviderForTest, resolvePiTurnModel } from "@/services/engine/pi"
+import { resetPiRuntimeProviderForTest, resolvePiTurnModel } from "@/services/engine/harness"
 import { formatError } from "@/services/error"
 
 /** 原设置页文案里的那句话：两个调用点共用下限，但归因不能共用。 */

@@ -1,4 +1,4 @@
-// Desk-Pet 的 AgentHarness 运行槽（H-2：运行内核替换）。
+// V1rtual-Desk-Pet 的 AgentHarness 运行槽（H-2：运行内核替换）。
 //
 // 每个 App 会话一个槽：一个 JsonlSessionRepo 会话 + 一条 "main" lane。
 // Harness 承担模型/工具循环、持久 inbox（steer/followUp）、操作记录与取消收尾；

@@ -450,7 +450,7 @@ function readLooseFallbacks(text: string, defaults: FallbackReplies): FallbackRe
 
 /**
  * 为指定 Card 生成阶段文案（阻塞 LLM 调用）
- * 请求走 engine/pi 的 completePiText，复用主链路的模型解析与网络边界
+ * 请求走 engine/harness 的 completePiText，复用主链路的模型解析与网络边界
  * 写盘经 stages-file 的段级合并，只覆写 stages 段、不动变量区
  * @returns 成功的 StagePrompts，失败返回 null
  */
@@ -466,7 +466,7 @@ export async function generateStagesForCard(card: PersonalityCard): Promise<Stag
   log.info("开始生成 stages:", cardId)
 
   try {
-    const { completePiText } = await import("@/services/engine/pi")
+    const { completePiText } = await import("@/services/engine/harness")
     const resp = await completePiText({
       purpose: "stages",
       systemPrompt: "你是一个 JSON 生成器。你的唯一任务是根据模板输出 JSON 对象。不要输出角色对话、不要输出叙述文字、不要输出任何非 JSON 内容。只输出一个完整 JSON 对象。",

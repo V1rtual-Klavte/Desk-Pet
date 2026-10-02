@@ -8,7 +8,7 @@
 //   `harness/runtime/progress.js` 每个流式 delta 一次 `lane.command`
 //     → `{ kind: "commit", writes: [commitWrite(item)] }`
 //     → `JsonlStorage.applyCommit` → `fileSystem.appendFile`（全仓唯一一处 appendFile）
-//     → 本仓 `FrameBufferingFileSystem` 按「帧 append / 非帧」分流（`engine/pi/session-frame-buffer.ts`）。
+//     → 本仓 `FrameBufferingFileSystem` 按「帧 append / 非帧」分流（`engine/harness/session-frame-buffer.ts`）。
 //   单写事务落成「单个 JSON 对象 + 换行」，多写事务落成 JSON 数组（一条多写事务 = 一行）。
 //
 // 为什么由 `session.appendList(...)` 驱动真实 commit，而不是手拼 JSON 行：行里的 `seq` 由
@@ -43,11 +43,11 @@ import {
   FRAME_FLUSH_FAILURE_MARK,
   FrameBufferingFileSystem,
   flushSessionFrameWrites,
-} from "@/services/engine/pi"
+} from "@/services/engine/harness"
 // 判别器是「这一行是帧」的唯一真相源，但没进 barrel（barrel 只导出四个名字）；
 // 测试按需直连该模块，不去改动冻结中的实现目录。
-import { isFrameAppendTransaction } from "@/services/engine/pi/session-frame-buffer"
-import type { PiSessionRepo } from "@/services/engine/pi"
+import { isFrameAppendTransaction } from "@/services/engine/harness/session-frame-buffer"
+import type { PiSessionRepo } from "@/services/engine/harness"
 import { acquirePiSession, createPiSession, deletePiSession, releasePiSession } from "@/services/session"
 import { initPaths, runtimePath } from "@/services/paths"
 import { TauriExecutionEnv } from "@/services/tool/pi/tauri-execution-env"
@@ -56,7 +56,7 @@ type JsonlSession = Session<JsonlSessionMetadata>
 
 const textEncoder = new TextEncoder()
 
-/** 字节口径与 Rust 侧 `content.len()`（`tool_exec.rs` 的单次写上限校验）一致，不用 `String.length`。 */
+/** 字节口径与 Rust 侧 `content.len()`（`tool_exec/mod.rs` 的单次写上限校验）一致，不用 `String.length`。 */
 function byteLength(text: string): number {
   return textEncoder.encode(text).byteLength
 }

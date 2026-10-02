@@ -3,6 +3,7 @@
 use super::protocol::{MEMORY_COMMANDS, MEMORY_SCHEMA_VERSION};
 use super::schema::SCHEMA_VERSION;
 use super::MemoryStore;
+use super::store::payload_hash;
 use crate::error::AppError;
 use serde_json::{json, Value};
 use std::path::PathBuf;
@@ -82,13 +83,13 @@ fn chinese_two_character_queries_match_via_like_fallback() {
 
     // 「咖啡」只有两个 Unicode 字符：FTS5 trigram 的 MATCH 对它永远零命中，
     // 召回必须靠短词 LIKE 回退才能命中 —— 这是中文陪伴场景最常见的查询形态。
-    let short = store.query("咖啡", None, None, 10).unwrap();
+    let short = store.query("咖啡", None, None, None, 10).unwrap();
     assert_eq!(short.len(), 1, "两字中文查询没有命中（短词回退失效）");
     assert_eq!(short[0]["draft"]["content"], json!("用户喜欢喝冰美式咖啡"));
 
     // 三字以上的查询走 FTS 正常命中；无关查询不得返回任何条目。
-    assert_eq!(store.query("冰美式", None, None, 10).unwrap().len(), 1);
-    assert!(store.query("用户的银行卡号", None, None, 10).unwrap().is_empty());
+    assert_eq!(store.query("冰美式", None, None, None, 10).unwrap().len(), 1);
+    assert!(store.query("用户的银行卡号", None, None, None, 10).unwrap().is_empty());
 }
 
 #[test]
@@ -103,22 +104,35 @@ fn query_filters_scope_and_expiry() {
     add(&store, "op-1", 0, &draft("用户养了一只叫团子的猫", vec!["src-1"]));
     let mut card_draft = draft("用户在糖糖这里喜欢被叫老板", vec!["src-2"]);
     card_draft["scope"] = json!("card");
-    card_draft["scopeId"] = json!("candy");
+    card_draft["scopeId"] = json!("v1rtual");
     add(&store, "op-2", 1, &card_draft);
     let mut expiring = draft("用户这周在出差", vec!["src-1"]);
     expiring["expiresAt"] = json!(1_000i64);
     add(&store, "op-3", 2, &expiring);
 
-    assert_eq!(store.query("猫", Some("user"), None, 10).unwrap().len(), 1);
+    assert_eq!(store.query("猫", Some("user"), None, None, 10).unwrap().len(), 1);
     assert!(
-        store.query("老板", Some("user"), None, 10).unwrap().is_empty(),
+        store.query("老板", Some("user"), None, None, 10).unwrap().is_empty(),
         "user 范围查询返回了 card 范围的记忆"
     );
-    assert_eq!(store.query("老板", Some("card"), Some("candy"), 10).unwrap().len(), 1);
+    assert_eq!(store.query("老板", Some("card"), Some("v1rtual"), None, 10).unwrap().len(), 1);
     assert!(
-        store.query("出差", None, None, 10).unwrap().is_empty(),
+        store.query("出差", None, None, None, 10).unwrap().is_empty(),
         "已过有效期的记忆仍被召回"
     );
+}
+
+#[test]
+fn future_and_closed_validity_intervals_are_not_recalled() {
+    let (_fixture, store) = Fixture::new();
+    store.register_sources(&[source("src-1", "entry-1", "hash-1")]).unwrap();
+    let mut future = draft("未来才生效的偏好", vec!["src-1"]);
+    future["validFrom"] = json!(4_102_444_800_000i64);
+    add(&store, "op-future", 0, &future);
+    let mut closed = draft("已经失效的偏好", vec!["src-1"]);
+    closed["validTo"] = json!(1_000i64);
+    add(&store, "op-closed", 1, &closed);
+    assert!(store.query("偏好", None, None, None, 10).unwrap().is_empty());
 }
 
 #[test]
@@ -135,30 +149,31 @@ fn forget_blocks_recall_and_reingest_and_rebuild() {
     store
         .apply_change("op-forget", revision, "forget", Some(&id), None, None)
         .expect("遗忘提交");
-    assert!(store.query("杭州", None, None, 10).unwrap().is_empty(), "遗忘后仍能召回");
+    assert!(store.query("杭州", None, None, None, 10).unwrap().is_empty(), "遗忘后仍能召回");
 
     // 同一来源事件不得重新进入候选：索引重建与旧水位补扫都要被拦住。
     let written = store.register_sources(&[source("src-1", "entry-1", "hash-1")]).unwrap();
     assert_eq!(written, 0, "被遗忘的来源重新登记成功（防回灌失效）");
     assert_eq!(store.rebuild().unwrap(), 0, "重建索引复活了已遗忘的条目");
-    assert!(store.query("杭州", None, None, 10).unwrap().is_empty());
+    assert!(store.query("杭州", None, None, None, 10).unwrap().is_empty());
+    assert!(store.detail(&id).unwrap().is_none(), "遗忘后 detail 仍返回正文");
 }
 
 #[test]
 fn pending_candidates_stay_out_of_recall_until_published() {
     let (_fixture, store) = Fixture::new();
     store.register_sources(&[source("src-1", "entry-1", "hash-1")]).unwrap();
-    let job = store.job_start("review").unwrap();
+    let job = store.job_start("review", "host").unwrap();
     let job_id = job["id"].as_str().unwrap().to_string();
     let written = store
         .candidates_add(
             &job_id,
-            &[json!({"draft": draft("用户喜欢喝拿铁", vec!["src-1"]), "payloadHash": "hash-a"})],
+            &[json!({"draft": draft("用户喜欢喝拿铁", vec!["src-1"]), "payloadHash": payload_hash(&draft("用户喜欢喝拿铁", vec!["src-1"]))})],
         )
         .unwrap();
     assert_eq!(written, 1);
     assert!(
-        store.query("拿铁", None, None, 10).unwrap().is_empty(),
+        store.query("拿铁", None, None, None, 10).unwrap().is_empty(),
         "未审批的候选进入了召回"
     );
 
@@ -172,7 +187,7 @@ fn pending_candidates_stay_out_of_recall_until_published() {
 
     let revision = store.status().unwrap().revision;
     store.publish_batch(&job_id, &[candidate_id], revision).expect("发布获批候选");
-    assert_eq!(store.query("拿铁", None, None, 10).unwrap().len(), 1);
+    assert_eq!(store.query("拿铁", None, None, None, 10).unwrap().len(), 1);
     assert!(store.review_batch(&job_id).unwrap().is_empty(), "已发布的候选仍在待审清单里");
 }
 

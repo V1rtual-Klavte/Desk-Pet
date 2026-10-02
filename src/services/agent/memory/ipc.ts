@@ -72,10 +72,10 @@ export async function registerMemorySources(sources: MemorySource[]): Promise<nu
 
 export async function queryMemory(
   query: string,
-  options: { scope?: MemoryScope; scopeId?: string; limit?: number } = {},
+  options: { scope?: MemoryScope; scopeId?: string; limit?: number; sessionId?: string } = {},
 ): Promise<MemoryItem[]> {
   if (!query.trim()) return []
-  return invoke("memory_query", { query, scope: options.scope, scopeId: options.scopeId, limit: options.limit })
+  return invoke("memory_query", { query, scope: options.scope, scopeId: options.scopeId, sessionId: options.sessionId, limit: options.limit })
 }
 
 export async function getMemoryItems(ids: string[]): Promise<MemoryItem[]> {
@@ -89,7 +89,7 @@ export async function applyMemoryChange(request: MemoryChangeRequest): Promise<n
 }
 
 export async function startMemoryJob(phase: MemoryJob["phase"]): Promise<MemoryJob> {
-  return invoke("memory_job_start", { phase })
+  return invoke("memory_job_start", { phase, leaseOwner: "memory-dreaming" })
 }
 
 export async function checkpointMemoryJob(
@@ -101,8 +101,8 @@ export async function checkpointMemoryJob(
   return invoke("memory_job_checkpoint", { jobId, cursor, leaseOwner, leaseMs })
 }
 
-export async function cancelMemoryJob(jobId: string): Promise<MemoryJob> {
-  return invoke("memory_job_cancel", { jobId })
+export async function cancelMemoryJob(jobId: string, leaseOwner = "memory-dreaming"): Promise<MemoryJob> {
+  return invoke("memory_job_cancel", { jobId, leaseOwner })
 }
 
 export async function resumeMemoryJob(jobId: string, leaseOwner: string): Promise<MemoryJob> {

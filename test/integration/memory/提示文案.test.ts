@@ -2,7 +2,7 @@
 // 提示文案 —— 从 test/e2e/scenes/memory/提示文案.scene.ts 迁到 L3
 // ==========================================
 //
-// 动态提示的文案此前散在三处（context/builder、engine/pi/runtime、engine/pi/model-gateway）：
+// 动态提示的文案此前散在三处（context/builder、engine/harness/runtime、engine/harness/model-gateway）：
 // 改一处就分叉，而且没有任何断言拦它。这个测试钉住「只有一处定义」这件事本身。
 //
 // 当前时间的落位：它此前拼在 `composeDynamicPrompt` 末尾、落在 dynamic:runtime 块里。
@@ -11,11 +11,11 @@
 // 瞬时消息附在请求视图最末，**system prompt 里一个字符都不该有**。这个测试同时钉住
 // 「动态提示只剩池正文 + 强度后缀」与「注记的形状与瞬时身份」。
 //
-// 归 L3 的理由：注记的生产者是 `@/services/engine/pi`（会带出 runtime 的 IPC 依赖）。
+// 归 L3 的理由：注记的生产者是 `@/services/engine/harness`（会带出 runtime 的 IPC 依赖）。
 import { describe, expect, it } from "vitest"
 
 import { buildPrompt, CHAT_THINKING_HINTS, ONE_SHOT_LOW_EFFORT_HINT, composeDynamicPrompt, currentTimeNote, estimateContextTokens } from "@/services/context"
-import { createTurnNoteMessage } from "@/services/engine/pi"
+import { createTurnNoteMessage } from "@/services/engine/harness"
 import { isTransientInputMessage, TURN_NOTE_CUSTOM_TYPE } from "@/services/engine/runtime"
 import { formatPoolForPrompt } from "@/services/personality/variable-pool"
 import type { VariablePool } from "@/services/personality/variable-pool"
@@ -100,7 +100,7 @@ describe("提示文案", () => {
       thinkingEffort: "high",
       tools: [],
       contextMaxTokens: 131_072,
-      candyInstructions: "",
+      v1rtualInstructions: "",
       skillsPromptBlock: "",
     }, null, POOL)
     expect(built.systemPrompt, "buildPrompt 的系统提示没有消费 CHAT_THINKING_HINTS.high").toContain(CHAT_THINKING_HINTS.high)

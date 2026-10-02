@@ -33,8 +33,8 @@ import type { JsonlSessionMetadata, SessionRepo } from "@earendil-works/pi-agent
 import { afterAll, beforeAll, describe, expect, it } from "vitest"
 
 import { setTestDataRoot } from "../../host/node-ipc"
-import { createPiSessionRepo } from "@/services/engine/pi"
-import type { PiSessionRepo } from "@/services/engine/pi"
+import { createPiSessionRepo } from "@/services/engine/harness"
+import type { PiSessionRepo } from "@/services/engine/harness"
 import { initPaths, runtimePath } from "@/services/paths"
 
 let dataRoot = ""

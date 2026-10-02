@@ -1,5 +1,5 @@
-import { harnessSlots, listQueuedInputs, withdrawQueuedInput } from "@/services/engine/pi"
-import type { HarnessQueuedItem } from "@/services/engine/pi"
+import { harnessSlots, listQueuedInputs, withdrawQueuedInput } from "@/services/engine/harness"
+import type { HarnessQueuedItem } from "@/services/engine/harness"
 import { initChat, sendMessage } from "@/services/agent/runner"
 import { getActiveSessionId } from "@/services/session"
 import { registerBlockingTool } from "../../../host/blocking-tool"

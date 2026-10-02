@@ -35,7 +35,7 @@ import type { AgentMessage } from "@earendil-works/pi-agent-core"
 
 import { setTestDataRoot } from "../../host/node-ipc"
 import { fakeText, installFakeProvider, lastRequestText } from "../../host/fake-provider"
-import { formatStructuredSummary, parseStructuredSummary } from "@/services/agent/memory"
+import { formatStructuredSummary, parseStructuredSummary } from "@/services/engine/compaction/structured-summary"
 import { DEFAULT_CONTEXT_WINDOW, contextBudget, estimateValueTokens, toolResultTokenBudget } from "@/services/context"
 import {
   COMPACTION_SLICE_RATIO,
@@ -67,7 +67,7 @@ let root = ""
 /**
  * 本文件装过的 provider：afterEach 按安装逆序逐个 restore（跨场景的注入点不留残留）。
  * 走 `installFakeProvider` 的返回值而不是 `resetPiRuntimeProviderForTest` —— 后者在
- * `@/services/engine/pi`，import 它会让这一层（L2）撞上规则 6。
+ * `@/services/engine/harness`，import 它会让这一层（L2）撞上规则 6。
  */
 const providerRestores: Array<() => void> = []
 

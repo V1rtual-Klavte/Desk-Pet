@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, ref, nextTick, onMounted, onUnmounted, watch } from "vue";
-import { chatHistory, sendMessage, getActiveSessionId, pushAssistantMessage, resumePausedInputs, stopActiveRun } from "@/services/agent";
+import { sendMessage, resumePausedInputs, stopActiveRun } from "@/services/agent";
+import { chatHistory, getActiveSessionId, pushAssistantMessage } from "@/services/session";
 import { playEventSound } from "@/services/audio/registry";
 import { conversationConfig, userConfig } from "@/services/config";
 import { getUiUrl } from "@/services/profile";

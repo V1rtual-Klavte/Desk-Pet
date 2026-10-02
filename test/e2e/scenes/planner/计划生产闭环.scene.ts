@@ -3,7 +3,7 @@ import { initChat, sendMessage, stopActiveRun } from "@/services/agent/runner"
 import { getActiveSessionId } from "@/services/session"
 import { planConfig, setOverride } from "@/services/config"
 import { DESKPET_SYSTEM_MESSAGE_ENTRY } from "@/services/engine/runtime"
-import { PLAN_CHECKPOINT_ENTRY, PLAN_STEP_RESULT_ENTRY } from "@/services/agent/memory"
+import { PLAN_CHECKPOINT_ENTRY, PLAN_STEP_RESULT_ENTRY } from "@/services/engine/plan/checkpoint-store"
 import { registerBlockingTool } from "../../../host/blocking-tool"
 import { fakeText, fakeToolCall, installFakeProvider } from "../../../host/fake-provider"
 import { planEndRecords, planInteractionRecords, planProgressRecords, planRecords } from "../../../host/plan-confirm-channel"
@@ -26,7 +26,7 @@ import type { SceneDef } from "../../../e2e/types"
  * `evaluateComplexity`，于是 `evaluateComplexity` 的 `startsWith("--plan")` force 分支永不命中；
  * 剥离后的正文又不含关键词（`complexityEval=keyword` 下 score=1），计划段因此一次都没进
  *（pl-11 的 101 字符回复正是被主回合直接吐出来的规划脚本）。这是产品缺陷，已修在
- * `engine/pi/runtime.ts`：复杂度判定看原文本，前缀只从交给规划 prompt 的正文里剥。场景断言未改。
+ * `engine/harness/runtime.ts`：复杂度判定看原文本，前缀只从交给规划 prompt 的正文里剥。场景断言未改。
  */
 const PLAN_JSON = '```json\n{"summary":"两件事","steps":[{"id":1,"description":"读取配置"},{"id":2,"description":"改写配置"},{"id":3,"description":"多余的一步"}]}\n```'
 const FIRST_TEXT = "第一步完成"

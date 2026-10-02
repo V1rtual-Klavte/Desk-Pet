@@ -1,4 +1,4 @@
-import { deliverActiveTurn, harnessSlots, listQueuedInputs } from "@/services/engine/pi"
+import { deliverActiveTurn, harnessSlots, listQueuedInputs } from "@/services/engine/harness"
 import { initChat, sendMessage } from "@/services/agent/runner"
 import { getActiveSessionId } from "@/services/session"
 import { inputEventId } from "@/services/engine/runtime/input-identity"

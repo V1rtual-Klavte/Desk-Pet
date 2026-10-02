@@ -5,7 +5,7 @@
 
 import type { ToolDeclaration, ThinkingEffort } from "@/services/agent/types"
 import { listAll, toToolDeclaration } from "@/services/tool"
-import { MemoryService } from "@/services/agent/memory"
+import { getV1rtualInstructionsSync } from "@/services/context/instructions"
 import { aiConfig } from "@/services/config"
 import { getSkillsPromptBlock } from "@/services/skill"
 import { formatPoolForPrompt } from "@/services/personality/variable-pool"
@@ -29,7 +29,7 @@ export interface BuildContextInput {
   maxOutputTokens?: number
   tools?: ToolDeclaration[]
   dynamicPrompt?: string
-  candyInstructions?: string
+  v1rtualInstructions?: string
   skillsPromptBlock?: string
 }
 
@@ -99,7 +99,7 @@ const WEEKDAY_LABELS = ["周日", "周一", "周二", "周三", "周四", "周�
  *
  * 分钟精度足够：秒级不给出额外信息，只会让每个回合的请求视图都不同。
  *
- * 消费者是 `engine/pi` 的 `createTurnNoteMessage`（尾随瞬时注记）——不在 `buildPrompt` 的
+ * 消费者是 `engine/harness` 的 `createTurnNoteMessage`（尾随瞬时注记）——不在 `buildPrompt` 的
  * 块里。放那里的原因见 `composeDynamicPrompt` 的注释：它每回合都变，进 system prompt
  * 就会把前缀缓存断在会话正文之前。
  */
@@ -134,12 +134,12 @@ function decideTools(input: BuildContextInput): ToolDeclaration[] {
   return input.tools ?? listAll().map(toToolDeclaration)
 }
 
-/** Builds complete, taint-preserving blocks. It never clips Card/CANDY/User/schema text. */
+/** Builds complete, taint-preserving blocks. It never clips Card/V1RTUAL/User/schema text. */
 export function buildPrompt(input: BuildContextInput, card: PersonalityCard | null, pool: VariablePool): BuildContextOutput {
   const contextMaxTokens = input.contextMaxTokens ?? aiConfig.contextMaxTokens
   const budget = contextBudget(contextMaxTokens, input.maxOutputTokens)
   const tools = decideTools(input)
-  const candy = input.candyInstructions ?? MemoryService.getCandyInstructionsSync()
+  const v1rtual = input.v1rtualInstructions ?? getV1rtualInstructionsSync()
   const toolProtocol = tools.length
     ? "你可以使用工具完成任务。需要工具时只输出工具调用。完成后基于结果简短回复。"
     : "请简短口语化回复。"
@@ -149,13 +149,13 @@ export function buildPrompt(input: BuildContextInput, card: PersonalityCard | nu
 
   const kernel = buildPromptBlocks([
     { blockId: "static:card", layer: "static", source: "personality-card", text: cardStaticPrompt(card), priority: 100, origin: "system", taint: "system" },
-    { blockId: "static:candy", layer: "static", source: "CANDY.md", text: candy, priority: 99, origin: "system", taint: "system" },
+    { blockId: "static:v1rtual", layer: "static", source: "V1RTUAL.md", text: v1rtual, priority: 99, origin: "system", taint: "system" },
     { blockId: "static:tool-protocol", layer: "static", source: "tool-protocol", text: toolProtocol, priority: 98, origin: "system", taint: "system" },
     // Provider sends declarations independently. This complete block only records their frozen budget/snapshot and stays out of systemPrompt.
     { blockId: "static:tool-schema", layer: "static", source: "tool-schema", text: toolSchemaSnapshot, priority: 97, origin: "system", taint: "system" },
     { blockId: "static:skill-catalog", layer: "static", source: "skill-catalog", text: skillCatalog, priority: 96, origin: "system", taint: "system" },
     { blockId: "dynamic:runtime", layer: "dynamic", source: "runtime", text: dynamic, priority: 90, origin: "system", taint: "system" },
-    // Summary remains derived session data; it never inherits CANDY's system-instruction taint.
+    // Summary remains derived session data; it never inherits V1RTUAL's system-instruction taint.
     { blockId: "memory:session-summary", layer: "memory", source: "session-summary", text: input.sessionSummary ?? "", priority: 70, origin: "assistant", taint: "derived" },
     { blockId: `ephemeral:${input.ephemeralOrigin ?? (input.isActiveMessage ? "active" : "none")}`,
       layer: "ephemeral", source: input.ephemeralOrigin ?? (input.isActiveMessage ? "active_monitor" : "none"),

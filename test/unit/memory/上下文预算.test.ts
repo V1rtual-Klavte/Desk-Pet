@@ -46,7 +46,7 @@ describe("上下文预算", () => {
 
     const fixed = [
       staticBlock("static:card", "personality-card", "固定角色规则"),
-      staticBlock("static:candy", "CANDY.md", "固定 CANDY 指令"),
+      staticBlock("static:v1rtual", "V1RTUAL.md", "固定 V1RTUAL 指令"),
       staticBlock("static:tool-protocol", "tool-protocol", "固定工具协议"),
       staticBlock("static:tool-schema", "tool-schema", "完整工具 schema".repeat(80)),
     ]

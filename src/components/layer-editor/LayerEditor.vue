@@ -4,7 +4,7 @@
 // 逻辑已提取至 useLayerEditor composable
 // ==========================================
 
-import { useLayerEditor } from "@/composables/useLayerEditor";
+import { useLayerEditor } from "./useLayerEditor";
 
 const {
   fileInput,

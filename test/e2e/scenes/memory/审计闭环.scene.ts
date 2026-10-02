@@ -1,4 +1,4 @@
-import { PROMPT_SNAPSHOT_ENTRY, harnessSlots } from "@/services/engine/pi"
+import { PROMPT_SNAPSHOT_ENTRY, harnessSlots } from "@/services/engine/harness"
 import { initChat, sendActiveMessage } from "@/services/agent/runner"
 import { getActiveSessionId } from "@/services/session"
 import { estimateContextTokens } from "@/services/context"

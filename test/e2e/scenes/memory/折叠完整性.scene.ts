@@ -48,7 +48,7 @@ import {
   harnessSlots,
   prepareFold,
   readFoldLog,
-} from "@/services/engine/pi"
+} from "@/services/engine/harness"
 import {
   acquirePiSession,
   getActiveSessionId,
