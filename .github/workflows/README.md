@@ -78,5 +78,5 @@ Actions 页面选 `Release` → Run workflow → 填一个**已存在**的 tag�
 
 ## 相关
 
-- 设计口径与验收标准：[发布与打包契约](../../docs/plans/active/发布与打包契约.md)
-- 逐任务实施记录：[发布与打包执行方案](../../docs/plans/active/发布与打包执行方案.md)
+- 产物位置、本地构建与常见失败：[工程参考](../../docs/current/development.md) 的「打包与发布」
+- 设计口径与尚未验收项：`docs/history/implementation/发布与打包契约-2026-10-02基线.md`

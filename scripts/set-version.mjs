@@ -80,7 +80,8 @@ function main() {
     console.log(`\n接下来：`)
     console.log(`  1. pnpm run test:types        # 同步 Cargo.lock 并确认编译`)
     console.log(`  2. git commit -am "chore(release): ${version}"`)
-    console.log(`  3. git tag v${version} && git push --follow-tags`)
+    console.log(`  3. git tag v${version} && git push && git push origin v${version}`)
+    console.log("     （tag 是轻量标签，--follow-tags 推不上去；发版流程见 .github/workflows/README.md）")
   } catch (error) {
     console.error(`版本号统一失败: ${error.message}`)
     process.exit(1)

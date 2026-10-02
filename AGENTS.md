@@ -184,4 +184,5 @@ pnpm run version:set <x.y.z>  # 发版：统一三处版本号
 - Conventional Commits：`<type>(<scope>): <中文描述>`；不加句号，一次提交一个主题，正文解释原因。
   scope 使用模块名，跨模块可省略；破坏性变更用 `!` 与 `BREAKING CHANGE`，是否提交遵循用户授权。
   当前实现不用内部版本号命名，发布版本以 Git tag 为准；tag 版本与 `tauri.conf.json`
-  的 `version` 由 `ci.yml` 的 `bundle-config` 校验一致，发版流程见[发布与打包契约](docs/plans/active/发布与打包契约.md)。
+  的 `version` 由 `ci.yml` 的 `bundle-config` 校验一致，推 tag 与发版流程见
+  [.github/workflows/README.md](.github/workflows/README.md)。
