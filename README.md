@@ -6,6 +6,24 @@
 [![Tauri](https://img.shields.io/badge/Tauri-v2-ffc131)](https://tauri.app)
 [![Vue](https://img.shields.io/badge/Vue-3-4fc08d)](https://vuejs.org)
 
+## 下载安装
+
+去 [Releases](https://github.com/V1rtual-Klavte/Desk-Pet/releases/latest) 取对应平台的文件
+（页内其余文件是自动更新用的，手动安装不需要）：
+
+| 平台 | 文件 | 说明 |
+|---|---|---|
+| macOS（Apple Silicon） | `虚拟桌宠_x.y.z_aarch64.dmg` | 打开后把应用拖进「应用程序」。暂不支持 Intel Mac |
+| Windows | `虚拟桌宠_x.y.z_x64-setup.exe` | 双击安装 |
+
+> **首次打开会被系统拦一下** —— 当前安装包**未做代码签名与公证**：
+> - macOS 提示「已损坏，无法打开」时，把应用拖进「应用程序」后执行
+>   `xattr -dr com.apple.quarantine /Applications/虚拟桌宠.app`，再打开。
+> - Windows 弹 SmartScreen「已保护你的电脑」时，点「更多信息 → 仍要运行」。
+
+装完之后不用手动追版本：应用启动约 30 秒后会检查一次更新，发现新版本会在聊天里
+发一条系统消息并弹出确认框，点「下载并安装」即可。
+
 ## 特性
 
 - **角色与人格**：Card 定义角色设定、语言风格与互动变量，同一桌宠可切换多个角色。
@@ -30,7 +48,9 @@ Tauri v2 · Vue 3 + TypeScript · Rust · Pi Agent Core
 
 pnpm 版本由 [package.json](package.json) 的 `packageManager` 指定。
 
-## 快速开始
+## 从源码运行
+
+上面下载的是打包产物；下面是把同一份代码跑起来的方式，两者等价。
 
 ```bash
 git clone https://github.com/V1rtual-Klavte/Desk-Pet.git
@@ -59,7 +79,7 @@ macOS 的窗口监控需要在「系统设置 → 隐私与安全性 → 辅助�
 |---|---|
 | `pnpm tauri dev` | 完整桌面开发环境 |
 | `pnpm dev` | 仅前端，不含 Rust IPC |
-| `pnpm tauri build` | 构建安装产物 |
+| `pnpm tauri build` | 构建安装产物（本地构建，产物在 `target/release/bundle/`；正式产物见 Releases 页） |
 | `pnpm run test:types` | TypeScript 类型检查与 Rust 编译检查 |
 | `pnpm run test:rust` | Rust 单元测试 |
 | `pnpm run test:e2e -- --module <模块>` | 运行指定模块的 E2E 场景 |

@@ -50,6 +50,8 @@ pnpm run test:types   # Vue 类型 + Rust 编译
 pnpm run test:rust    # Rust 单测（cargo test --lib）
 pnpm run test:e2e -- --module <module>   # L4 端到端（真 Tauri 与 Rust IPC）
 pnpm run test:release # 类型/编译 + Rust 单测 + L2/L3 + 严格 Contract + 三次 trial
+pnpm run check:bundle # 打包配置校验（秒级，不编译）
+pnpm run version:set <x.y.z>  # 发版：统一三处版本号
 ```
 
 - Rust 单测内联在 `src-tauri/src/**`，`pnpm run test:rust` 执行；CI 在 macOS 与 Windows
@@ -66,6 +68,9 @@ pnpm run test:release # 类型/编译 + Rust 单测 + L2/L3 + 严格 Contract + 
 - **L2 / L3 进 CI 双端门禁；L4 不进 CI**（要起 Tauri、占端口、macOS 锁屏会挂起页面 JS），
   只能靠本地 `pnpm run test:e2e` 与发布门禁 `test:release` 覆盖。**L4 场景没有自动门禁，
   改完必须手工跑一次**，否则会烂掉而无人察觉。
+- CI 分两条线：push/PR 走 `ci.yml`（双平台验证 + `bundle-config` 配置校验，不做构建）；
+  tag `v*` 走 `release.yml`（双平台打包并发布到 GitHub Release）。发版前先跑
+  `pnpm run version:set <x.y.z>`，tag 与 `tauri.conf.json` 的 version 由 CI 校验一致。
 - 先完成授权范围内的实现与 Contract/Scene，再按影响范围集中验证；修复失败后重验。
 - 源码或行为契约变化须按 [测试 SKILL](test/SKILL.md) 重新 analyze → generate；不能只改 sourceHash 过门禁。
 - 类型/编译不能代替运行验证。非 unit 场景需实际 Provider 或 fake Provider 响应；
@@ -178,4 +183,5 @@ pnpm run test:release # 类型/编译 + Rust 单测 + L2/L3 + 严格 Contract + 
   测试结果只在检查点记录一次，注明基线/范围/未验证项；不在多个概览复制数字。
 - Conventional Commits：`<type>(<scope>): <中文描述>`；不加句号，一次提交一个主题，正文解释原因。
   scope 使用模块名，跨模块可省略；破坏性变更用 `!` 与 `BREAKING CHANGE`，是否提交遵循用户授权。
-  当前实现不用内部版本号命名，发布版本以 Git tag 为准。
+  当前实现不用内部版本号命名，发布版本以 Git tag 为准；tag 版本与 `tauri.conf.json`
+  的 `version` 由 `ci.yml` 的 `bundle-config` 校验一致，发版流程见[发布与打包契约](docs/plans/active/发布与打包契约.md)。
