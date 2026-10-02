@@ -14,7 +14,7 @@ import { BaseDirs } from "@/services/paths"
  * 「两个入口」「读私钥的模型回合」「bash 写私钥的模型回合」。
  *
  * 「拒绝来自哪一层」现在是结构性结论，不再靠反证：两个入口的入参面已收窄到只剩内容本身 ——
- *   · `file_read` / `file_write` 只收路径，凭据判定在 `paths.rs` 的词法阶段
+ *   · `file_read` / `file_write` 只收路径，凭据判定在 `paths/mod.rs` 的词法阶段
  *     （`validate_file_path` / `validate_new_file_path`，先于 canonicalize 与允许根判定）；
  *   · `bash_exec` 只收命令，凭据规则是层 1 的 `deny_credential_paths`，与 `deny_hard_floor`、
  *     `deny_destructive_flags` 并列（层 2 才是系统路径保护）。

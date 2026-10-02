@@ -5,7 +5,7 @@
 // 低于下限的窗口没有可用的压缩切点：设置页保存被拒（复用同一个 contextWindowError），
 // 运行期在模型解析这一唯一入口报错 —— 这里验证运行期路径，避免「保存能过、回合静默跑坏」。
 //
-// 归 L3 的理由：接线断言经 `resolvePiTurnModel`（`@/services/engine/pi` 会带出 runtime 的 IPC 依赖）。
+// 归 L3 的理由：接线断言经 `resolvePiTurnModel`（`@/services/engine/harness` 会带出 runtime 的 IPC 依赖）。
 import { mkdtempSync, rmSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
@@ -15,7 +15,7 @@ import { setTestDataRoot } from "../../host/node-ipc"
 import { installFakeProvider } from "../../host/fake-provider"
 import { MIN_CONTEXT_WINDOW, contextWindowError } from "@/services/context"
 import { getOverride, setOverride } from "@/services/config"
-import { resetPiRuntimeProviderForTest, resolvePiTurnModel } from "@/services/engine/pi"
+import { resetPiRuntimeProviderForTest, resolvePiTurnModel } from "@/services/engine/harness"
 import { formatError } from "@/services/error"
 
 const PINNED_CONTEXT_MAX_TOKENS = 131_072

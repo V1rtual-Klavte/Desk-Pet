@@ -12,7 +12,7 @@ import {
   type AssistantMessageEventStream,
 } from "@earendil-works/pi-ai"
 import type { StreamFn } from "@earendil-works/pi-agent-core"
-import { installPiRuntimeProviderForTest } from "@/services/engine/pi"
+import { installPiRuntimeProviderForTest } from "@/services/engine/harness"
 
 /** 时间片段的形态：与生产同形，但按形态写死、不复用生产实现（不用被测代码验证被测代码）。 */
 const TURN_NOTE_PATTERN = /^\[当前时间\] \d{4}-\d{2}-\d{2} \d{2}:\d{2} 周[日一二三四五六]$/

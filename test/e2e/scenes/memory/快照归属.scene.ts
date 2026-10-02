@@ -1,5 +1,5 @@
 import type { Context, FauxResponseStep } from "@earendil-works/pi-ai"
-import { compactActiveSession, compactionSettingsFor, harnessSlots, PROMPT_REWRITE_ENTRY, PROMPT_SNAPSHOT_ENTRY } from "@/services/engine/pi"
+import { compactActiveSession, compactionSettingsFor, harnessSlots, PROMPT_REWRITE_ENTRY, PROMPT_SNAPSHOT_ENTRY } from "@/services/engine/harness"
 import { initChat } from "@/services/agent/runner"
 import { getActiveSessionId } from "@/services/session"
 import { aiConfig } from "@/services/config"

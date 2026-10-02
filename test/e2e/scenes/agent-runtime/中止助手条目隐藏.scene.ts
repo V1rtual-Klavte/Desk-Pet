@@ -4,7 +4,7 @@ import type {
   AssistantMessage, AssistantMessageEventStream, Context, FauxModelDefinition, FauxResponseStep, Model, SimpleStreamOptions,
 } from "@earendil-works/pi-ai"
 import { listen } from "@tauri-apps/api/event"
-import { installPiRuntimeProviderForTest } from "@/services/engine/pi"
+import { installPiRuntimeProviderForTest } from "@/services/engine/harness"
 import { initChat, sendMessage, stopActiveRun } from "@/services/agent/runner"
 import { DESKPET_SYSTEM_MESSAGE_ENTRY } from "@/services/engine/runtime"
 import { getActiveSessionId } from "@/services/session"

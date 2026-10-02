@@ -4,7 +4,7 @@
 
 import { type Ref } from "vue"
 import { listen } from "@tauri-apps/api/event"
-import { pushAssistantMessage, incrementUnanswered, getActiveSessionId } from "@/services/agent"
+import { pushAssistantMessage, incrementUnanswered, getActiveSessionId } from "@/services/session"
 import { checkWindowTiming, processTrigger } from "./monitor"
 import { generateActiveMessage } from "@/services/agent"
 import { playNotificationByBoundary } from "@/services/audio/registry"

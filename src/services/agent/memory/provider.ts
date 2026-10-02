@@ -10,7 +10,7 @@
 
 import type { MessageTaint } from "@/services/engine/runtime"
 import { estimateContextTokens } from "@/services/context/budget"
-import { completePiText } from "@/services/engine/pi"
+import { completePiText } from "@/services/engine/harness"
 import { memoryConfig } from "@/services/config"
 import { createLogger } from "@/services/logger"
 import { formatError } from "@/services/error"

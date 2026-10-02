@@ -10,8 +10,8 @@ import { getCommandReply, getFallbackReply } from "@/services/personality/stages
 import type { SlashSkillAdmission } from "@/services/engine/slash"
 import { conversationConfig } from "@/services/config"
 import type { DeliveryIntent } from "@/services/config"
-import { createActiveMessage, deliverActiveTurn, harnessSlots, isInputCommitted, pausedInputsText, returnPausedInputs, runPiAgentTurn, takePausedInputs } from "@/services/engine/pi"
-import type { HarnessDeliveryReceipt, PiAgentTurnOutput } from "@/services/engine/pi"
+import { createActiveMessage, deliverActiveTurn, harnessSlots, isInputCommitted, pausedInputsText, returnPausedInputs, runPiAgentTurn, takePausedInputs } from "@/services/engine/harness"
+import type { HarnessDeliveryReceipt, PiAgentTurnOutput } from "@/services/engine/harness"
 import type { AgentMessage } from "@earendil-works/pi-agent-core"
 import { preProcess } from "@/services/engine/preprocessor"
 import type { PreProcessState } from "@/services/engine/preprocessor"
@@ -27,7 +27,7 @@ import { formatError, summarizeError } from "@/services/error"
 import { reportError } from "@/services/error"
 import type { IngressEnvelope, MessagePriority } from "@/services/engine/runtime"
 import { inputEventId, inputSourceMark, messageRequestId, userInputMessage } from "@/services/engine/runtime"
-import { planCheckpointStore } from "@/services/agent/memory"
+import { planCheckpointStore } from "@/services/engine/plan/checkpoint-store"
 import { abortRunningPlan } from "@/services/engine/plan-confirmation"
 import { listPiSessionMetadata } from "@/services/session"
 
@@ -154,7 +154,7 @@ export interface SendMessageResult {
   toolCalls: { toolName: string; status: string }[]
   /** 忙碌投递给当前运行的准确回执；空闲回合与直接拒绝不返回。 */
   delivery?: HarnessDeliveryReceipt
-  failure?: import("@/services/engine/pi").TurnFailure
+  failure?: import("@/services/engine/harness").TurnFailure
   /**
    * 回复在界面显示了但没能写进会话文件：宿主已用系统消息告知用户，
    * 这里透传同样的事实供场景/调用方断言「界面与持久正文不一致」。

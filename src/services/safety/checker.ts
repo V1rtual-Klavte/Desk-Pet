@@ -38,12 +38,12 @@ export const BASH_NOWAY_PATTERNS: RegExp[] = [
 ]
 
 /** 私钥与凭据类路径 — 连读取都不允许，内容一旦进模型上下文就等于泄露。
- *  规则文本（与 Rust `paths.rs::is_credential_path` 同一规则族）：路径中出现 `.ssh` 目录组件，
+ *  规则文本（与 Rust `paths/mod.rs::is_credential_path` 同一规则族）：路径中出现 `.ssh` 目录组件，
  *  或以 `.pem` / `.key` 结尾。首条 `(^|\/)` 覆盖不带前导斜杠的相对形式（`.ssh/id_rsa`）。
  *  三条都带 `i` 标志：macOS/Windows 文件系统大小写不敏感，`.SSH`/`.PEM` 必须同判（Rust 侧用
  *  `to_ascii_lowercase()` 达到同一效果）；**不要**改成把整条路径 lower 后再匹配 ——
  *  `FILE_SENSITIVE_PATTERNS` 里的 `/System/`、`/Windows/` 依赖大写，整体 lower 会让它们失效。
- *  这里只是同一规则族的分级副本；权威判定在 Rust（`paths.rs` / `bash_policy.rs`）。 */
+ *  这里只是同一规则族的分级副本；权威判定在 Rust（`paths/mod.rs` / `bash_policy.rs`）。 */
 export const FILE_NOWAY_PATTERNS: RegExp[] = [
   /(^|\/)\.ssh(\/|$)/i, /\.pem$/i, /\.key$/i,
 ]
@@ -100,7 +100,7 @@ function normalizeForGrading(path: string): string {
  * 上游 `read` 工具的 schema 明示路径可为相对而 cwd 是 home，只认绝对形式的模式
  * 会让 `.ssh/id_rsa` 完全不命中。
  *
- * 归一仅用于**分级**；权威判定在 Rust（`paths.rs` / `bash_policy.rs`），
+ * 归一仅用于**分级**；权威判定在 Rust（`paths/mod.rs` / `bash_policy.rs`），
  * 这里不看符号链接也不查磁盘，更不是 OS 沙箱。
  */
 export function resolveFilePathLevel(path: unknown): SafetyLevel {

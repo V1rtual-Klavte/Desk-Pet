@@ -5,7 +5,7 @@
 // 归属 L3 的依据：原场景 import 只到 `@/services/personality/registry`（不在 L2 禁入清单里，
 // 按 import 判定本是 L2 候选），但它用 fake provider 驱动**完整 Pi agent loop**
 // （admitInput → Provider 请求 → 回复后处理 → generateReply 解析 RUNTIME_DATA → 落池），
-// 这条链路要真会话落盘（`@/services/session` / `@/services/engine/pi`），L2 装不下。
+// 这条链路要真会话落盘（`@/services/session` / `@/services/engine/harness`），L2 装不下。
 // 定向探针实测：本文件在 Node 适配层跑通、无 UnsupportedInNodeError。核对产品侧调用点，
 // 经过的 IPC 面（会话 JSONL 的 file_read/file_write/file_append/file_rename/file_info/
 // file_list/file_exists/dir_create、人格与 stages 的 personality_file_*、会话 UI 状态、
@@ -37,7 +37,7 @@ import { fakeText, installFakeProvider } from "../../host/fake-provider"
 import { setTestDataRoot } from "../../host/node-ipc"
 import { MemoryService } from "@/services/agent/memory"
 import { flushConfig, setOverrides } from "@/services/config"
-import { runPiAgentTurn } from "@/services/engine/pi"
+import { runPiAgentTurn } from "@/services/engine/harness"
 import { userInputMessage } from "@/services/engine/runtime"
 import { initPaths } from "@/services/paths"
 import { getCard, initCards } from "@/services/personality/loader"

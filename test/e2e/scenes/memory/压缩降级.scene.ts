@@ -1,6 +1,6 @@
 import type { Context, FauxModelDefinition, FauxResponseStep } from "@earendil-works/pi-ai"
 import type { Entry } from "@earendil-works/pi-agent-core"
-import { COMPACTION_DECLINED_ENTRY, PROMPT_SNAPSHOT_ENTRY, compactionSettingsFor, compactActiveSession, harnessSlots, readContextEpoch } from "@/services/engine/pi"
+import { COMPACTION_DECLINED_ENTRY, PROMPT_SNAPSHOT_ENTRY, compactionSettingsFor, compactActiveSession, harnessSlots, readContextEpoch } from "@/services/engine/harness"
 import { compactCommand } from "@/services/engine/slash/commands/compact"
 import { getCommandReply } from "@/services/personality"
 import { aiConfig } from "@/services/config"

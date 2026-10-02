@@ -1,7 +1,7 @@
 import type { Context, FauxModelDefinition, FauxProviderState, FauxResponseStep } from "@earendil-works/pi-ai"
 import { aiConfig } from "@/services/config"
 import { contextBudget } from "@/services/context"
-import { compactionSettingsFor, harnessSlots, isSessionBusy, listQueuedInputs } from "@/services/engine/pi"
+import { compactionSettingsFor, harnessSlots, isSessionBusy, listQueuedInputs } from "@/services/engine/harness"
 import { initChat, sendMessage } from "@/services/agent/runner"
 import { getFallbackReply } from "@/services/personality/stages-cache"
 import { FALLBACK_KEYS } from "@/services/personality"

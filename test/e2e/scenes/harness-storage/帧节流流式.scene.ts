@@ -13,7 +13,7 @@
 //     → `{ kind: "commit", writes: [commitWrite(item)] }`
 //     → `JsonlStorage.applyCommit`（`harness/session/jsonl/storage.js:172-182`）
 //     → `fileSystem.appendFile`（`storage.js:178`，全仓唯一一处 appendFile）
-//     → 本仓 `FrameBufferingFileSystem` 按「帧 append / 非帧」分流（`engine/pi/session-frame-buffer.ts`）。
+//     → 本仓 `FrameBufferingFileSystem` 按「帧 append / 非帧」分流（`engine/harness/session-frame-buffer.ts`）。
 //   单写事务落成「单个 JSON 对象 + 换行」，多写事务落成 JSON 数组（一条多写事务 = 一行）；
 //   所以读原始文件一律「逐行 JSON.parse → 数组展开」，与 `scripts/session-frame-stats.mjs` 同口径。
 //
@@ -39,7 +39,7 @@ import type { FileError, Result } from "@earendil-works/pi-agent-core"
 import { pendingAssistantFrames } from "@earendil-works/pi-agent-core/harness/session"
 import type { CommittedListAppendWrite, CommittedWrite } from "@earendil-works/pi-agent-core/harness/session"
 import { initChat, sendMessage } from "@/services/agent/runner"
-import { createPiSessionRepo } from "@/services/engine/pi"
+import { createPiSessionRepo } from "@/services/engine/harness"
 import { acquirePiSession, getActiveSessionId, getPiSessionRepo } from "@/services/session"
 import { runtimePath } from "@/services/paths"
 import { TauriExecutionEnv } from "@/services/tool/pi/tauri-execution-env"

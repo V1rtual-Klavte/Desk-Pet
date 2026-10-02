@@ -426,9 +426,9 @@ onMounted(async () => {
     : false;
 
   try {
-    const { MemoryService } = await import("@/services/agent/memory");
-    await MemoryService.init();
-    const candy = MemoryService.getCandyInstructionsSync();
+    const { loadCandy, getCandyInstructionsSync } = await import("@/services/context/instructions");
+    await loadCandy();
+    const candy = getCandyInstructionsSync();
     if (candy) candyInstructions.value = candy.replace(/^[\s\S]*?指令\]\n/, "").trim();
   } catch (e) {
     log.warn("记忆指令读取失败:", formatError(e));

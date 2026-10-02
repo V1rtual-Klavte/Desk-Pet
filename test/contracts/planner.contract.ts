@@ -6,11 +6,11 @@ export const plannerContract: ModuleContract = {
   // 步骤门裁决），确认、进度、逐步门与取消结算的行为都定义在它和 runtime 的计划段里；
   // 本契约不再用 unitOnly 豁免运行时接线（plan-production-loop 覆盖确认/进度/终态，
   // plan-execution-stop-settlement 覆盖执行期取消的结算，plan-step-gate-each-step 覆盖逐步门）。
-  // 计划条目本身的写入机制归 memory 契约（plan-checkpoint-store.ts 在它的 sourceFiles 里），
+  // 计划条目本身的写入机制归 agent-runtime 契约（engine/plan/checkpoint-store.ts 在它的 sourceFiles 里），
   // 这里只从计划域的相位与通道出发断言它们落成的结果。
-  sourceFiles: ["src/services/engine/pi/runtime.ts", "src/services/engine/planner.ts", "src/services/engine/plan-confirmation.ts"],
+  sourceFiles: ["src/services/engine/harness/runtime.ts", "src/services/engine/planner.ts", "src/services/engine/plan-confirmation.ts"],
   generatedAt: "2026-09-28",
-  sourceHash: "4c064d7f7376e9a37292f3107375c17f7c3a7f852ad8d11c4012200b374b8331",
+  sourceHash: "0601bf017e96bfaf63be01703dd4e09c740ea4e1960cd79f9fc0fabdfd401ca5",
   coverage: [
     { id: "pl-01", feature: "evaluateComplexity force触发", description: "--plan 前缀强制触发评分=5；判定是 startsWith，行首之外的 --plan 不命中 force 分支", why: "用户手动触发 Plan", layer: "integration", depth: "shallow", scenarios: ["plan-force-trigger"] },
     { id: "pl-02", feature: "evaluateComplexity 关键词匹配", description: "关键词列表匹配 → 评分 3、原因里带回命中的词；默认 complexityEval=keyword 时未命中关键词直接给低分，不为它单独发一次模型请求（判据用没有任何响应的 Provider：真发了请求就只能是 llm 分支或超时）", why: "自动检测复杂任务，同时不让每条助手消息都付一次判定请求的成本", layer: "integration", depth: "shallow", scenarios: ["plan-keyword-trigger"] },

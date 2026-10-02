@@ -4,7 +4,7 @@ import { fakeText, fakeToolCall, installFakeProvider } from "../../../host/fake-
 import { isUniqueAddressRef, sliceByTokenBudget } from "@/services/context"
 import { createTranscriptTool, executeToolDefinition, register, unregister, transcriptPageTokens } from "@/services/tool"
 import { McpClient } from "@/services/tool/mcp"
-import { harnessSlots, resolvePiTurnModel } from "@/services/engine/pi"
+import { harnessSlots, resolvePiTurnModel } from "@/services/engine/harness"
 import { getActiveSessionId } from "@/services/session"
 import { sessionEntries } from "../../../host/session-entries"
 

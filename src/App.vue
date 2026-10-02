@@ -13,7 +13,7 @@ import ChatPanel from "./components/ChatPanel.vue";
 import SessionTabs from "./components/SessionTabs.vue";
 import WinSim from "./components/winsim/WinSim.vue";
 import { initWindowListener } from "./services/window";
-import { switchToSession, createNewSession, closeSession, openSession, deleteSession, getSessions, getActiveSessionId, initWelcome } from "@/services/agent";
+import { switchToSession, createNewSession, closeSession, openSession, deleteSession, getSessions, getActiveSessionId, initWelcome } from "@/services/session";
 import type { PiSessionSummary } from "@/services/session";
 import { initApp } from "@/services/init";
 import { desktopConfig, shortcutConfig, userConfig, reloadConfig } from "@/services/config";

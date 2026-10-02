@@ -42,7 +42,7 @@ pnpm run test:mutation                 # 缺陷注入观测（先记录，不设
 层的硬边界：
 
 - L2 / L3 一律朴素 vitest（`describe` / `it` / `expect`）；`SceneDef` DSL 只留在 L4 —— 只有 L4 需要在非 Node 宿主里声明式地枚举并执行场景。
-- **L2 不得 import `@/services/engine/pi`、`@/services/session`、`@/services/tool`**（规则 6，可判，扫描器执行）。
+- **L2 不得 import `@/services/engine/harness`、`@/services/session`、`@/services/tool`**（规则 6，可判，扫描器执行）。
   **这条的理由是「L2 不依赖 pi runtime / 工具系统 / 会话存储」，不是「L2 里 IPC 跑不了」** —— Node 适配层（`test/host/node-ipc.ts`）本来就能等价复现 31 条 IPC 命令。判层的实操口径是「这份测试需要真 agent loop / 真 JSONL 落盘吗」，需要就归 L3。
   清单常量在 `scripts/check-test-rules.mjs` 的 `IPC_MODULES`。**往清单里加一条 = 把受影响的 L2 测试改判 L3**，改前先确认它们确实需要该模块，而不是为了消一个扫描告警。
 - **L3 不得使用真实 Provider**（规则 7，可判，扫描器执行）。

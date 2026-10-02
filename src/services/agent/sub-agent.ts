@@ -6,8 +6,8 @@
 // ==========================================
 
 import { listAll, type ToolDef } from "@/services/tool"
-import { runPiSubAgent } from "@/services/engine/pi"
-import type { PiSubAgentOutput } from "@/services/engine/pi"
+import { runPiSubAgent } from "@/services/engine/harness"
+import type { PiSubAgentOutput } from "@/services/engine/harness"
 import { loopConfig } from "@/services/config"
 import { createLogger } from "@/services/logger"
 

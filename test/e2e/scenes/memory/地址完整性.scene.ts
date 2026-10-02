@@ -5,7 +5,7 @@ import {
 } from "@/services/context"
 // 留痕去重的两个纯函数不进 barrel（`context/index.ts` 只导出投影面）：场景深导入唯一实现。
 import { NO_ADDRESS_WARN_KEY_CHARS, noAddressWarnKey, shouldWarnNoAddress } from "@/services/context/tool-output"
-import { compactionSettingsFor, compactActiveSession, harnessSlots } from "@/services/engine/pi"
+import { compactionSettingsFor, compactActiveSession, harnessSlots } from "@/services/engine/harness"
 import { aiConfig } from "@/services/config"
 import { initChat } from "@/services/agent/runner"
 import { getActiveSessionId } from "@/services/session"

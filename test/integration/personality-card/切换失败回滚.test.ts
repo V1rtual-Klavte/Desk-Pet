@@ -2,7 +2,7 @@
 // 切换失败回滚 —— 从 test/e2e/scenes/personality-card/切换失败回滚.scene.ts 迁到 L3
 // ==========================================
 //
-// 归属 L3 的理由（按 import 判定）：场景 import `@/services/engine/pi`（测试 provider 装载点），
+// 归属 L3 的理由（按 import 判定）：场景 import `@/services/engine/harness`（测试 provider 装载点），
 // 该入口在规则 6 的 IPC 模块清单里，照搬进 L2 会当场命中 —— 它依赖 pi 侧一次性文本调用链，
 // 本身就是集成级的（契约的 L2/L3 判据「跑不跑 agent loop」之外，import 决定了它不能进 L2）。
 //
@@ -27,7 +27,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest"
 
 import { installFakeProvider, fakeText } from "../../host/fake-provider"
 import { setTestDataRoot } from "../../host/node-ipc"
-import { installPiRuntimeProviderForTest } from "@/services/engine/pi"
+import { installPiRuntimeProviderForTest } from "@/services/engine/harness"
 import { getCard, initCards } from "@/services/personality/loader"
 import {
   getActiveCard,

@@ -1,5 +1,5 @@
 import type { SlashCommand } from "../types"
-import { compactActiveSession } from "@/services/engine/pi"
+import { compactActiveSession } from "@/services/engine/harness"
 import { getActiveSessionId } from "@/services/session/store"
 import { getCommandReply } from "@/services/personality"
 import type { CommandReplies } from "@/services/personality"

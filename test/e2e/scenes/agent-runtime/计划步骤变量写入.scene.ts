@@ -34,7 +34,7 @@
 //    场景头部的 B 断言（步骤子代理不写变量、原始正文留证）保持不变。
 
 import { initChat } from "@/services/agent/runner"
-import { PLAN_STEP_RESULT_ENTRY, type PlanStepResult } from "@/services/agent/memory"
+import { PLAN_STEP_RESULT_ENTRY, type PlanStepResult } from "@/services/engine/plan/checkpoint-store"
 import { planConfig, setOverride } from "@/services/config"
 import { getActiveCard, listPersonalities, switchPersonality } from "@/services/personality/registry"
 import { readStagesFile } from "@/services/personality/stages-file"

@@ -5,7 +5,7 @@
 
 import type { ToolDeclaration, ThinkingEffort } from "@/services/agent/types"
 import { listAll, toToolDeclaration } from "@/services/tool"
-import { MemoryService } from "@/services/agent/memory"
+import { getCandyInstructionsSync } from "@/services/context/instructions"
 import { aiConfig } from "@/services/config"
 import { getSkillsPromptBlock } from "@/services/skill"
 import { formatPoolForPrompt } from "@/services/personality/variable-pool"
@@ -99,7 +99,7 @@ const WEEKDAY_LABELS = ["周日", "周一", "周二", "周三", "周四", "周�
  *
  * 分钟精度足够：秒级不给出额外信息，只会让每个回合的请求视图都不同。
  *
- * 消费者是 `engine/pi` 的 `createTurnNoteMessage`（尾随瞬时注记）——不在 `buildPrompt` 的
+ * 消费者是 `engine/harness` 的 `createTurnNoteMessage`（尾随瞬时注记）——不在 `buildPrompt` 的
  * 块里。放那里的原因见 `composeDynamicPrompt` 的注释：它每回合都变，进 system prompt
  * 就会把前缀缓存断在会话正文之前。
  */
@@ -139,7 +139,7 @@ export function buildPrompt(input: BuildContextInput, card: PersonalityCard | nu
   const contextMaxTokens = input.contextMaxTokens ?? aiConfig.contextMaxTokens
   const budget = contextBudget(contextMaxTokens, input.maxOutputTokens)
   const tools = decideTools(input)
-  const candy = input.candyInstructions ?? MemoryService.getCandyInstructionsSync()
+  const candy = input.candyInstructions ?? getCandyInstructionsSync()
   const toolProtocol = tools.length
     ? "你可以使用工具完成任务。需要工具时只输出工具调用。完成后基于结果简短回复。"
     : "请简短口语化回复。"

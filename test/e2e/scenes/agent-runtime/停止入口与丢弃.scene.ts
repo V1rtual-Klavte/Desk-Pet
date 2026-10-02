@@ -1,4 +1,4 @@
-import { listQueuedInputs, withdrawQueuedInput } from "@/services/engine/pi"
+import { listQueuedInputs, withdrawQueuedInput } from "@/services/engine/harness"
 import { initChat, sendMessage, stopActiveRun } from "@/services/agent/runner"
 import { getActiveSessionId } from "@/services/session"
 import { registerBlockingTool } from "../../../host/blocking-tool"

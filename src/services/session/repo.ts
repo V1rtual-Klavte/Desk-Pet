@@ -6,8 +6,8 @@
 
 import { BACKGROUND_CONTEXT } from "@earendil-works/pi-agent-core"
 import type { Entry, EntryQuery, JsonValue, JsonlSessionMetadata, Session } from "@earendil-works/pi-agent-core"
-import { createPiSessionRepo, flushSessionFrameWrites } from "@/services/engine/pi"
-import type { PiSessionRepo } from "@/services/engine/pi"
+import { createPiSessionRepo, flushSessionFrameWrites } from "@/services/engine/harness"
+import type { PiSessionRepo } from "@/services/engine/harness"
 import { createLogger } from "@/services/logger"
 import { formatError, reportError } from "@/services/error"
 

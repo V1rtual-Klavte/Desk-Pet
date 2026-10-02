@@ -14,7 +14,7 @@
  * 目录见 docs/history/implementation/测试分层重构契约-2026-09-29基线.md「宿主分层」的不可复现表。
  */
 export const RUST_ONLY_COMMANDS = [
-  // tool_exec.rs / bash_policy.rs：层 1 硬基线 + 系统路径保护 + 凭据拦截，调用方不可关闭
+  // tool_exec/mod.rs / bash_policy.rs：层 1 硬基线 + 系统路径保护 + 凭据拦截，调用方不可关闭
   "bash_exec", "bash_cancel",
   // mcp_bridge.rs：stdio 子进程
   "mcp_spawn", "mcp_send", "mcp_kill",

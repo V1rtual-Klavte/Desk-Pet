@@ -1,4 +1,4 @@
-import { describeInputDelivery } from "@/services/engine/pi"
+import { describeInputDelivery } from "@/services/engine/harness"
 import { inputSourceOf, messageRequestId } from "@/services/engine/runtime"
 import { initChat, sendMessage } from "@/services/agent/runner"
 import { getActiveSessionId } from "@/services/session"

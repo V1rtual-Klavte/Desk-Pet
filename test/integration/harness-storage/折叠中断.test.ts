@@ -3,7 +3,7 @@
 //
 // 故障注入：折叠在「发布点」失败不得损坏文件、不得丢状态。
 //
-// 被测实现：`engine/pi/session-fold.ts` 的 `foldSessionFile`（经 `PiSessionRepo.foldSession`）。
+// 被测实现：`engine/harness/session-fold.ts` 的 `foldSessionFile`（经 `PiSessionRepo.foldSession`）。
 // 它的替换顺序是写死的：闸门 1（stat）→ 尺寸守卫 → 读全文 → 白名单判定 → 闸门 2（回收量）
 // → S-1 两侧重放摘要比对 → **写同目录临时文件** → `renameFile` 覆盖。任何一步失败都保留原文件、
 // 返回结构化 `skipped`，绝不抛错。
@@ -52,8 +52,8 @@ import {
   logStateDigest,
   prepareFold,
   readFoldLog,
-} from "@/services/engine/pi"
-import type { FoldOutcome, PiSessionRepo } from "@/services/engine/pi"
+} from "@/services/engine/harness"
+import type { FoldOutcome, PiSessionRepo } from "@/services/engine/harness"
 import { initPaths, runtimePath } from "@/services/paths"
 import { TauriExecutionEnv } from "@/services/tool/pi/tauri-execution-env"
 

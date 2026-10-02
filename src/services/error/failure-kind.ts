@@ -1,7 +1,7 @@
 // ==========================================
 // 失败分类 —— 唯一定义点
 //
-// 生产回合失败（`engine/pi/runtime.ts` 的 `classifyTurnFailure` 由本文件 re-export）与
+// 生产回合失败（`engine/harness/runtime.ts` 的 `classifyTurnFailure` 由本文件 re-export）与
 // Live Test 的场景失败分类共用本模块；不得在别处复制正则表。
 // ==========================================
 

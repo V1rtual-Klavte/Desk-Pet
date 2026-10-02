@@ -425,7 +425,7 @@ function compareBytes(left: string, right: string): number {
 // ── 命令实现表 ──
 
 const handlers: Record<string, (args: Args) => unknown> = {
-  // ── 文件操作（tool_exec.rs）──
+  // ── 文件操作（tool_exec/mod.rs）──
 
   /** file_read(path: String, max_bytes: Option<usize>) -> { content, size } */
   file_read: (args) => {

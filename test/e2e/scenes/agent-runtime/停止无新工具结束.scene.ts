@@ -1,5 +1,5 @@
 import type { Entry } from "@earendil-works/pi-agent-core"
-import { harnessSlots } from "@/services/engine/pi"
+import { harnessSlots } from "@/services/engine/harness"
 import { initChat, sendMessage, stopActiveRun } from "@/services/agent/runner"
 import { getActiveSessionId } from "@/services/session"
 import { defineTool, permitSnapshot, register, TOOL_POLICY_VERSION, unregister } from "@/services/tool"

@@ -10,7 +10,7 @@
 // - 单条来源过大不截断内容，直接标记 oversized 交给用户挑选片段；
 // - 模型调用走 completePiText(purpose="memory")，与主回合共用认证、取消与用量口径。
 
-import { completePiText } from "@/services/engine/pi"
+import { completePiText } from "@/services/engine/harness"
 import { createLogger } from "@/services/logger"
 import { formatError } from "@/services/error"
 import { memoryConfig } from "@/services/config"

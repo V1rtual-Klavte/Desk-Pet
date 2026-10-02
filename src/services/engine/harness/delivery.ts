@@ -86,7 +86,7 @@ export async function isInputCommitted(sessionId: string, requestId: string): Pr
     return (await readSessionEvidence(sessionId, requestId)).committedEntryId === undefined ? "pending" : "committed"
   } catch (error) {
     log.error("输入提交状态读取失败:", { sessionId, requestId }, formatError(error))
-    // 文案并入既有投递提示族（「已加入对话」）；动态 import 断开 delivery ← engine/pi ← session 的静态环。
+    // 文案并入既有投递提示族（「已加入对话」）；动态 import 断开 delivery ← engine/harness ← session 的静态环。
     const { pushSystemMessage } = await import("@/services/session/messages")
     pushSystemMessage("这条输入的落盘状态没能核对，已按「已加入对话」处理，不再重复追加正文", sessionId)
     return "unknown"

@@ -7,7 +7,7 @@
 import { reactive } from "vue"
 import type { Usage } from "@earendil-works/pi-ai"
 import type { ThinkingEffort } from "@/services/agent/types"
-import type { PiTextPurpose } from "@/services/engine/pi"
+import type { PiTextPurpose } from "@/services/engine/harness"
 import { aiConfig, safetyConfig } from "@/services/config"
 
 // ── 会话级思考强度覆盖 ──

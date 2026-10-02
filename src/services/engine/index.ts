@@ -97,7 +97,7 @@ export {
   runPiAgentTurn,
   runPiSubAgent,
   withdrawQueuedInput,
-} from "./pi"
+} from "./harness"
 export type {
   HarnessQueuedItem,
   InputDeliveryEvidence,
@@ -108,4 +108,4 @@ export type {
   PiSubAgentOutput,
   QueuedInputsView,
   RecoveredPlanView,
-} from "./pi"
+} from "./harness"

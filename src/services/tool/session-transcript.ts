@@ -3,7 +3,7 @@
 // 真相源是 Harness 会话条目（sessions/ 下的 JSONL）：请求投影里的引用地址就是工具结果条目的 id。
 // 分页语义：同名同参、offset/总长。
 //
-// `createTranscriptTool` 是本仓唯一实现；生产调用方在 engine/pi/runtime.ts，用
+// `createTranscriptTool` 是本仓唯一实现；生产调用方在 engine/harness/runtime.ts，用
 // `slot.readToolResult` 作 reader（会话作用域的读取在槽上，工具只认地址引用，不认 session id）。
 
 import { sliceByTokenBudget } from "@/services/context/budget"

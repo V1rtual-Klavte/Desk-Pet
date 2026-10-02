@@ -5,6 +5,7 @@ import {
   userConfig, toolsConfig,
   setOverrides, setOverride, getAllOverrides, flushConfig, parallelToolsError, memoryConfigError,
 } from "@/services/config";
+import { updateCandy } from "@/services/context/instructions";
 import {
   saveSoundAssignments,
 } from "@/services/audio/registry";
@@ -216,8 +217,7 @@ async function doSave() {
   }
 
   if (a.candyInstructions.trim()) {
-    const { MemoryService } = await import("@/services/agent/memory");
-    await MemoryService.updateCandy(a.candyInstructions.trim());
+    await updateCandy(a.candyInstructions.trim());
   }
 
   await flushConfig()

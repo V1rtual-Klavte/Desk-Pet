@@ -1,14 +1,21 @@
+mod security;
+mod seeding;
+
+use security::{is_allowed_file_path, normalize_absolute};
+pub use security::{is_credential_path, is_managed_memory_path};
+use seeding::{seed_default_resources, seed_e2e_stages};
+pub use seeding::{restore_default_resources, SeedSummary};
+
 // src-tauri/src/paths.rs
 // ==========================================
 // 统一路径管理 — base dirs + 路径校验
 // ==========================================
 
 use std::fs;
-use std::path::{Component, Path, PathBuf};
+use std::path::{Path, PathBuf};
 use tauri::Manager;
 
 use crate::error::{AppError, AppResult};
-use crate::rust_debug;
 
 pub struct AppPaths {
     pub data_root: PathBuf,   // 统一读写根
@@ -101,7 +108,7 @@ impl AppPaths {
         }
 
         if !cfg!(debug_assertions) && !paths.config_file.exists() {
-            fs::write(&paths.config_file, include_str!("../../CONFIG.yaml")).map_err(|e| {
+            fs::write(&paths.config_file, include_str!("../../../CONFIG.yaml")).map_err(|e| {
                 AppError::Config(format!("初始化生产配置失败: {:?}: {e}", paths.config_file))
             })?;
         }
@@ -235,99 +242,6 @@ impl AppPaths {
     }
 }
 
-fn allowed_file_roots() -> AppResult<Vec<PathBuf>> {
-    let home = home_dir().ok_or(AppError::NoHomeDir)?;
-    let temp = std::env::temp_dir();
-    let mut candidates = vec![home, temp];
-
-    // 开发构建下再把项目根纳入：dev 的数据根是 `{project}/data/desk-pet`，
-    // 仓库若不在 $HOME 之内（外置卷、/opt、Windows 的 D:\），所有会话写入
-    // 都会直接撞 PATH_ESCAPE，而错误只给出 code，很难看出是根目录的问题。
-    // 生产构建不受影响：那时数据根本来就在用户目录下。
-    if cfg!(debug_assertions) {
-        candidates.push(project_root());
-    }
-
-    let mut roots = Vec::with_capacity(candidates.len() * 2);
-    for root in candidates {
-        let normalized = normalize_absolute(&root)?;
-        if !roots.contains(&normalized) {
-            roots.push(normalized);
-        }
-    }
-    // canonicalize 后的形态也各留一份：macOS 的 /var → /private/var、Windows 的短名都走这条
-    for root in roots.clone() {
-        match root.canonicalize() {
-            Ok(canonical) => {
-                if !roots.contains(&canonical) {
-                    roots.push(canonical);
-                }
-            }
-            // 解析失败只是少一个候选根，语义与之前一致；但路径被拒时报的是 PATH_ESCAPE，
-            // 没有这条日志就无法区分「真的越权」与「根没解析出来」。
-            // [保留已登记 §4.2]
-            Err(error) => rust_debug!(
-                "允许根 canonicalize 失败，跳过候选: root={} error={error}",
-                root.display()
-            ),
-        }
-    }
-    Ok(roots)
-}
-
-fn is_allowed_file_path(path: &Path) -> AppResult<bool> {
-    Ok(allowed_file_roots()?
-        .iter()
-        .any(|root| path.starts_with(root)))
-}
-
-/// 凭据路径规则（与 TS `checker.ts` 的 `FILE_NOWAY_PATTERNS` 同一规则族）：
-/// 路径中出现 `.ssh` 目录组件，或后缀为 `.pem` / `.key`。只看路径文本，不查磁盘。
-///
-/// 先做词法归一（`\` → `/`、整体小写）：macOS/Windows 文件系统本身不区分大小写，
-/// `.SSH`/`.PEM` 与 `C:\Users\me\.ssh\id_rsa` 必须与 POSIX 写法同判 —— TS 侧靠正则
-/// 的 `i` 标志达到同一效果。归一只用于判定形态，权威结论在本函数。
-///
-/// 规则文本的任何改动都必须与 `src/services/safety/checker.ts` 同时进行。
-pub fn is_credential_path(path: &Path) -> bool {
-    let lowered = path.to_string_lossy().replace('\\', "/").to_ascii_lowercase();
-    if lowered.ends_with(".pem") || lowered.ends_with(".key") {
-        return true;
-    }
-    // 按 `/` 切组件：`.sshnotes` 是普通目录名，只有整段等于 `.ssh` 才算目录组件
-    lowered.split('/').any(|segment| segment == ".ssh")
-}
-
-/// SQLite 的主库与 WAL/SHM 同属 Rust 记忆边界，通用文件工具不能绕过 MemoryStore 直接改写。
-/// CANDY、只读导出和备份仍可通过各自的显式入口访问。
-pub fn is_managed_memory_path(path: &Path) -> bool {
-    let lowered = path.to_string_lossy().replace('\\', "/").to_ascii_lowercase();
-    lowered.ends_with("/memory/memory.sqlite3")
-        || lowered.ends_with("/memory/memory.sqlite3-wal")
-        || lowered.ends_with("/memory/memory.sqlite3-shm")
-        || lowered.ends_with("/memory/memory.sqlite3-journal")
-}
-
-fn normalize_absolute(path: &Path) -> AppResult<PathBuf> {
-    if !path.is_absolute() {
-        return Err(AppError::NotAbsolute(path.to_string_lossy().to_string()));
-    }
-    let mut normalized = PathBuf::new();
-    for component in path.components() {
-        match component {
-            Component::Prefix(_) | Component::RootDir | Component::Normal(_) => {
-                normalized.push(component.as_os_str());
-            }
-            Component::CurDir => {}
-            Component::ParentDir => {
-                if !normalized.pop() {
-                    return Err(AppError::PathEscape);
-                }
-            }
-        }
-    }
-    Ok(normalized)
-}
 
 fn resolve_resource_dir(app: &tauri::AppHandle) -> AppResult<PathBuf> {
     if cfg!(debug_assertions) {
@@ -356,132 +270,7 @@ pub(crate) fn is_e2e() -> bool {
 }
 
 /// E2E 只从由 AppPaths 定义的开发根复制阶段种子，避免测试脚本另行维护路径布局。
-fn seed_e2e_stages(paths: &AppPaths) -> AppResult<()> {
-    let source = development_data_root().join("personality").join("stages");
-    let target = paths.personality.join("stages");
-    if !source.is_dir() || source == target {
-        return Ok(());
-    }
-    copy_directory(&source, &target)
-}
 
-fn copy_directory(source: &Path, target: &Path) -> AppResult<()> {
-    fs::create_dir_all(target).map_err(|e| AppError::Io(format!("创建测试种子目录失败: {e}")))?;
-    for entry in
-        fs::read_dir(source).map_err(|e| AppError::Io(format!("读取测试种子目录失败: {e}")))?
-    {
-        let entry = entry.map_err(|e| AppError::Io(format!("读取测试种子条目失败: {e}")))?;
-        let source_path = entry.path();
-        let target_path = target.join(entry.file_name());
-        let file_type = entry
-            .file_type()
-            .map_err(|e| AppError::Io(format!("读取测试种子类型失败: {e}")))?;
-        if file_type.is_dir() {
-            copy_directory(&source_path, &target_path)?;
-        } else if file_type.is_file() {
-            fs::copy(&source_path, &target_path)
-                .map_err(|e| AppError::Io(format!("复制测试阶段种子失败: {e}")))?;
-        }
-    }
-    Ok(())
-}
-
-/// 默认资源只在第一次初始化时复制到运行时目录。
-///
-/// 标记写入后不再补齐缺失文件，用户删除自带 Profile/Card 或素材后不会在下一次
-/// 启动时被恢复；运行时目录中的资源与用户导入资源具有完全相同的所有权。
-fn seed_default_resources(paths: &AppPaths) -> AppResult<()> {
-    let marker = paths.settings.join(".default-resources-seeded");
-    if marker.exists() {
-        AppPaths::validate_path(&marker, &paths.settings)?;
-        return Ok(());
-    }
-
-    seed_all(&paths, false)?;
-    fs::write(&marker, b"1\n")
-        .map_err(|e| AppError::Io(format!("写入默认资源初始化标记失败: {marker:?}: {e}")))?;
-    Ok(())
-}
-
-/// 各类默认资源的种子同步结果，字段是写回的文件数。
-#[derive(serde::Serialize)]
-pub struct SeedSummary {
-    pub profiles: usize,
-    pub cards: usize,
-    pub skills: usize,
-}
-
-/// 用随包种子覆盖运行时资源，恢复出厂状态。
-///
-/// 与首次初始化不同，这里会覆盖同名文件。用户自建的资源不在种子里，
-/// 因此不受影响；被覆盖的只有随包内置资源。
-pub fn restore_default_resources(paths: &AppPaths) -> AppResult<SeedSummary> {
-    seed_all(paths, true)
-}
-
-fn seed_all(paths: &AppPaths, overwrite: bool) -> AppResult<SeedSummary> {
-    Ok(SeedSummary {
-        profiles: sync_seed_directory(&paths.seed_profiles, &paths.profiles, "Profile", overwrite)?,
-        cards: sync_seed_directory(
-            &paths.seed_personality_cards,
-            &paths.personality.join("cards"),
-            "Card",
-            overwrite,
-        )?,
-        skills: sync_seed_directory(&paths.seed_skills, &paths.skills, "Skill", overwrite)?,
-    })
-}
-
-/// 把种子目录同步到运行时目录，返回复制的文件数。
-///
-/// `overwrite` 为假时只补缺失文件（首次初始化，绝不覆盖运行时编辑结果），
-/// 为真时用种子覆盖同名文件（恢复出厂）。两种模式都只处理种子里存在的条目。
-fn sync_seed_directory(
-    source: &Path,
-    target: &Path,
-    label: &str,
-    overwrite: bool,
-) -> AppResult<usize> {
-    if !source.is_dir() {
-        return Ok(0);
-    }
-    fs::create_dir_all(target).map_err(|e| AppError::Io(format!("创建 {label} 目录失败: {e}")))?;
-
-    let mut copied = 0;
-    for entry in
-        fs::read_dir(source).map_err(|e| AppError::Io(format!("读取 {label} 种子失败: {e}")))?
-    {
-        let entry = entry.map_err(|e| AppError::Io(format!("读取 {label} 种子条目失败: {e}")))?;
-        let source_path = entry.path();
-        let target_path = target.join(entry.file_name());
-        let file_type = entry
-            .file_type()
-            .map_err(|e| AppError::Io(format!("读取 {label} 种子类型失败: {e}")))?;
-        if file_type.is_dir() {
-            copied += sync_seed_directory(&source_path, &target_path, label, overwrite)?;
-        } else if file_type.is_file() && (overwrite || !target_path.exists()) {
-            fs::copy(&source_path, &target_path)
-                .map_err(|e| AppError::Io(format!("写入 {label} 种子失败: {e}")))?;
-            copied += 1;
-        }
-    }
-    Ok(copied)
-}
-
-fn home_dir() -> Option<PathBuf> {
-    #[cfg(target_os = "macos")]
-    {
-        std::env::var("HOME").ok().map(PathBuf::from)
-    }
-    #[cfg(target_os = "windows")]
-    {
-        std::env::var("USERPROFILE").ok().map(PathBuf::from)
-    }
-    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
-    {
-        std::env::var("HOME").ok().map(PathBuf::from)
-    }
-}
 
 #[cfg(test)]
 mod tests {

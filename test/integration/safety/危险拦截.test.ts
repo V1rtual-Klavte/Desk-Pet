@@ -28,7 +28,7 @@ import { registerDefaultTools } from "@/services/tool/registry"
 import { initSessions } from "@/services/session"
 import { getActiveSessionId } from "@/services/session/store"
 import { pushAssistantMessage, pushUserMessage } from "@/services/session/messages"
-import { runPiAgentTurn } from "@/services/engine/pi"
+import { runPiAgentTurn } from "@/services/engine/harness"
 import { userInputMessage } from "@/services/engine/runtime"
 
 let root = ""

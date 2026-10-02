@@ -5,7 +5,7 @@
 // 下一次 run 开始前收到新 RetryPolicy。策略只在 `AgentHarness.create` 下发时，改设置页看似
 // 生效、实际要重开会话才起作用；这条路径由本用例钉住。
 //
-// 归 L3 的理由（按 import 判定 + 实测）：场景 import `@/services/engine/pi`（HarnessSlot /
+// 归 L3 的理由（按 import 判定 + 实测）：场景 import `@/services/engine/harness`（HarnessSlot /
 // 运行内核与测试 provider 装载点），命中规则 6 的 L2 禁入清单；实测在 Node 适配层下两回合
 // 全链路跑通（fake Provider 交付脚本，真实 agent loop、真实 JSONL 落盘）。
 //
@@ -29,7 +29,7 @@ import { setTestDataRoot } from "../../host/node-ipc"
 import { standardSetup } from "../../host/standard-setup"
 import { runRuntimeTurn } from "./_runtime-turn"
 import { loopConfig, setOverride } from "@/services/config"
-import { harnessSlots } from "@/services/engine/pi"
+import { harnessSlots } from "@/services/engine/harness"
 import { initPaths } from "@/services/paths"
 import { getActiveSessionId } from "@/services/session/store"
 

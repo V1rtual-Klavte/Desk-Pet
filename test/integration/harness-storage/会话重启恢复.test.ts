@@ -19,7 +19,7 @@ import type { FileError, Result } from "@earendil-works/pi-agent-core"
 import { afterAll, beforeAll, describe, expect, it } from "vitest"
 
 import { setTestDataRoot } from "../../host/node-ipc"
-import { createPiSessionRepo } from "@/services/engine/pi"
+import { createPiSessionRepo } from "@/services/engine/harness"
 import { initPaths, runtimePath } from "@/services/paths"
 import { TauriExecutionEnv } from "@/services/tool/pi/tauri-execution-env"
 

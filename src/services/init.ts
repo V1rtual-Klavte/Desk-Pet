@@ -4,6 +4,7 @@
 // ==========================================
 
 import { MemoryService, startIdleDreamingScheduler } from "@/services/agent/memory"
+import { loadCandy } from "@/services/context/instructions"
 import { initRegistry, initCards } from "@/services/personality"
 import { registerDefaultTools } from "@/services/tool"
 import { initDebug } from "@/services/debug"
@@ -31,6 +32,7 @@ export async function initApp(): Promise<void> {
 
   // ── 1. Memory 文件系统 ──
   await MemoryService.init()
+  await loadCandy()
   startIdleDreamingScheduler()
   log.info("1/7 Memory 就绪")
 
