@@ -22,6 +22,7 @@
 
 ### 打包与发布
 
+- 怎么推、怎么发版、怎么打 tag：看 [工作流说明](../../.github/workflows/README.md)（含轻量标签必须显式推送、预发布冒烟流程、失败排查表）。
 - 流水线：[ci.yml](../../.github/workflows/ci.yml)（双平台验证 + `bundle-config` 配置校验，不做构建）与 [release.yml](../../.github/workflows/release.yml)（tag `v*` 或手动触发的双平台打包发布）。
 - 配置守卫：`pnpm run check:bundle`，失败项逐条给出修法；它在 release 构建之前跑，拦住版本号与 tag 分叉。
 - 产物位置：CI 在 GitHub Release；本地 `pnpm tauri build` 落在仓库根 workspace 的 `target/release/bundle/`。
