@@ -25,6 +25,7 @@
 - 流水线：[ci.yml](../../.github/workflows/ci.yml)（双平台验证 + `bundle-config` 配置校验，不做构建）与 [release.yml](../../.github/workflows/release.yml)（tag `v*` 或手动触发的双平台打包发布）。
 - 配置守卫：`pnpm run check:bundle`，失败项逐条给出修法；它在 release 构建之前跑，拦住版本号与 tag 分叉。
 - 产物位置：CI 在 GitHub Release；本地 `pnpm tauri build` 落在仓库根 workspace 的 `target/release/bundle/`。
+- 本地构建：`createUpdaterArtifacts: true` 要求环境里有 `TAURI_SIGNING_PRIVATE_KEY`；只想要未签名的本地产物时加 `--no-sign`（`pnpm tauri build --no-sign`）。
 - 常见失败：`TAURI_SIGNING_PRIVATE_KEY` 未配置（updater 产物签不出来）；tag 与 `tauri.conf.json` 的 version 不一致（跑 `pnpm run version:set`）。
 
 ## IPC 与窗口入口

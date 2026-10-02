@@ -79,7 +79,7 @@ macOS 的窗口监控需要在「系统设置 → 隐私与安全性 → 辅助�
 |---|---|
 | `pnpm tauri dev` | 完整桌面开发环境 |
 | `pnpm dev` | 仅前端，不含 Rust IPC |
-| `pnpm tauri build` | 构建安装产物（本地构建，产物在 `target/release/bundle/`；正式产物见 Releases 页） |
+| `pnpm tauri build` | 构建安装产物（本地构建，产物在 `target/release/bundle/`；正式产物见 Releases 页）。未配置 updater 签名密钥时加 `--no-sign` |
 | `pnpm run test:types` | TypeScript 类型检查与 Rust 编译检查 |
 | `pnpm run test:rust` | Rust 单元测试 |
 | `pnpm run test:e2e -- --module <模块>` | 运行指定模块的 E2E 场景 |
