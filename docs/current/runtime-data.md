@@ -113,6 +113,7 @@ Profile 导入、复制和编辑写入 `profiles/{profileId}/`；选择保存在
 |---|---|
 | 展示模式 off/parallax/dof | CONFIG 的 `appearance.effectMode` |
 | 灵动图层全局强度 | CONFIG 的 `appearance.parallax` |
+| 全局字体（家族与字号） | CONFIG 的 `appearance.font`（系统已安装字体，不随 Profile） |
 | 每层素材和参数 | 当前 Profile 的 `theme.parallax.layers` |
 | 景深素材、取景和焦点参数 | 当前 Profile 的 `theme.depthOfField` |
 

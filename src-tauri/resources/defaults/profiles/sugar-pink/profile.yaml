@@ -40,10 +40,6 @@ theme:
     # 透明玻璃
     透明背景: "rgba(252,228,236,0.35)"
     模糊度: "0px"
-  fonts:
-    ui: "zpix"
-    chat: "zpix"
-    size: 14
   shield:
     enabled: false
     image: ""

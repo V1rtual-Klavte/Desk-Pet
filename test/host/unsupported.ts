@@ -24,7 +24,7 @@ export const RUST_ONLY_COMMANDS = [
   // 桌面能力：系统剪贴板
   "clipboard_read", "clipboard_write",
   // 窗口与显示器
-  "open_windows_sim", "close_windows_sim", "pause_monitor", "resume_monitor",
+  "pause_monitor", "resume_monitor",
   // 桌面副作用
   "app_open", "export_profile_zip", "restore_default_resources",
   // MemoryStore/FTS/transactions are Rust-owned; Node must not fake them.

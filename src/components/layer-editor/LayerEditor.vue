@@ -447,7 +447,7 @@ html, body {
   margin: 0; padding: 0;
   background: #1a1025;
   color: #e0d0e8;
-  font-family: "zpix", "pixel-mplus", "Microsoft YaHei", "PingFang SC", sans-serif;
+  font-family: var(--font-ui, "Microsoft YaHei", "PingFang SC", sans-serif);
   font-size: 12px;
   overflow: hidden;
   user-select: none;

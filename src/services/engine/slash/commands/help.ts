@@ -10,7 +10,6 @@ const CATEGORY_CONFIG: Record<string, { emoji: string; label: string }> = {
   memory:      { emoji: "🧠", label: "记忆" },
   // 与设置页的「📦 Skill」同一标记，用户在两处看到的是同一个东西。
   skill:       { emoji: "📦", label: "技能" },
-  easteregg:   { emoji: "🕹️", label: "彩蛋" },
   general:     { emoji: "⚙️", label: "通用" },
 }
 
@@ -26,7 +25,7 @@ function formatHelp(): string {
   }
 
   // 按分类顺序排列
-  const order = ["session", "memory", "skill", "easteregg", "general"]
+  const order = ["session", "memory", "skill", "general"]
 
   const lines: string[] = []
   lines.push(`📋 可用命令 (共 ${cmds.length} 个)`)

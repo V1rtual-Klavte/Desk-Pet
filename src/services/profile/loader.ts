@@ -13,38 +13,6 @@ import { ref } from "vue";
 
 const log = createLogger("Profile");
 
-// ── 字体 @font-face 缓存 ──
-let _fontStyleEl: HTMLStyleElement | null = null;
-
-function injectFonts(profile: ProfileData): void {
-  if (_fontStyleEl) { _fontStyleEl.remove(); _fontStyleEl = null; }
-  const fonts = profile.theme.fonts;
-
-  const fontMap: Record<string, string> = {
-    zpix: "zpix.ttf",
-    "pixel-mplus": "PixelMplus10-Regular.ttf",
-    "pixel-mplus-bold": "PixelMplus10-Bold.ttf",
-  };
-
-  const families = new Set<string>();
-  if (fonts.ui) families.add(fonts.ui);
-  if (fonts.chat) families.add(fonts.chat);
-
-  let css = "";
-  for (const family of families) {
-    const filename = fontMap[family];
-    if (filename) {
-      css += `@font-face{font-family:"${family}";src:url("${resolveProfileAssetUrl(profile, `fonts/${filename}`)}") format("truetype");}\n`;
-    }
-  }
-
-  if (css) {
-    _fontStyleEl = document.createElement("style");
-    _fontStyleEl.textContent = css;
-    document.head.appendChild(_fontStyleEl);
-  }
-}
-
 // ── 类型 ──
 
 export interface ProfileMeta {
@@ -66,7 +34,6 @@ export interface ProfileThemeColors {
 
 export interface ProfileTheme {
   colors: ProfileThemeColors
-  fonts: { ui: string; chat: string; size: number }
   shield: { enabled: boolean; image: string }
   /** 当前 Profile 未携带 UI 位图时，使用默认 Profile 的 UI。 */
   useDefaultUi: boolean
@@ -249,7 +216,6 @@ async function loadProfile(id: string): Promise<ProfileData> {
     },
     theme: {
       colors: rawProfile?.theme?.colors || {},
-      fonts: rawProfile?.theme?.fonts || { ui: "zpix", chat: "zpix", size: 14 },
       shield: rawProfile?.theme?.shield || { enabled: false, image: "" },
       useDefaultUi: rawProfile?.theme?.useDefaultUi === true,
       parallax: {
@@ -355,7 +321,6 @@ export function activateProfile(id: string): boolean {
   if (!profiles.has(id)) { log.error(`Profile "${id}" 未加载`); return false; }
   activeId = id;
   const p = profiles.get(id)!;
-  injectFonts(p);
   injectCssVars(p);
   activeProfileRevision.value++;
   log.info(`Profile 已激活: "${id}" (${p.meta.name})`);
@@ -384,7 +349,6 @@ let _cssVarStyleEl: HTMLStyleElement | null = null;
 function injectCssVars(profile: ProfileData): void {
   if (_cssVarStyleEl) _cssVarStyleEl.remove();
   const c = profile.theme.colors as unknown as Record<string, string>;
-  const f = profile.theme.fonts;
   const preset = profile.meta.preset || "pink";
   const v = (key: string, fb: string) => c[key] || fb;
   const accentLight = v("强调色", "#c4276f").replace(")", ",0.35)").replace("rgb", "rgba");
@@ -471,12 +435,8 @@ function injectCssVars(profile: ProfileData): void {
   --color-history-item-hover-bg: ${v("表面色", "#4a2540")};
   --color-history-topic-text: ${v("亮文字", "#f0e0f0")};
   --color-history-meta-text: ${v("暗文字", "#8a6080")};
-  --color-winsim-bg: #000; --color-winsim-taskbar-bg: ${v("表面色", "#4a2540")};
-  --color-winsim-accent: ${v("强调色", "#c4276f")};
   --color-glass-bg: ${glassBg}; --color-glass-blur: ${glassBlur};
-  --font-ui: "${f.ui || "zpix"}"; --font-chat: "${f.chat || "zpix"}";
   --font-mono: "Courier New", monospace; --font-notification: "Microsoft YaHei", sans-serif;
-  --font-size: ${f.size || 14}px; --font-size-small: 10px; --font-size-large: 18px;
   --font-line-height: 1.6;
 }`;
 

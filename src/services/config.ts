@@ -28,7 +28,21 @@ interface UserSettings {
   autoPopupOnMessage: boolean;
   effectMode: EffectMode;
   parallaxIntensity: number;
+  /** 全局字体家族名（用户系统已安装的字体）；空串 = 跟随系统默认字体栈 */
+  fontFamily: string;
+  /** 全局字号 px */
+  fontSize: number;
 }
+
+/**
+ * 全局字号（`appearance.font.size`）的取值范围与默认值。
+ *
+ * 默认 15 与改造前聊天文本的实际渲染一致（旧 `--font-size` 变量没有消费者，
+ * 聊天文本由 clamp 上限 15px 决定）；字体服务在配置值非法时也回退到它。
+ */
+export const MIN_FONT_SIZE = 10
+export const MAX_FONT_SIZE = 24
+export const DEFAULT_FONT_SIZE = 15
 
 /**
  * 角色展示效果。单字段枚举 —— 灵动图层与景深互斥，
@@ -160,6 +174,11 @@ interface Config {
     /** 灵动图层的全局强度；逐层素材与参数在 Profile 的 theme.parallax.layers */
     parallax?: {
       intensity: number
+    }
+    /** 全局字体（不随 Profile）：family 为空串时跟随系统默认字体栈 */
+    font?: {
+      family: string
+      size: number
     }
     soundAssignments?: Record<string, string>
   }
@@ -297,6 +316,8 @@ const USER_DEFAULTS: UserSettings = {
   autoPopupOnMessage: cfg.general?.popup?.autoPopupOnMessage ?? false,
   effectMode: cfg.appearance?.effectMode ?? "off",
   parallaxIntensity: cfg.appearance?.parallax?.intensity ?? 1.0,
+  fontFamily: cfg.appearance?.font?.family ?? "",
+  fontSize: cfg.appearance?.font?.size ?? DEFAULT_FONT_SIZE,
 };
 
 function loadUserOverrides(): UserSettings {
@@ -311,6 +332,8 @@ function loadUserOverrides(): UserSettings {
     autoPopupOnMessage: cfg.general?.popup?.autoPopupOnMessage ?? USER_DEFAULTS.autoPopupOnMessage,
     effectMode: cfg.appearance?.effectMode ?? USER_DEFAULTS.effectMode,
     parallaxIntensity: cfg.appearance?.parallax?.intensity ?? USER_DEFAULTS.parallaxIntensity,
+    fontFamily: cfg.appearance?.font?.family ?? USER_DEFAULTS.fontFamily,
+    fontSize: cfg.appearance?.font?.size ?? USER_DEFAULTS.fontSize,
   }
 }
 
@@ -326,6 +349,10 @@ function saveUserOverrides(s: UserSettings): void {
   cfg.appearance.effectMode = s.effectMode
   cfg.appearance.parallax = {
     intensity: s.parallaxIntensity,
+  }
+  cfg.appearance.font = {
+    family: s.fontFamily,
+    size: s.fontSize,
   }
   queueConfigSave()
 }
@@ -361,6 +388,10 @@ export const userConfig = {
   set effectMode(v: EffectMode) { const u = loadUserOverrides(); u.effectMode = v; saveUserOverrides(u); },
   get parallaxIntensity() { return getUser().parallaxIntensity; },
   set parallaxIntensity(v: number) { const u = loadUserOverrides(); u.parallaxIntensity = v; saveUserOverrides(u); },
+  get fontFamily() { return getUser().fontFamily; },
+  set fontFamily(v: string) { const u = loadUserOverrides(); u.fontFamily = v; saveUserOverrides(u); },
+  get fontSize() { return getUser().fontSize; },
+  set fontSize(v: number) { const u = loadUserOverrides(); u.fontSize = v; saveUserOverrides(u); },
 };
 
 function setAtPath(key: string, value: any): void {
@@ -672,8 +703,19 @@ export function computeMcpEnabled(): boolean {
 // 主题/角色/音效由运行时 data_root/profiles/ 管理
 // ==========================================
 export const appearanceConfig = {
-  get activeProfile() { return overrideOr("appearance.activeProfile", cfg.appearance?.activeProfile || DEFAULT_PROFILE); },
+  get activeProfile() { return overrideOr("appearance.activeProfile", cfg.appearance?.activeProfile ?? DEFAULT_PROFILE); },
+  /** 全局字体家族名；空串 = 跟随系统默认字体栈（由消费方决定具体栈） */
+  get fontFamily() { return overrideOr("appearance.font.family", cfg.appearance?.font?.family ?? ""); },
+  get fontSize() { return overrideOr("appearance.font.size", cfg.appearance?.font?.size ?? DEFAULT_FONT_SIZE); },
 };
+
+/** 设置页保存前的范围校验：合法返回 undefined（与 parallelToolsError 同一用法）。 */
+export function fontSizeError(value: number): string | undefined {
+  if (!Number.isInteger(value) || value < MIN_FONT_SIZE || value > MAX_FONT_SIZE) {
+    return `全局字号必须是 ${MIN_FONT_SIZE}-${MAX_FONT_SIZE} 的整数（当前 ${value}）`
+  }
+  return undefined
+}
 
 // ══════════════════════════════════════════
 // 开发时日志

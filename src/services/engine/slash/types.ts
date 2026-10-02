@@ -27,12 +27,12 @@ export type SlashCommandResult = string | null | SlashSkillAdmission
  * 命令（`/skill`）才需要实例化到 `SlashCommandResult`，两处都只这一份字段定义。
  */
 export interface SlashCommand<Result extends SlashCommandResult = string | null> {
-  /** 命令名（不含 /），如 "help", "smile", "win open" */
+  /** 命令名（不含 /），如 "help", "clear", "memory clean" */
   name: string
   /** 简介描述，显示在下拉框和 /help 中 */
   description: string
   /** 分类，用于 /help 分组显示 */
-  category?: "general" | "session" | "memory" | "skill" | "easteregg"
+  category?: "general" | "session" | "memory" | "skill"
   /** 参数说明（可选），如 "[关键词]" */
   args?: string
   /**
@@ -46,7 +46,7 @@ export interface SlashCommand<Result extends SlashCommandResult = string | null>
    * 声明命令把「命令名之后的余下文本」当参数收（`/skill <技能名> [额外指示]`）。
    *
    * 只有声明了它的命令参与 `find()` 的最长前缀匹配；未声明的命令必须整串精确命中，
-   * `win open` 这类含空格的命令名因此不会被前缀匹配抢走。
+   * `memory clean` 这类含空格的命令名因此不会被前缀匹配抢走。
    */
   acceptsArgs?: boolean
   /**

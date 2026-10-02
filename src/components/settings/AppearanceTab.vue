@@ -137,7 +137,6 @@ async function switchProfile(id: string) {
   activeProfileId.value = id;
   profileDetail.value = getActiveProfile();
   initColorEditor();
-  initFontEditor();
 }
 
 /**
@@ -204,20 +203,6 @@ async function doRestoreDefaults(): Promise<void> {
   );
   if (!accepted) return;
   await reportResult(await restoreDefaultResources(), "恢复完成");
-}
-
-// ── 预设切换 ──
-const presets = [
-  { id: "pink", name: "🌸 粉色", desc: "默认粉色主题" },
-  { id: "dark", name: "🌙 暗夜", desc: "暗色护眼主题" },
-  { id: "glass", name: "🪟 玻璃", desc: "透明毛玻璃效果" },
-];
-
-async function switchPreset(presetId: string) {
-  const presetProfile = profileList.value.find((p) => p.meta.preset === presetId);
-  if (presetProfile) {
-    await switchProfile(presetProfile.id);
-  }
 }
 
 // ── 颜色编辑 ──
@@ -334,87 +319,31 @@ async function saveColorsToProfile() {
   }
 }
 
-// ── 字体 ──
-const fontAssign = ref({ ui: "zpix", chat: "zpix" });
-
-function initFontEditor() {
-  const p = getActiveProfile();
-  if (!p) return;
-  fontAssign.value = {
-    ui: p.theme.fonts.ui || "zpix",
-    chat: p.theme.fonts.chat || "zpix",
-  };
-}
-
-/** 字体属于 Profile，写入 profile.yaml 的 theme.fonts（保留同段其它字段，如 size）。 */
-async function saveFontsToProfile() {
-  const p = getActiveProfile();
-  if (!p) {
-    const message = "没有激活的 Profile，无法保存。";
-    log.warn(message);
-    window.alert(message);
-    return;
-  }
-  try {
-    const resp = await fetch(`${p.basePath}/profile.yaml`);
-    if (!resp.ok) throw new Error("无法读取");
-    const jsYaml = await import("js-yaml");
-    const doc = jsYaml.load(await resp.text()) as any;
-    if (!doc.theme) doc.theme = {};
-    doc.theme.fonts = { ...(doc.theme.fonts || {}), ui: fontAssign.value.ui, chat: fontAssign.value.chat };
-    const newYaml = jsYaml.dump(doc, { lineWidth: -1, noRefs: true });
-    const { invoke } = await import("@tauri-apps/api/core");
-    await invoke("profile_file_write", {
-      profileId: p.id,
-      relativePath: "profile.yaml",
-      content: Array.from(new TextEncoder().encode(newYaml)),
-    });
-    invalidateProfileCache(p.id);
-    const { ensureProfileLoaded } = await import("@/services/profile");
-    await ensureProfileLoaded(p.id);
-    activateProfile(p.id);
-    profileDetail.value = getActiveProfile();
-    initFontEditor();
-    await emit("deskpet-profile-updated", { profileId: p.id });
-    log.info("字体已保存");
-  } catch (e: any) {
-    log.error("字体保存失败:", e);
-    await showFailure("字体保存失败: " + formatError(e));
-  }
-}
+// ── 字体（全局设置，不随 Profile）──
+// 值与校验都走 CONFIG：本组件只持有编辑态，落盘由设置面板的统一保存完成。
+const fontFamily = ref(userConfig.fontFamily);
+const fontSize = ref(userConfig.fontSize);
+const systemFonts = ref<string[]>([]);
 
 // ── 生命周期 ──
 onMounted(async () => {
   await initProfiles();
   refreshProfileList();
-  initFontEditor();
+  const { listSystemFonts } = await import("@/services/font");
+  systemFonts.value = await listSystemFonts();
 });
 
 defineExpose({
   effectMode,
   parallaxIntensity,
   assignments,
+  fontFamily,
+  fontSize,
 });
 </script>
 
 <template>
   <div>
-  <!-- 预设切换 -->
-  <div class="s-section">
-    <div class="s-label">🎨 预设方案</div>
-    <div class="preset-row">
-      <button
-        v-for="pr in presets"
-        :key="pr.id"
-        class="preset-btn"
-        :class="{ active: profileDetail?.meta?.preset === pr.id }"
-        @click="switchPreset(pr.id)"
-        :title="pr.desc"
-      >{{ pr.name }}</button>
-    </div>
-    <div class="s-hint">一键切换配色方案，应用即时生效</div>
-  </div>
-
   <!-- 角色展示效果：灵动图层与景深互斥，只能选一个 -->
   <div class="s-section">
     <div class="s-label">✨ 角色展示效果</div>
@@ -501,24 +430,19 @@ defineExpose({
     </div>
   </div>
 
-  <!-- 字体 -->
+  <!-- 字体（全局设置，不随 Profile） -->
   <div class="s-section">
     <div class="s-label">✏️ 字体</div>
-    <div class="fld"><span class="fn">界面</span>
-      <select class="inp" v-model="fontAssign.ui">
-        <option value="zpix">zpix</option>
-        <option value="pixel-mplus">pixel-mplus</option>
+    <div class="fld"><span class="fn">字体</span>
+      <select class="inp" v-model="fontFamily">
+        <option value="">跟随系统默认</option>
+        <option v-for="name in systemFonts" :key="name" :value="name">{{ name }}</option>
       </select>
     </div>
-    <div class="fld"><span class="fn">聊天</span>
-      <select class="inp" v-model="fontAssign.chat">
-        <option value="zpix">zpix</option>
-        <option value="pixel-mplus">pixel-mplus</option>
-      </select>
+    <div class="fld"><span class="fn">字号</span>
+      <input class="inp" style="width:64px" type="number" min="10" max="24" step="1" v-model.number="fontSize" />
     </div>
-    <div class="row-gap" style="margin-top:6px">
-      <button class="btn-s" @click="saveFontsToProfile()">💾 保存</button>
-    </div>
+    <div class="s-hint">来自你电脑上已安装的字体；对所有 Profile 生效，保存后应用</div>
   </div>
 
   <!-- 音效 -->

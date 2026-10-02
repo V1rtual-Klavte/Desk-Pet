@@ -875,12 +875,13 @@ onUnmounted(() => {
 }
 
 /* --- 消息条目 --- */
-.cm { display: flex; flex-direction: column; gap: 1px; font-size: clamp(9px, 2.5vw, 15px); line-height: 1.4; }
+/* 字号上限取全局设置（--font-size，默认 15px 与改造前一致）；下限与小窗口自适应保持原样 */
+.cm { display: flex; flex-direction: column; gap: 1px; font-size: clamp(9px, 2.5vw, var(--font-size, 15px)); line-height: 1.4; }
 .cm.user { align-items: flex-end; }
 .cm.assistant { align-items: flex-start; }
 .cn { font-size: clamp(8px, 2.2vw, 12px); color: var(--color-text-pink); }
 .cm.user .cn { color: #90d0ff; }
-.ct { color: var(--color-text-bright); word-break: break-word; padding: 4px 8px; border-radius: 12px; max-width: 95%; font-size: clamp(9px, 2.5vw, 15px); }
+.ct { color: var(--color-text-bright); word-break: break-word; padding: 4px 8px; border-radius: 12px; max-width: 95%; font-size: clamp(9px, 2.5vw, var(--font-size, 15px)); }
 .cm.user .ct { background: var(--color-border-light); }
 .cm.assistant .ct { background: var(--color-surface-dark); }
 

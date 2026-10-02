@@ -18,12 +18,12 @@ use tauri::Manager;
 use tauri::{WebviewUrl, WebviewWindowBuilder};
 
 use crate::commands::{
-    app_open, app_restart, bash_cancel, bash_exec, clipboard_read, clipboard_write, close_windows_sim,
+    app_open, app_restart, bash_cancel, bash_exec, clipboard_read, clipboard_write,
     compute_popup_position, dir_create, export_profile_zip, file_append,
     file_canonical_path, file_exists, file_info, file_list, file_read, file_read_binary,
     file_remove, file_rename, file_write, file_write_atomic, get_cursor_position, init_memory_files,
-    list_profile_files, list_profiles, log_messages, mcp_kill, mcp_send,
-    mcp_spawn, open_devtools, open_windows_sim, pause_monitor, personality_file_list, personality_file_read, personality_file_write, profile_asset_base,
+    list_profile_files, list_profiles, list_system_fonts, log_messages, mcp_kill, mcp_send,
+    mcp_spawn, open_devtools, pause_monitor, personality_file_list, personality_file_read, personality_file_write, profile_asset_base,
     profile_clone, profile_delete, profile_file_read, profile_file_write, report_frontend_error,
     restore_default_resources, resume_monitor, set_log_config, set_monitor_config, skill_catalog_fingerprint, skill_delete,
     spawn_cursor_tracker, system_info, session_read_text, tool_permit_acquire, tool_permit_attach, tool_permit_cancel,
@@ -405,8 +405,7 @@ pub fn run() {
             pause_monitor,
             resume_monitor,
             set_monitor_config,
-            open_windows_sim,
-            close_windows_sim,
+            list_system_fonts,
             log_messages,
             set_log_config,
             report_frontend_error,

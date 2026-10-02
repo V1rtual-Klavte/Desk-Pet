@@ -12,6 +12,7 @@ import {
   refreshProfileAssets, resolveProfileAssetUrl, type ProfileData, type ProfileDofRegion,
 } from "@/services/profile";
 import { reloadConfig, userConfig, type EffectMode } from "@/services/config";
+import { applyFontVars } from "@/services/font";
 import { DEFAULT_LAYERS, LAYER_NAMES, layerDepth, type ParallaxLayerCfg } from "@/composables/useParallax";
 import { useDepthOfField, canvasToImage, imageToCanvas, type DofState } from "@/composables/useDepthOfField";
 import { createLogger } from "@/services/logger";
@@ -783,8 +784,10 @@ export function useLayerEditor() {
       await initFromStorage(payload?.profileId);
     });
     // 效果模式是 CONFIG 字段：设置页切换后要立刻换面板，否则编辑器会停在旧模式的界面上。
+    // 全局字体同理：保存后重注入，编辑器不等重启就换上新字体。
     unlistenSettingsSaved = await listen("deskpet-settings-saved", async () => {
       await reloadConfig();
+      applyFontVars();
       await initFromStorage();
     });
     try {

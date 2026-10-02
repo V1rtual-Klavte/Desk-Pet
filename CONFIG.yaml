@@ -181,3 +181,6 @@ appearance:
   soundAssignments: {}
   parallax:
     intensity: 1.0                # 灵动图层的全局强度；逐层参数在 Profile 的 theme.parallax.layers
+  font:
+    family: ""                    # 全局字体（用户电脑上已安装的字体名）；空 = 跟随系统默认字体栈
+    size: 14                      # 全局字号 px

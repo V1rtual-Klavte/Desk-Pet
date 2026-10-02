@@ -31,11 +31,8 @@ theme:
     遮罩: "rgba(3, 15, 35, 0.62)"
     透明背景: "rgba(74, 164, 226, 0.19)"
     模糊度: "18px"
-  fonts:
-    ui: "zpix"
-    chat: "zpix"
-    size: 14
   # 视觉素材由五层雨夜图负责；窗口 UI 复用默认内置资源。
+  # 字体不随 Profile：由 CONFIG 的 appearance.font 全局管理（系统已安装字体）。
   useDefaultUi: true
   shield:
     enabled: false

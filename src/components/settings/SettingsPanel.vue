@@ -3,8 +3,9 @@ import { ref, onMounted, onUnmounted } from "vue";
 import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
 import {
   userConfig, toolsConfig,
-  setOverrides, setOverride, getAllOverrides, flushConfig, parallelToolsError, memoryConfigError,
+  setOverrides, setOverride, getAllOverrides, flushConfig, parallelToolsError, memoryConfigError, fontSizeError,
 } from "@/services/config";
+import { applyFontVars } from "@/services/font";
 import { updateV1rtualInstructions } from "@/services/context/instructions";
 import {
   saveSoundAssignments,
@@ -89,6 +90,13 @@ async function doSave() {
     log.error("设置保存失败:", memoryIssue);
     return;
   }
+  // 全局字号越界同样拒绝保存：手写 YAML 的非法值不该在保存时被静默改写成别的数字
+  const fontIssue = fontSizeError(ap.fontSize);
+  if (fontIssue) {
+    saveError.value = fontIssue;
+    log.error("设置保存失败:", fontIssue);
+    return;
+  }
   const previousPersonalityActive = getActivePersonalityId();
 
   userConfig.popupMode = g.popupMode;
@@ -99,6 +107,8 @@ async function doSave() {
   else userConfig.shortcutWinModifiers = g.recMods;
   userConfig.effectMode = ap.effectMode;
   userConfig.parallaxIntensity = ap.parallaxIntensity;
+  userConfig.fontFamily = ap.fontFamily;
+  userConfig.fontSize = ap.fontSize;
 
   // 音效分配持久化
   saveSoundAssignments(ap.assignments);
@@ -222,6 +232,9 @@ async function doSave() {
 
   await flushConfig()
 
+  // 字体是本窗口自己保存的：立刻重注入，不必等重启或广播回环
+  applyFontVars()
+
   saved.value = true;
   log.info("设置已保存");
   emit("deskpet-settings-saved").catch((error) => {
@@ -247,6 +260,8 @@ function doCancel() {
  * 进程级重启。写盘必须先于重启：设置改动先进写盘队列，直接重启会把队列里
  * 还没落盘的配置丢掉，用户以为是"重启后生效"，实际是改动没了。写盘失败就
  * 不重启，把原因摆出来。
+ * 开发模式下 Rust 侧以重载界面代替进程重启（dev 会话不能被进程重启打断，
+ * 见 app_lifecycle.rs），写盘前置不变。
  */
 async function restartApp() {
   try {
@@ -370,7 +385,7 @@ onUnmounted(() => {
   display: flex; flex-direction: column;
   background: var(--color-settings-bg, #3e1a2e);
   color: #f0e0f0;
-  font-family: "zpix", "pixel-mplus", sans-serif;
+  font-family: var(--font-ui, sans-serif);
   font-size: 11px;
   overflow: hidden;
 }

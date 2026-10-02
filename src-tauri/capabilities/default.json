@@ -2,7 +2,7 @@
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
   "description": "permissions",
-  "windows": ["main", "windows-sim", "settings", "layer-editor", "e2e"],
+  "windows": ["main", "settings", "layer-editor", "e2e"],
   "permissions": [
     "core:default",
     "updater:default",

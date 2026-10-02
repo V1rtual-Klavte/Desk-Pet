@@ -1,5 +1,5 @@
 /* ========================================== */
-/* 全局样式 — CSS 变量由 Profile 注入      */
+/* 全局样式 — 颜色变量由 Profile 注入；字体变量由 @/services/font 注入 */
 /* ========================================== */
 
 * {
@@ -12,7 +12,9 @@ html, body, #app {
   width: 100%;
   height: 100%;
   overflow: hidden;
-  font-family: var(--font-ui, "zpix"), "pixel-mplus", sans-serif;
+  font-family: var(--font-ui, sans-serif);
+  /* 全局字号基准：无显式 font-size 的文本跟随设置/外观里的字号 */
+  font-size: var(--font-size, 15px);
   background: transparent;
 }
 
