@@ -72,6 +72,7 @@ Actions 页面选 `Release` → Run workflow → 填一个**已存在**的 tag�
 | 症状 | 原因 |
 |---|---|
 | `check:bundle` 报 tag 与 version 不一致 | 跑 `pnpm run version:set <tag 的版本>`，重新提交后再打 tag |
+| `check:bundle` 报 `tauri` 与 `@tauri-apps/api` 版本不一致 | Rust crate 被某个依赖顶到了新 minor，而 JS 包还锁在旧的（**`package.json` 的 caret range 允许、锁文件没跟**）。按提示 `pnpm add '@tauri-apps/api@^X.Y'` 对齐；**注意 `tauri build` 会因这个不一致直接拒绝构建**，不是体积问题。v0.15.0 首次发布就是栽在这里 |
 | 构建报签名错误 | 缺仓库 Secrets `TAURI_SIGNING_PRIVATE_KEY` / `..._PASSWORD` |
 | Release 里只有 Windows 产物 | macOS job 挂了，先看它的日志 |
 | 本地 `pnpm tauri build` 报签名错误 | 本地不需要签名的构建用 `pnpm tauri build --no-sign` |
