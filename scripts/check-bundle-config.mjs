@@ -4,7 +4,7 @@
  *
  * 只做**零编译、零依赖安装**的静态检查 —— Release 模式的 Rust 构建在 macOS runner 上
  * 按 10 倍计费，而绝大多数「打包悄悄烂掉」都是从配置漂移开始的（图标丢了、targets
- * 写死成某个平台的目标、identifier 不合法、版本号与 tag 分叉）。
+ * 写死成某个平台的目标、identifier 不合法、三处版本号或与 tag 分叉）。
  *
  * 检查项与失败含义见《发布与打包契约》§3.1；本文件是那张表的执行机制，不是第二个定义点。
  *
@@ -20,6 +20,8 @@ import { fileURLToPath } from "node:url"
 const REPO_ROOT = resolve(fileURLToPath(new URL("..", import.meta.url)))
 
 const CONF = "src-tauri/tauri.conf.json"
+const NPM_PACKAGE = "package.json"
+const CARGO_MANIFEST = "src-tauri/Cargo.toml"
 const SEMVER = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/
 const IDENTIFIER = /^[A-Za-z][A-Za-z0-9-]*(\.[A-Za-z0-9-]+)+$/
 
@@ -41,10 +43,55 @@ function checkTargets(targets, problems) {
   problems.push(`bundle.targets 不合法: ${JSON.stringify(targets)}（应为 "all" 或已知目标的数组）`)
 }
 
+/** 读取 package.json 的顶层 version；文件缺失、JSON 坏或字段非法时记问题并返回 null。 */
+function readPackageVersion(rootDir, problems) {
+  const path = join(rootDir, NPM_PACKAGE)
+  if (!existsSync(path)) {
+    problems.push(`${NPM_PACKAGE} 不存在`)
+    return null
+  }
+  let parsed
+  try {
+    parsed = JSON.parse(readFileSync(path, "utf8"))
+  } catch (error) {
+    problems.push(`${NPM_PACKAGE} 不是合法 JSON: ${error.message}`)
+    return null
+  }
+  const version = parsed.version
+  if (typeof version !== "string" || !SEMVER.test(version)) {
+    problems.push(`${NPM_PACKAGE} 的 version 不是合法 semver，收到: ${JSON.stringify(version)}`)
+    return null
+  }
+  return version
+}
+
+/**
+ * 读取 Cargo.toml `[package]` 段的 version。
+ * `[package]` 的 version 一定在行首；[dependencies] 里的嵌套 version 不是行首，
+ * 所以 `/^version\s*=/m` 只会命中前者（与 scripts/set-version.mjs 同一口径）。
+ */
+function readCargoVersion(rootDir, problems) {
+  const path = join(rootDir, CARGO_MANIFEST)
+  if (!existsSync(path)) {
+    problems.push(`${CARGO_MANIFEST} 不存在`)
+    return null
+  }
+  const match = readFileSync(path, "utf8").match(/^version\s*=\s*"([^"]*)"/m)
+  if (!match) {
+    problems.push(`${CARGO_MANIFEST} 里找不到 [package] 的 version 行`)
+    return null
+  }
+  if (!SEMVER.test(match[1])) {
+    problems.push(`${CARGO_MANIFEST} 的 version 不是合法 semver，收到: ${JSON.stringify(match[1])}`)
+    return null
+  }
+  return match[1]
+}
+
 /**
  * 校验 rootDir 下的打包配置。
  * @param {string} rootDir 仓库根
- * @param {{ tag?: string | null }} [options] tag 形如 `v0.15.0`；给了就校验与 version 一致
+ * @param {{ tag?: string | null }} [options] tag 形如 `v0.15.0`；给了就要求三处 version 都与它一致
  * @returns {string[]} 问题清单，空数组 = 通过
  */
 export function checkBundleConfig(rootDir, options = {}) {
@@ -64,7 +111,8 @@ export function checkBundleConfig(rootDir, options = {}) {
   if (!conf.productName || typeof conf.productName !== "string") {
     problems.push("productName 必须是非空字符串（安装包与窗口都在用它）")
   }
-  if (!conf.version || !SEMVER.test(conf.version)) {
+  const confVersionOk = typeof conf.version === "string" && SEMVER.test(conf.version)
+  if (!confVersionOk) {
     problems.push(`version 必须是合法 semver，收到: ${JSON.stringify(conf.version)}`)
   }
   if (!conf.identifier || !IDENTIFIER.test(conf.identifier)) {
@@ -93,14 +141,40 @@ export function checkBundleConfig(rootDir, options = {}) {
     problems.push("plugins.updater.pubkey 为空：updater 装了也永远验不过签名，先跑 tauri signer generate")
   }
 
+  // 版本号三处一致（契约 §8 的完成定义）。tauri.conf.json 是打包实际写进产物的那份，
+  // 作为对照基准；package.json 与 Cargo.toml 是它的投影，手改任一处都要在这里被拦下。
+  const packageVersion = readPackageVersion(rootDir, problems)
+  const cargoVersion = readCargoVersion(rootDir, problems)
+  const otherVersions = [
+    { file: NPM_PACKAGE, version: packageVersion },
+    { file: CARGO_MANIFEST, version: cargoVersion },
+  ]
+  if (confVersionOk) {
+    for (const { file, version } of otherVersions) {
+      if (version !== null && version !== conf.version) {
+        problems.push(
+          `${file} 的 version ${JSON.stringify(version)} 与 ${CONF} 的 version ${JSON.stringify(conf.version)} 不一致：` +
+          `先跑 pnpm run version:set ${conf.version} 再打 tag`,
+        )
+      }
+    }
+  }
+
   const tag = options.tag
   if (tag) {
     const tagVersion = String(tag).replace(/^v/, "")
-    if (tagVersion !== conf.version) {
-      problems.push(
-        `tag ${tag} 与 ${CONF} 的 version ${JSON.stringify(conf.version)} 不一致：` +
-        `先跑 pnpm run version:set ${tagVersion} 再打 tag`,
-      )
+    // 三处都要与 tag 一致，逐文件报出，不能只查 tauri.conf.json
+    const allVersions = [
+      { file: CONF, version: confVersionOk ? conf.version : null },
+      ...otherVersions,
+    ]
+    for (const { file, version } of allVersions) {
+      if (version !== null && version !== tagVersion) {
+        problems.push(
+          `tag ${tag} 与 ${file} 的 version ${JSON.stringify(version)} 不一致：` +
+          `先跑 pnpm run version:set ${tagVersion} 再打 tag`,
+        )
+      }
     }
   }
 

@@ -19,6 +19,11 @@ interface FixtureOptions {
   config?: unknown
   icons?: string[]
   updaterPubkey?: string | null
+  /** 覆盖默认 config 的 version（只影响未显式传 config 的夹具） */
+  confVersion?: string
+  /** 单独覆盖 package.json / Cargo.toml 的 version，用来构造「三处不一致」 */
+  packageVersion?: string
+  cargoVersion?: string
 }
 
 function fixtureRoot(options: FixtureOptions = {}) {
@@ -29,7 +34,7 @@ function fixtureRoot(options: FixtureOptions = {}) {
   }
   const config = options.config ?? {
     productName: "虚拟桌宠",
-    version: "0.15.0",
+    version: options.confVersion ?? "0.15.0",
     identifier: "com.v1rtual.deskpet",
     bundle: {
       active: true,
@@ -45,6 +50,20 @@ function fixtureRoot(options: FixtureOptions = {}) {
     },
   }
   writeFileSync(join(root, "src-tauri", "tauri.conf.json"), JSON.stringify(config, null, 2))
+
+  // 三处版本号默认与 config 的 version 联动；[dependencies] 里的嵌套 version 离行首，
+  // 用来钉住「只认 [package] 段的行首 version」这条口径。
+  const confVersionRaw = (config as { version?: unknown }).version
+  const baseVersion = typeof confVersionRaw === "string" ? confVersionRaw : "0.15.0"
+  writeFileSync(
+    join(root, "package.json"),
+    JSON.stringify({ name: "deskpet-fixture", version: options.packageVersion ?? baseVersion }, null, 2),
+  )
+  writeFileSync(
+    join(root, "src-tauri", "Cargo.toml"),
+    `[package]\nname = "deskpet-fixture"\nversion = "${options.cargoVersion ?? baseVersion}"\nedition = "2021"\n\n` +
+    `[dependencies]\nserde = { version = "1.0.0", features = ["derive"] }\n`,
+  )
   return root
 }
 
@@ -93,6 +112,27 @@ describe("checkBundleConfig", () => {
     expect(checkBundleConfig(root, { tag: "v0.15.0" })).toEqual([])
     const problems = checkBundleConfig(root, { tag: "v0.16.0" })
     expect(problems.some(p => p.includes("version:set"))).toBe(true)
+  })
+
+  it("package.json 的 version 与其它两处不一致被拦，点名文件并给出 version:set 修法", () => {
+    const root = fixtureRoot({ packageVersion: "0.16.0" })
+    const problems = checkBundleConfig(root)
+    expect(problems.some(p => p.includes("package.json") && p.includes("version:set"))).toBe(true)
+  })
+
+  it("Cargo.toml 的 version 与其它两处不一致被拦，点名文件并给出 version:set 修法", () => {
+    const root = fixtureRoot({ cargoVersion: "0.16.0" })
+    const problems = checkBundleConfig(root)
+    expect(problems.some(p => p.includes("Cargo.toml") && p.includes("version:set"))).toBe(true)
+  })
+
+  it("tag 校验逐文件覆盖三处，tauri.conf.json 与 tag 不一致也被点名", () => {
+    // 三处一致（0.16.0）但与 tag 不符：两两对照无话可说，只有 tag 逐文件核对能报出，
+    // 三处必须各报一条，不能只查 tauri.conf.json。
+    const root = fixtureRoot({ confVersion: "0.16.0" })
+    const problems = checkBundleConfig(root, { tag: "v0.15.0" })
+    expect(problems.filter(p => p.includes("tag v0.15.0"))).toHaveLength(3)
+    expect(problems.some(p => p.includes("tauri.conf.json") && p.includes("version:set"))).toBe(true)
   })
 
   it("tauri.conf.json 不是合法 JSON 时给出可读报错", () => {
