@@ -1,7 +1,7 @@
 import { check } from "@tauri-apps/plugin-updater"
 import { relaunch } from "@tauri-apps/plugin-process"
 import { getActiveSessionId, pushSystemMessage } from "@/services/session"
-import { confirmDialog } from "@/services/dialog"
+import { confirmDialog, showFailure } from "@/services/dialog"
 import { createLogger } from "@/services/logger"
 import { formatError } from "@/services/error"
 
@@ -46,10 +46,11 @@ export function __setUpdatePortForTest(next: UpdatePortFactory | null): void {
  *   none    没有新版本（或本次启动已经提示过）
  *   skipped 用户选了「稍后」
  *   updated 已下载安装并触发重启
- *   failed  检查或安装抛错（已记日志，不打扰用户）
+ *   failed  检查或安装抛错（已记日志；用户确认后的失败另给中性提示）
  */
 export async function checkForUpdate(): Promise<"none" | "skipped" | "updated" | "failed"> {
   if (prompted) return "none"
+  let accepted = false
   try {
     const update = await factory.check()
     if (!update) return "none"
@@ -59,7 +60,7 @@ export async function checkForUpdate(): Promise<"none" | "skipped" | "updated" |
     // 中性系统消息：更新是系统事件，不用角色口吻（AGENTS.md 的通用文案约束）
     pushSystemMessage(`发现新版本 v${update.version}，可下载并安装更新`, getActiveSessionId())
 
-    const accepted = await confirmDialog(`发现新版本 v${update.version}`, {
+    accepted = await confirmDialog(`发现新版本 v${update.version}`, {
       title: "软件更新",
       okLabel: "下载并安装",
       // 正常可用的更新不是故障，显式关掉危险样式（confirmDialog 不传 danger 时默认按 error + 危险按钮渲染）
@@ -72,6 +73,11 @@ export async function checkForUpdate(): Promise<"none" | "skipped" | "updated" |
     return "updated"
   } catch (error) {
     log.warn("检查更新失败:", formatError(error))
+    // 用户已经点过「下载并安装」：下载可能要几分钟，失败不能只在日志里。
+    // 中性文案（非角色口吻），走既有 dialog 服务呈现结果。
+    if (accepted) {
+      await showFailure("更新下载或安装失败，请稍后重试", { title: "软件更新" })
+    }
     return "failed"
   }
 }

@@ -14,8 +14,10 @@ vi.mock("@tauri-apps/plugin-process", () => ({ relaunch: async () => {} }))
 let dialogAnswer = true
 // 声明 rest 参数：工厂里转发 `confirmDialog(...args)` 需要展开目标签名兼容 unknown[]。
 const confirmDialog = vi.fn(async (..._args: unknown[]) => dialogAnswer)
+const showFailure = vi.fn(async (..._args: unknown[]) => {})
 vi.mock("@/services/dialog", () => ({
   confirmDialog: (...args: unknown[]) => confirmDialog(...args),
+  showFailure: (...args: unknown[]) => showFailure(...args),
 }))
 
 import {
@@ -47,6 +49,7 @@ function failingFactory(): UpdatePortFactory {
 beforeEach(() => {
   pushSystemMessage.mockClear()
   confirmDialog.mockClear()
+  showFailure.mockClear()
   dialogAnswer = true
   __setUpdatePortForTest(null)
 })
@@ -95,9 +98,25 @@ describe("checkForUpdate", () => {
     expect(confirmDialog).not.toHaveBeenCalled()
   })
 
-  it("检查或下载抛错时不崩、返回 failed", async () => {
+  it("检查抛错（用户未确认）时不崩、返回 failed，也不弹失败提示", async () => {
     __setUpdatePortForTest(failingFactory())
     expect(await checkForUpdate()).toBe("failed")
+    // 用户还没答应任何操作：检查端点的偶发失败不该打扰用户
+    expect(showFailure).not.toHaveBeenCalled()
+  })
+
+  it("用户确认后下载抛错时，给出中性失败提示而不是静默", async () => {
+    const { factory, downloadAndInstall, relaunch } = portWith({ version: "0.16.0" })
+    downloadAndInstall.mockRejectedValueOnce(new Error("download interrupted"))
+    __setUpdatePortForTest(factory)
+    expect(await checkForUpdate()).toBe("failed")
+    expect(downloadAndInstall).toHaveBeenCalledTimes(1)
+    expect(relaunch).not.toHaveBeenCalled()
+    // 用户已经点了「下载并安装」：失败必须让他看见
+    expect(showFailure).toHaveBeenCalledTimes(1)
+    const [message] = showFailure.mock.calls[0] as [string, ...unknown[]]
+    // 中性文案：不能出现角色口吻的招呼词
+    expect(message).not.toMatch(/主人|人家|～|~/)
   })
 })
 
