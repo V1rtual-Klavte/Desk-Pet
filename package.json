@@ -17,7 +17,8 @@
         "test:mutation": "node scripts/mutate.mjs",
         "test:e2e": "node scripts/e2e-test.mjs",
         "test:smoke": "pnpm run test:e2e -- --module agent-runtime --case production-chat-entry --strict --repeat 2",
-        "test:release": "pnpm run test:types && pnpm run test:rust && pnpm run test:unit && pnpm run test:integration && pnpm run test:e2e -- --strict --repeat 3 --report json"
+        "test:release": "pnpm run test:types && pnpm run test:rust && pnpm run test:unit && pnpm run test:integration && pnpm run test:e2e -- --strict --repeat 3 --report json",
+        "version:set": "node scripts/set-version.mjs"
     },
     "dependencies": {
         "@earendil-works/pi-agent-core": "0.85.1",
