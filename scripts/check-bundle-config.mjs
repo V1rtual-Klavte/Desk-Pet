@@ -29,6 +29,8 @@ const TAURI_CRATE = "tauri"
 const TAURI_API_PACKAGE = "@tauri-apps/api"
 const SEMVER = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/
 const IDENTIFIER = /^[A-Za-z][A-Za-z0-9-]*(\.[A-Za-z0-9-]+)+$/
+/** 可打印 ASCII：productName 会进入产物文件名，超出这个范围的字符会被 GitHub 剥掉。 */
+const PRINTABLE_ASCII = /^[\x20-\x7E]+$/
 
 /** 各平台合法的 bundle target。`"all"` 由 host OS 决定候选集，永远合法。 */
 const KNOWN_TARGETS = new Set([
@@ -176,6 +178,17 @@ export function checkBundleConfig(rootDir, options = {}) {
 
   if (!conf.productName || typeof conf.productName !== "string") {
     problems.push("productName 必须是非空字符串（安装包与窗口都在用它）")
+  } else if (!PRINTABLE_ASCII.test(conf.productName.trim())) {
+    // v0.15.0 发布事故：中文 productName → 产物文件名带中文 → GitHub 上传时剥掉非 ASCII →
+    // tauri-action 匹配不到自己的产物名，静默跳过 updater 的 latest.json：CI 全绿，更新永久失效。
+    problems.push(
+      `productName ${JSON.stringify(conf.productName)} 含非 ASCII 字符：` +
+      `Tauri 按 productName 命名 bundle 与安装包，非 ASCII 字符会进入产物文件名，` +
+      `GitHub 上传时会剥掉它们，tauri-action 匹配不到自己的产物名，` +
+      `只打印「Signature not found ... Skipping upload...」就静默跳过 updater 的 latest.json。` +
+      `结果是 CI 全绿、用户永远收不到更新。把 productName 改成纯 ASCII 名称；` +
+      `窗口内标题来自 index.html，保持中文不受影响`,
+    )
   }
   const confVersionOk = typeof conf.version === "string" && SEMVER.test(conf.version)
   if (!confVersionOk) {

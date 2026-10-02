@@ -18,6 +18,8 @@ const resolveTag: ResolveTag = resolveTagSource
 interface FixtureOptions {
   config?: unknown
   icons?: string[]
+  /** 覆盖默认 config 的 productName（默认 ASCII；非 ASCII 会进产物文件名，被 GitHub 剥掉） */
+  productName?: string
   updaterPubkey?: string | null
   /** 覆盖默认 config 的 version（只影响未显式传 config 的夹具） */
   confVersion?: string
@@ -39,7 +41,7 @@ function fixtureRoot(options: FixtureOptions = {}) {
     writeFileSync(join(root, "src-tauri", "icons", name), "x")
   }
   const config = options.config ?? {
-    productName: "虚拟桌宠",
+    productName: options.productName ?? "v1rtual-desk-pet",
     version: options.confVersion ?? "0.15.0",
     identifier: "com.v1rtual.deskpet",
     bundle: {
@@ -134,6 +136,16 @@ describe("checkBundleConfig", () => {
     expect(checkBundleConfig(fixtureRoot())).toEqual([])
   })
 
+  it("productName 含非 ASCII 字符被拦，点名 GitHub 剥名、latest.json 被跳过的后果", () => {
+    // v0.15.0 发布事故：productName 是中文 → 产物文件名带中文 → GitHub 上传时剥掉非 ASCII →
+    // tauri-action 匹配不到自己的产物名，静默跳过 updater 的 latest.json：CI 全绿，更新永久失效。
+    const problems = checkBundleConfig(fixtureRoot({ productName: "虚拟桌宠" }))
+    expect(problems.some(p => p.includes("productName") && p.includes("latest.json"))).toBe(true)
+    // 判据必须是「纯 ASCII」而不是「有没有中文」：重音字母同样会被 GitHub 剥掉，只有 ASCII 才安全
+    const accented = checkBundleConfig(fixtureRoot({ productName: "café-desk-pet" }))
+    expect(accented.some(p => p.includes("productName"))).toBe(true)
+  })
+
   it("图标文件缺失被点名", () => {
     const root = fixtureRoot({ config: undefined, icons: ["32x32.png"] })
     const problems = checkBundleConfig(root)
@@ -144,7 +156,7 @@ describe("checkBundleConfig", () => {
   it("targets 写死单一平台目标被拦（本次要修的原始 bug）", () => {
     const root = fixtureRoot({
       config: {
-        productName: "虚拟桌宠", version: "0.15.0", identifier: "com.v1rtual.deskpet",
+        productName: "v1rtual-desk-pet", version: "0.15.0", identifier: "com.v1rtual.deskpet",
         bundle: { active: true, targets: ["nsis"], icon: ["icons/32x32.png"], resources: {} },
         plugins: { updater: { pubkey: "k", endpoints: ["https://example.com/latest.json"] } },
       },
@@ -156,7 +168,7 @@ describe("checkBundleConfig", () => {
   it("identifier 不是反向域名被拦", () => {
     const root = fixtureRoot({
       config: {
-        productName: "虚拟桌宠", version: "0.15.0", identifier: "deskpet",
+        productName: "v1rtual-desk-pet", version: "0.15.0", identifier: "deskpet",
         bundle: { active: true, targets: "all", icon: ["icons/32x32.png"], resources: {} },
         plugins: { updater: { pubkey: "k", endpoints: ["https://example.com/latest.json"] } },
       },
