@@ -12,7 +12,7 @@ const win = getCurrentWebviewWindow();
 <template>
   <div id="bar" :style="{ height: height + 'px' }" data-tauri-drag-region>
     <div class="left" data-tauri-drag-region>
-      <img class="win-icon" :src="getUiUrl('windows/icon_desktop_yapoo.png')" alt="" data-tauri-drag-region draggable="false" />
+      <span class="brand" data-tauri-drag-region>V1rtual</span>
       <span class="title" :style="{ color: titlebarLogo.color || undefined }" data-tauri-drag-region>{{ titlebarLogo.text }}</span>
       <span class="dots"><span class="d1"></span><span class="d2"></span><span class="d3"></span></span>
     </div>
@@ -65,7 +65,25 @@ const win = getCurrentWebviewWindow();
   flex-shrink: 0; user-select: none; z-index: 10;
 }
 .left { display: flex; align-items: center; gap: 6px; padding-left: 8px; height: 100%; }
-.win-icon { height: 22px; image-rendering: pixelated; }
+/* 品牌字样：固定不可自定义（参考网站 header 的 Bodoni 大字）。
+   字号刻意大于顶栏高度：字形下沿压出边框、上沿贴住窗口顶，
+   溢出部分由 #bar 的 z-index 盖在内容之上，只允许字体超出。 */
+.brand {
+  font-family: "Libre Bodoni", "Bodoni 72", "Didot", Georgia, serif;
+  font-size: 44px;
+  font-weight: 400;
+  line-height: 0.72;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+  -webkit-text-stroke: 0.8px currentColor;
+  transform: scaleX(0.85);
+  transform-origin: left center;
+  color: var(--color-titlebar-text);
+  white-space: nowrap;
+  margin-top: 6px;
+  /* 补偿 scaleX 缩放后留下的布局空白，让「配信中」贴近字形 */
+  margin-right: -14px;
+}
 .title { color: var(--color-titlebar-text); font-size: 14px; font-weight: bold; margin-left: 6px; text-shadow: 1px 1px 1px rgba(0,0,0,0.3); overflow: hidden; text-overflow: ellipsis; flex-shrink: 0; }
 .dots { display: inline-flex; gap: 3px; align-items: center; margin-top: 12px; margin-left: -4px; }
 .dots span {
