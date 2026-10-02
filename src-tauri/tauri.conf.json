@@ -1,6 +1,6 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "虚拟桌宠",
+  "productName": "v1rtual-desk-pet",
   "version": "0.15.0",
   "identifier": "com.v1rtual.deskpet",
   "build": {

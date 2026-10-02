@@ -13,12 +13,12 @@
 
 | 平台 | 文件 | 说明 |
 |---|---|---|
-| macOS（Apple Silicon） | `虚拟桌宠_x.y.z_aarch64.dmg` | 打开后把应用拖进「应用程序」。暂不支持 Intel Mac |
-| Windows | `虚拟桌宠_x.y.z_x64-setup.exe` | 双击安装 |
+| macOS（Apple Silicon） | `v1rtual-desk-pet_x.y.z_aarch64.dmg` | 打开后把应用拖进「应用程序」。暂不支持 Intel Mac |
+| Windows | `v1rtual-desk-pet_x.y.z_x64-setup.exe` | 双击安装 |
 
 > **首次打开会被系统拦一下** —— 当前安装包**未做代码签名与公证**：
 > - macOS 提示「已损坏，无法打开」时，把应用拖进「应用程序」后执行
->   `xattr -dr com.apple.quarantine /Applications/虚拟桌宠.app`，再打开。
+>   `xattr -dr com.apple.quarantine /Applications/v1rtual-desk-pet.app`，再打开。
 > - Windows 弹 SmartScreen「已保护你的电脑」时，点「更多信息 → 仍要运行」。
 
 装完之后不用手动追版本：应用启动约 30 秒后会检查一次更新，发现新版本会在聊天里

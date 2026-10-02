@@ -72,6 +72,7 @@ Actions 页面选 `Release` → Run workflow → 填一个**已存在**的 tag�
 | 症状 | 原因 |
 |---|---|
 | `check:bundle` 报 tag 与 version 不一致 | 跑 `pnpm run version:set <tag 的版本>`，重新提交后再打 tag |
+| `check:bundle` 报 `productName` 不是 ASCII | 产物文件名会带中文，GitHub 上传时**静默剥掉非 ASCII 字符**，`tauri-action` 随即匹配不上自己的产物名、**跳过 `latest.json`** —— CI 全绿但用户永远收不到更新。`productName` 保持 ASCII，界面里的中文名来自 `index.html`，不受影响 |
 | `check:bundle` 报 `tauri` 与 `@tauri-apps/api` 版本不一致 | Rust crate 被某个依赖顶到了新 minor，而 JS 包还锁在旧的（**`package.json` 的 caret range 允许、锁文件没跟**）。按提示 `pnpm add '@tauri-apps/api@^X.Y'` 对齐；**注意 `tauri build` 会因这个不一致直接拒绝构建**，不是体积问题。v0.15.0 首次发布就是栽在这里 |
 | 构建报签名错误 | 缺仓库 Secrets `TAURI_SIGNING_PRIVATE_KEY` / `..._PASSWORD` |
 | Release 里只有 Windows 产物 | macOS job 挂了，先看它的日志 |
