@@ -1,3 +1,7 @@
+#[cfg(target_os = "windows")]
+use super::system::to_wide;
+#[cfg(target_os = "windows")]
+use crate::error::err;
 use crate::error::AppResult;
 use std::path::Path;
 use std::process::Command;

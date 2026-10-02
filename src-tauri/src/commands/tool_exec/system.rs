@@ -152,8 +152,9 @@ fn get_memory_info() -> (u64, u64, u64) {
 // ── 打开应用 ──
 
 /// `ShellExecuteW` 需要的 NUL 结尾宽字符串。
+/// 与 `desktop.rs` 的 `ShellExecuteW` 调用点共用（原为私有函数，模块重组后跨文件引用不到）。
 #[cfg(target_os = "windows")]
-fn to_wide(value: impl AsRef<std::ffi::OsStr>) -> Vec<u16> {
+pub(super) fn to_wide(value: impl AsRef<std::ffi::OsStr>) -> Vec<u16> {
     use std::os::windows::ffi::OsStrExt;
     value
         .as_ref()
