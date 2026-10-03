@@ -15,13 +15,6 @@
 |---|---|---|
 | macOS（Apple Silicon） | `v1rtual-desk-pet_x.y.z_aarch64.dmg` | 打开后把应用拖进「应用程序」。暂不支持 Intel Mac |
 | Windows（安装版） | `v1rtual-desk-pet_x.y.z_x64-setup.exe` | 双击安装 |
-| Windows（免安装） | `v1rtual-desk-pet_x.y.z_x64-portable.zip` | 解压到任意目录，双击里面的 `v1rtual-desk-pet.exe` 即可，不写注册表、不产生卸载项 |
-
-> **免安装版不是「全便携」** —— 它免的只是安装步骤：数据仍然写在
-> `%LOCALAPPDATA%\com.v1rtual.deskpet\`（跟安装版共用同一份数据），换目录或换机器不会把数据带走。
-> 另外它不自带 WebView2 运行时兜底：Windows 11 和绝大多数 Windows 10 已预装，干净系统需要先手动装
-> [WebView2 Runtime](https://developer.microsoft.com/microsoft-edge/webview2/)（安装版会自动处理这一步）。
-> 应用内的自动更新对免安装版会把「安装版」装进来——想一直保持免安装形态，就手动换新的 zip。
 
 > **首次打开会被系统拦一下** —— 当前安装包**未做代码签名与公证**：
 > - macOS 提示「已损坏，无法打开」时，把应用拖进「应用程序」后执行
@@ -95,9 +88,10 @@ macOS 的窗口监控需要在「系统设置 → 隐私与安全性 → 辅助�
 | `pnpm run test:memory-quality` | 真实记忆质量采集，独立审阅后判定 |
 | `pnpm run test:memory-bench:prepare` | 安装外部记忆基准数据（锁定版本 → 指定目录；数据集不进仓库） |
 | `pnpm run test:memory-bench` | 外部记忆基准观测运行（LongMemEval / LoCoMo / MemoryBank，不进 CI） |
+| `pnpm run test:memory-bench:<梯队>` | 分层观测运行：`smoke` / `regression` / `zh` / `difficulty` / `external`；日常默认 `regression`，节奏见[基准 README](test/memory-bench/README.md) §8 |
 | `pnpm run test:memory-performance` | release 存储与 debug IPC 性能评测 |
 | `pnpm run test:trace-review -- <理想稿> <trace> <manifest> <审阅>` | 用户理想线路的 AI 审阅证据门禁 |
-| `pnpm run test:release` | 发布门禁：类型与编译 + Rust 单测 + 严格 E2E 场景 |
+| `pnpm run test:release` | 发布门禁：类型与编译 + 纪律扫描 + Rust 单测 + L2/L3 + 严格契约与 3 trials 的全量 E2E |
 
 ## 测试
 
