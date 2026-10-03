@@ -7,7 +7,7 @@ scope: runtime-foundation-before-memory-kernel
 
 # 当前运行时契约
 
-本文记录已经落地的横向运行时边界；记忆与会话的存储、checkpoint 和预算细节由[当前记忆与会话基础](./memory.md)维护，长期记忆的后续目标见[记忆系统运行时契约](../plans/active/记忆系统运行时契约.md)。
+本文记录已经落地的横向运行时边界；记忆与会话的存储、checkpoint 和预算细节由[当前记忆与会话基础](./memory.md)维护，长期记忆的剩余验收见[未完成工作与已知缺口](../plans/active/未完成工作与已知缺口.md) §3。
 
 ## 会话、来源与恢复
 

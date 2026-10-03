@@ -16,7 +16,7 @@
 | 测试执行/验证边界 | [测试边界](current/testing.md) | [测试 README](../test/README.md)；生成契约时再读 [测试 SKILL](../test/SKILL.md) |
 | 推 tag、发版、打包产物、自动更新 | [工作流说明](../.github/workflows/README.md) | [工程参考](current/development.md) 的「打包与发布」、`scripts/check-bundle-config.mjs`、`scripts/set-version.mjs` |
 | 主动陪伴、事项跟进、行为画像 | [主动陪伴](current/proactive.md) | [行为画像](current/behavior.md)、[未完成总表](plans/active/未完成工作与已知缺口.md) §5.1 |
-| 查看还剩哪些未完成工作、继续记忆重构 | [未完成工作与已知缺口](plans/active/未完成工作与已知缺口.md) | [B 方案目标契约与执行计划（已实施，剩余验证边界）](plans/active/记忆系统运行时契约.md)及相关源码 |
+| 查看还剩哪些未完成工作、继续记忆重构 | [未完成工作与已知缺口](plans/active/未完成工作与已知缺口.md) | [当前记忆](current/memory.md)及相关源码（B 方案契约已归档） |
 
 ## 文档职责与维护
 
@@ -40,7 +40,7 @@ AGENTS 维持全局规则入口，CLAUDE 只导入它；模块细节通过任务
 ## 未完成工作
 
 - [未完成工作与已知缺口](plans/active/未完成工作与已知缺口.md)：**唯一未完成工作总表**——Pi 剩余批次、平台与发布、长期记忆 B 方案的剩余验收、已知代码缺口、验证缺口与已决策的不修边界。
-- [记忆系统 B 方案](plans/active/记忆系统运行时契约.md)：无向量分层记忆的设计口径、SQLite/来源/治理协议、dreaming、UI/配置接线与验收矩阵。主路径已实施，剩余验证边界见未完成总表 §3。
+- [活人感（拟人化）运行时契约](plans/active/拟人化运行时契约.md)：分条气泡、打字节奏、正在输入、回合分流、主动消息同路径与两个开关的目标契约。设计已定，待实施；实施后剩余事项转入未完成总表。
 
 ## 历史入口
 
@@ -65,6 +65,7 @@ AGENTS 维持全局规则入口，CLAUDE 只导入它；模块细节通过任务
 - [会话压缩建设方案](history/implementation/会话压缩建设方案.md)：参考项目比较、压缩设计与当时的实施证据。
 - [旧产品与技术说明](history/design/DES-2026-09-17基线.md)：DES 精简前正文。
 - [旧统一内核总方案](history/design/轻量陪伴运行时与统一内核建设方案-2026-09-17基线.md)：原比较、论证和候选设计。
+- [记忆系统运行时契约 2026-10-03 基线](history/implementation/记忆系统运行时契约-2026-10-03基线.md)：无向量分层记忆的设计口径、SQLite／来源／治理协议、dreaming、UI/配置接线与验收矩阵；已按当前实现归档，提案差异见文末 §14。
 - [旧运行时契约](history/implementation/记忆系统运行时契约-2026-09-17基线.md)、[旧执行手册](history/implementation/记忆系统重构执行手册-2026-09-17基线.md)：原阶段协议、接力记录与证据。
 - [加固审查基线](history/analysis/运行时加固与清理计划-2026-09-17基线.md)：原缺陷、修复批次、历史行号与当时决策。
 - [愿景驱动重构方案](history/design/愿景驱动整体重构方案.md)：早期设计；其中纯 Markdown 和 Pi 候选结论已被后续方案替代。

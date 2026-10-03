@@ -34,7 +34,7 @@
 | judge 模型与异构纪律 | `--bench-judge-model` > `DESKPET_EVAL_JUDGE_MODEL` > 两层模型配置文件（[eval-models.json](eval-models.json) 与本地 `eval-models.local.json`）的 `judge.model`（当前 deepseek-reasoner）；judge 继承测试侧网关的 endpoint/apiKey；**必须不同于被测模型**，同模型在开跑前报错 |
 | 上游评测数据怎么装、装到哪 | [memory-bench/README.md](memory-bench/README.md)：prepare 命令、`--data-dir` / `DESKPET_BENCH_DATA_DIR`、revision + SHA-256 锁定清单（`upstream-lock.json`） |
 | 报告与证据在哪、怎么淘汰 | README「报告在哪、怎么看」（组保留：最近 5 组 + 200 MiB） |
-| 评分口径与门槛 | README「Trace、记忆质量与性能门禁」+ [memory-bench/README.md](memory-bench/README.md)（judge 模板、F1 口径）；记忆质量门槛见[记忆契约](../docs/plans/active/记忆系统运行时契约.md) §12.3 |
+| 评分口径与门槛 | README「Trace、记忆质量与性能门禁」+ [memory-bench/README.md](memory-bench/README.md)（judge 模板、F1 口径）；记忆质量门槛见[未完成总表 §3.2](../docs/plans/active/未完成工作与已知缺口.md#32-尚未完成的验收口径) |
 | sourceHash 怎么算、什么时候要刷 | README「Contract 与 sourceHash」+ [SKILL.md](SKILL.md)（analyze → generate，不能只刷 hash） |
 | 环境前提（锁屏、窗口、挂起） | README「环境注意」与「隔离、超时与失败」 |
 | 产物保留/清理机制 | README「报告在哪」+ [scripts/report-retention.mjs](../scripts/report-retention.mjs)（组淘汰核心） |

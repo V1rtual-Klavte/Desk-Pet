@@ -34,7 +34,7 @@ V1rtual-Desk-Pet 是可自定义 Card/Profile 的 Tauri v2 桌宠，优先做好
 | 人格变量、阶段文案、回复元数据 | [人格与回复](docs/current/personality.md) |
 | 日志、异常、IPC、构建排查 | [工程参考](docs/current/development.md) |
 | 测试规则、分层与门禁 | [测试 AGENTS](test/AGENTS.md)（规则入口与维护义务表）；命令与报告见其 [README](test/README.md)，生成与审查流程见其 [SKILL](test/SKILL.md) |
-| 记忆系统设计与剩余验证 | [当前记忆](docs/current/memory.md)，再读 [B 方案契约](docs/plans/active/记忆系统运行时契约.md) 与 [未完成工作与已知缺口](docs/plans/active/未完成工作与已知缺口.md) §3 |
+| 记忆系统设计与剩余验证 | [当前记忆](docs/current/memory.md) 与 [未完成工作与已知缺口](docs/plans/active/未完成工作与已知缺口.md) §3（B 方案契约已按当前实现归档，不再读取） |
 | 主动机会、约定、回执、presence 与观察画像 | [主动陪伴](docs/current/proactive.md)、[行为画像](docs/current/behavior.md) |
 
 完整目录见 [docs/INDEX.md](docs/INDEX.md)。当前行为由源码和对应 `docs/current/` 说明；
