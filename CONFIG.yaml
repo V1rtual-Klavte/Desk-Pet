@@ -87,9 +87,10 @@ ai:
       mode: idle
       idleSeconds: 120
       minIntervalMinutes: 60
-      maxDailyTokens: 12000
-      # 单次 Review 的输出上限；reasoning 模型的 thinking 也计入此预算，推理模型需调大（如 4096）
-      reviewMaxTokens: 1200
+      # 每日自动整理预算：按 128k 窗口、3 批最坏预留（3×8k 输入 + 3×16k 输出）校准；0 = 禁用自动整理
+      maxDailyTokens: 72000
+      # reviewMaxTokens：单次 Review 输出上限；留空/删掉 = 按模型输出预算自动推导（窗口×1/8，32k 封顶，且不越过模型目录上限）
+      # reviewMaxTokens: 4096
     maxSessions: 20
 
   plan:

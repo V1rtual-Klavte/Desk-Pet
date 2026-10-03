@@ -134,8 +134,8 @@ interface Config {
         idleSeconds: number
         minIntervalMinutes: number
         maxDailyTokens: number
-        /** 单次 Review 的输出上限；reasoning 模型的 thinking 也计入，推理模型需调大 */
-        reviewMaxTokens: number
+        /** 单次 Review 的输出上限；null 表示按模型输出预算自动推导 */
+        reviewMaxTokens: number | null
       }
       maxSessions: number
     }
@@ -568,8 +568,10 @@ export const memoryConfig = {
   get dreamingMode() { return overrideOr("ai.memory.dreaming.mode", cfg.ai?.memory?.dreaming?.mode || "idle") as "manual" | "idle"; },
   get dreamingIdleSeconds() { return overrideOr("ai.memory.dreaming.idleSeconds", cfg.ai?.memory?.dreaming?.idleSeconds ?? 120); },
   get dreamingMinIntervalMinutes() { return overrideOr("ai.memory.dreaming.minIntervalMinutes", cfg.ai?.memory?.dreaming?.minIntervalMinutes ?? 60); },
-  get dreamingMaxDailyTokens() { return overrideOr("ai.memory.dreaming.maxDailyTokens", cfg.ai?.memory?.dreaming?.maxDailyTokens ?? 12000); },
-  get dreamingReviewMaxTokens() { return overrideOr("ai.memory.dreaming.reviewMaxTokens", cfg.ai?.memory?.dreaming?.reviewMaxTokens ?? 1200); },
+  /** 每日自动整理预算（tokens）：默认按 128k 窗口、3 批最坏预留（3×8k 输入 + 3×16k 输出）校准；显式 0 表示禁用自动整理。 */
+  get dreamingMaxDailyTokens() { return overrideOr("ai.memory.dreaming.maxDailyTokens", cfg.ai?.memory?.dreaming?.maxDailyTokens ?? 72000); },
+  /** Review 输出上限：null/未配置=按模型输出预算自动推导（仍受上下文窗口约束）；显式值只作为更小的上限。 */
+  get dreamingReviewMaxTokens(): number | null { return overrideOr("ai.memory.dreaming.reviewMaxTokens", cfg.ai?.memory?.dreaming?.reviewMaxTokens ?? null); },
   get maxSessions() { return overrideOr("ai.memory.maxSessions", cfg.ai?.memory?.maxSessions ?? 20); },
 };
 

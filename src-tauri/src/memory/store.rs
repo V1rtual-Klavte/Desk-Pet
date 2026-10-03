@@ -362,12 +362,12 @@ impl MemoryStore {
                 "expiresAt": row.get::<_, Option<i64>>(15)?,
                 "supersedesId": row.get::<_, Option<String>>(16)?,
                 "sourceIds": [],
-            },
-            "createdAt": row.get::<_, i64>(17)?,
-                "updatedAt": row.get::<_, i64>(18)?,
                 "eventAt": row.get::<_, Option<String>>(19)?.and_then(|text| serde_json::from_str::<Value>(&text).ok()),
                 "dueAt": row.get::<_, Option<String>>(20)?.and_then(|text| serde_json::from_str::<Value>(&text).ok()),
                 "workingState": row.get::<_, Option<String>>(21)?,
+            },
+            "createdAt": row.get::<_, i64>(17)?,
+            "updatedAt": row.get::<_, i64>(18)?,
         }))
     }
 

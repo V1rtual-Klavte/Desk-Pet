@@ -48,8 +48,9 @@ ai:
     rerank: off
     recallTimeoutMs: 4000
     rerankTimeoutMs: 2500
-    # reviewMaxTokens：单次 Review 输出上限；reasoning 模型的 thinking 也计入，推理模型需调大
-    dreaming: { mode: idle, idleSeconds: 120, minIntervalMinutes: 60, maxDailyTokens: 12000, reviewMaxTokens: 1200 }
+    # maxDailyTokens：每日自动整理预算，按 128k 窗口 3 批最坏预留校准；0 = 禁用自动整理
+    # reviewMaxTokens：单次 Review 输出上限；缺省 = 按模型输出预算自动推导（窗口×1/8，32k 封顶）
+    dreaming: { mode: idle, idleSeconds: 120, minIntervalMinutes: 60, maxDailyTokens: 72000 }
     maxSessions: 20
   plan:
     enabled: true

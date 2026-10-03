@@ -672,8 +672,8 @@ mod tests {
         fixture.1.proactive_change(&json!({"operationId":"reschedule-linked","baseRevision":revision,"action":"reschedule","owner":owner.clone(),"trustedUserEventId":"user-event","sourceRefs":[Fixture::source_ref()],"taskId":"linked-task","expectedVersion":1,"taskPatch":{"nextCheckinAt":now_ms()+120_000,"eventAt":{"precision":"day","localDate":"2026-10-05","timezone":"UTC"},"dueAt":{"precision":"day","localDate":"2026-10-05","timezone":"UTC"}}})).expect("改期应连动记忆锚");
         let item=fixture.1.query("练琴",Some("session"),Some("s1"),None,10).expect("读取权威记忆").remove(0);
         assert_eq!(item["version"],json!(2));
-        assert_eq!(item["eventAt"]["localDate"],json!("2026-10-05"));
-        assert_eq!(item["dueAt"]["localDate"],json!("2026-10-05"));
+        assert_eq!(item["draft"]["eventAt"]["localDate"],json!("2026-10-05"));
+        assert_eq!(item["draft"]["dueAt"]["localDate"],json!("2026-10-05"));
         let task=fixture.1.proactive_query(&json!({"owner":owner,"sessionId":"s1"})).unwrap()["tasks"][0].clone();
         assert_eq!(task["sourceRefs"][0]["version"],json!(2));
     }

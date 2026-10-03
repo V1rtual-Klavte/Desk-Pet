@@ -12,6 +12,7 @@
 //   模型取辅助模型（ai.auxModel，留空跟随聊天模型）。
 
 import { completePiText, resolvePiAuxModel } from "@/services/engine/harness"
+import { estimateContextTokens } from "@/services/context/budget"
 import { createLogger } from "@/services/logger"
 import { formatError } from "@/services/error"
 import { memoryConfig } from "@/services/config"
@@ -31,8 +32,7 @@ const MAX_SOURCES_PER_BATCH = 20
 /** 单条来源正文上界：超过它不截断，整条标 oversized 交给用户。 */
 const MAX_SOURCE_CHARS = 1_200
 const MAX_BATCHES_PER_RUN = 3
-const REVIEW_TIMEOUT_MS = 30_000
-/** 评审输出上限的防呆下限；实际值读 ai.memory.dreaming.reviewMaxTokens（默认 1200）。 */
+/** 评审输出上限的防呆下限；未配置时按模型输出预算自动推导（见 runDreamingSweep）。 */
 const REVIEW_MAX_TOKENS_FLOOR = 256
 const LEASE_OWNER = "memory-dreaming"
 const IDLE_TICK_MS = 15_000
@@ -71,7 +71,8 @@ const REVIEW_SYSTEM_PROMPT = [
   "2. 每条候选必须带至少一个来源 id，且只能用输入里出现过的 id。",
   "3. 称呼、稳定的表达偏好可以置 pinned=true；一次性的经历或临时安排置 false。",
   "4. 有明显时效的说法写 expiresAt（毫秒时间戳，可省略）；不要把临时状态写成永久偏好。",
-  "5. 没有值得长期记住的内容时返回空数组。",
+  "5. kind=working 的候选项必须带 workingState：open|completed|cancelled（拿不准就 open）。",
+  "6. 没有值得长期记住的内容时返回空数组。",
 ].join("\n")
 
 function asRecord(value: unknown): Record<string, unknown> | undefined {
@@ -92,6 +93,12 @@ function stable(value: unknown): string {
 
 const KINDS = new Set(["fact", "preference", "episode", "working"])
 const SCOPES = new Set(["user", "card", "session"])
+const WORKING_STATES = new Set(["open", "completed", "cancelled"])
+
+/** 单次 Review 的超时：随输出预算放大（按每分钟至少 8k tokens 估），30s 起、180s 封顶。 */
+function reviewTimeoutMs(outputBudget: number): number {
+  return Math.min(180_000, Math.max(30_000, Math.ceil(Math.max(1, outputBudget) / 8_000) * 60_000))
+}
 
 /**
  * 校验模型返回的候选：来源必须落在本批、枚举必须合法、正文不能为空。
@@ -127,6 +134,10 @@ export function parseReviewCandidates(
       ? record.aliases.filter((alias): alias is string => typeof alias === "string").slice(0, 8)
       : []
     const pinned = record.pinned === true
+    // kind=working 必须带状态：模型漏写时默认 open（条目不关闭），非法值不猜测完成态。
+    const workingState = kind === "working"
+      ? (typeof record.workingState === "string" && WORKING_STATES.has(record.workingState) ? record.workingState : "open")
+      : undefined
     // 只有称呼类的稳定事实才允许 pinned，避免模型把所有东西都塞进核心画像。
     const cardId = batch.find(source => sourceIds.includes(source.sourceId))?.cardId
     out.push({
@@ -142,6 +153,7 @@ export function parseReviewCandidates(
         confidence: typeof record.confidence === "number" ? Math.min(1, Math.max(0, record.confidence)) : 0.5,
         observedAt: Date.now(),
         ...(typeof record.expiresAt === "number" ? { expiresAt: record.expiresAt } : {}),
+        ...(workingState ? { workingState: workingState as MemoryDraft["workingState"] } : {}),
         sourceIds,
       },
       ...(typeof record.reason === "string" ? { reason: record.reason.slice(0, 400) } : {}),
@@ -216,9 +228,13 @@ export async function runDreamingSweep(options: { signal?: AbortSignal; automati
       const { collectAllMemorySources } = await import("./sources")
       await collectAllMemorySources()
     }
-    // 评审输出上限按配置取一次快照：reasoning 模型的 thinking 也计入该预算（推理模型需要调大）；
-    // 同一轮内预留与调用共用同一个值，避免中途改配置造成账目口径不一致。
-    const reviewMaxTokens = Math.max(REVIEW_MAX_TOKENS_FLOOR, Math.floor(memoryConfig.dreamingReviewMaxTokens))
+    // 输出预算按模型窗口推导一次快照（reasoning 的 thinking 也计入），显式配置只作更小的上限；
+    // 同一轮内预留与调用共用同一个模型与预算，避免中途改配置造成账目口径不一致。
+    const auxModel = resolvePiAuxModel()
+    const { contextWindow, maxTokens: outputBudget } = auxModel
+    const configuredReviewMaxTokens = memoryConfig.dreamingReviewMaxTokens
+    const reviewMaxTokens = Math.max(REVIEW_MAX_TOKENS_FLOOR,
+      Math.min(configuredReviewMaxTokens ?? outputBudget, outputBudget))
 
     for (let batch = 0; batch < MAX_BATCHES_PER_RUN; batch += 1) {
       if (options.signal?.aborted) {
@@ -239,7 +255,12 @@ export async function runDreamingSweep(options: { signal?: AbortSignal; automati
       if (usable.length === 0) break
 
       const userText = buildReviewPrompt(usable)
-      const reservation = Math.ceil(userText.length / 4) + reviewMaxTokens
+      // 单批再按真实剩余窗口收紧：输入 + 输出 + 余量必须留在窗口内，避免大输入把输出逼到截断。
+      const inputTokens = estimateContextTokens(userText)
+      const reserveMargin = Math.max(512, Math.floor(contextWindow * .02))
+      const batchMaxTokens = Math.max(REVIEW_MAX_TOKENS_FLOOR,
+        Math.min(reviewMaxTokens, contextWindow - inputTokens - reserveMargin))
+      const reservation = inputTokens + batchMaxTokens
       if (options.automatic) {
         const reservationId = `${jobId}:${resumedBatchOffset + batch}`
         const granted = await reserveMemoryDreamingBudget(reservationId, today, reservation, memoryConfig.dreamingMaxDailyTokens)
@@ -249,11 +270,11 @@ export async function runDreamingSweep(options: { signal?: AbortSignal; automati
       const result = await completePiText({
         purpose: "memory",
         // 辅助模型在这里冻结（ai.auxModel；留空即聊天模型）：整理作业与子代理同款模型。
-        model: resolvePiAuxModel(),
+        model: auxModel,
         systemPrompt: REVIEW_SYSTEM_PROMPT,
         userText,
-        maxTokens: reviewMaxTokens,
-        timeoutMs: REVIEW_TIMEOUT_MS,
+        maxTokens: batchMaxTokens,
+        timeoutMs: reviewTimeoutMs(batchMaxTokens),
         ...(options.signal ? { signal: options.signal } : {}),
         ...(traceContext ? { traceContext } : {}),
       })

@@ -1,7 +1,7 @@
 import type { ModuleContract } from "../host/types"
 
 export const proactiveContract:ModuleContract={
-  module:"proactive",sourceHash: "35cf327fec635de7574cbafca2a9171af857f0a03f44b7a806886a452d91fa83",
+  module:"proactive",sourceHash: "db8e5d3da3eaa40d680305cd9d12e7bcfe46579725b28614fae9a05420003b55",
   sourceFiles:["src/services/proactive/config.ts","src/services/proactive/index.ts","src/services/proactive/scanner.ts","src/services/proactive/opportunities.ts","src/services/proactive/time.ts",
     "src/services/proactive/planner.ts","src/services/proactive/delivery.ts","src/services/proactive/ipc.ts","src/services/proactive/protocol.json",
     "src/services/proactive/protocol.ts","src/services/proactive/trace.ts","src/services/proactive/types.ts","src/services/proactive/presence.ts","src/services/proactive/usage.ts",

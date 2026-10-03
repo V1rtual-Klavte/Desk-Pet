@@ -21,7 +21,7 @@ import { contextBudget, ContextBudgetError, contextWindowError, estimateDriftRat
 import { PROMPT_SNAPSHOT_ENTRY, createPromptSnapshot, redactText, sha256Text } from "@/services/engine/runtime"
 import type { PromptSnapshot, PromptSnapshotInput } from "@/services/engine/runtime"
 import type { HarnessSlotSnapshot } from "./harness-slot"
-import { PROVIDER_TIMEOUT_MS, createProviderFetchGuard, validateProviderUrl } from "./net-guard"
+import { PROVIDER_TIMEOUT_MS, createProviderFetchGuard, providerResponseByteCap, validateProviderUrl } from "./net-guard"
 
 const log = createLogger("PiGateway")
 
@@ -49,6 +49,21 @@ function builtinProvider(providerId: string): Provider | undefined {
   return undefined
 }
 
+/**
+ * 配置模型的有效窗口与输出预算：窗口取「模型目录 ∩ 配置窗口」，
+ * 输出取「窗口比例推导值」与「模型目录 maxTokens」的较小者。
+ *
+ * 这是主回合、注入模型、一次性文本请求与记忆整理共用的唯一预算口径：
+ * 大窗口按比例拿到更大的输出预算，同时不越过模型自身声明的上限；
+ * 目录里没有的自定义模型 id 只用比例推导值，不再落回固定 4096。
+ */
+function resolvePiModelBudget(modelId: string = aiConfig.model): { contextWindow: number; outputBudget: number } {
+  const catalog = builtinProvider(configuredProviderId())?.getModels().find(model => model.id === modelId)
+  const contextWindow = Math.min(aiConfig.contextMaxTokens, catalog?.contextWindow ?? aiConfig.contextMaxTokens)
+  const derived = contextBudget(contextWindow).outputReserve
+  return { contextWindow, outputBudget: Math.min(derived, catalog?.maxTokens ?? derived) }
+}
+
 function createConfiguredGateway(modelId: string = aiConfig.model): PiGateway {
   const providerId = configuredProviderId()
   const url = validateProviderUrl(aiConfig.endpoint)
@@ -66,6 +81,7 @@ function createConfiguredGateway(modelId: string = aiConfig.model): PiGateway {
 
   const builtin = builtinProvider(providerId)
   const catalog = builtin?.getModels().find(model => model.id === modelId)
+  const { contextWindow, outputBudget } = resolvePiModelBudget(modelId)
   const model: Model<any> = {
     ...catalog,
     id: modelId,
@@ -76,9 +92,9 @@ function createConfiguredGateway(modelId: string = aiConfig.model): PiGateway {
     reasoning: catalog?.reasoning ?? false,
     input: catalog?.input ?? ["text"],
     cost: catalog?.cost ?? { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-    contextWindow: Math.min(aiConfig.contextMaxTokens, catalog?.contextWindow ?? aiConfig.contextMaxTokens),
+    contextWindow,
     // ReplyGenerator only keeps 500 characters; leave headroom for reasoning and RUNTIME_DATA.
-    maxTokens: contextBudget(Math.min(aiConfig.contextMaxTokens, catalog?.contextWindow ?? aiConfig.contextMaxTokens)).outputReserve,
+    maxTokens: outputBudget,
   }
   const provider = createProvider({
     id: providerId,
@@ -101,7 +117,7 @@ function createConfiguredGateway(modelId: string = aiConfig.model): PiGateway {
   })
   const models = createModels()
   models.setProvider(provider)
-  const gateway: PiGateway = { signature, model, models, fetch: createProviderFetchGuard(endpoint) }
+  const gateway: PiGateway = { signature, model, models, fetch: createProviderFetchGuard(endpoint, providerResponseByteCap(model.maxTokens)) }
   gatewayCacheByModel.set(modelId, gateway)
   modelGateways.set(model, gateway)
   return gateway
@@ -156,7 +172,8 @@ export function resolvePiTurnModel(): PiModel {
   let model: PiModel
   if (overrideModel) {
     const window = Math.min(aiConfig.contextMaxTokens, overrideModel.contextWindow)
-    model = { ...overrideModel, contextWindow: window, maxTokens: contextBudget(window).outputReserve }
+    const derived = contextBudget(window).outputReserve
+    model = { ...overrideModel, contextWindow: window, maxTokens: Math.min(derived, overrideModel.maxTokens ?? derived) }
   } else {
     model = getPiModel()
   }

@@ -9,7 +9,7 @@ import { validateDataset, LIVE_DATASET_VERSION } from "./dataset"
 import { runAllScenes, plannedTrialCount } from "./scene-runner"
 import { standardSetup } from "../host/standard-setup"
 import { formatReport } from "./reporter"
-import { createProgressView, formatSceneFailure, formatTraceEvents, TRACE_WINDOW_SIZE } from "./progress"
+import { createProgressView, createSpecialProgressView, formatSceneFailure, formatTraceEvents, TRACE_WINDOW_SIZE } from "./progress"
 import type { ProgressView } from "./progress"
 import { checkAllContracts } from "../host/contract-checker"
 import { parseArgs } from "./cli"
@@ -133,6 +133,31 @@ async function finishSpecialReport(report: unknown, passed: boolean): Promise<vo
   await invoke("e2e_complete", { passed, report: JSON.stringify(report, null, 2) })
 }
 
+/** 长跑模式（质量 / 基准）的窗口观测面：与场景视图共用样式与结果目录出口。 */
+async function createSpecialView(mode: string, total: number) {
+  const root = document.getElementById("e2e-progress")
+  if (!root) {
+    reportError("e2e", new Error("test-e2e.html 缺少 #e2e-progress 容器，窗口进度不可见"), { kind: "观测面配置" })
+  }
+  return createSpecialProgressView(root ?? document.body, {
+    mode, total,
+    reportPath: await runtimePath("data", "e2e-result.txt"),
+    reportDir: await runtimePath("data"),
+    openDirectory: dirPath => {
+      void invoke("app_open", { path: dirPath }).catch(error => {
+        reportError("e2e", error, { kind: "打开报告目录失败" })
+      })
+    },
+  })
+}
+
+/** 长跑 cell 状态 → 观测面三态：完整通过 / 未裁决（跳过）/ 失败。 */
+function cellStatusForView(status: string): "pass" | "fail" | "skip" {
+  if (status === "complete") return "pass"
+  if (status === "inconclusive") return "skip"
+  return "fail"
+}
+
 /** 读取启动器 stage 到数据根的模型配置；文件缺失返回 undefined（调用方决定是否留痕）。 */
 async function readStagedModelsFile(name: string): Promise<string | undefined> {
   try {
@@ -253,9 +278,13 @@ async function main(): Promise<void> {
   if (opts.performance) {
     manifest.expectedTrials = [{ caseId: "memory-performance", sceneId: "memory-performance", trialId: "1" }]
     await writeManifest(false)
+    const view = await createSpecialView("记忆性能评测", 1)
+    view.begin({ key: "memory-performance", label: "memory-performance" })
     await traceRecorder.beginTrial("memory-performance", "1")
     const report = await runMemoryPerformanceEvaluation(opts.trace, traceRecorder.bindOperation)
     await traceRecorder.endTrial("memory-performance", "1")
+    view.end({ key: "memory-performance", status: report.passed ? "pass" : "fail", note: report.passed ? "通过" : "未达标" })
+    view.finish({ verdict: report.passed ? "pass" : "fail", note: report.passed ? "性能门槛通过" : "性能门槛未通过，见报告明细" })
     await finishSpecialReport({ ...report, runEvidence: {commit: manifest.commit, sourceHashes: manifest.sourceHashes,
       seedHash: manifest.seedHash, model: manifest.model} }, report.passed)
     return
@@ -268,17 +297,21 @@ async function main(): Promise<void> {
     const cases = filter ? MEMORY_QUALITY_CASES.filter(item => filter.includes(item.caseId) || filter.includes(item.group)) : MEMORY_QUALITY_CASES
     manifest.expectedTrials = cases.flatMap(item => Array.from({ length: trials }, (_, index) => ["extraction", ...MEMORY_QUALITY_STRATEGIES].map(strategy => ({ caseId: item.caseId, sceneId: `${item.caseId}/${strategy}`, trialId: String(index + 1) }))).flat())
     await writeManifest(false)
+    const view = await createSpecialView(`记忆质量采集 · ${cases.length} 题 × ${trials} trial`, cases.length * trials * (1 + MEMORY_QUALITY_STRATEGIES.length))
+    const cellKey = (cell: MemoryQualityCellContext): string => `${cell.caseId}/${cell.strategy}@${cell.trial}`
     const report = await runMemoryQualityEvaluation({
       adapter: createLiveMemoryQualityAdapter(), seed: opts.qualitySeed, trials, caseFilter: filter,
       onCellStart: async (cell: MemoryQualityCellContext) => {
         const sceneId = `${cell.caseId}/${cell.strategy}`
         await traceRecorder!.beginTrial(sceneId, String(cell.trial))
         qualityLog.info(`${cell.sequence}/${cell.total} ${cell.caseId} ${cell.strategy} trial=${cell.trial}`)
+        view.begin({ key: cellKey(cell), label: `${cell.sequence}/${cell.total} ${cell.caseId} ${cell.strategy} t${cell.trial}` })
       },
       onCellEnd: async cell => {
         // Each finished cell survives a later timeout; the summary cannot erase partial outcomes.
         await invoke("file_append", { path: await runtimePath("data", "memory-quality-outcomes.jsonl"), content: JSON.stringify(cell) + "\n", maxBytes: 5 * 1024 * 1024 })
         await traceRecorder!.endTrial(`${cell.caseId}/${cell.strategy}`, String(cell.trial))
+        view.end({ key: cellKey(cell), status: cellStatusForView(cell.status), note: cell.status })
       },
     })
     manifest.quality = { datasetVersion: report.datasetVersion, evalRunId: report.evalRunId, manifest: report.manifest }
@@ -287,6 +320,11 @@ async function main(): Promise<void> {
     // 自身已包含 complete / governanceZero / 各能力阈值（见 runMemoryQualityEvaluation 的 allQualityGates），
     // 再逐项重列属于防御性冗余，曾经的阈值重列是重复定义点，已收敛。
     const qualityPassed = report.gates.qualityThresholdsPassed === true && report.gates.goldAuditComplete === true && report.gates.reviewComplete === true
+    view.finish({
+      verdict: qualityPassed ? "pass" : report.gates.complete && report.gates.governanceZero ? "pending" : "fail",
+      note: `完成 ${report.completedCells}/${report.plannedCells} · 失败 ${report.failures.length}`
+        + (qualityPassed ? "" : " · 采集成功不等于质量通过：还需双人 gold 审计与独立审阅"),
+    })
     await finishSpecialReport({ ...report, runEvidence: {commit: manifest.commit, sourceHashes: manifest.sourceHashes, seedHash: manifest.seedHash}, status: qualityPassed ? "pass" : report.gates.complete && report.gates.governanceZero ? "pending_review" : "fail" }, qualityPassed)
     return
   }
@@ -317,12 +355,14 @@ async function main(): Promise<void> {
       seed, judge: judgeMode === "off" ? null : judgeModel }
     manifest.expectedTrials = planned.map(cell => ({ caseId: cell.caseId, sceneId: cell.caseId, trialId: "1" }))
     await writeManifest(false)
+    const view = await createSpecialView(`外部记忆基准 · ${dataset}/${info.split}`, planned.length)
     const report: BenchReport = await runMemoryBenchEvaluation({
       adapter: createLiveMemoryBenchAdapter(),
       dataset, split: info.split, file, seed, limit, caseFilter, judge: judgeMode, judgeModel,
       onCellStart: async (cell: BenchCellContext) => {
         await traceRecorder!.beginTrial(cell.caseId, "1")
         benchLog.info(`${cell.sequence}/${cell.total} ${cell.caseId}`)
+        view.begin({ key: cell.caseId, label: `${cell.sequence}/${cell.total} ${cell.caseId}` })
       },
       onCellEnd: async cell => {
         // 每题一行落盘：LongMemEval 行内同时携带官方 evaluate_qa.py 所需的 question_id/hypothesis，
@@ -335,12 +375,17 @@ async function main(): Promise<void> {
           content: JSON.stringify(line) + "\n", maxBytes: 5 * 1024 * 1024 })
         await writeManifest(false)
         await traceRecorder!.endTrial(cell.caseId, "1")
+        view.end({ key: cell.caseId, status: cellStatusForView(cell.status), note: cell.status })
       },
     })
     manifest.bench = { ...(manifest.bench as Record<string, unknown>), evalRunId: report.evalRunId,
       judgeModel: report.judgeModel, upstream: report.upstream, importTransformVersion: report.importTransformVersion }
     // 外部基准是观测证据：passed 只表示「完整跑完」，质量阈值字段在报告中恒为 null。
     const benchPassed = report.gates.complete === true
+    view.finish({
+      verdict: benchPassed ? "pass" : "fail",
+      note: benchPassed ? "全部计划题已完成（观测层通过只表示跑完）" : "存在未完成或失败题，见报告与上方红行",
+    })
     await finishSpecialReport({ ...report, runEvidence: { commit: manifest.commit,
       sourceHashes: manifest.sourceHashes, seedHash: manifest.seedHash } }, benchPassed)
     return

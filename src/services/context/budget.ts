@@ -35,7 +35,15 @@ const NON_ASCII_TOKENS_PER_UNIT = 1
 /** 每个 UTF-16 单元匹配一次；非 ASCII 汉字、假名、全角标点与 emoji 代理对各算一个单元。 */
 const NON_ASCII_UNIT_RE = /[^\x00-\x7F]/g
 const MIN_OUTPUT = 1024
-const MAX_OUTPUT = 4096
+/**
+ * 输出预留 = 窗口 × 1/8，上限 32k。
+ *
+ * 旧值是固定 4096：所有 ≥16k 的窗口（现在的主流 128k 起）都吃同一个硬顶，
+ * 大窗口的输入预算被白白撑大、输出却被卡死，记忆 Review 这类结构化长输出一超就截断。
+ * 改为按窗口比例推导；模型目录声明的 maxTokens 在网关侧取更小者，不越过模型自身能力。
+ */
+const MAX_OUTPUT = 32_768
+const OUTPUT_RATIO = 1 / 8
 const MAX_HEADROOM = 20_000
 const HEADROOM_RATIO = .16
 const OVERHEAD_RATIO = .02
@@ -195,7 +203,8 @@ export function estimateRequestTokens(systemPrompt: string, messages: readonly u
 }
 export function contextBudget(window: number, maxOutput?: number): ContextBudget {
   const size = Math.max(1, Math.floor(window))
-  const outputReserve = Math.min(size - 1, maxOutput ?? Math.min(MAX_OUTPUT, Math.max(MIN_OUTPUT, Math.floor(size / 4))))
+  const derivedOutput = Math.min(MAX_OUTPUT, Math.max(MIN_OUTPUT, Math.floor(size * OUTPUT_RATIO)))
+  const outputReserve = Math.min(size - 1, maxOutput ?? derivedOutput)
   const protocolOverhead = Math.min(Math.max(0, size - outputReserve - 1), Math.max(32, Math.ceil(size * OVERHEAD_RATIO)))
   const hardInputLimit = Math.max(1, size - outputReserve - protocolOverhead)
   const compactionHeadroom = Math.min(MAX_HEADROOM, Math.floor(size * HEADROOM_RATIO), Math.floor(hardInputLimit / 3))
