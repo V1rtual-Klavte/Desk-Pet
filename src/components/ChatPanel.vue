@@ -4,7 +4,6 @@ import { sendMessage, resumePausedInputs, stopActiveRun } from "@/services/agent
 import { chatHistory, getActiveSessionId, pushAssistantMessage } from "@/services/session";
 import { playEventSound } from "@/services/audio/registry";
 import { conversationConfig, userConfig } from "@/services/config";
-import { getUiUrl } from "@/services/profile";
 import { createLogger } from "@/services/logger";
 import { formatError } from "@/services/error";
 import { listen } from "@tauri-apps/api/event";
@@ -23,7 +22,7 @@ import DebugBar from "./DebugBar.vue";
 import PlanConfirm from "./PlanConfirm.vue";
 import { confirmState, resolvePermissionConfirm } from "@/services/safety";
 import { actionCategoryOf } from "@/services/tool";
-import { getFallbackReply, getSimpleStage, getStagePrompt } from "@/services/personality";
+import { activeCardName, getFallbackReply, getSimpleStage, getStagePrompt } from "@/services/personality";
 import type { SimpleStageKey } from "@/services/personality";
 
 // ★ 同步初始化 Slash 命令注册表（下拉补全用；命令执行只在 ingress，见 preProcess）
@@ -36,6 +35,9 @@ const input = ref("");
 const inputRef = ref<HTMLTextAreaElement | null>(null);
 const msgContainer = ref<HTMLElement | null>(null);
 const thumb = ref<HTMLElement | null>(null);
+
+/** 聊天气泡的说话人标签：取当前 Card 的名字（源码不留硬编码角色名，切卡后自动更新）。 */
+const cardName = computed(() => activeCardName.value || "桌宠");
 
 /** 工具执行状态提示（agent-loop 事件驱动） */
 const toolStatus = ref<{ text: string; visible: boolean }>({ text: "", visible: false });
@@ -625,18 +627,16 @@ onUnmounted(() => {
 
 <template>
   <div id="chat">
-    <img class="cbg" :src="getUiUrl('windows/tinder_match.png')" alt="" draggable="false" />
-
     <!-- 消息区 + 滚动条容器 -->
     <div id="ch-body">
       <div id="ch-msgs" ref="msgContainer" @scroll="checkBottom">
         <div v-for="m in chatHistory" :key="m.id" class="cm" :class="m.role">
-          <span class="cn">{{ m.role === "system" ? "📋" : m.role === "assistant" ? "糖糖" : "你" }}</span>
+          <span class="cn">{{ m.role === "system" ? "系统" : m.role === "assistant" ? cardName : "你" }}</span>
           <span class="ct">{{ m.text }}</span>
         </div>
         <!-- 流式正文：只做瞬时展示，回合结束后由提交路径推送的完整消息取代 -->
         <div v-if="streamingText" class="cm assistant stream">
-          <span class="cn">糖糖</span>
+          <span class="cn">{{ cardName }}</span>
           <span class="ct">{{ streamingText }}<span class="ct-cursor">▍</span></span>
         </div>
       </div>
@@ -669,7 +669,7 @@ onUnmounted(() => {
     <!-- 工具执行状态提示 -->
     <Transition name="tool-status-fade">
       <div v-if="toolStatus.visible" id="ch-tool-status">
-        🔧 {{ toolStatus.text }}
+        {{ toolStatus.text }}
       </div>
     </Transition>
 
@@ -718,7 +718,7 @@ onUnmounted(() => {
         <textarea
           ref="inputRef"
           v-model="input"
-          placeholder="消息... 输入 / 查看命令"
+          placeholder="说点什么…"
           @keydown="key"
           @compositionstart="onCompositionStart"
           @compositionend="onCompositionEnd"
@@ -800,14 +800,6 @@ onUnmounted(() => {
   overflow: hidden;
   background: var(--color-surface-darker);
 }
-.cbg {
-  position: absolute;
-  width: 100%; height: 100%;
-  object-fit: cover;
-  pointer-events: none;
-  z-index: 0;
-  opacity: 0.15;
-}
 
 /* --- 消息区 + 滚动条 --- */
 #ch-body {
@@ -872,12 +864,13 @@ onUnmounted(() => {
 }
 
 /* --- 消息条目 --- */
-.cm { display: flex; flex-direction: column; gap: 1px; font-size: clamp(9px, 2.5vw, 15px); line-height: 1.4; }
+/* 字号上限取全局设置（--font-size，默认 15px 与改造前一致）；下限与小窗口自适应保持原样 */
+.cm { display: flex; flex-direction: column; gap: 1px; font-size: clamp(9px, 2.5vw, var(--font-size, 15px)); line-height: 1.4; }
 .cm.user { align-items: flex-end; }
 .cm.assistant { align-items: flex-start; }
 .cn { font-size: clamp(8px, 2.2vw, 12px); color: var(--color-text-pink); }
 .cm.user .cn { color: #90d0ff; }
-.ct { color: var(--color-text-bright); word-break: break-word; padding: 4px 8px; border-radius: 12px; max-width: 95%; font-size: clamp(9px, 2.5vw, 15px); }
+.ct { color: var(--color-text-bright); word-break: break-word; padding: 4px 8px; border-radius: 12px; max-width: 95%; font-size: clamp(9px, 2.5vw, var(--font-size, 15px)); }
 .cm.user .ct { background: var(--color-border-light); }
 .cm.assistant .ct { background: var(--color-surface-dark); }
 

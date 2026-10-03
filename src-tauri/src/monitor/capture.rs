@@ -1,87 +1,266 @@
-// ==========================================
-// 窗口标题捕获
-// Windows: GetForegroundWindow + GetWindowTextW
-// macOS:   osascript (AppleScript) → 应用名回退
-// ==========================================
+use std::time::{SystemTime, UNIX_EPOCH};
 
-use crate::rust_debug;
+pub struct PlatformSample {
+    pub app_id: Option<String>,
+    pub app: Option<String>,
+    pub title: Option<String>,
+    pub idle_for_ms: Option<u64>,
+    pub observation_state: &'static str,
+}
 
-pub fn capture_window_title() -> String {
-    #[cfg(target_os = "windows")]
-    // SAFETY: 只调用只读的 Win32 查询 API（GetForegroundWindow / GetWindowTextW /
-    // GetWindowThreadProcessId / GetProcessImageFileNameW），没有设备上下文或句柄创建。
-    // 唯一的句柄来自 OpenProcess：非 0 时立即由 CloseHandle 释放(:41)，不跨作用域逃逸。
-    // 两个缓冲区（[u16; 1024] / [u16; 260]）都是栈上定长数组，切片按 API 返回的长度截断。
+pub struct SystemActivitySample {
+    pub idle_for_ms: Option<u64>,
+    pub observation_state: &'static str,
+    pub locked: bool,
+}
+
+pub fn unix_now_ms() -> u64 {
+    SystemTime::now().duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_millis().min(u64::MAX as u128) as u64)
+        .unwrap_or(0)
+}
+
+pub fn sample_window() -> PlatformSample {
+    let activity = sample_system_activity();
+    if activity.observation_state != "observed" || activity.locked {
+        return PlatformSample {
+            app_id: None, app: None, title: None, idle_for_ms: activity.idle_for_ms,
+            observation_state: if activity.locked { "locked" } else { activity.observation_state },
+        };
+    }
+    let (app_id, app, title) = platform_window();
+    let observation_state = if app_id.is_some() { "observed" } else { "unavailable" };
+    PlatformSample { app_id, app, title, idle_for_ms: activity.idle_for_ms, observation_state }
+}
+
+#[cfg(windows)]
+pub fn sample_system_activity() -> SystemActivitySample {
+    use windows_sys::Win32::Foundation::BOOL;
+    use windows_sys::Win32::System::StationsAndDesktops::{
+        CloseDesktop, GetUserObjectInformationW, OpenInputDesktop, DESKTOP_READOBJECTS, UOI_NAME,
+    };
+    use windows_sys::Win32::System::SystemInformation::GetTickCount;
+    use windows_sys::Win32::UI::Input::KeyboardAndMouse::{GetLastInputInfo, LASTINPUTINFO};
+
     unsafe {
-        use windows_sys::Win32::Foundation::CloseHandle;
-        use windows_sys::Win32::System::ProcessStatus::GetProcessImageFileNameW;
-        use windows_sys::Win32::System::Threading::{
-            OpenProcess, PROCESS_QUERY_INFORMATION, PROCESS_VM_READ,
-        };
-        use windows_sys::Win32::UI::WindowsAndMessaging::{
-            GetForegroundWindow, GetWindowTextW, GetWindowThreadProcessId,
-        };
-        let hwnd = GetForegroundWindow();
-        let mut buf = [0u16; 1024];
-        let len = GetWindowTextW(hwnd, buf.as_mut_ptr(), 1024);
-        if len > 0 {
-            let title = String::from_utf16_lossy(&buf[..len as usize]);
-            rust_debug!("窗口标题(Win): {}", &title[..title.len().min(60)]);
-            return title;
+        let desktop = OpenInputDesktop(0, 0 as BOOL, DESKTOP_READOBJECTS);
+        if desktop == 0 {
+            return SystemActivitySample { idle_for_ms: None, observation_state: "unavailable", locked: false };
         }
-        // 回退：获取前台进程名
-        let mut pid: u32 = 0;
+        let mut name = [0u16; 128];
+        let mut required = 0u32;
+        let name_ok = GetUserObjectInformationW(
+            desktop,
+            UOI_NAME,
+            name.as_mut_ptr().cast(),
+            (name.len() * std::mem::size_of::<u16>()) as u32,
+            &mut required,
+        ) != 0;
+        CloseDesktop(desktop);
+        if !name_ok {
+            return SystemActivitySample { idle_for_ms: None, observation_state: "unavailable", locked: false };
+        }
+        let desktop_name = String::from_utf16_lossy(&name[..name.iter().position(|item| *item == 0).unwrap_or(name.len())]);
+        if desktop_name.eq_ignore_ascii_case("winlogon") {
+            return SystemActivitySample { idle_for_ms: None, observation_state: "locked", locked: true };
+        }
+
+        let mut input = LASTINPUTINFO { cbSize: std::mem::size_of::<LASTINPUTINFO>() as u32, dwTime: 0 };
+        if GetLastInputInfo(&mut input) == 0 {
+            return SystemActivitySample { idle_for_ms: None, observation_state: "unavailable", locked: false };
+        }
+        // Both values are 32-bit GetTickCount milliseconds; wrapping_sub handles its ~49-day wrap.
+        let idle_for_ms = GetTickCount().wrapping_sub(input.dwTime) as u64;
+        SystemActivitySample { idle_for_ms: Some(idle_for_ms), observation_state: "observed", locked: false }
+    }
+}
+
+#[cfg(target_os = "macos")]
+pub fn sample_system_activity() -> SystemActivitySample {
+    use std::ffi::{c_char, c_void, CString};
+
+    type CfTypeRef = *const c_void;
+    type CfStringRef = CfTypeRef;
+    type CfDictionaryRef = CfTypeRef;
+
+    #[link(name = "CoreGraphics", kind = "framework")]
+    extern "C" {
+        fn CGSessionCopyCurrentDictionary() -> CfDictionaryRef;
+        fn CGEventSourceSecondsSinceLastEventType(state_id: u32, event_type: u32) -> f64;
+    }
+    #[link(name = "CoreFoundation", kind = "framework")]
+    extern "C" {
+        static kCFBooleanTrue: CfTypeRef;
+        fn CFStringCreateWithCString(allocator: CfTypeRef, c_str: *const c_char, encoding: u32) -> CfStringRef;
+        fn CFDictionaryGetValue(dictionary: CfDictionaryRef, key: CfTypeRef) -> CfTypeRef;
+        fn CFRelease(value: CfTypeRef);
+    }
+
+    unsafe {
+        let session = CGSessionCopyCurrentDictionary();
+        if session.is_null() {
+            return SystemActivitySample { idle_for_ms: None, observation_state: "unavailable", locked: false };
+        }
+        let key = match CString::new("CGSSessionScreenIsLocked") {
+            Ok(value) => value,
+            Err(_) => {
+                CFRelease(session);
+                return SystemActivitySample { idle_for_ms: None, observation_state: "unavailable", locked: false };
+            }
+        };
+        // kCFStringEncodingUTF8 is 0x08000100. A missing lock property is treated as unavailable,
+        // never as an affirmative unlocked result.
+        let cf_key = CFStringCreateWithCString(std::ptr::null(), key.as_ptr(), 0x0800_0100);
+        if cf_key.is_null() {
+            CFRelease(session);
+            return SystemActivitySample { idle_for_ms: None, observation_state: "unavailable", locked: false };
+        }
+        let lock_value = CFDictionaryGetValue(session, cf_key);
+        let lock_known = !lock_value.is_null();
+        let locked = lock_known && lock_value == kCFBooleanTrue;
+        CFRelease(cf_key);
+        CFRelease(session);
+        if !lock_known {
+            return SystemActivitySample { idle_for_ms: None, observation_state: "unavailable", locked: false };
+        }
+        if locked {
+            return SystemActivitySample { idle_for_ms: None, observation_state: "locked", locked: true };
+        }
+        let seconds = CGEventSourceSecondsSinceLastEventType(1, u32::MAX);
+        if !seconds.is_finite() || seconds < 0.0 {
+            return SystemActivitySample { idle_for_ms: None, observation_state: "unavailable", locked: false };
+        }
+        let idle_for_ms = (seconds * 1_000.0).min(u64::MAX as f64) as u64;
+        SystemActivitySample { idle_for_ms: Some(idle_for_ms), observation_state: "observed", locked: false }
+    }
+}
+
+#[cfg(not(any(windows, target_os = "macos")))]
+pub fn sample_system_activity() -> SystemActivitySample {
+    SystemActivitySample { idle_for_ms: None, observation_state: "unavailable", locked: false }
+}
+
+#[cfg(windows)]
+fn platform_window() -> (Option<String>, Option<String>, Option<String>) {
+    use windows_sys::Win32::Foundation::{CloseHandle, HWND};
+    use windows_sys::Win32::System::ProcessStatus::GetProcessImageFileNameW;
+    use windows_sys::Win32::System::Threading::{OpenProcess, PROCESS_QUERY_INFORMATION, PROCESS_VM_READ};
+    use windows_sys::Win32::UI::WindowsAndMessaging::{GetForegroundWindow, GetWindowTextW, GetWindowThreadProcessId};
+
+    unsafe {
+        let hwnd: HWND = GetForegroundWindow();
+        if hwnd == 0 { return (None, None, None); }
+        let mut pid = 0u32;
         GetWindowThreadProcessId(hwnd, &mut pid);
-        if pid > 0 {
-            let h = OpenProcess(PROCESS_QUERY_INFORMATION | PROCESS_VM_READ, 0, pid);
-            // windows-sys 0.52 的 HANDLE 是 isize，失败返回 0（不是空指针）
-            if h != 0 {
-                let mut name_buf = [0u16; 260];
-                let name_len = GetProcessImageFileNameW(h, name_buf.as_mut_ptr(), 260);
-                CloseHandle(h);
-                if name_len > 0 {
-                    let full_path = String::from_utf16_lossy(&name_buf[..name_len as usize]);
-                    if let Some(name) = std::path::Path::new(&full_path).file_name() {
-                        let n = name.to_string_lossy().trim_end_matches(".exe").to_string();
-                        rust_debug!("进程名(Win): {}", &n[..n.len().min(40)]);
-                        return n;
-                    }
-                }
+        if pid == 0 { return (None, None, None); }
+        let process = OpenProcess(PROCESS_QUERY_INFORMATION | PROCESS_VM_READ, 0, pid);
+        let app_id = if process == 0 {
+            None
+        } else {
+            let mut buffer = [0u16; 1024];
+            let size = GetProcessImageFileNameW(process, buffer.as_mut_ptr(), buffer.len() as u32);
+            CloseHandle(process);
+            if size == 0 { None } else {
+                let full_path = String::from_utf16_lossy(&buffer[..size as usize]);
+                std::path::Path::new(&full_path).file_stem().map(|name| name.to_string_lossy().to_ascii_lowercase())
             }
-        }
+        };
+        let mut title_buffer = [0u16; 2048];
+        let title_len = GetWindowTextW(hwnd, title_buffer.as_mut_ptr(), title_buffer.len() as i32);
+        let title = (title_len > 0).then(|| String::from_utf16_lossy(&title_buffer[..title_len as usize]));
+        let app = app_id.clone();
+        (app_id, app, title)
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn platform_window() -> (Option<String>, Option<String>, Option<String>) {
+    use objc::runtime::Object;
+    use objc::{class, msg_send, sel, sel_impl};
+    use std::ffi::CStr;
+    use std::os::raw::c_char;
+
+    unsafe fn ns_string(value: *mut Object) -> Option<String> {
+        if value.is_null() { return None; }
+        let pointer: *const c_char = msg_send![value, UTF8String];
+        if pointer.is_null() { None } else { Some(CStr::from_ptr(pointer).to_string_lossy().into_owned()) }
     }
 
-    #[cfg(target_os = "macos")]
-    {
-        // 1. 尝试获取前台窗口标题（需要辅助功能权限）
-        if let Ok(out) = std::process::Command::new("osascript")
-            .arg("-e")
-            .arg(r#"tell application "System Events" to get title of front window of first process whose frontmost is true"#)
-            .output()
-        {
-            if out.status.success() {
-                let t = String::from_utf8_lossy(&out.stdout).trim().to_string();
-                if !t.is_empty() {
-                    rust_debug!("窗口标题(Mac): {}", &t[..t.len().min(60)]);
-                    return t;
-                }
-            }
-        }
-        // 2. 回退：获取前台应用名
-        if let Ok(out) = std::process::Command::new("osascript")
-            .arg("-e")
-            .arg(r#"tell application "System Events" to get name of first process whose frontmost is true"#)
-            .output()
-        {
-            if out.status.success() {
-                let t = String::from_utf8_lossy(&out.stdout).trim().to_string();
-                if !t.is_empty() {
-                    rust_debug!("应用名(Mac): {}", &t[..t.len().min(40)]);
-                    return t;
-                }
-            }
-        }
+    unsafe {
+        let workspace: *mut Object = msg_send![class!(NSWorkspace), sharedWorkspace];
+        let running_app: *mut Object = msg_send![workspace, frontmostApplication];
+        if running_app.is_null() { return (None, None, None); }
+        let bundle: *mut Object = msg_send![running_app, bundleIdentifier];
+        let name: *mut Object = msg_send![running_app, localizedName];
+        let app_id = ns_string(bundle);
+        let app = ns_string(name);
+        let title = capture_mac_window_title();
+        (app_id, app, title)
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn capture_mac_window_title() -> Option<String> {
+    use std::ffi::{c_char, c_void, CString};
+
+    type CfTypeRef = *const c_void;
+    type CfArrayRef = CfTypeRef;
+    type CfDictionaryRef = CfTypeRef;
+    type CfStringRef = CfTypeRef;
+    type CfNumberRef = CfTypeRef;
+    #[link(name = "CoreGraphics", kind = "framework")]
+    extern "C" {
+        fn CGWindowListCopyWindowInfo(option: u32, relative_to_window: u32) -> CfArrayRef;
+    }
+    #[link(name = "CoreFoundation", kind = "framework")]
+    extern "C" {
+        fn CFArrayGetCount(array: CfArrayRef) -> isize;
+        fn CFArrayGetValueAtIndex(array: CfArrayRef, index: isize) -> CfTypeRef;
+        fn CFDictionaryGetValue(dictionary: CfDictionaryRef, key: CfTypeRef) -> CfTypeRef;
+        fn CFStringCreateWithCString(allocator: CfTypeRef, text: *const c_char, encoding: u32) -> CfStringRef;
+        fn CFStringGetCString(value: CfStringRef, buffer: *mut c_char, size: isize, encoding: u32) -> bool;
+        fn CFNumberGetValue(value: CfNumberRef, number_type: i32, output: *mut i32) -> bool;
+        fn CFRelease(value: CfTypeRef);
     }
 
-    String::new()
+    unsafe {
+        let names = CString::new("kCGWindowName").ok()?;
+        let layers = CString::new("kCGWindowLayer").ok()?;
+        let name_key = CFStringCreateWithCString(std::ptr::null(), names.as_ptr(), 0x0800_0100);
+        let layer_key = CFStringCreateWithCString(std::ptr::null(), layers.as_ptr(), 0x0800_0100);
+        if name_key.is_null() || layer_key.is_null() {
+            if !name_key.is_null() { CFRelease(name_key); }
+            if !layer_key.is_null() { CFRelease(layer_key); }
+            return None;
+        }
+        // On-screen, non-desktop windows are returned in front-to-back order. Avoid launching
+        // AppleScript once per observation, which would dominate a lightweight polling loop.
+        let array = CGWindowListCopyWindowInfo(1 | 16, 0);
+        let mut title = None;
+        if !array.is_null() {
+            for index in 0..CFArrayGetCount(array).min(32) {
+                let dictionary = CFArrayGetValueAtIndex(array, index);
+                if dictionary.is_null() { continue; }
+                let layer_ref = CFDictionaryGetValue(dictionary, layer_key);
+                let mut layer = -1i32;
+                if layer_ref.is_null() || !CFNumberGetValue(layer_ref, 3, &mut layer) || layer != 0 { continue; }
+                let value = CFDictionaryGetValue(dictionary, name_key);
+                if value.is_null() { continue; }
+                let mut buffer = [0i8; 1024];
+                if CFStringGetCString(value, buffer.as_mut_ptr(), buffer.len() as isize, 0x0800_0100) {
+                    let text = std::ffi::CStr::from_ptr(buffer.as_ptr()).to_string_lossy().trim().to_string();
+                    if !text.is_empty() { title = Some(text); break; }
+                }
+            }
+            CFRelease(array);
+        }
+        CFRelease(name_key);
+        CFRelease(layer_key);
+        title
+    }
+}
+
+#[cfg(not(any(windows, target_os = "macos")))]
+fn platform_window() -> (Option<String>, Option<String>, Option<String>) {
+    (None, None, None)
 }

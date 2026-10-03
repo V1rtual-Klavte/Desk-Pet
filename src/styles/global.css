@@ -1,5 +1,5 @@
 /* ========================================== */
-/* 全局样式 — CSS 变量由 Profile 注入      */
+/* 全局样式 — 颜色变量由 Profile 注入；字体变量由 @/services/font 注入 */
 /* ========================================== */
 
 * {
@@ -12,7 +12,9 @@ html, body, #app {
   width: 100%;
   height: 100%;
   overflow: hidden;
-  font-family: var(--font-ui, "zpix"), "pixel-mplus", sans-serif;
+  font-family: var(--font-ui, sans-serif);
+  /* 全局字号基准：无显式 font-size 的文本跟随设置/外观里的字号 */
+  font-size: var(--font-size, 15px);
   background: transparent;
 }
 
@@ -22,7 +24,8 @@ html, body, #app {
   display: flex;
   flex-direction: column;
   overflow: hidden;
-  background: var(--color-bg, #fce4ec);
+  /* 兜底白：Profile 未注入 --color-bg 时也保持白底（不再是粉色） */
+  background: var(--color-bg, #ffffff);
   position: relative;
   border-bottom: 3px solid var(--color-border, #a01a5a);
   user-select: none;
@@ -73,13 +76,16 @@ html, body, #app {
   display: flex;
   flex-direction: column;
   overflow: hidden;
+  /* 图层舞台底：固定白底，与图层编辑器画布一致；素材层直接盖在上面 */
+  background: #ffffff;
 }
 
 #chat-slot {
   display: flex;
   flex-direction: column;
   flex-shrink: 0;
-  background: var(--color-chat-bg, #fce4ec);
+  /* 兜底白：Profile 未注入 --color-chat-bg 时聊天区也是白底 */
+  background: var(--color-chat-bg, #ffffff);
   transition: width 0.3s ease;
   overflow: hidden;
 }
@@ -118,13 +124,4 @@ html, body, #app {
 #divider.dragging::after {
   background: var(--color-accent, #c4276f);
   width: 2px;
-}
-
-#bg {
-  position: absolute;
-  width: 100%;
-  height: 100%;
-  object-fit: fill;
-  pointer-events: none;
-  z-index: 0;
 }

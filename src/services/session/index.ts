@@ -64,6 +64,9 @@ export {
   messagesFromEntries,
   registerSessionEntryMapper,
   isAssistantEntryVisible,
+  registerActiveReceiptReader,
+  registerActiveReceiptReconciler,
+  reconcileActiveReceipts,
 } from "./read-model"
 export type { SessionEntryMapper } from "./read-model"
 
@@ -85,6 +88,7 @@ export {
   initWelcome,
   pushUserMessage,
   pushAssistantMessage,
+  pushCommittedProactiveMessage,
   pushSystemMessage,
   incrementUnanswered,
   resetUnanswered,

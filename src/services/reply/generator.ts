@@ -3,7 +3,8 @@
 // 解析 RUNTIME_DATA 块 → 变量写入落盘 → 截断
 // ==========================================
 
-import { batchWriteVars, savePoolToDisk } from "@/services/personality/variable-pool"
+import { batchWriteVars, getVariablePoolCardId, savePoolToDisk, savePoolToDiskStrict } from "@/services/personality/variable-pool"
+import { getActiveCard } from "@/services/personality"
 import type { PersonalityCard } from "@/services/personality/types"
 import { createLogger } from "@/services/logger"
 
@@ -105,4 +106,15 @@ export async function generateReply(
     text,
     runtimeData: { variables: { ...runtime.vars } },
   }
+}
+
+/** Apply an already parsed active-reply patch only after its durable delivery receipt is confirmed. */
+export async function applyProactiveReplyPatch(variables: Record<string, string>, expectedCardId: string, expectedCardHash: string): Promise<boolean> {
+  const card = getActiveCard()
+  if (card?.id !== expectedCardId || card.hash !== expectedCardHash || getVariablePoolCardId() !== expectedCardId) return false
+  if (Object.keys(variables).length === 0) return true
+  const write = batchWriteVars(variables, "proactive_response")
+  if (write.errors.length > 0) log.warn("主动回复变量提交被拒:", write.errors.join("; "))
+  await savePoolToDiskStrict()
+  return true
 }

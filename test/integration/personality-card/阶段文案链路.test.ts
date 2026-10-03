@@ -38,6 +38,7 @@ import { actionCategoryOf, registerDefaultTools } from "@/services/tool"
 const PROBE_STAGES: StageMap = {
   thinking: "探针思考中",
   planning: "探针规划",
+  presence: { idle: "探针空闲", working: "探针工作", resting: "探针休息" },
   executing: { "fs.read": "探针读取中", _default: "探针执行中" },
   done: { "fs.write": "探针写入完成", _default: "探针完成" },
   blocked: { _default: "探针已拦截" },
@@ -45,6 +46,8 @@ const PROBE_STAGES: StageMap = {
   retry: "探针重试",
   commands: {
     clear: "探针已清空", memoryCleared: "探针记忆已清理",
+    proactiveEnabled: "探针主动陪伴已开启", proactiveDisabled: "探针主动陪伴已关闭",
+    proactiveStatus: "探针主动陪伴状态", behaviorCleared: "探针行为观测已清除",
     compactCompleted: "探针压缩完成", compactDeclined: "探针未压缩", compactNothing: "探针无可压缩",
     compactBusy: "探针压缩忙", compactClosed: "探针会话不可用", compactPending: "探针排队未清空",
     compactFailed: "探针压缩失败",

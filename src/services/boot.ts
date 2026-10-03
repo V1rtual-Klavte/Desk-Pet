@@ -6,6 +6,7 @@
 import type { Component } from "vue"
 import { initPaths } from "@/services/paths"
 import { initConfig, applyLogLevel } from "@/services/config"
+import { applyFontVars } from "@/services/font"
 import { createLogger } from "@/services/logger"
 import { installGlobalHandlers, installVueErrorHandler, reportError } from "@/services/error"
 
@@ -29,6 +30,9 @@ export async function bootWindow(
 
     // 计算并应用生效级别（前端 + 推给 Rust），两端过滤保持一致
     const level = applyLogLevel()
+
+    // 全局字体（不随 Profile）：挂载前注入，避免首帧用兜底字体闪一下
+    applyFontVars()
 
     const { createApp } = await import("vue")
     const { default: Root } = await loadRoot()

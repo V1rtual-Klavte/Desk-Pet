@@ -1,7 +1,7 @@
 {
     "name": "v1rtual-desk-pet",
     "private": true,
-    "version": "0.7.1",
+    "version": "0.16.0",
     "packageManager": "pnpm@11.5.2",
     "type": "module",
     "scripts": {
@@ -15,21 +15,36 @@
         "test:unit": "vitest run --project unit",
         "test:integration": "vitest run --project integration",
         "test:mutation": "node scripts/mutate.mjs",
+        "test:trace-review": "node scripts/trace-evidence.mjs",
+        "test:memory-quality": "node scripts/e2e-test.mjs --quality --repeat 3 --report json",
+        "test:memory-quality-review": "node scripts/memory-quality-review.mjs",
+        "test:memory-performance": "node scripts/memory-performance.mjs",
+        "test:memory-bench": "node scripts/e2e-test.mjs --bench --report json",
+        "test:memory-bench:smoke": "node scripts/e2e-test.mjs --bench --report json --bench-dataset longmemeval --bench-split oracle --bench-limit 3",
+        "test:memory-bench:regression": "node scripts/e2e-test.mjs --bench --report json --bench-dataset longmemeval --bench-split oracle",
+        "test:memory-bench:zh": "node scripts/e2e-test.mjs --bench --report json --bench-dataset memorybank --bench-split cn",
+        "test:memory-bench:difficulty": "node scripts/e2e-test.mjs --bench --report json --bench-dataset longmemeval --bench-split s",
+        "test:memory-bench:external": "node scripts/e2e-test.mjs --bench --report json --bench-dataset locomo --bench-split locomo10 --bench-limit 100",
+        "test:memory-bench:prepare": "node test/memory-bench/prepare.mjs",
         "test:e2e": "node scripts/e2e-test.mjs",
         "test:smoke": "pnpm run test:e2e -- --module agent-runtime --case production-chat-entry --strict --repeat 2",
-        "test:release": "pnpm run test:types && pnpm run test:rust && pnpm run test:unit && pnpm run test:integration && pnpm run test:e2e -- --strict --repeat 3 --report json"
+        "test:release": "pnpm run test:types && node scripts/check-test-rules.mjs && node scripts/check-flaky-ratchet.mjs && pnpm run test:rust && node scripts/run-vitest-with-retry.mjs unit && node scripts/run-vitest-with-retry.mjs integration && pnpm run test:e2e -- --strict --repeat 3 --report json",
+        "version:set": "node scripts/set-version.mjs",
+        "check:bundle": "node scripts/check-bundle-config.mjs"
     },
     "dependencies": {
         "@earendil-works/pi-agent-core": "0.85.1",
         "@earendil-works/pi-ai": "0.85.1",
-        "@tauri-apps/api": "^2.10.1",
+        "@tauri-apps/api": "^2.12.1",
         "@tauri-apps/plugin-global-shortcut": "^2.3.2",
+        "@tauri-apps/plugin-process": "^2.4.0",
+        "@tauri-apps/plugin-updater": "^2.13.1",
         "js-yaml": "^4.2.0",
         "jszip": "^3.10.1",
         "vue": "^3.5.32"
     },
     "devDependencies": {
-        "@tauri-apps/cli": "^2.10.1",
+        "@tauri-apps/cli": "^2.12.1",
         "@types/js-yaml": "^4.0.9",
         "@types/jszip": "^3.4.1",
         "@types/node": "^26.0.0",

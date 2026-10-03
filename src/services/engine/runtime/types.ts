@@ -51,10 +51,12 @@ export type MessageOrigin =
   | "recovery"
   | "plan"
   | "memory"
+  | "proactive"
 
 export type QuerySource =
   | "chat"
   | "active_monitor"
+  | "proactive"
   | "hook"
   | "queue"
   | "recovery"

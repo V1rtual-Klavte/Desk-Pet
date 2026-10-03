@@ -85,25 +85,25 @@ const {
             @click="selectedIndex = i">
             <span class="le-dot" :class="`ldot-${i}`"></span>
             <span class="le-tab-name">{{ l.name }}</span>
-            <span v-if="l.config.locked" class="le-tag">🔒</span>
+            <span v-if="l.config.locked" class="le-tag">锁</span>
             <span v-else-if="!l.config.enabled" class="le-tag off">关</span>
-            <span v-if="l.loadFailed" class="le-tag err">⚠</span>
+            <span v-if="l.loadFailed" class="le-tag err">缺</span>
           </button>
         </template>
       </div>
       <div class="le-actions">
         <template v-if="!isDof">
           <button class="le-btn" @click="toggleLock()" :title="selectedLayer.config.locked?'解锁':'锁定'">
-            {{ selectedLayer.config.locked ? '🔒 已锁' : '🔓 解锁' }}
+            {{ selectedLayer.config.locked ? '已锁' : '解锁' }}
           </button>
           <button class="le-btn" @click="toggleEnabled()">
-            {{ selectedLayer.config.enabled ? '👁 可见' : '🚫 隐藏' }}
+            {{ selectedLayer.config.enabled ? '可见' : '隐藏' }}
           </button>
           <button class="le-btn le-btn-d" @click="resetLayer()">↺ 重置</button>
         </template>
         <span class="le-spacer"></span>
-        <span v-if="saved" class="le-saved">✅ 已保存</span>
-        <button class="le-btn le-btn-primary" @click="save()">💾 保存</button>
+        <span v-if="saved" class="le-saved">已保存</span>
+        <button class="le-btn le-btn-primary" @click="save()">保存</button>
         <button class="le-btn le-btn-d" @click="closeWindow()">✕ 关闭</button>
       </div>
     </div>
@@ -178,7 +178,7 @@ const {
                 @error="(e: Event) => onImgError(i, e)"
               />
               <span v-else class="le-no-img">
-                {{ l.loadFailed ? '⚠' : i === 2 ? '🎯' : '' }}
+                {{ l.loadFailed ? '缺失' : i === 2 ? '角色本体' : '' }}
               </span>
             </div>
           </template>
@@ -203,9 +203,9 @@ const {
               <span class="le-prop-val" :class="{ empty: !dof.image }">{{ dof.image || '未设置' }}</span>
             </div>
             <div class="le-prop-row" style="gap:3px;flex-wrap:wrap">
-              <button class="le-btn le-btn-xs" @click="openDofPicker()">🖼 选择素材</button>
+              <button class="le-btn le-btn-xs" @click="openDofPicker()">选择素材</button>
               <button class="le-btn le-btn-xs" @click="uploadDofImage()" :disabled="dofUploading">
-                {{ dofUploading ? '⏳' : '📤 上传' }}
+                {{ dofUploading ? '上传中…' : '上传' }}
               </button>
             </div>
           </div>
@@ -282,7 +282,7 @@ const {
             <div class="le-prop-row" style="gap:3px;flex-wrap:wrap">
               <button class="le-btn le-btn-xs" @click="addFocusRegion()">＋ 添加</button>
               <button class="le-btn le-btn-xs le-btn-d" @click="removeFocusRegion()" :disabled="selectedFocus < 0">✕ 删除</button>
-              <button class="le-btn le-btn-xs le-btn-d" @click="clearFocus()" :disabled="!dof.focus.length">🗑 全清</button>
+              <button class="le-btn le-btn-xs le-btn-d" @click="clearFocus()" :disabled="!dof.focus.length">全清</button>
             </div>
 
             <label class="le-check-row">
@@ -326,8 +326,8 @@ const {
         <div class="le-panel-head">
           <span class="le-dot" :class="`ldot-${selectedIndex}`"></span>
           <span class="le-panel-title">{{ selectedLayer.name }}</span>
-          <span v-if="selectedLayer.config.locked" class="le-tag">🔒</span>
-          <span v-if="selectedLayer.loadFailed" class="le-tag err">⚠ 素材缺失</span>
+          <span v-if="selectedLayer.config.locked" class="le-tag">锁</span>
+          <span v-if="selectedLayer.loadFailed" class="le-tag err">素材缺失</span>
         </div>
 
         <!-- 素材管理 — 所有层通用 -->
@@ -340,10 +340,10 @@ const {
           </div>
           <div class="le-prop-row" style="gap:3px;flex-wrap:wrap">
             <button class="le-btn le-btn-xs" @click="openPicker()">
-              🖼 更换
+              更换
             </button>
             <button class="le-btn le-btn-xs" @click="uploadImage()" :disabled="uploading === selectedIndex">
-              {{ uploading === selectedIndex ? '⏳' : '📤 上传' }}
+              {{ uploading === selectedIndex ? '上传中…' : '上传' }}
             </button>
             <button class="le-btn le-btn-xs le-btn-d" @click="removeImage()" :disabled="!selectedLayer.config.image">
               ✕ 移除
@@ -362,7 +362,7 @@ const {
           <input type="range" class="le-range" min="0.2" max="3" step="0.05" v-model.number="selectedLayer.config.scale" />
           <span class="le-prop-num">{{ (selectedLayer.config.scale ?? 1).toFixed(2) }}</span>
           <button class="le-btn le-btn-d le-btn-xs" @click="selectedLayer.config.scale = 1" :disabled="(selectedLayer.config.scale ?? 1) === 1">↺</button>
-          <span class="le-prop-val" style="flex:1;font-size:8px;text-align:right">🖱 滚轮</span>
+          <span class="le-prop-val" style="flex:1;font-size:8px;text-align:right">滚轮</span>
         </div>
 
         <div class="le-prop-row">
@@ -409,7 +409,7 @@ const {
       <div v-if="showPicker" class="picker-overlay" @click.self="closePicker()">
         <div class="picker-dialog">
           <div class="picker-head">
-            <span>🖼 选择素材 — {{ profile?.meta.name }}</span>
+            <span>选择素材 — {{ profile?.meta.name }}</span>
             <button class="le-btn le-btn-d" @click="closePicker()">✕</button>
           </div>
           <div class="picker-body">
@@ -418,7 +418,7 @@ const {
               <img :src="pickerPreview" @error="($event.target as HTMLImageElement).style.display='none'" />
             </div>
             <div class="picker-preview picker-preview-empty" v-else>
-              <span>👆 悬停预览</span>
+              <span>悬停预览</span>
             </div>
             <!-- 列表 -->
             <div class="picker-list">
@@ -431,7 +431,6 @@ const {
                 @click="selectAsset(f)"
                 @mouseenter="previewAsset(f)"
               >
-                <span class="picker-icon">🖼</span>
                 <span class="picker-name">{{ f }}</span>
               </button>
             </div>
@@ -445,9 +444,10 @@ const {
 <style>
 html, body {
   margin: 0; padding: 0;
-  background: #1a1025;
-  color: #e0d0e8;
-  font-family: "zpix", "pixel-mplus", "Microsoft YaHei", "PingFang SC", sans-serif;
+  /* 窗口底/文字随主题：深色主题仍是深底浅字，浅色主题自动换浅底深字 */
+  background: var(--color-surface-darker, #1a1025);
+  color: var(--color-text-bright, #e0d0e8);
+  font-family: var(--font-ui, "Microsoft YaHei", "PingFang SC", sans-serif);
   font-size: 12px;
   overflow: hidden;
   user-select: none;
@@ -465,30 +465,30 @@ html, body {
 #le-toolbar {
   display: flex; align-items: center; gap: 6px;
   padding: 6px 10px;
-  background: rgba(0,0,0,0.35);
-  border-bottom: 1px solid rgba(255,255,255,0.08);
+  background: var(--color-surface-dark, rgba(0,0,0,0.35));
+  border-bottom: 1px solid var(--color-divider, rgba(255,255,255,0.08));
   flex-shrink: 0; flex-wrap: wrap;
 }
 .le-tabs { display: flex; gap: 3px; flex: 1; }
 .le-tab {
   display: flex; align-items: center; gap: 4px;
   padding: 4px 10px; border-radius: 6px;
-  border: 1px solid rgba(255,255,255,0.12);
-  background: rgba(255,255,255,0.04);
-  color: #a090b0; cursor: pointer; font-size: 11px;
+  border: 1px solid var(--color-border-input, rgba(255,255,255,0.12));
+  background: var(--color-surface-dark, rgba(255,255,255,0.04));
+  color: var(--color-text-muted, #a090b0); cursor: pointer; font-size: 11px;
   font-family: inherit; transition: all 0.12s;
 }
-.le-tab:hover { background: rgba(255,255,255,0.08); color: #d0c0e0; }
-.le-tab.active { background: rgba(196,39,111,0.25); border-color: rgba(196,39,111,0.45); color: #f0a0c0; }
+.le-tab:hover { background: var(--color-surface-dark, rgba(255,255,255,0.08)); color: var(--color-text-bright, #d0c0e0); }
+.le-tab.active { background: color-mix(in srgb, var(--color-accent) 25%, transparent); border-color: color-mix(in srgb, var(--color-accent) 45%, transparent); color: var(--color-text-pink, #f0a0c0); }
 .le-tab.disabled { opacity: 0.35; }
-.le-tab.locked { border-style: dashed; border-color: rgba(196,39,111,0.3); }
+.le-tab.locked { border-style: dashed; border-color: color-mix(in srgb, var(--color-accent) 30%, transparent); }
 .le-dot { width: 7px; height: 7px; border-radius: 50%; flex-shrink: 0; }
 .ldot-0 { background: #60a0f0; } .ldot-1 { background: #60c0a0; }
-.ldot-2 { background: #f0a0c0; } .ldot-3 { background: #f0c060; }
+.ldot-2 { background: var(--color-text-pink, #f0a0c0); } .ldot-3 { background: #f0c060; }
 .ldot-4 { background: #c060f0; }
 .le-tab-name { font-size: 10px; }
-.le-tag { font-size: 8px; background: rgba(255,255,255,0.1); padding: 1px 4px; border-radius: 4px; }
-.le-tag.off { background: rgba(255,255,255,0.05); color: #666; }
+.le-tag { font-size: 8px; background: var(--color-surface-dark, rgba(255,255,255,0.1)); padding: 1px 4px; border-radius: 4px; }
+.le-tag.off { background: var(--color-surface-dark, rgba(255,255,255,0.05)); color: #666; }
 .le-tag.err { background: rgba(240,160,60,0.2); color: #f0a060; }
 
 .le-actions { display: flex; gap: 4px; align-items: center; }
@@ -497,16 +497,16 @@ html, body {
 
 .le-btn {
   padding: 3px 10px; border-radius: 5px;
-  border: 1px solid rgba(255,255,255,0.12);
-  background: rgba(255,255,255,0.06);
-  color: #c0b0d0; cursor: pointer; font-size: 11px;
+  border: 1px solid var(--color-border-input, rgba(255,255,255,0.12));
+  background: var(--color-surface-dark, rgba(255,255,255,0.06));
+  color: var(--color-text-bright, #c0b0d0); cursor: pointer; font-size: 11px;
   font-family: inherit; white-space: nowrap; transition: all 0.12s;
 }
-.le-btn:hover { background: rgba(255,255,255,0.12); color: #e0d0f0; }
+.le-btn:hover { background: var(--color-surface-darker, rgba(255,255,255,0.12)); color: var(--color-text-bright, #e0d0f0); }
 .le-btn:disabled { opacity: 0.3; cursor: default; }
 .le-btn-d { opacity: 0.5; } .le-btn-d:hover { opacity: 0.8; }
-.le-btn-primary { background: rgba(196,39,111,0.3); border-color: rgba(196,39,111,0.5); color: #f0a0c0; }
-.le-btn-primary:hover { background: rgba(196,39,111,0.45); }
+.le-btn-primary { background: color-mix(in srgb, var(--color-accent) 30%, transparent); border-color: color-mix(in srgb, var(--color-accent) 50%, transparent); color: var(--color-text-pink, #f0a0c0); }
+.le-btn-primary:hover { background: color-mix(in srgb, var(--color-accent) 45%, transparent); }
 .le-btn-xs { padding: 1px 4px; font-size: 9px; }
 
 /* ── 主体 ── */
@@ -519,9 +519,10 @@ html, body {
 }
 
 /* ── ☆ WYSIWYG 画布 — JS 显式宽高，维持等比例 ── */
+/* 画布底白：与实际舞台的兜底白一致，图层直接盖在白底上 */
 #le-canvas {
   flex-shrink: 0;
-  background: rgba(0,0,0,0.4);
+  background: #ffffff;
   border-radius: 6px;
   position: relative; overflow: hidden;
   cursor: grab;
@@ -530,7 +531,7 @@ html, body {
 #le-canvas:active { cursor: grabbing; }
 .le-grid-h, .le-grid-v {
   position: absolute; pointer-events: none; z-index: 99;
-  border-color: rgba(255,255,255,0.06); border-style: dashed;
+  border-color: rgba(0,0,0,0.12); border-style: dashed;
 }
 .le-grid-h { left: 0; right: 0; border-top-width: 1px; }
 .le-grid-v { top: 0; bottom: 0; border-left-width: 1px; }
@@ -538,19 +539,19 @@ html, body {
 /* 窗口边框指示 */
 .le-win-border {
   position: absolute; inset: 0;
-  border: 1px solid rgba(255,255,255,0.1);
+  border: 1px solid rgba(0,0,0,0.15);
   pointer-events: none; z-index: 100;
   border-radius: 6px;
 }
 .le-win-label {
   position: absolute; bottom: 3px; right: 6px;
-  font-size: 8px; opacity: 0.25; pointer-events: none;
+  font-size: 8px; color: rgba(0,0,0,0.35); pointer-events: none;
 }
 
 .le-loading {
   position: absolute; inset: 0;
   display: flex; align-items: center; justify-content: center;
-  color: rgba(255,255,255,0.3); font-size: 14px;
+  color: rgba(0,0,0,0.35); font-size: 14px;
 }
 .le-preview-layer {
   position: absolute; inset: 0;
@@ -558,7 +559,7 @@ html, body {
   pointer-events: auto;
   will-change: transform;
 }
-.le-preview-layer.selected { outline: 2px solid rgba(240,160,192,0.7); outline-offset: -2px; z-index: 50 !important; }
+.le-preview-layer.selected { outline: 2px solid color-mix(in srgb, var(--color-text-pink) 70%, transparent); outline-offset: -2px; z-index: 50 !important; }
 .le-preview-layer.locked .le-layer-img { cursor: default; }
 .le-layer-img {
   width: 100%; height: 100%;
@@ -566,7 +567,7 @@ html, body {
   image-rendering: pixelated; cursor: move;
 }
 .le-no-img {
-  font-size: 11px; color: rgba(255,255,255,0.2); pointer-events: none;
+  font-size: 11px; color: rgba(0,0,0,0.3); pointer-events: none;
 }
 
 /* ── 景深 ── */
@@ -578,23 +579,23 @@ html, body {
 /* 焦点椭圆的可视化边框 —— 拖拽时看得到范围，透明度随羽化变化 */
 .le-focus-ring {
   position: absolute;
-  border: 1.5px dashed rgba(240,160,192,0.9);
+  border: 1.5px dashed color-mix(in srgb, var(--color-text-pink) 90%, transparent);
   border-radius: 50%;
   pointer-events: none;
 }
 .le-focus-ring.active {
-  border-color: #fff;
+  border-color: var(--color-accent, #c4276f);
   border-style: solid;
-  box-shadow: 0 0 0 1px rgba(0,0,0,0.6);
+  box-shadow: 0 0 0 1px rgba(0,0,0,0.35);
 }
 .le-dof-empty {
   position: absolute; inset: 0;
   display: flex; align-items: center; justify-content: center;
-  font-size: 11px; color: rgba(255,255,255,0.35);
+  font-size: 11px; color: rgba(0,0,0,0.4);
 }
 .le-hint {
   font-size: 9px; line-height: 1.5;
-  color: rgba(255,255,255,0.35);
+  color: var(--color-text-muted, rgba(255,255,255,0.35));
   padding: 2px 0 4px;
 }
 .le-focus-list {
@@ -604,26 +605,26 @@ html, body {
 .le-focus-item {
   display: flex; align-items: center; gap: 6px;
   padding: 4px 8px; border-radius: 6px;
-  border: 1px solid rgba(255,255,255,0.1);
-  background: rgba(255,255,255,0.03);
-  color: rgba(255,255,255,0.6);
+  border: 1px solid var(--color-border-input, rgba(255,255,255,0.1));
+  background: var(--color-surface-dark, rgba(255,255,255,0.03));
+  color: var(--color-text-muted, rgba(255,255,255,0.6));
   font-family: inherit; font-size: 10px; cursor: pointer;
   transition: all .12s;
 }
-.le-focus-item:hover { background: rgba(255,255,255,0.07); }
+.le-focus-item:hover { background: var(--color-surface-dark, rgba(255,255,255,0.07)); }
 .le-focus-item.active {
-  background: rgba(196,39,111,0.25);
-  border-color: rgba(196,39,111,0.45);
-  color: #f0a0c0;
+  background: color-mix(in srgb, var(--color-accent) 25%, transparent);
+  border-color: color-mix(in srgb, var(--color-accent) 45%, transparent);
+  color: var(--color-text-pink, #f0a0c0);
 }
 .le-focus-idx { font-weight: bold; min-width: 12px; }
 .le-focus-sens { opacity: 0.75; }
 .le-check-row {
   display: flex; align-items: center; gap: 5px;
-  font-size: 10px; color: rgba(255,255,255,0.6);
+  font-size: 10px; color: var(--color-text-muted, rgba(255,255,255,0.6));
   padding: 3px 0; cursor: pointer;
 }
-.le-check-row input { accent-color: #c4276f; cursor: pointer; }
+.le-check-row input { accent-color: var(--color-accent, #c4276f); cursor: pointer; }
 .le-drag-hint {
   position: absolute; bottom: 6px; left: 50%; transform: translateX(-50%);
   padding: 3px 10px; background: rgba(0,0,0,0.75);
@@ -635,34 +636,34 @@ html, body {
 #le-panel {
   width: 220px; flex-shrink: 0;
   padding: 8px 10px;
-  background: rgba(0,0,0,0.2);
-  border-left: 1px solid rgba(255,255,255,0.06);
+  background: var(--color-surface-dark, rgba(0,0,0,0.2));
+  border-left: 1px solid var(--color-divider, rgba(255,255,255,0.06));
   display: flex; flex-direction: column; gap: 6px;
   overflow-y: auto;
 }
 .le-panel-head {
   display: flex; align-items: center; gap: 6px;
-  padding-bottom: 6px; border-bottom: 1px solid rgba(255,255,255,0.06);
+  padding-bottom: 6px; border-bottom: 1px solid var(--color-divider, rgba(255,255,255,0.06));
 }
-.le-panel-title { font-size: 12px; font-weight: bold; color: #f0a0c0; }
-.le-prop-section { padding: 4px 0; border-bottom: 1px solid rgba(255,255,255,0.04); }
+.le-panel-title { font-size: 12px; font-weight: bold; color: var(--color-text-pink, #f0a0c0); }
+.le-prop-section { padding: 4px 0; border-bottom: 1px solid var(--color-divider, rgba(255,255,255,0.04)); }
 .le-prop-row { display: flex; align-items: center; gap: 4px; margin-bottom: 3px; }
 .le-prop-label { font-size: 10px; opacity: 0.5; min-width: 42px; flex-shrink: 0; }
 .le-prop-val { font-size: 10px; opacity: 0.4; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; }
 .le-prop-val.empty { opacity: 0.25; font-style: italic; }
 .le-prop-num { font-size: 10px; width: 30px; text-align: right; opacity: 0.6; }
-.le-range { flex: 1; height: 3px; accent-color: #c4276f; min-width: 0; }
+.le-range { flex: 1; height: 3px; accent-color: var(--color-accent, #c4276f); min-width: 0; }
 .le-inp-num {
-  width: 48px; background: rgba(0,0,0,0.3);
-  border: 1px solid rgba(255,255,255,0.1); border-radius: 4px;
-  color: #f0e0f0; padding: 1px 4px; font-size: 10px;
+  width: 48px; background: var(--color-surface-dark, rgba(0,0,0,0.3));
+  border: 1px solid var(--color-border-input, rgba(255,255,255,0.1)); border-radius: 4px;
+  color: var(--color-text-bright, #f0e0f0); padding: 1px 4px; font-size: 10px;
   font-family: inherit; text-align: center;
 }
-.le-inp-num:focus { border-color: #c4276f; outline: none; }
+.le-inp-num:focus { border-color: var(--color-accent, #c4276f); outline: none; }
 .le-inp-num:disabled { opacity: 0.3; }
 .le-filter-preview {
   margin-top: 4px; padding: 4px 6px;
-  background: rgba(0,0,0,0.3); border-radius: 4px;
+  background: var(--color-surface-dark, rgba(0,0,0,0.3)); border-radius: 4px;
 }
 .le-filter-preview code {
   font-size: 8.5px; opacity: 0.4; word-break: break-all;
@@ -678,8 +679,9 @@ html, body {
 .picker-dialog {
   width: 560px; max-width: 90vw;
   height: 420px; max-height: 80vh;
-  background: #2a1535;
-  border: 1px solid rgba(255,255,255,0.1);
+  /* 弹窗是自包含 surface：底与内部文字/面板一起随主题，避免浅色主题下深底深字 */
+  background: var(--color-confirm-bg, #2a1535);
+  border: 1px solid var(--color-divider, rgba(255,255,255,0.1));
   border-radius: 10px;
   display: flex; flex-direction: column;
   overflow: hidden;
@@ -688,9 +690,9 @@ html, body {
 .picker-head {
   display: flex; align-items: center; justify-content: space-between;
   padding: 8px 12px;
-  background: rgba(0,0,0,0.3);
-  border-bottom: 1px solid rgba(255,255,255,0.06);
-  font-size: 12px; color: #f0a0c0;
+  background: var(--color-surface-dark, rgba(0,0,0,0.3));
+  border-bottom: 1px solid var(--color-divider, rgba(255,255,255,0.06));
+  font-size: 12px; color: var(--color-text-pink, #f0a0c0);
 }
 .picker-body {
   display: flex; flex: 1; overflow: hidden;
@@ -698,8 +700,8 @@ html, body {
 .picker-preview {
   width: 200px; height: 200px; flex-shrink: 0;
   display: flex; align-items: center; justify-content: center;
-  background: rgba(0,0,0,0.2);
-  border-right: 1px solid rgba(255,255,255,0.06);
+  background: var(--color-surface-dark, rgba(0,0,0,0.2));
+  border-right: 1px solid var(--color-divider, rgba(255,255,255,0.06));
   padding: 8px; overflow: hidden;
 }
 .picker-preview img {
@@ -707,7 +709,7 @@ html, body {
   object-fit: contain; image-rendering: pixelated;
 }
 .picker-preview-empty {
-  color: rgba(255,255,255,0.2); font-size: 13px;
+  color: var(--color-text-muted, rgba(255,255,255,0.2)); font-size: 13px;
 }
 .picker-list {
   flex: 1; overflow-y: auto;
@@ -717,20 +719,19 @@ html, body {
 }
 .picker-loading {
   padding: 20px; text-align: center;
-  color: rgba(255,255,255,0.3); font-size: 12px;
+  color: var(--color-text-muted, rgba(255,255,255,0.3)); font-size: 12px;
 }
 .picker-item {
   display: flex; align-items: center; gap: 6px;
   padding: 5px 8px;
   border: none; border-radius: 4px;
   background: transparent;
-  color: #c0b0d0; cursor: pointer;
+  color: var(--color-text-bright, #c0b0d0); cursor: pointer;
   font-size: 11px; font-family: inherit;
   text-align: left; transition: all 0.1s;
 }
-.picker-item:hover { background: rgba(255,255,255,0.06); color: #e0d0f0; }
-.picker-item.active { background: rgba(196,39,111,0.2); color: #f0a0c0; }
-.picker-icon { font-size: 14px; flex-shrink: 0; }
+.picker-item:hover { background: var(--color-surface-dark, rgba(255,255,255,0.06)); color: var(--color-text-bright, #e0d0f0); }
+.picker-item.active { background: color-mix(in srgb, var(--color-accent) 20%, transparent); color: var(--color-text-pink, #f0a0c0); }
 .picker-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
 .picker-fade-enter-active, .picker-fade-leave-active { transition: opacity 0.15s; }

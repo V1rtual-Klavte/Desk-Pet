@@ -35,6 +35,16 @@ pub fn create_main_window(app: &tauri::AppHandle) -> tauri::Result<tauri::Webvie
         }
     });
     enhance_to_iterm_style(&window);
+    // 兜底重设：Tauri 在 build 之后还会再应用一次窗口配置（visible_on_all_workspaces 等），
+    // 实测把层级与 collectionBehavior 覆盖回默认值，随后设置才保得住 —— 延迟一拍重设。
+    // ⚠️ 必须在主线程执行：AppKit 非线程安全，从后台线程直接 msg_send 到 NSWindow
+    //    会静默 SIGSEGV（连 panic 日志都没有）。
+    let handle2 = window.clone();
+    std::thread::spawn(move || {
+        std::thread::sleep(std::time::Duration::from_millis(900));
+        let w = handle2.clone();
+        let _ = handle2.run_on_main_thread(move || enhance_to_iterm_style(&w));
+    });
     rust_info!("主窗口已创建 (Rust 手动, URL=index.html)");
     Ok(window)
 }
@@ -49,8 +59,27 @@ pub fn enhance_to_iterm_style(window: &tauri::WebviewWindow) {
             let ns_win = ns_win as *mut Object;
             unsafe {
                 // NSScreenSaverWindowLevel = 1000，覆盖所有窗口
+                let level_before: isize = msg_send![ns_win, level];
                 let _: () = msg_send![ns_win, setLevel: 1000isize];
-                let behavior: usize = (1 << 0) | (1 << 17) | (1 << 4) | (1 << 5) | (1 << 3);
+                let level_after: isize = msg_send![ns_win, level];
+                let cb_after: usize = msg_send![ns_win, collectionBehavior];
+                rust_info!(
+                    "主窗口层级: {} → {}，collectionBehavior: {:#b}",
+                    level_before,
+                    level_after,
+                    cb_after
+                );
+                // NSWindowCollectionBehavior 位（取值见 AppKit 头文件）：
+                //   1<<0  CanJoinAllSpaces          出现在所有普通 Space
+                //   1<<8  FullScreenAuxiliary       可随全屏窗口一起显示 —— 缺它时全屏应用会盖住桌宠
+                //   1<<18 CanJoinAllApplications    macOS 13+：可加入其它 App 的集合与全屏空间，
+                //          「浮动窗口 / 系统浮层」语义，桌宠要的正是它。它与 1<<17 Auxiliary
+                //          （About/设置类辅助窗口）互斥，二选一 —— 原实现的 1<<17 改为此位
+                //   1<<4  Stationary                不受 Exposé 影响，像桌面窗口一样驻留
+                //   1<<5  ParticipatesInCycle      参与窗口轮换
+                //   1<<3  Transient                 浮动窗口（与 Stationary 互斥，历史遗留）
+                let behavior: usize =
+                    (1 << 0) | (1 << 8) | (1 << 18) | (1 << 4) | (1 << 5) | (1 << 3);
                 let _: () = msg_send![ns_win, setCollectionBehavior: behavior];
                 let _: () = msg_send![ns_win, orderFrontRegardless];
             }

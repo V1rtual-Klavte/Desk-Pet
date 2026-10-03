@@ -2,14 +2,25 @@
 // 开发工具直接用 console：改走 logger 会污染 data_root/logs/deskpet.log
 // 并引入 IPC 依赖 [保留已登记 §4.2]
 
-import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync } from "node:fs"
+import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs"
 import { createHash } from "node:crypto"
 import { execFileSync, spawn } from "node:child_process"
 import { extname, join, relative } from "node:path"
+import { inspectTraceEvidence, retainTraceBundle, salvageTempTrace } from "./trace-evidence.mjs"
+import { pruneReportArtifacts } from "./report-retention.mjs"
+import { compareCaseIdLayers, extractContractCaseIds, formatCaseIdLayerIssues } from "./contract-layers.mjs"
 
-const args = process.argv.slice(2)
-const valueOptions = new Set(["--module", "--scene", "--case", "--tag", "--suite", "--repeat", "--report", "--contracts"])
-const flagOptions = new Set(["--strict"])
+const REPORTS_DIR = join(process.cwd(), "test", "reports")
+const TRACES_DIR = join(REPORTS_DIR, "traces")
+
+const args = process.argv.slice(2).filter(arg => arg !== "--")
+// 这两份选项清单必须与 test/e2e/cli.ts 的 parseArgs 同步：漏一个 valueOption，
+// 参数会被这里吞掉、浏览器侧收不到；漏一个 flagOption，模式不会进环境变量。
+// 两边各有一行互指注释；不做机制化共享（cli.ts 是浏览器侧模块，本文件顶层有副作用、
+// 不能被 import，重复清单是现状里代价最低的同步点）。
+const valueOptions = new Set(["--module", "--scene", "--case", "--tag", "--suite", "--repeat", "--report", "--contracts", "--quality-seed", "--trace",
+  "--bench-dataset", "--bench-split", "--bench-limit", "--bench-case", "--bench-seed", "--bench-judge", "--bench-judge-model"])
+const flagOptions = new Set(["--strict", "--quality", "--performance", "--bench"])
 const env = { ...process.env, DESKPET_E2E: "1" }
 
 function sha256(parts) {
@@ -176,39 +187,139 @@ if (seedHash) env.DESKPET_E2E_SEED_HASH = seedHash
 const TEMP_ROOT_DIR = join(process.cwd(), "test", ".tmp")
 mkdirSync(TEMP_ROOT_DIR, { recursive: true })
 /**
- * L4 不能并行跑（占同一个 Vite/Tauri 端口），所以启动时已存在的 `e2e-*` 一律是上次的残留。
- * 直接清掉：异常退出（SIGKILL、进程被挂起后杀掉）不会执行 finally，靠正常路径清理不住。
+ * 残留根的「有主」判据：根里的 `.pid`（数据根创建后立即写入 process.pid）对应的进程
+ * 还活着。`process.kill(pid, 0)` 成功或 EPERM（进程存在但不可信号）都算存活，
+ * 与 scripts/memory-performance.mjs 的 pruneStalePerfRoots 同一判定。
+ * 没有 .pid（旧残留）或进程已死 → 无主，按残留处理。
+ */
+function liveOwnerPid(root) {
+  const pidFile = join(root, ".pid")
+  if (!existsSync(pidFile)) return undefined
+  const pid = Number(readFileSync(pidFile, "utf8").trim())
+  if (!Number.isSafeInteger(pid) || pid <= 0) return undefined
+  try {
+    process.kill(pid, 0)
+    return pid
+  } catch (error) {
+    return error.code === "EPERM" ? pid : undefined
+  }
+}
+
+/**
+ * L4 不能并行跑（占同一个 Vite/Tauri 端口），启动时已存在的 `e2e-*` 按有无存活主人分开处理：
+ * 无主的是上次异常退出的残留（SIGKILL、进程被挂起后杀掉不会执行 finally，靠正常路径清理不住），
+ * 抢救未结束场景后删除；有主的说明另一个 E2E 正在跑 —— 它的根绝不能当残留删掉，
+ * 直接拒绝启动并指名 pid 与根名。
  */
 function pruneStaleTempRoots() {
   for (const name of readdirSync(TEMP_ROOT_DIR)) {
-    if (name.startsWith("e2e-")) rmSync(join(TEMP_ROOT_DIR, name), { recursive: true, force: true })
+    if (!name.startsWith("e2e-")) continue
+    const stale = join(TEMP_ROOT_DIR, name)
+    const owner = liveOwnerPid(stale)
+    if (owner !== undefined) {
+      console.error(`[E2E] 另一个 E2E 运行仍在进行（pid ${owner}，根 ${name}），先停止它再重跑`)
+      process.exit(1)
+    }
+    // Capture the unfinished current scene before deleting an interrupted test root.
+    // 抢救失败不中断整次启动：保留该根留待人工处理，继续清理其它残留。
+    try {
+      salvageTempTrace({ tempRoot: stale, reportsDir: TRACES_DIR, stamp: `${new Date().toISOString().replace(/[:.]/g, "-")}-${name}` })
+    } catch (error) {
+      console.error(`[E2E] 残留根抢救失败，保留 ${name} 待人工处理: ${error.message}`)
+      continue
+    }
+    rmSync(stale, { recursive: true, force: true })
   }
 }
 pruneStaleTempRoots()
 
 const dataRoot = mkdtempSync(join(TEMP_ROOT_DIR, "e2e-"))
+// 有主标记：并发启动的第二个 L4 据此区分「正在运行的根」与「可抢救删除的残留」，
+// 不会把在跑者的数据根当残留删掉（判定见 pruneStaleTempRoots / liveOwnerPid）。
+writeFileSync(join(dataRoot, ".pid"), `${process.pid}\n`)
 const resultPath = join(dataRoot, "e2e-result.txt")
+const configSource = CONFIG_FILES.find(name => existsSync(join(process.cwd(), name)))
+if (!configSource) throw new Error("E2E 缺少完整配置种子")
+mkdirSync(join(dataRoot, "settings"), { recursive: true })
+copyFileSync(join(process.cwd(), configSource), join(dataRoot, "settings", "CONFIG.yaml"))
+// 测试侧统一模型配置 stage（仓库常驻；缺失时告警，宿主按全部继承处理）。
+const evalModelsSource = join(process.cwd(), "test", "eval-models.json")
+if (existsSync(evalModelsSource)) copyFileSync(evalModelsSource, join(dataRoot, "eval-models.json"))
+else console.error("[E2E] 缺少 test/eval-models.json，测试模型将全部继承仓库配置")
+// 本地专属覆盖（凭据 / 临时指向；已 gitignore）：存在才 stage，只进隔离副本、不写回真实配置。
+const evalModelsLocal = join(process.cwd(), "test", "eval-models.local.json")
+if (existsSync(evalModelsLocal)) copyFileSync(evalModelsLocal, join(dataRoot, "eval-models.local.json"))
+// 外部记忆基准：案例文件在开发者的 data-dir（默认 test/memory-bench/.data，可用
+// --data-dir / DESKPET_BENCH_DATA_DIR 指定），这里按 upstream-lock.json 的目录映射
+// stage 成隔离数据根的 bench/cases.json；宿主只读，不做运行期下载。
+if (env.DESKPET_E2E_BENCH === "1") {
+  const benchModuleDir = join(process.cwd(), "test", "memory-bench")
+  const lock = JSON.parse(readFileSync(join(benchModuleDir, "upstream-lock.json"), "utf8"))
+  const dataDir = env.DESKPET_BENCH_DATA_DIR?.trim() || join(benchModuleDir, ".data")
+  const dataset = env.DESKPET_E2E_BENCH_DATASET
+  const datasetEntry = dataset ? lock.datasets[dataset] : undefined
+  const split = env.DESKPET_E2E_BENCH_SPLIT || datasetEntry?.defaultSplit
+  const caseFile = datasetEntry?.splits?.[split]?.caseFile
+  if (!caseFile) throw new Error(`[E2E] --bench-dataset/--bench-split 无效: ${dataset ?? "<empty>"}/${split ?? "<empty>"}`)
+  const casePath = join(dataDir, caseFile)
+  if (!existsSync(casePath)) {
+    throw new Error(`[E2E] 缺少案例文件 ${casePath}；先安装：pnpm run test:memory-bench:prepare -- --dataset ${dataset}` +
+      (env.DESKPET_BENCH_DATA_DIR ? ` --data-dir ${dataDir}` : ""))
+  }
+  mkdirSync(join(dataRoot, "bench"), { recursive: true })
+  copyFileSync(casePath, join(dataRoot, "bench", "cases.json"))
+}
 env.DESKPET_E2E_DATA_ROOT = dataRoot
 env.DESKPET_E2E_COMMIT = currentCommit()
 
 let child
 let finalized = false
 let timeout
+let stopping
+let stopDeadline
+
+function producerGroupAlive() {
+  if (!child) return false
+  // macOS may report EPERM for an already-exited group. Inspect membership without signalling unrelated processes.
+  const groups = execFileSync("ps", ["-axo", "pgid="], {encoding:"utf8",timeout:5000})
+  return groups.trim().split(/\s+/).some(group => Number(group) === child.pid)
+}
 
 function stopChild(signal = "SIGTERM") {
-  if (child && child.exitCode === null && child.signalCode === null) child.kill(signal)
+  if (!child) return
+  if (process.platform !== "win32") {
+    try { process.kill(-child.pid, signal) } catch (error) {
+      if (error.code !== "ESRCH" && !(error.code === "EPERM" && !producerGroupAlive())) throw error
+    }
+  } else if (child.exitCode === null && child.signalCode === null) {
+    execFileSync("taskkill", ["/PID", String(child.pid), "/T", "/F"], { stdio: "ignore" })
+  }
+}
+
+function requestStop(exitCode, reason) {
+  if (stopping || finalized) return
+  stopping = { exitCode, reason }
+  if (timeout) clearTimeout(timeout)
+  stopChild()
+  // Keep the root intact until the producer has exited; an interrupted trace stays partial.
+  stopDeadline = setTimeout(() => {
+    stopChild("SIGKILL")
+    setTimeout(() => finalizeStoppedProducer(), 250)
+  }, 5_000)
+}
+
+function finalizeStoppedProducer() {
+  if (process.platform === "win32") { finalize(stopping.exitCode, stopping.reason); return }
+  if (!producerGroupAlive()) { finalize(stopping.exitCode, stopping.reason); return }
+  // pnpm may exit before its grandchildren; wait for the whole isolated process group.
+  if (!finalized) setTimeout(finalizeStoppedProducer, 100)
 }
 
 /**
  * 报告原先只写在一次性临时数据根里，随根一起删掉：CI 拿不到产物，
  * 也没法 diff 两次运行。清理之前先复制到仓库内的稳定目录（已在 .gitignore 忽略）。
+ * 保留淘汰在 scripts/report-retention.mjs：组 = 报告 + 审阅/评分卫星；最近五组 + 200 MiB + 最新一组恒留。
  */
-const REPORTS_DIR = join(process.cwd(), "test", "reports")
-/**
- * 保留策略按体积而不是份数：单份报告可达 11 MB，只按份数上限不封顶磁盘占用。
- * 按 mtime 从新到旧累加，超过上限即淘汰更旧的。
- */
-const REPORTS_MAX_BYTES = 200 * 1024 * 1024
 
 /**
  * 目标扩展名按 --report 声明的格式显式决定，不做内容嗅探。
@@ -217,69 +328,179 @@ const REPORTS_MAX_BYTES = 200 * 1024 * 1024
  */
 const REPORT_EXTENSIONS = { json: "json", html: "html" }
 
-function pruneReportsBySize() {
-  const entries = readdirSync(REPORTS_DIR)
-    .filter(name => /\.(json|txt|html)$/.test(name))
-    .map(name => {
-      const stats = statSync(join(REPORTS_DIR, name))
-      return { name, size: stats.size, mtimeMs: stats.mtimeMs }
-    })
-    .sort((a, b) => b.mtimeMs - a.mtimeMs)
-  let totalBytes = 0
-  for (const [index, entry] of entries.entries()) {
-    totalBytes += entry.size
-    // 最新一份始终保留：哪怕它单独就超过上限，也不能删掉刚跑出来的报告
-    if (index > 0 && totalBytes > REPORTS_MAX_BYTES) {
-      rmSync(join(REPORTS_DIR, entry.name), { force: true })
+async function preserveReport() {
+  let returnCode = 0
+  const stamp = new Date().toISOString().replace(/[:.]/g, "-")
+  if (existsSync(join(dataRoot, "e2e-trace.jsonl"))) {
+    if (existsSync(join(dataRoot, "e2e-manifest.json"))) {
+      // bench 模式下逐题结果文件名不同；bundle 成员名由源文件名映射（trace-evidence.mjs）：
+      // bench → `.memory-bench.jsonl`，记忆质量 → `.quality.jsonl`。
+      const outcomesName = env.DESKPET_E2E_BENCH === "1" ? "memory-bench-outcomes.jsonl" : "memory-quality-outcomes.jsonl"
+      // 正常路径不传 resultPath：根报告（test/reports/<stamp>.*）已是同一份字节，bundle 不再存第二份；
+      // 抢救路径（salvageTempTrace）仍带 resultPath —— 中断时它是唯一留存。
+      const bundle = retainTraceBundle({ reportsDir: TRACES_DIR, stamp, tracePath: join(dataRoot, "e2e-trace.jsonl"), manifestPath: join(dataRoot, "e2e-manifest.json"), qualityPath: join(dataRoot, outcomesName) })
+      const integrity = await inspectTraceEvidence({ actualPath: bundle.tracePath, manifestPath: bundle.manifestPath })
+      const { actual: _actual, manifestBody: _manifest, ...integritySummary } = integrity
+      writeFileSync(join(TRACES_DIR, `trace-bundle-${stamp}.integrity.json`), JSON.stringify(integritySummary, null, 2) + "\n")
+      if (integrity.status !== "complete") {
+        const previewIssues = integrity.issues.slice(0, 10).join("; ")
+        console.error(`[E2E] trace 不完整（共 ${integrity.issues.length} 项，完整记录见 integrity.json）: ${previewIssues}`)
+        returnCode = 1
+      }
     }
+    else salvageTempTrace({ tempRoot: dataRoot, reportsDir: TRACES_DIR, stamp })
+    console.error(`[E2E] trace 证据已留存: ${TRACES_DIR}`)
   }
-}
-
-function preserveReport() {
-  if (!existsSync(resultPath)) return
-  try {
+  if (!existsSync(join(dataRoot, "e2e-trace.jsonl")) && !(env.DESKPET_E2E_PERFORMANCE === "1" && env.DESKPET_E2E_TRACE === "off")) {
+    console.error("[E2E] 缺少 trace，不能作为完整验收证据")
+    returnCode = 1
+  }
+  if (existsSync(resultPath)) {
     mkdirSync(REPORTS_DIR, { recursive: true })
-    const stamp = new Date().toISOString().replace(/[:.]/g, "-")
     const extension = REPORT_EXTENSIONS[env.DESKPET_E2E_REPORT] ?? "txt"
     copyFileSync(resultPath, join(REPORTS_DIR, `${stamp}.${extension}`))
-    pruneReportsBySize()
+    const artifactCopy = env.DESKPET_E2E_ARTIFACT_COPY
+    if (artifactCopy) {
+      const rel = relative(TEMP_ROOT_DIR, artifactCopy)
+      if (rel.startsWith("..") || rel === "" || rel.startsWith("/")) throw new Error("评测副本必须位于 test/.tmp")
+      const text = readFileSync(resultPath, "utf8")
+      const payload = text.slice(text.indexOf("\n") + 1)
+      JSON.parse(payload)
+      writeFileSync(artifactCopy, payload)
+    }
+    pruneReportArtifacts(REPORTS_DIR)
     console.error(`[E2E] 报告已留存: ${REPORTS_DIR}`)
+  }
+  return returnCode
+}
+
+// ── 全量运行收尾的跨层 caseId 门禁 ──
+
+/** 让某一层集合残缺或报告换协议的运行：这些情况下不做跨层对账。 */
+const CASEID_GATE_SKIP_FILTERS = ["MODULE", "SCENE", "CASE", "TAG", "SUITE"]
+const CASEID_GATE_SKIP_MODES = ["BENCH", "QUALITY", "PERFORMANCE"]
+
+/**
+ * 只有「全量运行」才判定跨层 caseId：过滤参数（--module / --scene / --case / --tag /
+ * --suite）会让 L4 场景集不完整，--bench / --quality / --performance 是另一套数据集与
+ * 报告协议 —— 对着残缺集合判 MISSING/ORPHAN 会成片误报，而误报会让下一个人放宽整条规则
+ *（与 test/host/caseid-reporter.ts 对快层子集运行不判定的同一条判据）。
+ */
+function isFullLayerRun() {
+  return CASEID_GATE_SKIP_FILTERS.every(name => !env[`DESKPET_E2E_${name}`])
+    && CASEID_GATE_SKIP_MODES.every(name => env[`DESKPET_E2E_${name}`] !== "1")
+}
+
+/** 快层整层 caseId 报告（reporter 只在非过滤的全层运行里落盘；子集运行不落盘）。 */
+function readCaseIdReport(name) {
+  const file = join(REPORTS_DIR, name)
+  if (!existsSync(file)) return undefined
+  const parsed = JSON.parse(readFileSync(file, "utf8"))
+  if (!Array.isArray(parsed)) throw new Error(`test/reports/${name} 不是 caseId 数组`)
+  return parsed
+}
+
+/** 本次 L4 报告的 caseId 集合：只认真的跑过的场景（skip 不算覆盖，同快层纪律 8 的口径）。 */
+function readL4CaseIds() {
+  if (!existsSync(resultPath)) return undefined
+  const text = readFileSync(resultPath, "utf8")
+  const payload = text.slice(text.indexOf("\n") + 1)
+  const report = JSON.parse(payload)
+  if (!Array.isArray(report.scenes)) throw new Error("L4 报告缺少 scenes 数组")
+  return report.scenes.filter(scene => scene.status !== "skip").map(scene => scene.caseId)
+}
+
+/**
+ * 三层 caseId 汇总 vs 全部契约声明（scripts/contract-layers.mjs 的纯函数）：
+ * missing（声明了没人实现）/ orphan（实现了没声明）/ duplicates（两层重复携带）任一命中即失败。
+ * 契约声明经正则读取（与 checkContractHashes 同一读法），实现集合来自最近一次整层快层
+ * 运行落盘的 caseids-*.json 与本次 L4 报告 —— 所以全量运行前要先跑快层（test:release 的顺序保证）。
+ * 读不到任何一份集合都算「无法核对」，如实失败，不静默放行。
+ */
+function checkCrossLayerCaseIds() {
+  try {
+    const contractsDir = join(process.cwd(), "test", "contracts")
+    const declared = readdirSync(contractsDir)
+      .filter(name => name.endsWith(".contract.ts"))
+      .flatMap(name => extractContractCaseIds(readFileSync(join(contractsDir, name), "utf8")))
+    const implemented = {}
+    for (const [layer, reportName] of [["unit", "caseids-unit.json"], ["integration", "caseids-integration.json"]]) {
+      const ids = readCaseIdReport(reportName)
+      if (!ids) {
+        console.error(`[E2E] 跨层 caseId 校验失败：缺少 test/reports/${reportName}（整层集合）；先跑 node scripts/run-vitest-with-retry.mjs ${layer}`)
+        return false
+      }
+      implemented[layer] = ids
+    }
+    const l4 = readL4CaseIds()
+    if (!l4) {
+      console.error("[E2E] 跨层 caseId 校验失败：本次没有 L4 报告，e2e 层集合无法核对")
+      return false
+    }
+    implemented.e2e = l4
+    const issues = formatCaseIdLayerIssues(compareCaseIdLayers({ declared, implemented }))
+    if (issues.length > 0) {
+      console.error(`[E2E] 跨层 caseId 校验失败（共 ${issues.length} 条）：`)
+      for (const line of issues) console.error(`  ${line}`)
+      return false
+    }
+    console.error(`[E2E] 跨层 caseId 校验通过：契约声明 ${new Set(declared).size} 个，unit ${implemented.unit.length} / integration ${implemented.integration.length} / e2e ${implemented.e2e.length} 个`)
+    return true
   } catch (error) {
-    // 留存失败不该影响测试结论本身
-    console.error(`[E2E] 报告留存失败: ${error.message}`)
+    console.error(`[E2E] 跨层 caseId 校验无法执行: ${error.message}`)
+    return false
   }
 }
 
-function finalize(exitCode, reason) {
+async function finalize(exitCode, reason) {
   if (finalized) return
   finalized = true
   if (timeout) clearTimeout(timeout)
+  if (stopDeadline) clearTimeout(stopDeadline)
   if (reason) console.error(`[E2E] ${reason}`)
-  preserveReport()
-  rmSync(dataRoot, { recursive: true, force: true })
+  try {
+    try {
+      const finalAttestation = checkContractHashes()
+      if (JSON.stringify(finalAttestation) !== JSON.stringify(hashAttestation)) throw new Error("源码证明与启动时不同")
+    } catch (error) {
+      exitCode = 1
+      console.error(`[E2E] 运行期间源码发生变化，不能验收本次结果: ${error.message}`)
+      const manifestPath = join(dataRoot, "e2e-manifest.json")
+      if (existsSync(manifestPath)) {
+        const manifest = JSON.parse(readFileSync(manifestPath, "utf8"))
+        writeFileSync(manifestPath, JSON.stringify({...manifest,complete:false,sourceChangedDuringRun:true}, null, 2) + "\n")
+      }
+    }
+    if (await preserveReport()) exitCode = 1
+    // 全量运行的跨层 caseId 门禁（过滤与特殊模式跳过，判据见 isFullLayerRun）。
+    if (isFullLayerRun() && !checkCrossLayerCaseIds()) exitCode = 1
+    rmSync(dataRoot, { recursive: true, force: true })
+  } catch (error) {
+    // A lost report is an infrastructure failure; preserve its source for recovery.
+    console.error(`[E2E] 证据留存失败，临时根保留 ${dataRoot}: ${error.message}`)
+    exitCode = 1
+  }
   process.exit(exitCode)
 }
 
-process.once("SIGINT", () => { stopChild("SIGTERM"); finalize(130, "收到 SIGINT，已清理隔离数据目录") })
-process.once("SIGTERM", () => { stopChild("SIGTERM"); finalize(143, "收到 SIGTERM，已清理隔离数据目录") })
+process.once("SIGINT", () => requestStop(130, "收到 SIGINT，停止后留存隔离现场"))
+process.once("SIGTERM", () => requestStop(143, "收到 SIGTERM，停止后留存隔离现场"))
 
 child = spawn("pnpm", ["exec", "tauri", "dev", "--no-watch"], {
   cwd: process.cwd(),
   env,
   stdio: "inherit",
+  detached: process.platform !== "win32",
 })
 timeout = setTimeout(() => {
-  stopChild("SIGTERM")
-  finalize(1, "超过 10 分钟未结束，终止测试进程")
-}, 10 * 60 * 1000)
+  requestStop(1, "超过本次评测截止时间，停止后留存现场")
+}, (env.DESKPET_E2E_QUALITY === "1" ? 480 : env.DESKPET_E2E_BENCH === "1" ? 480 : env.DESKPET_E2E_PERFORMANCE === "1" ? 30 : Math.max(30, Number(env.DESKPET_E2E_REPEAT ?? 1) * 10)) * 60 * 1000)
 
 child.on("error", error => finalize(1, `无法启动 Tauri: ${error.message}`))
 child.on("exit", (code, signal) => {
+  if (stopping) { finalizeStoppedProducer(); return }
   const passed = existsSync(resultPath) && readFileSync(resultPath, "utf8").startsWith("PASS\n")
-  if (!passed && !finalized) {
-    const suffix = existsSync(resultPath) ? "测试报告标记为失败" : `测试进程未生成结果文件 (exit=${code}, signal=${signal ?? "none"})`
-    finalize(1, suffix)
-    return
-  }
-  finalize(0)
+  const reason = passed ? undefined : existsSync(resultPath) ? "测试报告标记为失败" : `测试进程未生成结果文件 (exit=${code}, signal=${signal ?? "none"})`
+  requestStop(passed ? 0 : 1, reason)
+  finalizeStoppedProducer()
 })

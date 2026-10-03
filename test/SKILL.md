@@ -7,6 +7,8 @@ description: V1rtual-Desk-Pet 测试树的 Contract 分析、测试生成与覆�
 
 三层职责、「该写在哪一层」的判定顺序、完整规则表、命令与报告位置以 [README.md](./README.md) 为权威。本文件只定义代码代理在源码变更后如何分析 Contract、生成测试与审查覆盖；它不是 shell 脚本。
 
+**编号有两套，不要混**：本文件的 D1–D10 是**断言缺陷分类法**（`/generate` 与 `/audit` 的自查口径）；README「测试纪律」的 1–10 是**行为纪律**（机制可判与只能 review 两档）。两套编号各自引用，不互相对应。
+
 ## 触发词
 
 - `/analyze test [module]`：从当前源码重新分析 Contract。
@@ -30,14 +32,14 @@ caseId 的锚定方式随层不同，但同一字母表：L2 / L3 写在 vitest 
 1. 确定受影响模块和跨模块调用链；读取当前 `contracts/{module}.contract.ts`、其 `sourceFiles` 与相关测试（L2/L3 的 vitest 文件与 L4 的 Scene）。
 2. 分析当前公开行为、状态转换、持久化、取消/错误分支、边界值和平台差异。不要把计划文档中的 P6 或未接通能力写成已实现。
 3. 更新 `sourceFiles`，使其覆盖行为实际所在的源码；覆盖点描述当前可验证行为，不以文件名替代行为。
-4. 为每个 coverage point 设置唯一 id、`depth` 与 `scenarios`。`scenarios` 填已存在或将创建的 **caseId**（L2/L3 的写在测试名末尾的 `[caseId]` 标记里，L4 的写在 `meta.caseId`）；caseId 空间跨层唯一，重复是硬错误（`assertNoDuplicates`：后者会静默压掉前者，旧的那条不再跑而报告照样全绿）。
-5. 根据实际风险设置 `minScenarios`、`minDeepScenarios`、`requireBoundary`、`requireErrorPath`。只有确实无法经运行时入口触达时才声明 `unitOnly`，并写明 `unitOnlyReason`。
+4. 为每个 coverage point 设置唯一 id、`depth` 与 `scenarios`。`scenarios` 填已存在或将创建的 **caseId**（L2/L3 的写在测试名末尾的 `[caseId]` 标记里，L4 的写在 `meta.caseId`）；caseId 空间**跨层唯一**：同层重复由 `assertNoDuplicates` 在快层 reporter 里直接抛出（后者会静默压掉前者，旧的那条不再跑而报告照样全绿）；跨层重复与「声明了没人实现 / 实现了没声明」由全量 L4 收尾的跨层对账核对（`scripts/contract-layers.mjs`：unit / integration 读 `test/reports/caseids-*.json`，e2e 读本次报告；带过滤参数或 `--bench` / `--quality` / `--performance` 的运行跳过）。
+5. 根据实际风险设置 `minScenarios`、`minDeepScenarios`、`requireBoundary`、`requireErrorPath`。前两项的口径是 **L4 场景集**：只数 e2e 层覆盖点落地的场景（unit / integration 点由快层校验器负责，不在这里计数），按「当前实际 L4 场景数」校准、不许再少；没有 e2e 层覆盖点的契约写 0。值偏大会让全量严格运行在跑任何场景之前直接中止（报告 `scenes: []`）。只有确实无法经运行时入口触达时才声明 `unitOnly`，并写明 `unitOnlyReason`。
 6. 按项目的 source hash 计算方式刷新 `sourceHash`。不能只改 hash 而不完成前述行为审查。
 
 ## `/generate test [module]`
 
 1. 读取目标 Contract、`sourceFiles` 和相关实现，确认每个 coverage point 的输入、输出、状态和副作用。
-2. 先按上面的判定顺序选层，再落文件：L2 → `test/unit/<模块>/<主题>.test.ts`，L3 → `test/integration/<模块>/<主题>.test.ts`（都是朴素 vitest，测试名末尾带 `[caseId]`），L4 → 新建或修改 Scene（`meta.module` 必须等于 Contract module，`meta.contractId` 必须等于 coverage point id，`meta.caseId` 为全局稳定的小写 kebab-case）。
+2. 先按上面的判定顺序选层，再落文件：L2 → `test/unit/<模块>/<主题>.test.ts`，L3 → `test/integration/<模块>/<主题>.test.ts`（都是朴素 vitest，测试名末尾带 `[caseId]`），L4 → 新建或修改 Scene（`meta.module` 必须等于 Contract module，`meta.contractId` 必须等于 coverage point id，`meta.caseId` 为全局稳定的小写 kebab-case）。L4 落笔前先核实两件事：宿主能力对等（依赖的初始化在 E2E 宿主里是否真实存在）与 repeat 隔离（setup 每 trial 重跑：持久化身份每 setup 全新、消耗型配额用独立记账域），判据见 README「Scene 规范」。
 3. L4 选择入口：完整聊天产品路径使用 `production`；运行时适配层使用 `runtime`。**不再新增 `entry: "unit"` 场景** —— 纯确定性逻辑一律写 L2，存量 unit 场景按迁移批次处理。
 4. 需要可重复模型输出时使用 fake Provider；它仍应经过真实运行时和工具链。需要验证真实模型能力时使用真实 Provider，并把模型不稳定性与产品失败区分开。
 5. 断言用户可见结果之外的真实证据：工具调用状态、确认记录、会话事件、文件回读、变量状态、取消或错误结论。安全场景不执行破坏操作，只验证实际调用被受控拒绝。
@@ -45,6 +47,7 @@ caseId 的锚定方式随层不同，但同一字母表：L2 / L3 写在 vitest 
 7. 失败路径以 `turns[].expectFailure` 声明预期失败（分类 + 失败正文匹配器），让本回合以声明的分类与文案失败才算通过；不要用「不写断言」或「允许任何失败」的方式放过失败 —— 预期之外的失败必须照旧判失败。
 8. Scene 集合改变后更新 `dataset.ts` 的版本。
 9. 写下每条断言后，走一遍下面的「生成时自查清单」。
+10. 新场景 / 场景改动的验收不是过滤运行：交付前必须跑到**全量严格 ×3 全绿**（`pnpm run test:e2e -- --strict --repeat 3 --report json`）。`--module` / `--case` 过滤只用于迭代排查，会跳过跨层 caseId 对账与全量校验；不要把新场景留到发布门禁才第一次全量跑。
 
 ## 生成时自查清单（`/generate` 必过）
 
@@ -94,9 +97,12 @@ caseId 的锚定方式随层不同，但同一字母表：L2 / L3 写在 vitest 
 
 当前目录包含以下 Contract：
 
+- `behavior`
+- `evaluation`
 - `agent-runtime`
 - `harness-storage`
 - `memory`
+- `memory-bench`
 - `personality-card`
 - `planner`
 - `safety`

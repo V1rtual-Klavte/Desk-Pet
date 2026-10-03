@@ -14,6 +14,8 @@ import type { ThinkingEffort } from "@/services/agent/types"
 import { aiConfig } from "@/services/config"
 import { recordModelUsage } from "@/services/debug"
 import { createLogger } from "@/services/logger"
+import { hasRuntimeTraceSubscribers, publishRuntimeTrace, runtimeTraceContextForRequest } from "@/services/engine/runtime/trace"
+import type { RuntimeTraceContext } from "@/services/engine/runtime/trace"
 import { formatError } from "@/services/error"
 import { contextBudget, ContextBudgetError, contextWindowError, estimateDriftRatio, estimateRequestTokens, ONE_SHOT_LOW_EFFORT_HINT } from "@/services/context"
 import { PROMPT_SNAPSHOT_ENTRY, createPromptSnapshot, redactText, sha256Text } from "@/services/engine/runtime"
@@ -174,6 +176,8 @@ export interface HarnessModelsOptions {
    * 重试请求重新执行 `transform_context` 得到新判定；残留旧判定会让重试被同一条错误挡住。
    */
   takeBlockedError?: () => Error | undefined
+  traceContext?: () => RuntimeTraceContext | undefined
+  traceRequestInfo?: () => { step?: string; attempt?: number } | undefined
 }
 
 /**
@@ -202,7 +206,36 @@ export function createHarnessModels(options: HarnessModelsOptions = {}): Models 
         return (model: Model<any>, context: Context, streamOptions?: SimpleStreamOptions): AssistantMessageEventStream => {
           const blocked = options.takeBlockedError?.()
           if (blocked) return blockedAssistantStream(model, blocked)
-          return toAssistantStream((piRuntimeProviderOverride?.streamFn ?? piStream)(model, context, streamOptions), model)
+          const traceContext = options.traceContext?.()
+          const tracing = Boolean(traceContext && hasRuntimeTraceSubscribers())
+          const requestInfo = tracing ? options.traceRequestInfo?.() : undefined
+          const spanId = tracing ? `provider-${crypto.randomUUID?.() ?? `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`}` : undefined
+          const started = tracing ? (typeof performance === "undefined" ? Date.now() : performance.now()) : 0
+          if (traceContext && spanId) publishRuntimeTrace(traceContext, "provider_request_start", () => ({
+            purpose: "main", model: model.id, api: model.api, ...requestInfo,
+          }), { spanId, parentRunId: traceContext.runId })
+          const stream = toAssistantStream((piRuntimeProviderOverride?.streamFn ?? piStream)(model, context, streamOptions), model)
+          void stream.result().then(message => {
+            if (traceContext && spanId) publishRuntimeTrace(traceContext, "provider_request_end", () => ({
+              model: model.id,
+              api: model.api,
+              purpose: "main",
+              status: message.stopReason,
+              ...requestInfo,
+              durationMs: (typeof performance === "undefined" ? Date.now() : performance.now()) - started,
+              inputTokens: message.usage.input,
+              outputTokens: message.usage.output,
+              ...(typeof message.usage.cacheRead === "number" && Number.isFinite(message.usage.cacheRead) ? { cacheRead: message.usage.cacheRead } : {}),
+              ...(typeof message.usage.cacheWrite === "number" && Number.isFinite(message.usage.cacheWrite) ? { cacheWrite: message.usage.cacheWrite } : {}),
+            }), { spanId, parentRunId: traceContext.runId })
+          }, () => {
+            if (traceContext && spanId) publishRuntimeTrace(traceContext, "provider_request_end", () => ({
+              model: model.id, api: model.api, purpose: "main", status: "stream_failed",
+              ...requestInfo,
+              durationMs: (typeof performance === "undefined" ? Date.now() : performance.now()) - started,
+            }), { spanId, parentRunId: traceContext.runId })
+          })
+          return stream
         }
       }
       const value = Reflect.get(target, property, target)
@@ -319,6 +352,7 @@ export interface PiTextCallAudit {
   requestId?: string
   /** 派生来源（如触发这次一次性调用的 runId/planId）。 */
   derivedFrom?: string[]
+  traceContext?: RuntimeTraceContext
 }
 
 export interface PiTextCallInput {
@@ -336,6 +370,8 @@ export interface PiTextCallInput {
   timeoutMs?: number
   /** 审计归属：有会话可归属时给出，这次请求就进快照体系（无归属的调用不落证据）。 */
   audit?: PiTextCallAudit
+  /** Trace-only parent operation when the call has no session audit destination. */
+  traceContext?: RuntimeTraceContext
 }
 
 export interface PiTextCallResult {
@@ -466,10 +502,20 @@ export async function completePiText(input: PiTextCallInput): Promise<PiTextCall
   if (input.signal?.aborted) abortFromCaller()
   else input.signal?.addEventListener("abort", abortFromCaller, { once: true })
   const timer = setTimeout(() => controller.abort(new Error("Provider 请求超时")), timeoutMs)
+  const traceContext = input.traceContext ?? audit?.traceContext ?? runtimeTraceContextForRequest(audit?.requestId ?? audit?.derivedFrom?.[0])
+  const traceEnabled = Boolean(traceContext && hasRuntimeTraceSubscribers())
+  let spanId: string | undefined
+  let providerStarted = 0
+  let providerEndEmitted = false
   try {
     // 不把已取消的 signal 交给可能忽略它的 provider/fake stream，避免取消后仍发起请求。
     if (controller.signal.aborted) throw new Error("Provider 请求超时或已取消")
     const messages: PiMessage[] = [{ role: "user", content: input.userText, timestamp: startedAt }]
+    spanId = traceEnabled ? `provider-${crypto.randomUUID?.() ?? `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`}` : undefined
+    providerStarted = traceEnabled ? (typeof performance === "undefined" ? Date.now() : performance.now()) : 0
+    if (traceContext && spanId) publishRuntimeTrace(traceContext, "provider_request_start", () => ({
+      purpose: input.purpose, model: model.id, api: model.api,
+    }), { spanId, parentRunId: traceContext.runId })
     // StreamFn 允许返回 Promise（pi-agent-core 的签名），先 await 拿到流本身。
     const stream = await streamFn(model, { systemPrompt, messages }, {
       signal: controller.signal,
@@ -480,6 +526,18 @@ export async function completePiText(input: PiTextCallInput): Promise<PiTextCall
       maxTokens,
     })
     const message = await stream.result()
+    if (traceContext && spanId) publishRuntimeTrace(traceContext, "provider_request_end", () => ({
+      purpose: input.purpose,
+      model: model.id,
+      api: model.api,
+      status: message.stopReason,
+      durationMs: (typeof performance === "undefined" ? Date.now() : performance.now()) - providerStarted,
+      inputTokens: message.usage.input,
+      outputTokens: message.usage.output,
+      ...(typeof message.usage.cacheRead === "number" && Number.isFinite(message.usage.cacheRead) ? { cacheRead: message.usage.cacheRead } : {}),
+      ...(typeof message.usage.cacheWrite === "number" && Number.isFinite(message.usage.cacheWrite) ? { cacheWrite: message.usage.cacheWrite } : {}),
+    }), { spanId, parentRunId: traceContext.runId })
+    providerEndEmitted = Boolean(traceContext && spanId)
     // 响应一到就记用量：失败/截断的响应同样产生成本，不能只计成功调用。
     // Provider 未回报时这里只累加次数（recordModelUsage 不把全 0 当准确值）。
     recordModelUsage(input.purpose, message.usage)
@@ -528,6 +586,10 @@ export async function completePiText(input: PiTextCallInput): Promise<PiTextCall
     log.debug(`[${input.purpose}] 完成: ${result.durationMs}ms, stop=${result.stopReason}, out=${result.usage.output}`)
     return result
   } catch (e) {
+    if (traceContext && spanId && !providerEndEmitted) publishRuntimeTrace(traceContext, "provider_request_end", () => ({
+      purpose: input.purpose, model: model.id, api: model.api, status: "failed",
+      ...(providerStarted ? { durationMs: (typeof performance === "undefined" ? Date.now() : performance.now()) - providerStarted } : {}),
+    }), { spanId, parentRunId: traceContext.runId })
     log.warn(`[${input.purpose}] 失败 (${Date.now() - startedAt}ms):`, formatError(e))
     throw e
   } finally {

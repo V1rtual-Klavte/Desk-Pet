@@ -23,7 +23,7 @@ export interface BuildContextInput {
   isActiveMessage?: boolean
   sessionSummary?: string
   ephemeralText?: string
-  ephemeralOrigin?: "active" | "hook" | "recovery" | "plan"
+  ephemeralOrigin?: "active" | "hook" | "recovery" | "plan" | "proactive"
   /** Run-preflight 冻结快照；调用方未提供时回退到当前配置与注册表。 */
   contextMaxTokens?: number
   maxOutputTokens?: number

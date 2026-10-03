@@ -81,6 +81,8 @@ export type ActionCategory =
 export interface ToolContext {
   /** 当前 Pi 工具调用 ID */
   toolCallId?: string
+  /** 当前回合已提交的用户输入身份；记忆工具必须用它筛选可归属来源。 */
+  trustedUserEventId?: string
   /** 稳定的单次操作标识，用于审计和幂等关联。 */
   operationId?: string
   /** 工具声明与安全策略的摘要。 */

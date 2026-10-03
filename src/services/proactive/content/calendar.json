@@ -1,0 +1,1981 @@
+{
+  "coverage": {
+    "from": 2026,
+    "until": 2035,
+    "sourceTimezone": "Asia/Hong_Kong"
+  },
+  "sources": [
+    {
+      "year": 2026,
+      "url": "https://www.hko.gov.hk/tc/gts/time/calendar/text/files/T2026c.txt",
+      "sha256": "7b0831acb16a5a72a1ab553205e938b2f658c3837e06440f22c084e1a39832dd"
+    },
+    {
+      "year": 2027,
+      "url": "https://www.hko.gov.hk/tc/gts/time/calendar/text/files/T2027c.txt",
+      "sha256": "2c6a406cd2f8c6f1cf11f154737b7c5ae4afb53c87d76b101bd561b482e3b93f"
+    },
+    {
+      "year": 2028,
+      "url": "https://www.hko.gov.hk/tc/gts/time/calendar/text/files/T2028c.txt",
+      "sha256": "4b0c09cc20947f6199106f2664c3b1178f20510f5ccf044be502c352250bb3c0"
+    },
+    {
+      "year": 2029,
+      "url": "https://www.hko.gov.hk/tc/gts/time/calendar/text/files/T2029c.txt",
+      "sha256": "4477676453008afe875869c3915acdfc7a62cdbc3c6001751978eea7d7c1f4f7"
+    },
+    {
+      "year": 2030,
+      "url": "https://www.hko.gov.hk/tc/gts/time/calendar/text/files/T2030c.txt",
+      "sha256": "6f402ba7aa1c1db74172e0eb47cd38feb3562889c289a60d7fb9ba67ba8ca234"
+    },
+    {
+      "year": 2031,
+      "url": "https://www.hko.gov.hk/tc/gts/time/calendar/text/files/T2031c.txt",
+      "sha256": "e4fc7d762e09c749a117a26e0164c140e1e6c0c110bc571ee4137cb60e75c863"
+    },
+    {
+      "year": 2032,
+      "url": "https://www.hko.gov.hk/tc/gts/time/calendar/text/files/T2032c.txt",
+      "sha256": "4ccf673be92a44b0471a5aca12c48de3b95a967e07776e346a8ce0e63a5dcb42"
+    },
+    {
+      "year": 2033,
+      "url": "https://www.hko.gov.hk/tc/gts/time/calendar/text/files/T2033c.txt",
+      "sha256": "d2ec5d438f5838512c38879a8d32b38a6e0cb5dcdd8993ed8b78741fc9f1e899"
+    },
+    {
+      "year": 2034,
+      "url": "https://www.hko.gov.hk/tc/gts/time/calendar/text/files/T2034c.txt",
+      "sha256": "0b9cdf0733d7069d55851aeed05421365978c58ddc314e524328537a5a011ca2"
+    },
+    {
+      "year": 2035,
+      "url": "https://www.hko.gov.hk/tc/gts/time/calendar/text/files/T2035c.txt",
+      "sha256": "18a341b931284ddf77d5fe2ca7a0ecc96a5fcf1427611b3e7d4282dc7de9be18"
+    }
+  ],
+  "events": [
+    {
+      "localDate": "2026-01-05",
+      "kind": "solar_term",
+      "name": "小寒",
+      "key": "term:小寒"
+    },
+    {
+      "localDate": "2026-01-20",
+      "kind": "solar_term",
+      "name": "大寒",
+      "key": "term:大寒"
+    },
+    {
+      "localDate": "2026-01-26",
+      "kind": "lunar_festival",
+      "name": "腊八节",
+      "key": "lunar:12:8"
+    },
+    {
+      "localDate": "2026-02-04",
+      "kind": "solar_term",
+      "name": "立春",
+      "key": "term:立春"
+    },
+    {
+      "localDate": "2026-02-16",
+      "kind": "lunar_festival",
+      "name": "除夕",
+      "key": "lunar:new-year-eve"
+    },
+    {
+      "localDate": "2026-02-17",
+      "kind": "lunar_festival",
+      "name": "春节",
+      "key": "lunar:1:1"
+    },
+    {
+      "localDate": "2026-02-18",
+      "kind": "solar_term",
+      "name": "雨水",
+      "key": "term:雨水"
+    },
+    {
+      "localDate": "2026-03-03",
+      "kind": "lunar_festival",
+      "name": "元宵节",
+      "key": "lunar:1:15"
+    },
+    {
+      "localDate": "2026-03-05",
+      "kind": "solar_term",
+      "name": "驚蟄",
+      "key": "term:驚蟄"
+    },
+    {
+      "localDate": "2026-03-20",
+      "kind": "solar_term",
+      "name": "春分",
+      "key": "term:春分"
+    },
+    {
+      "localDate": "2026-04-05",
+      "kind": "solar_term",
+      "name": "清明",
+      "key": "term:清明"
+    },
+    {
+      "localDate": "2026-04-20",
+      "kind": "solar_term",
+      "name": "穀雨",
+      "key": "term:穀雨"
+    },
+    {
+      "localDate": "2026-05-05",
+      "kind": "solar_term",
+      "name": "立夏",
+      "key": "term:立夏"
+    },
+    {
+      "localDate": "2026-05-21",
+      "kind": "solar_term",
+      "name": "小滿",
+      "key": "term:小滿"
+    },
+    {
+      "localDate": "2026-06-05",
+      "kind": "solar_term",
+      "name": "芒種",
+      "key": "term:芒種"
+    },
+    {
+      "localDate": "2026-06-19",
+      "kind": "lunar_festival",
+      "name": "端午节",
+      "key": "lunar:5:5"
+    },
+    {
+      "localDate": "2026-06-21",
+      "kind": "solar_term",
+      "name": "夏至",
+      "key": "term:夏至"
+    },
+    {
+      "localDate": "2026-07-07",
+      "kind": "solar_term",
+      "name": "小暑",
+      "key": "term:小暑"
+    },
+    {
+      "localDate": "2026-07-23",
+      "kind": "solar_term",
+      "name": "大暑",
+      "key": "term:大暑"
+    },
+    {
+      "localDate": "2026-08-07",
+      "kind": "solar_term",
+      "name": "立秋",
+      "key": "term:立秋"
+    },
+    {
+      "localDate": "2026-08-19",
+      "kind": "lunar_festival",
+      "name": "七夕",
+      "key": "lunar:7:7"
+    },
+    {
+      "localDate": "2026-08-23",
+      "kind": "solar_term",
+      "name": "處暑",
+      "key": "term:處暑"
+    },
+    {
+      "localDate": "2026-09-07",
+      "kind": "solar_term",
+      "name": "白露",
+      "key": "term:白露"
+    },
+    {
+      "localDate": "2026-09-23",
+      "kind": "solar_term",
+      "name": "秋分",
+      "key": "term:秋分"
+    },
+    {
+      "localDate": "2026-09-25",
+      "kind": "lunar_festival",
+      "name": "中秋节",
+      "key": "lunar:8:15"
+    },
+    {
+      "localDate": "2026-10-08",
+      "kind": "solar_term",
+      "name": "寒露",
+      "key": "term:寒露"
+    },
+    {
+      "localDate": "2026-10-18",
+      "kind": "lunar_festival",
+      "name": "重阳节",
+      "key": "lunar:9:9"
+    },
+    {
+      "localDate": "2026-10-23",
+      "kind": "solar_term",
+      "name": "霜降",
+      "key": "term:霜降"
+    },
+    {
+      "localDate": "2026-11-07",
+      "kind": "solar_term",
+      "name": "立冬",
+      "key": "term:立冬"
+    },
+    {
+      "localDate": "2026-11-22",
+      "kind": "solar_term",
+      "name": "小雪",
+      "key": "term:小雪"
+    },
+    {
+      "localDate": "2026-12-07",
+      "kind": "solar_term",
+      "name": "大雪",
+      "key": "term:大雪"
+    },
+    {
+      "localDate": "2026-12-22",
+      "kind": "solar_term",
+      "name": "冬至",
+      "key": "term:冬至"
+    },
+    {
+      "localDate": "2027-01-05",
+      "kind": "solar_term",
+      "name": "小寒",
+      "key": "term:小寒"
+    },
+    {
+      "localDate": "2027-01-15",
+      "kind": "lunar_festival",
+      "name": "腊八节",
+      "key": "lunar:12:8"
+    },
+    {
+      "localDate": "2027-01-20",
+      "kind": "solar_term",
+      "name": "大寒",
+      "key": "term:大寒"
+    },
+    {
+      "localDate": "2027-02-04",
+      "kind": "solar_term",
+      "name": "立春",
+      "key": "term:立春"
+    },
+    {
+      "localDate": "2027-02-05",
+      "kind": "lunar_festival",
+      "name": "除夕",
+      "key": "lunar:new-year-eve"
+    },
+    {
+      "localDate": "2027-02-06",
+      "kind": "lunar_festival",
+      "name": "春节",
+      "key": "lunar:1:1"
+    },
+    {
+      "localDate": "2027-02-19",
+      "kind": "solar_term",
+      "name": "雨水",
+      "key": "term:雨水"
+    },
+    {
+      "localDate": "2027-02-20",
+      "kind": "lunar_festival",
+      "name": "元宵节",
+      "key": "lunar:1:15"
+    },
+    {
+      "localDate": "2027-03-06",
+      "kind": "solar_term",
+      "name": "驚蟄",
+      "key": "term:驚蟄"
+    },
+    {
+      "localDate": "2027-03-21",
+      "kind": "solar_term",
+      "name": "春分",
+      "key": "term:春分"
+    },
+    {
+      "localDate": "2027-04-05",
+      "kind": "solar_term",
+      "name": "清明",
+      "key": "term:清明"
+    },
+    {
+      "localDate": "2027-04-20",
+      "kind": "solar_term",
+      "name": "穀雨",
+      "key": "term:穀雨"
+    },
+    {
+      "localDate": "2027-05-06",
+      "kind": "solar_term",
+      "name": "立夏",
+      "key": "term:立夏"
+    },
+    {
+      "localDate": "2027-05-21",
+      "kind": "solar_term",
+      "name": "小滿",
+      "key": "term:小滿"
+    },
+    {
+      "localDate": "2027-06-06",
+      "kind": "solar_term",
+      "name": "芒種",
+      "key": "term:芒種"
+    },
+    {
+      "localDate": "2027-06-09",
+      "kind": "lunar_festival",
+      "name": "端午节",
+      "key": "lunar:5:5"
+    },
+    {
+      "localDate": "2027-06-21",
+      "kind": "solar_term",
+      "name": "夏至",
+      "key": "term:夏至"
+    },
+    {
+      "localDate": "2027-07-07",
+      "kind": "solar_term",
+      "name": "小暑",
+      "key": "term:小暑"
+    },
+    {
+      "localDate": "2027-07-23",
+      "kind": "solar_term",
+      "name": "大暑",
+      "key": "term:大暑"
+    },
+    {
+      "localDate": "2027-08-08",
+      "kind": "lunar_festival",
+      "name": "七夕",
+      "key": "lunar:7:7"
+    },
+    {
+      "localDate": "2027-08-08",
+      "kind": "solar_term",
+      "name": "立秋",
+      "key": "term:立秋"
+    },
+    {
+      "localDate": "2027-08-23",
+      "kind": "solar_term",
+      "name": "處暑",
+      "key": "term:處暑"
+    },
+    {
+      "localDate": "2027-09-08",
+      "kind": "solar_term",
+      "name": "白露",
+      "key": "term:白露"
+    },
+    {
+      "localDate": "2027-09-15",
+      "kind": "lunar_festival",
+      "name": "中秋节",
+      "key": "lunar:8:15"
+    },
+    {
+      "localDate": "2027-09-23",
+      "kind": "solar_term",
+      "name": "秋分",
+      "key": "term:秋分"
+    },
+    {
+      "localDate": "2027-10-08",
+      "kind": "lunar_festival",
+      "name": "重阳节",
+      "key": "lunar:9:9"
+    },
+    {
+      "localDate": "2027-10-08",
+      "kind": "solar_term",
+      "name": "寒露",
+      "key": "term:寒露"
+    },
+    {
+      "localDate": "2027-10-23",
+      "kind": "solar_term",
+      "name": "霜降",
+      "key": "term:霜降"
+    },
+    {
+      "localDate": "2027-11-07",
+      "kind": "solar_term",
+      "name": "立冬",
+      "key": "term:立冬"
+    },
+    {
+      "localDate": "2027-11-22",
+      "kind": "solar_term",
+      "name": "小雪",
+      "key": "term:小雪"
+    },
+    {
+      "localDate": "2027-12-07",
+      "kind": "solar_term",
+      "name": "大雪",
+      "key": "term:大雪"
+    },
+    {
+      "localDate": "2027-12-22",
+      "kind": "solar_term",
+      "name": "冬至",
+      "key": "term:冬至"
+    },
+    {
+      "localDate": "2028-01-04",
+      "kind": "lunar_festival",
+      "name": "腊八节",
+      "key": "lunar:12:8"
+    },
+    {
+      "localDate": "2028-01-06",
+      "kind": "solar_term",
+      "name": "小寒",
+      "key": "term:小寒"
+    },
+    {
+      "localDate": "2028-01-20",
+      "kind": "solar_term",
+      "name": "大寒",
+      "key": "term:大寒"
+    },
+    {
+      "localDate": "2028-01-25",
+      "kind": "lunar_festival",
+      "name": "除夕",
+      "key": "lunar:new-year-eve"
+    },
+    {
+      "localDate": "2028-01-26",
+      "kind": "lunar_festival",
+      "name": "春节",
+      "key": "lunar:1:1"
+    },
+    {
+      "localDate": "2028-02-04",
+      "kind": "solar_term",
+      "name": "立春",
+      "key": "term:立春"
+    },
+    {
+      "localDate": "2028-02-09",
+      "kind": "lunar_festival",
+      "name": "元宵节",
+      "key": "lunar:1:15"
+    },
+    {
+      "localDate": "2028-02-19",
+      "kind": "solar_term",
+      "name": "雨水",
+      "key": "term:雨水"
+    },
+    {
+      "localDate": "2028-03-05",
+      "kind": "solar_term",
+      "name": "驚蟄",
+      "key": "term:驚蟄"
+    },
+    {
+      "localDate": "2028-03-20",
+      "kind": "solar_term",
+      "name": "春分",
+      "key": "term:春分"
+    },
+    {
+      "localDate": "2028-04-04",
+      "kind": "solar_term",
+      "name": "清明",
+      "key": "term:清明"
+    },
+    {
+      "localDate": "2028-04-19",
+      "kind": "solar_term",
+      "name": "穀雨",
+      "key": "term:穀雨"
+    },
+    {
+      "localDate": "2028-05-05",
+      "kind": "solar_term",
+      "name": "立夏",
+      "key": "term:立夏"
+    },
+    {
+      "localDate": "2028-05-20",
+      "kind": "solar_term",
+      "name": "小滿",
+      "key": "term:小滿"
+    },
+    {
+      "localDate": "2028-05-28",
+      "kind": "lunar_festival",
+      "name": "端午节",
+      "key": "lunar:5:5"
+    },
+    {
+      "localDate": "2028-06-05",
+      "kind": "solar_term",
+      "name": "芒種",
+      "key": "term:芒種"
+    },
+    {
+      "localDate": "2028-06-21",
+      "kind": "solar_term",
+      "name": "夏至",
+      "key": "term:夏至"
+    },
+    {
+      "localDate": "2028-07-06",
+      "kind": "solar_term",
+      "name": "小暑",
+      "key": "term:小暑"
+    },
+    {
+      "localDate": "2028-07-22",
+      "kind": "solar_term",
+      "name": "大暑",
+      "key": "term:大暑"
+    },
+    {
+      "localDate": "2028-08-07",
+      "kind": "solar_term",
+      "name": "立秋",
+      "key": "term:立秋"
+    },
+    {
+      "localDate": "2028-08-22",
+      "kind": "solar_term",
+      "name": "處暑",
+      "key": "term:處暑"
+    },
+    {
+      "localDate": "2028-08-26",
+      "kind": "lunar_festival",
+      "name": "七夕",
+      "key": "lunar:7:7"
+    },
+    {
+      "localDate": "2028-09-07",
+      "kind": "solar_term",
+      "name": "白露",
+      "key": "term:白露"
+    },
+    {
+      "localDate": "2028-09-22",
+      "kind": "solar_term",
+      "name": "秋分",
+      "key": "term:秋分"
+    },
+    {
+      "localDate": "2028-10-03",
+      "kind": "lunar_festival",
+      "name": "中秋节",
+      "key": "lunar:8:15"
+    },
+    {
+      "localDate": "2028-10-08",
+      "kind": "solar_term",
+      "name": "寒露",
+      "key": "term:寒露"
+    },
+    {
+      "localDate": "2028-10-23",
+      "kind": "solar_term",
+      "name": "霜降",
+      "key": "term:霜降"
+    },
+    {
+      "localDate": "2028-10-26",
+      "kind": "lunar_festival",
+      "name": "重阳节",
+      "key": "lunar:9:9"
+    },
+    {
+      "localDate": "2028-11-07",
+      "kind": "solar_term",
+      "name": "立冬",
+      "key": "term:立冬"
+    },
+    {
+      "localDate": "2028-11-22",
+      "kind": "solar_term",
+      "name": "小雪",
+      "key": "term:小雪"
+    },
+    {
+      "localDate": "2028-12-06",
+      "kind": "solar_term",
+      "name": "大雪",
+      "key": "term:大雪"
+    },
+    {
+      "localDate": "2028-12-21",
+      "kind": "solar_term",
+      "name": "冬至",
+      "key": "term:冬至"
+    },
+    {
+      "localDate": "2029-01-05",
+      "kind": "solar_term",
+      "name": "小寒",
+      "key": "term:小寒"
+    },
+    {
+      "localDate": "2029-01-20",
+      "kind": "solar_term",
+      "name": "大寒",
+      "key": "term:大寒"
+    },
+    {
+      "localDate": "2029-01-22",
+      "kind": "lunar_festival",
+      "name": "腊八节",
+      "key": "lunar:12:8"
+    },
+    {
+      "localDate": "2029-02-03",
+      "kind": "solar_term",
+      "name": "立春",
+      "key": "term:立春"
+    },
+    {
+      "localDate": "2029-02-12",
+      "kind": "lunar_festival",
+      "name": "除夕",
+      "key": "lunar:new-year-eve"
+    },
+    {
+      "localDate": "2029-02-13",
+      "kind": "lunar_festival",
+      "name": "春节",
+      "key": "lunar:1:1"
+    },
+    {
+      "localDate": "2029-02-18",
+      "kind": "solar_term",
+      "name": "雨水",
+      "key": "term:雨水"
+    },
+    {
+      "localDate": "2029-02-27",
+      "kind": "lunar_festival",
+      "name": "元宵节",
+      "key": "lunar:1:15"
+    },
+    {
+      "localDate": "2029-03-05",
+      "kind": "solar_term",
+      "name": "驚蟄",
+      "key": "term:驚蟄"
+    },
+    {
+      "localDate": "2029-03-20",
+      "kind": "solar_term",
+      "name": "春分",
+      "key": "term:春分"
+    },
+    {
+      "localDate": "2029-04-04",
+      "kind": "solar_term",
+      "name": "清明",
+      "key": "term:清明"
+    },
+    {
+      "localDate": "2029-04-20",
+      "kind": "solar_term",
+      "name": "穀雨",
+      "key": "term:穀雨"
+    },
+    {
+      "localDate": "2029-05-05",
+      "kind": "solar_term",
+      "name": "立夏",
+      "key": "term:立夏"
+    },
+    {
+      "localDate": "2029-05-21",
+      "kind": "solar_term",
+      "name": "小滿",
+      "key": "term:小滿"
+    },
+    {
+      "localDate": "2029-06-05",
+      "kind": "solar_term",
+      "name": "芒種",
+      "key": "term:芒種"
+    },
+    {
+      "localDate": "2029-06-16",
+      "kind": "lunar_festival",
+      "name": "端午节",
+      "key": "lunar:5:5"
+    },
+    {
+      "localDate": "2029-06-21",
+      "kind": "solar_term",
+      "name": "夏至",
+      "key": "term:夏至"
+    },
+    {
+      "localDate": "2029-07-07",
+      "kind": "solar_term",
+      "name": "小暑",
+      "key": "term:小暑"
+    },
+    {
+      "localDate": "2029-07-22",
+      "kind": "solar_term",
+      "name": "大暑",
+      "key": "term:大暑"
+    },
+    {
+      "localDate": "2029-08-07",
+      "kind": "solar_term",
+      "name": "立秋",
+      "key": "term:立秋"
+    },
+    {
+      "localDate": "2029-08-16",
+      "kind": "lunar_festival",
+      "name": "七夕",
+      "key": "lunar:7:7"
+    },
+    {
+      "localDate": "2029-08-23",
+      "kind": "solar_term",
+      "name": "處暑",
+      "key": "term:處暑"
+    },
+    {
+      "localDate": "2029-09-07",
+      "kind": "solar_term",
+      "name": "白露",
+      "key": "term:白露"
+    },
+    {
+      "localDate": "2029-09-22",
+      "kind": "lunar_festival",
+      "name": "中秋节",
+      "key": "lunar:8:15"
+    },
+    {
+      "localDate": "2029-09-23",
+      "kind": "solar_term",
+      "name": "秋分",
+      "key": "term:秋分"
+    },
+    {
+      "localDate": "2029-10-08",
+      "kind": "solar_term",
+      "name": "寒露",
+      "key": "term:寒露"
+    },
+    {
+      "localDate": "2029-10-16",
+      "kind": "lunar_festival",
+      "name": "重阳节",
+      "key": "lunar:9:9"
+    },
+    {
+      "localDate": "2029-10-23",
+      "kind": "solar_term",
+      "name": "霜降",
+      "key": "term:霜降"
+    },
+    {
+      "localDate": "2029-11-07",
+      "kind": "solar_term",
+      "name": "立冬",
+      "key": "term:立冬"
+    },
+    {
+      "localDate": "2029-11-22",
+      "kind": "solar_term",
+      "name": "小雪",
+      "key": "term:小雪"
+    },
+    {
+      "localDate": "2029-12-07",
+      "kind": "solar_term",
+      "name": "大雪",
+      "key": "term:大雪"
+    },
+    {
+      "localDate": "2029-12-21",
+      "kind": "solar_term",
+      "name": "冬至",
+      "key": "term:冬至"
+    },
+    {
+      "localDate": "2030-01-05",
+      "kind": "solar_term",
+      "name": "小寒",
+      "key": "term:小寒"
+    },
+    {
+      "localDate": "2030-01-11",
+      "kind": "lunar_festival",
+      "name": "腊八节",
+      "key": "lunar:12:8"
+    },
+    {
+      "localDate": "2030-01-20",
+      "kind": "solar_term",
+      "name": "大寒",
+      "key": "term:大寒"
+    },
+    {
+      "localDate": "2030-02-02",
+      "kind": "lunar_festival",
+      "name": "除夕",
+      "key": "lunar:new-year-eve"
+    },
+    {
+      "localDate": "2030-02-03",
+      "kind": "lunar_festival",
+      "name": "春节",
+      "key": "lunar:1:1"
+    },
+    {
+      "localDate": "2030-02-04",
+      "kind": "solar_term",
+      "name": "立春",
+      "key": "term:立春"
+    },
+    {
+      "localDate": "2030-02-17",
+      "kind": "lunar_festival",
+      "name": "元宵节",
+      "key": "lunar:1:15"
+    },
+    {
+      "localDate": "2030-02-18",
+      "kind": "solar_term",
+      "name": "雨水",
+      "key": "term:雨水"
+    },
+    {
+      "localDate": "2030-03-05",
+      "kind": "solar_term",
+      "name": "驚蟄",
+      "key": "term:驚蟄"
+    },
+    {
+      "localDate": "2030-03-20",
+      "kind": "solar_term",
+      "name": "春分",
+      "key": "term:春分"
+    },
+    {
+      "localDate": "2030-04-05",
+      "kind": "solar_term",
+      "name": "清明",
+      "key": "term:清明"
+    },
+    {
+      "localDate": "2030-04-20",
+      "kind": "solar_term",
+      "name": "穀雨",
+      "key": "term:穀雨"
+    },
+    {
+      "localDate": "2030-05-05",
+      "kind": "solar_term",
+      "name": "立夏",
+      "key": "term:立夏"
+    },
+    {
+      "localDate": "2030-05-21",
+      "kind": "solar_term",
+      "name": "小滿",
+      "key": "term:小滿"
+    },
+    {
+      "localDate": "2030-06-05",
+      "kind": "lunar_festival",
+      "name": "端午节",
+      "key": "lunar:5:5"
+    },
+    {
+      "localDate": "2030-06-05",
+      "kind": "solar_term",
+      "name": "芒種",
+      "key": "term:芒種"
+    },
+    {
+      "localDate": "2030-06-21",
+      "kind": "solar_term",
+      "name": "夏至",
+      "key": "term:夏至"
+    },
+    {
+      "localDate": "2030-07-07",
+      "kind": "solar_term",
+      "name": "小暑",
+      "key": "term:小暑"
+    },
+    {
+      "localDate": "2030-07-23",
+      "kind": "solar_term",
+      "name": "大暑",
+      "key": "term:大暑"
+    },
+    {
+      "localDate": "2030-08-05",
+      "kind": "lunar_festival",
+      "name": "七夕",
+      "key": "lunar:7:7"
+    },
+    {
+      "localDate": "2030-08-07",
+      "kind": "solar_term",
+      "name": "立秋",
+      "key": "term:立秋"
+    },
+    {
+      "localDate": "2030-08-23",
+      "kind": "solar_term",
+      "name": "處暑",
+      "key": "term:處暑"
+    },
+    {
+      "localDate": "2030-09-07",
+      "kind": "solar_term",
+      "name": "白露",
+      "key": "term:白露"
+    },
+    {
+      "localDate": "2030-09-12",
+      "kind": "lunar_festival",
+      "name": "中秋节",
+      "key": "lunar:8:15"
+    },
+    {
+      "localDate": "2030-09-23",
+      "kind": "solar_term",
+      "name": "秋分",
+      "key": "term:秋分"
+    },
+    {
+      "localDate": "2030-10-05",
+      "kind": "lunar_festival",
+      "name": "重阳节",
+      "key": "lunar:9:9"
+    },
+    {
+      "localDate": "2030-10-08",
+      "kind": "solar_term",
+      "name": "寒露",
+      "key": "term:寒露"
+    },
+    {
+      "localDate": "2030-10-23",
+      "kind": "solar_term",
+      "name": "霜降",
+      "key": "term:霜降"
+    },
+    {
+      "localDate": "2030-11-07",
+      "kind": "solar_term",
+      "name": "立冬",
+      "key": "term:立冬"
+    },
+    {
+      "localDate": "2030-11-22",
+      "kind": "solar_term",
+      "name": "小雪",
+      "key": "term:小雪"
+    },
+    {
+      "localDate": "2030-12-07",
+      "kind": "solar_term",
+      "name": "大雪",
+      "key": "term:大雪"
+    },
+    {
+      "localDate": "2030-12-22",
+      "kind": "solar_term",
+      "name": "冬至",
+      "key": "term:冬至"
+    },
+    {
+      "localDate": "2031-01-01",
+      "kind": "lunar_festival",
+      "name": "腊八节",
+      "key": "lunar:12:8"
+    },
+    {
+      "localDate": "2031-01-05",
+      "kind": "solar_term",
+      "name": "小寒",
+      "key": "term:小寒"
+    },
+    {
+      "localDate": "2031-01-20",
+      "kind": "solar_term",
+      "name": "大寒",
+      "key": "term:大寒"
+    },
+    {
+      "localDate": "2031-01-22",
+      "kind": "lunar_festival",
+      "name": "除夕",
+      "key": "lunar:new-year-eve"
+    },
+    {
+      "localDate": "2031-01-23",
+      "kind": "lunar_festival",
+      "name": "春节",
+      "key": "lunar:1:1"
+    },
+    {
+      "localDate": "2031-02-04",
+      "kind": "solar_term",
+      "name": "立春",
+      "key": "term:立春"
+    },
+    {
+      "localDate": "2031-02-06",
+      "kind": "lunar_festival",
+      "name": "元宵节",
+      "key": "lunar:1:15"
+    },
+    {
+      "localDate": "2031-02-19",
+      "kind": "solar_term",
+      "name": "雨水",
+      "key": "term:雨水"
+    },
+    {
+      "localDate": "2031-03-06",
+      "kind": "solar_term",
+      "name": "驚蟄",
+      "key": "term:驚蟄"
+    },
+    {
+      "localDate": "2031-03-21",
+      "kind": "solar_term",
+      "name": "春分",
+      "key": "term:春分"
+    },
+    {
+      "localDate": "2031-04-05",
+      "kind": "solar_term",
+      "name": "清明",
+      "key": "term:清明"
+    },
+    {
+      "localDate": "2031-04-20",
+      "kind": "solar_term",
+      "name": "穀雨",
+      "key": "term:穀雨"
+    },
+    {
+      "localDate": "2031-05-06",
+      "kind": "solar_term",
+      "name": "立夏",
+      "key": "term:立夏"
+    },
+    {
+      "localDate": "2031-05-21",
+      "kind": "solar_term",
+      "name": "小滿",
+      "key": "term:小滿"
+    },
+    {
+      "localDate": "2031-06-06",
+      "kind": "solar_term",
+      "name": "芒種",
+      "key": "term:芒種"
+    },
+    {
+      "localDate": "2031-06-21",
+      "kind": "solar_term",
+      "name": "夏至",
+      "key": "term:夏至"
+    },
+    {
+      "localDate": "2031-06-24",
+      "kind": "lunar_festival",
+      "name": "端午节",
+      "key": "lunar:5:5"
+    },
+    {
+      "localDate": "2031-07-07",
+      "kind": "solar_term",
+      "name": "小暑",
+      "key": "term:小暑"
+    },
+    {
+      "localDate": "2031-07-23",
+      "kind": "solar_term",
+      "name": "大暑",
+      "key": "term:大暑"
+    },
+    {
+      "localDate": "2031-08-08",
+      "kind": "solar_term",
+      "name": "立秋",
+      "key": "term:立秋"
+    },
+    {
+      "localDate": "2031-08-23",
+      "kind": "solar_term",
+      "name": "處暑",
+      "key": "term:處暑"
+    },
+    {
+      "localDate": "2031-08-24",
+      "kind": "lunar_festival",
+      "name": "七夕",
+      "key": "lunar:7:7"
+    },
+    {
+      "localDate": "2031-09-08",
+      "kind": "solar_term",
+      "name": "白露",
+      "key": "term:白露"
+    },
+    {
+      "localDate": "2031-09-23",
+      "kind": "solar_term",
+      "name": "秋分",
+      "key": "term:秋分"
+    },
+    {
+      "localDate": "2031-10-01",
+      "kind": "lunar_festival",
+      "name": "中秋节",
+      "key": "lunar:8:15"
+    },
+    {
+      "localDate": "2031-10-08",
+      "kind": "solar_term",
+      "name": "寒露",
+      "key": "term:寒露"
+    },
+    {
+      "localDate": "2031-10-23",
+      "kind": "solar_term",
+      "name": "霜降",
+      "key": "term:霜降"
+    },
+    {
+      "localDate": "2031-10-24",
+      "kind": "lunar_festival",
+      "name": "重阳节",
+      "key": "lunar:9:9"
+    },
+    {
+      "localDate": "2031-11-07",
+      "kind": "solar_term",
+      "name": "立冬",
+      "key": "term:立冬"
+    },
+    {
+      "localDate": "2031-11-22",
+      "kind": "solar_term",
+      "name": "小雪",
+      "key": "term:小雪"
+    },
+    {
+      "localDate": "2031-12-07",
+      "kind": "solar_term",
+      "name": "大雪",
+      "key": "term:大雪"
+    },
+    {
+      "localDate": "2031-12-22",
+      "kind": "solar_term",
+      "name": "冬至",
+      "key": "term:冬至"
+    },
+    {
+      "localDate": "2032-01-06",
+      "kind": "solar_term",
+      "name": "小寒",
+      "key": "term:小寒"
+    },
+    {
+      "localDate": "2032-01-20",
+      "kind": "lunar_festival",
+      "name": "腊八节",
+      "key": "lunar:12:8"
+    },
+    {
+      "localDate": "2032-01-20",
+      "kind": "solar_term",
+      "name": "大寒",
+      "key": "term:大寒"
+    },
+    {
+      "localDate": "2032-02-04",
+      "kind": "solar_term",
+      "name": "立春",
+      "key": "term:立春"
+    },
+    {
+      "localDate": "2032-02-10",
+      "kind": "lunar_festival",
+      "name": "除夕",
+      "key": "lunar:new-year-eve"
+    },
+    {
+      "localDate": "2032-02-11",
+      "kind": "lunar_festival",
+      "name": "春节",
+      "key": "lunar:1:1"
+    },
+    {
+      "localDate": "2032-02-19",
+      "kind": "solar_term",
+      "name": "雨水",
+      "key": "term:雨水"
+    },
+    {
+      "localDate": "2032-02-25",
+      "kind": "lunar_festival",
+      "name": "元宵节",
+      "key": "lunar:1:15"
+    },
+    {
+      "localDate": "2032-03-05",
+      "kind": "solar_term",
+      "name": "驚蟄",
+      "key": "term:驚蟄"
+    },
+    {
+      "localDate": "2032-03-20",
+      "kind": "solar_term",
+      "name": "春分",
+      "key": "term:春分"
+    },
+    {
+      "localDate": "2032-04-04",
+      "kind": "solar_term",
+      "name": "清明",
+      "key": "term:清明"
+    },
+    {
+      "localDate": "2032-04-19",
+      "kind": "solar_term",
+      "name": "穀雨",
+      "key": "term:穀雨"
+    },
+    {
+      "localDate": "2032-05-05",
+      "kind": "solar_term",
+      "name": "立夏",
+      "key": "term:立夏"
+    },
+    {
+      "localDate": "2032-05-20",
+      "kind": "solar_term",
+      "name": "小滿",
+      "key": "term:小滿"
+    },
+    {
+      "localDate": "2032-06-05",
+      "kind": "solar_term",
+      "name": "芒種",
+      "key": "term:芒種"
+    },
+    {
+      "localDate": "2032-06-12",
+      "kind": "lunar_festival",
+      "name": "端午节",
+      "key": "lunar:5:5"
+    },
+    {
+      "localDate": "2032-06-21",
+      "kind": "solar_term",
+      "name": "夏至",
+      "key": "term:夏至"
+    },
+    {
+      "localDate": "2032-07-06",
+      "kind": "solar_term",
+      "name": "小暑",
+      "key": "term:小暑"
+    },
+    {
+      "localDate": "2032-07-22",
+      "kind": "solar_term",
+      "name": "大暑",
+      "key": "term:大暑"
+    },
+    {
+      "localDate": "2032-08-07",
+      "kind": "solar_term",
+      "name": "立秋",
+      "key": "term:立秋"
+    },
+    {
+      "localDate": "2032-08-12",
+      "kind": "lunar_festival",
+      "name": "七夕",
+      "key": "lunar:7:7"
+    },
+    {
+      "localDate": "2032-08-22",
+      "kind": "solar_term",
+      "name": "處暑",
+      "key": "term:處暑"
+    },
+    {
+      "localDate": "2032-09-07",
+      "kind": "solar_term",
+      "name": "白露",
+      "key": "term:白露"
+    },
+    {
+      "localDate": "2032-09-19",
+      "kind": "lunar_festival",
+      "name": "中秋节",
+      "key": "lunar:8:15"
+    },
+    {
+      "localDate": "2032-09-22",
+      "kind": "solar_term",
+      "name": "秋分",
+      "key": "term:秋分"
+    },
+    {
+      "localDate": "2032-10-08",
+      "kind": "solar_term",
+      "name": "寒露",
+      "key": "term:寒露"
+    },
+    {
+      "localDate": "2032-10-12",
+      "kind": "lunar_festival",
+      "name": "重阳节",
+      "key": "lunar:9:9"
+    },
+    {
+      "localDate": "2032-10-23",
+      "kind": "solar_term",
+      "name": "霜降",
+      "key": "term:霜降"
+    },
+    {
+      "localDate": "2032-11-07",
+      "kind": "solar_term",
+      "name": "立冬",
+      "key": "term:立冬"
+    },
+    {
+      "localDate": "2032-11-22",
+      "kind": "solar_term",
+      "name": "小雪",
+      "key": "term:小雪"
+    },
+    {
+      "localDate": "2032-12-06",
+      "kind": "solar_term",
+      "name": "大雪",
+      "key": "term:大雪"
+    },
+    {
+      "localDate": "2032-12-21",
+      "kind": "solar_term",
+      "name": "冬至",
+      "key": "term:冬至"
+    },
+    {
+      "localDate": "2033-01-05",
+      "kind": "solar_term",
+      "name": "小寒",
+      "key": "term:小寒"
+    },
+    {
+      "localDate": "2033-01-08",
+      "kind": "lunar_festival",
+      "name": "腊八节",
+      "key": "lunar:12:8"
+    },
+    {
+      "localDate": "2033-01-20",
+      "kind": "solar_term",
+      "name": "大寒",
+      "key": "term:大寒"
+    },
+    {
+      "localDate": "2033-01-30",
+      "kind": "lunar_festival",
+      "name": "除夕",
+      "key": "lunar:new-year-eve"
+    },
+    {
+      "localDate": "2033-01-31",
+      "kind": "lunar_festival",
+      "name": "春节",
+      "key": "lunar:1:1"
+    },
+    {
+      "localDate": "2033-02-03",
+      "kind": "solar_term",
+      "name": "立春",
+      "key": "term:立春"
+    },
+    {
+      "localDate": "2033-02-14",
+      "kind": "lunar_festival",
+      "name": "元宵节",
+      "key": "lunar:1:15"
+    },
+    {
+      "localDate": "2033-02-18",
+      "kind": "solar_term",
+      "name": "雨水",
+      "key": "term:雨水"
+    },
+    {
+      "localDate": "2033-03-05",
+      "kind": "solar_term",
+      "name": "驚蟄",
+      "key": "term:驚蟄"
+    },
+    {
+      "localDate": "2033-03-20",
+      "kind": "solar_term",
+      "name": "春分",
+      "key": "term:春分"
+    },
+    {
+      "localDate": "2033-04-04",
+      "kind": "solar_term",
+      "name": "清明",
+      "key": "term:清明"
+    },
+    {
+      "localDate": "2033-04-20",
+      "kind": "solar_term",
+      "name": "穀雨",
+      "key": "term:穀雨"
+    },
+    {
+      "localDate": "2033-05-05",
+      "kind": "solar_term",
+      "name": "立夏",
+      "key": "term:立夏"
+    },
+    {
+      "localDate": "2033-05-21",
+      "kind": "solar_term",
+      "name": "小滿",
+      "key": "term:小滿"
+    },
+    {
+      "localDate": "2033-06-01",
+      "kind": "lunar_festival",
+      "name": "端午节",
+      "key": "lunar:5:5"
+    },
+    {
+      "localDate": "2033-06-05",
+      "kind": "solar_term",
+      "name": "芒種",
+      "key": "term:芒種"
+    },
+    {
+      "localDate": "2033-06-21",
+      "kind": "solar_term",
+      "name": "夏至",
+      "key": "term:夏至"
+    },
+    {
+      "localDate": "2033-07-07",
+      "kind": "solar_term",
+      "name": "小暑",
+      "key": "term:小暑"
+    },
+    {
+      "localDate": "2033-07-22",
+      "kind": "solar_term",
+      "name": "大暑",
+      "key": "term:大暑"
+    },
+    {
+      "localDate": "2033-08-01",
+      "kind": "lunar_festival",
+      "name": "七夕",
+      "key": "lunar:7:7"
+    },
+    {
+      "localDate": "2033-08-07",
+      "kind": "solar_term",
+      "name": "立秋",
+      "key": "term:立秋"
+    },
+    {
+      "localDate": "2033-08-23",
+      "kind": "solar_term",
+      "name": "處暑",
+      "key": "term:處暑"
+    },
+    {
+      "localDate": "2033-09-07",
+      "kind": "solar_term",
+      "name": "白露",
+      "key": "term:白露"
+    },
+    {
+      "localDate": "2033-09-08",
+      "kind": "lunar_festival",
+      "name": "中秋节",
+      "key": "lunar:8:15"
+    },
+    {
+      "localDate": "2033-09-23",
+      "kind": "solar_term",
+      "name": "秋分",
+      "key": "term:秋分"
+    },
+    {
+      "localDate": "2033-10-01",
+      "kind": "lunar_festival",
+      "name": "重阳节",
+      "key": "lunar:9:9"
+    },
+    {
+      "localDate": "2033-10-08",
+      "kind": "solar_term",
+      "name": "寒露",
+      "key": "term:寒露"
+    },
+    {
+      "localDate": "2033-10-23",
+      "kind": "solar_term",
+      "name": "霜降",
+      "key": "term:霜降"
+    },
+    {
+      "localDate": "2033-11-07",
+      "kind": "solar_term",
+      "name": "立冬",
+      "key": "term:立冬"
+    },
+    {
+      "localDate": "2033-11-22",
+      "kind": "solar_term",
+      "name": "小雪",
+      "key": "term:小雪"
+    },
+    {
+      "localDate": "2033-12-07",
+      "kind": "solar_term",
+      "name": "大雪",
+      "key": "term:大雪"
+    },
+    {
+      "localDate": "2033-12-21",
+      "kind": "solar_term",
+      "name": "冬至",
+      "key": "term:冬至"
+    },
+    {
+      "localDate": "2034-01-05",
+      "kind": "solar_term",
+      "name": "小寒",
+      "key": "term:小寒"
+    },
+    {
+      "localDate": "2034-01-20",
+      "kind": "solar_term",
+      "name": "大寒",
+      "key": "term:大寒"
+    },
+    {
+      "localDate": "2034-01-27",
+      "kind": "lunar_festival",
+      "name": "腊八节",
+      "key": "lunar:12:8"
+    },
+    {
+      "localDate": "2034-02-04",
+      "kind": "solar_term",
+      "name": "立春",
+      "key": "term:立春"
+    },
+    {
+      "localDate": "2034-02-18",
+      "kind": "lunar_festival",
+      "name": "除夕",
+      "key": "lunar:new-year-eve"
+    },
+    {
+      "localDate": "2034-02-18",
+      "kind": "solar_term",
+      "name": "雨水",
+      "key": "term:雨水"
+    },
+    {
+      "localDate": "2034-02-19",
+      "kind": "lunar_festival",
+      "name": "春节",
+      "key": "lunar:1:1"
+    },
+    {
+      "localDate": "2034-03-05",
+      "kind": "lunar_festival",
+      "name": "元宵节",
+      "key": "lunar:1:15"
+    },
+    {
+      "localDate": "2034-03-05",
+      "kind": "solar_term",
+      "name": "驚蟄",
+      "key": "term:驚蟄"
+    },
+    {
+      "localDate": "2034-03-20",
+      "kind": "solar_term",
+      "name": "春分",
+      "key": "term:春分"
+    },
+    {
+      "localDate": "2034-04-05",
+      "kind": "solar_term",
+      "name": "清明",
+      "key": "term:清明"
+    },
+    {
+      "localDate": "2034-04-20",
+      "kind": "solar_term",
+      "name": "穀雨",
+      "key": "term:穀雨"
+    },
+    {
+      "localDate": "2034-05-05",
+      "kind": "solar_term",
+      "name": "立夏",
+      "key": "term:立夏"
+    },
+    {
+      "localDate": "2034-05-21",
+      "kind": "solar_term",
+      "name": "小滿",
+      "key": "term:小滿"
+    },
+    {
+      "localDate": "2034-06-05",
+      "kind": "solar_term",
+      "name": "芒種",
+      "key": "term:芒種"
+    },
+    {
+      "localDate": "2034-06-20",
+      "kind": "lunar_festival",
+      "name": "端午节",
+      "key": "lunar:5:5"
+    },
+    {
+      "localDate": "2034-06-21",
+      "kind": "solar_term",
+      "name": "夏至",
+      "key": "term:夏至"
+    },
+    {
+      "localDate": "2034-07-07",
+      "kind": "solar_term",
+      "name": "小暑",
+      "key": "term:小暑"
+    },
+    {
+      "localDate": "2034-07-23",
+      "kind": "solar_term",
+      "name": "大暑",
+      "key": "term:大暑"
+    },
+    {
+      "localDate": "2034-08-07",
+      "kind": "solar_term",
+      "name": "立秋",
+      "key": "term:立秋"
+    },
+    {
+      "localDate": "2034-08-20",
+      "kind": "lunar_festival",
+      "name": "七夕",
+      "key": "lunar:7:7"
+    },
+    {
+      "localDate": "2034-08-23",
+      "kind": "solar_term",
+      "name": "處暑",
+      "key": "term:處暑"
+    },
+    {
+      "localDate": "2034-09-07",
+      "kind": "solar_term",
+      "name": "白露",
+      "key": "term:白露"
+    },
+    {
+      "localDate": "2034-09-23",
+      "kind": "solar_term",
+      "name": "秋分",
+      "key": "term:秋分"
+    },
+    {
+      "localDate": "2034-09-27",
+      "kind": "lunar_festival",
+      "name": "中秋节",
+      "key": "lunar:8:15"
+    },
+    {
+      "localDate": "2034-10-08",
+      "kind": "solar_term",
+      "name": "寒露",
+      "key": "term:寒露"
+    },
+    {
+      "localDate": "2034-10-20",
+      "kind": "lunar_festival",
+      "name": "重阳节",
+      "key": "lunar:9:9"
+    },
+    {
+      "localDate": "2034-10-23",
+      "kind": "solar_term",
+      "name": "霜降",
+      "key": "term:霜降"
+    },
+    {
+      "localDate": "2034-11-07",
+      "kind": "solar_term",
+      "name": "立冬",
+      "key": "term:立冬"
+    },
+    {
+      "localDate": "2034-11-22",
+      "kind": "solar_term",
+      "name": "小雪",
+      "key": "term:小雪"
+    },
+    {
+      "localDate": "2034-12-07",
+      "kind": "solar_term",
+      "name": "大雪",
+      "key": "term:大雪"
+    },
+    {
+      "localDate": "2034-12-22",
+      "kind": "solar_term",
+      "name": "冬至",
+      "key": "term:冬至"
+    },
+    {
+      "localDate": "2035-01-05",
+      "kind": "solar_term",
+      "name": "小寒",
+      "key": "term:小寒"
+    },
+    {
+      "localDate": "2035-01-16",
+      "kind": "lunar_festival",
+      "name": "腊八节",
+      "key": "lunar:12:8"
+    },
+    {
+      "localDate": "2035-01-20",
+      "kind": "solar_term",
+      "name": "大寒",
+      "key": "term:大寒"
+    },
+    {
+      "localDate": "2035-02-04",
+      "kind": "solar_term",
+      "name": "立春",
+      "key": "term:立春"
+    },
+    {
+      "localDate": "2035-02-07",
+      "kind": "lunar_festival",
+      "name": "除夕",
+      "key": "lunar:new-year-eve"
+    },
+    {
+      "localDate": "2035-02-08",
+      "kind": "lunar_festival",
+      "name": "春节",
+      "key": "lunar:1:1"
+    },
+    {
+      "localDate": "2035-02-19",
+      "kind": "solar_term",
+      "name": "雨水",
+      "key": "term:雨水"
+    },
+    {
+      "localDate": "2035-02-22",
+      "kind": "lunar_festival",
+      "name": "元宵节",
+      "key": "lunar:1:15"
+    },
+    {
+      "localDate": "2035-03-06",
+      "kind": "solar_term",
+      "name": "驚蟄",
+      "key": "term:驚蟄"
+    },
+    {
+      "localDate": "2035-03-21",
+      "kind": "solar_term",
+      "name": "春分",
+      "key": "term:春分"
+    },
+    {
+      "localDate": "2035-04-05",
+      "kind": "solar_term",
+      "name": "清明",
+      "key": "term:清明"
+    },
+    {
+      "localDate": "2035-04-20",
+      "kind": "solar_term",
+      "name": "穀雨",
+      "key": "term:穀雨"
+    },
+    {
+      "localDate": "2035-05-05",
+      "kind": "solar_term",
+      "name": "立夏",
+      "key": "term:立夏"
+    },
+    {
+      "localDate": "2035-05-21",
+      "kind": "solar_term",
+      "name": "小滿",
+      "key": "term:小滿"
+    },
+    {
+      "localDate": "2035-06-06",
+      "kind": "solar_term",
+      "name": "芒種",
+      "key": "term:芒種"
+    },
+    {
+      "localDate": "2035-06-10",
+      "kind": "lunar_festival",
+      "name": "端午节",
+      "key": "lunar:5:5"
+    },
+    {
+      "localDate": "2035-06-21",
+      "kind": "solar_term",
+      "name": "夏至",
+      "key": "term:夏至"
+    },
+    {
+      "localDate": "2035-07-07",
+      "kind": "solar_term",
+      "name": "小暑",
+      "key": "term:小暑"
+    },
+    {
+      "localDate": "2035-07-23",
+      "kind": "solar_term",
+      "name": "大暑",
+      "key": "term:大暑"
+    },
+    {
+      "localDate": "2035-08-07",
+      "kind": "solar_term",
+      "name": "立秋",
+      "key": "term:立秋"
+    },
+    {
+      "localDate": "2035-08-10",
+      "kind": "lunar_festival",
+      "name": "七夕",
+      "key": "lunar:7:7"
+    },
+    {
+      "localDate": "2035-08-23",
+      "kind": "solar_term",
+      "name": "處暑",
+      "key": "term:處暑"
+    },
+    {
+      "localDate": "2035-09-08",
+      "kind": "solar_term",
+      "name": "白露",
+      "key": "term:白露"
+    },
+    {
+      "localDate": "2035-09-16",
+      "kind": "lunar_festival",
+      "name": "中秋节",
+      "key": "lunar:8:15"
+    },
+    {
+      "localDate": "2035-09-23",
+      "kind": "solar_term",
+      "name": "秋分",
+      "key": "term:秋分"
+    },
+    {
+      "localDate": "2035-10-08",
+      "kind": "solar_term",
+      "name": "寒露",
+      "key": "term:寒露"
+    },
+    {
+      "localDate": "2035-10-09",
+      "kind": "lunar_festival",
+      "name": "重阳节",
+      "key": "lunar:9:9"
+    },
+    {
+      "localDate": "2035-10-23",
+      "kind": "solar_term",
+      "name": "霜降",
+      "key": "term:霜降"
+    },
+    {
+      "localDate": "2035-11-07",
+      "kind": "solar_term",
+      "name": "立冬",
+      "key": "term:立冬"
+    },
+    {
+      "localDate": "2035-11-22",
+      "kind": "solar_term",
+      "name": "小雪",
+      "key": "term:小雪"
+    },
+    {
+      "localDate": "2035-12-07",
+      "kind": "solar_term",
+      "name": "大雪",
+      "key": "term:大雪"
+    },
+    {
+      "localDate": "2035-12-22",
+      "kind": "solar_term",
+      "name": "冬至",
+      "key": "term:冬至"
+    }
+  ]
+}

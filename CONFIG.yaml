@@ -33,8 +33,6 @@ general:
 
   desktop:
     pollingIntervalMs: 3000
-    pauseExtraMs: 5000
-    waitTimeoutMs: 5000
 
 # ══════════════════════════════════════════
 # 2. AI 设置 (AI)
@@ -83,10 +81,12 @@ ai:
     recallTimeoutMs: 4000
     rerankTimeoutMs: 2500
     dreaming:
-      mode: manual
+      mode: idle
       idleSeconds: 120
       minIntervalMinutes: 60
       maxDailyTokens: 12000
+      # 单次 Review 的输出上限；reasoning 模型的 thinking 也计入此预算，推理模型需调大（如 4096）
+      reviewMaxTokens: 1200
     maxSessions: 20
 
   plan:
@@ -122,7 +122,6 @@ ai:
     # 冷却时长统一毫秒。原 cooldownSeconds 写 5000 却被当秒用，实际冷却 83 分钟。
     cooldownMs: 5000
     samePageCooldownMs: 7800
-    resumeExtraMs: 2000
 
   safety:
     mode: tell_me
@@ -181,3 +180,6 @@ appearance:
   soundAssignments: {}
   parallax:
     intensity: 1.0                # 灵动图层的全局强度；逐层参数在 Profile 的 theme.parallax.layers
+  font:
+    family: ""                    # 全局字体（用户电脑上已安装的字体名）；空 = 跟随系统默认字体栈
+    size: 14                      # 全局字号 px

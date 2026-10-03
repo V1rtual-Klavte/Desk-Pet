@@ -1,0 +1,146 @@
+{
+  "lockVersion": 1,
+  "note": "外部记忆基准的版本锁定清单（进 git 的小文件）：上游 URL、固定 revision、SHA-256、下载与转换产物的目录映射。数据集文件本身不进仓库，由 prepare.mjs 安装到 data-dir（默认 test/memory-bench/.data/，可用 --data-dir 或 DESKPET_BENCH_DATA_DIR 指定）。",
+  "dataDirLayout": {
+    "raw": "raw/ — 上游原始文件（下载缓存）",
+    "cases": "cases/ — 转换后的案例文件（runner 实际读取的产物）",
+    "reference": "reference/ — 官方判分脚本参考件与上游许可原文副本（审计用）"
+  },
+  "downloads": {
+    "longmemeval_oracle": {
+      "url": "https://huggingface.co/datasets/xiaowu0162/longmemeval-cleaned/resolve/98d7416c24c778c2fee6e6f3006e7a073259d48f/longmemeval_oracle.json",
+      "revision": "98d7416c24c778c2fee6e6f3006e7a073259d48f",
+      "sha256": "821a2034d219ab45846873dd14c14f12cfe7776e73527a483f9dac095d38620c",
+      "bytes": 15388478,
+      "path": "raw/longmemeval_oracle.json"
+    },
+    "longmemeval_s_cleaned": {
+      "url": "https://huggingface.co/datasets/xiaowu0162/longmemeval-cleaned/resolve/98d7416c24c778c2fee6e6f3006e7a073259d48f/longmemeval_s_cleaned.json",
+      "revision": "98d7416c24c778c2fee6e6f3006e7a073259d48f",
+      "sha256": "d6f21ea9d60a0d56f34a05b609c79c88a451d2ae03597821ea3d5a9678c3a442",
+      "bytes": 277383467,
+      "path": "raw/longmemeval_s_cleaned.json"
+    },
+    "locomo10": {
+      "url": "https://raw.githubusercontent.com/snap-research/locomo/3eb6f2c585f5e1699204e3c3bdf7adc5c28cb376/data/locomo10.json",
+      "revision": "3eb6f2c585f5e1699204e3c3bdf7adc5c28cb376",
+      "sha256": "79fa87e90f04081343b8c8debecb80a9a6842b76a7aa537dc9fdf651ea698ff4",
+      "bytes": 2805274,
+      "path": "raw/locomo10.json"
+    },
+    "memorybank_cn": {
+      "url": "https://raw.githubusercontent.com/zhongwanjun/MemoryBank-SiliconFriend/cf61c4196e4cfdb0f2b7a0316249fa40312dc3a9/eval_data/cn/memory_bank_cn.json",
+      "revision": "cf61c4196e4cfdb0f2b7a0316249fa40312dc3a9",
+      "sha256": "6098382314c7e5cf1d4564a3b587e9863b1e083f2ba56ce3fbbea68a1c91d287",
+      "bytes": 193686,
+      "path": "raw/memory_bank_cn.json"
+    },
+    "memorybank_probing_cn": {
+      "url": "https://raw.githubusercontent.com/zhongwanjun/MemoryBank-SiliconFriend/cf61c4196e4cfdb0f2b7a0316249fa40312dc3a9/eval_data/cn/probing_questions_cn.jsonl",
+      "revision": "cf61c4196e4cfdb0f2b7a0316249fa40312dc3a9",
+      "sha256": "10f26828cc14a98b6dca39223d7536b7b9af38f1fe68d7851070a64ec0339aa7",
+      "bytes": 6335,
+      "path": "raw/probing_questions_cn.jsonl"
+    },
+    "longmemeval_evaluate_qa": {
+      "url": "https://raw.githubusercontent.com/xiaowu0162/LongMemEval/9e0b455f4ef0e2ab8f2e582289761153549043fc/src/evaluation/evaluate_qa.py",
+      "revision": "9e0b455f4ef0e2ab8f2e582289761153549043fc",
+      "sha256": "ecce9c4c79dc89d99534ac17b383a5cbb5b9f0c69ee98adaf0684742e3d95251",
+      "bytes": 7436,
+      "path": "reference/longmemeval-evaluate_qa.py"
+    },
+    "locomo_evaluation": {
+      "url": "https://raw.githubusercontent.com/snap-research/locomo/3eb6f2c585f5e1699204e3c3bdf7adc5c28cb376/task_eval/evaluation.py",
+      "revision": "3eb6f2c585f5e1699204e3c3bdf7adc5c28cb376",
+      "sha256": "8e3be5d57ff2ff9ec5cd05939592f468c5f3f1fd95d13e431932bdf6bf0fd6fd",
+      "bytes": 9441,
+      "path": "reference/locomo-evaluation.py"
+    },
+    "longmemeval_license": {
+      "url": "https://raw.githubusercontent.com/xiaowu0162/LongMemEval/9e0b455f4ef0e2ab8f2e582289761153549043fc/LICENSE",
+      "revision": "9e0b455f4ef0e2ab8f2e582289761153549043fc",
+      "sha256": "d3c4b9aa54759df6ded337978a6f3b55b75615e5e4525c3b82d7e2627d4b9732",
+      "bytes": 1062,
+      "path": "reference/longmemeval-LICENSE.txt"
+    },
+    "locomo_license": {
+      "url": "https://raw.githubusercontent.com/snap-research/locomo/3eb6f2c585f5e1699204e3c3bdf7adc5c28cb376/LICENSE.txt",
+      "revision": "3eb6f2c585f5e1699204e3c3bdf7adc5c28cb376",
+      "sha256": "41003d4a74749c0220e33dd415042164b5a1093ed401f36277234f772d22d3d0",
+      "bytes": 19347,
+      "path": "reference/locomo-LICENSE.txt"
+    },
+    "memorybank_license": {
+      "url": "https://raw.githubusercontent.com/zhongwanjun/MemoryBank-SiliconFriend/cf61c4196e4cfdb0f2b7a0316249fa40312dc3a9/LICENSE",
+      "revision": "cf61c4196e4cfdb0f2b7a0316249fa40312dc3a9",
+      "sha256": "38a553151ada2b1518ab5ac469de7d04d35923b3510aea17b1156a2ce9ce50cf",
+      "bytes": 1069,
+      "path": "reference/memorybank-LICENSE.txt"
+    }
+  },
+  "licenses": {
+    "longmemeval": {
+      "spdx": "MIT",
+      "attribution": "Copyright (c) 2024 Di Wu — xiaowu0162/LongMemEval, xiaowu0162/longmemeval-cleaned",
+      "revision": "9e0b455f4ef0e2ab8f2e582289761153549043fc",
+      "repoFile": "licenses/longmemeval-LICENSE.txt",
+      "download": "longmemeval_license"
+    },
+    "locomo": {
+      "spdx": "CC-BY-NC-4.0",
+      "attribution": "Copyright (c) 2024 Snap Inc. — snap-research/locomo",
+      "nonCommercial": true,
+      "revision": "3eb6f2c585f5e1699204e3c3bdf7adc5c28cb376",
+      "repoFile": "licenses/locomo-LICENSE.txt",
+      "download": "locomo_license"
+    },
+    "memorybank": {
+      "spdx": "MIT",
+      "attribution": "Copyright (c) 2023 Wanjun Zhong — zhongwanjun/MemoryBank-SiliconFriend",
+      "revision": "cf61c4196e4cfdb0f2b7a0316249fa40312dc3a9",
+      "repoFile": "licenses/memorybank-LICENSE.txt",
+      "download": "memorybank_license"
+    }
+  },
+  "datasets": {
+    "longmemeval": {
+      "defaultSplit": "oracle",
+      "splits": {
+        "oracle": {
+          "caseFile": "cases/longmemeval/oracle-subset.json",
+          "transformVersion": "lme-clean/1",
+          "downloads": ["longmemeval_oracle"],
+          "license": "longmemeval"
+        },
+        "s": {
+          "caseFile": "cases/longmemeval/s-subset.json",
+          "transformVersion": "lme-clean/1",
+          "downloads": ["longmemeval_s_cleaned"],
+          "license": "longmemeval"
+        }
+      }
+    },
+    "locomo": {
+      "defaultSplit": "locomo10",
+      "splits": {
+        "locomo10": {
+          "caseFile": "cases/locomo/locomo10.json",
+          "transformVersion": "locomo10/1",
+          "downloads": ["locomo10"],
+          "license": "locomo"
+        }
+      }
+    },
+    "memorybank": {
+      "defaultSplit": "cn",
+      "splits": {
+        "cn": {
+          "caseFile": "cases/memorybank/cn.json",
+          "transformVersion": "membank-cn/1",
+          "downloads": ["memorybank_cn", "memorybank_probing_cn"],
+          "license": "memorybank"
+        }
+      }
+    }
+  }
+}

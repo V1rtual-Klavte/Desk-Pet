@@ -19,9 +19,9 @@
  * [保留已登记 §4.2] Node 侧工具用 console，避免污染 data_root/logs/deskpet.log
  */
 
-import { existsSync, readFileSync, readdirSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync, realpathSync } from "node:fs";
 import { dirname, join, relative, resolve, sep } from "node:path";
-import { fileURLToPath, pathToFileURL } from "node:url";
+import { fileURLToPath } from "node:url";
 
 /** 规则表：只有机制可判的 5 条在这里。措辞与契约「测试纪律」一致。 */
 export const RULES = [
@@ -390,7 +390,9 @@ function isMain() {
   const entry = process.argv[1];
   if (!entry) return false;
   try {
-    return import.meta.url === pathToFileURL(entry).href;
+    // 经符号链接路径调用时（macOS /tmp → /private/tmp），argv[1] 保留链接而 import.meta.url
+    // 是真实路径——直接比较会静默跳过 main（守卫什么都没做却 exit 0）。按真实路径比较。
+    return realpathSync(entry) === realpathSync(fileURLToPath(import.meta.url));
   } catch {
     return false;
   }

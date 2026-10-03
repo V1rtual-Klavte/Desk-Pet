@@ -14,6 +14,7 @@ import { useParallax, DEFAULT_PARALLAX_STATE, type ParallaxState } from "@/compo
 import { useDepthOfField, type DofState } from "@/composables/useDepthOfField";
 import { appearanceConfig, userConfig, reloadConfig, type EffectMode } from "@/services/config";
 import { createLogger } from "@/services/logger";
+import { getPresence, subscribePresence, type PresenceSnapshot } from "@/services/proactive/presence";
 
 const log = createLogger("Stream");
 
@@ -29,6 +30,10 @@ const scaleMode = computed(() => getCharacterScaleMode() === "smooth" ? "auto" :
 
 // ── 效果模式（由 reloadEffects() 从 CONFIG 同步，settings-saved 时刷新）──
 const effectMode = ref<EffectMode>(userConfig.effectMode);
+const presence = ref<PresenceSnapshot>(getPresence());
+const presenceClass = computed(() => `presence-${presence.value.state}`);
+const reducedMotion = ref(false);
+const motionActive = computed(() => Boolean(presence.value.motion) && isVisible.value && !reducedMotion.value);
 
 // ── 景深配置 ──
 const dofConfig = ref<DofState>({
@@ -148,6 +153,9 @@ function reloadEffects() {
 
 let unlistenProfileUpdated: UnlistenFn | null = null;
 let unlistenSettingsSaved: UnlistenFn | null = null;
+let unsubscribePresence: (() => void) | null = null;
+let reducedMotionQuery: MediaQueryList | null = null;
+const updateReducedMotion = (event?: MediaQueryListEvent) => { reducedMotion.value = event?.matches ?? reducedMotionQuery?.matches ?? false };
 
 async function syncActiveProfile(profileId?: string) {
   await reloadConfig();
@@ -164,6 +172,10 @@ async function syncActiveProfile(profileId?: string) {
 
 onMounted(async () => {
   reloadEffects();
+  reducedMotionQuery = window.matchMedia("(prefers-reduced-motion: reduce)");
+  updateReducedMotion();
+  reducedMotionQuery.addEventListener("change", updateReducedMotion);
+  unsubscribePresence = subscribePresence((value) => { presence.value = value });
   unlistenProfileUpdated = await listen<{ profileId?: string }>("deskpet-profile-updated", async ({ payload }) => {
     await syncActiveProfile(payload?.profileId);
   })
@@ -174,6 +186,9 @@ onMounted(async () => {
   })
 });
 onUnmounted(() => {
+  unsubscribePresence?.();
+  reducedMotionQuery?.removeEventListener("change", updateReducedMotion);
+  reducedMotionQuery = null;
   unlistenProfileUpdated?.();
   unlistenSettingsSaved?.();
   if (_reloadRetryId) clearTimeout(_reloadRetryId);
@@ -182,7 +197,7 @@ onUnmounted(() => {
 </script>
 
 <template>
-  <div id="parallax-stage" :style="{ aspectRatio: userConfig.popupSize.w + '/' + userConfig.popupSize.h }">
+  <div id="parallax-stage" :class="[presenceClass, { 'presence-motion': motionActive }]" :style="{ aspectRatio: userConfig.popupSize.w + '/' + userConfig.popupSize.h }">
     <!-- 灵动图层：五层始终渲染，display 由 layerStyles 控制 -->
     <template v-if="effectMode === 'parallax'">
       <template v-for="i in 5" :key="i">
@@ -235,6 +250,15 @@ onUnmounted(() => {
   position: relative;
   overflow: hidden;
   z-index: 1;
+}
+#parallax-stage.presence-working .pl-layer { animation: none !important; }
+#parallax-stage.presence-motion { animation: presence-breath 2s ease-in-out both; }
+@keyframes presence-breath {
+  0%, 100% { transform: translateY(0) scale(1); }
+  50% { transform: translateY(-2px) scale(1.008); }
+}
+@media (prefers-reduced-motion: reduce) {
+  #parallax-stage.presence-motion { animation: none; }
 }
 /* ★ aspect-ratio 由 JS 动态绑定 :style 注入，锁定与编辑器一致的宽高比 */
 

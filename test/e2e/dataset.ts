@@ -44,7 +44,7 @@ import { DEFAULT_SCENE_TIMEOUT, UNIT_SCENE_TIMEOUT } from "./scene-runner"
  * `2026-09-29.5`：B 方案记忆重构：新增 `memory-store-lifecycle`（真 Rust 记忆库生命周期），
  * 并把记忆来源准入与重排校验分别落到 L3/L2；场景集合与判据口径一起变，故 bump。
  */
-export const LIVE_DATASET_VERSION = "2026-09-29.5"
+export const LIVE_DATASET_VERSION = "2026-10-03.1"
 
 export function validateDataset(scenes: SceneDef[], contracts: ModuleContract[]): string[] {
   const errors: string[] = []

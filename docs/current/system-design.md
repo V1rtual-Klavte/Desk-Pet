@@ -10,15 +10,18 @@
 | Vue 界面 | 会话、聊天、角色、设置和确认的投影 | [App.vue](../../src/App.vue)、[components/](../../src/components/) |
 | agent | 用户输入、子代理与主动消息入口（Provider 调用归 `engine/harness/model-gateway.ts`，`agent/pi/` 已随 Harness 迁移删除） | [runner.ts](../../src/services/agent/runner.ts)、[agent/](../../src/services/agent/) |
 | engine | 预处理、Plan、Slash、Harness 运行槽、会话仓库与压缩接线 | [engine/](../../src/services/engine/)、[pi/harness-slot.ts](../../src/services/engine/harness/harness-slot.ts)、[pi/runtime.ts](../../src/services/engine/harness/runtime.ts)、[pi/session-repo.ts](../../src/services/engine/harness/session-repo.ts) |
-| engine/runtime | trace、快照协议与输入事件身份（`deskpetEventId`/`deskpetSource`；Queue/AgentSlot 已退役） | [runtime/](../../src/services/engine/runtime/)、[input-identity.ts](../../src/services/engine/runtime/input-identity.ts) |
+| engine/runtime | 可选惰性 trace、快照协议与输入事件身份（`deskpetEventId`/`deskpetSource`；Queue/AgentSlot 已退役） | [runtime/](../../src/services/engine/runtime/)、[input-identity.ts](../../src/services/engine/runtime/input-identity.ts) |
 | context | 分层构建、共享预算（块排序与可选块整块淘汰）与工具输出请求投影 | [context/](../../src/services/context/) |
 | memory | 召回端口、来源收集、dreaming 编排；Rust 记忆库本体在 `src-tauri/src/memory/`，V1RTUAL 属于 context instructions，Plan checkpoint 属于 engine/plan | [memory/](../../src/services/agent/memory/)、[instructions/](../../src/services/context/instructions/)、[plan/](../../src/services/engine/plan/) |
+| proactive | 机会、有限规划、约定任务、预算、消息回执与presence；治理表共用MemoryStore连接 | [proactive/](../../src/services/proactive/)、[Rust主动域](../../src-tauri/src/proactive/) |
+| behavior | 独立派生域：采集窗口心跳、分段、日聚合、质量与四组时机指标 | [behavior/](../../src/services/behavior/) |
+| evaluation（测试宿主） | trace 缓冲/ACK/证据审阅、真实记忆质量跑批与性能采样；不拥有产品运行状态 | [test/trace/](../../test/trace/)、[test/memory-quality/](../../test/memory-quality/)、[trace-observer.ts](../../test/host/trace-observer.ts)、[Rust trace](../../src-tauri/src/e2e_trace.rs)、[Rust benchmark](../../src-tauri/src/memory/benchmark.rs) |
 | session | 会话仓库访问层、会话列表与消息读模型、切换与恢复 | [session/](../../src/services/session/) |
 | personality / reply | Card、变量与阶段文案；回复元数据解析和效果 | [personality/](../../src/services/personality/)、[reply/](../../src/services/reply/) |
 | tool / safety | 工具注册和路由、Pi 文件工具、MCP；权限与确认 | [tool/](../../src/services/tool/)、[safety/](../../src/services/safety/) |
 | skill | Pi 原生 Skill 清单（目录指纹驱动刷新）与披露块 | [skill/](../../src/services/skill/) |
 | profile / audio | 外观资源、导入导出与系统音效 | [profile/](../../src/services/profile/)、[audio/](../../src/services/audio/) |
-| window / cooldown | 前台窗口监控、主动消息与共享冷却 | [window/](../../src/services/window/)、[cooldown.ts](../../src/services/cooldown.ts) |
+| window / cooldown | 单一原生窗口观测入口与共享冷却（发话由proactive持有） | [window/](../../src/services/window/)、[cooldown.ts](../../src/services/cooldown.ts) |
 | config / paths | 类型化配置与 Rust 路径桥接 | [config.ts](../../src/services/config.ts)、[paths.ts](../../src/services/paths.ts) |
 | logger / error / dialog | 统一日志、异常出口与通用交互提示 | [logger/](../../src/services/logger/)、[error/](../../src/services/error/)、[dialog/](../../src/services/dialog/) |
 | Rust App / commands | AppPaths（数据根、允许根与凭据路径终判）、IPC 注册、文件/工具与平台能力 | [lib.rs](../../src-tauri/src/lib.rs)、[paths/mod.rs](../../src-tauri/src/paths/mod.rs)、[commands/](../../src-tauri/src/commands/) |
@@ -59,6 +62,6 @@ sendMessage → preprocessor / Slash
 
 窗口共用 `bootWindow()`：安装异常拦截 → 初始化路径和配置 → 设置日志级别 → 挂载 Vue。主应用再由 `init.ts` 初始化对应能力。
 
-MCP 不随应用启动连接；按运行 owner 借用，最后释放时关闭。Skill 按目录指纹刷新清单，披露块只含名称/说明/位置，正文不进请求。记忆 LLM 整理只有在用户显式开启 idle 模式时才由空闲调度器触发；默认 manual 不发起整理。Card 阶段文案的加载/缺失生成属于另一条人格准备路径。
+MCP 不随应用启动连接；按运行 owner 借用，最后释放时关闭。Skill 按目录指纹刷新清单，披露块只含名称/说明/位置，正文不进请求。记忆整理默认 idle，由空闲调度器在配置条件和持久预算内触发；手动整理共用同一自动提交协议。Card 阶段文案的加载/缺失生成属于另一条人格准备路径。主窗口完成配置、Card、会话和窗口监听初始化后启动单一 proactive scheduler。
 
 Profile 与默认资源的位置见[运行时数据](runtime-data.md)，构建/平台/日志诊断见[工程参考](development.md)。不要从旧方案的候选类名推导必须存在同名“全局状态内核”。

@@ -1,0 +1,33 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Desk-Pet proactive IPC protocol",
+  "version": 1,
+  "constants": {
+    "tickMs": 300000,
+    "quietStartHour": 22,
+    "quietEndHour": 9,
+    "dailySuccess": 1,
+    "dailyExpressionAttempts": 3,
+    "dailyPlanningAttempts": 2,
+    "dailyTokens": 24000,
+    "maxTasks": 100,
+    "maxRecurringTasks": 10,
+    "maxTasksPerPlan": 2,
+    "maxTargetsPerMessage": 2,
+    "scanBatch": 100,
+    "retryDelayMs": 1800000,
+    "attemptLeaseMs": 180000,
+    "evaluationRetentionDays": 30,
+    "settledRetentionDays": 90
+  },
+  "commands": {
+    "proactive_scan": { "request": { "$ref": "memory#/definitions/ProactiveScanRequest" }, "response": { "$ref": "memory#/definitions/ProactiveScanResponse" } },
+    "proactive_query": { "request": { "$ref": "memory#/definitions/ProactiveQueryRequest" }, "response": { "$ref": "memory#/definitions/ProactiveQueryResponse" } },
+    "proactive_change": { "request": { "$ref": "memory#/definitions/ProactiveChangeRequest" }, "response": { "$ref": "memory#/definitions/ProactiveChangeResponse" } },
+    "proactive_claim": { "request": { "$ref": "memory#/definitions/ProactiveClaimRequest" }, "response": { "$ref": "memory#/definitions/ProactiveClaimResponse" } },
+    "proactive_validate": { "request": { "$ref": "memory#/definitions/ProactiveValidateRequest" }, "response": { "$ref": "memory#/definitions/ProactiveValidateResponse" } },
+    "proactive_settle": { "request": { "$ref": "memory#/definitions/ProactiveSettleRequest" }, "response": { "type": "object", "required": ["revision", "status"], "properties": { "revision": { "type": "integer" }, "status": { "$ref": "memory#/definitions/ProactiveAttemptStatus" } } } },
+    "proactive_reconcile": { "request": { "$ref": "memory#/definitions/ProactiveReconcileRequest" }, "response": { "type": "object", "required": ["revision", "status"], "properties": { "revision": { "type": "integer" }, "status": { "$ref": "memory#/definitions/ProactiveAttemptStatus" } } } },
+    "proactive_control": { "request": { "$ref": "memory#/definitions/ProactiveControlRequest" }, "response": { "$ref": "memory#/definitions/ProactiveControl" } }
+  }
+}

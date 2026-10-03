@@ -1,14 +1,14 @@
 import type { SceneDef } from "../../../e2e/types"
 import { executeToolDefinition, getToolByName } from "@/services/tool"
-import { getLastWindowChange } from "@/services/window"
+import { getLatestWindowObservation } from "@/services/window"
 import { getOverride, setOverride } from "@/services/config"
 
 /**
  * window_info 的三态（te-22）。
  *
- * 工具只读 `window/listener.ts` 缓存的最近一次 window-changed，三态都如实返回 success: true 的行式文本：
+ * 工具只读 `window/listener.ts` 缓存的最近一次完整 observation，三态都如实返回 success: true 的行式文本：
  * `ai.windowMonitor.enabled=false` → 「未开启」；已开启但尚未收到事件 → 「尚未收到窗口变化事件」；
- * 有快照 → 三行（标题 / 内容 / 观测时间）。
+ * 有观察 → 应用、标题、观察时间、原生状态与 idle 数据。
  *
  * **可验证性边界（§8.10）**：`initWindowListener` 只在 `App.vue` 被调用，Live 宿主不挂 listener，
  * 因此模块内的快照恒为 null —— 本场景只能覆盖前两态，第三态（三行快照）没有任何入口能在宿主里造出来。
@@ -19,9 +19,9 @@ import { getOverride, setOverride } from "@/services/config"
  */
 const TOOL_NAME = "window_info"
 const DISABLED_MARK = "窗口监控未开启"
-const NOT_OBSERVED_MARK = "尚未收到窗口变化事件"
+const NOT_OBSERVED_MARK = "尚未收到窗口观察"
 /** 三行快照的任意一行；它不该出现在前两态里。 */
-const SNAPSHOT_MARKS = ["窗口标题:", "窗口内容:", "观测时间:"]
+const SNAPSHOT_MARKS = ["窗口标题:", "观察状态:", "观测时间:"]
 
 /** 场景自己改的配置：按「原始覆盖值」（未必存在）还原，不把开发配置的当前值当默认值。 */
 let originalEnabled: boolean | undefined
@@ -68,7 +68,7 @@ export const 窗口信息三态: SceneDef = {
 
           // ③ 开启但宿主没有挂 listener：缓存恒为 null，如实说「尚未收到事件」。
           // 这条前置不成立说明宿主已经挂了 listener（或别处写入了快照），本场景的断言需要重写。
-          if (getLastWindowChange() !== null) {
+          if (getLatestWindowObservation() !== null) {
             throw new Error("宿主已存在窗口快照：本场景的「未观测到」一侧不再成立，需重写")
           }
           setOverride("ai.windowMonitor.enabled", true)

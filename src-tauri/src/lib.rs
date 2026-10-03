@@ -2,12 +2,14 @@
 #![allow(unexpected_cfgs)]
 
 mod commands;
+mod e2e_trace;
 pub mod error;
 pub mod logger;
 mod macros;
 mod memory;
 mod monitor;
 mod paths;
+mod proactive;
 mod window;
 
 use std::path::PathBuf;
@@ -18,14 +20,14 @@ use tauri::Manager;
 use tauri::{WebviewUrl, WebviewWindowBuilder};
 
 use crate::commands::{
-    app_open, app_restart, bash_cancel, bash_exec, clipboard_read, clipboard_write, close_windows_sim,
+    app_open, app_restart, bash_cancel, bash_exec, clipboard_read, clipboard_write,
     compute_popup_position, dir_create, export_profile_zip, file_append,
     file_canonical_path, file_exists, file_info, file_list, file_read, file_read_binary,
     file_remove, file_rename, file_write, file_write_atomic, get_cursor_position, init_memory_files,
-    list_profile_files, list_profiles, log_messages, mcp_kill, mcp_send,
-    mcp_spawn, open_devtools, open_windows_sim, pause_monitor, personality_file_list, personality_file_read, personality_file_write, profile_asset_base,
+    list_profile_files, list_profiles, list_system_fonts, log_messages, mcp_kill, mcp_send,
+    mcp_spawn, open_devtools, get_runtime_activity, personality_file_list, personality_file_read, personality_file_write, profile_asset_base,
     profile_clone, profile_delete, profile_file_read, profile_file_write, report_frontend_error,
-    restore_default_resources, resume_monitor, set_log_config, set_monitor_config, skill_catalog_fingerprint, skill_delete,
+    restore_default_resources, set_log_config, set_monitor_enabled, skill_catalog_fingerprint, skill_delete,
     spawn_cursor_tracker, system_info, session_read_text, tool_permit_acquire, tool_permit_attach, tool_permit_cancel,
     tool_permit_release, tool_permit_set_max_shared_readers, tool_permit_snapshot, BashPool, McpPool,
     ToolPermitPool,
@@ -146,6 +148,21 @@ struct E2eOptions {
     seed_hash: Option<String>,
     source_hashes: Option<String>,
     commit: Option<String>,
+    quality: Option<String>,
+    quality_seed: Option<String>,
+    performance: Option<String>,
+    trace: Option<String>,
+    bench: Option<String>,
+    bench_dataset: Option<String>,
+    bench_split: Option<String>,
+    bench_limit: Option<String>,
+    bench_case: Option<String>,
+    bench_seed: Option<String>,
+    bench_judge: Option<String>,
+    bench_judge_model: Option<String>,
+    eval_provider: Option<String>,
+    eval_model: Option<String>,
+    eval_judge_model: Option<String>,
 }
 
 #[tauri::command]
@@ -163,6 +180,21 @@ fn e2e_options() -> E2eOptions {
             seed_hash: None,
             source_hashes: None,
             commit: None,
+            quality: None,
+            quality_seed: None,
+            performance: None,
+            trace: None,
+            bench: None,
+            bench_dataset: None,
+            bench_split: None,
+            bench_limit: None,
+            bench_case: None,
+            bench_seed: None,
+            bench_judge: None,
+            bench_judge_model: None,
+            eval_provider: None,
+            eval_model: None,
+            eval_judge_model: None,
         };
     }
     let env_value = |key: &str| std::env::var(key).ok().filter(|v| !v.is_empty());
@@ -178,6 +210,21 @@ fn e2e_options() -> E2eOptions {
         seed_hash: env_value("DESKPET_E2E_SEED_HASH"),
         source_hashes: env_value("DESKPET_E2E_SOURCE_HASHES"),
         commit: env_value("DESKPET_E2E_COMMIT"),
+        quality: env_value("DESKPET_E2E_QUALITY"),
+        quality_seed: env_value("DESKPET_E2E_QUALITY_SEED"),
+        performance: env_value("DESKPET_E2E_PERFORMANCE"),
+        trace: env_value("DESKPET_E2E_TRACE"),
+        bench: env_value("DESKPET_E2E_BENCH"),
+        bench_dataset: env_value("DESKPET_E2E_BENCH_DATASET"),
+        bench_split: env_value("DESKPET_E2E_BENCH_SPLIT"),
+        bench_limit: env_value("DESKPET_E2E_BENCH_LIMIT"),
+        bench_case: env_value("DESKPET_E2E_BENCH_CASE"),
+        bench_seed: env_value("DESKPET_E2E_BENCH_SEED"),
+        bench_judge: env_value("DESKPET_E2E_BENCH_JUDGE"),
+        bench_judge_model: env_value("DESKPET_E2E_BENCH_JUDGE_MODEL"),
+        eval_provider: env_value("DESKPET_EVAL_PROVIDER"),
+        eval_model: env_value("DESKPET_EVAL_MODEL"),
+        eval_judge_model: env_value("DESKPET_EVAL_JUDGE_MODEL"),
     }
 }
 
@@ -188,15 +235,14 @@ fn e2e_complete(
     passed: bool,
     report: String,
 ) -> AppResult<()> {
-    if !cfg!(debug_assertions) {
-        return err("E2E 仅允许 debug 构建");
+    if !cfg!(debug_assertions) || !paths::is_e2e() {
+        return Err(AppError::Config("E2E 仅允许隔离 debug 宿主".into()));
     }
     // 报告是多行结构，原样转发（不套 Rust 前缀），但要经过统一出口才能落盘
     logger::emit_frontend(&format!("[E2E] completed passed={passed}\n{report}"));
     let result = format!("{}\n{}", if passed { "PASS" } else { "FAIL" }, report);
-    if let Err(error) = std::fs::write(paths.data_root.join("e2e-result.txt"), result) {
-        eprintln!("[E2E] 无法写入测试结果: {error}");
-    }
+    std::fs::write(paths.data_root.join("e2e-result.txt"), result)
+        .map_err(|error| AppError::Io(format!("无法写入测试结果: {error}")))?;
     app.exit(0);
     Ok(())
 }
@@ -266,6 +312,12 @@ pub fn run() {
                     if e2e { "Regular" } else { "Accessory" }
                 );
             }
+            // 自动更新与进程重启。桌面目标都支持；这里不写 cfg(desktop) 分支，
+            // 因为本项目只构建 Windows/macOS（`tauri.conf.json` 的 bundle.targets 不含移动端）
+            app.handle()
+                .plugin(tauri_plugin_updater::Builder::new().build())?;
+            app.handle().plugin(tauri_plugin_process::init())?;
+
             let paths = match AppPaths::init(app.handle()) {
                 Ok(p) => p,
                 Err(e) => {
@@ -286,8 +338,14 @@ pub fn run() {
             }
             app.manage(paths);
 
+            // 启动窗口监控后台线程。放在 E2E 分支提前 return 之前：E2E 宿主同样要跑真实
+            // 原生观察协议（behavior bh-06 场景在宿主内 enable/disable 并等待事件），放到
+            // 下方公共段会因提前 return 永远收不到 observation —— get_runtime_activity 与
+            // window_info 都会退化成「已开启但尚未收到窗口观察」。
+            monitor::spawn_monitor_thread(app.handle().clone(), monitor_state_clone);
+
             if e2e {
-                let window = WebviewWindowBuilder::new(
+                let builder = WebviewWindowBuilder::new(
                     app,
                     "e2e",
                     WebviewUrl::App(PathBuf::from("test-e2e.html")),
@@ -295,10 +353,12 @@ pub fn run() {
                 .title("Desk-Pet E2E")
                 .inner_size(900.0, 700.0)
                 .visible(true)
-                // 不让最小化：窗口被遮挡（含最小化）时 WebKit 会冻结页面 JS，
-                // 整轮测试静默停摆。Dock 能唤回是兜底，这里从源头堵掉误操作。
-                .minimizable(false)
-                .build();
+                .minimizable(false);
+                // macOS 14+ 的公开调度策略：仅测试宿主关闭后台挂起，长时间采集可在锁屏时继续。
+                // 旧系统和其他平台仍须实测；产品窗口保留原有资源策略。
+                #[cfg(target_os = "macos")]
+                let builder = builder.background_throttling(tauri::utils::config::BackgroundThrottlingPolicy::Disabled);
+                let window = builder.build();
                 match window {
                     Ok(_) => {
                         rust_info!("E2E 窗口已创建");
@@ -384,9 +444,6 @@ pub fn run() {
                 Err(e) => rust_warn!("系统托盘创建失败（应用继续运行）: {e}"),
             }
 
-            // 启动窗口监控后台线程
-            monitor::spawn_monitor_thread(app.handle().clone(), monitor_state_clone);
-
             // 启动光标追踪后台线程 (灵动图层 ~60fps)
             spawn_cursor_tracker(app.handle().clone());
 
@@ -396,11 +453,9 @@ pub fn run() {
             app_restart,
             get_cursor_position,
             compute_popup_position,
-            pause_monitor,
-            resume_monitor,
-            set_monitor_config,
-            open_windows_sim,
-            close_windows_sim,
+            get_runtime_activity,
+            set_monitor_enabled,
+            list_system_fonts,
             log_messages,
             set_log_config,
             report_frontend_error,
@@ -450,6 +505,9 @@ pub fn run() {
             skill_delete,
             e2e_options,
             e2e_complete,
+            e2e_trace::e2e_trace,
+            memory::benchmark::e2e_memory_performance,
+            memory::benchmark::e2e_memory_reset,
             personality_file_read,
             personality_file_write,
             personality_file_list,
@@ -462,6 +520,7 @@ pub fn run() {
             crate::memory::commands::memory_status,
             crate::memory::commands::memory_list,
             crate::memory::commands::memory_detail,
+            crate::memory::commands::memory_history,
             crate::memory::commands::memory_register_sources,
             crate::memory::commands::memory_query,
             crate::memory::commands::memory_get_items,
@@ -472,12 +531,22 @@ pub fn run() {
             crate::memory::commands::memory_job_resume,
             crate::memory::commands::memory_job_sources,
             crate::memory::commands::memory_candidates_add,
-            crate::memory::commands::memory_review_batch,
-            crate::memory::commands::memory_publish_batch,
+            crate::memory::commands::memory_dreaming_commit,
+            crate::memory::commands::memory_dreaming_budget_reserve,
+            crate::memory::commands::memory_dreaming_budget_settle,
+            crate::memory::commands::memory_dreaming_budget,
             crate::memory::commands::memory_export,
             crate::memory::commands::memory_backup,
             crate::memory::commands::memory_rebuild,
             crate::memory::commands::memory_restore,
+            crate::proactive::commands::proactive_scan,
+            crate::proactive::commands::proactive_query,
+            crate::proactive::commands::proactive_change,
+            crate::proactive::commands::proactive_claim,
+            crate::proactive::commands::proactive_validate,
+            crate::proactive::commands::proactive_settle,
+            crate::proactive::commands::proactive_reconcile,
+            crate::proactive::commands::proactive_control,
             ])
         .build(tauri::generate_context!())
         .unwrap_or_else(|e| {

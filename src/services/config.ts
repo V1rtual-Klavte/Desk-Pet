@@ -28,7 +28,21 @@ interface UserSettings {
   autoPopupOnMessage: boolean;
   effectMode: EffectMode;
   parallaxIntensity: number;
+  /** 全局字体家族名（用户系统已安装的字体）；空串 = 跟随系统默认字体栈 */
+  fontFamily: string;
+  /** 全局字号 px */
+  fontSize: number;
 }
+
+/**
+ * 全局字号（`appearance.font.size`）的取值范围与默认值。
+ *
+ * 默认 15 与改造前聊天文本的实际渲染一致（旧 `--font-size` 变量没有消费者，
+ * 聊天文本由 clamp 上限 15px 决定）；字体服务在配置值非法时也回退到它。
+ */
+export const MIN_FONT_SIZE = 10
+export const MAX_FONT_SIZE = 24
+export const DEFAULT_FONT_SIZE = 15
 
 /**
  * 角色展示效果。单字段枚举 —— 灵动图层与景深互斥，
@@ -73,8 +87,6 @@ interface Config {
     errors: { overlay: "auto" | "always" | "never" }
     desktop: {
       pollingIntervalMs: number
-      pauseExtraMs: number
-      waitTimeoutMs: number
     }
   }
   ai: {
@@ -120,6 +132,8 @@ interface Config {
         idleSeconds: number
         minIntervalMinutes: number
         maxDailyTokens: number
+        /** 单次 Review 的输出上限；reasoning 模型的 thinking 也计入，推理模型需调大 */
+        reviewMaxTokens: number
       }
       maxSessions: number
     }
@@ -142,7 +156,6 @@ interface Config {
       settleMs: number
       cooldownMs: number
       samePageCooldownMs: number
-      resumeExtraMs: number
     }
     safety: { mode: string; sessionTrustEnabled: boolean }
   }
@@ -160,6 +173,11 @@ interface Config {
     /** 灵动图层的全局强度；逐层素材与参数在 Profile 的 theme.parallax.layers */
     parallax?: {
       intensity: number
+    }
+    /** 全局字体（不随 Profile）：family 为空串时跟随系统默认字体栈 */
+    font?: {
+      family: string
+      size: number
     }
     soundAssignments?: Record<string, string>
   }
@@ -297,6 +315,8 @@ const USER_DEFAULTS: UserSettings = {
   autoPopupOnMessage: cfg.general?.popup?.autoPopupOnMessage ?? false,
   effectMode: cfg.appearance?.effectMode ?? "off",
   parallaxIntensity: cfg.appearance?.parallax?.intensity ?? 1.0,
+  fontFamily: cfg.appearance?.font?.family ?? "",
+  fontSize: cfg.appearance?.font?.size ?? DEFAULT_FONT_SIZE,
 };
 
 function loadUserOverrides(): UserSettings {
@@ -311,6 +331,8 @@ function loadUserOverrides(): UserSettings {
     autoPopupOnMessage: cfg.general?.popup?.autoPopupOnMessage ?? USER_DEFAULTS.autoPopupOnMessage,
     effectMode: cfg.appearance?.effectMode ?? USER_DEFAULTS.effectMode,
     parallaxIntensity: cfg.appearance?.parallax?.intensity ?? USER_DEFAULTS.parallaxIntensity,
+    fontFamily: cfg.appearance?.font?.family ?? USER_DEFAULTS.fontFamily,
+    fontSize: cfg.appearance?.font?.size ?? USER_DEFAULTS.fontSize,
   }
 }
 
@@ -326,6 +348,10 @@ function saveUserOverrides(s: UserSettings): void {
   cfg.appearance.effectMode = s.effectMode
   cfg.appearance.parallax = {
     intensity: s.parallaxIntensity,
+  }
+  cfg.appearance.font = {
+    family: s.fontFamily,
+    size: s.fontSize,
   }
   queueConfigSave()
 }
@@ -361,6 +387,10 @@ export const userConfig = {
   set effectMode(v: EffectMode) { const u = loadUserOverrides(); u.effectMode = v; saveUserOverrides(u); },
   get parallaxIntensity() { return getUser().parallaxIntensity; },
   set parallaxIntensity(v: number) { const u = loadUserOverrides(); u.parallaxIntensity = v; saveUserOverrides(u); },
+  get fontFamily() { return getUser().fontFamily; },
+  set fontFamily(v: string) { const u = loadUserOverrides(); u.fontFamily = v; saveUserOverrides(u); },
+  get fontSize() { return getUser().fontSize; },
+  set fontSize(v: number) { const u = loadUserOverrides(); u.fontSize = v; saveUserOverrides(u); },
 };
 
 function setAtPath(key: string, value: any): void {
@@ -416,8 +446,6 @@ export const generalConfig = {
   get shortcutWinModifiers() { return overrideOr("general.shortcut.winModifiers", cfg.general?.shortcut?.winModifiers ?? ["Control", "Alt"]); },
   get loggingLevel() { return overrideOr("general.logging.level", cfg.general?.logging?.level ?? (import.meta.env.DEV ? "debug" : "info")) as "debug" | "info" | "warn" | "error"; },
   get pollingIntervalMs() { return overrideOr("general.desktop.pollingIntervalMs", cfg.general?.desktop?.pollingIntervalMs ?? 3000); },
-  get pauseExtraMs() { return overrideOr("general.desktop.pauseExtraMs", cfg.general?.desktop?.pauseExtraMs ?? 5000); },
-  get waitTimeoutMs() { return overrideOr("general.desktop.waitTimeoutMs", cfg.general?.desktop?.waitTimeoutMs ?? 5000); },
 };
 
 /**
@@ -469,8 +497,6 @@ export const errorsConfig = {
 
 export const desktopConfig = {
   get pollingIntervalMs() { return generalConfig.pollingIntervalMs; },
-  get pauseExtraMs() { return generalConfig.pauseExtraMs; },
-  get waitTimeoutMs() { return generalConfig.waitTimeoutMs; },
 };
 
 // ══════════════════════════════════════════
@@ -521,9 +547,8 @@ export const windowMonitorConfig = {
   // 于是「5 秒」静默变成 83 分钟；同一个量还有第二个键 `defaultCooldownMs` 喂同一变量，
   // 两者只保留了前者。
   get cooldownMs() { return overrideOr("ai.windowMonitor.cooldownMs", cfg.ai?.windowMonitor?.cooldownMs || 5000); },
-  /** 同一页面内容重复触发时的抑制窗口；消费者在 `services/agent/active.ts` */
+  /** 同一页面内容重复触发时的抑制窗口；消费者在主动域 window_context 规则 */
   get samePageCooldownMs() { return overrideOr("ai.windowMonitor.samePageCooldownMs", cfg.ai?.windowMonitor?.samePageCooldownMs || 7800); },
-  get resumeExtraMs() { return overrideOr("ai.windowMonitor.resumeExtraMs", cfg.ai?.windowMonitor?.resumeExtraMs || 2000); },
 };
 
 export const aiLockConfig = {
@@ -537,10 +562,11 @@ export const memoryConfig = {
   get rerank() { return overrideOr("ai.memory.rerank", cfg.ai?.memory?.rerank || "off") as "off" | "adaptive"; },
   get recallTimeoutMs() { return overrideOr("ai.memory.recallTimeoutMs", cfg.ai?.memory?.recallTimeoutMs ?? 4000); },
   get rerankTimeoutMs() { return overrideOr("ai.memory.rerankTimeoutMs", cfg.ai?.memory?.rerankTimeoutMs ?? 2500); },
-  get dreamingMode() { return overrideOr("ai.memory.dreaming.mode", cfg.ai?.memory?.dreaming?.mode || "manual") as "manual" | "idle"; },
+  get dreamingMode() { return overrideOr("ai.memory.dreaming.mode", cfg.ai?.memory?.dreaming?.mode || "idle") as "manual" | "idle"; },
   get dreamingIdleSeconds() { return overrideOr("ai.memory.dreaming.idleSeconds", cfg.ai?.memory?.dreaming?.idleSeconds ?? 120); },
   get dreamingMinIntervalMinutes() { return overrideOr("ai.memory.dreaming.minIntervalMinutes", cfg.ai?.memory?.dreaming?.minIntervalMinutes ?? 60); },
   get dreamingMaxDailyTokens() { return overrideOr("ai.memory.dreaming.maxDailyTokens", cfg.ai?.memory?.dreaming?.maxDailyTokens ?? 12000); },
+  get dreamingReviewMaxTokens() { return overrideOr("ai.memory.dreaming.reviewMaxTokens", cfg.ai?.memory?.dreaming?.reviewMaxTokens ?? 1200); },
   get maxSessions() { return overrideOr("ai.memory.maxSessions", cfg.ai?.memory?.maxSessions ?? 20); },
 };
 
@@ -672,8 +698,19 @@ export function computeMcpEnabled(): boolean {
 // 主题/角色/音效由运行时 data_root/profiles/ 管理
 // ==========================================
 export const appearanceConfig = {
-  get activeProfile() { return overrideOr("appearance.activeProfile", cfg.appearance?.activeProfile || DEFAULT_PROFILE); },
+  get activeProfile() { return overrideOr("appearance.activeProfile", cfg.appearance?.activeProfile ?? DEFAULT_PROFILE); },
+  /** 全局字体家族名；空串 = 跟随系统默认字体栈（由消费方决定具体栈） */
+  get fontFamily() { return overrideOr("appearance.font.family", cfg.appearance?.font?.family ?? ""); },
+  get fontSize() { return overrideOr("appearance.font.size", cfg.appearance?.font?.size ?? DEFAULT_FONT_SIZE); },
 };
+
+/** 设置页保存前的范围校验：合法返回 undefined（与 parallelToolsError 同一用法）。 */
+export function fontSizeError(value: number): string | undefined {
+  if (!Number.isInteger(value) || value < MIN_FONT_SIZE || value > MAX_FONT_SIZE) {
+    return `全局字号必须是 ${MIN_FONT_SIZE}-${MAX_FONT_SIZE} 的整数（当前 ${value}）`
+  }
+  return undefined
+}
 
 // ══════════════════════════════════════════
 // 开发时日志

@@ -1,3 +1,13 @@
 [workspace]
 resolver = "2"
 members = ["src-tauri"]
+
+# 发布产物体积。只能写在 workspace 根：成员 crate 里的 `[profile]` 会被 Cargo 忽略
+# （带 warning 但不是错误，放错位置会静默不生效）。
+# 默认 release 不 strip、不做 LTO、codegen-units=16；实测 17 MB 的二进制里 __TEXT 占
+# 13.4 MB，而真正的 __text 只有 9.6 MB —— 差出来的约 3.6 MB 基本是符号表与字符串表。
+[profile.release]
+strip = true      # 本仓不做崩溃符号化，也没有配套的 dSYM/PDB 归档，符号表是纯负担
+lto = true        # 跨 crate 内联并去重泛型实例，是体积收益的主要来源
+codegen-units = 1 # 与 lto 配套换最大优化；代价是 release 构建变慢（CI 的 macOS runner 按 10 倍计费）
+

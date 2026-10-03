@@ -3,8 +3,7 @@ import type { ModuleContract } from "../host/types"
 export const variablePoolContract: ModuleContract = {
   module: "variable-pool",
   sourceFiles: ["src/services/engine/harness/runtime.ts", "src/services/personality/variable-pool.ts", "src/services/personality/types.ts", "src/services/personality/stages-file.ts", "src/services/reply/generator.ts", "src/services/session/store.ts"],
-  generatedAt: "2026-09-28",
-  sourceHash: "89370e44e62265aa9ef6b560d1a2b1ed953f1d08e762d1152efc553bbd7a7b87",
+  sourceHash: "96c5a07f41004e56454b8a662af6d4c78654bc42c65f5fa8e5f817a54d35c89d",
   coverage: [
     { id: "vp-01", feature: "系统变量计算", description: "computeSystemVariables(now, activeCardId) 产出 6 个系统变量：5 个由本地时间派生（hour / minute / dayOfWeek / isNightTime / isWeekend）+ activeCardId。**没有模式派生变量** —— pet/assistant 双模式与 general.mode 已全链删除，系统变量集合与删除前逐项一致，这是本轮重分析专门核对过的负向结论（含模式字段的注入点只剩 Card 变量与互动状态）", why: "Prompt 注入基础；模式面删除后必须确认系统变量集合没有跟着漂移，否则 Prompt 里会留下已不存在的维度", layer: "unit", depth: "shallow", scenarios: ["variable-system-vars"] },
     { id: "vp-02", feature: "变量池初始化", description: "initVariablePool 从Card variableDefs初始化", why: "Card切换和重启时正确构建", layer: "unit", depth: "deep", scenarios: ["variable-pool-init"] },
@@ -28,10 +27,10 @@ export const variablePoolContract: ModuleContract = {
     { id: "vp-20", feature: "daily 游标跨重启", description: "daily 重置游标随 variables 段落盘：destroy → 重新 init（透传磁盘游标）后同一天不重置、跨日重置一次并把新游标落盘；游标缺失时视为陈旧重置一次；不存在的 Card 由 loadCardVars 返回 null 交给调用方重建", why: "游标只写不读会让 daily 变量每次重启都重新判定一次，跨天的语义整个失效", layer: "unit", depth: "deep", scenarios: ["variable-pool-daily-cursor-restart"] },
     { id: "vp-21", feature: "session 游标按持久化键判定", description: "session 重置只按持久化的 sessionKey 判定：键为 null 不做判定（旧数据缺会话游标时同样什么都不做）、同一键（含跨重启）幂等、换键重置一次并把新键落盘；缺游标但键非 null 按新会话重置一次", why: "没有持久化键时凭空认定「新会话」会让变量被反复清空，键不落盘则重启后判定失去依据", layer: "unit", depth: "deep", scenarios: ["variable-pool-session-cursor"] },
   ],
-  // W0–W7 把本契约全部 21 个场景迁出 L4 后重标定：L4 侧已无任何 layer=e2e 的覆盖点，
-  // 有效场景数与 deep 数都是 0，门槛因此是 0（门槛=当前值，不是「放宽」）。
-  // 两个 0 表示本契约在 L4 路径上已无可核对内容 —— 是否继续留在 L4 校验里（并因此
-  // 需要处理下面两条只在 L4 场景集上判定的 tag 规则）由收口方决定。
-  // 跨层完整性由 checkLayerCoverage 负责（21 个 caseId 的声明层都是 unit/integration）。
-  rules: { minScenarios: 0, minDeepScenarios: 0, requireBoundary: true, requireErrorPath: true },
+  // W0–W7 把本契约全部场景迁出 L4 后重标定：L4 侧已无任何 layer=e2e 的覆盖点，
+  // 门槛=当前 rules 声明值，只缩不放（数字由 checker 报错提供），不是「放宽」。
+  // 门槛已到最小，表示本契约在 L4 路径上已无可核对内容 —— 是否继续留在 L4 校验里（并因此
+  // L4没有消费者，边界/错误由L2变量拒绝与非法恢复用例承担，L4标签规则关闭。
+  // 跨层完整性由 checkLayerCoverage 负责（caseId 的声明层都是 unit/integration）。
+  rules: { minScenarios: 0, minDeepScenarios: 0, requireBoundary: false, requireErrorPath: false },
 }

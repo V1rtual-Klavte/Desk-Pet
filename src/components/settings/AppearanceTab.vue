@@ -104,18 +104,19 @@ function restoreSoundDefaults() {
 
 // ── Profile ──
 const profileList = ref<
-  { id: string; meta: { name: string; description: string; preset?: string } }[]
+  { id: string; meta: { name: string; description: string } }[]
 >([]);
 const activeProfileId = ref("");
 const profileDetail = ref<ProfileData | null>(null);
 
 async function refreshProfileList() {
-  const { discoverAllProfiles, ensureProfileLoaded } = await import("@/services/profile");
+  // 轻量读 meta：只建列表、不进内存缓存（内存里只留激活 Profile）
+  const { discoverAllProfiles, readProfileMeta } = await import("@/services/profile");
   const ids = await discoverAllProfiles();
-  const list: any[] = [];
+  const list: { id: string; meta: { name: string; description: string } }[] = [];
   for (const id of ids) {
-    const p = await ensureProfileLoaded(id);
-    if (p) list.push({ id: p.id, meta: p.meta });
+    const meta = await readProfileMeta(id);
+    if (meta) list.push({ id, meta });
   }
   profileList.value = list;
   const active = getActiveProfile();
@@ -137,7 +138,6 @@ async function switchProfile(id: string) {
   activeProfileId.value = id;
   profileDetail.value = getActiveProfile();
   initColorEditor();
-  initFontEditor();
 }
 
 /**
@@ -204,20 +204,6 @@ async function doRestoreDefaults(): Promise<void> {
   );
   if (!accepted) return;
   await reportResult(await restoreDefaultResources(), "恢复完成");
-}
-
-// ── 预设切换 ──
-const presets = [
-  { id: "pink", name: "🌸 粉色", desc: "默认粉色主题" },
-  { id: "dark", name: "🌙 暗夜", desc: "暗色护眼主题" },
-  { id: "glass", name: "🪟 玻璃", desc: "透明毛玻璃效果" },
-];
-
-async function switchPreset(presetId: string) {
-  const presetProfile = profileList.value.find((p) => p.meta.preset === presetId);
-  if (presetProfile) {
-    await switchProfile(presetProfile.id);
-  }
 }
 
 // ── 颜色编辑 ──
@@ -295,7 +281,7 @@ function resetColors() {
   if (p) activateProfile(p.id);
 }
 
-async function saveColorsToProfile() {
+async function saveAppearanceToProfile() {
   const p = getActiveProfile();
   if (!p) {
     const message = "没有激活的 Profile，无法保存。";
@@ -327,97 +313,41 @@ async function saveColorsToProfile() {
     activateProfile(p.id);
     profileDetail.value = getActiveProfile();
     await emit("deskpet-profile-updated", { profileId: p.id });
-    log.info("颜色已保存");
+    log.info("外观设置已保存（颜色）");
   } catch (e: any) {
     log.error("保存失败:", e);
-    await showFailure("颜色保存失败: " + formatError(e));
+    await showFailure("外观保存失败: " + formatError(e));
   }
 }
 
-// ── 字体 ──
-const fontAssign = ref({ ui: "zpix", chat: "zpix" });
-
-function initFontEditor() {
-  const p = getActiveProfile();
-  if (!p) return;
-  fontAssign.value = {
-    ui: p.theme.fonts.ui || "zpix",
-    chat: p.theme.fonts.chat || "zpix",
-  };
-}
-
-/** 字体属于 Profile，写入 profile.yaml 的 theme.fonts（保留同段其它字段，如 size）。 */
-async function saveFontsToProfile() {
-  const p = getActiveProfile();
-  if (!p) {
-    const message = "没有激活的 Profile，无法保存。";
-    log.warn(message);
-    window.alert(message);
-    return;
-  }
-  try {
-    const resp = await fetch(`${p.basePath}/profile.yaml`);
-    if (!resp.ok) throw new Error("无法读取");
-    const jsYaml = await import("js-yaml");
-    const doc = jsYaml.load(await resp.text()) as any;
-    if (!doc.theme) doc.theme = {};
-    doc.theme.fonts = { ...(doc.theme.fonts || {}), ui: fontAssign.value.ui, chat: fontAssign.value.chat };
-    const newYaml = jsYaml.dump(doc, { lineWidth: -1, noRefs: true });
-    const { invoke } = await import("@tauri-apps/api/core");
-    await invoke("profile_file_write", {
-      profileId: p.id,
-      relativePath: "profile.yaml",
-      content: Array.from(new TextEncoder().encode(newYaml)),
-    });
-    invalidateProfileCache(p.id);
-    const { ensureProfileLoaded } = await import("@/services/profile");
-    await ensureProfileLoaded(p.id);
-    activateProfile(p.id);
-    profileDetail.value = getActiveProfile();
-    initFontEditor();
-    await emit("deskpet-profile-updated", { profileId: p.id });
-    log.info("字体已保存");
-  } catch (e: any) {
-    log.error("字体保存失败:", e);
-    await showFailure("字体保存失败: " + formatError(e));
-  }
-}
+// ── 字体（全局设置，不随 Profile）──
+// 值与校验都走 CONFIG：本组件只持有编辑态，落盘由设置面板的统一保存完成。
+const fontFamily = ref(userConfig.fontFamily);
+const fontSize = ref(userConfig.fontSize);
+const systemFonts = ref<string[]>([]);
 
 // ── 生命周期 ──
 onMounted(async () => {
   await initProfiles();
   refreshProfileList();
-  initFontEditor();
+  const { listSystemFonts } = await import("@/services/font");
+  systemFonts.value = await listSystemFonts();
 });
 
 defineExpose({
   effectMode,
   parallaxIntensity,
   assignments,
+  fontFamily,
+  fontSize,
 });
 </script>
 
 <template>
   <div>
-  <!-- 预设切换 -->
-  <div class="s-section">
-    <div class="s-label">🎨 预设方案</div>
-    <div class="preset-row">
-      <button
-        v-for="pr in presets"
-        :key="pr.id"
-        class="preset-btn"
-        :class="{ active: profileDetail?.meta?.preset === pr.id }"
-        @click="switchPreset(pr.id)"
-        :title="pr.desc"
-      >{{ pr.name }}</button>
-    </div>
-    <div class="s-hint">一键切换配色方案，应用即时生效</div>
-  </div>
-
   <!-- 角色展示效果：灵动图层与景深互斥，只能选一个 -->
   <div class="s-section">
-    <div class="s-label">✨ 角色展示效果</div>
+    <div class="s-label">角色展示效果</div>
     <div class="preset-row">
       <button
         v-for="m in EFFECT_MODES" :key="m.id"
@@ -435,7 +365,7 @@ defineExpose({
     </div>
 
     <div class="row-gap" style="margin-top:6px" v-if="effectMode !== 'off'">
-      <button class="btn-s" style="background:rgba(196,39,111,0.2);border-color:rgba(196,39,111,0.4);color:#f0a0c0" @click="openLayerEditor()">🎨 打开图层编辑器</button>
+      <button class="btn-s" style="background:rgba(196,39,111,0.2);border-color:rgba(196,39,111,0.4);color:#f0a0c0" @click="openLayerEditor()">打开图层编辑器</button>
     </div>
     <div class="s-hint">{{ EFFECT_MODES.find(m => m.id === effectMode)?.hint }}</div>
   </div>
@@ -443,11 +373,11 @@ defineExpose({
   <!-- Profile + 预览 -->
   <div class="s-section">
     <div class="pf-head">
-      <span class="s-label" style="margin:0">📦 Profile</span>
+      <span class="s-label" style="margin:0">Profile</span>
       <span class="pf-head-actions">
         <button class="btn-s btn-d" @click="doRestoreDefaults()">↺ 恢复默认</button>
-        <button class="btn-s" @click="refreshProfileList()">🔄 刷新</button>
-        <button class="btn-s" @click="doImportProfile()">📥 导入</button>
+        <button class="btn-s" @click="refreshProfileList()">刷新</button>
+        <button class="btn-s" @click="doImportProfile()">导入</button>
       </span>
     </div>
 
@@ -467,7 +397,7 @@ defineExpose({
         <div class="pf-row-actions" @click.stop>
           <button class="btn-s" @click="doCloneProfile(p.id)">复制</button>
           <button class="btn-s" @click="doExportProfile(p.id)">导出</button>
-          <button class="btn-s btn-d" @click="doDeleteProfile(p.id)">🗑</button>
+          <button class="btn-s btn-d" @click="doDeleteProfile(p.id)">删除</button>
         </div>
       </div>
       <div v-if="!profileList.length" class="s-hint">未发现任何 Profile</div>
@@ -486,7 +416,7 @@ defineExpose({
 
   <!-- 颜色编辑 -->
   <div class="s-section">
-    <div class="s-label">🎨 颜色调整</div>
+    <div class="s-label">颜色</div>
     <div class="color-grid-simple">
       <div v-for="f in colorFields" :key="f.key" class="color-row">
         <span class="color-label">{{ f.label }}</span>
@@ -497,33 +427,28 @@ defineExpose({
     <div class="row-gap" style="margin-top:6px">
       <button class="btn-s" @click="applyColors()">应用</button>
       <button class="btn-s btn-d" @click="resetColors()">恢复</button>
-      <button class="btn-s" @click="saveColorsToProfile()">💾 保存</button>
+      <button class="btn-s" @click="saveAppearanceToProfile()">保存</button>
     </div>
   </div>
 
-  <!-- 字体 -->
+  <!-- 字体（全局设置，不随 Profile） -->
   <div class="s-section">
-    <div class="s-label">✏️ 字体</div>
-    <div class="fld"><span class="fn">界面</span>
-      <select class="inp" v-model="fontAssign.ui">
-        <option value="zpix">zpix</option>
-        <option value="pixel-mplus">pixel-mplus</option>
+    <div class="s-label">字体</div>
+    <div class="fld"><span class="fn">字体</span>
+      <select class="inp" v-model="fontFamily">
+        <option value="">跟随系统默认</option>
+        <option v-for="name in systemFonts" :key="name" :value="name">{{ name }}</option>
       </select>
     </div>
-    <div class="fld"><span class="fn">聊天</span>
-      <select class="inp" v-model="fontAssign.chat">
-        <option value="zpix">zpix</option>
-        <option value="pixel-mplus">pixel-mplus</option>
-      </select>
+    <div class="fld"><span class="fn">字号</span>
+      <input class="inp" style="width:64px" type="number" min="10" max="24" step="1" v-model.number="fontSize" />
     </div>
-    <div class="row-gap" style="margin-top:6px">
-      <button class="btn-s" @click="saveFontsToProfile()">💾 保存</button>
-    </div>
+    <div class="s-hint">来自你电脑上已安装的字体；对所有 Profile 生效，保存后应用</div>
   </div>
 
   <!-- 音效 -->
   <div class="s-section">
-    <div class="s-label">🔊 音效事件</div>
+    <div class="s-label">音效事件</div>
     <div class="sound-list">
       <div v-for="ev in soundEvents" :key="ev.key" class="sound-row">
         <span class="sound-name">{{ ev.label }}</span>
@@ -546,11 +471,11 @@ defineExpose({
 .preset-row { display: flex; gap: 6px; margin-top: 4px; }
 .preset-btn {
   padding: 6px 14px; font-size: 11px; font-family: inherit;
-  background: rgba(255,255,255,0.04); color: rgba(255,255,255,0.5);
-  border: 1px solid rgba(255,255,255,0.08); border-radius: 10px;
+  background: var(--color-surface-dark, rgba(255,255,255,0.04)); color: var(--color-text-muted, rgba(255,255,255,0.5));
+  border: 1px solid var(--color-border-input, rgba(255,255,255,0.08)); border-radius: 10px;
   cursor: pointer; transition: all .15s;
 }
-.preset-btn:hover { background: rgba(255,255,255,0.08); color: rgba(255,255,255,0.8); }
+.preset-btn:hover { background: var(--color-surface-darker, rgba(255,255,255,0.08)); color: var(--color-text-bright, rgba(255,255,255,0.8)); }
 .preset-btn.active { background: var(--color-accent,#c4276f); color: #fff; border-color: var(--color-accent,#c4276f); }
 
 /* ── 颜色编辑 ── */
@@ -559,7 +484,7 @@ defineExpose({
 .color-label { font-size: 9px; opacity: 0.55; min-width: 48px; text-align: right; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .color-picker { width: 22px; height: 20px; border: none; border-radius: 3px; cursor: pointer; padding: 0; background: none; flex-shrink: 0; }
 .color-picker::-webkit-color-swatch-wrapper { padding: 0; }
-.color-picker::-webkit-color-swatch { border: 1px solid rgba(255,255,255,0.2); border-radius: 3px; }
+.color-picker::-webkit-color-swatch { border: 1px solid var(--color-border-input, rgba(255,255,255,0.2)); border-radius: 3px; }
 .color-val { flex: 1; min-width: 60px; font-size: 9px !important; padding: 1px 3px !important; }
 
 /* ── 灵动图层 ── */
@@ -580,11 +505,11 @@ defineExpose({
   padding: 5px 8px;
   border-radius: 6px;
   border: 1px solid transparent;
-  background: rgba(0, 0, 0, 0.15);
+  background: var(--color-surface-dark, rgba(0, 0, 0, 0.15));
   cursor: pointer;
   transition: background 0.15s, border-color 0.15s;
 }
-.pf-row:hover { background: rgba(255, 255, 255, 0.06); }
+.pf-row:hover { background: var(--color-surface-darker, rgba(255, 255, 255, 0.06)); }
 .pf-row.active { border-color: var(--color-accent, #c4276f); }
 .pf-row-main { display: flex; align-items: baseline; gap: 6px; min-width: 0; }
 .pf-row-name { font-weight: 700; }
@@ -592,7 +517,7 @@ defineExpose({
   font-size: 9px;
   padding: 1px 5px;
   border-radius: 4px;
-  background: rgba(255, 255, 255, 0.12);
+  background: var(--color-surface-dark, rgba(255, 255, 255, 0.12));
   opacity: 0.8;
 }
 /* 副本沿用原名（显示名不改），靠 ID 区分 */
@@ -600,8 +525,8 @@ defineExpose({
 .pf-row-current { font-size: 10px; color: var(--color-accent, #c4276f); }
 .pf-row-actions { display: flex; gap: 4px; flex-shrink: 0; }
 
-.profile-preview { display: flex; gap: 8px; padding: 6px; background: rgba(0,0,0,0.15); border-radius: 8px; align-items: flex-start; }
-.preview-body { width: 48px; height: 48px; object-fit: contain; image-rendering: pixelated; border-radius: 4px; border: 2px solid rgba(255,255,255,0.1); flex-shrink: 0; background: rgba(0,0,0,0.2); }
+.profile-preview { display: flex; gap: 8px; padding: 6px; background: var(--color-surface-dark, rgba(0,0,0,0.15)); border-radius: 8px; align-items: flex-start; }
+.preview-body { width: 48px; height: 48px; object-fit: contain; image-rendering: pixelated; border-radius: 4px; border: 2px solid var(--color-divider, rgba(255,255,255,0.1)); flex-shrink: 0; background: var(--color-surface-dark, rgba(0,0,0,0.2)); }
 .preview-info { flex: 1; min-width: 0; }
 .preview-name { font-size: 12px; color: var(--color-accent,#c4276f); font-weight: bold; }
 .preview-meta { font-size: 10px; opacity: 0.5; margin-top: 2px; }

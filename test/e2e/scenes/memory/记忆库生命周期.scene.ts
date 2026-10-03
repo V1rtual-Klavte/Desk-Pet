@@ -1,8 +1,8 @@
 import type { SceneDef } from "../../../e2e/types"
 import { fakeText, installFakeProvider } from "../../../host/fake-provider"
 import {
-  addMemoryCandidates, applyMemoryChange, memoryList, memoryStatus, publishMemoryBatch,
-  queryMemory, registerMemorySources, reviewMemoryBatch, startMemoryJob,
+  addMemoryCandidates, applyMemoryChange, commitMemoryDreamingJob, memoryList, memoryStatus,
+  queryMemory, registerMemorySources, startMemoryJob,
 } from "@/services/agent/memory"
 import type { MemoryDraft, MemorySource } from "@/services/agent/memory"
 
@@ -22,6 +22,8 @@ const SOURCE: MemorySource = {
   origin: "user",
   observedAt: 1_700_000_000_000,
 }
+let trialIdentity = ""
+let source = SOURCE
 
 function draft(content: string): MemoryDraft {
   return {
@@ -34,7 +36,7 @@ function draft(content: string): MemoryDraft {
     importance: 6,
     confidence: 0.9,
     observedAt: Date.now(),
-    sourceIds: [SOURCE.sourceId],
+    sourceIds: [source.sourceId],
   }
 }
 
@@ -55,32 +57,36 @@ export const 记忆库生命周期: SceneDef = {
     caseId: "memory-store-lifecycle",
     module: "memory",
     contractId: "mm-03",
-    description: "真实 SQLite 记忆库：中文短词召回、候选隔离、发布、遗忘防回灌与版本冲突",
+    description: "真实 SQLite 记忆库：中文短词召回、staging 候选隔离、自动提交、遗忘防回灌与版本冲突",
     depth: "deep",
     suite: "regression",
     entry: "runtime",
     tags: ["memory", "boundary", "error"],
   },
   setup: async () => {
+    trialIdentity = crypto.randomUUID()
+    // clear/forget 的来源封锁跨 trial 持久有效；新的试验必须使用新的证据身份。
+    source = { ...SOURCE, sessionId: trialIdentity, sourceId: `${trialIdentity}:entry-1`, eventId: `req-${trialIdentity}:user` }
     installFakeProvider([fakeText("好的。")])
   },
   turns: [
     {
       index: 1,
-      description: "记忆库写入、召回、候选发布与遗忘",
+      description: "记忆库写入、召回、候选自动提交与遗忘",
       userText: "记住我喜欢冰美式",
       checks: [
         {
           type: "expectMemoryStoreLifecycle",
           run: async () => {
-            const registered = await registerMemorySources([SOURCE])
+            const registered = await registerMemorySources([source])
             if (registered !== 1) throw new Error(`来源登记数 ${registered}，期望 1`)
 
             const base = (await memoryStatus()).revision
             await applyMemoryChange({
-              operationId: "e2e-add-1",
+              operationId: `${trialIdentity}-add`,
               baseRevision: base,
               action: "add",
+              actor: "internal",
               draft: draft("用户喜欢喝冰美式咖啡"),
             })
 
@@ -90,46 +96,47 @@ export const 记忆库生命周期: SceneDef = {
             const unrelated = await queryMemory("用户的银行卡密码", { limit: 10 })
             if (unrelated.length !== 0) throw new Error("无关查询召回了记忆")
 
-            // 待审候选不进召回，发布后才可见。
+            // staging 候选不进召回，事务提交后才可见。
             const job = await startMemoryJob("review")
             const candidateDraft = draft("用户喜欢别人叫他老板")
             await addMemoryCandidates(job.id, [{
-              id: "e2e-candidate-1",
+              id: `${trialIdentity}-candidate`,
               draft: candidateDraft,
               payloadHash: await payloadHash({ draft: candidateDraft }),
               reason: "用户在自我介绍里提到称呼偏好",
             }])
             const beforePublish = await queryMemory("老板", { limit: 10 })
-            if (beforePublish.length !== 0) throw new Error("未审批的候选进入了召回")
-            const pending = await reviewMemoryBatch(job.id)
-            if (pending.length !== 1) throw new Error(`待审候选 ${pending.length} 条，期望 1`)
+            if (beforePublish.length !== 0) throw new Error("未提交的候选进入了召回")
+            const pendingBeforeCommit = await queryMemory("老板", { limit: 10 })
+            if (pendingBeforeCommit.length !== 0) throw new Error("自动提交前候选进入了召回")
 
             // 基准过期必须被拒绝，不能静默覆盖。
             let conflictRejected = false
             try {
-              await publishMemoryBatch(job.id, [pending[0]!.id], (await memoryStatus()).revision + 5)
+              await commitMemoryDreamingJob(job.id, (await memoryStatus()).revision + 5)
             } catch {
               conflictRejected = true
             }
-            if (!conflictRejected) throw new Error("过期基准的发布没有被拒绝")
+            if (!conflictRejected) throw new Error("过期基准的自动提交没有被拒绝")
 
-            await publishMemoryBatch(job.id, [pending[0]!.id], (await memoryStatus()).revision)
+            await commitMemoryDreamingJob(job.id, (await memoryStatus()).revision)
             const published = await queryMemory("老板", { limit: 10 })
-            if (published.length !== 1) throw new Error(`发布后召回 ${published.length} 条，期望 1`)
+            if (published.length !== 1) throw new Error(`自动提交后召回 ${published.length} 条，期望 1`)
 
             // 遗忘：召回消失，且同一来源事件不能再被登记（防回灌）。
             const items = await memoryList("user", undefined, 50)
             const target = items.find(item => item.draft.content.includes("冰美式"))
             if (!target) throw new Error("列表里找不到刚写入的记忆")
             await applyMemoryChange({
-              operationId: "e2e-forget-1",
+              operationId: `${trialIdentity}-forget`,
               baseRevision: (await memoryStatus()).revision,
               action: "forget",
+              actor: "internal",
               itemId: target.id,
             })
             const afterForget = await queryMemory("咖啡", { limit: 10 })
             if (afterForget.length !== 0) throw new Error("遗忘后仍能召回")
-            const reRegistered = await registerMemorySources([SOURCE])
+            const reRegistered = await registerMemorySources([source])
             if (reRegistered !== 0) throw new Error(`遗忘来源重新登记 ${reRegistered} 条，期望 0`)
           },
         },

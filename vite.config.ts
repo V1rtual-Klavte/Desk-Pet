@@ -19,15 +19,20 @@ export default defineConfig({
   server: {
     port: 1420,
     strictPort: true,
+    // A Live batch must keep the same loaded code; HMR would reset its trace cursor mid-trial.
+    hmr: process.env.DESKPET_E2E === "1" ? false : undefined,
     watch: { ignored: ["**/src-tauri/**", "**/target/**"] },
   },
   build: {
+    // 只列产品窗口。test-e2e.html 不进 build input：E2E 全程由 `tauri dev` 走 devUrl，
+    // Vite dev server 服务根目录下所有 HTML，不需要它出现在产物里；而 release 构建下
+    // `lib.rs` 的 `cfg!(debug_assertions) && is_e2e()` 恒为 false，e2e 窗口永不创建，
+    // 打进去就是纯死重（实测 463 KB，占前端 JS 的 24%）。
     rollupOptions: {
       input: {
         main: resolve(__dirname, "index.html"),
         settings: resolve(__dirname, "settings.html"),
         "layer-editor": resolve(__dirname, "layer-editor.html"),
-        "test-e2e": resolve(__dirname, "test-e2e.html"),
       },
     },
   },

@@ -46,6 +46,10 @@ const FALLBACK_FALLBACKS: FallbackReplies = {
 const FALLBACK_COMMANDS: CommandReplies = {
   clear: "对话已清空，原会话保留在历史记录里",
   memoryCleared: "记忆已清理",
+  proactiveEnabled: "主动陪伴已开启",
+  proactiveDisabled: "主动陪伴已关闭",
+  proactiveStatus: "主动陪伴状态",
+  behaviorCleared: "行为观测已清除",
   compactCompleted: "压缩完成，原始对话已保留。",
   compactDeclined: "未压缩：没有可安全摘要的完整旧轮次。",
   compactNothing: "未压缩：当前没有可压缩的历史。",
@@ -62,6 +66,7 @@ const FALLBACK_COMMANDS: CommandReplies = {
 
 export const FALLBACK_STAGES: StageMap = {
   thinking: "思考中...", planning: "正在规划...",
+  presence: { idle: "陪伴中", working: "安静陪伴", resting: "休息中" },
   executing: { _default: "处理中..." },
   done: {
     "fs.read": "读取完成",
@@ -126,6 +131,10 @@ export function getSimpleStage(stage: SimpleStageKey): string | null {
   return null
 }
 
+export function getPresenceStage(state: keyof StageMap["presence"]): string {
+  return cache?.stages.presence?.[state] || FALLBACK_STAGES.presence[state]
+}
+
 /** 获取 slash 命令的 Card 输出；缺该 key 或为空串时回退中性常量 */
 export function getCommandReply(key: keyof CommandReplies): string {
   const val = cache?.stages.commands?.[key]
@@ -167,7 +176,7 @@ export function pickActiveGreeting(): string | null {
 
 /** slash 命令输出的全部键 —— 生成、归一化、失效判定与场景共用这一份清单 */
 export const COMMAND_KEYS: ReadonlyArray<keyof CommandReplies> = [
-  "clear", "memoryCleared", "compactCompleted", "compactDeclined",
+  "clear", "memoryCleared", "proactiveEnabled", "proactiveDisabled", "proactiveStatus", "behaviorCleared", "compactCompleted", "compactDeclined",
   "compactNothing", "compactBusy", "compactClosed", "compactPending", "compactFailed",
   "skillStarted", "skillUnknown", "skillEmpty", "skillDisabled",
 ]
@@ -196,6 +205,7 @@ export function validateStages(data: unknown): data is StagePrompts {
   // 判定必须看**原始文件形态**，不能先过 normalize —— normalize 会把缺失的键补成中性默认值，
   // 补完就再也分不清「旧模板产物」和「新模板产物」，Card 的定制语气会永久停在系统默认文案上。
   if (typeof s.error !== "string" || typeof s.retry !== "string") return false
+  if (!hasAllNonEmpty(s.presence, ["idle", "working", "resting"])) return false
   if (!Array.isArray(s.greetings) || s.greetings.length === 0) return false
   if (!hasAllNonEmpty(s.commands, COMMAND_KEYS)) return false
   const fallbacks = s.fallbacks as Record<string, unknown> | undefined
@@ -330,6 +340,7 @@ function normalizeStageMap(raw: Partial<StageMap>): StageMap {
   return {
     thinking: typeof raw.thinking === "string" ? raw.thinking : FALLBACK_STAGES.thinking,
     planning: typeof raw.planning === "string" ? raw.planning : FALLBACK_STAGES.planning,
+    presence: { ...FALLBACK_STAGES.presence, ...(raw.presence || {}) },
     executing: { ...FALLBACK_STAGES.executing, ...(raw.executing || {}) },
     done: { ...FALLBACK_STAGES.done, ...(raw.done || {}) },
     blocked: { ...FALLBACK_STAGES.blocked, ...(raw.blocked || {}) },

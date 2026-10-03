@@ -8,7 +8,7 @@ general:
   logging: { level: debug }
   # 错误覆盖层：auto(dev 弹/生产不弹) | always | never
   errors: { overlay: auto }
-  desktop: { pollingIntervalMs: 3000, pauseExtraMs: 5000, waitTimeoutMs: 5000 }
+  desktop: { pollingIntervalMs: 3000 }
 
 ai:
   provider: deepseek
@@ -45,7 +45,8 @@ ai:
     rerank: off
     recallTimeoutMs: 4000
     rerankTimeoutMs: 2500
-    dreaming: { mode: manual, idleSeconds: 120, minIntervalMinutes: 60, maxDailyTokens: 12000 }
+    # reviewMaxTokens：单次 Review 输出上限；reasoning 模型的 thinking 也计入，推理模型需调大
+    dreaming: { mode: idle, idleSeconds: 120, minIntervalMinutes: 60, maxDailyTokens: 12000, reviewMaxTokens: 1200 }
     maxSessions: 20
   plan:
     enabled: true
@@ -66,7 +67,6 @@ ai:
     # 冷却时长统一毫秒
     cooldownMs: 5000
     samePageCooldownMs: 7800
-    resumeExtraMs: 2000
   safety: { mode: tell_me, sessionTrustEnabled: true }
 
 tools:
@@ -88,3 +88,6 @@ appearance:
   soundAssignments: {}            # 事件 → 音效 ID；空表示全走内置默认，设置页可改
   parallax:
     intensity: 1.0
+  font:
+    family: ""                    # 全局字体（用户电脑上已安装的字体名）；空 = 跟随系统默认字体栈
+    size: 14                      # 全局字号 px

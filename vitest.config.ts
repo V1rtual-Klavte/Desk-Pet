@@ -21,10 +21,10 @@ export default defineConfig({
       // L2/L3 用 Node 适配层顶替 Tauri IPC。分开三条是因为 pi 的子路径
       // 导出与主入口的解析路径不同，只写包名会漏掉子路径。
       //
-      // 注意：test/host/node-ipc.ts / node-path.ts / node-event.ts 目前**尚不存在**
-      // （由后续任务创建）。别名只是路径映射，指向不存在的文件不会在配置加载时
-      // 报错；但如果某个测试真的 import 到其中一条，运行时会立刻报「模块不存在」
-      // —— 这是预期行为，不是配置坏了。
+      // 适配层已存在：test/host/node-ipc.ts 按 Rust `#[tauri::command]` 签名逐条复现
+      // IPC 命令的 Node 等价实现，node-path.ts / node-event.ts 分别顶替 path / event。
+      // 只复现机制、不做策略：路径裁决、Bash 基线与许可配额等 Rust 专有命令命中即抛
+      // UnsupportedInNodeError（见 test/host/unsupported.ts），让相应场景明确留在 L4。
       "@tauri-apps/api/core": resolve(__dirname, "test/host/node-ipc.ts"),
       "@tauri-apps/api/path": resolve(__dirname, "test/host/node-path.ts"),
       "@tauri-apps/api/event": resolve(__dirname, "test/host/node-event.ts"),

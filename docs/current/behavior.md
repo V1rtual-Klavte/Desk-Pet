@@ -1,0 +1,25 @@
+# 行为观察与画像
+
+行为画像是 `data_root/behavior/` 下独立的派生数据域。它不进入长期记忆、dreaming、记忆召回或用户事实。窗口监控设置是观察许可；关闭时 Rust 观察线程停止采样，前端清当前快照并结束画像分段。隐私清除先撤销主动来源对行为画像的引用，再清除画像文件与内存读模型。
+
+## 原生观察
+
+Rust 单一 monitor 线程发出 `window-observed`，每个有效采样包含 `appId/app/title`、Unix `observedAt`、本代 monotonic `sampleMonoMs`、`monitorGeneration`、单调 `sequence`、系统 idle、锁屏/不可用/挂起/关闭状态及桌宠可见和前台状态。Windows 应用标识只取进程文件名 stem，不保存可执行文件路径；macOS 取 bundle id 与当前应用名。锁屏和不可用状态不带应用或标题。独立 `get_runtime_activity` 只返回桌宠可见/前台、观察可用/锁屏状态、idle 和采样时间，不返回当前应用身份。
+
+前端唯一事件入口做形状、代际和序号校验：旧代际、重复和乱序样本丢弃；窗口工具只读这份快照。窗口观察订阅者同步收到原事件，画像写盘在自身串行队列执行，不阻塞主动规则的事件监听。
+
+## 分段、聚合和质量
+
+相同应用和类别的心跳合并；变化、关闭、锁屏、不可用、暂停、系统时间回退和采样空窗都会截断分段。空窗阈值是 `max(2 × pollingIntervalMs, 10 秒)`；阈值内计为观察覆盖，超出的时间进入 `unobservedMs`，只接受上限内的计时并开始新段。跨本地日、小时的时长拆分。系统 idle 超过 5 分钟归入 idle，不计活跃工作。
+
+单日聚合包含 `categoryMs`、本地小时直方图、appId 时长、工作连续段统计、切换数、`coveredMs`、`unobservedMs`、`idleMs` 和桌宠前台使用时间。appId 每日最多记录 64 个；没有标题、正文、标题哈希或截图。滚动 JSONL 分片每片不超过 512 KiB、保留 30 日；daily JSON 保留 180 日；最新四类画像只留内存读模型，可由 daily 重算。
+
+画像提供 `rhythm/apps/focus/activity` 四组近30个日历日画像；另有按最近7个日历日裁剪的 `weekly` activity/focus，供周回顾使用，不以“最近7个有样本的日子”代替一周。`quality.eligibleCollectionMs` 是实际收到采样、正在许可采集的时间与已知采样空窗之和，不把应用未运行、监控关闭或两次采样以外的整天当作已观测时间。没有有效采集时间时质量为 `unavailable`；`coverageRatio = coveredMs / eligibleCollectionMs`，至少 3 个有效观察日且覆盖率≥60%才标为 `reliable`。质量不足时仍可使用当前心跳连续支持的 30 分钟工作上下文，但不得据此宣称长期作息、精确工时或成就。
+
+`clearBehavior()` 先停 collector 并等待其队列完成，再删除行为目录并清空内存快照。调用端须先在 SQLite 主动控制事务里失效 behavior 来源的机会、任务、未决尝试与派生缓存，然后调用此清理函数。停止后的迟到事件不写回。
+
+## 有限陪伴表现
+
+presence 只允许 `idle/working/resting`。当前实际采样连续观察到工作或开发上下文 30 分钟后可进入 `working`，不依赖长期画像质量门槛；系统 idle、观察许可关闭、锁屏/挂起/不可用、卡片切换或心跳租约到期退出。`working` 抑制非约定主动发话。`resting` 来自当前观察到的 idle 或媒体上下文，不代表人格或真实休息结论。
+
+`StreamView` 只在桌宠容器执行轻微的两秒呼吸动作，每小时最多两次；减少动态效果设置、隐藏或组件销毁时停止。它不移动窗口、不切换 Profile 或视觉效果模式、不播放音频。顶栏文案通过 Card 的 presence key 读取，并由 titlebar owner/priority 服务管理；释放时只清自己的 owner 状态。

@@ -52,6 +52,7 @@ export interface StageMap {
   /** 回合开始、尚未产出可见内容时的状态行提示 */
   thinking: string | null
   planning: string | null
+  presence: { idle: string; working: string; resting: string }
   executing: Record<string, string>
   done: Record<string, string>
   blocked: Record<string, string>
@@ -74,6 +75,10 @@ export interface StageMap {
 export interface CommandReplies {
   clear: string
   memoryCleared: string
+  proactiveEnabled: string
+  proactiveDisabled: string
+  proactiveStatus: string
+  behaviorCleared: string
   compactCompleted: string
   compactDeclined: string
   compactNothing: string

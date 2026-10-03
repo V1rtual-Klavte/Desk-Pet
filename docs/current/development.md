@@ -16,9 +16,22 @@
 
   最后一步必须做：`.vite/deps` 的失效键是 lockfile/config 摘要，不感知依赖文件被改；依赖安装或缓存失效会重新预打包，要么把插桩打进 bundle（每次 assistant 结束写 localStorage），要么在打包器作用域摊平不成立时于 `observer.end` 直接 `ReferenceError`。若第二步输出 `Already up to date` 而副本未恢复（pnpm 只比对状态摘要，不检查 `.pnpm` 目录是否完整），先删 `node_modules/.pnpm-workspace-state-v1.json` 再重跑同一命令。本约束只落文档、不加 CI 检查（CI 只跑双平台 `test:types`/`test:rust`，grep `node_modules` 的检查价值低且易漏），裁定理由见[前舞台修复方案](../history/implementation/前舞台修复方案-2026-09-24基线.md) §10。
 - `pnpm dev` 仅 Vite；完整 IPC/桌面行为通过 `pnpm tauri dev` 或 Live Test 宿主运行。
-- [tauri.conf.json](../../src-tauri/tauri.conf.json) 管理基础配置并默认构建 Windows NSIS；[macOS 配置](../../src-tauri/tauri.macos.conf.json) 覆盖为 app/dmg。macOS 签名、公证与 Windows 体验未完成项见[未完成工作与已知缺口](../plans/active/未完成工作与已知缺口.md)。
+- [tauri.conf.json](../../src-tauri/tauri.conf.json) 管理基础配置（`bundle.targets: "all"` 由 host OS 决定候选集，CI 再用 `--bundles` 裁到最小集）；[macOS 配置](../../src-tauri/tauri.macos.conf.json) 覆盖为 app/dmg。macOS 签名、公证与 Windows 体验未完成项见[未完成工作与已知缺口](../plans/active/未完成工作与已知缺口.md)。
 - 本机 macOS 类型/编译检查不能覆盖 Windows 条件代码；Windows CI 的原生 check 与 `cargo test` 才能提供对应编译与单测证据，仍不替代 UI 验收。
 - CSP 的配置解析通过不代表生产 WebView 行为通过。涉及 CSP、资源协议或窗口权限的变更需要检查构建产物中的实际行为。
+
+### 打包与发布
+
+- 怎么推、怎么发版、怎么打 tag：看 [工作流说明](../../.github/workflows/README.md)（含轻量标签必须显式推送、预发布冒烟流程、失败排查表）。
+- 流水线：[ci.yml](../../.github/workflows/ci.yml)（双平台验证 + `bundle-config` 配置校验，不做构建）与 [release.yml](../../.github/workflows/release.yml)（tag `v*` 或手动触发的双平台打包发布）。
+- 配置守卫：`pnpm run check:bundle`，失败项逐条给出修法；它在 release 构建之前跑，拦住版本号与 tag 分叉。
+- 产物位置：CI 在 GitHub Release；本地 `pnpm tauri build` 落在仓库根 workspace 的 `target/release/bundle/`。
+- 发布产物三类：macOS `.dmg`（手动安装）与 `.app.tar.gz`（updater）；Windows `x64-setup.exe`（安装版）。
+- 体积控制三个落点：① `[profile.release]` 只认 **workspace 根** `Cargo.toml`（成员 crate 里的 `[profile]` 会被 Cargo 忽略且不报错），本仓开 `strip`/`lto`/`codegen-units = 1`；② Vite `build.rollupOptions.input` 只列产品窗口，`test-e2e.html` 不进产物（release 下 `lib.rs` 的 `cfg!(debug_assertions) && is_e2e()` 恒假，e2e 窗口永不创建）；③ 随包资源只有 `resources/defaults` 种子，Profile 素材才是体积大头。
+- 实测体积（2026-10-03，本机 macOS arm64，`--no-sign --bundles app,dmg`）：`.app` 13.05 MiB、`.dmg` 7.62 MiB、`.app.tar.gz`（updater 包）7.48 MiB。同日改前为 9.5 / 9.3 MiB，Rust 二进制 16.6 → 10.9 MiB（`strip` 回收符号表约 3.6 MiB，`lto` 再缩代码约 1.1 MiB）；更早的 v0.15.0 发布包是 27.1 / 27.2 MiB（还带着随包 zpix）。Windows `x64-setup.exe` 不在本机复测 —— profile 收益两个平台同源，但只有 Windows CI 能给实测值。产物名由 `productName` 决定，**必须是 ASCII**（中文会被 GitHub 剥掉并让 updater 的 `latest.json` 静默缺失）。
+- 发布验收：Release 资产中必须存在 `latest.json`，且其 `platforms` 同时含 `darwin-aarch64` 与 `windows-x86_64`；缺它时 CI 仍是绿的，但客户端检查更新会 404。
+- 本地构建：`createUpdaterArtifacts: true` 要求环境里有 `TAURI_SIGNING_PRIVATE_KEY`；只想要未签名的本地产物时加 `--no-sign`（`pnpm tauri build --no-sign`）。
+- 常见失败：`TAURI_SIGNING_PRIVATE_KEY` 未配置（updater 产物签不出来）；tag 与 `tauri.conf.json` 的 version 不一致（跑 `pnpm run version:set`）。
 
 ## IPC 与窗口入口
 
@@ -31,6 +44,8 @@ Rust 命令集中在 [commands/](../../src-tauri/src/commands/)，由 [mod.rs](.
 新窗口涉及 HTML/TS、[Vite input](../../vite.config.ts)、Rust 创建、[capabilities](../../src-tauri/capabilities/) 和层级/聚焦行为。窗口启动共用 [bootWindow](../../src/services/boot.ts)，全局拦截先于路径和配置初始化，避免启动失败变成空白窗口。
 
 进程级重启走 `app_restart`（[app_lifecycle.rs](../../src-tauri/src/commands/app_lifecycle.rs)）。它用 `AppHandle::request_restart()` 而不是 `restart()`：后者在调用线程就是事件循环线程时直接 `process::restart()`，**不发 `RunEvent::Exit`**，[lib.rs](../../src-tauri/src/lib.rs) 那条回收 MCP 子进程的钩子不会执行，每次重启漏下一批 npx/node。前端在 invoke 前先 `flushConfig()`——设置改动先进写盘队列，直接重启会把未落盘的配置丢掉。
+
+开发模式（debug 构建）下 `app_restart` 不走进程重启，改为关闭其他窗口并重载主窗口：`pnpm tauri dev` 的 CLI 把 app 当子进程，子进程一退出就结束整个 dev 会话并关掉 Vite，`process::restart()` 拉起的孤儿进程没有页面可加载，只剩一个空白窗口（终端 Ctrl+C 也因 CLI 已退出而失效）。重载后前端从零 boot，设置同样从磁盘重新读取；打包版仍走真进程重启。
 
 ## 日志
 

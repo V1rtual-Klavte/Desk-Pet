@@ -1,5 +1,4 @@
 <script setup lang="ts">
-import "./styles/fonts.css";
 import "./styles/global.css";
 import { ref, onMounted, onUnmounted, provide } from "vue";
 import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
@@ -11,14 +10,14 @@ import TitleBar from "./components/TitleBar.vue";
 import StreamView from "./components/StreamView.vue";
 import ChatPanel from "./components/ChatPanel.vue";
 import SessionTabs from "./components/SessionTabs.vue";
-import WinSim from "./components/winsim/WinSim.vue";
-import { initWindowListener } from "./services/window";
+import { initWindowListener, setMonitorEnabled } from "./services/window";
+import { start as startProactive, stop as stopProactive, refreshProactive } from "@/services/proactive";
 import { switchToSession, createNewSession, closeSession, openSession, deleteSession, getSessions, getActiveSessionId, initWelcome } from "@/services/session";
 import type { PiSessionSummary } from "@/services/session";
 import { initApp } from "@/services/init";
-import { desktopConfig, shortcutConfig, userConfig, reloadConfig } from "@/services/config";
+import { desktopConfig, windowMonitorConfig, shortcutConfig, userConfig, reloadConfig } from "@/services/config";
 import { isMacOS } from "@/services/env";
-import { getUiUrl } from "@/services/profile";
+import { applyFontVars } from "@/services/font";
 import { createLogger } from "@/services/logger";
 import { formatError } from "@/services/error";
 import { playEventSound } from "@/services/audio/registry";
@@ -43,13 +42,6 @@ async function greetNewSession(): Promise<void> {
   const greeting = pickActiveGreeting();
   if (greeting) await initWelcome(greeting, getActiveSessionId());
 }
-
-const isWinSim = (() => {
-  try { return getCurrentWebviewWindow().label === "windows-sim"; }
-  // 非 Tauri 环境守卫：拿不到窗口对象时按「非仿真窗口」处理，没有静默降级
-  // [保留已登记 §4.2]
-  catch { return false; }
-})();
 
 const showChat = ref(true);
 const winSize = ref({ w: 0, h: 0 });
@@ -191,7 +183,9 @@ async function openSettings() {
     width: 440,
     height: 560,
     resizable: true,
-    decorations: true,
+    // 隐藏原生标题栏：设置页自带 ✕ 关闭按钮，顶栏可拖动（#s-head 的 drag-region）。
+    // transparent 保留只为圆角，页面自身是实色底、不透出桌面
+    decorations: false,
     alwaysOnTop: true,
     transparent: true,
   });
@@ -580,8 +574,6 @@ function disposeCursorTracker(): void {
 // 生命周期
 // ==========================================
 onMounted(async () => {
-  if (isWinSim) return;
-
   const win = getCurrentWebviewWindow();
   const savedSize = getPopupSize();
   log.info("从配置恢复: size=", savedSize, "mode=", userConfig.popupMode, "fixedPos=", userConfig.fixedPosition);
@@ -604,13 +596,10 @@ onMounted(async () => {
 
   await initApp();
 
-  invoke("set_monitor_config", {
-    pollingIntervalMs: desktopConfig.pollingIntervalMs,
-    pauseExtraMs: desktopConfig.pauseExtraMs,
-    waitTimeoutMs: desktopConfig.waitTimeoutMs,
-  }).catch(error => log.warn("监控节流参数下发失败，Rust 仍用默认节流参数:", formatError(error)));
+  await setMonitorEnabled(windowMonitorConfig.enabled, desktopConfig.pollingIntervalMs);
   playEventSound("welcome");
   cleanupListener = await initWindowListener(winSize);
+    startProactive();
 
   await registerShortcut();
 
@@ -687,6 +676,10 @@ onMounted(async () => {
   try {
     cleanupSettingsSaved = await listen("deskpet-settings-saved", async () => {
       await reloadConfig();
+      await setMonitorEnabled(windowMonitorConfig.enabled, desktopConfig.pollingIntervalMs);
+      refreshProactive();
+      // 全局字体可能刚被改：紧跟配置刷新重注入字体 CSS 变量
+      applyFontVars();
       // 效果模式可能刚被改：紧跟配置刷新重判光标追踪的注册态
       await syncCursorTracker();
       const { initDebug } = await import("@/services/debug");
@@ -729,6 +722,7 @@ onMounted(async () => {
 });
 
 onUnmounted(() => {
+  stopProactive();
   void import("@/services/tool/mcp").then(({ disconnectAllMcpServers }) => disconnectAllMcpServers())
   if (cleanupListener) cleanupListener();
   disposeCursorTracker();
@@ -744,12 +738,10 @@ onUnmounted(() => {
 </script>
 
 <template>
-  <WinSim v-if="isWinSim" />
-  <div v-else id="root" ref="rootRef" @contextmenu="onContextMenu">
-    <TitleBar :height="30" title="配信中" @toggle-chat="showChat = !showChat" @toggle-settings="openSettings" @toggle-layer-editor="openLayerEditor" />
+  <div id="root" ref="rootRef" @contextmenu="onContextMenu">
+    <TitleBar :height="30" @toggle-chat="showChat = !showChat" @toggle-settings="openSettings" @toggle-layer-editor="openLayerEditor" />
     <div id="body">
       <div id="stream-col">
-        <img id="bg" :src="getUiUrl('windows/operation_base.png')" alt="" />
         <StreamView />
       </div>
       <div
@@ -777,8 +769,21 @@ onUnmounted(() => {
         :style="{ left: ctxMenu.x + 'px', top: ctxMenu.y + 'px' }"
         @click.stop
       >
-        <button class="ctx-item" @click="copySelection">📋 复制</button>
-        <button class="ctx-item" @click="openDevTools">🔧 控制台</button>
+        <button class="ctx-item" @click="copySelection">
+          <svg width="11" height="11" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.2" aria-hidden="true">
+            <rect x="4" y="1" width="7" height="8" rx="1" />
+            <rect x="1" y="4" width="7" height="7" rx="1" />
+          </svg>
+          复制
+        </button>
+        <button class="ctx-item" @click="openDevTools">
+          <svg width="11" height="11" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.2" aria-hidden="true">
+            <rect x="1" y="2" width="10" height="8" rx="1" />
+            <path d="M3 5l1.5 1.5L3 8" />
+            <path d="M6.5 8h2.5" />
+          </svg>
+          控制台
+        </button>
       </div>
     </Transition>
 
@@ -800,7 +805,9 @@ onUnmounted(() => {
   min-width: 80px;
 }
 .ctx-item {
-  display: block;
+  display: flex;
+  align-items: center;
+  gap: 6px;
   width: 100%;
   padding: 4px 12px;
   font-size: 12px;
@@ -813,6 +820,7 @@ onUnmounted(() => {
   text-align: left;
   white-space: nowrap;
 }
+.ctx-item svg { flex-shrink: 0; opacity: 0.8; }
 .ctx-item:hover {
   background: var(--color-contextmenu-hover-bg);
   color: var(--color-contextmenu-hover-text);

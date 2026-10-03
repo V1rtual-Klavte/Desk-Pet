@@ -43,7 +43,10 @@ export type { PromptRewriteInput, PromptSnapshotInput, RedactedText } from "./sn
 
 export {
   createRuntimeTraceContext,
+  hasRuntimeTraceSubscribers,
   publishRuntimeTrace,
+  runtimeTraceContextForRequest,
+  runtimeTracePreview,
   subscribeRuntimeTrace,
 } from "./trace"
 export type { RuntimeTraceContext, RuntimeTraceEvent, RuntimeTraceKind, RuntimeTraceListener } from "./trace"

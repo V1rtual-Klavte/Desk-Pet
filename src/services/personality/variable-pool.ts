@@ -38,6 +38,38 @@ let registry: CardVariableDef[] = []
 let currentCardId: string | null = null
 let pool: VariablePool = { system: {}, card: {}, interaction: {} }
 let savePending = false
+type VariableCommitReason = "llm" | "manual" | "system" | "proactive_response"
+export interface VariableCommitEvent {
+  cardId: string
+  committedAt: number
+  reason: VariableCommitReason
+  values: Record<string, string | number | boolean>
+  definitions: CardVariableDef[]
+}
+const variableCommitListeners = new Set<(event: VariableCommitEvent) => void>()
+let pendingCommitReason: VariableCommitReason | undefined
+
+export function subscribeVariableCommits(listener: (event: VariableCommitEvent) => void): () => void {
+  variableCommitListeners.add(listener)
+  return () => variableCommitListeners.delete(listener)
+}
+
+function publishVariableCommit(): void {
+  if (!currentCardId || !pendingCommitReason) return
+  const reason = pendingCommitReason
+  pendingCommitReason = undefined
+  if (variableCommitListeners.size === 0) return
+  const event: VariableCommitEvent = {
+    cardId: currentCardId,
+    committedAt: Date.now(),
+    reason,
+    values: Object.fromEntries(Object.entries(pool.card).map(([name, state]) => [name, state.value as string | number | boolean])),
+    definitions: registry.map(def => ({ ...def })),
+  }
+  for (const listener of variableCommitListeners) {
+    try { listener(event) } catch (error) { log.warn("变量提交观察者失败:", formatError(error)) }
+  }
+}
 
 /** reset: "daily" 的「已应用」日期键；null = 尚无记录（升级前数据或首次激活） */
 let lastDailyResetKey: string | null = null
@@ -246,6 +278,11 @@ export function getPoolSnapshot(): VariablePool {
   }
 }
 
+/** Current pool owner, used to prevent a late response from writing into the next active Card. */
+export function getVariablePoolCardId(): string | null {
+  return currentCardId
+}
+
 export function getVariableRegistry(): CardVariableDef[] {
   return registry
 }
@@ -362,10 +399,12 @@ export async function saveVariablePoolAsync(): Promise<void> {
   try {
     await updateStagesFile(currentCardId, { variables: buildVariablesSection() })
     savePending = false
+    publishVariableCommit()
     log.debug("变量池已持久化:", currentCardId)
   } catch (e) {
     log.warn("变量池持久化失败:", formatError(e))
     savePending = false  // ★ 关键：防止卡死
+    pendingCommitReason = undefined
   }
 }
 
@@ -374,6 +413,7 @@ export async function saveVariablePoolStrict(): Promise<void> {
   if (!savePending || !currentCardId) return
   await updateStagesFile(currentCardId, { variables: buildVariablesSection() })
   savePending = false
+  publishVariableCommit()
   log.debug("变量池已持久化(strict):", currentCardId)
 }
 
@@ -447,7 +487,7 @@ function coerceValue(raw: string, def: CardVariableDef): number | string | boole
   }
 }
 
-export function batchWriteVars(updates: Record<string, string>): { written: string[]; errors: string[] } {
+export function batchWriteVars(updates: Record<string, string>, updatedBy: "llm" | "proactive_response" | "manual" = "llm"): { written: string[]; errors: string[] } {
   const written: string[] = []
   const errors: string[] = []
 
@@ -459,12 +499,13 @@ export function batchWriteVars(updates: Record<string, string>): { written: stri
     const value = coerceValue(rawValue.trim(), def)
     if (value === undefined) { errors.push(`${name}: 类型/范围不符`); continue }
 
-    pool.card[name] = { value, type: def.type, updatedAt: Date.now(), updatedBy: "llm" }
+    pool.card[name] = { value, type: def.type, updatedAt: Date.now(), updatedBy }
     savePending = true
     written.push(name)
   }
 
   if (written.length > 0) log.info("batchWrite:", written.join(", "))
+  if (written.length > 0) pendingCommitReason = updatedBy
   if (errors.length > 0) log.warn("batchWrite errors:", errors.join("; "))
   return { written, errors }
 }

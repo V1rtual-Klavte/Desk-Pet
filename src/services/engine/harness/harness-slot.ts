@@ -41,8 +41,8 @@ import type { HarnessToolRun, ToolDef, ToolResultLookup } from "@/services/tool"
 import {
   ContextBudgetError, contextBudget, isUniqueAddressRef, resolveAddressRef, shortenAddresses, toHarnessEstimateTokens,
 } from "@/services/context"
-import { COMPACTION_DECLINED_ENTRY, PROMPT_REWRITE_ENTRY, laneMessageText, messageRequestId, userInputMessage } from "@/services/engine/runtime"
-import type { CompactionAuditSink, InputSourceMark } from "@/services/engine/runtime"
+import { COMPACTION_DECLINED_ENTRY, PROMPT_REWRITE_ENTRY, hasRuntimeTraceSubscribers, laneMessageText, messageRequestId, publishRuntimeTrace, runtimeTraceContextForRequest, userInputMessage } from "@/services/engine/runtime"
+import type { CompactionAuditSink, InputSourceMark, RuntimeTraceContext } from "@/services/engine/runtime"
 import { conversationConfig, loopConfig } from "@/services/config"
 import { getSkillCatalogFingerprint, listEnabledSkills, syncSkillCatalog } from "@/services/skill"
 import { PI_LANE } from "@/services/session/repo"
@@ -83,6 +83,8 @@ export interface HarnessRunState {
   finalAssistant?: AssistantMessage
   /** 最近一次不带工具调用的 assistant（结算候选）。 */
   finalPlainAssistant?: AssistantMessage
+  /** Actual request usage observed from Harness events; absent means unknown. */
+  usage?: { inputTokens: number; outputTokens: number; cacheRead?: number; cacheWrite?: number }
 }
 
 export function createHarnessRunState(): HarnessRunState {
@@ -146,6 +148,8 @@ export interface HarnessStructuralHost {
   systemPrompt?: string
   hooks?: HarnessRunHooks
   state: HarnessRunState
+  traceContext?: RuntimeTraceContext
+  traceBridgeState?: { linkedNativeRunIds: Set<string>; firstTextGenerated: boolean }
 }
 
 /** 宿主注入的 UI/统计消费点；事件在 Harness 交付线上按序 await。 */
@@ -182,6 +186,10 @@ export interface HarnessRunSpec {
   hooks: HarnessRunHooks
   sinks?: HarnessRunSinks
   state: HarnessRunState
+  traceContext?: RuntimeTraceContext
+  traceRequestInfo?: () => { step?: string; attempt?: number } | undefined
+  /** Prevent a silent extra model request from compaction during scheduler-owned one-shot work. */
+  disableAutomaticCompaction?: boolean
 }
 
 /**
@@ -312,6 +320,10 @@ interface ActiveRun {
   spec: HarnessRunSpec
   operationId?: string
   deliveryPhase?: HarnessDeliveryPhase
+  traceUnsubscribes?: Array<() => void>
+  firstTextGenerated?: boolean
+  linkedNativeRunIds?: Set<string>
+  traceStatus?: string
 }
 
 const ABORT_REASON_TIMEOUT = "timeout"
@@ -447,6 +459,18 @@ export class HarnessSlot {
     await this.openPromise
   }
 
+  /** Temporarily pin one operation to a single provider attempt; caller must restore after drive settles. */
+  async useSingleAttemptPolicy(): Promise<() => Promise<void>> {
+    await this.open()
+    if (!this.harness) throw new Error("Harness 尚未就绪，不能固定主动重试策略")
+    const harness = this.harness
+    const previous = await harness.getRetryPolicy(TODO_CONTEXT)
+    await harness.setRetryPolicy({ ...previous, enabled: false, maxRetries: 0 }, TODO_CONTEXT)
+    return async () => {
+      if (this.harness === harness) await harness.setRetryPolicy(previous, TODO_CONTEXT)
+    }
+  }
+
   private async openOnce(): Promise<void> {
     if (this.harness || this.state === "faulted") return
     const ctx = TODO_CONTEXT
@@ -481,6 +505,8 @@ export class HarnessSlot {
       models: createHarnessModels({
         // 结构操作没有冻结的回合模型：取当前解析值（它与续跑发起时的设置一致）。
         model: () => this.activeRun?.spec.model ?? resolvePiTurnModel(),
+        traceContext: () => this.activeRun?.spec.traceContext ?? this.structuralHost?.traceContext,
+        traceRequestInfo: () => this.activeRun?.spec.traceRequestInfo?.(),
         takeBlockedError: () => {
           const state = this.hostSpec().state
           const blocked = state.contextError
@@ -1028,7 +1054,12 @@ export class HarnessSlot {
     if (live === undefined) log.error("队列真相读取失败，按存在排队项拒绝手动压缩:", this.sessionId)
     const counts = live ?? this.queuedCounts()
     if (live === undefined || counts.steer + counts.followUp + counts.nextRun > 0) return { status: "pending", queued: counts }
-    this.structuralHost = { systemPrompt: host.systemPrompt, hooks: host.hooks, state: host.state ?? createHarnessRunState() }
+    const traceContext = host.traceContext
+    if (traceContext) publishRuntimeTrace(traceContext, "input_accepted", () => ({ requestId: traceContext.requestId, status: "committed" }))
+    this.structuralHost = { systemPrompt: host.systemPrompt, hooks: host.hooks, state: host.state ?? createHarnessRunState(), traceContext: host.traceContext, traceBridgeState: host.traceBridgeState }
+    const traceUnsubscribes = host.traceContext && hasRuntimeTraceSubscribers()
+      ? this.attachRuntimeTraceBridge(host.traceContext, host.traceBridgeState ?? { linkedNativeRunIds: new Set(), firstTextGenerated: false })
+      : []
     try {
       const result = await this.lane.compact(
         options.customInstructions === undefined ? undefined : { customInstructions: options.customInstructions },
@@ -1068,6 +1099,7 @@ export class HarnessSlot {
     } catch (error) {
       return { status: "failed", error: formatError(error) }
     } finally {
+      for (const unsubscribe of traceUnsubscribes) unsubscribe()
       this.structuralHost = undefined
       // 手动压缩不是 execute()：没有别的 flush 点，审计条目（含压缩续跑的收口条目）在这里落盘。
       await this.flushAudit()
@@ -1395,8 +1427,10 @@ export class HarnessSlot {
    * 只有「怎么驱动」由调用方给的闭包（`drive`）决定，计时器与收尾段完全共用。
    */
   private async executeDrive(spec: HarnessRunSpec, drive: () => Promise<DriveSettlement>): Promise<HarnessRunResult> {
-    const run: ActiveRun = { spec }
+    const run: ActiveRun = { spec, linkedNativeRunIds: new Set() }
     this.activeRun = run
+    if (spec.traceContext) publishRuntimeTrace(spec.traceContext, "agent_start", () => ({ status: "started" }), { parentRunId: spec.traceContext.runId })
+    if (spec.traceContext && hasRuntimeTraceSubscribers()) this.subscribeRuntimeTraceForRun(run)
     // 冻结的 systemPrompt 留底：回合结束后若还有结构性驱动（续跑/恢复），人格前缀不因
     // activeRun 被清而丢成空串。
     this.lastSystemPrompt = spec.systemPrompt
@@ -1405,7 +1439,13 @@ export class HarnessSlot {
     this.timer = setTimeout(() => { void this.abort(ABORT_REASON_TIMEOUT) }, Math.max(1, spec.timeoutMs))
     try {
       await this.assembleLane(spec)
+      if (spec.disableAutomaticCompaction) {
+        const baseline = this.compactionSettings(spec.model).settings
+        await this.harness!.setCompactionSettings({ ...baseline, enabled: false }, TODO_CONTEXT)
+      }
       const settlement = await drive()
+      run.traceStatus = settlement.kind === "settled" ? settlement.record.status
+        : settlement.kind === "rejected" ? settlement.status : "suspended"
       if (settlement.kind === "rejected") {
         log.warn("Harness 操作未被接受:", { sessionId: this.sessionId, tag: settlement.tag })
         return {
@@ -1455,6 +1495,7 @@ export class HarnessSlot {
         state: spec.state,
       }
     } catch (error) {
+      run.traceStatus = "failed"
       // Harness 驱动拒绝（例如上下文取消）或槽自身异常：不静默重建，交给宿主结算。
       await this.collectPendingDelivery(run)
       return {
@@ -1466,9 +1507,20 @@ export class HarnessSlot {
         error: formatError(error),
       }
     } finally {
+      if (spec.disableAutomaticCompaction && this.harness) {
+        try {
+          await this.harness.setCompactionSettings(this.compactionSettings(spec.model).settings, TODO_CONTEXT)
+        } catch (error) {
+          this.compactionSettingsKey = undefined
+          log.error("单次运行结束后恢复自动压缩设置失败，下次装配将重试:", { sessionId: this.sessionId }, formatError(error))
+        }
+      }
+      if (spec.traceContext) publishRuntimeTrace(spec.traceContext, "agent_end", () => ({ status: run.traceStatus ?? (this.abortReason ? "aborted" : "settled") }), { parentRunId: spec.traceContext.runId })
       this.clearTimer()
       // drive 已结束、lane 空闲，这里才是写审计条目的安全点（hook 内写入必死锁）。
       await this.flushAudit()
+      for (const unsubscribe of run.traceUnsubscribes ?? []) unsubscribe()
+      run.traceUnsubscribes = undefined
       // 运行收尾（含中止/失败）必须结束瞬时流式展示，不能让半截正文悬在 UI 上。
       this.endAssistantStream()
       this.activeRun = undefined
@@ -1484,6 +1536,68 @@ export class HarnessSlot {
       // 所以注册表只在 !isRunning() 时真正释放，否则把请求归还给槽等 end()。
       this.onRunSettled?.(this)
     }
+  }
+
+  /** Pi lifecycle bridge exists only for an actively observed run; stream deltas are sampled once. */
+  private subscribeRuntimeTraceForRun(run: ActiveRun): void {
+    if (!this.harness || !run.spec.traceContext || !hasRuntimeTraceSubscribers()) return
+    run.traceUnsubscribes = this.attachRuntimeTraceBridge(run.spec.traceContext, run)
+  }
+
+  private attachRuntimeTraceBridge(context: RuntimeTraceContext, state: { linkedNativeRunIds?: Set<string>; firstTextGenerated?: boolean }): Array<() => void> {
+    if (!this.harness || !hasRuntimeTraceSubscribers()) return []
+    const events = this.harness.events
+    const unsubscribes: Array<() => void> = []
+    const emit = (kind: Parameters<typeof publishRuntimeTrace>[1], payload: Record<string, unknown>, nativeRunId?: string, links: Parameters<typeof publishRuntimeTrace>[3] = {}) => {
+      if (nativeRunId && !state.linkedNativeRunIds?.has(nativeRunId)) {
+        state.linkedNativeRunIds?.add(nativeRunId)
+        publishRuntimeTrace(context, "run_linked", { sessionId: this.sessionId }, { nativeRunId, parentRunId: context.runId })
+      }
+      publishRuntimeTrace(context, kind, payload, { ...links, ...(nativeRunId ? { nativeRunId } : {}), parentRunId: context.runId })
+    }
+    const on = <K extends Parameters<typeof events.on>[0]>(type: K, handler: (event: Extract<import("@earendil-works/pi-agent-core").HarnessEventPayload, { type: K }>) => void) => {
+      unsubscribes.push(events.on(type, handler as never))
+    }
+    on("turn_start", event => emit("turn_start", {}, event.runId, { turnId: event.turnId }))
+    on("turn_end", event => emit("turn_end", { hasToolCalls: event.message.content.some(part => part.type === "toolCall") }, event.runId, { turnId: event.turnId }))
+    on("message_start", event => {
+      if (event.message.role === "user") {
+        const requestId = messageRequestId(event.message as { deskpetEventId?: unknown })
+        emit("input_consumed", { requestId }, event.runId, requestId ? { requestId } : {})
+      }
+      emit("message_start", { role: event.message.role }, event.runId)
+    })
+    on("message_end", event => emit("message_end", { role: event.message.role }, event.runId, { ...(event.entryId ? { entryId: event.entryId } : {}) }))
+    on("message_update", event => {
+      const frame = event.frame
+      const delta = frame?.type === "text_delta" ? frame.delta : event.event.type === "text_delta" ? event.event.delta : ""
+      if (state.firstTextGenerated || delta.length === 0) return
+      state.firstTextGenerated = true
+      emit("first_text_generated", { length: delta.length }, event.runId)
+    })
+    on("tool_start", event => emit("tool_execution_start", { toolName: event.toolName }, event.runId, { turnId: event.turnId, toolCallId: event.toolCallId }))
+    on("tool_end", event => {
+      const resultTextChars = event.result.content.reduce((count, item) => count + (item.type === "text" ? item.text.length : 0), 0)
+      emit("tool_execution_end", { toolName: event.toolName, isError: event.isError, resultTextChars,
+        resultPartCount: event.result.content.length }, event.runId, { turnId: event.turnId, toolCallId: event.toolCallId })
+    })
+    on("retry_start", event => emit("retry_start", { attempt: event.attempt, step: event.step }, event.runId))
+    on("retry_end", event => emit("retry_end", { attempt: event.attempt, step: event.step, success: event.success }, event.runId))
+    on("compaction_start", event => {
+      emit("compaction_requested", { reason: event.reason }, event.runId)
+      emit("compaction_start", { reason: event.reason }, event.runId)
+    })
+    on("compaction_end", event => emit("compaction_end", { reason: event.reason, status: event.status }, event.runId, { ...(event.status === "completed" ? { entryId: event.entryId } : {}) }))
+    on("entry_added", event => {
+      const entry = event.entry
+      const message = entry.type === "message" ? entry.message : undefined
+      emit("entry_added", {
+        entryType: entry.type,
+        ...(message ? { role: message.role } : {}),
+        ...(entry.type === "custom" ? { customType: entry.customType } : {}),
+      }, undefined, { entryId: entry.id })
+    })
+    return unsubscribes
   }
 
   /**
@@ -1540,6 +1654,8 @@ export class HarnessSlot {
     if (!result.ok) return false
     if (result.value.kind === "cancelled") {
       this.pendingDeliveryEntries.delete(requestId)
+      const traceContext = runtimeTraceContextForRequest(requestId)
+      if (traceContext) publishRuntimeTrace(traceContext, "input_cancelled", () => ({ requestId, reason: "delivery_withdrawn" }), { requestId })
       return true
     }
     if (result.value.kind === "already_consumed") this.pendingDeliveryEntries.delete(requestId)

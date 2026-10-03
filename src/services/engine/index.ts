@@ -75,7 +75,10 @@ export {
 export type { PromptSnapshotInput, RedactedText } from "./runtime"
 export {
   createRuntimeTraceContext,
+  hasRuntimeTraceSubscribers,
   publishRuntimeTrace,
+  runtimeTraceContextForRequest,
+  runtimeTracePreview,
   subscribeRuntimeTrace,
 } from "./runtime"
 export type { RuntimeTraceContext, RuntimeTraceEvent, RuntimeTraceKind, RuntimeTraceListener } from "./runtime"

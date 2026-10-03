@@ -1,9 +1,9 @@
 // ==========================================
-// Dreaming —— 离线整理：Light → Review →（人工）Publish
+// Dreaming —— 离线整理：Light → Review → 自动 Publish
 // ==========================================
 //
-// 这条链路永远不自动发布：Review 的产物一律落成 pending_review 候选，
-// 只有用户在记忆面板里逐条批准之后才由 publish 写进 active。
+// Review 的产物只在 Rust 事务提交前落成 prepared staging 候选；
+// 作业完成时由 memory_dreaming_commit 复核并自动写进 active，面板只做事后治理。
 //
 // 资源边界（与《记忆系统运行时契约》§7.2 同源）：
 // - 每批来源数与正文长度都有界，超出的留给下一批，不做「一次全库重算」；
@@ -15,10 +15,11 @@ import { createLogger } from "@/services/logger"
 import { formatError } from "@/services/error"
 import { memoryConfig } from "@/services/config"
 import { isAIGenerating } from "@/services/cooldown"
+import { createRuntimeTraceContext, hasRuntimeTraceSubscribers, publishRuntimeTrace } from "@/services/engine/runtime/trace"
 import { refreshMemoryCount } from "./index"
 import {
-  addMemoryCandidates, cancelMemoryJob, checkpointMemoryJob, publishMemoryBatch, memoryJobSources,
-  memoryStatus, startMemoryJob,
+  addMemoryCandidates, cancelMemoryJob, checkpointMemoryJob, commitMemoryDreamingJob, memoryJobSources,
+  memoryStatus, memoryDreamingBudget, reserveMemoryDreamingBudget, settleMemoryDreamingBudget, startMemoryJob,
 } from "./ipc"
 import type { MemoryCandidateDraft, MemoryDraft, MemorySource } from "./ipc"
 
@@ -30,27 +31,23 @@ const MAX_SOURCES_PER_BATCH = 20
 const MAX_SOURCE_CHARS = 1_200
 const MAX_BATCHES_PER_RUN = 3
 const REVIEW_TIMEOUT_MS = 30_000
-const REVIEW_MAX_TOKENS = 1_200
+/** 评审输出上限的防呆下限；实际值读 ai.memory.dreaming.reviewMaxTokens（默认 1200）。 */
+const REVIEW_MAX_TOKENS_FLOOR = 256
 const LEASE_OWNER = "memory-dreaming"
 const IDLE_TICK_MS = 15_000
 
 let idleTimer: ReturnType<typeof setInterval> | null = null
 let idleSince = 0
 let lastIdleRunAt = 0
-let usageDay = ""
-let usageTokensToday = 0
-
-function refreshUsageDay(): void {
-  const day = new Date().toISOString().slice(0, 10)
-  if (usageDay !== day) {
-    usageDay = day
-    usageTokensToday = 0
-  }
+function localDate(): string {
+  const now = new Date()
+  return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(now.getDate()).padStart(2, "0")}`
 }
 
-function idleBudgetAvailable(): boolean {
-  refreshUsageDay()
-  return memoryConfig.dreamingMaxDailyTokens > 0 && usageTokensToday < memoryConfig.dreamingMaxDailyTokens
+async function idleBudgetAvailable(): Promise<boolean> {
+  if (memoryConfig.dreamingMaxDailyTokens <= 0) return false
+  const budget = await memoryDreamingBudget(localDate())
+  return budget.usedTokens + budget.reservedTokens < memoryConfig.dreamingMaxDailyTokens
 }
 
 export interface DreamingOutcome {
@@ -58,7 +55,9 @@ export interface DreamingOutcome {
   jobId?: string
   sourcesProcessed: number
   candidatesAdded: number
+  publishedCount: number
   oversized: string[]
+  budget?: { localDate: string; reservedTokens: number; usedTokens: number }
   message?: string
 }
 
@@ -168,27 +167,50 @@ function buildReviewPrompt(batch: readonly MemorySource[]): string {
 }
 
 /**
- * 一次整理：Light（登记来源）→ Review（产出待审候选）。
- * 不发布任何内容；返回的计数用于面板展示与报告。
+ * 一次整理：Light（登记来源）→ Review（产出 staging 候选）→ 自动 Publish。
+ * 返回已提交计数，用于面板展示与报告。
  */
-export async function runDreamingSweep(options: { signal?: AbortSignal } = {}): Promise<DreamingOutcome> {
+export async function runDreamingSweep(options: { signal?: AbortSignal; automatic?: boolean } = {}): Promise<DreamingOutcome> {
   if (!memoryConfig.enabled) {
-    return { status: "empty", sourcesProcessed: 0, candidatesAdded: 0, oversized: [], message: "记忆功能已关闭" }
+    return { status: "empty", sourcesProcessed: 0, candidatesAdded: 0, publishedCount: 0, oversized: [], message: "记忆功能已关闭" }
   }
   const started = await startMemoryJob("review")
   const jobId = started.id
+  const traceContext = hasRuntimeTraceSubscribers() ? createRuntimeTraceContext(undefined, jobId) : undefined
+  const traceStartedAt = traceContext ? (typeof performance === "undefined" ? Date.now() : performance.now()) : 0
   let sourcesProcessed = 0
   let candidatesAdded = 0
+  let candidateCount = 0
+  let publishedCount = 0
+  let reservedTokens = 0
+  let usedTokens = 0
+  const today = localDate()
+  let revision = started.revision
+  const processedSourceIds: string[] = []
   const oversized: string[] = []
+
+  if (traceContext) publishRuntimeTrace(traceContext, "memory_extraction_start", () => ({ jobId, revision, phase: started.phase }))
+  const finish = (status: DreamingOutcome["status"], outcome: Omit<DreamingOutcome, "status" | "jobId">, reason?: string): DreamingOutcome => {
+    if (traceContext) publishRuntimeTrace(traceContext, "memory_extraction_end", () => ({
+      jobId, revision, status, candidateCount, sourceIds: processedSourceIds,
+      sourceCount: sourcesProcessed,
+      durationMs: (typeof performance === "undefined" ? Date.now() : performance.now()) - traceStartedAt,
+      ...(reason ? { reason } : {}),
+    }))
+    return { status, jobId, ...outcome }
+  }
 
   try {
     const { collectAllMemorySources } = await import("./sources")
     await collectAllMemorySources()
+    // 评审输出上限按配置取一次快照：reasoning 模型的 thinking 也计入该预算（推理模型需要调大）；
+    // 同一轮内预留与调用共用同一个值，避免中途改配置造成账目口径不一致。
+    const reviewMaxTokens = Math.max(REVIEW_MAX_TOKENS_FLOOR, Math.floor(memoryConfig.dreamingReviewMaxTokens))
 
     for (let batch = 0; batch < MAX_BATCHES_PER_RUN; batch += 1) {
       if (options.signal?.aborted) {
         await cancelMemoryJob(jobId).catch(error => log.warn("取消整理作业失败:", formatError(error)))
-        return { status: "cancelled", jobId, sourcesProcessed, candidatesAdded, oversized }
+        return finish("cancelled", { sourcesProcessed, candidatesAdded, publishedCount, oversized }, "signal_aborted")
       }
       const pending = await memoryJobSources(jobId)
       if (pending.length === 0) break
@@ -203,17 +225,31 @@ export async function runDreamingSweep(options: { signal?: AbortSignal } = {}): 
       })
       if (usable.length === 0) break
 
+      const userText = buildReviewPrompt(usable)
+      const reservation = Math.ceil(userText.length / 4) + reviewMaxTokens
+      if (options.automatic) {
+        const reservationId = `${jobId}:${batch}`
+        const granted = await reserveMemoryDreamingBudget(reservationId, today, reservation, memoryConfig.dreamingMaxDailyTokens)
+        if (!granted) break
+        reservedTokens += reservation
+      }
       const result = await completePiText({
         purpose: "memory",
         systemPrompt: REVIEW_SYSTEM_PROMPT,
-        userText: buildReviewPrompt(usable),
-        maxTokens: REVIEW_MAX_TOKENS,
+        userText,
+        maxTokens: reviewMaxTokens,
         timeoutMs: REVIEW_TIMEOUT_MS,
         ...(options.signal ? { signal: options.signal } : {}),
+        ...(traceContext ? { traceContext } : {}),
       })
-      refreshUsageDay()
-      usageTokensToday += result.usage.input + result.usage.output
+      const actualUsage = result.usage.input + result.usage.output
+      usedTokens += actualUsage
+      if (options.automatic) {
+        await settleMemoryDreamingBudget(`${jobId}:${batch}`, today, reservation, actualUsage)
+        reservedTokens -= reservation
+      }
       const parsed = parseReviewCandidates(result.text, usable)
+      candidateCount += parsed.length
       if (parsed.length > 0) {
         const payloads: MemoryCandidateDraft[] = []
         for (const candidate of parsed) {
@@ -229,21 +265,31 @@ export async function runDreamingSweep(options: { signal?: AbortSignal } = {}): 
         candidatesAdded += await addMemoryCandidates(jobId, payloads)
       }
       sourcesProcessed += usable.length
-      await checkpointMemoryJob(jobId, usable[usable.length - 1]!.sourceId, LEASE_OWNER)
+      processedSourceIds.push(...usable.map(source => source.sourceId))
+      const checkpoint = await checkpointMemoryJob(jobId, usable[usable.length - 1]!.sourceId, LEASE_OWNER)
+      revision = checkpoint.revision
       if (batchSources.length < MAX_SOURCES_PER_BATCH) break
     }
 
+    // Candidate rows are only an internal, hash-checked staging area. There is no
+    // review screen: the finished job commits all eligible candidates atomically.
+    const current = await memoryStatus()
+    const committedRevision = await commitMemoryDreamingJob(jobId, current.revision)
+    if (candidateCount > 0) {
+      publishedCount = candidateCount
+      await refreshMemoryCount()
+    }
     const status = sourcesProcessed === 0 && candidatesAdded === 0 ? "empty" : "completed"
-    return { status, jobId, sourcesProcessed, candidatesAdded, oversized }
+    return finish(status, { sourcesProcessed, candidatesAdded, publishedCount, oversized, budget: { localDate: today, reservedTokens, usedTokens }, message: `revision ${committedRevision}` })
   } catch (error) {
     log.error("整理失败:", formatError(error))
     await cancelMemoryJob(jobId).catch(cancelError => log.warn("失败后取消作业也失败:", formatError(cancelError)))
-    return { status: "failed", jobId, sourcesProcessed, candidatesAdded, oversized, message: formatError(error) }
+    return finish("failed", { sourcesProcessed, candidatesAdded, publishedCount, oversized, message: formatError(error) }, "operation_failed")
   }
 }
 
 /**
- * 空闲模式的轻量调度器：只负责触发可取消的离线作业，发布仍必须经过面板审批。
+ * 空闲模式的轻量调度器：只负责触发可取消的离线作业，作业完成后由 Rust 事务自动提交。
  * 状态保存在本模块仅作为节流；真正的租约、游标和候选正文都在 Rust 库里。
  */
 export function startIdleDreamingScheduler(): () => void {
@@ -260,10 +306,11 @@ export function startIdleDreamingScheduler(): () => void {
     idleSince ||= Date.now()
     const idleReady = Date.now() - idleSince >= Math.max(30, memoryConfig.dreamingIdleSeconds) * 1000
     const intervalReady = Date.now() - lastIdleRunAt >= Math.max(1, memoryConfig.dreamingMinIntervalMinutes) * 60_000
-    if (!idleReady || !intervalReady || !idleBudgetAvailable()) return
+    if (!idleReady || !intervalReady) return
     lastIdleRunAt = Date.now()
     idleSince = Date.now()
-    void runDreamingSweep().catch(error => log.warn("空闲记忆整理失败:", formatError(error)))
+    void idleBudgetAvailable().then(available => available ? runDreamingSweep({ automatic: true }) : undefined)
+      .catch(error => log.warn("空闲记忆整理失败:", formatError(error)))
   }
   idleTimer = setInterval(tick, IDLE_TICK_MS)
   tick()
@@ -274,20 +321,4 @@ export function stopIdleDreamingScheduler(): void {
   if (idleTimer) clearInterval(idleTimer)
   idleTimer = null
   idleSince = 0
-}
-
-/**
- * 发布用户批准的候选。基准过期由 Rust 抛 MEMORY_CONFLICT，
- * 这里只把它翻译成可展示的结果，不做自动重试或静默覆盖。
- */
-export async function publishApprovedCandidates(jobId: string, candidateIds: string[]): Promise<{ ok: boolean; revision?: number; error?: string }> {
-  if (candidateIds.length === 0) return { ok: true }
-  const { revision } = await memoryStatus()
-  try {
-    const next = await publishMemoryBatch(jobId, candidateIds, revision)
-    await refreshMemoryCount()
-    return { ok: true, revision: next }
-  } catch (error) {
-    return { ok: false, error: formatError(error) }
-  }
 }

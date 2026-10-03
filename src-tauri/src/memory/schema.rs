@@ -1,7 +1,7 @@
 //! 记忆库 schema：唯一建表点。
 //!
 //! 设计约束（对应《记忆系统运行时契约》§3.2）：
-//! - 已接受事实（memory_items）与待审候选（memory_candidates）分表：候选永远不进召回。
+//! - 已接受事实（memory_items）与 staging 候选（memory_candidates）分表：候选只在提交事务前存在，永远不进召回。
 //! - 每条事实的来源存在 memory_item_sources，来源本身独立成行。
 //! - 遗忘用 memory_tombstones 记录**稳定事件身份**（session+entry+hash）：它要在索引重建、
 //!   水位补扫、旧批次发布时继续拦住同一来源，不能依赖可重建的行号。
@@ -10,7 +10,7 @@
 use crate::error::{AppError, AppResult};
 use rusqlite::{Connection, OptionalExtension};
 
-pub const SCHEMA_VERSION: i64 = 1;
+pub const SCHEMA_VERSION: i64 = super::protocol::MEMORY_SCHEMA_VERSION;
 
 pub fn ensure(conn: &Connection) -> AppResult<()> {
     conn.execute_batch(
@@ -55,6 +55,9 @@ pub fn ensure(conn: &Connection) -> AppResult<()> {
           observed_at INTEGER,
           valid_from INTEGER,
           valid_to INTEGER,
+          event_at_json TEXT,
+          due_at_json TEXT,
+          working_state TEXT,
           expires_at INTEGER,
           supersedes_id TEXT,
           created_at INTEGER NOT NULL,
@@ -130,6 +133,24 @@ pub fn ensure(conn: &Connection) -> AppResult<()> {
           created_at INTEGER NOT NULL
         ) STRICT;
 
+        CREATE TABLE IF NOT EXISTS memory_dreaming_budgets (
+          local_date TEXT PRIMARY KEY NOT NULL,
+          reserved_tokens INTEGER NOT NULL DEFAULT 0,
+          used_tokens INTEGER NOT NULL DEFAULT 0,
+          updated_at INTEGER NOT NULL
+        ) STRICT;
+
+        CREATE TABLE IF NOT EXISTS memory_dreaming_reservations (
+          reservation_id TEXT PRIMARY KEY NOT NULL,
+          local_date TEXT NOT NULL,
+          reserved_tokens INTEGER NOT NULL,
+          used_tokens INTEGER,
+          status TEXT NOT NULL CHECK(status IN ('reserved','settled')),
+          created_at INTEGER NOT NULL,
+          updated_at INTEGER NOT NULL
+        ) STRICT;
+        CREATE INDEX IF NOT EXISTS memory_dreaming_reservations_day ON memory_dreaming_reservations(local_date,status);
+
         CREATE VIRTUAL TABLE IF NOT EXISTS memory_fts USING fts5(
           item_id UNINDEXED,
           item_version UNINDEXED,
@@ -141,6 +162,8 @@ pub fn ensure(conn: &Connection) -> AppResult<()> {
         "#,
     )
     .map_err(|e| AppError::Memory(format!("建表失败: {e}")))?;
+
+    crate::proactive::schema::ensure(conn)?;
 
     for (key, value) in [
         ("schema_version", SCHEMA_VERSION.to_string()),

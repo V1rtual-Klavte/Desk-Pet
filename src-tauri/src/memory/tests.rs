@@ -66,12 +66,36 @@ fn add(store: &MemoryStore, op: &str, base: i64, draft: &Value) -> i64 {
     store.apply_change(op, base, "add", None, None, Some(draft)).expect("写入记忆")
 }
 
+#[cfg(debug_assertions)]
+#[test]
+fn evaluation_reset_replaces_database_and_source_governance() {
+    let (_fixture, store) = Fixture::new();
+    store.register_sources(&[source("eval-source", "eval-entry", "eval-hash")]).expect("登记来源");
+    let revision = add(&store, "eval-add", 0, &draft("旧试验事实", vec!["eval-source"]));
+    store.apply_change("eval-forget", revision, "clear", None, None, None).expect("遗忘旧库");
+    store.job_start("review", "s1").expect("旧试验任务");
+    let old = store.status().expect("旧库状态");
+    assert!(old.revision > 0 && old.forget_epoch > 0 && old.job_count > 0);
+    let fresh = store.reset_for_evaluation().expect("重建同一所有者的数据库");
+    assert_eq!(fresh.revision, 0);
+    assert_eq!(fresh.forget_epoch, 0);
+    assert_eq!(fresh.item_count, 0);
+    assert_eq!(fresh.job_count, 0);
+    assert_eq!(fresh.candidate_count, 0);
+    // 同一 source id 在上一试验被遗忘，重建后必须按新证据重新准入。
+    store.register_sources(&[source("eval-source", "fresh-entry", "fresh-hash")]).expect("新来源");
+    assert_eq!(add(&store, "eval-add", 0, &draft("新试验事实", vec!["eval-source"])), 1);
+    let items = store.query("新试验事实", Some("user"), None, None, 50).expect("实际新查询");
+    assert_eq!(items.len(), 1);
+    assert_eq!(items[0]["draft"]["content"], json!("新试验事实"));
+}
+
 #[test]
 fn protocol_commands_match_published_schema() {
     // 协议文件是跨 Rust/TS 的唯一边界：命令清单与 schema 版本必须与实现同源。
     assert!(MEMORY_COMMANDS.contains(&"memory_query"));
-    assert!(MEMORY_COMMANDS.contains(&"memory_publish_batch"));
-    assert_eq!(MEMORY_COMMANDS.len(), 19, "命令数量变了就要同步 protocol.json 与 ipc.ts");
+    assert!(MEMORY_COMMANDS.contains(&"memory_dreaming_commit"));
+    assert_eq!(MEMORY_COMMANDS.len(), 22, "命令数量变了就要同步 protocol.json 与 ipc.ts");
     assert_eq!(MEMORY_SCHEMA_VERSION, SCHEMA_VERSION);
 }
 
@@ -90,6 +114,36 @@ fn chinese_two_character_queries_match_via_like_fallback() {
     // 三字以上的查询走 FTS 正常命中；无关查询不得返回任何条目。
     assert_eq!(store.query("冰美式", None, None, None, 10).unwrap().len(), 1);
     assert!(store.query("用户的银行卡号", None, None, None, 10).unwrap().is_empty());
+}
+
+#[test]
+fn fts_only_hits_keep_scope_expiry_and_version_boundaries() {
+    let (fixture, store) = Fixture::new();
+    store.register_sources(&[source("fts-source", "fts-entry", "fts-hash")]).unwrap();
+    add(&store, "fts-user", 0, &draft("用户喜欢CAFÉ", vec!["fts-source"]));
+    let mut card = draft("其他Card喜欢CAFÉ", vec!["fts-source"]);
+    card["scope"] = json!("card");
+    card["scopeId"] = json!("other-card");
+    add(&store, "fts-card", 1, &card);
+    let mut expired = draft("已过期CAFÉ", vec!["fts-source"]);
+    expired["validTo"] = json!(1_000i64);
+    add(&store, "fts-expired", 2, &expired);
+    // SQLite LIKE does not fold non-ASCII É/é; this must exercise the FTS branch.
+    let conn = rusqlite::Connection::open(fixture.0.join("memory.sqlite3")).unwrap();
+    let like_hits: i64 = conn.query_row("SELECT count(*) FROM memory_items WHERE content LIKE '%café%'", [], |row| row.get(0)).unwrap();
+    assert_eq!(like_hits, 0);
+    let hits = store.query("café", Some("user"), None, Some("s1"), 50).unwrap();
+    assert_eq!(hits.len(), 1, "FTS must find the live user fact while excluding card and expired facts");
+    assert_eq!(hits[0]["draft"]["content"], json!("用户喜欢CAFÉ"));
+    assert!(store.query("café", Some("card"), Some("active-card"), Some("s1"), 50).unwrap().is_empty());
+    let id = hits[0]["id"].as_str().unwrap();
+    store.apply_change("fts-correct", 3, "update", Some(id), Some(1), Some(&draft("用户改喝红茶", vec!["fts-source"]))).unwrap();
+    // Inject an old index row to verify exact (id, version) matching independently of index cleanup.
+    conn.execute("INSERT INTO memory_fts(item_id,item_version,content,summary,aliases) VALUES (?1,1,'CAFÉ','','')", [id]).unwrap();
+    assert!(store.query("café", Some("user"), None, Some("s1"), 50).unwrap().is_empty(), "stale FTS version resurrected the corrected fact");
+    let corrected = store.query("红茶", Some("user"), None, Some("s1"), 50).unwrap();
+    assert_eq!(corrected.len(), 1);
+    assert_eq!(corrected[0]["version"], json!(2));
 }
 
 #[test]
@@ -160,7 +214,7 @@ fn forget_blocks_recall_and_reingest_and_rebuild() {
 }
 
 #[test]
-fn pending_candidates_stay_out_of_recall_until_published() {
+fn dreaming_candidates_commit_only_at_job_boundary() {
     let (_fixture, store) = Fixture::new();
     store.register_sources(&[source("src-1", "entry-1", "hash-1")]).unwrap();
     let job = store.job_start("review", "host").unwrap();
@@ -174,21 +228,25 @@ fn pending_candidates_stay_out_of_recall_until_published() {
     assert_eq!(written, 1);
     assert!(
         store.query("拿铁", None, None, None, 10).unwrap().is_empty(),
-        "未审批的候选进入了召回"
+        "prepared 候选进入了召回"
     );
 
-    let pending = store.review_batch(&job_id).unwrap();
-    assert_eq!(pending.len(), 1);
-    let candidate_id = pending[0]["id"].as_str().unwrap().to_string();
-
-    // 基准过期（这里故意用旧版本）必须拒绝，不能静默覆盖。
-    let stale = store.publish_batch(&job_id, &[candidate_id.clone()], 999);
+    // Commit with a stale library version must reject the whole automatic publish.
+    let stale = store.commit_dreaming_job(&job_id, 999);
     assert!(matches!(stale, Err(AppError::MemoryConflict)));
 
     let revision = store.status().unwrap().revision;
-    store.publish_batch(&job_id, &[candidate_id], revision).expect("发布获批候选");
+    store.commit_dreaming_job(&job_id, revision).expect("自动提交本 job 的合格候选");
     assert_eq!(store.query("拿铁", None, None, None, 10).unwrap().len(), 1);
-    assert!(store.review_batch(&job_id).unwrap().is_empty(), "已发布的候选仍在待审清单里");
+}
+
+#[test]
+fn natural_chinese_question_retrieves_address_fact_by_concept_bigrams() {
+    let (_fixture,store)=Fixture::new();
+    store.register_sources(&[source("src-address","entry-address","hash-address")]).unwrap();
+    add(&store,"address-fact",0,&draft("用户希望被称呼为阿澄",vec!["src-address"]));
+    let results=store.query("你平时想让我怎么称呼你？",None,None,None,10).unwrap();
+    assert!(results.iter().any(|item|item["draft"]["content"]==json!("用户希望被称呼为阿澄")),"由模板礼貌语气包裹的完整问题应命中‘称呼’事实");
 }
 
 #[test]

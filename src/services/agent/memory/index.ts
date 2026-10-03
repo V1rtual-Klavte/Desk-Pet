@@ -13,6 +13,8 @@ import { formatError } from "@/services/error"
 import { installMemoryProvider, sqliteMemoryProvider, recallMemory } from "./provider"
 import { memoryList, memoryStatus, applyMemoryChange } from "./ipc"
 
+export type { TemporalAnchor, ProactiveRecurrence, ProactiveOwner, ProactiveTask, ProactiveSourceRef } from "./protocol"
+
 export { parseRerankIds } from "./rerank"
 export {
   emptyMemoryProvider, getMemoryProvider, installMemoryProvider, recallMemory, resetMemoryProvider,
@@ -20,16 +22,17 @@ export {
 } from "./provider"
 export type { MemoryProvider, MemoryProjection, MemoryRecallRequest } from "./provider"
 export {
-  addMemoryCandidates, applyMemoryChange, backupMemory, cancelMemoryJob, checkpointMemoryJob, exportMemory,
-  getMemoryItems, memoryDetail, memoryJobSources, memoryList, memoryStatus, publishMemoryBatch,
-  queryMemory, rebuildMemory, registerMemorySources, restoreMemory, resumeMemoryJob, reviewMemoryBatch,
-  startMemoryJob,
+  addMemoryCandidates, applyMemoryChange, backupMemory, cancelMemoryJob, checkpointMemoryJob, commitMemoryDreamingJob,
+  exportMemory, getMemoryItems, memoryDetail, memoryHistory, memoryJobSources, memoryList, memoryStatus,
+  memoryDreamingBudget, reserveMemoryDreamingBudget, settleMemoryDreamingBudget,
+  queryMemory, rebuildMemory, registerMemorySources, restoreMemory, resumeMemoryJob, startMemoryJob,
 } from "./ipc"
 export type {
-  CandidateStatus, MemoryCandidate, MemoryCandidateDraft, MemoryChangeRequest, MemoryDraft, MemoryItem,
-  MemoryJob, MemoryKind, MemoryScope, MemorySource, MemoryStatus, MemoryStatusSnapshot,
+  MemoryCandidateDraft, MemoryChangeRequest, MemoryDraft, MemoryHistoryEntry, MemoryItem,
+  MemoryJob, MemoryKind, MemoryScope, MemorySource, MemorySourceAudit, MemoryStatus, MemoryStatusSnapshot, WorkingState,
 } from "./ipc"
 export { collectAllMemorySources, collectMemorySources, trustedSourcesFromEntries } from "./sources"
+export { resolveCurrentTrustedMemorySource } from "./sources"
 export { runDreamingSweep, startIdleDreamingScheduler, stopIdleDreamingScheduler, type DreamingOutcome } from "./dreaming"
 
 const log = createLogger("Memory")
@@ -93,6 +96,7 @@ export const MemoryService = {
         operationId: `clear-${crypto.randomUUID()}`,
         baseRevision: revision,
         action: "clear",
+        actor: "internal",
       })
     } catch (error) {
       log.error("清空记忆失败:", error instanceof Error ? error : undefined)

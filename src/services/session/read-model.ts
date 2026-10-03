@@ -16,6 +16,26 @@ const log = createLogger("SessionReadModel")
 export type SessionEntryMapper = (entry: CustomEntry) => Message | Message[] | undefined
 
 const customMappers = new Map<string, SessionEntryMapper>()
+type ActiveReceiptReader = (sessionId: string, attemptId: string, assistantEntryId: string) => Promise<boolean>
+type ActiveReceiptReconciler = (sessionId: string) => Promise<void>
+let activeReceiptReader: ActiveReceiptReader | undefined
+let activeReceiptReconciler: ActiveReceiptReconciler | undefined
+
+/** Proactive owns receipt truth in SQLite; the session projection only asks whether a specific entry is qualified. */
+export function registerActiveReceiptReader(reader: ActiveReceiptReader): () => void {
+  activeReceiptReader = reader
+  return () => { if (activeReceiptReader === reader) activeReceiptReader = undefined }
+}
+
+/** Resolve only unresolved proactive attempts for the session before projecting its entries. */
+export function registerActiveReceiptReconciler(reconcile: ActiveReceiptReconciler): () => void {
+  activeReceiptReconciler = reconcile
+  return () => { if (activeReceiptReconciler === reconcile) activeReceiptReconciler = undefined }
+}
+
+export async function reconcileActiveReceipts(sessionId: string): Promise<void> {
+  await activeReceiptReconciler?.(sessionId)
+}
 
 /**
  * 注册 deskpet 自定义 entry 的展示映射（内核写入新自定义类型时在此登记）。
@@ -117,12 +137,37 @@ function messageFromEntry(entry: MessageEntry): Message | undefined {
  * compaction / branch_summary 是控制 entry，不进入聊天视图；
  * 未注册 mapper 的自定义 entry 默认隐藏，避免控制事件伪装成聊天内容。
  */
-export function messagesFromEntries(entries: readonly Entry[]): Message[] {
+export interface ActiveAttemptAssociation { attemptId: string; triggerEntryId: string }
+
+export async function messagesFromEntries(entries: readonly Entry[], sessionId?: string, onActiveReceiptError?: (error: unknown) => void, activeAssociations: ReadonlyMap<string, ActiveAttemptAssociation> = new Map()): Promise<Message[]> {
   const messages: Message[] = []
+  const latestUserIndex = entries.reduce((latest, entry, index) => entry.type === "message" && entry.message.role === "user" ? index : latest, -1)
+  const entryIndex = new Map(entries.map((entry, index) => [entry.id, index]))
   for (const entry of entries) {
     if (entry.type === "message") {
+      const association = activeAssociations.get(entry.id)
+      if (entry.message.role === "assistant" && association) {
+        if (!sessionId || !activeReceiptReader) {
+          log.error("主动助手条目缺少回执读取器，按未确认隐藏:", { sessionId, attemptId: association.attemptId, entryId: entry.id })
+          continue
+        }
+        // 读取异常交给 session loader 暴露；不能把“查不到/读失败”解释为成功投影。
+        try {
+          if (!await activeReceiptReader(sessionId, association.attemptId, entry.id)) continue
+        } catch (error) {
+          onActiveReceiptError?.(error)
+          log.error("主动助手条目回执核对失败，按未确认隐藏:", { sessionId, attemptId: association.attemptId, entryId: entry.id }, formatError(error))
+          continue
+        }
+      }
       const message = messageFromEntry(entry)
-      if (message) messages.push(message)
+      if (message) {
+        const triggerIndex = association ? entryIndex.get(association.triggerEntryId) ?? -1 : -1
+        // An attempt whose source trigger predates the latest user ingress may remain visible as history,
+        // but it must not become a new unanswered proactive message after a settlement race.
+        const countsAsUnanswered = Boolean(association && triggerIndex > latestUserIndex)
+        messages.push(association ? { ...message, isProactive: countsAsUnanswered } : message)
+      }
       continue
     }
     if (entry.type === "custom") {

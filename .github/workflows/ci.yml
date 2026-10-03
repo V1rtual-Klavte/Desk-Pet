@@ -6,6 +6,8 @@ name: CI
 # 不用真实 Provider，夹具一律走 `os.tmpdir()` 与 node:path，不依赖某一端的 shell 或分隔符。
 on:
   push:
+    # v* tag 由 release.yml 负责：不排除的话同一 SHA 会在 verify 上白跑一遍双平台（且并不阻塞 release）
+    tags-ignore: ["v*"]
   pull_request:
   workflow_dispatch:
 
@@ -60,3 +62,23 @@ jobs:
 
       # FLAKY 棘轮：只缩不放，观测到基线（test/flaky-baseline.json）之外的新 FLAKY 即失败
       - run: node scripts/check-flaky-ratchet.mjs
+
+  # 打包配置守卫：秒级、不装 Rust、不跑构建。Release 模式构建在 macOS runner 上按 10 倍
+  # 计费，所以平时的 push/PR 只用静态检查守住配置漂移；真正的双平台构建在 release.yml。
+  bundle-config:
+    name: bundle-config
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # 版本与 tag 的一致性检查需要 pnpm 与 node，但不需要安装依赖
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      # GITHUB_REF_NAME 在任何触发下都会被设置（push 时是分支名、pull_request 时是 `123/merge`），
+      # 只有 GITHUB_REF_TYPE === "tag" 时它才是 tag，脚本据此决定是否校验版本一致性
+      #（见 scripts/check-bundle-config.mjs 的 resolveTag）。
+      - run: pnpm run check:bundle

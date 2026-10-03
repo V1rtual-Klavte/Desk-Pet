@@ -6,7 +6,7 @@ V1rtual-Desk-Pet 的运行时验证以 [Live Test 使用规范](../../test/READM
 
 - **Live Test** 在独立 Tauri WebView 中运行真实前端服务、Rust IPC、运行时状态和临时数据根。它按 Scene 的入口选择真实 Provider、fake Provider 或无模型的 unit 断言；这些入口的含义及命令见 Live README。
 - **类型与编译检查**只证明 TypeScript/Rust 的静态可构建性，不能替代 Live Test 的状态、IPC、Provider 或工具链验证。
-- **Rust 单测**（`pnpm run test:rust`，即 `cargo test --lib`）覆盖 `src-tauri` 内不依赖运行时的纯逻辑：Bash 策略、路径校验、输出裁剪与工具许可额度。它们不启动 Tauri，也不验证 IPC、Provider 与持久化。
+- **Rust 单测**（`pnpm run test:rust`，即 `cargo test --lib`）覆盖 Bash 策略、路径校验、工具许可，以及真实 SQLite 治理与 trace 文件追加、重试和恢复。它们不启动 Tauri，不验证 WebView IPC 与 Provider 接线；release 存储基准需显式执行。
 - **CI** 在 macOS 和 Windows 执行编译级检查、Rust 单测与快层 L2 / L3（经重试入口 `scripts/run-vitest-with-retry.mjs`，附测试纪律扫描与 FLAKY 棘轮）；L4 Live Test 不在 CI 中运行。Windows 的运行时交互仍须在支持的桌面环境中验证。
 
 ## Contract 门禁
@@ -16,10 +16,14 @@ V1rtual-Desk-Pet 的运行时验证以 [Live Test 使用规范](../../test/READM
 严格模式同时检查：
 
 - `coverage.scenarios` 引用已发现的 **caseId**，并与模块和 `contractId` 匹配；
-- Contract 所需的 `boundary`、`error` 由实际 Scene tag 满足；
+- Contract 声明的 L4 `boundary`、`error` 要求由实际 Scene tag 满足；已经迁入 L2/L3 的判据由对应 caseId 与层级关联验证，不强制重复制造 L4 场景；
 - 除显式且有理由的 `unitOnly` 外，每个 Contract 至少有一个非 unit 场景。
 
 通过结果只证明当次配置、Provider 与已覆盖 Scene 下的行为；真实模型下的记忆召回质量、记忆库的资源开销、未覆盖的平台路径与尚未接通的规划能力不能由已有场景推断为已验证（记忆模块已有 L4 `memory-store-lifecycle` 等确定性场景，它们证明协议与存储，不证明模型效果）。
+
+线路、记忆质量与资源开销分别有独立评测入口，格式和命令见[测试 README](../../test/README.md#trace记忆质量与性能门禁)。线路完整性检查与用户理想稿的独立 AI 审阅分开；理想稿只由用户编写。记忆原始采集不能代替 gold 双人审计与校准 judge 盲审。性能分列 release 原生存储、debug IPC 和进程树样本，不能冒充真实 UI 首显或完整产品 RSS。
+
+外部记忆基准（memory-bench：LongMemEval / LoCoMo / MemoryBank cn）是独立观测层，与自建 80 题物理隔离、不进 CI 与发布门禁。数据集文件不进仓库：版本锁（固定 revision + SHA-256、许可原文、判分移植代码）在 git，数据由 `pnpm run test:memory-bench:prepare [-- --data-dir <目录>]` 装进开发者指定的 data-dir（默认 `test/memory-bench/.data/`，可弃缓存），运行期不下载。判分为官方脚本/模板的自适配移植（LoCoMo 词面 F1 无 judge；LME judge 必须异构于被测模型），报告口径为 `source: external` / `status: observational`、不设质量阈值；运行方法、口径差异与非商用许可约束见 [memory-bench/README](../../test/memory-bench/README.md)。
 
 ## 未验证边界
 

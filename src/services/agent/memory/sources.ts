@@ -95,6 +95,14 @@ export async function collectMemorySources(sessionId: string): Promise<MemorySou
   return sources.map(({ rawText: _rawText, ...source }) => source)
 }
 
+/** Resolve only the source attached to the currently committed trusted ingress. */
+export async function resolveCurrentTrustedMemorySource(sessionId: string, eventId: string): Promise<MemorySource> {
+  if (!sessionId || !eventId) throw new Error("缺少当前可信用户事件身份")
+  const matches = (await collectMemorySources(sessionId)).filter(source => source.eventId === eventId)
+  if (matches.length !== 1) throw new Error("当前可信用户来源缺失或不唯一")
+  return matches[0]!
+}
+
 export async function collectAllMemorySources(): Promise<MemorySource[]> {
   const metadata = await listPiSessionMetadata()
   const all: MemorySource[] = []

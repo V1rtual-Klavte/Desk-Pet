@@ -19,7 +19,7 @@ pub fn log_messages(msgs: Vec<String>) {
 }
 
 /// 前端启动后推送生效级别。
-/// 与 set_monitor_config 同一模式：配置的唯一真相源在前端，Rust 只接收原语。
+/// 与 set_monitor_enabled 同一模式：配置的唯一真相源在前端，Rust 只接收原语。
 #[tauri::command]
 pub fn set_log_config(level: u8) {
     logger::set_level(level);

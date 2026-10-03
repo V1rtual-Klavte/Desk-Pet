@@ -1,7 +1,7 @@
 ---
 document_type: current_contract
 status: code_checked
-updated_at: 2026-09-29
+updated_at: 2026-10-02
 scope: runtime-foundation-before-memory-kernel
 ---
 
@@ -17,7 +17,7 @@ scope: runtime-foundation-before-memory-kernel
 
 忙碌输入的持久状态由 lane inbox 承担：投递即 commit 进会话文件；被消费即移出并进入正文；未消费项在停止/中断后归还，不会虚假 accepted。单项撤回经 `cancelQueued` 返回 `cancelled / already_consumed / not_found / unavailable`（末者表示槽或 lane 通道不可用，不是「没找到」）；忙碌也包含**没有宿主回合可投递**的情形：压缩在飞时普通输入与 `resumePausedInputs` 都被明确拒绝并按 `admission` 结算、会话里补一条可见系统消息，主动消息不排队，「忙」的唯一判据是 `hasOpenOperation()`（含 lane 结构操作，读失败 fail-closed，对外经 `isSessionBusy` 暴露）；排队项另有只读视图（`listQueuedInputs`）供 UI/场景使用，UI 不再自建队列状态。显式投递意图选择、排队视图、单项撤回、停止入口与逐项投递证据已落地（协议见 [Pi 方案基线](../history/implementation/Pi运行时与工具协议建设方案-2026-09-20基线.md#3-steer-与-follow-up-双模式)）。运行中的「停止」按会话取消（`stopActiveRun`）：停止同时终止该会话在跑的计划与它的子运行（子槽随父槽级联取消，正在跑的那一步也立刻停，不等到步骤边界），结果为 `aborted` 且 `abortReason=user` 时不写兜底失败回复、不标 failure，未消费输入由 lane 以 `nextRun` 归还（口语为「已暂停」，面板可见可撤回；收尾点 `executeDrive` 的 finally 在清空 `activeRun` 后再补一次 `flushRequeueQueue()`，兜住停止期间晚到 push 的窗口）；停止与工具轮上限同时发生时按停止结算（停止是更晚、更可见的事实，不退回「工具轮超限」早退，也不因此在结算里丢掉归还的未消费输入）；用户可经 `resumePausedInputs` 把暂停输入按原顺序投递成一次标准回合，或逐条丢弃（投递前已从 inbox 取出，投递未被接受或失败时按「是否已有条目落盘」决定是否放回，绝不重复追加用户正文；回滚放回自身失败按 error 级记录并经 `reportError(overlay:false)` 留证，当前会话补一条可见提示（「刚才那条暂停输入没能放回队列，请重新发送～」），不静默）。[`delivery.ts`](../../src/services/engine/harness/delivery.ts) 的 `describeInputDelivery(sessionId, requestId)` 只读既有产物推导输入阶段（queued / context_committed / request_prepared / responded），返回判别式结果：`ok:true` 可带 `evidence`（也可能确实没有证据），`ok:false` 表示读取失败——「核对不了」与「没有证据」不同形；请求快照的 `agentMessages[].id` 用投递身份（`deskpetEventId`，见 [`input-identity.ts`](../../src/services/engine/runtime/input-identity.ts)），因此「这条输入进没进这次请求」可核对，`responded` 只在确有 `provider_usage` 快照时给出。空闲发送与忙碌投递共用同一身份口径（入口只生成一次 requestId 与 ingress，两路复用），所以证据链对空闲输入同样走到 `request_prepared`（拿到回执为 `responded`），不存在查不到证据的输入路径。证据链写入/正文落盘失败一律 error 级并走 `reportError`；兜底失败回复与中断文案的落盘失败除留痕外还在回合结果上标 `persistFailed`——失败可见，且承认界面显示过的正文可能没进会话文件（界面与持久正文不一致是已知后果，不假装已落盘），读失败与空结果不同形：`isInputCommitted` 返回 `committed / pending / unknown` 三态，读取失败（`unknown`）按「不重复追加用户正文」处理并补一条系统提示。审计与快照条目（`deskpet.*`）只入队（hook 内写 lane 会与 drive 的命令锁互等），落盘由槽的唯一 `flushAudit()` 在 lane 空闲时完成：回合收尾、手动压缩收尾、槽关闭前各 flush 一次，回合结算前对悬空的快照任务再补一次；写失败的条目保留在队列里重试一次，仍失败记 error 级，槽关闭前仍有残留也记 error —— 证据链的组成项不因槽生命周期结束而静默消失。排队视图是 lane inbox 的只读投影（`listQueuedInputs`）：开槽时 `seedQueuedMirror()` 用 `lane.watch()` 的一次性读取播种（播种失败按未就绪处理，不把空镜像当成「没有排队项」），此后由 `queue_update` 全量覆盖；镜像未就绪时 `/compact` 按失败拒绝（`队列状态未就绪，稍后再试`）而不是放行，`QueuedInputsView.loaded` 表示镜像可信。中断运行（崩溃恢复）的继续/丢弃经同一决策条暴露给用户。预检失败不丢输入的边界：准入（`lane.accept`）提交条目在先，计划段/召回/装配在后的任一步失败都只结算那条已接受的操作（按取消），条目本身留在会话文件里 —— 界面看到的是「已发出但没回上」，重启后仍能读到这条输入，不做静默删除；未获准入（拒绝/槽不可用）时输入没有条目，也不先画用户气泡。七阶段只保留这四段是**显式裁定**：`request_started` 由 `request_prepared` 覆盖、`settled` 由 `responded` 覆盖，不补两段（FIX-14）。
 
-投递意图由单条显式选择决定，未选择时取配置 `ai.conversation.defaultDelivery`；运行阶段只决定能否投递，不再替用户选择 steer/followUp。队列批量策略 `ai.conversation.steeringMode` / `followUpMode`、压缩阈值与生成级重试策略（`ai.loop.maxRetry`）在每次运行开始前与配置对齐（按运行冻结）：改设置从下一次 run 起作用，不必重开会话；运行中不改变已冻结的行为。steer 等当前响应及整个工具批次结束，followUp 等运行准备自然结束，均不硬中断工具。Slash 执行只有 ingress 一条路径（ChatPanel 只提交输入），命令按声明的 `busyPolicy` 准入：只读查询与独立窗口动作（`immediate`：`/help`、`/win open`、`/win close`）可立即执行，`/compact` 与 `/skill`（`coordinated`）交给运行边界 —— `/skill` 在忙碌时按并发如实拒绝、不中途排队也不谎称已启动，改会话状态的命令（`exclusive`：`/clear`、`/memory clean`）在忙碌时明确拒绝而不是丢弃。
+投递意图由单条显式选择决定，未选择时取配置 `ai.conversation.defaultDelivery`；运行阶段只决定能否投递，不再替用户选择 steer/followUp。队列批量策略 `ai.conversation.steeringMode` / `followUpMode`、压缩阈值与生成级重试策略（`ai.loop.maxRetry`）在每次运行开始前与配置对齐（按运行冻结）：改设置从下一次 run 起作用，不必重开会话；运行中不改变已冻结的行为。steer 等当前响应及整个工具批次结束，followUp 等运行准备自然结束，均不硬中断工具。Slash 执行只有 ingress 一条路径（ChatPanel 只提交输入），命令按声明的 `busyPolicy` 准入：只读查询与独立窗口动作（`immediate`：`/help`）可立即执行，`/compact` 与 `/skill`（`coordinated`）交给运行边界 —— `/skill` 在忙碌时按并发如实拒绝、不中途排队也不谎称已启动，改会话状态的命令（`exclusive`：`/clear`、`/memory clean`）在忙碌时明确拒绝而不是丢弃。
 
 启动恢复隔离未知副作用。Plan 恢复按「步骤状态 + 末事件 + 效果类」定档：只对运行中的步骤判定，末事件为 `tool_end` 或只读工具 `tool_start`（含无事件的只读步骤）回 pending，有 `tool_start` 无 `tool_end` 的非只读步骤进 unknown_side_effect；计划转 paused 且不自动重试，上次恢复产出的 paused 计划在重启后仍直接列出，未处置的未知副作用只能由用户显式选定——标记为已完成（写 `user_confirmed` 凭证、不记新尝试）或重跑此步（记一次新执行尝试）。计划段的暂停语义与这一档一致：`interrupted` 也是「等用户处置」的终态，不由宿主自动续跑；计划记录写盘失败时降级为证据条目 `deskpet.plan_write_failed` 加一条系统消息（「计划执行记录写入失败（计划本身已执行/已取消）」）后继续正常结算；计划超时与按用户选择中止各写一条说明停在当前步骤、剩余步骤未执行的系统消息，会话切换/会话关闭/确认超时/确认事件发射失败的说明由计划确认域在结算处写出（见「Pi、权限与网络」的计划段）；规划输出的 JSON 解析失败时降级为单步直接执行（用户可见的行为变化），计划段向计划所属会话写一条系统消息（「计划解析失败，已改为单步直接执行」），降级原因只作瞬态标记、不进计划记录，恢复路径不重复提示。启动恢复扫描失败不静默：单个会话恢复失败记 `log.error` 并经 `reportError` 上报，同时在该会话落一条 `deskpet.plan_recovery_failed` 证据条目，扫描结果按 `{ recovered, failed }` 如实上报，不把失败算成「没有计划要恢复」。Harness 重启后以 open 操作暴露中断运行，默认暂停并提示继续/丢弃，不自动重放；中断态按会话懒读取（`getInterruptedRun` 读当前运行槽的快照，不另存第二份持久状态），且只在打开会话时读取：启动不做全量孤儿扫描——启动即扫要为每个会话 `open()` 槽，与轻量化目标冲突，而未打开会话的中断操作也不会自己跑起来。继续中断运行前与主回合走同一个能力准备入口（`prepareRunCapabilities`：重新借用启用的服务器、核对 Skill 目录指纹 —— 控制面在每服务器 `enabled`，没有总闸；中断期间能力可能已漂移）；中断操作里待重放的工具调用引用了本次借不到的 MCP 服务器时，以显式原因失败（说明哪些服务器不可用），不落上游「Tool … is unavailable」的通用文案。恢复运行按会话确定性 owner 借用 MCP，收尾按同一 owner 释放。
 
@@ -47,8 +47,20 @@ Provider 返回未预期的延迟响应（suspended）时按失败结算并取�
 - [`PromptSnapshot`](../../src/services/engine/runtime/snapshot.ts) 在 `transform_context`、`provider_payload` 和 `provider_usage` 阶段记录关联 ID、预算、分配、hash 与 usage，并记录「这是哪次请求」：`request`（用途与上游 step/attempt）、`systemPromptHash`（三档可比）、`payloadHash` 与 `requestParams`（`provider_payload` 档由 `before_payload` 从实际 payload 采集，取不到就不写，不粘到同回合其它档）、`plan`/`capabilities`（预检冻结：`skillsFingerprint`（技能目录指纹，扫描条目的 mtime/size 摘要，变了下一回合重载；从未核对成功时不写该字段）、`safetyMode`、逐请求累积的工具裁决）、`compaction`（换代次数、最近压缩条目与摘要 hash）、`generation`（槽代际）与 `budgetDrops`（整块淘汰）。一次性文本请求（planner/compaction/stages）在有会话归属时同样写 payload 与 usage 两档快照，块与消息用 `one-shot:<purpose>` 身份，与主回合的请求可区分；压缩/分支摘要的 payload 不写成主回合快照。system block、消息和工具 schema 不持久化原始正文；快照只保留脱敏 hash，`agentMessages[].contentHash` 走内容投影（不含 usage/时间戳），跨运行可复现。
 - Card 和变量在回合开始冻结。回复中的 `RUNTIME_DATA` 只在当前 Card 的 id、hash、version 仍一致时写回；写入仍由变量注册表验证。[`generateReply`](../../src/services/reply/generator.ts) 与 [`batchWriteVars`](../../src/services/personality/variable-pool.ts)
 
+## 运行观测
+
+`RuntimeTrace` 是可选的只读观测通道，无订阅者时不构造 payload；生产入口不加载 Live Test 的订阅/落盘设施。观测器异常不会影响运行或改变权限。Harness run/turn/message/tool/retry/compaction 与真实 entry commit 分别桥接，输入、记忆召回/提取、计划、权限和主动输入补充领域事件；流增量只采首个非空文本生成点。宿主 runId 与 Pi nativeRunId 通过 `run_linked` 关联，span/request 绑定真实请求，不能凭当前显示场景或首个 Pi run 猜归属。
+
+事件带单调 sequence、monotonicMs 与 clockDomain；跨时钟域不直接相减。`message_end` 只表示消息结束，`entry_added` 才是已提交条目证据。召回候选、选择、端口投影与最后实际注入请求的 `memory_recall_rendered` 分开，预算丢弃不能计为模型见过的事实。主请求与一次性请求各有 request span，缺失 usage/cache 字段保持未知。trace 保留结构和已有审计 hash，用户/工具正文不持久化到该通道。
+
+只在隔离 Live Test + debug 宿主落盘，`e2e_trace` 命令在 release 或普通开发宿主拒绝。身份映射和缓冲有界，周期/边界写盘，持久 ACK 后释放块；孤儿、丢弃、缺 trial 与不完整终态显式进入证据检查。用户理想稿与后续 AI 审阅门禁的格式、命令和留存规则见[测试 README](../../test/README.md#trace记忆质量与性能门禁)。观测通道不成为持久状态或调度的第二个定义点。
+
 ## 长期记忆接线点
 
 `MemoryProvider` 已接真实实现：每个用户回合在主请求前取一次投影，本回合写过记忆时下一次请求前重取；投影以尾随 custom 消息进入请求视图，不写会话条目。事实存储、来源、候选与治理决定的真相源是 Rust 侧 SQLite（`数据根/memory/memory.sqlite3`），经[当前记忆](memory.md)描述的命令面读写。
 
 未完成的是**验证**而非能力：真实模型质量对照、资源账目实测、Windows 证据与真实设置窗口的人工验收见[未完成工作与已知缺口](../plans/active/未完成工作与已知缺口.md) §3。
+
+## 主动表达与回执
+
+主动入口使用结构化 `sendActiveMessage(request)`，表达为无工具、无重试的真实Harness回合，Provider前按最终请求预算准入。返回committed要求原生operation终态assistant tip与SQLite回执同时成立；未确认主动结果不显示。普通回合可读取最多两个相关约定作为预算内尾随context。用户可信输入提交后直接通知取消所有者，业务守卫不依赖trace订阅。完整来源、任务、限频、恢复与控制见[主动陪伴](proactive.md)。

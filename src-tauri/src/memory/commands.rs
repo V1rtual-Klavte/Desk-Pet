@@ -29,6 +29,11 @@ pub fn memory_detail(state: tauri::State<'_, MemoryState>, id: String) -> AppRes
 }
 
 #[tauri::command]
+pub fn memory_history(state: tauri::State<'_, MemoryState>, id: String) -> AppResult<Vec<Value>> {
+    state.0.history(&id)
+}
+
+#[tauri::command]
 pub fn memory_register_sources(state: tauri::State<'_, MemoryState>, sources: Vec<Value>) -> AppResult<usize> {
     state.0.register_sources(&sources)
 }
@@ -53,6 +58,7 @@ pub fn memory_get_items(state: tauri::State<'_, MemoryState>, ids: Vec<String>) 
 #[tauri::command]
 #[allow(clippy::too_many_arguments)]
 pub fn memory_apply_change(
+    window: tauri::WebviewWindow,
     state: tauri::State<'_, MemoryState>,
     operation_id: String,
     base_revision: i64,
@@ -60,14 +66,26 @@ pub fn memory_apply_change(
     item_id: Option<String>,
     expected_version: Option<i64>,
     draft: Option<Value>,
+    actor: String,
+    trusted_user_event_id: Option<String>,
 ) -> AppResult<i64> {
-    state.0.apply_change(
+    match actor.as_str() {
+        "current_input" if window.label() == "main" => {},
+        "user_ui" if window.label() == "settings" => {},
+        // Governance clears and evaluation seeding use the internal actor. Keep it
+        // on the real main window or the debug-only E2E window.
+        "internal" if window.label() == "main" || (cfg!(debug_assertions) && window.label() == "e2e") => {},
+        _ => return Err(crate::error::AppError::Memory("记忆变更调用窗口身份与操作类型不匹配".into())),
+    }
+    state.0.apply_change_with_actor(
         &operation_id,
         base_revision,
         &action,
         item_id.as_deref(),
         expected_version,
         draft.as_ref(),
+        &actor,
+        trusted_user_event_id.as_deref(),
     )
 }
 
@@ -116,18 +134,23 @@ pub fn memory_candidates_add(
 }
 
 #[tauri::command]
-pub fn memory_review_batch(state: tauri::State<'_, MemoryState>, job_id: String) -> AppResult<Vec<Value>> {
-    state.0.review_batch(&job_id)
+pub fn memory_dreaming_budget_reserve(state: tauri::State<'_, MemoryState>, reservation_id: String, local_date: String, reserved_tokens: i64, daily_limit: i64) -> AppResult<bool> {
+    state.0.reserve_dreaming_budget(&reservation_id, &local_date, reserved_tokens, daily_limit)
 }
 
 #[tauri::command]
-pub fn memory_publish_batch(
-    state: tauri::State<'_, MemoryState>,
-    job_id: String,
-    candidate_ids: Vec<String>,
-    base_revision: i64,
-) -> AppResult<i64> {
-    state.0.publish_batch(&job_id, &candidate_ids, base_revision)
+pub fn memory_dreaming_budget_settle(state: tauri::State<'_, MemoryState>, reservation_id: String, local_date: String, reserved_tokens: i64, used_tokens: Option<i64>) -> AppResult<()> {
+    state.0.settle_dreaming_budget(&reservation_id, &local_date, reserved_tokens, used_tokens)
+}
+
+#[tauri::command]
+pub fn memory_dreaming_budget(state: tauri::State<'_, MemoryState>, local_date: String) -> AppResult<Value> {
+    state.0.dreaming_budget(&local_date)
+}
+
+#[tauri::command]
+pub fn memory_dreaming_commit(state: tauri::State<'_, MemoryState>, job_id: String, base_revision: i64) -> AppResult<i64> {
+    state.0.commit_dreaming_job(&job_id, base_revision)
 }
 
 #[tauri::command]

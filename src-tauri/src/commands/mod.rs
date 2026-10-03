@@ -5,6 +5,7 @@
 pub mod app_lifecycle;
 pub mod bash_policy;
 pub mod cursor;
+pub mod font_cmd;
 pub mod logging;
 pub mod mcp_bridge;
 pub mod memory_cmd;
@@ -12,7 +13,6 @@ pub mod monitor_ctl;
 pub mod personality_fs_cmd;
 pub mod profile_cmd;
 pub mod resources_cmd;
-pub mod sim;
 pub mod session_fs;
 pub mod skill_cmd;
 pub mod tool_exec;
@@ -20,11 +20,12 @@ pub mod tool_permit;
 
 pub use app_lifecycle::app_restart;
 pub use cursor::{compute_popup_position, get_cursor_position, spawn_cursor_tracker};
+pub use font_cmd::list_system_fonts;
 pub use logging::{log_messages, open_devtools, report_frontend_error, set_log_config};
 pub(crate) use mcp_bridge::McpPool;
 pub use mcp_bridge::{mcp_kill, mcp_send, mcp_spawn};
 pub use memory_cmd::init_memory_files;
-pub use monitor_ctl::{pause_monitor, resume_monitor, set_monitor_config};
+pub use monitor_ctl::{get_runtime_activity, set_monitor_enabled};
 pub use personality_fs_cmd::{
     personality_file_list, personality_file_read, personality_file_write,
 };
@@ -34,7 +35,6 @@ pub use profile_cmd::{
 };
 pub use resources_cmd::{restore_default_resources, skill_delete};
 pub use skill_cmd::skill_catalog_fingerprint;
-pub use sim::{close_windows_sim, open_windows_sim};
 pub use session_fs::session_read_text;
 pub(crate) use tool_exec::BashPool;
 pub use tool_exec::{

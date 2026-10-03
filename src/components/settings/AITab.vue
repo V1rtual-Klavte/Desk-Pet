@@ -487,9 +487,9 @@ defineExpose({
   <div>
   <!-- ═══ 🤖 API ═══ -->
   <div class="s-section">
-    <div class="s-label">🤖 API</div>
+    <div class="s-label">API</div>
     <div class="fld"><span class="fn">端点</span><input class="inp" v-model="aiEndpoint" /></div>
-    <div class="fld"><span class="fn">密钥</span><input class="inp" :type="showApiKey ? 'text' : 'password'" v-model="aiApiKey" /><button class="btn-s" @click="showApiKey = !showApiKey">{{ showApiKey ? '🙈' : '👁' }}</button></div>
+    <div class="fld"><span class="fn">密钥</span><input class="inp" :type="showApiKey ? 'text' : 'password'" v-model="aiApiKey" /><button class="btn-s" @click="showApiKey = !showApiKey">{{ showApiKey ? '隐藏' : '显示' }}</button></div>
     <div class="fld"><span class="fn">模型</span><input class="inp" v-model="aiModel" /></div>
     <div class="fld"><span class="fn">上下文</span><input class="inp-num" type="number" :min="MIN_CONTEXT_WINDOW" v-model.number="aiContextMaxTokens" style="width:80px" /><span class="s-muted">tokens（最低 {{ MIN_CONTEXT_WINDOW }}）</span></div>
     <label class="chk" style="margin-top:4px"><input type="checkbox" v-model="aiRequireApiKey" /><span>需要 API Key</span></label>
@@ -497,7 +497,7 @@ defineExpose({
 
   <!-- ═══ 🧠 思考强度 ═══ -->
   <div class="s-section">
-    <div class="s-label">🧠 思考强度</div>
+    <div class="s-label">思考强度</div>
 
     <div class="s-subtitle">模型思考强度</div>
     <div class="radio-row">
@@ -507,7 +507,7 @@ defineExpose({
 
   <!-- ═══ 💬 对话投递 ═══ -->
   <div class="s-section">
-    <div class="s-label">💬 对话投递</div>
+    <div class="s-label">对话投递</div>
 
     <div class="s-subtitle">默认发送方式（忙碌时）</div>
     <div class="radio-row">
@@ -529,7 +529,7 @@ defineExpose({
 
   <!-- ═══ 🎭 人格卡 ═══ -->
   <div class="s-section">
-    <div class="s-label">🎭 人格卡</div>
+    <div class="s-label">人格卡</div>
 
     <div class="card-grid">
       <div
@@ -574,13 +574,13 @@ defineExpose({
 
           <!-- stages 状态 + 生成按钮（展开时显示） -->
           <div v-if="(card as any)._stagesExist === false" class="stages-warn">
-            ⚠️ 此角色尚未生成阶段文案（stages），需先生成才能正常使用
+            此角色尚未生成阶段文案（stages），需先生成才能正常使用
             <button
               class="btn-s" style="margin-top:4px;background:var(--color-accent,#c4276f);color:#fff"
               :disabled="regenerating"
               @click.stop="generateStagesForSelected(card)"
             >
-              {{ regenerating ? '⏳ 生成中…' : '🔄 生成阶段文案' }}
+              {{ regenerating ? '生成中…' : '生成阶段文案' }}
             </button>
           </div>
         </div>
@@ -597,7 +597,7 @@ defineExpose({
         @click="applySwitch()"
         :disabled="switchingCard"
       >
-        {{ switchingCard ? '⏳ 切换中…' : `✅ 切换到 ${cardList.find(c => c.id === pendingCardId)?.name ?? pendingCardId}` }}
+        {{ switchingCard ? '切换中…' : `切换到 ${cardList.find(c => c.id === pendingCardId)?.name ?? pendingCardId}` }}
       </button>
       <button class="btn-s" @click="pendingCardId = personalityActive" :disabled="switchingCard">取消</button>
     </div>
@@ -609,7 +609,7 @@ defineExpose({
   <!-- ═══ 📊 变量池 ═══ -->
   <div class="s-section">
     <div class="s-label" style="cursor:pointer" @click="showVarPool = !showVarPool">
-      📊 变量池 (Card变量/互动状态为上次运行快照) <span style="flex:1"></span><span class="card-arrow">{{ showVarPool ? '▾' : '▸' }}</span>
+      变量池 (Card变量/互动状态为上次运行快照) <span style="flex:1"></span><span class="card-arrow">{{ showVarPool ? '▾' : '▸' }}</span>
     </div>
 
     <div v-if="showVarPool">
@@ -622,7 +622,7 @@ defineExpose({
   <!-- ═══ ✏️ 阶段文案 ═══ -->
   <div class="s-section">
     <div class="s-label" style="cursor:pointer" @click="showStages = !showStages">
-      ✏️ 阶段文案 <span style="flex:1"></span><span class="card-arrow">{{ showStages ? '▾' : '▸' }}</span>
+      阶段文案 <span style="flex:1"></span><span class="card-arrow">{{ showStages ? '▾' : '▸' }}</span>
       <span v-if="!stagesData" class="tag-tip" style="margin-right:4px">未生成</span>
     </div>
 
@@ -632,11 +632,11 @@ defineExpose({
         <textarea class="inp txa mono" v-model="stageEditJson" rows="12"></textarea>
         <div class="row-gap" style="margin-top:4px">
           <button class="btn-s" @click="cancelEditStages()">取消</button>
-          <button class="btn-s" style="background:var(--color-accent,#c4276f);color:#fff" @click="saveEditStages()">💾 保存</button>
+          <button class="btn-s" style="background:var(--color-accent,#c4276f);color:#fff" @click="saveEditStages()">保存</button>
         </div>
       </div>
       <div v-else>
-        <div v-if="!stagesData && !stagesFileExists" class="s-hint" style="color:#fa0;margin-bottom:4px">⚠️ 当前 Card 的阶段文案尚未生成，点击下方按钮生成</div>
+        <div v-if="!stagesData && !stagesFileExists" class="s-hint" style="color:#fa0;margin-bottom:4px">当前 Card 的阶段文案尚未生成，点击下方按钮生成</div>
         <div class="stage-table">
           <div class="stage-th"><span>阶段</span><span>类别</span><span>文案</span></div>
           <div v-for="row in stageRows" :key="`${row.stage}-${row.category}`" class="stage-tr">
@@ -646,10 +646,10 @@ defineExpose({
           </div>
         </div>
         <div class="row-gap" style="margin-top:6px">
-          <button class="btn-s" @click="startEditStages()" v-if="stagesData">✏️ 编辑</button>
-          <button class="btn-s" @click="regenerateStages()" :disabled="regenerating">{{ regenerating ? '⏳ 生成中…' : '🔄 重新生成' }}</button>
-          <button v-if="stagesData && !stagesFileExists" class="btn-s" style="background:var(--color-accent,#c4276f);color:#fff" @click="persistCurrentStages()">💾 持久化到磁盘</button>
-          <span class="s-hint">⚠ 重新生成会覆盖手动编辑</span>
+          <button class="btn-s" @click="startEditStages()" v-if="stagesData">编辑</button>
+          <button class="btn-s" @click="regenerateStages()" :disabled="regenerating">{{ regenerating ? '生成中…' : '重新生成' }}</button>
+          <button v-if="stagesData && !stagesFileExists" class="btn-s" style="background:var(--color-accent,#c4276f);color:#fff" @click="persistCurrentStages()">持久化到磁盘</button>
+          <span class="s-hint">重新生成会覆盖手动编辑</span>
         </div>
       </div>
     </div>
@@ -657,7 +657,7 @@ defineExpose({
 
   <!-- ═══ 👁 窗口监控 ═══ -->
   <div class="s-section">
-    <div class="s-label">👁 窗口监控</div>
+    <div class="s-label">窗口监控</div>
     <label class="chk"><input type="checkbox" v-model="wmEnabled" /><span>启用主动搭话</span></label>
     <div class="row-gap" style="margin-top:4px">
       <label>停留 <input class="inp-num" type="number" v-model.number="wmStaySeconds" />s</label>
@@ -671,7 +671,7 @@ defineExpose({
 
   <!-- ═══ 🛡 安全 & 并发 ═══ -->
   <div class="s-section">
-    <div class="s-label">🛡 安全 & 并发</div>
+    <div class="s-label">安全 & 并发</div>
     <div class="radio-row">
       <span class="fn">策略</span>
       <label v-for="m in [{v:'just_do_it',l:'全放行'},{v:'tell_me',l:'告知确认'},{v:'let_me_tk',l:'全部确认'}]" :key="m.v" class="chk"><input type="radio" v-model="safetyMode" :value="m.v" /><span>{{ m.l }}</span></label>
@@ -682,7 +682,7 @@ defineExpose({
 
   <!-- ═══ 📋 计划模式 ═══ -->
   <div class="s-section">
-    <div class="s-label">📋 计划模式</div>
+    <div class="s-label">计划模式</div>
     <label class="chk"><input type="checkbox" v-model="planEnabled" /><span>启用任务计划</span></label>
     <div class="fld" style="margin-top:6px"><span class="fn">复杂度阈值</span><input class="inp-num" type="number" v-model.number="planComplexityThreshold" min="1" max="5" style="width:60px" /><span class="s-muted">(1-5, 越高越少触发)</span></div>
     <div class="s-subtitle" style="margin-top:4px">复杂度判定</div>
@@ -706,7 +706,7 @@ defineExpose({
 
   <!-- ═══ 🧠 记忆 ═══ -->
   <div class="s-section">
-    <div class="s-label">🧠 记忆</div>
+    <div class="s-label">记忆</div>
     <label class="chk"><input type="checkbox" v-model="memoryEnabled" /><span>启用长期记忆召回与候选收集</span></label>
     <div class="fld"><span class="fn">核心画像预算</span><input class="inp-num" type="number" v-model.number="coreTokenBudget" min="0" max="2000" /> tokens</div>
     <div class="fld"><span class="fn">召回预算</span><input class="inp-num" type="number" v-model.number="recallTokenBudget" min="0" max="4000" /> tokens</div>
@@ -737,7 +737,7 @@ defineExpose({
 }
 
 .card-item {
-  border: 1px solid rgba(255,255,255,0.06);
+  border: 1px solid var(--color-divider, rgba(255,255,255,0.06));
   border-radius: 5px;
   overflow: hidden;
   transition: border-color .15s;
@@ -756,9 +756,9 @@ defineExpose({
   justify-content: space-between;
   padding: 4px 6px;
   cursor: pointer;
-  background: rgba(255,255,255,0.02);
+  background: var(--color-surface-dark, rgba(255,255,255,0.02));
 }
-.card-header:hover { background: rgba(255,255,255,0.04); }
+.card-header:hover { background: var(--color-surface-darker, rgba(255,255,255,0.04)); }
 
 .card-select { font-size: 11px; flex: 1; cursor: pointer; display: flex; align-items: center; gap: 4px; }
 .card-radio-dot { font-size: 13px; opacity: 0.5; min-width: 16px; }
@@ -780,15 +780,15 @@ defineExpose({
   gap: 8px;
   margin-top: 6px;
   padding: 6px;
-  background: rgba(255,255,255,0.03);
+  background: var(--color-surface-dark, rgba(255,255,255,0.03));
   border-radius: 5px;
-  border: 1px solid rgba(255,255,255,0.06);
+  border: 1px solid var(--color-divider, rgba(255,255,255,0.06));
 }
 
 /* ── Card 详情 ── */
 .card-detail {
   padding: 4px 8px 6px;
-  border-top: 1px solid rgba(255,255,255,0.04);
+  border-top: 1px solid var(--color-divider, rgba(255,255,255,0.04));
   display: flex;
   flex-direction: column;
   gap: 3px;
@@ -803,10 +803,10 @@ defineExpose({
   margin-bottom: 1px;
 }
 .card-text {
-  color: rgba(255,255,255,0.6);
+  color: var(--color-text-muted, rgba(255,255,255,0.6));
   line-height: 1.3;
   padding-left: 4px;
-  border-left: 1px solid rgba(255,255,255,0.1);
+  border-left: 1px solid var(--color-divider, rgba(255,255,255,0.1));
 }
 
 .card-stats {
@@ -834,12 +834,12 @@ defineExpose({
 
 /* ── 变量池 ── */
 .pool-preview {
-  background: rgba(0,0,0,0.3);
-  border: 1px solid rgba(255,255,255,0.06);
+  background: var(--color-surface-dark, rgba(0,0,0,0.3));
+  border: 1px solid var(--color-divider, rgba(255,255,255,0.06));
   border-radius: 4px;
   padding: 6px 8px;
   font-size: 10px;
-  color: rgba(255,255,255,0.7);
+  color: var(--color-text-bright, rgba(255,255,255,0.7));
   white-space: pre-wrap;
   line-height: 1.4;
   max-height: 160px;
@@ -850,7 +850,7 @@ defineExpose({
 /* ── 阶段文案表 ── */
 .stage-table {
   font-size: 10px;
-  border: 1px solid rgba(255,255,255,0.06);
+  border: 1px solid var(--color-divider, rgba(255,255,255,0.06));
   border-radius: 4px;
   overflow: hidden;
 }
@@ -863,17 +863,17 @@ defineExpose({
 }
 
 .stage-th {
-  background: rgba(255,255,255,0.04);
+  background: var(--color-surface-dark, rgba(255,255,255,0.04));
   font-size: 9px;
   opacity: 0.5;
 }
 
 .stage-tr {
-  border-top: 1px solid rgba(255,255,255,0.03);
+  border-top: 1px solid var(--color-divider, rgba(255,255,255,0.03));
 }
 
 .stage-text {
-  color: rgba(255,255,255,0.7);
+  color: var(--color-text-bright, rgba(255,255,255,0.7));
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;

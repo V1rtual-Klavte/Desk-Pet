@@ -44,9 +44,9 @@ function argsAfter(input: string, name: string): string | undefined {
  * 查找命令并把余下文本拆成参数（用于执行）。
  *
  * 顺序是硬约定（方案 §8.2）：
- * ① **整串精确匹配优先** —— `win open` 这类含空格的命令名必须整串命中，不能被某个可带参数命令的前缀抢走；
+ * ① **整串精确匹配优先** —— `memory clean` 这类含空格的命令名必须整串命中，不能被某个可带参数命令的前缀抢走；
  * ② 未命中时**只对声明了 `acceptsArgs` 的命令**做最长前缀匹配（命令名 + 至少一处分隔空白），
- *    取最长的命令名：`win open` 这类名字将来若声明可带参数，不会被更短的名字截走；
+ *    取最长的命令名：`memory clean` 这类名字将来若声明可带参数，不会被更短的名字截走；
  *    余下文本（两端空白已去掉）即参数，没有余下文本的命令不算带参调用。
  */
 export function find(input: string): SlashInvocation | undefined {

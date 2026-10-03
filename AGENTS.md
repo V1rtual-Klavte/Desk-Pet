@@ -33,8 +33,9 @@ V1rtual-Desk-Pet 是可自定义 Card/Profile 的 Tauri v2 桌宠，优先做好
 | 配置、路径、Profile 资源、持久化 | [运行时数据](docs/current/runtime-data.md) |
 | 人格变量、阶段文案、回复元数据 | [人格与回复](docs/current/personality.md) |
 | 日志、异常、IPC、构建排查 | [工程参考](docs/current/development.md) |
-| 测试分层、执行与场景 | [测试 README](test/README.md)（三层职责、规则表、命令与报告）；生成或审查测试时再读 [测试 SKILL](test/SKILL.md) |
+| 测试规则、分层与门禁 | [测试 AGENTS](test/AGENTS.md)（规则入口与维护义务表）；命令与报告见其 [README](test/README.md)，生成与审查流程见其 [SKILL](test/SKILL.md) |
 | 记忆系统设计与剩余验证 | [当前记忆](docs/current/memory.md)，再读 [B 方案契约](docs/plans/active/记忆系统运行时契约.md) 与 [未完成工作与已知缺口](docs/plans/active/未完成工作与已知缺口.md) §3 |
+| 主动机会、约定、回执、presence 与观察画像 | [主动陪伴](docs/current/proactive.md)、[行为画像](docs/current/behavior.md) |
 
 完整目录见 [docs/INDEX.md](docs/INDEX.md)。当前行为由源码和对应 `docs/current/` 说明；
 `plans/active/` 只维护未完成工作，`history/` 保存过去的方案与证据。
@@ -45,33 +46,20 @@ V1rtual-Desk-Pet 是可自定义 Card/Profile 的 Tauri v2 桌宠，优先做好
 pnpm install
 pnpm tauri dev        # 完整桌面应用
 pnpm dev              # 仅前端，不能验证 Rust IPC
-pnpm test             # L2 单元 + L3 集成（每 PR 必过的一组，不指向 L4）
-pnpm run test:types   # Vue 类型 + Rust 编译
-pnpm run test:rust    # Rust 单测（cargo test --lib）
-pnpm run test:e2e -- --module <module>   # L4 端到端（真 Tauri 与 Rust IPC）
-pnpm run test:release # 类型/编译 + Rust 单测 + L2/L3 + 严格 Contract + 三次 trial
+pnpm run check:bundle # 打包配置校验（秒级，不编译）
+pnpm run version:set <x.y.z>  # 发版：统一三处版本号
 ```
 
-- Rust 单测内联在 `src-tauri/src/**`，`pnpm run test:rust` 执行；CI 在 macOS 与 Windows
-  两端都跑，缺少执行的测试不算门禁。
+- **测试规则（分层、选层、纪律、门禁与报告）由测试模块自持**：[test/AGENTS.md](test/AGENTS.md)
+  （规则入口与维护义务表）；命令与保留细节见其 [README](test/README.md)。本文件不重复测试域规则。
 - pnpm 版本以 `package.json` 的 `packageManager` 为准；新增有构建脚本的依赖须在
   `pnpm-workspace.yaml` 的 `allowBuilds` 显式声明运行或跳过，避免干净安装失败。
-- 新测试按 [测试 README](test/README.md) 的判定顺序选层（需要真 Rust 边界 → L4；真 JSONL 落盘与
-  agent loop → L3；否则 L2）；可判测试纪律由 `node scripts/check-test-rules.mjs` 扫描 `test/`
-  实施，命中即失败，新测试须零命中。
-- **写断言前必须对照 [测试 SKILL](test/SKILL.md) 的 D1–D10 自查。判据只有一句：把产品实现改坏
-  （条件反转 / 常数替换 / 分支删除），这条断言还会红吗？不会红就不合格。**
-  扫描器只能判「有没有 `expect`」这类形状，**判不了「这个 `expect` 能不能区分对错实现」** ——
-  那一层靠这一步。恒真子句、拿被测函数的输出当期望值、断言测试自己构造的值，都属于此类。
-- **L2 / L3 进 CI 双端门禁；L4 不进 CI**（要起 Tauri、占端口、macOS 锁屏会挂起页面 JS），
-  只能靠本地 `pnpm run test:e2e` 与发布门禁 `test:release` 覆盖。**L4 场景没有自动门禁，
-  改完必须手工跑一次**，否则会烂掉而无人察觉。
-- 先完成授权范围内的实现与 Contract/Scene，再按影响范围集中验证；修复失败后重验。
-- 源码或行为契约变化须按 [测试 SKILL](test/SKILL.md) 重新 analyze → generate；不能只改 sourceHash 过门禁。
-- 类型/编译不能代替运行验证。非 unit 场景需实际 Provider 或 fake Provider 响应；
-  `entry: production` 须经过 `sendMessage()`，fake 只替换 Provider，工具和 IPC 行为仍需场景断言。
-- 跨模块改动运行完整 E2E；发布门禁为严格 Contract 与至少三次 trial，跳过/超时不得报通过。
-- 文档改动只检查链接、事实、引用及格式，不因文案变化重跑完整 E2E。
+- CI 分两条线：push/PR 走 `ci.yml`（双平台验证 + `bundle-config` 配置校验，不做构建）；
+  tag `v*` 走 `release.yml`（双平台打包并发布到 GitHub Release）。
+  发版前先跑 `pnpm run version:set <x.y.z>`，tag 与 `tauri.conf.json` 的 version 由 CI 校验一致。
+- `[profile.release]` 只能写在 **workspace 根** `Cargo.toml`：成员 crate 里的 `[profile]`
+  被 Cargo 静默忽略（只有 warning），放错位置不报错也不生效。产物体积的另两个落点是
+  `vite.config.ts` 的 build input（只列产品窗口）与随包资源范围。
 - 平台代码同时考虑 Windows/macOS；修改 Windows 条件代码或依赖后须检查 Windows CI。
   本机 macOS check 不证明 Windows 分支，现有本机交叉构建也不能替代 Windows job。
 - Rust 平台专有实现须使用条件编译和对应平台依赖，不能让另一平台的编译路径引用它。
@@ -109,6 +97,13 @@ pnpm run test:release # 类型/编译 + Rust 单测 + L2/L3 + 严格 Contract + 
   初始化标记存在后删除不自动恢复；恢复默认资源是明确的覆盖操作。
 - `appearance.effectMode` 单字段裁定 off/parallax/dof；逐层素材、取景、焦点等属于当前 Profile，
   全局 CONFIG 不覆盖 Profile 的效果参数。
+- Profile 是自包含闭包：主题色、UI 位图与素材只从 Profile 自身目录读取，
+  导入即用，不跨 Profile 回退（图层素材在 `materials/L{n}/`、景深素材在 `materials/dof/`）。
+  内存只保留激活 Profile；设置页列 Profile 用 `readProfileMeta()` 轻量读 meta，不进缓存。
+- 字体是全局设置（`appearance.font`），不随 Profile：取值为用户系统已安装的字体名
+  （Rust `list_system_fonts` 枚举），Profile 不携带字体资源；消费点统一走 `@/services/font` 注入。
+- 顶栏文案（缺省「配信中」）是窗口运行时状态，唯一真值点在 `@/services/titlebar`：
+  不随 Profile、不持久化，重启回到缺省；暂未开放界面编辑，保留接口供联动功能改写。
 - localStorage 不保存配置、会话正文或 Profile 编辑状态。
 
 ## 运行时不变量
@@ -138,7 +133,8 @@ pnpm run test:release # 类型/编译 + Rust 单测 + L2/L3 + 严格 Contract + 
 - 长期记忆只经 MemoryProvider 进入 Runtime（核心画像也走它）；事实与治理决定归 Rust 侧 SQLite
   （`数据根/memory/`），JSONL 只是会话证据源。只有 `origin=user` + `taint=trusted_user` +
   `eligibleForMemory=true` 的已提交条目能成为候选：不得把压缩摘要、工具结果、主动消息、助手台词
-  或已召回的记忆晋升为用户事实。候选必须经用户批准才进入 active；遗忘要覆盖正文、索引、候选与
+  或已召回的记忆晋升为用户事实。直接记忆工具绑定本轮可信用户事件；dreaming 候选在 job 边界经
+  来源 hash、版本、失效代和租约复核后整批自动提交，不恢复批准路径。遗忘要覆盖正文、索引、候选与
   补扫回灌，且不把「忘记记忆」说成删除了聊天原文或外部备份。
 
 ## 工具与权限
@@ -150,7 +146,10 @@ pnpm run test:release # 类型/编译 + Rust 单测 + L2/L3 + 严格 Contract + 
   网络边界不得夸大为通用沙箱。
 - Skill 清单由 Pi loader 维护：每回合核对一次目录指纹（不读正文），指纹变了才重载（重载时读入
   正文）；进请求的只有 name/description/location 披露块，正文在 `/skill` 显式调用或模型 read
-  时才进入对话；Skill 不提升权限。MCP 按运行借用并释放；启动不连接 MCP、不隐式启动记忆 LLM 整理。
+  时才进入对话；Skill 不提升权限。MCP 按运行借用并释放；启动不连接 MCP，记忆整理只按配置的
+  空闲策略和持久预算运行。主动规划与表达 tools=[]，来源和 owner 失效时取消；送达只认原生
+  已提交助手条目与 SQLite 精确回执，未知外部副作用不重放。派生 behavior 与长期事实分域，清除
+  画像同时撤销相关来源资格；系统可消费已提交 Card 变量，主动回复的变量写回不能自激出新机会。
 
 ## 日志、异常与 IPC
 
@@ -168,9 +167,10 @@ pnpm run test:release # 类型/编译 + Rust 单测 + L2/L3 + 严格 Contract + 
 ## 文档维护与提交
 
 - 本文件是唯一全局规则入口；`CLAUDE.md` 仅保留一行 `@AGENTS.md`，不改成普通链接。
-- 不建立子目录 AGENTS。模块协议与例子放对应 current 文档或源码注释；这里仅保留全局约束。
+- 子目录 AGENTS 目前仅测试域建立：[test/AGENTS.md](test/AGENTS.md) 自持测试规则，本文件不重复其内容；
+  其余模块的协议与例子放对应 current 文档或源码注释，本文件仅保留全局约束。
 - 每轮核对 README、AGENTS、DES 和相关 current 的影响，受影响内容必须在同一改动中更新：
-  行为→current，玩法→DES，用户入口→README，规则→AGENTS，未完成进度→未完成工作与已知缺口。
+  行为→current，玩法→DES，用户入口→README，规则→AGENTS（测试域规则同步 [test/AGENTS.md](test/AGENTS.md)），未完成进度→未完成工作与已知缺口。
   新增/删除模块还要更新系统地图及受影响导航；没有变化不为同步而追加总结。
   配置变更同时执行上面的全链路清单；交付注明尚未同步或未验证部分，不能只写“已同步”。
 - 完成方案保留正文与证据后归档，注明日期和替代入口；历史内容不作为当前指令或实现契约。
@@ -178,4 +178,6 @@ pnpm run test:release # 类型/编译 + Rust 单测 + L2/L3 + 严格 Contract + 
   测试结果只在检查点记录一次，注明基线/范围/未验证项；不在多个概览复制数字。
 - Conventional Commits：`<type>(<scope>): <中文描述>`；不加句号，一次提交一个主题，正文解释原因。
   scope 使用模块名，跨模块可省略；破坏性变更用 `!` 与 `BREAKING CHANGE`，是否提交遵循用户授权。
-  当前实现不用内部版本号命名，发布版本以 Git tag 为准。
+  当前实现不用内部版本号命名，发布版本以 Git tag 为准；tag 版本与 `tauri.conf.json`
+  的 `version` 由 `ci.yml` 的 `bundle-config` 校验一致，推 tag 与发版流程见
+  [.github/workflows/README.md](.github/workflows/README.md)。

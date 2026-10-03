@@ -16,7 +16,7 @@ const pending = computed(() => dialogState.pending)
 const icon = computed(() => {
   switch (pending.value?.kind) {
     case "success": return "✓"
-    case "error": return "⚠"
+    case "error": return "!"
     default: return "ℹ"
   }
 })
@@ -149,7 +149,7 @@ onUnmounted(() => window.removeEventListener("keydown", onKeydown))
   cursor: pointer;
   transition: background 0.15s;
 }
-.dlg-btn:hover { background: rgba(255, 255, 255, 0.08); }
+.dlg-btn:hover { background: var(--color-surface-dark, rgba(255, 255, 255, 0.08)); }
 .dlg-btn-primary { border-color: var(--color-accent, #c4276f); }
 .dlg-btn-danger {
   border-color: #f38ba8;

@@ -17,11 +17,12 @@ Pi Harness Tool → harness-tool-adapter → ToolRouter → 执行许可借用 �
 | write / edit | DANGER（凭据路径升 NOWAY 硬拒绝）；写能力恒暴露、不做配置开关，风险与确认只由安全模式裁决 |
 | bash | 动态风险：首词命中白名单、无 shell 组合符且未命中危险/硬禁止模式为 NORMAL（免确认通道），其余为 DANGER；Rust 侧层 1 硬基线与系统路径保护不可关闭；命令里的凭据路径 token 硬拒绝 |
 | system_info | 只读运行环境：操作系统、架构、CPU 核心数、内存（总量 / 已用 / 可用）与 bash 默认工作目录 |
-| window_info | 只读最近一次窗口变化（标题 / 内容 / 观测时间）；窗口监控未开启或尚无事件时如实说明 |
+| window_info | 只读最新原生窗口观测（应用、标题、采样时间和状态）；监控关闭、无观测或过期时如实说明 |
 | read_session_event | 按 `eventId` 回读地址分页读取当前会话保存的完整工具结果（被 L0 缩短或清空的结果由此恢复）：地址是完整 36 位条目 id 或**会话内最短唯一前缀**，前缀命中多条返回明确错误（`errorCode: "ambiguous"`，提示用更长前缀）而不任选；页大小按 token 预算推导、随窗口单调（旧的固定 8000 字符页宽已删除；`offset` 仍是字符下标）；前缀解析只由条目 id 集合决定，折叠不改条目 id，地址因此对折叠不敏感 |
 | app_open / clipboard_read / clipboard_write / agent_spawn | 恒暴露，受各自策略约束；四者都是 DANGER，`agent_spawn` 另声明 `delegate` 隔离，运行入口（`runPiSubAgent`）按这一判定把派生型工具从子代理工具面里剥离 |
 | MCP 工具 | 仅启用且成功借用的 server；借用期间进入此后每个回合的冻结工具集（计划步骤的未限定工具面拿得到；`agent_spawn` 的 fork/team 子代理按固定白名单收窄 —— 只有 read / system_info / bash，不在其列），受工具发现过滤与权限终裁 |
-| memory_query / memory_change | 长期记忆的读写面。`memory_query` 只读（`shared_read`、结果 `preserve`，查的是与运行时同一份记忆库）；`memory_change` 是唯一的模型写入通道（`local_mutation` + `exclusive_effect` + `replay: never`，权限意见固定 `ask`），支持 remember/correct/forget，确认绑定会话、代际、精确参数与库版本。模型不能发布 dreaming 批次、不能跑 SQL、不能写 Markdown |
+| memory_query / memory_change | 同一长期记忆库的查询与治理；change 为 NORMAL、passthrough，继续由 PermissionKernel 终裁，绑定本轮已提交可信用户事件和目标版本。支持 remember/correct/complete/cancel/forget，patch 保留未提供字段，事项时间使用 day/minute TemporalAnchor。模型不能执行 dreaming job 提交或 SQL |
+| proactive_query / proactive_change | 当前范围内的约定与事项；query 只读，change 为 NORMAL、passthrough、exclusive_effect、replay:never。创建、完成、取消、改期、延后和控制必须绑定当前 owner；任务写入绑定本轮用户事件，周期还需用户明确同意，歧义先澄清 |
 
 实际清单由 [registry.ts](../../src/services/tool/registry.ts)、[pi-tools.ts](../../src/services/tool/local/pi-tools.ts) 和回合冻结快照决定。目录列举使用 bash ls；不再注册独立 ls/file_search/http_get。Pi CLI 的 Node 工具不能直接移入 WebView，需要现有 ExecutionEnv 边界。
 
@@ -50,7 +51,7 @@ Harness 以 `toolExecution: parallel` 派发批次，效果之间的并发由 Ru
 - `tool_permit_release` 与 `tool_permit_cancel` 同样绑定借用者：其它窗口/页面即使拿到 requestId 也不能释放在飞额度或取消他人的排队项，被拒绝的调用不改变额度状态。
 - 释放与上线声明的 IPC 失败不再只留日志：失败的释放按 requestId 入队（请求标识是确定量，Rust 对未知 id 返回 Ok，重放幂等），由运行槽在**下一次 run 开始前**补偿重放；上线声明失败同样记欠账并在同一时机重试。补偿失败只留痕、不阻断本次 run。
 - 借用者身份 = Rust 提供的窗口标签 + 前端页面实例 id（[execution-permit.ts](../../src/services/tool/execution-permit.ts) 在模块加载时声明上线）。同一窗口同一时刻只有一个活着的页面实例：新实例上线（Vite 全量热重载、WebView 重建）时一次性回收同窗口其它实例的在飞额度与排队项，并以回收数量作为证据。回收只由「借用者已经不存在」触发，不看时间：同一实例重复上线是空操作，其它窗口的借用者与在飞的 `exclusive_effect` 都不受影响；窗口关闭且不再重新加载时，它留下的额度仍要等下一次同窗口上线或进程退出才回收。
-- 「声明上线的窗口」比「能持额度的窗口」大，判断残留影响只看后者：`windows-sim` 窗口同样加载主入口，模块加载时即声明上线，但它不启动回合、从不借用工具，因此不可能留下额度；`settings`、`layer-editor` 是独立 HTML 入口，根本不经过借用者声明。**能持额度的窗口 = 会启动回合的窗口 = `main` 与 Live Test 窗口**，二者由 `lib.rs` 按构建形态二选一创建、从不共存（Live Test 宿主不建 main）。窗口销毁残留因此没有可阻塞的对象，维持「不修」。
+- 「声明上线的窗口」比「能持额度的窗口」大，判断残留影响只看后者：`settings`、`layer-editor` 是独立 HTML 入口，根本不经过借用者声明。**能持额度的窗口 = 会启动回合的窗口 = `main` 与 Live Test 窗口**，二者由 `lib.rs` 按构建形态二选一创建、从不共存（Live Test 宿主不建 main）。窗口销毁残留因此没有可阻塞的对象，维持「不修」。
 - 上限由前端在每个 run 开始前下发给所有者并按运行生效（与队列批量策略同一模式）：降低上限不撤销在飞许可，只是暂停新获准执行；提高会唤醒有序等待项。越界值三处处理不同（见[运行时数据](runtime-data.md#工具并行上限字段的语义与生效时机)）（三处处理各不相同，口径见该节）。**共享读上限的所有者是 Rust**（[tool_permit.rs](../../src-tauri/src/commands/tool_permit.rs) 持有默认值与 1–8 范围，是宿主侧唯一的额度定义点）：默认值是**无配置可下发时**的兜底（Live Test / 单独启动没有前端），前端 `MIN/MAX/DEFAULT_PARALLEL_TOOLS` 是同值副本，只做设置页校验与 YAML 兜底，不构成第二个所有者；两份范围的一致性由 `tool-execution-permit` 场景的可执行边界钉保证（上限原值被接受、两侧越界被拒绝）。
 - 许可域按数据根区分，Live Test 的临时根自带隔离域；多个 WebView 共用同一所有者。许可只约束 V1rtual-Desk-Pet 托管的调用，不承诺阻止外部进程改文件（沙箱边界见下节）。
 - 额度没有 TTL、也不加看门狗：超时释放会放开在飞的 `exclusive_effect`，与「写互斥不许被时间条件打开」直接冲突。写互斥是工具路径（声明 + 额度层）的性质，不会因为某个 handler 卡住而被绕过，但会因 handler 永不结算而不归还 —— 这个入口已从源头消除：文件读写只接受常规文件，FIFO/设备/套接字在调用前就被拒绝（见下节），不再有「永远打不开的 open 占着额度」这条路径。
