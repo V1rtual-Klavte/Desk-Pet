@@ -5,7 +5,7 @@
 | 工作流 | 什么时候跑 | 跑什么 | 出安装包吗 |
 |---|---|---|---|
 | `ci.yml` | 任何分支 push、任何 PR、手动（**`v*` tag 不跑**，见 `release.yml`） | 双平台验证（类型/编译 · Rust 单测 · L2 · L3 · 纪律扫描 · FLAKY 棘轮）+ `bundle-config` 配置校验 | **不会** |
-| `release.yml` | 推 `v*` tag，或手动触发 | 双平台构建（macOS `.dmg` / Windows `.exe` + 免安装 `.zip`）并发布到 GitHub Release | **会** |
+| `release.yml` | 推 `v*` tag，或手动触发 | 双平台构建（macOS `.dmg` / Windows `.exe`）并发布到 GitHub Release | **会** |
 
 ---
 
@@ -64,9 +64,7 @@ git tag v0.15.0-rc.1
 git push && git push origin v0.15.0-rc.1
 ```
 
-跑完检查四件事：Release 页面出现 `v0.15.0-rc.1`（标着 Pre-release）、两个平台都有产物、
-Windows 侧额外有 `v1rtual-desk-pet_x.y.z_x64-portable.zip`、`latest.json` 里 `darwin-aarch64`
-与 `windows-x86_64` 都在。
+跑完检查三件事：Release 页面出现 `v0.15.0-rc.1`（标着 Pre-release）、两个平台都有产物、`latest.json` 里 `darwin-aarch64` 与 `windows-x86_64` 都在。
 
 ## 手动触发
 

@@ -55,7 +55,7 @@ pnpm run version:set <x.y.z>  # 发版：统一三处版本号
 - pnpm 版本以 `package.json` 的 `packageManager` 为准；新增有构建脚本的依赖须在
   `pnpm-workspace.yaml` 的 `allowBuilds` 显式声明运行或跳过，避免干净安装失败。
 - CI 分两条线：push/PR 走 `ci.yml`（双平台验证 + `bundle-config` 配置校验，不做构建）；
-  tag `v*` 走 `release.yml`（双平台打包并发布到 GitHub Release，Windows 侧额外追加免安装 zip）。
+  tag `v*` 走 `release.yml`（双平台打包并发布到 GitHub Release）。
   发版前先跑 `pnpm run version:set <x.y.z>`，tag 与 `tauri.conf.json` 的 version 由 CI 校验一致。
 - `[profile.release]` 只能写在 **workspace 根** `Cargo.toml`：成员 crate 里的 `[profile]`
   被 Cargo 静默忽略（只有 warning），放错位置不报错也不生效。产物体积的另两个落点是
