@@ -151,6 +151,7 @@ export interface ProactiveQueryRequest {
   sessionId?: string
   recentDelivered?: boolean
   limit: number
+  receiptLookup?: { "attemptId": string; "assistantEntryId": string }
 }
 
 export interface ProactiveAttempt {
@@ -164,12 +165,15 @@ export interface ProactiveAttempt {
   usage: Record<string, unknown> | null
   sourceFingerprint: string
   localDate: string
+  updatedAt: number
+  decision: ProactiveDecision | null
 }
 
 export interface ProactiveQueryResponse {
   tasks: Array<ProactiveTask>
   attempts: Array<ProactiveAttempt>
   revision: number
+  receipt?: { "committed": boolean }
 }
 
 export interface ProactiveChangeRequest {
@@ -265,6 +269,39 @@ export interface ProactiveControlRequest {
   patch: Record<string, unknown>
 }
 
+export interface MemoryRecallTarget {
+  id: string
+  version: number
+}
+
+export interface MemoryRecallCandidateSnapshot {
+  revision: number
+  candidatesByScope: { "user": Array<MemoryItem>; "card": Array<MemoryItem>; "session": Array<MemoryItem> }
+  candidates: Array<MemoryItem>
+  pinned: Array<MemoryItem>
+  targeted: Array<MemoryItem>
+}
+
+export interface MemoryJobListItem {
+  id: string
+  phase: "light" | "review"
+  status: "queued" | "running" | "paused" | "cancelled" | "completed" | "failed"
+  revision: number
+  forgetEpoch: number
+  leaseUntil: number | null
+  processed: number
+  createdAt: number
+  updatedAt: number
+}
+
+export interface MemoryRestorePreview {
+  schemaVersion: number
+  revision: number
+  forgetEpoch: number
+  itemCount: number
+  jobCount: number
+}
+
 export interface MemorySource {
   sourceId: string
   sessionId: string
@@ -351,7 +388,7 @@ export interface MemoryCandidateDraft {
   reason?: string
 }
 
-export type MemoryCommand = "memory_status" | "memory_list" | "memory_detail" | "memory_history" | "memory_register_sources" | "memory_query" | "memory_get_items" | "memory_apply_change" | "memory_job_start" | "memory_job_checkpoint" | "memory_job_cancel" | "memory_job_resume" | "memory_job_sources" | "memory_candidates_add" | "memory_dreaming_commit" | "memory_dreaming_budget_reserve" | "memory_dreaming_budget_settle" | "memory_dreaming_budget" | "memory_export" | "memory_backup" | "memory_rebuild" | "memory_restore"
+export type MemoryCommand = "memory_recall_candidates" | "memory_job_list" | "memory_restore_preview" | "memory_source_evidence" | "memory_status" | "memory_list" | "memory_detail" | "memory_history" | "memory_register_sources" | "memory_query" | "memory_get_items" | "memory_apply_change" | "memory_job_start" | "memory_job_checkpoint" | "memory_job_cancel" | "memory_job_resume" | "memory_job_sources" | "memory_candidates_add" | "memory_dreaming_commit" | "memory_dreaming_budget_reserve" | "memory_dreaming_budget_settle" | "memory_dreaming_budget" | "memory_export" | "memory_backup" | "memory_rebuild" | "memory_restore"
 export type ProactiveCommand = "proactive_scan" | "proactive_query" | "proactive_change" | "proactive_claim" | "proactive_validate" | "proactive_settle" | "proactive_reconcile" | "proactive_control"
 export const PROACTIVE_LIMITS = Object.freeze({
   "tickMs": 300000,

@@ -1338,6 +1338,18 @@ export class HarnessSlot {
     this.auditPending.push({ customType, data })
   }
 
+  /**
+   * 持久槽上的宿主自定义条目必须经过 AgentLane，而不是 session Branch：运行中 lane 持有内存 tip，
+   * Branch 旁路提交会移动盘上 tip，之后 Harness 仍按旧 tip 提交并把新 entry 挤成孤立分支。
+   * AgentLane 会按当前 operation 状态将写入纳入提交或持久 inbox，并返回真实 entry id。
+   */
+  async appendCustomEntry(customType: string, data?: JsonValue): Promise<string> {
+    await this.open()
+    const lane = this.lane
+    if (!lane) throw new Error("Harness lane 尚未就绪，不能追加会话自定义条目")
+    return await lane.appendCustomEntry(customType, data, TODO_CONTEXT)
+  }
+
   /** 唯一的 flush 入口。失败条目不丢弃：重试一次后仍失败就保留在本队列。 */
   async flushAudit(): Promise<void> {
     const lane = this.lane

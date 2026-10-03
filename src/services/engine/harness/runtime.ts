@@ -10,8 +10,9 @@ import type { ActiveMessageRequest, Message, ProactiveOwner, ProviderReservation
 import type { SlashSkillAdmission } from "@/services/engine/slash"
 import type { CompactionAuditSink, ContextAllocation, ContextBlock, IngressEnvelope, InputSourceMark, PlanState, PlanStepRecord, PromptCapabilityContext, PromptPlanContext, PromptRequestContext, PromptRequestParams, PromptSnapshot, PromptTokenDrift, PromptTransform } from "@/services/engine/runtime"
 import { createMessageId } from "@/services/agent/types"
-import { MemoryService, recallMemory } from "@/services/agent/memory"
-import type { MemoryProjection } from "@/services/agent/memory"
+import { MemoryService, recallMemory, memoryStatus, subscribeMemoryRevision } from "@/services/agent/memory"
+import type { MemoryProjection, MemoryRecallRequest } from "@/services/agent/memory"
+import type { ProactiveTurnContext } from "@/services/proactive"
 import { planCheckpointStore } from "@/services/engine/plan/checkpoint-store"
 import type { StructuredSummary } from "@/services/engine/compaction/structured-summary"
 import { getV1rtualInstructionsSync } from "@/services/context/instructions"
@@ -70,12 +71,6 @@ import type { RuntimeTraceContext } from "@/services/engine/runtime"
 import { redactText, sha256Text, stableSerialize } from "@/services/engine/runtime"
 
 const log = createLogger("PiRuntime")
-
-/**
- * 记忆写入工具名：本回合写过记忆时，下一次请求前要重新召回一次（同回合纠正即刻生效）。
- * 名字与 `local-extra/memory.ts` 注册的工具同名；两处只共享这一个常量来源。
- */
-const MEMORY_CHANGE_TOOL_NAME = "memory_change"
 
 /**
  * 向正在执行的回合投递新输入，先落盘（lane 持久 inbox）再影响模型。
@@ -180,7 +175,7 @@ interface PiAgentTurnBase {
   unansweredCount: number
   isActiveMessage?: boolean
   activeRequest?: ActiveMessageRequest
-  turnContext?: { text: string; taskRefs: Array<{ taskId: string; memoryItemId?: string; expectedVersion: number }> }
+  turnContext?: ProactiveTurnContext
   runGeneration?: number
   turnId?: string
 }
@@ -1359,6 +1354,7 @@ export async function runPiAgentTurn(input: PiAgentTurnInput): Promise<PiAgentTu
   // 准入是否已成立（用户条目已提交进会话文件）：此后每条退出路径都必须结算那条已接受的操作。
   let admittedOnce = false
   let restoreRetryPolicy: (() => Promise<void>) | undefined
+  let stopMemoryRevision: (() => void) | undefined
   try {
   // 运行态信号：ChatPanel 据此显示/收起停止按钮。真相仍是 harnessSlots 的运行槽，
   // 事件只是通知通道，UI 不因此持有第二份运行状态。
@@ -1382,6 +1378,7 @@ export async function runPiAgentTurn(input: PiAgentTurnInput): Promise<PiAgentTu
     sessionId: turnSessionId, runGeneration: generation,
     ...(input.ingress?.origin === "user" && input.ingress.taint === "trusted_user"
       ? { trustedUserEventId: inputEventId(input.ingress.requestId) } : {}),
+    ...(input.turnContext ? { proactiveTurnContext: input.turnContext } : {}),
     isCurrent: () => runIsCurrent(),
     history: toolCallHistory,
   }
@@ -1499,10 +1496,11 @@ export async function runPiAgentTurn(input: PiAgentTurnInput): Promise<PiAgentTu
     ? (input.activeRequest ? memoryConfig.recallTokenBudget : memoryConfig.coreTokenBudget + memoryConfig.recallTokenBudget)
     : 0
   // recall 走槽级取消信号：回合被停止时这次读取随之结束，旧代际的结果不会写进新投影。
-  const memoryRequest = {
+  const memoryRequest: MemoryRecallRequest = {
     requestId, sessionId: turnSessionId, cardId: card?.id, runGeneration: generation,
     query: userText, tokenBudget: memoryTokenBudget, signal: slot.runSignal, traceContext,
-    ...(input.activeRequest ? { purpose: "proactive" as const, targets: [...input.activeRequest.memoryTargets] } : {}),
+    ...(input.activeRequest ? { purpose: "proactive" as const, targets: [...input.activeRequest.memoryTargets] }
+      : input.turnContext?.memoryRefs.length ? { targets: input.turnContext.memoryRefs.map(ref => ({ id: ref.id, version: ref.version })), allowExpiredTargets: true } : {}),
   }
   let memoryProjections: MemoryProjection[] = []
   try {
@@ -1525,19 +1523,34 @@ export async function runPiAgentTurn(input: PiAgentTurnInput): Promise<PiAgentTu
       at: Date.now(),
     } as unknown as JsonValue)
   }
-  /**
-   * 请求期取数：本回合没写过记忆就复用同一份投影（前缀稳定、没有额外 IPC）；
-   * 写过记忆（memory_change 出现在工具历史里）则重新召回 —— 用户刚纠正的事实
-   * 必须在同一回合的下一次请求里生效，不能等到下一轮。
-   */
+  stopMemoryRevision = subscribeMemoryRevision(async revision => {
+    const feedbackHasMemory = Boolean(input.turnContext?.memoryRefs.length)
+    if (!runIsCurrent() || (!memoryProjections.length && !feedbackHasMemory)
+      || (!feedbackHasMemory && memoryProjections.every(item => item.memoryRevision === revision))) return
+    // The UI waits for this closure before reporting the change as applied. Already-sent inputs cannot be recalled.
+    memoryProjections = []
+    await slot.abort("user")
+    await slot.waitForIdle()
+  })
+  /** Reuse only a current DB revision; write-after-read refresh is local and does not repeat reranking. */
   const memoryRecallForRequest = async (): Promise<MemoryProjection[]> => {
     if (memoryTokenBudget <= 0 || (input.activeRequest && input.activeRequest.memoryTargets.length === 0)) return []
-    if (!toolCallHistory.some(entry => entry.toolName === MEMORY_CHANGE_TOOL_NAME)) return memoryProjections
+    // Injected providers without a Rust revision remain isolated L3 probes.
+    if (memoryRequest.readRevision === undefined) return memoryProjections
     try {
-      memoryProjections = await recallMemory(memoryRequest)
+      const currentRevision = (await memoryStatus()).revision
+      if (currentRevision !== memoryRequest.readRevision) {
+        const refreshRequest = { ...memoryRequest, skipRerank: true }
+        memoryProjections = await recallMemory(refreshRequest)
+        memoryRequest.readRevision = refreshRequest.readRevision
+      }
     } catch (error) {
-      log.warn("记忆写后重召回失败，沿用上一份投影:", formatError(error))
+      // An unavailable DB cannot prove the eligibility of old facts: fail closed for this optional block.
+      memoryProjections = []
+      memoryRequest.readRevision = undefined
+      log.warn("记忆revision复核失败，本请求放弃记忆投影:", formatError(error))
     }
+    assertCurrent()
     return memoryProjections
   }
   assertCurrent()
@@ -1638,6 +1651,7 @@ export async function runPiAgentTurn(input: PiAgentTurnInput): Promise<PiAgentTu
     // 兜底回复与系统提示仍交回 runner 既有路径处理（照现状），这里只负责结算。
     throw error
   } finally {
+    stopMemoryRevision?.()
     releaseTitlebarStatus(processTitlebarOwner(turnSessionId, generation))
     if (restoreRetryPolicy) {
       await restoreRetryPolicy().catch(error => log.error("主动回合恢复重试策略失败:", formatError(error)))

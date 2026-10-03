@@ -11,10 +11,10 @@ import { createLogger } from "@/services/logger"
 import { formatError, errorCode } from "@/services/error"
 import type { PiSubAgentInput, PiSubAgentOutput } from "@/services/engine/harness"
 import type { ActiveExpressionAdapter } from "./delivery"
-import { collectOpportunities, opportunity, source, selectOpportunities } from "./opportunities"
+import { advanceFinishedWorkTracker, collectOpportunities, isLeisureOrIdle, opportunity, qualifiesFinishedWork, source, selectOpportunities } from "./opportunities"
 import { contentPool } from "./content/pool"
 import { isQuietTime, localDayKey } from "./time"
-import { PROACTIVE_LIMITS, OPPORTUNITY_LIMIT, OBSERVATION_MAX_AGE_MS, WORK_SILENCE_MS, FINISH_WORK_DELAY_MS, DAY_MS } from "./config"
+import { PROACTIVE_LIMITS, OPPORTUNITY_LIMIT, OBSERVATION_MAX_AGE_MS, WORK_SILENCE_MS, DAY_MS } from "./config"
 import { planningInput, plan } from "./planner"
 import { observePresence, setPresence, stopPresence, requestBriefMotion } from "./presence"
 import { createRuntimeTraceContext, trace, installProactiveInspector } from "./trace"
@@ -34,7 +34,7 @@ let aborter:AbortController|undefined,jobOwner:ProactiveOwner|undefined,jobRequi
 const cleanups:Array<()=>void>=[],offered=new Map<string,Opportunity>()
 let windowIdentity="",windowSince=0,lastWindowGeneration=-1,lastWindowSequence=-1,lastWindowOfferAt=0,offeringWindow=false
 let controlEnabled=false
-let workEndedAt=0,wasWorking=false,lastReliableActive=0,reunionAt=0,lastObservedAt=0,hadObservationGap=true
+let workEndedAt=0,restingSince=0,lastRestObservationAt=0,wasWorking=false,lastReliableActive=0,reunionAt=0,lastObservedAt=0,hadObservationGap=true
 const previousVars=new Map<string,Record<string,string|number|boolean>>()
 function seedVariables():void {
   const card=getActiveCard()
@@ -71,12 +71,13 @@ export function start():void {
     const maxGap=Math.max(10_000,2*desktopConfig.pollingIntervalMs)
     if(lastObservedAt&&now-lastObservedAt>maxGap)hadObservationGap=true
     lastObservedAt=now
-    if(observation.observationState!=="observed") {if(observation.observationState!=="locked")hadObservationGap=true;windowIdentity="";windowSince=0;return}
+    if(observation.observationState!=="observed") {if(observation.observationState!=="locked")hadObservationGap=true;restingSince=0;lastRestObservationAt=0;windowIdentity="";windowSince=0;return}
     const identity=`${observation.appId}:${observation.title}`
     if(identity!==windowIdentity){windowIdentity=identity;windowSince=now;lastWindowOfferAt=0;if(jobRequiresWindow)cancelCurrent("window_changed")}
     const behavior=getBehaviorSnapshot(now),working=behavior.focus.currentContinuousMs>=WORK_SILENCE_MS&&["work","development"].includes(behavior.focus.currentCategory??"")
-    if(wasWorking&&!working)workEndedAt=now
-    wasWorking=working
+    const tracker=advanceFinishedWorkTracker({workEndedAt,restingSince,lastRestObservationAt,wasWorking},
+      {now,working,leisureOrIdle:isLeisureOrIdle(behavior.focus.currentCategory,observation.idleForMs),maxGap})
+    workEndedAt=tracker.workEndedAt;restingSince=tracker.restingSince;lastRestObservationAt=tracker.lastRestObservationAt;wasWorking=tracker.wasWorking
     if(observation.idleForMs!==null&&observation.idleForMs<60_000) {
       if(lastReliableActive&&now-lastReliableActive>=DAY_MS&&!hadObservationGap)reunionAt=now
       lastReliableActive=now;hadObservationGap=false
@@ -127,17 +128,18 @@ export function stop():void {
   for(const dispose of cleanups.splice(0))dispose()
   offered.clear();previousVars.clear();stopPresence("window-observation");const card=getActiveCard();if(card)stopPresence(`planner:${card.id}`)
 }
-export function discardDerivedSources():void {for(const [key,value] of offered)if(value.sourceRefs.some(ref=>ref.kind==="behavior"))offered.delete(key);windowIdentity="";windowSince=0;lastWindowOfferAt=0;workEndedAt=0;reunionAt=0;hadObservationGap=true;stopPresence("window-observation")}
+export function discardDerivedSources():void {for(const [key,value] of offered)if(value.sourceRefs.some(ref=>ref.kind==="behavior"))offered.delete(key);windowIdentity="";windowSince=0;lastWindowOfferAt=0;workEndedAt=0;restingSince=0;lastRestObservationAt=0;reunionAt=0;hadObservationGap=true;stopPresence("window-observation")}
 export function refreshProactive():void {setCooldown(windowMonitorConfig.cooldownMs);cancelCurrent("configuration_changed");enqueueTick()}
 
 export async function tick(now=Date.now()):Promise<void> {
   if(!started||!adapters)return
   const context=createRuntimeTraceContext(activeSessionId.value??undefined)
   if(busy){trace(context,"proactive_skipped",()=>({reason:"tick_reentry"}));return}
+  trace(context,"proactive_tick",()=>({status:"started"}))
   busy=true;aborter=new AbortController()
   try {
     const owner=await adapters.expression.captureOwner()
-    if(!owner)return
+    if(!owner){trace(context,"proactive_skipped",()=>({reason:"owner_unavailable"}));return}
     jobOwner=owner
     await adapters.reconcileSession(owner.sessionId)
     if(!current(owner))return
@@ -159,9 +161,10 @@ export async function tick(now=Date.now()):Promise<void> {
       hasMore=hasMore&&page.hasMore;targetHasMore=targetHasMore&&page.targetHasMore;cursor=nextCursor;targetCursor=nextTargetCursor
     }
     topic=contentPool(card,behavior,owner,day,scan.usedTopicKeys,memoryConfig.enabled?memoryTargets:[])
-    trace(context,"proactive_tick",()=>({count:tasks.length,sourceRevision:scan.sourceRevision,controlRevision:scan.control.revision,hasMore:scan.hasMore}))
+    trace(context,"proactive_tick",()=>({status:"scanned",count:tasks.length,sourceRevision:scan.sourceRevision,controlRevision:scan.control.revision,hasMore:scan.hasMore}))
     const rules=collectOpportunities({owner,now,timezone,tasks,memoryTargets,memoryEnabled:memoryConfig.enabled,behavior,topic})
-    if(workEndedAt&&now-workEndedAt>=FINISH_WORK_DELAY_MS&&!wasWorking&&behavior.quality.status==="reliable")rules.push(opportunity(owner,"rhythm",`${day}:finish`,[source("behavior",`finish:${day}`,behavior.revision,`${workEndedAt}`,owner)],now,now+2*60*60_000,40,"可靠工作段结束已超过10分钟，邀请放松，不声称完成了现实成果。"))
+    if(qualifiesFinishedWork({workEndedAt,restingSince,now,wasWorking,reliable:behavior.quality.status==="reliable"}))
+      rules.push(opportunity(owner,"rhythm",`${day}:finish`,[source("behavior",`finish:${day}`,behavior.revision,`${workEndedAt}:${restingSince}`,owner)],restingSince,restingSince+2*60*60_000,40,"可靠工作段结束后已连续观察到至少10分钟休闲或空闲，邀请放松，不声称完成了现实成果。"))
     if(reunionAt&&now-reunionAt<2*60*60_000)rules.push(opportunity(owner,"rhythm",`${day}:reunion`,[source("behavior",`reunion:${day}`,1,`${reunionAt}`,owner)],reunionAt,reunionAt+2*60*60_000,50,"可靠活跃信号相隔至少24小时后的重逢；不要推测离开原因。"))
     const eligible=selectOpportunities([...offered.values(),...rules],new Set(scan.evaluatedFingerprints),now,unansweredCount.value,
       behavior.focus.currentContinuousMs>=WORK_SILENCE_MS&&["work","development"].includes(behavior.focus.currentCategory??""))
@@ -171,26 +174,37 @@ export async function tick(now=Date.now()):Promise<void> {
     await ipc.scan({owner,now,localDate:day,limit:1,sourceRefs:eligible.flatMap(item=>item.sourceRefs).filter(ref=>!["memory","user_entry","task"].includes(ref.kind))})
     const activity=await getRuntimeActivity()
     const muted=typeof scan.control.muteUntil==="number"&&scan.control.muteUntil>now
-    const blocked=!scan.control.enabled||muted||isQuietTime(now,timezone)||!activity.isPetVisible||activity.observationState!=="observed"
-      ||now-activity.observedAt>OBSERVATION_MAX_AGE_MS||isCoolingDown()||isAIGenerating()||await harnessSlots.hasOpenOperation(owner.sessionId)
-      ||scan.budget.successfulMessages>=PROACTIVE_LIMITS.dailySuccess
-    if(blocked){trace(context,"proactive_skipped",()=>({reason:"global_guard",opportunityIds:eligible.map(item=>item.id)}));return}
+    const laneBusy=await harnessSlots.hasOpenOperation(owner.sessionId)
+    const guardReason=!scan.control.enabled?"disabled":muted?"muted":isQuietTime(now,timezone)?"quiet_time":!activity.isPetVisible?"pet_hidden"
+      :activity.observationState!=="observed"?"observation_unavailable":now-activity.observedAt>OBSERVATION_MAX_AGE_MS?"stale_observation"
+      :isCoolingDown()?"cooldown":isAIGenerating()?"ai_generating":laneBusy?"lane_busy"
+      :scan.budget.successfulMessages>=PROACTIVE_LIMITS.dailySuccess?"daily_quota":null
+    if(guardReason){trace(context,"proactive_skipped",()=>({reason:guardReason,ruleId:eligible[0]?.ruleId,opportunityIds:eligible.map(item=>item.id)}));return}
     trace(context,"proactive_opportunity",()=>({ruleId:eligible[0]!.ruleId,opportunityIds:eligible.map(item=>item.id),sourceIds:eligible.flatMap(item=>item.sourceRefs.map(ref=>ref.id))}))
     const selected=eligible[0]!,sourceRefs=[...new Map(eligible.flatMap(item=>item.sourceRefs).map(ref=>[`${ref.kind}:${ref.id}`,ref])).values()]
     const fingerprint=eligible.map(item=>item.fingerprint).join("|"),occurrenceIds=eligible.map(item=>item.intentKey)
     let intent=eligible.map(item=>item.context).join("\n"),decisionKind:ProactiveDecision["kind"]="speak_now"
     if(!selected.explicit) {
       const input=await planningInput(eligible,owner,now,aborter.signal)
-      if(!current(owner))return
+      if(!current(owner)){trace(context,"proactive_skipped",()=>({reason:"owner_changed",ruleId:selected.ruleId}));return}
       const attemptId=crypto.randomUUID(),requestId=crypto.randomUUID()
       let planningClaimed=false
-      const planned=await plan(input,owner,now,aborter.signal,()=>current(owner),adapters.runPlanner,async reservation=>{
-        if(!current(owner)||reservation.estimatedInputTokens>reservation.hardInputLimit||reservation.estimatedInputTokens+reservation.maxOutputTokens>reservation.contextWindow)return false
+      let ownerSkipTraced=false
+      const plannerCurrent=()=>{
+        const valid=current(owner)
+        if(!valid&&!ownerSkipTraced){ownerSkipTraced=true;trace(context,"proactive_skipped",()=>({reason:"owner_changed",ruleId:selected.ruleId}),{requestId})}
+        return valid
+      }
+      const planned=await plan(input,owner,now,aborter.signal,plannerCurrent,adapters.runPlanner,async reservation=>{
+        if(!plannerCurrent())return false
+        if(reservation.estimatedInputTokens>reservation.hardInputLimit||reservation.estimatedInputTokens+reservation.maxOutputTokens>reservation.contextWindow) {
+          trace(context,"proactive_skipped",()=>({reason:"planning_budget",ruleId:selected.ruleId}),{requestId});return false
+        }
         const receipt=await ipc.claim({attemptId,requestId,kind:"planning",owner,sourceRefs,sourceFingerprint:fingerprint,
           sourceRevision:scan.sourceRevision,controlRevision:scan.control.revision,occurrenceIds,now:Date.now(),localDate:day,
           reservedTokens:reservation.estimatedInputTokens+reservation.maxOutputTokens})
         planningClaimed=receipt.claimed
-        trace(context,"proactive_claim",()=>({attemptId,status:receipt.claimed?"claimed":"denied",reason:receipt.reason}))
+        trace(context,"proactive_claim",()=>({attemptId,status:receipt.claimed?"claimed":"denied",reason:receipt.reason}),{requestId})
         return receipt.claimed
       })
       if(!planningClaimed)return
@@ -207,7 +221,7 @@ export async function tick(now=Date.now()):Promise<void> {
       if(planned.kind==="set_presence")decision.presence={state:planned.presence,expiresAt:now+PROACTIVE_LIMITS.tickMs}
       const planningReceipt=await ipc.settle({attemptId,owner,sourceFingerprint:fingerprint,localDate:day,status:current(owner)?"committed":"failed",decision,usage:accountedUsage(planned.usage),
         errorCode:current(owner)?undefined:"owner_changed",summary:planned.reason})
-      trace(context,"proactive_decision",()=>({attemptId,decisionKind:planned.kind,taskIds:decision.taskDrafts?.map(task=>task.id)??[]}))
+      trace(context,"proactive_decision",()=>({attemptId,decisionKind:planned.kind,taskIds:decision.taskDrafts?.map(task=>task.id)??[]}),{requestId})
       if(!current(owner)||planningReceipt.status!=="committed")return
       if(planned.kind==="set_presence"&&planned.presence){setPresence(planned.presence,{reason:"planned_presence",sourceOwner:`planner:${owner.cardId}`,expiresAt:now+PROACTIVE_LIMITS.tickMs});requestBriefMotion(now,`planner:${owner.cardId}`);return}
       if(planned.kind!=="speak_now")return
@@ -219,20 +233,30 @@ export async function tick(now=Date.now()):Promise<void> {
       sourceRefs,occurrenceIds,memoryTargets:[...new Map(eligible.flatMap(item=>item.targets).map(target=>[target.id,target])).values()].slice(0,2),
       beforeGenerate:async (actual,reservation)=>{
         jobOwner=actual
-        if(!current(actual))return false
-        if(reservation.toolCount!==0||reservation.estimatedInputTokens>reservation.hardInputLimit||reservation.estimatedInputTokens+reservation.maxOutputTokens>reservation.contextWindow)return false
+        if(!current(actual)){trace(context,"proactive_skipped",()=>({reason:"owner_changed",ruleId:selected.ruleId}),{requestId});return false}
+        if(reservation.toolCount!==0){trace(context,"proactive_skipped",()=>({reason:"planner_tools_present",ruleId:selected.ruleId}),{requestId});return false}
+        if(reservation.estimatedInputTokens>reservation.hardInputLimit||reservation.estimatedInputTokens+reservation.maxOutputTokens>reservation.contextWindow) {
+          trace(context,"proactive_skipped",()=>({reason:"expression_budget",ruleId:selected.ruleId}),{requestId});return false
+        }
         const reservedTokens=reservation.estimatedInputTokens+reservation.maxOutputTokens
         const receipt=await ipc.claim({attemptId:expressionAttempt,requestId,kind:"expression",owner:actual,sourceRefs,sourceFingerprint:fingerprint,
           sourceRevision:scan.sourceRevision,controlRevision:scan.control.revision,occurrenceIds,now:Date.now(),localDate:day,reservedTokens})
         claimed=receipt.claimed
-        trace(context,"proactive_claim",()=>({attemptId:expressionAttempt,status:claimed?"claimed":"denied",reason:receipt.reason}))
+        trace(context,"proactive_claim",()=>({attemptId:expressionAttempt,status:claimed?"claimed":"denied",reason:receipt.reason}),{requestId})
         return claimed
       },isCurrent:async actual=>{
-        if(!current(actual))return false
+        if(!current(actual)){trace(context,"proactive_skipped",()=>({reason:"owner_changed",ruleId:selected.ruleId}),{requestId});return false}
         const activity=await getRuntimeActivity(),time=Date.now()
-        if(!activity.isPetVisible||activity.observationState!=="observed"||time-activity.observedAt>OBSERVATION_MAX_AGE_MS||isQuietTime(time,timezone))return false
-        if(jobRequiresWindow){const observation=getLatestWindowObservation();if(!observation||observation.observationState!=="observed"||time-observation.observedAt>OBSERVATION_MAX_AGE_MS)return false}
-        return !claimed||(await ipc.validate({attemptId:expressionAttempt,owner:actual,now:time})).valid
+        const activityReason=!activity.isPetVisible?"pet_hidden":activity.observationState!=="observed"?"observation_unavailable"
+          :time-activity.observedAt>OBSERVATION_MAX_AGE_MS?"stale_observation":isQuietTime(time,timezone)?"quiet_time":null
+        if(activityReason){trace(context,"proactive_skipped",()=>({reason:activityReason,ruleId:selected.ruleId}),{requestId});return false}
+        if(jobRequiresWindow){const observation=getLatestWindowObservation();const reason=!observation||observation.observationState!=="observed"?"window_unavailable"
+          :time-observation.observedAt>OBSERVATION_MAX_AGE_MS?"window_stale":null
+          if(reason){trace(context,"proactive_skipped",()=>({reason,ruleId:selected.ruleId}),{requestId});return false}}
+        if(!claimed)return true
+        const receipt=await ipc.validate({attemptId:expressionAttempt,owner:actual,now:time})
+        if(!receipt.valid)trace(context,"proactive_skipped",()=>({reason:receipt.reason??"claim_invalid",ruleId:selected.ruleId}),{requestId})
+        return receipt.valid
       },
       settle:async (actual,proof)=>{
         if(!current(actual))return "stale"
@@ -244,11 +268,11 @@ export async function tick(now=Date.now()):Promise<void> {
       }})
     if(result.status==="committed") {
       triggerCooldown();for(const item of eligible)offered.delete(item.fingerprint)
-      trace(context,"proactive_settled",()=>({attemptId:expressionAttempt,status:"committed",assistantEntryId:result.assistantEntryId}))
+      trace(context,"proactive_settled",()=>({attemptId:expressionAttempt,status:"committed",assistantEntryId:result.assistantEntryId}),{requestId})
     } else if(claimed) {
       await ipc.settle({attemptId:expressionAttempt,owner:jobOwner??owner,sourceFingerprint:fingerprint,localDate:day,status:result.status==="failed"&&result.commitState!=="not_committed"?"unresolved":"failed",
         decision:null,usage:result.status==="failed"?accountedUsage(result.usage):null,errorCode:result.status==="failed"?result.errorCode:result.reason})
-      trace(context,"proactive_settled",()=>({attemptId:expressionAttempt,status:result.status,reason:result.status==="failed"?result.errorCode:result.reason}))
+      trace(context,"proactive_settled",()=>({attemptId:expressionAttempt,status:result.status,reason:result.status==="failed"?result.errorCode:result.reason}),{requestId})
     }
   } catch(error) {
     trace(context,"proactive_skipped",()=>({reason:errorCode(error)}));log.warn("主动运行未完成:",formatError(error))

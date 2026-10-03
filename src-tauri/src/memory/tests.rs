@@ -6,6 +6,7 @@ use super::MemoryStore;
 use super::store::payload_hash;
 use crate::error::AppError;
 use serde_json::{json, Value};
+use sha2::{Digest, Sha256};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -94,9 +95,65 @@ fn evaluation_reset_replaces_database_and_source_governance() {
 fn protocol_commands_match_published_schema() {
     // 协议文件是跨 Rust/TS 的唯一边界：命令清单与 schema 版本必须与实现同源。
     assert!(MEMORY_COMMANDS.contains(&"memory_query"));
+    assert!(MEMORY_COMMANDS.contains(&"memory_recall_candidates"));
     assert!(MEMORY_COMMANDS.contains(&"memory_dreaming_commit"));
-    assert_eq!(MEMORY_COMMANDS.len(), 22, "命令数量变了就要同步 protocol.json 与 ipc.ts");
+    assert!(MEMORY_COMMANDS.contains(&"memory_job_list"));
+    assert!(MEMORY_COMMANDS.contains(&"memory_restore_preview"));
+    assert!(MEMORY_COMMANDS.contains(&"memory_source_evidence"));
+    assert_eq!(MEMORY_COMMANDS.len(), 26, "命令数量变了就要同步 protocol.json 与 ipc.ts");
     assert_eq!(MEMORY_SCHEMA_VERSION, SCHEMA_VERSION);
+}
+
+#[test]
+fn source_evidence_hides_forgotten_sources_and_job_list_omits_secrets() {
+    let (_fixture, store) = Fixture::new();
+    store.register_sources(&[source("visible-source", "visible-entry", "visible-hash")]).unwrap();
+    let visible = store.source_evidence("visible-source").unwrap().unwrap();
+    assert_eq!(visible["evidence"], json!("用户原话"));
+    assert_eq!(visible["eligibleForMemory"], json!(true));
+    assert_eq!(store.source_evidence("missing").unwrap(), None);
+
+    let revision = add(&store, "source-add", 0, &draft("待忘记", vec!["visible-source"]));
+    let item = store.query("待忘记", Some("user"), None, None, 50).unwrap().remove(0);
+    store.apply_change("source-forget", revision, "forget", item["id"].as_str(), Some(1), None).unwrap();
+    assert_eq!(store.source_evidence("visible-source").unwrap(), None);
+
+    store.job_start("review", "private-owner").unwrap();
+    let jobs = store.job_list(50, 0).unwrap();
+    assert_eq!(jobs.len(), 1);
+    assert!(jobs[0].get("leaseOwner").is_none());
+    assert!(jobs[0].get("cursor").is_none());
+}
+
+#[test]
+fn chat_user_ui_add_requires_one_complete_current_trusted_source() {
+    let (_fixture, store) = Fixture::new();
+    let mut trusted = source("chat-source", "chat-entry", "unused");
+    trusted["contentHash"] = json!(format!("{:x}", Sha256::digest("用户原话".as_bytes())));
+    store.register_sources(&[trusted]).unwrap();
+    let complete = draft("用户原话", vec!["chat-source"]);
+    assert_eq!(
+        store.apply_change_with_actor("chat-save", 0, "add", None, None, Some(&complete), "user_ui_current", Some("chat-entry:user"), Some("s1")).unwrap(),
+        1,
+    );
+
+    let partial = draft("用户原", vec!["chat-source"]);
+    assert!(store.apply_change_with_actor("chat-partial", 1, "add", None, None, Some(&partial), "user_ui_current", Some("chat-entry:user"), Some("s1")).is_err());
+    assert!(store.apply_change_with_actor("chat-wrong-session", 1, "add", None, None, Some(&complete), "user_ui_current", Some("chat-entry:user"), Some("other-session")).is_err());
+    assert!(store.apply_change_with_actor("chat-update", 1, "update", Some("item"), Some(1), Some(&complete), "user_ui_current", Some("chat-entry:user"), Some("s1")).is_err());
+}
+
+#[test]
+fn restore_preview_validates_managed_backup_metadata_without_applying_it() {
+    let (_fixture, store) = Fixture::new();
+    store.register_sources(&[source("preview-source", "preview-entry", "preview-hash")]).unwrap();
+    add(&store, "preview-add", 0, &draft("备份内容", vec!["preview-source"]));
+    let backup = store.backup().unwrap();
+    let preview = MemoryStore::restore_preview(std::path::Path::new(&backup)).unwrap();
+    assert_eq!(preview["schemaVersion"], json!(SCHEMA_VERSION));
+    assert_eq!(preview["itemCount"], json!(1));
+    assert_eq!(preview["jobCount"], json!(0));
+    assert_eq!(store.status().unwrap().item_count, 1);
 }
 
 #[test]
@@ -174,6 +231,94 @@ fn query_filters_scope_and_expiry() {
         store.query("出差", None, None, None, 10).unwrap().is_empty(),
         "已过有效期的记忆仍被召回"
     );
+}
+
+#[test]
+fn pinned_core_is_read_without_query_and_bound_to_current_scopes_and_revision() {
+    let (_fixture, store) = Fixture::new();
+    store.register_sources(&[
+        source("core-user", "core-user-entry", "core-user-hash"),
+        source("core-card", "core-card-entry", "core-card-hash"),
+        source("core-other", "core-other-entry", "core-other-hash"),
+        source("core-session", "core-session-entry", "core-session-hash"),
+        source("core-expired", "core-expired-entry", "core-expired-hash"),
+    ]).unwrap();
+    let mut user = draft("核心称呼是小澄", vec!["core-user"]);
+    user["pinned"] = json!(true);
+    add(&store, "core-user-add", 0, &user);
+    let mut card = draft("当前Card称呼是老板", vec!["core-card"]);
+    card["scope"] = json!("card"); card["scopeId"] = json!("current-card"); card["pinned"] = json!(true);
+    add(&store, "core-card-add", 1, &card);
+    let mut other = draft("其它Card秘密称呼是主管", vec!["core-other"]);
+    other["scope"] = json!("card"); other["scopeId"] = json!("other-card"); other["pinned"] = json!(true);
+    add(&store, "core-other-add", 2, &other);
+    let mut session = draft("当前会话核心事项", vec!["core-session"]);
+    session["scope"] = json!("session"); session["scopeId"] = json!("s1"); session["pinned"] = json!(true);
+    add(&store, "core-session-add", 3, &session);
+    let mut expired = draft("过期核心称呼", vec!["core-expired"]);
+    expired["pinned"] = json!(true); expired["expiresAt"] = json!(1_000i64);
+    add(&store, "core-expired-add", 4, &expired);
+
+    let snapshot = store.recall_candidates("一个完全无关的天气问题", Some("current-card"), "s1", 50, &[], false).unwrap();
+    assert!(snapshot["candidates"].as_array().unwrap().is_empty(), "无关问题不应从动态召回命中内容");
+    let pinned = snapshot["pinned"].as_array().unwrap();
+    let texts = pinned.iter().map(|item| item["draft"]["content"].as_str().unwrap()).collect::<Vec<_>>();
+    assert!(texts.contains(&"核心称呼是小澄"));
+    assert!(texts.contains(&"当前Card称呼是老板"));
+    assert!(texts.contains(&"当前会话核心事项"));
+    assert!(!texts.iter().any(|text| text.contains("其它Card") || text.contains("过期")));
+    assert_eq!(snapshot["revision"], json!(store.status().unwrap().revision), "候选和核心画像 revision 应来自同一读取快照");
+}
+
+#[test]
+fn exact_feedback_targets_allow_expiry_but_enforce_version_and_owner_scope() {
+    let (_fixture, store) = Fixture::new();
+    store.register_sources(&[
+        source("target-user", "target-user-entry", "target-user-hash"),
+        source("target-card", "target-card-entry", "target-card-hash"),
+        source("target-session", "target-session-entry", "target-session-hash"),
+        source("target-other", "target-other-entry", "target-other-hash"),
+    ]).unwrap();
+    let mut user = draft("到期但仍active的用户事项", vec!["target-user"]);
+    user["expiresAt"] = json!(1i64);
+    store.apply_change("target-user-add", 0, "add", Some("target-user-id"), None, Some(&user)).unwrap();
+    let mut card = draft("当前Card事项", vec!["target-card"]);
+    card["scope"] = json!("card"); card["scopeId"] = json!("current-card");
+    store.apply_change("target-card-add", 1, "add", Some("target-card-id"), None, Some(&card)).unwrap();
+    let mut session = draft("当前session事项", vec!["target-session"]);
+    session["scope"] = json!("session"); session["scopeId"] = json!("s1");
+    store.apply_change("target-session-add", 2, "add", Some("target-session-id"), None, Some(&session)).unwrap();
+    let mut other = draft("其它Card事项", vec!["target-other"]);
+    other["scope"] = json!("card"); other["scopeId"] = json!("other-card");
+    store.apply_change("target-other-add", 3, "add", Some("target-other-id"), None, Some(&other)).unwrap();
+
+    let targets = vec![
+        json!({"id":"target-user-id","version":1}),
+        json!({"id":"target-card-id","version":1}),
+        json!({"id":"target-session-id","version":1}),
+        json!({"id":"target-other-id","version":1}),
+        json!({"id":"target-user-id","version":2}),
+    ];
+    let snapshot = store.recall_candidates("", Some("current-card"), "s1", 50, &targets, true).unwrap();
+    let ids = snapshot["targeted"].as_array().unwrap().iter().map(|item| item["id"].as_str().unwrap()).collect::<Vec<_>>();
+    assert_eq!(ids, ["target-user-id", "target-card-id", "target-session-id"]);
+    assert!(snapshot["candidates"].as_array().unwrap().is_empty());
+}
+
+#[test]
+fn relevance_beats_importance_when_a_stronger_query_match_is_available() {
+    let (_fixture, store) = Fixture::new();
+    store.register_sources(&[source("weak-match", "weak-entry", "weak-hash"), source("strong-match", "strong-entry", "strong-hash")]).unwrap();
+    let mut weak = draft("用户喜欢喝咖啡", vec!["weak-match"]);
+    weak["importance"] = json!(10.0);
+    add(&store, "weak-add", 0, &weak);
+    let mut strong = draft("用户喜欢喝拿铁", vec!["strong-match"]);
+    strong["importance"] = json!(1.0);
+    add(&store, "strong-add", 1, &strong);
+
+    let results = store.query("用户喜欢喝拿铁", Some("user"), None, Some("s1"), 1).unwrap();
+    assert_eq!(results.len(), 1);
+    assert_eq!(results[0]["draft"]["content"], json!("用户喜欢喝拿铁"), "强查询匹配应胜过 importance 较高的弱片段命中");
 }
 
 #[test]

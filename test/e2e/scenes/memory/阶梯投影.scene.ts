@@ -99,7 +99,7 @@ const SINGLE_ENTRY_TOKENS = toolResultTokenBudget(WINDOW_TOKENS)
 /**
  * 第 4 轮的越线量（校准目标 = `target + MARGIN`）：取自预算自己的压缩余量的一半，
  * 不写死数字。量级理由：级 2 能腾出的是「保护区外每条候选的级 1 形态」≈ 若干倍单条上限
- * （`L0_TOOL_RESULT_SHARE = 10%` 的 target），远大于这个余量；而余量本身又足以吸收
+ * （`L0_TOOL_RESULT_CAP = 10%` 的 target），远大于这个余量；而余量本身又足以吸收
  * 估算漂移与系统提示词的分钟级变化。两条边都由第 4 轮的断言当场把关。
  */
 const MARGIN_TOKENS = Math.ceil(BUDGET.compactionHeadroom / 2)

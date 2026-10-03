@@ -12,10 +12,12 @@ import { createLogger } from "@/services/logger"
 import { formatError } from "@/services/error"
 import { installMemoryProvider, sqliteMemoryProvider, recallMemory } from "./provider"
 import { memoryList, memoryStatus, applyMemoryChange } from "./ipc"
+import { initMemoryRevisionSync } from "./revision"
 
 export type { TemporalAnchor, ProactiveRecurrence, ProactiveOwner, ProactiveTask, ProactiveSourceRef } from "./protocol"
 
 export { parseRerankIds } from "./rerank"
+export { initMemoryRevisionSync, publishMemoryRevision, subscribeMemoryRevision } from "./revision"
 export {
   emptyMemoryProvider, getMemoryProvider, installMemoryProvider, recallMemory, resetMemoryProvider,
   sqliteMemoryProvider,
@@ -23,13 +25,13 @@ export {
 export type { MemoryProvider, MemoryProjection, MemoryRecallRequest } from "./provider"
 export {
   addMemoryCandidates, applyMemoryChange, backupMemory, cancelMemoryJob, checkpointMemoryJob, commitMemoryDreamingJob,
-  exportMemory, getMemoryItems, memoryDetail, memoryHistory, memoryJobSources, memoryList, memoryStatus,
-  memoryDreamingBudget, reserveMemoryDreamingBudget, settleMemoryDreamingBudget,
+  exportMemory, getMemoryItems, getMemoryRecallCandidates, memoryDetail, memoryHistory, memoryJobSources, memorySourceEvidence, memoryList, memoryStatus,
+  memoryDreamingBudget, memoryJobList, memoryRestorePreview, reserveMemoryDreamingBudget, settleMemoryDreamingBudget,
   queryMemory, rebuildMemory, registerMemorySources, restoreMemory, resumeMemoryJob, startMemoryJob,
 } from "./ipc"
 export type {
   MemoryCandidateDraft, MemoryChangeRequest, MemoryDraft, MemoryHistoryEntry, MemoryItem,
-  MemoryJob, MemoryKind, MemoryScope, MemorySource, MemorySourceAudit, MemoryStatus, MemoryStatusSnapshot, WorkingState,
+  MemoryJob, MemoryJobListItem, MemoryKind, MemoryRecallCandidateSnapshot, MemoryRestorePreview, MemoryScope, MemorySource, MemorySourceAudit, MemoryStatus, MemoryStatusSnapshot, WorkingState,
 } from "./ipc"
 export { collectAllMemorySources, collectMemorySources, trustedSourcesFromEntries } from "./sources"
 export { resolveCurrentTrustedMemorySource } from "./sources"
@@ -53,6 +55,7 @@ async function ensureInit(): Promise<void> {
 async function _doInit(): Promise<void> {
   await initPaths()
   await invoke("init_memory_files")
+  await initMemoryRevisionSync()
   // 记忆库不可用时保留空实现：聊天照常，管理界面会以 MEMORY 错误如实上报。
   installMemoryProvider(sqliteMemoryProvider)
   try {

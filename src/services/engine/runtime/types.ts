@@ -113,7 +113,6 @@ export type ContextLayer =
 export interface ContextAllocation {
   layer: "static" | "tools" | "dynamic" | "memory" | "transcript" | "ephemeral"
   requested: number
-  assigned: number
   used: number
   /** 本层被整块淘汰的 token 数；没有淘汰时省略字段（不写 0）。 */
   dropped?: number

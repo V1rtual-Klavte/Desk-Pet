@@ -194,13 +194,14 @@ fn platform_window() -> (Option<String>, Option<String>, Option<String>) {
         let name: *mut Object = msg_send![running_app, localizedName];
         let app_id = ns_string(bundle);
         let app = ns_string(name);
-        let title = capture_mac_window_title();
+        let pid: i32 = msg_send![running_app, processIdentifier];
+        let title = capture_mac_window_title(pid);
         (app_id, app, title)
     }
 }
 
 #[cfg(target_os = "macos")]
-fn capture_mac_window_title() -> Option<String> {
+fn capture_mac_window_title(owner_pid: i32) -> Option<String> {
     use std::ffi::{c_char, c_void, CString};
 
     type CfTypeRef = *const c_void;
@@ -225,11 +226,14 @@ fn capture_mac_window_title() -> Option<String> {
 
     unsafe {
         let names = CString::new("kCGWindowName").ok()?;
+        let owners = CString::new("kCGWindowOwnerPID").ok()?;
         let layers = CString::new("kCGWindowLayer").ok()?;
         let name_key = CFStringCreateWithCString(std::ptr::null(), names.as_ptr(), 0x0800_0100);
+        let owner_key = CFStringCreateWithCString(std::ptr::null(), owners.as_ptr(), 0x0800_0100);
         let layer_key = CFStringCreateWithCString(std::ptr::null(), layers.as_ptr(), 0x0800_0100);
-        if name_key.is_null() || layer_key.is_null() {
+        if name_key.is_null() || owner_key.is_null() || layer_key.is_null() {
             if !name_key.is_null() { CFRelease(name_key); }
+            if !owner_key.is_null() { CFRelease(owner_key); }
             if !layer_key.is_null() { CFRelease(layer_key); }
             return None;
         }
@@ -241,6 +245,9 @@ fn capture_mac_window_title() -> Option<String> {
             for index in 0..CFArrayGetCount(array).min(32) {
                 let dictionary = CFArrayGetValueAtIndex(array, index);
                 if dictionary.is_null() { continue; }
+                let owner_ref = CFDictionaryGetValue(dictionary, owner_key);
+                let mut window_owner = 0i32;
+                if owner_ref.is_null() || !CFNumberGetValue(owner_ref, 3, &mut window_owner) || !window_owner_matches(window_owner,owner_pid) { continue; }
                 let layer_ref = CFDictionaryGetValue(dictionary, layer_key);
                 let mut layer = -1i32;
                 if layer_ref.is_null() || !CFNumberGetValue(layer_ref, 3, &mut layer) || layer != 0 { continue; }
@@ -255,8 +262,21 @@ fn capture_mac_window_title() -> Option<String> {
             CFRelease(array);
         }
         CFRelease(name_key);
+        CFRelease(owner_key);
         CFRelease(layer_key);
         title
+    }
+}
+
+#[cfg(any(target_os = "macos", test))]
+fn window_owner_matches(window_owner: i32, frontmost_pid: i32) -> bool { window_owner == frontmost_pid }
+
+#[cfg(test)]
+mod owner_tests {
+    #[test]
+    fn frontmost_title_requires_matching_window_owner_pid() {
+        assert_eq!(super::window_owner_matches(41, 41), true);
+        assert_eq!(super::window_owner_matches(42, 41), false);
     }
 }
 

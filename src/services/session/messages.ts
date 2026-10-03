@@ -34,8 +34,9 @@ export async function initWelcome(text: string, sessionId: string): Promise<void
   }
 }
 
-export function pushUserMessage(text: string, sessionId: string): Message {
+export function pushUserMessage(text: string, sessionId: string, eventId?: string): Message {
   const msg = createUserMessage(text)
+  if (eventId) msg.eventId = eventId
   pushMessageFor(sessionId, msg)
 
   // 改名只在「首条用户消息落进它自己的视图」时发生：跨会话推送不替别人改会话名。

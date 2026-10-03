@@ -6,7 +6,7 @@
 import type { CustomEntry, Entry, JsonValue, MessageEntry } from "@earendil-works/pi-agent-core"
 import type { ImageContent, TextContent, ThinkingContent, ToolCall } from "@earendil-works/pi-ai"
 import type { Message, ToolCallRequest } from "@/services/agent/types"
-import { DESKPET_GREETING_ENTRY, DESKPET_SYSTEM_MESSAGE_ENTRY } from "@/services/engine/runtime"
+import { DESKPET_GREETING_ENTRY, DESKPET_SYSTEM_MESSAGE_ENTRY, messageEventId } from "@/services/engine/runtime"
 import { createLogger } from "@/services/logger"
 import { formatError } from "@/services/error"
 
@@ -102,7 +102,8 @@ function messageFromEntry(entry: MessageEntry): Message | undefined {
   switch (raw.role) {
     case "user": {
       const text = typeof raw.content === "string" ? raw.content : textFromParts(raw.content)
-      return { id: entry.id, eventId: entry.id, role: "user", text, timestamp }
+      const eventId = messageEventId(raw)
+      return { id: entry.id, ...(eventId ? { eventId } : {}), role: "user", text, timestamp }
     }
     case "assistant": {
       if (!isAssistantEntryVisible(raw)) return undefined

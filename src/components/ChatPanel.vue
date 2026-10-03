@@ -24,6 +24,7 @@ import { confirmState, resolvePermissionConfirm } from "@/services/safety";
 import { actionCategoryOf } from "@/services/tool";
 import { activeCardName, getFallbackReply, getSimpleStage, getStagePrompt } from "@/services/personality";
 import type { SimpleStageKey } from "@/services/personality";
+import { applyMemoryChange, memoryStatus, publishMemoryRevision, resolveCurrentTrustedMemorySource } from "@/services/agent/memory";
 
 // ★ 同步初始化 Slash 命令注册表（下拉补全用；命令执行只在 ingress，见 preProcess）
 initSlashCommands();
@@ -219,6 +220,7 @@ async function stopRun() {
 
 /** 单条状态提示（投递回执/撤回结果/已加入本次对话），短暂展示，不落盘。 */
 const deliveryNote = ref("");
+const rememberingEvents = ref<Set<string>>(new Set());
 let deliveryNoteTimer: ReturnType<typeof setTimeout> | null = null;
 function showDeliveryNote(text: string) {
   deliveryNote.value = text;
@@ -226,6 +228,56 @@ function showDeliveryNote(text: string) {
   deliveryNoteTimer = setTimeout(() => {
     if (deliveryNote.value === text) deliveryNote.value = "";
   }, 4000);
+}
+
+/**
+ * “记住这条”只接受带持久 eventId 的用户原文，并重新从 JSONL 的可信来源表核验。
+ * 页面文本只是明确选择的内容，不经过模型或工具提炼；缺少可信身份的历史气泡不提供入口。
+ */
+async function rememberUserMessage(message: (typeof chatHistory)[number]): Promise<void> {
+  if (message.role !== "user" || !message.eventId || rememberingEvents.value.has(message.eventId)) return;
+  const eventId = message.eventId;
+  rememberingEvents.value.add(eventId);
+  try {
+    const sessionId = getActiveSessionId();
+    const source = await resolveCurrentTrustedMemorySource(sessionId, eventId);
+    if (!source.eligibleForMemory || source.origin !== "user" || source.taint !== "trusted_user") {
+      throw new Error("这条消息不是可记忆的可信用户原文");
+    }
+    if (!source.evidence) throw new Error("这条可信用户原文目前不可用");
+    const current = await memoryStatus();
+    const revision = await applyMemoryChange({
+      operationId: `remember-${crypto.randomUUID()}`,
+      baseRevision: current.revision,
+      action: "add",
+      actor: "user_ui",
+      trustedSessionId: sessionId,
+      trustedUserEventId: eventId,
+      draft: {
+        content: source.evidence,
+        summary: source.evidence.trim().slice(0, 120),
+        kind: "episode",
+        scope: "user",
+        aliases: [],
+        pinned: false,
+        importance: 5,
+        confidence: 1,
+        observedAt: message.timestamp,
+        sourceIds: [source.sourceId],
+      },
+    });
+    try {
+      await publishMemoryRevision(revision);
+      showDeliveryNote(`已记住这条用户原文（revision ${revision}）`);
+    } catch (error) {
+      showDeliveryNote(`已提交记忆（revision ${revision}），但同步失败：${formatError(error)}`);
+    }
+  } catch (error) {
+    log.warn("记住用户消息失败:", formatError(error));
+    showDeliveryNote(`记忆未提交：${formatError(error)}`);
+  } finally {
+    rememberingEvents.value.delete(eventId);
+  }
 }
 
 const DELIVERY_NOTES: Record<"steered" | "followup" | "deferred", string> = {
@@ -633,6 +685,7 @@ onUnmounted(() => {
         <div v-for="m in chatHistory" :key="m.id" class="cm" :class="m.role">
           <span class="cn">{{ m.role === "system" ? "系统" : m.role === "assistant" ? cardName : "你" }}</span>
           <span class="ct">{{ m.text }}</span>
+          <button v-if="m.role === 'user' && m.eventId" type="button" class="cm-remember" :disabled="rememberingEvents.has(m.eventId)" @click="rememberUserMessage(m)">{{ rememberingEvents.has(m.eventId) ? "记忆提交中…" : "记住这条" }}</button>
         </div>
         <!-- 流式正文：只做瞬时展示，回合结束后由提交路径推送的完整消息取代 -->
         <div v-if="streamingText" class="cm assistant stream">
@@ -872,6 +925,8 @@ onUnmounted(() => {
 .cm.user .cn { color: #90d0ff; }
 .ct { color: var(--color-text-bright); word-break: break-word; padding: 4px 8px; border-radius: 12px; max-width: 95%; font-size: clamp(9px, 2.5vw, var(--font-size, 15px)); }
 .cm.user .ct { background: var(--color-border-light); }
+.cm-remember { align-self: flex-end; border: 0; padding: 1px 4px; color: var(--color-text-pink); background: transparent; font-size: 9px; cursor: pointer; opacity: .72; }
+.cm-remember:hover { opacity: 1; }
 .cm.assistant .ct { background: var(--color-surface-dark); }
 
 /* 流式正文：半透明 + 光标，区别未提交内容 */

@@ -46,7 +46,9 @@ function createCanvas(width: number, height: number): ImageCanvas | undefined {
 /** 画布取 2d 上下文：离屏画布有 `convertToBlob`，文档画布只有 `toBlob`。
  *  用能力判定而不是 `instanceof OffscreenCanvas` —— 构造器不存在时 instanceof 会抛 ReferenceError。 */
 function context2d(canvas: ImageCanvas): CanvasRenderingContext2D | OffscreenCanvasRenderingContext2D | null {
-  return canvas.getContext("2d")
+  // TS 5.9 的 DOM lib 在联合画布上会选中 `getContext(string)` 宽重载（含 ImageBitmapRenderingContext）；
+  // 调用点只按 "2d" 请求，这里把返回收窄回两类 2d 上下文。
+  return canvas.getContext("2d") as CanvasRenderingContext2D | OffscreenCanvasRenderingContext2D | null
 }
 
 async function encodeCanvas(canvas: ImageCanvas, mimeType: string): Promise<Blob | undefined> {

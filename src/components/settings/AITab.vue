@@ -391,13 +391,18 @@ const stageRows = computed<StageRow[]>(() => {
   const rows: StageRow[] = [];
   if (!stages) return rows;
 
-  for (const stage of ["executing", "done", "blocked"] as const) {
-    const map = stages[stage] as Record<string, string>;
+  for (const stage of ["presence", "executing", "done", "blocked", "commands", "fallbacks"] as const) {
+    const map = stages[stage] as Record<string, string | string[]>;
     if (map) {
-      for (const [cat, text] of Object.entries(map)) {
-        rows.push({ stage, category: cat, text });
+      for (const [cat, value] of Object.entries(map)) {
+        if (Array.isArray(value)) value.forEach((text, index) => rows.push({ stage, category: `${cat} ${index + 1}`, text }));
+        else rows.push({ stage, category: cat, text: value });
       }
     }
+  }
+
+  for (const [index, text] of stages.greetings.entries()) {
+    rows.push({ stage: "greetings", category: String(index + 1), text });
   }
 
   for (const stage of ["thinking", "planning", "error", "retry"] as const) {

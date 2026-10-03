@@ -45,7 +45,8 @@ function createCanvas(width: number, height: number): CanvasLike | undefined {
 }
 
 function context2d(canvas: CanvasLike): CanvasRenderingContext2D | OffscreenCanvasRenderingContext2D | null {
-  return canvas.getContext("2d")
+  // 同 image-processor：联合画布上的 getContext("2d") 在 TS 5.9 DOM lib 里会选中宽重载。
+  return canvas.getContext("2d") as CanvasRenderingContext2D | OffscreenCanvasRenderingContext2D | null
 }
 
 /** 现场生成一张纯色 PNG 夹具。 */

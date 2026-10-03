@@ -34,7 +34,7 @@ import { join } from "node:path"
 import { BACKGROUND_CONTEXT, err, FileError } from "@earendil-works/pi-agent-core"
 import type { Context, JsonlSessionMetadata, Result, Session } from "@earendil-works/pi-agent-core"
 import { appendList, pendingAssistantFrames } from "@earendil-works/pi-agent-core/harness/session"
-import { afterAll, beforeAll, describe, expect, it } from "vitest"
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest"
 
 import { setTestDataRoot } from "../../host/node-ipc"
 import {
@@ -49,6 +49,7 @@ import {
 import { isFrameAppendTransaction } from "@/services/engine/harness/session-frame-buffer"
 import type { PiSessionRepo } from "@/services/engine/harness"
 import { acquirePiSession, createPiSession, deletePiSession, releasePiSession } from "@/services/session"
+import { getPiSessionRepo } from "@/services/session/repo"
 import { initPaths, runtimePath } from "@/services/paths"
 import { TauriExecutionEnv } from "@/services/tool/pi/tauri-execution-env"
 
@@ -345,7 +346,30 @@ describe("帧写缓冲", () => {
           expect(before.includes(frameDelta), `释放前盘上不应有缓冲帧: ${frameDelta.slice(0, 24)}…`).toBe(false)
         }
 
-        await releasePiSession(summary.id)
+        // release 的折叠挂点必须被 await：用一个受控 Promise 卡住 foldSession，确认 release
+        // 尚未完成，再放行。这样即使小文件最终 skipped，也能区分「调用并等待」与「漏接/浮动调用」。
+        const sessionRepo = await getPiSessionRepo()
+        let enterFold!: () => void
+        let finishFold!: () => void
+        const foldEntered = new Promise<void>(resolve => { enterFold = resolve })
+        const foldGate = new Promise<void>(resolve => { finishFold = resolve })
+        const foldSpy = vi.spyOn(sessionRepo, "foldSession").mockImplementation(async () => {
+          enterFold()
+          await foldGate
+          return { kind: "skipped", reason: "probe-too-small" }
+        })
+        let releaseFinished = false
+        const release = releasePiSession(summary.id).then(() => { releaseFinished = true })
+        try {
+          await Promise.race([foldEntered, release])
+          expect(foldSpy, "releasePiSession 应调用仓库折叠入口").toHaveBeenCalledOnce()
+          expect(releaseFinished, "releasePiSession 必须等待关闭后的折叠任务结束").toBe(false)
+        } finally {
+          finishFold()
+          foldSpy.mockRestore()
+        }
+        await release
+        expect(releaseFinished, "折叠放行后 releasePiSession 应完成").toBe(true)
 
         const after = expectOk(await raw.readTextFile(path, context), "readTextFile(释放后)")
         let cursor = -1

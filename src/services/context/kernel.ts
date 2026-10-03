@@ -1,12 +1,12 @@
 import type { ContextBlock, ContextLayer, ContextAllocation } from "@/services/engine/runtime"
 import { createLogger } from "@/services/logger"
-import { CONTEXT_RATIOS, ContextBudgetError, contextBudget, estimateContextTokens, type ContextBudget } from "./budget"
+import { ContextBudgetError, contextBudget, estimateContextTokens, type ContextBudget } from "./budget"
 
 const log = createLogger("ContextKernel")
 
 /** 请求块顺序的唯一真相源（static → dynamic → memory → transcript → ephemeral）；模块内使用，不导出。 */
 const CONTEXT_LAYER_ORDER: readonly ContextLayer[] = ["static", "dynamic", "memory", "transcript", "ephemeral"]
-/** 分配账目覆盖的层。transcript 不再有预算份额（请求视图由 Harness 从已提交条目重建），但审计行保留。 */
+/** 实际用量账目覆盖的层；transcript 请求视图由 Harness 从已提交条目重建，仍保留审计行。 */
 const ALLOCATION_LAYERS = ["static", "tools", "dynamic", "memory", "transcript", "ephemeral"] as const
 
 export interface ContextBlockInput extends Omit<ContextBlock, "tokenBudget"> {}
@@ -88,13 +88,11 @@ export function buildPromptBlocks(inputBlocks: ContextBlockInput[], contextMaxTo
     used += tokens
     selected.push({ ...block, tokenBudget: tokens })
   }
-  // Ratios are an audit/soft quota: only the memory share is consumed at runtime, the rest is a report.
   const allocations = ALLOCATION_LAYERS.map(layer => {
-    const assigned = Math.floor(budget.normalInputTarget * (CONTEXT_RATIOS[layer as keyof typeof CONTEXT_RATIOS] ?? 0))
     const requested = inputBlocks.filter(block => budgetLayer(block) === layer).reduce((n, block) => n + estimateContextTokens(block.text), 0)
     const consumed = selected.filter(block => budgetLayer(block) === layer).reduce((n, block) => n + (block.tokenBudget ?? 0), 0)
     const dropped = requested - consumed
-    return { layer, requested, assigned, used: consumed, ...(dropped > 0 ? { dropped } : {}) }
+    return { layer, requested, used: consumed, ...(dropped > 0 ? { dropped } : {}) }
   })
   const ordered = sortBlocks(selected)
   const staticPrefix = joinPrompt(ordered, block => block.blockId === "static:card" || block.blockId === "static:v1rtual" || block.blockId === "static:tool-protocol")

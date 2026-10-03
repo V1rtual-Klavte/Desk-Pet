@@ -14,6 +14,7 @@ export interface HarnessToolRun {
   sessionId?: string
   runGeneration?: number
   trustedUserEventId?: string
+  proactiveTurnContext?: import("@/services/proactive").ProactiveTurnContext
   /** 当前回合仍是代际所有者且未取消。 */
   isCurrent: () => boolean
   /** 回合级工具调用历史（返回给 UI/报告）。 */
@@ -43,6 +44,7 @@ export function toAgentHarnessTools(tools: readonly ToolDef[], run: HarnessToolR
           sessionId: run.sessionId,
           runGeneration: run.runGeneration,
           ...(run.trustedUserEventId ? { trustedUserEventId: run.trustedUserEventId } : {}),
+          ...(run.proactiveTurnContext ? { proactiveTurnContext: run.proactiveTurnContext } : {}),
           isCurrent: run.isCurrent,
           toolCallId,
           operationId: invocation.invocationId,

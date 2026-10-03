@@ -142,6 +142,17 @@ class TempWriteFailsEnv extends TauriExecutionEnv {
   }
 }
 
+/** 注入一个违反 FileSystem 不抛约定的 stat：显式折叠也必须收口成 skipped。 */
+class FileInfoThrowsEnv extends TauriExecutionEnv {
+  /** 建会话语料本身也要 stat；注入只在场景布置完成后开启。 */
+  failFileInfo = false
+  // 类型保持基类返回：真正的故障是「运行期抛」，不是换签名。
+  override fileInfo(_path: string, _context: Context): ReturnType<TauriExecutionEnv["fileInfo"]> {
+    if (!this.failFileInfo) return super.fileInfo(_path, _context)
+    throw new Error("injected fileInfo throw")
+  }
+}
+
 // ── 夹具 ──
 
 interface FoldCrashFixture {
@@ -278,6 +289,26 @@ async function assertNoTempResidue(target: FoldCrashFixture, label: string): Pro
 }
 
 describe("折叠中断", () => {
+  it("显式折叠遇到 FileSystem throw 时返回 skipped 且 open 仍继续 [harness-session-fold-throw-safe]", async () => {
+    const context = BACKGROUND_CONTEXT
+    const env = new FileInfoThrowsEnv(await runtimePath("data"))
+    const root = expectOk(await env.createTempDir("deskpet-fold-throw-safe-", context), "createTempDir")
+    const repo = await createPiSessionRepo({ sessionsRoot: root, cwd: root, fileSystem: env })
+    try {
+      const session = await repo.create({ id: "fold-throw-safe" }, context)
+      const metadata = session.metadata
+      await session.close(context)
+      env.failFileInfo = true
+      const folded = await repo.foldSession(metadata, context)
+      expect(folded).toEqual({ kind: "skipped", reason: "read-failed" })
+      const reopened = await repo.open(metadata, context)
+      await reopened.close(context)
+    } finally {
+      await repo.close(context)
+      await env.remove(root, { recursive: true, force: true }, context)
+    }
+  })
+
   it("折叠在 rename / 临时文件写入失败时中止：原文件逐字完好、临时文件被清理、会话仍可打开；残留的 .tmp 文件不参与会话列举 [harness-session-log-fold-crash]", async () => {
     const context = BACKGROUND_CONTEXT
     const target = await buildFixture()

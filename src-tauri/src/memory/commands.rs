@@ -7,6 +7,17 @@ use super::MemoryState;
 use crate::error::AppResult;
 use serde_json::Value;
 
+fn managed_backup_path(paths: &crate::paths::AppPaths, backup_path: &str) -> AppResult<std::path::PathBuf> {
+    let requested = std::path::Path::new(backup_path);
+    let backups = paths.memory.join("backups");
+    let resolved = requested.canonicalize().map_err(|_| crate::error::AppError::PathNotFound(backup_path.to_string()))?;
+    let base = backups.canonicalize().map_err(|_| crate::error::AppError::PathNotFound(backups.to_string_lossy().to_string()))?;
+    if !resolved.starts_with(&base) || !resolved.is_file() {
+        return Err(crate::error::AppError::PathEscape);
+    }
+    Ok(resolved)
+}
+
 #[tauri::command]
 pub fn memory_status(state: tauri::State<'_, MemoryState>) -> AppResult<Value> {
     let status = state.0.status()?;
@@ -51,6 +62,22 @@ pub fn memory_query(
 }
 
 #[tauri::command]
+pub fn memory_recall_candidates(
+    state: tauri::State<'_, MemoryState>,
+    query: String,
+    card_id: Option<String>,
+    session_id: String,
+    limit: Option<i64>,
+    targets: Option<Vec<Value>>,
+    allow_expired_targets: Option<bool>,
+) -> AppResult<Value> {
+    state.0.recall_candidates(
+        &query, card_id.as_deref(), &session_id, limit.unwrap_or(50),
+        targets.as_deref().unwrap_or(&[]), allow_expired_targets.unwrap_or(false),
+    )
+}
+
+#[tauri::command]
 pub fn memory_get_items(state: tauri::State<'_, MemoryState>, ids: Vec<String>) -> AppResult<Vec<Value>> {
     state.0.get_items(&ids)
 }
@@ -68,15 +95,17 @@ pub fn memory_apply_change(
     draft: Option<Value>,
     actor: String,
     trusted_user_event_id: Option<String>,
+    trusted_session_id: Option<String>,
 ) -> AppResult<i64> {
-    match actor.as_str() {
-        "current_input" if window.label() == "main" => {},
-        "user_ui" if window.label() == "settings" => {},
+    let store_actor = match actor.as_str() {
+        "current_input" if window.label() == "main" => "current_input",
+        "user_ui" if window.label() == "settings" => "user_ui",
+        "user_ui" if window.label() == "main" && action == "add" && trusted_session_id.as_deref().is_some_and(|value| !value.is_empty()) => "user_ui_current",
         // Governance clears and evaluation seeding use the internal actor. Keep it
         // on the real main window or the debug-only E2E window.
-        "internal" if window.label() == "main" || (cfg!(debug_assertions) && window.label() == "e2e") => {},
+        "internal" if window.label() == "main" || (cfg!(debug_assertions) && window.label() == "e2e") => "internal",
         _ => return Err(crate::error::AppError::Memory("记忆变更调用窗口身份与操作类型不匹配".into())),
-    }
+    };
     state.0.apply_change_with_actor(
         &operation_id,
         base_revision,
@@ -84,14 +113,20 @@ pub fn memory_apply_change(
         item_id.as_deref(),
         expected_version,
         draft.as_ref(),
-        &actor,
+        store_actor,
         trusted_user_event_id.as_deref(),
+        trusted_session_id.as_deref(),
     )
 }
 
 #[tauri::command]
 pub fn memory_job_start(state: tauri::State<'_, MemoryState>, phase: String, lease_owner: String) -> AppResult<Value> {
     state.0.job_start(&phase, &lease_owner)
+}
+
+#[tauri::command]
+pub fn memory_job_list(state: tauri::State<'_, MemoryState>, limit: Option<i64>, offset: Option<i64>) -> AppResult<Vec<Value>> {
+    state.0.job_list(limit.unwrap_or(50), offset.unwrap_or(0))
 }
 
 #[tauri::command]
@@ -122,6 +157,11 @@ pub fn memory_job_resume(
 #[tauri::command]
 pub fn memory_job_sources(state: tauri::State<'_, MemoryState>, job_id: String) -> AppResult<Vec<Value>> {
     state.0.job_sources(&job_id)
+}
+
+#[tauri::command]
+pub fn memory_source_evidence(state: tauri::State<'_, MemoryState>, source_id: String) -> AppResult<Option<Value>> {
+    state.0.source_evidence(&source_id)
 }
 
 #[tauri::command]
@@ -174,12 +214,15 @@ pub fn memory_restore(
     paths: tauri::State<'_, crate::paths::AppPaths>,
     backup_path: String,
 ) -> AppResult<i64> {
-    let requested = std::path::Path::new(&backup_path);
-    let backups = paths.memory.join("backups");
-    let resolved = requested.canonicalize().map_err(|_| crate::error::AppError::PathNotFound(backup_path.clone()))?;
-    let base = backups.canonicalize().map_err(|_| crate::error::AppError::PathNotFound(backups.to_string_lossy().to_string()))?;
-    if !resolved.starts_with(&base) || resolved.is_dir() {
-        return Err(crate::error::AppError::PathEscape);
-    }
+    let resolved = managed_backup_path(&paths, &backup_path)?;
     state.0.restore(&resolved)
+}
+
+#[tauri::command]
+pub fn memory_restore_preview(
+    paths: tauri::State<'_, crate::paths::AppPaths>,
+    backup_path: String,
+) -> AppResult<Value> {
+    let resolved = managed_backup_path(&paths, &backup_path)?;
+    super::MemoryStore::restore_preview(&resolved)
 }

@@ -17,7 +17,10 @@ import type {
   MemoryItem,
   MemoryJob,
   MemoryKind,
+  MemoryJobListItem,
   MemoryScope,
+  MemoryRestorePreview,
+  MemoryRecallCandidateSnapshot,
   MemorySource,
   MemorySourceAudit,
   MemoryStatus,
@@ -31,7 +34,10 @@ export type {
   MemoryChangeActor,
   MemoryItem,
   MemoryJob,
+  MemoryJobListItem,
   MemoryKind,
+  MemoryRecallCandidateSnapshot,
+  MemoryRestorePreview,
   MemoryScope,
   MemorySource,
   MemorySourceAudit,
@@ -54,6 +60,7 @@ export interface MemoryChangeRequest {
   action: "add" | "update" | "supersede" | "forget" | "clear" | "complete" | "cancel"
   actor: MemoryChangeActor
   trustedUserEventId?: string
+  trustedSessionId?: string
   itemId?: string
   expectedVersion?: number
   draft?: MemoryDraft
@@ -88,18 +95,29 @@ export async function queryMemory(
   return invoke("memory_query", { query, scope: options.scope, scopeId: options.scopeId, sessionId: options.sessionId, limit: options.limit })
 }
 
+/** Read query candidates, pinned core and exact feedback targets from one scoped SQLite snapshot. */
+export async function getMemoryRecallCandidates(
+  query: string,
+  cardId: string | undefined,
+  sessionId: string,
+  targets: Array<{ id: string; version: number }> = [],
+  allowExpiredTargets = false,
+): Promise<MemoryRecallCandidateSnapshot> {
+  if (!sessionId) throw new Error("记忆召回缺少当前会话身份")
+  return invoke("memory_recall_candidates", { query, cardId: cardId ?? null, sessionId, limit: 50, targets, allowExpiredTargets })
+}
+
+export async function memoryJobList(limit = 50, offset = 0): Promise<MemoryJobListItem[]> {
+  return invoke("memory_job_list", { limit, offset })
+}
+
+export async function memoryRestorePreview(backupPath: string): Promise<MemoryRestorePreview> {
+  return invoke("memory_restore_preview", { backupPath })
+}
+
 export async function getMemoryItems(ids: string[]): Promise<MemoryItem[]> {
   if (ids.length === 0) return []
   return invoke("memory_get_items", { ids })
-}
-
-/** 主动表达只按调度器冻结的 id/version 解引用，不做第二次语义搜索。 */
-export async function getMemoryItemsForTargets(targets: Array<{ id: string; version: number }>): Promise<MemoryItem[]> {
-  if (targets.length === 0) return []
-  const unique = [...new Map(targets.map(target => [`${target.id}@${target.version}`, target])).values()]
-  const items = await getMemoryItems(unique.map(target => target.id))
-  const expected = new Map(unique.map(target => [target.id, target.version]))
-  return items.filter(item => item.status === "active" && expected.get(item.id) === item.version)
 }
 
 /** 返回提交后的 revision；冲突（stale 基准）由 Rust 抛 `MEMORY_CONFLICT`。 */
@@ -130,6 +148,11 @@ export async function resumeMemoryJob(jobId: string, leaseOwner: string): Promis
 
 export async function memoryJobSources(jobId: string): Promise<MemorySource[]> {
   return invoke("memory_job_sources", { jobId })
+}
+
+/** UI-only readback of bounded evidence; forgotten or suppressed sources return null. */
+export async function memorySourceEvidence(sourceId: string): Promise<MemorySource | null> {
+  return invoke("memory_source_evidence", { sourceId })
 }
 
 export async function addMemoryCandidates(jobId: string, candidates: MemoryCandidateDraft[]): Promise<number> {

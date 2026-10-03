@@ -29,8 +29,8 @@ export function inputEventId(requestId: string): string {
 }
 
 /** 从 lane 消息上取回投递事件身份；不是投递输入的消息（无身份 / 后缀不符）返回 undefined。 */
-export function messageEventId(message: { deskpetEventId?: unknown }): string | undefined {
-  const eventId = message.deskpetEventId
+export function messageEventId(message: unknown): string | undefined {
+  const eventId = (message as { deskpetEventId?: unknown } | null | undefined)?.deskpetEventId
   return typeof eventId === "string" && eventId.endsWith(USER_SUFFIX) ? eventId : undefined
 }
 

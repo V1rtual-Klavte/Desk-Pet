@@ -2,11 +2,14 @@ import { invoke } from "@tauri-apps/api/core"
 import { runtimePath } from "@/services/paths"
 import { generalConfig } from "@/services/config"
 import { createLogger } from "@/services/logger"
+import { createRuntimeTraceContext } from "@/services/engine/runtime/trace"
+import { proactiveEvent } from "@/services/proactive/trace"
 import { classifyApp } from "./classifier"
 import { buildSnapshot, coveredInterval, emptyDaily } from "./aggregate"
 import type { AppCategory, BehaviorDaily, BehaviorSegment, BehaviorSnapshot, WindowObservation } from "./types"
 
 const log = createLogger("Behavior")
+const behaviorTraceContext = createRuntimeTraceContext()
 const SEGMENT_SHARD_LIMIT = 512 * 1024
 const SEGMENT_RETENTION_DAYS = 30
 const DAILY_RETENTION_DAYS = 180
@@ -38,6 +41,7 @@ let pendingObservations = 0
 let droppedObservations = 0
 const days = new Map<string, BehaviorDaily>()
 const listeners = new Set<(snapshot: BehaviorSnapshot) => void>()
+let lastTraceObservationKey="",lastTraceObservationAt=0
 
 function localDate(at: number): string {
   const date = new Date(at)
@@ -196,6 +200,7 @@ async function checkpointSegment(endAt: number, close: boolean, preserveWork = f
   for (const date of new Set(segments.map((segment) => segment.date))) await persistDay(dayFor(date))
   if (close) { currentStart = null; currentCategory = null; if (!preserveWork) currentContinuousMs = 0 }
   else { currentSegmentStart = endAt; currentStart = previous }
+  publish()
 }
 
 async function closeSegment(endAt: number): Promise<void> { await checkpointSegment(endAt, true) }
@@ -203,6 +208,8 @@ async function closeSegment(endAt: number): Promise<void> { await checkpointSegm
 function publish(): void {
   const snapshot = buildSnapshot([...days.values()], Date.now(), currentContinuousMs, currentCategory)
   revision = snapshot.revision = ++revision
+  proactiveEvent(behaviorTraceContext,"behavior_rollup",()=>({revision,status:snapshot.quality.status,sampleDays:snapshot.quality.sampleDays,
+    coverageRatio:snapshot.quality.coverageRatio,eligibleCollectionMs:snapshot.quality.eligibleCollectionMs,dayCount:days.size}))
   for (const listener of listeners) listener(snapshot)
 }
 
@@ -292,7 +299,17 @@ export function observeBehavior(observation: WindowObservation): Promise<void> {
   }
   if (pendingObservations >= MAX_PENDING_OBSERVATIONS) {
     droppedObservations++
+    proactiveEvent(behaviorTraceContext,"behavior_observed",()=>({status:"dropped",observationState:observation.observationState,
+      category:"unknown",idleMs:observation.idleForMs??undefined,sequence:observation.sequence,monitorGeneration:observation.monitorGeneration}))
     return Promise.resolve()
+  }
+  const category=observation.observationState==="observed"?classifyApp(observation.appId,observation.title):"unknown"
+  const idleBand=observation.idleForMs===null?"unknown":observation.idleForMs>=IDLE_ACTIVE_LIMIT_MS?"idle":"active"
+  const traceKey=`${observation.observationState}:${category}:${idleBand}`
+  if(traceKey!==lastTraceObservationKey||observation.observedAt-lastTraceObservationAt>=60_000) {
+    lastTraceObservationKey=traceKey;lastTraceObservationAt=observation.observedAt
+    proactiveEvent(behaviorTraceContext,"behavior_observed",()=>({status:"queued",observationState:observation.observationState,category,
+      idleMs:observation.idleForMs??undefined,sequence:observation.sequence,monitorGeneration:observation.monitorGeneration}))
   }
   pendingObservations++
   serial = serial.then(() => ingest(observation)).catch((error) => log.error("行为画像写入失败", error instanceof Error ? error : undefined))

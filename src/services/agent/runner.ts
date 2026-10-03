@@ -35,13 +35,13 @@ import { listPiSessionMetadata } from "@/services/session"
 import type { ActiveMessageRequest, ActiveMessageResult, ProactiveOwner } from "./types"
 import { applyProactiveReplyPatch } from "@/services/reply"
 import { playNotificationByBoundary } from "@/services/audio/registry"
+import type { ProactiveTurnContext } from "@/services/proactive"
 
 const log = createLogger("Agent")
 
 const preprocessStates = new Map<string, PreProcessState>()
 const activeRunOwners = new Map<string, ProactiveOwner>()
-type ProactiveTurnContext = { text: string; taskRefs: Array<{ taskId: string; memoryItemId?: string; expectedVersion: number }> }
-type ProactiveTurnContextReader = (owner: ProactiveOwner) => Promise<ProactiveTurnContext | undefined>
+type ProactiveTurnContextReader = (owner: ProactiveOwner, userText: string) => Promise<ProactiveTurnContext | undefined>
 let proactiveTurnContextReader: ProactiveTurnContextReader | undefined
 const userIngressObservers = new Set<(event: { sessionId: string; requestId: string }) => void | Promise<void>>()
 
@@ -450,7 +450,7 @@ async function dispatchMessage(text: string, options: SendMessageOptions = {}): 
       resolveDeliveryIntent(options.delivery, text),
     )
     if (receipt) {
-      pushUserMessage(preResult.normalizedText, originSessionId)
+      pushUserMessage(preResult.normalizedText, originSessionId, inputEventId(requestId))
       log.info(`AI 生成中，用户消息已投递为 ${receipt}:`, requestId)
       return {
         reply: "",
@@ -529,7 +529,7 @@ async function dispatchMessage(text: string, options: SendMessageOptions = {}): 
       runGeneration,
     }
     try {
-      const context = await proactiveTurnContextReader(owner)
+      const context = await proactiveTurnContextReader(owner, preResult.text)
       const currentCard = getActiveCard()
       if (getActiveSessionId() === originSessionId && currentCard?.id === owner.cardId && currentCard.hash === owner.cardHash) {
         turnContext = context
@@ -560,7 +560,7 @@ async function dispatchMessage(text: string, options: SendMessageOptions = {}): 
       userPrompt: userInputMessage(preResult.text, inputEventId(requestId), inputSourceMark(inputIngress, turnCard?.id)),
       ingress: inputIngress,
       onInputAdmitted: async () => {
-        pushUserMessage(preResult.text, originSessionId)
+        pushUserMessage(preResult.text, originSessionId, inputEventId(requestId))
         resetUnanswered()
         await notifyUserIngressCommitted(originSessionId, requestId)
       },

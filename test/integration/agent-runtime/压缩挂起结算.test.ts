@@ -21,16 +21,17 @@
 
 import { fauxAssistantMessage } from "@earendil-works/pi-ai"
 import type { DeferredHandle, FauxModelDefinition, FauxResponseStep } from "@earendil-works/pi-ai"
+import type { AgentLane } from "@earendil-works/pi-agent-core"
 import { mkdtempSync, rmSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest"
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest"
 
 import { fakeText, installFakeProvider, lastRequestText } from "../../host/fake-provider"
 import { setTestDataRoot } from "../../host/node-ipc"
 import { assistantTexts, countTexts, sessionEntries, sessionMessages } from "../../host/session-entries"
 import { standardSetup } from "../../host/standard-setup"
-import { harnessSlots } from "@/services/engine/harness"
+import { createHarnessRunState, harnessSlots } from "@/services/engine/harness"
 import { initChat } from "@/services/agent/runner"
 import { initPaths } from "@/services/paths"
 import { getActiveSessionId } from "@/services/session/store"
@@ -130,4 +131,28 @@ describe("压缩挂起结算", () => {
     expect(countTexts(assistantTexts(await sessionMessages(sessionId)), NEXT_REPLY), "挂起结算后的回复没有恰好出现一次").toBe(1)
     expect(await harnessSlots.hasOpenOperation(sessionId), "下一轮运行结束后会话仍被判忙").toBe(false)
   }, 60_000)
+
+  it("结构压缩调用抛异常时返回失败且 finally 仍写入待处理审计条目", async () => {
+    await initChat()
+    const sessionId = getActiveSessionId()
+    const slot = harnessSlots.ensure(sessionId)
+    await slot.open()
+    const lane = (slot as unknown as { lane: AgentLane }).lane
+    const compactSpy = vi.spyOn(lane, "compact").mockRejectedValue(new Error("compact probe failed"))
+    const probeType = "deskpet.compaction_exception_probe"
+    slot.queueAuditEntry(probeType, { probe: true })
+
+    try {
+      const outcome = await slot.compact({ systemPrompt: "结构压缩测试提示词", state: createHarnessRunState() })
+      expect(outcome.status, "compact 抛错必须映射为失败结果").toBe("failed")
+      const entries = await sessionEntries(sessionId)
+      expect(
+        entries.some(entry => entry.type === "custom" && entry.customType === probeType),
+        "compact 的 finally 必须 flush 已排队审计条目",
+      ).toBe(true)
+    } finally {
+      compactSpy.mockRestore()
+      await slot.close()
+    }
+  })
 })

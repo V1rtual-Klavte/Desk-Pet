@@ -9,7 +9,7 @@
 use super::schema;
 use crate::error::{AppError, AppResult};
 use crate::paths::AppPaths;
-use rusqlite::{backup, params, Connection, OptionalExtension, TransactionBehavior};
+use rusqlite::{backup, params, Connection, OpenFlags, OptionalExtension, TransactionBehavior};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use std::path::{Path, PathBuf};
@@ -104,6 +104,33 @@ fn query_token_clause(terms:&[String],first_param:usize)->(String,Vec<Value>){
     for (index,term) in terms.iter().enumerate(){let p=first_param+index;let pattern=format!("%{}%",escape_like(term));
         clauses.push(format!("(i.content LIKE ?{p} ESCAPE '\\' OR i.summary LIKE ?{p} ESCAPE '\\' OR i.aliases_json LIKE ?{p} ESCAPE '\\')"));values.push(json!(pattern));}
     (clauses.join(" OR "),values)
+}
+
+fn relevance_order(terms: &[String], first_param: usize) -> String {
+    let phrase = "(CASE WHEN i.content LIKE ?2 ESCAPE '\\' THEN 8 ELSE 0 END + CASE WHEN i.summary LIKE ?2 ESCAPE '\\' THEN 6 ELSE 0 END + CASE WHEN i.aliases_json LIKE ?2 ESCAPE '\\' THEN 4 ELSE 0 END)";
+    let token_scores = terms.iter().enumerate().map(|(index, _)| {
+        let p = first_param + index;
+        format!(
+            "(CASE WHEN i.content LIKE ?{p} ESCAPE '\\' THEN 3 WHEN i.summary LIKE ?{p} ESCAPE '\\' THEN 2 WHEN i.aliases_json LIKE ?{p} ESCAPE '\\' THEN 1 ELSE 0 END)"
+        )
+    }).collect::<Vec<_>>();
+    if token_scores.is_empty() { phrase.to_string() }
+    else { format!("{phrase} + {}", token_scores.join(" + ")) }
+}
+
+fn relevance_score(item: &Value, query: &str) -> i64 {
+    let draft = item.get("draft").unwrap_or(&Value::Null);
+    let content = s(draft, "content").to_lowercase();
+    let summary = s(draft, "summary").to_lowercase();
+    let aliases = draft.get("aliases").map(Value::to_string).unwrap_or_default().to_lowercase();
+    let phrase = query.trim().to_lowercase();
+    let mut score = (if content.contains(&phrase) { 8 } else { 0 })
+        + (if summary.contains(&phrase) { 6 } else { 0 })
+        + (if aliases.contains(&phrase) { 4 } else { 0 });
+    for term in memory_query_terms(query) {
+        score += if content.contains(&term) { 3 } else if summary.contains(&term) { 2 } else if aliases.contains(&term) { 1 } else { 0 };
+    }
+    score
 }
 
 /// SQL 参数：用 rusqlite 自己的值类型，避免把 serde_json::Value 直接塞进语句。
@@ -396,6 +423,26 @@ impl MemoryStore {
         Self::attach_sources(&conn, items)
     }
 
+    fn pinned_on(conn: &Connection, card_id: Option<&str>, session_id: &str, limit: i64) -> AppResult<Vec<Value>> {
+        if session_id.is_empty() { return Ok(Vec::new()); }
+        let now = now_ms();
+        let sql = format!(
+            "SELECT {} FROM memory_items i WHERE i.status='active' AND i.pinned=1 \
+             AND (i.valid_from IS NULL OR i.valid_from <= ?1) \
+             AND (i.valid_to IS NULL OR i.valid_to > ?1) \
+             AND (i.expires_at IS NULL OR i.expires_at > ?1) \
+             AND (i.scope='user' OR (i.scope='session' AND i.scope_id=?2) OR (i.scope='card' AND i.scope_id=?3)) \
+             ORDER BY CASE i.scope WHEN 'user' THEN 0 WHEN 'card' THEN 1 ELSE 2 END, i.importance DESC, i.updated_at DESC, i.id LIMIT ?4",
+            Self::ITEM_COLUMNS
+        );
+        let items = conn.prepare(&sql).map_err(db_err)?
+            .query_map(params![now, session_id, card_id, limit.clamp(1, 50)], Self::row_to_item)
+            .map_err(db_err)?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(db_err)?;
+        Self::attach_sources(conn, items)
+    }
+
     pub fn detail(&self, id: &str) -> AppResult<Option<Value>> {
         let conn = self.lock()?;
         let sql = format!(
@@ -494,6 +541,10 @@ impl MemoryStore {
     /// （「咖啡」这类两字词在 MATCH 下永远零命中），只靠 FTS 会让最常见的中文短查询整体失聪。
     pub fn query(&self, query: &str, scope: Option<&str>, scope_id: Option<&str>, session_id: Option<&str>, limit: i64) -> AppResult<Vec<Value>> {
         let conn = self.lock()?;
+        Self::query_on(&conn, query, scope, scope_id, session_id, limit)
+    }
+
+    fn query_on(conn: &Connection, query: &str, scope: Option<&str>, scope_id: Option<&str>, session_id: Option<&str>, limit: i64) -> AppResult<Vec<Value>> {
         let text = query.trim();
         if text.is_empty() {
             return Ok(Vec::new());
@@ -528,7 +579,7 @@ impl MemoryStore {
             args.push(json!(session_id));
             sql.push_str(&format!(" AND (?{} IS NULL OR i.scope <> 'session' OR i.scope_id=?{})", args.len(), args.len()));
         }
-        sql.push_str(" ORDER BY i.pinned DESC, i.importance DESC, i.updated_at DESC, i.id LIMIT ?");
+        sql.push_str(&format!(" ORDER BY {} DESC, i.pinned DESC, i.importance DESC, i.updated_at DESC, i.id LIMIT ?", relevance_order(&terms, 4)));
         args.push(json!(limit));
         let rows = {
             let mut statement = conn.prepare(&sql).map_err(db_err)?;
@@ -564,7 +615,7 @@ impl MemoryStore {
                         fallback_args.push(json!(session_id));
                         fallback.push_str(&format!(" AND (?{} IS NULL OR i.scope <> 'session' OR i.scope_id=?{})", fallback_args.len(), fallback_args.len()));
                     }
-                    fallback.push_str(" ORDER BY i.pinned DESC, i.importance DESC, i.updated_at DESC, i.id LIMIT ?");
+                    fallback.push_str(&format!(" ORDER BY {} DESC, i.pinned DESC, i.importance DESC, i.updated_at DESC, i.id LIMIT ?", relevance_order(&terms, 3)));
                     fallback_args.push(json!(limit));
                     let mut statement = conn.prepare(&fallback).map_err(db_err)?;
                     let rows = statement
@@ -576,7 +627,64 @@ impl MemoryStore {
                 }
             }
         };
-        Self::attach_sources(&conn, rows)
+        Self::attach_sources(conn, rows)
+    }
+
+    /// All conversational recall inputs share one SQLite read snapshot and revision.
+    pub fn recall_candidates(
+        &self,
+        query: &str,
+        card_id: Option<&str>,
+        session_id: &str,
+        limit: i64,
+        targets: &[Value],
+        allow_expired_targets: bool,
+    ) -> AppResult<Value> {
+        if session_id.is_empty() { return Err(AppError::Memory("召回缺少当前 sessionId".into())); }
+        let conn = self.lock()?;
+        let tx = conn.unchecked_transaction().map_err(db_err)?;
+        let revision: i64 = tx.query_row("SELECT CAST(value AS INTEGER) FROM memory_meta WHERE key='revision'", [], |row| row.get(0)).map_err(db_err)?;
+        let user = Self::query_on(&tx, query, Some("user"), None, Some(session_id), limit)?;
+        let card = if let Some(card_id) = card_id { Self::query_on(&tx, query, Some("card"), Some(card_id), Some(session_id), limit)? } else { Vec::<Value>::new() };
+        let session = Self::query_on(&tx, query, Some("session"), Some(session_id), Some(session_id), limit)?;
+        let now = now_ms();
+        let mut targeted = Vec::new();
+        let mut targeted_seen = std::collections::HashSet::new();
+        for target in targets.iter().take(50) {
+            let id = s(target, "id");
+            let Some(version) = i(target, "version") else { continue };
+            if id.is_empty() || !targeted_seen.insert((id.clone(), version)) { continue; }
+            let sql = format!(
+                "SELECT {} FROM memory_items i WHERE i.id=?1 AND i.version=?2 AND i.status='active' \
+                 AND (i.valid_from IS NULL OR i.valid_from <= ?3) AND (i.valid_to IS NULL OR i.valid_to > ?3) \
+                 AND (?4=1 OR i.expires_at IS NULL OR i.expires_at > ?3)",
+                Self::ITEM_COLUMNS
+            );
+            let item = tx.query_row(&sql, params![id, version, now, allow_expired_targets], Self::row_to_item).optional().map_err(db_err)?;
+            if let Some(item) = item {
+                let draft = item.get("draft").unwrap_or(&Value::Null);
+                let scope = s(draft, "scope");
+                let scope_id = opt_s(draft, "scopeId");
+                let owned = match scope.as_str() {
+                    "user" => scope_id.is_none(),
+                    "card" => scope_id.as_deref().is_some_and(|value| Some(value) == card_id),
+                    "session" => scope_id.as_deref() == Some(session_id),
+                    _ => false,
+                };
+                if owned { targeted.push(item); }
+            }
+        }
+        targeted = Self::attach_sources(&tx, targeted)?;
+        let mut candidates = user.iter().chain(&card).chain(&session).cloned().collect::<Vec<_>>();
+        candidates.sort_by(|left, right| {
+            relevance_score(right, query).cmp(&relevance_score(left, query))
+                .then_with(|| number(right.get("draft").unwrap_or(&Value::Null), "importance", 0.0).total_cmp(&number(left.get("draft").unwrap_or(&Value::Null), "importance", 0.0)))
+                .then_with(|| i(right, "updatedAt").cmp(&i(left, "updatedAt")))
+                .then_with(|| s(left, "id").cmp(&s(right, "id")))
+        });
+        let pinned = Self::pinned_on(&tx, card_id, session_id, 50)?;
+        tx.commit().map_err(db_err)?;
+        Ok(json!({ "revision": revision, "candidatesByScope": { "user": user, "card": card, "session": session }, "candidates": candidates, "pinned": pinned, "targeted": targeted }))
     }
 
     pub fn get_items(&self, ids: &[String]) -> AppResult<Vec<Value>> {
@@ -608,7 +716,7 @@ impl MemoryStore {
         expected_version: Option<i64>,
         draft: Option<&Value>,
     ) -> AppResult<i64> {
-        self.apply_change_with_actor(operation_id, base_revision, action, item_id, expected_version, draft, "internal", None)
+        self.apply_change_with_actor(operation_id, base_revision, action, item_id, expected_version, draft, "internal", None, None)
     }
 
     pub fn apply_change_with_actor(
@@ -621,6 +729,7 @@ impl MemoryStore {
         draft: Option<&Value>,
         actor: &str,
         trusted_user_event_id: Option<&str>,
+        trusted_session_id: Option<&str>,
     ) -> AppResult<i64> {
         let mut conn = self.lock()?;
         let transaction = conn
@@ -649,6 +758,38 @@ impl MemoryStore {
                 .ok_or_else(|| AppError::Memory("记忆变更缺少当前可信用户事件身份".into()))?;
             let valid: bool = transaction.query_row("SELECT EXISTS(SELECT 1 FROM memory_sources WHERE event_id=?1 AND origin='user' AND taint='trusted_user')",[event_id],|row|row.get(0)).map_err(db_err)?;
             if !valid { return Err(AppError::Memory("当前可信用户事件尚未登记或不具备记忆资格".into())); }
+        }
+        if actor == "user_ui_current" {
+            if action != "add" { return Err(AppError::Memory("聊天记住入口仅允许新增事实".into())); }
+            let event_id = trusted_user_event_id.filter(|value| !value.is_empty())
+                .ok_or_else(|| AppError::Memory("聊天记住缺少当前可信用户事件身份".into()))?;
+            let session_id = trusted_session_id.filter(|value| !value.is_empty())
+                .ok_or_else(|| AppError::Memory("聊天记住缺少当前会话身份".into()))?;
+            let draft = draft.ok_or_else(|| AppError::Memory("聊天记住缺少记忆内容".into()))?;
+            let source_ids = strings(draft, "sourceIds");
+            if source_ids.len() != 1 { return Err(AppError::Memory("聊天记住只能绑定唯一可信来源".into())); }
+            let source_id = &source_ids[0];
+            let source: Option<(String, Option<String>, String, Option<String>)> = transaction.query_row(
+                "SELECT s.session_id,s.card_id,s.content_hash,s.evidence FROM memory_sources s \
+                 WHERE s.source_id=?1 AND s.event_id=?2 AND s.origin='user' AND s.taint='trusted_user' \
+                 AND NOT EXISTS(SELECT 1 FROM memory_tombstones t WHERE t.session_id=s.session_id AND t.entry_id=s.entry_id \
+                   AND t.content_hash=s.content_hash AND t.effect='block_extraction')",
+                params![source_id, event_id],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+            ).optional().map_err(db_err)?;
+            let (source_session, source_card, content_hash, evidence) =
+                source.ok_or_else(|| AppError::Memory("可信来源不存在或已被遗忘".into()))?;
+            let evidence = evidence.ok_or_else(|| AppError::Memory("可信来源没有可用原话".into()))?;
+            let mut hasher = Sha256::new();
+            hasher.update(evidence.as_bytes());
+            if source_session != session_id || format!("{:x}", hasher.finalize()) != content_hash || s(draft, "content") != evidence {
+                return Err(AppError::Memory("聊天记住只能保存当前会话中的完整可信原话".into()));
+            }
+            match (s(draft, "scope").as_str(), opt_s(draft, "scopeId").as_deref()) {
+                ("user", None) => {},
+                ("card", Some(card_id)) if source_card.as_deref() == Some(card_id) => {},
+                _ => return Err(AppError::Memory("记忆范围必须绑定当前来源所属用户或Card".into())),
+            }
         }
         let mut touched_version: Option<i64> = None;
         let mut touched_item: Option<String> = item_id.map(str::to_string);
@@ -716,7 +857,7 @@ impl MemoryStore {
             "add" | "update" | "supersede" | "complete" | "cancel" => {
                 let draft = draft.ok_or_else(|| AppError::Memory("缺少记忆内容".into()))?;
                 validate_draft(draft)?;
-                if actor == "current_input" {
+                if actor == "current_input" || actor == "user_ui_current" {
                     let event_id = trusted_user_event_id.filter(|value| !value.is_empty())
                         .ok_or_else(|| AppError::Memory("记忆变更缺少当前可信用户事件身份".into()))?;
                     let owns_event = strings(draft, "sourceIds").into_iter().any(|source_id| {
@@ -896,6 +1037,27 @@ impl MemoryStore {
         .ok_or_else(|| AppError::Memory("作业不存在".into()))
     }
 
+    /// Read-only, secret-free job history for the memory management UI.
+    pub fn job_list(&self, limit: i64, offset: i64) -> AppResult<Vec<Value>> {
+        let conn = self.lock()?;
+        let mut statement = conn.prepare(
+            "SELECT id,phase,status,revision,forget_epoch,lease_until,processed,created_at,updated_at \
+             FROM memory_jobs ORDER BY updated_at DESC,id DESC LIMIT ?1 OFFSET ?2",
+        ).map_err(db_err)?;
+        let rows = statement.query_map(params![limit.clamp(1, 100), offset.max(0)], |row| Ok(json!({
+            "id": row.get::<_, String>(0)?,
+            "phase": row.get::<_, String>(1)?,
+            "status": row.get::<_, String>(2)?,
+            "revision": row.get::<_, i64>(3)?,
+            "forgetEpoch": row.get::<_, i64>(4)?,
+            "leaseUntil": row.get::<_, Option<i64>>(5)?,
+            "processed": row.get::<_, i64>(6)?,
+            "createdAt": row.get::<_, i64>(7)?,
+            "updatedAt": row.get::<_, i64>(8)?,
+        }))).map_err(db_err)?.collect::<Result<Vec<_>, _>>().map_err(db_err)?;
+        Ok(rows)
+    }
+
     /// 续租并推进游标；租约已过期或不属于本 owner 时拒绝，避免两个窗口同时写同一作业。
     pub fn job_checkpoint(&self, job_id: &str, cursor: &str, lease_owner: &str, lease_ms: i64) -> AppResult<Value> {
         let conn = self.lock()?;
@@ -937,12 +1099,13 @@ impl MemoryStore {
         let conn = self.lock()?;
         let revision = Self::meta(&conn, "revision")?;
         let epoch = Self::meta(&conn, "forget_epoch")?;
-        conn.execute(
-            "UPDATE memory_jobs SET status='running',lease_owner=?2,lease_until=?3,updated_at=?4,revision=?5,forget_epoch=?6 \
-             WHERE id=?1 AND status IN ('paused','cancelled','failed')",
+        let changed = conn.execute(
+            "UPDATE memory_jobs SET status='running',lease_owner=?2,lease_until=?3,updated_at=?4 \
+             WHERE id=?1 AND phase='review' AND status IN ('paused','cancelled','failed') AND revision=?5 AND forget_epoch=?6",
             params![job_id, lease_owner, now_ms() + 60_000, now_ms(), revision, epoch],
         )
         .map_err(db_err)?;
+        if changed == 0 { return Err(AppError::MemoryConflict); }
         Self::read_job(&conn, job_id)
     }
 
@@ -965,7 +1128,10 @@ impl MemoryStore {
             .prepare(
                 "SELECT s.source_id,s.session_id,s.entry_id,s.event_id,s.seq,s.content_hash,s.evidence,s.card_id,s.taint,s.origin,s.observed_at \
                  FROM memory_sources s LEFT JOIN memory_watermarks w ON w.session_id=s.session_id \
-                 WHERE (w.seq IS NULL OR s.seq > w.seq) \
+                 WHERE s.origin='user' AND s.taint='trusted_user' \
+                   AND NOT EXISTS(SELECT 1 FROM memory_tombstones t WHERE t.session_id=s.session_id AND t.entry_id=s.entry_id \
+                     AND t.content_hash=s.content_hash AND t.effect='block_extraction') \
+                   AND (w.seq IS NULL OR s.seq > w.seq) \
                    AND (?1 IS NULL OR s.session_id > ?1 OR (s.session_id = ?1 AND s.seq > ?2)) \
                  ORDER BY s.session_id, s.seq LIMIT ?3",
             )
@@ -993,6 +1159,33 @@ impl MemoryStore {
             out.push(row.map_err(db_err)?);
         }
         Ok(out)
+    }
+
+    /// Return only the bounded, originally registered evidence for a still-eligible source.
+    /// Tombstoned (forgotten or otherwise suppressed) evidence is never reconstructed here.
+    pub fn source_evidence(&self, source_id: &str) -> AppResult<Option<Value>> {
+        let conn = self.lock()?;
+        conn.query_row(
+            "SELECT s.source_id,s.session_id,s.entry_id,s.event_id,s.seq,s.content_hash,s.evidence,s.card_id,s.taint,s.origin,s.observed_at \
+             FROM memory_sources s WHERE s.source_id=?1 AND s.origin='user' AND s.taint='trusted_user' \
+             AND NOT EXISTS(SELECT 1 FROM memory_tombstones t WHERE t.session_id=s.session_id AND t.entry_id=s.entry_id \
+               AND t.content_hash=s.content_hash AND t.effect='block_extraction')",
+            [source_id],
+            |row| Ok(json!({
+                "sourceId": row.get::<_, String>(0)?,
+                "sessionId": row.get::<_, String>(1)?,
+                "entryId": row.get::<_, String>(2)?,
+                "eventId": row.get::<_, String>(3)?,
+                "seq": row.get::<_, i64>(4)?,
+                "contentHash": row.get::<_, String>(5)?,
+                "evidence": row.get::<_, Option<String>>(6)?,
+                "cardId": row.get::<_, Option<String>>(7)?,
+                "eligibleForMemory": true,
+                "taint": row.get::<_, String>(8)?,
+                "origin": row.get::<_, String>(9)?,
+                "observedAt": row.get::<_, i64>(10)?,
+            })),
+        ).optional().map_err(db_err)
     }
 
     /// Review 产物落库为 prepared，完成整份 Review 后同事务 Publish，不进召回。
@@ -1230,6 +1423,45 @@ impl MemoryStore {
         Ok(target.to_string_lossy().to_string())
     }
 
+    /// Validate a managed backup without applying it; returns metadata only.
+    pub fn restore_preview(backup_path: &Path) -> AppResult<Value> {
+        if !backup_path.is_file() {
+            return Err(AppError::PathNotFound(backup_path.to_string_lossy().to_string()));
+        }
+        let source = Connection::open_with_flags(backup_path, OpenFlags::SQLITE_OPEN_READ_ONLY).map_err(db_err)?;
+        let integrity: String = source.query_row("PRAGMA integrity_check", [], |row| row.get(0)).map_err(db_err)?;
+        if integrity != "ok" { return Err(AppError::Memory("备份完整性校验失败".into())); }
+        let version: Option<String> = source.query_row(
+            "SELECT value FROM memory_meta WHERE key='schema_version'", [], |row| row.get(0),
+        ).optional().map_err(db_err)?;
+        if version.as_deref().and_then(|value| value.parse::<i64>().ok()) != Some(schema::SCHEMA_VERSION) {
+            return Err(AppError::Memory("备份 schema 版本不受支持".into()));
+        }
+        for table in [
+            "memory_meta", "memory_sources", "memory_items", "memory_item_sources",
+            "memory_candidates", "memory_jobs", "memory_watermarks", "memory_tombstones",
+            "memory_operations", "memory_fts",
+        ] {
+            let exists: Option<i64> = source.query_row(
+                "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?1 LIMIT 1", [table], |row| row.get(0),
+            ).optional().map_err(db_err)?;
+            if exists.is_none() { return Err(AppError::Memory(format!("备份缺少记忆表: {table}"))); }
+        }
+        let meta = |key: &str| -> AppResult<i64> {
+            let value: Option<String> = source.query_row("SELECT value FROM memory_meta WHERE key=?1", [key], |row| row.get(0)).optional().map_err(db_err)?;
+            value.and_then(|value| value.parse::<i64>().ok()).ok_or_else(|| AppError::Memory(format!("备份缺少有效元数据: {key}")))
+        };
+        let item_count: i64 = source.query_row("SELECT COUNT(*) FROM memory_items WHERE status='active'", [], |row| row.get(0)).map_err(db_err)?;
+        let job_count: i64 = source.query_row("SELECT COUNT(*) FROM memory_jobs", [], |row| row.get(0)).map_err(db_err)?;
+        Ok(json!({
+            "schemaVersion": schema::SCHEMA_VERSION,
+            "revision": meta("revision")?,
+            "forgetEpoch": meta("forget_epoch")?,
+            "itemCount": item_count,
+            "jobCount": job_count,
+        }))
+    }
+
     /// 索引重建：只从 active 条目重建 FTS，被遗忘的内容不会因此复活。
     pub fn rebuild(&self) -> AppResult<i64> {
         let conn = self.lock()?;
@@ -1271,7 +1503,7 @@ impl MemoryStore {
                 return Err(AppError::Memory(format!("备份缺少记忆表: {table}")));
             }
         }
-        let mut conn = self.lock()?;
+        let conn = self.lock()?;
         // 先把「现在生效的墓碑」取出来：拷回旧库会把它们连同旧 revision 一起换掉。
         let tombstones = {
             let mut statement = conn

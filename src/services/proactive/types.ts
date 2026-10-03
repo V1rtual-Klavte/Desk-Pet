@@ -3,6 +3,24 @@ import type { ProactiveOpportunity, ProactiveTask } from "./protocol"
 export type { ProactiveDecision, ProactiveMemoryTarget, TemporalAnchor } from "./protocol"
 import type { MemoryProjection } from "@/services/agent/memory"
 
+export interface RecurrenceProposal {
+  proposalId: string
+  assistantEntryId: string
+  intent: string
+  recurrence: import("./protocol").ProactiveRecurrence
+  nextCheckinAt: number
+  validUntil: number | null
+  owner: import("./protocol").ProactiveOwner
+}
+
+/** Frozen metadata only; user authorization still comes from this run's committed ingress. */
+export interface ProactiveTurnContext {
+  text: string
+  taskRefs: Array<{ taskId: string; memoryItemId?: string; expectedVersion: number }>
+  memoryRefs: import("./protocol").ProactiveSourceRef[]
+  recurrenceProposals: RecurrenceProposal[]
+}
+
 /** Additional intent metadata stays in memory; IPC scans never inject memory content. */
 export interface Opportunity extends ProactiveOpportunity {
   context: string

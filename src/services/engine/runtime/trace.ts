@@ -62,6 +62,10 @@ export type RuntimeTraceKind =
   | "proactive_settled"
   | "proactive_skipped"
   | "proactive_reconciled"
+  | "proactive_feedback"
+  | "proactive_task"
+  | "behavior_observed"
+  | "behavior_rollup"
   | "behavior_cleared"
   | "presence_changed"
 
@@ -161,13 +165,17 @@ const SAFE_FIELDS: Readonly<Record<RuntimeTraceKind, readonly string[]>> = {
   input_accepted: ["requestId", "status", "source", "priority"], input_consumed: ["requestId"], input_cancelled: ["requestId", "reason"],
   plan_created: ["planId", "stepCount"], plan_confirmed: ["planId", "stepId", "decision"], plan_settled: ["planId", "status"], plan_step_end: ["planId", "stepId", "status"],
   permission_asked: ["toolName", "decision", "source"], permission_decided: ["toolName", "decision", "source"], active_message_delivered: ["requestId", "status"],
-  proactive_tick: ["status", "reason", "count", "hasMore", "controlRevision"],
+  proactive_tick: ["status", "reason", "count", "hasMore", "controlRevision", "sourceRevision"],
   proactive_opportunity: ["ruleId", "opportunityIds", "sourceIds", "sourceRevision", "count"],
   proactive_decision: ["decisionKind", "opportunityIds", "occurrenceIds", "reason", "sourceRevision"],
-  proactive_claim: ["attemptId", "taskIds", "occurrenceIds", "controlRevision"],
+  proactive_claim: ["attemptId", "taskIds", "occurrenceIds", "controlRevision", "status", "reason"],
   proactive_settled: ["attemptId", "status", "assistantEntryId", "usageTokens", "taskIds"],
   proactive_skipped: ["status", "reason", "ruleId", "opportunityIds", "count"],
   proactive_reconciled: ["status", "attemptId", "assistantEntryId", "count"],
+  proactive_feedback: ["feedbackKind", "status", "attemptId", "occurrenceIds"],
+  proactive_task: ["operation", "status", "taskIds", "reason"],
+  behavior_observed: ["status", "observationState", "category", "idleMs", "sequence", "monitorGeneration"],
+  behavior_rollup: ["revision", "status", "sampleDays", "coverageRatio", "eligibleCollectionMs", "segmentCount", "dayCount"],
   behavior_cleared: ["status", "count", "controlRevision"],
   presence_changed: ["presenceState", "status", "reason"],
 }

@@ -20,7 +20,7 @@ import { createRuntimeTraceContext, hasRuntimeTraceSubscribers, publishRuntimeTr
 import { refreshMemoryCount } from "./index"
 import {
   addMemoryCandidates, cancelMemoryJob, checkpointMemoryJob, commitMemoryDreamingJob, memoryJobSources,
-  memoryStatus, memoryDreamingBudget, reserveMemoryDreamingBudget, settleMemoryDreamingBudget, startMemoryJob,
+  memoryStatus, memoryDreamingBudget, reserveMemoryDreamingBudget, resumeMemoryJob, settleMemoryDreamingBudget, startMemoryJob,
 } from "./ipc"
 import type { MemoryCandidateDraft, MemoryDraft, MemorySource } from "./ipc"
 
@@ -171,11 +171,21 @@ function buildReviewPrompt(batch: readonly MemorySource[]): string {
  * 一次整理：Light（登记来源）→ Review（产出 staging 候选）→ 自动 Publish。
  * 返回已提交计数，用于面板展示与报告。
  */
-export async function runDreamingSweep(options: { signal?: AbortSignal; automatic?: boolean } = {}): Promise<DreamingOutcome> {
+export async function runDreamingSweep(options: { signal?: AbortSignal; automatic?: boolean; resumeJobId?: string } = {}): Promise<DreamingOutcome> {
   if (!memoryConfig.enabled) {
     return { status: "empty", sourcesProcessed: 0, candidatesAdded: 0, publishedCount: 0, oversized: [], message: "记忆功能已关闭" }
   }
-  const started = await startMemoryJob("review")
+  const started = options.resumeJobId
+    ? await resumeMemoryJob(options.resumeJobId, LEASE_OWNER)
+    : await startMemoryJob("review")
+  if (started.phase !== "review") {
+    if (options.resumeJobId) {
+      await cancelMemoryJob(options.resumeJobId, LEASE_OWNER)
+        .catch(error => log.warn("继续非 Review 作业后取消失败:", formatError(error)))
+    }
+    return { status: "failed", jobId: started.id, sourcesProcessed: 0, candidatesAdded: 0, publishedCount: 0, oversized: [], message: "只能继续 Review 阶段的记忆作业" }
+  }
+  const resumedBatchOffset = options.resumeJobId ? (started.processed ?? 0) : 0
   const jobId = started.id
   const traceContext = hasRuntimeTraceSubscribers() ? createRuntimeTraceContext(undefined, jobId) : undefined
   const traceStartedAt = traceContext ? (typeof performance === "undefined" ? Date.now() : performance.now()) : 0
@@ -202,8 +212,10 @@ export async function runDreamingSweep(options: { signal?: AbortSignal; automati
   }
 
   try {
-    const { collectAllMemorySources } = await import("./sources")
-    await collectAllMemorySources()
+    if (!options.resumeJobId) {
+      const { collectAllMemorySources } = await import("./sources")
+      await collectAllMemorySources()
+    }
     // 评审输出上限按配置取一次快照：reasoning 模型的 thinking 也计入该预算（推理模型需要调大）；
     // 同一轮内预留与调用共用同一个值，避免中途改配置造成账目口径不一致。
     const reviewMaxTokens = Math.max(REVIEW_MAX_TOKENS_FLOOR, Math.floor(memoryConfig.dreamingReviewMaxTokens))
@@ -229,7 +241,7 @@ export async function runDreamingSweep(options: { signal?: AbortSignal; automati
       const userText = buildReviewPrompt(usable)
       const reservation = Math.ceil(userText.length / 4) + reviewMaxTokens
       if (options.automatic) {
-        const reservationId = `${jobId}:${batch}`
+        const reservationId = `${jobId}:${resumedBatchOffset + batch}`
         const granted = await reserveMemoryDreamingBudget(reservationId, today, reservation, memoryConfig.dreamingMaxDailyTokens)
         if (!granted) break
         reservedTokens += reservation
@@ -248,7 +260,7 @@ export async function runDreamingSweep(options: { signal?: AbortSignal; automati
       const actualUsage = result.usage.input + result.usage.output
       usedTokens += actualUsage
       if (options.automatic) {
-        await settleMemoryDreamingBudget(`${jobId}:${batch}`, today, reservation, actualUsage)
+        await settleMemoryDreamingBudget(`${jobId}:${resumedBatchOffset + batch}`, today, reservation, actualUsage)
         reservedTokens -= reservation
       }
       const parsed = parseReviewCandidates(result.text, usable)

@@ -15,6 +15,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest"
 import { setTestDataRoot } from "../../host/node-ipc"
 import { emptyMemoryProvider, getMemoryProvider, installMemoryProvider, recallMemory } from "@/services/agent/memory"
 import { createMemoryRecallMessage, isMemoryRecallMessage, MEMORY_RECALL_CUSTOM_TYPE } from "@/services/engine/runtime"
+import { estimateContextTokens } from "@/services/context/budget"
 
 /** 注入探针的正文：中文按 token 口径估算（1 汉字 ≈ 1 token），5 个汉字 ≈ 5 token。 */
 const INJECTED_TEXT = "可注入记忆"
@@ -56,7 +57,8 @@ describe("记忆投影形态", () => {
     const recalled = await emptyMemoryProvider.recall({ requestId: "profile-test", sessionId: "profile-test", query: "秘密查询", tokenBudget: 128, signal: new AbortController().signal })
     expect(recalled, "空 MemoryProvider 产生了自动召回").toHaveLength(0)
 
-    // 注入探针：召回端口被替换后，单条预算取「请求预算」与「投影声明」的严格者（2 < 16）。
+    // 注入探针：召回端口被替换后按整条全文计量 —— 请求预算 2 < 全文 5 token 时整条淘汰，
+    // 预算内则逐字保留且声明预算等于实际全文用量。
     const injected = {
       recall: async () => [{
         sourceId: "test", memoryVersion: "1", provenance: "e2e", taint: "derived" as const,
@@ -66,16 +68,16 @@ describe("记忆投影形态", () => {
     const restore = installMemoryProvider(injected)
     try {
       const injectedRecall = await recallMemory({ requestId: "injected", sessionId: "profile-test", query: "test", tokenBudget: REQUEST_BUDGET })
-      expect(injectedRecall.length, "MemoryProvider 注入未生效（没有召回投影）").toBe(1)
-      expect(
-        injectedRecall[0]!.tokenBudget,
-        `单条预算没有取请求与声明的严格者: ${injectedRecall[0]!.tokenBudget}`,
-      ).toBe(REQUEST_BUDGET)
+      expect(injectedRecall.length, "极小预算没有整条淘汰超预算事实（不得截断正文）").toBe(0)
 
-      // 预算内原样通过：受注入控制的是正文，不是被统一改写过的副本。
+      // 预算内原样通过：受注入控制的是正文，不是被统一改写过的副本；声明预算按实际全文口径。
       const inBudget = await recallMemory({ requestId: "injected-in-budget", sessionId: "profile-test", query: "test", tokenBudget: PROJECTION_BUDGET })
       expect(inBudget.length, "注入的提供者在预算内没有返回投影").toBe(1)
       expect(inBudget[0]!.text, `预算内的召回文本被改写: ${inBudget[0]?.text ?? "（没有返回）"}`).toBe(INJECTED_TEXT)
+      expect(
+        inBudget[0]!.tokenBudget,
+        `投影声明预算没有等于实际全文用量: ${inBudget[0]!.tokenBudget}`,
+      ).toBe(estimateContextTokens(INJECTED_TEXT))
     } finally {
       restore()
     }

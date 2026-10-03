@@ -83,6 +83,8 @@ export interface ToolContext {
   toolCallId?: string
   /** 当前回合已提交的用户输入身份；记忆工具必须用它筛选可归属来源。 */
   trustedUserEventId?: string
+  /** Host-frozen proposals; model arguments cannot manufacture this evidence. */
+  proactiveTurnContext?: import("@/services/proactive").ProactiveTurnContext
   /** 稳定的单次操作标识，用于审计和幂等关联。 */
   operationId?: string
   /** 工具声明与安全策略的摘要。 */

@@ -1,10 +1,25 @@
 import type { Opportunity, ProactiveOwner, ProactiveSourceRef, ProactiveTask, ProactiveMemoryTarget } from "./types"
-import { OPPORTUNITY_LIMIT, DAY_MS } from "./config"
+import { DAY_MS, FINISH_WORK_DELAY_MS } from "./config"
 import { checkinWindows, localDayKey, localDayWindow, localToInstant, zonedParts, weekKey, calendarAnniversary, shiftLocalDate } from "./time"
 import { getCalendarEvents } from "./content/calendar"
 import type { BehaviorSnapshot } from "@/services/behavior"
 
 export type MemoryTarget = ProactiveMemoryTarget
+export interface FinishedWorkTracker { workEndedAt:number; restingSince:number; lastRestObservationAt:number; wasWorking:boolean }
+export function isLeisureOrIdle(category:string|null,idleForMs:number|null):boolean {
+  return (idleForMs!==null&&idleForMs>=5*60_000)||category==="media"
+}
+export function advanceFinishedWorkTracker(state:FinishedWorkTracker,input:{now:number;working:boolean;leisureOrIdle:boolean;maxGap:number}):FinishedWorkTracker {
+  if(input.working)return {workEndedAt:0,restingSince:0,lastRestObservationAt:0,wasWorking:true}
+  const workEndedAt=state.wasWorking?input.now:state.workEndedAt
+  if(!input.leisureOrIdle)return {workEndedAt,restingSince:0,lastRestObservationAt:0,wasWorking:false}
+  const reset=!state.restingSince||!state.lastRestObservationAt||input.now-state.lastRestObservationAt>input.maxGap
+  return {workEndedAt,restingSince:reset?input.now:state.restingSince,lastRestObservationAt:input.now,wasWorking:false}
+}
+export function qualifiesFinishedWork(input:{workEndedAt:number;restingSince:number;now:number;wasWorking:boolean;reliable:boolean}):boolean {
+  return input.workEndedAt>0&&input.restingSince>0&&!input.wasWorking&&input.reliable
+    &&input.now-input.restingSince>=FINISH_WORK_DELAY_MS&&input.now-input.workEndedAt<=DAY_MS
+}
 export interface RuleInput {
   owner:ProactiveOwner; now:number; timezone:string; tasks:ProactiveTask[]; memoryTargets:MemoryTarget[]
   memoryEnabled:boolean; behavior:BehaviorSnapshot; topic: {key:string;context:string;source:ProactiveSourceRef;targets:Array<{id:string;version:number}>} | null
@@ -94,13 +109,27 @@ export function collectOpportunities(input:RuleInput):Opportunity[] {
     out.push(opportunity(owner,"curiosity",weekKey(now,timezone),[topic.source],open,localToInstant(shiftLocalDate(weekKey(now,timezone),7),"00:00",timezone),25,
       `${topic.context}\n就这个有依据的话题问一个小问题；可提议习惯，但没有新用户同意不得建立周期任务。`,false,topic.targets))
   }
-  return out.filter(item=>now>=item.validFrom&&now<item.validUntil).slice(0,OPPORTUNITY_LIMIT)
+  // Do not cap here: scanner still has to remove already-evaluated occurrences and apply
+  // interruption/priority rules. A large prefix of stale tasks must never hide later valid work.
+  const unique = new Map<string,Opportunity>()
+  for (const item of out) {
+    if (now < item.validFrom || now >= item.validUntil) continue
+    const previous = unique.get(item.fingerprint)
+    if (!previous || item.priority > previous.priority) unique.set(item.fingerprint,item)
+  }
+  return [...unique.values()].sort((a,b)=>b.priority-a.priority||a.validUntil-b.validUntil||a.id.localeCompare(b.id))
 }
 
 /** Merge overlapping anchors/duplicate rules for the same target without consuming two deliveries. */
 export function selectOpportunities(items:Opportunity[],evaluated:ReadonlySet<string>,now:number,unanswered:number,working:boolean):Opportunity[] {
-  const sorted=items.filter(item=>now>=item.validFrom&&now<item.validUntil&&!evaluated.has(item.fingerprint)
-    &&unanswered<4&&(unanswered<2||item.explicit)&&(!working||item.explicit))
+  const deduped=new Map<string,Opportunity>()
+  for(const item of items) {
+    if(now<item.validFrom||now>=item.validUntil||evaluated.has(item.fingerprint)
+      ||unanswered>=4||(unanswered>=2&&!item.explicit)||(working&&!item.explicit))continue
+    const prior=deduped.get(item.fingerprint)
+    if(!prior||item.priority>prior.priority)deduped.set(item.fingerprint,item)
+  }
+  const sorted=[...deduped.values()]
     .sort((a,b)=>b.priority-a.priority||a.validUntil-b.validUntil||a.id.localeCompare(b.id))
   if(!sorted.length)return []
   const first=sorted[0]!

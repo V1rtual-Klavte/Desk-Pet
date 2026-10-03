@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest"
-import { opportunity, selectOpportunities, collectOpportunities } from "@/services/proactive/opportunities"
+import { opportunity, selectOpportunities, collectOpportunities, advanceFinishedWorkTracker, isLeisureOrIdle, qualifiesFinishedWork } from "@/services/proactive/opportunities"
 import { parsePlanningDecision } from "@/services/proactive/planner"
 import { getCalendarEvents } from "@/services/proactive/content/calendar"
 import { emptyDaily, buildSnapshot } from "@/services/behavior"
@@ -20,6 +20,25 @@ describe("主动机会和受限规划",()=>{
     expect(selectOpportunities([unrelated,followup,agreed],new Set(),now,0,false).map(item=>item.id)).toEqual([agreed.id,"followup"])
     expect(selectOpportunities([agreed],new Set([agreed.fingerprint]),now,0,false)).toEqual([])
     expect(selectOpportunities([agreed],new Set(),now+100,0,false)).toEqual([])
+  })
+  it("超过候选批量的已评估事项不遮挡其后的有效高优先级机会 [proactive-evaluated-prefix-does-not-mask]",()=>{
+    const stale=Array.from({length:140},(_,index)=>opportunity(owner,"scheduled_task",`old-${index}`,[],now-1,now+100,100,"已评估",true))
+    const fresh=opportunity(owner,"memory_checkin","fresh",[],now-1,now+100,90,"有效事项",true,[{id:"fresh",version:1}])
+    const evaluated=new Set(stale.map(item=>item.fingerprint))
+    expect(selectOpportunities([...stale,fresh],evaluated,now,0,false).map(item=>item.id)).toContain(fresh.id)
+  })
+  it("收工机会要求可靠画像且休闲/空闲连续满十分钟 [proactive-finished-work-rest-lease]",()=>{
+    const ended=now-20*60_000,resting=now-9*60_000
+    expect(qualifiesFinishedWork({workEndedAt:ended,restingSince:resting,now,wasWorking:false,reliable:true})).toBe(false)
+    expect(qualifiesFinishedWork({workEndedAt:ended,restingSince:now-10*60_000,now,wasWorking:false,reliable:true})).toBe(true)
+    expect(qualifiesFinishedWork({workEndedAt:ended,restingSince:now-20*60_000,now,wasWorking:true,reliable:true})).toBe(false)
+    expect(qualifiesFinishedWork({workEndedAt:ended,restingSince:now-20*60_000,now,wasWorking:false,reliable:false})).toBe(false)
+    expect(isLeisureOrIdle("communication",0)).toBe(false)
+    expect(isLeisureOrIdle("media",0)).toBe(true)
+    const tracker=advanceFinishedWorkTracker({workEndedAt:0,restingSince:now-20*60_000,lastRestObservationAt:now-5*60_000,wasWorking:false},
+      {now,working:false,leisureOrIdle:false,maxGap:10_000})
+    expect(tracker.restingSince).toBe(0)
+    expect(tracker.workEndedAt).toBe(0)
   })
   it("扫描事项无来源、已完成及未进入窗口不生成提醒 [proactive-working-evidence]",()=>{
     const base={owner,now,timezone:"Asia/Shanghai",tasks:[],memoryEnabled:true,behavior:buildSnapshot([],now),topic:null}
