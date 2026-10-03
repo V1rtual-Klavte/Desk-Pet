@@ -31,7 +31,8 @@ const MAX_SOURCES_PER_BATCH = 20
 const MAX_SOURCE_CHARS = 1_200
 const MAX_BATCHES_PER_RUN = 3
 const REVIEW_TIMEOUT_MS = 30_000
-const REVIEW_MAX_TOKENS = 1_200
+/** 评审输出上限的防呆下限；实际值读 ai.memory.dreaming.reviewMaxTokens（默认 1200）。 */
+const REVIEW_MAX_TOKENS_FLOOR = 256
 const LEASE_OWNER = "memory-dreaming"
 const IDLE_TICK_MS = 15_000
 
@@ -202,6 +203,9 @@ export async function runDreamingSweep(options: { signal?: AbortSignal; automati
   try {
     const { collectAllMemorySources } = await import("./sources")
     await collectAllMemorySources()
+    // 评审输出上限按配置取一次快照：reasoning 模型的 thinking 也计入该预算（推理模型需要调大）；
+    // 同一轮内预留与调用共用同一个值，避免中途改配置造成账目口径不一致。
+    const reviewMaxTokens = Math.max(REVIEW_MAX_TOKENS_FLOOR, Math.floor(memoryConfig.dreamingReviewMaxTokens))
 
     for (let batch = 0; batch < MAX_BATCHES_PER_RUN; batch += 1) {
       if (options.signal?.aborted) {
@@ -222,7 +226,7 @@ export async function runDreamingSweep(options: { signal?: AbortSignal; automati
       if (usable.length === 0) break
 
       const userText = buildReviewPrompt(usable)
-      const reservation = Math.ceil(userText.length / 4) + REVIEW_MAX_TOKENS
+      const reservation = Math.ceil(userText.length / 4) + reviewMaxTokens
       if (options.automatic) {
         const reservationId = `${jobId}:${batch}`
         const granted = await reserveMemoryDreamingBudget(reservationId, today, reservation, memoryConfig.dreamingMaxDailyTokens)
@@ -233,7 +237,7 @@ export async function runDreamingSweep(options: { signal?: AbortSignal; automati
         purpose: "memory",
         systemPrompt: REVIEW_SYSTEM_PROMPT,
         userText,
-        maxTokens: REVIEW_MAX_TOKENS,
+        maxTokens: reviewMaxTokens,
         timeoutMs: REVIEW_TIMEOUT_MS,
         ...(options.signal ? { signal: options.signal } : {}),
         ...(traceContext ? { traceContext } : {}),

@@ -132,6 +132,8 @@ interface Config {
         idleSeconds: number
         minIntervalMinutes: number
         maxDailyTokens: number
+        /** 单次 Review 的输出上限；reasoning 模型的 thinking 也计入，推理模型需调大 */
+        reviewMaxTokens: number
       }
       maxSessions: number
     }
@@ -564,6 +566,7 @@ export const memoryConfig = {
   get dreamingIdleSeconds() { return overrideOr("ai.memory.dreaming.idleSeconds", cfg.ai?.memory?.dreaming?.idleSeconds ?? 120); },
   get dreamingMinIntervalMinutes() { return overrideOr("ai.memory.dreaming.minIntervalMinutes", cfg.ai?.memory?.dreaming?.minIntervalMinutes ?? 60); },
   get dreamingMaxDailyTokens() { return overrideOr("ai.memory.dreaming.maxDailyTokens", cfg.ai?.memory?.dreaming?.maxDailyTokens ?? 12000); },
+  get dreamingReviewMaxTokens() { return overrideOr("ai.memory.dreaming.reviewMaxTokens", cfg.ai?.memory?.dreaming?.reviewMaxTokens ?? 1200); },
   get maxSessions() { return overrideOr("ai.memory.maxSessions", cfg.ai?.memory?.maxSessions ?? 20); },
 };
 

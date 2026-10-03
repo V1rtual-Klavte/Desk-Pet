@@ -187,7 +187,7 @@ async function registerAll(sources: MemorySource[]): Promise<void> {
  * 逐批消化待处理来源；连续无进展或达到上限即停。manual 模式绕开每日预算。
  *
  * 失败分类与 memory-quality 同一口径：`provider_request_end` 显示 memory 用途的模型输出
- * 撞上长度上限（reasoning 模型的 thinking 也吃 REVIEW_MAX_TOKENS）时，这是**产品观察到并
+ * 撞上长度上限（reasoning 模型的 thinking 也吃 ai.memory.dreaming.reviewMaxTokens 预算）时，这是**产品观察到并
  * 拒绝不完整输出**的行为，返回 `incompleteOutput` 让调用方记成失败 cell 而不是基础设施失败 ——
  * 一次 run 里 52 题都会被逐一观测，而不是连续三次后整批中止；其他 dreaming 失败照旧抛错。
  */

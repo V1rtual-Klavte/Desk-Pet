@@ -81,7 +81,7 @@ pnpm run test:memory-bench -- --bench-dataset longmemeval --bench-split oracle \
 | `--bench-case id1,id2` | 精确题号过滤（调试用） |
 | `--bench-seed` | 组内洗牌种子，默认 `memory-bench-2026-10-03` |
 | `--bench-judge on/off` | 默认 `on`；`off` 只出确定性检索指标 |
-| `--bench-judge-model` | 默认取 [test/eval-models.json](../eval-models.json) 的 `judge.model`（当前 `deepseek-reasoner`）；**必须不同于被测模型** |
+| `--bench-judge-model` | 默认取 [test/eval-models.json](../eval-models.json)（或本地 `eval-models.local.json`）的 `judge.model`（当前 `deepseek-reasoner`）；**必须不同于被测模型** |
 | `--report json` | 报告落 `test/reports/<stamp>.json`（建议始终带） |
 
 报告与逐题 JSONL（`memory-bench-outcomes.jsonl`）随现有保留组机制留存：
@@ -103,7 +103,7 @@ node test/memory-bench/export-hypotheses.mjs test/reports/<stamp>.json --out /tm
 - 答案判分：**五套题型模板逐字移植自官方 `src/evaluation/evaluate_qa.py`**（通用 yes/no、
   temporal 免 off-by-one、knowledge-update 允新旧并述、preference rubric、abstention）。
   判定解析保持官方语义（`'yes' in response.lower()`），原始回答落盘可复判。
-- judge 走仓库配置的 Provider 端点与 api_key（同 key 异构；默认 judge 模型由
+- judge 走测试侧网关的端点与 api_key（同 key 异构；本地 `eval-models.local.json` 可覆盖网关端点与凭据；默认 judge 模型由
   [test/eval-models.json](../eval-models.json) 提供——当前 `deepseek-reasoner`，可用
   `--bench-judge-model` 或 `DESKPET_EVAL_JUDGE_MODEL` 覆盖；被测模型以本机配置为准，也可在
   同一文件或 `DESKPET_EVAL_MODEL` 覆盖）。**唯一纪律：judge 模型必须不同于
@@ -149,12 +149,13 @@ node test/memory-bench/export-hypotheses.mjs test/reports/<stamp>.json --out /tm
   dreaming 截断（1200）/丢弃（4800）造成的压分照实记录（`ingest` + `manifest.memoryConfig`）。
 - 已知偏差（报告口径如实标注）：官方 LongMemEval 以 `question_date` 为「当前日期」，
   本仓提问发生在真实时钟（2026+），相对日期类问题受此影响；题面不做改写。
-- **被测模型为 reasoning 模型时的已知限制（实测 2026-10-03，deepseek-flash）**：产品 dreaming 的
-  单次评审输出上限是 1200 tokens（`REVIEW_MAX_TOKENS`），reasoning 的 thinking 也计入该预算，
-  因此提取会批量以「Provider 输出达到长度上限，拒绝使用不完整结果」失败——产品**拒绝采用不完整
-  输出**是正确的保守行为，不是基准缺陷。此类题按 `status: "failed"` 记入报告（`error` 字段注明
-  `model-output-length`），一次 run 会继续观测其余题目而不是连续中止；非 reasoning 模型
-  （如 deepseek-chat）不受此限。要观测提取链路，先跑 `--bench-limit 3` 确认该限制是否出现。
+- **reasoning 模型的评审输出上限（2026-10-03 实测与处理）**：产品 dreaming 单次评审默认上限
+  1200 tokens，reasoning 的 thinking 也计入该预算，超限时提取如实以「Provider 输出达到长度
+  上限，拒绝使用不完整结果」失败（拒绝采用不完整输出是产品的保守行为，不是基准缺陷），按
+  `status: "failed"`（`error` 注明 `model-output-length`）记入报告且一次 run 继续观测其余题目。
+  **解法**：调大 `ai.memory.dreaming.reviewMaxTokens`（默认 1200；测试侧可在
+  `test/eval-models.local.json` 写 `underTest.reviewMaxTokens`，如 4096），或改用非 reasoning
+  模型（如 deepseek-chat）。接新模型先按 §8 的冒烟层验证提取链路。
 
 ## 7. LongMemEval S 子集（本轮不跑）
 
@@ -164,13 +165,19 @@ node test/memory-bench/export-hypotheses.mjs test/reports/<stamp>.json --out /tm
 - 想跑 S：`node test/memory-bench/prepare.mjs --dataset longmemeval --split s`，然后
   `pnpm run test:memory-bench -- --bench-dataset longmemeval --bench-split s …`。成本量级见 §8。
 
-## 8. 成本量级（供选择 limit 时参考，按 deepseek 系列计价）
+## 8. 分层节奏：按目的挑层，不每次全跑
 
-- LongMemEval oracle：每题 ≈1 次提取 sweep（≈1–3 个 Provider 请求）+ 1 次提问 + 1 次 judge；
-  52 题全量子集约 0.5–1M tokens。
-- LongMemEval S：每题 haystack 约 122k tokens，100 题约 2.5–4.5M tokens。
-- LoCoMo：10 段对话灌入（每段 19–32 会话）+ 1986 次提问；信息量最大，建议始终带 `--bench-limit` 分批跑。
-- MemoryBank cn：15 个角色 × 100 题，规模最小。
+| 梯队 | 何时跑 | 命令（`pnpm run test:memory-bench --` 后接参数） | 量级（deepseek 系列计价） |
+|---|---|---|---|
+| **冒烟自检** | 接新模型 / 改采集或判分后先跑 | `--bench-dataset longmemeval --bench-split oracle --bench-limit 3` | 几分钟、几千 tokens |
+| **常规回归**（默认） | 记忆核心（召回 / 提取 / 治理）改动后 | `--bench-dataset longmemeval --bench-split oracle`（全量 52 题） | 0.5–1M（每题 ≈1 次提取 sweep + 1 次提问 + 1 次 judge） |
+| **中文对照** | 中文卡 / 中文体验改动后 | `--bench-dataset memorybank --bench-split cn`（15 角色 × 100 题） | 最小（提取近零，主要是 judge） |
+| **检索难度** | 里程碑 / 发版前 | `--bench-split s`（需先 `node test/memory-bench/prepare.mjs --dataset longmemeval --split s` 装 277MB） | 2.5–4.5M（每题 haystack ≈122k） |
+| **对外可比** | 需要对外引用数字时 | `--bench-dataset locomo`（务必带 `--bench-limit` 分批） | 免 judge（词面 F1）；1986 题信息量最大 |
+
+成本大头在 dreaming 提取（每题 1~5 次 sweep），judge 占比小；推理模型先按 §6 调
+`reviewMaxTokens` 并用冒烟层验证提取链路。每轮报告都记录实际 usage，用来校准这里的量级。
+**默认节奏 = 冒烟 → 常规**；中文 / 难度 / 对外只在对应触发条件下跑，不随每次改动全量执行。
 
 ## 9. 测试与验证
 

@@ -85,6 +85,8 @@ ai:
       idleSeconds: 120
       minIntervalMinutes: 60
       maxDailyTokens: 12000
+      # 单次 Review 的输出上限；reasoning 模型的 thinking 也计入此预算，推理模型需调大（如 4096）
+      reviewMaxTokens: 1200
     maxSessions: 20
 
   plan:
