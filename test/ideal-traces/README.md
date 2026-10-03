@@ -16,7 +16,7 @@
 - **与自动产物隔离**：本目录不在 `test/reports/` 下——报告与 trace 的保留策略（最近 5 份）不会碰到它。
 - **与 git 的关系**：`test/reports/` 与 `test/.tmp/` 在 `.gitignore` 中，本目录**不在**——理想稿默认随仓库版本化（它是"期望规格"，像文档一样值得留痕）。
 - **含隐私的理想稿**：移到仓库外任意位置，或自行加 ignore 条目；运行命令时直接传路径即可，目录只是推荐。
-- 实际 trace 在 `test/reports/traces/trace-bundle-*.trace.jsonl`（bundle 组，gitignore）；后缀约定让两者一眼可辨：`.ideal.md` 是期望、`.trace.jsonl` 是实际。
+- 实际 trace 在 `test/reports/traces/trace-bundle-*.trace.jsonl`（bundle 组，gitignore；bench / quality 运行在各自子目录的 `traces/`，理想稿审阅只针对门禁 L4 trace）；后缀约定让两者一眼可辨：`.ideal.md` 是期望、`.trace.jsonl` 是实际。
 
 ## 怎么写
 

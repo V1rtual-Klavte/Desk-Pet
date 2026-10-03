@@ -42,9 +42,11 @@ function listing(dir: string): string[] {
 
 describe("reportRetentionGroupKey", () => {
   it("报告本体取自身、两类卫星归父报告、非日期戳产物不参与 [report-retention-group-key]", () => {
-    expect(reportRetentionGroupKey(`${stamp(1)}.json`)).toBe(`${stamp(1)}.json`)
-    expect(reportRetentionGroupKey(`${stamp(1)}.json.review.json`)).toBe(`${stamp(1)}.json`)
-    expect(reportRetentionGroupKey(`${stamp(1)}.txt.scored.json`)).toBe(`${stamp(1)}.txt`)
+    // 同一场报告的 json / html / 卫星共用一个组键（只留 stamp），不能把报告拆成两组各自淘汰。
+    expect(reportRetentionGroupKey(`${stamp(1)}.json`)).toBe(stamp(1))
+    expect(reportRetentionGroupKey(`${stamp(1)}.html`)).toBe(stamp(1))
+    expect(reportRetentionGroupKey(`${stamp(1)}.json.review.json`)).toBe(stamp(1))
+    expect(reportRetentionGroupKey(`${stamp(1)}.txt.scored.json`)).toBe(stamp(1))
     expect(reportRetentionGroupKey("caseids-unit.json")).toBeNull()
     expect(reportRetentionGroupKey("flaky.json")).toBeNull()
     // 基名不是日期戳的人工文件（如 notes.review.json）不属于保留体系
@@ -53,12 +55,23 @@ describe("reportRetentionGroupKey", () => {
 })
 
 describe("pruneRetainedGroups", () => {
-  it("保留最新五组、最老的组整组淘汰 [report-retention-newest-five]", () => {
+  it("保留最新三场、最老的组整组淘汰 [report-retention-newest-three]", () => {
     const dir = fixture()
     for (let i = 1; i <= 6; i++) write(dir, `${stamp(i)}.json`, 10, BASE + i * 1000)
     const result = pruneRetainedGroups(dir, { groupKey: reportRetentionGroupKey })
-    expect({ kept: result.kept, evicted: result.evicted }).toEqual({ kept: 5, evicted: [`${stamp(1)}.json`] })
-    expect(listing(dir)).toEqual([2, 3, 4, 5, 6].map(i => `${stamp(i)}.json`))
+    expect({ kept: result.kept, evicted: result.evicted }).toEqual({ kept: 3, evicted: [stamp(3), stamp(2), stamp(1)] })
+    expect(listing(dir)).toEqual([4, 5, 6].map(i => `${stamp(i)}.json`))
+  })
+
+  it("同一场的 json 与 html 作为一个组一起保留或一起淘汰 [report-retention-json-html-pair]", () => {
+    const dir = fixture()
+    for (let i = 1; i <= 4; i++) {
+      write(dir, `${stamp(i)}.json`, 10, BASE + i * 1000)
+      write(dir, `${stamp(i)}.html`, 20, BASE + i * 1000 + 1)
+    }
+    const result = pruneRetainedGroups(dir, { groupKey: reportRetentionGroupKey })
+    expect(result.kept).toBe(3)
+    expect(listing(dir)).toEqual([2, 3, 4].flatMap(i => [`${stamp(i)}.html`, `${stamp(i)}.json`]).sort())
   })
 
   it("最新一组即使单独超字节上限也恒留，其余组按上限淘汰 [report-retention-newest-kept-over-budget]", () => {
@@ -75,7 +88,7 @@ describe("pruneRetainedGroups", () => {
     write(dir, `${stamp(1)}.json`, 10, BASE + 1000)
     write(dir, `${stamp(1)}.json.review.json`, 90, BASE + 1500)
     write(dir, `${stamp(2)}.json`, 10, BASE + 2000)
-    // 都在 5 组线内不淘汰，但字节必须含卫星：10 + 90 + 10 = 110
+    // 都在 3 场线内不淘汰，但字节必须含卫星：10 + 90 + 10 = 110
     const result = pruneRetainedGroups(dir, { groupKey: reportRetentionGroupKey })
     expect(result.keptBytes).toBe(110)
     // 收紧到 1 组：父与卫星整组消失，不能留下无父的孤儿卫星
@@ -90,10 +103,10 @@ describe("pruneRetainedGroups", () => {
     write(dir, "vitest-unit-attempt1.json", 10, BASE)
     for (let i = 1; i <= 6; i++) write(dir, `${stamp(i)}.json`, 10, BASE + i * 1000)
     const result = pruneRetainedGroups(dir, { groupKey: reportRetentionGroupKey })
-    expect(result.evicted).toEqual([`${stamp(1)}.json`])
+    expect(result.evicted).toEqual([stamp(3), stamp(2), stamp(1)])
     expect(listing(dir)).toEqual([
       "caseids-unit.json", "flaky.json", "vitest-unit-attempt1.json",
-      ...[2, 3, 4, 5, 6].map(i => `${stamp(i)}.json`),
+      ...[4, 5, 6].map(i => `${stamp(i)}.json`),
     ].sort())
   })
 })

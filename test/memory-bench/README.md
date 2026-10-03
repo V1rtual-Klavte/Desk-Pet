@@ -84,10 +84,11 @@ pnpm run test:memory-bench -- --bench-dataset longmemeval --bench-split oracle \
 | `--bench-seed` | 组内洗牌种子，默认 `memory-bench-2026-10-03` |
 | `--bench-judge on/off` | 默认 `on`；`off` 只出确定性检索指标 |
 | `--bench-judge-model` | 默认取 [test/eval-models.json](../eval-models.json)（或本地 `eval-models.local.json`）的 `judge.model`（当前 `deepseek-reasoner`）；**必须不同于被测模型** |
-| `--report json` | 报告落 `test/reports/<stamp>.json`（建议始终带） |
+| `--report json` | 报告落 `test/reports/bench/<stamp>.json`（建议始终带；同名 `.html` 由启动器自动生成质量摘要页） |
 
 报告与逐题 JSONL（`memory-bench-outcomes.jsonl`）随现有保留组机制留存：
-主报告 `<stamp>.json`；逐题结果作为 bundle 成员 `<trace-bundle>-<stamp>.quality.jsonl`
+主报告 `<stamp>.json` 与同名 `.html` 在 `test/reports/bench/`，按「最近 3 场」淘汰；
+逐题结果作为 bundle 成员 `test/reports/bench/traces/trace-bundle-<stamp>.memory-bench.jsonl`
 （复用现有成员名后缀，未改 `scripts/trace-evidence.mjs`）。
 
 **LongMemEval 的逐题 JSONL 行同时携带 `question_id` 与 `hypothesis`**，官方
@@ -95,7 +96,7 @@ pnpm run test:memory-bench -- --bench-dataset longmemeval --bench-split oracle \
 `ref_file` 用官方原始 LongMemEval 数据。另一条导出路径：
 
 ```bash
-node test/memory-bench/export-hypotheses.mjs test/reports/<stamp>.json --out /tmp/hypotheses.jsonl
+node test/memory-bench/export-hypotheses.mjs test/reports/bench/<stamp>.json --out /tmp/hypotheses.jsonl
 ```
 
 ## 5. 判分口径

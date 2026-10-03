@@ -6,12 +6,12 @@ import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdir
 import { createHash } from "node:crypto"
 import { execFileSync, spawn } from "node:child_process"
 import { extname, join, relative } from "node:path"
+import { pathToFileURL } from "node:url"
 import { inspectTraceEvidence, retainTraceBundle, salvageTempTrace } from "./trace-evidence.mjs"
 import { pruneReportArtifacts } from "./report-retention.mjs"
 import { compareCaseIdLayers, extractContractCaseIds, formatCaseIdLayerIssues } from "./contract-layers.mjs"
 
 const REPORTS_DIR = join(process.cwd(), "test", "reports")
-const TRACES_DIR = join(REPORTS_DIR, "traces")
 
 const args = process.argv.slice(2).filter(arg => arg !== "--")
 // 这两份选项清单必须与 test/e2e/cli.ts 的 parseArgs 同步：漏一个 valueOption，
@@ -48,6 +48,15 @@ for (let index = 0; index < args.length; index++) {
   if (!valueOptions.has(option) || !args[index + 1]) continue
   env[`DESKPET_E2E_${option.slice(2).toUpperCase().replace(/-/g, "_")}`] = args[++index]
 }
+
+/**
+ * 报告分池：门禁/测试留在 `test/reports/`；外部基准与自建评测各用一个子目录，
+ * 各自按「最近 3 场」淘汰，互不干扰。分池判定必须在参数解析之后（上面刚写入 env）。
+ */
+const MODE_REPORTS_DIR = env.DESKPET_E2E_BENCH === "1" ? join(REPORTS_DIR, "bench")
+  : env.DESKPET_E2E_QUALITY === "1" ? join(REPORTS_DIR, "quality")
+  : REPORTS_DIR
+const TRACES_DIR = join(MODE_REPORTS_DIR, "traces")
 
 /**
  * `--contracts=selected` 只校验 `--module` 选中的那一份 Contract。
@@ -356,9 +365,22 @@ async function preserveReport() {
     returnCode = 1
   }
   if (existsSync(resultPath)) {
-    mkdirSync(REPORTS_DIR, { recursive: true })
+    mkdirSync(MODE_REPORTS_DIR, { recursive: true })
     const extension = REPORT_EXTENSIONS[env.DESKPET_E2E_REPORT] ?? "txt"
-    copyFileSync(resultPath, join(REPORTS_DIR, `${stamp}.${extension}`))
+    const savedReport = join(MODE_REPORTS_DIR, `${stamp}.${extension}`)
+    copyFileSync(resultPath, savedReport)
+    // 外部记忆基准：留存后可读化 —— 终端质量摘要 + 同名 HTML 一页报告（质量指标与门禁分开呈现）。
+    if (env.DESKPET_E2E_BENCH === "1" && extension === "json") {
+      try {
+        const { writeBenchReport } = await import(pathToFileURL(join(process.cwd(), "test", "memory-bench", "report.mjs")).href)
+        const rendered = writeBenchReport(savedReport, {
+          hypothesesPath: join(TRACES_DIR, `trace-bundle-${stamp}.memory-bench.jsonl`),
+        })
+        console.error(rendered.text)
+      } catch (error) {
+        console.error(`[E2E] 基准报告摘要/HTML 生成失败: ${error?.message ?? error}`)
+      }
+    }
     const artifactCopy = env.DESKPET_E2E_ARTIFACT_COPY
     if (artifactCopy) {
       const rel = relative(TEMP_ROOT_DIR, artifactCopy)
@@ -368,8 +390,8 @@ async function preserveReport() {
       JSON.parse(payload)
       writeFileSync(artifactCopy, payload)
     }
-    pruneReportArtifacts(REPORTS_DIR)
-    console.error(`[E2E] 报告已留存: ${REPORTS_DIR}`)
+    pruneReportArtifacts(MODE_REPORTS_DIR)
+    console.error(`[E2E] 报告已留存: ${MODE_REPORTS_DIR}`)
   }
   return returnCode
 }

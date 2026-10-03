@@ -382,9 +382,23 @@ async function main(): Promise<void> {
       judgeModel: report.judgeModel, upstream: report.upstream, importTransformVersion: report.importTransformVersion }
     // 外部基准是观测证据：passed 只表示「完整跑完」，质量阈值字段在报告中恒为 null。
     const benchPassed = report.gates.complete === true
+    const scores = report.scores as {
+      overall?: { correct?: number; judged?: number; accuracy?: number | null }
+      accuracy?: { correct?: number; judged?: number; value?: number | null }
+      meanScore?: number | null
+      scored?: number
+    }
+    const benchAccuracy = scores.overall ? scores.overall.accuracy : scores.accuracy?.value
+    const benchJudged = scores.overall?.judged ?? scores.accuracy?.judged ?? scores.scored
+    const benchCorrect = scores.overall?.correct ?? scores.accuracy?.correct
+    const qualityNote = benchAccuracy === null || benchAccuracy === undefined
+      ? "无已判分样本"
+      : `${dataset === "locomo" ? "平均 F1" : "正确率"} ${(benchAccuracy * 100).toFixed(1)}%`
+        + `（${dataset === "locomo" ? `n=${benchJudged ?? "?"}` : `${benchCorrect ?? "?"}/${benchJudged ?? "?"}`}）`
     view.finish({
       verdict: benchPassed ? "pass" : "fail",
-      note: benchPassed ? "全部计划题已完成（观测层通过只表示跑完）" : "存在未完成或失败题，见报告与上方红行",
+      note: `完成 ${report.completedCells}/${report.plannedCells} · ${qualityNote} · 观测指标非门禁阈值；详见 HTML 报告`
+        + (benchPassed ? "" : " · 存在未完成或失败题，见上方红行"),
     })
     await finishSpecialReport({ ...report, runEvidence: { commit: manifest.commit,
       sourceHashes: manifest.sourceHashes, seedHash: manifest.seedHash } }, benchPassed)
