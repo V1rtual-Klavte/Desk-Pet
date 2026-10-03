@@ -169,7 +169,7 @@ node test/memory-bench/export-hypotheses.mjs test/reports/<stamp>.json --out /tm
 
 | 梯队 | 何时跑 | 命令（`pnpm run test:memory-bench --` 后接参数） | 量级（deepseek 系列计价） |
 |---|---|---|---|
-| **冒烟自检** | 接新模型 / 改采集或判分后先跑 | `--bench-dataset longmemeval --bench-split oracle --bench-limit 3` | 几分钟、几千 tokens |
+| **冒烟自检** | 接新模型 / 改采集或判分后先跑 | `pnpm run test:memory-bench:smoke`（oracle ×3 题） | 几分钟、几千 tokens |
 | **常规回归**（默认） | 记忆核心（召回 / 提取 / 治理）改动后 | `--bench-dataset longmemeval --bench-split oracle`（全量 52 题） | 0.5–1M（每题 ≈1 次提取 sweep + 1 次提问 + 1 次 judge） |
 | **中文对照** | 中文卡 / 中文体验改动后 | `--bench-dataset memorybank --bench-split cn`（15 角色 × 100 题） | 最小（提取近零，主要是 judge） |
 | **检索难度** | 里程碑 / 发版前 | `--bench-split s`（需先 `node test/memory-bench/prepare.mjs --dataset longmemeval --split s` 装 277MB） | 2.5–4.5M（每题 haystack ≈122k） |
@@ -185,7 +185,7 @@ node test/memory-bench/export-hypotheses.mjs test/reports/<stamp>.json --out /tm
   `test/unit/memory-bench/*.test.ts`，合成小样本，不读真数据。
 - 数据转换的完整性由 `prepare.mjs --verify` 与 `validate*File` 校验保证；不做 datasetHash/三重哈希链
   （外部集不进门禁，最简完整性守卫即 revision + fileSha256 + importTransformVersion）。
-- smoke：`pnpm run test:memory-bench -- --bench-dataset longmemeval --bench-split oracle --bench-limit 3 --report json`
+- smoke：`pnpm run test:memory-bench:smoke`（等价于 `--bench-dataset longmemeval --bench-split oracle --bench-limit 3`）
   （真实 Provider；`--bench-judge off` 可只验采集管线）。
 
 ## 10. 红线

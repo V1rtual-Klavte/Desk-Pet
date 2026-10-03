@@ -20,6 +20,7 @@
         "test:memory-quality-review": "node scripts/memory-quality-review.mjs",
         "test:memory-performance": "node scripts/memory-performance.mjs",
         "test:memory-bench": "node scripts/e2e-test.mjs --bench --report json",
+        "test:memory-bench:smoke": "node scripts/e2e-test.mjs --bench --report json --bench-dataset longmemeval --bench-split oracle --bench-limit 3",
         "test:memory-bench:prepare": "node test/memory-bench/prepare.mjs",
         "test:e2e": "node scripts/e2e-test.mjs",
         "test:smoke": "pnpm run test:e2e -- --module agent-runtime --case production-chat-entry --strict --repeat 2",
