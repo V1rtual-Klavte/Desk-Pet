@@ -11,6 +11,8 @@
  */
 
 import { TODO_CONTEXT } from "@earendil-works/pi-agent-core"
+import { operationResult } from "@earendil-works/pi-agent-core/harness/session"
+import type { AssistantMessage } from "@earendil-works/pi-ai"
 import { createLogger } from "@/services/logger"
 import { formatError } from "@/services/error"
 import { PI_LANE, acquirePiSession } from "@/services/session/repo"
@@ -18,6 +20,100 @@ import { PROMPT_SNAPSHOT_ENTRY, inputEventId, messageRequestId } from "@/service
 import { harnessSlots } from "./harness-slot"
 
 const log = createLogger("Delivery")
+
+export interface ActiveAttemptEvidence {
+  operationId: string
+  triggerEntryId: string
+  assistantEntryId: string
+  text: string
+  usage?: { inputTokens: number; outputTokens: number; cacheRead?: number; cacheWrite?: number }
+}
+
+/** Resolve active attempt -> native assistant entry using operation prompt and terminal/state records. */
+export interface ActiveAttemptAssociation { attemptId: string; triggerEntryId: string }
+
+export async function readActiveAttemptAssociations(sessionId: string): Promise<Map<string, ActiveAttemptAssociation>> {
+  const session = await acquirePiSession(sessionId)
+  const entries = await session.findEntries({ order: "asc" }, TODO_CONTEXT)
+  const triggers = entries.filter(entry => entry.type === "message"
+    && entry.message.role === "custom" && entry.message.customType === "deskpet.active_message"
+    && isRecord(entry.message.details)
+    && typeof entry.message.details.attemptId === "string")
+  if (!triggers.length) return new Map()
+  // `operationMeta` is an in-flight value and is deleted by pi-agent-core after terminal cleanup.
+  // The immutable operation result keeps the branch anchors needed to bind a trigger to its tip.
+  const operations = await session.scanValues(operationResult(""), TODO_CONTEXT)
+  const result = new Map<string, ActiveAttemptAssociation>()
+  for (const trigger of triggers) {
+    if (trigger.type !== "message" || trigger.message.role !== "custom" || !isRecord(trigger.message.details)) continue
+    const attemptId = trigger.message.details.attemptId
+    if (typeof attemptId !== "string") continue
+    const triggerIndex = entries.findIndex(entry => entry.id === trigger.id)
+    for (const stored of operations) {
+      const terminal = stored.value
+      if (terminal.kind !== "run" || terminal.status !== "completed" || !terminal.tipId) continue
+      const fromIndex = entries.findIndex(entry => entry.id === terminal.fromTipId)
+      const tipIndex = entries.findIndex(entry => entry.id === terminal.tipId)
+      if (fromIndex < 0 || tipIndex < 0 || !(fromIndex < triggerIndex && triggerIndex < tipIndex)) continue
+      result.set(terminal.tipId, { attemptId, triggerEntryId: trigger.id })
+      break
+    }
+  }
+  return result
+}
+
+/** Prove one active attempt from its custom trigger, terminal native operation, and committed assistant tip. */
+export async function readActiveAttemptEvidence(
+  sessionId: string,
+  attemptId: string,
+  requestId: string,
+): Promise<ActiveAttemptEvidence | undefined> {
+  const session = await acquirePiSession(sessionId)
+  const entries = await session.findEntries({ order: "asc" }, TODO_CONTEXT)
+  const trigger = entries.find(entry => entry.type === "message"
+    && entry.message.role === "custom" && entry.message.customType === "deskpet.active_message"
+    && isRecord(entry.message.details)
+    && entry.message.details.attemptId === attemptId && entry.message.details.requestId === requestId)
+  if (!trigger) return undefined
+  // `operationMeta` is removed during terminal cleanup. Use the immutable result's branch anchors
+  // and the exact trigger/tip ordering to prove this operation belongs to this active attempt.
+  const operations = await session.scanValues(operationResult(""), TODO_CONTEXT)
+  const triggerIndex = entries.findIndex(entry => entry.id === trigger.id)
+  for (const stored of operations) {
+    const terminal = stored.value
+    if (terminal.kind !== "run" || terminal.status !== "completed" || !terminal.tipId) continue
+    const fromIndex = entries.findIndex(entry => entry.id === terminal.fromTipId)
+    const tipIndex = entries.findIndex(entry => entry.id === terminal.tipId)
+    if (fromIndex < 0 || tipIndex < 0 || !(fromIndex < triggerIndex && triggerIndex < tipIndex)) continue
+    const assistant = entries.find(entry => entry.type === "message" && entry.id === terminal.tipId)
+    if (!assistant || assistant.type !== "message" || assistant.message.role !== "assistant"
+      || assistant.message.stopReason === "error" || assistant.message.stopReason === "aborted") continue
+    const text = contentText(assistant.message.content).trim()
+    if (!text) continue
+    const usage = assistant.message.usage
+    return {
+      operationId: terminal.operationId,
+      triggerEntryId: trigger.id,
+      assistantEntryId: assistant.id,
+      text,
+      ...(usage ? { usage: {
+        inputTokens: usage.input,
+        outputTokens: usage.output,
+        ...(Number.isFinite(usage.cacheRead) ? { cacheRead: usage.cacheRead } : {}),
+        ...(Number.isFinite(usage.cacheWrite) ? { cacheWrite: usage.cacheWrite } : {}),
+      } } : {}),
+    }
+  }
+  return undefined
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === "object" && !Array.isArray(value)
+}
+
+function contentText(content: AssistantMessage["content"]): string {
+  return content.filter(part => part.type === "text").map(part => part.text).join("\n")
+}
 
 /** 请求视图的换代身份：本会话 lane 分支上已提交的压缩次数与最近一条压缩条目。 */
 export interface ContextEpoch {

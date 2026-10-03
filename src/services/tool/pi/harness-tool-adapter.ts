@@ -13,6 +13,7 @@ import { getSimpleStage } from "@/services/personality/stages-cache"
 export interface HarnessToolRun {
   sessionId?: string
   runGeneration?: number
+  trustedUserEventId?: string
   /** 当前回合仍是代际所有者且未取消。 */
   isCurrent: () => boolean
   /** 回合级工具调用历史（返回给 UI/报告）。 */
@@ -41,6 +42,7 @@ export function toAgentHarnessTools(tools: readonly ToolDef[], run: HarnessToolR
         result = await executeToolDefinition(tool, params as Record<string, unknown>, {
           sessionId: run.sessionId,
           runGeneration: run.runGeneration,
+          ...(run.trustedUserEventId ? { trustedUserEventId: run.trustedUserEventId } : {}),
           isCurrent: run.isCurrent,
           toolCallId,
           operationId: invocation.invocationId,

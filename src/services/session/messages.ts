@@ -53,6 +53,23 @@ export function pushAssistantMessage(text: string, sessionId: string): Message {
   return msg
 }
 
+/** Project a confirmed JSONL assistant entry once into the currently matching session view. */
+export function pushCommittedProactiveMessage(text: string, sessionId: string, entryId: string, countsAsUnanswered = true): number | undefined {
+  if (sessionId === activeSessionId.value) {
+    const existing = chatHistory.find(message => message.eventId === entryId)
+    if (!existing) pushMessageFor(sessionId, { id: entryId, eventId: entryId, role: "assistant", text, timestamp: Date.now(), isProactive: countsAsUnanswered })
+    else existing.isProactive = countsAsUnanswered
+    const count = chatHistory.reduce((total, message) => {
+      if (message.role === "user") return 0
+      return message.role === "assistant" && message.isProactive ? total + 1 : total
+    }, 0)
+    unansweredCount.value = count
+    saveUnanswered(sessionId, count)
+    return count
+  }
+  return undefined
+}
+
 export function pushSystemMessage(text: string, sessionId: string): Message {
   const msg = createSystemMessage(text)
   pushMessageFor(sessionId, msg)

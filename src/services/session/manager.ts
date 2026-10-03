@@ -21,10 +21,10 @@ import {
 } from "./repo"
 import type { PiSessionSummary } from "./repo"
 import { prependSessionHistory, removeSessionHistory, renameSessionHistory, sessionHistoryError } from "./history"
-import { messagesFromEntries } from "./read-model"
+import { messagesFromEntries, reconcileActiveReceipts } from "./read-model"
 import { createLogger } from "@/services/logger"
 import { formatError, reportError } from "@/services/error"
-import { harnessSlots } from "@/services/engine/harness"
+import { harnessSlots, readActiveAttemptAssociations } from "@/services/engine/harness"
 import { cancelSessionPlans } from "@/services/engine/plan-confirmation"
 
 const log = createLogger("Session")
@@ -45,7 +45,21 @@ function summaryToMeta(summary: PiSessionSummary): SessionMeta {
 /** 读正文：失败与「确实没有正文」不同形 —— 错误随返回值交给调用方，不只藏在日志里。 */
 async function loadMessagesFromSession(sessionId: string): Promise<{ messages: Message[]; error?: string }> {
   try {
-    return { messages: messagesFromEntries(await readPiSessionEntries(sessionId)) }
+    await reconcileActiveReceipts(sessionId)
+  } catch (error) {
+    log.error("主动送达回执恢复失败，继续隐藏未确认的主动条目:", sessionId, formatError(error))
+    const entries = await readPiSessionEntries(sessionId)
+    let receiptError = formatError(error)
+    const associations = await readActiveAttemptAssociations(sessionId)
+    const messages = await messagesFromEntries(entries, sessionId, item => { receiptError = formatError(item) }, associations)
+    return { messages, error: receiptError }
+  }
+  try {
+    let receiptError: string | undefined
+    const entries = await readPiSessionEntries(sessionId)
+    const associations = await readActiveAttemptAssociations(sessionId)
+    const messages = await messagesFromEntries(entries, sessionId, item => { receiptError = formatError(item) }, associations)
+    return { messages, ...(receiptError ? { error: receiptError } : {}) }
   } catch (error) {
     log.error("加载会话正文失败:", sessionId, formatError(error))
     return { messages: [], error: formatError(error) }
@@ -63,7 +77,17 @@ async function activateSession(sessionId: string): Promise<void> {
   const { messages, error } = await loadMessagesFromSession(sessionId)
   if (activeSessionId.value !== sessionId) return
   replaceMessages(messages)
-  unansweredCount.value = loadUnanswered(sessionId)
+  if (!error) {
+    let rebuiltUnanswered = 0
+    for (const message of messages) {
+      if (message.role === "user") rebuiltUnanswered = 0
+      else if (message.role === "assistant" && message.isProactive) rebuiltUnanswered++
+    }
+    unansweredCount.value = rebuiltUnanswered
+    saveUnanswered(sessionId, rebuiltUnanswered)
+  } else {
+    unansweredCount.value = loadUnanswered(sessionId)
+  }
   if (error) {
     // 沿用清空语义，但让用户看到「读取失败」而不是「历史没了」；证据在 log.error（见 loadMessagesFromSession）。
     // 动态 import 断开 manager ⇄ messages 的静态环（messages 的改名路径要回 import manager）。

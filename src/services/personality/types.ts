@@ -8,7 +8,7 @@ import type { MustRules } from "./must-rules"
 
 export type VariableScope = "card" | "interaction"
 export type VariableType = "number" | "string" | "boolean"
-export type VariableUpdateBy = "llm" | "manual" | "system"
+export type VariableUpdateBy = "llm" | "proactive_response" | "manual" | "system"
 export type VariableResetPolicy = "never" | "daily" | "session"
 export type VariablePrimitive = number | string | boolean
 
@@ -31,7 +31,7 @@ export interface VariableState {
   value: VariablePrimitive
   type: VariableType
   updatedAt: number
-  updatedBy: "llm" | "manual" | "system" | "migration"
+  updatedBy: "llm" | "proactive_response" | "manual" | "system" | "migration"
 }
 
 /** Card 的解析后 sections */

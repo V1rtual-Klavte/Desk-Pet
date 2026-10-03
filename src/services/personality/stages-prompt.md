@@ -84,6 +84,7 @@
 {
   "thinking": "",
   "planning": "",
+  "presence": { "idle": "", "working": "", "resting": "" },
   "executing": {
     "fs.read": "",
     "fs.write": "",
@@ -119,6 +120,10 @@
   "commands": {
     "clear": "",
     "memoryCleared": "",
+    "proactiveEnabled": "",
+    "proactiveDisabled": "",
+    "proactiveStatus": "",
+    "behaviorCleared": "",
     "compactCompleted": "",
     "compactDeclined": "",
     "compactNothing": "",
@@ -149,3 +154,5 @@
   },
   "greetings": ["", "", ""]
 }
+
+presence是安静陪伴的顶栏状态，idle/working/resting分别为日常陪伴、专注时安静陪伴、休息；commands的proactiveEnabled/proactiveDisabled/proactiveStatus/behaviorCleared分别表达开启、关闭、简短状态和清除派生观测，不能声称删除用户记忆或聊天。
