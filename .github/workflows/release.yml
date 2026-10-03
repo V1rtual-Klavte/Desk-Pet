@@ -81,3 +81,36 @@ jobs:
           prerelease: ${{ contains(github.event.inputs.tag || github.ref_name, '-') }}
           includeUpdaterJson: true
           args: --bundles ${{ matrix.bundles }}
+
+      # Windows 免安装包。Tauri v2 没有 portable target（BundleType 只有 deb/rpm/appimage/
+      # msi/nsis/app/dmg），但 `tauri-utils` 的 `resource_dir_from()` 在 Windows 上无条件返回
+      # exe 所在目录 —— exe 旁边放一份 defaults/ 就是官方的免安装形态：解压即双击运行，
+      # 不写注册表、不落卸载项。原料取自同一次构建的产物，不额外编译。
+      # 代价要说清楚：数据仍写 %LOCALAPPDATA%\com.v1rtual.deskpet\（AppPaths 生产分支走
+      # app_local_data_dir），所以是「免安装」不是「全便携」；干净系统还需自备 WebView2 运行时
+      # （NSIS 有 downloadBootstrapper 兜底，这里没有）。
+      - name: 打 Windows 免安装 zip
+        if: matrix.os == 'windows-latest'
+        shell: pwsh
+        run: |
+          $staging = "target/release/portable/v1rtual-desk-pet"
+          New-Item -ItemType Directory -Force -Path $staging | Out-Null
+          Copy-Item target/release/v1rtual-desk-pet.exe $staging/
+          # 资源从源目录取，不从 target/release/defaults 取：tauri-build 的 copy_resources
+          # 只复制不清理，而 Swatinem/rust-cache 会连 target/ 一起缓存 —— 恢复一份旧缓存后，
+          # 源里已删除的文件仍会残留在 target/release/defaults 里被一起打进 zip
+          # （本机实测过：那里还留着 3 份已废弃的 zpix.ttf，共 61 MB）。
+          # 目的名 `defaults` 必须与 tauri.conf.json 的 bundle.resources 映射一致。
+          Copy-Item -Recurse src-tauri/resources/defaults $staging/defaults
+          $version = "${{ github.event.inputs.tag || github.ref_name }}" -replace '^v', ''
+          Compress-Archive -Path $staging -DestinationPath "target/release/v1rtual-desk-pet_${version}_x64-portable.zip" -Force
+
+      # 追加到刚才 tauri-action 建好的 Release。`gh` 在 GitHub 托管 runner 上预装，
+      # 权限沿用 job 级的 contents: write。--clobber 让重跑同一 tag 幂等。
+      # 这一步失败不会影响 updater：latest.json 只列 .nsis 与 .app.tar.gz 的端点。
+      - name: 免安装 zip 追加到 Release
+        if: matrix.os == 'windows-latest'
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh release upload "${{ github.event.inputs.tag || github.ref_name }}" target/release/v1rtual-desk-pet_*_x64-portable.zip --clobber
