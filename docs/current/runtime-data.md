@@ -99,7 +99,7 @@ Rust 持有 base 的命令接收域内相对路径，例如 personality 命令�
 
 折叠阈值是源码常量 `FOLD_POLICY`（与 `foldSessionFile` 同在 [session-fold.ts](../../src/services/engine/harness/session-fold.ts)，唯一可调点），**不是** YAML 运行时 CONFIG 字段，不适用上面的配置同步清单：`minFileBytes = 512 KiB`（不超过它不探测）、`minReclaimBytes = 128 KiB` 与 `minReclaimRatio = 0.15`（可回收字节须同时达到二者），三者 AND，维持现值（用户 2026-09-28 定稿）。
 
-Live Test 在 debug 且 `DESKPET_E2E=1` 时使用测试脚本在用户 Home 下创建的临时数据根，结束后清理。隔离边界与报告位置见[测试 README](../../test/README.md)，不把测试目录当作正常用户数据位置。
+Live Test 在 debug 且 `DESKPET_E2E=1` 时只接受启动脚本创建的 `test/.tmp/e2e-*` 隔离根（校验真实路径）。完整配置复制到该根的 `settings/CONFIG.yaml`，测试读写均走此副本；未提供有效根直接报错，不回退真实开发数据。退出先留存 trace/manifest/结果，再清理。隔离边界与报告位置见[测试 README](../../test/README.md)，不把测试目录当作正常用户数据位置。
 
 ## 默认资源与 Profile
 

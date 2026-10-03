@@ -26,7 +26,10 @@
 - 流水线：[ci.yml](../../.github/workflows/ci.yml)（双平台验证 + `bundle-config` 配置校验，不做构建）与 [release.yml](../../.github/workflows/release.yml)（tag `v*` 或手动触发的双平台打包发布）。
 - 配置守卫：`pnpm run check:bundle`，失败项逐条给出修法；它在 release 构建之前跑，拦住版本号与 tag 分叉。
 - 产物位置：CI 在 GitHub Release；本地 `pnpm tauri build` 落在仓库根 workspace 的 `target/release/bundle/`。
-- 实测体积（2026-10-02）：macOS `.dmg` 9.1 MiB、`app.tar.gz`（updater 包）8.9 MiB——字体全局化（删除随包 zpix，共 57MB）之后的实测，同日改前为 27.1 / 27.2 MiB；Windows `x64-setup.exe` 10.6 MiB 为改前实测，待重新测量。产物名由 `productName` 决定，**必须是 ASCII**（中文会被 GitHub 剥掉并让 updater 的 `latest.json` 静默缺失）。
+- 发布产物四类：macOS `.dmg`（手动安装）与 `.app.tar.gz`（updater）；Windows `x64-setup.exe`（安装版）与 `x64-portable.zip`（免安装）。追加免安装包的两步在 release.yml 里、只对 windows job 生效。
+- Windows 免安装包的依据：Tauri v2 **没有** portable target（`BundleType` 只有 deb/rpm/appimage/msi/nsis/app/dmg），但 `tauri-utils` 的 `resource_dir_from()` 在 Windows 上无条件返回 exe 所在目录 —— exe 旁边放一份 `defaults/` 就是官方的免安装形态。两个边界写进了 README：数据仍落 `%LOCALAPPDATA%\com.v1rtual.deskpet\`（`AppPaths` 生产分支走 `app_local_data_dir`），是「免安装」而非「全便携」；也不自带 WebView2 兜底（NSIS 有 downloadBootstrapper，裸 exe 没有）。
+- 体积控制三个落点：① `[profile.release]` 只认 **workspace 根** `Cargo.toml`（成员 crate 里的 `[profile]` 会被 Cargo 忽略且不报错），本仓开 `strip`/`lto`/`codegen-units = 1`；② Vite `build.rollupOptions.input` 只列产品窗口，`test-e2e.html` 不进产物（release 下 `lib.rs` 的 `cfg!(debug_assertions) && is_e2e()` 恒假，e2e 窗口永不创建）；③ 随包资源只有 `resources/defaults` 种子，Profile 素材才是体积大头。
+- 实测体积（2026-10-03，本机 macOS arm64，`--no-sign --bundles app,dmg`）：`.app` 13.05 MiB、`.dmg` 7.62 MiB、`.app.tar.gz`（updater 包）7.48 MiB。同日改前为 9.5 / 9.3 MiB，Rust 二进制 16.6 → 10.9 MiB（`strip` 回收符号表约 3.6 MiB，`lto` 再缩代码约 1.1 MiB）；更早的 v0.15.0 发布包是 27.1 / 27.2 MiB（还带着随包 zpix）。Windows `x64-setup.exe` 不在本机复测 —— profile 收益两个平台同源，但只有 Windows CI 能给实测值。产物名由 `productName` 决定，**必须是 ASCII**（中文会被 GitHub 剥掉并让 updater 的 `latest.json` 静默缺失）。
 - 发布验收：Release 资产中必须存在 `latest.json`，且其 `platforms` 同时含 `darwin-aarch64` 与 `windows-x86_64`；缺它时 CI 仍是绿的，但客户端检查更新会 404。
 - 本地构建：`createUpdaterArtifacts: true` 要求环境里有 `TAURI_SIGNING_PRIVATE_KEY`；只想要未签名的本地产物时加 `--no-sign`（`pnpm tauri build --no-sign`）。
 - 常见失败：`TAURI_SIGNING_PRIVATE_KEY` 未配置（updater 产物签不出来）；tag 与 `tauri.conf.json` 的 version 不一致（跑 `pnpm run version:set`）。

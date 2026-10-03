@@ -17,11 +17,12 @@ Pi Harness Tool → harness-tool-adapter → ToolRouter → 执行许可借用 �
 | write / edit | DANGER（凭据路径升 NOWAY 硬拒绝）；写能力恒暴露、不做配置开关，风险与确认只由安全模式裁决 |
 | bash | 动态风险：首词命中白名单、无 shell 组合符且未命中危险/硬禁止模式为 NORMAL（免确认通道），其余为 DANGER；Rust 侧层 1 硬基线与系统路径保护不可关闭；命令里的凭据路径 token 硬拒绝 |
 | system_info | 只读运行环境：操作系统、架构、CPU 核心数、内存（总量 / 已用 / 可用）与 bash 默认工作目录 |
-| window_info | 只读最近一次窗口变化（标题 / 内容 / 观测时间）；窗口监控未开启或尚无事件时如实说明 |
+| window_info | 只读最新原生窗口观测（应用、标题、采样时间和状态）；监控关闭、无观测或过期时如实说明 |
 | read_session_event | 按 `eventId` 回读地址分页读取当前会话保存的完整工具结果（被 L0 缩短或清空的结果由此恢复）：地址是完整 36 位条目 id 或**会话内最短唯一前缀**，前缀命中多条返回明确错误（`errorCode: "ambiguous"`，提示用更长前缀）而不任选；页大小按 token 预算推导、随窗口单调（旧的固定 8000 字符页宽已删除；`offset` 仍是字符下标）；前缀解析只由条目 id 集合决定，折叠不改条目 id，地址因此对折叠不敏感 |
 | app_open / clipboard_read / clipboard_write / agent_spawn | 恒暴露，受各自策略约束；四者都是 DANGER，`agent_spawn` 另声明 `delegate` 隔离，运行入口（`runPiSubAgent`）按这一判定把派生型工具从子代理工具面里剥离 |
 | MCP 工具 | 仅启用且成功借用的 server；借用期间进入此后每个回合的冻结工具集（计划步骤的未限定工具面拿得到；`agent_spawn` 的 fork/team 子代理按固定白名单收窄 —— 只有 read / system_info / bash，不在其列），受工具发现过滤与权限终裁 |
-| memory_query / memory_change | 长期记忆的读写面。`memory_query` 只读（`shared_read`、结果 `preserve`，查的是与运行时同一份记忆库）；`memory_change` 是唯一的模型写入通道（`local_mutation` + `exclusive_effect` + `replay: never`，权限意见固定 `ask`），支持 remember/correct/forget，确认绑定会话、代际、精确参数与库版本。模型不能发布 dreaming 批次、不能跑 SQL、不能写 Markdown |
+| memory_query / memory_change | 同一长期记忆库的查询与治理；change 为 NORMAL、passthrough，继续由 PermissionKernel 终裁，绑定本轮已提交可信用户事件和目标版本。支持 remember/correct/complete/cancel/forget，patch 保留未提供字段，事项时间使用 day/minute TemporalAnchor。模型不能执行 dreaming job 提交或 SQL |
+| proactive_query / proactive_change | 当前范围内的约定与事项；query 只读，change 为 NORMAL、passthrough、exclusive_effect、replay:never。创建、完成、取消、改期、延后和控制必须绑定当前 owner；任务写入绑定本轮用户事件，周期还需用户明确同意，歧义先澄清 |
 
 实际清单由 [registry.ts](../../src/services/tool/registry.ts)、[pi-tools.ts](../../src/services/tool/local/pi-tools.ts) 和回合冻结快照决定。目录列举使用 bash ls；不再注册独立 ls/file_search/http_get。Pi CLI 的 Node 工具不能直接移入 WebView，需要现有 ExecutionEnv 边界。
 

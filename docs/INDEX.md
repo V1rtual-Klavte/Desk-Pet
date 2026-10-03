@@ -15,6 +15,7 @@
 | 查 Pi 协议与 Harness 迁移的原设计 | [Pi 方案 2026-09-20 基线](history/implementation/Pi运行时与工具协议建设方案-2026-09-20基线.md)对应章节 | 当前 runtime/tool/memory 契约与源码 |
 | 测试执行/验证边界 | [测试边界](current/testing.md) | [测试 README](../test/README.md)；生成契约时再读 [测试 SKILL](../test/SKILL.md) |
 | 推 tag、发版、打包产物、自动更新 | [工作流说明](../.github/workflows/README.md) | [工程参考](current/development.md) 的「打包与发布」、`scripts/check-bundle-config.mjs`、`scripts/set-version.mjs` |
+| 主动陪伴、事项跟进、行为画像 | [主动陪伴](current/proactive.md) | [行为画像](current/behavior.md)、[实施方案](plans/active/主动陪伴运行时执行方案.md) |
 | 查看还剩哪些未完成工作、继续记忆重构 | [未完成工作与已知缺口](plans/active/未完成工作与已知缺口.md) | [B 方案目标契约与执行计划（已实施，剩余验证边界）](plans/active/记忆系统运行时契约.md)、[执行手册基线](history/implementation/记忆系统重构执行手册-2026-09-20基线.md)及相关源码 |
 | 追溯旧方案、比较项目与实施证据 | 下方历史入口 | 只读关联章节，历史命令与授权不自动生效 |
 
@@ -41,6 +42,9 @@ AGENTS 维持全局规则入口，CLAUDE 只导入它；模块细节通过任务
 
 - [未完成工作与已知缺口](plans/active/未完成工作与已知缺口.md)：**唯一未完成工作总表**——Pi 剩余批次、平台与发布、长期记忆 P6、已知代码缺口、验证缺口与不修边界。
 - [记忆系统 B 方案](plans/active/记忆系统运行时契约.md)：无向量分层记忆的设计口径、SQLite/来源/治理协议、dreaming、UI/配置接线与验收矩阵。主路径已实施，剩余验证边界见未完成总表 §3。
+- [主动陪伴运行时执行方案](plans/active/主动陪伴运行时执行方案.md)：记忆 check-in、自动记忆治理、约定排期、行为画像、内容与有限陪伴表现的完整目标契约、改动清单和集中验收；一次实施，直接替换，无兼容／过渡。正在按用户授权完整实施，集中验收结果尚未产生。
+
+- [记忆 check-in 与主动扫描器设计草案](plans/active/记忆checkin与主动扫描器设计.md)：保留原始想法与效果蓝图，用于最终逐项对照功能实现；实施以主动陪伴运行时执行方案为准，对照完成后再归档。
 
 ## 历史入口
 

@@ -1,7 +1,7 @@
 ---
 document_type: current_contract
 status: code_checked
-updated_at: 2026-09-29
+updated_at: 2026-10-02
 scope: runtime-foundation-before-memory-kernel
 ---
 
@@ -47,8 +47,20 @@ Provider 返回未预期的延迟响应（suspended）时按失败结算并取�
 - [`PromptSnapshot`](../../src/services/engine/runtime/snapshot.ts) 在 `transform_context`、`provider_payload` 和 `provider_usage` 阶段记录关联 ID、预算、分配、hash 与 usage，并记录「这是哪次请求」：`request`（用途与上游 step/attempt）、`systemPromptHash`（三档可比）、`payloadHash` 与 `requestParams`（`provider_payload` 档由 `before_payload` 从实际 payload 采集，取不到就不写，不粘到同回合其它档）、`plan`/`capabilities`（预检冻结：`skillsFingerprint`（技能目录指纹，扫描条目的 mtime/size 摘要，变了下一回合重载；从未核对成功时不写该字段）、`safetyMode`、逐请求累积的工具裁决）、`compaction`（换代次数、最近压缩条目与摘要 hash）、`generation`（槽代际）与 `budgetDrops`（整块淘汰）。一次性文本请求（planner/compaction/stages）在有会话归属时同样写 payload 与 usage 两档快照，块与消息用 `one-shot:<purpose>` 身份，与主回合的请求可区分；压缩/分支摘要的 payload 不写成主回合快照。system block、消息和工具 schema 不持久化原始正文；快照只保留脱敏 hash，`agentMessages[].contentHash` 走内容投影（不含 usage/时间戳），跨运行可复现。
 - Card 和变量在回合开始冻结。回复中的 `RUNTIME_DATA` 只在当前 Card 的 id、hash、version 仍一致时写回；写入仍由变量注册表验证。[`generateReply`](../../src/services/reply/generator.ts) 与 [`batchWriteVars`](../../src/services/personality/variable-pool.ts)
 
+## 运行观测
+
+`RuntimeTrace` 是可选的只读观测通道，无订阅者时不构造 payload；生产入口不加载 Live Test 的订阅/落盘设施。观测器异常不会影响运行或改变权限。Harness run/turn/message/tool/retry/compaction 与真实 entry commit 分别桥接，输入、记忆召回/提取、计划、权限和主动输入补充领域事件；流增量只采首个非空文本生成点。宿主 runId 与 Pi nativeRunId 通过 `run_linked` 关联，span/request 绑定真实请求，不能凭当前显示场景或首个 Pi run 猜归属。
+
+事件带单调 sequence、monotonicMs 与 clockDomain；跨时钟域不直接相减。`message_end` 只表示消息结束，`entry_added` 才是已提交条目证据。召回候选、选择、端口投影与最后实际注入请求的 `memory_recall_rendered` 分开，预算丢弃不能计为模型见过的事实。主请求与一次性请求各有 request span，缺失 usage/cache 字段保持未知。trace 保留结构和已有审计 hash，用户/工具正文不持久化到该通道。
+
+只在隔离 Live Test + debug 宿主落盘，`e2e_trace` 命令在 release 或普通开发宿主拒绝。身份映射和缓冲有界，周期/边界写盘，持久 ACK 后释放块；孤儿、丢弃、缺 trial 与不完整终态显式进入证据检查。用户理想稿与后续 AI 审阅门禁的格式、命令和留存规则见[测试 README](../../test/README.md#trace记忆质量与性能门禁)。观测通道不成为持久状态或调度的第二个定义点。
+
 ## 长期记忆接线点
 
 `MemoryProvider` 已接真实实现：每个用户回合在主请求前取一次投影，本回合写过记忆时下一次请求前重取；投影以尾随 custom 消息进入请求视图，不写会话条目。事实存储、来源、候选与治理决定的真相源是 Rust 侧 SQLite（`数据根/memory/memory.sqlite3`），经[当前记忆](memory.md)描述的命令面读写。
 
 未完成的是**验证**而非能力：真实模型质量对照、资源账目实测、Windows 证据与真实设置窗口的人工验收见[未完成工作与已知缺口](../plans/active/未完成工作与已知缺口.md) §3。
+
+## 主动表达与回执
+
+主动入口使用结构化 `sendActiveMessage(request)`，表达为无工具、无重试的真实Harness回合，Provider前按最终请求预算准入。返回committed要求原生operation终态assistant tip与SQLite回执同时成立；未确认主动结果不显示。普通回合可读取最多两个相关约定作为预算内尾随context。用户可信输入提交后直接通知取消所有者，业务守卫不依赖trace订阅。完整来源、任务、限频、恢复与控制见[主动陪伴](proactive.md)。

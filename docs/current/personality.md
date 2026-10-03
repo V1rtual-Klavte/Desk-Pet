@@ -22,7 +22,7 @@ card/interaction 状态保存在 `personality/stages/{cardId}.json` 的变量区
 
 阶段文案先读持久化缓存，缺失时可经模型生成；任一 Card 首次激活或角色设定/语言风格变化时会重新生成一次（一次 LLM 调用/卡）。失效判定键是生成输入 `sourceHash`（`SHA-256(roleSetting + "\n" + languageStyle)`），`version:` 只作元数据、不参与判定；重新生成只覆写 stages 段，不清空变量区。
 
-**用户可见的阶段与兜底文案只有 Card 一个来源**，取用点固定为四个 getter：
+**用户可见的阶段与兜底文案只有 Card 一个来源**，取用点如下：
 
 | getter | 覆盖面 | 消费点 |
 |---|---|---|
@@ -30,12 +30,15 @@ card/interaction 状态保存在 `personality/stages/{cardId}.json` 的变量区
 | `getSimpleStage(key)` | `thinking` / `planning` / `error` / `retry` 状态行 | 同上（`thinking` 来自每轮 `turn_start`，`planning` 来自计划阶段入口，`retry` 来自 Harness `retry_start`） |
 | `getCommandReply(key)` | `commands` 段的 slash 命令输出 | `/clear`、`/memory clean`、`/compact`、`/skill` |
 | `getFallbackReply(key)` | `fallbacks` 段的异常兜底正文 | 运行内核各失败出口 |
+| `getPresenceStage(key)` | `presence.idle/working/resting` | 有 owner 和到期时间的有限展示与顶栏 |
 
 引擎只经 `deskpet-stage-hint { sessionId, stage }` 发语义 key，文案由界面按当前 Card 取 —— 与 `tool-executing` 同一条口径，引擎不持有第二份台词。`commands` 里带计数、错误原因与技能名的明细保持中性：插值内容是诊断事实，角色化会让用户分不清「真的排了几条」和「角色在说话」——`/compact` 的排队计数与失败原因、`/skill` 的三个失败句（`skillUnknown` / `skillEmpty` / `skillDisabled`）后附的技能名都按这条口径处理（技能名与原因不写进 Card 的终态 key）。系统消息与错误诊断同样保持中性（角色台词会掩盖故障）。
 
 新增一个用户可见场景的联动清单：`StageMap` / `FallbackReplies` / `CommandReplies` 加 key → `stages-prompt.md` 补说明与 JSON 模板 → `validateStages` 把它列为必需（旧缓存判过期才会重生成，否则新 key 永远取不到 Card 文案）→ 接消费点。`CommandReplies` 的新 key 还有两处固定的代码坐标要同改：[stages-file.ts](../../src/services/personality/stages-file.ts) 的 `CommandReplies` 类型与 [stages-cache.ts](../../src/services/personality/stages-cache.ts) 的 `COMMAND_KEYS`（判过期的依据，缺它旧缓存不会重生成）和 `FALLBACK_COMMANDS`。`FALLBACK_STAGES` / `FALLBACK_FALLBACKS` / `FALLBACK_COMMANDS` 只是 Card 完全不可用时的中性兜底，不是第二份产品文案。
 
-`thinking` / `planning` / `retry` 是状态行不是对话回复，`error` 供工具错误前缀；`timeout` 无处安放，超时是**终态**且已有专属于它的 `fallbacks.turnTimeout`，不再保留第二个同名阶段字段。`idle` 已删除（生成侧强制为 null 的死字段）。
+`thinking` / `planning` / `retry` 是状态行不是对话回复，`error` 供工具错误前缀；超时使用 `fallbacks.turnTimeout`。presence 的 idle/working/resting 是有限展示状态，独立于过程状态；顶栏过程 owner 优先级高于 presence，退出时释放自己的 owner。新增 presence 和主动控制命令 key 都进入缓存完整性校验，缺 key 的旧缓存会重新生成。
+
+主动机会只消费已提交的 Card 变量变化；初始化、重置、interaction/system 变化和 `proactive_response` 写回不产生变量机会。主动回复先拆出文本与变量 patch，拿到真实助手条目与 SQLite 回执后，核对冻结 Card id/hash 与变量池 owner，再保存 patch；失败不会把已经送达的表达改成未送达。
 
 ## 回复与写入
 

@@ -14,7 +14,14 @@
 | 平台 | 文件 | 说明 |
 |---|---|---|
 | macOS（Apple Silicon） | `v1rtual-desk-pet_x.y.z_aarch64.dmg` | 打开后把应用拖进「应用程序」。暂不支持 Intel Mac |
-| Windows | `v1rtual-desk-pet_x.y.z_x64-setup.exe` | 双击安装 |
+| Windows（安装版） | `v1rtual-desk-pet_x.y.z_x64-setup.exe` | 双击安装 |
+| Windows（免安装） | `v1rtual-desk-pet_x.y.z_x64-portable.zip` | 解压到任意目录，双击里面的 `v1rtual-desk-pet.exe` 即可，不写注册表、不产生卸载项 |
+
+> **免安装版不是「全便携」** —— 它免的只是安装步骤：数据仍然写在
+> `%LOCALAPPDATA%\com.v1rtual.deskpet\`（跟安装版共用同一份数据），换目录或换机器不会把数据带走。
+> 另外它不自带 WebView2 运行时兜底：Windows 11 和绝大多数 Windows 10 已预装，干净系统需要先手动装
+> [WebView2 Runtime](https://developer.microsoft.com/microsoft-edge/webview2/)（安装版会自动处理这一步）。
+> 应用内的自动更新对免安装版会把「安装版」装进来——想一直保持免安装形态，就手动换新的 zip。
 
 > **首次打开会被系统拦一下** —— 当前安装包**未做代码签名与公证**：
 > - macOS 提示「已损坏，无法打开」时，把应用拖进「应用程序」后执行
@@ -33,7 +40,9 @@
 - **工具与扩展**：文件读写、Bash、系统信息、剪贴板、计划与子代理；Skill 按需加载，MCP 按服务器在运行期借用。所有执行受统一权限策略约束。
 - **对话连续性**：多会话切换与历史恢复；长会话按预算压缩上下文，完整正文保留在本地。
 
-启动时不连接 MCP；记忆整理也不在启动时自动发起（只按用户操作或显式开启的空闲策略运行）。工具执行不等于无条件授权：Rust 保留路径裁决与命令安全基线。长期记忆由本地 SQLite 承载：跨会话召回、显式记住/纠正/忘记与「整理产出待审候选、用户批准后才生效」的 dreaming 已接通；记忆管理在设置页的「记忆」标签里。
+启动时不连接 MCP。记忆整理按配置的空闲策略和持久预算运行，也可在设置页手动触发；合格的可信用户来源经整批校验后自动提交，设置页「记忆」可查看来源、历史版本、纠正和忘记。工具执行仍受权限策略与 Rust 安全基线约束。
+
+主动陪伴支持有来源的事项跟进、明确约定、节令、轻话题与有限展示，统一受静默、忙碌、未回复档位和每日预算约束。聊天中可用 `/proactive on`、`/proactive off`、`/proactive status` 控制，用 `/behavior clear` 清除派生观察画像；关闭窗口监控后，有来源的独立约定仍可执行。运行边界见[主动陪伴](docs/current/proactive.md)。
 
 ## 技术栈
 
@@ -83,6 +92,11 @@ macOS 的窗口监控需要在「系统设置 → 隐私与安全性 → 辅助�
 | `pnpm run test:types` | TypeScript 类型检查与 Rust 编译检查 |
 | `pnpm run test:rust` | Rust 单元测试 |
 | `pnpm run test:e2e -- --module <模块>` | 运行指定模块的 E2E 场景 |
+| `pnpm run test:memory-quality` | 真实记忆质量采集，独立审阅后判定 |
+| `pnpm run test:memory-bench:prepare` | 安装外部记忆基准数据（锁定版本 → 指定目录；数据集不进仓库） |
+| `pnpm run test:memory-bench` | 外部记忆基准观测运行（LongMemEval / LoCoMo / MemoryBank，不进 CI） |
+| `pnpm run test:memory-performance` | release 存储与 debug IPC 性能评测 |
+| `pnpm run test:trace-review -- <理想稿> <trace> <manifest> <审阅>` | 用户理想线路的 AI 审阅证据门禁 |
 | `pnpm run test:release` | 发布门禁：类型与编译 + Rust 单测 + 严格 E2E 场景 |
 
 ## 测试
