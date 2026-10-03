@@ -166,7 +166,7 @@ L2 / L3 可并行、不占端口；**L4 不能并行跑**（占用同一 Vite/Ta
 
 ## Trace、记忆质量与性能门禁
 
-**测试侧模型配置**：被测模型默认继承仓库 Provider 配置（启动器拷贝隔离副本，凭据不被写回）；被测与 judge 的显式覆盖收敛在 [test/eval-models.json](eval-models.json)（无凭据、进 git）。解析优先级：环境变量 `DESKPET_EVAL_PROVIDER` / `DESKPET_EVAL_MODEL` / `DESKPET_EVAL_JUDGE_MODEL` > 该文件 > 内置默认；bench 的 `--bench-judge-model` 参数仍最高。`underTest` 覆盖经 `setOverrides` 只写隔离副本。**judge 必须不同于被测模型**（同模型在开跑前报错）。
+**测试侧模型配置**：被测模型默认继承仓库 Provider 配置（启动器拷贝隔离副本，凭据不被写回）；显式覆盖分两层——[test/eval-models.json](eval-models.json)（进 git，**不得含 apiKey**，出现即显式报错）与本地专属 `test/eval-models.local.json`（已 gitignore、不进 git，可含 `underTest.apiKey` / `underTest.endpoint` / `underTest.reviewMaxTokens`（reasoning 模型的评审输出上限）等字段）。解析优先级：环境变量 `DESKPET_EVAL_PROVIDER` / `DESKPET_EVAL_MODEL` / `DESKPET_EVAL_JUDGE_MODEL` > 本地文件 > 进 git 文件 > 内置默认；bench 的 `--bench-judge-model` 参数仍最高。`underTest` 覆盖经 `setOverrides` 只写隔离副本（含 endpoint / apiKey）；judge 继承测试侧网关的 endpoint / apiKey，只换模型。**judge 必须不同于被测模型**（同模型在开跑前报错）。
 
 ```bash
 pnpm run test:e2e -- --module evaluation --repeat 3 --report json
@@ -193,7 +193,7 @@ Trace 默认 `full`；`light` 省略 payload/snapshot 事件，`off` 只用于�
 
 报告保留原始 outcome、回答与提取候选（仅合成测试材料），完整事件只在 trace sidecar 保存，避免在报告和每 cell checkpoint 重复整份 trace。提取结果分别记录 `processedSourceCount`（已完成处理）和 `pendingSourceCount`（作业剩余来源），不把完成后的空队列解释为没有提取输入。选择指标取最后真正送进请求的 `memory_recall_rendered` 证据；候选报告每 scope 的 Recall@50 与合并池 recall，不把最多 150 条的合并池擅自截前 50。所有模型请求按 span 去重计 token；总输入包含 Pi 分列的缓存 token，另报未缓存输入和缓存计数。零初始化 usage 视为缺失；Pi 默认缓存零值不证明未命中，没有可证实的计数时为未知。额外 token 与首文本延迟按相同 case/trial 相对本地策略配对；正确率收益按题目聚合三次 trial 后 bootstrap 95% 区间，避免把重复 trial 当独立题目。未审阅的提取语义指标为未知。gold 标注须由两名人工完整审计；回答/提取评分可由经人工校准且不同于被测模型的 AI judge 或人工 judge 盲审。语义评分必须绑定 dataset 与完整采集报告 hash 提交（报告 hash 已覆盖 outcomes），不能让被测模型自评。门槛见[记忆契约 §12.3](../docs/plans/active/记忆系统运行时契约.md#123-真实模型对照)。定向采集不能宣布全套 80 题验收通过；采集成功但尚未审阅会输出 `pending_review` 并非零退出。
 
-**外部记忆基准（memory-bench）**是观测层，与自建 80 题物理隔离：数据、运行、判分、门禁四处分开，**不进 CI / `test:release`、默认不跑**。三个开源集（LongMemEval / LoCoMo / MemoryBank cn）的数据集文件**不进仓库**——仓库只保留版本锁（`test/memory-bench/upstream-lock.json` 的固定 revision + SHA-256、`licenses/` 许可原文与移植的判分/导入代码），`pnpm run test:memory-bench:prepare [-- --data-dir <目录>]` 把原始文件与转换后的案例装进 data-dir（默认 `test/memory-bench/.data/`，已 gitignore；也可用 `DESKPET_BENCH_DATA_DIR`），运行期不做下载。判分为官方模板的自适配移植（LoCoMo 词面 F1 不用 judge；judge 走配置网关且必须异构于被测模型），报告 `desk-pet-memory-bench/v1` 顶层 `source: external` / `status: observational`、质量阈值字段恒 `null`——宿主 `PASS` 只表示完整跑完。来源、许可（LoCoMo 非商用）、子集口径与全部偏差见 [memory-bench/README](memory-bench/README.md)。
+**外部记忆基准（memory-bench）**是观测层，与自建 80 题物理隔离：数据、运行、判分、门禁四处分开，**不进 CI / `test:release`、默认不跑**。三个开源集（LongMemEval / LoCoMo / MemoryBank cn）的数据集文件**不进仓库**——仓库只保留版本锁（`test/memory-bench/upstream-lock.json` 的固定 revision + SHA-256、`licenses/` 许可原文与移植的判分/导入代码），`pnpm run test:memory-bench:prepare [-- --data-dir <目录>]` 把原始文件与转换后的案例装进 data-dir（默认 `test/memory-bench/.data/`，已 gitignore；也可用 `DESKPET_BENCH_DATA_DIR`），运行期不做下载。判分为官方模板的自适配移植（LoCoMo 词面 F1 不用 judge；judge 走配置网关且必须异构于被测模型），报告 `desk-pet-memory-bench/v1` 顶层 `source: external` / `status: observational`、质量阈值字段恒 `null`——宿主 `PASS` 只表示完整跑完。来源、许可（LoCoMo 非商用）、子集口径与全部偏差、以及**按消耗分层的运行节奏**（默认只跑 LongMemEval oracle 常规层，S 变体 / 中文 / 对外各按触发条件跑）见 [memory-bench/README](memory-bench/README.md)。
 
 **性能**测 1k/10k 合成库，查询包含短中文、别名/长词、组合条件和无关词，分别逐次记录 query + get_items 和真实 MemoryProvider 端口调用（off重排；绑定实际会话与测试操作来源），报告 P50/P95 与原始样本。10k 的四条代表查询都须热路径 P95≤500ms，任一超标都失败（用户于2026-10-02放宽原50ms目标）。普通L4场景默认等5分钟、显式场景时限优先；整批截止至少30分钟，三trial批为30分钟，质量采集8小时，超时仍失败并保全证据。release Rust 存储和 debug WebView IPC 分列；连接重开不等于 OS 冷缓存。另记录建库、FTS 重建、发布、备份、磁盘、后台查询争用下的前台真实回合，以及按 idle/运行区间区分的进程树 RSS/CPU 样本。进程树可能遗漏 launchd 持有的 WebKit helper；完整产品 RSS、release IPC、二进制增量与 ChatPanel UI 延迟仍需相应实机验收，不能由编译进程样本或 debug 结果替代。性能报告位于 `test/reports/performance/`，按与日期戳报告一致的口径淘汰：最近 5 份、累计不超过 200 MiB、最新一份始终保留。
 
@@ -230,6 +230,28 @@ Node 启动预检会校验 `sourceHash`；源码变更后应先按 SKILL 重新�
 要验证「本回合以某类失败结束」时用 `turns[].expectFailure` 声明，而不是删掉断言：`kind` 必须命中 `output.failure.kind`（允许声明一组），`message` 是失败正文的匹配器（字符串按子串、正则按 `test`，空匹配器在数据集校验时被拒绝），两者都命中才算预期失败，回合的其余断言照常执行。回合正常完成、以别的分类失败或文案不匹配都判失败 —— 它只覆盖 `output.failure`，回合抛出异常仍是系统错误。报告把这类回合标为 `expected failure`（errorKind 照常记录真实分类）。
 
 测试宿主没有 ChatPanel：应用启动时由 UI 壳完成的服务级初始化由 `standard-setup.ts` 补齐 —— slash 命令注册表也在其中（应用里它挂在 ChatPanel 的模块副作用上；宿主不补的话 `/compact`、`/clear` 会按「未注册的 slash 文本透传 AI」，被当成普通回合发给模型）。涉及确认请求的 Scene 用 `meta.confirmPolicy` 声明 `deny`（默认）或 `approve`，由 `confirm-channel.ts` 确定性应答；涉及计划确认或逐步门的 Scene 用 `meta.planPolicy` 声明 `auto`、`stepByStep` 或 `deny`（默认），由 `plan-confirm-channel.ts` 确定性应答（`deny` 下确认按用户取消、门按中止结算）。计划通道同时把本场景的确认、进度与终态事件记成可读记录：确认经 `AssertContext.plans`（`plan-confirm-channel.ts` 的 `planRecords()`），进度与终态查 `planProgressRecords()` / `planEndRecords()`（事件回环是异步投递，断言按状态有界等待）；这些记录每个场景在隔离点清空。
+
+### 每个 trial 都是独立的一生：repeat 隔离纪律
+
+`--repeat N` 在**同一个 app 实例**里把 Scene 连跑 N 次，每次调用 `setup()`，期间共享同一份隔离数据根（SQLite、会话、文件）。因此：
+
+- **setup 必须可重复执行**：所有持久化身份（attempt / request / occurrence / 指纹 / 自定义 id）在每次 setup 里重新生成，绝不跨 trial 复用固定值——已结算的身份会被产品守卫（去重、幂等、冷却）合法拒绝，表现为后续 trial 卡在 setup。
+- **消耗型共享资源要用独立记账域**：按日 / 按槽计数的配额（如 proactive 的每日 expression 尝试）在同一记账键下被所有 trial 与场景共享；每个 setup 取一个未用过的记账键（模式见 `test/e2e/scenes/proactive/quota-day.ts`），否则 `repeat>1`（或后跑的场景）会撞产品配额——那是产品正确行为，不是缺陷。
+- **模块级变量跨 trial 存活**：外层只放声明，值一律在 `setup` 内赋值；不要假设上一个 trial 留下的状态是干净的。
+
+### 宿主能力对等：能用什么，先核实
+
+Scene 跑在 **E2E 宿主**里，它是产品的一个子集：不创建主窗口 / 系统托盘 / 光标追踪；`lib.rs` 的 `if e2e` 分支提前返回，**只在该分支之后、或只在产品窗口路径（App.vue 等）触发的初始化不存在**。已知对账：监控线程两种宿主都会跑（bh-06 依赖它）；`initWindowListener` 只在 App.vue 调用，宿主里窗口快照恒为 null（`窗口信息三态` 因此只覆盖两态，并把「快照必须为 null」断言成前置）。写场景前，对它依赖的每个子系统先读 `lib.rs` 的 e2e 分支与 `standard-setup.ts` 核实宿主是否拉起；确实造不出的状态按「可验证性边界」模式处理：断言前置 + 注释写明为什么与何时重写，不允许假装覆盖。
+
+### 交付前的自证：全量严格 ×3
+
+新增或修改 Scene 后，迭代期可以用 `--module` / `--case` 过滤快速跑单场景；但**交付前必须完整跑一次严格 + 3 trials 的全量套件并要求全绿**：
+
+```bash
+pnpm run test:e2e -- --strict --repeat 3 --report json
+```
+
+过滤运行会跳过多项只有全量才做的校验（跨层 caseId 对账、完整严格契约集合、共享状态的真实上下文），**不构成自证**。把新场景留到发布门禁才第一次全量跑，就是把问题攒到最贵的时间点才被发现。
 
 ## 隔离、超时与失败
 

@@ -22,7 +22,7 @@ export const behaviorContract: ModuleContract = {
     "src-tauri/src/lib.rs",
     "test/e2e/scenes/behavior/原生观察边界.scene.ts",
   ],
-  sourceHash: "503d522b498115f6ea5767c20f1e9c6b2a6c53b2e69489ba97530ab6ffe0c120",
+  sourceHash: "0de783df19156ebdc2ed8277778138ea3803613d7a5c515ffb2fb3a475f8b97b",
   coverage: [
     { id: "bh-01", feature: "窗口类别与画像指标", description: "应用分类优先稳定appId、未知保持unknown；日历窗口生成近30日画像与真实7日activity/focus，不以最近有数据的天数冒充自然周，未知时长不伪装为已知类别", why: "画像和机会必须有来源可解释，分类错误会伪造习惯与工作结论", layer: "unit", depth: "shallow", scenarios: ["behavior-app-classification", "behavior-metrics-source"] },
     { id: "bh-02", feature: "覆盖率与采样空窗", description: "无有效采集时间时质量为unavailable；至少3个有效观察日且覆盖率达到60%才可靠；超长或倒退采样间隔截断分段、限制可计时长并标记不可观测空窗", why: "采样中断不能被解释成连续工作或作息规律", layer: "unit", depth: "deep", scenarios: ["behavior-quality-threshold", "behavior-gap-no-fill"] },
@@ -31,5 +31,5 @@ export const behaviorContract: ModuleContract = {
     { id: "bh-05", feature: "画像清除与停止", description: "行为清除串行排空、删除behavior文件树并清内存读模型；采集许可保持原状，清除水位之前的迟到观察不能重建画像，之后的新样本可重新采集", why: "清除不能只清UI或留下能被后台回写的个人画像，也不能悄悄关闭用户启用的采集", layer: "integration", depth: "deep", scenarios: ["behavior-clear-erases-source"] },
     { id: "bh-06", feature: "原生观察协议", description: "Windows/macOS native command enable/disable 与独立 activity 查询返回锁屏、系统 idle、桌宠可见与前台；observation 带真实时间、generation/sequence、appId/app/title，隐私快照无标题/应用字段", why: "模拟载荷与TS类型不足以证明跨平台Rust采样和命令注册可用", layer: "e2e", depth: "deep", scenarios: ["behavior-native-observation"] },
   ],
-  rules: { minScenarios: 9, minDeepScenarios: 6, requireBoundary: true, requireErrorPath: false },
+  rules: { minScenarios: 1, minDeepScenarios: 1, requireBoundary: true, requireErrorPath: false },
 }

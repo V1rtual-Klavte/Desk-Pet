@@ -30,8 +30,8 @@
 
 | 你要查 | 去哪 |
 |---|---|
-| 测试跑哪个被测模型 | 默认继承仓库 Provider 配置（启动器把 `CONFIG-DEV.yaml` / `CONFIG.yaml` 拷为隔离副本；凭据不被写回）；可在 [eval-models.json](eval-models.json) 或环境变量 `DESKPET_EVAL_MODEL` / `DESKPET_EVAL_PROVIDER` 覆盖 |
-| judge 模型与异构纪律 | `--bench-judge-model` > `DESKPET_EVAL_JUDGE_MODEL` > [eval-models.json](eval-models.json) 的 `judge.model`（当前 deepseek-reasoner）；**必须不同于被测模型**，同模型在开跑前报错 |
+| 测试跑哪个被测模型 | 默认继承仓库 Provider 配置（启动器把 `CONFIG-DEV.yaml` / `CONFIG.yaml` 拷为隔离副本；凭据不被写回）；可在 [eval-models.json](eval-models.json)、本地 `test/eval-models.local.json`（凭据/临时覆盖；已 gitignore）或环境变量 `DESKPET_EVAL_MODEL` / `DESKPET_EVAL_PROVIDER` 覆盖 |
+| judge 模型与异构纪律 | `--bench-judge-model` > `DESKPET_EVAL_JUDGE_MODEL` > 两层模型配置文件（[eval-models.json](eval-models.json) 与本地 `eval-models.local.json`）的 `judge.model`（当前 deepseek-reasoner）；judge 继承测试侧网关的 endpoint/apiKey；**必须不同于被测模型**，同模型在开跑前报错 |
 | 上游评测数据怎么装、装到哪 | [memory-bench/README.md](memory-bench/README.md)：prepare 命令、`--data-dir` / `DESKPET_BENCH_DATA_DIR`、revision + SHA-256 锁定清单（`upstream-lock.json`） |
 | 报告与证据在哪、怎么淘汰 | README「报告在哪、怎么看」（组保留：最近 5 组 + 200 MiB） |
 | 评分口径与门槛 | README「Trace、记忆质量与性能门禁」+ [memory-bench/README.md](memory-bench/README.md)（judge 模板、F1 口径）；记忆质量门槛见[记忆契约](../docs/plans/active/记忆系统运行时契约.md) §12.3 |
@@ -53,6 +53,10 @@
   `entry: production` 须经过 `sendMessage()`（fake 只替换 Provider，工具与 IPC 行为仍要断言）；
   L2 / L3 进 CI 双端门禁，**L4 不进 CI——改完必须手工跑一次**；跨模块改动运行完整 E2E；
   发布门禁为严格 Contract 与至少三次 trial，跳过 / 超时不得报通过；文档改动只查链接、事实、引用与格式，不重跑 E2E。
+- **场景自证**：新增 / 修改 L4 场景后，交付前必须全量严格 ×3 全绿
+  （`pnpm run test:e2e -- --strict --repeat 3 --report json`）；过滤运行只用于迭代、不算自证。
+  写场景遵守 repeat 隔离（持久化身份每 setup 全新、消耗型配额用独立记账域）与宿主能力对等
+  （E2E 宿主是产品子集，只在 App.vue 等产品窗口路径触发的初始化不存在）——判据与模式见 README「Scene 规范」。
 - **Rust 单测**内联在 `src-tauri/src/**`，由 `pnpm run test:rust` 执行；CI 在 macOS 与 Windows
   双端运行，缺少执行的测试不算门禁。
 - **观测与门禁分离**：记忆质量（自建）与外部记忆基准都是**观测性证据**——外部基准与其报告
@@ -74,6 +78,7 @@
 | 评测模型 / judge 模型 / 数据目录等测试侧配置 | 本文件「信息获取入口」+ 对应 README 与解析实现 |
 | L4 环境约束（后台挂起策略、窗口防护、锁屏判据） | README「环境注意」 |
 | 宿主设施行为（standard-setup、确认 / 计划通道、隔离与超时） | README 对应章节 |
+| E2E 宿主能力差异（`lib.rs` e2e 分支、App.vue-only 初始化、监控线程等） | README「Scene 规范」的宿主能力对等段 + `src-tauri/src/lib.rs` / `standard-setup.ts` 实现 |
 
 **总则：任何改动只要触及本文件陈述的规则或上表对象，必须在同一改动里更新本文件与表中对应文档——文档不允许落后于实现。**
 

@@ -338,6 +338,12 @@ pub fn run() {
             }
             app.manage(paths);
 
+            // 启动窗口监控后台线程。放在 E2E 分支提前 return 之前：E2E 宿主同样要跑真实
+            // 原生观察协议（behavior bh-06 场景在宿主内 enable/disable 并等待事件），放到
+            // 下方公共段会因提前 return 永远收不到 observation —— get_runtime_activity 与
+            // window_info 都会退化成「已开启但尚未收到窗口观察」。
+            monitor::spawn_monitor_thread(app.handle().clone(), monitor_state_clone);
+
             if e2e {
                 let builder = WebviewWindowBuilder::new(
                     app,
@@ -437,9 +443,6 @@ pub fn run() {
                 Ok(()) => rust_info!("系统托盘已创建"),
                 Err(e) => rust_warn!("系统托盘创建失败（应用继续运行）: {e}"),
             }
-
-            // 启动窗口监控后台线程
-            monitor::spawn_monitor_thread(app.handle().clone(), monitor_state_clone);
 
             // 启动光标追踪后台线程 (灵动图层 ~60fps)
             spawn_cursor_tracker(app.handle().clone());

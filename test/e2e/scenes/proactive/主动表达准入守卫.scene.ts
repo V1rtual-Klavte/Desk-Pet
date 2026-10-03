@@ -2,7 +2,7 @@ import type { Entry } from "@earendil-works/pi-agent-core"
 import { captureProactiveOwner, initChat, sendActiveMessage } from "@/services/agent/runner"
 import { getActiveCard } from "@/services/personality"
 import * as proactiveIpc from "@/services/proactive/ipc"
-import { localDayKey } from "@/services/proactive/time"
+import { nextProactiveQuotaDay } from "./quota-day"
 import { getActiveSessionId } from "@/services/session/store"
 import { fakeText, installFakeProvider } from "../../../host/fake-provider"
 import { sessionEntries } from "../../../host/session-entries"
@@ -41,8 +41,11 @@ export const 主动表达准入守卫: SceneDef = {
     owner = await captureProactiveOwner()
     if (!owner) throw new Error("准入守卫场景没有真实会话/Card owner")
     const now = Date.now()
-    const localDate = localDayKey(now, Intl.DateTimeFormat().resolvedOptions().timeZone)
-    sourceFingerprint = `l4-duplicate-claim:${owner.cardId}:${owner.cardHash}`
+    // 每个 setup 独立记账日（产品每日配额按 localDate 共享防打扰，见 quota-day.ts）；
+    // occurrence 指纹同理用全新值：已 settle 的 occurrence 会被冷却守卫拒绝重复 claim
+    // （正是本场景验证的行为），固定值会让 repeat>1 的后续 trial 卡在 setup。
+    const localDate = nextProactiveQuotaDay()
+    sourceFingerprint = `l4-duplicate-claim:${owner.cardId}:${owner.cardHash}:${crypto.randomUUID()}`
     sourceRefs = [{ kind: "card", id: owner.cardId, version: 1, revision: 1, scope: "card", scopeId: owner.cardId,
       fingerprint: owner.cardHash, validUntil: now + 60_000 }]
     scanState = await proactiveIpc.scan({ owner, now, localDate, limit: 1, sourceRefs })

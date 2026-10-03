@@ -2,10 +2,10 @@ import type { Entry } from "@earendil-works/pi-agent-core"
 import { captureProactiveOwner, initChat, sendActiveMessage } from "@/services/agent/runner"
 import { readActiveAttemptEvidence } from "@/services/engine/harness"
 import * as proactiveIpc from "@/services/proactive/ipc"
+import { nextProactiveQuotaDay } from "./quota-day"
 import { readReceipt } from "@/services/proactive"
 import { registerActiveReceiptReader } from "@/services/session"
 import { getActiveCard } from "@/services/personality"
-import { localDayKey } from "@/services/proactive/time"
 import { accountedUsage } from "@/services/proactive/usage"
 import { getActiveSessionId } from "@/services/session/store"
 import { fakeText, installFakeProvider } from "../../../host/fake-provider"
@@ -47,8 +47,11 @@ export const 主动表达提交: SceneDef = {
     const owner = await captureProactiveOwner()
     if (!owner) throw new Error("主动表达没有可用的真实 session/Card owner")
     const now = Date.now()
-    const localDate = localDayKey(now, Intl.DateTimeFormat().resolvedOptions().timeZone)
-    const fingerprint = `l4-card-expression:${owner.cardId}:${owner.cardHash}`
+    // 每个 setup 独立记账日（产品每日配额按 localDate 共享防打扰，见 quota-day.ts）；
+    // occurrence 指纹同理用全新值：已 committed 的 occurrence 会被拒绝重复 claim，
+    // 固定值会让 repeat>1 的后续 trial 拿不到 claim 而 ACTIVE_NO_COMMIT。
+    const localDate = nextProactiveQuotaDay()
+    const fingerprint = `l4-card-expression:${owner.cardId}:${owner.cardHash}:${crypto.randomUUID()}`
     const sourceRefs = [{ kind: "card" as const, id: owner.cardId, version: 1, revision: 1,
       scope: "card" as const, scopeId: owner.cardId, fingerprint: owner.cardHash, validUntil: now + 60_000 }]
     // Real IPC scan registers the source and supplies the SQLite source/control revisions used by claim.
