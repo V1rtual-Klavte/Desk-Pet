@@ -56,7 +56,7 @@ const PROBE_STAGES: StageMap = {
   },
   fallbacks: {
     concurrentRejected: "探针忙", maxRetriesExhausted: "探针重试失败", turnTimeout: "探针超时",
-    toolLoopMaxRounds: "探针轮数用尽", llmUnavailable: ["探针不可用"], subAgentDone: "探针子代理完成",
+    toolLoopMaxRounds: "探针轮数用尽", llmUnavailable: ["探针不可用"],
     subAgentFailed: "探针子代理失败", subAgentNoResult: "探针子代理无结果",
     runInterrupted: "探针上次中断", compactionRejected: "探针压缩进行中", pausedReturnFailed: "探针暂停输入未放回",
     planCancelled: "探针计划已取消", planCompleted: "探针计划已完成", planResumeBusy: "探针会话忙",

@@ -108,7 +108,6 @@ export interface FallbackReplies {
   turnTimeout: string
   toolLoopMaxRounds: string
   llmUnavailable: string[]        // 数组，运行时随机选一条
-  subAgentDone: string
   subAgentFailed: string
   subAgentNoResult: string
   /** 上次运行中断，等待用户选择继续或丢弃 */

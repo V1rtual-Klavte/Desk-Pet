@@ -31,7 +31,6 @@ const FALLBACK_FALLBACKS: FallbackReplies = {
   turnTimeout: "处理超时",
   toolLoopMaxRounds: "处理完成",
   llmUnavailable: ["服务暂不可用"],
-  subAgentDone: "完成",
   subAgentFailed: "执行失败",
   subAgentNoResult: "无结果",
   runInterrupted: "上次运行中断，请选择继续或丢弃",
@@ -184,7 +183,7 @@ export const COMMAND_KEYS: ReadonlyArray<keyof CommandReplies> = [
 /** 系统兜底回复的全部键 —— 同上，单一清单 */
 export const FALLBACK_KEYS: ReadonlyArray<keyof FallbackReplies> = [
   "concurrentRejected", "maxRetriesExhausted", "turnTimeout", "toolLoopMaxRounds",
-  "llmUnavailable", "subAgentDone", "subAgentFailed", "subAgentNoResult",
+  "llmUnavailable", "subAgentFailed", "subAgentNoResult",
   "runInterrupted", "compactionRejected", "pausedReturnFailed",
   "planCancelled", "planCompleted", "planResumeBusy",
 ]

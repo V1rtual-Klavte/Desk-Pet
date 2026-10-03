@@ -53,7 +53,6 @@
 - turnTimeout: 单轮处理等待超时
 - toolLoopMaxRounds: 工具调用轮数用尽
 - llmUnavailable: LLM 完全不可用时的通用回复（2-3 条，以 JSON 数组形式）
-- subAgentDone: 子代理执行完成
 - subAgentFailed: 子代理执行失败
 - subAgentNoResult: 子代理跑完了但没有产出任何结果
 - runInterrupted: 应用崩溃或退出导致上一次运行中断，需要用户选择继续或丢弃
@@ -142,7 +141,6 @@
     "turnTimeout": "",
     "toolLoopMaxRounds": "",
     "llmUnavailable": ["", ""],
-    "subAgentDone": "",
     "subAgentFailed": "",
     "subAgentNoResult": "",
     "runInterrupted": "",

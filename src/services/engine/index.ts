@@ -98,7 +98,6 @@ export {
   listRecoveredPlans,
   resumePlan,
   runPiAgentTurn,
-  runPiSubAgent,
   withdrawQueuedInput,
 } from "./harness"
 export type {
@@ -108,7 +107,6 @@ export type {
   InterruptedRunInfo,
   ManualCompactionResult,
   PiAgentTurnOutput,
-  PiSubAgentOutput,
   QueuedInputsView,
   RecoveredPlanView,
 } from "./harness"
