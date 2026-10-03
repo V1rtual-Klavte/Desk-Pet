@@ -9,12 +9,14 @@
 // 不能引入候选之外的 id，也不能把否定句裁掉。
 
 import type { MessageTaint } from "@/services/engine/runtime"
+import { publishRuntimeTrace } from "@/services/engine/runtime"
+import type { RuntimeTraceContext } from "@/services/engine/runtime"
 import { estimateContextTokens } from "@/services/context/budget"
 import { completePiText } from "@/services/engine/harness"
 import { memoryConfig } from "@/services/config"
 import { createLogger } from "@/services/logger"
 import { formatError } from "@/services/error"
-import { queryMemory } from "./ipc"
+import { getMemoryItemsForTargets, queryMemory } from "./ipc"
 import type { MemoryItem } from "./ipc"
 import { parseRerankIds } from "./rerank"
 
@@ -27,10 +29,17 @@ export interface MemoryRecallRequest {
   sessionId: string
   /** 当回合冻结的 Card 身份：card 范围的记忆只在它的 Card 里可见。 */
   cardId?: string
+  /** 主动消息只允许解引用调度器精确选定且仍为该版本的记忆。 */
+  purpose?: "conversation" | "proactive"
+  targets?: Array<{ id: string; version: number }>
+  allowExpiredTargets?: boolean
   runGeneration?: number
   query: string
   tokenBudget: number
   signal: AbortSignal
+  traceContext?: RuntimeTraceContext
+  fallbackReason?: string
+  droppedCandidateIds?: string[]
 }
 
 export interface MemoryProjection {
@@ -111,9 +120,10 @@ async function rerank(items: MemoryItem[], request: MemoryRecallRequest, timeout
       maxTokens: 128,
       timeoutMs,
       signal: controller.signal,
-      audit: { sessionId: request.sessionId, requestId: request.requestId },
+      audit: { sessionId: request.sessionId, requestId: request.requestId, traceContext: request.traceContext },
     })
     const ids = parseRerankIds(result.text, new Set(items.map(item => item.id)))
+    if (request.traceContext) publishRuntimeTrace(request.traceContext, "memory_recall_selected", () => ({ selectedIds: ids, strategy: "adaptive" }))
     if (ids.length === 0) return items
     const byId = new Map(items.map(item => [item.id, item]))
     return [
@@ -123,6 +133,7 @@ async function rerank(items: MemoryItem[], request: MemoryRecallRequest, timeout
   } catch (error) {
     // 重排是增强不是前置：任何失败都退回已经算好的本地顺序。
     log.warn("记忆重排失败，使用本地顺序:", formatError(error))
+    request.fallbackReason = "rerank_failed"
     return items
   } finally {
     clearTimeout(timer)
@@ -132,17 +143,33 @@ async function rerank(items: MemoryItem[], request: MemoryRecallRequest, timeout
 
 export const sqliteMemoryProvider: MemoryProvider = {
   async recall(request) {
-    const candidates = await queryMemory(request.query, {
+    const targeted = request.purpose === "proactive"
+    const candidates = targeted
+      ? await getMemoryItemsForTargets(request.targets ?? [])
+      : await queryMemory(request.query, {
       limit: LOCAL_CANDIDATE_LIMIT,
       sessionId: request.sessionId,
       scope: "user",
     })
-    const cardCandidates = request.cardId
+    const cardCandidates = targeted ? [] : request.cardId
       ? await queryMemory(request.query, { limit: LOCAL_CANDIDATE_LIMIT, scope: "card", scopeId: request.cardId, sessionId: request.sessionId })
       : []
-    const sessionCandidates = await queryMemory(request.query, { limit: LOCAL_CANDIDATE_LIMIT, scope: "session", scopeId: request.sessionId, sessionId: request.sessionId })
+    const sessionCandidates = targeted ? [] : await queryMemory(request.query, { limit: LOCAL_CANDIDATE_LIMIT, scope: "session", scopeId: request.sessionId, sessionId: request.sessionId })
     const merged = [...new Map([...candidates, ...cardCandidates, ...sessionCandidates].map(item => [item.id, item])).values()]
-    const ranked = await rerank(merged, request, memoryConfig.rerankTimeoutMs)
+    if (request.traceContext) publishRuntimeTrace(request.traceContext, "memory_recall_candidates", () => ({
+      candidateIds: merged.map(item => item.id),
+      candidateCount: merged.length,
+      candidateIdsByScope: {
+        user: candidates.map(item => item.id),
+        card: cardCandidates.map(item => item.id),
+        session: sessionCandidates.map(item => item.id),
+      },
+    }))
+    const ranked = targeted ? merged : await rerank(merged, request, memoryConfig.rerankTimeoutMs)
+    if (request.traceContext && memoryConfig.rerank !== "adaptive") publishRuntimeTrace(request.traceContext, "memory_recall_selected", () => ({
+      selectedIds: ranked.map(item => item.id),
+      strategy: "local",
+    }))
     let coreRemaining = Math.max(0, memoryConfig.coreTokenBudget)
     let recallRemaining = Math.max(0, memoryConfig.recallTokenBudget)
     const result: MemoryProjection[] = []
@@ -160,6 +187,7 @@ export const sqliteMemoryProvider: MemoryProvider = {
       if (tier === "core") coreRemaining -= estimateContextTokens(text)
       else recallRemaining -= estimateContextTokens(text)
     }
+    request.droppedCandidateIds = merged.filter(item => !result.some(projection => projection.sourceId.startsWith(`${item.id}@`))).map(item => item.id)
     return result
   },
 }
@@ -198,9 +226,14 @@ export async function recallMemory(
     () => controller.abort(new Error("记忆召回超时")),
     Math.max(1, memoryConfig.recallTimeoutMs),
   )
+  const traceContext = request.traceContext
+  const started = typeof performance === "undefined" ? Date.now() : performance.now()
+  request.fallbackReason = undefined
+  if (traceContext) publishRuntimeTrace(traceContext, "memory_recall_start", () => ({ budget: request.tokenBudget }))
   try {
+    const providerRequest: MemoryRecallRequest = { ...request, signal: controller.signal }
     const recalled = await Promise.race([
-      activeProvider.recall({ ...request, signal: controller.signal }),
+      activeProvider.recall(providerRequest),
       new Promise<MemoryProjection[]>((resolve) => {
         controller.signal.addEventListener("abort", () => resolve([]), { once: true })
       }),
@@ -211,13 +244,14 @@ export async function recallMemory(
     let recallRemaining = Math.max(0, memoryConfig.recallTokenBudget)
     let totalRemaining = Math.max(0, request.tokenBudget)
     const projections: MemoryProjection[] = []
+    const droppedIds: string[] = [...(providerRequest.droppedCandidateIds ?? [])]
     for (const projection of recalled) {
       if (!projection || typeof projection.text !== "string") continue
       const tierRemaining = projection.tier === "core" ? coreRemaining : recallRemaining
       const remaining = Math.min(tierRemaining, totalRemaining)
-      if (remaining <= 0) continue
+      if (remaining <= 0) { droppedIds.push(projection.sourceId); continue }
       const budget = Math.min(remaining, Math.max(0, projection.tokenBudget))
-      if (budget <= 0) continue
+      if (budget <= 0) { droppedIds.push(projection.sourceId); continue }
       const text = clipToTokenBudget(projection.text, budget)
       if (!text) continue
       projections.push({ ...projection, text, tokenBudget: budget })
@@ -225,7 +259,23 @@ export async function recallMemory(
       else recallRemaining -= budget
       totalRemaining -= budget
     }
+    if (traceContext) {
+      publishRuntimeTrace(traceContext, "memory_recall_projected", () => ({
+        sourceIds: projections.map(item => item.sourceId),
+        projectedCount: projections.length,
+        usedTokens: projections.reduce((sum, item) => sum + estimateContextTokens(item.text), 0),
+        droppedIds,
+      }))
+      publishRuntimeTrace(traceContext, "memory_recall_end", () => ({
+        status: controller.signal.aborted ? "aborted_or_timed_out" : "completed",
+        fallback: controller.signal.aborted || Boolean(providerRequest.fallbackReason),
+        durationMs: (typeof performance === "undefined" ? Date.now() : performance.now()) - started,
+      }))
+    }
     return projections
+  } catch (error) {
+    if (traceContext) publishRuntimeTrace(traceContext, "memory_recall_end", () => ({ status: "failed", fallback: true }))
+    throw error
   } finally {
     clearTimeout(timer)
     request.signal?.removeEventListener("abort", abort)

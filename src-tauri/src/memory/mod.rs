@@ -4,6 +4,7 @@
 //! 前端不持有第二份 Store，也不接受调用方传入的数据库路径。
 
 pub mod commands;
+pub(crate) mod benchmark;
 mod schema;
 mod store;
 #[cfg(test)]

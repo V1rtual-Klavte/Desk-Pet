@@ -7,14 +7,16 @@ export type {
   Message, ToolCallRequest, ToolResult,
   ToolDeclaration,
   ThinkingEffort,
+  ProactiveOwner,
+  ActiveSourceRef,
+  ActiveMessageRequest,
+  ActiveExpressionReservation,
+  ActiveMessageResult,
 } from "./types"
 export {
   createMessageId, createUserMessage, createAssistantMessage, createToolMessage,
 } from "./types"
 
 // ── Agent 运行器 ──
-export { sendMessage, initChat, sendActiveMessage, stopActiveRun, resumePausedInputs, resetAgentRuntimeForTest } from "./runner"
+export { sendMessage, initChat, sendActiveMessage, captureProactiveOwner, registerProactiveTurnContextReader, registerUserIngressObserver, cancelProactiveRun, stopActiveRun, resumePausedInputs, resetAgentRuntimeForTest } from "./runner"
 export type { SendMessageOptions } from "./runner"
-
-// ── 主动消息 ──
-export { generateActiveMessage } from "./active"

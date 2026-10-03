@@ -13,7 +13,9 @@
 import type { PiAgentTurnOutput } from "@/services/engine/harness"
 import { runPiAgentTurn } from "@/services/engine/harness"
 import { userInputMessage } from "@/services/engine/runtime"
-import { sendActiveMessage } from "@/services/agent/runner"
+import { initChat } from "@/services/agent/runner"
+import type { ActiveMessageResult } from "@/services/agent/types"
+import { runTestActiveExpression } from "../../host/active-expression"
 import { initSessions } from "@/services/session"
 import { pushAssistantMessage, pushUserMessage } from "@/services/session/messages"
 import { getActiveSessionId } from "@/services/session/store"
@@ -47,7 +49,8 @@ export async function runRuntimeTurn(userText: string): Promise<PiAgentTurnOutpu
  * 一轮主动搭话：走产品入口 `sendActiveMessage`（自定义条目 + active 来源元数据）。
  * 与运行器一致，助手气泡不由这里推 —— 主动消息的可见性由投递路径自己决定。
  */
-export async function runActiveTurn(userText: string): Promise<string> {
+export async function runActiveTurn(userText: string): Promise<ActiveMessageResult> {
   await ensureSession()
-  return sendActiveMessage(userText)
+  await initChat()
+  return runTestActiveExpression(userText)
 }

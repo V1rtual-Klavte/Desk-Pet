@@ -6,7 +6,264 @@ export type MemoryKind = "fact" | "preference" | "episode" | "working"
 
 export type MemoryStatus = "active" | "superseded" | "expired" | "forgotten"
 
-export type CandidateStatus = "pending_review" | "accepted" | "rejected" | "stale"
+export type WorkingState = "open" | "completed" | "cancelled"
+
+export type MemoryChangeActor = "current_input" | "user_ui" | "internal"
+
+export type ProactiveAttemptKind = "planning" | "expression"
+
+export type ProactiveAttemptStatus = "reserved" | "generating" | "committed" | "failed" | "unresolved" | "skipped"
+
+export type ProactiveDecisionKind = "decline" | "speak_now" | "schedule" | "set_presence"
+
+export type TemporalAnchor = { "precision": "day"; "localDate": string; "timezone": string } | { "precision": "minute"; "instant": number; "timezone": string }
+
+export interface ProactiveRecurrence {
+  frequency: "daily" | "weekly" | "monthly" | "yearly"
+  localTime: string
+  timezone: string
+  weekdays?: Array<number>
+  dayOfMonth?: number
+  month?: number
+}
+
+export interface ProactiveSourceRef {
+  kind: "memory" | "user_entry" | "behavior" | "variable" | "calendar" | "task" | "card"
+  id: string
+  version: number
+  revision: number
+  scope: MemoryScope
+  scopeId: string | null
+  fingerprint: string
+  validUntil: number | null
+}
+
+export interface ProactiveOwner {
+  sessionId: string
+  cardId: string
+  cardHash: string
+  runGeneration: number
+}
+
+export interface ProactiveTask {
+  id: string
+  version: number
+  scope: MemoryScope
+  scopeId: string | null
+  sourceRefs: Array<ProactiveSourceRef>
+  intent: Record<string, unknown>
+  eventAt: TemporalAnchor | null
+  dueAt: TemporalAnchor | null
+  nextCheckinAt: number | null
+  validUntil: number | null
+  timezone: string
+  recurrence: ProactiveRecurrence | null
+  state: "active" | "completed" | "cancelled" | "invalidated"
+  createdAt: number
+  updatedAt: number
+}
+
+export interface ProactiveTaskDraft {
+  id: string
+  scope: MemoryScope
+  scopeId: string | null
+  sourceRefs: Array<ProactiveSourceRef>
+  intent: Record<string, unknown>
+  eventAt: TemporalAnchor | null
+  dueAt: TemporalAnchor | null
+  nextCheckinAt: number | null
+  validUntil: number | null
+  timezone: string
+  recurrence: ProactiveRecurrence | null
+}
+
+export interface ProactiveOpportunity {
+  id: string
+  ruleId: string
+  sourceRefs: Array<ProactiveSourceRef>
+  owner: ProactiveOwner
+  intentKey: string
+  validFrom: number
+  validUntil: number
+  priority: number
+  fingerprint: string
+}
+
+export interface ProactiveBudget {
+  localDate: string
+  planningAttempts: number
+  expressionAttempts: number
+  successfulMessages: number
+  reservedTokens: number
+  usedTokens: number
+  unknownTokens: number
+}
+
+export interface ProactiveControl {
+  enabled: boolean
+  muteUntil: number | null
+  revision: number
+}
+
+export interface ProactiveScanRequest {
+  owner: ProactiveOwner
+  now: number
+  localDate: string
+  cursor?: string
+  targetCursor?: string
+  limit?: number
+  sourceRefs?: Array<ProactiveSourceRef>
+}
+
+export interface ProactiveMemoryTarget {
+  id: string
+  version: number
+  scope: MemoryScope
+  scopeId: string | null
+  eventAt: TemporalAnchor | null
+  dueAt: TemporalAnchor | null
+  workingState: WorkingState | null
+  kind: MemoryKind
+  aliases: Array<string>
+  sourceIds: Array<string>
+  updatedAt: number
+}
+
+export interface ProactiveScanResponse {
+  tasks: Array<ProactiveTask>
+  memoryTargets: Array<ProactiveMemoryTarget>
+  evaluatedFingerprints: Array<string>
+  unresolvedAttempts: Array<ProactiveAttempt>
+  usedTopicKeys: Array<string>
+  control: ProactiveControl
+  budget: ProactiveBudget
+  sourceRevision: number
+  hasMore: boolean
+  nextCursor: string | null
+  targetHasMore: boolean
+  nextTargetCursor: string | null
+}
+
+export interface ProactiveQueryRequest {
+  owner: ProactiveOwner
+  targets?: Array<Record<string, unknown>>
+  attemptIds?: Array<string>
+  sessionId?: string
+  recentDelivered?: boolean
+  limit: number
+}
+
+export interface ProactiveAttempt {
+  attemptId: string
+  status: ProactiveAttemptStatus
+  sessionId: string
+  assistantEntryId: string | null
+  requestId: string
+  owner: ProactiveOwner
+  sourceRefs: Array<ProactiveSourceRef>
+  usage: Record<string, unknown> | null
+  sourceFingerprint: string
+  localDate: string
+}
+
+export interface ProactiveQueryResponse {
+  tasks: Array<ProactiveTask>
+  attempts: Array<ProactiveAttempt>
+  revision: number
+}
+
+export interface ProactiveChangeRequest {
+  operationId: string
+  baseRevision: number
+  action: "create" | "reschedule" | "snooze" | "complete" | "cancel" | "control"
+  owner: ProactiveOwner
+  trustedUserEventId?: string
+  taskId?: string
+  expectedVersion?: number
+  sourceRefs?: Array<ProactiveSourceRef>
+  taskPatch?: Record<string, unknown>
+  controlPatch?: Record<string, unknown>
+}
+
+export interface ProactiveChangeResponse {
+  revision: number
+  task: ProactiveTask | null
+}
+
+export interface ProactiveClaimRequest {
+  attemptId: string
+  requestId: string
+  kind: ProactiveAttemptKind
+  owner: ProactiveOwner
+  sourceRefs: Array<ProactiveSourceRef>
+  sourceFingerprint: string
+  sourceRevision: number
+  controlRevision: number
+  occurrenceIds: Array<string>
+  now: number
+  localDate: string
+  reservedTokens: number
+}
+
+export interface ProactiveClaimResponse {
+  claimed: boolean
+  reason: string | null
+  leaseUntil: number | null
+  revision: number
+}
+
+export interface ProactiveValidateRequest {
+  attemptId: string
+  owner: ProactiveOwner
+  now: number
+}
+
+export interface ProactiveValidateResponse {
+  valid: boolean
+  reason: string | null
+  sourceRevision: number
+  controlRevision: number
+}
+
+export interface ProactiveSettleRequest {
+  attemptId: string
+  owner: ProactiveOwner
+  sourceFingerprint: string
+  localDate: string
+  status: "committed" | "failed" | "skipped" | "unresolved"
+  decision: ProactiveDecision | null
+  assistantEntryId?: string
+  usage: Record<string, unknown> | null
+  errorCode?: string
+  summary?: string
+}
+
+export interface ProactiveDecision {
+  kind: ProactiveDecisionKind
+  opportunityFingerprints: Array<string>
+  topicKey: string | null
+  slot: string | null
+  validUntil: number | null
+  taskDrafts?: Array<ProactiveTaskDraft>
+  presence?: Record<string, unknown> | null
+}
+
+export interface ProactiveReconcileRequest {
+  attemptId: string
+  owner: ProactiveOwner
+  sourceFingerprint: string
+  localDate: string
+  assistantEntryId?: string
+  committed: boolean
+  usage: Record<string, unknown> | null
+}
+
+export interface ProactiveControlRequest {
+  operationId: string
+  baseRevision: number
+  owner: ProactiveOwner
+  patch: Record<string, unknown>
+}
 
 export interface MemorySource {
   sourceId: string
@@ -24,6 +281,23 @@ export interface MemorySource {
   observedAt: number
 }
 
+export interface MemorySourceAudit {
+  sourceId: string
+  sessionId: string
+  entryId: string
+  eventId: string
+  seq: number
+  contentHash: string
+  origin: string
+  taint: string
+  observedAt: number
+}
+
+export interface MemoryHistoryEntry {
+  item: MemoryItem
+  sourceAudits: Array<MemorySourceAudit>
+}
+
 export interface MemoryDraft {
   content: string
   summary: string
@@ -37,6 +311,9 @@ export interface MemoryDraft {
   observedAt?: number
   validFrom?: number | null
   validTo?: number | null
+  eventAt?: TemporalAnchor | null
+  dueAt?: TemporalAnchor | null
+  workingState?: WorkingState
   expiresAt?: number | null
   supersedesId?: string | null
   sourceIds: Array<string>
@@ -51,20 +328,9 @@ export interface MemoryItem {
   updatedAt: number
 }
 
-export interface MemoryCandidate {
-  id: string
-  jobId: string
-  status: CandidateStatus
-  draft: MemoryDraft
-  baseRevision: number
-  payloadHash: string
-  createdAt: number
-  reason?: string
-}
-
 export interface MemoryJob {
   id: string
-  phase: "light" | "review" | "publish"
+  phase: "light" | "review"
   status: "queued" | "running" | "paused" | "cancelled" | "completed" | "failed"
   revision: number
   forgetEpoch: number
@@ -85,4 +351,23 @@ export interface MemoryCandidateDraft {
   reason?: string
 }
 
-export type MemoryCommand = "memory_status" | "memory_list" | "memory_detail" | "memory_register_sources" | "memory_query" | "memory_get_items" | "memory_apply_change" | "memory_job_start" | "memory_job_checkpoint" | "memory_job_cancel" | "memory_job_resume" | "memory_job_sources" | "memory_candidates_add" | "memory_review_batch" | "memory_publish_batch" | "memory_export" | "memory_backup" | "memory_rebuild" | "memory_restore"
+export type MemoryCommand = "memory_status" | "memory_list" | "memory_detail" | "memory_history" | "memory_register_sources" | "memory_query" | "memory_get_items" | "memory_apply_change" | "memory_job_start" | "memory_job_checkpoint" | "memory_job_cancel" | "memory_job_resume" | "memory_job_sources" | "memory_candidates_add" | "memory_dreaming_commit" | "memory_dreaming_budget_reserve" | "memory_dreaming_budget_settle" | "memory_dreaming_budget" | "memory_export" | "memory_backup" | "memory_rebuild" | "memory_restore"
+export type ProactiveCommand = "proactive_scan" | "proactive_query" | "proactive_change" | "proactive_claim" | "proactive_validate" | "proactive_settle" | "proactive_reconcile" | "proactive_control"
+export const PROACTIVE_LIMITS = Object.freeze({
+  "tickMs": 300000,
+  "quietStartHour": 22,
+  "quietEndHour": 9,
+  "dailySuccess": 1,
+  "dailyExpressionAttempts": 3,
+  "dailyPlanningAttempts": 2,
+  "dailyTokens": 24000,
+  "maxTasks": 100,
+  "maxRecurringTasks": 10,
+  "maxTasksPerPlan": 2,
+  "maxTargetsPerMessage": 2,
+  "scanBatch": 100,
+  "retryDelayMs": 1800000,
+  "attemptLeaseMs": 180000,
+  "evaluationRetentionDays": 30,
+  "settledRetentionDays": 90
+} as const)

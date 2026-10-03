@@ -17,6 +17,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest"
 import { setTestDataRoot } from "../../host/node-ipc"
 import { emptyMemoryProvider, getMemoryProvider, installMemoryProvider, recallMemory } from "@/services/agent/memory"
 import { estimateContextTokens } from "@/services/context"
+import { createRuntimeTraceContext, subscribeRuntimeTrace } from "@/services/engine/runtime"
 
 /** 裁剪标记：与 `provider.ts` 的常量逐字一致（钉住「显式标记」这一形态本身）。 */
 const TRUNCATION_MARK = "…[召回文本超出预算，已按 token 口径截断]"
@@ -91,5 +92,16 @@ describe("召回预算", () => {
     // 默认空实现下行为不变，且注入的 provider 必须被收回。
     expect(getMemoryProvider(), "MemoryProvider 恢复未回到空实现").toBe(emptyMemoryProvider)
     expect((await recallMemory(request(BUDGET))).length, "空实现产生了召回").toBe(0)
+
+    const events: Array<{kind: string; payload: Record<string,unknown>}> = []
+    const stopTrace = subscribeRuntimeTrace(event => { events.push(event) })
+    const fallbackProvider = installMemoryProvider({recall: async req => {
+      req.fallbackReason = "rerank_failed"
+      return [projectionOf(SHORT, BUDGET)]
+    }})
+    try {
+      await recallMemory({...request(BUDGET), traceContext: createRuntimeTraceContext("recall-budget", "recall-budget")})
+      expect(events.find(event => event.kind === "memory_recall_end")?.payload.fallback).toBe(true)
+    } finally { fallbackProvider(); stopTrace() }
   })
 })

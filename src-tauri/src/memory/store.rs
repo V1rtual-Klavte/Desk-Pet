@@ -4,7 +4,7 @@
 //! - 一次写入一个事务：条目/版本、来源关联、FTS、revision 一起提交，失败全回滚。
 //! - `operation_id` 幂等：提交结果未知时先查这条操作记录，绝不盲重放。
 //! - `base_revision` 不匹配就是 `MemoryConflict`，由调用方重新读取后再决定。
-//! - 待审候选不进 FTS、不进召回；发布是唯一把它们变成 active 的路径。
+//! - prepared 候选不进 FTS、不进召回；自动 dreaming commit 是唯一把它们变成 active 的路径。
 
 use super::schema;
 use crate::error::{AppError, AppResult};
@@ -88,6 +88,24 @@ fn escape_like(text: &str) -> String {
     text.replace('\\', "\\\\").replace('%', "\\%").replace('_', "\\_")
 }
 
+/// Chinese natural questions need concept n-grams in addition to whole-phrase LIKE.
+fn memory_query_terms(query:&str)->Vec<String> {
+    const STOP:&[&str]=&["你","我","他","她","它","用户","的","了","吗","呢","啊","是","在","想","怎么","什么","哪个","哪里","平时","让我","告诉","记得","有没有","能不能","请问","一下","可以","这个","那个"];
+    let mut terms=Vec::new();let mut chinese=Vec::new();let mut latin=String::new();
+    let flush_chinese=|run:&mut Vec<char>,out:&mut Vec<String>|{if run.len()==1{out.push(run.iter().collect());}else if run.len()>1{for w in run.windows(2){out.push(w.iter().collect());}if run.len()>=3{for w in run.windows(3){out.push(w.iter().collect());}}}run.clear();};
+    let flush_latin=|run:&mut String,out:&mut Vec<String>|{if !run.is_empty(){out.push(run.to_lowercase());run.clear();}};
+    for ch in query.chars(){if ch.is_ascii_alphanumeric(){flush_chinese(&mut chinese,&mut terms);latin.push(ch);}else if matches!(ch as u32,0x3400..=0x4dbf|0x4e00..=0x9fff|0xf900..=0xfaff){flush_latin(&mut latin,&mut terms);chinese.push(ch);}else{flush_chinese(&mut chinese,&mut terms);flush_latin(&mut latin,&mut terms);}}
+    flush_chinese(&mut chinese,&mut terms);flush_latin(&mut latin,&mut terms);
+    terms.retain(|term|!STOP.contains(&term.as_str())&&term.chars().count()>=2);terms.sort();terms.dedup();terms.truncate(16);terms
+}
+
+fn query_token_clause(terms:&[String],first_param:usize)->(String,Vec<Value>){
+    let mut clauses=Vec::new();let mut values=Vec::new();
+    for (index,term) in terms.iter().enumerate(){let p=first_param+index;let pattern=format!("%{}%",escape_like(term));
+        clauses.push(format!("(i.content LIKE ?{p} ESCAPE '\\' OR i.summary LIKE ?{p} ESCAPE '\\' OR i.aliases_json LIKE ?{p} ESCAPE '\\')"));values.push(json!(pattern));}
+    (clauses.join(" OR "),values)
+}
+
 /// SQL 参数：用 rusqlite 自己的值类型，避免把 serde_json::Value 直接塞进语句。
 fn pv(value: &Value) -> rusqlite::types::Value {
     match value {
@@ -127,6 +145,28 @@ fn validate_draft(draft: &Value) -> AppResult<()> {
     if strings(draft, "sourceIds").is_empty() {
         return Err(AppError::Memory("记忆条目必须带来源".into()));
     }
+    if kind == "working" && !matches!(s(draft, "workingState").as_str(), "open" | "completed" | "cancelled") {
+        return Err(AppError::Memory("working 条目必须带 open/completed/cancelled 状态".into()));
+    }
+    if kind != "working" && (draft.get("eventAt").is_some_and(|v| !v.is_null())
+        || draft.get("dueAt").is_some_and(|v| !v.is_null())
+        || draft.get("workingState").is_some_and(|v| !v.is_null())) {
+        return Err(AppError::Memory("仅 working 条目可带事项时间和状态".into()));
+    }
+    for key in ["eventAt", "dueAt"] {
+        if let Some(anchor) = draft.get(key).filter(|value| !value.is_null()) {
+            let precision = anchor.get("precision").and_then(Value::as_str).unwrap_or_default();
+            let timezone = anchor.get("timezone").and_then(Value::as_str).unwrap_or_default();
+            let valid = !timezone.is_empty() && match precision {
+                "day" => anchor.get("localDate").and_then(Value::as_str).is_some_and(|value| {
+                    value.len() == 10 && value.as_bytes().get(4) == Some(&b'-') && value.as_bytes().get(7) == Some(&b'-')
+                }),
+                "minute" => anchor.get("instant").and_then(Value::as_i64).is_some(),
+                _ => false,
+            };
+            if !valid { return Err(AppError::Memory(format!("{key} 的 day/minute 时间锚无效"))); }
+        }
+    }
     Ok(())
 }
 
@@ -147,6 +187,68 @@ pub struct MemoryStore {
 }
 
 impl MemoryStore {
+    pub fn reserve_dreaming_budget(&self, reservation_id:&str, local_date: &str, reserve: i64, limit: i64) -> AppResult<bool> {
+        if reservation_id.is_empty() || local_date.len()!=10 || reserve<0 || limit<0 { return Err(AppError::Memory("dreaming 预算参数无效".into())); }
+        let mut conn=self.lock()?;let tx=conn.transaction_with_behavior(TransactionBehavior::Immediate).map_err(db_err)?;
+        if let Some((saved_day,saved_amount,status))=tx.query_row("SELECT local_date,reserved_tokens,status FROM memory_dreaming_reservations WHERE reservation_id=?1",[reservation_id],|r|Ok((r.get::<_,String>(0)?,r.get::<_,i64>(1)?,r.get::<_,String>(2)?))).optional().map_err(db_err)? {
+            if saved_day!=local_date||saved_amount!=reserve{return Err(AppError::MemoryConflict);}
+            tx.commit().map_err(db_err)?;return Ok(status=="reserved");
+        }
+        tx.execute("INSERT INTO memory_dreaming_budgets(local_date,updated_at) VALUES (?1,?2) ON CONFLICT(local_date) DO NOTHING",params![local_date,now_ms()]).map_err(db_err)?;
+        let (reserved,used):(i64,i64)=tx.query_row("SELECT reserved_tokens,used_tokens FROM memory_dreaming_budgets WHERE local_date=?1",[local_date],|r|Ok((r.get(0)?,r.get(1)?))).map_err(db_err)?;
+        let accepted=limit>0&&reserved.saturating_add(used).saturating_add(reserve)<=limit;
+        if accepted {let now=now_ms();tx.execute("UPDATE memory_dreaming_budgets SET reserved_tokens=reserved_tokens+?2,updated_at=?3 WHERE local_date=?1",params![local_date,reserve,now]).map_err(db_err)?;
+            tx.execute("INSERT INTO memory_dreaming_reservations(reservation_id,local_date,reserved_tokens,used_tokens,status,created_at,updated_at) VALUES (?1,?2,?3,NULL,'reserved',?4,?4)",params![reservation_id,local_date,reserve,now]).map_err(db_err)?;}
+        tx.commit().map_err(db_err)?;Ok(accepted)
+    }
+
+    pub fn settle_dreaming_budget(&self, reservation_id:&str, local_date: &str, reserved: i64, used: Option<i64>) -> AppResult<()> {
+        if reservation_id.is_empty()||local_date.len()!=10 || reserved<0 || used.is_some_and(|value|value<0) {return Err(AppError::Memory("dreaming 结算参数无效".into()));}
+        let mut conn=self.lock()?;let tx=conn.transaction_with_behavior(TransactionBehavior::Immediate).map_err(db_err)?;
+        if let Some(used)=used {
+            let saved:Option<(String,i64,String,Option<i64>)>=tx.query_row("SELECT local_date,reserved_tokens,status,used_tokens FROM memory_dreaming_reservations WHERE reservation_id=?1",[reservation_id],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?))).optional().map_err(db_err)?;
+            let Some((day,amount,status,old_used))=saved else{return Err(AppError::MemoryConflict)};
+            if day!=local_date||amount!=reserved{return Err(AppError::MemoryConflict);}
+            if status=="settled" {if old_used==Some(used){tx.commit().map_err(db_err)?;return Ok(());}return Err(AppError::MemoryConflict);}
+            tx.execute("UPDATE memory_dreaming_budgets SET reserved_tokens=MAX(0,reserved_tokens-?2),used_tokens=used_tokens+?3,updated_at=?4 WHERE local_date=?1",params![local_date,reserved,used,now_ms()]).map_err(db_err)?;
+            tx.execute("UPDATE memory_dreaming_reservations SET status='settled',used_tokens=?2,updated_at=?3 WHERE reservation_id=?1",params![reservation_id,used,now_ms()]).map_err(db_err)?;
+        }
+        // Unknown usage intentionally keeps its reservation across process restarts.
+        tx.commit().map_err(db_err)?;Ok(())
+    }
+
+    pub fn dreaming_budget(&self, local_date: &str) -> AppResult<Value> {
+        let conn=self.lock()?;
+        let row:Option<(i64,i64)>=conn.query_row("SELECT reserved_tokens,used_tokens FROM memory_dreaming_budgets WHERE local_date=?1",[local_date],|r|Ok((r.get(0)?,r.get(1)?))).optional().map_err(db_err)?;
+        let (reserved,used)=row.unwrap_or((0,0));Ok(json!({"localDate":local_date,"reservedTokens":reserved,"usedTokens":used}))
+    }
+
+    /// Evaluation-only reset of the existing owner's connection, never a second writer.
+    #[cfg(debug_assertions)]
+    pub(crate) fn reset_for_evaluation(&self) -> AppResult<MemoryStoreStatus> {
+        let mut connection = self.lock()?;
+        let placeholder = Connection::open_in_memory().map_err(db_err)?;
+        let previous = std::mem::replace(&mut *connection, placeholder);
+        if let Err((previous, error)) = previous.close() {
+            *connection = previous;
+            return Err(db_err(error));
+        }
+        for file in [self.db_path.clone(), PathBuf::from(format!("{}-wal", self.db_path.display())), PathBuf::from(format!("{}-shm", self.db_path.display()))] {
+            match std::fs::symlink_metadata(&file) {
+                Ok(metadata) if metadata.file_type().is_symlink() => return Err(AppError::PathEscape),
+                Ok(_) => std::fs::remove_file(file)?,
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {},
+                Err(error) => return Err(AppError::Io(error.to_string())),
+            }
+        }
+        let reopened = Connection::open(&self.db_path).map_err(db_err)?;
+        reopened.busy_timeout(std::time::Duration::from_millis(750)).map_err(db_err)?;
+        schema::ensure(&reopened)?;
+        *connection = reopened;
+        drop(connection);
+        self.status()
+    }
+
     pub fn open(paths: &AppPaths) -> AppResult<Self> {
         std::fs::create_dir_all(&paths.memory)
             .map_err(|e| AppError::Io(format!("创建记忆目录失败: {e}")))?;
@@ -199,7 +301,7 @@ impl MemoryStore {
                 .query_row("SELECT COUNT(*) FROM memory_items WHERE status='active'", [], |r| r.get(0))
                 .map_err(db_err)?,
             candidate_count: conn
-                .query_row("SELECT COUNT(*) FROM memory_candidates WHERE status='pending_review'", [], |r| r.get(0))
+                .query_row("SELECT COUNT(*) FROM memory_candidates WHERE status='prepared'", [], |r| r.get(0))
                 .map_err(db_err)?,
             job_count: conn
                 .query_row(
@@ -235,13 +337,16 @@ impl MemoryStore {
                 "sourceIds": [],
             },
             "createdAt": row.get::<_, i64>(17)?,
-            "updatedAt": row.get::<_, i64>(18)?,
+                "updatedAt": row.get::<_, i64>(18)?,
+                "eventAt": row.get::<_, Option<String>>(19)?.and_then(|text| serde_json::from_str::<Value>(&text).ok()),
+                "dueAt": row.get::<_, Option<String>>(20)?.and_then(|text| serde_json::from_str::<Value>(&text).ok()),
+                "workingState": row.get::<_, Option<String>>(21)?,
         }))
     }
 
     const ITEM_COLUMNS: &'static str = "i.id,i.version,i.status,i.content,i.summary,i.kind,i.scope,i.scope_id,\
         i.aliases_json,i.pinned,i.importance,i.confidence,i.observed_at,i.valid_from,i.valid_to,i.expires_at,\
-        i.supersedes_id,i.created_at,i.updated_at";
+        i.supersedes_id,i.created_at,i.updated_at,i.event_at_json,i.due_at_json,i.working_state";
 
     /// 补齐每个条目的来源清单：来源是「这条记忆从哪来」的唯一答案，详情与列表都要带。
     fn attach_sources(conn: &Connection, mut items: Vec<Value>) -> AppResult<Vec<Value>> {
@@ -302,6 +407,31 @@ impl MemoryStore {
             Some(item) => Self::attach_sources(&conn, vec![item])?.into_iter().next(),
             None => None,
         })
+    }
+
+    /// Immutable version history with source identities and audit metadata only;
+    /// source message bodies never cross this management IPC.
+    pub fn history(&self, id: &str) -> AppResult<Vec<Value>> {
+        let conn=self.lock()?;
+        let sql=format!("SELECT {} FROM memory_items i WHERE i.id=?1 ORDER BY i.version",Self::ITEM_COLUMNS);
+        let mut statement=conn.prepare(&sql).map_err(db_err)?;
+        let rows=statement.query_map([id],Self::row_to_item).map_err(db_err)?;
+        let items=rows.collect::<Result<Vec<_>,_>>().map_err(db_err)?;
+        let items=Self::attach_sources(&conn,items)?;
+        let mut history=Vec::new();
+        for item in items {
+            let ids=item.get("draft").and_then(|draft|draft.get("sourceIds")).and_then(Value::as_array).cloned().unwrap_or_default();
+            let mut audits=Vec::new();
+            for source_id in ids.iter().filter_map(Value::as_str) {
+                if let Some((session,entry,event,seq,hash,origin,taint,observed))=conn.query_row(
+                    "SELECT session_id,entry_id,event_id,seq,content_hash,origin,taint,observed_at FROM memory_sources WHERE source_id=?1",
+                    [source_id],|r|Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?,r.get::<_,String>(2)?,r.get::<_,i64>(3)?,r.get::<_,String>(4)?,r.get::<_,String>(5)?,r.get::<_,String>(6)?,r.get::<_,i64>(7)?))).optional().map_err(db_err)? {
+                    audits.push(json!({"sourceId":source_id,"sessionId":session,"entryId":entry,"eventId":event,"seq":seq,"contentHash":hash,"origin":origin,"taint":taint,"observedAt":observed}));
+                }
+            }
+            history.push(json!({"item":item,"sourceAudits":audits}));
+        }
+        Ok(history)
     }
 
     /// 登记来源：只接受「用户本人可信输入」，并且命中墓碑的事件直接拒收。
@@ -370,16 +500,22 @@ impl MemoryStore {
         }
         let limit = limit.clamp(1, 50);
         let like = format!("%{}%", escape_like(text));
+        let terms=memory_query_terms(text);
+        let (term_sql,term_args)=query_token_clause(&terms,4);
+        let term_sql=if term_sql.is_empty(){String::new()}else{format!(" OR ({term_sql})")};
+        // Compute FTS hits once; a correlated EXISTS repeats MATCH for every item.
+        // Keep the version in the join so a stale index row cannot match a newer fact.
         let mut sql = format!(
             "SELECT {} FROM memory_items i WHERE i.status='active' \
              AND (i.valid_from IS NULL OR i.valid_from <= ?1) \
              AND (i.valid_to IS NULL OR i.valid_to > ?1) \
              AND (i.expires_at IS NULL OR i.expires_at > ?1) \
              AND (i.content LIKE ?2 ESCAPE '\\' OR i.summary LIKE ?2 ESCAPE '\\' OR i.aliases_json LIKE ?2 ESCAPE '\\' \
-                  OR EXISTS (SELECT 1 FROM memory_fts WHERE memory_fts.item_id=i.id AND memory_fts.item_version=i.version AND memory_fts MATCH ?3))",
+                  OR (i.id,i.version) IN (SELECT item_id,item_version FROM memory_fts WHERE memory_fts MATCH ?3){term_sql})",
             Self::ITEM_COLUMNS
         );
         let mut args: Vec<Value> = vec![json!(now_ms()), json!(like), json!(fts_phrase(text))];
+        args.extend(term_args);
         if let Some(scope) = scope {
             args.push(json!(scope));
             sql.push_str(&format!(" AND i.scope=?{}", args.len()));
@@ -404,15 +540,18 @@ impl MemoryStore {
                 Ok(items) => items,
                 // FTS 语法在极端输入下可能被拒（例如只剩标点）：退回纯 LIKE，不让整次召回失败。
                 Err(_) => {
+                    let (fallback_terms,fallback_term_args)=query_token_clause(&terms,3);
+                    let fallback_terms=if fallback_terms.is_empty(){String::new()}else{format!(" OR ({fallback_terms})")};
                     let mut fallback = format!(
                         "SELECT {} FROM memory_items i WHERE i.status='active' \
                          AND (i.valid_from IS NULL OR i.valid_from <= ?1) \
              AND (i.valid_to IS NULL OR i.valid_to > ?1) \
              AND (i.expires_at IS NULL OR i.expires_at > ?1) \
-                         AND (i.content LIKE ?2 ESCAPE '\\' OR i.summary LIKE ?2 ESCAPE '\\' OR i.aliases_json LIKE ?2 ESCAPE '\\')",
+                         AND (i.content LIKE ?2 ESCAPE '\\' OR i.summary LIKE ?2 ESCAPE '\\' OR i.aliases_json LIKE ?2 ESCAPE '\\'{fallback_terms})",
                         Self::ITEM_COLUMNS
                     );
                     let mut fallback_args: Vec<Value> = vec![json!(now_ms()), json!(like)];
+                    fallback_args.extend(fallback_term_args);
                     if let Some(scope) = scope {
                         fallback_args.push(json!(scope));
                         fallback.push_str(&format!(" AND i.scope=?{}", fallback_args.len()));
@@ -469,6 +608,20 @@ impl MemoryStore {
         expected_version: Option<i64>,
         draft: Option<&Value>,
     ) -> AppResult<i64> {
+        self.apply_change_with_actor(operation_id, base_revision, action, item_id, expected_version, draft, "internal", None)
+    }
+
+    pub fn apply_change_with_actor(
+        &self,
+        operation_id: &str,
+        base_revision: i64,
+        action: &str,
+        item_id: Option<&str>,
+        expected_version: Option<i64>,
+        draft: Option<&Value>,
+        actor: &str,
+        trusted_user_event_id: Option<&str>,
+    ) -> AppResult<i64> {
         let mut conn = self.lock()?;
         let transaction = conn
             .transaction_with_behavior(TransactionBehavior::Immediate)
@@ -491,6 +644,12 @@ impl MemoryStore {
         if revision != base_revision {
             return Err(AppError::MemoryConflict);
         }
+        if actor == "current_input" {
+            let event_id = trusted_user_event_id.filter(|value| !value.is_empty())
+                .ok_or_else(|| AppError::Memory("记忆变更缺少当前可信用户事件身份".into()))?;
+            let valid: bool = transaction.query_row("SELECT EXISTS(SELECT 1 FROM memory_sources WHERE event_id=?1 AND origin='user' AND taint='trusted_user')",[event_id],|row|row.get(0)).map_err(db_err)?;
+            if !valid { return Err(AppError::Memory("当前可信用户事件尚未登记或不具备记忆资格".into())); }
+        }
         let mut touched_version: Option<i64> = None;
         let mut touched_item: Option<String> = item_id.map(str::to_string);
 
@@ -511,6 +670,7 @@ impl MemoryStore {
                     .map_err(db_err)?;
                 // 候选和来源证据也属于应用管理的记忆正文，清空后不能留在可读表里。
                 transaction.execute("DELETE FROM memory_candidates", []).map_err(db_err)?;
+                crate::proactive::store::clear_memory_closure_tx(&transaction)?;
                 transaction.execute("DELETE FROM memory_sources", []).map_err(db_err)?;
                 transaction.execute("DELETE FROM memory_watermarks", []).map_err(db_err)?;
                 Self::bump(&transaction, "forget_epoch")?;
@@ -540,21 +700,38 @@ impl MemoryStore {
                     .map_err(db_err)?;
                 // 删除引用该事实来源的候选正文，独立来源的评审产物仍可继续审查。
                 transaction.execute(
-                    "DELETE FROM memory_candidates WHERE status='pending_review' AND EXISTS (SELECT 1 FROM json_each(memory_candidates.source_ids_json) candidate_source JOIN memory_item_sources link ON link.source_id=candidate_source.value WHERE link.item_id=?1)",
+                    "DELETE FROM memory_candidates WHERE status='prepared' AND EXISTS (SELECT 1 FROM json_each(memory_candidates.source_ids_json) candidate_source JOIN memory_item_sources link ON link.source_id=candidate_source.value WHERE link.item_id=?1)",
                     [&id],
                 ).map_err(db_err)?;
                 transaction.execute("DELETE FROM memory_item_sources WHERE item_id=?1", [&id]).map_err(db_err)?;
                 transaction.execute("DELETE FROM memory_items WHERE id=?1", [&id]).map_err(db_err)?;
                 transaction.execute("DELETE FROM memory_fts WHERE item_id=?1", [&id]).map_err(db_err)?;
+                crate::proactive::store::invalidate_memory_closure_tx(&transaction, &id)?;
                 transaction.execute(
                     "DELETE FROM memory_sources WHERE EXISTS (SELECT 1 FROM memory_tombstones t WHERE t.session_id=memory_sources.session_id AND t.entry_id=memory_sources.entry_id AND t.content_hash=memory_sources.content_hash AND t.effect='block_extraction' AND t.reason='forget') AND NOT EXISTS (SELECT 1 FROM memory_item_sources keep WHERE keep.source_id=memory_sources.source_id)",
                     [],
                 ).map_err(db_err)?;
                 Self::bump(&transaction, "forget_epoch")?;
             }
-            "add" | "update" | "supersede" => {
+            "add" | "update" | "supersede" | "complete" | "cancel" => {
                 let draft = draft.ok_or_else(|| AppError::Memory("缺少记忆内容".into()))?;
                 validate_draft(draft)?;
+                if actor == "current_input" {
+                    let event_id = trusted_user_event_id.filter(|value| !value.is_empty())
+                        .ok_or_else(|| AppError::Memory("记忆变更缺少当前可信用户事件身份".into()))?;
+                    let owns_event = strings(draft, "sourceIds").into_iter().any(|source_id| {
+                        transaction.query_row("SELECT 1 FROM memory_sources WHERE source_id=?1 AND event_id=?2 AND origin='user' AND taint='trusted_user'",params![source_id,event_id],|row|row.get::<_,i64>(0)).optional().ok().flatten().is_some()
+                    });
+                    if !owns_event { return Err(AppError::Memory("记忆变更来源不属于当前可信用户事件".into())); }
+                } else if actor != "user_ui" && actor != "internal" {
+                    return Err(AppError::Memory("未知记忆治理 actor".into()));
+                }
+                if action == "complete" && s(draft, "workingState") != "completed" {
+                    return Err(AppError::Memory("complete 操作必须将 workingState 设为 completed".into()));
+                }
+                if action == "cancel" && s(draft, "workingState") != "cancelled" {
+                    return Err(AppError::Memory("cancel 操作必须将 workingState 设为 cancelled".into()));
+                }
                 let scope = s(draft, "scope");
                 let scope_id = opt_s(draft, "scopeId");
                 if scope == "card" && scope_id.is_none() {
@@ -583,20 +760,20 @@ impl MemoryStore {
                 let version = match action {
                     "add" => 1,
                     _ => {
-                        let active: Option<(i64, String)> = transaction
+                        let active: Option<(i64, String, Option<String>)> = transaction
                             .query_row(
-                                "SELECT version, scope FROM memory_items WHERE id=?1 AND status='active'",
+                                "SELECT version, scope, scope_id FROM memory_items WHERE id=?1 AND status='active'",
                                 [&id],
-                                |row| Ok((row.get(0)?, row.get(1)?)),
+                                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
                             )
                             .optional()
                             .map_err(db_err)?;
-                        let (current, current_scope) =
+                        let (current, current_scope, current_scope_id) =
                             active.ok_or_else(|| AppError::Memory("目标记忆不存在或已失效".into()))?;
                         if expected_version.is_some_and(|expected| expected != current) {
                             return Err(AppError::MemoryConflict);
                         }
-                        if current_scope != scope {
+                        if current_scope != scope || current_scope_id.as_deref() != scope_id.as_deref() {
                             return Err(AppError::Memory("更正的记忆不能跨范围改归属".into()));
                         }
                         transaction
@@ -605,6 +782,11 @@ impl MemoryStore {
                                 params![id, now_ms()],
                             )
                             .map_err(db_err)?;
+                        if matches!(action, "complete" | "cancel") {
+                            crate::proactive::store::finish_working_closure_tx(&transaction, &id, &s(draft, "workingState"))?;
+                        } else {
+                            crate::proactive::store::invalidate_memory_closure_tx(&transaction, &id)?;
+                        }
                         current + 1
                     }
                 };
@@ -613,8 +795,8 @@ impl MemoryStore {
                     .map_err(|e| AppError::Memory(e.to_string()))?;
                 transaction
                     .execute(
-                        "INSERT INTO memory_items(id,version,status,content,summary,kind,scope,scope_id,aliases_json,pinned,importance,confidence,observed_at,valid_from,valid_to,expires_at,supersedes_id,created_at,updated_at) \
-                         VALUES (?1,?2,'active',?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?17)",
+                    "INSERT INTO memory_items(id,version,status,content,summary,kind,scope,scope_id,aliases_json,pinned,importance,confidence,observed_at,valid_from,valid_to,expires_at,supersedes_id,created_at,updated_at,event_at_json,due_at_json,working_state) \
+                         VALUES (?1,?2,'active',?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?17,?18,?19,?20)",
                         params![
                             id,
                             version,
@@ -633,6 +815,9 @@ impl MemoryStore {
                             draft.get("expiresAt").and_then(Value::as_i64),
                             draft.get("supersedesId").and_then(Value::as_str).or_else(|| if action == "add" { None } else { Some(id.as_str()) }),
                             now_ms(),
+                            draft.get("eventAt").filter(|value| !value.is_null()).map(Value::to_string),
+                            draft.get("dueAt").filter(|value| !value.is_null()).map(Value::to_string),
+                            opt_s(draft, "workingState"),
                         ],
                     )
                     .map_err(db_err)?;
@@ -668,7 +853,7 @@ impl MemoryStore {
     }
 
     pub fn job_start(&self, phase: &str, lease_owner: &str) -> AppResult<Value> {
-        if !matches!(phase, "light" | "review" | "publish") {
+        if !matches!(phase, "light" | "review") {
             return Err(AppError::Memory(format!("未知作业阶段: {phase}")));
         }
         let conn = self.lock()?;
@@ -810,7 +995,7 @@ impl MemoryStore {
         Ok(out)
     }
 
-    /// Review 的产物落库：一律是 `pending_review`，不进召回。
+    /// Review 产物落库为 prepared，完成整份 Review 后同事务 Publish，不进召回。
     pub fn candidates_add(&self, job_id: &str, candidates: &[Value]) -> AppResult<usize> {
         let conn = self.lock()?;
         let revision = Self::meta(&conn, "revision")?;
@@ -833,9 +1018,9 @@ impl MemoryStore {
             written += conn
                 .execute(
                     "INSERT INTO memory_candidates(id,job_id,status,draft_json,source_ids_json,payload_hash,base_revision,reason,created_at) \
-                     VALUES (?1,?2,'pending_review',?3,?4,?5,?6,?7,?8) \
+                     VALUES (?1,?2,'prepared',?3,?4,?5,?6,?7,?8) \
                      ON CONFLICT(id) DO UPDATE SET draft_json=excluded.draft_json,payload_hash=excluded.payload_hash,\
-                       reason=excluded.reason,status='pending_review',decided_at=NULL",
+                       reason=excluded.reason,status='prepared',decided_at=NULL",
                     params![
                         id,
                         job_id,
@@ -852,39 +1037,8 @@ impl MemoryStore {
         Ok(written)
     }
 
-    fn row_to_candidate(row: &rusqlite::Row<'_>) -> rusqlite::Result<Value> {
-        let draft: String = row.get(3)?;
-        Ok(json!({
-            "id": row.get::<_, String>(0)?,
-            "jobId": row.get::<_, String>(1)?,
-            "status": row.get::<_, String>(2)?,
-            "draft": serde_json::from_str::<Value>(&draft).unwrap_or_else(|_| json!({})),
-            "baseRevision": row.get::<_, i64>(4)?,
-            "payloadHash": row.get::<_, String>(5)?,
-            "reason": row.get::<_, Option<String>>(6)?,
-            "createdAt": row.get::<_, i64>(7)?,
-        }))
-    }
-
-    /// 待审清单：只列 `pending_review`，让 UI 与发布都看到同一份事实。
-    pub fn review_batch(&self, job_id: &str) -> AppResult<Vec<Value>> {
-        let conn = self.lock()?;
-        let mut statement = conn
-            .prepare(
-                "SELECT id,job_id,status,draft_json,base_revision,payload_hash,reason,created_at \
-                 FROM memory_candidates WHERE job_id=?1 AND status='pending_review' ORDER BY created_at, id",
-            )
-            .map_err(db_err)?;
-        let rows = statement.query_map([job_id], Self::row_to_candidate).map_err(db_err)?;
-        let mut out = Vec::new();
-        for row in rows {
-            out.push(row.map_err(db_err)?);
-        }
-        Ok(out)
-    }
-
-    /// 发布：只接受用户批准过的候选，并逐条复核 base_revision 与 payload_hash。
-    pub fn publish_batch(&self, job_id: &str, candidate_ids: &[String], base_revision: i64) -> AppResult<i64> {
+    /// 自动发布经过 hash、来源和 revision 复核的 dreaming candidates。
+    fn publish_candidates(&self, job_id: &str, candidate_ids: &[String], base_revision: i64) -> AppResult<i64> {
         let mut conn = self.lock()?;
         let transaction = conn
             .transaction_with_behavior(TransactionBehavior::Immediate)
@@ -910,7 +1064,7 @@ impl MemoryStore {
             let row: Option<(String, i64, String)> = transaction
                 .query_row(
                     "SELECT draft_json,base_revision,payload_hash FROM memory_candidates \
-                     WHERE id=?1 AND job_id=?2 AND status='pending_review'",
+                     WHERE id=?1 AND job_id=?2 AND status='prepared'",
                     params![candidate_id, job_id],
                     |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
                 )
@@ -942,8 +1096,8 @@ impl MemoryStore {
                 .map_err(|e| AppError::Memory(e.to_string()))?;
             transaction
                 .execute(
-                    "INSERT INTO memory_items(id,version,status,content,summary,kind,scope,scope_id,aliases_json,pinned,importance,confidence,observed_at,valid_from,valid_to,expires_at,supersedes_id,created_at,updated_at) \
-                     VALUES (?1,1,'active',?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?16)",
+                    "INSERT INTO memory_items(id,version,status,content,summary,kind,scope,scope_id,aliases_json,pinned,importance,confidence,observed_at,valid_from,valid_to,expires_at,supersedes_id,created_at,updated_at,event_at_json,due_at_json,working_state) \
+                     VALUES (?1,1,'active',?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?16,?17,?18,?19)",
                     params![
                         id,
                         s(&draft, "content"),
@@ -961,6 +1115,9 @@ impl MemoryStore {
                         draft.get("expiresAt").and_then(Value::as_i64),
                         draft.get("supersedesId").and_then(Value::as_str),
                         now_ms(),
+                        draft.get("eventAt").filter(|value| !value.is_null()).map(Value::to_string),
+                        draft.get("dueAt").filter(|value| !value.is_null()).map(Value::to_string),
+                        opt_s(&draft, "workingState"),
                     ],
                 )
                 .map_err(db_err)?;
@@ -996,6 +1153,15 @@ impl MemoryStore {
             .map_err(db_err)?;
         transaction.commit().map_err(db_err)?;
         Ok(revision)
+    }
+
+    /// Automatic Review -> Publish boundary. Only candidates created inside this
+    /// persisted dreaming job are committed; there is no user-approval command path.
+    pub fn commit_dreaming_job(&self, job_id: &str, base_revision: i64) -> AppResult<i64> {
+        let ids={let conn=self.lock()?;let mut statement=conn.prepare("SELECT id FROM memory_candidates WHERE job_id=?1 AND status='prepared' ORDER BY created_at,id").map_err(db_err)?;
+            let rows=statement.query_map([job_id],|row|row.get::<_,String>(0)).map_err(db_err)?;
+            rows.collect::<Result<Vec<_>,_>>().map_err(db_err)?};
+        self.publish_candidates(job_id,&ids,base_revision)
     }
 
     /// 只读导出：给人看的事实投影，带版本与时间，不是可回写的数据源。
@@ -1124,14 +1290,35 @@ impl MemoryStore {
                 .map_err(db_err)?;
             rows
         };
-        {
-            let destination = &mut *conn;
-            let backup = backup::Backup::new(&source, destination).map_err(db_err)?;
-            backup
-                .run_to_completion(64, std::time::Duration::from_millis(5), None)
-                .map_err(db_err)?;
+        // Restore memory content selectively. The active proactive ledger, control,
+        // budgets and receipts belong to the current installation and must survive.
+        // Copying the whole SQLite file here would resurrect old tasks and reset quotas.
+        let current_forget_epoch = Self::meta(&conn, "forget_epoch")?;
+        let current_revision = Self::meta(&conn, "revision")?;
+        conn.execute("ATTACH DATABASE ?1 AS restore_src", [backup_path.to_string_lossy().as_ref()]).map_err(db_err)?;
+        conn.execute_batch("BEGIN IMMEDIATE").map_err(db_err)?;
+        let restore_tables = [
+            ("memory_item_sources", "memory_item_sources"),
+            ("memory_candidates", "memory_candidates"),
+            ("memory_jobs", "memory_jobs"),
+            ("memory_watermarks", "memory_watermarks"),
+            ("memory_operations", "memory_operations"),
+            ("memory_items", "memory_items"),
+            ("memory_sources", "memory_sources"),
+        ];
+        for (table, _) in restore_tables { conn.execute(&format!("DELETE FROM {table}"), []).map_err(db_err)?; }
+        // Replace metadata except the monotonically increasing privacy/version counters.
+        conn.execute("DELETE FROM memory_meta WHERE key NOT IN ('schema_version','revision','forget_epoch')", []).map_err(db_err)?;
+        conn.execute("INSERT INTO memory_meta(key,value) SELECT key,value FROM restore_src.memory_meta WHERE key NOT IN ('schema_version','revision','forget_epoch')", []).map_err(db_err)?;
+        for (table, _) in [
+            ("memory_sources", "memory_sources"), ("memory_items", "memory_items"),
+            ("memory_item_sources", "memory_item_sources"), ("memory_candidates", "memory_candidates"),
+            ("memory_jobs", "memory_jobs"), ("memory_watermarks", "memory_watermarks"),
+            ("memory_operations", "memory_operations"),
+        ] {
+            conn.execute(&format!("INSERT INTO {table} SELECT * FROM restore_src.{table}"), []).map_err(db_err)?;
         }
-        schema::ensure(&conn)?;
+        conn.execute("INSERT INTO memory_tombstones SELECT * FROM restore_src.memory_tombstones WHERE 1 ON CONFLICT DO NOTHING", []).map_err(db_err)?;
         for (session_id, entry_id, content_hash) in tombstones {
             conn.execute(
                 "INSERT INTO memory_tombstones(session_id,entry_id,content_hash,effect,reason,forget_epoch,created_at) \
@@ -1140,14 +1327,15 @@ impl MemoryStore {
                 params![session_id, entry_id, content_hash, now_ms()],
             )
             .map_err(db_err)?;
-            conn.execute(
-                "UPDATE memory_items SET status='forgotten',updated_at=?4 WHERE status='active' AND id IN (\
-                   SELECT link.item_id FROM memory_item_sources link JOIN memory_sources s ON s.source_id=link.source_id \
-                   WHERE s.session_id=?1 AND s.entry_id=?2 AND s.content_hash=?3)",
-                params![session_id, entry_id, content_hash, now_ms()],
-            )
-            .map_err(db_err)?;
         }
+        // Tombstones from either the current installation or backup dominate all
+        // restored content; remove the full item/version closure so history cannot
+        // reveal forgotten text after a restore.
+        conn.execute("DELETE FROM memory_candidates WHERE EXISTS(SELECT 1 FROM json_each(memory_candidates.source_ids_json) c JOIN memory_sources s ON s.source_id=c.value JOIN memory_tombstones t ON t.session_id=s.session_id AND t.entry_id=s.entry_id AND t.content_hash=s.content_hash WHERE t.effect='block_extraction')", []).map_err(db_err)?;
+        conn.execute("DELETE FROM memory_items WHERE EXISTS(SELECT 1 FROM memory_item_sources l JOIN memory_sources s ON s.source_id=l.source_id JOIN memory_tombstones t ON t.session_id=s.session_id AND t.entry_id=s.entry_id AND t.content_hash=s.content_hash WHERE l.item_id=memory_items.id AND t.effect='block_extraction')", []).map_err(db_err)?;
+        conn.execute("DELETE FROM memory_sources WHERE EXISTS(SELECT 1 FROM memory_tombstones t WHERE t.session_id=memory_sources.session_id AND t.entry_id=memory_sources.entry_id AND t.content_hash=memory_sources.content_hash AND t.effect='block_extraction') AND NOT EXISTS(SELECT 1 FROM memory_item_sources l WHERE l.source_id=memory_sources.source_id)", []).map_err(db_err)?;
+        conn.execute("UPDATE memory_meta SET value=?1 WHERE key='schema_version'", [schema::SCHEMA_VERSION.to_string()]).map_err(db_err)?;
+        conn.execute("UPDATE memory_meta SET value=?1 WHERE key='forget_epoch'", [current_forget_epoch.to_string()]).map_err(db_err)?;
         conn.execute("DELETE FROM memory_fts", []).map_err(db_err)?;
         conn.execute(
             "INSERT INTO memory_fts(item_id,item_version,content,summary,aliases) \
@@ -1158,7 +1346,14 @@ impl MemoryStore {
         let restored: i64 = conn
             .query_row("SELECT COUNT(*) FROM memory_items WHERE status='active'", [], |row| row.get(0))
             .map_err(db_err)?;
-        Self::bump(&conn, "revision")?;
+        conn.execute("UPDATE memory_meta SET value=?1 WHERE key='revision'", [(current_revision + 1).to_string()]).map_err(db_err)?;
+        // A restore invalidates proactive content while leaving its control, daily
+        // budgets and attempt receipts intact. Host snapshots repopulate fresh sources.
+        conn.execute("UPDATE proactive_tasks SET state=CASE WHEN state='active' THEN 'invalidated' ELSE state END,version=version+1,intent_json='{}',source_refs_json='[]',updated_at=?1,invalidation_epoch=invalidation_epoch+1", [now_ms()]).map_err(db_err)?;
+        conn.execute("DELETE FROM proactive_evaluations", []).map_err(db_err)?;
+        conn.execute("DELETE FROM proactive_source_registry", []).map_err(db_err)?;
+        conn.execute("UPDATE proactive_attempts SET status=CASE WHEN status IN ('reserved','generating') THEN 'unresolved' ELSE status END,source_refs_json='[]',decision_json=NULL,summary=NULL,error_code='memory_restored',updated_at=?1", [now_ms()]).map_err(db_err)?;
+        conn.execute_batch("COMMIT; DETACH DATABASE restore_src;").map_err(db_err)?;
         Ok(restored)
     }
 

@@ -1,5 +1,7 @@
 import { PROMPT_SNAPSHOT_ENTRY, harnessSlots } from "@/services/engine/harness"
-import { initChat, sendActiveMessage } from "@/services/agent/runner"
+import { initChat } from "@/services/agent/runner"
+import { readActiveAttemptEvidence } from "@/services/engine/harness"
+import { runTestActiveExpression } from "../../../host/active-expression"
 import { getActiveSessionId } from "@/services/session"
 import { estimateContextTokens } from "@/services/context"
 import { installFakeProvider, fakeText, fakeToolCall } from "../../../host/fake-provider"
@@ -80,8 +82,12 @@ export const 审计闭环: SceneDef = {
         // production 入口必须真的投递一条主动消息，才能让本回合的瞬时输入被算出来。
         const sessionId = getActiveSessionId()
         const before = new Set((await snapshotEntries(sessionId)).map(entry => entry.id))
-        const reply = await sendActiveMessage(ACTIVE_TEXT)
-        if (!reply.trim()) throw new Error("主动搭话回合没有回复")
+        const result = await runTestActiveExpression(ACTIVE_TEXT)
+        if (result.status !== "committed" || !result.text.trim()) throw new Error(`主动表达没有得到提交回执: ${JSON.stringify(result)}`)
+        const proof = await readActiveAttemptEvidence(sessionId, result.attemptId, result.requestId)
+        if (!proof || proof.operationId !== result.evidence.operationId || proof.assistantEntryId !== result.assistantEntryId) {
+          throw new Error("主动表达回执与真实 JSONL native operation/tip 不匹配")
+        }
         const added = (await snapshotEntries(sessionId)).filter(entry => !before.has(entry.id))
         const usage = added.filter(entry => entry.captureStage === "provider_usage")
         if (usage.length !== 1) {

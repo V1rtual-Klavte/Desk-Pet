@@ -8,7 +8,7 @@ general:
   logging: { level: debug }
   # 错误覆盖层：auto(dev 弹/生产不弹) | always | never
   errors: { overlay: auto }
-  desktop: { pollingIntervalMs: 3000, pauseExtraMs: 5000, waitTimeoutMs: 5000 }
+  desktop: { pollingIntervalMs: 3000 }
 
 ai:
   provider: deepseek
@@ -45,7 +45,7 @@ ai:
     rerank: off
     recallTimeoutMs: 4000
     rerankTimeoutMs: 2500
-    dreaming: { mode: manual, idleSeconds: 120, minIntervalMinutes: 60, maxDailyTokens: 12000 }
+    dreaming: { mode: idle, idleSeconds: 120, minIntervalMinutes: 60, maxDailyTokens: 12000 }
     maxSessions: 20
   plan:
     enabled: true
@@ -66,7 +66,6 @@ ai:
     # 冷却时长统一毫秒
     cooldownMs: 5000
     samePageCooldownMs: 7800
-    resumeExtraMs: 2000
   safety: { mode: tell_me, sessionTrustEnabled: true }
 
 tools:

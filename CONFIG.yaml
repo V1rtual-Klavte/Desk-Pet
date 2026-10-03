@@ -33,8 +33,6 @@ general:
 
   desktop:
     pollingIntervalMs: 3000
-    pauseExtraMs: 5000
-    waitTimeoutMs: 5000
 
 # ══════════════════════════════════════════
 # 2. AI 设置 (AI)
@@ -83,7 +81,7 @@ ai:
     recallTimeoutMs: 4000
     rerankTimeoutMs: 2500
     dreaming:
-      mode: manual
+      mode: idle
       idleSeconds: 120
       minIntervalMinutes: 60
       maxDailyTokens: 12000
@@ -122,7 +120,6 @@ ai:
     # 冷却时长统一毫秒。原 cooldownSeconds 写 5000 却被当秒用，实际冷却 83 分钟。
     cooldownMs: 5000
     samePageCooldownMs: 7800
-    resumeExtraMs: 2000
 
   safety:
     mode: tell_me

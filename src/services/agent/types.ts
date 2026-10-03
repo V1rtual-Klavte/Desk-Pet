@@ -10,6 +10,8 @@ export interface Message {
   timestamp: number
   /** Durable transcript identity; old sessions receive stable compatibility IDs. */
   eventId?: string
+  /** Visible assistant entry came from a scheduler-confirmed proactive attempt. */
+  isProactive?: boolean
   /** 工具调用（assistant 消息可能包含） */
   toolCalls?: ToolCallRequest[]
   /** 工具调用结果（tool 消息） */
@@ -35,6 +37,75 @@ export type { ToolResult, ToolDeclaration } from "@/services/tool/types"
 
 /** 思考强度 */
 export type ThinkingEffort = "auto" | "low" | "medium" | "high"
+
+import type { ProactiveOwner } from "@/services/agent/memory/protocol"
+export type { ProactiveOwner } from "@/services/agent/memory/protocol"
+
+export interface ActiveSourceRef {
+  kind: string
+  id: string
+  version?: number
+}
+
+export interface ActiveMessageRequest {
+  /** Intent and grounded source context for the model, not a prewritten user-facing utterance. */
+  text: string
+  owner: Omit<ProactiveOwner, "runGeneration"> & { runGeneration?: number }
+  requestId: string
+  attemptId: string
+  ruleId: string
+  intent: string
+  sourceRefs: readonly ActiveSourceRef[]
+  memoryTargets: readonly { id: string; version: number }[]
+  occurrenceIds: readonly string[]
+  /** Scheduler admission/last validation; state changes must cancel the native lane. */
+  beforeGenerate?: (owner: ProactiveOwner, reservation: ActiveExpressionReservation) => Promise<boolean>
+  isCurrent: (owner: ProactiveOwner) => boolean | Promise<boolean>
+  settle: (owner: ProactiveOwner, evidence: { operationId: string; triggerEntryId: string; assistantEntryId: string; text: string; usage?: { inputTokens: number; outputTokens: number; cacheRead?: number; cacheWrite?: number } }) => Promise<"committed" | "stale" | "unresolved">
+}
+
+/** The finalized request-view estimate presented to the scheduler before the Provider call. */
+export interface ActiveExpressionReservation {
+  estimatedInputTokens: number
+  maxOutputTokens: number
+  contextWindow: number
+  hardInputLimit: number
+  toolCount: 0
+}
+
+export interface ProviderReservation {
+  estimatedInputTokens: number
+  maxOutputTokens: number
+  contextWindow: number
+  hardInputLimit: number
+  toolCount: number
+}
+
+export type ActiveSkipReason = "no_session" | "busy" | "stale" | "quiet_hours" | "muted" | "budget"
+
+export type ActiveMessageResult =
+  | {
+      status: "committed"
+      sessionId: string
+      cardId: string
+      runGeneration: number
+      requestId: string
+      attemptId: string
+      assistantEntryId: string
+      text: string
+      usage?: { inputTokens: number; outputTokens: number; cacheRead?: number; cacheWrite?: number }
+      evidence: { operationId: string; triggerEntryId: string; assistantEntryId: string }
+    }
+  | { status: "skipped"; reason: ActiveSkipReason }
+  | {
+      status: "failed"
+      stage: "admission" | "generation" | "commit" | "settle"
+      errorCode: string
+      safeSummary: string
+      commitState: "not_committed" | "unknown" | "committed_unsettled"
+      /** Actual provider usage accrued before failure; absent means unknown, not an estimate. */
+      usage?: { inputTokens: number; outputTokens: number; cacheRead?: number; cacheWrite?: number }
+    }
 
 // ── 工具函数 ──
 

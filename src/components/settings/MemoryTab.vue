@@ -3,38 +3,33 @@
 // 记忆管理面板
 // ==========================================
 //
-// 数据操作（记住 / 纠正 / 遗忘 / 评审 / 发布 / 维护）都在这里独立提交，
+// 数据操作（纠正 / 遗忘 / 维护）都在这里独立提交，
 // 不走设置页的「保存」按钮 —— 那条路径写的是 CONFIG，与记忆库是两回事。
 // 每次写操作后重新读 revision，界面显示的永远是已提交状态。
 
-import { computed, onMounted, ref } from "vue"
+import { onMounted, ref } from "vue"
 import {
   applyMemoryChange, backupMemory, exportMemory, memoryDetail,
-  memoryJobSources, memoryList, memoryStatus, publishMemoryBatch, rebuildMemory, reviewMemoryBatch,
+  memoryHistory, memoryList, memoryStatus, rebuildMemory,
 } from "@/services/agent/memory/ipc"
-import type { MemoryCandidate, MemoryItem, MemoryScope, MemoryStatusSnapshot } from "@/services/agent/memory/ipc"
+import type { MemoryHistoryEntry, MemoryItem, MemoryScope, MemoryStatusSnapshot } from "@/services/agent/memory/ipc"
 import { runDreamingSweep } from "@/services/agent/memory/dreaming"
-import { createLogger } from "@/services/logger"
+import type { DreamingOutcome } from "@/services/agent/memory/dreaming"
 import { formatError } from "@/services/error"
-
-const log = createLogger("MemoryTab")
 
 const scope = ref<MemoryScope | "">("")
 const status = ref<MemoryStatusSnapshot | null>(null)
 const items = ref<MemoryItem[]>([])
 const selected = ref<MemoryItem | null>(null)
-const candidates = ref<MemoryCandidate[]>([])
-const approved = ref<Set<string>>(new Set())
+const history = ref<MemoryHistoryEntry[]>([])
 const editingContent = ref("")
 const busy = ref(false)
 const error = ref("")
 const notice = ref("")
 const lastJobId = ref("")
 const sweeping = ref(false)
-const sourceEvidence = ref<Record<string, string>>({})
+const lastSweep = ref<DreamingOutcome | null>(null)
 let sweepController: AbortController | null = null
-
-const pendingCount = computed(() => status.value?.candidateCount ?? 0)
 
 function clearMessage(): void {
   error.value = ""
@@ -56,7 +51,9 @@ async function refresh(): Promise<void> {
 async function openItem(item: MemoryItem): Promise<void> {
   clearMessage()
   try {
-    selected.value = await memoryDetail(item.id)
+    const [detail, versions] = await Promise.all([memoryDetail(item.id), memoryHistory(item.id)])
+    selected.value = detail
+    history.value = versions
     editingContent.value = selected.value?.draft.content ?? ""
   } catch (e) {
     error.value = formatError(e)
@@ -78,6 +75,7 @@ async function saveCorrection(): Promise<void> {
       action: "update",
       itemId: target.id,
       expectedVersion: target.version,
+      actor: "user_ui",
       draft: { ...target.draft, content, summary: content.slice(0, 120) },
     })
     notice.value = `已提交纠正（revision ${revision}）`
@@ -104,7 +102,9 @@ async function forgetSelected(): Promise<void> {
       operationId: `forget-${crypto.randomUUID()}`,
       baseRevision: status.value?.revision ?? 0,
       action: "forget",
+      actor: "user_ui",
       itemId: target.id,
+      expectedVersion: target.version,
     })
     notice.value = `已忘记这条记忆（revision ${revision}）：原始聊天与外部备份不受影响`
     selected.value = null
@@ -116,22 +116,24 @@ async function forgetSelected(): Promise<void> {
   }
 }
 
-/** 整理：Light + Review 只产出待审候选，绝不自动写入。 */
+/** 整理：提交结果由 Rust 原子落库，面板只呈现最终结果。 */
 async function runSweep(): Promise<void> {
   clearMessage()
   sweeping.value = true
   sweepController = new AbortController()
   try {
     const outcome = await runDreamingSweep({ signal: sweepController.signal })
+    lastSweep.value = outcome
     lastJobId.value = outcome.jobId ?? ""
     if (outcome.status === "failed") error.value = `整理失败：${outcome.message ?? "未知原因"}`
     else if (outcome.status === "empty") notice.value = "没有新的可信用户输入需要整理。"
-    else notice.value = `整理完成：处理 ${outcome.sourcesProcessed} 条来源，新增 ${outcome.candidatesAdded} 条待审候选`
+    else if (outcome.status === "cancelled") notice.value = `整理已取消：处理 ${outcome.sourcesProcessed} 条来源；已提交内容不会回滚。`
+    else notice.value = `整理并自动提交完成：处理 ${outcome.sourcesProcessed} 条来源，提交 ${outcome.publishedCount} 条记忆`
     if (outcome.oversized.length > 0) {
       notice.value += `；${outcome.oversized.length} 条来源过大，已整条跳过待你挑选片段`
     }
     await refresh()
-    await loadCandidates()
+    if (selected.value) await openItem(selected.value)
   } catch (e) {
     error.value = formatError(e)
   } finally {
@@ -144,45 +146,8 @@ function cancelSweep(): void {
   sweepController?.abort()
 }
 
-async function loadCandidates(): Promise<void> {
-  if (!lastJobId.value) return
-  try {
-    const [reviewed, sources] = await Promise.all([
-      reviewMemoryBatch(lastJobId.value),
-      memoryJobSources(lastJobId.value),
-    ])
-    candidates.value = reviewed
-    sourceEvidence.value = Object.fromEntries(sources.map(source => [source.sourceId, source.evidence ?? ""]))
-    // 评审默认不批准任何候选：用户必须逐条看过正文、范围和来源后再勾选。
-    approved.value = new Set()
-  } catch (e) {
-    error.value = formatError(e)
-  }
-}
-
-function toggleApproved(id: string): void {
-  const next = new Set(approved.value)
-  if (next.has(id)) next.delete(id)
-  else next.add(id)
-  approved.value = next
-}
-
-/** 发布：只提交用户勾选且审核过的候选；基准过期由 Rust 拒绝，不静默覆盖。 */
-async function publishApproved(): Promise<void> {
-  clearMessage()
-  const ids = [...approved.value]
-  if (ids.length === 0 || !lastJobId.value) return
-  busy.value = true
-  try {
-    const revision = await publishMemoryBatch(lastJobId.value, ids, status.value?.revision ?? 0)
-    notice.value = `已发布 ${ids.length} 条记忆（revision ${revision}）`
-    await refresh()
-    await loadCandidates()
-  } catch (e) {
-    error.value = `发布未提交（基准可能已过期）：${formatError(e)}`
-  } finally {
-    busy.value = false
-  }
+function formatTime(at: number): string {
+  return new Intl.DateTimeFormat(undefined, { dateStyle: "medium", timeStyle: "short" }).format(at)
 }
 
 async function runMaintenance(action: "backup" | "export" | "rebuild"): Promise<void> {
@@ -217,7 +182,7 @@ onMounted(() => { void refresh() })
         <button class="btn-s" :disabled="busy" @click="refresh">↻ 刷新</button>
       </div>
       <div v-if="status" class="s-hint">
-        库版本 revision {{ status.revision }} · {{ status.itemCount }} 条已记住 · {{ pendingCount }} 条待审 · {{ status.jobCount }} 个作业
+        库版本 revision {{ status.revision }} · {{ status.itemCount }} 条当前记忆 · {{ status.jobCount }} 个整理作业
       </div>
       <div v-if="items.length === 0" class="s-hint">当前范围没有已记住的内容。</div>
       <button v-for="item in items" :key="`${item.id}:${item.version}`" class="memory-row" @click="openItem(item)">
@@ -234,7 +199,10 @@ onMounted(() => { void refresh() })
       <div class="memory-detail">
         类型：{{ selected.draft.kind }}　范围：{{ selected.draft.scope }}　状态：{{ selected.status }}　版本：{{ selected.version }}<br />
         来源：{{ selected.draft.sourceIds.join(", ") || "无" }}<br />
-        重要性：{{ selected.draft.importance }}　置信度：{{ selected.draft.confidence }}
+        重要性：{{ selected.draft.importance }}　置信度：{{ selected.draft.confidence }}<br />
+        发生时间：{{ selected.draft.eventAt ? JSON.stringify(selected.draft.eventAt) : "未记录" }}<br />
+        提醒时间：{{ selected.draft.dueAt ? JSON.stringify(selected.draft.dueAt) : "未记录" }}<br />
+        事项状态：{{ selected.draft.workingState ?? "不适用" }}
       </div>
       <textarea class="inp memory-editor" v-model="editingContent" rows="3"></textarea>
       <div class="memory-toolbar">
@@ -244,26 +212,36 @@ onMounted(() => { void refresh() })
       <div class="s-hint">
         忘记只清应用管理的记忆与它的回灌资格：原始聊天、已导出的文件和外部备份要另在会话管理或文件系统里处理。
       </div>
+      <div class="memory-history">
+        <div class="s-label">历史版本与来源审计</div>
+        <div v-if="history.length === 0" class="s-hint">没有可显示的历史版本。</div>
+        <article v-for="entry in history" :key="`${entry.item.id}:${entry.item.version}`" class="memory-history-entry">
+          <strong>v{{ entry.item.version }} · {{ entry.item.status }} · {{ formatTime(entry.item.updatedAt) }}</strong>
+          <div>{{ entry.item.draft.content }}</div>
+          <small v-if="entry.sourceAudits.length === 0">来源审计已不可用。</small>
+          <small v-for="source in entry.sourceAudits" :key="source.sourceId" class="memory-evidence">
+            {{ source.origin }}/{{ source.taint }} · event {{ source.eventId }} · session {{ source.sessionId }} · entry {{ source.entryId }} · seq {{ source.seq }} · {{ formatTime(source.observedAt) }} · sha256 {{ source.contentHash }}
+          </small>
+        </article>
+      </div>
     </div>
 
     <div class="s-section">
-      <div class="s-label">整理与待评审</div>
+      <div class="s-label">自动整理</div>
       <div class="memory-toolbar">
         <button class="btn-s" :disabled="sweeping || busy" @click="runSweep">整理新增对话</button>
         <button v-if="sweeping" class="btn-s" :disabled="busy" @click="cancelSweep">取消整理</button>
-        <button class="btn-s" :disabled="busy || !lastJobId || pendingCount === 0" @click="loadCandidates">载入待审</button>
-        <button class="btn-s" :disabled="busy || approved.size === 0" @click="publishApproved">发布勾选（{{ approved.size }}）</button>
       </div>
-      <div class="s-hint">整理只产出待审候选，不会自动写入；发布时才要求库版本没有变过。</div>
-      <div v-if="candidates.length === 0" class="s-hint">没有待审候选。</div>
-      <div v-for="candidate in candidates" :key="candidate.id" class="memory-row memory-candidate">
-        <label class="memory-row-main">
-          <span><input type="checkbox" :checked="approved.has(candidate.id)" @change="toggleApproved(candidate.id)" /> {{ candidate.draft.content }}</span>
-          <small>{{ candidate.draft.kind }} · {{ candidate.draft.scope }} · 来源 {{ candidate.draft.sourceIds.join(", ") }}</small>
-          <small v-for="sourceId in candidate.draft.sourceIds" :key="sourceId" class="memory-evidence">证据：{{ sourceEvidence[sourceId] || "来源正文不可用" }}</small>
-          <small v-if="candidate.reason">理由：{{ candidate.reason }}</small>
-        </label>
+      <div class="s-hint">整理作业自动提交完成的候选；冲突、失败或取消会显示明确终态。未经用户输入绑定的候选不会发布。</div>
+      <div v-if="lastSweep" class="memory-detail">
+        状态：{{ lastSweep.status }}<br />
+        作业：{{ lastSweep.jobId ?? "无" }}<br />
+        处理来源：{{ lastSweep.sourcesProcessed }}　生成候选：{{ lastSweep.candidatesAdded }}　自动提交：{{ lastSweep.publishedCount }}<br />
+        <template v-if="lastSweep.budget">预算日：{{ lastSweep.budget.localDate }}　预留：{{ lastSweep.budget.reservedTokens }} tokens　使用：{{ lastSweep.budget.usedTokens }} tokens<br /></template>
+        <span v-if="lastSweep.message">详情：{{ lastSweep.message }}</span>
       </div>
+      <div v-else class="s-hint">尚未在此打开的面板中执行整理。</div>
+      <div v-if="lastJobId" class="s-hint">最后一次作业：{{ lastJobId }}</div>
     </div>
 
     <div class="s-section">
@@ -292,5 +270,7 @@ onMounted(() => { void refresh() })
 .memory-row-main small, .memory-row-meta { opacity: .65; font-size: 9px; }
 .memory-evidence { opacity: .8; white-space: normal; overflow-wrap: anywhere; }
 .memory-detail { padding: 6px; line-height: 1.6; background: var(--color-surface-dark, rgba(0, 0, 0, .12)); white-space: pre-wrap; overflow-wrap: anywhere; }
+.memory-history { display: flex; flex-direction: column; gap: 4px; margin-top: 8px; }
+.memory-history-entry { display: flex; flex-direction: column; gap: 3px; padding: 6px; background: var(--color-surface-dark, rgba(0, 0, 0, .12)); overflow-wrap: anywhere; }
 .memory-editor { width: 100%; margin-top: 4px; }
 </style>

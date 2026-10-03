@@ -10,29 +10,33 @@
 
 import { invoke } from "@tauri-apps/api/core"
 import type {
-  CandidateStatus,
-  MemoryCandidate,
   MemoryCandidateDraft,
   MemoryDraft,
+  MemoryHistoryEntry,
+  MemoryChangeActor,
   MemoryItem,
   MemoryJob,
   MemoryKind,
   MemoryScope,
   MemorySource,
+  MemorySourceAudit,
   MemoryStatus,
+  WorkingState,
 } from "./protocol"
 
 export type {
-  CandidateStatus,
-  MemoryCandidate,
   MemoryCandidateDraft,
   MemoryDraft,
+  MemoryHistoryEntry,
+  MemoryChangeActor,
   MemoryItem,
   MemoryJob,
   MemoryKind,
   MemoryScope,
   MemorySource,
+  MemorySourceAudit,
   MemoryStatus,
+  WorkingState,
 }
 
 export interface MemoryStatusSnapshot {
@@ -47,7 +51,9 @@ export interface MemoryStatusSnapshot {
 export interface MemoryChangeRequest {
   operationId: string
   baseRevision: number
-  action: "add" | "update" | "supersede" | "forget" | "clear"
+  action: "add" | "update" | "supersede" | "forget" | "clear" | "complete" | "cancel"
+  actor: MemoryChangeActor
+  trustedUserEventId?: string
   itemId?: string
   expectedVersion?: number
   draft?: MemoryDraft
@@ -63,6 +69,10 @@ export async function memoryList(scope?: MemoryScope, scopeId?: string, limit = 
 
 export async function memoryDetail(id: string): Promise<MemoryItem | null> {
   return invoke("memory_detail", { id })
+}
+
+export async function memoryHistory(id: string): Promise<MemoryHistoryEntry[]> {
+  return invoke("memory_history", { id })
 }
 
 export async function registerMemorySources(sources: MemorySource[]): Promise<number> {
@@ -81,6 +91,15 @@ export async function queryMemory(
 export async function getMemoryItems(ids: string[]): Promise<MemoryItem[]> {
   if (ids.length === 0) return []
   return invoke("memory_get_items", { ids })
+}
+
+/** 主动表达只按调度器冻结的 id/version 解引用，不做第二次语义搜索。 */
+export async function getMemoryItemsForTargets(targets: Array<{ id: string; version: number }>): Promise<MemoryItem[]> {
+  if (targets.length === 0) return []
+  const unique = [...new Map(targets.map(target => [`${target.id}@${target.version}`, target])).values()]
+  const items = await getMemoryItems(unique.map(target => target.id))
+  const expected = new Map(unique.map(target => [target.id, target.version]))
+  return items.filter(item => item.status === "active" && expected.get(item.id) === item.version)
 }
 
 /** 返回提交后的 revision；冲突（stale 基准）由 Rust 抛 `MEMORY_CONFLICT`。 */
@@ -118,13 +137,20 @@ export async function addMemoryCandidates(jobId: string, candidates: MemoryCandi
   return invoke("memory_candidates_add", { jobId, candidates })
 }
 
-export async function reviewMemoryBatch(jobId: string): Promise<MemoryCandidate[]> {
-  return invoke("memory_review_batch", { jobId })
+/** 完成一个 dreaming job，并在 Rust 事务中自动提交其中全部合格候选。 */
+export async function commitMemoryDreamingJob(jobId: string, baseRevision: number): Promise<number> {
+  return invoke("memory_dreaming_commit", { jobId, baseRevision })
 }
 
-/** 发布已批准的候选；返回提交后的 revision，基准过期时由 Rust 抛 `MEMORY_CONFLICT`。 */
-export async function publishMemoryBatch(jobId: string, candidateIds: string[], baseRevision: number): Promise<number> {
-  return invoke("memory_publish_batch", { jobId, candidateIds, baseRevision })
+export interface MemoryDreamingBudget { localDate: string; reservedTokens: number; usedTokens: number }
+export async function memoryDreamingBudget(localDate: string): Promise<MemoryDreamingBudget> {
+  return invoke("memory_dreaming_budget", { localDate })
+}
+export async function reserveMemoryDreamingBudget(reservationId: string, localDate: string, reservedTokens: number, dailyLimit: number): Promise<boolean> {
+  return invoke("memory_dreaming_budget_reserve", { reservationId, localDate, reservedTokens, dailyLimit })
+}
+export async function settleMemoryDreamingBudget(reservationId: string, localDate: string, reservedTokens: number, usedTokens: number | null): Promise<void> {
+  return invoke("memory_dreaming_budget_settle", { reservationId, localDate, reservedTokens, usedTokens })
 }
 
 export async function exportMemory(): Promise<string> {
