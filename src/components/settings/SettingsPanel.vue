@@ -153,8 +153,6 @@ async function doSave() {
     "ai.plan.stepThinkingEffort": a.planStepThinkingEffort,
     "ai.plan.onStepFailure": a.planOnStepFailure,
     "general.desktop.pollingIntervalMs": g.deskPoll,
-    "general.desktop.pauseExtraMs": g.deskPause,
-    "general.desktop.waitTimeoutMs": g.deskWait,
     "general.logging.level": g.logLevel,
     "general.errors.overlay": g.errOverlay,
     "ai.safety.mode": a.safetyMode,
@@ -332,7 +330,7 @@ onUnmounted(() => {
 
 <template>
   <div id="s-root">
-    <div id="s-head">
+    <div id="s-head" data-tauri-drag-region>
       <span>设置</span>
       <span class="s-hint">修改后点击保存，部分配置需重启生效</span>
       <button class="s-close" @click="doCancel">✕</button>
@@ -383,7 +381,10 @@ onUnmounted(() => {
 #s-root {
   width: 100%; height: 100%;
   display: flex; flex-direction: column;
-  background: var(--color-settings-bg, #3e1a2e);
+  /* 实色卡片底（浅色主题是纯白，深色主题是深卡面）：窗口无边框后不再有系统底；
+     圆角自己画（原生标题栏已隐藏，系统不再提供圆角） */
+  background: var(--color-settings-card, #2a1020);
+  border-radius: 10px;
   /* 文字跟随主题：深色主题下仍是浅色字，浅色主题下自动变深色 */
   color: var(--color-text-bright, #f0e0f0);
   font-family: var(--font-ui, sans-serif);
@@ -391,6 +392,7 @@ onUnmounted(() => {
   overflow: hidden;
 }
 
+/* 无边框窗口：标题条即拖动区（子元素不拦截拖动） */
 #s-head {
   display: flex; align-items: center; gap: 8px;
   padding: 8px 12px;
@@ -399,6 +401,7 @@ onUnmounted(() => {
   color: var(--color-accent, #c4276f);
   font-size: 13px; flex-shrink: 0; user-select: none;
 }
+#s-head span { pointer-events: none; }
 #s-head .s-hint { flex: 1; font-size: 9px; opacity: 0.55; }
 .s-close {
   background: none; border: none;

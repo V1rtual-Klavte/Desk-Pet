@@ -433,9 +433,10 @@ function injectCssVars(profile: ProfileData): void {
 }`;
 
   if (glassActive) {
+    // 桌面玻璃只作用于主窗口（#root）：设置窗口是常规窗口，底色由自身主题决定
+    // （实色白底/卡片色），不透出桌面
     const glassCss = `
-#root, #s-root { backdrop-filter: blur(${glassBlur}); -webkit-backdrop-filter: blur(${glassBlur}); }
-#root { background: ${glassBg}; } #s-root { background: ${glassBg}; }`;
+#root { backdrop-filter: blur(${glassBlur}); -webkit-backdrop-filter: blur(${glassBlur}); background: ${glassBg}; }`;
     _cssVarStyleEl = document.createElement("style");
     _cssVarStyleEl.textContent = css + glassCss;
   } else {

@@ -59,8 +59,6 @@ const errOverlay = ref(errorsConfig.overlay);
 
 // ── 桌面轮询 ──
 const deskPoll = ref(desktopConfig.pollingIntervalMs);
-const deskPause = ref(desktopConfig.pauseExtraMs);
-const deskWait = ref(desktopConfig.waitTimeoutMs);
 
 // ── 弹窗大小预览 ──
 async function previewSize() {
@@ -120,8 +118,6 @@ defineExpose({
   logLevel,
   errOverlay,
   deskPoll,
-  deskPause,
-  deskWait,
 });
 </script>
 
@@ -174,8 +170,6 @@ defineExpose({
     <div class="s-label">桌面轮询</div>
     <div class="row-gap">
       <label>轮询 <input class="inp-num" type="number" v-model.number="deskPoll" /> ms</label>
-      <label>暂停额外 <input class="inp-num" type="number" v-model.number="deskPause" /> ms</label>
-      <label>超时 <input class="inp-num" type="number" v-model.number="deskWait" /> ms</label>
     </div>
   </div>
 </div>

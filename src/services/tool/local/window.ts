@@ -1,15 +1,14 @@
 // ==========================================
 // 本地工具：窗口信息 (SAFE)
 //
-// 只读 window/listener.ts 缓存的最近一次 `window-changed`：不自己挂监听、不建第二份缓存。
-// 载荷里没有时间字段，`observedAt` 是宿主收报文时打的时间戳（见 WindowChangeSnapshot）。
+// 只读 window/listener.ts 缓存的最近一次原生 observation：不自己挂监听、不建第二份缓存。
 // ==========================================
 
 import type { ToolDef } from "../types"
 import { TOOL_POLICY_VERSION } from "../types"
 import { defineTool } from "../policy"
 import { register } from "../registry"
-import { getLastWindowChange } from "@/services/window"
+import { getLatestWindowObservation } from "@/services/window"
 import { windowMonitorConfig } from "@/services/config"
 import { createLogger } from "@/services/logger"
 
@@ -38,9 +37,9 @@ const windowInfoTool: ToolDef = defineTool({
   if (!windowMonitorConfig.enabled) {
     return { success: true, content: "窗口监控未开启（ai.windowMonitor.enabled = false），没有窗口信息可读。" }
   }
-  const snapshot = getLastWindowChange()
+  const snapshot = getLatestWindowObservation()
   if (!snapshot) {
-    return { success: true, content: "窗口监控已开启，但尚未收到窗口变化事件。" }
+    return { success: true, content: "窗口监控已开启，但尚未收到窗口观察。" }
   }
 
   // 与提示词侧的当前时间同形（本地时区、分钟精度），便于模型直接和注入的当前时间比较。
@@ -50,8 +49,11 @@ const windowInfoTool: ToolDef = defineTool({
     + `${pad(at.getHours())}:${pad(at.getMinutes())}`
 
   const text = [
+    `应用: ${snapshot.app || "(未知)"}`,
+    `应用标识: ${snapshot.appId || "(未知)"}`,
     `窗口标题: ${snapshot.title || "(空)"}`,
-    `窗口内容: ${snapshot.content || "(空)"}`,
+    `观察状态: ${snapshot.observationState}`,
+    `系统空闲时长: ${snapshot.idleForMs ?? "未知"} ms`,
     `观测时间: ${observedAt}`,
   ].join("\n")
 

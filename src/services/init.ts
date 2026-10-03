@@ -48,6 +48,17 @@ export async function initApp(): Promise<void> {
   await initRegistry()
   log.info("3/7 人格模块就绪")
 
+  // Proactive owns SQLite receipts; install readers before session projection/recovery.
+  const proactive = await import("@/services/proactive")
+  const runner = await import("@/services/agent/runner")
+  const session = await import("@/services/session")
+  proactive.configureProactive({expression:proactive.createActiveExpressionAdapter(),runPlanner:(await import("@/services/engine/harness")).runPiSubAgent,
+    cancelExpression:runner.cancelProactiveRun,reconcileSession:proactive.reconcileSession})
+  runner.registerProactiveTurnContextReader(proactive.getTurnContext)
+  runner.registerUserIngressObserver(()=>proactive.cancelCurrent("user_input"))
+  session.registerActiveReceiptReader(proactive.readReceipt)
+  session.registerActiveReceiptReconciler(proactive.reconcileSession)
+
   // ── 4. 工具注册 ──
   await registerDefaultTools()
   log.info("4a/7 基础工具就绪")

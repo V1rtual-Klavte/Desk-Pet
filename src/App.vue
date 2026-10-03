@@ -10,11 +10,12 @@ import TitleBar from "./components/TitleBar.vue";
 import StreamView from "./components/StreamView.vue";
 import ChatPanel from "./components/ChatPanel.vue";
 import SessionTabs from "./components/SessionTabs.vue";
-import { initWindowListener } from "./services/window";
+import { initWindowListener, setMonitorEnabled } from "./services/window";
+import { start as startProactive, stop as stopProactive, refreshProactive } from "@/services/proactive";
 import { switchToSession, createNewSession, closeSession, openSession, deleteSession, getSessions, getActiveSessionId, initWelcome } from "@/services/session";
 import type { PiSessionSummary } from "@/services/session";
 import { initApp } from "@/services/init";
-import { desktopConfig, shortcutConfig, userConfig, reloadConfig } from "@/services/config";
+import { desktopConfig, windowMonitorConfig, shortcutConfig, userConfig, reloadConfig } from "@/services/config";
 import { isMacOS } from "@/services/env";
 import { applyFontVars } from "@/services/font";
 import { createLogger } from "@/services/logger";
@@ -182,7 +183,9 @@ async function openSettings() {
     width: 440,
     height: 560,
     resizable: true,
-    decorations: true,
+    // 隐藏原生标题栏：设置页自带 ✕ 关闭按钮，顶栏可拖动（#s-head 的 drag-region）。
+    // transparent 保留只为圆角，页面自身是实色底、不透出桌面
+    decorations: false,
     alwaysOnTop: true,
     transparent: true,
   });
@@ -593,13 +596,10 @@ onMounted(async () => {
 
   await initApp();
 
-  invoke("set_monitor_config", {
-    pollingIntervalMs: desktopConfig.pollingIntervalMs,
-    pauseExtraMs: desktopConfig.pauseExtraMs,
-    waitTimeoutMs: desktopConfig.waitTimeoutMs,
-  }).catch(error => log.warn("监控节流参数下发失败，Rust 仍用默认节流参数:", formatError(error)));
+  await setMonitorEnabled(windowMonitorConfig.enabled, desktopConfig.pollingIntervalMs);
   playEventSound("welcome");
   cleanupListener = await initWindowListener(winSize);
+    startProactive();
 
   await registerShortcut();
 
@@ -676,6 +676,8 @@ onMounted(async () => {
   try {
     cleanupSettingsSaved = await listen("deskpet-settings-saved", async () => {
       await reloadConfig();
+      await setMonitorEnabled(windowMonitorConfig.enabled, desktopConfig.pollingIntervalMs);
+      refreshProactive();
       // 全局字体可能刚被改：紧跟配置刷新重注入字体 CSS 变量
       applyFontVars();
       // 效果模式可能刚被改：紧跟配置刷新重判光标追踪的注册态
@@ -720,6 +722,7 @@ onMounted(async () => {
 });
 
 onUnmounted(() => {
+  stopProactive();
   void import("@/services/tool/mcp").then(({ disconnectAllMcpServers }) => disconnectAllMcpServers())
   if (cleanupListener) cleanupListener();
   disposeCursorTracker();
