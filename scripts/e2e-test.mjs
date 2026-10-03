@@ -246,6 +246,9 @@ copyFileSync(join(process.cwd(), configSource), join(dataRoot, "settings", "CONF
 const evalModelsSource = join(process.cwd(), "test", "eval-models.json")
 if (existsSync(evalModelsSource)) copyFileSync(evalModelsSource, join(dataRoot, "eval-models.json"))
 else console.error("[E2E] 缺少 test/eval-models.json，测试模型将全部继承仓库配置")
+// 本地专属覆盖（凭据 / 临时指向；已 gitignore）：存在才 stage，只进隔离副本、不写回真实配置。
+const evalModelsLocal = join(process.cwd(), "test", "eval-models.local.json")
+if (existsSync(evalModelsLocal)) copyFileSync(evalModelsLocal, join(dataRoot, "eval-models.local.json"))
 // 外部记忆基准：案例文件在开发者的 data-dir（默认 test/memory-bench/.data，可用
 // --data-dir / DESKPET_BENCH_DATA_DIR 指定），这里按 upstream-lock.json 的目录映射
 // stage 成隔离数据根的 bench/cases.json；宿主只读，不做运行期下载。

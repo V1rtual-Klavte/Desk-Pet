@@ -133,17 +133,29 @@ async function finishSpecialReport(report: unknown, passed: boolean): Promise<vo
   await invoke("e2e_complete", { passed, report: JSON.stringify(report, null, 2) })
 }
 
-/** 读取启动器 stage 到数据根的 eval-models.json；仓库未提供（未 stage）按全部继承。 */
-async function loadEvalModels(): Promise<EvalModelsFile> {
-  let content: string
+/** 读取启动器 stage 到数据根的模型配置；文件缺失返回 undefined（调用方决定是否留痕）。 */
+async function readStagedModelsFile(name: string): Promise<string | undefined> {
   try {
-    content = (await invoke<{ content: string; size: number }>("file_read", { path: await runtimePath("data", "eval-models.json"), maxBytes: 64 * 1024 })).content
-  } catch (error) {
-    // 正常路径是「仓库文件存在 → 启动器总是 stage」；走到这里说明文件缺失或读取失败，留痕不静默。
-    console.error(`[E2E] eval-models.json 未读取到，测试模型按仓库配置全部继承: ${formatError(error)}`)
-    return {}
+    return (await invoke<{ content: string; size: number }>("file_read", { path: await runtimePath("data", name), maxBytes: 64 * 1024 })).content
+  } catch {
+    return undefined
   }
-  return parseEvalModelsFile(content)
+}
+
+/** 读取两层测试侧模型配置：进 git 的基线与本地专属覆盖（凭据入口）。 */
+async function loadEvalModels(): Promise<{ base: EvalModelsFile; local: EvalModelsFile }> {
+  const baseText = await readStagedModelsFile("eval-models.json")
+  if (baseText === undefined) {
+    // 正常路径是「仓库文件存在 → 启动器总是 stage」；缺失说明没走启动脚本，留痕不静默。
+    console.error("[E2E] eval-models.json 未读取到，测试模型按仓库配置全部继承")
+  }
+  // 本地文件可选：缺失是常态（凭据与临时覆盖入口，见 test/README.md）；存在则解析，
+  // 坏 JSON / 违规字段照旧显式抛错，不被「可选」吞掉。
+  const localText = await readStagedModelsFile("eval-models.local.json")
+  return {
+    base: baseText === undefined ? {} : parseEvalModelsFile(baseText, { allowCredentials: false }),
+    local: localText === undefined ? {} : parseEvalModelsFile(localText, { allowCredentials: true }),
+  }
 }
 
 /** 行键：trial 1 用裸 caseId（最常见的形态），repeat 时才带序号。 */
@@ -195,18 +207,22 @@ async function main(): Promise<void> {
   await initPaths()
   await initConfig()
   const raw = await invoke<RuntimeOptions>("e2e_options")
-  // 测试侧统一模型配置：环境变量 > test/eval-models.json（启动器 stage 到数据根）> 继承仓库配置。
+  // 测试侧统一模型配置：环境变量 > test/eval-models.local.json（本地专属）> test/eval-models.json
+  // （启动器 stage 到数据根）> 继承仓库配置。
   // underTest 覆盖只作用于隔离副本（setOverrides + flushConfig），凭据与真实配置不受影响。
   const evalModels = await loadEvalModels()
-  const resolvedModels = resolveEvalModels(evalModels, {
+  const resolvedModels = resolveEvalModels(evalModels.base, evalModels.local, {
     DESKPET_EVAL_PROVIDER: raw.evalProvider,
     DESKPET_EVAL_MODEL: raw.evalModel,
     DESKPET_EVAL_JUDGE_MODEL: raw.evalJudgeModel,
   })
-  if (resolvedModels.underTestProvider || resolvedModels.underTestModel) {
+  if (resolvedModels.underTestProvider || resolvedModels.underTestModel || resolvedModels.underTestEndpoint || resolvedModels.underTestApiKey || resolvedModels.underTestReviewMaxTokens !== undefined) {
     setOverrides({
       ...(resolvedModels.underTestProvider ? { "ai.provider": resolvedModels.underTestProvider } : {}),
       ...(resolvedModels.underTestModel ? { "ai.model": resolvedModels.underTestModel } : {}),
+      ...(resolvedModels.underTestEndpoint ? { "ai.endpoint": resolvedModels.underTestEndpoint } : {}),
+      ...(resolvedModels.underTestApiKey ? { "ai.apiKey": resolvedModels.underTestApiKey } : {}),
+      ...(resolvedModels.underTestReviewMaxTokens !== undefined ? { "ai.memory.dreaming.reviewMaxTokens": resolvedModels.underTestReviewMaxTokens } : {}),
     })
     await flushConfig()
   }

@@ -1,5 +1,5 @@
 {
-  "_readme": "测试侧统一模型配置（不含凭据；凭据始终读隔离副本）。null = 继承仓库 Provider 配置。解析优先级：环境变量 DESKPET_EVAL_PROVIDER / DESKPET_EVAL_MODEL / DESKPET_EVAL_JUDGE_MODEL > 本文件 > 内置默认；bench 的 --bench-judge-model 参数仍最高优先。judge 必须不同于被测模型（同模型在开跑前报错）。",
+  "_readme": "测试侧统一模型配置（禁止凭据：出现 apiKey 会显式报错）。null = 继承仓库 Provider 配置。解析优先级：环境变量 DESKPET_EVAL_PROVIDER / DESKPET_EVAL_MODEL / DESKPET_EVAL_JUDGE_MODEL > test/eval-models.local.json（本地专属、已 gitignore，可含 underTest.apiKey/endpoint/reviewMaxTokens）> 本文件 > 仓库 Provider 配置；bench 的 --bench-judge-model 参数仍最高优先。judge 必须不同于被测模型（同模型在开跑前报错），judge 继承测试侧网关的 endpoint/apiKey。",
   "underTest": { "provider": null, "model": null },
   "judge": { "model": "deepseek-reasoner" }
 }

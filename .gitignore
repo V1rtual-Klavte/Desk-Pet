@@ -48,3 +48,5 @@ test/reports/
 test/.tmp/
 # 外部记忆基准的上游大文件缓存（LongMemEval S 等；固定 revision + SHA-256 见 prepare.mjs）
 test/memory-bench/.data/
+# 测试侧模型凭据与临时覆盖（本地专属、不进 git；优先级与字段见 test/README.md「测试侧模型配置」）
+test/eval-models.local.json
