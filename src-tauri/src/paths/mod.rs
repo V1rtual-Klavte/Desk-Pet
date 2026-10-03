@@ -43,9 +43,15 @@ impl AppPaths {
         let data_root = if cfg!(debug_assertions) {
             // 临时根只允许由 E2E runner 启用，普通 `tauri dev` 不受遗留环境变量影响。
             if is_e2e() {
-                std::env::var("DESKPET_E2E_DATA_ROOT")
+                let requested = std::env::var("DESKPET_E2E_DATA_ROOT")
                     .map(PathBuf::from)
-                    .unwrap_or_else(|_| development_data_root())
+                    .map_err(|_| AppError::Config("E2E 必须提供隔离临时根".into()))?;
+                let root = requested.canonicalize().map_err(|e| AppError::Config(format!("E2E 临时根不存在: {e}")))?;
+                let base = project_root().join("test/.tmp").canonicalize().map_err(|e| AppError::Config(format!("E2E 临时根目录不存在: {e}")))?;
+                if root.parent() != Some(base.as_path()) || !root.file_name().is_some_and(|name| name.to_string_lossy().starts_with("e2e-")) {
+                    return Err(AppError::PathEscape);
+                }
+                root
             } else {
                 development_data_root()
             }
@@ -57,7 +63,10 @@ impl AppPaths {
         };
 
         let settings = data_root.join("settings");
-        let config_file = if cfg!(debug_assertions) {
+        let config_file = if cfg!(debug_assertions) && is_e2e() {
+            // E2E 设置变更只写启动器复制的完整配置，不能覆盖真实开发配置。
+            settings.join("CONFIG.yaml")
+        } else if cfg!(debug_assertions) {
             let dev = project_root().join("CONFIG-DEV.yaml");
             if dev.exists() {
                 dev
