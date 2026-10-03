@@ -359,6 +359,49 @@ fn forget_blocks_recall_and_reingest_and_rebuild() {
 }
 
 #[test]
+fn forget_tombstone_blocks_sibling_add_from_same_source() {
+    // 遗忘是按来源事件（session+entry+content_hash）整条抑制的：一条条目被遗忘后，
+    // 共享同一来源的兄弟条目仍可召回，但任何**新增**引用该来源的写入都会被墓碑拦下
+    // （防「忘了又复活」）。bench 夹具的 session→user 归一因此必须先把全部副本 add
+    // 完再 forget 原件；逐条 add→forget 会在共享来源的第二条上撞出
+    // `来源未登记`（2026-10-03 LongMemEval oracle lme-oracle-e01b8e2f 的真实故障）。
+    let (_fixture, store) = Fixture::new();
+    store.register_sources(&[source("src-1", "entry-1", "hash-1")]).unwrap();
+    let mut first = draft("用户喜欢喝拿铁", vec!["src-1"]);
+    first["scope"] = json!("session");
+    first["scopeId"] = json!("sess-1");
+    let mut second = draft("用户住在杭州", vec!["src-1"]);
+    second["scope"] = json!("session");
+    second["scopeId"] = json!("sess-1");
+    let revision = store.status().unwrap().revision;
+    add(&store, "op-first", revision, &first);
+    let revision = store.status().unwrap().revision;
+    add(&store, "op-second", revision, &second);
+    // 夹具归一第一条：先 add user 副本，再 forget 原件。
+    let revision = store.status().unwrap().revision;
+    add(&store, "op-copy-1", revision, &draft("用户喜欢喝拿铁", vec!["src-1"]));
+    let items = store.list(Some("session"), None, 10).unwrap();
+    let first_id = items
+        .iter()
+        .find(|item| item["draft"]["content"] == json!("用户喜欢喝拿铁"))
+        .and_then(|item| item["id"].as_str())
+        .unwrap()
+        .to_string();
+    let revision = store.status().unwrap().revision;
+    store
+        .apply_change("op-forget-1", revision, "forget", Some(&first_id), None, None)
+        .unwrap();
+    // 夹具归一第二条：add 会撞上第一条 forget 留下的墓碑。
+    let revision = store.status().unwrap().revision;
+    let blocked = store.apply_change("op-copy-2", revision, "add", None, None, Some(&draft("用户住在杭州", vec!["src-1"])));
+    assert!(
+        matches!(blocked, Err(AppError::Memory(ref message)) if message.contains("来源未登记")),
+        "同一来源的兄弟条目在原件被遗忘后仍被允许新增（墓碑拦新增失效）"
+    );
+    assert_eq!(store.query("杭州", None, None, None, 10).unwrap().len(), 1, "未遗忘的兄弟条目应仍可召回");
+}
+
+#[test]
 fn dreaming_candidates_commit_only_at_job_boundary() {
     let (_fixture, store) = Fixture::new();
     store.register_sources(&[source("src-1", "entry-1", "hash-1")]).unwrap();

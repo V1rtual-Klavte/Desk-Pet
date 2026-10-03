@@ -2,7 +2,7 @@
 // 上下文引擎 —— 统一导出
 // ==========================================
 
-export { buildPrompt, CHAT_THINKING_HINTS, ONE_SHOT_LOW_EFFORT_HINT, composeDynamicPrompt, currentTimeNote } from "./builder"
+export { buildPrompt, CHAT_THINKING_HINTS, ONE_SHOT_LOW_EFFORT_HINT, composeDynamicPrompt, currentTimeNote, setCurrentTimeNoteAnchor } from "./builder"
 export type { BuildContextInput, BuildContextOutput } from "./builder"
 export { buildPromptBlocks } from "./kernel"
 export type { ContextBlockInput, ContextBudgetAdjustment, PromptBlocks, PromptBlocksOptions } from "./kernel"

@@ -53,6 +53,7 @@ export { RuntimeDataStreamFilter } from "./stream-text"
 
 export {
   createHarnessModels,
+  getPiModel,
   getPiRuntimeProviderOverride,
   installPiRuntimeProviderForTest,
   resetPiRuntimeProviderForTest,

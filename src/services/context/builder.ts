@@ -94,6 +94,18 @@ export const ONE_SHOT_LOW_EFFORT_HINT = "\n\n[请快速简要回答，不需要�
 const WEEKDAY_LABELS = ["周日", "周一", "周二", "周三", "周四", "周五", "周六"] as const
 
 /**
+ * E2E 夹具的时间锚点：外部基准（LongMemEval）的官方协议以题目 `question_date` 为「今天」，
+ * 真实时钟会让相对日期题系统性失真。只有 test/ 宿主会设置它，生产没有任何调用点；
+ * 传 null（或非法值）复位后 `currentTimeNote` 回到真实时钟。
+ */
+let noteTimeAnchor: Date | null = null
+
+/** 设置 / 复位尾随注记的时间锚点（E2E 专用）。 */
+export function setCurrentTimeNoteAnchor(anchor: Date | null): void {
+  noteTimeAnchor = anchor && Number.isFinite(anchor.getTime()) ? anchor : null
+}
+
+/**
  * 当前日期与时间的唯一取用点。**定长**：`[当前时间] YYYY-MM-DD HH:mm 周X`，恒为 26 字符
  * （约 11 tokens：非 ASCII 1 token/字符、ASCII 1/4 token），不随输入或窗口变化。
  *
@@ -103,7 +115,7 @@ const WEEKDAY_LABELS = ["周日", "周一", "周二", "周三", "周四", "周�
  * 块里。放那里的原因见 `composeDynamicPrompt` 的注释：它每回合都变，进 system prompt
  * 就会把前缀缓存断在会话正文之前。
  */
-export function currentTimeNote(now: Date = new Date()): string {
+export function currentTimeNote(now: Date = noteTimeAnchor ?? new Date()): string {
   const pad = (value: number) => String(value).padStart(2, "0")
   return `[当前时间] ${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())} `
     + `${pad(now.getHours())}:${pad(now.getMinutes())} ${WEEKDAY_LABELS[now.getDay()]}`

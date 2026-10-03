@@ -109,7 +109,10 @@ node test/memory-bench/export-hypotheses.mjs test/reports/bench/<stamp>.json --o
 - judge 走测试侧网关的端点与 api_key（同 key 异构；本地 `eval-models.local.json` 可覆盖网关端点与凭据；默认 judge 模型由
   [test/eval-models.json](../eval-models.json) 提供——当前 `deepseek-reasoner`，可用
   `--bench-judge-model` 或 `DESKPET_EVAL_JUDGE_MODEL` 覆盖；被测模型以本机配置为准，也可在
-  同一文件或 `DESKPET_EVAL_MODEL` 覆盖）。**唯一纪律：judge 模型必须不同于
+  同一文件或 `DESKPET_EVAL_MODEL` 覆盖）。judge 模型经网关按 id 解析（不借用被测模型的预算），
+  单次输出预算 `judgeOutputBudget`：下限 1024、上限 4096 token，绝不越过模型自身上限 ——
+  reasoning judge 的 thinking 也计入 `maxTokens`，固定 512 曾把一次判分截断成「未裁决」
+  （2026-10-03 LME oracle `852ce960`），实际计费仍按真实输出。**唯一纪律：judge 模型必须不同于
   被测模型**（配置相同会在开跑前报错），报告顶层记录 `judgeModel`。judge 失败（超时/空响应）只记
   「未裁决」，不进正确率分母，另计 `judgeFailures`。
 - 确定性检索指标（不依赖 judge）：`sessionRecall`（gold `answer_session_ids` 被渲染证据覆盖的比例）、
@@ -145,13 +148,20 @@ node test/memory-bench/export-hypotheses.mjs test/reports/bench/<stamp>.json --o
 - 提取走**真实 dreaming**（`manual` 模式，绕开每日预算；循环 sweep 直至无待处理来源）。
 - **session-scope 候选归一为 user scope**：Rust 禁止跨范围改归属，用 `add`（同内容/来源）+ `forget`
   原条目实现；否则提问发生在新建会话会漏召回。次数记入 `ingest.scopeNormalized`。
+  **必须两段式**（先全部 `add`、再全部 `forget`，规划在 `scope-normalize.mjs`）：Rust 的遗忘
+  按来源事件写 `block_extraction` 墓碑，之后任何引用该来源的 `add` 都会判「来源未登记」；
+  逐条 `add→forget` 在共享来源的候选上会把整题打成基础设施失败（2026-10-03 LME oracle
+  `lme-oracle-e01b8e2f` 的故障），而不是被测能力问题。
 - 提问：每题新建会话；cell = 题 × 1 trial（外部集是观测证据，不套自建集的 ≥3 trial 配对纪律）。
 - 组复用：LoCoMo 一段对话灌一次库、组内多题提问；MemoryBank 一个角色同理；LongMemEval 每题一组。
 - 工具全部撤下（与 memory-quality 相同的隔离）；存储为隔离 E2E 根内的真实 Rust SQLite。
 - 模型工具/权限边界不变；**不为拉高分改产品**：recall 预算（CONFIG `ai.memory.core/recall`）、
   dreaming 截断（1200）/丢弃（4800）造成的压分照实记录（`ingest` + `manifest.memoryConfig`）。
-- 已知偏差（报告口径如实标注）：官方 LongMemEval 以 `question_date` 为「当前日期」，
-  本仓提问发生在真实时钟（2026+），相对日期类问题受此影响；题面不做改写。
+- 题目基准日（2026-10-03 修正）：官方 LongMemEval 以 `question_date` 为「当前日期」，
+  适配器把提问回合的尾随注记 `[当前时间]` 锚到题目基准日（**本地墙钟**，`questionTimeAnchor`），
+  相对日期题（「多少天前」「上周二」）从此在官方口径下测量；锚点只活在该提问回合内、
+  finally 复位，生产路径仍用真实时钟。**题面一个字不改**，报告 manifest 记
+  `questionTimeAnchoring` 供审计。其余数据集没有基准日，保持真实时钟。
 - **reasoning 模型的评审输出上限（2026-10-03 实测与处理）**：产品 dreaming 的单次评审输出
   预算按模型窗口自动推导（窗口 × 1/8、32k 封顶；reasoning 的 thinking 也计入）。若显式压低
   `ai.memory.dreaming.reviewMaxTokens` 后仍超限，提取会如实以「Provider 输出达到长度上限，

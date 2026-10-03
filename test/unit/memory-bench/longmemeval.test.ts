@@ -2,7 +2,7 @@
 // 对照 test/SKILL.md D1–D10：把实现改坏（换边界、删分支、改公式）这些断言必须变红。
 import { describe, it, expect } from "vitest"
 import {
-  importLongMemEvalQuestion, parseLmeDate, buildLongMemEvalFile, selectLongMemEvalSubset,
+  importLongMemEvalQuestion, parseLmeDate, questionTimeAnchor, buildLongMemEvalFile, selectLongMemEvalSubset,
   validateLongMemEvalFile, LME_SUBSET_TARGETS,
 } from "../../memory-bench/datasets/longmemeval/importer.mjs"
 import { scoreLongMemEval } from "../../memory-bench/datasets/longmemeval/scorer.mjs"
@@ -41,6 +41,18 @@ describe("LongMemEval 日期解析", () => {
     expect(parseLmeDate("2023/04/10")).toBe(null)
     expect(parseLmeDate("2023-04-10 (Mon) 17:50")).toBe(null)
     expect(parseLmeDate(undefined)).toBe(null)
+  })
+
+  it("question_date 时间锚点按本地墙钟还原（UTC 毫秒直接 toLocal 会平移时区/跨日） [bench-lme-question-anchor]", () => {
+    const anchor = questionTimeAnchor("2023/05/01 (Mon) 03:56")
+    // 断言的期望来自上游字符串本身，不来自被测实现的格式化输出。
+    expect({ year: anchor.getFullYear(), month: anchor.getMonth() + 1, day: anchor.getDate(),
+      hour: anchor.getHours(), minute: anchor.getMinutes() })
+      .toEqual({ year: 2023, month: 5, day: 1, hour: 3, minute: 56 })
+
+    // 形状不符必须抛错：静默回退真实时钟会把相对日期题重新污染且不留痕迹。
+    expect(() => questionTimeAnchor(null)).toThrow(/无法解析/)
+    expect(() => questionTimeAnchor("2023-05-01")).toThrow(/无法解析/)
   })
 })
 

@@ -14,7 +14,7 @@
 // 归 L3 的理由：注记的生产者是 `@/services/engine/harness`（会带出 runtime 的 IPC 依赖）。
 import { describe, expect, it } from "vitest"
 
-import { buildPrompt, CHAT_THINKING_HINTS, ONE_SHOT_LOW_EFFORT_HINT, composeDynamicPrompt, currentTimeNote, estimateContextTokens } from "@/services/context"
+import { buildPrompt, CHAT_THINKING_HINTS, ONE_SHOT_LOW_EFFORT_HINT, composeDynamicPrompt, currentTimeNote, estimateContextTokens, setCurrentTimeNoteAnchor } from "@/services/context"
 import { createTurnNoteMessage } from "@/services/engine/harness"
 import { isTransientInputMessage, TURN_NOTE_CUSTOM_TYPE } from "@/services/engine/runtime"
 import { formatPoolForPrompt } from "@/services/personality/variable-pool"
@@ -111,5 +111,23 @@ describe("提示文案", () => {
     expect(built.staticPrefix, "时间片段进了 staticPrefix（静态前缀是缓存身份的一部分，不能每回合变化）").not.toContain(TIME_MARKER)
     expect(built.systemPrompt, "时间片段仍留在 system prompt 里：前缀缓存会断在会话正文上游").not.toContain(TIME_MARKER)
     expect(built.turnDynamic).not.toContain(TIME_MARKER)
+  })
+
+  // 外部基准（LongMemEval）要求「今天」= 题目 question_date；E2E 夹具经这个锚点把注记锚到
+  // 题目基准日。生产没有调用点，复位后必须立刻回到真实时钟 —— 否则下一题会被旧日期污染。
+  it("E2E 时间锚点覆盖注记日期，复位后回到真实时钟", () => {
+    try {
+      setCurrentTimeNoteAnchor(new Date(2023, 4, 1, 3, 56))
+      expect(currentTimeNote()).toBe("[当前时间] 2023-05-01 03:56 周一")
+    } finally {
+      setCurrentTimeNoteAnchor(null)
+    }
+    const restored = currentTimeNote()
+    expect(restored).toMatch(TIME_NOTE_PATTERN)
+    const digits = restored.match(/(\d{4})-(\d{2})-(\d{2}) (\d{2}):(\d{2})/)
+    expect(digits).not.toBeNull()
+    const at = new Date(Number(digits![1]), Number(digits![2]) - 1, Number(digits![3]),
+      Number(digits![4]), Number(digits![5])).getTime()
+    expect(Math.abs(at - Date.now()), "复位后注记没有回到真实时钟").toBeLessThanOrEqual(TIME_DRIFT_TOLERANCE_MS)
   })
 })

@@ -21,6 +21,20 @@ export function parseLmeDate(text) {
   return Number.isFinite(value) ? value : null
 }
 
+/**
+ * 题目基准日的「今天」锚点（LongMemEval 官方协议以 `question_date` 为当前日期）。
+ *
+ * 必须按**本地墙钟**构造：上游时间串（`2023/05/01 (Mon) 03:56`）是用户当地时间，
+ * 尾随注记也用本机时区格式化；拿 `parseLmeDate` 的 UTC 毫秒直接 toLocal 会在非 UTC
+ * 机器上整体平移（上海 +8h，可跨日）。形状不符时抛错而不是静默回退真实时钟 ——
+ * 静默回退会让相对日期题再次被真实时钟系统性污染，且无任何痕迹。
+ */
+export function questionTimeAnchor(questionDate) {
+  const match = /^(\d{4})\/(\d{2})\/(\d{2}) \([A-Za-z]{3}\) (\d{2}):(\d{2})$/.exec(String(questionDate ?? "").trim())
+  if (!match) throw new Error(`LongMemEval question_date 无法解析为时间锚点: ${JSON.stringify(questionDate)}`)
+  return new Date(Number(match[1]), Number(match[2]) - 1, Number(match[3]), Number(match[4]), Number(match[5]))
+}
+
 export function importLongMemEvalQuestion(raw) {
   const questionId = raw?.question_id
   if (typeof questionId !== "string" || !questionId) throw new Error("LongMemEval 条目缺少 question_id")
