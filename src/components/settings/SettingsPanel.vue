@@ -118,6 +118,7 @@ async function doSave() {
     "ai.apiKey": a.aiApiKey,
     "ai.requireApiKey": a.aiRequireApiKey,
     "ai.model": a.aiModel,
+    "ai.auxModel": a.aiAuxModel,
     "ai.contextMaxTokens": a.aiContextMaxTokens,
     "ai.thinking.effort": a.aiThinkingEffort,
     // 对话投递：默认发送方式与队列批量策略（忙碌投递与下一回合的批量行为）

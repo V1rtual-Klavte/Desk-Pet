@@ -95,6 +95,8 @@ interface Config {
     apiKey: string
     requireApiKey: boolean
     model: string
+    /** 辅助模型（子代理 / 主动扫描规划 / 记忆整理）；空 = 跟随聊天模型 */
+    auxModel: string
     contextMaxTokens: number
     thinking: {
       effort: string
@@ -507,6 +509,7 @@ const _ai = {
   get endpoint() { return overrideOr("ai.endpoint", cfg.ai?.endpoint || import.meta.env.VITE_API_ENDPOINT || ""); },
   get apiKey() { return overrideOr("ai.apiKey", cfg.ai?.apiKey || import.meta.env.VITE_API_KEY || ""); },
   get model() { return overrideOr("ai.model", cfg.ai?.model || import.meta.env.VITE_MODEL || "deepseek-chat"); },
+  get auxModel() { return overrideOr("ai.auxModel", cfg.ai?.auxModel || ""); },
   get contextMaxTokens() { return overrideOr("ai.contextMaxTokens", cfg.ai?.contextMaxTokens ?? DEFAULT_CONTEXT_WINDOW); },
   get thinkingEffort() { return overrideOr("ai.thinking.effort", cfg.ai?.thinking?.effort || "auto") as import("@/services/agent/types").ThinkingEffort; },
   get requireApiKey() { return overrideOr("ai.requireApiKey", cfg.ai?.requireApiKey ?? true); },

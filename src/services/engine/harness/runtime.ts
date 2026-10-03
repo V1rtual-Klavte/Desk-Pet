@@ -42,7 +42,7 @@ import {
 import type { HarnessToolRun, ToolDef } from "@/services/tool"
 import { loopConfig, memoryConfig, planConfig } from "@/services/config"
 import { emit } from "@tauri-apps/api/event"
-import { resolvePiTurnModel } from "./model-gateway"
+import { resolvePiAuxModel, resolvePiTurnModel } from "./model-gateway"
 import type { PiModel } from "./model-gateway"
 import { PROVIDER_TIMEOUT_MS } from "./net-guard"
 import { RuntimeDataStreamFilter } from "./stream-text"
@@ -2495,7 +2495,9 @@ export async function compactActiveSession(sessionId: string): Promise<ManualCom
 /** Used by planning and fork/team agents. It shares the same harness kernel, not a second loop. */
 export async function runPiSubAgent(input: PiSubAgentInput): Promise<PiSubAgentOutput> {
   const thinkingEffort = input.thinkingEffort ?? "low"
-  const baseModel = resolvePiTurnModel()
+  // 子运行的模型取辅助模型（ai.auxModel；留空回落聊天模型）：agent_spawn 工具、计划步骤与
+  // 主动扫描规划共用这一个出口，模型路由只在这一处生效。
+  const baseModel = resolvePiAuxModel()
   if (input.maxOutputTokens !== undefined && (!Number.isSafeInteger(input.maxOutputTokens) || input.maxOutputTokens < 1)) {
     throw new Error("子运行 maxOutputTokens 必须是正整数")
   }

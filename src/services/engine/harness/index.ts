@@ -56,6 +56,7 @@ export {
   getPiRuntimeProviderOverride,
   installPiRuntimeProviderForTest,
   resetPiRuntimeProviderForTest,
+  resolvePiAuxModel,
   resolvePiTurnModel,
   toPiReasoningLevel,
 } from "./model-gateway"

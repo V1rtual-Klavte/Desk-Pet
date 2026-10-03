@@ -8,9 +8,10 @@
 // 资源边界（与《记忆系统运行时契约》§7.2 同源）：
 // - 每批来源数与正文长度都有界，超出的留给下一批，不做「一次全库重算」；
 // - 单条来源过大不截断内容，直接标记 oversized 交给用户挑选片段；
-// - 模型调用走 completePiText(purpose="memory")，与主回合共用认证、取消与用量口径。
+// - 模型调用走 completePiText(purpose="memory")，与主回合共用认证、取消与用量口径；
+//   模型取辅助模型（ai.auxModel，留空跟随聊天模型）。
 
-import { completePiText } from "@/services/engine/harness"
+import { completePiText, resolvePiAuxModel } from "@/services/engine/harness"
 import { createLogger } from "@/services/logger"
 import { formatError } from "@/services/error"
 import { memoryConfig } from "@/services/config"
@@ -235,6 +236,8 @@ export async function runDreamingSweep(options: { signal?: AbortSignal; automati
       }
       const result = await completePiText({
         purpose: "memory",
+        // 辅助模型在这里冻结（ai.auxModel；留空即聊天模型）：整理作业与子代理同款模型。
+        model: resolvePiAuxModel(),
         systemPrompt: REVIEW_SYSTEM_PROMPT,
         userText,
         maxTokens: reviewMaxTokens,

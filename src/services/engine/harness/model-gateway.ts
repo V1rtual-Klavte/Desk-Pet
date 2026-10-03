@@ -35,7 +35,8 @@ interface PiGateway {
 /** 已冻结的 pi-ai 模型快照，避免一次性调用在中途重新读取设置。 */
 export type PiModel = Model<any>
 
-let gatewayCache: PiGateway | undefined
+/** 按模型 id 缓存的网关（聊天模型 + 辅助模型各自一份，签名变化即重建）。 */
+const gatewayCacheByModel = new Map<string, PiGateway>()
 const modelGateways = new WeakMap<Model<any>, PiGateway>()
 
 function configuredProviderId(): string {
@@ -48,7 +49,7 @@ function builtinProvider(providerId: string): Provider | undefined {
   return undefined
 }
 
-function createConfiguredGateway(): PiGateway {
+function createConfiguredGateway(modelId: string = aiConfig.model): PiGateway {
   const providerId = configuredProviderId()
   const url = validateProviderUrl(aiConfig.endpoint)
   // Existing local-server configurations accept a bare host; custom API paths are preserved.
@@ -58,16 +59,17 @@ function createConfiguredGateway(): PiGateway {
   const requireApiKey = aiConfig.requireApiKey
   const signature = JSON.stringify([
     providerId, endpoint, configuredKey, aiConfig.requireApiKey,
-    aiConfig.model, aiConfig.contextMaxTokens,
+    modelId, aiConfig.contextMaxTokens,
   ])
-  if (gatewayCache?.signature === signature) return gatewayCache
+  const cached = gatewayCacheByModel.get(modelId)
+  if (cached?.signature === signature) return cached
 
   const builtin = builtinProvider(providerId)
-  const catalog = builtin?.getModels().find(model => model.id === aiConfig.model)
+  const catalog = builtin?.getModels().find(model => model.id === modelId)
   const model: Model<any> = {
     ...catalog,
-    id: aiConfig.model,
-    name: aiConfig.model,
+    id: modelId,
+    name: modelId,
     api: catalog?.api ?? "openai-completions",
     provider: providerId,
     baseUrl: endpoint,
@@ -99,13 +101,14 @@ function createConfiguredGateway(): PiGateway {
   })
   const models = createModels()
   models.setProvider(provider)
-  gatewayCache = { signature, model, models, fetch: createProviderFetchGuard(endpoint) }
-  modelGateways.set(model, gatewayCache)
-  return gatewayCache
+  const gateway: PiGateway = { signature, model, models, fetch: createProviderFetchGuard(endpoint) }
+  gatewayCacheByModel.set(modelId, gateway)
+  modelGateways.set(model, gateway)
+  return gateway
 }
 
-export function getPiModel(): Model<any> {
-  return createConfiguredGateway().model
+export function getPiModel(modelId: string = aiConfig.model): Model<any> {
+  return createConfiguredGateway(modelId).model
 }
 
 export function toPiAgentThinkingLevel(effort: ThinkingEffort | undefined): "off" | "low" | "medium" | "high" {
@@ -160,6 +163,21 @@ export function resolvePiTurnModel(): PiModel {
   // 低于下限的窗口没有可用的压缩切点：在模型解析这个唯一入口报错，
   // 不让回合静默跑在坏预算上（设置页保存时同样会拒绝）。这里的窗口是
   // `min(模型目录窗口, 配置窗口)`，所以带上模型 id 与配置值 —— 用户该换模型，不是改配置。
+  const issue = contextWindowError(model.contextWindow, { configured: aiConfig.contextMaxTokens, modelId: model.id })
+  if (issue) throw new Error(issue)
+  return model
+}
+
+/**
+ * 辅助模型的解析（子代理 / 计划步骤 / 主动扫描规划 / 记忆整理）。
+ * `ai.auxModel` 留空或与聊天模型相同时回落主模型；非空时经同一网关
+ * （同 provider/endpoint/apiKey）按目标模型 id 解析，预算口径与主模型一致。
+ * 测试注入只替换运行面（streamFn），不改写这里解析出的模型身份。
+ */
+export function resolvePiAuxModel(): PiModel {
+  const auxId = aiConfig.auxModel.trim()
+  if (!auxId || auxId === aiConfig.model) return resolvePiTurnModel()
+  const model = getPiModel(auxId)
   const issue = contextWindowError(model.contextWindow, { configured: aiConfig.contextMaxTokens, modelId: model.id })
   if (issue) throw new Error(issue)
   return model

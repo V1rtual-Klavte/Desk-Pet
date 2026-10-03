@@ -24,6 +24,7 @@ const log = createLogger("Settings");
 const aiEndpoint = ref(aiConfig.endpoint);
 const aiApiKey = ref(aiConfig.apiKey);
 const aiModel = ref(aiConfig.model);
+const aiAuxModel = ref(aiConfig.auxModel);
 const aiContextMaxTokens = ref(aiConfig.contextMaxTokens);
 const showApiKey = ref(false);
 const aiRequireApiKey = ref(aiConfig.requireApiKey);
@@ -447,6 +448,7 @@ defineExpose({
   aiEndpoint,
   aiApiKey,
   aiModel,
+  aiAuxModel,
   aiContextMaxTokens,
   aiThinkingEffort,
   aiRequireApiKey,
@@ -491,6 +493,7 @@ defineExpose({
     <div class="fld"><span class="fn">端点</span><input class="inp" v-model="aiEndpoint" /></div>
     <div class="fld"><span class="fn">密钥</span><input class="inp" :type="showApiKey ? 'text' : 'password'" v-model="aiApiKey" /><button class="btn-s" @click="showApiKey = !showApiKey">{{ showApiKey ? '隐藏' : '显示' }}</button></div>
     <div class="fld"><span class="fn">模型</span><input class="inp" v-model="aiModel" /></div>
+    <div class="fld"><span class="fn">辅助模型</span><input class="inp" v-model="aiAuxModel" placeholder="留空 = 跟随聊天模型" /><span class="s-muted">子代理 / 记忆整理 / 主动规划</span></div>
     <div class="fld"><span class="fn">上下文</span><input class="inp-num" type="number" :min="MIN_CONTEXT_WINDOW" v-model.number="aiContextMaxTokens" style="width:80px" /><span class="s-muted">tokens（最低 {{ MIN_CONTEXT_WINDOW }}）</span></div>
     <label class="chk" style="margin-top:4px"><input type="checkbox" v-model="aiRequireApiKey" /><span>需要 API Key</span></label>
   </div>

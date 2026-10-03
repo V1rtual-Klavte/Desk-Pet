@@ -43,6 +43,9 @@ ai:
   apiKey: ""
   requireApiKey: true
   model: deepseek-chat
+  # 辅助模型：子代理（agent_spawn 工具、计划步骤）、主动扫描规划与记忆整理（dreaming）使用；
+  # 留空跟随聊天模型。与聊天共用同一 provider/endpoint/apiKey。
+  auxModel: ""
   # 上下文窗口（tokens）：默认 128k，最低 65536。再低时压缩找不到可摘要范围，
   # 设置页会拒绝保存，运行期会在模型解析处报错。
   contextMaxTokens: 131072

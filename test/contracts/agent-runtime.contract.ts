@@ -24,7 +24,7 @@ export const agentRuntimeContract: ModuleContract = {
     "src/services/session/repo.ts",
     "src/services/session/store.ts",
   ],
-  sourceHash: "ec4ff83f6ed5c03a1b174912d55a3dfc8baf5e1c025b27802e085b64d5bb76a1",
+  sourceHash: "640708afb60f7d4a985af22c7c86e5de2744755883e23e004eca7ca29ac27e8b",
   coverage: [
     {
       id: "ar-01",
@@ -224,6 +224,15 @@ export const agentRuntimeContract: ModuleContract = {
       layer: "e2e",
       depth: "deep",
       scenarios: ["runtime-skill-admission"],
+    },
+    {
+      id: "ar-23",
+      feature: "辅助模型路由",
+      description: "子运行的模型取辅助模型：`ai.auxModel` 留空或与聊天模型同名时回落主模型解析（测试注入的生效模型照常生效），非空时经同一网关（同 provider/endpoint/apiKey）按目标模型 id 解析；`resolvePiAuxModel` 是唯一解析入口，`runPiSubAgent`（agent_spawn 的 fork/team、计划步骤、主动扫描规划共用这一个出口）与 dreaming Review 的模型都从它冻结。请求落在哪个模型从 fork 通路的真实请求载荷断言（fake provider 记录的 `payloads[].model`）：留空/同名落聊天模型、非空落辅助模型；dreaming 的接入与子运行共用同一入口，其请求模型不在本场景断言",
+      why: "整个运行时一个模型会让便宜模型无法用于子代理与离线整理、推理模型的后台 token 白烧；路由必须收在单一解析入口，否则每个子运行调用点都会漂移出第二份模型选择逻辑",
+      layer: "integration",
+      depth: "deep",
+      scenarios: ["aux-model-routing"],
     },
   ],
   // W0–W7 把 ar-18 / ar-22 的 memory-retry-policy-sync、runtime-compaction-suspended-settles

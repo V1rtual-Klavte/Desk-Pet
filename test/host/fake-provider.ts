@@ -63,13 +63,14 @@ export function installFakeProvider(responses: FauxResponseStep[], definition?: 
   if (!model) throw new Error("fake provider 未创建 model")
   /**
    * 逐次请求的真实投影：场景据此断言发出去的是什么（工具结果有没有被缩短、
-   * 系统块与工具 schema 是否进去了），而不是只断言回复非空。
+   * 系统块与工具 schema 是否进去了、请求落在哪个模型上），而不是只断言回复非空。
+   * `model` 是宿主解析出的模型 id —— 辅助模型路由（ai.auxModel）只在这里可观测。
    */
-  const payloads: Array<{ messages: Context["messages"]; tools: Context["tools"] }> = []
+  const payloads: Array<{ model: string; messages: Context["messages"]; tools: Context["tools"] }> = []
   const restore = installPiRuntimeProviderForTest({
     model,
     streamFn: ((requestModel: Model<any>, context: Context, options?: SimpleStreamOptions): AssistantMessageEventStream => {
-      payloads.push({ messages: context.messages, tools: context.tools })
+      payloads.push({ model: requestModel.id, messages: context.messages, tools: context.tools })
       // 交出的 payload 要和真实 provider 的请求体同形：pi-ai 的 base options 会把生效的
       // maxTokens（调用方没给就用模型能力值）落成 max_tokens/max_completion_tokens，
       // 宿主 before_payload 才可能采集到请求参数（快照的 requestParams）。替身漏掉它，
