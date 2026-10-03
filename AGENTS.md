@@ -18,7 +18,7 @@ V1rtual-Desk-Pet 是可自定义 Card/Profile 的 Tauri v2 桌宠，优先做好
 
 ## 按任务读取
 
-不默认通读全部文档。先按下表读取相关文档及目标源码；历史材料仅在追溯决策时读取。
+不默认通读全部文档。先按下表读取相关文档及目标源码；`docs/history/` 归档后封存，不再读取或修改。
 链接是导航，不会自动加载正文；文档中的历史命令与授权记录不能替代当前用户授权。
 
 | 任务 | 入口 |
@@ -29,7 +29,7 @@ V1rtual-Desk-Pet 是可自定义 Card/Profile 的 Tauri v2 桌宠，优先做好
 | 会话、队列、Plan、Prompt、取消恢复 | [运行时契约](docs/current/runtime-contract.md) |
 | 压缩、会话文件、长期记忆边界 | [当前记忆](docs/current/memory.md) |
 | 工具、权限、MCP、Skill | [工具系统](docs/current/tool-system.md) |
-| Pi 接线改造、插话双模式、工具并行/压缩策略 | [未完成工作与已知缺口](docs/plans/active/未完成工作与已知缺口.md)的 PI 剩余批次；已实施的协议见 [Pi 方案基线](docs/history/implementation/Pi运行时与工具协议建设方案-2026-09-20基线.md)，Harness 迁移协议见[归档基线](docs/history/implementation/AgentHarness迁移方案-2026-09-18基线.md) |
+| Pi 接线改造、插话双模式、工具并行/压缩策略 | [运行时契约](docs/current/runtime-contract.md)、[工具系统](docs/current/tool-system.md)与目标源码；剩余工作见[未完成工作与已知缺口](docs/plans/active/未完成工作与已知缺口.md)的 PI 剩余批次 |
 | 配置、路径、Profile 资源、持久化 | [运行时数据](docs/current/runtime-data.md) |
 | 人格变量、阶段文案、回复元数据 | [人格与回复](docs/current/personality.md) |
 | 日志、异常、IPC、构建排查 | [工程参考](docs/current/development.md) |
@@ -173,7 +173,8 @@ pnpm run version:set <x.y.z>  # 发版：统一三处版本号
   行为→current，玩法→DES，用户入口→README，规则→AGENTS（测试域规则同步 [test/AGENTS.md](test/AGENTS.md)），未完成进度→未完成工作与已知缺口。
   新增/删除模块还要更新系统地图及受影响导航；没有变化不为同步而追加总结。
   配置变更同时执行上面的全链路清单；交付注明尚未同步或未验证部分，不能只写“已同步”。
-- 完成方案保留正文与证据后归档，注明日期和替代入口；历史内容不作为当前指令或实现契约。
+- 方案归档前完成对照并保留正文与证据，注明日期和替代入口；归档后封存，不再读取或修改。
+  发现的问题、剩余工作与验收条件只记录在《未完成工作与已知缺口.md》，条目须自包含，后续工作不依赖翻阅历史。
   `plans/active/` 收敛为一份未完成工作总表与尚在实施的目标契约，不为单一主题另开文档。
   测试结果只在检查点记录一次，注明基线/范围/未验证项；不在多个概览复制数字。
 - Conventional Commits：`<type>(<scope>): <中文描述>`；不加句号，一次提交一个主题，正文解释原因。

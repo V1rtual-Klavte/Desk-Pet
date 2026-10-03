@@ -4,7 +4,7 @@
 
 ## 原生观察
 
-Rust 单一 monitor 线程发出 `window-observed`，每个有效采样包含 `appId/app/title`、Unix `observedAt`、本代 monotonic `sampleMonoMs`、`monitorGeneration`、单调 `sequence`、系统 idle、锁屏/不可用/挂起/关闭状态及桌宠可见和前台状态。Windows 应用标识只取进程文件名 stem，不保存可执行文件路径；macOS 取 bundle id 与当前应用名。锁屏和不可用状态不带应用或标题。独立 `get_runtime_activity` 只返回桌宠可见/前台、观察可用/锁屏状态、idle 和采样时间，不返回当前应用身份。
+Rust 单一 monitor 线程发出 `window-observed`，每个有效采样包含 `appId/app/title`、Unix `observedAt`、本代 monotonic `sampleMonoMs`、`monitorGeneration`、单调 `sequence`、系统 idle、锁屏/不可用/挂起/关闭状态及桌宠可见和前台状态。Windows 应用标识只取进程文件名 stem，不保存可执行文件路径；macOS 取 bundle id 与当前应用名，标题只取属于前台进程（窗口 owner PID 匹配）的窗口，否则标题缺失。锁屏和不可用状态不带应用或标题。独立 `get_runtime_activity` 只返回桌宠可见/前台、观察可用/锁屏状态、idle 和采样时间，不返回当前应用身份。
 
 前端唯一事件入口做形状、代际和序号校验：旧代际、重复和乱序样本丢弃；窗口工具只读这份快照。窗口观察订阅者同步收到原事件，画像写盘在自身串行队列执行，不阻塞主动规则的事件监听。
 
