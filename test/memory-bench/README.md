@@ -167,13 +167,15 @@ node test/memory-bench/export-hypotheses.mjs test/reports/<stamp>.json --out /tm
 
 ## 8. 分层节奏：按目的挑层，不每次全跑
 
-| 梯队 | 何时跑 | 命令（`pnpm run test:memory-bench --` 后接参数） | 量级（deepseek 系列计价） |
+| 梯队 | 何时跑 | 命令（即梯队别名，覆盖全部数据集） | 量级（deepseek 系列计价） |
 |---|---|---|---|
-| **冒烟自检** | 接新模型 / 改采集或判分后先跑 | `pnpm run test:memory-bench:smoke`（oracle ×3 题） | 几分钟、几千 tokens |
-| **常规回归**（默认） | 记忆核心（召回 / 提取 / 治理）改动后 | `--bench-dataset longmemeval --bench-split oracle`（全量 52 题） | 0.5–1M（每题 ≈1 次提取 sweep + 1 次提问 + 1 次 judge） |
-| **中文对照** | 中文卡 / 中文体验改动后 | `--bench-dataset memorybank --bench-split cn`（15 角色 × 100 题） | 最小（提取近零，主要是 judge） |
-| **检索难度** | 里程碑 / 发版前 | `--bench-split s`（需先 `node test/memory-bench/prepare.mjs --dataset longmemeval --split s` 装 277MB） | 2.5–4.5M（每题 haystack ≈122k） |
-| **对外可比** | 需要对外引用数字时 | `--bench-dataset locomo`（务必带 `--bench-limit` 分批） | 免 judge（词面 F1）；1986 题信息量最大 |
+| **冒烟自检** | 接新模型 / 改采集或判分后先跑 | `pnpm run test:memory-bench:smoke`（LongMemEval oracle ×3 题） | 几分钟、几千 tokens |
+| **常规回归**（默认） | 记忆核心（召回 / 提取 / 治理）改动后 | `pnpm run test:memory-bench:regression`（oracle 全量 52 题） | 0.5–1M（每题 ≈1 次提取 sweep + 1 次提问 + 1 次 judge） |
+| **中文对照** | 中文卡 / 中文体验改动后 | `pnpm run test:memory-bench:zh`（MemoryBank cn 15 角色 × 100 题） | 最小（提取近零，主要是 judge） |
+| **检索难度** | 里程碑 / 发版前 | `pnpm run test:memory-bench:difficulty`（LongMemEval S；需先 `node test/memory-bench/prepare.mjs --dataset longmemeval --split s` 装 277MB） | 2.5–4.5M（每题 haystack ≈122k） |
+| **对外可比** | 需要对外引用数字时 | `pnpm run test:memory-bench:external`（LoCoMo，默认分批 100 题；换批量用 `test:memory-bench -- --bench-dataset locomo --bench-limit N`） | 免 judge（词面 F1）；1986 题信息量最大 |
+
+别名只是固定最常见口径；其它参数组合仍走 `pnpm run test:memory-bench -- <参数>`。
 
 成本大头在 dreaming 提取（每题 1~5 次 sweep），judge 占比小；推理模型先按 §6 调
 `reviewMaxTokens` 并用冒烟层验证提取链路。每轮报告都记录实际 usage，用来校准这里的量级。

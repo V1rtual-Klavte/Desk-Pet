@@ -176,8 +176,8 @@ pnpm run test:memory-quality -- --case mq-address-preference-01           # 定�
 pnpm run test:memory-quality-review -- prepare --report <采集报告.json>
 pnpm run test:memory-quality-review -- apply --report <采集报告.json> --review <审阅.json>
 pnpm run test:memory-bench:prepare                      # 外部记忆基准安装（锁定版本 → data-dir；数据集不进 git）
-pnpm run test:memory-bench -- --bench-dataset longmemeval --bench-limit 5  # 外部基准观测运行；不进 CI / test:release
-pnpm run test:memory-bench:smoke                        # 冒烟自检（oracle ×3 题）；接新模型 / 改采集判分后先跑
+pnpm run test:memory-bench:smoke                        # 分层命令 smoke / regression / zh / difficulty / external：见 memory-bench/README §8
+pnpm run test:memory-bench -- --bench-dataset longmemeval --bench-limit 5  # 任意参数观测运行；不进 CI / test:release
 pnpm run test:memory-performance                        # release存储 + debug IPC；off/light/full
 pnpm run test:memory-performance -- --native-only
 ```
