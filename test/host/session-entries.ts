@@ -6,6 +6,7 @@ import type { Entry } from "@earendil-works/pi-agent-core"
 import type { Message } from "@/services/agent/types"
 import { readPiSessionEntries } from "@/services/session/repo"
 import { messagesFromEntries } from "@/services/session/read-model"
+import { readActiveAttemptAssociations } from "@/services/engine/harness"
 import { getActiveSessionId } from "@/services/session/store"
 
 /** 读取会话条目（默认当前活跃会话）。 */
@@ -17,7 +18,11 @@ export async function sessionEntries(sessionId?: string): Promise<Entry[]> {
 
 /** 条目 → 聊天视图消息（与 UI 同一条读模型）。 */
 export async function sessionMessages(sessionId?: string): Promise<Message[]> {
-  return messagesFromEntries(await sessionEntries(sessionId))
+  const id = sessionId ?? getActiveSessionId()
+  if (!id) throw new Error("没有活跃会话")
+  const entries = await sessionEntries(id)
+  const activeAssociations = await readActiveAttemptAssociations(id)
+  return messagesFromEntries(entries, id, undefined, activeAssociations)
 }
 
 /**

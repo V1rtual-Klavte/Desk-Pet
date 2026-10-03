@@ -6,6 +6,8 @@ name: CI
 # 不用真实 Provider，夹具一律走 `os.tmpdir()` 与 node:path，不依赖某一端的 shell 或分隔符。
 on:
   push:
+    # v* tag 由 release.yml 负责：不排除的话同一 SHA 会在 verify 上白跑一遍双平台（且并不阻塞 release）
+    tags-ignore: ["v*"]
   pull_request:
   workflow_dispatch:
 

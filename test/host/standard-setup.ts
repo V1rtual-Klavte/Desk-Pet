@@ -114,6 +114,16 @@ function configBaseline(): ConfigTree {
     const plan = isConfigTree(ai.plan) ? ai.plan : {}
     const safety = isConfigTree(ai.safety) ? ai.safety : {}
     snapshot.ai = { ...ai, plan: { ...plan, enabled: false }, safety: { ...safety, mode: "tell_me" } }
+    // 外部 MCP 属于场景显式前提；本机已启用的 npx/server 不能阻塞 fake Provider 与记忆基准。
+    // 只修改隔离根中的配置，场景可在自己的 setup 中重新启用所需服务器。
+    const tools = isConfigTree(snapshot.tools) ? snapshot.tools : {}
+    const mcp = isConfigTree(tools.mcp) ? tools.mcp : {}
+    const builtin = isConfigTree(mcp.builtin) ? mcp.builtin : {}
+    snapshot.tools = { ...tools, mcp: { ...mcp,
+      servers: Array.isArray(mcp.servers) ? mcp.servers.map(server => isConfigTree(server) ? { ...server, enabled: false } : server) : [],
+      builtin: Object.fromEntries(Object.entries(builtin).map(([name, server]) => [name,
+        isConfigTree(server) ? { ...server, enabled: false } : server])),
+    } }
     configSnapshot = snapshot
   }
   return configSnapshot

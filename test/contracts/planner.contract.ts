@@ -9,8 +9,7 @@ export const plannerContract: ModuleContract = {
   // 计划条目本身的写入机制归 agent-runtime 契约（engine/plan/checkpoint-store.ts 在它的 sourceFiles 里），
   // 这里只从计划域的相位与通道出发断言它们落成的结果。
   sourceFiles: ["src/services/engine/harness/runtime.ts", "src/services/engine/planner.ts", "src/services/engine/plan-confirmation.ts"],
-  generatedAt: "2026-09-28",
-  sourceHash: "4fdd3b0c8b6ccbc45b28820cd4414e38b808fb54b797520ff30075ad98face9b",
+  sourceHash: "de6d78602be11c0a2bc9c626aaafb8d03b72f23db33692da2ccace93f0b873f1",
   coverage: [
     { id: "pl-01", feature: "evaluateComplexity force触发", description: "--plan 前缀强制触发评分=5；判定是 startsWith，行首之外的 --plan 不命中 force 分支", why: "用户手动触发 Plan", layer: "integration", depth: "shallow", scenarios: ["plan-force-trigger"] },
     { id: "pl-02", feature: "evaluateComplexity 关键词匹配", description: "关键词列表匹配 → 评分 3、原因里带回命中的词；默认 complexityEval=keyword 时未命中关键词直接给低分，不为它单独发一次模型请求（判据用没有任何响应的 Provider：真发了请求就只能是 llm 分支或超时）", why: "自动检测复杂任务，同时不让每条助手消息都付一次判定请求的成本", layer: "integration", depth: "shallow", scenarios: ["plan-keyword-trigger"] },
@@ -25,8 +24,8 @@ export const plannerContract: ModuleContract = {
     { id: "pl-11", feature: "逐步确认的真前置门", description: "用户以 `--plan` 强制触发进入计划段（生产入口的 force 路径，`complexityEval=keyword` 下同样生效）且确认给出的 mode=stepByStep 传进计划段：2 步计划每步开工前各问一次步骤门（恰好 2 次 kind=step_gate 的 continue 裁决），门没有把计划卡住 —— 每步都执行、终态与终态事件都是 done、进度 total 是计划步数；门选择中止的 declined 归宿不在本场景（宿主通道对确认与门共用一套 planPolicy，给不出「确认自动 + 门中止」）", why: "逐步门此前没有任何运行时证据：它是否真的成为每步的前置门、确认的 mode 是否被采纳，只能在运行时接线里看", layer: "e2e", depth: "deep", scenarios: ["plan-step-gate-each-step"] },
   ],
   rules: {
-    // W0–W7 把 8 个场景迁出 L4 后按 L4 侧当前值重标定：3 = 本契约 e2e 层有效场景数
-    // （pl-09/10/11 各一条）、3 = 其中 deep 数（门槛=当前值，一个都不许掉）；
+    // W0–W7 把本契约迁出 L4 的场景按 L4 侧当前值重标定：门槛=当前 rules 声明值
+    // （pl-09/10/11 留在 L4），只缩不放（数字由 checker 报错提供）；
     // 跨层完整性由 checkLayerCoverage 负责。
     minScenarios: 3,
     minDeepScenarios: 3,

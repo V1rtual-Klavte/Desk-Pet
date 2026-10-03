@@ -9,7 +9,6 @@ export const harnessStorageContract: ModuleContract = {
     "src/services/tool/pi/tauri-execution-env.ts",
     "src/services/session/repo.ts",
   ],
-  generatedAt: "2026-09-28",
   sourceHash: "bc88fe8abbabae7a03bca7d2c1e441cde0db9e9a6c13f6c62524b8ac1902145a",
   coverage: [
     {
@@ -85,14 +84,15 @@ export const harnessStorageContract: ModuleContract = {
       scenarios: ["harness-session-log-fold-crash", "harness-session-log-fold-address"],
     },
   ],
+  // 存储失败/折叠注入失败已在 L3 的 hs-02/hs-08 验证；L4只保留需要真实Rust的生产正常链路。
   rules: {
-    // W0–W7 把 7 个场景迁出 L4 后按 L4 侧当前值重标定：2 = 本契约 e2e 层有效场景数
-    // （hs-04 `harness-branch-tip-bypass`、hs-06 `harness-frame-throttle-live`），
-    // 2 = 其中 deep 数（门槛=当前值，一个都不许掉）；迁出的 7 个（hs-01/02/03/05/07/08
-    // 的 7 个 caseId）由 L2/L3 承担，跨层完整性由 checkLayerCoverage 负责。
+    // W0–W7 把本契约迁出 L4 的场景按 L4 侧当前值重标定：门槛=当前 rules 声明值，
+    // 只缩不放（数字由 checker 报错提供）；留在 L4 的为 hs-04 `harness-branch-tip-bypass`、
+    // hs-06 `harness-frame-throttle-live`，迁出点（hs-01/02/03/05/07/08）
+    // 由 L2/L3 承担，跨层完整性由 checkLayerCoverage 负责。
     minScenarios: 2,
     minDeepScenarios: 2,
     requireBoundary: true,
-    requireErrorPath: true,
+    requireErrorPath: false,
   },
 }

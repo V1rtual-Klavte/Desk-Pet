@@ -15,6 +15,7 @@ export const agentRuntimeContract: ModuleContract = {
     "src/services/engine/plan-confirmation.ts",
     "src/services/engine/preprocessor.ts",
     "src/services/engine/runtime/input-identity.ts",
+    "src/services/engine/runtime/trace.ts",
     "src/services/engine/runtime/types.ts",
     "src/services/session/manager.ts",
     "src/services/session/messages.ts",
@@ -23,13 +24,12 @@ export const agentRuntimeContract: ModuleContract = {
     "src/services/session/repo.ts",
     "src/services/session/store.ts",
   ],
-  generatedAt: "2026-09-28",
-  sourceHash: "2cefb93fa8b24b980f22dceb3c2863e52047aeb71d05ef9195a24a87860c776e",
+  sourceHash: "ec4ff83f6ed5c03a1b174912d55a3dfc8baf5e1c025b27802e085b64d5bb76a1",
   coverage: [
     {
       id: "ar-01",
       feature: "生产消息入口",
-      description: "sendMessage 经预处理、Harness lane 与会话条目持久化走完一个回合；用户正文与助手回复都能按会话 id 从 JSONL 读回恰好一次",
+      description: "sendMessage 经预处理、Harness lane 与会话条目持久化走完一个回合；用户正文与助手回复都能按会话 id 从 JSONL 读回恰好一次；可选观测旁路的提交身份由 evaluation 契约独立验证，不取代正文或取消所有权",
       why: "直接调用运行内核不能证明桌宠实际聊天入口仍然可用",
       layer: "e2e",
       depth: "deep",
@@ -226,10 +226,9 @@ export const agentRuntimeContract: ModuleContract = {
       scenarios: ["runtime-skill-admission"],
     },
   ],
-  // W0–W7 把 2 个场景（ar-18 / ar-22 的 memory-retry-policy-sync、
-  // runtime-compaction-suspended-settles）迁出 L4 后按 L4 侧当前值重标定：25 = 本契约
-  // e2e 层有效场景数、24 = 其中 deep 数（门槛=当前值，一个都不许掉）；
-  // 跨层完整性（迁出点有没有被声明层真的跑着）由 checkLayerCoverage 负责。
+  // W0–W7 把 ar-18 / ar-22 的 memory-retry-policy-sync、runtime-compaction-suspended-settles
+  // 迁出 L4 后按 L4 侧当前值重标定：门槛=当前 rules 声明值，只缩不放（数字由 checker
+  // 报错提供）；跨层完整性（迁出点有没有被声明层真的跑着）由 checkLayerCoverage 负责。
   rules: { minScenarios: 25, minDeepScenarios: 24, requireBoundary: true, requireErrorPath: false },
 }
 

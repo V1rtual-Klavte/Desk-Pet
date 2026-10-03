@@ -16,10 +16,19 @@ import { parseArgs } from "./cli"
 import type { ModuleContract } from "../host/types"
 import type { SceneDef, TestReport } from "./types"
 import { initPaths, runtimePath } from "@/services/paths"
-import { initConfig } from "@/services/config"
+import { aiConfig, flushConfig, initConfig, setOverrides } from "@/services/config"
+import { parseEvalModelsFile, resolveEvalModels } from "./eval-models"
+import type { EvalModelsFile } from "./eval-models"
 import { installGlobalHandlers, reportError, formatError } from "@/services/error"
-import { subscribeRuntimeTrace } from "@/services/engine/runtime"
-import type { RuntimeTraceEvent } from "@/services/engine/runtime"
+import { createLogger } from "@/services/logger"
+import { createLiveTraceRecorder } from "../host/trace-observer"
+import { runMemoryPerformanceEvaluation } from "./memory-performance"
+import { createLiveMemoryQualityAdapter } from "../memory-quality/live-adapter"
+import { runMemoryQualityEvaluation, MEMORY_QUALITY_CASES, MEMORY_QUALITY_STRATEGIES } from "../memory-quality/index.mjs"
+import type { MemoryQualityCellContext } from "../memory-quality/live-adapter"
+import { createLiveMemoryBenchAdapter } from "../memory-bench/bench-adapter"
+import { runMemoryBenchEvaluation, planBenchCells, benchSplitInfo } from "../memory-bench/index.mjs"
+import type { BenchCaseFile, BenchCellContext, BenchReport } from "../memory-bench/index.mjs"
 
 interface RuntimeOptions {
   module?: string
@@ -33,6 +42,21 @@ interface RuntimeOptions {
   seedHash?: string
   sourceHashes?: string
   commit?: string
+  quality?: string
+  qualitySeed?: string
+  performance?: string
+  trace?: string
+  bench?: string
+  benchDataset?: string
+  benchSplit?: string
+  benchLimit?: string
+  benchCase?: string
+  benchSeed?: string
+  benchJudge?: string
+  benchJudgeModel?: string
+  evalProvider?: string
+  evalModel?: string
+  evalJudgeModel?: string
 }
 
 const sceneModules = import.meta.glob<{ default?: SceneDef }>("./scenes/**/*.scene.ts", { eager: true })
@@ -95,13 +119,32 @@ function withStandardSetup(scene: SceneDef): SceneDef {
  * repeat>1 时一个场景的多个 trial 共用同一批事件（批内没有 trial 边界可挂钩），
  * 展开里的头部会写明「本场景共 N 条」，截断不会被读成「只发生了这么多」。
  */
-const traceWindow: RuntimeTraceEvent[] = []
-let traceSeen = 0
-subscribeRuntimeTrace(event => {
-  traceSeen += 1
-  traceWindow.push(event)
-  if (traceWindow.length > TRACE_WINDOW_SIZE) traceWindow.shift()
-})
+let traceRecorder: ReturnType<typeof createLiveTraceRecorder> | undefined
+let manifest: Record<string, unknown> = {}
+
+async function writeManifest(complete: boolean): Promise<void> {
+  manifest = { ...manifest, complete, trace: traceRecorder?.status }
+  await invoke("file_write_atomic", { path: await runtimePath("data", "e2e-manifest.json"), content: JSON.stringify(manifest, null, 2) + "\n" })
+}
+
+async function finishSpecialReport(report: unknown, passed: boolean): Promise<void> {
+  await traceRecorder?.complete()
+  await writeManifest(true)
+  await invoke("e2e_complete", { passed, report: JSON.stringify(report, null, 2) })
+}
+
+/** 读取启动器 stage 到数据根的 eval-models.json；仓库未提供（未 stage）按全部继承。 */
+async function loadEvalModels(): Promise<EvalModelsFile> {
+  let content: string
+  try {
+    content = (await invoke<{ content: string; size: number }>("file_read", { path: await runtimePath("data", "eval-models.json"), maxBytes: 64 * 1024 })).content
+  } catch (error) {
+    // 正常路径是「仓库文件存在 → 启动器总是 stage」；走到这里说明文件缺失或读取失败，留痕不静默。
+    console.error(`[E2E] eval-models.json 未读取到，测试模型按仓库配置全部继承: ${formatError(error)}`)
+    return {}
+  }
+  return parseEvalModelsFile(content)
+}
 
 /** 行键：trial 1 用裸 caseId（最常见的形态），repeat 时才带序号。 */
 function rowKey(caseId: string, trial: number): string {
@@ -152,6 +195,21 @@ async function main(): Promise<void> {
   await initPaths()
   await initConfig()
   const raw = await invoke<RuntimeOptions>("e2e_options")
+  // 测试侧统一模型配置：环境变量 > test/eval-models.json（启动器 stage 到数据根）> 继承仓库配置。
+  // underTest 覆盖只作用于隔离副本（setOverrides + flushConfig），凭据与真实配置不受影响。
+  const evalModels = await loadEvalModels()
+  const resolvedModels = resolveEvalModels(evalModels, {
+    DESKPET_EVAL_PROVIDER: raw.evalProvider,
+    DESKPET_EVAL_MODEL: raw.evalModel,
+    DESKPET_EVAL_JUDGE_MODEL: raw.evalJudgeModel,
+  })
+  if (resolvedModels.underTestProvider || resolvedModels.underTestModel) {
+    setOverrides({
+      ...(resolvedModels.underTestProvider ? { "ai.provider": resolvedModels.underTestProvider } : {}),
+      ...(resolvedModels.underTestModel ? { "ai.model": resolvedModels.underTestModel } : {}),
+    })
+    await flushConfig()
+  }
   const opts = parseArgs([
     ...(raw.module ? ["--module", raw.module] : []),
     ...(raw.scene ? ["--scene", raw.scene] : []),
@@ -161,7 +219,116 @@ async function main(): Promise<void> {
     ...(raw.repeat ? ["--repeat", raw.repeat] : []),
     ...(raw.strict === "1" ? ["--strict"] : []),
     ...(raw.report ? ["--report", raw.report] : []),
+    ...(raw.quality === "1" ? ["--quality"] : []),
+    ...(raw.qualitySeed ? ["--quality-seed", raw.qualitySeed] : []),
+    ...(raw.performance === "1" ? ["--performance"] : []),
+    ...(raw.trace ? ["--trace", raw.trace] : []),
   ])
+
+  traceRecorder = createLiveTraceRecorder(opts.trace)
+  manifest = {
+    schemaVersion: 1, runId: crypto.randomUUID(), timestamp: new Date().toISOString(),
+    commit: raw.commit, sourceHashes: parseHashAttestation(raw.sourceHashes), seedHash: raw.seedHash,
+    platform: navigator.platform, userAgent: navigator.userAgent,
+    model: { provider: aiConfig.provider, model: aiConfig.model }, options: opts, expectedTrials: [],
+  }
+  await writeManifest(false)
+
+  if (opts.performance) {
+    manifest.expectedTrials = [{ caseId: "memory-performance", sceneId: "memory-performance", trialId: "1" }]
+    await writeManifest(false)
+    await traceRecorder.beginTrial("memory-performance", "1")
+    const report = await runMemoryPerformanceEvaluation(opts.trace, traceRecorder.bindOperation)
+    await traceRecorder.endTrial("memory-performance", "1")
+    await finishSpecialReport({ ...report, runEvidence: {commit: manifest.commit, sourceHashes: manifest.sourceHashes,
+      seedHash: manifest.seedHash, model: manifest.model} }, report.passed)
+    return
+  }
+
+  if (opts.quality) {
+    const qualityLog = createLogger("MemoryQuality") // Long-run progress also reaches the isolated host's terminal log.
+    const trials = Math.max(3, opts.repeat)
+    const filter = opts.caseId ? [opts.caseId] : undefined
+    const cases = filter ? MEMORY_QUALITY_CASES.filter(item => filter.includes(item.caseId) || filter.includes(item.group)) : MEMORY_QUALITY_CASES
+    manifest.expectedTrials = cases.flatMap(item => Array.from({ length: trials }, (_, index) => ["extraction", ...MEMORY_QUALITY_STRATEGIES].map(strategy => ({ caseId: item.caseId, sceneId: `${item.caseId}/${strategy}`, trialId: String(index + 1) }))).flat())
+    await writeManifest(false)
+    const report = await runMemoryQualityEvaluation({
+      adapter: createLiveMemoryQualityAdapter(), seed: opts.qualitySeed, trials, caseFilter: filter,
+      onCellStart: async (cell: MemoryQualityCellContext) => {
+        const sceneId = `${cell.caseId}/${cell.strategy}`
+        await traceRecorder!.beginTrial(sceneId, String(cell.trial))
+        qualityLog.info(`${cell.sequence}/${cell.total} ${cell.caseId} ${cell.strategy} trial=${cell.trial}`)
+      },
+      onCellEnd: async cell => {
+        // Each finished cell survives a later timeout; the summary cannot erase partial outcomes.
+        await invoke("file_append", { path: await runtimePath("data", "memory-quality-outcomes.jsonl"), content: JSON.stringify(cell) + "\n", maxBytes: 5 * 1024 * 1024 })
+        await traceRecorder!.endTrial(`${cell.caseId}/${cell.strategy}`, String(cell.trial))
+      },
+    })
+    manifest.quality = { datasetVersion: report.datasetVersion, evalRunId: report.evalRunId, manifest: report.manifest }
+    // Collection success is not a semantic pass; the independent review command owns that gate.
+    // 这里只 AND 采集路径推不出的两项（双人 gold 审计与裁决完成）：qualityThresholdsPassed
+    // 自身已包含 complete / governanceZero / 各能力阈值（见 runMemoryQualityEvaluation 的 allQualityGates），
+    // 再逐项重列属于防御性冗余，曾经的阈值重列是重复定义点，已收敛。
+    const qualityPassed = report.gates.qualityThresholdsPassed === true && report.gates.goldAuditComplete === true && report.gates.reviewComplete === true
+    await finishSpecialReport({ ...report, runEvidence: {commit: manifest.commit, sourceHashes: manifest.sourceHashes, seedHash: manifest.seedHash}, status: qualityPassed ? "pass" : report.gates.complete && report.gates.governanceZero ? "pending_review" : "fail" }, qualityPassed)
+    return
+  }
+
+  if (raw.bench === "1") {
+    const benchLog = createLogger("MemoryBench") // Long-run progress also reaches the isolated host's terminal log.
+    const dataset = raw.benchDataset
+    if (!dataset) {
+      await finishSpecialReport({ error: "缺少 --bench-dataset（longmemeval / locomo / memorybank）" }, false)
+      return
+    }
+    const info = benchSplitInfo(dataset, raw.benchSplit)
+    // 数据由启动器从开发者 data-dir（DESKPET_BENCH_DATA_DIR / --data-dir）stage 成
+    // 隔离数据根的 bench/cases.json；宿主只读固定路径，不做运行期下载。
+    const benchPath = await runtimePath("data", "bench", "cases.json")
+    const loaded = await invoke<{ content: string; size: number }>("file_read", { path: benchPath, maxBytes: 64 * 1024 * 1024 })
+    const file = JSON.parse(loaded.content) as BenchCaseFile
+    const seed = raw.benchSeed ?? "memory-bench-2026-10-03"
+    // Rust 的 Option<String> 缺失时序列化为 null（不是 undefined），一律按 nullish 处理。
+    const limit = raw.benchLimit ? Number.parseInt(raw.benchLimit, 10) : undefined
+    if (raw.benchLimit && (!Number.isInteger(limit) || (limit ?? 0) <= 0))
+      throw new Error(`--bench-limit 必须是正整数: ${raw.benchLimit}`)
+    const caseFilter = raw.benchCase ? raw.benchCase.split(",").map(value => value.trim()).filter(Boolean) : undefined
+    const judgeMode = raw.benchJudge === "off" ? "off" : "on"
+    const judgeModel = raw.benchJudgeModel ?? resolvedModels.judgeModel ?? "deepseek-reasoner"
+    const planned = planBenchCells(dataset, file, { limit, caseFilter, seed })
+    manifest.bench = { dataset, split: info.split, namespace: info.namespace, plannedCells: planned.length,
+      seed, judge: judgeMode === "off" ? null : judgeModel }
+    manifest.expectedTrials = planned.map(cell => ({ caseId: cell.caseId, sceneId: cell.caseId, trialId: "1" }))
+    await writeManifest(false)
+    const report: BenchReport = await runMemoryBenchEvaluation({
+      adapter: createLiveMemoryBenchAdapter(),
+      dataset, split: info.split, file, seed, limit, caseFilter, judge: judgeMode, judgeModel,
+      onCellStart: async (cell: BenchCellContext) => {
+        await traceRecorder!.beginTrial(cell.caseId, "1")
+        benchLog.info(`${cell.sequence}/${cell.total} ${cell.caseId}`)
+      },
+      onCellEnd: async cell => {
+        // 每题一行落盘：LongMemEval 行内同时携带官方 evaluate_qa.py 所需的 question_id/hypothesis，
+        // 失败中止也不会丢掉已完成的题；官方脚本可直接消费该 JSONL（多余字段会被忽略）。
+        const outcome = cell.outcome as { answer?: string } | undefined
+        const line = { caseId: cell.caseId, questionId: cell.questionId ?? null, status: cell.status,
+          hypothesis: outcome?.answer ?? null, judgment: cell.judgment ?? null, outcome: cell.outcome ?? null,
+          error: cell.error ?? null }
+        await invoke("file_append", { path: await runtimePath("data", "memory-bench-outcomes.jsonl"),
+          content: JSON.stringify(line) + "\n", maxBytes: 5 * 1024 * 1024 })
+        await writeManifest(false)
+        await traceRecorder!.endTrial(cell.caseId, "1")
+      },
+    })
+    manifest.bench = { ...(manifest.bench as Record<string, unknown>), evalRunId: report.evalRunId,
+      judgeModel: report.judgeModel, upstream: report.upstream, importTransformVersion: report.importTransformVersion }
+    // 外部基准是观测证据：passed 只表示「完整跑完」，质量阈值字段在报告中恒为 null。
+    const benchPassed = report.gates.complete === true
+    await finishSpecialReport({ ...report, runEvidence: { commit: manifest.commit,
+      sourceHashes: manifest.sourceHashes, seedHash: manifest.seedHash } }, benchPassed)
+    return
+  }
 
   const contracts = collectContracts()
   const allScenes = collectScenes()
@@ -181,6 +348,8 @@ async function main(): Promise<void> {
 
   const prepared = scenes.map(withStandardSetup)
   const totalTrials = plannedTrialCount(prepared, opts.repeat)
+  manifest.expectedTrials = prepared.flatMap(scene => Array.from({ length: plannedTrialCount([scene], opts.repeat) }, (_, index) => ({ caseId: scene.meta.caseId, sceneId: scene.meta.caseId, trialId: String(index + 1) })))
+  await writeManifest(false)
 
   // 视图在任何场景跑之前建好：数据集/契约失败、启动崩溃也要能一眼看见，
   // 而不是留下一扇从加载到结束都不动的白窗口。
@@ -231,6 +400,8 @@ async function main(): Promise<void> {
       passed: false,
       note: `未运行任何场景：数据集错误 ${datasetErrors.length} 条${strictContractFailure ? "，契约校验不通过" : ""}`,
     })
+    await traceRecorder.complete()
+    await writeManifest(true)
     await invoke("e2e_complete", { passed: false, report: formatted })
     return
   }
@@ -242,14 +413,15 @@ async function main(): Promise<void> {
     for (let trial = 1; trial <= trialCount; trial++) {
       progressView.plan(rowKey(scene.meta.caseId, trial), scene.meta.caseId, scene.meta.description)
     }
-    traceSeen = 0
-    traceWindow.length = 0
     // 一次只喂一个场景给 runAllScenes：超时后跳过同场景剩余 trial 的策略在它内部，
     // 拆批不改语义（批之间没有共享状态），换来的是一跑完就能逐条结算。
     // 批内没有逐 trial 回调，所以进行中标记只能落在这个场景最早未结算的行上；
     // repeat>1 时它可能落后于真实回合，状态与耗时不受影响。
     progressView.start(rowKey(scene.meta.caseId, 1), scene.meta.caseId, scene.meta.description)
-    const sceneResults = await runAllScenes([scene], opts.repeat)
+    const sceneResults = await runAllScenes([scene], opts.repeat, {
+      onTrialStart: async (current, trial) => { await traceRecorder!.beginTrial(current.meta.caseId, String(trial)) },
+      onTrialEnd: async result => { await traceRecorder!.endTrial(result.caseId, String(result.trial)) },
+    })
     for (const result of sceneResults) {
       const key = rowKey(result.caseId, result.trial)
       if (result.status === "skip") {
@@ -265,7 +437,7 @@ async function main(): Promise<void> {
       // 失败行立即展开的内容：断言差异 + 失败窗口的事件序列（契约「观测面」目标 1）。
       progressView.fail(key, result.duration, [
         ...formatSceneFailure(result),
-        ...formatTraceEvents(traceWindow, traceSeen),
+        ...formatTraceEvents(traceRecorder.recent.slice(-TRACE_WINDOW_SIZE), traceRecorder.status.recorded),
       ])
     }
     results.push(...sceneResults)
@@ -274,9 +446,12 @@ async function main(): Promise<void> {
   const report: TestReport = { ...reportBase, scenes: results, summary: makeSummary(results, totalTrials) }
   const formatted = formatReport(report, opts.report)
   console.log(formatted)
+  await traceRecorder.complete()
+  await writeManifest(true)
   const passed = report.summary.failed === 0
     && report.summary.timeout === 0
     && report.summary.total > 0
+    && report.summary.skipped === 0
     && report.datasetErrors.length === 0
     && (!opts.strictContracts || report.contracts.every(contract => contract.valid))
   progressView.finish({
@@ -301,5 +476,13 @@ main().catch(async error => {
   reportError("e2e", error, { kind: "启动或执行失败" })
   // 窗口里也要留结论：崩溃不能只表现为「跑到一半不动了」。
   progressView?.finish({ passed: false, note: `启动或执行失败：${formatError(error)}` })
-  try { await invoke("e2e_complete", { passed: false, report: message }) } catch { /* app may not be ready */ }
+  try {
+    await traceRecorder?.complete()
+    await writeManifest(false)
+  } catch (traceError) {
+    reportError("e2e", traceError, { kind: "失败现场落盘失败" })
+  }
+  try { await invoke("e2e_complete", { passed: false, report: message }) } catch (completionError) {
+    reportError("e2e", completionError, { kind: "失败结果落盘失败" })
+  }
 })

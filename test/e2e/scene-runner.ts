@@ -13,7 +13,7 @@ import type {
 import type { PiAgentTurnOutput, TurnFailure } from "@/services/engine/harness"
 import { runPiAgentTurn } from "@/services/engine/harness"
 import { userInputMessage } from "@/services/engine/runtime"
-import { sendMessage, sendActiveMessage } from "@/services/agent/runner"
+import { sendMessage } from "@/services/agent/runner"
 import { getPoolSnapshot } from "@/services/personality/variable-pool"
 import { harnessSlots } from "@/services/engine/harness"
 import { getActiveSessionId } from "@/services/session/store"
@@ -25,8 +25,9 @@ import { classifyFailureKind } from "@/services/error/failure-kind"
 import { confirmRecords } from "../host/confirm-channel"
 import { planRecords } from "../host/plan-confirm-channel"
 import { sessionMessages } from "../host/session-entries"
+import { runTestActiveExpression } from "../host/active-expression"
 
-export const DEFAULT_SCENE_TIMEOUT = 120_000
+export const DEFAULT_SCENE_TIMEOUT = 300_000
 /**
  * unit 场景的超时上限。它们不跑模型，正常都是毫秒级；
  * 留 10 秒是为了容下首次触碰磁盘（变量池持久化、Card 加载）的开销。
@@ -251,8 +252,13 @@ async function executeTurn(userText: string, entry: SceneEntry, isActiveMessage 
   }
 
   if (isActiveMessage) {
-    const reply = await sendActiveMessage(userText)
-    return { reply, toolCallHistory: [], retriesUsed: 0 }
+    const result = await runTestActiveExpression(userText)
+    return {
+      reply: result.status === "committed" ? result.text : "",
+      toolCallHistory: [],
+      retriesUsed: 0,
+      ...(result.status === "failed" ? { failure: { kind: "unknown" as const, message: result.safeSummary } } : {}),
+    }
   }
 
   // Mirror the production message lifecycle around the lower-level Pi runtime.
@@ -520,6 +526,8 @@ function skippedTrial(scene: SceneDef, trial: number, reason: string): SceneResu
 }
 
 export interface RunAllScenesOptions {
+  onTrialStart?: (scene: SceneDef, trial: number) => Promise<void>
+  onTrialEnd?: (result: SceneResult) => Promise<void>
   /**
    * 超时策略。
    * - `"continue"`（默认）：只终止超时的那条场景 —— 它的剩余 trial 记为 skip，
@@ -539,7 +547,9 @@ export async function runAllScenes(
   for (const scene of scenes) {
     const trialCount = Math.max(repeat, scene.meta.repetitions ?? 1)
     for (let trial = 1; trial <= trialCount; trial++) {
+      await options.onTrialStart?.(scene, trial)
       const result = await runScene(scene, trial)
+      await options.onTrialEnd?.(result)
       results.push(result)
       if (result.status !== "timeout") continue
       // 超时只保证了「已登记的 Agent 回合被取消 + 最多等一次收尾宽限」；

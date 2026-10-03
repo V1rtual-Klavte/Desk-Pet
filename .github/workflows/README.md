@@ -4,8 +4,8 @@
 
 | 工作流 | 什么时候跑 | 跑什么 | 出安装包吗 |
 |---|---|---|---|
-| `ci.yml` | 任何 push、任何 PR、手动 | 双平台验证（类型/编译 · Rust 单测 · L2 · L3 · 纪律扫描 · FLAKY 棘轮）+ `bundle-config` 配置校验 | **不会** |
-| `release.yml` | 推 `v*` tag，或手动触发 | 双平台构建（macOS `.dmg` / Windows `.exe`）并发布到 GitHub Release | **会** |
+| `ci.yml` | 任何分支 push、任何 PR、手动（**`v*` tag 不跑**，见 `release.yml`） | 双平台验证（类型/编译 · Rust 单测 · L2 · L3 · 纪律扫描 · FLAKY 棘轮）+ `bundle-config` 配置校验 | **不会** |
+| `release.yml` | 推 `v*` tag，或手动触发 | 双平台构建（macOS `.dmg` / Windows `.exe` + 免安装 `.zip`）并发布到 GitHub Release | **会** |
 
 ---
 
@@ -19,7 +19,7 @@ git push
 
 只跑 `ci.yml`，**不打包、不发版**。两个 job（`verify` 双平台 + `bundle-config`）都要绿。
 
-## 发版：四步
+## 发版：五步
 
 ```bash
 # 1. 统一版本号（一次改三处：tauri.conf.json / Cargo.toml / package.json）
@@ -28,10 +28,14 @@ pnpm run version:set 0.15.0
 # 2. 同步 Cargo.lock 并确认编译
 pnpm run test:types
 
-# 3. 提交
+# 3. 跑发布门禁（L0–L4：类型/编译 + 纪律/棘轮 + Rust 单测 + L2/L3 + 严格 Contract 与 3 trials 的 L4）
+#    这是唯一跑严格 Contract + 3 trials 的 L4 门禁；L4 不进 CI，只能靠它
+pnpm run test:release
+
+# 4. 提交
 git commit -am "chore(release): 0.15.0"
 
-# 4. 打 tag 并推送
+# 5. 打 tag 并推送
 git tag v0.15.0
 git push && git push origin v0.15.0
 ```
@@ -60,8 +64,9 @@ git tag v0.15.0-rc.1
 git push && git push origin v0.15.0-rc.1
 ```
 
-跑完检查三件事：Release 页面出现 `v0.15.0-rc.1`（标着 Pre-release）、两个平台都有产物、
-`latest.json` 里 `darwin-aarch64` 与 `windows-x86_64` 都在。
+跑完检查四件事：Release 页面出现 `v0.15.0-rc.1`（标着 Pre-release）、两个平台都有产物、
+Windows 侧额外有 `v1rtual-desk-pet_x.y.z_x64-portable.zip`、`latest.json` 里 `darwin-aarch64`
+与 `windows-x86_64` 都在。
 
 ## 手动触发
 

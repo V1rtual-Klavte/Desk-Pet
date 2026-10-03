@@ -92,7 +92,6 @@ export interface ContractRules {
 export interface ModuleContract {
   module: string
   sourceFiles: string[]
-  generatedAt: string
   sourceHash: string
   coverage: CoveragePoint[]
   rules: ContractRules

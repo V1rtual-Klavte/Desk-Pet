@@ -7,6 +7,8 @@ description: V1rtual-Desk-Pet 测试树的 Contract 分析、测试生成与覆�
 
 三层职责、「该写在哪一层」的判定顺序、完整规则表、命令与报告位置以 [README.md](./README.md) 为权威。本文件只定义代码代理在源码变更后如何分析 Contract、生成测试与审查覆盖；它不是 shell 脚本。
 
+**编号有两套，不要混**：本文件的 D1–D10 是**断言缺陷分类法**（`/generate` 与 `/audit` 的自查口径）；README「测试纪律」的 1–10 是**行为纪律**（机制可判与只能 review 两档）。两套编号各自引用，不互相对应。
+
 ## 触发词
 
 - `/analyze test [module]`：从当前源码重新分析 Contract。
@@ -30,7 +32,7 @@ caseId 的锚定方式随层不同，但同一字母表：L2 / L3 写在 vitest 
 1. 确定受影响模块和跨模块调用链；读取当前 `contracts/{module}.contract.ts`、其 `sourceFiles` 与相关测试（L2/L3 的 vitest 文件与 L4 的 Scene）。
 2. 分析当前公开行为、状态转换、持久化、取消/错误分支、边界值和平台差异。不要把计划文档中的 P6 或未接通能力写成已实现。
 3. 更新 `sourceFiles`，使其覆盖行为实际所在的源码；覆盖点描述当前可验证行为，不以文件名替代行为。
-4. 为每个 coverage point 设置唯一 id、`depth` 与 `scenarios`。`scenarios` 填已存在或将创建的 **caseId**（L2/L3 的写在测试名末尾的 `[caseId]` 标记里，L4 的写在 `meta.caseId`）；caseId 空间跨层唯一，重复是硬错误（`assertNoDuplicates`：后者会静默压掉前者，旧的那条不再跑而报告照样全绿）。
+4. 为每个 coverage point 设置唯一 id、`depth` 与 `scenarios`。`scenarios` 填已存在或将创建的 **caseId**（L2/L3 的写在测试名末尾的 `[caseId]` 标记里，L4 的写在 `meta.caseId`）；caseId 空间**跨层唯一**：同层重复由 `assertNoDuplicates` 在快层 reporter 里直接抛出（后者会静默压掉前者，旧的那条不再跑而报告照样全绿）；跨层重复与「声明了没人实现 / 实现了没声明」由全量 L4 收尾的跨层对账核对（`scripts/contract-layers.mjs`：unit / integration 读 `test/reports/caseids-*.json`，e2e 读本次报告；带过滤参数或 `--bench` / `--quality` / `--performance` 的运行跳过）。
 5. 根据实际风险设置 `minScenarios`、`minDeepScenarios`、`requireBoundary`、`requireErrorPath`。只有确实无法经运行时入口触达时才声明 `unitOnly`，并写明 `unitOnlyReason`。
 6. 按项目的 source hash 计算方式刷新 `sourceHash`。不能只改 hash 而不完成前述行为审查。
 
@@ -94,9 +96,12 @@ caseId 的锚定方式随层不同，但同一字母表：L2 / L3 写在 vitest 
 
 当前目录包含以下 Contract：
 
+- `behavior`
+- `evaluation`
 - `agent-runtime`
 - `harness-storage`
 - `memory`
+- `memory-bench`
 - `personality-card`
 - `planner`
 - `safety`

@@ -4,7 +4,7 @@
 
 ## 快速开始
 
-**跑 E2E 前先解锁屏幕并保持点亮**（锁屏时 macOS WebKit 会挂起页面 JS，场景会集体卡死）。
+macOS 14+ 测试窗口显式关闭 WebKit 后台挂起；其他系统若遇无进展，先恢复窗口可见状态并检查 trace 边界。系统整体睡眠仍会暂停执行。
 
 ```bash
 pnpm test                              # 快层 L2 + L3，几秒，每 PR 必过的那一组
@@ -18,6 +18,7 @@ pnpm run test:mutation                 # 缺陷注入观测（先记录，不设
 
 下面的章节是架构理由、分层判定与规则表 —— 只想跑测试的话到这里就够了。
 
+- 测试域规则入口与维护义务（改了什么同步什么）：[AGENTS.md](./AGENTS.md)
 - 分层目标、波次与诚实边界：[测试分层重构契约](../docs/history/implementation/测试分层重构契约-2026-09-29基线.md)（已归档；未完成项见[未完成工作与已知缺口](../docs/plans/active/未完成工作与已知缺口.md)）
 - 当前验证边界与未验证项：[测试边界](../docs/current/testing.md)
 - 代码代理的 Contract 分析、生成与覆盖审查流程：[SKILL.md](./SKILL.md)
@@ -37,7 +38,7 @@ pnpm run test:mutation                 # 缺陷注入观测（先记录，不设
 | L2 单元 | `test:unit` | vitest · node | 纯逻辑：变量池 / 解析 / 注册表 / 边界 | 新增 |
 | L3 集成 | `test:integration` | vitest · node + 临时数据根 + fake Provider | Pi runtime 走真 loop、真 JSONL 落盘 | 新增 |
 | L4 端到端 | `test:e2e` | Tauri WebView · 真 Rust IPC | 需真 Rust 边界的场景 | 本地 / 发布 |
-| L5 发布门禁 | `test:release` | — | L0 + L1 + L2 + L3 + 严格 Contract 的 L4 | 现状保留并扩展 |
+| L5 发布门禁 | `test:release` | — | L0 + 纪律扫描 / FLAKY 棘轮 + L1 + L2 / L3（重试入口） + 严格 Contract 的 L4 | 与 CI 同源 |
 
 层的硬边界：
 
@@ -102,7 +103,7 @@ pnpm run test:release
 pnpm run test:mutation
 ```
 
-可组合的筛选参数为 `--module`、`--scene`、`--case`、`--tag`、`--suite`、`--repeat`、`--strict`、`--report`、`--contracts`。`--repeat` 范围为 1–20，且不会低于 Scene 的 `meta.repetitions`。`test:release` 执行类型检查、Rust 单测、L2 / L3 与严格三次 E2E 试验。
+可组合的筛选参数为 `--module`、`--scene`、`--case`、`--tag`、`--suite`、`--repeat`、`--strict`、`--report`、`--contracts`。`--repeat` 范围为 1–20，且不会低于 Scene 的 `meta.repetitions`。`test:release` 与 CI 同源：类型检查、纪律扫描与 FLAKY 棘轮、Rust 单测、经重试入口（`run-vitest-with-retry.mjs`）的 L2 / L3 与严格三次 E2E 试验；它也是唯一跑严格 Contract + 3 trials 的 L4 门禁（L4 不进 CI）。
 
 ### 缺陷注入观测（`test:mutation`，W7）
 
@@ -110,15 +111,15 @@ pnpm run test:mutation
 
 读法与边界：
 
-- **当前只有 2 个目标文件**（`src/services/personality/variable-pool.ts`、`src/services/context/budget.ts`）。首轮观测为 **5/7 = 71.4%** —— 这是这两个文件上的数字，**不代表快层整体命中率**；扩大目标面后才更新。
+- **当前有 3 个目标文件**：`variable-pool.ts`、`context/budget.ts` 与 `agent/memory/rerank.ts`。记忆重排解析已进入缺陷注入范围；历史 5/7 仅代表原两个文件，不能作为扩大目标后的结果。
 - 结果先作为**观测**记录，**不设阈值**，不进每 PR 门禁；稳定后再按只缩不放的棘轮设阈值。
 - 口径与已知收窄（语法解析不过的注入不计入分母、算子只在代码区匹配等）见[测试分层重构契约](../docs/history/implementation/测试分层重构契约-2026-09-29基线.md) 的「首轮观测」一节。
 
 L2 / L3 可并行、不占端口；**L4 不能并行跑**（占用同一 Vite/Tauri 端口），也不要与 `pnpm tauri dev` 的开发实例同时运行。
 
-**环境注意**：macOS 锁屏、**窗口被最小化**、或被别的窗口完全盖住时，WebKit 会把窗口判为遮挡并挂起页面 JS（实测每个 scene 约 6 秒后整体停摆，进程存活但无进展）。跑 E2E 门禁前必须解锁屏幕并保持点亮；`always_on_top` / `caffeinate` 无效。
+**环境注意**：WebKit 默认会在锁屏或窗口不可见时挂起 JS。测试宿主现通过 Tauri 的 `BackgroundThrottlingPolicy::Disabled` 关闭 macOS 14+ 的后台挂起；只作用于 E2E 窗口，产品窗口保留资源策略。本机锁屏短批已有真实 trace 证据，其他系统与整机睡眠不得据此推断可持续运行；`always_on_top` / `caffeinate` 不能代替 WebView 调度策略。
 
-**判据**：正常整轮约 4–5 分钟。若进程活着但 `ps -o time= -p <pid>` 的 CPU 累计几乎不涨（实测最小化那次：7 分钟只耗 0.6% CPU），就是被挂起了 —— **杀进程重跑，别等**。
+**判据**：进程存活但 trace 边界与日志长时间不推进时，结合窗口可见性、锁屏状态、CPU 和当前 await 排查，不把低 CPU 单独当作挂起结论。中断运行先保留部分证据，再重新采集；未完整执行不能报通过。
 
 窗口本身已经做了两层防护：E2E 时 macOS 的 `ActivationPolicy` 用 `Regular`（出现在 Dock 与 Cmd+Tab，随时能唤回；产品运行仍是 `Accessory` 不占 Dock），并且窗口**禁止最小化**。
 
@@ -141,7 +142,7 @@ L2 / L3 可并行、不占端口；**L4 不能并行跑**（占用同一 Vite/Ta
 
 可判项由 `scripts/check-test-rules.mjs` 扫描 `test/` 实施，命中即失败。它是守卫，因此**守卫自身要有测试**（照 hermes 的做法：断言「访问真实网络／真实 Provider 会抛错」这类守卫真的生效，而不是假定生效）。
 
-规则落位：本文件持完整规则表；`SKILL.md` 写生成测试时的硬约束与禁令；`AGENTS.md` 的测试段落指三层入口与扫描器。生成时的自查清单（D1–D10 缺陷分类法与本仓已确认的例子）在 [SKILL.md](./SKILL.md)。
+规则落位：本文件持完整规则表；`SKILL.md` 写生成测试时的硬约束与禁令；[AGENTS.md](./AGENTS.md) 是测试域规则入口与维护义务表（改了什么必须同步哪份文档）。生成时的自查清单（D1–D10 缺陷分类法与本仓已确认的例子）在 [SKILL.md](./SKILL.md)。
 
 ## 波动与假绿（FLAKY）
 
@@ -155,16 +156,52 @@ L2 / L3 可并行、不占端口；**L4 不能并行跑**（占用同一 Vite/Ta
 ## 报告在哪、怎么看
 
 - **终端**：默认 `--report terminal`，全局结论与逐 case 结果直接打在运行终端；`--report markdown` 是终端文本的 markdown 版。
-- **文件**：浏览器侧把结果经 `e2e_complete` 交给 Rust，写入数据根的 `e2e-result.txt`（首行 `PASS` / `FAIL`，也是启动脚本判断进程退出码的依据）；启动脚本在清理临时数据根之前把它复制进仓库内的 `test/reports/`（已在 `.gitignore` 排除），文件名是 ISO 时间戳。`--report` 决定副本的扩展名：`json`→`.json`、`html`→`.html`、其余（terminal / markdown）→`.txt`。保留策略按**体积**：按 mtime 从新到旧累加，超过 200 MB 即淘汰更旧的，最新一份始终保留。
-  **临时数据根也在 `test/.tmp/e2e-<随机>/`** —— 它承载整个 data_root（sessions / logs / personality / …），跑完即删；启动时会先清掉上次的残留（跑挂了、被 kill 不会执行清理路径）。**测试产物一律在 `test/` 下，不落仓库外。**
+- **文件**：浏览器侧把结果经 `e2e_complete` 交给 Rust，写入数据根的 `e2e-result.txt`（首行 `PASS` / `FAIL`，也是启动脚本判断进程退出码的依据）；启动脚本在清理临时数据根之前把它复制进仓库内的 `test/reports/`（已在 `.gitignore` 排除），文件名是 ISO 时间戳。`--report` 决定副本的扩展名：`json`→`.json`、`html`→`.html`、其余（terminal / markdown）→`.txt`。保留最近 **5 份**日期戳报告，累计体积上限 **200 MiB**，最新一份始终保留；日期戳报告的审阅/评分包（`<报告名>.review.json`、`<报告名>.scored.json`）与父报告算**同一保留单元**：字节计入 200 MiB、组内最新时间作为排序时间、父报告被淘汰时一并删除，父报告已不在的孤儿包在下一次淘汰时清除；`caseids-*.json`（全量 L4 收尾的跨层对账输入）与 `flaky.json` 不参与淘汰。
+  **临时数据根也在 `test/.tmp/e2e-<随机>/`** —— 它承载整个 data_root（sessions / logs / personality / …），跑完即删；启动时残留根按 `.pid` 判主人：`process.kill(pid, 0)` 仍存活（或 EPERM）说明另一个 L4 正在跑，直接拒绝启动并指名 pid 与根名（并发第二个 L4 不会再把在跑者的数据根当残留删掉）；无主（无 `.pid` 或进程已死）才抢救残留 trace（含未结束场景与半行）再清理，抢救失败保留该根留待人工处理、不中断启动。`test/.tmp/memory-perf-*` 残留在性能脚本下次启动时回收（前缀匹配 + 目录年龄 ≥3 小时 + 无存活 pid）；清扫只针对已知前缀的运行根，不碰人工放置的输入（如 `proactive-calendar/`），无归属的人工临时文件属可弃物、不设自动清理。**测试产物一律在 `test/` 下，不落仓库外。**
 - **报告内容**：`desk-pet-live/v2` 结构，包含数据集版本、筛选项、trial 指标、错误分类与 `pass@k` / `pass^k`。前者表示至少一次试验通过，后者表示全部已执行试验通过；回归或发布结论使用后者及严格 Contract 结果。`environment.seedHash` 由启动脚本生成：覆盖 `src-tauri/resources/defaults` 下的文本种子与开发构建实际加载的 CONFIG，凭据按 key 名脱敏后不参与摘要，二进制素材与摘要无关。
 - **宿主窗口**：`test-e2e.html` 提供**实时进度** —— 顶部 sticky 汇总条（已跑 / 通过 / 失败 / 预期失败 / 剩余 / 耗时），逐 case 一行；**失败行立即展开**，内含断言差异与该场景的事件序列。汇总条常驻显示报告的绝对路径与「打开结果目录」入口。
+  **该页由 dev server 提供，不在 Vite `build.rollupOptions.input` 里**：L4 全程走 `tauri dev` 的 `devUrl`，Vite dev server 服务根目录下所有 HTML，加进 build input 只会把它打进发布产物（463 KB）—— release 下 `lib.rs` 的 `cfg!(debug_assertions) && is_e2e()` 恒假，e2e 窗口永不创建，那些字节一个都加载不到。历史契约里的「补进 build input」是误判，不要照抄。
   **窗口不驻留**：`e2e_complete` 后 Rust 直接 `app.exit(0)` 关窗，结束横幅实际可见时间极短 —— 这也是报告路径与打开入口被做成**运行期常驻**而非只在结束时出现的原因。要让它结束后长驻需改结果协议（Rust + 启动器），不在当前范围。
-- **别拿文件名当证据**：归档文档引用报告时写可核对标识（runId / commit / dataset 版本 / cases 与 trials 计数），不写文件名 —— 报告目录的保留策略会淘汰旧文件，按路径引用会悬空。
+- **别拿文件名当证据**：归档文档引用报告时写可核对标识（runId / commit / dataset 版本 / cases 与 trials 计数），不写文件名 —— 报告目录的保留策略会淘汰旧文件，按路径引用会悬空。报告与 trace 是两条独立保留链，同一 stamp 一般成对存亡但允许单侧先淘汰（无 trace 运行、启动救援组、性能子运行都会让两侧计数漂移），引用一律以标识为准。
+
+## Trace、记忆质量与性能门禁
+
+**测试侧模型配置**：被测模型默认继承仓库 Provider 配置（启动器拷贝隔离副本，凭据不被写回）；被测与 judge 的显式覆盖收敛在 [test/eval-models.json](eval-models.json)（无凭据、进 git）。解析优先级：环境变量 `DESKPET_EVAL_PROVIDER` / `DESKPET_EVAL_MODEL` / `DESKPET_EVAL_JUDGE_MODEL` > 该文件 > 内置默认；bench 的 `--bench-judge-model` 参数仍最高。`underTest` 覆盖经 `setOverrides` 只写隔离副本。**judge 必须不同于被测模型**（同模型在开跑前报错）。
+
+```bash
+pnpm run test:e2e -- --module evaluation --repeat 3 --report json
+pnpm run test:trace-review -- <你的理想稿> <实际.trace.jsonl> <manifest.json> <AI审阅.json>
+pnpm run test:memory-quality                            # 80题 × 3trial，真实Provider；会消耗token
+pnpm run test:memory-quality -- --case mq-address-preference-01           # 定向采集，不能代替完整质量验收
+pnpm run test:memory-quality-review -- prepare --report <采集报告.json>
+pnpm run test:memory-quality-review -- apply --report <采集报告.json> --review <审阅.json>
+pnpm run test:memory-bench:prepare                      # 外部记忆基准安装（锁定版本 → data-dir；数据集不进 git）
+pnpm run test:memory-bench -- --bench-dataset longmemeval --bench-limit 5  # 外部基准观测运行；不进 CI / test:release
+pnpm run test:memory-performance                        # release存储 + debug IPC；off/light/full
+pnpm run test:memory-performance -- --native-only
+```
+
+**线路理想稿只由用户编写**，可用任意 UTF-8 文本表达；仓库不生成、不复制实际 trace 作为理想稿，也不要求理想稿遵守固定事件语法。后续 AI 阅读理想稿、manifest 与实际 trace，另交审阅 JSON。门禁只核对证据完整性、文件哈希和审阅覆盖，不冒充语义理解：缺理想稿/审阅为 `pending`，文件变化、缺 trial、丢事件或未完成为 `inconclusive`，两者退出码 2；审阅结论失败退出 1，完整且结论通过才退出 0。自动修复代理应先读差异和证据，再修改产品、重跑采集与重新审阅；旧审阅不能批准新产物。理想稿建议放在 [`test/ideal-traces/`](ideal-traces/README.md)（编写指引、工作流与审阅 JSON 字段表见该目录 README）。
+
+审阅记录包含 `idealSha256 / actualSha256 / manifestSha256`、`verdict`、`reviewedTrials`、`differences`、`evidence`、`reviewedOrphans`。每个 trial 都须有实际引用：事件 `{chunkId,eventSeq,sceneId,trialId}`，或合法静默线路的边界 `{chunkId,boundaryKind,sceneId,trialId}`；孤儿事件须逐条明确审阅。失败必须写差异，通过必须无差异。哈希只证明审阅绑定这份产物，不证明 AI 判断正确。
+
+Trace 默认 `full`；`light` 省略 payload/snapshot 事件，`off` 只用于性能对照，不能通过线路完整性门禁。事件保留宿主/Pi 的运行映射、request/turn/tool/entry/span 身份、单调序号和时钟域。`message_end` 与真实 `entry_added` 提交分开；首文本生成、流事件投递与实际 UI 显示不同口径，当前宿主不测 ChatPanel 首显。只采结构、数量和已有审计 hash，正文与工具参数/结果不落 trace。
+
+宿主缓冲有事件数和字节上限，周期与场景边界都落盘；只有 Rust fsync 后的 ACK 才释放待写块。每行是 `{chunk,contentSha256}`，chunk 内有边界、丢弃计数与逐事件 scene/trial；按事件的 sceneId 读取线路，不能把一个物理 chunk 当作只有一个场景。未匹配的迟到事件保留为 orphan。启动器在清理前流式核对 hash、序号、所有预先声明的 trial 和 complete 边界；丢弃/写盘失败不洗成通过。`test/reports/traces/` 按 trace、manifest、逐 cell 质量 / 外部基准 checkpoint（成员名 `.quality.jsonl` / `.memory-bench.jsonl`）与完整性 sidecar 整组保留最近 5 份且累计不超过 200 MiB（组键覆盖未完成写入的 `.manifest.json.pending` 残片），超过单组限制保留源临时根并失败。正常路径的 bundle 不再包含结果副本（根报告已是同一份字节）；只有中断抢救（`salvageTempTrace`）还带 `result.*` —— 中断时它是唯一留存。
+
+**记忆质量**复用 Live Test、真实 `sendMessage` 与 Rust IPC；不引入通用 eval 框架。80 题是 AI 起草的待审标注集，双人独立审计和 judge 校准未完成前不能通过质量门禁。覆盖称呼/偏好、经历/时效、纠正、遗忘及来源/scope 反例；真实 dreaming 提取单独采集。Provider长度截断等已观测模型输出失败保留为失败cell，继续其他对照；三次连续基础设施失败才中止。失败cell不能判质量通过。对照为无记忆、本地、每次重排、adaptive、gold evidence，每题至少三次随机配对试验。所有质量cell统一撤下模型工具并在结束后恢复，防止无记忆组通过memory_query、文件读取或Bash获取fixture；fixture/治理操作仍走真实Rust IPC。此专项比较MemoryProvider投影，不代表工具搜索能力评测。每个 cell 取消旧运行、清会话、通过受守卫的 Rust 评测命令关闭并重建同一所有者的 SQLite 库；记录 store generation 和规范化 fixture 指纹，禁止沿用上一策略的治理状态。各 cell 共用一次隔离宿主数据根，数据库实例和会话逐 cell 新建，不宣称每个 cell 都启动独立进程。
+
+报告保留原始 outcome、回答与提取候选（仅合成测试材料），完整事件只在 trace sidecar 保存，避免在报告和每 cell checkpoint 重复整份 trace。提取结果分别记录 `processedSourceCount`（已完成处理）和 `pendingSourceCount`（作业剩余来源），不把完成后的空队列解释为没有提取输入。选择指标取最后真正送进请求的 `memory_recall_rendered` 证据；候选报告每 scope 的 Recall@50 与合并池 recall，不把最多 150 条的合并池擅自截前 50。所有模型请求按 span 去重计 token；总输入包含 Pi 分列的缓存 token，另报未缓存输入和缓存计数。零初始化 usage 视为缺失；Pi 默认缓存零值不证明未命中，没有可证实的计数时为未知。额外 token 与首文本延迟按相同 case/trial 相对本地策略配对；正确率收益按题目聚合三次 trial 后 bootstrap 95% 区间，避免把重复 trial 当独立题目。未审阅的提取语义指标为未知。gold 标注须由两名人工完整审计；回答/提取评分可由经人工校准且不同于被测模型的 AI judge 或人工 judge 盲审。语义评分必须绑定 dataset 与完整采集报告 hash 提交（报告 hash 已覆盖 outcomes），不能让被测模型自评。门槛见[记忆契约 §12.3](../docs/plans/active/记忆系统运行时契约.md#123-真实模型对照)。定向采集不能宣布全套 80 题验收通过；采集成功但尚未审阅会输出 `pending_review` 并非零退出。
+
+**外部记忆基准（memory-bench）**是观测层，与自建 80 题物理隔离：数据、运行、判分、门禁四处分开，**不进 CI / `test:release`、默认不跑**。三个开源集（LongMemEval / LoCoMo / MemoryBank cn）的数据集文件**不进仓库**——仓库只保留版本锁（`test/memory-bench/upstream-lock.json` 的固定 revision + SHA-256、`licenses/` 许可原文与移植的判分/导入代码），`pnpm run test:memory-bench:prepare [-- --data-dir <目录>]` 把原始文件与转换后的案例装进 data-dir（默认 `test/memory-bench/.data/`，已 gitignore；也可用 `DESKPET_BENCH_DATA_DIR`），运行期不做下载。判分为官方模板的自适配移植（LoCoMo 词面 F1 不用 judge；judge 走配置网关且必须异构于被测模型），报告 `desk-pet-memory-bench/v1` 顶层 `source: external` / `status: observational`、质量阈值字段恒 `null`——宿主 `PASS` 只表示完整跑完。来源、许可（LoCoMo 非商用）、子集口径与全部偏差见 [memory-bench/README](memory-bench/README.md)。
+
+**性能**测 1k/10k 合成库，查询包含短中文、别名/长词、组合条件和无关词，分别逐次记录 query + get_items 和真实 MemoryProvider 端口调用（off重排；绑定实际会话与测试操作来源），报告 P50/P95 与原始样本。10k 的四条代表查询都须热路径 P95≤500ms，任一超标都失败（用户于2026-10-02放宽原50ms目标）。普通L4场景默认等5分钟、显式场景时限优先；整批截止至少30分钟，三trial批为30分钟，质量采集8小时，超时仍失败并保全证据。release Rust 存储和 debug WebView IPC 分列；连接重开不等于 OS 冷缓存。另记录建库、FTS 重建、发布、备份、磁盘、后台查询争用下的前台真实回合，以及按 idle/运行区间区分的进程树 RSS/CPU 样本。进程树可能遗漏 launchd 持有的 WebKit helper；完整产品 RSS、release IPC、二进制增量与 ChatPanel UI 延迟仍需相应实机验收，不能由编译进程样本或 debug 结果替代。性能报告位于 `test/reports/performance/`，按与日期戳报告一致的口径淘汰：最近 5 份、累计不超过 200 MiB、最新一份始终保留。
 
 ## Contract 与 sourceHash
 
 `contracts/*.contract.ts` 是模块行为契约。每个 coverage point 的 `scenarios` 必须写场景的稳定 **`caseId`**，不是文件名、描述或导出名。每个 caseId 只能归属一个场景，且场景的 `meta.module`、`meta.contractId` 必须与其 Contract coverage point 一致。
+
+**跨层 caseId 对账在全量 L4 的收尾路径真实执行**：启动脚本（`scripts/contract-layers.mjs`）把三层实际收集到的 caseId 汇总 —— unit / integration 读最近一次整层快层运行落盘的 `test/reports/caseids-*.json`，e2e 读本次报告的场景集（skip 不算）—— 与全部 Contract 声明的 `scenarios` 对比：声明了没有任何层携带（MISSING）、携带了没有任何声明（ORPHAN）、同一 caseId 被两层同时携带（CROSS-LAYER，违反跨层唯一）任一命中即打印明细并非零退出。带 `--module` / `--scene` / `--case` / `--tag` / `--suite` 过滤、或 `--bench` / `--quality` / `--performance` 特殊模式的运行跳过（集合残缺会误报），所以全量 L4 前要先跑过快层（`test:release` 的顺序保证）。快层逐层运行时 `test/host/caseid-reporter.ts` 只判自己那层并把整层集合落盘 —— 落盘文件正是这份对账的输入。
 
 Node 启动预检会校验 `sourceHash`；源码变更后应先按 SKILL 重新分析 Contract，再更新 hash 和场景。不要只替换 hash 来绕过门禁。`--strict` 还会拒绝 coverage、深度、边界、错误或入口规则的缺口。
 
@@ -196,11 +233,13 @@ Node 启动预检会校验 `sourceHash`；源码变更后应先按 SKILL 重新�
 
 ## 隔离、超时与失败
 
+测试配置默认关闭本机外部 MCP 连接；需要 MCP 的场景在自己的 setup 声明前提或替换传输边界，模型认证仍读取隔离副本。本机配置不被写回。
+
 每个 trial 在 `standard-setup.ts` 中取消并等待已登记 Agent 回合，然后重置会话文件、UI index、工作记忆、变量池、聊天状态、预处理与 AI 锁。超时按固定顺序收尾：置取消位（框架在每个步骤边界停下，不再推进后续 setup 与断言）→ 取现场 → 取消已登记的 Agent 回合 → 最多等 `SCENE_CANCEL_GRACE_MS` 让被放弃的执行落地，没落地会写进超时 error。超时报告保留已完成轮次和在飞轮次已跑完的断言，并补一条失败的 `timeout` 断言；`status` 仍是 `timeout`，不进通过统计。
 
 取消是协作式的：JS 不能强杀任意 await，Scene 自己发起、不经过框架边界的等待只能靠上述宽限时间收尾。Provider、网络、认证和断言等错误会分类，兜底回复不把失败改写为成功。
 
-E2E 启动脚本在用户 Home 下创建 `.deskpet-e2e-*` 临时数据根，退出时删除；删除前把结果文件复制到仓库内的 `test/reports/`（保留策略见「报告在哪、怎么看」）。
+E2E 启动脚本在 `test/.tmp/e2e-*` 创建隔离数据根，复制完整开发配置到其中的 `settings/CONFIG.yaml`。测试中的配置修改只写该副本；真实 `CONFIG-DEV.yaml` 和用户数据不被写入。退出/超时先停止隔离进程组、留存证据，再清理临时根；复制失败保留原根。
 
 ## 目录职责
 
@@ -211,7 +250,7 @@ test/
 ├── contracts/            # 模块行为契约与 sourceHash（跨层）
 ├── host/                 # 宿主与共享设施（L2–L4）：状态隔离、确认通道、断言辅助、契约校验、
 │   │                     #   caseId 收集、Node IPC 适配层
-│   └── shims/            # node:assert/strict 的别名目标（浏览器构建必需，无本仓源码消费者）
+│   └── shims/            # node:assert/strict 的别名目标（evaluation 的 L4 场景经 vite 别名真实消费；删除会破坏 L4）
 ├── unit/                 # L2：朴素 vitest，纯逻辑
 ├── integration/          # L3：朴素 vitest + 临时数据根 + fake Provider
 └── e2e/                  # L4：宿主入口 e2e-main 与执行器 scene-runner / dataset / reporter / cli，
