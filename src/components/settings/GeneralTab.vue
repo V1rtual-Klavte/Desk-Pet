@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { ref, computed, onMounted, onUnmounted } from "vue";
 import { emit, listen } from "@tauri-apps/api/event";
-import { userConfig, loggingConfig, desktopConfig, errorsConfig } from "@/services/config";
+import { userConfig, loggingConfig, errorsConfig } from "@/services/config";
 import { createLogger } from "@/services/logger";
 import { formatError } from "@/services/error";
 import { isMacOS } from "@/services/env";
@@ -58,7 +58,6 @@ const logLevel = ref(loggingConfig.level);
 const errOverlay = ref(errorsConfig.overlay);
 
 // ── 桌面轮询 ──
-const deskPoll = ref(desktopConfig.pollingIntervalMs);
 
 // ── 弹窗大小预览 ──
 async function previewSize() {
@@ -117,7 +116,6 @@ defineExpose({
   recMods,
   logLevel,
   errOverlay,
-  deskPoll,
 });
 </script>
 
@@ -166,13 +164,7 @@ defineExpose({
     </div>
   </div>
 
-  <div class="s-section">
-    <div class="s-label">桌面轮询</div>
-    <div class="row-gap">
-      <label>轮询 <input class="inp-num" type="number" v-model.number="deskPoll" /> ms</label>
-    </div>
-  </div>
-</div>
+ </div>
 </template>
 
 <style scoped>

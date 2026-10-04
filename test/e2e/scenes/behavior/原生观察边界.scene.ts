@@ -1,7 +1,7 @@
 import { invoke } from "@tauri-apps/api/core"
 import { listen } from "@tauri-apps/api/event"
 import type { SceneDef } from "../../types"
-import { desktopConfig, silentAccessConfig } from "@/services/config"
+import { silentAccessConfig } from "@/services/config"
 
 interface Observation {
   appId: string | null
@@ -32,7 +32,6 @@ export const 原生观察边界: SceneDef = {
       type: "expectNativeObservationProtocol",
       run: async () => {
         const enabledBefore = silentAccessConfig.enabled
-        const intervalBefore = desktopConfig.pollingIntervalMs
         const events: Observation[] = []
         let pendingPredicate: ((event: Observation) => boolean) | null = null
         let pendingResolve: ((event: Observation) => void) | null = null
@@ -53,14 +52,17 @@ export const 原生观察边界: SceneDef = {
           if (existing) return Promise.resolve(existing)
           return new Promise<Observation>((resolve, reject) => {
             pendingPredicate = predicate; pendingResolve = resolve
+            // 事件驱动下「启用」只发布一次采样，判据仍是「必须收到新代际的已发布事件」；
+            // 这里给 20s 只是容忍原生采样在满负载宿主上变慢（曾见一次 >8s 未发布），
+            // 不放宽任何断言条件。
             pendingTimer = setTimeout(() => {
               pendingTimer = null; pendingPredicate = null; pendingResolve = null
-              reject(new Error("等待 window-observed 事件超过 8 秒"))
-            }, 8_000)
+              reject(new Error("等待 window-observed 事件超过 20 秒"))
+            }, 20_000)
           })
         }
         try {
-          await invoke("set_monitor_enabled", { enabled: false, pollingIntervalMs: 1_000 })
+          await invoke("set_monitor_enabled", { enabled: false })
           const activity = await invoke<{
             isPetVisible: boolean; isPetForeground: boolean; observationState: "observed" | "locked" | "unavailable";
             idleForMs: number | null; observedAt: number
@@ -72,10 +74,10 @@ export const 原生观察边界: SceneDef = {
 
           const baselineGeneration = events.reduce((latest, event) => Math.max(latest, event.monitorGeneration), -1)
           const received = waitFor((event) => event.observationState !== "disabled" && event.monitorGeneration > baselineGeneration)
-          await invoke("set_monitor_enabled", { enabled: true, pollingIntervalMs: 1_000 })
+          await invoke("set_monitor_enabled", { enabled: true })
           const nativeActive = await received
           const disabledPromise = waitFor((event) => event.observationState === "disabled" && event.monitorGeneration > nativeActive.monitorGeneration)
-          await invoke("set_monitor_enabled", { enabled: false, pollingIntervalMs: 1_000 })
+          await invoke("set_monitor_enabled", { enabled: false })
           const disabled = await disabledPromise
           if (disabled.monitorGeneration <= nativeActive.monitorGeneration) {
             throw new Error("monitor 关闭没有发出更新代际的 disabled 边界事件")
@@ -90,7 +92,7 @@ export const 原生观察边界: SceneDef = {
         } finally {
           if (pendingTimer) clearTimeout(pendingTimer)
           unlisten()
-          await invoke("set_monitor_enabled", { enabled: enabledBefore, pollingIntervalMs: intervalBefore })
+          await invoke("set_monitor_enabled", { enabled: enabledBefore })
         }
       },
     }],

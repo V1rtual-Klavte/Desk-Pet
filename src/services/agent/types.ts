@@ -10,7 +10,10 @@ export interface Message {
   timestamp: number
   /** 已提交的助手正文分段，重载与实时推送共用。 */
   parts?: string[]
-  /** 用户选择的原图片路径；不落盘 base64 或创建图片副本。 */
+  /**
+   * 本条消息关联的图片原文件路径：用户选择的图片，或助手消息上 `show_to_user` 截图的落盘文件
+   * （条目字段同为 `deskpetImagePaths`）。只存路径，不落盘 base64 或创建图片副本。
+   */
   imagePaths?: string[]
   /** 恢复等宿主输入不视为用户开口，不重置互动计数。 */
   isUserInput?: boolean

@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { ref, onMounted } from "vue";
-import { toolsConfig, loopConfig, MIN_PARALLEL_TOOLS, MAX_PARALLEL_TOOLS } from "@/services/config";
+import { toolsConfig } from "@/services/config";
 import { createLogger } from "@/services/logger";
 import { errorCode, formatError } from "@/services/error";
 // 纯文本工具函数，同步使用；其余 MCP 生命周期 API 仍按需动态 import
@@ -14,7 +14,6 @@ const bashWhitelist = ref(toolsConfig.bashWhitelist.join("\n"));
 // ── 工具执行并发 ──
 // 共享读上限：范围校验在 SettingsPanel.doSave 里按 parallelToolsError 拒绝越界值，
 // 这里只做初值读取与控件提示。
-const maxParallelTools = ref(loopConfig.maxParallelTools);
 
 // ── MCP ──
 const mcpServerList = ref<
@@ -336,7 +335,6 @@ onMounted(async () => {
 
 defineExpose({
   bashWhitelist,
-  maxParallelTools,
   mcpServerList,
   builtinMcpList,
   loadMcpConfig,
@@ -350,16 +348,6 @@ defineExpose({
     <div class="s-label">Bash 白名单</div>
     <textarea class="inp txa mono" v-model="bashWhitelist" rows="4" placeholder="ls&#10;cat&#10;grep..."></textarea>
     <div class="s-hint">{{ bashWhitelist.split('\n').filter(l => l.trim()).length }} 个命令</div>
-  </div>
-
-  <div class="s-section">
-    <div class="s-label">工具执行</div>
-    <div class="fld">
-      <span class="fn">只读并行</span>
-      <input class="inp-num" type="number" :min="MIN_PARALLEL_TOOLS" :max="MAX_PARALLEL_TOOLS" v-model.number="maxParallelTools" />
-      <span class="s-muted">同时执行的只读工具数（{{ MIN_PARALLEL_TOOLS }}-{{ MAX_PARALLEL_TOOLS }}）</span>
-    </div>
-    <div class="s-hint">效果类工具仍与其它执行互斥；保存后从下一次运行开始生效。</div>
   </div>
 
   <div class="s-section">

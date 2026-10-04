@@ -38,9 +38,11 @@ import { getActiveSessionId, pushMessageFor } from "@/services/session/store"
 import { getSessionCreatedAt, isAssistantEntryVisible, pushSystemMessage } from "@/services/session"
 import {
   SESSION_TRANSCRIPT_TOOL, toToolDeclaration, createTranscriptTool,
+  createEnableToolsTool, defaultActiveToolNames,
   findRetainedToolCall, listAll, preservedToolNames, retainedToolNames, toolPolicyHash,
 } from "@/services/tool"
 import type { HarnessToolRun, ToolDef } from "@/services/tool"
+import { readScreenshotToolDetails, SCREENSHOT_TOOL_NAME } from "@/services/tool/local/screenshot-details"
 import { humanizerConfig, loopConfig, memoryConfig, planConfig, silentAccessConfig } from "@/services/config"
 import { getUnderstandingPromptBlock } from "@/services/observation"
 import { emit } from "@tauri-apps/api/event"
@@ -236,6 +238,8 @@ export interface PiAgentTurnOutput {
   runGeneration?: number
   generationStartedAt?: number
   committedAssistantEntryId?: string
+  /** 本回合提交的助手条目关联的截图路径（`deskpetImagePaths`）；宿主据此推实时界面消息。 */
+  userImagePaths?: string[]
   humanized?: boolean
   toolCallHistory: { toolName: string; status: string; personalityMsg?: string }[]
   retriesUsed: number
@@ -367,6 +371,11 @@ interface TurnKernel {
   request: PromptRequestContext
   /** before_payload 从 Provider payload 取到的请求参数（脱敏快照用）。 */
   requestParams?: PromptRequestParams
+  /**
+   * before_payload 从 Provider payload 取到的当次工具名（DebugBar 的「本次请求工具」）。
+   * 激活面收窄与回合内渐进披露都会改变实际工具面，以 payload 为准；取不到时不写。
+   */
+  requestToolNames?: string[]
   /** Provider payload 的稳定 hash；由 before_payload 采集后写进快照。 */
   payloadHash?: string
   /** 计划步骤归属（子代理按步骤传）。 */
@@ -857,6 +866,24 @@ function extractRequestParams(payload: unknown): PromptRequestParams {
 }
 
 /**
+ * 从 Provider payload 取当次下发的工具名（DebugBar 的「本次请求工具」）。
+ * 兼容 OpenAI-compatible（`{type:"function",function:{name}}`）与 Anthropic（`{name}`）两种形态；
+ * 取不到工具数组时返回 undefined，由调用方退回冻结工具面，不写假值。
+ */
+function extractToolNames(payload: unknown): string[] | undefined {
+  if (!payload || typeof payload !== "object") return undefined
+  const tools = (payload as { tools?: unknown }).tools
+  if (!Array.isArray(tools)) return undefined
+  const names = tools.map(raw => {
+    if (!raw || typeof raw !== "object") return undefined
+    const record = raw as { name?: unknown; function?: { name?: unknown } }
+    if (typeof record.name === "string") return record.name
+    return typeof record.function?.name === "string" ? record.function.name : undefined
+  }).filter((name): name is string => name !== undefined)
+  return names.length === tools.length ? names : undefined
+}
+
+/**
  * 请求视图构建 + 硬预算判定（主回合与手动压缩的续跑共用同一份实现）。
  *
  * 构建分两步，顺序不可换：
@@ -1157,9 +1184,41 @@ function createRuntimeDataStripHook(args: {
   }
 }
 
+/**
+ * 收集 `screenshot` 工具（show_to_user=true）落盘的截图路径。
+ *
+ * 只认名字与 details 契约都对得上的成功结果：工具在返回结果前已完成文件落盘，
+ * 因此宿主拿到路径时文件一定在磁盘上（先文件、后条目）。
+ */
+function collectScreenshotResult(state: HarnessRunState, toolName: string, details: unknown, isError: boolean): void {
+  if (isError || toolName !== SCREENSHOT_TOOL_NAME) return
+  const shot = readScreenshotToolDetails(details)
+  if (!shot?.showToUser) return
+  ;(state.pendingUserImages ??= []).push(shot.screenshotPath)
+}
+
+/**
+ * 提交前把本回合待展示的截图路径并入最终助手消息（`deskpetImagePaths`，与用户图片同字段名）。
+ *
+ * 只在最终消息（不带工具调用）上并入：带工具调用的消息是过程节点，提前并入会让同一张图
+ * 出现在多条条目上。取消/出错的回合根本走不到提交链，因此不会留下「有图无条目」或
+ * 「有正文无图」的半条消息；错误/中止帧也不并入（那类条目不进聊天视图）。
+ */
+function attachUserImages(message: SettledAssistantMessage, state: HarnessRunState): SettledAssistantMessage {
+  const pending = state.pendingUserImages
+  if (!pending || pending.length === 0) return message
+  if (message.stopReason === "error" || message.stopReason === "aborted") return message
+  if (message.content.some(part => part.type === "toolCall")) return message
+  const paths = pending.splice(0, pending.length)
+  state.attachedUserImages = paths
+  return { ...message, deskpetImagePaths: paths } as SettledAssistantMessage
+}
+
 /** 每回合的 Harness 运行规格；权限、投影、观测与 UI/统计消费点都在这里接线。 */
 function createTurnSpec(kernel: TurnKernel, options: {
   prompt: string | AgentMessage | AgentMessage[]
+  /** 默认激活面（⊆ kernel.tools）：主对话回合收窄，省略 = 全量（子代理 / 计划步骤）。 */
+  activeToolNames?: readonly string[]
   timeoutMs: number
   maxToolCalls: number
   projectToolResults: boolean
@@ -1236,13 +1295,17 @@ function createTurnSpec(kernel: TurnKernel, options: {
       }
       return undefined
     },
-    afterTool: ({ details, isError }) => ({
-      details: {
-        ...(details && typeof details === "object" ? details as Record<string, unknown> : {}),
-        origin: "tool", taint: "untrusted_external", isError,
-      },
-      isError,
-    }),
+    afterTool: ({ toolName, details, isError }) => {
+      // show_to_user 的截图路径在这里进入回合状态，由提交链并入最终助手条目。
+      collectScreenshotResult(state, toolName, details, isError)
+      return {
+        details: {
+          ...(details && typeof details === "object" ? details as Record<string, unknown> : {}),
+          origin: "tool", taint: "untrusted_external", isError,
+        },
+        isError,
+      }
+    },
     transformContext: createRequestViewHook({
       projectToolResults: options.projectToolResults,
       toolsByName,
@@ -1301,7 +1364,10 @@ function createTurnSpec(kernel: TurnKernel, options: {
         }
       }
       // 提交前剥离 RUNTIME_DATA：条目是真相源，但正文块不进入后续请求与展示。
-      return await stripReply(message, meta)
+      const stripped = await stripReply(message, meta)
+      if (stripped === undefined) return undefined
+      // 最后并入本回合的展示截图路径：文件已落盘，条目在这里带上 deskpetImagePaths。
+      return attachUserImages(stripped, state)
     },
     beforePayload: (payload, payloadModel) => {
       const step = kernel.currentRequest?.step
@@ -1309,6 +1375,7 @@ function createTurnSpec(kernel: TurnKernel, options: {
       if (step === "compaction" || step === "branch_summary") return
       const safePayload = redactText(stableSerialize(payload))
       kernel.requestParams = extractRequestParams(payload)
+      kernel.requestToolNames = extractToolNames(payload)
       const task = sha256Text(safePayload.text)
         .then(async payloadHash => {
           kernel.payloadHash = payloadHash
@@ -1331,6 +1398,7 @@ function createTurnSpec(kernel: TurnKernel, options: {
     thinkingEffort: kernel.thinkingEffort,
     systemPrompt: kernel.systemPrompt,
     tools: kernel.tools,
+    ...(options.activeToolNames ? { activeToolNames: options.activeToolNames } : {}),
     toolRun: kernel.toolRun,
     prompt: options.prompt,
     timeoutMs: options.timeoutMs,
@@ -1439,13 +1507,16 @@ function createTurnSinks(kernel: TurnKernel): HarnessRunSinks {
         ...((previous?.cacheWrite !== undefined || row.usage.cacheWrite !== undefined)
           ? { cacheWrite: (previous?.cacheWrite ?? 0) + (row.usage.cacheWrite ?? 0) } : {}),
       }
+      // 本次请求实际下发的工具面以 payload 采集为准（激活面收窄与回合内渐进披露都会改变它）；
+      // 没有 payload 读数时才退回冻结工具面。
+      const requestToolNames = kernel.requestToolNames ?? kernel.tools.map(tool => tool.name)
       updateRequestStats({
         promptTokens: row.usage.input,
         completionTokens: row.usage.output,
         systemTokens: estimateContextTokens(kernel.systemPrompt),
         conversationTokens: kernel.latestMessages.reduce((n, message) => n + estimateMessageTokens(message), 0),
-        toolCount: kernel.tools.length,
-        toolNames: kernel.tools.map(tool => tool.name),
+        toolCount: requestToolNames.length,
+        toolNames: requestToolNames,
       })
       // 主回合逐请求用量记进分列统计；压缩等一次性调用不走这个 sink，
       // 由 completePiText 按自己的 purpose 单独记录。
@@ -1465,6 +1536,19 @@ function createTurnSinks(kernel: TurnKernel): HarnessRunSinks {
       }))
     },
   }
+}
+
+/**
+ * 对话回合的工具面装配（主回合与恢复续跑共用）：全量冻结（`setTools` 持全量，Pi 会校验
+ * 激活集 ⊆ 全量）+ 结果回读工具 + 取用入口；默认激活集由 `defaultActiveToolNames` 唯一判定，
+ * MCP 白名单之外的工具由 enable_tools 在本回合按需加入（`addedToolNames` 渐进披露）。
+ */
+function assembleConversationTools(slot: HarnessSlot, windowTokens: number): { tools: ToolDef[]; activeToolNames: string[] } {
+  const tools: ToolDef[] = [...listAll()]
+  tools.push(createTranscriptTool(entryId => slot.readToolResult(entryId), { windowTokens }))
+  // 取用入口只在确有未激活工具时挂载：没有任何这类工具时它无事可做，白占一份 schema。
+  if (defaultActiveToolNames(tools).length < tools.length) tools.push(createEnableToolsTool({ tools }))
+  return { tools, activeToolNames: defaultActiveToolNames(tools) }
 }
 
 /** 主对话回合：接替手写 Agent Loop 的 harness lane 入口。 */
@@ -1535,9 +1619,11 @@ export async function runPiAgentTurn(input: PiAgentTurnInput): Promise<PiAgentTu
   }
   // 主回合不使用返回的不可用名单：借用失败已由各自的工具报告；这里只保留取消守卫语义。
   assertCurrent()
-  const frozenTools: ToolDef[] = isActiveMessage ? [] : [...listAll()]
-  // 工具结果回读：请求投影里标注的 eventId 就是 Harness 条目 id，按条目分页读取。
-  if (frozenTools.length) frozenTools.push(createTranscriptTool(entryId => slot.readToolResult(entryId), { windowTokens }))
+  // 工具结果回读（请求投影里标注的 eventId 就是 Harness 条目 id，按条目分页读取）与默认激活面
+  // 都在装配函数里；主动表达回合没有工具面（tools=[]），激活集同为空。
+  const { tools: frozenTools, activeToolNames } = isActiveMessage
+    ? { tools: [] as ToolDef[], activeToolNames: [] as string[] }
+    : assembleConversationTools(slot, windowTokens)
   // 用户正文由 Harness 的 prompt 条目承担落盘（先落盘再投递由 Harness 事务保证）；
   // 主动消息用 deskpet.active_message 自定义消息投递，来源标记在 details.* 且不成为用户事实。
   assertCurrent()
@@ -1573,12 +1659,12 @@ export async function runPiAgentTurn(input: PiAgentTurnInput): Promise<PiAgentTu
   // 那条用户条目由 Pi 在 accept 内按技能文件构造 —— 一条命令只能落一条正文。
   const admitted = input.skillAdmission
     ? await slot.admitInput({
-        model, thinkingEffort, tools: frozenTools, toolRun,
+        model, thinkingEffort, tools: frozenTools, activeToolNames, toolRun,
         kind: "skill",
         name: input.skillAdmission.name,
         additionalInstructions: input.skillAdmission.additionalInstructions,
       })
-    : await slot.admitInput({ model, thinkingEffort, tools: frozenTools, toolRun, prompt: promptInput })
+    : await slot.admitInput({ model, thinkingEffort, tools: frozenTools, activeToolNames, toolRun, prompt: promptInput })
   if (!admitted.ok) {
     // 技能准入在边界上失败（清单在启动瞬间变化 → UnknownSkill）与前置判定的四态不同：留痕带上技能名，
     // 不把它混进「技能不存在」的报告里（`failure.kind` 仍是 admission，`failure.message` 带原始 tag）。
@@ -1773,6 +1859,7 @@ export async function runPiAgentTurn(input: PiAgentTurnInput): Promise<PiAgentTu
   const spec = createTurnSpec(kernel, {
     // 正文在准入时已提交（与 toolRun 一起装配），spec 只承载驱动面。
     prompt: promptInput,
+    activeToolNames,
     timeoutMs: loopConfig.turnTimeoutMs,
     maxToolCalls: loopConfig.maxToolCallsPerTurn,
     projectToolResults: true,
@@ -2484,6 +2571,8 @@ async function settleMainTurn(args: {
     runGeneration: kernel.generation,
     ...(kernel.generationStartedAt !== undefined ? { generationStartedAt: kernel.generationStartedAt } : {}),
     ...(state.finalAssistantEntryId ? { committedAssistantEntryId: state.finalAssistantEntryId } : {}),
+    // 已并入条目的截图路径回传给宿主：实时推送的界面消息与条目同源（重载由读模型带回）。
+    ...(state.attachedUserImages?.length ? { userImagePaths: [...state.attachedUserImages] } : {}),
     humanized: casualFlow,
     toolCallHistory,
     retriesUsed: state.retriesUsed,
@@ -2570,8 +2659,16 @@ export async function continueInterruptedRun(sessionId: string): Promise<PiAgent
     const currentCard = getActiveCard()
     const card = currentCard ? JSON.parse(JSON.stringify(currentCard)) as typeof currentCard : null
     const pool = getPoolSnapshot()
-    const frozenTools = [...listAll()]
-    frozenTools.push(createTranscriptTool(entryId => slot.readToolResult(entryId), { windowTokens: model.contextWindow }))
+    const { tools: frozenTools, activeToolNames } = assembleConversationTools(slot, model.contextWindow)
+    // 恢复中的工具调用仍要可执行：Pi 执行工具批次时按激活集过滤（`drive/tools.js` 的
+    // activeToolNames），中断前激活、若落到默认面外的 MCP 工具会被判成 unavailable。
+    // 把中断操作里 running 的工具名并回本回合激活集；这不改变「取用不跨 run 保留」——
+    // 这是恢复语义，不是模型取用的持久化。
+    if (pendingTools) {
+      for (const name of pendingTools) {
+        if (!activeToolNames.includes(name) && frozenTools.some(tool => tool.name === name)) activeToolNames.push(name)
+      }
+    }
     const thinkingEffort = getEffectiveThinkingEffort()
     // 中断运行的原始冻结快照已随进程丢失：用当前 Card/变量重建只读前缀，不静默改 Card。
     const context = buildPrompt({
@@ -2593,6 +2690,7 @@ export async function continueInterruptedRun(sessionId: string): Promise<PiAgent
     })
     const spec = createTurnSpec(kernel, {
       prompt: recoveryInput,
+      activeToolNames,
       timeoutMs: loopConfig.turnTimeoutMs,
       maxToolCalls: loopConfig.maxToolCallsPerTurn,
       projectToolResults: true,

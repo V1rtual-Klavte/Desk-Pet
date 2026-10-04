@@ -46,7 +46,7 @@ describe("主动机会和受限规划",()=>{
     expect(isLeisureOrIdle("communication",0)).toBe(false)
     expect(isLeisureOrIdle("media",0)).toBe(true)
     const tracker=advanceFinishedWorkTracker({workEndedAt:0,restingSince:now-20*60_000,lastRestObservationAt:now-5*60_000,wasWorking:false},
-      {now,working:false,leisureOrIdle:false,maxGap:10_000})
+      {now,working:false,leisureOrIdle:false})
     expect(tracker.restingSince).toBe(0)
     expect(tracker.workEndedAt).toBe(0)
   })

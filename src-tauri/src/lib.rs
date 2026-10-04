@@ -117,9 +117,12 @@ fn write_runtime_config(paths: tauri::State<AppPaths>, content: String) -> AppRe
         .map_err(|e| AppError::Io(format!("写入配置失败: {e}")))
 }
 
+/// 会话列表 UI 状态文件名：`sessions/` 下唯一允许丢弃的文件（正文以各会话 JSONL 为准）。
+const SESSION_UI_STATE_FILE: &str = "index.json";
+
 #[tauri::command]
 fn read_session_ui_state(paths: tauri::State<AppPaths>) -> AppResult<Option<String>> {
-    let file = paths.sessions.join("index.json");
+    let file = paths.sessions.join(SESSION_UI_STATE_FILE);
     if !file.exists() {
         return Ok(None);
     }
@@ -130,7 +133,7 @@ fn read_session_ui_state(paths: tauri::State<AppPaths>) -> AppResult<Option<Stri
 
 #[tauri::command]
 fn write_session_ui_state(paths: tauri::State<AppPaths>, content: String) -> AppResult<()> {
-    let file = paths.sessions.join("index.json");
+    let file = paths.sessions.join(SESSION_UI_STATE_FILE);
     std::fs::write(file, content).map_err(|e| AppError::Io(format!("写入会话 UI 状态失败: {e}")))
 }
 
@@ -282,7 +285,6 @@ pub fn run() {
         .plugin(tauri_plugin_global_shortcut::Builder::new().build())
         .plugin(tauri_plugin_dialog::init())
         .manage(monitor_state)
-        .manage(crate::commands::observation_cmd::ObservationState::default())
         .manage(McpPool::default())
         .manage(BashPool::default())
         .manage(ToolPermitPool::default())
@@ -472,9 +474,9 @@ pub fn run() {
             pick_chat_images,
             validate_chat_images,
             crate::commands::observation_cmd::observation_capture_screen,
-            crate::commands::observation_cmd::observation_read_project_notes,
-            crate::commands::observation_cmd::pick_observation_project,
-            crate::commands::observation_cmd::set_observation_project_root,
+            crate::commands::observation_cmd::observation_read_targets,
+            crate::commands::screenshot_cmd::capture_screenshot,
+            crate::commands::screenshot_cmd::save_screenshot,
             file_write,
             file_write_atomic,
             file_append,

@@ -8,6 +8,9 @@ import type { ToolDef } from "../types"
 import { executeToolDefinition } from "../router"
 import { toolPolicyHash } from "../policy"
 import { getSimpleStage } from "@/services/personality/stages-cache"
+import { createLogger } from "@/services/logger"
+
+const log = createLogger("HarnessTool")
 
 /** 一次工具调用所属回合的执行上下文；主回合与子代理共用。 */
 export interface HarnessToolRun {
@@ -25,6 +28,9 @@ export interface HarnessToolRun {
 
 /** 把冻结的工具集转成 Harness 原生工具数组；每次 run 前用 setTools 注入。 */
 export function toAgentHarnessTools(tools: readonly ToolDef[], run: HarnessToolRun): AgentHarnessTool<undefined>[] {
+  // 渐进披露的兜底过滤面：Pi 在下一次 generation 校验 activeToolNames ⊆ setTools，
+  // 名单外的名字会直接 configuration_failure 把整条运行带崩 —— 到这里为止只认本回合冻结集。
+  const frozenNames = new Set(tools.map(tool => tool.name))
   return tools.map(tool => ({
     name: tool.name,
     label: tool.name,
@@ -62,11 +68,19 @@ export function toAgentHarnessTools(tools: readonly ToolDef[], run: HarnessToolR
       }
       if (result.success) {
         run.history.push({ toolName: tool.name, status: "done" })
+        // 渐进披露（enable_tools）：结果随附的工具名交给 Pi 的 addedToolNames，
+        // 在工具批次落盘时并入本回合激活集。名单外的名字在这里拒绝并留痕（不静默）。
+        const added = result.addedToolNames?.filter(name => {
+          if (frozenNames.has(name)) return true
+          log.warn("工具声明了本回合工具集之外的 addedToolNames，已忽略:", { tool: tool.name, name })
+          return false
+        })
         return {
           content: result.contentParts ?? [{ type: "text", text: result.content }],
           // deskpetEntryId 是工具结果的持久条目 id（invocationId 与保留的结果条目 id 相同），
           // transform_context 用它给被缩短的结果标注可回读地址。
           details: { ...(result.details && typeof result.details === "object" ? result.details : {}), deskpetEntryId: invocation.invocationId },
+          ...(added && added.length ? { addedToolNames: added } : {}),
         }
       }
       run.history.push({ toolName: tool.name, status: "error" })

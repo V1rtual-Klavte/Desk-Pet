@@ -60,3 +60,7 @@ export {
   SESSION_TRANSCRIPT_TOOL,
 } from "./session-transcript"
 export type { ToolResultEntryReader, ToolResultLookup } from "./session-transcript"
+
+// ── 回合默认激活面与按需取用（唯一判定 + 取用入口）──
+export { defaultActiveToolNames } from "./activation"
+export { createEnableToolsTool, ENABLE_TOOLS_TOOL } from "./enable-tools"

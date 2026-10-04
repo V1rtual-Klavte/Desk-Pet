@@ -87,7 +87,8 @@ pnpm run version:set <x.y.z>  # 发版：统一三处版本号
 ## 路径、配置与资源
 
 - Rust `AppPaths` 决定数据根；开发/生产依据 Rust 构建模式，前端通过 `getRuntimeMode()` 判断路径环境。
-  不用 `import.meta.env.DEV` 代替，不用 `dirs_next()`、`find_project_root()` 或 `env!("CARGO_MANIFEST_DIR")` 推导业务路径。
+  不用 `import.meta.env.DEV` 代替，不用 `dirs_next()`、`find_project_root()` 或 `env!("CARGO_MANIFEST_DIR")` 推导业务路径
+  （唯一例外：`paths/mod.rs` 的 `project_root()`，仅 debug 构建用于定位开发工作区与随包资源，release 路径不经过它）。
 - TS 先初始化路径；`BaseDirs` 只表示目录，完整文件路径通过 `runtimePath(scope, ...segments)` 取得。
 - Rust 持有 base 的命令仅接收域内相对路径，如 `stages/x.json`，不加 `personality/` 等域前缀。
   通用文件 API 需要绝对路径时使用 `runtimePath()`；模块不硬编码数据根或带域前缀的业务路径。
@@ -146,7 +147,7 @@ pnpm run version:set <x.y.z>  # 发版：统一三处版本号
   网络边界不得夸大为通用沙箱。
 - Skill 清单由 Pi loader 维护：每回合核对一次目录指纹（不读正文），指纹变了才重载（重载时读入
   正文）；进请求的只有 name/description/location 披露块，正文在 `/skill` 显式调用或模型 read
-  时才进入对话；Skill 不提升权限。MCP 按运行借用并释放；启动不连接 MCP，记忆整理只按配置的
+  时才进入对话；Skill 不提升权限。MCP 按运行借用并释放（末位释放后连接在空闲宽限内复用、到点回收）；启动不连接 MCP，记忆整理只按配置的
   空闲策略和持久预算运行。主动规划与表达 tools=[]，来源和 owner 失效时取消；送达只认原生
   已提交助手条目与 SQLite 精确回执，未知外部副作用不重放。派生 behavior 与长期事实分域，清除
   画像同时撤销相关来源资格；系统可消费已提交 Card 变量，主动回复的变量写回不能自激出新机会。

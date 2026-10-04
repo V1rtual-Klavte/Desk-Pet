@@ -451,7 +451,7 @@ function injectCssVars(profile: ProfileData): void {
 /**
  * 1×1 透明 PNG。
  *
- * `<img src="">` 是非法值：浏览器会把它解析成文档地址（`http://localhost:1420/`），
+ * `<img src="">` 是非法值：浏览器会把它解析成文档地址（dev server 地址，端口取自 `tauri.conf.json` 的 `build.devUrl`），
  * 于是启动阶段每个还没拿到 Profile 的图片都产生一条资源加载失败。
  * 用透明占位代替空串，等 Profile 就绪后 activeProfileRevision 会触发重算。
  */

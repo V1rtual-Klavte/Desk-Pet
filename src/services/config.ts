@@ -85,7 +85,12 @@ interface Config {
     }
     logging: { level: "debug" | "info" | "warn" | "error" }
     errors: { overlay: "auto" | "always" | "never" }
-    desktop: {
+    /**
+     * 已退役：桌面观察改为原生事件驱动，不再有轮询间隔，运行期没有任何消费者。
+     * 键仍随文件读写往返（不提供 UI），待统一批次从 CONFIG.yaml 删除；
+     * 新代码不要读取它，也不要为它建立 getter。
+     */
+    desktop?: {
       pollingIntervalMs: number
     }
   }
@@ -155,7 +160,6 @@ interface Config {
     humanizer: { enabled: boolean }
     silentAccess: {
       enabled: boolean
-      projectPath: string
       staySeconds: number
       settleMs: number
       cooldownMs: number
@@ -449,7 +453,8 @@ export const generalConfig = {
   get shortcutMacModifiers() { return overrideOr("general.shortcut.macModifiers", cfg.general?.shortcut?.macModifiers ?? ["Control", "Command"]); },
   get shortcutWinModifiers() { return overrideOr("general.shortcut.winModifiers", cfg.general?.shortcut?.winModifiers ?? ["Control", "Alt"]); },
   get loggingLevel() { return overrideOr("general.logging.level", cfg.general?.logging?.level ?? (import.meta.env.DEV ? "debug" : "info")) as "debug" | "info" | "warn" | "error"; },
-  get pollingIntervalMs() { return overrideOr("general.desktop.pollingIntervalMs", cfg.general?.desktop?.pollingIntervalMs ?? 3000); },
+  // general.desktop.pollingIntervalMs 已退役（原生事件驱动，无轮询间隔）：没有 getter，
+  // 运行期无消费者；键暂留 CONFIG.yaml，待统一批次删除。
 };
 
 /**
@@ -499,9 +504,7 @@ export const errorsConfig = {
   get overlay() { return overrideOr("general.errors.overlay", cfg.general?.errors?.overlay ?? "auto") as OverlayMode; },
 };
 
-export const desktopConfig = {
-  get pollingIntervalMs() { return generalConfig.pollingIntervalMs; },
-};
+// desktopConfig 随窗口观察事件驱动一起退场：采样不再有轮询间隔这一输入。
 
 // ══════════════════════════════════════════
 // 2. AI 配置
@@ -550,10 +553,6 @@ export const humanizerConfig = {
 
 export const silentAccessConfig = {
   get enabled() { return overrideOr("ai.silentAccess.enabled", cfg.ai?.silentAccess?.enabled ?? true); },
-  get projectPath() {
-    const value = overrideOr("ai.silentAccess.projectPath", cfg.ai?.silentAccess?.projectPath ?? "");
-    return typeof value === "string" ? value : "";
-  },
   get staySeconds() { return overrideOr("ai.silentAccess.staySeconds", cfg.ai?.silentAccess?.staySeconds || 60); },
   get settleMs() { return overrideOr("ai.silentAccess.settleMs", cfg.ai?.silentAccess?.settleMs || 2000); },
   // 冷却时长统一用毫秒。早先这里是 `cooldownSeconds: 5000` 由调用方当秒乘 1000，

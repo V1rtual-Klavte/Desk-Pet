@@ -238,7 +238,8 @@ fn capture_mac_window_title(owner_pid: i32) -> Option<String> {
             return None;
         }
         // On-screen, non-desktop windows are returned in front-to-back order. Avoid launching
-        // AppleScript once per observation, which would dominate a lightweight polling loop.
+        // AppleScript once per observation: it is far slower than the CoreGraphics query and
+        // would dominate every event-driven sample.
         let array = CGWindowListCopyWindowInfo(1 | 16, 0);
         let mut title = None;
         if !array.is_null() {

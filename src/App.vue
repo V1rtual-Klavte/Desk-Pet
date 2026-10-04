@@ -15,7 +15,7 @@ import { start as startProactive, stop as stopProactive, refreshProactive } from
 import { switchToSession, createNewSession, closeSession, openSession, deleteSession, getSessions, getActiveSessionId, initWelcome } from "@/services/session";
 import type { PiSessionSummary } from "@/services/session";
 import { initApp } from "@/services/init";
-import { desktopConfig, silentAccessConfig, shortcutConfig, userConfig, reloadConfig } from "@/services/config";
+import { silentAccessConfig, shortcutConfig, userConfig, reloadConfig } from "@/services/config";
 import { isMacOS } from "@/services/env";
 import { applyFontVars } from "@/services/font";
 import { createLogger } from "@/services/logger";
@@ -599,7 +599,7 @@ onMounted(async () => {
   await initApp();
   await initObservationGovernance();
 
-  await setMonitorEnabled(silentAccessConfig.enabled, desktopConfig.pollingIntervalMs);
+  await setMonitorEnabled(silentAccessConfig.enabled);
   playEventSound("welcome");
   cleanupListener = await initWindowListener(winSize);
   startProactive();
@@ -681,7 +681,7 @@ onMounted(async () => {
     cleanupSettingsSaved = await listen("deskpet-settings-saved", async () => {
       await stopSilentUnderstanding();
       await reloadConfig();
-      await setMonitorEnabled(silentAccessConfig.enabled, desktopConfig.pollingIntervalMs);
+      await setMonitorEnabled(silentAccessConfig.enabled);
       refreshProactive();
       revealAllHumanizedMessages();
       startSilentUnderstanding();

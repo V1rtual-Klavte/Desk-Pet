@@ -10,7 +10,9 @@ use tauri::{Emitter, Manager};
 
 use crate::error::{err, AppResult};
 use crate::rust_info;
-use crate::window::enhance_to_iterm_style;
+#[cfg(target_os = "windows")]
+use crate::window::{DPI_BASELINE, FALLBACK_SCREEN_HEIGHT, FALLBACK_SCREEN_WIDTH};
+use crate::window::{enhance_to_iterm_style, MAIN_WINDOW_HEIGHT, MAIN_WINDOW_WIDTH};
 
 /// 获取光标位置和所在屏幕信息（返回原始平台坐标，不做 Y 轴翻转）
 /// Windows: (cx, cy, sx, sy, sw, sh) 全部 web 坐标系（左上原点）
@@ -35,7 +37,7 @@ fn get_cursor_and_screen() -> AppResult<CursorScreen> {
         let monitor = MonitorFromPoint(pt, 2); // MONITOR_DEFAULTTONEAREST
         let mut info: MONITORINFOEXW = std::mem::zeroed();
         info.monitorInfo.cbSize = std::mem::size_of::<MONITORINFOEXW>() as u32;
-        let (mut sx, mut sy, mut sw, mut sh) = (0i32, 0i32, 1920i32, 1080i32);
+        let (mut sx, mut sy, mut sw, mut sh) = (0i32, 0i32, FALLBACK_SCREEN_WIDTH, FALLBACK_SCREEN_HEIGHT);
         if GetMonitorInfoW(monitor, &mut info as *mut _ as *mut _) != 0 {
             let r = info.monitorInfo.rcMonitor;
             sx = r.left;
@@ -44,11 +46,11 @@ fn get_cursor_and_screen() -> AppResult<CursorScreen> {
             sh = r.bottom - r.top;
         }
         // 获取显示器 DPI，物理像素转逻辑（web）坐标
-        let mut dpi_x: u32 = 96;
-        let mut dpi_y: u32 = 96;
+        let mut dpi_x: u32 = DPI_BASELINE;
+        let mut dpi_y: u32 = DPI_BASELINE;
         GetDpiForMonitor(monitor, 0, &mut dpi_x, &mut dpi_y);
-        let scale_x = dpi_x as f64 / 96.0;
-        let scale_y = dpi_y as f64 / 96.0;
+        let scale_x = f64::from(dpi_x) / f64::from(DPI_BASELINE);
+        let scale_y = f64::from(dpi_y) / f64::from(DPI_BASELINE);
         let lx = (pt.x as f64 / scale_x).round() as i32;
         let ly = (pt.y as f64 / scale_y).round() as i32;
         let lsx = (sx as f64 / scale_x).round() as i32;
@@ -181,8 +183,8 @@ pub fn compute_popup_position(
     win_w: i32,
     win_h: i32,
 ) -> AppResult<PopupPosition> {
-    let win_w = if win_w > 0 { win_w } else { 730 };
-    let win_h = if win_h > 0 { win_h } else { 450 };
+    let win_w = if win_w > 0 { win_w } else { MAIN_WINDOW_WIDTH as i32 };
+    let win_h = if win_h > 0 { win_h } else { MAIN_WINDOW_HEIGHT as i32 };
 
     // ── iTerm 风格增强 + 显示窗口 ──
     if let Some(win) = app.get_webview_window("main") {

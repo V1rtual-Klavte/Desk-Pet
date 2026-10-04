@@ -122,6 +122,9 @@ function messageFromEntry(entry: MessageEntry): Message | undefined {
         .filter((part): part is ToolCall => part.type === "toolCall")
         .map(call => ({ id: call.id, name: call.name, arguments: safeStringify(call.arguments) }))
       const parts = raw.content.filter((part): part is TextContent => part.type === "text").map(part => part.text)
+      // 助手条目同样只带回原路径（她 show_to_user 截图的落盘文件）：文件没了就由界面
+      // 按「不可用」呈现，不在这里从缓存恢复副本。
+      const imagePaths = getMessageImagePaths(raw)
       return {
         id: entry.id,
         eventId: entry.id,
@@ -131,6 +134,7 @@ function messageFromEntry(entry: MessageEntry): Message | undefined {
         timestamp,
         ...(thinking ? { thinking } : {}),
         ...(toolCalls.length > 0 ? { toolCalls } : {}),
+        ...(imagePaths.length ? { imagePaths } : {}),
       }
     }
     case "toolResult": {

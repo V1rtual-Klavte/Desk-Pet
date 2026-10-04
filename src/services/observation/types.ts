@@ -1,4 +1,4 @@
-export type ObservationKind = "screenshot" | "file" | "window"
+export type ObservationKind = "screenshot" | "file" | "dir" | "window"
 
 export interface UnderstandingRecord {
   sourceId: string
@@ -6,6 +6,24 @@ export interface UnderstandingRecord {
   observedAt: number
   expiresAt: number
   summary: string
+  /** 本批实际读取的路径（了解层审计，可回看 AI 读了什么）；截图/窗口来源没有。 */
+  targets?: string[]
+}
+
+/** 一次宿主读取请求的目标（决策输出的宿主侧形态）。 */
+export interface ReadTargetRequest {
+  path: string
+  kind: "dir" | "file"
+}
+
+/** 宿主逐目标的如实结果：status=skipped 时 detail 说明原因，不猜测、不崩整批。 */
+export interface TargetReadResult {
+  path: string
+  kind: "dir" | "file"
+  status: "read" | "listed" | "skipped"
+  detail: string
+  names?: string[]
+  content?: string
 }
 
 export interface TopicEvidence {

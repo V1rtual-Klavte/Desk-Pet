@@ -339,7 +339,8 @@ async function pushTurnOutcome(result: PiAgentTurnOutput, sessionId: string): Pr
     return
   }
   if (result.silent) return
-  const message = pushAssistantMessage(result.reply, sessionId, result.replyParts, result.committedAssistantEntryId)
+  // 条目关联的截图路径与条目本身同一次提交；实时界面消息必须带上同一份路径（重载由读模型带回）。
+  const message = pushAssistantMessage(result.reply, sessionId, result.replyParts, result.committedAssistantEntryId, result.userImagePaths)
   if (result.humanized && result.toolCallHistory.length === 0) {
     enqueueCommitted({ sessionId, runGeneration: result.runGeneration ?? 0,
       messageId: message.id, parts: result.replyParts ?? [result.reply], isActiveMessage: false,

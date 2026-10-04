@@ -10,7 +10,7 @@ export const humanizerContract: ModuleContract = {
     "src/services/engine/harness/runtime.ts",
   ],
   // Root integration will refresh after the shared runtime/UI audit is complete.
-  sourceHash: "2ab7687a16d8577f187f3a1ff665a46088efd9ae5af006873a547c8f1205c5e2",
+  sourceHash: "44d303fa7e8f70cb1a973e44812df322904001fd72dfbded50a4f73fa7d41409",
   coverage: [
     {
       id: "hz-01",
@@ -39,7 +39,7 @@ export const humanizerContract: ModuleContract = {
       depth: "deep",
       scenarios: ["humanizer-scheduler-casual", "humanizer-scheduler-cancel", "humanizer-scheduler-active-first", "humanizer-scheduler-titlebar"],
     },
-    { id: "hz-04", feature: "真实生产组件呈现", description: "真实Tauri WebView内挂载生产ChatPanel，普通聊天显示Card typing，已提交内容按泡揭示，停止立即全显并清状态；这提供组件自动证据，不代替桌面截图人工观察", why: "纯调度器测试不能证明Vue组件正确消费瞬态揭示和阶段通道", layer: "e2e", depth: "deep", scenarios: ["humanizer-real-component-reveal"] },
+    { id: "hz-04", feature: "真实生产组件呈现", description: "真实Tauri WebView内挂载生产ChatPanel：普通聊天生成时 Card typing 只经顶栏展示（组件内输入框上方状态位不再被占用），已提交内容按泡揭示，停止立即全显并释放顶栏状态；这提供组件自动证据，不代替桌面截图人工观察", why: "纯调度器测试不能证明Vue组件正确消费瞬态揭示和阶段通道", layer: "e2e", depth: "deep", scenarios: ["humanizer-real-component-reveal"] },
   ],
   rules: { minScenarios: 1, minDeepScenarios: 1, requireBoundary: true, requireErrorPath: false },
 }

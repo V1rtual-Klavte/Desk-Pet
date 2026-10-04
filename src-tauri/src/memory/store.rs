@@ -20,6 +20,48 @@ pub const WATERMARK_RULE_VERSION: i64 = 1;
 /// 单批 Light 抽取的来源上限：批大小是资源边界，不是调优旋钮。
 const JOB_SOURCE_BATCH: i64 = 64;
 
+/// SQLite 忙等待：记忆库连接是进程内唯一写者，维护命令跨连接短暂争用时最多等 750ms。
+const DB_BUSY_TIMEOUT_MS: u64 = 750;
+
+/// dreaming 作业租约默认时长；job_start / job_resume 与命令层缺省值共用一处。
+pub(crate) const JOB_LEASE_MS: i64 = 60_000;
+/// 续租时长下限：低于它会把仍在手持租约的作业过早判成可抢。
+const JOB_LEASE_MIN_MS: i64 = 1_000;
+
+/// limit 统一下限：0 或负数按「取一条」处理，避免调用方拿到空结果。
+const LIMIT_MIN: i64 = 1;
+/// 管理列表单页上限。
+const LIST_LIMIT_MAX: i64 = 500;
+/// 单次 scope 查询／召回与 pinned 取回的条数上限。
+const QUERY_LIMIT_MAX: i64 = 50;
+/// 单次召回接受的精确目标（targets）数量上限。
+const RECALL_TARGETS_MAX: usize = 50;
+/// 作业历史列表单页上限。
+const JOB_LIST_LIMIT_MAX: i64 = 100;
+
+/// 命令层缺省 limit：与 store 侧上限同处一个定义点，命令层不另写数字。
+pub(crate) const LIST_LIMIT_DEFAULT: i64 = 200;
+pub(crate) const QUERY_LIMIT_DEFAULT: i64 = 12;
+pub(crate) const RECALL_LIMIT_DEFAULT: i64 = 50;
+pub(crate) const JOB_LIST_LIMIT_DEFAULT: i64 = 50;
+
+/// 相关度权重：整串短语命中高于短词命中，且 content > summary > aliases。
+/// `relevance_order`（SQL 排序）与 `relevance_score`（本地重排）必须共用这一份，
+/// 两处各自硬编码会在改权重时静默漂移。
+const PHRASE_CONTENT_WEIGHT: i64 = 8;
+const PHRASE_SUMMARY_WEIGHT: i64 = 6;
+const PHRASE_ALIASES_WEIGHT: i64 = 4;
+const TERM_CONTENT_WEIGHT: i64 = 3;
+const TERM_SUMMARY_WEIGHT: i64 = 2;
+const TERM_ALIASES_WEIGHT: i64 = 1;
+
+/// 查询词条截断上限：参与 LIKE 回退与相关度评分的词最多保留 16 个。
+const QUERY_TERM_LIMIT: usize = 16;
+
+/// draft 未提供 importance/confidence 时的入库默认值。
+const DEFAULT_IMPORTANCE: f64 = 5.0;
+const DEFAULT_CONFIDENCE: f64 = 0.5;
+
 fn now_ms() -> i64 {
     SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_millis() as i64
 }
@@ -90,13 +132,14 @@ fn escape_like(text: &str) -> String {
 
 /// Chinese natural questions need concept n-grams in addition to whole-phrase LIKE.
 fn memory_query_terms(query:&str)->Vec<String> {
-    const STOP:&[&str]=&["你","我","他","她","它","用户","的","了","吗","呢","啊","是","在","想","怎么","什么","哪个","哪里","平时","让我","告诉","记得","有没有","能不能","请问","一下","可以","这个","那个"];
+    // 停用词：疑问词、指代词与功能词；切出的短词命中它们不代表内容相关。
+    const QUERY_STOP_WORDS:&[&str]=&["你","我","他","她","它","用户","的","了","吗","呢","啊","是","在","想","怎么","什么","哪个","哪里","平时","让我","告诉","记得","有没有","能不能","请问","一下","可以","这个","那个"];
     let mut terms=Vec::new();let mut chinese=Vec::new();let mut latin=String::new();
     let flush_chinese=|run:&mut Vec<char>,out:&mut Vec<String>|{if run.len()==1{out.push(run.iter().collect());}else if run.len()>1{for w in run.windows(2){out.push(w.iter().collect());}if run.len()>=3{for w in run.windows(3){out.push(w.iter().collect());}}}run.clear();};
     let flush_latin=|run:&mut String,out:&mut Vec<String>|{if !run.is_empty(){out.push(run.to_lowercase());run.clear();}};
     for ch in query.chars(){if ch.is_ascii_alphanumeric(){flush_chinese(&mut chinese,&mut terms);latin.push(ch);}else if matches!(ch as u32,0x3400..=0x4dbf|0x4e00..=0x9fff|0xf900..=0xfaff){flush_latin(&mut latin,&mut terms);chinese.push(ch);}else{flush_chinese(&mut chinese,&mut terms);flush_latin(&mut latin,&mut terms);}}
     flush_chinese(&mut chinese,&mut terms);flush_latin(&mut latin,&mut terms);
-    terms.retain(|term|!STOP.contains(&term.as_str())&&term.chars().count()>=2);terms.sort();terms.dedup();terms.truncate(16);terms
+    terms.retain(|term|!QUERY_STOP_WORDS.contains(&term.as_str())&&term.chars().count()>=2);terms.sort();terms.dedup();terms.truncate(QUERY_TERM_LIMIT);terms
 }
 
 fn query_token_clause(terms:&[String],first_param:usize)->(String,Vec<Value>){
@@ -107,14 +150,14 @@ fn query_token_clause(terms:&[String],first_param:usize)->(String,Vec<Value>){
 }
 
 fn relevance_order(terms: &[String], first_param: usize) -> String {
-    let phrase = "(CASE WHEN i.content LIKE ?2 ESCAPE '\\' THEN 8 ELSE 0 END + CASE WHEN i.summary LIKE ?2 ESCAPE '\\' THEN 6 ELSE 0 END + CASE WHEN i.aliases_json LIKE ?2 ESCAPE '\\' THEN 4 ELSE 0 END)";
+    let phrase = format!("(CASE WHEN i.content LIKE ?2 ESCAPE '\\' THEN {PHRASE_CONTENT_WEIGHT} ELSE 0 END + CASE WHEN i.summary LIKE ?2 ESCAPE '\\' THEN {PHRASE_SUMMARY_WEIGHT} ELSE 0 END + CASE WHEN i.aliases_json LIKE ?2 ESCAPE '\\' THEN {PHRASE_ALIASES_WEIGHT} ELSE 0 END)");
     let token_scores = terms.iter().enumerate().map(|(index, _)| {
         let p = first_param + index;
         format!(
-            "(CASE WHEN i.content LIKE ?{p} ESCAPE '\\' THEN 3 WHEN i.summary LIKE ?{p} ESCAPE '\\' THEN 2 WHEN i.aliases_json LIKE ?{p} ESCAPE '\\' THEN 1 ELSE 0 END)"
+            "(CASE WHEN i.content LIKE ?{p} ESCAPE '\\' THEN {TERM_CONTENT_WEIGHT} WHEN i.summary LIKE ?{p} ESCAPE '\\' THEN {TERM_SUMMARY_WEIGHT} WHEN i.aliases_json LIKE ?{p} ESCAPE '\\' THEN {TERM_ALIASES_WEIGHT} ELSE 0 END)"
         )
     }).collect::<Vec<_>>();
-    if token_scores.is_empty() { phrase.to_string() }
+    if token_scores.is_empty() { phrase }
     else { format!("{phrase} + {}", token_scores.join(" + ")) }
 }
 
@@ -124,11 +167,11 @@ fn relevance_score(item: &Value, query: &str) -> i64 {
     let summary = s(draft, "summary").to_lowercase();
     let aliases = draft.get("aliases").map(Value::to_string).unwrap_or_default().to_lowercase();
     let phrase = query.trim().to_lowercase();
-    let mut score = (if content.contains(&phrase) { 8 } else { 0 })
-        + (if summary.contains(&phrase) { 6 } else { 0 })
-        + (if aliases.contains(&phrase) { 4 } else { 0 });
+    let mut score = (if content.contains(&phrase) { PHRASE_CONTENT_WEIGHT } else { 0 })
+        + (if summary.contains(&phrase) { PHRASE_SUMMARY_WEIGHT } else { 0 })
+        + (if aliases.contains(&phrase) { PHRASE_ALIASES_WEIGHT } else { 0 });
     for term in memory_query_terms(query) {
-        score += if content.contains(&term) { 3 } else if summary.contains(&term) { 2 } else if aliases.contains(&term) { 1 } else { 0 };
+        score += if content.contains(&term) { TERM_CONTENT_WEIGHT } else if summary.contains(&term) { TERM_SUMMARY_WEIGHT } else if aliases.contains(&term) { TERM_ALIASES_WEIGHT } else { 0 };
     }
     score
 }
@@ -269,7 +312,7 @@ impl MemoryStore {
             }
         }
         let reopened = Connection::open(&self.db_path).map_err(db_err)?;
-        reopened.busy_timeout(std::time::Duration::from_millis(750)).map_err(db_err)?;
+        reopened.busy_timeout(std::time::Duration::from_millis(DB_BUSY_TIMEOUT_MS)).map_err(db_err)?;
         schema::ensure(&reopened)?;
         *connection = reopened;
         drop(connection);
@@ -279,9 +322,9 @@ impl MemoryStore {
     pub fn open(paths: &AppPaths) -> AppResult<Self> {
         std::fs::create_dir_all(&paths.memory)
             .map_err(|e| AppError::Io(format!("创建记忆目录失败: {e}")))?;
-        let db_path = paths.memory.join("memory.sqlite3");
+        let db_path = paths.memory.join(crate::paths::MEMORY_DB_FILE);
         let conn = Connection::open(&db_path).map_err(db_err)?;
-        conn.busy_timeout(std::time::Duration::from_millis(750)).map_err(db_err)?;
+        conn.busy_timeout(std::time::Duration::from_millis(DB_BUSY_TIMEOUT_MS)).map_err(db_err)?;
         schema::ensure(&conn)?;
         Ok(Self { db_path, conn: Mutex::new(conn) })
     }
@@ -292,7 +335,7 @@ impl MemoryStore {
             std::fs::create_dir_all(parent).map_err(|e| AppError::Io(format!("创建测试目录失败: {e}")))?;
         }
         let conn = Connection::open(db_path).map_err(db_err)?;
-        conn.busy_timeout(std::time::Duration::from_millis(750)).map_err(db_err)?;
+        conn.busy_timeout(std::time::Duration::from_millis(DB_BUSY_TIMEOUT_MS)).map_err(db_err)?;
         schema::ensure(&conn)?;
         Ok(Self { db_path: db_path.to_path_buf(), conn: Mutex::new(conn) })
     }
@@ -413,7 +456,7 @@ impl MemoryStore {
             sql.push_str(&format!(" AND i.scope_id=?{}", args.len()));
         }
         sql.push_str(" ORDER BY i.pinned DESC,i.updated_at DESC,i.id LIMIT ?");
-        args.push(json!(limit.clamp(1, 500)));
+        args.push(json!(limit.clamp(LIMIT_MIN, LIST_LIMIT_MAX)));
         let mut statement = conn.prepare(&sql).map_err(db_err)?;
         let items = statement
             .query_map(rusqlite::params_from_iter(params_of(&args)), Self::row_to_item)
@@ -436,7 +479,7 @@ impl MemoryStore {
             Self::ITEM_COLUMNS
         );
         let items = conn.prepare(&sql).map_err(db_err)?
-            .query_map(params![now, session_id, card_id, limit.clamp(1, 50)], Self::row_to_item)
+            .query_map(params![now, session_id, card_id, limit.clamp(LIMIT_MIN, QUERY_LIMIT_MAX)], Self::row_to_item)
             .map_err(db_err)?
             .collect::<Result<Vec<_>, _>>()
             .map_err(db_err)?;
@@ -549,7 +592,7 @@ impl MemoryStore {
         if text.is_empty() {
             return Ok(Vec::new());
         }
-        let limit = limit.clamp(1, 50);
+        let limit = limit.clamp(LIMIT_MIN, QUERY_LIMIT_MAX);
         let like = format!("%{}%", escape_like(text));
         let terms=memory_query_terms(text);
         let (term_sql,term_args)=query_token_clause(&terms,4);
@@ -650,7 +693,7 @@ impl MemoryStore {
         let now = now_ms();
         let mut targeted = Vec::new();
         let mut targeted_seen = std::collections::HashSet::new();
-        for target in targets.iter().take(50) {
+        for target in targets.iter().take(RECALL_TARGETS_MAX) {
             let id = s(target, "id");
             let Some(version) = i(target, "version") else { continue };
             if id.is_empty() || !targeted_seen.insert((id.clone(), version)) { continue; }
@@ -682,7 +725,7 @@ impl MemoryStore {
                 .then_with(|| i(right, "updatedAt").cmp(&i(left, "updatedAt")))
                 .then_with(|| s(left, "id").cmp(&s(right, "id")))
         });
-        let pinned = Self::pinned_on(&tx, card_id, session_id, 50)?;
+        let pinned = Self::pinned_on(&tx, card_id, session_id, QUERY_LIMIT_MAX)?;
         tx.commit().map_err(db_err)?;
         Ok(json!({ "revision": revision, "candidatesByScope": { "user": user, "card": card, "session": session }, "candidates": candidates, "pinned": pinned, "targeted": targeted }))
     }
@@ -948,8 +991,8 @@ impl MemoryStore {
                             scope_id,
                             aliases,
                             b(draft, "pinned") as i64,
-                            number(draft, "importance", 5.0),
-                            number(draft, "confidence", 0.5),
+                            number(draft, "importance", DEFAULT_IMPORTANCE),
+                            number(draft, "confidence", DEFAULT_CONFIDENCE),
                             i(draft, "observedAt").unwrap_or_else(now_ms),
                             draft.get("validFrom").and_then(Value::as_i64),
                             draft.get("validTo").and_then(Value::as_i64),
@@ -1004,7 +1047,7 @@ impl MemoryStore {
         conn.execute(
             "INSERT INTO memory_jobs(id,phase,status,revision,forget_epoch,lease_owner,lease_until,cursor,processed,created_at,updated_at) \
              VALUES (?1,?2,'running',?3,?4,?5,?6,'',0,?7,?7)",
-            params![id, phase, revision, epoch, lease_owner, now_ms() + 60_000, now_ms()],
+            params![id, phase, revision, epoch, lease_owner, now_ms() + JOB_LEASE_MS, now_ms()],
         )
         .map_err(db_err)?;
         Self::read_job(&conn, &id)
@@ -1044,7 +1087,7 @@ impl MemoryStore {
             "SELECT id,phase,status,revision,forget_epoch,lease_until,processed,created_at,updated_at \
              FROM memory_jobs ORDER BY updated_at DESC,id DESC LIMIT ?1 OFFSET ?2",
         ).map_err(db_err)?;
-        let rows = statement.query_map(params![limit.clamp(1, 100), offset.max(0)], |row| Ok(json!({
+        let rows = statement.query_map(params![limit.clamp(LIMIT_MIN, JOB_LIST_LIMIT_MAX), offset.max(0)], |row| Ok(json!({
             "id": row.get::<_, String>(0)?,
             "phase": row.get::<_, String>(1)?,
             "status": row.get::<_, String>(2)?,
@@ -1065,7 +1108,7 @@ impl MemoryStore {
             .execute(
                 "UPDATE memory_jobs SET cursor=?2,lease_owner=?3,lease_until=?4,processed=processed+1,updated_at=?5 \
                  WHERE id=?1 AND status='running' AND (lease_owner IS NULL OR lease_owner=?3 OR lease_until IS NULL OR lease_until < ?5)",
-                params![job_id, cursor, lease_owner, now_ms() + lease_ms.max(1_000), now_ms()],
+                params![job_id, cursor, lease_owner, now_ms() + lease_ms.max(JOB_LEASE_MIN_MS), now_ms()],
             )
             .map_err(db_err)?;
         if changed == 0 {
@@ -1102,7 +1145,7 @@ impl MemoryStore {
         let changed = conn.execute(
             "UPDATE memory_jobs SET status='running',lease_owner=?2,lease_until=?3,updated_at=?4 \
              WHERE id=?1 AND phase='review' AND status IN ('paused','cancelled','failed') AND revision=?5 AND forget_epoch=?6",
-            params![job_id, lease_owner, now_ms() + 60_000, now_ms(), revision, epoch],
+            params![job_id, lease_owner, now_ms() + JOB_LEASE_MS, now_ms(), revision, epoch],
         )
         .map_err(db_err)?;
         if changed == 0 { return Err(AppError::MemoryConflict); }
@@ -1300,8 +1343,8 @@ impl MemoryStore {
                         scope_id,
                         aliases,
                         b(&draft, "pinned") as i64,
-                        number(&draft, "importance", 5.0),
-                        number(&draft, "confidence", 0.5),
+                        number(&draft, "importance", DEFAULT_IMPORTANCE),
+                        number(&draft, "confidence", DEFAULT_CONFIDENCE),
                         i(&draft, "observedAt").unwrap_or_else(now_ms),
                         draft.get("validFrom").and_then(Value::as_i64),
                         draft.get("validTo").and_then(Value::as_i64),
@@ -1382,7 +1425,7 @@ impl MemoryStore {
             .db_path
             .parent()
             .ok_or_else(|| AppError::Memory("记忆目录不可用".into()))?
-            .join("exports")
+            .join(crate::paths::MEMORY_EXPORTS_DIR)
             .join(format!("MEMORY-{}.md", now_ms()));
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent).map_err(|e| AppError::Io(format!("创建导出目录失败: {e}")))?;
@@ -1412,7 +1455,7 @@ impl MemoryStore {
             .db_path
             .parent()
             .ok_or_else(|| AppError::Memory("记忆目录不可用".into()))?
-            .join("backups");
+            .join(crate::paths::MEMORY_BACKUPS_DIR);
         std::fs::create_dir_all(&dir).map_err(|e| AppError::Io(format!("创建备份目录失败: {e}")))?;
         let target = dir.join(format!("memory-{}.sqlite3", now_ms()));
         let mut destination = Connection::open(&target).map_err(db_err)?;

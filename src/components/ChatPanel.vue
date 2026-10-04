@@ -72,7 +72,7 @@ const cardName = computed(() => activeCardName.value || "桌宠");
 
 /** 工具执行状态提示（agent-loop 事件驱动） */
 const toolStatus = ref<{ text: string; visible: boolean }>({ text: "", visible: false });
-let statusOwner: "typing" | "tool" | "stage" | undefined;
+let statusOwner: "tool" | "stage" | undefined;
 let toolExecuting = false;
 let cleanupToolExec: (() => void) | null = null;
 let cleanupToolDone: (() => void) | null = null;
@@ -641,11 +641,8 @@ onMounted(async () => {
   cleanupHumanizer = subscribeHumanizer(state => {
     if (state.sessionId !== getActiveSessionId()) return;
     revealTick.value++;
-    if (state.typing && state.revealed === 0 && !toolExecuting) {
-      statusOwner = "typing";
-      const text = getSimpleStage("typing") ?? "";
-      toolStatus.value = { text, visible: Boolean(text) };
-    } else if (!state.typing && statusOwner === "typing") hideToolStatus();
+    // typing 状态只作顶栏展示（emitStageHint 已双写「配信中」位），不再占用输入框上方的状态位；
+    // 这里只处理揭示进度带来的滚动。
     nextTick(() => { if (isAtBottom.value) scrollToBottom(); else { hasNewBelow.value = true; updateThumb(); } });
   });
   getCurrentWebview().onDragDropEvent(event => {
@@ -679,8 +676,9 @@ onMounted(async () => {
     if (event.payload.sessionId !== getActiveSessionId()) return;
     const stage = event.payload.stage;
     if (!stage) return;
-    if (stage === "typing" && toolExecuting) return;
-    statusOwner = stage === "typing" ? "typing" : "stage";
+    // typing 只走顶栏（同一事件已双写），不占用输入框上方的状态位。
+    if (stage === "typing") return;
+    statusOwner = "stage";
     const text = getSimpleStage(stage);
     // 没有文案就等于没有提示位（Card 给了空串）：收起而不是显示一个空框。
     if (!text) { hideToolStatus(); return; }
@@ -764,7 +762,7 @@ onUnmounted(() => {
             <template v-if="index === 0">
               <template v-for="path in m.imagePaths" :key="path">
                 <span v-if="unavailableImages.has(path)" class="ct image-unavailable">图片原文件不可用</span>
-                <div v-else class="chat-image-link"><img :src="chatImageUrl(path)" alt="用户发送的图片" class="chat-image" loading="lazy" @error="imageUnavailable(path)" /></div>
+                <div v-else class="chat-image-link"><img :src="chatImageUrl(path)" :alt="m.role === 'user' ? '用户发送的图片' : '桌宠发来的截图'" class="chat-image" loading="lazy" @error="imageUnavailable(path)" /></div>
               </template>
               <button v-if="m.role === 'user' && m.eventId && m.text" type="button" class="cm-remember" :disabled="rememberingEvents.has(m.eventId)" @click="rememberUserMessage(m)">{{ rememberingEvents.has(m.eventId) ? "记忆提交中…" : "记住这条" }}</button>
             </template>

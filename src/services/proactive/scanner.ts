@@ -1,9 +1,9 @@
 import { watch } from "vue"
 import { activeSessionId, unansweredCount, getUnansweredPolicyHistory, readPiSessionEntriesOnce } from "@/services/session"
 import { getActiveCard, getActivePersonalityId, subscribeVariableCommits, getPoolSnapshot } from "@/services/personality"
-import { getBehaviorSnapshot } from "@/services/behavior"
+import { getBehaviorSnapshot, IDLE_ACTIVE_LIMIT_MS } from "@/services/behavior"
 import { subscribeWindowObservations, getRuntimeActivity, getLatestWindowObservation } from "@/services/window"
-import { silentAccessConfig, memoryConfig, desktopConfig } from "@/services/config"
+import { silentAccessConfig, memoryConfig } from "@/services/config"
 import { isAIGenerating, isCoolingDown, triggerCooldown, setCooldown } from "@/services/cooldown"
 import { harnessSlots } from "@/services/engine/harness"
 import { sha256Text } from "@/services/engine/runtime"
@@ -35,7 +35,11 @@ let aborter:AbortController|undefined,jobOwner:ProactiveOwner|undefined,jobRequi
 const cleanups:Array<()=>void>=[],offered=new Map<string,Opportunity>()
 let windowIdentity="",windowSince=0,lastWindowGeneration=-1,lastWindowSequence=-1,lastWindowOfferAt=0,offeringWindow=false
 let controlEnabled=false
-let workEndedAt=0,restingSince=0,lastRestObservationAt=0,wasWorking=false,lastReliableActive=0,reunionAt=0,lastObservedAt=0,hadObservationGap=true
+let workEndedAt=0,restingSince=0,lastRestObservationAt=0,wasWorking=false,lastReliableActive=0,reunionAt=0,hadObservationGap=true
+/** 最近一条观察的 observationState；用于「locked → observed」解锁转移。 */
+let lastWindowState:string|null=null
+/** 最近一次观察时系统 idle 是否已达关键阈值；用于 idle 跨阈值唤醒。 */
+let wasSystemIdle=false
 const previousVars=new Map<string,Record<string,string|number|boolean>>()
 function seedVariables():void {
   const card=getActiveCard()
@@ -79,22 +83,29 @@ export function start():void {
   let bridgeStop:Promise<(()=>void)|undefined>|undefined
   bridgeStop=initProactiveControlBridge(handleControlRequest).catch(error=>{log.warn("主动控制桥未启动:",formatError(error));return undefined})
   cleanups.push(()=>{void bridgeStop?.then(stopBridge=>stopBridge?.()).catch(error=>log.warn("主动控制跨窗口监听卸载失败:",formatError(error)))})
-  cleanups.push(watch(()=>getActivePersonalityId(),(value,previous)=>{cancelCurrent("card_changed");if(previous)stopPresence(`planner:${previous}`);offered.clear();discardDerivedSources();wasWorking=false;lastReliableActive=0;lastObservedAt=0;seedVariables();enqueueTick()}))
+  cleanups.push(watch(()=>getActivePersonalityId(),(value,previous)=>{cancelCurrent("card_changed");if(previous)stopPresence(`planner:${previous}`);offered.clear();discardDerivedSources();wasWorking=false;lastReliableActive=0;lastWindowState=null;wasSystemIdle=false;seedVariables();enqueueTick()}))
   cleanups.push(subscribeWindowObservations(observation=>{
     if(observation.monitorGeneration<lastWindowGeneration||(observation.monitorGeneration===lastWindowGeneration&&observation.sequence<=lastWindowSequence))return
     lastWindowGeneration=observation.monitorGeneration;lastWindowSequence=observation.sequence
     const now=observation.observedAt,card=getActiveCard()
     if(controlEnabled)observePresence(observation,card?.id)
-    const maxGap=Math.max(10_000,2*desktopConfig.pollingIntervalMs)
-    if(lastObservedAt&&now-lastObservedAt>maxGap)hadObservationGap=true
-    lastObservedAt=now
-    if(observation.observationState!=="observed") {if(observation.observationState!=="locked")hadObservationGap=true;restingSince=0;lastRestObservationAt=0;windowIdentity="";windowSince=0;return}
+    // 事件驱动采样：两次观察的间隔不再代表观察中断（可能只是长时间没切窗口）。
+    // 中断证据只来自显式状态变化：非 observed 状态截断分段，唤醒/恢复会先发 suspended 边界。
+    const previousState=lastWindowState;lastWindowState=observation.observationState
+    if(previousState==="locked")enqueueTick()
+    if(observation.observationState!=="observed") {if(observation.observationState!=="locked")hadObservationGap=true;restingSince=0;lastRestObservationAt=0;windowIdentity="";windowSince=0;wasSystemIdle=false;return}
     const identity=`${observation.appId}:${observation.title}`
-    if(identity!==windowIdentity){windowIdentity=identity;windowSince=now;lastWindowOfferAt=0;if(jobRequiresWindow)cancelCurrent("window_changed")}
+    if(identity!==windowIdentity){windowIdentity=identity;windowSince=now;lastWindowOfferAt=0;if(jobRequiresWindow)cancelCurrent("window_changed");enqueueTick()}
     const behavior=getBehaviorSnapshot(now),working=behavior.focus.currentContinuousMs>=WORK_SILENCE_MS&&["work","development"].includes(behavior.focus.currentCategory??"")
     const tracker=advanceFinishedWorkTracker({workEndedAt,restingSince,lastRestObservationAt,wasWorking},
-      {now,working,leisureOrIdle:isLeisureOrIdle(behavior.focus.currentCategory,observation.idleForMs),maxGap})
+      {now,working,leisureOrIdle:isLeisureOrIdle(behavior.focus.currentCategory,observation.idleForMs)})
     workEndedAt=tracker.workEndedAt;restingSince=tracker.restingSince;lastRestObservationAt=tracker.lastRestObservationAt;wasWorking=tracker.wasWorking
+    // 系统 idle 跨过 5 分钟阈值（进入/离开空闲）时唤醒扫描：这是事件驱动采样下
+    // 唯一能观察到空闲状态切换的时机（空闲本身不再有周期心跳）。
+    if(observation.idleForMs!==null) {
+      const systemIdle=observation.idleForMs>=IDLE_ACTIVE_LIMIT_MS
+      if(systemIdle!==wasSystemIdle){wasSystemIdle=systemIdle;enqueueTick()}
+    }
     if(observation.idleForMs!==null&&observation.idleForMs<60_000) {
       if(lastReliableActive&&now-lastReliableActive>=DAY_MS&&!hadObservationGap)reunionAt=now
       lastReliableActive=now;hadObservationGap=false
@@ -286,8 +297,9 @@ export async function tick(now=Date.now()):Promise<void> {
           ||(respectRandomInterval&&typeof scan.budget.nextSuccessAfter==="number"&&scan.budget.nextSuccessAfter>time)) {
           trace(context,"proactive_skipped",()=>({reason:"daily_quota_or_success_interval",ruleId:selected.ruleId}),{requestId});return false
         }
-        if(jobRequiresWindow){const observation=getLatestWindowObservation();const reason=!observation||observation.observationState!=="observed"?"window_unavailable"
-          :time-observation.observedAt>OBSERVATION_MAX_AGE_MS?"window_stale":null
+        // 事件驱动采样下观察只在前台变化时更新，观察时间不再是新鲜度判据：
+        // 「快照被更新」等价于身份变化，订阅回调已在那时取消窗口任务（window_changed）。
+        if(jobRequiresWindow){const observation=getLatestWindowObservation();const reason=!observation||observation.observationState!=="observed"?"window_unavailable":null
           if(reason){trace(context,"proactive_skipped",()=>({reason,ruleId:selected.ruleId}),{requestId});return false}}
         if(!claimed)return true
         const receipt=await ipc.validate({attemptId:expressionAttempt,owner:actual,now:time})

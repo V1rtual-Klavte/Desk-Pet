@@ -56,6 +56,11 @@ windows-sys = { version = "0.52", features = [
     "Win32_System_StationsAndDesktops", # OpenInputDesktop / GetUserObjectInformationW / CloseDesktop
     "Win32_UI_Input_KeyboardAndMouse", # GetLastInputInfo / LASTINPUTINFO
     "Win32_UI_Shell",               # ShellExecuteW（app_open 用它替代 cmd /C start）
+    "Win32_UI_Accessibility",       # SetWinEventHook / HWINEVENTHOOK / WINEVENTPROC（前台切换事件）
+    "Win32_System_RemoteDesktop",   # WTSRegisterSessionNotification / NOTIFY_FOR_THIS_SESSION（锁屏/解锁会话事件）
+    "Win32_System_Power",           # PowerRegisterSuspendResumeNotification / RegisterPowerSettingNotification / POWERBROADCAST_SETTING（睡眠/唤醒、显示器开关）
+    "Win32_System_SystemServices",  # GUID_CONSOLE_DISPLAY_STATE（显示器电源设置通知的 GUID）
+    "Win32_System_LibraryLoader",   # GetModuleHandleW（消息窗口实例句柄）
 ] }
 
 [target.'cfg(target_os = "macos")'.dependencies]

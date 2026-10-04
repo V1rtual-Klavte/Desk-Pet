@@ -3,13 +3,17 @@
 //! 每个命令只做三件事：参数收窄、调用唯一 Store、把结果原样返回。
 //! 业务规则一律留在 `store.rs`，命令层不复制第二份判定。
 
+use super::store::{
+    JOB_LEASE_MS, JOB_LIST_LIMIT_DEFAULT, LIST_LIMIT_DEFAULT, QUERY_LIMIT_DEFAULT,
+    RECALL_LIMIT_DEFAULT,
+};
 use super::MemoryState;
 use crate::error::AppResult;
 use serde_json::Value;
 
 fn managed_backup_path(paths: &crate::paths::AppPaths, backup_path: &str) -> AppResult<std::path::PathBuf> {
     let requested = std::path::Path::new(backup_path);
-    let backups = paths.memory.join("backups");
+    let backups = paths.memory.join(crate::paths::MEMORY_BACKUPS_DIR);
     let resolved = requested.canonicalize().map_err(|_| crate::error::AppError::PathNotFound(backup_path.to_string()))?;
     let base = backups.canonicalize().map_err(|_| crate::error::AppError::PathNotFound(backups.to_string_lossy().to_string()))?;
     if !resolved.starts_with(&base) || !resolved.is_file() {
@@ -31,7 +35,7 @@ pub fn memory_list(
     scope_id: Option<String>,
     limit: Option<i64>,
 ) -> AppResult<Vec<Value>> {
-    state.0.list(scope.as_deref(), scope_id.as_deref(), limit.unwrap_or(200))
+    state.0.list(scope.as_deref(), scope_id.as_deref(), limit.unwrap_or(LIST_LIMIT_DEFAULT))
 }
 
 #[tauri::command]
@@ -58,7 +62,7 @@ pub fn memory_query(
     session_id: Option<String>,
     limit: Option<i64>,
 ) -> AppResult<Vec<Value>> {
-    state.0.query(&query, scope.as_deref(), scope_id.as_deref(), session_id.as_deref(), limit.unwrap_or(12))
+    state.0.query(&query, scope.as_deref(), scope_id.as_deref(), session_id.as_deref(), limit.unwrap_or(QUERY_LIMIT_DEFAULT))
 }
 
 #[tauri::command]
@@ -72,7 +76,7 @@ pub fn memory_recall_candidates(
     allow_expired_targets: Option<bool>,
 ) -> AppResult<Value> {
     state.0.recall_candidates(
-        &query, card_id.as_deref(), &session_id, limit.unwrap_or(50),
+        &query, card_id.as_deref(), &session_id, limit.unwrap_or(RECALL_LIMIT_DEFAULT),
         targets.as_deref().unwrap_or(&[]), allow_expired_targets.unwrap_or(false),
     )
 }
@@ -126,7 +130,7 @@ pub fn memory_job_start(state: tauri::State<'_, MemoryState>, phase: String, lea
 
 #[tauri::command]
 pub fn memory_job_list(state: tauri::State<'_, MemoryState>, limit: Option<i64>, offset: Option<i64>) -> AppResult<Vec<Value>> {
-    state.0.job_list(limit.unwrap_or(50), offset.unwrap_or(0))
+    state.0.job_list(limit.unwrap_or(JOB_LIST_LIMIT_DEFAULT), offset.unwrap_or(0))
 }
 
 #[tauri::command]
@@ -137,7 +141,7 @@ pub fn memory_job_checkpoint(
     lease_owner: String,
     lease_ms: Option<i64>,
 ) -> AppResult<Value> {
-    state.0.job_checkpoint(&job_id, &cursor, &lease_owner, lease_ms.unwrap_or(60_000))
+    state.0.job_checkpoint(&job_id, &cursor, &lease_owner, lease_ms.unwrap_or(JOB_LEASE_MS))
 }
 
 #[tauri::command]

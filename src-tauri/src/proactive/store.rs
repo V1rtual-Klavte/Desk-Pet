@@ -60,7 +60,8 @@ fn prune_tx(tx:&Transaction<'_>,now:i64)->AppResult<()> {
     tx.execute("DELETE FROM proactive_attempts WHERE status IN ('committed','failed','skipped') AND updated_at<?1",[now-crate::memory::protocol::PROACTIVE_SETTLED_RETENTION_DAYS*DAY_MS]).map_err(db)?;
     tx.execute("DELETE FROM proactive_tasks WHERE state<>'active' AND updated_at<?1",[now-crate::memory::protocol::PROACTIVE_SETTLED_RETENTION_DAYS*DAY_MS]).map_err(db)?;
     tx.execute("DELETE FROM proactive_occurrences WHERE status IN ('committed','failed','skipped') AND updated_at<?1",[now-crate::memory::protocol::PROACTIVE_SETTLED_RETENTION_DAYS*DAY_MS]).map_err(db)?;
-    tx.execute("DELETE FROM proactive_topics WHERE used_at<?1",[now-30*DAY_MS]).map_err(db)?;
+    // 话题去重、投递回看与评估留存共用 30 天回看窗（取 protocol 常量，不另写数字）。
+    tx.execute("DELETE FROM proactive_topics WHERE used_at<?1",[now-crate::memory::protocol::PROACTIVE_EVALUATION_RETENTION_DAYS*DAY_MS]).map_err(db)?;
     tx.execute("DELETE FROM proactive_source_registry WHERE valid_until IS NOT NULL AND valid_until<?1",[now]).map_err(db)?;
     tx.execute("UPDATE proactive_attempts SET status='unresolved',updated_at=?1,error_code='lease_expired' WHERE status IN ('reserved','generating') AND lease_until<?1",[now]).map_err(db)?;
     let expired_auxiliary={
@@ -326,7 +327,7 @@ impl MemoryStore {
             let rows=stmt.query_map(params![now,crate::memory::protocol::PROACTIVE_SCAN_BATCH],|row|row.get::<_,String>(0)).map_err(db)?;
             let mut out=Vec::new(); for row in rows { out.push(row.map_err(db)?); } out };
         let used_topics={let mut stmt=tx.prepare("SELECT topic_key FROM proactive_topics WHERE used_at>=?1 ORDER BY used_at DESC LIMIT 500").map_err(db)?;
-            let rows=stmt.query_map([now-30*DAY_MS],|row|row.get::<_,String>(0)).map_err(db)?;let mut out=Vec::new();for row in rows{out.push(row.map_err(db)?);}out};
+            let rows=stmt.query_map([now-crate::memory::protocol::PROACTIVE_EVALUATION_RETENTION_DAYS*DAY_MS],|row|row.get::<_,String>(0)).map_err(db)?;let mut out=Vec::new();for row in rows{out.push(row.map_err(db)?);}out};
         let attempts={ let mut stmt=tx.prepare("SELECT attempt_id,status,session_id,assistant_entry_id,request_id,owner_json,source_refs_json,usage_json,source_fingerprint,local_date,COALESCE(decision_json,'null'),updated_at FROM proactive_attempts WHERE session_id=?1 AND status IN ('reserved','generating','unresolved') ORDER BY updated_at LIMIT ?2").map_err(db)?;
             let rows=stmt.query_map(params![session_id,limit],attempt_json).map_err(db)?;
             let mut out=Vec::new(); for row in rows { out.push(row.map_err(db)?); } out };
@@ -357,12 +358,12 @@ impl MemoryStore {
         let recent=request.get("recentDelivered").and_then(Value::as_bool).unwrap_or(false);
         let task_sql=format!("SELECT {TASK_COLUMNS} FROM proactive_tasks WHERE state='active' AND (scope='user' OR (scope='card' AND scope_id=?1) OR (scope='session' AND scope_id=?2)) AND (?3=0 OR EXISTS(SELECT 1 FROM proactive_attempts a JOIN json_each(a.source_refs_json) r WHERE a.session_id=?2 AND a.status='committed' AND a.assistant_entry_id IS NOT NULL AND a.updated_at>=?4 AND json_extract(r.value,'$.kind')='task' AND json_extract(r.value,'$.id')=proactive_tasks.id AND json_extract(r.value,'$.version')=proactive_tasks.version)) ORDER BY updated_at DESC,id LIMIT ?5");
         let mut stmt=conn.prepare(&task_sql).map_err(db)?;
-        let rows=stmt.query_map(params![card_id,session_id,recent as i64,now_ms()-30*DAY_MS,limit],read_task).map_err(db)?; let mut tasks=Vec::new(); for row in rows {tasks.push(row.map_err(db)?);}
+        let rows=stmt.query_map(params![card_id,session_id,recent as i64,now_ms()-crate::memory::protocol::PROACTIVE_EVALUATION_RETENTION_DAYS*DAY_MS,limit],read_task).map_err(db)?; let mut tasks=Vec::new(); for row in rows {tasks.push(row.map_err(db)?);}
         let ids=value_array(request,"attemptIds"); let mut attempts=Vec::new();
         if ids.is_empty() {
             let include_recent=request.get("recentDelivered").and_then(Value::as_bool).unwrap_or(false);
             let statuses=if include_recent {"('committed','unresolved','reserved','generating')"} else {"('unresolved')"};
-            let recency=if include_recent {format!(" AND (status<>'committed' OR (kind='expression' AND assistant_entry_id IS NOT NULL AND updated_at>={}))",now_ms()-30*DAY_MS)} else {String::new()};
+            let recency=if include_recent {format!(" AND (status<>'committed' OR (kind='expression' AND assistant_entry_id IS NOT NULL AND updated_at>={}))",now_ms()-crate::memory::protocol::PROACTIVE_EVALUATION_RETENTION_DAYS*DAY_MS)} else {String::new()};
             let sql=format!("SELECT attempt_id,status,session_id,assistant_entry_id,request_id,owner_json,source_refs_json,usage_json,source_fingerprint,local_date,COALESCE(decision_json,'null'),updated_at FROM proactive_attempts WHERE session_id=?1 AND json_extract(owner_json,'$.cardId')=?2 AND json_extract(owner_json,'$.cardHash')=?3 AND status IN {statuses}{recency} ORDER BY updated_at DESC LIMIT ?4");
             let mut stmt=conn.prepare(&sql).map_err(db)?;
             let rows=stmt.query_map(params![session_id,card_id,text(&current_owner,"cardHash"),limit],attempt_json).map_err(db)?; for row in rows {attempts.push(row.map_err(db)?);}

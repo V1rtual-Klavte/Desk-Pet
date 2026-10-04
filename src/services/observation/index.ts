@@ -3,4 +3,3 @@ export { clearSilentUnderstanding, initObservationGovernance, invalidateTopicSou
 export { getUnderstandingPromptBlock, getUnderstandingPromptBlockAsync, getUnderstandingSnapshot, getUnderstandingSnapshotAsync, getTopicWeights } from "./store"
 export type { CommittedUserParticipation, UnderstandingSnapshot, TopicWeight } from "./types"
 export { drainTopicIntake, recordCommittedUserParticipation } from "./topics"
-export { pickObservationProject } from "./picker"

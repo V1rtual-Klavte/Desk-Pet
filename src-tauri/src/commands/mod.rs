@@ -15,6 +15,7 @@ pub mod observation_cmd;
 pub mod personality_fs_cmd;
 pub mod profile_cmd;
 pub mod resources_cmd;
+pub mod screenshot_cmd;
 pub mod session_fs;
 pub mod skill_cmd;
 pub mod tool_exec;

@@ -36,6 +36,8 @@ static SINK: Mutex<Option<FileSink>> = Mutex::new(None);
 
 const MAX_FILE_BYTES: u64 = 5 * 1024 * 1024;
 const MAX_BACKUPS: u32 = 2;
+/// 日志文件名；轮转备份是 `deskpet.log.1`、`deskpet.log.2`（见 `backup_path`）。
+const LOG_FILE_NAME: &str = "deskpet.log";
 
 // ── 级别 ──
 
@@ -123,7 +125,7 @@ pub fn init_file_sink(dir: &Path) {
         warn_to_stderr(&format!("日志目录创建失败: {dir:?}: {e}"));
         return;
     }
-    let path = dir.join("deskpet.log");
+    let path = dir.join(LOG_FILE_NAME);
     match open_sink(&path) {
         Ok(sink) => {
             if let Ok(mut guard) = SINK.lock() {

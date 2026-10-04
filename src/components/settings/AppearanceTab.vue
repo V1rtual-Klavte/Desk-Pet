@@ -20,6 +20,7 @@ import {
   deleteProfile,
   cloneProfile,
   restoreDefaultResources,
+  profileDisplayPath,
   invalidateProfileCache,
   type ProfileOpResult,
   type ProfileData,
@@ -27,7 +28,6 @@ import {
 } from "@/services/profile";
 import { showSuccess, showFailure, confirmDialog } from "@/services/dialog";
 import { formatError } from "@/services/error";
-import { BaseDirs } from "@/services/paths";
 import { createLogger } from "@/services/logger";
 
 const log = createLogger("Settings");
@@ -182,7 +182,7 @@ async function doDeleteProfile(profileId: string): Promise<void> {
   const accepted = await confirmDialog(`确定删除「${profileId}」吗？该操作不可撤销。`, {
     title: "删除 Profile",
     okLabel: "删除",
-    detail: `${BaseDirs.profiles()}/${profileId}`,
+    detail: profileDisplayPath(profileId),
   });
   if (!accepted) return;
   // deleteProfile 已含「拒绝删除内置默认 Profile」与「删后回退」两条策略，

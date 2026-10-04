@@ -15,6 +15,12 @@ const MAX_CHUNK_BYTES: usize = 4 * 1024 * 1024;
 const MAX_TRACE_LINE_BYTES: usize = MAX_CHUNK_BYTES + 1024;
 static TRACE_WRITE_LOCK: Mutex<()> = Mutex::new(());
 
+/// trace chunk 协议版本：与 TS 侧同一契约，chunk.schemaVersion 必须等于它。
+const TRACE_SCHEMA_VERSION: u8 = 1;
+/// trace 事件流文件与 ACK 游标文件名（均在数据根下）。
+const TRACE_FILE_NAME: &str = "e2e-trace.jsonl";
+const TRACE_ACK_FILE_NAME: &str = "e2e-trace-ack.json";
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct TraceBoundary {
@@ -149,7 +155,7 @@ fn ack(chunk: &TraceChunk) -> TraceChunkAck {
 }
 
 fn validate_chunk(chunk: &TraceChunk) -> AppResult<()> {
-    if chunk.schema_version != 1 || chunk.chunk_id.trim().is_empty() || chunk.chunk_seq == 0 {
+    if chunk.schema_version != TRACE_SCHEMA_VERSION || chunk.chunk_id.trim().is_empty() || chunk.chunk_seq == 0 {
         return Err(AppError::Tool("trace chunk 标识或 schema 无效".into()));
     }
     if chunk.event_count != chunk.events.len() {
@@ -176,7 +182,7 @@ fn trace_file_path(data_root: &Path) -> AppResult<PathBuf> {
     let root = data_root
         .canonicalize()
         .map_err(|e| AppError::Io(format!("解析 E2E 数据根失败: {e}")))?;
-    let path = data_root.join("e2e-trace.jsonl");
+    let path = data_root.join(TRACE_FILE_NAME);
     if let Ok(metadata) = fs::symlink_metadata(&path) {
         if metadata.file_type().is_symlink() {
             return Err(AppError::PathEscape);
@@ -192,7 +198,7 @@ fn trace_file_path(data_root: &Path) -> AppResult<PathBuf> {
 }
 
 fn ack_file_path(trace_path: &Path) -> AppResult<PathBuf> {
-    let path = trace_path.with_file_name("e2e-trace-ack.json");
+    let path = trace_path.with_file_name(TRACE_ACK_FILE_NAME);
     if fs::symlink_metadata(&path).is_ok_and(|metadata| metadata.file_type().is_symlink()) {
         return Err(AppError::PathEscape);
     }
@@ -328,7 +334,7 @@ mod tests {
 
     fn chunk(chunk_seq: u64, chunk_id: &str) -> TraceChunk {
         TraceChunk {
-            schema_version: 1,
+            schema_version: TRACE_SCHEMA_VERSION,
             chunk_id: chunk_id.into(),
             chunk_seq,
             seq_from: Some(chunk_seq),
@@ -353,7 +359,7 @@ mod tests {
         let retry = append_chunk(&root, chunk(1, "chunk-1")).unwrap();
         assert_eq!(first.chunk_id, retry.chunk_id);
         assert_eq!(first.chunk_seq, retry.chunk_seq);
-        assert_eq!(fs::read_to_string(root.join("e2e-trace.jsonl")).unwrap().lines().count(), 1);
+        assert_eq!(fs::read_to_string(root.join(TRACE_FILE_NAME)).unwrap().lines().count(), 1);
         fs::remove_dir_all(root).unwrap();
     }
 
@@ -361,10 +367,10 @@ mod tests {
     fn missing_ack_cursor_recovers_from_jsonl_and_exact_last_retry_is_idempotent() {
         let root = root();
         let first = append_chunk(&root, chunk(1, "chunk-1")).unwrap();
-        fs::remove_file(root.join("e2e-trace-ack.json")).unwrap();
+        fs::remove_file(root.join(TRACE_ACK_FILE_NAME)).unwrap();
         let retry = append_chunk(&root, chunk(1, "chunk-1")).unwrap();
         assert_eq!(first.chunk_id, retry.chunk_id);
-        assert_eq!(fs::read_to_string(root.join("e2e-trace.jsonl")).unwrap().lines().count(), 1);
+        assert_eq!(fs::read_to_string(root.join(TRACE_FILE_NAME)).unwrap().lines().count(), 1);
         fs::remove_dir_all(root).unwrap();
     }
 
@@ -384,7 +390,7 @@ mod tests {
     #[test]
     fn recovery_rejects_oversized_jsonl_line_with_bounded_read_buffer() {
         let root = root();
-        let path = root.join("e2e-trace.jsonl");
+        let path = root.join(TRACE_FILE_NAME);
         let mut file = File::create(&path).unwrap();
         file.write_all(&vec![b'x'; MAX_TRACE_LINE_BYTES + 1]).unwrap();
         file.write_all(b"\n").unwrap();

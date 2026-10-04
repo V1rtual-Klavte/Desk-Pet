@@ -3,16 +3,18 @@ import { runtimePath } from "@/services/paths"
 import { silentAccessConfig } from "@/services/config"
 import { createLogger } from "@/services/logger"
 import { errorCode, formatError } from "@/services/error"
-import { OBSERVATION_SOURCE_TTL_MS, TOPIC_EVIDENCE_TTL_MS } from "./config"
+import { BEHAVIOR_DIR, UNDERSTANDING_FILE } from "@/services/behavior"
+import { MAX_AUDIT_PATH_CHARS, OBSERVATION_SOURCE_TTL_MS, READ_WINDOW_MS, TOPIC_EVIDENCE_TTL_MS } from "./config"
 import type { TopicEvidence, TopicWeight, UnderstandingRecord, UnderstandingSnapshot } from "./types"
 
 const log = createLogger("ObservationStore")
-const STORE_FILE = "understanding.json"
 const STORE_MAX_BYTES = 256 * 1024
 const MAX_OBSERVATIONS = 64
 /** Persist at most 512 label/source rows; 90-day expiry prunes old participation before the hard cap. */
 const MAX_TOPIC_EVIDENCE = 512
 const MAX_INVALIDATED_SOURCES = 1_024
+/** 滚动读取消费的持久上限；一小时窗口内实际用不到这么多条。 */
+const MAX_TRACKED_READ_ATTEMPTS = 64
 
 interface StoreData {
   schemaVersion: 1
@@ -21,20 +23,41 @@ interface StoreData {
   invalidatedTopicSources: string[]
   topicClearedAt: number
   lastAuxiliaryAttemptAt: number
+  /** 了解层宿主读取的滚动时间戳（毫秒），用于每小时读取上限记账。 */
+  targetReadAttempts: number[]
 }
 
-let data: StoreData = { schemaVersion: 1, observations: [], topics: [], invalidatedTopicSources: [], topicClearedAt: 0, lastAuxiliaryAttemptAt: 0 }
+function emptyStore(): StoreData {
+  return { schemaVersion: 1, observations: [], topics: [], invalidatedTopicSources: [], topicClearedAt: 0, lastAuxiliaryAttemptAt: 0, targetReadAttempts: [] }
+}
+
+let data: StoreData = emptyStore()
 let loaded = false
 let loadPromise: Promise<void> | undefined
 let revision = 0
 let queue: Promise<void> = Promise.resolve()
 
+function sanitizeTargets(value: unknown): string[] | undefined {
+  if (!Array.isArray(value)) return undefined
+  const paths = value
+    .filter((item): item is string => typeof item === "string" && item.length > 0)
+    .slice(0, 3)
+    .map(item => item.slice(0, MAX_AUDIT_PATH_CHARS))
+  return paths.length > 0 ? paths : undefined
+}
+
 function isObservation(value: unknown): value is UnderstandingRecord {
   if (!value || typeof value !== "object") return false
   const record = value as Partial<UnderstandingRecord>
-  return typeof record.sourceId === "string" && ["screenshot", "file", "window"].includes(record.kind ?? "")
+  return typeof record.sourceId === "string" && ["screenshot", "file", "dir", "window"].includes(record.kind ?? "")
     && Number.isSafeInteger(record.observedAt) && Number.isSafeInteger(record.expiresAt)
     && typeof record.summary === "string" && record.summary.length > 0 && record.summary.length <= 500
+}
+
+function normalizeObservation(record: UnderstandingRecord): UnderstandingRecord {
+  const { targets: rawTargets, ...rest } = record
+  const targets = sanitizeTargets(rawTargets)
+  return targets ? { ...rest, targets } : rest
 }
 
 function isTopic(value: unknown): value is TopicEvidence {
@@ -47,8 +70,8 @@ function isTopic(value: unknown): value is TopicEvidence {
 }
 
 async function persist(): Promise<void> {
-  const path = await runtimePath("data", "behavior", STORE_FILE)
-  const parent = await runtimePath("data", "behavior")
+  const path = await runtimePath("data", BEHAVIOR_DIR, UNDERSTANDING_FILE)
+  const parent = await runtimePath("data", BEHAVIOR_DIR)
   await invoke("dir_create", { path: parent, recursive: true })
   const content = JSON.stringify(data)
   await invoke("file_write_atomic", { path, content, maxBytes: STORE_MAX_BYTES })
@@ -59,13 +82,13 @@ export async function loadObservationStore(): Promise<void> {
   if (loadPromise) return loadPromise
   loadPromise = (async () => {
     try {
-      const path = await runtimePath("data", "behavior", STORE_FILE)
+      const path = await runtimePath("data", BEHAVIOR_DIR, UNDERSTANDING_FILE)
       const { content } = await invoke<{ content: string }>("file_read", { path, maxBytes: STORE_MAX_BYTES })
       const parsed = JSON.parse(content) as Partial<StoreData>
       if (parsed.schemaVersion !== 1) throw new Error("了解层schemaVersion无效")
       const now = Date.now()
       const observations = Array.isArray(parsed.observations)
-        ? parsed.observations.filter(isObservation).filter(row => row.expiresAt > now && now - row.observedAt <= OBSERVATION_SOURCE_TTL_MS).slice(-MAX_OBSERVATIONS)
+        ? parsed.observations.filter(isObservation).filter(row => row.expiresAt > now && now - row.observedAt <= OBSERVATION_SOURCE_TTL_MS).map(normalizeObservation).slice(-MAX_OBSERVATIONS)
         : []
       const topics = Array.isArray(parsed.topics)
         ? parsed.topics.filter(isTopic).filter(row => row.observedAt + TOPIC_EVIDENCE_TTL_MS > now).slice(-MAX_TOPIC_EVIDENCE)
@@ -73,10 +96,15 @@ export async function loadObservationStore(): Promise<void> {
       const invalidatedSourceIds = Array.isArray(parsed.invalidatedTopicSources)
         ? parsed.invalidatedTopicSources.filter((row): row is string => typeof row === "string")
         : []
+      const staleReadAttempts = Array.isArray(parsed.targetReadAttempts)
+        ? parsed.targetReadAttempts.filter((row): row is number => Number.isSafeInteger(row) && row > now - READ_WINDOW_MS)
+        : []
+      const targetReadAttempts = staleReadAttempts.slice(-MAX_TRACKED_READ_ATTEMPTS)
       const invalidationOverflow = invalidatedSourceIds.length > MAX_INVALIDATED_SOURCES
       const requiresPrune = (parsed.observations?.length ?? 0) !== observations.length
         || (parsed.topics?.length ?? 0) !== topics.length
         || invalidatedSourceIds.length > MAX_INVALIDATED_SOURCES
+        || (parsed.targetReadAttempts?.length ?? 0) !== targetReadAttempts.length
       data = {
         schemaVersion: 1,
         observations,
@@ -86,13 +114,14 @@ export async function loadObservationStore(): Promise<void> {
           ? Math.max(Number.isSafeInteger(parsed.topicClearedAt) ? Number(parsed.topicClearedAt) : 0, now)
           : Number.isSafeInteger(parsed.topicClearedAt) ? Number(parsed.topicClearedAt) : 0,
         lastAuxiliaryAttemptAt: Number.isSafeInteger(parsed.lastAuxiliaryAttemptAt) ? Number(parsed.lastAuxiliaryAttemptAt) : 0,
+        targetReadAttempts,
       }
       if (requiresPrune) await persist()
       revision += 1
       loaded = true
     } catch (error) {
       if (errorCode(error) === "PATH_NOT_FOUND") {
-        data = { schemaVersion: 1, observations: [], topics: [], invalidatedTopicSources: [], topicClearedAt: 0, lastAuxiliaryAttemptAt: 0 }
+        data = emptyStore()
         loaded = true
         return
       }
@@ -200,6 +229,23 @@ export async function markAuxiliaryAttemptAt(at: number): Promise<void> {
   })
 }
 
+/** 滚动窗口内已发生的宿主读取次数（持久记账），供每小时上限判定。 */
+export function getRecentTargetReadAttempts(now = Date.now()): number[] {
+  return data.targetReadAttempts.filter(at => at > now - READ_WINDOW_MS && at <= now)
+}
+
+/** 记一次宿主读取尝试（一条目标算一次）；窗口外的旧记录一并滚出。 */
+export async function recordTargetReadAttempts(count: number, at: number): Promise<void> {
+  if (!Number.isSafeInteger(count) || count <= 0) return
+  await loadObservationStore()
+  await serialize(async () => {
+    data.targetReadAttempts = [...data.targetReadAttempts.filter(stamp => stamp > at - READ_WINDOW_MS), ...Array.from({ length: count }, () => at)]
+      .slice(-MAX_TRACKED_READ_ATTEMPTS)
+    revision += 1
+    await persist()
+  })
+}
+
 export async function pruneExpiredObservationData(now = Date.now()): Promise<void> {
   await loadObservationStore()
   await serialize(async () => {
@@ -251,14 +297,7 @@ export async function clearObservationDomain(): Promise<void> {
   const loading = loadPromise
   if (loading) await loading.catch(error => log.warn("清除前等待了解层读取", formatError(error)))
   await serialize(async () => {
-    data = {
-      schemaVersion: 1,
-      observations: [],
-      topics: [],
-      invalidatedTopicSources: [],
-      topicClearedAt: Date.now(),
-      lastAuxiliaryAttemptAt: Date.now(),
-    }
+    data = { ...emptyStore(), topicClearedAt: Date.now(), lastAuxiliaryAttemptAt: Date.now() }
     loaded = true
     revision += 1
     await persist()

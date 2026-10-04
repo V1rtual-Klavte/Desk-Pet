@@ -25,6 +25,8 @@ export const RUST_ONLY_COMMANDS = [
   "clipboard_read", "clipboard_write",
   // 窗口与显示器
   "set_monitor_enabled", "get_runtime_activity",
+  // 截图（screenshot_cmd.rs）：桌面屏幕采集 + 数据根落盘，Node 无法等价复现
+  "capture_screenshot", "save_screenshot",
   // 桌面副作用
   "app_open", "export_profile_zip", "restore_default_resources",
   // MemoryStore/FTS/transactions are Rust-owned; Node must not fake them.

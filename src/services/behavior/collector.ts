@@ -1,11 +1,12 @@
 import { invoke } from "@tauri-apps/api/core"
 import { runtimePath } from "@/services/paths"
-import { generalConfig } from "@/services/config"
 import { createLogger } from "@/services/logger"
 import { createRuntimeTraceContext } from "@/services/engine/runtime/trace"
 import { proactiveEvent } from "@/services/proactive/trace"
 import { classifyApp } from "./classifier"
 import { buildSnapshot, coveredInterval, emptyDaily } from "./aggregate"
+import { BEHAVIOR_DIR, DAILY_DIR, SEGMENT_INDEX_FILE, SEGMENTS_DIR, UNDERSTANDING_FILE } from "./paths"
+import { IDLE_ACTIVE_LIMIT_MS } from "./types"
 import type { AppCategory, BehaviorDaily, BehaviorSegment, BehaviorSnapshot, WindowObservation } from "./types"
 
 const log = createLogger("Behavior")
@@ -13,11 +14,12 @@ const behaviorTraceContext = createRuntimeTraceContext()
 const SEGMENT_SHARD_LIMIT = 512 * 1024
 const SEGMENT_RETENTION_DAYS = 30
 const DAILY_RETENTION_DAYS = 180
-const IDLE_ACTIVE_LIMIT_MS = 5 * 60_000
 const WORK_PRESENCE_THRESHOLD_MS = 30 * 60_000
 const MAX_DAILY_READ_BYTES = 2 * 1024 * 1024
 const MAX_APP_IDS_PER_DAY = 64
 const MAX_PENDING_OBSERVATIONS = 128
+/** 事件密集时按时间兜底落盘一次，避免分段只在状态切换时才持久化。 */
+const CHECKPOINT_INTERVAL_MS = 60_000
 
 let started = false
 let loaded = false
@@ -36,6 +38,7 @@ let currentCategory: AppCategory | null = null
 let currentContinuousMs = 0
 let currentSegmentStart = 0
 let currentWorkStartAt = 0
+let lastCheckpointAt = 0
 let serial = Promise.resolve()
 let pendingObservations = 0
 let droppedObservations = 0
@@ -67,9 +70,9 @@ function dayFor(date: string): BehaviorDaily {
 function isWorkCategory(category: AppCategory | null): boolean { return category === "work" || category === "development" }
 
 async function writeJson(relative: string[], value: unknown): Promise<void> {
-  const path = await runtimePath("data", "behavior", ...relative)
+  const path = await runtimePath("data", BEHAVIOR_DIR, ...relative)
   const content = JSON.stringify(value)
-  const parent = await runtimePath("data", "behavior", ...relative.slice(0, -1))
+  const parent = await runtimePath("data", BEHAVIOR_DIR, ...relative.slice(0, -1))
   await invoke("dir_create", { path: parent, recursive: true })
   await invoke("file_write_atomic", { path, content, maxBytes: Math.max(SEGMENT_SHARD_LIMIT, content.length + 1) })
 }
@@ -79,12 +82,12 @@ async function loadDailyHistory(): Promise<void> {
   loaded = true
   const epoch = loadEpoch
   try {
-    const dailyPath = await runtimePath("data", "behavior", "daily")
+    const dailyPath = await runtimePath("data", BEHAVIOR_DIR, DAILY_DIR)
     const listing = await invoke<{ entries: Array<{ name: string; isDir: boolean }> }>("file_list", { path: dailyPath })
     const names = listing.entries.filter((entry) => !entry.isDir && /^\d{4}-\d{2}-\d{2}\.json$/.test(entry.name))
       .sort((a, b) => b.name.localeCompare(a.name)).slice(0, DAILY_RETENTION_DAYS)
     for (const entry of names) {
-      const path = await runtimePath("data", "behavior", "daily", entry.name)
+      const path = await runtimePath("data", BEHAVIOR_DIR, DAILY_DIR, entry.name)
       const { content } = await invoke<{ content: string }>("file_read", { path, maxBytes: MAX_DAILY_READ_BYTES })
       const day = JSON.parse(content) as BehaviorDaily
       if (epoch === loadEpoch && day.date === entry.name.slice(0, 10) && Array.isArray(day.hourMs) && day.hourMs.length === 24) days.set(day.date, day)
@@ -95,17 +98,17 @@ async function loadDailyHistory(): Promise<void> {
     for (const entry of listing.entries) {
       const date = entry.name.slice(0, 10)
       if (!entry.isDir && /^\d{4}-\d{2}-\d{2}\.json$/.test(entry.name) && date < dailyCutoff) {
-        const path = await runtimePath("data", "behavior", "daily", entry.name)
+        const path = await runtimePath("data", BEHAVIOR_DIR, DAILY_DIR, entry.name)
         await invoke("file_remove", { path, recursive: false, force: true })
       }
     }
-    const segmentsPath = await runtimePath("data", "behavior", "segments")
+    const segmentsPath = await runtimePath("data", BEHAVIOR_DIR, SEGMENTS_DIR)
     try {
       const segments = await invoke<{ entries: Array<{ name: string; isDir: boolean }> }>("file_list", { path: segmentsPath })
       const segmentCutoff = cutoff(SEGMENT_RETENTION_DAYS)
       for (const entry of segments.entries) {
         if (entry.isDir && /^\d{4}-\d{2}-\d{2}$/.test(entry.name) && entry.name < segmentCutoff) {
-          const path = await runtimePath("data", "behavior", "segments", entry.name)
+          const path = await runtimePath("data", BEHAVIOR_DIR, SEGMENTS_DIR, entry.name)
           await invoke("file_remove", { path, recursive: true, force: true })
         }
       }
@@ -116,9 +119,9 @@ async function loadDailyHistory(): Promise<void> {
 }
 
 async function persistSegment(segment: BehaviorSegment): Promise<void> {
-  const root = await runtimePath("data", "behavior", "segments", segment.date)
+  const root = await runtimePath("data", BEHAVIOR_DIR, SEGMENTS_DIR, segment.date)
   await invoke("dir_create", { path: root, recursive: true })
-  const indexPath = await runtimePath("data", "behavior", "segments", segment.date, "index.json")
+  const indexPath = await runtimePath("data", BEHAVIOR_DIR, SEGMENTS_DIR, segment.date, SEGMENT_INDEX_FILE)
   let index: { shard: number; bytes: number } = { shard: 1, bytes: 0 }
   try {
     const { content } = await invoke<{ content: string }>("file_read", { path: indexPath, maxBytes: 1024 })
@@ -128,14 +131,14 @@ async function persistSegment(segment: BehaviorSegment): Promise<void> {
   const line = `${JSON.stringify(segment)}\n`
   if (index.bytes + new TextEncoder().encode(line).length > SEGMENT_SHARD_LIMIT) index = { shard: index.shard + 1, bytes: 0 }
   const shardName = `${String(index.shard).padStart(4, "0")}.jsonl`
-  const shardPath = await runtimePath("data", "behavior", "segments", segment.date, shardName)
+  const shardPath = await runtimePath("data", BEHAVIOR_DIR, SEGMENTS_DIR, segment.date, shardName)
   await invoke("file_append", { path: shardPath, content: line, maxBytes: SEGMENT_SHARD_LIMIT })
   index.bytes += new TextEncoder().encode(line).length
-  await writeJson(["segments", segment.date, "index.json"], index)
+  await writeJson([SEGMENTS_DIR, segment.date, SEGMENT_INDEX_FILE], index)
 }
 
 async function persistDay(day: BehaviorDaily): Promise<void> {
-  await writeJson(["daily", `${day.date}.json`], day)
+  await writeJson([DAILY_DIR, `${day.date}.json`], day)
 }
 
 async function finishWorkSegment(preserveWork: boolean): Promise<void> {
@@ -228,6 +231,7 @@ async function ingest(observation: WindowObservation): Promise<void> {
     log.warn(`画像采集队列达到上限，丢弃 ${lost} 个心跳并切断分段`)
     previous = observation
     generation = observation.monitorGeneration; sequence = observation.sequence
+    lastCheckpointAt = observation.observedAt
     return
   }
   if (observation.monitorGeneration < generation || (observation.monitorGeneration === generation && observation.sequence <= sequence)) return
@@ -236,14 +240,18 @@ async function ingest(observation: WindowObservation): Promise<void> {
     await closeSegment(previous?.observedAt ?? observation.observedAt)
     previous = observation.observationState === "observed" ? observation : null
     generation = observation.monitorGeneration; sequence = observation.sequence
+    lastCheckpointAt = observation.observedAt
     publish(); return
   }
   generation = observation.monitorGeneration; sequence = observation.sequence
-  if (!previous) { previous = observation; return }
+  if (!previous) { previous = observation; lastCheckpointAt = observation.observedAt; return }
   const delta = observation.sampleMonoMs - previous.sampleMonoMs
   const wallDelta = observation.observedAt - previous.observedAt
-  const maxCovered = Math.max(10_000, 2 * generalConfig.pollingIntervalMs)
-  const interval = coveredInterval(delta, wallDelta, maxCovered)
+  // 事件驱动采样：两次 observed 之间没有心跳，采样间隔本身不再代表观察中断
+  // （可能只是长时间没切窗口）。整段时长回填给上一条观察；显式 suspended/
+  // locked/unavailable/disabled 才是中断证据，它们在 observationState 分支截断分段。
+  // 仍保留 coveredInterval 对时钟回退（非正 delta）的截断。
+  const interval = coveredInterval(delta, wallDelta, Number.POSITIVE_INFINITY)
   if (interval.reset && interval.creditedMs === 0) {
     await closeSegment(previous.observedAt)
     previous = observation; return
@@ -276,8 +284,12 @@ async function ingest(observation: WindowObservation): Promise<void> {
   }
   if (currentContinuousMs >= WORK_PRESENCE_THRESHOLD_MS) publish()
   previous = observation
-  // Bound persistence cost: close/checkpoint on transitions and once per minute.
-  if (observation.sequence % 20 === 0) await checkpointSegment(observation.observedAt, false)
+  // Bound persistence cost: close/checkpoint on transitions and about once per minute.
+  // 没有事件的时间段本就不会触发落盘；恢复后的第一条事件会立即补齐检查点。
+  if (observation.observedAt - lastCheckpointAt >= CHECKPOINT_INTERVAL_MS) {
+    await checkpointSegment(observation.observedAt, false)
+    lastCheckpointAt = observation.observedAt
+  }
 }
 
 export function startBehavior(): void { started = true; void loadDailyHistory() }
@@ -286,7 +298,7 @@ export function stopBehavior(): void {
   started = false
   const endAt = previous?.observedAt ?? Date.now()
   serial = serial.then(() => closeSegment(endAt)).catch((error) => log.error("关闭行为分段失败", error instanceof Error ? error : undefined))
-  previous = null; generation = -1; sequence = 0
+  previous = null; generation = -1; sequence = 0; lastCheckpointAt = 0
 }
 
 export function observeBehavior(observation: WindowObservation): Promise<void> {
@@ -335,22 +347,22 @@ async function performClearBehavior(): Promise<void> {
     if (newerThan(latestReceived ?? { observedAt: 0, monitorGeneration: generation, sequence }, clearWatermark)) {
       clearWatermark = latestReceived ?? { observedAt: 0, monitorGeneration: generation, sequence }
     }
-    previous = null; currentStart = null; currentCategory = null; currentContinuousMs = 0; currentWorkStartAt = 0
+    previous = null; currentStart = null; currentCategory = null; currentContinuousMs = 0; currentWorkStartAt = 0; lastCheckpointAt = 0
   }).catch((error) => log.error("清理前停止画像队列失败", error instanceof Error ? error : undefined))
   await serial
   try {
     const { clearSilentUnderstanding } = await import("@/services/observation")
     await clearSilentUnderstanding()
-    const path = await runtimePath("data", "behavior")
+    const path = await runtimePath("data", BEHAVIOR_DIR)
     const listing = await invoke<{ entries: Array<{ name: string }> }>("file_list", { path })
     for (const entry of listing.entries) {
       // This metadata-only file carries the clear watermark so a busy-inbox scan cannot
       // reintroduce user messages that were committed before the explicit clear.
-      if (entry.name === "understanding.json") continue
-      const stalePath = await runtimePath("data", "behavior", entry.name)
+      if (entry.name === UNDERSTANDING_FILE) continue
+      const stalePath = await runtimePath("data", BEHAVIOR_DIR, entry.name)
       await invoke("file_remove", { path: stalePath, recursive: true, force: true })
     }
-    days.clear(); previous = null; currentStart = null; currentCategory = null; currentContinuousMs = 0; currentWorkStartAt = 0
+    days.clear(); previous = null; currentStart = null; currentCategory = null; currentContinuousMs = 0; currentWorkStartAt = 0; lastCheckpointAt = 0
     loaded = true
     droppedObservations = 0
     revision++

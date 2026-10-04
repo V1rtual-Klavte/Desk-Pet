@@ -3,6 +3,7 @@ mod seeding;
 
 use security::{is_allowed_file_path, normalize_absolute};
 pub use security::{is_credential_path, is_managed_memory_path};
+pub(crate) use security::home_dir;
 use seeding::{seed_default_resources, seed_e2e_stages};
 pub use seeding::{restore_default_resources, SeedSummary};
 
@@ -16,6 +17,11 @@ use std::path::{Path, PathBuf};
 use tauri::Manager;
 
 use crate::error::{AppError, AppResult};
+
+/// 记忆域的固定文件名/目录名（唯一真相源：库写入、备份/导出目录与受保护路径识别共用）。
+pub const MEMORY_DB_FILE: &str = "memory.sqlite3";
+pub const MEMORY_BACKUPS_DIR: &str = "backups";
+pub const MEMORY_EXPORTS_DIR: &str = "exports";
 
 pub struct AppPaths {
     pub data_root: PathBuf,   // 统一读写根

@@ -28,6 +28,7 @@ export {
   cloneProfile,
   nextCloneId,
   restoreDefaultResources,
+  profileDisplayPath,
 } from "./io";
 
 export type { ProfileOpResult } from "./io";

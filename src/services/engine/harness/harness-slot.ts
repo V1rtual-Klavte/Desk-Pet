@@ -85,6 +85,14 @@ export interface HarnessRunState {
   finalPlainAssistant?: AssistantMessage
   /** Durable JSONL entry identity paired with the final assistant message. */
   finalAssistantEntryId?: string
+  /**
+   * 本回合 show_to_user 截图的落盘路径（afterTool 从工具结果 details 取回）。
+   * 提交链在最终助手消息落条目之前把它们并入条目（`deskpetImagePaths`）与结算回传；
+   * 被取消/失败的回合不会走到提交，状态随回合丢弃。
+   */
+  pendingUserImages?: string[]
+  /** 已并入提交条目的用户可见截图路径（结算回传给宿主推界面）。 */
+  attachedUserImages?: string[]
   /** Actual request usage observed from Harness events; absent means unknown. */
   usage?: { inputTokens: number; outputTokens: number; cacheRead?: number; cacheWrite?: number }
 }
@@ -182,6 +190,14 @@ export interface HarnessRunSpec {
   thinkingEffort: ThinkingEffort
   systemPrompt: string
   tools: readonly ToolDef[]
+  /**
+   * 本回合默认激活的工具名（⊆ tools）；省略 = tools 全量激活。
+   *
+   * 主对话回合传 `defaultActiveToolNames(...)`（MCP 白名单之外的工具由 enable_tools 回合内
+   * 按需加入）；子代理 / 计划步骤保持省略 —— 它们的工具面本来就是显式收窄的，不再打折。
+   * 激活只收窄请求视图，`setTools` 仍持全量（Pi 校验激活集 ⊆ 全量）。
+   */
+  activeToolNames?: readonly string[]
   toolRun: HarnessToolRun
   /** 多条消息用于「停止后继续」：把取回的暂停输入按原顺序一次性投递（身份不合并）。 */
   prompt: string | AgentMessage | AgentMessage[]
@@ -209,6 +225,8 @@ interface HarnessAdmitBase {
   model: PiModel
   thinkingEffort: ThinkingEffort
   tools: readonly ToolDef[]
+  /** 与 `HarnessRunSpec.activeToolNames` 同义：准入与驱动必须给同一份激活面（省略 = 全量）。 */
+  activeToolNames?: readonly string[]
   toolRun: HarnessToolRun
 }
 
@@ -1411,7 +1429,7 @@ export class HarnessSlot {
    * 正文由 `accept` 落盘）：调用方直接透传准入参数，不在这里做二次拼装 —— 准入形态不影响装配口径。
    */
   private async assembleLane(
-    spec: Pick<HarnessAdmitSpec, "model" | "thinkingEffort" | "tools" | "toolRun" | "kind" | "name" | "additionalInstructions">,
+    spec: Pick<HarnessAdmitSpec, "model" | "thinkingEffort" | "tools" | "toolRun" | "kind" | "name" | "additionalInstructions" | "activeToolNames">,
   ): Promise<void> {
     const tools = toAgentHarnessTools(spec.tools, spec.toolRun)
     await this.harness!.setTools(tools, TODO_CONTEXT)
@@ -1434,7 +1452,10 @@ export class HarnessSlot {
     await flushPendingReleases()
     await this.lane!.setModel({ provider: spec.model.provider, modelId: spec.model.id }, TODO_CONTEXT)
     await this.lane!.setThinkingLevel(toPiAgentThinkingLevel(spec.thinkingEffort), TODO_CONTEXT)
-    await this.lane!.setActiveTools(spec.tools.map(tool => tool.name), TODO_CONTEXT)
+    // 默认激活面来自调用方的冻结判定（唯一判定在 tool/activation.ts）：主对话回合收窄到
+    // 「基础工具 + 常用白名单」，其余交给 enable_tools 回合内按需加入；省略即全量激活，
+    // 子代理 / 计划步骤保持既有行为。`setTools` 仍是全量，这里只改请求视图。
+    await this.lane!.setActiveTools(spec.activeToolNames ? [...spec.activeToolNames] : spec.tools.map(tool => tool.name), TODO_CONTEXT)
   }
 
   /**

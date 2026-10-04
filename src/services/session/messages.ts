@@ -51,10 +51,13 @@ export function pushUserMessage(text: string, sessionId: string, eventId?: strin
   return msg
 }
 
-export function pushAssistantMessage(text: string, sessionId: string, parts?: string[], entryId?: string): Message {
+export function pushAssistantMessage(text: string, sessionId: string, parts?: string[], entryId?: string, imagePaths?: readonly string[]): Message {
   const msg = createAssistantMessage(text)
   if (parts && parts.length > 1) msg.parts = parts
   if (entryId) { msg.id = entryId; msg.eventId = entryId }
+  // 本条消息关联的图片路径（与用户图片同字段语义）：她截图给用户看时实时展示，
+  // 重载后由读模型从条目 deskpetImagePaths 带回同一份路径。
+  if (imagePaths?.length) msg.imagePaths = [...imagePaths]
   pushMessageFor(sessionId, msg)
   return msg
 }

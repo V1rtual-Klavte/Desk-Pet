@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { ref, onMounted, onUnmounted, computed } from "vue";
 import {
-  aiConfig, silentAccessConfig, humanizerConfig, aiLockConfig,
+  aiConfig, silentAccessConfig, humanizerConfig,
   memoryConfig, personalityConfig,
   safetyConfig, planConfig, conversationConfig,
 } from "@/services/config";
@@ -15,10 +15,8 @@ import type { PersonalityCard } from "@/services/personality";
 import type { StageMap, StagePrompts, StageFileStages, VariablePool, CardVariableDef } from "@/services/personality";
 import { createLogger } from "@/services/logger";
 import { formatError } from "@/services/error"
-import { MIN_CONTEXT_WINDOW } from "@/services/context"
 import { getActiveSessionId } from "@/services/session"
 import { requestProactiveControl, subscribeProactiveControl } from "@/services/proactive"
-import { pickObservationProject } from "@/services/observation"
 
 const log = createLogger("Settings");
 
@@ -27,12 +25,8 @@ const aiEndpoint = ref(aiConfig.endpoint);
 const aiApiKey = ref(aiConfig.apiKey);
 const aiModel = ref(aiConfig.model);
 const aiAuxModel = ref(aiConfig.auxModel);
-const aiContextMaxTokens = ref(aiConfig.contextMaxTokens);
 const showApiKey = ref(false);
 const aiRequireApiKey = ref(aiConfig.requireApiKey);
-
-// ── 思考 ──
-const aiThinkingEffort = ref(aiConfig.thinkingEffort);
 
 // ── 对话投递（忙碌时的默认方式与队列批量策略）──
 const defaultDelivery = ref(conversationConfig.defaultDelivery);
@@ -82,46 +76,19 @@ onMounted(async () => {
 });
 onUnmounted(() => cleanupProactiveControl?.());
 const wmEnabled = ref(silentAccessConfig.enabled);
-const observationProjectPath = ref(silentAccessConfig.projectPath);
-async function chooseObservationProject() {
-  try {
-    const path = await pickObservationProject();
-    if (path) observationProjectPath.value = path;
-  } catch (error) {
-    proactiveError.value = "项目目录选择失败：" + formatError(error);
-    log.warn("静默访问目录选择失败:", formatError(error));
-  }
-}
 const wmStaySeconds = ref(silentAccessConfig.staySeconds);
 const wmSettleMs = ref(silentAccessConfig.settleMs);
 // 配置存的是毫秒（`cooldownMs`），面板让人按秒填，换算在 SettingsPanel 的 setOverrides
 const wmCooldownSec = ref(Math.round(silentAccessConfig.cooldownMs / 1000));
 const wmSamePageCool = ref(Math.round(silentAccessConfig.samePageCooldownMs / 1000));
 
-// ── 并发锁 ──
-const lockTimeout = ref(aiLockConfig.safetyTimeoutMs);
-
 // ── 记忆策略（数据治理操作在 MemoryTab 独立提交）──
 const memoryEnabled = ref(memoryConfig.enabled);
-const coreTokenBudget = ref(memoryConfig.coreTokenBudget);
-const recallTokenBudget = ref(memoryConfig.recallTokenBudget);
-const memoryRerank = ref(memoryConfig.rerank);
-const recallTimeoutMs = ref(memoryConfig.recallTimeoutMs);
-const rerankTimeoutMs = ref(memoryConfig.rerankTimeoutMs);
 const dreamingMode = ref(memoryConfig.dreamingMode);
-const dreamingIdleSeconds = ref(memoryConfig.dreamingIdleSeconds);
-const dreamingMinIntervalMinutes = ref(memoryConfig.dreamingMinIntervalMinutes);
-const dreamingMaxDailyTokens = ref(memoryConfig.dreamingMaxDailyTokens);
 const v1rtualInstructions = ref("");
 
 // ── Plan 设置 ──
 const planEnabled = ref(planConfig.enabled);
-const planComplexityThreshold = ref(planConfig.complexityThreshold);
-const planComplexityEval = ref(planConfig.complexityEval);
-const planMaxSteps = ref(planConfig.maxSteps);
-const planThinkingEffort = ref(planConfig.thinkingEffort);
-const planStepThinkingEffort = ref(planConfig.stepThinkingEffort);
-const planOnStepFailure = ref(planConfig.onStepFailure);
 // ═══════════════════════════════════
 // 🎭 Card 系统
 // ═══════════════════════════════════
@@ -503,8 +470,6 @@ defineExpose({
   aiApiKey,
   aiModel,
   aiAuxModel,
-  aiContextMaxTokens,
-  aiThinkingEffort,
   aiRequireApiKey,
   defaultDelivery,
   steeringMode,
@@ -514,31 +479,15 @@ defineExpose({
   humanizerEnabled,
   saveProactiveControl,
   wmEnabled,
-  observationProjectPath,
   wmStaySeconds,
   wmSettleMs,
   wmCooldownSec,
   wmSamePageCool,
-  lockTimeout,
   memoryEnabled,
-  coreTokenBudget,
-  recallTokenBudget,
-  memoryRerank,
-  recallTimeoutMs,
-  rerankTimeoutMs,
   dreamingMode,
-  dreamingIdleSeconds,
-  dreamingMinIntervalMinutes,
-  dreamingMaxDailyTokens,
   personalityActive,
   v1rtualInstructions,
   planEnabled,
-  planComplexityThreshold,
-  planComplexityEval,
-  planMaxSteps,
-  planThinkingEffort,
-  planStepThinkingEffort,
-  planOnStepFailure,
 });
 </script>
 
@@ -551,18 +500,7 @@ defineExpose({
     <div class="fld"><span class="fn">密钥</span><input class="inp" :type="showApiKey ? 'text' : 'password'" v-model="aiApiKey" /><button class="btn-s" @click="showApiKey = !showApiKey">{{ showApiKey ? '隐藏' : '显示' }}</button></div>
     <div class="fld"><span class="fn">模型</span><input class="inp" v-model="aiModel" /></div>
     <div class="fld"><span class="fn">辅助模型</span><input class="inp" v-model="aiAuxModel" placeholder="留空 = 跟随聊天模型" /><span class="s-muted">子代理 / 记忆整理 / 主动规划</span></div>
-    <div class="fld"><span class="fn">上下文</span><input class="inp-num" type="number" :min="MIN_CONTEXT_WINDOW" v-model.number="aiContextMaxTokens" style="width:80px" /><span class="s-muted">tokens（最低 {{ MIN_CONTEXT_WINDOW }}）</span></div>
     <label class="chk" style="margin-top:4px"><input type="checkbox" v-model="aiRequireApiKey" /><span>需要 API Key</span></label>
-  </div>
-
-  <!-- ═══ 🧠 思考强度 ═══ -->
-  <div class="s-section">
-    <div class="s-label">思考强度</div>
-
-    <div class="s-subtitle">模型思考强度</div>
-    <div class="radio-row">
-      <label v-for="lv in ['auto','low','medium','high']" :key="'p1'+lv" class="chk"><input type="radio" v-model="aiThinkingEffort" :value="lv" /><span>{{ lv }}</span></label>
-    </div>
   </div>
 
   <!-- ═══ 💬 对话投递 ═══ -->
@@ -722,9 +660,7 @@ defineExpose({
     <div v-if="proactiveError" class="s-hint">开关读取失败：{{ proactiveError }} <button type="button" class="btn-s" @click="refreshProactiveControl">重试</button></div>
     <label class="chk"><input type="checkbox" v-model="humanizerEnabled" /><span>拟人表达</span></label>
     <label class="chk"><input type="checkbox" v-model="wmEnabled" /><span>静默访问</span></label>
-    <div class="s-hint">允许观察窗口、截图与手边文件，用于带来源的了解；主动消息由独立开关控制</div>
-    <div class="s-subtitle">可读项目目录（可选）</div>
-    <div class="row-gap"><input class="inp" :value="observationProjectPath" readonly placeholder="未选择，文件观察关闭" /><button type="button" class="btn-s" @click="chooseObservationProject">选择</button><button type="button" class="btn-s" :disabled="!observationProjectPath" @click="observationProjectPath = ''">清除</button></div>
+    <div class="s-hint">允许观察窗口、截图与手边文件；读取哪些文件由 AI 根据当前窗口判断，用于带来源的了解。主动消息由独立开关控制</div>
     <div class="row-gap" style="margin-top:4px">
       <label>停留 <input class="inp-num" type="number" v-model.number="wmStaySeconds" />s</label>
       <label>防抖 <input class="inp-num" type="number" v-model.number="wmSettleMs" />ms</label>
@@ -743,52 +679,22 @@ defineExpose({
       <label v-for="m in [{v:'just_do_it',l:'全放行'},{v:'tell_me',l:'告知确认'},{v:'let_me_tk',l:'全部确认'}]" :key="m.v" class="chk"><input type="radio" v-model="safetyMode" :value="m.v" /><span>{{ m.l }}</span></label>
     </div>
     <label class="chk"><input type="checkbox" v-model="sessionTrustEnabled" /><span>会话信任 NORMAL 工具</span></label>
-    <div class="fld" style="margin-top:4px"><span class="fn">锁超时</span><input class="inp-num" type="number" v-model.number="lockTimeout" /> ms</div>
   </div>
 
   <!-- ═══ 📋 计划模式 ═══ -->
   <div class="s-section">
     <div class="s-label">计划模式</div>
     <label class="chk"><input type="checkbox" v-model="planEnabled" /><span>启用任务计划</span></label>
-    <div class="fld" style="margin-top:6px"><span class="fn">复杂度阈值</span><input class="inp-num" type="number" v-model.number="planComplexityThreshold" min="1" max="5" style="width:60px" /><span class="s-muted">(1-5, 越高越少触发)</span></div>
-    <div class="s-subtitle" style="margin-top:4px">复杂度判定</div>
-    <div class="radio-row">
-      <label v-for="m in [{v:'keyword',l:'仅关键词（默认）'},{v:'llm',l:'关键词 + 模型自判'}]" :key="'ce'+m.v" class="chk"><input type="radio" v-model="planComplexityEval" :value="m.v" /><span>{{ m.l }}</span></label>
-    </div>
-    <div class="fld"><span class="fn">最大步骤</span><input class="inp-num" type="number" v-model.number="planMaxSteps" min="1" max="20" style="width:60px" /></div>
-    <div class="s-subtitle" style="margin-top:6px">计划思考强度</div>
-    <div class="radio-row">
-      <label v-for="lv in ['low','medium','high']" :key="'pt'+lv" class="chk"><input type="radio" v-model="planThinkingEffort" :value="lv" /><span>{{ lv }}</span></label>
-    </div>
-    <div class="s-subtitle" style="margin-top:4px">步骤思考强度</div>
-    <div class="radio-row">
-      <label v-for="lv in ['low','medium','high']" :key="'ps'+lv" class="chk"><input type="radio" v-model="planStepThinkingEffort" :value="lv" /><span>{{ lv }}</span></label>
-    </div>
-    <div class="s-subtitle" style="margin-top:4px">步骤失败时</div>
-    <div class="radio-row">
-      <label v-for="m in [{v:'continue',l:'继续执行'},{v:'abort',l:'终止计划'},{v:'ask',l:'询问用户'}]" :key="'pf'+m.v" class="chk"><input type="radio" v-model="planOnStepFailure" :value="m.v" /><span>{{ m.l }}</span></label>
-    </div>
   </div>
 
   <!-- ═══ 🧠 记忆 ═══ -->
   <div class="s-section">
     <div class="s-label">记忆</div>
     <label class="chk"><input type="checkbox" v-model="memoryEnabled" /><span>启用长期记忆召回与候选收集</span></label>
-    <div class="fld"><span class="fn">核心画像预算</span><input class="inp-num" type="number" v-model.number="coreTokenBudget" min="0" max="2000" /> tokens</div>
-    <div class="fld"><span class="fn">召回预算</span><input class="inp-num" type="number" v-model.number="recallTokenBudget" min="0" max="4000" /> tokens</div>
-    <div class="s-subtitle" style="margin-top:6px">召回重排</div>
-    <div class="radio-row">
-      <label v-for="m in [{v:'off',l:'关闭'},{v:'adaptive',l:'按需重排'}]" :key="'mr'+m.v" class="chk"><input type="radio" v-model="memoryRerank" :value="m.v" /><span>{{ m.l }}</span></label>
-    </div>
-    <div class="fld"><span class="fn">召回时限</span><input class="inp-num" type="number" v-model.number="recallTimeoutMs" min="100" max="10000" /> ms</div>
-    <div class="fld"><span class="fn">重排时限</span><input class="inp-num" type="number" v-model.number="rerankTimeoutMs" min="100" max="10000" /> ms</div>
     <div class="s-subtitle" style="margin-top:6px">后台整理</div>
     <div class="radio-row">
       <label v-for="m in [{v:'manual',l:'手动'},{v:'idle',l:'空闲自动'}]" :key="'dm'+m.v" class="chk"><input type="radio" v-model="dreamingMode" :value="m.v" /><span>{{ m.l }}</span></label>
     </div>
-    <div class="fld"><span class="fn">空闲等待</span><input class="inp-num" type="number" v-model.number="dreamingIdleSeconds" min="30" max="3600" /> 秒</div>
-    <div class="fld"><span class="fn">最小间隔</span><input class="inp-num" type="number" v-model.number="dreamingMinIntervalMinutes" min="1" max="1440" /> 分钟</div>
-    <div class="fld"><span class="fn">每日模型预算</span><input class="inp-num" type="number" v-model.number="dreamingMaxDailyTokens" min="0" max="100000" /> tokens</div>
     <div class="fld-col" style="margin-top:4px"><span class="fn">V1RTUAL.md 指令</span><textarea class="inp txa mono" v-model="v1rtualInstructions" rows="2" placeholder="例如：叫我小明、用日语回复..."></textarea></div>
   </div>
 </div>
