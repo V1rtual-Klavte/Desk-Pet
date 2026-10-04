@@ -51,6 +51,9 @@ export interface CardSections {
 export interface PersonalityCard {
   id: string
   name: string
+  /** 可选：声明承载「用户给角色起的名字」的 Card 变量名。声明后聊天气泡的说话人标签
+   *  优先显示该变量值；未起名（空值）时回落到界面兜底，不回落到卡标签。 */
+  nameVar?: string
   description: string
   version: number
   rawContent: string

@@ -14,6 +14,8 @@ const log = createLogger("Persona")
 
 interface CardFrontmatter {
   id: string; name: string; description: string; version: number
+  /** 可选：承载「用户给角色起的名字」的 Card 变量名（见 types.ts PersonalityCard.nameVar） */
+  nameVar?: string
 }
 
 function parseFrontmatter(raw: string): { meta: CardFrontmatter; body: string } {
@@ -32,6 +34,7 @@ function parseFrontmatter(raw: string): { meta: CardFrontmatter; body: string } 
     const v = kv[2]!.trim().replace(/^["']|["']$/g, "")
     if (k === "id") meta.id = v
     else if (k === "name") meta.name = v
+    else if (k === "nameVar") meta.nameVar = v
     else if (k === "description") meta.description = v
     else if (k === "version") meta.version = parseInt(v, 10) || 1
   }
@@ -261,7 +264,7 @@ async function parseCard(raw: string): Promise<PersonalityCard> {
   const { meta, body } = parseFrontmatter(raw)
   const sections = parseSections(body)
   const hash = await hashCardText(raw)
-  return { id: meta.id, name: meta.name || meta.id, description: meta.description, version: meta.version, rawContent: raw, sections, hash, source: "runtime" }
+  return { id: meta.id, name: meta.name || meta.id, nameVar: meta.nameVar, description: meta.description, version: meta.version, rawContent: raw, sections, hash, source: "runtime" }
 }
 
 async function loadRuntimeCards(): Promise<PersonalityCard[]> {

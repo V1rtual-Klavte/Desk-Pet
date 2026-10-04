@@ -112,6 +112,13 @@ describe("卡片解析", () => {
       .not.toBe(card.hash)
   })
 
+  it("Card nameVar 声明解析 [card-name-var]", async () => {
+    // 名字由用户起的 Card 用 frontmatter nameVar 声明承载名字的变量；
+    // 解析落字段是显示链路（名字跟随.test.ts）的前提
+    const card = await importUserCard(CARD_MD.replace("version: 3", "version: 3\nnameVar: 名字"))
+    expect(card.nameVar).toBe("名字")
+  })
+
   it("Card variableDefs 解析 [card-variable-defs]", async () => {
     const defs = (await importUserCard(CARD_MD)).sections.variableDefs
 

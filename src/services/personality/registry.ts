@@ -10,7 +10,7 @@ import { personalityConfig } from "@/services/config"
 import {
   initVariablePool, destroyPool, loadCardVars,
   savePoolToDiskStrict, snapshotVariablePoolState, restoreVariablePoolState,
-  updateInteractionVar,
+  updateInteractionVar, getCardVarValue,
 } from "./variable-pool"
 import {
   generateStagesForCard, loadStagesFromDisk, stageSourceHash,
@@ -87,10 +87,19 @@ export function getActivePersonalityId(): string | null { return activeId.value 
 /**
  * 当前 Card 的显示名（响应式）：供界面显示角色名（如聊天气泡的说话人标签）。
  * 从 activeId 派生，切卡、回滚、启动初始化后自动更新 —— 界面不硬编码角色名。
+ * Card 声明 nameVar 时（名字由用户起）优先显示该变量值：起名后跟随、改名后同步；
+ * 未起名返回空串交给界面兜底，不回落到卡标签。变量写入经池代际（poolRevision）触发重算。
  */
-export const activeCardName = computed<string>(() =>
-  activeId.value ? (getCard(activeId.value)?.name ?? activeId.value) : ""
-)
+export const activeCardName = computed<string>(() => {
+  if (!activeId.value) return ""
+  const card = getCard(activeId.value)
+  if (!card) return activeId.value
+  if (card.nameVar) {
+    const given = getCardVarValue(card.nameVar)
+    return typeof given === "string" ? given.trim() : ""
+  }
+  return card.name
+})
 
 export function isPersonalityRuntimeReady(): boolean { return runtimeReady }
 

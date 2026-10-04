@@ -3,6 +3,8 @@
 // §5: 注册表驱动 + 持久化收敛到 stages 文件变量区 + 更新闭环
 // ==========================================
 
+import { ref } from "vue"
+
 import { createLogger } from "@/services/logger"
 import { PROACTIVE_LIMITS } from "@/services/proactive/protocol"
 import type { CardVariableDef, VariableState, VariableType, VariablePrimitive } from "./types"
@@ -50,6 +52,12 @@ export interface VariableCommitEvent {
 }
 const variableCommitListeners = new Set<(event: VariableCommitEvent) => void>()
 let pendingCommitReason: VariableCommitReason | undefined
+
+/**
+ * 池代际：任何改变池内容的操作后自增。它本身不是状态，只作界面侧的失效信号 ——
+ * 例如聊天说话人标签要跟随用户给角色起的名字（Card 变量），而池对象是非响应式的。
+ */
+const poolRevision = ref(0)
 
 export function subscribeVariableCommits(listener: (event: VariableCommitEvent) => void): () => void {
   variableCommitListeners.add(listener)
@@ -114,6 +122,7 @@ export function restoreVariablePoolState(state: VariablePoolRuntimeState): void 
   savePending = state.savePending
   lastDailyResetKey = state.lastDailyResetKey
   appliedSessionKey = state.appliedSessionKey
+  poolRevision.value++
 }
 
 // ── 辅助 ──
@@ -168,6 +177,7 @@ export function initVariablePool(input: InitPoolInput): VariablePool {
   appliedSessionKey = input.sessionKey ?? null
 
   pool = buildPoolFromDefs(input)
+  poolRevision.value++
   savePending = true
   log.info("变量池初始化:", currentCardId, "| system:", Object.keys(pool.system).length, "| card:", Object.keys(pool.card).length, "| interaction:", Object.keys(pool.interaction).length)
   return getPoolSnapshot()
@@ -265,6 +275,7 @@ export function applyResetPolicies(now: Date, sessionKey: number | null): string
   }
 
   if (resetVars.length > 0) {
+    poolRevision.value++
     log.info("reset 策略触发:", resetVars.join(", "))
   }
   return resetVars
@@ -287,6 +298,15 @@ export function getVariablePoolCardId(): string | null {
 
 export function getVariableRegistry(): CardVariableDef[] {
   return registry
+}
+
+/**
+ * 读取 Card 变量当前值（响应式：依赖池代际，写入 / 恢复 / 重载 / 销毁后可触发界面重算）。
+ * 未注册、未初始化或变量不存在时返回 undefined —— 回退策略由调用方决定。
+ */
+export function getCardVarValue(name: string): VariablePrimitive | undefined {
+  void poolRevision.value
+  return pool.card[name]?.value
 }
 
 // ── Prompt 格式化 ──
@@ -372,6 +392,7 @@ export function updateInteractionVar(name: string, value: VariablePrimitive): { 
   }
 
   pool.interaction[name] = { value: value as VariablePrimitive, type: def.type, updatedAt: Date.now(), updatedBy: "system" }
+  poolRevision.value++
   savePending = true
   log.debug("interaction update:", name, "=", value)
   return { success: true }
@@ -506,7 +527,10 @@ export function batchWriteVars(updates: Record<string, string>, updatedBy: "llm"
     written.push(name)
   }
 
-  if (written.length > 0) log.info("batchWrite:", written.join(", "))
+  if (written.length > 0) {
+    log.info("batchWrite:", written.join(", "))
+    poolRevision.value++
+  }
   if (written.length > 0) pendingCommitReason = updatedBy
   if (errors.length > 0) log.warn("batchWrite errors:", errors.join("; "))
   return { written, errors }
@@ -518,6 +542,7 @@ export function destroyPool(): void {
   currentCardId = null
   registry = []
   pool = emptyPool()
+  poolRevision.value++
   savePending = false
   lastDailyResetKey = null
   appliedSessionKey = null

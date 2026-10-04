@@ -3,7 +3,7 @@ import type { ModuleContract } from "../host/types"
 export const variablePoolContract: ModuleContract = {
   module: "variable-pool",
   sourceFiles: ["src/services/engine/harness/runtime.ts", "src/services/personality/variable-pool.ts", "src/services/personality/types.ts", "src/services/personality/stages-file.ts", "src/services/reply/generator.ts", "src/services/session/store.ts"],
-  sourceHash: "b99ac257aa155fa4d25262ec8fc30a38a023b4ba5c62326cf36c65e130162862",
+  sourceHash: "179e837d8eae9ed478e532d862a1e8333996bbba6f6764a2cdd5ce964205b1a0",
   coverage: [
     { id: "vp-01", feature: "系统变量计算", description: "computeSystemVariables(now, activeCardId) 产出 6 个系统变量：5 个由本地时间派生（hour / minute / dayOfWeek / isNightTime / isWeekend）+ activeCardId。**没有模式派生变量** —— pet/assistant 双模式与 general.mode 已全链删除，系统变量集合与删除前逐项一致，这是本轮重分析专门核对过的负向结论（含模式字段的注入点只剩 Card 变量与互动状态）", why: "Prompt 注入基础；模式面删除后必须确认系统变量集合没有跟着漂移，否则 Prompt 里会留下已不存在的维度", layer: "unit", depth: "shallow", scenarios: ["variable-system-vars"] },
     { id: "vp-02", feature: "变量池初始化", description: "initVariablePool 从Card variableDefs初始化", why: "Card切换和重启时正确构建", layer: "unit", depth: "deep", scenarios: ["variable-pool-init"] },
@@ -26,6 +26,7 @@ export const variablePoolContract: ModuleContract = {
     { id: "vp-19", feature: "阶段文案与变量区共存", description: "stages 段与 variables 段共享 stages/{cardId}.json：变量（含 interaction）与两个重置游标先落盘后，阶段文案写入仍原样保留变量区；变量池再写一次，stages 段同样原样保留（两个唯一生产者经段级合并互不抹除）", why: "改动前三个写入者各自整文件覆写会静默抹掉变量区，现场要等下次激活 Card 才可见 —— VAR-01 的防回归断言", layer: "unit", depth: "deep", scenarios: ["variable-pool-stages-coexist"] },
     { id: "vp-20", feature: "daily 游标跨重启", description: "daily 重置游标随 variables 段落盘：destroy → 重新 init（透传磁盘游标）后同一天不重置、跨日重置一次并把新游标落盘；游标缺失时视为陈旧重置一次；不存在的 Card 由 loadCardVars 返回 null 交给调用方重建", why: "游标只写不读会让 daily 变量每次重启都重新判定一次，跨天的语义整个失效", layer: "unit", depth: "deep", scenarios: ["variable-pool-daily-cursor-restart"] },
     { id: "vp-21", feature: "session 游标按持久化键判定", description: "session 重置只按持久化的 sessionKey 判定：键为 null 不做判定（旧数据缺会话游标时同样什么都不做）、同一键（含跨重启）幂等、换键重置一次并把新键落盘；缺游标但键非 null 按新会话重置一次", why: "没有持久化键时凭空认定「新会话」会让变量被反复清空，键不落盘则重启后判定失去依据", layer: "unit", depth: "deep", scenarios: ["variable-pool-session-cursor"] },
+    { id: "vp-22", feature: "Card 变量读取入口", description: "getCardVarValue 读取当前池中的 Card 变量值：未初始化 / 未注册 / destroy 后返回 undefined（回退策略归调用方）；读取依赖池代际（poolRevision），写入（batchWriteVars）与销毁后挂在它上面的 computed 重算而不是缓存旧值", why: "界面侧需要非响应式池的响应式读取点（说话人标签跟随用户起的名字，见 personality-card pc-12）；没有失效信号会一直显示旧名", layer: "unit", depth: "shallow", scenarios: ["variable-card-value-read"] },
   ],
   // W0–W7 把本契约全部场景迁出 L4 后重标定：L4 侧已无任何 layer=e2e 的覆盖点，
   // 门槛=当前 rules 声明值，只缩不放（数字由 checker 报错提供），不是「放宽」。

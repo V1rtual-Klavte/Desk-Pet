@@ -18,7 +18,7 @@ card/interaction 状态保存在 `personality/stages/{cardId}.json` 的变量区
 
 [loader.ts](../../src/services/personality/loader.ts) 从运行时 cards 目录读取和解析 Card，包内 defaults 只作首次初始化种子。[registry.ts](../../src/services/personality/registry.ts) 的 `switchPersonality()` 先准备阶段文案与变量池，成功后改变活动 Card；失败恢复旧 Card、变量池（含变量注册表）与阶段缓存。设置页展开 Card 只构建局部预览快照，不改动全局变量池所有权。
 
-随包种子提供 `default`（小雪）、`yuki` 与 `angelkawaii` 三张 Card；没有可用 Card 时允许无活动 Card 降级运行。`whenText` 是自然语言语气指引；mustRules 参与 Prompt 构建，不是一套任意执行脚本。
+随包种子提供 `default`（本体卡）、`yuki` 与 `angelkawaii` 三张 Card；没有可用 Card 时允许无活动 Card 降级运行。默认卡的名字由用户起：frontmatter `name` 只是产品标签（「默认」），`nameVar: 名字` 声明承载名字的 Card 变量——用户在对话里起名或改名时由模型经 RUNTIME_DATA 写入（进 Card 身份、随卡持久化，不进用户长期记忆），聊天气泡的说话人标签优先显示它；未起名时返回空串交界面兜底（ChatPanel 显示「桌宠」），不回落到卡标签；未声明 `nameVar` 的 Card 仍显示卡 `name`。`whenText` 是自然语言语气指引；mustRules 参与 Prompt 构建，不是一套任意执行脚本。
 
 阶段文案先读持久化缓存，缺失时可经模型生成；任一 Card 首次激活或角色设定/语言风格变化时会重新生成一次（一次 LLM 调用/卡）。失效判定键是生成输入 `sourceHash`（`SHA-256(roleSetting + "\n" + languageStyle)`），`version:` 只作元数据、不参与判定；重新生成只覆写 stages 段，不清空变量区。
 

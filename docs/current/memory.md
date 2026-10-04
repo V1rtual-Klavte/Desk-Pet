@@ -1,6 +1,6 @@
 # 当前记忆与会话基础
 
-长期记忆由 Rust 侧 SQLite（`数据根/memory/memory.sqlite3`）承载，经 `MemoryProvider` 只读端口进入 Runtime。召回是「本地检索 + 可关闭的 adaptive 重排」两段：本地结果先算出来并随时可用，重排失败、超时或被取消都退回同一份本地顺序。召回按 `estimateContextTokens` 对整条事实计量，超单条／tier／总预算的条目整条淘汰并记录预算原因，不截断正文。Card 变量与用户长期事实分别管理。
+长期记忆由 Rust 侧 SQLite（`数据根/memory/memory.sqlite3`）承载，经 `MemoryProvider` 只读端口进入 Runtime。召回是「本地检索 + 可关闭的 adaptive 重排」两段：本地结果先算出来并随时可用，重排失败、超时或被取消都退回同一份本地顺序。召回按 `estimateContextTokens` 对整条事实计量，超单条／tier／总预算的条目整条淘汰并记录预算原因，不截断正文。Card 变量与用户长期事实分别管理（如用户给角色起的名字进 Card 变量，不进用户长期事实）。
 
 ## 记忆的五层与两条链路
 
