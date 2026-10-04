@@ -52,9 +52,10 @@ export const 主动表达准入守卫: SceneDef = {
     attemptId = crypto.randomUUID(); requestId = crypto.randomUUID()
     const initialClaim = await proactiveIpc.claim({ attemptId, requestId, kind: "expression", owner, sourceRefs,
       sourceFingerprint, sourceRevision: scanState.sourceRevision, controlRevision: scanState.control.revision,
-      occurrenceIds: [sourceFingerprint], now, localDate, reservedTokens: 1 })
+      occurrenceIds: [sourceFingerprint], now, localDate, reservedTokens: 1, ruleId: "l4_duplicate_claim" })
     if (!initialClaim.claimed) throw new Error(`真实 SQLite 初始 claim 未成功: ${initialClaim.reason}`)
     deniedResult = await sendActiveMessage({
+    expectsReply: true,
       text: "重复 claim 必须在 Provider 前拒绝。", owner, requestId, attemptId, ruleId: "l4_duplicate_claim",
       intent: "l4_duplicate_claim", sourceRefs, memoryTargets: [], occurrenceIds: [sourceFingerprint],
       beforeGenerate: async (actualOwner, reservation) => {
@@ -63,7 +64,7 @@ export const 主动表达准入守卫: SceneDef = {
         const duplicate = await proactiveIpc.claim({ attemptId, requestId, kind: "expression", owner: actualOwner,
           sourceRefs, sourceFingerprint, sourceRevision: scanState!.sourceRevision,
           controlRevision: scanState!.control.revision, occurrenceIds: [sourceFingerprint], now: Date.now(), localDate,
-          reservedTokens: reservation.estimatedInputTokens + reservation.maxOutputTokens })
+          reservedTokens: reservation.estimatedInputTokens + reservation.maxOutputTokens, ruleId: "l4_duplicate_claim" })
         return duplicate.claimed
       },
       isCurrent: async actualOwner => actualOwner.sessionId === getActiveSessionId()

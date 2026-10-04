@@ -68,4 +68,21 @@ export function getRuntimeMode(): "development" | "production" {
   return _runtimeMode
 }
 
+// ── 纯路径文本工具（零依赖）──
+// 跨域共用：分隔符归一与「取根内相对路径」只在这里实现一次，
+// 各模块不再自行 `replace(/\\/g, "/")` 或手工 slice 前缀。
+
+/** `\` → `/`；只做分隔符归一，不解析、不查盘。 */
+export function normalizeSeparators(path: string): string {
+  return path.replace(/\\/g, "/")
+}
+
+/** 取 `full` 在 `root` 内的相对路径（`/` 分隔）；不在 root 内（含等于 root）返回 null。 */
+export function relativeWithinRoot(root: string, full: string): string | null {
+  const base = normalizeSeparators(root).replace(/\/+$/, "")
+  const target = normalizeSeparators(full)
+  if (!target.startsWith(`${base}/`)) return null
+  return target.slice(base.length + 1)
+}
+
 export const DEFAULT_PROFILE = "sugar-pink"

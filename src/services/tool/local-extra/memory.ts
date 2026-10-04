@@ -13,7 +13,8 @@ import { defineTool } from "../policy"
 import { register } from "../registry"
 import { createLogger } from "@/services/logger"
 import { formatError } from "@/services/error"
-import { applyMemoryChange, memoryDetail, memoryStatus, queryMemory, resolveCurrentTrustedMemorySource } from "@/services/agent/memory"
+import { applyMemoryChange, memoryDetail, memoryStatus, resolveCurrentTrustedMemorySource } from "@/services/agent/memory"
+import { queryMemoryVisibleToCurrentTurn } from "@/services/agent/memory/visible-query"
 import type { MemoryDraft, MemoryKind, MemoryScope, TemporalAnchor, WorkingState } from "@/services/agent/memory"
 
 const log = createLogger("ToolMemory")
@@ -50,7 +51,7 @@ function temporalAnchor(value: unknown, name: string): TemporalAnchor | null | u
 const memoryQueryTool: ToolDef = defineTool({
   id: "local-memory-query",
   name: "memory_query",
-  description: "查询长期记忆里已经记住的关于用户的事实、偏好与经历。只读，不会写入。",
+  description: "查询当前用户、当前 Card 与当前会话可见的长期记忆。只读，不会写入。",
   parameters: {
     type: "object",
     properties: {
@@ -73,9 +74,10 @@ const memoryQueryTool: ToolDef = defineTool({
 }, async (params, ctx) => {
   const query = text(params.query)
   if (!query) return { success: false, content: "", error: "查询内容不能为空" }
+  if (!ctx.sessionId || !ctx.trustedUserEventId) return { success: false, content: "", error: "记忆查询必须绑定本轮已提交的可信用户输入" }
   const limit = typeof params.limit === "number" && Number.isFinite(params.limit) ? params.limit : 8
   try {
-    const items = await queryMemory(query, { limit, sessionId: ctx.sessionId })
+    const items = await queryMemoryVisibleToCurrentTurn(query, ctx.sessionId, ctx.trustedUserEventId, limit)
     if (items.length === 0) return { success: true, content: "没有查到相关记忆。" }
     const lines = items.map(item =>
       `- [id=${item.id} · ${item.draft.kind} · ${item.draft.scope} · v${item.version} · sourceIds=${item.draft.sourceIds.join(",")}] ${item.draft.content}`)

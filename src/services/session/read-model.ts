@@ -6,9 +6,10 @@
 import type { CustomEntry, Entry, JsonValue, MessageEntry } from "@earendil-works/pi-agent-core"
 import type { ImageContent, TextContent, ThinkingContent, ToolCall } from "@earendil-works/pi-ai"
 import type { Message, ToolCallRequest } from "@/services/agent/types"
-import { DESKPET_GREETING_ENTRY, DESKPET_SYSTEM_MESSAGE_ENTRY } from "@/services/engine/runtime"
+import { DESKPET_GREETING_ENTRY, DESKPET_SYSTEM_MESSAGE_ENTRY, inputSourceOf, messageEventId } from "@/services/engine/runtime"
 import { createLogger } from "@/services/logger"
 import { formatError } from "@/services/error"
+import { getMessageImagePaths } from "@/services/images"
 
 const log = createLogger("SessionReadModel")
 
@@ -91,8 +92,10 @@ function safeStringify(value: unknown): string {
  * 否则会出现「点了停止看不到、重启后冒出一条半截气泡」。
  * （空正文的过程消息仍然展示：它承载 toolCalls 展示，`停止入口与继续` 场景按非空正文统计基线。）
  */
-export function isAssistantEntryVisible(message: { stopReason?: string }): boolean {
-  return message.stopReason !== "error" && message.stopReason !== "aborted"
+export function isAssistantEntryVisible(message: { stopReason?: string; content?: readonly { type: string; text?: string }[] }): boolean {
+  if (message.stopReason === "error" || message.stopReason === "aborted") return false
+  // 合法沉默保留 completed 原生条目；无正文且无工具的条目不产生空气泡。
+  return !message.content || message.content.some(part => part.type === "toolCall" || (part.type === "text" && Boolean(part.text?.trim())))
 }
 
 /** message entry → 聊天视图消息；未知消息类型不展示。 */
@@ -102,7 +105,12 @@ function messageFromEntry(entry: MessageEntry): Message | undefined {
   switch (raw.role) {
     case "user": {
       const text = typeof raw.content === "string" ? raw.content : textFromParts(raw.content)
-      return { id: entry.id, eventId: entry.id, role: "user", text, timestamp }
+      const eventId = messageEventId(raw)
+      const imagePaths = getMessageImagePaths(raw)
+      const source = inputSourceOf(raw)
+      return { id: entry.id, ...(eventId ? { eventId } : {}), role: "user", text, timestamp,
+        isUserInput: !source || (source.origin === "user" && source.taint === "trusted_user"),
+        ...(imagePaths.length ? { imagePaths } : {}) }
     }
     case "assistant": {
       if (!isAssistantEntryVisible(raw)) return undefined
@@ -113,14 +121,20 @@ function messageFromEntry(entry: MessageEntry): Message | undefined {
       const toolCalls: ToolCallRequest[] = raw.content
         .filter((part): part is ToolCall => part.type === "toolCall")
         .map(call => ({ id: call.id, name: call.name, arguments: safeStringify(call.arguments) }))
+      const parts = raw.content.filter((part): part is TextContent => part.type === "text").map(part => part.text)
+      // 助手条目同样只带回原路径（她 show_to_user 截图的落盘文件）：文件没了就由界面
+      // 按「不可用」呈现，不在这里从缓存恢复副本。
+      const imagePaths = getMessageImagePaths(raw)
       return {
         id: entry.id,
         eventId: entry.id,
         role: "assistant",
         text: textFromParts(raw.content),
+        ...(parts.length > 1 ? { parts } : {}),
         timestamp,
         ...(thinking ? { thinking } : {}),
         ...(toolCalls.length > 0 ? { toolCalls } : {}),
+        ...(imagePaths.length ? { imagePaths } : {}),
       }
     }
     case "toolResult": {
@@ -137,11 +151,15 @@ function messageFromEntry(entry: MessageEntry): Message | undefined {
  * compaction / branch_summary 是控制 entry，不进入聊天视图；
  * 未注册 mapper 的自定义 entry 默认隐藏，避免控制事件伪装成聊天内容。
  */
-export interface ActiveAttemptAssociation { attemptId: string; triggerEntryId: string }
+export interface ActiveAttemptAssociation { attemptId: string; triggerEntryId: string; expectsReply?: boolean }
 
 export async function messagesFromEntries(entries: readonly Entry[], sessionId?: string, onActiveReceiptError?: (error: unknown) => void, activeAssociations: ReadonlyMap<string, ActiveAttemptAssociation> = new Map()): Promise<Message[]> {
   const messages: Message[] = []
-  const latestUserIndex = entries.reduce((latest, entry, index) => entry.type === "message" && entry.message.role === "user" ? index : latest, -1)
+  const latestUserIndex = entries.reduce((latest, entry, index) => {
+    if (entry.type !== "message" || entry.message.role !== "user") return latest
+    const mark = inputSourceOf(entry.message)
+    return !mark || (mark.origin === "user" && mark.taint === "trusted_user") ? index : latest
+  }, -1)
   const entryIndex = new Map(entries.map((entry, index) => [entry.id, index]))
   for (const entry of entries) {
     if (entry.type === "message") {
@@ -165,8 +183,15 @@ export async function messagesFromEntries(entries: readonly Entry[], sessionId?:
         const triggerIndex = association ? entryIndex.get(association.triggerEntryId) ?? -1 : -1
         // An attempt whose source trigger predates the latest user ingress may remain visible as history,
         // but it must not become a new unanswered proactive message after a settlement race.
-        const countsAsUnanswered = Boolean(association && triggerIndex > latestUserIndex)
-        messages.push(association ? { ...message, isProactive: countsAsUnanswered } : message)
+        const countsAsUnanswered = Boolean(association && association.expectsReply !== false && triggerIndex > latestUserIndex)
+        const tipIndex = entryIndex.get(entry.id) ?? -1
+        const userIntervened = triggerIndex < 0 || entries.slice(triggerIndex + 1, tipIndex).some(item => {
+          if (item.type !== "message" || item.message.role !== "user") return false
+          const mark = inputSourceOf(item.message)
+          return !mark || (mark.origin === "user" && mark.taint === "trusted_user")
+        })
+        messages.push(association ? { ...message, isProactive: countsAsUnanswered,
+          proactiveReplySeeking: association.expectsReply !== false && !userIntervened } : message)
       }
       continue
     }

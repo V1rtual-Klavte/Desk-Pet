@@ -8,10 +8,21 @@ export interface Message {
   role: "user" | "assistant" | "tool" | "system"
   text: string
   timestamp: number
+  /** 已提交的助手正文分段，重载与实时推送共用。 */
+  parts?: string[]
+  /**
+   * 本条消息关联的图片原文件路径：用户选择的图片，或助手消息上 `show_to_user` 截图的落盘文件
+   * （条目字段同为 `deskpetImagePaths`）。只存路径，不落盘 base64 或创建图片副本。
+   */
+  imagePaths?: string[]
+  /** 恢复等宿主输入不视为用户开口，不重置互动计数。 */
+  isUserInput?: boolean
   /** Durable transcript identity; old sessions receive stable compatibility IDs. */
   eventId?: string
   /** Visible assistant entry came from a scheduler-confirmed proactive attempt. */
   isProactive?: boolean
+  /** 已确认主动消息在自身投递周期需要回应；保留历史资格供次日档位重建。 */
+  proactiveReplySeeking?: boolean
   /** 工具调用（assistant 消息可能包含） */
   toolCalls?: ToolCallRequest[]
   /** 工具调用结果（tool 消息） */
@@ -55,6 +66,8 @@ export interface ActiveMessageRequest {
   attemptId: string
   ruleId: string
   intent: string
+  /** 由机会类型决定，不从角色台词猜测是否需要回应。 */
+  expectsReply: boolean
   sourceRefs: readonly ActiveSourceRef[]
   memoryTargets: readonly { id: string; version: number }[]
   occurrenceIds: readonly string[]
@@ -81,7 +94,7 @@ export interface ProviderReservation {
   toolCount: number
 }
 
-export type ActiveSkipReason = "no_session" | "busy" | "stale" | "quiet_hours" | "muted" | "budget"
+export type ActiveSkipReason = "no_session" | "busy" | "stale" | "quiet_hours" | "muted" | "budget" | "silent"
 
 export type ActiveMessageResult =
   | {
@@ -96,7 +109,9 @@ export type ActiveMessageResult =
       usage?: { inputTokens: number; outputTokens: number; cacheRead?: number; cacheWrite?: number }
       evidence: { operationId: string; triggerEntryId: string; assistantEntryId: string }
     }
-  | { status: "skipped"; reason: ActiveSkipReason }
+  | { status: "skipped"; reason: ActiveSkipReason;
+      usage?: { inputTokens: number; outputTokens: number; cacheRead?: number; cacheWrite?: number };
+      evidence?: { operationId: string; triggerEntryId: string; assistantEntryId: string } }
   | {
       status: "failed"
       stage: "admission" | "generation" | "commit" | "settle"

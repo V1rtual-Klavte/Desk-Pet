@@ -83,6 +83,16 @@ export interface HarnessRunState {
   finalAssistant?: AssistantMessage
   /** 最近一次不带工具调用的 assistant（结算候选）。 */
   finalPlainAssistant?: AssistantMessage
+  /** Durable JSONL entry identity paired with the final assistant message. */
+  finalAssistantEntryId?: string
+  /**
+   * 本回合 show_to_user 截图的落盘路径（afterTool 从工具结果 details 取回）。
+   * 提交链在最终助手消息落条目之前把它们并入条目（`deskpetImagePaths`）与结算回传；
+   * 被取消/失败的回合不会走到提交，状态随回合丢弃。
+   */
+  pendingUserImages?: string[]
+  /** 已并入提交条目的用户可见截图路径（结算回传给宿主推界面）。 */
+  attachedUserImages?: string[]
   /** Actual request usage observed from Harness events; absent means unknown. */
   usage?: { inputTokens: number; outputTokens: number; cacheRead?: number; cacheWrite?: number }
 }
@@ -110,6 +120,7 @@ export interface HarnessRunHooks {
   transformContext?: (input: {
     messages: AgentMessage[]
     systemPrompt: string
+    signal?: AbortSignal
   }) => Promise<{ messages?: AgentMessage[] } | undefined> | { messages?: AgentMessage[] } | undefined
   /**
    * 压缩决策钩子：返回自定义 CompactResult（宿主摘要内核）或 decline 跳过。
@@ -179,6 +190,14 @@ export interface HarnessRunSpec {
   thinkingEffort: ThinkingEffort
   systemPrompt: string
   tools: readonly ToolDef[]
+  /**
+   * 本回合默认激活的工具名（⊆ tools）；省略 = tools 全量激活。
+   *
+   * 主对话回合传 `defaultActiveToolNames(...)`（MCP 白名单之外的工具由 enable_tools 回合内
+   * 按需加入）；子代理 / 计划步骤保持省略 —— 它们的工具面本来就是显式收窄的，不再打折。
+   * 激活只收窄请求视图，`setTools` 仍持全量（Pi 校验激活集 ⊆ 全量）。
+   */
+  activeToolNames?: readonly string[]
   toolRun: HarnessToolRun
   /** 多条消息用于「停止后继续」：把取回的暂停输入按原顺序一次性投递（身份不合并）。 */
   prompt: string | AgentMessage | AgentMessage[]
@@ -206,6 +225,8 @@ interface HarnessAdmitBase {
   model: PiModel
   thinkingEffort: ThinkingEffort
   tools: readonly ToolDef[]
+  /** 与 `HarnessRunSpec.activeToolNames` 同义：准入与驱动必须给同一份激活面（省略 = 全量）。 */
+  activeToolNames?: readonly string[]
   toolRun: HarnessToolRun
 }
 
@@ -859,7 +880,7 @@ export class HarnessSlot {
    * 只有一处定义）：带身份时写 `deskpetEventId`（证据链按它关联输入），来源标记随消息落盘；
    * 没有 identity 时不带身份，保持「非投递输入」语义。
    */
-  async steer(text: string, identity?: { eventId: string; mark?: InputSourceMark }, kindOverride?: "steer" | "followUp" | "nextRun"): Promise<HarnessDeliveryReceipt | undefined> {
+  async steer(text: string, identity?: { eventId: string; mark?: InputSourceMark; imagePaths?: readonly string[] }, kindOverride?: "steer" | "followUp" | "nextRun"): Promise<HarnessDeliveryReceipt | undefined> {
     // 不要求运行已进入驱动：预检阶段的投递也进入 lane 持久 inbox（先 open 再投递），
     // 由本次或下一次运行消费；宿主不再保留自己的队列副本。
     if (this.state !== "running") return undefined
@@ -873,7 +894,7 @@ export class HarnessSlot {
     }
     if (this.state !== "running" || !this.lane) return undefined
     const kind = kindOverride ?? (this.deliveryPhase === "settling" ? "followUp" : "steer")
-    const message = userInputMessage(text, identity?.eventId ?? "", identity?.mark)
+    const message = userInputMessage(text, identity?.eventId ?? "", identity?.mark, identity?.imagePaths)
     const result = kind === "steer"
       ? await this.lane.steer(message, undefined, TODO_CONTEXT)
       : kind === "followUp"
@@ -1338,6 +1359,18 @@ export class HarnessSlot {
     this.auditPending.push({ customType, data })
   }
 
+  /**
+   * 持久槽上的宿主自定义条目必须经过 AgentLane，而不是 session Branch：运行中 lane 持有内存 tip，
+   * Branch 旁路提交会移动盘上 tip，之后 Harness 仍按旧 tip 提交并把新 entry 挤成孤立分支。
+   * AgentLane 会按当前 operation 状态将写入纳入提交或持久 inbox，并返回真实 entry id。
+   */
+  async appendCustomEntry(customType: string, data?: JsonValue): Promise<string> {
+    await this.open()
+    const lane = this.lane
+    if (!lane) throw new Error("Harness lane 尚未就绪，不能追加会话自定义条目")
+    return await lane.appendCustomEntry(customType, data, TODO_CONTEXT)
+  }
+
   /** 唯一的 flush 入口。失败条目不丢弃：重试一次后仍失败就保留在本队列。 */
   async flushAudit(): Promise<void> {
     const lane = this.lane
@@ -1396,7 +1429,7 @@ export class HarnessSlot {
    * 正文由 `accept` 落盘）：调用方直接透传准入参数，不在这里做二次拼装 —— 准入形态不影响装配口径。
    */
   private async assembleLane(
-    spec: Pick<HarnessAdmitSpec, "model" | "thinkingEffort" | "tools" | "toolRun" | "kind" | "name" | "additionalInstructions">,
+    spec: Pick<HarnessAdmitSpec, "model" | "thinkingEffort" | "tools" | "toolRun" | "kind" | "name" | "additionalInstructions" | "activeToolNames">,
   ): Promise<void> {
     const tools = toAgentHarnessTools(spec.tools, spec.toolRun)
     await this.harness!.setTools(tools, TODO_CONTEXT)
@@ -1419,7 +1452,10 @@ export class HarnessSlot {
     await flushPendingReleases()
     await this.lane!.setModel({ provider: spec.model.provider, modelId: spec.model.id }, TODO_CONTEXT)
     await this.lane!.setThinkingLevel(toPiAgentThinkingLevel(spec.thinkingEffort), TODO_CONTEXT)
-    await this.lane!.setActiveTools(spec.tools.map(tool => tool.name), TODO_CONTEXT)
+    // 默认激活面来自调用方的冻结判定（唯一判定在 tool/activation.ts）：主对话回合收窄到
+    // 「基础工具 + 常用白名单」，其余交给 enable_tools 回合内按需加入；省略即全量激活，
+    // 子代理 / 计划步骤保持既有行为。`setTools` 仍是全量，这里只改请求视图。
+    await this.lane!.setActiveTools(spec.activeToolNames ? [...spec.activeToolNames] : spec.tools.map(tool => tool.name), TODO_CONTEXT)
   }
 
   /**
@@ -1718,8 +1754,8 @@ export class HarnessSlot {
           isError: event.isError,
         })
       }),
-      hooks.on("transform_context", async (event) => {
-        return this.hostSpec().hooks?.transformContext?.({ messages: event.messages, systemPrompt: event.systemPrompt })
+      hooks.on("transform_context", async (event, context) => {
+        return this.hostSpec().hooks?.transformContext?.({ messages: event.messages, systemPrompt: event.systemPrompt, signal: context.abortSignal })
       }),
       hooks.on("before_compaction", async (event, context) => {
         // 运行期用回合钩子；/compact 等手动压缩没有 activeRun，用本次下发的结构操作钩子。
@@ -1770,6 +1806,7 @@ export class HarnessSlot {
           // 先结束瞬时缓冲，再交给提交路径推送真实消息（§6）。
           this.endAssistantStream()
           run.spec.state.finalAssistant = message
+          run.spec.state.finalAssistantEntryId = event.entryId
           await run.spec.sinks?.onAssistantMessage?.(message, event.entryId)
           return
         }

@@ -1,6 +1,7 @@
 import type { AppCategory, WindowObservation } from "@/services/window/types"
 
 export type { AppCategory, WindowObservation }
+export { IDLE_ACTIVE_LIMIT_MS } from "@/services/window/types"
 
 export interface BehaviorQuality {
   status: "reliable" | "insufficient" | "unavailable"

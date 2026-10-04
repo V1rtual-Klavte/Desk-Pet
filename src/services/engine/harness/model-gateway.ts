@@ -8,7 +8,7 @@ import { contentText, createAssistantMessageEventStream, createModels, createPro
 import { openAICompletionsApi } from "@earendil-works/pi-ai/api/openai-completions.lazy"
 import { deepseekProvider } from "@earendil-works/pi-ai/providers/deepseek"
 import { openaiProvider } from "@earendil-works/pi-ai/providers/openai"
-import type { AssistantMessage, AssistantMessageEventStream, Context, Message as PiMessage, Model, Models, MutableModels, Provider, SimpleStreamOptions, StopReason, ThinkingContent, ThinkingLevel, Usage } from "@earendil-works/pi-ai"
+import type { AssistantMessage, AssistantMessageEventStream, Context, ImageContent, Message as PiMessage, Model, Models, MutableModels, Provider, SimpleStreamOptions, StopReason, ThinkingContent, ThinkingLevel, Usage } from "@earendil-works/pi-ai"
 import type { StreamFn } from "@earendil-works/pi-agent-core"
 import type { ThinkingEffort } from "@/services/agent/types"
 import { aiConfig } from "@/services/config"
@@ -17,11 +17,12 @@ import { createLogger } from "@/services/logger"
 import { hasRuntimeTraceSubscribers, publishRuntimeTrace, runtimeTraceContextForRequest } from "@/services/engine/runtime/trace"
 import type { RuntimeTraceContext } from "@/services/engine/runtime/trace"
 import { formatError } from "@/services/error"
-import { contextBudget, ContextBudgetError, contextWindowError, estimateDriftRatio, estimateRequestTokens, ONE_SHOT_LOW_EFFORT_HINT } from "@/services/context"
+import { contextBudget, ContextBudgetError, contextWindowError, estimateDriftRatio, estimateRequestTokens, projectMessageContent, ONE_SHOT_LOW_EFFORT_HINT } from "@/services/context"
 import { PROMPT_SNAPSHOT_ENTRY, createPromptSnapshot, redactText, sha256Text } from "@/services/engine/runtime"
 import type { PromptSnapshot, PromptSnapshotInput } from "@/services/engine/runtime"
 import type { HarnessSlotSnapshot } from "./harness-slot"
-import { PROVIDER_TIMEOUT_MS, createProviderFetchGuard, validateProviderUrl } from "./net-guard"
+import chatImageLimits from "@/services/images/limits.json"
+import { PROVIDER_TIMEOUT_MS, createProviderFetchGuard, providerResponseByteCap, validateProviderUrl } from "./net-guard"
 
 const log = createLogger("PiGateway")
 
@@ -35,7 +36,8 @@ interface PiGateway {
 /** 已冻结的 pi-ai 模型快照，避免一次性调用在中途重新读取设置。 */
 export type PiModel = Model<any>
 
-let gatewayCache: PiGateway | undefined
+/** 按模型 id 缓存的网关（聊天模型 + 辅助模型各自一份，签名变化即重建）。 */
+const gatewayCacheByModel = new Map<string, PiGateway>()
 const modelGateways = new WeakMap<Model<any>, PiGateway>()
 
 function configuredProviderId(): string {
@@ -48,7 +50,22 @@ function builtinProvider(providerId: string): Provider | undefined {
   return undefined
 }
 
-function createConfiguredGateway(): PiGateway {
+/**
+ * 配置模型的有效窗口与输出预算：窗口取「模型目录 ∩ 配置窗口」，
+ * 输出取「窗口比例推导值」与「模型目录 maxTokens」的较小者。
+ *
+ * 这是主回合、注入模型、一次性文本请求与记忆整理共用的唯一预算口径：
+ * 大窗口按比例拿到更大的输出预算，同时不越过模型自身声明的上限；
+ * 目录里没有的自定义模型 id 只用比例推导值，不再落回固定 4096。
+ */
+function resolvePiModelBudget(modelId: string = aiConfig.model): { contextWindow: number; outputBudget: number } {
+  const catalog = builtinProvider(configuredProviderId())?.getModels().find(model => model.id === modelId)
+  const contextWindow = Math.min(aiConfig.contextMaxTokens, catalog?.contextWindow ?? aiConfig.contextMaxTokens)
+  const derived = contextBudget(contextWindow).outputReserve
+  return { contextWindow, outputBudget: Math.min(derived, catalog?.maxTokens ?? derived) }
+}
+
+function createConfiguredGateway(modelId: string = aiConfig.model): PiGateway {
   const providerId = configuredProviderId()
   const url = validateProviderUrl(aiConfig.endpoint)
   // Existing local-server configurations accept a bare host; custom API paths are preserved.
@@ -58,25 +75,29 @@ function createConfiguredGateway(): PiGateway {
   const requireApiKey = aiConfig.requireApiKey
   const signature = JSON.stringify([
     providerId, endpoint, configuredKey, aiConfig.requireApiKey,
-    aiConfig.model, aiConfig.contextMaxTokens,
+    modelId, aiConfig.contextMaxTokens,
   ])
-  if (gatewayCache?.signature === signature) return gatewayCache
+  const cached = gatewayCacheByModel.get(modelId)
+  if (cached?.signature === signature) return cached
 
   const builtin = builtinProvider(providerId)
-  const catalog = builtin?.getModels().find(model => model.id === aiConfig.model)
+  const catalog = builtin?.getModels().find(model => model.id === modelId)
+  const { contextWindow, outputBudget } = resolvePiModelBudget(modelId)
   const model: Model<any> = {
     ...catalog,
-    id: aiConfig.model,
-    name: aiConfig.model,
+    id: modelId,
+    name: modelId,
     api: catalog?.api ?? "openai-completions",
     provider: providerId,
     baseUrl: endpoint,
     reasoning: catalog?.reasoning ?? false,
-    input: catalog?.input ?? ["text"],
+    // 未知自定义模型目录没有 input 声明；允许网关传图，由实际 provider 能力裁决。
+    // 已知目录模型仍遵循其显式声明，避免假装不支持的模型能看图。
+    input: catalog?.input ?? ["text", "image"],
     cost: catalog?.cost ?? { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-    contextWindow: Math.min(aiConfig.contextMaxTokens, catalog?.contextWindow ?? aiConfig.contextMaxTokens),
+    contextWindow,
     // ReplyGenerator only keeps 500 characters; leave headroom for reasoning and RUNTIME_DATA.
-    maxTokens: contextBudget(Math.min(aiConfig.contextMaxTokens, catalog?.contextWindow ?? aiConfig.contextMaxTokens)).outputReserve,
+    maxTokens: outputBudget,
   }
   const provider = createProvider({
     id: providerId,
@@ -99,13 +120,14 @@ function createConfiguredGateway(): PiGateway {
   })
   const models = createModels()
   models.setProvider(provider)
-  gatewayCache = { signature, model, models, fetch: createProviderFetchGuard(endpoint) }
-  modelGateways.set(model, gatewayCache)
-  return gatewayCache
+  const gateway: PiGateway = { signature, model, models, fetch: createProviderFetchGuard(endpoint, providerResponseByteCap(model.maxTokens)) }
+  gatewayCacheByModel.set(modelId, gateway)
+  modelGateways.set(model, gateway)
+  return gateway
 }
 
-export function getPiModel(): Model<any> {
-  return createConfiguredGateway().model
+export function getPiModel(modelId: string = aiConfig.model): Model<any> {
+  return createConfiguredGateway(modelId).model
 }
 
 export function toPiAgentThinkingLevel(effort: ThinkingEffort | undefined): "off" | "low" | "medium" | "high" {
@@ -153,13 +175,29 @@ export function resolvePiTurnModel(): PiModel {
   let model: PiModel
   if (overrideModel) {
     const window = Math.min(aiConfig.contextMaxTokens, overrideModel.contextWindow)
-    model = { ...overrideModel, contextWindow: window, maxTokens: contextBudget(window).outputReserve }
+    const derived = contextBudget(window).outputReserve
+    model = { ...overrideModel, contextWindow: window, maxTokens: Math.min(derived, overrideModel.maxTokens ?? derived) }
   } else {
     model = getPiModel()
   }
   // 低于下限的窗口没有可用的压缩切点：在模型解析这个唯一入口报错，
   // 不让回合静默跑在坏预算上（设置页保存时同样会拒绝）。这里的窗口是
   // `min(模型目录窗口, 配置窗口)`，所以带上模型 id 与配置值 —— 用户该换模型，不是改配置。
+  const issue = contextWindowError(model.contextWindow, { configured: aiConfig.contextMaxTokens, modelId: model.id })
+  if (issue) throw new Error(issue)
+  return model
+}
+
+/**
+ * 辅助模型的解析（子代理 / 计划步骤 / 主动扫描规划 / 记忆整理）。
+ * `ai.auxModel` 留空或与聊天模型相同时回落主模型；非空时经同一网关
+ * （同 provider/endpoint/apiKey）按目标模型 id 解析，预算口径与主模型一致。
+ * 测试注入只替换运行面（streamFn），不改写这里解析出的模型身份。
+ */
+export function resolvePiAuxModel(): PiModel {
+  const auxId = aiConfig.auxModel.trim()
+  if (!auxId || auxId === aiConfig.model) return resolvePiTurnModel()
+  const model = getPiModel(auxId)
   const issue = contextWindowError(model.contextWindow, { configured: aiConfig.contextMaxTokens, modelId: model.id })
   if (issue) throw new Error(issue)
   return model
@@ -343,7 +381,7 @@ export function getPiRuntimeProviderOverride(): PiRuntimeProviderOverride | unde
 // ── 一次性文本调用 ──
 
 /** 一次性调用的用途；用量统计按它单列，不从主回合统计里消失。 */
-export type PiTextPurpose = "planner" | "compaction" | "memory" | "stages"
+export type PiTextPurpose = "planner" | "compaction" | "memory" | "stages" | "observation" | "topic"
 
 /** 一次性调用的审计归属：给出后请求快照与派生记录按会话落盘（不入模型消息流）。 */
 export interface PiTextCallAudit {
@@ -360,6 +398,8 @@ export interface PiTextCallInput {
   purpose: PiTextPurpose
   systemPrompt: string
   userText: string
+  /** In-memory visual inputs for one-shot calls. Prompt snapshots record only their count. */
+  images?: readonly ImageContent[]
   thinkingEffort?: ThinkingEffort
   /** 上游取消会与总超时合并，任何一个触发都终止请求。 */
   signal?: AbortSignal
@@ -454,7 +494,20 @@ export async function completePiText(input: PiTextCallInput): Promise<PiTextCall
   if (input.thinkingEffort === "low" && !model.reasoning) systemPrompt += ONE_SHOT_LOW_EFFORT_HINT
 
   const requestBudget = contextBudget(model.contextWindow, maxTokens)
-  const estimatedInput = estimateRequestTokens(systemPrompt, [{ role: "user", content: input.userText }])
+  const images = input.images ?? []
+  if (images.length > chatImageLimits.maxImages) throw new Error("一次性请求图像数量超出上限")
+  for (const image of images) {
+    if (image.type !== "image" || !["image/png", "image/jpeg", "image/webp"].includes(image.mimeType)
+      || typeof image.data !== "string" || image.data.length === 0 || image.data.length > Math.ceil(chatImageLimits.maxBytes / 3) * 4
+      || image.data.length % 4 === 1 || !/^[A-Za-z0-9+/]*={0,2}$/.test(image.data)) {
+      throw new Error("一次性请求图像格式无效或超过大小上限")
+    }
+  }
+  if (images.length > 0 && !model.input.includes("image")) {
+    throw new Error(`当前模型 ${model.id} 未声明图像输入能力`)
+  }
+  const requestContent = images.length ? [{ type: "text" as const, text: input.userText }, ...images] : input.userText
+  const estimatedInput = estimateRequestTokens(systemPrompt, [{ role: "user", content: requestContent }])
   if (estimatedInput > requestBudget.hardInputLimit) throw new ContextBudgetError(estimatedInput, requestBudget.hardInputLimit)
 
   // 一次性请求的审计归属：purpose/step 进 request，块与消息用 one-shot:* 身份
@@ -475,15 +528,15 @@ export async function completePiText(input: PiTextCallInput): Promise<PiTextCall
       text: systemPrompt, priority: 100, origin: "system", taint: "system",
     }],
     toolSchemas: [],
-    agentMessages: [{ id: `one-shot:${input.purpose}:0`, role: "user", content: input.userText }],
-    llmMessages: [{ role: "user", content: input.userText }],
+    agentMessages: [{ id: `one-shot:${input.purpose}:0`, role: "user", content: projectMessageContent({ role: "user", content: requestContent }) }],
+    llmMessages: [{ role: "user", content: projectMessageContent({ role: "user", content: requestContent }) }],
     transforms: [],
     estimatedInputTokens: estimatedInput,
     request: {
       purpose: input.purpose === "compaction" ? "compaction" : "one_shot",
       ...(input.purpose === "compaction" ? { step: "compaction" as const } : {}),
     },
-    requestParams: { maxTokens },
+    requestParams: { maxTokens, ...(images.length ? { imageCount: images.length } : {}) },
     generation: slotSnapshot?.generation ?? 0,
     // 未知的换代基数不写 0（那会谎称请求视图未换代）。
     ...(input.purpose === "compaction" && slotSnapshot?.contextEpoch !== undefined
@@ -510,7 +563,11 @@ export async function completePiText(input: PiTextCallInput): Promise<PiTextCall
   try {
     // 不把已取消的 signal 交给可能忽略它的 provider/fake stream，避免取消后仍发起请求。
     if (controller.signal.aborted) throw new Error("Provider 请求超时或已取消")
-    const messages: PiMessage[] = [{ role: "user", content: input.userText, timestamp: startedAt }]
+    const messages: PiMessage[] = [{
+      role: "user",
+      content: images.length ? [{ type: "text" as const, text: input.userText }, ...images] : input.userText,
+      timestamp: startedAt,
+    }]
     spanId = traceEnabled ? `provider-${crypto.randomUUID?.() ?? `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`}` : undefined
     providerStarted = traceEnabled ? (typeof performance === "undefined" ? Date.now() : performance.now()) : 0
     if (traceContext && spanId) publishRuntimeTrace(traceContext, "provider_request_start", () => ({

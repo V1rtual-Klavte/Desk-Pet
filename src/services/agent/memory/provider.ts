@@ -16,9 +16,9 @@ import { completePiText } from "@/services/engine/harness"
 import { memoryConfig } from "@/services/config"
 import { createLogger } from "@/services/logger"
 import { formatError } from "@/services/error"
-import { getMemoryItemsForTargets, queryMemory } from "./ipc"
+import { getMemoryRecallCandidates } from "./ipc"
 import type { MemoryItem } from "./ipc"
-import { parseRerankIds } from "./rerank"
+import { parseRerankSelection } from "./rerank"
 
 export { parseRerankIds } from "./rerank"
 
@@ -34,6 +34,10 @@ export interface MemoryRecallRequest {
   targets?: Array<{ id: string; version: number }>
   allowExpiredTargets?: boolean
   runGeneration?: number
+  /** Filled by the provider so a runtime can detect a revision change before later requests. */
+  readRevision?: number
+  /** Same-turn mutation refreshes local eligibility without paying for a second rerank. */
+  skipRerank?: boolean
   query: string
   tokenBudget: number
   signal: AbortSignal
@@ -50,37 +54,24 @@ export interface MemoryProjection {
   text: string
   tokenBudget: number
   tier: "core" | "recall"
+  memoryRevision?: number
 }
 
 export interface MemoryProvider {
   recall(request: MemoryRecallRequest): Promise<MemoryProjection[]>
 }
 
-const LOCAL_CANDIDATE_LIMIT = 50
 const RERANK_CANDIDATE_LIMIT = 12
+const RERANK_INPUT_TOKEN_BUDGET = 512
 
-/** 裁剪标记：与 L0 的缩短标记同思想 —— 超配显式可见，不静默截尾。 */
-export const RECALL_TRUNCATION_MARK = "…[召回文本超出预算，已按 token 口径截断]"
+/** 初始动态记忆选择上限；超过它才值得花一次重排请求。 */
+export const FINAL_RECALL_ITEM_LIMIT = 6
 
 export const emptyMemoryProvider: MemoryProvider = {
   async recall() { return [] },
 }
 
-function clipToTokenBudget(text: string, tokenBudget: number): string {
-  if (tokenBudget <= 0) return ""
-  if (estimateContextTokens(text) <= tokenBudget) return text
-  // 逐 UTF-16 单元累加（与估算器同口径：emoji 代理对算两个单元），越界即停。
-  let nonAscii = 0
-  let length = 0
-  for (; length < text.length; length += 1) {
-    const unit = text.charCodeAt(length) > 0x7F ? 1 : 0
-    if (Math.ceil(nonAscii + unit + (length + 1 - nonAscii - unit) / 4) > tokenBudget) break
-    nonAscii += unit
-  }
-  return `${text.slice(0, length)}${RECALL_TRUNCATION_MARK}`
-}
-
-function projection(item: MemoryItem, tokenBudget: number): MemoryProjection {
+function projection(item: MemoryItem, tokenBudget: number, memoryRevision?: number): MemoryProjection {
   return {
     sourceId: `${item.id}@${item.version}`,
     memoryVersion: `${item.id}:${item.version}`,
@@ -89,47 +80,66 @@ function projection(item: MemoryItem, tokenBudget: number): MemoryProjection {
     text: item.draft.content,
     tokenBudget,
     tier: item.draft.pinned ? "core" : "recall",
+    ...(memoryRevision === undefined ? {} : { memoryRevision }),
   }
 }
 
 /** 本地候选是否值得花一次模型调用：候选太少时重排只会增加延迟。 */
 function shouldRerank(candidates: readonly MemoryItem[]): boolean {
-  return memoryConfig.rerank === "adaptive" && candidates.length > 1
+  return memoryConfig.rerank === "adaptive"
+    && candidates.filter(item => !item.draft.pinned).length > FINAL_RECALL_ITEM_LIMIT
 }
 
 async function rerank(items: MemoryItem[], request: MemoryRecallRequest, timeoutMs: number): Promise<MemoryItem[]> {
-  if (!shouldRerank(items) || request.signal.aborted) return items
+  if (request.skipRerank || !shouldRerank(items) || request.signal.aborted) return items
+  if (estimateContextTokens(request.query) > RERANK_INPUT_TOKEN_BUDGET / 2) {
+    request.fallbackReason = "rerank_query_over_budget"
+    return items
+  }
   const controller = new AbortController()
   const abort = () => controller.abort(request.signal.reason)
   request.signal.addEventListener("abort", abort, { once: true })
   const timer = setTimeout(() => controller.abort(new Error("记忆重排超时")), timeoutMs)
   try {
-    const candidates = items.slice(0, RERANK_CANDIDATE_LIMIT).map(item => ({
-      id: item.id,
-      summary: item.draft.summary || item.draft.content.slice(0, 160),
-      kind: item.draft.kind,
-      scope: item.draft.scope,
-      aliases: item.draft.aliases.slice(0, 6),
-    }))
+    const dynamicItems = items.filter(item => !item.draft.pinned)
+    const systemPrompt =
+      "你是记忆检索的排序器。只输出 JSON 数组，元素必须来自给定候选的 id。"
+      + "按与当前问题相关的程度排序，只保留真正有用的候选；没有有用的返回 []。"
+    const sentItems: MemoryItem[] = []
+    const candidates: Array<{ id: string; summary: string; kind: string; scope: string; aliases: string[] }> = []
+    for (const item of dynamicItems) {
+      if (sentItems.length >= RERANK_CANDIDATE_LIMIT) break
+      const summary = item.draft.summary || item.draft.content
+      const candidate = { id: item.id, summary, kind: item.draft.kind, scope: item.draft.scope, aliases: item.draft.aliases.slice(0, 6) }
+      const nextItems = [...sentItems, item]
+      const nextCandidates = [...candidates, candidate]
+      const nextUserText = JSON.stringify({ query: request.query, candidates: nextCandidates })
+      if (estimateContextTokens(`${systemPrompt}\n${nextUserText}`) > RERANK_INPUT_TOKEN_BUDGET) continue
+      sentItems.push(item)
+      candidates.push(candidate)
+    }
+    if (sentItems.length === 0) {
+      request.fallbackReason = "rerank_candidates_over_budget"
+      return dynamicItems
+    }
+    const userText = JSON.stringify({ query: request.query, candidates })
     const result = await completePiText({
       purpose: "memory",
-      systemPrompt:
-        "你是记忆检索的排序器。只输出 JSON 数组，元素必须来自给定候选的 id。"
-        + "按与当前问题相关的程度排序，只保留真正有用的候选；没有有用的返回 []。",
-      userText: JSON.stringify({ query: request.query, candidates }),
+      systemPrompt,
+      userText,
       maxTokens: 128,
       timeoutMs,
       signal: controller.signal,
       audit: { sessionId: request.sessionId, requestId: request.requestId, traceContext: request.traceContext },
     })
-    const ids = parseRerankIds(result.text, new Set(items.map(item => item.id)))
-    if (request.traceContext) publishRuntimeTrace(request.traceContext, "memory_recall_selected", () => ({ selectedIds: ids, strategy: "adaptive" }))
-    if (ids.length === 0) return items
-    const byId = new Map(items.map(item => [item.id, item]))
-    return [
-      ...ids.map(id => byId.get(id)).filter((item): item is MemoryItem => Boolean(item)),
-      ...items.filter(item => !ids.includes(item.id)),
-    ]
+    const selection = parseRerankSelection(result.text, new Set(sentItems.map(item => item.id)))
+    if (!selection.valid) {
+      request.fallbackReason = "rerank_invalid"
+      return dynamicItems
+    }
+    if (request.traceContext) publishRuntimeTrace(request.traceContext, "memory_recall_selected", () => ({ selectedIds: selection.ids, strategy: "adaptive" }))
+    const byId = new Map(sentItems.map(item => [item.id, item]))
+    return selection.ids.map(id => byId.get(id)).filter((item): item is MemoryItem => Boolean(item))
   } catch (error) {
     // 重排是增强不是前置：任何失败都退回已经算好的本地顺序。
     log.warn("记忆重排失败，使用本地顺序:", formatError(error))
@@ -144,28 +154,37 @@ async function rerank(items: MemoryItem[], request: MemoryRecallRequest, timeout
 export const sqliteMemoryProvider: MemoryProvider = {
   async recall(request) {
     const targeted = request.purpose === "proactive"
-    const candidates = targeted
-      ? await getMemoryItemsForTargets(request.targets ?? [])
-      : await queryMemory(request.query, {
-      limit: LOCAL_CANDIDATE_LIMIT,
-      sessionId: request.sessionId,
-      scope: "user",
-    })
-    const cardCandidates = targeted ? [] : request.cardId
-      ? await queryMemory(request.query, { limit: LOCAL_CANDIDATE_LIMIT, scope: "card", scopeId: request.cardId, sessionId: request.sessionId })
-      : []
-    const sessionCandidates = targeted ? [] : await queryMemory(request.query, { limit: LOCAL_CANDIDATE_LIMIT, scope: "session", scopeId: request.sessionId, sessionId: request.sessionId })
-    const merged = [...new Map([...candidates, ...cardCandidates, ...sessionCandidates].map(item => [item.id, item])).values()]
+    const targets = request.targets ?? []
+    const snapshot = await getMemoryRecallCandidates(
+      targeted ? "" : request.query,
+      request.cardId,
+      request.sessionId,
+      targets,
+      request.allowExpiredTargets ?? targeted,
+    )
+    request.readRevision = snapshot.revision
+    const targetedCandidates = snapshot.targeted
+    const targetedIds = new Set(targetedCandidates.map(item => item.id))
+    const coreCandidates = targeted ? [] : snapshot.pinned
+    const merged = [...new Map([
+      ...targetedCandidates,
+      ...(targeted ? [] : snapshot.candidates.filter(item => !targetedIds.has(item.id))),
+      ...coreCandidates.filter(item => !targetedIds.has(item.id)),
+    ].map(item => [item.id, item])).values()]
     if (request.traceContext) publishRuntimeTrace(request.traceContext, "memory_recall_candidates", () => ({
       candidateIds: merged.map(item => item.id),
       candidateCount: merged.length,
       candidateIdsByScope: {
-        user: candidates.map(item => item.id),
-        card: cardCandidates.map(item => item.id),
-        session: sessionCandidates.map(item => item.id),
+        user: snapshot.candidatesByScope.user.map(item => item.id),
+        card: snapshot.candidatesByScope.card.map(item => item.id),
+        session: snapshot.candidatesByScope.session.map(item => item.id),
+        targeted: targetedCandidates.map(item => item.id),
       },
     }))
-    const ranked = targeted ? merged : await rerank(merged, request, memoryConfig.rerankTimeoutMs)
+    const core = merged.filter(item => item.draft.pinned && !targetedIds.has(item.id))
+    const dynamic = merged.filter(item => !item.draft.pinned && !targetedIds.has(item.id))
+    const rankedDynamic = targeted ? dynamic : await rerank(dynamic, request, memoryConfig.rerankTimeoutMs)
+    const ranked = [...core, ...rankedDynamic.slice(0, FINAL_RECALL_ITEM_LIMIT), ...targetedCandidates]
     if (request.traceContext && memoryConfig.rerank !== "adaptive") publishRuntimeTrace(request.traceContext, "memory_recall_selected", () => ({
       selectedIds: ranked.map(item => item.id),
       strategy: "local",
@@ -178,14 +197,11 @@ export const sqliteMemoryProvider: MemoryProvider = {
       const tier = item.draft.pinned ? "core" : "recall"
       const remaining = tier === "core" ? coreRemaining : recallRemaining
       if (remaining <= 0) continue
-      const budget = Math.min(remaining, Math.max(1, estimateContextTokens(item.draft.content)))
-      const text = clipToTokenBudget(item.draft.content, budget)
-      if (!text) continue
-      const projectionResult = projection(item, budget)
-      projectionResult.text = text
-      result.push(projectionResult)
-      if (tier === "core") coreRemaining -= estimateContextTokens(text)
-      else recallRemaining -= estimateContextTokens(text)
+      const fullItemTokens = estimateContextTokens(item.draft.content)
+      if (fullItemTokens <= 0 || fullItemTokens > remaining) continue
+      result.push(projection(item, fullItemTokens, request.readRevision))
+      if (tier === "core") coreRemaining -= fullItemTokens
+      else recallRemaining -= fullItemTokens
     }
     request.droppedCandidateIds = merged.filter(item => !result.some(projection => projection.sourceId.startsWith(`${item.id}@`))).map(item => item.id)
     return result
@@ -238,6 +254,7 @@ export async function recallMemory(
         controller.signal.addEventListener("abort", () => resolve([]), { once: true })
       }),
     ])
+    request.readRevision = providerRequest.readRevision
     // 预算裁决留在端口这一层：provider 可以有自己的取舍，但「声明的预算」必须真的是
     // 「实际占用的 token」—— 单条取「请求剩余」与「该条声明」的严格者，逐条扣减。
     let coreRemaining = Math.max(0, memoryConfig.coreTokenBudget)
@@ -250,14 +267,13 @@ export async function recallMemory(
       const tierRemaining = projection.tier === "core" ? coreRemaining : recallRemaining
       const remaining = Math.min(tierRemaining, totalRemaining)
       if (remaining <= 0) { droppedIds.push(projection.sourceId); continue }
+      const usedTokens = estimateContextTokens(projection.text)
       const budget = Math.min(remaining, Math.max(0, projection.tokenBudget))
-      if (budget <= 0) { droppedIds.push(projection.sourceId); continue }
-      const text = clipToTokenBudget(projection.text, budget)
-      if (!text) continue
-      projections.push({ ...projection, text, tokenBudget: budget })
-      if (projection.tier === "core") coreRemaining -= budget
-      else recallRemaining -= budget
-      totalRemaining -= budget
+      if (usedTokens <= 0 || usedTokens > budget) { droppedIds.push(projection.sourceId); continue }
+      projections.push({ ...projection, tokenBudget: usedTokens })
+      if (projection.tier === "core") coreRemaining -= usedTokens
+      else recallRemaining -= usedTokens
+      totalRemaining -= usedTokens
     }
     if (traceContext) {
       publishRuntimeTrace(traceContext, "memory_recall_projected", () => ({

@@ -9,7 +9,7 @@ import { TOOL_POLICY_VERSION } from "../types"
 import { defineTool } from "../policy"
 import { register } from "../registry"
 import { getLatestWindowObservation } from "@/services/window"
-import { windowMonitorConfig } from "@/services/config"
+import { silentAccessConfig } from "@/services/config"
 import { createLogger } from "@/services/logger"
 
 const log = createLogger("ToolWin")
@@ -17,7 +17,7 @@ const log = createLogger("ToolWin")
 const windowInfoTool: ToolDef = defineTool({
   id: "local-window-info",
   name: "window_info",
-  description: "获取最近一次窗口变化：窗口标题、内容与观测时间。窗口监控未开启或尚未收到事件时如实说明。",
+  description: "获取最近一次窗口变化：窗口标题、内容与观测时间。静默访问未开启或尚未收到事件时如实说明。",
   parameters: {
     type: "object",
     properties: {},
@@ -34,8 +34,8 @@ const windowInfoTool: ToolDef = defineTool({
     context: { resultProjection: "reference", historyCompaction: "summarize" },
   },
 }, async () => {
-  if (!windowMonitorConfig.enabled) {
-    return { success: true, content: "窗口监控未开启（ai.windowMonitor.enabled = false），没有窗口信息可读。" }
+  if (!silentAccessConfig.enabled) {
+    return { success: true, content: "静默访问未开启（ai.silentAccess.enabled = false），没有窗口信息可读。" }
   }
   const snapshot = getLatestWindowObservation()
   if (!snapshot) {

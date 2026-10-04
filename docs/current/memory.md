@@ -1,6 +1,6 @@
 # 当前记忆与会话基础
 
-长期记忆由 Rust 侧 SQLite（`数据根/memory/memory.sqlite3`）承载，经 `MemoryProvider` 只读端口进入 Runtime。召回是「本地检索 + 可关闭的 adaptive 重排」两段：本地结果先算出来并随时可用，重排失败、超时或被取消都退回同一份本地顺序。召回文本按 `estimateContextTokens` 裁剪并在超配时显式标记（不用「4 字符 = 1 token」的通吃常数）。Card 变量与用户长期事实分别管理。
+长期记忆由 Rust 侧 SQLite（`数据根/memory/memory.sqlite3`）承载，经 `MemoryProvider` 只读端口进入 Runtime。召回是「本地检索 + 可关闭的 adaptive 重排」两段：本地结果先算出来并随时可用，重排失败、超时或被取消都退回同一份本地顺序。召回按 `estimateContextTokens` 对整条事实计量，超单条／tier／总预算的条目整条淘汰并记录预算原因，不截断正文。Card 变量与用户长期事实分别管理。
 
 ## 记忆的五层与两条链路
 
@@ -16,7 +16,7 @@
 
 **准入判据是「谁说的」**：只有 `origin=user` + `taint=trusted_user` + `eligibleForMemory=true` 的已提交条目能成为候选。助手台词、工具结果、压缩摘要、主动搭话与缺来源标记的历史条目一律出局 —— 它们都可能又长又具体，但没有一条能证明是用户本人说的。投递时刻冻结的 `cardId` 随来源落盘，事后不从「当前正在显示的 Card」反推。
 
-**检索链路**：同一库版本下先过滤 scope、状态、有效期与遗忘 → 本地合并 FTS5 trigram、主题/别名与**短词 LIKE 回退**（FTS命中集合只计算一次，按条目id与版本精确关联） → 顺序为「本地候选 → 可选重排 → 按预算取全文」。FTS5 trigram 的 `MATCH` 不匹配少于三个 Unicode 字符的查询（「咖啡」这类两字词在它下面恒零命中），所以两字中文查询靠短词回退兜住。重排只接收 id 与一行摘要，只能返回候选白名单内的 id；未知 id、坏 JSON、散文一律判无效并回退本地顺序。
+**检索链路**：同一库版本下先过滤 scope、状态、有效期与遗忘 → 本地合并 FTS5 trigram、主题/别名与**短词 LIKE 回退**（FTS命中集合只计算一次，按条目id与版本精确关联），本地顺序按相关度优先、importance／时间／id 依次兜底 → 可选重排 → 按预算取全文。FTS5 trigram 的 `MATCH` 不匹配少于三个 Unicode 字符的查询（「咖啡」这类两字词在它下面恒零命中），所以两字中文查询靠短词回退兜住。一次召回从同一 SQLite 读快照取 user／当前 Card／当前 session 候选、置顶核心与精确目标，并带回该快照的 revision；核心画像（pinned）无关键词也独立读取，不参与重排、不因查询词缺席而消失。adaptive 只在动态候选超过 6 条时调用，最多发送 12 条且受输入预算约束，白名单只含真正发送的 id，合法空数组表示不使用动态记忆；未知 id、坏 JSON、散文一律判无效并回退本地顺序。
 
 **请求落位**：核心画像与动态召回合成一个记忆块，作为**尾随 custom 消息**贴在请求视图末尾（不是 system prompt）：记忆每回合都可能变，留在 system prompt 里会把前缀缓存断在会话正文上游。记忆块带 `eligibleForMemory=false`，因此召回内容不会被下一轮整理当成用户新事实重新提取。额度先按「当前视图已用量」算出真实可用量，再逐条按预算追加；空间不足只丢可选记忆并记录 `budgetDrops`，不截断块内文字。
 
@@ -32,11 +32,13 @@
 
 ## 显式写入与整理
 
-模型写入只经 `memory_change` 工具（`local_mutation` / `exclusive_effect` / `replay: never`，继续由 PermissionKernel 终裁）：工具只接受本轮已提交可信用户事件，宿主绑定来源、目标版本与库版本后直接提交；不存在另起的人工发布确认 UI。只读查询走 `memory_query`（`shared_read`，结果 `preserve`）。
+模型写入只经 `memory_change` 工具（`local_mutation` / `exclusive_effect` / `replay: never`，继续由 PermissionKernel 终裁）：工具只接受本轮已提交可信用户事件，宿主绑定来源、目标版本与库版本后直接提交；不存在另起的人工发布确认 UI。只读查询走 `memory_query`（`shared_read`，结果 `preserve`），并绑定本轮已提交可信用户事件：只允许 user＋该输入冻结的当前 Card＋当前 session，管理接口的跨 scope 浏览不暴露给模型。
 
-自然语言显式写入不等待下一轮 dreaming；成功的判据是 Rust 返回的已提交 revision，而不是模型说「记住了」。本回合写过记忆时，**下一次请求前会重新召回一次** —— 用户刚纠正的事实要在同一回合的下一次请求里生效。
+自然语言显式写入不等待下一轮 dreaming；成功的判据是 Rust 返回的已提交 revision，而不是模型说「记住了」。每个尚未发出的 Provider 请求前都会复核记忆库 revision：与本回合读到的 revision 不一致时整份刷新（跳过重排、按新资格重选），读不到库时本次请求放弃记忆投影（fail closed）—— 用户刚纠正或忘记的事实要在下一次请求里生效，已发出的网络输入无法收回。
 
-dreaming 分三阶段：Light 固定输入范围（来源登记 + 水位）、Review 产出带证据引用的 `prepared` 候选、Publish 在复核来源/版本/抑制后单事务提交。每批来源数与正文长度有界，单条过大整条跳过交给用户挑选片段，不做静默截断；模型来源 id 必须落在本批内，否则整条丢弃。单次 Review 的模型输出上限由 `ai.memory.dreaming.reviewMaxTokens` 配置（默认 1200）——reasoning 模型的 thinking 也计入该预算，用推理模型时应调大，否则批次会以「输出达到长度上限」如实失败。运行入口支持手动整理；显式开启 `idle` 后，启动的空闲调度器按空闲阈值、最小间隔和每日模型预算触发 Review，并在作业完成时自动 Publish。每日用量写入 Rust 作业账本，重启后沿用同一自然日的已用量与租约状态。
+**用户入口与跨窗口同步**：聊天里可对带持久事件身份的本人原话点「记住这条」，Rust 复核唯一可信来源、完整原话与归属后才新增；设置页「记忆」可查看来源原话（按 sourceId 按需解引用，已遗忘来源返回不可用）、切换核心画像标记、查看并继续 Review 作业、预览并应用受管备份，以及纠正与忘记。面板提交后发布记忆 revision 并等待运行窗口确认旧投影已取消才报告同步完成；提交成功但同步失败会如实提示，不假装已生效。槽存活期间 `appendPiSessionCustomEntry` 转交 `HarnessSlot` → `AgentLane`（按 operation 状态进分支或持久 inbox），只有无活槽的空闲会话才直接写 session Branch，避免旁路追加移动盘上 tip 把条目挤成孤立分支。
+
+dreaming 分三阶段：Light 固定输入范围（来源登记 + 水位）、Review 产出带证据引用的 `prepared` 候选、Publish 在复核来源/版本/抑制后单事务提交。每批来源数与正文长度有界，单条过大整条跳过交给用户挑选片段，不做静默截断；模型来源 id 必须落在本批内，否则整条丢弃。单次 Review 的输出预算按模型窗口推导（窗口 × 1/8、32k 封顶，且不越过模型目录声明的上限；reasoning 的 thinking 也计入），再按「窗口 − 估算输入 − 余量」逐批收紧；`ai.memory.dreaming.reviewMaxTokens` 只用于显式压低上限，缺省即自动。触达长度上限的批次仍以「输出达到长度上限」如实失败，不采用不完整结果。Review 使用的模型取辅助模型 `ai.auxModel`（留空跟随聊天模型；与子运行共用同一解析入口）。运行入口支持手动整理；显式开启 `idle` 后，启动的空闲调度器按空闲阈值、最小间隔和每日模型预算触发 Review，并在作业完成时自动 Publish。每日用量写入 Rust 作业账本，重启后沿用同一自然日的已用量与租约状态。
 
 ## 当前文件职责
 
@@ -73,9 +75,9 @@ dreaming 分三阶段：Light 固定输入范围（来源登记 + 水位）、Re
 
 预算由 [context/budget.ts](../../src/services/context/budget.ts) 统一，估算会计入标准化消息和完整工具 schema，不把估算值当成 Provider usage；主请求与一次性文本请求共享输出预留。正常目标在硬输入上限下留 `min(20,000, 16% 窗口)` 余量（极小窗口另有限制）；保留原文尾部和摘要输出各有独立上限。设置中的窗口还受已知模型上限约束。
 
-请求层顺序为 static → dynamic → profile → memory → transcript → ephemeral，稳定静态前缀先放。预算桶比例是 static 12%、tools 8%、dynamic 10%、memory 15%、ephemeral 5%（**transcript 不再有份额** —— 请求视图由 Harness 从已提交条目重建、内核看不到消息 —— 只保留审计行而 `assigned` 按 0 计，因此合计不再是 100%）；profile 计入 dynamic，schema/Skill 清单计入 tools。它们是可借用空闲容量的软配额，不是按百分比强行截字；设置页调整总窗口，比例由预算模块定义。
+请求层顺序为 static → dynamic → profile → memory → transcript → ephemeral，稳定静态前缀先放。分配账目按层记录实际 `requested / used`（有淘汰才写 `dropped`），不再有名义比例或 `assigned`；profile 计入 dynamic，schema/Skill 清单计入 tools。记忆额度由配置的 core／recall token 上限分别约束，追加时还检查真实剩余空间；设置页调整总窗口，不按百分比强行截字。
 
-- L0：请求内缩短大工具结果（保留头尾和 eventId），阈值由 `contextBudget().normalInputTarget × L0_TOOL_RESULT_SHARE`（10%）推导，判定与裁剪都用 token 口径（中文 ≈1 token/字符，头尾各半按 token 切），随窗口单调。**无条件带地址**：不论是否超阈值，每条工具结果在请求视图里都带回读地址（未缩短的正文也附地址尾行；`preserve` 只挡升档处理、不挡地址标注）；无地址的在缩短/清空时用 `L0_NO_ADDRESS_NOTICE` 变体（正文未被改动时不加提示，不写假 eventId），且同一内容只留痕一次（键是「长度:首 32 字符」的内容指纹，有界集合上限 64、FIFO 淘汰最旧）。**阶梯**：级 0 不动 / 级 1 缩短 / 级 2 清空；级 2 的硬前提是有地址（无地址永停级 1）；保护区 `LADDER_PROTECTION_TURNS = 3` 按用户意图轮计（user/`bashExecution` 开轮，toolResult/assistant/custom/compactionSummary 不开轮；不足 3 轮全保护，`turns <= 0` 才关保护区），只挡级 2/级 3、不挡级 1。**回读分页改 token 口径**：`read_session_event` 的页大小与 L0 同源推导（`toolResultTokenBudget(window)`）、随窗口单调，不再是固定 8000 字符常数。级 3（摘要）前的闸门只在 `reason === "threshold"` 且级 1/2 压完装得下时 decline（不花摘要调用）；生产路径上目前由前置守卫（摘要范围为空）先拦截，闸门自身的 decline 分支不可达、不构成用户可见行为。Bash 在返回前可能已截断并生成会淘汰的 spill 文件，不能把这些文件等同于持久会话原文；见[工具输出边界](tool-system.md#文件命令与取消)。
+- L0：请求内缩短大工具结果（保留头尾和 eventId），阈值由 `contextBudget().normalInputTarget × L0_TOOL_RESULT_CAP`（10%）推导，判定与裁剪都用 token 口径（中文 ≈1 token/字符，头尾各半按 token 切），随窗口单调。**无条件带地址**：不论是否超阈值，每条工具结果在请求视图里都带回读地址（未缩短的正文也附地址尾行；`preserve` 只挡升档处理、不挡地址标注）；无地址的在缩短/清空时用 `L0_NO_ADDRESS_NOTICE` 变体（正文未被改动时不加提示，不写假 eventId），且同一内容只留痕一次（键是「长度:首 32 字符」的内容指纹，有界集合上限 64、FIFO 淘汰最旧）。**阶梯**：级 0 不动 / 级 1 缩短 / 级 2 清空；级 2 的硬前提是有地址（无地址永停级 1）；保护区 `LADDER_PROTECTION_TURNS = 3` 按用户意图轮计（user/`bashExecution` 开轮，toolResult/assistant/custom/compactionSummary 不开轮；不足 3 轮全保护，`turns <= 0` 才关保护区），只挡级 2/级 3、不挡级 1。**回读分页改 token 口径**：`read_session_event` 的页大小与 L0 同源推导（`toolResultTokenBudget(window)`）、随窗口单调，不再是固定 8000 字符常数。级 3（摘要）前的闸门只在 `reason === "threshold"` 且级 1/2 压完装得下时 decline（不花摘要调用）；生产路径上目前由前置守卫（摘要范围为空）先拦截，闸门自身的 decline 分支不可达、不构成用户可见行为。Bash 在返回前可能已截断并生成会淘汰的 spill 文件，不能把这些文件等同于持久会话原文；见[工具输出边界](tool-system.md#文件命令与取消)。
 - L1：整段摘要。切分范围不由本仓决定：「最旧的连续完整用户意图轮、工具批次不拆、保留窗口」都是上游 `findCutPoint` 的执行结果（`@earendil-works/pi-agent-core` 的 `harness/compaction/compaction.js`）；宿主只提供摘要内核（`before_compaction`，[compactor.ts](../../src/services/engine/compactor.ts)）与提交后的可解释结果。切分回合时上游把当前未完成回合的前半段单列（`turnPrefixMessages`），宿主用 `SPLIT_TURN_INSTRUCTION` 另段摘要。素材超硬上限时切成 K 片，逐片串行调摘要、以 `previousSummary` 迭代合并，最终一次提交一份摘要（提交仍只有一次）；片数上限 `MAX_COMPACTION_SLICES = 8`，超上限或存在不可再分且自身超硬上限的片段则 `CompactionOverflowError`（`code = "COMPACTION_MATERIAL_OVER_CAP"`）明确失败——零请求、零提交，不存在静默丢弃。
 - L2：在无法再安全压缩时保留原文；如果核心输入仍超过硬上限，先走 Harness 的一次性溢出恢复（压缩后重试一次，见上），恢复用尽或没有可摘要范围时才返回可解释的上下文不足错误，不用占位文案伪装压缩成功。
 
@@ -85,12 +87,12 @@ dreaming 分三阶段：Light 固定输入范围（来源登记 + 水位）、Re
 
 回合冻结与三阶段 PromptSnapshot 由[运行时契约](runtime-contract.md#快照与人格状态)维护（审计条目的入队与 `flushAudit()` 的落盘边界同见该节）。摘要调用不计为正常聊天回复，但摘要请求同样进快照体系：有会话归属的一次性调用写 payload 与 usage 两档快照（`one-shot:<purpose>` 身份、`request.step = "compaction"`），压缩成功后另写一条 `deskpet.prompt_rewrite`（`compaction_summary`，只含输入/输出 hash、运行来源与压缩条目地址，压缩正文与素材都不落盘）。
 
-`V1RTUAL.md` 是人工指令，与摘要分别建块；用户画像不再有独立文件，它就是记忆库里置顶的条目。应用启动、每五轮与 session 结束都不隐式发起记忆整理：整理只能由记忆面板手动触发（或在用户显式开启 idle 整理后按空闲条件运行），作业完成后自动提交合格候选，失败/冲突/取消保持明确终态。
+`V1RTUAL.md` 是人工指令，与摘要分别建块：有 `## 指令` 小节时只取该节内容，没有则整份正文都算指令（手写文件不留标题也不能静默丢）；用户画像不再有独立文件，它就是记忆库里置顶的条目。应用启动、每五轮与 session 结束都不隐式发起记忆整理：整理只能由记忆面板手动触发（或在用户显式开启 idle 整理后按空闲条件运行），作业完成后自动提交合格候选，失败/冲突/取消保持明确终态。
 
 当前实现入口为 [harness-slot.ts](../../src/services/engine/harness/harness-slot.ts)（运行与压缩调度）、[compactor.ts](../../src/services/engine/compactor.ts)（摘要内核）、[session/repo.ts](../../src/services/session/repo.ts)（会话仓库）、[memory/](../../src/services/agent/memory/)（召回端口、来源收集、dreaming）、[instructions/](../../src/services/context/instructions/)（V1RTUAL）、[src-tauri/src/memory/](../../src-tauri/src/memory/)（SQLite 存储与治理命令）、[tool-output.ts](../../src/services/context/tool-output.ts)（L0 工具结果投影与回读地址）与 [delivery.ts](../../src/services/engine/harness/delivery.ts)（投递证据与上下文 epoch）；计划 checkpoint 与恢复扫描入口为 [checkpoint-store.ts](../../src/services/engine/plan/checkpoint-store.ts) 与 [runner.ts](../../src/services/agent/runner.ts) 的 `recoverPlanCheckpoints()`，恢复产出的继续/丢弃消费者 `resumePlan`/`discardPlan` 由 [runtime.ts](../../src/services/engine/harness/runtime.ts) 消费。
 
 ## 质量与资源证据
 
-记忆质量跑批、独立审阅门禁与 release 存储/debug IPC 性能脚本已接入[测试入口](../../test/README.md#trace记忆质量与性能门禁)。质量数据集目前是待人工审计的合成标注草案；实际注入证据取请求预算裁剪后的 rendered IDs，提取与回答分开评分，无记忆/本地/always/adaptive/gold evidence 逐 cell 重建库并配对。采集完成不等于质量通过，缺审阅与缓存计数不能补成成功或零成本。
+记忆质量以外部权威基准为**主口径**（memory-bench：LongMemEval／MemoryBank cn／LoCoMo，按分层节奏运行，报告是质量证据）；自建 80 题是**兜底冒烟与治理语义回归**，目前仍是待人工审计的合成标注草案。跑批、独立审阅门禁与 release 存储/debug IPC 性能脚本已接入[测试入口](../../test/README.md#trace记忆质量与性能门禁)。实际注入证据取请求预算裁剪后的 rendered IDs，提取与回答分开评分，无记忆/本地/always/adaptive/gold evidence 逐 cell 重建库并配对。采集完成不等于质量通过，缺审阅与缓存计数不能补成成功或零成本。
 
-完整性/治理零失败、语义质量、重排收益与资源门槛分别判定，结果和未验证边界只在[未完成工作总表](../plans/active/未完成工作与已知缺口.md#3-长期记忆-b-方案已实施剩余验证边界)维护。当前尚不能宣称 adaptive 已带来收益；真实设置窗口、Windows 和 release UI/IPC 证据也不能由 Node 单测替代。
+完整性/治理零失败、语义质量、重排收益与资源门槛分别判定，结果和未验证边界只在[未完成工作总表](../plans/active/未完成工作与已知缺口.md#3-长期记忆-b-方案主路径已实施仍有验收缺口)维护。当前尚不能宣称 adaptive 已带来收益；真实设置窗口、Windows 和 release UI/IPC 证据也不能由 Node 单测替代。

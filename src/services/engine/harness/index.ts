@@ -53,9 +53,11 @@ export { RuntimeDataStreamFilter } from "./stream-text"
 
 export {
   createHarnessModels,
+  getPiModel,
   getPiRuntimeProviderOverride,
   installPiRuntimeProviderForTest,
   resetPiRuntimeProviderForTest,
+  resolvePiAuxModel,
   resolvePiTurnModel,
   toPiReasoningLevel,
 } from "./model-gateway"
@@ -93,7 +95,9 @@ export { toAgentHarnessTools } from "@/services/tool"
 export type { HarnessToolRun } from "@/services/tool"
 
 export {
-  MAX_PROVIDER_RESPONSE_BYTES,
+  MAX_PROVIDER_RESPONSE_BASE_BYTES,
+  PROVIDER_RESPONSE_BYTES_PER_TOKEN,
+  providerResponseByteCap,
   PROVIDER_TIMEOUT_MS,
   capProviderResponseBody,
   guardProviderFetch,

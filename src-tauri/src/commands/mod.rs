@@ -5,20 +5,24 @@
 pub mod app_lifecycle;
 pub mod bash_policy;
 pub mod cursor;
+pub mod chat_images;
 pub mod font_cmd;
 pub mod logging;
 pub mod mcp_bridge;
 pub mod memory_cmd;
 pub mod monitor_ctl;
+pub mod observation_cmd;
 pub mod personality_fs_cmd;
 pub mod profile_cmd;
 pub mod resources_cmd;
+pub mod screenshot_cmd;
 pub mod session_fs;
 pub mod skill_cmd;
 pub mod tool_exec;
 pub mod tool_permit;
 
 pub use app_lifecycle::app_restart;
+pub use chat_images::{pick_chat_images, validate_chat_images};
 pub use cursor::{compute_popup_position, get_cursor_position, spawn_cursor_tracker};
 pub use font_cmd::list_system_fonts;
 pub use logging::{log_messages, open_devtools, report_frontend_error, set_log_config};

@@ -5,8 +5,8 @@ const log = createLogger("ToolOutput")
 
 /** Request-only L0 projection. The stored message remains complete and addressable by event id. */
 
-/** 单条工具结果在请求视图里允许占用的份额（normalInputTarget 的比例）。 */
-export const L0_TOOL_RESULT_SHARE = .10
+/** 单条工具结果进入 L0 投影的 token 上限，按 normalInputTarget 推导。 */
+export const L0_TOOL_RESULT_CAP = .10
 
 /**
  * 阶梯保护区轮数：最近 N 个用户意图轮内的工具结果**只挡级 2（清空）/级 3（摘要）**，
@@ -46,7 +46,7 @@ const DEFAULT_READ_TOOL_NAME = "read_session_event"
  * 2500 tokens）——中文结果的实际放行量因此约是阈值的 4 倍，窗口也完全不参与推导。
  */
 export function toolResultTokenBudget(window: number): number {
-  return Math.max(1, Math.floor(contextBudget(window).normalInputTarget * L0_TOOL_RESULT_SHARE))
+  return Math.max(1, Math.floor(contextBudget(window).normalInputTarget * L0_TOOL_RESULT_CAP))
 }
 
 /**

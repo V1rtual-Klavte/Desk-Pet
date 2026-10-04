@@ -57,21 +57,8 @@ export interface PiSessionRepoOptions {
 }
 
 class DataRootSessionRepo implements PiSessionRepo {
-  constructor(private readonly repo: JsonlSessionRepo, readonly sessionsRoot: string, readonly cwd: string) {}
-
-  /**
-   * `JsonlSessionRepo` 实际持有的那个 `FileSystem`，也就是 W1 装饰后的实例（O-9 的帧缓冲只包在
-   * 它外面）。上游把该字段声明为 `private`（`jsonl/repo.d.ts:6`），但 TS 的 private 只是编译期
-   * 可见性：npm 版 0.85.1（`package.json` 精确锁版）的产物里它是普通实例字段，构造函数里
-   * `this.fileSystem = options.fileSystem`。
-   *
-   * 为什么不另存一份引用（例如加构造参数）：那样就有了同一个实例的两个定义点 —— 将来任一处
-   * 被换掉都不会有人发现，而折叠**必须**用被装饰的那一个（未装饰的读写会让折叠重写与缓冲里的
-   * 帧互相盖掉）。
-   */
-  private get repoFileSystem(): FileSystem {
-    return (this.repo as unknown as { readonly fileSystem: FileSystem }).fileSystem
-  }
+  constructor(private readonly repo: JsonlSessionRepo, private readonly fileSystem: FileSystem,
+    readonly sessionsRoot: string, readonly cwd: string) {}
 
   create(options: SessionCreateOptions, context: Context): Promise<Session<JsonlSessionMetadata>> {
     return this.repo.create({ ...options, cwd: this.cwd }, context)
@@ -80,12 +67,21 @@ class DataRootSessionRepo implements PiSessionRepo {
   /**
    * 按需折叠一个会话文件（唯一入口：`open` 前的兜底与 `releasePiSession` 的回收主路径共用）。
    *
-   * 全程经 `repoFileSystem`（W1 装饰后的实例）：同路径的 `readTextFile` / `writeFile` /
+   * 全程经构造时注入的同一个 `fileSystem`（W1 装饰后的实例）：同路径的 `readTextFile` / `writeFile` /
    * `renameFile` 都会先 flush 该路径的帧缓冲，因此「读全文 + 原子重写」天然发生在帧已落盘之后。
    * 失败一律以 `skipped` 结论返回（`foldSessionFile` 的契约），不抛错、不影响会话功能。
    */
-  foldSession(metadata: JsonlSessionMetadata, context: Context): Promise<FoldOutcome> {
-    return foldSessionFile(this.repoFileSystem, metadata.path, context)
+  async foldSession(metadata: JsonlSessionMetadata, context: Context): Promise<FoldOutcome> {
+    return this.foldSafely(metadata, context)
+  }
+
+  private async foldSafely(metadata: JsonlSessionMetadata, context: Context): Promise<FoldOutcome> {
+    try {
+      return await foldSessionFile(this.fileSystem, metadata.path, context)
+    } catch (error) {
+      log.warn("会话折叠失败，按原文件继续:", metadata.path, formatError(error))
+      return { kind: "skipped", reason: "read-failed" }
+    }
   }
 
   async open(metadata: JsonlSessionMetadata, context: Context): Promise<Session<JsonlSessionMetadata>> {
@@ -102,13 +98,13 @@ class DataRootSessionRepo implements PiSessionRepo {
    */
   private async maybeFoldBeforeOpen(metadata: JsonlSessionMetadata, context: Context): Promise<void> {
     try {
-      const info = await this.repoFileSystem.fileInfo(metadata.path, context)
+      const info = await this.fileSystem.fileInfo(metadata.path, context)
       // stat 失败（文件不存在 / IPC 错误）不在这里报：紧接着的 this.repo.open 会以同一条路径
       // 失败并把根因抛给调用方，留痕点就是 open 的失败路径，折叠不重复报一次。
       if (!info.ok || info.value.size <= FOLD_POLICY.minFileBytes) return
-      await foldSessionFile(this.repoFileSystem, metadata.path, context)
+      await this.foldSafely(metadata, context)
     } catch (error) {
-      // 折叠是优化，不得成为 open 的前置条件；根因留痕在 foldSessionFile（logger "SessionFold"）。
+      // 折叠是优化，不得成为 open 的前置条件；foldSafely 留折叠错误，stat 的异常在此处留痕。
       // FileSystem 契约要求方法不 throw，但折叠链路上还有解析、哈希、crypto 等本仓代码。
       log.warn("打开前折叠失败，按原文件继续打开:", metadata.path, formatError(error))
     }
@@ -161,5 +157,5 @@ export async function createPiSessionRepo(options: PiSessionRepoOptions = {}): P
   const fileSystem = options.frameThrottle === false ? base : new FrameBufferingFileSystem(base)
   const sessionsRoot = options.sessionsRoot ?? (await runtimePath("sessions"))
   log.info("JsonlSessionRepo 就绪:", sessionsRoot)
-  return new DataRootSessionRepo(new JsonlSessionRepo({ fileSystem, sessionsRoot }), sessionsRoot, cwd)
+  return new DataRootSessionRepo(new JsonlSessionRepo({ fileSystem, sessionsRoot }), fileSystem, sessionsRoot, cwd)
 }

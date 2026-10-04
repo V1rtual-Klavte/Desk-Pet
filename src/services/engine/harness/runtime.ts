@@ -10,8 +10,9 @@ import type { ActiveMessageRequest, Message, ProactiveOwner, ProviderReservation
 import type { SlashSkillAdmission } from "@/services/engine/slash"
 import type { CompactionAuditSink, ContextAllocation, ContextBlock, IngressEnvelope, InputSourceMark, PlanState, PlanStepRecord, PromptCapabilityContext, PromptPlanContext, PromptRequestContext, PromptRequestParams, PromptSnapshot, PromptTokenDrift, PromptTransform } from "@/services/engine/runtime"
 import { createMessageId } from "@/services/agent/types"
-import { MemoryService, recallMemory } from "@/services/agent/memory"
-import type { MemoryProjection } from "@/services/agent/memory"
+import { MemoryService, recallMemory, memoryStatus, subscribeMemoryRevision } from "@/services/agent/memory"
+import type { MemoryProjection, MemoryRecallRequest } from "@/services/agent/memory"
+import type { ProactiveTurnContext } from "@/services/proactive"
 import { planCheckpointStore } from "@/services/engine/plan/checkpoint-store"
 import type { StructuredSummary } from "@/services/engine/compaction/structured-summary"
 import { getV1rtualInstructionsSync } from "@/services/context/instructions"
@@ -37,15 +38,21 @@ import { getActiveSessionId, pushMessageFor } from "@/services/session/store"
 import { getSessionCreatedAt, isAssistantEntryVisible, pushSystemMessage } from "@/services/session"
 import {
   SESSION_TRANSCRIPT_TOOL, toToolDeclaration, createTranscriptTool,
+  createEnableToolsTool, defaultActiveToolNames,
   findRetainedToolCall, listAll, preservedToolNames, retainedToolNames, toolPolicyHash,
 } from "@/services/tool"
 import type { HarnessToolRun, ToolDef } from "@/services/tool"
-import { loopConfig, memoryConfig, planConfig } from "@/services/config"
+import { readScreenshotToolDetails, SCREENSHOT_TOOL_NAME } from "@/services/tool/local/screenshot-details"
+import { humanizerConfig, loopConfig, memoryConfig, planConfig, silentAccessConfig } from "@/services/config"
+import { getUnderstandingPromptBlock } from "@/services/observation"
 import { emit } from "@tauri-apps/api/event"
-import { resolvePiTurnModel } from "./model-gateway"
+import { resolvePiAuxModel, resolvePiTurnModel } from "./model-gateway"
 import type { PiModel } from "./model-gateway"
 import { PROVIDER_TIMEOUT_MS } from "./net-guard"
 import { RuntimeDataStreamFilter } from "./stream-text"
+import { hydrateImageMessages } from "@/services/images"
+import { humanizerSilenceGuard, setFirstRevealHandler, transformHumanizerText } from "@/services/humanizer"
+import type { HumanizerFlow, HumanizedText } from "@/services/humanizer"
 import { ladderGate, summarizeCompaction } from "../compactor"
 import type { LadderGateInput } from "../compactor"
 import { createHarnessRunState, harnessSlots, HarnessSlot } from "./harness-slot"
@@ -72,12 +79,6 @@ import { redactText, sha256Text, stableSerialize } from "@/services/engine/runti
 const log = createLogger("PiRuntime")
 
 /**
- * 记忆写入工具名：本回合写过记忆时，下一次请求前要重新召回一次（同回合纠正即刻生效）。
- * 名字与 `local-extra/memory.ts` 注册的工具同名；两处只共享这一个常量来源。
- */
-const MEMORY_CHANGE_TOOL_NAME = "memory_change"
-
-/**
  * 向正在执行的回合投递新输入，先落盘（lane 持久 inbox）再影响模型。
  *
  * Harness 的语义是「本轮边界注入」，不是立即中止 —— 当前批次里已经开始的工具会照常跑完，
@@ -88,7 +89,7 @@ const MEMORY_CHANGE_TOOL_NAME = "memory_change"
 export async function deliverActiveTurn(
   sessionId: string,
   text: string,
-  identity: { eventId: string; mark?: InputSourceMark },
+  identity: { eventId: string; mark?: InputSourceMark; imagePaths?: readonly string[] },
   kind?: "steer" | "followUp" | "nextRun",
 ): Promise<HarnessDeliveryReceipt | undefined> {
   // §4.2 保留：没有运行槽 = 没有可投递的回合，`undefined` 是如实答复（调用方据此收起/改走正常回合），
@@ -180,7 +181,7 @@ interface PiAgentTurnBase {
   unansweredCount: number
   isActiveMessage?: boolean
   activeRequest?: ActiveMessageRequest
-  turnContext?: { text: string; taskRefs: Array<{ taskId: string; memoryItemId?: string; expectedVersion: number }> }
+  turnContext?: ProactiveTurnContext
   runGeneration?: number
   turnId?: string
 }
@@ -229,10 +230,21 @@ export interface TurnFailure {
 
 export interface PiAgentTurnOutput {
   reply: string
+  /** Multiple display bubbles derived from one committed assistant entry. */
+  replyParts?: string[]
+  /** True when the committed assistant entry intentionally contains no visible text. */
+  silent?: boolean
+  /** Runtime generation paired with any transient reveal schedule. */
+  runGeneration?: number
+  generationStartedAt?: number
+  committedAssistantEntryId?: string
+  /** 本回合提交的助手条目关联的截图路径（`deskpetImagePaths`）；宿主据此推实时界面消息。 */
+  userImagePaths?: string[]
+  humanized?: boolean
   toolCallHistory: { toolName: string; status: string; personalityMsg?: string }[]
   retriesUsed: number
   runtimeData?: { variables: Record<string, string> }
-  activeCommit?: { operationId: string; triggerEntryId: string; assistantEntryId: string; text: string; usage?: { inputTokens: number; outputTokens: number; cacheRead?: number; cacheWrite?: number } }
+  activeCommit?: { operationId: string; triggerEntryId: string; assistantEntryId: string; text: string; timestamp: number; parts?: string[]; silent?: boolean; usage?: { inputTokens: number; outputTokens: number; cacheRead?: number; cacheWrite?: number } }
   /** Actual provider usage accrued before a failure; absence means unknown, never an estimate. */
   usage?: { inputTokens: number; outputTokens: number; cacheRead?: number; cacheWrite?: number }
   /** 仅在重试耗尽、回复是兜底文案时出现 */
@@ -359,6 +371,11 @@ interface TurnKernel {
   request: PromptRequestContext
   /** before_payload 从 Provider payload 取到的请求参数（脱敏快照用）。 */
   requestParams?: PromptRequestParams
+  /**
+   * before_payload 从 Provider payload 取到的当次工具名（DebugBar 的「本次请求工具」）。
+   * 激活面收窄与回合内渐进披露都会改变实际工具面，以 payload 为准；取不到时不写。
+   */
+  requestToolNames?: string[]
   /** Provider payload 的稳定 hash；由 before_payload 采集后写进快照。 */
   payloadHash?: string
   /** 计划步骤归属（子代理按步骤传）。 */
@@ -369,6 +386,10 @@ interface TurnKernel {
   policy: PermissionPolicySnapshot
   /** 槽代际：区分「同一会话被释放重建」前后的请求。 */
   generation: number
+  humanizerEnabled?: boolean
+  taskReply?: boolean
+  silentRejectedReply?: string
+  generationStartedAt?: number
   /** 上游 before_request 的当次 step/attempt；由它回答「这次 payload 属于哪次请求」。 */
   currentRequest?: { step: PromptRequestContext["step"]; attempt: number }
   /** 采集一档请求快照；带 usage 的一档同时给出估算偏差（provider_usage 的对账值）。 */
@@ -383,9 +404,10 @@ interface TurnKernel {
    * afterResponse 会先剥离再提交，事件里拿到的最终助手消息已经没有标签，
    * 结算时直接解析会丢掉变量写入，所以必须在这里留底。
    */
-  recordSettledReply: (raw: string, stripped: string) => void
+  recordSettledReply: (raw: string, stripped: string, humanized?: HumanizedText) => void
   /** 取回与剥离后正文配对的原始正文；没有配对时原样返回。 */
   rawTextForSettledReply: (stripped: string) => string
+  humanizedForSettledReply: (stripped: string) => HumanizedText | undefined
 }
 
 interface TurnKernelOptions {
@@ -411,6 +433,11 @@ interface TurnKernelOptions {
   plan?: PromptPlanContext
   /** 槽代际（调用方在 preflight 冻结）。 */
   generation?: number
+  /** Static style instruction and output transform are frozen together per run. */
+  humanizerEnabled?: boolean
+  /** Plan-produced context makes the final answer task-like even without local tool use. */
+  taskReply?: boolean
+  silentRejectedReply?: string
   traceContext?: RuntimeTraceContext
 }
 
@@ -422,6 +449,7 @@ function createTurnKernel(options: TurnKernelOptions): TurnKernel {
   const latestMessages: AgentMessage[] = []
   const snapshotTasks: Promise<void>[] = []
   let settledReply: { raw: string; stripped: string } | undefined
+  let settledHumanized: HumanizedText | undefined
   const kernel: TurnKernel = {
     ...options,
     blocks: options.blocks ?? [],
@@ -442,8 +470,15 @@ function createTurnKernel(options: TurnKernelOptions): TurnKernel {
       toolDecisions: [],
     },
     generation: options.generation ?? 0,
-    recordSettledReply: (raw, stripped) => { settledReply = { raw, stripped } },
+    humanizerEnabled: options.humanizerEnabled ?? false,
+    taskReply: options.taskReply ?? false,
+    silentRejectedReply: options.silentRejectedReply,
+    recordSettledReply: (raw, stripped, humanized) => {
+      settledReply = { raw, stripped }
+      settledHumanized = humanized
+    },
     rawTextForSettledReply: stripped => settledReply?.stripped === stripped ? settledReply.raw : stripped,
+    humanizedForSettledReply: stripped => settledReply?.stripped === stripped ? settledHumanized : undefined,
     captureSnapshot: async (captureStage, agentMessages, llmMessages, usage) => {
       const snapshotId = `${traceContext.runId}:${captureStage}:${++kernel.snapshotSequence}`
       // 工具轮会追加消息；用准确请求投影刷新分配，不计入 Pi usage/时间戳。
@@ -710,13 +745,19 @@ function createCompactionHook(options: {
   // X-4 的「没有兜底出口」由类型保证，不靠注释维持。
   return async ({ reason, preparation, signal, runId }): Promise<{ decline: true } | { compaction: CompactResult }> => {
     try {
+      // Keep the JSONL range intact, but omit empty completed silence rows from the summary model's view.
+      const summaryPreparation = {
+        ...preparation,
+        messagesToSummarize: preparation.messagesToSummarize.filter(message => !isCompletedEmptyAssistant(message)),
+        turnPrefixMessages: preparation.turnPrefixMessages.filter(message => !isCompletedEmptyAssistant(message)),
+      }
       // 结局①（decline）：全量都在保留窗口内时没有可安全摘要的覆盖范围，让 Harness 原样收尾。
-      if (!preparation.messagesToSummarize.length && !preparation.turnPrefixMessages.length) return { decline: true }
+      if (!summaryPreparation.messagesToSummarize.length && !summaryPreparation.turnPrefixMessages.length) return { decline: true }
       // historyCompaction=retain 的调用配对必须保留原文：连续完整轮下不能把覆盖边界推进越过它，
       // 宁可 decline（由宿主预算守卫报告上下文不足），也不默默丢掉未覆盖历史。
       // 当前生产路径不可达：无工具声明 `retain`，由测试场景驱动（`memory-retain-guard`）。
-      const retainedTool = findRetainedToolCall(preparation.messagesToSummarize, retained)
-        ?? findRetainedToolCall(preparation.turnPrefixMessages, retained)
+      const retainedTool = findRetainedToolCall(summaryPreparation.messagesToSummarize, retained)
+        ?? findRetainedToolCall(summaryPreparation.turnPrefixMessages, retained)
       if (retainedTool) {
         log.warn("摘要范围覆盖了必须保留原文的工具调用，本轮不压缩:", retainedTool)
         // 结局②（decline）：策略性不压缩，不是内核失败 —— 不写 audit.failure，避免污染失败面。
@@ -734,7 +775,7 @@ function createCompactionHook(options: {
         // 报 failed、并落一条误导性的 deskpet.compaction_declined。
         try {
           const refs = await readAddressRefs(options.addressRefs, "级 3 闸门")
-          const gate = ladderGate(options.buildGate(compactionGateView(preparation), refs))
+          const gate = ladderGate(options.buildGate(compactionGateView(summaryPreparation), refs))
           if (gate.fits) {
             log.info("级 1/2 投影后请求视图装得下，本轮不做摘要:", { tokens: gate.tokens, target: gate.target, level: gate.level })
             return { decline: true }
@@ -745,9 +786,9 @@ function createCompactionHook(options: {
         }
       }
       const outcome = await summarizeCompaction({
-        messages: preparation.messagesToSummarize,
-        turnPrefixMessages: preparation.turnPrefixMessages,
-        previousSummary: preparation.previousSummary,
+        messages: summaryPreparation.messagesToSummarize,
+        turnPrefixMessages: summaryPreparation.turnPrefixMessages,
+        previousSummary: summaryPreparation.previousSummary,
         model: options.model,
         signal,
         preserveToolNames: preserved,
@@ -772,8 +813,8 @@ function createCompactionHook(options: {
       return {
         compaction: {
           summary: outcome.text,
-          retainedTail: preparation.retainedTail,
-          tokensBefore: preparation.tokensBefore,
+          retainedTail: summaryPreparation.retainedTail,
+          tokensBefore: summaryPreparation.tokensBefore,
           usage: outcome.usage,
         },
       }
@@ -825,6 +866,24 @@ function extractRequestParams(payload: unknown): PromptRequestParams {
 }
 
 /**
+ * 从 Provider payload 取当次下发的工具名（DebugBar 的「本次请求工具」）。
+ * 兼容 OpenAI-compatible（`{type:"function",function:{name}}`）与 Anthropic（`{name}`）两种形态；
+ * 取不到工具数组时返回 undefined，由调用方退回冻结工具面，不写假值。
+ */
+function extractToolNames(payload: unknown): string[] | undefined {
+  if (!payload || typeof payload !== "object") return undefined
+  const tools = (payload as { tools?: unknown }).tools
+  if (!Array.isArray(tools)) return undefined
+  const names = tools.map(raw => {
+    if (!raw || typeof raw !== "object") return undefined
+    const record = raw as { name?: unknown; function?: { name?: unknown } }
+    if (typeof record.name === "string") return record.name
+    return typeof record.function?.name === "string" ? record.function.name : undefined
+  }).filter((name): name is string => name !== undefined)
+  return names.length === tools.length ? names : undefined
+}
+
+/**
  * 请求视图构建 + 硬预算判定（主回合与手动压缩的续跑共用同一份实现）。
  *
  * 构建分两步，顺序不可换：
@@ -852,6 +911,31 @@ interface RenderedMemoryRecall {
   sourceIds: string[]
   droppedIds: string[]
   usedTokens: number
+}
+
+/** Completed empty assistant rows are durable silence evidence, not Provider conversation turns. */
+function isCompletedEmptyAssistant(message: AgentMessage): boolean {
+  if (message.role !== "assistant" || (message.stopReason !== "stop" && message.stopReason !== "length")) return false
+  const hasVisibleText = message.content.some(part => part.type === "text" && part.text.trim().length > 0)
+  const hasToolCall = message.content.some(part => part.type === "toolCall")
+  return !hasVisibleText && !hasToolCall
+}
+
+/** Rebuild the silence guard from committed native assistant entries; no counter is persisted separately. */
+function committedSilentStreak(messages: readonly AgentMessage[]): number {
+  let count = 0
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    const message = messages[index]!
+    if (message.role !== "assistant") continue
+    if (message.stopReason !== "stop" && message.stopReason !== "length") continue
+    if (message.content.some(part => part.type === "toolCall")) continue
+    const text = contentText(message.content).trim()
+    const markedSilent = (message as typeof message & { deskpetSilent?: boolean }).deskpetSilent === true
+    if (markedSilent && !text) { count++; continue }
+    // Any other completed plain assistant response breaks a consecutive-silence run.
+    break
+  }
+  return count
 }
 
 function renderMemoryRecall(projections: MemoryProjection[], tokenBudget: number): RenderedMemoryRecall {
@@ -900,13 +984,22 @@ function createRequestViewHook(args: {
   memory?: { tokenBudget: number; recall: () => Promise<MemoryProjection[]>; traceContext: RuntimeTraceContext }
   activeAdmission?: { owner: ProactiveOwner; beforeGenerate: NonNullable<ActiveMessageRequest["beforeGenerate"]>; maxOutputTokens: number }
   providerAdmission?: { beforeProvider: (reservation: ProviderReservation) => Promise<boolean>; maxOutputTokens: number }
+  supportsImages?: boolean
+  understanding?: { text: string; sourceId: string; revision: number }
+  silenceGuardSessionId?: string
 }): NonNullable<HarnessRunHooks["transformContext"]> {
   const tools = [...args.toolsByName.values()]
   let activeAdmissionChecked = false
-  return async ({ messages, systemPrompt }) => {
+  return async ({ messages, systemPrompt, signal }) => {
+    if (args.silenceGuardSessionId) {
+      humanizerSilenceGuard.seed(args.silenceGuardSessionId, committedSilentStreak(messages))
+    }
     // 注记逐请求重算而不是回合级冻结：它承载的就是「当前时间」，取当次更准；且它贴在末尾，
     // 同回合内多次请求之间的分钟漂移不损失任何缓存。
-    let prepared = [...messages, createTurnNoteMessage(currentTimeNote())]
+    // Hydrate path metadata only in the final request projection. The original lane entry
+    // remains path-only, while budget estimation, snapshots and Provider payload see images.
+    const conversationMessages = messages.filter(message => !isCompletedEmptyAssistant(message))
+    let prepared = [...await hydrateImageMessages(conversationMessages, { signal, supportsImages: args.supportsImages }), createTurnNoteMessage(currentTimeNote())]
     let used: number
     try {
       if (args.projectToolResults) {
@@ -930,6 +1023,18 @@ function createRequestViewHook(args: {
       } else {
         // 子代理路径不投影工具结果（`projectToolResults: false`）：读数就是原始视图的估算。
         used = estimateRequestTokens(systemPrompt, prepared, tools)
+      }
+      if (args.understanding?.text) {
+        const note = prepared[prepared.length - 1]
+        const understanding = createUnderstandingMessage(args.understanding)
+        const candidate = [...prepared.slice(0, -1), understanding, note]
+        const candidateTokens = estimateRequestTokens(systemPrompt, candidate, tools)
+        // Observation is a whole optional block: it is omitted when the normal input target
+        // has no room, and never clipped or converted into a system instruction.
+        if (candidateTokens <= contextBudget(args.model.contextWindow).normalInputTarget) {
+          prepared = candidate
+          used = candidateTokens
+        }
       }
       // 记忆召回块：先按「当前视图已用量」算出这块真正能占的额度，再逐条按预算追加。
       // 顺序必须在阶梯投影之后、快照之前 —— 快照要看到模型真正收到的视图。
@@ -1022,22 +1127,104 @@ function createRequestViewHook(args: {
 
 /** RUNTIME_DATA 剥离（主回合与手动压缩的续跑共用）：条目是真相源，但协议块不进后续请求与展示。 */
 function createRuntimeDataStripHook(args: {
-  recordSettledReply?: (raw: string, stripped: string) => void
+  recordSettledReply?: (raw: string, stripped: string, humanized?: HumanizedText) => void
+  humanizer?: { enabled: boolean; sessionId?: string; fallbackReply: string; flow: () => HumanizerFlow; traceContext?: RuntimeTraceContext }
 }): NonNullable<HarnessRunHooks["afterResponse"]> {
   return (message) => {
     // 剥离前先留底原始正文：事件里的最终助手消息已经没有标签，结算时的变量写入要靠它。
     const stripped = stripRuntimeData(message)
-    args.recordSettledReply?.(contentText(message.content), contentText(stripped.content))
-    return stripped
+    const raw = contentText(message.content)
+    const visibleText = contentText(stripped.content)
+    if (!args.humanizer?.enabled || message.content.some(part => part.type === "toolCall")) {
+      args.recordSettledReply?.(raw, visibleText)
+      return stripped
+    }
+
+    try {
+      const transformed = transformHumanizerText(visibleText, args.humanizer.flow())
+      const resolved = args.humanizer.sessionId
+        ? humanizerSilenceGuard.resolve(args.humanizer.sessionId, transformed, args.humanizer.fallbackReply)
+        : { silent: transformed.silent, text: transformed.text, parts: transformed.parts, rejected: false }
+      const safeParts = resolved.parts.some(part => part.trim().length > 0) ? resolved.parts
+        : resolved.silent ? [] : [args.humanizer.fallbackReply]
+      const finalResult: HumanizedText = {
+        text: safeParts.join("\n"),
+        parts: safeParts,
+        silent: resolved.silent,
+        split: transformed.split,
+      }
+      if (args.humanizer.traceContext) publishRuntimeTrace(args.humanizer.traceContext, "humanizer_transform", () => ({
+        flow: args.humanizer?.flow() ?? "casual",
+        status: resolved.rejected ? "silent_rejected" : resolved.silent ? "silent" : "transformed",
+        split: transformed.split,
+        silent: resolved.silent,
+        partCount: safeParts.length,
+      }))
+      let inserted = false
+      const content = stripped.content.flatMap<typeof stripped.content[number]>(part => {
+        if (part.type !== "text") return [part]
+        if (inserted) return []
+        inserted = true
+        return safeParts.map(text => ({ type: "text" as const, text }))
+      })
+      if (!inserted) content.push(...safeParts.map(text => ({ type: "text" as const, text })))
+      const output = {
+        ...stripped,
+        content,
+        ...(resolved.silent ? { deskpetSilent: true } : {}),
+      } as typeof stripped
+      args.recordSettledReply?.(raw, contentText(output.content), finalResult)
+      return output
+    } catch (error) {
+      // Keep the entire stripped source as one body if any transformation step fails.
+      args.recordSettledReply?.(raw, visibleText)
+      log.warn("拟人表达变换失败，按原文提交:", formatError(error))
+      return stripped
+    }
   }
+}
+
+/**
+ * 收集 `screenshot` 工具（show_to_user=true）落盘的截图路径。
+ *
+ * 只认名字与 details 契约都对得上的成功结果：工具在返回结果前已完成文件落盘，
+ * 因此宿主拿到路径时文件一定在磁盘上（先文件、后条目）。
+ */
+function collectScreenshotResult(state: HarnessRunState, toolName: string, details: unknown, isError: boolean): void {
+  if (isError || toolName !== SCREENSHOT_TOOL_NAME) return
+  const shot = readScreenshotToolDetails(details)
+  if (!shot?.showToUser) return
+  ;(state.pendingUserImages ??= []).push(shot.screenshotPath)
+}
+
+/**
+ * 提交前把本回合待展示的截图路径并入最终助手消息（`deskpetImagePaths`，与用户图片同字段名）。
+ *
+ * 只在最终消息（不带工具调用）上并入：带工具调用的消息是过程节点，提前并入会让同一张图
+ * 出现在多条条目上。取消/出错的回合根本走不到提交链，因此不会留下「有图无条目」或
+ * 「有正文无图」的半条消息；错误/中止帧也不并入（那类条目不进聊天视图）。
+ */
+function attachUserImages(message: SettledAssistantMessage, state: HarnessRunState): SettledAssistantMessage {
+  const pending = state.pendingUserImages
+  if (!pending || pending.length === 0) return message
+  if (message.stopReason === "error" || message.stopReason === "aborted") return message
+  if (message.content.some(part => part.type === "toolCall")) return message
+  const paths = pending.splice(0, pending.length)
+  state.attachedUserImages = paths
+  return { ...message, deskpetImagePaths: paths } as SettledAssistantMessage
 }
 
 /** 每回合的 Harness 运行规格；权限、投影、观测与 UI/统计消费点都在这里接线。 */
 function createTurnSpec(kernel: TurnKernel, options: {
   prompt: string | AgentMessage | AgentMessage[]
+  /** 默认激活面（⊆ kernel.tools）：主对话回合收窄，省略 = 全量（子代理 / 计划步骤）。 */
+  activeToolNames?: readonly string[]
   timeoutMs: number
   maxToolCalls: number
   projectToolResults: boolean
+  humanizerEnabled?: boolean
+  taskReply?: boolean
+  understanding?: { text: string; sourceId: string; revision: number }
   isPermissionCurrent: () => boolean
   runGeneration: number
   activeRequest?: ActiveMessageRequest
@@ -1059,7 +1246,15 @@ function createTurnSpec(kernel: TurnKernel, options: {
   const compactionAudit: CompactionAuditSink = {}
   let toolCallsUsed = 0
   const stripReply = createRuntimeDataStripHook({
-    recordSettledReply: (raw, stripped) => kernel.recordSettledReply(raw, stripped),
+    recordSettledReply: (raw, stripped, humanized) => kernel.recordSettledReply(raw, stripped, humanized),
+    humanizer: {
+      enabled: options.humanizerEnabled ?? kernel.humanizerEnabled ?? false,
+      sessionId: kernel.sessionId,
+      fallbackReply: kernel.silentRejectedReply ?? getFallbackReply("silentRejected"),
+      flow: () => options.activeRequest ? "casual"
+        : (options.taskReply ?? kernel.taskReply) || kernel.toolRun.history.length > 0 ? "task" : "casual",
+      traceContext: kernel.traceContext,
+    },
   })
   const hooks: HarnessRunHooks = {
     beforeTool: async ({ toolCallId, toolName, args, signal }) => {
@@ -1100,18 +1295,25 @@ function createTurnSpec(kernel: TurnKernel, options: {
       }
       return undefined
     },
-    afterTool: ({ details, isError }) => ({
-      details: {
-        ...(details && typeof details === "object" ? details as Record<string, unknown> : {}),
-        origin: "tool", taint: "untrusted_external", isError,
-      },
-      isError,
-    }),
+    afterTool: ({ toolName, details, isError }) => {
+      // show_to_user 的截图路径在这里进入回合状态，由提交链并入最终助手条目。
+      collectScreenshotResult(state, toolName, details, isError)
+      return {
+        details: {
+          ...(details && typeof details === "object" ? details as Record<string, unknown> : {}),
+          origin: "tool", taint: "untrusted_external", isError,
+        },
+        isError,
+      }
+    },
     transformContext: createRequestViewHook({
       projectToolResults: options.projectToolResults,
       toolsByName,
       preserveToolNames,
       model: kernel.model,
+      supportsImages: kernel.model.input.includes("image"),
+      ...(options.understanding ? { understanding: options.understanding } : {}),
+      ...(kernel.humanizerEnabled && kernel.sessionId ? { silenceGuardSessionId: kernel.sessionId } : {}),
       state,
       captureSnapshot: kernel.captureSnapshot,
       snapshotTasks: kernel.snapshotTasks,
@@ -1162,7 +1364,10 @@ function createTurnSpec(kernel: TurnKernel, options: {
         }
       }
       // 提交前剥离 RUNTIME_DATA：条目是真相源，但正文块不进入后续请求与展示。
-      return await stripReply(message, meta)
+      const stripped = await stripReply(message, meta)
+      if (stripped === undefined) return undefined
+      // 最后并入本回合的展示截图路径：文件已落盘，条目在这里带上 deskpetImagePaths。
+      return attachUserImages(stripped, state)
     },
     beforePayload: (payload, payloadModel) => {
       const step = kernel.currentRequest?.step
@@ -1170,6 +1375,7 @@ function createTurnSpec(kernel: TurnKernel, options: {
       if (step === "compaction" || step === "branch_summary") return
       const safePayload = redactText(stableSerialize(payload))
       kernel.requestParams = extractRequestParams(payload)
+      kernel.requestToolNames = extractToolNames(payload)
       const task = sha256Text(safePayload.text)
         .then(async payloadHash => {
           kernel.payloadHash = payloadHash
@@ -1192,6 +1398,7 @@ function createTurnSpec(kernel: TurnKernel, options: {
     thinkingEffort: kernel.thinkingEffort,
     systemPrompt: kernel.systemPrompt,
     tools: kernel.tools,
+    ...(options.activeToolNames ? { activeToolNames: options.activeToolNames } : {}),
     toolRun: kernel.toolRun,
     prompt: options.prompt,
     timeoutMs: options.timeoutMs,
@@ -1214,6 +1421,10 @@ function processTitlebarOwner(sessionId: string, generation: number): string {
   return `agent-process:${sessionId}:${generation}`
 }
 
+// The scheduler runs after the committed message reaches the runner; its first visible bubble ends
+// the typing titlebar owner even though the lane itself may already have settled.
+setFirstRevealHandler(state => releaseTitlebarStatus(processTitlebarOwner(state.sessionId, state.runGeneration)))
+
 function emitStageHint(sessionId: string | undefined, stage: SimpleStageKey, generation?: number): void {
   if (!sessionId || getActiveSessionId() !== sessionId) return
   void emitUiEvent("deskpet-stage-hint", { sessionId, stage })
@@ -1228,6 +1439,7 @@ function emitStageHint(sessionId: string | undefined, stage: SimpleStageKey, gen
 /** 主回合消费点：流式正文按消息落 UI，usage 按请求进统计。 */
 function createTurnSinks(kernel: TurnKernel): HarnessRunSinks {
   let apiRound = 0
+  let typingHintSent = false
   const sessionId = kernel.sessionId
   // 瞬时流式展示：只发正文增量（§6）。RUNTIME_DATA 起止与非活动会话在这里被过滤。
   let streamFilter: RuntimeDataStreamFilter | undefined
@@ -1235,18 +1447,36 @@ function createTurnSinks(kernel: TurnKernel): HarnessRunSinks {
     if (!delta || !sessionId || getActiveSessionId() !== sessionId) return
     void emitUiEvent("deskpet-assistant-stream", { sessionId, delta })
   }
+  const taskFlow = (): boolean => Boolean(kernel.taskReply) || kernel.toolRun.history.length > 0
+  const suppressCasualStream = (): boolean => kernel.humanizerEnabled === true && !taskFlow()
   return {
     onTurnStart: () => {
       apiRound++
-      // 每轮 API 起点（含工具轮之间）都回到「思考中」：上一轮的 done/blocked 提示此时已经过期。
-      emitStageHint(sessionId, "thinking", kernel.generation)
+      kernel.generationStartedAt ??= Date.now()
+      // Casual 从请求开始就显示typing，不能等到首token才把生成期暴露给界面。
+      if (suppressCasualStream()) {
+        typingHintSent = true
+        emitStageHint(sessionId, "typing", kernel.generation)
+      } else emitStageHint(sessionId, "thinking", kernel.generation)
     },
     onRetry: () => emitStageHint(sessionId, "retry", kernel.generation),
     onAssistantDelta: delta => {
+      if (suppressCasualStream()) {
+        if (!typingHintSent) {
+          typingHintSent = true
+          emitStageHint(sessionId, "typing", kernel.generation)
+        }
+        return
+      }
       streamFilter ??= new RuntimeDataStreamFilter()
       publishStreamDelta(streamFilter.push(delta))
     },
     onAssistantStreamEnd: () => {
+      if (suppressCasualStream()) {
+        streamFilter = undefined
+        if (sessionId) void emitUiEvent("deskpet-assistant-stream-end", { sessionId })
+        return
+      }
       // 未构成标签的尾部按普通正文归还；随后清空瞬时缓冲，真实消息由提交路径推送。
       const tail = streamFilter?.flush() ?? ""
       streamFilter = undefined
@@ -1277,13 +1507,16 @@ function createTurnSinks(kernel: TurnKernel): HarnessRunSinks {
         ...((previous?.cacheWrite !== undefined || row.usage.cacheWrite !== undefined)
           ? { cacheWrite: (previous?.cacheWrite ?? 0) + (row.usage.cacheWrite ?? 0) } : {}),
       }
+      // 本次请求实际下发的工具面以 payload 采集为准（激活面收窄与回合内渐进披露都会改变它）；
+      // 没有 payload 读数时才退回冻结工具面。
+      const requestToolNames = kernel.requestToolNames ?? kernel.tools.map(tool => tool.name)
       updateRequestStats({
         promptTokens: row.usage.input,
         completionTokens: row.usage.output,
         systemTokens: estimateContextTokens(kernel.systemPrompt),
         conversationTokens: kernel.latestMessages.reduce((n, message) => n + estimateMessageTokens(message), 0),
-        toolCount: kernel.tools.length,
-        toolNames: kernel.tools.map(tool => tool.name),
+        toolCount: requestToolNames.length,
+        toolNames: requestToolNames,
       })
       // 主回合逐请求用量记进分列统计；压缩等一次性调用不走这个 sink，
       // 由 completePiText 按自己的 purpose 单独记录。
@@ -1303,6 +1536,19 @@ function createTurnSinks(kernel: TurnKernel): HarnessRunSinks {
       }))
     },
   }
+}
+
+/**
+ * 对话回合的工具面装配（主回合与恢复续跑共用）：全量冻结（`setTools` 持全量，Pi 会校验
+ * 激活集 ⊆ 全量）+ 结果回读工具 + 取用入口；默认激活集由 `defaultActiveToolNames` 唯一判定，
+ * MCP 白名单之外的工具由 enable_tools 在本回合按需加入（`addedToolNames` 渐进披露）。
+ */
+function assembleConversationTools(slot: HarnessSlot, windowTokens: number): { tools: ToolDef[]; activeToolNames: string[] } {
+  const tools: ToolDef[] = [...listAll()]
+  tools.push(createTranscriptTool(entryId => slot.readToolResult(entryId), { windowTokens }))
+  // 取用入口只在确有未激活工具时挂载：没有任何这类工具时它无事可做，白占一份 schema。
+  if (defaultActiveToolNames(tools).length < tools.length) tools.push(createEnableToolsTool({ tools }))
+  return { tools, activeToolNames: defaultActiveToolNames(tools) }
 }
 
 /** 主对话回合：接替手写 Agent Loop 的 harness lane 入口。 */
@@ -1352,13 +1598,16 @@ export async function runPiAgentTurn(input: PiAgentTurnInput): Promise<PiAgentTu
   applyResetPolicies(new Date(), getSessionCreatedAt(turnSessionId))
   const currentCard = getActiveCard()
   const card = currentCard ? JSON.parse(JSON.stringify(currentCard)) as typeof currentCard : null
+  const frozenSilentRejectedReply = getFallbackReply("silentRejected")
   const pool = getPoolSnapshot()
   const thinkingEffort = getEffectiveThinkingEffort()
   const frozenUserContext = { v1rtualInstructions: getV1rtualInstructionsSync(),
     dynamicPrompt: composeDynamicPrompt(formatPoolForPrompt(pool), thinkingEffort) }
   // 准入是否已成立（用户条目已提交进会话文件）：此后每条退出路径都必须结算那条已接受的操作。
   let admittedOnce = false
+  let deferTypingTitlebarRelease = false
   let restoreRetryPolicy: (() => Promise<void>) | undefined
+  let stopMemoryRevision: (() => void) | undefined
   try {
   // 运行态信号：ChatPanel 据此显示/收起停止按钮。真相仍是 harnessSlots 的运行槽，
   // 事件只是通知通道，UI 不因此持有第二份运行状态。
@@ -1370,9 +1619,11 @@ export async function runPiAgentTurn(input: PiAgentTurnInput): Promise<PiAgentTu
   }
   // 主回合不使用返回的不可用名单：借用失败已由各自的工具报告；这里只保留取消守卫语义。
   assertCurrent()
-  const frozenTools: ToolDef[] = isActiveMessage ? [] : [...listAll()]
-  // 工具结果回读：请求投影里标注的 eventId 就是 Harness 条目 id，按条目分页读取。
-  if (frozenTools.length) frozenTools.push(createTranscriptTool(entryId => slot.readToolResult(entryId), { windowTokens }))
+  // 工具结果回读（请求投影里标注的 eventId 就是 Harness 条目 id，按条目分页读取）与默认激活面
+  // 都在装配函数里；主动表达回合没有工具面（tools=[]），激活集同为空。
+  const { tools: frozenTools, activeToolNames } = isActiveMessage
+    ? { tools: [] as ToolDef[], activeToolNames: [] as string[] }
+    : assembleConversationTools(slot, windowTokens)
   // 用户正文由 Harness 的 prompt 条目承担落盘（先落盘再投递由 Harness 事务保证）；
   // 主动消息用 deskpet.active_message 自定义消息投递，来源标记在 details.* 且不成为用户事实。
   assertCurrent()
@@ -1382,6 +1633,7 @@ export async function runPiAgentTurn(input: PiAgentTurnInput): Promise<PiAgentTu
     sessionId: turnSessionId, runGeneration: generation,
     ...(input.ingress?.origin === "user" && input.ingress.taint === "trusted_user"
       ? { trustedUserEventId: inputEventId(input.ingress.requestId) } : {}),
+    ...(input.turnContext ? { proactiveTurnContext: input.turnContext } : {}),
     isCurrent: () => runIsCurrent(),
     history: toolCallHistory,
   }
@@ -1407,12 +1659,12 @@ export async function runPiAgentTurn(input: PiAgentTurnInput): Promise<PiAgentTu
   // 那条用户条目由 Pi 在 accept 内按技能文件构造 —— 一条命令只能落一条正文。
   const admitted = input.skillAdmission
     ? await slot.admitInput({
-        model, thinkingEffort, tools: frozenTools, toolRun,
+        model, thinkingEffort, tools: frozenTools, activeToolNames, toolRun,
         kind: "skill",
         name: input.skillAdmission.name,
         additionalInstructions: input.skillAdmission.additionalInstructions,
       })
-    : await slot.admitInput({ model, thinkingEffort, tools: frozenTools, toolRun, prompt: promptInput })
+    : await slot.admitInput({ model, thinkingEffort, tools: frozenTools, activeToolNames, toolRun, prompt: promptInput })
   if (!admitted.ok) {
     // 技能准入在边界上失败（清单在启动瞬间变化 → UnknownSkill）与前置判定的四态不同：留痕带上技能名，
     // 不把它混进「技能不存在」的报告里（`failure.kind` 仍是 admission，`failure.message` 带原始 tag）。
@@ -1499,10 +1751,11 @@ export async function runPiAgentTurn(input: PiAgentTurnInput): Promise<PiAgentTu
     ? (input.activeRequest ? memoryConfig.recallTokenBudget : memoryConfig.coreTokenBudget + memoryConfig.recallTokenBudget)
     : 0
   // recall 走槽级取消信号：回合被停止时这次读取随之结束，旧代际的结果不会写进新投影。
-  const memoryRequest = {
+  const memoryRequest: MemoryRecallRequest = {
     requestId, sessionId: turnSessionId, cardId: card?.id, runGeneration: generation,
     query: userText, tokenBudget: memoryTokenBudget, signal: slot.runSignal, traceContext,
-    ...(input.activeRequest ? { purpose: "proactive" as const, targets: [...input.activeRequest.memoryTargets] } : {}),
+    ...(input.activeRequest ? { purpose: "proactive" as const, targets: [...input.activeRequest.memoryTargets] }
+      : input.turnContext?.memoryRefs.length ? { targets: input.turnContext.memoryRefs.map(ref => ({ id: ref.id, version: ref.version })), allowExpiredTargets: true } : {}),
   }
   let memoryProjections: MemoryProjection[] = []
   try {
@@ -1525,29 +1778,46 @@ export async function runPiAgentTurn(input: PiAgentTurnInput): Promise<PiAgentTu
       at: Date.now(),
     } as unknown as JsonValue)
   }
-  /**
-   * 请求期取数：本回合没写过记忆就复用同一份投影（前缀稳定、没有额外 IPC）；
-   * 写过记忆（memory_change 出现在工具历史里）则重新召回 —— 用户刚纠正的事实
-   * 必须在同一回合的下一次请求里生效，不能等到下一轮。
-   */
+  stopMemoryRevision = subscribeMemoryRevision(async revision => {
+    const feedbackHasMemory = Boolean(input.turnContext?.memoryRefs.length)
+    if (!runIsCurrent() || (!memoryProjections.length && !feedbackHasMemory)
+      || (!feedbackHasMemory && memoryProjections.every(item => item.memoryRevision === revision))) return
+    // The UI waits for this closure before reporting the change as applied. Already-sent inputs cannot be recalled.
+    memoryProjections = []
+    await slot.abort("user")
+    await slot.waitForIdle()
+  })
+  /** Reuse only a current DB revision; write-after-read refresh is local and does not repeat reranking. */
   const memoryRecallForRequest = async (): Promise<MemoryProjection[]> => {
     if (memoryTokenBudget <= 0 || (input.activeRequest && input.activeRequest.memoryTargets.length === 0)) return []
-    if (!toolCallHistory.some(entry => entry.toolName === MEMORY_CHANGE_TOOL_NAME)) return memoryProjections
+    // Injected providers without a Rust revision remain isolated L3 probes.
+    if (memoryRequest.readRevision === undefined) return memoryProjections
     try {
-      memoryProjections = await recallMemory(memoryRequest)
+      const currentRevision = (await memoryStatus()).revision
+      if (currentRevision !== memoryRequest.readRevision) {
+        const refreshRequest = { ...memoryRequest, skipRerank: true }
+        memoryProjections = await recallMemory(refreshRequest)
+        memoryRequest.readRevision = refreshRequest.readRevision
+      }
     } catch (error) {
-      log.warn("记忆写后重召回失败，沿用上一份投影:", formatError(error))
+      // An unavailable DB cannot prove the eligibility of old facts: fail closed for this optional block.
+      memoryProjections = []
+      memoryRequest.readRevision = undefined
+      log.warn("记忆revision复核失败，本请求放弃记忆投影:", formatError(error))
     }
+    assertCurrent()
     return memoryProjections
   }
   assertCurrent()
   const frozenContext = { ...frozenUserContext, skillsPromptBlock: isActiveMessage ? "" : getSkillsPromptBlock() }
+  const frozenHumanizerEnabled = humanizerConfig.enabled
+  const frozenUnderstandingBlock = silentAccessConfig.enabled ? getUnderstandingPromptBlock() : undefined
   const skillCatalogFingerprint = getSkillCatalogFingerprint() ?? undefined
   // 会话历史由 Harness 条目承担；buildPrompt 只负责静态/动态/记忆块与预算分配记录。
   const tailContextText = [planStepContext, input.turnContext?.text].filter(Boolean).join("\n\n")
   const context = buildPrompt({
     ...frozenContext,
-    unansweredCount, thinkingEffort, isActiveMessage,
+    unansweredCount, thinkingEffort, isActiveMessage, humanizerEnabled: frozenHumanizerEnabled,
     contextMaxTokens: windowTokens, maxOutputTokens: model.maxTokens,
     tools: frozenTools.map(toToolDeclaration),
     ...(tailContextText ? { ephemeralText: tailContextText, ephemeralOrigin: input.turnContext ? "proactive" as const : "plan" as const } : {}),
@@ -1582,13 +1852,20 @@ export async function runPiAgentTurn(input: PiAgentTurnInput): Promise<PiAgentTu
     card,
     toolRun,
     generation,
+    humanizerEnabled: frozenHumanizerEnabled,
+    taskReply: Boolean(planStepContext),
+    silentRejectedReply: frozenSilentRejectedReply,
   })
   const spec = createTurnSpec(kernel, {
     // 正文在准入时已提交（与 toolRun 一起装配），spec 只承载驱动面。
     prompt: promptInput,
+    activeToolNames,
     timeoutMs: loopConfig.turnTimeoutMs,
     maxToolCalls: loopConfig.maxToolCallsPerTurn,
     projectToolResults: true,
+    humanizerEnabled: frozenHumanizerEnabled,
+    taskReply: Boolean(planStepContext),
+    ...(frozenUnderstandingBlock ? { understanding: frozenUnderstandingBlock } : {}),
     runGeneration: generation,
     ...(input.activeRequest && activeOwner ? { activeRequest: input.activeRequest, activeOwner, activeIsCurrent } : {}),
     // 投影与压缩共用同一份地址目录 thunk：两路投影对同一条结果逐字相同（槽内有稳定缓存）。
@@ -1617,7 +1894,8 @@ export async function runPiAgentTurn(input: PiAgentTurnInput): Promise<PiAgentTu
         if (evidence && evidence.operationId === record.operationId && evidence.assistantEntryId === record.tipId) {
           output.activeCommit = evidence
           output.reply = evidence.text
-          publishRuntimeTrace(traceContext, "active_message_delivered", () => ({ requestId, status: "committed" }), { entryId: evidence.assistantEntryId })
+          if (evidence.silent) output.silent = true
+          else publishRuntimeTrace(traceContext, "active_message_delivered", () => ({ requestId, status: "committed" }), { entryId: evidence.assistantEntryId })
         }
       } catch (error) {
         log.error("主动回复 JSONL 提交核对失败:", { sessionId: turnSessionId, requestId }, formatError(error))
@@ -1628,6 +1906,9 @@ export async function runPiAgentTurn(input: PiAgentTurnInput): Promise<PiAgentTu
       output.failure = { kind: "unknown", message: "主动表达没有可核实的助手提交条目" }
     }
   }
+  deferTypingTitlebarRelease = output.humanized === true && output.silent !== true && Boolean(output.reply)
+    && (input.ingress !== undefined || input.activeRequest !== undefined)
+    && getActiveSessionId() === turnSessionId
   return output
   } catch (error) {
     // 准入之后、驱动之前失败（计划段抛错、断言失效、装配失败）：已提交的输入条目保留在会话里
@@ -1638,7 +1919,8 @@ export async function runPiAgentTurn(input: PiAgentTurnInput): Promise<PiAgentTu
     // 兜底回复与系统提示仍交回 runner 既有路径处理（照现状），这里只负责结算。
     throw error
   } finally {
-    releaseTitlebarStatus(processTitlebarOwner(turnSessionId, generation))
+    stopMemoryRevision?.()
+    if (!deferTypingTitlebarRelease) releaseTitlebarStatus(processTitlebarOwner(turnSessionId, generation))
     if (restoreRetryPolicy) {
       await restoreRetryPolicy().catch(error => log.error("主动回合恢复重试策略失败:", formatError(error)))
     }
@@ -2274,11 +2556,28 @@ async function settleMainTurn(args: {
   }
   // afterResponse 已把提交的助手消息剥离过 RUNTIME_DATA，取配对留底的原始正文再交给回复模块。
   const rawReply = kernel.rawTextForSettledReply(contentText(finalAssistant.content))
+  const committedText = contentText(finalAssistant.content)
+  const humanized = kernel.humanizedForSettledReply(committedText)
+  const casualFlow = Boolean(kernel.humanizerEnabled)
+    && (Boolean(args.input.activeRequest) || (!kernel.taskReply && kernel.toolRun.history.length === 0))
   const liveCard = getActiveCard()
   // 卡片快照不一致（运行中切换 Card）时只展示文本，不写变量：变量写入必须归属本回合冻结的快照。
   const cardIsCurrent = liveCard?.id === kernel.card?.id && liveCard?.hash === kernel.card?.hash && liveCard?.version === kernel.card?.version
   const processed = await generateReply(rawReply, kernel.card, { applyRuntimeData: cardIsCurrent && !args.input.activeRequest })
-  return { reply: processed.text, toolCallHistory, retriesUsed: state.retriesUsed, runtimeData: processed.runtimeData }
+  return {
+    reply: humanized?.text ?? processed.text,
+    ...(humanized && humanized.parts.length > 1 ? { replyParts: humanized.parts } : {}),
+    ...(humanized?.silent ? { silent: true } : {}),
+    runGeneration: kernel.generation,
+    ...(kernel.generationStartedAt !== undefined ? { generationStartedAt: kernel.generationStartedAt } : {}),
+    ...(state.finalAssistantEntryId ? { committedAssistantEntryId: state.finalAssistantEntryId } : {}),
+    // 已并入条目的截图路径回传给宿主：实时推送的界面消息与条目同源（重载由读模型带回）。
+    ...(state.attachedUserImages?.length ? { userImagePaths: [...state.attachedUserImages] } : {}),
+    humanized: casualFlow,
+    toolCallHistory,
+    retriesUsed: state.retriesUsed,
+    runtimeData: processed.runtimeData,
+  }
 }
 
 // ── 崩溃恢复入口（§8.7.3） ──
@@ -2360,8 +2659,16 @@ export async function continueInterruptedRun(sessionId: string): Promise<PiAgent
     const currentCard = getActiveCard()
     const card = currentCard ? JSON.parse(JSON.stringify(currentCard)) as typeof currentCard : null
     const pool = getPoolSnapshot()
-    const frozenTools = [...listAll()]
-    frozenTools.push(createTranscriptTool(entryId => slot.readToolResult(entryId), { windowTokens: model.contextWindow }))
+    const { tools: frozenTools, activeToolNames } = assembleConversationTools(slot, model.contextWindow)
+    // 恢复中的工具调用仍要可执行：Pi 执行工具批次时按激活集过滤（`drive/tools.js` 的
+    // activeToolNames），中断前激活、若落到默认面外的 MCP 工具会被判成 unavailable。
+    // 把中断操作里 running 的工具名并回本回合激活集；这不改变「取用不跨 run 保留」——
+    // 这是恢复语义，不是模型取用的持久化。
+    if (pendingTools) {
+      for (const name of pendingTools) {
+        if (!activeToolNames.includes(name) && frozenTools.some(tool => tool.name === name)) activeToolNames.push(name)
+      }
+    }
     const thinkingEffort = getEffectiveThinkingEffort()
     // 中断运行的原始冻结快照已随进程丢失：用当前 Card/变量重建只读前缀，不静默改 Card。
     const context = buildPrompt({
@@ -2383,6 +2690,7 @@ export async function continueInterruptedRun(sessionId: string): Promise<PiAgent
     })
     const spec = createTurnSpec(kernel, {
       prompt: recoveryInput,
+      activeToolNames,
       timeoutMs: loopConfig.turnTimeoutMs,
       maxToolCalls: loopConfig.maxToolCallsPerTurn,
       projectToolResults: true,
@@ -2477,6 +2785,7 @@ export async function compactActiveSession(sessionId: string): Promise<ManualCom
         toolsByName: new Map(),
         preserveToolNames: structurePreserveToolNames,
         model,
+        supportsImages: model.input.includes("image"),
         state,
         // 结构操作没有回合身份：不落 PromptSnapshot，也没有 payload 观测的读者。
         captureSnapshot: async () => undefined,
@@ -2495,7 +2804,9 @@ export async function compactActiveSession(sessionId: string): Promise<ManualCom
 /** Used by planning and fork/team agents. It shares the same harness kernel, not a second loop. */
 export async function runPiSubAgent(input: PiSubAgentInput): Promise<PiSubAgentOutput> {
   const thinkingEffort = input.thinkingEffort ?? "low"
-  const baseModel = resolvePiTurnModel()
+  // 子运行的模型取辅助模型（ai.auxModel；留空回落聊天模型）：agent_spawn 工具、计划步骤与
+  // 主动扫描规划共用这一个出口，模型路由只在这一处生效。
+  const baseModel = resolvePiAuxModel()
   if (input.maxOutputTokens !== undefined && (!Number.isSafeInteger(input.maxOutputTokens) || input.maxOutputTokens < 1)) {
     throw new Error("子运行 maxOutputTokens 必须是正整数")
   }
@@ -2711,6 +3022,7 @@ export function createActiveMessage(text: string, active: ActiveMessageRequest, 
       attemptId: active.attemptId,
       ruleId: active.ruleId,
       intent: active.intent,
+      expectsReply: active.expectsReply,
       sourceRefs: active.sourceRefs as unknown as JsonValue,
       occurrenceIds: [...active.occurrenceIds],
       cardId: active.owner.cardId,
@@ -2745,6 +3057,26 @@ export function createTurnNoteMessage(text: string): AgentMessage {
     display: false,
     details: {
       taint: "derived",
+      visibleToUser: false,
+      eligibleForTranscript: false,
+      eligibleForMemory: false,
+    },
+    timestamp: Date.now(),
+  }
+}
+
+/** Observation data enters only the request projection and is explicitly untrusted. */
+function createUnderstandingMessage(input: { text: string; sourceId: string; revision: number }): AgentMessage {
+  return {
+    role: "custom",
+    customType: "deskpet.understanding",
+    content: input.text,
+    display: false,
+    details: {
+      sourceId: input.sourceId,
+      revision: input.revision,
+      origin: "observation",
+      taint: "untrusted_external",
       visibleToUser: false,
       eligibleForTranscript: false,
       eligibleForMemory: false,

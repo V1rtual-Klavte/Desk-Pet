@@ -112,10 +112,10 @@ function messageIdentityOf(message: unknown): { role?: unknown; customType?: unk
  * 上游内核已记下的淘汰不因重算不出正数而被抹掉（沿用原值）。
  */
 function refreshAllocation(allocation: ContextAllocation, used: number): ContextAllocation {
-  const { dropped: previous, ...rest } = allocation
+  const { layer, dropped: previous } = allocation
   const dropped = allocation.requested - used
   const effective = dropped > 0 ? dropped : previous !== undefined && previous > 0 ? previous : undefined
-  return { ...rest, requested: used, used, ...(effective === undefined ? {} : { dropped: effective }) }
+  return { layer, requested: used, used, ...(effective === undefined ? {} : { dropped: effective }) }
 }
 
 /**

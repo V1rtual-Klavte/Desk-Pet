@@ -18,13 +18,16 @@ import {
 } from "@/services/agent/memory"
 import type { MemoryDraft, MemoryItem, MemorySource } from "@/services/agent/memory"
 import { aiConfig, flushConfig, memoryConfig, setOverrides } from "@/services/config"
-import { completePiText, resolvePiTurnModel } from "@/services/engine/harness"
+import { setCurrentTimeNoteAnchor } from "@/services/context"
+import { completePiText, getPiModel } from "@/services/engine/harness"
 import type { PiModel } from "@/services/engine/harness"
 import { subscribeRuntimeTrace } from "@/services/engine/runtime"
 import { createNewSession } from "@/services/session"
 import { listAll, register, unregister } from "@/services/tool"
 import { standardSetup } from "../host/standard-setup"
-import { buildLongMemEvalJudgePrompt, buildMemoryBankJudgePrompt, parseJudgeVerdict } from "./judge.mjs"
+import { buildLongMemEvalJudgePrompt, buildMemoryBankJudgePrompt, judgeOutputBudget, parseJudgeVerdict } from "./judge.mjs"
+import { questionTimeAnchor } from "./datasets/longmemeval/importer.mjs"
+import { planScopeNormalization } from "./scope-normalize.mjs"
 import { summarizeMemoryQualityUsage } from "../memory-quality/index.mjs"
 
 /** 与 src/services/agent/memory/sources.ts 的 EVIDENCE_CHARS 对齐：登记证据只保留引文长度。 */
@@ -32,7 +35,6 @@ const EVIDENCE_CHARS = 2_000
 /** 产品 dreaming 的丢弃阈值（sourceLength > 4800 的整条来源不处理）。 */
 const OVERSIZED_SOURCE_CHARS = 4_800
 const DREAMING_SWEEP_CAP = 40
-const JUDGE_MAX_TOKENS = 512
 const JUDGE_TIMEOUT_MS = 120_000
 
 export interface BenchEvidenceRef {
@@ -222,20 +224,25 @@ async function drainDreaming(signal: AbortSignal | undefined, traces: unknown[])
  * session-scope 候选归一为 user scope（提问发生在新建会话，否则漏召回）。
  * Rust 禁止 update/supersede 跨范围改归属，因此用 add（同内容/同来源）+ forget 原条目；
  * 这是测试夹具对产品存储的显式治理操作，不改产品代码。
+ *
+ * 必须两段式执行：forget 写的来源墓碑会让之后引用同一来源的 add 判「来源未登记」，
+ * 逐条 add→forget 在共享来源的候选上必炸。操作顺序由 scope-normalize.mjs 规划，
+ * 这里按序执行、不再自行交错。
  */
 async function normalizeSessionScope(): Promise<number> {
   const items = await memoryList(undefined, undefined, 1_000)
-  const sessionItems = items.filter(item => item.status === "active" && item.draft.scope === "session")
   let normalized = 0
-  for (const item of sessionItems) {
-    let revision = (await memoryStatus()).revision
-    const draft: MemoryDraft = { ...item.draft, scope: "user", scopeId: undefined }
-    await applyMemoryChange({ operationId: `bench-scope-add-${crypto.randomUUID()}`, baseRevision: revision,
-      action: "add", actor: "internal", draft })
-    revision = (await memoryStatus()).revision
-    await applyMemoryChange({ operationId: `bench-scope-forget-${crypto.randomUUID()}`, baseRevision: revision,
-      action: "forget", actor: "internal", itemId: item.id })
-    normalized += 1
+  for (const operation of planScopeNormalization(items)) {
+    const revision = (await memoryStatus()).revision
+    if (operation.action === "add") {
+      const draft: MemoryDraft = operation.draft
+      await applyMemoryChange({ operationId: `bench-scope-add-${crypto.randomUUID()}`, baseRevision: revision,
+        action: "add", actor: "internal", draft })
+      normalized += 1
+    } else {
+      await applyMemoryChange({ operationId: `bench-scope-forget-${crypto.randomUUID()}`, baseRevision: revision,
+        action: "forget", actor: "internal", itemId: operation.itemId })
+    }
   }
   return normalized
 }
@@ -285,16 +292,15 @@ function candidateSessionIds(traces: unknown[], itemById: Map<string, MemoryItem
 }
 
 /**
- * judge 模型解析：继承配置网关的 endpoint / api_key / provider，只替换模型 id。
+ * judge 模型解析：走网关公开的按 id 解析入口（与主链路同一份 endpoint / api_key / provider
+ * 与窗口推导），不用被测模型的预算冒充 judge 模型。
  * 唯一纪律：judge 模型必须不同于被测模型（不允许被测模型自评）。
  * 默认模型（deepseek-reasoner）由 e2e-main 传入；其他 Provider 用 --bench-judge-model 指定。
  */
 function judgeModelFor(modelId: string): PiModel {
   const tested = aiConfig.model
   if (modelId === tested) throw new Error(`judge 模型必须不同于被测模型（同为 ${tested}）；用 --bench-judge-model 指定异构模型`)
-  // 走网关公开的模型解析入口（与主链路同一份 endpoint / key / 预算口径），只替换模型 id。
-  const base = resolvePiTurnModel()
-  return { ...base, id: modelId, name: modelId }
+  return getPiModel(modelId)
 }
 
 function formatMemoryBankHistory(persona: { name: string; metaInformation: Record<string, string | null>;
@@ -309,8 +315,9 @@ function formatMemoryBankHistory(persona: { name: string; metaInformation: Recor
 
 /** 提问回合：新建会话、撤下工具、记录首文本延迟；答案与渲染证据映射回登记来源。 */
 async function askQuestion(input: { caseDef: BenchCase; groupKey: string; sequence: number; total: number;
-  group: PreparedGroup; groupReused: boolean; traces: unknown[]; signal?: AbortSignal }): Promise<BenchCellOutcome> {
-  const { caseDef, groupKey, sequence, total, group, groupReused, traces } = input
+  group: PreparedGroup; groupReused: boolean; traces: unknown[]; timeAnchor: Date | null;
+  signal?: AbortSignal }): Promise<BenchCellOutcome> {
+  const { caseDef, groupKey, sequence, total, group, groupReused, traces, timeAnchor } = input
   installMemoryProvider(sqliteMemoryProvider)
   const questionSession = await createNewSession()
   let start = 0
@@ -322,6 +329,10 @@ async function askQuestion(input: { caseDef: BenchCase; groupKey: string; sequen
   const restoreTools = isolateTools()
   start = performance.now()
   try {
+    // LongMemEval 官方协议以 question_date 为「今天」：提问回合的尾随注记锚到题目基准日，
+    // 相对日期题才在官方口径下被测量；其余数据集 timeAnchor 为 null，保持真实时钟。
+    // 锚点只活在这个回合内，finally 复位，绝不外溢到下一题。
+    setCurrentTimeNoteAnchor(timeAnchor)
     const result = await sendMessage(String(caseDef.question), { requestId: `${groupKey}-q${sequence}-of-${total}` })
     if (result.outcome !== "succeeded" || result.persistFailed)
       throw new Error(`question turn failed or was not committed: ${result.failure?.message ?? result.outcome}`)
@@ -342,6 +353,7 @@ async function askQuestion(input: { caseDef: BenchCase; groupKey: string; sequen
       groupReused, storeGeneration: group.storeGeneration, ingest: group.ingest,
       metrics: { firstDeliveredTextDeltaMs }, usage: measured.usage, cache: { status: measured.cache } }
   } finally {
+    setCurrentTimeNoteAnchor(null)
     stopStream()
     restoreTools()
   }
@@ -400,6 +412,9 @@ export function createLiveMemoryBenchAdapter(): {
         storageMode: "rust-ipc", configHash: await sha256(JSON.stringify(cfg)),
         toolIsolation: "all model tools disabled; host fixture/governance IPC remains real",
         ingestion: "direct MemorySource registration (no JSONL replay); dreaming manual sweep; session scope normalized to user",
+        questionTimeAnchoring: dataset === "longmemeval"
+          ? "LongMemEval: question_date 作为提问回合的 [当前时间]（本地墙钟）；其余数据集用真实时钟"
+          : "真实时钟（该数据集没有题目基准日）",
         memoryConfig: { rerank: memoryConfig.rerank, coreTokenBudget: memoryConfig.coreTokenBudget,
           recallTokenBudget: memoryConfig.recallTokenBudget, recallTimeoutMs: memoryConfig.recallTimeoutMs,
           rerankTimeoutMs: memoryConfig.rerankTimeoutMs },
@@ -433,7 +448,8 @@ export function createLiveMemoryBenchAdapter(): {
           setOverrides({ "ai.memory.enabled": true, "ai.memory.rerank": "off", "ai.memory.dreaming.mode": "manual" })
           await flushConfig()
         }
-        return await askQuestion({ caseDef, groupKey, sequence, total, group: prepared, groupReused, traces, signal })
+        const timeAnchor = dataset === "longmemeval" ? questionTimeAnchor(caseDef.questionDate) : null
+        return await askQuestion({ caseDef, groupKey, sequence, total, group: prepared, groupReused, traces, timeAnchor, signal })
       } finally {
         unsubscribe()
       }
@@ -452,7 +468,7 @@ export function createLiveMemoryBenchAdapter(): {
       else throw new Error(`未知 judge 输入: ${(request as { kind?: string }).kind}`)
       const result = await completePiText({ purpose: "memory", model,
         systemPrompt: "You are an evaluation judge that follows the user's instruction exactly. Reply with a single word: yes or no.",
-        userText: built.prompt, maxTokens: JUDGE_MAX_TOKENS, timeoutMs: JUDGE_TIMEOUT_MS })
+        userText: built.prompt, maxTokens: judgeOutputBudget(model.maxTokens), timeoutMs: JUDGE_TIMEOUT_MS })
       const text = result.text.trim()
       if (!text) return { adjudicated: false, error: "judge returned an empty response", templateId: built.templateId, model: judgeModel }
       return { adjudicated: true, correct: parseJudgeVerdict(text), raw: text, templateId: built.templateId,

@@ -59,6 +59,7 @@ export const 主动表达提交: SceneDef = {
     const attemptId = crypto.randomUUID(), requestId = crypto.randomUUID()
     let claimed = false
     result = await sendActiveMessage({
+    expectsReply: true,
       text: INTENT, owner, requestId, attemptId, ruleId: "l4_card_expression", intent: "l4_card_expression",
       sourceRefs, memoryTargets: [], occurrenceIds: [fingerprint],
       beforeGenerate: async (actualOwner, budget) => {
@@ -70,7 +71,7 @@ export const 主动表达提交: SceneDef = {
         const claim = await proactiveIpc.claim({ attemptId, requestId, kind: "expression", owner: actualOwner,
           sourceRefs, sourceFingerprint: fingerprint, sourceRevision: scan.sourceRevision,
           controlRevision: scan.control.revision, occurrenceIds: [fingerprint], now: Date.now(), localDate,
-          reservedTokens: budget.estimatedInputTokens + budget.maxOutputTokens })
+          reservedTokens: budget.estimatedInputTokens + budget.maxOutputTokens, ruleId: "l4_card_expression" })
         claimed = claim.claimed
         return claimed
       },
@@ -84,7 +85,7 @@ export const 主动表达提交: SceneDef = {
         if (!validation.valid) return "stale"
         const receipt = await proactiveIpc.settle({ attemptId, owner: actualOwner, sourceFingerprint: fingerprint,
           localDate, status: "committed", assistantEntryId: proof.assistantEntryId,
-          usage: accountedUsage(proof.usage), decision: { kind: "speak_now", opportunityFingerprints: [fingerprint],
+          usage: accountedUsage(proof.usage), decision: { kind: "speak_now", ruleId: "l4_card_expression", opportunityFingerprints: [fingerprint],
             topicKey: null, slot: localDate, validUntil: now + 60_000 } })
         return receipt.status === "committed" ? "committed" : "unresolved"
       },

@@ -17,6 +17,9 @@
 | behavior | 独立派生域：采集窗口心跳、分段、日聚合、质量与四组时机指标 | [behavior/](../../src/services/behavior/) |
 | evaluation（测试宿主） | trace 缓冲/ACK/证据审阅、真实记忆质量跑批与性能采样；不拥有产品运行状态 | [test/trace/](../../test/trace/)、[test/memory-quality/](../../test/memory-quality/)、[trace-observer.ts](../../test/host/trace-observer.ts)、[Rust trace](../../src-tauri/src/e2e_trace.rs)、[Rust benchmark](../../src-tauri/src/memory/benchmark.rs) |
 | session | 会话仓库访问层、会话列表与消息读模型、切换与恢复 | [session/](../../src/services/session/) |
+| humanizer | 引擎拟人协议、沉默护栏、提交后逐泡揭示（只存瞬态进度） | [humanizer/](../../src/services/humanizer/) |
+| images | 原图路径准入、预览与请求投影；复用唯一缩放处理器 | [images/](../../src/services/images/)、[原生准入](../../src-tauri/src/commands/chat_images.rs) |
+| observation | 截图／手边文件了解、对话主题权重，独立派生域 | [observation/](../../src/services/observation/)、[原生观察](../../src-tauri/src/commands/observation_cmd.rs) |
 | personality / reply | Card、变量与阶段文案；回复元数据解析和效果 | [personality/](../../src/services/personality/)、[reply/](../../src/services/reply/) |
 | tool / safety | 工具注册和路由、Pi 文件工具、MCP；权限与确认 | [tool/](../../src/services/tool/)、[safety/](../../src/services/safety/) |
 | skill | Pi 原生 Skill 清单（目录指纹驱动刷新）与披露块 | [skill/](../../src/services/skill/) |
@@ -62,6 +65,6 @@ sendMessage → preprocessor / Slash
 
 窗口共用 `bootWindow()`：安装异常拦截 → 初始化路径和配置 → 设置日志级别 → 挂载 Vue。主应用再由 `init.ts` 初始化对应能力。
 
-MCP 不随应用启动连接；按运行 owner 借用，最后释放时关闭。Skill 按目录指纹刷新清单，披露块只含名称/说明/位置，正文不进请求。记忆整理默认 idle，由空闲调度器在配置条件和持久预算内触发；手动整理共用同一自动提交协议。Card 阶段文案的加载/缺失生成属于另一条人格准备路径。主窗口完成配置、Card、会话和窗口监听初始化后启动单一 proactive scheduler。
+MCP 不随应用启动连接；按运行 owner 借用，最后释放时关闭。Skill 按目录指纹刷新清单，披露块只含名称/说明/位置，正文不进请求。记忆整理默认 idle，由空闲调度器在配置条件和持久预算内触发；手动整理共用同一自动提交协议。Card 阶段文案的加载/缺失生成属于另一条人格准备路径。主窗口完成配置、Card、会话和窗口监听初始化后启动单一 proactive scheduler 与受静默访问许可约束的 observation 空闲任务；二者共用持久 token 总预算，观察不进入聊天 lane 或用户事实。
 
 Profile 与默认资源的位置见[运行时数据](runtime-data.md)，构建/平台/日志诊断见[工程参考](development.md)。不要从旧方案的候选类名推导必须存在同名“全局状态内核”。

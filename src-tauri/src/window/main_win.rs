@@ -5,6 +5,9 @@
 use std::path::PathBuf;
 use tauri::WebviewWindowBuilder;
 
+use super::{MAIN_WINDOW_HEIGHT, MAIN_WINDOW_MIN_HEIGHT, MAIN_WINDOW_MIN_WIDTH, MAIN_WINDOW_WIDTH};
+#[cfg(target_os = "macos")]
+use super::WINDOW_LEVEL_MAIN;
 use crate::rust_info;
 
 /// 手动创建主窗口（在 ActivationPolicy::Accessory 之后）
@@ -19,8 +22,8 @@ pub fn create_main_window(app: &tauri::AppHandle) -> tauri::Result<tauri::Webvie
     .always_on_top(true)
     .visible_on_all_workspaces(true)
     .shadow(true)
-    .inner_size(730.0, 450.0)
-    .min_inner_size(448.0, 272.0)
+    .inner_size(MAIN_WINDOW_WIDTH, MAIN_WINDOW_HEIGHT)
+    .min_inner_size(MAIN_WINDOW_MIN_WIDTH, MAIN_WINDOW_MIN_HEIGHT)
     .center()
     .build()?;
     // 关闭请求（Alt+F4、⌘W、系统关闭）一律隐藏到托盘，与标题栏按钮同一语义：
@@ -60,7 +63,7 @@ pub fn enhance_to_iterm_style(window: &tauri::WebviewWindow) {
             unsafe {
                 // NSScreenSaverWindowLevel = 1000，覆盖所有窗口
                 let level_before: isize = msg_send![ns_win, level];
-                let _: () = msg_send![ns_win, setLevel: 1000isize];
+                let _: () = msg_send![ns_win, setLevel: WINDOW_LEVEL_MAIN];
                 let level_after: isize = msg_send![ns_win, level];
                 let cb_after: usize = msg_send![ns_win, collectionBehavior];
                 rust_info!(

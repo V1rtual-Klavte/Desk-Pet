@@ -111,8 +111,12 @@ export async function prepareConversationCapabilities(owner: string): Promise<Ca
   // 借用面与「MCP 是否生效」同源（config 的 enabledMcpServerNames）：总闸已删，控制面在
   // 每服务器的 enabled，全部关掉即无人可借。owner 必填：调用方一律给本轮的 requestId 或
   // resumeOwner(sessionId)，默认值会让「谁借的」失去唯一来源，也让释放失去配对。
-  const { acquireMcpServer } = await import("@/services/tool/mcp")
-  for (const name of enabledMcpServerNames()) {
+  const { acquireMcpServer, disconnectUnlistedMcpServers } = await import("@/services/tool/mcp")
+  const enabledMcp = enabledMcpServerNames()
+  // 保活连接不代表仍然启用：先撤掉配置里已关闭、且没有 owner 的服务器，
+  // 避免它们的工具在保活窗口内继续进请求。
+  await disconnectUnlistedMcpServers(enabledMcp)
+  for (const name of enabledMcp) {
     const acquired = await acquireMcpServer(name, owner)
     if (!acquired.success) {
       unavailableMcp.push(name)

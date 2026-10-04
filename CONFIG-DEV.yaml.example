@@ -16,6 +16,9 @@ ai:
   apiKey: ""
   requireApiKey: true
   model: deepseek-chat
+  # 辅助模型：子代理（agent_spawn 工具、计划步骤）、主动扫描规划与记忆整理（dreaming）使用；
+  # 留空跟随聊天模型（同一 provider/endpoint/apiKey）
+  auxModel: ""
   # 上下文窗口（tokens）：默认 128k，最低 65536（再低压缩找不到可摘要范围）
   contextMaxTokens: 131072
   thinking:
@@ -28,7 +31,7 @@ ai:
     # 稍后继续的批量策略：one-at-a-time=逐条保留话题边界 | all=集中处理
     followUpMode: one-at-a-time
   personality:
-    active: angelkawaii
+    active: default
   loop:
     maxRetry: 3
     maxToolCallsPerTurn: 5
@@ -45,8 +48,9 @@ ai:
     rerank: off
     recallTimeoutMs: 4000
     rerankTimeoutMs: 2500
-    # reviewMaxTokens：单次 Review 输出上限；reasoning 模型的 thinking 也计入，推理模型需调大
-    dreaming: { mode: idle, idleSeconds: 120, minIntervalMinutes: 60, maxDailyTokens: 12000, reviewMaxTokens: 1200 }
+    # maxDailyTokens：每日自动整理预算，按 128k 窗口 3 批最坏预留校准；0 = 禁用自动整理
+    # reviewMaxTokens：单次 Review 输出上限；缺省 = 按模型输出预算自动推导（窗口×1/8，32k 封顶）
+    dreaming: { mode: idle, idleSeconds: 120, minIntervalMinutes: 60, maxDailyTokens: 72000 }
     maxSessions: 20
   plan:
     enabled: true
@@ -60,7 +64,10 @@ ai:
     onStepFailure: continue
     keywords: [分析, 整理, 重构, 修复, 审查, 合并, 总结, 生成, 创建项目]
   lock: { safetyTimeoutMs: 30000 }
-  windowMonitor:
+  humanizer:
+    enabled: true
+
+  silentAccess:
     enabled: true
     staySeconds: 60
     settleMs: 2000
@@ -76,9 +83,9 @@ tools:
     # 无总闸：按每服务器 enabled 控制，全部关闭即不使用 MCP；五个内置项默认关闭
     servers: []
     builtin:
-      filesystem:  { enabled: false, command: npx, args: ["-y", "@modelcontextprotocol/server-filesystem", "/"], description: "📁 文件系统操作" }
+      filesystem:  { enabled: false, command: npx, args: ["-y", "@modelcontextprotocol/server-filesystem", "/"], description: "📁 文件系统操作", includeTools: [read_text_file, read_media_file, read_multiple_files, list_directory, directory_tree, search_files, get_file_info, list_allowed_directories] }
       brave-search: { enabled: false, command: npx, args: ["-y", "@brave/brave-search-mcp-server"], env: { BRAVE_API_KEY: "" }, description: "🔍 Brave Search" }
-      playwright:   { enabled: false, command: npx, args: ["-y", "@executeautomation/playwright-mcp-server"], description: "🎭 Playwright" }
+      playwright:   { enabled: false, command: npx, args: ["-y", "@executeautomation/playwright-mcp-server"], description: "🎭 Playwright", includeTools: [playwright_navigate, playwright_click, playwright_fill, playwright_screenshot, playwright_get_visible_text, playwright_get_visible_html, playwright_evaluate, playwright_console_logs, playwright_select, playwright_press_key, playwright_go_back, playwright_go_forward, playwright_resize, playwright_close] }
       git:          { enabled: false, command: npx, args: ["-y", "@anthropic/mcp-git", "/"], description: "📝 Git" }
       github:       { enabled: false, command: npx, args: ["-y", "@anthropic/mcp-github"], env: { GITHUB_PERSONAL_ACCESS_TOKEN: "" }, description: "🐙 GitHub" }
 

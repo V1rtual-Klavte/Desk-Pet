@@ -69,10 +69,11 @@ pub fn is_credential_path(path: &Path) -> bool {
 /// V1RTUAL、只读导出和备份仍可通过各自的显式入口访问。
 pub fn is_managed_memory_path(path: &Path) -> bool {
     let lowered = path.to_string_lossy().replace('\\', "/").to_ascii_lowercase();
-    lowered.ends_with("/memory/memory.sqlite3")
-        || lowered.ends_with("/memory/memory.sqlite3-wal")
-        || lowered.ends_with("/memory/memory.sqlite3-shm")
-        || lowered.ends_with("/memory/memory.sqlite3-journal")
+    let db = super::MEMORY_DB_FILE;
+    lowered.ends_with(&format!("/memory/{db}"))
+        || lowered.ends_with(&format!("/memory/{db}-wal"))
+        || lowered.ends_with(&format!("/memory/{db}-shm"))
+        || lowered.ends_with(&format!("/memory/{db}-journal"))
 }
 
 pub(crate) fn normalize_absolute(path: &Path) -> AppResult<PathBuf> {

@@ -1,7 +1,6 @@
 import { getPresenceStage } from "@/services/personality"
-import { getBehaviorSnapshot } from "@/services/behavior"
+import { getBehaviorSnapshot, IDLE_ACTIVE_LIMIT_MS } from "@/services/behavior"
 import { releaseTitlebarStatus, setTitlebarStatus } from "@/services/titlebar"
-import { generalConfig } from "@/services/config"
 import type { WindowObservation } from "@/services/window"
 
 export type PresenceState = "idle" | "working" | "resting"
@@ -17,7 +16,6 @@ export interface PresenceSnapshot {
 const PRESENCE_OWNER = "proactive-presence"
 const PRESENCE_PRIORITY = 10
 const WORKING_MS = 30 * 60_000
-const OBSERVATION_LEASE_PAD_MS = 1_000
 const MOTION_MS = 2_000
 const MOTION_LIMIT_PER_HOUR = 2
 let motionId = 0
@@ -77,15 +75,17 @@ export function observePresence(observation: WindowObservation, cardId?: string)
   }
   const behavior = getBehaviorSnapshot(now).focus
   const previousState = snapshot.state
-  const expiresAt = now + Math.max(10_000, 2 * generalConfig.pollingIntervalMs + OBSERVATION_LEASE_PAD_MS)
-  const systemIdle = observation.idleForMs !== null && observation.idleForMs >= 5 * 60_000
+  const systemIdle = observation.idleForMs !== null && observation.idleForMs >= IDLE_ACTIVE_LIMIT_MS
+  // 事件驱动采样下只有前台变化才会再有观察，presence 因此不设到期时间：
+  // 由下一条观察（状态矛盾/锁屏/关闭观察）显式释放，避免在安静但持续的
+  // 工作片段里到期闪断。释放路径：clearPresence / stopPresence / 监控关闭。
   if (systemIdle) {
-    setPresence("resting", { reason: "observed_idle", sourceOwner: "window-observation", expiresAt })
+    setPresence("resting", { reason: "observed_idle", sourceOwner: "window-observation" })
   } else if ((behavior.currentCategory === "work" || behavior.currentCategory === "development")
     && behavior.currentContinuousMs >= WORKING_MS) {
-    setPresence("working", { reason: "continuous_work_context", sourceOwner: "window-observation", expiresAt })
+    setPresence("working", { reason: "continuous_work_context", sourceOwner: "window-observation" })
   } else if (behavior.currentCategory === "media") {
-    setPresence("resting", { reason: "observed_leisure_context", sourceOwner: "window-observation", expiresAt })
+    setPresence("resting", { reason: "observed_leisure_context", sourceOwner: "window-observation" })
   } else {
     clearPresence("window-observation", "context_changed")
   }

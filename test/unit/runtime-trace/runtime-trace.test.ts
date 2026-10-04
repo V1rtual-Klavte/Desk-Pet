@@ -95,6 +95,22 @@ describe("Runtime trace [trace-runtime]", () => {
     expect(JSON.stringify(observed), "memory正文进入 trace").not.toContain("private memory content")
   })
 
+  it("limits behavior and proactive governance events to structural fields [trace-proactive-behavior-schema]", () => {
+    const context = createRuntimeTraceContext("session-test")
+    const observed: RuntimeTraceEvent[] = []
+    unsubscribes.push(subscribeRuntimeTrace(event => { observed.push(event) }))
+    publishRuntimeTrace(context, "behavior_observed", () => ({ status: "queued", observationState: "observed", category: "media", idleMs: 0,
+      sequence: 7, monitorGeneration: 2, appId: "private.app", title: "Private Window" }))
+    publishRuntimeTrace(context, "proactive_task", () => ({ operation: "settle", status: "committed", taskIds: ["task-1"],
+      reason: "completed", intent: "private task body" }))
+
+    expect(observed[0]?.payload).toEqual({ status: "queued", observationState: "observed", category: "media", idleMs: 0, sequence: 7, monitorGeneration: 2 })
+    expect(observed[1]?.payload).toEqual({ operation: "settle", status: "committed", taskIds: ["task-1"], reason: "completed" })
+    expect(JSON.stringify(observed)).not.toContain("Private Window")
+    expect(JSON.stringify(observed)).not.toContain("private task body")
+    expect(JSON.stringify(observed)).not.toContain("private.app")
+  })
+
   it("redacts secrets before applying the preview length cap [trace-preview]", () => {
     expect(runtimeTracePreview("key=sk-1234567890abcdefghijklmnop\n" + "x".repeat(400))).toBe("key=[redacted]\n" + "x".repeat(285))
     expect(runtimeTracePreview("contact me at hello@example.com")).toBe("contact me at [redacted]")

@@ -61,3 +61,16 @@ export function buildMemoryBankJudgePrompt({ question, history, response }) {
 export function parseJudgeVerdict(text) {
   return String(text ?? "").toLowerCase().includes("yes")
 }
+
+/**
+ * judge 单次输出的 token 预算：reasoning judge 的 thinking 也计入 `maxTokens`，
+ * 固定 512 曾把一次 deepseek-reasoner 判分截断成「未裁决」（2026-10-03 LME oracle
+ * `852ce960`）。judge 只回一个词，实际计费按真实输出，抬高上限不产生额外成本，
+ * 但要给足思考空间，同时不超过模型自身声明的上限。
+ */
+export function judgeOutputBudget(modelMaxTokens) {
+  const budgetCap = 4096
+  const budgetFloor = 1024
+  const max = Number.isFinite(modelMaxTokens) && modelMaxTokens > 0 ? modelMaxTokens : budgetCap
+  return Math.min(Math.max(budgetFloor, Math.min(budgetCap, max)), max)
+}

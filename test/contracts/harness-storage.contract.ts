@@ -9,7 +9,7 @@ export const harnessStorageContract: ModuleContract = {
     "src/services/tool/pi/tauri-execution-env.ts",
     "src/services/session/repo.ts",
   ],
-  sourceHash: "bc88fe8abbabae7a03bca7d2c1e441cde0db9e9a6c13f6c62524b8ac1902145a",
+  sourceHash: "2b330bd6119c570a22aa0ad2b358328d52948ada53077fd3981a2ba5bb2f70f1",
   coverage: [
     {
       id: "hs-01",
@@ -41,7 +41,7 @@ export const harnessStorageContract: ModuleContract = {
     {
       id: "hs-04",
       feature: "旁路写入与分支 tip 链",
-      description: "阻塞工具期间经 session/repo 的旁路入口写入自定义条目，按 2026-09-24 两轮实测钉住它回合结束后的归宿：条目在会话文件中可读、其 seq 早于收尾后的 tip，但**不在** lane 分支的 tip 链上 —— Harness 的提交面按内存 `state.tipId` 续写并覆盖 `branch.tip`，把旁路条目挤成孤立分支（两轮实测链上都查不到旁路 id，前后写入的条目都在）。这是已登记的会话层限制（修法归 session 层，不在本波范围）：断言钉的是真实现状并当回归守卫 —— 将来旁路条目回到链上时场景会失败并要求更新登记",
+      description: "阻塞工具期间经 session/repo 的旁路入口写入自定义条目，断言它回合结束后的归宿：条目在会话文件中可读、其 seq 早于收尾后的 tip，且**在** lane 分支的 tip 链上。活槽存在时 `appendPiSessionCustomEntry` 转交 `HarnessSlot.appendCustomEntry` → `AgentLane`，由 Pi 按当前 operation 状态提交进分支或持久 inbox，Harness 不再从旧内存 `state.tipId` 续写把旁路条目挤成孤立分支；无活槽的空闲会话仍走 session Branch 单写路径。契约只钉「条目在 tip 回溯链上」这一证据链归属，不钉它必须落在哪一个提交批次",
       why: "lane 的 tip 缓存若按旧 tip 续写，旁路写入的审计条目会静默从证据链里消失（条目还在文件里，却不在 tip 回溯链上）——本覆盖点就是这条风险的实测出口",
       layer: "e2e",
       depth: "deep",
@@ -77,11 +77,11 @@ export const harnessStorageContract: ModuleContract = {
     {
       id: "hs-08",
       feature: "折叠的中断安全与地址不变性",
-      description: "两条互补路径。① **中断安全（S-5）**：用场景内 `TauriExecutionEnv` 子类注入 rename / 临时文件写入失败，证明折叠**任何一步失败都返回结构化 skipped/write-failed**（不抛）、**原文件逐字未变**、其后仍能正常 open 与读回 —— 原子替换的语义是「要么整份换掉，要么一点都不动」。若进程在折叠中途被杀会留下 `.tmp-` 残留：残留**不参与会话列举、不阻断 open**（**不是**「下一次折叠会清掉残留」—— 实现没有残留回收，这条按方案自己的契约描述收窄）。② **地址不变性（X-1）**：折叠只删整行、保留行是原文子串 ⇒ 条目 id 与 seq 不变 ⇒ **折叠前发出的地址（条目 id 的唯一前缀）在折叠后逐字相同**，且仍能在折叠后的 id 全集里唯一命中；按 id 回读正文逐字相同。合成 toolResult 条目走真实提交路径（`branch.appendMessage`）而非手写 entry 行，省掉手工维护 seq 高水位的纪律",
+      description: "三条互补路径。① **中断安全（S-5）**：用场景内 `TauriExecutionEnv` 子类注入 rename / 临时文件写入失败，证明折叠失败返回结构化 skipped（不抛）、**原文件逐字未变**、其后仍能正常 open 与读回；包含违反 FileSystem 不抛契约的 fileInfo throw，显式 fold 归一为 skipped/read-failed，open 兜底失败仍继续打开。若进程在折叠中途被杀会留下 `.tmp-` 残留：残留**不参与会话列举、不阻断 open**（实现没有残留回收）。② **地址不变性（X-1）**：折叠只删整行、保留行是原文子串 ⇒ 条目 id 与 seq 不变 ⇒ **折叠前发出的地址在折叠后逐字相同**，且仍能唯一命中；按 id 回读正文逐字相同。合成 toolResult 条目走真实提交路径（`branch.appendMessage`）而非手写 entry 行，省掉手工维护 seq 高水位的纪律",
       why: "折叠重写用户文件的两类致命失败：一是写坏了（中断），二是写对了但历史被改动（地址漂移、模型手里的回读地址失效）。这两条各自都能让「压缩只改变请求视图、原文条目始终保留」这条不变量名存实亡，故必须各有实测出口",
       layer: "integration",
       depth: "deep",
-      scenarios: ["harness-session-log-fold-crash", "harness-session-log-fold-address"],
+      scenarios: ["harness-session-log-fold-crash", "harness-session-log-fold-address", "harness-session-fold-throw-safe"],
     },
   ],
   // 存储失败/折叠注入失败已在 L3 的 hs-02/hs-08 验证；L4只保留需要真实Rust的生产正常链路。

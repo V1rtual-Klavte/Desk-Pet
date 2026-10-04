@@ -21,6 +21,7 @@
 [阶段状态行]
 界面在聊天窗口显示一行瞬时状态提示，让用户知道系统正在做什么。
 - thinking: 模型开始生成、还没有可见内容时
+- typing: 正在生成普通回复、随后会逐条显示消息时
 - planning: 正在判定复杂度并生成执行计划时
 - retry: 上一次请求失败、系统正在自动重试时
 - error: 工具或流程出错时的一句话
@@ -53,7 +54,6 @@
 - turnTimeout: 单轮处理等待超时
 - toolLoopMaxRounds: 工具调用轮数用尽
 - llmUnavailable: LLM 完全不可用时的通用回复（2-3 条，以 JSON 数组形式）
-- subAgentDone: 子代理执行完成
 - subAgentFailed: 子代理执行失败
 - subAgentNoResult: 子代理跑完了但没有产出任何结果
 - runInterrupted: 应用崩溃或退出导致上一次运行中断，需要用户选择继续或丢弃
@@ -62,6 +62,7 @@
 - planCancelled: 计划被取消
 - planCompleted: 计划剩余步骤执行完成
 - planResumeBusy: 用户想继续执行一个计划，但会话正忙
+- silentRejected: 连续沉默护栏拒绝后，给出一条极短且自然的角色回复
 
 要求：
 - 只输出一个完整 JSON 对象，不要 Markdown，不要代码块，不要解释。
@@ -83,6 +84,7 @@
 
 {
   "thinking": "",
+  "typing": "",
   "planning": "",
   "presence": { "idle": "", "working": "", "resting": "" },
   "executing": {
@@ -142,7 +144,6 @@
     "turnTimeout": "",
     "toolLoopMaxRounds": "",
     "llmUnavailable": ["", ""],
-    "subAgentDone": "",
     "subAgentFailed": "",
     "subAgentNoResult": "",
     "runInterrupted": "",
@@ -150,7 +151,8 @@
     "pausedReturnFailed": "",
     "planCancelled": "",
     "planCompleted": "",
-    "planResumeBusy": ""
+    "planResumeBusy": "",
+    "silentRejected": ""
   },
   "greetings": ["", "", ""]
 }

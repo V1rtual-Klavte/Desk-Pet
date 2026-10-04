@@ -18,6 +18,8 @@ const PURPOSE_LABELS: Record<UsagePurpose, string> = {
   planner: "规划",
   memory: "记忆",
   stages: "阶段",
+  observation: "静默了解",
+  topic: "话题画像",
 }
 const usageLabel = computed(() =>
   usageTotal.value.total > 0 ? `${(usageTotal.value.total / 1000).toFixed(1)}k` : "—"

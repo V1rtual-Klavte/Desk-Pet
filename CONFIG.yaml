@@ -43,6 +43,9 @@ ai:
   apiKey: ""
   requireApiKey: true
   model: deepseek-chat
+  # 辅助模型：子代理（agent_spawn 工具、计划步骤）、主动扫描规划与记忆整理（dreaming）使用；
+  # 留空跟随聊天模型。与聊天共用同一 provider/endpoint/apiKey。
+  auxModel: ""
   # 上下文窗口（tokens）：默认 128k，最低 65536。再低时压缩找不到可摘要范围，
   # 设置页会拒绝保存，运行期会在模型解析处报错。
   contextMaxTokens: 131072
@@ -60,7 +63,7 @@ ai:
     followUpMode: one-at-a-time
 
   personality:
-    active: angelkawaii
+    active: default
 
   loop:
     maxRetry: 3
@@ -84,9 +87,10 @@ ai:
       mode: idle
       idleSeconds: 120
       minIntervalMinutes: 60
-      maxDailyTokens: 12000
-      # 单次 Review 的输出上限；reasoning 模型的 thinking 也计入此预算，推理模型需调大（如 4096）
-      reviewMaxTokens: 1200
+      # 每日自动整理预算：按 128k 窗口、3 批最坏预留（3×8k 输入 + 3×16k 输出）校准；0 = 禁用自动整理
+      maxDailyTokens: 72000
+      # reviewMaxTokens：单次 Review 输出上限；留空/删掉 = 按模型输出预算自动推导（窗口×1/8，32k 封顶，且不越过模型目录上限）
+      # reviewMaxTokens: 4096
     maxSessions: 20
 
   plan:
@@ -115,7 +119,10 @@ ai:
   lock:
     safetyTimeoutMs: 30000
 
-  windowMonitor:
+  humanizer:
+    enabled: true
+
+  silentAccess:
     enabled: true
     staySeconds: 60
     settleMs: 2000
@@ -146,6 +153,8 @@ tools:
         command: npx
         args: ["-y", "@modelcontextprotocol/server-filesystem", "/"]
         description: "📁 文件系统操作 — 读写/搜索本地文件"
+        # 白名单：只注册常用工具（全量 47 个 schema 约占 5–6.5k token/请求）
+        includeTools: [read_text_file, read_media_file, read_multiple_files, list_directory, directory_tree, search_files, get_file_info, list_allowed_directories]
       brave-search:
         enabled: false
         command: npx
@@ -157,6 +166,8 @@ tools:
         command: npx
         args: ["-y", "@executeautomation/playwright-mcp-server"]
         description: "🎭 Playwright — 无头浏览器自动化测试"
+        # 白名单：33 个工具只保留常用操作；未列出的不注册、不进请求
+        includeTools: [playwright_navigate, playwright_click, playwright_fill, playwright_screenshot, playwright_get_visible_text, playwright_get_visible_html, playwright_evaluate, playwright_console_logs, playwright_select, playwright_press_key, playwright_go_back, playwright_go_forward, playwright_resize, playwright_close]
       git:
         enabled: false
         command: npx

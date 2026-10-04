@@ -88,12 +88,14 @@ describe("上下文预算", () => {
     expect(drop?.originalTokens).toBe(estimateContextTokens("y".repeat(2_000)))
     expect(small.estimatedInputTokens, `淘汰的块仍计入了输入预算: ${small.estimatedInputTokens}`).toBe(estimateContextTokens("固定角色规则"))
 
-    // transcript 不再有预算份额（请求视图归 Harness）：账目行保留，requested 恒 0，且没有借用字段。
+    // 分配账目只记录真实 requested/used/dropped，不保存名义份额或借还字段。
+    expect(small.allocations.some(allocation => "assigned" in allocation), "名义预算份额不应进入实际用量账目").toBe(false)
+    expect(small.allocations.some(allocation => "borrowed" in allocation), "分配账目回到了借还计算（borrowed 字段）").toBe(false)
+    // transcript 请求视图归 Harness：账目行保留，requested 恒 0。
     const transcript = small.allocations.find(allocation => allocation.layer === "transcript")
     expect(transcript, "分配账目缺少 transcript 行（审计行必须保留）").toBeDefined()
     expect(transcript?.requested, `transcript 不该有预算占用: ${JSON.stringify(transcript)}`).toBe(0)
     expect(transcript?.used).toBe(0)
-    expect(small.allocations.some(allocation => "borrowed" in allocation), "分配账目回到了借还计算（borrowed 字段）").toBe(false)
     // 淘汰量落在块自己所属的层（memory），没有淘汰的层不写 dropped（不写 0）。
     const droppedLayer = small.allocations.find(allocation => allocation.layer === "memory")
     expect(droppedLayer?.dropped, `memory 层的淘汰量没有如实记录: ${JSON.stringify(droppedLayer ?? null)}`)

@@ -9,8 +9,22 @@
 /** 一次性 Provider 调用（planner / 压缩 / 记忆 / 阶段文案）的总时限 */
 export const PROVIDER_TIMEOUT_MS = 60_000
 
-/** 单个 Provider 响应体的字节上限 */
-export const MAX_PROVIDER_RESPONSE_BYTES = 4 * 1024 * 1024
+/** 响应体上限的固定基线（协议头、用量与流式包封的公共部分）。 */
+export const MAX_PROVIDER_RESPONSE_BASE_BYTES = 1 * 1024 * 1024
+/**
+ * 每个输出 token 预留的流式字节。
+ *
+ * 旧值是固定 4 MiB 总上限：输出预算还叫 4k 时够用，但预算改为按窗口推导后，
+ * reasoning 模型的思考与 JSON 包封会按 token 数放大，16k 输出就可能超过 4 MiB。
+ * 512B/token 覆盖实测的 SSE 分块与包封开销（约 256B/token）并留一倍余量；
+ * 上限仍随请求输出预算有界，不放开成无限制读取。
+ */
+export const PROVIDER_RESPONSE_BYTES_PER_TOKEN = 512
+
+/** 按本次最大输出推导响应体上限：基线 + 输出预算 × 每 token 预留。 */
+export function providerResponseByteCap(maxOutputTokens: number): number {
+  return MAX_PROVIDER_RESPONSE_BASE_BYTES + Math.max(0, Math.floor(maxOutputTokens)) * PROVIDER_RESPONSE_BYTES_PER_TOKEN
+}
 
 /** 协议白名单：只放行 http/https，`file:` 等一律拒绝。 */
 export function validateProviderUrl(value: string): URL {
@@ -43,9 +57,9 @@ function requestUrl(input: RequestInfo | URL): string {
  * 返回一个按 chunk 计数的 ReadableStream，不预读、不整段缓冲 SSE。超限时先
  * 取消上游 reader 再报错，避免连接继续占用网络和内存。
  */
-export async function capProviderResponseBody(response: Response): Promise<Response> {
+export async function capProviderResponseBody(response: Response, maxBytes: number): Promise<Response> {
   const declared = Number(response.headers.get("content-length") ?? 0)
-  if (declared > MAX_PROVIDER_RESPONSE_BYTES) {
+  if (declared > maxBytes) {
     await response.body?.cancel()
     throw new Error("Provider 响应超过大小上限")
   }
@@ -62,7 +76,7 @@ export async function capProviderResponseBody(response: Response): Promise<Respo
           return
         }
         total += next.value.byteLength
-        if (total > MAX_PROVIDER_RESPONSE_BYTES) {
+        if (total > maxBytes) {
           await reader.cancel()
           controller.error(new Error("Provider 响应超过大小上限"))
           return
@@ -90,22 +104,22 @@ export async function capProviderResponseBody(response: Response): Promise<Respo
  * 网络不可达的 TypeError）原样抛出，由 pi-ai 归一化成 `stopReason: "error"`
  * 的 AssistantMessage，不在这里改写文案。
  */
-export async function guardProviderFetch(input: RequestInfo | URL, init?: RequestInit): Promise<Response> {
+export async function guardProviderFetch(input: RequestInfo | URL, init?: RequestInit, maxBytes = providerResponseByteCap(4_096)): Promise<Response> {
   validateProviderUrl(requestUrl(input))
   // 不跟随 30x，避免 Authorization/API Key 被转发到重定向目标。
   const response = await globalThis.fetch(input, { ...init, redirect: "error" })
-  return capProviderResponseBody(response)
+  return capProviderResponseBody(response, maxBytes)
 }
 
 /**
  * 为一个配置快照创建 fetch 边界。所有请求都必须留在 endpoint 的同一 origin；
  * path/query 可由 pi-ai 正常追加，host、scheme 或 port 的漂移一律拒绝。
  */
-export function createProviderFetchGuard(endpoint: string): typeof fetch {
+export function createProviderFetchGuard(endpoint: string, maxBytes = providerResponseByteCap(4_096)): typeof fetch {
   const origin = configuredProviderOrigin(endpoint)
   return async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
     const request = validateProviderUrl(requestUrl(input))
     if (request.origin !== origin) throw new Error("Provider 请求目标不在已配置 origin 内")
-    return guardProviderFetch(input, init)
+    return guardProviderFetch(input, init, maxBytes)
   }
 }

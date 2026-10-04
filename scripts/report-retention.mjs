@@ -7,11 +7,12 @@
 import { readdirSync, rmSync, statSync } from "node:fs"
 import { join } from "node:path"
 
-export const RETENTION_MAX_GROUPS = 5
+/** 保留最近 N 场（报告与 trace 同口径）；bench / quality 各自成池，互不淘汰。 */
+export const RETENTION_MAX_GROUPS = 3
 export const RETENTION_MAX_BYTES = 200 * 1024 * 1024
 
 /** 日期戳报告本体：<stamp>.(json|txt|html) */
-const REPORT_NAME = /^\d{4}-\d{2}-\d{2}T[\dTZ.-]+\.(?:json|txt|html)$/
+const REPORT_NAME = /^(\d{4}-\d{2}-\d{2}T[\dTZ.-]+)\.(?:json|txt|html)$/
 /** 日期戳报告的派生卫星：<报告名>.review.json / <报告名>.scored.json */
 const REPORT_SATELLITE = /^(\d{4}-\d{2}-\d{2}T[\dTZ.-]+\.(?:json|txt|html))\.(?:review|scored)\.json$/
 
@@ -20,9 +21,11 @@ const REPORT_SATELLITE = /^(\d{4}-\d{2}-\d{2}T[\dTZ.-]+\.(?:json|txt|html))\.(?:
  * vitest-* 等固定名产物与人工文件）返回 null —— 不参与淘汰，也不计入字节。
  */
 export function reportRetentionGroupKey(name) {
-  if (REPORT_NAME.test(name)) return name
+  // 同一场的 json/html/txt 是同一保留单元（先写 json 再补 html 不能被拆开淘汰）。
+  const report = name.match(REPORT_NAME)
+  if (report) return report[1]
   const satellite = name.match(REPORT_SATELLITE)
-  return satellite ? satellite[1] : null
+  return satellite ? satellite[1].replace(/\.(?:json|txt|html)$/, "") : null
 }
 
 /**

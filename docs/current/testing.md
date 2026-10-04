@@ -23,7 +23,7 @@ V1rtual-Desk-Pet 的运行时验证以 [Live Test 使用规范](../../test/READM
 
 线路、记忆质量与资源开销分别有独立评测入口，格式和命令见[测试 README](../../test/README.md#trace记忆质量与性能门禁)。线路完整性检查与用户理想稿的独立 AI 审阅分开；理想稿只由用户编写。记忆原始采集不能代替 gold 双人审计与校准 judge 盲审。性能分列 release 原生存储、debug IPC 和进程树样本，不能冒充真实 UI 首显或完整产品 RSS。
 
-外部记忆基准（memory-bench：LongMemEval / LoCoMo / MemoryBank cn）是独立观测层，与自建 80 题物理隔离、不进 CI 与发布门禁。数据集文件不进仓库：版本锁（固定 revision + SHA-256、许可原文、判分移植代码）在 git，数据由 `pnpm run test:memory-bench:prepare [-- --data-dir <目录>]` 装进开发者指定的 data-dir（默认 `test/memory-bench/.data/`，可弃缓存），运行期不下载。判分为官方脚本/模板的自适配移植（LoCoMo 词面 F1 无 judge；LME judge 必须异构于被测模型），报告口径为 `source: external` / `status: observational`、不设质量阈值；运行方法、口径差异与非商用许可约束见 [memory-bench/README](../../test/memory-bench/README.md)。
+外部记忆基准（memory-bench：LongMemEval / LoCoMo / MemoryBank cn）是**质量对照的主口径**（观测性证据，与自建 80 题物理隔离）；**门禁保持现状**——CI 与 `test:release` 不跑评测集（最多冒烟级自检），完整分层在本机跑通后再发布；自建 80 题只作兜底冒烟与治理语义回归。数据集文件不进仓库：版本锁（固定 revision + SHA-256、许可原文、判分移植代码）在 git，数据由 `pnpm run test:memory-bench:prepare [-- --data-dir <目录>]` 装进开发者指定的 data-dir（默认 `test/memory-bench/.data/`，可弃缓存），运行期不下载。判分为官方脚本/模板的自适配移植（LoCoMo 词面 F1 无 judge；LME judge 必须异构于被测模型），报告口径为 `source: external` / `status: observational`、不设质量阈值；运行方法、口径差异与非商用许可约束见 [memory-bench/README](../../test/memory-bench/README.md)。
 
 ## 未验证边界
 

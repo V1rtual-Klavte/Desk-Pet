@@ -7,6 +7,10 @@ import { conversationConfig, userConfig } from "@/services/config";
 import { createLogger } from "@/services/logger";
 import { formatError } from "@/services/error";
 import { listen } from "@tauri-apps/api/event";
+import { getCurrentWebview } from "@tauri-apps/api/webview";
+import { CHAT_IMAGE_LIMITS, chatImageUrl, pickChatImages, prepareImagePaths } from "@/services/images";
+import { cancelSession, getRevealState, subscribe as subscribeHumanizer } from "@/services/humanizer";
+import type { Message } from "@/services/agent/types";
 import {
   continueInterruptedRun,
   describeInputDelivery,
@@ -24,6 +28,7 @@ import { confirmState, resolvePermissionConfirm } from "@/services/safety";
 import { actionCategoryOf } from "@/services/tool";
 import { activeCardName, getFallbackReply, getSimpleStage, getStagePrompt } from "@/services/personality";
 import type { SimpleStageKey } from "@/services/personality";
+import { applyMemoryChange, memoryStatus, publishMemoryRevision, resolveCurrentTrustedMemorySource } from "@/services/agent/memory";
 
 // ★ 同步初始化 Slash 命令注册表（下拉补全用；命令执行只在 ingress，见 preProcess）
 initSlashCommands();
@@ -32,6 +37,32 @@ const log = createLogger("ChatPanel");
 
 const emit = defineEmits<{ send: [text: string]; "request-popup": [] }>();
 const input = ref("");
+const selectedImages = ref<string[]>([]);
+const imagePicking = ref(false);
+const unavailableImages = ref(new Set<string>());
+const revealTick = ref(0);
+let cleanupHumanizer: (() => void) | undefined;
+let cleanupImageDrop: (() => void) | undefined;
+
+function messageParts(message: Message): string[] { return message.parts ?? [message.text]; }
+function partVisible(message: Message, index: number): boolean {
+  void revealTick.value;
+  return index < (getRevealState(getActiveSessionId(), message.id)?.revealed ?? messageParts(message).length);
+}
+function imageUnavailable(path: string) {
+  unavailableImages.value = new Set([...unavailableImages.value, path]);
+}
+async function addImagePaths(paths: readonly string[]) {
+  const selected = await prepareImagePaths([...new Set([...selectedImages.value, ...paths])]);
+  selectedImages.value = selected;
+}
+async function chooseImages() {
+  if (imagePicking.value) return;
+  imagePicking.value = true;
+  try { await addImagePaths(await pickChatImages()); }
+  catch (error) { showDeliveryNote("图片选择失败：" + formatError(error)); }
+  finally { imagePicking.value = false; }
+}
 const inputRef = ref<HTMLTextAreaElement | null>(null);
 const msgContainer = ref<HTMLElement | null>(null);
 const thumb = ref<HTMLElement | null>(null);
@@ -41,6 +72,8 @@ const cardName = computed(() => activeCardName.value || "桌宠");
 
 /** 工具执行状态提示（agent-loop 事件驱动） */
 const toolStatus = ref<{ text: string; visible: boolean }>({ text: "", visible: false });
+let statusOwner: "tool" | "stage" | undefined;
+let toolExecuting = false;
 let cleanupToolExec: (() => void) | null = null;
 let cleanupToolDone: (() => void) | null = null;
 let cleanupStageHint: (() => void) | null = null;
@@ -50,6 +83,7 @@ const toolCompletedTimer = ref<ReturnType<typeof setTimeout> | null>(null);
 function hideToolStatus() {
   if (toolCompletedTimer.value) { clearTimeout(toolCompletedTimer.value); toolCompletedTimer.value = null; }
   toolStatus.value = { text: "", visible: false };
+  statusOwner = undefined;
 }
 
 /**
@@ -219,6 +253,7 @@ async function stopRun() {
 
 /** 单条状态提示（投递回执/撤回结果/已加入本次对话），短暂展示，不落盘。 */
 const deliveryNote = ref("");
+const rememberingEvents = ref<Set<string>>(new Set());
 let deliveryNoteTimer: ReturnType<typeof setTimeout> | null = null;
 function showDeliveryNote(text: string) {
   deliveryNote.value = text;
@@ -226,6 +261,56 @@ function showDeliveryNote(text: string) {
   deliveryNoteTimer = setTimeout(() => {
     if (deliveryNote.value === text) deliveryNote.value = "";
   }, 4000);
+}
+
+/**
+ * “记住这条”只接受带持久 eventId 的用户原文，并重新从 JSONL 的可信来源表核验。
+ * 页面文本只是明确选择的内容，不经过模型或工具提炼；缺少可信身份的历史气泡不提供入口。
+ */
+async function rememberUserMessage(message: (typeof chatHistory)[number]): Promise<void> {
+  if (message.role !== "user" || !message.eventId || rememberingEvents.value.has(message.eventId)) return;
+  const eventId = message.eventId;
+  rememberingEvents.value.add(eventId);
+  try {
+    const sessionId = getActiveSessionId();
+    const source = await resolveCurrentTrustedMemorySource(sessionId, eventId);
+    if (!source.eligibleForMemory || source.origin !== "user" || source.taint !== "trusted_user") {
+      throw new Error("这条消息不是可记忆的可信用户原文");
+    }
+    if (!source.evidence) throw new Error("这条可信用户原文目前不可用");
+    const current = await memoryStatus();
+    const revision = await applyMemoryChange({
+      operationId: `remember-${crypto.randomUUID()}`,
+      baseRevision: current.revision,
+      action: "add",
+      actor: "user_ui",
+      trustedSessionId: sessionId,
+      trustedUserEventId: eventId,
+      draft: {
+        content: source.evidence,
+        summary: source.evidence.trim().slice(0, 120),
+        kind: "episode",
+        scope: "user",
+        aliases: [],
+        pinned: false,
+        importance: 5,
+        confidence: 1,
+        observedAt: message.timestamp,
+        sourceIds: [source.sourceId],
+      },
+    });
+    try {
+      await publishMemoryRevision(revision);
+      showDeliveryNote(`已记住这条用户原文（revision ${revision}）`);
+    } catch (error) {
+      showDeliveryNote(`已提交记忆（revision ${revision}），但同步失败：${formatError(error)}`);
+    }
+  } catch (error) {
+    log.warn("记住用户消息失败:", formatError(error));
+    showDeliveryNote(`记忆未提交：${formatError(error)}`);
+  } finally {
+    rememberingEvents.value.delete(eventId);
+  }
 }
 
 const DELIVERY_NOTES: Record<"steered" | "followup" | "deferred", string> = {
@@ -475,17 +560,31 @@ function onCompositionEnd() { composing.value = false; }
 // ==========================================
 async function send() {
   const t = input.value.trim();
-  if (!t) return;
+  const images = [...selectedImages.value];
+  if (!t && images.length === 0) return;
 
   input.value = "";
+  selectedImages.value = [];
   slashVisible.value = false;
   intentOpen.value = false;
   emit("send", t);
   playEventSound("send");
   // Slash 命令一律交给 ingress（preProcess）执行，这里不再保留第二条执行路径；
   // 未注册的 / 文本由 ingress 透传 AI。显式意图只作用于普通消息（slash 文本按次轮排队）。
-  const result = await sendMessage(t, { delivery: t.startsWith("/") ? undefined : deliveryIntent.value });
-  if (result.delivery) showDeliveryNote(DELIVERY_NOTES[result.delivery]);
+  try {
+    const result = await sendMessage(t, { delivery: t.startsWith("/") ? undefined : deliveryIntent.value, imagePaths: images });
+    if (result.delivery) showDeliveryNote(DELIVERY_NOTES[result.delivery]);
+    if (result.failure?.kind === "admission") {
+      if (!input.value) input.value = t;
+      if (selectedImages.value.length === 0) selectedImages.value = images;
+      showDeliveryNote(result.failure.message);
+    }
+  } catch (error) {
+    if (!input.value) input.value = t;
+    if (selectedImages.value.length === 0) selectedImages.value = images;
+    log.error("发送消息失败:", formatError(error));
+    showDeliveryNote("消息未发送：" + formatError(error));
+  }
   refreshQueue();
   scrollToBottom();
 }
@@ -539,17 +638,32 @@ onMounted(async () => {
   checkBottom();
   refreshQueue();
   void refreshInterrupted();
+  cleanupHumanizer = subscribeHumanizer(state => {
+    if (state.sessionId !== getActiveSessionId()) return;
+    revealTick.value++;
+    // typing 状态只作顶栏展示（emitStageHint 已双写「配信中」位），不再占用输入框上方的状态位；
+    // 这里只处理揭示进度带来的滚动。
+    nextTick(() => { if (isAtBottom.value) scrollToBottom(); else { hasNewBelow.value = true; updateThumb(); } });
+  });
+  getCurrentWebview().onDragDropEvent(event => {
+    if (event.payload.type !== "drop") return;
+    void addImagePaths(event.payload.paths).catch(error => showDeliveryNote("图片拖入失败：" + formatError(error)));
+  }).then(stop => { cleanupImageDrop = stop; }).catch(error => log.error("图片拖放监听注册失败:", formatError(error)));
 
   // ── 工具执行状态监听 ──
   // 注册失败一律 error 级留痕（FIX-04 口径：事件监听注册失败 = 静默行为变化，不是可忽略的降级）。
   listen<{ toolName: string }>("tool-executing", (event) => {
     // 过程提示语来自当前 Card 的阶段文案（按工具类别匹配），界面不写死。
     const hint = getStagePrompt("executing", actionCategoryOf(event.payload.toolName))
+    toolExecuting = true;
+    statusOwner = "tool";
     toolStatus.value = { text: hint, visible: true }
   }).then(fn => { cleanupToolExec = fn }).catch(error => log.error("事件监听注册失败，工具状态不再更新:", formatError(error)))
   listen<{ toolName: string; success: boolean }>("tool-completed", (event) => {
     // 成功 → done、失败 → blocked：Card 只为工具结果生成这两族文案（error 是非工具阶段、无类别维度）。
     const category = actionCategoryOf(event.payload.toolName)
+    toolExecuting = false;
+    statusOwner = "tool";
     const hint = getStagePrompt(event.payload.success ? "done" : "blocked", category)
     toolStatus.value = { text: hint, visible: true }
     // 工具结束是排队项消费/释放的常见时点，顺带刷新排队视图。
@@ -562,6 +676,9 @@ onMounted(async () => {
     if (event.payload.sessionId !== getActiveSessionId()) return;
     const stage = event.payload.stage;
     if (!stage) return;
+    // typing 只走顶栏（同一事件已双写），不占用输入框上方的状态位。
+    if (stage === "typing") return;
+    statusOwner = "stage";
     const text = getSimpleStage(stage);
     // 没有文案就等于没有提示位（Card 给了空串）：收起而不是显示一个空框。
     if (!text) { hideToolStatus(); return; }
@@ -585,6 +702,7 @@ onMounted(async () => {
   listen<{ sessionId?: string; running?: boolean }>("deskpet-run-state", (event) => {
     if (event.payload.sessionId !== getActiveSessionId()) return
     if (event.payload.running === false) {
+      toolExecuting = false;
       stopping.value = false
       // 回合收尾：阶段提示（思考中/规划中/重试中）没有续期者，必须在这里收起，
       // 否则「思考中…」会挂到下一次运行开始。
@@ -604,7 +722,11 @@ onMounted(async () => {
 });
 
 // 切换会话不显示上一会话的半截流式正文与排队视图。
-watch(() => getActiveSessionId(), () => {
+watch(() => getActiveSessionId(), (_current, previous) => {
+  if (previous) cancelSession(previous);
+  selectedImages.value = [];
+  unavailableImages.value = new Set();
+  hideToolStatus();
   streamingText.value = ""
   previousQueuedIds = []
   deliveryNote.value = ""
@@ -613,6 +735,9 @@ watch(() => getActiveSessionId(), () => {
 });
 
 onUnmounted(() => {
+  cancelSession(getActiveSessionId());
+  cleanupHumanizer?.();
+  cleanupImageDrop?.();
   if (cleanupToolExec) cleanupToolExec()
   if (cleanupToolDone) cleanupToolDone()
   if (cleanupStageHint) cleanupStageHint()
@@ -630,10 +755,19 @@ onUnmounted(() => {
     <!-- 消息区 + 滚动条容器 -->
     <div id="ch-body">
       <div id="ch-msgs" ref="msgContainer" @scroll="checkBottom">
-        <div v-for="m in chatHistory" :key="m.id" class="cm" :class="m.role">
-          <span class="cn">{{ m.role === "system" ? "系统" : m.role === "assistant" ? cardName : "你" }}</span>
-          <span class="ct">{{ m.text }}</span>
-        </div>
+        <template v-for="m in chatHistory" :key="m.id">
+          <div v-for="(part, index) in messageParts(m)" v-show="partVisible(m, index)" :key="`${m.id}:${index}`" class="cm" :class="m.role">
+            <span v-if="index === 0" class="cn">{{ m.role === "system" ? "系统" : m.role === "assistant" ? cardName : "你" }}</span>
+            <span v-if="part" class="ct">{{ part }}</span>
+            <template v-if="index === 0">
+              <template v-for="path in m.imagePaths" :key="path">
+                <span v-if="unavailableImages.has(path)" class="ct image-unavailable">图片原文件不可用</span>
+                <div v-else class="chat-image-link"><img :src="chatImageUrl(path)" :alt="m.role === 'user' ? '用户发送的图片' : '桌宠发来的截图'" class="chat-image" loading="lazy" @error="imageUnavailable(path)" /></div>
+              </template>
+              <button v-if="m.role === 'user' && m.eventId && m.text" type="button" class="cm-remember" :disabled="rememberingEvents.has(m.eventId)" @click="rememberUserMessage(m)">{{ rememberingEvents.has(m.eventId) ? "记忆提交中…" : "记住这条" }}</button>
+            </template>
+          </div>
+        </template>
         <!-- 流式正文：只做瞬时展示，回合结束后由提交路径推送的完整消息取代 -->
         <div v-if="streamingText" class="cm assistant stream">
           <span class="cn">{{ cardName }}</span>
@@ -667,11 +801,10 @@ onUnmounted(() => {
     </div>
 
     <!-- 工具执行状态提示 -->
-    <Transition name="tool-status-fade">
-      <div v-if="toolStatus.visible" id="ch-tool-status">
-        {{ toolStatus.text }}
-      </div>
-    </Transition>
+    <!-- 过程状态直接随owner消失；不依赖后台/锁屏时会暂停的RAF过渡。typing已有最短显示调度。 -->
+    <div v-if="toolStatus.visible" id="ch-tool-status">
+      {{ toolStatus.text }}
+    </div>
 
     <!-- 中断运行（崩溃恢复）：内核默认暂停，继续/丢弃由用户显式决定 -->
     <div v-if="interrupted" id="ch-interrupted">
@@ -712,7 +845,15 @@ onUnmounted(() => {
     <!-- 计划确认面板 -->
     <PlanConfirm />
 
+    <div v-if="selectedImages.length" id="ch-images">
+      <div v-for="(path, index) in selectedImages" :key="path" class="pending-image">
+        <img :src="chatImageUrl(path)" :alt="`待发送图片 ${index + 1}`" />
+        <button type="button" :aria-label="`移除图片 ${index + 1}`" @click="selectedImages.splice(index, 1)">×</button>
+      </div>
+      <span>{{ selectedImages.length }}/{{ CHAT_IMAGE_LIMITS.maxImages }}</span>
+    </div>
     <div id="ch-foot">
+      <button type="button" :disabled="imagePicking" aria-label="添加图片" title="添加图片，也可拖入原文件" @click="chooseImages">图片</button>
       <!-- 输入框容器（相对定位，供下拉框定位） -->
       <div id="ch-input-wrap">
         <textarea
@@ -769,7 +910,7 @@ onUnmounted(() => {
       <button v-if="runRunning" id="ch-stop" type="button" :disabled="stopping" @click="stopRun">
         {{ stopping ? "停止中…" : "停止" }}
       </button>
-      <button @click="send" :disabled="!input.trim()">发送</button>
+      <button @click="send" :disabled="!input.trim() && selectedImages.length === 0">发送</button>
     </div>
 
     <!-- 安全确认弹窗 -->
@@ -872,7 +1013,17 @@ onUnmounted(() => {
 .cm.user .cn { color: #90d0ff; }
 .ct { color: var(--color-text-bright); word-break: break-word; padding: 4px 8px; border-radius: 12px; max-width: 95%; font-size: clamp(9px, 2.5vw, var(--font-size, 15px)); }
 .cm.user .ct { background: var(--color-border-light); }
+.cm-remember { align-self: flex-end; border: 0; padding: 1px 4px; color: var(--color-text-pink); background: transparent; font-size: 9px; cursor: pointer; opacity: .72; }
+.cm-remember:hover { opacity: 1; }
 .cm.assistant .ct { background: var(--color-surface-dark); }
+.chat-image-link { max-width: 95%; }
+.chat-image { display: block; max-width: 100%; max-height: 240px; border-radius: 10px; object-fit: contain; }
+.image-unavailable { color: var(--color-text-muted); }
+#ch-images { display: flex; align-items: center; gap: 6px; padding: 6px; flex-wrap: wrap; background: var(--color-surface-dark); }
+#ch-images > span { color: var(--color-text-muted); font-size: 11px; }
+.pending-image { position: relative; }
+.pending-image img { width: 48px; height: 48px; object-fit: cover; border-radius: 6px; }
+.pending-image button { position: absolute; top: -3px; right: -3px; border: none; border-radius: 50%; background: var(--color-surface-darker); color: var(--color-text-bright); cursor: pointer; }
 
 /* 流式正文：半透明 + 光标，区别未提交内容 */
 .cm.stream .ct { background: var(--color-surface-dark); opacity: 0.75; }

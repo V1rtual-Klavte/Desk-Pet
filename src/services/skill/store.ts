@@ -17,7 +17,7 @@ import {
   type SkillDiagnostic,
 } from "@earendil-works/pi-agent-core"
 import { TauriExecutionEnv } from "@/services/tool/pi/tauri-execution-env"
-import { runtimePath } from "@/services/paths"
+import { relativeWithinRoot, runtimePath } from "@/services/paths"
 import { createLogger } from "@/services/logger"
 import { formatError } from "@/services/error"
 
@@ -259,17 +259,12 @@ function frontmatterRange(raw: string): FrontmatterRange | null {
  * 目录技能去掉结尾的 `SKILL.md`：删除坐标是目录，`skill_delete` 会连同目录里的引用文件一起删。
  */
 function skillRelativePath(skillsDir: string, filePath: string): string | null {
-  const root = normalizeSeparators(skillsDir).replace(/\/+$/, "")
-  const full = normalizeSeparators(filePath)
-  if (!full.startsWith(`${root}/`)) {
+  // 归一与根内截取走路径模块的纯函数，这里只做技能特有的 SKILL.md 收尾。
+  const relative = relativeWithinRoot(skillsDir, filePath)
+  if (relative === null) {
     // 防御分支：Pi 只会从我们传入的目录里取文件，这里取不到坐标时不猜路径，也没有删除入口。
     log.warn("Skill 文件不在 skills 根内，没有删除坐标:", filePath)
     return null
   }
-  const relative = full.slice(root.length + 1)
   return relative.endsWith(`/${SKILL_FILE}`) ? relative.slice(0, -(SKILL_FILE.length + 1)) : relative
-}
-
-function normalizeSeparators(path: string): string {
-  return path.replace(/\\/g, "/")
 }

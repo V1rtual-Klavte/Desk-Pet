@@ -25,14 +25,16 @@ export const RUST_ONLY_COMMANDS = [
   "clipboard_read", "clipboard_write",
   // 窗口与显示器
   "set_monitor_enabled", "get_runtime_activity",
+  // 截图（screenshot_cmd.rs）：桌面屏幕采集 + 数据根落盘，Node 无法等价复现
+  "capture_screenshot", "save_screenshot",
   // 桌面副作用
   "app_open", "export_profile_zip", "restore_default_resources",
   // MemoryStore/FTS/transactions are Rust-owned; Node must not fake them.
-  "memory_status", "memory_list", "memory_detail", "memory_register_sources", "memory_query", "memory_get_items",
+  "memory_status", "memory_list", "memory_detail", "memory_register_sources", "memory_query", "memory_recall_candidates", "memory_get_items",
   "memory_apply_change", "memory_job_start", "memory_job_checkpoint", "memory_job_cancel", "memory_job_resume",
-  "memory_job_sources", "memory_candidates_add", "memory_dreaming_commit", "memory_dreaming_budget_reserve",
+  "memory_job_sources", "memory_job_list", "memory_source_evidence", "memory_candidates_add", "memory_dreaming_commit", "memory_dreaming_budget_reserve",
   "memory_dreaming_budget_settle", "memory_dreaming_budget", "memory_export",
-  "memory_backup", "memory_rebuild", "memory_restore", "memory_history",
+  "memory_backup", "memory_rebuild", "memory_restore", "memory_restore_preview", "memory_history",
   "proactive_scan", "proactive_query", "proactive_change", "proactive_claim", "proactive_validate", "proactive_settle", "proactive_reconcile", "proactive_control",
 ] as const
 

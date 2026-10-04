@@ -1,17 +1,10 @@
 import { bashExecutionToText, BRANCH_SUMMARY_PREFIX, BRANCH_SUMMARY_SUFFIX, COMPACTION_SUMMARY_PREFIX, COMPACTION_SUMMARY_SUFFIX } from "@earendil-works/pi-agent-core"
 import type { AgentMessage } from "@earendil-works/pi-agent-core"
 import { createLogger } from "@/services/logger"
+import { imageInputTokens } from "@/services/images/budget"
 
 const log = createLogger("ContextBudget")
 
-/**
- * 各层的软配额比例（normalInputTarget 的份额）。
- *
- * 比例是审计/软配额：只有 memory 份额被运行期消费（召回预算），其余只是报表口径，
- * 不按百分比截字。transcript 不再有份额 —— 请求视图由 Harness 从已提交条目重建，
- * 内核看不到消息（分配账目里仍保留该行，requested 恒为已选块的 0）。
- */
-export const CONTEXT_RATIOS = Object.freeze({ static: .12, tools: .08, dynamic: .10, memory: .15, ephemeral: .05 })
 /** All request budgets, including one-shot summaries, use the same units. */
 /** 上下文窗口默认值（tokens）：CONFIG 与设置页的缺省都取它（128k）。 */
 export const DEFAULT_CONTEXT_WINDOW = 131_072
@@ -43,7 +36,15 @@ const NON_ASCII_TOKENS_PER_UNIT = 1
 /** 每个 UTF-16 单元匹配一次；非 ASCII 汉字、假名、全角标点与 emoji 代理对各算一个单元。 */
 const NON_ASCII_UNIT_RE = /[^\x00-\x7F]/g
 const MIN_OUTPUT = 1024
-const MAX_OUTPUT = 4096
+/**
+ * 输出预留 = 窗口 × 1/8，上限 32k。
+ *
+ * 旧值是固定 4096：所有 ≥16k 的窗口（现在的主流 128k 起）都吃同一个硬顶，
+ * 大窗口的输入预算被白白撑大、输出却被卡死，记忆 Review 这类结构化长输出一超就截断。
+ * 改为按窗口比例推导；模型目录声明的 maxTokens 在网关侧取更小者，不越过模型自身能力。
+ */
+const MAX_OUTPUT = 32_768
+const OUTPUT_RATIO = 1 / 8
 const MAX_HEADROOM = 20_000
 const HEADROOM_RATIO = .16
 const OVERHEAD_RATIO = .02
@@ -148,7 +149,7 @@ export type AgentMessageRole = AgentMessage["role"]
  * 该偏差落在估算器允许的余量内，不为它引入第二处口径。
  */
 const MESSAGE_CONTENT_PROJECTION: Record<AgentMessageRole, (message: MessageRecord) => string> = {
-  user: message => textOf(message),
+  user: message => join([textOf(message), extraPartsOf(message)]),
   assistant: message => join([textOf(message), toolCallsOf(message)]),
   toolResult: message => join([textOf(message), extraPartsOf(message)]),
   custom: message => textOf(message),
@@ -178,7 +179,15 @@ export function projectMessageContent(value: unknown): string {
 
 /** 与本投影同口径的消息估算；绝不把 usage、时间戳、模型名或持久化元数据算作会话输入。 */
 export function estimateMessageTokens(value: unknown): number {
-  return estimateContextTokens(projectMessageContent(value)) + MESSAGE_STRUCTURE_TOKENS
+  const message = record(value)
+  const imageTokens = imageInputTokens(message.content)
+  if (!imageTokens) return estimateContextTokens(projectMessageContent(value)) + MESSAGE_STRUCTURE_TOKENS
+  // 快照仍对真实图像内容取hash；计费视图只将图像编码改为形态元数据，再加入统一图像预算。
+  const content = (message.content as unknown[]).map(part => {
+    const item = record(part)
+    return item.type === "image" ? { type: "image", mimeType: item.mimeType } : part
+  })
+  return estimateContextTokens(projectMessageContent({ ...message, content })) + imageTokens + MESSAGE_STRUCTURE_TOKENS
 }
 
 /**
@@ -203,7 +212,8 @@ export function estimateRequestTokens(systemPrompt: string, messages: readonly u
 }
 export function contextBudget(window: number, maxOutput?: number): ContextBudget {
   const size = Math.max(1, Math.floor(window))
-  const outputReserve = Math.min(size - 1, maxOutput ?? Math.min(MAX_OUTPUT, Math.max(MIN_OUTPUT, Math.floor(size / 4))))
+  const derivedOutput = Math.min(MAX_OUTPUT, Math.max(MIN_OUTPUT, Math.floor(size * OUTPUT_RATIO)))
+  const outputReserve = Math.min(size - 1, maxOutput ?? derivedOutput)
   const protocolOverhead = Math.min(Math.max(0, size - outputReserve - 1), Math.max(32, Math.ceil(size * OVERHEAD_RATIO)))
   const hardInputLimit = Math.max(1, size - outputReserve - protocolOverhead)
   const compactionHeadroom = Math.min(MAX_HEADROOM, Math.floor(size * HEADROOM_RATIO), Math.floor(hardInputLimit / 3))

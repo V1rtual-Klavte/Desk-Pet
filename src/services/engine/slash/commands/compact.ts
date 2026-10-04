@@ -43,7 +43,7 @@ export const compactCommand: SlashCommand = {
     const outcome = await compactActiveSession(sessionId)
     if (outcome.status === "completed") {
       const completed = getCommandReply("compactCompleted")
-      return outcome.intent ? `${completed}\n${outcome.intent}` : completed
+      return outcome.intent ? [completed, outcome.intent].join("\n") : completed
     }
     if (outcome.status === "failed") {
       // 上游原因是可操作的诊断（预算超限、没有可安全摘要的范围），原样附在 Card 文案之后。

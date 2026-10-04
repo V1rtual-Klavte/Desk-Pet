@@ -40,9 +40,10 @@ function fail(message: string, detail?: string): ProfileOpResult {
 }
 const CANCELLED: ProfileOpResult = { ok: false, cancelled: true, message: "" }
 
-/** 用户 profile 的展示用路径（相对 data_root） */
-function profileLabel(profileId: string): string {
-  return `profiles/${profileId}`
+/** Profile 的展示用完整路径（数据根下 `profiles/<id>`）。
+ *  回执与设置页共用这一处，不在各处自行用 `/` 拼接。 */
+export function profileDisplayPath(profileId: string): string {
+  return `${BaseDirs.profiles()}/${profileId}`
 }
 
 // ── 导出 ──
@@ -107,7 +108,7 @@ export async function cloneProfile(
 
     invalidateProfileCache(newId)
     log.info(`已复制 Profile: ${sourceId} → ${newId}`)
-    return { ...ok(`已复制为 ${newId}`, `${BaseDirs.profiles()}/${newId}`), newId }
+    return { ...ok(`已复制为 ${newId}`, profileDisplayPath(newId)), newId }
   } catch (e) {
     log.error("复制失败", formatError(e))
     return fail(formatError(e))
@@ -166,7 +167,7 @@ export async function importProfileZip(file: File): Promise<ProfileOpResult & { 
           : `已导入 ${count} 个文件`,
         collisions.length
           ? `被覆盖的条目: ${collisions.join(", ")}`
-          : `${BaseDirs.profiles()}/${profileId}`,
+          : profileDisplayPath(profileId),
       ),
       profileId,
     }
@@ -196,14 +197,14 @@ export async function deleteProfile(profileId: string): Promise<ProfileOpResult>
     invalidateProfileCache(profileId)
     log.info(`已删除 Profile: ${profileId}`)
 
-    if (!wasActive) return ok(`已删除 ${profileId}`, profileLabel(profileId))
+    if (!wasActive) return ok(`已删除 ${profileId}`, profileDisplayPath(profileId))
 
     if (await switchActiveProfile(DEFAULT_PROFILE)) {
-      return ok(`已删除 ${profileId}，已切回默认 Profile`, profileLabel(profileId))
+      return ok(`已删除 ${profileId}，已切回默认 Profile`, profileDisplayPath(profileId))
     }
     const fallbackId = (await discoverAllProfiles()).find(id => id !== profileId)
     if (fallbackId && await switchActiveProfile(fallbackId)) {
-      return ok(`已删除 ${profileId}，已切换到 ${fallbackId}`, profileLabel(profileId))
+      return ok(`已删除 ${profileId}，已切换到 ${fallbackId}`, profileDisplayPath(profileId))
     }
     log.error(`已删除 ${profileId}，但没有可切换的 Profile（默认 Profile 不可用，磁盘上也别无可用项）`)
     return fail(`已删除 ${profileId}，但当前没有可用的 Profile，请重启应用或恢复默认资源`)

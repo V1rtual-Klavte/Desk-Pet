@@ -11,21 +11,26 @@
  * 模型可能返回未知 id、重复 id、被截断的 JSON 或一段解释文字 —— 一律按无效结果处理，
  * 由调用方回退本地顺序。空数组是合法结果（表示「这次没有值得用的记忆」）。
  */
-export function parseRerankIds(text: string, allowed: Iterable<string>): string[] {
+export function parseRerankSelection(text: string, allowed: Iterable<string>): { valid: boolean; ids: string[] } {
   const known = allowed instanceof Set ? allowed : new Set(allowed)
   let parsed: unknown
   try {
     parsed = JSON.parse(text)
   } catch {
-    return []
+    return { valid: false, ids: [] }
   }
   const list = Array.isArray(parsed)
     ? parsed
-    : Array.isArray((parsed as { ids?: unknown })?.ids) ? (parsed as { ids: unknown[] }).ids : []
+    : Array.isArray((parsed as { ids?: unknown })?.ids) ? (parsed as { ids: unknown[] }).ids : undefined
+  if (!list) return { valid: false, ids: [] }
   const out: string[] = []
   for (const value of list) {
     if (typeof value !== "string" || !known.has(value) || out.includes(value)) continue
     out.push(value)
   }
-  return out
+  return { valid: true, ids: out }
+}
+
+export function parseRerankIds(text: string, allowed: Iterable<string>): string[] {
+  return parseRerankSelection(text, allowed).ids
 }

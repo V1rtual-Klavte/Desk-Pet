@@ -93,6 +93,7 @@ describe("Runtime trace 持久化锚点", () => {
     try {
       await runRuntimeTurn("请简短回复我。")
       const rendered = trace.events.find(event => event.kind === "memory_recall_rendered")
+      const projected = trace.events.find(event => event.kind === "memory_recall_projected")
       const requestTexts = provider.payloads.flatMap(payload => payload.messages.map(message => typeof message.content === "string"
         ? message.content
         : message.content.map(part => part.type === "text" ? part.text : "").join("")))
@@ -100,7 +101,8 @@ describe("Runtime trace 持久化锚点", () => {
 
       expect(rendered?.sessionId, "render trace 缺少所属会话").toBe(sessionId)
       expect(rendered?.payload.sourceIds, "trace 的准入 ID 应与最终记忆块一致").toEqual(["mq-kept@1"])
-      expect(rendered?.payload.droppedIds, "预算未容纳的投影应显式留下 ID").toEqual(["mq-dropped@1"])
+      // 整条淘汰由召回端口按全文口径裁决（超过单条/总预算不裁剪正文），淘汰 ID 记在端口事件上。
+      expect(projected?.payload.droppedIds, "预算未容纳的投影应显式留下 ID").toContain("mq-dropped@1")
       expect(memoryText, "fake provider 应收到实际渲染出来的记忆块").toContain("fixture:kept")
       expect(memoryText, "预算丢弃的记忆不应进入 Provider 请求").not.toContain("fixture:dropped")
     } finally {

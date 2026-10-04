@@ -3,7 +3,7 @@ import { ref, onMounted, onUnmounted } from "vue";
 import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
 import {
   userConfig, toolsConfig,
-  setOverrides, setOverride, getAllOverrides, flushConfig, parallelToolsError, memoryConfigError, fontSizeError,
+  setOverrides, setOverride, getAllOverrides, flushConfig, fontSizeError,
 } from "@/services/config";
 import { applyFontVars } from "@/services/font";
 import { updateV1rtualInstructions } from "@/services/context/instructions";
@@ -15,7 +15,6 @@ import { createLogger } from "@/services/logger";
 import { formatError } from "@/services/error";
 import { isMacOS } from "@/services/env";
 import { parseEnvText } from "@/services/tool/mcp";
-import { contextWindowError } from "@/services/context";
 import { emit } from "@tauri-apps/api/event";
 import GeneralTab from "@/components/settings/GeneralTab.vue";
 import AITab from "@/components/settings/AITab.vue";
@@ -60,36 +59,8 @@ async function doSave() {
   const t = toolsTabRef.value!;
   const ap = appearanceTabRef.value!;
   saveError.value = "";
-  // 窗口低于支持下限时拒绝保存：这类配置会让压缩找不到可摘要范围，
-  // 落盘只会把“静默跑坏”固化进 CONFIG；运行期同样会在模型解析处报错。
-  const windowIssue = contextWindowError(a.aiContextMaxTokens);
-  if (windowIssue) {
-    saveError.value = windowIssue;
-    log.error("设置保存失败:", windowIssue);
-    return;
-  }
-  // 共享读上限越界同样拒绝保存：范围外的手写值不会静默夹到边界后落盘，
-  // 用户看到的是错误而不是“保存成功但生效值不同”。
-  const parallelIssue = parallelToolsError(t.maxParallelTools);
-  if (parallelIssue) {
-    saveError.value = parallelIssue;
-    log.error("设置保存失败:", parallelIssue);
-    return;
-  }
-  const memoryIssue = memoryConfigError({
-    coreTokenBudget: a.coreTokenBudget,
-    recallTokenBudget: a.recallTokenBudget,
-    recallTimeoutMs: a.recallTimeoutMs,
-    rerankTimeoutMs: a.rerankTimeoutMs,
-    dreamingIdleSeconds: a.dreamingIdleSeconds,
-    dreamingMinIntervalMinutes: a.dreamingMinIntervalMinutes,
-    dreamingMaxDailyTokens: a.dreamingMaxDailyTokens,
-  });
-  if (memoryIssue) {
-    saveError.value = memoryIssue;
-    log.error("设置保存失败:", memoryIssue);
-    return;
-  }
+  // 上下文窗口、共享读上限、记忆预算/超时/dreaming 等技术参数已从设置页撤下（值只在 YAML/getter），
+  // 界面不再写入这些键，对应的保存前校验一并取消；越界手写值由读取期规则处理。
   // 全局字号越界同样拒绝保存：手写 YAML 的非法值不该在保存时被静默改写成别的数字
   const fontIssue = fontSizeError(ap.fontSize);
   if (fontIssue) {
@@ -118,47 +89,26 @@ async function doSave() {
     "ai.apiKey": a.aiApiKey,
     "ai.requireApiKey": a.aiRequireApiKey,
     "ai.model": a.aiModel,
-    "ai.contextMaxTokens": a.aiContextMaxTokens,
-    "ai.thinking.effort": a.aiThinkingEffort,
+    "ai.auxModel": a.aiAuxModel,
     // 对话投递：默认发送方式与队列批量策略（忙碌投递与下一回合的批量行为）
     "ai.conversation.defaultDelivery": a.defaultDelivery,
     "ai.conversation.steeringMode": a.steeringMode,
     "ai.conversation.followUpMode": a.followUpMode,
     "ai.personality.active": a.personalityActive,
-    "ai.windowMonitor.enabled": a.wmEnabled,
-    "ai.windowMonitor.staySeconds": a.wmStaySeconds,
-    "ai.windowMonitor.settleMs": a.wmSettleMs,
+    "ai.humanizer.enabled": a.humanizerEnabled,
+    "ai.silentAccess.enabled": a.wmEnabled,
+    "ai.silentAccess.staySeconds": a.wmStaySeconds,
+    "ai.silentAccess.settleMs": a.wmSettleMs,
     // 配置面统一毫秒，界面面用秒（给人读的），换算就放在这个边界上
-    "ai.windowMonitor.cooldownMs": Math.round(a.wmCooldownSec * 1000),
-    "ai.windowMonitor.samePageCooldownMs": Math.round(a.wmSamePageCool * 1000),
-    "ai.lock.safetyTimeoutMs": a.lockTimeout,
+    "ai.silentAccess.cooldownMs": Math.round(a.wmCooldownSec * 1000),
+    "ai.silentAccess.samePageCooldownMs": Math.round(a.wmSamePageCool * 1000),
     "ai.memory.enabled": a.memoryEnabled,
-    "ai.memory.coreTokenBudget": a.coreTokenBudget,
-    "ai.memory.recallTokenBudget": a.recallTokenBudget,
-    "ai.memory.rerank": a.memoryRerank,
-    "ai.memory.recallTimeoutMs": a.recallTimeoutMs,
-    "ai.memory.rerankTimeoutMs": a.rerankTimeoutMs,
     "ai.memory.dreaming.mode": a.dreamingMode,
-    "ai.memory.dreaming.idleSeconds": a.dreamingIdleSeconds,
-    "ai.memory.dreaming.minIntervalMinutes": a.dreamingMinIntervalMinutes,
-    "ai.memory.dreaming.maxDailyTokens": a.dreamingMaxDailyTokens,
-    // Plan 的七个键在 AITab 里都有 UI 和 expose，此前没进这张表 ——
-    // 用户在设置页改完保存会被静默丢弃，且 test:types 抓不到
     "ai.plan.enabled": a.planEnabled,
-    "ai.plan.complexityThreshold": a.planComplexityThreshold,
-    // 与 ai.loop.maxParallelTools 同类：界面能改的值必须能落盘，否则设置页的改动只是看起来生效
-    "ai.plan.complexityEval": a.planComplexityEval,
-    "ai.plan.maxSteps": a.planMaxSteps,
-    "ai.plan.thinkingEffort": a.planThinkingEffort,
-    "ai.plan.stepThinkingEffort": a.planStepThinkingEffort,
-    "ai.plan.onStepFailure": a.planOnStepFailure,
-    "general.desktop.pollingIntervalMs": g.deskPoll,
     "general.logging.level": g.logLevel,
     "general.errors.overlay": g.errOverlay,
     "ai.safety.mode": a.safetyMode,
     "ai.safety.sessionTrustEnabled": a.sessionTrustEnabled,
-    // 共享读并行上限：并发所有权在 Rust 许可池，这里只落配置值
-    "ai.loop.maxParallelTools": t.maxParallelTools,
     "tools.bash.whitelist": t.bashWhitelist.split("\n").map(s => s.trim()).filter(Boolean),
   });
 
@@ -224,11 +174,15 @@ async function doSave() {
     return;
   }
 
-  if (a.v1rtualInstructions.trim()) {
-    await updateV1rtualInstructions(a.v1rtualInstructions.trim());
+  // 空串是「清空指令」，必须照写：跳过空值会让旧指令留在文件里继续生效（模块内只跳过重复写盘）。
+  if (!(await updateV1rtualInstructions(a.v1rtualInstructions))) {
+    saveError.value = "V1RTUAL 指令保存失败：文件未写入，旧指令仍在生效";
+    log.error("设置保存失败:", saveError.value);
+    return;
   }
 
   await flushConfig()
+  await a.saveProactiveControl()
 
   // 字体是本窗口自己保存的：立刻重注入，不必等重启或广播回环
   applyFontVars()

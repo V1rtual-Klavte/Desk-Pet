@@ -4,6 +4,7 @@
 // ==========================================
 
 import { createLogger } from "@/services/logger"
+import { PROACTIVE_LIMITS } from "@/services/proactive/protocol"
 import type { CardVariableDef, VariableState, VariableType, VariablePrimitive } from "./types"
 import { formatError } from "@/services/error"
 import { readStagesFile, updateStagesFile, STAGES_FILE_SCHEMA_VERSION } from "./stages-file"
@@ -28,7 +29,8 @@ const SYSTEM_VAR_DEFS: Array<{
   { name: "hour", type: "number", compute: (n) => n.getHours() },
   { name: "minute", type: "number", compute: (n) => n.getMinutes() },
   { name: "dayOfWeek", type: "number", compute: (n) => n.getDay() },
-  { name: "isNightTime", type: "boolean", compute: (n) => n.getHours() >= 22 || n.getHours() <= 5 },
+  // 静默时段与主动链同源（protocol.json 生成、Rust/TS 共用），不在这里写第二份 23–9。
+  { name: "isNightTime", type: "boolean", compute: (n) => { const h = n.getHours(); return h >= PROACTIVE_LIMITS.quietStartHour || h < PROACTIVE_LIMITS.quietEndHour } },
   { name: "isWeekend", type: "boolean", compute: (n) => n.getDay() === 0 || n.getDay() === 6 },
 ]
 

@@ -20,6 +20,7 @@ use tauri::Manager;
 use tauri::{WebviewUrl, WebviewWindowBuilder};
 
 use crate::commands::{
+    pick_chat_images, validate_chat_images,
     app_open, app_restart, bash_cancel, bash_exec, clipboard_read, clipboard_write,
     compute_popup_position, dir_create, export_profile_zip, file_append,
     file_canonical_path, file_exists, file_info, file_list, file_read, file_read_binary,
@@ -116,9 +117,12 @@ fn write_runtime_config(paths: tauri::State<AppPaths>, content: String) -> AppRe
         .map_err(|e| AppError::Io(format!("写入配置失败: {e}")))
 }
 
+/// 会话列表 UI 状态文件名：`sessions/` 下唯一允许丢弃的文件（正文以各会话 JSONL 为准）。
+const SESSION_UI_STATE_FILE: &str = "index.json";
+
 #[tauri::command]
 fn read_session_ui_state(paths: tauri::State<AppPaths>) -> AppResult<Option<String>> {
-    let file = paths.sessions.join("index.json");
+    let file = paths.sessions.join(SESSION_UI_STATE_FILE);
     if !file.exists() {
         return Ok(None);
     }
@@ -129,7 +133,7 @@ fn read_session_ui_state(paths: tauri::State<AppPaths>) -> AppResult<Option<Stri
 
 #[tauri::command]
 fn write_session_ui_state(paths: tauri::State<AppPaths>, content: String) -> AppResult<()> {
-    let file = paths.sessions.join("index.json");
+    let file = paths.sessions.join(SESSION_UI_STATE_FILE);
     std::fs::write(file, content).map_err(|e| AppError::Io(format!("写入会话 UI 状态失败: {e}")))
 }
 
@@ -467,6 +471,12 @@ pub fn run() {
             bash_cancel,
             file_read,
             file_read_binary,
+            pick_chat_images,
+            validate_chat_images,
+            crate::commands::observation_cmd::observation_capture_screen,
+            crate::commands::observation_cmd::observation_read_targets,
+            crate::commands::screenshot_cmd::capture_screenshot,
+            crate::commands::screenshot_cmd::save_screenshot,
             file_write,
             file_write_atomic,
             file_append,
@@ -523,13 +533,16 @@ pub fn run() {
             crate::memory::commands::memory_history,
             crate::memory::commands::memory_register_sources,
             crate::memory::commands::memory_query,
+            crate::memory::commands::memory_recall_candidates,
             crate::memory::commands::memory_get_items,
             crate::memory::commands::memory_apply_change,
             crate::memory::commands::memory_job_start,
+            crate::memory::commands::memory_job_list,
             crate::memory::commands::memory_job_checkpoint,
             crate::memory::commands::memory_job_cancel,
             crate::memory::commands::memory_job_resume,
             crate::memory::commands::memory_job_sources,
+            crate::memory::commands::memory_source_evidence,
             crate::memory::commands::memory_candidates_add,
             crate::memory::commands::memory_dreaming_commit,
             crate::memory::commands::memory_dreaming_budget_reserve,
@@ -539,6 +552,7 @@ pub fn run() {
             crate::memory::commands::memory_backup,
             crate::memory::commands::memory_rebuild,
             crate::memory::commands::memory_restore,
+            crate::memory::commands::memory_restore_preview,
             crate::proactive::commands::proactive_scan,
             crate::proactive::commands::proactive_query,
             crate::proactive::commands::proactive_change,
@@ -547,6 +561,8 @@ pub fn run() {
             crate::proactive::commands::proactive_settle,
             crate::proactive::commands::proactive_reconcile,
             crate::proactive::commands::proactive_control,
+            crate::proactive::commands::proactive_auxiliary_budget_reserve,
+            crate::proactive::commands::proactive_auxiliary_budget_settle,
             ])
         .build(tauri::generate_context!())
         .unwrap_or_else(|e| {

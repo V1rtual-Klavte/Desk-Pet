@@ -1,7 +1,18 @@
 import vue from "@vitejs/plugin-vue";
+import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { defineConfig } from "vite";
 import { yamlPlugin } from "./vite-yaml-plugin";
+
+// 端口只有一个真相源：`src-tauri/tauri.conf.json` 的 `build.devUrl`。
+// 改端口只改那一处，Vite dev server 从这里派生，避免两处各写一份后漂移；
+// 拿不到有效端口时直接失败，不静默回退到一个可能冲突的端口。
+const tauriConf = JSON.parse(readFileSync(resolve(__dirname, "src-tauri/tauri.conf.json"), "utf8")) as { build?: { devUrl?: string } };
+const devUrl = tauriConf.build?.devUrl ?? "";
+const devPort = devUrl ? Number(new URL(devUrl).port) : NaN;
+if (!Number.isInteger(devPort) || devPort <= 0) {
+  throw new Error(`tauri.conf.json 的 build.devUrl 缺少有效端口，无法为 Vite 派生 dev server 端口: ${JSON.stringify(devUrl)}`);
+}
 
 export default defineConfig({
   plugins: [vue(), yamlPlugin()],
@@ -17,7 +28,7 @@ export default defineConfig({
     },
   },
   server: {
-    port: 1420,
+    port: devPort,
     strictPort: true,
     // A Live batch must keep the same loaded code; HMR would reset its trace cursor mid-trial.
     hmr: process.env.DESKPET_E2E === "1" ? false : undefined,

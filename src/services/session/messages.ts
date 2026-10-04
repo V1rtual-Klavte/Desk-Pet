@@ -13,6 +13,7 @@ import { DESKPET_GREETING_ENTRY, DESKPET_SYSTEM_MESSAGE_ENTRY } from "@/services
 import { harnessSlots } from "@/services/engine/harness"
 import { createLogger } from "@/services/logger"
 import { formatError } from "@/services/error"
+import { summarizeUnanswered, unansweredPolicyHistory } from "@/services/interaction"
 
 const log = createLogger("Msg")
 
@@ -34,8 +35,11 @@ export async function initWelcome(text: string, sessionId: string): Promise<void
   }
 }
 
-export function pushUserMessage(text: string, sessionId: string): Message {
+export function pushUserMessage(text: string, sessionId: string, eventId?: string, imagePaths?: readonly string[]): Message {
   const msg = createUserMessage(text)
+  msg.isUserInput = true
+  if (eventId) msg.eventId = eventId
+  if (imagePaths?.length) msg.imagePaths = [...imagePaths]
   pushMessageFor(sessionId, msg)
 
   // 改名只在「首条用户消息落进它自己的视图」时发生：跨会话推送不替别人改会话名。
@@ -47,27 +51,36 @@ export function pushUserMessage(text: string, sessionId: string): Message {
   return msg
 }
 
-export function pushAssistantMessage(text: string, sessionId: string): Message {
+export function pushAssistantMessage(text: string, sessionId: string, parts?: string[], entryId?: string, imagePaths?: readonly string[]): Message {
   const msg = createAssistantMessage(text)
+  if (parts && parts.length > 1) msg.parts = parts
+  if (entryId) { msg.id = entryId; msg.eventId = entryId }
+  // 本条消息关联的图片路径（与用户图片同字段语义）：她截图给用户看时实时展示，
+  // 重载后由读模型从条目 deskpetImagePaths 带回同一份路径。
+  if (imagePaths?.length) msg.imagePaths = [...imagePaths]
   pushMessageFor(sessionId, msg)
   return msg
 }
 
 /** Project a confirmed JSONL assistant entry once into the currently matching session view. */
-export function pushCommittedProactiveMessage(text: string, sessionId: string, entryId: string, countsAsUnanswered = true): number | undefined {
+export function pushCommittedProactiveMessage(text: string, sessionId: string, entryId: string, countsAsUnanswered = true, parts?: string[], timestamp = Date.now()): number | undefined {
   if (sessionId === activeSessionId.value) {
     const existing = chatHistory.find(message => message.eventId === entryId)
-    if (!existing) pushMessageFor(sessionId, { id: entryId, eventId: entryId, role: "assistant", text, timestamp: Date.now(), isProactive: countsAsUnanswered })
-    else existing.isProactive = countsAsUnanswered
-    const count = chatHistory.reduce((total, message) => {
-      if (message.role === "user") return 0
-      return message.role === "assistant" && message.isProactive ? total + 1 : total
-    }, 0)
+    if (!existing) pushMessageFor(sessionId, { id: entryId, eventId: entryId, role: "assistant", text, timestamp, isProactive: countsAsUnanswered, proactiveReplySeeking: countsAsUnanswered, ...(parts?.length && parts.length > 1 ? { parts } : {}) })
+    else { existing.isProactive = countsAsUnanswered; existing.proactiveReplySeeking = countsAsUnanswered }
+    const { count } = summarizeUnanswered(chatHistory)
     unansweredCount.value = count
     saveUnanswered(sessionId, count)
     return count
   }
   return undefined
+}
+
+export function getUnansweredThresholdReachedAt(): number | null {
+  return summarizeUnanswered(chatHistory).thresholdReachedAt
+}
+export function getUnansweredPolicyHistory(): { thresholdReachedAt: number | null; clearedAt: number | null } {
+  return unansweredPolicyHistory(chatHistory)
 }
 
 export function pushSystemMessage(text: string, sessionId: string): Message {

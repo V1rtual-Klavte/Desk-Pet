@@ -4,6 +4,7 @@ import type {
   AssistantMessage, AssistantMessageEventStream, Context, FauxModelDefinition, FauxResponseStep, Model, SimpleStreamOptions,
 } from "@earendil-works/pi-ai"
 import { listen } from "@tauri-apps/api/event"
+import { setOverride } from "@/services/config"
 import { installPiRuntimeProviderForTest } from "@/services/engine/harness"
 import { initChat, sendMessage, stopActiveRun } from "@/services/agent/runner"
 import { DESKPET_SYSTEM_MESSAGE_ENTRY } from "@/services/engine/runtime"
@@ -132,6 +133,8 @@ export const 中止助手条目隐藏: SceneDef = {
     tags: ["production-entry", "cancel", "stop", "persistence"],
   },
   setup: async () => {
+    // 本场景的证据是流式输出到一半后停止；拟人模式本身的流式抑制另有覆盖。
+    setOverride("ai.humanizer.enabled", false)
     const restore = installStreamingProvider([
       fakeToolCall(TOOL_NAME),
       fakeText(PROCESS_TEXT),

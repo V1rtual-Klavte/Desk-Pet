@@ -4,11 +4,14 @@
   "version": 1,
   "constants": {
     "tickMs": 300000,
-    "quietStartHour": 22,
+    "quietStartHour": 23,
     "quietEndHour": 9,
-    "dailySuccess": 1,
-    "dailyExpressionAttempts": 3,
-    "dailyPlanningAttempts": 2,
+    "dailySuccess": 6,
+    "dailyExpressionAttempts": 12,
+    "dailyPlanningAttempts": 8,
+    "dailyAuxiliaryAttempts": 4,
+    "minSuccessIntervalMs": 3600000,
+    "successIntervalSpreadMs": 7200000,
     "dailyTokens": 24000,
     "maxTasks": 100,
     "maxRecurringTasks": 10,
@@ -28,6 +31,8 @@
     "proactive_validate": { "request": { "$ref": "memory#/definitions/ProactiveValidateRequest" }, "response": { "$ref": "memory#/definitions/ProactiveValidateResponse" } },
     "proactive_settle": { "request": { "$ref": "memory#/definitions/ProactiveSettleRequest" }, "response": { "type": "object", "required": ["revision", "status"], "properties": { "revision": { "type": "integer" }, "status": { "$ref": "memory#/definitions/ProactiveAttemptStatus" } } } },
     "proactive_reconcile": { "request": { "$ref": "memory#/definitions/ProactiveReconcileRequest" }, "response": { "type": "object", "required": ["revision", "status"], "properties": { "revision": { "type": "integer" }, "status": { "$ref": "memory#/definitions/ProactiveAttemptStatus" } } } },
-    "proactive_control": { "request": { "$ref": "memory#/definitions/ProactiveControlRequest" }, "response": { "$ref": "memory#/definitions/ProactiveControl" } }
+    "proactive_control": { "request": { "$ref": "memory#/definitions/ProactiveControlRequest" }, "response": { "$ref": "memory#/definitions/ProactiveControl" } },
+    "proactive_auxiliary_budget_reserve": { "request": { "$ref": "memory#/definitions/ProactiveAuxiliaryBudgetReserveRequest" }, "response": { "$ref": "memory#/definitions/ProactiveAuxiliaryBudgetReserveResponse" } },
+    "proactive_auxiliary_budget_settle": { "request": { "$ref": "memory#/definitions/ProactiveAuxiliaryBudgetSettleRequest" }, "response": { "$ref": "memory#/definitions/ProactiveAuxiliaryBudgetSettleResponse" } }
   }
 }

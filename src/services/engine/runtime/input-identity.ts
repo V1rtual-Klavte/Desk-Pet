@@ -29,8 +29,8 @@ export function inputEventId(requestId: string): string {
 }
 
 /** 从 lane 消息上取回投递事件身份；不是投递输入的消息（无身份 / 后缀不符）返回 undefined。 */
-export function messageEventId(message: { deskpetEventId?: unknown }): string | undefined {
-  const eventId = message.deskpetEventId
+export function messageEventId(message: unknown): string | undefined {
+  const eventId = (message as { deskpetEventId?: unknown } | null | undefined)?.deskpetEventId
   return typeof eventId === "string" && eventId.endsWith(USER_SUFFIX) ? eventId : undefined
 }
 
@@ -77,13 +77,14 @@ export function inputSourceMark(ingress: IngressEnvelope, cardId?: string): Inpu
  * 没有身份（`eventId` 为空）时不写 `deskpetEventId`，保持「非投递输入」语义；
  * 没有标记时不写 `deskpetSource` —— 读取方一律按可选处理（历史条目没有这个字段）。
  */
-export function userInputMessage(text: string, eventId: string, mark?: InputSourceMark): AgentMessage {
+export function userInputMessage(text: string, eventId: string, mark?: InputSourceMark, imagePaths?: readonly string[]): AgentMessage {
   return {
     role: "user" as const,
     content: text,
     timestamp: Date.now(),
     ...(eventId ? { deskpetEventId: eventId } : {}),
     ...(mark ? { [INPUT_SOURCE_FIELD]: mark } : {}),
+    ...(imagePaths?.length ? { deskpetImagePaths: [...imagePaths] } : {}),
   }
 }
 
@@ -91,8 +92,9 @@ export function userInputMessage(text: string, eventId: string, mark?: InputSour
  * 从条目/消息上取回来源标记。只做形态核对，不枚举取值域（取值域由写入侧的类型保证）：
  * 旧数据没有该字段、或字段被别人写坏时返回 undefined，调用方按「没有标记」处理。
  */
-export function inputSourceOf(message: { deskpetSource?: unknown }): InputSourceMark | undefined {
-  const raw = message[INPUT_SOURCE_FIELD]
+export function inputSourceOf(message: unknown): InputSourceMark | undefined {
+  if (!message || typeof message !== "object" || !(INPUT_SOURCE_FIELD in message)) return undefined
+  const raw = (message as Record<string, unknown>)[INPUT_SOURCE_FIELD]
   if (!raw || typeof raw !== "object") return undefined
   const record = raw as Record<string, unknown>
   if (typeof record.origin !== "string" || typeof record.querySource !== "string"

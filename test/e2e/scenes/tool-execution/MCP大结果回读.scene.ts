@@ -27,6 +27,7 @@ const SCHEMA_TOOL = "large_query"
 /** `toToolDefs` 的命名规则：`mcp_<serverId>_<工具名>`。 */
 const TOOL_NAME = `mcp_${SERVER}_${SCHEMA_TOOL}`
 const CALL_ID = "mcp-large-call"
+const ENABLE_CALL_ID = "enable-mcp-large"
 const REPLY = "大结果已经取回。"
 /** 正文远大于旧的 50,000 字符一次性截断上限；非 ASCII 计价让请求侧必然超 L0 预算。 */
 const PAYLOAD_CHARS = 60_000
@@ -115,6 +116,8 @@ export const MCP大结果回读: SceneDef = {
     register(tool)
     registeredId = tool.id
     provider = installFakeProvider([
+      // MCP 按回合动态激活后，白名单外的 MCP 工具默认不进请求：先经取用入口启用再调用它。
+      fakeToolCall("enable_tools", { names: [TOOL_NAME] }, ENABLE_CALL_ID),
       fakeToolCall(TOOL_NAME, {}, CALL_ID),
       fakeText(REPLY),
     ])

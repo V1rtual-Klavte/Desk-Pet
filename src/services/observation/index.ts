@@ -1,0 +1,5 @@
+export { startSilentUnderstanding, stopSilentUnderstanding } from "./scheduler"
+export { clearSilentUnderstanding, initObservationGovernance, invalidateTopicSources, stopObservationGovernance } from "./ownership"
+export { getUnderstandingPromptBlock, getUnderstandingPromptBlockAsync, getUnderstandingSnapshot, getUnderstandingSnapshotAsync, getTopicWeights } from "./store"
+export type { CommittedUserParticipation, UnderstandingSnapshot, TopicWeight } from "./types"
+export { drainTopicIntake, recordCommittedUserParticipation } from "./topics"

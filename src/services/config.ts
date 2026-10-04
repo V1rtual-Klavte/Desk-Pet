@@ -85,7 +85,12 @@ interface Config {
     }
     logging: { level: "debug" | "info" | "warn" | "error" }
     errors: { overlay: "auto" | "always" | "never" }
-    desktop: {
+    /**
+     * 已退役：桌面观察改为原生事件驱动，不再有轮询间隔，运行期没有任何消费者。
+     * 键仍随文件读写往返（不提供 UI），待统一批次从 CONFIG.yaml 删除；
+     * 新代码不要读取它，也不要为它建立 getter。
+     */
+    desktop?: {
       pollingIntervalMs: number
     }
   }
@@ -95,6 +100,8 @@ interface Config {
     apiKey: string
     requireApiKey: boolean
     model: string
+    /** 辅助模型（子代理 / 主动扫描规划 / 记忆整理）；空 = 跟随聊天模型 */
+    auxModel: string
     contextMaxTokens: number
     thinking: {
       effort: string
@@ -132,8 +139,8 @@ interface Config {
         idleSeconds: number
         minIntervalMinutes: number
         maxDailyTokens: number
-        /** 单次 Review 的输出上限；reasoning 模型的 thinking 也计入，推理模型需调大 */
-        reviewMaxTokens: number
+        /** 单次 Review 的输出上限；null 表示按模型输出预算自动推导 */
+        reviewMaxTokens: number | null
       }
       maxSessions: number
     }
@@ -150,7 +157,8 @@ interface Config {
       keywords: string[]
     }
     lock: { safetyTimeoutMs: number }
-    windowMonitor: {
+    humanizer: { enabled: boolean }
+    silentAccess: {
       enabled: boolean
       staySeconds: number
       settleMs: number
@@ -445,7 +453,8 @@ export const generalConfig = {
   get shortcutMacModifiers() { return overrideOr("general.shortcut.macModifiers", cfg.general?.shortcut?.macModifiers ?? ["Control", "Command"]); },
   get shortcutWinModifiers() { return overrideOr("general.shortcut.winModifiers", cfg.general?.shortcut?.winModifiers ?? ["Control", "Alt"]); },
   get loggingLevel() { return overrideOr("general.logging.level", cfg.general?.logging?.level ?? (import.meta.env.DEV ? "debug" : "info")) as "debug" | "info" | "warn" | "error"; },
-  get pollingIntervalMs() { return overrideOr("general.desktop.pollingIntervalMs", cfg.general?.desktop?.pollingIntervalMs ?? 3000); },
+  // general.desktop.pollingIntervalMs 已退役（原生事件驱动，无轮询间隔）：没有 getter，
+  // 运行期无消费者；键暂留 CONFIG.yaml，待统一批次删除。
 };
 
 /**
@@ -495,9 +504,7 @@ export const errorsConfig = {
   get overlay() { return overrideOr("general.errors.overlay", cfg.general?.errors?.overlay ?? "auto") as OverlayMode; },
 };
 
-export const desktopConfig = {
-  get pollingIntervalMs() { return generalConfig.pollingIntervalMs; },
-};
+// desktopConfig 随窗口观察事件驱动一起退场：采样不再有轮询间隔这一输入。
 
 // ══════════════════════════════════════════
 // 2. AI 配置
@@ -507,6 +514,7 @@ const _ai = {
   get endpoint() { return overrideOr("ai.endpoint", cfg.ai?.endpoint || import.meta.env.VITE_API_ENDPOINT || ""); },
   get apiKey() { return overrideOr("ai.apiKey", cfg.ai?.apiKey || import.meta.env.VITE_API_KEY || ""); },
   get model() { return overrideOr("ai.model", cfg.ai?.model || import.meta.env.VITE_MODEL || "deepseek-chat"); },
+  get auxModel() { return overrideOr("ai.auxModel", cfg.ai?.auxModel || ""); },
   get contextMaxTokens() { return overrideOr("ai.contextMaxTokens", cfg.ai?.contextMaxTokens ?? DEFAULT_CONTEXT_WINDOW); },
   get thinkingEffort() { return overrideOr("ai.thinking.effort", cfg.ai?.thinking?.effort || "auto") as import("@/services/agent/types").ThinkingEffort; },
   get requireApiKey() { return overrideOr("ai.requireApiKey", cfg.ai?.requireApiKey ?? true); },
@@ -539,16 +547,20 @@ export const conversationConfig = {
   },
 };
 
-export const windowMonitorConfig = {
-  get enabled() { return overrideOr("ai.windowMonitor.enabled", cfg.ai?.windowMonitor?.enabled ?? true); },
-  get staySeconds() { return overrideOr("ai.windowMonitor.staySeconds", cfg.ai?.windowMonitor?.staySeconds || 60); },
-  get settleMs() { return overrideOr("ai.windowMonitor.settleMs", cfg.ai?.windowMonitor?.settleMs || 2000); },
+export const humanizerConfig = {
+  get enabled() { return overrideOr("ai.humanizer.enabled", cfg.ai?.humanizer?.enabled ?? true); },
+};
+
+export const silentAccessConfig = {
+  get enabled() { return overrideOr("ai.silentAccess.enabled", cfg.ai?.silentAccess?.enabled ?? true); },
+  get staySeconds() { return overrideOr("ai.silentAccess.staySeconds", cfg.ai?.silentAccess?.staySeconds || 60); },
+  get settleMs() { return overrideOr("ai.silentAccess.settleMs", cfg.ai?.silentAccess?.settleMs || 2000); },
   // 冷却时长统一用毫秒。早先这里是 `cooldownSeconds: 5000` 由调用方当秒乘 1000，
   // 于是「5 秒」静默变成 83 分钟；同一个量还有第二个键 `defaultCooldownMs` 喂同一变量，
   // 两者只保留了前者。
-  get cooldownMs() { return overrideOr("ai.windowMonitor.cooldownMs", cfg.ai?.windowMonitor?.cooldownMs || 5000); },
+  get cooldownMs() { return overrideOr("ai.silentAccess.cooldownMs", cfg.ai?.silentAccess?.cooldownMs || 5000); },
   /** 同一页面内容重复触发时的抑制窗口；消费者在主动域 window_context 规则 */
-  get samePageCooldownMs() { return overrideOr("ai.windowMonitor.samePageCooldownMs", cfg.ai?.windowMonitor?.samePageCooldownMs || 7800); },
+  get samePageCooldownMs() { return overrideOr("ai.silentAccess.samePageCooldownMs", cfg.ai?.silentAccess?.samePageCooldownMs || 7800); },
 };
 
 export const aiLockConfig = {
@@ -565,8 +577,10 @@ export const memoryConfig = {
   get dreamingMode() { return overrideOr("ai.memory.dreaming.mode", cfg.ai?.memory?.dreaming?.mode || "idle") as "manual" | "idle"; },
   get dreamingIdleSeconds() { return overrideOr("ai.memory.dreaming.idleSeconds", cfg.ai?.memory?.dreaming?.idleSeconds ?? 120); },
   get dreamingMinIntervalMinutes() { return overrideOr("ai.memory.dreaming.minIntervalMinutes", cfg.ai?.memory?.dreaming?.minIntervalMinutes ?? 60); },
-  get dreamingMaxDailyTokens() { return overrideOr("ai.memory.dreaming.maxDailyTokens", cfg.ai?.memory?.dreaming?.maxDailyTokens ?? 12000); },
-  get dreamingReviewMaxTokens() { return overrideOr("ai.memory.dreaming.reviewMaxTokens", cfg.ai?.memory?.dreaming?.reviewMaxTokens ?? 1200); },
+  /** 每日自动整理预算（tokens）：默认按 128k 窗口、3 批最坏预留（3×8k 输入 + 3×16k 输出）校准；显式 0 表示禁用自动整理。 */
+  get dreamingMaxDailyTokens() { return overrideOr("ai.memory.dreaming.maxDailyTokens", cfg.ai?.memory?.dreaming?.maxDailyTokens ?? 72000); },
+  /** Review 输出上限：null/未配置=按模型输出预算自动推导（仍受上下文窗口约束）；显式值只作为更小的上限。 */
+  get dreamingReviewMaxTokens(): number | null { return overrideOr("ai.memory.dreaming.reviewMaxTokens", cfg.ai?.memory?.dreaming?.reviewMaxTokens ?? null); },
   get maxSessions() { return overrideOr("ai.memory.maxSessions", cfg.ai?.memory?.maxSessions ?? 20); },
 };
 

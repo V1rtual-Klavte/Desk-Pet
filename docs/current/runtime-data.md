@@ -38,6 +38,12 @@ Rust [AppPaths](../../src-tauri/src/paths/mod.rs) 依据 `cfg!(debug_assertions)
 
 模块只经类型化 getter 读取。`serializeConfig()` 保留文件头注释块，正文由 js-yaml 重排，不承诺保留正文注释或原格式。
 
+### 已退役字段
+
+| 字段 | 状态 | 说明 |
+|---|---|---|
+| `general.desktop.pollingIntervalMs` | 已退役，运行期无消费者 | 窗口观察改为原生事件驱动（前台切换／锁屏／睡眠唤醒／会话切换触发采样），不再存在轮询间隔输入；[config.ts](../../src/services/config.ts) 已无 getter，[monitor.ts](../../src/services/window/monitor.ts) 的 `setMonitorEnabled` 不再接收该值，Rust 侧无 interval 状态。键暂留 [CONFIG.yaml](../../CONFIG.yaml) 并随读写往返（不提供设置 UI），待统一批次删除；新代码不要读取它 |
+
 ### 对话投递字段的语义与生效时机
 
 | 字段 | 取值 | 语义 | 生效 |
@@ -54,9 +60,9 @@ Rust [AppPaths](../../src-tauri/src/paths/mod.rs) 依据 `cfg!(debug_assertions)
 |---|---|---|---|
 | `ai.loop.maxParallelTools` | 1–8 的整数，默认 4 | 同时执行的只读（`shared_read`）工具数上限；效果类工具始终与其它执行互斥，不受它影响 | 每个 run 开始前下发给 Rust 许可所有者，运行期间不撤销已借出的额度 |
 
-由 [ToolsTab](../../src/components/settings/ToolsTab.vue) 的「工具执行」读取与回写、经 SettingsPanel 的 setOverrides 落盘，保存后由 `deskpet-settings-saved` 触发的 `reloadConfig()` 生效；运行期只经 [config.ts](../../src/services/config.ts) 的 `loopConfig.maxParallelTools` 读取，并发所有权仍在 [tool_permit.rs](../../src-tauri/src/commands/tool_permit.rs)。`MIN/MAX/DEFAULT_PARALLEL_TOOLS` 与所有者的默认值和范围同值，是给设置页校验与 YAML 兜底用的 UI 校验副本，不构成第二个所有者。
+本字段 2026-10-04 起随设置瘦身从设置页撤下：值只在 CONFIG／getter，运行期只经 [config.ts](../../src/services/config.ts) 的 `loopConfig.maxParallelTools` 读取，并发所有权仍在 [tool_permit.rs](../../src-tauri/src/commands/tool_permit.rs)。`MIN/MAX/DEFAULT_PARALLEL_TOOLS` 与所有者的默认值和范围同值，是 YAML 兜底与校验副本，不构成第二个所有者。
 
-非法值不静默接受：手写 YAML 的非数值按默认值、越界值收拢到最近边界（getter）；设置页保存前用 `parallelToolsError()` 拒绝越界输入；Rust 许可所有者收到 1–8 之外的下发直接报错而不夹边界（上限 0 会让所有读永久排队）。降低上限暂停新获准执行，提高会唤醒有序等待项。
+非法值不静默接受：手写 YAML 的非数值按默认值、越界值收拢到最近边界（getter）；Rust 许可所有者收到 1–8 之外的下发直接报错而不夹边界（上限 0 会让所有读永久排队）。降低上限暂停新获准执行，提高会唤醒有序等待项。
 
 ### 复杂度评估字段的语义与生效时机
 
@@ -64,7 +70,7 @@ Rust [AppPaths](../../src-tauri/src/paths/mod.rs) 依据 `cfg!(debug_assertions)
 |---|---|---|---|
 | `ai.plan.complexityEval` | keyword / llm，默认 keyword | 未命中关键词时是否再发一次独立模型请求自判复杂度 | 保存后下一次 `sendMessage` 即生效；`--plan` 强制触发不受它影响 |
 
-由 [AITab](../../src/components/settings/AITab.vue) 的「计划模式 · 复杂度判定」读取与回写、经 SettingsPanel 的 setOverrides 落盘，运行期只经 [config.ts](../../src/services/config.ts) 的 `planConfig.complexityEval` 读取。`keyword` 下未命中关键词直接返回低分（不发起请求，复杂度判定只由关键词与 `--plan` 驱动）；`llm` 下未命中关键词再发一次独立请求自判，失败按跳过 Plan 处理并把原因写进判定结果。
+本字段 2026-10-04 起随设置瘦身从设置页撤下：值只在 CONFIG／getter，运行期只经 [config.ts](../../src/services/config.ts) 的 `planConfig.complexityEval` 读取。`keyword` 下未命中关键词直接返回低分（不发起请求，复杂度判定只由关键词与 `--plan` 驱动）；`llm` 下未命中关键词再发一次独立请求自判，失败按跳过 Plan 处理并把原因写进判定结果。
 
 ### Bash 白名单字段的语义与生效时机
 
@@ -73,6 +79,19 @@ Rust [AppPaths](../../src-tauri/src/paths/mod.rs) 依据 `cfg!(debug_assertions)
 | `tools.bash.whitelist` | 命令名数组，出厂 CONFIG 18 项（getter 另留 15 项兜底，同值子集） | 命令首词命中、不含 shell 组合符且未命中危险/硬禁止模式时判 `NORMAL`、免确认；它是**免确认通道**而不是硬墙 —— 不在名单只意味着要走确认，命令仍可执行 | 每次风险分级即时读取；设置页保存后经 `deskpet-settings-saved` 触发的 `reloadConfig()` 生效 |
 
 由 [ToolsTab](../../src/components/settings/ToolsTab.vue) 的「Bash 白名单」逐行读取与回写、经 SettingsPanel 的 setOverrides 落盘；运行期只经 [config.ts](../../src/services/config.ts) 的 `toolsConfig.bashWhitelist` 读取，分级消费点是 [pi-tools.ts](../../src/services/tool/local/pi-tools.ts) 的 `classifyBashRisk`。Rust 侧不再看白名单：[bash_policy.rs](../../src-tauri/src/commands/bash_policy.rs) 的 `enforce_bash_policy` 只有层 1 硬基线与层 2 系统路径保护，也不接收 scope / whitelist 入参，拒绝结论与名单无关。
+
+### 陪伴控制字段
+
+| 字段 | 默认 | 唯一来源与生效 |
+|---|---|---|
+| 主动消息 enabled | true | Rust SQLite `proactive_control`，不写 CONFIG；设置页经主窗口控制桥复用 `/proactive` 的 `setEnabled`，关闭即时取消 |
+| `ai.humanizer.enabled` | true | 设置页保存 CONFIG，下个回合冻结；关闭不加协议、不变换、不调度，已提交多段历史仍逐泡展示 |
+| `ai.silentAccess.enabled` | true | 直接替换原窗口监控域，不兼容读取旧键；配置刷新后停止旧观察代际并重启许可内的观察 |
+| `ai.silentAccess.staySeconds / settleMs / cooldownMs / samePageCooldownMs` | 60 / 2000 / 5000 / 7800 | 沿用窗口来源的停留、防抖和冷却，AI 设置可编辑，后两个界面以秒显示、保存毫秒 |
+
+节奏参数归 `humanizer` 模块；主动额度、静默时段和观察预算归各领域协议／常量。配置模板、getter、设置 ref/expose、保存映射与主窗口刷新同步；真实 CONFIG-DEV.yaml 与已有运行时数据未在本批同步。
+
+图片条目只保存 `deskpetImagePaths` 原路径：用户发图与 `screenshot` 工具 `show_to_user` 的截图共用这一字段（用户图片的请求视图临时读取并缩放编码；截图是工具结果本身带图片块、原图另存 `screenshots/`，两者都不写 CONFIG、不建图片副本）。原文件变化即体现为下一次读取的内容；路径失效明确显示不可用，不从缓存恢复副本。
 
 ## 路径与文件布局
 
@@ -84,6 +103,7 @@ data_root/
 ├── personality/    cards/、stages/{cardId}.json
 ├── profiles/       {profileId}/ 下的 Profile 与素材
 ├── skills/         {name}/SKILL.md（per-skill `enabled` 开关；Pi 递归遍历、根级 `.md` 也算技能、name 可缺省取父目录名）
+├── screenshots/    桌宠截图（`<时间戳>.png`，用户可直接查看/删除；只保留最新 200 个，按 mtime 淘汰，无长期留存）
 └── logs/           运行日志
 ```
 

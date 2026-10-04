@@ -453,3 +453,118 @@ export function createProgressView(root: HTMLElement, total: number, options: Pr
 }
 
 export type ProgressView = ReturnType<typeof createProgressView>
+
+// ── 长跑模式（记忆质量 / 外部基准）的进度视图 ──
+//
+// 与场景视图共用同一套 CSS 与「打开结果目录」出口，只是行模型换成「宿主回报的 cell 序号」：
+// 长跑没有固定场景清单，进度只能来自 onCellStart / onCellEnd 的事实回报。
+// 视图是观测面：任何 DOM 问题都不得影响测试协议（结果照旧走 console 与 e2e_complete）。
+
+export interface SpecialProgressCell {
+  /** 视图内唯一键：调用方用 caseId/strategy/trial 组合，start 与 end 必须一致。 */
+  key: string
+  label: string
+}
+
+export interface SpecialProgressOptions {
+  mode: string
+  total: number
+  reportPath?: string
+  reportDir?: string
+  openDirectory?: (dirPath: string) => void
+}
+
+export function createSpecialProgressView(root: HTMLElement, options: SpecialProgressOptions) {
+  const startedAt = Date.now()
+  const rows = new Map<string, { row: HTMLElement; startedAt: number }>()
+  const MAX_ROWS = 200
+  let pass = 0
+  let fail = 0
+  let skip = 0
+
+  const mode = span("e2e-counts", options.mode)
+  const verdict = span("e2e-verdict", "运行中")
+  const counts = span("e2e-counts", "")
+  const reportPath = span("e2e-report-path", `结果目录：${options.reportPath ?? "未解析"}`)
+  reportPath.title = options.reportPath ?? ""
+  const openButton = document.createElement("button")
+  openButton.type = "button"
+  openButton.className = "e2e-open"
+  openButton.textContent = "打开结果目录"
+  openButton.title = "打开本次运行的数据目录（含 e2e-result.txt）；留存副本由启动器复制到报告目录，路径打印在终端"
+  openButton.disabled = !(options.reportDir && options.openDirectory)
+  openButton.addEventListener("click", () => {
+    if (options.reportDir && options.openDirectory) options.openDirectory(options.reportDir)
+  })
+
+  const summaryBar = document.createElement("div")
+  summaryBar.className = "e2e-summary"
+  summaryBar.append(mode, verdict, counts, reportPath, openButton)
+  const list = document.createElement("div")
+  list.className = "e2e-cases"
+  const finishBar = document.createElement("div")
+  finishBar.className = "e2e-finish"
+  finishBar.hidden = true
+  root.replaceChildren(summaryBar, list, finishBar)
+
+  function syncSummary(): void {
+    counts.textContent = `${pass + fail + skip}/${options.total} · 通过 ${pass} · 失败 ${fail}`
+      + (skip ? ` · 跳过 ${skip}` : "") + ` · ${formatDuration(Date.now() - startedAt)}`
+  }
+  syncSummary()
+  const timer = setInterval(syncSummary, 1000)
+
+  function icon(row: HTMLElement, text: string): void {
+    const element = row.querySelector(".e2e-icon")
+    if (element) element.textContent = text
+  }
+
+  return {
+    begin(cell: SpecialProgressCell): void {
+      let entry = rows.get(cell.key)
+      if (!entry) {
+        const row = document.createElement("div")
+        row.className = "e2e-case"
+        row.dataset.status = "running"
+        const detail = document.createElement("div")
+        detail.className = "e2e-detail"
+        detail.append(span("e2e-icon", "…"), span("e2e-id", cell.label), span("e2e-ms", ""), span("e2e-title", ""))
+        row.append(detail)
+        list.append(row)
+        if (list.childElementCount > MAX_ROWS) list.firstElementChild?.remove()
+        entry = { row, startedAt: Date.now() }
+        rows.set(cell.key, entry)
+      }
+      entry.row.dataset.status = "running"
+      icon(entry.row, "…")
+      syncSummary()
+    },
+    end(cell: { key: string; status: "pass" | "fail" | "skip"; note?: string }): void {
+      const entry = rows.get(cell.key)
+      if (!entry) return
+      entry.row.dataset.status = cell.status
+      icon(entry.row, cell.status === "pass" ? "✓" : cell.status === "fail" ? "✗" : "–")
+      const ms = entry.row.querySelector(".e2e-ms")
+      if (ms) ms.textContent = formatDuration(Date.now() - entry.startedAt)
+      const title = entry.row.querySelector(".e2e-title")
+      if (title) title.textContent = cell.note ?? ""
+      if (cell.status === "pass") pass += 1
+      else if (cell.status === "fail") fail += 1
+      else skip += 1
+      syncSummary()
+    },
+    finish(outcome: { verdict: "pass" | "pending" | "fail"; note?: string }): void {
+      clearInterval(timer)
+      verdict.textContent = outcome.verdict === "pass" ? "通过 (PASS)" : outcome.verdict === "pending" ? "待审阅 (PENDING)" : "失败 (FAIL)"
+      verdict.dataset.verdict = outcome.verdict === "pass" ? "pass" : outcome.verdict === "fail" ? "fail" : "pending"
+      syncSummary()
+      finishBar.hidden = false
+      finishBar.replaceChildren(
+        span("e2e-finish-note", outcome.note ?? ""),
+        span("e2e-finish-path", `结果文件（本次运行产物）：${options.reportPath ?? "路径未解析"}`),
+      )
+    },
+  }
+}
+
+export type SpecialProgressView = ReturnType<typeof createSpecialProgressView>

@@ -109,6 +109,8 @@ export const debug = reactive<DebugState>({
     planner: emptyPurposeUsage(),
     memory: emptyPurposeUsage(),
     stages: emptyPurposeUsage(),
+    observation: emptyPurposeUsage(),
+    topic: emptyPurposeUsage(),
   },
 
   registeredToolCount: 0,

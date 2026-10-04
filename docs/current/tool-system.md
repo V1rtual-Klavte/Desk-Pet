@@ -13,24 +13,38 @@ Pi Harness Tool → harness-tool-adapter → ToolRouter → 执行许可借用 �
 
 | 工具 | 当前边界 |
 |---|---|
-| read | 文本或图片读取；图片长边超过 1568 时等比缩放、BMP 一律转 PNG，处理失败回退原图（[image-processor.ts](../../src/services/tool/local/image-processor.ts)）；敏感路径仍会提高风险或被拒绝；私钥/凭据路径（含相对形式与 `~`/`$HOME`/`${HOME}`/反斜杠/`..` 归一）硬拒绝，Rust 侧 `is_credential_path` 是不可关闭的最终判定（规则文本 = 「`.ssh` 目录组件或 `.pem`/`.key` 后缀」） |
+| read | 文本或图片读取；图片长边超过 1568 时等比缩放、BMP 一律转 PNG，处理失败回退原图（[images/processor.ts](../../src/services/images/processor.ts)）；敏感路径仍会提高风险或被拒绝；私钥/凭据路径（含相对形式与 `~`/`$HOME`/`${HOME}`/反斜杠/`..` 归一）硬拒绝，Rust 侧 `is_credential_path` 是不可关闭的最终判定（规则文本 = 「`.ssh` 目录组件或 `.pem`/`.key` 后缀」） |
 | write / edit | DANGER（凭据路径升 NOWAY 硬拒绝）；写能力恒暴露、不做配置开关，风险与确认只由安全模式裁决 |
 | bash | 动态风险：首词命中白名单、无 shell 组合符且未命中危险/硬禁止模式为 NORMAL（免确认通道），其余为 DANGER；Rust 侧层 1 硬基线与系统路径保护不可关闭；命令里的凭据路径 token 硬拒绝 |
 | system_info | 只读运行环境：操作系统、架构、CPU 核心数、内存（总量 / 已用 / 可用）与 bash 默认工作目录 |
 | window_info | 只读最新原生窗口观测（应用、标题、采样时间和状态）；监控关闭、无观测或过期时如实说明 |
+| screenshot | 截取画面：前台窗口，桌宠自己是前台时退到主显示器整屏（避免截到桌宠自己的窗口）；缩放与静默了解同口径（长边 ≤1280、PNG），不套它的 idle 门槛；隐私总闸 `ai.silentAccess.enabled` 关闭时返回中性说明而不是报错，Rust `capture_screenshot` 复检同一开关；结果同时带图片块给模型（她自己也看得见），PNG 经 `save_screenshot` 落盘到数据根 `screenshots/`（原子写、只保留最新 200 个，按 mtime 淘汰）；`show_to_user=true` 时路径并入本回合提交的助手条目（`deskpetImagePaths`）在聊天里展示 |
 | read_session_event | 按 `eventId` 回读地址分页读取当前会话保存的完整工具结果（被 L0 缩短或清空的结果由此恢复）：地址是完整 36 位条目 id 或**会话内最短唯一前缀**，前缀命中多条返回明确错误（`errorCode: "ambiguous"`，提示用更长前缀）而不任选；页大小按 token 预算推导、随窗口单调（旧的固定 8000 字符页宽已删除；`offset` 仍是字符下标）；前缀解析只由条目 id 集合决定，折叠不改条目 id，地址因此对折叠不敏感 |
 | app_open / clipboard_read / clipboard_write / agent_spawn | 恒暴露，受各自策略约束；四者都是 DANGER，`agent_spawn` 另声明 `delegate` 隔离，运行入口（`runPiSubAgent`）按这一判定把派生型工具从子代理工具面里剥离 |
-| MCP 工具 | 仅启用且成功借用的 server；借用期间进入此后每个回合的冻结工具集（计划步骤的未限定工具面拿得到；`agent_spawn` 的 fork/team 子代理按固定白名单收窄 —— 只有 read / system_info / bash，不在其列），受工具发现过滤与权限终裁 |
-| memory_query / memory_change | 同一长期记忆库的查询与治理；change 为 NORMAL、passthrough，继续由 PermissionKernel 终裁，绑定本轮已提交可信用户事件和目标版本。支持 remember/correct/complete/cancel/forget，patch 保留未提供字段，事项时间使用 day/minute TemporalAnchor。模型不能执行 dreaming job 提交或 SQL |
-| proactive_query / proactive_change | 当前范围内的约定与事项；query 只读，change 为 NORMAL、passthrough、exclusive_effect、replay:never。创建、完成、取消、改期、延后和控制必须绑定当前 owner；任务写入绑定本轮用户事件，周期还需用户明确同意，歧义先澄清 |
+| enable_tools | 按需启用本回合未激活的工具（SAFE、allow；机制见「回合激活面与渐进披露」）：空参返回可启用清单、`query` 关键词查找并启用、`names` 精确启用；只在确有未激活工具时挂进对话回合的工具面，取用经 `addedToolNames` 回合内生效、不跨 run 保留 |
+| MCP 工具 | 仅启用且成功借用的 server；借用期间**全量**进入此后每个回合的冻结工具集（`setTools` 持全量），但对话回合的默认激活集只含基础工具与常用白名单，其余由 `enable_tools` 回合内按需加入（见「回合激活面与渐进披露」）；计划步骤的未限定工具面拿得到全量（子运行不收窄），`agent_spawn` 的 fork/team 子代理按固定白名单收窄 —— 只有 read / system_info / bash，不在其列；受工具发现过滤与权限终裁 |
+| memory_query / memory_change | 同一长期记忆库的查询与治理；change 为 NORMAL、passthrough，继续由 PermissionKernel 终裁，绑定本轮已提交可信用户事件和目标版本。支持 remember/correct/complete/cancel/forget，patch 保留未提供字段，事项时间使用 day/minute TemporalAnchor。只读查询同样绑定本轮可信用户事件，范围固定为 user＋当前 Card＋当前 session（管理界面的跨 scope 浏览不进入模型入口）。模型不能执行 dreaming job 提交或 SQL |
+| proactive_query / proactive_change | 当前范围内的约定与事项；query 只读，change 为 NORMAL、passthrough、exclusive_effect、replay:never。创建、完成、取消、改期、延后和控制必须绑定当前 owner；任务写入绑定本轮用户事件，周期可先经 `propose` 记录提议、只有本轮明确同意并引用 `proposalId` 才能建立，歧义先澄清；改期必须同时给出事项时间锚，延后只改下次提醒并保留原有效期 |
 
-实际清单由 [registry.ts](../../src/services/tool/registry.ts)、[pi-tools.ts](../../src/services/tool/local/pi-tools.ts) 和回合冻结快照决定。目录列举使用 bash ls；不再注册独立 ls/file_search/http_get。Pi CLI 的 Node 工具不能直接移入 WebView，需要现有 ExecutionEnv 边界。
+实际清单由 [registry.ts](../../src/services/tool/registry.ts)、[pi-tools.ts](../../src/services/tool/local/pi-tools.ts) 和回合冻结快照决定；每回合请求里下发的还会再经默认激活集收窄（见「回合激活面与渐进披露」）。目录列举使用 bash ls；不再注册独立 ls/file_search/http_get。Pi CLI 的 Node 工具不能直接移入 WebView，需要现有 ExecutionEnv 边界。
+
+## 回合激活面与渐进披露
+
+工具按「注册面 / 冻结面 / 激活面」三层落地，三者不合并：
+
+- **注册面**：MCP 发现经 includeTools/excludeTools 过滤后注册进注册表（内置服务器随包带了 includeTools 白名单，2026-10-04）；注册即拥有完整 ToolDef。
+- **冻结面**：对话回合装配时 `[...listAll()]` 全量交给 Pi `setTools`（名字可解析；Pi 在每次请求前校验激活集 ⊆ 全量）。
+- **激活面**：真正进请求 schema 的只有默认激活集 —— 非 MCP 工具全部 + MCP 常用白名单（内置 filesystem 的只读工具；唯一判定是 [activation.ts](../../src/services/tool/activation.ts) 的 `defaultActiveToolNames`，白名单常量是调整默认面的唯一位置）。默认激活集在每回合装配时经 `lane.setActiveTools` 重设：只有主对话回合（主回合与恢复续跑）收窄，子代理 / 计划步骤省略即全量，保持既有行为。
+
+模型取用入口是 `enable_tools`（[enable-tools.ts](../../src/services/tool/enable-tools.ts)）：传 `names` 精确启用、传 `query` 按关键词查找并启用、空参返回可启用清单；只在确有未激活工具时挂进对话回合的工具面（没有 MCP 工具时它无事可做，不占 schema）。启用经 Pi 原生 `addedToolNames` 在**本回合**后续请求生效（工具批次落盘时并入激活集），不跨 run 保留；[harness-tool-adapter.ts](../../src/services/tool/pi/harness-tool-adapter.ts) 把结果里本回合工具集之外的名字过滤掉并留痕（Pi 对名单外的名字会直接 configuration_failure，不能放进去）。
+
+渐进披露只改变「进不进请求」：披露面 ≠ 执行面 —— MCP 的 passthrough、PermissionKernel 终裁与 Rust 路径裁决一律不变；`setTools` 仍持全量，计划步骤 allowedTools、fork/team 白名单与恒暴露工具不受影响。恢复续跑会把中断操作里 running 的工具名并回本回合激活集（Pi 执行工具批次同样按激活集过滤，否则重放会变成「unavailable」），这是恢复语义、不是取用持久化。
 
 ## 工具策略
 
 `ToolDef` 携带身份、schema 与风险等级，策略集中在 `policy`（[types.ts](../../src/services/tool/types.ts)）；执行函数**不是公开字段**，经 `defineTool` 进入 [policy.ts](../../src/services/tool/policy.ts) 的模块内 WeakMap（`getToolHandler` 只给 router / registry，不从 barrel 导出）：
 
-- `safetyLevel`（`SAFE` / `NORMAL` / `DANGER` / `NOWAY`，可用 `resolveSafetyLevel(params, ctx)` 按调用动态解析）留在 ToolDef 顶层：它是风险维度而不是权限意见，供 PermissionKernel 定风险。等级到裁决的映射只有 [permission.ts](../../src/services/safety/permission.ts) 的 `standardDecision` 一处：`NOWAY` 一律 deny，`SAFE` / `NORMAL` 一律 allow，`DANGER` 交给安全模式（`just_do_it` 放行，`let_me_tk` 与默认档都要确认）。工具没有各自的可见性开关，`validateRiskDeclaration` 只守未经类型检查的 `safetyLevel` 声明。
+- `safetyLevel`（`SAFE` / `NORMAL` / `DANGER` / `NOWAY`，可用 `resolveSafetyLevel(params, ctx)` 按调用动态解析）留在 ToolDef 顶层：它是风险维度而不是权限意见，供 PermissionKernel 定风险。等级到裁决的映射只有 [permission.ts](../../src/services/safety/permission.ts) 的 `standardDecision` 一处：`NOWAY` 一律 deny，`SAFE` / `NORMAL` 一律 allow，`DANGER` 交给安全模式（`just_do_it` 放行，`let_me_tk` 与默认档都要确认）。工具没有各自的权限开关（回合激活面收窄的是「进不进请求」，不是授权；见「回合激活面与渐进披露」），`validateRiskDeclaration` 只守未经类型检查的 `safetyLevel` 声明。
 - `permission.defaultDecision` 是工具侧唯一的权限意见（`allow` / `ask` / `deny` / `passthrough`），`passthrough` 不是执行许可，必须由 PermissionKernel 收敛。
 - `execution.effect / isolation / replay / timeoutMs`：效果分类、隔离级别、恢复重放资格与超时；未声明超时时统一取 `loop.toolTimeoutMs`。并发语义只由 `effect` / `isolation` 表达（`shared_read` 必须同时是 `read` 效果；反向不设约束，独占读是合法的保守声明）。
 - `context.resultProjection`：`preserve` 是**禁止二次处理**，不缩短、不清空（地址标注不在此列，照旧带），避免「引用 → 读取 → 又变引用」的循环 —— 回读工具 `read_session_event` 自身即声明 `preserve`；`reference` 的结果可被 L0 缩短或清空，且**无条件带地址**（不论是否超阈值）。两者都只改请求视图，会话条目存档始终保留全文。Router 的 L1 内联截断已删除：会话条目与请求视图共用同一份工具返回全文，请求视图里工具结果的改动只发生在 L0（[context/tool-output.ts](../../src/services/context/tool-output.ts)）且提示带 eventId 回读地址。
@@ -90,7 +104,7 @@ Skill 不注册 ToolDef、不占工具声明槽，也不授予权限：它只提
 
 ## MCP 生命周期
 
-[manager.ts](../../src/services/tool/mcp/manager.ts) 按运行 owner 借用连接（owner = 本轮 requestId 或 `resumeOwner(sessionId)`）；应用启动不连接 MCP。并发 acquire 串行化，最后 owner 释放时关闭进程并注销工具。includeTools/excludeTools 过滤发现结果；借来的工具进全局注册表、没有模式或回合过滤 —— 借用期间此后每个回合的冻结工具集都含它们（fork/team 子代理按固定白名单（read / system_info / bash）收窄，不在其列）。工具定义在回合内冻结，设置变化不无声杀掉在飞回合的借用。
+[manager.ts](../../src/services/tool/mcp/manager.ts) 按运行 owner 借用连接（owner = 本轮 requestId 或 `resumeOwner(sessionId)`）；应用启动不连接 MCP。并发 acquire 串行化；末位 owner 释放后连接进入空闲宽限（`MCP_IDLE_GRACE_MS` 模块常量），宽限内再次借用直接复用同一条连接，到点仍未复用才关闭进程并注销工具；配置里撤下的服务器在下一次能力准备时立即断开（`disconnectUnlistedMcpServers`，只处理无 owner 的连接）。includeTools/excludeTools 过滤发现结果（收窄可注册的工具集）；随包内置五项默认关闭，其中 filesystem／playwright 预置 includeTools 白名单（2026-10-04 起）。借来的工具进全局注册表、没有模式过滤 —— 借用期间此后每个回合的冻结工具集都含它们（fork/team 子代理按固定白名单（read / system_info / bash）收窄，不在其列）；对话回合实际下发的默认面由「回合激活面与渐进披露」收窄（默认只含基础工具 + filesystem 常用白名单，其余经 `enable_tools` 取用）。工具定义在回合内冻结，设置变化不无声杀掉在飞回合的借用。
 
 MCP 结果与内置工具走同一条回读链（[client.ts](../../src/services/tool/mcp/client.ts) 的一次性截断已删）：全文原样落会话条目，请求视图由 L0 投影按 `details.deskpetEntryId` 缩短并标注 eventId 回读地址，模型随后用 `read_session_event` 取回全文。唯一的物理上限在条目写盘链上（[tauri-execution-env.ts](../../src/services/tool/pi/tauri-execution-env.ts) 的 `MAX_TOOL_FILE_BYTES`，5 MB）：超过时写盘如实报错，不静默截断。
 

@@ -107,6 +107,14 @@ async function ensureStagesReady(card: PersonalityCard): Promise<void> {
 }
 
 async function prepareVariablePool(card: PersonalityCard): Promise<void> {
+  for (const def of card.sections.variableDefs) {
+    const bands=def.proactiveBands
+    if(!bands)continue
+    if(def.scope!=="card"||def.type!=="number"||def.min===undefined||def.max===undefined||def.max<=def.min
+      ||bands.length<2||bands[0]!==def.min||bands.some((value,index)=>!Number.isFinite(value)||value<def.min!||value>=def.max!||(index>0&&value<=bands[index-1]!))) {
+      throw new Error(`Card 主动变量档位无效: ${def.name}`)
+    }
+  }
   log.info("准备变量池:", card.id, "| variableDefs:", card.sections.variableDefs.length, "个")
 
   const prevVars = await loadCardVars(card.id)

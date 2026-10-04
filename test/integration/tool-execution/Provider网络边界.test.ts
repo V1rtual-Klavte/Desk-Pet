@@ -11,14 +11,16 @@
 import { describe, expect, it } from "vitest"
 
 import {
-  MAX_PROVIDER_RESPONSE_BYTES,
   capProviderResponseBody,
   createProviderFetchGuard,
+  providerResponseByteCap,
   validateProviderUrl,
 } from "@/services/engine/harness"
 
 describe("Provider 网络边界", () => {
   it("Provider URL 协议边界与响应体上限 [tool-provider-network-boundary]", async () => {
+    // 响应体上限随输出预算推导（基线 + token 预留）；这里按 4k 输出取一个稳定口径做边界断言。
+    const maxBytes = providerResponseByteCap(4_096)
     expect(validateProviderUrl("https://localhost/v1").protocol).toBe("https:")
     expect(() => validateProviderUrl("file:///tmp/provider"), "非 HTTP 协议未拒绝").toThrow()
 
@@ -46,19 +48,19 @@ describe("Provider 网络边界", () => {
 
     // content-length 预检：声明超限时不必读 body 就拒绝
     await expect(
-      capProviderResponseBody(new Response("x", { headers: { "content-length": String(MAX_PROVIDER_RESPONSE_BYTES + 1) } })),
+      capProviderResponseBody(new Response("x", { headers: { "content-length": String(maxBytes + 1) } }), maxBytes),
       "content-length 超限未拒绝",
     ).rejects.toThrow()
 
     // 流式超限：无 content-length，按累计读取字节数拒绝
     const oversized = new ReadableStream<Uint8Array>({
       start(controller) {
-        controller.enqueue(new Uint8Array(MAX_PROVIDER_RESPONSE_BYTES + 1))
+        controller.enqueue(new Uint8Array(maxBytes + 1))
         controller.close()
       },
     })
     const readOversized = async () => {
-      const capped = await capProviderResponseBody(new Response(oversized))
+      const capped = await capProviderResponseBody(new Response(oversized), maxBytes)
       await capped.arrayBuffer()
     }
     await expect(readOversized(), "流式响应超限未拒绝").rejects.toThrow()
@@ -70,7 +72,7 @@ describe("Provider 网络边界", () => {
       start(controller) { upstream = controller; controller.enqueue(new Uint8Array([1])) },
       cancel() { cancelled = true },
     })
-    const guarded = await capProviderResponseBody(new Response(source))
+    const guarded = await capProviderResponseBody(new Response(source), maxBytes)
     const reader = guarded.body!.getReader()
     const first = await reader.read()
     expect(first.value?.[0], "首块没有增量交付").toBe(1)

@@ -270,6 +270,13 @@ export async function readPiSessionEntriesOnce(sessionId: string, query?: EntryQ
 
 /** 追加 deskpet 自定义 entry（宿主生成、非模型消息）；lane 分支不存在时按需创建。返回条目 id。 */
 export async function appendPiSessionCustomEntry(sessionId: string, customType: string, data?: JsonValue): Promise<string> {
+  // 槽存活时只允许 AgentLane 改动它自己的 tip。session Branch 即使成功落盘，也会让运行中的
+  // Harness 按旧内存 tip 续写并把旁路 entry 留在链外；动态导入避免 repo ↔ harness-slot 静态环。
+  const { harnessSlots } = await import("@/services/engine/harness/harness-slot")
+  const slot = harnessSlots.peek(sessionId)
+  if (slot) return await slot.appendCustomEntry(customType, data)
+
+  // 无活槽时 lane 不在运行：直接走持久 repo branch 仍是空闲会话的单写路径。
   const session = await acquirePiSession(sessionId)
   const branch = await session.branch(PI_LANE, BACKGROUND_CONTEXT)
     ?? await session.createBranch(PI_LANE, null, BACKGROUND_CONTEXT)

@@ -367,6 +367,7 @@ async function connectMcpServerUnlocked(server: McpServerConfig): Promise<McpCon
 
 /** Lock-held implementation. Callers decide whether owner references permit a forced disconnect. */
 async function disconnectMcpServerUnlocked(name: string): Promise<void> {
+  cancelIdleRelease(name)
   const client = connectedClients.get(name)
   if (client) {
     try { await client.disconnect() }
@@ -396,6 +397,47 @@ export async function disconnectMcpServer(name: string): Promise<void> {
   })
 }
 
+// ── 空闲保活 ──
+// 连接跨回合保活：末位 owner 释放后不立刻杀进程，等空闲宽限到点再断开。
+// 连续对话因此复用同一条连接（消除每条消息 1.5–3s 的 npx 启动），空闲或配置撤下后仍然释放；
+// 宽限期是模块常量（实现细节，不进 CONFIG），进程退出由 disconnectAllMcpServers 兜底。
+const MCP_IDLE_GRACE_MS = 120_000
+const idleReleaseTimers = new Map<string, ReturnType<typeof setTimeout>>()
+
+function cancelIdleRelease(name: string): void {
+  const timer = idleReleaseTimers.get(name)
+  if (timer !== undefined) {
+    clearTimeout(timer)
+    idleReleaseTimers.delete(name)
+  }
+}
+
+function scheduleIdleRelease(name: string): void {
+  cancelIdleRelease(name)
+  const timer = setTimeout(() => {
+    idleReleaseTimers.delete(name)
+    void withServerLock(name, async () => {
+      if (hasOwners(name)) return
+      await disconnectMcpServerUnlocked(name)
+    }).catch(error => log.warn("MCP 空闲释放失败:", name, formatError(error)))
+  }, MCP_IDLE_GRACE_MS)
+  // 浏览器计时器没有 unref：保活只是优化，不能拦住应用退出。
+  ;(timer as unknown as { unref?: () => void }).unref?.()
+  idleReleaseTimers.set(name, timer)
+}
+
+/**
+ * 配置撤下的服务器即使正处于保活窗口也立即断开（只处理无 owner 的连接）。
+ * 由每回合的借用方在借用前调用，避免已关闭的 server 的工具继续进请求。
+ */
+export async function disconnectUnlistedMcpServers(keep: readonly string[]): Promise<void> {
+  const keepSet = new Set(keep)
+  for (const name of [...connectedClients.keys()]) {
+    if (keepSet.has(name) || hasOwners(name)) continue
+    await withServerLock(name, () => disconnectMcpServerUnlocked(name))
+  }
+}
+
 /** 按需取得一个 MCP server；同一 owner 重复取得不会重复 spawn。owner 必填：借用与释放要用同一个运行标识配对。 */
 export async function acquireMcpServer(name: string, owner: string): Promise<McpConnectResult> {
   markPendingOwner(name, owner)
@@ -410,6 +452,7 @@ export async function acquireMcpServer(name: string, owner: string): Promise<Mcp
         : await connectMcpServerUnlocked(server)
       // Empty include/exclude results deliberately leave no client and no owner reference.
       if (result.success && connectedClients.has(name)) {
+        cancelIdleRelease(name)
         owners.add(owner)
         connectionOwners.set(name, owners)
       }
@@ -420,13 +463,13 @@ export async function acquireMcpServer(name: string, owner: string): Promise<Mcp
   }
 }
 
-/** 释放 owner 的使用权；没有其他 owner 时注销工具并终止 server。 */
+/** 释放 owner 的使用权；没有其他 owner 时进入空闲宽限，到点仍未复用才注销工具并终止 server。 */
 export async function releaseMcpServer(name: string, owner = "runtime"): Promise<void> {
   await withServerLock(name, async () => {
     const owners = connectionOwners.get(name)
     if (!owners) return
     owners.delete(owner)
-    if (owners.size === 0) await disconnectMcpServerUnlocked(name)
+    if (owners.size === 0) scheduleIdleRelease(name)
   })
 }
 

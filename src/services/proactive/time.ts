@@ -87,6 +87,11 @@ export function isQuietTime(now: number, timezone: string): boolean {
   return hour >= PROACTIVE_LIMITS.quietStartHour || hour < PROACTIVE_LIMITS.quietEndHour
 }
 
+/** 22:00–23:00 is reserved for the single nightly opportunity; 23:00–09:00 is silent. */
+export function isNightlyWindow(now: number, timezone: string): boolean {
+  return zonedParts(now, timezone).hour === 22
+}
+
 export function nextSpeakingTime(now: number, timezone: string): number {
   if (!isQuietTime(now, timezone)) return now
   const p = zonedParts(now, timezone)
@@ -103,7 +108,7 @@ export function checkinWindows(anchor: TemporalAnchor): Array<{ phase: "before" 
   const window = localDayWindow(anchor.localDate, anchor.timezone)
   const previous = shiftLocalDate(anchor.localDate, -1)
   const anchorKey = `day:${anchor.localDate}:${anchor.timezone}`
-  return [{ phase: "before", from: localToInstant(previous, `${pad(PROACTIVE_LIMITS.quietEndHour)}:00`, anchor.timezone), until: localToInstant(previous, `${pad(PROACTIVE_LIMITS.quietStartHour)}:00`, anchor.timezone), anchorKey },
+  return [{ phase: "before", from: localToInstant(previous, `${pad(PROACTIVE_LIMITS.quietEndHour)}:00`, anchor.timezone), until: localToInstant(previous, `${pad(PROACTIVE_LIMITS.quietStartHour - 1)}:00`, anchor.timezone), anchorKey },
     { phase: "after", from: window.until, until: window.until + 2 * DAY_MS, anchorKey }]
 }
 

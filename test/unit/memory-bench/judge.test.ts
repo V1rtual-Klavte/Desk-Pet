@@ -1,8 +1,18 @@
 // 外部评测 judge 模板 L2 单测：模板选取、官方措辞关键句、判定解析语义。
 import { describe, it, expect } from "vitest"
 import {
-  buildLongMemEvalJudgePrompt, buildMemoryBankJudgePrompt, judgeTemplateId, parseJudgeVerdict,
+  buildLongMemEvalJudgePrompt, buildMemoryBankJudgePrompt, judgeOutputBudget, judgeTemplateId, parseJudgeVerdict,
 } from "../../memory-bench/judge.mjs"
+
+describe("judge 输出预算", () => {
+  it("reasoning judge 拿得到思考空间，但不超过模型自身上限 [bench-judge-budget]", () => {
+    // 512 曾把一次 deepseek-reasoner 判分截断成未裁决（2026-10-03 LME oracle 852ce960）。
+    expect(judgeOutputBudget(512)).toBe(512)
+    expect(judgeOutputBudget(2048)).toBe(2048)
+    expect(judgeOutputBudget(32768)).toBe(4096)
+    expect(judgeOutputBudget(undefined)).toBe(4096)
+  })
+})
 
 describe("LongMemEval judge 模板选取", () => {
   it("按官方分流：三类通用、temporal、knowledge-update、preference、弃权 [bench-judge-routing]", () => {

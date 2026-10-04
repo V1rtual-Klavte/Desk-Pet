@@ -4,6 +4,11 @@
 
 use tauri::Manager;
 
+#[cfg(target_os = "macos")]
+use super::{
+    WINDOW_LEVEL_LAYER_EDITOR, WINDOW_LEVEL_MAIN, WINDOW_LEVEL_PICKER, WINDOW_LEVEL_SETTINGS,
+};
+
 /// 提升设置窗口层级，确保浮动在主窗口之上。
 ///
 /// macOS：把窗口 level 设为 1200（主窗口 1000 之上、图层编辑器 1500 之下），再前移并置为 key。
@@ -28,7 +33,7 @@ pub fn enhance_settings_window(app: tauri::AppHandle) {
             // 三个调用依次是：设层级 1200（主窗口 1000 之上、图层编辑器 1500 之下）、
             // 前移、置顶并激活。
             unsafe {
-                let _: () = msg_send![ns_win, setLevel: 1200isize];
+                let _: () = msg_send![ns_win, setLevel: WINDOW_LEVEL_SETTINGS];
                 let _: () = msg_send![ns_win, orderFrontRegardless];
                 let _: () = msg_send![ns_win, makeKeyAndOrderFront: std::ptr::null::<Object>()];
             }
@@ -65,9 +70,9 @@ pub fn set_picker_window_level(app: tauri::AppHandle, picking: bool) {
         use objc::runtime::Object;
         use objc::{msg_send, sel, sel_impl};
         let levels: [(&str, isize); 3] = [
-            ("main", if picking { 0 } else { 1000 }),
-            ("settings", if picking { 0 } else { 1200 }),
-            ("layer-editor", if picking { 0 } else { 1500 }),
+            ("main", if picking { WINDOW_LEVEL_PICKER } else { WINDOW_LEVEL_MAIN }),
+            ("settings", if picking { WINDOW_LEVEL_PICKER } else { WINDOW_LEVEL_SETTINGS }),
+            ("layer-editor", if picking { WINDOW_LEVEL_PICKER } else { WINDOW_LEVEL_LAYER_EDITOR }),
         ];
         for (label, level) in levels {
             if let Some(win) = app.get_webview_window(label) {
@@ -112,7 +117,7 @@ pub fn enhance_layer_editor_window(app: tauri::AppHandle) {
             unsafe {
                 // CGWindowLevelForKey(kCGOverlayWindowLevelKey) ≈ 1000+
                 // 比设置窗口(1200)更高的层级
-                let _: () = msg_send![ns_win, setLevel: 1500isize];
+                let _: () = msg_send![ns_win, setLevel: WINDOW_LEVEL_LAYER_EDITOR];
                 let _: () = msg_send![ns_win, orderFrontRegardless];
             }
         }

@@ -178,7 +178,7 @@ describe("trace review integrity gate", () => {
       .toEqual(["ideal.md", "actual.jsonl", "manifest.json", "review.json"])
   })
 
-  it("retains the newest five trace bundles and leaves case-id and flaky artifacts untouched [trace-bundle-retention]", () => {
+  it("retains the newest three trace bundles and leaves case-id and flaky artifacts untouched [trace-bundle-retention]", () => {
     const root = temp()
     const reportsDir = join(root, "reports")
     const tracePath = join(root, "trace.jsonl")
@@ -208,11 +208,11 @@ describe("trace review integrity gate", () => {
     }
 
     const names = readdirSync(reportsDir)
-    expect(names.filter(name => name.endsWith(".trace.jsonl"))).toHaveLength(5)
+    expect(names.filter(name => name.endsWith(".trace.jsonl"))).toHaveLength(3)
     expect(names.some(name => name.includes("run-0."))).toBe(false)
     expect(names.some(name => name.includes("run-0.integrity.json"))).toBe(false)
     expect(names.some(name => name.includes("run-0.quality.jsonl"))).toBe(false)
-    expect(names.filter(name => name.endsWith(".quality.jsonl"))).toHaveLength(5)
+    expect(names.filter(name => name.endsWith(".quality.jsonl"))).toHaveLength(3)
     expect(names).toContain("trace-bundle-run-5.integrity.json")
     expect(names).toContain("caseids-run.json")
     expect(names).toContain("flaky.json")

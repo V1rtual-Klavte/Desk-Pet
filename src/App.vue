@@ -15,13 +15,15 @@ import { start as startProactive, stop as stopProactive, refreshProactive } from
 import { switchToSession, createNewSession, closeSession, openSession, deleteSession, getSessions, getActiveSessionId, initWelcome } from "@/services/session";
 import type { PiSessionSummary } from "@/services/session";
 import { initApp } from "@/services/init";
-import { desktopConfig, windowMonitorConfig, shortcutConfig, userConfig, reloadConfig } from "@/services/config";
+import { silentAccessConfig, shortcutConfig, userConfig, reloadConfig } from "@/services/config";
 import { isMacOS } from "@/services/env";
 import { applyFontVars } from "@/services/font";
 import { createLogger } from "@/services/logger";
 import { formatError } from "@/services/error";
 import { playEventSound } from "@/services/audio/registry";
 import { emit, listen } from "@tauri-apps/api/event";
+import { initObservationGovernance, startSilentUnderstanding, stopObservationGovernance, stopSilentUnderstanding } from "@/services/observation";
+import { revealAll as revealAllHumanizedMessages } from "@/services/humanizer";
 
 const log = createLogger("App");
 
@@ -595,11 +597,13 @@ onMounted(async () => {
   }
 
   await initApp();
+  await initObservationGovernance();
 
-  await setMonitorEnabled(windowMonitorConfig.enabled, desktopConfig.pollingIntervalMs);
+  await setMonitorEnabled(silentAccessConfig.enabled);
   playEventSound("welcome");
   cleanupListener = await initWindowListener(winSize);
-    startProactive();
+  startProactive();
+  startSilentUnderstanding();
 
   await registerShortcut();
 
@@ -675,9 +679,12 @@ onMounted(async () => {
   // 设置面板保存
   try {
     cleanupSettingsSaved = await listen("deskpet-settings-saved", async () => {
+      await stopSilentUnderstanding();
       await reloadConfig();
-      await setMonitorEnabled(windowMonitorConfig.enabled, desktopConfig.pollingIntervalMs);
+      await setMonitorEnabled(silentAccessConfig.enabled);
       refreshProactive();
+      revealAllHumanizedMessages();
+      startSilentUnderstanding();
       // 全局字体可能刚被改：紧跟配置刷新重注入字体 CSS 变量
       applyFontVars();
       // 效果模式可能刚被改：紧跟配置刷新重判光标追踪的注册态
@@ -722,6 +729,7 @@ onMounted(async () => {
 });
 
 onUnmounted(() => {
+  void stopSilentUnderstanding().catch(error => log.error("静默了解停止失败:", formatError(error))).finally(() => stopObservationGovernance());
   stopProactive();
   void import("@/services/tool/mcp").then(({ disconnectAllMcpServers }) => disconnectAllMcpServers())
   if (cleanupListener) cleanupListener();

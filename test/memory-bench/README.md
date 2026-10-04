@@ -1,10 +1,12 @@
-# memory-bench — 外部记忆基准（观测层）
+# memory-bench — 外部记忆基准（质量对照主口径）
 
 把三个开源权威记忆评测集接进测试体系，与自建 80 题（`test/memory-quality/`）**物理隔离**：
-数据、运行、判分、门禁四处全分开。外部集只回答「记忆通道放在公开基准上是什么位置」，
-是**观测性证据**，不参与发布门禁。
+数据、运行、判分、门禁四处全分开。外部集是**质量对照的主口径**：回答「记忆通道放在公开
+基准上是什么位置」，报告与 hypotheses 作为质量证据；它仍是**观测性证据**，不参与发布门禁。
 
-- **不进 CI、不进 `test:release`、默认不跑**；常规 `pnpm test`（L2/L3）完全不受影响。
+- **不进 CI、不进 `test:release`（门禁保持现状）**：按 §8 的分层节奏在本机运行（冒烟 → 常规，
+  中文／难度／对外按触发条件），默认不为每次改动全量跑；冒烟层（`test:memory-bench:smoke`）可作
+  接入自检，完整分层在本机跑通后再发布。常规 `pnpm test`（L2/L3）完全不受影响。
 - 独立命令：`pnpm run test:memory-bench -- --bench-dataset <…> [--bench-split <…>]`。
 - 报告 `schemaVersion = desk-pet-memory-bench/v1`，顶层 `source: "external"`、`status: "observational"`，
   `qualityThresholds: null`。宿主对本次运行的 `PASS` 只表示「完整跑完」，不表示质量达标。
@@ -82,10 +84,11 @@ pnpm run test:memory-bench -- --bench-dataset longmemeval --bench-split oracle \
 | `--bench-seed` | 组内洗牌种子，默认 `memory-bench-2026-10-03` |
 | `--bench-judge on/off` | 默认 `on`；`off` 只出确定性检索指标 |
 | `--bench-judge-model` | 默认取 [test/eval-models.json](../eval-models.json)（或本地 `eval-models.local.json`）的 `judge.model`（当前 `deepseek-reasoner`）；**必须不同于被测模型** |
-| `--report json` | 报告落 `test/reports/<stamp>.json`（建议始终带） |
+| `--report json` | 报告落 `test/reports/bench/<stamp>.json`（建议始终带；同名 `.html` 由启动器自动生成质量摘要页） |
 
 报告与逐题 JSONL（`memory-bench-outcomes.jsonl`）随现有保留组机制留存：
-主报告 `<stamp>.json`；逐题结果作为 bundle 成员 `<trace-bundle>-<stamp>.quality.jsonl`
+主报告 `<stamp>.json` 与同名 `.html` 在 `test/reports/bench/`，按「最近 3 场」淘汰；
+逐题结果作为 bundle 成员 `test/reports/bench/traces/trace-bundle-<stamp>.memory-bench.jsonl`
 （复用现有成员名后缀，未改 `scripts/trace-evidence.mjs`）。
 
 **LongMemEval 的逐题 JSONL 行同时携带 `question_id` 与 `hypothesis`**，官方
@@ -93,7 +96,7 @@ pnpm run test:memory-bench -- --bench-dataset longmemeval --bench-split oracle \
 `ref_file` 用官方原始 LongMemEval 数据。另一条导出路径：
 
 ```bash
-node test/memory-bench/export-hypotheses.mjs test/reports/<stamp>.json --out /tmp/hypotheses.jsonl
+node test/memory-bench/export-hypotheses.mjs test/reports/bench/<stamp>.json --out /tmp/hypotheses.jsonl
 ```
 
 ## 5. 判分口径
@@ -106,7 +109,10 @@ node test/memory-bench/export-hypotheses.mjs test/reports/<stamp>.json --out /tm
 - judge 走测试侧网关的端点与 api_key（同 key 异构；本地 `eval-models.local.json` 可覆盖网关端点与凭据；默认 judge 模型由
   [test/eval-models.json](../eval-models.json) 提供——当前 `deepseek-reasoner`，可用
   `--bench-judge-model` 或 `DESKPET_EVAL_JUDGE_MODEL` 覆盖；被测模型以本机配置为准，也可在
-  同一文件或 `DESKPET_EVAL_MODEL` 覆盖）。**唯一纪律：judge 模型必须不同于
+  同一文件或 `DESKPET_EVAL_MODEL` 覆盖）。judge 模型经网关按 id 解析（不借用被测模型的预算），
+  单次输出预算 `judgeOutputBudget`：下限 1024、上限 4096 token，绝不越过模型自身上限 ——
+  reasoning judge 的 thinking 也计入 `maxTokens`，固定 512 曾把一次判分截断成「未裁决」
+  （2026-10-03 LME oracle `852ce960`），实际计费仍按真实输出。**唯一纪律：judge 模型必须不同于
   被测模型**（配置相同会在开跑前报错），报告顶层记录 `judgeModel`。judge 失败（超时/空响应）只记
   「未裁决」，不进正确率分母，另计 `judgeFailures`。
 - 确定性检索指标（不依赖 judge）：`sessionRecall`（gold `answer_session_ids` 被渲染证据覆盖的比例）、
@@ -142,20 +148,28 @@ node test/memory-bench/export-hypotheses.mjs test/reports/<stamp>.json --out /tm
 - 提取走**真实 dreaming**（`manual` 模式，绕开每日预算；循环 sweep 直至无待处理来源）。
 - **session-scope 候选归一为 user scope**：Rust 禁止跨范围改归属，用 `add`（同内容/来源）+ `forget`
   原条目实现；否则提问发生在新建会话会漏召回。次数记入 `ingest.scopeNormalized`。
+  **必须两段式**（先全部 `add`、再全部 `forget`，规划在 `scope-normalize.mjs`）：Rust 的遗忘
+  按来源事件写 `block_extraction` 墓碑，之后任何引用该来源的 `add` 都会判「来源未登记」；
+  逐条 `add→forget` 在共享来源的候选上会把整题打成基础设施失败（2026-10-03 LME oracle
+  `lme-oracle-e01b8e2f` 的故障），而不是被测能力问题。
 - 提问：每题新建会话；cell = 题 × 1 trial（外部集是观测证据，不套自建集的 ≥3 trial 配对纪律）。
 - 组复用：LoCoMo 一段对话灌一次库、组内多题提问；MemoryBank 一个角色同理；LongMemEval 每题一组。
 - 工具全部撤下（与 memory-quality 相同的隔离）；存储为隔离 E2E 根内的真实 Rust SQLite。
 - 模型工具/权限边界不变；**不为拉高分改产品**：recall 预算（CONFIG `ai.memory.core/recall`）、
   dreaming 截断（1200）/丢弃（4800）造成的压分照实记录（`ingest` + `manifest.memoryConfig`）。
-- 已知偏差（报告口径如实标注）：官方 LongMemEval 以 `question_date` 为「当前日期」，
-  本仓提问发生在真实时钟（2026+），相对日期类问题受此影响；题面不做改写。
-- **reasoning 模型的评审输出上限（2026-10-03 实测与处理）**：产品 dreaming 单次评审默认上限
-  1200 tokens，reasoning 的 thinking 也计入该预算，超限时提取如实以「Provider 输出达到长度
-  上限，拒绝使用不完整结果」失败（拒绝采用不完整输出是产品的保守行为，不是基准缺陷），按
+- 题目基准日（2026-10-03 修正）：官方 LongMemEval 以 `question_date` 为「当前日期」，
+  适配器把提问回合的尾随注记 `[当前时间]` 锚到题目基准日（**本地墙钟**，`questionTimeAnchor`），
+  相对日期题（「多少天前」「上周二」）从此在官方口径下测量；锚点只活在该提问回合内、
+  finally 复位，生产路径仍用真实时钟。**题面一个字不改**，报告 manifest 记
+  `questionTimeAnchoring` 供审计。其余数据集没有基准日，保持真实时钟。
+- **reasoning 模型的评审输出上限（2026-10-03 实测与处理）**：产品 dreaming 的单次评审输出
+  预算按模型窗口自动推导（窗口 × 1/8、32k 封顶；reasoning 的 thinking 也计入）。若显式压低
+  `ai.memory.dreaming.reviewMaxTokens` 后仍超限，提取会如实以「Provider 输出达到长度上限，
+  拒绝使用不完整结果」失败（拒绝采用不完整输出是产品的保守行为，不是基准缺陷），按
   `status: "failed"`（`error` 注明 `model-output-length`）记入报告且一次 run 继续观测其余题目。
-  **解法**：调大 `ai.memory.dreaming.reviewMaxTokens`（默认 1200；测试侧可在
-  `test/eval-models.local.json` 写 `underTest.reviewMaxTokens`，如 4096），或改用非 reasoning
-  模型（如 deepseek-chat）。接新模型先按 §8 的冒烟层验证提取链路。
+  **解法**：先看自动预算是否被显式值压低；需要临时放大时在
+  `test/eval-models.local.json` 写 `underTest.reviewMaxTokens`，或改用非 reasoning 模型
+  （如 deepseek-chat）。接新模型先按 §8 的冒烟层验证提取链路。
 
 ## 7. LongMemEval S 子集（本轮不跑）
 
@@ -177,8 +191,9 @@ node test/memory-bench/export-hypotheses.mjs test/reports/<stamp>.json --out /tm
 
 别名只是固定最常见口径；其它参数组合仍走 `pnpm run test:memory-bench -- <参数>`。
 
-成本大头在 dreaming 提取（每题 1~5 次 sweep），judge 占比小；推理模型先按 §6 调
-`reviewMaxTokens` 并用冒烟层验证提取链路。每轮报告都记录实际 usage，用来校准这里的量级。
+成本大头在 dreaming 提取（每题 1~5 次 sweep），judge 占比小；推理模型先确认自动输出预算
+（必要时用 `underTest.reviewMaxTokens` 覆盖）并用冒烟层验证提取链路。每轮报告都记录实际
+usage，用来校准这里的量级。
 **默认节奏 = 冒烟 → 常规**；中文 / 难度 / 对外只在对应触发条件下跑，不随每次改动全量执行。
 
 ## 9. 测试与验证

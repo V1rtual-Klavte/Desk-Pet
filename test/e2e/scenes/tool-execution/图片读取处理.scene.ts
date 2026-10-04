@@ -1,7 +1,7 @@
 import { BACKGROUND_CONTEXT } from "@earendil-works/pi-agent-core"
 import type { FileError, Result } from "@earendil-works/pi-agent-core"
 import type { SceneDef } from "../../../e2e/types"
-import { MAX_IMAGE_EDGE, readImageProcessor } from "@/services/tool/local/image-processor"
+import { MAX_IMAGE_EDGE, readImageProcessor } from "@/services/images"
 import { executeToolDefinition, getToolByName } from "@/services/tool"
 import { TauriExecutionEnv } from "@/services/tool/pi/tauri-execution-env"
 
@@ -45,7 +45,8 @@ function createCanvas(width: number, height: number): CanvasLike | undefined {
 }
 
 function context2d(canvas: CanvasLike): CanvasRenderingContext2D | OffscreenCanvasRenderingContext2D | null {
-  return canvas.getContext("2d")
+  // 同 image-processor：联合画布上的 getContext("2d") 在 TS 5.9 DOM lib 里会选中宽重载。
+  return canvas.getContext("2d") as CanvasRenderingContext2D | OffscreenCanvasRenderingContext2D | null
 }
 
 /** 现场生成一张纯色 PNG 夹具。 */

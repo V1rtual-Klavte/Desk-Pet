@@ -18,7 +18,7 @@ card/interaction 状态保存在 `personality/stages/{cardId}.json` 的变量区
 
 [loader.ts](../../src/services/personality/loader.ts) 从运行时 cards 目录读取和解析 Card，包内 defaults 只作首次初始化种子。[registry.ts](../../src/services/personality/registry.ts) 的 `switchPersonality()` 先准备阶段文案与变量池，成功后改变活动 Card；失败恢复旧 Card、变量池（含变量注册表）与阶段缓存。设置页展开 Card 只构建局部预览快照，不改动全局变量池所有权。
 
-随包种子提供 `yuki` 与 `angelkawaii` 两张 Card；没有可用 Card 时允许无活动 Card 降级运行。`whenText` 是自然语言语气指引；mustRules 参与 Prompt 构建，不是一套任意执行脚本。
+随包种子提供 `default`（小雪）、`yuki` 与 `angelkawaii` 三张 Card；没有可用 Card 时允许无活动 Card 降级运行。`whenText` 是自然语言语气指引；mustRules 参与 Prompt 构建，不是一套任意执行脚本。
 
 阶段文案先读持久化缓存，缺失时可经模型生成；任一 Card 首次激活或角色设定/语言风格变化时会重新生成一次（一次 LLM 调用/卡）。失效判定键是生成输入 `sourceHash`（`SHA-256(roleSetting + "\n" + languageStyle)`），`version:` 只作元数据、不参与判定；重新生成只覆写 stages 段，不清空变量区。
 
@@ -36,9 +36,17 @@ card/interaction 状态保存在 `personality/stages/{cardId}.json` 的变量区
 
 新增一个用户可见场景的联动清单：`StageMap` / `FallbackReplies` / `CommandReplies` 加 key → `stages-prompt.md` 补说明与 JSON 模板 → `validateStages` 把它列为必需（旧缓存判过期才会重生成，否则新 key 永远取不到 Card 文案）→ 接消费点。`CommandReplies` 的新 key 还有两处固定的代码坐标要同改：[stages-file.ts](../../src/services/personality/stages-file.ts) 的 `CommandReplies` 类型与 [stages-cache.ts](../../src/services/personality/stages-cache.ts) 的 `COMMAND_KEYS`（判过期的依据，缺它旧缓存不会重生成）和 `FALLBACK_COMMANDS`。`FALLBACK_STAGES` / `FALLBACK_FALLBACKS` / `FALLBACK_COMMANDS` 只是 Card 完全不可用时的中性兜底，不是第二份产品文案。
 
-`thinking` / `planning` / `retry` 是状态行不是对话回复，`error` 供工具错误前缀；超时使用 `fallbacks.turnTimeout`。presence 的 idle/working/resting 是有限展示状态，独立于过程状态；顶栏过程 owner 优先级高于 presence，退出时释放自己的 owner。新增 presence 和主动控制命令 key 都进入缓存完整性校验，缺 key 的旧缓存会重新生成。
+`typing` / `thinking` / `planning` / `retry` 是状态行不是对话回复，`error` 供工具错误前缀；超时使用 `fallbacks.turnTimeout`。presence 的 idle/working/resting 是有限展示状态，独立于过程状态；顶栏过程 owner 优先级高于 presence，退出时释放自己的 owner。新增 presence 和主动控制命令 key 都进入缓存完整性校验，缺 key 的旧缓存会重新生成。
 
 主动机会只消费已提交的 Card 变量变化；初始化、重置、interaction/system 变化和 `proactive_response` 写回不产生变量机会。主动回复先拆出文本与变量 patch，拿到真实助手条目与 SQLite 回执后，核对冻结 Card id/hash 与变量池 owner，再保存 patch；失败不会把已经送达的表达改成未送达。
+
+## 拟人表达与关系档位
+
+拟人协议与节奏是全局引擎能力，不写入 Card；Card 只提供人设、语言风格与阶段台词。`typing` 与 `silentRejected` 纳入阶段缓存完整性校验，缺 key 的缓存重新生成。合法沉默保留原生已提交空助手条目与宿主语义元数据，但不产生空气泡、通知或主动成功计数；同会话连续沉默被拒并取当前 Card 的极短兜底。
+
+可选数值变量声明 `proactiveBands`（有限、严格递增且覆盖 min）；只有已提交 Card 数值跨过显式档位才形成机会，不按变量名写死规则。默认 Card 好感度 0–100，档位 0/10/30/60/85；有分量时按分量增加，不按消息数涨、不因沉默降低，亲密感不接采样 temperature。
+
+提交前先剥离 RUNTIME_DATA，再把 SPLIT 标记转为同一助手条目的多个 text part，原文留底与最终落盘文本精确配对；变量仍从原始正文解析。实时推送与重载共享分段，标记不进入下一次请求或压缩正文。
 
 ## 回复与写入
 

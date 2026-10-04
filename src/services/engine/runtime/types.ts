@@ -113,7 +113,6 @@ export type ContextLayer =
 export interface ContextAllocation {
   layer: "static" | "tools" | "dynamic" | "memory" | "transcript" | "ephemeral"
   requested: number
-  assigned: number
   used: number
   /** 本层被整块淘汰的 token 数；没有淘汰时省略字段（不写 0）。 */
   dropped?: number
@@ -213,7 +212,7 @@ export interface PromptRequestContext {
 }
 
 /** Provider 请求参数（脱敏快照）：取不到的参数不写字段，不写假值。 */
-export interface PromptRequestParams { maxTokens?: number; temperature?: number }
+export interface PromptRequestParams { maxTokens?: number; temperature?: number; imageCount?: number }
 
 /** 计划步骤归属：步骤执行中把 stepId 更新进去。 */
 export interface PromptPlanContext { planId: string; stepId?: string; version: number }

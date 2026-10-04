@@ -83,6 +83,8 @@ export interface ToolContext {
   toolCallId?: string
   /** 当前回合已提交的用户输入身份；记忆工具必须用它筛选可归属来源。 */
   trustedUserEventId?: string
+  /** Host-frozen proposals; model arguments cannot manufacture this evidence. */
+  proactiveTurnContext?: import("@/services/proactive").ProactiveTurnContext
   /** 稳定的单次操作标识，用于审计和幂等关联。 */
   operationId?: string
   /** 工具声明与安全策略的摘要。 */
@@ -105,6 +107,12 @@ export interface ToolResult {
   content: string
   error?: string
   errorCode?: "not_found" | "denied" | "timeout" | "cancelled" | "failed" | "ambiguous"
+  /**
+   * 结果随附引入的工具名（渐进披露）：由启用型工具（enable_tools）声明，
+   * 适配器映射成 Pi 原生 `addedToolNames`，在本回合后续请求里激活这些工具。
+   * 只在本回合冻结的工具集内生效，不跨 run 保留。
+   */
+  addedToolNames?: string[]
   /** Pi 原生文本/图片结果；未提供时由 content 生成文本结果。 */
   contentParts?: Array<
     | { type: "text"; text: string }

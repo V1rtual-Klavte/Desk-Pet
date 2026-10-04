@@ -164,6 +164,14 @@ function buildVarDef(name: string, raw: Record<string, unknown>, scope: Variable
   const initial = raw.initial !== undefined ? toPrimitive(raw.initial) : ""
   const type = (raw.type as VariableType) || inferVarType(initial)
   const defaults = scope === "interaction" ? { updateBy: "system" as const } : { updateBy: "llm" as const }
+  const min=typeof raw.min==="number"?raw.min:undefined
+  const max=typeof raw.max==="number"?raw.max:undefined
+  const bands=Array.isArray(raw.proactiveBands)&&raw.proactiveBands.every((value):value is number=>typeof value==="number"&&Number.isFinite(value))
+    ?raw.proactiveBands:undefined
+  const proactiveBands=bands&&scope==="card"&&type==="number"&&min!==undefined&&max!==undefined&&max>min
+    &&bands.length>=2&&bands[0]===min&&bands.every((value,index)=>value>=min&&value<max&&(index===0||value>bands[index-1]!))
+    ?bands:undefined
+  if (raw.proactiveBands!==undefined&&!proactiveBands) log.warn("Card主动变量档位无效，忽略该声明:",name)
 
   return {
     scope,
@@ -172,8 +180,9 @@ function buildVarDef(name: string, raw: Record<string, unknown>, scope: Variable
     initial,
     description: String(raw.description ?? ""),
     updateBy: (raw.updateBy as VariableUpdateBy) || defaults.updateBy,
-    min: typeof raw.min === "number" ? raw.min : undefined,
-    max: typeof raw.max === "number" ? raw.max : undefined,
+    min,
+    max,
+    proactiveBands,
     enum: Array.isArray(raw.enum) ? raw.enum.map(String) : undefined,
     reset: (raw.reset as VariableResetPolicy) || "never",
   }

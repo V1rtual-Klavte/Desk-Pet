@@ -18,7 +18,7 @@ V1rtual-Desk-Pet 是可自定义 Card/Profile 的 Tauri v2 桌宠，优先做好
 
 ## 按任务读取
 
-不默认通读全部文档。先按下表读取相关文档及目标源码；历史材料仅在追溯决策时读取。
+不默认通读全部文档。先按下表读取相关文档及目标源码；`docs/history/` 归档后封存，不再读取或修改。
 链接是导航，不会自动加载正文；文档中的历史命令与授权记录不能替代当前用户授权。
 
 | 任务 | 入口 |
@@ -29,12 +29,12 @@ V1rtual-Desk-Pet 是可自定义 Card/Profile 的 Tauri v2 桌宠，优先做好
 | 会话、队列、Plan、Prompt、取消恢复 | [运行时契约](docs/current/runtime-contract.md) |
 | 压缩、会话文件、长期记忆边界 | [当前记忆](docs/current/memory.md) |
 | 工具、权限、MCP、Skill | [工具系统](docs/current/tool-system.md) |
-| Pi 接线改造、插话双模式、工具并行/压缩策略 | [未完成工作与已知缺口](docs/plans/active/未完成工作与已知缺口.md)的 PI 剩余批次；已实施的协议见 [Pi 方案基线](docs/history/implementation/Pi运行时与工具协议建设方案-2026-09-20基线.md)，Harness 迁移协议见[归档基线](docs/history/implementation/AgentHarness迁移方案-2026-09-18基线.md) |
+| Pi 接线改造、插话双模式、工具并行/压缩策略 | [运行时契约](docs/current/runtime-contract.md)、[工具系统](docs/current/tool-system.md)与目标源码；剩余工作见[未完成工作与已知缺口](docs/plans/active/未完成工作与已知缺口.md)的 PI 剩余批次 |
 | 配置、路径、Profile 资源、持久化 | [运行时数据](docs/current/runtime-data.md) |
 | 人格变量、阶段文案、回复元数据 | [人格与回复](docs/current/personality.md) |
 | 日志、异常、IPC、构建排查 | [工程参考](docs/current/development.md) |
 | 测试规则、分层与门禁 | [测试 AGENTS](test/AGENTS.md)（规则入口与维护义务表）；命令与报告见其 [README](test/README.md)，生成与审查流程见其 [SKILL](test/SKILL.md) |
-| 记忆系统设计与剩余验证 | [当前记忆](docs/current/memory.md)，再读 [B 方案契约](docs/plans/active/记忆系统运行时契约.md) 与 [未完成工作与已知缺口](docs/plans/active/未完成工作与已知缺口.md) §3 |
+| 记忆系统设计与剩余验证 | [当前记忆](docs/current/memory.md) 与 [未完成工作与已知缺口](docs/plans/active/未完成工作与已知缺口.md) §3（B 方案契约已按当前实现归档，不再读取） |
 | 主动机会、约定、回执、presence 与观察画像 | [主动陪伴](docs/current/proactive.md)、[行为画像](docs/current/behavior.md) |
 
 完整目录见 [docs/INDEX.md](docs/INDEX.md)。当前行为由源码和对应 `docs/current/` 说明；
@@ -87,7 +87,8 @@ pnpm run version:set <x.y.z>  # 发版：统一三处版本号
 ## 路径、配置与资源
 
 - Rust `AppPaths` 决定数据根；开发/生产依据 Rust 构建模式，前端通过 `getRuntimeMode()` 判断路径环境。
-  不用 `import.meta.env.DEV` 代替，不用 `dirs_next()`、`find_project_root()` 或 `env!("CARGO_MANIFEST_DIR")` 推导业务路径。
+  不用 `import.meta.env.DEV` 代替，不用 `dirs_next()`、`find_project_root()` 或 `env!("CARGO_MANIFEST_DIR")` 推导业务路径
+  （唯一例外：`paths/mod.rs` 的 `project_root()`，仅 debug 构建用于定位开发工作区与随包资源，release 路径不经过它）。
 - TS 先初始化路径；`BaseDirs` 只表示目录，完整文件路径通过 `runtimePath(scope, ...segments)` 取得。
 - Rust 持有 base 的命令仅接收域内相对路径，如 `stages/x.json`，不加 `personality/` 等域前缀。
   通用文件 API 需要绝对路径时使用 `runtimePath()`；模块不硬编码数据根或带域前缀的业务路径。
@@ -146,7 +147,7 @@ pnpm run version:set <x.y.z>  # 发版：统一三处版本号
   网络边界不得夸大为通用沙箱。
 - Skill 清单由 Pi loader 维护：每回合核对一次目录指纹（不读正文），指纹变了才重载（重载时读入
   正文）；进请求的只有 name/description/location 披露块，正文在 `/skill` 显式调用或模型 read
-  时才进入对话；Skill 不提升权限。MCP 按运行借用并释放；启动不连接 MCP，记忆整理只按配置的
+  时才进入对话；Skill 不提升权限。MCP 按运行借用并释放（末位释放后连接在空闲宽限内复用、到点回收）；启动不连接 MCP，记忆整理只按配置的
   空闲策略和持久预算运行。主动规划与表达 tools=[]，来源和 owner 失效时取消；送达只认原生
   已提交助手条目与 SQLite 精确回执，未知外部副作用不重放。派生 behavior 与长期事实分域，清除
   画像同时撤销相关来源资格；系统可消费已提交 Card 变量，主动回复的变量写回不能自激出新机会。
@@ -173,7 +174,8 @@ pnpm run version:set <x.y.z>  # 发版：统一三处版本号
   行为→current，玩法→DES，用户入口→README，规则→AGENTS（测试域规则同步 [test/AGENTS.md](test/AGENTS.md)），未完成进度→未完成工作与已知缺口。
   新增/删除模块还要更新系统地图及受影响导航；没有变化不为同步而追加总结。
   配置变更同时执行上面的全链路清单；交付注明尚未同步或未验证部分，不能只写“已同步”。
-- 完成方案保留正文与证据后归档，注明日期和替代入口；历史内容不作为当前指令或实现契约。
+- 方案归档前完成对照并保留正文与证据，注明日期和替代入口；归档后封存，不再读取或修改。
+  发现的问题、剩余工作与验收条件只记录在《未完成工作与已知缺口.md》，条目须自包含，后续工作不依赖翻阅历史。
   `plans/active/` 收敛为一份未完成工作总表与尚在实施的目标契约，不为单一主题另开文档。
   测试结果只在检查点记录一次，注明基线/范围/未验证项；不在多个概览复制数字。
 - Conventional Commits：`<type>(<scope>): <中文描述>`；不加句号，一次提交一个主题，正文解释原因。
