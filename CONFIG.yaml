@@ -63,7 +63,7 @@ ai:
     followUpMode: one-at-a-time
 
   personality:
-    active: angelkawaii
+    active: default
 
   loop:
     maxRetry: 3
@@ -119,8 +119,13 @@ ai:
   lock:
     safetyTimeoutMs: 30000
 
-  windowMonitor:
+  humanizer:
     enabled: true
+
+  silentAccess:
+    enabled: true
+    # 可选的手边项目目录；只读取其中有限的 README/笔记，留空不读文件。
+    projectPath: ""
     staySeconds: 60
     settleMs: 2000
     # 冷却时长统一毫秒。原 cooldownSeconds 写 5000 却被当秒用，实际冷却 83 分钟。

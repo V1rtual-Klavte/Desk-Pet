@@ -74,6 +74,20 @@ Rust [AppPaths](../../src-tauri/src/paths/mod.rs) 依据 `cfg!(debug_assertions)
 
 由 [ToolsTab](../../src/components/settings/ToolsTab.vue) 的「Bash 白名单」逐行读取与回写、经 SettingsPanel 的 setOverrides 落盘；运行期只经 [config.ts](../../src/services/config.ts) 的 `toolsConfig.bashWhitelist` 读取，分级消费点是 [pi-tools.ts](../../src/services/tool/local/pi-tools.ts) 的 `classifyBashRisk`。Rust 侧不再看白名单：[bash_policy.rs](../../src-tauri/src/commands/bash_policy.rs) 的 `enforce_bash_policy` 只有层 1 硬基线与层 2 系统路径保护，也不接收 scope / whitelist 入参，拒绝结论与名单无关。
 
+### 陪伴控制字段
+
+| 字段 | 默认 | 唯一来源与生效 |
+|---|---|---|
+| 主动消息 enabled | true | Rust SQLite `proactive_control`，不写 CONFIG；设置页经主窗口控制桥复用 `/proactive` 的 `setEnabled`，关闭即时取消 |
+| `ai.humanizer.enabled` | true | 设置页保存 CONFIG，下个回合冻结；关闭不加协议、不变换、不调度，已提交多段历史仍逐泡展示 |
+| `ai.silentAccess.enabled` | true | 直接替换原窗口监控域，不兼容读取旧键；配置刷新后停止旧观察代际并重启许可内的观察 |
+| `ai.silentAccess.projectPath` | 空串 | 设置页原生选择一个可读项目目录，空串不读取文件；只读取目录中的 README.md／NOTES.md |
+| `ai.silentAccess.staySeconds / settleMs / cooldownMs / samePageCooldownMs` | 60 / 2000 / 5000 / 7800 | 沿用窗口来源的停留、防抖和冷却，AI 设置可编辑，后两个界面以秒显示、保存毫秒 |
+
+节奏参数归 `humanizer` 模块；主动额度、静默时段和观察预算归各领域协议／常量。配置模板、getter、设置 ref/expose、保存映射与主窗口刷新同步；真实 CONFIG-DEV.yaml 与已有运行时数据未在本批同步。
+
+图片条目只保存 `deskpetImagePaths` 原路径；请求视图临时读取并缩放编码，不写入 JSONL、CONFIG 或图片副本。原文件变化即体现为下一次读取的内容；路径失效明确显示不可用，不从缓存恢复副本。
+
 ## 路径与文件布局
 
 ```text

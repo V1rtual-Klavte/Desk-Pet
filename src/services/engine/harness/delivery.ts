@@ -26,11 +26,14 @@ export interface ActiveAttemptEvidence {
   triggerEntryId: string
   assistantEntryId: string
   text: string
+  timestamp: number
+  parts?: string[]
+  silent?: boolean
   usage?: { inputTokens: number; outputTokens: number; cacheRead?: number; cacheWrite?: number }
 }
 
 /** Resolve active attempt -> native assistant entry using operation prompt and terminal/state records. */
-export interface ActiveAttemptAssociation { attemptId: string; triggerEntryId: string }
+export interface ActiveAttemptAssociation { attemptId: string; triggerEntryId: string; expectsReply?: boolean }
 
 export async function readActiveAttemptAssociations(sessionId: string): Promise<Map<string, ActiveAttemptAssociation>> {
   const session = await acquirePiSession(sessionId)
@@ -55,7 +58,7 @@ export async function readActiveAttemptAssociations(sessionId: string): Promise<
       const fromIndex = entries.findIndex(entry => entry.id === terminal.fromTipId)
       const tipIndex = entries.findIndex(entry => entry.id === terminal.tipId)
       if (fromIndex < 0 || tipIndex < 0 || !(fromIndex < triggerIndex && triggerIndex < tipIndex)) continue
-      result.set(terminal.tipId, { attemptId, triggerEntryId: trigger.id })
+      result.set(terminal.tipId, { attemptId, triggerEntryId: trigger.id, expectsReply: trigger.message.details.expectsReply !== false })
       break
     }
   }
@@ -89,13 +92,18 @@ export async function readActiveAttemptEvidence(
     if (!assistant || assistant.type !== "message" || assistant.message.role !== "assistant"
       || assistant.message.stopReason === "error" || assistant.message.stopReason === "aborted") continue
     const text = contentText(assistant.message.content).trim()
-    if (!text) continue
+    const silent = (assistant.message as typeof assistant.message & { deskpetSilent?: boolean }).deskpetSilent === true
+    if (!text && !silent) continue
     const usage = assistant.message.usage
     return {
       operationId: terminal.operationId,
       triggerEntryId: trigger.id,
       assistantEntryId: assistant.id,
       text,
+      timestamp: typeof assistant.message.timestamp === "number" ? assistant.message.timestamp : assistant.timestamp,
+      ...(silent ? { silent: true } : {}),
+      ...(assistant.message.content.filter(part => part.type === "text").length > 1
+        ? { parts: assistant.message.content.filter(part => part.type === "text").map(part => part.text) } : {}),
       ...(usage ? { usage: {
         inputTokens: usage.input,
         outputTokens: usage.output,

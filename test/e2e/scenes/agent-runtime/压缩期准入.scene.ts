@@ -4,7 +4,7 @@ import { contextBudget } from "@/services/context"
 import { compactionSettingsFor, harnessSlots, isSessionBusy, listQueuedInputs } from "@/services/engine/harness"
 import { initChat, sendMessage } from "@/services/agent/runner"
 import { getFallbackReply } from "@/services/personality/stages-cache"
-import { FALLBACK_KEYS } from "@/services/personality"
+import { FALLBACK_KEYS, getCachedStages } from "@/services/personality"
 import type { FallbackReplies } from "@/services/personality"
 import { chatHistory, getActiveSessionId } from "@/services/session/store"
 import { fakeText, installFakeProvider, lastRequestText } from "../../../host/fake-provider"
@@ -77,6 +77,7 @@ let summaryRequestInFlight = false
 let compactionSettled: Promise<true> | undefined
 let compactionDone = false
 let compactReply = ""
+let expectedCompactCompletion = ""
 let compactOutcome: string | undefined
 let requestsAfterSetup = -1
 /**
@@ -163,6 +164,9 @@ export const 压缩期准入: SceneDef = {
       FAKE_MODEL,
     ).state
     await initChat()
+    const completion = getCachedStages()?.stages.commands.compactCompleted
+    if (!completion) throw new Error("测试Card缺少压缩完成台词资产")
+    expectedCompactCompletion = completion
     sessionId = getActiveSessionId()
 
     // 两轮真实回合造出「可摘要范围 + 保留尾段」：第一轮整体落进摘要范围（见 PAD 的口径注释）。
@@ -235,7 +239,7 @@ export const 压缩期准入: SceneDef = {
             throw new Error(`放行摘要后压缩没有在 30s 内结算｜${sizing()}`)
           }
           if (compactOutcome !== "succeeded") throw new Error(`压缩没有正常完成: ${String(compactOutcome)}`)
-          if (!compactReply.includes("压缩完成")) throw new Error(`/compact 没有按完成回执: ${JSON.stringify(compactReply)}`)
+          if (compactReply !== [expectedCompactCompletion, SUMMARY_INTENT].join("\n")) throw new Error(`/compact 完成回执与Card台词及摘要意图不一致: ${JSON.stringify(compactReply)}`)
           if (!compactReply.includes(SUMMARY_INTENT)) {
             throw new Error(`/compact 回执没有带宿主摘要意图，宿主钩子可能没跑: ${JSON.stringify(compactReply)}`)
           }

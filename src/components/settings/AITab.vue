@@ -1,7 +1,7 @@
 <script setup lang="ts">
-import { ref, onMounted, computed } from "vue";
+import { ref, onMounted, onUnmounted, computed } from "vue";
 import {
-  aiConfig, windowMonitorConfig, aiLockConfig,
+  aiConfig, silentAccessConfig, humanizerConfig, aiLockConfig,
   memoryConfig, personalityConfig,
   safetyConfig, planConfig, conversationConfig,
 } from "@/services/config";
@@ -17,6 +17,8 @@ import { createLogger } from "@/services/logger";
 import { formatError } from "@/services/error"
 import { MIN_CONTEXT_WINDOW } from "@/services/context"
 import { getActiveSessionId } from "@/services/session"
+import { requestProactiveControl, subscribeProactiveControl } from "@/services/proactive"
+import { pickObservationProject } from "@/services/observation"
 
 const log = createLogger("Settings");
 
@@ -41,13 +43,60 @@ const followUpMode = ref(conversationConfig.followUpMode);
 const safetyMode = ref(safetyConfig.mode as string);
 const sessionTrustEnabled = ref(safetyConfig.sessionTrustEnabled);
 
-// ── 窗口监控 ──
-const wmEnabled = ref(windowMonitorConfig.enabled);
-const wmStaySeconds = ref(windowMonitorConfig.staySeconds);
-const wmSettleMs = ref(windowMonitorConfig.settleMs);
+// ── 表达与静默访问 ──
+const humanizerEnabled = ref(humanizerConfig.enabled);
+const proactiveEnabled = ref(false);
+const proactiveLoaded = ref(false);
+const proactiveError = ref("");
+let cleanupProactiveControl: (() => void) | undefined;
+
+async function refreshProactiveControl() {
+  try {
+    const control = await requestProactiveControl();
+    proactiveEnabled.value = control.enabled;
+    proactiveLoaded.value = true;
+    proactiveError.value = "";
+  } catch (error) {
+    proactiveLoaded.value = false;
+    proactiveError.value = formatError(error);
+    log.warn("主动消息开关读取失败:", formatError(error));
+  }
+}
+
+async function saveProactiveControl() {
+  if (!proactiveLoaded.value) return;
+  const desired = proactiveEnabled.value;
+  const current = await requestProactiveControl();
+  if (current.enabled !== desired) await requestProactiveControl(desired);
+}
+
+onMounted(async () => {
+  try {
+    cleanupProactiveControl = await subscribeProactiveControl(control => {
+      proactiveEnabled.value = control.enabled;
+      proactiveLoaded.value = true;
+      proactiveError.value = "";
+    });
+  } catch (error) { log.error("主动开关跨窗口同步监听失败:", formatError(error)); }
+  await refreshProactiveControl();
+});
+onUnmounted(() => cleanupProactiveControl?.());
+const wmEnabled = ref(silentAccessConfig.enabled);
+const observationProjectPath = ref(silentAccessConfig.projectPath);
+async function chooseObservationProject() {
+  try {
+    const path = await pickObservationProject();
+    if (path) observationProjectPath.value = path;
+  } catch (error) {
+    proactiveError.value = "项目目录选择失败：" + formatError(error);
+    log.warn("静默访问目录选择失败:", formatError(error));
+  }
+}
+const wmStaySeconds = ref(silentAccessConfig.staySeconds);
+const wmSettleMs = ref(silentAccessConfig.settleMs);
 // 配置存的是毫秒（`cooldownMs`），面板让人按秒填，换算在 SettingsPanel 的 setOverrides
-const wmCooldownSec = ref(Math.round(windowMonitorConfig.cooldownMs / 1000));
-const wmSamePageCool = ref(Math.round(windowMonitorConfig.samePageCooldownMs / 1000));
+const wmCooldownSec = ref(Math.round(silentAccessConfig.cooldownMs / 1000));
+const wmSamePageCool = ref(Math.round(silentAccessConfig.samePageCooldownMs / 1000));
 
 // ── 并发锁 ──
 const lockTimeout = ref(aiLockConfig.safetyTimeoutMs);
@@ -462,7 +511,10 @@ defineExpose({
   followUpMode,
   safetyMode,
   sessionTrustEnabled,
+  humanizerEnabled,
+  saveProactiveControl,
   wmEnabled,
+  observationProjectPath,
   wmStaySeconds,
   wmSettleMs,
   wmCooldownSec,
@@ -663,10 +715,16 @@ defineExpose({
     </div>
   </div>
 
-  <!-- ═══ 👁 窗口监控 ═══ -->
+  <!-- 表达与观察控制 -->
   <div class="s-section">
-    <div class="s-label">窗口监控</div>
-    <label class="chk"><input type="checkbox" v-model="wmEnabled" /><span>启用主动搭话</span></label>
+    <div class="s-label">陪伴与表达</div>
+    <label class="chk"><input type="checkbox" v-model="proactiveEnabled" :disabled="!proactiveLoaded" /><span>主动消息</span></label>
+    <div v-if="proactiveError" class="s-hint">开关读取失败：{{ proactiveError }} <button type="button" class="btn-s" @click="refreshProactiveControl">重试</button></div>
+    <label class="chk"><input type="checkbox" v-model="humanizerEnabled" /><span>拟人表达</span></label>
+    <label class="chk"><input type="checkbox" v-model="wmEnabled" /><span>静默访问</span></label>
+    <div class="s-hint">允许观察窗口、截图与手边文件，用于带来源的了解；主动消息由独立开关控制</div>
+    <div class="s-subtitle">可读项目目录（可选）</div>
+    <div class="row-gap"><input class="inp" :value="observationProjectPath" readonly placeholder="未选择，文件观察关闭" /><button type="button" class="btn-s" @click="chooseObservationProject">选择</button><button type="button" class="btn-s" :disabled="!observationProjectPath" @click="observationProjectPath = ''">清除</button></div>
     <div class="row-gap" style="margin-top:4px">
       <label>停留 <input class="inp-num" type="number" v-model.number="wmStaySeconds" />s</label>
       <label>防抖 <input class="inp-num" type="number" v-model.number="wmSettleMs" />ms</label>

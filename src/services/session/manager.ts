@@ -26,6 +26,9 @@ import { createLogger } from "@/services/logger"
 import { formatError, reportError } from "@/services/error"
 import { harnessSlots, readActiveAttemptAssociations } from "@/services/engine/harness"
 import { cancelSessionPlans } from "@/services/engine/plan-confirmation"
+import { cancelSession as cancelHumanizerSession } from "@/services/humanizer"
+import { prepareImagePaths } from "@/services/images"
+import { summarizeUnanswered } from "@/services/interaction"
 
 const log = createLogger("Session")
 
@@ -71,18 +74,22 @@ async function loadMessagesFromSession(sessionId: string): Promise<{ messages: M
  * 所有异步读取后都重新校验活跃会话，旧切换不能覆盖新所有者。
  */
 async function activateSession(sessionId: string): Promise<void> {
+  if (activeSessionId.value) cancelHumanizerSession(activeSessionId.value)
   activeSessionId.value = sessionId
   saveActiveId(sessionId)
 
   const { messages, error } = await loadMessagesFromSession(sessionId)
+  for (const message of messages) {
+    if (!message.imagePaths?.length) continue
+    for (const path of message.imagePaths) {
+      try { await prepareImagePaths([path]) }
+      catch (imageError) { log.warn("会话图片原文件不可用，保留路径与正文:", formatError(imageError)) }
+    }
+  }
   if (activeSessionId.value !== sessionId) return
   replaceMessages(messages)
   if (!error) {
-    let rebuiltUnanswered = 0
-    for (const message of messages) {
-      if (message.role === "user") rebuiltUnanswered = 0
-      else if (message.role === "assistant" && message.isProactive) rebuiltUnanswered++
-    }
+    const { count: rebuiltUnanswered } = summarizeUnanswered(messages)
     unansweredCount.value = rebuiltUnanswered
     saveUnanswered(sessionId, rebuiltUnanswered)
   } else {
@@ -272,6 +279,12 @@ export async function deleteSession(sessionId: string): Promise<boolean> {
   // 删除意图优先，但「带着未结束的运行删文件」不能是静默行为。
   if (!(await harnessSlots.dispose(sessionId))) {
     log.warn("Session: 会话运行未在删除前收尾，继续删除:", sessionId)
+  }
+  const sourceEntries = await readPiSessionEntries(sessionId)
+  const sourceIds = sourceEntries.filter(entry => entry.type === "message" && entry.message.role === "user").map(entry => entry.id)
+  if (sourceIds.length) {
+    const { invalidateTopicSources } = await import("@/services/observation")
+    await invalidateTopicSources(sessionId, sourceIds)
   }
 
   const wasActive = activeSessionId.value === sessionId

@@ -25,6 +25,8 @@ export interface ProactiveTurnContext {
 export interface Opportunity extends ProactiveOpportunity {
   context: string
   explicit: boolean
+  expectsReply?: boolean
+  selfSufficient?: boolean
   topicKey?: string
   task?: ProactiveTask
   targets: Array<{id:string;version:number}>

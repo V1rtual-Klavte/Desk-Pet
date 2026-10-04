@@ -17,6 +17,13 @@ export const agentRuntimeContract: ModuleContract = {
     "src/services/engine/runtime/input-identity.ts",
     "src/services/engine/runtime/trace.ts",
     "src/services/engine/runtime/types.ts",
+    "src/services/humanizer/protocol.ts",
+    "src/services/humanizer/scheduler.ts",
+    "src/services/humanizer/index.ts",
+    "src/services/context/builder.ts",
+    "src/services/context/kernel.ts",
+    "src/services/images/request.ts",
+    "src/services/images/paths.ts",
     "src/services/session/manager.ts",
     "src/services/session/messages.ts",
     "src/services/session/persistence.ts",
@@ -24,7 +31,7 @@ export const agentRuntimeContract: ModuleContract = {
     "src/services/session/repo.ts",
     "src/services/session/store.ts",
   ],
-  sourceHash: "6c47b742ba284533176077991977eda310d14b713cdb4af7a10bf5960a799c43",
+  sourceHash: "d211a0ff152e5bd94538084e8f96284ce7a2cd7c00b08e85cdc79b851378fe2c",
   coverage: [
     {
       id: "ar-01",
@@ -233,6 +240,15 @@ export const agentRuntimeContract: ModuleContract = {
       layer: "integration",
       depth: "deep",
       scenarios: ["aux-model-routing"],
+    },
+    {
+      id: "ar-24",
+      feature: "拟人表达的提交与请求投影",
+      description: "启用拟人表达后，after_response 先剥离 RUNTIME_DATA 再把 SPLIT 标记写成同一原生助手条目的多个 text part，原始配对仍使变量写入落池；合法 casual SILENT 写成 completed 空助手条目并带可核验语义标记，读模型与后续 Provider 请求省略它，跨进程连续沉默护栏从该原生标记重建；用户图片只以 deskpetImagePaths 元数据落盘，请求投影才读文件形成真实 image part，base64 不进入原始 JSONL；task 流由真实工具调用记录分流，task 输出的 SILENT 改为 Card 短回复且不启动 casual 揭示",
+      why: "拟人标记、空白沉默与图片字节必须只改变请求/展示视图，不能破坏变量通道或把 transient 表达数据变成第二份持久事实",
+      layer: "integration",
+      depth: "deep",
+      scenarios: ["humanizer-native-commit-projection"],
     },
   ],
   // W0–W7 把 ar-18 / ar-22 的 memory-retry-policy-sync、runtime-compaction-suspended-settles

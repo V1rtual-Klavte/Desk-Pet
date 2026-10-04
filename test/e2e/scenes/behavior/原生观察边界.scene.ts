@@ -1,7 +1,7 @@
 import { invoke } from "@tauri-apps/api/core"
 import { listen } from "@tauri-apps/api/event"
 import type { SceneDef } from "../../types"
-import { desktopConfig, windowMonitorConfig } from "@/services/config"
+import { desktopConfig, silentAccessConfig } from "@/services/config"
 
 interface Observation {
   appId: string | null
@@ -31,7 +31,7 @@ export const 原生观察边界: SceneDef = {
     checks: [{
       type: "expectNativeObservationProtocol",
       run: async () => {
-        const enabledBefore = windowMonitorConfig.enabled
+        const enabledBefore = silentAccessConfig.enabled
         const intervalBefore = desktopConfig.pollingIntervalMs
         const events: Observation[] = []
         let pendingPredicate: ((event: Observation) => boolean) | null = null

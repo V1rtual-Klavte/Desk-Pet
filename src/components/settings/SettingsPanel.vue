@@ -126,12 +126,14 @@ async function doSave() {
     "ai.conversation.steeringMode": a.steeringMode,
     "ai.conversation.followUpMode": a.followUpMode,
     "ai.personality.active": a.personalityActive,
-    "ai.windowMonitor.enabled": a.wmEnabled,
-    "ai.windowMonitor.staySeconds": a.wmStaySeconds,
-    "ai.windowMonitor.settleMs": a.wmSettleMs,
+    "ai.humanizer.enabled": a.humanizerEnabled,
+    "ai.silentAccess.enabled": a.wmEnabled,
+    "ai.silentAccess.projectPath": a.observationProjectPath,
+    "ai.silentAccess.staySeconds": a.wmStaySeconds,
+    "ai.silentAccess.settleMs": a.wmSettleMs,
     // 配置面统一毫秒，界面面用秒（给人读的），换算就放在这个边界上
-    "ai.windowMonitor.cooldownMs": Math.round(a.wmCooldownSec * 1000),
-    "ai.windowMonitor.samePageCooldownMs": Math.round(a.wmSamePageCool * 1000),
+    "ai.silentAccess.cooldownMs": Math.round(a.wmCooldownSec * 1000),
+    "ai.silentAccess.samePageCooldownMs": Math.round(a.wmSamePageCool * 1000),
     "ai.lock.safetyTimeoutMs": a.lockTimeout,
     "ai.memory.enabled": a.memoryEnabled,
     "ai.memory.coreTokenBudget": a.coreTokenBudget,
@@ -225,11 +227,15 @@ async function doSave() {
     return;
   }
 
-  if (a.v1rtualInstructions.trim()) {
-    await updateV1rtualInstructions(a.v1rtualInstructions.trim());
+  // 空串是「清空指令」，必须照写：跳过空值会让旧指令留在文件里继续生效（模块内只跳过重复写盘）。
+  if (!(await updateV1rtualInstructions(a.v1rtualInstructions))) {
+    saveError.value = "V1RTUAL 指令保存失败：文件未写入，旧指令仍在生效";
+    log.error("设置保存失败:", saveError.value);
+    return;
   }
 
   await flushConfig()
+  await a.saveProactiveControl()
 
   // 字体是本窗口自己保存的：立刻重注入，不必等重启或广播回环
   applyFontVars()

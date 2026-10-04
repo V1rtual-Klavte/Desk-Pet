@@ -10,6 +10,18 @@ fn db(error: rusqlite::Error) -> AppError { AppError::Memory(format!("主动陪�
 fn fail(message: impl Into<String>) -> AppError { AppError::Memory(message.into()) }
 fn text(value: &Value, key: &str) -> String { value.get(key).and_then(Value::as_str).unwrap_or_default().to_string() }
 fn number(value: &Value, key: &str) -> Option<i64> { value.get(key).and_then(Value::as_i64) }
+fn is_local_date(value: &str) -> bool {
+    chrono::NaiveDate::parse_from_str(value, "%Y-%m-%d")
+        .map(|date| date.format("%Y-%m-%d").to_string() == value)
+        .unwrap_or(false)
+}
+fn reply_tier_limit(local_date: &str, threshold_date: Option<&str>, cleared_date: Option<&str>) -> i64 {
+    let Some(threshold_date) = threshold_date else { return crate::memory::protocol::PROACTIVE_DAILY_SUCCESS; };
+    if threshold_date >= local_date { return crate::memory::protocol::PROACTIVE_DAILY_SUCCESS; }
+    let cleared_after_threshold_before_today = cleared_date
+        .is_some_and(|date| date >= threshold_date && date < local_date);
+    if cleared_after_threshold_before_today { crate::memory::protocol::PROACTIVE_DAILY_SUCCESS } else { 1 }
+}
 fn stable(value: &Value) -> String {
     match value {
         Value::Null => "null".into(), Value::Bool(v) => v.to_string(), Value::Number(v) => v.to_string(),
@@ -30,15 +42,37 @@ fn bump(tx: &Transaction<'_>) -> AppResult<i64> {
     tx.execute("UPDATE proactive_meta SET value=CAST(value AS INTEGER)+1 WHERE key='revision'", []).map_err(db)?;
     proactive_revision(tx)
 }
+fn denied_claim(tx: Transaction<'_>, reason: &str) -> AppResult<Value> {
+    let revision=proactive_revision(&tx)?;
+    tx.commit().map_err(db)?;
+    Ok(json!({"claimed":false,"reason":reason,"leaseUntil":null,"revision":revision}))
+}
 const DAY_MS: i64 = 86_400_000;
+fn next_success_after(attempt: &str, now: i64) -> i64 {
+    let hash = attempt.bytes().fold(2_166_136_261_u32, |state, byte| {
+        (state ^ u32::from(byte)).wrapping_mul(16_777_619)
+    });
+    now + crate::memory::protocol::PROACTIVE_MIN_SUCCESS_INTERVAL_MS
+        + i64::from(hash) % crate::memory::protocol::PROACTIVE_SUCCESS_INTERVAL_SPREAD_MS
+}
 fn prune_tx(tx:&Transaction<'_>,now:i64)->AppResult<()> {
     tx.execute("DELETE FROM proactive_evaluations WHERE created_at<?1",[now-crate::memory::protocol::PROACTIVE_EVALUATION_RETENTION_DAYS*DAY_MS]).map_err(db)?;
     tx.execute("DELETE FROM proactive_attempts WHERE status IN ('committed','failed','skipped') AND updated_at<?1",[now-crate::memory::protocol::PROACTIVE_SETTLED_RETENTION_DAYS*DAY_MS]).map_err(db)?;
     tx.execute("DELETE FROM proactive_tasks WHERE state<>'active' AND updated_at<?1",[now-crate::memory::protocol::PROACTIVE_SETTLED_RETENTION_DAYS*DAY_MS]).map_err(db)?;
-    tx.execute("DELETE FROM proactive_occurrences WHERE status IN ('committed','failed') AND updated_at<?1",[now-crate::memory::protocol::PROACTIVE_SETTLED_RETENTION_DAYS*DAY_MS]).map_err(db)?;
+    tx.execute("DELETE FROM proactive_occurrences WHERE status IN ('committed','failed','skipped') AND updated_at<?1",[now-crate::memory::protocol::PROACTIVE_SETTLED_RETENTION_DAYS*DAY_MS]).map_err(db)?;
     tx.execute("DELETE FROM proactive_topics WHERE used_at<?1",[now-30*DAY_MS]).map_err(db)?;
     tx.execute("DELETE FROM proactive_source_registry WHERE valid_until IS NOT NULL AND valid_until<?1",[now]).map_err(db)?;
     tx.execute("UPDATE proactive_attempts SET status='unresolved',updated_at=?1,error_code='lease_expired' WHERE status IN ('reserved','generating') AND lease_until<?1",[now]).map_err(db)?;
+    let expired_auxiliary={
+        let mut statement=tx.prepare("SELECT local_date,SUM(reserved_tokens) FROM proactive_auxiliary_reservations WHERE status='reserved' AND updated_at<?1 GROUP BY local_date").map_err(db)?;
+        let rows=statement.query_map([now-crate::memory::protocol::PROACTIVE_ATTEMPT_LEASE_MS],|row|Ok((row.get::<_,String>(0)?,row.get::<_,i64>(1)?))).map_err(db)?;
+        let mut out=Vec::new();for row in rows{out.push(row.map_err(db)?);}out
+    };
+    tx.execute("UPDATE proactive_auxiliary_reservations SET status='unresolved',updated_at=?1 WHERE status='reserved' AND updated_at<?2",params![now,now-crate::memory::protocol::PROACTIVE_ATTEMPT_LEASE_MS]).map_err(db)?;
+    for (date,tokens) in expired_auxiliary {
+        tx.execute("UPDATE proactive_budgets SET unknown_tokens=unknown_tokens+?2,updated_at=?3 WHERE local_date=?1",params![date,tokens,now]).map_err(db)?;
+    }
+    tx.execute("DELETE FROM proactive_auxiliary_reservations WHERE status IN ('committed','failed') AND updated_at<?1",[now-crate::memory::protocol::PROACTIVE_SETTLED_RETENTION_DAYS*DAY_MS]).map_err(db)?;
     Ok(())
 }
 fn usage_tokens(value:Option<&Value>)->AppResult<Option<i64>> {
@@ -253,7 +287,12 @@ impl MemoryStore {
         let current_owner = owner(request); validate_owner(&current_owner)?;
         let now = number(request,"now").ok_or_else(|| fail("scan 缺少 now"))?;
         let local_date = text(request,"localDate");
-        if local_date.len()!=10 { return Err(fail("scan localDate 必须是当地 YYYY-MM-DD")); }
+        if !is_local_date(&local_date) { return Err(fail("scan localDate 必须是合法当地 YYYY-MM-DD")); }
+        let unanswered_date=request.get("unansweredThresholdDate").and_then(Value::as_str);
+        if unanswered_date.is_some_and(|date|!is_local_date(date)){return Err(fail("scan unansweredThresholdDate 必须是合法当地 YYYY-MM-DD"));}
+        let unanswered_cleared_date=request.get("unansweredClearedDate").and_then(Value::as_str);
+        if unanswered_cleared_date.is_some_and(|date|!is_local_date(date)){return Err(fail("scan unansweredClearedDate 必须是合法当地 YYYY-MM-DD"));}
+        let desired_success_limit=reply_tier_limit(&local_date,unanswered_date,unanswered_cleared_date);
         let limit = number(request,"limit").unwrap_or(crate::memory::protocol::PROACTIVE_SCAN_BATCH).clamp(1,crate::memory::protocol::PROACTIVE_SCAN_BATCH);
         let conn = connection(self)?;
         let tx = conn.unchecked_transaction().map_err(db)?;
@@ -265,6 +304,7 @@ impl MemoryStore {
                 params![kind,id,number(&reference,"version").unwrap_or(0),number(&reference,"revision").unwrap_or(0),text(&reference,"scope"),reference.get("scopeId").and_then(Value::as_str),text(&reference,"fingerprint"),number(&reference,"validUntil"),now]).map_err(db)?;
         }
         tx.execute("INSERT INTO proactive_budgets(local_date,updated_at) VALUES (?1,?2) ON CONFLICT(local_date) DO NOTHING",params![local_date,now]).map_err(db)?;
+        tx.execute("UPDATE proactive_budgets SET daily_success_limit=CASE WHEN daily_success_limit=0 THEN ?2 ELSE MIN(daily_success_limit,?2) END WHERE local_date=?1",params![local_date,desired_success_limit]).map_err(db)?;
         let cursor = text(request,"cursor"); let session_id = owner_session(&current_owner); let card_id=text(&current_owner,"cardId");
         let mut statement = tx.prepare(&format!("SELECT {TASK_COLUMNS} FROM proactive_tasks WHERE state='active' AND id>?1 AND (scope='user' OR (scope='card' AND scope_id=?2) OR (scope='session' AND scope_id=?3)) ORDER BY id LIMIT ?4" )).map_err(db)?;
         let rows = statement.query_map(params![cursor,card_id,session_id,limit+1],read_task).map_err(db)?;
@@ -291,7 +331,7 @@ impl MemoryStore {
             let rows=stmt.query_map(params![session_id,limit],attempt_json).map_err(db)?;
             let mut out=Vec::new(); for row in rows { out.push(row.map_err(db)?); } out };
         let control=tx.query_row("SELECT enabled,mute_until,revision FROM proactive_control WHERE id=1",[],|row|Ok(json!({"enabled":row.get::<_,i64>(0)?!=0,"muteUntil":row.get::<_,Option<i64>>(1)?,"revision":row.get::<_,i64>(2)?}))).map_err(db)?;
-        let budget=tx.query_row("SELECT local_date,planning_attempts,expression_attempts,successful_messages,reserved_tokens,used_tokens,unknown_tokens FROM proactive_budgets WHERE local_date=?1",[local_date],|row|Ok(json!({"localDate":row.get::<_,String>(0)?,"planningAttempts":row.get::<_,i64>(1)?,"expressionAttempts":row.get::<_,i64>(2)?,"successfulMessages":row.get::<_,i64>(3)?,"reservedTokens":row.get::<_,i64>(4)?,"usedTokens":row.get::<_,i64>(5)?,"unknownTokens":row.get::<_,i64>(6)?}))).map_err(db)?;
+        let budget=tx.query_row("SELECT local_date,planning_attempts,expression_attempts,successful_messages,reserved_tokens,used_tokens,unknown_tokens,observation_attempts,topic_attempts,next_success_after,daily_success_limit FROM proactive_budgets WHERE local_date=?1",[local_date],|row|Ok(json!({"localDate":row.get::<_,String>(0)?,"planningAttempts":row.get::<_,i64>(1)?,"expressionAttempts":row.get::<_,i64>(2)?,"successfulMessages":row.get::<_,i64>(3)?,"reservedTokens":row.get::<_,i64>(4)?,"usedTokens":row.get::<_,i64>(5)?,"unknownTokens":row.get::<_,i64>(6)?,"observationAttempts":row.get::<_,i64>(7)?,"topicAttempts":row.get::<_,i64>(8)?,"nextSuccessAfter":row.get::<_,Option<i64>>(9)?,"dailySuccessLimit":row.get::<_,i64>(10)?}))).map_err(db)?;
         let source_revision=tx.query_row("SELECT CAST(value AS INTEGER) FROM memory_meta WHERE key='revision'",[],|row|row.get::<_,i64>(0)).map_err(db)?;
         let result=json!({"tasks":tasks,"memoryTargets":memory_targets,"evaluatedFingerprints":evaluations,"unresolvedAttempts":attempts,"usedTopicKeys":used_topics,"control":control,"budget":budget,"sourceRevision":source_revision,"hasMore":has_more,"nextCursor":if has_more {next_cursor} else {None::<String>},"targetHasMore":target_has_more,"nextTargetCursor":if target_has_more {next_target_cursor} else {None::<String>}});
         tx.commit().map_err(db)?; Ok(result)
@@ -426,11 +466,20 @@ impl MemoryStore {
 
     pub(crate) fn proactive_claim(&self, request: &Value) -> AppResult<Value> {
         let own=owner(request);validate_owner(&own)?;let now=number(request,"now").ok_or_else(||fail("claim 缺少 now"))?;let date=text(request,"localDate");
+        if !is_local_date(&date){return Err(fail("claim localDate 必须是合法当地 YYYY-MM-DD"));}
+        let unanswered_date=request.get("unansweredThresholdDate").and_then(Value::as_str);
+        if unanswered_date.is_some_and(|threshold|!is_local_date(threshold)){return Err(fail("claim unansweredThresholdDate 必须是合法当地 YYYY-MM-DD"));}
+        let unanswered_cleared_date=request.get("unansweredClearedDate").and_then(Value::as_str);
+        if unanswered_cleared_date.is_some_and(|cleared|!is_local_date(cleared)){return Err(fail("claim unansweredClearedDate 必须是合法当地 YYYY-MM-DD"));}
+        let desired_success_limit=reply_tier_limit(&date,unanswered_date,unanswered_cleared_date);
+        let rule_id=text(request,"ruleId");
+        if rule_id.is_empty(){return Err(fail("claim ruleId 不能为空"));}
+        let respect_random_interval=matches!(rule_id.as_str(),"topic_share"|"curiosity");
         let kind=text(request,"kind");if !matches!(kind.as_str(),"planning"|"expression"){return Err(fail("claim kind 无效"));}
         let reserved=number(request,"reservedTokens").unwrap_or(-1);if reserved<0{return Err(fail("reservedTokens 无效"));}
         let conn=connection(self)?;let tx=conn.unchecked_transaction().map_err(db)?;prune_tx(&tx,now)?;
         let control=tx.query_row("SELECT enabled,mute_until,revision FROM proactive_control WHERE id=1",[],|r|Ok((r.get::<_,i64>(0)?,r.get::<_,Option<i64>>(1)?,r.get::<_,i64>(2)?))).map_err(db)?;
-        if control.0==0||control.1.is_some_and(|until|until>now){return Ok(json!({"claimed":false,"reason":"disabled_or_muted","leaseUntil":null,"revision":proactive_revision(&tx)?}));}
+        if control.0==0||control.1.is_some_and(|until|until>now){return denied_claim(tx,"disabled_or_muted");}
         if Some(control.2)!=number(request,"controlRevision"){return Err(AppError::MemoryConflict);}
         let source_rev=tx.query_row("SELECT CAST(value AS INTEGER) FROM memory_meta WHERE key='revision'",[],|r|r.get::<_,i64>(0)).map_err(db)?;
         if Some(source_rev)!=number(request,"sourceRevision"){return Err(AppError::MemoryConflict);}
@@ -438,16 +487,18 @@ impl MemoryStore {
         validate_refs_owner(&refs,&own)?;
         for reference in &refs{validate_source_ref(&tx,reference)?;}
         tx.execute("INSERT INTO proactive_budgets(local_date,updated_at) VALUES (?1,?2) ON CONFLICT(local_date) DO NOTHING",params![date,now]).map_err(db)?;
-        let budget:(i64,i64,i64,i64,i64,i64)=tx.query_row("SELECT planning_attempts,expression_attempts,successful_messages,reserved_tokens,used_tokens,unknown_tokens FROM proactive_budgets WHERE local_date=?1",[&date],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?,r.get(5)?))).map_err(db)?;
-        if (kind=="planning"&&budget.0>=crate::memory::protocol::PROACTIVE_DAILY_PLANNING_ATTEMPTS)||(kind=="expression"&&(budget.1>=crate::memory::protocol::PROACTIVE_DAILY_EXPRESSION_ATTEMPTS||budget.2>=crate::memory::protocol::PROACTIVE_DAILY_SUCCESS)){return Ok(json!({"claimed":false,"reason":"daily_limit","leaseUntil":null,"revision":proactive_revision(&tx)?}));}
+        tx.execute("UPDATE proactive_budgets SET daily_success_limit=CASE WHEN daily_success_limit=0 THEN ?2 ELSE MIN(daily_success_limit,?2) END WHERE local_date=?1",params![date,desired_success_limit]).map_err(db)?;
+        let budget:(i64,i64,i64,i64,i64,i64,Option<i64>,i64)=tx.query_row("SELECT planning_attempts,expression_attempts,successful_messages,reserved_tokens,used_tokens,unknown_tokens,next_success_after,daily_success_limit FROM proactive_budgets WHERE local_date=?1",[&date],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?,r.get(5)?,r.get(6)?,r.get(7)?))).map_err(db)?;
+        if (kind=="planning"&&budget.0>=crate::memory::protocol::PROACTIVE_DAILY_PLANNING_ATTEMPTS)||(kind=="expression"&&(budget.1>=crate::memory::protocol::PROACTIVE_DAILY_EXPRESSION_ATTEMPTS||budget.2>=budget.7)){return denied_claim(tx,"daily_limit");}
+        if respect_random_interval&&budget.6.is_some_and(|until|until>now){return denied_claim(tx,"success_interval");}
         // unknown_tokens is an audit subset of reserved_tokens, so it must never be
         // added a second time when enforcing the daily ceiling.
-        if budget.3+budget.4+reserved>crate::memory::protocol::PROACTIVE_DAILY_TOKENS{return Ok(json!({"claimed":false,"reason":"token_budget","leaseUntil":null,"revision":proactive_revision(&tx)?}));}
-        if kind=="planning"&&tx.query_row("SELECT COUNT(*) FROM proactive_tasks WHERE state='active'",[],|r|r.get::<_,i64>(0)).map_err(db)?>=crate::memory::protocol::PROACTIVE_MAX_TASKS{return Ok(json!({"claimed":false,"reason":"task_capacity","leaseUntil":null,"revision":proactive_revision(&tx)?}));}
-        if tx.query_row("SELECT EXISTS(SELECT 1 FROM proactive_attempts WHERE status IN ('reserved','generating','unresolved'))",[],|r|r.get::<_,bool>(0)).map_err(db)?{return Ok(json!({"claimed":false,"reason":"attempt_in_flight","leaseUntil":null,"revision":proactive_revision(&tx)?}));}
+        if budget.3+budget.4+reserved>crate::memory::protocol::PROACTIVE_DAILY_TOKENS{return denied_claim(tx,"token_budget");}
+        if kind=="planning"&&tx.query_row("SELECT COUNT(*) FROM proactive_tasks WHERE state='active'",[],|r|r.get::<_,i64>(0)).map_err(db)?>=crate::memory::protocol::PROACTIVE_MAX_TASKS{return denied_claim(tx,"task_capacity");}
+        if tx.query_row("SELECT EXISTS(SELECT 1 FROM proactive_attempts WHERE status IN ('reserved','generating','unresolved'))",[],|r|r.get::<_,bool>(0)).map_err(db)?{return denied_claim(tx,"attempt_in_flight");}
         if kind=="expression" { for occurrence in value_array(request,"occurrenceIds").iter().filter_map(Value::as_str) {
             let prior:Option<(String,Option<i64>)>=tx.query_row("SELECT status,retry_after FROM proactive_occurrences WHERE occurrence_id=?1",[occurrence],|r|Ok((r.get(0)?,r.get(1)?))).optional().map_err(db)?;
-            if let Some((state,retry))=prior {if state=="committed"||state=="unresolved"||retry.is_some_and(|time|time>now){return Ok(json!({"claimed":false,"reason":"occurrence_already_settled_or_cooling","leaseUntil":null,"revision":proactive_revision(&tx)?}));}}
+            if let Some((state,retry))=prior {if state=="committed"||state=="skipped"||state=="unresolved"||retry.is_some_and(|time|time>now){return denied_claim(tx,"occurrence_already_settled_or_cooling");}}
         }}
         let attempt=text(request,"attemptId");let reqid=text(request,"requestId");if attempt.is_empty()||reqid.is_empty(){return Err(fail("attempt/request id 不能为空"));}
         let fp=text(request,"sourceFingerprint");if fp.is_empty(){return Err(fail("sourceFingerprint 不能为空"));}
@@ -455,7 +506,8 @@ impl MemoryStore {
         let prior:Option<(String,String,Option<i64>,String,String)>=tx.query_row("SELECT status,owner_json,lease_until,source_fingerprint,local_date FROM proactive_attempts WHERE attempt_id=?1",[&attempt],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?))).optional().map_err(db)?;
         if let Some((status,saved,lease,stored_fp,stored_day))=prior {let saved:Value=serde_json::from_str(&saved).unwrap_or(Value::Null);if saved!=own||stored_fp!=fp||stored_day!=date{return Err(AppError::MemoryConflict);}
             let claimed=matches!(status.as_str(),"reserved"|"generating")&&lease.is_some_and(|until|until>=now);
-            return Ok(json!({"claimed":claimed,"reason":if claimed {None::<String>} else {Some("attempt_already_settled_or_expired".to_string())},"leaseUntil":if claimed {lease} else {None},"revision":proactive_revision(&tx)?}));}
+            let revision=proactive_revision(&tx)?;tx.commit().map_err(db)?;
+            return Ok(json!({"claimed":claimed,"reason":if claimed {None::<String>} else {Some("attempt_already_settled_or_expired".to_string())},"leaseUntil":if claimed {lease} else {None},"revision":revision}));}
         if tx.query_row("SELECT EXISTS(SELECT 1 FROM proactive_attempts WHERE request_id=?1)",[&reqid],|r|r.get::<_,bool>(0)).map_err(db)?{return Err(AppError::MemoryConflict);}
         let lease=now+crate::memory::protocol::PROACTIVE_ATTEMPT_LEASE_MS;
         let refs_json=serde_json::to_string(&refs).map_err(|e|fail(e.to_string()))?;let own_json=stable(&own);
@@ -489,11 +541,13 @@ impl MemoryStore {
         let saved:Value=serde_json::from_str(&owner_json).unwrap_or(Value::Null);
         if saved!=own||fp!=text(request,"sourceFingerprint")||date!=text(request,"localDate"){return Err(AppError::MemoryConflict);}
         if old_status!="reserved"&&old_status!="generating" {if old_status==status{return Ok(json!({"revision":proactive_revision(&tx)?,"status":old_status,"occurrenceIds":serde_json::from_str::<Value>(&occurrences).unwrap_or(json!([]))}));}return Err(AppError::MemoryConflict);}
-        let refs:Vec<Value>=serde_json::from_str(&refs_json).unwrap_or_default();validate_refs_owner(&refs,&own)?;for reference in &refs{validate_source_ref(&tx,reference)?;}
-        let current_source=tx.query_row("SELECT CAST(value AS INTEGER) FROM memory_meta WHERE key='revision'",[],|r|r.get::<_,i64>(0)).map_err(db)?;
-        let current_control=tx.query_row("SELECT revision FROM proactive_control WHERE id=1",[],|r|r.get::<_,i64>(0)).map_err(db)?;
-        let saved_control:i64=tx.query_row("SELECT control_revision FROM proactive_attempts WHERE attempt_id=?1",[&attempt],|r|r.get(0)).map_err(db)?;
-        if current_source!=source_revision||current_control!=saved_control{return Err(AppError::MemoryConflict);}
+        if status!="skipped" {
+            let refs:Vec<Value>=serde_json::from_str(&refs_json).unwrap_or_default();validate_refs_owner(&refs,&own)?;for reference in &refs{validate_source_ref(&tx,reference)?;}
+            let current_source=tx.query_row("SELECT CAST(value AS INTEGER) FROM memory_meta WHERE key='revision'",[],|r|r.get::<_,i64>(0)).map_err(db)?;
+            let current_control=tx.query_row("SELECT revision FROM proactive_control WHERE id=1",[],|r|r.get::<_,i64>(0)).map_err(db)?;
+            let saved_control:i64=tx.query_row("SELECT control_revision FROM proactive_attempts WHERE attempt_id=?1",[&attempt],|r|r.get(0)).map_err(db)?;
+            if current_source!=source_revision||current_control!=saved_control{return Err(AppError::MemoryConflict);}
+        }
         let usage=request.get("usage").filter(|v|!v.is_null()).cloned();let known=usage_tokens(usage.as_ref())?;
         let decision=request.get("decision").filter(|v|!v.is_null());let assistant=request.get("assistantEntryId").and_then(Value::as_str);
         if status=="committed"&&kind=="expression"&&assistant.is_none(){return Err(fail("已提交表达必须绑定真实 assistant entry"));}
@@ -502,14 +556,16 @@ impl MemoryStore {
         let decision_json=decision.map(Value::to_string);
         tx.execute("UPDATE proactive_attempts SET status=?2,assistant_entry_id=COALESCE(?3,assistant_entry_id),usage_json=?4,used_tokens=?5,decision_json=?6,summary=?7,error_code=?8,updated_at=?9 WHERE attempt_id=?1",params![attempt,settled_status,assistant,usage.as_ref().map(Value::to_string),known,decision_json,request.get("summary").and_then(Value::as_str),request.get("errorCode").and_then(Value::as_str),now]).map_err(db)?;
         if let Some(tokens)=known {
-            tx.execute("UPDATE proactive_budgets SET reserved_tokens=MAX(0,reserved_tokens-?2),used_tokens=used_tokens+?3,successful_messages=successful_messages+?4,updated_at=?5 WHERE local_date=?1",params![date,reserved,tokens,if kind=="expression"&&status=="committed"{1}else{0},now]).map_err(db)?;
+            let random_fallback=decision.and_then(|value|value.get("ruleId")).and_then(Value::as_str).is_some_and(|rule|matches!(rule,"topic_share"|"curiosity"));
+            let next_after=if kind=="expression"&&status=="committed"&&random_fallback {Some(next_success_after(&attempt,now))} else {None};
+            tx.execute("UPDATE proactive_budgets SET reserved_tokens=MAX(0,reserved_tokens-?2),used_tokens=used_tokens+?3,successful_messages=successful_messages+?4,next_success_after=COALESCE(?5,next_success_after),updated_at=?6 WHERE local_date=?1",params![date,reserved,tokens,if kind=="expression"&&status=="committed"{1}else{0},next_after,now]).map_err(db)?;
         }else if status=="committed" || status=="unresolved" {
             // Hold the original reservation until exact receipt reconciliation.
             tx.execute("UPDATE proactive_budgets SET unknown_tokens=MAX(unknown_tokens,?2),updated_at=?3 WHERE local_date=?1",params![date,reserved,now]).map_err(db)?;
         } else {
             tx.execute("UPDATE proactive_budgets SET reserved_tokens=MAX(0,reserved_tokens-?2),updated_at=?3 WHERE local_date=?1",params![date,reserved,now]).map_err(db)?;
         }
-        let occurrence_state=match settled_status{"committed"=>"committed","unresolved"=>"unresolved","failed"=>"failed",_=>"failed"};
+        let occurrence_state=match settled_status{"committed"=>"committed","unresolved"=>"unresolved","failed"=>"failed","skipped"=>"skipped",_=>"failed"};
         let retry=if occurrence_state=="failed"{Some(now+crate::memory::protocol::PROACTIVE_RETRY_DELAY_MS)}else{None};
         tx.execute("UPDATE proactive_occurrences SET status=?2,retry_after=?3,updated_at=?4 WHERE attempt_id=?1",params![attempt,occurrence_state,retry,now]).map_err(db)?;
         // A planning decision is useful as a negative cache, but topic consumption and
@@ -539,7 +595,7 @@ impl MemoryStore {
         if committed&&kind=="expression"&&request.get("assistantEntryId").and_then(Value::as_str).is_none(){return Err(fail("receipt 缺少 assistantEntryId"));}
         let new_status=if committed&&tokens.is_some(){"committed"}else if committed{"unresolved"}else{"failed"};let now=now_ms();
         tx.execute("UPDATE proactive_attempts SET status=?2,assistant_entry_id=COALESCE(?3,assistant_entry_id),usage_json=?4,used_tokens=?5,updated_at=?6 WHERE attempt_id=?1",params![attempt,new_status,request.get("assistantEntryId").and_then(Value::as_str),usage.map(Value::to_string),tokens,now]).map_err(db)?;
-        if let Some(tokens)=tokens {tx.execute("UPDATE proactive_budgets SET reserved_tokens=MAX(0,reserved_tokens-?2),unknown_tokens=MAX(0,unknown_tokens-?2),used_tokens=used_tokens+?3,successful_messages=successful_messages+?4,updated_at=?5 WHERE local_date=?1",params![date,reserved,tokens,if kind=="expression"&&committed{1}else{0},now]).map_err(db)?;}
+        if let Some(tokens)=tokens {let random_fallback=serde_json::from_str::<Value>(&decision_json).ok().and_then(|value|value.get("ruleId").and_then(Value::as_str).map(|rule|matches!(rule,"topic_share"|"curiosity"))).unwrap_or(false);let next_after=if kind=="expression"&&committed&&random_fallback {Some(next_success_after(&attempt,now))} else {None};tx.execute("UPDATE proactive_budgets SET reserved_tokens=MAX(0,reserved_tokens-?2),unknown_tokens=MAX(0,unknown_tokens-?2),used_tokens=used_tokens+?3,successful_messages=successful_messages+?4,next_success_after=COALESCE(?5,next_success_after),updated_at=?6 WHERE local_date=?1",params![date,reserved,tokens,if kind=="expression"&&committed{1}else{0},next_after,now]).map_err(db)?;}
         else if !committed {tx.execute("UPDATE proactive_budgets SET reserved_tokens=MAX(0,reserved_tokens-?2),unknown_tokens=MAX(0,unknown_tokens-?2),updated_at=?3 WHERE local_date=?1",params![date,reserved,now]).map_err(db)?;}
         if !committed {tx.execute("UPDATE proactive_occurrences SET status='failed',retry_after=?2,updated_at=?3 WHERE attempt_id=?1",params![attempt,now+crate::memory::protocol::PROACTIVE_RETRY_DELAY_MS,now]).map_err(db)?;}
         else if tokens.is_some(){tx.execute("UPDATE proactive_occurrences SET status='committed',retry_after=NULL,updated_at=?2 WHERE attempt_id=?1",params![attempt,now]).map_err(db)?;}
@@ -552,6 +608,109 @@ impl MemoryStore {
         let value=json!({"operationId":request.get("operationId"),"baseRevision":request.get("baseRevision"),"action":"control","controlPatch":patch});
         let _=self.proactive_change(&value)?;let conn=connection(self)?;
         conn.query_row("SELECT enabled,mute_until,revision FROM proactive_control WHERE id=1",[],|r|Ok(json!({"enabled":r.get::<_,i64>(0)?!=0,"muteUntil":r.get::<_,Option<i64>>(1)?,"revision":r.get::<_,i64>(2)?}))).map_err(db)
+    }
+
+    pub(crate) fn proactive_auxiliary_budget_reserve(&self, request: &Value) -> AppResult<Value> {
+        let reservation_id = text(request, "reservationId");
+        let request_id = text(request, "requestId");
+        let kind = text(request, "kind");
+        let date = text(request, "localDate");
+        let reserved = number(request, "reservedTokens").unwrap_or(-1);
+        let requested_limit = number(request, "dailyLimit").unwrap_or(0);
+        let limit = requested_limit.min(crate::memory::protocol::PROACTIVE_DAILY_AUXILIARY_ATTEMPTS);
+        let now = number(request, "now").unwrap_or_else(now_ms);
+        if reservation_id.is_empty() || request_id.is_empty() || !is_local_date(&date)
+            || !matches!(kind.as_str(), "observation" | "topic") || reserved < 0
+            || requested_limit < 1 || limit < 1 {
+            return Err(fail("辅助预算预留参数无效"));
+        }
+        let conn = connection(self)?;
+        let tx = conn.unchecked_transaction().map_err(db)?;
+        prune_tx(&tx,now)?;
+        if let Some((stored_request, stored_kind, stored_date, status)) = tx.query_row(
+            "SELECT request_id,kind,local_date,status FROM proactive_auxiliary_reservations WHERE reservation_id=?1",
+            [&reservation_id], |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?, row.get::<_, String>(2)?, row.get::<_, String>(3)?)),
+        ).optional().map_err(db)? {
+            if stored_request != request_id || stored_kind != kind || stored_date != date {
+                return Err(AppError::MemoryConflict);
+            }
+            let can_resume = status == "reserved";
+            tx.commit().map_err(db)?;
+            return Ok(json!({"reserved":can_resume,"reason":if can_resume {None::<String>} else if status=="unresolved" {Some("usage_reconciliation_required".to_string())} else {Some("reservation_settled".to_string())} }));
+        }
+        if tx.query_row(
+            "SELECT EXISTS(SELECT 1 FROM proactive_auxiliary_reservations WHERE request_id=?1)",
+            [&request_id], |row| row.get::<_, bool>(0),
+        ).map_err(db)? {
+            return Err(AppError::MemoryConflict);
+        }
+        tx.execute("INSERT INTO proactive_budgets(local_date,updated_at) VALUES (?1,?2) ON CONFLICT(local_date) DO NOTHING", params![date, now]).map_err(db)?;
+        let (attempts, reserved_total, used_total): (i64, i64, i64) = if kind == "observation" {
+            tx.query_row("SELECT observation_attempts,reserved_tokens,used_tokens FROM proactive_budgets WHERE local_date=?1", [&date], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?))).map_err(db)?
+        } else {
+            tx.query_row("SELECT topic_attempts,reserved_tokens,used_tokens FROM proactive_budgets WHERE local_date=?1", [&date], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?))).map_err(db)?
+        };
+        if attempts >= limit {
+            tx.commit().map_err(db)?;
+            return Ok(json!({"reserved":false,"reason":"daily_limit"}));
+        }
+        if reserved_total.checked_add(used_total).and_then(|value| value.checked_add(reserved)).map_or(true, |total| total > crate::memory::protocol::PROACTIVE_DAILY_TOKENS) {
+            tx.commit().map_err(db)?;
+            return Ok(json!({"reserved":false,"reason":"token_budget"}));
+        }
+        tx.execute("INSERT INTO proactive_auxiliary_reservations(reservation_id,request_id,kind,local_date,status,reserved_tokens,created_at,updated_at) VALUES (?1,?2,?3,?4,'reserved',?5,?6,?6)", params![reservation_id, request_id, kind, date, reserved, now]).map_err(db)?;
+        let counter = if kind == "observation" { "observation_attempts" } else { "topic_attempts" };
+        tx.execute(&format!("UPDATE proactive_budgets SET {counter}={counter}+1,reserved_tokens=reserved_tokens+?2,updated_at=?3 WHERE local_date=?1"), params![date, reserved, now]).map_err(db)?;
+        tx.commit().map_err(db)?;
+        Ok(json!({"reserved":true,"reason":null}))
+    }
+
+    pub(crate) fn proactive_auxiliary_budget_settle(&self, request: &Value) -> AppResult<Value> {
+        let reservation_id = text(request, "reservationId");
+        let date = text(request, "localDate");
+        let status = text(request, "status");
+        let usage = request.get("usage").filter(|value| !value.is_null());
+        let tokens = usage_tokens(usage)?;
+        let now = number(request, "now").unwrap_or_else(now_ms);
+        if reservation_id.is_empty() || !is_local_date(&date) || !matches!(status.as_str(), "committed" | "failed" | "unresolved") {
+            return Err(fail("辅助预算结算参数无效"));
+        }
+        let conn = connection(self)?;
+        let tx = conn.unchecked_transaction().map_err(db)?;
+        let row: Option<(String, i64)> = tx.query_row(
+            "SELECT status,reserved_tokens FROM proactive_auxiliary_reservations WHERE reservation_id=?1 AND local_date=?2",
+            params![reservation_id, date], |row| Ok((row.get(0)?, row.get(1)?)),
+        ).optional().map_err(db)?;
+        let Some((old_status, reserved)) = row else { return Err(AppError::MemoryConflict); };
+        if matches!(old_status.as_str(), "committed" | "failed") {
+            if old_status == status { tx.commit().map_err(db)?; return Ok(json!({"status":old_status})); }
+            return Err(AppError::MemoryConflict);
+        }
+        if status == "committed" && tokens.is_none() {
+            tx.execute("UPDATE proactive_auxiliary_reservations SET status='unresolved',updated_at=?2 WHERE reservation_id=?1", params![reservation_id, now]).map_err(db)?;
+            tx.execute("UPDATE proactive_budgets SET unknown_tokens=unknown_tokens+CASE WHEN ?2='unresolved' THEN 0 ELSE ?3 END,updated_at=?4 WHERE local_date=?1", params![date, old_status, reserved, now]).map_err(db)?;
+            tx.commit().map_err(db)?;
+            return Ok(json!({"status":"unresolved"}));
+        }
+        if status == "unresolved" {
+            tx.execute("UPDATE proactive_auxiliary_reservations SET status='unresolved',usage_json=?2,updated_at=?3 WHERE reservation_id=?1", params![reservation_id, usage.map(Value::to_string), now]).map_err(db)?;
+            if old_status != "unresolved" {
+                tx.execute("UPDATE proactive_budgets SET unknown_tokens=unknown_tokens+?2,updated_at=?3 WHERE local_date=?1", params![date, reserved, now]).map_err(db)?;
+            }
+            tx.commit().map_err(db)?;
+            return Ok(json!({"status":"unresolved"}));
+        }
+        let Some(tokens) = tokens else { // Known failure with no Provider call releases the reservation.
+            tx.execute("UPDATE proactive_auxiliary_reservations SET status='failed',usage_json=?2,updated_at=?3 WHERE reservation_id=?1", params![reservation_id, usage.map(Value::to_string), now]).map_err(db)?;
+            tx.execute("UPDATE proactive_budgets SET reserved_tokens=MAX(0,reserved_tokens-?2),unknown_tokens=MAX(0,unknown_tokens-CASE WHEN ?3='unresolved' THEN ?2 ELSE 0 END),updated_at=?4 WHERE local_date=?1", params![date, reserved, old_status, now]).map_err(db)?;
+            tx.commit().map_err(db)?;
+            return Ok(json!({"status":"failed"}));
+        };
+        let final_status = if status == "failed" { "failed" } else { "committed" };
+        tx.execute("UPDATE proactive_auxiliary_reservations SET status=?2,used_tokens=?3,usage_json=?4,updated_at=?5 WHERE reservation_id=?1", params![reservation_id, final_status, tokens, usage.map(Value::to_string), now]).map_err(db)?;
+        tx.execute("UPDATE proactive_budgets SET reserved_tokens=MAX(0,reserved_tokens-?2),unknown_tokens=MAX(0,unknown_tokens-CASE WHEN ?3='unresolved' THEN ?2 ELSE 0 END),used_tokens=used_tokens+?4,updated_at=?5 WHERE local_date=?1", params![date, reserved, old_status, tokens, now]).map_err(db)?;
+        tx.commit().map_err(db)?;
+        Ok(json!({"status":final_status}))
     }
 }
 
@@ -613,6 +772,44 @@ mod tests {
     impl Drop for Fixture { fn drop(&mut self) { let _=std::fs::remove_dir_all(&self.0); } }
 
     #[test]
+    fn schema_initialization_adds_final_budget_columns_without_resetting_existing_runtime_state() {
+        let conn=Connection::open_in_memory().expect("打开旧schema合成库");
+        conn.execute_batch(r#"
+          CREATE TABLE proactive_budgets (
+            local_date TEXT PRIMARY KEY NOT NULL,
+            planning_attempts INTEGER NOT NULL DEFAULT 0,
+            expression_attempts INTEGER NOT NULL DEFAULT 0,
+            successful_messages INTEGER NOT NULL DEFAULT 0,
+            reserved_tokens INTEGER NOT NULL DEFAULT 0,
+            used_tokens INTEGER NOT NULL DEFAULT 0,
+            unknown_tokens INTEGER NOT NULL DEFAULT 0,
+            updated_at INTEGER NOT NULL
+          ) STRICT;
+          INSERT INTO proactive_budgets(local_date,planning_attempts,expression_attempts,successful_messages,reserved_tokens,used_tokens,unknown_tokens,updated_at)
+            VALUES ('2026-10-03',3,4,2,25,40,7,9);
+          CREATE TABLE proactive_tasks (
+            id TEXT PRIMARY KEY NOT NULL,version INTEGER NOT NULL,scope TEXT NOT NULL,scope_id TEXT,source_refs_json TEXT NOT NULL,
+            intent_json TEXT NOT NULL,event_at_json TEXT,due_at_json TEXT,next_checkin_at INTEGER,valid_until INTEGER,timezone TEXT NOT NULL,
+            recurrence_json TEXT,state TEXT NOT NULL,created_at INTEGER NOT NULL,updated_at INTEGER NOT NULL,
+            invalidation_epoch INTEGER NOT NULL DEFAULT 0,operation_id TEXT NOT NULL UNIQUE
+          ) STRICT;
+          INSERT INTO proactive_tasks(id,version,scope,source_refs_json,intent_json,timezone,state,created_at,updated_at,operation_id)
+            VALUES ('task-keep',2,'user','[]','{}','UTC','active',1,2,'task-operation');
+          CREATE TABLE proactive_control (id INTEGER PRIMARY KEY CHECK(id=1),enabled INTEGER NOT NULL CHECK(enabled IN (0,1)),mute_until INTEGER,revision INTEGER NOT NULL) STRICT;
+          INSERT INTO proactive_control(id,enabled,mute_until,revision) VALUES (1,0,77,9);
+        "#).expect("准备旧版主动schema及现存状态");
+        crate::proactive::schema::ensure(&conn).expect("增列到最终主动预算schema");
+        let budget:(i64,i64,i64,i64,i64,i64,i64,i64,i64,Option<i64>)=conn.query_row(
+            "SELECT planning_attempts,expression_attempts,successful_messages,reserved_tokens,used_tokens,unknown_tokens,observation_attempts,topic_attempts,daily_success_limit,next_success_after FROM proactive_budgets WHERE local_date='2026-10-03'",
+            [],|row|Ok((row.get(0)?,row.get(1)?,row.get(2)?,row.get(3)?,row.get(4)?,row.get(5)?,row.get(6)?,row.get(7)?,row.get(8)?,row.get(9)?))).expect("旧预算行完整保留");
+        assert_eq!(budget,(3,4,2,25,40,7,0,0,0,None));
+        let task:String=conn.query_row("SELECT id FROM proactive_tasks WHERE id='task-keep'",[],|row|row.get(0)).expect("既有事项保留");
+        let control:(i64,Option<i64>,i64)=conn.query_row("SELECT enabled,mute_until,revision FROM proactive_control WHERE id=1",[],|row|Ok((row.get(0)?,row.get(1)?,row.get(2)?))).expect("既有控制保留");
+        assert_eq!(task,"task-keep");
+        assert_eq!(control,(0,Some(77),9));
+    }
+
+    #[test]
     fn direct_task_creation_obeys_shared_capacity_guard() {
         let fixture=Fixture::new();
         for index in 0..crate::memory::protocol::PROACTIVE_MAX_TASKS {
@@ -648,9 +845,17 @@ mod tests {
     }
 
     #[test]
+    fn budget_dates_must_be_real_iso_calendar_days() {
+        let fixture=Fixture::new();let now=now_ms();
+        assert!(fixture.1.proactive_scan(&json!({"owner":Fixture::owner(),"now":now,"localDate":"2026-02-30","limit":1})).is_err());
+        assert!(fixture.1.proactive_auxiliary_budget_reserve(&json!({"reservationId":"bad-date","requestId":"bad-date-request","kind":"topic",
+            "localDate":"2026-02-30","reservedTokens":0,"dailyLimit":4,"now":now})).is_err());
+    }
+
+    #[test]
     fn settle_accepts_unresolved_and_retains_unknown_usage_reservation() {
         let fixture=Fixture::new(); let owner=Fixture::owner(); let now=now_ms();
-        let claimed=fixture.1.proactive_claim(&json!({"owner":owner.clone(),"now":now,"localDate":"2026-10-03","kind":"expression","reservedTokens":17,"sourceRevision":0,"controlRevision":0,"sourceRefs":[Fixture::source_ref()],"occurrenceIds":["occ-1"],"attemptId":"attempt-unresolved","requestId":"request-unresolved","sourceFingerprint":"source-fingerprint"})).expect("领取表达尝试");
+        let claimed=fixture.1.proactive_claim(&json!({"owner":owner.clone(),"now":now,"localDate":"2026-10-03","kind":"expression","reservedTokens":17,"sourceRevision":0,"controlRevision":0,"sourceRefs":[Fixture::source_ref()],"occurrenceIds":["occ-1"],"attemptId":"attempt-unresolved","requestId":"request-unresolved","sourceFingerprint":"source-fingerprint","ruleId":"memory_checkin"})).expect("领取表达尝试");
         assert_eq!(claimed["claimed"],json!(true));
         let settled=fixture.1.proactive_settle(&json!({"owner":owner,"attemptId":"attempt-unresolved","sourceFingerprint":"source-fingerprint","localDate":"2026-10-03","status":"unresolved","usage":null,"assistantEntryId":null})).expect("未知提交状态应可结算");
         assert_eq!(settled["status"],json!("unresolved"));
@@ -659,6 +864,152 @@ mod tests {
         assert_eq!(status,"unresolved"); assert_eq!(reserved,17);
         let unknown:i64=conn.query_row("SELECT unknown_tokens FROM proactive_budgets WHERE local_date='2026-10-03'",[],|row|row.get(0)).expect("回读未知预算");
         assert_eq!(unknown,17);
+    }
+
+    #[test]
+    fn unanswered_success_cap_begins_on_the_following_local_day_and_is_claim_enforced() {
+        let fixture=Fixture::new();let owner=Fixture::owner();let now=now_ms();
+        for (date,threshold_date,cleared_date,expected_claimed) in [
+            ("2026-10-03","2026-10-03",None,true),
+            ("2026-10-04","2026-10-03",None,false),
+            ("2026-10-04","2026-10-03",Some("2026-10-04"),false),
+            ("2026-10-05","2026-10-03",Some("2026-10-04"),true),
+        ] {
+            let conn=connection(&fixture.1).expect("锁库");
+            conn.execute("INSERT INTO proactive_budgets(local_date,successful_messages,updated_at) VALUES (?1,1,?2) ON CONFLICT(local_date) DO UPDATE SET successful_messages=1,updated_at=excluded.updated_at",params![date,now]).expect("准备已用成功数");
+            drop(conn);
+            let attempt=format!("attempt-{date}");let request_id=format!("request-{date}");let occurrence=format!("occurrence-{date}");
+            let claimed=fixture.1.proactive_claim(&json!({"owner":owner.clone(),"now":now,"localDate":date,"unansweredThresholdDate":threshold_date,"unansweredClearedDate":cleared_date,
+                "kind":"expression","reservedTokens":1,"sourceRevision":0,"controlRevision":0,"sourceRefs":[Fixture::source_ref()],
+                "occurrenceIds":[occurrence],"attemptId":attempt,"requestId":request_id,"sourceFingerprint":format!("fp-{date}"),"ruleId":"memory_checkin"})).expect("申请主动表达");
+            assert_eq!(claimed["claimed"],json!(expected_claimed),"same-day threshold must retain normal cap; next local day must enforce one-success cap");
+            if date=="2026-10-04"&&cleared_date.is_none() {
+                let same_day_rethreshold=fixture.1.proactive_scan(&json!({"owner":owner.clone(),"now":now,"localDate":date,"limit":1,
+                    "unansweredThresholdDate":date,"unansweredClearedDate":"2026-10-03"})).expect("同日本轮新阈值不应解除已冻结降档");
+                assert_eq!(same_day_rethreshold["budget"]["dailySuccessLimit"],json!(1));
+            }
+            if expected_claimed {
+                fixture.1.proactive_settle(&json!({"owner":owner.clone(),"attemptId":attempt,"sourceFingerprint":format!("fp-{date}"),
+                    "localDate":date,"status":"failed","usage":{"totalTokens":1},"decision":null})).expect("回收测试领取");
+            }
+        }
+    }
+
+    #[test]
+    fn first_daily_success_is_admitted_without_profile_and_random_interval_survives_restart() {
+        let fixture=Fixture::new();let owner=Fixture::owner();
+        let now=1_791_003_600_000_i64;let date="2026-10-03";
+        let initial=fixture.1.proactive_scan(&json!({"owner":owner.clone(),"now":now,"localDate":date,"limit":1})).expect("首轮扫描");
+        assert_eq!(initial["budget"]["successfulMessages"],json!(0));
+        assert_eq!(initial["budget"]["nextSuccessAfter"],Value::Null);
+        assert_eq!(initial["budget"]["dailySuccessLimit"],json!(crate::memory::protocol::PROACTIVE_DAILY_SUCCESS));
+        let claimed=fixture.1.proactive_claim(&json!({"owner":owner.clone(),"now":now,"localDate":date,"kind":"expression","reservedTokens":20,"ruleId":"topic_share",
+            "sourceRevision":0,"controlRevision":0,"sourceRefs":[Fixture::source_ref()],"occurrenceIds":["interval-occurrence"],
+            "attemptId":"interval-attempt","requestId":"interval-request","sourceFingerprint":"interval-fingerprint"})).expect("首条表达应可领取");
+        assert_eq!(claimed["claimed"],json!(true));
+        fixture.1.proactive_settle(&json!({"owner":owner,"attemptId":"interval-attempt","sourceFingerprint":"interval-fingerprint","localDate":date,
+            "status":"committed","now":now,"assistantEntryId":"interval-assistant","usage":{"totalTokens":12},
+            "decision":{"kind":"speak_now","ruleId":"topic_share","opportunityFingerprints":[],"topicKey":null,"slot":date,"validUntil":null}})).expect("写入首条真实成功");
+        let expected=next_success_after("interval-attempt",now);
+        assert!(expected>now+crate::memory::protocol::PROACTIVE_MIN_SUCCESS_INTERVAL_MS);
+        assert!(expected<now+crate::memory::protocol::PROACTIVE_MIN_SUCCESS_INTERVAL_MS+crate::memory::protocol::PROACTIVE_SUCCESS_INTERVAL_SPREAD_MS);
+        let reopened=MemoryStore::open_at(&fixture.0.join("memory.sqlite3")).expect("重启后重开库");
+        let after_restart=reopened.proactive_scan(&json!({"owner":Fixture::owner(),"now":now+1,"localDate":date,"limit":1})).expect("重启后读预算");
+        assert_eq!(after_restart["budget"]["nextSuccessAfter"],json!(expected));
+        assert_eq!(next_success_after("interval-attempt",now),expected,"同一个持久attempt的间隔不能因重启改变");
+        let random_retry=reopened.proactive_claim(&json!({"owner":Fixture::owner(),"now":now+1,"localDate":date,"kind":"expression","reservedTokens":20,"ruleId":"topic_share",
+            "sourceRevision":0,"controlRevision":0,"sourceRefs":[Fixture::source_ref()],"occurrenceIds":["ordinary-next"],
+            "attemptId":"random-next","requestId":"random-next-request","sourceFingerprint":"random-next-fingerprint"})).expect("普通选材尊重持久随机间隔");
+        assert_eq!(random_retry["reason"],json!("success_interval"));
+        let anchored=reopened.proactive_claim(&json!({"owner":Fixture::owner(),"now":now+1,"localDate":date,"kind":"expression","reservedTokens":20,"ruleId":"scheduled_task",
+            "sourceRevision":0,"controlRevision":0,"sourceRefs":[Fixture::source_ref()],"occurrenceIds":["explicit-anchor"],
+            "attemptId":"anchor-next","requestId":"anchor-next-request","sourceFingerprint":"anchor-next-fingerprint"})).expect("明确约定不被随机间隔阻断");
+        assert_eq!(anchored["claimed"],json!(true));
+    }
+
+    #[test]
+    fn auxiliary_budget_shares_daily_tokens_but_keeps_kind_attempt_caps_independent() {
+        let fixture=Fixture::new();let date="2026-10-03";let now=now_ms();
+        for kind in ["observation","topic"] {
+            for index in 0..crate::memory::protocol::PROACTIVE_DAILY_AUXILIARY_ATTEMPTS {
+                let result=fixture.1.proactive_auxiliary_budget_reserve(&json!({"reservationId":format!("{kind}-{index}"),"requestId":format!("request-{kind}-{index}"),
+                    "kind":kind,"localDate":date,"reservedTokens":0,"dailyLimit":4,"now":now})).expect("辅助预留");
+                assert_eq!(result["reserved"],json!(true));
+            }
+            let capped=fixture.1.proactive_auxiliary_budget_reserve(&json!({"reservationId":format!("{kind}-overflow"),"requestId":format!("request-{kind}-overflow"),
+                "kind":kind,"localDate":date,"reservedTokens":0,"dailyLimit":4,"now":now})).expect("独立kind日限");
+            assert_eq!(capped["reason"],json!("daily_limit"));
+        }
+        let conn=connection(&fixture.1).expect("锁库");
+        conn.execute("UPDATE proactive_budgets SET reserved_tokens=0 WHERE local_date=?1",[date]).expect("归零预留以隔离共享token检查");
+        drop(conn);
+        let first=fixture.1.proactive_auxiliary_budget_reserve(&json!({"reservationId":"shared-first","requestId":"request-shared-first","kind":"observation","localDate":"2026-10-04","reservedTokens":20_000,"dailyLimit":4,"now":now})).expect("共享额度第一笔");
+        assert_eq!(first["reserved"],json!(true));
+        let overflow=fixture.1.proactive_auxiliary_budget_reserve(&json!({"reservationId":"shared-overflow","requestId":"request-shared-overflow","kind":"topic","localDate":"2026-10-04","reservedTokens":5_000,"dailyLimit":4,"now":now})).expect("共享token上限");
+        assert_eq!(overflow["reason"],json!("token_budget"));
+        let interrupted=fixture.1.proactive_auxiliary_budget_reserve(&json!({"reservationId":"foreground-preempted","requestId":"foreground-request",
+            "kind":"topic","localDate":"2026-10-05","reservedTokens":1_000,"dailyLimit":4,"now":now})).expect("前台抢占前预留");
+        assert_eq!(interrupted["reserved"],json!(true));
+        fixture.1.proactive_auxiliary_budget_settle(&json!({"reservationId":"foreground-preempted","localDate":"2026-10-05","status":"failed",
+            "usage":{"totalTokens":9},"now":now})).expect("取消后仍结算Provider实际用量");
+        let conn=connection(&fixture.1).expect("检查前台抢占结算");
+        let (reserved,used):(i64,i64)=conn.query_row("SELECT reserved_tokens,used_tokens FROM proactive_budgets WHERE local_date='2026-10-05'",[],|row|Ok((row.get(0)?,row.get(1)?))).expect("读回取消用量");
+        assert_eq!((reserved,used),(0,9));
+    }
+
+    #[test]
+    fn auxiliary_unknown_usage_survives_expiry_restart_and_reconciles_against_original_day() {
+        let fixture=Fixture::new();let now=now_ms();let day_one="2026-10-03";let day_two="2026-10-04";
+        let reserved=fixture.1.proactive_auxiliary_budget_reserve(&json!({"reservationId":"unknown-across-restart","requestId":"unknown-request",
+            "kind":"observation","localDate":day_one,"reservedTokens":100,"dailyLimit":4,"now":now})).expect("预留辅助调用");
+        assert_eq!(reserved["reserved"],json!(true));
+        let reopened=MemoryStore::open_at(&fixture.0.join("memory.sqlite3")).expect("重开SQLite库");
+        let expiry=now+crate::memory::protocol::PROACTIVE_ATTEMPT_LEASE_MS+1;
+        reopened.proactive_scan(&json!({"owner":Fixture::owner(),"now":expiry,"localDate":day_two,"limit":1})).expect("下日扫描回收过期租约");
+        let duplicate=reopened.proactive_auxiliary_budget_reserve(&json!({"reservationId":"unknown-across-restart","requestId":"unknown-request",
+            "kind":"observation","localDate":day_one,"reservedTokens":100,"dailyLimit":4,"now":expiry})).expect("未知预留禁止重新生成");
+        assert_eq!(duplicate["reserved"],json!(false));
+        assert_eq!(duplicate["reason"],json!("usage_reconciliation_required"));
+        let conn=connection(&reopened).expect("检查租约结算");
+        let (status,reserved_tokens,unknown_tokens):(String,i64,i64)=conn.query_row(
+            "SELECT r.status,r.reserved_tokens,b.unknown_tokens FROM proactive_auxiliary_reservations r JOIN proactive_budgets b ON b.local_date=r.local_date WHERE r.reservation_id='unknown-across-restart'",
+            [],|row|Ok((row.get(0)?,row.get(1)?,row.get(2)?))).expect("回读过期辅助尝试");
+        assert_eq!((status,reserved_tokens,unknown_tokens),("unresolved".to_string(),100,100));
+        drop(conn);
+        let settled=reopened.proactive_auxiliary_budget_settle(&json!({"reservationId":"unknown-across-restart","localDate":day_one,
+            "status":"committed","usage":{"totalTokens":17},"now":expiry})).expect("使用原本地日精确对账");
+        assert_eq!(settled["status"],json!("committed"));
+        let conn=connection(&reopened).expect("检查精确结算");
+        let (reserved_tokens,used_tokens,unknown_tokens):(i64,i64,i64)=conn.query_row(
+            "SELECT reserved_tokens,used_tokens,unknown_tokens FROM proactive_budgets WHERE local_date=?1",[day_one],|row|Ok((row.get(0)?,row.get(1)?,row.get(2)?))).expect("读取旧日预算");
+        assert_eq!((reserved_tokens,used_tokens,unknown_tokens),(0,17,0));
+        drop(conn);
+        reopened.proactive_scan(&json!({"owner":Fixture::owner(),"now":expiry+crate::memory::protocol::PROACTIVE_SETTLED_RETENTION_DAYS*DAY_MS+1,
+            "localDate":day_two,"limit":1})).expect("清理过期终态辅助行");
+        let conn=connection(&reopened).expect("检查终态清理");
+        let exists:bool=conn.query_row("SELECT EXISTS(SELECT 1 FROM proactive_auxiliary_reservations WHERE reservation_id='unknown-across-restart')",[],|row|row.get(0)).expect("确认清理");
+        assert!(!exists,"终态reservation过期后应清理，旧日预算聚合保留");
+    }
+
+    #[test]
+    fn skipped_silent_settlement_spends_known_tokens_without_success_or_occurrence_replay() {
+        let fixture=Fixture::new();let owner=Fixture::owner();let now=now_ms();let date="2026-10-03";
+        let claimed=fixture.1.proactive_claim(&json!({"owner":owner.clone(),"now":now,"localDate":date,"kind":"expression","reservedTokens":20,"ruleId":"topic_share",
+            "sourceRevision":0,"controlRevision":0,"sourceRefs":[Fixture::source_ref()],"occurrenceIds":["silent-occurrence"],
+            "attemptId":"silent-attempt","requestId":"silent-request","sourceFingerprint":"silent-fingerprint"})).expect("领取静默机会");
+        assert_eq!(claimed["claimed"],json!(true));
+        let settled=fixture.1.proactive_settle(&json!({"owner":owner.clone(),"attemptId":"silent-attempt","sourceFingerprint":"silent-fingerprint",
+            "localDate":date,"status":"skipped","assistantEntryId":"empty-assistant-tip","usage":{"totalTokens":7},"decision":null,"summary":"humanizer_silent"})).expect("静默回执结案");
+        assert_eq!(settled["status"],json!("skipped"));
+        let retry=fixture.1.proactive_claim(&json!({"owner":owner,"now":now+1,"localDate":date,"kind":"expression","reservedTokens":20,"ruleId":"topic_share",
+            "sourceRevision":0,"controlRevision":0,"sourceRefs":[Fixture::source_ref()],"occurrenceIds":["silent-occurrence"],
+            "attemptId":"silent-retry","requestId":"silent-request-retry","sourceFingerprint":"silent-fingerprint"})).expect("重复机会必须被挡住");
+        assert_eq!(retry["claimed"],json!(false));
+        let conn=connection(&fixture.1).expect("检查静默账目");
+        let (success,used,reserved):(i64,i64,i64)=conn.query_row("SELECT successful_messages,used_tokens,reserved_tokens FROM proactive_budgets WHERE local_date=?1",[date],|row|Ok((row.get(0)?,row.get(1)?,row.get(2)?))).expect("读取静默额度");
+        let occurrence:String=conn.query_row("SELECT status FROM proactive_occurrences WHERE occurrence_id='silent-occurrence'",[],|row|row.get(0)).expect("读取静默槽");
+        assert_eq!((success,used,reserved),(0,7,0));
+        assert_eq!(occurrence,"skipped");
     }
 
     #[test]

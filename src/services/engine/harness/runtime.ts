@@ -41,12 +41,16 @@ import {
   findRetainedToolCall, listAll, preservedToolNames, retainedToolNames, toolPolicyHash,
 } from "@/services/tool"
 import type { HarnessToolRun, ToolDef } from "@/services/tool"
-import { loopConfig, memoryConfig, planConfig } from "@/services/config"
+import { humanizerConfig, loopConfig, memoryConfig, planConfig, silentAccessConfig } from "@/services/config"
+import { getUnderstandingPromptBlock } from "@/services/observation"
 import { emit } from "@tauri-apps/api/event"
 import { resolvePiAuxModel, resolvePiTurnModel } from "./model-gateway"
 import type { PiModel } from "./model-gateway"
 import { PROVIDER_TIMEOUT_MS } from "./net-guard"
 import { RuntimeDataStreamFilter } from "./stream-text"
+import { hydrateImageMessages } from "@/services/images"
+import { humanizerSilenceGuard, setFirstRevealHandler, transformHumanizerText } from "@/services/humanizer"
+import type { HumanizerFlow, HumanizedText } from "@/services/humanizer"
 import { ladderGate, summarizeCompaction } from "../compactor"
 import type { LadderGateInput } from "../compactor"
 import { createHarnessRunState, harnessSlots, HarnessSlot } from "./harness-slot"
@@ -83,7 +87,7 @@ const log = createLogger("PiRuntime")
 export async function deliverActiveTurn(
   sessionId: string,
   text: string,
-  identity: { eventId: string; mark?: InputSourceMark },
+  identity: { eventId: string; mark?: InputSourceMark; imagePaths?: readonly string[] },
   kind?: "steer" | "followUp" | "nextRun",
 ): Promise<HarnessDeliveryReceipt | undefined> {
   // §4.2 保留：没有运行槽 = 没有可投递的回合，`undefined` 是如实答复（调用方据此收起/改走正常回合），
@@ -224,10 +228,19 @@ export interface TurnFailure {
 
 export interface PiAgentTurnOutput {
   reply: string
+  /** Multiple display bubbles derived from one committed assistant entry. */
+  replyParts?: string[]
+  /** True when the committed assistant entry intentionally contains no visible text. */
+  silent?: boolean
+  /** Runtime generation paired with any transient reveal schedule. */
+  runGeneration?: number
+  generationStartedAt?: number
+  committedAssistantEntryId?: string
+  humanized?: boolean
   toolCallHistory: { toolName: string; status: string; personalityMsg?: string }[]
   retriesUsed: number
   runtimeData?: { variables: Record<string, string> }
-  activeCommit?: { operationId: string; triggerEntryId: string; assistantEntryId: string; text: string; usage?: { inputTokens: number; outputTokens: number; cacheRead?: number; cacheWrite?: number } }
+  activeCommit?: { operationId: string; triggerEntryId: string; assistantEntryId: string; text: string; timestamp: number; parts?: string[]; silent?: boolean; usage?: { inputTokens: number; outputTokens: number; cacheRead?: number; cacheWrite?: number } }
   /** Actual provider usage accrued before a failure; absence means unknown, never an estimate. */
   usage?: { inputTokens: number; outputTokens: number; cacheRead?: number; cacheWrite?: number }
   /** 仅在重试耗尽、回复是兜底文案时出现 */
@@ -364,6 +377,10 @@ interface TurnKernel {
   policy: PermissionPolicySnapshot
   /** 槽代际：区分「同一会话被释放重建」前后的请求。 */
   generation: number
+  humanizerEnabled?: boolean
+  taskReply?: boolean
+  silentRejectedReply?: string
+  generationStartedAt?: number
   /** 上游 before_request 的当次 step/attempt；由它回答「这次 payload 属于哪次请求」。 */
   currentRequest?: { step: PromptRequestContext["step"]; attempt: number }
   /** 采集一档请求快照；带 usage 的一档同时给出估算偏差（provider_usage 的对账值）。 */
@@ -378,9 +395,10 @@ interface TurnKernel {
    * afterResponse 会先剥离再提交，事件里拿到的最终助手消息已经没有标签，
    * 结算时直接解析会丢掉变量写入，所以必须在这里留底。
    */
-  recordSettledReply: (raw: string, stripped: string) => void
+  recordSettledReply: (raw: string, stripped: string, humanized?: HumanizedText) => void
   /** 取回与剥离后正文配对的原始正文；没有配对时原样返回。 */
   rawTextForSettledReply: (stripped: string) => string
+  humanizedForSettledReply: (stripped: string) => HumanizedText | undefined
 }
 
 interface TurnKernelOptions {
@@ -406,6 +424,11 @@ interface TurnKernelOptions {
   plan?: PromptPlanContext
   /** 槽代际（调用方在 preflight 冻结）。 */
   generation?: number
+  /** Static style instruction and output transform are frozen together per run. */
+  humanizerEnabled?: boolean
+  /** Plan-produced context makes the final answer task-like even without local tool use. */
+  taskReply?: boolean
+  silentRejectedReply?: string
   traceContext?: RuntimeTraceContext
 }
 
@@ -417,6 +440,7 @@ function createTurnKernel(options: TurnKernelOptions): TurnKernel {
   const latestMessages: AgentMessage[] = []
   const snapshotTasks: Promise<void>[] = []
   let settledReply: { raw: string; stripped: string } | undefined
+  let settledHumanized: HumanizedText | undefined
   const kernel: TurnKernel = {
     ...options,
     blocks: options.blocks ?? [],
@@ -437,8 +461,15 @@ function createTurnKernel(options: TurnKernelOptions): TurnKernel {
       toolDecisions: [],
     },
     generation: options.generation ?? 0,
-    recordSettledReply: (raw, stripped) => { settledReply = { raw, stripped } },
+    humanizerEnabled: options.humanizerEnabled ?? false,
+    taskReply: options.taskReply ?? false,
+    silentRejectedReply: options.silentRejectedReply,
+    recordSettledReply: (raw, stripped, humanized) => {
+      settledReply = { raw, stripped }
+      settledHumanized = humanized
+    },
     rawTextForSettledReply: stripped => settledReply?.stripped === stripped ? settledReply.raw : stripped,
+    humanizedForSettledReply: stripped => settledReply?.stripped === stripped ? settledHumanized : undefined,
     captureSnapshot: async (captureStage, agentMessages, llmMessages, usage) => {
       const snapshotId = `${traceContext.runId}:${captureStage}:${++kernel.snapshotSequence}`
       // 工具轮会追加消息；用准确请求投影刷新分配，不计入 Pi usage/时间戳。
@@ -705,13 +736,19 @@ function createCompactionHook(options: {
   // X-4 的「没有兜底出口」由类型保证，不靠注释维持。
   return async ({ reason, preparation, signal, runId }): Promise<{ decline: true } | { compaction: CompactResult }> => {
     try {
+      // Keep the JSONL range intact, but omit empty completed silence rows from the summary model's view.
+      const summaryPreparation = {
+        ...preparation,
+        messagesToSummarize: preparation.messagesToSummarize.filter(message => !isCompletedEmptyAssistant(message)),
+        turnPrefixMessages: preparation.turnPrefixMessages.filter(message => !isCompletedEmptyAssistant(message)),
+      }
       // 结局①（decline）：全量都在保留窗口内时没有可安全摘要的覆盖范围，让 Harness 原样收尾。
-      if (!preparation.messagesToSummarize.length && !preparation.turnPrefixMessages.length) return { decline: true }
+      if (!summaryPreparation.messagesToSummarize.length && !summaryPreparation.turnPrefixMessages.length) return { decline: true }
       // historyCompaction=retain 的调用配对必须保留原文：连续完整轮下不能把覆盖边界推进越过它，
       // 宁可 decline（由宿主预算守卫报告上下文不足），也不默默丢掉未覆盖历史。
       // 当前生产路径不可达：无工具声明 `retain`，由测试场景驱动（`memory-retain-guard`）。
-      const retainedTool = findRetainedToolCall(preparation.messagesToSummarize, retained)
-        ?? findRetainedToolCall(preparation.turnPrefixMessages, retained)
+      const retainedTool = findRetainedToolCall(summaryPreparation.messagesToSummarize, retained)
+        ?? findRetainedToolCall(summaryPreparation.turnPrefixMessages, retained)
       if (retainedTool) {
         log.warn("摘要范围覆盖了必须保留原文的工具调用，本轮不压缩:", retainedTool)
         // 结局②（decline）：策略性不压缩，不是内核失败 —— 不写 audit.failure，避免污染失败面。
@@ -729,7 +766,7 @@ function createCompactionHook(options: {
         // 报 failed、并落一条误导性的 deskpet.compaction_declined。
         try {
           const refs = await readAddressRefs(options.addressRefs, "级 3 闸门")
-          const gate = ladderGate(options.buildGate(compactionGateView(preparation), refs))
+          const gate = ladderGate(options.buildGate(compactionGateView(summaryPreparation), refs))
           if (gate.fits) {
             log.info("级 1/2 投影后请求视图装得下，本轮不做摘要:", { tokens: gate.tokens, target: gate.target, level: gate.level })
             return { decline: true }
@@ -740,9 +777,9 @@ function createCompactionHook(options: {
         }
       }
       const outcome = await summarizeCompaction({
-        messages: preparation.messagesToSummarize,
-        turnPrefixMessages: preparation.turnPrefixMessages,
-        previousSummary: preparation.previousSummary,
+        messages: summaryPreparation.messagesToSummarize,
+        turnPrefixMessages: summaryPreparation.turnPrefixMessages,
+        previousSummary: summaryPreparation.previousSummary,
         model: options.model,
         signal,
         preserveToolNames: preserved,
@@ -767,8 +804,8 @@ function createCompactionHook(options: {
       return {
         compaction: {
           summary: outcome.text,
-          retainedTail: preparation.retainedTail,
-          tokensBefore: preparation.tokensBefore,
+          retainedTail: summaryPreparation.retainedTail,
+          tokensBefore: summaryPreparation.tokensBefore,
           usage: outcome.usage,
         },
       }
@@ -849,6 +886,31 @@ interface RenderedMemoryRecall {
   usedTokens: number
 }
 
+/** Completed empty assistant rows are durable silence evidence, not Provider conversation turns. */
+function isCompletedEmptyAssistant(message: AgentMessage): boolean {
+  if (message.role !== "assistant" || (message.stopReason !== "stop" && message.stopReason !== "length")) return false
+  const hasVisibleText = message.content.some(part => part.type === "text" && part.text.trim().length > 0)
+  const hasToolCall = message.content.some(part => part.type === "toolCall")
+  return !hasVisibleText && !hasToolCall
+}
+
+/** Rebuild the silence guard from committed native assistant entries; no counter is persisted separately. */
+function committedSilentStreak(messages: readonly AgentMessage[]): number {
+  let count = 0
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    const message = messages[index]!
+    if (message.role !== "assistant") continue
+    if (message.stopReason !== "stop" && message.stopReason !== "length") continue
+    if (message.content.some(part => part.type === "toolCall")) continue
+    const text = contentText(message.content).trim()
+    const markedSilent = (message as typeof message & { deskpetSilent?: boolean }).deskpetSilent === true
+    if (markedSilent && !text) { count++; continue }
+    // Any other completed plain assistant response breaks a consecutive-silence run.
+    break
+  }
+  return count
+}
+
 function renderMemoryRecall(projections: MemoryProjection[], tokenBudget: number): RenderedMemoryRecall {
   if (tokenBudget <= 0) return { text: "", sourceIds: [], droppedIds: projections.map(item => item.sourceId), usedTokens: 0 }
   if (projections.length === 0) return { text: "", sourceIds: [], droppedIds: [], usedTokens: 0 }
@@ -895,13 +957,22 @@ function createRequestViewHook(args: {
   memory?: { tokenBudget: number; recall: () => Promise<MemoryProjection[]>; traceContext: RuntimeTraceContext }
   activeAdmission?: { owner: ProactiveOwner; beforeGenerate: NonNullable<ActiveMessageRequest["beforeGenerate"]>; maxOutputTokens: number }
   providerAdmission?: { beforeProvider: (reservation: ProviderReservation) => Promise<boolean>; maxOutputTokens: number }
+  supportsImages?: boolean
+  understanding?: { text: string; sourceId: string; revision: number }
+  silenceGuardSessionId?: string
 }): NonNullable<HarnessRunHooks["transformContext"]> {
   const tools = [...args.toolsByName.values()]
   let activeAdmissionChecked = false
-  return async ({ messages, systemPrompt }) => {
+  return async ({ messages, systemPrompt, signal }) => {
+    if (args.silenceGuardSessionId) {
+      humanizerSilenceGuard.seed(args.silenceGuardSessionId, committedSilentStreak(messages))
+    }
     // 注记逐请求重算而不是回合级冻结：它承载的就是「当前时间」，取当次更准；且它贴在末尾，
     // 同回合内多次请求之间的分钟漂移不损失任何缓存。
-    let prepared = [...messages, createTurnNoteMessage(currentTimeNote())]
+    // Hydrate path metadata only in the final request projection. The original lane entry
+    // remains path-only, while budget estimation, snapshots and Provider payload see images.
+    const conversationMessages = messages.filter(message => !isCompletedEmptyAssistant(message))
+    let prepared = [...await hydrateImageMessages(conversationMessages, { signal, supportsImages: args.supportsImages }), createTurnNoteMessage(currentTimeNote())]
     let used: number
     try {
       if (args.projectToolResults) {
@@ -925,6 +996,18 @@ function createRequestViewHook(args: {
       } else {
         // 子代理路径不投影工具结果（`projectToolResults: false`）：读数就是原始视图的估算。
         used = estimateRequestTokens(systemPrompt, prepared, tools)
+      }
+      if (args.understanding?.text) {
+        const note = prepared[prepared.length - 1]
+        const understanding = createUnderstandingMessage(args.understanding)
+        const candidate = [...prepared.slice(0, -1), understanding, note]
+        const candidateTokens = estimateRequestTokens(systemPrompt, candidate, tools)
+        // Observation is a whole optional block: it is omitted when the normal input target
+        // has no room, and never clipped or converted into a system instruction.
+        if (candidateTokens <= contextBudget(args.model.contextWindow).normalInputTarget) {
+          prepared = candidate
+          used = candidateTokens
+        }
       }
       // 记忆召回块：先按「当前视图已用量」算出这块真正能占的额度，再逐条按预算追加。
       // 顺序必须在阶梯投影之后、快照之前 —— 快照要看到模型真正收到的视图。
@@ -1017,13 +1100,60 @@ function createRequestViewHook(args: {
 
 /** RUNTIME_DATA 剥离（主回合与手动压缩的续跑共用）：条目是真相源，但协议块不进后续请求与展示。 */
 function createRuntimeDataStripHook(args: {
-  recordSettledReply?: (raw: string, stripped: string) => void
+  recordSettledReply?: (raw: string, stripped: string, humanized?: HumanizedText) => void
+  humanizer?: { enabled: boolean; sessionId?: string; fallbackReply: string; flow: () => HumanizerFlow; traceContext?: RuntimeTraceContext }
 }): NonNullable<HarnessRunHooks["afterResponse"]> {
   return (message) => {
     // 剥离前先留底原始正文：事件里的最终助手消息已经没有标签，结算时的变量写入要靠它。
     const stripped = stripRuntimeData(message)
-    args.recordSettledReply?.(contentText(message.content), contentText(stripped.content))
-    return stripped
+    const raw = contentText(message.content)
+    const visibleText = contentText(stripped.content)
+    if (!args.humanizer?.enabled || message.content.some(part => part.type === "toolCall")) {
+      args.recordSettledReply?.(raw, visibleText)
+      return stripped
+    }
+
+    try {
+      const transformed = transformHumanizerText(visibleText, args.humanizer.flow())
+      const resolved = args.humanizer.sessionId
+        ? humanizerSilenceGuard.resolve(args.humanizer.sessionId, transformed, args.humanizer.fallbackReply)
+        : { silent: transformed.silent, text: transformed.text, parts: transformed.parts, rejected: false }
+      const safeParts = resolved.parts.some(part => part.trim().length > 0) ? resolved.parts
+        : resolved.silent ? [] : [args.humanizer.fallbackReply]
+      const finalResult: HumanizedText = {
+        text: safeParts.join("\n"),
+        parts: safeParts,
+        silent: resolved.silent,
+        split: transformed.split,
+      }
+      if (args.humanizer.traceContext) publishRuntimeTrace(args.humanizer.traceContext, "humanizer_transform", () => ({
+        flow: args.humanizer?.flow() ?? "casual",
+        status: resolved.rejected ? "silent_rejected" : resolved.silent ? "silent" : "transformed",
+        split: transformed.split,
+        silent: resolved.silent,
+        partCount: safeParts.length,
+      }))
+      let inserted = false
+      const content = stripped.content.flatMap<typeof stripped.content[number]>(part => {
+        if (part.type !== "text") return [part]
+        if (inserted) return []
+        inserted = true
+        return safeParts.map(text => ({ type: "text" as const, text }))
+      })
+      if (!inserted) content.push(...safeParts.map(text => ({ type: "text" as const, text })))
+      const output = {
+        ...stripped,
+        content,
+        ...(resolved.silent ? { deskpetSilent: true } : {}),
+      } as typeof stripped
+      args.recordSettledReply?.(raw, contentText(output.content), finalResult)
+      return output
+    } catch (error) {
+      // Keep the entire stripped source as one body if any transformation step fails.
+      args.recordSettledReply?.(raw, visibleText)
+      log.warn("拟人表达变换失败，按原文提交:", formatError(error))
+      return stripped
+    }
   }
 }
 
@@ -1033,6 +1163,9 @@ function createTurnSpec(kernel: TurnKernel, options: {
   timeoutMs: number
   maxToolCalls: number
   projectToolResults: boolean
+  humanizerEnabled?: boolean
+  taskReply?: boolean
+  understanding?: { text: string; sourceId: string; revision: number }
   isPermissionCurrent: () => boolean
   runGeneration: number
   activeRequest?: ActiveMessageRequest
@@ -1054,7 +1187,15 @@ function createTurnSpec(kernel: TurnKernel, options: {
   const compactionAudit: CompactionAuditSink = {}
   let toolCallsUsed = 0
   const stripReply = createRuntimeDataStripHook({
-    recordSettledReply: (raw, stripped) => kernel.recordSettledReply(raw, stripped),
+    recordSettledReply: (raw, stripped, humanized) => kernel.recordSettledReply(raw, stripped, humanized),
+    humanizer: {
+      enabled: options.humanizerEnabled ?? kernel.humanizerEnabled ?? false,
+      sessionId: kernel.sessionId,
+      fallbackReply: kernel.silentRejectedReply ?? getFallbackReply("silentRejected"),
+      flow: () => options.activeRequest ? "casual"
+        : (options.taskReply ?? kernel.taskReply) || kernel.toolRun.history.length > 0 ? "task" : "casual",
+      traceContext: kernel.traceContext,
+    },
   })
   const hooks: HarnessRunHooks = {
     beforeTool: async ({ toolCallId, toolName, args, signal }) => {
@@ -1107,6 +1248,9 @@ function createTurnSpec(kernel: TurnKernel, options: {
       toolsByName,
       preserveToolNames,
       model: kernel.model,
+      supportsImages: kernel.model.input.includes("image"),
+      ...(options.understanding ? { understanding: options.understanding } : {}),
+      ...(kernel.humanizerEnabled && kernel.sessionId ? { silenceGuardSessionId: kernel.sessionId } : {}),
       state,
       captureSnapshot: kernel.captureSnapshot,
       snapshotTasks: kernel.snapshotTasks,
@@ -1209,6 +1353,10 @@ function processTitlebarOwner(sessionId: string, generation: number): string {
   return `agent-process:${sessionId}:${generation}`
 }
 
+// The scheduler runs after the committed message reaches the runner; its first visible bubble ends
+// the typing titlebar owner even though the lane itself may already have settled.
+setFirstRevealHandler(state => releaseTitlebarStatus(processTitlebarOwner(state.sessionId, state.runGeneration)))
+
 function emitStageHint(sessionId: string | undefined, stage: SimpleStageKey, generation?: number): void {
   if (!sessionId || getActiveSessionId() !== sessionId) return
   void emitUiEvent("deskpet-stage-hint", { sessionId, stage })
@@ -1223,6 +1371,7 @@ function emitStageHint(sessionId: string | undefined, stage: SimpleStageKey, gen
 /** 主回合消费点：流式正文按消息落 UI，usage 按请求进统计。 */
 function createTurnSinks(kernel: TurnKernel): HarnessRunSinks {
   let apiRound = 0
+  let typingHintSent = false
   const sessionId = kernel.sessionId
   // 瞬时流式展示：只发正文增量（§6）。RUNTIME_DATA 起止与非活动会话在这里被过滤。
   let streamFilter: RuntimeDataStreamFilter | undefined
@@ -1230,18 +1379,36 @@ function createTurnSinks(kernel: TurnKernel): HarnessRunSinks {
     if (!delta || !sessionId || getActiveSessionId() !== sessionId) return
     void emitUiEvent("deskpet-assistant-stream", { sessionId, delta })
   }
+  const taskFlow = (): boolean => Boolean(kernel.taskReply) || kernel.toolRun.history.length > 0
+  const suppressCasualStream = (): boolean => kernel.humanizerEnabled === true && !taskFlow()
   return {
     onTurnStart: () => {
       apiRound++
-      // 每轮 API 起点（含工具轮之间）都回到「思考中」：上一轮的 done/blocked 提示此时已经过期。
-      emitStageHint(sessionId, "thinking", kernel.generation)
+      kernel.generationStartedAt ??= Date.now()
+      // Casual 从请求开始就显示typing，不能等到首token才把生成期暴露给界面。
+      if (suppressCasualStream()) {
+        typingHintSent = true
+        emitStageHint(sessionId, "typing", kernel.generation)
+      } else emitStageHint(sessionId, "thinking", kernel.generation)
     },
     onRetry: () => emitStageHint(sessionId, "retry", kernel.generation),
     onAssistantDelta: delta => {
+      if (suppressCasualStream()) {
+        if (!typingHintSent) {
+          typingHintSent = true
+          emitStageHint(sessionId, "typing", kernel.generation)
+        }
+        return
+      }
       streamFilter ??= new RuntimeDataStreamFilter()
       publishStreamDelta(streamFilter.push(delta))
     },
     onAssistantStreamEnd: () => {
+      if (suppressCasualStream()) {
+        streamFilter = undefined
+        if (sessionId) void emitUiEvent("deskpet-assistant-stream-end", { sessionId })
+        return
+      }
       // 未构成标签的尾部按普通正文归还；随后清空瞬时缓冲，真实消息由提交路径推送。
       const tail = streamFilter?.flush() ?? ""
       streamFilter = undefined
@@ -1347,12 +1514,14 @@ export async function runPiAgentTurn(input: PiAgentTurnInput): Promise<PiAgentTu
   applyResetPolicies(new Date(), getSessionCreatedAt(turnSessionId))
   const currentCard = getActiveCard()
   const card = currentCard ? JSON.parse(JSON.stringify(currentCard)) as typeof currentCard : null
+  const frozenSilentRejectedReply = getFallbackReply("silentRejected")
   const pool = getPoolSnapshot()
   const thinkingEffort = getEffectiveThinkingEffort()
   const frozenUserContext = { v1rtualInstructions: getV1rtualInstructionsSync(),
     dynamicPrompt: composeDynamicPrompt(formatPoolForPrompt(pool), thinkingEffort) }
   // 准入是否已成立（用户条目已提交进会话文件）：此后每条退出路径都必须结算那条已接受的操作。
   let admittedOnce = false
+  let deferTypingTitlebarRelease = false
   let restoreRetryPolicy: (() => Promise<void>) | undefined
   let stopMemoryRevision: (() => void) | undefined
   try {
@@ -1555,12 +1724,14 @@ export async function runPiAgentTurn(input: PiAgentTurnInput): Promise<PiAgentTu
   }
   assertCurrent()
   const frozenContext = { ...frozenUserContext, skillsPromptBlock: isActiveMessage ? "" : getSkillsPromptBlock() }
+  const frozenHumanizerEnabled = humanizerConfig.enabled
+  const frozenUnderstandingBlock = silentAccessConfig.enabled ? getUnderstandingPromptBlock() : undefined
   const skillCatalogFingerprint = getSkillCatalogFingerprint() ?? undefined
   // 会话历史由 Harness 条目承担；buildPrompt 只负责静态/动态/记忆块与预算分配记录。
   const tailContextText = [planStepContext, input.turnContext?.text].filter(Boolean).join("\n\n")
   const context = buildPrompt({
     ...frozenContext,
-    unansweredCount, thinkingEffort, isActiveMessage,
+    unansweredCount, thinkingEffort, isActiveMessage, humanizerEnabled: frozenHumanizerEnabled,
     contextMaxTokens: windowTokens, maxOutputTokens: model.maxTokens,
     tools: frozenTools.map(toToolDeclaration),
     ...(tailContextText ? { ephemeralText: tailContextText, ephemeralOrigin: input.turnContext ? "proactive" as const : "plan" as const } : {}),
@@ -1595,6 +1766,9 @@ export async function runPiAgentTurn(input: PiAgentTurnInput): Promise<PiAgentTu
     card,
     toolRun,
     generation,
+    humanizerEnabled: frozenHumanizerEnabled,
+    taskReply: Boolean(planStepContext),
+    silentRejectedReply: frozenSilentRejectedReply,
   })
   const spec = createTurnSpec(kernel, {
     // 正文在准入时已提交（与 toolRun 一起装配），spec 只承载驱动面。
@@ -1602,6 +1776,9 @@ export async function runPiAgentTurn(input: PiAgentTurnInput): Promise<PiAgentTu
     timeoutMs: loopConfig.turnTimeoutMs,
     maxToolCalls: loopConfig.maxToolCallsPerTurn,
     projectToolResults: true,
+    humanizerEnabled: frozenHumanizerEnabled,
+    taskReply: Boolean(planStepContext),
+    ...(frozenUnderstandingBlock ? { understanding: frozenUnderstandingBlock } : {}),
     runGeneration: generation,
     ...(input.activeRequest && activeOwner ? { activeRequest: input.activeRequest, activeOwner, activeIsCurrent } : {}),
     // 投影与压缩共用同一份地址目录 thunk：两路投影对同一条结果逐字相同（槽内有稳定缓存）。
@@ -1630,7 +1807,8 @@ export async function runPiAgentTurn(input: PiAgentTurnInput): Promise<PiAgentTu
         if (evidence && evidence.operationId === record.operationId && evidence.assistantEntryId === record.tipId) {
           output.activeCommit = evidence
           output.reply = evidence.text
-          publishRuntimeTrace(traceContext, "active_message_delivered", () => ({ requestId, status: "committed" }), { entryId: evidence.assistantEntryId })
+          if (evidence.silent) output.silent = true
+          else publishRuntimeTrace(traceContext, "active_message_delivered", () => ({ requestId, status: "committed" }), { entryId: evidence.assistantEntryId })
         }
       } catch (error) {
         log.error("主动回复 JSONL 提交核对失败:", { sessionId: turnSessionId, requestId }, formatError(error))
@@ -1641,6 +1819,9 @@ export async function runPiAgentTurn(input: PiAgentTurnInput): Promise<PiAgentTu
       output.failure = { kind: "unknown", message: "主动表达没有可核实的助手提交条目" }
     }
   }
+  deferTypingTitlebarRelease = output.humanized === true && output.silent !== true && Boolean(output.reply)
+    && (input.ingress !== undefined || input.activeRequest !== undefined)
+    && getActiveSessionId() === turnSessionId
   return output
   } catch (error) {
     // 准入之后、驱动之前失败（计划段抛错、断言失效、装配失败）：已提交的输入条目保留在会话里
@@ -1652,7 +1833,7 @@ export async function runPiAgentTurn(input: PiAgentTurnInput): Promise<PiAgentTu
     throw error
   } finally {
     stopMemoryRevision?.()
-    releaseTitlebarStatus(processTitlebarOwner(turnSessionId, generation))
+    if (!deferTypingTitlebarRelease) releaseTitlebarStatus(processTitlebarOwner(turnSessionId, generation))
     if (restoreRetryPolicy) {
       await restoreRetryPolicy().catch(error => log.error("主动回合恢复重试策略失败:", formatError(error)))
     }
@@ -2288,11 +2469,26 @@ async function settleMainTurn(args: {
   }
   // afterResponse 已把提交的助手消息剥离过 RUNTIME_DATA，取配对留底的原始正文再交给回复模块。
   const rawReply = kernel.rawTextForSettledReply(contentText(finalAssistant.content))
+  const committedText = contentText(finalAssistant.content)
+  const humanized = kernel.humanizedForSettledReply(committedText)
+  const casualFlow = Boolean(kernel.humanizerEnabled)
+    && (Boolean(args.input.activeRequest) || (!kernel.taskReply && kernel.toolRun.history.length === 0))
   const liveCard = getActiveCard()
   // 卡片快照不一致（运行中切换 Card）时只展示文本，不写变量：变量写入必须归属本回合冻结的快照。
   const cardIsCurrent = liveCard?.id === kernel.card?.id && liveCard?.hash === kernel.card?.hash && liveCard?.version === kernel.card?.version
   const processed = await generateReply(rawReply, kernel.card, { applyRuntimeData: cardIsCurrent && !args.input.activeRequest })
-  return { reply: processed.text, toolCallHistory, retriesUsed: state.retriesUsed, runtimeData: processed.runtimeData }
+  return {
+    reply: humanized?.text ?? processed.text,
+    ...(humanized && humanized.parts.length > 1 ? { replyParts: humanized.parts } : {}),
+    ...(humanized?.silent ? { silent: true } : {}),
+    runGeneration: kernel.generation,
+    ...(kernel.generationStartedAt !== undefined ? { generationStartedAt: kernel.generationStartedAt } : {}),
+    ...(state.finalAssistantEntryId ? { committedAssistantEntryId: state.finalAssistantEntryId } : {}),
+    humanized: casualFlow,
+    toolCallHistory,
+    retriesUsed: state.retriesUsed,
+    runtimeData: processed.runtimeData,
+  }
 }
 
 // ── 崩溃恢复入口（§8.7.3） ──
@@ -2491,6 +2687,7 @@ export async function compactActiveSession(sessionId: string): Promise<ManualCom
         toolsByName: new Map(),
         preserveToolNames: structurePreserveToolNames,
         model,
+        supportsImages: model.input.includes("image"),
         state,
         // 结构操作没有回合身份：不落 PromptSnapshot，也没有 payload 观测的读者。
         captureSnapshot: async () => undefined,
@@ -2727,6 +2924,7 @@ export function createActiveMessage(text: string, active: ActiveMessageRequest, 
       attemptId: active.attemptId,
       ruleId: active.ruleId,
       intent: active.intent,
+      expectsReply: active.expectsReply,
       sourceRefs: active.sourceRefs as unknown as JsonValue,
       occurrenceIds: [...active.occurrenceIds],
       cardId: active.owner.cardId,
@@ -2761,6 +2959,26 @@ export function createTurnNoteMessage(text: string): AgentMessage {
     display: false,
     details: {
       taint: "derived",
+      visibleToUser: false,
+      eligibleForTranscript: false,
+      eligibleForMemory: false,
+    },
+    timestamp: Date.now(),
+  }
+}
+
+/** Observation data enters only the request projection and is explicitly untrusted. */
+function createUnderstandingMessage(input: { text: string; sourceId: string; revision: number }): AgentMessage {
+  return {
+    role: "custom",
+    customType: "deskpet.understanding",
+    content: input.text,
+    display: false,
+    details: {
+      sourceId: input.sourceId,
+      revision: input.revision,
+      origin: "observation",
+      taint: "untrusted_external",
       visibleToUser: false,
       eligibleForTranscript: false,
       eligibleForMemory: false,

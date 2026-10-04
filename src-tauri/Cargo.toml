@@ -37,6 +37,10 @@ sha2 = "0.10"
 # 枚举系统已安装字体（设置/外观的全局字体选择）。纯 Rust 读取系统字体目录/注册表，
 # 不链接系统库；目标平台只有 macOS 与 Windows，fontconfig（Linux 专用）不需要。
 fontdb = { version = "0.24", default-features = false, features = ["fs", "std"] }
+# Frontmost-window capture for macOS/Windows; keep xcap defaults off (no recording / WGC path).
+xcap = { version = "=0.9.8", default-features = false }
+# Screenshot bytes are encoded in memory for Tauri IPC and are never written to disk.
+base64 = "=0.22.1"
 
 [target.'cfg(windows)'.dependencies]
 # feature 必须覆盖每个符号所属模块，缺一个就只在 Windows 目标上编译失败。

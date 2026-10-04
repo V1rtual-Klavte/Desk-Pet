@@ -141,7 +141,7 @@ version: 1
   hour         number   当前小时 (0-23)
   minute       number   当前分钟 (0-59)
   dayOfWeek    number   周几 (0=周日)
-  isNightTime  boolean  hour>=22 或 hour<=5
+  isNightTime  boolean  hour>=23 或 hour<9
   isWeekend    boolean  dayOfWeek=0 或 dayOfWeek=6
   activeCardId string   当前启用的 Card ID
 

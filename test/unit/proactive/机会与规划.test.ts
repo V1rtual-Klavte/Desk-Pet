@@ -1,8 +1,9 @@
 import { describe, it, expect } from "vitest"
-import { opportunity, selectOpportunities, collectOpportunities, advanceFinishedWorkTracker, isLeisureOrIdle, qualifiesFinishedWork } from "@/services/proactive/opportunities"
+import { opportunity, selectOpportunities, collectOpportunities, advanceFinishedWorkTracker, isLeisureOrIdle, qualifiesFinishedWork, source, usesRandomFallbackInterval } from "@/services/proactive/opportunities"
 import { parsePlanningDecision } from "@/services/proactive/planner"
 import { getCalendarEvents } from "@/services/proactive/content/calendar"
 import { emptyDaily, buildSnapshot } from "@/services/behavior"
+import { isQuietTime } from "@/services/proactive/time"
 import type { ProactiveOwner } from "@/services/proactive/protocol"
 
 const owner:ProactiveOwner={sessionId:"session-a",cardId:"card-a",cardHash:"hash-a",runGeneration:7}
@@ -10,22 +11,31 @@ const now=Date.parse("2026-10-03T03:00:00Z")
 const unrelated=opportunity(owner,"topic_share","topic-1",[],now-1,now+100,30,"问个小问题")
 const agreed=opportunity(owner,"scheduled_task","task-1",[],now-1,now+100,100,"明确约定",true,[{id:"work-1",version:1}])
 describe("主动机会和受限规划",()=>{
-  it("未回复两次抑制非约定，四次抑制所有；工作上下文保留明确约定 [proactive-unanswered-guards]",()=>{
-    expect(selectOpportunities([unrelated,agreed],new Set(),now,2,true).map(item=>item.ruleId)).toEqual(["scheduled_task"])
-    expect(selectOpportunities([unrelated,agreed],new Set(),now,4,false)).toEqual([])
-    expect(selectOpportunities([unrelated],new Set(),now,0,true)).toEqual([])
+  it("未回复不会封死非约定机会；忙碌时仍只放自足内容 [proactive-unanswered-guards]",()=>{
+    const selfSufficient={...unrelated,selfSufficient:true}
+    expect(selectOpportunities([selfSufficient],new Set(),now,true).map(item=>item.ruleId)).toEqual(["topic_share"])
+    expect(selectOpportunities([unrelated],new Set(),now,true)).toEqual([])
+    expect(selectOpportunities([agreed],new Set(),now,true).map(item=>item.ruleId)).toEqual(["scheduled_task"])
+  })
+  it("1–3小时随机槽只限制普通话题，明确锚与画像机会继续走自身节奏 [proactive-random-interval-scope]",()=>{
+    expect(usesRandomFallbackInterval("topic_share")).toBe(true)
+    expect(usesRandomFallbackInterval("curiosity")).toBe(true)
+    expect(usesRandomFallbackInterval("scheduled_task")).toBe(false)
+    expect(usesRandomFallbackInterval("memory_checkin")).toBe(false)
+    expect(usesRandomFallbackInterval("rhythm")).toBe(false)
+    expect(usesRandomFallbackInterval("late_goodnight")).toBe(false)
   })
   it("同一事项重叠锚合并，负评估和过期机会不占选择 [proactive-dedupe-window]",()=>{
     const followup={...agreed,id:"followup",fingerprint:"followup",ruleId:"memory_checkin",priority:90}
-    expect(selectOpportunities([unrelated,followup,agreed],new Set(),now,0,false).map(item=>item.id)).toEqual([agreed.id,"followup"])
-    expect(selectOpportunities([agreed],new Set([agreed.fingerprint]),now,0,false)).toEqual([])
-    expect(selectOpportunities([agreed],new Set(),now+100,0,false)).toEqual([])
+    expect(selectOpportunities([unrelated,followup,agreed],new Set(),now,false).map(item=>item.id)).toEqual([agreed.id,"followup"])
+    expect(selectOpportunities([agreed],new Set([agreed.fingerprint]),now,false)).toEqual([])
+    expect(selectOpportunities([agreed],new Set(),now+100,false)).toEqual([])
   })
   it("超过候选批量的已评估事项不遮挡其后的有效高优先级机会 [proactive-evaluated-prefix-does-not-mask]",()=>{
     const stale=Array.from({length:140},(_,index)=>opportunity(owner,"scheduled_task",`old-${index}`,[],now-1,now+100,100,"已评估",true))
     const fresh=opportunity(owner,"memory_checkin","fresh",[],now-1,now+100,90,"有效事项",true,[{id:"fresh",version:1}])
     const evaluated=new Set(stale.map(item=>item.fingerprint))
-    expect(selectOpportunities([...stale,fresh],evaluated,now,0,false).map(item=>item.id)).toContain(fresh.id)
+    expect(selectOpportunities([...stale,fresh],evaluated,now,false).map(item=>item.id)).toContain(fresh.id)
   })
   it("收工机会要求可靠画像且休闲/空闲连续满十分钟 [proactive-finished-work-rest-lease]",()=>{
     const ended=now-20*60_000,resting=now-9*60_000
@@ -39,6 +49,17 @@ describe("主动机会和受限规划",()=>{
       {now,working:false,leisureOrIdle:false,maxGap:10_000})
     expect(tracker.restingSince).toBe(0)
     expect(tracker.workEndedAt).toBe(0)
+  })
+  it("22点只保留不求回应的晚安机会，23点后静默不回落普通分享 [proactive-goodnight-window]",()=>{
+    const topic={key:"topic:music",context:"一条自足音乐分享",source:source("behavior","topic:music",1,"topic-hash",owner),targets:[]}
+    const base={owner,timezone:"Asia/Shanghai",tasks:[],memoryTargets:[],memoryEnabled:true,behavior:buildSnapshot([],now),topic}
+    const goodnightAt=Date.parse("2026-10-03T14:30:00Z")
+    const goodnight=collectOpportunities({...base,now:goodnightAt})
+    expect(goodnight.map(item=>item.ruleId)).toEqual(["late_goodnight"])
+    expect(goodnight[0]?.expectsReply).toBe(false)
+    const quietAt=Date.parse("2026-10-03T15:00:00Z")
+    expect(isQuietTime(quietAt,"Asia/Shanghai")).toBe(true)
+    expect(collectOpportunities({...base,now:quietAt})).toEqual([])
   })
   it("扫描事项无来源、已完成及未进入窗口不生成提醒 [proactive-working-evidence]",()=>{
     const base={owner,now,timezone:"Asia/Shanghai",tasks:[],memoryEnabled:true,behavior:buildSnapshot([],now),topic:null}

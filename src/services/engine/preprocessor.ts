@@ -44,6 +44,8 @@ export interface PreProcessState {
 export interface PreProcessOptions {
   /** 同会话有在飞运行：命令按 busyPolicy 准入，exclusive 的命令明确拒绝而不是丢弃。 */
   busy?: boolean
+  /** 路径图片也是有效输入；空文字与文字去重不能丢掉不同的图片。 */
+  imageInput?: boolean
 }
 
 /** 忙碌期准入：只有 immediate / coordinated 的命令能执行，其余明确拒绝（§3.4）。 */
@@ -63,7 +65,7 @@ export async function preProcess(rawText: string, state: PreProcessState = {}, o
   const text = rawText.trim()
 
   // ── 空消息 ──
-  if (!text) {
+  if (!text && !options.imageInput) {
     return { handled: true, text: "", rawText, normalizedText: text }
   }
 
@@ -106,7 +108,7 @@ export async function preProcess(rawText: string, state: PreProcessState = {}, o
 
   // ── 去重 ──
   const now = Date.now()
-  if (text === state.lastUserText && now - (state.lastUserTime ?? 0) < loopConfig.dedupWindowMs) {
+  if (!options.imageInput && text === state.lastUserText && now - (state.lastUserTime ?? 0) < loopConfig.dedupWindowMs) {
     log.debug("重复消息过滤")
     return { handled: true, text: "", rawText, normalizedText: text }
   }

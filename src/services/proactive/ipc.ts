@@ -26,3 +26,4 @@ export const validate = (request: ProactiveValidateRequest): Promise<ProactiveVa
 export const settle = (request: ProactiveSettleRequest): Promise<{ revision: number; status: ProactiveAttempt["status"] }> => invoke("proactive_settle", { request })
 export const reconcile = (request: ProactiveReconcileRequest): Promise<{ revision: number; status: ProactiveAttempt["status"] }> => invoke("proactive_reconcile", { request })
 export const control = (request: ProactiveControlRequest): Promise<ProactiveControl> => invoke("proactive_control", { request })
+export { reserveAuxiliaryBudget, settleAuxiliaryBudget } from "./auxiliary-budget"

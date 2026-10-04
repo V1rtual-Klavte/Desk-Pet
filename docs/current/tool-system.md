@@ -13,7 +13,7 @@ Pi Harness Tool → harness-tool-adapter → ToolRouter → 执行许可借用 �
 
 | 工具 | 当前边界 |
 |---|---|
-| read | 文本或图片读取；图片长边超过 1568 时等比缩放、BMP 一律转 PNG，处理失败回退原图（[image-processor.ts](../../src/services/tool/local/image-processor.ts)）；敏感路径仍会提高风险或被拒绝；私钥/凭据路径（含相对形式与 `~`/`$HOME`/`${HOME}`/反斜杠/`..` 归一）硬拒绝，Rust 侧 `is_credential_path` 是不可关闭的最终判定（规则文本 = 「`.ssh` 目录组件或 `.pem`/`.key` 后缀」） |
+| read | 文本或图片读取；图片长边超过 1568 时等比缩放、BMP 一律转 PNG，处理失败回退原图（[images/processor.ts](../../src/services/images/processor.ts)）；敏感路径仍会提高风险或被拒绝；私钥/凭据路径（含相对形式与 `~`/`$HOME`/`${HOME}`/反斜杠/`..` 归一）硬拒绝，Rust 侧 `is_credential_path` 是不可关闭的最终判定（规则文本 = 「`.ssh` 目录组件或 `.pem`/`.key` 后缀」） |
 | write / edit | DANGER（凭据路径升 NOWAY 硬拒绝）；写能力恒暴露、不做配置开关，风险与确认只由安全模式裁决 |
 | bash | 动态风险：首词命中白名单、无 shell 组合符且未命中危险/硬禁止模式为 NORMAL（免确认通道），其余为 DANGER；Rust 侧层 1 硬基线与系统路径保护不可关闭；命令里的凭据路径 token 硬拒绝 |
 | system_info | 只读运行环境：操作系统、架构、CPU 核心数、内存（总量 / 已用 / 可用）与 bash 默认工作目录 |

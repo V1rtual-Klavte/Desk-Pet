@@ -20,6 +20,7 @@ use tauri::Manager;
 use tauri::{WebviewUrl, WebviewWindowBuilder};
 
 use crate::commands::{
+    pick_chat_images, validate_chat_images,
     app_open, app_restart, bash_cancel, bash_exec, clipboard_read, clipboard_write,
     compute_popup_position, dir_create, export_profile_zip, file_append,
     file_canonical_path, file_exists, file_info, file_list, file_read, file_read_binary,
@@ -281,6 +282,7 @@ pub fn run() {
         .plugin(tauri_plugin_global_shortcut::Builder::new().build())
         .plugin(tauri_plugin_dialog::init())
         .manage(monitor_state)
+        .manage(crate::commands::observation_cmd::ObservationState::default())
         .manage(McpPool::default())
         .manage(BashPool::default())
         .manage(ToolPermitPool::default())
@@ -467,6 +469,12 @@ pub fn run() {
             bash_cancel,
             file_read,
             file_read_binary,
+            pick_chat_images,
+            validate_chat_images,
+            crate::commands::observation_cmd::observation_capture_screen,
+            crate::commands::observation_cmd::observation_read_project_notes,
+            crate::commands::observation_cmd::pick_observation_project,
+            crate::commands::observation_cmd::set_observation_project_root,
             file_write,
             file_write_atomic,
             file_append,
@@ -551,6 +559,8 @@ pub fn run() {
             crate::proactive::commands::proactive_settle,
             crate::proactive::commands::proactive_reconcile,
             crate::proactive::commands::proactive_control,
+            crate::proactive::commands::proactive_auxiliary_budget_reserve,
+            crate::proactive::commands::proactive_auxiliary_budget_settle,
             ])
         .build(tauri::generate_context!())
         .unwrap_or_else(|e| {

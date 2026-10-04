@@ -66,9 +66,10 @@ describe("变量池核心", () => {
     })
 
     // 边界：边界值必须落在同一侧，否则「夜里」的定义会随实现漂移
-    expect(computeSystemVariables(new Date(2026, 0, 5, 22, 0), "x").isNightTime).toBe(true)
-    expect(computeSystemVariables(new Date(2026, 0, 5, 5, 0), "x").isNightTime).toBe(true)
-    expect(computeSystemVariables(new Date(2026, 0, 5, 6, 0), "x").isNightTime).toBe(false)
+    expect(computeSystemVariables(new Date(2026, 0, 5, 22, 0), "x").isNightTime).toBe(false)
+    expect(computeSystemVariables(new Date(2026, 0, 5, 23, 0), "x").isNightTime).toBe(true)
+    expect(computeSystemVariables(new Date(2026, 0, 5, 8, 59), "x").isNightTime).toBe(true)
+    expect(computeSystemVariables(new Date(2026, 0, 5, 9, 0), "x").isNightTime).toBe(false)
     expect(computeSystemVariables(new Date(2026, 0, 5, 12, 0), "x").isWeekend).toBe(false)
   })
 

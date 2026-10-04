@@ -20,3 +20,19 @@ proactive_command!(proactive_validate, proactive_validate);
 proactive_command!(proactive_settle, proactive_settle);
 proactive_command!(proactive_reconcile, proactive_reconcile);
 proactive_command!(proactive_control, proactive_control);
+
+#[tauri::command]
+pub fn proactive_auxiliary_budget_reserve(
+    state: tauri::State<'_, MemoryState>,
+    request: Value,
+) -> AppResult<Value> {
+    state.0.proactive_auxiliary_budget_reserve(&request)
+}
+
+#[tauri::command]
+pub fn proactive_auxiliary_budget_settle(
+    state: tauri::State<'_, MemoryState>,
+    request: Value,
+) -> AppResult<Value> {
+    state.0.proactive_auxiliary_budget_settle(&request)
+}

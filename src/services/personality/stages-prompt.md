@@ -21,6 +21,7 @@
 [阶段状态行]
 界面在聊天窗口显示一行瞬时状态提示，让用户知道系统正在做什么。
 - thinking: 模型开始生成、还没有可见内容时
+- typing: 正在生成普通回复、随后会逐条显示消息时
 - planning: 正在判定复杂度并生成执行计划时
 - retry: 上一次请求失败、系统正在自动重试时
 - error: 工具或流程出错时的一句话
@@ -61,6 +62,7 @@
 - planCancelled: 计划被取消
 - planCompleted: 计划剩余步骤执行完成
 - planResumeBusy: 用户想继续执行一个计划，但会话正忙
+- silentRejected: 连续沉默护栏拒绝后，给出一条极短且自然的角色回复
 
 要求：
 - 只输出一个完整 JSON 对象，不要 Markdown，不要代码块，不要解释。
@@ -82,6 +84,7 @@
 
 {
   "thinking": "",
+  "typing": "",
   "planning": "",
   "presence": { "idle": "", "working": "", "resting": "" },
   "executing": {
@@ -148,7 +151,8 @@
     "pausedReturnFailed": "",
     "planCancelled": "",
     "planCompleted": "",
-    "planResumeBusy": ""
+    "planResumeBusy": "",
+    "silentRejected": ""
   },
   "greetings": ["", "", ""]
 }

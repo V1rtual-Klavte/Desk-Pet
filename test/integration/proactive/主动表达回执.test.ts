@@ -18,7 +18,7 @@ import { fakeText, installFakeProvider } from "../../host/fake-provider"
 import { runTestActiveExpression } from "../../host/active-expression"
 import { sessionEntries, sessionMessages } from "../../host/session-entries"
 import { readActiveAttemptEvidence } from "@/services/engine/harness"
-import { getActiveSessionId } from "@/services/session/store"
+import { getActiveSessionId, unansweredCount } from "@/services/session/store"
 import { initChat, captureProactiveOwner } from "@/services/agent/runner"
 import { registerActiveReceiptReader } from "@/services/session/read-model"
 import { runActiveTurn } from "../memory/回合夹具"
@@ -139,5 +139,29 @@ describe("主动消息来源", () => {
     expect(newAssistants.length,
       `准入拒绝后存在 assistant 输出条目: ${newAssistants.map(entry => entry.id).join(",")}`,
     ).toBe(0)
+  })
+
+  it("合法静默保留空native tip证据，但作为skipped不进入UI或未回复计数 [proactive-silent-skip]", async () => {
+    const provider = installFakeProvider([fakeText("<<SILENT>>")])
+    restoreFakeProvider = provider.restore
+    const unansweredBefore = unansweredCount.value
+    const result = await runActiveTurn("纯符号，无需回应")
+
+    expect(result.status, "合法沉默不能伪装成已送达表达").toBe("skipped")
+    if (result.status !== "skipped") return
+    expect(result.reason).toBe("silent")
+    expect(result.evidence?.assistantEntryId, "silent skip要保留空tip地址以阻止重放").toBeTruthy()
+    const entries = await sessionEntries()
+    const active = entries.find(entry => entry.type === "message" && entry.message.role === "custom"
+      && entry.message.customType === "deskpet.active_message")
+    expect(active, "静默主动回合仍应保留来源审计条目").toBeDefined()
+    const tip = entries.find(entry => entry.type === "message" && entry.id === result.evidence?.assistantEntryId)
+    expect(tip?.type === "message" && tip.message.role === "assistant"
+      && tip.message.content.filter(part => part.type === "text").every(part => part.text.trim() === ""),
+    "receipt应精确指向原生空assistant tip").toBe(true)
+    const projected = await sessionMessages()
+    expect(projected.some(message => message.id === result.evidence?.assistantEntryId),
+      "静默tip不得投影成空UI气泡").toBe(false)
+    expect(unansweredCount.value, "静默skip不应增加主动未回复计数").toBe(unansweredBefore)
   })
 })

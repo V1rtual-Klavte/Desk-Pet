@@ -122,7 +122,24 @@ export async function getMemoryItems(ids: string[]): Promise<MemoryItem[]> {
 
 /** 返回提交后的 revision；冲突（stale 基准）由 Rust 抛 `MEMORY_CONFLICT`。 */
 export async function applyMemoryChange(request: MemoryChangeRequest): Promise<number> {
-  return invoke("memory_apply_change", { ...request })
+  // 删除事实同时撤销由同一可信原话派生的主题资格；只传来源身份，不把正文交给观察域。
+  const forgottenSources = request.action === "forget" && request.itemId
+    ? (await memoryHistory(request.itemId)).flatMap(history => history.sourceAudits) : []
+  const revision = await invoke<number>("memory_apply_change", { ...request })
+  if (request.action === "forget" && forgottenSources.length) {
+    const { invalidateTopicSources } = await import("@/services/observation")
+    const bySession = new Map<string, Set<string>>()
+    for (const source of forgottenSources) {
+      const entries = bySession.get(source.sessionId) ?? new Set<string>()
+      entries.add(source.entryId)
+      bySession.set(source.sessionId, entries)
+    }
+    for (const [sessionId, entries] of bySession) await invalidateTopicSources(sessionId, [...entries])
+  } else if (request.action === "clear") {
+    const { clearSilentUnderstanding } = await import("@/services/observation")
+    await clearSilentUnderstanding()
+  }
+  return revision
 }
 
 export async function startMemoryJob(phase: MemoryJob["phase"]): Promise<MemoryJob> {

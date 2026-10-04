@@ -51,6 +51,8 @@ export type StagePrompts = StageFileStages
 export interface StageMap {
   /** 回合开始、尚未产出可见内容时的状态行提示 */
   thinking: string | null
+  /** 普通回复生成并逐条揭示期间的状态行提示 */
+  typing: string
   planning: string | null
   presence: { idle: string; working: string; resting: string }
   executing: Record<string, string>
@@ -122,6 +124,8 @@ export interface FallbackReplies {
   planCompleted: string
   /** 继续计划时会话正忙 */
   planResumeBusy: string
+  /** 连续沉默被护栏拒绝后的极短 Card 回复 */
+  silentRejected: string
 }
 
 // ── 读写 ──

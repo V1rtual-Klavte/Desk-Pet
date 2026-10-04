@@ -339,8 +339,17 @@ async function performClearBehavior(): Promise<void> {
   }).catch((error) => log.error("清理前停止画像队列失败", error instanceof Error ? error : undefined))
   await serial
   try {
+    const { clearSilentUnderstanding } = await import("@/services/observation")
+    await clearSilentUnderstanding()
     const path = await runtimePath("data", "behavior")
-    await invoke("file_remove", { path, recursive: true, force: true })
+    const listing = await invoke<{ entries: Array<{ name: string }> }>("file_list", { path })
+    for (const entry of listing.entries) {
+      // This metadata-only file carries the clear watermark so a busy-inbox scan cannot
+      // reintroduce user messages that were committed before the explicit clear.
+      if (entry.name === "understanding.json") continue
+      const stalePath = await runtimePath("data", "behavior", entry.name)
+      await invoke("file_remove", { path: stalePath, recursive: true, force: true })
+    }
     days.clear(); previous = null; currentStart = null; currentCategory = null; currentContinuousMs = 0; currentWorkStartAt = 0
     loaded = true
     droppedObservations = 0

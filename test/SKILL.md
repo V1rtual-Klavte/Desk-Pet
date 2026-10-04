@@ -97,10 +97,15 @@ caseId 的锚定方式随层不同，但同一字母表：L2 / L3 写在 vitest 
 
 当前目录包含以下 Contract：
 
+- `chat-images`
+- `humanizer`
+- `observation`
+- `proactive`
 - `behavior`
 - `evaluation`
 - `agent-runtime`
 - `harness-storage`
+- `humanizer`
 - `memory`
 - `memory-bench`
 - `personality-card`

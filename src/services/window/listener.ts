@@ -1,6 +1,6 @@
 import { type Ref } from "vue"
 import { listen } from "@tauri-apps/api/event"
-import { windowMonitorConfig } from "@/services/config"
+import { silentAccessConfig } from "@/services/config"
 import { observeBehavior, startBehavior } from "@/services/behavior"
 import { createLogger } from "@/services/logger"
 import type { WindowObservation } from "./types"
@@ -13,7 +13,7 @@ let latestSequence = 0
 const subscribers = new Set<(observation: WindowObservation) => void>()
 
 export function getLatestWindowObservation(): WindowObservation | null {
-  return windowMonitorConfig.enabled ? latestObservation : null
+  return silentAccessConfig.enabled ? latestObservation : null
 }
 
 export function clearLatestWindowObservation(): void {
@@ -31,7 +31,7 @@ export function acceptWindowObservation(value: unknown): boolean {
     return false
   }
   const observation = value
-  if (!windowMonitorConfig.enabled && observation.observationState !== "disabled") return false
+  if (!silentAccessConfig.enabled && observation.observationState !== "disabled") return false
   if (observation.monitorGeneration < latestGeneration
     || observation.monitorGeneration === latestGeneration && observation.sequence <= latestSequence) {
     log.debug("丢弃重复或乱序 observation", { generation: observation.monitorGeneration, sequence: observation.sequence })
@@ -53,7 +53,7 @@ export function acceptWindowObservation(value: unknown): boolean {
 
 export async function initWindowListener(winSize: Ref<{ w: number; h: number }>): Promise<() => void> {
   const unlisten = await listen<WindowObservation>("window-observed", ({ payload }) => { acceptWindowObservation(payload) })
-  if (windowMonitorConfig.enabled) startBehavior()
+  if (silentAccessConfig.enabled) startBehavior()
   const observer = new ResizeObserver(() => { winSize.value = { w: window.innerWidth, h: window.innerHeight } })
   observer.observe(document.body)
   log.info("window-observed listener 已启动")

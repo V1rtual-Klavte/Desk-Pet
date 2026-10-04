@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest"
-import { localToInstant, checkinWindows, isQuietTime, nextSpeakingTime, calendarAnniversary } from "@/services/proactive/time"
+import { localToInstant, checkinWindows, isQuietTime, nextSpeakingTime, calendarAnniversary, localDayKey } from "@/services/proactive/time"
 import { recurrenceSlot } from "@/services/proactive/opportunities"
 import type { ProactiveTask } from "@/services/proactive/protocol"
 
@@ -22,12 +22,21 @@ describe("主动事项时间",()=>{
     expect(localToInstant("2026-11-01","01:30","America/New_York")).toBe(Date.parse("2026-11-01T05:30:00Z"))
     expect(()=>localToInstant("2026-02-30","09:00","Asia/Shanghai")).toThrow("invalid local date")
   })
-  it("静默边界22点至09点及闰日周年，不推迟已合法时间 [proactive-quiet-boundary]",()=>{
+  it("静默边界23点至09点及闰日周年，不推迟已合法时间 [proactive-quiet-boundary]",()=>{
     const at=(text:string)=>Date.parse(`2026-10-03T${text}+08:00`)
-    expect([isQuietTime(at("08:59:00"),"Asia/Shanghai"),isQuietTime(at("09:00:00"),"Asia/Shanghai"),isQuietTime(at("21:59:00"),"Asia/Shanghai"),isQuietTime(at("22:00:00"),"Asia/Shanghai")]).toEqual([true,false,false,true])
-    expect(nextSpeakingTime(at("22:00:00"),"Asia/Shanghai")).toBe(Date.parse("2026-10-04T01:00:00Z"))
+    expect([isQuietTime(at("08:59:00"),"Asia/Shanghai"),isQuietTime(at("09:00:00"),"Asia/Shanghai"),isQuietTime(at("22:59:00"),"Asia/Shanghai"),isQuietTime(at("23:00:00"),"Asia/Shanghai")]).toEqual([true,false,false,true])
+    expect(nextSpeakingTime(at("22:00:00"),"Asia/Shanghai")).toBe(at("22:00:00"))
+    expect(nextSpeakingTime(at("23:00:00"),"Asia/Shanghai")).toBe(Date.parse("2026-10-04T01:00:00Z"))
     expect(nextSpeakingTime(at("09:00:00"),"Asia/Shanghai")).toBe(at("09:00:00"))
     expect(calendarAnniversary(2027,2,29)).toBe("2027-02-28")
+  })
+  it("未回复两次只从阈值后的下个当地日降档，可信用户输入清零阈值 [proactive-unanswered-daily-freeze]",()=>{
+    const threshold=Date.parse("2026-10-03T14:00:00Z") // 22:00 Asia/Shanghai
+    const thresholdDate=localDayKey(threshold,"Asia/Shanghai")
+    expect(thresholdDate).toBe("2026-10-03")
+    expect(localDayKey(Date.parse("2026-10-03T15:59:00Z"),"Asia/Shanghai")).toBe(thresholdDate)
+    expect(localDayKey(Date.parse("2026-10-03T16:00:00Z"),"Asia/Shanghai")).toBe("2026-10-04")
+    expect(localDayKey(Date.parse("2026-10-04T01:00:00Z"),"Asia/Shanghai")).toBe("2026-10-04")
   })
   it("月周期按当地日历最后合法日，不积压旧 occurrence [proactive-recurring-slot]",()=>{
     const task={id:"month",version:3,nextCheckinAt:null,validUntil:null,recurrence:{frequency:"monthly",localTime:"09:00",timezone:"Asia/Shanghai",dayOfMonth:31}} as ProactiveTask

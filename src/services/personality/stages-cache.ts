@@ -39,6 +39,7 @@ const FALLBACK_FALLBACKS: FallbackReplies = {
   planCancelled: "计划已取消",
   planCompleted: "计划已完成",
   planResumeBusy: "会话正忙，请稍后再继续计划",
+  silentRejected: "嗯嗯",
 }
 
 /** slash 命令输出的中性兜底：与 COMPACT_MESSAGES 时代同文，只是改由 Card 覆盖 */
@@ -64,7 +65,7 @@ const FALLBACK_COMMANDS: CommandReplies = {
 }
 
 export const FALLBACK_STAGES: StageMap = {
-  thinking: "思考中...", planning: "正在规划...",
+  thinking: "思考中...", planning: "正在规划...", typing: "正在组织回复...",
   presence: { idle: "陪伴中", working: "安静陪伴", resting: "休息中" },
   executing: { _default: "处理中..." },
   done: {
@@ -121,7 +122,7 @@ export function getStagePrompt(
 }
 
 /** 无类别维度的标量阶段 —— commands/executing/done/blocked 等映射型字段不在其中 */
-export type SimpleStageKey = "thinking" | "planning" | "error" | "retry"
+export type SimpleStageKey = "thinking" | "planning" | "typing" | "error" | "retry"
 
 /** 获取非工具阶段文案（空串回退 FALLBACK） */
 export function getSimpleStage(stage: SimpleStageKey): string | null {
@@ -185,7 +186,7 @@ export const FALLBACK_KEYS: ReadonlyArray<keyof FallbackReplies> = [
   "concurrentRejected", "maxRetriesExhausted", "turnTimeout", "toolLoopMaxRounds",
   "llmUnavailable", "subAgentFailed", "subAgentNoResult",
   "runInterrupted", "compactionRejected", "pausedReturnFailed",
-  "planCancelled", "planCompleted", "planResumeBusy",
+  "planCancelled", "planCompleted", "planResumeBusy", "silentRejected",
 ]
 
 /** 原始文件形态的键齐备性检查：每个键都必须是非空字符串（llmUnavailable 单列，是数组） */
@@ -203,7 +204,7 @@ export function validateStages(data: unknown): data is StagePrompts {
   // 后加的键一律在这里要求：旧 stages 文件缺它们时判为过期，触发按新模板重新生成。
   // 判定必须看**原始文件形态**，不能先过 normalize —— normalize 会把缺失的键补成中性默认值，
   // 补完就再也分不清「旧模板产物」和「新模板产物」，Card 的定制语气会永久停在系统默认文案上。
-  if (typeof s.error !== "string" || typeof s.retry !== "string") return false
+  if (typeof s.error !== "string" || typeof s.retry !== "string" || typeof s.typing !== "string" || !s.typing) return false
   if (!hasAllNonEmpty(s.presence, ["idle", "working", "resting"])) return false
   if (!Array.isArray(s.greetings) || s.greetings.length === 0) return false
   if (!hasAllNonEmpty(s.commands, COMMAND_KEYS)) return false
@@ -268,7 +269,13 @@ export function parseStagesResponse(jsonStr: string): StageMap | null {
   // reasoning 模型可能在 CoT 中包含多个 JSON 示例，取最后一个有效对象
   const candidates = extractJSONCandidates(jsonStr)
   for (let i = candidates.length - 1; i >= 0; i--) {
-    try { return normalizeStageMap(JSON.parse(candidates[i]) as Partial<StageMap>) } catch {}
+    try {
+      const raw = JSON.parse(candidates[i]) as Record<string, unknown>
+      const fallbacks = raw.fallbacks as Record<string, unknown> | undefined
+      if (typeof raw.typing !== "string" || !raw.typing.trim()
+        || typeof fallbacks?.silentRejected !== "string" || !fallbacks.silentRejected.trim()) continue
+      return normalizeStageMap(raw as Partial<StageMap>)
+    } catch {}
   }
 
   // 候选都失败时尝试宽松解析
@@ -339,6 +346,7 @@ function normalizeStageMap(raw: Partial<StageMap>): StageMap {
   return {
     thinking: typeof raw.thinking === "string" ? raw.thinking : FALLBACK_STAGES.thinking,
     planning: typeof raw.planning === "string" ? raw.planning : FALLBACK_STAGES.planning,
+    typing: typeof raw.typing === "string" ? raw.typing : FALLBACK_STAGES.typing,
     presence: { ...FALLBACK_STAGES.presence, ...(raw.presence || {}) },
     executing: { ...FALLBACK_STAGES.executing, ...(raw.executing || {}) },
     done: { ...FALLBACK_STAGES.done, ...(raw.done || {}) },
@@ -356,10 +364,12 @@ function normalizeStageMap(raw: Partial<StageMap>): StageMap {
 function parseLooseStagesResponse(raw: string): StageMap | null {
   const text = raw.trim()
   if (!text) return null
+  if (!readLooseScalar(text, "typing") || !/^\s*silentRejected\s*:/m.test(text)) return null
 
   const result: StageMap = normalizeStageMap({})
   result.thinking = readLooseScalar(text, "thinking") ?? readLeadingThinking(text) ?? result.thinking
   result.planning = readLooseScalar(text, "planning") ?? result.planning
+  result.typing = readLooseScalar(text, "typing") ?? result.typing
   result.error = readLooseScalar(text, "error") ?? result.error
   result.retry = readLooseScalar(text, "retry") ?? result.retry
 
@@ -379,7 +389,7 @@ function readLeadingThinking(text: string): string | null {
 }
 
 function readLooseScalar(text: string, key: string): string | null {
-  const keys = ["thinking", "planning", "executing", "done", "blocked", "error", "retry", "commands"]
+  const keys = ["thinking", "planning", "typing", "executing", "done", "blocked", "error", "retry", "commands"]
   const next = keys.filter(k => k !== key).join("|")
   const re = new RegExp(`${key}:\\s*([\\s\\S]*?)(?=,?\\s*(?:${next}):|$)`)
   const match = text.match(re)

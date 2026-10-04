@@ -83,6 +83,8 @@ export interface HarnessRunState {
   finalAssistant?: AssistantMessage
   /** 最近一次不带工具调用的 assistant（结算候选）。 */
   finalPlainAssistant?: AssistantMessage
+  /** Durable JSONL entry identity paired with the final assistant message. */
+  finalAssistantEntryId?: string
   /** Actual request usage observed from Harness events; absent means unknown. */
   usage?: { inputTokens: number; outputTokens: number; cacheRead?: number; cacheWrite?: number }
 }
@@ -110,6 +112,7 @@ export interface HarnessRunHooks {
   transformContext?: (input: {
     messages: AgentMessage[]
     systemPrompt: string
+    signal?: AbortSignal
   }) => Promise<{ messages?: AgentMessage[] } | undefined> | { messages?: AgentMessage[] } | undefined
   /**
    * 压缩决策钩子：返回自定义 CompactResult（宿主摘要内核）或 decline 跳过。
@@ -859,7 +862,7 @@ export class HarnessSlot {
    * 只有一处定义）：带身份时写 `deskpetEventId`（证据链按它关联输入），来源标记随消息落盘；
    * 没有 identity 时不带身份，保持「非投递输入」语义。
    */
-  async steer(text: string, identity?: { eventId: string; mark?: InputSourceMark }, kindOverride?: "steer" | "followUp" | "nextRun"): Promise<HarnessDeliveryReceipt | undefined> {
+  async steer(text: string, identity?: { eventId: string; mark?: InputSourceMark; imagePaths?: readonly string[] }, kindOverride?: "steer" | "followUp" | "nextRun"): Promise<HarnessDeliveryReceipt | undefined> {
     // 不要求运行已进入驱动：预检阶段的投递也进入 lane 持久 inbox（先 open 再投递），
     // 由本次或下一次运行消费；宿主不再保留自己的队列副本。
     if (this.state !== "running") return undefined
@@ -873,7 +876,7 @@ export class HarnessSlot {
     }
     if (this.state !== "running" || !this.lane) return undefined
     const kind = kindOverride ?? (this.deliveryPhase === "settling" ? "followUp" : "steer")
-    const message = userInputMessage(text, identity?.eventId ?? "", identity?.mark)
+    const message = userInputMessage(text, identity?.eventId ?? "", identity?.mark, identity?.imagePaths)
     const result = kind === "steer"
       ? await this.lane.steer(message, undefined, TODO_CONTEXT)
       : kind === "followUp"
@@ -1730,8 +1733,8 @@ export class HarnessSlot {
           isError: event.isError,
         })
       }),
-      hooks.on("transform_context", async (event) => {
-        return this.hostSpec().hooks?.transformContext?.({ messages: event.messages, systemPrompt: event.systemPrompt })
+      hooks.on("transform_context", async (event, context) => {
+        return this.hostSpec().hooks?.transformContext?.({ messages: event.messages, systemPrompt: event.systemPrompt, signal: context.abortSignal })
       }),
       hooks.on("before_compaction", async (event, context) => {
         // 运行期用回合钩子；/compact 等手动压缩没有 activeRun，用本次下发的结构操作钩子。
@@ -1782,6 +1785,7 @@ export class HarnessSlot {
           // 先结束瞬时缓冲，再交给提交路径推送真实消息（§6）。
           this.endAssistantStream()
           run.spec.state.finalAssistant = message
+          run.spec.state.finalAssistantEntryId = event.entryId
           await run.spec.sinks?.onAssistantMessage?.(message, event.entryId)
           return
         }

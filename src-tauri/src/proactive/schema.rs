@@ -122,11 +122,29 @@ pub(crate) fn ensure(conn: &Connection) -> AppResult<()> {
           planning_attempts INTEGER NOT NULL DEFAULT 0,
           expression_attempts INTEGER NOT NULL DEFAULT 0,
           successful_messages INTEGER NOT NULL DEFAULT 0,
+          daily_success_limit INTEGER NOT NULL DEFAULT 0,
           reserved_tokens INTEGER NOT NULL DEFAULT 0,
           used_tokens INTEGER NOT NULL DEFAULT 0,
           unknown_tokens INTEGER NOT NULL DEFAULT 0,
+          observation_attempts INTEGER NOT NULL DEFAULT 0,
+          topic_attempts INTEGER NOT NULL DEFAULT 0,
+          next_success_after INTEGER,
           updated_at INTEGER NOT NULL
         ) STRICT;
+
+        CREATE TABLE IF NOT EXISTS proactive_auxiliary_reservations (
+          reservation_id TEXT PRIMARY KEY NOT NULL,
+          request_id TEXT NOT NULL UNIQUE,
+          kind TEXT NOT NULL CHECK(kind IN ('observation','topic')),
+          local_date TEXT NOT NULL,
+          status TEXT NOT NULL CHECK(status IN ('reserved','unresolved','committed','failed')),
+          reserved_tokens INTEGER NOT NULL,
+          used_tokens INTEGER,
+          usage_json TEXT,
+          created_at INTEGER NOT NULL,
+          updated_at INTEGER NOT NULL
+        ) STRICT;
+        CREATE INDEX IF NOT EXISTS proactive_auxiliary_reservations_date ON proactive_auxiliary_reservations(local_date,kind,status);
 
         CREATE TABLE IF NOT EXISTS proactive_operations (
           operation_id TEXT PRIMARY KEY NOT NULL,
@@ -136,5 +154,24 @@ pub(crate) fn ensure(conn: &Connection) -> AppResult<()> {
         ) STRICT;
         "#,
     )
-    .map_err(|error| AppError::Memory(format!("主动陪伴建表失败: {error}")))
+    .map_err(|error| AppError::Memory(format!("主动陪伴建表失败: {error}")))?;
+    for (name, definition) in [
+        ("observation_attempts", "INTEGER NOT NULL DEFAULT 0"),
+        ("topic_attempts", "INTEGER NOT NULL DEFAULT 0"),
+        ("daily_success_limit", "INTEGER NOT NULL DEFAULT 0"),
+        ("next_success_after", "INTEGER"),
+    ] {
+        let exists: bool = conn
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM pragma_table_info('proactive_budgets') WHERE name=?1)",
+                [name],
+                |row| row.get(0),
+            )
+            .map_err(|error| AppError::Memory(format!("主动预算字段检查失败: {error}")))?;
+        if !exists {
+            conn.execute_batch(&format!("ALTER TABLE proactive_budgets ADD COLUMN {name} {definition}"))
+                .map_err(|error| AppError::Memory(format!("主动预算字段迁移失败: {error}")))?;
+        }
+    }
+    Ok(())
 }

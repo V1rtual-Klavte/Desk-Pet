@@ -37,6 +37,7 @@ import { actionCategoryOf, registerDefaultTools } from "@/services/tool"
 /** 探针 Card 的阶段文案：故意与 FALLBACK_STAGES 不同，且 blocked 缺 fs.read 类别。 */
 const PROBE_STAGES: StageMap = {
   thinking: "探针思考中",
+  typing: "探针正在输入",
   planning: "探针规划",
   presence: { idle: "探针空闲", working: "探针工作", resting: "探针休息" },
   executing: { "fs.read": "探针读取中", _default: "探针执行中" },
@@ -55,6 +56,7 @@ const PROBE_STAGES: StageMap = {
     skillDisabled: "探针技能已关闭",
   },
   fallbacks: {
+    silentRejected: "探针极短回应",
     concurrentRejected: "探针忙", maxRetriesExhausted: "探针重试失败", turnTimeout: "探针超时",
     toolLoopMaxRounds: "探针轮数用尽", llmUnavailable: ["探针不可用"],
     subAgentFailed: "探针子代理失败", subAgentNoResult: "探针子代理无结果",

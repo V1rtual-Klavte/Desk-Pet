@@ -2,13 +2,13 @@
 // 统一全局冷却控制器
 // ==========================================
 
-import { windowMonitorConfig, aiLockConfig } from "@/services/config";
+import { silentAccessConfig, aiLockConfig } from "@/services/config";
 import { createLogger } from "@/services/logger";
 
 const log = createLogger("Cool");
 
 /** 冷却时长（毫秒），由外部配置 */
-let cooldownMs = windowMonitorConfig.cooldownMs;
+let cooldownMs = silentAccessConfig.cooldownMs;
 
 /** 全局冷却截止时间戳 */
 let globalCooldownUntil = 0;

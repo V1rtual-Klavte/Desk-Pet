@@ -1,6 +1,7 @@
 import { bashExecutionToText, BRANCH_SUMMARY_PREFIX, BRANCH_SUMMARY_SUFFIX, COMPACTION_SUMMARY_PREFIX, COMPACTION_SUMMARY_SUFFIX } from "@earendil-works/pi-agent-core"
 import type { AgentMessage } from "@earendil-works/pi-agent-core"
 import { createLogger } from "@/services/logger"
+import { imageInputTokens } from "@/services/images/budget"
 
 const log = createLogger("ContextBudget")
 
@@ -148,7 +149,7 @@ export type AgentMessageRole = AgentMessage["role"]
  * 该偏差落在估算器允许的余量内，不为它引入第二处口径。
  */
 const MESSAGE_CONTENT_PROJECTION: Record<AgentMessageRole, (message: MessageRecord) => string> = {
-  user: message => textOf(message),
+  user: message => join([textOf(message), extraPartsOf(message)]),
   assistant: message => join([textOf(message), toolCallsOf(message)]),
   toolResult: message => join([textOf(message), extraPartsOf(message)]),
   custom: message => textOf(message),
@@ -178,7 +179,15 @@ export function projectMessageContent(value: unknown): string {
 
 /** 与本投影同口径的消息估算；绝不把 usage、时间戳、模型名或持久化元数据算作会话输入。 */
 export function estimateMessageTokens(value: unknown): number {
-  return estimateContextTokens(projectMessageContent(value)) + MESSAGE_STRUCTURE_TOKENS
+  const message = record(value)
+  const imageTokens = imageInputTokens(message.content)
+  if (!imageTokens) return estimateContextTokens(projectMessageContent(value)) + MESSAGE_STRUCTURE_TOKENS
+  // 快照仍对真实图像内容取hash；计费视图只将图像编码改为形态元数据，再加入统一图像预算。
+  const content = (message.content as unknown[]).map(part => {
+    const item = record(part)
+    return item.type === "image" ? { type: "image", mimeType: item.mimeType } : part
+  })
+  return estimateContextTokens(projectMessageContent({ ...message, content })) + imageTokens + MESSAGE_STRUCTURE_TOKENS
 }
 
 /**

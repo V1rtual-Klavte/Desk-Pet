@@ -31,7 +31,7 @@ ai:
     # 稍后继续的批量策略：one-at-a-time=逐条保留话题边界 | all=集中处理
     followUpMode: one-at-a-time
   personality:
-    active: angelkawaii
+    active: default
   loop:
     maxRetry: 3
     maxToolCallsPerTurn: 5
@@ -64,8 +64,12 @@ ai:
     onStepFailure: continue
     keywords: [分析, 整理, 重构, 修复, 审查, 合并, 总结, 生成, 创建项目]
   lock: { safetyTimeoutMs: 30000 }
-  windowMonitor:
+  humanizer:
     enabled: true
+
+  silentAccess:
+    enabled: true
+    projectPath: ""
     staySeconds: 60
     settleMs: 2000
     # 冷却时长统一毫秒

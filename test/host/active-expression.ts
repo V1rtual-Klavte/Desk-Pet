@@ -10,6 +10,7 @@ export async function runTestActiveExpression(
   if (!owner) return { status: "skipped", reason: "no_session" }
   const requestId = `test-active-${crypto.randomUUID()}`
   return sendActiveMessage({
+    expectsReply: true,
     text,
     owner,
     requestId,

@@ -47,7 +47,7 @@ import { DEFAULT_SCENE_TIMEOUT, UNIT_SCENE_TIMEOUT } from "./scene-runner"
  * 改写为「活槽经 AgentLane 追加、条目必须在 tip 链上」，同步 hs-04 契约；`阶梯投影` 只跟着
  * `L0_TOOL_RESULT_SHARE → CAP` 改注释。判据口径变化，故 bump；主动/记忆修复未新增 L4 场景。
  */
-export const LIVE_DATASET_VERSION = "2026-10-03.2"
+export const LIVE_DATASET_VERSION = "2026-10-04.1"
 
 export function validateDataset(scenes: SceneDef[], contracts: ModuleContract[]): string[] {
   const errors: string[] = []

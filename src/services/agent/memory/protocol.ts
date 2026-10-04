@@ -97,6 +97,10 @@ export interface ProactiveBudget {
   reservedTokens: number
   usedTokens: number
   unknownTokens: number
+  observationAttempts: number
+  topicAttempts: number
+  nextSuccessAfter: number | null
+  dailySuccessLimit: number
 }
 
 export interface ProactiveControl {
@@ -105,10 +109,39 @@ export interface ProactiveControl {
   revision: number
 }
 
+export interface ProactiveAuxiliaryBudgetReserveRequest {
+  reservationId: string
+  requestId: string
+  kind: "observation" | "topic"
+  localDate: string
+  reservedTokens: number
+  dailyLimit: number
+  now: number
+}
+
+export interface ProactiveAuxiliaryBudgetReserveResponse {
+  reserved: boolean
+  reason: string | null
+}
+
+export interface ProactiveAuxiliaryBudgetSettleRequest {
+  reservationId: string
+  localDate: string
+  status: "committed" | "failed" | "unresolved"
+  usage: Record<string, unknown> | null
+  now: number
+}
+
+export interface ProactiveAuxiliaryBudgetSettleResponse {
+  status: "committed" | "failed" | "unresolved"
+}
+
 export interface ProactiveScanRequest {
   owner: ProactiveOwner
   now: number
   localDate: string
+  unansweredThresholdDate?: string | null
+  unansweredClearedDate?: string | null
   cursor?: string
   targetCursor?: string
   limit?: number
@@ -207,6 +240,9 @@ export interface ProactiveClaimRequest {
   now: number
   localDate: string
   reservedTokens: number
+  ruleId: string
+  unansweredThresholdDate?: string | null
+  unansweredClearedDate?: string | null
 }
 
 export interface ProactiveClaimResponse {
@@ -244,6 +280,7 @@ export interface ProactiveSettleRequest {
 
 export interface ProactiveDecision {
   kind: ProactiveDecisionKind
+  ruleId?: string
   opportunityFingerprints: Array<string>
   topicKey: string | null
   slot: string | null
@@ -389,14 +426,17 @@ export interface MemoryCandidateDraft {
 }
 
 export type MemoryCommand = "memory_recall_candidates" | "memory_job_list" | "memory_restore_preview" | "memory_source_evidence" | "memory_status" | "memory_list" | "memory_detail" | "memory_history" | "memory_register_sources" | "memory_query" | "memory_get_items" | "memory_apply_change" | "memory_job_start" | "memory_job_checkpoint" | "memory_job_cancel" | "memory_job_resume" | "memory_job_sources" | "memory_candidates_add" | "memory_dreaming_commit" | "memory_dreaming_budget_reserve" | "memory_dreaming_budget_settle" | "memory_dreaming_budget" | "memory_export" | "memory_backup" | "memory_rebuild" | "memory_restore"
-export type ProactiveCommand = "proactive_scan" | "proactive_query" | "proactive_change" | "proactive_claim" | "proactive_validate" | "proactive_settle" | "proactive_reconcile" | "proactive_control"
+export type ProactiveCommand = "proactive_scan" | "proactive_query" | "proactive_change" | "proactive_claim" | "proactive_validate" | "proactive_settle" | "proactive_reconcile" | "proactive_control" | "proactive_auxiliary_budget_reserve" | "proactive_auxiliary_budget_settle"
 export const PROACTIVE_LIMITS = Object.freeze({
   "tickMs": 300000,
-  "quietStartHour": 22,
+  "quietStartHour": 23,
   "quietEndHour": 9,
-  "dailySuccess": 1,
-  "dailyExpressionAttempts": 3,
-  "dailyPlanningAttempts": 2,
+  "dailySuccess": 6,
+  "dailyExpressionAttempts": 12,
+  "dailyPlanningAttempts": 8,
+  "dailyAuxiliaryAttempts": 4,
+  "minSuccessIntervalMs": 3600000,
+  "successIntervalSpreadMs": 7200000,
   "dailyTokens": 24000,
   "maxTasks": 100,
   "maxRecurringTasks": 10,

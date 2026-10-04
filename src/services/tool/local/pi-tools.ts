@@ -5,7 +5,7 @@ import {
   createWriteTool,
 } from "@earendil-works/pi-agent-core"
 import type { ExecutionEnv } from "@earendil-works/pi-agent-core"
-import { readImageProcessor } from "./image-processor"
+import { readImageProcessor } from "@/services/images"
 import { registerAll } from "../registry"
 import { adaptHarnessTool } from "../pi/harness-adapter"
 import { TauriExecutionEnv } from "../pi/tauri-execution-env"

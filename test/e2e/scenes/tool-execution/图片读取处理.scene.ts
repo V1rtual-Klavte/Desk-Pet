@@ -1,7 +1,7 @@
 import { BACKGROUND_CONTEXT } from "@earendil-works/pi-agent-core"
 import type { FileError, Result } from "@earendil-works/pi-agent-core"
 import type { SceneDef } from "../../../e2e/types"
-import { MAX_IMAGE_EDGE, readImageProcessor } from "@/services/tool/local/image-processor"
+import { MAX_IMAGE_EDGE, readImageProcessor } from "@/services/images"
 import { executeToolDefinition, getToolByName } from "@/services/tool"
 import { TauriExecutionEnv } from "@/services/tool/pi/tauri-execution-env"
 

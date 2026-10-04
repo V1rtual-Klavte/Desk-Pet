@@ -8,7 +8,7 @@ import { contentText, createAssistantMessageEventStream, createModels, createPro
 import { openAICompletionsApi } from "@earendil-works/pi-ai/api/openai-completions.lazy"
 import { deepseekProvider } from "@earendil-works/pi-ai/providers/deepseek"
 import { openaiProvider } from "@earendil-works/pi-ai/providers/openai"
-import type { AssistantMessage, AssistantMessageEventStream, Context, Message as PiMessage, Model, Models, MutableModels, Provider, SimpleStreamOptions, StopReason, ThinkingContent, ThinkingLevel, Usage } from "@earendil-works/pi-ai"
+import type { AssistantMessage, AssistantMessageEventStream, Context, ImageContent, Message as PiMessage, Model, Models, MutableModels, Provider, SimpleStreamOptions, StopReason, ThinkingContent, ThinkingLevel, Usage } from "@earendil-works/pi-ai"
 import type { StreamFn } from "@earendil-works/pi-agent-core"
 import type { ThinkingEffort } from "@/services/agent/types"
 import { aiConfig } from "@/services/config"
@@ -17,10 +17,11 @@ import { createLogger } from "@/services/logger"
 import { hasRuntimeTraceSubscribers, publishRuntimeTrace, runtimeTraceContextForRequest } from "@/services/engine/runtime/trace"
 import type { RuntimeTraceContext } from "@/services/engine/runtime/trace"
 import { formatError } from "@/services/error"
-import { contextBudget, ContextBudgetError, contextWindowError, estimateDriftRatio, estimateRequestTokens, ONE_SHOT_LOW_EFFORT_HINT } from "@/services/context"
+import { contextBudget, ContextBudgetError, contextWindowError, estimateDriftRatio, estimateRequestTokens, projectMessageContent, ONE_SHOT_LOW_EFFORT_HINT } from "@/services/context"
 import { PROMPT_SNAPSHOT_ENTRY, createPromptSnapshot, redactText, sha256Text } from "@/services/engine/runtime"
 import type { PromptSnapshot, PromptSnapshotInput } from "@/services/engine/runtime"
 import type { HarnessSlotSnapshot } from "./harness-slot"
+import chatImageLimits from "@/services/images/limits.json"
 import { PROVIDER_TIMEOUT_MS, createProviderFetchGuard, providerResponseByteCap, validateProviderUrl } from "./net-guard"
 
 const log = createLogger("PiGateway")
@@ -90,7 +91,9 @@ function createConfiguredGateway(modelId: string = aiConfig.model): PiGateway {
     provider: providerId,
     baseUrl: endpoint,
     reasoning: catalog?.reasoning ?? false,
-    input: catalog?.input ?? ["text"],
+    // 未知自定义模型目录没有 input 声明；允许网关传图，由实际 provider 能力裁决。
+    // 已知目录模型仍遵循其显式声明，避免假装不支持的模型能看图。
+    input: catalog?.input ?? ["text", "image"],
     cost: catalog?.cost ?? { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
     contextWindow,
     // ReplyGenerator only keeps 500 characters; leave headroom for reasoning and RUNTIME_DATA.
@@ -378,7 +381,7 @@ export function getPiRuntimeProviderOverride(): PiRuntimeProviderOverride | unde
 // ── 一次性文本调用 ──
 
 /** 一次性调用的用途；用量统计按它单列，不从主回合统计里消失。 */
-export type PiTextPurpose = "planner" | "compaction" | "memory" | "stages"
+export type PiTextPurpose = "planner" | "compaction" | "memory" | "stages" | "observation" | "topic"
 
 /** 一次性调用的审计归属：给出后请求快照与派生记录按会话落盘（不入模型消息流）。 */
 export interface PiTextCallAudit {
@@ -395,6 +398,8 @@ export interface PiTextCallInput {
   purpose: PiTextPurpose
   systemPrompt: string
   userText: string
+  /** In-memory visual inputs for one-shot calls. Prompt snapshots record only their count. */
+  images?: readonly ImageContent[]
   thinkingEffort?: ThinkingEffort
   /** 上游取消会与总超时合并，任何一个触发都终止请求。 */
   signal?: AbortSignal
@@ -489,7 +494,20 @@ export async function completePiText(input: PiTextCallInput): Promise<PiTextCall
   if (input.thinkingEffort === "low" && !model.reasoning) systemPrompt += ONE_SHOT_LOW_EFFORT_HINT
 
   const requestBudget = contextBudget(model.contextWindow, maxTokens)
-  const estimatedInput = estimateRequestTokens(systemPrompt, [{ role: "user", content: input.userText }])
+  const images = input.images ?? []
+  if (images.length > chatImageLimits.maxImages) throw new Error("一次性请求图像数量超出上限")
+  for (const image of images) {
+    if (image.type !== "image" || !["image/png", "image/jpeg", "image/webp"].includes(image.mimeType)
+      || typeof image.data !== "string" || image.data.length === 0 || image.data.length > Math.ceil(chatImageLimits.maxBytes / 3) * 4
+      || image.data.length % 4 === 1 || !/^[A-Za-z0-9+/]*={0,2}$/.test(image.data)) {
+      throw new Error("一次性请求图像格式无效或超过大小上限")
+    }
+  }
+  if (images.length > 0 && !model.input.includes("image")) {
+    throw new Error(`当前模型 ${model.id} 未声明图像输入能力`)
+  }
+  const requestContent = images.length ? [{ type: "text" as const, text: input.userText }, ...images] : input.userText
+  const estimatedInput = estimateRequestTokens(systemPrompt, [{ role: "user", content: requestContent }])
   if (estimatedInput > requestBudget.hardInputLimit) throw new ContextBudgetError(estimatedInput, requestBudget.hardInputLimit)
 
   // 一次性请求的审计归属：purpose/step 进 request，块与消息用 one-shot:* 身份
@@ -510,15 +528,15 @@ export async function completePiText(input: PiTextCallInput): Promise<PiTextCall
       text: systemPrompt, priority: 100, origin: "system", taint: "system",
     }],
     toolSchemas: [],
-    agentMessages: [{ id: `one-shot:${input.purpose}:0`, role: "user", content: input.userText }],
-    llmMessages: [{ role: "user", content: input.userText }],
+    agentMessages: [{ id: `one-shot:${input.purpose}:0`, role: "user", content: projectMessageContent({ role: "user", content: requestContent }) }],
+    llmMessages: [{ role: "user", content: projectMessageContent({ role: "user", content: requestContent }) }],
     transforms: [],
     estimatedInputTokens: estimatedInput,
     request: {
       purpose: input.purpose === "compaction" ? "compaction" : "one_shot",
       ...(input.purpose === "compaction" ? { step: "compaction" as const } : {}),
     },
-    requestParams: { maxTokens },
+    requestParams: { maxTokens, ...(images.length ? { imageCount: images.length } : {}) },
     generation: slotSnapshot?.generation ?? 0,
     // 未知的换代基数不写 0（那会谎称请求视图未换代）。
     ...(input.purpose === "compaction" && slotSnapshot?.contextEpoch !== undefined
@@ -545,7 +563,11 @@ export async function completePiText(input: PiTextCallInput): Promise<PiTextCall
   try {
     // 不把已取消的 signal 交给可能忽略它的 provider/fake stream，避免取消后仍发起请求。
     if (controller.signal.aborted) throw new Error("Provider 请求超时或已取消")
-    const messages: PiMessage[] = [{ role: "user", content: input.userText, timestamp: startedAt }]
+    const messages: PiMessage[] = [{
+      role: "user",
+      content: images.length ? [{ type: "text" as const, text: input.userText }, ...images] : input.userText,
+      timestamp: startedAt,
+    }]
     spanId = traceEnabled ? `provider-${crypto.randomUUID?.() ?? `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`}` : undefined
     providerStarted = traceEnabled ? (typeof performance === "undefined" ? Date.now() : performance.now()) : 0
     if (traceContext && spanId) publishRuntimeTrace(traceContext, "provider_request_start", () => ({

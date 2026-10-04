@@ -186,7 +186,7 @@ pnpm run test:memory-performance -- --native-only
 
 审阅记录包含 `idealSha256 / actualSha256 / manifestSha256`、`verdict`、`reviewedTrials`、`differences`、`evidence`、`reviewedOrphans`。每个 trial 都须有实际引用：事件 `{chunkId,eventSeq,sceneId,trialId}`，或合法静默线路的边界 `{chunkId,boundaryKind,sceneId,trialId}`；孤儿事件须逐条明确审阅。失败必须写差异，通过必须无差异。哈希只证明审阅绑定这份产物，不证明 AI 判断正确。
 
-Trace 默认 `full`；`light` 省略 payload/snapshot 事件，`off` 只用于性能对照，不能通过线路完整性门禁。事件保留宿主/Pi 的运行映射、request/turn/tool/entry/span 身份、单调序号和时钟域。`message_end` 与真实 `entry_added` 提交分开；首文本生成、流事件投递与实际 UI 显示不同口径，当前宿主不测 ChatPanel 首显。只采结构、数量和已有审计 hash，正文与工具参数/结果不落 trace。
+Trace 默认 `full`；`light` 省略 payload/snapshot 事件，`off` 只用于性能对照，不能通过线路完整性门禁。事件保留宿主/Pi 的运行映射、request/turn/tool/entry/span 身份、单调序号和时钟域。`message_end` 与真实 `entry_added` 提交分开；首文本生成、流事件投递与实际 UI 显示不同口径，默认宿主不测 ChatPanel 首显；humanizer独立组件场景会挂载生产ChatPanel验证分泡/typing消费，但不宣称科学UI延迟测量。只采结构、数量和已有审计 hash，正文与工具参数/结果不落 trace。
 
 宿主缓冲有事件数和字节上限，周期与场景边界都落盘；只有 Rust fsync 后的 ACK 才释放待写块。每行是 `{chunk,contentSha256}`，chunk 内有边界、丢弃计数与逐事件 scene/trial；按事件的 sceneId 读取线路，不能把一个物理 chunk 当作只有一个场景。未匹配的迟到事件保留为 orphan。启动器在清理前流式核对 hash、序号、所有预先声明的 trial 和 complete 边界；丢弃/写盘失败不洗成通过。trace bundle（门禁在 `test/reports/traces/`，bench / quality 在各自子目录的 `traces/`）按 trace、manifest、逐 cell 质量 / 外部基准 checkpoint（成员名 `.quality.jsonl` / `.memory-bench.jsonl`）与完整性 sidecar 整组保留最近 3 场且累计不超过 200 MiB（组键覆盖未完成写入的 `.manifest.json.pending` 残片），超过单组限制保留源临时根并失败。正常路径的 bundle 不再包含结果副本（根报告已是同一份字节）；只有中断抢救（`salvageTempTrace`）还带 `result.*` —— 中断时它是唯一留存。
 
@@ -230,7 +230,7 @@ Node 启动预检会校验 `sourceHash`；源码变更后应先按 SKILL 重新�
 
 要验证「本回合以某类失败结束」时用 `turns[].expectFailure` 声明，而不是删掉断言：`kind` 必须命中 `output.failure.kind`（允许声明一组），`message` 是失败正文的匹配器（字符串按子串、正则按 `test`，空匹配器在数据集校验时被拒绝），两者都命中才算预期失败，回合的其余断言照常执行。回合正常完成、以别的分类失败或文案不匹配都判失败 —— 它只覆盖 `output.failure`，回合抛出异常仍是系统错误。报告把这类回合标为 `expected failure`（errorKind 照常记录真实分类）。
 
-测试宿主没有 ChatPanel：应用启动时由 UI 壳完成的服务级初始化由 `standard-setup.ts` 补齐 —— slash 命令注册表也在其中（应用里它挂在 ChatPanel 的模块副作用上；宿主不补的话 `/compact`、`/clear` 会按「未注册的 slash 文本透传 AI」，被当成普通回合发给模型）。涉及确认请求的 Scene 用 `meta.confirmPolicy` 声明 `deny`（默认）或 `approve`，由 `confirm-channel.ts` 确定性应答；涉及计划确认或逐步门的 Scene 用 `meta.planPolicy` 声明 `auto`、`stepByStep` 或 `deny`（默认），由 `plan-confirm-channel.ts` 确定性应答（`deny` 下确认按用户取消、门按中止结算）。计划通道同时把本场景的确认、进度与终态事件记成可读记录：确认经 `AssertContext.plans`（`plan-confirm-channel.ts` 的 `planRecords()`），进度与终态查 `planProgressRecords()` / `planEndRecords()`（事件回环是异步投递，断言按状态有界等待）；这些记录每个场景在隔离点清空。
+测试宿主默认不挂载 ChatPanel（`humanizer-real-component-reveal`是独立、结束即销毁的生产组件自动验收，不启动完整App或替代桌面截图人工观察）：应用启动时由 UI 壳完成的服务级初始化由 `standard-setup.ts` 补齐 —— slash 命令注册表也在其中（应用里它挂在 ChatPanel 的模块副作用上；宿主不补的话 `/compact`、`/clear` 会按「未注册的 slash 文本透传 AI」，被当成普通回合发给模型）。涉及确认请求的 Scene 用 `meta.confirmPolicy` 声明 `deny`（默认）或 `approve`，由 `confirm-channel.ts` 确定性应答；涉及计划确认或逐步门的 Scene 用 `meta.planPolicy` 声明 `auto`、`stepByStep` 或 `deny`（默认），由 `plan-confirm-channel.ts` 确定性应答（`deny` 下确认按用户取消、门按中止结算）。计划通道同时把本场景的确认、进度与终态事件记成可读记录：确认经 `AssertContext.plans`（`plan-confirm-channel.ts` 的 `planRecords()`），进度与终态查 `planProgressRecords()` / `planEndRecords()`（事件回环是异步投递，断言按状态有界等待）；这些记录每个场景在隔离点清空。
 
 ### 每个 trial 都是独立的一生：repeat 隔离纪律
 

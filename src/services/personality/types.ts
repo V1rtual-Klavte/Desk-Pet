@@ -22,6 +22,8 @@ export interface CardVariableDef {
   updateBy: VariableUpdateBy
   min?: number
   max?: number
+  /** Inclusive lower bounds for generic proactive transitions; omitted means no transition opportunity. */
+  proactiveBands?: number[]
   enum?: string[]
   reset: VariableResetPolicy
 }

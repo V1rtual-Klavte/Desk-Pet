@@ -9,6 +9,7 @@
 // 且负载里没有文案字段」；文案侧由 personality-card 的 stage-prompt-link 钉住。
 
 import { listen } from "@tauri-apps/api/event"
+import { setOverride } from "@/services/config"
 import { initChat, sendMessage } from "@/services/agent/runner"
 import { formatError } from "@/services/error"
 import { fakeText, installFakeProvider } from "../../../host/fake-provider"
@@ -51,6 +52,8 @@ export const 阶段状态行: SceneDef = {
     tags: ["production-entry", "stages"],
   },
   setup: async () => {
+    // 这里验证关闭拟人后的既有thinking协议；开启时的typing由真实组件场景覆盖。
+    setOverride("ai.humanizer.enabled", false)
     hints = []
     outputReply = ""
     turnError = undefined

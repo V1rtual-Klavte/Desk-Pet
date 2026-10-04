@@ -16,6 +16,7 @@ import type { ContextBlock } from "@/services/engine/runtime"
 import { buildPromptBlocks } from "./kernel"
 import type { ContextBudgetAdjustment } from "./kernel"
 import { contextBudget, toolBudgetSchema, type ContextBudget } from "./budget"
+import { HUMANIZER_PROMPT } from "@/services/humanizer"
 
 export interface BuildContextInput {
   unansweredCount?: number
@@ -31,6 +32,8 @@ export interface BuildContextInput {
   dynamicPrompt?: string
   v1rtualInstructions?: string
   skillsPromptBlock?: string
+  /** 回合开始冻结的全局拟人开关；缺省为关闭，避免一次性/子代理请求隐式启用。 */
+  humanizerEnabled?: boolean
 }
 
 export interface BuildContextOutput {
@@ -162,6 +165,7 @@ export function buildPrompt(input: BuildContextInput, card: PersonalityCard | nu
   const kernel = buildPromptBlocks([
     { blockId: "static:card", layer: "static", source: "personality-card", text: cardStaticPrompt(card), priority: 100, origin: "system", taint: "system" },
     { blockId: "static:v1rtual", layer: "static", source: "V1RTUAL.md", text: v1rtual, priority: 99, origin: "system", taint: "system" },
+    ...(input.humanizerEnabled ? [{ blockId: "static:humanizer", layer: "static" as const, source: "humanizer", text: HUMANIZER_PROMPT, priority: 98, origin: "system" as const, taint: "system" as const }] : []),
     { blockId: "static:tool-protocol", layer: "static", source: "tool-protocol", text: toolProtocol, priority: 98, origin: "system", taint: "system" },
     // Provider sends declarations independently. This complete block only records their frozen budget/snapshot and stays out of systemPrompt.
     { blockId: "static:tool-schema", layer: "static", source: "tool-schema", text: toolSchemaSnapshot, priority: 97, origin: "system", taint: "system" },

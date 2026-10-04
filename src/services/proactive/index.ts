@@ -5,6 +5,9 @@ export { start, stop, tick, offer, configureProactive, cancelCurrent, refreshPro
 export { createActiveExpressionAdapter } from "./delivery"
 export { getPresence, subscribePresence, setPresence, clearPresence, requestBriefMotion, stopPresence } from "./presence"
 export type { PresenceState, PresenceSnapshot } from "./presence"
+export { requestProactiveControl, subscribeProactiveControl } from "./control-bridge"
+export { reserveAuxiliaryBudget, settleAuxiliaryBudget } from "./auxiliary-budget"
+export { OBSERVATION_MAX_AGE_MS } from "./config"
 import * as ipc from "./ipc"
 import { accountedUsage } from "./usage"
 import { cancelCurrent, applyEnabled, discardDerivedSources } from "./scanner"
@@ -21,6 +24,7 @@ import { createLogger } from "@/services/logger"
 import { formatError } from "@/services/error"
 const log=createLogger("ProactiveContext")
 import { createRuntimeTraceContext, trace } from "./trace"
+import { publishProactiveControl } from "./control-bridge"
 
 /** SQLite is authoritative; the session reader never interprets a UI counter as delivery proof. */
 export async function readReceipt(sessionId:string,attemptId:string,assistantEntryId:string):Promise<boolean> {
@@ -133,8 +137,9 @@ export async function getTurnContext(owner: ProactiveOwner, userText: string): P
 export async function setEnabled(enabled:boolean,owner:ProactiveOwner):Promise<void> {
   cancelCurrent("control_changed")
   const state=await ipc.query({owner,limit:1})
-  await ipc.control({operationId:crypto.randomUUID(),baseRevision:state.revision,owner,patch:{enabled}})
+  const control=await ipc.control({operationId:crypto.randomUUID(),baseRevision:state.revision,owner,patch:{enabled}})
   applyEnabled(enabled)
+  await publishProactiveControl(control)
 }
 export async function clearBehavior(owner:ProactiveOwner):Promise<void> {
   cancelCurrent("behavior_cleared")

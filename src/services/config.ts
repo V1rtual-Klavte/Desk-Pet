@@ -152,8 +152,10 @@ interface Config {
       keywords: string[]
     }
     lock: { safetyTimeoutMs: number }
-    windowMonitor: {
+    humanizer: { enabled: boolean }
+    silentAccess: {
       enabled: boolean
+      projectPath: string
       staySeconds: number
       settleMs: number
       cooldownMs: number
@@ -542,16 +544,24 @@ export const conversationConfig = {
   },
 };
 
-export const windowMonitorConfig = {
-  get enabled() { return overrideOr("ai.windowMonitor.enabled", cfg.ai?.windowMonitor?.enabled ?? true); },
-  get staySeconds() { return overrideOr("ai.windowMonitor.staySeconds", cfg.ai?.windowMonitor?.staySeconds || 60); },
-  get settleMs() { return overrideOr("ai.windowMonitor.settleMs", cfg.ai?.windowMonitor?.settleMs || 2000); },
+export const humanizerConfig = {
+  get enabled() { return overrideOr("ai.humanizer.enabled", cfg.ai?.humanizer?.enabled ?? true); },
+};
+
+export const silentAccessConfig = {
+  get enabled() { return overrideOr("ai.silentAccess.enabled", cfg.ai?.silentAccess?.enabled ?? true); },
+  get projectPath() {
+    const value = overrideOr("ai.silentAccess.projectPath", cfg.ai?.silentAccess?.projectPath ?? "");
+    return typeof value === "string" ? value : "";
+  },
+  get staySeconds() { return overrideOr("ai.silentAccess.staySeconds", cfg.ai?.silentAccess?.staySeconds || 60); },
+  get settleMs() { return overrideOr("ai.silentAccess.settleMs", cfg.ai?.silentAccess?.settleMs || 2000); },
   // 冷却时长统一用毫秒。早先这里是 `cooldownSeconds: 5000` 由调用方当秒乘 1000，
   // 于是「5 秒」静默变成 83 分钟；同一个量还有第二个键 `defaultCooldownMs` 喂同一变量，
   // 两者只保留了前者。
-  get cooldownMs() { return overrideOr("ai.windowMonitor.cooldownMs", cfg.ai?.windowMonitor?.cooldownMs || 5000); },
+  get cooldownMs() { return overrideOr("ai.silentAccess.cooldownMs", cfg.ai?.silentAccess?.cooldownMs || 5000); },
   /** 同一页面内容重复触发时的抑制窗口；消费者在主动域 window_context 规则 */
-  get samePageCooldownMs() { return overrideOr("ai.windowMonitor.samePageCooldownMs", cfg.ai?.windowMonitor?.samePageCooldownMs || 7800); },
+  get samePageCooldownMs() { return overrideOr("ai.silentAccess.samePageCooldownMs", cfg.ai?.silentAccess?.samePageCooldownMs || 7800); },
 };
 
 export const aiLockConfig = {

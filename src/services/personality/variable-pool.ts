@@ -28,7 +28,7 @@ const SYSTEM_VAR_DEFS: Array<{
   { name: "hour", type: "number", compute: (n) => n.getHours() },
   { name: "minute", type: "number", compute: (n) => n.getMinutes() },
   { name: "dayOfWeek", type: "number", compute: (n) => n.getDay() },
-  { name: "isNightTime", type: "boolean", compute: (n) => n.getHours() >= 22 || n.getHours() <= 5 },
+  { name: "isNightTime", type: "boolean", compute: (n) => n.getHours() >= 23 || n.getHours() < 9 },
   { name: "isWeekend", type: "boolean", compute: (n) => n.getDay() === 0 || n.getDay() === 6 },
 ]
 

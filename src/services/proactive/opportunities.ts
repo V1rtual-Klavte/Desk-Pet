@@ -1,6 +1,6 @@
 import type { Opportunity, ProactiveOwner, ProactiveSourceRef, ProactiveTask, ProactiveMemoryTarget } from "./types"
 import { DAY_MS, FINISH_WORK_DELAY_MS } from "./config"
-import { checkinWindows, localDayKey, localDayWindow, localToInstant, zonedParts, weekKey, calendarAnniversary, shiftLocalDate } from "./time"
+import { checkinWindows, localDayKey, localDayWindow, localToInstant, zonedParts, weekKey, calendarAnniversary, shiftLocalDate, isNightlyWindow, isQuietTime } from "./time"
 import { getCalendarEvents } from "./content/calendar"
 import type { BehaviorSnapshot } from "@/services/behavior"
 
@@ -26,6 +26,10 @@ export interface RuleInput {
 }
 export function source(kind:ProactiveSourceRef["kind"],id:string,revision:number,fingerprint:string,owner:ProactiveOwner):ProactiveSourceRef {
   return {kind,id,version:revision,revision,scope:"card",scopeId:owner.cardId,fingerprint,validUntil:null}
+}
+
+export function usesRandomFallbackInterval(ruleId:string):boolean {
+  return ruleId==="topic_share"||ruleId==="curiosity"
 }
 export function opportunity(owner:ProactiveOwner,ruleId:string,slot:string,refs:ProactiveSourceRef[],from:number,until:number,
   priority:number,context:string,explicit=false,targets:Opportunity["targets"]=[]):Opportunity {
@@ -54,6 +58,7 @@ export function recurrenceSlot(task:ProactiveTask,now:number):{id:string;from:nu
 
 export function collectOpportunities(input:RuleInput):Opportunity[] {
   const {owner,now,timezone}=input, day=localDayKey(now,timezone), p=zonedParts(now,timezone)
+  if (isQuietTime(now, timezone)) return []
   const out:Opportunity[]=[]
   for(const task of input.tasks) {
     if(task.state!=="active" || (!input.memoryEnabled && task.sourceRefs.some(ref=>ref.kind==="memory")))continue
@@ -62,7 +67,7 @@ export function collectOpportunities(input:RuleInput):Opportunity[] {
     const targets=task.sourceRefs.filter(ref=>ref.kind==="memory").map(ref=>({id:ref.id,version:ref.version}))
     const taskRef:ProactiveSourceRef={kind:"task",id:task.id,version:task.version,revision:task.version,scope:task.scope,scopeId:task.scopeId,fingerprint:`${task.id}:${task.version}`,validUntil:null}
     out.push({...opportunity(owner,"scheduled_task",slot.id,[taskRef,...task.sourceRefs],slot.from,slot.until,100,
-      JSON.stringify({taskId:task.id,intent:task.intent,recurrence:task.recurrence}),task.sourceRefs.some(ref=>ref.kind==="user_entry"),targets),task})
+      JSON.stringify({taskId:task.id,intent:task.intent,recurrence:task.recurrence}),task.sourceRefs.some(ref=>ref.kind==="user_entry"),targets),task,expectsReply:true,selfSufficient:true})
   }
   if(input.memoryEnabled) for(const target of input.memoryTargets) {
     if(!target.sourceIds?.length)continue
@@ -71,8 +76,8 @@ export function collectOpportunities(input:RuleInput):Opportunity[] {
     if(target.kind!=="working" && target.eventAt && target.aliases?.some((alias: string)=>["生日","birthday","纪念日","anniversary"].includes(alias.toLowerCase()))) {
       const anchor=target.eventAt,p=anchor.precision==="day"?{month:Number(anchor.localDate.slice(5,7)),day:Number(anchor.localDate.slice(8,10))}:zonedParts(anchor.instant,anchor.timezone)
       const local=localDayKey(now,anchor.timezone),year=zonedParts(now,anchor.timezone).year
-      if(local===calendarAnniversary(year,p.month,p.day))out.push(opportunity(owner,"anniversary",`${target.id}:v${target.version}:${year}`,[ref],
-        localToInstant(local,"09:00",anchor.timezone),localToInstant(local,"22:00",anchor.timezone),75,"用户明确日期的生日或纪念日，只根据来源表达，不捏造年龄、庆祝安排或共同经历。",true,[{id:target.id,version:target.version}]))
+      if(local===calendarAnniversary(year,p.month,p.day))out.push({...opportunity(owner,"anniversary",`${target.id}:v${target.version}:${year}`,[ref],
+        localToInstant(local,"09:00",anchor.timezone),localToInstant(local,"22:00",anchor.timezone),75,"用户明确日期的生日或纪念日，只根据来源表达，不捏造年龄、庆祝安排或共同经历。",true,[{id:target.id,version:target.version}]),expectsReply:false,selfSufficient:true})
     }
     if(target.kind!=="working" || target.workingState!=="open")continue
     if(!target.eventAt&&!target.dueAt&&now<target.updatedAt+7*DAY_MS)out.push(opportunity(owner,"open_end_followup",`${target.id}:v${target.version}:untimed`,[ref],target.updatedAt,target.updatedAt+7*DAY_MS,45,
@@ -85,29 +90,35 @@ export function collectOpportunities(input:RuleInput):Opportunity[] {
     }
   }
   const open=localToInstant(day,"09:00",timezone),close=localToInstant(day,"22:00",timezone)
+  if (isNightlyWindow(now,timezone)) {
+    out.push({...opportunity(owner,"late_goodnight",`${day}:goodnight`,[source("calendar",`goodnight:${day}`,1,day,owner)],
+      localToInstant(day,"22:00",timezone),localToInstant(shiftLocalDate(day,1),"00:00",timezone),20,
+      "一条简短、温柔的晚安分享，不询问、不追问，也不要求回应。"),expectsReply:false,selfSufficient:true})
+    return out
+  }
   const events=getCalendarEvents(day)
   if(events.status==="covered")for(const event of events.events) {
     const ref=source("calendar",event.key,1,event.sourceHash,owner)
-    out.push(opportunity(owner,"calendar",`${event.key}:${day}`,[ref],open,close,75,`本地历表明确：${event.name}；只分享该日期的节令，不推断用户在放假或已庆祝。`))
+    out.push({...opportunity(owner,"calendar",`${event.key}:${day}`,[ref],open,close,75,`本地历表明确：${event.name}；只分享该日期的节令，不推断用户在放假或已庆祝。`),expectsReply:false,selfSufficient:true})
   }
   const clockRef=source("calendar",`rhythm:${day}`,1,day,owner)
   const weekday=new Date(`${day}T00:00:00Z`).getUTCDay()
   const observedHours=weekday===0||weekday===6?input.behavior.rhythm.weekends:input.behavior.rhythm.weekdays
   const rhythmEligible=input.behavior.quality.status!=="reliable"||observedHours[p.hour]!>0
-  if(rhythmEligible && p.hour>=9 && p.hour<12)out.push(opportunity(owner,"rhythm",`${day}:morning`,[clockRef],open,localToInstant(day,"12:00",timezone),35,"晨间问候，可邀请聊今天的安排；不知道的安排不能编造。"))
-  if(rhythmEligible && p.hour>=18 && p.hour<22)out.push(opportunity(owner,"rhythm",`${day}:evening`,[clockRef],localToInstant(day,"18:00",timezone),close,35,"晚间问候，可邀请讲讲今天；不假定工作成果。"))
+  if(rhythmEligible && p.hour>=9 && p.hour<12)out.push({...opportunity(owner,"rhythm",`${day}:morning`,[clockRef],open,localToInstant(day,"12:00",timezone),35,"晨间问候，可邀请聊今天的安排；不知道的安排不能编造。"),expectsReply:true})
+  if(rhythmEligible && p.hour>=18 && p.hour<22)out.push({...opportunity(owner,"rhythm",`${day}:evening`,[clockRef],localToInstant(day,"18:00",timezone),close,35,"晚间问候，可邀请讲讲今天；不假定工作成果。"),expectsReply:true})
   if(input.behavior.quality.status==="reliable") {
     const b=input.behavior
     const ref=source("behavior",`behavior:${day}`,b.revision,`${b.revision}:${day}`,owner)
     const weekday=new Date(`${day}T00:00:00Z`).getUTCDay()
-    if(weekday===0 && p.hour>=18 && p.hour<22) out.push(opportunity(owner,"retrospective",weekKey(now,timezone),[ref],localToInstant(day,"18:00",timezone),close,65,
-      JSON.stringify({quality:b.quality,days7:b.weekly.days,observedActivity:b.weekly.activity,focus:b.weekly.focus,instruction:"仅描述合格观测，不声称现实成就；过去7天一份回顾。"})))
+    if(weekday===0 && p.hour>=18 && p.hour<22) out.push({...opportunity(owner,"retrospective",weekKey(now,timezone),[ref],localToInstant(day,"18:00",timezone),close,65,
+      JSON.stringify({quality:b.quality,days7:b.weekly.days,observedActivity:b.weekly.activity,focus:b.weekly.focus,instruction:"仅描述合格观测，不声称现实成就；过去7天一份回顾。"})),expectsReply:true})
   }
   if(input.topic) {
     const topic=input.topic
-    out.push({...opportunity(owner,"topic_share",`${day}:${topic.key}`,[topic.source],open,close,30,topic.context,false,topic.targets),topicKey:topic.key})
-    out.push(opportunity(owner,"curiosity",weekKey(now,timezone),[topic.source],open,localToInstant(shiftLocalDate(weekKey(now,timezone),7),"00:00",timezone),25,
-      `${topic.context}\n就这个有依据的话题问一个小问题；可提议习惯，但没有新用户同意不得建立周期任务。`,false,topic.targets))
+    out.push({...opportunity(owner,"topic_share",`${day}:${topic.key}`,[topic.source],open,close,30,topic.context,false,topic.targets),topicKey:topic.key,expectsReply:false,selfSufficient:true})
+    out.push({...opportunity(owner,"curiosity",weekKey(now,timezone),[topic.source],open,localToInstant(shiftLocalDate(weekKey(now,timezone),7),"00:00",timezone),25,
+      `${topic.context}\n就这个有依据的话题问一个小问题；可提议习惯，但没有新用户同意不得建立周期任务。`,false,topic.targets),expectsReply:true})
   }
   // Do not cap here: scanner still has to remove already-evaluated occurrences and apply
   // interruption/priority rules. A large prefix of stale tasks must never hide later valid work.
@@ -121,11 +132,11 @@ export function collectOpportunities(input:RuleInput):Opportunity[] {
 }
 
 /** Merge overlapping anchors/duplicate rules for the same target without consuming two deliveries. */
-export function selectOpportunities(items:Opportunity[],evaluated:ReadonlySet<string>,now:number,unanswered:number,working:boolean):Opportunity[] {
+export function selectOpportunities(items:Opportunity[],evaluated:ReadonlySet<string>,now:number,working:boolean):Opportunity[] {
   const deduped=new Map<string,Opportunity>()
   for(const item of items) {
     if(now<item.validFrom||now>=item.validUntil||evaluated.has(item.fingerprint)
-      ||unanswered>=4||(unanswered>=2&&!item.explicit)||(working&&!item.explicit))continue
+      ||(working&&!item.explicit&&!item.selfSufficient))continue
     const prior=deduped.get(item.fingerprint)
     if(!prior||item.priority>prior.priority)deduped.set(item.fingerprint,item)
   }
