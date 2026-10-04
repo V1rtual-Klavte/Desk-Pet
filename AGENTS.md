@@ -31,6 +31,7 @@ V1rtual-Desk-Pet 是可自定义 Card/Profile 的 Tauri v2 桌宠，优先做好
 | 工具、权限、MCP、Skill | [工具系统](docs/current/tool-system.md) |
 | Pi 接线改造、插话双模式、工具并行/压缩策略 | [运行时契约](docs/current/runtime-contract.md)、[工具系统](docs/current/tool-system.md)与目标源码；剩余工作见[未完成工作与已知缺口](docs/plans/active/未完成工作与已知缺口.md)的 PI 剩余批次 |
 | 配置、路径、Profile 资源、持久化 | [运行时数据](docs/current/runtime-data.md) |
+| 数据库表结构、schema 版本、备份/恢复版本校验 | [数据库](docs/current/database.md) |
 | 人格变量、阶段文案、回复元数据 | [人格与回复](docs/current/personality.md) |
 | 日志、异常、IPC、构建排查 | [工程参考](docs/current/development.md) |
 | 测试规则、分层与门禁 | [测试 AGENTS](test/AGENTS.md)（规则入口与维护义务表）；命令与报告见其 [README](test/README.md)，生成与审查流程见其 [SKILL](test/SKILL.md) |

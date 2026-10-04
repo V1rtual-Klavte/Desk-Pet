@@ -53,7 +53,7 @@ sendMessage → preprocessor / Slash
 
 | 生命周期 | 所有者 | 边界 |
 |---|---|---|
-| 跨重启 | 配置文件、Card/Profile 资源、会话 JSONL 条目 | 文件原子提交；index 不是正文来源 |
+| 跨重启 | 配置文件、Card/Profile 资源、会话 JSONL 条目、记忆与主动链 SQLite（[数据库](database.md)） | 文件原子提交；index 不是正文来源；库走事务提交与 schema 版本校验 |
 | 应用 | 配置、Card/Profile 选择、能力目录 | 新 run 读取快照；切换有专用入口 |
 | 会话 | Lane 持久 inbox、会话 JSONL 条目 | 身份由 sessionId 与操作代际关联 |
 | 单次运行 | 冻结模型/能力/Prompt 来源、AbortSignal、写队列 | 旧运行不能修改新的会话或 Card 所有者 |

@@ -37,3 +37,7 @@ presence只有 idle/working/resting 和有限短动作，不移动真实窗口�
 聊天入口：`/proactive on`、`/proactive off`、`/proactive status`、`/behavior clear`。关闭取消主动尝试与表现，保留约定暂停；开启只检查仍有效窗口，不堆积补发。画像清除先撤销SQLite中的派生资格，再排空采集队列、删除文件与RAM；旧样本不能恢复，启用监控时后续新样本继续采集。AI设置提供主动消息开关，由主窗口复用同一setEnabled/SQLite控制点；命令与设置双向同步。拟人表达和静默访问独立控制表达节奏与观察来源。
 
 开发模式 `window.__proactive.events()` 只读最近200条脱敏事件。事件经既有RuntimeTrace／logger发布，覆盖窗口观察与画像结算、机会、规划、claim、表达、反馈与事项治理，并给跳过原因（如静默、冷却、忙、视图过期、预算或 owner 变化）以及 tick／attempt／request 关联；不保存标题、应用身份、记忆正文、用户原话或完整Prompt，trace观察者不承担业务提交或取消资格。理想线路由用户撰写，审阅门禁与证据工具见[测试README](../../test/README.md)。
+
+## 数据库
+
+主动链状态与记忆同库同文件（`数据根/memory/memory.sqlite3`）；库文件与版本策略见[数据库](database.md)。

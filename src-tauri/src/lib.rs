@@ -335,7 +335,7 @@ pub fn run() {
             // 文件 sink 必须在 paths 就绪后初始化；此处之前的日志只进终端
             logger::init_file_sink(&paths.logs);
             // 记忆库在路径就绪后立刻打开（建表 + 版本校验）：schema 不兼容要在启动时就说清楚，
-            // 不能让第一轮召回才发现库是坏的。打开失败不阻断聊天，命令层会以 MEMORY 错误如实上报。
+            // 不能让第一轮召回才发现库是坏的。打开失败即中止启动（不降级半启动），原因随错误如实带出。
             match crate::memory::MemoryStore::open(&paths) {
                 Ok(store) => { app.manage(MemoryState::new(store)); }
                 Err(error) => return Err(format!("记忆库打开失败，应用无法初始化记忆状态: {error}").into()),
