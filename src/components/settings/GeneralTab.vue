@@ -5,6 +5,7 @@ import { userConfig, loggingConfig, errorsConfig } from "@/services/config";
 import { createLogger } from "@/services/logger";
 import { formatError } from "@/services/error";
 import { isMacOS } from "@/services/env";
+import { checkForUpdate } from "@/services/update";
 
 const log = createLogger("Settings");
 
@@ -56,6 +57,19 @@ const logLevel = ref(loggingConfig.level);
 
 // ── 错误覆盖层 ──
 const errOverlay = ref(errorsConfig.overlay);
+
+// ── 软件更新 ──
+const checkingUpdate = ref(false);
+async function manualCheckUpdate() {
+  if (checkingUpdate.value) return;
+  checkingUpdate.value = true;
+  try {
+    // 手动入口：不受「本次启动已提示过」闩限制，无更新 / 失败都有明确回执（见 services/update.ts）
+    await checkForUpdate({ manual: true });
+  } finally {
+    checkingUpdate.value = false;
+  }
+}
 
 // ── 桌面轮询 ──
 
@@ -162,6 +176,16 @@ defineExpose({
     <div class="radio-row">
       <label v-for="m in ['auto','always','never']" :key="m" class="chk"><input type="radio" v-model="errOverlay" :value="m" /><span>{{ m }}</span></label>
     </div>
+  </div>
+
+  <div class="s-section">
+    <div class="s-label">软件更新</div>
+    <div class="row-gap">
+      <button class="btn-s" :disabled="checkingUpdate" @click="manualCheckUpdate">
+        {{ checkingUpdate ? "检查中…" : "检查更新" }}
+      </button>
+    </div>
+    <div class="s-hint">启动约 30 秒后会自动检查一次；这里可以随时手动再查</div>
   </div>
 
  </div>

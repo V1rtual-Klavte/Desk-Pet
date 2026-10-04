@@ -1,7 +1,7 @@
 import { check } from "@tauri-apps/plugin-updater"
 import { relaunch } from "@tauri-apps/plugin-process"
 import { getActiveSessionId, pushSystemMessage } from "@/services/session"
-import { confirmDialog, showFailure } from "@/services/dialog"
+import { confirmDialog, showDialog, showFailure } from "@/services/dialog"
 import { createLogger } from "@/services/logger"
 import { formatError } from "@/services/error"
 
@@ -43,22 +43,35 @@ export function __setUpdatePortForTest(next: UpdatePortFactory | null): void {
 
 /**
  * 检查并询问是否更新。返回：
- *   none    没有新版本（或本次启动已经提示过）
+ *   none    没有新版本（或自动检查本次启动已经提示过）
  *   skipped 用户选了「稍后」
  *   updated 已下载安装并触发重启
  *   failed  检查或安装抛错（已记日志；用户确认后的失败另给中性提示）
+ *
+ * `manual` = 用户从设置页主动点「检查更新」：
+ *   - 不受「本次启动已提示过」闩限制 —— 主动点就是要再查、再问；
+ *   - 无新版本 / 检查失败都给明确回执（自动检查这两条路径保持静默）；
+ *   - 不落聊天的系统消息：用户就在设置页看着对话框，聊天记录留给自动检查路径。
  */
-export async function checkForUpdate(): Promise<"none" | "skipped" | "updated" | "failed"> {
-  if (prompted) return "none"
+export async function checkForUpdate(options: { manual?: boolean } = {}): Promise<"none" | "skipped" | "updated" | "failed"> {
+  const manual = options.manual === true
+  if (!manual && prompted) return "none"
   let accepted = false
   try {
     const update = await factory.check()
-    if (!update) return "none"
+    if (!update) {
+      // 自动检查静默；手动检查必须给回执，否则用户分不清「已是最新」和「没反应」
+      if (manual) await showDialog({ kind: "info", title: "软件更新", message: "当前已是最新版本" })
+      return "none"
+    }
 
-    prompted = true
-
-    // 中性系统消息：更新是系统事件，不用角色口吻（AGENTS.md 的通用文案约束）
-    pushSystemMessage(`发现新版本 v${update.version}，可下载并安装更新`, getActiveSessionId())
+    if (!prompted) {
+      prompted = true
+      // 中性系统消息：更新是系统事件，不用角色口吻（AGENTS.md 的通用文案约束）。
+      // 手动路径不落这条：设置窗口没有会话上下文，确认框本身就是回执，
+      // 且这里置闩可避免同窗口的后续自动检查再弹一次。
+      if (!manual) pushSystemMessage(`发现新版本 v${update.version}，可下载并安装更新`, getActiveSessionId())
+    }
 
     accepted = await confirmDialog(`发现新版本 v${update.version}`, {
       title: "软件更新",
@@ -77,6 +90,9 @@ export async function checkForUpdate(): Promise<"none" | "skipped" | "updated" |
     // 中性文案（非角色口吻），走既有 dialog 服务呈现结果。
     if (accepted) {
       await showFailure("更新下载或安装失败，请稍后重试", { title: "软件更新" })
+    } else if (manual) {
+      // 手动入口要求明确回执；自动检查的端点偶发失败不打扰用户（只记日志）
+      await showFailure("检查更新失败，请稍后重试", { title: "软件更新" })
     }
     return "failed"
   }

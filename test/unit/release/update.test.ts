@@ -15,9 +15,11 @@ let dialogAnswer = true
 // 声明 rest 参数：工厂里转发 `confirmDialog(...args)` 需要展开目标签名兼容 unknown[]。
 const confirmDialog = vi.fn(async (..._args: unknown[]) => dialogAnswer)
 const showFailure = vi.fn(async (..._args: unknown[]) => {})
+const showDialog = vi.fn(async (..._args: unknown[]) => {})
 vi.mock("@/services/dialog", () => ({
   confirmDialog: (...args: unknown[]) => confirmDialog(...args),
   showFailure: (...args: unknown[]) => showFailure(...args),
+  showDialog: (...args: unknown[]) => showDialog(...args),
 }))
 
 import {
@@ -50,6 +52,7 @@ beforeEach(() => {
   pushSystemMessage.mockClear()
   confirmDialog.mockClear()
   showFailure.mockClear()
+  showDialog.mockClear()
   dialogAnswer = true
   __setUpdatePortForTest(null)
 })
@@ -113,6 +116,45 @@ describe("checkForUpdate", () => {
     expect(downloadAndInstall).toHaveBeenCalledTimes(1)
     expect(relaunch).not.toHaveBeenCalled()
     // 用户已经点了「下载并安装」：失败必须让他看见
+    expect(showFailure).toHaveBeenCalledTimes(1)
+    const [message] = showFailure.mock.calls[0] as [string, ...unknown[]]
+    // 中性文案：不能出现角色口吻的招呼词
+    expect(message).not.toMatch(/主人|人家|～|~/)
+  })
+
+  it("手动检查无新版本时给明确回执，且不落聊天系统消息", async () => {
+    const { factory } = portWith(null)
+    __setUpdatePortForTest(factory)
+    expect(await checkForUpdate({ manual: true })).toBe("none")
+    // 「没事」不是「失败」：必须是 info 回执，不能借失败样式
+    expect(showDialog).toHaveBeenCalledTimes(1)
+    expect(showDialog).toHaveBeenCalledWith(expect.objectContaining({ kind: "info" }))
+    // 设置页的对话框就是回执：手动路径不往聊天里落系统消息
+    expect(pushSystemMessage).not.toHaveBeenCalled()
+  })
+
+  it("手动检查在「稍后」之后仍会再问一次，且不重复落系统消息", async () => {
+    dialogAnswer = false
+    const { factory, downloadAndInstall } = portWith({ version: "0.16.0" })
+    __setUpdatePortForTest(factory)
+    expect(await checkForUpdate()).toBe("skipped")
+    expect(pushSystemMessage).toHaveBeenCalledTimes(1)
+
+    // 自动路径的闩：第二次静默放过
+    expect(await checkForUpdate()).toBe("none")
+    expect(confirmDialog).toHaveBeenCalledTimes(1)
+
+    // 手动路径不受闩限制：再查、再问；系统消息不重复
+    dialogAnswer = true
+    expect(await checkForUpdate({ manual: true })).toBe("updated")
+    expect(confirmDialog).toHaveBeenCalledTimes(2)
+    expect(pushSystemMessage).toHaveBeenCalledTimes(1)
+    expect(downloadAndInstall).toHaveBeenCalledTimes(1)
+  })
+
+  it("手动检查失败时给中性回执", async () => {
+    __setUpdatePortForTest(failingFactory())
+    expect(await checkForUpdate({ manual: true })).toBe("failed")
     expect(showFailure).toHaveBeenCalledTimes(1)
     const [message] = showFailure.mock.calls[0] as [string, ...unknown[]]
     // 中性文案：不能出现角色口吻的招呼词
