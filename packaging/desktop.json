@@ -1,0 +1,43 @@
+{
+  "$schema": "https://raw.githubusercontent.com/crabnebula-dev/cargo-packager/%40crabnebula/packager-v0.11.8/crates/packager/schema.json",
+  "name": "v1rtual-desk-pet",
+  "productName": "v1rtual-desk-pet",
+  "version": "0.16.0",
+  "identifier": "com.v1rtual.deskpet",
+  "description": "V1rtual Desk Pet 原生宿主 + 随包 Node（W0/W2 最小打包试验；cargo-packager 0.11.8）",
+  "outDir": "dist",
+  "binariesDir": "../target/release",
+  "binaries": [
+    {
+      "path": "native-host",
+      "main": true
+    },
+    {
+      "path": "deskpet-update-helper"
+    }
+  ],
+  "resources": [
+    {
+      "src": "dist/node",
+      "target": "node"
+    },
+    {
+      "src": "dist/harness",
+      "target": "harness"
+    },
+    {
+      "src": "dist/version-set.json",
+      "target": "version-set.json"
+    },
+    {
+      "src": "../resources/defaults",
+      "target": "defaults"
+    }
+  ],
+  "macos": {
+    "backgroundApp": true
+  },
+  "nsis": {
+    "installMode": "currentUser"
+  }
+}

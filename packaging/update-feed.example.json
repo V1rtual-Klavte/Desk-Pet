@@ -1,0 +1,15 @@
+{
+  "schemaVersion": 1,
+  "appIdentifier": "com.v1rtual.deskpet",
+  "generatedAt": "2026-10-04T00:00:00Z",
+  "releases": [
+    {
+      "envelope": "{\"appIdentifier\":\"com.v1rtual.deskpet\",\"version\":\"0.17.0\",\"platform\":\"macos\",\"arch\":\"aarch64\",\"publishedAt\":\"2026-10-04T00:00:00Z\",\"notes\":\"示例模板：envelope 是发布时被签名的原始字节；本文件里的 signature/sha256/size 全是占位，不会通过验签，只演示形状。\",\"versionSet\":{\"app\":\"0.17.0\",\"node\":\"22.22.3\"},\"components\":[{\"kind\":\"app\",\"name\":\"v1rtual-desk-pet_0.17.0_aarch64.app.tar.gz\",\"url\":\"https://github.com/V1rtual-Klavte/Desk-Pet/releases/download/v0.17.0/v1rtual-desk-pet_0.17.0_aarch64.app.tar.gz\",\"size\":52428800,\"sha256\":\"0000000000000000000000000000000000000000000000000000000000000000\"}]}",
+      "signature": "untrusted comment: 占位：发布时用 minisign 私钥对 envelope 字节签名（私钥不进入仓库）\nAAAAC3NzaC1lZDI1NTE5AAAAIAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA\n"
+    },
+    {
+      "envelope": "{\"appIdentifier\":\"com.v1rtual.deskpet\",\"version\":\"0.17.0\",\"platform\":\"windows\",\"arch\":\"x86_64\",\"publishedAt\":\"2026-10-04T00:00:00Z\",\"notes\":\"示例模板：Windows 组件是 NSIS 安装器，同样承载完整版本集合。\",\"versionSet\":{\"app\":\"0.17.0\",\"node\":\"22.22.3\"},\"components\":[{\"kind\":\"installer\",\"name\":\"v1rtual-desk-pet_0.17.0_x64-setup.exe\",\"url\":\"https://github.com/V1rtual-Klavte/Desk-Pet/releases/download/v0.17.0/v1rtual-desk-pet_0.17.0_x64-setup.exe\",\"size\":41943040,\"sha256\":\"0000000000000000000000000000000000000000000000000000000000000000\"}]}",
+      "signature": "untrusted comment: 占位：发布时用 minisign 私钥对 envelope 字节签名（私钥不进入仓库）\nAAAAC3NzaC1lZDI1NTE5AAAAIAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA\n"
+    }
+  ]
+}

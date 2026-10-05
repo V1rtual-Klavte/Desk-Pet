@@ -1,0 +1,53 @@
+// ==========================================
+// 日志 & 开发者工具命令
+//
+// transport 无关的普通函数；打开 DevTools 经 [`WindowPort`]
+// （窗口不存在/仅调试可用由端口如实返回错误）。
+// ==========================================
+
+use crate::error::AppResult;
+use crate::host::{WindowId, WindowPort};
+use crate::logger;
+use crate::rust_info;
+
+/// 接收前端统一日志。
+/// 前端已按生效级别过滤，且以**单一 FIFO 队列**批量发送以保证顺序，
+/// 所以这里不再按级别分流（分流会打乱文件里的物理顺序），原样落盘即可。
+pub fn log_messages(msgs: Vec<String>) {
+    for msg in msgs {
+        logger::emit_frontend(&msg);
+    }
+}
+
+/// 前端启动后推送生效级别。
+/// 与 set_monitor_enabled 同一模式：配置的唯一真相源在前端，Rust 只接收原语。
+pub fn set_log_config(level: u8) {
+    logger::set_level(level);
+    rust_info!(
+        "日志级别已由前端设置: {}",
+        logger::level_name(logger::level())
+    );
+}
+
+/// 前端未捕获异常上报 —— 即使前端界面全挂，终端与日志文件里也要留下完整记录。
+pub fn report_frontend_error(source: String, message: String, stack: String) {
+    logger::emit(
+        logger::LEVEL_ERROR,
+        format_args!("[前端异常][{source}] {message}\n{stack}"),
+    );
+}
+
+/// 聚焦主窗口（通知卡片点击时调用）
+// ═══════════════════════════════════════════════════════════════
+// macOS 系统通知 — 已移除
+// 尝试过 tauri-plugin-notification（需代码签名）和 osascript
+// display notification（Tauri WebView 沙箱下 osascript 无法
+// 触发用户通知中心），均无法在 macOS 未签名开发构建中正常工作。
+// 保留此注释作为占位，未来若 Apple 放开限制或 Tauri 提供新方案再议。
+// ═══════════════════════════════════════════════════════════════
+
+/// 打开主窗口 DevTools（调试用）。仅 debug 构建有意义；release 构建或主窗口缺失时
+/// 端口**返回错误** —— 静默返回 Ok 是假信号（本端口刻意报错，不做静默成功）。
+pub fn open_devtools(port: &dyn WindowPort) -> AppResult<()> {
+    port.open_devtools(WindowId::Main)
+}

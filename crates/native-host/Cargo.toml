@@ -1,0 +1,137 @@
+[package]
+name = "native-host"
+# 应用版本继承根 Cargo.toml 的 [workspace.package]（单一真相源，W10a）
+version.workspace = true
+description = "V1rtual-Desk-Pet 原生宿主：窗口、绘制、系统能力与最终执行裁决（无 Tauri/WebView）"
+edition = "2021"
+
+[lib]
+name = "native_host"
+crate-type = ["rlib"]
+
+# 更新 helper（W10b）：与主宿主同 crate、独立可执行文件（cargo 产出
+# `target/<profile>/deskpet-update-helper`）。`src/main.rs` 的主 bin 仍由 cargo
+# 自动发现（edition 2021 的 autobins 默认开启，显式 [[bin]] 不清空自动发现）；
+# 随包分发见 `packaging/desktop.json` 的 binaries 清单。
+[[bin]]
+name = "deskpet-update-helper"
+path = "src/update/helper_main.rs"
+
+[dependencies]
+# 结构化错误类型（error.rs）
+thiserror = "1"
+serde = { version = "1", features = ["derive"] }
+# 本地时间戳（chrono::Local）—— 仅需 clock + std，不拉 serde/unicode
+chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
+# 线协议信封（ipc/protocol.rs）与单元测试的 JSON 往返
+serde_json = "1"
+# Bundled SQLite keeps macOS and Windows on the same SQLite/FTS5 runtime.
+rusqlite = { version = "0.40", features = ["bundled", "backup"] }
+# 记忆来源准入与作业协议的内容哈希
+sha2 = "0.10"
+# 系统信息命令（commands/tool_exec/system.rs）的 CPU 核数
+num_cpus = "1"
+# Frontmost-window capture for macOS/Windows（截图与静默了解，版本沿用既有锁定值）
+xcap = { version = "=0.9.8", default-features = false }
+# 截图字节在内存中编码/解码（IPC 与落盘），版本沿用既有锁定值
+base64 = "=0.22.1"
+# Profile 导出打包（commands/profile_cmd.rs）。只留 zlib-rs 的 deflate：
+# 默认特性会拉入 zstd/bzip2/lzma/aes/sha2/ppmd 等一大串，而 `deflate` 本身还额外捆绑
+# 了编译极慢的 zopfli。Profile 里绝大多数是已压缩的 PNG/WAV，多算法收益极低。
+zip = { version = "8", default-features = false, features = ["deflate-flate2-zlib-rs"] }
+# 枚举系统已安装字体（commands/font_cmd.rs）。纯 Rust 读取系统字体目录/注册表，
+# 不链接系统库；目标平台只有 macOS 与 Windows，fontconfig（Linux 专用）不需要。
+fontdb = { version = "0.24", default-features = false, features = ["fs", "std"] }
+# 私有 IPC（ipc/）与 Node 监督器（host/supervisor.rs）：异步传输、两通道、背压与进程生命周期。
+# 只开需要的特性：rt-multi-thread（监督器专用小运行时）、net（UDS / named pipe）、
+# io-util（分帧读写）、time（握手/关停超时）、process（随包 Node）、sync（有界队列/oneshot）、
+# macros（select! 优先队列与测试）。版本与树上既有的 tokio 同源，不引入第二份运行时。
+tokio = { version = "1.52", features = [
+    "rt-multi-thread",
+    "net",
+    "io-util",
+    "time",
+    "process",
+    "sync",
+    "macros",
+] }
+# 端点名、一次性握手值、blob id 的随机字节（系统熵源；不引入 rand 全家族）。
+getrandom = "0.3"
+# 统一图片域（images/）：解码/缩放/编码。与 xcap 同一版本口径；显式只开五种准入格式的
+# feature，不拉默认全集（avif/tiff/exr/ico/pnm/qoi/tga/dds/hdr 都不需要）。
+# GIF/WebP 仍需开启：动画文件只解首帧、不播放（2026-10-04 用户指令），格式准入与静态解码不变。
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif", "webp", "bmp"] }
+# 更新域（update/，W10b）：
+# - ureq：feed / 制品 HTTPS 拉取。rustls + ring + webpki-roots（锁内 rustls 0.23 同一
+#   provider，不引入 aws-lc-rs）；阻塞式，调用点在 IPC 的 spawn_blocking 与退出序列，
+#   两者都不在 tokio 运行时的 async 上下文。proxy-from-env 让企业代理可用（TLS 仍验证）；
+#   socks-proxy 补上 SOCKS 出口 —— `proxy-from-env` 只认 http(s)/ALL_PROXY，用户把
+#   `ALL_PROXY` 设成 `socks5://…` 时少了它就会直接在连出去之前失败（实测报
+#   `Connect error: SOCKS feature disabled`，更新检查整个不可用）。**透明生效**：
+#   只读环境变量，不加设置项、不进 UI、用户无感知。
+# - minisign-verify：release envelope 的 minisign/ed25519 验签，零传递依赖。
+# - tar + flate2：macOS `.app` 整包归档（`.tar.gz`）的进程内解包；flate2 只开 zlib-rs，
+#   与既有 zip 依赖同一后端，不拉第二套 deflate 实现。
+ureq = { version = "2.12", default-features = false, features = ["tls", "proxy-from-env", "socks-proxy"] }
+minisign-verify = "0.2.5"
+tar = "0.4"
+flate2 = { version = "1", default-features = false, features = ["zlib-rs"] }
+
+[target.'cfg(unix)'.dependencies]
+# MCP 子进程整组回收（commands/mcp_bridge.rs 的 kill_child 用 killpg）：只做一次系统
+# 调用、不链接额外系统库。版本对齐 Cargo.lock 既有 0.2.186（树上已有传递依赖，这里
+# 显式提升为直接依赖，不新增版本）；Windows 由 taskkill /T 承担同一职责，不需要它。
+libc = "0.2.186"
+
+[target.'cfg(target_os = "macos")'.dependencies]
+# monitor 的平台事件源（NSWorkspace）与前台窗口标题采集
+objc = "0.2"
+# W5 原生薄层 UI（ui/platform/macos.rs）：窗口/托盘/帧计时器/动画。
+# 与 W0 原型（crates/ui-probe，已随迁移完成删除）同一套 objc2 绑定版本（工作区 Cargo.lock 已有），
+# 做法照原型搬；只开 5 个 crate，不带 core-graphics/core-text/image-io
+# （那些属图片与渲染域，本波不用）。
+objc2 = "0.6"
+objc2-app-kit = "0.3"
+objc2-foundation = "0.3"
+objc2-quartz-core = "0.3"
+objc2-core-foundation = "0.3"
+# CGPath（主题绘制的投影 spread 用 shadowPath 外扩/内缩近似，ui/theme/paint.rs）。
+# 版本与 objc2-quartz-core 0.3 的传递依赖对齐（它已默认启用本 crate 并开好
+# CGColor/CGPath/objc2 特性，这里显式提升为直接依赖、不引入新生态）；
+# `objc2` 特性让 CF 类型可进 NSArray（渐变色的 CGColor 数组）。
+objc2-core-graphics = { version = "0.3", default-features = false, features = ["CGPath", "objc2"] }
+# 主线程唤醒（ui/platform/macos.rs 的 MainThreadQueue 唤醒器）：libdispatch 主队列
+# 投递。手写裸 `extern "C"` 声明 dispatch_get_main_queue 会在链接期以 undefined
+# symbol 失败（cargo check 通过但产不出二进制）；dispatch2 提供正规绑定并自带
+# `#[link(name = "System", kind = "dylib")]`，实机验证可链接。版本与树上现有传递
+# 版本 0.3.1（经 objc2 家族）对齐，不新增版本；feature 保持与现有编译配置一致
+# （alloc），不引入默认的 block2/std/objc2 面，避免扩大依赖图。
+dispatch2 = { version = "0.3", default-features = false, features = ["alloc"] }
+
+[target.'cfg(windows)'.dependencies]
+# feature 覆盖 monitor / commands / ui（W5 原生薄层）平台代码用到的每个符号
+# （与树上既有的 0.52 对齐；树上并存其它版本的 windows-sys，feature unification 不互相兜底）
+windows-sys = { version = "0.52", features = [
+    "Win32_Foundation",                 # CloseHandle / HWND / BOOL / POINT
+    "Win32_UI_Shell",                   # ShellExecuteW（commands/tool_exec/desktop.rs 的 app_open）
+    "Win32_Graphics_Gdi",               # GetMonitorInfoW / MonitorFromPoint / MONITORINFOEXW（commands/cursor.rs）
+    "Win32_UI_HiDpi",                   # GetDpiForMonitor（commands/cursor.rs 的 DPI 换算）
+    "Win32_UI_WindowsAndMessaging",     # 前台窗口/消息窗口/钩子/会话常量、SW_SHOWNORMAL
+    "Win32_System_Threading",           # OpenProcess / GetCurrentThreadId
+    "Win32_System_ProcessStatus",       # GetProcessImageFileNameW
+    "Win32_System_SystemInformation",   # GetTickCount
+    "Win32_System_StationsAndDesktops", # OpenInputDesktop / GetUserObjectInformationW
+    "Win32_UI_Input_KeyboardAndMouse",  # GetLastInputInfo / LASTINPUTINFO
+    "Win32_UI_Input_Ime",               # W8a 聊天输入：ImmGetContext/ImmSetCandidateWindow（候选窗定位）
+    "Win32_UI_Controls",                # W8a 聊天画布：SetScrollInfo/ShowScrollBar（0.52 里滚动 API 在 Controls）
+    "Win32_Globalization",              # 上一行的 HIMC 类型依赖（windows-sys 0.52 的 feature 门槛）
+    "Win32_UI_Accessibility",           # SetWinEventHook（前台切换事件）
+    "Win32_System_RemoteDesktop",       # WTSRegisterSessionNotification（锁屏/解锁）
+    "Win32_System_Power",               # 睡眠/唤醒、显示器电源通知
+    "Win32_System_SystemServices",      # GUID_CONSOLE_DISPLAY_STATE
+    "Win32_System_LibraryLoader",       # GetModuleHandleW（消息窗口实例句柄）
+    "Win32_System_JobObjects",          # CreateJobObjectW / AssignProcessToJobObject（监督器不留孤儿）
+    "Win32_Security",                   # CreateJobObjectW 的 SECURITY_ATTRIBUTES 参数类型（传 null）
+    "Win32_System_DataExchange",        # 提示对话框「复制详情」：OpenClipboard / SetClipboardData（W8c）
+    "Win32_System_Memory",              # 剪贴板文本内存块：GlobalAlloc / GlobalLock / GlobalUnlock
+] }

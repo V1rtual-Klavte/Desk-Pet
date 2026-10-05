@@ -1,0 +1,25 @@
+{
+  "$schema": "desk-pet/update-client@1",
+  "schemaVersion": 1,
+  "description": "Native 更新客户端元数据（编译期嵌入 crates/native-host/src/update/mod.rs）。这是**客户端**配置；发布出去的更新源文件叫 update.json，形状见 packaging/update-feed.example.json——两者不是同一个文件，不要混淆。",
+  "appIdentifier": "com.v1rtual.deskpet",
+  "feedUrl": "https://github.com/V1rtual-Klavte/Desk-Pet/releases/latest/download/update.json",
+  "releasePublicKey": "RWQBS1lrNG3Ji1IlxfcL37gSCZAgz8ZqxCOIGuWMYKoCKFgNpaW2uAWE",
+  "releasePublicKeyOrigin": "与旧 Tauri updater 同一把 minisign 公钥：tauri.conf.json 的 updater.pubkey 是 key 文件全文的 base64，解码后的第二行就是本字段（公钥不是密钥，可以进仓库；私钥与口令只在发布侧，不进入本仓库、日志或方案正文）。",
+  "limits": {
+    "maxFeedBytes": 1048576,
+    "maxArtifactBytes": 2147483648
+  },
+  "codeSigning": {
+    "macosDeveloperId": false,
+    "macosNotarized": false,
+    "windowsAuthenticode": false,
+    "note": "Apple Developer ID/公证与 Windows Authenticode 代码签名尚未交付；换打包器（cargo-packager）不会自动变成已签名（执行契约 §4.5）。首次 Native 包与更新 helper 的状态在每次发布时对照实物如实更新本记录；更新 envelope 的 minisign 签名与此处的 OS 代码签名是两回事。"
+  },
+  "schemaNotes": {
+    "singleSchemaVersion": "update.json（发布 feed）与 envelope 共用 schemaVersion=1；字段增删改一律提升该值，旧客户端遇到不认识的版本直接拒绝，不做兼容读取。",
+    "envelopeCoverage": "签名覆盖 envelope 原始字节：appIdentifier、version、platform、arch、versionSet（app/node）、每个组件的 kind/name/url/size/sha256。顶层 feed 字段（generatedAt 等）不在签名覆盖内、也不参与安装决策。",
+    "artifactFormat": "macOS 组件 kind=app，是含 .app 整目录（Native + Node + JS + defaults + version-set.json）的 .tar.gz；Windows 组件 kind=installer，是 NSIS 安装器 .exe，静默安装后校验同一套完整版本集合。",
+    "installPointer": "安装 helper 是独立可执行 deskpet-update-helper（crates/native-host/src/update/helper_main.rs，随包见 packaging/desktop.json 的 binaries 清单）；主宿主只负责下载/校验/staging，替换与重启发生在整套进程退出之后。"
+  }
+}

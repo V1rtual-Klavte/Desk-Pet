@@ -1,0 +1,90 @@
+meta:
+  name: yuki
+  description: 结城理 · 雨夜蓝与门户白卡
+  version: 1
+theme:
+  colors:
+    背景: rgba(6, 16, 31, 0.45)
+    卡片背景: '#ffffff'
+    聊天背景: '#ffffff'
+    边框: rgba(79, 195, 247, 0.8)
+    分割线: '#b9c4cc'
+    输入边框: '#b9c4cc'
+    主文字: '#2f3b47'
+    亮文字: rgb(1, 87, 155)
+    粉色文字: rgb(194, 24, 91)
+    暗文字: rgb(95, 114, 133)
+    强调色: rgb(2, 119, 189)
+    强调悬浮: '#01579b'
+    标题栏渐变起: '#4fc3f7'
+    标题栏渐变止: '#0277bd'
+    标题栏文字: rgb(255, 255, 255)
+    表面色: rgb(226, 237, 246)
+    深表面色: rgb(206, 224, 240)
+    遮罩: rgba(6, 16, 31, 0.72)
+    透明背景: rgba(255, 255, 255, 0.85)
+    模糊度: 14px
+  shield:
+    enabled: false
+    image: ''
+  parallax:
+    intensity: 1
+    layers:
+      - enabled: true
+        image: materials/L0/layer_0_1791083948671.png
+        sensitivity: 0.4171875
+        scale: 1.29
+        offsetX: -3.4778645833333326
+        offsetY: 2.7871621621621627
+        locked: false
+      - enabled: true
+        image: materials/L1/layer_1_1791083996429.png
+        sensitivity: 0.6956038678278688
+        scale: 1.13
+        offsetX: -0.9641927083333331
+        offsetY: -0.29771959459459457
+        locked: false
+      - enabled: true
+        image: materials/L2/l2_1.png
+        sensitivity: 0.8377561475409838
+        scale: 1.09
+        offsetX: 0.7831754210992906
+        offsetY: 11.776140042741591
+        locked: false
+      - enabled: true
+        image: materials/L3/layer_3_1791084030580.png
+        sensitivity: 1.2719966700819674
+        scale: 1.92
+        offsetX: 2.228751108156027
+        offsetY: 5.62173279458436
+        locked: false
+      - enabled: true
+        image: materials/L4/layer_4_1791084042101.png
+        sensitivity: 2.349282786885246
+        scale: 1
+        offsetX: -7.179465868794322
+        offsetY: 3.158291903409087
+        locked: false
+  depthOfField:
+    image: materials/dof/dof_1789274506827.jpeg
+    blur: 1.5
+    scale: 2.58
+    offsetX: -1.1100260416666572
+    offsetY: -22.354307432432428
+    bgSensitivity: 0.35
+    brightness: 0.95
+    contrast: 1
+    saturate: 0.9
+    focus:
+      - x: 49.8802675189394
+        'y': 59.375287929975435
+        rx: 13
+        ry: 18.5
+        feather: 0.35
+        sensitivity: 0.9
+      - x: 53.56654756136951
+        'y': 70.38321024512885
+        rx: 14.5
+        ry: 24
+        feather: 0.35
+        sensitivity: 0.8

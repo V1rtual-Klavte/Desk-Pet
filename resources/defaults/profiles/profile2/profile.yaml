@@ -1,0 +1,42 @@
+meta:
+  name: void
+  description: ''
+  version: 1
+theme:
+  parallax:
+    layers:
+      - enabled: true
+        image: materials/L0/bg6.png
+        sensitivity: 0.32535220286885247
+        scale: 1.12
+        offsetX: 0.4280252659574469
+        offsetY: -3.879616477272726
+        locked: false
+      - enabled: true
+        image: materials/L1/l1_3.png
+        sensitivity: 0.5
+        scale: 1
+        offsetX: -15.402676196808498
+        offsetY: 14.411695075757557
+        locked: false
+      - enabled: true
+        image: materials/L2/l2_3.png
+        sensitivity: 0.8
+        scale: 0.74
+        offsetX: -0.44256981382978766
+        offsetY: 19.04592803030304
+        locked: false
+      - enabled: true
+        image: materials/L3/l3_3.png
+        sensitivity: 1.2
+        scale: 3
+        offsetX: -186.7977061170213
+        offsetY: 91.23461174242424
+        locked: false
+      - enabled: true
+        image: materials/L4/l4_4.png
+        sensitivity: 1.6
+        scale: 1.237128586065574
+        offsetX: -13.930213874113464
+        offsetY: 1.1881510416666616
+        locked: false

@@ -1,0 +1,42 @@
+meta:
+  name: 黍
+  description: ''
+  version: 1
+theme:
+  parallax:
+    layers:
+      - enabled: true
+        image: materials/L0/bg_6.png
+        sensitivity: 0.2
+        scale: 1.35
+        offsetX: 1.7134862588652464
+        offsetY: -8.879320549242417
+        locked: false
+      - enabled: true
+        image: materials/L1/l1_2.png
+        sensitivity: 0.5
+        scale: 1.32
+        offsetX: -0.5727781471631207
+        offsetY: 4.603900331439393
+        locked: false
+      - enabled: true
+        image: materials/L2/l2_5.png
+        sensitivity: 0.8
+        scale: 1.35
+        offsetX: 1.1656416223404298
+        offsetY: 26.876183712121243
+        locked: false
+      - enabled: true
+        image: materials/L3/l3_2.png
+        sensitivity: 1.2
+        scale: 1.89
+        offsetX: 2.9816323138297767
+        offsetY: -0.6362452651515159
+        locked: false
+      - enabled: true
+        image: materials/L4/l4_2.png
+        sensitivity: 1.6
+        scale: 1.7
+        offsetX: 0
+        offsetY: 0
+        locked: false

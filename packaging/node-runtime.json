@@ -1,0 +1,65 @@
+{
+  "$schema": "desk-pet/node-runtime@1",
+  "schemaVersion": 1,
+  "description": "随包 Node 运行时的版本锁定元数据。唯一指定随包 Node 版本；打包按这里的值取发行闭包（node + npm/npx CLI + 必要运行库，不只复制 node 可执行文件），监督器握手时用 nodeVersion 核对 Node 自报版本。",
+  "nodeVersion": "22.22.3",
+  "nodeMajorLine": 22,
+  "minimumRequirement": ">=22.19.0",
+  "minimumRequirementSource": "Pi Agent Core 的引擎要求（>=22.19.0）；选定版本必须落在这个下限之上。",
+  "selectionRationale": "取 Node 22 LTS 线的最新补丁（32 位 hex 版本号的空间内）；22 线同时满足 Pi 的 >=22.19.0 与原生扩展生态（NODE_MODULE_VERSION 稳定）的要求。",
+  "modulesAbi": 127,
+  "modulesAbiNote": "Node 22 线的 NODE_MODULE_VERSION。原生扩展必须与它匹配或走 N-API；实测值见 verification.observedModulesAbi。",
+  "distribution": {
+    "source": "https://nodejs.org/dist",
+    "artifactPattern": "node-v${nodeVersion}-${platform}-${arch}.{tar.gz|zip}",
+    "integrity": "SHASUMS256.txt（nodejs.org 同目录提供）；打包脚本必须校验哈希后再纳入发行闭包。",
+    "closure": {
+      "includes": [
+        "bin/node（可执行文件）",
+        "bin/npm、bin/npx、bin/corepack（官方符号链接，指向 lib/node_modules 下的 CLI 入口）",
+        "lib/node_modules/npm",
+        "lib/node_modules/corepack",
+        "LICENSE"
+      ],
+      "excludes": [
+        "include/（约 62MB C/C++ 头文件）：源码编译原生扩展不在保证范围（执行契约 §4.3），预编译 .node / N-API 二进制不需要头文件",
+        "share/（man 手册与 gdb/lldb 调试脚本）"
+      ],
+      "note": "Windows zip 布局不同（node.exe 在根部、npm.cmd/npx.cmd 为包装脚本），main.rs 按平台解析 node 可执行文件。",
+      "caveats": [
+        "cargo-packager 对目录资源逐文件复制，bin/npm、bin/npx、bin/corepack 三个官方符号链接会被展开为普通文件副本；展开后其相对 require（如 '../lib/cli.js'）不再成立，直接执行这些副本会失败（macOS 打包产物已实证）。可用调用形式是随包 node + 真实 CLI 脚本：node lib/node_modules/npm/bin/npm-cli.js（npx → npx-cli.js，corepack → dist/corepack.js）。W4 的进程管理域按此解析 node/npm/npx；W10 打包需恢复符号链接或生成等价 shim，避免留下不可执行的陷阱文件。",
+        "macOS arm64 打包产物验证：node bin/node -v → 22.22.3；node lib/node_modules/npm/bin/npm-cli.js --version → 10.9.8。"
+      ]
+    },
+    "notIncluded": [
+      "随包下载/暂存脚本与 CI 接线属 W10；W0/W2 只在隔离目录（/tmp）手工取证，未改 CI。"
+    ]
+  },
+  "provisional": false,
+  "verification": {
+    "verifiedAt": "2026-10-04",
+    "method": "从 nodejs.org/dist 下载官方发行包并用同目录 SHASUMS256.txt 校验 SHA-256；在 macOS arm64 上实测 `node --version`、`node -p process.versions.modules`、`node -p process.versions.napi`、`npm --version`。",
+    "darwinArm64": {
+      "artifact": "node-v22.22.3-darwin-arm64.tar.gz",
+      "sha256": "0da7ff74ef8611328c8212f17943368713a2ad953fb7d89a8c8a0eae87c23207",
+      "observedNodeVersion": "22.22.3",
+      "observedModulesAbi": 127,
+      "observedNapi": 10,
+      "observedNpm": "10.9.8"
+    },
+    "darwinX64": {
+      "artifact": "node-v22.22.3-darwin-x64.tar.gz",
+      "sha256": "45830ba752fa0d892c6dcd640946669801293cac820a33591ded40ac075198ec",
+      "observed": "Mach-O 64-bit x86_64；本机无 Rosetta 未执行。同版本号与 arm64 同源，NODE_MODULE_VERSION 按 Node 主线固定为 127。"
+    },
+    "notVerified": [
+      "Windows x64 发行包（未下载、未执行；ABI 预期同为 127）",
+      "打包产物内的原生扩展加载（W10 用 fixture 验证）"
+    ]
+  },
+  "consumers": [
+    "监督器（crates/native-host/src/host/supervisor.rs 的 expected_node_version）——握手时拒绝版本不一致的 Node。",
+    "原生宿主入口（crates/native-host/src/main.rs）——编译期嵌入本文件，以 nodeVersion 作为握手期望值。",
+    "W10 打包/更新（发行闭包与 update.json 的组件集版本）。"
+  ]
+}

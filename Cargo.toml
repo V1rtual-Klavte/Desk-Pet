@@ -1,6 +1,18 @@
 [workspace]
 resolver = "2"
-members = ["src-tauri"]
+# `crates/native-host` 是原生宿主 crate（无 Tauri/WebView），产品本体。
+# W0 的 UI 选型探针 `crates/ui-probe` 已随迁移完成删除（2026-10-04 用户裁定；它是唯一
+# 真跑过原生平台代码的东西，实机证据留在 `test/.tmp/ui-probe/`，过程记录见
+# docs/history/implementation/原生宿主迁移过程记录-2026-10-04基线.md）。
+members = ["crates/native-host"]
+
+# 应用版本的单一真相源：成员 crate 以 `version.workspace = true` 继承。
+# 其余投影点由 scripts/set-version.mjs 统一写入、scripts/check-bundle-config.mjs 校验：
+#   · package.json（前端 / 工具链）
+#   · packaging/desktop.json（cargo-packager 的 --config 元数据；它不会自动读 Cargo 版本，
+#     不显式同步就会打出版本号错的包）
+[workspace.package]
+version = "0.16.0"
 
 # 发布产物体积。只能写在 workspace 根：成员 crate 里的 `[profile]` 会被 Cargo 忽略
 # （带 warning 但不是错误，放错位置会静默不生效）。

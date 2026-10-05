@@ -1,0 +1,1899 @@
+//! 图层编辑器窗内容（W9a，Windows）：五层编辑 + 第二个渲染器预览。
+//!
+//! **未在 Windows 实机验证**（本机离线类型核对，见原生宿主迁移过程记录 §9.4 第 19 条）。
+//! 与 macOS 同语义：预览 = 第二个 `Renderer`（`WinLayerSurface` 以编辑器窗口为
+//! 合成目标；窗口需带 `WS_EX_LAYERED`，由 `windows.rs` 的 `open_aux` 设置），
+//! 草稿改动同步投给主窗舞台（主窗/预览一致），保存走 `EditorUi::save`。
+//!
+//! 与 macOS 的已登记差异：
+//! - 参数用数值 `EDIT` 输入（macOS 侧是滑杆）；拖动预览在窗口空白区按左键拖动；
+//!   **位置输入不设范围**（任意有限值都接受；macOS 滑杆的 ±50 只是粗调控件范围）——
+//!   两边共享同一条领域规则：偏移可拖到任意位置，框外部分由取景框裁掉
+//!   （`ui/editor/mod.rs::EditorDraft::set_offset` 不夹取，2026-10-05 用户裁决）。
+//! - 素材列表用 `COMBOBOX`（`CBS_DROPDOWNLIST`，macOS 侧是 `NSPopUpButton`）；
+//! - 未保存改动的关闭确认用 `MessageBoxW`（是 = 保存并关闭 / 否 = 放弃 / 取消 = 留下）；
+//!   「没有素材？」素材提示词面板用**非模态**的自建 owned window（`MessageBoxW`
+//!   装不下「可滚动正文 + 复制按钮」，而帮助内容也不该锁窗；与 macOS 的 transient
+//!   NSPopover 对称）。
+//! 本文件全部代码只在 UI 主线程运行。
+//!
+//! ## 主题接线（范围 c：图层编辑器）
+//!
+//! 口径与设置窗同（`WM_CTLCOLORSTATIC` / `WM_CTLCOLORBTN` 字色、ownerdraw 主按钮、
+//! [paint_background] 自绘窗底），差异是编辑器的画布语义：
+//! - 左列控件区与底部按钮条用 `tokens().field_bg`（工作台面色）；
+//! - **预览区（左列右侧）用 `tokens().stage_bg`** —— 预览是角色图层落在舞台底上的
+//!   合成，与主窗舞台同一底色语义；
+//! - 两区之间与底部按钮条上沿用 `rule` 分隔线。
+//!
+//! **已知限制（如实登记）**：编辑器窗口同时是第二个渲染器的 `UpdateLayeredWindow`
+//! 合成目标 —— 渲染器提交过帧后，窗口外观由分层位图决定，`WM_PAINT`/`WM_ERASEBKGND`
+//! 画的窗底**不在合成里显示**（子控件与 ownerdraw 按钮照常可见）。预览区的
+//! `stage_bg` 要真正可见，需要渲染表面支持背板填充（或把预览改成独立的分层子窗口，
+//! 与 `windows_main` 的舞台同构）—— 属「预览区只占右半边」的既有缺口
+//! （W9b/W11 实机验证项），本批不扩大范围改共享渲染表面。控件区一侧的窗底同样受此
+//! 影响；本文件保证「渲染器未提交帧时」与子控件周边外露区域的底色正确。
+
+use std::cell::{Cell, RefCell};
+
+use windows_sys::Win32::Foundation::{HWND, LPARAM, LRESULT, RECT, WPARAM};
+use windows_sys::Win32::Graphics::Gdi::{
+    CreateFontW, DeleteObject, InvalidateRect, SetBkMode, SetTextColor, CLIP_DEFAULT_PRECIS,
+    DEFAULT_CHARSET, FW_BOLD, FW_NORMAL, HDC, HFONT, OUT_DEFAULT_PRECIS,
+};
+use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
+use windows_sys::Win32::UI::Controls::{ODS_DISABLED, ODS_GRAYED, ODS_SELECTED, ODT_BUTTON};
+use windows_sys::Win32::UI::HiDpi::{GetDpiForSystem, GetDpiForWindow};
+use windows_sys::Win32::UI::Input::KeyboardAndMouse::{IsWindowEnabled, SetFocus, VK_ESCAPE};
+use windows_sys::Win32::UI::Shell::{DefSubclassProc, SetWindowSubclass};
+use windows_sys::Win32::UI::WindowsAndMessaging::{
+    AdjustWindowRectEx, CreateWindowExW, DefWindowProcW, DestroyWindow, GetClientRect, GetParent,
+    GetSystemMetrics, GetWindowLongPtrW, GetWindowRect, GetWindowTextLengthW, GetWindowTextW,
+    IsIconic, IsWindowVisible, MessageBoxW, MoveWindow, RegisterClassW, SendMessageW,
+    SetForegroundWindow, SetWindowLongPtrW, SetWindowTextW, ShowWindow, BS_DEFPUSHBUTTON,
+    BS_OWNERDRAW, CBN_SELENDOK, CBS_DROPDOWNLIST, CB_ADDSTRING, CB_GETCURSEL, CB_RESETCONTENT,
+    CB_SETCURSEL, CS_HREDRAW, CS_VREDRAW, ES_AUTOVSCROLL, ES_MULTILINE, ES_READONLY, GWL_STYLE,
+    IDCANCEL, IDNO, IDOK, IDYES, MB_DEFBUTTON2, MB_ICONWARNING, MB_YESNOCANCEL, SM_CXSCREEN,
+    SM_CYSCREEN, SW_SHOW, WM_CLOSE, WM_COMMAND, WM_CTLCOLORSTATIC, WM_DESTROY, WM_ERASEBKGND,
+    WM_KEYDOWN, WM_SETFONT, WNDCLASSW, WS_BORDER, WS_CAPTION, WS_CHILD, WS_EX_CLIENTEDGE,
+    WS_EX_TOPMOST, WS_POPUP, WS_SYSMENU, WS_TABSTOP, WS_VISIBLE, WS_VSCROLL,
+};
+
+use crate::render::geometry::WindowGeometry;
+use crate::render::win::WinLayerSurface;
+use crate::render::Renderer;
+use crate::ui::editor::{
+    asset_help_bottom_offset, editor_ui, ASSET_HELP_BUTTON, ASSET_HELP_BUTTON_H, ASSET_HELP_CLOSE,
+    ASSET_HELP_COPIED, ASSET_HELP_COPY, ASSET_HELP_FONT_SIZE, ASSET_HELP_INTRO, ASSET_HELP_TITLE,
+    ASSET_PROMPT,
+};
+use crate::ui::theme;
+use crate::ui::theme::paint_win::{self, ButtonRole, TextRole};
+use crate::window::DPI_BASELINE;
+use crate::{rust_debug, rust_info, rust_warn};
+
+use super::windows_chat::DrawItemStruct;
+
+/// 层 tab 控件 ID：2000 + 层号（点击即选中该层；与 macOS 的顶部 tab 栏同构）。
+const TAB_BASE: i32 = 2000;
+/// 参数输入框 ID：3000 + 序号。
+const EDIT_BASE: i32 = 3000;
+const EDIT_SCALE: i32 = 0;
+const EDIT_SENSITIVITY: i32 = 1;
+const EDIT_OFFSET_X: i32 = 2;
+const EDIT_OFFSET_Y: i32 = 3;
+const EDIT_INTENSITY: i32 = 4;
+const PICK_ID: i32 = 3100;
+const REVERT_ID: i32 = 3101;
+const SAVE_ID: i32 = 3102;
+const CLOSE_ID: i32 = 3103;
+const STATUS_ID: i32 = 3104;
+/// 素材区控件：下拉列表（应用内素材）+ 移除/刷新。
+const ASSET_COMBO_ID: i32 = 3105;
+const ASSET_REMOVE_ID: i32 = 3106;
+const ASSET_REFRESH_ID: i32 = 3107;
+/// 单层复位（参数回默认）与位置归零：与「放弃改动」是不同操作。
+const RESET_LAYER_ID: i32 = 3108;
+const RESET_OFFSET_ID: i32 = 3109;
+/// 顶部动作：锁定 / 可见（作用于当前选中层；旧壳 le-actions 的「解锁/可见」）。
+const TOGGLE_LOCK_ID: i32 = 3110;
+const TOGGLE_ENABLE_ID: i32 = 3111;
+/// 右栏最下方「没有素材？」（打开素材提示词面板）。
+const ASSET_HELP_ID: i32 = 3112;
+
+/// 右侧属性面板宽度（旧壳 `#le-panel`；与 macOS 的 PANEL_W 同口径）。
+const PANEL_W: i32 = 264;
+const MARGIN: i32 = 12;
+/// 顶部层 tab 栏高度（层 tab + 动作按钮）与底部状态行高度。
+const TABS_H: i32 = 38;
+const BOTTOM_H: i32 = 30;
+/// 层 tab 固定宽度（标题超长由按钮文字截断）与顶部动作按钮尺寸。
+const TAB_W: i32 = 78;
+const TOP_BUTTON_W: i32 = 76;
+const TOP_BUTTON_H: i32 = 26;
+
+/// `SetBkMode` 的 TRANSPARENT：windows-sys 里 `Gdi::TRANSPARENT` 是 u32，该 API 要 i32
+/// （与 `windows_chat.rs` 同款就地定义）。
+const TRANSPARENT: i32 = 1;
+
+fn wide(value: &str) -> Vec<u16> {
+    value.encode_utf16().chain(std::iter::once(0)).collect()
+}
+
+fn dpi_scale(hwnd: HWND) -> f64 {
+    let dpi = unsafe { GetDpiForWindow(hwnd) }.max(DPI_BASELINE);
+    f64::from(dpi) / f64::from(DPI_BASELINE)
+}
+
+fn scaled(value: i32, scale: f64) -> i32 {
+    (f64::from(value) * scale).round() as i32
+}
+
+// ==========================================
+// 主题判定（纯逻辑：无 Win32 调用，可单测；表见文件末的测试小节）
+// ==========================================
+
+/// 编辑器窗里显式创建的按钮（按动作语义分类，不按 ID）。
+///
+/// 表外的控件（顶部层 tab、素材下拉）不进本表，一律保持系统外观，属刻意选择。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum EditorButton {
+    /// 「保存」—— 唯一提交类主操作。
+    Save,
+    /// 「上传本地图」。
+    Pick,
+    /// 「本层复位」。
+    ResetLayer,
+    /// 「位置复位」。
+    ResetOffset,
+    /// 「放弃改动」。
+    Revert,
+    /// 「关闭」。
+    Close,
+    /// 「移除素材」。
+    AssetRemove,
+    /// 「刷新列表」。
+    AssetRefresh,
+    /// 顶部「解锁/已锁」（作用于选中层）。
+    ToggleLock,
+    /// 顶部「可见/隐藏」（作用于选中层）。
+    ToggleEnable,
+    /// 右栏「没有素材？」。
+    AssetHelp,
+}
+
+/// 按钮语义 → ownerdraw 角色；`None` = 保持系统外观。
+///
+/// 只给「保存」贴 `primary_*` 面（提交语义，与设置窗同一口径）；
+/// 「放弃改动」虽重但语义是撤销而非提交，保持系统外观 —— 避免危险动作被主色放大。
+fn button_role(button: EditorButton) -> Option<ButtonRole> {
+    match button {
+        EditorButton::Save => Some(ButtonRole::Primary),
+        EditorButton::Pick
+        | EditorButton::ResetLayer
+        | EditorButton::ResetOffset
+        | EditorButton::Revert
+        | EditorButton::Close
+        | EditorButton::AssetRemove
+        | EditorButton::AssetRefresh
+        | EditorButton::ToggleLock
+        | EditorButton::ToggleEnable
+        | EditorButton::AssetHelp => None,
+    }
+}
+
+/// 给控件记录语义字色（`WM_CTLCOLORSTATIC` / `WM_CTLCOLORBTN` 按控件读回）。
+fn stamp_text(hwnd: HWND, role: TextRole) {
+    if hwnd != 0 {
+        paint_win::set_text_color(hwnd, paint_win::text_color(theme::tokens(), role));
+    }
+}
+
+/// 主操作按钮转 ownerdraw（`primary_*` 面 + 悬浮/圆角子类；角色写进控件，`WM_DRAWITEM` 读回）。
+unsafe fn make_themed_button(hwnd: HWND, role: ButtonRole, scale: f64) {
+    if hwnd == 0 {
+        return;
+    }
+    let style = unsafe { GetWindowLongPtrW(hwnd, GWL_STYLE) };
+    unsafe { SetWindowLongPtrW(hwnd, GWL_STYLE, style | (BS_OWNERDRAW as isize)) };
+    paint_win::set_role(hwnd, role);
+    paint_win::install_button(
+        hwnd,
+        scaled(theme::tokens().radii.btn.round() as i32, scale),
+    );
+}
+
+/// 按语义表给按钮上主题：主操作转 ownerdraw；其余保持系统外观（不动样式位）。
+fn style_button(button: EditorButton, hwnd: HWND, scale: f64) {
+    if let Some(role) = button_role(button) {
+        unsafe { make_themed_button(hwnd, role, scale) };
+    }
+}
+
+/// 顶部层 tab（BUTTON 子窗口；标题带「锁/关/缺」角标，点击即选中该层）。
+struct LayerTab {
+    button: HWND,
+}
+
+struct EditorState {
+    hwnd: HWND,
+    renderer: Renderer,
+    /// 顶部层 tab（按层数重建；标题/选中态走 `refresh_ui`）。
+    tabs: Vec<LayerTab>,
+    edits: Vec<(HWND, i32)>,
+    status: HWND,
+    fonts: Vec<HFONT>,
+    applied_profile: String,
+    /// 素材下拉（应用内列表；含本层引用与跨层复制两类项）。
+    asset_combo: HWND,
+    /// 素材下拉的重建键（列表代次 + 选中层 + 该层当前素材名）。
+    assets_key: String,
+    /// 拖动中：上一鼠标位置（物理像素，窗口客户区坐标）。
+    drag_last: Option<(i32, i32)>,
+    /// 固定按钮句柄（8 颗；主题广播按它们逐个失效重绘）。
+    buttons: Vec<HWND>,
+    /// 已应用的窗口标题（带 Profile 名；只在变化时 SetWindowTextW）。
+    applied_title: String,
+}
+
+thread_local! {
+    static STATE: RefCell<Option<EditorState>> = const { RefCell::new(None) };
+}
+
+fn with_state<R>(f: impl FnOnce(&mut EditorState) -> R) -> Option<R> {
+    STATE.with(|cell| cell.borrow_mut().as_mut().map(|state| f(state)))
+}
+
+fn make_font(scale: f64, base: i32, bold: bool) -> HFONT {
+    let snapshot = crate::ui::font::snapshot();
+    let logical = snapshot.scaled_size(f64::from(base), 13.5).round() as i32;
+    let face = snapshot
+        .family
+        .clone()
+        .unwrap_or_else(|| "Microsoft YaHei UI".to_string());
+    unsafe {
+        CreateFontW(
+            -scaled(logical, scale),
+            0,
+            0,
+            0,
+            if bold {
+                FW_BOLD as i32
+            } else {
+                FW_NORMAL as i32
+            },
+            0,
+            0,
+            0,
+            DEFAULT_CHARSET as u32,
+            OUT_DEFAULT_PRECIS as u32,
+            CLIP_DEFAULT_PRECIS as u32,
+            0,
+            0,
+            wide(&face).as_ptr(),
+        )
+    }
+}
+
+fn client_size(hwnd: HWND) -> (i32, i32) {
+    let mut rect: windows_sys::Win32::Foundation::RECT = unsafe { std::mem::zeroed() };
+    unsafe { GetClientRect(hwnd, &mut rect) };
+    (rect.right - rect.left, rect.bottom - rect.top)
+}
+
+// ==========================================
+// 主题绘制（窗底 / 预览区背板 / 分隔线 / 字色 / ownerdraw 按钮 / 主题广播）
+// ==========================================
+
+/// 窗底 + 预览区背板 + `rule` 分隔线（WM_ERASEBKGND 与 WM_PAINT 共用；物理像素）。
+///
+/// 右侧属性面板与底部状态条取 `tokens().field_bg`；预览区（左侧大区：顶部 tab 栏
+/// 之下、右侧面板之外）取 `tokens().stage_bg` —— 预览与主窗舞台同一底色语义。
+/// 分隔线两条：预览与面板之间的竖线、底部条上沿的横线。
+///
+/// **可见性限制**见模块头：渲染器提交过 ULW 帧后，本函数画的窗底不在合成里显示。
+pub(crate) fn paint_background(hwnd: HWND, hdc: HDC) {
+    let (width, height) = client_size(hwnd);
+    if width <= 0 || height <= 0 {
+        return;
+    }
+    let tokens = theme::tokens();
+    let scale = dpi_scale(hwnd);
+    paint_win::fill_rect(
+        hdc,
+        paint_win::Rect::new(0, 0, width, height),
+        &tokens.field_bg,
+    );
+    let bottom_y = (height - scaled(BOTTOM_H, scale)).max(0);
+    // 预览区 = 左侧大区（顶部 tab 栏之下、底部状态行之上、右侧属性面板之外），
+    // 与 macOS 的版面同构；分隔线在面板左缘左侧。
+    let panel_x = width - scaled(PANEL_W + MARGIN, scale);
+    let preview_right = (panel_x - scaled(8, scale)).max(0);
+    let preview_top = scaled(TABS_H + MARGIN * 2, scale);
+    if preview_right > 0 && bottom_y > preview_top {
+        paint_win::fill_rect(
+            hdc,
+            paint_win::Rect::new(0, preview_top, preview_right, bottom_y - preview_top),
+            &tokens.stage_bg,
+        );
+    }
+    let divider_x = (preview_right - 1).max(0);
+    paint_win::fill_color(
+        hdc,
+        paint_win::Rect::new(divider_x, preview_top, 1, (bottom_y - preview_top).max(0)),
+        tokens.rule,
+    );
+    paint_win::fill_color(
+        hdc,
+        paint_win::Rect::new(0, bottom_y, width, 1),
+        tokens.rule,
+    );
+}
+
+/// `WM_CTLCOLORSTATIC` / `WM_CTLCOLORBTN`：字色按控件记录的角色取（未记录 → `ink`；
+/// 禁用控件统一降为 `dim`），文字底透明、控件底回 `field_bg`（左列工作面色）。
+///
+/// 注意：可编辑 `EDIT` 走 `WM_CTLCOLOREDIT`（本批不接，保持系统配色）；只读/禁用
+/// `EDIT` 也发 `WM_CTLCOLORSTATIC`，会一并拿到主题字色。
+pub(crate) fn on_ctlcolor(wparam: WPARAM, lparam: LPARAM) -> LRESULT {
+    let hdc = wparam as HDC;
+    let control = lparam as HWND;
+    let tokens = theme::tokens();
+    let enabled = unsafe { IsWindowEnabled(control) } != 0;
+    let color = paint_win::text_color_of(control)
+        .map(|color| if enabled { color } else { tokens.dim })
+        .unwrap_or(if enabled { tokens.ink } else { tokens.dim });
+    unsafe {
+        SetBkMode(hdc, TRANSPARENT);
+        SetTextColor(hdc, paint_win::colorref(color));
+    }
+    paint_win::solid_brush(tokens.field_bg.base_color()) as LRESULT
+}
+
+/// `WM_DRAWITEM`：ownerdraw 按钮绘制（角色/悬浮/按下从控件自身读，与聊天窗同款）。
+/// 返回是否已处理（`false` = 不是 ownerdraw 按钮，交回 DefWindowProc）。
+pub(crate) fn on_drawitem(lparam: LPARAM) -> bool {
+    if lparam == 0 {
+        return false;
+    }
+    let item = unsafe { &*(lparam as *const DrawItemStruct) };
+    if item.CtlType != ODT_BUTTON {
+        return false;
+    }
+    let tokens = theme::tokens();
+    let role = paint_win::role_of(item.hwndItem);
+    let hovered = paint_win::button_hovered(item.hwndItem);
+    let pressed = item.itemState & ODS_SELECTED != 0;
+    let disabled = item.itemState & (ODS_DISABLED | ODS_GRAYED) != 0;
+    let face = paint_win::button_face(tokens, role, hovered, pressed);
+    let label = window_text(item.hwndItem);
+    let rect = paint_win::Rect::new(
+        item.rcItem.left,
+        item.rcItem.top,
+        item.rcItem.right - item.rcItem.left,
+        item.rcItem.bottom - item.rcItem.top,
+    );
+    unsafe {
+        paint_win::draw_button(
+            item.hDC,
+            item.hwndItem,
+            rect,
+            &face,
+            &label,
+            pressed,
+            disabled,
+        )
+    };
+    true
+}
+
+/// 主题广播（`windows.rs::apply_theme` 调用）。
+///
+/// 顺序不变量：调用方已先 `paint_win::release_theme_resources()`（旧主题的画刷/纹理
+/// 都在那里 `DeleteObject`），本函数只做「按新 token 重刷字色 + 强制重绘」；
+/// 本文件自己不持有任何 GDI 对象（字体不随主题变化），没有需要在这里释放的句柄。
+///
+/// 不在这里调 `refresh_ui()` 的理由：它经 `apply_preview → apply_editor_preview_to_stage`
+/// 回到 `windows.rs` 的 `with_ui`，而广播本身就持有该 `WinUi` 的可变借用 —— 重入
+/// `RefCell` 必 panic。这里直接读编辑器域的视图重刷字色，不触碰窗口层。
+pub(crate) fn apply_theme() {
+    let exists = STATE.with(|cell| cell.borrow().is_some());
+    if !exists {
+        rust_debug!("编辑器未打开，主题广播跳过");
+        return;
+    }
+    let view = editor_ui().view();
+    with_state(|state| {
+        let scale = dpi_scale(state.hwnd);
+        // 层 tab：按新 token 重贴选中/未选中面（ownerdraw 构建期取色）并失效重绘。
+        for (index, tab) in state.tabs.iter().enumerate() {
+            let role = if index == view.selected {
+                ButtonRole::TabOn
+            } else {
+                ButtonRole::TabOff
+            };
+            unsafe { make_themed_button(tab.button, role, scale) };
+            unsafe { InvalidateRect(tab.button, std::ptr::null(), 1) };
+        }
+        for (edit, _) in state.edits.iter() {
+            unsafe { InvalidateRect(*edit, std::ptr::null(), 1) };
+        }
+        for button in state.buttons.iter() {
+            // ownerdraw 主按钮的圆角半径随主题的 `radii.btn` 变化：重新贴一次区域。
+            if paint_win::role_of(*button) == ButtonRole::Primary {
+                paint_win::install_button(
+                    *button,
+                    scaled(theme::tokens().radii.btn.round() as i32, scale),
+                );
+            }
+            unsafe { InvalidateRect(*button, std::ptr::null(), 1) };
+        }
+        unsafe {
+            InvalidateRect(state.status, std::ptr::null(), 1);
+            InvalidateRect(state.asset_combo, std::ptr::null(), 1);
+            InvalidateRect(state.hwnd, std::ptr::null(), 1);
+        }
+        stamp_text(state.status, TextRole::Hint);
+    });
+    rust_info!("编辑器窗已按新主题重刷并重绘（Windows）");
+}
+
+/// 编辑器窗建立后挂载内容（W5 的 open_aux 调用；窗口须已带 WS_EX_LAYERED）。
+pub(crate) fn install_editor_content(hwnd: HWND) {
+    let surface = match unsafe { WinLayerSurface::new(hwnd) } {
+        Ok(surface) => surface,
+        Err(error) => {
+            rust_warn!("编辑器预览表面创建失败（编辑器仍可用，但无预览）: {error}");
+            return;
+        }
+    };
+    let mut renderer = Renderer::new(surface);
+    renderer.set_enabled(true);
+
+    let hinstance = unsafe { GetModuleHandleW(std::ptr::null()) };
+    let scale = dpi_scale(hwnd);
+    let body = make_font(scale, 13, false);
+    let small = make_font(scale, 11, false);
+    let fonts = vec![body, small];
+
+    // 参数输入框（数值）。
+    let mut edits = Vec::new();
+    for (index, _label) in ["缩放", "灵敏度", "位置X%", "位置Y%", "强度"]
+        .iter()
+        .enumerate()
+    {
+        let edit = unsafe {
+            CreateWindowExW(
+                0,
+                wide("EDIT").as_ptr(),
+                wide("").as_ptr(),
+                WS_CHILD | WS_VISIBLE | WS_TABSTOP | WS_BORDER,
+                0,
+                0,
+                80,
+                scaled(22, scale),
+                hwnd,
+                (EDIT_BASE + index as i32) as isize,
+                hinstance,
+                std::ptr::null(),
+            )
+        };
+        unsafe { SendMessageW(edit, WM_SETFONT, body as WPARAM, 1) };
+        edits.push((edit, index as i32));
+    }
+    let status = unsafe {
+        CreateWindowExW(
+            0,
+            wide("STATIC").as_ptr(),
+            wide("").as_ptr(),
+            WS_CHILD | WS_VISIBLE,
+            0,
+            0,
+            200,
+            scaled(18, scale),
+            hwnd,
+            STATUS_ID as isize,
+            hinstance,
+            std::ptr::null(),
+        )
+    };
+    unsafe { SendMessageW(status, WM_SETFONT, small as WPARAM, 1) };
+    // 状态行是信息通道（进展 + 保存状态 + 素材错误共用），取说明色。
+    stamp_text(status, TextRole::Hint);
+    // 素材下拉：CBS_DROPDOWNLIST（列表只读，选择即动作；高度含下拉清单）。
+    let asset_combo = unsafe {
+        CreateWindowExW(
+            0,
+            wide("COMBOBOX").as_ptr(),
+            wide("").as_ptr(),
+            WS_CHILD | WS_VISIBLE | WS_TABSTOP | WS_VSCROLL | CBS_DROPDOWNLIST as u32,
+            0,
+            0,
+            scaled(LIST_W, scale),
+            scaled(200, scale),
+            hwnd,
+            ASSET_COMBO_ID as isize,
+            hinstance,
+            std::ptr::null(),
+        )
+    };
+    unsafe { SendMessageW(asset_combo, WM_SETFONT, body as WPARAM, 1) };
+    let mut buttons = Vec::new();
+    for (id, text, kind) in [
+        (PICK_ID, "上传本地图", EditorButton::Pick),
+        (RESET_LAYER_ID, "本层复位", EditorButton::ResetLayer),
+        (RESET_OFFSET_ID, "位置复位", EditorButton::ResetOffset),
+        (REVERT_ID, "放弃改动", EditorButton::Revert),
+        (SAVE_ID, "保存", EditorButton::Save),
+        (CLOSE_ID, "关闭", EditorButton::Close),
+        (ASSET_REMOVE_ID, "移除素材", EditorButton::AssetRemove),
+        (ASSET_REFRESH_ID, "刷新列表", EditorButton::AssetRefresh),
+        // 顶部动作（作用于选中层；标题随选中层状态在 refresh_ui 里重写）。
+        (TOGGLE_LOCK_ID, "解锁", EditorButton::ToggleLock),
+        (TOGGLE_ENABLE_ID, "可见", EditorButton::ToggleEnable),
+        // 右栏最下方（文案来自平台无关模块，两平台同一份）。
+        (ASSET_HELP_ID, ASSET_HELP_BUTTON, EditorButton::AssetHelp),
+    ] {
+        let button = unsafe {
+            CreateWindowExW(
+                0,
+                wide("BUTTON").as_ptr(),
+                wide(text).as_ptr(),
+                WS_CHILD | WS_VISIBLE | WS_TABSTOP,
+                0,
+                0,
+                scaled(88, scale),
+                scaled(26, scale),
+                hwnd,
+                id as isize,
+                hinstance,
+                std::ptr::null(),
+            )
+        };
+        unsafe { SendMessageW(button, WM_SETFONT, body as WPARAM, 1) };
+        style_button(kind, button, scale);
+        buttons.push(button);
+    }
+
+    STATE.with(|cell| {
+        *cell.borrow_mut() = Some(EditorState {
+            hwnd,
+            renderer,
+            tabs: Vec::new(),
+            edits,
+            status,
+            fonts,
+            applied_profile: String::new(),
+            asset_combo,
+            assets_key: String::new(),
+            drag_last: None,
+            buttons,
+            applied_title: String::new(),
+        });
+    });
+    rebuild_tabs();
+    layout(hwnd);
+    refresh_ui();
+    rust_info!("编辑器窗内容已建立（Windows：第二个渲染器绑定编辑器窗口）");
+}
+
+/// 按当前层数重建顶部层 tab（标题带「锁/关/缺」角标；点击即选中该层）。
+fn rebuild_tabs() {
+    let hinstance = unsafe { GetModuleHandleW(std::ptr::null()) };
+    let layer_count = editor_ui().view().layers.len();
+    with_state(|state| {
+        for tab in state.tabs.drain(..) {
+            unsafe { DestroyWindow(tab.button) };
+        }
+        let hwnd = state.hwnd;
+        let scale = dpi_scale(hwnd);
+        let body = *state.fonts.first().unwrap_or(&0);
+        let mut tabs = Vec::new();
+        for index in 0..layer_count {
+            let button = unsafe {
+                CreateWindowExW(
+                    0,
+                    wide("BUTTON").as_ptr(),
+                    wide("").as_ptr(),
+                    WS_CHILD | WS_VISIBLE | WS_TABSTOP,
+                    0,
+                    0,
+                    scaled(TAB_W, scale),
+                    scaled(TOP_BUTTON_H, scale),
+                    hwnd,
+                    (TAB_BASE + index as i32) as isize,
+                    hinstance,
+                    std::ptr::null(),
+                )
+            };
+            unsafe { SendMessageW(button, WM_SETFONT, body as WPARAM, 1) };
+            tabs.push(LayerTab { button });
+        }
+        state.tabs = tabs;
+    });
+}
+
+/// 摆放控件（顶部层 tab 栏 + 左侧预览大区 + 右侧属性面板 + 底部状态行；
+/// 与 macOS 的版面同构）。
+fn layout(hwnd: HWND) {
+    with_state(|state| {
+        let scale = dpi_scale(hwnd);
+        let (width, height) = client_size(hwnd);
+        // 顶部：层 tab 栏（左，自 MARGIN 起）+ 动作按钮（右到左：关闭 / 保存 /
+        // 本层复位 / 可见 / 锁定 —— 作用于当前选中层）。
+        let top_y = scaled(MARGIN, scale);
+        let mut x = scaled(MARGIN, scale);
+        for tab in state.tabs.iter() {
+            unsafe {
+                MoveWindow(
+                    tab.button,
+                    x,
+                    top_y,
+                    scaled(TAB_W, scale),
+                    scaled(TOP_BUTTON_H, scale),
+                    1,
+                )
+            };
+            x += scaled(TAB_W + 4, scale);
+        }
+        let mut bx = width - scaled(MARGIN, scale);
+        for id in [
+            CLOSE_ID,
+            SAVE_ID,
+            RESET_LAYER_ID,
+            TOGGLE_ENABLE_ID,
+            TOGGLE_LOCK_ID,
+        ] {
+            let hwnd_button =
+                unsafe { windows_sys::Win32::UI::WindowsAndMessaging::GetDlgItem(hwnd, id) };
+            if hwnd_button != 0 {
+                bx -= scaled(TOP_BUTTON_W, scale);
+                unsafe {
+                    MoveWindow(
+                        hwnd_button,
+                        bx.max(0),
+                        top_y,
+                        scaled(TOP_BUTTON_W, scale),
+                        scaled(TOP_BUTTON_H, scale),
+                        1,
+                    )
+                };
+                bx -= scaled(6, scale);
+            }
+        }
+        // 右侧属性面板（x = width - PANEL_W - MARGIN）：参数输入框自上而下、
+        // 素材区（下拉 + 上传/移除/刷新）、单层操作（位置复位 / 放弃改动）。
+        let panel_x = width - scaled(PANEL_W + MARGIN, scale);
+        let mut py = top_y + scaled(TABS_H + 6, scale);
+        for (edit, _index) in state.edits.iter() {
+            unsafe {
+                MoveWindow(
+                    *edit,
+                    panel_x,
+                    py,
+                    scaled(PANEL_W, scale),
+                    scaled(22, scale),
+                    1,
+                )
+            };
+            py += scaled(28, scale);
+        }
+        py += scaled(10, scale);
+        if state.asset_combo != 0 {
+            unsafe {
+                MoveWindow(
+                    state.asset_combo,
+                    panel_x,
+                    py,
+                    scaled(PANEL_W, scale),
+                    scaled(200, scale),
+                    1,
+                )
+            };
+        }
+        py += scaled(30, scale);
+        let small_w = (scaled(PANEL_W, scale) - scaled(12, scale)) / 3;
+        for (slot, id) in [PICK_ID, ASSET_REMOVE_ID, ASSET_REFRESH_ID]
+            .iter()
+            .enumerate()
+        {
+            let hwnd_button =
+                unsafe { windows_sys::Win32::UI::WindowsAndMessaging::GetDlgItem(hwnd, *id) };
+            if hwnd_button != 0 {
+                unsafe {
+                    MoveWindow(
+                        hwnd_button,
+                        panel_x + slot as i32 * (small_w + scaled(6, scale)),
+                        py,
+                        small_w,
+                        scaled(24, scale),
+                        1,
+                    )
+                };
+            }
+        }
+        py += scaled(34, scale);
+        let half_w = (scaled(PANEL_W, scale) - scaled(6, scale)) / 2;
+        for (slot, id) in [RESET_OFFSET_ID, REVERT_ID].iter().enumerate() {
+            let hwnd_button =
+                unsafe { windows_sys::Win32::UI::WindowsAndMessaging::GetDlgItem(hwnd, *id) };
+            if hwnd_button != 0 {
+                unsafe {
+                    MoveWindow(
+                        hwnd_button,
+                        panel_x + slot as i32 * (half_w + scaled(6, scale)),
+                        py,
+                        half_w,
+                        scaled(24, scale),
+                        1,
+                    )
+                };
+            }
+        }
+        // 右栏最下方「没有素材？」：贴栏底（与 macOS 同一「距底」口径与共享夹取
+        // 纯函数），窗口被压矮时上移到单层操作行上沿 + 最小间距。
+        // 共享函数吃逻辑点的距底距离（两端同口径），DPR 换算只在这里做一次。
+        let help_button =
+            unsafe { windows_sys::Win32::UI::WindowsAndMessaging::GetDlgItem(hwnd, ASSET_HELP_ID) };
+        if help_button != 0 {
+            let bottom_line_logical = f64::from(BOTTOM_H + MARGIN);
+            let layer_ops_bottom_logical = f64::from(py + scaled(24, scale)) / scale;
+            let layer_ops_top_logical = f64::from(py) / scale;
+            let offset = asset_help_bottom_offset(
+                0.0,
+                bottom_line_logical - layer_ops_bottom_logical,
+                bottom_line_logical - layer_ops_top_logical,
+            );
+            let help_h = scaled(ASSET_HELP_BUTTON_H.round() as i32, scale);
+            let help_y = height
+                - scaled(BOTTOM_H + MARGIN, scale)
+                - scaled(offset.round() as i32, scale)
+                - help_h;
+            unsafe {
+                MoveWindow(
+                    help_button,
+                    panel_x,
+                    help_y,
+                    scaled(PANEL_W, scale),
+                    help_h,
+                    1,
+                )
+            };
+        }
+        // 底部：状态行（顶部动作已移入 tab 栏，底部只剩状态文本）。
+        if state.status != 0 {
+            unsafe {
+                MoveWindow(
+                    state.status,
+                    scaled(MARGIN, scale),
+                    height - scaled(26, scale),
+                    (width - scaled(MARGIN * 2, scale)).max(80),
+                    scaled(18, scale),
+                    1,
+                )
+            };
+        }
+    });
+}
+
+/// WM_COMMAND：层 tab / 参数输入 / 按钮。
+pub(crate) fn on_command(hwnd: HWND, wparam: WPARAM) -> bool {
+    let id = (wparam & 0xFFFF) as i32;
+    let code = ((wparam >> 16) & 0xFFFF) as u32;
+    match id {
+        PICK_ID => {
+            let selected = editor_ui().view().selected;
+            if let Err(error) = editor_ui().op_swap_asset(selected) {
+                editor_ui().set_notice(Some(format!("换素材未启动：{error}")));
+            }
+            return true;
+        }
+        ASSET_COMBO_ID => {
+            // 只认 SELENDOK（用户选定）：SELCHANGE 在键盘游走时也发，动作会重复触发。
+            if code != CBN_SELENDOK {
+                return false;
+            }
+            let combo = unsafe {
+                windows_sys::Win32::UI::WindowsAndMessaging::GetDlgItem(hwnd, ASSET_COMBO_ID)
+            };
+            let index = unsafe { SendMessageW(combo, CB_GETCURSEL, 0, 0) } as isize;
+            // 复位到占位项：下拉语义是「动作」，不是持久选中值。
+            unsafe { SendMessageW(combo, CB_SETCURSEL, 0, 0) };
+            if index < 1 {
+                return true;
+            }
+            let view = editor_ui().view();
+            let count = view.assets.len() as isize;
+            let selected = view.selected;
+            if index <= count {
+                if let Err(error) = editor_ui().op_use_asset(selected, (index - 1) as usize) {
+                    editor_ui().set_notice(Some(format!("换素材失败：{error}")));
+                }
+            } else {
+                if let Err(error) = editor_ui().op_swap_asset(selected) {
+                    editor_ui().set_notice(Some(format!("换素材未启动：{error}")));
+                }
+            }
+            refresh_ui();
+            return true;
+        }
+        ASSET_REMOVE_ID => {
+            let selected = editor_ui().view().selected;
+            if let Err(error) = editor_ui().op_remove_asset(selected) {
+                editor_ui().set_notice(Some(format!("移除素材失败：{error}")));
+            }
+            refresh_ui();
+            return true;
+        }
+        ASSET_REFRESH_ID => {
+            editor_ui().schedule_assets();
+            return true;
+        }
+        ASSET_HELP_ID => {
+            // 「没有素材？」：模态面板（说明 + 可滚动提示词 + 复制到剪贴板）。
+            open_asset_help_dialog(hwnd);
+            return true;
+        }
+        RESET_LAYER_ID => {
+            let selected = editor_ui().view().selected;
+            if let Err(error) = editor_ui().op_reset_layer(selected) {
+                editor_ui().set_notice(Some(format!("本层复位失败：{error}")));
+            }
+            refresh_ui();
+            return true;
+        }
+        RESET_OFFSET_ID => {
+            let selected = editor_ui().view().selected;
+            if let Err(error) = editor_ui().op_reset_offset(selected) {
+                editor_ui().set_notice(Some(format!("位置复位失败：{error}")));
+            }
+            refresh_ui();
+            return true;
+        }
+        TOGGLE_LOCK_ID => {
+            let selected = editor_ui().view().selected;
+            editor_ui().op_toggle_locked(selected);
+            refresh_ui();
+            return true;
+        }
+        TOGGLE_ENABLE_ID => {
+            let selected = editor_ui().view().selected;
+            editor_ui().op_toggle_enabled(selected);
+            refresh_ui();
+            return true;
+        }
+        REVERT_ID => {
+            editor_ui().revert();
+            refresh_ui();
+            return true;
+        }
+        SAVE_ID => {
+            if let Err(error) = editor_ui().save() {
+                editor_ui().set_notice(Some(format!("保存未启动：{error}")));
+            }
+            refresh_ui();
+            return true;
+        }
+        CLOSE_ID => {
+            if !confirm_close(hwnd) {
+                return true;
+            }
+            let _ = super::windows::close_editor_window();
+            return true;
+        }
+        STATUS_ID => return false,
+        _ if (TAB_BASE..TAB_BASE + 100).contains(&id) => {
+            // 顶部层 tab：点击即选中该层（标题角标与选中态由 refresh_ui 重写）。
+            editor_ui().op_select((id - TAB_BASE) as usize);
+            refresh_ui();
+            return true;
+        }
+        _ if (EDIT_BASE..EDIT_BASE + 10).contains(&id) => {
+            // EN_KILLFOCUS(512) 提交；其它通知忽略（避免输入过程中逐字符提交）。
+            if code != 512 {
+                return false;
+            }
+            let index = id - EDIT_BASE;
+            let text = window_text(unsafe {
+                windows_sys::Win32::UI::WindowsAndMessaging::GetDlgItem(hwnd, id)
+            });
+            let Some(value) = text.trim().parse::<f64>().ok().filter(|v| v.is_finite()) else {
+                editor_ui().set_notice(Some("输入无效：需要数值".into()));
+                refresh_ui();
+                return true;
+            };
+            let selected = editor_ui().view().selected;
+            let result = match index {
+                EDIT_SCALE => editor_ui().op_set_scale(selected, value),
+                EDIT_SENSITIVITY => editor_ui().op_set_sensitivity(selected, value),
+                EDIT_OFFSET_X => {
+                    let current = offset_y_of(selected);
+                    editor_ui().op_set_offsets(selected, value, current)
+                }
+                EDIT_OFFSET_Y => {
+                    let current = offset_x_of(selected);
+                    editor_ui().op_set_offsets(selected, current, value)
+                }
+                EDIT_INTENSITY => {
+                    editor_ui().op_set_intensity(value);
+                    Ok(())
+                }
+                _ => Ok(()),
+            };
+            if let Err(error) = result {
+                editor_ui().set_notice(Some(format!("该图层已锁定或参数无效：{error}")));
+            }
+            refresh_ui();
+            return true;
+        }
+        _ => {}
+    }
+    let _ = hwnd;
+    false
+}
+
+fn offset_x_of(index: usize) -> f64 {
+    editor_ui()
+        .view()
+        .layers
+        .get(index)
+        .map(|layer| layer.offset_x_percent)
+        .unwrap_or(0.0)
+}
+
+fn offset_y_of(index: usize) -> f64 {
+    editor_ui()
+        .view()
+        .layers
+        .get(index)
+        .map(|layer| layer.offset_y_percent)
+        .unwrap_or(0.0)
+}
+
+/// WM_SIZE：重排 + 预览几何更新。
+///
+/// 与 macOS 对称：`macos_editor.rs::relayout`（窗口 resize 通知 → 同一份
+/// `editor_layout` 重摆 + 背板重画 + `apply_preview`）。Windows 的窗口过程把
+/// WM_SIZE 直接分发到这里（`windows.rs::aux_wndproc`，code == 2 分支），
+/// `layout` 用 `MoveWindow` 重摆全部子控件（tab / 顶栏按钮 / 参数输入 / 素材区 /
+/// 状态行），窗底与预览区分界线由 `paint_background` 按新客户区尺寸重画；
+/// 预览的合成目标仍是整窗（区域偏移缺口见模块头「已知限制」）。
+pub(crate) fn on_size(hwnd: HWND) {
+    layout(hwnd);
+    apply_preview();
+}
+
+/// 拖动：左键按下（预览区）开始，移动改位置，抬起结束。
+pub(crate) fn on_lbutton_down(hwnd: HWND, x: i32, y: i32) -> bool {
+    with_state(|state| {
+        // 只接受预览区（左侧大区：顶部 tab 栏之下、右侧属性面板之外）的拖动 ——
+        // 与窗底绘制的预览区几何同一口径。
+        let scale = dpi_scale(state.hwnd);
+        let (width, height) = client_size(state.hwnd);
+        let preview_right = width - scaled(PANEL_W + MARGIN, scale) - scaled(8, scale);
+        let preview_top = scaled(TABS_H + MARGIN * 2, scale);
+        let bottom = height - scaled(BOTTOM_H, scale);
+        if x >= 0 && x < preview_right && y >= preview_top && y < bottom {
+            state.drag_last = Some((x, y));
+        }
+    });
+    STATE.with(|cell| {
+        cell.borrow()
+            .as_ref()
+            .map(|state| state.drag_last.is_some())
+            .unwrap_or(false)
+    })
+}
+
+pub(crate) fn on_mouse_move(hwnd: HWND, x: i32, y: i32) -> bool {
+    let dragged = with_state(|state| {
+        let Some((last_x, last_y)) = state.drag_last else {
+            return false;
+        };
+        let (dx, dy) = (x - last_x, y - last_y);
+        state.drag_last = Some((x, y));
+        let scale = dpi_scale(hwnd);
+        // 拖动比例按预览区尺寸归一（预览区 = 顶部 tab 栏之下、右侧属性面板之外、
+        // 底部状态行之上）。
+        let (client_w, client_h) = client_size(hwnd);
+        let width =
+            f64::from((client_w - scaled(PANEL_W + MARGIN, scale) - scaled(8, scale)).max(1));
+        let height = f64::from(
+            (client_h - scaled(BOTTOM_H, scale) - scaled(TABS_H + MARGIN * 2, scale)).max(1),
+        );
+        let selected = editor_ui().view().selected;
+        if let Err(error) =
+            editor_ui().op_drag(selected, f64::from(dx), f64::from(dy), width, height)
+        {
+            rust_debug!("拖动被拒绝（{error}）");
+        }
+        true
+    });
+    if dragged.unwrap_or(false) {
+        refresh_ui();
+        // 拖动期间状态行显示实时数值（旧壳 dragHint 同文案；两平台共用文案函数）；
+        // 抬起时 on_lbutton_up 触发 refresh_ui 恢复常规文案。
+        let view = editor_ui().view();
+        let selected = view.selected;
+        if let Some(layer) = view.layers.get(selected) {
+            let hint = crate::ui::editor::drag_hint(
+                selected,
+                &layer.name,
+                layer.offset_x_percent,
+                layer.offset_y_percent,
+            );
+            with_state(|state| {
+                if state.status != 0 {
+                    unsafe { SetWindowTextW(state.status, wide(&hint).as_ptr()) };
+                }
+            });
+        }
+    }
+    dragged.unwrap_or(false)
+}
+
+pub(crate) fn on_lbutton_up() {
+    let was_dragging = with_state(|state| state.drag_last.take().is_some());
+    if was_dragging {
+        // 拖动结束：恢复常规状态行（拖动期间显示实时数值）。
+        refresh_ui();
+    }
+}
+
+/// WM_MOUSEWHEEL：滚轮缩放选中层（与 macOS `scrollWheel:` 同口径）。
+///
+/// wParam 高 16 位是有符号轮增量（一格 = WHEEL_DELTA=120，与 web 的 ~100/格同一
+/// 数量级），按「正 = 向下滚 = 缩小」归一后交领域层；换算仍走 `onWheel` 的
+/// 0.001/单位，与 macOS 触控板路径共用同一条规则。
+///
+/// 接线点：`windows.rs` 的 `aux_wndproc`（编辑器窗口 code == 2 分支）转发
+/// `WM_MOUSEWHEEL` 到这里。
+pub(crate) fn on_mouse_wheel(_hwnd: HWND, wparam: WPARAM) {
+    let z_delta = ((wparam >> 16) & 0xFFFF) as i16 as f64;
+    let selected = editor_ui().view().selected;
+    if let Err(error) = editor_ui().op_zoom(selected, -z_delta) {
+        editor_ui().set_notice(Some(format!("该图层已锁定或参数无效：{error}")));
+    }
+    refresh_ui();
+}
+
+/// 关闭前确认：未保存改动时问「保存并关闭 / 放弃 / 取消」。返回是否放行关闭。
+///
+/// 无需 macOS 的「模态降层」包裹：MessageBoxW 以编辑器 hwnd 为 owner，系统把它
+/// 提升到 owner 之上，不受 WS_EX_TOPMOST 分层影响（macOS 的假死根因是 AppKit 把
+/// 模态弹窗固定在 level 8、被 level 1500 的编辑器窗盖住）。文件对话框（
+/// `native_ports` 的通用对话框，owner 固定主窗）是否需要同样处理见交付报告
+/// （Windows 侧未实机验证）。
+pub(crate) fn confirm_close(hwnd: HWND) -> bool {
+    if !editor_ui().is_dirty() {
+        return true;
+    }
+    let response = unsafe {
+        MessageBoxW(
+            hwnd,
+            wide("有未保存的改动。\n是：保存并关闭；否：放弃修改；取消：继续编辑。").as_ptr(),
+            wide("图层编辑器").as_ptr(),
+            MB_YESNOCANCEL | MB_ICONWARNING | MB_DEFBUTTON2,
+        )
+    };
+    if response == IDYES {
+        if let Err(error) = editor_ui().save_then_close() {
+            editor_ui().set_notice(Some(format!("保存未启动：{error}")));
+        }
+        // 保存成功后由后台线程发起关闭（见 `save_then_close`）。
+        false
+    } else if response == IDNO {
+        editor_ui().revert();
+        true
+    } else if response == IDCANCEL {
+        false
+    } else {
+        false
+    }
+}
+
+// ==========================================
+// 「没有素材？」素材提示词面板（非模态自建窗）
+// ==========================================
+//
+// 为什么不用 MessageBoxW：本面板要「可滚动只读提示词 + 复制到剪贴板」，MessageBox
+// 只能给系统固定按钮（与 `windows_chat.rs` 的通用提示对话框同一判断）。
+//
+// **非模态**（与 macOS 的 transient NSPopover 对称）：内容是只读说明 + 提示词 +
+// 复制，没有「必须先回答」的语义；模态（禁用属主 + 嵌套消息循环）会把整个应用
+// 锁住 —— 实机复现过同类问题，帮助/说明类面板一律不锁窗。窗口是编辑器窗的
+// **owned window**：跟随属主最小化/销毁、恒在属主之上，但不禁用属主。
+// 剪贴板走共享层 `ui::clipboard`（OpenClipboard + CF_UNICODETEXT），不拉子进程、
+// 不经 Node 的 IPC 命令面。
+// Esc 关窗由「窗口过程 + 正文 EDIT 的子类」两处接（子类把 Esc 转成 WM_CLOSE）；
+// 点外部不关（有意差异：Windows 没有不装钩子就能做的 transient 语义，如实登记）。
+//
+// 与 macOS 的关系：承载不同（macOS 是 NSPopover），文案与版面数值同源
+// （`ui::editor` 的 `ASSET_HELP_*`）。**未在 Windows 实机验证**（见模块头）。
+
+/// 弹窗窗口类名（与编辑器主窗、聊天窗的类名并列注册）。
+const ASSET_HELP_DIALOG_CLASS: &str = "DeskPetEditorAssetHelpDialog";
+/// 「复制」按钮控件 ID（「关闭」走系统 IDOK/IDCANCEL）。
+const ASSET_HELP_COPY_ID: i32 = 3201;
+
+/// 打开中的面板状态（同一时刻至多一个；只在 UI 主线程读写）。
+struct AssetHelpDialog {
+    hwnd: HWND,
+    /// 提示词正文 EDIT（再次打开时聚焦它，键盘立即可用）。
+    prompt: HWND,
+    copy_button: HWND,
+    /// 本窗使用的字体（窗口销毁时释放；不借用编辑器窗的字体，避免两次销毁）。
+    fonts: Vec<HFONT>,
+}
+
+thread_local! {
+    static ASSET_HELP_DIALOG: RefCell<Option<AssetHelpDialog>> = const { RefCell::new(None) };
+    /// 弹窗窗口类是否已注册（进程内一次；失败在打开时如实报出）。
+    static ASSET_HELP_CLASS_READY: Cell<bool> = const { Cell::new(false) };
+}
+
+/// 打开素材提示词面板（UI 主线程；失败如实留痕，不静默）。
+///
+/// 非模态：已在显示就把它带到前台，不再开第二个（不改编辑器窗状态、不禁用属主）。
+fn open_asset_help_dialog(owner: HWND) {
+    if let Some(dialog) = ASSET_HELP_DIALOG.with(|cell| {
+        cell.borrow()
+            .as_ref()
+            .map(|dialog| (dialog.hwnd, dialog.prompt))
+    }) {
+        unsafe {
+            ShowWindow(dialog.0, SW_SHOW);
+            SetForegroundWindow(dialog.0);
+            SetFocus(dialog.1);
+        }
+        return;
+    }
+    if let Err(error) = run_asset_help_dialog(owner) {
+        rust_warn!("素材提示词面板打开失败：{error}");
+    }
+}
+
+/// 注册弹窗窗口类（幂等）。
+fn ensure_asset_help_class() -> Result<(), String> {
+    if ASSET_HELP_CLASS_READY.with(Cell::get) {
+        return Ok(());
+    }
+    let hinstance = unsafe { GetModuleHandleW(std::ptr::null()) };
+    // 类名缓冲先绑定再取指针（临时 Vec 会立刻析构，指针悬垂；与聊天窗同规）。
+    let class_name = wide(ASSET_HELP_DIALOG_CLASS);
+    let mut wc: WNDCLASSW = unsafe { std::mem::zeroed() };
+    wc.style = CS_HREDRAW | CS_VREDRAW;
+    wc.lpfnWndProc = Some(asset_help_wndproc);
+    wc.hInstance = hinstance;
+    wc.lpszClassName = class_name.as_ptr();
+    // 类刷留空：底色由 WM_ERASEBKGND 按主题画（换主题不必重注册窗口类）。
+    wc.hbrBackground = 0;
+    if unsafe { RegisterClassW(&wc) } == 0 {
+        return Err("RegisterClassW（素材提示词面板）失败".into());
+    }
+    ASSET_HELP_CLASS_READY.with(|ready| ready.set(true));
+    Ok(())
+}
+
+fn run_asset_help_dialog(owner: HWND) -> Result<(), String> {
+    ensure_asset_help_class()?;
+    let hinstance = unsafe { GetModuleHandleW(std::ptr::null()) };
+    let scale = if owner != 0 {
+        dpi_scale(owner)
+    } else {
+        // 无属主（前台没有本线程窗口）：GetDpiForWindow(0) 无意义，退回系统 DPI。
+        f64::from(unsafe { GetDpiForSystem() }.max(DPI_BASELINE)) / f64::from(DPI_BASELINE)
+    };
+    // 排版表来自平台无关模块（逻辑点，本机可测）；DPR 换算只在这里做一次。
+    let panel = crate::ui::editor::asset_help_panel_layout();
+    let margin = scaled(panel.margin, scale);
+    let title_y = scaled(panel.title_y, scale);
+    let title_h = scaled(panel.title_h, scale);
+    let message_y = scaled(panel.message_y, scale);
+    let message_h = scaled(panel.message_h, scale);
+    let text_y = scaled(panel.text_y, scale);
+    let text_w = scaled(panel.text_w, scale);
+    let text_h = scaled(panel.text_h, scale);
+    let button_y = scaled(panel.button_y, scale);
+    let button_w = scaled(panel.button_w, scale);
+    let button_h = scaled(panel.button_h, scale);
+    let copy_x = scaled(panel.copy_x, scale);
+    let close_x = scaled(panel.close_x, scale);
+    let client_w = scaled(panel.width, scale);
+    let client_h = scaled(panel.height, scale);
+
+    // 客户区 → 外框尺寸；属主存在时居中于属主，否则居中于主屏。
+    let style = WS_POPUP | WS_CAPTION | WS_SYSMENU;
+    let mut window_rect = RECT {
+        left: 0,
+        top: 0,
+        right: client_w,
+        bottom: client_h,
+    };
+    unsafe { AdjustWindowRectEx(&mut window_rect, style, 0, 0) };
+    let window_w = window_rect.right - window_rect.left;
+    let window_h = window_rect.bottom - window_rect.top;
+    let mut owner_rect: RECT = unsafe { std::mem::zeroed() };
+    let (x, y) = if owner != 0 && unsafe { GetWindowRect(owner, &mut owner_rect) } != 0 {
+        (
+            owner_rect.left + (owner_rect.right - owner_rect.left - window_w) / 2,
+            owner_rect.top + (owner_rect.bottom - owner_rect.top - window_h) / 2,
+        )
+    } else {
+        (
+            (unsafe { GetSystemMetrics(SM_CXSCREEN) } - window_w) / 2,
+            (unsafe { GetSystemMetrics(SM_CYSCREEN) } - window_h) / 2,
+        )
+    };
+
+    let hwnd = unsafe {
+        CreateWindowExW(
+            // 编辑器窗是 WS_EX_TOPMOST（层级 1500）：帮助窗不同样 topmost 的话会被
+            // 属主整面盖住（owned 只在同层内保证高于属主）。
+            WS_EX_TOPMOST,
+            wide(ASSET_HELP_DIALOG_CLASS).as_ptr(),
+            wide(ASSET_HELP_TITLE).as_ptr(),
+            style,
+            x,
+            y,
+            window_w,
+            window_h,
+            owner,
+            0,
+            hinstance,
+            std::ptr::null(),
+        )
+    };
+    if hwnd == 0 {
+        return Err("素材提示词面板 CreateWindowExW 失败".into());
+    }
+
+    // 字体：正文/标题走全局字体快照（弹窗不成为第二个字体定义点），提示词用等宽
+    // 小号字（长文本可读性；字号与 macOS 的 `ASSET_HELP_FONT_SIZE` 同源）。
+    let body = make_font(scale, 13, false);
+    let bold = make_font(scale, 13, true);
+    let mono = unsafe {
+        let face = wide("Consolas");
+        let size = crate::ui::font::snapshot()
+            .scaled_size(ASSET_HELP_FONT_SIZE, 13.5)
+            .round() as i32;
+        CreateFontW(
+            -scaled(size, scale),
+            0,
+            0,
+            0,
+            FW_NORMAL as i32,
+            0,
+            0,
+            0,
+            DEFAULT_CHARSET as u32,
+            OUT_DEFAULT_PRECIS as u32,
+            CLIP_DEFAULT_PRECIS as u32,
+            0,
+            0,
+            face.as_ptr(),
+        )
+    };
+
+    // ── 子控件（自上而下：标题 / 说明 / 提示词正文 / 按钮行）──
+    let title = unsafe {
+        CreateWindowExW(
+            0,
+            wide("STATIC").as_ptr(),
+            wide(ASSET_HELP_TITLE).as_ptr(),
+            WS_CHILD | WS_VISIBLE,
+            margin,
+            title_y,
+            client_w - margin * 2,
+            title_h,
+            hwnd,
+            0,
+            hinstance,
+            std::ptr::null(),
+        )
+    };
+    // 说明文字：STATIC 默认左对齐 + 自动换行（SS_LEFT=0）。
+    let message = unsafe {
+        CreateWindowExW(
+            0,
+            wide("STATIC").as_ptr(),
+            wide(ASSET_HELP_INTRO).as_ptr(),
+            WS_CHILD | WS_VISIBLE,
+            margin,
+            message_y,
+            client_w - margin * 2,
+            message_h,
+            hwnd,
+            0,
+            hinstance,
+            std::ptr::null(),
+        )
+    };
+    // 提示词正文：只读多行 EDIT + 竖向滚动条（正文 300+ 行，必须能滚、能选中）。
+    let prompt = unsafe {
+        CreateWindowExW(
+            WS_EX_CLIENTEDGE,
+            wide("EDIT").as_ptr(),
+            wide(ASSET_PROMPT).as_ptr(),
+            WS_CHILD
+                | WS_VISIBLE
+                | WS_VSCROLL
+                | WS_TABSTOP
+                | ES_MULTILINE as u32
+                | ES_READONLY as u32
+                | ES_AUTOVSCROLL as u32,
+            margin,
+            text_y,
+            text_w,
+            text_h,
+            hwnd,
+            0,
+            hinstance,
+            std::ptr::null(),
+        )
+    };
+    // 按钮行（右起：关闭是默认按钮；复制在左）。
+    let close = unsafe {
+        CreateWindowExW(
+            0,
+            wide("BUTTON").as_ptr(),
+            wide(ASSET_HELP_CLOSE).as_ptr(),
+            WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_DEFPUSHBUTTON as u32,
+            close_x,
+            button_y,
+            button_w,
+            button_h,
+            hwnd,
+            IDOK as isize,
+            hinstance,
+            std::ptr::null(),
+        )
+    };
+    let copy_button = unsafe {
+        CreateWindowExW(
+            0,
+            wide("BUTTON").as_ptr(),
+            wide(ASSET_HELP_COPY).as_ptr(),
+            WS_CHILD | WS_VISIBLE | WS_TABSTOP,
+            copy_x,
+            button_y,
+            button_w,
+            button_h,
+            hwnd,
+            ASSET_HELP_COPY_ID as isize,
+            hinstance,
+            std::ptr::null(),
+        )
+    };
+    unsafe {
+        SendMessageW(title, WM_SETFONT, bold as WPARAM, 1);
+        SendMessageW(message, WM_SETFONT, body as WPARAM, 1);
+        SendMessageW(prompt, WM_SETFONT, mono as WPARAM, 1);
+        SendMessageW(close, WM_SETFONT, body as WPARAM, 1);
+        SendMessageW(copy_button, WM_SETFONT, body as WPARAM, 1);
+        // 子类只做一件事：把 Esc 转成 WM_CLOSE（非模态窗没有 IsDialogMessage 的
+        // Esc→IDCANCEL 通路；焦点落在 EDIT 或按钮上时按键都不会冒泡到窗口）。
+        SetWindowSubclass(prompt, Some(asset_help_prompt_subclass), 1, 0);
+        SetWindowSubclass(close, Some(asset_help_prompt_subclass), 2, 0);
+        SetWindowSubclass(copy_button, Some(asset_help_prompt_subclass), 3, 0);
+    }
+
+    // ── 非模态显示：不收属主、不跑嵌套循环（帮助内容不该锁住任何窗口）──
+    ASSET_HELP_DIALOG.with(|cell| {
+        *cell.borrow_mut() = Some(AssetHelpDialog {
+            hwnd,
+            prompt,
+            copy_button,
+            fonts: vec![body, bold, mono],
+        });
+    });
+    unsafe {
+        ShowWindow(hwnd, SW_SHOW);
+        SetForegroundWindow(hwnd);
+        SetFocus(prompt);
+    }
+    Ok(())
+}
+
+/// 「没有素材？」面板正文子类：Esc → 请求关窗（其余全部交还默认处理）。
+unsafe extern "system" fn asset_help_prompt_subclass(
+    hwnd: HWND,
+    msg: u32,
+    wparam: WPARAM,
+    lparam: LPARAM,
+    _uidsubclass: usize,
+    _refdata: usize,
+) -> LRESULT {
+    if msg == WM_KEYDOWN && wparam == VK_ESCAPE as WPARAM {
+        unsafe { SendMessageW(GetParent(hwnd), WM_CLOSE, 0, 0) };
+        return 0;
+    }
+    unsafe { DefSubclassProc(hwnd, msg, wparam, lparam) }
+}
+
+unsafe extern "system" fn asset_help_wndproc(
+    hwnd: HWND,
+    msg: u32,
+    wparam: WPARAM,
+    lparam: LPARAM,
+) -> LRESULT {
+    match msg {
+        WM_COMMAND => {
+            let id = (wparam & 0xFFFF) as i32;
+            if id == ASSET_HELP_COPY_ID {
+                let copy_button = ASSET_HELP_DIALOG.with(|cell| {
+                    cell.borrow()
+                        .as_ref()
+                        .map(|dialog| dialog.copy_button)
+                        .unwrap_or(0)
+                });
+                // 共享层是安全函数（unsafe 收在 `ui::clipboard` 内部），不要再包 unsafe。
+                if crate::ui::clipboard::write_text(hwnd, ASSET_PROMPT) {
+                    // 就地反馈：不关窗，可继续看/再复制（与 macOS 侧同语义）。
+                    unsafe { SetWindowTextW(copy_button, wide(ASSET_HELP_COPIED).as_ptr()) };
+                } else {
+                    rust_warn!("复制素材提示词到剪贴板失败");
+                }
+                0
+            } else if id == IDOK || id == IDCANCEL {
+                // 关闭按钮（IDOK）与 Esc 落到窗口自己身上时的 IDCANCEL 同一出口。
+                unsafe { DestroyWindow(hwnd) };
+                0
+            } else {
+                unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) }
+            }
+        }
+        WM_KEYDOWN if wparam == VK_ESCAPE as WPARAM => {
+            // 焦点在窗口本身（不在正文 EDIT）时按 Esc：同一出口关窗。
+            unsafe { DestroyWindow(hwnd) };
+            0
+        }
+        WM_CLOSE => {
+            unsafe { DestroyWindow(hwnd) };
+            0
+        }
+        WM_DESTROY => {
+            // 摘状态并释放本窗字体（用户点关闭、Esc、或随属主窗一起销毁都走这里）。
+            if let Some(dialog) = ASSET_HELP_DIALOG.with(|cell| cell.borrow_mut().take()) {
+                unsafe {
+                    for font in dialog.fonts {
+                        if font != 0 {
+                            DeleteObject(font);
+                        }
+                    }
+                }
+            }
+            0
+        }
+        WM_CTLCOLORSTATIC => {
+            let hdc = wparam as HDC;
+            let tokens = theme::tokens();
+            unsafe {
+                SetBkMode(hdc, TRANSPARENT);
+                SetTextColor(hdc, paint_win::colorref(tokens.ink));
+            }
+            paint_win::solid_brush(tokens.panel_bg.base_color()) as LRESULT
+        }
+        WM_ERASEBKGND => {
+            // 弹窗底：面板底色（与聊天窗的提示对话框同源）。
+            let mut client: RECT = unsafe { std::mem::zeroed() };
+            unsafe { GetClientRect(hwnd, &mut client) };
+            paint_win::fill_rect(
+                wparam as HDC,
+                paint_win::Rect::new(
+                    client.left,
+                    client.top,
+                    client.right - client.left,
+                    client.bottom - client.top,
+                ),
+                &theme::tokens().panel_bg,
+            );
+            1
+        }
+        _ => unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) },
+    }
+}
+
+/// 编辑器窗销毁：释放预览渲染器（Drop 会停表并摘层）、控件与字体。
+pub(crate) fn on_destroy() {
+    // 素材提示词面板（若还开着）：先显式销毁并释放它的字体 —— 属主销毁虽然会
+    // 连带销毁 owned window，但这里先收一次，字体释放与状态摘除的路径才唯一。
+    if let Some(dialog) = ASSET_HELP_DIALOG.with(|cell| cell.borrow_mut().take()) {
+        unsafe {
+            DestroyWindow(dialog.hwnd);
+            for font in dialog.fonts {
+                if font != 0 {
+                    DeleteObject(font);
+                }
+            }
+        }
+    }
+    STATE.with(|cell| {
+        if let Some(state) = cell.borrow_mut().take() {
+            for font in state.fonts {
+                if font != 0 {
+                    unsafe { DeleteObject(font) };
+                }
+            }
+            // 渲染器随 state 释放（WinLayerSurface::drop 停表、消息窗销毁）。
+            drop(state.renderer);
+        }
+    });
+    editor_ui().note_window_closed();
+    rust_info!("编辑器窗已关闭：预览表面与控件释放");
+}
+
+/// 界面刷新（草稿/保存状态/预览同步）。
+pub(crate) fn refresh_ui() {
+    let view = editor_ui().view();
+    let profile_changed = with_state(|state| {
+        if !view.profile_id.is_empty() && state.applied_profile != view.profile_id {
+            state.applied_profile = view.profile_id.clone();
+            true
+        } else {
+            false
+        }
+    });
+    if profile_changed.unwrap_or(false) {
+        rebuild_tabs();
+        with_state(|state| layout(state.hwnd));
+    }
+    with_state(|state| {
+        // 窗口标题跟随 Profile 名（与 macOS 同一文案来源；载入完成前保持建窗文案）。
+        let title = crate::ui::editor::editor_window_title(&view.profile_name);
+        if state.applied_title != title {
+            unsafe { SetWindowTextW(state.hwnd, wide(&title).as_ptr()) };
+            state.applied_title = title;
+        }
+        // 层 tab（标题角标 + 选中态；与 macOS 的 sync_tabs 同语义、同文案函数）。
+        let scale = dpi_scale(state.hwnd);
+        for (index, tab) in state.tabs.iter().enumerate() {
+            let Some(layer) = view.layers.get(index) else {
+                continue;
+            };
+            let title = crate::ui::editor::layer_tab_title(
+                index,
+                &layer.name,
+                layer.enabled,
+                layer.locked,
+                layer.asset_missing(),
+            );
+            unsafe { SetWindowTextW(tab.button, wide(&title).as_ptr()) };
+            // 选中标签贴 `tab_on_*` 族、未选中 `tab_off`（按钮转 ownerdraw 贴面；
+            // `SetWindowSubclass` 同 id 重复调用幂等，逐次刷新重贴安全）。
+            let role = if index == view.selected {
+                ButtonRole::TabOn
+            } else {
+                ButtonRole::TabOff
+            };
+            unsafe { make_themed_button(tab.button, role, scale) };
+        }
+        // 顶部动作标题随选中层状态（旧壳 le-actions 的「已锁/解锁」「可见/隐藏」文案；
+        // 标题记录的是**当前状态**，与 macOS 同口径）。
+        if let Some(layer) = view.layers.get(view.selected) {
+            let lock = unsafe {
+                windows_sys::Win32::UI::WindowsAndMessaging::GetDlgItem(state.hwnd, TOGGLE_LOCK_ID)
+            };
+            if lock != 0 {
+                unsafe {
+                    SetWindowTextW(
+                        lock,
+                        wide(if layer.locked { "已锁" } else { "解锁" }).as_ptr(),
+                    )
+                };
+            }
+            let enable = unsafe {
+                windows_sys::Win32::UI::WindowsAndMessaging::GetDlgItem(
+                    state.hwnd,
+                    TOGGLE_ENABLE_ID,
+                )
+            };
+            if enable != 0 {
+                unsafe {
+                    SetWindowTextW(
+                        enable,
+                        wide(if layer.enabled { "可见" } else { "隐藏" }).as_ptr(),
+                    )
+                };
+            }
+        }
+        // 素材下拉：重建键 = 列表代次 + 选中层 + 该层当前素材名。
+        // 占位项（0）不带动作；1..=n 为素材项；末项为本地文件直选。
+        let selected_name = view
+            .layers
+            .get(view.selected)
+            .map(|layer| layer.name.clone())
+            .unwrap_or_default();
+        let assets_key = format!(
+            "{}|{}|{}|{}",
+            view.assets_generation, view.assets_loading, view.selected, selected_name
+        );
+        if state.asset_combo != 0 && state.assets_key != assets_key {
+            state.assets_key = assets_key;
+            unsafe {
+                SendMessageW(state.asset_combo, CB_RESETCONTENT, 0, 0);
+                // 首次载入（列表还空着）显示「载入中」；已有列表的刷新保留旧项。
+                let placeholder = if view.assets_loading && view.assets.is_empty() {
+                    "素材列表载入中…".to_string()
+                } else if selected_name.is_empty() {
+                    "素材：未设置".to_string()
+                } else {
+                    format!("素材：{selected_name}")
+                };
+                SendMessageW(
+                    state.asset_combo,
+                    CB_ADDSTRING,
+                    0,
+                    wide(&placeholder).as_ptr() as isize,
+                );
+                for asset in &view.assets {
+                    let title = if asset.layer == view.selected {
+                        format!("L{} · {}", asset.layer + 1, asset.name)
+                    } else {
+                        format!("L{} · {}（复制到本层）", asset.layer + 1, asset.name)
+                    };
+                    SendMessageW(
+                        state.asset_combo,
+                        CB_ADDSTRING,
+                        0,
+                        wide(&title).as_ptr() as isize,
+                    );
+                }
+                SendMessageW(
+                    state.asset_combo,
+                    CB_ADDSTRING,
+                    0,
+                    wide("选择本地文件…").as_ptr() as isize,
+                );
+                SendMessageW(state.asset_combo, CB_SETCURSEL, 0, 0);
+            }
+        }
+        // 「移除素材」只在选中层确有素材时可用。
+        let remove_button = unsafe {
+            windows_sys::Win32::UI::WindowsAndMessaging::GetDlgItem(state.hwnd, ASSET_REMOVE_ID)
+        };
+        if remove_button != 0 {
+            let has_asset = view
+                .layers
+                .get(view.selected)
+                .map(|layer| !layer.wire_path.is_empty())
+                .unwrap_or(false);
+            unsafe { EnableWindow(remove_button, if has_asset { 1 } else { 0 }) };
+        }
+        // 参数输入框（未聚焦时才回写）。
+        let selected = view.layers.get(view.selected);
+        for (edit, index) in state.edits.iter() {
+            let focused =
+                unsafe { windows_sys::Win32::UI::Input::KeyboardAndMouse::GetFocus() == *edit };
+            if focused {
+                continue;
+            }
+            let value = match index {
+                &EDIT_SCALE => selected.map(|l| l.scale).unwrap_or(1.0),
+                &EDIT_SENSITIVITY => selected.map(|l| l.sensitivity).unwrap_or(0.8),
+                &EDIT_OFFSET_X => selected.map(|l| l.offset_x_percent).unwrap_or(0.0),
+                &EDIT_OFFSET_Y => selected.map(|l| l.offset_y_percent).unwrap_or(0.0),
+                &EDIT_INTENSITY => view.intensity,
+                _ => 0.0,
+            };
+            unsafe { SetWindowTextW(*edit, wide(&format!("{value:.2}")).as_ptr()) };
+        }
+        // 状态行（素材列表失败不阻断编辑：错误如实展示，本地文件直选仍可用）。
+        let status_text = if let Some(notice) = &view.notice {
+            notice.clone()
+        } else if view.profile_id.is_empty() {
+            "Profile 未载入（Node Profile I/O 端口就绪后自动载入）".to_string()
+        } else {
+            let dirty = if view.dirty {
+                " · 有未保存改动"
+            } else {
+                ""
+            };
+            let saving = if view.saving {
+                " · 正在保存…"
+            } else {
+                ""
+            };
+            let assets = view
+                .assets_error
+                .as_ref()
+                .map(|error| format!(" · {error}"))
+                .unwrap_or_default();
+            format!("Profile: {}{dirty}{saving}{assets}", view.profile_id)
+        };
+        if state.status != 0 {
+            unsafe { SetWindowTextW(state.status, wide(&status_text).as_ptr()) };
+            stamp_text(state.status, TextRole::Hint);
+        }
+        // 保存按钮启用状态。
+        let save =
+            unsafe { windows_sys::Win32::UI::WindowsAndMessaging::GetDlgItem(state.hwnd, SAVE_ID) };
+        if save != 0 {
+            let enabled = view.dirty && view.connected && !view.saving;
+            unsafe { EnableWindow(save, if enabled { 1 } else { 0 }) };
+        }
+    });
+    apply_preview();
+}
+
+/// 草稿 → 编辑器预览渲染器 + 主窗舞台（同一份 LayerSpec）。
+fn apply_preview() {
+    let preview = editor_ui().preview();
+    with_state(|state| {
+        let hwnd = state.hwnd;
+        let scale = dpi_scale(hwnd);
+        state.renderer.set_intensity(preview.intensity);
+        state.renderer.set_enabled(preview.effect_enabled);
+        let report = state.renderer.set_layers(preview.layers.clone());
+        if !report.failures.is_empty() {
+            rust_warn!("预览层收敛有 {} 个失败项", report.failures.len());
+        }
+        state.renderer.set_cursor(None);
+        // 合成目标是整个编辑器窗口（WinLayerSurface 按客户区合成，无区域偏移能力），
+        // 因此几何按整窗给（逻辑像素）：缩放/居中与主窗同一几何核；
+        // 控件是子窗口、绘制在合成内容之上。「预览区只占右半边」的精确合成需要
+        // 表面支持区域偏移（W9b/W11 实机验证时处理，见交付报告的未验证项）。
+        //
+        // 同样因区域偏移缺口未实施（macOS 侧已做，本侧待实机批次）：
+        // ① 预览框按弹窗宽高比的 aspect-fit（整窗合成下无「框」可裁）；
+        // ② `set_popup_width` 与舞台同口径 —— 需要主窗尺寸，本模块拿不到
+        //    windows.rs 的私有主窗状态（属跨文件接线，非本批所有权）；
+        // ③ 预览框指示（边框 / 50% 十字线 / 右下角尺寸标注；macOS 侧 2026-10-05
+        //    已随 `macos_editor.rs::EditorFrameOverlay` 落地）—— 它依赖①的「框」
+        //    几何先存在，且需要表面区域偏移把画饰与预览对齐；同一缺口的下游，
+        //    不在本批强行实施。
+        let (client_w, client_h) = client_size(hwnd);
+        state.renderer.set_window_geometry(WindowGeometry {
+            x: 0.0,
+            y: 0.0,
+            width: f64::from(client_w) / scale,
+            height: f64::from(client_h) / scale,
+        });
+        // 隐藏期不得调 render_now（§6.2）。
+        let visible = unsafe { IsWindowVisible(hwnd) != 0 && IsIconic(hwnd) == 0 };
+        if visible {
+            if let Err(error) = state.renderer.render_now() {
+                rust_warn!("编辑器预览重绘失败: {error}");
+            }
+        }
+    });
+    let promote = editor_ui().take_promote();
+    if let Err(error) =
+        super::windows::apply_editor_preview_to_stage(preview.layers, preview.intensity, promote)
+    {
+        rust_warn!("主窗舞台预览同步失败: {error}");
+    }
+}
+
+/// 全局字体变化：重建字体并下发。
+pub(crate) fn apply_font() {
+    with_state(|state| {
+        let hwnd = state.hwnd;
+        let scale = dpi_scale(hwnd);
+        for font in state.fonts.drain(..) {
+            if font != 0 {
+                unsafe { DeleteObject(font) };
+            }
+        }
+        let body = make_font(scale, 13, false);
+        let small = make_font(scale, 11, false);
+        state.fonts = vec![body, small];
+        for tab in state.tabs.iter() {
+            unsafe { SendMessageW(tab.button, WM_SETFONT, body as WPARAM, 1) };
+        }
+        for (edit, _) in state.edits.iter() {
+            unsafe { SendMessageW(*edit, WM_SETFONT, body as WPARAM, 1) };
+        }
+        if state.status != 0 {
+            unsafe { SendMessageW(state.status, WM_SETFONT, small as WPARAM, 1) };
+        }
+        if state.asset_combo != 0 {
+            unsafe { SendMessageW(state.asset_combo, WM_SETFONT, body as WPARAM, 1) };
+        }
+        for id in [ASSET_REMOVE_ID, ASSET_REFRESH_ID] {
+            let button =
+                unsafe { windows_sys::Win32::UI::WindowsAndMessaging::GetDlgItem(state.hwnd, id) };
+            if button != 0 {
+                unsafe { SendMessageW(button, WM_SETFONT, body as WPARAM, 1) };
+            }
+        }
+    });
+    rust_debug!("编辑器字体已按全局快照刷新");
+}
+
+fn window_text(hwnd: HWND) -> String {
+    if hwnd == 0 {
+        return String::new();
+    }
+    let len = unsafe { GetWindowTextLengthW(hwnd) };
+    if len <= 0 {
+        return String::new();
+    }
+    let mut buffer = vec![0u16; (len + 1) as usize];
+    let read = unsafe { GetWindowTextW(hwnd, buffer.as_mut_ptr(), buffer.len() as i32) };
+    String::from_utf16_lossy(&buffer[..read as usize])
+}
+
+// ==========================================
+// 纯逻辑单测（无 Win32 调用；本模块只在 Windows 编译，macOS 上跑不到 —— 见 AGENTS §2。
+// 同表在 macOS 可跑的部分：`paint_win` 的 `文字角色映射到各自_token` 与
+// `主按钮面全套取_primary_族`；本文件用例由 CI 的 verify (windows-latest) 执行。）
+// ==========================================
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn 编辑器只有保存贴主按钮面其余保持系统外观() {
+        assert_eq!(
+            button_role(EditorButton::Save),
+            Some(ButtonRole::Primary),
+            "保存是提交类动作"
+        );
+        for kind in [
+            EditorButton::Pick,
+            EditorButton::ResetLayer,
+            EditorButton::ResetOffset,
+            EditorButton::Revert,
+            EditorButton::Close,
+            EditorButton::AssetRemove,
+            EditorButton::AssetRefresh,
+            EditorButton::ToggleLock,
+            EditorButton::ToggleEnable,
+            EditorButton::AssetHelp,
+        ] {
+            assert_eq!(button_role(kind), None, "{kind:?} 应保持系统外观");
+        }
+    }
+
+    /// 源码级守门：素材提示词面板必须保持**非模态**（不得再出现「禁用属主 +
+    /// 嵌套消息循环」的自建模态窗写法）—— 帮助内容没有「必须先回答」的语义，
+    /// 锁住整个应用属回归（实机复现过同类问题）。把面板改回模态时本用例必须红。
+    #[test]
+    fn 素材提示词面板保持非模态_源码守门() {
+        let src = include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/src/ui/platform/windows_editor.rs"
+        ));
+        let start = src
+            .find("「没有素材？」素材提示词面板（非模态")
+            .expect("面板小节标记");
+        let end = src.find("/// 编辑器窗销毁").expect("编辑器销毁函数标记");
+        let section = &src[start..end];
+        assert!(
+            !section.contains("EnableWindow(owner"),
+            "帮助面板不得禁用属主窗（非模态）"
+        );
+        assert!(
+            !section.contains("GetMessageW"),
+            "帮助面板不得自跑嵌套消息循环（非模态）"
+        );
+        assert!(
+            section.contains("SetFocus(prompt)"),
+            "非模态窗打开时把键盘焦点交给正文（Esc 子类才有落点）"
+        );
+    }
+
+    /// 素材提示词弹窗：排版表来自平台无关模块（`ui::editor`，几何断言在本机
+    /// 单测里跑）；这里只钉 DPR 换算——逻辑点乘 DPI 缩放后仍落在按钮行内。
+    #[test]
+    fn 素材提示词弹窗按DPI缩放() {
+        let panel = crate::ui::editor::asset_help_panel_layout();
+        for scale in [1.0, 1.5, 2.0] {
+            let client_w = scaled(panel.width, scale);
+            let close_right = scaled(panel.close_x, scale) + scaled(panel.button_w, scale);
+            assert_eq!(
+                close_right,
+                client_w - scaled(panel.margin, scale),
+                "scale={scale}：关闭按钮贴右缘"
+            );
+            let copy_right = scaled(panel.copy_x, scale) + scaled(panel.button_w, scale);
+            assert!(
+                copy_right <= scaled(panel.close_x, scale),
+                "scale={scale}：复制按钮不压关闭按钮"
+            );
+            assert!(scaled(panel.text_y, scale) > scaled(panel.message_y, scale));
+        }
+    }
+}
