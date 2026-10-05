@@ -156,7 +156,10 @@ fn list_files_recursive(
                     "png" | "jpg" | "jpeg" | "gif" | "webp" | "svg"
                 ) {
                     if let Ok(rel) = path.strip_prefix(base) {
-                        files.push(rel.to_string_lossy().to_string());
+                        // 线格式统一正斜杠：素材列表经 IPC 交给编辑器，且 subdir 前缀
+                        // 过滤以 `materials/` 形态比对（Windows 原生反斜杠会永远匹配
+                        // 不上，等于清单静默漏空）。
+                        files.push(rel.to_string_lossy().replace('\\', "/"));
                     }
                 }
             }

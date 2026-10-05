@@ -22,8 +22,12 @@ impl NodeRuntimePaths {
         let (node, modules) = (root.join("bin/node"), root.join("lib/node_modules"));
         Self {
             node,
-            npm: modules.join("npm/bin/npm-cli.js"),
-            npx: modules.join("npm/bin/npx-cli.js"),
+            // 逐段 join：`join("npm/bin/npm-cli.js")` 会把正斜杠原样带进 OsString，
+            // Windows 下得到 `node_modules\npm/bin\...` 这种混合分隔符（能执行，但
+            // 与同为该路径构造方的测试/日志口径不一致）；逐段 join 产出各平台的
+            // 规范本机路径。
+            npm: modules.join("npm").join("bin").join("npm-cli.js"),
+            npx: modules.join("npm").join("bin").join("npx-cli.js"),
         }
     }
 
@@ -135,19 +139,39 @@ mod tests {
         #[cfg(windows)]
         {
             assert_eq!(runtime.node, root.join("node.exe"));
-            assert_eq!(runtime.npm, root.join("node_modules/npm/bin/npm-cli.js"));
-            assert_eq!(runtime.npx, root.join("node_modules/npm/bin/npx-cli.js"));
-        }
-        #[cfg(not(windows))]
-        {
-            assert_eq!(runtime.node, root.join("bin/node"));
             assert_eq!(
                 runtime.npm,
-                root.join("lib/node_modules/npm/bin/npm-cli.js")
+                root.join("node_modules")
+                    .join("npm")
+                    .join("bin")
+                    .join("npm-cli.js")
             );
             assert_eq!(
                 runtime.npx,
-                root.join("lib/node_modules/npm/bin/npx-cli.js")
+                root.join("node_modules")
+                    .join("npm")
+                    .join("bin")
+                    .join("npx-cli.js")
+            );
+        }
+        #[cfg(not(windows))]
+        {
+            assert_eq!(runtime.node, root.join("bin").join("node"));
+            assert_eq!(
+                runtime.npm,
+                root.join("lib")
+                    .join("node_modules")
+                    .join("npm")
+                    .join("bin")
+                    .join("npm-cli.js")
+            );
+            assert_eq!(
+                runtime.npx,
+                root.join("lib")
+                    .join("node_modules")
+                    .join("npm")
+                    .join("bin")
+                    .join("npx-cli.js")
             );
         }
     }
@@ -161,13 +185,21 @@ mod tests {
         #[cfg(windows)]
         let (node_file, npm_script) = (
             root.join("node").join("node.exe"),
-            root.join("node").join("node_modules/npm/bin/npm-cli.js"),
+            root.join("node")
+                .join("node_modules")
+                .join("npm")
+                .join("bin")
+                .join("npm-cli.js"),
         );
         #[cfg(not(windows))]
         let (node_file, npm_script) = (
-            root.join("node").join("bin/node"),
+            root.join("node").join("bin").join("node"),
             root.join("node")
-                .join("lib/node_modules/npm/bin/npm-cli.js"),
+                .join("lib")
+                .join("node_modules")
+                .join("npm")
+                .join("bin")
+                .join("npm-cli.js"),
         );
         std::fs::create_dir_all(node_file.parent().unwrap()).unwrap();
         std::fs::write(&node_file, b"").unwrap();

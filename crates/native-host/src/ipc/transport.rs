@@ -1018,19 +1018,25 @@ pub(crate) mod test_peer {
 
     pub async fn connect_control(address: &str) -> io::Result<PeerStream> {
         let mut stream = connect_raw(address).await?;
-        stream.write_all(&[ROLE_CONTROL]).await?;
-        stream.write_all(&FRAME_MAGIC).await?;
+        // 前导字节单次写出：服务端读过角色字节就可能拒绝并关闭（如二进制先到），
+        // 分段写会在被关闭的 Windows 管道上撞出 BrokenPipe；一次 write_all 让
+        // 「角色 + magic」作为一整段交付，之后的读才能稳定拿到握手状态。
+        let mut lead = Vec::with_capacity(1 + FRAME_MAGIC.len());
+        lead.push(ROLE_CONTROL);
+        lead.extend_from_slice(&FRAME_MAGIC);
+        stream.write_all(&lead).await?;
         Ok(stream)
     }
 
     pub async fn connect_binary(address: &str, token: &str) -> io::Result<(PeerStream, u8)> {
         let mut stream = connect_raw(address).await?;
-        stream.write_all(&[ROLE_BINARY]).await?;
-        stream.write_all(&FRAME_MAGIC).await?;
-        stream
-            .write_all(&(token.len() as u32).to_le_bytes())
-            .await?;
-        stream.write_all(token.as_bytes()).await?;
+        // 同上：角色 + magic + 长度 + token 合并成一次写。
+        let mut lead = Vec::with_capacity(1 + FRAME_MAGIC.len() + 4 + token.len());
+        lead.push(ROLE_BINARY);
+        lead.extend_from_slice(&FRAME_MAGIC);
+        lead.extend_from_slice(&(token.len() as u32).to_le_bytes());
+        lead.extend_from_slice(token.as_bytes());
+        stream.write_all(&lead).await?;
         let mut reply = [0u8; 5];
         stream.read_exact(&mut reply).await?;
         assert_eq!(&reply[0..4], &FRAME_MAGIC);
@@ -1047,7 +1053,25 @@ pub(crate) mod test_peer {
     #[cfg(windows)]
     async fn connect_raw(address: &str) -> io::Result<PeerStream> {
         use tokio::net::windows::named_pipe::ClientOptions;
-        Ok(PeerStream::PipeClient(ClientOptions::new().open(address)?))
+        // Windows 命名管道与 Unix socket 不同：客户端 CreateFile 时若名字下还没有
+        // 「已进入监听」的实例（服务端尚未轮到 connect()），或实例全被占用，会立刻
+        // 得到 ERROR_PIPE_BUSY。tokio 的 open() 是同步调用、不让出执行权，而
+        // current_thread 运行时下被 spawn 的 accept 任务要先有机会被调度才能建实例/
+        // 进监听 —— 生产侧 Node 走 libuv（它对 ERROR_PIPE_BUSY 同样重试等待），
+        // 测试对端按同一语义实现：有界重试。
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        loop {
+            match ClientOptions::new().open(address) {
+                Ok(pipe) => return Ok(PeerStream::PipeClient(pipe)),
+                Err(error)
+                    if error.raw_os_error() == Some(231)
+                        && std::time::Instant::now() < deadline =>
+                {
+                    tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+                }
+                Err(error) => return Err(error),
+            }
+        }
     }
 }
 
