@@ -10,12 +10,17 @@
 // 与持久化语义未变，vp-23 的缺失检测与提醒接线（上一批登记）不受影响；其余点不在改动面内、
 // 实现点仍在。本批刷新同时包含另一会话的改动；本轮只做 coverage 描述与当前实现一致性核对
 //（非逐行行为审计），未修订覆盖点，仅按当前源码刷新 sourceHash。
+// 2026-10-05 压缩拒绝留痕批次（本批刷新）：sourceFiles 变化 —— runtime.ts（createCompactionHook
+// 拒绝留痕：四个 decline 结局结构化 + 统一日志；变量池读写、代际与落盘路径未动）。
+// vp-01..vp-23 逐点核对：vp-04 / vp-08 / vp-13 的写入闭环与持久化语义未变，vp-23 的缺失检测
+// 与提醒接线不受影响；其余点不在改动面内、实现点仍在，覆盖描述与当前实现一致。未修订覆盖点，
+// 仅按当前源码刷新 sourceHash。
 import type { ModuleContract } from "../host/types"
 
 export const variablePoolContract: ModuleContract = {
   module: "variable-pool",
   sourceFiles: ["src/services/engine/harness/runtime.ts", "src/services/personality/variable-pool.ts", "src/services/personality/types.ts", "src/services/personality/stages-file.ts", "src/services/reply/generator.ts", "src/services/session/store.ts"],
-  sourceHash: "f7b314a6a034a30bb7d8af3a55ad79494b70118d329b0ae9317ea07c021bb51e",
+  sourceHash: "bb8b8dc1360a1e12f8d999ba87bd5663018e454308d9048dbee91df3e532a550",
   coverage: [
     { id: "vp-01", feature: "系统变量计算", description: "computeSystemVariables(now, activeCardId) 产出 6 个系统变量：5 个由本地时间派生（hour / minute / dayOfWeek / isNightTime / isWeekend）+ activeCardId。**没有模式派生变量** —— pet/assistant 双模式与 general.mode 已全链删除，系统变量集合与删除前逐项一致，这是本轮重分析专门核对过的负向结论（含模式字段的注入点只剩 Card 变量与互动状态）", why: "Prompt 注入基础；模式面删除后必须确认系统变量集合没有跟着漂移，否则 Prompt 里会留下已不存在的维度", layer: "unit", depth: "shallow", scenarios: ["variable-system-vars"] },
     { id: "vp-02", feature: "变量池初始化", description: "initVariablePool 从Card variableDefs初始化", why: "Card切换和重启时正确构建", layer: "unit", depth: "deep", scenarios: ["variable-pool-init"] },

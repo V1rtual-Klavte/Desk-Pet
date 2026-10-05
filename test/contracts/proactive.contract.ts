@@ -34,8 +34,11 @@ import type { ModuleContract } from "../host/types"
 // 分列与预留账本语义未变）。pr-01..pr-08 逐点核对实现点仍在、覆盖描述与当前实现一致。本批
 // 刷新同时包含另一会话的改动；本轮只做 coverage 描述与当前实现一致性核对（非逐行行为审计），
 // 未修订覆盖点，仅按当前源码刷新 sourceHash。
+// 2026-10-05 压缩拒绝留痕批次（本批刷新）：sourceFiles 变化 —— runtime.ts（createCompactionHook
+// 拒绝留痕：四个 decline 结局结构化 + 统一日志；主动表达回合不参与压缩调度）。pr-01..pr-08
+// 逐点核对实现点仍在、覆盖描述与当前实现一致，未修订覆盖点，仅按当前源码刷新 sourceHash。
 export const proactiveContract:ModuleContract={
-  module:"proactive",sourceHash: "37bd83a43ef1040cb42c9022e5a1343f2a7e51eeb457fd86f29f93799aceea53",
+  module:"proactive",sourceHash: "42b76b488082813ce8d4916319e443085c01f145089747d6ea013bb9c3bdf8ab",
   sourceFiles:["src/services/proactive/config.ts","src/services/proactive/index.ts","src/services/proactive/scanner.ts","src/services/proactive/opportunities.ts","src/services/proactive/time.ts",
     "src/services/proactive/planner.ts","src/services/proactive/delivery.ts","src/services/proactive/ipc.ts","src/services/proactive/auxiliary-budget.ts","src/services/proactive/control.ts","src/services/proactive/protocol.json",
     "src/services/proactive/protocol.ts","src/services/proactive/trace.ts","src/services/proactive/types.ts","src/services/proactive/presence.ts","src/services/proactive/usage.ts",

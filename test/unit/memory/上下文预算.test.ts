@@ -35,6 +35,31 @@ afterEach(() => {
   rmSync(root, { recursive: true, force: true })
 })
 
+describe("保留窗口随窗口长大", () => {
+  it("小窗口沿用 20k 兜底不变，大窗口松开并在 80k 封顶 [memory-keep-recent-scaling]", () => {
+    const budgetAt = (window: number) => contextBudget(window)
+    const keep = (window: number) => budgetAt(window).keepRecentTokens
+    const windows = [16_000, 32_000, 128_000, 200_000, 1_000_000]
+
+    for (const window of windows) {
+      // 不变量：保留窗口吃不掉输入目标 —— 否则压缩之后请求不缩小，等于压了个寂寞。
+      expect(keep(window), `${window} 窗口的保留窗口超过正常输入目标的四成`)
+        .toBeLessThanOrEqual(Math.floor(budgetAt(window).normalInputTarget * 0.4))
+    }
+    // 小窗口仍是「与压缩余量共用 20k 封顶」时代的旧口径：拆分封顶不得让小窗口回退。
+    expect(keep(32_000)).toBe(Math.min(20_000, Math.floor(budgetAt(32_000).normalInputTarget * 0.4)))
+    // 大窗口必须真的松开（本次要修的就是「窗口再大也只留 20k」），并在绝对上限封顶。
+    expect(keep(1_000_000), "1M 窗口的保留窗口没有随窗口长大").toBeGreaterThan(20_000)
+    expect(keep(1_000_000)).toBeLessThanOrEqual(80_000)
+    // 单调不减：窗口变大不该反而保留更少。
+    const curve = windows.map(keep)
+    for (let i = 1; i < curve.length; i++) {
+      expect(curve[i]!, `窗口 ${windows[i]} 比 ${windows[i - 1]} 保留得更少`)
+        .toBeGreaterThanOrEqual(curve[i - 1]!)
+    }
+  })
+})
+
 describe("上下文预算", () => {
   it("上下文内核只做预算：块排序、硬上限判定、可选块整块淘汰与分配账目 [memory-context-budget]", () => {
     for (const window of [16_000, 32_000, 128_000]) {

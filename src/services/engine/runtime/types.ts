@@ -26,10 +26,13 @@ export const PROMPT_SNAPSHOT_ENTRY = "deskpet.prompt_snapshot"
 export const PROMPT_REWRITE_ENTRY = "deskpet.prompt_rewrite"
 
 /**
- * 压缩降级条目：宿主摘要内核失败（或压缩未完成）时写的审计条目。
+ * 压缩降级条目：压缩没落成（宿主摘要内核失败，或宿主钩子策略性 decline 了 manual/overflow
+ * 压缩）时写的审计条目。
  *
  * 它证明的是「这次压缩为什么没落成」：上游通用英文摘要一旦提交就成为后续所有回合唯一的历史
- * 视图且不可回滚，宿主的取舍是显式 decline，代价必须留下可追溯的证据。
+ * 视图且不可回滚，宿主的取舍是显式 decline，代价必须留下可追溯的证据。内核失败用 `error`
+ * 字段（用户面读同一字段报 failed），策略性拒绝用 `decline` 结构化记录（kind/trigger/数字）。
+ * threshold 触发的 decline 不落条目（每个检查点都会重试的内部优化），只留统一日志。
  */
 export const COMPACTION_DECLINED_ENTRY = "deskpet.compaction_declined"
 
@@ -154,13 +157,67 @@ export interface PromptTransform {
 }
 
 /**
- * 宿主压缩钩子的审计槽：一次性调用（摘要内核）把这次压缩的产物/失败写进它，
+ * 宿主压缩钩子的审计槽：一次性调用（摘要内核）把这次压缩的产物/失败/拒绝写进它，
  * 由运行槽在 `compaction_end` 收口成审计条目（hook 内不能直接写 lane）。
- * `rewrite` 是压缩摘要的派生记录，失败路径用 `failure`；`rewrite` 用过即由槽清空。
+ * `rewrite` 是压缩摘要的派生记录，失败路径用 `failure`；`decline` 是策略性拒绝的结构化原因
+ * （素材为空 / 保留守卫 / 闸门装得下），**不写 failure** —— 两者语义不同：failure 会把手动
+ * `/compact` 翻成可见失败，decline 只改审计面。`rewrite` 与 `decline` 用过即由槽清空。
  */
 export interface CompactionAuditSink {
   rewrite?: PromptTransform
   failure?: string
+  decline?: CompactionDeclineRecord
+}
+
+/** 压缩任务的触发方式：与 pi 的 compaction 任务 reason 同名（manual = 用户 `/compact`；overflow = 溢出恢复；threshold = 阈值检查点）。 */
+export type CompactionTrigger = "manual" | "threshold" | "overflow"
+
+/** 压缩被拒绝的分类：素材为空 / 必须保留原文的工具 / 级 3 闸门装得下 / 摘要内核失败。 */
+export type CompactionDeclineKind = "empty_material" | "retained_tool" | "gate_fits" | "kernel_failure"
+
+/**
+ * 素材分段后仍无法覆盖的结构化数字（`CompactionOverflowError.detail` 的形状，唯一定义点在这里）：
+ * `over_cap` 时 `needed` = 真实片数、`limit` = 片数上限（`used` = 同上限）；
+ * `oversized_unit` 时 `used` = 单元自身成本 + overhead、`limit` = 硬输入上限。
+ */
+export interface CompactionOverflowDetail {
+  readonly reason: "over_cap" | "oversized_unit"
+  readonly needed: number
+  readonly used: number
+  readonly limit: number
+}
+
+/**
+ * 压缩被拒绝的结构化留痕：decline 不是失败（不写 `failure`、不改用户可见文案），但「哪种原因、
+ * 什么触发、关键数字多少」必须可诊断 —— pi 的 `declined` 终态不带 error，宿主钩子是唯一的原因出口。
+ * 钩子每次拒绝都写进 `CompactionAuditSink.decline` 并留一条统一日志；槽按触发方式落审计条目
+ * （manual / overflow；threshold 是每个检查点都会重试的内部优化，只留日志，见 harness-slot）。
+ */
+export interface CompactionDeclineRecord {
+  readonly kind: CompactionDeclineKind
+  readonly trigger: CompactionTrigger
+  readonly sessionId?: string
+  /** empty_material：为什么没有可安全摘要的范围（素材与保留窗口的现场读数）。 */
+  readonly material?: {
+    /** 过滤空助手消息后的待摘要条数（decline 时为 0）。 */
+    readonly messagesToSummarize: number
+    /** 同上，split-turn 前缀段条数。 */
+    readonly turnPrefixMessages: number
+    /** 被「无正文已完结助手」过滤丢掉的条数：>0 说明素材曾经非空，是滤空的。 */
+    readonly droppedEmptyAssistant: number
+    /** 保留区（retainedTail）的条数：全量落在保留窗口内就是它顶掉了摘要范围。 */
+    readonly retainedMessages: number
+    /** pi 估的压缩前上下文 tokens（estimateContextTokens 口径）。 */
+    readonly tokensBefore: number
+    /** 上游保留窗口（keepRecentTokens）：消息估算总量没越过它时切点停在开头。 */
+    readonly keepRecentTokens: number
+  }
+  /** retained_tool：命中的必须保留原文的工具名（historyCompaction=retain）。 */
+  readonly retainedTool?: { readonly toolName: string }
+  /** gate_fits：级 1/2 投影后的估算、目标与生效层级。 */
+  readonly gate?: { readonly tokens: number; readonly target: number; readonly level: number }
+  /** kernel_failure：错误码 + over_cap/oversized_unit 的结构化数字。 */
+  readonly failure?: { readonly code?: string; readonly overflow?: CompactionOverflowDetail }
 }
 
 export interface PromptToolSchema {

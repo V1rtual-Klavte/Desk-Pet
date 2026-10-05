@@ -13,6 +13,10 @@
 // 与拟人表达的解析、沉默护栏、逐泡揭示与标题栏调度不相交）。hz-01..hz-04 逐点核对实现点
 // 仍在、覆盖描述与当前实现一致。本批刷新同时包含另一会话的改动；本轮只做 coverage 描述与
 // 当前实现一致性核对（非逐行行为审计），未修订覆盖点，仅按当前源码刷新 sourceHash。
+// 2026-10-05 压缩拒绝留痕批次（本批刷新）：sourceFiles 变化 —— runtime.ts（createCompactionHook
+// 拒绝留痕：四个 decline 结局结构化 + 统一日志；与拟人表达的解析、沉默护栏、逐泡揭示与标题栏
+// 调度不相交）。hz-01..hz-04 逐点核对实现点仍在、覆盖描述与当前实现一致，未修订覆盖点，
+// 仅按当前源码刷新 sourceHash。
 import type { ModuleContract } from "../host/types"
 
 export const humanizerContract: ModuleContract = {
@@ -23,7 +27,7 @@ export const humanizerContract: ModuleContract = {
     "src/services/agent/runner.ts",
     "src/services/engine/harness/runtime.ts",
   ],
-  sourceHash: "91538f0a9ee764d022aa13f5ee1a49648ff3ad05b7b90121bae1c938f69183a5",
+  sourceHash: "3535c5ef61ea6514fdf09531fa1db39169f507e8c9691dbe06b5070e4d672f42",
   coverage: [
     {
       id: "hz-01",

@@ -1,6 +1,10 @@
 // Runtime protocol vocabulary. Keep this barrel free of business side effects.
 export type {
   CompactionAuditSink,
+  CompactionDeclineKind,
+  CompactionDeclineRecord,
+  CompactionOverflowDetail,
+  CompactionTrigger,
   ContextBlock,
   ContextLayer,
   IngressEnvelope,

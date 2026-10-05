@@ -48,6 +48,18 @@ const OUTPUT_RATIO = 1 / 8
 const MAX_HEADROOM = 20_000
 const HEADROOM_RATIO = .16
 const OVERHEAD_RATIO = .02
+/**
+ * 近期对话原样保留（`keepRecentTokens`）的上限：**随窗口长大，不与压缩余量共用封顶**。
+ *
+ * 原先两个量共用 `MAX_HEADROOM`，于是窗口再大也只保留最近 20k —— 200k 与 1M 窗口下它占
+ * 总窗口的比例越来越小，等于「空间越大反而越早、越狠地压掉历史」。这两件事性质不同：
+ * 压缩余量是**压缩调用自身的操作开销**（固定，该封顶）；保留窗口是**给用户的近期上下文**
+ * （该随空间涨）。故拆开：`max(MAX_HEADROOM, min(80k, 窗口 × 1/4))`。
+ * 小窗口仍被 `MAX_HEADROOM` 兜住（与旧行为逐字相同），大窗口才松开；80k 是 2026-10-05
+ * 定的绝对上限，防止超大窗口下单次请求无谓膨胀。
+ */
+const KEEP_RECENT_RATIO = .25
+const KEEP_RECENT_CAP_ABS = 80_000
 
 export interface ContextBudget {
   window: number
@@ -218,8 +230,14 @@ export function contextBudget(window: number, maxOutput?: number): ContextBudget
   const hardInputLimit = Math.max(1, size - outputReserve - protocolOverhead)
   const compactionHeadroom = Math.min(MAX_HEADROOM, Math.floor(size * HEADROOM_RATIO), Math.floor(hardInputLimit / 3))
   const normalInputTarget = hardInputLimit - compactionHeadroom
+  // 保留窗口的上限自己会长大（见 KEEP_RECENT_* 注释）；比例项仍是既有的 40%，所以它
+  // 永远不会超过 normalInputTarget 的四成 —— 压缩之后请求必然缩小，不会压了个寂寞。
+  const keepRecentCap = Math.max(
+    MAX_HEADROOM,
+    Math.min(KEEP_RECENT_CAP_ABS, Math.floor(size * KEEP_RECENT_RATIO)),
+  )
   return { window: size, outputReserve, protocolOverhead, compactionHeadroom, hardInputLimit, normalInputTarget,
-    keepRecentTokens: Math.min(MAX_HEADROOM, Math.floor(normalInputTarget * .4)),
+    keepRecentTokens: Math.min(keepRecentCap, Math.floor(normalInputTarget * .4)),
     summaryMaxTokens: Math.max(1, Math.min(2048, Math.floor(normalInputTarget * .12))) }
 }
 

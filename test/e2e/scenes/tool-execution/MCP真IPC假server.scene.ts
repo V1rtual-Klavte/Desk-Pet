@@ -1,6 +1,5 @@
 import { mkdirSync, writeFileSync } from "node:fs"
 import { dirname, join } from "node:path"
-import { fileURLToPath } from "node:url"
 import type { SceneDef } from "../../../e2e/types"
 import type { Entry } from "@earendil-works/pi-agent-core"
 import { fakeText, fakeToolCall, installFakeProvider } from "../../../host/fake-provider"
@@ -77,10 +76,17 @@ function fixtureSource(): string {
   ].join("\n")
 }
 
-/** 夹具脚本的绝对路径（test/.tmp 在产物边界内）。 */
+/**
+ * 夹具脚本的绝对路径（test/.tmp 在产物边界内）。
+ *
+ * 锚点用 `process.cwd()`（= 仓库根，L4 由启动器在仓库根起 Node），**不能用 `import.meta.url`**：
+ * 场景连同本文件会被打进 `test/.tmp/native-host-e2e/main.mjs`，届时 `import.meta.url` 是
+ * **bundle** 的 URL 而非本文件的，相对它上跳三级正好落到仓库根，产物就写到 `test/` 边界外
+ * （根 `.tmp/` 不在 .gitignore 里，会直接冒进 `git status`）。同一锚点在
+ * `test/host/caseid-reporter.ts`（`test/reports`）与 `scripts/e2e-test.mjs` 已是惯例。
+ */
 function fixturePath(): string {
-  const here = dirname(fileURLToPath(import.meta.url))
-  return join(here, "..", "..", "..", ".tmp", "mcp-real-ipc", "fake-server.mjs")
+  return join(process.cwd(), "test", ".tmp", "mcp-real-ipc", "fake-server.mjs")
 }
 
 function archivedToolText(entry: Entry, toolCallId: string): string | undefined {

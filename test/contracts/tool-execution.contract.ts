@@ -12,6 +12,15 @@
 // 口径是对话回合的「实际请求工具面」，上报路径未被本改动改写；te-08..te-29 逐点核对实现点
 // 仍在、覆盖描述与当前实现一致。本批刷新同时包含另一会话的改动；本轮只做 coverage 描述与
 // 当前实现一致性核对（非逐行行为审计），未修订覆盖点，仅按当前源码刷新 sourceHash。
+// 2026-10-05 压缩拒绝留痕批次（本批刷新）：sourceFiles 变化 —— runtime.ts（createCompactionHook
+// 拒绝留痕：四个 decline 结局结构化 + 统一日志）与 harness-slot.ts（compaction_end 按
+// manual/overflow 落 deskpet.compaction_declined 条目、threshold 只留日志）。te-17 的
+// preserve/投影语义与摘要素材共用链路未被改写（本次只改拒绝留痕，不改投影实现）；te-08..te-29
+// 逐点核对实现点仍在、覆盖描述与当前实现一致，未修订覆盖点，仅按当前源码刷新 sourceHash。
+// 2026-10-05 复算补充（同一刷新轮）：复算时并发落进一处本批改动单之外的 context/budget.ts
+// 变化（keepRecentTokens 上限改为随窗口长大；并发写入，不在本批改动单内）。按当前源码复算，
+// sourceHash 一并覆盖它；te-08..te-29 无覆盖点描述 keepRecentTokens（te-13 的页预算走
+// toolResultTokenBudget(window)，本次未改），逐点核对不受影响。
 import type { ModuleContract } from "../host/types"
 
 export const toolExecutionContract: ModuleContract = {
@@ -55,7 +64,7 @@ export const toolExecutionContract: ModuleContract = {
     "crates/native-host/src/commands/tool_permit.rs",
     "crates/native-host/src/commands/tool_exec/mod.rs",
   ],
-  sourceHash: "aaa508c7c6b29b08ec6d7fcdf9186301b4285ce726b7fa0c3b3d7035c1804bc4",
+  sourceHash: "6497a13854de96c28cac6bb31b2478c88584495c1174480f3ae52b136dab2016",
   coverage: [
     { id: "te-13", feature: "工具结果持久化与回读", description: "生产工具配对作为会话条目持久化，完整工具文本保留（L0 只改请求视图；Router 不做内联截断，旧 L1 截断已删），read_session_event 按条目 id 或其**最短唯一前缀**分页回读（前缀不唯一时返回明确错误、绝不任选；完整 id 恒可读），页大小由 `transcriptPageTokens(window)`（= `toolResultTokenBudget(window)`，与 L0 单条结果同一份额）的 **token 口径**限定并随窗口单调（旧的固定字符页宽常量已删除），单页正文由 `sliceByTokenBudget` 切出、`estimateContextTokens(正文) <= pageTokens` 恒成立，`offset` 仍是字符下标；读取限定当前 session（reader 是槽上的 readToolResult，工具只认地址引用）；超上限边界上条目仍为全文、请求视图带真地址（前缀形态）、bash 截断带 spill 回读路径（实际生效上限由 Rust 回传）。MCP 结果与内置工具走同一条回读链，**一次性截断已删**（旧 MAX_MCP_RESULT_CHARS 的「正文里如实标记不保留全文、不写假 eventId」前提随决策 11 反转）：全文原样落会话条目，缩短只由 L0 投影按 details.deskpetEntryId 完成，模型随后用 read_session_event 取回 —— 因此超过旧 50,000 字符的结果仍可回读。无地址的条目（取不到 `details.deskpetEntryId`）不写假 eventId：未缩短形态不追加任何行、缩短形态在占位串里如实说明「中间段不可恢复」，留痕按内容指纹键（`noAddressWarnKey` = `长度:首 NO_ADDRESS_WARN_KEY_CHARS=32 字符`）去重、同键只报一次，键集合有界（`NO_ADDRESS_WARN_KEYS=64`，满员按插入序 FIFO 淘汰最旧键）—— 指纹分键与去重由 memory 的 mm-27 场景断言，有界淘汰未由场景断言。唯一的物理上限在条目写盘链上（native-execution-env 的 MAX_TOOL_FILE_BYTES，5 MB）：超过时写盘如实失败，**不做静默截断**（§8.8 的裁定，边界本身未由本点场景断言，见 harness-storage 的 hs-02）", why: "短请求不能以丢失工具证据为代价；删掉截断后「大结果仍能取回」正是这条链唯一的可观测结论", layer: "e2e", depth: "deep", scenarios: ["tool-transcript-recovery", "tool-archive-beyond-inline-limit", "tool-mcp-large-result-readback"] },
     { id: "te-08", feature: "真 LLM 多工具调用", description: "真实 LLM 对话中先后调用多个工具。场景点名的 system_info 已按决策 13 改写为「运行环境」：五行输出（操作系统、架构、CPU 核心数、内存「已用 / 总 (百分比)，可用」、bash 默认工作目录），其中三个内存口径来自 Rust system_info（新增 memAvailable 字段，used 与 available 是各自独立的计数口径、不是互补关系），bash 默认 cwd 由 TS 侧 NativeExecutionEnv.defaultCwd() 提供而不是 Rust 返回值，因此不重复永不变的信息（旧实现里的「永不变」条目已删）。注：场景只断言工具调用成功与非空回复、不绑字段名，所以这五行的字段级形状未由本点断言（Rust 侧 SystemInfoResult 由单测覆盖）", why: "端到端工具链验证", layer: "e2e", depth: "deep", scenarios: ["tool-system-info"] },

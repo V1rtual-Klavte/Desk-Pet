@@ -12,6 +12,15 @@
 // 链路不相交）。ci-01..ci-06 逐点核对实现点仍在、覆盖描述与当前实现一致。本批刷新同时包含
 // 另一会话的改动；本轮只做 coverage 描述与当前实现一致性核对（非逐行行为审计），未修订
 // 覆盖点，仅按当前源码刷新 sourceHash。
+// 2026-10-05 压缩拒绝留痕批次（本批刷新）：sourceFiles 变化 —— runtime.ts（createCompactionHook
+// 新增 noteDecline：四个拒绝结局结构化留痕 + 统一日志）与 harness-slot.ts（compaction_end 按
+// manual/overflow 落 deskpet.compaction_declined 条目、threshold 只留日志），与截图/图片命令、
+// 图像预算与投影链路不相交。ci-01..ci-06 的准入、截图、预览与投影链路逐点核对实现点仍在、
+// 覆盖描述与当前实现一致，未修订覆盖点，仅按当前源码刷新 sourceHash。
+// 2026-10-05 复算补充（同一刷新轮）：复算时并发落进一处本批改动单之外的 context/budget.ts
+// 变化（keepRecentTokens 上限改为随窗口长大：max(MAX_HEADROOM, min(80k, 窗口 × 1/4))，小窗口
+// 逐字不变；并发写入，不在本批改动单内）。按当前源码复算，sourceHash 一并覆盖它；
+// ci-01..ci-06 无覆盖点描述 keepRecentTokens（图像预算走独立份额），逐点核对不受影响。
 import type { ModuleContract } from "../host/types"
 export const chatImagesContract: ModuleContract = {
   module: "chat-images",
@@ -23,7 +32,7 @@ export const chatImagesContract: ModuleContract = {
     "src/services/engine/harness/runtime.ts", "src/services/engine/harness/harness-slot.ts", "src/services/session/read-model.ts", "src/services/session/manager.ts", "crates/native-host/src/images/inline.rs",
     "src/services/session/messages.ts", "src/services/tool/local/screenshot.ts", "src/services/tool/local/screenshot-details.ts", "crates/native-host/src/commands/screenshot_cmd.rs",
   ],
-  sourceHash: "15ec4be2941253dc1830f7e1bff59439dd154341b57a79daed3670c13c376998",
+  sourceHash: "9546ddfedba5918e9f06b0b0ac8dfad7ba10215bd47b5e0a8730f8389b2de3cd",
   coverage: [{ id: "ci-01", feature: "用户图片原路径整链", description: "原生常规图片准入最多4张/15MiB，图片-only输入提交后持久JSONL只存路径；模型请求临时读取真实图像，原文件删除后展示投影仍保留路径、请求明确缺失而无图像副本", why: "文本和UI缩略图不能证明模型收到了图像，也不能证明编码未进入JSONL", layer: "e2e", depth: "deep", scenarios: ["chat-image-path-production"] },
     { id: "ci-02", feature: "视觉预算与审计投影", description: "真实用户图像参与主请求与辅助请求的统一保守预算；base64长短不冒充语言token，完整图像内容仍进入仅hash审计投影", why: "图片预算为零会使上下文与主动持久额度准入失真，图像变化也不能得到相同审计内容", layer: "unit", depth: "deep", scenarios: ["chat-image-budget-content-hash"] },
     { id: "ci-03", feature: "截图展示给用户与隐私总闸", description: "screenshot 工具只在 ai.silentAccess.enabled 开启时可用：Rust capture_screenshot 复检同一开关（关闭即 Cancelled），前端命中时返回中性说明且不触达采集/落盘；show_to_user=true 时截图先经 save_screenshot 原子落盘（数据根 screenshots/，只保留最新 200 个）再挂到本回合提交的助手条目 deskpetImagePaths，读模型重载带回、原文件删除后仍保留路径（界面按不可用呈现）；show_to_user 缺省时不挂条目、结算不回传；工具结果对模型始终携带 PNG image 块", why: "「她给你看她看到的画面」要求条目与文件同源（先文件后条目、取消不产生半条消息），且隐私总闸关闭时不能截", layer: "integration", depth: "deep", scenarios: ["screenshot-show-to-user-attach", "screenshot-default-private", "screenshot-gate-neutral"] },

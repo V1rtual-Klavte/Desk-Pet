@@ -9,8 +9,9 @@ import type { StructuredSummary } from "./compaction/structured-summary"
 import { contextBudget, estimateValueTokens, estimateRequestTokens, annotateToolResultText, planToolResultLadder, projectToolResultText, toolResultAddress, ContextBudgetError } from "@/services/context"
 import type { ToolResultLadderEntry, ToolResultLevelMeasure } from "@/services/context"
 import { aiConfig } from "@/services/config"
-import { formatError } from "@/services/error"
+import { errorCode, formatError } from "@/services/error"
 import { createLogger } from "@/services/logger"
+import type { CompactionOverflowDetail } from "@/services/engine/runtime"
 import { SESSION_TRANSCRIPT_TOOL } from "@/services/tool/session-transcript"
 
 const log = createLogger("Compactor")
@@ -262,9 +263,10 @@ export function measureCompactionMaterial(input: {
 //   K 片成功的审计面因此是 **2K 条快照**。
 // - **失败片**：连响应都没拿到（超时/取消/传输错误）时只落 payload 那一档；已落的快照与已记的用量
 //   **不回滚、不清账**（AGENTS.md「已提交的写入不因取消回滚」），用量留在 `purpose: "compaction"` 分列。
-// - **失败原因不在这里留痕**：本模块只负责抛错；原因由钩子的 catch 写进 `CompactionAuditSink.failure`，
-//   槽在 `compaction_end` 收口成 `deskpet.compaction_declined` 条目的 `error` 字段（另有钩子的
-//   `log.error`）。所以失败时的审计面是「2k 条快照 + 1 条降级条目 + **0 条 compaction 条目**」。
+// - **失败原因不在这里留痕**：本模块只负责抛错；原因由钩子的 catch 写进 `CompactionAuditSink.failure`
+//   与 `decline`（`describeCompactionFailure` 的错误码 + 超上限数字），槽在 `compaction_end` 收口成
+//   `deskpet.compaction_declined` 条目（另有钩子的 `log.error`）。所以失败时的审计面是
+//   「2k 条快照 + 1 条降级条目 + **0 条 compaction 条目**」。
 // - **成功才写派生记录**：钩子用这份 outcome 写 `audit.rewrite`（1 条 `deskpet.prompt_rewrite`，
 //   `inputHash` 取下面 K 片拼接的 `inputText`），同样由槽在 `compaction_end` 落盘。
 // - **compaction 条目恒为 0 或 1 条**，绝无多条：提交在 AgentHarness（收到钩子返回的 compaction 后
@@ -273,12 +275,25 @@ export function measureCompactionMaterial(input: {
 /** 素材分段后仍无法在一次压缩里覆盖：明确失败，绝不降级为部分覆盖（源方案 §2.1）。 */
 export class CompactionOverflowError extends Error {
   readonly code = "COMPACTION_MATERIAL_OVER_CAP"
-  constructor(readonly detail: { readonly reason: "over_cap" | "oversized_unit"; readonly needed: number; readonly used: number; readonly limit: number }) {
+  constructor(readonly detail: CompactionOverflowDetail) {
     // 文案按 T4.04 的执行契约原样落地（用户可见面复用 `/compact` 的既有失败链路，本类只提供可判定的 code）。
     super(detail.reason === "over_cap"
       ? `压缩素材需要 ${detail.needed} 片，超过单次上限 ${detail.limit} 片`
       : `压缩素材里有不可再分的片段（约 ${detail.used} tokens）超过单片上限 ${detail.limit} tokens`)
     this.name = "CompactionOverflowError"
+  }
+}
+
+/**
+ * 内核失败的诊断字段（进统一日志与审计条目的 `decline.failure`）：错误码 + `over_cap` /
+ * `oversized_unit` 的结构化数字。**面向人的文案由调用方经 `formatError` 另行保留**，
+ * 这里只补机器可读的那一份，两处不互相替代。
+ */
+export function describeCompactionFailure(error: unknown): { code?: string; overflow?: CompactionOverflowDetail } {
+  const code = errorCode(error)
+  return {
+    ...(code ? { code } : {}),
+    ...(error instanceof CompactionOverflowError ? { overflow: error.detail } : {}),
   }
 }
 

@@ -19,6 +19,15 @@
 // debug-request-stats.test.ts）未携带 caseId，本批不凭空登记 coverage（有实现无契约覆盖，
 // 属已知缺口）；其余点不在改动面内、实现点仍在。本批刷新同时包含另一会话的改动；本轮只做
 // coverage 描述与当前实现一致性核对（非逐行行为审计）。未修订覆盖点，sourceHash 按当前源码刷新。
+// 2026-10-05 压缩拒绝留痕批次（本批刷新）：sourceFiles 变化 —— runtime.ts（createCompactionHook
+// 新增 noteDecline：empty_material / retained_tool / gate_fits / kernel_failure 四个拒绝结局
+// 写结构化 decline 记录并各留一条统一日志）、harness-slot.ts（compaction_end 在 failure 或
+// manual/overflow 的 decline 时落 deskpet.compaction_declined 条目，threshold 只留日志）、
+// runtime/types.ts（新增 CompactionDeclineRecord / CompactionTrigger / CompactionDeclineKind /
+// CompactionOverflowDetail，CompactionAuditSink 增可选 decline）。ar-01..ar-25 逐点核对：
+// ar-07 的 purpose 分列（压缩走同一通道）记账路径未动；ar-15 的手动压缩准入/续跑收口在压缩
+// 之前判定，拒绝面不受 decline 留痕影响；ar-22 的挂起结算与其余点不在改动面内、实现点仍在，
+// 覆盖描述与当前实现一致。未修订覆盖点，仅按当前源码刷新 sourceHash。
 import type { ModuleContract } from "../host/types"
 
 export const agentRuntimeContract: ModuleContract = {
@@ -53,7 +62,7 @@ export const agentRuntimeContract: ModuleContract = {
     "src/services/session/repo.ts",
     "src/services/session/store.ts",
   ],
-  sourceHash: "bb5eae05856f5824782097804e747618d2493a558316bde1ceacf5b82ec3f9d9",
+  sourceHash: "04e7ed8bd3cca3654c894707412cf64aea932538c0b0562aad999afe87e831e7",
   coverage: [
     {
       id: "ar-01",

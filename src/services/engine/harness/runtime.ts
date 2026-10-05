@@ -8,7 +8,7 @@ import type { AgentMessage, CompactResult, CompactionPreparation, JsonValue, Set
 import type { Usage } from "@earendil-works/pi-ai"
 import type { ActiveMessageRequest, Message, ProactiveOwner, ProviderReservation, ThinkingEffort } from "@/services/agent/types"
 import type { SlashSkillAdmission } from "@/services/engine/slash"
-import type { CompactionAuditSink, ContextAllocation, ContextBlock, IngressEnvelope, InputSourceMark, PlanState, PlanStepRecord, PromptCapabilityContext, PromptPlanContext, PromptRequestContext, PromptRequestParams, PromptSnapshot, PromptTokenDrift, PromptTransform } from "@/services/engine/runtime"
+import type { CompactionAuditSink, CompactionDeclineKind, CompactionDeclineRecord, ContextAllocation, ContextBlock, IngressEnvelope, InputSourceMark, PlanState, PlanStepRecord, PromptCapabilityContext, PromptPlanContext, PromptRequestContext, PromptRequestParams, PromptSnapshot, PromptTokenDrift, PromptTransform } from "@/services/engine/runtime"
 import { createMessageId } from "@/services/agent/types"
 import { MemoryService, recallMemory, memoryStatus, subscribeMemoryRevision } from "@/services/agent/memory"
 import type { MemoryProjection, MemoryRecallRequest } from "@/services/agent/memory"
@@ -53,7 +53,7 @@ import { RuntimeDataStreamFilter } from "./stream-text"
 import { hydrateImageMessages } from "@/services/images"
 import { humanizerSilenceGuard, setFirstRevealHandler, transformHumanizerText } from "@/services/humanizer"
 import type { HumanizerFlow, HumanizedText } from "@/services/humanizer"
-import { ladderGate, summarizeCompaction } from "../compactor"
+import { describeCompactionFailure, ladderGate, summarizeCompaction } from "../compactor"
 import type { LadderGateInput } from "../compactor"
 import { createHarnessRunState, harnessSlots, HarnessSlot } from "./harness-slot"
 import { readActiveAttemptEvidence, readContextEpoch } from "./delivery"
@@ -709,9 +709,11 @@ function createLadderGateBuilder(args: {
  * `if (!host)` 早退是上游唯一的兜底入口 —— 宿主一旦空返回，等于放行上游摘要。
  *
  * 失败的可见面（现状口径，改那条接线不属本函数职责）：decline 在上游的 `declined` 终态里**不带
- * error**，原因只走两处 —— `options.audit.failure`（槽在 `compaction_end` 收口成
- * `deskpet.compaction_declined` 条目的 `error` 字段）与下面的 `log.error`；回合路径没有用户可见行，
- * 手动 `/compact` 由 `compactActiveSession` 读同一审计槽把 declined 重标为 failed 才带上原因。
+ * error**，原因只走审计槽与日志 —— 内核失败写 `options.audit.failure`（槽在 `compaction_end` 收口成
+ * `deskpet.compaction_declined` 条目的 `error` 字段；回合路径没有用户可见行，手动 `/compact` 由
+ * `compactActiveSession` 读同一审计槽把 declined 重标为 failed 才带上原因）与下面的 `log.error`；
+ * 策略性拒绝（素材为空 / 保留守卫 / 闸门）写 `options.audit.decline`（结构化 kind/trigger/数字，
+ * 槽按触发方式落条目或只留日志）与一条统一的 decline 日志 —— pi 的 declined 不带原因，这里不写就没人写。
  */
 function createCompactionHook(options: {
   model: PiModel
@@ -744,6 +746,23 @@ function createCompactionHook(options: {
   // 返回类型显式收窄到「两种结局」（不含空返回）：日后再加一条空返回就编译不过 ——
   // X-4 的「没有兜底出口」由类型保证，不靠注释维持。
   return async ({ reason, preparation, signal, runId }): Promise<{ decline: true } | { compaction: CompactResult }> => {
+    /**
+     * 记一次策略性 decline：结构化原因写进可注入的审计槽（槽按触发方式落条目），并返回给调用点
+     * 留一条统一日志。pi 的 declined 终态不带 error —— 钩子不在这里留痕，这次拒绝就从日志与审计面
+     * 同时消失（2026-10-05 实测：44 条会话因素材为空被拒，会话文件与三份日志都是 0 条，原因无从查起）。
+     */
+    const noteDecline = (
+      kind: CompactionDeclineKind,
+      fields: Omit<CompactionDeclineRecord, "kind" | "trigger" | "sessionId">,
+    ): CompactionDeclineRecord => {
+      const record: CompactionDeclineRecord = {
+        kind, trigger: reason,
+        ...(options.sessionId ? { sessionId: options.sessionId } : {}),
+        ...fields,
+      }
+      if (options.audit) options.audit.decline = record
+      return record
+    }
     try {
       // Keep the JSONL range intact, but omit empty completed silence rows from the summary model's view.
       const summaryPreparation = {
@@ -752,15 +771,31 @@ function createCompactionHook(options: {
         turnPrefixMessages: preparation.turnPrefixMessages.filter(message => !isCompletedEmptyAssistant(message)),
       }
       // 结局①（decline）：全量都在保留窗口内时没有可安全摘要的覆盖范围，让 Harness 原样收尾。
-      if (!summaryPreparation.messagesToSummarize.length && !summaryPreparation.turnPrefixMessages.length) return { decline: true }
+      if (!summaryPreparation.messagesToSummarize.length && !summaryPreparation.turnPrefixMessages.length) {
+        // 这条拒绝过去完全静默（pi 不带 error、钩子不写 failure、槽因此不落条目），是「一句话都不留」的根因。
+        log.info("压缩被拒绝（decline）：摘要素材为空，没有可安全摘要的覆盖范围:", noteDecline("empty_material", {
+          material: {
+            messagesToSummarize: summaryPreparation.messagesToSummarize.length,
+            turnPrefixMessages: summaryPreparation.turnPrefixMessages.length,
+            // 过滤「无正文已完结助手」丢掉了几条：>0 说明素材曾经非空，是滤空的而不是切点没给出范围。
+            droppedEmptyAssistant: preparation.messagesToSummarize.length + preparation.turnPrefixMessages.length
+              - summaryPreparation.messagesToSummarize.length - summaryPreparation.turnPrefixMessages.length,
+            retainedMessages: summaryPreparation.retainedTail.length,
+            tokensBefore: summaryPreparation.tokensBefore,
+            keepRecentTokens: summaryPreparation.settings.keepRecentTokens,
+          },
+        }))
+        return { decline: true }
+      }
       // historyCompaction=retain 的调用配对必须保留原文：连续完整轮下不能把覆盖边界推进越过它，
       // 宁可 decline（由宿主预算守卫报告上下文不足），也不默默丢掉未覆盖历史。
       // 当前生产路径不可达：无工具声明 `retain`，由测试场景驱动（`memory-retain-guard`）。
       const retainedTool = findRetainedToolCall(summaryPreparation.messagesToSummarize, retained)
         ?? findRetainedToolCall(summaryPreparation.turnPrefixMessages, retained)
       if (retainedTool) {
-        log.warn("摘要范围覆盖了必须保留原文的工具调用，本轮不压缩:", retainedTool)
-        // 结局②（decline）：策略性不压缩，不是内核失败 —— 不写 audit.failure，避免污染失败面。
+        log.warn("摘要范围覆盖了必须保留原文的工具调用，本轮不压缩:", noteDecline("retained_tool", { retainedTool: { toolName: retainedTool } }))
+        // 结局②（decline）：策略性不压缩，不是内核失败 —— 不写 audit.failure（会污染失败面与用户文案），
+        // 原因只进 decline 记录与这条 warn。
         return { decline: true }
       }
       // ── 结局③（decline）：级 3 闸门（源方案 §3.2 要点 3 / 执行方案 §1.5）──
@@ -772,12 +807,15 @@ function createCompactionHook(options: {
       if (reason === "threshold" && options.systemPrompt !== undefined && options.buildGate) {
         // 闸门是省钱的优化，不是正确性闸门：估算链路自身出错时照常摘要（保守方向），原因就地留痕。
         // 这里**不写 audit.failure** —— 那不是压缩内核失败，写出去会让手动路径（读同一审计槽）
-        // 报 failed、并落一条误导性的 deskpet.compaction_declined。
+        // 报 failed。拒绝原因走 noteDecline 的 decline 记录：threshold 每条检查点都可能重试，
+        // 槽不为它落审计条目（只留这条日志），所以也不会产生误导性的 deskpet.compaction_declined 条目。
         try {
           const refs = await readAddressRefs(options.addressRefs, "级 3 闸门")
           const gate = ladderGate(options.buildGate(compactionGateView(summaryPreparation), refs))
           if (gate.fits) {
-            log.info("级 1/2 投影后请求视图装得下，本轮不做摘要:", { tokens: gate.tokens, target: gate.target, level: gate.level })
+            log.info("级 1/2 投影后请求视图装得下，本轮不做摘要:", noteDecline("gate_fits", {
+              gate: { tokens: gate.tokens, target: gate.target, level: gate.level },
+            }))
             return { decline: true }
           }
           log.debug("级 1/2 之后仍超目标，照常摘要:", { tokens: gate.tokens, target: gate.target, level: gate.level })
@@ -822,12 +860,13 @@ function createCompactionHook(options: {
       // 结局④（decline）/ X-4 的红线：**必须转 decline，绝不 rethrow**。上游对抛出的处理器只记
       // handler_error 后继续，最终走 publishStructuralReady 用上游通用英文摘要补压（见函数头注释）——
       // 那条路径不受本方案地址目录/投影阶梯约束，却会提交成唯一历史视图且不可回滚。
-      // 失败原因的留痕点就在下面三行：审计槽（槽在 compaction_end 写 deskpet.compaction_declined
-      // 的 error 字段）+ log.error；本函数不制造任何静默。
-      const reason = formatError(error)
-      if (options.audit) options.audit.failure = reason
-      options.onFailure?.(reason)
-      log.error("摘要内核失败，本轮压缩 decline:", reason)
+      // 失败原因的留痕点：审计槽（槽在 compaction_end 写 deskpet.compaction_declined 的 error 字段，
+      // 以及 decline.failure 的错误码 + over_cap/oversized_unit 数字）+ log.error；本函数不制造任何静默。
+      const failureText = formatError(error)
+      const record = noteDecline("kernel_failure", { failure: describeCompactionFailure(error) })
+      if (options.audit) options.audit.failure = failureText
+      options.onFailure?.(failureText)
+      log.error("摘要内核失败，本轮压缩 decline:", failureText, record)
       return { decline: true }
     }
   }
@@ -2732,12 +2771,17 @@ export async function continueInterruptedRun(sessionId: string): Promise<PiAgent
       }
     }
     const thinkingEffort = getEffectiveThinkingEffort()
+    // 续跑也是一次生成：上一回合违约挂起的提醒同样要送达 —— 否则「违约 → 用户中断 → 续跑」
+    // 这条路上提醒永远送不到（本路径不经 isActiveMessage/activeRequest，故只判可写变量与挂起态）。
+    const runtimeDataReminder = hasLlmWritableCardVars(card) && hasRuntimeDataReminder(sessionId)
+      ? RUNTIME_DATA_REMINDER_TEXT : ""
     // 中断运行的原始冻结快照已随进程丢失：用当前 Card/变量重建只读前缀，不静默改 Card。
     const context = buildPrompt({
       ...{ v1rtualInstructions: getV1rtualInstructionsSync() },
       unansweredCount: 0, thinkingEffort,
       contextMaxTokens: model.contextWindow, maxOutputTokens: model.maxTokens,
       tools: frozenTools.map(toToolDeclaration),
+      ...(runtimeDataReminder ? { runtimeDataReminder } : {}),
     }, card, pool)
     const kernel = createTurnKernel({
       sessionId, requestId, model,

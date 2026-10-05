@@ -14,6 +14,14 @@
 // 观察调度、静默了解与主动读取链路不在改动面内）。ob-01..ob-07 逐点核对实现点仍在、覆盖
 // 描述与当前实现一致。本批刷新同时包含另一会话的改动；本轮只做 coverage 描述与当前实现
 // 一致性核对（非逐行行为审计），未修订覆盖点，仅按当前源码刷新 sourceHash。
+// 2026-10-05 压缩拒绝留痕批次（本批刷新）：sourceFiles 变化 —— runtime.ts（createCompactionHook
+// 拒绝留痕：四个 decline 结局结构化 + 统一日志）与 runtime/types.ts（新增 CompactionDeclineRecord
+// / CompactionTrigger / CompactionDeclineKind / CompactionOverflowDetail，压缩审计槽专属类型，
+// 观察域的 snapshot / types 消费点不受影响）。ob-01..ob-07 逐点核对实现点仍在、覆盖描述与
+// 当前实现一致，未修订覆盖点，仅按当前源码刷新 sourceHash。
+// 2026-10-05 复算补充（同一刷新轮）：复算时并发落进一处本批改动单之外的 context/budget.ts
+// 变化（keepRecentTokens 上限改为随窗口长大；并发写入，不在本批改动单内）。按当前源码复算，
+// sourceHash 一并覆盖它；ob-01..ob-07 无覆盖点描述 keepRecentTokens，逐点核对不受影响。
 import type { ModuleContract } from "../host/types"
 
 export const observationContract: ModuleContract = {
@@ -68,7 +76,7 @@ export const observationContract: ModuleContract = {
     "test/integration/observation/了解层与话题来源.test.ts",
     "test/e2e/scenes/observation/静默访问关闭边界.scene.ts",
   ],
-  sourceHash: "636f6b0cf156b7fbf3ad295df346ee8ea972d6a81ed50dff40bf5bb28aa72461",
+  sourceHash: "c160dc0db3a264354b80a1499c4e016418017f8c7f0799d6381601236d8f5db5",
   coverage: [
     {
       id: "ob-01",

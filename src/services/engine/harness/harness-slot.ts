@@ -1876,16 +1876,24 @@ export class HarnessSlot {
         // 结算文案要回到本条判定（否则用户只看到上游的 decline 文案和兜底回复）。
         const run = this.activeRun
         if (run && event.reason === "overflow") run.spec.state.overflowRecoveryDeclined = event.status === "declined"
-        // 宿主摘要内核失败：压缩没落成的原因必须留下审计条目（只入队，由 flushAudit 落盘）。
+        // 压缩没落成的原因必须留下审计条目（只入队，由 flushAudit 落盘）：
+        // - 内核失败（failure）：error 字段带原因，手动路径读同一审计槽把 declined 重标为 failed；
+        // - 策略性 decline（decline 记录）：manual / overflow 落条目（用户可见的压缩没发生，原因要可查）；
+        //   threshold 是每个检查点都可能重试的内部优化（级 3 闸门省 LLM），落盘会按回合累积噪音 —— 它只留钩子的统一日志。
         const audit = run?.spec.hooks.compactionAudit ?? this.structuralHost?.hooks?.compactionAudit
-        if (event.status !== "completed" && audit?.failure) {
+        const decline = audit?.decline
+        const persistDecline = decline !== undefined && decline.trigger !== "threshold"
+        if (event.status !== "completed" && (audit?.failure !== undefined || persistDecline)) {
           this.queueAuditEntry(COMPACTION_DECLINED_ENTRY, {
             status: event.status,
             reason: event.reason,
-            error: audit.failure,
+            ...(audit?.failure !== undefined ? { error: audit.failure } : {}),
+            ...(persistDecline ? { decline } : {}),
             endedAt: event.endedAt,
           } as unknown as JsonValue)
         }
+        // 用过的拒绝记录即清：同一次运行里后续压缩不得复用上一条原因（与 rewrite 同规则）。
+        if (audit) delete audit.decline
         // 摘要成功后的派生记录：只留 hash 与压缩条目地址，不进模型消息流。
         if (event.status === "completed" && audit?.rewrite) {
           this.queueAuditEntry(PROMPT_REWRITE_ENTRY, {

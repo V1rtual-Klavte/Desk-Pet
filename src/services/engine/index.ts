@@ -22,7 +22,7 @@ export type { SlashCommand, SlashMatch } from "./slash"
 // 不得对同一份素材另拼 JSON 重算 token。
 // `CompactionOverflowError` 是「素材超上限」的唯一失败类型（`code` + `detail.reason` 可判定）：
 // 场景用它做 `instanceof` 断言，与其它预算失败（ContextBudgetError）区分开。
-export { summarizeCompaction, planCompactionShards, measureCompactionMaterial, CompactionOverflowError, COMPACTION_SLICE_RATIO, MAX_COMPACTION_SLICES } from "./compactor"
+export { summarizeCompaction, planCompactionShards, measureCompactionMaterial, CompactionOverflowError, describeCompactionFailure, COMPACTION_SLICE_RATIO, MAX_COMPACTION_SLICES } from "./compactor"
 export type { CompactionSummaryInput, CompactionSummaryOutcome, CompactionShardPlan, CompactionMaterial } from "./compactor"
 
 // ── Planner ──

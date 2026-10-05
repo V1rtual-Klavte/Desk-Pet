@@ -14,6 +14,30 @@
 // 核对：mm-19 / mm-26 / mm-34 的 usage 记账、偏差对账与快照完整性语义未变，其余点不在改动
 // 面内、实现点仍在。本批刷新同时包含另一会话的改动；本轮只做 coverage 描述与当前实现一致性
 // 核对（非逐行行为审计），未修订覆盖点，仅按当前源码刷新 sourceHash。
+// 2026-10-05 压缩拒绝留痕批次（本批刷新）：sourceFiles 变化 —— runtime/types.ts（新增
+// CompactionDeclineRecord / CompactionTrigger / CompactionDeclineKind / CompactionOverflowDetail，
+// CompactionAuditSink 增可选 decline）、harness/runtime.ts（createCompactionHook 新增
+// noteDecline：empty_material / retained_tool / gate_fits / kernel_failure 四个拒绝结局全部写
+// 结构化原因并各留一条统一日志，empty_material 原来完全静默）、harness/harness-slot.ts
+// （compaction_end 在 status!=="completed" 且 failure 或 manual/overflow 的 decline 时落
+// deskpet.compaction_declined 条目，threshold 只留日志；decline 用过即清）、compactor.ts
+// （新增 describeCompactionFailure：错误码 + over_cap/oversized_unit 数字，经 engine barrel
+// 导出）。用户可见文案与 declined/nothing/failed 三态映射零改动。
+// mm-* 逐点核对：mm-25 按现状修订 —— 原描述只覆盖内核失败 decline 与 error 字段，现补
+// 「策略性拒绝同样写结构化 decline 记录、manual/overflow 落审计条目、threshold 只留日志、
+// decline 与 failure 语义分离」与内核失败 decline.failure 的错误码/超上限数字（修订理由见
+// 该点描述）；mm-19 的摘要 usage 分列、mm-22 的溢出 declined 分类、mm-23 的 retain 守卫、
+// mm-24 的审计落盘、mm-32 的闸门与 mm-33 的分片 fatal 逐点核对语义未变（新审计条目与日志
+// 属 mm-25 的留痕面，不改各点已声明的终态、零提交与零请求断言）；mm-11 / mm-28 的快照归属
+// 与换代身份、mm-34 的保留与 trace 不受影响；其余点不在改动面内、实现点仍在。
+// 新增 L3/L2 用例（压缩拒绝留痕 / 压缩上限诊断）尚无 caseId 锚点，未登记进 scenarios
+// （有实现无契约覆盖，属已知缺口，另行安排 caseId）；sourceHash 按当前源码刷新。
+// 2026-10-05 复算补充（同一刷新轮）：复算时并发落进一处本批改动单之外的 context/budget.ts
+// 变化（keepRecentTokens 上限改为随窗口长大：max(MAX_HEADROOM, min(80k, 窗口 × 1/4))，小窗口
+// 逐字不变；并发写入，不在本批改动单内）。按当前源码复算，sourceHash 一并覆盖它；mm-21 的
+// 保留窗口不变量经核对仍成立（keepRecent 仍是该上限与 normalInputTarget × 0.4 取小，故
+// ≤ normalInputTarget < hardInputLimit；该点的 L3 用例按 contextBudget() 现算期望、随新公式
+// 走）；其余点不在该改动面内。
 import type { ModuleContract } from "../host/types"
 
 export const memoryContract: ModuleContract = {
@@ -56,7 +80,7 @@ export const memoryContract: ModuleContract = {
     "src/services/context/tool-output.ts",
     "src/services/debug.ts",
   ],
-  sourceHash: "19f7d85cb7180ef21b13a4e43013f652db04579d892de767b1eaefdb9347e79c",
+  sourceHash: "24b2461f454bbac9bd09461ff37f5a490d20be00527831f92d81086719791204",
   coverage: [
     { id: "mm-01", feature: "记忆来源准入", description: "只有 origin=user 且 taint=trusted_user 且 eligibleForMemory=true 的已提交条目能成为候选：助手台词、工具结果、压缩摘要、主动搭话、缺来源标记与 custom 控制条目一律出局；投递时刻冻结的 cardId 随来源落盘", why: "「谁说的」是记忆的唯一准入判据：把这些来源放进去，模型的一次措辞就会被当成用户长期事实", layer: "integration", depth: "deep", scenarios: ["memory-source-admission"] },
     { id: "mm-02", feature: "重排结果校验", description: "重排只接受候选白名单内的 id：未知 id、重复 id、非字符串、坏 JSON、散文与对象外形错误一律判无效并回退本地顺序，对象形态取 ids 字段；空数组是合法答案（这次不投影动态记忆），合法非空子集保序通过、不补回未选项", why: "模型只能决定「用哪几条」，不能决定「还有哪些」——白名单外的 id 会让不存在的记忆进入请求", layer: "unit", depth: "deep", scenarios: ["memory-rerank-fallback"] },
@@ -83,7 +107,7 @@ export const memoryContract: ModuleContract = {
     { id: "mm-26", feature: "估算器角色覆盖与偏差对账", description: "内容投影按角色表覆盖 compactionSummary/branchSummary/bashExecution/custom（摘要只计 summary 正文、excludeFromContext 的 bash 执行计 0），未知角色按整条估算并留痕；provider_usage 快照记录 tokenDrift（estimated/actual/ratio），超 ESTIMATE_DRIFT_WARN_RATIO 只 warn 与 trace 带 driftRatio，不改变预算判定", why: "估算器系统性漏算某类消息会让硬预算与压缩触发点整体漂移，估算与真实 usage 的偏差必须可见才能定位", layer: "integration", depth: "deep", scenarios: ["memory-estimator-role-coverage"] },
     { id: "mm-27", feature: "L0 地址完整性", description: "工具结果的回读地址是条目 id 的唯一前缀（shortenAddresses 在当次 id 全集上取最短唯一，下界 MIN_ADDRESS_PREFIX=8；槽级缓存已发出的地址，仍唯一就复用、失效才重算 —— D-W2-8，故长度不是契约；读取端 resolveAddressRef 给 exact/unique/ambiguous/none 判别联合，完整条目 id 永远 exact 命中，前缀命中多条绝不任选）；地址无条件标注 —— 超阈值与否都带 `[回读地址 eventId=<前缀>，可用 read_session_event 分页读取]` 尾行，未缩短的结果同样带，preserve 的结果只挡缩短/清空、照带地址；无地址的结果不写假 eventId（缩短形态标「不可回读」占位串，未缩短形态不追加任何行）；无地址留痕按内容指纹（长度 + 首 NO_ADDRESS_WARN_KEY_CHARS=32 字符）分键去重、同键只报一次，集合有界（NO_ADDRESS_WARN_KEYS=64，满员按插入序 FIFO 淘汰最旧；淘汰分支当前无场景断言，按实现事实记录）；主请求与摘要素材共用同一份地址目录与投影实现，同一 level 下逐字相同、素材级别 ≤ 视图级别（素材升档判据 hardInputLimit、视图 normalInputTarget）", why: "回读地址是模型从缩短结果回到真相源的唯一通道，假地址会让模型读到「当前会话没有此工具结果」", layer: "e2e", depth: "deep", scenarios: ["memory-l0-address-integrity"] },
     { id: "mm-24", feature: "审计落盘闭环", description: "审计条目只入队、由唯一 flush 入口在 lane 空闲时写入；失败条目保留并重试一次；槽关闭前 flush 且残留非空记 error；transform_context/provider_payload/provider_usage 三档快照在一轮 production 回合里各至少一条且释放槽后集合不变", why: "证据链的组成项不能在槽生命周期结束时静默消失，否则「请求发过什么」这件事在重启后不可查", layer: "e2e", depth: "deep", scenarios: ["memory-snapshot-audit-closure"] },
-    { id: "mm-25", feature: "摘要降级显式 decline", description: "宿主摘要内核失败时钩子返回 decline 而非抛出：/compact 报 failed 并在用户可见文案里给出原因；不提交 compaction 条目、不推进换代身份（readContextEpoch 与槽快照同为 0 —— decline 不是提交）；回合路径写 deskpet.compaction_declined 审计条目（error 字段带内核失败原因）；失败路径不产生任何宿主之外的摘要正文 —— 助手正文序列逐字不变、provider 请求增量恰好等于内核摘要请求数（直接区分「钩子 decline」与「钩子抛错被上游回退通用英文摘要」两个世界：后者会多发一次请求并提交一条不可回滚的摘要）", why: "上游通用英文摘要一旦提交就成为后续所有回合唯一的历史视图且不可回滚，宁可不压缩也不落违反协议的历史；decline 也不能顺手推进请求视图的换代身份", layer: "e2e", depth: "deep", scenarios: ["memory-compaction-degrade-declines"] },
+    { id: "mm-25", feature: "摘要降级显式 decline", description: "宿主摘要内核失败时钩子返回 decline 而非抛出：/compact 报 failed 并在用户可见文案里给出原因；不提交 compaction 条目、不推进换代身份（readContextEpoch 与槽快照同为 0 —— decline 不是提交）；回合路径写 deskpet.compaction_declined 审计条目 —— 内核失败带 error 字段（原因文案；manual/overflow 触发的条目另带 decline.failure：错误码 + over_cap/oversized_unit 数字，经 describeCompactionFailure 映射），策略性拒绝（empty_material / retained_tool / gate_fits）在 manual/overflow 触发时同样落条目并带结构化 decline（kind/trigger/sessionId/关键数字），threshold 是每个检查点都会重试的内部优化、只留统一日志不落盘；decline 与 failure 语义分离（策略性拒绝不写 error、不翻用户文案），decline 记录用过即清；四个结局各自留一条统一日志（empty_material 此前完全静默）；失败路径不产生任何宿主之外的摘要正文 —— 助手正文序列逐字不变、provider 请求增量恰好等于内核摘要请求数（直接区分「钩子 decline」与「钩子抛错被上游回退通用英文摘要」两个世界：后者会多发一次请求并提交一条不可回滚的摘要）", why: "上游通用英文摘要一旦提交就成为后续所有回合唯一的历史视图且不可回滚，宁可不压缩也不落违反协议的历史；decline 也不能顺手推进请求视图的换代身份；策略性拒绝同样没有用户可见原因（上游 declined 终态不带 error），审计条目与统一日志是它唯一的留痕出口 —— 不写就无从区分「素材为空」「保留守卫」「闸门装得下」与「超上限失败」", layer: "e2e", depth: "deep", scenarios: ["memory-compaction-degrade-declines"] },
     { id: "mm-28", feature: "上下文换代身份沿分支", description: "context epoch 由 delivery.ts 的 readContextEpoch 沿 lane 分支回溯已提交 compaction 条目得出；槽快照、请求快照与设置页显示共用它；读失败不写 0；K 片分片压缩仍只提交一次 compaction 条目，换代身份因此每次压缩只推进一次（不按片计数）", why: "换代身份必须按分支算：会话级全量计数会把其它分支的压缩算进来，未知时写 0 会让快照谎称请求视图未换代", layer: "e2e", depth: "deep", scenarios: ["memory-context-epoch-branch"] },
     { id: "mm-29", feature: "动态提示与思考强度文案", description: "聊天动态提示由 composeDynamicPrompt + CHAT_THINKING_HINTS 唯一拼接：变量池正文 [+ 强度后缀]，**不含当前时间**；一次性调用不经过这条拼接，非推理模型 + low 档时的兜底提示是 ONE_SHOT_LOW_EFFORT_HINT，两者刻意不同。当前时间由 currentTimeNote 唯一生产（`[当前时间] YYYY-MM-DD HH:mm 周X`，26 字符、分钟精度），再经 createTurnNoteMessage 作为 **custom 尾随瞬时注记**逐请求附在请求视图**最末** —— 不出现在 buildPrompt 的任何块、systemPrompt 或 staticPrefix 里。落位理由是前缀缓存：缓存只在第一个差异处之前命中，而 system prompt 整体排在会话正文之前，每回合变化的内容留在那里会让整个会话正文每轮重新计费；附在消息数组末尾时差异点落在「本来就是新的」那一段，不额外损失缓存。注记带 eligibleForTranscript/eligibleForMemory = false，并被 isTransientInputMessage 判为瞬时输入（token 归 ephemeral 行，不虚增 transcript 行）", why: "文案散落三处时改一处就分叉，且没有任何断言拦它；system prompt 必须逐字节稳定，否则会话正文的前缀缓存每轮作废", layer: "integration", depth: "shallow", scenarios: ["memory-prompt-composition"] },
     { id: "mm-30", feature: "窗口下限错误的归因", description: "模型解析处报出的窗口下限错误区分「模型目录窗口与配置取小」：指出模型 id 与配置值并建议换模型；设置页校验文案不变", why: "把模型能力问题报成配置问题会让用户去改一个本来合法的值（无可修旋钮）", layer: "integration", depth: "shallow", scenarios: ["memory-context-window-message"] },
@@ -92,6 +116,9 @@ export const memoryContract: ModuleContract = {
     // mm-32 原把「阶梯/闸门 + 保护区」合成一点（跨层混搭）；按层拆开：保护区侧为 mm-36（L2），阶梯与闸门侧留在 mm-32（L4）。
     { id: "mm-36", feature: "工具结果阶梯的保护区", description: "**保护区**（LADDER_PROTECTION_TURNS = 3，轮口径取上游 findTurnStartIndex：user/bashExecution 开轮，toolResult/assistant/custom/compactionSummary 不开轮，不足 N 轮全保护）**只挡级 2 与级 3，不挡级 1**——级 1 是无损缩短，保护区内照做", why: "没有保护区的清空会把用户刚说的话也清掉；轮口径必须与上游 findTurnStartIndex 同源，否则保护边界整体错位", layer: "unit", depth: "deep", scenarios: ["memory-ladder-protection-zone"] },
     { id: "mm-39", feature: "记忆 revision 的进程内分发", description: "publishMemoryRevision / subscribeMemoryRevision 是 Node 领域侧的进程内总线（L3）：订阅者收到已提交的 revision（含 await 到全部消费者处置完成再返回的本地语义），退订后不再分发；跨窗口同步（旧壳 deskpet-memory-revision-changed/-applied）不属 Node 图 —— 单 Node 架构下所有提交都发生在本进程，订阅与发布都在本地完成", why: "revision 是「已提交」的通知值：丢弃它会让 runtime 对陈旧投影继续应答；退回事件回环则把纯 UI 的窗口协调重新塞进 Node 领域面", layer: "integration", depth: "shallow", scenarios: ["memory-revision-local-dispatch"] },
+    { id: "mm-40", feature: "保留窗口随窗口长大", description: "`keepRecentTokens` 的上限**不与压缩余量共用 `MAX_HEADROOM`**：先 `max(20_000, min(80_000, ⌊窗口 × 1/4⌋))` 得到本次上限，再与既有的 `⌊normalInputTarget × 40%⌋` 取小。小窗口仍被 20k 兜住（与拆封顶之前的旧口径逐字相同，不回退），大窗口才松开——128k 窗口 20_000→32_768、200k→50_000、1M 在 80_000 封顶；比例项不变保证保留窗口永远吃不掉输入目标，压缩之后请求必然缩小；曲线随窗口单调不减", why: "两个量性质不同：压缩余量是**压缩调用自身的操作开销**（固定封顶是对的），保留窗口是**给用户的近期上下文**（该随空间涨）。共用封顶会让窗口越大越早、越狠地压掉历史——200k 与 1M 窗口下占窗口的比例越来越小", layer: "unit", depth: "shallow", scenarios: ["memory-keep-recent-scaling"] },
+    { id: "mm-41", feature: "策略性拒绝的留痕", description: "策略性 decline（`empty_material` / `retained_tool` / `gate_fits`）在 manual / overflow 触发时落 `deskpet.compaction_declined` 条目，带结构化 `decline`（kind、trigger、sessionId、关键数字如 messagesToSummarize / retainedMessages / tokensBefore / keepRecentTokens），并在统一日志里留一条可读原因；`threshold` 只在日志留痕、不落条目（它是每个检查点都会重试的内部优化，落盘会逐回合累积噪音）。用户可见文案不变：`declined` 仍映射 Card 的 `compactDeclined`，**不并进 `failed`**（条目 `error` 字段必须为空），也不并进 `nothing`", why: "拒绝不留痕时，用户与开发都无法回答「为什么没压」——实测一次 44 条会话的手动压缩被判 declined，会话与日志同时零痕迹，只能靠回放 journal 复算才查出是「素材全在保留窗口内」（6,686 token < 20,000）", layer: "integration", depth: "shallow", scenarios: ["memory-compaction-decline-audit"] },
+    { id: "mm-42", feature: "压缩失败诊断的可判定性", description: "`describeCompactionFailure` 把摘要素材规划的两条 fatal（`over_cap` 片数超上限、`oversized_unit` 单元超硬限）描述成**可判定的错误码 + 全部数字**（需要片数/上限、单元成本/上限），普通错误与预算错误**不得冒充** overflow 形态", why: "「压不动」和「没得压」是两条完全不同的处置路径：前者要调上限或改分段，后者什么都不用做。描述层含糊会让用户和诊断都分不清该走哪条", layer: "unit", depth: "shallow", scenarios: ["memory-compaction-overflow-diagnostic"] },
   ],
   // W0–W7 把本契约的场景迁出 L4 后按 L4 侧当前值重标定：门槛=当前 rules 声明值，
   // 只缩不放（数字由 checker 报错提供）；跨层完整性由 checkLayerCoverage 负责。
