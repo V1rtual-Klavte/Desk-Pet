@@ -2,6 +2,10 @@ name: Release
 
 # 只有 tag 与手动触发会打包：Release 模式的 Rust 构建在 macOS runner 上按 10 倍计费，
 # 放进每次 push/PR 不划算。平时的配置漂移由 ci.yml 的 bundle-config job 守住。
+#
+# 打包用锁版本的 cargo-packager（0.11.8，与 packaging/desktop.json 的 $schema 同版），
+# 不再经过 tauri-action；更新清单 update.json 由 .github/scripts/update-feed.mjs 生成并用
+# minisign 私钥（既有 TAURI_SIGNING_* secrets）签名，签完现场验签后才进入 Release。
 on:
   push:
     # 历史里混过 `Ver0.0.x` 前缀，这里用大小写敏感的小写 v 把它们排除在外
@@ -9,7 +13,7 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: '要发布的 tag（如 v0.15.0，需已存在）'
+        description: '要发布的 tag（如 v0.16.0，需已存在）'
         required: true
 
 concurrency:
@@ -18,21 +22,16 @@ concurrency:
   group: release-${{ github.event.inputs.tag || github.ref_name }}
   cancel-in-progress: false
 
+env:
+  RELEASE_TAG: ${{ github.event.inputs.tag || github.ref_name }}
+
 jobs:
-  publish:
-    name: publish (${{ matrix.os }})
-    runs-on: ${{ matrix.os }}
-    permissions:
-      # tauri-action 要创建/更新 Release 并上传产物
-      contents: write
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - os: macos-latest
-            bundles: app,dmg
-          - os: windows-latest
-            bundles: nsis
+  # Harness（src/harness/main.ts → packaging/dist/harness/main.mjs）是平台无关的 Node bundle，
+  # 只构建一次并由两个平台的打包 job 取用：顺带避开 Windows 默认 cmd 对 build:harness 里
+  # 单引号 banner 参数的拆解（命令定义仍单源在 package.json 的 build:harness）。
+  harness:
+    name: harness bundle
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
         with:
@@ -45,39 +44,236 @@ jobs:
           node-version: 22
           cache: pnpm
 
+      - run: pnpm install --frozen-lockfile
+
+      - run: pnpm run build:harness
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: harness-bundle
+          path: packaging/dist/harness/main.mjs
+          if-no-files-found: error
+
+  build:
+    name: build (${{ matrix.os }})
+    needs: harness
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # macos-latest 是 arm64 runner；产物为 .app/.dmg + 更新用 .app.tar.gz
+          - os: macos-latest
+            platform: macos
+            arch: aarch64
+            kind: app
+            formats: app,dmg
+          - os: windows-latest
+            platform: windows
+            arch: x86_64
+            kind: installer
+            formats: nsis
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.tag || github.ref }}
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      # 各平台用各自的原生 target，无需 rustup target add。
       - uses: dtolnay/rust-toolchain@stable
 
       - uses: Swatinem/rust-cache@v2
 
-      - run: pnpm install --frozen-lockfile
-
-      # 打包前先过配置守卫：tag 与 tauri.conf.json 的 version 不一致会在这里失败，
-      # 而不是产出一个版本号错的安装包。
+      # 配置守卫（preflight，与 `pnpm run check:bundle` 同一脚本）：tag 与三处 version
+      # （根 Cargo.toml 的 [workspace.package] / package.json / packaging/desktop.json）
+      # 不一致会在这里失败，而不是产出一个版本号错的安装包。
       # GITHUB_REF_TYPE 必须显式置为 tag —— 脚本按它判定「本次是否 tag 触发」，
       # 只给 GITHUB_REF_NAME 的话这个校验会被静默跳过（workflow_dispatch 下 runner 的
       # GITHUB_REF_TYPE 是 branch）。
-      - run: pnpm run check:bundle
+      - run: node scripts/check-bundle-config.mjs
         env:
           GITHUB_REF_TYPE: tag
-          GITHUB_REF_NAME: ${{ github.event.inputs.tag || github.ref_name }}
+          GITHUB_REF_NAME: ${{ env.RELEASE_TAG }}
 
-      # Apple/Windows 代码签名本次未交付（契约 D2）。不要提前声明 APPLE_* 环境变量：GitHub 会把
-      # 未设置的 secret 展开成「已定义但为空」的值，Tauri CLI 用 var_os 读取并不做空值过滤，
-      # macOS 侧一旦发现 cert 变量为 Some 就会走钥匙串导入、对空 p12 执行 security import 而失败，
-      # 结果是 Release 只剩 Windows 产物、macOS 客户端收不到更新。将来补签名时按契约 §3.3 加步骤：
-      # 用 `env: HAS_APPLE_CERT: ${{ secrets.APPLE_CERTIFICATE != '' }}` 配 `if:`，
-      # 或直接加钥匙串导入步骤。TAURI_SIGNING_* 是 updater 自己的密钥（不是 Apple 签名），
-      # secrets 已存在且必需，必须保留。
-      - uses: tauri-apps/tauri-action@v0
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
-          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+      # 打包资源暂存：harness bundle（上一 job 的 artifact）+ 按 packaging/node-runtime.json
+      # 锁定版本取随包 Node（校验 SHASUMS256.txt 后落 packaging/dist/node）。
+      - uses: actions/download-artifact@v4
         with:
-          tagName: ${{ github.event.inputs.tag || github.ref_name }}
-          releaseName: ${{ github.event.inputs.tag || github.ref_name }}
-          releaseDraft: false
-          # 含 `-` 的 tag（如 v0.15.0-rc.1）只作预发布，不会被 updater 端点选中
-          prerelease: ${{ contains(github.event.inputs.tag || github.ref_name, '-') }}
-          includeUpdaterJson: true
-          args: --bundles ${{ matrix.bundles }}
+          name: harness-bundle
+          path: packaging/dist/harness
+
+      - run: node .github/scripts/stage-node.mjs
+
+      # 将本次应用/Node 版本与刚构建的 Harness 指纹写入包内清单；helper 安装时
+      # 会用它拒绝 Native、Node 与 JS 资源混装的制品。
+      - run: node .github/scripts/write-version-set.mjs
+
+      # 暂存齐备后再过一遍守卫（--require-staging）：缺组件在打包前失败，而不是装出来才发现。
+      - run: node scripts/check-bundle-config.mjs --require-staging
+        env:
+          GITHUB_REF_TYPE: tag
+          GITHUB_REF_NAME: ${{ env.RELEASE_TAG }}
+
+      # update.json 的 arch 是安装链的硬闸（宿主按平台/架构过滤）：runner 一旦换架构
+      # （macos-latest 目前是 arm64），这里大声失败，而不是把另一种架构的包标成 matrix.arch 发出去。
+      - name: Assert runner arch
+        shell: bash
+        run: |
+          set -euo pipefail
+          HOST=$(rustc -vV | sed -n 's/^host: //p')
+          case "$HOST" in
+            aarch64-*) HOST_ARCH=aarch64 ;;
+            x86_64-*) HOST_ARCH=x86_64 ;;
+            *) echo "未知 rustc host: $HOST"; exit 1 ;;
+          esac
+          if [ "$HOST_ARCH" != "${{ matrix.arch }}" ]; then
+            echo "runner 架构 $HOST_ARCH 与 matrix.arch ${{ matrix.arch }} 不符：更新清单的 arch 会标错"
+            exit 1
+          fi
+
+      # 主宿主 + 更新 helper（packaging/desktop.json 的 binaries 清单；产物落 target/release）。
+      - run: cargo build --release -p native-host --bin native-host --bin deskpet-update-helper
+
+      # cargo-packager pin 0.11.8；缓存按版本 + OS，避免每次 release 重编译。
+      - uses: actions/cache@v4
+        with:
+          path: ~/.cargo/bin/cargo-packager*
+          key: cargo-packager-0.11.8-${{ runner.os }}
+
+      - run: command -v cargo-packager >/dev/null 2>&1 || cargo install cargo-packager --version 0.11.8 --locked
+        shell: bash
+
+      # create-dmg 是 cargo-packager 生成 .dmg 的运行时依赖（首次使用会联网下载到
+      # ~/Library/Caches/.cargo-packager）。这里以固定 commit 的 URL 预置并校验 sha256，
+      # 不依赖运行时下载。仅 macOS 需要。
+      - name: Pre-stage create-dmg (macOS)
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          set -euo pipefail
+          URL="https://raw.githubusercontent.com/create-dmg/create-dmg/28867ba3563ddef62f55dcf130677103b4296c42/create-dmg"
+          SHA="d4be62531a0d4d4524d34fe0599b4ebdddd6f664931b4e0832536d1f0fd92b26"
+          DEST="$HOME/Library/Caches/.cargo-packager/DMG/script"
+          mkdir -p "$DEST"
+          curl -fsSL "$URL" -o "$DEST/create-dmg"
+          echo "$SHA  $DEST/create-dmg" | shasum -a 256 -c -
+          chmod 764 "$DEST/create-dmg"
+
+      # Apple/Windows 代码签名本次未交付（契约 D2）。**不要**提前声明 APPLE_* 环境变量：
+      # GitHub 会把未设置的 secret 展开成「已定义但为空」的值，cargo-packager 用 var_os
+      # 读取它们（codesign/macos.rs 的 APPLE_CERTIFICATE / APPLE_CERTIFICATE_PASSWORD），
+      # 一旦发现两个变量是 Some 就会对空 p12 执行钥匙串导入而失败 —— 结果是 Release 只剩
+      # Windows 产物、macOS 客户端收不到更新。desktop.json 没有 signing_identity，打包器
+      # 本来就不走签名分支；将来补签名时按契约 §3.3 专门加步骤（HAS_APPLE_CERT 门控的
+      # 钥匙串导入），不要只往 job env 里塞 secret。
+      #
+      # 产物落 packaging/dist（cargo-packager 的相对路径以配置文件目录为基准）。
+      - run: cargo packager --release --config packaging/desktop.json --formats ${{ matrix.formats }}
+
+      # macOS 更新制品 = 单个顶层 .app 的 .tar.gz（update helper 只接受恰好一个顶层 .app）。
+      # 打包前先把 cargo-packager 复制资源时展开掉的 bin/npm|npx|corepack 符号链接恢复
+      # （node-runtime.json 记录的坑：展开成普通副本后相对 require 失效）。
+      # --no-mac-metadata：macOS 的 bsdtar 默认会把扩展属性写成 ._ 条目，而 ._xxx.app 也以
+      # `.app` 结尾，会让 helper 的「恰好一个顶层 .app」判定数出 2 个而拒绝整包。
+      - name: Make macOS app.tar.gz update artifact
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          set -euo pipefail
+          APP="packaging/dist/v1rtual-desk-pet.app"
+          NODE_BIN="$APP/Contents/Resources/node/bin"
+          ln -sfn ../lib/node_modules/npm/bin/npm-cli.js "$NODE_BIN/npm"
+          ln -sfn ../lib/node_modules/npm/bin/npx-cli.js "$NODE_BIN/npx"
+          ln -sfn ../lib/node_modules/corepack/dist/corepack.js "$NODE_BIN/corepack"
+          VERSION=$(node -p "require('./packaging/desktop.json').version")
+          tar --no-mac-metadata -C packaging/dist -czf "$PWD/packaging/dist/v1rtual-desk-pet_${VERSION}_${{ matrix.arch }}.app.tar.gz" "v1rtual-desk-pet.app"
+
+      # 生成被签名的 release envelope（update.json 的一条 release）：
+      # · 私钥/口令经环境变量传入（与旧 Tauri updater 同一把 minisign 密钥；密钥不落盘、
+      #   不进日志），脚本内用仓库内嵌公钥现场验签，签名或格式不对直接 red；
+      # · 脚本还需要 GITHUB_REPOSITORY（Actions 自动提供）来生成资产 URL。
+      - name: Build signed update fragment
+        shell: bash
+        env:
+          CARGO_PACKAGER_SIGN_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          CARGO_PACKAGER_SIGN_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: |
+          set -euo pipefail
+          mkdir -p release-assets
+          if [ "${{ matrix.kind }}" = "app" ]; then
+            COMPONENT=$(ls packaging/dist/*_${{ matrix.arch }}.app.tar.gz)
+          else
+            COMPONENT=$(ls packaging/dist/*-setup.exe)
+          fi
+          node .github/scripts/update-feed.mjs fragment \
+            --tag "$RELEASE_TAG" \
+            --platform ${{ matrix.platform }} \
+            --arch ${{ matrix.arch }} \
+            --kind ${{ matrix.kind }} \
+            --component "$COMPONENT" \
+            --out "release-assets/update-fragment-${{ matrix.platform }}.json"
+
+      - name: Collect release assets
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ "${{ matrix.kind }}" = "app" ]; then
+            cp packaging/dist/*.dmg release-assets/
+            cp packaging/dist/*_${{ matrix.arch }}.app.tar.gz release-assets/
+          else
+            cp packaging/dist/*-setup.exe release-assets/
+          fi
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-${{ matrix.platform }}
+          path: release-assets
+          if-no-files-found: error
+
+  publish:
+    name: publish release
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      # gh release 创建/上传资产
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.tag || github.ref }}
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: release-*
+          path: release-assets
+          merge-multiple: true
+
+      # 两个平台的 fragment 齐备才出 update.json；缺一、重复、版本不符、验签失败都直接失败
+      #（不发布半份 feed）。
+      - name: Assemble update.json
+        run: node .github/scripts/update-feed.mjs assemble --tag "$RELEASE_TAG" --fragments release-assets --out release-assets/update.json
+
+      # 先建 draft → 传全部平台资产 → 最后传 update.json → 再发布：客户端在资产齐备前
+      # 看不到这一版；feed 出现时它引用的制品已经全部在 Release 里。
+      # 含 `-` 的 tag（如 v0.15.0-rc.1）只作预发布，不会被 updater 端点选中。
+      - name: Publish GitHub Release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          PRERELEASE=""
+          case "$RELEASE_TAG" in *-*) PRERELEASE="--prerelease";; esac
+          if ! gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
+            gh release create "$RELEASE_TAG" --draft --title "$RELEASE_TAG" --generate-notes $PRERELEASE
+          fi
+          gh release upload "$RELEASE_TAG" --clobber release-assets/*.dmg release-assets/*.app.tar.gz release-assets/*-setup.exe
+          gh release upload "$RELEASE_TAG" --clobber release-assets/update.json
+          gh release edit "$RELEASE_TAG" --draft=false $PRERELEASE

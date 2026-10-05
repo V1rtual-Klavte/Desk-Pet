@@ -7,7 +7,7 @@ import { createHash } from "node:crypto"
 import { pruneRetainedGroups } from "./report-retention.mjs"
 
 const repo = dirname(dirname(fileURLToPath(import.meta.url)))
-const SOURCE_FILES = ["Cargo.lock", "src-tauri/src/memory/benchmark.rs", "src-tauri/src/memory/store.rs", "src-tauri/src/memory/schema.rs", "src-tauri/src/paths/mod.rs", "test/e2e/memory-performance.ts", "test/host/performance.ts", "scripts/memory-performance.mjs"]
+const SOURCE_FILES = ["Cargo.lock", "crates/native-host/src/memory/benchmark.rs", "crates/native-host/src/memory/store.rs", "crates/native-host/src/memory/schema.rs", "crates/native-host/src/paths/mod.rs", "test/e2e/memory-performance.ts", "test/host/performance.ts", "scripts/memory-performance.mjs"]
 function sourceHash() {
   const hash = createHash("sha256")
   for (const file of [...SOURCE_FILES].sort()) hash.update(readFileSync(join(repo, file)))
@@ -97,7 +97,7 @@ async function main() {
   let failed = false
   try {
     if (!args.includes("--ipc-only")) {
-      const result = await run("cargo", ["test", "--manifest-path", "src-tauri/Cargo.toml", "--release", "--lib", "memory::benchmark::tests::release_storage_benchmark", "--", "--ignored", "--exact", "--nocapture"], { DESKPET_MEMORY_PERF_ROOT: root })
+      const result = await run("cargo", ["test", "--manifest-path", "crates/native-host/Cargo.toml", "--release", "--lib", "memory::benchmark::tests::release_storage_benchmark", "--", "--ignored", "--exact", "--nocapture"], { DESKPET_MEMORY_PERF_ROOT: root })
       // Full test path is needed for --exact; the filtered name must execute one test.
       if (!existsSync(join(root, "native.json"))) throw new Error("Release benchmark 没有执行或没有产出 native.json")
       const native = JSON.parse(readFileSync(join(root, "native.json"), "utf8"))

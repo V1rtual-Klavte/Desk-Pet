@@ -33,34 +33,41 @@ export const RULES = [
 ];
 
 /**
- * 规则 6 的判据范围：模块入口 —— import 它会**直接**加载一个自己 import
- * `@tauri-apps/api/*` 的模块（直接依赖，不做传递闭包）。
+ * 规则 6 的判据范围：模块入口 —— import 它会**直接**加载一个自己从 `@/services/host`
+ * 取 HostBridge、或经宿主端口（`publishUiEvent`）出 IPC 的模块（直接依赖，不做传递闭包）。
  *
- * 为什么不做传递闭包：闭包会把所有经 logger（它自己 invoke）间接触达 IPC 的纯模块都算进来，
+ * 迁移后（旧壳删除）transport 从 `@tauri-apps/api/*` 换成 HostBridge：L2 的 setupFiles
+ * 装的是 Node 假宿主桥，但「pi runtime / 会话落盘 / 工具执行」这三块的真实语义（真 loop、
+ * 真 JSONL、真工具执行）仍只属于 L3 —— 规则保住的是层次，不只是「能不能 import」。
+ *
+ * 为什么不做传递闭包：闭包会把所有经 logger（它自己走桥）间接触达 IPC 的纯模块都算进来，
  * 规则立刻失去区分力 —— 契约写明 L2 就是「纯逻辑 / 解析 / 注册表 / 边界」，注册表、解析器
  * 必须能 import。所以同一个域里的纯子模块**不**在这里：
+ *   · `@/services/engine`（桶再经 harness 桶转一手，超出「直接依赖」一档；L2 的 slash /
+ *     压缩用例就 import 它）
  *   · `@/services/tool/registry`、`tool/policy`、`tool/router`（I/O 都在别的文件里）
- *   · `@/services/engine/pi/session-frame-buffer`、`session-fold`、`delivery`、`stream-text`
+ *   · `@/services/engine/harness/session-frame-buffer`、`session-fold`、`delivery`、`stream-text`
  *   · `@/services/session/{repo,manager,messages,read-model,store,history}`
  *   · `@/services/error`、`@/services/logger`（跨领域工具，AGENTS.md 要求错误处理经前者）
  * 精确到入口而不是整目录前缀，正是为了不误伤它们。
  *
  * 域的范围与 test/README.md 规则表的括注一致（pi runtime / 会话落盘 / 工具执行）。
- * 新增直接 import @tauri-apps/api/* 的入口时同步本表（派生命令：
- * `rg -l 'from "@tauri-apps/api/' src/`）。
+ * 新增直接取 HostBridge / 宿主端口的入口时同步本表（派生命令：
+ * `rg -l 'getHostBridge|from "@/services/host"' src/services`，按入口归位到 `@/…`）。
  */
 const IPC_MODULES = [
-  { spec: "@/services/engine/pi", why: "pi barrel 会带出 runtime.ts" },
-  { spec: "@/services/engine/pi/runtime", why: "agent harness 运行时：直接 invoke" },
+  { spec: "@/services/engine/harness", why: "pi barrel 会带出 runtime.ts（经宿主端口发布 UI 事件）" },
+  { spec: "@/services/engine/harness/runtime", why: "agent harness 运行时：经宿主端口发布事件" },
   { spec: "@/services/session", why: "会话 barrel 会带出 persistence.ts" },
-  { spec: "@/services/session/persistence", why: "会话 JSONL 落盘经 invoke（L3 的层签名）" },
+  { spec: "@/services/session/persistence", why: "会话 UI 状态落盘经 HostBridge（L3 的层签名）" },
   { spec: "@/services/tool", why: "工具 barrel 会带出执行许可" },
-  { spec: "@/services/tool/execution-permit", why: "工具执行许可经 invoke" },
-  { spec: "@/services/tool/pi", why: "工具侧 pi barrel 会带出 tauri-execution-env.ts" },
-  { spec: "@/services/tool/pi/tauri-execution-env", why: "Tauri 执行环境：直接 invoke" },
-  { spec: "@/services/tool/mcp", why: "MCP 走 stdio 子进程（Rust-only 边界）" },
-  { spec: "@/services/tool/local", why: "本地工具实现经 invoke（bash / 系统路径）" },
-  { spec: "@/services/tool/local-extra", why: "剪贴板 / 打开应用经 invoke（桌面能力）" },
+  { spec: "@/services/tool/execution-permit", why: "工具执行许可经 HostBridge" },
+  { spec: "@/services/tool/pi/native-execution-env", why: "Native 执行环境：文件/命令全经 HostBridge（Rust 专属命令在 L2/L3 命中即抛）" },
+  { spec: "@/services/tool/mcp", why: "MCP barrel 会带出 transport.ts：stdio 子进程经 HostBridge（Rust-only 边界）" },
+  { spec: "@/services/tool/local/screenshot", why: "截图落盘经 HostBridge（桌面能力）" },
+  { spec: "@/services/tool/local/system", why: "系统信息与路径命令经 HostBridge" },
+  { spec: "@/services/tool/local-extra/app", why: "打开应用经 HostBridge（桌面能力）" },
+  { spec: "@/services/tool/local-extra/clipboard", why: "剪贴板经 HostBridge（桌面能力）" },
 ];
 
 /**

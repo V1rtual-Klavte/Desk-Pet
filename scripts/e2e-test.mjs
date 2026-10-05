@@ -1,27 +1,54 @@
-// E2E 启动脚本（Node 侧，负责构建、起 WebView、汇总报告）。
+// E2E 启动脚本（Node 侧：构建原生宿主 + Node Scene runner、合成 CONFIG、私有
+// 测试通道、隔离根、结果与 trace 留存、跨层 caseId 对账）。
+//
+// 执行契约 §8 W11：本文件保留为命令入口，但启动路径已替换 ——
+// `tauri dev` + `test-e2e.html`（WebView）→ `cargo build -p native-host` + esbuild
+// bundle，直接运行原生宿主；结束路径 `invoke("e2e_complete")` → 宿主 e2e_complete
+// 命令落盘 `e2e-result.txt` + 进程退出码。宿主构建与启动在 test/host/native/。
+//
 // 开发工具直接用 console：改走 logger 会污染 data_root/logs/deskpet.log
 // 并引入 IPC 依赖 [保留已登记 §4.2]
 
 import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs"
 import { createHash } from "node:crypto"
-import { execFileSync, spawn } from "node:child_process"
+import { execFileSync } from "node:child_process"
 import { extname, join, relative } from "node:path"
 import { pathToFileURL } from "node:url"
 import { inspectTraceEvidence, retainTraceBundle, salvageTempTrace } from "./trace-evidence.mjs"
 import { pruneReportArtifacts } from "./report-retention.mjs"
 import { compareCaseIdLayers, extractContractCaseIds, formatCaseIdLayerIssues } from "./contract-layers.mjs"
+import { buildE2eSceneBundle, buildNativeHost, bundledNodePath } from "../test/host/native/build.mjs"
+import { CHANNEL_ENV_VAR, DATA_ROOT_ENV_VAR, E2E_ENV_VAR, buildChannel, newTrialId, writeChannel } from "../test/host/native/channel.mjs"
+import { judgeNativeVerdict, launchNativeHost, producerGroupAlive, stopChild } from "../test/host/native/driver.mjs"
+import { buildSyntheticConfig, writeSyntheticConfig } from "../test/host/native/synthetic-config.mjs"
 
 const REPORTS_DIR = join(process.cwd(), "test", "reports")
 
 const args = process.argv.slice(2).filter(arg => arg !== "--")
 // 这两份选项清单必须与 test/e2e/cli.ts 的 parseArgs 同步：漏一个 valueOption，
-// 参数会被这里吞掉、浏览器侧收不到；漏一个 flagOption，模式不会进环境变量。
-// 两边各有一行互指注释；不做机制化共享（cli.ts 是浏览器侧模块，本文件顶层有副作用、
-// 不能被 import，重复清单是现状里代价最低的同步点）。
+// 参数会被这里吞掉、Scene runner 收不到；漏一个 flagOption，模式不会进通道。
+// 两边各有一行互指注释；不做机制化共享（cli.ts 经 esbuild 进 Node bundle，
+// 本文件顶层有副作用、不能被 import，重复清单是现状里代价最低的同步点）。
 const valueOptions = new Set(["--module", "--scene", "--case", "--tag", "--suite", "--repeat", "--report", "--contracts", "--quality-seed", "--trace",
   "--bench-dataset", "--bench-split", "--bench-limit", "--bench-case", "--bench-seed", "--bench-judge", "--bench-judge-model"])
 const flagOptions = new Set(["--strict", "--quality", "--performance", "--bench"])
-const env = { ...process.env, DESKPET_E2E: "1" }
+// 启动器自用的选项表（分池 / 门禁 / 超时的判据；子进程环境另见 childEnv）。
+const env = { ...process.env }
+
+/**
+ * 私有测试通道的选项键：与 test/e2e/cli.ts 的解析键一一对应（`--contracts` 是启动器
+ * 专属开关，不进通道）。宿主只原样转交这份表，不维护第二份键清单。
+ */
+const channelOptionKeys = {
+  "--module": "module", "--scene": "scene", "--case": "case", "--tag": "tag", "--suite": "suite",
+  "--repeat": "repeat", "--report": "report", "--quality-seed": "qualitySeed", "--trace": "trace",
+  "--bench-dataset": "benchDataset", "--bench-split": "benchSplit", "--bench-limit": "benchLimit",
+  "--bench-case": "benchCase", "--bench-seed": "benchSeed", "--bench-judge": "benchJudge",
+  "--bench-judge-model": "benchJudgeModel",
+  "--strict": "strict", "--quality": "quality", "--performance": "performance", "--bench": "bench",
+}
+/** 通道选项值表（键写全、缺省 null；与 RuntimeOptions 的投影同形）。 */
+const channelOptions = Object.fromEntries(Object.values(channelOptionKeys).map(key => [key, null]))
 
 function sha256(parts) {
   const hash = createHash("sha256")
@@ -38,16 +65,25 @@ function currentCommit() {
   }
 }
 
-// 参数要先解析：下面的 Contract 门禁需要知道自己是不是单模块运行
+// 参数要先解析：下面的 Contract 门禁需要知道自己是不是单模块运行。
+// 同一份来源同时填 env（启动器自用：分池、跨层门禁、超时）与 channelOptions
+// （经私有测试通道交给宿主 → test/e2e Scene runner）。
 for (let index = 0; index < args.length; index++) {
   const option = args[index]
   if (flagOptions.has(option)) {
     env[`DESKPET_E2E_${option.slice(2).toUpperCase()}`] = "1"
+    channelOptions[channelOptionKeys[option]] = "1"
     continue
   }
   if (!valueOptions.has(option) || !args[index + 1]) continue
-  env[`DESKPET_E2E_${option.slice(2).toUpperCase().replace(/-/g, "_")}`] = args[++index]
+  const value = args[++index]
+  env[`DESKPET_E2E_${option.slice(2).toUpperCase().replace(/-/g, "_")}`] = value
+  if (channelOptionKeys[option]) channelOptions[channelOptionKeys[option]] = value
 }
+// 测试侧模型覆盖：启动器进程的环境变量取值随通道交付（旧路径是宿主读 env）。
+channelOptions.evalProvider = process.env.DESKPET_EVAL_PROVIDER ?? null
+channelOptions.evalModel = process.env.DESKPET_EVAL_MODEL ?? null
+channelOptions.evalJudgeModel = process.env.DESKPET_EVAL_JUDGE_MODEL ?? null
 
 /**
  * 报告分池：门禁/测试留在 `test/reports/`；外部基准与自建评测各用一个子目录，
@@ -75,9 +111,9 @@ function selectedContractFile() {
 /**
  * Contract 预检：逐份重算 sourceFiles 的 hash 并和声明的 sourceHash 比对。
  *
- * 通过时返回「模块 → 预检 hash」的证明：浏览器读不到源码，只能核对这份证明
- * （contract-checker.ts）。没有证明或与契约声明不一致，浏览器侧判为 stale，
- * 所以绕过本脚本直接跑 Tauri 不会得到一份看起来通过的报告。
+ * 通过时返回「模块 → 预检 hash」的证明：Scene runner 不独立读源码重算，只能核对
+ * 这份证明（contract-checker.ts）。没有证明或与契约声明不一致，runner 判为 stale
+ * —— 绕过本脚本直接起原生宿主不会得到一份看起来通过的报告。
  */
 function checkContractHashes() {
   const directory = join(process.cwd(), "test/contracts")
@@ -112,22 +148,21 @@ try {
   console.error(`[E2E] Contract 校验失败: ${error instanceof Error ? error.message : String(error)}`)
   process.exit(1)
 }
-env.DESKPET_E2E_SOURCE_HASHES = JSON.stringify(hashAttestation)
+/** 预检通过的源码证明（模块 → sourceHash），随私有测试通道交给宿主与 Scene runner。 */
+const sourceHashesProof = JSON.stringify(hashAttestation)
 
 // ── 种子与配置摘要（报告 environment.seedHash）──
 
 /** 随包种子的来源目录；运行时资源由 Rust 首次初始化时从这里拷贝。 */
-const SEED_DIR = "src-tauri/resources/defaults"
+const SEED_DIR = "resources/defaults"
 /**
  * 只有文本种子参与摘要。png/ttf 素材不影响 Live 断言（也不进 Prompt），
  * 而体积是文本种子的几千倍 —— 摘要要能对比两次运行，不是完整备份校验和。
  */
 const SEED_TEXT_EXTENSIONS = new Set([".md", ".yaml", ".yml", ".json", ".txt"])
-/** 开发构建按此顺序取第一个存在的配置（与 paths.rs 的 config_file 选择一致）。 */
-const CONFIG_FILES = ["CONFIG-DEV.yaml", "CONFIG.yaml"]
 /**
  * 凭据键名。命中即把值替换为 <redacted>，摘要因此能区分模型、参数与种子的变化，
- * 却不包含、也不能反推 apiKey 之类的凭据（本地 CONFIG-DEV.yaml 常带真实 key）。
+ * 却不包含、也不能反推 apiKey 之类的凭据。
  */
 const CREDENTIAL_KEY = /(api[_-]?key|apikey|access[_-]?key|secret|token|password|passwd|authorization|credential|private[_-]?key|bearer)/i
 
@@ -158,31 +193,43 @@ function hashSeedFile(file) {
 
 /**
  * 种子与配置摘要。覆盖本次运行真正读到的输入：
- * 文本形式的 Card / Profile / Skill 种子，加上开发构建实际加载的那份 CONFIG。
- * 缺文件只报警，不阻断运行 —— 摘要缺失会如实表现为报告里的 seedHash 为空。
+ * 文本形式的 Card / Profile / Skill 种子，加上**本次合成并写入隔离根的 CONFIG**
+ * （不再读真实 CONFIG-DEV.yaml / 运行时 CONFIG —— 合成文本本身就是唯一来源）。
  */
-function computeSeedHash() {
+function computeSeedHash(syntheticConfigText) {
   const parts = []
   for (const file of collectFiles(join(process.cwd(), SEED_DIR))) {
     if (!SEED_TEXT_EXTENSIONS.has(extname(file))) continue
     parts.push(`${relative(process.cwd(), file)}\0${hashSeedFile(file)}`)
   }
-  for (const name of CONFIG_FILES) {
-    const file = join(process.cwd(), name)
-    if (existsSync(file)) {
-      parts.push(`${name}\0${hashSeedFile(file)}`)
-      break
-    }
-  }
-  if (parts.length === 0) {
-    console.error(`[E2E] seedHash 未生成：${SEED_DIR} 与 ${CONFIG_FILES.join(" / ")} 都不存在`)
-    return undefined
-  }
+  parts.push(`settings/CONFIG.yaml\0${sha256([Buffer.from(syntheticConfigText, "utf8")])}`)
   return sha256(parts.sort())
 }
 
-const seedHash = computeSeedHash()
-if (seedHash) env.DESKPET_E2E_SEED_HASH = seedHash
+// 合成 CONFIG（执行契约 §8 W0：fixture override + 不继承真实凭据）。构建失败按预检失败处理。
+let syntheticConfigText
+try {
+  syntheticConfigText = buildSyntheticConfig({ repoRoot: process.cwd() })
+} catch (error) {
+  console.error(`[E2E] 合成 CONFIG 失败: ${error instanceof Error ? error.message : String(error)}`)
+  process.exit(1)
+}
+// seedHash 只经通道 attestation 交付（不落 env、不落第二处）。
+const seedHash = computeSeedHash(syntheticConfigText)
+
+// ── 构建原生 L4 宿主（替换 `pnpm exec tauri dev --no-watch`）──
+// 在创建隔离根之前构建：构建失败时不产生任何需要回收的临时根。
+let hostBinary
+let bundleEntry
+let nodeBinary
+try {
+  hostBinary = buildNativeHost()
+  bundleEntry = await buildE2eSceneBundle()
+  nodeBinary = bundledNodePath()
+} catch (error) {
+  console.error(`[E2E] 构建原生 L4 宿主失败: ${error instanceof Error ? error.message : String(error)}`)
+  process.exit(1)
+}
 
 /**
  * 临时数据根落在 `test/.tmp/` 下，**不放仓库外**。
@@ -215,7 +262,8 @@ function liveOwnerPid(root) {
 }
 
 /**
- * L4 不能并行跑（占同一个 Vite/Tauri 端口），启动时已存在的 `e2e-*` 按有无存活主人分开处理：
+ * L4 不能并行跑（两场运行会竞争构建输出 `target/` 与 `test/.tmp/native-host-e2e/`、
+ * 共享报告保留链），启动时已存在的 `e2e-*` 按有无存活主人分开处理：
  * 无主的是上次异常退出的残留（SIGKILL、进程被挂起后杀掉不会执行 finally，靠正常路径清理不住），
  * 抢救未结束场景后删除；有主的说明另一个 E2E 正在跑 —— 它的根绝不能当残留删掉，
  * 直接拒绝启动并指名 pid 与根名。
@@ -247,14 +295,13 @@ const dataRoot = mkdtempSync(join(TEMP_ROOT_DIR, "e2e-"))
 // 不会把在跑者的数据根当残留删掉（判定见 pruneStaleTempRoots / liveOwnerPid）。
 writeFileSync(join(dataRoot, ".pid"), `${process.pid}\n`)
 const resultPath = join(dataRoot, "e2e-result.txt")
-const configSource = CONFIG_FILES.find(name => existsSync(join(process.cwd(), name)))
-if (!configSource) throw new Error("E2E 缺少完整配置种子")
-mkdirSync(join(dataRoot, "settings"), { recursive: true })
-copyFileSync(join(process.cwd(), configSource), join(dataRoot, "settings", "CONFIG.yaml"))
+// 合成 CONFIG 写进隔离根（AppPaths 在 debug + is_e2e 时加载 settings/CONFIG.yaml）；
+// 不再复制真实 CONFIG-DEV.yaml —— 凭据不经这条路径，只在运行期经测试侧凭据入口写隔离副本。
+const configPath = writeSyntheticConfig(dataRoot, syntheticConfigText)
 // 测试侧统一模型配置 stage（仓库常驻；缺失时告警，宿主按全部继承处理）。
 const evalModelsSource = join(process.cwd(), "test", "eval-models.json")
 if (existsSync(evalModelsSource)) copyFileSync(evalModelsSource, join(dataRoot, "eval-models.json"))
-else console.error("[E2E] 缺少 test/eval-models.json，测试模型将全部继承仓库配置")
+else console.error("[E2E] 缺少 test/eval-models.json，测试模型将全部继承隔离副本的合成 CONFIG")
 // 本地专属覆盖（凭据 / 临时指向；已 gitignore）：存在才 stage，只进隔离副本、不写回真实配置。
 const evalModelsLocal = join(process.cwd(), "test", "eval-models.local.json")
 if (existsSync(evalModelsLocal)) copyFileSync(evalModelsLocal, join(dataRoot, "eval-models.local.json"))
@@ -278,8 +325,32 @@ if (env.DESKPET_E2E_BENCH === "1") {
   mkdirSync(join(dataRoot, "bench"), { recursive: true })
   copyFileSync(casePath, join(dataRoot, "bench", "cases.json"))
 }
-env.DESKPET_E2E_DATA_ROOT = dataRoot
-env.DESKPET_E2E_COMMIT = currentCommit()
+// ── 私有测试通道 + 拉起原生宿主 ──
+
+/**
+ * 通道内容是「地址 + 身份 + 证明」：隔离根、合成 CONFIG、结果文件、Node 与入口、
+ * trial 身份、attestation（commit / sourceHashes / seedHash）。凭据不经过它。
+ */
+const channel = buildChannel({
+  trialId: newTrialId(),
+  dataRoot,
+  configPath,
+  resultPath,
+  harnessEntry: bundleEntry,
+  nodeBinary,
+  options: channelOptions,
+  attestation: { commit: currentCommit(), sourceHashes: sourceHashesProof, seedHash },
+})
+const channelPath = writeChannel(dataRoot, channel)
+
+// 子进程环境只给三种私有通道变量（不再把 DESKPET_E2E_* 选项散进环境：
+// 选项的唯一交付路径是通道文件 → 宿主 → e2e_options）。
+const childEnv = {
+  ...process.env,
+  [E2E_ENV_VAR]: "1",
+  [DATA_ROOT_ENV_VAR]: dataRoot,
+  [CHANNEL_ENV_VAR]: channelPath,
+}
 
 let child
 let finalized = false
@@ -287,40 +358,22 @@ let timeout
 let stopping
 let stopDeadline
 
-function producerGroupAlive() {
-  if (!child) return false
-  // macOS may report EPERM for an already-exited group. Inspect membership without signalling unrelated processes.
-  const groups = execFileSync("ps", ["-axo", "pgid="], {encoding:"utf8",timeout:5000})
-  return groups.trim().split(/\s+/).some(group => Number(group) === child.pid)
-}
-
-function stopChild(signal = "SIGTERM") {
-  if (!child) return
-  if (process.platform !== "win32") {
-    try { process.kill(-child.pid, signal) } catch (error) {
-      if (error.code !== "ESRCH" && !(error.code === "EPERM" && !producerGroupAlive())) throw error
-    }
-  } else if (child.exitCode === null && child.signalCode === null) {
-    execFileSync("taskkill", ["/PID", String(child.pid), "/T", "/F"], { stdio: "ignore" })
-  }
-}
-
 function requestStop(exitCode, reason) {
   if (stopping || finalized) return
   stopping = { exitCode, reason }
   if (timeout) clearTimeout(timeout)
-  stopChild()
+  stopChild(child)
   // Keep the root intact until the producer has exited; an interrupted trace stays partial.
   stopDeadline = setTimeout(() => {
-    stopChild("SIGKILL")
+    stopChild(child, "SIGKILL")
     setTimeout(() => finalizeStoppedProducer(), 250)
   }, 5_000)
 }
 
 function finalizeStoppedProducer() {
   if (process.platform === "win32") { finalize(stopping.exitCode, stopping.reason); return }
-  if (!producerGroupAlive()) { finalize(stopping.exitCode, stopping.reason); return }
-  // pnpm may exit before its grandchildren; wait for the whole isolated process group.
+  if (!producerGroupAlive(child)) { finalize(stopping.exitCode, stopping.reason); return }
+  // 监督器可能在宿主退出后仍短暂管理 Node 子进程；等整组回收完再结算。
   if (!finalized) setTimeout(finalizeStoppedProducer, 100)
 }
 
@@ -332,8 +385,8 @@ function finalizeStoppedProducer() {
 
 /**
  * 目标扩展名按 --report 声明的格式显式决定，不做内容嗅探。
- * WebView 侧经 `e2e_complete` 落盘的载荷固定是 `e2e-result.txt`，
- * 若按它推断，`--report html` 会被存成 `.txt`，双击进编辑器而不是浏览器。
+ * 原生宿主在 `e2e_complete` 时固定落盘 `e2e-result.txt`（首行 PASS/FAIL 是退出码
+ * 判据的另一半），若按它推断，`--report html` 会被存成 `.txt`，双击进编辑器而不是浏览器。
  */
 const REPORT_EXTENSIONS = { json: "json", html: "html" }
 
@@ -508,21 +561,17 @@ async function finalize(exitCode, reason) {
 process.once("SIGINT", () => requestStop(130, "收到 SIGINT，停止后留存隔离现场"))
 process.once("SIGTERM", () => requestStop(143, "收到 SIGTERM，停止后留存隔离现场"))
 
-child = spawn("pnpm", ["exec", "tauri", "dev", "--no-watch"], {
-  cwd: process.cwd(),
-  env,
-  stdio: "inherit",
-  detached: process.platform !== "win32",
-})
+child = launchNativeHost({ binary: hostBinary, env: childEnv, cwd: process.cwd() })
 timeout = setTimeout(() => {
   requestStop(1, "超过本次评测截止时间，停止后留存现场")
 }, (env.DESKPET_E2E_QUALITY === "1" ? 480 : env.DESKPET_E2E_BENCH === "1" ? 480 : env.DESKPET_E2E_PERFORMANCE === "1" ? 30 : Math.max(30, Number(env.DESKPET_E2E_REPEAT ?? 1) * 10)) * 60 * 1000)
 
-child.on("error", error => finalize(1, `无法启动 Tauri: ${error.message}`))
+child.on("error", error => finalize(1, `无法启动原生宿主: ${error.message}`))
 child.on("exit", (code, signal) => {
   if (stopping) { finalizeStoppedProducer(); return }
-  const passed = existsSync(resultPath) && readFileSync(resultPath, "utf8").startsWith("PASS\n")
-  const reason = passed ? undefined : existsSync(resultPath) ? "测试报告标记为失败" : `测试进程未生成结果文件 (exit=${code}, signal=${signal ?? "none"})`
-  requestStop(passed ? 0 : 1, reason)
+  // 完成协议的判据 = 结果文件 + 进程退出码（judgeNativeVerdict）：丢结果、
+  // 文件与退出码互相矛盾、关停未干净，都不得标通过。
+  const verdict = judgeNativeVerdict({ resultPath, exitCode: code, signal })
+  requestStop(verdict.passed ? 0 : 1, verdict.reason)
   finalizeStoppedProducer()
 })

@@ -11,9 +11,10 @@
 // 2) 样本：被 .gitignore 的运行时数据根（默认 data/desk-pet/sessions）里的会话 JSONL，
 //    属用户数据 —— 本脚本只读，绝不改写、绝不删除；--selftest 的合成样本只写系统 temp。
 // 3) --calibrate 的模拟规则必须与装饰器实现保持一致：每文件一个缓冲 / 体积触发 /
-//    非帧触发清空（见 src/services/engine/pi/session-frame-buffer.ts，T1.01/T1.02）。
-//    改装饰器的触发规则就要同步改这里的模拟，否则校准表立刻失真。
-// 4) --fold-preview 的行级判定与 src/services/engine/pi/session-fold.ts 的 prepareFold **同源**：
+//    非帧触发清空 / 同键 delta 合并（见 src/services/engine/harness/session-frame-buffer.ts，
+//    T1.01/T1.02 + 同键 delta 合并）。
+//    改装饰器的触发或合并规则就要同步改这里的模拟，否则校准表立刻失真。
+// 4) --fold-preview 的行级判定与 src/services/engine/harness/session-fold.ts 的 prepareFold **同源**：
 //    只删「该行全部写都是死 key（行号小于该物理 key 最后一次 delete 的行号）的 append/set」的整行；
 //    delete 行、entry/usage 行与任何含保留写的多写行永远保留；保留行是原文子串（不重新序列化）。
 //    改折叠规则要同步这里；两者不一致时以 session-fold.ts 为准。
@@ -169,9 +170,15 @@ function responseDurations(lines, writes = expandTransactions(lines).writes) {
 }
 
 /**
- * 体积阈值扫描：模拟「每文件一个缓冲 / 体积触发 / 非帧触发清空」（无定时器）。
- * 规则必须与 src/services/engine/pi/session-frame-buffer.ts 的 T1.01/T1.02 实现一致。
- * 缓冲字节 = 帧行 content 的实际字节数（含行尾换行）；非帧行只在缓冲非空时产生一次 flush。
+ * 体积阈值扫描：模拟「每文件一个缓冲 / 体积触发 / 非帧触发清空 / 同键 delta 合并」（无定时器）。
+ * 规则必须与 src/services/engine/harness/session-frame-buffer.ts 的实现一致：
+ *   · 可合并 = 帧 append 的 value.type 以 `_delta` 结尾、value.delta 是字符串、seq 是安全整数；
+ *     合并键 = (namespace, key, value.type, value.contentIndex)（contentIndex 缺失归一为 null）；
+ *   · delta 入队时按 value.delta 的 UTF-8 字节累计估算；物化时按实际序列化行字节校准；
+ *   · 物化边界 = 非 delta 帧（先物化再放行）与 drain（体积触发 / 非帧行 / 收尾 flush）；
+ *   · 物化按最后 seq 升序（整文件 seq 严格递增）。
+ * 缓冲字节 = chunks 各行的实际字节（含行尾换行）+ 合并项的 delta 估算字节；
+ * 非帧行只在缓冲非空时产生一次 flush。
  */
 function simulateBuffer(lines, thresholdBytes) {
   let bufferedBytes = 0
@@ -179,6 +186,19 @@ function simulateBuffer(lines, thresholdBytes) {
   let volumeFlushes = 0
   let nonFrameFlushes = 0
   let mergedFrames = 0
+  let writtenRows = 0
+  /** 合并槽位：键 → { lastWrite, lastSeq, delta, estimatedBytes }（与装饰器同形）。 */
+  const merged = new Map()
+  /** 与装饰器的 materializeMergedDeltas 同序：按最后 seq 升序物化，字节按实际行校准。 */
+  const materialize = () => {
+    if (merged.size === 0) return
+    for (const entry of [...merged.values()].sort((left, right) => left.lastSeq - right.lastSeq)) {
+      const line = `${JSON.stringify({ ...entry.lastWrite, seq: entry.lastSeq, value: { ...entry.lastWrite.value, delta: entry.delta } })}\n`
+      bufferedBytes += Buffer.byteLength(line, "utf8") - entry.estimatedBytes
+      writtenRows += 1
+    }
+    merged.clear()
+  }
   for (let index = 1; index < lines.length; index++) {
     const line = lines[index]
     if (line.trim() === "") continue
@@ -189,11 +209,31 @@ function simulateBuffer(lines, thresholdBytes) {
       continue
     }
     if (!Array.isArray(parsed) && isFrameAppendWrite(parsed)) {
-      bufferedBytes += Buffer.byteLength(line, "utf8") + 1
+      const parts = deltaFrameParts(parsed)
       bufferedFrames += 1
+      if (parts === null) {
+        // 非 delta 帧：先物化再入队（合并绝不跨越 *_end 的覆盖语义边界）。
+        materialize()
+        bufferedBytes += Buffer.byteLength(line, "utf8") + 1
+        writtenRows += 1
+      } else {
+        const addedBytes = Buffer.byteLength(parts.delta, "utf8")
+        const slotKey = JSON.stringify([parts.namespace, parts.key, parts.type, parts.contentIndex ?? null])
+        const entry = merged.get(slotKey)
+        if (entry === undefined) {
+          merged.set(slotKey, { lastWrite: parsed, lastSeq: parts.seq, delta: parts.delta, estimatedBytes: addedBytes })
+        } else {
+          entry.lastWrite = parsed
+          entry.lastSeq = parts.seq
+          entry.delta += parts.delta
+          entry.estimatedBytes += addedBytes
+        }
+        bufferedBytes += addedBytes
+      }
       if (bufferedBytes >= thresholdBytes) {
         volumeFlushes += 1
         mergedFrames += bufferedFrames
+        materialize()
         bufferedBytes = 0
         bufferedFrames = 0
       }
@@ -202,13 +242,17 @@ function simulateBuffer(lines, thresholdBytes) {
     if (bufferedFrames > 0) {
       nonFrameFlushes += 1
       mergedFrames += bufferedFrames
+      materialize()
       bufferedBytes = 0
       bufferedFrames = 0
     }
   }
   // 文件结束时仍留在缓冲里的帧必须在关闭路径 flush（T1.04），否则会丢帧。
   const trailingFlushes = bufferedFrames > 0 ? 1 : 0
-  if (trailingFlushes === 1) mergedFrames += bufferedFrames
+  if (trailingFlushes === 1) {
+    mergedFrames += bufferedFrames
+    materialize()
+  }
   const flushes = volumeFlushes + nonFrameFlushes + trailingFlushes
   return {
     thresholdBytes,
@@ -217,8 +261,27 @@ function simulateBuffer(lines, thresholdBytes) {
     trailingFlushes,
     flushes,
     mergedFrames,
+    writtenRows,
     mergedPerFlush: flushes > 0 ? mergedFrames / flushes : null,
+    rowsPerFlush: flushes > 0 ? writtenRows / flushes : null,
   }
+}
+
+/**
+ * 与装饰器 deltaFrameParts **同判定**的可合并 delta 帧字段；不合形状返回 null。
+ * 判定更严不含糊：type 必须以 `_delta` 结尾、delta 必须是字符串、seq 必须是安全整数。
+ */
+function deltaFrameParts(write) {
+  const seq = write.seq
+  if (typeof seq !== "number" || !Number.isSafeInteger(seq) || seq < 1) return null
+  if (typeof write.namespace !== "string" || typeof write.key !== "string") return null
+  const value = write.value
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return null
+  const { type, delta, contentIndex } = value
+  if (typeof type !== "string" || !type.endsWith("_delta")) return null
+  if (typeof delta !== "string") return null
+  if (contentIndex !== undefined && (typeof contentIndex !== "number" || !Number.isSafeInteger(contentIndex) || contentIndex < 0)) return null
+  return { seq, namespace: write.namespace, key: write.key, type, contentIndex, delta }
 }
 
 // ── 单个样本的汇总 ──
@@ -382,27 +445,28 @@ function renderReport(report) {
 function renderCalibration(calibration, baselinePerSecond) {
   const out = []
   out.push("")
-  out.push("O-5 阈值校准（模拟：每文件一个缓冲 / 体积触发 / 非帧触发清空；规则须与 session-frame-buffer.ts 一致）")
+  out.push("O-5 阈值校准（模拟：每文件一个缓冲 / 体积触发 / 非帧触发清空 / 同键 delta 合并；规则须与 session-frame-buffer.ts 一致）")
   out.push(`基线（样本实测平均）: ${fixed(baselinePerSecond, 1)} 次/秒`)
   out.push("")
   out.push(
-    `  ${padDisplay("阈值", 10)}${padDisplay("flush 次数", 12)}${padDisplay("体积 / 非帧", 14)}${padDisplay("合并帧/次", 12)}${padDisplay("落盘调用速率", 16)}相对基线`,
+    `  ${padDisplay("阈值", 10)}${padDisplay("flush 次数", 12)}${padDisplay("体积 / 非帧", 14)}${padDisplay("合并帧/次", 12)}${padDisplay("落盘行/次", 12)}${padDisplay("落盘调用速率", 16)}相对基线`,
   )
   for (const row of calibration) {
     const threshold = padDisplay(`${row.thresholdKib} KiB`, 10)
     const flushes = padDisplay(String(row.flushes), 12)
     const split = padDisplay(`${row.volumeFlushes} / ${row.nonFrameFlushes}${row.trailingFlushes > 0 ? " + 1 收尾" : ""}`, 14)
     const perFlush = padDisplay(fixed(row.mergedPerFlush, 1), 12)
+    const rowsPerFlush = padDisplay(fixed(row.rowsPerFlush, 1), 12)
     const rate = padDisplay(`${fixed(row.flushPerSecond, 2)} /s`, 16)
     const ratio = row.ratioToBaseline === null ? "n/a" : `${Math.round(row.ratioToBaseline)}×`
-    out.push(`  ${threshold}${flushes}${split}${perFlush}${rate}${ratio}`)
+    out.push(`  ${threshold}${flushes}${split}${perFlush}${rowsPerFlush}${rate}${ratio}`)
   }
   out.push("")
-  out.push("裁定（O-5）: 16 KiB —— 生产常量见 src/services/engine/pi/session-frame-buffer.ts（T1.01）；本脚本只是扫描器，不是定义点。")
+  out.push("裁定（O-5）: 16 KiB —— 生产常量见 src/services/engine/harness/session-frame-buffer.ts（T1.01）；本脚本只是扫描器，不是定义点。")
   return out.join("\n")
 }
 
-// ── 折叠收益预览（--fold-preview；判定同源 src/services/engine/pi/session-fold.ts）──
+// ── 折叠收益预览（--fold-preview；判定同源 src/services/engine/harness/session-fold.ts）──
 //
 // 判定规则与 session-fold.ts 的 prepareFold 同源；改折叠规则要同步这里；两者不一致时以
 // session-fold.ts 为准。本模式只用于选阈值（O-6），不作门禁证据。
@@ -643,7 +707,7 @@ function buildFoldPreview(samples) {
       minFileBytes: FOLD_POLICY.minFileBytes,
       minReclaimBytes: FOLD_POLICY.minReclaimBytes,
       minReclaimRatio: FOLD_POLICY.minReclaimRatio,
-      sourceOfTruth: "src/services/engine/pi/session-fold.ts:FOLD_POLICY",
+      sourceOfTruth: "src/services/engine/harness/session-fold.ts:FOLD_POLICY",
     },
     samples: samples.map(sample => analyzeFoldSample(sample.text, sample.bytes, sample.path)),
   }
@@ -661,7 +725,7 @@ function renderFoldGate(gate) {
 
 function renderFoldPreview(foldPreview) {
   const out = []
-  out.push("[frame-stats] --fold-preview（判定同源 src/services/engine/pi/session-fold.ts 的 prepareFold；只用于 O-6 选阈值，不作门禁证据）")
+  out.push("[frame-stats] --fold-preview（判定同源 src/services/engine/harness/session-fold.ts 的 prepareFold；只用于 O-6 选阈值，不作门禁证据）")
   out.push(
     `  FOLD_POLICY（唯一可调点在 session-fold.ts，本脚本是只读镜像）: minFileBytes=${FOLD_POLICY.minFileBytes} B（512 KiB） · minReclaimBytes=${FOLD_POLICY.minReclaimBytes} B（128 KiB） · minReclaimRatio=${FOLD_POLICY.minReclaimRatio}（字节口径，三者 AND）`,
   )
@@ -867,11 +931,34 @@ function runSelftest(json) {
     assertEqual(eager.volumeFlushes, 5, "1 B 阈值的体积触发")
     assertEqual(eager.nonFrameFlushes, 0, "1 B 阈值的非帧触发")
     assertEqual(eager.mergedPerFlush, 1, "1 B 阈值的合并帧/次")
+    // 1 B 阈值下每条帧各自触发 flush，没有跨帧合并 → 5 帧写成 5 行。
+    assertEqual(eager.writtenRows, 5, "1 B 阈值的落盘行数（不跨 flush 合并）")
     const lazy = simulateBuffer(parsedLines, 1024 * 1024)
     assertEqual(lazy.volumeFlushes, 0, "1 MiB 阈值的体积触发")
     assertEqual(lazy.nonFrameFlushes, 2, "1 MiB 阈值的非帧触发")
     assertEqual(lazy.mergedPerFlush, 2.5, "1 MiB 阈值的合并帧/次")
-    checks.push("simulateBuffer: 1 B → 5（5/0）；1 MiB → 2（0/2）")
+    // 同键 delta 合并：组 1 的 2 帧合成 1 行（"ab"）、组 2 的 3 帧合成 1 行（"xyz"）。
+    assertEqual(lazy.writtenRows, 2, "1 MiB 阈值的落盘行数（5 帧 → 2 行）")
+    assertEqual(lazy.rowsPerFlush, 1, "1 MiB 阈值的落盘行/次（2 次 flush 各 1 行）")
+    checks.push("simulateBuffer: 1 B → 5 次 flush / 5 行；1 MiB → 2 次 flush / 2 行（同键 2+3 帧各合 1 行）")
+
+    // 合并边界：同一槽位的 delta 不得跨非 delta 帧（text_end 是覆盖语义）合并成一行。
+    const boundaryKey = "op-b:resp-b"
+    const boundaryFrame = (seq, delta) =>
+      JSON.stringify({ kind: "list", op: "append", seq, namespace: FRAME_NAMESPACE, key: boundaryKey, value: { type: "text_delta", contentIndex: 0, delta } })
+    const boundary = simulateBuffer(
+      [
+        JSON.stringify({ v: 4, kind: "header", id: "selftest-boundary", storageVersion: 1, createdAt: 0, cwd: "/tmp" }),
+        boundaryFrame(1, "a"),
+        boundaryFrame(2, "b"),
+        JSON.stringify({ kind: "list", op: "append", seq: 3, namespace: FRAME_NAMESPACE, key: boundaryKey, value: { type: "text_end", contentIndex: 0, content: "ab" } }),
+        boundaryFrame(4, "c"),
+      ],
+      1024 * 1024,
+    )
+    assertEqual(boundary.writtenRows, 3, "跨非 delta 帧必须切行（2 行合并 delta + 1 行 text_end）")
+    assertEqual(boundary.mergedFrames, 4, "边界切分只切行：原帧数一个不少（3 delta + 1 text_end）")
+    checks.push("simulateBuffer: delta→text_end→delta 切成 3 行（不跨覆盖语义边界合并）")
 
     // --fold-preview：合成样本（含中文）走与真实文件相同的入口，钉住折叠口径与 UTF-8 字节口径。
     const foldLines = buildFoldSelftestLines()
@@ -1042,6 +1129,7 @@ function buildCalibration(samples, baselinePerSecond, durationSeconds) {
     let trailingFlushes = 0
     let flushes = 0
     let mergedFrames = 0
+    let writtenRows = 0
     for (const sample of samples) {
       const row = simulateBuffer(sample.lines, thresholdBytes)
       volumeFlushes += row.volumeFlushes
@@ -1049,6 +1137,7 @@ function buildCalibration(samples, baselinePerSecond, durationSeconds) {
       trailingFlushes += row.trailingFlushes
       flushes += row.flushes
       mergedFrames += row.mergedFrames
+      writtenRows += row.writtenRows
     }
     const flushPerSecond = durationSeconds > 0 ? flushes / durationSeconds : null
     return {
@@ -1059,7 +1148,9 @@ function buildCalibration(samples, baselinePerSecond, durationSeconds) {
       nonFrameFlushes,
       trailingFlushes,
       mergedFrames,
+      writtenRows,
       mergedPerFlush: flushes > 0 ? mergedFrames / flushes : null,
+      rowsPerFlush: flushes > 0 ? writtenRows / flushes : null,
       flushPerSecond,
       ratioToBaseline: flushPerSecond !== null && flushPerSecond > 0 ? baselinePerSecond / flushPerSecond : null,
     }

@@ -42,11 +42,12 @@ jobs:
 
       - run: pnpm install --frozen-lockfile
 
-      # = vue-tsc --noEmit && cargo check --manifest-path src-tauri/Cargo.toml
-      # cargo 侧解析到仓库根 workspace，Cargo.lock 与 target/ 均在仓库根。
+      # = tsc --noEmit && cargo check
+      # cargo 在仓库根 workspace 上跑（成员：crates/native-host），
+      # Cargo.lock 与 target/ 均在仓库根。
       - run: pnpm run test:types
 
-      # = cargo test --manifest-path src-tauri/Cargo.toml --lib
+      # = cargo test --lib -p native-host
       # 单测与 check 一样按平台原生编译运行；`#[cfg(unix)]`/`#[cfg(windows)]` 分支只在对应 job 生效。
       - run: pnpm run test:rust
 
