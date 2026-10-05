@@ -1,0 +1,673 @@
+<!doctype html><html lang="zh-CN"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>主题候选 · 3 款 · 完整聊天面 + 设置窗</title><style>*,*::before,*::after{box-sizing:border-box}
+body{margin:0;background:#101215;color:#c5cad2;
+  font:400 14px/1.55 ui-sans-serif,-apple-system,"PingFang SC","Microsoft YaHei",sans-serif}
+.wrap{max-width:1300px;margin:0 auto;padding:50px 26px 110px}
+:root{
+ --contact:0 1px 2px rgba(0,0,0,.30);
+ --ambient:0 10px 24px -14px rgba(0,0,0,.55);
+ --fiber:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='180' height='180'%3E%3Cfilter id='f'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.55 .9' numOctaves='4' stitchTiles='stitch'/%3E%3CfeColorMatrix values='0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 .5 0'/%3E%3C/filter%3E%3Crect width='180' height='180' filter='url(%23f)'/%3E%3C/svg%3E");
+ --brush:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='260' height='260'%3E%3Cfilter id='b'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='1.6 .014' numOctaves='3' stitchTiles='stitch'/%3E%3CfeColorMatrix values='0 0 0 0 .5 0 0 0 0 .52 0 0 0 0 .56 0 0 0 .5 0'/%3E%3C/filter%3E%3Crect width='260' height='260' filter='url(%23b)'/%3E%3C/svg%3E");
+ --grain:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='140' height='140'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.9' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='140' height='140' filter='url(%23n)'/%3E%3C/svg%3E");
+ --verdigris:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='900' height='900'%3E%3Cfilter id='v'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.011' numOctaves='4' stitchTiles='stitch'/%3E%3CfeColorMatrix values='0 0 0 0 .25 0 0 0 0 .52 0 0 0 0 .44 0 0 0 .5 0'/%3E%3C/filter%3E%3Crect width='900' height='900' filter='url(%23v)'/%3E%3C/svg%3E");
+}
+.masthead{border-bottom:1px solid #24282e;padding-bottom:18px;margin-bottom:30px}
+h1{margin:0 0 8px;font-size:20px;font-weight:600;color:#eef1f5}
+.lede{margin:0;max-width:84ch;font-size:13.5px;color:#8a929e}
+.lede b{color:#c5cad2;font-weight:500}
+nav.toc{display:flex;flex-wrap:wrap;gap:6px;margin-top:20px}
+nav.toc a{font-size:12px;padding:5px 10px;border:1px solid #2b3037;border-radius:999px;color:#929ba8;text-decoration:none}
+.theme{margin:0 0 70px;scroll-margin-top:18px}
+.theme-head{display:flex;align-items:baseline;gap:11px;flex-wrap:wrap;padding:0 2px 11px}
+.theme-num{font:500 12px/1 ui-monospace,Menlo,monospace;color:#5a626d}
+.theme-name{font-size:16px;font-weight:600;color:#eef1f5;margin:0}
+.theme-ref{font-size:12.5px;color:#79818d}
+.theme-story{margin:5px 0 0;flex-basis:100%;max-width:84ch;font-size:13px;color:#98a1ad}
+.theme-story b{color:#c5cad2;font-weight:500}
+h3.sub{margin:22px 0 10px;font-size:13px;font-weight:600;color:#b9c0ca;padding-left:9px;border-left:3px solid #3a424d}
+
+/* ── 展台：左舞台 + 右完整聊天面 ── */
+.rig{position:relative;display:grid;grid-template-columns:minmax(180px,1fr) minmax(420px,540px);
+  height:640px;border-radius:12px;overflow:hidden;box-shadow:var(--ambient)}
+@media (max-width:900px){.rig{grid-template-columns:1fr;height:auto}.stage{min-height:140px}}
+.stage{position:relative;background:var(--stage-bg);overflow:hidden}
+.stage::before{content:"";position:absolute;inset:0;background-image:var(--grain);opacity:.05;
+  mix-blend-mode:overlay;pointer-events:none}
+.stagef{position:absolute;inset:20px;border:1px dashed var(--stage-mark);border-radius:6px;opacity:.4}
+.stagel{position:absolute;left:32px;bottom:28px;font-size:11.5px;color:var(--stage-mark)}
+
+.chat{position:relative;display:flex;flex-direction:column;overflow:hidden;background:var(--pbg);
+  color:var(--ink);border-left:1px solid var(--outline);box-shadow:var(--pshadow)}
+.chat::before{content:"";position:absolute;inset:0;background:var(--ptex);background-size:inherit;
+  pointer-events:none;z-index:0}
+.chat::after{content:"";position:absolute;inset:0;background-image:var(--grain);opacity:.028;
+  mix-blend-mode:overlay;pointer-events:none;z-index:0}
+.chat>*{position:relative;z-index:1}
+
+/* ① 顶栏 */
+.bar{display:flex;align-items:center;gap:8px;padding:8px 11px;background:var(--bar);
+  border-bottom:1px solid var(--bare);box-shadow:var(--barsh)}
+.lights{display:flex;gap:6px;margin-right:2px}
+.lights i{width:10px;height:10px;border-radius:50%;display:block;
+  box-shadow:inset 0 1px 1px rgba(255,255,255,.7),var(--contact)}
+.lights i:nth-child(1){background:var(--l1,#ff5f57)}
+.lights i:nth-child(2){background:var(--l2,#febc2e)}
+.lights i:nth-child(3){background:var(--l3,#28c840)}
+.brand{font-size:12px;font-weight:600}.brand small{font-weight:400;opacity:.5;margin-left:5px}
+.status{margin-left:auto;display:inline-flex;align-items:center;gap:5px;font-size:11px;color:var(--dim)}
+.status i{width:6px;height:6px;border-radius:50%;background:var(--acc)}
+.btns{display:flex;gap:2px;margin-left:8px}
+.btns span{font-size:11px;padding:2px 7px;border-radius:var(--r1);color:var(--dim)}
+.btns .x{opacity:.7}
+
+/* ② 会话标签行 */
+.tabs{display:flex;align-items:center;gap:3px;padding:5px 9px;border-bottom:1px solid var(--bare);
+  background:var(--fbg2);font-size:11.5px}
+.tab{padding:3px 9px;border-radius:var(--r1);color:var(--dim);max-width:96px;
+  overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.tab.on{color:var(--ink);background:var(--tabon);border:1px solid var(--tabone);box-shadow:var(--tabonsh)}
+.tabadd{margin-left:auto;padding:3px 8px;border-radius:var(--r1);color:var(--dim);background:var(--bbg);
+  border:1px solid var(--bedge);box-shadow:var(--bsh)}
+.tabhist{padding:3px 8px;border-radius:var(--r1);color:var(--dim);background:var(--bbg);
+  border:1px solid var(--bedge);box-shadow:var(--bsh)}
+
+/* ③ 消息流 */
+.log{flex:1;min-height:104px;padding:10px 12px;display:flex;flex-direction:column;gap:8px;
+  overflow:hidden;box-shadow:var(--logsh);position:relative}
+.m{max-width:86%;font-size:12.5px;line-height:1.55}
+.m.me{align-self:flex-end;background:var(--me);color:var(--meink);padding:6px 10px;
+  border-radius:var(--r2);box-shadow:var(--mesh);border:1px solid var(--meedge);position:relative}
+.m.me .lvl{display:block;font-size:10px;opacity:.62;margin-top:3px;text-align:right}
+.m.ai{align-self:flex-start;background:var(--aibg);border:1px solid var(--aiedge);
+  padding:6px 10px;border-radius:var(--r2)}
+.who{align-self:flex-start;font-size:10.5px;color:var(--dim);margin:0 0 -5px 3px}
+.m.ai.streaming .caret{display:inline-block;width:1px;height:11px;background:currentColor;
+  margin-left:2px;vertical-align:-1px;opacity:.8}
+.think{align-self:flex-start;font-size:11px;color:var(--dim);padding:3px 8px;border-radius:var(--r1);
+  background:var(--tbg);border:1px solid var(--tedge);box-shadow:var(--tsh)}
+.toolcard{align-self:flex-start;display:flex;align-items:center;gap:6px;max-width:100%;font-size:11px;
+  color:var(--tink);background:var(--tbg);border:1px solid var(--tedge);border-radius:var(--r1);
+  padding:4px 8px;box-shadow:var(--tsh);font-family:ui-monospace,Menlo,monospace}
+.toolcard .tch{color:var(--acc);font-weight:600;font-family:inherit}
+.toolcard code{font:inherit;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.jump{position:absolute;right:10px;bottom:8px;font-size:10.5px;padding:3px 8px;border-radius:10px;
+  color:var(--bink);background:var(--bbg);border:1px solid var(--bedge);box-shadow:var(--bsh)}
+
+/* ④ 面板叠加区（实机就在输入区之上） */
+.pstack{display:flex;flex-direction:column;gap:1px;border-top:1px solid var(--bare)}
+.pbox{padding:6px 11px;background:var(--fbg2);box-shadow:var(--logsh)}
+.phead{display:flex;align-items:baseline;gap:8px;font-size:11.5px;margin-bottom:4px}
+.phead b{font-weight:600}
+.phead span{font-size:10.5px;color:var(--dim)}
+.pstep{display:flex;align-items:center;gap:7px;font-size:11.5px;padding:1.5px 0;color:var(--ink)}
+.pstep em{font-style:normal;width:14px;height:14px;border-radius:50%;font-size:9px;display:grid;
+  place-items:center;background:var(--bbg);border:1px solid var(--bedge);color:var(--bink)}
+.pstep .ok{margin-left:auto;color:var(--acc);font-size:10.5px}
+.pstep .run{margin-left:auto;color:var(--dim);font-size:10.5px}
+.pstep .wait{margin-left:auto;color:var(--dim);font-size:10.5px;opacity:.6}
+.prow{display:flex;align-items:center;gap:5px;flex-wrap:wrap;padding:2px 0}
+.prow .pl{font-size:11.5px;margin-right:auto}.prow .pl b{font-weight:600}
+.pmeta{font-size:11px;color:var(--dim);font-family:ui-monospace,Menlo,monospace}
+.pmeta b{color:var(--acc);font-weight:600}
+.chip{font-style:normal;font-size:10.5px;padding:2px 8px;border-radius:var(--r1);color:var(--dim);
+  background:var(--bbg);border:1px solid var(--bedge);box-shadow:var(--bsh)}
+.chip.on{color:var(--sink);background:var(--sbg);border-color:var(--sedge);box-shadow:var(--ssh)}
+
+/* ⑤ 待发送条 */
+.pending{padding:5px 11px;border-top:1px solid var(--bare);background:var(--fbg2)}
+.pchip{display:inline-flex;align-items:center;gap:6px;font-size:10.5px;padding:3px 8px;
+  border-radius:var(--r1);color:var(--ink);background:var(--fbg);border:1px solid var(--fedge);
+  box-shadow:var(--finner)}
+.pchip em{font-style:normal;opacity:.6}
+
+/* ⑥ 状态行 */
+.statusrow{display:flex;align-items:center;gap:8px;padding:5px 11px;border-top:1px solid var(--bare);
+  font-size:11px;color:var(--dim);background:var(--fbg2)}
+.statusrow .note{margin-right:auto}
+.stop,.cycle{font-size:10.5px;padding:3px 9px;border-radius:var(--r1);color:var(--bink);
+  background:var(--bbg);border:1px solid var(--bedge);box-shadow:var(--bsh)}
+.stop{color:var(--sink);background:var(--sbg);border-color:var(--sedge);box-shadow:var(--ssh)}
+
+/* ⑦ 输入区 */
+.inp{border-top:1px solid var(--iedge);padding:8px;display:flex;align-items:center;gap:7px;background:var(--ibg)}
+.inp .ph{flex:1;font-size:12.5px;color:var(--dim);padding:6px 9px;border-radius:var(--r1);
+  background:var(--fbg);border:1px solid var(--fedge);box-shadow:var(--finner)}
+.btn{font-size:12px;padding:6px 12px;border-radius:var(--r3);color:var(--bink);background:var(--bbg);
+  border:1px solid var(--bedge);box-shadow:var(--bsh);text-shadow:var(--bts)}
+.btn.send{background:var(--sbg);color:var(--sink);border-color:var(--sedge);
+  box-shadow:var(--ssh);text-shadow:var(--sts);font-weight:600}
+
+/* ── 设置窗：顶栏 + 左竖栏 + 分组内容 + 底部主操作 ── */
+.set{position:relative;display:flex;flex-direction:column;overflow:hidden;background:var(--pbg);
+  color:var(--ink);border-left:1px solid var(--outline);box-shadow:var(--pshadow);
+  max-width:560px;min-height:420px;border-radius:var(--r2)}
+.set::before{content:"";position:absolute;inset:0;background:var(--ptex);background-size:inherit;
+  pointer-events:none;z-index:0}
+.set::after{content:"";position:absolute;inset:0;background-image:var(--grain);opacity:.028;
+  mix-blend-mode:overlay;pointer-events:none;z-index:0}
+.set>*{position:relative;z-index:1}
+.sbody{display:grid;grid-template-columns:104px 1fr;flex:1;min-height:0}
+/* 左竖栏：--rail / --raile 一对（此前是死定义，这里才有消费者） */
+.srail{background:var(--rail);border-right:1px solid var(--raile);padding:9px 6px;
+  display:flex;flex-direction:column;gap:1px}
+.srail span{font-size:11.5px;padding:5px 9px;border-radius:var(--r1);color:var(--dim)}
+.srail .on{color:var(--ink);background:var(--tabon);border:1px solid var(--tabone);box-shadow:var(--tabonsh)}
+/* 内容区：分组标题走 --grule（分组线；与 --outline 的「舞台↔聊天分界」不同义，不可互替） */
+.spane{overflow:hidden;padding:11px 14px;display:flex;flex-direction:column;gap:13px}
+.sgtitle{font-size:11.5px;font-weight:600;color:var(--ink);padding-bottom:5px;
+  border-bottom:1px solid var(--grule);margin-bottom:2px}
+.srow{display:flex;align-items:center;gap:10px;padding:4px 0;font-size:12px}
+.srow .sl{flex:1;min-width:0}
+.srow .sl small{display:block;font-size:10.5px;color:var(--dim);margin-top:1px;line-height:1.4}
+/* 控件：分段 / 下拉 / 数值 / 开关 / 按钮 */
+.seg{display:inline-flex;padding:1px;border-radius:var(--r1);background:var(--fbg);
+  border:1px solid var(--fedge);box-shadow:var(--finner);flex:none}
+.seg i{font-style:normal;font-size:10.5px;padding:2px 8px;border-radius:calc(var(--r1) - 1px);
+  color:var(--dim);white-space:nowrap}
+.seg i.on{color:var(--ink);background:var(--bbg);border:1px solid var(--bedge);box-shadow:var(--bsh)}
+.spick{font-size:11.5px;padding:4px 8px;border-radius:var(--r1);background:var(--fbg);
+  border:1px solid var(--fedge);box-shadow:var(--finner);color:var(--ink);min-width:108px;
+  display:inline-flex;align-items:center;flex:none}
+.spick em{font-style:normal;margin-left:auto;opacity:.55;font-size:9px;padding-left:8px}
+.snum{font-size:11.5px;padding:4px 8px;border-radius:var(--r1);background:var(--fbg);
+  border:1px solid var(--fedge);box-shadow:var(--finner);color:var(--ink);min-width:58px;
+  text-align:right;font-family:ui-monospace,Menlo,monospace;flex:none}
+.snum em{font-style:normal;opacity:.5;margin-left:3px}
+/* 开关：--tg/--tge/--tgk 关态，--tgon/--tgone 开态 */
+.sw{width:32px;height:17px;border-radius:999px;background:var(--tg);border:1px solid var(--tge);
+  box-shadow:var(--finner);position:relative;flex:none}
+.sw::after{content:"";position:absolute;top:1px;left:1px;width:13px;height:13px;border-radius:50%;
+  background:var(--tgk);box-shadow:var(--contact)}
+.sw.on{background:var(--tgon);border-color:var(--tgone)}
+.sw.on::after{left:auto;right:1px}
+.sbtn{font-size:11.5px;padding:4px 12px;border-radius:var(--r3);color:var(--bink);
+  background:var(--bbg);border:1px solid var(--bedge);box-shadow:var(--bsh);text-shadow:var(--bts)}
+.sbtn.primary{background:var(--sbg);color:var(--sink);border-color:var(--sedge);
+  box-shadow:var(--ssh);text-shadow:var(--sts);font-weight:600}
+.sfoot{display:flex;align-items:center;gap:7px;padding:8px 11px;border-top:1px solid var(--bare);
+  background:var(--fbg2)}
+.sfoot .snote{margin-right:auto;font-size:10.5px;color:var(--dim)}
+/* 控件关态样本条（原型标注：虚线框，同 .stagef 的约定，不是产品 UI） */
+.samples{display:flex;align-items:center;gap:15px;flex-wrap:wrap;margin-top:11px;padding:9px 12px;
+  border:1px dashed var(--outline);border-radius:var(--r1)}
+.samples .cap{font-size:10.5px;color:var(--dim);margin-right:2px}
+.samples b{font-weight:500;font-size:10.5px;color:var(--dim);margin-left:-9px}
+
+#brushed .rig,#brushed .set,#brushed .samples{
+ --stage-bg:linear-gradient(#2D3137,#1D2024);--stage-mark:#6A737E;--outline:rgba(0,0,0,.55);
+ --pbg:#33373D;--pedge:#131619;--ptex:repeating-linear-gradient(0deg,rgba(255,255,255,.05) 0 1px,transparent 1px 2px),repeating-linear-gradient(0deg,rgba(0,0,0,.055) 0 1px,transparent 1px 7px),linear-gradient(180deg,rgba(255,255,255,.08),rgba(255,255,255,0) 16%,rgba(0,0,0,.14) 100%);--pshadow:inset 1px 1px 0 rgba(255,255,255,.15),inset -1px 0 0 rgba(0,0,0,.55),var(--ambient);
+ --bar:linear-gradient(#4C525A 0%,#3D434A 48%,#32373D 52%,#3E444B 100%);--bare:#181B1E;--barsh:inset 0 1px 0 rgba(255,255,255,.19),inset 0 -1px 0 rgba(0,0,0,.5);
+ --ink:#E7EAEE;--dim:#9BA3AD;--acc:#E8A33D;
+ --me:linear-gradient(#575E67,#454B53);--meink:#F3F5F8;--meedge:#24282D;--mesh:inset 0 1px 0 rgba(255,255,255,.15),inset 0 -1px 0 rgba(0,0,0,.38),var(--contact);
+ --aibg:linear-gradient(#3E444C,#363C43);--aiedge:#1D2126;
+ --logsh:inset 0 2px 6px rgba(0,0,0,.45),0 1px 0 rgba(255,255,255,.07);--tbg:#24282C;--tedge:#121416;--tink:#9FE870;--tsh:inset 0 2px 5px rgba(0,0,0,.6),0 1px 0 rgba(255,255,255,.08);
+ --ibg:linear-gradient(#3D4249,#2E3238);--iedge:#14171A;--fbg:#212427;--fedge:#101214;--finner:inset 0 2px 5px rgba(0,0,0,.65);
+ --bbg:linear-gradient(#575D65 0%,#474D55 48%,#383D44 52%,#434952 100%);--bink:#E0E5EB;--bedge:#1C1F23;--bsh:inset 0 1px 0 rgba(255,255,255,.21),inset 0 -2px 3px rgba(0,0,0,.48),var(--contact);--bts:0 -1px 0 rgba(0,0,0,.5);
+ --sbg:linear-gradient(#F7CB7E 0%,#E1A446 46%,#C1822A 52%,#C98C34 100%);--sink:#2E1E06;--sedge:#8A5816;--ssh:inset 0 1px 0 rgba(255,255,255,.6),inset 0 -2px 4px rgba(90,50,0,.42),var(--contact);--sts:0 1px 0 rgba(255,255,255,.35);
+ --r1:4px;--r2:6px;--r3:5px;
+ --rail:linear-gradient(#3A3F45,#2F3439);--raile:#181B1E;
+ --tabon:linear-gradient(#565D66,#42484F);--tabone:#1E2125;--tabonsh:inset 0 1px 0 rgba(255,255,255,.18),inset 0 -1px 0 rgba(0,0,0,.45);
+ --tg:#232629;--tge:#111315;--tgk:linear-gradient(#E4E9EE,#A8B0B9);--tgon:linear-gradient(#F0B95E,#C9872C);--tgone:#8A5816;
+ --grule:#22262A;--fbg2:rgba(0,0,0,.14);
+ --l1:#4A5058;--l2:#4A5058;--l3:#4A5058;
+}
+#brushed .lights i{opacity:.5}
+#brushed .chat,#brushed .set{border-left:2px solid #1B1E22}
+
+#chrome .rig,#chrome .set,#chrome .samples{
+ --stage-bg:radial-gradient(130% 120% at 18% 8%,#33236F,#150F33 66%,#0C0920);--stage-mark:#9E8EE8;--outline:rgba(44,58,78,.34);
+ --pbg:#AEBBC8;--pedge:#F4F9FF;--ptex:linear-gradient(178deg,#ECF3F9 0%,#C0CCD9 13%,#8B9AA9 26%,#E8F0F7 39%,#9EADBC 51%,#7B8A99 54%,#B7C5D2 66%,#DEE8F0 78%,#93A2B1 90%,#C6D2DE 100%),linear-gradient(0deg,rgba(255,255,255,.6) 0 1px,transparent 1px);--pshadow:inset 1px 1px 0 rgba(255,255,255,.95),inset -2px -2px 3px rgba(70,90,120,.45),var(--ambient),inset 0 0 0 1px rgba(255,255,255,.55);
+ --bar:linear-gradient(#F8FBFE 0%,#D4DEE8 44%,#A9BACB 52%,#CAD7E3 100%);--bare:#F0F6FB;--barsh:inset 0 1px 0 rgba(255,255,255,.95),inset 0 -1px 0 rgba(90,110,140,.42);
+ --ink:#151A2A;--dim:#4A5670;--acc:#FF3D97;
+ --me:linear-gradient(#9BE8FF 0%,#54B8EE 48%,#2E8ED6 52%,#3FA0E0 100%);--meink:#062139;--meedge:#E8F6FF;--mesh:inset 0 1px 0 rgba(255,255,255,.8),inset 0 -1px 0 rgba(20,80,140,.35),var(--contact);
+ --aibg:linear-gradient(#F2F7FB,#DEE8F1);--aiedge:#FBFDFF;
+ --logsh:inset 0 1px 2px rgba(255,255,255,.5),inset 0 -1px 3px rgba(60,80,110,.32);--tbg:linear-gradient(rgba(255,255,255,.62),rgba(216,229,242,.52));--tedge:rgba(255,255,255,.9);--tink:#33405C;--tsh:inset 0 1px 0 #fff,inset 0 -1px 0 rgba(80,100,130,.25);
+ --ibg:linear-gradient(#C7D4E0,#A7B6C5);--iedge:#8C9DAE;--fbg:linear-gradient(#FFFFFF,#E7EFF7);--fedge:#F2F8FD;--finner:inset 0 1px 2px rgba(40,60,100,.26),inset 0 1px 0 rgba(255,255,255,.9);
+ --bbg:linear-gradient(#FFFFFF 0%,#DEE9F3 46%,#ADBECE 52%,#C8D6E2 100%);--bink:#1A2233;--bedge:#EFF6FB;--bsh:inset 0 1px 0 #fff,inset 0 -2px 3px rgba(70,90,120,.42),var(--contact);--bts:0 1px 0 rgba(255,255,255,.8);
+ --sbg:linear-gradient(#FFC6E4 0%,#FF74B7 44%,#E8177E 54%,#C4106A 100%);--sink:#fff;--sedge:#FFE3F2;--ssh:inset 0 1px 0 rgba(255,255,255,.7),inset 0 -2px 4px rgba(140,0,70,.45),var(--contact);--sts:0 -1px 0 rgba(140,0,70,.55);
+ --r1:8px;--r2:13px;--r3:9px;
+ --rail:linear-gradient(#D3DEE9,#AEBDCB);--raile:#F0F6FB;
+ --tabon:linear-gradient(#FFFFFF,#CAD7E3);--tabone:#F4FAFE;--tabonsh:inset 0 1px 0 #fff,inset 0 -1px 0 rgba(80,100,130,.35);
+ --tg:linear-gradient(#B7C4D1,#9CACBC);--tge:#F0F6FB;--tgk:linear-gradient(#FFFFFF,#C4D1DD);--tgon:linear-gradient(#FF9CCB,#E8177E);--tgone:#FFE3F2;
+ --grule:rgba(60,80,110,.35);--fbg2:rgba(255,255,255,.22);
+ --l1:#FF8FB8;--l2:#FFE07A;--l3:#8CE8C4;
+}
+#chrome .m.ai,#chrome .r .l{text-shadow:0 1px 0 rgba(255,255,255,.7)}
+
+#verdigris .rig,#verdigris .set,#verdigris .samples{
+ --stage-bg:linear-gradient(#24413A,#16292 4);--stage-mark:#5E8C7E;--outline:rgba(0,0,0,.48);
+ --pbg:#1E3630;--pedge:#0E1A16;--ptex:var(--verdigris),linear-gradient(180deg,rgba(255,255,255,.05),rgba(0,0,0,.16));--pshadow:var(--contact),var(--ambient);
+ --bar:linear-gradient(#26443B,#1D352E);--bare:#0D1A15;--barsh:inset 0 1px 0 rgba(220,255,240,.08),var(--contact);
+ --ink:#DCEBE4;--dim:#7FA394;--acc:#C8A15C;
+ --me:linear-gradient(#2A4A41,#203A33);--meink:#EAF5EF;--meedge:#12241E;--mesh:var(--contact),inset 0 1px 0 rgba(255,255,255,.10);
+ --aibg:linear-gradient(#2C4C42,#244139);--aiedge:#10211B;
+ --logsh:inset 0 1px 3px rgba(0,0,0,.16);--tbg:#101F1A;--tedge:#08110D;--tink:#C8A15C;--tsh:var(--contact);
+ --ibg:linear-gradient(#223D35,#1A302A);--iedge:#0A120F;--fbg:#070D0B;--fedge:#08110D;--finner:inset 0 2px 5px rgba(0,0,0,.55);
+ --bbg:linear-gradient(#26443B,#1D352E);--bink:#DEEDE6;--bedge:#0D1A15;--bsh:inset 0 1px 0 rgba(220,255,240,.08),var(--contact);--bts:none;
+ --sbg:linear-gradient(#C09A50,#8E6C2C);--sink:#2A1E06;--sedge:#5E4715;--ssh:inset 0 1px 0 rgba(255,245,215,.35),var(--contact);--sts:none;
+ --r1:4px;--r2:7px;--r3:5px;
+ --rail:linear-gradient(#213B33,#182D27);--raile:#0C1512;
+ --tabon:linear-gradient(#2A463E,#1F3830);--tabone:#0D1713;--tabonsh:var(--contact);
+ --tg:#070D0B;--tge:#08110D;--tgk:#DEEDE6;--tgon:linear-gradient(#C09A50,#8E6C2C);--tgone:#5E4715;
+ --grule:#101F1A;--fbg2:rgba(255,255,255,.03);
+ --l1:#555;--l2:#555;--l3:#555;
+}
+#nightfall .rig,#nightfall .set,#nightfall .samples{
+  --stage-bg:radial-gradient(126% 108% at 30% 0%, #40386E 0%, #232046 52%, #12112A 100%);
+  --stage-mark:#8C86C9;
+  --outline:rgba(9,8,22,.6);
+  --pbg:#232145;
+  --pedge:#12112A;
+  --ptex:linear-gradient(180deg, rgba(219,208,255,.085) 0%, rgba(219,208,255,0) 42%, rgba(0,0,0,.22) 100%), repeating-linear-gradient(74deg, rgba(219,208,255,.02) 0 1px, transparent 1px 5px);
+  --pshadow:inset 0 1px 0 rgba(226,216,255,.10), var(--ambient);
+  --bar:linear-gradient(#2B2757,#221F46);
+  --bare:#100F26;
+  --barsh:inset 0 1px 0 rgba(226,216,255,.11);
+  --ink:#E6E2F7;
+  --dim:#948FBE;
+  --acc:#E0709C;
+  --me:linear-gradient(#3A3470,#2E2A5C);
+  --meink:#F3EEFF;
+  --meedge:#1A1740;
+  --mesh:inset 0 1px 0 rgba(230,220,255,.12), var(--contact);
+  --aibg:linear-gradient(#2A2751,#252248);
+  --aiedge:#191640;
+  --logsh:inset 0 2px 10px rgba(10,6,30,.36);
+  --tbg:#181635;
+  --tedge:#0E0C24;
+  --tink:#C0A9DC;
+  --tsh:inset 0 1px 4px rgba(10,6,30,.4);
+  --ibg:linear-gradient(#282550,#1E1B3E);
+  --iedge:#131029;
+  --fbg:#171530;
+  --fedge:#100E26;
+  --finner:inset 0 2px 6px rgba(10,6,30,.5);
+  --bbg:linear-gradient(#322D64,#262250);
+  --bink:#E6E2F7;
+  --bedge:#161334;
+  --bsh:inset 0 1px 0 rgba(226,216,255,.12), var(--contact);
+  --bts:none;
+  --sbg:linear-gradient(#F095B7,#C25380);
+  --sink:#2E0A1C;
+  --sedge:#8E3A5C;
+  --ssh:inset 0 1px 0 rgba(255,255,255,.45), var(--contact);
+  --sts:none;
+  --r1:10px;
+  --r2:16px;
+  --r3:12px;
+  --rail:linear-gradient(#2A2754,#211E46);
+  --raile:#12112A;
+  --tabon:linear-gradient(#352F6B,#2A2658);
+  --tabone:#191640;
+  --tabonsh:inset 0 1px 0 rgba(230,220,255,.13), var(--contact);
+  --tg:#171530;
+  --tge:#100E26;
+  --tgk:linear-gradient(#E6E2F7,#9C96C8);
+  --tgon:linear-gradient(#F095B7,#C25380);
+  --tgone:#8E3A5C;
+  --grule:#302C5C;
+  --fbg2:rgba(226,216,255,.04);
+  --l1:#4A4478;
+  --l2:#4A4478;
+  --l3:#4A4478;
+  --scrimc:rgba(12,10,30,.44);
+}
+
+#azurite .rig,#azurite .set,#azurite .samples{
+  --stage-bg:radial-gradient(124% 104% at 70% 8%, #F3F8FE 0%, #DFE9F8 58%, #C8D8EF 100%);
+  --stage-mark:#7C90B0;
+  --outline:rgba(31,79,168,.42);
+  --pbg:#F5F9FE;
+  --pedge:#B9CBE4;
+  --ptex:linear-gradient(180deg,#FFFFFF 0%,#E8F1FC 100%), linear-gradient(180deg, rgba(255,255,255,.95) 0 1px, transparent 1px);
+  --pshadow:inset 0 0 0 1px rgba(255,255,255,.95), var(--ambient);
+  --bar:linear-gradient(#E9F1FD,#CFE0F6);
+  --bare:#A8C0E0;
+  --barsh:inset 0 1px 0 #FFFFFF, inset 0 -1px 0 rgba(31,79,168,.22);
+  --ink:#0E2450;
+  --dim:#4A5F85;
+  --acc:#1F4FA8;
+  --me:linear-gradient(#D3E3F9,#B4CBEE);
+  --meink:#0A1E45;
+  --meedge:#9BB8DF;
+  --mesh:inset 0 1px 0 rgba(255,255,255,.85), var(--contact);
+  --aibg:linear-gradient(#FFFFFF,#E7F0FB);
+  --aiedge:#C3D4EC;
+  --logsh:inset 0 2px 8px rgba(31,79,168,.12);
+  --tbg:#DCE8F9;
+  --tedge:#B4C8E6;
+  --tink:#1B3F7E;
+  --tsh:inset 0 1px 0 rgba(255,255,255,.9);
+  --ibg:linear-gradient(#FAFCFF,#DEE9F8);
+  --iedge:#B4C8E6;
+  --fbg:linear-gradient(#FFFFFF,#EEF4FC);
+  --fedge:#C3D4EC;
+  --finner:inset 0 1px 3px rgba(31,79,168,.16);
+  --bbg:linear-gradient(#FFFFFF,#D3E1F6);
+  --bink:#102A4D;
+  --bedge:#AEC3E2;
+  --bsh:inset 0 1px 0 #FFFFFF, var(--contact);
+  --bts:0 1px 0 rgba(255,255,255,.9);
+  --sbg:linear-gradient(#DE5744,#B3311F);
+  --sink:#FFF6F2;
+  --sedge:#8E2415;
+  --ssh:inset 0 1px 0 rgba(255,255,255,.45), 0 1px 2px rgba(120,35,20,.3);
+  --sts:0 -1px 0 rgba(90,20,10,.35);
+  --r1:5px;
+  --r2:8px;
+  --r3:6px;
+  --rail:linear-gradient(#E4EEFC,#CDDFF6);
+  --raile:#A8C0E0;
+  --tabon:linear-gradient(#FFFFFF,#C9DAF3);
+  --tabone:#A4BCE0;
+  --tabonsh:inset 0 1px 0 #FFFFFF;
+  --tg:linear-gradient(#E1ECFB,#CBDCF3);
+  --tge:#A8C0E0;
+  --tgk:linear-gradient(#FFFFFF,#C2D2E8);
+  --tgon:linear-gradient(#2E63BC,#1F4FA8);
+  --tgone:#17397A;
+  --grule:#C3D4EC;
+  --fbg2:rgba(31,79,168,.07);
+  --l1:#A4BCE0;
+  --l2:#A4BCE0;
+  --l3:#A4BCE0;
+  --scrimc:rgba(236,243,252,.55);
+}
+
+#verdigris .chat,#verdigris .set{background-size:cover;}
+#verdigris .stage{background-image:var(--verdigris),linear-gradient(#24413A,#16292 4);background-size:cover;}
+</style></head>
+<body><div class="wrap"><header class="masthead">
+  <h1>主题候选 · 3 款 · 完整聊天面 + 设置窗</h1>
+  <p class="lede">
+    这一版把<b>聊天面板的真实全貌</b>画全了 —— 面板清单取自 <code>ui/chat/panels.rs</code> 的
+    <b>10 种 PanelKind</b>（计划 / 恢复计划 / 权限 / 中断 / 队列 / 用量 / 投递 / slash 候选 / 会话历史 / 调试条）
+    与 <b>31 个 PanelAction</b>。位置按实机：<b>顶栏 → 会话标签行 → 消息流 → 面板叠加区 → 待发送条 → 状态行 → 输入区</b>，
+    面板叠在输入区<b>之上</b>。顶栏按平台规则（macOS 无 ×；Windows 只留 ×）。
+    三款里 <b>Verdigris 的纹理接缝已修</b>（低频纹理改 900×900 + cover 不再平铺），
+    <b>白色外框已换成中性极细线</b>。
+  </p>
+  <nav class="toc"><a href="#brushed">A2 Brushed</a>
+    <a href="#chrome">A4 Y2K Chrome</a><a href="#verdigris">B4 Verdigris</a></nav>
+</header>
+
+<section class="theme" id="brushed">
+  <div class="theme-head"><span class="theme-num">A2</span>
+    <h2 class="theme-name">Brushed</h2><span class="theme-ref">iTunes 4–6 / Final Cut · 2003–2006</span>
+    <p class="theme-story">**回退到上一版**：拉丝用<b>两组不同周期</b>的横纹叠出（2px 亮 + 7px 暗），规整感就没了。面板<b>上亮下暗倒角</b>，内容区深凹槽，工具行是更深的 LCD 槽。琥珀只给按钮，绿只给终端状态。</p></div>
+  <h3 class="sub">聊天面板 · 完整面（顶栏 / 标签行 / 消息流 / 面板叠加区 / 待发送条 / 状态行 / 输入区）</h3>
+  <div class="rig">
+    <div class="stage"><div class="stagef"></div><span class="stagel">灵动图层 L0–L4 · 舞台兜底</span></div>
+    <div class="chat">
+      <!-- ① 顶栏（macOS 无 ×；Windows 只留 ×） -->
+      <div class="bar"><span class="lights"><i></i><i></i><i></i></span>
+        <span class="brand">V1rtual<small>Desk Pet</small></span>
+        <span class="status"><i></i>配信中</span>
+        <span class="btns"><span>设置</span><span>图层</span><span class="x">×</span></span></div>
+      <!-- ② 会话标签行 -->
+      <div class="tabs"><span class="tab on">晚上的事</span><span class="tab">Profile 调色</span>
+        <span class="tabadd">＋</span><span class="tabhist">历史</span></div>
+      <!-- ③ 消息流 -->
+      <div class="log">
+        <span class="who">糖糖</span>
+        <div class="m ai">晚上好呀。看你窗口切得挺勤，今天在赶东西？</div>
+        <div class="think">思考 ▸</div>
+        <div class="toolcard"><span class="tch">已完成</span><code>sed -n '120,175p' profile.yaml</code></div>
+        <div class="m me">帮我把 L2 的灵敏度调低一点<span class="lvl">记住这条</span></div>
+        <div class="m ai streaming">好，我看看当前是哪一层…<span class="caret"></span></div>
+        <span class="jump">↓ 新消息</span>
+      </div>
+      
+    <div class="pstack">
+      <div class="pbox plan">
+        <div class="phead"><b>任务计划</b><span>3 步 · 等待确认</span></div>
+        <div class="pstep"><em>1</em>读取 profile.yaml<span class="ok">已完成</span></div>
+        <div class="pstep"><em>2</em>改主题色与图层灵敏度<span class="run">执行中</span></div>
+        <div class="pstep"><em>3</em>重推舞台快照<span class="wait">待执行</span></div>
+        <div class="prow"><i class="chip act">全部确认</i><i class="chip act">逐步确认</i><i class="chip act">取消</i></div>
+      </div>
+      <div class="pbox usage">
+        <div class="prow"><span class="pl">Σ 用量 <b>1.24k</b></span><i class="chip">用量明细</i></div>
+      </div>
+      <div class="pbox debug">
+        <div class="prow pmeta">上下文 <b>12%</b> · Token <b>1.24k</b> · 工具 <b>3</b> · 注册 <b>15</b>(MCP:0)</div>
+        <div class="prow"><span class="pl">思考…</span><i class="chip act">默认</i><i class="chip act">auto</i><i class="chip act">low</i><i class="chip act">medium</i></div>
+        <div class="prow"><span class="pl">安全…</span><i class="chip act">默认</i><i class="chip act">全放行</i><i class="chip act">告知</i><i class="chip act">全确认</i></div>
+        <div class="prow"><i class="chip">工具明细</i><i class="chip">注册明细</i></div>
+      </div>
+    </div>
+      <!-- ④ 待发送图片条 -->
+      <div class="pending"><span class="pchip">图片 1 · 1791084123556.png<em>×</em></span></div>
+      <!-- ⑤ 状态行 + 停止 -->
+      <div class="statusrow"><span class="note">已完成 · 工具调用已结算</span>
+        <span class="stop">停止</span><span class="cycle">投递：插话</span></div>
+      <!-- ⑥ 输入区 -->
+      <div class="inp"><span class="ph">说点什么…</span><span class="btn">图片</span><span class="btn send">发送</span></div>
+    </div>
+  </div>
+  <h3 class="sub">设置窗 · 左竖栏 5 Tab（通用 / 外观 / AI / 工具 / 记忆）· 改草稿 → 点「保存」生效</h3>
+  <div class="set">
+    <div class="bar"><span class="lights"><i></i><i></i><i></i></span>
+      <span class="brand">设置<small>V1rtual Desk Pet</small></span>
+      <span class="btns"><span class="x">×</span></span></div>
+    <div class="sbody">
+      <nav class="srail"><span>通用</span><span class="on">外观</span><span>AI</span><span>工具</span><span>记忆</span></nav>
+      <div class="spane">
+        <div>
+          <div class="sgtitle">角色展示</div>
+          <div class="srow"><span class="sl">当前 Profile<small>选项来自运行时 profiles 目录，切换会重载舞台与素材</small></span>
+            <span class="spick">糖糖默认<em>▾</em></span></div>
+          <div class="srow"><span class="sl">角色效果</span>
+            <span class="seg"><i>关闭</i><i class="on">视差</i></span></div>
+          <div class="srow"><span class="sl">界面主题<small>产品预设三选一（不可改色值）；与 Profile 无关，换 Profile 不换主题</small></span>
+            <span class="seg"><i class="on">拉丝金属</i><i>铬</i><i>铜绿</i></span></div>
+          <div class="srow"><span class="sl">灵动强度</span>
+            <span class="snum">1.0</span></div>
+          <div class="srow"><span class="sl">聊天图片自动预览<small>关闭时历史消息只显示图片占位，点击占位仍可打开查看器</small></span>
+            <span class="sw on"></span></div>
+        </div>
+        <div>
+          <div class="sgtitle">字体（全局）</div>
+          <div class="srow"><span class="sl">全局字体<small>只列系统已安装字体；空 = 跟随系统默认字体</small></span>
+            <span class="spick">系统默认<em>▾</em></span></div>
+          <div class="srow"><span class="sl">全局字号</span>
+            <span class="snum">14<em>px</em></span></div>
+        </div>
+      </div>
+    </div>
+    <div class="sfoot"><span class="snote">已改动 2 项 · 保存后写入 CONFIG 并即时生效</span>
+      <span class="sbtn">取消</span><span class="sbtn primary">保存</span></div>
+  </div>
+  <div class="samples"><span class="cap">控件关态样本（原型标注，不是产品 UI）：</span>
+    <span class="sw"></span><b>开关 · 关</b>
+    <span class="spick" style="min-width:78px">未设置<em>▾</em></span><b>下拉 · 空</b>
+    <span class="snum">0.0</span><b>数值</b>
+    <span class="sbtn">动作</span><b>按钮</b></div>
+</section>
+<section class="theme" id="chrome">
+  <div class="theme-head"><span class="theme-num">A4</span>
+    <h2 class="theme-name">Y2K Chrome</h2><span class="theme-ref">液态铬 / 虹彩 · 1998–2003</span>
+    <p class="theme-story">**回退到上一版**：铬的柱面反射是<b>多停渐变</b>（暗→亮→暗→亮四段）再叠一条<b>地平线</b>，四周近白边光把面板托起。上一版把它改成两段渐变、边框又硬又怪 —— 回退。</p></div>
+  <h3 class="sub">聊天面板 · 完整面（顶栏 / 标签行 / 消息流 / 面板叠加区 / 待发送条 / 状态行 / 输入区）</h3>
+  <div class="rig">
+    <div class="stage"><div class="stagef"></div><span class="stagel">灵动图层 L0–L4 · 舞台兜底</span></div>
+    <div class="chat">
+      <!-- ① 顶栏（macOS 无 ×；Windows 只留 ×） -->
+      <div class="bar"><span class="lights"><i></i><i></i><i></i></span>
+        <span class="brand">V1rtual<small>Desk Pet</small></span>
+        <span class="status"><i></i>配信中</span>
+        <span class="btns"><span>设置</span><span>图层</span><span class="x">×</span></span></div>
+      <!-- ② 会话标签行 -->
+      <div class="tabs"><span class="tab on">晚上的事</span><span class="tab">Profile 调色</span>
+        <span class="tabadd">＋</span><span class="tabhist">历史</span></div>
+      <!-- ③ 消息流 -->
+      <div class="log">
+        <span class="who">糖糖</span>
+        <div class="m ai">晚上好呀。看你窗口切得挺勤，今天在赶东西？</div>
+        <div class="think">思考 ▸</div>
+        <div class="toolcard"><span class="tch">已完成</span><code>sed -n '120,175p' profile.yaml</code></div>
+        <div class="m me">帮我把 L2 的灵敏度调低一点<span class="lvl">记住这条</span></div>
+        <div class="m ai streaming">好，我看看当前是哪一层…<span class="caret"></span></div>
+        <span class="jump">↓ 新消息</span>
+      </div>
+      
+    <div class="pstack">
+      <div class="pbox plan">
+        <div class="phead"><b>任务计划</b><span>3 步 · 等待确认</span></div>
+        <div class="pstep"><em>1</em>读取 profile.yaml<span class="ok">已完成</span></div>
+        <div class="pstep"><em>2</em>改主题色与图层灵敏度<span class="run">执行中</span></div>
+        <div class="pstep"><em>3</em>重推舞台快照<span class="wait">待执行</span></div>
+        <div class="prow"><i class="chip act">全部确认</i><i class="chip act">逐步确认</i><i class="chip act">取消</i></div>
+      </div>
+      <div class="pbox usage">
+        <div class="prow"><span class="pl">Σ 用量 <b>1.24k</b></span><i class="chip">用量明细</i></div>
+      </div>
+      <div class="pbox debug">
+        <div class="prow pmeta">上下文 <b>12%</b> · Token <b>1.24k</b> · 工具 <b>3</b> · 注册 <b>15</b>(MCP:0)</div>
+        <div class="prow"><span class="pl">思考…</span><i class="chip act">默认</i><i class="chip act">auto</i><i class="chip act">low</i><i class="chip act">medium</i></div>
+        <div class="prow"><span class="pl">安全…</span><i class="chip act">默认</i><i class="chip act">全放行</i><i class="chip act">告知</i><i class="chip act">全确认</i></div>
+        <div class="prow"><i class="chip">工具明细</i><i class="chip">注册明细</i></div>
+      </div>
+    </div>
+      <!-- ④ 待发送图片条 -->
+      <div class="pending"><span class="pchip">图片 1 · 1791084123556.png<em>×</em></span></div>
+      <!-- ⑤ 状态行 + 停止 -->
+      <div class="statusrow"><span class="note">已完成 · 工具调用已结算</span>
+        <span class="stop">停止</span><span class="cycle">投递：插话</span></div>
+      <!-- ⑥ 输入区 -->
+      <div class="inp"><span class="ph">说点什么…</span><span class="btn">图片</span><span class="btn send">发送</span></div>
+    </div>
+  </div>
+  <h3 class="sub">设置窗 · 左竖栏 5 Tab（通用 / 外观 / AI / 工具 / 记忆）· 改草稿 → 点「保存」生效</h3>
+  <div class="set">
+    <div class="bar"><span class="lights"><i></i><i></i><i></i></span>
+      <span class="brand">设置<small>V1rtual Desk Pet</small></span>
+      <span class="btns"><span class="x">×</span></span></div>
+    <div class="sbody">
+      <nav class="srail"><span>通用</span><span class="on">外观</span><span>AI</span><span>工具</span><span>记忆</span></nav>
+      <div class="spane">
+        <div>
+          <div class="sgtitle">角色展示</div>
+          <div class="srow"><span class="sl">当前 Profile<small>选项来自运行时 profiles 目录，切换会重载舞台与素材</small></span>
+            <span class="spick">糖糖默认<em>▾</em></span></div>
+          <div class="srow"><span class="sl">角色效果</span>
+            <span class="seg"><i>关闭</i><i class="on">视差</i></span></div>
+          <div class="srow"><span class="sl">界面主题<small>产品预设三选一（不可改色值）；与 Profile 无关，换 Profile 不换主题</small></span>
+            <span class="seg"><i>拉丝金属</i><i class="on">铬</i><i>铜绿</i></span></div>
+          <div class="srow"><span class="sl">灵动强度</span>
+            <span class="snum">1.0</span></div>
+          <div class="srow"><span class="sl">聊天图片自动预览<small>关闭时历史消息只显示图片占位，点击占位仍可打开查看器</small></span>
+            <span class="sw on"></span></div>
+        </div>
+        <div>
+          <div class="sgtitle">字体（全局）</div>
+          <div class="srow"><span class="sl">全局字体<small>只列系统已安装字体；空 = 跟随系统默认字体</small></span>
+            <span class="spick">系统默认<em>▾</em></span></div>
+          <div class="srow"><span class="sl">全局字号</span>
+            <span class="snum">14<em>px</em></span></div>
+        </div>
+      </div>
+    </div>
+    <div class="sfoot"><span class="snote">已改动 2 项 · 保存后写入 CONFIG 并即时生效</span>
+      <span class="sbtn">取消</span><span class="sbtn primary">保存</span></div>
+  </div>
+  <div class="samples"><span class="cap">控件关态样本（原型标注，不是产品 UI）：</span>
+    <span class="sw"></span><b>开关 · 关</b>
+    <span class="spick" style="min-width:78px">未设置<em>▾</em></span><b>下拉 · 空</b>
+    <span class="snum">0.0</span><b>数值</b>
+    <span class="sbtn">动作</span><b>按钮</b></div>
+</section>
+<section class="theme" id="verdigris">
+  <div class="theme-head"><span class="theme-num">B4</span>
+    <h2 class="theme-name">Verdigris</h2><span class="theme-ref">氧化铜 / 铜绿</span>
+    <p class="theme-story">锈是<b>大尺度斑块</b>（0.011 极低频、4 倍频）—— 氧化是从点长成片的，所以是块而不是噪。<b>铜胎色</b>从斑块缝里露出来，这是这套唯一的暖。</p></div>
+  <h3 class="sub">聊天面板 · 完整面（顶栏 / 标签行 / 消息流 / 面板叠加区 / 待发送条 / 状态行 / 输入区）</h3>
+  <div class="rig">
+    <div class="stage"><div class="stagef"></div><span class="stagel">灵动图层 L0–L4 · 舞台兜底</span></div>
+    <div class="chat">
+      <!-- ① 顶栏（macOS 无 ×；Windows 只留 ×） -->
+      <div class="bar"><span class="lights"><i></i><i></i><i></i></span>
+        <span class="brand">V1rtual<small>Desk Pet</small></span>
+        <span class="status"><i></i>配信中</span>
+        <span class="btns"><span>设置</span><span>图层</span><span class="x">×</span></span></div>
+      <!-- ② 会话标签行 -->
+      <div class="tabs"><span class="tab on">晚上的事</span><span class="tab">Profile 调色</span>
+        <span class="tabadd">＋</span><span class="tabhist">历史</span></div>
+      <!-- ③ 消息流 -->
+      <div class="log">
+        <span class="who">糖糖</span>
+        <div class="m ai">晚上好呀。看你窗口切得挺勤，今天在赶东西？</div>
+        <div class="think">思考 ▸</div>
+        <div class="toolcard"><span class="tch">已完成</span><code>sed -n '120,175p' profile.yaml</code></div>
+        <div class="m me">帮我把 L2 的灵敏度调低一点<span class="lvl">记住这条</span></div>
+        <div class="m ai streaming">好，我看看当前是哪一层…<span class="caret"></span></div>
+        <span class="jump">↓ 新消息</span>
+      </div>
+      
+    <div class="pstack">
+      <div class="pbox plan">
+        <div class="phead"><b>任务计划</b><span>3 步 · 等待确认</span></div>
+        <div class="pstep"><em>1</em>读取 profile.yaml<span class="ok">已完成</span></div>
+        <div class="pstep"><em>2</em>改主题色与图层灵敏度<span class="run">执行中</span></div>
+        <div class="pstep"><em>3</em>重推舞台快照<span class="wait">待执行</span></div>
+        <div class="prow"><i class="chip act">全部确认</i><i class="chip act">逐步确认</i><i class="chip act">取消</i></div>
+      </div>
+      <div class="pbox usage">
+        <div class="prow"><span class="pl">Σ 用量 <b>1.24k</b></span><i class="chip">用量明细</i></div>
+      </div>
+      <div class="pbox debug">
+        <div class="prow pmeta">上下文 <b>12%</b> · Token <b>1.24k</b> · 工具 <b>3</b> · 注册 <b>15</b>(MCP:0)</div>
+        <div class="prow"><span class="pl">思考…</span><i class="chip act">默认</i><i class="chip act">auto</i><i class="chip act">low</i><i class="chip act">medium</i></div>
+        <div class="prow"><span class="pl">安全…</span><i class="chip act">默认</i><i class="chip act">全放行</i><i class="chip act">告知</i><i class="chip act">全确认</i></div>
+        <div class="prow"><i class="chip">工具明细</i><i class="chip">注册明细</i></div>
+      </div>
+    </div>
+      <!-- ④ 待发送图片条 -->
+      <div class="pending"><span class="pchip">图片 1 · 1791084123556.png<em>×</em></span></div>
+      <!-- ⑤ 状态行 + 停止 -->
+      <div class="statusrow"><span class="note">已完成 · 工具调用已结算</span>
+        <span class="stop">停止</span><span class="cycle">投递：插话</span></div>
+      <!-- ⑥ 输入区 -->
+      <div class="inp"><span class="ph">说点什么…</span><span class="btn">图片</span><span class="btn send">发送</span></div>
+    </div>
+  </div>
+  <h3 class="sub">设置窗 · 左竖栏 5 Tab（通用 / 外观 / AI / 工具 / 记忆）· 改草稿 → 点「保存」生效</h3>
+  <div class="set">
+    <div class="bar"><span class="lights"><i></i><i></i><i></i></span>
+      <span class="brand">设置<small>V1rtual Desk Pet</small></span>
+      <span class="btns"><span class="x">×</span></span></div>
+    <div class="sbody">
+      <nav class="srail"><span>通用</span><span class="on">外观</span><span>AI</span><span>工具</span><span>记忆</span></nav>
+      <div class="spane">
+        <div>
+          <div class="sgtitle">角色展示</div>
+          <div class="srow"><span class="sl">当前 Profile<small>选项来自运行时 profiles 目录，切换会重载舞台与素材</small></span>
+            <span class="spick">糖糖默认<em>▾</em></span></div>
+          <div class="srow"><span class="sl">角色效果</span>
+            <span class="seg"><i>关闭</i><i class="on">视差</i></span></div>
+          <div class="srow"><span class="sl">界面主题<small>产品预设三选一（不可改色值）；与 Profile 无关，换 Profile 不换主题</small></span>
+            <span class="seg"><i>拉丝金属</i><i>铬</i><i class="on">铜绿</i></span></div>
+          <div class="srow"><span class="sl">灵动强度</span>
+            <span class="snum">1.0</span></div>
+          <div class="srow"><span class="sl">聊天图片自动预览<small>关闭时历史消息只显示图片占位，点击占位仍可打开查看器</small></span>
+            <span class="sw on"></span></div>
+        </div>
+        <div>
+          <div class="sgtitle">字体（全局）</div>
+          <div class="srow"><span class="sl">全局字体<small>只列系统已安装字体；空 = 跟随系统默认字体</small></span>
+            <span class="spick">系统默认<em>▾</em></span></div>
+          <div class="srow"><span class="sl">全局字号</span>
+            <span class="snum">14<em>px</em></span></div>
+        </div>
+      </div>
+    </div>
+    <div class="sfoot"><span class="snote">已改动 2 项 · 保存后写入 CONFIG 并即时生效</span>
+      <span class="sbtn">取消</span><span class="sbtn primary">保存</span></div>
+  </div>
+  <div class="samples"><span class="cap">控件关态样本（原型标注，不是产品 UI）：</span>
+    <span class="sw"></span><b>开关 · 关</b>
+    <span class="spick" style="min-width:78px">未设置<em>▾</em></span><b>下拉 · 空</b>
+    <span class="snum">0.0</span><b>数值</b>
+    <span class="sbtn">动作</span><b>按钮</b></div>
+</section></div></body></html>

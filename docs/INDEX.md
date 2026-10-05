@@ -9,6 +9,8 @@
 | 安装、运行、能力概览 | [README](../README.md) | [工程参考](current/development.md) |
 | 产品定位、Card/Profile 玩法、交互 | [DES](DES.md) 对应章节 | [人格与回复](current/personality.md)、[资源所有权](current/runtime-data.md) |
 | 找模块、跟踪主调用链 | [系统地图](current/system-design.md) | 目标源码与对应 current 文档 |
+| TypeScript 业务服务与 HostBridge 接线规则 | [services AGENTS](../src/services/AGENTS.md) | 目标领域 current 与源码 |
+| Rust 宿主、原生 UI 与平台规则 | [native-host AGENTS](../crates/native-host/AGENTS.md) | [工程参考](current/development.md)与目标源码 |
 | 会话队列、取消、恢复、Pi 接线、PromptSnapshot | [运行时契约](current/runtime-contract.md) | [记忆与压缩](current/memory.md)、[工具系统](current/tool-system.md) |
 | 配置、路径、Profile 持久化 | [运行时数据](current/runtime-data.md) | Config getter、AppPaths 和目标设置 Tab |
 | 数据库表结构、schema 版本、库文件与 WAL | [数据库](current/database.md) | 记忆与主动链同库；行为见[当前记忆](current/memory.md)、[主动陪伴](current/proactive.md) |
@@ -17,7 +19,8 @@
 | 测试执行/验证边界 | [测试边界](current/testing.md) | [测试 README](../test/README.md)；生成契约时再读 [测试 SKILL](../test/SKILL.md) |
 | 推 tag、发版、打包产物、自动更新 | [工作流说明](../.github/workflows/README.md) | [工程参考](current/development.md) 的「打包与发布」、`scripts/check-bundle-config.mjs`、`scripts/set-version.mjs` |
 | 主动陪伴、事项跟进、行为画像 | [主动陪伴](current/proactive.md) | [行为画像](current/behavior.md)、[未完成总表](plans/active/未完成工作与已知缺口.md) §5.1 |
-| 移除 WebView、Native/Rust + Node Harness、轻量化执行交接 | [原生宿主轻量化执行契约](plans/active/原生宿主轻量化执行契约.md) | [未完成总表](plans/active/未完成工作与已知缺口.md) §9；对应 current 与目标源码 |
+| 主动消息/静默了解/记忆整理的频率档位、锁屏可用、设置落 CONFIG | [频率档位执行契约](plans/active/主动陪伴与记忆频率档位执行契约.md) | [未完成总表](plans/active/未完成工作与已知缺口.md) §12；对应 current 与目标源码 |
+| 原生宿主（Rust）+ 唯一 Node Harness、私有 IPC 与轻量化收尾 | [未完成总表](plans/active/未完成工作与已知缺口.md) §10 | [系统地图](current/system-design.md) 与目标源码；目标契约已归档（见下方历史入口） |
 | 查看还剩哪些未完成工作、继续记忆重构 | [未完成工作与已知缺口](plans/active/未完成工作与已知缺口.md) | [当前记忆](current/memory.md)及相关源码（B 方案契约已归档） |
 
 ## 文档职责与维护
@@ -25,29 +28,37 @@
 | 文档 | 只维护什么 |
 |---|---|
 | [AGENTS](../AGENTS.md) | 全局约束与任务阅读路由；不承担项目百科、详细测试教程或动态进度 |
+| [services AGENTS](../src/services/AGENTS.md) | TS 业务层的状态、配置取用、HostBridge、运行时与工具约束 |
+| [native-host AGENTS](../crates/native-host/AGENTS.md) | Rust 宿主的类型、平台、原生 UI、执行边界与同步义务 |
+| [test AGENTS](../test/AGENTS.md) | 测试域的规则入口、分层、门禁与维护义务 |
 | README | 用户安装、启动、能力简介与文档导航 |
 | DES | 产品定位、玩法与用户可感知行为 |
 | current | 已核对的模块契约、关键边界与源码入口；按主题分文档 |
 | plans/active | 未完成工作总表与尚在实施的目标契约；不为单一主题另开文档 |
 | history | 封存当时设计、旧实现和验证证据；归档后不再读取或修改 |
 
-一个事实只有一个主要维护位置，其他文件用链接。每轮都核对 README、AGENTS、DES 与相关 current 的影响，受影响内容在同一改动中同步；新增规则改 AGENTS，用户入口变化改 README，玩法变化改 DES，模块变更更新系统地图及受影响导航。未变化的文档不为同步而追加总结。
+一个事实只有一个主要维护位置，其他文件用链接。每轮都核对 README、AGENTS、DES 与相关 current 的影响，受影响内容在同一改动中同步；新增规则改所属范围的 AGENTS，用户入口变化改 README，玩法变化改 DES，模块变更更新系统地图及受影响导航。未变化的文档不为同步而追加总结。
 
 运行时 CONFIG 字段新增、改名、删除或语义变化同时执行[配置变更同步清单](current/runtime-data.md#配置变更同步清单)，覆盖 CONFIG、开发模板、类型/getter、设置页、保存与刷新消费者。真实本地配置需单独授权，未同步/未验证项在交付中说明。归档前保留正文和证据，归档后封存；未完成总表直接写清剩余事项与验收条件，不依赖跳转历史。
 
 计划/归档文件用简短文件头说明用途、状态、日期及替代入口；核对日期不代表整个工作树已验证。报告必须区分源码基线、执行环境和未验证项，不把旧通过数复制到每份概览。历史文件可能带 archived 或 implemented_verified 等状态，所在 history 目录均表示它不再是当前行为契约。
 
-AGENTS 维持全局规则入口，CLAUDE 只导入它；模块细节通过任务路由按需读取，不建立互相重复的子目录规则。阅读路径的成本按实际文件 token 数评估，仓库 Markdown 总量不等于每轮 Prompt 注入量。
+根 AGENTS 只维护全局规则；services、native-host、test 的 AGENTS 各自维护本域约束，通过链接引用全局条款，避免重复。所有 CLAUDE.md 只写一行 `@agents.md`，导入同目录规则。模块细节通过任务路由按需读取；阅读路径的成本按实际文件 token 数评估，仓库 Markdown 总量不等于每轮 Prompt 注入量。
 
 ## 未完成工作
 
 - [未完成工作与已知缺口](plans/active/未完成工作与已知缺口.md)：**唯一未完成工作总表**——Pi 剩余批次、平台与发布、长期记忆 B 方案的剩余验收、活人感与整链陪伴的剩余环境验收、已知代码缺口、验证缺口与已决策的不修边界。
-- [原生宿主轻量化执行契约](plans/active/原生宿主轻量化执行契约.md)：用户已定功能边界、最终接口、源码映射和 W0–W11 执行/验收条件；产品迁移尚未开始，进度只在总表 §9 更新。
+- [主动陪伴与记忆频率档位执行契约](plans/active/主动陪伴与记忆频率档位执行契约.md)：主动消息/静默了解/记忆整理的根因修复（macOS 观察态恒 unavailable）、锁屏可用、三处「关/低/中/高」频率档位、设置全部落 CONFIG、带工具规划器、自带 MCP 与 Skill；含 8 条**执行前需用户确认**的开放问题与 W1–W5 分波验收。**实施尚未开始**，进度只在总表 §12 维护。
+- [主动陪伴与记忆频率档位执行契约](plans/active/主动陪伴与记忆频率档位执行契约.md)：主动消息/静默了解/记忆整理的根因修复（macOS 观察态恒 unavailable）、锁屏可用、三处「关/低/中/高」频率档位、设置全部落 CONFIG、带工具规划器、自带 MCP 与 Skill；含 8 条**执行前需用户确认**的开放问题与 W1–W5 分波验收。**实施尚未开始**，进度只在总表 §12 维护。
 
 ## 历史入口
 
 以下只保留归档目录索引，不作为后续任务的阅读入口；不再读取或修改这些文件。当前问题与进度只看未完成总表。
 
+- [主题设计稿（三套预设）](history/design/theme-candidates.html)：三套主题预设（`brushed` / `chrome` / `verdigris`）的视觉基准与 55 个自定义属性取值。**例外说明**：它同时是 `crates/native-host/src/ui/theme/tokens.rs` 的 `include_str!` **编译期依赖**（常量 `DESIGN_DOC`），移动即编译失败；主题逐屏对照收尾前仍作视觉基准使用，改色值须与 `tokens.rs` 两处同改。2026-10-05 由 `docs/plans/active/` 移入，路径引用已全仓同步。
+- [主题设计稿（两款 · 聊天面）](history/design/theme-candidates-2.html)：2026-10-05 聊天面板改版的视觉基准（`.rail` / `.insp` 等结构与尺寸），`macos_chat.rs` 三处注释引用；同批移入归档。
+- [原生宿主轻量化执行契约 2026-10-04 基线](history/implementation/原生宿主轻量化执行契约-2026-10-04基线.md)：用户已定功能边界、最终接口、源码映射与 W0–W11 执行/验收条件；**W0–W9 已实现后归档**，W10/W11 的验收条件、打包定案、L4 重接与资源口径已折入[未完成总表](plans/active/未完成工作与已知缺口.md) §10。
+- [原生宿主迁移过程记录 2026-10-04 基线](history/implementation/原生宿主迁移过程记录-2026-10-04基线.md)：W0 只读盘点基线、W0/W1 已发现的问题、W0 冻结决定（含**仍具约束力的六条裁定**：Node 不得驱动窗口显隐与层级、不静默改线格式字段名、契约 sourceFiles 只指向 native-host、命令矩阵冻结流程、光标事件不进 Node 事件表、`window-observed` 双投）、W1 行为差异对照，以及功能对等接线批次与设置管理面的交付记录；W0–W9 实现落地后归档，剩余工作已转入未完成总表 §10。
 - [活人感（拟人化）运行时契约 2026-10-04 基线](history/implementation/拟人化运行时契约-2026-10-04基线.md)：分条气泡、打字节奏、正在输入、回合分流、主动消息同路径与三个开关、静默了解、话题画像、主动纪律和图片输入的目标契约与自动验收检查点（§12）；实现完成后归档，剩余环境验收已转入未完成总表 §7。
 - [主动陪伴运行时执行方案 2026-10-03 基线](history/implementation/主动陪伴运行时执行方案-2026-10-03基线.md)：完整目标契约、实现对照矩阵与检查点；核心链路已接入，核对后的实现与验收缺口已转入未完成总表，归档不表示完整验收。
 - [记忆 check-in 与主动扫描器设计 2026-10-03 基线](history/design/记忆checkin与主动扫描器设计-2026-10-03基线.md)：原始功能／效果蓝图；旧数据结构、分轮安排及范围修订由执行基线的对照说明承接，不再作为当前指令。

@@ -1,0 +1,956 @@
+<!doctype html>
+<html lang="zh-CN"><head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>主题候选 · 2 款 · 完整聊天面 + 设置窗</title>
+<style>
+/* ── 页壳（不进产品）────────────────────────────────────────────── */
+:root{
+  --page:#101215;--page-ink:#C5CAD2;--page-dim:#8A929E;--page-card:#171A1F;--page-line:#24282E;
+  --grain:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='140' height='140'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.9' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='140' height='140' filter='url(%23n)'/%3E%3C/svg%3E");
+}
+*,*::before,*::after{box-sizing:border-box}
+body{margin:0;background:#101215;color:#c5cad2;
+  font:400 14px/1.55 ui-sans-serif,-apple-system,"PingFang SC","Microsoft YaHei",sans-serif}
+.wrap{max-width:1180px;margin:0 auto;padding:48px 26px 104px}
+.masthead{border-bottom:1px solid #24282e;padding-bottom:18px;margin-bottom:30px}
+h1{margin:0 0 8px;font-size:21px;font-weight:600;color:#eef1f5;letter-spacing:-.01em}
+.lede{margin:0;max-width:86ch;font-size:13.5px;color:#8a929e}
+.lede b{color:#c5cad2;font-weight:500}
+.lede code{font:12px/1 ui-monospace,Menlo,monospace;padding:1.5px 5px;border-radius:4px;
+  background:#171a1f;border:1px solid #24282e;color:#c5cad2}
+nav.toc{display:flex;flex-wrap:wrap;gap:6px;margin-top:20px}
+nav.toc a{font-size:12px;padding:5px 11px;border:1px solid #2b3037;border-radius:999px;
+  color:#929ba8;text-decoration:none}
+nav.toc a:hover{color:#eef1f5;border-color:#4a525d}
+.theme{margin:0 0 78px;scroll-margin-top:18px}
+.theme-head{display:flex;align-items:baseline;gap:11px;flex-wrap:wrap;padding:0 2px 10px;
+  border-bottom:1px solid #24282e;margin-bottom:6px}
+.theme-num{font:500 12px/1 ui-monospace,Menlo,monospace;color:#5a626d}
+.theme-name{font-size:17px;font-weight:600;color:#eef1f5;margin:0}
+.theme-ref{font-size:12.5px;color:#79818d}
+.theme-story{margin:5px 0 0;flex-basis:100%;max-width:86ch;font-size:13px;color:#98a1ad;line-height:1.6}
+.theme-story b{color:#c5cad2;font-weight:500}
+h3.sub{margin:24px 0 10px;font-size:13px;font-weight:600;color:#b9c0ca;padding-left:9px;
+  border-left:3px solid #3a424d}
+.palette{display:flex;flex-wrap:wrap;border:1px solid #24282e;border-radius:9px;overflow:hidden;
+  background:#171a1f;margin-top:4px}
+.pc{flex:1 1 0;min-width:106px;padding:9px 11px 10px;border-right:1px solid #24282e}
+.pc:last-child{border-right:0}
+.pc i{display:block;height:26px;border-radius:5px;margin-bottom:8px;
+  box-shadow:inset 0 0 0 1px rgba(128,128,128,.22)}
+.pc b{display:block;font-size:10.5px;font-weight:600;color:#eef1f5}
+.pc span{display:block;font:10px/1.4 ui-monospace,Menlo,monospace;color:#79818d;margin-top:2px}
+.pc em{display:block;font-style:normal;font-size:10px;color:#79818d;margin-top:3px}
+
+/* ── 共享骨架（两款同一套结构与交互；状态选择器走 [id$="-…"] 后缀匹配）── */
+/* ============================================================================
+   共享骨架（Shell）
+   ----------------------------------------------------------------------------
+   雨3 Nightfall 与 金3 Azurite 共用这一份结构与交互，仅通过 CSS 自定义属性换肤。
+   变量分两类：
+
+   A. 产品契约变量 —— 与 crates/native-host/src/ui/theme/tokens.rs 的语义槽位
+      同名逐条对应（该文件记为 55 项；本稿按 59 个自定义属性展开，差额在
+      --contact / --ambient 与 --l1..l3 的分组口径）。视觉基准来自
+      docs/history/design/theme-candidates.html。改这里 = 改产品；换主题只允许
+      改下面那两段 #<主题名>{…} 的变量块。
+
+   B. 本页展示用扩展变量（--page-* / --scrimc）—— 只服务于这份设计稿的页面
+      外壳与浮层遮罩，不进 tokens.rs。命名统一带前缀以免误认。
+
+   状态选择器统一写「后缀匹配」（[id$="-i-debug"]），因为两份主题的 id 各带
+   nightfall- / azurite- 前缀，而骨架只有这一份。
+   ========================================================================== */
+
+   结构约定（与实机一致）：
+     舞台 ┊ 聊天面 [顶栏 → 会话标签行 → 消息流 → 输入区 → meta 轨]
+   本版对输入区上方「面板叠加区」的改版见 .rail / .insp 注释。
+   ========================================================================== */
+
+*,*::before,*::after{box-sizing:border-box}
+
+body{
+  margin:0;
+  background:var(--page);
+  color:var(--page-ink);
+  font:400 14px/1.55 ui-sans-serif,-apple-system,"PingFang SC","Microsoft YaHei",sans-serif;
+  -webkit-font-smoothing:antialiased;
+}
+:focus-visible{outline:2px solid var(--acc);outline-offset:2px;border-radius:3px}
+.wrap{max-width:1180px;margin:0 auto;padding:46px 24px 96px}
+
+/* ── 页头 ─────────────────────────────────────────────────────────────────── */
+.masthead{border-bottom:1px solid var(--page-line);padding-bottom:20px;margin-bottom:34px}
+.crumb{display:inline-flex;align-items:center;gap:7px;font-size:11.5px;color:var(--page-dim);
+  text-decoration:none;margin-bottom:14px;letter-spacing:.02em}
+.crumb:hover{color:var(--acc)}
+.crumb i{font-style:normal;opacity:.5}
+.masthead h1{margin:0 0 4px;font-size:26px;font-weight:650;letter-spacing:-.012em;color:var(--page-ink)}
+.masthead h1 small{font-size:12.5px;font-weight:400;color:var(--page-dim);margin-left:10px;letter-spacing:0}
+.lede{margin:0;max-width:78ch;font-size:13.5px;color:var(--page-dim)}
+.lede b{color:var(--page-ink);font-weight:550}
+.lede code{font:12px/1 ui-monospace,Menlo,monospace;padding:1.5px 5px;border-radius:4px;
+  background:var(--page-card);border:1px solid var(--page-line)}
+
+/* 色板：直接照立绘取色，标出每颗的用途，避免「主题」变成随手调色 */
+.palette{display:flex;flex-wrap:wrap;gap:0;margin:20px 0 0;border:1px solid var(--page-line);
+  border-radius:9px;overflow:hidden;background:var(--page-card)}
+.pc{flex:1 1 0;min-width:104px;padding:9px 11px 10px;border-right:1px solid var(--page-line)}
+.pc:last-child{border-right:0}
+.pc i{display:block;height:26px;border-radius:5px;margin-bottom:8px;
+  box-shadow:inset 0 0 0 1px rgba(128,128,128,.22)}
+.pc b{display:block;font-size:10.5px;font-weight:600;letter-spacing:.01em;color:var(--page-ink)}
+.pc span{display:block;font:10px/1.4 ui-monospace,Menlo,monospace;color:var(--page-dim);margin-top:2px}
+.pc em{display:block;font-style:normal;font-size:10px;color:var(--page-dim);margin-top:3px;opacity:.85}
+
+/* ── 章节 ─────────────────────────────────────────────────────────────────── */
+.theme{margin:0 0 26px;scroll-margin-top:16px}
+h2.sub{margin:30px 0 10px;font-size:13px;font-weight:600;letter-spacing:.01em;color:var(--page-ink);
+  padding-left:10px;border-left:3px solid var(--acc)}
+h2.sub:first-of-type{margin-top:0}
+.cap{margin:0 0 12px;max-width:78ch;font-size:12.5px;color:var(--page-dim)}
+.cap b{color:var(--page-ink);font-weight:550}
+.cap kbd{font:11px/1 ui-monospace,Menlo,monospace;padding:2px 5px;border-radius:4px;
+  background:var(--page-card);border:1px solid var(--page-line);color:var(--page-ink)}
+
+/* ── 展台：左舞台 + 右聊天面 ─────────────────────────────────────────────── */
+.rig{position:relative;display:grid;grid-template-columns:minmax(170px,1fr) minmax(430px,520px);
+  height:648px;border-radius:var(--r2);overflow:hidden;box-shadow:var(--ambient)}
+@media (max-width:880px){.rig{grid-template-columns:1fr;height:auto}.stage{min-height:150px}.chat{min-height:648px}}
+
+.stage{position:relative;background:var(--stage-bg);overflow:hidden}
+.stage::before{content:"";position:absolute;inset:0;background-image:var(--grain);opacity:.05;
+  mix-blend-mode:overlay;pointer-events:none}
+.stagef{position:absolute;inset:20px;border:1px dashed var(--stage-mark);border-radius:6px;opacity:.35}
+.stagel{position:absolute;left:30px;bottom:26px;font-size:11.5px;color:var(--stage-mark)}
+
+.chat{position:relative;display:flex;flex-direction:column;overflow:hidden;background:var(--pbg);
+  color:var(--ink);border-left:1px solid var(--outline);box-shadow:var(--pshadow)}
+.chat::before{content:"";position:absolute;inset:0;background:var(--ptex);pointer-events:none;z-index:0}
+.chat::after{content:"";position:absolute;inset:0;background-image:var(--grain);opacity:.03;
+  mix-blend-mode:overlay;pointer-events:none;z-index:0}
+.chat>*{position:relative;z-index:1}
+
+/* 隐藏的电台：驱动浮层开合（纯 CSS，无 JS） */
+.insw,.tr{position:absolute;width:1px;height:1px;opacity:0;pointer-events:none}
+
+/* ── ① 顶栏 ──────────────────────────────────────────────────────────────── */
+.bar{display:flex;align-items:center;gap:8px;padding:8px 12px;background:var(--bar);
+  border-bottom:1px solid var(--bare);box-shadow:var(--barsh);flex:none}
+.lights{display:flex;gap:6px;margin-right:2px}
+.lights i{width:10px;height:10px;border-radius:50%;display:block;background:var(--l1,.5);
+  box-shadow:inset 0 1px 1px rgba(255,255,255,.35),var(--contact)}
+.lights i:nth-child(2){background:var(--l2,.5)}
+.lights i:nth-child(3){background:var(--l3,.5)}
+.brand{font-size:12px;font-weight:600;letter-spacing:.005em}
+.brand small{font-weight:400;opacity:.5;margin-left:5px;letter-spacing:0}
+.status{margin-left:auto;display:inline-flex;align-items:center;gap:5px;font-size:11px;color:var(--dim)}
+.status i{width:6px;height:6px;border-radius:50%;background:var(--acc)}
+.btns{display:flex;gap:2px;margin-left:8px}
+.btns span{font-size:11px;padding:3px 8px;border-radius:var(--r1);color:var(--dim);cursor:default}
+.btns span:hover{color:var(--ink)}
+.btns .x{opacity:.75}
+
+/* ── ② 会话标签行 ────────────────────────────────────────────────────────── */
+.tabs{display:flex;align-items:center;gap:3px;padding:5px 9px;border-bottom:1px solid var(--bare);
+  background:var(--fbg2);font-size:11.5px;flex:none}
+.tab{padding:3px 10px;border-radius:var(--r1);color:var(--dim);max-width:100px;
+  overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.tab.on{color:var(--ink);background:var(--tabon);border:1px solid var(--tabone);box-shadow:var(--tabonsh)}
+.tabadd{margin-left:auto;padding:3px 9px;border-radius:var(--r1);color:var(--dim);background:var(--bbg);
+  border:1px solid var(--bedge);box-shadow:var(--bsh);cursor:pointer}
+.tabhist{padding:3px 9px;border-radius:var(--r1);color:var(--dim);background:var(--bbg);
+  border:1px solid var(--bedge);box-shadow:var(--bsh);cursor:pointer}
+
+/* ── ③ 消息流 ────────────────────────────────────────────────────────────── */
+.log{flex:1;min-height:0;padding:12px;display:flex;flex-direction:column;gap:8px;
+  overflow:hidden;box-shadow:var(--logsh);position:relative}
+.who{align-self:flex-start;font-size:10.5px;color:var(--dim);margin:0 0 -5px 3px}
+.m{max-width:86%;font-size:12.5px;line-height:1.58}
+.m.me{align-self:flex-end;background:var(--me);color:var(--meink);padding:7px 11px;
+  border-radius:var(--r2);box-shadow:var(--mesh);border:1px solid var(--meedge)}
+.m.me .lvl{display:block;font-size:10px;opacity:.6;margin-top:4px;text-align:right;letter-spacing:.02em}
+.m.ai{align-self:flex-start;background:var(--aibg);border:1px solid var(--aiedge);
+  padding:7px 11px;border-radius:var(--r2)}
+.m.ai.streaming .caret{display:inline-block;width:1px;height:11px;background:currentColor;
+  margin-left:2px;vertical-align:-1px;opacity:.75;animation:blink 1.1s steps(1) infinite}
+@keyframes blink{50%{opacity:0}}
+/* 工具结果：从「一张卡片」降为一行，避免和消息抢视觉重量 */
+.think{align-self:flex-start;font-size:11px;color:var(--dim);padding:3px 9px;border-radius:var(--r1);
+  background:var(--tbg);border:1px solid var(--tedge);box-shadow:var(--tsh);cursor:default}
+.toolcard{align-self:flex-start;display:flex;align-items:center;gap:7px;max-width:100%;font-size:11px;
+  color:var(--tink);background:var(--tbg);border:1px solid var(--tedge);border-radius:var(--r1);
+  padding:5px 9px;box-shadow:var(--tsh);font-family:ui-monospace,Menlo,monospace}
+.toolcard .tch{color:var(--acc);font-weight:600;font-family:inherit}
+.toolcard code{font:inherit;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.jump{position:absolute;right:11px;bottom:9px;font-size:10.5px;padding:4px 9px;border-radius:10px;
+  color:var(--bink);background:var(--bbg);border:1px solid var(--bedge);box-shadow:var(--bsh)}
+
+/* ── ③b 决策条：要你做决定的面板才留在流内，且只占一行 ─────────────────────
+   这是对老版「一摞面板」的第二个改动：必须被看见的（计划 / 权限 / 中断 /
+   队列）保留在消息流里，但压成一行的 .askbar，点「查看」才就地铺开步骤。 */
+.askbar{align-self:stretch;display:flex;align-items:center;gap:8px;padding:6px 9px;margin-top:2px;
+  font-size:11.5px;background:var(--aibg);border:1px solid var(--aiedge);border-radius:var(--r1);
+  box-shadow:var(--contact)}
+.askbar .n{font-style:normal;width:16px;height:16px;border-radius:50%;display:grid;place-items:center;
+  font-size:9.5px;font-weight:600;background:var(--sbg);color:var(--sink);flex:none}
+.askbar .tx{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.askbar label{font-size:10.5px;padding:3px 9px;border-radius:var(--r1);color:var(--bink);
+  background:var(--bbg);border:1px solid var(--bedge);box-shadow:var(--bsh);cursor:pointer;flex:none}
+.askbar label.primary{color:var(--sink);background:var(--sbg);border-color:var(--sedge);box-shadow:var(--ssh);font-weight:600}
+.plansteps{display:none;padding:2px 0 4px 24px;font-size:11.5px;color:var(--ink)}
+.plansteps div{display:flex;align-items:center;gap:7px;padding:2px 0}
+.plansteps em{font-style:normal;width:14px;height:14px;border-radius:50%;font-size:9px;display:grid;
+  place-items:center;background:var(--bbg);border:1px solid var(--bedge);color:var(--bink);flex:none}
+.plansteps .s{margin-left:auto;font-size:10.5px;color:var(--dim)}
+.plansteps .s.ok{color:var(--acc)}
+.rig:has([id$="-planx"]:checked) .plansteps{display:block}
+.rig:has([id$="-planx"]:checked) .askbar label[for$="-planx"]{color:var(--ink);background:var(--tabon);
+  border-color:var(--tabone);box-shadow:var(--tabonsh)}
+
+/* ── ④ 输入区（含待发送条 + meta 轨）────────────────────────────────────── */
+.composer{flex:none;border-top:1px solid var(--iedge);background:var(--ibg)}
+.pend{padding:5px 10px;border-bottom:1px solid var(--bare);background:var(--fbg2)}
+.pchip{display:inline-flex;align-items:center;gap:7px;font-size:10.5px;padding:3px 9px;
+  border-radius:var(--r1);color:var(--ink);background:var(--fbg);border:1px solid var(--fedge);
+  box-shadow:var(--finner)}
+.pchip em{font-style:normal;opacity:.55;cursor:pointer}
+.inp{padding:9px 10px;display:flex;align-items:center;gap:7px}
+.inp .ph{flex:1;font-size:12.5px;color:var(--dim);padding:7px 10px;border-radius:var(--r1);
+  background:var(--fbg);border:1px solid var(--fedge);box-shadow:var(--finner)}
+.btn{font-size:12px;padding:6px 13px;border-radius:var(--r3);color:var(--bink);background:var(--bbg);
+  border:1px solid var(--bedge);box-shadow:var(--bsh);text-shadow:var(--bts);cursor:pointer;flex:none}
+.btn.send{background:var(--sbg);color:var(--sink);border-color:var(--sedge);
+  box-shadow:var(--ssh);text-shadow:var(--sts);font-weight:600}
+.btn:active{transform:translateY(1px)}
+
+/* ── ④b meta 轨：老版「用量 / 调试信息▸ / 投递」三行的合并体 ────────────────
+   常驻高度固定一行。左侧是会话状态（不可点），右侧三个入口都可点，且都有
+   明确的 affordance：底色是按钮材质、带 ▾、hover 抬起、展开时翻箭头并换成
+   「选中标签」材质。老版把 chip 画成静态小字，看不出能点 —— 这里修掉。 */
+.rail{display:flex;align-items:center;gap:6px;padding:6px 10px;border-top:1px solid var(--bare);
+  background:var(--fbg2);font-size:11px;color:var(--dim)}
+.rstat{margin-right:auto;display:inline-flex;align-items:center;gap:6px;min-width:0}
+.rstat i{width:6px;height:6px;border-radius:50%;background:var(--acc);flex:none}
+.rstat span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.rchip{font-size:10.5px;padding:3.5px 9px;border-radius:var(--r1);color:var(--dim);background:var(--bbg);
+  border:1px solid var(--bedge);box-shadow:var(--bsh);cursor:pointer;flex:none;
+  display:inline-flex;align-items:center;gap:5px;
+  transition:color .16s cubic-bezier(.16,1,.3,1),background .16s cubic-bezier(.16,1,.3,1)}
+.rchip b{font-weight:400;opacity:.55;font-size:8px;line-height:1;
+  transition:transform .22s cubic-bezier(.16,1,.3,1)}
+.rchip:hover{color:var(--ink)}
+.rchip:active{transform:translateY(.5px)}
+/* 展开中：换成候选/选中标签的材质，箭头翻面 —— 状态一眼可读 */
+.rig:has([id$="-i-usage"]:checked) .rchip[for$="-i-usage"],
+.rig:has([id$="-i-debug"]:checked) .rchip[for$="-i-debug"],
+.rig:has([id$="-i-route"]:checked) .rchip[for$="-i-route"]{
+  color:var(--ink);background:var(--tabon);border-color:var(--tabone);box-shadow:var(--tabonsh)}
+.rig:has([id$="-i-usage"]:checked) .rchip[for$="-i-usage"] b,
+.rig:has([id$="-i-debug"]:checked) .rchip[for$="-i-debug"] b,
+.rig:has([id$="-i-route"]:checked) .rchip[for$="-i-route"] b{transform:rotate(180deg)}
+
+/* ── ④c 浮层 Inspector：详情不再占布局 ────────────────────────────────────
+   浮层挂在 .log 内部（.log 是 position:relative + overflow:hidden），底对齐到
+   消息流下沿，正好压在输入区之上。因为脱离了布局流，消息流在开合前后 y 坐标
+   完全不变 —— 这是「不挡」的关键。遮罩只罩消息流，不罩输入区。 */
+.scrim{position:absolute;inset:0;z-index:4;background:var(--scrimc);opacity:0;
+  pointer-events:none;transition:opacity .22s cubic-bezier(.16,1,.3,1);cursor:default}
+.rig:has(.insw:checked:not([id$="-i-none"])) .scrim{opacity:1;pointer-events:auto}
+
+.insp{position:absolute;left:9px;right:9px;bottom:9px;z-index:5;
+  background:var(--pbg);border:1px solid var(--pedge);border-radius:var(--r2);
+  box-shadow:var(--pshadow),var(--ambient);overflow:hidden;
+  opacity:0;visibility:hidden;pointer-events:none;transform:translateY(8px) scale(.985);
+  transform-origin:bottom center;
+  transition:opacity .2s cubic-bezier(.16,1,.3,1),transform .26s cubic-bezier(.16,1,.3,1),visibility .2s}
+.rig:has([id$="-i-usage"]:checked) .insp.usage,
+.rig:has([id$="-i-debug"]:checked) .insp.debug,
+.rig:has([id$="-i-route"]:checked) .insp.route{opacity:1;visibility:visible;pointer-events:auto;transform:none}
+
+.insph{display:flex;align-items:baseline;gap:8px;padding:9px 11px;border-bottom:1px solid var(--bare);
+  background:var(--bar);box-shadow:var(--barsh)}
+.insph b{font-size:12px;font-weight:600}
+.insph span{font-size:10.5px;color:var(--dim)}
+.insph .insx{margin-left:auto;font-size:11px;color:var(--dim);cursor:pointer;padding:2px 6px;
+  border-radius:var(--r1);border:1px solid transparent}
+.insph .insx:hover{color:var(--ink);border-color:var(--bedge);background:var(--bbg)}
+.insbody{padding:10px 11px 12px;display:flex;flex-direction:column;gap:7px;
+  max-height:246px;overflow:auto}
+.insbody::-webkit-scrollbar{width:8px}
+.insbody::-webkit-scrollbar-thumb{background:var(--bedge);border-radius:8px}
+
+/* 用量页：一个主数字 + 三行明细，不做图表控件 */
+.biguse{display:flex;align-items:baseline;gap:7px;padding:2px 0 6px;border-bottom:1px solid var(--grule)}
+.biguse .n{font:600 24px/1 ui-monospace,Menlo,monospace;color:var(--ink);letter-spacing:-.02em}
+.biguse .u{font-size:11px;color:var(--dim)}
+.kv{display:flex;align-items:center;gap:10px;font-size:11.5px;color:var(--dim)}
+.kv b{margin-left:auto;color:var(--ink);font-weight:500;font-family:ui-monospace,Menlo,monospace}
+.meter{height:5px;border-radius:3px;background:var(--fbg);border:1px solid var(--fedge);
+  box-shadow:var(--finner);overflow:hidden;display:block}
+.meter i{display:block;height:100%;background:var(--acc);border-radius:3px}
+
+/* 调试页：分页签（不再平铺一排 chip）+ 两行真下拉 */
+.instabs{display:flex;gap:2px;padding:6px 11px 0;border-bottom:1px solid var(--bare);background:var(--fbg2)}
+.instab{font-size:11px;padding:5px 11px;border-radius:var(--r1) var(--r1) 0 0;color:var(--dim);
+  cursor:pointer;border:1px solid transparent;border-bottom:0;margin-bottom:-1px;
+  transition:color .16s cubic-bezier(.16,1,.3,1)}
+.instab:hover{color:var(--ink)}
+.insp.debug:has([id$="-d1"]:checked) .instab[for$="-d1"],
+.insp.debug:has([id$="-d2"]:checked) .instab[for$="-d2"],
+.insp.debug:has([id$="-d3"]:checked) .instab[for$="-d3"]{
+  color:var(--ink);background:var(--tabon);border-color:var(--tabone);box-shadow:var(--tabonsh)}
+.pane{display:none}
+.insp.debug:has([id$="-d1"]:checked) .p1,
+.insp.debug:has([id$="-d2"]:checked) .p2,
+.insp.debug:has([id$="-d3"]:checked) .p3{display:flex;flex-direction:column;gap:7px}
+.setrow{display:flex;align-items:center;gap:10px;font-size:11.5px}
+.setrow .setl{flex:1;min-width:0;color:var(--dim)}
+
+/* 投递页：三选一说明行，比一行 chip 讲得清 */
+.opt{display:flex;gap:9px;align-items:flex-start;padding:7px 9px;border-radius:var(--r1);
+  border:1px solid transparent;cursor:pointer;transition:border-color .16s}
+.opt:hover{border-color:var(--bedge);background:var(--fbg2)}
+.opt.on{border-color:var(--sedge);background:var(--fbg2)}
+.opt .dot{width:13px;height:13px;border-radius:50%;border:1px solid var(--bedge);background:var(--fbg);
+  box-shadow:var(--finner);flex:none;margin-top:2px;position:relative}
+.opt.on .dot{border-color:var(--sedge);background:var(--sbg);box-shadow:var(--ssh)}
+.opt .tt{font-size:11.5px;color:var(--ink);font-weight:550}
+.opt .dd{display:block;font-size:10.5px;color:var(--dim);font-weight:400;margin-top:2px;line-height:1.5}
+
+/* ── ⑤ 设置窗 ────────────────────────────────────────────────────────────── */
+.set{position:relative;display:flex;flex-direction:column;overflow:hidden;background:var(--pbg);
+  color:var(--ink);border:1px solid var(--pedge);border-radius:var(--r2);box-shadow:var(--pshadow),var(--ambient);
+  max-width:560px;min-height:432px}
+.set::before{content:"";position:absolute;inset:0;background:var(--ptex);pointer-events:none;z-index:0}
+.set::after{content:"";position:absolute;inset:0;background-image:var(--grain);opacity:.03;
+  mix-blend-mode:overlay;pointer-events:none;z-index:0}
+.set>*{position:relative;z-index:1}
+.sbody{display:grid;grid-template-columns:106px 1fr;flex:1;min-height:0}
+.srail{background:var(--rail);border-right:1px solid var(--raile);padding:10px 6px;
+  display:flex;flex-direction:column;gap:1px}
+.srail span{font-size:11.5px;padding:6px 10px;border-radius:var(--r1);color:var(--dim)}
+.srail .on{color:var(--ink);background:var(--tabon);border:1px solid var(--tabone);box-shadow:var(--tabonsh)}
+.spane{overflow:hidden;padding:12px 15px;display:flex;flex-direction:column;gap:14px}
+.sgtitle{font-size:11.5px;font-weight:600;color:var(--ink);padding-bottom:6px;
+  border-bottom:1px solid var(--grule);margin-bottom:3px}
+.srow{display:flex;align-items:center;gap:11px;padding:4px 0;font-size:12px}
+.srow .sl{flex:1;min-width:0}
+.srow .sl small{display:block;font-size:10.5px;color:var(--dim);margin-top:2px;line-height:1.45}
+
+.seg{display:inline-flex;padding:1px;border-radius:var(--r1);background:var(--fbg);
+  border:1px solid var(--fedge);box-shadow:var(--finner);flex:none}
+.seg i{font-style:normal;font-size:10.5px;padding:3px 9px;border-radius:calc(var(--r1) - 1px);
+  color:var(--dim);white-space:nowrap}
+.seg i.on{color:var(--ink);background:var(--bbg);border:1px solid var(--bedge);box-shadow:var(--bsh)}
+.spick{font-size:11.5px;padding:5px 9px;border-radius:var(--r1);background:var(--fbg);
+  border:1px solid var(--fedge);box-shadow:var(--finner);color:var(--ink);min-width:112px;
+  display:inline-flex;align-items:center;flex:none}
+.spick em{font-style:normal;margin-left:auto;opacity:.5;font-size:9px;padding-left:9px}
+.snum{font-size:11.5px;padding:5px 9px;border-radius:var(--r1);background:var(--fbg);
+  border:1px solid var(--fedge);box-shadow:var(--finner);color:var(--ink);min-width:60px;
+  text-align:right;font-family:ui-monospace,Menlo,monospace;flex:none}
+.snum em{font-style:normal;opacity:.5;margin-left:3px}
+.sw{width:34px;height:18px;border-radius:999px;background:var(--tg);border:1px solid var(--tge);
+  box-shadow:var(--finner);position:relative;flex:none}
+.sw::after{content:"";position:absolute;top:1px;left:1px;width:14px;height:14px;border-radius:50%;
+  background:var(--tgk);box-shadow:var(--contact);transition:left .18s cubic-bezier(.16,1,.3,1)}
+.sw.on{background:var(--tgon);border-color:var(--tgone)}
+.sw.on::after{left:auto;right:1px}
+.sbtn{font-size:11.5px;padding:5px 13px;border-radius:var(--r3);color:var(--bink);background:var(--bbg);
+  border:1px solid var(--bedge);box-shadow:var(--bsh);text-shadow:var(--bts);cursor:pointer}
+.sbtn.primary{background:var(--sbg);color:var(--sink);border-color:var(--sedge);
+  box-shadow:var(--ssh);text-shadow:var(--sts);font-weight:600}
+.sfoot{display:flex;align-items:center;gap:8px;padding:9px 12px;border-top:1px solid var(--bare);
+  background:var(--fbg2)}
+.sfoot .snote{margin-right:auto;font-size:10.5px;color:var(--dim)}
+
+/* 控件关态样本（原型标注：虚线框，不是产品 UI） */
+.samples{display:flex;align-items:center;gap:16px;flex-wrap:wrap;margin-top:12px;padding:10px 13px;
+  border:1px dashed var(--outline);border-radius:var(--r1)}
+.samples .scap{font-size:10.5px;color:var(--dim);margin-right:2px}
+.samples b{font-weight:500;font-size:10.5px;color:var(--dim);margin-left:-10px}
+
+/* ── 页脚导航 ────────────────────────────────────────────────────────────── */
+.pager{display:flex;gap:8px;flex-wrap:wrap;border-top:1px solid var(--page-line);
+  margin-top:44px;padding-top:20px}
+.pager a{font-size:12px;padding:7px 13px;border-radius:7px;text-decoration:none;
+  color:var(--page-dim);background:var(--page-card);border:1px solid var(--page-line)}
+.pager a:hover{color:var(--page-ink);border-color:var(--acc)}
+.pager a.here{color:var(--page-ink);border-color:var(--acc);box-shadow:inset 0 -2px 0 var(--acc)}
+.pager a.idx{margin-left:auto}
+
+@media (prefers-reduced-motion:reduce){
+  *,*::before,*::after{transition-duration:.01ms !important;animation-duration:.01ms !important}
+}
+
+/* ── 雨3 Nightfall 的变量 ───────────────────────────────────────── */
+#nightfall{
+  --stage-bg:radial-gradient(126% 108% at 30% 0%, #40386E 0%, #232046 52%, #12112A 100%);
+  --stage-mark:#8C86C9;
+  --outline:rgba(9,8,22,.6);
+  --pbg:#232145;
+  --pedge:#12112A;
+  --ptex:linear-gradient(166deg, rgba(219,208,255,.085) 0%, rgba(219,208,255,0) 42%, rgba(0,0,0,.22) 100%), repeating-linear-gradient(74deg, rgba(219,208,255,.02) 0 1px, transparent 1px 5px);
+  --pshadow:inset 0 1px 0 rgba(226,216,255,.10), var(--ambient);
+  --bar:linear-gradient(#2B2757,#221F46);
+  --bare:#100F26;
+  --barsh:inset 0 1px 0 rgba(226,216,255,.11);
+  --ink:#E6E2F7;
+  --dim:#948FBE;
+  --acc:#E0709C;
+  --me:linear-gradient(#3A3470,#2E2A5C);
+  --meink:#F3EEFF;
+  --meedge:#1A1740;
+  --mesh:inset 0 1px 0 rgba(230,220,255,.12), var(--contact);
+  --aibg:linear-gradient(#2A2751,#252248);
+  --aiedge:#191640;
+  --logsh:inset 0 2px 10px rgba(10,6,30,.36);
+  --tbg:#181635;
+  --tedge:#0E0C24;
+  --tink:#C0A9DC;
+  --tsh:inset 0 1px 4px rgba(10,6,30,.4);
+  --ibg:linear-gradient(#282550,#1E1B3E);
+  --iedge:#131029;
+  --fbg:#171530;
+  --fedge:#100E26;
+  --finner:inset 0 2px 6px rgba(10,6,30,.5);
+  --bbg:linear-gradient(#322D64,#262250);
+  --bink:#E6E2F7;
+  --bedge:#161334;
+  --bsh:inset 0 1px 0 rgba(226,216,255,.12), var(--contact);
+  --bts:none;
+  --sbg:linear-gradient(#F095B7,#C25380);
+  --sink:#2E0A1C;
+  --sedge:#8E3A5C;
+  --ssh:inset 0 1px 0 rgba(255,255,255,.45), var(--contact);
+  --sts:none;
+  --r1:10px;
+  --r2:16px;
+  --r3:12px;
+  --rail:linear-gradient(#2A2754,#211E46);
+  --raile:#12112A;
+  --tabon:linear-gradient(#352F6B,#2A2658);
+  --tabone:#191640;
+  --tabonsh:inset 0 1px 0 rgba(230,220,255,.13), var(--contact);
+  --tg:#171530;
+  --tge:#100E26;
+  --tgk:linear-gradient(#E6E2F7,#9C96C8);
+  --tgon:linear-gradient(#F095B7,#C25380);
+  --tgone:#8E3A5C;
+  --grule:#302C5C;
+  --fbg2:rgba(226,216,255,.04);
+  --l1:#4A4478;
+  --l2:#4A4478;
+  --l3:#4A4478;
+  --contact:0 1px 2px rgba(8,5,24,.4);
+  --ambient:0 16px 32px -18px rgba(8,4,26,.8);
+  --scrimc:rgba(12,10,30,.44);
+}
+/* ── 金3 Azurite 的变量 ─────────────────────────────────────────── */
+#azurite{
+  --stage-bg:radial-gradient(124% 104% at 70% 8%, #FBFCFE 0%, #E8EEF7 58%, #D5DFEE 100%);
+  --stage-mark:#7C90B0;
+  --outline:rgba(42,85,168,.3);
+  --pbg:#F7F9FC;
+  --pedge:#D3DDEB;
+  --ptex:linear-gradient(180deg,#FFFFFF 0%,#EFF4FA 100%), linear-gradient(180deg, rgba(255,255,255,.95) 0 1px, rgba(255,255,255,0) 1px);
+  --pshadow:inset 0 0 0 1px rgba(255,255,255,.95), 0 0 0 1px rgba(42,85,168,.22), 0 16px 32px -22px rgba(28,55,110,.6);
+  --bar:linear-gradient(#FCFDFF,#E9EFF8);
+  --bare:#D2DCEA;
+  --barsh:inset 0 1px 0 #FFFFFF, inset 0 -1px 0 rgba(42,85,168,.12);
+  --ink:#132A52;
+  --dim:#5C6E8E;
+  --acc:#2A55A8;
+  --me:linear-gradient(#DEE9F8,#C8D8EF);
+  --meink:#0E2249;
+  --meedge:#B2C7E4;
+  --mesh:inset 0 1px 0 rgba(255,255,255,.85), var(--contact);
+  --aibg:linear-gradient(#FFFFFF,#F1F5FB);
+  --aiedge:#DBE4F1;
+  --logsh:inset 0 2px 8px rgba(42,85,168,.09);
+  --tbg:#E7EDF8;
+  --tedge:#D0DAEB;
+  --tink:#24457E;
+  --tsh:inset 0 1px 0 rgba(255,255,255,.9);
+  --ibg:linear-gradient(#FFFFFF,#EDF2FA);
+  --iedge:#D3DDEB;
+  --fbg:linear-gradient(#FFFFFF,#F0F4FB);
+  --fedge:#DCE4F0;
+  --finner:inset 0 1px 3px rgba(42,85,168,.14);
+  --bbg:linear-gradient(#FFFFFF,#E4EBF7);
+  --bink:#16304F;
+  --bedge:#CFDAEA;
+  --bsh:inset 0 1px 0 #FFFFFF, 0 1px 2px rgba(42,85,168,.16), var(--contact);
+  --bts:0 1px 0 rgba(255,255,255,.9);
+  --sbg:linear-gradient(#DE5744,#B3311F);
+  --sink:#FFF6F2;
+  --sedge:#8E2415;
+  --ssh:inset 0 1px 0 rgba(255,255,255,.45), 0 1px 2px rgba(120,35,20,.3);
+  --sts:0 -1px 0 rgba(90,20,10,.35);
+  --r1:5px;
+  --r2:8px;
+  --r3:6px;
+  --rail:linear-gradient(#F2F6FC,#E6EDF7);
+  --raile:#D2DCEA;
+  --tabon:linear-gradient(#FFFFFF,#DCE6F5);
+  --tabone:#C6D5EC;
+  --tabonsh:inset 0 1px 0 #FFFFFF;
+  --tg:linear-gradient(#E6EDF7,#D5E0EE);
+  --tge:#CBD8EA;
+  --tgk:linear-gradient(#FFFFFF,#C2D2E8);
+  --tgon:linear-gradient(#4A7AC8,#2A55A8);
+  --tgone:#1E4088;
+  --grule:#DCE4F0;
+  --fbg2:rgba(42,85,168,.045);
+  --l1:#C2D2E8;
+  --l2:#C2D2E8;
+  --l3:#C2D2E8;
+  --contact:0 1px 2px rgba(28,55,110,.2);
+  --ambient:0 16px 32px -22px rgba(28,55,110,.5);
+  --scrimc:rgba(240,245,252,.5);
+}
+/* ── 每款的加料 ─────────────────────────────────────────────────── */
+#nightfall .lights i{opacity:.55}
+#azurite .lights i{opacity:.55}
+</style>
+</head>
+<body><div class="wrap">
+
+<header class="masthead">
+  <h1>主题候选 · 2 款 · 完整聊天面 + 设置窗</h1>
+  <p class="lede">
+    从「立绘 1 · 蓝雨夜少年」与「立绘 2 · 白金精灵少女」各 4 款共 8 份里挑出的两款。
+    两份共用<b>同一套结构与交互</b>，只有皮肤在变，可以直接横向比。
+    <br><b>本版对聊天面板的改动</b>：输入区上方原本是<b>一摞面板</b>（Σ用量 / 调试信息▸ / 投递），展开就把消息流顶走 ——
+    现在压成<b>一行 meta 轨</b>，详情改走<b>脱离布局流的浮层</b>（开合前后消息流 <code>dy=0</code>）；
+    浮层内按<b>概览 / 工具 / 注册</b>分页签，设置项换真下拉行；
+    需要你拍板的计划 / 权限 / 中断 / 队列仍留在流内，但压成<b>一行决策条</b>，点「查看」才就地铺开。
+    <br>交互本身是纯 CSS（<code>:has()</code>），没有 JS 依赖。
+  </p>
+  <nav class="toc">
+    <a href="#nightfall">雨 3 暮蓝</a>
+    <a href="#azurite">金 3 青花</a>
+  </nav>
+</header>
+
+<section class="theme" id="nightfall">
+  <div class="theme-head"><span class="theme-num">雨 3</span>
+    <h2 class="theme-name">暮蓝 Nightfall</h2><span class="theme-ref">立绘 1 · 湿头发拨到耳后的疲惫</span>
+    <p class="theme-story">蓝紫偏暖的那一版。<b>没有硬边，全靠色阶分层</b>，圆角放大到 16px，阴影软到几乎摸不出来。暮粉来自他发梢那两道 —— 整个主题里唯一允许亮起来的地方就是「停止」和状态点。</p></div>
+
+  <h3 class="sub">① 聊天面板 · 默认收起态</h3>
+  <p class="cap">输入区上方原本是<b>一摞面板</b>（Σ用量 / 调试信息▸ / 投递），展开就把消息流顶走。
+    本版压成<b>一行 meta 轨</b>，详情改走浮层 —— <b>点右边的「Σ 1.24k / 调试 / 插话」试试</b>，
+    消息流在开合前后 y 坐标完全不动。点浮层外或 <kbd>✕</kbd> 关闭。</p>
+<!-- ============================================================================
+     共享结构（雨3 Nightfall 与 金3 Azurite 各一份）
+     ----------------------------------------------------------------------------
+     id 一律是 <主题>-<名字>（nightfall-i-debug / azurite-i-debug …）：两份主题
+     同处一份文档，id 必须唯一、radio 的 name 也必须分组隔离，否则点一边的入口
+     会把另一边的状态一起带走。骨架 CSS 因此统一用 [id$="-i-debug"] 这类后缀
+     选择器匹配，一份样式照顾两份主题。
+
+     电台全部是纯 CSS 的开关，没有一行 JS：浮层开合靠 :has() 匹配被选中的电台。
+     ========================================================================== -->
+<div class="rig">
+  <div class="stage"><div class="stagef"></div><span class="stagel">灵动图层 L0–L4 · 舞台兜底</span></div>
+
+  <div class="chat">
+    <!-- 浮层开合电台 -->
+    <input class="insw" type="radio" name="nightfall-insp" id="nightfall-i-none" checked>
+    <input class="insw" type="radio" name="nightfall-insp" id="nightfall-i-usage">
+    <input class="insw" type="radio" name="nightfall-insp" id="nightfall-i-debug">
+    <input class="insw" type="radio" name="nightfall-insp" id="nightfall-i-route">
+
+    <!-- ① 顶栏（macOS 无 ×；Windows 只留 ×） -->
+    <div class="bar"><span class="lights"><i></i><i></i><i></i></span>
+      <span class="brand">V1rtual<small>Desk Pet</small></span>
+      <span class="status"><i></i>配信中</span>
+      <span class="btns"><span>设置</span><span>图层</span><span class="x">×</span></span></div>
+
+    <!-- ② 会话标签行 -->
+    <div class="tabs"><span class="tab on">晚上的事</span><span class="tab">Profile 调色</span>
+      <span class="tabadd">＋</span><span class="tabhist">历史</span></div>
+
+    <!-- ③ 消息流（浮层与遮罩都挂在这一层内，不参与布局流） -->
+    <div class="log">
+      <input class="tr" type="checkbox" id="nightfall-planx">
+      <label class="scrim" for="nightfall-i-none"></label>
+
+      <span class="who">糖糖</span>
+      <div class="m ai">晚上好呀。看你窗口切得挺勤，今天在赶东西？</div>
+      <div class="think">思考 ▸</div>
+      <div class="toolcard"><span class="tch">已完成</span><code>sed -n '120,175p' profile.yaml</code></div>
+      <div class="m me">帮我把 L2 的灵敏度调低一点<span class="lvl">记住这条</span></div>
+      <div class="m ai streaming">好，我看看当前是哪一层…<span class="caret"></span></div>
+
+      <!-- ③b 需要你拍板的面板：留在流内，但只占一行 -->
+      <div class="askbar"><em class="n">3</em>
+        <span class="tx">任务计划 · 3 步待确认</span>
+        <label for="nightfall-planx">查看</label><label class="primary">全部确认</label></div>
+      <div class="plansteps">
+        <div><em>1</em>读取 profile.yaml<span class="s ok">已完成</span></div>
+        <div><em>2</em>改主题色与图层灵敏度<span class="s">执行中</span></div>
+        <div><em>3</em>重推舞台快照<span class="s">待执行</span></div>
+      </div>
+
+      <span class="jump">↓ 新消息</span>
+
+      <!-- ④c 用量浮层 -->
+      <section class="insp usage">
+        <div class="insph"><b>用量</b><span>本会话</span><label class="insx" for="nightfall-i-none">✕</label></div>
+        <div class="insbody">
+          <div class="biguse"><span class="n">1.24k</span><span class="u">tokens</span></div>
+          <div class="kv"><span>输入</span><b>812</b></div>
+          <div class="kv"><span>输出</span><b>431</b></div>
+          <div class="kv"><span>缓存命中</span><b>62%</b></div>
+          <div class="kv"><span>本会话 14 轮 · 平均每轮</span><b>89</b></div>
+        </div>
+      </section>
+
+      <!-- ④c 调试浮层（分页签，不再平铺一排 chip） -->
+      <section class="insp debug">
+        <input class="tr" type="radio" name="nightfall-dbg" id="nightfall-d1" checked>
+        <input class="tr" type="radio" name="nightfall-dbg" id="nightfall-d2">
+        <input class="tr" type="radio" name="nightfall-dbg" id="nightfall-d3">
+        <div class="insph"><b>调试</b><span>只读 · 改动即时生效</span><label class="insx" for="nightfall-i-none">✕</label></div>
+        <div class="instabs">
+          <label class="instab" for="nightfall-d1">概览</label>
+          <label class="instab" for="nightfall-d2">工具</label>
+          <label class="instab" for="nightfall-d3">注册</label>
+        </div>
+        <div class="insbody">
+          <div class="pane p1">
+            <div class="kv"><span>上下文占用</span><b>12%</b></div>
+            <span class="meter"><i style="width:12%"></i></span>
+            <div class="setrow"><span class="setl">思考深度</span><span class="spick">默认<em>▾</em></span></div>
+            <div class="setrow"><span class="setl">安全策略</span><span class="spick">默认<em>▾</em></span></div>
+          </div>
+          <div class="pane p2">
+            <div class="kv"><span>本次请求携带 3 个工具</span><b>已结算</b></div>
+            <div class="kv"><span>read_file</span><b>1 次 · 12ms</b></div>
+            <div class="kv"><span>edit_file</span><b>1 次 · 38ms</b></div>
+            <div class="kv"><span>shell</span><b>1 次 · 214ms</b></div>
+          </div>
+          <div class="pane p3">
+            <div class="kv"><span>注册工具</span><b>15</b></div>
+            <div class="kv"><span>MCP 服务器</span><b>0</b></div>
+            <div class="kv"><span>Skill</span><b>4</b></div>
+            <div class="kv"><span>本会话被拒</span><b>0</b></div>
+          </div>
+        </div>
+      </section>
+
+      <!-- ④c 投递浮层 -->
+      <section class="insp route">
+        <div class="insph"><b>投递方式</b><span>消息生成中时的去处</span><label class="insx" for="nightfall-i-none">✕</label></div>
+        <div class="insbody">
+          <label class="opt on"><span class="dot"></span><span><span class="tt">插话</span>
+            <span class="dd">消息正在生成时，把新消息排进当前回合，她下一句就能看到</span></span></label>
+          <label class="opt"><span class="dot"></span><span><span class="tt">排队</span>
+            <span class="dd">等这一轮结束再处理，不打断当前回复</span></span></label>
+          <label class="opt"><span class="dot"></span><span><span class="tt">打断</span>
+            <span class="dd">立刻中止本轮生成，只处理新消息</span></span></label>
+        </div>
+      </section>
+    </div>
+
+    <!-- ④ 输入区 -->
+    <div class="composer">
+      <div class="pend"><span class="pchip">图片 1 · 1791084123556.png<em>×</em></span></div>
+      <div class="inp"><span class="ph">说点什么…</span><span class="btn">图片</span><span class="btn send">停止</span></div>
+
+      <!-- ④b meta 轨：老版三行（Σ用量 / 调试信息▸ / 投递）合并成的一行 -->
+      <div class="rail">
+        <span class="rstat"><i></i><span>生成中 · 已完成 1/3 步</span></span>
+        <label class="rchip" for="nightfall-i-usage">Σ 1.24k <b>▾</b></label>
+        <label class="rchip" for="nightfall-i-debug">调试 <b>▾</b></label>
+        <label class="rchip" for="nightfall-i-route">插话 <b>▾</b></label>
+      </div>
+    </div>
+  </div>
+</div>
+
+
+  <h3 class="sub">② 设置窗 · 左竖栏 5 Tab（通用 / 外观 / AI / 工具 / 记忆）</h3>
+  <p class="cap">与聊天面同一套变量。这一层最暴露材质：面板底、控件凹槽、开关轨道、主按钮都各有一套渐变。</p>
+<!-- ============================================================================
+     设置窗结构（与聊天面同一套变量）
+     清单取自实机：左竖栏 5 Tab（通用 / 外观 / AI / 工具 / 记忆）。
+     这里只画「外观」页，因为它是最能暴露主题材质的一屏。
+     ========================================================================== -->
+<div class="set">
+  <div class="bar"><span class="lights"><i></i><i></i><i></i></span>
+    <span class="brand">设置<small>V1rtual Desk Pet</small></span>
+    <span class="status"><i></i>已连接</span>
+    <span class="btns"><span class="x">×</span></span></div>
+
+  <div class="sbody">
+    <nav class="srail"><span>通用</span><span class="on">外观</span><span>AI</span><span>工具</span><span>记忆</span></nav>
+
+    <div class="spane">
+      <div>
+        <div class="sgtitle">角色展示</div>
+        <div class="srow"><span class="sl">当前 Profile<small>选项来自运行时 profiles 目录，切换会重载舞台与素材</small></span>
+          <span class="spick">默认<em>▾</em></span></div>
+        <div class="srow"><span class="sl">角色效果</span>
+          <span class="seg"><i>关闭</i><i class="on">视差</i></span></div>
+        <div class="srow"><span class="sl">界面主题<small>产品预设（不可改色值）；与 Profile 无关，换 Profile 不换主题</small></span>
+          <span class="seg"><i class="on">本主题</i><i>其余 7 款</i></span></div>
+        <div class="srow"><span class="sl">灵动强度</span>
+          <span class="snum">1.0</span></div>
+        <div class="srow"><span class="sl">聊天图片自动预览<small>关闭时历史消息只显示图片占位，点击占位仍可打开查看器</small></span>
+          <span class="sw on"></span></div>
+      </div>
+
+      <div>
+        <div class="sgtitle">字体（全局）</div>
+        <div class="srow"><span class="sl">全局字体<small>只列系统已安装字体；空 = 跟随系统默认字体</small></span>
+          <span class="spick">系统默认<em>▾</em></span></div>
+        <div class="srow"><span class="sl">全局字号</span>
+          <span class="snum">14<em>px</em></span></div>
+      </div>
+
+      <div>
+        <div class="sgtitle">窗口</div>
+        <div class="srow"><span class="sl">置顶显示</span>
+          <span class="sw on"></span></div>
+        <div class="srow"><span class="sl">开机自动启动</span>
+          <span class="sw"></span></div>
+      </div>
+    </div>
+  </div>
+
+  <div class="sfoot"><span class="snote">已改动 2 项 · 保存后写入 CONFIG 并即时生效</span>
+    <span class="sbtn">取消</span><span class="sbtn primary">保存</span></div>
+</div>
+
+<!-- 控件关态样本（原型标注，不是产品 UI） -->
+<div class="samples"><span class="scap">控件关态样本（原型标注，不是产品 UI）：</span>
+  <span class="sw"></span><b>开关 · 关</b>
+  <span class="spick" style="min-width:82px">未设置<em>▾</em></span><b>下拉 · 空</b>
+  <span class="snum">0.0</span><b>数值</b>
+  <span class="sbtn">动作</span><b>按钮</b></div>
+
+
+  <h3 class="sub">③ 色板 · 取自对应立绘</h3>
+  <div class="palette"><div class="pc"><i style="background:#12112A"></i><b>夜紫底</b><span>#12112A</span><em>画布 · --stage-bg 深处</em></div><div class="pc"><i style="background:#232145"></i><b>面板</b><span>#232145</span><em>雾面 · --pbg</em></div><div class="pc"><i style="background:#E0709C"></i><b>暮粉</b><span>#E0709C</span><em>发梢 · --acc</em></div><div class="pc"><i style="background:#3A3470"></i><b>我的气泡</b><span>#3A3470</span><em>高光面 · --me</em></div><div class="pc"><i style="background:#948FBE"></i><b>雾紫</b><span>#948FBE</span><em>次要字 · --dim</em></div><div class="pc"><i style="background:#E6E2F7"></i><b>正文</b><span>#E6E2F7</span><em>月白 · --ink</em></div></div>
+</section>
+
+
+<section class="theme" id="azurite">
+  <div class="theme-head"><span class="theme-num">金 3</span>
+    <h2 class="theme-name">青花 Azurite</h2><span class="theme-ref">立绘 2 · 白瓷釉面 / 靛蓝 / 一笔朱红</span>
+    <p class="theme-story">白瓷上画青花，只点一笔朱红。<b>全局只有一个地方是红的 —— 需要你拍板的按钮</b>，其余全靠靛蓝浓淡分层。面板顶沿留一条釉面高光，边界用极细的靛色线，冷白但不寡。对比度在这一套里最高，长时间看字最省力。</p></div>
+
+  <h3 class="sub">① 聊天面板 · 默认收起态</h3>
+  <p class="cap">输入区上方原本是<b>一摞面板</b>（Σ用量 / 调试信息▸ / 投递），展开就把消息流顶走。
+    本版压成<b>一行 meta 轨</b>，详情改走浮层 —— <b>点右边的「Σ 1.24k / 调试 / 插话」试试</b>，
+    消息流在开合前后 y 坐标完全不动。点浮层外或 <kbd>✕</kbd> 关闭。</p>
+<!-- ============================================================================
+     共享结构（雨3 Nightfall 与 金3 Azurite 各一份）
+     ----------------------------------------------------------------------------
+     id 一律是 <主题>-<名字>（nightfall-i-debug / azurite-i-debug …）：两份主题
+     同处一份文档，id 必须唯一、radio 的 name 也必须分组隔离，否则点一边的入口
+     会把另一边的状态一起带走。骨架 CSS 因此统一用 [id$="-i-debug"] 这类后缀
+     选择器匹配，一份样式照顾两份主题。
+
+     电台全部是纯 CSS 的开关，没有一行 JS：浮层开合靠 :has() 匹配被选中的电台。
+     ========================================================================== -->
+<div class="rig">
+  <div class="stage"><div class="stagef"></div><span class="stagel">灵动图层 L0–L4 · 舞台兜底</span></div>
+
+  <div class="chat">
+    <!-- 浮层开合电台 -->
+    <input class="insw" type="radio" name="azurite-insp" id="azurite-i-none" checked>
+    <input class="insw" type="radio" name="azurite-insp" id="azurite-i-usage">
+    <input class="insw" type="radio" name="azurite-insp" id="azurite-i-debug">
+    <input class="insw" type="radio" name="azurite-insp" id="azurite-i-route">
+
+    <!-- ① 顶栏（macOS 无 ×；Windows 只留 ×） -->
+    <div class="bar"><span class="lights"><i></i><i></i><i></i></span>
+      <span class="brand">V1rtual<small>Desk Pet</small></span>
+      <span class="status"><i></i>配信中</span>
+      <span class="btns"><span>设置</span><span>图层</span><span class="x">×</span></span></div>
+
+    <!-- ② 会话标签行 -->
+    <div class="tabs"><span class="tab on">晚上的事</span><span class="tab">Profile 调色</span>
+      <span class="tabadd">＋</span><span class="tabhist">历史</span></div>
+
+    <!-- ③ 消息流（浮层与遮罩都挂在这一层内，不参与布局流） -->
+    <div class="log">
+      <input class="tr" type="checkbox" id="azurite-planx">
+      <label class="scrim" for="azurite-i-none"></label>
+
+      <span class="who">糖糖</span>
+      <div class="m ai">晚上好呀。看你窗口切得挺勤，今天在赶东西？</div>
+      <div class="think">思考 ▸</div>
+      <div class="toolcard"><span class="tch">已完成</span><code>sed -n '120,175p' profile.yaml</code></div>
+      <div class="m me">帮我把 L2 的灵敏度调低一点<span class="lvl">记住这条</span></div>
+      <div class="m ai streaming">好，我看看当前是哪一层…<span class="caret"></span></div>
+
+      <!-- ③b 需要你拍板的面板：留在流内，但只占一行 -->
+      <div class="askbar"><em class="n">3</em>
+        <span class="tx">任务计划 · 3 步待确认</span>
+        <label for="azurite-planx">查看</label><label class="primary">全部确认</label></div>
+      <div class="plansteps">
+        <div><em>1</em>读取 profile.yaml<span class="s ok">已完成</span></div>
+        <div><em>2</em>改主题色与图层灵敏度<span class="s">执行中</span></div>
+        <div><em>3</em>重推舞台快照<span class="s">待执行</span></div>
+      </div>
+
+      <span class="jump">↓ 新消息</span>
+
+      <!-- ④c 用量浮层 -->
+      <section class="insp usage">
+        <div class="insph"><b>用量</b><span>本会话</span><label class="insx" for="azurite-i-none">✕</label></div>
+        <div class="insbody">
+          <div class="biguse"><span class="n">1.24k</span><span class="u">tokens</span></div>
+          <div class="kv"><span>输入</span><b>812</b></div>
+          <div class="kv"><span>输出</span><b>431</b></div>
+          <div class="kv"><span>缓存命中</span><b>62%</b></div>
+          <div class="kv"><span>本会话 14 轮 · 平均每轮</span><b>89</b></div>
+        </div>
+      </section>
+
+      <!-- ④c 调试浮层（分页签，不再平铺一排 chip） -->
+      <section class="insp debug">
+        <input class="tr" type="radio" name="azurite-dbg" id="azurite-d1" checked>
+        <input class="tr" type="radio" name="azurite-dbg" id="azurite-d2">
+        <input class="tr" type="radio" name="azurite-dbg" id="azurite-d3">
+        <div class="insph"><b>调试</b><span>只读 · 改动即时生效</span><label class="insx" for="azurite-i-none">✕</label></div>
+        <div class="instabs">
+          <label class="instab" for="azurite-d1">概览</label>
+          <label class="instab" for="azurite-d2">工具</label>
+          <label class="instab" for="azurite-d3">注册</label>
+        </div>
+        <div class="insbody">
+          <div class="pane p1">
+            <div class="kv"><span>上下文占用</span><b>12%</b></div>
+            <span class="meter"><i style="width:12%"></i></span>
+            <div class="setrow"><span class="setl">思考深度</span><span class="spick">默认<em>▾</em></span></div>
+            <div class="setrow"><span class="setl">安全策略</span><span class="spick">默认<em>▾</em></span></div>
+          </div>
+          <div class="pane p2">
+            <div class="kv"><span>本次请求携带 3 个工具</span><b>已结算</b></div>
+            <div class="kv"><span>read_file</span><b>1 次 · 12ms</b></div>
+            <div class="kv"><span>edit_file</span><b>1 次 · 38ms</b></div>
+            <div class="kv"><span>shell</span><b>1 次 · 214ms</b></div>
+          </div>
+          <div class="pane p3">
+            <div class="kv"><span>注册工具</span><b>15</b></div>
+            <div class="kv"><span>MCP 服务器</span><b>0</b></div>
+            <div class="kv"><span>Skill</span><b>4</b></div>
+            <div class="kv"><span>本会话被拒</span><b>0</b></div>
+          </div>
+        </div>
+      </section>
+
+      <!-- ④c 投递浮层 -->
+      <section class="insp route">
+        <div class="insph"><b>投递方式</b><span>消息生成中时的去处</span><label class="insx" for="azurite-i-none">✕</label></div>
+        <div class="insbody">
+          <label class="opt on"><span class="dot"></span><span><span class="tt">插话</span>
+            <span class="dd">消息正在生成时，把新消息排进当前回合，她下一句就能看到</span></span></label>
+          <label class="opt"><span class="dot"></span><span><span class="tt">排队</span>
+            <span class="dd">等这一轮结束再处理，不打断当前回复</span></span></label>
+          <label class="opt"><span class="dot"></span><span><span class="tt">打断</span>
+            <span class="dd">立刻中止本轮生成，只处理新消息</span></span></label>
+        </div>
+      </section>
+    </div>
+
+    <!-- ④ 输入区 -->
+    <div class="composer">
+      <div class="pend"><span class="pchip">图片 1 · 1791084123556.png<em>×</em></span></div>
+      <div class="inp"><span class="ph">说点什么…</span><span class="btn">图片</span><span class="btn send">停止</span></div>
+
+      <!-- ④b meta 轨：老版三行（Σ用量 / 调试信息▸ / 投递）合并成的一行 -->
+      <div class="rail">
+        <span class="rstat"><i></i><span>生成中 · 已完成 1/3 步</span></span>
+        <label class="rchip" for="azurite-i-usage">Σ 1.24k <b>▾</b></label>
+        <label class="rchip" for="azurite-i-debug">调试 <b>▾</b></label>
+        <label class="rchip" for="azurite-i-route">插话 <b>▾</b></label>
+      </div>
+    </div>
+  </div>
+</div>
+
+
+  <h3 class="sub">② 设置窗 · 左竖栏 5 Tab（通用 / 外观 / AI / 工具 / 记忆）</h3>
+  <p class="cap">与聊天面同一套变量。这一层最暴露材质：面板底、控件凹槽、开关轨道、主按钮都各有一套渐变。</p>
+<!-- ============================================================================
+     设置窗结构（与聊天面同一套变量）
+     清单取自实机：左竖栏 5 Tab（通用 / 外观 / AI / 工具 / 记忆）。
+     这里只画「外观」页，因为它是最能暴露主题材质的一屏。
+     ========================================================================== -->
+<div class="set">
+  <div class="bar"><span class="lights"><i></i><i></i><i></i></span>
+    <span class="brand">设置<small>V1rtual Desk Pet</small></span>
+    <span class="status"><i></i>已连接</span>
+    <span class="btns"><span class="x">×</span></span></div>
+
+  <div class="sbody">
+    <nav class="srail"><span>通用</span><span class="on">外观</span><span>AI</span><span>工具</span><span>记忆</span></nav>
+
+    <div class="spane">
+      <div>
+        <div class="sgtitle">角色展示</div>
+        <div class="srow"><span class="sl">当前 Profile<small>选项来自运行时 profiles 目录，切换会重载舞台与素材</small></span>
+          <span class="spick">默认<em>▾</em></span></div>
+        <div class="srow"><span class="sl">角色效果</span>
+          <span class="seg"><i>关闭</i><i class="on">视差</i></span></div>
+        <div class="srow"><span class="sl">界面主题<small>产品预设（不可改色值）；与 Profile 无关，换 Profile 不换主题</small></span>
+          <span class="seg"><i class="on">本主题</i><i>其余 7 款</i></span></div>
+        <div class="srow"><span class="sl">灵动强度</span>
+          <span class="snum">1.0</span></div>
+        <div class="srow"><span class="sl">聊天图片自动预览<small>关闭时历史消息只显示图片占位，点击占位仍可打开查看器</small></span>
+          <span class="sw on"></span></div>
+      </div>
+
+      <div>
+        <div class="sgtitle">字体（全局）</div>
+        <div class="srow"><span class="sl">全局字体<small>只列系统已安装字体；空 = 跟随系统默认字体</small></span>
+          <span class="spick">系统默认<em>▾</em></span></div>
+        <div class="srow"><span class="sl">全局字号</span>
+          <span class="snum">14<em>px</em></span></div>
+      </div>
+
+      <div>
+        <div class="sgtitle">窗口</div>
+        <div class="srow"><span class="sl">置顶显示</span>
+          <span class="sw on"></span></div>
+        <div class="srow"><span class="sl">开机自动启动</span>
+          <span class="sw"></span></div>
+      </div>
+    </div>
+  </div>
+
+  <div class="sfoot"><span class="snote">已改动 2 项 · 保存后写入 CONFIG 并即时生效</span>
+    <span class="sbtn">取消</span><span class="sbtn primary">保存</span></div>
+</div>
+
+<!-- 控件关态样本（原型标注，不是产品 UI） -->
+<div class="samples"><span class="scap">控件关态样本（原型标注，不是产品 UI）：</span>
+  <span class="sw"></span><b>开关 · 关</b>
+  <span class="spick" style="min-width:82px">未设置<em>▾</em></span><b>下拉 · 空</b>
+  <span class="snum">0.0</span><b>数值</b>
+  <span class="sbtn">动作</span><b>按钮</b></div>
+
+
+  <h3 class="sub">③ 色板 · 取自对应立绘</h3>
+  <div class="palette"><div class="pc"><i style="background:#F7F9FC"></i><b>瓷白</b><span>#F7F9FC</span><em>釉面 · --pbg</em></div><div class="pc"><i style="background:#2A55A8"></i><b>靛</b><span>#2A55A8</span><em>主色 · --acc</em></div><div class="pc"><i style="background:#132A52"></i><b>墨蓝</b><span>#132A52</span><em>正文 · --ink</em></div><div class="pc"><i style="background:#C63A2E"></i><b>朱红</b><span>#C63A2E</span><em>只给一个按钮 · --sbg</em></div><div class="pc"><i style="background:#DEE9F8"></i><b>淡青</b><span>#DEE9F8</span><em>我的气泡 · --me</em></div><div class="pc"><i style="background:#5C6E8E"></i><b>釉灰</b><span>#5C6E8E</span><em>次要字 · --dim</em></div></div>
+</section>
+
+</div>
+<script>
+/* 交互不依赖 JS。这里只按 URL 片段复位一次初始态，片段直接写元素 id：
+   #nightfall-i-debug ／ #nightfall-i-route ／ #azurite-i-usage ／ #azurite-planx */
+(() => {
+  const el = location.hash && document.getElementById(location.hash.slice(1));
+  if (el && (el.type === 'radio' || el.type === 'checkbox')) el.checked = true;
+})();
+</script>
+</body></html>

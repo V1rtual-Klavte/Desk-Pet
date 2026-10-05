@@ -1,40 +1,40 @@
 # 当前工具系统
 
-本文维护工具能力、权限和 Skill/MCP 生命周期。Pi hook 的整体接线、请求快照与会话代际见[运行时契约](runtime-contract.md)，历史修复记录见[加固基线](../history/analysis/运行时加固与清理计划-2026-09-17基线.md)。
+本文维护工具能力、权限和 Skill/MCP 生命周期。Pi hook 的整体接线、请求快照与会话代际见[运行时契约](runtime-contract.md)。
 
 ## 执行链
 
 ```text
-Pi Harness Tool → harness-tool-adapter → ToolRouter → 执行许可借用 → TauriExecutionEnv → Rust tool_exec
+Pi Harness Tool → harness-tool-adapter → ToolRouter → 执行许可借用 → NativeExecutionEnv → HostBridge（私有 IPC）→ 原生宿主 commands/tool_exec
                         ↑ beforeToolCall / PermissionKernel 先完成门禁
 ```
 
-文件与命令工具来自 Pi 的 ExecutionEnv 抽象，通过 [harness-adapter](../../src/services/tool/pi/harness-adapter.ts) 和 [TauriExecutionEnv](../../src/services/tool/pi/tauri-execution-env.ts) 接入 WebView。内部 IPC 的 file_read/file_write/file_write_atomic/bash_exec 仍可被宿主服务（Skill 保存、V1RTUAL.md 写入）使用；host 写入不纳入许可域（借用者身份是页面实例，host 没有该生命周期），但走 `file_write_atomic` 的同目录 rename 原子替换，消除半写可观测窗口。它们不是另一个模型工具集。
+文件与命令工具来自 Pi 的 ExecutionEnv 抽象，通过 [harness-adapter](../../src/services/tool/pi/harness-adapter.ts) 和 [NativeExecutionEnv](../../src/services/tool/pi/native-execution-env.ts) 走 HostBridge 接入原生宿主；路径运算经 `ExecutionPathKit` 端口（Node 实现走 `node:path`/`node:os`）。宿主命令 `file_read`/`file_write`/`file_write_atomic`/`file_append`/`bash_exec` 同样被 Node 域服务（Skill 保存、V1RTUAL.md 写入等）直接使用；这类域内写入不纳入工具许可域（许可借用者是 Node 模块实例、只覆盖模型工具执行），但走 `file_write_atomic` 的同目录 rename 原子替换，消除半写可观测窗口。它们不是另一个模型工具集。
 
 | 工具 | 当前边界 |
 |---|---|
-| read | 文本或图片读取；图片长边超过 1568 时等比缩放、BMP 一律转 PNG，处理失败回退原图（[images/processor.ts](../../src/services/images/processor.ts)）；敏感路径仍会提高风险或被拒绝；私钥/凭据路径（含相对形式与 `~`/`$HOME`/`${HOME}`/反斜杠/`..` 归一）硬拒绝，Rust 侧 `is_credential_path` 是不可关闭的最终判定（规则文本 = 「`.ssh` 目录组件或 `.pem`/`.key` 后缀」） |
+| read | 文本或图片读取；图片经 Pi 的 `ReadImageProcessor` 端口（[images/processor.ts](../../src/services/images/processor.ts)）：有画布/解码能力时长边超 1568 等比缩放、BMP 转 PNG，任何处理失败回退原图（只留痕，不把图片从结果里丢掉）；长边阈值与 BMP 判定的唯一定义点都在该文件。**Node 进程没有画布/`createImageBitmap` 能力，这条处理链当前对图片一律回退原图并留痕**；宿主图片域（[crates/native-host/src/images/](../../crates/native-host/src/images/)）另有完整解码/缩放/编码实现，当前由截图、查看器与聊天内联预览消费。敏感路径仍会提高风险或被拒绝；私钥/凭据路径（含相对形式与 `~`/`$HOME`/`${HOME}`/反斜杠/`..` 归一）硬拒绝，Rust 侧 `is_credential_path` 是不可关闭的最终判定（规则文本 = 「`.ssh` 目录组件或 `.pem`/`.key` 后缀」） |
 | write / edit | DANGER（凭据路径升 NOWAY 硬拒绝）；写能力恒暴露、不做配置开关，风险与确认只由安全模式裁决 |
 | bash | 动态风险：首词命中白名单、无 shell 组合符且未命中危险/硬禁止模式为 NORMAL（免确认通道），其余为 DANGER；Rust 侧层 1 硬基线与系统路径保护不可关闭；命令里的凭据路径 token 硬拒绝 |
 | system_info | 只读运行环境：操作系统、架构、CPU 核心数、内存（总量 / 已用 / 可用）与 bash 默认工作目录 |
 | window_info | 只读最新原生窗口观测（应用、标题、采样时间和状态）；监控关闭、无观测或过期时如实说明 |
-| screenshot | 截取画面：前台窗口，桌宠自己是前台时退到主显示器整屏（避免截到桌宠自己的窗口）；缩放与静默了解同口径（长边 ≤1280、PNG），不套它的 idle 门槛；隐私总闸 `ai.silentAccess.enabled` 关闭时返回中性说明而不是报错，Rust `capture_screenshot` 复检同一开关；结果同时带图片块给模型（她自己也看得见），PNG 经 `save_screenshot` 落盘到数据根 `screenshots/`（原子写、只保留最新 200 个，按 mtime 淘汰）；`show_to_user=true` 时路径并入本回合提交的助手条目（`deskpetImagePaths`）在聊天里展示 |
-| read_session_event | 按 `eventId` 回读地址分页读取当前会话保存的完整工具结果（被 L0 缩短或清空的结果由此恢复）：地址是完整 36 位条目 id 或**会话内最短唯一前缀**，前缀命中多条返回明确错误（`errorCode: "ambiguous"`，提示用更长前缀）而不任选；页大小按 token 预算推导、随窗口单调（旧的固定 8000 字符页宽已删除；`offset` 仍是字符下标）；前缀解析只由条目 id 集合决定，折叠不改条目 id，地址因此对折叠不敏感 |
+| screenshot | 截取画面：前台窗口，桌宠自己是前台时退到主显示器整屏（避免截到桌宠自己的窗口）；缩放与静默了解同口径（长边 ≤1280、PNG），不套它的 idle 门槛；隐私总闸 `ai.silentAccess.enabled` 关闭时返回中性说明而不是报错，Rust `capture_screenshot` 复检同一开关；结果同时带图片块给模型（她自己也看得见），PNG 经 `save_screenshot` 落盘到数据根 `screenshots/`（原子写、只保留最新 [`SCREENSHOT_RETENTION` = 200](../../crates/native-host/src/commands/screenshot_cmd.rs)，按 mtime 淘汰）；`show_to_user=true` 时路径并入本回合提交的助手条目（`deskpetImagePaths`）在聊天里展示 |
+| read_session_event | 按 `eventId` 回读地址分页读取当前会话保存的完整工具结果（被 L0 缩短或清空的结果由此恢复）：地址是完整 36 位条目 id 或**会话内最短唯一前缀**，前缀命中多条返回明确错误（`errorCode: "ambiguous"`，提示用更长前缀）而不任选；页大小按 token 预算推导、随窗口单调；`offset` 是字符下标；前缀解析只由条目 id 集合决定，折叠不改条目 id，地址因此对折叠不敏感 |
 | app_open / clipboard_read / clipboard_write / agent_spawn | 恒暴露，受各自策略约束；四者都是 DANGER，`agent_spawn` 另声明 `delegate` 隔离，运行入口（`runPiSubAgent`）按这一判定把派生型工具从子代理工具面里剥离 |
 | enable_tools | 按需启用本回合未激活的工具（SAFE、allow；机制见「回合激活面与渐进披露」）：空参返回可启用清单、`query` 关键词查找并启用、`names` 精确启用；只在确有未激活工具时挂进对话回合的工具面，取用经 `addedToolNames` 回合内生效、不跨 run 保留 |
-| MCP 工具 | 仅启用且成功借用的 server；借用期间**全量**进入此后每个回合的冻结工具集（`setTools` 持全量），但对话回合的默认激活集只含基础工具与常用白名单，其余由 `enable_tools` 回合内按需加入（见「回合激活面与渐进披露」）；计划步骤的未限定工具面拿得到全量（子运行不收窄），`agent_spawn` 的 fork/team 子代理按固定白名单收窄 —— 只有 read / system_info / bash，不在其列；受工具发现过滤与权限终裁 |
+| MCP 工具 | 仅启用且成功借用的 server；借用期间**全量**进入此后每个回合的冻结工具集（`setTools` 持全量），对话回合的默认激活集只含基础工具（MCP 工具默认不在其中），其余由 `enable_tools` 回合内按需加入（见「回合激活面与渐进披露」）；计划步骤的未限定工具面拿得到全量（子运行不收窄），`agent_spawn` 的 fork/team 子代理按固定白名单收窄 —— 只有 read / system_info / bash，不在其列；受工具发现过滤与权限终裁 |
 | memory_query / memory_change | 同一长期记忆库的查询与治理；change 为 NORMAL、passthrough，继续由 PermissionKernel 终裁，绑定本轮已提交可信用户事件和目标版本。支持 remember/correct/complete/cancel/forget，patch 保留未提供字段，事项时间使用 day/minute TemporalAnchor。只读查询同样绑定本轮可信用户事件，范围固定为 user＋当前 Card＋当前 session（管理界面的跨 scope 浏览不进入模型入口）。模型不能执行 dreaming job 提交或 SQL |
 | proactive_query / proactive_change | 当前范围内的约定与事项；query 只读，change 为 NORMAL、passthrough、exclusive_effect、replay:never。创建、完成、取消、改期、延后和控制必须绑定当前 owner；任务写入绑定本轮用户事件，周期可先经 `propose` 记录提议、只有本轮明确同意并引用 `proposalId` 才能建立，歧义先澄清；改期必须同时给出事项时间锚，延后只改下次提醒并保留原有效期 |
 
-实际清单由 [registry.ts](../../src/services/tool/registry.ts)、[pi-tools.ts](../../src/services/tool/local/pi-tools.ts) 和回合冻结快照决定；每回合请求里下发的还会再经默认激活集收窄（见「回合激活面与渐进披露」）。目录列举使用 bash ls；不再注册独立 ls/file_search/http_get。Pi CLI 的 Node 工具不能直接移入 WebView，需要现有 ExecutionEnv 边界。
+实际清单由 [registry.ts](../../src/services/tool/registry.ts)、[pi-tools.ts](../../src/services/tool/local/pi-tools.ts) 和回合冻结快照决定；每回合请求里下发的还会再经默认激活集收窄（见「回合激活面与渐进披露」）。目录列举使用 bash ls；不注册独立 ls/file_search/http_get。Pi CLI 的 Node 工具不直接搬进业务代码，一律经现有 ExecutionEnv 边界接入。
 
 ## 回合激活面与渐进披露
 
 工具按「注册面 / 冻结面 / 激活面」三层落地，三者不合并：
 
-- **注册面**：MCP 发现经 includeTools/excludeTools 过滤后注册进注册表（内置服务器随包带了 includeTools 白名单，2026-10-04）；注册即拥有完整 ToolDef。
+- **注册面**：MCP 发现经 includeTools/excludeTools 过滤后注册进注册表（自定义服务器可在配置里预置 includeTools 白名单）；注册即拥有完整 ToolDef。
 - **冻结面**：对话回合装配时 `[...listAll()]` 全量交给 Pi `setTools`（名字可解析；Pi 在每次请求前校验激活集 ⊆ 全量）。
-- **激活面**：真正进请求 schema 的只有默认激活集 —— 非 MCP 工具全部 + MCP 常用白名单（内置 filesystem 的只读工具；唯一判定是 [activation.ts](../../src/services/tool/activation.ts) 的 `defaultActiveToolNames`，白名单常量是调整默认面的唯一位置）。默认激活集在每回合装配时经 `lane.setActiveTools` 重设：只有主对话回合（主回合与恢复续跑）收窄，子代理 / 计划步骤省略即全量，保持既有行为。
+- **激活面**：真正进请求 schema 的只有默认激活集 —— 非 MCP 工具全部（MCP 工具默认不在激活面；唯一判定是 [activation.ts](../../src/services/tool/activation.ts) 的 `defaultActiveToolNames`）。默认激活集在每回合装配时经 `lane.setActiveTools` 重设：只有主对话回合（主回合与恢复续跑）收窄，子代理 / 计划步骤省略即全量，保持既有行为。
 
 模型取用入口是 `enable_tools`（[enable-tools.ts](../../src/services/tool/enable-tools.ts)）：传 `names` 精确启用、传 `query` 按关键词查找并启用、空参返回可启用清单；只在确有未激活工具时挂进对话回合的工具面（没有 MCP 工具时它无事可做，不占 schema）。启用经 Pi 原生 `addedToolNames` 在**本回合**后续请求生效（工具批次落盘时并入激活集），不跨 run 保留；[harness-tool-adapter.ts](../../src/services/tool/pi/harness-tool-adapter.ts) 把结果里本回合工具集之外的名字过滤掉并留痕（Pi 对名单外的名字会直接 configuration_failure，不能放进去）。
 
@@ -44,11 +44,11 @@ Pi Harness Tool → harness-tool-adapter → ToolRouter → 执行许可借用 �
 
 `ToolDef` 携带身份、schema 与风险等级，策略集中在 `policy`（[types.ts](../../src/services/tool/types.ts)）；执行函数**不是公开字段**，经 `defineTool` 进入 [policy.ts](../../src/services/tool/policy.ts) 的模块内 WeakMap（`getToolHandler` 只给 router / registry，不从 barrel 导出）：
 
-- `safetyLevel`（`SAFE` / `NORMAL` / `DANGER` / `NOWAY`，可用 `resolveSafetyLevel(params, ctx)` 按调用动态解析）留在 ToolDef 顶层：它是风险维度而不是权限意见，供 PermissionKernel 定风险。等级到裁决的映射只有 [permission.ts](../../src/services/safety/permission.ts) 的 `standardDecision` 一处：`NOWAY` 一律 deny，`SAFE` / `NORMAL` 一律 allow，`DANGER` 交给安全模式（`just_do_it` 放行，`let_me_tk` 与默认档都要确认）。工具没有各自的权限开关（回合激活面收窄的是「进不进请求」，不是授权；见「回合激活面与渐进披露」），`validateRiskDeclaration` 只守未经类型检查的 `safetyLevel` 声明。
+- `safetyLevel`（`SAFE` / `NORMAL` / `DANGER` / `NOWAY`，可用 `resolveSafetyLevel(params, ctx)` 按调用动态解析）留在 ToolDef 顶层：它是风险维度而不是权限意见，供 PermissionKernel 定风险。等级到裁决的映射只有 [permission.ts](../../src/services/safety/permission.ts) 的 `standardDecision` 一处：`NOWAY` 一律 deny，`SAFE` / `NORMAL` 一律 allow，`DANGER` 交给安全模式（`just_do_it` 放行，`let_me_tk` 与默认档都要确认）。工具没有各自的权限开关（回合激活面收窄的是「进不进请求」，不是授权），`validateRiskDeclaration` 只守未经类型检查的 `safetyLevel` 声明。
 - `permission.defaultDecision` 是工具侧唯一的权限意见（`allow` / `ask` / `deny` / `passthrough`），`passthrough` 不是执行许可，必须由 PermissionKernel 收敛。
 - `execution.effect / isolation / replay / timeoutMs`：效果分类、隔离级别、恢复重放资格与超时；未声明超时时统一取 `loop.toolTimeoutMs`。并发语义只由 `effect` / `isolation` 表达（`shared_read` 必须同时是 `read` 效果；反向不设约束，独占读是合法的保守声明）。
 - `context.resultProjection`：`preserve` 是**禁止二次处理**，不缩短、不清空（地址标注不在此列，照旧带），避免「引用 → 读取 → 又变引用」的循环 —— 回读工具 `read_session_event` 自身即声明 `preserve`；`reference` 的结果可被 L0 缩短或清空，且**无条件带地址**（不论是否超阈值）。两者都只改请求视图，会话条目存档始终保留全文。Router 的 L1 内联截断已删除：会话条目与请求视图共用同一份工具返回全文，请求视图里工具结果的改动只发生在 L0（[context/tool-output.ts](../../src/services/context/tool-output.ts)）且提示带 eventId 回读地址。
-- `context.historyCompaction`：`retain` 的调用配对必须保留原文，压缩覆盖边界不得越过（连续完整轮下命中即 decline，由预算守卫报告上下文不足）；该取值维持保留（裁定 B）：生产无消费者（全部生产工具声明 `summarize`），由 `memory-retain-guard` 场景驱动，不删。
+- `context.historyCompaction`：`retain` 的调用配对必须保留原文，压缩覆盖边界不得越过（连续完整轮下命中即 decline，由预算守卫报告上下文不足）；该取值维持保留：生产无消费者（全部生产工具声明 `summarize`），由 `memory-retain-guard` 场景驱动，不删。
 
 [defineTool](../../src/services/tool/policy.ts) 是唯一构造入口（手写、Pi 适配、MCP 都经它产出 ToolDef），注册入口再次校验：缺策略、`shared_read` 搭配非只读效果、未知策略版本、非法权限意见都是注册错误，不做缺省猜测；未经它构造的定义在注册时直接抛错（结构上没有执行体），不会进入注册表。`actionCategory` 由 ToolDef 唯一声明，经 `actionCategoryOf`（[registry.ts](../../src/services/tool/registry.ts)）解析后驱动人格阶段文案（`getStagePrompt`）；不再决定并行、权限或压缩。`replay` 由 Harness 恢复路径消费：只有持久化调用与当前工具都声明 `safe` 才会重放效果，当前全部工具为 `never`。
 
@@ -56,40 +56,48 @@ Pi Harness Tool → harness-tool-adapter → ToolRouter → 执行许可借用 �
 
 ## 执行许可（纯读并行与效果互斥）
 
-Harness 以 `toolExecution: parallel` 派发批次，效果之间的并发由 Rust 应用级许可所有者裁定：[tool_permit.rs](../../src-tauri/src/commands/tool_permit.rs) 持有额度，前端在 [router.ts](../../src/services/tool/router.ts) 执行入口借用、真实结算后释放（[execution-permit.ts](../../src/services/tool/execution-permit.ts)）。
+Harness 以 `toolExecution: parallel` 派发批次，效果之间的并发由原生宿主侧的应用级许可所有者裁定：[tool_permit.rs](../../crates/native-host/src/commands/tool_permit.rs) 持有额度，Node 在 [router.ts](../../src/services/tool/router.ts) 执行入口借用、真实结算后释放（[execution-permit.ts](../../src/services/tool/execution-permit.ts)）。
 
 - `shared_read` 走有界共享额度（默认 4，由 [`ai.loop.maxParallelTools`](runtime-data.md#工具并行上限字段的语义与生效时机) 配置，范围 1–8），两个只读可真正重叠；`exclusive_effect`（write/edit/bash/app_open/clipboard_write/MCP）与进行中的读写互斥，效果按借用顺序串行。
-- `delegate`（agent_spawn）不占父批次额度，子运行的工具各自取许可；编排入口不自行执行文件写入。子代理运行随父运行取消（取消域级联：子槽挂到父槽下，父槽停止/关闭/释放都会级联到子运行），许可借用身份绑定父会话 + 代际 —— 计划步骤的子代理不再落到 `no-session:-1:…` 这一档。
-- Harness 的工具 memo 持久位（`invocation.getMemo` / `setMemo`）维持不实现：没有任何 V1rtual-Desk-Pet 工具把中间状态放进 memo（[harness-adapter.ts](../../src/services/tool/pi/harness-adapter.ts) 是空实现），恢复判定只按会话条目与工具结果条目这一份证据；`replay: "never"` 已保证不重放，恢复位无消费者（FIX-16）。
+- `delegate`（agent_spawn）不占父批次额度，子运行的工具各自取许可；编排入口不自行执行文件写入。子代理运行随父运行取消（取消域级联：子槽挂到父槽下，父槽停止/关闭/释放都会级联到子运行），许可借用身份绑定父会话 + 代际。
+- Harness 的工具 memo 持久位（`invocation.getMemo` / `setMemo`）维持不实现：没有任何 V1rtual-Desk-Pet 工具把中间状态放进 memo（[harness-adapter.ts](../../src/services/tool/pi/harness-adapter.ts) 是空实现），恢复判定只按会话条目与工具结果条目这一份证据；`replay: "never"` 已保证不重放，恢复位无消费者。
 - 等待可取消（取消会移出排队项），没有超时自动释放；拿到额度后重新核对取消与代际，排队不能成为绕过检查的通道。
-- `tool_permit_release` 与 `tool_permit_cancel` 同样绑定借用者：其它窗口/页面即使拿到 requestId 也不能释放在飞额度或取消他人的排队项，被拒绝的调用不改变额度状态。
+- `tool_permit_release` 与 `tool_permit_cancel` 同样绑定借用者：其它调用方即使拿到 requestId 也不能释放在飞额度或取消他人的排队项，被拒绝的调用不改变额度状态。
 - 释放与上线声明的 IPC 失败不再只留日志：失败的释放按 requestId 入队（请求标识是确定量，Rust 对未知 id 返回 Ok，重放幂等），由运行槽在**下一次 run 开始前**补偿重放；上线声明失败同样记欠账并在同一时机重试。补偿失败只留痕、不阻断本次 run。
-- 借用者身份 = Rust 提供的窗口标签 + 前端页面实例 id（[execution-permit.ts](../../src/services/tool/execution-permit.ts) 在模块加载时声明上线）。同一窗口同一时刻只有一个活着的页面实例：新实例上线（Vite 全量热重载、WebView 重建）时一次性回收同窗口其它实例的在飞额度与排队项，并以回收数量作为证据。回收只由「借用者已经不存在」触发，不看时间：同一实例重复上线是空操作，其它窗口的借用者与在飞的 `exclusive_effect` 都不受影响；窗口关闭且不再重新加载时，它留下的额度仍要等下一次同窗口上线或进程退出才回收。
-- 「声明上线的窗口」比「能持额度的窗口」大，判断残留影响只看后者：`settings`、`layer-editor` 是独立 HTML 入口，根本不经过借用者声明。**能持额度的窗口 = 会启动回合的窗口 = `main` 与 Live Test 窗口**，二者由 `lib.rs` 按构建形态二选一创建、从不共存（Live Test 宿主不建 main）。窗口销毁残留因此没有可阻塞的对象，维持「不修」。
-- 上限由前端在每个 run 开始前下发给所有者并按运行生效（与队列批量策略同一模式）：降低上限不撤销在飞许可，只是暂停新获准执行；提高会唤醒有序等待项。越界值三处处理不同（见[运行时数据](runtime-data.md#工具并行上限字段的语义与生效时机)）（三处处理各不相同，口径见该节）。**共享读上限的所有者是 Rust**（[tool_permit.rs](../../src-tauri/src/commands/tool_permit.rs) 持有默认值与 1–8 范围，是宿主侧唯一的额度定义点）：默认值是**无配置可下发时**的兜底（Live Test / 单独启动没有前端），前端 `MIN/MAX/DEFAULT_PARALLEL_TOOLS` 是同值副本，只做设置页校验与 YAML 兜底，不构成第二个所有者；两份范围的一致性由 `tool-execution-permit` 场景的可执行边界钉保证（上限原值被接受、两侧越界被拒绝）。
-- 许可域按数据根区分，Live Test 的临时根自带隔离域；多个 WebView 共用同一所有者。许可只约束 V1rtual-Desk-Pet 托管的调用，不承诺阻止外部进程改文件（沙箱边界见下节）。
+- **借用者身份 = Node 进程内的模块实例 id**（[execution-permit.ts](../../src/services/tool/execution-permit.ts) 在模块加载时声明上线，存 globalThis 保证同进程内重复求值复用同一身份）；窗口身份由 Rust 按命令来源的 principal 填（产品宿主 = main，E2E 隔离宿主 = e2e），Node 不复制一份。Node 换代（连接重建 / 崩溃重启）后旧实例已无法归还额度，新实例上线时由 `tool_permit_attach` 一次性回收该数据根域内上一实例的在飞额度与排队项，并以回收数量作为证据。回收只由「借用者已经不存在」触发，不看时间：同一实例重复上线是空操作，在飞的 `exclusive_effect` 不受影响。
+- 能持额度的进程 = 会启动回合的进程 = 唯一 Node（产品宿主与 E2E 宿主各只有一个，E2E 宿主不建主窗口）。原生设置窗 / 图层编辑器窗不启动回合、也不声明借用者，因此不存在「窗口销毁留下的额度」这一类对象。
+- 上限由 Node 在每个 run 开始前下发给所有者并按运行生效（与队列批量策略同一模式）：降低上限不撤销在飞许可，只是暂停新获准执行；提高会唤醒有序等待项。**共享读上限的所有者是 Rust**（[tool_permit.rs](../../crates/native-host/src/commands/tool_permit.rs) 持有默认值与 1–8 范围，是宿主侧唯一的额度定义点）：默认值是**无配置可下发时**的兜底（E2E / 单独启动没有前端），Node 侧 `MIN/MAX/DEFAULT_PARALLEL_TOOLS` 是同值副本，只做设置页校验与 YAML 兜底，不构成第二个所有者；两份范围的一致性由 `tool-execution-permit` 场景的可执行边界钉保证（上限原值被接受、两侧越界被拒绝）。越界值三处处理不同（见[运行时数据](runtime-data.md#工具并行上限字段的语义与生效时机)）。
+- 许可域按数据根区分（`domain_key = data_root`），Live Test 的临时根自带隔离域。许可只约束 V1rtual-Desk-Pet 托管的调用，不承诺阻止外部进程改文件（沙箱边界见下节）。
 - 额度没有 TTL、也不加看门狗：超时释放会放开在飞的 `exclusive_effect`，与「写互斥不许被时间条件打开」直接冲突。写互斥是工具路径（声明 + 额度层）的性质，不会因为某个 handler 卡住而被绕过，但会因 handler 永不结算而不归还 —— 这个入口已从源头消除：文件读写只接受常规文件，FIFO/设备/套接字在调用前就被拒绝（见下节），不再有「永远打不开的 open 占着额度」这条路径。
 
-薄 `BaseTool` 仍未实施（当前零消费者）；设置页「工具策略（声明）」区从同一 ToolDef 展示权限意见、隔离级别、结果投影与历史摘要，不复制第二份策略定义。
+原生设置窗工具页的策略声明表从同一 ToolDef 展示权限意见、隔离级别、结果投影与历史摘要，不复制第二份策略定义；PermissionKernel 仍是唯一终裁，声明表只读。
+
+## 宿主侧端口实现
+
+[host/native_ports.rs](../../crates/native-host/src/host/native_ports.rs) 是宿主能力端口在原生宿主里的实现，命令域与退出序列共用，业务侧只经 trait 取用：
+
+- `NativeAssetScope`（受控资源读取授权）：聊天图片、截图与查看器读取本地图片前必须经它放行；授权时逐路径跑 `AppPaths::validate_file_path`（存在性 + 凭据 + 记忆保护 + 允许根）后才进进程内白名单，profiles 根在启动时整目录授权 —— 不是「任意路径可读」，未授权即拒绝、不自动补授权。
+- `NativeFileDialog`（原生文件对话框）：macOS 走 `NSOpenPanel`/`NSSavePanel`（AppKit 只能在 UI 主线程，经主线程队列执行并等待），Windows 走系统通用对话框（专用线程，不需消息循环）；用户取消是**正常结果**（空数组 / `None`），不是错误。
+- `NativeLifecycle`（退出/重启）：接到只跑一次的 `ExitOnceHook` —— 先回收 MCP/Bash 子进程池，再走统一退出序列；命令侧 `app_restart` 与被杀兜底共用这条路径。
 
 ## 权限终裁
 
 [PermissionKernel](../../src/services/safety/permission.ts) 将风险等级与 `allow / ask / deny / passthrough` 分开：前三种表达工具侧意见，passthrough 继续总策略；内核最终只能给出 allow/ask/deny。MCP 明确走 passthrough，不绕过总策略。硬拒绝优先，工具 allow 不能吞掉总策略 ask。
 
-`beforeToolCall` 等待调用事件落盘，再检查次数、权限和确认。确认绑定 session、generation、call ID、完整参数 hash、策略 hash、到期时间；支持仅本次、会话内同参数、拒绝。确认后重新校验，取消、参数/策略变化或旧代际不能继续执行，授权在运行结束释放，不从摘要恢复。
+`beforeToolCall` 等待调用事件落盘，再检查次数、权限和确认。确认绑定 session、generation、call ID、完整参数 hash、策略 hash、到期时间；支持仅本次、会话内同参数、拒绝。确认后重新校验，取消、参数/策略变化或旧代际不能继续执行，授权在运行结束释放，不从摘要恢复。确认请求经 `deskpet-permission-confirm` 事件投影到原生 UI（回执走 `UiReceiptMap` 的 `deskpet-permission-confirm-resolved`）；测试宿主由 confirm-channel 确定性应答（见 [confirm.ts](../../src/services/safety/confirm.ts) 与 [native-ui/permission-confirm.ts](../../src/services/native-ui/permission-confirm.ts)）。
 
 `afterToolCall` 标注来源、taint 和错误；工具结果条目由 Harness 事务写入会话文件，宿主的事件订阅只把结果投影进界面读模型——宿主的审计写队列只落 `deskpet.*` 条目，不写正文。观测 trace 不承担阻断语义。Router 的结果 `details.audit` 含 operationId、outcome 和策略元数据；其风险分类 hash 与 PermissionKernel 的完整授权 policyHash 职责不同，不能互相替代。[router.ts](../../src/services/tool/router.ts)
 
 ## 文件、命令与取消
 
-- 文件路径通过 AppPaths 校验，允许根为用户 Home、系统临时目录，开发构建还包含项目根；凭据等路径（规则文本 = 「`.ssh` 目录组件或 `.pem`/`.key` 后缀」）由 Rust [paths/mod.rs::is_credential_path](../../src-tauri/src/paths/mod.rs) 做不可关闭的最终判定（`SENSITIVE_PATH`），接入点是 `validate_file_path`/`validate_new_file_path` 的词法形态**与** canonicalize 结果两侧 —— 不存在的路径也先得凭据结论而不是 `PATH_NOT_FOUND`，符号链接与 Windows 短名解析后仍会被判；TS 侧的 [resolveFilePathLevel](../../src/services/safety/checker.ts) 是同一规则族的分级副本（相对形式与 `~`/`$HOME`/`${HOME}`/反斜杠/`..` 经词法归一后同判），在进入 ToolRouter 前就提为 NOWAY。
-- 读写目标只接受**常规文件**（[tool_exec/mod.rs](../../src-tauri/src/commands/tool_exec/mod.rs) 的 `ensure_regular_file`）：`file_read`/`file_read_binary` 在取元数据后立刻判类型，`file_write`/`file_write_atomic`/`file_append` 对已存在的目标判，`file_rename` 的源拒绝 FIFO/设备/套接字但**允许目录**（重命名目录是合法用法，且 `rename` 是元数据操作、不打开内容）。FIFO/套接字/字符设备/块设备的 open 会一直等对端或直接写到设备，handler 因此永不结算、许可额度也不释放，只能在源头拒绝。`/dev/null` 类设备目标**不豁免**：设备路径本就不在允许根（Home/系统临时目录/开发项目根）内，到不了类型判定这一步。
+- 文件路径通过 AppPaths 校验，允许根为用户 Home、系统临时目录，开发构建还包含项目根；凭据等路径（规则文本 = 「`.ssh` 目录组件或 `.pem`/`.key` 后缀」）由 Rust [paths/mod.rs::is_credential_path](../../crates/native-host/src/paths/mod.rs) 做不可关闭的最终判定（`SENSITIVE_PATH`），接入点是 `validate_file_path`/`validate_new_file_path` 的词法形态**与** canonicalize 结果两侧 —— 不存在的路径也先得凭据结论而不是 `PATH_NOT_FOUND`，符号链接与 Windows 短名解析后仍会被判；记忆库主文件与 `-wal`/`-shm` 同受 `is_managed_memory_path` 保护；TS 侧的 [resolveFilePathLevel](../../src/services/safety/checker.ts) 是同一规则族的分级副本（相对形式与 `~`/`$HOME`/`${HOME}`/反斜杠/`..` 经词法归一后同判），在进入 ToolRouter 前就提为 NOWAY。
+- 读写目标只接受**常规文件**（[tool_exec/fs.rs](../../crates/native-host/src/commands/tool_exec/fs.rs) 的 `ensure_regular_file`）：`file_read`/`file_read_binary` 在取元数据后立刻判类型，`file_write`/`file_write_atomic`/`file_append` 对已存在的目标判，`file_rename` 的源拒绝 FIFO/设备/套接字但**允许目录**（重命名目录是合法用法，且 `rename` 是元数据操作、不打开内容）。FIFO/套接字/字符设备/块设备的 open 会一直等对端或直接写到设备，handler 因此永不结算、许可额度也不释放，只能在源头拒绝。`/dev/null` 类设备目标**不豁免**：设备路径本就不在允许根（Home/系统临时目录/开发项目根）内，到不了类型判定这一步。
 - 这套路径与命令策略是**同一规则族的两层副本**，不是完备的 OS 沙箱：间接形式（如 `python -c "open('~/.ssh/id_rsa')"`）与「拦实际打开的文件」都不在覆盖内；`.env`、系统目录等可确认路径不受影响 —— 它们按风险等级走确认（DANGER 由安全模式裁决），不再按模式分层。
 - Bash 超时、取消和进程回收由 Rust 管理；Router 为调用叠加取消/超时，区分 cancelled、timeout、not_found、failed。判定顺序唯一：超时（定时器置位）→ 取消（外部 signal）→ error，不做错误文案匹配，一次调用只有一条审计账。取消可以在子进程 spawn 前到达：`bash_exec` 的登记先于任何阻塞动作，命中在案槽位的取消会立案并在 spawn 后立即终止（稳定码 `CANCELLED`）；池里没有该 execution_id 时 `bash_cancel` 返回 `false` 并留一条 debug 记录，不再是静默成功 —— 调用方据此区分「取消成功」与「取消来晚了（子进程可能已结束）」。
-- 输出上限与 spill 保留数由 [tool_exec/mod.rs](../../src-tauri/src/commands/tool_exec/mod.rs) 管理。Bash 截断会返回 spill 引用，最近文件会淘汰；不能声称任意长的 shell 输出永久存于会话。生效上限只在 Rust 定义并随结果回传（`maxBytes`/`maxLines`），前端不再复制一份默认值；超时返回结构化错误码 `TIMEOUT`，前端据此归类而不匹配文案。
+- 输出上限与 spill 保留数由 [tool_exec/bash.rs](../../crates/native-host/src/commands/tool_exec/bash.rs) 管理（默认 50 KiB / 2000 行；spill 保留最近 10 份、按时间淘汰）。Bash 截断会返回 spill 引用，最近文件会淘汰；不能声称任意长的 shell 输出永久存于会话。生效上限只在 Rust 定义并随结果回传（`maxBytes`/`maxLines`），Node 不复制一份默认值；超时返回结构化错误码 `TIMEOUT`，前端据此归类而不匹配文案。
 - 会话保存的是**工具实际返回内容**；Context L0 再做请求投影时，原工具结果仍可用 read_session_event 读取。两层截断的范围不能混同。
 
-[bash_policy.rs](../../src-tauri/src/commands/bash_policy.rs) 是不可关闭的最终门禁，`enforce_bash_policy` 只接收命令本身 —— 没有 scope / whitelist 这类可传弱的旋钮。层 1 硬基线拒绝：删根/家目录、设备破坏（mkfs / dd）、系统电源命令、下载即执行、危险参数（`-delete` / `-exec` 等，按 token 对全体命令生效）、重定向写系统路径、递归 chmod/chown 到根或 777，以及命令里的凭据路径 token（`deny_credential_paths`，与 `deny_destructive_flags` 并列，嵌套脚本按展开后的 token 判）；层 2 只有一条 —— 写/删类命令指向固定系统路径即拒绝。白名单与 shell 组合符属于**分级**问题而不是拒绝问题，归 TS 的 `classifyBashRisk`：白名单只是**免确认通道**，不在白名单只意味着要走确认。策略基于 Shell token，不以简单子串代替（沙箱边界同本节开头的两层副本说明）。
+[bash_policy.rs](../../crates/native-host/src/commands/bash_policy.rs) 是不可关闭的最终门禁，`enforce_bash_policy` 只接收命令本身 —— 没有 scope / whitelist 这类可传弱的旋钮。层 1 硬基线拒绝：删根/家目录、设备破坏（mkfs / dd）、系统电源命令、下载即执行、危险参数（`-delete` / `-exec` 等，按 token 对全体命令生效）、重定向写系统路径、递归 chmod/chown 到根或 777，以及命令里的凭据路径 token（`deny_credential_paths`，与 `deny_destructive_flags` 并列，嵌套脚本按展开后的 token 判）；层 2 只有一条 —— 写/删类命令指向固定系统路径即拒绝。白名单与 shell 组合符属于**分级**问题而不是拒绝问题，归 TS 的 `classifyBashRisk`：白名单只是**免确认通道**，不在白名单只意味着要走确认。策略基于 Shell token，不以简单子串代替（沙箱边界同本节开头的两层副本说明）。
 
 Provider 网络边界独立于 MCP/shell：配置 origin、禁止 redirect、超时和响应上限见[运行时契约](runtime-contract.md#pi权限与网络)。不能把 Provider fetch guard 当作所有联网工具的控制层。
 
@@ -104,12 +112,12 @@ Skill 不注册 ToolDef、不占工具声明槽，也不授予权限：它只提
 
 ## MCP 生命周期
 
-[manager.ts](../../src/services/tool/mcp/manager.ts) 按运行 owner 借用连接（owner = 本轮 requestId 或 `resumeOwner(sessionId)`）；应用启动不连接 MCP。并发 acquire 串行化；末位 owner 释放后连接进入空闲宽限（`MCP_IDLE_GRACE_MS` 模块常量），宽限内再次借用直接复用同一条连接，到点仍未复用才关闭进程并注销工具；配置里撤下的服务器在下一次能力准备时立即断开（`disconnectUnlistedMcpServers`，只处理无 owner 的连接）。includeTools/excludeTools 过滤发现结果（收窄可注册的工具集）；随包内置五项默认关闭，其中 filesystem／playwright 预置 includeTools 白名单（2026-10-04 起）。借来的工具进全局注册表、没有模式过滤 —— 借用期间此后每个回合的冻结工具集都含它们（fork/team 子代理按固定白名单（read / system_info / bash）收窄，不在其列）；对话回合实际下发的默认面由「回合激活面与渐进披露」收窄（默认只含基础工具 + filesystem 常用白名单，其余经 `enable_tools` 取用）。工具定义在回合内冻结，设置变化不无声杀掉在飞回合的借用。
+[manager.ts](../../src/services/tool/mcp/manager.ts) 按运行 owner 借用连接（owner = 本轮 requestId 或 `resumeOwner(sessionId)`）；应用启动不连接 MCP。并发 acquire 串行化；末位 owner 释放后连接进入空闲宽限（stdio `MCP_IDLE_GRACE_MS` 120s／http `MCP_HTTP_IDLE_GRACE_MS` 30s 模块常量），宽限内再次借用直接复用同一条连接，到点仍未复用才关闭进程并注销工具；配置里撤下的服务器在下一次能力准备时立即断开（`disconnectUnlistedMcpServers`，只处理无 owner 的连接）。includeTools/excludeTools 过滤发现结果（收窄可注册的工具集）；stdio 形态的 npx 命令由宿主托管安装到数据根后直启（安装失败回退 npx）；http 形态（Streamable HTTP）用 url + headers，headers 值支持 `${ENV_VAR}`（只从该条目 env 展开、缺失即错、凭据不落日志），请求强制 `redirect:"error"` 防凭据随重定向外泄。借来的工具进全局注册表、没有模式过滤 —— 借用期间此后每个回合的冻结工具集都含它们（fork/team 子代理按固定白名单（read / system_info / bash）收窄，不在其列）；对话回合实际下发的默认面由「回合激活面与渐进披露」收窄。工具定义在回合内冻结，设置变化不无声杀掉在飞回合的借用。
 
-MCP 结果与内置工具走同一条回读链（[client.ts](../../src/services/tool/mcp/client.ts) 的一次性截断已删）：全文原样落会话条目，请求视图由 L0 投影按 `details.deskpetEntryId` 缩短并标注 eventId 回读地址，模型随后用 `read_session_event` 取回全文。唯一的物理上限在条目写盘链上（[tauri-execution-env.ts](../../src/services/tool/pi/tauri-execution-env.ts) 的 `MAX_TOOL_FILE_BYTES`，5 MB）：超过时写盘如实报错，不静默截断。
+MCP 结果与内置工具走同一条回读链（[client.ts](../../src/services/tool/mcp/client.ts) 的一次性截断已删）：全文原样落会话条目，请求视图由 L0 投影按 `details.deskpetEntryId` 缩短并标注 eventId 回读地址，模型随后用 `read_session_event` 取回全文。唯一的物理上限在条目写盘链上（[native-execution-env.ts](../../src/services/tool/pi/native-execution-env.ts) 的 `MAX_TOOL_FILE_BYTES`，5 MB）：超过时写盘如实报错，不静默截断。
 
-Rust [mcp_bridge.rs](../../src-tauri/src/commands/mcp_bridge.rs) 托管 stdio 进程：按 JSON-RPC id 配对响应，跳过 notification 和非 JSON 输出，常驻 stdout 读取线程与有界等待避免请求无限阻塞。应用退出回收 server；Windows 结束进程树，避免派生进程遗留。
+协议栈在 Node 侧由 `@earendil-works/pi-mcp`（1.0.2 精确锁）承担：initialize 握手与 `notifications/initialized`、tools/list 分页、通知/进度/取消都归客户端；[transport.ts](../../src/services/tool/mcp/transport.ts) 把它接到宿主桥上（spawn、裸行读写、kill）。Rust [mcp_bridge.rs](../../crates/native-host/src/commands/mcp_bridge.rs) 只做裸行收发：`mcp_write` 写一行、`mcp_read` 等下一行 JSON（默认 30s、上限 120s；非 JSON 行跳过留痕、通知原样上行、断开返回 `closed` 且此后恒真、同一服务器并发读拒绝），整行作为单个字符串走既有 blob 物化——超过 64KiB 控制帧的巨型结果不再受限。应用退出由统一退出序列回收 server（`kill_all`）；Unix 按进程组回收（`process_group` + `killpg`）、Windows 用 `taskkill /T` 递归结束进程树。
 
-设置页测试连接后恢复原连接状态。env 只透传给子进程，日志不打印 env；配置导出含 env 时需要确认明文凭据。MCP 工具一律声明 `passthrough` + `external_side_effect` + `exclusive_effect`，既不能凭发现结果自动获得执行许可，也不能与其它执行并发。
+原生设置窗的工具页对 MCP 提供服务器列表、逐项开关与连接测试（管理面 `tools_mcp_servers` / `tools_mcp_toggle` / `mcp_test`，占用中的服务器由既有入口拒绝）；自定义条目的编辑面覆盖 name/transport/command/args/url/headers/env/enabled，导入兼容 `"type":"http"`、`sse` 明确拒绝并点名。env 只透传给子进程，日志不打印 env。MCP 工具一律声明 `passthrough` + `external_side_effect` + `exclusive_effect`，既不能凭发现结果自动获得执行许可，也不能与其它执行并发。
 
 验证规则见[测试边界](testing.md)。

@@ -1,8 +1,9 @@
 # AGENTS.md
 
-V1rtual-Desk-Pet 是可自定义 Card/Profile 的 Tauri v2 桌宠，优先做好轻量陪伴与聊天。
-技术栈：Vue 3、TypeScript、Rust、Pi Agent Core；目标平台为 Windows 与 macOS。
-核心方针：轻量化、低内存、高性能、节省 token、保持功能完整。
+V1rtual-Desk-Pet 是可自定义 Card/Profile 的桌宠，优先做好轻量陪伴与聊天。
+技术栈：Rust 原生宿主（含原生 UI 与平台能力）、TypeScript（Node 22 Harness 与服务层）、
+Pi Agent Core；唯一 Node 随包分发（版本锁定在 `packaging/node-runtime.json`），无 WebView。
+目标平台为 Windows 与 macOS。核心方针：轻量化、低内存、高性能、节省 token、保持功能完整。
 
 ## 工作范围
 
@@ -23,6 +24,8 @@ V1rtual-Desk-Pet 是可自定义 Card/Profile 的 Tauri v2 桌宠，优先做好
 
 | 任务 | 入口 |
 |---|---|
+| TypeScript 业务服务、Harness 接线 | [services AGENTS](src/services/AGENTS.md) |
+| Rust 宿主、原生 UI、平台能力 | [native-host AGENTS](crates/native-host/AGENTS.md) |
 | 安装、运行、产品能力 | [README](README.md) |
 | 陪伴玩法、Card/Profile、交互体验 | [DES](docs/DES.md) 对应章节 |
 | 模块位置、主链路、状态所有权 | [系统地图](docs/current/system-design.md) |
@@ -45,142 +48,79 @@ V1rtual-Desk-Pet 是可自定义 Card/Profile 的 Tauri v2 桌宠，优先做好
 
 ```bash
 pnpm install
-pnpm tauri dev        # 完整桌面应用
-pnpm dev              # 仅前端，不能验证 Rust IPC
+pnpm dev              # 完整桌面应用：暂存随包资源 → debug 构建 → 启动 target/debug/native-host
+pnpm run dev:prepare  # 只做随包资源暂存（幂等；pnpm dev 已包含）
+pnpm run build:harness        # 单独构建 Node Harness 产物（esbuild → packaging/dist/harness）
+pnpm run test:types           # 静态检查：tsc --noEmit + cargo check（不替代运行验证）
+pnpm run test:rust            # Rust 单测：cargo test --lib -p native-host
 pnpm run check:bundle # 打包配置校验（秒级，不编译）
 pnpm run version:set <x.y.z>  # 发版：统一三处版本号
 ```
 
+- dev 与 release 的路径区分（数据根 / CONFIG / 资源根 / runtime_mode / E2E）与 dev 入口的
+  组成见[工程参考](docs/current/development.md#开发环境入口)。
 - **测试规则（分层、选层、纪律、门禁与报告）由测试模块自持**：[test/AGENTS.md](test/AGENTS.md)
   （规则入口与维护义务表）；命令与保留细节见其 [README](test/README.md)。本文件不重复测试域规则。
 - pnpm 版本以 `package.json` 的 `packageManager` 为准；新增有构建脚本的依赖须在
   `pnpm-workspace.yaml` 的 `allowBuilds` 显式声明运行或跳过，避免干净安装失败。
 - CI 分两条线：push/PR 走 `ci.yml`（双平台验证 + `bundle-config` 配置校验，不做构建）；
   tag `v*` 走 `release.yml`（双平台打包并发布到 GitHub Release）。
-  发版前先跑 `pnpm run version:set <x.y.z>`，tag 与 `tauri.conf.json` 的 version 由 CI 校验一致。
-- `[profile.release]` 只能写在 **workspace 根** `Cargo.toml`：成员 crate 里的 `[profile]`
-  被 Cargo 静默忽略（只有 warning），放错位置不报错也不生效。产物体积的另两个落点是
-  `vite.config.ts` 的 build input（只列产品窗口）与随包资源范围。
-- 平台代码同时考虑 Windows/macOS；修改 Windows 条件代码或依赖后须检查 Windows CI。
-  本机 macOS check 不证明 Windows 分支，现有本机交叉构建也不能替代 Windows job。
-- Rust 平台专有实现须使用条件编译和对应平台依赖，不能让另一平台的编译路径引用它。
+  发版前先跑 `pnpm run version:set <x.y.z>`，tag 与三处 version（根 `Cargo.toml`、
+  `package.json`、`packaging/desktop.json`）由 CI 校验一致。
+- **Rust 侧的构建产物、平台与条件编译约束由 `crates/native-host` 自持**：
+  见 [native-host AGENTS](crates/native-host/AGENTS.md) §2/§3（`[profile.release]` 只能写 workspace 根、
+  Windows/macOS 必须对称、本机编不出 Windows 分支的离线核对法）。本文件不重复。
 
 ## 单一真相源与模块落位
 
-- 配置只经 `@/services/config` 的类型化 getter 读取；不复制默认值，不直读内部 cfg。
-- 设置读写值与运行期派生值分开，例如 `generalConfig.loggingLevel` 与 `computeLogLevel()`。
-- YAML 运行时 CONFIG 字段新增、改名、删除或含义/单位/默认值变化，必须逐项核对并同步整条链：
-  `CONFIG.yaml` → `CONFIG-DEV.yaml.example` → Config/getter → 设置 Tab 的读取/ref/defineExpose
-  → SettingsPanel 的保存映射或 setter → 写盘/刷新消费者 → 对应文档。
-  不能只加 UI 或 YAML；不提供 UI 的字段须明确用途与修改入口，详见[配置同步清单](docs/current/runtime-data.md#配置变更同步清单)。
-- 真实开发配置需单独授权后同步，未同步须在交付时说明；不得因未获授权而跳过模板或代码同步。
-  本地调参只改开发副本，不污染生产默认值；开发配置是完整文件，不是增量覆盖层。
-- 被 ≥2 处使用的阈值、超时、业务文件名、命令名和枚举必须放所属模块配置或常量；
+- 被 ≥2 处使用的阈值、超时、业务文件名、命令名和枚举放所属模块配置或常量；
   单函数内一次使用的字面量可内联，不为无复用逻辑增加抽象，不建大一统 constants 文件。
-- 单文件服务可平铺；≥3 文件或有内部结构时放 `src/services/<领域>/` 并提供 `index.ts`。
-  跨领域使用公开 barrel，不深入业务内部文件；零依赖叶子保持独立，避免循环引用。
-- 跨领域共享纯函数放零依赖叶子；全局冷却与并发所有权复用现有模块，平台检测走 `@/services/env`。
 - 改共享接口前先查全部消费者；移动、改名或删除文件时，结合 CodeGraph 与全仓 `rg` 检查
-  import、字符串/动态引用、Vite input、capabilities、Rust 注册、Contract sourceFiles 和文档链接。
-  删除后确认已无有效消费者；类型检查不能代替这项核对。
-- Vue 使用 `<script setup lang="ts">`。目录地图只在系统地图维护，行为、用户入口和玩法仍须同步各自文档。
+  import、动态/字符串引用、`include_str!` / `include_bytes!`、打包资源清单、Rust 分派、
+  Contract sourceFiles 和文档链接。删除后确认已无有效消费者；类型检查不能代替这项核对。
+- 配置变更同步清单：YAML 运行时 CONFIG 字段新增、改名、删除，或含义、单位、默认值变化，
+  必须同步 `CONFIG.yaml` → `CONFIG-DEV.yaml.example` → TS Config/getter
+  → 原生设置字段表（`crates/native-host/src/ui/settings/schema.rs`，键与 CONFIG 路径一致）
+  → `settings_commit` 的提交与写盘 → 刷新消费者 → 对应文档。
+  不提供 UI 的字段须明确用途与修改入口，详见[配置同步清单](docs/current/runtime-data.md#配置变更同步清单)。
+- 真实开发配置需单独授权，未同步须在交付时说明；不得因此跳过模板或代码同步。
+  本地调参只改开发副本，不污染生产默认值；开发配置是完整文件，不是增量覆盖层。
+- 目录地图只在[系统地图](docs/current/system-design.md)维护；模块内部组织由所属 AGENTS 约束。
 
-## 路径、配置与资源
+## 跨层 IPC
 
-- Rust `AppPaths` 决定数据根；开发/生产依据 Rust 构建模式，前端通过 `getRuntimeMode()` 判断路径环境。
-  不用 `import.meta.env.DEV` 代替，不用 `dirs_next()`、`find_project_root()` 或 `env!("CARGO_MANIFEST_DIR")` 推导业务路径
-  （唯一例外：`paths/mod.rs` 的 `project_root()`，仅 debug 构建用于定位开发工作区与随包资源，release 路径不经过它）。
-- TS 先初始化路径；`BaseDirs` 只表示目录，完整文件路径通过 `runtimePath(scope, ...segments)` 取得。
-- Rust 持有 base 的命令仅接收域内相对路径，如 `stages/x.json`，不加 `personality/` 等域前缀。
-  通用文件 API 需要绝对路径时使用 `runtimePath()`；模块不硬编码数据根或带域前缀的业务路径。
-- 路径命令注入 `State<AppPaths>` 并校验边界；不存在的写入目标校验父目录与符号链接风险。
-  不用 `canonicalize().unwrap_or()` 静默回退。
-- 默认 Card/Profile/Skill 仅作首次初始化种子；完成后所有读取和编辑走运行时资源。
-  初始化标记存在后删除不自动恢复；恢复默认资源是明确的覆盖操作。
-- `appearance.effectMode` 单字段裁定 off/parallax/dof；逐层素材、取景、焦点等属于当前 Profile，
-  全局 CONFIG 不覆盖 Profile 的效果参数。
-- Profile 是自包含闭包：主题色、UI 位图与素材只从 Profile 自身目录读取，
-  导入即用，不跨 Profile 回退（图层素材在 `materials/L{n}/`、景深素材在 `materials/dof/`）。
-  内存只保留激活 Profile；设置页列 Profile 用 `readProfileMeta()` 轻量读 meta，不进缓存。
-- 字体是全局设置（`appearance.font`），不随 Profile：取值为用户系统已安装的字体名
-  （Rust `list_system_fonts` 枚举），Profile 不携带字体资源；消费点统一走 `@/services/font` 注入。
-- 顶栏文案（缺省「配信中」）是窗口运行时状态，唯一真值点在 `@/services/titlebar`：
-  不随 Profile、不持久化，重启回到缺省；暂未开放界面编辑，保留接口供联动功能改写。
-- localStorage 不保存配置、会话正文或 Profile 编辑状态。
+- 宿主与唯一 Node 使用私有通道（非 HTTP、非浏览器 API）。改命令、事件、请求/回执、
+  作用域或线协议时，在同一改动中同步 Rust 分派/协议、TS 类型/消费者与相关 Contract sourceFiles。
+  参数名、类型、可选性与错误语义逐项对齐；具体接线规则分别见 services 与 native-host AGENTS。
+- 新增窗口或命令时核对原生 UI 创建逻辑与窗口/许可 principal 的取用。
+  类型检查不能证明命令接线、窗口行为或跨平台运行正确。
 
-## 运行时不变量
+## 错误留痕
 
-- 会话正文以数据根 `sessions/` 的 JSONL 为真相源（JsonlSessionRepo，commit 事务写入）；
-  写入以追加为主，已回收 key 的写入行可被折叠清理，逻辑状态不变；
-  `sessions/index.json` 仅保存可丢弃 UI 状态。
-- 正文条目保存稳定 entryId/seq 与运行关联；用户 ingress 先落盘再投递（lane 持久 inbox）；
-  工具调用先落盘再执行，结果落盘后才进入下一次 Provider 请求。
-- 所有异步读取、写回、确认、取消都绑定 session 与 run generation；旧运行不能改写新所有者状态。
-  未知外部副作用不自动重放；UI 和 Pi 内存消息不成为第二份持久化 Store。
-- 压缩只改变请求视图，完整正文保留；compaction 条目由 Harness 单事务提交，提交成功前不报告完成。
-  摘要失败或无可覆盖时 decline/报错，禁止默默丢弃未覆盖历史；已提交的写入不因取消回滚。
-- 预算共用 ContextKernel 规则，包含完整 schema、输出预留及压缩余量；静态协议与当前输入不截字。
-  每轮冻结 Card/变量/配置/能力；PromptSnapshot 只保存 hash 与审计元数据，不落盘原始 Prompt。
-- Card、互动状态、用户长期事实分开。RUNTIME_DATA 由回复模块剥离、验证、持久化，不能重新塞回 Loop。
-  card/interaction 保存 VariableState；system/session 使用原始只读值。LLM 只写注册且允许更新的 card 变量。
-- `whenText` 是自然语言指引；不恢复旧变量工具、情绪前缀或可执行 When DSL。
-- 用户可见的阶段提示、过程提示与兜底台词一律由当前 Card 生成，源码不留硬编码文案：
-  取用只经 `getStagePrompt` / `getSimpleStage` / `getCommandReply` / `getFallbackReply`，
-  引擎按语义 key 发事件、界面取文案，两边都不各存一份台词。
-  新增一个用户可见场景时，先在 `StageMap` / `FallbackReplies` / `CommandReplies` 加 key，
-  同步 `stages-prompt.md` 与 `validateStages`（旧缓存必须判过期重生成，否则新 key 永远取不到
-  Card 文案），再接消费点；`FALLBACK_*` 常量只是 Card 完全不可用时的中性兜底。
-  系统消息与错误诊断保持中性：角色台词会掩盖故障，用户要能分清「角色在说话」和「出问题了」。
-- 主请求与一次性文本请求统一走模型网关，共享配置、认证、取消和 deadline；不叠加 SDK 内层重试。
-- 长期记忆只经 MemoryProvider 进入 Runtime（核心画像也走它）；事实与治理决定归 Rust 侧 SQLite
-  （`数据根/memory/`），JSONL 只是会话证据源。只有 `origin=user` + `taint=trusted_user` +
-  `eligibleForMemory=true` 的已提交条目能成为候选：不得把压缩摘要、工具结果、主动消息、助手台词
-  或已召回的记忆晋升为用户事实。直接记忆工具绑定本轮可信用户事件；dreaming 候选在 job 边界经
-  来源 hash、版本、失效代和租约复核后整批自动提交，不恢复批准路径。遗忘要覆盖正文、索引、候选与
-  补扫回灌，且不把「忘记记忆」说成删除了聊天原文或外部备份。
-
-## 工具与权限
-
-- 使用 Pi AgentHarness 原生 hook（`before_tool` / `after_tool` / `transform_context` / `before_compaction` 等）；不重建无消费者的 HookBus。
-- PermissionKernel 终裁 allow/ask/deny；passthrough 只能继续策略链，不能直接执行。MCP 走 passthrough。
-- deny-first；确认与授权绑定会话、代际、精确参数、策略和有效期，变更后重审；摘要不能恢复授权。
-- Rust 保留最终路径裁决与 Bash 安全基线（层 1 硬基线 + 系统路径保护 + 凭据拦截），调用方不可关闭；
-  网络边界不得夸大为通用沙箱。
-- Skill 清单由 Pi loader 维护：每回合核对一次目录指纹（不读正文），指纹变了才重载（重载时读入
-  正文）；进请求的只有 name/description/location 披露块，正文在 `/skill` 显式调用或模型 read
-  时才进入对话；Skill 不提升权限。MCP 按运行借用并释放（末位释放后连接在空闲宽限内复用、到点回收）；启动不连接 MCP，记忆整理只按配置的
-  空闲策略和持久预算运行。主动规划与表达 tools=[]，来源和 owner 失效时取消；送达只认原生
-  已提交助手条目与 SQLite 精确回执，未知外部副作用不重放。派生 behavior 与长期事实分域，清除
-  画像同时撤销相关来源资格；系统可消费已提交 Card 变量，主动回复的变量写回不能自激出新机会。
-
-## 日志、异常与 IPC
-
-- 日志走 `@/services/logger` / Rust 日志宏，错误走 `@/services/error`；禁止直接 `console.*` 或 `String(e)`。
-- 错误判断使用 `formatError()` / `errorCode()`；持久化错误使用脱敏的 `summarizeError()`。
-- 全局异常经 `bootWindow()` 安装拦截、`reportError()` 单一出口，不自行再建覆盖层。
-- 有意静默必须就地留注释说明为什么，并在注释里指名统一留痕点（如「根因留痕在 getCtx / reportEffectFailure」）；
-  裸 `catch {}` 与只写「ignore」的注释都算违规；统一标记为 `[保留已登记 §4.2]`。
-- 已知可接受的保留项记录在《前舞台修复方案》§4.2（已归档：`docs/history/implementation/前舞台修复方案-2026-09-24基线.md`），复审不重复报。
-- Rust 命令返回 `AppResult<T>`，使用具体 AppError；不退回 `Result<T, String>`。
-  锁中毒用 `.unwrap_or_else(|e| e.into_inner())` 恢复，不写 `.lock().unwrap()`。
-- IPC 变更同步 Rust 签名、mod 导出、`lib.rs` 注册与 TS invoke；新增窗口同时核对 HTML/TS 入口、
-  Vite input、capabilities windows 与 Rust 创建逻辑。类型检查不能证明命令注册正确。
+- 使用所属语言的统一日志与错误出口；不得另建平行出口或把故障伪装为成功。
+  TS 的入口见 [services AGENTS](src/services/AGENTS.md#日志与错误)，Rust 的入口见
+  [native-host AGENTS](crates/native-host/AGENTS.md#6-测试与日志)。
+- 有意静默必须就地说明原因并指名统一留痕点；裸 `catch {}` 与只写「ignore」的注释都算违规。
+  已登记的保留项使用 `[保留已登记 §4.2]` 标记，复审不重复报；既有登记已封存在
+  `docs/history/implementation/前舞台修复方案-2026-09-24基线.md`，不为复审重新读取历史。
 
 ## 文档维护与提交
 
-- 本文件是唯一全局规则入口；`CLAUDE.md` 仅保留一行 `@AGENTS.md`，不改成普通链接。
-- 子目录 AGENTS 目前仅测试域建立：[test/AGENTS.md](test/AGENTS.md) 自持测试规则，本文件不重复其内容；
-  其余模块的协议与例子放对应 current 文档或源码注释，本文件仅保留全局约束。
-- 每轮核对 README、AGENTS、DES 和相关 current 的影响，受影响内容必须在同一改动中更新：
-  行为→current，玩法→DES，用户入口→README，规则→AGENTS（测试域规则同步 [test/AGENTS.md](test/AGENTS.md)），未完成进度→未完成工作与已知缺口。
-  新增/删除模块还要更新系统地图及受影响导航；没有变化不为同步而追加总结。
-  配置变更同时执行上面的全链路清单；交付注明尚未同步或未验证部分，不能只写“已同步”。
-- 方案归档前完成对照并保留正文与证据，注明日期和替代入口；归档后封存，不再读取或修改。
-  发现的问题、剩余工作与验收条件只记录在《未完成工作与已知缺口.md》，条目须自包含，后续工作不依赖翻阅历史。
-  `plans/active/` 收敛为一份未完成工作总表与尚在实施的目标契约，不为单一主题另开文档。
-  测试结果只在检查点记录一次，注明基线/范围/未验证项；不在多个概览复制数字。
+- 本文件是唯一全局规则入口；子目录只维护所属范围的补充约束，不复制全局条款。
+  [services AGENTS](src/services/AGENTS.md) 自持 TS 业务层；
+  [native-host AGENTS](crates/native-host/AGENTS.md) 自持 Rust 宿主；
+  [test AGENTS](test/AGENTS.md) 自持测试域。修改跨域代码时按涉及范围读取对应入口，
+  不把子目录规则自动扩大为全仓规则。其他机制与例子放对应 current 文档或源码注释。
+- 所有 `CLAUDE.md` 只保留一行 `@agents.md`，引用同目录规则，不放额外正文或普通链接。
+- 每轮核对 README、AGENTS、DES 和相关 current 的影响，在同一改动中更新受影响内容：
+  行为→current，玩法→DES，用户入口→README，规则→所属 AGENTS，进度→未完成工作与已知缺口。
+  新增/删除模块同步系统地图与导航；没有变化不为同步而追加总结。
+  交付注明尚未同步或未验证部分，不能只写“已同步”。
+- 方案归档前完成对照并保留正文与证据，注明日期和替代入口；归档后封存。
+  问题、剩余工作和验收条件只记在《未完成工作与已知缺口.md》，条目须自包含，后续不依赖翻阅历史。
+  `plans/active/` 只留未完成总表与尚在实施的目标契约，不为单一主题另开文档。
+  测试结果只在检查点记录一次，注明基线、范围和未验证项；不在多个概览复制数字。
 - Conventional Commits：`<type>(<scope>): <中文描述>`；不加句号，一次提交一个主题，正文解释原因。
   scope 使用模块名，跨模块可省略；破坏性变更用 `!` 与 `BREAKING CHANGE`，是否提交遵循用户授权。
-  当前实现不用内部版本号命名，发布版本以 Git tag 为准；tag 版本与 `tauri.conf.json`
-  的 `version` 由 `ci.yml` 的 `bundle-config` 校验一致，推 tag 与发版流程见
+  当前实现不用内部版本号命名，发布版本以 Git tag 为准；发布流程见
   [.github/workflows/README.md](.github/workflows/README.md)。
