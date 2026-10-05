@@ -1,7 +1,0 @@
-# 结城理的 Profile 角色元数据。
-# 五层透明素材由 profile.yaml 的 parallax.layers 负责显示。
-character:
-  id: "yuki"
-  name: "结城理"
-  scale: 1.0
-  scaleMode: smooth
