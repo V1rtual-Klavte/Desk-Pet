@@ -6,6 +6,11 @@ name: CI
 # 不用真实 Provider，夹具一律走 `os.tmpdir()` 与 node:path，不依赖某一端的 shell 或分隔符。
 on:
   push:
+    # ⚠️ branches 必须**显式写全**：GitHub 的 push 事件规则是「只定义 tags/tags-ignore 或只定义
+    # branches/branches-ignore 时，另一侧 ref 的事件不触发」。2026-10-03 把裸 `push:` 收窄成
+    # 只有 `tags-ignore` 之后，**分支推送一声不响地不再触发 CI**（10-05 才发现，中间所有分支推送
+    # 都没有门禁）。删 tags-ignore 又会踩回旧问题：同一个 SHA 在 verify 上白跑一遍双平台。
+    branches: ["**"]
     # v* tag 由 release.yml 负责：不排除的话同一 SHA 会在 verify 上白跑一遍双平台（且并不阻塞 release）
     tags-ignore: ["v*"]
   pull_request:
