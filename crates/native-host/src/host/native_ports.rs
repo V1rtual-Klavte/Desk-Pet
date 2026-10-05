@@ -330,6 +330,53 @@ mod macos_panel {
     }
 }
 
+// ── 通用对话框回读的纯解析（无 Win32 调用）──
+
+/// OFN_EXPLORER 多选布局：`目录\0名称1\0名称2\0\0`；单选布局是完整路径 + 单 NUL。
+///
+/// 不碰任何平台 API，所以放在 `cfg(windows)` 模块之外并允许测试构建编译：本机
+/// （macOS）`cargo test` 就能覆盖偏移推进这条最容易写错的逻辑（AGENTS §2 的离线
+/// 核对法——只证明类型与纯逻辑，不证明链接与运行）；macOS 普通构建不编译它。
+#[cfg(any(windows, test))]
+fn parse_multi_selection(buffer: &[u16]) -> Vec<String> {
+    let directory = read_unit(buffer, 0);
+    if directory.is_empty() {
+        return Vec::new();
+    }
+    let mut names = Vec::new();
+    let mut offset = directory.len() + 1;
+    loop {
+        let name = read_unit(buffer, offset);
+        if name.is_empty() {
+            break;
+        }
+        // 先把偏移推过本段的 NUL 再交货：`name` 进 `names` 后就不能再借它算长度。
+        offset += name.len() + 1;
+        names.push(name);
+    }
+    if names.is_empty() {
+        // 没有第二段 = 单选：第一段就是完整路径。
+        vec![directory]
+    } else {
+        let base = std::path::PathBuf::from(directory.replace('/', "\\"));
+        names
+            .into_iter()
+            .map(|name| base.join(name).to_string_lossy().into_owned())
+            .collect()
+    }
+}
+
+/// 读 `offset` 起以 NUL 结尾的一段 UTF-16；越界起点按空串（回读缓冲的防御性解析）。
+#[cfg(any(windows, test))]
+fn read_unit(buffer: &[u16], offset: usize) -> String {
+    let slice = &buffer[offset.min(buffer.len())..];
+    let end = slice
+        .iter()
+        .position(|unit| *unit == 0)
+        .unwrap_or(slice.len());
+    String::from_utf16_lossy(&slice[..end])
+}
+
 // ── Windows：系统通用对话框（专用线程上打开，不需消息循环）──
 
 #[cfg(windows)]
@@ -341,6 +388,8 @@ mod windows_panel {
         OFN_NOCHANGEDIR, OFN_OVERWRITEPROMPT, OFN_PATHMUSTEXIST, OPENFILENAMEW,
     };
     use windows_sys::Win32::UI::WindowsAndMessaging::{FindWindowW, PostMessageW, WM_COMMAND};
+
+    use super::{parse_multi_selection, read_unit};
 
     use crate::error::{AppError, AppResult};
 
@@ -446,43 +495,6 @@ mod windows_panel {
             .map_err(|error| AppError::Other(format!("文件对话框线程创建失败: {error}")))?
             .join()
             .map_err(|_| AppError::Other("文件对话框线程异常结束".into()))?
-    }
-
-    /// OFN_EXPLORER 多选布局：`目录\0名称1\0名称2\0\0`；单选布局是完整路径 + 单 NUL。
-    fn parse_multi_selection(buffer: &[u16]) -> Vec<String> {
-        let directory = read_unit(buffer, 0);
-        if directory.is_empty() {
-            return Vec::new();
-        }
-        let mut names = Vec::new();
-        let mut offset = directory.len() + 1;
-        loop {
-            let name = read_unit(buffer, offset);
-            if name.is_empty() {
-                break;
-            }
-            names.push(name);
-            offset += name.len() + 1;
-        }
-        if names.is_empty() {
-            // 没有第二段 = 单选：第一段就是完整路径。
-            vec![directory]
-        } else {
-            let base = std::path::PathBuf::from(directory.replace('/', "\\"));
-            names
-                .into_iter()
-                .map(|name| base.join(name).to_string_lossy().into_owned())
-                .collect()
-        }
-    }
-
-    fn read_unit(buffer: &[u16], offset: usize) -> String {
-        let slice = &buffer[offset.min(buffer.len())..];
-        let end = slice
-            .iter()
-            .position(|unit| *unit == 0)
-            .unwrap_or(slice.len());
-        String::from_utf16_lossy(&slice[..end])
     }
 
     fn c_string_lossy(buffer: &[u16]) -> String {
@@ -773,6 +785,55 @@ mod tests {
                 assert_eq!(error.code(), "PATH_ESCAPE");
             }
         }
+    }
+
+    // ── OFN_EXPLORER 对话框回读解析（Windows 资源对话框的多选布局；纯函数）──
+
+    fn utf16_units(segments: &[&str]) -> Vec<u16> {
+        let mut buffer = Vec::new();
+        for segment in segments {
+            buffer.extend(segment.encode_utf16());
+            buffer.push(0);
+        }
+        buffer
+    }
+
+    #[test]
+    fn 单选布局保留完整路径() {
+        // 单选：完整路径 + 尾部 NUL。多出来的那个尾 NUL 不构成第二段。
+        let buffer = utf16_units(&["C:\\pics\\a.png", ""]);
+        assert_eq!(parse_multi_selection(&buffer), vec!["C:\\pics\\a.png"]);
+    }
+
+    #[test]
+    fn 多选布局按目录拼出每个文件名() {
+        let buffer = utf16_units(&["D:", "one.png", "two.jpg", ""]);
+        let picked = parse_multi_selection(&buffer);
+        assert_eq!(picked.len(), 2, "偏移推进要跳过每个名字后的 NUL");
+        assert!(
+            picked[0].ends_with("one.png") && picked[1].ends_with("two.jpg"),
+            "两个文件名都要回读：{picked:?}"
+        );
+        assert!(
+            picked.iter().all(|path| path.contains("D:")),
+            "文件名要拼回目录：{picked:?}"
+        );
+    }
+
+    #[test]
+    fn 多选缓冲缺尾终止符不越界() {
+        // 缓冲正好在最后一个名字的 NUL 处结束：越界起点按空段处理即终止（不 panic）。
+        let buffer = utf16_units(&["D:", "one.png"]);
+        assert_eq!(buffer.last(), Some(&0));
+        let picked = parse_multi_selection(&buffer);
+        assert_eq!(picked.len(), 1);
+        assert!(picked[0].ends_with("one.png"), "{picked:?}");
+    }
+
+    #[test]
+    fn 首段为空按空选择处理() {
+        assert!(parse_multi_selection(&utf16_units(&[""])).is_empty());
+        assert!(parse_multi_selection(&[]).is_empty());
     }
 
     // ── ExitOnceHook ──

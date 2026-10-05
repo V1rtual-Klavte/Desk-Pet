@@ -99,7 +99,7 @@ impl AudioPort for NativeAudio {
             #[cfg(target_os = "macos")]
             return macos::play_wav(&wav);
             #[cfg(target_os = "windows")]
-            return windows::play_wav(Arc::from(wav));
+            return windows::play_wav(&wav);
             #[allow(unreachable_code)]
             Err(AppError::Other("当前平台没有 Native 音效后端".into()))
         })?

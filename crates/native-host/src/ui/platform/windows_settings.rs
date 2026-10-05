@@ -151,8 +151,9 @@ use windows_sys::Win32::UI::WindowsAndMessaging::{
     GWL_STYLE, HTTRANSPARENT, HWND_TOP, IDCANCEL, IDOK, IDYES, MB_DEFBUTTON2, MB_ICONERROR,
     MB_ICONWARNING, MB_OK, MB_YESNO, MSG, PM_REMOVE, SB_LINEDOWN, SB_LINEUP, SB_PAGEDOWN,
     SB_PAGEUP, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SW_HIDE, SW_SHOW, SW_SHOWNA, WM_CLOSE,
-    WM_COMMAND, WM_CTLCOLOREDIT, WM_CTLCOLORLISTBOX, WM_DESTROY, WM_ERASEBKGND, WM_GETFONT,
-    WM_NCHITTEST, WM_PAINT, WM_SETFONT, WM_VSCROLL, WNDCLASSW, WS_BORDER, WS_CAPTION, WS_CHILD,
+    WM_COMMAND, WM_CTLCOLORBTN, WM_CTLCOLOREDIT, WM_CTLCOLORLISTBOX, WM_CTLCOLORSTATIC, WM_DESTROY,
+    WM_ERASEBKGND, WM_GETFONT,
+    WM_NCHITTEST, WM_PAINT, WM_SETFONT, WNDCLASSW, WS_BORDER, WS_CAPTION, WS_CHILD,
     WS_CLIPCHILDREN, WS_CLIPSIBLINGS, WS_EX_CLIENTEDGE, WS_EX_DLGMODALFRAME, WS_POPUP, WS_SYSMENU,
     WS_TABSTOP, WS_VISIBLE, WS_VSCROLL,
 };
@@ -2419,7 +2420,7 @@ fn present_document_dialog(document: &DocumentState, draft: Option<String>) {
 
     let mut msg: MSG = unsafe { std::mem::zeroed() };
     while !unsafe { (*state).done } {
-        let ret = unsafe { GetMessageW(&mut msg, std::ptr::null_mut(), 0, 0) };
+        let ret = unsafe { GetMessageW(&mut msg, 0, 0, 0) };
         if ret <= 0 {
             // 0 = WM_QUIT：转交外层循环，不吞在弹窗里。
             if ret == 0 {
@@ -2701,7 +2702,7 @@ fn build_panel(
     create_panel_control(
         state,
         "STATIC",
-        panel.hint,
+        &panel.hint,
         MARGIN,
         y,
         content_w,
@@ -3646,7 +3647,7 @@ pub(crate) fn prompt_text(
         // 嵌套消息循环（模态）：直到 wndproc 置 done（窗口已销毁）或进程退出消息。
         let mut msg: MSG = std::mem::zeroed();
         while !(*state).done {
-            let ret = GetMessageW(&mut msg, std::ptr::null_mut(), 0, 0);
+            let ret = GetMessageW(&mut msg, 0, 0, 0);
             if ret <= 0 {
                 // 0 = WM_QUIT：转交外层循环，不吞在弹窗里。
                 if ret == 0 {
@@ -4781,7 +4782,9 @@ unsafe fn combo_item_text(hwnd: HWND, index: i32) -> String {
 /// **只比数量会漏掉改名**（数量不变、标题过期），过期标题与按 id 的取值错位：
 /// 用户按看到的名字选中，读回的却是另一个 id（macOS 侧同款判据）。
 unsafe fn combo_choice_stale(hwnd: HWND, desired: &[String]) -> bool {
-    let count = SendMessageW(hwnd, 0x0146 /* CB_GETCOUNT */, 0, 0);
+    // CB_GETCOUNT 按 Win32 语义是 int；`SendMessageW` 的返回宽是 LRESULT=isize，
+    // 收回到 i32 才能直接喂给 `combo_item_text` 的索引参数（CB_ERR=-1 走首条比较即判过期）。
+    let count = SendMessageW(hwnd, 0x0146 /* CB_GETCOUNT */, 0, 0) as i32;
     count as usize != desired.len()
         || (0..count).any(|i| combo_item_text(hwnd, i) != desired[i as usize])
 }

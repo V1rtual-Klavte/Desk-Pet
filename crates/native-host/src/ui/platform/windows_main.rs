@@ -144,15 +144,17 @@ fn client_size(hwnd: HWND) -> (i32, i32) {
 pub(crate) struct MainLayout {
     stage: Stage,
     stage_hwnd: HWND,
-    chat_visible: bool,
+    // 以下三项由 windows.rs 的 ULW 底色读取（BackdropKey + paint_backdrop 入参），
+    // 是跨 windows_main / windows 两个模块的共享布局状态，故对 crate 可见。
+    pub(crate) chat_visible: bool,
     /// 聊天列宽度（逻辑像素）；`None` = 未收到 CONFIG 推送（用兜底）。
     chat_width: Option<f64>,
     /// 分隔条拖动：按下时的鼠标 x（物理）与当时的列宽（逻辑）。
     divider_drag: Option<(i32, f64)>,
     // ── 主窗 ULW 底色的重画几何（`relayout` 每轮写入；`windows.rs` 读）──
     /// 分隔带左缘（物理像素）与带宽；`chat_visible=false` 时无意义。
-    divider_x: i32,
-    divider_w: i32,
+    pub(crate) divider_x: i32,
+    pub(crate) divider_w: i32,
 }
 
 /// 建立主窗布局：舞台子窗口 + 聊天面板挂载。
@@ -452,7 +454,7 @@ pub(crate) fn paint_backdrop(hdc: HDC, width: i32, height: i32, layout: Option<&
     // 舞台纹理（verdigris 的氧化斑块；另两套主题为 None）——与 macOS
     // `macos_main.rs::paint_stage_backdrop` 的层序一致（底 → 纹理 → 颗粒）。
     if let Some(sheen) = t.stage_tex {
-        paint_win::draw_sheen(hdc, full, sheen);
+        paint_win::draw_sheen(hdc, full, &sheen);
     }
     if let Some(alpha) = t.stage_grain {
         paint_win::draw_texture(hdc, full, crate::ui::theme::Tex::Grain, alpha);

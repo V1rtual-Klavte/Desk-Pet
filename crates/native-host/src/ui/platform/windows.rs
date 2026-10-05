@@ -49,7 +49,7 @@ use windows_sys::Win32::UI::WindowsAndMessaging::{
     WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSEMOVE, WM_MOUSEWHEEL, WM_NCCALCSIZE, WM_NCHITTEST,
     WM_PAINT, WM_RBUTTONUP, WM_SETCURSOR, WM_SIZE, WM_TIMER, WM_VSCROLL, WNDCLASSW,
     WS_CLIPCHILDREN, WS_EX_LAYERED, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_OVERLAPPEDWINDOW, WS_POPUP,
-    WS_THICKFRAME, WS_VISIBLE,
+    WS_THICKFRAME, WS_VISIBLE, WS_VSCROLL,
 };
 
 use crate::audio::AudioCue;
@@ -1002,7 +1002,9 @@ unsafe extern "system" fn main_wndproc(
                 })
                 .unwrap_or(false);
                 if over_divider {
-                    unsafe { SetCursor(LoadCursorW(std::ptr::null_mut(), IDC_SIZEWE)) };
+                    // windows-sys 0.52 的 HINSTANCE 是 isize（不是指针），空实例句柄写 0；
+                    // IDC_SIZEWE 本身就是 PCWSTR 常量，不用再转。
+                    unsafe { SetCursor(LoadCursorW(0, IDC_SIZEWE)) };
                     return 1;
                 }
             }

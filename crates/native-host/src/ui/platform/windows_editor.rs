@@ -44,7 +44,9 @@ use windows_sys::Win32::Graphics::Gdi::{
 use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows_sys::Win32::UI::Controls::{ODS_DISABLED, ODS_GRAYED, ODS_SELECTED, ODT_BUTTON};
 use windows_sys::Win32::UI::HiDpi::{GetDpiForSystem, GetDpiForWindow};
-use windows_sys::Win32::UI::Input::KeyboardAndMouse::{IsWindowEnabled, SetFocus, VK_ESCAPE};
+use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
+    EnableWindow, IsWindowEnabled, SetFocus, VK_ESCAPE,
+};
 use windows_sys::Win32::UI::Shell::{DefSubclassProc, SetWindowSubclass};
 use windows_sys::Win32::UI::WindowsAndMessaging::{
     AdjustWindowRectEx, CreateWindowExW, DefWindowProcW, DestroyWindow, GetClientRect, GetParent,
@@ -509,7 +511,9 @@ pub(crate) fn install_editor_content(hwnd: HWND) {
             WS_CHILD | WS_VISIBLE | WS_TABSTOP | WS_VSCROLL | CBS_DROPDOWNLIST as u32,
             0,
             0,
-            scaled(LIST_W, scale),
+            // 初始宽度即右栏面板宽（与 macOS `asset_popup` 的 PANEL_W 同口径）；
+            // 展开后的最终尺寸由 relayout 的 MoveWindow 再按 PANEL_W 定。
+            scaled(PANEL_W, scale),
             scaled(200, scale),
             hwnd,
             ASSET_COMBO_ID as isize,
@@ -1033,7 +1037,8 @@ pub(crate) fn on_mouse_move(hwnd: HWND, x: i32, y: i32) -> bool {
 }
 
 pub(crate) fn on_lbutton_up() {
-    let was_dragging = with_state(|state| state.drag_last.take().is_some());
+    // `with_state` 在 UI 状态缺失时返回 None：没有状态同样意味着没在拖动。
+    let was_dragging = with_state(|state| state.drag_last.take().is_some()).unwrap_or(false);
     if was_dragging {
         // 拖动结束：恢复常规状态行（拖动期间显示实时数值）。
         refresh_ui();

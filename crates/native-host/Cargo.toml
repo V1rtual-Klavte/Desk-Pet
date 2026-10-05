@@ -124,6 +124,7 @@ windows-sys = { version = "0.52", features = [
     "Win32_UI_Input_KeyboardAndMouse",  # GetLastInputInfo / LASTINPUTINFO
     "Win32_UI_Input_Ime",               # W8a 聊天输入：ImmGetContext/ImmSetCandidateWindow（候选窗定位）
     "Win32_UI_Controls",                # W8a 聊天画布：SetScrollInfo/ShowScrollBar（0.52 里滚动 API 在 Controls）
+    "Win32_UI_Controls_Dialogs",        # 文件对话框：GetOpenFileNameW/GetSaveFileNameW/OPENFILENAMEW/OFN_*（只在 Controls::Dialogs 子模块，0.52 独立 feature 门槛）
     "Win32_Globalization",              # 上一行的 HIMC 类型依赖（windows-sys 0.52 的 feature 门槛）
     "Win32_UI_Accessibility",           # SetWinEventHook（前台切换事件）
     "Win32_System_RemoteDesktop",       # WTSRegisterSessionNotification（锁屏/解锁）

@@ -881,7 +881,7 @@ unsafe fn paint_shell(state: &ChatWinState, hdc: HDC) {
     paint_win::draw_elevation(hdc, full, &t.panel_shadow);
     paint_win::fill_rect(hdc, full, &t.panel_bg);
     if let Some(sheen) = t.panel_tex {
-        paint_win::draw_sheen(hdc, full, sheen);
+        paint_win::draw_sheen(hdc, full, &sheen);
     }
     if let Some(alpha) = t.panel_grain {
         paint_win::draw_texture(hdc, full, ThemeTex::Grain, alpha);
@@ -1016,7 +1016,7 @@ unsafe fn paint_canvas_shell(state: &ChatWinState, hdc: HDC) {
     }
     paint_win::fill_rect(hdc, full, &t.panel_bg);
     if let Some(sheen) = t.panel_tex {
-        paint_win::draw_sheen(hdc, full, sheen);
+        paint_win::draw_sheen(hdc, full, &sheen);
     }
     if let Some(alpha) = t.panel_grain {
         paint_win::draw_texture(hdc, full, ThemeTex::Grain, alpha);
