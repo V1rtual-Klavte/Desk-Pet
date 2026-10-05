@@ -7,6 +7,7 @@
 // ==========================================
 
 import JSZip from "jszip";
+import { join } from "node:path";
 import { getHostBridge } from "@/services/host";
 import {
   DEFAULT_LAYER_SENSITIVITIES,
@@ -44,9 +45,10 @@ function fail(message: string, detail?: string): ProfileOpResult {
 const CANCELLED: ProfileOpResult = { ok: false, cancelled: true, message: "" }
 
 /** Profile 的展示用完整路径（数据根下 `profiles/<id>`）。
- *  回执与设置页共用这一处，不在各处自行用 `/` 拼接。 */
+ *  回执与设置页共用这一处，不在各处自行用 `/` 拼接；展示路径按平台原生分隔符
+ *  拼（Windows 上 `\` 与 `/` 混拼的路径复制出去在资源管理器里打不开）。 */
 export function profileDisplayPath(profileId: string): string {
-  return `${BaseDirs.profiles()}/${profileId}`
+  return join(BaseDirs.profiles(), profileId)
 }
 
 // ── 导出 ──
