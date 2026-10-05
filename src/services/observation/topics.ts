@@ -1,11 +1,11 @@
 import { estimateRequestTokens } from "@/services/context"
-import { PROACTIVE_LIMITS } from "@/services/proactive/protocol"
 import { completePiText, resolvePiAuxModel } from "@/services/engine/harness"
 import { formatError } from "@/services/error"
 import { createLogger } from "@/services/logger"
 import { reserveAuxiliaryBudget, settleAuxiliaryBudget } from "@/services/proactive/auxiliary-budget"
-import { silentAccessConfig } from "@/services/config"
+import { silentAccessFrequency } from "@/services/proactive/tiers"
 import { appendTopicEvidence, hasTopicSource, invalidateTopicEvidence, isTopicSourceEligible, loadObservationStore, markAuxiliaryAttemptAt, readTopicClearWatermark } from "./store"
+import { TOPIC_BATCH_TOKEN_CEILING } from "./config"
 import type { CommittedUserParticipation, TopicEvidence } from "./types"
 
 const log = createLogger("ObservationTopics")
@@ -85,7 +85,7 @@ function hasTopicBearingText(text: string): boolean {
 
 /** Low-cost ingress hook: queue only the committed text and source mark in RAM. No model call is awaited. */
 export function recordCommittedUserParticipation(input: CommittedUserParticipation): void {
-  if (!topicIntakeEnabled || !silentAccessConfig.enabled || input.committed !== true || input.origin !== "user"
+  if (!topicIntakeEnabled || silentAccessFrequency() === "off" || input.committed !== true || input.origin !== "user"
     || input.taint !== "trusted_user" || input.eligibleForMemory !== true
     || typeof input.sessionId !== "string" || typeof input.entryId !== "string"
     || !Number.isSafeInteger(input.committedAt) || input.committedAt <= 0
@@ -117,7 +117,7 @@ export async function drainTopicIntake(): Promise<void> {
 }
 
 export async function processTopicBatch(signal: AbortSignal): Promise<boolean> {
-  if (!topicIntakeEnabled || !silentAccessConfig.enabled || signal.aborted || pending.length === 0) return false
+  if (!topicIntakeEnabled || silentAccessFrequency() === "off" || signal.aborted || pending.length === 0) return false
   const epoch = topicEpoch
   await loadObservationStore()
   if (signal.aborted || epoch !== topicEpoch || !topicIntakeEnabled) return false
@@ -132,7 +132,7 @@ export async function processTopicBatch(signal: AbortSignal): Promise<boolean> {
   const batchText = () => JSON.stringify({ entries: rows.map(row => ({ sourceId: row.sourceId, text: row.text })) })
   const batchTokens = () => estimateRequestTokens(TOPIC_SYSTEM_PROMPT, [{ role: "user", content: batchText() }]) + TOPIC_OUTPUT_TOKENS
   // 按完整可负担来源缩小批次，防止四条长来源永久卡住队首。
-  while (rows.length > 1 && batchTokens() > PROACTIVE_LIMITS.dailyTokens) pending.unshift(rows.pop()!)
+  while (rows.length > 1 && batchTokens() > TOPIC_BATCH_TOKEN_CEILING) pending.unshift(rows.pop()!)
   const userText = batchText()
   let model
   try { model = resolvePiAuxModel() }
@@ -152,7 +152,7 @@ export async function processTopicBatch(signal: AbortSignal): Promise<boolean> {
     if (epoch === topicEpoch && !signal.aborted) pending.unshift(...rows)
     return false
   }
-  if (signal.aborted || !silentAccessConfig.enabled || !topicIntakeEnabled || epoch !== topicEpoch
+  if (signal.aborted || silentAccessFrequency() === "off" || !topicIntakeEnabled || epoch !== topicEpoch
     || rows.some(row => !isTopicSourceEligible(row.sourceId, row.committedAt))) {
     await settleAuxiliaryBudget({ reservationId, localDate: date, status: "failed", usage: { totalTokens: 0 }, now: Date.now() })
     return false
@@ -188,7 +188,7 @@ export async function processTopicBatch(signal: AbortSignal): Promise<boolean> {
     signal.removeEventListener("abort", forwardAbort)
   }
   await settleAuxiliaryBudget({ reservationId, localDate: date, status: "committed", usage: { totalTokens: result.usage.totalTokens }, now: Date.now() })
-  if (signal.aborted || !topicIntakeEnabled || !silentAccessConfig.enabled || epoch !== topicEpoch) return true
+  if (signal.aborted || !topicIntakeEnabled || silentAccessFrequency() === "off" || epoch !== topicEpoch) return true
   const eligibleRows = rows.filter(row => isTopicSourceEligible(row.sourceId, row.committedAt))
   if (eligibleRows.length === 0) return true
   let parsed: ParsedEntry[]

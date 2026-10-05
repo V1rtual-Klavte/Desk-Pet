@@ -17,7 +17,10 @@ export interface McpServerConfig {
   command?: string
   args?: string[]
   url?: string
-  /** 附加请求头（仅 http）。值里的 `${VAR}` 只从本服务器 env 展开，见 client 的 expandHeaders。 */
+  /**
+   * 附加请求头（仅 http）。值里的 `${VAR}` 先查本服务器 env，未命中再取凭据存储
+   * （宿主 `mcp_credential_get`，值不写 CONFIG），见 client 的 `resolveHeaderEnv`。
+   */
   headers?: Record<string, string>
   env?: Record<string, string>
   /** 仅发现这些原始 MCP 工具名；空数组表示不暴露任何工具。 */

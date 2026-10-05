@@ -14,18 +14,11 @@ use xcap::Window;
 use crate::error::{AppError, AppResult};
 use crate::host::WindowPort;
 use crate::images::screenshot::encode_screenshot;
-use crate::monitor::{runtime_activity, MonitorState};
+use crate::monitor::{runtime_activity, MonitorState, RuntimeActivity};
 use crate::paths::{home_dir, is_credential_path, AppPaths};
 use crate::rust_debug;
 
-/// 单个目标文件的字节上限；超出与读取中增长都按跳过如实回执。
-const MAX_TARGET_FILE_BYTES: u64 = 32 * 1024;
-/// 目录列举只回名字，跳过隐藏/凭据项，最多回 40 条。
-const MAX_DIR_ENTRIES: usize = 40;
-/// 单次目录扫描的条目预算：目录很大时先扫一段再排序截断，不把内存押在条目总数上。
-const MAX_DIR_SCAN_ENTRIES: usize = 256;
-/// 单批目标数；调用方（TS）也会截断，这里再拦一次。
-const MAX_READ_TARGETS: usize = 3;
+/// 静默了解的空闲地板：档位值由 Node 侧强制、只会更严，Rust 终裁不低于 30 分钟。
 const MIN_IDLE_MS: u64 = 30 * 60_000;
 
 #[derive(Serialize)]
@@ -68,13 +61,34 @@ fn require_enabled(state: &MonitorState) -> AppResult<()> {
     }
 }
 
+/// 静默了解（读取类）资格口径：`screen_state ∈ {observed, locked}` —— 锁屏=用户离开，
+/// 读取不依赖屏幕内容；`unavailable`（真不可知）、桌宠前台、空闲未达地板都拒绝。
+/// 判定拆成纯函数：资格语义在没有系统采样桩的环境下也能被单测钉住。
+fn idle_observation_allowed(current: &RuntimeActivity) -> bool {
+    matches!(current.screen_state, "observed" | "locked")
+        && !current.is_pet_foreground
+        && !current.idle_for_ms.map_or(true, |idle| idle < MIN_IDLE_MS)
+}
+
+/// 截图类资格：在读取资格之上追加屏幕维度 —— 锁屏时截图无意义，仅 `observed` 放行。
+fn idle_capture_allowed(current: &RuntimeActivity) -> bool {
+    idle_observation_allowed(current) && current.screen_state == "observed"
+}
+
 fn require_idle_observation(window: &dyn WindowPort, state: &MonitorState) -> AppResult<()> {
     require_enabled(state)?;
     let current = runtime_activity(window);
-    if current.observation_state != "observed"
-        || current.is_pet_foreground
-        || current.idle_for_ms.map_or(true, |idle| idle < MIN_IDLE_MS)
-    {
+    if !idle_observation_allowed(&current) {
+        return Err(AppError::Cancelled);
+    }
+    Ok(())
+}
+
+/// 截图类终裁：沿用既有拒绝语义（`AppError::Cancelled`，不新增错误变体）。
+fn require_idle_capture(window: &dyn WindowPort, state: &MonitorState) -> AppResult<()> {
+    require_enabled(state)?;
+    let current = runtime_activity(window);
+    if !idle_capture_allowed(&current) {
         return Err(AppError::Cancelled);
     }
     Ok(())
@@ -82,11 +96,12 @@ fn require_idle_observation(window: &dyn WindowPort, state: &MonitorState) -> Ap
 
 /// Capture only the foreground window. The encoded bytes exist in memory for the IPC response;
 /// this command never creates a screenshot file or returns executable paths/window titles.
+/// 截图类资格在读取资格之上要求屏幕 `observed`：锁屏时截图无意义，直接拒绝。
 pub fn observation_capture_screen(
     port: &dyn WindowPort,
     state: &MonitorState,
 ) -> AppResult<ScreenCapture> {
-    require_idle_observation(port, state)?;
+    require_idle_capture(port, state)?;
     let windows = Window::all().map_err(|_| AppError::Other("无法枚举前台窗口".into()))?;
     let mut focused = None;
     for window in windows {
@@ -102,7 +117,7 @@ pub fn observation_capture_screen(
     let image = window
         .capture_image()
         .map_err(|_| AppError::Other("截图不可用".into()))?;
-    require_idle_observation(port, state)?;
+    require_idle_capture(port, state)?;
 
     // 缩放/编码统一走图片域的 `encode_screenshot`（契约 §2.1/§5.4：解码/缩放/编码集中
     // 到 Rust 图片域，不给截图另建缩放器）。口径逐项固定为：
@@ -110,7 +125,7 @@ pub fn observation_capture_screen(
     // Triangle 滤波、PNG、8 MiB 传输上限；「尺寸无效 / 编码失败 / 超传输上限」的
     // 错误文案与错误码由该实现给出，调用方可见行为不变。
     let encoded = encode_screenshot(&image)?;
-    require_idle_observation(port, state)?;
+    require_idle_capture(port, state)?;
     Ok(ScreenCapture {
         data: STANDARD.encode(encoded.bytes),
         mime_type: encoded.mime_type,
@@ -164,12 +179,7 @@ fn list_directory(requested: &str, canonical: &Path) -> TargetReadResult {
         Err(error) => return skipped(requested, "dir", format!("读取目录失败（{error}）")),
     };
     let mut names = Vec::new();
-    let mut scanned = 0usize;
     for entry in entries {
-        if scanned >= MAX_DIR_SCAN_ENTRIES {
-            break;
-        }
-        scanned += 1;
         let entry = match entry {
             Ok(entry) => entry,
             // 单项读失败不代表目录不可读；根因留痕在 rust_debug，不中断列举。
@@ -185,7 +195,6 @@ fn list_directory(requested: &str, canonical: &Path) -> TargetReadResult {
         names.push(name);
     }
     names.sort();
-    names.truncate(MAX_DIR_ENTRIES);
     TargetReadResult {
         path: requested.to_string(),
         kind: "dir".to_string(),
@@ -204,22 +213,12 @@ fn read_text_file(requested: &str, canonical: &Path) -> TargetReadResult {
     if !metadata.file_type().is_file() {
         return skipped(requested, "file", "目标不是常规文件");
     }
-    if metadata.len() > MAX_TARGET_FILE_BYTES {
-        return skipped(
-            requested,
-            "file",
-            format!("文件超过 {} 字节上限", MAX_TARGET_FILE_BYTES),
-        );
-    }
     let mut content = String::new();
-    if let Err(error) = std::fs::File::open(canonical).and_then(|file| {
-        file.take(MAX_TARGET_FILE_BYTES + 1)
-            .read_to_string(&mut content)
-    }) {
+    if let Err(error) =
+        std::fs::File::open(canonical).and_then(|mut file| file.read_to_string(&mut content))
+    {
+        // 没有字节上限：整读；UTF-8 失败等 IO 错误按既有 skipped 如实回执。
         return skipped(requested, "file", format!("读取文件失败（{error}）"));
-    }
-    if content.len() as u64 > MAX_TARGET_FILE_BYTES {
-        return skipped(requested, "file", "读取期间文件增长超过上限");
     }
     TargetReadResult {
         path: requested.to_string(),
@@ -267,8 +266,10 @@ fn read_one_target(target: &ReadTarget, home: &Path, data_root: &Path) -> Target
 }
 
 /// 读取静默了解批次里模型判断的本地目标。许可与空闲资格沿用 MonitorState 终裁
-/// （关闭/不满足即 CANCELLED 终止整批）；单项边界失败以 skipped 如实回执，
-/// 绝不猜测内容或静默回退。目录只列名字，文件有长度上限。
+/// （关闭/不满足即 CANCELLED 终止整批）；**读什么、读多少由调用方（模型决策）裁断，
+/// 边界由本命令终裁**：绝对路径、canonical 解析、主目录之内、数据根之外、非凭据路径、
+/// 非 home 系统目录。目录全量列名（仍跳隐藏与凭据项），文件整读（UTF-8 失败按既有
+/// skipped 如实回执）；单项边界失败以 skipped 回执，绝不猜测内容或静默回退。
 pub fn observation_read_targets(
     port: &dyn WindowPort,
     monitor: &MonitorState,
@@ -276,11 +277,6 @@ pub fn observation_read_targets(
     targets: Vec<ReadTarget>,
 ) -> AppResult<Vec<TargetReadResult>> {
     require_idle_observation(port, monitor)?;
-    if targets.len() > MAX_READ_TARGETS {
-        return Err(AppError::Other(format!(
-            "单批最多读取 {MAX_READ_TARGETS} 个目标"
-        )));
-    }
     let home = home_dir().ok_or(AppError::NoHomeDir)?;
     let home = home
         .canonicalize()
@@ -399,12 +395,13 @@ mod tests {
         std::fs::write(dir.join(".hidden"), "x").unwrap();
         std::fs::write(dir.join("server.pem"), "x").unwrap();
 
+        // 目录全量列举（旧实现 40 条截断已删除）：45 个条目全部回，仍跳隐藏与凭据项。
         let listed = read_one_target(&target(&dir, "dir"), &home, &data_root);
         assert_eq!(listed.status, "listed");
         let names = listed.names.unwrap();
-        assert_eq!(names.len(), MAX_DIR_ENTRIES);
+        assert_eq!(names.len(), 45);
         assert_eq!(names.first().map(String::as_str), Some("file-00.txt"));
-        assert_eq!(names.last().map(String::as_str), Some("file-39.txt"));
+        assert_eq!(names.last().map(String::as_str), Some("file-44.txt"));
         assert!(!names
             .iter()
             .any(|name| name == ".hidden" || name == "server.pem"));
@@ -412,7 +409,7 @@ mod tests {
     }
 
     #[test]
-    fn file_reads_are_bounded_and_kind_mismatches_are_skipped() {
+    fn file_reads_are_whole_and_kind_mismatches_are_skipped() {
         let (home, data_root) = fixture();
         let small = home.join("notes.md");
         std::fs::write(&small, "hello").unwrap();
@@ -420,11 +417,20 @@ mod tests {
         assert_eq!(read.status, "read");
         assert_eq!(read.content.as_deref(), Some("hello"));
 
+        // 没有字节上限（旧实现 32KB 截断已删除）：大文件整读。
+        let big_bytes = 96 * 1024;
         let big = home.join("big.txt");
-        std::fs::write(&big, vec![b'a'; MAX_TARGET_FILE_BYTES as usize + 1]).unwrap();
-        let oversized = read_one_target(&target(&big, "file"), &home, &data_root);
-        assert_eq!(oversized.status, "skipped");
-        assert!(oversized.content.is_none());
+        std::fs::write(&big, vec![b'a'; big_bytes]).unwrap();
+        let whole = read_one_target(&target(&big, "file"), &home, &data_root);
+        assert_eq!(whole.status, "read");
+        assert_eq!(whole.content.map(|content| content.len()), Some(big_bytes));
+
+        // 非 UTF-8 文件按既有 skipped 如实回执，不猜测内容。
+        let binary = home.join("binary.dat");
+        std::fs::write(&binary, [0xff, 0xfe, 0x00]).unwrap();
+        let invalid_utf8 = read_one_target(&target(&binary, "file"), &home, &data_root);
+        assert_eq!(invalid_utf8.status, "skipped");
+        assert!(invalid_utf8.content.is_none());
 
         let as_dir = read_one_target(&target(&small, "dir"), &home, &data_root);
         assert_eq!(as_dir.status, "skipped");
@@ -432,6 +438,51 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         let as_file = read_one_target(&target(&dir, "file"), &home, &data_root);
         assert_eq!(as_file.status, "skipped");
+    }
+
+    fn activity(
+        screen_state: &'static str,
+        idle_for_ms: Option<u64>,
+        is_pet_foreground: bool,
+    ) -> RuntimeActivity {
+        RuntimeActivity {
+            is_pet_visible: true,
+            is_pet_foreground,
+            screen_state,
+            idle_for_ms,
+            observed_at: 0,
+        }
+    }
+
+    #[test]
+    fn locked_gates_reads_in_but_rejects_capture() {
+        // 锁屏=用户离开：读取放行（终裁 `screen_state ∈ {observed, locked}`）、截图拒绝。
+        let locked = activity("locked", Some(MIN_IDLE_MS), false);
+        assert!(idle_observation_allowed(&locked));
+        assert!(!idle_capture_allowed(&locked));
+
+        // 未锁屏：读取与截图都放行（空闲正好等于地板也放行）。
+        let observed = activity("observed", Some(MIN_IDLE_MS), false);
+        assert!(idle_observation_allowed(&observed));
+        assert!(idle_capture_allowed(&observed));
+
+        // 真不可知：两者都拒绝。
+        let unavailable = activity("unavailable", Some(MIN_IDLE_MS), false);
+        assert!(!idle_observation_allowed(&unavailable));
+        assert!(!idle_capture_allowed(&unavailable));
+
+        // 既有排除项不变：桌宠前台、空闲不足/未知。
+        assert!(!idle_observation_allowed(&activity(
+            "observed",
+            Some(MIN_IDLE_MS),
+            true
+        )));
+        assert!(!idle_observation_allowed(&activity(
+            "locked",
+            Some(MIN_IDLE_MS - 1),
+            false
+        )));
+        assert!(!idle_observation_allowed(&activity("locked", None, false)));
     }
 
     #[test]

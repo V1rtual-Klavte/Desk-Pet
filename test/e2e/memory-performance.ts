@@ -13,7 +13,7 @@ const SIZES = [1_000, 10_000] as const
 /** Timings stay in the WebView's performance clock; native timings are separate. */
 export async function runMemoryPerformanceEvaluation(traceMode: string, bindOperation: (runId: string, requestId?: string) => void) {
   await standardSetup()
-  setOverrides({"ai.memory.enabled":true,"ai.memory.rerank":"off","ai.memory.dreaming.mode":"manual"})
+  setOverrides({"ai.memory.enabled":true,"ai.memory.rerank":"off","ai.memory.dreaming.tier":"off"})
   await flushConfig()
   await initChat()
   // This explicit idle interval is a measurement window, never an assertion/polling delay.

@@ -32,9 +32,12 @@ export const RUST_ONLY_COMMANDS = [
   // MemoryStore/FTS/transactions are Rust-owned; Node must not fake them.
   "memory_status", "memory_list", "memory_detail", "memory_register_sources", "memory_query", "memory_recall_candidates", "memory_get_items",
   "memory_apply_change", "memory_job_start", "memory_job_checkpoint", "memory_job_cancel", "memory_job_resume",
-  "memory_job_sources", "memory_job_list", "memory_source_evidence", "memory_candidates_add", "memory_dreaming_commit", "memory_dreaming_budget_reserve",
+  "memory_job_sources", "memory_job_list", "memory_source_evidence", "memory_pending_source_count", "memory_candidates_add", "memory_dreaming_commit", "memory_dreaming_budget_reserve",
   "memory_dreaming_budget_settle", "memory_dreaming_budget", "memory_export",
   "memory_backup", "memory_rebuild", "memory_restore", "memory_restore_preview", "memory_history",
+  // MCP 凭据同库同源（mcp_credentials 表）：写入与名单由 Rust 持有，Node 不复现写入语义。
+  // 读取（mcp_credential_get）由 node-ipc 以夹具形式提供（L3 的连接期展开优先级需要观测）。
+  "mcp_credential_set", "mcp_credential_delete", "mcp_credential_status",
   "proactive_scan", "proactive_query", "proactive_change", "proactive_claim", "proactive_validate", "proactive_settle", "proactive_reconcile", "proactive_control",
 ] as const
 

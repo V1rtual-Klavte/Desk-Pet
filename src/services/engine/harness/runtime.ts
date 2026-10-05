@@ -43,7 +43,8 @@ import {
 } from "@/services/tool"
 import type { HarnessToolRun, ToolDef } from "@/services/tool"
 import { readScreenshotToolDetails, SCREENSHOT_TOOL_NAME } from "@/services/tool/local/screenshot-details"
-import { humanizerConfig, loopConfig, memoryConfig, planConfig, silentAccessConfig } from "@/services/config"
+import { humanizerConfig, loopConfig, memoryConfig, planConfig } from "@/services/config"
+import { silentAccessFrequency } from "@/services/proactive/tiers"
 import { getUnderstandingPromptBlock } from "@/services/observation"
 import { publishUiEvent, type HostEventMap, type NodeUiEventName } from "@/services/host"
 import { resolvePiAuxModel, resolvePiTurnModel } from "./model-gateway"
@@ -1885,7 +1886,7 @@ export async function runPiAgentTurn(input: PiAgentTurnInput): Promise<PiAgentTu
     assertCurrent()
     const frozenContext = { ...frozenUserContext, skillsPromptBlock: isActiveMessage ? "" : getSkillsPromptBlock() }
     const frozenHumanizerEnabled = humanizerConfig.enabled
-    const frozenUnderstandingBlock = silentAccessConfig.enabled ? getUnderstandingPromptBlock() : undefined
+    const frozenUnderstandingBlock = silentAccessFrequency() !== "off" ? getUnderstandingPromptBlock() : undefined
     const skillCatalogFingerprint = getSkillCatalogFingerprint() ?? undefined
     // 会话历史由 Harness 条目承担；buildPrompt 只负责静态/动态/记忆块与预算分配记录。
     const tailContextText = [planStepContext, input.turnContext?.text].filter(Boolean).join("\n\n")

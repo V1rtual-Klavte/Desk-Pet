@@ -1,5 +1,6 @@
 use crate::error::{AppError, AppResult};
 use crate::memory::MemoryStore;
+use crate::proactive::ProactiveLimits;
 use rusqlite::{params, Connection, OptionalExtension, Transaction};
 use serde_json::{json, Value};
 use std::sync::MutexGuard;
@@ -32,21 +33,24 @@ fn is_local_date(value: &str) -> bool {
         .map(|date| date.format("%Y-%m-%d").to_string() == value)
         .unwrap_or(false)
 }
+/// 当日成功上限：档位投影的 `dailySuccess` 为基准；「昨日主动消息未被回应且未清除」
+/// 的硬刹车（→1）优先级最高。档位值由投影参数下传，不读全局。
 fn reply_tier_limit(
     local_date: &str,
     threshold_date: Option<&str>,
     cleared_date: Option<&str>,
+    limits: &ProactiveLimits,
 ) -> i64 {
     let Some(threshold_date) = threshold_date else {
-        return crate::memory::protocol::PROACTIVE_DAILY_SUCCESS;
+        return limits.daily_success;
     };
     if threshold_date >= local_date {
-        return crate::memory::protocol::PROACTIVE_DAILY_SUCCESS;
+        return limits.daily_success;
     }
     let cleared_after_threshold_before_today =
         cleared_date.is_some_and(|date| date >= threshold_date && date < local_date);
     if cleared_after_threshold_before_today {
-        crate::memory::protocol::PROACTIVE_DAILY_SUCCESS
+        limits.daily_success
     } else {
         1
     }
@@ -110,12 +114,13 @@ fn denied_claim(tx: Transaction<'_>, reason: &str) -> AppResult<Value> {
     Ok(json!({"claimed":false,"reason":reason,"leaseUntil":null,"revision":revision}))
 }
 const DAY_MS: i64 = 86_400_000;
-fn next_success_after(attempt: &str, now: i64) -> i64 {
+/// 随机成功间隔：投影的 `minSuccessIntervalMs + hash % successIntervalSpreadMs`。
+/// 同一个持久 attempt 的哈希稳定，重启不改变间隔。
+fn next_success_after(attempt: &str, now: i64, limits: &ProactiveLimits) -> i64 {
     let hash = attempt.bytes().fold(2_166_136_261_u32, |state, byte| {
         (state ^ u32::from(byte)).wrapping_mul(16_777_619)
     });
-    now + crate::memory::protocol::PROACTIVE_MIN_SUCCESS_INTERVAL_MS
-        + i64::from(hash) % crate::memory::protocol::PROACTIVE_SUCCESS_INTERVAL_SPREAD_MS
+    now + limits.min_success_interval_ms + i64::from(hash) % limits.success_interval_spread_ms
 }
 fn prune_tx(tx: &Transaction<'_>, now: i64) -> AppResult<()> {
     tx.execute(
@@ -644,7 +649,11 @@ fn reschedule_linked_memory_tx(
 }
 
 impl MemoryStore {
-    pub(crate) fn proactive_scan(&self, request: &Value) -> AppResult<Value> {
+    pub(crate) fn proactive_scan(
+        &self,
+        request: &Value,
+        limits: &ProactiveLimits,
+    ) -> AppResult<Value> {
         let current_owner = owner(request);
         validate_owner(&current_owner)?;
         let now = number(request, "now").ok_or_else(|| fail("scan 缺少 now"))?;
@@ -665,7 +674,7 @@ impl MemoryStore {
             return Err(fail("scan unansweredClearedDate 必须是合法当地 YYYY-MM-DD"));
         }
         let desired_success_limit =
-            reply_tier_limit(&local_date, unanswered_date, unanswered_cleared_date);
+            reply_tier_limit(&local_date, unanswered_date, unanswered_cleared_date, limits);
         let limit = number(request, "limit")
             .unwrap_or(crate::memory::protocol::PROACTIVE_SCAN_BATCH)
             .clamp(1, crate::memory::protocol::PROACTIVE_SCAN_BATCH);
@@ -763,7 +772,7 @@ impl MemoryStore {
             }
             out
         };
-        let control=tx.query_row("SELECT enabled,mute_until,revision FROM proactive_control WHERE id=1",[],|row|Ok(json!({"enabled":row.get::<_,i64>(0)?!=0,"muteUntil":row.get::<_,Option<i64>>(1)?,"revision":row.get::<_,i64>(2)?}))).map_err(db)?;
+        let control=tx.query_row("SELECT mute_until,revision FROM proactive_control WHERE id=1",[],|row|Ok(json!({"muteUntil":row.get::<_,Option<i64>>(0)?,"revision":row.get::<_,i64>(1)?}))).map_err(db)?;
         let budget=tx.query_row("SELECT local_date,planning_attempts,expression_attempts,successful_messages,reserved_tokens,used_tokens,unknown_tokens,observation_attempts,topic_attempts,next_success_after,daily_success_limit FROM proactive_budgets WHERE local_date=?1",[local_date],|row|Ok(json!({"localDate":row.get::<_,String>(0)?,"planningAttempts":row.get::<_,i64>(1)?,"expressionAttempts":row.get::<_,i64>(2)?,"successfulMessages":row.get::<_,i64>(3)?,"reservedTokens":row.get::<_,i64>(4)?,"usedTokens":row.get::<_,i64>(5)?,"unknownTokens":row.get::<_,i64>(6)?,"observationAttempts":row.get::<_,i64>(7)?,"topicAttempts":row.get::<_,i64>(8)?,"nextSuccessAfter":row.get::<_,Option<i64>>(9)?,"dailySuccessLimit":row.get::<_,i64>(10)?}))).map_err(db)?;
         let source_revision = tx
             .query_row(
@@ -1096,14 +1105,34 @@ impl MemoryStore {
             "control" => {
                 let patch = request
                     .get("controlPatch")
-                    .ok_or_else(|| fail("control 缺少 controlPatch"))?;
-                let enabled = patch.get("enabled").and_then(Value::as_bool);
-                let mute = patch
-                    .get("muteUntil")
-                    .filter(|v| !v.is_null())
-                    .and_then(Value::as_i64);
-                tx.execute("UPDATE proactive_control SET enabled=COALESCE(?1,enabled),mute_until=CASE WHEN ?2 THEN ?3 ELSE mute_until END,revision=revision+1 WHERE id=1",params![enabled.map(|value|value as i64),patch.get("muteUntil").is_some(),mute]).map_err(db)?;
-                if patch.get("clearBehaviorSources").and_then(Value::as_bool) == Some(true) {
+                    .ok_or_else(|| fail("control 缺少 controlPatch"))?
+                    .as_object()
+                    .ok_or_else(|| fail("control patch 必须是对象"))?;
+                // 白名单（协议同口径 additionalProperties:false）：`enabled` 随 CONFIG
+                // 档位撤出（`ai.proactive.frequency` 的 off 承担开关），收到即如实报错，
+                // 不静默吞掉一个已退役的开关冒充成功。
+                if let Some(key) = patch
+                    .keys()
+                    .find(|key| !matches!(key.as_str(), "muteUntil" | "clearBehaviorSources"))
+                {
+                    return Err(fail(format!(
+                        "control patch 未知字段 {key}（主动开关已由 ai.proactive.frequency 档位承担）"
+                    )));
+                }
+                let mute = match patch.get("muteUntil") {
+                    None => None,
+                    Some(Value::Null) => None,
+                    Some(value) => {
+                        Some(value.as_i64().ok_or_else(|| fail("muteUntil 必须是整数或 null"))?)
+                    }
+                };
+                let clear_sources = match patch.get("clearBehaviorSources") {
+                    None => false,
+                    Some(Value::Bool(value)) => *value,
+                    Some(_) => return Err(fail("clearBehaviorSources 必须是布尔值")),
+                };
+                tx.execute("UPDATE proactive_control SET mute_until=CASE WHEN ?1 THEN ?2 ELSE mute_until END,revision=revision+1 WHERE id=1",params![patch.get("muteUntil").is_some(),mute]).map_err(db)?;
+                if clear_sources {
                     tx.execute("UPDATE proactive_tasks SET state='invalidated',version=version+1,intent_json='{}',source_refs_json='[]',updated_at=?1,invalidation_epoch=invalidation_epoch+1 WHERE state='active' AND EXISTS(SELECT 1 FROM json_each(source_refs_json) s WHERE json_extract(s.value,'$.kind') IN ('behavior','variable','calendar','card'))",[now_ms()]).map_err(db)?;
                     tx.execute("DELETE FROM proactive_evaluations WHERE EXISTS(SELECT 1 FROM json_each(source_refs_json) s WHERE json_extract(s.value,'$.kind') IN ('behavior','variable','calendar','card'))",[]).map_err(db)?;
                     tx.execute("UPDATE proactive_attempts SET status='failed',source_refs_json='[]',decision_json=NULL,summary=NULL,error_code='source_cleared',updated_at=?1 WHERE status IN ('reserved','generating','unresolved') AND EXISTS(SELECT 1 FROM json_each(source_refs_json) s WHERE json_extract(s.value,'$.kind') IN ('behavior','variable','calendar','card'))",[now_ms()]).map_err(db)?;
@@ -1119,7 +1148,11 @@ impl MemoryStore {
         Ok(json!({"revision":revision,"task":task}))
     }
 
-    pub(crate) fn proactive_claim(&self, request: &Value) -> AppResult<Value> {
+    pub(crate) fn proactive_claim(
+        &self,
+        request: &Value,
+        limits: &ProactiveLimits,
+    ) -> AppResult<Value> {
         let own = owner(request);
         validate_owner(&own)?;
         let now = number(request, "now").ok_or_else(|| fail("claim 缺少 now"))?;
@@ -1142,7 +1175,7 @@ impl MemoryStore {
             ));
         }
         let desired_success_limit =
-            reply_tier_limit(&date, unanswered_date, unanswered_cleared_date);
+            reply_tier_limit(&date, unanswered_date, unanswered_cleared_date, limits);
         let rule_id = text(request, "ruleId");
         if rule_id.is_empty() {
             return Err(fail("claim ruleId 不能为空"));
@@ -1161,21 +1194,15 @@ impl MemoryStore {
         prune_tx(&tx, now)?;
         let control = tx
             .query_row(
-                "SELECT enabled,mute_until,revision FROM proactive_control WHERE id=1",
+                "SELECT mute_until,revision FROM proactive_control WHERE id=1",
                 [],
-                |r| {
-                    Ok((
-                        r.get::<_, i64>(0)?,
-                        r.get::<_, Option<i64>>(1)?,
-                        r.get::<_, i64>(2)?,
-                    ))
-                },
+                |r| Ok((r.get::<_, Option<i64>>(0)?, r.get::<_, i64>(1)?)),
             )
             .map_err(db)?;
-        if control.0 == 0 || control.1.is_some_and(|until| until > now) {
-            return denied_claim(tx, "disabled_or_muted");
+        if control.0.is_some_and(|until| until > now) {
+            return denied_claim(tx, "muted");
         }
-        if Some(control.2) != number(request, "controlRevision") {
+        if Some(control.1) != number(request, "controlRevision") {
             return Err(AppError::MemoryConflict);
         }
         let source_rev = tx
@@ -1199,11 +1226,9 @@ impl MemoryStore {
         tx.execute("INSERT INTO proactive_budgets(local_date,updated_at) VALUES (?1,?2) ON CONFLICT(local_date) DO NOTHING",params![date,now]).map_err(db)?;
         tx.execute("UPDATE proactive_budgets SET daily_success_limit=CASE WHEN daily_success_limit=0 THEN ?2 ELSE MIN(daily_success_limit,?2) END WHERE local_date=?1",params![date,desired_success_limit]).map_err(db)?;
         let budget:(i64,i64,i64,i64,i64,i64,Option<i64>,i64)=tx.query_row("SELECT planning_attempts,expression_attempts,successful_messages,reserved_tokens,used_tokens,unknown_tokens,next_success_after,daily_success_limit FROM proactive_budgets WHERE local_date=?1",[&date],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?,r.get(5)?,r.get(6)?,r.get(7)?))).map_err(db)?;
-        if (kind == "planning"
-            && budget.0 >= crate::memory::protocol::PROACTIVE_DAILY_PLANNING_ATTEMPTS)
+        if (kind == "planning" && budget.0 >= limits.daily_planning_attempts)
             || (kind == "expression"
-                && (budget.1 >= crate::memory::protocol::PROACTIVE_DAILY_EXPRESSION_ATTEMPTS
-                    || budget.2 >= budget.7))
+                && (budget.1 >= limits.daily_expression_attempts || budget.2 >= budget.7))
         {
             return denied_claim(tx, "daily_limit");
         }
@@ -1212,7 +1237,7 @@ impl MemoryStore {
         }
         // unknown_tokens is an audit subset of reserved_tokens, so it must never be
         // added a second time when enforcing the daily ceiling.
-        if budget.3 + budget.4 + reserved > crate::memory::protocol::PROACTIVE_DAILY_TOKENS {
+        if budget.3 + budget.4 + reserved > limits.daily_tokens {
             return denied_claim(tx, "token_budget");
         }
         if kind == "planning"
@@ -1284,7 +1309,7 @@ impl MemoryStore {
         let lease = now + crate::memory::protocol::PROACTIVE_ATTEMPT_LEASE_MS;
         let refs_json = serde_json::to_string(&refs).map_err(|e| fail(e.to_string()))?;
         let own_json = stable(&own);
-        tx.execute("INSERT INTO proactive_attempts(attempt_id,request_id,kind,status,owner_json,source_refs_json,source_fingerprint,source_revision,control_revision,occurrence_ids_json,session_id,local_date,lease_until,reserved_tokens,created_at,updated_at) VALUES (?1,?2,?3,'reserved',?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?14)",params![attempt,reqid,kind,own_json,refs_json,fp,source_rev,control.2,serde_json::to_string(&value_array(request,"occurrenceIds")).unwrap_or_default(),owner_session(&own),date,lease,reserved,now]).map_err(db)?;
+        tx.execute("INSERT INTO proactive_attempts(attempt_id,request_id,kind,status,owner_json,source_refs_json,source_fingerprint,source_revision,control_revision,occurrence_ids_json,session_id,local_date,lease_until,reserved_tokens,created_at,updated_at) VALUES (?1,?2,?3,'reserved',?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?14)",params![attempt,reqid,kind,own_json,refs_json,fp,source_rev,control.1,serde_json::to_string(&value_array(request,"occurrenceIds")).unwrap_or_default(),owner_session(&own),date,lease,reserved,now]).map_err(db)?;
         if kind == "expression" {
             for occurrence in value_array(request, "occurrenceIds")
                 .iter()
@@ -1350,7 +1375,11 @@ impl MemoryStore {
         )
     }
 
-    pub(crate) fn proactive_settle(&self, request: &Value) -> AppResult<Value> {
+    pub(crate) fn proactive_settle(
+        &self,
+        request: &Value,
+        limits: &ProactiveLimits,
+    ) -> AppResult<Value> {
         let own = owner(request);
         validate_owner(&own)?;
         let attempt = text(request, "attemptId");
@@ -1449,7 +1478,7 @@ impl MemoryStore {
                 .and_then(Value::as_str)
                 .is_some_and(|rule| matches!(rule, "topic_share" | "curiosity"));
             let next_after = if kind == "expression" && status == "committed" && random_fallback {
-                Some(next_success_after(&attempt, now))
+                Some(next_success_after(&attempt, now, limits))
             } else {
                 None
             };
@@ -1534,7 +1563,11 @@ impl MemoryStore {
         )
     }
 
-    pub(crate) fn proactive_reconcile(&self, request: &Value) -> AppResult<Value> {
+    pub(crate) fn proactive_reconcile(
+        &self,
+        request: &Value,
+        limits: &ProactiveLimits,
+    ) -> AppResult<Value> {
         let attempt = text(request, "attemptId");
         let committed = request
             .get("committed")
@@ -1591,7 +1624,7 @@ impl MemoryStore {
                 })
                 .unwrap_or(false);
             let next_after = if kind == "expression" && committed && random_fallback {
-                Some(next_success_after(&attempt, now))
+                Some(next_success_after(&attempt, now, limits))
             } else {
                 None
             };
@@ -1617,25 +1650,51 @@ impl MemoryStore {
         Ok(json!({"revision":rev,"status":new_status}))
     }
 
+    /// `patch` 可选：只带 `limits` 的档位下发不改变 mute/清除状态，也不推进控制
+    /// revision（投影是 dispatcher 级运行期状态，不进 SQLite）；仅回读当前快照。
     pub(crate) fn proactive_control(&self, request: &Value) -> AppResult<Value> {
-        let patch = request
-            .get("patch")
-            .ok_or_else(|| fail("control 缺少 patch"))?;
-        let value = json!({"operationId":request.get("operationId"),"baseRevision":request.get("baseRevision"),"action":"control","controlPatch":patch});
-        let _ = self.proactive_change(&value)?;
+        if let Some(patch) = request.get("patch") {
+            let value = json!({"operationId":request.get("operationId"),"baseRevision":request.get("baseRevision"),"action":"control","controlPatch":patch});
+            let _ = self.proactive_change(&value)?;
+        }
         let conn = connection(self)?;
-        conn.query_row("SELECT enabled,mute_until,revision FROM proactive_control WHERE id=1",[],|r|Ok(json!({"enabled":r.get::<_,i64>(0)?!=0,"muteUntil":r.get::<_,Option<i64>>(1)?,"revision":r.get::<_,i64>(2)?}))).map_err(db)
+        conn.query_row("SELECT mute_until,revision FROM proactive_control WHERE id=1",[],|r|Ok(json!({"muteUntil":r.get::<_,Option<i64>>(0)?,"revision":r.get::<_,i64>(1)?}))).map_err(db)
     }
 
-    pub(crate) fn proactive_auxiliary_budget_reserve(&self, request: &Value) -> AppResult<Value> {
+    pub(crate) fn proactive_auxiliary_budget_reserve(
+        &self,
+        request: &Value,
+        limits: &ProactiveLimits,
+    ) -> AppResult<Value> {
         let reservation_id = text(request, "reservationId");
         let request_id = text(request, "requestId");
         let kind = text(request, "kind");
         let date = text(request, "localDate");
         let reserved = number(request, "reservedTokens").unwrap_or(-1);
         let requested_limit = number(request, "dailyLimit").unwrap_or(0);
-        let limit =
-            requested_limit.min(crate::memory::protocol::PROACTIVE_DAILY_AUXILIARY_ATTEMPTS);
+        // 辅助尝试天花板按 kind 取相应字段的**档位最大值**（与请求无关的静态上限）：
+        // 静默批次（observation）与主动 aux（topic）是两个量，Node 按各自档位下发
+        // dailyLimit，Rust 只保证它不越过生成表的最高档，避免高阶档被旧值截断。
+        let ceiling = if kind == "observation" {
+            [
+                crate::memory::protocol::PROACTIVE_TIERS_SILENT_LOW_DAILY_BATCHES,
+                crate::memory::protocol::PROACTIVE_TIERS_SILENT_MEDIUM_DAILY_BATCHES,
+                crate::memory::protocol::PROACTIVE_TIERS_SILENT_HIGH_DAILY_BATCHES,
+            ]
+            .into_iter()
+            .max()
+            .unwrap_or(0)
+        } else {
+            [
+                crate::memory::protocol::PROACTIVE_TIERS_LOW_DAILY_AUXILIARY_ATTEMPTS,
+                crate::memory::protocol::PROACTIVE_TIERS_MEDIUM_DAILY_AUXILIARY_ATTEMPTS,
+                crate::memory::protocol::PROACTIVE_TIERS_HIGH_DAILY_AUXILIARY_ATTEMPTS,
+            ]
+            .into_iter()
+            .max()
+            .unwrap_or(0)
+        };
+        let limit = requested_limit.min(ceiling);
         let now = number(request, "now").unwrap_or_else(now_ms);
         if reservation_id.is_empty()
             || request_id.is_empty()
@@ -1684,9 +1743,7 @@ impl MemoryStore {
         if reserved_total
             .checked_add(used_total)
             .and_then(|value| value.checked_add(reserved))
-            .map_or(true, |total| {
-                total > crate::memory::protocol::PROACTIVE_DAILY_TOKENS
-            })
+            .map_or(true, |total| total > limits.daily_tokens)
         {
             tx.commit().map_err(db)?;
             return Ok(json!({"reserved":false,"reason":"token_budget"}));
@@ -1856,13 +1913,13 @@ mod tests {
         }
     }
 
-    /// 设置页的「主动消息」全局开关（control）不归属会话：不带 owner 也要能切换。
+    /// 控制面（control）不归属会话：不带 owner 也要能暂停/清除来源。
     ///
     /// 回归（2026-10-05 实机必现）：owner 校验此前对所有 action 无条件执行，
     /// 而设置页请求没有 session/Card/hash/generation → 切换必失败于
     /// 「proactive owner 缺少 session/Card/hash/generation」。
     #[test]
-    fn 全局开关切换不要求会话_owner_而业务变更仍要求() {
+    fn 控制面不要求会话_owner_而业务变更仍要求() {
         let fixture = Fixture::new();
         let revision = fixture
             .1
@@ -1875,9 +1932,9 @@ mod tests {
             "operationId":"op-control-1",
             "baseRevision":revision,
             "action":"control",
-            "controlPatch":{"enabled":false}
+            "controlPatch":{"muteUntil":77}
         }));
-        assert!(snapshot.is_ok(), "全局开关（无 owner）应可切换：{snapshot:?}");
+        assert!(snapshot.is_ok(), "控制面（无 owner）应可切换：{snapshot:?}");
         // 豁免只给 control：业务变更不带 owner 仍必须被拦。
         let denied = fixture.1.proactive_change(&json!({
             "operationId":"op-control-2",
@@ -1889,6 +1946,105 @@ mod tests {
             matches!(denied, Err(AppError::Memory(ref message)) if message.contains("owner")),
             "业务变更缺 owner 必须被拦：{denied:?}"
         );
+    }
+
+    /// `enabled` 已随 CONFIG 档位撤出：控制 patch 收到即如实报错（不静默吞掉），
+    /// 未知字段与类型不符同口径。
+    #[test]
+    fn 控制patch拒绝enabled与未知字段() {
+        let fixture = Fixture::new();
+        let revision = fixture
+            .1
+            .proactive_query(&json!({"owner":Fixture::owner(),"sessionId":"s1"}))
+            .expect("查询基线")
+            .get("revision")
+            .and_then(Value::as_i64)
+            .unwrap();
+        let enabled = fixture.1.proactive_change(&json!({
+            "operationId":"op-enabled",
+            "baseRevision":revision,
+            "action":"control",
+            "controlPatch":{"enabled":false}
+        }))
+        .unwrap_err();
+        assert!(enabled.to_string().contains("enabled"), "{enabled}");
+        let unknown = fixture.1.proactive_change(&json!({
+            "operationId":"op-unknown",
+            "baseRevision":revision,
+            "action":"control",
+            "controlPatch":{"foo":1}
+        }))
+        .unwrap_err();
+        assert!(unknown.to_string().contains("foo"), "{unknown}");
+        let wrong_type = fixture.1.proactive_change(&json!({
+            "operationId":"op-mute-type",
+            "baseRevision":revision,
+            "action":"control",
+            "controlPatch":{"muteUntil":"tomorrow"}
+        }))
+        .unwrap_err();
+        assert!(wrong_type.to_string().contains("muteUntil"), "{wrong_type}");
+    }
+
+    /// `proactive_control` 去掉 `enabled` 后的查询形状：响应只含 muteUntil/revision；
+    /// 只带 limits（无 patch）的请求不触碰 SQLite、不推进控制 revision。
+    #[test]
+    fn control查询形状只含mute与revision且无patch不推进revision() {
+        let fixture = Fixture::new();
+        let conn = connection(&fixture.1).expect("锁库");
+        let has_enabled: bool = conn
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM pragma_table_info('proactive_control') WHERE name='enabled')",
+                [],
+                |row| row.get(0),
+            )
+            .expect("核对控制表列");
+        assert!(!has_enabled, "新建库的 proactive_control 不得再有 enabled 列");
+        drop(conn);
+        let response = fixture
+            .1
+            .proactive_control(&json!({"operationId":"op-limits-only","baseRevision":0}))
+            .expect("只读快照");
+        let fields = response
+            .as_object()
+            .expect("control 快照必须是对象")
+            .keys()
+            .cloned()
+            .collect::<Vec<_>>();
+        assert_eq!(fields, vec!["muteUntil".to_string(), "revision".to_string()]);
+        assert_eq!(response["revision"], json!(0), "无 patch 不得推进控制 revision");
+        let muted = fixture
+            .1
+            .proactive_control(&json!({
+                "operationId":"op-mute","baseRevision":0,"patch":{"muteUntil":123}
+            }))
+            .expect("写 mute 快照");
+        assert_eq!(muted["muteUntil"], json!(123));
+        assert_eq!(muted["revision"], json!(1));
+    }
+
+    /// 暂停期间领取被拒，理由只可能来自 mute（enabled 门已撤出 Rust）。
+    #[test]
+    fn 暂停后claim返回muted原因() {
+        let fixture = Fixture::new();
+        fixture
+            .1
+            .proactive_control(&json!({
+                "operationId":"op-mute","baseRevision":0,"patch":{"muteUntil":now_ms()+60_000}
+            }))
+            .expect("写入暂停");
+        let now = now_ms();
+        let claimed = fixture
+            .1
+            .proactive_claim(
+                &json!({"owner":Fixture::owner(),"now":now,"localDate":"2026-10-03","kind":"expression","reservedTokens":1,"ruleId":"memory_checkin",
+                "sourceRevision":0,"controlRevision":1,"sourceRefs":[Fixture::source_ref()],"occurrenceIds":["muted-occurrence"],
+                "attemptId":"muted-attempt","requestId":"muted-request","sourceFingerprint":"muted-fingerprint"}),
+                &ProactiveLimits::medium(),
+            )
+            .expect("暂停下的领取查询");
+        assert_eq!(claimed["claimed"], json!(false));
+        assert_eq!(claimed["reason"], json!("muted"));
     }
 
     #[test]
@@ -1915,8 +2071,8 @@ mod tests {
           ) STRICT;
           INSERT INTO proactive_tasks(id,version,scope,source_refs_json,intent_json,timezone,state,created_at,updated_at,operation_id)
             VALUES ('task-keep',2,'user','[]','{}','UTC','active',1,2,'task-operation');
-          CREATE TABLE proactive_control (id INTEGER PRIMARY KEY CHECK(id=1),enabled INTEGER NOT NULL CHECK(enabled IN (0,1)),mute_until INTEGER,revision INTEGER NOT NULL) STRICT;
-          INSERT INTO proactive_control(id,enabled,mute_until,revision) VALUES (1,0,77,9);
+          CREATE TABLE proactive_control (id INTEGER PRIMARY KEY CHECK(id=1),mute_until INTEGER,revision INTEGER NOT NULL) STRICT;
+          INSERT INTO proactive_control(id,mute_until,revision) VALUES (1,77,9);
         "#).expect("准备旧版主动schema及现存状态");
         crate::proactive::schema::ensure(&conn).expect("增列到最终主动预算schema");
         let budget:(i64,i64,i64,i64,i64,i64,i64,i64,i64,Option<i64>)=conn.query_row(
@@ -1930,15 +2086,15 @@ mod tests {
                 |row| row.get(0),
             )
             .expect("既有事项保留");
-        let control: (i64, Option<i64>, i64) = conn
+        let control: (Option<i64>, i64) = conn
             .query_row(
-                "SELECT enabled,mute_until,revision FROM proactive_control WHERE id=1",
+                "SELECT mute_until,revision FROM proactive_control WHERE id=1",
                 [],
-                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+                |row| Ok((row.get(0)?, row.get(1)?)),
             )
             .expect("既有控制保留");
         assert_eq!(task, "task-keep");
-        assert_eq!(control, (0, Some(77), 9));
+        assert_eq!(control, (Some(77), 9));
     }
 
     #[test]
@@ -1988,14 +2144,16 @@ mod tests {
         assert!(fixture
             .1
             .proactive_scan(
-                &json!({"owner":Fixture::owner(),"now":now,"localDate":"2026-02-30","limit":1})
+                &json!({"owner":Fixture::owner(),"now":now,"localDate":"2026-02-30","limit":1}),
+                &ProactiveLimits::medium(),
             )
             .is_err());
         assert!(fixture
             .1
             .proactive_auxiliary_budget_reserve(
                 &json!({"reservationId":"bad-date","requestId":"bad-date-request","kind":"topic",
-            "localDate":"2026-02-30","reservedTokens":0,"dailyLimit":4,"now":now})
+            "localDate":"2026-02-30","reservedTokens":0,"dailyLimit":4,"now":now}),
+                &ProactiveLimits::medium(),
             )
             .is_err());
     }
@@ -2005,9 +2163,9 @@ mod tests {
         let fixture = Fixture::new();
         let owner = Fixture::owner();
         let now = now_ms();
-        let claimed=fixture.1.proactive_claim(&json!({"owner":owner.clone(),"now":now,"localDate":"2026-10-03","kind":"expression","reservedTokens":17,"sourceRevision":0,"controlRevision":0,"sourceRefs":[Fixture::source_ref()],"occurrenceIds":["occ-1"],"attemptId":"attempt-unresolved","requestId":"request-unresolved","sourceFingerprint":"source-fingerprint","ruleId":"memory_checkin"})).expect("领取表达尝试");
+        let claimed=fixture.1.proactive_claim(&json!({"owner":owner.clone(),"now":now,"localDate":"2026-10-03","kind":"expression","reservedTokens":17,"sourceRevision":0,"controlRevision":0,"sourceRefs":[Fixture::source_ref()],"occurrenceIds":["occ-1"],"attemptId":"attempt-unresolved","requestId":"request-unresolved","sourceFingerprint":"source-fingerprint","ruleId":"memory_checkin"}),&ProactiveLimits::medium()).expect("领取表达尝试");
         assert_eq!(claimed["claimed"], json!(true));
-        let settled=fixture.1.proactive_settle(&json!({"owner":owner,"attemptId":"attempt-unresolved","sourceFingerprint":"source-fingerprint","localDate":"2026-10-03","status":"unresolved","usage":null,"assistantEntryId":null})).expect("未知提交状态应可结算");
+        let settled=fixture.1.proactive_settle(&json!({"owner":owner,"attemptId":"attempt-unresolved","sourceFingerprint":"source-fingerprint","localDate":"2026-10-03","status":"unresolved","usage":null,"assistantEntryId":null}),&ProactiveLimits::medium()).expect("未知提交状态应可结算");
         assert_eq!(settled["status"], json!("unresolved"));
         let conn = connection(&fixture.1).expect("锁库");
         let (status,reserved):(String,i64)=conn.query_row("SELECT status,reserved_tokens FROM proactive_attempts WHERE attempt_id='attempt-unresolved'",[],|row|Ok((row.get(0)?,row.get(1)?))).expect("回读尝试状态");
@@ -2042,7 +2200,7 @@ mod tests {
             let occurrence = format!("occurrence-{date}");
             let claimed=fixture.1.proactive_claim(&json!({"owner":owner.clone(),"now":now,"localDate":date,"unansweredThresholdDate":threshold_date,"unansweredClearedDate":cleared_date,
                 "kind":"expression","reservedTokens":1,"sourceRevision":0,"controlRevision":0,"sourceRefs":[Fixture::source_ref()],
-                "occurrenceIds":[occurrence],"attemptId":attempt,"requestId":request_id,"sourceFingerprint":format!("fp-{date}"),"ruleId":"memory_checkin"})).expect("申请主动表达");
+                "occurrenceIds":[occurrence],"attemptId":attempt,"requestId":request_id,"sourceFingerprint":format!("fp-{date}"),"ruleId":"memory_checkin"}),&ProactiveLimits::medium()).expect("申请主动表达");
             assert_eq!(claimed["claimed"],json!(expected_claimed),"same-day threshold must retain normal cap; next local day must enforce one-success cap");
             if date == "2026-10-04" && cleared_date.is_none() {
                 let same_day_rethreshold = fixture
@@ -2050,6 +2208,7 @@ mod tests {
                     .proactive_scan(
                         &json!({"owner":owner.clone(),"now":now,"localDate":date,"limit":1,
                     "unansweredThresholdDate":date,"unansweredClearedDate":"2026-10-03"}),
+                        &ProactiveLimits::medium(),
                     )
                     .expect("同日本轮新阈值不应解除已冻结降档");
                 assert_eq!(
@@ -2059,7 +2218,7 @@ mod tests {
             }
             if expected_claimed {
                 fixture.1.proactive_settle(&json!({"owner":owner.clone(),"attemptId":attempt,"sourceFingerprint":format!("fp-{date}"),
-                    "localDate":date,"status":"failed","usage":{"totalTokens":1},"decision":null})).expect("回收测试领取");
+                    "localDate":date,"status":"failed","usage":{"totalTokens":1},"decision":null}),&ProactiveLimits::medium()).expect("回收测试领取");
             }
         }
     }
@@ -2070,52 +2229,92 @@ mod tests {
         let owner = Fixture::owner();
         let now = 1_791_003_600_000_i64;
         let date = "2026-10-03";
+        let limits = ProactiveLimits::medium();
         let initial = fixture
             .1
-            .proactive_scan(&json!({"owner":owner.clone(),"now":now,"localDate":date,"limit":1}))
+            .proactive_scan(
+                &json!({"owner":owner.clone(),"now":now,"localDate":date,"limit":1}),
+                &limits,
+            )
             .expect("首轮扫描");
         assert_eq!(initial["budget"]["successfulMessages"], json!(0));
         assert_eq!(initial["budget"]["nextSuccessAfter"], Value::Null);
         assert_eq!(
             initial["budget"]["dailySuccessLimit"],
-            json!(crate::memory::protocol::PROACTIVE_DAILY_SUCCESS)
+            json!(limits.daily_success)
         );
         let claimed=fixture.1.proactive_claim(&json!({"owner":owner.clone(),"now":now,"localDate":date,"kind":"expression","reservedTokens":20,"ruleId":"topic_share",
             "sourceRevision":0,"controlRevision":0,"sourceRefs":[Fixture::source_ref()],"occurrenceIds":["interval-occurrence"],
-            "attemptId":"interval-attempt","requestId":"interval-request","sourceFingerprint":"interval-fingerprint"})).expect("首条表达应可领取");
+            "attemptId":"interval-attempt","requestId":"interval-request","sourceFingerprint":"interval-fingerprint"}),&limits).expect("首条表达应可领取");
         assert_eq!(claimed["claimed"], json!(true));
         fixture.1.proactive_settle(&json!({"owner":owner,"attemptId":"interval-attempt","sourceFingerprint":"interval-fingerprint","localDate":date,
             "status":"committed","now":now,"assistantEntryId":"interval-assistant","usage":{"totalTokens":12},
-            "decision":{"kind":"speak_now","ruleId":"topic_share","opportunityFingerprints":[],"topicKey":null,"slot":date,"validUntil":null}})).expect("写入首条真实成功");
-        let expected = next_success_after("interval-attempt", now);
-        assert!(expected > now + crate::memory::protocol::PROACTIVE_MIN_SUCCESS_INTERVAL_MS);
+            "decision":{"kind":"speak_now","ruleId":"topic_share","opportunityFingerprints":[],"topicKey":null,"slot":date,"validUntil":null}}),&limits).expect("写入首条真实成功");
+        let expected = next_success_after("interval-attempt", now, &limits);
+        assert!(expected > now + limits.min_success_interval_ms);
         assert!(
             expected
-                < now
-                    + crate::memory::protocol::PROACTIVE_MIN_SUCCESS_INTERVAL_MS
-                    + crate::memory::protocol::PROACTIVE_SUCCESS_INTERVAL_SPREAD_MS
+                < now + limits.min_success_interval_ms + limits.success_interval_spread_ms
         );
         let reopened =
             MemoryStore::open_at(&fixture.0.join("memory.sqlite3")).expect("重启后重开库");
         let after_restart = reopened
             .proactive_scan(
                 &json!({"owner":Fixture::owner(),"now":now+1,"localDate":date,"limit":1}),
+                &limits,
             )
             .expect("重启后读预算");
         assert_eq!(after_restart["budget"]["nextSuccessAfter"], json!(expected));
         assert_eq!(
-            next_success_after("interval-attempt", now),
+            next_success_after("interval-attempt", now, &limits),
             expected,
             "同一个持久attempt的间隔不能因重启改变"
         );
         let random_retry=reopened.proactive_claim(&json!({"owner":Fixture::owner(),"now":now+1,"localDate":date,"kind":"expression","reservedTokens":20,"ruleId":"topic_share",
             "sourceRevision":0,"controlRevision":0,"sourceRefs":[Fixture::source_ref()],"occurrenceIds":["ordinary-next"],
-            "attemptId":"random-next","requestId":"random-next-request","sourceFingerprint":"random-next-fingerprint"})).expect("普通选材尊重持久随机间隔");
+            "attemptId":"random-next","requestId":"random-next-request","sourceFingerprint":"random-next-fingerprint"}),&limits).expect("普通选材尊重持久随机间隔");
         assert_eq!(random_retry["reason"], json!("success_interval"));
         let anchored=reopened.proactive_claim(&json!({"owner":Fixture::owner(),"now":now+1,"localDate":date,"kind":"expression","reservedTokens":20,"ruleId":"scheduled_task",
             "sourceRevision":0,"controlRevision":0,"sourceRefs":[Fixture::source_ref()],"occurrenceIds":["explicit-anchor"],
-            "attemptId":"anchor-next","requestId":"anchor-next-request","sourceFingerprint":"anchor-next-fingerprint"})).expect("明确约定不被随机间隔阻断");
+            "attemptId":"anchor-next","requestId":"anchor-next-request","sourceFingerprint":"anchor-next-fingerprint"}),&limits).expect("明确约定不被随机间隔阻断");
         assert_eq!(anchored["claimed"], json!(true));
+    }
+
+    /// 随机成功间隔与每日成功上限取**投影档位**（低档：3h + 0–2h，上限 2）。
+    #[test]
+    fn 随机间隔与成功上限使用投影档位() {
+        let fixture = Fixture::new();
+        let owner = Fixture::owner();
+        let now = 1_791_003_600_000_i64;
+        let date = "2026-10-03";
+        let limits = ProactiveLimits::low();
+        let initial = fixture
+            .1
+            .proactive_scan(
+                &json!({"owner":owner.clone(),"now":now,"localDate":date,"limit":1}),
+                &limits,
+            )
+            .expect("低档扫描");
+        assert_eq!(initial["budget"]["dailySuccessLimit"], json!(limits.daily_success));
+        assert_eq!(limits.daily_success, 2, "低档生成行 dailySuccess 基准值");
+        let claimed=fixture.1.proactive_claim(&json!({"owner":owner.clone(),"now":now,"localDate":date,"kind":"expression","reservedTokens":20,"ruleId":"topic_share",
+            "sourceRevision":0,"controlRevision":0,"sourceRefs":[Fixture::source_ref()],"occurrenceIds":["low-interval-occurrence"],
+            "attemptId":"low-interval-attempt","requestId":"low-interval-request","sourceFingerprint":"low-interval-fingerprint"}),&limits).expect("低档首条表达");
+        assert_eq!(claimed["claimed"], json!(true));
+        fixture.1.proactive_settle(&json!({"owner":owner,"attemptId":"low-interval-attempt","sourceFingerprint":"low-interval-fingerprint","localDate":date,
+            "status":"committed","now":now,"assistantEntryId":"low-interval-assistant","usage":{"totalTokens":12},
+            "decision":{"kind":"speak_now","ruleId":"topic_share","opportunityFingerprints":[],"topicKey":null,"slot":date,"validUntil":null}}),&limits).expect("低档成功结算");
+        let expected = next_success_after("low-interval-attempt", now, &limits);
+        assert!(expected > now + limits.min_success_interval_ms);
+        assert!(expected < now + limits.min_success_interval_ms + limits.success_interval_spread_ms);
+        let after = fixture
+            .1
+            .proactive_scan(
+                &json!({"owner":Fixture::owner(),"now":now+1,"localDate":date,"limit":1}),
+                &limits,
+            )
+            .expect("低档读预算");
+        assert_eq!(after["budget"]["nextSuccessAfter"], json!(expected));
     }
 
     #[test]
@@ -2123,14 +2322,15 @@ mod tests {
         let fixture = Fixture::new();
         let date = "2026-10-03";
         let now = now_ms();
+        let limits = ProactiveLimits::medium();
         for kind in ["observation", "topic"] {
-            for index in 0..crate::memory::protocol::PROACTIVE_DAILY_AUXILIARY_ATTEMPTS {
+            for index in 0..4 {
                 let result=fixture.1.proactive_auxiliary_budget_reserve(&json!({"reservationId":format!("{kind}-{index}"),"requestId":format!("request-{kind}-{index}"),
-                    "kind":kind,"localDate":date,"reservedTokens":0,"dailyLimit":4,"now":now})).expect("辅助预留");
+                    "kind":kind,"localDate":date,"reservedTokens":0,"dailyLimit":4,"now":now}),&limits).expect("辅助预留");
                 assert_eq!(result["reserved"], json!(true));
             }
             let capped=fixture.1.proactive_auxiliary_budget_reserve(&json!({"reservationId":format!("{kind}-overflow"),"requestId":format!("request-{kind}-overflow"),
-                "kind":kind,"localDate":date,"reservedTokens":0,"dailyLimit":4,"now":now})).expect("独立kind日限");
+                "kind":kind,"localDate":date,"reservedTokens":0,"dailyLimit":4,"now":now}),&limits).expect("独立kind日限");
             assert_eq!(capped["reason"], json!("daily_limit"));
         }
         let conn = connection(&fixture.1).expect("锁库");
@@ -2140,12 +2340,12 @@ mod tests {
         )
         .expect("归零预留以隔离共享token检查");
         drop(conn);
-        let first=fixture.1.proactive_auxiliary_budget_reserve(&json!({"reservationId":"shared-first","requestId":"request-shared-first","kind":"observation","localDate":"2026-10-04","reservedTokens":20_000,"dailyLimit":4,"now":now})).expect("共享额度第一笔");
+        let first=fixture.1.proactive_auxiliary_budget_reserve(&json!({"reservationId":"shared-first","requestId":"request-shared-first","kind":"observation","localDate":"2026-10-04","reservedTokens":20_000,"dailyLimit":4,"now":now}),&limits).expect("共享额度第一笔");
         assert_eq!(first["reserved"], json!(true));
-        let overflow=fixture.1.proactive_auxiliary_budget_reserve(&json!({"reservationId":"shared-overflow","requestId":"request-shared-overflow","kind":"topic","localDate":"2026-10-04","reservedTokens":5_000,"dailyLimit":4,"now":now})).expect("共享token上限");
+        let overflow=fixture.1.proactive_auxiliary_budget_reserve(&json!({"reservationId":"shared-overflow","requestId":"request-shared-overflow","kind":"topic","localDate":"2026-10-04","reservedTokens":5_000,"dailyLimit":4,"now":now}),&limits).expect("共享token上限");
         assert_eq!(overflow["reason"], json!("token_budget"));
         let interrupted=fixture.1.proactive_auxiliary_budget_reserve(&json!({"reservationId":"foreground-preempted","requestId":"foreground-request",
-            "kind":"topic","localDate":"2026-10-05","reservedTokens":1_000,"dailyLimit":4,"now":now})).expect("前台抢占前预留");
+            "kind":"topic","localDate":"2026-10-05","reservedTokens":1_000,"dailyLimit":4,"now":now}),&limits).expect("前台抢占前预留");
         assert_eq!(interrupted["reserved"], json!(true));
         fixture.1.proactive_auxiliary_budget_settle(&json!({"reservationId":"foreground-preempted","localDate":"2026-10-05","status":"failed",
             "usage":{"totalTokens":9},"now":now})).expect("取消后仍结算Provider实际用量");
@@ -2154,14 +2354,53 @@ mod tests {
         assert_eq!((reserved, used), (0, 9));
     }
 
+    /// aux 天花板按 kind 取相应字段的**档位最大值**：observation（静默批次）→ 12，
+    /// 其余（topic）→ 8。旧口径按单一常量截到 4 会把高阶档压在旧值上。
+    #[test]
+    fn 辅助尝试天花板按kind取档位最大值() {
+        let fixture = Fixture::new();
+        let limits = ProactiveLimits::medium();
+        let now = now_ms();
+        for (kind, date, ceiling) in [
+            ("observation", "2026-10-06", 12_i64),
+            ("topic", "2026-10-07", 8_i64),
+        ] {
+            for index in 0..ceiling {
+                let result = fixture
+                    .1
+                    .proactive_auxiliary_budget_reserve(
+                        &json!({"reservationId":format!("{kind}-{index}"),"requestId":format!("request-{kind}-{index}"),
+                        "kind":kind,"localDate":date,"reservedTokens":0,"dailyLimit":12,"now":now}),
+                        &limits,
+                    )
+                    .expect("辅助预留");
+                assert_eq!(
+                    result["reserved"],
+                    json!(true),
+                    "{kind} 第 {index} 次应在上限 {ceiling} 内"
+                );
+            }
+            let capped = fixture
+                .1
+                .proactive_auxiliary_budget_reserve(
+                    &json!({"reservationId":format!("{kind}-overflow"),"requestId":format!("request-{kind}-overflow"),
+                    "kind":kind,"localDate":date,"reservedTokens":0,"dailyLimit":12,"now":now}),
+                    &limits,
+                )
+                .expect("越天花板");
+            assert_eq!(capped["reason"], json!("daily_limit"), "{kind}");
+        }
+    }
+
     #[test]
     fn auxiliary_unknown_usage_survives_expiry_restart_and_reconciles_against_original_day() {
         let fixture = Fixture::new();
         let now = now_ms();
         let day_one = "2026-10-03";
         let day_two = "2026-10-04";
+        let limits = ProactiveLimits::medium();
         let reserved=fixture.1.proactive_auxiliary_budget_reserve(&json!({"reservationId":"unknown-across-restart","requestId":"unknown-request",
-            "kind":"observation","localDate":day_one,"reservedTokens":100,"dailyLimit":4,"now":now})).expect("预留辅助调用");
+            "kind":"observation","localDate":day_one,"reservedTokens":100,"dailyLimit":4,"now":now}),&limits).expect("预留辅助调用");
         assert_eq!(reserved["reserved"], json!(true));
         let reopened =
             MemoryStore::open_at(&fixture.0.join("memory.sqlite3")).expect("重开SQLite库");
@@ -2169,10 +2408,11 @@ mod tests {
         reopened
             .proactive_scan(
                 &json!({"owner":Fixture::owner(),"now":expiry,"localDate":day_two,"limit":1}),
+                &limits,
             )
             .expect("下日扫描回收过期租约");
         let duplicate=reopened.proactive_auxiliary_budget_reserve(&json!({"reservationId":"unknown-across-restart","requestId":"unknown-request",
-            "kind":"observation","localDate":day_one,"reservedTokens":100,"dailyLimit":4,"now":expiry})).expect("未知预留禁止重新生成");
+            "kind":"observation","localDate":day_one,"reservedTokens":100,"dailyLimit":4,"now":expiry}),&limits).expect("未知预留禁止重新生成");
         assert_eq!(duplicate["reserved"], json!(false));
         assert_eq!(duplicate["reason"], json!("usage_reconciliation_required"));
         let conn = connection(&reopened).expect("检查租约结算");
@@ -2197,7 +2437,7 @@ mod tests {
         assert_eq!((reserved_tokens, used_tokens, unknown_tokens), (0, 17, 0));
         drop(conn);
         reopened.proactive_scan(&json!({"owner":Fixture::owner(),"now":expiry+crate::memory::protocol::PROACTIVE_SETTLED_RETENTION_DAYS*DAY_MS+1,
-            "localDate":day_two,"limit":1})).expect("清理过期终态辅助行");
+            "localDate":day_two,"limit":1}),&limits).expect("清理过期终态辅助行");
         let conn = connection(&reopened).expect("检查终态清理");
         let exists:bool=conn.query_row("SELECT EXISTS(SELECT 1 FROM proactive_auxiliary_reservations WHERE reservation_id='unknown-across-restart')",[],|row|row.get(0)).expect("确认清理");
         assert!(!exists, "终态reservation过期后应清理，旧日预算聚合保留");
@@ -2211,14 +2451,14 @@ mod tests {
         let date = "2026-10-03";
         let claimed=fixture.1.proactive_claim(&json!({"owner":owner.clone(),"now":now,"localDate":date,"kind":"expression","reservedTokens":20,"ruleId":"topic_share",
             "sourceRevision":0,"controlRevision":0,"sourceRefs":[Fixture::source_ref()],"occurrenceIds":["silent-occurrence"],
-            "attemptId":"silent-attempt","requestId":"silent-request","sourceFingerprint":"silent-fingerprint"})).expect("领取静默机会");
+            "attemptId":"silent-attempt","requestId":"silent-request","sourceFingerprint":"silent-fingerprint"}),&ProactiveLimits::medium()).expect("领取静默机会");
         assert_eq!(claimed["claimed"], json!(true));
         let settled=fixture.1.proactive_settle(&json!({"owner":owner.clone(),"attemptId":"silent-attempt","sourceFingerprint":"silent-fingerprint",
-            "localDate":date,"status":"skipped","assistantEntryId":"empty-assistant-tip","usage":{"totalTokens":7},"decision":null,"summary":"humanizer_silent"})).expect("静默回执结案");
+            "localDate":date,"status":"skipped","assistantEntryId":"empty-assistant-tip","usage":{"totalTokens":7},"decision":null,"summary":"humanizer_silent"}),&ProactiveLimits::medium()).expect("静默回执结案");
         assert_eq!(settled["status"], json!("skipped"));
         let retry=fixture.1.proactive_claim(&json!({"owner":owner,"now":now+1,"localDate":date,"kind":"expression","reservedTokens":20,"ruleId":"topic_share",
             "sourceRevision":0,"controlRevision":0,"sourceRefs":[Fixture::source_ref()],"occurrenceIds":["silent-occurrence"],
-            "attemptId":"silent-retry","requestId":"silent-request-retry","sourceFingerprint":"silent-fingerprint"})).expect("重复机会必须被挡住");
+            "attemptId":"silent-retry","requestId":"silent-request-retry","sourceFingerprint":"silent-fingerprint"}),&ProactiveLimits::medium()).expect("重复机会必须被挡住");
         assert_eq!(retry["claimed"], json!(false));
         let conn = connection(&fixture.1).expect("检查静默账目");
         let (success,used,reserved):(i64,i64,i64)=conn.query_row("SELECT successful_messages,used_tokens,reserved_tokens FROM proactive_budgets WHERE local_date=?1",[date],|row|Ok((row.get(0)?,row.get(1)?,row.get(2)?))).expect("读取静默额度");
@@ -2231,6 +2471,44 @@ mod tests {
             .expect("读取静默槽");
         assert_eq!((success, used, reserved), (0, 7, 0));
         assert_eq!(occurrence, "skipped");
+    }
+
+    /// 终裁点的每日尝试上限读投影档位：低档 planning=3 / expression=4，
+    /// 各 kind 独立（收口旧常量 8/12 的档位截断）。
+    #[test]
+    fn 投影低档收紧planning与expression尝试上限() {
+        let fixture = Fixture::new();
+        let owner = Fixture::owner();
+        let now = now_ms();
+        let date = "2026-10-03";
+        let limits = ProactiveLimits::low();
+        let claim = |kind: &str, attempt: &str| {
+            fixture.1.proactive_claim(&json!({"owner":owner.clone(),"now":now,"localDate":date,"kind":kind,"reservedTokens":1,"ruleId":"memory_checkin",
+                "sourceRevision":0,"controlRevision":0,"sourceRefs":[Fixture::source_ref()],"occurrenceIds":[format!("occ-{attempt}")],
+                "attemptId":attempt,"requestId":format!("request-{attempt}"),"sourceFingerprint":format!("fp-{attempt}")}), &limits)
+        };
+        let settle = |attempt: &str| {
+            fixture.1.proactive_settle(&json!({"owner":owner.clone(),"attemptId":attempt,"sourceFingerprint":format!("fp-{attempt}"),
+                "localDate":date,"status":"failed","usage":{"totalTokens":1},"decision":null}), &limits)
+        };
+        for index in 0..limits.daily_planning_attempts {
+            let attempt = format!("planning-{index}");
+            let claimed = claim("planning", &attempt).expect("领取planning");
+            assert_eq!(claimed["claimed"], json!(true), "第 {index} 次 planning 应在上限内");
+            settle(&attempt).expect("回收planning");
+        }
+        let denied = claim("planning", "planning-overflow").expect("超限planning");
+        assert_eq!(denied["claimed"], json!(false));
+        assert_eq!(denied["reason"], json!("daily_limit"));
+        for index in 0..limits.daily_expression_attempts {
+            let attempt = format!("expression-{index}");
+            let claimed = claim("expression", &attempt).expect("领取expression");
+            assert_eq!(claimed["claimed"], json!(true), "第 {index} 次 expression 应在上限内");
+            settle(&attempt).expect("回收expression");
+        }
+        let denied = claim("expression", "expression-overflow").expect("超限expression");
+        assert_eq!(denied["claimed"], json!(false));
+        assert_eq!(denied["reason"], json!("daily_limit"));
     }
 
     #[test]

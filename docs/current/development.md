@@ -91,7 +91,7 @@ Rust 对应日志宏位于 [macros.rs](../../crates/native-host/src/macros.rs)�
 
 前端按时间/条数批量转发到 Rust；当前批量阈值在 logger 模块，文件大小与备份数在 Rust 日志内核。改参数直接定位这些定义，不在配置或其他模块复制常量。
 
-生效级别由 [config.ts](../../src/services/config.ts) 的 computeLogLevel 计算：开发模式一律 debug → 生产配置值。开发模式的判据是宿主运行模式端口（Node = ServerWelcome、旧壳 = Vite 构建模式，见 [host/ports.ts](../../src/services/host/ports.ts)），不再是 `import.meta.env`；`.env` 的 VITE_* 覆写已随端口化删除（运行期调参走 CONFIG/开发配置）。Rust 启动时有自己的构建默认值与 DESKPET_LOG_LEVEL，前端初始化后推送统一级别。下发失败只 `log.debug` 留痕、不阻断启动：后果是两端过滤级别不一致，Rust 侧按其构建默认值过滤（根因留痕在 `applyLogLevel`，T4.41）。
+生效级别由 [config.ts](../../src/services/config.ts) 的 computeLogLevel 计算：开发模式一律 debug → 生产配置值。开发模式的判据是宿主运行模式端口（Node = ServerWelcome、旧壳 = Vite 构建模式，见 [host/ports.ts](../../src/services/host/ports.ts)），不再是 `import.meta.env`；`.env` 的 VITE_* 覆写已随端口化删除（运行期调参走 CONFIG/开发配置）。Rust 启动时有自己的构建默认值与 DESKPET_LOG_LEVEL，前端初始化后推送统一级别。引导期在 `runDomainBootstrap` 的 `initConfig()` 之后立即应用（`applyLogLevel()`）：`computeLogLevel()` 需要真实运行模式与已加载配置，不应用则 logger 停在保守默认 `info`，主动链路的 debug 证据整段丢失；刻意不放进 `initConfig()` 内部——它被多个 L2 用例直接调用，放进去会给每次调用加一次 `set_log_config` 下行请求与噪声。领域引导序列用例断言引导后 `getLogLevel() === computeLogLevel()`。下发失败只 `log.debug` 留痕、不阻断启动：后果是两端过滤级别不一致，Rust 侧按其构建默认值过滤（根因留痕在 `applyLogLevel`，T4.41）。
 
 `generalConfig.loggingLevel` 是设置读写接口；`computeLogLevel()` 是运行期派生值。保存设置时使用前者，避免把 dev 强制 debug 误写入用户 YAML。
 

@@ -2,13 +2,19 @@
 // 统一全局冷却控制器
 // ==========================================
 
-import { silentAccessConfig, aiLockConfig } from "@/services/config";
+import { aiLockConfig } from "@/services/config";
+import { proactiveTierLimits } from "@/services/proactive/tiers";
 import { createLogger } from "@/services/logger";
 
 const log = createLogger("Cool");
 
-/** 冷却时长（毫秒），由外部配置 */
-let cooldownMs = silentAccessConfig.cooldownMs;
+/**
+ * 冷却时长（毫秒）。模块加载期的中性缺省取**中档**（与 CONFIG 默认档一致）；
+ * 唯一的写入口是主动扫描器的 `start()` / `refreshProactive()`，它们按当前
+ * `ai.proactive.frequency` 档位覆盖（契约 §2.3：四个数值随档位派生，不再有
+ * silentAccess 的独立配置）。
+ */
+let cooldownMs = proactiveTierLimits("medium").cooldownMs;
 
 /** 全局冷却截止时间戳 */
 let globalCooldownUntil = 0;

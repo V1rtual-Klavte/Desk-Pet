@@ -9,7 +9,7 @@ import { TOOL_POLICY_VERSION } from "../types"
 import { defineTool } from "../policy"
 import { register } from "../registry"
 import { getLatestWindowObservation } from "@/services/window"
-import { silentAccessConfig } from "@/services/config"
+import { silentAccessFrequency } from "@/services/proactive/tiers"
 import { createLogger } from "@/services/logger"
 
 const log = createLogger("ToolWin")
@@ -34,8 +34,8 @@ const windowInfoTool: ToolDef = defineTool({
     context: { resultProjection: "reference", historyCompaction: "summarize" },
   },
 }, async () => {
-  if (!silentAccessConfig.enabled) {
-    return { success: true, content: "静默访问未开启（ai.silentAccess.enabled = false），没有窗口信息可读。" }
+  if (silentAccessFrequency() === "off") {
+    return { success: true, content: "静默访问未开启（ai.silentAccess.frequency = off），没有窗口信息可读。" }
   }
   const snapshot = getLatestWindowObservation()
   if (!snapshot) {

@@ -22,6 +22,26 @@
 // 2026-10-05 复算补充（同一刷新轮）：复算时并发落进一处本批改动单之外的 context/budget.ts
 // 变化（keepRecentTokens 上限改为随窗口长大；并发写入，不在本批改动单内）。按当前源码复算，
 // sourceHash 一并覆盖它；ob-01..ob-07 无覆盖点描述 keepRecentTokens，逐点核对不受影响。
+// 2026-10-05 频率档位 W1（本批只做描述订正与登记，未跑 analyze→generate）：sourceFiles 变化 ——
+// scheduler.ts（screenState=locked 的批次资格、锁定批跳过截图、决策提示改用最后一次窗口快照）、
+// decide.ts（删除单批 ≤3 目标截断与提示词）、config.ts（删除 MAX_READ_TARGETS_PER_BATCH）、
+// observation_cmd.rs / monitor/*（Rust 终裁与 screen_state 改名，锁屏可用）。ob-04 的 ≤3 口径
+// 已按 Node 现状订正；ob-03 的 Rust 上限描述与全表 sourceHash 留待收口波统一 analyze→generate。
+// 2026-10-05 频率档位 W4-B（本批只做描述订正与登记，未跑 analyze→generate）：sourceFiles 变化 ——
+// scheduler.ts（决策输入补齐：本地时间 / Card 人设有界摘要 / 行为画像快照 / 话题权重 top-5 /
+// 长期记忆核心画像，均只读、有界、运行时绑定；召回关闭重排，不新增模型调用）、decide.ts
+// （新增 DECISION_MEMORY_TOKEN_BUDGET、boundedCardBrief、localTimeBrief 与提示词参考资料口径）。
+// ob-04 描述补「决策输入」一句并登记三个新 caseId（由 test/integration/observation/
+// 决策输入补齐.test.ts 与 test/unit/observation/决策解析与读取名额.test.ts 携带）；
+// sourceHash 与其余逐点复核留待收口波统一 analyze→generate。
+// 2026-10-05 频率档位收口波（analyze→generate）：ob-03 的 Rust 读取上限描述订正 —— W1 已删
+// 大小/条目数值上限、保留路径边界（绝对路径 / canonical 解析 / home 内 / 数据根外 / 非凭据 /
+// 非 home 系统目录），目录全量列名、文件整读。ob-04 拆点：决策输入三 caseId（observation-
+// decision-inputs / -degrade / -memory-identity）载体是 L3（决策输入补齐.test.ts），归新增
+// ob-08（integration）；上一段的「由…与决策解析与读取名额.test.ts 携带」据此更正 —— 该 L2
+// 文件实际只携带 parse / read-quota / card-brief / local-time 四个。新增 ob-09（integration）
+// 登记 静默了解档位参数消费.test.ts 的 4 个 caseId。ob-01..ob-07 其余点按当前源码复核未变；
+// sourceHash 按当前源码复算。
 import type { ModuleContract } from "../host/types"
 
 export const observationContract: ModuleContract = {
@@ -76,7 +96,7 @@ export const observationContract: ModuleContract = {
     "test/integration/observation/了解层与话题来源.test.ts",
     "test/e2e/scenes/observation/静默访问关闭边界.scene.ts",
   ],
-  sourceHash: "c160dc0db3a264354b80a1499c4e016418017f8c7f0799d6381601236d8f5db5",
+  sourceHash: "df2dbc3427f156aa70fa8259955e1a8a0bb357c59b1e6243bb288bdaad1763b8",
   coverage: [
     {
       id: "ob-01",
@@ -99,7 +119,7 @@ export const observationContract: ModuleContract = {
     {
       id: "ob-03",
       feature: "Rust观察命令的许可终裁",
-      description: "静默访问关闭时，真实Rust注册的截图与目标读取命令（observation_read_targets）返回CANCELLED，系统窗口观察显示disabled；前端关闭只能阻止调度，最终权限由原生MonitorState裁决。读取目标由 AI 决策（decide.ts）、宿主逐项重校验（home 内、非凭据、非数据根、大小/条目上限），单项失败只记 skipped 不中断整批。",
+      description: "静默访问关闭时，真实Rust注册的截图与目标读取命令（observation_read_targets）返回CANCELLED，系统窗口观察显示disabled；前端关闭只能阻止调度，最终权限由原生MonitorState裁决。读取目标由 AI 决策（decide.ts）、宿主逐项重校验（绝对路径、canonical 解析、主目录之内、数据根之外、非凭据路径、非 home 系统目录等路径边界；W1 起删除大小/条目数值上限——目录全量列名、文件整读），单项失败只记 skipped 不中断整批。",
       why: "前端状态或漏接的后台任务不能绕过用户关闭许可，原生边界必须阻止截图和文件读取。",
       layer: "e2e",
       depth: "deep",
@@ -108,11 +128,11 @@ export const observationContract: ModuleContract = {
     {
       id: "ob-04",
       feature: "静默了解的目标决策与读取名额",
-      description: "读什么由 AI 决策：决策调用输出 {targets:[{path,kind,why}]}（≤3、绝对路径），解析器对围栏 JSON、非数组、字段非法、相对路径、重复路径一律退化为空清单（本批只截图、不报错崩批）；每小时读取名额（MAX_READS_PER_HOUR，滚动窗口）在批次开始前扣减，超限即跳过决策与读取。",
-      why: "用户已撤销「指定目录」配置，读目标改由模型判断；决策输出是不可信输入，解析必须 fail-closed 且不能把坏 JSON 变成崩溃或乱读。",
+      description: "读什么由 AI 决策：决策调用输出 {targets:[{path,kind,why}]}（绝对路径），解析器对围栏 JSON、非数组、字段非法、相对路径、重复路径一律退化为空清单（本批只截图、不报错崩批）；单批目标数不设硬上限（W1 起删除 ≤3 截断；单批读取量以剩余每小时名额为界），每小时读取名额（MAX_READS_PER_HOUR，滚动窗口）在批次开始前扣减，超限即跳过决策与读取。决策输入的基础块在同层按界断言：Card 人设有界摘要（名字/描述/角色设定截断）与带时区的可读本地时间；完整输入矩阵与降级由 ob-08（L3）覆盖。",
+      why: "用户已撤销「指定目录」配置，读目标改由模型判断；决策输出是不可信输入，解析必须 fail-closed 且不能把坏 JSON 变成崩溃或乱读；输入块只读有界才能既把决定权交给模型，又不让每条链各自造证据或撑爆请求预算。",
       layer: "unit",
       depth: "shallow",
-      scenarios: ["observation-decision-parse", "observation-read-quota"],
+      scenarios: ["observation-decision-parse", "observation-read-quota", "observation-decision-card-brief", "observation-decision-local-time"],
     },
     {
       id: "ob-05",
@@ -140,6 +160,24 @@ export const observationContract: ModuleContract = {
       layer: "integration",
       depth: "shallow",
       scenarios: ["ui-coordination-outside-domain-barrels"],
+    },
+    {
+      id: "ob-08",
+      feature: "静默了解决策输入补齐与降级（L3）",
+      description: "决策输入在 W4-B 补齐为只读有界块并经 L3 端到端断言：本地时间（时刻+时区）、Card 人设有界摘要（名字/描述/角色设定截断）、行为画像快照（质量状态+就近 6 钟点活跃分钟）、话题权重 top-5（占比，仅 ≥2 独立来源的话题入榜）、长期记忆核心画像（召回端口空 query、token 上限 256、关闭重排、身份取运行时会话与激活 Card；条数与单条字符都有界）；原窗口快照与最近 8 条了解摘要保留。画像不可靠/话题为空/无 Card/无记忆时各块如实降级（null / [] / 质量状态原样）而批次照跑；无活跃会话时不发起记忆召回、不造身份。",
+      why: "输入块只读有界才能既把决定权交给模型，又不让每条链各自造证据或撑爆请求预算；降级必须如实（不可靠带状态、无身份不造身份）而不是静默补块或抛错。",
+      layer: "integration",
+      depth: "shallow",
+      scenarios: ["observation-decision-inputs", "observation-decision-inputs-degrade", "observation-decision-memory-identity"],
+    },
+    {
+      id: "ob-09",
+      feature: "静默了解档位参数消费（off/低/中/高）",
+      description: "静默了解调度按 ai.silentAccess.frequency 档位取全部参数：off = 调度器不启动、不预留批次、话题入口不开启（可信来源被丢弃、批次零模型调用）；三档决定离开阈值（2h / 1h / 30min，差 1ms 不开）、批次间隔（2h / 30min / 15min——16 分钟前尝试在高档放行、中档被挡）与每日批数 / 每小时读取名额（4 / 8 / 12）——数值唯一来源是 proactive tiers 档位表，批次经 budget.reserve 以档位值预留；低档每小时读取名额占满时跳过决策调用、只做整理（一批 = 决策+整理两次辅助调用，名额耗尽时只剩一次）。",
+      why: "档位是静默了解唯一的总闸与频率来源，任何一处仍读旧常量都会让档位选择无声失效（off 仍开批、中档按旧 4 批、低档按旧间隔）。",
+      layer: "integration",
+      depth: "shallow",
+      scenarios: ["silent-tier-off", "silent-tier-medium-limits", "silent-tier-low-read-quota", "silent-tier-gap"],
     },
   ],
   rules: { minScenarios: 1, minDeepScenarios: 1, requireBoundary: true, requireErrorPath: true },

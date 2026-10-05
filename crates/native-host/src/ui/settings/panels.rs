@@ -42,6 +42,9 @@ pub enum RowAction {
     /// 行内下拉：主控件是弹出选择（选项见 `PanelRow::pick`），
     /// 选中某值后由平台把（行 id, 值）回传领域入口（音效事件行）。
     Pick,
+    /// 凭据输入：点击弹原生输入框，值经领域入口定向写进应用自有存储
+    /// （MCP 面板的「GitHub 令牌」行；值不回显、不写 CONFIG）。
+    Credential,
 }
 
 impl RowAction {
@@ -54,6 +57,7 @@ impl RowAction {
             "delete" => Self::Delete,
             "preview" => Self::Preview,
             "pick" => Self::Pick,
+            "credential" => Self::Credential,
             _ => Self::None,
         }
     }
@@ -351,6 +355,7 @@ mod tests {
         assert_eq!(RowAction::parse("delete"), RowAction::Delete);
         assert_eq!(RowAction::parse("preview"), RowAction::Preview);
         assert_eq!(RowAction::parse("pick"), RowAction::Pick);
+        assert_eq!(RowAction::parse("credential"), RowAction::Credential);
     }
 
     #[test]

@@ -59,7 +59,7 @@ ai:
   plan: { enabled: false }
   humanizer: { enabled: false }
   memory: { enabled: false }
-  silentAccess: { enabled: false }
+  silentAccess: { frequency: "off" }
 tools:
   bash: { whitelist: [ls, cat] }
   mcp:
@@ -90,6 +90,9 @@ const fixtures = {
   pickOpen: null as string | null,
   pickSave: null as string | null,
   fingerprintFails: true,
+  /** MCP 凭据状态（只回变量名；Rust 侧同名命令只回名字、不回值）。 */
+  credentialVars: [] as string[],
+  credentialStatusError: false,
 }
 
 function createBridge() {
@@ -143,6 +146,11 @@ function createBridge() {
         case "skill_catalog_fingerprint":
           if (fixtures.fingerprintFails) throw new Error("测试注入：Skill 目录不可读")
           return { fingerprint: "fp-1", truncated: false }
+        case "mcp_credential_status":
+          if (fixtures.credentialStatusError) {
+            throw Object.assign(new Error("测试注入：凭据状态读取失败"), { code: "OTHER" })
+          }
+          return fixtures.credentialVars
         case "audio_play_wav":
           return null
         default:
@@ -202,6 +210,8 @@ beforeEach(() => {
   fixtures.pickOpen = null
   fixtures.pickSave = null
   fixtures.fingerprintFails = true
+  fixtures.credentialVars = []
+  fixtures.credentialStatusError = false
 })
 
 afterAll(() => {
@@ -292,6 +302,75 @@ describe("工具页：MCP 服务器行与开关", () => {
       dispatchHostRequest("tools_mcp_toggle", { id: "demo-custom" }),
       "缺 enabled 布尔字段应拒绝",
     ).rejects.toMatchObject({ code: "CONFIG" })
+  })
+})
+
+describe("工具页：MCP 凭据（GitHub 令牌）", () => {
+  const GITHUB_ENTRY = {
+    name: "github",
+    transport: "http",
+    url: "https://api.githubcopilot.com/mcp/",
+    headers: { Authorization: "Bearer ${GITHUB_TOKEN}" },
+    enabled: false,
+  }
+
+  it("tools_mcp_servers：github 条目存在时附令牌行，状态取 mcp_credential_status（只有名单、没有值） [native-ui-mcp-credential-row]", async () => {
+    setCustomServers([GITHUB_ENTRY])
+    fixtures.credentialVars = []
+    const unset = (await dispatchHostRequest("tools_mcp_servers", {})) as {
+      rows: Array<{ id: string; title: string; subtitle: string; action: string }>
+    }
+    // 服务器行在前、凭据行在后（凭据设置的是 github 服务器的 GITHUB_TOKEN）。
+    expect(unset.rows.map(row => row.id)).toEqual(["github", "credential:github:GITHUB_TOKEN"])
+    expect(unset.rows[1]).toMatchObject({ title: "GitHub 令牌", action: "credential" })
+    expect(unset.rows[1]?.subtitle).toContain("未设置")
+    // 状态只经宿主命令读（坐标固定为内置 github 的 GITHUB_TOKEN）。
+    expect(recorded("mcp_credential_status")).toEqual([
+      { method: "mcp_credential_status", args: { server: "github" } },
+    ])
+
+    // 已设置：状态翻转，行里仍然只有变量名、没有值。
+    fixtures.credentialVars = ["GITHUB_TOKEN"]
+    const set = (await dispatchHostRequest("tools_mcp_servers", {})) as {
+      rows: Array<{ title: string; subtitle: string }>
+    }
+    expect(set.rows[1]?.subtitle).toContain("已设置")
+    expect(set.rows[1]?.subtitle).toContain("不回显")
+
+    // github 条目被删掉：不产出令牌行（没有条目引用该变量，设置了也不生效）。
+    setCustomServers([{ name: "demo-custom", transport: "http", url: "http://127.0.0.1:9/mcp", enabled: true }])
+    const absent = (await dispatchHostRequest("tools_mcp_servers", {})) as { rows: Array<{ id: string }> }
+    expect(absent.rows.map(row => row.id)).toEqual(["demo-custom"])
+
+    // 状态读取失败如实抛出（面板呈现「列表读取失败」），不把故障画成「未设置」。
+    setCustomServers([GITHUB_ENTRY])
+    fixtures.credentialStatusError = true
+    await expect(dispatchHostRequest("tools_mcp_servers", {})).rejects.toMatchObject({ code: "OTHER" })
+  })
+
+  it("mcp_credential_write：行坐标解析回 server/var 定向写宿主存储；空值/未知坐标拒绝且不写 CONFIG [native-ui-mcp-credential-write]", async () => {
+    // 非法输入全部在发出宿主命令之前拦下：空值、未知坐标、缺 id。
+    await expect(
+      dispatchHostRequest("mcp_credential_write", { id: "credential:github:GITHUB_TOKEN", value: "   " }),
+    ).rejects.toMatchObject({ code: "CONFIG" })
+    await expect(
+      dispatchHostRequest("mcp_credential_write", { id: "credential:nope", value: "probe" }),
+    ).rejects.toMatchObject({ code: "CONFIG" })
+    await expect(
+      dispatchHostRequest("mcp_credential_write", { value: "probe" }),
+    ).rejects.toMatchObject({ code: "CONFIG" })
+    expect(recorded("mcp_credential_set")).toHaveLength(0)
+
+    await dispatchHostRequest("mcp_credential_write", {
+      id: "credential:github:GITHUB_TOKEN",
+      value: "probe-token",
+    })
+    // 值定向交给宿主命令（→ 应用自有存储），坐标由行 id 解析。
+    expect(recorded("mcp_credential_set")).toEqual([
+      { method: "mcp_credential_set", args: { server: "github", var: "GITHUB_TOKEN", value: "probe-token" } },
+    ])
+    // 凭据不写配置文件。
+    expect(recorded("write_runtime_config")).toHaveLength(0)
   })
 })
 

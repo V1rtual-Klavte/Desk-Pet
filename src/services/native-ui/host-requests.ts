@@ -97,6 +97,7 @@ import {
   mcpExport,
   mcpImport,
   mcpServerDoc,
+  mcpCredentialWrite,
   mcpTest,
   memoryDreamingSweep,
   memoryItemChange,
@@ -107,7 +108,6 @@ import {
   memorySourceEvidence,
   pickOpenFile,
   pickSaveFile,
-  proactiveControl,
   profileList,
   profileManage,
   readTextFile,
@@ -337,8 +337,6 @@ export async function dispatchHostRequest(method: string, args: unknown): Promis
       return configExport()
     case "config_import":
       return configImport()
-    case "proactive_control":
-      return proactiveControl(args)
     case "v1rtual_read":
       return v1rtualRead()
     case "v1rtual_write":
@@ -371,6 +369,8 @@ export async function dispatchHostRequest(method: string, args: unknown): Promis
       return soundPreview(args)
     case "mcp_server_doc":
       return mcpServerDoc(args)
+    case "mcp_credential_write":
+      return mcpCredentialWrite(args)
     case "mcp_edit":
       return mcpEdit(args)
     case "mcp_test":
@@ -435,7 +435,7 @@ async function configImport(): Promise<{ imported: boolean }> {
   const text = await readTextFile(path)
   await importConfigYaml(text)
   await reapplyRuntimeSettings([
-    { key: "ai.silentAccess.enabled", value: silentAccessConfig.enabled },
+    { key: "ai.silentAccess.frequency", value: silentAccessConfig.frequency },
     { key: "general.logging.level", value: generalConfig.loggingLevel },
     { key: "ai.humanizer.enabled", value: humanizerConfig.enabled },
   ])
@@ -599,8 +599,9 @@ async function settingsCommit(args: { changes: SettingChangePayload[] }): Promis
  *
  * 按键裁定（值一律读保存后的 CONFIG 现值，不再读 `changes` 里的草稿值）：
  *   - `ai.silentAccess.*` → 观察总闸（`setMonitorEnabled`，内含行为采集启停）+ 静默了解
- *     调度起停（enabled 关 = 停；开 = 起）+ `refreshProactive()`（冷却时长是 scanner
- *     唯一的运行期配置输入，每次保存后都要重应用）；
+ *     调度起停（档位「关」= 停；否则起）；
+ *   - `ai.proactive.*` → `refreshProactive()`（档位与静默时段都是 scanner 的运行期
+ *     配置输入，每次保存后都要重应用；scanner 按档位「关」自行停跑）；
  *   - `general.logging.level` → `applyLogLevel()`（logger 级别是缓存值，需在保存后
  *     重应用；Rust 侧同步接收）；
  *   - `ai.humanizer.enabled` → `revealAll()`（保存后立即揭示已提交未展示的分泡）。
@@ -619,13 +620,16 @@ async function reapplyRuntimeSettings(changes: SettingChangePayload[]): Promise<
   if (touched("ai.silentAccess.")) {
     try {
       const { setMonitorEnabled } = await import("@/services/window")
-      await setMonitorEnabled(silentAccessConfig.enabled)
+      const enabled = silentAccessConfig.frequency !== "off"
+      await setMonitorEnabled(enabled)
       const { startSilentUnderstanding, stopSilentUnderstanding } = await import("@/services/observation")
-      if (silentAccessConfig.enabled) startSilentUnderstanding()
+      if (enabled) startSilentUnderstanding()
       else await stopSilentUnderstanding()
     } catch (error) {
       failures.push(`silentAccess=${formatError(error)}`)
     }
+  }
+  if (touched("ai.proactive.")) {
     try {
       const { refreshProactive } = await import("@/services/proactive")
       refreshProactive()

@@ -39,7 +39,9 @@ Rust [AppPaths](../../crates/native-host/src/paths/mod.rs) 依据 `cfg!(debug_as
 
 当前主保存路径为：原生设置窗控件（Rust 草稿）→ `SettingsPort`（[ui/ports.rs](../../crates/native-host/src/ui/ports.rs) 的 `settings_commit` 请求）→ Node `settingsCommit` → setOverrides → config 写队列 → `flushConfig` → `reapplyRuntimeSettings` → `pushNativeUiState`（快捷键/字体/主题/舞台/聊天列/图片预览/摆位/尺寸/自动呼出/音效十条推送，逐项口径见 [pushes.ts](../../src/services/native-ui/pushes.ts) 头部）。字段是否即时生效取决于具体消费者，不能只以事件已发出为完成依据。Profile 素材和参数有自己的保存路径，不强行塞进 CONFIG。
 
-例如窗口冷却的 getter/CONFIG 使用毫秒，原生设置窗按各自 schema 的单位换算显示（换算点在宿主草稿边界：`ui/settings/mod.rs` 的毫秒键表，读入除 1000、提交乘 1000；schema 只声明显示单位与按显示单位收口的范围）；日志设置读取配置值，运行期才应用 dev 的 debug 覆盖。这两类边界不能混入 getter 导致保存污染。
+频率档位批（2026-10-05）的即时生效链：保存后 `reapplyRuntimeSettings` 的 `ai.proactive.*` 分支调 `refreshProactive()`（scanner 按新档重排随机唤醒、重算冷却并重推 Rust 投影），`ai.silentAccess.*` 分支按档位是否 `off` 起停观察总闸与静默了解；整份导入 YAML 由 `importConfigYaml()` 收尾的消费者刷新链补同样的刷新（失败只留痕，配置已落盘）。
+
+字段的显示单位与 CONFIG 存储单位不一定相同，换算必须落在宿主草稿边界、不能混入 getter 导致保存污染。例如（历史）：窗口冷却的 getter/CONFIG 用毫秒，原生设置窗按秒换算显示（读入除 1000、提交乘 1000；schema 只声明显示单位与按显示单位收口的范围）——2026-10-05 档位化后这两个冷却键随字段删除，`ui/settings/mod.rs` 的毫秒键表与换算机制一并退役（开发阶段不留无消费者的脚手架）；将来再出现显示单位差异时按同一规则在草稿边界新增唯一换算点。日志设置读取配置值，运行期才应用 dev 的 debug 覆盖，同属这类边界。
 
 设置改动完成后集中核对“修改 → 保存 → 文件回读 → 运行期读取 → 关闭重开设置”的往返；涉及跨窗口、模式或重启生效时一并核对对应消费者。类型检查不能发现字符串配置键漏映射或单位错误；本清单是后续变更的验收要求，不表示本轮文档修改运行了这些验证。
 
@@ -50,6 +52,7 @@ Rust [AppPaths](../../crates/native-host/src/paths/mod.rs) 依据 `cfg!(debug_as
 | 字段 | 状态 | 说明 |
 |---|---|---|
 | ~~`general.desktop.pollingIntervalMs`~~ | **已删除（不再存在该键）** | 窗口观察改为原生事件驱动（前台切换／锁屏／睡眠唤醒／会话切换触发采样），不再存在轮询间隔输入。[config.ts](../../src/services/config.ts) 无 getter、[monitor.ts](../../src/services/window/monitor.ts) 的 `setMonitorEnabled` 不再接收该值、Rust 侧无 interval 状态。**钥匙已从 [CONFIG.yaml](../../CONFIG.yaml) 与 [CONFIG-DEV.yaml.example](../../CONFIG-DEV.yaml.example)、本文件的类型定义、原生设置窗 schema（[schema.rs](../../crates/native-host/src/ui/settings/schema.rs)）一并移除**；不建兼容读取，用户文件里若残留该键按未知键忽略 |
+| ~~`ai.silentAccess.enabled` 与 `staySeconds / settleMs / cooldownMs / samePageCooldownMs`；`ai.memory.dreaming.mode / idleSeconds / minIntervalMinutes / maxDailyTokens`~~ | **已删除（2026-10-05 频率档位批）** | 启用语义并入三处频率档位的「关」，数值收进 [proactive/protocol.json](../../src/services/proactive/protocol.json) 的 `tiers`（四个节奏数值的真实消费者是主动消息）；不建兼容读取，残留键按未知键忽略。Rust SQLite `proactive_control.enabled` 列同批删除，`MEMORY_SCHEMA_VERSION` 2→3，旧库按版本策略拒绝（见[数据库](database.md)） |
 
 ### 对话投递字段的语义与生效时机
 
@@ -105,12 +108,13 @@ Rust [AppPaths](../../crates/native-host/src/paths/mod.rs) 依据 `cfg!(debug_as
 
 | 字段 | 默认 | 唯一来源与生效 |
 |---|---|---|
-| 主动消息 enabled | true | Rust SQLite `proactive_control`，不写 CONFIG；当前用户入口是 `/proactive on` / `/proactive off`（slash 命令 → Node `setEnabled` → `proactive_control` 命令），关闭即时取消 |
+| `ai.proactive.frequency` | `medium` | 主动消息的**总闸 + 频率**（`off｜low｜medium｜high`），唯一来源是 CONFIG；`off` = 不唤醒、不产生机会、不发送（不另建开关）；用户入口是设置窗「AI → 主动陪伴」与斜杠 `/proactive on`（写回 `medium`，不记忆上次档位）/ `off`（写回 `off`），两者走同一写盘路径（`setOverride` → `flushConfig`），保存后经 `refreshProactive()` 重排随机唤醒并重推 Rust 投影 |
+| `ai.proactive.quietStartHour` / `quietEndHour` | 23 / 9 | 静默时间段（本地小时 0–23 整数），**仅约束主动消息**：该时段不唤醒、不产生机会、不发送。跨夜语义 `start > end`（默认 23 开始、9 结束）；`start == end` = 不静默；白天不设窗口；晚安窗口=静默开始前一小时（派生，不硬编码） |
+| `ai.silentAccess.frequency` | `medium` | 静默了解的总闸 + 频率（同型四档）；`off` = 调度器不启动、不观察、不注入（读取靠手动）；三档决定离开要求（2h / 1h / 30min）、批次间隔（2h / 30min / 15min）、每日批数（4 / 8 / 12）与每小时读取名额（4 / 8 / 12） |
+| `ai.memory.dreaming.tier` | `medium` | 记忆整理档位（同型四档）；`off` = 空闲调度器早退（面板手动整理按钮保留）；三档决定空闲阈值（3600 / 1800 / 600 秒）、最小间隔（240 / 60 / 30 分钟）与每日 token 预算（24000 / 72000 / 120000） |
 | `ai.humanizer.enabled` | true | 设置窗保存 CONFIG，下个回合冻结；关闭不加协议、不变换、不调度，已提交多段历史仍逐泡展示；保存后立即揭示未展示分泡（`revealAll`） |
-| `ai.silentAccess.enabled` | true | 直接替换原窗口监控域，不兼容读取旧键；配置刷新后停止旧观察代际并重启许可内的观察 |
-| `ai.silentAccess.staySeconds / settleMs / cooldownMs / samePageCooldownMs` | 60 / 2000 / 5000 / 7800 | 沿用窗口来源的停留、防抖和冷却，AI 设置可编辑，后两个界面以秒显示、保存毫秒 |
 
-节奏参数归 `humanizer` 模块；主动额度、静默时段和观察预算归各领域协议／常量。配置模板、getter、原生设置窗 schema、保存映射与保存后的重应用/推送保持同步；真实 CONFIG-DEV.yaml 与已有运行时数据未在本批同步。
+三处档位的数值表（唤醒区间、每日配额、token、停留/防抖/冷却等）的唯一真相源是 [proactive/protocol.json](../../src/services/proactive/protocol.json) 的 `tiers`（生成器同步到 TS 与 Rust 两侧）；[config.ts](../../src/services/config.ts) 只做读取期收拢（非法档位按 `medium` 读取、不写盘、同一非法值只诊断一次），[proactive/tiers.ts](../../src/services/proactive/tiers.ts) 负责查表。手写静默小时不是 0–23 整数（小数或范围外）时按默认 23/9 读取并 warn（同一非法值只诊断一次），写盘不拦——设置面 Number 控件只做范围收口，整数合规由读侧兜住。删除字段（2026-10-05）：`ai.silentAccess.enabled` 与 `staySeconds/settleMs/cooldownMs/samePageCooldownMs`（并入档位表）、`ai.memory.dreaming.mode/idleSeconds/minIntervalMinutes/maxDailyTokens`（mode 被 tier 取代）；Rust SQLite `proactive_control.enabled` 列同批删除。**静默时段只约束主动消息**：静默了解与记忆整理不受它门禁。配置模板、getter、原生设置窗 schema、保存映射与保存后的重应用/推送保持同步；W2 代码已落地（2026-10-05），测试统一留收口波运行；真实 CONFIG-DEV.yaml 与已有运行时数据未在本批同步。
 
 图片条目只保存 `deskpetImagePaths` 原路径：用户发图与 `screenshot` 工具 `show_to_user` 的截图共用这一字段（用户图片的请求视图临时读取、经当前图片处理链处理，见[工具系统](tool-system.md)的 read 边界；截图是工具结果本身带图片块、原图另存 `screenshots/`，两者都不写 CONFIG、不建图片副本）。原文件变化即体现为下一次读取的内容；路径失效明确显示不可用，不从缓存恢复副本。
 

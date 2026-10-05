@@ -20,6 +20,18 @@ pub const WATERMARK_RULE_VERSION: i64 = 1;
 /// 单批 Light 抽取的来源上限：批大小是资源边界，不是调优旋钮。
 const JOB_SOURCE_BATCH: i64 = 64;
 
+/// 待处理来源的判定（水位之后 + 未命中提取墓碑 + 可信用户来源）。
+/// `job_sources`（批内取数）与 `pending_source_count`（开作业前的前置查询）共用这两段：
+/// 水位判定只有一份实现，两处不会各自漂移（`memory_watermarks` 是唯一水位）。
+/// 参数：?1 = 游标 session_id（NULL 表示不限）、?2 = 游标 seq。
+const PENDING_SOURCE_COLUMNS: &str = "s.source_id,s.session_id,s.entry_id,s.event_id,s.seq,s.content_hash,s.evidence,s.card_id,s.taint,s.origin,s.observed_at";
+const PENDING_SOURCE_FROM: &str = "FROM memory_sources s LEFT JOIN memory_watermarks w ON w.session_id=s.session_id \
+     WHERE s.origin='user' AND s.taint='trusted_user' \
+       AND NOT EXISTS(SELECT 1 FROM memory_tombstones t WHERE t.session_id=s.session_id AND t.entry_id=s.entry_id \
+         AND t.content_hash=s.content_hash AND t.effect='block_extraction') \
+       AND (w.seq IS NULL OR s.seq > w.seq) \
+       AND (?1 IS NULL OR s.session_id > ?1 OR (s.session_id = ?1 AND s.seq > ?2))";
+
 /// SQLite 忙等待：记忆库连接是进程内唯一写者，维护命令跨连接短暂争用时最多等 750ms。
 const DB_BUSY_TIMEOUT_MS: u64 = 750;
 
@@ -475,6 +487,66 @@ impl MemoryStore {
         let row:Option<(i64,i64)>=conn.query_row("SELECT reserved_tokens,used_tokens FROM memory_dreaming_budgets WHERE local_date=?1",[local_date],|r|Ok((r.get(0)?,r.get(1)?))).optional().map_err(db_err)?;
         let (reserved, used) = row.unwrap_or((0, 0));
         Ok(json!({"localDate":local_date,"reservedTokens":reserved,"usedTokens":used}))
+    }
+
+    // ── MCP 凭据（mcp_credentials 表；键 = 服务器名 + headers 变量名）──
+    //
+    // 凭据值由设置面经 `mcp_credential_set` 定向写入，MCP 连接期经 `mcp_credential_get`
+    // 取用；**不写 CONFIG、不回显、不进日志**（错误文案也只在缺值与故障时报坐标/变量名）。
+
+    /// 写入/更新一条凭据（同键覆盖）。服务器名、变量名与值都不能为空（含纯空白）：
+    /// 凭据的唯一用途是替换 headers 模板里的 `${VAR}`，空值只会让连接带上假凭据。
+    pub fn credential_set(&self, server: &str, var: &str, value: &str) -> AppResult<()> {
+        if server.trim().is_empty() || var.trim().is_empty() || value.trim().is_empty() {
+            return Err(AppError::Config(
+                "MCP 凭据的服务器名、变量名与值都不能为空".into(),
+            ));
+        }
+        let conn = self.lock()?;
+        conn.execute(
+            "INSERT INTO mcp_credentials(server,var,value,updated_at) VALUES (?1,?2,?3,?4)
+             ON CONFLICT(server,var) DO UPDATE SET value=excluded.value, updated_at=excluded.updated_at",
+            params![server, var, value, now_ms()],
+        )
+        .map_err(db_err)?;
+        Ok(())
+    }
+
+    /// 读取一条凭据；未设置返回 `None`（调用方按「变量缺失」如实失败，不给兜底值）。
+    pub fn credential_get(&self, server: &str, var: &str) -> AppResult<Option<String>> {
+        let conn = self.lock()?;
+        conn.query_row(
+            "SELECT value FROM mcp_credentials WHERE server=?1 AND var=?2",
+            params![server, var],
+            |row| row.get(0),
+        )
+        .optional()
+        .map_err(db_err)
+    }
+
+    /// 删除一条凭据；返回是否真的删掉了（未设置 = false，如实报告，不谎称已删）。
+    pub fn credential_delete(&self, server: &str, var: &str) -> AppResult<bool> {
+        let conn = self.lock()?;
+        let removed = conn
+            .execute(
+                "DELETE FROM mcp_credentials WHERE server=?1 AND var=?2",
+                params![server, var],
+            )
+            .map_err(db_err)?;
+        Ok(removed > 0)
+    }
+
+    /// 该服务器已设置凭据的变量名名单（按名排序）。**只回变量名、不回值** ——
+    /// 设置面状态显示用它，值的唯一出口是 `credential_get`（Node 连接期注入）。
+    pub fn credential_status(&self, server: &str) -> AppResult<Vec<String>> {
+        let conn = self.lock()?;
+        let mut stmt = conn
+            .prepare("SELECT var FROM mcp_credentials WHERE server=?1 ORDER BY var")
+            .map_err(db_err)?;
+        let rows = stmt
+            .query_map([server], |row| row.get::<_, String>(0))
+            .map_err(db_err)?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(db_err)
     }
 
     /// Evaluation-only reset of the existing owner's connection, never a second writer.
@@ -1628,16 +1700,9 @@ impl MemoryStore {
             .map_err(db_err)?
         };
         let mut statement = conn
-            .prepare(
-                "SELECT s.source_id,s.session_id,s.entry_id,s.event_id,s.seq,s.content_hash,s.evidence,s.card_id,s.taint,s.origin,s.observed_at \
-                 FROM memory_sources s LEFT JOIN memory_watermarks w ON w.session_id=s.session_id \
-                 WHERE s.origin='user' AND s.taint='trusted_user' \
-                   AND NOT EXISTS(SELECT 1 FROM memory_tombstones t WHERE t.session_id=s.session_id AND t.entry_id=s.entry_id \
-                     AND t.content_hash=s.content_hash AND t.effect='block_extraction') \
-                   AND (w.seq IS NULL OR s.seq > w.seq) \
-                   AND (?1 IS NULL OR s.session_id > ?1 OR (s.session_id = ?1 AND s.seq > ?2)) \
-                 ORDER BY s.session_id, s.seq LIMIT ?3",
-            )
+            .prepare(&format!(
+                "SELECT {PENDING_SOURCE_COLUMNS} {PENDING_SOURCE_FROM} ORDER BY s.session_id, s.seq LIMIT ?3"
+            ))
             .map_err(db_err)?;
         let rows = statement
             .query_map(
@@ -1669,6 +1734,19 @@ impl MemoryStore {
             out.push(row.map_err(db_err)?);
         }
         Ok(out)
+    }
+
+    /// 开作业前的只读前置查询：水位之后已有多少待处理来源。
+    /// 作业只在有输入时才值得开（水位之上一条来源都没有 = Review 必然空跑）；
+    /// 判定条件与 `job_sources` 共用同一段 SQL（新作业的游标恒为空，故不传游标）。
+    pub fn pending_source_count(&self) -> AppResult<i64> {
+        let conn = self.lock()?;
+        conn.query_row(
+            &format!("SELECT COUNT(*) {PENDING_SOURCE_FROM}"),
+            params![None::<String>, None::<i64>],
+            |row| row.get(0),
+        )
+        .map_err(db_err)
     }
 
     /// Return only the bounded, originally registered evidence for a still-eligible source.

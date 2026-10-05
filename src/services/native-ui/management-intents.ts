@@ -49,7 +49,6 @@ import type {
   ProfileManagePayload,
   ProfileManageResult,
   ProfileOptionPayload,
-  ProactiveControlPayload,
   SkillsPayload,
   SoundLibraryPayload,
 } from "@/services/host/types"
@@ -106,16 +105,92 @@ function mcpWhitelistSummary(server: { includeTools?: string[]; excludeTools?: s
 export async function toolsMcpServers(): Promise<ManagementRowsPayload> {
   await initConfig()
   const { getMcpServers } = await import("@/services/tool/mcp")
+  const servers = getMcpServers()
+  const credential = await mcpCredentialRow(servers)
   return {
-    rows: getMcpServers().map(server => ({
-      id: server.name,
-      title: server.name,
-      subtitle: [mcpCommandSummary(server), mcpWhitelistSummary(server)].filter(Boolean).join(" · "),
-      action: "toggle" as const,
-      action2: "edit" as const,
-      enabled: server.enabled,
-    })),
+    rows: [
+      ...servers.map(server => ({
+        id: server.name,
+        title: server.name,
+        subtitle: [mcpCommandSummary(server), mcpWhitelistSummary(server)].filter(Boolean).join(" · "),
+        action: "toggle" as const,
+        action2: "edit" as const,
+        enabled: server.enabled,
+      })),
+      // 凭据行附在服务器行之后：它设置的是「github 服务器的 GITHUB_TOKEN」，不是服务器本身。
+      ...(credential ? [credential] : []),
+    ],
   }
+}
+
+// ── 工具页：MCP 凭据（GitHub 令牌）──
+//
+// 内置 github 服务器（CONFIG 出厂条目，默认关闭）的 headers 模板引用 `${GITHUB_TOKEN}`：
+// 该变量**不在 CONFIG 里**（凭据值不落配置文件），由用户在设置面输入、经宿主命令存进
+// 应用自有存储（记忆库 `mcp_credentials` 表）。这里只做两件事：读状态组装行、把行坐标
+// 解析回 server/var 定向交给宿主 —— **值不回显、不进日志**。
+
+/** 内置凭据坐标（与 CONFIG 出厂条目的 `${GITHUB_TOKEN}` 引用同源）。 */
+const MCP_CREDENTIAL = { server: "github", variable: "GITHUB_TOKEN" } as const
+
+/** 凭据行的行坐标（写操作原样回带；由本模块解析，只认这个形状）。 */
+function credentialRowId(server: string, variable: string): string {
+  return `credential:${server}:${variable}`
+}
+
+function parseCredentialRowId(id: string): { server: string; variable: string } | null {
+  const match = /^credential:([^:]+):([^:]+)$/.exec(id)
+  return match?.[1] && match[2] ? { server: match[1], variable: match[2] } : null
+}
+
+/**
+ * GitHub 令牌行：`已设置/未设置` 状态经宿主 `mcp_credential_status`（只回变量名、不回值）。
+ *
+ * 服务器条目被用户删除时不产出该行：没有条目引用这个变量，设置了也不会生效。
+ * 状态读取失败如实抛出（面板的 `mcp_error` 会呈现「列表读取失败」），不把故障画成「未设置」。
+ */
+async function mcpCredentialRow(servers: { name: string }[]): Promise<ManagementRowPayload | null> {
+  if (!servers.some(server => server.name === MCP_CREDENTIAL.server)) return null
+  const vars = await getHostBridge().request("mcp_credential_status", {
+    server: MCP_CREDENTIAL.server,
+  })
+  if (!Array.isArray(vars) || vars.some(item => typeof item !== "string")) {
+    throw Object.assign(new Error("mcp_credential_status 回执不是字符串数组"), { code: "OTHER" })
+  }
+  const configured = vars.includes(MCP_CREDENTIAL.variable)
+  return {
+    id: credentialRowId(MCP_CREDENTIAL.server, MCP_CREDENTIAL.variable),
+    title: "GitHub 令牌",
+    subtitle: configured
+      ? "已设置（值不回显）· 令牌只存本地数据库，不写入配置文件"
+      : "未设置 · 连接 github 服务器前填写 fine-grained 只读 PAT（免费账号即可，无需 Copilot 席位）；令牌只存本地数据库",
+    action: "credential" as const,
+    enabled: false,
+  }
+}
+
+/**
+ * 工具页：写入一条 MCP 凭据（值由原生输入框取得，经宿主命令定向存进自有存储）。
+ *
+ * 空值拒绝（与宿主 `mcp_credential_set` 同一门槛，界面不放宽）；值**不写 CONFIG、
+ * 不回显、不进日志** —— 留痕只记坐标。
+ */
+export async function mcpCredentialWrite(args: unknown): Promise<void> {
+  const id = requireId(args, "mcp_credential_write")
+  const raw = (args as { value?: unknown } | null)?.value
+  if (typeof raw !== "string" || raw.trim().length === 0) {
+    throw Object.assign(new Error("mcp_credential_write 缺少有效的 value（空值拒绝）"), { code: "CONFIG" })
+  }
+  const target = parseCredentialRowId(id)
+  if (!target) {
+    throw Object.assign(new Error(`未知的 MCP 凭据行坐标: ${id}`), { code: "CONFIG" })
+  }
+  await getHostBridge().request("mcp_credential_set", {
+    server: target.server,
+    var: target.variable,
+    value: raw,
+  })
+  log.info(`MCP 凭据已更新: ${target.server}/${target.variable}`)
 }
 
 /** 逐项开关一个 MCP 服务器（既有写入口 + 一次原子写盘）。 */
@@ -405,7 +480,7 @@ export async function memoryItemChange(args: MemoryItemChangePayload): Promise<M
 }
 
 // ==========================================
-// 本批：AI 页（主动开关 / V1RTUAL / 阶段文案 / 变量池）
+// 本批：AI 页（V1RTUAL / 阶段文案 / 变量池）
 // ==========================================
 
 /** 取字符串字段（非空），失败抛结构化 CONFIG（与 requireId 同口径，但键名可变）。 */
@@ -425,18 +500,6 @@ function optionalCardId(args: unknown, method: string): string | null {
     throw Object.assign(new Error(`${method} 的 cardId 必须是非空字符串或空`), { code: "CONFIG" })
   }
   return value
-}
-
-/** 主动消息开关：`enabled` 缺省/null = 只读查询；处理走 scanner 已登记的控制处理器。 */
-export async function proactiveControl(args: unknown): Promise<ProactiveControlPayload> {
-  const raw = (args as { enabled?: unknown } | null)?.enabled
-  if (raw !== undefined && raw !== null && typeof raw !== "boolean") {
-    throw Object.assign(new Error("proactive_control 的 enabled 必须是布尔或空"), { code: "CONFIG" })
-  }
-  const { handleProactiveControlRequest } = await import("@/services/proactive")
-  // 未 start（scanner 未登记处理器）会显式抛错：这是接线事实，不伪装成「开关不可用」。
-  const control = await handleProactiveControlRequest(raw === null ? undefined : raw)
-  return { enabled: control.enabled, muteUntil: control.muteUntil ?? null, revision: control.revision }
 }
 
 /** V1RTUAL.md：读取当前生效的用户指令文本（没有小节时按整份正文）。 */

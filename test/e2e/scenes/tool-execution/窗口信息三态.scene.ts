@@ -7,7 +7,7 @@ import { getOverride, setOverride } from "@/services/config"
  * window_info 的三态（te-22）。
  *
  * 工具只读 `window/listener.ts` 缓存的最近一次完整 observation，三态都如实返回 success: true 的行式文本：
- * `ai.silentAccess.enabled=false` → 「未开启」；已开启但尚未收到事件 → 「尚未收到窗口变化事件」；
+ * `ai.silentAccess.frequency=off` → 「未开启」；非 off 档但尚未收到事件 → 「尚未收到窗口变化事件」；
  * 有观察 → 应用、标题、观察时间、原生状态与 idle 数据。
  *
  * **可验证性边界（§8.10）**：`initWindowListener` 只在 `App.vue` 被调用，Live 宿主不挂 listener，
@@ -24,7 +24,7 @@ const NOT_OBSERVED_MARK = "尚未收到窗口观察"
 const SNAPSHOT_MARKS = ["窗口标题:", "观察状态:", "观测时间:"]
 
 /** 场景自己改的配置：按「原始覆盖值」（未必存在）还原，不把开发配置的当前值当默认值。 */
-let originalEnabled: boolean | undefined
+let originalFrequency: string | undefined
 
 export const 窗口信息三态: SceneDef = {
   meta: {
@@ -33,7 +33,7 @@ export const 窗口信息三态: SceneDef = {
     depth: "shallow", suite: "regression", entry: "unit", tags: ["tool-execution", "boundary"],
   },
   setup: async () => {
-    originalEnabled = getOverride<boolean>("ai.silentAccess.enabled")
+    originalFrequency = getOverride<string>("ai.silentAccess.frequency")
   },
   turns: [{
     index: 1,
@@ -58,7 +58,7 @@ export const 窗口信息三态: SceneDef = {
           }
 
           // ② 关闭监控：如实说「未开启」，不得给出任何窗口快照。
-          setOverride("ai.silentAccess.enabled", false)
+          setOverride("ai.silentAccess.frequency", "off")
           const disabled = await executeToolDefinition(tool, {}, { toolCallId: "window-info-disabled" })
           if (!disabled.success) throw new Error(`未开启态没有如实成功返回: ${disabled.error ?? ""}`)
           if (!disabled.content.includes(DISABLED_MARK)) {
@@ -71,7 +71,7 @@ export const 窗口信息三态: SceneDef = {
           if (getLatestWindowObservation() !== null) {
             throw new Error("宿主已存在窗口快照：本场景的「未观测到」一侧不再成立，需重写")
           }
-          setOverride("ai.silentAccess.enabled", true)
+          setOverride("ai.silentAccess.frequency", "medium")
           const unobserved = await executeToolDefinition(tool, {}, { toolCallId: "window-info-unobserved" })
           if (!unobserved.success) throw new Error(`未观测到态没有如实成功返回: ${unobserved.error ?? ""}`)
           if (!unobserved.content.includes(NOT_OBSERVED_MARK)) {
@@ -81,7 +81,7 @@ export const 窗口信息三态: SceneDef = {
           assertNoSnapshot("未观测到", unobserved.content)
         } finally {
           // 还原开发配置里的原值；跨场景兜底由 standard-setup 的配置基线承担。
-          setOverride("ai.silentAccess.enabled", originalEnabled)
+          setOverride("ai.silentAccess.frequency", originalFrequency)
         }
       },
     }],

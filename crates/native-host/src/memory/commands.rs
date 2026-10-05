@@ -203,6 +203,11 @@ pub fn memory_job_sources(state: &MemoryState, job_id: String) -> AppResult<Vec<
     state.0.job_sources(&job_id)
 }
 
+/// 开作业前的只读前置查询：水位之后是否已有待处理来源（与 `memory_job_sources` 同一水位判定）。
+pub fn memory_pending_source_count(state: &MemoryState) -> AppResult<i64> {
+    state.0.pending_source_count()
+}
+
 pub fn memory_source_evidence(state: &MemoryState, source_id: String) -> AppResult<Option<Value>> {
     state.0.source_evidence(&source_id)
 }

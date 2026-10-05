@@ -64,12 +64,12 @@ const queryTool=defineTool({id:"local-proactive-query",name:"proactive_query",de
   catch(error){return {success:false,content:"",error:formatError(error)}}
 })
 const changeTool=defineTool({id:"local-proactive-change",name:"proactive_change",
-  description:"根据本轮用户的明确指示创建、完成、取消、改期或延后约定，或开关/暂停主动陪伴。歧义须先澄清；改期改变事项时间，延后只改变下次提问时间。周期必须用户明确同意。",
+  description:"根据本轮用户的明确指示创建、完成、取消、改期或延后约定，或暂停主动陪伴。歧义须先澄清；改期改变事项时间，延后只改变下次提问时间。周期必须用户明确同意。开关主动陪伴不在此工具（归设置页档位）。",
   parameters:{type:"object",properties:{action:{type:"string",enum:["propose","create","reschedule","snooze","complete","cancel","control"]},proposalId:{type:"string",description:"只用于接受本轮上下文中仍有效的明确提议"},taskId:{type:"string"},expectedVersion:{type:"integer"},memoryItemId:{type:"string",description:"将本轮明确要求延后的某条记忆事项绑定到任务时，必须使用上下文给出的精确记忆ID"},expectedMemoryVersion:{type:"integer",description:"与memoryItemId配对，必须匹配冻结上下文版本"},
     intent:{type:"string",maxLength:1000},nextCheckinAt:{type:"number",description:"UTC毫秒，用户只说日期时使用合法发话窗口，不伪造用户指定钟点"},validUntil:{type:"number"},
     eventAt:{type:"object",description:"{precision:day,localDate:YYYY-MM-DD,timezone:IANA} 或 {precision:minute,instant:UTC毫秒,timezone:IANA}"},dueAt:{type:"object"},
     recurrence:{type:"object",description:"frequency daily/weekly/monthly/yearly +localTime HH:mm+timezone；weekly带weekdays(0周日)，monthly/yearly带dayOfMonth/yearly带month"},
-    enabled:{type:"boolean"},muteUntil:{type:"number",description:"暂停到UTC毫秒；不能用模型理由替用户关掉主动"}},required:["action"]},
+    muteUntil:{type:"number",description:"暂停到UTC毫秒；不能用模型理由替用户关掉主动；开关主动陪伴已归设置页档位，不在此工具"}},required:["action"]},
   safetyLevel:"NORMAL",source:"local",sourceId:"",actionCategory:"_default",
   policy:{version:TOOL_POLICY_VERSION,permission:{defaultDecision:"passthrough"},execution:{effect:"local_mutation",isolation:"exclusive_effect",replay:"never"},context:{resultProjection:"preserve",historyCompaction:"summarize"}}},async(params,ctx)=>{
   try {
@@ -139,7 +139,7 @@ const changeTool=defineTool({id:"local-proactive-change",name:"proactive_change"
     const result=await change({operationId:ctx.operationId??ctx.toolCallId??crypto.randomUUID(),baseRevision:state.revision,
       action:action as "create"|"reschedule"|"snooze"|"complete"|"cancel"|"control",owner:frozen,taskId:typeof params.taskId==="string"?params.taskId:undefined,
       expectedVersion:typeof params.expectedVersion==="number"?params.expectedVersion:undefined,trustedUserEventId:ctx.trustedUserEventId,sourceRefs,taskPatch:patch,
-      controlPatch:action==="control"?{...(typeof params.enabled==="boolean"?{enabled:params.enabled}:{}),...(typeof params.muteUntil==="number"?{muteUntil:params.muteUntil}:{})}:undefined})
+      controlPatch:action==="control"?{...(typeof params.muteUntil==="number"?{muteUntil:params.muteUntil}:{})}:undefined})
     proactiveEvent(createRuntimeTraceContext(frozen.sessionId),"proactive_task",()=>({operation:action,status:"committed",taskIds:result.task?.id?[result.task.id]:[],reason:"user_governance"}))
     return {success:true,content:JSON.stringify({revision:result.revision,task:result.task})}
   }catch(error){

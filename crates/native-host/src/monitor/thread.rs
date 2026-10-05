@@ -54,7 +54,8 @@ pub fn spawn_monitor_thread(
                             app: None,
                             title: None,
                             idle_for_ms: None,
-                            observation_state: "disabled",
+                            // 边界样本经 screen_state 直通事件载荷的生命周期维度（值仍是 disabled）。
+                            screen_state: "disabled",
                         },
                         generation,
                         generation_started.elapsed().as_millis() as u64,
@@ -108,7 +109,8 @@ fn publish_sample(
                     app: None,
                     title: None,
                     idle_for_ms: None,
-                    observation_state: "suspended",
+                    // 边界样本经 screen_state 直通事件载荷的生命周期维度（值仍是 suspended）。
+                    screen_state: "suspended",
                 },
                 generation,
                 sampled_at,
@@ -136,6 +138,10 @@ fn publish_sample(
 /// `PlatformSample` 的身份字段是 `Option<String>`；端口契约的 [`WindowObservation`]
 /// 用 `String` 承载（未知为空串）。**`idle_for_ms` 不做任何折算**：未知保持 `None`
 /// （空串→null 的还原发生在壳层 EventSink 的载荷适配处，消费方不得把未知当 0）。
+///
+/// 事件载荷的 `observation_state` 保持 5 值生命周期维度（`observed`/`locked`/
+/// `unavailable`/`suspended`/`disabled`），值直接取自采样的 `screen_state`：正常采样是
+/// 屏幕三态，监控边界样本以 `suspended`/`disabled` 直通。字段名不改（跨层线协议）。
 fn observation(
     window: &dyn WindowPort,
     state: &MonitorState,
@@ -152,7 +158,7 @@ fn observation(
         sample_mono_ms: sample_mono_ms.min(i64::MAX as u64) as i64,
         monitor_generation: generation,
         sequence: state.sequence.fetch_add(1, Ordering::SeqCst) + 1,
-        observation_state: sample.observation_state.to_string(),
+        observation_state: sample.screen_state.to_string(),
         idle_for_ms: sample
             .idle_for_ms
             .map(|idle| idle.min(i64::MAX as u64) as i64),
@@ -175,14 +181,14 @@ mod tests {
     fn sample(
         app_id: Option<&str>,
         idle: Option<u64>,
-        observation_state: &'static str,
+        screen_state: &'static str,
     ) -> PlatformSample {
         PlatformSample {
             app_id: app_id.map(ToString::to_string),
             app: app_id.map(ToString::to_string),
             title: app_id.map(|_| "标题".to_string()),
             idle_for_ms: idle,
-            observation_state,
+            screen_state,
         }
     }
 
@@ -232,5 +238,16 @@ mod tests {
         assert_eq!(next.app_id, "com.apple.Safari");
         assert_eq!(next.idle_for_ms, Some(5000), "已知闲置时长原样透出");
         assert!(!next.is_pet_visible && next.is_pet_foreground);
+
+        // 锁屏采样：屏幕维度直通事件载荷的 observation_state（字段名不变），idle 保留。
+        let locked = observation(
+            &port(true, false),
+            &state,
+            sample(None, Some(600_000), "locked"),
+            8,
+            260,
+        );
+        assert_eq!(locked.observation_state, "locked");
+        assert_eq!(locked.idle_for_ms, Some(600_000));
     }
 }

@@ -35,6 +35,11 @@
 // 标签、历史帧与缺省语义未动）。nui-01..nui-26 逐点核对：nui-14 / nui-18 / nui-19 的帧形状
 // 与触发语义未变，其余点不在改动面内、实现点仍在。本批刷新同时包含另一会话的改动；本轮只做
 // coverage 描述与当前实现一致性核对（非逐行行为审计），未修订覆盖点，仅按当前源码刷新 sourceHash。
+// 2026-10-05 频率档位收口波（analyze→generate）：nui-27 的 caseId 登记经对账通过；sourceFiles
+// 补入 `crates/native-host/src/ui/settings/panels.rs`（凭据行的 action 线值 `credential` 在
+// 原生侧由 RowAction::parse 接收 —— nui-27 声称的「action = credential」在这根线上，只改
+// handler 不改线形状时会漏判）。nui-01..nui-26 逐点复核实现点仍在、语义未变；sourceHash 按
+// 当前源码复算。
 import type { ModuleContract } from "../host/types"
 
 export const nativeUiContract: ModuleContract = {
@@ -57,8 +62,12 @@ export const nativeUiContract: ModuleContract = {
     "src/services/native-ui/session-projection.ts",
     "src/services/native-ui/session-signal.ts",
     "src/services/native-ui/titlebar-status.ts",
+    // 2026-10-05 自带 MCP 批次补入：nui-27 的凭据行从 Node 到原生设置窗走同一根线 ——
+    // 行 action 线值 `credential` 由该文件的 RowAction::parse 接收（wire+parse；
+    // 平台手势与行渲染不在本契约范围，与既有「原生渲染不在这里冒充」的口径一致）。
+    "crates/native-host/src/ui/settings/panels.rs",
   ],
-  sourceHash: "c1ad3197b501ed6391af52496305410622dc2c429365c224894174a6fe4aaf08",
+  sourceHash: "666f28a879f8152b13e5415ed8970d4de2ec734001d8395caae2baa6228cafb4",
   coverage: [
     {
       id: "nui-01",
@@ -359,6 +368,17 @@ export const nativeUiContract: ModuleContract = {
       layer: "unit",
       depth: "shallow",
       scenarios: ["native-ui-sound-reset-defaults"],
+    },
+    // 2026-10-05：自带 MCP 批次新增 nui-27（GitHub 令牌行与写入接线，L2）。
+    {
+      id: "nui-27",
+      feature: "MCP 凭据行（GitHub 令牌）与写入接线",
+      description:
+        "tools_mcp_servers 在 github 条目存在时追加一行凭据行（id = `credential:github:GITHUB_TOKEN`，action = credential）：状态经宿主 mcp_credential_status 读取（只有变量名、没有值），已设置/未设置只影响副标题；条目被删则不产出该行。mcp_credential_write 把行坐标解析回 server/var 后经宿主 mcp_credential_set 定向写入应用自有存储（不写 CONFIG、不回显、日志只记坐标）；空值/未知坐标/缺 id 在发出宿主命令之前以结构化 CONFIG 拒绝（零宿主命令、零写盘）；状态读取失败如实抛出，不把故障画成「未设置」",
+      why: "凭据值不落 CONFIG 后，设置面是唯一的写入入口：坐标解析错了会把令牌存到别的键上，空值放行会让连接带上假凭据，而把故障画成「未设置」会让用户反复输入同一份无效令牌",
+      layer: "unit",
+      depth: "shallow",
+      scenarios: ["native-ui-mcp-credential-row", "native-ui-mcp-credential-write"],
     },
   ],
   // 本契约全部覆盖点在 L2 / L3：原生 UI 桥的推送与请求面是纯适配层，不需要真 Rust 边界

@@ -294,8 +294,8 @@ export interface ManagementRowPayload {
   id: string
   title: string
   subtitle: string
-  /** 行动作：toggle=逐项开关；select=点开详情；preview=试听（音效行）；pick=行内下拉；none=只读行。 */
-  action: "toggle" | "select" | "preview" | "pick" | "none"
+  /** 行动作：toggle=逐项开关；select=点开详情；preview=试听（音效行）；pick=行内下拉；credential=凭据输入（弹原生输入框写自有存储）；none=只读行。 */
+  action: "toggle" | "select" | "preview" | "pick" | "credential" | "none"
   /** 次动作（可选渲染第二个按钮）：edit=打开行编辑文档；delete=删除该行资源；preview=试听（下拉行的次动作）。 */
   action2?: "edit" | "delete" | "preview"
   /** 开关类行的当前状态（其它行为 false）。 */
@@ -390,18 +390,6 @@ export interface MemoryItemChangeResult {
 export interface ConfigTransferResult {
   saved: boolean
   path: string | null
-}
-
-/**
- * `proactive_control` 的应答（运行期主动开关状态）。
- *
- * 真相源仍是宿主 SQLite（经 scanner 的控制通道读写）；本回执只是一次操作后的
- * 权威状态快照，宿主不落第二份持久状态。
- */
-export interface ProactiveControlPayload {
-  enabled: boolean
-  muteUntil: number | null
-  revision: number
 }
 
 /**
@@ -1137,6 +1125,11 @@ export type HostCommandMap = {
   memory_job_cancel: { args: { jobId: string; leaseOwner: string }; result: MemoryJob }
   memory_job_resume: { args: { jobId: string; leaseOwner: string }; result: MemoryJob }
   memory_job_sources: { args: { jobId: string }; result: MemorySource[] }
+  /**
+   * 开作业前的只读前置查询：水位之后待处理来源数（与 `memory_job_sources` 同一水位判定）。
+   * 返回 0 时 dreaming 直接跳过本次整理，不创建 job、不动预算与租约。
+   */
+  memory_pending_source_count: { args: Record<string, never>; result: number }
   memory_source_evidence: { args: { sourceId: string }; result: MemorySource | null }
   /** 返回接受的候选条数。 */
   memory_candidates_add: {
@@ -1166,6 +1159,24 @@ export type HostCommandMap = {
   memory_rebuild: { args: Record<string, never>; result: number }
   memory_restore: { args: { backupPath: string }; result: number }
   memory_restore_preview: { args: { backupPath: string }; result: MemoryRestorePreview }
+
+  // ── MCP 凭据（crates/native-host/src/commands/mcp_credentials.rs）──
+  //
+  // 服务器 headers 模板引用的 `${VAR}`（如 github 的 GITHUB_TOKEN）存记忆库的
+  // `mcp_credentials` 表（应用自有 SQLite，**不写 CONFIG**）。`mcp_credential_get` 是值
+  // 的唯一出口，消费方只有 MCP 连接期注入（`tool/mcp/client.ts`）；其余命令只报名单/
+  // 是否删掉。**值不进任何日志与回执**（除 get 的定向返回）。
+  /** 写入/更新一条凭据（值不能为空）。 */
+  mcp_credential_set: {
+    args: { server: string; var: string; value: string }
+    result: void
+  }
+  /** 删除一条凭据；返回是否真的删掉了（未设置 = false）。 */
+  mcp_credential_delete: { args: { server: string; var: string }; result: boolean }
+  /** 该服务器已设置的变量名名单（不返回值；设置面状态显示用）。 */
+  mcp_credential_status: { args: { server: string }; result: string[] }
+  /** 读取一条凭据的值（唯一消费者是 Node 连接期注入；不外传、不落日志）。 */
+  mcp_credential_get: { args: { server: string; var: string }; result: string | null }
 
   // ── 主动陪伴（crates/native-host/src/proactive/commands.rs，宏生成同名命令）──
   // 全部是 `request: Value -> Value` 形态；request/response 结构复用生成物
@@ -1522,14 +1533,6 @@ export type HostRequestMap = {
   config_export: { args: Record<string, never>; result: ConfigTransferResult }
   /** 通用页「导入配置」：打开对话框 → 读取 YAML → 校验后替换运行时 CONFIG 并写盘。 */
   config_import: { args: Record<string, never>; result: { imported: boolean } }
-  /**
-   * AI 页：主动消息开关（读/写运行期状态，真相源宿主 SQLite）。
-   * `enabled` 缺省/null = 只读查询；处理走 scanner 已登记的控制处理器。
-   */
-  proactive_control: {
-    args: { enabled?: boolean | null }
-    result: ProactiveControlPayload
-  }
   /** AI 页：V1RTUAL.md 用户指令读取。 */
   v1rtual_read: { args: Record<string, never>; result: { content: string } }
   /** AI 页：V1RTUAL.md 全量写入（既有 `updateV1rtualInstructions` 唯一入口）。 */
@@ -1562,6 +1565,14 @@ export type HostRequestMap = {
   sound_preview: { args: { soundId: string }; result: void }
   /** 工具页：MCP 服务器编辑文档（`name` 缺省 = 新建模板；行格式定义在 Node）。 */
   mcp_server_doc: { args: { name?: string | null }; result: { text: string } }
+  /**
+   * 工具页：写入一条 MCP 凭据（GitHub 令牌）。
+   *
+   * `id` 是凭据行的行坐标（Node 组装行时定义并解析回 server/var）；`value` 由用户在
+   * 原生输入框输入，经宿主 `mcp_credential_set` 存进应用自有存储 —— **不写 CONFIG、
+   * 不回显、不进日志**（回执只有 void）。
+   */
+  mcp_credential_write: { args: { id: string; value: string }; result: void }
   /** 工具页：MCP 文本编辑（按 name 增/改）或删除。 */
   mcp_edit: { args: McpEditPayload; result: void }
   /** 工具页：连接测试（借出→归还；连接失败是结果不是异常）。 */

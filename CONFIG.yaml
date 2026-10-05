@@ -81,11 +81,10 @@ ai:
     recallTimeoutMs: 4000
     rerankTimeoutMs: 2500
     dreaming:
-      mode: idle
-      idleSeconds: 120
-      minIntervalMinutes: 60
-      # 每日自动整理预算：按 128k 窗口、3 批最坏预留（3×8k 输入 + 3×16k 输出）校准；0 = 禁用自动整理
-      maxDailyTokens: 72000
+      # 记忆整理档位：off(不自动整理，面板手动整理入口保留) | low | medium | high
+      # 档位值（空闲阈值 / 最小间隔 / 每日 token）收进 src/services/proactive/protocol.json 的 tiers，
+      # 越高越勤、token 消耗越大（低→高每日预算 24000 → 120000）。
+      tier: medium
       # reviewMaxTokens：单次 Review 输出上限；留空/删掉 = 按模型输出预算自动推导（窗口×1/8，32k 封顶，且不越过模型目录上限）
       # reviewMaxTokens: 4096
     maxSessions: 20
@@ -119,13 +118,22 @@ ai:
   humanizer:
     enabled: true
 
+  # 主动消息：总闸 + 频率 + 静默时间段（静默时段仅约束主动消息）
+  proactive:
+    # off(不唤醒 / 不产生机会 / 不发送) | low | medium | high
+    # 随机唤醒（不形成固定节拍）：低每 2–5 小时、中每 30–90 分钟、高每 10–30 分钟一次；
+    # 体感 低≈1–2 条/天、中≈2–4 条/天、高≈4–8 条/天；「高」档 token 约 5 倍。
+    frequency: medium
+    # 静默时间段（本地小时，0–23 整数）：该时段不唤醒 / 不产生机会 / 不发送。
+    # 跨夜语义 start > end（默认 23 开始、9 结束）；start == end = 不静默；白天不设窗口。
+    quietStartHour: 23
+    quietEndHour: 9
+
   silentAccess:
-    enabled: true
-    staySeconds: 60
-    settleMs: 2000
-    # 冷却时长统一毫秒。原 cooldownSeconds 写 5000 却被当秒用，实际冷却 83 分钟。
-    cooldownMs: 5000
-    samePageCooldownMs: 7800
+    # 静默了解总闸 + 频率：off(不自动跑，读取靠手动) | low | medium | high
+    # （原 enabled 与四个数值字段 staySeconds/settleMs/cooldownMs/samePageCooldownMs 已删：
+    #   四个数值属主动消息节奏，收进 proactive/protocol.json 的 tiers。）
+    frequency: medium
 
   safety:
     mode: tell_me
@@ -142,9 +150,24 @@ tools:
 
   mcp:
     # 无总闸：按每服务器 enabled 控制，全部关闭即不使用 MCP。
-    # 自定义服务器列表。transport: stdio 用 command/args/env（npx -y <包> 形态由宿主托管安装后直启，失败回退 npx）；
-    # transport: http 用 url/headers（Streamable HTTP，headers 值支持 ${ENV_VAR} 从本条目 env 展开）。
-    servers: []
+    # 服务器列表。transport: stdio 用 command/args/env（npx -y <包> 形态由宿主托管安装后直启，失败回退 npx）；
+    # transport: http 用 url/headers（Streamable HTTP，headers 值支持 ${ENV_VAR}：先查本条目 env，
+    # 未命中再查应用自有凭据存储 —— 凭据值不写在本文件里）。
+    servers:
+      # GitHub 官方远程 MCP：出厂自带、默认关闭（enabled: false = 开箱不连接）。
+      # 端点对所有 GitHub 用户免费（无需 Copilot 席位；域名带 copilot 是历史命名）；
+      # 纯在线依赖：无网络不可用。
+      # X-MCP-Readonly: true = 只暴露只读工具；X-MCP-Toolsets 限定工具面（省 token）。
+      # GITHUB_TOKEN 不写在文件里：在设置 → 工具 → MCP 的「GitHub 令牌」行动作填入
+      # fine-grained、只读权限的 PAT；值存应用自有数据库（不回显、不进日志）。
+      - name: github
+        transport: http
+        url: https://api.githubcopilot.com/mcp/
+        headers:
+          X-MCP-Readonly: "true"
+          X-MCP-Toolsets: "context,repos,issues,pull_requests"
+          Authorization: "Bearer ${GITHUB_TOKEN}"
+        enabled: false
 
 # ══════════════════════════════════════════
 # 4. 外观 — Profile 系统

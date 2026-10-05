@@ -125,9 +125,11 @@ fn protocol_commands_match_published_schema() {
     assert!(MEMORY_COMMANDS.contains(&"memory_job_list"));
     assert!(MEMORY_COMMANDS.contains(&"memory_restore_preview"));
     assert!(MEMORY_COMMANDS.contains(&"memory_source_evidence"));
+    // 前置查询：dreaming 开作业前用它决定「水位之后无来源就跳过」。
+    assert!(MEMORY_COMMANDS.contains(&"memory_pending_source_count"));
     assert_eq!(
         MEMORY_COMMANDS.len(),
-        26,
+        27,
         "命令数量变了就要同步 protocol.json 与 ipc.ts"
     );
     assert_eq!(MEMORY_SCHEMA_VERSION, SCHEMA_VERSION);
@@ -756,6 +758,76 @@ fn dreaming_candidates_commit_only_at_job_boundary() {
 }
 
 #[test]
+fn pending_source_count_follows_watermark_and_tombstones() {
+    // dreaming 开作业前的前置查询：判定与 job_sources 同源（水位以 session_id + seq 为准）。
+    let (_fixture, store) = Fixture::new();
+    let mut first = source("src-1", "entry-1", "hash-1");
+    first["seq"] = json!(1);
+    let mut second = source("src-2", "entry-2", "hash-2");
+    second["seq"] = json!(2);
+    store
+        .register_sources(&[first, second])
+        .expect("登记两条来源");
+    assert_eq!(
+        store.pending_source_count().unwrap(),
+        2,
+        "新库的两条来源都应待处理"
+    );
+
+    // 作业推进到第一条：对应会话水位随 checkpoint 前移，只剩第二条。
+    let job = store.job_start("review", "host").unwrap();
+    let job_id = job["id"].as_str().unwrap().to_string();
+    store
+        .job_checkpoint(&job_id, "src-1", "host", 60_000)
+        .expect("推进水位");
+    assert_eq!(
+        store.pending_source_count().unwrap(),
+        1,
+        "水位之后仍应只剩未处理的一条"
+    );
+
+    // 墓碑仍然生效：同一来源事件被遗忘后不得再计入待处理。这里让另一条条目继续
+    // 引用该来源（来源行因此不被清理），命中的只能是墓碑过滤这一支。
+    let revision = store.status().unwrap().revision;
+    add(
+        &store,
+        "op-pending-a",
+        revision,
+        &draft("用户周末去爬山", vec!["src-2"]),
+    );
+    let revision = store.status().unwrap().revision;
+    add(
+        &store,
+        "op-pending-b",
+        revision,
+        &draft("用户想买登山鞋", vec!["src-2"]),
+    );
+    let forgotten = store
+        .list(Some("user"), None, 10)
+        .unwrap()
+        .into_iter()
+        .find(|item| item["draft"]["content"] == json!("用户周末去爬山"))
+        .and_then(|item| item["id"].as_str().map(str::to_string))
+        .expect("第二条条目");
+    let revision = store.status().unwrap().revision;
+    store
+        .apply_change(
+            "op-forget-pending",
+            revision,
+            "forget",
+            Some(&forgotten),
+            None,
+            None,
+        )
+        .expect("遗忘条目");
+    assert_eq!(
+        store.pending_source_count().unwrap(),
+        0,
+        "被遗忘的来源仍被计入待处理（墓碑过滤失效）"
+    );
+}
+
+#[test]
 fn natural_chinese_question_retrieves_address_fact_by_concept_bigrams() {
     let (_fixture, store) = Fixture::new();
     store
@@ -849,4 +921,65 @@ fn untrusted_sources_are_never_registered() {
         Some(&draft("用户有两只猫", vec!["src-ghost"])),
     );
     assert!(orphan.is_err(), "未登记来源的记忆被写入");
+}
+
+// ── MCP 凭据（mcp_credentials 表）──
+
+#[test]
+fn mcp_credential_roundtrip_and_status_never_exposes_values() {
+    let (_fixture, store) = Fixture::new();
+    assert_eq!(store.credential_status("github").unwrap(), Vec::<String>::new());
+    assert_eq!(store.credential_get("github", "GITHUB_TOKEN").unwrap(), None);
+
+    store
+        .credential_set("github", "GITHUB_TOKEN", "probe-token-1")
+        .unwrap();
+    assert_eq!(
+        store.credential_get("github", "GITHUB_TOKEN").unwrap().as_deref(),
+        Some("probe-token-1")
+    );
+    // 名单只报变量名、不带值：设置面状态显示的唯一依据。
+    let status = store.credential_status("github").unwrap();
+    assert_eq!(status, vec!["GITHUB_TOKEN".to_string()]);
+    assert!(
+        !status.iter().any(|item| item.contains("probe-token-1")),
+        "status 回执里出现了值"
+    );
+    // 别的服务器不受影响（键是 server + var）。
+    assert_eq!(store.credential_get("other", "GITHUB_TOKEN").unwrap(), None);
+    assert_eq!(store.credential_status("other").unwrap(), Vec::<String>::new());
+
+    // 同键覆盖：旧值不再可读，名单不重复。
+    store
+        .credential_set("github", "GITHUB_TOKEN", "probe-token-2")
+        .unwrap();
+    assert_eq!(
+        store.credential_get("github", "GITHUB_TOKEN").unwrap().as_deref(),
+        Some("probe-token-2")
+    );
+    assert_eq!(store.credential_status("github").unwrap(), vec!["GITHUB_TOKEN".to_string()]);
+
+    // 删除如实报告删没删到；删除后 get 回落 None（调用方按变量缺失失败）。
+    assert!(store.credential_delete("github", "GITHUB_TOKEN").unwrap());
+    assert!(!store.credential_delete("github", "GITHUB_TOKEN").unwrap());
+    assert_eq!(store.credential_get("github", "GITHUB_TOKEN").unwrap(), None);
+}
+
+#[test]
+fn mcp_credential_rejects_blank_axes() {
+    let (_fixture, store) = Fixture::new();
+    for (server, var, value) in [
+        ("", "GITHUB_TOKEN", "probe-token"),
+        ("github", "", "probe-token"),
+        ("github", "GITHUB_TOKEN", ""),
+        ("github", "GITHUB_TOKEN", "   "),
+    ] {
+        let error = store.credential_set(server, var, value).unwrap_err();
+        assert_eq!(
+            error.code(),
+            "CONFIG",
+            "空坐标/空值没有被拒绝: {server:?}/{var:?}/{value:?}"
+        );
+    }
+    assert_eq!(store.credential_status("github").unwrap(), Vec::<String>::new());
 }

@@ -75,12 +75,14 @@ impl MonitorState {
 
 /// 一次性运行活动快照。**字段集固定**：get_runtime_activity 的
 /// IPC 结果形状、E2E `expectNativeObservationProtocol` 断言都按这些名字与语义读。
+/// `screen_state` 取 `observed`（前台窗口可截）/`locked`（锁屏，截图无意义）/
+/// `unavailable`（真不可知）；`idle_for_ms` 是与它正交的第二维度（锁屏也带 idle）。
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RuntimeActivity {
     pub is_pet_visible: bool,
     pub is_pet_foreground: bool,
-    pub observation_state: &'static str,
+    pub screen_state: &'static str,
     pub idle_for_ms: Option<u64>,
     pub observed_at: u64,
 }
@@ -99,7 +101,7 @@ pub fn runtime_activity(window: &dyn WindowPort) -> RuntimeActivity {
     RuntimeActivity {
         is_pet_visible,
         is_pet_foreground,
-        observation_state: sampled.observation_state,
+        screen_state: sampled.screen_state,
         idle_for_ms: sampled.idle_for_ms,
         observed_at: capture::unix_now_ms(),
     }

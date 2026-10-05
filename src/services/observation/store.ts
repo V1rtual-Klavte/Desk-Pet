@@ -1,6 +1,6 @@
 import { getHostBridge } from "@/services/host"
 import { runtimePath } from "@/services/paths"
-import { silentAccessConfig } from "@/services/config"
+import { silentAccessFrequency } from "@/services/proactive/tiers"
 import { createLogger } from "@/services/logger"
 import { errorCode, formatError } from "@/services/error"
 import { BEHAVIOR_DIR, UNDERSTANDING_FILE } from "@/services/behavior"
@@ -167,7 +167,7 @@ export async function appendTopicEvidence(records: TopicEvidence[]): Promise<voi
 }
 
 export function getUnderstandingSnapshot(now = Date.now()): UnderstandingSnapshot {
-  if (!silentAccessConfig.enabled) return { revision, generatedAt: now, quality: "unavailable", observations: [] }
+  if (silentAccessFrequency() === "off") return { revision, generatedAt: now, quality: "unavailable", observations: [] }
   const observations = data.observations.filter(row => row.expiresAt > now).slice(-MAX_OBSERVATIONS)
   return {
     revision,
@@ -183,7 +183,7 @@ export async function getUnderstandingSnapshotAsync(now = Date.now()): Promise<U
 }
 
 export function getTopicWeights(cardId?: string, now = Date.now()): TopicWeight[] {
-  if (!silentAccessConfig.enabled) return []
+  if (silentAccessFrequency() === "off") return []
   const active = data.topics.filter(row => row.observedAt + TOPIC_EVIDENCE_TTL_MS > now
     && (!cardId || !row.cardId || row.cardId === cardId))
   const totals = new Map<string, number>()

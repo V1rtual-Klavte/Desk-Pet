@@ -53,7 +53,7 @@ export const 原生观察边界: SceneDef = {
     checks: [{
       type: "expectNativeObservationProtocol",
       run: async () => {
-        const enabledBefore = silentAccessConfig.enabled
+        const enabledBefore = silentAccessConfig.frequency !== "off"
         const events: Observation[] = []
         const unlisten = getHostBridge().subscribe("window-observed", (payload) => { events.push(payload) })
         try {
@@ -63,7 +63,7 @@ export const 原生观察边界: SceneDef = {
           // ② 独立运行活动快照：字段形状与隐私边界按协议核对（真实采样，不依赖事件源）。
           const activity = await getHostBridge().request("get_runtime_activity", {})
           if (typeof activity.isPetVisible !== "boolean" || typeof activity.isPetForeground !== "boolean") throw new Error("运行活动缺少桌宠可见/前台状态")
-          if (!["observed", "locked", "unavailable"].includes(activity.observationState)) throw new Error(`运行活动状态非法: ${activity.observationState}`)
+          if (!["observed", "locked", "unavailable"].includes(activity.screenState)) throw new Error(`运行活动状态非法: ${activity.screenState}`)
           if (!Number.isSafeInteger(activity.observedAt) || !(activity.idleForMs === null || Number.isFinite(activity.idleForMs))) throw new Error("运行活动时间或 idle 值非法")
           if ("title" in activity || "app" in activity || "appId" in activity) throw new Error("get_runtime_activity 不得携带窗口身份信息")
 

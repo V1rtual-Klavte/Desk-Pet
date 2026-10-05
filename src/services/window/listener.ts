@@ -6,7 +6,7 @@
 // - 订阅入口在 `monitor.ts` 的 `initWindowObservation()`（领域引导调用一次）：
 //   事件来自桥 `window-observed`（HostEventMap (a) 类，Rust monitor 双投）。
 
-import { silentAccessConfig } from "@/services/config"
+import { silentAccessFrequency } from "@/services/proactive/tiers"
 import { observeBehavior } from "@/services/behavior"
 import { createLogger } from "@/services/logger"
 import type { WindowObservation } from "./types"
@@ -19,7 +19,7 @@ let latestSequence = 0
 const subscribers = new Set<(observation: WindowObservation) => void>()
 
 export function getLatestWindowObservation(): WindowObservation | null {
-  return silentAccessConfig.enabled ? latestObservation : null
+  return silentAccessFrequency() !== "off" ? latestObservation : null
 }
 
 export function clearLatestWindowObservation(): void {
@@ -42,7 +42,7 @@ export function acceptWindowObservation(value: unknown): boolean {
     return false
   }
   const observation = value
-  if (!silentAccessConfig.enabled && observation.observationState !== "disabled") return false
+  if (silentAccessFrequency() === "off" && observation.observationState !== "disabled") return false
   if (observation.monitorGeneration < latestGeneration
     || observation.monitorGeneration === latestGeneration && observation.sequence <= latestSequence) {
     log.debug("丢弃重复或乱序 observation", { generation: observation.monitorGeneration, sequence: observation.sequence })

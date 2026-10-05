@@ -38,6 +38,16 @@
 // 保留窗口不变量经核对仍成立（keepRecent 仍是该上限与 normalInputTarget × 0.4 取小，故
 // ≤ normalInputTarget < hardInputLimit；该点的 L3 用例按 contextBudget() 现算期望、随新公式
 // 走）；其余点不在该改动面内。
+// 2026-10-05 dreaming 前置查询批次（W3-1）：sourceFiles 变化 —— store.rs（`job_sources` 与
+// 新增 `pending_source_count` 共用同一段水位判定 SQL，不另建第二套水位逻辑）、commands.rs 与
+// dispatch.rs（新增只读命令 `memory_pending_source_count`）、ipc.ts 与 dreaming.ts（开作业前
+// 先查水位之后有无待处理来源：没有就不创建 job、不动预算/租约；手动入口同走这条前置查询，
+// 恢复既有作业不受影响）。新增覆盖点 mm-43（L3 `整理前置查询.test.ts` 的 4 个 caseId）；
+// 其余 mm-* 实现点仍在、语义未变。sourceHash 本轮不重算 —— 契约刷新统一在收口波走
+// analyze → generate（本轮工作单禁止跑契约 generate）。
+// 2026-10-05 频率档位收口波（analyze→generate）：新增 mm-44（记忆整理的档位门禁与数值消费，
+// L3 记忆整理档位门禁.test.ts 的 4 个 caseId——W2-M1 登记转正）；mm-43 的 4 个 caseId 登记经
+// 对账通过；其余 mm-* 实现点按当前源码复核仍在、语义未变。sourceHash 按当前源码复算。
 import type { ModuleContract } from "../host/types"
 
 export const memoryContract: ModuleContract = {
@@ -80,7 +90,7 @@ export const memoryContract: ModuleContract = {
     "src/services/context/tool-output.ts",
     "src/services/debug.ts",
   ],
-  sourceHash: "24b2461f454bbac9bd09461ff37f5a490d20be00527831f92d81086719791204",
+  sourceHash: "009ca58e73860262b222c6a13466f2ff18dc12463f06f55d12d8456d4524bf43",
   coverage: [
     { id: "mm-01", feature: "记忆来源准入", description: "只有 origin=user 且 taint=trusted_user 且 eligibleForMemory=true 的已提交条目能成为候选：助手台词、工具结果、压缩摘要、主动搭话、缺来源标记与 custom 控制条目一律出局；投递时刻冻结的 cardId 随来源落盘", why: "「谁说的」是记忆的唯一准入判据：把这些来源放进去，模型的一次措辞就会被当成用户长期事实", layer: "integration", depth: "deep", scenarios: ["memory-source-admission"] },
     { id: "mm-02", feature: "重排结果校验", description: "重排只接受候选白名单内的 id：未知 id、重复 id、非字符串、坏 JSON、散文与对象外形错误一律判无效并回退本地顺序，对象形态取 ids 字段；空数组是合法答案（这次不投影动态记忆），合法非空子集保序通过、不补回未选项", why: "模型只能决定「用哪几条」，不能决定「还有哪些」——白名单外的 id 会让不存在的记忆进入请求", layer: "unit", depth: "deep", scenarios: ["memory-rerank-fallback"] },
@@ -119,6 +129,8 @@ export const memoryContract: ModuleContract = {
     { id: "mm-40", feature: "保留窗口随窗口长大", description: "`keepRecentTokens` 的上限**不与压缩余量共用 `MAX_HEADROOM`**：先 `max(20_000, min(80_000, ⌊窗口 × 1/4⌋))` 得到本次上限，再与既有的 `⌊normalInputTarget × 40%⌋` 取小。小窗口仍被 20k 兜住（与拆封顶之前的旧口径逐字相同，不回退），大窗口才松开——128k 窗口 20_000→32_768、200k→50_000、1M 在 80_000 封顶；比例项不变保证保留窗口永远吃不掉输入目标，压缩之后请求必然缩小；曲线随窗口单调不减", why: "两个量性质不同：压缩余量是**压缩调用自身的操作开销**（固定封顶是对的），保留窗口是**给用户的近期上下文**（该随空间涨）。共用封顶会让窗口越大越早、越狠地压掉历史——200k 与 1M 窗口下占窗口的比例越来越小", layer: "unit", depth: "shallow", scenarios: ["memory-keep-recent-scaling"] },
     { id: "mm-41", feature: "策略性拒绝的留痕", description: "策略性 decline（`empty_material` / `retained_tool` / `gate_fits`）在 manual / overflow 触发时落 `deskpet.compaction_declined` 条目，带结构化 `decline`（kind、trigger、sessionId、关键数字如 messagesToSummarize / retainedMessages / tokensBefore / keepRecentTokens），并在统一日志里留一条可读原因；`threshold` 只在日志留痕、不落条目（它是每个检查点都会重试的内部优化，落盘会逐回合累积噪音）。用户可见文案不变：`declined` 仍映射 Card 的 `compactDeclined`，**不并进 `failed`**（条目 `error` 字段必须为空），也不并进 `nothing`", why: "拒绝不留痕时，用户与开发都无法回答「为什么没压」——实测一次 44 条会话的手动压缩被判 declined，会话与日志同时零痕迹，只能靠回放 journal 复算才查出是「素材全在保留窗口内」（6,686 token < 20,000）", layer: "integration", depth: "shallow", scenarios: ["memory-compaction-decline-audit"] },
     { id: "mm-42", feature: "压缩失败诊断的可判定性", description: "`describeCompactionFailure` 把摘要素材规划的两条 fatal（`over_cap` 片数超上限、`oversized_unit` 单元超硬限）描述成**可判定的错误码 + 全部数字**（需要片数/上限、单元成本/上限），普通错误与预算错误**不得冒充** overflow 形态", why: "「压不动」和「没得压」是两条完全不同的处置路径：前者要调上限或改分段，后者什么都不用做。描述层含糊会让用户和诊断都分不清该走哪条", layer: "unit", depth: "shallow", scenarios: ["memory-compaction-overflow-diagnostic"] },
+    { id: "mm-43", feature: "记忆整理的前置查询（无新来源不开作业）", description: "dreaming 在创建 Review 作业前先查「水位之后还有没有待处理来源」（`memory_pending_source_count`，与 `memory_job_sources` 共用同一段水位判定 SQL）：没有 → 不创建 job、不动预算/租约，以 empty 如实回报（手动入口走同一条前置查询——Review 的输入只有这些来源，空跑与跳过对用户是同一种结果，文案如实说明）；有 → 照常创建 Review 作业；恢复既有作业（resumeJobId）不经前置查询，job 自带游标、水位为空也要能继续", why: "空闲命中即开作业会在没有任何新来源时白耗一次 job 创建与租约；而「水位之后有无来源」的判定必须与批内取数同源——另建一套水位口径会让两处静默漂移，跳过判断就会漏掉或虚报来源", layer: "integration", depth: "shallow", scenarios: ["dreaming-pending-gate-skip", "dreaming-pending-gate-proceed", "dreaming-pending-gate-manual", "dreaming-pending-gate-resume"] },
+    { id: "mm-44", feature: "记忆整理的档位门禁与数值消费", description: "空闲调度器按 ai.memory.dreaming.tier 档位表取值：off = 空闲调度器早退（不查预算、不自动开整理作业；手动入口 runDreamingSweep 不受档位影响，仍受同一本持久预算账约束）；三档决定空闲阈值（3600 / 1800 / 600 秒——差 1 秒不开、达标才开）、最小间隔（高档 30 分钟档位值：1801 秒后可再跑，旧 60 分钟常量会挡住）与每日 token 预算（低档 24000：已用 30000 时不开，旧 72000 常量会开）；数值唯一来源是 proactive tiers 档位表，不是旧 flat 常量", why: "档位若不落到空闲/间隔/预算三个消费点，配置选择形同虚设（off 仍自动跑、低档按旧预算放行、高档被旧间隔挡住）；旧常量残留会让用户选的档位无声失效", layer: "integration", depth: "shallow", scenarios: ["dreaming-tier-off", "dreaming-tier-medium-idle", "dreaming-tier-low-values", "dreaming-tier-high-values"] },
   ],
   // W0–W7 把本契约的场景迁出 L4 后按 L4 侧当前值重标定：门槛=当前 rules 声明值，
   // 只缩不放（数字由 checker 报错提供）；跨层完整性由 checkLayerCoverage 负责。

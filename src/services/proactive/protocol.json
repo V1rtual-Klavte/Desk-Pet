@@ -4,15 +4,6 @@
   "version": 1,
   "constants": {
     "tickMs": 300000,
-    "quietStartHour": 23,
-    "quietEndHour": 9,
-    "dailySuccess": 6,
-    "dailyExpressionAttempts": 12,
-    "dailyPlanningAttempts": 8,
-    "dailyAuxiliaryAttempts": 4,
-    "minSuccessIntervalMs": 3600000,
-    "successIntervalSpreadMs": 7200000,
-    "dailyTokens": 24000,
     "maxTasks": 100,
     "maxRecurringTasks": 10,
     "maxTasksPerPlan": 2,
@@ -21,7 +12,93 @@
     "retryDelayMs": 1800000,
     "attemptLeaseMs": 180000,
     "evaluationRetentionDays": 30,
-    "settledRetentionDays": 90
+    "settledRetentionDays": 90,
+    "tiers": {
+      "proactive": {
+        "low": {
+          "wakeMinMs": 7200000,
+          "wakeMaxMs": 18000000,
+          "dailySuccess": 2,
+          "dailyExpressionAttempts": 4,
+          "dailyPlanningAttempts": 3,
+          "dailyAuxiliaryAttempts": 2,
+          "minSuccessIntervalMs": 10800000,
+          "successIntervalSpreadMs": 7200000,
+          "dailyTokens": 8000,
+          "staySeconds": 120,
+          "settleMs": 4000,
+          "cooldownMs": 15000,
+          "samePageCooldownMs": 20000
+        },
+        "medium": {
+          "wakeMinMs": 1800000,
+          "wakeMaxMs": 5400000,
+          "dailySuccess": 6,
+          "dailyExpressionAttempts": 12,
+          "dailyPlanningAttempts": 8,
+          "dailyAuxiliaryAttempts": 4,
+          "minSuccessIntervalMs": 3600000,
+          "successIntervalSpreadMs": 7200000,
+          "dailyTokens": 24000,
+          "staySeconds": 60,
+          "settleMs": 2000,
+          "cooldownMs": 5000,
+          "samePageCooldownMs": 7800
+        },
+        "high": {
+          "wakeMinMs": 600000,
+          "wakeMaxMs": 1800000,
+          "dailySuccess": 10,
+          "dailyExpressionAttempts": 20,
+          "dailyPlanningAttempts": 14,
+          "dailyAuxiliaryAttempts": 8,
+          "minSuccessIntervalMs": 1800000,
+          "successIntervalSpreadMs": 3600000,
+          "dailyTokens": 40000,
+          "staySeconds": 30,
+          "settleMs": 1000,
+          "cooldownMs": 3000,
+          "samePageCooldownMs": 5000
+        }
+      },
+      "silent": {
+        "low": {
+          "minBatchGapMs": 7200000,
+          "idleRequiredMs": 7200000,
+          "dailyBatches": 4,
+          "maxReadsPerHour": 4
+        },
+        "medium": {
+          "minBatchGapMs": 1800000,
+          "idleRequiredMs": 3600000,
+          "dailyBatches": 8,
+          "maxReadsPerHour": 8
+        },
+        "high": {
+          "minBatchGapMs": 900000,
+          "idleRequiredMs": 1800000,
+          "dailyBatches": 12,
+          "maxReadsPerHour": 12
+        }
+      },
+      "dreaming": {
+        "low": {
+          "idleSeconds": 3600,
+          "minIntervalMinutes": 240,
+          "dailyTokens": 24000
+        },
+        "medium": {
+          "idleSeconds": 1800,
+          "minIntervalMinutes": 60,
+          "dailyTokens": 72000
+        },
+        "high": {
+          "idleSeconds": 600,
+          "minIntervalMinutes": 30,
+          "dailyTokens": 120000
+        }
+      }
+    }
   },
   "commands": {
     "proactive_scan": { "request": { "$ref": "memory#/definitions/ProactiveScanRequest" }, "response": { "$ref": "memory#/definitions/ProactiveScanResponse" } },

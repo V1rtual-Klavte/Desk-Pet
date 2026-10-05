@@ -2,8 +2,9 @@
 // 本地工具：截图 (SAFE)
 //
 // 采集走 Rust 的 capture_screenshot（前台窗口、长边 ≤1280），落盘走 save_screenshot
-// （数据根 screenshots/，原子写 + 只保留最新 200 个）。隐私总闸是 ai.silentAccess.enabled：
-// 关闭时返回中性说明而不是报错（与 window_info 同一口径），Rust 侧还复检一次同一开关。
+// （数据根 screenshots/，原子写 + 只保留最新 200 个）。隐私总闸是静默了解档位
+// （ai.silentAccess.frequency = off）：关闭时返回中性说明而不是报错（与 window_info
+// 同一口径），Rust 侧还复检一次同一个总闸（set_monitor_enabled 下发的观察许可）。
 // show_to_user=true 时把落盘路径放进 details，由运行内核并入本回合提交的助手条目。
 // ==========================================
 
@@ -12,7 +13,7 @@ import { TOOL_POLICY_VERSION } from "../types"
 import { defineTool } from "../policy"
 import { register } from "../registry"
 import { getHostBridge } from "@/services/host"
-import { silentAccessConfig } from "@/services/config"
+import { silentAccessFrequency } from "@/services/proactive/tiers"
 import { createLogger } from "@/services/logger"
 import { errorCode, formatError } from "@/services/error"
 import { SCREENSHOT_TOOL_NAME } from "./screenshot-details"
@@ -33,7 +34,7 @@ export interface SavedScreenshotResult {
 }
 
 /** 隐私总闸关闭时的中性说明：不是错误，也不谎称截了图。 */
-const GATE_CLOSED_TEXT = "静默访问未开启（ai.silentAccess.enabled = false），不能截取屏幕画面。"
+const GATE_CLOSED_TEXT = "静默访问未开启（ai.silentAccess.frequency = off），不能截取屏幕画面。"
 
 const screenshotTool: ToolDef = defineTool({
   id: "local-screenshot",
@@ -58,7 +59,7 @@ const screenshotTool: ToolDef = defineTool({
     context: { resultProjection: "reference", historyCompaction: "summarize" },
   },
 }, async (params) => {
-  if (!silentAccessConfig.enabled) {
+  if (silentAccessFrequency() === "off") {
     return { success: true, content: GATE_CLOSED_TEXT }
   }
   const showToUser = params.show_to_user === true

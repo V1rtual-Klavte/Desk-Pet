@@ -1,17 +1,39 @@
 use std::time::{SystemTime, UNIX_EPOCH};
 
+#[cfg(any(target_os = "macos", test))]
+use std::sync::Once;
+
+// 留痕宏只在锁屏探测分类路径使用；与分类函数同一 cfg（Windows 非测试构建不带它们）。
+#[cfg(any(target_os = "macos", test))]
+use crate::{rust_info, rust_warn};
+
+/// 一次前台窗口采样。`screen_state` 与 `idle_for_ms` 是两个正交维度：
+/// `screen_state` 表达屏幕能力（`observed` 前台窗口可截 / `locked` 锁屏，截图无意义 /
+/// `unavailable` 真不可知），空闲时长单独承载（锁屏也带 idle）。
+///
+/// 监控线程的边界样本（`disabled`/`suspended`）会经同一字段直通到事件载荷；
+/// 事件载荷 `observation_state` 保持 5 值生命周期维度、字段名不改（monitor/thread.rs）。
 pub struct PlatformSample {
     pub app_id: Option<String>,
     pub app: Option<String>,
     pub title: Option<String>,
     pub idle_for_ms: Option<u64>,
-    pub observation_state: &'static str,
+    pub screen_state: &'static str,
 }
 
+/// 系统活动采样：屏幕维度 + 空闲时长。锁屏（`locked`）也携带空闲时长——
+/// 「用户离开」与「离开多久」是两件事，消费方按需取用。
 pub struct SystemActivitySample {
     pub idle_for_ms: Option<u64>,
-    pub observation_state: &'static str,
-    pub locked: bool,
+    pub screen_state: &'static str,
+}
+
+/// 屏幕维度不可确认的采样：不带空闲（不知道就不编造；未知不等于 0）。
+fn unavailable_activity() -> SystemActivitySample {
+    SystemActivitySample {
+        idle_for_ms: None,
+        screen_state: "unavailable",
+    }
 }
 
 pub fn unix_now_ms() -> u64 {
@@ -23,21 +45,19 @@ pub fn unix_now_ms() -> u64 {
 
 pub fn sample_window() -> PlatformSample {
     let activity = sample_system_activity();
-    if activity.observation_state != "observed" || activity.locked {
+    if activity.screen_state != "observed" {
+        // 锁屏/不可知：不采前台身份与标题（锁屏时前台窗口无意义），
+        // 屏幕维度与空闲时长原样透出 —— 锁屏也带 idle 是下游「离开多久」的输入。
         return PlatformSample {
             app_id: None,
             app: None,
             title: None,
             idle_for_ms: activity.idle_for_ms,
-            observation_state: if activity.locked {
-                "locked"
-            } else {
-                activity.observation_state
-            },
+            screen_state: activity.screen_state,
         };
     }
     let (app_id, app, title) = platform_window();
-    let observation_state = if app_id.is_some() {
+    let screen_state = if app_id.is_some() {
         "observed"
     } else {
         "unavailable"
@@ -47,7 +67,88 @@ pub fn sample_window() -> PlatformSample {
         app,
         title,
         idle_for_ms: activity.idle_for_ms,
-        observation_state,
+        screen_state,
+    }
+}
+
+// ── 锁屏探测：分类纯函数与一次性留痕 ──
+
+/// `CGSSessionScreenIsLocked` 键的原始探测结果。
+/// CFDictionary 存不了 null（存 null 等于删键），故「键缺失」与「显式 false」可区分。
+#[cfg(any(target_os = "macos", test))]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum LockProbe {
+    Missing,
+    ExplicitFalse,
+    ExplicitTrue,
+    Unexpected,
+}
+
+/// 由探测结果得出的锁屏三态。
+#[cfg(any(target_os = "macos", test))]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum LockState {
+    Unlocked,
+    Locked,
+    Unknown,
+}
+
+/// 一次性留痕（进程级全局；`Once` 保证同一原因只打一条，不随每次采样重复）。
+#[cfg(any(target_os = "macos", test))]
+static MISSING_LOGGED: Once = Once::new();
+#[cfg(any(target_os = "macos", test))]
+static UNEXPECTED_LOGGED: Once = Once::new();
+
+/// 探测结果分类：**键缺失 = 未锁定**（继续查 idle），显式 false 同样未锁定，
+/// `kCFBooleanTrue` = 锁屏；非 null 且两者都不是 = 不可确认（一次性 `rust_warn!`）。
+///
+/// 理由与实测证据：`CGSSessionScreenIsLocked` 是只在锁屏时写入的键 —— macOS 未锁屏时
+/// `CGSessionCopyCurrentDictionary` **不写该键**。旧实现把「键缺失」判成不可确认，
+/// 导致本机日志 642 条 `unavailable` / 0 条 `observed`，依赖观察的两条链从未跑过。
+///
+/// **风险注明**：这是隐私相关的放宽 —— 未来系统若在锁屏时也不写此键，会误报
+/// `observed`；这是相对「键缺失即永久 unavailable、两条链从不运行」的取舍，已在文档写明。
+#[cfg(any(target_os = "macos", test))]
+fn lock_probe_state(probe: LockProbe) -> LockState {
+    match probe {
+        LockProbe::Missing => {
+            MISSING_LOGGED.call_once(|| {
+                rust_info!(
+                    "锁屏探测：CGSSessionScreenIsLocked 键缺失，按未锁定处理（未锁屏该键不写入）"
+                );
+            });
+            LockState::Unlocked
+        }
+        LockProbe::ExplicitFalse => LockState::Unlocked,
+        LockProbe::ExplicitTrue => LockState::Locked,
+        LockProbe::Unexpected => {
+            UNEXPECTED_LOGGED.call_once(|| {
+                rust_warn!("锁屏探测：CGSSessionScreenIsLocked 取值非常规，按不可确认处理")
+            });
+            LockState::Unknown
+        }
+    }
+}
+
+/// 由锁屏探测 + 空闲秒数组装系统活动采样：`{observed, locked}` 都要求有效空闲；
+/// 空闲缺失 / NaN / 负数（任何状态）或锁屏不可确认 → 整体 `unavailable` 且不带 idle
+/// （保持「未知不带值」的既有语义）。锁屏分支保留 idle 是与旧实现的刻意差异。
+#[cfg(any(target_os = "macos", test))]
+fn system_activity_from(probe: LockProbe, idle: Option<f64>) -> SystemActivitySample {
+    let state = lock_probe_state(probe);
+    let idle_for_ms = idle
+        .filter(|seconds| seconds.is_finite() && *seconds >= 0.0)
+        .map(|seconds| (seconds * 1_000.0).min(u64::MAX as f64) as u64);
+    match (state, idle_for_ms) {
+        (LockState::Unlocked, Some(ms)) => SystemActivitySample {
+            idle_for_ms: Some(ms),
+            screen_state: "observed",
+        },
+        (LockState::Locked, Some(ms)) => SystemActivitySample {
+            idle_for_ms: Some(ms),
+            screen_state: "locked",
+        },
+        _ => unavailable_activity(),
     }
 }
 
@@ -63,11 +164,7 @@ pub fn sample_system_activity() -> SystemActivitySample {
     unsafe {
         let desktop = OpenInputDesktop(0, 0 as BOOL, DESKTOP_READOBJECTS);
         if desktop == 0 {
-            return SystemActivitySample {
-                idle_for_ms: None,
-                observation_state: "unavailable",
-                locked: false,
-            };
+            return unavailable_activity();
         }
         let mut name = [0u16; 128];
         let mut required = 0u32;
@@ -80,11 +177,7 @@ pub fn sample_system_activity() -> SystemActivitySample {
         ) != 0;
         CloseDesktop(desktop);
         if !name_ok {
-            return SystemActivitySample {
-                idle_for_ms: None,
-                observation_state: "unavailable",
-                locked: false,
-            };
+            return unavailable_activity();
         }
         let desktop_name = String::from_utf16_lossy(
             &name[..name
@@ -92,31 +185,23 @@ pub fn sample_system_activity() -> SystemActivitySample {
                 .position(|item| *item == 0)
                 .unwrap_or(name.len())],
         );
-        if desktop_name.eq_ignore_ascii_case("winlogon") {
-            return SystemActivitySample {
-                idle_for_ms: None,
-                observation_state: "locked",
-                locked: true,
-            };
-        }
 
+        // 与 macOS 对称（行为变更，Windows 侧未在本机验证）：winlogon（锁屏）分支先查
+        // `GetLastInputInfo` 再定状态，`locked` 也带 idle；空闲无法查得时整体不可确认
+        // （对齐 macOS 的「idle 无效 → unavailable」口径）。此前 winlogon 直接返回 idle None。
         let mut input = LASTINPUTINFO {
             cbSize: std::mem::size_of::<LASTINPUTINFO>() as u32,
             dwTime: 0,
         };
         if GetLastInputInfo(&mut input) == 0 {
-            return SystemActivitySample {
-                idle_for_ms: None,
-                observation_state: "unavailable",
-                locked: false,
-            };
+            return unavailable_activity();
         }
         // Both values are 32-bit GetTickCount milliseconds; wrapping_sub handles its ~49-day wrap.
         let idle_for_ms = GetTickCount().wrapping_sub(input.dwTime) as u64;
+        let locked = desktop_name.eq_ignore_ascii_case("winlogon");
         SystemActivitySample {
             idle_for_ms: Some(idle_for_ms),
-            observation_state: "observed",
-            locked: false,
+            screen_state: if locked { "locked" } else { "observed" },
         }
     }
 }
@@ -137,6 +222,7 @@ pub fn sample_system_activity() -> SystemActivitySample {
     #[link(name = "CoreFoundation", kind = "framework")]
     extern "C" {
         static kCFBooleanTrue: CfTypeRef;
+        static kCFBooleanFalse: CfTypeRef;
         fn CFStringCreateWithCString(
             allocator: CfTypeRef,
             c_str: *const c_char,
@@ -149,77 +235,45 @@ pub fn sample_system_activity() -> SystemActivitySample {
     unsafe {
         let session = CGSessionCopyCurrentDictionary();
         if session.is_null() {
-            return SystemActivitySample {
-                idle_for_ms: None,
-                observation_state: "unavailable",
-                locked: false,
-            };
+            // 拿不到会话字典 = 屏幕维度真不可知（与「键缺失」不同：后者是未锁屏时的正常形态，
+            // 判定理由与风险见 lock_probe_state）。
+            return unavailable_activity();
         }
         let key = match CString::new("CGSSessionScreenIsLocked") {
             Ok(value) => value,
             Err(_) => {
                 CFRelease(session);
-                return SystemActivitySample {
-                    idle_for_ms: None,
-                    observation_state: "unavailable",
-                    locked: false,
-                };
+                return unavailable_activity();
             }
         };
-        // kCFStringEncodingUTF8 is 0x08000100. A missing lock property is treated as unavailable,
-        // never as an affirmative unlocked result.
+        // kCFStringEncodingUTF8 is 0x08000100.
         let cf_key = CFStringCreateWithCString(std::ptr::null(), key.as_ptr(), 0x0800_0100);
         if cf_key.is_null() {
             CFRelease(session);
-            return SystemActivitySample {
-                idle_for_ms: None,
-                observation_state: "unavailable",
-                locked: false,
-            };
+            return unavailable_activity();
         }
         let lock_value = CFDictionaryGetValue(session, cf_key);
-        let lock_known = !lock_value.is_null();
-        let locked = lock_known && lock_value == kCFBooleanTrue;
+        let probe = if lock_value.is_null() {
+            LockProbe::Missing
+        } else if lock_value == kCFBooleanTrue {
+            LockProbe::ExplicitTrue
+        } else if lock_value == kCFBooleanFalse {
+            LockProbe::ExplicitFalse
+        } else {
+            LockProbe::Unexpected
+        };
         CFRelease(cf_key);
         CFRelease(session);
-        if !lock_known {
-            return SystemActivitySample {
-                idle_for_ms: None,
-                observation_state: "unavailable",
-                locked: false,
-            };
-        }
-        if locked {
-            return SystemActivitySample {
-                idle_for_ms: None,
-                observation_state: "locked",
-                locked: true,
-            };
-        }
+        // 锁屏与未锁屏都查空闲：锁屏期间该 API 的语义（是否仍以最后一次输入计秒）
+        // **未实测验证**，按契约口径保留数值，由消费方决定用途。
         let seconds = CGEventSourceSecondsSinceLastEventType(1, u32::MAX);
-        if !seconds.is_finite() || seconds < 0.0 {
-            return SystemActivitySample {
-                idle_for_ms: None,
-                observation_state: "unavailable",
-                locked: false,
-            };
-        }
-        let idle_for_ms = (seconds * 1_000.0).min(u64::MAX as f64) as u64;
-        SystemActivitySample {
-            idle_for_ms: Some(idle_for_ms),
-            observation_state: "observed",
-            locked: false,
-        }
+        system_activity_from(probe, Some(seconds))
     }
 }
 
 #[cfg(not(any(windows, target_os = "macos")))]
 pub fn sample_system_activity() -> SystemActivitySample {
-    SystemActivitySample {
-        idle_for_ms: None,
-        observation_state: "unavailable",
-        locked: false,
-    }
+    unavailable_activity()
 }
 
 #[cfg(windows)]
@@ -421,6 +475,56 @@ mod owner_tests {
     fn frontmost_title_requires_matching_window_owner_pid() {
         assert_eq!(super::window_owner_matches(41, 41), true);
         assert_eq!(super::window_owner_matches(42, 41), false);
+    }
+}
+
+/// 锁屏探测分类与 idle 保留口径。**合成单一用例**覆盖进程级 `Once` 留痕路径
+/// （AGENTS §9：`cargo test --lib` 并行跑同一二进制的用例，拆开会互踩出偶发红）。
+#[cfg(test)]
+mod activity_tests {
+    use super::*;
+
+    #[test]
+    fn lock_probe_classifies_states_and_keeps_idle() {
+        // 键缺失 + 有效 idle → observed（本故障回归锚点：旧实现把键缺失判为 unavailable）。
+        assert_eq!(lock_probe_state(LockProbe::Missing), LockState::Unlocked);
+        let missing = system_activity_from(LockProbe::Missing, Some(1.5));
+        assert_eq!(missing.screen_state, "observed");
+        assert_eq!(missing.idle_for_ms, Some(1500));
+
+        // 显式 false → observed。
+        assert_eq!(
+            lock_probe_state(LockProbe::ExplicitFalse),
+            LockState::Unlocked
+        );
+        let explicit_false = system_activity_from(LockProbe::ExplicitFalse, Some(2.0));
+        assert_eq!(explicit_false.screen_state, "observed");
+        assert_eq!(explicit_false.idle_for_ms, Some(2000));
+
+        // true → locked 且 idle 保留（行为变更：不再提前返回 None）。
+        assert_eq!(lock_probe_state(LockProbe::ExplicitTrue), LockState::Locked);
+        let locked = system_activity_from(LockProbe::ExplicitTrue, Some(3.25));
+        assert_eq!(locked.screen_state, "locked");
+        assert_eq!(locked.idle_for_ms, Some(3250));
+
+        // 非常规取值 → unavailable；重复调用仍走一次性留痕路径，结果稳定不 panic。
+        assert_eq!(lock_probe_state(LockProbe::Unexpected), LockState::Unknown);
+        let unexpected = system_activity_from(LockProbe::Unexpected, Some(1.0));
+        assert_eq!(unexpected.screen_state, "unavailable");
+        assert_eq!(unexpected.idle_for_ms, None);
+        let unexpected_again = system_activity_from(LockProbe::Unexpected, Some(1.0));
+        assert_eq!(unexpected_again.screen_state, "unavailable");
+        let missing_again = system_activity_from(LockProbe::Missing, Some(1.0));
+        assert_eq!(missing_again.screen_state, "observed");
+
+        // idle 无效（NaN / 负数 / 缺失）→ 整体 unavailable 且不带 idle（observed/locked 同口径）。
+        for probe in [LockProbe::Missing, LockProbe::ExplicitTrue] {
+            for idle in [Some(f64::NAN), Some(-1.0), None] {
+                let sample = system_activity_from(probe, idle);
+                assert_eq!(sample.screen_state, "unavailable");
+                assert_eq!(sample.idle_for_ms, None);
+            }
+        }
     }
 }
 

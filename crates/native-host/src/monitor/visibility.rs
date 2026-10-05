@@ -9,7 +9,7 @@ use crate::rust_debug;
 /// 返回 `(is_pet_visible, is_pet_foreground)`。
 ///
 /// 主窗口不存在或状态读取失败 → 视为不可见/非前台（既有消费语义：读不到按
-/// `false`）；监控线程据此继续发布采样（锁定/不可用由 `observation_state` 表达，
+/// `false`）；监控线程据此继续发布采样（锁定/不可用由采样侧 `screen_state` 表达，
 /// 不因读窗口失败而中断观察流）。失败根因留痕在下方 debug 日志（统一入口
 /// `crate::logger`），不静默吞掉。
 pub fn pet_visibility(window: &dyn WindowPort) -> (bool, bool) {
@@ -50,7 +50,7 @@ mod tests {
             ..Default::default()
         };
         // 读不到按不可见/非前台（`unwrap_or(false)` 式消费语义）：观察流不中断，
-        // 锁定/不可用状态由 observationState 表达。
+        // 锁定/不可用状态由采样侧 screen_state 表达。
         assert_eq!(pet_visibility(&port), (false, false));
     }
 }

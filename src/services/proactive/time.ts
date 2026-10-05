@@ -1,5 +1,5 @@
 import type { TemporalAnchor } from "@/services/agent/memory"
-import { PROACTIVE_LIMITS } from "./protocol"
+import { proactiveConfig } from "@/services/config"
 import { DAY_MS } from "./config"
 
 const MINUTE_MS = 60_000
@@ -82,23 +82,59 @@ export function localDayWindow(day: string, timezone: string): { from: number; u
   return { from: localToInstant(day, "00:00", timezone), until: localToInstant(shiftLocalDate(day, 1), "00:00", timezone) }
 }
 
+/**
+ * 静默档的小时判定（与主动链同源配置 `ai.proactive.quietStartHour/quietEndHour` 配套的纯公式）：
+ * - 跨夜（start > end）：`h >= start || h < end`；
+ * - 同日（start < end）：`start <= h < end`；
+ * - `start == end` = 不静默（用户把两个值填成一样即关闭静默时段）。
+ * 变体池的 isNightTime 与主动链的 isQuietTime 都调用本函数，不各写一份。
+ */
+export function isQuietHour(hour: number, startHour: number, endHour: number): boolean {
+  if (startHour === endHour) return false
+  return startHour > endHour ? hour >= startHour || hour < endHour : hour >= startHour && hour < endHour
+}
+
+/** 静默开始前一小时（晚安窗口与 checkin 前置窗口共用）；由静默值派生，不硬编码 22 点。 */
+export function hourBeforeQuietStart(): number {
+  return (proactiveConfig.quietStartHour + 23) % 24
+}
+
 export function isQuietTime(now: number, timezone: string): boolean {
   const { hour } = zonedParts(now, timezone)
-  return hour >= PROACTIVE_LIMITS.quietStartHour || hour < PROACTIVE_LIMITS.quietEndHour
+  return isQuietHour(hour, proactiveConfig.quietStartHour, proactiveConfig.quietEndHour)
 }
 
-/** 22:00–23:00 is reserved for the single nightly opportunity; 23:00–09:00 is silent. */
+/**
+ * 静默开始前一小时是保留给单条晚安机会的晚安窗口；`start == end`（显式不静默）时
+ * 「静默前一小时」无定义，晚安窗口一并关闭（主会话口径 2026-10-05）。
+ */
 export function isNightlyWindow(now: number, timezone: string): boolean {
-  return zonedParts(now, timezone).hour === 22
+  if (proactiveConfig.quietStartHour === proactiveConfig.quietEndHour) return false
+  return zonedParts(now, timezone).hour === hourBeforeQuietStart()
 }
 
+/** 静默中算出下一个「非静默」时刻；同日的静默窗口在当日结束时刻恢复。 */
 export function nextSpeakingTime(now: number, timezone: string): number {
   if (!isQuietTime(now, timezone)) return now
+  const startHour = proactiveConfig.quietStartHour
+  const endHour = proactiveConfig.quietEndHour
   const p = zonedParts(now, timezone)
   const day = localDayKey(now, timezone)
-  return localToInstant(p.hour >= PROACTIVE_LIMITS.quietStartHour ? shiftLocalDate(day, 1) : day, `${pad(PROACTIVE_LIMITS.quietEndHour)}:00`, timezone)
+  // 只有跨夜静默的睡前段才顺延到次日；同日窗口与跨夜的凌晨段都在当日结束时刻恢复。
+  const nextDay = startHour > endHour && p.hour >= startHour
+  return localToInstant(nextDay ? shiftLocalDate(day, 1) : day, `${pad(endHour)}:00`, timezone)
 }
 
+/**
+ * 日期锚点的 checkin 两段窗口。before 段按静默时段三形态派生，三种形态都保证 from < until：
+ * - 跨夜（start > end）：前一日 `[静默结束, 静默开始前一小时)`——静默横跨午夜时，
+ *   从清晨静默结束到前夜静默开始之间的白天才是「前一日的分享窗」（如 23→9 得 09:00–22:00）；
+ * - 同日（start < end）：前一日 `[静默结束, 24:00)`——静默主体落在日内，
+ *   前一日接近锚日的可分享段只剩静默结束到当日结束；
+ * - start == end（显式不静默）：前一日整日 `[00:00, 24:00)`。
+ * 「前一日 24:00」不写成 "24:00"（localToInstant 只接受 00–23 时，会抛 invalid local time），
+ * 统一用锚日 0 点的 window.from 表达同一时刻。after 段与静默配置无关，恒为锚日 0 点起 48 小时。
+ */
 export function checkinWindows(anchor: TemporalAnchor): Array<{ phase: "before" | "after"; from: number; until: number; anchorKey: string }> {
   if (anchor.precision === "minute") {
     if (!Number.isFinite(anchor.instant)) throw new Error("invalid temporal anchor")
@@ -108,7 +144,15 @@ export function checkinWindows(anchor: TemporalAnchor): Array<{ phase: "before" 
   const window = localDayWindow(anchor.localDate, anchor.timezone)
   const previous = shiftLocalDate(anchor.localDate, -1)
   const anchorKey = `day:${anchor.localDate}:${anchor.timezone}`
-  return [{ phase: "before", from: localToInstant(previous, `${pad(PROACTIVE_LIMITS.quietEndHour)}:00`, anchor.timezone), until: localToInstant(previous, `${pad(PROACTIVE_LIMITS.quietStartHour - 1)}:00`, anchor.timezone), anchorKey },
+  const quietStart = proactiveConfig.quietStartHour
+  const quietEnd = proactiveConfig.quietEndHour
+  const before = quietStart > quietEnd
+    ? { from: localToInstant(previous, `${pad(quietEnd)}:00`, anchor.timezone),
+      until: localToInstant(previous, `${pad(hourBeforeQuietStart())}:00`, anchor.timezone) }
+    : quietStart < quietEnd
+      ? { from: localToInstant(previous, `${pad(quietEnd)}:00`, anchor.timezone), until: window.from }
+      : { from: localToInstant(previous, "00:00", anchor.timezone), until: window.from }
+  return [{ phase: "before", ...before, anchorKey },
     { phase: "after", from: window.until, until: window.until + 2 * DAY_MS, anchorKey }]
 }
 

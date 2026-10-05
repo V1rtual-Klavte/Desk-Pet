@@ -90,13 +90,13 @@ describe("静默了解与话题来源", () => {
     expect(block?.text, "有效了解摘要没有进入只读请求块").toContain("项目文档讨论模块边界")
     expect(block?.sourceId, "请求块没有携带派生来源身份").toContain("file-source-01")
 
-    const enabled = Object.getOwnPropertyDescriptor(silentAccessConfig, "enabled")
-    Object.defineProperty(silentAccessConfig, "enabled", { configurable: true, get: () => false })
+    const frequency = Object.getOwnPropertyDescriptor(silentAccessConfig, "frequency")
+    Object.defineProperty(silentAccessConfig, "frequency", { configurable: true, get: () => "off" })
     try {
       expect(getUnderstandingPromptBlock(), "静默访问关闭后仍暴露观察摘要").toBeUndefined()
       expect(getUnderstandingSnapshot().observations, "静默访问关闭后仍保留当前读投影").toEqual([])
     } finally {
-      if (enabled) Object.defineProperty(silentAccessConfig, "enabled", enabled)
+      if (frequency) Object.defineProperty(silentAccessConfig, "frequency", frequency)
     }
 
     const sourceBeforeClear = "clear-user-source"

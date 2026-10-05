@@ -153,6 +153,8 @@ function parseYamlValue(raw: string): unknown {
   if (t === "null" || t === "~" || t === "") return null
   // 方括号数组：元素与标量同规则解析（数字保持数字），空数组是 [] 而不是 [""]。
   // 一律字符串化会让 buildVarDef 的数值守卫丢掉 proactiveBands 这类数组声明。
+  // 已知边界（不扩 scope 支持）：① 不支持 YAML 块序列（`- 0` 换行写法，声明被忽略并告警）；
+  // ② 带引号且含逗号的字符串元素（如 ["a,b", "c"]）会被 split(",") 错误拆分。
   if (t.startsWith("[") && t.endsWith("]")) {
     const inner = t.slice(1, -1).trim()
     if (inner === "") return []

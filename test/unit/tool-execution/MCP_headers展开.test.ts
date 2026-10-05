@@ -10,7 +10,7 @@
 
 import { afterEach, describe, expect, it, vi } from "vitest"
 
-import { expandHeaders } from "@/services/tool/mcp/http-headers"
+import { expandHeaders, headerVariables } from "@/services/tool/mcp/http-headers"
 
 afterEach(() => {
   vi.unstubAllEnvs()
@@ -44,5 +44,23 @@ describe("expandHeaders", () => {
     expect(
       () => expandHeaders({ "X-Probe": "${DESKPET_MCP_HEADER_PROBE}" }, {}),
     ).toThrow(/DESKPET_MCP_HEADER_PROBE/)
+  })
+})
+
+// 连接期预取凭据存储用的引用名单：与 expandHeaders 共用同一份 `${...}` 语法 ——
+// 名单漏一个名字，这个变量就永远不会去凭据存储取（连接期直接报缺失）。
+describe("headerVariables", () => {
+  it("取全部引用、去重且保序；多变量值与多 header 都覆盖", () => {
+    expect(headerVariables({
+      Authorization: "Bearer ${TOKEN}",
+      "X-Both": "${A}-${B}",
+      "X-Repeat": "${TOKEN}",
+    })).toEqual(["TOKEN", "A", "B"])
+  })
+
+  it("无 headers 与无引用的值都给出空名单（不去猜）", () => {
+    expect(headerVariables(undefined)).toEqual([])
+    expect(headerVariables({})).toEqual([])
+    expect(headerVariables({ "X-Static": "plain" })).toEqual([])
   })
 })

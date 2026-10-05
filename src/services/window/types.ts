@@ -20,10 +20,16 @@ export interface WindowObservation {
   isPetForeground: boolean
 }
 
+/**
+ * `get_runtime_activity` 命令的一次性运行活动快照。
+ * `screenState` 是屏幕能力维度（`locked` = 锁屏：截图无意义但状态可知）；
+ * 事件负载 `WindowObservation.observationState` 是监控生命周期维度（另含
+ * suspended/disabled），两者语义不同，后者保持原名不做同步。
+ */
 export interface RuntimeActivity {
   isPetVisible: boolean
   isPetForeground: boolean
-  observationState: "observed" | "locked" | "unavailable"
+  screenState: "observed" | "locked" | "unavailable"
   idleForMs: number | null
   observedAt: number
 }

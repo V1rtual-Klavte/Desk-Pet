@@ -3,7 +3,7 @@
 // ==========================================
 //
 // 被测语义（四条，真实 agent loop + 真 JSONL 落盘，只替换桌面截图命令与 Provider）：
-// ① 隐私总闸（ai.silentAccess.enabled）关闭时：工具返回中性说明、不触达 capture/save，
+// ① 隐私总闸（ai.silentAccess.frequency = off）关闭时：工具返回中性说明、不触达 capture/save，
 //    也不产生 details（与 window_info 同一口径，不是报错）；
 // ② show_to_user=true：截图先经 save_screenshot 落盘拿到路径，随后该路径并入本回合
 //    提交的助手条目（`deskpetImagePaths`），读模型重载后仍能带回；工具结果同时带图片块
@@ -126,7 +126,7 @@ afterAll(() => {
 
 describe("截图工具与助手消息挂接", () => {
   it("总闸关闭：中性说明、不触达采集与落盘 [screenshot-gate-neutral]", async () => {
-    setOverrides({ "ai.silentAccess.enabled": false })
+    setOverrides({ "ai.silentAccess.frequency": "off" })
     await flushConfig()
     const tool = getToolByName("screenshot")
     expect(tool, "截图工具未注册，断言没有前提").toBeDefined()
@@ -144,7 +144,7 @@ describe("截图工具与助手消息挂接", () => {
   })
 
   it("show_to_user：先落盘后条目，路径随条目重载、模型收到图片 [screenshot-show-to-user-attach]", async () => {
-    setOverrides({ "ai.silentAccess.enabled": true })
+    setOverrides({ "ai.silentAccess.frequency": "medium" })
     await flushConfig()
 
     const provider = installFakeProvider([
@@ -198,7 +198,7 @@ describe("截图工具与助手消息挂接", () => {
   }, 60_000)
 
   it("show_to_user 缺省：工具照常执行、模型看得见，但条目与界面不带路径 [screenshot-default-private]", async () => {
-    setOverrides({ "ai.silentAccess.enabled": true })
+    setOverrides({ "ai.silentAccess.frequency": "medium" })
     await flushConfig()
 
     const provider = installFakeProvider([

@@ -884,6 +884,32 @@ const handlers: Record<string, (args: Args) => unknown> = {
       `[${localHms()}] ${LOG_LEVEL_NAMES[3]} [Rust] [前端异常][${source}] ${message}\n${stack}`,
     )
   },
+
+  // ── MCP 凭据（commands/mcp_credentials.rs）──
+  //
+  // 读取路径的 L3 夹具：真实存储是 Rust 记忆库的 mcp_credentials 表，写入门槛、覆盖与
+  // 删除语义由 Rust 单测覆盖（set/delete/status 在 unsupported.ts 登记为 Rust 持有，
+  // 不在 Node 侧复现写入）。这里只让 L3 能观测「未命中 env 的 ${VAR} 会先从凭据存储
+  // 取值」这一条消费路径：值由用例经 seedMcpCredential 显式种入，只活在进程内存里。
+  mcp_credential_get: (args) => {
+    const server = arg<string>(args, "server")
+    const variable = arg<string>(args, "var")
+    return mcpCredentialFixtures.get(`${server}\u0000${variable}`) ?? null
+  },
+}
+
+// ── MCP 凭据夹具 ──
+
+const mcpCredentialFixtures = new Map<string, string>()
+
+/** 种一条凭据夹具（仅 L3 测试用；不落盘、不进产品路径）。 */
+export function seedMcpCredential(server: string, variable: string, value: string): void {
+  mcpCredentialFixtures.set(`${server}\u0000${variable}`, value)
+}
+
+/** 清空凭据夹具（用例之间隔离）。 */
+export function clearMcpCredentials(): void {
+  mcpCredentialFixtures.clear()
 }
 
 /** 与 Rust `validate_profile_id` 同口径：非空且只含 [A-Za-z0-9_-]。 */

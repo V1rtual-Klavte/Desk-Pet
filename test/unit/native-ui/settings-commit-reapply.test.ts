@@ -7,7 +7,7 @@
 //
 // 被测行为（修复「改开关后需重启才生效」）：
 //   · 提交 ai.silentAccess.* 时重应用观察总闸（set_monitor_enabled 走既有开关入口，
-//     且发生在写盘之后）；
+//     且发生在写盘之后；档位「关」= 关闸）；
 //   · 提交与 silentAccess 无关的键时不触碰观察总闸（重应用按变更键裁定，不做无关副作用）；
 //   · 提交 general.logging.level 时重应用日志级别（下发 Rust 的 set_log_config）；
 //   · 重应用失败不回滚已保存的配置、不把保存判成失败（失败留痕可见）。
@@ -49,7 +49,8 @@ ai:
   plan: { enabled: false }
   humanizer: { enabled: true }
   memory: { enabled: false }
-  silentAccess: { enabled: false }
+  proactive: { frequency: medium, quietStartHour: 23, quietEndHour: 9 }
+  silentAccess: { frequency: off }
 tools:
   bash: { whitelist: [ls, cat] }
   mcp: { servers: [] }
@@ -107,7 +108,7 @@ describe("settings_commit 的运行期重应用", () => {
     await initConfig()
 
     await dispatchHostRequest("settings_commit", {
-      changes: [{ key: "ai.silentAccess.enabled", value: false }],
+      changes: [{ key: "ai.silentAccess.frequency", value: "off" }],
     })
 
     const monitor = recorded(calls, "set_monitor_enabled")
@@ -154,7 +155,7 @@ describe("settings_commit 的运行期重应用", () => {
     // 保存本身成功（配置已写盘）：重应用失败只留痕，不抛出。
     await expect(
       dispatchHostRequest("settings_commit", {
-        changes: [{ key: "ai.silentAccess.enabled", value: false }],
+        changes: [{ key: "ai.silentAccess.frequency", value: "off" }],
       }),
     ).resolves.toBeUndefined()
     expect(recorded(calls, "set_monitor_enabled")).toHaveLength(1)

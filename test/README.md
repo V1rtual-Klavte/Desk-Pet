@@ -262,7 +262,7 @@ pnpm run test:e2e -- --strict --repeat 3 --report json
 
 取消是协作式的：JS 不能强杀任意 await，Scene 自己发起、不经过框架边界的等待只能靠上述宽限时间收尾。Provider、网络、认证和断言等错误会分类，兜底回复不把失败改写为成功。
 
-E2E 启动脚本在 `test/.tmp/e2e-*` 创建隔离数据根，并**合成**其中的 `settings/CONFIG.yaml`：随仓 `CONFIG.yaml` 模板（凭据字段为空）+ `test/host/native/fixtures/config-overrides.yaml` 的显式覆盖，由 `test/host/native/synthetic-config.mjs` 深合并并做凭据扫描守卫（非空字符串凭据直接拒绝）。**不复制、不读取真实 `CONFIG-DEV.yaml` 或真实运行时 CONFIG**；测试中的配置修改只写该副本，用户数据不被触碰。真实 Provider 凭据只经 `test/eval-models.local.json` / `DESKPET_EVAL_*` 在运行期写进隔离副本。地址（隔离根、合成 CONFIG、结果文件、Node 与 runner 入口）与 trial 身份、attestation 经私有测试通道（`<数据根>/e2e-channel.json`，只由启动器写给宿主）交付。退出/超时先停止隔离进程组、留存证据，再清理临时根；构建或合成失败按预检失败处理（不会带着半套环境开跑）。
+E2E 启动脚本在 `test/.tmp/e2e-*` 创建隔离数据根，并**合成**其中的 `settings/CONFIG.yaml`：随仓 `CONFIG.yaml` 模板（凭据字段为空）+ `test/host/native/fixtures/config-overrides.yaml` 的显式覆盖，由 `test/host/native/synthetic-config.mjs` 深合并并做凭据扫描守卫（非空字符串凭据直接拒绝；纯 `${VAR}` 占位符引用除外——值本体是引用，运行期才解析，模板里不存在真实凭据）。**不复制、不读取真实 `CONFIG-DEV.yaml` 或真实运行时 CONFIG**；测试中的配置修改只写该副本，用户数据不被触碰。真实 Provider 凭据只经 `test/eval-models.local.json` / `DESKPET_EVAL_*` 在运行期写进隔离副本。地址（隔离根、合成 CONFIG、结果文件、Node 与 runner 入口）与 trial 身份、attestation 经私有测试通道（`<数据根>/e2e-channel.json`，只由启动器写给宿主）交付。退出/超时先停止隔离进程组、留存证据，再清理临时根；构建或合成失败按预检失败处理（不会带着半套环境开跑）。
 
 ## 目录职责
 

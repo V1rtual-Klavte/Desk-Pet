@@ -39,8 +39,8 @@ use objc2_foundation::{
 use crate::ui::settings::panels::{ListPanel, MemoryDetailState, PanelRow, RowAction, RowOption};
 use crate::ui::settings::schema::{Field, FieldKind, TABS};
 use crate::ui::settings::{
-    dynamic_field_hint, proactive_button_title, settings_ui, tab_index_for_tag, DocumentState,
-    DocumentTarget, NoticeLevel, SettingsValue, SettingsView, ShortcutModifiers,
+    dynamic_field_hint, settings_ui, tab_index_for_tag, DocumentState, DocumentTarget, NoticeLevel,
+    SettingsValue, SettingsView, ShortcutModifiers,
 };
 use crate::ui::theme::{self, paint, Rgba, Tokens};
 use crate::{rust_debug, rust_info, rust_warn};
@@ -1236,8 +1236,6 @@ define_class!(
             }
             if TABS[index].id == "ai" {
                 settings_ui().ensure_cards();
-                // 主动开关按钮显示当前状态：进入本页读取一次权威状态。
-                settings_ui().ensure_proactive();
             }
             // 工具 / 记忆 Tab 的管理面首次进入时拉取（各自在途去重）。
             if TABS[index].id == "tools" {
@@ -1371,6 +1369,8 @@ define_class!(
                 // 音效试听行：行 id = 事件键，当前分配的音效由共享层从行快照的
                 // `pick.selected` 取（平台不解析行数据）。
                 RowAction::Preview => settings_ui().preview_panel_row(panel, &row_id),
+                // 凭据输入行（MCP 面板的「GitHub 令牌」）：弹原生输入框取值后定向写存储。
+                RowAction::Credential => settings_ui().prompt_panel_credential(panel, &row_id),
                 // 行内下拉（音效事件行）：主控件走 `pickClicked:`（弹菜单后由
                 // `pickPicked:` 提交），不经本入口 —— 走到这里说明控件接线错了。
                 RowAction::Pick => {
@@ -2855,6 +2855,8 @@ impl SettingsContentController {
             }
             RowAction::Select => "查看",
             RowAction::Preview => "试听",
+            // 凭据输入行：主按钮打开原生输入框（值写入应用自有存储）。
+            RowAction::Credential => "设置",
             // 主按钮不会由 Edit/Delete 承担（它们渲染在次按钮位）；Pick 走上面的
             // 行内下拉分支 —— 这里兜底为空。
             RowAction::Edit | RowAction::Delete | RowAction::Pick | RowAction::None => "",
@@ -3287,14 +3289,6 @@ impl SettingsContentController {
                 // 动作入口始终可用（「检查更新」未接线时给中性说明）。
                 if let Some(control) = slot.view.downcast_ref::<NSControl>() {
                     control.setEnabled(true);
-                }
-                // 主动开关按钮是「状态文本」形态：标题随权威状态刷新
-                // （未读到时回 schema 的中性动作文案）。
-                if key == "action.toggleProactive" {
-                    if let Some(button) = slot.view.downcast_ref::<NSButton>() {
-                        button
-                            .setTitle(&NSString::from_str(&proactive_button_title(view.proactive)));
-                    }
                 }
                 continue;
             }

@@ -25,7 +25,7 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest"
 
-import { setTestDataRoot } from "../../host/node-ipc"
+import { clearMcpCredentials, seedMcpCredential, setTestDataRoot } from "../../host/node-ipc"
 import { getOverride, setOverride } from "@/services/config"
 import { listAll } from "@/services/tool"
 import {
@@ -133,6 +133,7 @@ beforeAll(async () => {
 
 afterEach(async () => {
   await disconnectAllMcpServers()
+  clearMcpCredentials()
   setOverride("tools.mcp.servers", previousServers)
 })
 
@@ -209,6 +210,37 @@ describe("MCP Streamable HTTP", () => {
     expect(acquired.error ?? "", "错误文案必须点名变量").toContain("MISSING_TOKEN")
     expect(stub.calls.length, "变量缺失应在发出连接请求之前拦下").toBe(before)
     expect(isMcpServerConnected(missingVarServer)).toBe(false)
+  })
+
+  it("凭据存储补齐 env 未命中的 header 变量；env 命中优先于凭据 [tool-mcp-credential-precedence]", async () => {
+    previousServers = getOverride<unknown>("tools.mcp.servers")
+    const server = `${SERVER}-credential`
+    seedMcpCredential(server, "STORE_TOKEN", "from-credential-store")
+    // 同名变量在 env 与凭据存储都存在：env 必须赢（凭据只补未命中的名字）。
+    seedMcpCredential(server, "STUB_TOKEN", "store-value-must-lose")
+    const config: McpServerConfig = {
+      name: server,
+      transport: "http",
+      url: `${stub.origin}/mcp`,
+      headers: { Authorization: "Bearer ${STORE_TOKEN}", "X-Env-Wins": "${STUB_TOKEN}" },
+      env: { STUB_TOKEN: "from-env" },
+      enabled: true,
+    }
+    const before = stub.calls.length
+    const connected = await connectMcpServer(config)
+    expect(connected.success, `凭据存储没有补上未命中的变量：${connected.error ?? "<无原因>"}`).toBe(true)
+    const initialize = stub.calls
+      .slice(before)
+      .find(call => call.message?.method === "initialize")
+    expect(initialize, "stub 没收到 initialize").toBeDefined()
+    // 未命中 env 的 ${STORE_TOKEN} 从凭据存储取值后照常发出。
+    expect(initialize!.headers.authorization).toBe("Bearer from-credential-store")
+    // env 命中的 ${STUB_TOKEN} 不被凭据存储覆盖。
+    expect(initialize!.headers["x-env-wins"], "env 命中时被凭据存储覆盖").toBe("from-env")
+    // 连接期取值只并入本次展开的临时表：不写回调用方的配置对象。
+    expect(config.env, "凭据值被写回 server.env（第二份真相源）").toEqual({ STUB_TOKEN: "from-env" })
+    await disconnectMcpServer(server)
+    expect(isMcpServerConnected(server)).toBe(false)
   })
 
   it("connect 前置校验：stdio 缺 command / http 缺 url / 非 http(s) / 未知 transport 逐个点名", async () => {

@@ -22,7 +22,7 @@ import { registerDefaultTools } from "@/services/tool"
 import { initDebug } from "@/services/debug"
 import { initSlashCommands } from "@/services/engine/slash"
 import { initSessions, chatHistory, initWelcome, getActiveSessionId } from "@/services/session"
-import { computeMcpEnabled, enabledMcpServerNames, initConfig } from "@/services/config"
+import { applyLogLevel, computeMcpEnabled, enabledMcpServerNames, initConfig } from "@/services/config"
 import { initPaths } from "@/services/paths"
 import { createLogger } from "@/services/logger"
 
@@ -65,6 +65,11 @@ async function runDomainBootstrap(): Promise<void> {
   // 否则设置窗会读到模板值，一次保存就会把用户配置覆盖成模板（两者都幂等）。
   await initPaths()
   await initConfig()
+  // 引导期即应用真实日志级别（契约 Part 1.3）：computeLogLevel() 要真实 runtimeMode 与
+  // 已加载配置，initConfig() 之后才具备；不应用则 logger 停在保守默认 info，主动链路的
+  // debug 证据整段丢失。刻意不放进 initConfig() —— 它被多个 L2 用例直接调用，放进去会
+  // 给每次调用加一次 set_log_config 下行请求与噪声。
+  applyLogLevel()
   log.info("1/11 路径与运行时 CONFIG 就绪")
 
   // ── 2. Memory 文件系统 ──
@@ -140,8 +145,8 @@ async function runDomainBootstrap(): Promise<void> {
   // ── 10. 窗口观察接线（Node 侧订阅 + 观察总闸）──
   // 宿主把 monitor 线程的 `window-observed` 双投到原生 UI 与当前代际 Node
   // （原生宿主迁移过程记录 §9.4 第 2 条）。这里接线：订阅（可退订、重复引导不叠加监听器）+ 按
-  // silentAccessConfig.enabled 应用观察总闸（setMonitorEnabled 是既有开关入口，
-  // 内含行为采集启停，不另建第二入口）。
+  // 静默了解档位（ai.silentAccess.frequency，off = 关闸）应用观察总闸
+  // （setMonitorEnabled 是既有开关入口，内含行为采集启停，不另建第二入口）。
   const { initWindowObservation } = await import("@/services/window")
   await initWindowObservation()
   log.info("10/11 窗口观察就绪")
@@ -156,7 +161,7 @@ async function runDomainBootstrap(): Promise<void> {
   // stop 侧：Node 宿主没有卸载点，进程随宿主断开退出（生命周期钩子在 harness/main.ts）。
   proactive.start()
   const { startSilentUnderstanding } = await import("@/services/observation")
-  // 静默了解内部按 silentAccessConfig.enabled 判定（关闭时不启动也不报错）。
+  // 静默了解内部按 ai.silentAccess.frequency 判定（off 档不启动也不报错）。
   startSilentUnderstanding()
   log.info("11/11 主动陪伴与静默了解调度就绪")
 

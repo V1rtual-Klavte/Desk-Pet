@@ -3,7 +3,7 @@ import type { ModuleContract } from "../host/types"
 export const memoryBenchContract: ModuleContract = {
   module: "memory-bench",
   sourceFiles: ["test/memory-bench/upstream-lock.json", "test/memory-bench/prepare.mjs", "test/memory-bench/index.mjs", "test/memory-bench/judge.mjs", "test/memory-bench/export-hypotheses.mjs", "test/memory-bench/report.mjs", "test/memory-bench/scope-normalize.mjs", "test/memory-bench/bench-adapter.ts", "test/memory-bench/datasets/longmemeval/importer.mjs", "test/memory-bench/datasets/longmemeval/scorer.mjs", "test/memory-bench/datasets/locomo/importer.mjs", "test/memory-bench/datasets/locomo/porter.mjs", "test/memory-bench/datasets/locomo/scorer.mjs", "test/memory-bench/datasets/memorybank/importer.mjs", "test/memory-bench/datasets/memorybank/scorer.mjs"],
-  sourceHash: "3d180d7793abc1d8eb42e6c52bd3314c032a29fa7a81b60931ca065d077ce4a7",
+  sourceHash: "99fabdeb9714dac072205917eecc1cd53571a1b73538b78873d590d4bec8e6cc",
   coverage: [
     {"id": "mb-01", "feature": "版本锁定与安装器", "description": "上游 revision 与 SHA-256 全部固定且校验失败拒绝使用；仓库许可原文副本与锁定哈希逐字节一致（NC 合规红线）；数据一律不进仓库目录、按锁下载到 data-dir（可指定）", "why": "外部基准的权威性依赖「同一 revision + 同一校验和 = 同一份数据」；锁定失效或数据回流仓库会让复现性无声破裂", "layer": "unit", "depth": "deep", "scenarios": ["bench-lock-pinned", "bench-lock-license", "bench-lock-no-vendored-data"]},
     {"id": "mb-02", "feature": "数据形态与导入校验", "description": "上游形状漂移显式暴露（悬挂行容错、缺答案抛错、重复角色行抛错）；证据轮坐标与弃权标记可追溯；question_date 时间锚点按本地墙钟还原（不拿 UTC 毫秒冒充当地日期）；子集选择确定性且覆盖题型", "why": "静默容忍上游瑕疵会让评测在错的坐标上跑出看似正常的结果", "layer": "unit", "depth": "deep", "scenarios": ["bench-lme-subset", "bench-lme-source-coords", "bench-lme-question-anchor", "bench-locomo-tolerance", "bench-membank-dup-guard"]},

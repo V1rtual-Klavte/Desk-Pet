@@ -167,6 +167,14 @@ export async function memoryJobSources(jobId: string): Promise<MemorySource[]> {
   return getHostBridge().request("memory_job_sources", { jobId })
 }
 
+/**
+ * 开作业前的只读前置查询：水位之后待处理来源数（与 `memory_job_sources` 同一水位判定）。
+ * 返回 0 = 没有新来源，调用方据此跳过整理、不创建 job。
+ */
+export async function pendingMemorySourceCount(): Promise<number> {
+  return getHostBridge().request("memory_pending_source_count", {})
+}
+
 /** UI-only readback of bounded evidence; forgotten or suppressed sources return null. */
 export async function memorySourceEvidence(sourceId: string): Promise<MemorySource | null> {
   return getHostBridge().request("memory_source_evidence", { sourceId })

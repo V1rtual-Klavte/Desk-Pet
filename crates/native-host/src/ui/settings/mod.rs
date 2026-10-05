@@ -101,13 +101,6 @@ pub struct ProfileOption {
 
 // ── 本批管理面的值类型（内容与格式都由 Node 定义，Rust 只显示与回传）──
 
-/// 主动消息开关的权威快照（真相源在宿主 SQLite，经 Node 的控制通道读写）。
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct ProactiveSnapshot {
-    pub enabled: bool,
-    pub revision: i64,
-}
-
 /// 当前卡阶段文案（`text` 是行编辑格式，Node 侧定义与校验）。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CardStages {
@@ -282,6 +275,14 @@ pub trait SettingsPort: Send + Sync {
         Err(AppError::Other("MCP 服务器开关端口未接线".into()))
     }
 
+    /// 工具页：写入一条 MCP 凭据（`row_id` = 凭据行坐标，Node 定义并解析回 server/var）。
+    ///
+    /// 值定向写进应用自有存储（宿主 `mcp_credential_set`）：**不写 CONFIG、不回显、
+    /// 不进日志**；空值由领域入口拒绝（界面同样在输入后判一次空）。
+    fn mcp_credential_set(&self, _row_id: &str, _value: &str) -> AppResult<()> {
+        Err(AppError::Other("MCP 凭据写入端口未接线".into()))
+    }
+
     /// 工具页：Skill 清单（`id` = skills 域内相对路径）。
     fn skills(&self) -> AppResult<panels::SkillCatalog> {
         Err(AppError::Other(
@@ -340,11 +341,6 @@ pub trait SettingsPort: Send + Sync {
     /// 通用页「导入配置」：Node 弹打开对话框、校验后替换 CONFIG 并写盘；取消返回 `Ok(false)`。
     fn import_config(&self) -> AppResult<bool> {
         Err(AppError::Other("配置导入端口未接线".into()))
-    }
-
-    /// AI 页：主动开关（`None` = 只读查询；处理走 scanner 的控制通道）。
-    fn proactive_control(&self, _enabled: Option<bool>) -> AppResult<ProactiveSnapshot> {
-        Err(AppError::Other("主动开关端口未接线".into()))
     }
 
     /// AI 页：读取 V1RTUAL.md 的用户指令文本。
@@ -571,42 +567,6 @@ pub fn validate_value(field: &schema::Field, value: &SettingsValue) -> AppResult
     }
 }
 
-// ── 界面显示单位 ↔ CONFIG 存储单位的适配（唯一换算点）──
-//
-// 静默访问的两个冷却键：CONFIG 键名与磁盘值都是**毫秒**（键名带 `Ms` 是 CONFIG
-// 的形状），而界面按旧壳口径用**秒**编辑/显示（schema 的 `unit: "s"`，范围也按秒
-// 收口）。换算在两个边界的中间态做：
-// - 快照载入 / 「↺ 默认」填入：毫秒 → 秒（旧壳 `Math.round(ms / 1000)` 的取整口径）；
-// - 提交（`changes()`）：秒 → 毫秒（×1000 取整）。
-// `staySeconds`（本就秒）与 `settleMs`（防抖保持毫秒）不在表内，原样透传。
-// 键与 schema 的对应关系由 `冷却换算键与 schema 的单位一致` 测试钉住。
-
-/// 需要在界面侧按秒显示、按毫秒存储的 CONFIG 键（当前只有两个冷却键）。
-const MS_KEY_DISPLAY_SECONDS: &[&str] = &[
-    "ai.silentAccess.cooldownMs",
-    "ai.silentAccess.samePageCooldownMs",
-];
-
-/// 快照值 → 界面显示值（毫秒键取整成秒；其余原样）。
-fn to_display_value(key: &str, value: SettingsValue) -> SettingsValue {
-    match value {
-        SettingsValue::Number(ms) if MS_KEY_DISPLAY_SECONDS.contains(&key) => {
-            SettingsValue::Number((ms / 1000.0).round())
-        }
-        other => other,
-    }
-}
-
-/// 界面显示值 → CONFIG 存储值（秒 → 毫秒取整；其余原样）。
-fn to_config_value(key: &str, value: SettingsValue) -> SettingsValue {
-    match value {
-        SettingsValue::Number(seconds) if MS_KEY_DISPLAY_SECONDS.contains(&key) => {
-            SettingsValue::Number((seconds * 1000.0).round())
-        }
-        other => other,
-    }
-}
-
 /// 草稿模型：committed（上次成功读入/保存的值）与当前编辑值分开。
 ///
 /// 关闭窗口即丢弃草稿（`revert_all`），不落盘、不跨会话保留 —— 与旧设置面板
@@ -620,19 +580,7 @@ pub struct SettingsDraft {
 
 impl SettingsDraft {
     /// 载入整表快照：committed 与编辑值都重置为该快照，清空 dirty。
-    ///
-    /// 毫秒键（见 [`MS_KEY_DISPLAY_SECONDS`]）在这里统一换成界面单位（秒）。
     pub fn load(&mut self, snapshot: SettingsSnapshot) {
-        let snapshot = SettingsSnapshot {
-            values: snapshot
-                .values
-                .into_iter()
-                .map(|(key, value)| {
-                    let value = to_display_value(&key, value);
-                    (key, value)
-                })
-                .collect(),
-        };
         self.committed = snapshot.clone();
         self.current = snapshot;
         self.dirty.clear();
@@ -686,23 +634,20 @@ impl SettingsDraft {
     }
 
     /// 待提交改动（按 key 有序，提交顺序稳定）。
-    ///
-    /// 毫秒键（冷却）在这里换算回 CONFIG 单位（秒 → 毫秒）；提交出去的永远是
-    /// 磁盘口径的值。
     pub fn changes(&self) -> Vec<SettingEdit> {
         self.dirty
             .iter()
             .filter_map(|key| {
                 self.current.values.get(key).map(|value| SettingEdit {
                     key: key.clone(),
-                    value: to_config_value(key, value.clone()),
+                    value: value.clone(),
                 })
             })
             .collect()
     }
 
-    /// 当前未保存改动（**界面单位**，不做毫秒回换）；供快照重拉时把用户编辑
-    /// 放回草稿（与 [`Self::set`] 的入参口径一致）。
+    /// 当前未保存改动（值口径与 [`Self::set`] 的入参一致）；
+    /// 供快照重拉时把用户编辑放回草稿。
     pub fn pending_edits(&self) -> Vec<SettingEdit> {
         self.dirty
             .iter()
@@ -731,9 +676,7 @@ impl SettingsDraft {
                 Some(FieldKind::Text { secret: true }) => continue,
                 Some(_) => {}
             }
-            // 默认值快照与运行快照同源（CONFIG 模板投影），毫秒键同样换算成界面单位。
-            let value = to_display_value(key, value.clone());
-            if let Err(error) = self.set(key, value) {
+            if let Err(error) = self.set(key, value.clone()) {
                 rust_debug!("默认值写入草稿失败（跳过该项）: {error}");
             }
         }
@@ -988,18 +931,6 @@ pub fn tab_index_for_tag(tag: isize) -> Option<usize> {
         .filter(|index| *index < schema::TABS.len())
 }
 
-/// 主动消息开关按钮的标题：按钮本身就是状态显示（旧壳的复选框语义）。
-///
-/// 状态未读到（`None`：未进入过本页/未接线/读失败）时回中性动作文案；
-/// 按钮点击的写入行为不变（读现状取反，见 [`SettingsUi::toggle_proactive`]）。
-pub fn proactive_button_title(snapshot: Option<ProactiveSnapshot>) -> String {
-    match snapshot {
-        Some(snapshot) if snapshot.enabled => "主动消息：已开启".to_string(),
-        Some(_) => "主动消息：已关闭".to_string(),
-        None => "切换主动消息开关".to_string(),
-    }
-}
-
 /// `FieldKind::Bool` 开关控件的开/关状态镜像（平台控件句柄 → 状态）。
 ///
 /// 为什么需要它：两平台的开关都是**自绘**控件（macOS 贴在 NSButton 的 CALayer 上，
@@ -1093,8 +1024,6 @@ pub struct SettingsView {
     pub card_options: Option<Arc<Vec<CardOption>>>,
     /// 激活 Profile 选项（外观页；窗口打开时拉取一次）。
     pub profile_options: Option<Arc<Vec<ProfileOption>>>,
-    /// 主动消息开关的当前状态（AI 页进入时读一次；`None` = 尚未读到，按钮显示中性文案）。
-    pub proactive: Option<ProactiveSnapshot>,
     pub saving: bool,
 }
 
@@ -1158,10 +1087,6 @@ pub struct SettingsUi {
     /// Profile 选项在途（与人格卡分开：外观页与 AI 页各自拉取）。
     profiles_loading: AtomicBool,
     profile_options: Mutex<Option<Arc<Vec<ProfileOption>>>>,
-    /// 主动消息开关的权威状态（AI 页进入时读一次；关窗释放）。
-    proactive: Mutex<Option<ProactiveSnapshot>>,
-    /// 主动状态读取在途（与切换动作分开：两者都可能触发读）。
-    proactive_loading: AtomicBool,
     /// 管理面数据（W9d）。
     panels: Mutex<PanelState>,
     /// 记忆治理变更在途（同一时刻只提交一个，避免连点并发写同一库）。
@@ -1210,8 +1135,6 @@ impl SettingsUi {
             card_options: Mutex::new(None),
             profiles_loading: AtomicBool::new(false),
             profile_options: Mutex::new(None),
-            proactive: Mutex::new(None),
-            proactive_loading: AtomicBool::new(false),
             panels: Mutex::new(PanelState::default()),
             memory_change_in_flight: AtomicBool::new(false),
             document: Mutex::new(None),
@@ -1294,9 +1217,6 @@ impl SettingsUi {
         *Self::lock(&self.font_families) = None;
         *Self::lock(&self.card_options) = None;
         *Self::lock(&self.profile_options) = None;
-        // 主动开关状态同样关窗释放：状态真值在宿主 SQLite，重开重读。
-        *Self::lock(&self.proactive) = None;
-        self.proactive_loading.store(false, Ordering::SeqCst);
         // 管理面同样关闭即释放：列表、详情与未保存的内容草稿都不跨窗口保留。
         let mut panels = Self::lock(&self.panels);
         *panels = PanelState::default();
@@ -1348,7 +1268,6 @@ impl SettingsUi {
             font_families: Self::lock(&self.font_families).clone(),
             card_options: Self::lock(&self.card_options).clone(),
             profile_options: Self::lock(&self.profile_options).clone(),
-            proactive: *Self::lock(&self.proactive),
             saving: self.saving.load(Ordering::SeqCst),
         }
     }
@@ -1393,7 +1312,6 @@ impl SettingsUi {
             "action.exportConfig" => self.export_config(),
             "action.importConfig" => self.import_config(),
             // ── 本批：AI 页 ──
-            "action.toggleProactive" => self.toggle_proactive(),
             "action.editV1rtual" => {
                 self.open_document(DocumentTarget::V1rtual);
                 Ok(())
@@ -1555,73 +1473,6 @@ impl SettingsUi {
     }
 
     // ── 本批：AI 页 ──
-
-    /// 主动消息开关：先读权威状态再取反写回（两步都在工作线程）。
-    ///
-    /// 写入行为与旧实现一致；差别只在成功后把权威快照存进 UI 状态，按钮标题
-    /// （[`proactive_button_title`]）随刷新显示新状态。失败时状态不动。
-    pub fn toggle_proactive(&self) -> AppResult<()> {
-        self.set_notice(Some("正在切换主动消息…".into()));
-        let port = Self::lock(&self.port).clone();
-        let spawn = std::thread::Builder::new()
-            .name("deskpet-settings-proactive".into())
-            .spawn(move || {
-                let ui = settings_ui();
-                let outcome = port
-                    .proactive_control(None)
-                    .and_then(|current| port.proactive_control(Some(!current.enabled)));
-                match outcome {
-                    Ok(snapshot) => {
-                        *Self::lock(&ui.proactive) = Some(snapshot);
-                        ui.set_notice(Some(format!(
-                            "主动消息已{}（revision {}）",
-                            if snapshot.enabled { "开启" } else { "关闭" },
-                            snapshot.revision
-                        )));
-                    }
-                    Err(error) => {
-                        // 用户可见错误必须同时留痕（统一日志出口）：状态行只显示一行，
-                        // 截断后读不到全文（2026-10-05 实机「记忆数据库不可用: 主动…」）。
-                        rust_warn!("主动消息切换失败（状态未变）：{error}");
-                        ui.set_error(format!("主动消息切换失败（状态未变）：{error}"))
-                    }
-                }
-            });
-        match spawn {
-            Ok(_) => Ok(()),
-            Err(error) => Err(AppError::Other(format!("主动开关线程创建失败: {error}"))),
-        }
-    }
-
-    /// AI 页首次进入：读取主动开关的权威状态（在途去重；已缓存则直接刷新）。
-    ///
-    /// 失败只留痕不改按钮标题 —— 按钮点击自身仍是「读现状取反」的完整两步，
-    /// 不依赖这次预读。
-    pub fn ensure_proactive(&self) {
-        if Self::lock(&self.proactive).is_some() {
-            self.refresh();
-            return;
-        }
-        if self.proactive_loading.swap(true, Ordering::SeqCst) {
-            return;
-        }
-        let port = Self::lock(&self.port).clone();
-        let spawn = std::thread::Builder::new()
-            .name("deskpet-settings-proactive-read".into())
-            .spawn(move || {
-                let ui = settings_ui();
-                match port.proactive_control(None) {
-                    Ok(snapshot) => *Self::lock(&ui.proactive) = Some(snapshot),
-                    Err(error) => rust_warn!("主动开关状态读取失败（按钮保持中性文案）: {error}"),
-                }
-                ui.proactive_loading.store(false, Ordering::SeqCst);
-                ui.refresh();
-            });
-        if let Err(error) = spawn {
-            self.proactive_loading.store(false, Ordering::SeqCst);
-            rust_warn!("主动状态读取线程创建失败: {error}");
-        }
-    }
 
     /// 阶段文案重新生成；成功时把结果替换进已打开的阶段文档。
     pub fn regenerate_card_stages(&self) -> AppResult<()> {
@@ -2075,6 +1926,60 @@ impl SettingsUi {
         match spawn {
             Ok(_) => Ok(()),
             Err(error) => Err(AppError::Other(format!("Skill 上传线程创建失败: {error}"))),
+        }
+    }
+
+    /// 管理面凭据行（`RowAction::Credential`，当前只有 MCP 面板的「GitHub 令牌」）：
+    /// 先弹原生输入框取值（取消 = 不写任何值），再经 [`SettingsPort::mcp_credential_set`]
+    /// 定向写进应用自有存储。
+    ///
+    /// 纪律：令牌值不回显、不写 CONFIG、不进日志（通知与错误文案只带「令牌」这一对象，
+    /// 不带值）；空输入在写之前拦下；行坐标由 Node 定义并解析（本层只校验行与动作，
+    /// 不解析凭据语义）。
+    pub fn prompt_panel_credential(&self, panel: &str, row_id: &str) -> AppResult<()> {
+        if panel != panels::PANEL_MCP {
+            return Err(AppError::Other(format!("面板 {panel} 没有凭据行")));
+        }
+        {
+            let state = Self::lock(&self.panels);
+            let Some(row) = state.mcp.iter().find(|row| row.id == row_id) else {
+                return Err(AppError::Other("列表已更新，请刷新后重试".into()));
+            };
+            if row.action != RowAction::Credential {
+                return Err(AppError::Other(format!("行 {row_id} 不是凭据行")));
+            }
+        }
+        let Some(value) = crate::ui::platform::imp::prompt_text(
+            "GitHub 令牌",
+            "粘贴 fine-grained、仅只读权限的 PAT（免费账号即可，无需 Copilot 席位）；令牌只写入本地数据库，不写入配置文件",
+            "",
+        )?
+        else {
+            return Ok(()); // 取消：不写任何值
+        };
+        if value.trim().is_empty() {
+            self.set_notice(Some("未输入令牌，未写入任何值".into()));
+            return Ok(());
+        }
+        self.set_notice(Some("正在保存令牌…".into()));
+        let port = Self::lock(&self.port).clone();
+        let row_id = row_id.to_string();
+        let spawn = std::thread::Builder::new()
+            .name("deskpet-settings-mcp-credential".into())
+            .spawn(move || {
+                let ui = settings_ui();
+                match port.mcp_credential_set(&row_id, &value) {
+                    Ok(()) => {
+                        ui.set_notice(Some("GitHub 令牌已保存（仅存本地数据库）".into()));
+                        // 状态行经由 Node 重读（已设置/未设置），界面不自行推进本地行状态。
+                        ui.spawn_tools_fetch();
+                    }
+                    Err(error) => ui.set_error(format!("令牌未保存：{error}")),
+                }
+            });
+        match spawn {
+            Ok(_) => Ok(()),
+            Err(error) => Err(AppError::Other(format!("令牌保存线程创建失败: {error}"))),
         }
     }
 
@@ -3491,7 +3396,7 @@ mod tests {
         let mut draft = SettingsDraft::default();
         draft.load(SettingsSnapshot::default());
         draft
-            .set("ai.silentAccess.staySeconds", SettingsValue::Number(60.0))
+            .set("ai.silentAccess.frequency", SettingsValue::Text("low".into()))
             .unwrap();
         draft
             .set(
@@ -3501,8 +3406,44 @@ mod tests {
             .unwrap();
         let changes = draft.changes();
         // 按 CONFIG 键**字母序**（`ai.` 排在 `appearance.` 之前 —— 这正是这条测试要钉的口径）。
-        assert_eq!(changes[0].key, "ai.silentAccess.staySeconds");
+        assert_eq!(changes[0].key, "ai.silentAccess.frequency");
         assert_eq!(changes[1].key, "appearance.effectMode");
+    }
+
+    /// 三处档位走枚举校验收口；静默时段是 0–23 的数值（0 合法，不参与兜底）。
+    #[test]
+    fn 档位枚举与静默时段值走既有校验收口() {
+        let mut draft = SettingsDraft::default();
+        draft.load(SettingsSnapshot::default());
+        for tier in ["off", "low", "medium", "high"] {
+            draft
+                .set("ai.proactive.frequency", SettingsValue::Text(tier.into()))
+                .unwrap();
+            draft
+                .set("ai.silentAccess.frequency", SettingsValue::Text(tier.into()))
+                .unwrap();
+            draft
+                .set("ai.memory.dreaming.tier", SettingsValue::Text(tier.into()))
+                .unwrap();
+        }
+        assert!(
+            draft
+                .set("ai.proactive.frequency", SettingsValue::Text("always".into()))
+                .is_err(),
+            "四档之外的取值必须被枚举校验拒绝"
+        );
+        draft
+            .set("ai.proactive.quietStartHour", SettingsValue::Number(0.0))
+            .unwrap();
+        draft
+            .set("ai.proactive.quietEndHour", SettingsValue::Number(23.0))
+            .unwrap();
+        assert!(
+            draft
+                .set("ai.proactive.quietStartHour", SettingsValue::Number(24.0))
+                .is_err(),
+            "24 时越界必须被拒绝"
+        );
     }
 
     #[test]
@@ -3596,8 +3537,8 @@ mod tests {
                 SettingsValue::Bool(true),
             ),
             (
-                "ai.silentAccess.staySeconds".to_string(),
-                SettingsValue::Number(60.0),
+                "ai.silentAccess.frequency".to_string(),
+                SettingsValue::Text("high".into()),
             ),
             // 未知键不是可编辑字段：跳过而不是进草稿。
             ("nope".to_string(), SettingsValue::Bool(true)),
@@ -3614,8 +3555,8 @@ mod tests {
             Some(&SettingsValue::Bool(true))
         );
         assert_eq!(
-            draft.value("ai.silentAccess.staySeconds"),
-            Some(&SettingsValue::Number(60.0))
+            draft.value("ai.silentAccess.frequency"),
+            Some(&SettingsValue::Text("high".into()))
         );
         // 密钥字段原样保留（既不改值也不标脏）。
         assert_eq!(
@@ -3829,133 +3770,7 @@ mod tests {
         assert!(!states.contains(7));
     }
 
-    // ── 界面单位换算（冷却键：界面秒 / CONFIG 毫秒）──
-
-    /// 换算键表与 schema 必须一致：键存在、是数值控件、界面单位是秒。
-    #[test]
-    fn 冷却换算键与_schema_的单位一致() {
-        assert!(!MS_KEY_DISPLAY_SECONDS.is_empty());
-        for key in MS_KEY_DISPLAY_SECONDS {
-            let field = field(key).unwrap_or_else(|| panic!("{key} 必须在 schema 里"));
-            match field.kind {
-                FieldKind::Number { unit, .. } => {
-                    assert_eq!(unit, "s", "{key} 是界面秒键，schema 单位必须标秒")
-                }
-                other => panic!("{key} 必须是数值控件: {other:?}"),
-            }
-        }
-    }
-
-    /// 快照载入按秒取整显示；提交（changes）按毫秒回写；两者互逆到毫秒精度。
-    #[test]
-    fn 冷却键载入按秒提交按毫秒() {
-        let mut draft = SettingsDraft::default();
-        draft.load(snapshot(&[
-            ("ai.silentAccess.cooldownMs", SettingsValue::Number(5000.0)),
-            (
-                "ai.silentAccess.samePageCooldownMs",
-                SettingsValue::Number(7800.0),
-            ),
-            // 防抖与停留不是换算键：原样透传（防抖保持毫秒、停留本就秒）。
-            ("ai.silentAccess.settleMs", SettingsValue::Number(2000.0)),
-            ("ai.silentAccess.staySeconds", SettingsValue::Number(60.0)),
-        ]));
-        assert_eq!(
-            draft.committed_value("ai.silentAccess.cooldownMs"),
-            Some(&SettingsValue::Number(5.0)),
-            "5000ms → 5s（旧壳 Math.round 口径）"
-        );
-        assert_eq!(
-            draft.committed_value("ai.silentAccess.samePageCooldownMs"),
-            Some(&SettingsValue::Number(8.0)),
-            "7800ms → 8s（四舍五入）"
-        );
-        assert_eq!(
-            draft.committed_value("ai.silentAccess.settleMs"),
-            Some(&SettingsValue::Number(2000.0))
-        );
-        assert_eq!(
-            draft.committed_value("ai.silentAccess.staySeconds"),
-            Some(&SettingsValue::Number(60.0))
-        );
-
-        // 用户在界面把冷却从 5s 改成 7s：提交值必须是 7000ms。
-        draft
-            .set("ai.silentAccess.cooldownMs", SettingsValue::Number(7.0))
-            .unwrap();
-        assert!(draft.is_dirty());
-        let changes = draft.changes();
-        assert_eq!(changes.len(), 1);
-        assert_eq!(changes[0].key, "ai.silentAccess.cooldownMs");
-        assert_eq!(changes[0].value, SettingsValue::Number(7000.0));
-
-        // 拉取合并用的 pending_edits 是界面单位（写回草稿要走 set 的秒值域，
-        // 不能用已换算成毫秒的 changes()）。
-        let pending = draft.pending_edits();
-        assert_eq!(pending[0].value, SettingsValue::Number(7.0));
-        let mut merged = SettingsDraft::default();
-        merged.load(snapshot(&[(
-            "ai.silentAccess.cooldownMs",
-            SettingsValue::Number(5000.0),
-        )]));
-        merged
-            .set(&pending[0].key, pending[0].value.clone())
-            .unwrap();
-        assert_eq!(
-            merged.value("ai.silentAccess.cooldownMs"),
-            Some(&SettingsValue::Number(7.0))
-        );
-    }
-
-    /// 「↺ 默认」的模板投影同样是 CONFIG 单位（毫秒）：填进草稿前换算成秒。
-    #[test]
-    fn 恢复默认把毫秒模板换成秒再入草稿() {
-        let mut draft = SettingsDraft::default();
-        draft.load(snapshot(&[(
-            "ai.silentAccess.cooldownMs",
-            SettingsValue::Number(9000.0),
-        )]));
-        let defaults = BTreeMap::from([(
-            "ai.silentAccess.cooldownMs".to_string(),
-            SettingsValue::Number(5000.0),
-        )]);
-        assert_eq!(draft.apply_defaults(&defaults), 1);
-        assert_eq!(
-            draft.value("ai.silentAccess.cooldownMs"),
-            Some(&SettingsValue::Number(5.0)),
-            "默认模板 5000ms 必须以 5s 进草稿（否则超第二单位值域被拒）"
-        );
-        assert_eq!(
-            draft.changes()[0].value,
-            SettingsValue::Number(5000.0),
-            "提交时换回毫秒"
-        );
-    }
-
-    // ── 主动开关 / 面板计数 / 动态帮助 ──
-
-    #[test]
-    fn 主动开关按钮标题显示三态() {
-        assert_eq!(
-            proactive_button_title(Some(ProactiveSnapshot {
-                enabled: true,
-                revision: 3
-            })),
-            "主动消息：已开启"
-        );
-        assert_eq!(
-            proactive_button_title(Some(ProactiveSnapshot {
-                enabled: false,
-                revision: 4
-            })),
-            "主动消息：已关闭"
-        );
-        assert_eq!(
-            proactive_button_title(None),
-            "切换主动消息开关",
-            "状态未读到时不得伪报开/关"
-        );
-    }
+    // ── 面板计数 / 动态帮助 ──
 
     #[test]
     fn bash_白名单计数只数非空行() {

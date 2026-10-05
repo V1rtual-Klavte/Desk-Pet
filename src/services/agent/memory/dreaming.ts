@@ -16,12 +16,14 @@ import { estimateContextTokens } from "@/services/context/budget"
 import { createLogger } from "@/services/logger"
 import { formatError } from "@/services/error"
 import { memoryConfig } from "@/services/config"
+import { dreamingTier, dreamingTierLimits } from "@/services/proactive/tiers"
 import { isAIGenerating } from "@/services/cooldown"
 import { createRuntimeTraceContext, hasRuntimeTraceSubscribers, publishRuntimeTrace } from "@/services/engine/runtime/trace"
 import { refreshMemoryCount } from "./index"
 import {
   addMemoryCandidates, cancelMemoryJob, checkpointMemoryJob, commitMemoryDreamingJob, memoryJobSources,
-  memoryStatus, memoryDreamingBudget, reserveMemoryDreamingBudget, resumeMemoryJob, settleMemoryDreamingBudget, startMemoryJob,
+  memoryStatus, memoryDreamingBudget, pendingMemorySourceCount, reserveMemoryDreamingBudget, resumeMemoryJob,
+  settleMemoryDreamingBudget, startMemoryJob,
 } from "./ipc"
 import type { MemoryCandidateDraft, MemoryDraft, MemorySource } from "./ipc"
 
@@ -47,10 +49,20 @@ function localDate(): string {
   return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(now.getDate()).padStart(2, "0")}`
 }
 
+/**
+ * 档位派生的每日 token 预算（`ai.memory.dreaming.tier` 查表；off 按 0 读，自动预留必然失败）。
+ * 手动入口 `action.memorySweep` 不走这个门（用户动作不受档位约束，只受同一本持久预算账约束）。
+ */
+function dreamingDailyTokens(): number {
+  const tier = dreamingTier()
+  return tier === "off" ? 0 : dreamingTierLimits(tier).dailyTokens
+}
+
 async function idleBudgetAvailable(): Promise<boolean> {
-  if (memoryConfig.dreamingMaxDailyTokens <= 0) return false
+  const dailyTokens = dreamingDailyTokens()
+  if (dailyTokens <= 0) return false
   const budget = await memoryDreamingBudget(localDate())
-  return budget.usedTokens + budget.reservedTokens < memoryConfig.dreamingMaxDailyTokens
+  return budget.usedTokens + budget.reservedTokens < dailyTokens
 }
 
 export interface DreamingOutcome {
@@ -189,6 +201,27 @@ export async function runDreamingSweep(options: { signal?: AbortSignal; automati
   if (!memoryConfig.enabled) {
     return { status: "empty", sourcesProcessed: 0, candidatesAdded: 0, publishedCount: 0, oversized: [], message: "记忆功能已关闭" }
   }
+  if (!options.resumeJobId) {
+    // 前置查询在开作业之前：Light 先登记来源（新来源没登记，水位判定永远为「无」），
+    // 再问 Rust「水位之后还有没有待处理来源」。没有 → 整段跳过：不创建 job、不动预算/租约，
+    // 只留一条 debug（按既有空闲粒度，最多一个间隔一次，不刷屏）。
+    // 手动入口走同一条前置查询：Review 的输入只有这些来源，没有输入时开作业必然空跑
+    // （提交也只会提交本 job 的候选，见 memory_dreaming_commit 的 job 归属），
+    // outcome 仍是 empty，只是不再产生垃圾作业行；回报文案如实说明。
+    let pending = 0
+    try {
+      const { collectAllMemorySources } = await import("./sources")
+      await collectAllMemorySources()
+      pending = await pendingMemorySourceCount()
+    } catch (error) {
+      log.error("整理前的来源收集失败:", formatError(error))
+      return { status: "failed", sourcesProcessed: 0, candidatesAdded: 0, publishedCount: 0, oversized: [], message: formatError(error) }
+    }
+    if (pending === 0) {
+      log.debug("水位之后没有待处理来源，跳过本次整理")
+      return { status: "empty", sourcesProcessed: 0, candidatesAdded: 0, publishedCount: 0, oversized: [], message: "水位之后没有新的可整理来源" }
+    }
+  }
   const started = options.resumeJobId
     ? await resumeMemoryJob(options.resumeJobId, LEASE_OWNER)
     : await startMemoryJob("review")
@@ -226,10 +259,6 @@ export async function runDreamingSweep(options: { signal?: AbortSignal; automati
   }
 
   try {
-    if (!options.resumeJobId) {
-      const { collectAllMemorySources } = await import("./sources")
-      await collectAllMemorySources()
-    }
     // 输出预算按模型窗口推导一次快照（reasoning 的 thinking 也计入），显式配置只作更小的上限；
     // 同一轮内预留与调用共用同一个模型与预算，避免中途改配置造成账目口径不一致。
     const auxModel = resolvePiAuxModel()
@@ -265,7 +294,7 @@ export async function runDreamingSweep(options: { signal?: AbortSignal; automati
       const reservation = inputTokens + batchMaxTokens
       if (options.automatic) {
         const reservationId = `${jobId}:${resumedBatchOffset + batch}`
-        const granted = await reserveMemoryDreamingBudget(reservationId, today, reservation, memoryConfig.dreamingMaxDailyTokens)
+        const granted = await reserveMemoryDreamingBudget(reservationId, today, reservation, dreamingDailyTokens())
         if (!granted) break
         reservedTokens += reservation
       }
@@ -329,11 +358,13 @@ export async function runDreamingSweep(options: { signal?: AbortSignal; automati
 /**
  * 空闲模式的轻量调度器：只负责触发可取消的离线作业，作业完成后由 Rust 事务自动提交。
  * 状态保存在本模块仅作为节流；真正的租约、游标和候选正文都在 Rust 库里。
+ * 档位 off = 本调度器早退（不自动跑），手动入口 `action.memorySweep` 不受档位影响。
  */
 export function startIdleDreamingScheduler(): () => void {
   if (idleTimer) return () => stopIdleDreamingScheduler()
   const tick = (): void => {
-    if (memoryConfig.dreamingMode !== "idle" || !memoryConfig.enabled) {
+    const tier = dreamingTier()
+    if (tier === "off" || !memoryConfig.enabled) {
       idleSince = 0
       return
     }
@@ -342,8 +373,9 @@ export function startIdleDreamingScheduler(): () => void {
       return
     }
     idleSince ||= Date.now()
-    const idleReady = Date.now() - idleSince >= Math.max(30, memoryConfig.dreamingIdleSeconds) * 1000
-    const intervalReady = Date.now() - lastIdleRunAt >= Math.max(1, memoryConfig.dreamingMinIntervalMinutes) * 60_000
+    const limits = dreamingTierLimits(tier)
+    const idleReady = Date.now() - idleSince >= Math.max(30, limits.idleSeconds) * 1000
+    const intervalReady = Date.now() - lastIdleRunAt >= Math.max(1, limits.minIntervalMinutes) * 60_000
     if (!idleReady || !intervalReady) return
     if (idleRun) return
     lastIdleRunAt = Date.now()

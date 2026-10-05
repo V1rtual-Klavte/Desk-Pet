@@ -1,4 +1,4 @@
-import { silentAccessConfig } from "@/services/config"
+import { silentAccessFrequency } from "@/services/proactive/tiers"
 import { formatError } from "@/services/error"
 import { getHostBridge } from "@/services/host"
 import { createLogger } from "@/services/logger"
@@ -10,15 +10,23 @@ import type { RuntimeActivity } from "./types"
 
 const log = createLogger("WindowMonitor")
 
+/** 观察态不可用留痕的同因限频窗口：同一原因 10 分钟内只打一次，避免每次采样刷屏。 */
+const OBSERVATION_GATE_WARN_INTERVAL_MS = 10 * 60_000
+
 /** Node 侧观察订阅句柄（领域引导接线一次；退订后置回 null 允许重接）。 */
 let bridgeUnsubscribe: (() => void) | null = null
+
+/** 上次「观察态不可用」告警的状态与时刻；可用状态后由 getRuntimeActivity 清空重来。 */
+let lastObservationWarnState: RuntimeActivity["screenState"] | null = null
+let lastObservationWarnAt: number | null = null
 
 /**
  * Node 侧观察接线（领域引导 `@/services/init` 调用一次）。
  *
  * - 订阅宿主双投的 `window-observed`（原生宿主迁移过程记录 §9.4 第 2 条：原生 UI 一腿 + 当前代际 Node 一腿）；
- * - 按 `ai.silentAccess.enabled` 应用观察总闸：`setMonitorEnabled` 是既有开关入口，
- *   内含 Rust 总闸请求与行为采集启停（`startBehavior`/`stopBehavior`），不另建第二入口。
+ * - 按静默了解档位（`ai.silentAccess.frequency`，off = 观察总闸关闭）应用观察总闸：
+ *   `setMonitorEnabled` 是既有开关入口，内含 Rust 总闸请求与行为采集启停
+ *   （`startBehavior`/`stopBehavior`），不另建第二入口。
  *
  * 幂等：重复调用复用同一订阅，不叠加监听器（引导本身的进程内单次闩是第一道保证，
  * 这里的句柄是第二道）。返回退订句柄（幂等）：只解除 Node 侧订阅并清空观察存储与
@@ -46,8 +54,9 @@ export async function initWindowObservation(): Promise<() => void> {
       return () => {}
     }
   }
-  await setMonitorEnabled(silentAccessConfig.enabled)
-  log.info(`window-observed 已订阅；观察总闸${silentAccessConfig.enabled ? "已开启" : "已关闭"}`)
+  const monitorEnabled = silentAccessFrequency() !== "off"
+  await setMonitorEnabled(monitorEnabled)
+  log.info(`window-observed 已订阅；观察总闸${monitorEnabled ? "已开启" : "已关闭"}`)
   return bridgeUnsubscribe
 }
 
@@ -74,6 +83,41 @@ export async function setMonitorEnabled(enabled: boolean): Promise<boolean> {
   return behaviorFlushed
 }
 
+/**
+ * 「观察态不可用」告警的限频判定（纯函数，注入 now 便于单测；状态记忆由调用方持有）：
+ *
+ * - `observed` / `locked` 都算可用（locked 只是截图无意义，读取与主动消息照常）→ 不告警；
+ * - 同一原因（同 state）距上次告警不满 10 分钟 → 不重复告警；
+ * - 原因变化或已满 10 分钟 → 告警。
+ *
+ * 可用状态后的重置由包装处（getRuntimeActivity）负责，本函数无副作用。
+ */
+export function shouldWarnObservationGate(
+  state: RuntimeActivity["screenState"],
+  now: number,
+  lastState: RuntimeActivity["screenState"] | null,
+  lastAt: number | null,
+): boolean {
+  if (state === "observed" || state === "locked") return false
+  if (lastState === state && lastAt !== null && now - lastAt < OBSERVATION_GATE_WARN_INTERVAL_MS) return false
+  return true
+}
+
+/**
+ * 运行活动快照。所有消费者共用本包装：观察态不可用时按同因 10 分钟限频留痕，
+ * 文案带影响面，避免 `unavailable` 被静默吞掉（频率档位契约 Part 1.3）。
+ */
 export async function getRuntimeActivity(): Promise<RuntimeActivity> {
-  return getHostBridge().request("get_runtime_activity", {})
+  const activity = await getHostBridge().request("get_runtime_activity", {})
+  const now = Date.now()
+  if (shouldWarnObservationGate(activity.screenState, now, lastObservationWarnState, lastObservationWarnAt)) {
+    lastObservationWarnState = activity.screenState
+    lastObservationWarnAt = now
+    log.warn(`观察态不可用（${activity.screenState}）：依赖观察的主动机会与静默了解会被跳过`)
+  } else if (activity.screenState === "observed" || activity.screenState === "locked") {
+    // 观察恢复可用：清掉限频记忆，下一次不可用重新留痕（不被上一次同因窗口压掉）。
+    lastObservationWarnState = null
+    lastObservationWarnAt = null
+  }
+  return activity
 }

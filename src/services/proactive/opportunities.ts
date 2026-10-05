@@ -1,7 +1,7 @@
 import type { Opportunity, ProactiveOwner, ProactiveSourceRef, ProactiveTask, ProactiveMemoryTarget } from "./types"
 import { DAY_MS, FINISH_WORK_DELAY_MS } from "./config"
-import { PROACTIVE_LIMITS } from "./protocol"
-import { checkinWindows, localDayKey, localDayWindow, localToInstant, zonedParts, weekKey, calendarAnniversary, shiftLocalDate, isNightlyWindow, isQuietTime } from "./time"
+import { proactiveConfig } from "@/services/config"
+import { checkinWindows, hourBeforeQuietStart, localDayKey, localDayWindow, localToInstant, zonedParts, weekKey, calendarAnniversary, shiftLocalDate, isNightlyWindow, isQuietTime } from "./time"
 import { getCalendarEvents } from "./content/calendar"
 import type { BehaviorSnapshot } from "@/services/behavior"
 import { IDLE_ACTIVE_LIMIT_MS } from "@/services/window/types"
@@ -77,11 +77,8 @@ const PRIORITY = {
   goodnight: 20,
 } as const
 
-// ── 发话时段（本地时刻）：开/收与全局静默窗衔接，中段为日间分界 ──
-const SHARE_START_HOUR = PROACTIVE_LIMITS.quietEndHour      // 09
-const SHARE_END_HOUR = PROACTIVE_LIMITS.quietStartHour - 1  // 22
-const MIDDAY_HOUR = 12
-const EVENING_HOUR = 18
+// 白天不再有任何硬窗口：日级机会的 open/close 就是本地整日（00:00–次日 00:00），
+// 夜间由 isQuietTime 门禁负责；晚安窗口由静默开始时刻派生（见 isNightlyWindow）。
 const clock = (hour: number): string => `${String(hour).padStart(2, "0")}:00`
 
 export function collectOpportunities(input:RuleInput):Opportunity[] {
@@ -105,7 +102,7 @@ export function collectOpportunities(input:RuleInput):Opportunity[] {
       const anchor=target.eventAt,p=anchor.precision==="day"?{month:Number(anchor.localDate.slice(5,7)),day:Number(anchor.localDate.slice(8,10))}:zonedParts(anchor.instant,anchor.timezone)
       const local=localDayKey(now,anchor.timezone),year=zonedParts(now,anchor.timezone).year
       if(local===calendarAnniversary(year,p.month,p.day))out.push({...opportunity(owner,"anniversary",`${target.id}:v${target.version}:${year}`,[ref],
-        localToInstant(local,clock(SHARE_START_HOUR),anchor.timezone),localToInstant(local,clock(SHARE_END_HOUR),anchor.timezone),PRIORITY.anniversary,"用户明确日期的生日或纪念日，只根据来源表达，不捏造年龄、庆祝安排或共同经历。",true,[{id:target.id,version:target.version}]),expectsReply:false,selfSufficient:true})
+        localToInstant(local,clock(0),anchor.timezone),localToInstant(shiftLocalDate(local,1),clock(0),anchor.timezone),PRIORITY.anniversary,"用户明确日期的生日或纪念日，只根据来源表达，不捏造年龄、庆祝安排或共同经历。",true,[{id:target.id,version:target.version}]),expectsReply:false,selfSufficient:true})
     }
     if(target.kind!=="working" || target.workingState!=="open")continue
     if(!target.eventAt&&!target.dueAt&&now<target.updatedAt+7*DAY_MS)out.push(opportunity(owner,"open_end_followup",`${target.id}:v${target.version}:untimed`,[ref],target.updatedAt,target.updatedAt+7*DAY_MS,PRIORITY.openEndFollowup,
@@ -117,10 +114,13 @@ export function collectOpportunities(input:RuleInput):Opportunity[] {
         JSON.stringify({targetId:target.id,anchor:key,phase:window.phase,time:anchor}),true,[{id:target.id,version:target.version}]))
     }
   }
-  const open=localToInstant(day,clock(SHARE_START_HOUR),timezone),close=localToInstant(day,clock(SHARE_END_HOUR),timezone)
+  const open=localToInstant(day,clock(0),timezone),close=localToInstant(shiftLocalDate(day,1),clock(0),timezone)
   if (isNightlyWindow(now,timezone)) {
+    // 晚安窗口 = 静默开始前一小时 → 静默开始时刻（close 由静默值派生，不再借用白天窗口的收口）。
+    const quietStartHour=proactiveConfig.quietStartHour,nightlyHour=hourBeforeQuietStart()
+    const untilDay=nightlyHour>=quietStartHour?shiftLocalDate(day,1):day
     out.push({...opportunity(owner,"late_goodnight",`${day}:goodnight`,[source("calendar",`goodnight:${day}`,1,day,owner)],
-      localToInstant(day,clock(SHARE_END_HOUR),timezone),localToInstant(shiftLocalDate(day,1),clock(0),timezone),PRIORITY.goodnight,
+      localToInstant(day,clock(nightlyHour),timezone),localToInstant(untilDay,clock(quietStartHour),timezone),PRIORITY.goodnight,
       "一条简短、温柔的晚安分享，不询问、不追问，也不要求回应。"),expectsReply:false,selfSufficient:true})
     return out
   }
@@ -132,14 +132,15 @@ export function collectOpportunities(input:RuleInput):Opportunity[] {
   const clockRef=source("calendar",`rhythm:${day}`,1,day,owner)
   const weekday=new Date(`${day}T00:00:00Z`).getUTCDay()
   const observedHours=weekday===0||weekday===6?input.behavior.rhythm.weekends:input.behavior.rhythm.weekdays
+  // 画像逐小时资格是自适应信号（不是硬窗口）：可靠画像里该小时有观测才发，不可靠时不限小时。
   const rhythmEligible=input.behavior.quality.status!=="reliable"||observedHours[p.hour]!>0
-  if(rhythmEligible && p.hour>=SHARE_START_HOUR && p.hour<MIDDAY_HOUR)out.push({...opportunity(owner,"rhythm",`${day}:morning`,[clockRef],open,localToInstant(day,clock(MIDDAY_HOUR),timezone),PRIORITY.rhythm,"晨间问候，可邀请聊今天的安排；不知道的安排不能编造。"),expectsReply:true})
-  if(rhythmEligible && p.hour>=EVENING_HOUR && p.hour<SHARE_END_HOUR)out.push({...opportunity(owner,"rhythm",`${day}:evening`,[clockRef],localToInstant(day,clock(EVENING_HOUR),timezone),close,PRIORITY.rhythm,"晚间问候，可邀请讲讲今天；不假定工作成果。"),expectsReply:true})
+  if(rhythmEligible)out.push({...opportunity(owner,"rhythm",`${day}:morning`,[clockRef],open,close,PRIORITY.rhythm,"晨间问候，可邀请聊今天的安排；不知道的安排不能编造。"),expectsReply:true})
+  if(rhythmEligible)out.push({...opportunity(owner,"rhythm",`${day}:evening`,[clockRef],open,close,PRIORITY.rhythm,"晚间问候，可邀请讲讲今天；不假定工作成果。"),expectsReply:true})
   if(input.behavior.quality.status==="reliable") {
     const b=input.behavior
     const ref=source("behavior",`behavior:${day}`,b.revision,`${b.revision}:${day}`,owner)
     const weekday=new Date(`${day}T00:00:00Z`).getUTCDay()
-    if(weekday===0 && p.hour>=EVENING_HOUR && p.hour<SHARE_END_HOUR) out.push({...opportunity(owner,"retrospective",weekKey(now,timezone),[ref],localToInstant(day,clock(EVENING_HOUR),timezone),close,PRIORITY.retrospective,
+    if(weekday===0) out.push({...opportunity(owner,"retrospective",weekKey(now,timezone),[ref],open,close,PRIORITY.retrospective,
       JSON.stringify({quality:b.quality,days7:b.weekly.days,observedActivity:b.weekly.activity,focus:b.weekly.focus,instruction:"仅描述合格观测，不声称现实成就；过去7天一份回顾。"})),expectsReply:true})
   }
   if(input.topic) {

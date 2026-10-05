@@ -226,14 +226,32 @@ const SAFETY_MODE: &[Choice] = &[
     },
 ];
 
-const DREAMING_MODE: &[Choice] = &[
+/// 三处频率档位共用的四档选项表（主动消息 / 静默了解 / 记忆整理）。
+///
+/// 档位的**数值**（唤醒区间、每日配额、token 等）的唯一真相源是
+/// `src/services/proactive/protocol.json` 的 `tiers`；这里是设置窗的取值与显示名，
+/// 只定义一次供三处字段引用，不在各处复制四值字面量。
+/// 三处频率档位共用的唯一选项表。
+///
+/// **必须是 `static` 而不是 `const`**：`const` 会在每个使用点内联成各自的一份匿名分配，
+/// 测试里 `std::ptr::eq` 的「同表」回归断言（首跑实测为假）会因此永远拦不住「复制字面量」。
+/// 单表约束靠地址同一来钉，只有 `static` 有稳定地址。
+static FREQUENCY_TIERS: &[Choice] = &[
     Choice {
-        value: "manual",
-        label: "手动",
+        value: "off",
+        label: "关",
     },
     Choice {
-        value: "idle",
-        label: "空闲自动",
+        value: "low",
+        label: "低",
+    },
+    Choice {
+        value: "medium",
+        label: "中",
+    },
+    Choice {
+        value: "high",
+        label: "高",
     },
 ];
 
@@ -605,7 +623,7 @@ const AI_COMPANION: &[Field] = &[
         key: "ai.humanizer.enabled",
         label: "拟人表达",
         kind: FieldKind::Bool,
-        help: "与主动总开关联动：只有主动开启时才有表达机会",
+        help: "主动消息档位非「关」时才有表达机会",
     },
     Field {
         key: "ai.memory.enabled",
@@ -614,22 +632,16 @@ const AI_COMPANION: &[Field] = &[
         help: "召回与候选收集总开关",
     },
     Field {
-        key: "ai.memory.dreaming.mode",
-        label: "记忆整理模式",
-        kind: FieldKind::Enum(DREAMING_MODE),
-        help: "",
+        key: "ai.memory.dreaming.tier",
+        label: "记忆整理档位",
+        kind: FieldKind::Enum(FREQUENCY_TIERS),
+        help: "「关」= 不自动整理（面板手动整理按钮保留）；档位越高空闲阈值越低、token 预算越大",
     },
 ];
 
-/// 陪伴管理动作（本批）：主动开关、指令与阶段文案、变量池预览。
+/// 陪伴管理动作（本批）：指令与阶段文案、变量池预览。
 /// 均走请求面（Node 侧既有领域入口），不在这里落任何第二份状态。
 const AI_COMPANION_ACTIONS: &[Field] = &[
-    Field {
-        key: "action.toggleProactive",
-        label: "切换主动消息开关",
-        kind: FieldKind::Action,
-        help: "按钮上显示当前状态；点击取反（状态在宿主侧，进入本页时读取一次，切换后立即刷新）",
-    },
     Field {
         key: "action.editV1rtual",
         label: "编辑 V1RTUAL 指令",
@@ -671,65 +683,49 @@ impl Field {
     }
 }
 
-// 静默访问的四个节奏参数：CONFIG 键名与磁盘值保持原本口径（`staySeconds` 秒、
-// `settleMs` 毫秒、两个 `*CooldownMs` 毫秒），界面按旧壳口径显示 —— 停留**秒**、
-// 防抖**毫秒**、全局/同页冷却**秒**。冷却键的秒↔毫秒换算在草稿边界做唯一一次
-// （`settings/mod.rs` 的 `MS_KEY_DISPLAY_SECONDS`，schema 不自行换算）；
-// 本表的范围/步长按**显示单位**（秒）收口。
-const AI_SILENT: &[Field] = &[
+/// 主动消息：档位（总闸 + 频率）与静默时间段。
+///
+/// 静默时间段**只约束主动消息**（该时段不唤醒 / 不产生机会 / 不发送）；
+/// 跨夜语义「开始 > 结束」（默认 23–9），开始 == 结束 = 不静默；白天不设窗口。
+const AI_PROACTIVE: &[Field] = &[
     Field {
-        key: "ai.silentAccess.enabled",
-        // 标签避免与小节标题「静默访问」逐字重复（实机反馈：区块标题下第一行
-        // 又是同名标签，读起来像渲染错误）。
-        label: "启用静默访问",
-        kind: FieldKind::Bool,
-        help: "允许观察窗口、截图与手边文件；读取哪些文件由 AI 根据当前窗口判断，用于带来源的了解。主动消息由独立开关控制",
+        key: "ai.proactive.frequency",
+        label: "主动消息档位",
+        kind: FieldKind::Enum(FREQUENCY_TIERS),
+        help: "「关」= 不唤醒 / 不产生机会 / 不发送；随机唤醒低≈1–2 条/天、中≈2–4、高≈4–8；「高」约 5 倍 token",
     },
     Field {
-        key: "ai.silentAccess.staySeconds",
-        label: "停留时长",
-        kind: FieldKind::Number {
-            min: 5.0,
-            max: 600.0,
-            step: 5.0,
-            unit: "s",
-        },
-        help: "",
-    },
-    Field {
-        key: "ai.silentAccess.settleMs",
-        label: "防抖",
+        key: "ai.proactive.quietStartHour",
+        label: "静默开始",
         kind: FieldKind::Number {
             min: 0.0,
-            max: 30_000.0,
-            step: 500.0,
-            unit: "ms",
-        },
-        help: "",
-    },
-    Field {
-        key: "ai.silentAccess.cooldownMs",
-        label: "全局冷却",
-        kind: FieldKind::Number {
-            min: 0.0,
-            max: 600.0,
+            max: 23.0,
             step: 1.0,
-            unit: "s",
+            unit: "时",
         },
-        help: "",
+        help: "仅约束主动消息；跨夜写「开始 > 结束」（默认 23–9）；开始 == 结束 = 不静默",
     },
     Field {
-        key: "ai.silentAccess.samePageCooldownMs",
-        label: "同页冷却",
+        key: "ai.proactive.quietEndHour",
+        label: "静默结束",
         kind: FieldKind::Number {
             min: 0.0,
-            max: 600.0,
+            max: 23.0,
             step: 1.0,
-            unit: "s",
+            unit: "时",
         },
-        help: "",
+        help: "静默时段的结束小时（该时刻起恢复）；开始 == 结束 = 不静默",
     },
 ];
+
+/// 静默了解：总闸 + 频率（原 `enabled` 与四个节奏数值字段随档位化删除；
+/// 四个数值属主动消息节奏，已收进 `proactive/protocol.json` 的 `tiers`）。
+const AI_SILENT: &[Field] = &[Field {
+    key: "ai.silentAccess.frequency",
+    label: "静默了解频率",
+    kind: FieldKind::Enum(FREQUENCY_TIERS),
+    help: "总闸 + 频率：「关」= 不自动了解（读取靠手动）；低/中/高按离开时长与每日批数分档",
+}];
 
 // ── 工具 ──
 
@@ -933,6 +929,10 @@ pub const TABS: &[Tab] = &[
                 fields: AI_COMPANION,
             },
             Section {
+                title: "主动陪伴",
+                fields: AI_PROACTIVE,
+            },
+            Section {
                 title: "陪伴管理",
                 fields: AI_COMPANION_ACTIONS,
             },
@@ -1122,27 +1122,58 @@ mod tests {
         }
     }
 
-    /// 冷却键的界面单位必须是秒（秒↔毫秒换算在草稿边界的唯一键表里，见 mod.rs）。
+    /// 三处频率档位引用同一张 Choice 表（不在各处再写一份四值字面量）；
+    /// 静默时间段字段的值域是 0–23 的整点。
     #[test]
-    fn 静默访问冷却键界面单位是秒() {
+    fn 频率档位共用一张选项表且静默时段字段齐备() {
         for key in [
-            "ai.silentAccess.cooldownMs",
-            "ai.silentAccess.samePageCooldownMs",
+            "ai.proactive.frequency",
+            "ai.silentAccess.frequency",
+            "ai.memory.dreaming.tier",
         ] {
             let field = super::field(key).unwrap_or_else(|| panic!("{key} 应在 schema 里"));
+            let FieldKind::Enum(choices) = field.kind else {
+                panic!("{key} 必须是枚举控件: {:?}", field.kind);
+            };
+            assert!(
+                std::ptr::eq(choices, FREQUENCY_TIERS),
+                "{key} 必须引用同一张四档选项表（不得复制字面量）"
+            );
+        }
+        let values: Vec<&str> = FREQUENCY_TIERS
+            .iter()
+            .map(|choice| choice.value)
+            .collect();
+        assert_eq!(values, vec!["off", "low", "medium", "high"]);
+        for key in ["ai.proactive.quietStartHour", "ai.proactive.quietEndHour"] {
+            let field = super::field(key).unwrap_or_else(|| panic!("{key} 应在 schema 里"));
             match field.kind {
-                FieldKind::Number { unit, .. } => {
-                    assert_eq!(unit, "s", "{key} 的界面单位必须是秒（旧壳口径）")
+                FieldKind::Number { min, max, .. } => {
+                    assert_eq!((min, max), (0.0, 23.0), "{key} 的值域必须是 0–23 的整点")
                 }
                 other => panic!("{key} 必须是数值控件: {other:?}"),
             }
         }
-        match super::field("ai.silentAccess.settleMs").unwrap().kind {
-            FieldKind::Number { unit, .. } => {
-                assert_eq!(unit, "ms", "防抖保持毫秒（不与冷却一起换算）")
-            }
-            other => panic!("防抖必须是数值控件: {other:?}"),
-        }
+    }
+
+    /// 主动陪伴字段成组落在 AI 页「主动陪伴」小节（设置面按小节呈现）。
+    #[test]
+    fn 主动陪伴字段成组落在_ai_页() {
+        let ai = TABS.iter().find(|tab| tab.id == "ai").unwrap();
+        let section = ai
+            .sections
+            .iter()
+            .find(|section| section.title == "主动陪伴")
+            .expect("AI 页必须有「主动陪伴」小节");
+        let keys: Vec<&str> = section.fields.iter().map(|field| field.key).collect();
+        assert_eq!(
+            keys,
+            vec![
+                "ai.proactive.frequency",
+                "ai.proactive.quietStartHour",
+                "ai.proactive.quietEndHour"
+            ]
+        );
     }
 
     #[test]

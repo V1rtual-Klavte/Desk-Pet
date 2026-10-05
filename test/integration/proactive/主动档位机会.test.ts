@@ -97,9 +97,8 @@ afterEach(async () => {
 describe("主动档位机会", () => {
   // 单测预算大于两个 waitFor 窗口之和：红色路径（档位没活）要走到 waitFor 报错，
   // 给出「拿不到 variable_change 机会」的可读证据，而不是被 vitest 默认 5s 超时截断。
-  // 本用例暂不带 caseId 标记：登记 caseId / coverage point 属于契约修订，
-  // 需按 test/SKILL 的 analyze → generate 流程走（本轮不改 test/contracts/）。
-  it("默认卡数值跨过档位形成变量机会", async () => {
+  // caseId 归 proactive/pr-10（W1-T3 登记；sourceHash 由收口波统一 analyze→generate 刷新）。
+  it("默认卡数值跨过档位形成变量机会 [proactive-variable-band-opportunity]", async () => {
     const card = getActiveCard()
     expect(card?.id, "场景前提：激活卡必须是默认卡").toBe("default")
     if (!card) return

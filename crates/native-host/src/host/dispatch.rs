@@ -1,13 +1,14 @@
 //! 原生宿主完整命令分派器（W4）。
 //!
-//! 覆盖 `src/services/host/types.ts` 的 `HostCommandMap` 全部 129 条（总数以 types.ts
-//! 为准；分项已复核为「107 冻结 + 22 扩展」：冻结件删 `profile_clone`（「新建 Profile」
+//! 覆盖 `src/services/host/types.ts` 的 `HostCommandMap` 全部 134 条（总数以 types.ts
+//! 为准；分项已复核为「107 冻结 + 27 扩展」：冻结件删 `profile_clone`（「新建 Profile」
 //! 改造）与 `mcp_send`，MCP 裸行收发改由 `mcp_write` / `mcp_read` 两条有意扩展承担）。
 //! A2 追加 `apply_chat_projection` / `apply_titlebar_status`，
 //! A3 追加 `set_popup_placement` / `set_popup_size`，管理面批次追加通用文件对话框
 //! `pick_file_open` / `pick_file_save` 与自动呼出开关 `set_popup_auto_show`，
 //! 主题批次追加界面主题下发 `apply_theme`，设置页 Card 管理批次追加人格文件删除
-//! `personality_file_delete`）。
+//! `personality_file_delete`，自带 MCP 批次追加凭据读写 `mcp_credential_set` /
+//! `mcp_credential_delete` / `mcp_credential_status` / `mcp_credential_get`）。
 //! 每条：从 JSON 参数解出（**参数名逐字对齐矩阵的 camelCase 线格式**）
 //! → 调用 `commands/**` 或对应域的实现 → 结果按矩阵形状序列化。
 //!
@@ -57,9 +58,9 @@ use serde::Serialize;
 use serde_json::{json, Value};
 
 use crate::commands::{
-    chat_images, cursor, font_cmd, logging, mcp_bridge, memory_cmd, monitor_ctl, observation_cmd,
-    personality_fs_cmd, profile_cmd, resources_cmd, screenshot_cmd, session_fs, skill_cmd,
-    tool_exec, tool_permit,
+    chat_images, cursor, font_cmd, logging, mcp_bridge, mcp_credentials, memory_cmd, monitor_ctl,
+    observation_cmd, personality_fs_cmd, profile_cmd, resources_cmd, screenshot_cmd, session_fs,
+    skill_cmd, tool_exec, tool_permit,
 };
 use crate::error::{AppError, AppResult};
 use crate::host::{WindowId, WindowPort};
@@ -120,6 +121,9 @@ pub struct NativeDispatcher {
     ui: UiHandle,
     windows: Arc<dyn WindowPort>,
     monitor: Arc<MonitorState>,
+    /// 主动档位投影（与 `monitor` 并列的 dispatcher 级运行期状态；不进 SQLite）：
+    /// Node 经 `proactive_control` 下发，缺省回落中档。消费者是 proactive 域的终裁命令。
+    proactive_limits: Arc<crate::proactive::ProactiveLimitsState>,
     mcp: Arc<mcp_bridge::McpPool>,
     bash: Arc<tool_exec::BashPool>,
     permits: Arc<tool_permit::ToolPermitPool>,
@@ -143,6 +147,7 @@ impl NativeDispatcher {
             ui: deps.ui,
             windows: deps.windows,
             monitor: deps.monitor,
+            proactive_limits: Arc::new(crate::proactive::ProactiveLimitsState::default()),
             mcp: deps.mcp,
             bash: deps.bash,
             permits: deps.permits,
@@ -894,6 +899,9 @@ impl NativeDispatcher {
                 self.memory()?,
                 arg_str(args, "jobId")?,
             )?),
+            "memory_pending_source_count" => Ok(Value::from(
+                memory_commands::memory_pending_source_count(self.memory()?)?,
+            )),
             "memory_source_evidence" => ser(memory_commands::memory_source_evidence(
                 self.memory()?,
                 arg_str(args, "sourceId")?,
@@ -953,9 +961,37 @@ impl NativeDispatcher {
                 memory_commands::memory_restore_preview(&self.paths, arg_str(args, "backupPath")?)
             }
 
+            // ── MCP 凭据（commands/mcp_credentials.rs；存储在同库 mcp_credentials 表）──
+            // 值与错误文案纪律：值只经 `mcp_credential_get` 的定向返回出去（消费方只有
+            // Node 连接期注入），本层不把值写进任何日志/回执。
+            "mcp_credential_set" => {
+                mcp_credentials::mcp_credential_set(
+                    self.memory()?,
+                    arg_str(args, "server")?,
+                    arg_str(args, "var")?,
+                    arg_str(args, "value")?,
+                )?;
+                Ok(Value::Null)
+            }
+            "mcp_credential_delete" => Ok(Value::Bool(mcp_credentials::mcp_credential_delete(
+                self.memory()?,
+                arg_str(args, "server")?,
+                arg_str(args, "var")?,
+            )?)),
+            "mcp_credential_status" => ser(mcp_credentials::mcp_credential_status(
+                self.memory()?,
+                arg_str(args, "server")?,
+            )?),
+            "mcp_credential_get" => ser(mcp_credentials::mcp_credential_get(
+                self.memory()?,
+                arg_str(args, "server")?,
+                arg_str(args, "var")?,
+            )?),
+
             // ── 主动陪伴（proactive/commands.rs；request: Value → Value）──
             "proactive_scan" => crate::proactive::commands::proactive_scan(
                 self.memory()?,
+                &self.proactive_limits,
                 arg_value(args, "request")?,
             ),
             "proactive_query" => crate::proactive::commands::proactive_query(
@@ -968,6 +1004,7 @@ impl NativeDispatcher {
             ),
             "proactive_claim" => crate::proactive::commands::proactive_claim(
                 self.memory()?,
+                &self.proactive_limits,
                 arg_value(args, "request")?,
             ),
             "proactive_validate" => crate::proactive::commands::proactive_validate(
@@ -976,19 +1013,23 @@ impl NativeDispatcher {
             ),
             "proactive_settle" => crate::proactive::commands::proactive_settle(
                 self.memory()?,
+                &self.proactive_limits,
                 arg_value(args, "request")?,
             ),
             "proactive_reconcile" => crate::proactive::commands::proactive_reconcile(
                 self.memory()?,
+                &self.proactive_limits,
                 arg_value(args, "request")?,
             ),
             "proactive_control" => crate::proactive::commands::proactive_control(
                 self.memory()?,
+                &self.proactive_limits,
                 arg_value(args, "request")?,
             ),
             "proactive_auxiliary_budget_reserve" => {
                 crate::proactive::commands::proactive_auxiliary_budget_reserve(
                     self.memory()?,
+                    &self.proactive_limits,
                     arg_value(args, "request")?,
                 )
             }
@@ -1561,7 +1602,12 @@ mod tests {
         // 自行裁决呼出）—— 补登记时一并把这条计数改到位。设置页 Card 管理本批追加
         // `personality_file_delete`（人格文件域删除，只删普通文件、拒绝链接叶子），
         // 分项随之变为「107 冻结 + 22 扩展」。
-        assert_eq!(names.len(), 129, "HostCommandMap 条数（以 types.ts 为准）");
+        // 本批追加 `memory_pending_source_count`（dreaming 开作业前查水位之后有无待处理来源；
+        // 漏登记会让整理链条「跳过」变成未定义行为）—— 分项随之变为「107 冻结 + 23 扩展」。
+        // 自带 MCP 批次追加凭据读写四条（`mcp_credential_set` / `_delete` / `_status` / `_get`：
+        // 令牌存自有 SQLite、不写 CONFIG；漏登记会让「设置面写不进令牌」变成未知方法）
+        // —— 分项随之变为「107 冻结 + 27 扩展」。
+        assert_eq!(names.len(), 134, "HostCommandMap 条数（以 types.ts 为准）");
         assert!(names.contains(&"init_memory_files".to_string()));
         assert!(names.contains(&"e2e_memory_reset".to_string()));
         // A2 追加的两条必须在分派面上（本测试只对账「有臂」，行为见下方专项测试）。
@@ -1848,6 +1894,55 @@ mod tests {
         assert_eq!(
             env.call("memory_detail", json!({ "id": "nope" })).unwrap(),
             Value::Null
+        );
+    }
+
+    // ── MCP 凭据：分派臂、camelCase 参数与「状态不回值」 ──
+
+    #[test]
+    fn mcp凭据命令往返且状态不回值() {
+        let env = TestEnv::new("mcp-credentials");
+        env.call(
+            "mcp_credential_set",
+            json!({ "server": "github", "var": "GITHUB_TOKEN", "value": "probe-token" }),
+        )
+        .unwrap();
+        assert_eq!(
+            env.call("mcp_credential_get", json!({ "server": "github", "var": "GITHUB_TOKEN" }))
+                .unwrap(),
+            json!("probe-token")
+        );
+        // 名单命令只回变量名：值不得出现在 status 回执里。
+        let status = env
+            .call("mcp_credential_status", json!({ "server": "github" }))
+            .unwrap();
+        assert_eq!(status, json!(["GITHUB_TOKEN"]));
+        assert!(!status.to_string().contains("probe-token"), "{status}");
+        // 未设置也是成功回执（null），由 Node 按「变量缺失」如实失败。
+        assert_eq!(
+            env.call("mcp_credential_get", json!({ "server": "github", "var": "OTHER" }))
+                .unwrap(),
+            Value::Null
+        );
+        assert_eq!(
+            env.call("mcp_credential_delete", json!({ "server": "github", "var": "GITHUB_TOKEN" }))
+                .unwrap(),
+            json!(true)
+        );
+        assert_eq!(
+            env.call("mcp_credential_delete", json!({ "server": "github", "var": "GITHUB_TOKEN" }))
+                .unwrap(),
+            json!(false)
+        );
+        // 空值拒绝走结构化 CONFIG（不静默存空、不折成成功）。
+        assert_eq!(
+            env.call(
+                "mcp_credential_set",
+                json!({ "server": "github", "var": "GITHUB_TOKEN", "value": "   " })
+            )
+            .unwrap_err()
+            .code(),
+            "CONFIG"
         );
     }
 

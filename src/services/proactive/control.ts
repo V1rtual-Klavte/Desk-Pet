@@ -1,50 +1,44 @@
 // ==========================================
-// 主动控制 —— 领域侧（Node）：处理器登记 + 进程内状态分发
+// 主动控制通道 —— 档位投影下发（Node → Rust）
 // ==========================================
 //
-// 拆分说明（原生宿主迁移过程记录 §9.4 第 7/35 条）：
-// - 本文件只做领域侧：scanner 登记控制处理器，领域在状态变化时做**进程内**分发。
-// - 跨窗口请求/应答协议（deskpet-proactive-control-request/-response/-state）
-//   是纯 UI 窗口间协调（判据 (b)），不进 Node 图；原生 UI 的控制入口尚未接线到本处理器。
-// - 控制数据（enabled/muteUntil）的真相源仍是 Rust SQLite（proactive_control 命令），
-//   本通道不承载第二份长期状态。
+// 真相源变更（契约 §2.2）：主动开关已并入 `ai.proactive.frequency` 档位（`off` = 关），
+// 不再有独立 enabled 设置，也没有运行期 enabled 状态 —— 门禁一律由 scanner 读
+// `proactiveFrequency()` 判定。Rust 侧 `proactive_control` 表的 enabled 列已删。
+//
+// 本模块唯一的职责：把当前档位派生的 limits 投影经 `proactive_control` 通道下发给
+// Rust 终裁（契约 §2.5）。Rust 存运行期投影、不读 CONFIG、不回写；真相源仍是 CONFIG。
+// `muteUntil` / `revision` 仍是 Rust 侧运行期状态，消费点是 scan 回执里的 `control`
+// （scanner.tick 直接读，不经过本模块）。
+//
+// limits 是全局运行期投影，不归属任何会话。`proactive_control` 的 control 动作用
+// 空身份信封（Rust 的 proactive_change 对 control 显式豁免 owner 校验，见 store.rs），
+// baseRevision 也不参与乐观并发比对；不要为下发投影伪造某张卡或某个会话的身份。
 
-import type { ProactiveControl } from "@/services/agent/memory/protocol"
 import { createLogger } from "@/services/logger"
 import { formatError } from "@/services/error"
+import { proactiveFrequency, proactiveTierLimits } from "./tiers"
+import * as ipc from "./ipc"
+import type { ProactiveOwner } from "./protocol"
 
 const log = createLogger("ProactiveControl")
 
-export type ProactiveControlHandler = (enabled?: boolean) => Promise<ProactiveControl>
+/** 投影推送的控制信封：全局运行期投影，不属于任何会话（见文件头注）。 */
+const projectionOwner: ProactiveOwner = { sessionId: "", cardId: "", cardHash: "", runGeneration: 0 }
 
-let handler: ProactiveControlHandler | null = null
-
-/** scanner 在 start() 时登记（stop() 时清空）。 */
-export function setProactiveControlHandler(value: ProactiveControlHandler | null): void {
-  handler = value
-}
-
-/** 处理一次控制请求；未登记处理器是接线错误（scanner 未启动），显式抛、不静默吞。 */
-export async function handleProactiveControlRequest(enabled?: boolean): Promise<ProactiveControl> {
-  if (!handler) throw new Error("主动控制处理器未登记：proactive scanner 尚未 start()")
-  return handler(enabled)
-}
-
-const subscribers = new Set<(control: ProactiveControl) => void>()
-
-/** 进程内订阅控制状态分发（UI 壳的广播桥用它把状态发给其它窗口）。 */
-export function subscribeProactiveControl(listener: (control: ProactiveControl) => void): () => void {
-  subscribers.add(listener)
-  return () => subscribers.delete(listener)
-}
-
-/** 控制状态变化后分发（proactive/index.ts 的 setEnabled 在命令成功后调用）。 */
-export async function publishProactiveControl(control: ProactiveControl): Promise<void> {
-  for (const listener of [...subscribers]) {
-    try {
-      listener(control)
-    } catch (error) {
-      log.warn("主动控制订阅者失败:", formatError(error))
-    }
+/**
+ * 把当前档位派生的 limits 投影推给 Rust（scanner start 与每次 `refreshProactive` 调用）。
+ *
+ * `off` 不推：Rust 保持现值 / 缺省（缺省 = 中档），与「关」不产生新节流需求一致。
+ * 失败只留痕不抛出 —— 投影是终裁加速器，真相源仍是 CONFIG，下一次刷新/启动会重推；
+ * 调用方在同步引导路径上，一次下发失败不该中断引导或设置保存。
+ */
+export async function pushProactiveLimits(): Promise<void> {
+  const tier = proactiveFrequency()
+  if (tier === "off") return
+  try {
+    await ipc.control({ operationId: crypto.randomUUID(), baseRevision: 0, owner: projectionOwner, limits: proactiveTierLimits(tier) })
+  } catch (error) {
+    log.warn("主动档位投影下发失败（Rust 保持现值，下次刷新重推）:", formatError(error))
   }
 }

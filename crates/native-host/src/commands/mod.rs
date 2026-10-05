@@ -11,6 +11,7 @@ pub mod cursor;
 pub mod font_cmd;
 pub mod logging;
 pub mod mcp_bridge;
+pub mod mcp_credentials;
 pub mod mcp_managed;
 pub mod memory_cmd;
 pub mod monitor_ctl;

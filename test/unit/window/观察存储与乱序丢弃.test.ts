@@ -33,7 +33,7 @@ vi.mock("@/services/behavior", () => behavior)
 
 vi.mock("@/services/proactive/presence", () => ({ clearPresence: vi.fn(() => true) }))
 
-const originalEnabled = getOverride<boolean>("ai.silentAccess.enabled")
+const originalFrequency = getOverride<string>("ai.silentAccess.frequency")
 
 /** 订阅者自身抛错不影响其它订阅者与接收；定义在用例体外，避免与断言混淆。 */
 function failingSubscriber(): void {
@@ -70,13 +70,13 @@ afterAll(() => {
 
 beforeEach(() => {
   vi.clearAllMocks()
-  setOverride("ai.silentAccess.enabled", true)
+  setOverride("ai.silentAccess.frequency", "medium")
 })
 
 afterEach(() => {
   clearLatestWindowObservation()
   clearWindowObservationSubscribers()
-  setOverride("ai.silentAccess.enabled", originalEnabled)
+  setOverride("ai.silentAccess.frequency", originalFrequency)
 })
 
 describe("乱序与重复丢弃", () => {
@@ -100,8 +100,8 @@ describe("乱序与重复丢弃", () => {
 })
 
 describe("总闸过滤", () => {
-  it("总闸关闭时非 disabled 状态一律拒收；disabled 状态放行且清空最近观察", () => {
-    setOverride("ai.silentAccess.enabled", false)
+  it("off 档时非 disabled 状态一律拒收；disabled 状态放行且清空最近观察", () => {
+    setOverride("ai.silentAccess.frequency", "off")
 
     expect(acceptWindowObservation(observation({ monitorGeneration: 3, sequence: 1, observationState: "observed" }))).toBe(false)
     expect(acceptWindowObservation(observation({ monitorGeneration: 3, sequence: 1, observationState: "unavailable" }))).toBe(false)
@@ -113,12 +113,12 @@ describe("总闸过滤", () => {
     expect(getLatestWindowObservation()).toBeNull()
 
     // 重新开启后按序号继续接收
-    setOverride("ai.silentAccess.enabled", true)
+    setOverride("ai.silentAccess.frequency", "medium")
     expect(acceptWindowObservation(observation({ monitorGeneration: 4, sequence: 1 }))).toBe(true)
     expect(getLatestWindowObservation()).not.toBeNull()
 
-    // 读取侧也看总闸：关闭后存量观察不再对外可见
-    setOverride("ai.silentAccess.enabled", false)
+    // 读取侧也看总闸：关档后存量观察不再对外可见
+    setOverride("ai.silentAccess.frequency", "off")
     expect(getLatestWindowObservation()).toBeNull()
   })
 })

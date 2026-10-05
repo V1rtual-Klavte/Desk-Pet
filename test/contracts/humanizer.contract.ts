@@ -27,7 +27,7 @@ export const humanizerContract: ModuleContract = {
     "src/services/agent/runner.ts",
     "src/services/engine/harness/runtime.ts",
   ],
-  sourceHash: "3535c5ef61ea6514fdf09531fa1db39169f507e8c9691dbe06b5070e4d672f42",
+  sourceHash: "1b14f44ded1081eed1c984aa5b24fe736712d6c3eac5a28d5335d28490b5e060",
   coverage: [
     {
       id: "hz-01",

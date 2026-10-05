@@ -10,7 +10,7 @@ export const 静默访问关闭边界: SceneDef = {
     description: "真实Rust命令注册与关闭许可边界：关闭时截图与目标读取都必须返回CANCELLED，不启动后台采集",
     depth: "deep", suite: "regression", entry: "production", tags: ["boundary", "error", "native", "permission"] },
   setup: async () => {
-    setOverride("ai.silentAccess.enabled", false)
+    setOverride("ai.silentAccess.frequency", "off")
     await setMonitorEnabled(false)
     installFakeProvider([fakeText("静默访问关闭了")])
   },

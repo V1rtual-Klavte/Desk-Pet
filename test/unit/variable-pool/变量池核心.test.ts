@@ -11,6 +11,7 @@ import { join } from "node:path"
 import { afterEach, beforeEach, describe, expect, it } from "vitest"
 
 import { setTestDataRoot } from "../../host/node-ipc"
+import { getOverride, setOverride } from "@/services/config"
 import type { CardVariableDef } from "@/services/personality/types"
 import {
   batchWriteVars,
@@ -71,6 +72,25 @@ describe("变量池核心", () => {
     expect(computeSystemVariables(new Date(2026, 0, 5, 8, 59), "x").isNightTime).toBe(true)
     expect(computeSystemVariables(new Date(2026, 0, 5, 9, 0), "x").isNightTime).toBe(false)
     expect(computeSystemVariables(new Date(2026, 0, 5, 12, 0), "x").isWeekend).toBe(false)
+  })
+
+  it("isNightTime 随 CONFIG 静默值走（同日静默与 start==end 不静默）[variable-night-time-config]", () => {
+    const originalStart = getOverride<number>("ai.proactive.quietStartHour")
+    const originalEnd = getOverride<number>("ai.proactive.quietEndHour")
+    try {
+      // 同日静默 12–14：只有 [12,14) 是夜里；旧 23–9 硬编码会给出相反结论
+      setOverride("ai.proactive.quietStartHour", 12)
+      setOverride("ai.proactive.quietEndHour", 14)
+      expect(computeSystemVariables(new Date(2026, 0, 5, 13, 0), "x").isNightTime).toBe(true)
+      expect(computeSystemVariables(new Date(2026, 0, 5, 23, 5), "x").isNightTime).toBe(false)
+      // start == end = 不静默
+      setOverride("ai.proactive.quietStartHour", 10)
+      setOverride("ai.proactive.quietEndHour", 10)
+      expect(computeSystemVariables(new Date(2026, 0, 5, 10, 0), "x").isNightTime).toBe(false)
+    } finally {
+      setOverride("ai.proactive.quietStartHour", originalStart)
+      setOverride("ai.proactive.quietEndHour", originalEnd)
+    }
   })
 
   it("initVariablePool 按 defs 建池 [variable-pool-init]", () => {

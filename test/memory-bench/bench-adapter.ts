@@ -4,7 +4,7 @@
 //
 // 与 test/memory-quality/live-adapter.ts 的差异（外部基准的本质不同）：
 //   · 不做 fact 金标与 fixture 指纹配对；历史注入 = 直登记 MemorySource（不写会话 JSONL、不逐轮重放）；
-//   · 提取走真实 dreaming（manual 模式、循环直至无待处理来源）；session-scope 候选归一为 user scope；
+//   · 提取走真实 dreaming（档位 off + 手动 sweep，循环直至无待处理来源）；session-scope 候选归一为 user scope；
 //   · 每题新建会话提问；cell = 题 × 1 trial（观测证据，不套自建集的 ≥3 trial 配对纪律）；
 //   · LoCoMo / MemoryBank 按「组」灌一次库、组内多题复用（对话级/角色级分组）。
 // 证据与计量：memory_recall_rendered / memory_recall_candidates trace + summarizeMemoryQualityUsage。
@@ -375,7 +375,7 @@ export function createLiveMemoryBenchAdapter(): {
   async function prepareGroup(groupKey: string, caseDef: BenchCase, traces: unknown[], signal?: AbortSignal):
     Promise<{ ok: true; group: PreparedGroup } | { ok: false; error: string; ingest: NonNullable<BenchCellOutcome["ingest"]> }> {
     const storeReset = await resetEvalMemoryStore()
-    setOverrides({ "ai.memory.enabled": true, "ai.memory.rerank": "off", "ai.memory.dreaming.mode": "manual" })
+    setOverrides({ "ai.memory.enabled": true, "ai.memory.rerank": "off", "ai.memory.dreaming.tier": "off" })
     await flushConfig()
     installMemoryProvider(sqliteMemoryProvider)
     await createNewSession()
@@ -406,7 +406,7 @@ export function createLiveMemoryBenchAdapter(): {
     async manifest() {
       const cfg = { provider: aiConfig.provider, model: aiConfig.model,
         coreTokenBudget: memoryConfig.coreTokenBudget, recallTokenBudget: memoryConfig.recallTokenBudget,
-        rerank: memoryConfig.rerank, dreamingMode: memoryConfig.dreamingMode }
+        rerank: memoryConfig.rerank, dreamingTier: memoryConfig.dreamingTier }
       return { provider: aiConfig.provider, model: aiConfig.model, entry: "production", providerMode: "real",
         storageMode: "rust-ipc", configHash: await sha256(JSON.stringify(cfg)),
         toolIsolation: "all model tools disabled; host fixture/governance IPC remains real",
@@ -444,7 +444,7 @@ export function createLiveMemoryBenchAdapter(): {
           groupReused = false
         } else {
           // standardSetup 会把配置拉回基线；组内复用时提问回合必须重新冻结记忆开关。
-          setOverrides({ "ai.memory.enabled": true, "ai.memory.rerank": "off", "ai.memory.dreaming.mode": "manual" })
+          setOverrides({ "ai.memory.enabled": true, "ai.memory.rerank": "off", "ai.memory.dreaming.tier": "off" })
           await flushConfig()
         }
         const timeAnchor = dataset === "longmemeval" ? questionTimeAnchor(caseDef.questionDate) : null

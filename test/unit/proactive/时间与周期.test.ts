@@ -1,6 +1,11 @@
-import { describe, it, expect } from "vitest"
-import { localToInstant, checkinWindows, isQuietTime, nextSpeakingTime, calendarAnniversary, localDayKey } from "@/services/proactive/time"
+import { mkdtempSync, rmSync } from "node:fs"
+import { tmpdir } from "node:os"
+import { join } from "node:path"
+import { afterAll, afterEach, beforeAll, describe, it, expect } from "vitest"
+import { localToInstant, checkinWindows, isQuietTime, isQuietHour, isNightlyWindow, nextSpeakingTime, calendarAnniversary, localDayKey } from "@/services/proactive/time"
+import { getOverride, setOverride } from "@/services/config"
 import { recurrenceSlot } from "@/services/proactive/opportunities"
+import { setTestDataRoot } from "../../host/node-ipc"
 import type { ProactiveTask } from "@/services/proactive/protocol"
 
 describe("主动事项时间",()=>{
@@ -43,5 +48,80 @@ describe("主动事项时间",()=>{
     const slot=recurrenceSlot(task,Date.parse("2027-02-28T02:00:00Z"))
     expect(slot).toEqual({id:"month:v3:2027-02-28:09:00",from:Date.parse("2027-02-28T01:00:00Z"),until:Date.parse("2027-02-28T16:00:00Z")})
     expect(recurrenceSlot(task,Date.parse("2027-03-01T02:00:00Z"))).toBeNull()
+  })
+})
+
+// ── 静默时段改为 CONFIG 派生（ai.proactive.quietStartHour/quietEndHour）后的三形态与派生窗口 ──
+// setOverride 会触发配置回写；给测试宿主一个临时数据根，回写落到可弃目录而不是报错刷屏。
+let quietRoot=""
+const originalQuietStart=getOverride<number>("ai.proactive.quietStartHour")
+const originalQuietEnd=getOverride<number>("ai.proactive.quietEndHour")
+beforeAll(()=>{ quietRoot=mkdtempSync(join(tmpdir(),"deskpet-proactive-time-")); setTestDataRoot(quietRoot) })
+afterEach(()=>{ setOverride("ai.proactive.quietStartHour",originalQuietStart); setOverride("ai.proactive.quietEndHour",originalQuietEnd) })
+afterAll(()=>{ rmSync(quietRoot,{recursive:true,force:true}) })
+
+describe("静默时段三形态与派生窗口",()=>{
+  const at=(text:string)=>Date.parse(`2026-10-03T${text}+08:00`)
+
+  it("纯公式覆盖跨夜、同日、相等三形态 [proactive-quiet-hour-forms]",()=>{
+    // 跨夜（start > end）：睡前段与凌晨段都算静默
+    expect([isQuietHour(23,23,9),isQuietHour(2,23,9),isQuietHour(8,23,9),isQuietHour(9,23,9),isQuietHour(22,23,9)]).toEqual([true,true,true,false,false])
+    // 同日（start < end）：只覆盖 [start, end)
+    expect([isQuietHour(12,12,14),isQuietHour(13,12,14),isQuietHour(14,12,14),isQuietHour(11,12,14)]).toEqual([true,true,false,false])
+    // start == end = 不静默
+    expect([isQuietHour(10,10,10),isQuietHour(3,10,10)]).toEqual([false,false])
+  })
+
+  it("isQuietTime 随 CONFIG 值走：同日静默生效，start==end 全不静默 [proactive-quiet-config-driven]",()=>{
+    setOverride("ai.proactive.quietStartHour",12); setOverride("ai.proactive.quietEndHour",14)
+    expect(isQuietTime(at("13:00:00"),"Asia/Shanghai")).toBe(true)
+    expect(isQuietTime(at("11:59:00"),"Asia/Shanghai")).toBe(false)
+    expect(isQuietTime(at("23:00:00"),"Asia/Shanghai")).toBe(false)
+    setOverride("ai.proactive.quietStartHour",10); setOverride("ai.proactive.quietEndHour",10)
+    expect(isQuietTime(at("10:00:00"),"Asia/Shanghai")).toBe(false)
+    expect(isQuietTime(at("03:00:00"),"Asia/Shanghai")).toBe(false)
+  })
+
+  it("nextSpeakingTime 三形态：跨夜顺延次日、同日回到当日结束、相等原样返回 [proactive-next-speaking-forms]",()=>{
+    setOverride("ai.proactive.quietStartHour",23); setOverride("ai.proactive.quietEndHour",9)
+    expect(nextSpeakingTime(at("23:30:00"),"Asia/Shanghai")).toBe(Date.parse("2026-10-04T01:00:00Z"))
+    expect(nextSpeakingTime(at("02:00:00"),"Asia/Shanghai")).toBe(at("09:00:00"))
+    setOverride("ai.proactive.quietStartHour",12); setOverride("ai.proactive.quietEndHour",14)
+    expect(nextSpeakingTime(at("13:30:00"),"Asia/Shanghai")).toBe(at("14:00:00"))
+    setOverride("ai.proactive.quietStartHour",10); setOverride("ai.proactive.quietEndHour",10)
+    expect(nextSpeakingTime(at("23:30:00"),"Asia/Shanghai")).toBe(at("23:30:00"))
+  })
+
+  it("isNightlyWindow 是静默开始前一小时（start=0 时落在前一日 23 点）[proactive-nightly-window-derived]",()=>{
+    setOverride("ai.proactive.quietStartHour",23)
+    expect(isNightlyWindow(at("22:30:00"),"Asia/Shanghai")).toBe(true)
+    expect(isNightlyWindow(at("21:30:00"),"Asia/Shanghai")).toBe(false)
+    expect(isNightlyWindow(at("23:30:00"),"Asia/Shanghai")).toBe(false)
+    setOverride("ai.proactive.quietStartHour",0)
+    expect(isNightlyWindow(at("23:30:00"),"Asia/Shanghai")).toBe(true)
+    expect(isNightlyWindow(at("22:30:00"),"Asia/Shanghai")).toBe(false)
+  })
+
+  it("checkin before 窗口随静默三形态派生且 from 恒早于 until [proactive-checkin-window-derived]",()=>{
+    // 跨夜（start > end）：前一日 [静默结束, 静默开始前一小时) 的白天分享窗——保留现状口径
+    setOverride("ai.proactive.quietStartHour",20); setOverride("ai.proactive.quietEndHour",7)
+    const overnight=checkinWindows({precision:"day",localDate:"2026-10-03",timezone:"Asia/Shanghai"})
+    // 前一日 07:00 起（静默结束）到 19:00 止（静默开始前一小时），不再假设 09/23
+    expect(overnight[0]).toMatchObject({from:Date.parse("2026-10-01T23:00:00Z"),until:Date.parse("2026-10-02T11:00:00Z")})
+
+    // 同日（start < end）：前一日 [静默结束 14:00, 24:00)——前一日 24:00 即锚日 0 点
+    setOverride("ai.proactive.quietStartHour",12); setOverride("ai.proactive.quietEndHour",14)
+    const sameDay=checkinWindows({precision:"day",localDate:"2026-10-03",timezone:"Asia/Shanghai"})
+    expect(sameDay[0].from).toBeLessThan(sameDay[0].until)
+    expect(sameDay[0]).toMatchObject({from:Date.parse("2026-10-02T06:00:00Z"),until:Date.parse("2026-10-02T16:00:00Z")})
+
+    // start == end（显式不静默）：前一日整日 [00:00, 24:00)
+    setOverride("ai.proactive.quietStartHour",10); setOverride("ai.proactive.quietEndHour",10)
+    const noQuiet=checkinWindows({precision:"day",localDate:"2026-10-03",timezone:"Asia/Shanghai"})
+    expect(noQuiet[0].from).toBeLessThan(noQuiet[0].until)
+    expect(noQuiet[0]).toMatchObject({from:Date.parse("2026-10-01T16:00:00Z"),until:Date.parse("2026-10-02T16:00:00Z")})
+
+    // after 窗口与静默形态无关：锚日 0 点起 48 小时（2026-10-04 00:00 +08 至 2026-10-06 00:00 +08）
+    expect(sameDay[1]).toMatchObject({from:Date.parse("2026-10-03T16:00:00Z"),until:Date.parse("2026-10-05T16:00:00Z")})
   })
 })

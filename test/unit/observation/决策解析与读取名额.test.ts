@@ -1,5 +1,8 @@
 import { describe, expect, it } from "vitest"
-import { isAbsoluteTargetPath, parseDecidedTargets, readSlotsAvailable } from "@/services/observation/decide"
+import {
+  DECISION_CARD_DESCRIPTION_CHARS, DECISION_CARD_NAME_CHARS, DECISION_CARD_ROLE_CHARS,
+  boundedCardBrief, isAbsoluteTargetPath, localTimeBrief, parseDecidedTargets, readSlotsAvailable,
+} from "@/services/observation/decide"
 
 describe("了解层决策输出解析", () => {
   it("接受合法目标并裁剪 why 与重复路径 [observation-decision-parse]", () => {
@@ -16,10 +19,10 @@ describe("了解层决策输出解析", () => {
     ])
   })
 
-  it("解析围栏 JSON 并最多保留 3 个目标", () => {
+  it("解析围栏 JSON 不再截断目标数（单批上限已删，读取量另受每小时名额约束）", () => {
     const targets = Array.from({ length: 5 }, (_, index) => ({ path: `/tmp/t${index}.md`, kind: "file", why: "x" }))
     const parsed = parseDecidedTargets("```json\n" + JSON.stringify({ targets }) + "\n```")
-    expect(parsed.map(target => target.path)).toEqual(["/tmp/t0.md", "/tmp/t1.md", "/tmp/t2.md"])
+    expect(parsed.map(target => target.path)).toEqual(targets.map(target => target.path))
   })
 
   it("非法 JSON、非数组 targets 与非法字段一律退化为空清单", () => {
@@ -56,5 +59,28 @@ describe("每小时读取名额", () => {
   it("窗口外的旧记录不再占用名额，未来时间戳不凭空放行", () => {
     expect(readSlotsAvailable([now - HOUR - 1], now, 6, HOUR)).toBe(6)
     expect(readSlotsAvailable([now + 1], now, 6, HOUR)).toBe(6)
+  })
+})
+
+describe("决策输入的有界摘要（W4-B 输入补齐）", () => {
+  it("Card 人设只取名字/描述/角色设定的有界前缀，空白折叠为单行 [observation-decision-card-brief]", () => {
+    const compacted = boundedCardBrief({ name: "  甲  ", description: "人设\n描述", sections: { roleSetting: "角色  设定" } })
+    expect(compacted).toEqual({ name: "甲", description: "人设 描述", roleSetting: "角色 设定" })
+
+    const brief = boundedCardBrief({
+      name: "N".repeat(200),
+      description: "D".repeat(400),
+      sections: { roleSetting: "R".repeat(900) },
+    })
+    expect(brief.name.length, "Card 名没有按上限截断").toBe(DECISION_CARD_NAME_CHARS)
+    expect(brief.description.length, "Card 描述没有按上限截断").toBe(DECISION_CARD_DESCRIPTION_CHARS)
+    expect(brief.roleSetting.length, "角色设定没有按上限截断").toBe(DECISION_CARD_ROLE_CHARS)
+    expect(brief.roleSetting, "截断前缀被改写").toBe("R".repeat(DECISION_CARD_ROLE_CHARS))
+  })
+
+  it("本地时间块给出可读时刻（含星期）与非空时区 [observation-decision-local-time]", () => {
+    const brief = localTimeBrief(new Date(2024, 0, 1, 12, 5))
+    expect(brief.localTime).toBe("2024-01-01 12:05 周一")
+    expect(brief.timezone.length).toBeGreaterThan(0)
   })
 })

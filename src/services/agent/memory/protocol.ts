@@ -104,9 +104,24 @@ export interface ProactiveBudget {
 }
 
 export interface ProactiveControl {
-  enabled: boolean
   muteUntil: number | null
   revision: number
+}
+
+export interface ProactiveLimits {
+  wakeMinMs: number
+  wakeMaxMs: number
+  dailySuccess: number
+  dailyExpressionAttempts: number
+  dailyPlanningAttempts: number
+  dailyAuxiliaryAttempts: number
+  minSuccessIntervalMs: number
+  successIntervalSpreadMs: number
+  dailyTokens: number
+  staySeconds: number
+  settleMs: number
+  cooldownMs: number
+  samePageCooldownMs: number
 }
 
 export interface ProactiveAuxiliaryBudgetReserveRequest {
@@ -303,7 +318,8 @@ export interface ProactiveControlRequest {
   operationId: string
   baseRevision: number
   owner: ProactiveOwner
-  patch: Record<string, unknown>
+  patch?: { "muteUntil"?: number | null; "clearBehaviorSources"?: boolean }
+  limits?: ProactiveLimits
 }
 
 export interface MemoryRecallTarget {
@@ -425,19 +441,10 @@ export interface MemoryCandidateDraft {
   reason?: string
 }
 
-export type MemoryCommand = "memory_recall_candidates" | "memory_job_list" | "memory_restore_preview" | "memory_source_evidence" | "memory_status" | "memory_list" | "memory_detail" | "memory_history" | "memory_register_sources" | "memory_query" | "memory_get_items" | "memory_apply_change" | "memory_job_start" | "memory_job_checkpoint" | "memory_job_cancel" | "memory_job_resume" | "memory_job_sources" | "memory_candidates_add" | "memory_dreaming_commit" | "memory_dreaming_budget_reserve" | "memory_dreaming_budget_settle" | "memory_dreaming_budget" | "memory_export" | "memory_backup" | "memory_rebuild" | "memory_restore"
+export type MemoryCommand = "memory_recall_candidates" | "memory_job_list" | "memory_restore_preview" | "memory_source_evidence" | "memory_status" | "memory_list" | "memory_detail" | "memory_history" | "memory_register_sources" | "memory_query" | "memory_get_items" | "memory_apply_change" | "memory_pending_source_count" | "memory_job_start" | "memory_job_checkpoint" | "memory_job_cancel" | "memory_job_resume" | "memory_job_sources" | "memory_candidates_add" | "memory_dreaming_commit" | "memory_dreaming_budget_reserve" | "memory_dreaming_budget_settle" | "memory_dreaming_budget" | "memory_export" | "memory_backup" | "memory_rebuild" | "memory_restore"
 export type ProactiveCommand = "proactive_scan" | "proactive_query" | "proactive_change" | "proactive_claim" | "proactive_validate" | "proactive_settle" | "proactive_reconcile" | "proactive_control" | "proactive_auxiliary_budget_reserve" | "proactive_auxiliary_budget_settle"
 export const PROACTIVE_LIMITS = Object.freeze({
   "tickMs": 300000,
-  "quietStartHour": 23,
-  "quietEndHour": 9,
-  "dailySuccess": 6,
-  "dailyExpressionAttempts": 12,
-  "dailyPlanningAttempts": 8,
-  "dailyAuxiliaryAttempts": 4,
-  "minSuccessIntervalMs": 3600000,
-  "successIntervalSpreadMs": 7200000,
-  "dailyTokens": 24000,
   "maxTasks": 100,
   "maxRecurringTasks": 10,
   "maxTasksPerPlan": 2,
@@ -446,5 +453,91 @@ export const PROACTIVE_LIMITS = Object.freeze({
   "retryDelayMs": 1800000,
   "attemptLeaseMs": 180000,
   "evaluationRetentionDays": 30,
-  "settledRetentionDays": 90
+  "settledRetentionDays": 90,
+  "tiers": {
+    "proactive": {
+      "low": {
+        "wakeMinMs": 7200000,
+        "wakeMaxMs": 18000000,
+        "dailySuccess": 2,
+        "dailyExpressionAttempts": 4,
+        "dailyPlanningAttempts": 3,
+        "dailyAuxiliaryAttempts": 2,
+        "minSuccessIntervalMs": 10800000,
+        "successIntervalSpreadMs": 7200000,
+        "dailyTokens": 8000,
+        "staySeconds": 120,
+        "settleMs": 4000,
+        "cooldownMs": 15000,
+        "samePageCooldownMs": 20000
+      },
+      "medium": {
+        "wakeMinMs": 1800000,
+        "wakeMaxMs": 5400000,
+        "dailySuccess": 6,
+        "dailyExpressionAttempts": 12,
+        "dailyPlanningAttempts": 8,
+        "dailyAuxiliaryAttempts": 4,
+        "minSuccessIntervalMs": 3600000,
+        "successIntervalSpreadMs": 7200000,
+        "dailyTokens": 24000,
+        "staySeconds": 60,
+        "settleMs": 2000,
+        "cooldownMs": 5000,
+        "samePageCooldownMs": 7800
+      },
+      "high": {
+        "wakeMinMs": 600000,
+        "wakeMaxMs": 1800000,
+        "dailySuccess": 10,
+        "dailyExpressionAttempts": 20,
+        "dailyPlanningAttempts": 14,
+        "dailyAuxiliaryAttempts": 8,
+        "minSuccessIntervalMs": 1800000,
+        "successIntervalSpreadMs": 3600000,
+        "dailyTokens": 40000,
+        "staySeconds": 30,
+        "settleMs": 1000,
+        "cooldownMs": 3000,
+        "samePageCooldownMs": 5000
+      }
+    },
+    "silent": {
+      "low": {
+        "minBatchGapMs": 7200000,
+        "idleRequiredMs": 7200000,
+        "dailyBatches": 4,
+        "maxReadsPerHour": 4
+      },
+      "medium": {
+        "minBatchGapMs": 1800000,
+        "idleRequiredMs": 3600000,
+        "dailyBatches": 8,
+        "maxReadsPerHour": 8
+      },
+      "high": {
+        "minBatchGapMs": 900000,
+        "idleRequiredMs": 1800000,
+        "dailyBatches": 12,
+        "maxReadsPerHour": 12
+      }
+    },
+    "dreaming": {
+      "low": {
+        "idleSeconds": 3600,
+        "minIntervalMinutes": 240,
+        "dailyTokens": 24000
+      },
+      "medium": {
+        "idleSeconds": 1800,
+        "minIntervalMinutes": 60,
+        "dailyTokens": 72000
+      },
+      "high": {
+        "idleSeconds": 600,
+        "minIntervalMinutes": 30,
+        "dailyTokens": 120000
+      }
+    }
+  }
 } as const)

@@ -13,7 +13,7 @@
 ## 建表点与版本策略
 
 - 生产建表点只有两个：记忆侧 [memory/schema.rs](../../crates/native-host/src/memory/schema.rs)、主动链侧 [proactive/schema.rs](../../crates/native-host/src/proactive/schema.rs)；记忆侧 `ensure` 建完自己的表后调用主动链侧的 `ensure`（`proactive/store.rs` 里的建表语句属于 `#[cfg(test)]` 夹具，不是生产路径）。
-- 版本：`MEMORY_SCHEMA_VERSION`（当前 2）存于 `memory_meta.schema_version`；打开时校验，**不一致拒绝以旧格式继续**（报错而非静默重建空库）。常量的生成链是单向的：源定义在 [src/services/agent/memory/protocol.json](../../src/services/agent/memory/protocol.json)，由 [scripts/generate-memory-protocol.mjs](../../scripts/generate-memory-protocol.mjs) 生成到 [memory/protocol.rs](../../crates/native-host/src/memory/protocol.rs)（该文件头注明 Generated，不手改）。开发阶段不做数据迁移、不建兼容层——处理方式是删掉 `memory.sqlite3` 连同 `-wal` / `-shm` 后重建（旧数据可弃）。
+- 版本：`MEMORY_SCHEMA_VERSION`（当前 3；2026-10-05 频率档位批随 `proactive_control.enabled` 列删除从 2 递增）存于 `memory_meta.schema_version`；打开时校验，**不一致拒绝以旧格式继续**（报错而非静默重建空库）。常量的生成链是单向的：源定义在 [src/services/agent/memory/protocol.json](../../src/services/agent/memory/protocol.json)，由 [scripts/generate-memory-protocol.mjs](../../scripts/generate-memory-protocol.mjs) 生成到 [memory/protocol.rs](../../crates/native-host/src/memory/protocol.rs)（该文件头注明 Generated，不手改）。开发阶段不做数据迁移、不建兼容层——处理方式是删掉 `memory.sqlite3` 连同 `-wal` / `-shm` 后重建（旧数据可弃）。
 - 同一版本内的结构演进用「检测缺列 → `ALTER TABLE` 补列（带默认值）」，不重置既有行（主动链的 `proactive_budgets` 增列即此模式）。
 
 ## 表清单
@@ -33,6 +33,7 @@
 | memory_operations | operation_id 幂等账本：提交结果未知时先查它，不盲重放 |
 | memory_dreaming_budgets | dreaming 每日模型预算（按自然日记录 reserved/used） |
 | memory_dreaming_reservations | 预算租约（reserved/settled） |
+| mcp_credentials | MCP 凭据（主键 server + var → value）：服务器 headers 模板 `${VAR}` 的定向存取；值不写 CONFIG、不回显、不落日志，唯一出口是连接期注入的 `mcp_credential_get`（[commands/mcp_credentials.rs](../../crates/native-host/src/commands/mcp_credentials.rs)）；`ensure` 每次打开执行（未动 schema_version，旧库只多一张表）；与记忆同库，随库备份/恢复一并带出 |
 | memory_fts（+5 张 FTS5 影子表） | 全文索引：正文/摘要/别名，trigram 分词；工具输出与原始 JSON 不建索引 |
 
 主动链侧（[proactive/schema.rs](../../crates/native-host/src/proactive/schema.rs)）：
@@ -47,7 +48,7 @@
 | proactive_attempts | 主动尝试账本：request_id 唯一，携带来源指纹与控制 revision、额度与本地日、session 与送达回执（assistant_entry_id）、租约、用量与错误 |
 | proactive_attempt_occurrences | 尝试 ↔ 机会实例的关联（随尝试级联删除） |
 | proactive_occurrences | 机会实例（kind/status/retry_after），重试调度依据 |
-| proactive_control | 主动总开关单行表（id=1：enabled、mute_until、revision），命令与用户入口共用同一行 |
+| proactive_control | 运行期控制单行表（id=1：mute_until、revision）：暂停与清除来源状态；主动开关已并入 CONFIG `ai.proactive.frequency` 档位，`enabled` 列 2026-10-05 删除 |
 | proactive_budgets | 每日预算与用量（规划/表达尝试、成功消息与上限、token 预留/已用/未知、观察与话题尝试、下一次成功间隔） |
 | proactive_auxiliary_reservations | 辅助模型（observation/topic）调用租约：reserved/unresolved/committed/failed |
 | proactive_operations | operation_id 幂等账本（提交结果未知时先查，不盲重放） |

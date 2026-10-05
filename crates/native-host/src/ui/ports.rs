@@ -45,8 +45,8 @@ use crate::ui::settings::panels::{
 };
 use crate::ui::settings::{
     self, CardManageOp, CardManageOutcome, CardOption, CardStages, CardVariablePool,
-    McpServerDoc, MemoryMaintenanceOp, ProactiveSnapshot, ProfileManageOp, ProfileManageOutcome,
-    SettingEdit, SettingsPort, SettingsSnapshot, SettingsValue, SoundLibrary,
+    McpServerDoc, MemoryMaintenanceOp, ProfileManageOp, ProfileManageOutcome, SettingEdit,
+    SettingsPort, SettingsSnapshot, SettingsValue, SoundLibrary,
 };
 use crate::ui::stage::StageProfile;
 use crate::{rust_debug, rust_warn};
@@ -384,6 +384,17 @@ impl SettingsPort for SettingsPortImpl {
         Ok(())
     }
 
+    fn mcp_credential_set(&self, row_id: &str, value: &str) -> AppResult<()> {
+        // 值经这条请求定向送到 Node（→ 宿主 `mcp_credential_set`）：不回显、不落 CONFIG；
+        // 本层不写日志（凭据值不得进任何日志）。
+        self.link.request(
+            "mcp_credential_write",
+            json!({ "id": row_id, "value": value }),
+            HOST_REQUEST_TIMEOUT,
+        )?;
+        Ok(())
+    }
+
     fn skills(&self) -> AppResult<SkillCatalog> {
         let value = self
             .link
@@ -493,28 +504,6 @@ impl SettingsPort for SettingsPortImpl {
             .get("imported")
             .and_then(Value::as_bool)
             .ok_or_else(|| AppError::Config("config_import 回执缺少 imported".into()))?)
-    }
-
-    fn proactive_control(&self, enabled: Option<bool>) -> AppResult<ProactiveSnapshot> {
-        let args = match enabled {
-            Some(enabled) => json!({ "enabled": enabled }),
-            None => json!({ "enabled": Value::Null }),
-        };
-        let value = self
-            .link
-            .request("proactive_control", args, HOST_REQUEST_TIMEOUT)?;
-        Ok(ProactiveSnapshot {
-            enabled: value
-                .get("enabled")
-                .and_then(Value::as_bool)
-                .ok_or_else(|| AppError::Config("proactive_control 回执缺少 enabled".into()))?,
-            // 与兄弟方法 `memory_item_change` 同口径：revision 缺失是协议违规，不是
-            // 「回到 0」—— 静默兜底会让界面拿着假 revision 去提交后续变更。
-            revision: value
-                .get("revision")
-                .and_then(Value::as_i64)
-                .ok_or_else(|| AppError::Config("proactive_control 回执缺少 revision".into()))?,
-        })
     }
 
     fn v1rtual_read(&self) -> AppResult<String> {
@@ -1995,53 +1984,6 @@ mod tests {
             Ok(json!({ "imported": "yes" })),
         )
         .is_err());
-
-        // proactive_control：None = 只读查询（enabled 发 null）；Some = 切换。
-        let snapshot = call_port(
-            &link,
-            &published,
-            "proactive_control",
-            |link| SettingsPortImpl::new(link).proactive_control(None),
-            |args| assert_eq!(args, &json!({ "enabled": Value::Null })),
-            Ok(json!({ "enabled": true, "revision": 7 })),
-        )
-        .unwrap();
-        assert!(snapshot.enabled);
-        assert_eq!(snapshot.revision, 7);
-        let snapshot = call_port(
-            &link,
-            &published,
-            "proactive_control",
-            |link| SettingsPortImpl::new(link).proactive_control(Some(false)),
-            |args| assert_eq!(args, &json!({ "enabled": false })),
-            Ok(json!({ "enabled": false, "revision": 8 })),
-        )
-        .unwrap();
-        assert!(!snapshot.enabled);
-        assert_eq!(snapshot.revision, 8);
-        // 缺 enabled：协议违规，不按 false 冒充「已关闭」。
-        let error = call_port(
-            &link,
-            &published,
-            "proactive_control",
-            |link| SettingsPortImpl::new(link).proactive_control(None),
-            |args| assert_eq!(args, &json!({ "enabled": Value::Null })),
-            Ok(json!({ "revision": 1 })),
-        )
-        .unwrap_err();
-        assert_missing_field(error, "enabled");
-        // 缺 revision：与兄弟方法 memory_item_change 同口径报错，不静默按 0 兜底
-        // （假 revision 会让后续变更带着错误版本去提交）。
-        let error = call_port(
-            &link,
-            &published,
-            "proactive_control",
-            |link| SettingsPortImpl::new(link).proactive_control(None),
-            |args| assert_eq!(args, &json!({ "enabled": Value::Null })),
-            Ok(json!({ "enabled": true })),
-        )
-        .unwrap_err();
-        assert_missing_field(error, "revision");
     }
 
     #[test]

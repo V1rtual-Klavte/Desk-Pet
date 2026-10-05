@@ -8,7 +8,8 @@
 
 import { McpClient as PiMcpClient, StreamableHttpTransport, type McpFetch } from "@earendil-works/pi-mcp"
 import { HostBridgeTransport } from "./transport"
-import { expandHeaders } from "./http-headers"
+import { expandHeaders, headerVariables } from "./http-headers"
+import { getHostBridge } from "@/services/host"
 import type { McpServerConfig } from "./manager"
 import type { ToolDef } from "@/services/tool/types"
 import { TOOL_POLICY_VERSION } from "@/services/tool/types"
@@ -90,6 +91,36 @@ function isHttpUrl(value: string | undefined): value is string {
  */
 const guardedFetch: McpFetch = (input, init) => globalThis.fetch(input, { ...init, redirect: "error" })
 
+/**
+ * 连接期解析 headers 变量表：来源优先级 = **本条目 env（现状，最高）→ 凭据存储**。
+ *
+ * 未被 env 命中的 `${VAR}` 逐个经宿主 `mcp_credential_get` 取回（键 = 服务器名 + 变量名；
+ * 值存应用自有 SQLite，不写 CONFIG）。**每次建立连接取一次**：结果只并入本次展开用的
+ * 临时表，不写回 `server.env`、不在连接之间缓存 —— 令牌轮换后下一次连接即取到新值，
+ * 连接建好后内存里也不驻留副本。
+ *
+ * 取不到值（未设置）时保持变量缺失，由 `expandHeaders` 抛出带变量名的错误；宿主读取
+ * 失败同样如实上抛。两种情况都让连接失败（不静默降级成匿名请求）。
+ */
+async function resolveHeaderEnv(
+  server: McpServerConfig,
+): Promise<Record<string, string> | undefined> {
+  const missing = headerVariables(server.headers).filter(name => {
+    const fromEnv = server.env?.[name]
+    return fromEnv === undefined || fromEnv === ""
+  })
+  if (missing.length === 0) return server.env
+  const env = { ...(server.env ?? {}) }
+  for (const name of missing) {
+    const value = await getHostBridge().request("mcp_credential_get", {
+      server: server.name,
+      var: name,
+    })
+    if (typeof value === "string" && value !== "") env[name] = value
+  }
+  return env
+}
+
 export class McpClient {
   private serverId: string
   private connected = false
@@ -103,8 +134,9 @@ export class McpClient {
    * 建立连接 + JSON-RPC initialize。
    *
    * - stdio：子进程由宿主 spawn（见 transport.ts）；`env` 透传给宿主进程（API Key 等）。
-   * - http：pi 的 StreamableHttpTransport 直连 url；`headers` 的 `${VAR}` 只从本服务器
-   *   的 env 展开（expandHeaders），请求经 guardedFetch 发出（拒绝带凭据跟随重定向）。
+   * - http：pi 的 StreamableHttpTransport 直连 url；`headers` 的 `${VAR}` 先查本服务器
+   *   env、未命中再取凭据存储（见 `resolveHeaderEnv`），请求经 guardedFetch 发出
+   *   （拒绝带凭据跟随重定向）。
    *
    * pi-mcp 的连接流程自带 initialize 与 initialized 通知。配置性错误（未知传输、缺
    * command/url、变量缺失）以 `{ success:false, error }` 原样回传；真正的连接失败仍
@@ -124,7 +156,7 @@ export class McpClient {
     let headers: Record<string, string> | undefined
     if (server.transport === "http") {
       try {
-        headers = expandHeaders(server.headers, server.env)
+        headers = expandHeaders(server.headers, await resolveHeaderEnv(server))
       } catch (error) {
         // 变量缺失是配置错误、不是连接故障：点名变量如实回传（文案只含变量名，不含值）。
         log.warn("MCP headers 展开失败:", server.name, formatError(error))

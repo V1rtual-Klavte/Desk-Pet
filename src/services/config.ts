@@ -139,6 +139,58 @@ function readThemeId(raw: unknown): ThemeId {
   return DEFAULT_THEME
 }
 
+// ── 三处频率档位（主动消息 / 静默了解 / 记忆整理）──
+//
+// 档位的**数值表**（唤醒区间、每日配额、token 等）的唯一真相源是
+// `proactive/protocol.json` 的 `tiers`（经 `proactive/tiers.ts` 消费）；
+// 这里只做 CONFIG 字符串的读取期收拢，不复制任何档位数值。
+
+/** 四档频率：off = 不自动跑（手动入口保留）；low/medium/high 按档位表。 */
+export type FrequencyTier = "off" | "low" | "medium" | "high"
+
+/** 合法档位判定（读取期收拢共用；四值集合的唯一真相源，`proactive/tiers.ts` 复用本判定）。 */
+export function isFrequencyTier(raw: unknown): raw is FrequencyTier {
+  return raw === "off" || raw === "low" || raw === "medium" || raw === "high"
+}
+
+/** 非法取值只记一条中性诊断（同一字段同一取值只提示一次）。 */
+const warnedInvalidTierValues = new Set<string>()
+
+/**
+ * 读取期收拢一档频率（CONFIG 是用户可手写的 YAML）。
+ *
+ * 与 `readEffectMode` 同款规则：不把非法值透传给运行内核，也不为旧取值写兼容映射 ——
+ * 合法四值之外一律按默认 `medium` 读取，不写盘。同一非法取值只记一条诊断，
+ * 修正入口是设置页对应档位下拉。
+ */
+function readFrequencyTier(raw: unknown, key: string): FrequencyTier {
+  if (isFrequencyTier(raw)) return raw
+  if (raw !== undefined && raw !== null) {
+    const marker = `${key}=${String(raw)}`
+    if (!warnedInvalidTierValues.has(marker)) {
+      warnedInvalidTierValues.add(marker)
+      log.warn(`${key} 取值非法（${String(raw)}），已按 medium 读取；请在设置页对应档位重新选择并保存`)
+    }
+  }
+  return "medium"
+}
+
+/**
+ * 读取期收拢静默小时（`ai.proactive.quietStartHour/quietEndHour`）：
+ * 0–23 的整数原样（0 是合法小时，不得用 `||` 兜底吞掉）；其余按默认读取。
+ */
+function readQuietHour(raw: unknown, key: string, fallback: number): number {
+  if (typeof raw === "number" && Number.isInteger(raw) && raw >= 0 && raw <= 23) return raw
+  if (raw !== undefined && raw !== null) {
+    const marker = `${key}=${String(raw)}`
+    if (!warnedInvalidTierValues.has(marker)) {
+      warnedInvalidTierValues.add(marker)
+      log.warn(`${key} 取值非法（${String(raw)}），已按 ${fallback} 读取；请在设置页重新填写并保存`)
+    }
+  }
+  return fallback
+}
+
 /**
  * 用户可选的投递意图：steer=插话（当前响应及工具批次结束后处理），
  * followUp=稍后继续（当前运行自然准备结束时继续）。与 Pi 函数名解耦，UI 不显示这两个词。
@@ -206,10 +258,8 @@ interface Config {
       recallTimeoutMs: number
       rerankTimeoutMs: number
       dreaming: {
-        mode: "manual" | "idle"
-        idleSeconds: number
-        minIntervalMinutes: number
-        maxDailyTokens: number
+        /** 整理档位：off = 不自动跑（手动入口保留）；low/medium/high 按档位表 */
+        tier: FrequencyTier
         /** 单次 Review 的输出上限；null 表示按模型输出预算自动推导 */
         reviewMaxTokens: number | null
       }
@@ -229,12 +279,16 @@ interface Config {
     }
     lock: { safetyTimeoutMs: number }
     humanizer: { enabled: boolean }
+    /** 主动消息：总闸 + 频率 + 静默时间段（静默时段仅约束主动消息） */
+    proactive: {
+      frequency: FrequencyTier
+      /** 静默开始/结束（本地小时 0–23）；跨夜语义 start > end，start == end = 不静默 */
+      quietStartHour: number
+      quietEndHour: number
+    }
     silentAccess: {
-      enabled: boolean
-      staySeconds: number
-      settleMs: number
-      cooldownMs: number
-      samePageCooldownMs: number
+      /** 静默了解总闸 + 频率 */
+      frequency: FrequencyTier
     }
     safety: { mode: string; sessionTrustEnabled: boolean }
   }
@@ -561,6 +615,42 @@ export async function importConfigYaml(text: string): Promise<void> {
   queueConfigSave()
   await flushConfig()
   applyLogLevel()
+  await refreshConfigConsumers()
+}
+
+/**
+ * 配置整份导入后的消费者刷新（`importConfigYaml` 的收尾）：
+ * - 静默了解调度按 `silentAccessConfig.frequency` 起停（off = 停）；
+ * - 主动扫描 `refreshProactive()`（档位与静默时段都是 scanner 的运行期配置输入）。
+ *
+ * 动态 `import()` 是刻意的：`observation` / `proactive` 都依赖本模块的 getter，
+ * 静态导入会形成循环依赖；这条刷新链只在一次用户动作里跑，动态开销可忽略。
+ *
+ * 失败只留痕不抛出：配置已写盘成功，消费者刷新失败不该把导入报成失败
+ * （与 `host-requests` 的 `reapplyRuntimeSettings` 同口径——失败项在下次启动时生效）。
+ */
+async function refreshConfigConsumers(): Promise<void> {
+  try {
+    const { startSilentUnderstanding, stopSilentUnderstanding } = await import("@/services/observation")
+    if (silentAccessConfig.frequency !== "off") startSilentUnderstanding()
+    else await stopSilentUnderstanding()
+  } catch (error) {
+    log.warn("导入配置后静默了解未重应用（配置已落盘；失败项在下次启动时生效）", formatError(error))
+  }
+  await refreshProactiveConsumer()
+}
+
+/**
+ * 主动扫描的消费者刷新（动态 `import()`：`proactive` 依赖本模块的 getter，
+ * 静态导入会成环；失败只留痕——配置已落盘，刷新失败不该把写入报成失败）。
+ */
+async function refreshProactiveConsumer(): Promise<void> {
+  try {
+    const { refreshProactive } = await import("@/services/proactive")
+    refreshProactive()
+  } catch (error) {
+    log.warn("主动扫描未重应用（配置已落盘；失败项在下次启动时生效）", formatError(error))
+  }
 }
 
 function overrideOr<T>(key: string, fallback: T): T {
@@ -679,16 +769,37 @@ export const humanizerConfig = {
   get enabled() { return overrideOr("ai.humanizer.enabled", cfg.ai?.humanizer?.enabled ?? true); },
 };
 
+/**
+ * 主动消息档位与静默时间段（契约 §2.1）。
+ *
+ * `frequency` 是主动消息的总闸 + 频率（off = 不唤醒、不产生机会、不发送）；
+ * 静默时间段只约束主动消息（该时段不唤醒 / 不产生机会 / 不发送），夜间判定由
+ * `proactive/time.ts` 按同一份值负责；白天不设窗口。档位数值表在 `proactive/tiers.ts`。
+ */
+export const proactiveConfig = {
+  get frequency() { return readFrequencyTier(overrideOr("ai.proactive.frequency", cfg.ai?.proactive?.frequency), "ai.proactive.frequency"); },
+  /** 静默开始（本地小时 0–23）；跨夜语义 start > end，start == end = 不静默。 */
+  get quietStartHour() { return readQuietHour(overrideOr("ai.proactive.quietStartHour", cfg.ai?.proactive?.quietStartHour), "ai.proactive.quietStartHour", 23); },
+  /** 静默结束（本地小时 0–23）；非静默从该时刻起。 */
+  get quietEndHour() { return readQuietHour(overrideOr("ai.proactive.quietEndHour", cfg.ai?.proactive?.quietEndHour), "ai.proactive.quietEndHour", 9); },
+};
+
+/**
+ * 写入主动消息档位（斜杠命令 `/proactive on|off` 的唯一入口；设置页走 `settings_commit`）。
+ *
+ * 与设置保存共用同一条写路径：`setOverride`（写内存 cfg + 入写队列）→ `flushConfig()`
+ * 原子写盘，不新建第二条写盘路径。写盘成功后刷新主动扫描消费者；写盘失败如实抛出
+ * （配置未落盘），由调用方决定如何向用户呈现。
+ */
+export async function setProactiveFrequency(tier: FrequencyTier): Promise<void> {
+  setOverride("ai.proactive.frequency", tier)
+  await flushConfig()
+  await refreshProactiveConsumer()
+}
+
 export const silentAccessConfig = {
-  get enabled() { return overrideOr("ai.silentAccess.enabled", cfg.ai?.silentAccess?.enabled ?? true); },
-  get staySeconds() { return overrideOr("ai.silentAccess.staySeconds", cfg.ai?.silentAccess?.staySeconds || 60); },
-  get settleMs() { return overrideOr("ai.silentAccess.settleMs", cfg.ai?.silentAccess?.settleMs || 2000); },
-  // 冷却时长统一用毫秒。早先这里是 `cooldownSeconds: 5000` 由调用方当秒乘 1000，
-  // 于是「5 秒」静默变成 83 分钟；同一个量还有第二个键 `defaultCooldownMs` 喂同一变量，
-  // 两者只保留了前者。
-  get cooldownMs() { return overrideOr("ai.silentAccess.cooldownMs", cfg.ai?.silentAccess?.cooldownMs || 5000); },
-  /** 同一页面内容重复触发时的抑制窗口；消费者在主动域 window_context 规则 */
-  get samePageCooldownMs() { return overrideOr("ai.silentAccess.samePageCooldownMs", cfg.ai?.silentAccess?.samePageCooldownMs || 7800); },
+  /** 静默了解总闸 + 频率（off = 调度器不启动；读取靠手动）。 */
+  get frequency() { return readFrequencyTier(overrideOr("ai.silentAccess.frequency", cfg.ai?.silentAccess?.frequency), "ai.silentAccess.frequency"); },
 };
 
 export const aiLockConfig = {
@@ -702,37 +813,12 @@ export const memoryConfig = {
   get rerank() { return overrideOr("ai.memory.rerank", cfg.ai?.memory?.rerank || "off") as "off" | "adaptive"; },
   get recallTimeoutMs() { return overrideOr("ai.memory.recallTimeoutMs", cfg.ai?.memory?.recallTimeoutMs ?? 4000); },
   get rerankTimeoutMs() { return overrideOr("ai.memory.rerankTimeoutMs", cfg.ai?.memory?.rerankTimeoutMs ?? 2500); },
-  get dreamingMode() { return overrideOr("ai.memory.dreaming.mode", cfg.ai?.memory?.dreaming?.mode || "idle") as "manual" | "idle"; },
-  get dreamingIdleSeconds() { return overrideOr("ai.memory.dreaming.idleSeconds", cfg.ai?.memory?.dreaming?.idleSeconds ?? 120); },
-  get dreamingMinIntervalMinutes() { return overrideOr("ai.memory.dreaming.minIntervalMinutes", cfg.ai?.memory?.dreaming?.minIntervalMinutes ?? 60); },
-  /** 每日自动整理预算（tokens）：默认按 128k 窗口、3 批最坏预留（3×8k 输入 + 3×16k 输出）校准；显式 0 表示禁用自动整理。 */
-  get dreamingMaxDailyTokens() { return overrideOr("ai.memory.dreaming.maxDailyTokens", cfg.ai?.memory?.dreaming?.maxDailyTokens ?? 72000); },
+  /** 整理档位（off = 不自动跑，手动入口保留）；档位数值表在 `proactive/tiers.ts`。 */
+  get dreamingTier() { return readFrequencyTier(overrideOr("ai.memory.dreaming.tier", cfg.ai?.memory?.dreaming?.tier), "ai.memory.dreaming.tier"); },
   /** Review 输出上限：null/未配置=按模型输出预算自动推导（仍受上下文窗口约束）；显式值只作为更小的上限。 */
   get dreamingReviewMaxTokens(): number | null { return overrideOr("ai.memory.dreaming.reviewMaxTokens", cfg.ai?.memory?.dreaming?.reviewMaxTokens ?? null); },
   get maxSessions() { return overrideOr("ai.memory.maxSessions", cfg.ai?.memory?.maxSessions ?? 20); },
 };
-
-export function memoryConfigError(values: {
-  coreTokenBudget: number; recallTokenBudget: number; recallTimeoutMs: number;
-  rerankTimeoutMs: number; dreamingIdleSeconds: number;
-  dreamingMinIntervalMinutes: number; dreamingMaxDailyTokens: number;
-}): string | undefined {
-  const ranges: Array<[string, number, number, number]> = [
-    ["核心画像预算", values.coreTokenBudget, 0, 2000],
-    ["召回预算", values.recallTokenBudget, 0, 4000],
-    ["召回时限", values.recallTimeoutMs, 100, 10000],
-    ["重排时限", values.rerankTimeoutMs, 100, 10000],
-    ["空闲等待", values.dreamingIdleSeconds, 30, 3600],
-    ["最小间隔", values.dreamingMinIntervalMinutes, 1, 1440],
-    ["每日模型预算", values.dreamingMaxDailyTokens, 0, 100000],
-  ];
-  for (const [label, value, min, max] of ranges) {
-    if (!Number.isInteger(value) || value < min || value > max) {
-      return `${label}必须是 ${min}-${max} 的整数（当前 ${value}）`;
-    }
-  }
-  return undefined;
-}
 
 export const planConfig = {
   get enabled() { return overrideOr("ai.plan.enabled", cfg.ai?.plan?.enabled ?? true); },

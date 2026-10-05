@@ -47,9 +47,9 @@ ai:
     rerank: off
     recallTimeoutMs: 4000
     rerankTimeoutMs: 2500
-    # maxDailyTokens：每日自动整理预算，按 128k 窗口 3 批最坏预留校准；0 = 禁用自动整理
+    # 整理档位：off(不自动跑，手动整理按钮保留) | low | medium | high；档位值收进协议表 tiers
     # reviewMaxTokens：单次 Review 输出上限；缺省 = 按模型输出预算自动推导（窗口×1/8，32k 封顶）
-    dreaming: { mode: idle, idleSeconds: 120, minIntervalMinutes: 60, maxDailyTokens: 72000 }
+    dreaming: { tier: medium }
     maxSessions: 20
   plan:
     enabled: true
@@ -66,13 +66,11 @@ ai:
   humanizer:
     enabled: true
 
-  silentAccess:
-    enabled: true
-    staySeconds: 60
-    settleMs: 2000
-    # 冷却时长统一毫秒
-    cooldownMs: 5000
-    samePageCooldownMs: 7800
+  # 主动消息档位 + 静默时间段（仅约束主动消息；跨夜 start > end，start == end = 不静默）
+  proactive: { frequency: medium, quietStartHour: 23, quietEndHour: 9 }
+  # 静默了解总闸 + 频率：off(不自动跑，读取靠手动) | low | medium | high
+  # （原 enabled 与四个节奏数值字段已删，数值收进 proactive/protocol.json 的 tiers。）
+  silentAccess: { frequency: medium }
   safety: { mode: tell_me, sessionTrustEnabled: true }
 
 tools:
@@ -80,9 +78,23 @@ tools:
     whitelist: ["ls", "cat", "head", "tail", "grep", "find", "which", "echo", "pwd", "date", "whoami", "uname", "df", "du", "ps", "tasklist", "system_profiler", "ifconfig"]
   mcp:
     # 无总闸：按每服务器 enabled 控制，全部关闭即不使用 MCP
-    # 自定义服务器列表。transport: stdio 用 command/args/env（npx -y <包> 形态由宿主托管安装后直启，失败回退 npx）
-    # transport: http 用 url/headers（Streamable HTTP，headers 值支持 ${ENV_VAR} 从本条目 env 展开）
-    servers: []
+    # 服务器列表。transport: stdio 用 command/args/env（npx -y <包> 形态由宿主托管安装后直启，失败回退 npx）
+    # transport: http 用 url/headers（Streamable HTTP，headers 值支持 ${ENV_VAR}：先查本条目 env，
+    # 未命中再查应用自有凭据存储 —— 凭据值不写在本文件里）
+    servers:
+      # GitHub 官方远程 MCP：出厂自带、默认关闭（enabled: false = 开箱不连接）。
+      # 端点对所有 GitHub 用户免费（无需 Copilot 席位；域名带 copilot 是历史命名）；纯在线依赖：无网络不可用。
+      # X-MCP-Readonly: true = 只暴露只读工具；X-MCP-Toolsets 限定工具面（省 token）。
+      # GITHUB_TOKEN 不写在文件里：在设置 → 工具 → MCP 的「GitHub 令牌」行动作填入
+      # fine-grained、只读权限的 PAT；值存应用自有数据库（不回显、不进日志）。
+      - name: github
+        transport: http
+        url: https://api.githubcopilot.com/mcp/
+        headers:
+          X-MCP-Readonly: "true"
+          X-MCP-Toolsets: "context,repos,issues,pull_requests"
+          Authorization: "Bearer ${GITHUB_TOKEN}"
+        enabled: false
 
 appearance:
   activeProfile: "sugar-pink"

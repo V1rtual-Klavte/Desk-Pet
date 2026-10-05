@@ -351,7 +351,7 @@ export function createLiveMemoryQualityAdapter(): {
       if (signal?.aborted) throw new Error("cancelled before extraction cell")
       await standardSetup()
       const storeReset = await resetEvalMemoryStore()
-      setOverrides({ "ai.memory.enabled": true, "ai.memory.rerank": "off", "ai.memory.dreaming.mode": "manual" })
+      setOverrides({ "ai.memory.enabled": true, "ai.memory.rerank": "off", "ai.memory.dreaming.tier": "off" })
       await flushConfig()
       installMemoryProvider(sqliteMemoryProvider)
       const active = await createNewSession()
@@ -435,7 +435,7 @@ export function createLiveMemoryQualityAdapter(): {
       await standardSetup()
       const storeReset = await resetEvalMemoryStore()
       setOverrides({ "ai.memory.enabled": true, "ai.memory.rerank": strategy === "adaptive" ? "adaptive" : "off",
-        "ai.memory.dreaming.mode": "manual" })
+        "ai.memory.dreaming.tier": "off" })
       await flushConfig()
       installMemoryProvider(sqliteMemoryProvider)
       const actualCardId = getActiveCard()?.id ?? ""

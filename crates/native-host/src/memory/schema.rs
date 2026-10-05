@@ -151,6 +151,18 @@ pub fn ensure(conn: &Connection) -> AppResult<()> {
         ) STRICT;
         CREATE INDEX IF NOT EXISTS memory_dreaming_reservations_day ON memory_dreaming_reservations(local_date,status);
 
+        -- MCP 凭据（如 github 服务器 headers 模板引用的 GITHUB_TOKEN）。
+        -- 与记忆事实无关，但沿用同一库文件：凭据值**不进 CONFIG**，由设置面经
+        -- `mcp_credential_set` 定向写入、由 MCP 连接期 `mcp_credential_get` 取用。
+        -- 新表对旧库只是多一张表：schema 版本校验语义不变，不递增 MEMORY_SCHEMA_VERSION。
+        CREATE TABLE IF NOT EXISTS mcp_credentials (
+          server TEXT NOT NULL,
+          var TEXT NOT NULL,
+          value TEXT NOT NULL,
+          updated_at INTEGER NOT NULL,
+          PRIMARY KEY(server,var)
+        ) STRICT;
+
         CREATE VIRTUAL TABLE IF NOT EXISTS memory_fts USING fts5(
           item_id UNINDEXED,
           item_version UNINDEXED,

@@ -2793,7 +2793,9 @@ enum RowMainKind {
 fn row_main_kind(action: RowAction) -> RowMainKind {
     match action {
         RowAction::Pick => RowMainKind::Pick,
-        RowAction::Toggle | RowAction::Select | RowAction::Preview => RowMainKind::Button,
+        RowAction::Toggle | RowAction::Select | RowAction::Preview | RowAction::Credential => {
+            RowMainKind::Button
+        }
         RowAction::Edit | RowAction::Delete | RowAction::None => RowMainKind::None,
     }
 }
@@ -2811,6 +2813,8 @@ fn row_button_title(action: RowAction, enabled: bool) -> &'static str {
         }
         RowAction::Select => "查看",
         RowAction::Preview => "试听",
+        // 凭据输入行：主按钮打开原生输入框（值写入应用自有存储）。
+        RowAction::Credential => "设置",
         RowAction::Pick | RowAction::Edit | RowAction::Delete | RowAction::None => "",
     }
 }
@@ -3723,8 +3727,6 @@ pub(crate) fn on_command(hwnd: HWND, wparam: WPARAM) -> bool {
             }
             if TABS[tab].id == "ai" {
                 settings_ui().ensure_cards();
-                // 主动开关按钮显示当前状态：进入本页读取一次权威状态。
-                settings_ui().ensure_proactive();
             }
             // 工具 / 记忆 Tab 的管理面首次进入时拉取（各自在途去重）。
             if TABS[tab].id == "tools" {
@@ -3836,6 +3838,8 @@ pub(crate) fn on_command(hwnd: HWND, wparam: WPARAM) -> bool {
                     // 试听是音效事件行的次按钮（action2）：行 id = 事件键，当前分配由
                     // 共享层从行快照的 `pick.selected` 取（平台不解析行数据；不改配置）。
                     RowAction::Preview => settings_ui().preview_panel_row(panel, &row_id),
+                    // 凭据输入行（MCP 面板的「GitHub 令牌」）：弹原生输入框取值后定向写存储。
+                    RowAction::Credential => settings_ui().prompt_panel_credential(panel, &row_id),
                     // 行内下拉（音效事件行）：按下标从选项值表还原 `value` 写回
                     // （`action == Pick` 且已过「确选」判据才会到这里）。
                     RowAction::Pick => match pick_selected_value(control, &pick_values) {
@@ -4449,14 +4453,6 @@ fn refresh_values(state: &mut SettingsState, view: &SettingsView) {
         };
         if kind.is_action() {
             unsafe { EnableWindow(slot.hwnd, 1) };
-            // 主动开关按钮是「状态文本」形态：标题随权威状态刷新
-            // （未读到时回 schema 的中性动作文案）。
-            if key == "action.toggleProactive" {
-                let title = crate::ui::settings::proactive_button_title(view.proactive);
-                unsafe { SetWindowTextW(slot.hwnd, wide(&title).as_ptr()) };
-                // ownerdraw 按钮的标题变了要显式失效（自绘读 `window_text`）。
-                unsafe { InvalidateRect(slot.hwnd, std::ptr::null(), 1) };
-            }
             continue;
         }
         // 聚焦中的编辑框不回声覆盖：用户输入在聚焦期间是权威（逐字置脏触发的刷新
@@ -5639,6 +5635,9 @@ mod tests {
         assert_eq!(row_button_title(RowAction::Toggle, false), "已关闭");
         assert_eq!(row_button_title(RowAction::Select, false), "查看");
         assert_eq!(row_button_title(RowAction::Preview, false), "试听");
+        // 凭据行（MCP「GitHub 令牌」）：主控件是按钮、文案「设置」（不落空按钮）。
+        assert_eq!(row_main_kind(RowAction::Credential), RowMainKind::Button);
+        assert_eq!(row_button_title(RowAction::Credential, false), "设置");
         assert_eq!(row_main_kind(RowAction::None), RowMainKind::None);
         // 次按钮文案：音效事件行的 action2 = 试听（次按钮位上的 Preview）。
         assert_eq!(row_secondary_title(RowAction::Preview), "试听");

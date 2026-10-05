@@ -65,7 +65,7 @@ Node 的端点与一次性握手值只经环境变量 `DESKPET_HOST_LAUNCH` 传�
 
 ## 通信面
 
-- **Node → 宿主命令**：`HostCommandMap`（129 条 = 107 冻结 + 22 条有意扩展；冻结件已删 `profile_clone`（改「新建 Profile」）与 `mcp_send`（裸行收发改 `mcp_write` / `mcp_read`），最近一条有意扩展是界面主题下发 `apply_theme`，只传预设 id、色值真相在宿主 `ui/theme`）逐条对应 Rust `NativeDispatcher` 分派；失败以结构化 `HostError` reject（错误码与 `AppError::code()` 同表），不降级为字符串。超过控制帧上限的字段自动编码为 blob，经二进制通道物化，应用层结果类型不缩水。
+- **Node → 宿主命令**：`HostCommandMap`（134 条 = 107 冻结 + 27 条有意扩展；冻结件已删 `profile_clone`（改「新建 Profile」）与 `mcp_send`（裸行收发改 `mcp_write` / `mcp_read`）；有意扩展如界面主题下发 `apply_theme`（只传预设 id、色值真相在宿主 `ui/theme`）、记忆整理的前置查询 `memory_pending_source_count`（水位之后有无待处理来源，开作业前查；只读、不带副作用）与 MCP 凭据读写 `mcp_credential_set` / `_delete` / `_status` / `_get`（值存记忆库同库的 `mcp_credentials` 表、不写 CONFIG；唯一的值出口是 `_get`，供 MCP 连接期注入））逐条对应 Rust `NativeDispatcher` 分派；失败以结构化 `HostError` reject（错误码与 `AppError::code()` 同表），不降级为字符串。超过控制帧上限的字段自动编码为 blob，经二进制通道物化，应用层结果类型不缩水。
 - **宿主 → Node 请求**：`HostRequestMap`（设置读写、弹窗几何写回、人格卡/Profile 列表、编辑器 I/O、会话标签与历史意图、核心聊天链路、决策类面板动作、设置页管理面）。传输复用两条既有通道：宿主投事件 `deskpet-host-request`，Node 用 `host_request_result` 命令回执；发送/停止等热路径用非阻塞提交，有界等待只用于用户尺度低频动作。
 - **事件（宿主/Node → 原生 UI）**：`HostEventMap`。宿主生产两类——`deskpet-cursor-move` **只直投原生 UI**（60fps 不经 Node），`window-observed` **双投**原生 UI 与当前代际 Node；Node 生产聊天流式、运行状态、阶段提示、计划、权限确认与揭示进度等事件，经桥按当前代际路由进 `ChatUi`。UI → Node 的回执（计划确认、步骤裁决、权限确认）走 `UiReceiptMap`，不进 `HostEventMap`。
 - **纯 UI 的窗口间协调不经 Node**（设置窗↔主窗、编辑器↔主窗、revision 同步、主动控制、观察治理），由原生 UI 内部承接（[types.ts](../../src/services/host/types.ts) 末尾的 (b) 类清单）。

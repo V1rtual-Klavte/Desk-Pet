@@ -2,8 +2,8 @@
 // 窗口观察接线（src/services/window/monitor.ts）—— 订阅、总闸与无事件通道宿主
 // ==========================================
 //
-// `ai.silentAccess.enabled` 观察总闸的唯一接线点：`initWindowObservation()` 订阅
-// `window-observed` 之后按配置调用 `setMonitorEnabled`，后者是既有开关入口
+// `ai.silentAccess.frequency`（off 档 = 观察总闸关闭）的唯一接线点：`initWindowObservation()`
+// 订阅 `window-observed` 之后按档位调用 `setMonitorEnabled`，后者是既有开关入口
 // （Rust 总闸请求 + 行为采集启停 + presence 释放），不另建第二入口。
 // 三条必须钉住的语义：
 //   · 幂等：重复引导复用同一订阅，不叠加监听器；退订后允许重接；
@@ -27,6 +27,8 @@ import {
   getRuntimeActivity,
   initWindowObservation,
   setMonitorEnabled,
+  shouldWarnObservationGate,
+  type RuntimeActivity,
   type WindowObservation,
 } from "@/services/window"
 import { installNodeHostBridge } from "../../host/install-node-bridge"
@@ -109,24 +111,24 @@ function monitorRequests(requests: RecordedRequest[]): RecordedRequest[] {
   return requests.filter(request => request.method === "set_monitor_enabled")
 }
 
-const originalEnabled = getOverride<boolean>("ai.silentAccess.enabled")
+const originalFrequency = getOverride<string>("ai.silentAccess.frequency")
 
 beforeEach(() => {
   vi.clearAllMocks()
   behavior.stopBehavior.mockResolvedValue(true)
-  setOverride("ai.silentAccess.enabled", true)
+  setOverride("ai.silentAccess.frequency", "medium")
 })
 
 afterEach(() => {
   disconnectWindowObservation()
   clearWindowObservationSubscribers()
   clearLatestWindowObservation()
-  setOverride("ai.silentAccess.enabled", originalEnabled)
+  setOverride("ai.silentAccess.frequency", originalFrequency)
   installNodeHostBridge()
 })
 
 describe("initWindowObservation", () => {
-  it("总闸开启：订阅 window-observed 并下发 set_monitor_enabled(true)，启动行为采集", async () => {
+  it("档位非 off：订阅 window-observed 并下发 set_monitor_enabled(true)，启动行为采集", async () => {
     const { requests, subscribe } = installBridge()
     const handle = await initWindowObservation()
 
@@ -155,12 +157,12 @@ describe("initWindowObservation", () => {
     expect(subscribe).toHaveBeenCalledTimes(2)
   })
 
-  it("总闸关闭：清空最近观察、停采集、按 monitor_disabled 释放 presence，再下发 false", async () => {
+  it("off 档：清空最近观察、停采集、按 monitor_disabled 释放 presence，再下发 false", async () => {
     const { requests } = installBridge()
     acceptWindowObservation(observation({ monitorGeneration: 101, sequence: 1 }))
     expect(getLatestWindowObservation()).not.toBeNull()
 
-    setOverride("ai.silentAccess.enabled", false)
+    setOverride("ai.silentAccess.frequency", "off")
     await initWindowObservation()
 
     expect(monitorRequests(requests)).toEqual([{ method: "set_monitor_enabled", args: { enabled: false } }])
@@ -226,10 +228,10 @@ describe("setMonitorEnabled 返回值语义", () => {
 
 describe("getRuntimeActivity", () => {
   it("按 get_runtime_activity 命令查询并原样返回宿主结果", async () => {
-    const activity = {
+    const activity: RuntimeActivity = {
       isPetVisible: true,
       isPetForeground: false,
-      observationState: "observed" as const,
+      screenState: "observed",
       idleForMs: 12,
       observedAt: 1_800_000_000_000,
     }
@@ -237,5 +239,63 @@ describe("getRuntimeActivity", () => {
 
     await expect(getRuntimeActivity()).resolves.toEqual(activity)
     expect(requests).toContainEqual({ method: "get_runtime_activity", args: {} })
+  })
+})
+
+describe("shouldWarnObservationGate", () => {
+  const NOW = 1_800_000_000_000
+  const TEN_MIN = 10 * 60_000
+
+  it("状态可用（observed/locked）不告警", () => {
+    expect(shouldWarnObservationGate("observed", NOW, "unavailable", NOW - 1_000)).toBe(false)
+    expect(shouldWarnObservationGate("locked", NOW, "unavailable", NOW - 1_000)).toBe(false)
+  })
+
+  it("不可用且没有上次告警记录 → 告警", () => {
+    expect(shouldWarnObservationGate("unavailable", NOW, null, null)).toBe(true)
+  })
+
+  it("同因 10 分钟内不重复告警；满 10 分钟重新告警", () => {
+    expect(shouldWarnObservationGate("unavailable", NOW, "unavailable", NOW - (TEN_MIN - 1))).toBe(false)
+    expect(shouldWarnObservationGate("unavailable", NOW, "unavailable", NOW - TEN_MIN)).toBe(true)
+  })
+
+  it("上次告警原因不同（state 变化）→ 立即告警", () => {
+    expect(shouldWarnObservationGate("unavailable", NOW, "locked", NOW - 1)).toBe(true)
+  })
+})
+
+describe("getRuntimeActivity 观察态不可用限频留痕", () => {
+  /** 每次请求换一份宿主结果；纯函数另有单测，这里验证包装处的留痕与重置。 */
+  async function requestActivity(screenState: RuntimeActivity["screenState"]): Promise<void> {
+    installBridge({ requestResult: { isPetVisible: true, isPetForeground: true, screenState, idleForMs: 0, observedAt: 1_800_000_000_000 } })
+    await getRuntimeActivity()
+  }
+
+  it("不可用告警一次且文案含影响面；同因重复请求不重复告警", async () => {
+    await requestActivity("observed") // 先落到可用状态，重置限频记忆
+    await requestActivity("unavailable")
+    await requestActivity("unavailable")
+
+    expect(loggerMocks.warn).toHaveBeenCalledTimes(1)
+    const message = String(loggerMocks.warn.mock.calls[0]![0])
+    expect(message).toContain("观察态不可用（unavailable）")
+    expect(message).toContain("依赖观察的主动机会与静默了解会被跳过")
+  })
+
+  it("恢复可用后重置限频：再次不可用重新告警", async () => {
+    await requestActivity("observed")
+    await requestActivity("unavailable")
+    expect(loggerMocks.warn).toHaveBeenCalledTimes(1)
+
+    await requestActivity("locked") // locked 也算可用，同样重置
+    await requestActivity("unavailable")
+    expect(loggerMocks.warn).toHaveBeenCalledTimes(2)
+  })
+
+  it("locked 与 observed 都算可用，不告警", async () => {
+    await requestActivity("locked")
+    await requestActivity("observed")
+    expect(loggerMocks.warn).not.toHaveBeenCalled()
   })
 })

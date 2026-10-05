@@ -56,7 +56,7 @@ ai:
   plan: { enabled: false }
   humanizer: { enabled: false }
   memory: { enabled: false }
-  silentAccess: { enabled: false }
+  silentAccess: { frequency: "off" }
 tools:
   bash: { whitelist: [ls, cat] }
   mcp: { servers: [] }
@@ -566,13 +566,7 @@ describe("V1RTUAL 指令文本", () => {
   })
 })
 
-describe("AI 页：主动开关 / 阶段文案 / 变量池", () => {
-  it("proactive_control：非布尔 enabled 以 CONFIG 拒绝", async () => {
-    await expect(dispatchHostRequest("proactive_control", { enabled: "yes" })).rejects.toMatchObject({
-      code: "CONFIG",
-    })
-  })
-
+describe("AI 页：阶段文案 / 变量池", () => {
   it("card_stages_read：未知卡与没有激活卡都以 PATH_NOT_FOUND 拒绝（不返回空文档）", async () => {
     await expect(
       dispatchHostRequest("card_stages_read", { cardId: "no-such-card" }),

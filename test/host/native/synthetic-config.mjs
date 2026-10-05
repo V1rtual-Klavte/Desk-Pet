@@ -35,6 +35,13 @@ const FORBIDDEN_SOURCE = "CONFIG-DEV.yaml"
  */
 const CREDENTIAL_KEY = /(api[_-]?key|apikey|access[_-]?key|secret|token|password|passwd|authorization|credential|private[_-]?key|bearer)/i
 
+/**
+ * 纯占位符引用（`${VAR}`；可带 `Bearer ` 之类单个字面前缀）不算凭据：值本体只是一段引用，
+ * 运行期才从环境或应用自有凭据存储解析（如携带 MCP 出厂条目的 `Bearer ${GITHUB_TOKEN}`），
+ * 模板与覆盖文件里并不存在真实值。含任何其它字符（例如一段真实 key）依旧命中守卫。
+ */
+const PLACEHOLDER_ONLY = /^(?:[A-Za-z][A-Za-z0-9_-]*\s+)?\$\{[A-Za-z_][A-Za-z0-9_]*\}$/
+
 function assertNotRealConfig(filePath) {
   if (basename(filePath) === FORBIDDEN_SOURCE) {
     throw new Error(`合成 CONFIG 不得以真实开发配置为输入（${filePath}）；基底只用 ${CONFIG_TEMPLATE_NAME}`)
@@ -62,13 +69,20 @@ function deepMerge(base, override, path) {
  *
  * 只判字符串：`requireApiKey: true` 这类开关是 boolean、`maxDailyTokens: 72000`
  * 这类预算含 "token" 但是数字，都不可能携带凭据；而任何真的 key/secret 一定是
- * 非空字符串。空串 / null / undefined 一律放行（模板的占位形态）。
+ * 非空字符串。空串 / null / undefined 一律放行（模板的占位形态）；纯占位符引用
+ * （`PLACEHOLDER_ONLY`，如 `Bearer ${GITHUB_TOKEN}`）同样放行——值本体是引用，
+ * 运行期才解析，模板里不存在真实凭据。
  */
 export function assertCredentialFree(tree, path = "") {
   if (isRecord(tree)) {
     for (const [key, value] of Object.entries(tree)) {
       const keyPath = path ? `${path}.${key}` : key
-      if (CREDENTIAL_KEY.test(key) && typeof value === "string" && value.trim() !== "") {
+      if (
+        CREDENTIAL_KEY.test(key)
+        && typeof value === "string"
+        && value.trim() !== ""
+        && !PLACEHOLDER_ONLY.test(value.trim())
+      ) {
         throw new Error(`合成 CONFIG 出现非空凭据字段：${keyPath}（凭据只经 test/eval-models.local.json / DESKPET_EVAL_* 注入）`)
       }
       assertCredentialFree(value, keyPath)

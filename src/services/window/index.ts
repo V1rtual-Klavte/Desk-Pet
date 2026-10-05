@@ -11,5 +11,5 @@ export {
   getLatestWindowObservation,
   subscribeWindowObservations,
 } from "./listener"
-export { getRuntimeActivity, initWindowObservation, setMonitorEnabled, disconnectWindowObservation } from "./monitor"
+export { getRuntimeActivity, initWindowObservation, setMonitorEnabled, disconnectWindowObservation, shouldWarnObservationGate } from "./monitor"
 export type { AppCategory, ObservationState, RuntimeActivity, WindowObservation } from "./types"

@@ -109,13 +109,18 @@ pub(crate) fn ensure(conn: &Connection) -> AppResult<()> {
         ) STRICT;
         CREATE INDEX IF NOT EXISTS proactive_occurrences_retry ON proactive_occurrences(status,retry_after);
 
+        -- `enabled` 已随 CONFIG 档位撤出（`ai.proactive.frequency` 的 off 承担开关）；
+        -- 旧库靠 MEMORY_SCHEMA_VERSION 拒开，不做列迁移。
         CREATE TABLE IF NOT EXISTS proactive_control (
           id INTEGER PRIMARY KEY CHECK(id=1),
-          enabled INTEGER NOT NULL CHECK(enabled IN (0,1)),
           mute_until INTEGER,
           revision INTEGER NOT NULL
         ) STRICT;
-        INSERT INTO proactive_control(id,enabled,mute_until,revision) VALUES (1,1,NULL,0) ON CONFLICT(id) DO NOTHING;
+        -- 用 NOT EXISTS 而非 ON CONFLICT：旧版表带 `enabled NOT NULL`，INSERT 若真发起
+        -- 会先撞 NOT NULL 约束（早于版本检查报错）；条件插入在不存在的行上直接不发起，
+        -- 让旧库继续走到 MEMORY_SCHEMA_VERSION 的诚实 abort。
+        INSERT INTO proactive_control(id,mute_until,revision)
+          SELECT 1,NULL,0 WHERE NOT EXISTS(SELECT 1 FROM proactive_control WHERE id=1);
 
         CREATE TABLE IF NOT EXISTS proactive_budgets (
           local_date TEXT PRIMARY KEY NOT NULL,

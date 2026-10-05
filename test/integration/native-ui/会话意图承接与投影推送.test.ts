@@ -110,7 +110,7 @@ ai:
   plan: { enabled: false }
   humanizer: { enabled: false }
   memory: { enabled: false }
-  silentAccess: { enabled: false }
+  silentAccess: { frequency: "off" }
 tools:
   bash: { whitelist: [ls, cat] }
   mcp: { servers: [] }

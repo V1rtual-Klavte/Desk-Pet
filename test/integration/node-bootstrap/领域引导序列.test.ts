@@ -29,6 +29,8 @@ import { afterAll, beforeAll, describe, expect, it, vi } from "vitest"
 
 import { setTestDataRoot } from "../../host/node-ipc"
 import { stopIdleDreamingSchedulerAndWait } from "@/services/agent/memory"
+import { computeLogLevel } from "@/services/config"
+import { getLogLevel } from "@/services/logger"
 import { stopSilentUnderstanding } from "@/services/observation"
 import { stop as stopProactive } from "@/services/proactive"
 import { debug } from "@/services/debug"
@@ -74,7 +76,7 @@ ai:
   plan: { enabled: false }
   humanizer: { enabled: false }
   memory: { enabled: false }
-  silentAccess: { enabled: false }
+  silentAccess: { frequency: "off" }
 tools:
   bash: { whitelist: [ls, cat] }
   mcp: { servers: [] }
@@ -215,6 +217,12 @@ describe("领域引导序列", () => {
     expect(isPersonalityRuntimeReady(), "人格注册没有完成").toBe(true)
     expect(listAllSlashCommands().length, "slash 命令表为空：引导没有注册命令").toBeGreaterThan(0)
     expect(debug.registeredToolCount, "工具注册没有先于 Debug 状态刷新").toBeGreaterThan(0)
+
+    // 引导期日志级别：initConfig() 之后即在引导内应用（`init.ts` 的 applyLogLevel()）——
+    // 不应用则级别停在 logger 保守默认 info，主动链路（scanner/observation 等）的 debug
+    // 证据会静默丢失。判据用运行期派生值本身：本用例宿主 runtimeMode=development →
+    // computeLogLevel()="debug" ≠ 默认 "info"，去掉引导里的 applyLogLevel() 这里会红。
+    expect(getLogLevel(), "引导期没有应用真实日志级别（computeLogLevel 的派生值未注入 logger）").toBe(computeLogLevel())
 
     const sessionId = getActiveSessionId()
     expect(sessionId, "会话初始化没有建立活跃会话").not.toBe("")

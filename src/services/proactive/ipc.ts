@@ -25,5 +25,7 @@ export const claim = (request: ProactiveClaimRequest): Promise<ProactiveClaimRes
 export const validate = (request: ProactiveValidateRequest): Promise<ProactiveValidateResponse> => getHostBridge().request("proactive_validate", { request })
 export const settle = (request: ProactiveSettleRequest): Promise<{ revision: number; status: ProactiveAttempt["status"] }> => getHostBridge().request("proactive_settle", { request })
 export const reconcile = (request: ProactiveReconcileRequest): Promise<{ revision: number; status: ProactiveAttempt["status"] }> => getHostBridge().request("proactive_reconcile", { request })
+// `control` 同时承载 patch（muteUntil / clearBehaviorSources，运行期状态）与档位投影
+// `limits`（契约 §2.5，形如 ProactiveLimits 一整行）；enabled 已随开关并入档位删除。
 export const control = (request: ProactiveControlRequest): Promise<ProactiveControl> => getHostBridge().request("proactive_control", { request })
 export { reserveAuxiliaryBudget, settleAuxiliaryBudget } from "./auxiliary-budget"

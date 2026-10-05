@@ -61,6 +61,36 @@ describe("主动机会和受限规划",()=>{
     expect(isQuietTime(quietAt,"Asia/Shanghai")).toBe(true)
     expect(collectOpportunities({...base,now:quietAt})).toEqual([])
   })
+  it("白天不再有硬窗口：非静默时段即可产出整日 rhythm，静默时段仍为空 [proactive-no-daytime-window]",()=>{
+    const topic={key:"topic:music",context:"一条自足音乐分享",source:source("behavior","topic:music",1,"topic-hash",owner),targets:[]}
+    const base={owner,timezone:"Asia/Shanghai",tasks:[],memoryTargets:[],memoryEnabled:true,behavior:buildSnapshot([],now),topic}
+    // 15:00 本地：旧实现（9–12 / 18–22 硬窗口）不会产出 rhythm；新实现两条机会整日有效
+    const afternoon=Date.parse("2026-10-03T07:00:00Z")
+    const rhythm=collectOpportunities({...base,now:afternoon}).filter(item=>item.ruleId==="rhythm")
+    expect(rhythm.map(item=>item.intentKey)).toHaveLength(2)
+    for(const item of rhythm){
+      expect(item.validFrom).toBe(Date.parse("2026-10-02T16:00:00Z")) // 当日 00:00 本地
+      expect(item.validUntil).toBe(Date.parse("2026-10-03T16:00:00Z")) // 次日 00:00 本地
+    }
+    // 只有静默时段是硬边界：09:00 本地（静默结束）即可产出，08:59 仍是整批为空
+    expect(collectOpportunities({...base,now:Date.parse("2026-10-03T01:00:00Z")}).some(item=>item.ruleId==="rhythm")).toBe(true)
+    expect(collectOpportunities({...base,now:Date.parse("2026-10-03T00:59:00Z")})).toEqual([])
+  })
+  it("周日回顾不再等晚间；晚安窗口收口是静默开始时刻，不是白天收口 [proactive-retrospective-goodnight-derived]",()=>{
+    const reliable={...buildSnapshot([],now),revision:7,quality:{status:"reliable" as const,sampleDays:5,coverageRatio:0.9,eligibleCollectionMs:10,reasons:[]}}
+    const base={owner,timezone:"Asia/Shanghai",tasks:[],memoryTargets:[],memoryEnabled:true,behavior:reliable,topic:null}
+    // 周日 10:00 本地：旧实现只在 18–22 产出回顾
+    const sunday=Date.parse("2026-10-04T02:00:00Z")
+    const retro=collectOpportunities({...base,now:sunday}).filter(item=>item.ruleId==="retrospective")
+    expect(retro).toHaveLength(1)
+    expect(retro[0]?.validFrom).toBe(Date.parse("2026-10-03T16:00:00Z")) // 周日 00:00 本地
+    expect(retro[0]?.validUntil).toBe(Date.parse("2026-10-04T16:00:00Z")) // 次日 00:00 本地
+    // 周六 22:30：晚安窗口 22:00 → 静默开始 23:00（旧实现的收口是次日 00:00）
+    const goodnight=collectOpportunities({...base,now:Date.parse("2026-10-03T14:30:00Z")}).filter(item=>item.ruleId==="late_goodnight")
+    expect(goodnight).toHaveLength(1)
+    expect(goodnight[0]?.validFrom).toBe(Date.parse("2026-10-03T14:00:00Z"))
+    expect(goodnight[0]?.validUntil).toBe(Date.parse("2026-10-03T15:00:00Z"))
+  })
   it("扫描事项无来源、已完成及未进入窗口不生成提醒 [proactive-working-evidence]",()=>{
     const base={owner,now,timezone:"Asia/Shanghai",tasks:[],memoryEnabled:true,behavior:buildSnapshot([],now),topic:null}
     const target={id:"work",version:2,scope:"user" as const,scopeId:null,kind:"working" as const,workingState:"open" as const,aliases:[],sourceIds:["user-source"],updatedAt:now,eventAt:null,dueAt:{precision:"minute" as const,instant:now+1000,timezone:"Asia/Shanghai"}}
