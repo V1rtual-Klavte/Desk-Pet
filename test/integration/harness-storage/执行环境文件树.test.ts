@@ -1,7 +1,7 @@
 // ==========================================
 // 执行环境文件树 —— 从 test/e2e/scenes/harness-storage/执行环境文件树.scene.ts 迁到 L3（W2）
 //
-// 被测：TauriExecutionEnv 的 append / rename / createDir / remove / createTempDir / listDir
+// 被测：NativeExecutionEnv 的 append / rename / createDir / remove / createTempDir / listDir
 // 命令语义。L3 里 IPC 由 test/host/node-ipc.ts 顶替（真实 Rust 命令的 Node 等价实现，
 // 只实现机制，不做路径裁决）；除错误码映射的两条策略探针外，语义与 L4 同源。
 //
@@ -27,7 +27,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest"
 
 import { setTestDataRoot } from "../../host/node-ipc"
 import { BaseDirs, initPaths, runtimePath } from "@/services/paths"
-import { TauriExecutionEnv } from "@/services/tool/pi/tauri-execution-env"
+import { NativeExecutionEnv } from "@/services/tool/pi/native-execution-env"
 
 /**
  * 解包 Result（夹具解码器，不是断言）：失败时先经 expect 记一条带错误码的失败，再中止本用例
@@ -47,13 +47,13 @@ function failureCode<T>(result: Result<T, FileError>, label: string): FileError[
 }
 
 let dataRoot = ""
-let env: TauriExecutionEnv
+let env: NativeExecutionEnv
 
 beforeAll(async () => {
   dataRoot = mkdtempSync(join(tmpdir(), "deskpet-harness-env-"))
   setTestDataRoot(dataRoot)
   await initPaths()
-  env = new TauriExecutionEnv(await runtimePath("data"))
+  env = new NativeExecutionEnv(await runtimePath("data"))
 })
 
 afterAll(() => {
@@ -61,7 +61,7 @@ afterAll(() => {
 })
 
 describe("执行环境文件树", () => {
-  it("TauriExecutionEnv 的 append/rename/createDir/remove/createTempDir 真实命令语义 [harness-execution-env-filetree]", async () => {
+  it("NativeExecutionEnv 的 append/rename/createDir/remove/createTempDir 真实命令语义 [harness-execution-env-filetree]", async () => {
     const context = BACKGROUND_CONTEXT
 
     // ── createDir 默认 recursive：一次建多层；append 创建缺失文件（含缺失父目录）并在末尾追加 ──

@@ -1,7 +1,7 @@
 import type { SceneDef } from "../../../e2e/types"
 import { installFakeProvider, fakeText, fakeToolCall } from "../../../host/fake-provider"
 import { sessionEntries } from "../../../host/session-entries"
-import { invoke } from "@tauri-apps/api/core"
+import { getHostBridge } from "@/services/host"
 import { errorCode, formatError } from "@/services/error"
 import { BaseDirs } from "@/services/paths"
 
@@ -54,7 +54,7 @@ export const 凭据路径终判: SceneDef = {
 
         // ① 不存在的绝对路径：结论必须是 SENSITIVE_PATH，而不是 PATH_NOT_FOUND。
         // 判定若落在 canonicalize 之后，这条会先拿到 PATH_NOT_FOUND。
-        const lexical = await rejection(() => invoke("file_read", { path: `${probe}/.ssh/id_rsa` }))
+        const lexical = await rejection(() => getHostBridge().request("file_read", { path: `${probe}/.ssh/id_rsa` }))
         if (lexical.code === "PATH_NOT_FOUND") {
           throw new Error("凭据判定落在了 canonicalize 之后：不存在的私钥路径先得到 PATH_NOT_FOUND")
         }
@@ -63,21 +63,21 @@ export const 凭据路径终判: SceneDef = {
         }
 
         // ② `..` 形态走同一个入口，中间层同样不存在
-        const dotted = await rejection(() => invoke("file_read", { path: `${probe}/x/../.ssh/id_rsa` }))
+        const dotted = await rejection(() => getHostBridge().request("file_read", { path: `${probe}/x/../.ssh/id_rsa` }))
         if (dotted.code !== "SENSITIVE_PATH") {
           throw new Error(`.. 形态的私钥路径未被拒绝: ${dotted.code ?? dotted.message}`)
         }
 
         // ③ 写入侧同一入口：目标不存在时走 `validate_new_file_path`，判定仍在归一化路径的词法阶段。
         // 结论必须是凭据而不是 PATH_NOT_FOUND —— 不能因为「文件还不存在」就跳过凭据判定。
-        const write = await rejection(() => invoke("file_write", { path: `${probe}/.ssh/id_rsa`, content: "x" }))
+        const write = await rejection(() => getHostBridge().request("file_write", { path: `${probe}/.ssh/id_rsa`, content: "x" }))
         if (write.code !== "SENSITIVE_PATH") {
           throw new Error(`写入侧未按凭据拒绝: ${write.code ?? write.message}`)
         }
 
         // ④ bash 层 1：凭据规则在调用方不可关闭（`bash_exec` 已无策略入参）。
         // 码只认 TOOL + 文案含「凭据路径」，超时（OTHER/超时文案）与 spawn 失败（IO）都不算通过。
-        const result = await rejection(() => invoke("bash_exec", {
+        const result = await rejection(() => getHostBridge().request("bash_exec", {
           executionId: "credential-probe-bash",
           command: "cat ~/.ssh/id_rsa",
         }))
@@ -188,7 +188,7 @@ export const 凭据命令被拦: SceneDef = {
           // 可观测产物代理「BashPool 未产生子进程」：策略通过时会在 spawn 之前就返回，
           // 文件不存在说明这条命令连 /bin/sh 都没拉起来。
           const leakPath = `${BaseDirs.sessions()}/deskpet-leak-safety-credential-bash-blocked`
-          if (await invoke<boolean>("file_exists", { path: leakPath })) {
+          if (await getHostBridge().request("file_exists", { path: leakPath })) {
             throw new Error("泄漏产物存在：bash 子进程被真的拉起来了")
           }
           // 不在这里断言耗时 —— 理由见文件顶部「本条场景没有耗时断言」。

@@ -8,11 +8,11 @@
 // 本场景用生产入口跑一个无工具的普通回合，断言「回合开始发了 thinking 语义 key，
 // 且负载里没有文案字段」；文案侧由 personality-card 的 stage-prompt-link 钉住。
 
-import { listen } from "@tauri-apps/api/event"
 import { setOverride } from "@/services/config"
 import { initChat, sendMessage } from "@/services/agent/runner"
 import { formatError } from "@/services/error"
 import { fakeText, installFakeProvider } from "../../../host/fake-provider"
+import { publishedUiEvents } from "../../../host/ui-event-tap"
 import type { SceneDef } from "../../../e2e/types"
 
 const STAGE_EVENT = "deskpet-stage-hint"
@@ -25,7 +25,7 @@ const STAGE_KEYS = ["thinking", "planning", "retry"]
 const TURN_SETTLE_MS = 60_000
 const HINT_DRAIN_MS = 5_000
 
-/** 收到的事件负载，按到达顺序存（事件经 IPC 回环投递，断言前有界等待）。 */
+/** HostBridge 成功发布的事件载荷；Native event UI 是产品消费者，tap 只供无 UI 的 L4 runner 观测。 */
 let hints: Array<Record<string, unknown>> = []
 let outputReply = ""
 let turnError: string | undefined
@@ -62,26 +62,19 @@ export const 阶段状态行: SceneDef = {
       // 校验回合自己也会发一条消息（场景 runner 按 turns[].userText 投递），它需要自己的响应。
       fakeText(SETTLE_REPLY),
     ])
-    // 监听在 setup 内完成取证并注销：不把监听器留给后面的场景（同一 WebView 复用）。
-    const unlisten = await listen<Record<string, unknown>>(STAGE_EVENT, event => {
-      hints.push(event.payload)
-    })
-    try {
-      await initChat()
-      const settled = await Promise.race([
-        sendMessage(USER_TEXT).then(
-          output => ({ output }),
-          error => ({ error: formatError(error) }),
-        ),
-        new Promise<undefined>(resolve => { setTimeout(() => resolve(undefined), TURN_SETTLE_MS) }),
-      ])
-      if (settled === undefined) turnError = `回合没有在 ${TURN_SETTLE_MS}ms 内结束`
-      else if ("error" in settled) turnError = settled.error
-      else outputReply = settled.output.reply
-      await waitUntil(() => hints.length > 0, HINT_DRAIN_MS)
-    } finally {
-      unlisten()
-    }
+    await initChat()
+    const settled = await Promise.race([
+      sendMessage(USER_TEXT).then(
+        output => ({ output }),
+        error => ({ error: formatError(error) }),
+      ),
+      new Promise<undefined>(resolve => { setTimeout(() => resolve(undefined), TURN_SETTLE_MS) }),
+    ])
+    if (settled === undefined) turnError = `回合没有在 ${TURN_SETTLE_MS}ms 内结束`
+    else if ("error" in settled) turnError = settled.error
+    else outputReply = settled.output.reply
+    await waitUntil(() => publishedUiEvents(STAGE_EVENT).length > 0, HINT_DRAIN_MS)
+    hints = publishedUiEvents(STAGE_EVENT)
   },
   turns: [{
     index: 1,

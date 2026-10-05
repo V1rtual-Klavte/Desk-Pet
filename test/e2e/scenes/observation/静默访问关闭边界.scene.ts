@@ -1,4 +1,4 @@
-import { invoke } from "@tauri-apps/api/core"
+import { getHostBridge } from "@/services/host"
 import { setOverride } from "@/services/config"
 import { setMonitorEnabled } from "@/services/window"
 import { errorCode } from "@/services/error"
@@ -16,12 +16,13 @@ export const 静默访问关闭边界: SceneDef = {
   },
   turns: [{ index: 1, description: "普通聊天仍能完成，观察端口由Rust终裁拒绝", userText: "这轮只聊一句",
     checks: [{ type: "expectNativeObservationDisabled", run: async () => {
-      for (const [command, arguments_] of [
-        ["observation_capture_screen", {}],
-        ["observation_read_targets", { targets: [{ path: "/not-a-readable-project", kind: "file" }] }],
-      ] as const) {
+      const probes = [
+        { command: "observation_capture_screen", request: getHostBridge().request("observation_capture_screen", {}) },
+        { command: "observation_read_targets", request: getHostBridge().request("observation_read_targets", { targets: [{ path: "/not-a-readable-project", kind: "file" }] }) },
+      ]
+      for (const { command, request } of probes) {
         let code: string | null | undefined
-        try { await invoke(command, arguments_) }
+        try { await request }
         catch (error) { code = errorCode(error) }
         if (code !== "CANCELLED") throw new Error(`${command}关闭时应返回CANCELLED，实际${code ?? "调用成功"}`)
       }

@@ -1,3 +1,19 @@
+// 2026-10-05 设置页 Card 增删改查 + 模版批次：本契约 sourceFiles 中三处变化，均为新增 ——
+// `src/services/native-ui/host-requests.ts` 加四条 Card 请求臂、`ui/settings/schema.rs`
+// 的 AI 页「人格」节加 7 个 action.card* 动作字段（silentAccess 字段与既有动作未动）、
+// `host/dispatch.rs` 加 `personality_file_delete` 分派臂；sourceFiles 里
+// `src/services/config.ts` 的累积改动经核对，增删行未出现 silentAccess / observation /
+// proactive 相关键。ob-01..ob-07 逐点复核行为面未变，仅按当前源码刷新 sourceHash。
+// 2026-10-05 三批复查（本批刷新）：sourceFiles 变化 —— runtime.ts（RUNTIME_DATA 协议缺失
+// 检测与提醒接线）、config.ts + ui/settings/schema.rs（设置面的当批改动；经核对 current
+// 源码里 silentAccess 与观察/主动读取键、ob-* 相关字段未受影响）、
+// crates/native-host/src/commands/mod.rs（仅命令域头注释里的设计契约路径改指 history 归档，
+// observation_cmd / monitor_ctl 模块声明未动）。ob-01..ob-07 逐点核对实现点仍在、语义未变，
+// 未修订覆盖点，仅按当前源码刷新 sourceHash。
+// 2026-10-05 收尾复查（本批刷新）：sourceFiles 变化 —— runtime.ts（onUsage 展示统计口径改造；
+// 观察调度、静默了解与主动读取链路不在改动面内）。ob-01..ob-07 逐点核对实现点仍在、覆盖
+// 描述与当前实现一致。本批刷新同时包含另一会话的改动；本轮只做 coverage 描述与当前实现
+// 一致性核对（非逐行行为审计），未修订覆盖点，仅按当前源码刷新 sourceHash。
 import type { ModuleContract } from "../host/types"
 
 export const observationContract: ModuleContract = {
@@ -17,6 +33,10 @@ export const observationContract: ModuleContract = {
     "src/services/window/listener.ts",
     "src/services/window/monitor.ts",
     "src/services/window/index.ts",
+    // ob-07 断言的领域 barrel 面：主动 / 记忆两个 barrel 与上面的 observation / window
+    // 属同一次「UI 协调移出领域面」裁定（W11b），其导出面的变化要重新审查该负向断言。
+    "src/services/proactive/index.ts",
+    "src/services/agent/memory/index.ts",
     "src/services/engine/harness/model-gateway.ts",
     "src/services/context/budget.ts",
     "src/services/images/budget.ts",
@@ -29,24 +49,26 @@ export const observationContract: ModuleContract = {
     "src/services/agent/memory/ipc.ts",
     "src/services/proactive/content/pool.ts",
     "src/services/proactive/auxiliary-budget.ts",
-    "src-tauri/src/proactive/schema.rs",
-    "src-tauri/src/proactive/store.rs",
-    "src-tauri/src/proactive/commands.rs",
-    "src-tauri/src/commands/observation_cmd.rs",
-    "src-tauri/src/commands/mod.rs",
-    "src-tauri/src/lib.rs",
-    "src-tauri/src/error.rs",
-    "src-tauri/src/paths/security.rs",
-    "src-tauri/src/monitor/mod.rs",
-    "src-tauri/Cargo.toml",
+    "crates/native-host/src/proactive/schema.rs",
+    "crates/native-host/src/proactive/store.rs",
+    "crates/native-host/src/proactive/commands.rs",
+    "crates/native-host/src/commands/observation_cmd.rs",
+    "crates/native-host/src/commands/mod.rs",
+    "crates/native-host/src/host/dispatch.rs",
+    "crates/native-host/src/error.rs",
+    "crates/native-host/src/paths/security.rs",
+    "crates/native-host/src/monitor/mod.rs",
+    "crates/native-host/Cargo.toml",
     "Cargo.lock",
-    "src/App.vue",
-    "src/components/settings/AITab.vue",
-    "src/components/settings/SettingsPanel.vue",
+    // 原 `src/App.vue`（跨窗口观察治理生命周期；按 silentAccess 应用 setMonitorEnabled）随 WebView
+    // 删壳退役：观察订阅与总闸应用已由 window/monitor.ts 的 initWindowObservation 接回（两者都在列）；
+    // 跨窗口治理形态在单 Node 架构下取消，本地应用即真相源（见 observation/ownership.ts）。
+    "crates/native-host/src/ui/settings/schema.rs",
+    "src/services/native-ui/host-requests.ts",
     "test/integration/observation/了解层与话题来源.test.ts",
     "test/e2e/scenes/observation/静默访问关闭边界.scene.ts",
   ],
-  sourceHash: "63b7bd1f6871995145922c8dc1a84d7f089acf4be72eb6e806770f3b8f6e9e55",
+  sourceHash: "636f6b0cf156b7fbf3ad295df346ee8ea972d6a81ed50dff40bf5bb28aa72461",
   coverage: [
     {
       id: "ob-01",
@@ -101,6 +123,15 @@ export const observationContract: ModuleContract = {
       layer: "integration",
       depth: "shallow",
       scenarios: ["observation-legacy-store-compat"],
+    },
+    {
+      id: "ob-07",
+      feature: "UI 协调移出领域面（跨域边界）",
+      description: "旧壳的跨窗口协调入口不再出现在领域 barrel 面：agent/memory 无 initMemoryRevisionSync、proactive 无 requestProactiveControl、observation 无 initObservationGovernance / stopObservationGovernance、window 无 initWindowListener；领域侧保留可用的本地路径（记忆 revision 的进程内分发不依赖任何 UI 通道，单 Node 架构下所有提交都发生在本进程）。窗口与观察治理入口退役是本点的主体，主动 / 记忆两个 barrel 面是同一次裁定的断言面（已登记进 sourceFiles）",
+      why: "入口留在领域面，删壳后的窗口协调会被重新接线进 Node 图（造出第二真相源）；负向边界没有门禁就会被后续的「补兼容」悄悄加回来",
+      layer: "integration",
+      depth: "shallow",
+      scenarios: ["ui-coordination-outside-domain-barrels"],
     },
   ],
   rules: { minScenarios: 1, minDeepScenarios: 1, requireBoundary: true, requireErrorPath: true },

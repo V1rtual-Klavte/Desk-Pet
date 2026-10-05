@@ -1,3 +1,18 @@
+// 2026-10-05 本批复查与刷新：契约 sourceFiles 里 runtime.ts 由另一会话同批写入
+// （新增 emitToolStageTitlebar：工具过程文案改推顶栏，与阶段提示共用同一 owner 与释放点），
+// runner.ts 的改动是「@/services/host/humanizer → @/services/humanizer」的纯 import 路径改名。
+// hz-01..hz-04 逐点核对实现点仍在、语义未变（hz-03/hz-04 的标题栏所有权与释放点由调度器
+// 承担，runtime 的新增推送不改其职责边界）。本批刷新同时包含另一会话对 runtime.ts 的改动；
+// 主会话只做了「coverage 描述与当前实现一致性」的核对（不是逐行行为审计），未修订覆盖点，
+// 仅按当前源码刷新 sourceHash。
+// 2026-10-05 三批复查（本批刷新）：runtime.ts 再次变化 —— RUNTIME_DATA 协议缺失检测与提醒
+// 接线（结算 mark/clear 与下一回合 buildPrompt 传参）。hz-01..hz-04 的表达解析、沉默护栏与
+// 逐泡揭示/标题栏所有权由 humanizer 调度器承担，与改动面无交集，逐点核对实现点仍在、
+// 语义未变，未修订覆盖点，仅按当前源码刷新 sourceHash。
+// 2026-10-05 收尾复查（本批刷新）：sourceFiles 变化 —— runtime.ts（onUsage 展示统计口径改造；
+// 与拟人表达的解析、沉默护栏、逐泡揭示与标题栏调度不相交）。hz-01..hz-04 逐点核对实现点
+// 仍在、覆盖描述与当前实现一致。本批刷新同时包含另一会话的改动；本轮只做 coverage 描述与
+// 当前实现一致性核对（非逐行行为审计），未修订覆盖点，仅按当前源码刷新 sourceHash。
 import type { ModuleContract } from "../host/types"
 
 export const humanizerContract: ModuleContract = {
@@ -5,21 +20,19 @@ export const humanizerContract: ModuleContract = {
   sourceFiles: [
     "src/services/humanizer/protocol.ts",
     "src/services/humanizer/scheduler.ts",
-    "src/components/ChatPanel.vue",
     "src/services/agent/runner.ts",
     "src/services/engine/harness/runtime.ts",
   ],
-  // Root integration will refresh after the shared runtime/UI audit is complete.
-  sourceHash: "44d303fa7e8f70cb1a973e44812df322904001fd72dfbded50a4f73fa7d41409",
+  sourceHash: "91538f0a9ee764d022aa13f5ee1a49648ff3ad05b7b90121bae1c938f69183a5",
   coverage: [
     {
       id: "hz-01",
       feature: "表达标记解析",
-      description: "只识别整行 SPLIT 标记并将超过四泡的尾部合并；task 流保持单泡且不能合法沉默；SILENT 只在 casual 整条可见正文等于哨兵时成立",
-      why: "输出协议必须对模型偏差采取可预测处理，不能把正文中的相似文本误当控制标记",
+      description: "只识别整行 SPLIT 标记并将超过四泡的尾部合并；casual 流在无标记时按空行分段成泡（单个换行与含代码块的消息不分，task 流保持单泡且不能合法沉默）；SILENT 只在 casual 整条可见正文等于哨兵时成立",
+      why: "输出协议必须对模型偏差采取可预测处理，不能把正文中的相似文本误当控制标记；模型用空行分段时要分成几条气泡（2026-10-05 用户规则）",
       layer: "unit",
       depth: "shallow",
-      scenarios: ["humanizer-protocol-split-merge", "humanizer-task-single-part", "humanizer-silent-exact"],
+      scenarios: ["humanizer-protocol-split-merge", "humanizer-blank-line-split", "humanizer-task-single-part", "humanizer-silent-exact"],
     },
     {
       id: "hz-02",
@@ -39,7 +52,13 @@ export const humanizerContract: ModuleContract = {
       depth: "deep",
       scenarios: ["humanizer-scheduler-casual", "humanizer-scheduler-cancel", "humanizer-scheduler-active-first", "humanizer-scheduler-titlebar"],
     },
-    { id: "hz-04", feature: "真实生产组件呈现", description: "真实Tauri WebView内挂载生产ChatPanel：普通聊天生成时 Card typing 只经顶栏展示（组件内输入框上方状态位不再被占用），已提交内容按泡揭示，停止立即全显并释放顶栏状态；这提供组件自动证据，不代替桌面截图人工观察", why: "纯调度器测试不能证明Vue组件正确消费瞬态揭示和阶段通道", layer: "e2e", depth: "deep", scenarios: ["humanizer-real-component-reveal"] },
+    // hz-04 口径变更（测试设施去 Tauri 批）：原「真实组件分泡呈现」场景挂载生产 ChatPanel，
+    // WebView/ChatPanel 退役后必然失效。处置为改服务级场景（test/e2e/scenes/humanizer/
+    // 生产入口分泡呈现.scene.ts）而非删除覆盖点 —— 删点需要放宽本契约的 L4 门槛
+    // （minScenarios / minDeepScenarios / requireBoundary），那等于把组件级证据的缺口
+    // 洗成「本层没有可核对内容」。组件渲染的实机证据待原生 UI 测试驱动承接，不在服务级
+    // 场景里冒充；caseId 保留为稳定历史标识（personality-card pc-09 也按它引用）。
+    { id: "hz-04", feature: "生产入口分泡与顶栏所有权", description: "真实 sendMessage 提交的普通聊天多泡正文进入逐泡揭示：生成期 Card typing 文案由顶栏状态通道持有、首泡揭示时释放；提交后首个揭示状态为 held（不整条全显）、第二泡按泡间节奏延后、停止立即全显并回收瞬态状态。组件渲染的 DOM 证据随 WebView 退役，本点只承担服务级链路", why: "调度器单测不能证明真实生产入口（runner/runtime）消费了瞬态揭示与阶段所有权通道", layer: "e2e", depth: "deep", scenarios: ["humanizer-real-component-reveal"] },
   ],
   rules: { minScenarios: 1, minDeepScenarios: 1, requireBoundary: true, requireErrorPath: false },
 }

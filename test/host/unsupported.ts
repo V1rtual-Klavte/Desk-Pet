@@ -17,7 +17,7 @@ export const RUST_ONLY_COMMANDS = [
   // tool_exec/mod.rs / bash_policy.rs：层 1 硬基线 + 系统路径保护 + 凭据拦截，调用方不可关闭
   "bash_exec", "bash_cancel",
   // mcp_bridge.rs：stdio 子进程
-  "mcp_spawn", "mcp_send", "mcp_kill",
+  "mcp_spawn", "mcp_write", "mcp_read", "mcp_kill",
   // tool_permit.rs：Rust 侧许可内核（额度、借用者代际、结算时点）
   "tool_permit_acquire", "tool_permit_release", "tool_permit_cancel",
   "tool_permit_attach", "tool_permit_snapshot", "tool_permit_set_max_shared_readers",

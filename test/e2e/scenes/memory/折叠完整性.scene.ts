@@ -57,7 +57,7 @@ import {
   releasePiSession,
 } from "@/services/session"
 import { runtimePath } from "@/services/paths"
-import { TauriExecutionEnv } from "@/services/tool/pi/tauri-execution-env"
+import { NativeExecutionEnv } from "@/services/tool/pi/native-execution-env"
 import { installFakeProvider, fakeText, lastRequestText } from "../../../host/fake-provider"
 import { assistantTexts, compactionEntries, sessionEntries, sessionMessages, userTexts } from "../../../host/session-entries"
 import type { AssertContext, SceneDef } from "../../../e2e/types"
@@ -195,7 +195,7 @@ function fileOk<T>(result: Result<T, FileError>): T {
 
 /** 盘上全文与字节（未包装的 env 直读；调用方先冲帧缓冲）。 */
 async function readOnDisk(path: string): Promise<{ text: string; bytes: number }> {
-  const plain = new TauriExecutionEnv(await runtimePath("data"))
+  const plain = new NativeExecutionEnv(await runtimePath("data"))
   const info = fileOk(await plain.fileInfo(path, BACKGROUND_CONTEXT))
   const text = fileOk(await plain.readTextFile(path, BACKGROUND_CONTEXT))
   return { text, bytes: info.size }

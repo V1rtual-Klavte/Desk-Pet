@@ -54,8 +54,10 @@ import {
   readFoldLog,
 } from "@/services/engine/harness"
 import type { FoldOutcome, PiSessionRepo } from "@/services/engine/harness"
+// 判别器是「这一行是帧」的唯一真相源；没进 barrel，按需直连该模块（同 帧写缓冲.test.ts）。
+import { isFrameAppendTransaction } from "@/services/engine/harness/session-frame-buffer"
 import { initPaths, runtimePath } from "@/services/paths"
-import { TauriExecutionEnv } from "@/services/tool/pi/tauri-execution-env"
+import { NativeExecutionEnv } from "@/services/tool/pi/native-execution-env"
 
 type JsonlSession = Session<JsonlSessionMetadata>
 
@@ -108,12 +110,12 @@ function frameDelta(index: number): string {
 /**
  * 注入点 ①：`renameFile` 恒失败 —— 折叠的**发布点**失败，是「崩溃」的可确定性等价形态。
  *
- * 覆盖的是 `TauriExecutionEnv` 的普通原型方法：其余读写全部照旧走真实 IPC，
+ * 覆盖的是 `NativeExecutionEnv` 的普通原型方法：其余读写全部照旧走真实 IPC，
  * 所以「原文件逐字未变」的结论仍然是关于真实磁盘的结论。注入实例经
  * `createPiSessionRepo({ fileSystem })` 传入 ⇒ 会被帧缓冲装饰器包住
  * （装饰器的 renameFile 是「先冲同路径缓冲再转发」，注入照常触发）。
  */
-class RenameFailsEnv extends TauriExecutionEnv {
+class RenameFailsEnv extends NativeExecutionEnv {
   renameAttempts = 0
   lastDestination: string | undefined
 
@@ -128,7 +130,7 @@ class RenameFailsEnv extends TauriExecutionEnv {
  * 注入点 ②：临时文件（`.tmp-` 前缀）的 `writeFile` 恒失败 —— 发布前的最后一次写盘失败。
  * 同时记下每一次 `writeFile` 的目标路径：用来断言失败路径上没有任何一次写落在会话文件本身。
  */
-class TempWriteFailsEnv extends TauriExecutionEnv {
+class TempWriteFailsEnv extends NativeExecutionEnv {
   tempWriteAttempts = 0
   readonly writePaths: string[] = []
 
@@ -143,11 +145,11 @@ class TempWriteFailsEnv extends TauriExecutionEnv {
 }
 
 /** 注入一个违反 FileSystem 不抛约定的 stat：显式折叠也必须收口成 skipped。 */
-class FileInfoThrowsEnv extends TauriExecutionEnv {
+class FileInfoThrowsEnv extends NativeExecutionEnv {
   /** 建会话语料本身也要 stat；注入只在场景布置完成后开启。 */
   failFileInfo = false
   // 类型保持基类返回：真正的故障是「运行期抛」，不是换签名。
-  override fileInfo(_path: string, _context: Context): ReturnType<TauriExecutionEnv["fileInfo"]> {
+  override fileInfo(_path: string, _context: Context): ReturnType<NativeExecutionEnv["fileInfo"]> {
     if (!this.failFileInfo) return super.fileInfo(_path, _context)
     throw new Error("injected fileInfo throw")
   }
@@ -157,7 +159,7 @@ class FileInfoThrowsEnv extends TauriExecutionEnv {
 
 interface FoldCrashFixture {
   /** 未包装的 env：直读磁盘，绕过装饰器（也就绕过读前 flush）。 */
-  plain: TauriExecutionEnv
+  plain: NativeExecutionEnv
   root: string
   path: string
   sessionDir: string
@@ -178,7 +180,7 @@ interface FoldCrashFixture {
  */
 async function buildFixture(): Promise<FoldCrashFixture> {
   const context = BACKGROUND_CONTEXT
-  const plain = new TauriExecutionEnv(await runtimePath("data"))
+  const plain = new NativeExecutionEnv(await runtimePath("data"))
   const root = expectOk(await plain.createTempDir("deskpet-live-foldcrash-", context), "createTempDir")
   const repo = await createPiSessionRepo({ sessionsRoot: root, cwd: root })
   const session: JsonlSession = await repo.create({ id: "fold-crash" }, context)
@@ -244,8 +246,11 @@ async function readSessionText(target: FoldCrashFixture): Promise<string> {
 
 /**
  * 前置断言：夹具必须真的会走到发布点 —— 用生产纯函数与生产策略常量复核闸门 1/2 都会放行，
- * 且可丢写入数正好等于帧数（可回收量全部来自帧行，真实条目一行不动）。
+ * 且可丢写入数正好等于**文件里实际的帧行数**（可回收量全部来自帧行，真实条目一行不动）。
  * 少了这条，「文件太小根本没折叠」会让注入的失败假通过。
+ *
+ * 「帧行数」不能写成 FRAME_COUNT：同键 delta 合并后一行可能承载多条帧 append（甚至整个
+ * 帧突发合成一行），行数由带缓冲的提交序列决定，只有从文件本身数才可靠（逐行用生产判别器）。
  */
 function expectFoldableFixture(text: string, label: string): void {
   const plan = prepareFold(readFoldLog(text))
@@ -255,7 +260,9 @@ function expectFoldableFixture(text: string, label: string): void {
   const reclaimed = plan.bytesBefore - plan.bytesAfter
   expect(reclaimed, `${label}: 可回收量未过闸门 2（绝对值）`).toBeGreaterThanOrEqual(FOLD_POLICY.minReclaimBytes)
   expect(reclaimed, `${label}: 可回收量未过闸门 2b（比例）`).toBeGreaterThanOrEqual(plan.bytesBefore * FOLD_POLICY.minReclaimRatio)
-  expect(plan.droppedWrites, `${label}: 可丢写入数应等于帧数（夹具形状变了）`).toBe(FRAME_COUNT)
+  const frameRows = readFoldLog(text).lines.filter(line => isFrameAppendTransaction(`${line}\n`)).length
+  expect(frameRows, `${label}: 夹具里应确实有帧行`).toBeGreaterThan(0)
+  expect(plan.droppedWrites, `${label}: 可丢写入数应等于帧行数（合并后行数 ≠ FRAME_COUNT）`).toBe(frameRows)
 }
 
 /**
@@ -338,7 +345,7 @@ describe("折叠中断", () => {
         const healthy = await createPiSessionRepo({
           sessionsRoot: target.root,
           cwd: target.root,
-          fileSystem: new TauriExecutionEnv(await runtimePath("data")),
+          fileSystem: new NativeExecutionEnv(await runtimePath("data")),
         })
         try {
           const folded = await healthy.foldSession(target.metadata, BACKGROUND_CONTEXT)
@@ -404,7 +411,7 @@ describe("折叠中断", () => {
 
       // ── ④ 崩溃残留：`.tmp-*` 残留不参与会话列举、也不阻断 open（回收缺口见文件头登记）──
       {
-        const env = new TauriExecutionEnv(await runtimePath("data"))
+        const env = new NativeExecutionEnv(await runtimePath("data"))
         const root = expectOk(await env.createTempDir("deskpet-live-foldcrash-residue-", context), "createTempDir")
         const repo = await createPiSessionRepo({ sessionsRoot: root, cwd: root, fileSystem: env })
         try {

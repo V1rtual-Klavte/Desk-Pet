@@ -1,15 +1,16 @@
-import { invoke } from "@tauri-apps/api/core"
+import { getHostBridge } from "@/services/host"
 import { initChat, sendMessage } from "@/services/agent"
 import { setOverride } from "@/services/config"
 import { getActiveSessionId } from "@/services/session"
 import { runtimePath } from "@/services/paths"
-import { chatImageUrl, getMessageImagePaths, prepareImagePaths } from "@/services/images"
+import { getMessageImagePaths, prepareImagePaths } from "@/services/images"
 import { messagesFromEntries } from "@/services/session/read-model"
 import { fakeText, installFakeProvider } from "../../../host/fake-provider"
 import { sessionEntries } from "../../../host/session-entries"
 import type { SceneDef } from "../../types"
 
 const PNG = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGP4z8DwHwAFAAH/iZk9HQAAAABJRU5ErkJggg=="
+// Native L4 runner 不创建产品窗口：本场景验证真实 Native 文件/准入/请求路径与字节，不声称验证图片查看器绘制。
 let path = ""
 let requestId = ""
 let rejectedExtraImages = false
@@ -17,7 +18,7 @@ let provider: ReturnType<typeof installFakeProvider>
 
 export const 原路径图片输入: SceneDef = {
   meta: { caseId: "chat-image-path-production", module: "chat-images", contractId: "ci-01",
-    description: "图片-only输入经生产sendMessage真实路径准入，原生JSONL只保存路径、模型收到图像；原文件删除后历史路径仍保留且请求明确缺失",
+    description: "图片-only输入经真实Native准入/二进制读取与生产sendMessage，原生JSONL只保存路径、模型收到原字节；删除后请求明确缺失",
     depth: "deep", suite: "regression", entry: "production", tags: ["boundary", "error", "persistence", "image", "production-entry"] },
   setup: async () => {
     await initChat()
@@ -25,14 +26,13 @@ export const 原路径图片输入: SceneDef = {
     setOverride("ai.memory.enabled", false)
     const profileId = `image-fixture-${crypto.randomUUID()}`
     path = await runtimePath("profiles", profileId, "original.png")
-    await invoke("profile_file_write", { profileId, relativePath: "original.png", content: [...atob(PNG)].map(character => character.charCodeAt(0)) })
+    const sourceBytes = [...atob(PNG)].map(character => character.charCodeAt(0))
+    await getHostBridge().request("profile_file_write", { profileId, relativePath: "original.png", content: new Uint8Array(sourceBytes) })
+    const storedBytes = await getHostBridge().request("profile_file_read", { profileId, relativePath: "original.png" })
+    if (storedBytes.length !== sourceBytes.length || storedBytes.some((byte, index) => byte !== sourceBytes[index])) {
+      throw new Error("Native Profile 文件命令未原样往返 PNG 字节")
+    }
     await prepareImagePaths([path])
-    await new Promise<void>((resolve, reject) => {
-      const preview = new Image()
-      preview.onload = () => { if (preview.naturalWidth === 1 && preview.naturalHeight === 1) resolve(); else reject(new Error("真实WebView图片预览尺寸错误")) }
-      preview.onerror = () => reject(new Error("原文件路径未被真实WebView成功解码预览"))
-      preview.src = chatImageUrl(path)
-    })
     requestId = crypto.randomUUID()
     rejectedExtraImages = false
     try { await prepareImagePaths([path, path, path, path, path]) }
@@ -41,9 +41,9 @@ export const 原路径图片输入: SceneDef = {
       { id: "deskpet-image-fake", name: "Image-capable Fake", input: ["text", "image"] })
     const result = await sendMessage("", { imagePaths: [path], requestId })
     if (result.outcome !== "succeeded") throw new Error(`图片-only输入未成功：${result.failure?.message ?? result.outcome}`)
-    await invoke("file_remove", { path, recursive: false, force: false })
+    await getHostBridge().request("file_remove", { path, recursive: false, force: false })
   },
-  turns: [{ index: 1, description: "删除原文件后请求不得假装仍看见图片，重载保留原路径", userText: "再看一下刚才那张图",
+  turns: [{ index: 1, description: "删除原文件后真实请求不得假装仍看见图片，重载保留原路径", userText: "再看一下刚才那张图",
     checks: [{ type: "expectImagePathNativeCommitAndMissingProjection", run: async () => {
       if (!rejectedExtraImages) throw new Error("原生图片准入未拒绝超过四张的输入")
       const entries = await sessionEntries()
@@ -69,7 +69,7 @@ export const 原路径图片输入: SceneDef = {
       const projected = await messagesFromEntries(entries, getActiveSessionId())
       const user = projected.find(message => message.eventId === `${requestId}:user`)
       if (JSON.stringify(user?.imagePaths) !== JSON.stringify([path])) throw new Error("重载丢失原路径")
-      if (await invoke<boolean>("file_exists", { path })) throw new Error("测试原文件删除未生效")
+      if (await getHostBridge().request("file_exists", { path })) throw new Error("测试原文件删除未生效")
     } }] }],
 }
 export default 原路径图片输入

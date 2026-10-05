@@ -2,7 +2,7 @@ import type { SceneDef } from "../../../e2e/types"
 import type { PermitReclaim, ToolDef, ToolPolicy } from "@/services/tool"
 import { defineTool, register, unregister, executeToolDefinition, permitSnapshot, TOOL_POLICY_VERSION } from "@/services/tool"
 import { loopConfig, MAX_PARALLEL_TOOLS, MIN_PARALLEL_TOOLS } from "@/services/config"
-import { invoke } from "@tauri-apps/api/core"
+import { getHostBridge } from "@/services/host"
 
 /**
  * 执行许可：共享读可以有界并发，效果操作与其它执行互斥；借用者（页面实例）消失后，
@@ -47,6 +47,14 @@ export const 执行许可: SceneDef = {
     description: "只读共享额度可并发，独占效果与其它执行互斥，执行结束才释放，借用者消失后额度被回收",
     depth: "deep", suite: "safety", entry: "unit", tags: ["tool-execution", "safety", "boundary", "error"],
   },
+  // repeat 在同一数据根上连跑、standard-setup 不重建 Rust 许可域：上一个 trial 若在断言
+  // 中途失败，直接借用的探针额度会留下（释放补偿只覆盖登记过的 run）。开跑时按产品既有的
+  // 「新页面实例上线」语义清扫一次：Rust 回收同窗口其它页面实例的在飞额度与排队项，探针
+  // 全部用 permit-* 页面身份，回收数量不参与断言、只做清理。不清扫会让失败跨 trial 级联
+  // （实测：第 3 trial 竞态失败留下的独占排队项，让第 4 trial 卡在永久排队上超时）。
+  setup: async () => {
+    await getHostBridge().request("tool_permit_attach", { borrowerId: `permit-setup-${crypto.randomUUID()}` })
+  },
   turns: [{
     index: 1,
     description: "校验纯读并行、效果互斥与借用者生命周期兜底",
@@ -88,6 +96,16 @@ export const 执行许可: SceneDef = {
         register(holdingRead)
         register(waitingWrite)
         const readJob = settle(executeToolDefinition(holdingRead, {}, { toolCallId: "permit-read-hold" }))
+        // 顺序是必须显式构造的前提：两次调用的 permit 借用发生在各自的策略 hash
+        // （`toolPolicyHash` → `crypto.subtle.digest`，异步且完成顺序不保证）之后，
+        // 不等读真正持有额度就发起效果，独占可能先取得额度、读随后排队 —— 那是合法的
+        // 先到先得，但「独占排在进行中的读之后」根本构造不出来（repeat 3 实测翻转过）。
+        // 判据与第 3 段同形：先读额度快照，再发起后一个调用。
+        const holdDeadline = Date.now() + WAIT_BUDGET_MS
+        while ((await permitSnapshot()).sharedActive < 1 && Date.now() < holdDeadline) {
+          await new Promise(resolve => setTimeout(resolve, 10))
+        }
+        if ((await permitSnapshot()).sharedActive < 1) throw new Error("只读工具没有取得共享额度")
         const writeJob = settle(executeToolDefinition(waitingWrite, {}, { toolCallId: "permit-write-wait" }))
         if (!await waitForQueued(1)) throw new Error("独占效果没有进入许可队列")
         if (writeStarted) throw new Error("独占效果与进行中的读并发执行")
@@ -130,16 +148,20 @@ export const 执行许可: SceneDef = {
         // 直接对许可所有者下指令，构造「读被排在独占之后」的确定顺序；借用者身份显式给出，
         // 让探针额度与页面实例一一对应（回收判定的一半是它）。
         const borrowAs = (borrowerId: string, requestId: string, kind: "shared" | "exclusive" = "shared") =>
-          invoke<boolean>("tool_permit_acquire", { requestId, kind, borrowerId, sessionId: "permit-probe", runGeneration: 1, operationId: requestId })
+          getHostBridge().request("tool_permit_acquire", { requestId, kind, borrowerId, sessionId: "permit-probe", runGeneration: 1, operationId: requestId })
         const borrow = (requestId: string, kind: "shared" | "exclusive") => borrowAs("permit-probe-page", requestId, kind)
         // 释放与取消都绑定借用者：窗口标签由 Rust 从调用来源填，前端只补页面实例 id。
-        const releaseAs = (borrowerId: string, requestId: string) => invoke("tool_permit_release", { requestId, borrowerId })
+        const releaseAs = (borrowerId: string, requestId: string) => getHostBridge().request("tool_permit_release", { requestId, borrowerId })
         const release = (requestId: string) => releaseAs("permit-probe-page", requestId)
-        const cancelAs = (borrowerId: string, requestId: string) => invoke<boolean>("tool_permit_cancel", { requestId, borrowerId })
+        const cancelAs = (borrowerId: string, requestId: string) => getHostBridge().request("tool_permit_cancel", { requestId, borrowerId })
 
         const holder = await borrow("probe-holder", "shared")
         if (!holder) throw new Error("共享占位没有取得额度")
         const queuedWrite = borrow("probe-queued-write", "exclusive")
+        if (!await waitForQueued(1)) throw new Error("排队的独占没有进入许可队列")
+        // 读必须在独占**已经排队**之后再发起：两个直接请求经宿主分派线程并发处理，到达
+        // 顺序不保证；读若先被处理，会走「队列为空且额度可用」的立即放行，「读排在独占
+        // 之后」这个待验证的顺序就构造不出来（repeat 5 实测翻转过）。
         const queuedRead = borrow("probe-queued-read", "shared")
         if (!await waitForQueued(2)) throw new Error("等待者没有进入许可队列")
         let readGranted = false
@@ -165,7 +187,7 @@ export const 执行许可: SceneDef = {
 
         // ── 6. 共享读上限来自配置下发：范围校验、降低不撤销在飞许可、提高唤醒等待项 ──
         // 上限是所有者持有的额度，不是常量：这里直接对所有者下发并观测额度行为。
-        const setLimit = (limit: number) => invoke<number>("tool_permit_set_max_shared_readers", { limit })
+        const setLimit = (limit: number) => getHostBridge().request("tool_permit_set_max_shared_readers", { limit })
 
         await setLimit(1)
         const hold = await borrow("limit-hold", "shared")
@@ -221,7 +243,7 @@ export const 执行许可: SceneDef = {
         // 已被新页面取代），能证明它已经消失的只有「同窗口的新实例上线」这条事实。
         const STALE_PAGE = "permit-stale-page"
         const FRESH_PAGE = "permit-fresh-page"
-        const attach = (borrowerId: string) => invoke<PermitReclaim>("tool_permit_attach", { borrowerId })
+        const attach = (borrowerId: string) => getHostBridge().request("tool_permit_attach", { borrowerId })
         /** 有界等待许可结果：永久排队必须报失败，而不是把整个场景挂住。 */
         const within = (grant: Promise<boolean>): Promise<boolean | undefined> =>
           Promise.race([grant, new Promise<undefined>(resolve => setTimeout(() => resolve(undefined), WAIT_BUDGET_MS))])
@@ -284,7 +306,7 @@ export const 执行许可: SceneDef = {
         if (!await borrowAs(FRESH_PAGE, "guard-lease", "exclusive")) throw new Error("守卫探针没有取得独占额度")
         let foreignReleaseRejected = false
         try {
-          await invoke("tool_permit_release", { requestId: "guard-lease", borrowerId: "permit-intruder-page" })
+          await getHostBridge().request("tool_permit_release", { requestId: "guard-lease", borrowerId: "permit-intruder-page" })
         } catch { foreignReleaseRejected = true }
         if (!foreignReleaseRejected) throw new Error("其它借用者释放了不属于它的在飞额度")
         if ((await permitSnapshot()).exclusiveActive !== true) throw new Error("被拒绝的释放放开了在飞的独占效果")

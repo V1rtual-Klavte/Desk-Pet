@@ -1,0 +1,15 @@
+# ==========================================
+# E2E 合成 CONFIG 的显式覆盖（相对随仓 CONFIG.yaml 模板）
+# ==========================================
+#
+# 由 test/host/native/synthetic-config.mjs 深合并到 CONFIG.yaml 模板之上，再写进
+# 隔离数据根的 settings/CONFIG.yaml。只写「测试需要与产品默认不同」的字段；
+# 其余字段一律继承模板（模板新增字段自动进入合成 CONFIG，不在这里重复）。
+#
+# 凭据纪律：本文件与模板都不携带真实凭据。真实 Provider 凭据只经测试侧凭据入口
+# （test/eval-models.local.json 或 DESKPET_EVAL_* 环境变量）在运行期写进隔离副本。
+
+general:
+  logging:
+    # 测试现场需要 debug 级日志（与旧开发配置同口径）；产品默认仍是 info。
+    level: debug

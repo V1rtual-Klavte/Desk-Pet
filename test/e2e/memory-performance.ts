@@ -1,4 +1,4 @@
-import { invoke } from "@tauri-apps/api/core"
+import { getHostBridge } from "@/services/host"
 import { queryMemory, getMemoryItems, installMemoryProvider, sqliteMemoryProvider, recallMemory } from "@/services/agent/memory"
 import { initChat, sendMessage } from "@/services/agent/runner"
 import { memoryConfig, setOverrides, flushConfig } from "@/services/config"
@@ -26,8 +26,8 @@ export async function runMemoryPerformanceEvaluation(traceMode: string, bindOper
   let target: {datasetSize: number; p95Ms: number} | undefined
   for (const count of SIZES) {
     let phaseStartedAt = Date.now()
-    const storeReset = await invoke("e2e_memory_reset")
-    const native = await invoke<Record<string, unknown>>("e2e_memory_performance", { count })
+    const storeReset = await getHostBridge().request("e2e_memory_reset", {})
+    const native = await getHostBridge().request("e2e_memory_performance", { count })
     const nativeTarget = native.target as {datasetSize?: number; p95Ms?: number} | undefined
     if (nativeTarget?.datasetSize !== 10_000 || typeof nativeTarget.p95Ms !== "number" || !Number.isFinite(nativeTarget.p95Ms) || nativeTarget.p95Ms <= 0)
       throw new Error("Native performance budget is missing or invalid")

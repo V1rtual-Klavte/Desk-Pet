@@ -1,4 +1,4 @@
-import { invoke } from "@tauri-apps/api/core"
+import { getHostBridge } from "@/services/host"
 import { continueInterruptedRun, harnessSlots } from "@/services/engine/harness"
 import { initChat, sendMessage } from "@/services/agent/runner"
 import { getActiveSessionId } from "@/services/session"
@@ -74,7 +74,7 @@ export const 恢复能力准备: SceneDef = {
 
     // 冷写：绕开 upsertSkill 的 syncSkillCatalog，直接改盘（同一路径取自 Pi 自己的 filePath）。
     // 写入只落到磁盘与 Rust 指纹上，进程内快照仍旧是描述 A —— 这正是本场景要的「冷目录」。
-    await invoke("file_write_atomic", { path: saved.filePath, content: skillSource(SKILL_DESC_AFTER) })
+    await getHostBridge().request("file_write_atomic", { path: saved.filePath, content: skillSource(SKILL_DESC_AFTER) })
     skillBlockBeforeResume = getSkillsPromptBlock()
 
     const resumed = await continueInterruptedRun(sessionId)

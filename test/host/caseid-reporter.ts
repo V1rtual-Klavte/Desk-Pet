@@ -98,7 +98,8 @@ export default class CaseIdReporter implements Reporter {
 }
 
 /**
- * 契约经 Vite 的 glob 注入（与 `e2e-main.ts` 的 collectContracts 同源）；
+ * 契约经 Vite 的 glob 注入（快层的收集方式；L4 的 `native-main.ts` 拿到的是构建时
+ * 生成的显式 import 清单，两侧只在「按 module 收敛、形状不对不认」的口径上同源）；
  * 形状不对的模块条目直接排除，不把「glob 读到了配置文件」演成契约。
  */
 function collectContracts(): ModuleContract[] {

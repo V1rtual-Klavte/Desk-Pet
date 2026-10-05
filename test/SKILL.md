@@ -113,5 +113,10 @@ caseId 的锚定方式随层不同，但同一字母表：L2 / L3 写在 vitest 
 - `safety`
 - `tool-execution`
 - `variable-pool`
+- `native-ui`
+- `host`
+- `update`
+- `env`
+- `audio`
 
 新增模块时先新增 Contract 和至少一个关联测试（L2/L3 或 L4），再把它加入此列表；不因历史通过记录或计划阶段名称推断其已验证。

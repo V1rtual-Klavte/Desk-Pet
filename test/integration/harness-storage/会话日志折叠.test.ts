@@ -64,7 +64,7 @@ import {
 import type { FoldOutcome, PiSessionRepo } from "@/services/engine/harness"
 import { PI_LANE } from "@/services/session"
 import { initPaths, runtimePath } from "@/services/paths"
-import { TauriExecutionEnv } from "@/services/tool/pi/tauri-execution-env"
+import { NativeExecutionEnv } from "@/services/tool/pi/native-execution-env"
 
 const textEncoder = new TextEncoder()
 
@@ -266,7 +266,7 @@ function buildRawFixture(startSeq: number, lastEntryId: string): RawFixture {
 
 interface FoldFixture {
   /** **未包装**的真实 IPC env：直读磁盘（绕过装饰器的读前 flush），也负责收尾删根。 */
-  env: TauriExecutionEnv
+  env: NativeExecutionEnv
   root: string
   repo: PiSessionRepo
   metadata: JsonlSessionMetadata
@@ -285,7 +285,7 @@ interface FoldFixture {
 
 async function buildFoldFixture(): Promise<FoldFixture> {
   const context = BACKGROUND_CONTEXT
-  const env = new TauriExecutionEnv(await runtimePath("data"))
+  const env = new NativeExecutionEnv(await runtimePath("data"))
   const root = await runtimePath("data", `fold-${crypto.randomUUID()}`)
   const repo = await createPiSessionRepo({ sessionsRoot: root })
   try {

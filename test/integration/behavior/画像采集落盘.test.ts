@@ -3,6 +3,7 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { afterAll, beforeAll, describe, expect, it } from "vitest"
 import { setTestDataRoot } from "../../host/node-ipc"
+import { getHostBridge } from "@/services/host"
 import { clearBehavior, getBehaviorSnapshot, observeBehavior, startBehavior, stopBehavior } from "@/services/behavior"
 import { initPaths, runtimePath } from "@/services/paths"
 import type { WindowObservation } from "@/services/window"
@@ -37,17 +38,17 @@ describe("behavior 聚合与落盘", () => {
       const sample = observation(sequence)
       await observeBehavior(sequence >= 11 ? { ...sample, appId: "org.wezfurlong.wezterm", app: "WezTerm" } : sample)
     }
-    stopBehavior()
+    await stopBehavior()
     await observeBehavior({ ...observation(22), observationState: "disabled", appId: null, app: null, title: null })
 
     const at = new Date(observation(1).observedAt)
     const date = `${at.getFullYear()}-${String(at.getMonth() + 1).padStart(2, "0")}-${String(at.getDate()).padStart(2, "0")}`
     const dailyPath = await runtimePath("data", "behavior", "daily", `${date}.json`)
-    const { content } = await import("@tauri-apps/api/core").then(({ invoke }) => invoke<{ content: string }>("file_read", { path: dailyPath, maxBytes: 2 * 1024 * 1024 }))
+    const { content } = await getHostBridge().request("file_read", { path: dailyPath, maxBytes: 2 * 1024 * 1024 })
     const daily = JSON.parse(content) as { categoryMs: Record<string, number>; workTotalMs: number; workSegments: number; workLongestMs: number; appMs: Record<string, number> }
     const snapshot = getBehaviorSnapshot()
     const segmentPath = await runtimePath("data", "behavior", "segments", date, "0001.jsonl")
-    const { content: segment } = await import("@tauri-apps/api/core").then(({ invoke }) => invoke<{ content: string }>("file_read", { path: segmentPath, maxBytes: 512 * 1024 }))
+    const { content: segment } = await getHostBridge().request("file_read", { path: segmentPath, maxBytes: 512 * 1024 })
 
     expect(daily.categoryMs.development).toBe(60_000)
     expect(daily.workTotalMs).toBe(60_000)
@@ -67,21 +68,21 @@ describe("behavior 聚合与落盘", () => {
     await observeBehavior(observation(2, 9))
     await clearBehavior()
     const path = await runtimePath("data", "behavior")
-    const { invoke } = await import("@tauri-apps/api/core")
-    const cleared = await invoke<{ entries: { name: string }[] }>("file_list", { path })
+    const bridge = getHostBridge()
+    const cleared = await bridge.request("file_list", { path })
     expect(cleared.entries.map(entry => entry.name)).toEqual(["understanding.json"])
     const markerPath = await runtimePath("data", "behavior", "understanding.json")
-    const marker = JSON.parse((await invoke<{ content: string }>("file_read", { path: markerPath })).content)
+    const marker = JSON.parse((await bridge.request("file_read", { path: markerPath })).content)
     expect(marker.observations).toEqual([])
     expect(marker.topics).toEqual([])
     expect(getBehaviorSnapshot().quality.sampleDays).toBe(0)
     await observeBehavior(observation(2, 9))
-    const afterLate = await invoke<{ entries: { name: string }[] }>("file_list", { path })
+    const afterLate = await bridge.request("file_list", { path })
     expect(afterLate.entries.map(entry => entry.name)).toEqual(["understanding.json"])
     await observeBehavior(observation(3, 9))
     await observeBehavior(observation(4, 9))
-    stopBehavior()
+    await stopBehavior()
     await observeBehavior({ ...observation(5, 9), observationState: "disabled", appId: null, app: null, title: null })
-    expect(await invoke<boolean>("file_exists", { path })).toBe(true)
+    expect(await bridge.request("file_exists", { path })).toBe(true)
   })
 })

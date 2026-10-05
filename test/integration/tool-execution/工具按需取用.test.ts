@@ -3,8 +3,8 @@
 // ==========================================
 //
 // 被测语义（四条，直接经执行入口调用取用工具本体）：
-// ① 默认激活判定（唯一口径 `defaultActiveToolNames`）：非 MCP 工具全激活，MCP 只激活
-//    常用白名单内的（内置 filesystem 的只读工具）；
+// ① 默认激活判定（唯一口径 `defaultActiveToolNames`）：非 MCP 工具全激活，MCP 工具一律
+//    不默认激活（前内置 filesystem 白名单已随 MCP 内置退役删除）；
 // ② names 取名：完整名精确启用；模型常给 MCP 原始名（`mcp_<server>_<原始名>` 的后缀），
 //    唯一后缀命中按命中启用；后缀命中多条时不任选，列出候选；
 // ③ 空参清单只列**未激活**工具；启用过的移出清单，全部启用后清单为空；
@@ -58,8 +58,8 @@ function probeTool(options: {
 
 /** 本地工具（默认激活）。 */
 const LOCAL = probeTool({ id: "scratch-local-probe", name: "scratch_local_probe", description: "本地探针", source: "local" })
-/** 内置 filesystem 白名单内的 MCP 工具（默认激活）。 */
-const WHITELISTED = probeTool({
+/** 前内置 filesystem 白名单里的 MCP 工具：白名单退役后它也不能默认激活（防机制被静默恢复）。 */
+const FORMER_WHITELISTED = probeTool({
   id: "mcp-filesystem-read_text_file", name: "mcp_filesystem_read_text_file",
   description: "读文件", source: "mcp", sourceId: "filesystem",
 })
@@ -79,7 +79,7 @@ const PROBE_C = probeTool({
 })
 
 /** 本回合冻结集：顺序固定，默认面期望值按同一顺序手写。 */
-const FROZEN_TOOLS: readonly ToolDef[] = [LOCAL, WHITELISTED, PROBE_A, PROBE_B, PROBE_C]
+const FROZEN_TOOLS: readonly ToolDef[] = [LOCAL, FORMER_WHITELISTED, PROBE_A, PROBE_B, PROBE_C]
 
 let root = ""
 
@@ -94,8 +94,8 @@ afterAll(() => {
 
 describe("工具按需取用", () => {
   it("默认激活判定唯一、后缀歧义不任选、清单随启用收窄、query 按描述命中 [tool-enable-tools]", async () => {
-    // ① 默认面（唯一判定）：非 MCP 全激活，MCP 只激活白名单内的。期望值是手写名单。
-    expect(defaultActiveToolNames(FROZEN_TOOLS), "默认激活面与手写名单不一致").toEqual([LOCAL.name, WHITELISTED.name])
+    // ① 默认面（唯一判定）：非 MCP 全激活，MCP 一律不默认激活。期望值是手写名单。
+    expect(defaultActiveToolNames(FROZEN_TOOLS), "默认激活面与手写名单不一致").toEqual([LOCAL.name])
 
     const enable = createEnableToolsTool({ tools: FROZEN_TOOLS })
 
@@ -117,16 +117,17 @@ describe("工具按需取用", () => {
     expect(exact.content, "精确启用回执没有点名工具").toContain(PROBE_A.name)
     expect(exact.addedToolNames, "精确启用没有声明 addedToolNames").toEqual([PROBE_A.name])
 
-    // ③ 清单只列未激活工具：已启用的移出；白名单与本地工具从不进清单。
+    // ③ 清单只列未激活工具：已启用的移出；本地工具从不进清单，前白名单工具退役后
+    //    也在清单里（不再有默认激活的 MCP 工具）。
     const catalog = await executeToolDefinition(enable, {}, {})
     expect(catalog.content, "清单缺少未激活工具").toContain(PROBE_B.name)
+    expect(catalog.content, "前白名单 MCP 工具没有进取用清单（白名单机制疑似残留）").toContain(FORMER_WHITELISTED.name)
     expect(catalog.content, "已启用工具仍留在清单里").not.toContain(PROBE_A.name)
-    expect(catalog.content, "默认激活工具不该进取用清单").not.toContain(WHITELISTED.name)
     expect(catalog.content, "本地工具不该进取用清单").not.toContain(LOCAL.name)
     expect(catalog.content, "清单没有给出启用方式").toContain("enable_tools")
 
     // 已激活的默认工具如实标注，不重复声明启用效果。
-    const already = await executeToolDefinition(enable, { names: [WHITELISTED.name] }, {})
+    const already = await executeToolDefinition(enable, { names: [LOCAL.name] }, {})
     expect(already.content, "已激活工具没有被如实标注").toContain("已处于激活")
     expect(already.addedToolNames, "已激活工具被重复声明 addedToolNames").toBeUndefined()
 
@@ -139,7 +140,9 @@ describe("工具按需取用", () => {
     const query = await executeToolDefinition(enable, { query: "服务 B" }, {})
     expect(query.addedToolNames, "query 没有启用描述命中的工具").toEqual([PROBE_B.name])
 
-    // ③b 全部启用后清单为空。
+    // ③b 前白名单工具也能按精确名取用；全部启用后清单为空。
+    const former = await executeToolDefinition(enable, { names: [FORMER_WHITELISTED.name] }, {})
+    expect(former.addedToolNames, "前白名单工具不能按名取用").toEqual([FORMER_WHITELISTED.name])
     const empty = await executeToolDefinition(enable, {}, {})
     expect(empty.content, "全部启用后清单不是空态").toContain("没有可启用的工具")
   })

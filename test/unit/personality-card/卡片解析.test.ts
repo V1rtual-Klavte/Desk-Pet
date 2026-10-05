@@ -13,7 +13,7 @@
 //   · 原 `card-active-prompt`（pc-07）**删除**：`getSystemPrompt()` 是 window 调试入口
 //     （无生产消费者），实现即 `return card?.sections.roleSetting`，断言拿同一字段与自己比。
 //     生产 system prompt 由 context/builder 从 sections 组装角色设定，不经过它。
-import { mkdtempSync, rmSync } from "node:fs"
+import { mkdtempSync, readFileSync, rmSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { afterEach, beforeEach, describe, expect, it } from "vitest"
@@ -58,6 +58,7 @@ version: 3
   initial: 0
   min: 0
   max: 10
+  proactiveBands: [0, 5]
   updateBy: llm
   reset: never
   description: 亲密度
@@ -131,12 +132,38 @@ describe("卡片解析", () => {
       scope: "card", type: "number", initial: 0, min: 0, max: 10,
       updateBy: "llm", reset: "never", description: "亲密度",
     })
+    // 行内数组必须按元素类型解析：档位以字符串数组（["0","5"]）进来时，buildVarDef 的
+    // `typeof value === "number"` 守卫会丢掉整个声明，proactive/scanner 的跨档链路随之不可达
+    expect(card?.proactiveBands).toEqual([0, 5])
 
     const interaction = defs.find(def => def.name === "unansweredCount")
     expect(interaction).toMatchObject({
       scope: "interaction", type: "number", initial: 0, min: 0,
       updateBy: "system", reset: "never", description: "未回复数",
     })
+
+    // 守卫仍必须拒绝非法档位（是解析元素类型，不是把守卫放宽成「字符串也认」）：
+    // 显式引号在 YAML 语义里是字符串，收回它等于让类型错误静默通过
+    const rejected: Array<[string, string]> = [
+      ["元素不是数字", "proactiveBands: [0, 低]"],
+      ["显式引号是字符串", 'proactiveBands: ["0", 5]'],
+      ["档位必须严格递增", "proactiveBands: [0, 5, 3]"],
+      ["首档必须等于 min", "proactiveBands: [1, 5]"],
+    ]
+    for (const [label, declaration] of rejected) {
+      const invalid = await importUserCard(CARD_MD.replace("proactiveBands: [0, 5]", declaration))
+      const invalidDef = invalid.sections.variableDefs.find(def => def.name === "亲密")
+      expect(invalidDef, `非法声明不得丢掉变量本身：${label}`).toBeDefined()
+      expect(invalidDef?.proactiveBands, `非法档位未被拒绝：${label}`).toBeUndefined()
+    }
+  })
+
+  it("默认卡的数值档位活着进入 defs", async () => {
+    // 真卡回归：默认卡的 proactiveBands 必须以数字数组落在 defs 上，
+    // 字符串数组会被守卫丢掉（「已提交变量跨档 → 主动回应」链路整体不可达）
+    const raw = readFileSync(join(process.cwd(), "resources/defaults/personality/cards/default.md"), "utf8")
+    const def = (await importUserCard(raw)).sections.variableDefs.find(item => item.name === "好感度")
+    expect(def?.proactiveBands).toEqual([0, 10, 30, 60, 85])
   })
 
   it("Card whenText 保留语气原文 [card-when-text]", async () => {

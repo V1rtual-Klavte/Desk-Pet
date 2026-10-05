@@ -17,7 +17,7 @@
 import type { StreamFn } from "@earendil-works/pi-agent-core"
 import { fauxProvider } from "@earendil-works/pi-ai"
 import type { AssistantMessageEventStream, Context, FauxResponseStep, Model, SimpleStreamOptions } from "@earendil-works/pi-ai"
-import { listen } from "@tauri-apps/api/event"
+import { publishedUiEvents } from "../../../host/ui-event-tap"
 import { installPiRuntimeProviderForTest } from "@/services/engine/harness"
 import { initChat, sendMessage } from "@/services/agent/runner"
 import { formatError } from "@/services/error"
@@ -60,7 +60,7 @@ function installPacedProvider(responses: FauxResponseStep[]): void {
 }
 
 /**
- * 事件经 IPC 回环投递，断言前有界等待它落地（不赌「resolve 时事件已经排空」）。
+ * 读取真实 HostBridge publisher 成功交给 IPC 的事件载荷；不会伪造本地事件总线或回灌 Rust 回执。
  * 超时不在这里报错：等不到就是断言要说的那件事，由断言给出可读原因。
  */
 const TOOL_ENTER_MS = 20_000
@@ -108,10 +108,6 @@ export const 流式消息边界: SceneDef = {
       // 校验回合的响应（本场景的全部断言针对上面那次回合）
       fakeText(SETTLE_REPLY),
     ])
-    // 监听在 setup 内完成取证并注销：不把监听器留给后面的场景（同一 WebView 复用）。
-    const unlisten = await listen<{ sessionId?: string; delta?: string }>(STREAM_EVENT, event => {
-      if (event.payload.delta) streamDeltas.push(event.payload.delta)
-    })
     try {
       await initChat()
       let toolEntered = false
@@ -136,11 +132,11 @@ export const 流式消息边界: SceneDef = {
       if (settled === undefined) turnError = `回合没有在 ${TURN_SETTLE_MS}ms 内结束`
       else if ("error" in settled) turnError = settled.error
       else outputReply = settled.output.reply
-      await waitUntil(() => streamDeltas.join("").includes(VISIBLE_TEXT), STREAM_DRAIN_MS)
+      await waitUntil(() => publishedUiEvents(STREAM_EVENT).some(event => event.delta.includes(VISIBLE_TEXT)), STREAM_DRAIN_MS)
+      streamDeltas = publishedUiEvents(STREAM_EVENT).map(event => event.delta)
       deltasText = streamDeltas.join("")
     } finally {
-      blocking.dispose()
-      unlisten()
+      blocking?.dispose()
     }
   },
   turns: [{

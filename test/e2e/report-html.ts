@@ -2,8 +2,8 @@
 // HTML 报告：单文件、内联 CSS/JS、零外部资源
 // ==========================================
 //
-// 为什么是纯函数：报告在 Tauri 窗口里生成（`reporter.ts` 的 `formatReport()` 被
-// `e2e-main.ts` 调用），又要在 Node 单测里断言产物文本。所以这里只拼字符串：
+// 为什么是纯函数：报告在 Node 宿主里生成（`reporter.ts` 的 `formatReport()` 被
+// `native-main.ts` 调用），又要在 Node 单测里断言产物文本。所以这里只拼字符串：
 // 不碰 DOM、不读环境、不 import 任何 UI 依赖 —— 契约选型时已否决
 // `@vitest-evals/report-ui`（会拖进 React 19 + Vite 7）。
 //

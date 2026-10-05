@@ -9,6 +9,19 @@ describe("humanizer protocol", () => {
     expect(result.split).toBe(true)
   })
 
+  it("splits blank-line casual paragraphs into bubbles while single breaks stay together [humanizer-blank-line-split]", () => {
+    const result = transformHumanizerText("看到了\n\n在改 Desk-Pet\n\n周末也这么拼")
+    expect(result.parts).toEqual(["看到了", "在改 Desk-Pet", "周末也这么拼"])
+    expect(result.split).toBe(true)
+    // 段内单个换行（同一段折行）不分条。
+    expect(transformHumanizerText("first line\nsecond line").parts).toEqual(["first line\nsecond line"])
+    expect(transformHumanizerText("first line\nsecond line").split).toBe(false)
+    // 含代码块的消息不拆（技术内容保持整条）。
+    expect(transformHumanizerText("看这个\n\n```ts\nconst a = 1\n```").parts).toEqual(["看这个\n\n```ts\nconst a = 1\n```"])
+    // task 流不受空行分段影响，保持整条。
+    expect(transformHumanizerText("one\n\ntwo", "task").parts).toEqual(["one\n\ntwo"])
+  })
+
   it("keeps task output in one part and removes a stray split marker [humanizer-task-single-part]", () => {
     const result = transformHumanizerText("one\n<<SPLIT>>\ntwo", "task")
     expect(result.parts).toEqual(["one\ntwo"])

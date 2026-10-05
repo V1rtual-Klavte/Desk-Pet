@@ -42,7 +42,7 @@ import { stableSerialize } from "@/services/engine/runtime"
 import { PI_LANE } from "@/services/session/repo"
 import { SESSION_TRANSCRIPT_TOOL } from "@/services/tool"
 import { initPaths, runtimePath } from "@/services/paths"
-import { TauriExecutionEnv } from "@/services/tool/pi/tauri-execution-env"
+import { NativeExecutionEnv } from "@/services/tool/pi/native-execution-env"
 
 type JsonlSession = Session<JsonlSessionMetadata>
 
@@ -166,7 +166,7 @@ interface FoldAddressFixture {
   /** 只可能是 folded：夹具在 skipped 时直接判失败（没有折叠就没有「折叠前后」）。 */
   fold: Extract<FoldOutcome, { kind: "folded" }>
   repo: PiSessionRepo
-  plain: TauriExecutionEnv
+  plain: NativeExecutionEnv
   root: string
 }
 
@@ -179,7 +179,7 @@ interface FoldAddressFixture {
  */
 async function buildFoldAddressFixture(): Promise<FoldAddressFixture> {
   const context = BACKGROUND_CONTEXT
-  const plain = new TauriExecutionEnv(await runtimePath("data"))
+  const plain = new NativeExecutionEnv(await runtimePath("data"))
   const root = expectOk(await plain.createTempDir("deskpet-live-fold-address-", context), "createTempDir")
   // 生产默认形态：仓库自带帧写入缓冲装饰器（本场景不关它 —— 帧的真实写入路径就是它）。
   const repo = await createPiSessionRepo({ sessionsRoot: root, cwd: root })

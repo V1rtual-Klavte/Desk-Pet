@@ -3,8 +3,9 @@
 // ==========================================
 //
 // 被测语义（三条，从真实 agent loop 的 Provider 请求上观测）：
-// ① 默认激活面 = 基础工具 + MCP 常用白名单；白名单外的 MCP 工具虽然已注册、也进了回合冻结
-//    工具集，但不进请求 schema（`lane.setActiveTools` 只收窄请求视图）；
+// ① 默认激活面 = 基础工具（MCP 工具一律不进请求 —— 内置白名单已随 MCP 内置退役删除）；
+//    已注册的 MCP 工具虽然也进了回合冻结工具集，但不进请求 schema
+//    （`lane.setActiveTools` 只收窄请求视图）；
 // ② 模型经 enable_tools 取用后，同一回合的后续请求带上该工具并能真实执行（Pi 原生
 //    `addedToolNames`：工具批次落盘时并入激活集）；
 // ③ 取用不跨 run 保留：下一回合的请求回到默认面。
@@ -12,8 +13,8 @@
 // 观测方式：fake provider 的 `payloads[].tools`（每次请求实际下发的工具声明）与
 // `payloads[].messages`（enable_tools 回执）；执行侧用探针 handler 自己的计数 ——
 // 不读实现内部状态。两个探针工具按 `client.toToolDefs` 的命名约定构造：
-// 白名单内的（filesystem 的 read_text_file）模拟内置常用服务器（默认激活），
-// 白名单外的（scratchprobe）模拟按需服务器（默认不激活）。
+// 前 filesystem 白名单名模拟旧内置常用服务器（现在也必须默认不激活），
+// scratchprobe 模拟自定义服务器（默认不激活、按需取用）。
 //
 // 归属 L3（不是 L2）的理由：import `@/services/tool` 与 `@/services/engine/harness` 的
 // 运行入口（工具 barrel 会带出执行许可，规则 6 的 L2 禁入清单）。
@@ -45,10 +46,10 @@ vi.mock("@/services/tool/execution-permit", () => ({
   failNextReleasesForTest: () => {},
 }))
 
-/** 白名单内（内置 filesystem 的只读工具）：默认应激活。 */
-const WHITELISTED_ID = "mcp-filesystem-read_text_file"
-const WHITELISTED_NAME = "mcp_filesystem_read_text_file"
-/** 白名单外（模拟自定义服务器）：默认不进请求，取用后才进。 */
+/** 前内置 filesystem 白名单里的工具：白名单退役后也不能默认激活（防机制被静默恢复）。 */
+const FORMER_WHITELISTED_ID = "mcp-filesystem-read_text_file"
+const FORMER_WHITELISTED_NAME = "mcp_filesystem_read_text_file"
+/** 自定义服务器探针：默认不进请求，取用后才进。 */
 const PROBE_ID = "mcp-scratchprobe-probe_echo"
 const PROBE_NAME = "mcp_scratchprobe_probe_echo"
 
@@ -102,13 +103,13 @@ beforeAll(async () => {
 beforeEach(async () => {
   await standardSetup()
   probeExecutions = 0
-  register(mcpProbeTool(WHITELISTED_ID, WHITELISTED_NAME, "filesystem"))
+  register(mcpProbeTool(FORMER_WHITELISTED_ID, FORMER_WHITELISTED_NAME, "filesystem"))
   register(mcpProbeTool(PROBE_ID, PROBE_NAME, "scratchprobe"))
 })
 
 afterEach(() => {
   resetPiRuntimeProviderForTest()
-  unregister(WHITELISTED_ID)
+  unregister(FORMER_WHITELISTED_ID)
   unregister(PROBE_ID)
 })
 
@@ -117,9 +118,10 @@ afterAll(() => {
 })
 
 describe("工具按回合激活", () => {
-  it("默认只激活基础工具 + 白名单；enable_tools 回合内取用、跨 run 不保留 [tool-conditional-activation]", async () => {
+  it("默认只激活基础工具（MCP 不进请求）；enable_tools 回合内取用、跨 run 不保留 [tool-conditional-activation]", async () => {
     // 前提：探针确实已注册 —— 否则「默认不进请求」的断言没有对象。
-    expect(listAll().some(tool => tool.id === PROBE_ID), "白名单外探针未注册，断言没有前提").toBe(true)
+    expect(listAll().some(tool => tool.id === PROBE_ID), "MCP 探针未注册，断言没有前提").toBe(true)
+    expect(listAll().some(tool => tool.id === FORMER_WHITELISTED_ID), "前白名单探针未注册，默认面断言没有前提").toBe(true)
     const baseToolName = getTool("pi-read")?.name
     expect(baseToolName, "基础工具 pi-read 未注册，默认面断言没有前提").toBeDefined()
 
@@ -131,11 +133,11 @@ describe("工具按回合激活", () => {
     const output = await runRuntimeTurn("试用一下扩展工具")
     expect(provider.payloads.length, "请求数不是预期三次（工具调用链跑偏）").toBe(3)
 
-    // ① 默认面：基础工具与白名单 MCP 工具在、白名单外的不在、取用入口在。
+    // ① 默认面：基础工具与取用入口在；MCP 工具（含前白名单名）一律不在。
     const first = payloadToolNames(provider.payloads[0])
     expect(first, "默认请求缺少基础工具").toContain(baseToolName)
-    expect(first, "白名单内的 MCP 工具没有默认激活").toContain(WHITELISTED_NAME)
-    expect(first, "白名单外的 MCP 工具默认进了请求").not.toContain(PROBE_NAME)
+    expect(first, "前白名单 MCP 工具默认进了请求（白名单机制疑似残留）").not.toContain(FORMER_WHITELISTED_NAME)
+    expect(first, "MCP 工具默认进了请求").not.toContain(PROBE_NAME)
     expect(first, "取用入口不在默认工具面里").toContain("enable_tools")
 
     // ② 取用回执：点名已启用；启用结果进入同一回合的后续请求并被真实执行。
@@ -155,7 +157,7 @@ describe("工具按回合激活", () => {
     await runRuntimeTurn("再来一轮")
     const third = payloadToolNames(secondTurn.payloads[0])
     expect(third, "取用被保留到了下一个 run").not.toContain(PROBE_NAME)
-    expect(third, "下一 run 的默认面缺少白名单工具").toContain(WHITELISTED_NAME)
+    expect(third, "MCP 工具跨 run 泄漏进了默认面").not.toContain(FORMER_WHITELISTED_NAME)
     expect(third, "下一 run 缺少取用入口").toContain("enable_tools")
     expect(debug.lastToolNames, "第二轮工具读数与请求不一致").toEqual(third)
   })

@@ -1,3 +1,24 @@
+// 2026-10-05 本批复查与刷新（RUNTIME_DATA 协议缺失检测与提醒）：sourceFiles 变化 ——
+// runtime.ts（结算按冻结 Card 判定 runtimeDataMissing：缺区块且声明了 updateBy=llm 的 card
+// 变量才 mark 会话提醒并 log.warn；取消/中断/主动表达在更早分支返回不参与；下一回合按挂起
+// 状态把 RUNTIME_DATA_REMINDER_TEXT 传给 buildPrompt）、context/builder.ts（新增可选入参
+// runtimeDataReminder → ephemeral:runtime-data 块；指令注入与缺失检测共用 hasLlmWritableCardVars）、
+// reply/reminder.ts（新文件：文案常量与会话级 mark/clear/has，本轮加入 sourceFiles）。
+// ar-01..ar-24 逐点核对：ar-16/ar-19/ar-24 紧邻改动面（计划回合 RUNTIME_DATA 写入、流式展示
+// 过滤器、humanizer 剥离与提交），逐条对照当前实现语义未变（检测只读结算结果，剥离与写入
+// 链路未动）；其余点不在改动面内，实现点仍在。新增 ar-25 登记提醒三条 L2 caseId（检测四条
+// 归 variable-pool 的 vp-23）；sourceHash 按当前源码刷新。
+// 2026-10-05 收尾复查（本批刷新）：sourceFiles 变化 —— runtime.ts（onUsage 展示统计口径：
+// 「最近一次请求」一组（lastPromptTokens / lastContextUsage / lastToolNames）只由对话回合
+// 刷新，主动表达回合（transientUserInput）不再刷新；累计用量 recordModelUsage("main") 路径
+// 未动）、src/services/debug.ts（updateRequestStats 改为真实 prompt 总量 = input + cacheRead
+// + cacheWrite，Provider 未回报才退回估算）；调试条投影经 getSessionThinkingEffortOverride /
+// getSessionSafetyModeOverride 读取「默认/覆盖」的既有路径未动。
+// ar-01..ar-25 逐点核对：ar-07 的 purpose 分列（recordModelUsage）语义与断言面未变；展示统计
+// 新口径不在任何覆盖点的断言面内 —— 对应 L2 用例（test/unit/agent-runtime/
+// debug-request-stats.test.ts）未携带 caseId，本批不凭空登记 coverage（有实现无契约覆盖，
+// 属已知缺口）；其余点不在改动面内、实现点仍在。本批刷新同时包含另一会话的改动；本轮只做
+// coverage 描述与当前实现一致性核对（非逐行行为审计）。未修订覆盖点，sourceHash 按当前源码刷新。
 import type { ModuleContract } from "../host/types"
 
 export const agentRuntimeContract: ModuleContract = {
@@ -22,6 +43,7 @@ export const agentRuntimeContract: ModuleContract = {
     "src/services/humanizer/index.ts",
     "src/services/context/builder.ts",
     "src/services/context/kernel.ts",
+    "src/services/reply/reminder.ts",
     "src/services/images/request.ts",
     "src/services/images/paths.ts",
     "src/services/session/manager.ts",
@@ -31,7 +53,7 @@ export const agentRuntimeContract: ModuleContract = {
     "src/services/session/repo.ts",
     "src/services/session/store.ts",
   ],
-  sourceHash: "628af66e0bfe034de566a10adcffe983c30db851cf06625f90503fbda658778c",
+  sourceHash: "bb5eae05856f5824782097804e747618d2493a558316bde1ceacf5b82ec3f9d9",
   coverage: [
     {
       id: "ar-01",
@@ -244,11 +266,20 @@ export const agentRuntimeContract: ModuleContract = {
     {
       id: "ar-24",
       feature: "拟人表达的提交与请求投影",
-      description: "启用拟人表达后，after_response 先剥离 RUNTIME_DATA 再把 SPLIT 标记写成同一原生助手条目的多个 text part，原始配对仍使变量写入落池；合法 casual SILENT 写成 completed 空助手条目并带可核验语义标记，读模型与后续 Provider 请求省略它，跨进程连续沉默护栏从该原生标记重建；用户图片只以 deskpetImagePaths 元数据落盘，请求投影才读文件形成真实 image part，base64 不进入原始 JSONL；task 流由真实工具调用记录分流，task 输出的 SILENT 改为 Card 短回复且不启动 casual 揭示",
+      description: "启用拟人表达后，after_response 先剥离 RUNTIME_DATA 再把 SPLIT 标记（casual 流无标记时空行分段同效，单个换行与含代码块的消息不分）写成同一原生助手条目的多个 text part，原始配对仍使变量写入落池；合法 casual SILENT 写成 completed 空助手条目并带可核验语义标记，读模型与后续 Provider 请求省略它，跨进程连续沉默护栏从该原生标记重建；用户图片只以 deskpetImagePaths 元数据落盘，请求投影才读文件形成真实 image part，base64 不进入原始 JSONL；task 流由真实工具调用记录分流，task 输出的 SILENT 改为 Card 短回复且不启动 casual 揭示",
       why: "拟人标记、空白沉默与图片字节必须只改变请求/展示视图，不能破坏变量通道或把 transient 表达数据变成第二份持久事实",
       layer: "integration",
       depth: "deep",
       scenarios: ["humanizer-native-commit-projection"],
+    },
+    {
+      id: "ar-25",
+      feature: "RUNTIME_DATA 协议提醒的挂起、文案与注入",
+      description: "协议提醒按会话收敛：markRuntimeDataMissing / clearRuntimeDataMissing / hasRuntimeDataReminder 以 sessionId 为键、进程内存不落盘，A 会话违约不提醒 B 会话；提醒文案 RUNTIME_DATA_REMINDER_TEXT 点名 RUNTIME_DATA 区块。buildPrompt 只在调用方传入可选入参 runtimeDataReminder 时产出一个 ephemeral:runtime-data 块（text 与传入值逐字相同、进入 systemPrompt 请求视图），不传时该块不存在。结算侧 mark/clear（完成回合缺区块标记、履约或无可写变量清除）与下一回合注入判定在 engine/harness/runtime.ts —— 本点的 L2 用例只验证状态、文案与请求视图三件套，不驱动该接线，接线的行为面尚无场景覆盖",
+      why: "提醒是「上一回合违约」到「下一回合补一句」的唯一补救通道：状态不按会话隔离会提醒到别的会话，块无条件产出会让每回合都多一段本不该出现的协议要求，文案不点名区块则模型无法照做",
+      layer: "unit",
+      depth: "deep",
+      scenarios: ["variable-runtime-data-reminder-state", "variable-runtime-data-reminder-text", "variable-runtime-data-reminder-block"],
     },
   ],
   // W0–W7 把 ar-18 / ar-22 的 memory-retry-policy-sync、runtime-compaction-suspended-settles

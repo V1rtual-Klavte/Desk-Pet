@@ -1,23 +1,21 @@
 // ==========================================
 // Live Test 计划确认通道 —— 测试宿主的确定性应答
 //
-// test-e2e.html 是裸页，没有 ChatPanel / PlanConfirm 面板：`requestPlanConfirm()` 写入的
+// Native L4 runner 不创建产品窗口，没有 ChatPanel / PlanConfirm 面板：`requestPlanConfirm()` 写入的
 // `planConfirmState.pending` 与 `requestPlanStepDecision()` 写入的 `stepGate` 无人 resolve，
 // 一旦计划走到确认或门就会挂到 PLAN_CONFIRM_TIMEOUT_MS（5 分钟）或场景超时。
 //
 // 这里给宿主装一条应答通道：watcher 以同步 flush 兜住每一条确认与门请求，
 // 按场景声明的 `meta.planPolicy` 立即应答。默认 "deny" —— 只有显式声明
 // `meta.planPolicy: "auto" | "stepByStep"` 的场景才会让计划跑起来。
+// `deskpet-plan-progress/end` 是 Node → Native UI 发布：Native L4 无原生窗口，
+// `ui-event-tap` 只在真实 HostBridge publish 成功后记录 payload，不伪造回环或 UI 绘制证据。
 // ==========================================
 
 import { watch } from "vue"
-import { listen } from "@tauri-apps/api/event"
 import { planConfirmState, resolvePlanConfirm, resolvePlanStepDecision } from "@/services/engine"
-import { createLogger } from "@/services/logger"
-import { formatError } from "@/services/error"
+import { publishedUiEvents, resetUiEventTap } from "./ui-event-tap"
 import type { PlanConfirmRecord, PlanPolicy } from "./types"
-
-const log = createLogger("PlanConfirmChannel")
 
 export interface PlanInteractionRecord {
   planId: string
@@ -27,39 +25,11 @@ export interface PlanInteractionRecord {
   decision: string
 }
 
-/** 进度事件的载荷（`deskpet-plan-progress`，宿主不参与应答）。 */
-interface PlanProgressPayload { sessionId: string; stepId: string; total: number; status: string }
-/** 终态事件的载荷（`deskpet-plan-end`）。 */
-interface PlanEndPayload { sessionId: string; reason: string }
-
 let policy: PlanPolicy = "deny"
 let stopResponders: (() => void)[] | undefined
 const records: PlanInteractionRecord[] = []
 /** 确认记录：由同步 watcher 顺带落下（确认视图与事件载荷同源，不等事件回环）。 */
 const confirms: PlanConfirmRecord[] = []
-/** 进度与终态只记录、不应答：它们没有等待方，订阅一次后由事件回环投递。 */
-const progressRecords: { step: number; total: number; status: string }[] = []
-const endRecords: { reason: string }[] = []
-let planEventRecorderInstalled = false
-
-/**
- * 订阅进度与终态事件（宿主自己 emit，`core:default` 允许本窗口 listen）。
- * 只装一次：订阅没有等待方，场景之间只清记录（见 `resetPlanConfirmChannel`）。
- */
-function installPlanEventRecorder(): void {
-  if (planEventRecorderInstalled) return
-  planEventRecorderInstalled = true
-  void Promise.all([
-    listen<PlanProgressPayload>("deskpet-plan-progress", event => {
-      const step = Number(event.payload.stepId)
-      progressRecords.push({ step, total: event.payload.total, status: event.payload.status })
-    }),
-    listen<PlanEndPayload>("deskpet-plan-end", event => {
-      endRecords.push({ reason: event.payload.reason })
-    }),
-  ]).catch(error => log.error("计划进度/终态事件订阅失败，记录不可用:", formatError(error)))
-}
-
 /**
  * 安装应答器并把通道重置到指定策略。每个场景开始时调用一次（见 standard-setup.ts）。
  *
@@ -108,9 +78,7 @@ export function resetPlanConfirmChannel(next: PlanPolicy = "deny"): void {
   }
   records.length = 0
   confirms.length = 0
-  progressRecords.length = 0
-  endRecords.length = 0
-  installPlanEventRecorder()
+  resetUiEventTap()
   policy = next
   if (planConfirmState.pending) resolvePlanConfirm(planConfirmState.pending.planId, { confirmed: false, reason: "user" })
   if (planConfirmState.stepGate) resolvePlanStepDecision(planConfirmState.stepGate.planId, "abort")
@@ -128,10 +96,12 @@ export function planRecords(): PlanConfirmRecord[] {
 
 /** 本场景已发生的进度事件（`step` 是 1 基的 stepId，`total` 是计划总步数）。 */
 export function planProgressRecords(): { step: number; total: number; status: string }[] {
-  return progressRecords.map(record => ({ ...record }))
+  return publishedUiEvents("deskpet-plan-progress").map(payload => ({
+    step: Number(payload.stepId), total: payload.total, status: payload.status,
+  }))
 }
 
 /** 本场景已发生的计划终态事件（reason：done / failed / cancelled）。 */
 export function planEndRecords(): { reason: string }[] {
-  return endRecords.map(record => ({ ...record }))
+  return publishedUiEvents("deskpet-plan-end").map(({ reason }) => ({ reason }))
 }

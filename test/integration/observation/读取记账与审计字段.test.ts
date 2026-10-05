@@ -3,7 +3,7 @@ import { join } from "node:path"
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest"
 import { setTestDataRoot } from "../../host/node-ipc"
 import { initPaths, runtimePath } from "@/services/paths"
-import { invoke } from "@tauri-apps/api/core"
+import { getHostBridge } from "@/services/host"
 import { clearSilentUnderstanding } from "@/services/observation"
 import {
   appendUnderstanding, getRecentTargetReadAttempts, getUnderstandingSnapshot, recordTargetReadAttempts,
@@ -34,7 +34,7 @@ interface StoredStore {
 
 async function readStore(): Promise<StoredStore> {
   const path = await runtimePath("data", "behavior", "understanding.json")
-  const { content } = await invoke<{ content: string }>("file_read", { path, maxBytes: 256 * 1024 })
+  const { content } = await getHostBridge().request("file_read", { path, maxBytes: 256 * 1024 })
   return JSON.parse(content) as StoredStore
 }
 

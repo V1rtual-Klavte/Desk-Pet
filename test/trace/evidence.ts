@@ -54,6 +54,16 @@ function randomId(): string {
   return globalThis.crypto.randomUUID()
 }
 
+const byteCounter = new TextEncoder()
+
+/**
+ * 单条事件在上限判定与块切分中的字节口径：JSON 序列化字节数 + 1（数组分隔符）。
+ * append 与 drainChunk 共用这一处实现，两处不允许各存一套估算。
+ */
+function recordBytes(record: TraceRecord): number {
+  return byteCounter.encode(JSON.stringify(record)).byteLength + 1
+}
+
 /** A caller captures this token when starting work and carries it through async callbacks. */
 export function captureTraceContext(input: Omit<TraceContext, "tokenId">): TraceContext {
   return Object.freeze({ ...input, tokenId: randomId() })
@@ -125,10 +135,15 @@ export class TraceContextMap {
   }
 }
 
-/** Bounded in-memory collector. A chunk remains pending byte-for-byte until a matching durable ACK. */
+/**
+ * Bounded in-memory collector. A chunk remains pending byte-for-byte until a matching durable ACK.
+ * A drain returns one chunk cut from the active head at `maxChunkBytes`; the remainder stays active
+ * for the next drain, so a single flush never needs a frame larger than the chunk budget.
+ */
 export class BoundedTraceBuffer {
   readonly #maxEvents: number
   readonly #maxBytes: number
+  readonly #maxChunkBytes: number
   #active: TraceRecord[] = []
   #activeBytes = 0
   #nextEventSeq = 1
@@ -136,11 +151,13 @@ export class BoundedTraceBuffer {
   #dropped = 0
   #pending?: TraceChunk
 
-  constructor(options: { maxEvents: number; maxBytes: number }) {
+  constructor(options: { maxEvents: number; maxBytes: number; maxChunkBytes: number }) {
     if (!Number.isSafeInteger(options.maxEvents) || options.maxEvents < 1) throw new RangeError("maxEvents must be positive")
     if (!Number.isSafeInteger(options.maxBytes) || options.maxBytes < 128) throw new RangeError("maxBytes must be at least 128")
+    if (!Number.isSafeInteger(options.maxChunkBytes) || options.maxChunkBytes < 128) throw new RangeError("maxChunkBytes must be at least 128")
     this.#maxEvents = options.maxEvents
     this.#maxBytes = options.maxBytes
+    this.#maxChunkBytes = options.maxChunkBytes
   }
 
   get pendingEventCount(): number { return this.#active.length }
@@ -161,7 +178,7 @@ export class BoundedTraceBuffer {
       orphan: context === undefined,
       event: { ...event, runId: event.runId ?? context?.runId ?? fallback.runId },
     }
-    const bytes = new TextEncoder().encode(JSON.stringify(record)).byteLength + 1
+    const bytes = recordBytes(record)
     if (this.#active.length >= this.#maxEvents || this.#activeBytes + bytes > this.#maxBytes) {
       this.#dropped++
       return undefined
@@ -171,10 +188,28 @@ export class BoundedTraceBuffer {
     return record
   }
 
-  /** Empty boundary chunks are intentional evidence that a scene/trial began or ended. */
+  /**
+   * 取一块可持久化的事件：按 append 的同一字节口径从 active 头部累加，直到再加下一条会超
+   * `maxChunkBytes` 为止；至少取 1 条（单条本身超预算时独占一块，保证切分永远前进、不卡死）。
+   * 剩余事件留在 active 等下一次 drain —— 调用方循环 drain 到 `pendingEventCount === 0`。
+   * `droppedCount` 随本批的第一块带走并清零：它表示「截至该块」被上限丢弃的数量，
+   * 同一批的后续块只报 0。
+   * 空块 + boundary 是刻意的证据（场景/试次开始或结束）；调用方保证边界落点，
+   * 这里只负责在 active 为空时如实产出空块。
+   */
   drainChunk(boundary: TraceChunk["boundary"]): TraceChunk {
     if (this.#pending) throw new Error("previous trace chunk is awaiting ACK")
-    const events = this.#active
+    let take = 0
+    let takeBytes = 0
+    while (take < this.#active.length) {
+      const bytes = recordBytes(this.#active[take])
+      if (take > 0 && takeBytes + bytes > this.#maxChunkBytes) break
+      takeBytes += bytes
+      take++
+    }
+    const events = this.#active.slice(0, take)
+    this.#active = this.#active.slice(take)
+    this.#activeBytes -= takeBytes
     this.#pending = {
       schemaVersion: 1,
       chunkId: randomId(),
@@ -186,8 +221,6 @@ export class BoundedTraceBuffer {
       boundary: Object.freeze({ ...boundary }),
       events,
     }
-    this.#active = []
-    this.#activeBytes = 0
     this.#dropped = 0
     return this.#pending
   }

@@ -29,16 +29,24 @@ const BASH_CALL = "archive-bash-call"
  * 大输出夹具：需要 ≥2000 行（或 ≥50KB）才会触发上游截断与 spill 回读路径。
  *
  * POSIX 侧是 `seq`；Windows 的 `cmd /C` 里**没有** `seq`（产品在 Windows 走
- * `("cmd","/C")`，见 `src-tauri/src/commands/tool_exec/bash.rs`），照抄这条夹具在 Windows
- * 上必然为红 —— Windows 侧换成 cmd 内建的 `for /L`，同样打印 20000 行。
+ * `("cmd","/C")`，见 `crates/native-host/src/commands/tool_exec/bash.rs`），照抄这条夹具
+ * 在 Windows 上必然为红 —— Windows 侧换成 cmd 内建的 `for /L`，同样打印 20000 行。
  *
  * 两条都**零引号**：`cmd /C` 不认 Rust 参数转义的 `\"`（只认 `""`/`^"`），带引号的
  * 命令会被拆坏（tool_exec/mod.rs 的用例注释有 CI windows-latest 实测结论），所以
  * `node -e "…"` 这类带引号的写法在这里不可用。
+ *
+ * **执行期惰性求值**：平台值的唯一真相源是宿主握手（`@/services/env` 的活绑定，
+ * 在 `connectHostBridge()` 装配端口时刷新）；L4 bundle 的模块求值早于握手，模块顶层
+ * 读 `isWindows` 只会拿到保守值 `false`，Windows L4 因此固定选中 POSIX 的 `seq`。
+ * 同目录「取消竞态」场景也是在执行期读（`delayedProbe` 的 `isWindows ? … : …`）。
+ * `setup` 在场景执行期运行（握手已完成），在这里读平台是安全的。
  */
-const BASH_COMMAND = isWindows
-  ? "for /L %i in (1,1,20000) do @echo %i"
-  : "seq 1 20000"
+function bashCommand(): string {
+  return isWindows
+    ? "for /L %i in (1,1,20000) do @echo %i"
+    : "seq 1 20000"
+}
 const BODY_CHARS = 60000
 const BODY = `存档边界${"丙".repeat(BODY_CHARS - 4)}`
 const ADDRESS_MARKER = "原结果 eventId="
@@ -117,7 +125,7 @@ export const 工具结果存档边界: SceneDef = {
     }, async () => ({ success: true, content: BODY })))
     provider = installFakeProvider([
       fakeToolCall(LARGE_TOOL, {}, LARGE_CALL),
-      fakeToolCall("bash", { command: BASH_COMMAND }, BASH_CALL),
+      fakeToolCall("bash", { command: bashCommand() }, BASH_CALL),
       fakeText("两条边界结果都回来了。"),
     ])
   },

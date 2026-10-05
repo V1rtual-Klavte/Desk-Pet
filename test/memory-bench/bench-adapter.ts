@@ -9,8 +9,7 @@
 //   · LoCoMo / MemoryBank 按「组」灌一次库、组内多题复用（对话级/角色级分组）。
 // 证据与计量：memory_recall_rendered / memory_recall_candidates trace + summarizeMemoryQualityUsage。
 
-import { invoke } from "@tauri-apps/api/core"
-import { listen } from "@tauri-apps/api/event"
+import { getHostBridge } from "@/services/host"
 import { sendMessage } from "@/services/agent/runner"
 import {
   applyMemoryChange, getMemoryItems, installMemoryProvider, memoryJobSources, memoryList, memoryStatus,
@@ -22,6 +21,7 @@ import { setCurrentTimeNoteAnchor } from "@/services/context"
 import { completePiText, getPiModel } from "@/services/engine/harness"
 import type { PiModel } from "@/services/engine/harness"
 import { subscribeRuntimeTrace } from "@/services/engine/runtime"
+import { publishedUiEventRecords } from "../host/ui-event-tap"
 import { createNewSession } from "@/services/session"
 import { listAll, register, unregister } from "@/services/tool"
 import { standardSetup } from "../host/standard-setup"
@@ -80,7 +80,7 @@ interface BenchCase {
 }
 
 interface EvalMemoryReset {
-  generation: string
+  generation: number
   freshStore: true
   status: { revision: number; forgetEpoch: number; itemCount: number; candidateCount: number; jobCount: number; schemaVersion: number }
 }
@@ -98,7 +98,7 @@ async function sha256(text: string): Promise<string> {
 }
 
 async function resetEvalMemoryStore(): Promise<EvalMemoryReset> {
-  const result = await invoke<EvalMemoryReset>("e2e_memory_reset")
+  const result = await getHostBridge().request("e2e_memory_reset", {})
   if (!result.freshStore || result.status.revision !== 0 || result.status.forgetEpoch !== 0 || result.status.itemCount !== 0
     || result.status.candidateCount !== 0 || result.status.jobCount !== 0)
     throw new Error("E2E MemoryStore reset did not return an empty fresh store")
@@ -313,7 +313,8 @@ function formatMemoryBankHistory(persona: { name: string; metaInformation: Recor
   return lines.join("\n")
 }
 
-/** 提问回合：新建会话、撤下工具、记录首文本延迟；答案与渲染证据映射回登记来源。 */
+/** 提问回合：新建会话、撤下工具、记录首文本发布延迟；答案与渲染证据映射回登记来源。
+ * Native L4 不建 UI；旧字段名兼容报告 schema，但时间点是 HostBridge publish 成功，不代表原生绘制。 */
 async function askQuestion(input: { caseDef: BenchCase; groupKey: string; sequence: number; total: number;
   group: PreparedGroup; groupReused: boolean; traces: unknown[]; timeAnchor: Date | null;
   signal?: AbortSignal }): Promise<BenchCellOutcome> {
@@ -322,10 +323,6 @@ async function askQuestion(input: { caseDef: BenchCase; groupKey: string; sequen
   const questionSession = await createNewSession()
   let start = 0
   let firstDeliveredTextDeltaMs: number | undefined
-  const stopStream = await listen<{ sessionId: string; delta: string }>("deskpet-assistant-stream", event => {
-    if (event.payload.sessionId === questionSession.id && event.payload.delta.trim() && firstDeliveredTextDeltaMs === undefined)
-      firstDeliveredTextDeltaMs = performance.now() - start
-  })
   const restoreTools = isolateTools()
   start = performance.now()
   try {
@@ -334,6 +331,9 @@ async function askQuestion(input: { caseDef: BenchCase; groupKey: string; sequen
     // 锚点只活在这个回合内，finally 复位，绝不外溢到下一题。
     setCurrentTimeNoteAnchor(timeAnchor)
     const result = await sendMessage(String(caseDef.question), { requestId: `${groupKey}-q${sequence}-of-${total}` })
+    const firstDelta = publishedUiEventRecords("deskpet-assistant-stream")
+      .find(({ payload }) => payload.sessionId === questionSession.id && payload.delta.trim())
+    firstDeliveredTextDeltaMs = firstDelta === undefined ? undefined : firstDelta.publishedAt - start
     if (result.outcome !== "succeeded" || result.persistFailed)
       throw new Error(`question turn failed or was not committed: ${result.failure?.message ?? result.outcome}`)
     if (result.toolCallsMade !== 0) throw new Error("question turn bypassed bench tool isolation")
@@ -354,7 +354,6 @@ async function askQuestion(input: { caseDef: BenchCase; groupKey: string; sequen
       metrics: { firstDeliveredTextDeltaMs }, usage: measured.usage, cache: { status: measured.cache } }
   } finally {
     setCurrentTimeNoteAnchor(null)
-    stopStream()
     restoreTools()
   }
 }

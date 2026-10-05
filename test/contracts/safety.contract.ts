@@ -1,9 +1,21 @@
+// 2026-10-05 本批复查与刷新：契约 sourceFiles 里仅 runtime.ts 变化（另一会话同批写入：
+// 工具过程文案新增 emitToolStageTitlebar 改推顶栏）；sf-01..sf-22 逐点核对实现点仍在、
+// 语义未变（裁决表、确认通道与凭据路径不受影响）。本批刷新同时包含另一会话对 runtime.ts
+// 的改动；主会话只做了「coverage 描述与当前实现一致性」的核对（不是逐行行为审计），
+// 未修订覆盖点，仅按当前源码刷新 sourceHash。
+// 2026-10-05 三批复查（本批刷新）：runtime.ts 再次变化 —— RUNTIME_DATA 协议缺失检测与提醒
+// 接线（结算 mark/clear 与 log.warn）。sf-01..sf-22 的裁决表、确认/放行通道、凭据路径与策略
+// 冻结逐点核对不受影响（结算新增逻辑不触达许可内核），未修订覆盖点，仅按当前源码刷新 sourceHash。
+// 2026-10-05 收尾复查（本批刷新）：sourceFiles 变化 —— runtime.ts（onUsage 展示统计口径改造；
+// 不触达许可内核、确认/放行通道与凭据路径）。sf-01..sf-23（共 22 点）逐点核对实现点仍在、
+// 覆盖描述与当前实现一致。本批刷新同时包含另一会话的改动；本轮只做 coverage 描述与当前实现
+// 一致性核对（非逐行行为审计），未修订覆盖点，仅按当前源码刷新 sourceHash。
 import type { ModuleContract } from "../host/types"
 
 export const safetyContract: ModuleContract = {
   module: "safety",
-  sourceFiles: ["src/services/engine/harness/runtime.ts", "src/services/engine/harness/harness-slot.ts", "src/services/safety/checker.ts", "src/services/safety/permission.ts", "src/services/safety/confirm.ts", "src/services/tool/types.ts", "src/services/tool/policy.ts", "src/services/tool/local/pi-tools.ts", "src/services/tool/local-extra/clipboard.ts", "src/services/tool/local-extra/agent-tool.ts", "src/services/tool/local-extra/app.ts", "src/services/tool/mcp/client.ts", "src/services/session/manager.ts", "src-tauri/src/paths/mod.rs", "src-tauri/src/commands/bash_policy.rs", "src-tauri/src/commands/tool_exec/mod.rs"],
-  sourceHash: "16a7705ec0aca3e6327e64d24385a576b92e2c28c1c77d6d1a6817aea905583f",
+  sourceFiles: ["src/services/engine/harness/runtime.ts", "src/services/engine/harness/harness-slot.ts", "src/services/safety/checker.ts", "src/services/safety/permission.ts", "src/services/safety/confirm.ts", "src/services/tool/types.ts", "src/services/tool/policy.ts", "src/services/tool/local/pi-tools.ts", "src/services/tool/local-extra/clipboard.ts", "src/services/tool/local-extra/agent-tool.ts", "src/services/tool/local-extra/app.ts", "src/services/tool/mcp/client.ts", "src/services/session/manager.ts", "crates/native-host/src/paths/mod.rs", "crates/native-host/src/commands/bash_policy.rs", "crates/native-host/src/commands/tool_exec/mod.rs"],
+  sourceHash: "f0b6f63dd247f25490173f8c42acd03b0297750498c85e12b3df1a6b1665f7c2",
   coverage: [
     { id: "sf-01", feature: "SAFE 级别放行", description: "safetyLevel=SAFE 的工具经生产裁决入口 evaluateToolPermission（标准决策层即 allow）直接放行，不生成确认请求；同一分支现在也接住 NORMAL，会话信任与安全裁决只有 permission.ts 一份实现", why: "安全等级体系基础，且放行结论必须来自唯一裁决点", layer: "integration", depth: "shallow", scenarios: ["safety-safe"] },
     { id: "sf-02", feature: "统一裁决表（SAFE / NORMAL 一律放行）", description: "标准决策是安全等级到裁决结果的唯一映射：NOWAY → deny（最前置，先于安全模式与工具侧策略）；SAFE 与 NORMAL → allow（与安全模式无关，也不看命令是否在白名单里 —— 白名单只决定 NORMAL/DANGER 的归属，是免确认通道而不是拒绝依据）；DANGER → 交给回合冻结的安全模式（let_me_tk → ask、just_do_it → allow、其余含缺省 → ask）。工具与运行模式不再参与裁决：pet/assistant 双模式、lightweightPolicy、`ToolDef.mode`/`ToolContext.mode` 已全链删除，而旧助手下 NORMAL 没有任何 allow 路径、一律 ask —— 这条收紧的消失正是 sf-21 必须逐工具重定级的原因", why: "常规工具需要安全评估，且裁决表必须唯一：NORMAL 的归属翻转后若仍留旧描述，重定级与确认通道的场景会照着已不存在的分支写断言", layer: "integration", depth: "shallow", scenarios: ["safety-normal"] },

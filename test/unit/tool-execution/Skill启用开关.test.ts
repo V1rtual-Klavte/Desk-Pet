@@ -13,7 +13,7 @@ import { mkdtempSync, rmSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest"
-import { invoke } from "@tauri-apps/api/core"
+import { getHostBridge } from "@/services/host"
 
 import { setTestDataRoot } from "../../host/node-ipc"
 import { errorCode } from "@/services/error"
@@ -73,7 +73,7 @@ async function invokeSkill(name: string): Promise<{ admitted: boolean; response:
 }
 
 async function rawFile(filePath: string): Promise<string> {
-  const result = await invoke<{ content: string }>("file_read", { path: filePath, maxBytes: 512 * 1024 })
+  const result = await getHostBridge().request("file_read", { path: filePath, maxBytes: 512 * 1024 })
   return result.content
 }
 
@@ -162,7 +162,7 @@ describe("Skill 启用开关", () => {
     const raw = await upsertSkill(source(RAW, "无 frontmatter 探针"))
     expect(raw, "无 frontmatter 探针没有被收录（前置不成立）").not.toBeNull()
     const body = "这份文件没有 frontmatter 块，也没有技能元数据。"
-    await invoke("file_write_atomic", { path: raw!.filePath, content: body, maxBytes: 512 * 1024 })
+    await getHostBridge().request("file_write_atomic", { path: raw!.filePath, content: body, maxBytes: 512 * 1024 })
 
     expect(await setSkillEnabled(RAW, false), "没有 frontmatter 块时开关却报告写入成功").toBe(false)
     expect(await rawFile(raw!.filePath), "没有 frontmatter 块时开关改动了文件").toBe(body)

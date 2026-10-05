@@ -65,8 +65,10 @@ describe("humanizer scheduler", () => {
     const clock = new FakeClock()
     const scheduler = new HumanizerScheduler(clock)
     let released = 0
-    scheduler.enqueueCommitted({ sessionId: "s1", runGeneration: 5, messageId: "m4", parts: ["one", "two"],
-      isActiveMessage: false, onFirstReveal: () => { released++ } })
+    scheduler.enqueueCommitted({
+      sessionId: "s1", runGeneration: 5, messageId: "m4", parts: ["one", "two"],
+      isActiveMessage: false, onFirstReveal: () => { released++ }
+    })
     expect(released).toBe(0)
     clock.advance(900)
     expect(released).toBe(1)

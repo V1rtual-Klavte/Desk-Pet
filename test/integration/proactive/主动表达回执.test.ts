@@ -45,7 +45,7 @@ beforeAll(async () => {
   mkdirSync(cardsDir, { recursive: true })
   writeFileSync(
     join(cardsDir, "angelkawaii.md"),
-    readFileSync(join(process.cwd(), "src-tauri/resources/defaults/personality/cards/angelkawaii.md"), "utf8"),
+    readFileSync(join(process.cwd(), "resources/defaults/personality/cards/angelkawaii.md"), "utf8"),
     "utf8",
   )
   await initCards()

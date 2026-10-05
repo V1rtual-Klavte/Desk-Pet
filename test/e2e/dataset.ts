@@ -46,8 +46,13 @@ import { DEFAULT_SCENE_TIMEOUT, UNIT_SCENE_TIMEOUT } from "./scene-runner"
  * `2026-10-03.2`：review 修复批次：`harness-branch-tip-bypass`（旁路写入）从「钉住孤立分支现状」
  * 改写为「活槽经 AgentLane 追加、条目必须在 tip 链上」，同步 hs-04 契约；`阶梯投影` 只跟着
  * `L0_TOOL_RESULT_SHARE → CAP` 改注释。判据口径变化，故 bump；主动/记忆修复未新增 L4 场景。
+ * `2026-10-04.2`：测试设施去 Tauri 批：humanizer 的「真实组件分泡呈现」（挂载生产 ChatPanel，
+ * 随 WebView 退役必然失效）改写为服务级「生产入口分泡呈现」—— caseId 不变，断言改挂
+ * 揭示调度与顶栏所有权通道。判据口径变化，故 bump。
+ * `2026-10-05.1`：MCP 子系统改造 W2（pi-mcp 协议栈 + 裸行通道）新增 te-29 场景
+ * （tool-mcp-real-ipc-bridge，真 IPC 假 server），全波共用这一次 bump。
  */
-export const LIVE_DATASET_VERSION = "2026-10-04.1"
+export const LIVE_DATASET_VERSION = "2026-10-05.1"
 
 export function validateDataset(scenes: SceneDef[], contracts: ModuleContract[]): string[] {
   const errors: string[] = []

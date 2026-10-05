@@ -8,245 +8,271 @@ import { describe, expect, it } from "vitest"
 import { checkBundleConfig as checkBundleConfigSource, resolveTag as resolveTagSource } from "../../../scripts/check-bundle-config.mjs"
 
 /** 校验器的运行期契约（与 scripts/check-bundle-config.mjs 的导出一致）。 */
-type CheckBundleConfig = (rootDir: string, options?: { tag?: string | null }) => string[]
+type CheckBundleConfig = (
+  rootDir: string,
+  options?: { tag?: string | null; requireStaging?: boolean },
+) => string[]
 const checkBundleConfig: CheckBundleConfig = checkBundleConfigSource
 
 /** tag 解析器的运行期契约。 */
 type ResolveTag = (env: Record<string, string | undefined>, argv: string[]) => string | null
 const resolveTag: ResolveTag = resolveTagSource
 
+const BASE_VERSION = "0.15.0"
+
 interface FixtureOptions {
-  config?: unknown
-  icons?: string[]
-  /** 覆盖默认 config 的 productName（默认 ASCII；非 ASCII 会进产物文件名，被 GitHub 剥掉） */
+  /** 覆盖默认 config 的 productName（默认 ASCII；非 ASCII 会进产物文件名，被 GitHub 剥掉）。 */
   productName?: string
-  updaterPubkey?: string | null
-  /** 覆盖默认 config 的 version（只影响未显式传 config 的夹具） */
-  confVersion?: string
-  /** 单独覆盖 package.json / Cargo.toml 的 version，用来构造「三处不一致」 */
+  /** 覆盖 identifier */
+  identifier?: string
+  /** 全部版本源的基数（默认 0.15.0）。单独漂移用 packageVersion / workspaceVersion。 */
+  desktopVersion?: string
+  /** desktop.json 的 binaries 覆盖（默认 [ { path: "native-host", main: true } ]） */
+  binaries?: unknown
+  /** desktop.json 的 resources 覆盖 */
+  resources?: unknown
+  /** desktop.json 整份原文（用于构造坏 JSON） */
+  desktopRaw?: string
+  /** 单独覆盖 package.json 的 version，用来构造「与主对象不一致」 */
   packageVersion?: string
-  cargoVersion?: string
-  /** Cargo.lock 里 tauri crate 的解析版本（默认与 JS 侧对齐） */
-  tauriCrateVersion?: string
-  /** pnpm-lock.yaml 里 @tauri-apps/api 的解析版本；给多个值构造「同一包锁成两个版本」的漂移 */
-  tauriApiVersions?: string[]
-  /** package.json 里 @tauri-apps/api 的声明范围；默认按解析版本生成 caret range */
-  tauriApiSpecifier?: string
+  /** 单独覆盖根 Cargo.toml 的 [workspace.package] version */
+  workspaceVersion?: string
+  /** 根 Cargo.toml 整份原文（用于构造「缺 [workspace.package] 段」） */
+  workspaceCargoRaw?: string
+  /** packaging/node-runtime.json 整体覆盖；显式 null = 不写该文件 */
+  nodeRuntime?: Record<string, unknown> | null
+  /** 创建 packaging/dist/node 暂存 */
+  stageNode?: boolean
+  /** 创建 packaging/dist/harness 暂存：file = 含 main.mjs；empty = 空目录 */
+  stageHarness?: "file" | "empty"
+}
+
+function validNodeRuntime(): Record<string, unknown> {
+  return {
+    $schema: "desk-pet/node-runtime@1",
+    nodeVersion: "22.22.3",
+    nodeMajorLine: 22,
+    minimumRequirement: ">=22.19.0",
+    provisional: false,
+    verification: { darwinArm64: { observedNodeVersion: "22.22.3" } },
+  }
 }
 
 function fixtureRoot(options: FixtureOptions = {}) {
   const root = mkdtempSync(join(tmpdir(), "bundle-config-"))
-  mkdirSync(join(root, "src-tauri", "icons"), { recursive: true })
-  for (const name of options.icons ?? ["32x32.png", "128x128.png", "icon.icns", "icon.ico"]) {
-    writeFileSync(join(root, "src-tauri", "icons", name), "x")
-  }
-  const config = options.config ?? {
-    productName: options.productName ?? "v1rtual-desk-pet",
-    version: options.confVersion ?? "0.15.0",
-    identifier: "com.v1rtual.deskpet",
-    bundle: {
-      active: true,
-      targets: "all",
-      icon: ["icons/32x32.png", "icons/128x128.png", "icons/icon.icns", "icons/icon.ico"],
-      resources: { "resources/defaults": "defaults" },
-    },
-    plugins: {
-      updater: {
-        pubkey: options.updaterPubkey === undefined ? "dW50cnVzdGVkIGNvbW1lbnQ6" : options.updaterPubkey,
-        endpoints: ["https://github.com/V1rtual-Klavte/Desk-Pet/releases/latest/download/latest.json"],
-      },
-    },
-  }
-  writeFileSync(join(root, "src-tauri", "tauri.conf.json"), JSON.stringify(config, null, 2))
+  mkdirSync(join(root, "packaging"), { recursive: true })
+  mkdirSync(join(root, "resources", "defaults"), { recursive: true })
+  writeFileSync(join(root, "resources", "defaults", "sentinel.txt"), "seed")
 
-  // 三处版本号默认与 config 的 version 联动；[dependencies] 里的嵌套 version 离行首，
-  // 用来钉住「只认 [package] 段的行首 version」这条口径。
-  const confVersionRaw = (config as { version?: unknown }).version
-  const baseVersion = typeof confVersionRaw === "string" ? confVersionRaw : "0.15.0"
-  const apiVersions = options.tauriApiVersions ?? ["2.12.1"]
-  const rootApiVersion = apiVersions[0]
-  writeFileSync(
-    join(root, "package.json"),
-    JSON.stringify(
+  const baseVersion = options.desktopVersion ?? BASE_VERSION
+  const productName = options.productName ?? "v1rtual-desk-pet"
+  const identifier = options.identifier ?? "com.v1rtual.deskpet"
+
+  // 根 Cargo.toml：版本的单一真相源在 [workspace.package]；段外故意放一条行首
+  // `version = "9.9.9"` 干扰行 —— 按「首个行首 version」读取会读错，本夹具钉住按段定位。
+  writeFileSync(join(root, "Cargo.toml"), options.workspaceCargoRaw ?? [
+    "[workspace]",
+    'resolver = "2"',
+    'members = ["crates/native-host"]',
+    "",
+    "[workspace.package]",
+    `version = "${options.workspaceVersion ?? baseVersion}"`,
+    'edition = "2021"',
+    "",
+    "# 段外干扰行：不能按「首个行首 version」误读成真相源",
+    "[workspace.metadata.demo]",
+    'version = "9.9.9"',
+    "",
+  ].join("\n"))
+
+  writeFileSync(join(root, "package.json"), JSON.stringify(
+    {
+      name: "deskpet-fixture",
+      version: options.packageVersion ?? baseVersion,
+    },
+    null,
+    2,
+  ))
+
+  if (options.desktopRaw !== undefined) {
+    writeFileSync(join(root, "packaging", "desktop.json"), options.desktopRaw)
+  } else {
+    writeFileSync(join(root, "packaging", "desktop.json"), JSON.stringify(
       {
-        name: "deskpet-fixture",
-        version: options.packageVersion ?? baseVersion,
-        dependencies: {
-          "@tauri-apps/api": options.tauriApiSpecifier ?? `^${rootApiVersion}`,
-        },
+        $schema: "https://raw.githubusercontent.com/crabnebula-dev/cargo-packager/@crabnebula/packager-v0.11.8/crates/packager/schema.json",
+        name: "v1rtual-desk-pet",
+        productName,
+        version: baseVersion,
+        identifier,
+        outDir: "dist",
+        binariesDir: "../target/release",
+        binaries: options.binaries ?? [{ path: "native-host", main: true }],
+        resources: options.resources ?? [
+          { src: "dist/node", target: "node" },
+          { src: "dist/harness", target: "harness" },
+          { src: "../resources/defaults", target: "defaults" },
+        ],
       },
       null,
       2,
-    ),
-  )
-  writeFileSync(
-    join(root, "src-tauri", "Cargo.toml"),
-    `[package]\nname = "deskpet-fixture"\nversion = "${options.cargoVersion ?? baseVersion}"\nedition = "2021"\n\n` +
-    `[dependencies]\nserde = { version = "1.0.0", features = ["derive"] }\n`,
-  )
-  // 版本对齐的判据只在锁文件的解析结果里：Cargo.toml / package.json 的声明都是 caret range，
-  // 允许范围内漂移。默认两边对齐（2.12.1）。
-  writeFileSync(
-    join(root, "Cargo.lock"),
-    [
-      "# This file is automatically @generated by Cargo.",
-      "# It is not intended for manual editing.",
-      "version = 4",
-      "",
-      "[[package]]",
-      'name = "deskpet-fixture"',
-      `version = "${baseVersion}"`,
-      "",
-      "[[package]]",
-      'name = "tauri"',
-      `version = "${options.tauriCrateVersion ?? "2.12.1"}"`,
-      'source = "registry+https://github.com/rust-lang/crates.io-index"',
-      'checksum = "0000000000000000000000000000000000000000000000000000000000000000"',
-      "",
-    ].join("\n"),
-  )
-  writeFileSync(
-    join(root, "pnpm-lock.yaml"),
-    [
-      "lockfileVersion: '9.0'",
-      "",
-      "importers:",
-      "",
-      "  .:",
-      "    dependencies:",
-      "      '@tauri-apps/api':",
-      `        specifier: ${options.tauriApiSpecifier ?? `^${rootApiVersion}`}`,
-      `        version: ${rootApiVersion}`,
-      "",
-      "packages:",
-      "",
-      ...apiVersions.map(v => `  '@tauri-apps/api@${v}':\n    resolution: {integrity: sha512-fixture}`),
-      "",
-      "snapshots:",
-      "",
-      ...apiVersions.map(v => `  '@tauri-apps/api@${v}': {}`),
-      "",
-    ].join("\n"),
-  )
+    ))
+  }
+
+  if (options.nodeRuntime !== null) {
+    writeFileSync(join(root, "packaging", "node-runtime.json"),
+      JSON.stringify(options.nodeRuntime ?? validNodeRuntime(), null, 2))
+  }
+
+  if (options.stageNode) {
+    mkdirSync(join(root, "packaging", "dist", "node", "bin"), { recursive: true })
+    writeFileSync(join(root, "packaging", "dist", "node", "bin", "node"), "x")
+  }
+  if (options.stageHarness === "file") {
+    mkdirSync(join(root, "packaging", "dist", "harness"), { recursive: true })
+    writeFileSync(join(root, "packaging", "dist", "harness", "main.mjs"), "x")
+  } else if (options.stageHarness === "empty") {
+    mkdirSync(join(root, "packaging", "dist", "harness"), { recursive: true })
+  }
   return root
 }
 
 describe("checkBundleConfig", () => {
-  it("合规配置零问题", () => {
+  it("合规夹具零问题（暂存缺席也通过 —— CI 的 checkout 里没有 gitignore 的 dist/）", () => {
     expect(checkBundleConfig(fixtureRoot())).toEqual([])
   })
 
-  it("productName 含非 ASCII 字符被拦，点名 GitHub 剥名、latest.json 被跳过的后果", () => {
+  it("productName 含非 ASCII 字符被拦，点名 GitHub 剥名、更新清单被静默跳过的后果", () => {
     // v0.15.0 发布事故：productName 是中文 → 产物文件名带中文 → GitHub 上传时剥掉非 ASCII →
-    // tauri-action 匹配不到自己的产物名，静默跳过 updater 的 latest.json：CI 全绿，更新永久失效。
+    // 发布侧匹配不到自己的产物名，静默跳过更新清单（update.json）的组件条目：CI 全绿，更新永久失效。
     const problems = checkBundleConfig(fixtureRoot({ productName: "虚拟桌宠" }))
-    expect(problems.some(p => p.includes("productName") && p.includes("latest.json"))).toBe(true)
+    expect(problems.some(p => p.includes("productName") && p.includes("update.json"))).toBe(true)
     // 判据必须是「纯 ASCII」而不是「有没有中文」：重音字母同样会被 GitHub 剥掉，只有 ASCII 才安全
     const accented = checkBundleConfig(fixtureRoot({ productName: "café-desk-pet" }))
     expect(accented.some(p => p.includes("productName"))).toBe(true)
   })
 
-  it("图标文件缺失被点名", () => {
-    const root = fixtureRoot({ config: undefined, icons: ["32x32.png"] })
-    const problems = checkBundleConfig(root)
-    expect(problems.some(p => p.includes("128x128.png"))).toBe(true)
-    expect(problems.some(p => p.includes("icon.icns"))).toBe(true)
-  })
-
-  it("targets 写死单一平台目标被拦（本次要修的原始 bug）", () => {
-    const root = fixtureRoot({
-      config: {
-        productName: "v1rtual-desk-pet", version: "0.15.0", identifier: "com.v1rtual.deskpet",
-        bundle: { active: true, targets: ["nsis"], icon: ["icons/32x32.png"], resources: {} },
-        plugins: { updater: { pubkey: "k", endpoints: ["https://example.com/latest.json"] } },
-      },
-    })
-    const problems = checkBundleConfig(root)
-    expect(problems.some(p => p.includes("targets"))).toBe(true)
-  })
-
   it("identifier 不是反向域名被拦", () => {
-    const root = fixtureRoot({
-      config: {
-        productName: "v1rtual-desk-pet", version: "0.15.0", identifier: "deskpet",
-        bundle: { active: true, targets: "all", icon: ["icons/32x32.png"], resources: {} },
-        plugins: { updater: { pubkey: "k", endpoints: ["https://example.com/latest.json"] } },
-      },
-    })
-    expect(checkBundleConfig(root).some(p => p.includes("identifier"))).toBe(true)
+    const problems = checkBundleConfig(fixtureRoot({ identifier: "deskpet" }))
+    expect(problems.some(p => p.includes("packaging/desktop.json") && p.includes("identifier"))).toBe(true)
   })
 
-  it("updater 公钥为空被拦", () => {
-    const root = fixtureRoot({ updaterPubkey: "" })
-    expect(checkBundleConfig(root).some(p => p.includes("pubkey"))).toBe(true)
+  it("binaries 形状：空数组、main 数量不是 1、path 为空都被拦", () => {
+    const empty = checkBundleConfig(fixtureRoot({ binaries: [] }))
+    expect(empty.some(p => p.includes("binaries") && p.includes("非空数组"))).toBe(true)
+
+    // cargo-packager 的 main_binary() 找不到 main: true 会直接报 MainBinaryNotFound 打包失败
+    const noMain = checkBundleConfig(fixtureRoot({ binaries: [{ path: "native-host", main: false }] }))
+    expect(noMain.some(p => p.includes("main: true"))).toBe(true)
+
+    const badPath = checkBundleConfig(fixtureRoot({ binaries: [{ path: "", main: true }] }))
+    expect(badPath.some(p => p.includes("path"))).toBe(true)
+
+    // cargo-packager 不支持字符串简写（schema 里 Binary 是对象）
+    const shorthand = checkBundleConfig(fixtureRoot({ binaries: ["native-host"] }))
+    expect(shorthand.some(p => p.includes("binaries[0]"))).toBe(true)
   })
 
-  it("tag 与 version 不一致被拦，一致则通过", () => {
+  it("resources 形状：缺 target 的对象被拦", () => {
+    const resources = [{ src: "dist/harness" }]
+    const problems = checkBundleConfig(fixtureRoot({ resources }))
+    expect(problems.some(p => p.includes("resources[0]") && p.includes("target"))).toBe(true)
+  })
+
+  it("resources 非暂存 src 不存在被拦（repo 内资源被改名不能留到打包才炸）", () => {
+    const resources = [{ src: "../resources/missing", target: "missing" }]
+    const problems = checkBundleConfig(fixtureRoot({ resources }))
+    expect(problems.some(p => p.includes("src 不存在") && p.includes("missing"))).toBe(true)
+  })
+
+  it("发布闭包不得含测试 / trace 常驻资产", () => {
+    const resources = [{ src: "../test/.tmp/fixture-bundle", target: "fixture" }]
+    const problems = checkBundleConfig(fixtureRoot({ resources }))
+    expect(problems.some(p => p.includes("发布闭包"))).toBe(true)
+  })
+
+  it("resources 暂存 src：requireStaging 打开时缺失被拦；默认不拦（CI 无暂存）", () => {
     const root = fixtureRoot()
-    expect(checkBundleConfig(root, { tag: "v0.15.0" })).toEqual([])
-    const problems = checkBundleConfig(root, { tag: "v0.16.0" })
-    expect(problems.some(p => p.includes("version:set"))).toBe(true)
+    expect(checkBundleConfig(root)).toEqual([])
+    const problems = checkBundleConfig(root, { requireStaging: true })
+    expect(problems.some(p => p.includes("暂存") && p.includes("dist/node"))).toBe(true)
+    expect(problems.some(p => p.includes("暂存") && p.includes("dist/harness"))).toBe(true)
   })
 
-  it("package.json 的 version 与其它两处不一致被拦，点名文件并给出 version:set 修法", () => {
-    const root = fixtureRoot({ packageVersion: "0.16.0" })
-    const problems = checkBundleConfig(root)
+  it("resources 暂存 src 存在但为空目录被拦（默认口径也拦 —— 空暂存 = 包树缺组件）", () => {
+    const problems = checkBundleConfig(fixtureRoot({ stageHarness: "empty" }))
+    expect(problems.some(p => p.includes("dist/harness") && p.includes("空目录"))).toBe(true)
+  })
+
+  it("暂存齐备时 requireStaging 通过", () => {
+    const root = fixtureRoot({ stageNode: true, stageHarness: "file" })
+    // requireStaging 也要求 version-set.json 已由暂存步骤产出，且 app / node 与锁定值一致
+    writeFileSync(join(root, "packaging", "dist", "version-set.json"), JSON.stringify({
+      app: BASE_VERSION,
+      node: validNodeRuntime().nodeVersion,
+      harness: "a".repeat(64),
+    }, null, 2))
+    expect(checkBundleConfig(root, { requireStaging: true })).toEqual([])
+  })
+
+  it("node-runtime 实测记录与锁定 nodeVersion 分叉被拦", () => {
+    const runtime = validNodeRuntime()
+    runtime.verification = { darwinArm64: { observedNodeVersion: "22.19.9" } }
+    const problems = checkBundleConfig(fixtureRoot({ nodeRuntime: runtime }))
+    expect(problems.some(p => p.includes("observedNodeVersion") && p.includes("22.19.9"))).toBe(true)
+  })
+
+  it("node-runtime provisional 未定稿被拦", () => {
+    const runtime = validNodeRuntime()
+    runtime.provisional = true
+    const problems = checkBundleConfig(fixtureRoot({ nodeRuntime: runtime }))
+    expect(problems.some(p => p.includes("provisional"))).toBe(true)
+  })
+
+  it("node-runtime 锁定版本低于 minimumRequirement 被拦", () => {
+    const runtime = validNodeRuntime()
+    runtime.minimumRequirement = ">=23.1.0"
+    const problems = checkBundleConfig(fixtureRoot({ nodeRuntime: runtime }))
+    expect(problems.some(p => p.includes("minimumRequirement"))).toBe(true)
+  })
+
+  it("node-runtime 文件缺失被拦", () => {
+    const problems = checkBundleConfig(fixtureRoot({ nodeRuntime: null }))
+    expect(problems.some(p => p.includes("packaging/node-runtime.json") && p.includes("不存在"))).toBe(true)
+  })
+
+  it("package.json 的 version 与 desktop.json 不一致被拦，点名文件并给出 version:set 修法", () => {
+    const problems = checkBundleConfig(fixtureRoot({ packageVersion: "0.16.0" }))
     expect(problems.some(p => p.includes("package.json") && p.includes("version:set"))).toBe(true)
   })
 
-  it("Cargo.toml 的 version 与其它两处不一致被拦，点名文件并给出 version:set 修法", () => {
-    const root = fixtureRoot({ cargoVersion: "0.16.0" })
-    const problems = checkBundleConfig(root)
-    expect(problems.some(p => p.includes("Cargo.toml") && p.includes("version:set"))).toBe(true)
+  it("根 Cargo.toml 的 [workspace.package] version 与 desktop.json 不一致被拦", () => {
+    const problems = checkBundleConfig(fixtureRoot({ workspaceVersion: "0.16.0" }))
+    expect(problems.some(p => p.startsWith("Cargo.toml 的 version") && p.includes("version:set"))).toBe(true)
   })
 
-  it("tag 校验逐文件覆盖三处，tauri.conf.json 与 tag 不一致也被点名", () => {
-    // 三处一致（0.16.0）但与 tag 不符：两两对照无话可说，只有 tag 逐文件核对能报出，
-    // 三处必须各报一条，不能只查 tauri.conf.json。
-    const root = fixtureRoot({ confVersion: "0.16.0" })
-    const problems = checkBundleConfig(root, { tag: "v0.15.0" })
+  it("根 Cargo.toml 缺 [workspace.package] 段被拦（单一真相源不存在）", () => {
+    const problems = checkBundleConfig(fixtureRoot({ workspaceCargoRaw: '[workspace]\nmembers = []\n' }))
+    expect(problems.some(p => p.includes("workspace.package"))).toBe(true)
+  })
+
+  it("tag 与三处 version 一致则通过；不一致时逐文件报出（不能只查某一处）", () => {
+    expect(checkBundleConfig(fixtureRoot(), { tag: "v0.15.0" })).toEqual([])
+
+    // 三处全部漂到 0.16.0：两两对照无话可说，只有 tag 逐文件核对能报出，必须各报一条
+    const problems = checkBundleConfig(fixtureRoot({ desktopVersion: "0.16.0" }), { tag: "v0.15.0" })
     expect(problems.filter(p => p.includes("tag v0.15.0"))).toHaveLength(3)
-    expect(problems.some(p => p.includes("tauri.conf.json") && p.includes("version:set"))).toBe(true)
+    for (const file of ["packaging/desktop.json", "package.json", "Cargo.toml"]) {
+      expect(
+        problems.some(p => p.includes(`tag v0.15.0 与 ${file} 的 version`) && p.includes("version:set")),
+      ).toBe(true)
+    }
   })
 
-  it("Cargo.lock 的 tauri crate 与 pnpm-lock.yaml 的 @tauri-apps/api 同 major.minor 时零问题（补丁号可不同）", () => {
-    const root = fixtureRoot({ tauriCrateVersion: "2.12.0", tauriApiVersions: ["2.12.1"] })
-    expect(checkBundleConfig(root)).toEqual([])
-  })
-
-  it("判据是锁文件的解析版本：package.json 范围放宽（^2.11.1 解析到 2.12.1）不报错", () => {
-    // 声明范围与解析结果不是一回事。本次发布事故正是 range 允许、锁文件漂移；
-    // 按 range 字面判定会把「声明旧、解析新」的正常状态误报。
-    const root = fixtureRoot({ tauriApiSpecifier: "^2.11.1", tauriApiVersions: ["2.12.1"] })
-    expect(checkBundleConfig(root)).toEqual([])
-  })
-
-  it("tauri crate 与 @tauri-apps/api 跨 minor 时被拦，点名两个解析版本并给出 pnpm add 修法", () => {
-    const root = fixtureRoot({
-      tauriCrateVersion: "2.12.1",
-      tauriApiVersions: ["2.11.1"],
-      tauriApiSpecifier: "^2.11.1",
-    })
-    const hit = checkBundleConfig(root).find(p => p.includes("2.12.1") && p.includes("2.11.1"))
-    expect(hit).toBeDefined()
-    expect(hit).toContain("pnpm add '@tauri-apps/api@^2.12'")
-  })
-
-  it("pnpm-lock.yaml 里 @tauri-apps/api 解析出多个版本时单独报出漂移", () => {
-    // 事故形态：新插件把 2.11.1 锁成子依赖，根依赖仍是 2.12.1，tauri build 只认其中一份。
-    const root = fixtureRoot({ tauriCrateVersion: "2.12.1", tauriApiVersions: ["2.11.1", "2.12.1"] })
-    const problems = checkBundleConfig(root)
-    expect(
-      problems.some(p => p.includes("解析出多个版本") && p.includes("2.11.1") && p.includes("2.12.1")),
-    ).toBe(true)
-  })
-
-  it("tauri.conf.json 不是合法 JSON 时给出可读报错", () => {
-    const root = fixtureRoot()
-    writeFileSync(join(root, "src-tauri", "tauri.conf.json"), "{ 坏掉的 json")
+  it("desktop.json 不是合法 JSON 时给出可读报错，其余检查继续而不是整体短路", () => {
+    const root = fixtureRoot({ desktopRaw: "{ 坏掉的 json" })
     const problems = checkBundleConfig(root)
     expect(problems).toHaveLength(1)
-    expect(problems[0]).toContain("tauri.conf.json")
+    expect(problems[0]).toContain("packaging/desktop.json")
   })
 })
 

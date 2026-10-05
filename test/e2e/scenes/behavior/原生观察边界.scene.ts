@@ -1,5 +1,4 @@
-import { invoke } from "@tauri-apps/api/core"
-import { listen } from "@tauri-apps/api/event"
+import { getHostBridge } from "@/services/host"
 import type { SceneDef } from "../../types"
 import { silentAccessConfig } from "@/services/config"
 
@@ -17,82 +16,76 @@ interface Observation {
   isPetForeground: boolean
 }
 
+/**
+ * 原生观察命令与运行活动快照（bh-06）。
+ *
+ * **可验证性边界（README「宿主能力对等」，与 `窗口信息三态` 同一模式）**：E2E 宿主不启动
+ * monitor 工作线程（`crates/native-host/src/main.rs` 的 `run_e2e` 不调用
+ * `spawn_monitor_thread`），`window-observed` 在宿主里没有事件源 —— 订阅者永远收不到事件。
+ * 事件载荷协议（采样时间、generation/sequence、前后台与可见性、disabled 边界）因此没有
+ * 可执行入口，本场景不假装覆盖，而是把「宿主不会发布任何观察事件」断言成前置：将来宿主在
+ * e2e 分支接入事件源，这条前置会失败，提示把事件协议断言重写回来，而不是让「未收到事件」
+ * 一侧悄悄永远成立（同 `窗口信息三态` 对「快照必须为 null」的处理）。
+ *
+ * 可执行的部分：启停两条命令被宿主接受、`get_runtime_activity` 独立快照的真实字段形状与
+ * 隐私边界（不带 appId/app/title）—— 这些不依赖事件源。
+ */
+
+/** 边界观察窗口：宿主当前没有事件源，等这段只为在事件源将来出现时抓出「开始发布」的变化。 */
+const BOUNDARY_WAIT_MS = 1200
+/** 关闸后的边界观察窗口：disabled 边界事件同样应由工作线程发布，这里同样不该出现。 */
+const DISABLED_WAIT_MS = 300
+const POLL_MS = 50
+
+const sleep = (ms: number) => new Promise<void>(resolve => { setTimeout(resolve, ms) })
+
 export const 原生观察边界: SceneDef = {
   meta: {
     caseId: "behavior-native-observation", module: "behavior", contractId: "bh-06",
-    description: "原生观察命令启停稳定，系统活动与观察事件带完整采样时间、代际、序号、前台/可见性和锁屏状态",
+    description: "原生观察命令启停被宿主接受、运行活动快照带锁屏/idle/可见与前台且不携带窗口身份；E2E 宿主无事件源，事件协议按可验证性边界标注",
     depth: "deep", suite: "regression", entry: "runtime", tags: ["behavior", "boundary"],
   },
   setup: async () => {},
   turns: [{
     index: 1,
-    description: "原生启停事件与独立运行活动快照符合跨平台协议",
+    description: "原生启停命令与独立运行活动快照符合跨平台协议",
     userText: "验证桌面观察边界。",
     checks: [{
       type: "expectNativeObservationProtocol",
       run: async () => {
         const enabledBefore = silentAccessConfig.enabled
         const events: Observation[] = []
-        let pendingPredicate: ((event: Observation) => boolean) | null = null
-        let pendingResolve: ((event: Observation) => void) | null = null
-        let pendingTimer: ReturnType<typeof setTimeout> | null = null
-        const unlisten = await listen<Observation>("window-observed", ({ payload }) => {
-          events.push(payload)
-          if (pendingPredicate?.(payload) && pendingResolve) {
-            if (pendingTimer) clearTimeout(pendingTimer)
-            pendingTimer = null
-            pendingPredicate = null
-            const resolve = pendingResolve
-            pendingResolve = null
-            resolve(payload)
-          }
-        })
-        const waitFor = (predicate: (event: Observation) => boolean) => {
-          const existing = events.find(predicate)
-          if (existing) return Promise.resolve(existing)
-          return new Promise<Observation>((resolve, reject) => {
-            pendingPredicate = predicate; pendingResolve = resolve
-            // 事件驱动下「启用」只发布一次采样，判据仍是「必须收到新代际的已发布事件」；
-            // 这里给 20s 只是容忍原生采样在满负载宿主上变慢（曾见一次 >8s 未发布），
-            // 不放宽任何断言条件。
-            pendingTimer = setTimeout(() => {
-              pendingTimer = null; pendingPredicate = null; pendingResolve = null
-              reject(new Error("等待 window-observed 事件超过 20 秒"))
-            }, 20_000)
-          })
-        }
+        const unlisten = getHostBridge().subscribe("window-observed", (payload) => { events.push(payload) })
         try {
-          await invoke("set_monitor_enabled", { enabled: false })
-          const activity = await invoke<{
-            isPetVisible: boolean; isPetForeground: boolean; observationState: "observed" | "locked" | "unavailable";
-            idleForMs: number | null; observedAt: number
-          }>("get_runtime_activity")
+          // ① 关闸命令被宿主接受（命令面存在且不报错；总闸状态本身在宿主里没有查询入口）。
+          await getHostBridge().request("set_monitor_enabled", { enabled: false })
+
+          // ② 独立运行活动快照：字段形状与隐私边界按协议核对（真实采样，不依赖事件源）。
+          const activity = await getHostBridge().request("get_runtime_activity", {})
           if (typeof activity.isPetVisible !== "boolean" || typeof activity.isPetForeground !== "boolean") throw new Error("运行活动缺少桌宠可见/前台状态")
           if (!["observed", "locked", "unavailable"].includes(activity.observationState)) throw new Error(`运行活动状态非法: ${activity.observationState}`)
           if (!Number.isSafeInteger(activity.observedAt) || !(activity.idleForMs === null || Number.isFinite(activity.idleForMs))) throw new Error("运行活动时间或 idle 值非法")
           if ("title" in activity || "app" in activity || "appId" in activity) throw new Error("get_runtime_activity 不得携带窗口身份信息")
 
-          const baselineGeneration = events.reduce((latest, event) => Math.max(latest, event.monitorGeneration), -1)
-          const received = waitFor((event) => event.observationState !== "disabled" && event.monitorGeneration > baselineGeneration)
-          await invoke("set_monitor_enabled", { enabled: true })
-          const nativeActive = await received
-          const disabledPromise = waitFor((event) => event.observationState === "disabled" && event.monitorGeneration > nativeActive.monitorGeneration)
-          await invoke("set_monitor_enabled", { enabled: false })
-          const disabled = await disabledPromise
-          if (disabled.monitorGeneration <= nativeActive.monitorGeneration) {
-            throw new Error("monitor 关闭没有发出更新代际的 disabled 边界事件")
+          // ③ 开闸命令同样被宿主接受。
+          await getHostBridge().request("set_monitor_enabled", { enabled: true })
+
+          // ④ 可验证性边界：宿主没有 monitor 工作线程，开闸也不会发布任何观察事件。
+          // 事件源接入后这里会失败 —— 那正是提示按完整事件协议（采样时间/代际/序号/
+          // 前后台/可见性/disabled 边界）重写本场景的信号，而不是把断言删掉。
+          const boundaryDeadline = Date.now() + BOUNDARY_WAIT_MS
+          while (Date.now() < boundaryDeadline) await sleep(POLL_MS)
+          if (events.length !== 0) {
+            throw new Error(`E2E 宿主不应有 window-observed 事件源，却收到 ${events.length} 条事件：宿主已接入事件源，本场景需重写为完整事件协议断言`)
           }
-          const value = nativeActive
-          if (!Number.isSafeInteger(value.observedAt) || !Number.isFinite(value.sampleMonoMs)) throw new Error("观察事件缺采样时间")
-          if (!Number.isSafeInteger(value.monitorGeneration) || value.monitorGeneration < 0 || !Number.isSafeInteger(value.sequence) || value.sequence < 1) throw new Error("观察事件缺 generation/sequence")
-          if (!["observed", "unavailable", "locked", "suspended"].includes(value.observationState)) throw new Error(`观察状态非法: ${value.observationState}`)
-          if (typeof value.isPetVisible !== "boolean" || typeof value.isPetForeground !== "boolean") throw new Error("观察事件缺桌宠可见/前台状态")
-          if (!(value.idleForMs === null || Number.isFinite(value.idleForMs))) throw new Error("观察事件 idle 值非法")
-          if (!(value.appId === null || typeof value.appId === "string") || !(value.app === null || typeof value.app === "string") || !(value.title === null || typeof value.title === "string")) throw new Error("观察事件窗口字段形状错误")
+
+          // ⑤ 关闸：命令仍被接受，且 disabled 边界事件同样不该出现（它由工作线程发布）。
+          await getHostBridge().request("set_monitor_enabled", { enabled: false })
+          await sleep(DISABLED_WAIT_MS)
+          if (events.length !== 0) throw new Error(`关闸后仍收到 ${events.length} 条观察事件：宿主已接入事件源，本场景需重写`)
         } finally {
-          if (pendingTimer) clearTimeout(pendingTimer)
           unlisten()
-          await invoke("set_monitor_enabled", { enabled: enabledBefore })
+          await getHostBridge().request("set_monitor_enabled", { enabled: enabledBefore })
         }
       },
     }],

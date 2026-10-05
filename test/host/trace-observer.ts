@@ -1,6 +1,6 @@
 import { subscribeRuntimeTrace } from "@/services/engine/runtime"
 import type { RuntimeTraceEvent } from "@/services/engine/runtime"
-import { invoke } from "@tauri-apps/api/core"
+import { getHostBridge } from "@/services/host"
 import { BoundedTraceBuffer, captureTraceContext, TraceContextMap } from "../trace/evidence"
 import type { TraceChunk, TraceChunkAck, TraceContext } from "../trace/evidence"
 
@@ -10,9 +10,20 @@ export function captureRuntimeTrace() {
   return { events, unsubscribe }
 }
 
+/**
+ * 单块 trace 事件的字节预算。
+ *
+ * 推导：`e2e_trace` 请求经 HostConnection.request 编码为控制帧，硬上限是
+ * `src/services/host/wire.ts` 的 `encodeFrame`（65536 字节，取自 ServerWelcome.limits，
+ * 与 Rust `ipc/protocol.rs` 的 CONTROL_FRAME_MAX_BYTES 同值）。`prepareArgs` 的字段级
+ * blob 化只兜「单字段 > 32 KiB」，对「大量小字段累加」无效 —— 所以必须由块切分保证。
+ * 48 KiB 显著小于 65536，给帧头、信封与 chunk 元数据（chunkId/边界等）留 ≥16 KiB 余量。
+ */
+const TRACE_CHUNK_BYTE_BUDGET = 48 * 1024
+
 /** Live-only writer. Identity maps survive trial end so late work retains its original owner. */
 export function createLiveTraceRecorder(mode: "off" | "light" | "full") {
-  const buffer = new BoundedTraceBuffer({ maxEvents: 2_000, maxBytes: 2 * 1024 * 1024 })
+  const buffer = new BoundedTraceBuffer({ maxEvents: 2_000, maxBytes: 2 * 1024 * 1024, maxChunkBytes: TRACE_CHUNK_BYTE_BUDGET })
   const contexts = new TraceContextMap()
   let active: TraceContext | undefined
   let chain = Promise.resolve()
@@ -47,8 +58,12 @@ export function createLiveTraceRecorder(mode: "off" | "light" | "full") {
   })
 
   async function persist(chunk: TraceChunk) {
-    const ack = await invoke<TraceChunkAck>("e2e_trace", { chunk })
-    buffer.ackChunk(ack)
+    const ack = await getHostBridge().request("e2e_trace", { chunk })
+    if (!ack.persisted) throw new Error(`Native trace chunk was not persisted: ${ack.chunkId}/${ack.chunkSeq}`)
+    // Rust currently returns persisted:true only after append + flush; validate that real wire
+    // field before narrowing the test-only ACK contract's literal true.
+    const durableAck: TraceChunkAck = { ...ack, persisted: true }
+    buffer.ackChunk(durableAck)
   }
 
   function flush(boundary: TraceChunk["boundary"]): Promise<void> {
@@ -58,6 +73,11 @@ export function createLiveTraceRecorder(mode: "off" | "light" | "full") {
     }).then(async () => {
       const pending = buffer.retryPending()
       if (pending) await persist(pending)
+      // 数据块全部标 periodic：批次字节上限（2 MiB 缓冲）远超控制帧上限（65536 字节），
+      // 一次 drain 只按预算产出一块，循环到 active 清空。边界块在最后单独产出（此时 active 已空），
+      // 与 beginTrial 的空 trial_start 同形态：保证 boundary 恰好出现一次且落在所有数据之后
+      //（complete 之后不再有块，scripts/trace-evidence.mjs 按此核验）。
+      while (buffer.pendingEventCount > 0) await persist(buffer.drainChunk({ kind: "periodic" }))
       await persist(buffer.drainChunk(boundary))
       lastError = undefined
     }).catch(error => {

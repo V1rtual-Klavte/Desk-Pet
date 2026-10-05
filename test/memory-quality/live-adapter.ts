@@ -1,8 +1,7 @@
 // Real Live quality adapter. The scorer is provider agnostic; this module deliberately
 // crosses sendMessage and Rust MemoryStore IPC, while all storage remains in E2E roots.
 import { sendMessage } from "@/services/agent/runner"
-import { listen } from "@tauri-apps/api/event"
-import { invoke } from "@tauri-apps/api/core"
+import { getHostBridge } from "@/services/host"
 import {
   applyMemoryChange, collectMemorySources, emptyMemoryProvider, getMemoryItems, installMemoryProvider,
   memoryJobSources, memoryList, memoryStatus, queryMemory,
@@ -13,6 +12,7 @@ import { aiConfig, flushConfig, memoryConfig, setOverrides } from "@/services/co
 import { estimateContextTokens } from "@/services/context/budget"
 import { completePiText } from "@/services/engine/harness"
 import { subscribeRuntimeTrace } from "@/services/engine/runtime"
+import { publishedUiEventRecords } from "../host/ui-event-tap"
 import { createNewSession, getActiveSessionId } from "@/services/session"
 import { getActiveCard } from "@/services/personality"
 import { listAll, register, unregister } from "@/services/tool"
@@ -103,13 +103,13 @@ type QualityCase = {
 }
 
 interface EvalMemoryReset {
-  generation: string
+  generation: number
   freshStore: true
   status: { revision: number; forgetEpoch: number; itemCount: number; candidateCount: number; jobCount: number; schemaVersion: number }
 }
 
 async function resetEvalMemoryStore(): Promise<EvalMemoryReset> {
-  const result = await invoke<EvalMemoryReset>("e2e_memory_reset")
+  const result = await getHostBridge().request("e2e_memory_reset", {})
   if (!result.freshStore || result.status.revision !== 0 || result.status.forgetEpoch !== 0 || result.status.itemCount !== 0
     || result.status.candidateCount !== 0 || result.status.jobCount !== 0)
     throw new Error("E2E MemoryStore reset did not return an empty fresh store")
@@ -491,14 +491,14 @@ export function createLiveMemoryQualityAdapter(): {
       const unsubscribe = subscribeRuntimeTrace(event => { traces.push(event) })
       let start = 0
       let firstDeliveredTextDeltaMs: number | undefined
-      const stopStream = await listen<{ sessionId: string; delta: string }>("deskpet-assistant-stream", event => {
-        if (event.payload.sessionId === activeSession.id && event.payload.delta.trim() && firstDeliveredTextDeltaMs === undefined)
-          firstDeliveredTextDeltaMs = performance.now() - start
-      })
+      // Native L4 无产品 UI：保留旧报告字段，但由真实 HostBridge publish 成功时刻计量，不冒充原生绘制延迟。
       start = performance.now()
       const restoreTools = isolateQualityTools()
       try {
         const result = await sendMessage(caseDef.question, { requestId: `${sessionId}-question` })
+        const firstDelta = publishedUiEventRecords("deskpet-assistant-stream")
+          .find(({ payload }) => payload.sessionId === activeSession.id && payload.delta.trim())
+        firstDeliveredTextDeltaMs = firstDelta === undefined ? undefined : firstDelta.publishedAt - start
         if (result.outcome !== "succeeded" || result.persistFailed) throw new Error(`question turn failed or was not committed: ${result.failure?.message ?? result.outcome}`)
         if (result.toolCallsMade !== 0) throw new Error("question turn bypassed quality tool isolation")
         const evidenceUsed = await actualPromptEvidence(traces, factIds, actualCardId, caseDef.fixture.cardId)
@@ -534,7 +534,6 @@ export function createLiveMemoryQualityAdapter(): {
           error: result.persistFailed ? "assistant response was not durably committed" : undefined }
       } finally {
         unsubscribe()
-        stopStream()
         restoreProvider?.()
         restoreTools()
       }

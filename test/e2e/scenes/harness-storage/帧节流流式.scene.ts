@@ -23,8 +23,11 @@
 //
 // faux 的分片数只是**估算**：`splitStringByTokenSize`（`pi-ai/dist/providers/faux.js:151-161`）
 //   按 `charSize = tokenSize * 4`、`tokenSize ∈ [3, 5]`（默认）切分 ⇒ 平均约 16 字符一个
-//   `text_delta`；`LONG_TEXT` 约 4000 字符 ⇒ 约 250 帧。估算不当断言用：断言只按下限写，
-//   失败信息里打印实测帧数。
+//   `text_delta`；`LONG_TEXT` 约 4000 字符 ⇒ 约 250 个 delta 事件。
+//
+// 帧**行数**不是 delta 事件数（2026-10-05 同键 delta 合并）：装饰器把同槽位连续 delta
+//   合并成一行落盘，长回复在盘上只有个位数帧行。断言因此不按「帧行数下限」写——内容用
+//   唯一哨兵证明（按序拼接仍含它 = 尾段没丢），顺序用 seq 严格递增证明。
 //
 // 帧只是**进度快照**，持久层是正文 entry：回合收尾时上游会把帧列表整条 list/delete 掉
 //   （`harness/runtime/drive/terminal.js` 的 `operationCleanupWrites`；参考会话实测 9/9 组
@@ -42,7 +45,7 @@ import { initChat, sendMessage } from "@/services/agent/runner"
 import { createPiSessionRepo } from "@/services/engine/harness"
 import { acquirePiSession, getActiveSessionId, getPiSessionRepo } from "@/services/session"
 import { runtimePath } from "@/services/paths"
-import { TauriExecutionEnv } from "@/services/tool/pi/tauri-execution-env"
+import { NativeExecutionEnv } from "@/services/tool/pi/native-execution-env"
 import { fakeText, installFakeProvider } from "../../../host/fake-provider"
 import type { SceneDef } from "../../../e2e/types"
 
@@ -66,14 +69,8 @@ const SENTINEL = "哨兵-STREAM-7F3A9C1E4B2D8E6F-THROTTLE-ENDS"
 /** 填充段落（75 字符）；重复 53 次 + 哨兵 ≈ 4015 字符，且全文只出现一次哨兵。 */
 const FILLER = "夜幕落下来的时候，屋里只剩下键盘的声音。我把手边的事一件件说给你听：先关掉多余的窗口，再把明天要用的文件归到同一个角落，然后是今天没说完的那半句话。 "
 
-/** 长流式回复的正文（约 4000 字符 ⇒ 按平均 16 字符一个 delta 估算约 250 个 text_delta 帧）。 */
+/** 长流式回复的正文（约 4000 字符 ⇒ 按平均 16 字符一个 delta 估算约 250 个 delta 事件）。 */
 const LONG_TEXT = `${FILLER.repeat(53)}${SENTINEL}`
-
-/**
- * 帧 append 数的**断言下限**（不是估算值、不是上限）：估算是 ≈250，取 100 留足余量，
- * 同时仍能挡住「流式帧根本没落盘」「只落了起止边界」这类回归。
- */
-const MIN_STREAM_FRAMES = 100
 
 /** 字节口径（与 Rust `content.len()` 一致）；本场景只在诊断信息里用它，不用 `String.length`。 */
 const textEncoder = new TextEncoder()
@@ -99,7 +96,7 @@ interface SessionFileDump {
 }
 
 /**
- * 用**未包装**的 `TauriExecutionEnv` 直读会话文件字节。
+ * 用**未包装**的 `NativeExecutionEnv` 直读会话文件字节。
  *
  * 未包装 = 绕过 `FrameBufferingFileSystem` 的读前 flush（以及一切缓冲状态）—— 读到的必须
  * 是**已经落在盘上**的字节，这正是 T-2/T-3 要证的。路径取自应用单例仓库的会话句柄，
@@ -110,7 +107,7 @@ async function dumpSessionFile(): Promise<SessionFileDump> {
   if (!sessionId) throw new Error("没有活跃会话：production 场景必须经 sendMessage() 建会话")
   const session = await acquirePiSession(sessionId)
   const path = session.metadata.path
-  const env = new TauriExecutionEnv(await runtimePath("data"))
+  const env = new NativeExecutionEnv(await runtimePath("data"))
   const content = fileOk(await env.readTextFile(path, BACKGROUND_CONTEXT))
 
   const lines = content.split("\n").filter(line => line !== "")
@@ -192,7 +189,7 @@ function frameGroups(writes: readonly CommittedWrite[]): FrameGroup[] {
  * 本场景要断言的那组帧 = 文件里**第一组**帧。
  *
  * setup 的长流式回合先跑（随后运行器还会为 turns[0] 发一条核对消息），所以文件里第一组帧
- * 就是长回合的；长度断言（≥ `MIN_STREAM_FRAMES`）会挡住「拿错组」的情形。
+ * 就是长回合的；「拿错组」由哨兵内容断言兜住（短回合正文不含哨兵）。
  */
 async function readTurnFrames(): Promise<{ dump: SessionFileDump; group: FrameGroup }> {
   const dump = await dumpSessionFile()
@@ -266,12 +263,8 @@ export const 帧节流流式: SceneDef = {
         run: async () => {
           const { group } = await readTurnFrames()
           const appends = group.appends
-          if (appends.length < MIN_STREAM_FRAMES) {
-            throw new Error(
-              `帧 append 数 ${appends.length} < 下限 ${MIN_STREAM_FRAMES}` +
-              `（正文 ${byteLength(LONG_TEXT)} 字节；faux 约 16 字符一个 delta 的估算值不是断言）`,
-            )
-          }
+          // 帧行数不再按下限断言：同键 delta 已在装饰器合并成行（长回复盘上只有个位数行），
+          // 「帧根本没落盘」由下面的内容与顺序断言兜住（没有任何 text_delta ⇒ 直接失败）。
 
           // 顺序：文件里的帧 append 必须按 seq 严格递增（FIFO + 合并等价性在真实链路上的表现）。
           let previousSeq = 0
@@ -352,7 +345,7 @@ export const 帧节流流式: SceneDef = {
           const slash = relative.indexOf("/")
           if (slash <= 0) throw new Error(`会话文件不在 --cwd-- 子目录下: ${relative}`)
 
-          const plain = new TauriExecutionEnv(await runtimePath("data"))
+          const plain = new NativeExecutionEnv(await runtimePath("data"))
           const root = fileOk(await plain.createTempDir("deskpet-live-frame-replay-", BACKGROUND_CONTEXT))
           try {
             const directory = `${root}/${relative.slice(0, slash)}`

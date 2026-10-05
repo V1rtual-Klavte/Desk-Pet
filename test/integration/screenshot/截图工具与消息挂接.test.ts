@@ -33,6 +33,7 @@ import { executeToolDefinition, getToolByName } from "@/services/tool"
 import { resetPiRuntimeProviderForTest } from "@/services/engine/harness"
 import { flushConfig, setOverrides } from "@/services/config"
 import { initPaths } from "@/services/paths"
+import type { HostBridge, HostCommandMap } from "@/services/host"
 
 /** 1×1 PNG：只用于形状与流转断言，不解释图像内容。 */
 const HOISTED = vi.hoisted(() => ({
@@ -44,29 +45,36 @@ const HOISTED = vi.hoisted(() => ({
   invoked: [] as string[],
 }))
 
-vi.mock("@tauri-apps/api/core", async () => {
-  // 显式取 node-ipc 真适配（不走别名解析）：只替换截图两个命令，其余命令仍是真实现。
-  // 工厂内一律动态 import：vi.mock 被提升，静态绑定的可用性不靠求值顺序担保。
-  const actual = await import("../../host/node-ipc")
+vi.mock("@/services/host", async importOriginal => {
+  // 在实际 HostBridge request 边界只替换截图两个 Rust-only 命令，其余真实调用继续交给
+  // setupFiles 注入的 NodeHostBridge；不安装旧 Tauri 命令面或兼容 transport。
+  const actual = await importOriginal<typeof import("@/services/host")>()
   const { mkdirSync, writeFileSync } = await import("node:fs")
   const { dirname } = await import("node:path")
   return {
     ...actual,
-    invoke: async (cmd: string, args: Record<string, unknown> = {}) => {
-      HOISTED.invoked.push(cmd)
-      if (cmd === "capture_screenshot") {
+    getHostBridge: () => {
+      const bridge = actual.getHostBridge()
+      const wrapped = {
+        ...bridge,
+        request: async <K extends keyof HostCommandMap>(method: K, args: HostCommandMap[K]["args"], options?: { signal?: AbortSignal; scope?: import("@/services/host").RunScope }) => {
+          HOISTED.invoked.push(String(method))
+          if (method === "capture_screenshot") {
         HOISTED.captureCalls += 1
-        return { data: HOISTED.pngBase64, mimeType: "image/png", width: 2, height: 2 }
-      }
-      if (cmd === "save_screenshot") {
+            return { data: HOISTED.pngBase64, mimeType: "image/png", width: 2, height: 2 } as HostCommandMap[K]["result"]
+          }
+          if (method === "save_screenshot") {
         HOISTED.saveCalls += 1
-        HOISTED.saveArgs.push(args)
-        // 与 Rust 侧同口径：落盘发生在返回路径之前（先文件、后条目）。
-        mkdirSync(dirname(HOISTED.savedPath), { recursive: true })
-        writeFileSync(HOISTED.savedPath, Buffer.from(HOISTED.pngBase64, "base64"))
-        return { path: HOISTED.savedPath }
+            HOISTED.saveArgs.push(args as Record<string, unknown>)
+            // 与 Rust 侧同口径：落盘发生在返回路径之前（先文件、后条目）。
+            mkdirSync(dirname(HOISTED.savedPath), { recursive: true })
+            writeFileSync(HOISTED.savedPath, Buffer.from(HOISTED.pngBase64, "base64"))
+            return { path: HOISTED.savedPath } as HostCommandMap[K]["result"]
+          }
+          return bridge.request(method, args, options)
+        },
       }
-      return actual.invoke(cmd, args)
+      return wrapped as HostBridge
     },
   }
 })

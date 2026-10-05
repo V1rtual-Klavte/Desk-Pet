@@ -19,7 +19,7 @@ import { sessionEntries } from "../../../host/session-entries"
  * （DANGER + passthrough + resultProjection=reference），只在传输边界替换 `callTool`
  * （真实 stdio 需要一台可用的 MCP 服务器；`live/` 里没有任何场景连过真服务器）。
  * 因此本场景覆盖「MCP 工具定义 → 内核裁决 → 工具执行 → 条目落盘 → 请求投影 → 回读」，
- * 不覆盖 stdio 传输本身。
+ * 不覆盖 stdio 传输本身（传输与真 IPC 由 te-29 的 `MCP真IPC假server` 场景覆盖）。
  */
 
 const SERVER = "live"
@@ -116,7 +116,7 @@ export const MCP大结果回读: SceneDef = {
     register(tool)
     registeredId = tool.id
     provider = installFakeProvider([
-      // MCP 按回合动态激活后，白名单外的 MCP 工具默认不进请求：先经取用入口启用再调用它。
+      // MCP 工具默认不进请求（按回合动态激活）：先经取用入口启用再调用它。
       fakeToolCall("enable_tools", { names: [TOOL_NAME] }, ENABLE_CALL_ID),
       fakeToolCall(TOOL_NAME, {}, CALL_ID),
       fakeText(REPLY),

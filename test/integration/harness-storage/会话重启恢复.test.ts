@@ -21,7 +21,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest"
 import { setTestDataRoot } from "../../host/node-ipc"
 import { createPiSessionRepo } from "@/services/engine/harness"
 import { initPaths, runtimePath } from "@/services/paths"
-import { TauriExecutionEnv } from "@/services/tool/pi/tauri-execution-env"
+import { NativeExecutionEnv } from "@/services/tool/pi/native-execution-env"
 
 /** 解包 Result（夹具解码器，不是断言）：失败时先经 expect 记一条带错误码的失败，再中止本用例。 */
 function expectOk<T>(result: Result<T, FileError>, label: string): T {
@@ -45,7 +45,7 @@ afterAll(() => {
 describe("会话重启恢复", () => {
   it("换一个仓库实例后会话可从磁盘恢复；会话文件落在数据根 sessions/ 下，与同根的 UI 状态文件互不干扰 [harness-session-restart-recovery]", async () => {
     const context = BACKGROUND_CONTEXT
-    const env = new TauriExecutionEnv(await runtimePath("data"))
+    const env = new NativeExecutionEnv(await runtimePath("data"))
 
     // ── ① 换实例恢复 + ② 目录边界 ──
     const sessionsRoot = await runtimePath("data", `restart-${crypto.randomUUID()}`)

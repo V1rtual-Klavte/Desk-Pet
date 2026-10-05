@@ -3,7 +3,6 @@ import { fauxProvider } from "@earendil-works/pi-ai"
 import type {
   AssistantMessage, AssistantMessageEventStream, Context, FauxModelDefinition, FauxResponseStep, Model, SimpleStreamOptions,
 } from "@earendil-works/pi-ai"
-import { listen } from "@tauri-apps/api/event"
 import { setOverride } from "@/services/config"
 import { installPiRuntimeProviderForTest } from "@/services/engine/harness"
 import { initChat, sendMessage, stopActiveRun } from "@/services/agent/runner"
@@ -12,6 +11,7 @@ import { getActiveSessionId } from "@/services/session"
 import { chatHistory } from "@/services/session/store"
 import { registerBlockingTool } from "../../../host/blocking-tool"
 import { fakeText, fakeToolCall } from "../../../host/fake-provider"
+import { publishedUiEvents, resetUiEventTap } from "../../../host/ui-event-tap"
 import { assistantTexts, entryMessageText, sessionEntries, sessionMessages, userTexts } from "../../../host/session-entries"
 import type { SceneDef } from "../../../e2e/types"
 
@@ -141,10 +141,6 @@ export const 中止助手条目隐藏: SceneDef = {
       fakeText(CONFIRM_REPLY),
       fakeText(TURN_REPLY),
     ])
-    // 监听在 setup 内完成取证并注销：不把监听器留给后面的场景（同一 WebView 复用）。
-    const unlisten = await listen<{ sessionId?: string; delta?: string }>(STREAM_EVENT, event => {
-      if (event.payload.delta) streamedText += event.payload.delta
-    })
     try {
       await initChat()
       sessionId = getActiveSessionId()
@@ -159,8 +155,15 @@ export const 中止助手条目隐藏: SceneDef = {
 
       // ② 流式输出途中停止：取消落在 assistant.effect_pending 上，上游把部分内容按 error/aborted 提交成助手条目。
       streamedText = ""
+      resetUiEventTap()
       const secondTurn = sendMessage(STREAMED_TURN_TEXT)
-      streamWindowOpened = await waitUntil(() => streamedText.length >= STREAM_WINDOW_CHARS, STREAM_HEADER_MS)
+      streamWindowOpened = await waitUntil(() => {
+        streamedText = publishedUiEvents(STREAM_EVENT)
+          .filter(event => event.sessionId === sessionId)
+          .map(event => event.delta)
+          .join("")
+        return streamedText.length >= STREAM_WINDOW_CHARS
+      }, STREAM_HEADER_MS)
       stoppedDuringStream = (await stopActiveRun(sessionId)) !== undefined
       const settledSecond = await bounded(secondTurn, TURN_SETTLE_MS)
       secondTurnReply = settledSecond === undefined ? "timeout" : settledSecond.reply
@@ -168,7 +171,6 @@ export const 中止助手条目隐藏: SceneDef = {
       // ③ 再发一条普通消息：让停止写下的系统提示有机会落盘（审计条目在下一个 drive 收尾 flush）。
       await sendMessage(CONFIRM_TURN_TEXT)
     } finally {
-      unlisten()
       restore()
     }
   },

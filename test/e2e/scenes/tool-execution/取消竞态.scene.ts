@@ -1,6 +1,6 @@
 import type { SceneDef } from "../../../e2e/types"
 import { installFakeProvider, fakeText } from "../../../host/fake-provider"
-import { invoke } from "@tauri-apps/api/core"
+import { getHostBridge } from "@/services/host"
 import { errorCode, formatError } from "@/services/error"
 import { BaseDirs } from "@/services/paths"
 import { isWindows } from "@/services/env"
@@ -67,7 +67,7 @@ export const 取消竞态: SceneDef = {
       run: async () => {
         // ① 池里没有这个 id 的取消不再静默：返回值必须是 false。
         // 改动前这个命令返回 `Ok(())`（IPC 上就是 null），调用方无从分辨「取消成功」与「取消来晚了」。
-        const missed = await invoke<boolean>("bash_cancel", { executionId: crypto.randomUUID() })
+        const missed = await getHostBridge().request("bash_cancel", { executionId: crypto.randomUUID() })
         if (missed !== false) {
           throw new Error(`未命中槽的 bash_cancel 应返回 false，实际 ${String(missed)}`)
         }
@@ -76,7 +76,7 @@ export const 取消竞态: SceneDef = {
         // 可能只是命令没跑通（策略拒绝、路径不可写），而不是取消生效。
         const controlId = crypto.randomUUID()
         const control = `${BaseDirs.sessions()}/deskpet-cancel-control-${controlId}`
-        const controlResult = await invoke<BashPayload>("bash_exec", {
+        const controlResult = await getHostBridge().request("bash_exec", {
           executionId: controlId,
           command: delayedProbe(0, control),
           timeoutMs: 60_000,
@@ -85,17 +85,17 @@ export const 取消竞态: SceneDef = {
           spill: false,
         })
         if (controlResult.exitCode !== 0) throw new Error(`正对照命令退出码 ${controlResult.exitCode}`)
-        if (!(await invoke<boolean>("file_exists", { path: control }))) {
+        if (!(await getHostBridge().request("file_exists", { path: control }))) {
           throw new Error("正对照没有留下探针：取消断言会退化成空断言")
         }
-        await invoke("file_remove", { path: control, recursive: false, force: true })
+        await getHostBridge().request("file_remove", { path: control, recursive: false, force: true })
 
         // ③ 竞态顺序：取消先发出（不 await，与 TS 侧 abort 监听器的顺序一致），exec 后发出。
         const id = crypto.randomUUID()
         const sentinel = `${BaseDirs.sessions()}/deskpet-cancel-race-${id}`
-        const cancelled = invoke<boolean>("bash_cancel", { executionId: id })
+        const cancelled = getHostBridge().request("bash_cancel", { executionId: id })
         let settled = false
-        const run = invoke<BashPayload>("bash_exec", {
+        const run = getHostBridge().request("bash_exec", {
           executionId: id,
           command: delayedProbe(PROBE_SECONDS, sentinel),
           timeoutMs: 60_000,
@@ -112,7 +112,7 @@ export const 取消竞态: SceneDef = {
         let terminated = await cancelled
         const deadline = Date.now() + 2_000
         while (!terminated && !settled && Date.now() < deadline) {
-          terminated = await invoke<boolean>("bash_cancel", { executionId: id })
+          terminated = await getHostBridge().request("bash_cancel", { executionId: id })
           if (!terminated) await delay(20)
         }
 
@@ -133,7 +133,7 @@ export const 取消竞态: SceneDef = {
           throw new Error("取消后命令仍以 0 退出：子进程没有被终止")
         }
         // 探针在取消之后仍不存在：运行确实停在 30s 之前（收口预算已先一步证明这一点）。
-        if (await invoke<boolean>("file_exists", { path: sentinel })) {
+        if (await getHostBridge().request("file_exists", { path: sentinel })) {
           throw new Error("取消后子进程仍留下探针：运行没有被终止")
         }
 

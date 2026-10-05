@@ -26,8 +26,8 @@ let bootstrapped = false
 /**
  * 宿主启动面：应用启动时由 UI 壳完成的服务级初始化，Live 宿主不挂载 UI，必须自己补齐。
  *
- * Slash 命令注册表就在这里：`preProcess`（唯一执行入口，ChatPanel / 运行器共用）按注册表
- * 查命令，而注册调用目前只在 `ChatPanel.vue` 的模块副作用里 —— 宿主不挂 UI 时注册表恒为空，
+ * Slash 命令注册表就在这里：`preProcess`（唯一执行入口）按注册表查命令，注册调用在
+ * 领域引导（`@/services/init`）里；场景不跑完整引导，宿主不补的话注册表恒为空，
  * `/compact`、`/clear` 会走「未注册的 slash 输入透传 AI」，被当成普通回合发给模型。
  * 补在这里而不是各场景里：命令注册是宿主启动面，与工具/卡片注册同级。
  */
@@ -118,11 +118,8 @@ function configBaseline(): ConfigTree {
     // 只修改隔离根中的配置，场景可在自己的 setup 中重新启用所需服务器。
     const tools = isConfigTree(snapshot.tools) ? snapshot.tools : {}
     const mcp = isConfigTree(tools.mcp) ? tools.mcp : {}
-    const builtin = isConfigTree(mcp.builtin) ? mcp.builtin : {}
     snapshot.tools = { ...tools, mcp: { ...mcp,
       servers: Array.isArray(mcp.servers) ? mcp.servers.map(server => isConfigTree(server) ? { ...server, enabled: false } : server) : [],
-      builtin: Object.fromEntries(Object.entries(builtin).map(([name, server]) => [name,
-        isConfigTree(server) ? { ...server, enabled: false } : server])),
     } }
     configSnapshot = snapshot
   }

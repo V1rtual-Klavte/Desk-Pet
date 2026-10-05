@@ -1,15 +1,31 @@
+// 2026-10-05 设置页 Card 增删改查 + 模版批次：本契约 sourceFiles 中仅
+// `crates/native-host/src/host/dispatch.rs` 变化 —— 新增一条 `personality_file_delete`
+// 分派臂（命令矩阵 128→129），memory_* 命令的既有接线与错误语义未改。mm-* 逐点复核
+// 行为面未变，仅按当前源码刷新 sourceHash。
+// 2026-10-05 三批复查（本批刷新）：sourceFiles 变化 —— runtime.ts 与 context/builder.ts
+// （RUNTIME_DATA 协议缺失检测与提醒：新增可选入参 runtimeDataReminder 与 ephemeral:runtime-data
+// 块）。mm-* 逐点核对：mm-11 的 systemPromptHash「随瞬时块内容变化」口径已涵盖新增的
+// ephemeral 块；mm-16 的块预算与淘汰按同一 ephemeral 通道处理；mm-29 的动态提示拼接与尾随
+// 时间注记不受影响（提醒不携带时间、不进 composeDynamicPrompt）。其余点不在改动面内，
+// 逐点核对实现点仍在、语义未变，未修订覆盖点，仅按当前源码刷新 sourceHash。
+// 2026-10-05 收尾复查（本批刷新）：sourceFiles 变化 —— runtime.ts（onUsage 展示统计口径改造；
+// provider_usage 快照、tokenDrift、purpose 分列与压缩素材链路未动）、src/services/debug.ts
+// （updateRequestStats 真实 prompt 口径；debug.ts 在本契约的既有消费点不受影响）。mm-* 逐点
+// 核对：mm-19 / mm-26 / mm-34 的 usage 记账、偏差对账与快照完整性语义未变，其余点不在改动
+// 面内、实现点仍在。本批刷新同时包含另一会话的改动；本轮只做 coverage 描述与当前实现一致性
+// 核对（非逐行行为审计），未修订覆盖点，仅按当前源码刷新 sourceHash。
 import type { ModuleContract } from "../host/types"
 
 export const memoryContract: ModuleContract = {
   module: "memory",
   sourceFiles: [
     "src/services/agent/memory/index.ts",
-    "src-tauri/src/memory/store.rs",
-    "src-tauri/src/memory/schema.rs",
-    "src-tauri/src/memory/mod.rs",
-    "src-tauri/src/memory/protocol.rs",
-    "src-tauri/src/memory/commands.rs",
-    "src-tauri/src/lib.rs",
+    "crates/native-host/src/memory/store.rs",
+    "crates/native-host/src/memory/schema.rs",
+    "crates/native-host/src/memory/mod.rs",
+    "crates/native-host/src/memory/protocol.rs",
+    "crates/native-host/src/memory/commands.rs",
+    "crates/native-host/src/host/dispatch.rs",
     "src/services/agent/memory/ipc.ts",
     "src/services/agent/memory/protocol.ts",
     "src/services/agent/memory/provider.ts",
@@ -40,7 +56,7 @@ export const memoryContract: ModuleContract = {
     "src/services/context/tool-output.ts",
     "src/services/debug.ts",
   ],
-  sourceHash: "cadc20f65e9ce3f4e45c412a5903188ebe5caa450efac2c21d477eb52a3ba515",
+  sourceHash: "19f7d85cb7180ef21b13a4e43013f652db04579d892de767b1eaefdb9347e79c",
   coverage: [
     { id: "mm-01", feature: "记忆来源准入", description: "只有 origin=user 且 taint=trusted_user 且 eligibleForMemory=true 的已提交条目能成为候选：助手台词、工具结果、压缩摘要、主动搭话、缺来源标记与 custom 控制条目一律出局；投递时刻冻结的 cardId 随来源落盘", why: "「谁说的」是记忆的唯一准入判据：把这些来源放进去，模型的一次措辞就会被当成用户长期事实", layer: "integration", depth: "deep", scenarios: ["memory-source-admission"] },
     { id: "mm-02", feature: "重排结果校验", description: "重排只接受候选白名单内的 id：未知 id、重复 id、非字符串、坏 JSON、散文与对象外形错误一律判无效并回退本地顺序，对象形态取 ids 字段；空数组是合法答案（这次不投影动态记忆），合法非空子集保序通过、不补回未选项", why: "模型只能决定「用哪几条」，不能决定「还有哪些」——白名单外的 id 会让不存在的记忆进入请求", layer: "unit", depth: "deep", scenarios: ["memory-rerank-fallback"] },
@@ -75,6 +91,7 @@ export const memoryContract: ModuleContract = {
     { id: "mm-32", feature: "手段阶梯与闸门", description: "工具结果压缩改为按**激进度**排的分级阶梯（级 0 不动 → 级 1 缩短 → 级 2 清空 → 级 3 摘要），规划器 planToolResultLadder 只认一个「装得下」判据：请求视图估算 ≤ contextBudget(window).normalInputTarget（运行期口径，不传 maxOutput），升到装得下就停、不做无谓升档。级 1 与级 2 共用同一个「单条上限」（校准时只调一个旋钮）；**级 2 的硬前提是必须有地址**——无地址的结果永远停在级 1（清空后捞不回来才是灾难），实测无地址 + 级 2 的输出与级 1 **逐字相等**。级 3 前是**闸门**（纯函数 ladderGate，与投影同一个 measure）：before_compaction 先跑级 1/2 的零成本阶梯，压完视图装得下就不花摘要调用（**一次摘要 LLM 都不花**）；压完仍装不下才走级 3；仅 reason === \"threshold\" 生效，manual/overflow 与缺 systemPrompt/buildGate 一律安全回退为照常摘要。**闸门自身的 decline 分支在当前 production 阈值路径上不可达** —— 实测由前置守卫「摘要范围为空」先拦截，场景钉住的是 0 次调用这个事实；不得据此宣称用户可见的「策略性不压缩」行为。", why: "零成本手段只有一档时，要么压缩失败（会话永久无法压缩）要么白花一次 LLM。本覆盖点是问题 C 的唯一出口，同时钉住「装得下」只有一个判据、级 2 只有一个硬前提，避免第二份判定链", layer: "e2e", depth: "deep", scenarios: ["memory-projection-ladder", "memory-ladder-gate"] },
     // mm-32 原把「阶梯/闸门 + 保护区」合成一点（跨层混搭）；按层拆开：保护区侧为 mm-36（L2），阶梯与闸门侧留在 mm-32（L4）。
     { id: "mm-36", feature: "工具结果阶梯的保护区", description: "**保护区**（LADDER_PROTECTION_TURNS = 3，轮口径取上游 findTurnStartIndex：user/bashExecution 开轮，toolResult/assistant/custom/compactionSummary 不开轮，不足 N 轮全保护）**只挡级 2 与级 3，不挡级 1**——级 1 是无损缩短，保护区内照做", why: "没有保护区的清空会把用户刚说的话也清掉；轮口径必须与上游 findTurnStartIndex 同源，否则保护边界整体错位", layer: "unit", depth: "deep", scenarios: ["memory-ladder-protection-zone"] },
+    { id: "mm-39", feature: "记忆 revision 的进程内分发", description: "publishMemoryRevision / subscribeMemoryRevision 是 Node 领域侧的进程内总线（L3）：订阅者收到已提交的 revision（含 await 到全部消费者处置完成再返回的本地语义），退订后不再分发；跨窗口同步（旧壳 deskpet-memory-revision-changed/-applied）不属 Node 图 —— 单 Node 架构下所有提交都发生在本进程，订阅与发布都在本地完成", why: "revision 是「已提交」的通知值：丢弃它会让 runtime 对陈旧投影继续应答；退回事件回环则把纯 UI 的窗口协调重新塞进 Node 领域面", layer: "integration", depth: "shallow", scenarios: ["memory-revision-local-dispatch"] },
   ],
   // W0–W7 把本契约的场景迁出 L4 后按 L4 侧当前值重标定：门槛=当前 rules 声明值，
   // 只缩不放（数字由 checker 报错提供）；跨层完整性由 checkLayerCoverage 负责。

@@ -1,5 +1,5 @@
 // ==========================================
-// Node IPC 适配层 —— 顶替 @tauri-apps/api/core 的 invoke
+// Node IPC 适配层 —— 顶替宿主桥（`getHostBridge().request`）的 Node 测试等价实现
 // ==========================================
 //
 // 只实现**机制**：把命令分发到 Node 等价实现，数据根指向 setTestDataRoot 给的临时目录。
@@ -9,13 +9,14 @@
 //
 // 两条硬规则：
 //   1. 未登记命令一律抛错，**任何分支都不返回 null 冒充成功**；
-//   2. 参数名按 Rust 侧 `#[tauri::command]` 的 camelCase 键逐个抄写（Tauri 默认
-//      ArgumentCase::Camel，见 tauri-macros command/wrapper.rs），取不到就抛错 ——
+//   2. 参数名按 Rust 分派侧（`crates/native-host/src/host/dispatch.rs` 与
+//      `commands/`）的 camelCase 键逐个抄写，取不到就抛错 ——
 //      参数名写错时静默拿到 undefined，只会读写错路径，是最难查的一类假通过。
 //
-// 签名以 src-tauri/src/commands/ 下的源文件为准，每条 handler 上注明出处。
-// [保留已登记 §4.2] 本文件在 Node 侧运行，不能 import @/services/logger|error（会拖进 Tauri IPC
-// 与浏览器全局）；需要留痕时写 stderr，不污染 stdout（vitest 用它输出报告）。
+// 签名以 `crates/native-host/src/{host/dispatch.rs,commands/}` 下的源文件为准，每条
+// handler 上注明出处。
+// [保留已登记 §4.2] 本文件在 Node 侧运行，不能 import @/services/logger|error（会拖进
+// 宿主桥与浏览器全局）；需要留痕时写 stderr，不污染 stdout（vitest 用它输出报告）。
 import {
   appendFileSync,
   existsSync,
@@ -103,7 +104,7 @@ function paths() {
 
 // ── 错误归一 ──
 
-/** Rust `AppError` 的序列化形态：`{ code, message }`（src-tauri/src/error.rs）。 */
+/** Rust `AppError` 的序列化形态：`{ code, message }`（crates/native-host/src/error.rs）。 */
 interface AppErrorPayload {
   code: string
   message: string
@@ -154,8 +155,8 @@ function arg<T>(args: Args, key: string): T {
   const value = args[key]
   if (value === undefined) {
     throw new Error(
-      `IPC 参数缺失: ${key}。参数名按 Rust #[tauri::command] 的 camelCase 逐个对照 ` +
-        `（src-tauri/src/commands/）后抄写，写错时 Tauri 会反序列化失败，这里同样直接报错。`,
+      `IPC 参数缺失: ${key}。参数名按 Rust 分派侧的 camelCase 逐个对照 ` +
+        `（crates/native-host/src/commands/）后抄写，写错时线协议反序列化会失败，这里同样直接报错。`,
     )
   }
   return value as T
@@ -821,6 +822,24 @@ const handlers: Record<string, (args: Args) => unknown> = {
     return readdirSync(dir).sort(compareBytes)
   },
 
+  /**
+   * personality_file_delete(path: String) -> ()
+   *
+   * 只删文件、缺文件是错误而不是静默成功 —— 这两条是可被快层观测的机制，在这里等价复现。
+   * Rust 侧多做的叶子符号链接拒绝与 `validate_path` 边界裁决属于安全策略，留在 L4 验证。
+   */
+  personality_file_delete: (args) => {
+    const relative = arg<string>(args, "path")
+    const target = personalityPath(relative)
+    if (!existsSync(target)) throw appError("PATH_NOT_FOUND", `文件不存在: ${relative}`)
+    if (!statSync(target).isFile()) throw appError("OTHER", `不是文件: ${relative}`)
+    try {
+      rmSync(target)
+    } catch (cause) {
+      fromFsError(target, "删除失败", cause)
+    }
+  },
+
   /** session_fs.rs: Node 只等价读文件，Rust 路径与有界读取由 Rust/L4 验证。 */
   session_read_text: (args) => {
     const relative = arg<string>(args, "path")
@@ -877,7 +896,8 @@ function assertProfileId(profileId: string): void {
 const rustOnly = new Set<string>(RUST_ONLY_COMMANDS)
 
 /**
- * 与 `@tauri-apps/api/core` 同签名：`invoke<T>(cmd, args?) => Promise<T>`。
+ * 测试宿主的命令调用面：`invoke<T>(cmd, args?) => Promise<T>`（形状沿用迁移前，
+ * 旧壳已删除；参数名与线协议一致，见文件头两条硬规则）。
  *
  * 三个分支都是显式的：Rust 专用命令抛 UnsupportedInNodeError；未登记命令同样抛错
  * （**绝不返回 null 冒充成功**）；已登记命令返回真实结果。唯一会让 JS 看到 `null` 的地方
@@ -893,7 +913,7 @@ export async function invoke<T>(cmd: string, args: Args = {}): Promise<T> {
 }
 
 /**
- * 与 `@tauri-apps/api/core` 的 `convertFileSrc` 同实现（tauri-2.11.2 scripts/core.js）：
+ * 资源 URL 拼装（沿用迁移前的方案，旧壳已删除）：
  * macOS / Linux 是 `${protocol}://localhost/<encodeURIComponent(path)>`，
  * Windows / Android 是 `http://${protocol}.localhost/...`。只做 URL 拼装，不校验路径。
  */

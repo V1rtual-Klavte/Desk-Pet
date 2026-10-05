@@ -89,7 +89,7 @@ const conformanceCases = [
 ]
 
 describe("会话仓库一致性", () => {
-  it("官方 SessionRepo 一致性套件（lifecycle/ownership/messages/fork，不含上游竞态组）跑在 TauriExecutionEnv 上 [harness-session-repo-conformance]", async () => {
+  it("官方 SessionRepo 一致性套件（lifecycle/ownership/messages/fork，不含上游竞态组）跑在 NativeExecutionEnv 上 [harness-session-repo-conformance]", async () => {
     // 集合为空时下面的循环是空转（0 条断言也全绿）—— 上游工厂改名/删除时会静默失去覆盖，
     // 所以先钉住条数（lifecycle 4 / ownership 1 / messages 2 / fork 行为 7 / fork 源快照 1）。
     expect(conformanceCases.length).toBe(15)

@@ -4,7 +4,7 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } 
 import { setTestDataRoot } from "../../host/node-ipc"
 import { fakeText, installFakeProvider } from "../../host/fake-provider"
 import { initPaths, runtimePath } from "@/services/paths"
-import { invoke } from "@tauri-apps/api/core"
+import { getHostBridge } from "@/services/host"
 import { silentAccessConfig } from "@/services/config"
 import {
   clearSilentUnderstanding, getTopicWeights, getUnderstandingPromptBlock, getUnderstandingSnapshot,
@@ -149,7 +149,7 @@ describe("静默了解与话题来源", () => {
     expect(labels.length, "两个独立参与来源没有形成话题权重").toBe(1)
     expect(labels[0]?.topic, "话题画像保存了非标签正文").toBe("软件架构")
     const path = await runtimePath("data", "behavior", "understanding.json")
-    const { content } = await invoke<{ content: string }>("file_read", { path, maxBytes: 256 * 1024 })
+    const { content } = await getHostBridge().request("file_read", { path, maxBytes: 256 * 1024 })
     expect(content, "派生存储写入了原始会话正文").not.toContain(first.text)
     expect(content, "派生存储写入了第二条原始会话正文").not.toContain(second.text)
     expect(content, "派生存储直接保留了用户entry ID").not.toContain(first.entryId)
@@ -171,7 +171,7 @@ describe("静默了解与话题来源", () => {
 })
 
 async function getTopicSourceRows(path: string): Promise<Array<{ topic: string; sourceId: string }>> {
-  const { content } = await invoke<{ content: string }>("file_read", { path, maxBytes: 256 * 1024 })
+  const { content } = await getHostBridge().request("file_read", { path, maxBytes: 256 * 1024 })
   return (JSON.parse(content) as { topics: Array<{ topic: string; sourceId: string }> }).topics
 }
 

@@ -1,3 +1,15 @@
+// 2026-10-05 本批复查与刷新：契约 sourceFiles 里仅 runtime.ts 变化（另一会话同批写入：
+// 工具过程文案新增 emitToolStageTitlebar 改推顶栏）；pl-01..pl-12 逐点核对实现点仍在、
+// 语义未变（计划段与逐步门路径不受工具顶栏推送影响）。本批刷新同时包含另一会话对
+// runtime.ts 的改动；主会话只做了「coverage 描述与当前实现一致性」的核对（不是逐行行为
+// 审计），未修订覆盖点，仅按当前源码刷新 sourceHash。
+// 2026-10-05 三批复查（本批刷新）：runtime.ts 再次变化 —— RUNTIME_DATA 协议缺失检测与提醒
+// 接线。pl-01..pl-12 的计划判定、生成、执行、确认与逐步门路径逐点核对不受影响（提醒只作用于
+// 主请求的请求视图，不改计划相位与通道），未修订覆盖点，仅按当前源码刷新 sourceHash。
+// 2026-10-05 收尾复查（本批刷新）：sourceFiles 变化 —— runtime.ts（onUsage 展示统计口径改造；
+// 计划判定、生成、执行、确认与逐步门路径不受影响）。pl-01..pl-12 逐点核对实现点仍在、覆盖
+// 描述与当前实现一致。本批刷新同时包含另一会话的改动；本轮只做 coverage 描述与当前实现
+// 一致性核对（非逐行行为审计），未修订覆盖点，仅按当前源码刷新 sourceHash。
 import type { ModuleContract } from "../host/types"
 
 export const plannerContract: ModuleContract = {
@@ -9,7 +21,7 @@ export const plannerContract: ModuleContract = {
   // 计划条目本身的写入机制归 agent-runtime 契约（engine/plan/checkpoint-store.ts 在它的 sourceFiles 里），
   // 这里只从计划域的相位与通道出发断言它们落成的结果。
   sourceFiles: ["src/services/engine/harness/runtime.ts", "src/services/engine/planner.ts", "src/services/engine/plan-confirmation.ts"],
-  sourceHash: "115c77be4ea59b493a7a8ba48c06a376d3f4c5a992fcd83a29c1123ae2c6996f",
+  sourceHash: "25051bc4d22c3031f91a74bf04c6cce31fe936e76a52ad26ef804b711a1ab232",
   coverage: [
     { id: "pl-01", feature: "evaluateComplexity force触发", description: "--plan 前缀强制触发评分=5；判定是 startsWith，行首之外的 --plan 不命中 force 分支", why: "用户手动触发 Plan", layer: "integration", depth: "shallow", scenarios: ["plan-force-trigger"] },
     { id: "pl-02", feature: "evaluateComplexity 关键词匹配", description: "关键词列表匹配 → 评分 3、原因里带回命中的词；默认 complexityEval=keyword 时未命中关键词直接给低分，不为它单独发一次模型请求（判据用没有任何响应的 Provider：真发了请求就只能是 llm 分支或超时）", why: "自动检测复杂任务，同时不让每条助手消息都付一次判定请求的成本", layer: "integration", depth: "shallow", scenarios: ["plan-keyword-trigger"] },
@@ -22,6 +34,7 @@ export const plannerContract: ModuleContract = {
     { id: "pl-09", feature: "生产入口的计划确认与进度", description: "生产入口跑完整计划闭环：确认视图与进度事件的步数都是截断后（maxSteps 生效后）的步数，终态同时落在 checkpoint 条目（terminal 快照 done、全量步骤基线两步都 done）与终态事件（done）上，步骤结果条目恰为计划步数；确认经会话键控的测试通道确定性应答（mode=auto）并带会话身份。计划段由 `planConfig.enabled` 单独把守（模式已删除、该开关出厂为 true；Live 基线把它钉在 false，本场景在 setup 里显式打开）", why: "计划入口此前只有判定与解析的 unit 覆盖，确认视图、进度 total 与终态证据这些真正的运行时接线没有任何生产入口证据", layer: "e2e", depth: "deep", scenarios: ["plan-production-loop"] },
     { id: "pl-10", feature: "计划执行期取消的结算", description: "生产入口（sendMessage）执行期停止：停止命中在跑的计划（planAborted）后，计划终态落 interrupted、剩余步骤在终态快照里保持 pending 且没有第 2 步的结果条目，终态事件 cancelled；用户主动停止不按失败结算 —— 生产结果不带 failure、outcome 是正常收尾、不写助手正文，宿主另写「已停止本次回复」的系统提示", why: "停止必须真的停住剩余步骤，且不能把用户自己的动作记成模型故障 —— 这条账只能在真实运行里核对", layer: "e2e", depth: "deep", scenarios: ["plan-execution-stop-settlement"] },
     { id: "pl-11", feature: "逐步确认的真前置门", description: "用户以 `--plan` 强制触发进入计划段（生产入口的 force 路径，`complexityEval=keyword` 下同样生效）且确认给出的 mode=stepByStep 传进计划段：2 步计划每步开工前各问一次步骤门（恰好 2 次 kind=step_gate 的 continue 裁决），门没有把计划卡住 —— 每步都执行、终态与终态事件都是 done、进度 total 是计划步数；门选择中止的 declined 归宿不在本场景（宿主通道对确认与门共用一套 planPolicy，给不出「确认自动 + 门中止」）", why: "逐步门此前没有任何运行时证据：它是否真的成为每步的前置门、确认的 mode 是否被采纳，只能在运行时接线里看", layer: "e2e", depth: "deep", scenarios: ["plan-step-gate-each-step"] },
+    { id: "pl-12", feature: "计划确认回执通道的结算", description: "计划确认与步骤门共用 UI 回执反向通道（L3）：提问经 deskpet-plan-start 发出后，确认回执按 planId 结算待确认计划并清空待确认表，步骤门回执同按 planId 结算裁决；未知 planId 的回执是 no-op —— 不结算、不误伤他人的待确认项、不抛，随后正确 planId 仍可正常结算；发布失败（UI 通道关闭）以 emit_failed 立即结算，不把 UI 不可达伪装成「继续等待」", why: "回执是 UI→Node 反向通道的唯一结算入口：未知/迟到回执若误结算会替用户作答；吞掉发布失败则每次确认都只能卡到超时", layer: "integration", depth: "deep", scenarios: ["plan-confirm-receipt-settles", "plan-confirm-receipt-unknown-noop", "plan-confirm-receipt-step-decision", "plan-confirm-emit-failure-settles"] },
   ],
   rules: {
     // W0–W7 把本契约迁出 L4 的场景按 L4 侧当前值重标定：门槛=当前 rules 声明值

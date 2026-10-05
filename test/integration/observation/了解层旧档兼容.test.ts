@@ -3,7 +3,7 @@ import { join } from "node:path"
 import { afterAll, beforeAll, describe, expect, it } from "vitest"
 import { setTestDataRoot } from "../../host/node-ipc"
 import { initPaths, runtimePath } from "@/services/paths"
-import { invoke } from "@tauri-apps/api/core"
+import { getHostBridge } from "@/services/host"
 import { getRecentTargetReadAttempts, getUnderstandingSnapshot, loadObservationStore } from "@/services/observation/store"
 
 let root = ""
@@ -25,7 +25,7 @@ describe("了解层旧档与非法字段读取", () => {
     const now = Date.now()
     const longPath = "/" + "x".repeat(499)
     const path = await runtimePath("data", "behavior", "understanding.json")
-    await invoke("file_write", {
+    await getHostBridge().request("file_write", {
       path,
       maxBytes: 256 * 1024,
       content: JSON.stringify({
