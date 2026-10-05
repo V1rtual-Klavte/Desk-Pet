@@ -8,7 +8,7 @@
 // 每个包装都 `await` 真实提交：调用方拿到的返回值就是已提交的 revision，
 // 没有「乐观成功」这种中间态。
 
-import { invoke } from "@tauri-apps/api/core"
+import { getHostBridge } from "@/services/host"
 import type {
   MemoryCandidateDraft,
   MemoryDraft,
@@ -67,24 +67,24 @@ export interface MemoryChangeRequest {
 }
 
 export async function memoryStatus(): Promise<MemoryStatusSnapshot> {
-  return invoke("memory_status")
+  return getHostBridge().request("memory_status", {})
 }
 
 export async function memoryList(scope?: MemoryScope, scopeId?: string, limit = 200): Promise<MemoryItem[]> {
-  return invoke("memory_list", { scope, scopeId, limit })
+  return getHostBridge().request("memory_list", { scope, scopeId, limit })
 }
 
 export async function memoryDetail(id: string): Promise<MemoryItem | null> {
-  return invoke("memory_detail", { id })
+  return getHostBridge().request("memory_detail", { id })
 }
 
 export async function memoryHistory(id: string): Promise<MemoryHistoryEntry[]> {
-  return invoke("memory_history", { id })
+  return getHostBridge().request("memory_history", { id })
 }
 
 export async function registerMemorySources(sources: MemorySource[]): Promise<number> {
   if (sources.length === 0) return 0
-  return invoke("memory_register_sources", { sources })
+  return getHostBridge().request("memory_register_sources", { sources })
 }
 
 export async function queryMemory(
@@ -92,7 +92,7 @@ export async function queryMemory(
   options: { scope?: MemoryScope; scopeId?: string; limit?: number; sessionId?: string } = {},
 ): Promise<MemoryItem[]> {
   if (!query.trim()) return []
-  return invoke("memory_query", { query, scope: options.scope, scopeId: options.scopeId, sessionId: options.sessionId, limit: options.limit })
+  return getHostBridge().request("memory_query", { query, scope: options.scope, scopeId: options.scopeId, sessionId: options.sessionId, limit: options.limit })
 }
 
 /** Read query candidates, pinned core and exact feedback targets from one scoped SQLite snapshot. */
@@ -104,20 +104,20 @@ export async function getMemoryRecallCandidates(
   allowExpiredTargets = false,
 ): Promise<MemoryRecallCandidateSnapshot> {
   if (!sessionId) throw new Error("记忆召回缺少当前会话身份")
-  return invoke("memory_recall_candidates", { query, cardId: cardId ?? null, sessionId, limit: 50, targets, allowExpiredTargets })
+  return getHostBridge().request("memory_recall_candidates", { query, cardId: cardId ?? null, sessionId, limit: 50, targets, allowExpiredTargets })
 }
 
 export async function memoryJobList(limit = 50, offset = 0): Promise<MemoryJobListItem[]> {
-  return invoke("memory_job_list", { limit, offset })
+  return getHostBridge().request("memory_job_list", { limit, offset })
 }
 
 export async function memoryRestorePreview(backupPath: string): Promise<MemoryRestorePreview> {
-  return invoke("memory_restore_preview", { backupPath })
+  return getHostBridge().request("memory_restore_preview", { backupPath })
 }
 
 export async function getMemoryItems(ids: string[]): Promise<MemoryItem[]> {
   if (ids.length === 0) return []
-  return invoke("memory_get_items", { ids })
+  return getHostBridge().request("memory_get_items", { ids })
 }
 
 /** 返回提交后的 revision；冲突（stale 基准）由 Rust 抛 `MEMORY_CONFLICT`。 */
@@ -125,7 +125,7 @@ export async function applyMemoryChange(request: MemoryChangeRequest): Promise<n
   // 删除事实同时撤销由同一可信原话派生的主题资格；只传来源身份，不把正文交给观察域。
   const forgottenSources = request.action === "forget" && request.itemId
     ? (await memoryHistory(request.itemId)).flatMap(history => history.sourceAudits) : []
-  const revision = await invoke<number>("memory_apply_change", { ...request })
+  const revision = await getHostBridge().request("memory_apply_change", { ...request })
   if (request.action === "forget" && forgottenSources.length) {
     const { invalidateTopicSources } = await import("@/services/observation")
     const bySession = new Map<string, Set<string>>()
@@ -143,7 +143,7 @@ export async function applyMemoryChange(request: MemoryChangeRequest): Promise<n
 }
 
 export async function startMemoryJob(phase: MemoryJob["phase"]): Promise<MemoryJob> {
-  return invoke("memory_job_start", { phase, leaseOwner: "memory-dreaming" })
+  return getHostBridge().request("memory_job_start", { phase, leaseOwner: "memory-dreaming" })
 }
 
 export async function checkpointMemoryJob(
@@ -152,59 +152,59 @@ export async function checkpointMemoryJob(
   leaseOwner: string,
   leaseMs?: number,
 ): Promise<MemoryJob> {
-  return invoke("memory_job_checkpoint", { jobId, cursor, leaseOwner, leaseMs })
+  return getHostBridge().request("memory_job_checkpoint", { jobId, cursor, leaseOwner, leaseMs })
 }
 
 export async function cancelMemoryJob(jobId: string, leaseOwner = "memory-dreaming"): Promise<MemoryJob> {
-  return invoke("memory_job_cancel", { jobId, leaseOwner })
+  return getHostBridge().request("memory_job_cancel", { jobId, leaseOwner })
 }
 
 export async function resumeMemoryJob(jobId: string, leaseOwner: string): Promise<MemoryJob> {
-  return invoke("memory_job_resume", { jobId, leaseOwner })
+  return getHostBridge().request("memory_job_resume", { jobId, leaseOwner })
 }
 
 export async function memoryJobSources(jobId: string): Promise<MemorySource[]> {
-  return invoke("memory_job_sources", { jobId })
+  return getHostBridge().request("memory_job_sources", { jobId })
 }
 
 /** UI-only readback of bounded evidence; forgotten or suppressed sources return null. */
 export async function memorySourceEvidence(sourceId: string): Promise<MemorySource | null> {
-  return invoke("memory_source_evidence", { sourceId })
+  return getHostBridge().request("memory_source_evidence", { sourceId })
 }
 
 export async function addMemoryCandidates(jobId: string, candidates: MemoryCandidateDraft[]): Promise<number> {
   if (candidates.length === 0) return 0
-  return invoke("memory_candidates_add", { jobId, candidates })
+  return getHostBridge().request("memory_candidates_add", { jobId, candidates })
 }
 
 /** 完成一个 dreaming job，并在 Rust 事务中自动提交其中全部合格候选。 */
 export async function commitMemoryDreamingJob(jobId: string, baseRevision: number): Promise<number> {
-  return invoke("memory_dreaming_commit", { jobId, baseRevision })
+  return getHostBridge().request("memory_dreaming_commit", { jobId, baseRevision })
 }
 
 export interface MemoryDreamingBudget { localDate: string; reservedTokens: number; usedTokens: number }
 export async function memoryDreamingBudget(localDate: string): Promise<MemoryDreamingBudget> {
-  return invoke("memory_dreaming_budget", { localDate })
+  return getHostBridge().request("memory_dreaming_budget", { localDate })
 }
 export async function reserveMemoryDreamingBudget(reservationId: string, localDate: string, reservedTokens: number, dailyLimit: number): Promise<boolean> {
-  return invoke("memory_dreaming_budget_reserve", { reservationId, localDate, reservedTokens, dailyLimit })
+  return getHostBridge().request("memory_dreaming_budget_reserve", { reservationId, localDate, reservedTokens, dailyLimit })
 }
 export async function settleMemoryDreamingBudget(reservationId: string, localDate: string, reservedTokens: number, usedTokens: number | null): Promise<void> {
-  return invoke("memory_dreaming_budget_settle", { reservationId, localDate, reservedTokens, usedTokens })
+  return getHostBridge().request("memory_dreaming_budget_settle", { reservationId, localDate, reservedTokens, usedTokens })
 }
 
 export async function exportMemory(): Promise<string> {
-  return invoke("memory_export")
+  return getHostBridge().request("memory_export", {})
 }
 
 export async function backupMemory(): Promise<string> {
-  return invoke("memory_backup")
+  return getHostBridge().request("memory_backup", {})
 }
 
 export async function rebuildMemory(): Promise<number> {
-  return invoke("memory_rebuild")
+  return getHostBridge().request("memory_rebuild", {})
 }
 
 export async function restoreMemory(backupPath: string): Promise<number> {
-  return invoke("memory_restore", { backupPath })
+  return getHostBridge().request("memory_restore", { backupPath })
 }

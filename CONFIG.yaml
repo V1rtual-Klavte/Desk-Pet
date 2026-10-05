@@ -31,9 +31,6 @@ general:
     #   never  = 两端都不弹，只写日志 + 上报 Rust
     overlay: auto
 
-  desktop:
-    pollingIntervalMs: 3000
-
 # ══════════════════════════════════════════
 # 2. AI 设置 (AI)
 # ══════════════════════════════════════════
@@ -145,40 +142,9 @@ tools:
 
   mcp:
     # 无总闸：按每服务器 enabled 控制，全部关闭即不使用 MCP。
-    # 内置五项默认关闭：总闸删除前它们由 mcp.enabled 关住，默认值必须保持今天实际生效的状态。
+    # 自定义服务器列表。transport: stdio 用 command/args/env（npx -y <包> 形态由宿主托管安装后直启，失败回退 npx）；
+    # transport: http 用 url/headers（Streamable HTTP，headers 值支持 ${ENV_VAR} 从本条目 env 展开）。
     servers: []
-    builtin:
-      filesystem:
-        enabled: false
-        command: npx
-        args: ["-y", "@modelcontextprotocol/server-filesystem", "/"]
-        description: "📁 文件系统操作 — 读写/搜索本地文件"
-        # 白名单：只注册常用工具（全量 47 个 schema 约占 5–6.5k token/请求）
-        includeTools: [read_text_file, read_media_file, read_multiple_files, list_directory, directory_tree, search_files, get_file_info, list_allowed_directories]
-      brave-search:
-        enabled: false
-        command: npx
-        args: ["-y", "@brave/brave-search-mcp-server"]
-        env: { BRAVE_API_KEY: "" }
-        description: "🔍 Brave Search — 网页搜索（需 API Key）"
-      playwright:
-        enabled: false
-        command: npx
-        args: ["-y", "@executeautomation/playwright-mcp-server"]
-        description: "🎭 Playwright — 无头浏览器自动化测试"
-        # 白名单：33 个工具只保留常用操作；未列出的不注册、不进请求
-        includeTools: [playwright_navigate, playwright_click, playwright_fill, playwright_screenshot, playwright_get_visible_text, playwright_get_visible_html, playwright_evaluate, playwright_console_logs, playwright_select, playwright_press_key, playwright_go_back, playwright_go_forward, playwright_resize, playwright_close]
-      git:
-        enabled: false
-        command: npx
-        args: ["-y", "@anthropic/mcp-git", "/"]
-        description: "📝 Git — 版本控制操作"
-      github:
-        enabled: false
-        command: npx
-        args: ["-y", "@anthropic/mcp-github"]
-        env: { GITHUB_PERSONAL_ACCESS_TOKEN: "" }
-        description: "🐙 GitHub — 仓库/Issue/PR 管理（需 Token）"
 
 # ══════════════════════════════════════════
 # 4. 外观 — Profile 系统
@@ -187,7 +153,9 @@ tools:
 # 每个 profile 是一个自包含文件夹，拖入即用
 appearance:
   activeProfile: "sugar-pink"     # 当前激活的 Profile ID
-  effectMode: "off"               # 角色展示效果: off | parallax(灵动图层) | dof(景深)，互斥
+  effectMode: "off"               # 角色展示效果: off(静态) | parallax(灵动图层)，互斥
+  theme: "brushed"                # 界面主题（产品级预设，与 Profile 正交）: brushed(拉丝金属) | chrome(铬) | verdigris(铜绿) | nightfall(暮蓝) | azurite(青花)
+  chatImagePreview: false         # 聊天图片自动预览: false(默认，历史只显示占位，点击占位仍可打开查看器) | true(只为可见消息按需加载内联预览)
   soundAssignments: {}
   parallax:
     intensity: 1.0                # 灵动图层的全局强度；逐层参数在 Profile 的 theme.parallax.layers

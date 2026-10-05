@@ -1,4 +1,6 @@
-import { invoke, convertFileSrc } from "@tauri-apps/api/core"
+// 资源 URL 经端口取用（Node 侧等 W7 的原生资源通道）；
+// invoke 走 HostBridge。本模块不 import 任何 @tauri-apps。
+import { getHostBridge, getResourceUrlResolver } from "@/services/host"
 import limits from "./limits.json"
 
 export const CHAT_IMAGE_LIMITS = Object.freeze(limits)
@@ -9,15 +11,15 @@ export function getMessageImagePaths(message: unknown): string[] {
   return Array.isArray(value) ? value.filter((path): path is string => typeof path === "string" && path.length > 0) : []
 }
 
-export function chatImageUrl(path: string): string { return convertFileSrc(path) }
+export function chatImageUrl(path: string): string { return getResourceUrlResolver().toResourceUrl(path) }
 
 export async function prepareImagePaths(paths: readonly string[]): Promise<string[]> {
   if (paths.length === 0) return []
-  return invoke<string[]>("validate_chat_images", { paths: [...paths] })
+  return getHostBridge().request("validate_chat_images", { paths: [...paths] })
 }
 
 export async function pickChatImages(): Promise<string[]> {
-  return invoke<string[]>("pick_chat_images")
+  return getHostBridge().request("pick_chat_images", {})
 }
 
 /** 判据认文件头，扩展名只参与原生文件选择器过滤。 */

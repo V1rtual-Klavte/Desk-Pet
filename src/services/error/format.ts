@@ -37,9 +37,14 @@ export function formatError(value: unknown): string {
   }
 }
 
-/** 取结构化错误码；裸 String / Error 形态返回 null */
+/** 取远端载荷或宿主 Error 上的稳定错误码；裸 String / 无码 Error 返回 null。 */
 export function errorCode(value: unknown): string | null {
-  return isAppErrorPayload(value) ? value.code : null
+  if (isAppErrorPayload(value)) return value.code
+  if (value instanceof Error && "code" in value) {
+    const code = (value as Error & { code?: unknown }).code
+    return typeof code === "string" ? code : null
+  }
+  return null
 }
 
 /** 完整详情（Error 带 stack），用于日志与错误面板 */
@@ -49,9 +54,13 @@ export function errorDetail(value: unknown): string {
   return formatError(value)
 }
 
-/** 常见密钥形态 —— 会随消息持久化进 session 文件，展示前必须打码 */
+/**
+ * 常见密钥形态 —— 会随消息持久化进 session 文件，展示前必须打码。
+ * 每条规则都必须带捕获组：替换串 `$1***` 依赖第 1 组保留前缀（如 `Bearer `、
+ * `"apiKey":"`、`sk-`）；没有捕获组的规则不会报错，但 `$1` 会作为字面量留在输出里。
+ */
 const SECRET_PATTERNS: RegExp[] = [
-  /sk-[A-Za-z0-9_-]{8,}/g,
+  /(sk-)[A-Za-z0-9_-]{8,}/g,
   /(Bearer\s+)[A-Za-z0-9._-]{8,}/gi,
   /("?(?:api[_-]?key|token|secret|password)"?\s*[:=]\s*"?)[^"\s,}]{8,}/gi,
 ]

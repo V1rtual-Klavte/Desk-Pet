@@ -21,7 +21,7 @@ import { createRuntimeTraceContext, trace, installProactiveInspector } from "./t
 import * as ipc from "./ipc"
 import type { Opportunity, ProactiveOwner, ProactiveDecision, ProactiveSourceRef, ProactiveTask } from "./types"
 import { accountedUsage } from "./usage"
-import { initProactiveControlBridge } from "./control-bridge"
+import { setProactiveControlHandler } from "./control"
 
 const log=createLogger("Proactive")
 export interface SchedulerAdapters {
@@ -30,7 +30,7 @@ export interface SchedulerAdapters {
   cancelExpression:(owner:ProactiveOwner)=>Promise<unknown>
   reconcileSession:(sessionId:string)=>Promise<void>
 }
-let adapters:SchedulerAdapters|undefined,started=false,busy=false,timer:ReturnType<typeof setInterval>|undefined
+let adapters:SchedulerAdapters|undefined,started=false,busy=false,timer:ReturnType<typeof setInterval>|undefined,activeTick:Promise<void>|undefined
 let aborter:AbortController|undefined,jobOwner:ProactiveOwner|undefined,jobRequiresWindow=false
 const cleanups:Array<()=>void>=[],offered=new Map<string,Opportunity>()
 let windowIdentity="",windowSince=0,lastWindowGeneration=-1,lastWindowSequence=-1,lastWindowOfferAt=0,offeringWindow=false
@@ -73,16 +73,20 @@ export function offer(value:Opportunity):void {
   offered.set(value.fingerprint,value)
   while(offered.size>OPPORTUNITY_LIMIT)offered.delete(offered.keys().next().value!)
 }
-function enqueueTick():void {void tick().catch(error=>log.warn("主动扫描失败:",formatError(error)))}
+function enqueueTick():void {
+  if(activeTick)return
+  const run=tick().catch(error=>log.warn("主动扫描失败:",formatError(error))).finally(()=>{if(activeTick===run)activeTick=undefined})
+  activeTick=run
+}
 
 export function start():void {
   if(started)return
   if(!adapters)throw new Error("proactive adapters not configured")
   started=true;setCooldown(silentAccessConfig.cooldownMs);seedVariables()
   cleanups.push(installProactiveInspector(),watch(activeSessionId,()=>{cancelCurrent("session_changed");offered.clear();enqueueTick()}))
-  let bridgeStop:Promise<(()=>void)|undefined>|undefined
-  bridgeStop=initProactiveControlBridge(handleControlRequest).catch(error=>{log.warn("主动控制桥未启动:",formatError(error));return undefined})
-  cleanups.push(()=>{void bridgeStop?.then(stopBridge=>stopBridge?.()).catch(error=>log.warn("主动控制跨窗口监听卸载失败:",formatError(error)))})
+  // 控制处理器登记在领域侧；原生 UI 的控制入口（设置窗开关等）尚未接线到本处理器。
+  setProactiveControlHandler(handleControlRequest)
+  cleanups.push(()=>setProactiveControlHandler(null))
   cleanups.push(watch(()=>getActivePersonalityId(),(value,previous)=>{cancelCurrent("card_changed");if(previous)stopPresence(`planner:${previous}`);offered.clear();discardDerivedSources();wasWorking=false;lastReliableActive=0;lastWindowState=null;wasSystemIdle=false;seedVariables();enqueueTick()}))
   cleanups.push(subscribeWindowObservations(observation=>{
     if(observation.monitorGeneration<lastWindowGeneration||(observation.monitorGeneration===lastWindowGeneration&&observation.sequence<=lastWindowSequence))return
@@ -149,15 +153,14 @@ export function start():void {
     }).catch(error=>log.warn("变量机会构造失败:",formatError(error)))
   }))
   timer=setInterval(enqueueTick,PROACTIVE_LIMITS.tickMs)
-  cleanups.push(()=>window.removeEventListener("focus",enqueueTick))
-  window.addEventListener("focus",enqueueTick)
   enqueueTick()
 }
-export function stop():void {
-  if(!started)return
+export async function stop():Promise<void> {
+  if(!started){await activeTick;return}
   started=false;cancelCurrent("scheduler_stopped");if(timer)clearInterval(timer);timer=undefined
   for(const dispose of cleanups.splice(0))dispose()
   offered.clear();previousVars.clear();stopPresence("window-observation");const card=getActiveCard();if(card)stopPresence(`planner:${card.id}`)
+  await activeTick
 }
 export function discardDerivedSources():void {for(const [key,value] of offered)if(value.sourceRefs.some(ref=>ref.kind==="behavior"||ref.kind==="variable"))offered.delete(key);windowIdentity="";windowSince=0;lastWindowOfferAt=0;workEndedAt=0;restingSince=0;lastRestObservationAt=0;reunionAt=0;hadObservationGap=true;stopPresence("window-observation")}
 export function refreshProactive():void {setCooldown(silentAccessConfig.cooldownMs);cancelCurrent("configuration_changed");enqueueTick()}

@@ -46,7 +46,7 @@ export interface PiSessionRepo {
 }
 
 export interface PiSessionRepoOptions {
-  /** 注入文件系统能力；默认 TauriExecutionEnv（真实 Rust IPC）。 */
+  /** 注入文件系统能力；默认 NativeExecutionEnv（真实 Rust IPC）。 */
   fileSystem?: FileSystem
   /** 会话根目录；默认数据根下 `sessions/`（运行时路径域 sessions）。 */
   sessionsRoot?: string

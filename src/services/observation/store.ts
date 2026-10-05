@@ -1,4 +1,4 @@
-import { invoke } from "@tauri-apps/api/core"
+import { getHostBridge } from "@/services/host"
 import { runtimePath } from "@/services/paths"
 import { silentAccessConfig } from "@/services/config"
 import { createLogger } from "@/services/logger"
@@ -72,9 +72,9 @@ function isTopic(value: unknown): value is TopicEvidence {
 async function persist(): Promise<void> {
   const path = await runtimePath("data", BEHAVIOR_DIR, UNDERSTANDING_FILE)
   const parent = await runtimePath("data", BEHAVIOR_DIR)
-  await invoke("dir_create", { path: parent, recursive: true })
+  await getHostBridge().request("dir_create", { path: parent, recursive: true })
   const content = JSON.stringify(data)
-  await invoke("file_write_atomic", { path, content, maxBytes: STORE_MAX_BYTES })
+  await getHostBridge().request("file_write_atomic", { path, content, maxBytes: STORE_MAX_BYTES })
 }
 
 export async function loadObservationStore(): Promise<void> {
@@ -83,7 +83,7 @@ export async function loadObservationStore(): Promise<void> {
   loadPromise = (async () => {
     try {
       const path = await runtimePath("data", BEHAVIOR_DIR, UNDERSTANDING_FILE)
-      const { content } = await invoke<{ content: string }>("file_read", { path, maxBytes: STORE_MAX_BYTES })
+      const { content } = await getHostBridge().request("file_read", { path, maxBytes: STORE_MAX_BYTES })
       const parsed = JSON.parse(content) as Partial<StoreData>
       if (parsed.schemaVersion !== 1) throw new Error("了解层schemaVersion无效")
       const now = Date.now()

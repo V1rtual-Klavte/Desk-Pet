@@ -1,4 +1,4 @@
-import { invoke } from "@tauri-apps/api/core"
+import { getHostBridge } from "@/services/host"
 import type {
   ProactiveAttempt, ProactiveBudget, ProactiveChangeRequest, ProactiveChangeResponse,
   ProactiveClaimRequest, ProactiveClaimResponse, ProactiveControl, ProactiveDecision,
@@ -18,12 +18,12 @@ export type {
 } from "@/services/agent/memory/protocol"
 export { PROACTIVE_LIMITS } from "@/services/agent/memory/protocol"
 
-export const scan = (request: ProactiveScanRequest): Promise<ProactiveScanResponse> => invoke("proactive_scan", { request })
-export const query = (request: ProactiveQueryRequest): Promise<ProactiveQueryResponse> => invoke("proactive_query", { request })
-export const change = (request: ProactiveChangeRequest): Promise<ProactiveChangeResponse> => invoke("proactive_change", { request })
-export const claim = (request: ProactiveClaimRequest): Promise<ProactiveClaimResponse> => invoke("proactive_claim", { request })
-export const validate = (request: ProactiveValidateRequest): Promise<ProactiveValidateResponse> => invoke("proactive_validate", { request })
-export const settle = (request: ProactiveSettleRequest): Promise<{ revision: number; status: ProactiveAttempt["status"] }> => invoke("proactive_settle", { request })
-export const reconcile = (request: ProactiveReconcileRequest): Promise<{ revision: number; status: ProactiveAttempt["status"] }> => invoke("proactive_reconcile", { request })
-export const control = (request: ProactiveControlRequest): Promise<ProactiveControl> => invoke("proactive_control", { request })
+export const scan = (request: ProactiveScanRequest): Promise<ProactiveScanResponse> => getHostBridge().request("proactive_scan", { request })
+export const query = (request: ProactiveQueryRequest): Promise<ProactiveQueryResponse> => getHostBridge().request("proactive_query", { request })
+export const change = (request: ProactiveChangeRequest): Promise<ProactiveChangeResponse> => getHostBridge().request("proactive_change", { request })
+export const claim = (request: ProactiveClaimRequest): Promise<ProactiveClaimResponse> => getHostBridge().request("proactive_claim", { request })
+export const validate = (request: ProactiveValidateRequest): Promise<ProactiveValidateResponse> => getHostBridge().request("proactive_validate", { request })
+export const settle = (request: ProactiveSettleRequest): Promise<{ revision: number; status: ProactiveAttempt["status"] }> => getHostBridge().request("proactive_settle", { request })
+export const reconcile = (request: ProactiveReconcileRequest): Promise<{ revision: number; status: ProactiveAttempt["status"] }> => getHostBridge().request("proactive_reconcile", { request })
+export const control = (request: ProactiveControlRequest): Promise<ProactiveControl> => getHostBridge().request("proactive_control", { request })
 export { reserveAuxiliaryBudget, settleAuxiliaryBudget } from "./auxiliary-budget"

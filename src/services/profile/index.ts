@@ -9,13 +9,6 @@ export {
   readProfileMeta,
   getProfile,
   isProfilesLoaded,
-  getBodyUrl,
-  getParallaxLayerUrl,
-  getCharacterScale,
-  getCharacterScaleMode,
-  getUiUrl,
-  getProfileAssetUrl,
-  resolveProfileAssetUrl,
   refreshProfileAssets,
   invalidateProfileCache,
   invalidateAllProfileCaches,
@@ -25,22 +18,19 @@ export {
   exportProfileZip,
   importProfileZip,
   deleteProfile,
-  cloneProfile,
-  nextCloneId,
+  createProfile,
+  nextCreateId,
+  renameProfile,
   restoreDefaultResources,
   profileDisplayPath,
 } from "./io";
 
-export type { ProfileOpResult } from "./io";
+export type { ProfileOpResult, RestoreResult } from "./io";
 
 export type {
   ProfileData,
   ProfileMeta,
   ProfileTheme,
-  ProfileThemeColors,
   ProfileParallax,
   ProfileParallaxLayer,
-  ProfileDepthOfField,
-  ProfileDofRegion,
-  ProfileCharacter,
 } from "./loader";

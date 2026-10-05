@@ -1,7 +1,7 @@
 // ==========================================
 // MCP —— 统一导出
 //
-// 外部（init.ts / App.vue / 设置面板）一律从这里导入，
+// 外部（init.ts 等消费者）一律从这里导入，
 // 不深入 manager / client / stdio 的具体文件路径。
 // 三个内部文件之间仍可互相直接引用，barrel 只约束外部消费者。
 // ==========================================
@@ -10,10 +10,6 @@
 export {
   parseEnvText,
   formatEnvText,
-  getBuiltinServers,
-  isBuiltinMcp,
-  getBuiltinMcpDescription,
-  setBuiltinMcpConfig,
   getMcpServers,
   setMcpServers,
   addMcpServer,
@@ -33,10 +29,9 @@ export {
 } from "./manager"
 export type { McpServerConfig } from "./manager"
 
-// ── 协议栈 ──
+// ── 协议栈（pi-mcp 包装）──
 export { McpClient } from "./client"
-export type { JsonRpcRequest, JsonRpcResponse } from "./client"
 
-// ── 传输层 ──
-export { StdioTransport } from "./stdio"
-export type { StdioTransportConfig } from "./stdio"
+// ── 传输层（HostBridge 行协议）──
+export { HostBridgeTransport } from "./transport"
+export type { HostBridgeTransportConfig } from "./transport"

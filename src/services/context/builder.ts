@@ -10,6 +10,7 @@ import { aiConfig } from "@/services/config"
 import { getSkillsPromptBlock } from "@/services/skill"
 import { formatPoolForPrompt } from "@/services/personality/variable-pool"
 import { formatAllRules } from "@/services/personality/must-rules"
+import { hasLlmWritableCardVars } from "@/services/reply"
 import type { PersonalityCard } from "@/services/personality/types"
 import type { VariablePool } from "@/services/personality/variable-pool"
 import type { ContextBlock } from "@/services/engine/runtime"
@@ -25,6 +26,12 @@ export interface BuildContextInput {
   sessionSummary?: string
   ephemeralText?: string
   ephemeralOrigin?: "active" | "hook" | "recovery" | "plan" | "proactive"
+  /**
+   * 上一回合违反 RUNTIME_DATA 协议时给本回合的一句话提醒（文案与状态见 reply/reminder.ts）。
+   * 独立成一个 ephemeral 块而不是并进 `ephemeralText`：审计（PromptSnapshot 的块账目）
+   * 要能分辨「回合上下文」与「协议提醒」，而且它出现时往往没有其他 ephemeral 内容。
+   */
+  runtimeDataReminder?: string
   /** Run-preflight 冻结快照；调用方未提供时回退到当前配置与注册表。 */
   contextMaxTokens?: number
   maxOutputTokens?: number
@@ -70,7 +77,8 @@ function cardStaticPrompt(card: PersonalityCard | null): string {
   if (!sections) return `你是一个桌面助手。准确、完整地回答用户问题。\n\n要求:\n- 使用 markdown 组织信息\n- 技术问题给出具体方案，不要模糊\n- 不会就说不知道，但尝试提供线索\n- 回复长度按问题复杂度自然调整`
   const pieces = [sections.roleSetting, sections.languageStyle, sections.outputRules]
   // RUNTIME_DATA 是模型写 Card 变量的唯一通道；Card 没有可写变量时不注入，省静态前缀。
-  if (sections.variableDefs.some(def => def.scope === "card" && def.updateBy === "llm")) {
+  // 判据与 reply/generator.ts 的缺失检测共用（hasLlmWritableCardVars），两边不许各写一份。
+  if (hasLlmWritableCardVars(card)) {
     pieces.push(RUNTIME_DATA_INSTRUCTION)
   }
   // Card is frozen at run start: role, whenText and must rules all belong to the static prefix.
@@ -177,6 +185,10 @@ export function buildPrompt(input: BuildContextInput, card: PersonalityCard | nu
       layer: "ephemeral", source: input.ephemeralOrigin ?? (input.isActiveMessage ? "active_monitor" : "none"),
       text: input.ephemeralText ?? "", priority: 50,
       origin: input.ephemeralOrigin ?? (input.isActiveMessage ? "active" : "system"), taint: "derived" },
+    // 协议提醒（RUNTIME_DATA）：宿主按上一回合结算注入，origin 记 system（它不是会话消息），
+    // taint 记 derived（内容由上一回合结果推导，不升级为可信系统文本）。
+    ...(input.runtimeDataReminder ? [{ blockId: "ephemeral:runtime-data", layer: "ephemeral" as const, source: "runtime-data",
+      text: input.runtimeDataReminder, priority: 50, origin: "system" as const, taint: "derived" as const }] : []),
   ], contextMaxTokens, { budget })
 
   return { systemPrompt: kernel.systemPrompt, tools,

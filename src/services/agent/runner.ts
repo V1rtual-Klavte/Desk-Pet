@@ -59,34 +59,50 @@ async function drainCommittedParticipation(sessionId: string): Promise<void> {
       participationIngress.delete(eventId)
       const mark = inputSourceOf(entry.message)
       if (mark?.origin !== "user" || mark.taint !== "trusted_user" || !mark.eligibleForMemory) continue
-      recordCommittedUserParticipation({ sessionId, entryId: entry.id, text: laneMessageText(entry.message), committed: true,
+      recordCommittedUserParticipation({
+        sessionId, entryId: entry.id, text: laneMessageText(entry.message), committed: true,
         committedAt: entry.timestamp,
-        origin: "user", taint: "trusted_user", eligibleForMemory: true, ...(mark.cardId ? { cardId: mark.cardId } : {}) })
+        origin: "user", taint: "trusted_user", eligibleForMemory: true, ...(mark.cardId ? { cardId: mark.cardId } : {})
+      })
     }
   } catch (error) { log.warn("用户参与度提交来源暂无法核对，保留事件身份稍后重试:", formatError(error)) }
 }
 type ProactiveTurnContextReader = (owner: ProactiveOwner, userText: string) => Promise<ProactiveTurnContext | undefined>
 let proactiveTurnContextReader: ProactiveTurnContextReader | undefined
-const userIngressObservers = new Set<(event: { sessionId: string; requestId: string }) => void | Promise<void>>()
+
+/**
+ * 提交后的 ingress 观察事件。
+ *
+ * `delivery` 是忙碌投递的归宿回执（唯一值域见 `HarnessDeliveryReceipt`），在投递准入
+ * 当刻就已确定，供原生 UI 发「已排队插话」这类中性回执；空闲回合与直接拒绝没有可回执
+ * 的投递，字段缺省（与 `SendMessageResult.delivery` 的既有口径一致）。
+ * 追加字段是向后兼容的：既有观察者（主动取消）只取 sessionId/requestId。
+ */
+export interface UserIngressObserverEvent {
+  sessionId: string
+  requestId: string
+  delivery?: HarnessDeliveryReceipt
+}
+const userIngressObservers = new Set<(event: UserIngressObserverEvent) => void | Promise<void>>()
 
 export function registerProactiveTurnContextReader(reader: ProactiveTurnContextReader): () => void {
   proactiveTurnContextReader = reader
   return () => { if (proactiveTurnContextReader === reader) proactiveTurnContextReader = undefined }
 }
 
-/** Direct post-commit ingress signal for proactive cancellation; not routed through diagnostic trace. */
-export function registerUserIngressObserver(observer: (event: { sessionId: string; requestId: string }) => void | Promise<void>): () => void {
+/** 提交后的直接 ingress 信号（主动取消 + 投递归宿推送），不经诊断 trace 转发。 */
+export function registerUserIngressObserver(observer: (event: UserIngressObserverEvent) => void | Promise<void>): () => void {
   userIngressObservers.add(observer)
   return () => userIngressObservers.delete(observer)
 }
 
-async function notifyUserIngressCommitted(sessionId: string, requestId: string): Promise<void> {
+async function notifyUserIngressCommitted(sessionId: string, requestId: string, delivery?: HarnessDeliveryReceipt): Promise<void> {
   participationIngress.set(inputEventId(requestId), sessionId)
   if (participationIngress.size > MAX_PENDING_PARTICIPATION_EVENTS) participationIngress.delete(participationIngress.keys().next().value!)
   await drainCommittedParticipation(sessionId)
   for (const observer of userIngressObservers) {
-    try { await observer({ sessionId, requestId }) }
-    catch (error) { log.warn("用户输入提交后的主动取消观察器失败:", formatError(error)) }
+    try { await observer({ sessionId, requestId, ...(delivery ? { delivery } : {}) }) }
+    catch (error) { log.warn("用户输入提交后的 ingress 观察器失败:", formatError(error)) }
   }
 }
 
@@ -312,11 +328,11 @@ async function performTurn(invocation: TurnInvocation): Promise<PiAgentTurnOutpu
     invocation.skillAdmission
       ? { ...common, skillAdmission: invocation.skillAdmission }
       : {
-          ...common,
-          userPrompt: invocation.userPrompt!,
-          ...(invocation.ingress ? { ingress: invocation.ingress } : {}),
-          ...(invocation.pausedMessages ? { pausedMessages: invocation.pausedMessages } : {}),
-        },
+        ...common,
+        userPrompt: invocation.userPrompt!,
+        ...(invocation.ingress ? { ingress: invocation.ingress } : {}),
+        ...(invocation.pausedMessages ? { pausedMessages: invocation.pausedMessages } : {}),
+      },
   )
   await drainCommittedParticipation(sessionId)
   return result
@@ -342,9 +358,11 @@ async function pushTurnOutcome(result: PiAgentTurnOutput, sessionId: string): Pr
   // 条目关联的截图路径与条目本身同一次提交；实时界面消息必须带上同一份路径（重载由读模型带回）。
   const message = pushAssistantMessage(result.reply, sessionId, result.replyParts, result.committedAssistantEntryId, result.userImagePaths)
   if (result.humanized && result.toolCallHistory.length === 0) {
-    enqueueCommitted({ sessionId, runGeneration: result.runGeneration ?? 0,
+    enqueueCommitted({
+      sessionId, runGeneration: result.runGeneration ?? 0,
       messageId: message.id, parts: result.replyParts ?? [result.reply], isActiveMessage: false,
-      sessionIsActive: getActiveSessionId() === sessionId, generationStartedAt: result.generationStartedAt })
+      sessionIsActive: getActiveSessionId() === sessionId, generationStartedAt: result.generationStartedAt
+    })
   }
 }
 
@@ -439,10 +457,19 @@ async function dispatchMessage(text: string, options: SendMessageOptions = {}): 
   cancelHumanizerSession(originSessionId)
   const imagePaths = await prepareImagePaths(options.imagePaths ?? [])
   if (getActiveSessionId() !== originSessionId) {
-    return { reply: "", toolCallsMade: 0, retriesUsed: 0, outcome: "failed", toolCalls: [], failure: { kind: "admission", message: "图片读取期间会话已切换，输入未发送" } }
+    // 准入失败要让用户看得见：原生宿主里 `chat_send` 的回执是 void，失败呈现只能由
+    // Node 领域的系统消息承担（不抛、不写消息 = 用户以为发出去了）。写进输入所属的
+    // 会话（原会话没有 UI 通道，与下方「会话已切换」分支的兜底回复同一处理），
+    // 用户切回去就能读到「输入未发送」，而不是一条凭空消失的图片消息。
+    const notice = "图片读取期间会话已切换，输入未发送"
+    pushSystemMessage(notice, originSessionId)
+    return { reply: "", toolCallsMade: 0, retriesUsed: 0, outcome: "failed", toolCalls: [], failure: { kind: "admission", message: notice } }
   }
   if (imagePaths.length && text.trim().startsWith("/")) {
-    return { reply: "", toolCallsMade: 0, retriesUsed: 0, outcome: "failed", toolCalls: [], failure: { kind: "admission", message: "命令不接收图片，请将图片作为普通消息发送" } }
+    // 同上：命令不接收图片时必须有中性呈现（不能伪装成角色台词，也不能静默失败）。
+    const notice = "命令不接收图片，请将图片作为普通消息发送"
+    pushSystemMessage(notice, originSessionId)
+    return { reply: "", toolCallsMade: 0, retriesUsed: 0, outcome: "failed", toolCalls: [], failure: { kind: "admission", message: notice } }
   }
   await cancelActiveRunForUserInput(originSessionId)
   // 输入身份与来源在入口只生成一次：忙碌投递与空闲回合共用同一个 requestId 与 envelope，
@@ -500,7 +527,8 @@ async function dispatchMessage(text: string, options: SendMessageOptions = {}): 
     if (receipt) {
       pushUserMessage(preResult.normalizedText, originSessionId, inputEventId(requestId), imagePaths)
       if (getActiveSessionId() === originSessionId) resetUnanswered()
-      await notifyUserIngressCommitted(originSessionId, requestId)
+      // 归宿回执随提交当刻一并交给观察者：原生 UI 据此发出中性回执（不等到整回合收尾）。
+      await notifyUserIngressCommitted(originSessionId, requestId, receipt)
       log.info(`AI 生成中，用户消息已投递为 ${receipt}:`, requestId)
       return {
         reply: "",
@@ -722,15 +750,21 @@ export async function sendActiveMessage(request: ActiveMessageRequest): Promise<
       runGeneration,
     })
     if (result.silent && result.activeCommit?.silent) {
-      return { status: "skipped", reason: "silent",
+      return {
+        status: "skipped", reason: "silent",
         ...(result.usage ? { usage: result.usage } : {}),
-        evidence: { operationId: result.activeCommit.operationId, triggerEntryId: result.activeCommit.triggerEntryId,
-          assistantEntryId: result.activeCommit.assistantEntryId } }
+        evidence: {
+          operationId: result.activeCommit.operationId, triggerEntryId: result.activeCommit.triggerEntryId,
+          assistantEntryId: result.activeCommit.assistantEntryId
+        }
+      }
     }
     if (!result.activeCommit) {
       const summary = result.failure?.message ?? "主动表达未产生可核实的提交"
-      return { status: "failed", stage: "generation", errorCode: "ACTIVE_NO_COMMIT", safeSummary: summarizeError(summary), commitState: "unknown",
-        ...(result.usage ? { usage: result.usage } : {}) }
+      return {
+        status: "failed", stage: "generation", errorCode: "ACTIVE_NO_COMMIT", safeSummary: summarizeError(summary), commitState: "unknown",
+        ...(result.usage ? { usage: result.usage } : {})
+      }
     }
     const evidence = result.activeCommit
     let settlement: "committed" | "stale" | "unresolved"
@@ -738,8 +772,10 @@ export async function sendActiveMessage(request: ActiveMessageRequest): Promise<
       settlement = await activeRequest.settle(actualOwner, evidence)
     } catch (error) {
       log.error("主动回执结算失败:", { sessionId, requestId: request.requestId, attemptId: request.attemptId }, formatError(error))
-      return { status: "failed", stage: "settle", errorCode: "ACTIVE_SETTLE_FAILED", safeSummary: summarizeError(error), commitState: "committed_unsettled",
-        ...(evidence.usage ? { usage: evidence.usage } : {}) }
+      return {
+        status: "failed", stage: "settle", errorCode: "ACTIVE_SETTLE_FAILED", safeSummary: summarizeError(error), commitState: "committed_unsettled",
+        ...(evidence.usage ? { usage: evidence.usage } : {})
+      }
     }
     if (settlement !== "committed") {
       return {
@@ -750,8 +786,10 @@ export async function sendActiveMessage(request: ActiveMessageRequest): Promise<
       }
     }
     if (!await activeRequest.isCurrent(actualOwner)) {
-      return { status: "failed", stage: "settle", errorCode: "ACTIVE_OWNER_STALE", safeSummary: "提交后会话 owner 已变化", commitState: "committed_unsettled",
-        ...(evidence.usage ? { usage: evidence.usage } : {}) }
+      return {
+        status: "failed", stage: "settle", errorCode: "ACTIVE_OWNER_STALE", safeSummary: "提交后会话 owner 已变化", commitState: "committed_unsettled",
+        ...(evidence.usage ? { usage: evidence.usage } : {})
+      }
     }
     if (result.runtimeData?.variables) {
       try {
@@ -777,9 +815,11 @@ export async function sendActiveMessage(request: ActiveMessageRequest): Promise<
       log.warn("主动消息未回复计数无法核对，保守地不计为未回复:", { sessionId, requestId: request.requestId }, formatError(error))
     }
     const unanswered = pushCommittedProactiveMessage(evidence.text, sessionId, evidence.assistantEntryId, countsAsUnanswered, evidence.parts, evidence.timestamp)
-    if (result.humanized) enqueueCommitted({ sessionId, runGeneration, messageId: evidence.assistantEntryId,
+    if (result.humanized) enqueueCommitted({
+      sessionId, runGeneration, messageId: evidence.assistantEntryId,
       parts: evidence.parts ?? [evidence.text], isActiveMessage: true, sessionIsActive: getActiveSessionId() === sessionId,
-      generationStartedAt: result.generationStartedAt })
+      generationStartedAt: result.generationStartedAt
+    })
     if (unanswered !== undefined) playNotificationByBoundary(unanswered)
     return {
       status: "committed", sessionId, cardId: owner.cardId, runGeneration,
@@ -810,11 +850,4 @@ export async function captureProactiveOwner(): Promise<Omit<ProactiveOwner, "run
   if (!sessionId || !card) return undefined
   const snapshot = harnessSlots.snapshot(sessionId) ?? harnessSlots.ensure(sessionId).snapshot()
   return { sessionId, cardId: card.id, cardHash: card.hash, runGeneration: snapshot.generation }
-}
-
-// ── HMR ──
-if (import.meta.hot) {
-  import.meta.hot.accept(() => {
-    log.info("Agent 内核 HMR 完成")
-  })
 }

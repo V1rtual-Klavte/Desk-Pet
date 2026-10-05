@@ -3,7 +3,7 @@
 // 路径模块 — Rust 是环境判断和路径拼接的唯一真相源
 // ==========================================
 
-import { invoke } from "@tauri-apps/api/core"
+import { getHostBridge } from "@/services/host"
 import { createLogger } from "@/services/logger"
 
 const log = createLogger("Paths")
@@ -19,7 +19,8 @@ let _sessionsDir = ""
 let _profilesDir = ""
 let _runtimeMode: "development" | "production" = "development"
 
-interface RuntimePathsPayload {
+/** `get_runtime_paths` 的回执（HostCommandMap 复用本类型，见 @/services/host）。 */
+export interface RuntimePathsPayload {
   data: string
   memory: string
   sessions: string
@@ -32,7 +33,7 @@ interface RuntimePathsPayload {
 
 export async function initPaths(): Promise<void> {
   if (_inited) return
-  const paths = await invoke<RuntimePathsPayload>("get_runtime_paths")
+  const paths = await getHostBridge().request("get_runtime_paths", {})
   _dataDir = paths.data
   _memoryDir = paths.memory
   _sessionsDir = paths.sessions
@@ -60,7 +61,7 @@ export type RuntimePathScope = "data" | "memory" | "sessions" | "personality" | 
 
 export async function runtimePath(scope: RuntimePathScope, ...segments: string[]): Promise<string> {
   if (!_inited) throw new Error("路径模块尚未初始化")
-  return invoke<string>("resolve_runtime_path", { scope, segments })
+  return getHostBridge().request("resolve_runtime_path", { scope, segments })
 }
 
 export function getRuntimeMode(): "development" | "production" {

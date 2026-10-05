@@ -36,21 +36,35 @@ export function transformHumanizerText(input: string, flow: HumanizerFlow = "cas
   let split = false
   if (flow === "casual") {
     const lines = text.split("\n")
-    if (!lines.some(line => line.trim() === HUMANIZER_SPLIT_MARKER)) {
-      return { parts: [text], text, silent: false, split: false }
-    }
-    pieces = []
-    let current: string[] = []
-    for (const line of lines) {
-      if (line.trim() === HUMANIZER_SPLIT_MARKER) {
-        split = true
-        pieces.push(current.join("\n").trim())
-        current = []
-      } else {
-        current.push(line)
+    if (lines.some(line => line.trim() === HUMANIZER_SPLIT_MARKER)) {
+      pieces = []
+      let current: string[] = []
+      for (const line of lines) {
+        if (line.trim() === HUMANIZER_SPLIT_MARKER) {
+          split = true
+          pieces.push(current.join("\n").trim())
+          current = []
+        } else {
+          current.push(line)
+        }
       }
+      pieces.push(current.join("\n").trim())
+    } else {
+      // 空行分段兜底（2026-10-05 用户规则「开启拟人化后回车消息要分成几条」）：
+      // 模型没发 SPLIT 标记、用空行分段时按段分泡，每个空行段独立成一条气泡；
+      // 单个换行（同一段内的折行）不分。含代码块的消息不拆（技术内容保持整条）。
+      const paragraphs = text.includes("```")
+        ? []
+        : text
+            .split(/\n[ \t]*\n+/)
+            .map(piece => piece.trim())
+            .filter(Boolean)
+      if (paragraphs.length <= 1) {
+        return { parts: [text], text, silent: false, split: false }
+      }
+      split = true
+      pieces = paragraphs
     }
-    pieces.push(current.join("\n").trim())
   } else {
     // Task replies remain one message even if the model emits a stray split marker.
     const lines = text.split("\n")

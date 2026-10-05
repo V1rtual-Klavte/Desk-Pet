@@ -6,7 +6,11 @@
 export type { PersonalityCard, PersonalityState, CardSections, CardVariableDef, VariableState, VariableScope, VariableType, VariableUpdateBy, VariableResetPolicy, VariablePrimitive } from "./types"
 
 // ── 加载器 ──
-export { getCards, getCard, initCards, importUserCard, saveUserCard } from "./loader"
+export { getCards, getCard, initCards, importUserCard, safeCardFileName, saveUserCard } from "./loader"
+
+// ── Card 管理（新建 / 重命名 / 编辑保存 / 删除 / 导出 / 导入）──
+export { createCard, renameCard, saveCardText, deleteCard, exportCardText, importCardText, readCardTemplate } from "./card-manage"
+export type { CardOpResult } from "./card-manage"
 
 // ── 注册表 ──
 export {

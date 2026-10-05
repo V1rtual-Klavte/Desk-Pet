@@ -32,7 +32,7 @@ export interface SwitchResult {
   card?: PersonalityCard | null
 }
 
-/** 初始化：从配置恢复激活状态（由 App.vue onMounted 调用） */
+/** 初始化：从配置恢复激活状态（由领域引导 initDomainBootstrap 调用） */
 export async function initRegistry(): Promise<void> {
   runtimeReady = false
   const configuredId = personalityConfig.active

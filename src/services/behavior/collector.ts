@@ -1,6 +1,7 @@
-import { invoke } from "@tauri-apps/api/core"
+import { getHostBridge } from "@/services/host"
 import { runtimePath } from "@/services/paths"
 import { createLogger } from "@/services/logger"
+import { errorCode, formatError } from "@/services/error"
 import { createRuntimeTraceContext } from "@/services/engine/runtime/trace"
 import { proactiveEvent } from "@/services/proactive/trace"
 import { classifyApp } from "./classifier"
@@ -21,8 +22,17 @@ const MAX_PENDING_OBSERVATIONS = 128
 /** 事件密集时按时间兜底落盘一次，避免分段只在状态切换时才持久化。 */
 const CHECKPOINT_INTERVAL_MS = 60_000
 
+/**
+ * `file_list` 的线格式是 FileEntry（见 @/services/host 的 HostCommandMap），目录判定
+ * 一律读 `kind`：这里曾经按 `isDir` 读取，而该字段不在线格式里、运行期恒为 undefined，
+ * 「按目录分段清理旧档」的分支因此从未执行（已改用 kind 修复）。本文件只消费
+ * `name` 与 `kind`；`path` 由 `runtimePath` 重新拼接，不消费。
+ */
+type ListedEntry = { name: string; path: string; kind: "file" | "directory" | "symlink" }
+
 let started = false
 let loaded = false
+let historyLoad: Promise<void> | null = null
 let loadEpoch = 0
 let revision = 0
 let generation = -1
@@ -42,6 +52,7 @@ let lastCheckpointAt = 0
 let serial = Promise.resolve()
 let pendingObservations = 0
 let droppedObservations = 0
+let persistenceFailures = 0
 const days = new Map<string, BehaviorDaily>()
 const listeners = new Set<(snapshot: BehaviorSnapshot) => void>()
 let lastTraceObservationKey="",lastTraceObservationAt=0
@@ -73,66 +84,87 @@ async function writeJson(relative: string[], value: unknown): Promise<void> {
   const path = await runtimePath("data", BEHAVIOR_DIR, ...relative)
   const content = JSON.stringify(value)
   const parent = await runtimePath("data", BEHAVIOR_DIR, ...relative.slice(0, -1))
-  await invoke("dir_create", { path: parent, recursive: true })
-  await invoke("file_write_atomic", { path, content, maxBytes: Math.max(SEGMENT_SHARD_LIMIT, content.length + 1) })
+  await getHostBridge().request("dir_create", { path: parent, recursive: true })
+  await getHostBridge().request("file_write_atomic", { path, content, maxBytes: Math.max(SEGMENT_SHARD_LIMIT, content.length + 1) })
 }
 
 async function loadDailyHistory(): Promise<void> {
+  if (historyLoad) return historyLoad
   if (loaded) return
-  loaded = true
   const epoch = loadEpoch
+  const loading = loadDailyHistoryOnce(epoch)
+  historyLoad = loading
+  try {
+    await loading
+  } finally {
+    if (historyLoad === loading) historyLoad = null
+  }
+}
+
+async function loadDailyHistoryOnce(epoch: number): Promise<void> {
   try {
     const dailyPath = await runtimePath("data", BEHAVIOR_DIR, DAILY_DIR)
-    const listing = await invoke<{ entries: Array<{ name: string; isDir: boolean }> }>("file_list", { path: dailyPath })
-    const names = listing.entries.filter((entry) => !entry.isDir && /^\d{4}-\d{2}-\d{2}\.json$/.test(entry.name))
+    const listing = await getHostBridge().request("file_list", { path: dailyPath })
+    const entries = listing.entries as ListedEntry[]
+    const names = entries.filter((entry) => entry.kind !== "directory" && /^\d{4}-\d{2}-\d{2}\.json$/.test(entry.name))
       .sort((a, b) => b.name.localeCompare(a.name)).slice(0, DAILY_RETENTION_DAYS)
     for (const entry of names) {
       const path = await runtimePath("data", BEHAVIOR_DIR, DAILY_DIR, entry.name)
-      const { content } = await invoke<{ content: string }>("file_read", { path, maxBytes: MAX_DAILY_READ_BYTES })
+      const { content } = await getHostBridge().request("file_read", { path, maxBytes: MAX_DAILY_READ_BYTES })
       const day = JSON.parse(content) as BehaviorDaily
       if (epoch === loadEpoch && day.date === entry.name.slice(0, 10) && Array.isArray(day.hourMs) && day.hourMs.length === 24) days.set(day.date, day)
     }
     const today = new Date()
     const cutoff = (retention: number) => { const date = new Date(today); date.setDate(date.getDate() - retention); return localDate(date.getTime()) }
     const dailyCutoff = cutoff(DAILY_RETENTION_DAYS)
-    for (const entry of listing.entries) {
+    for (const entry of entries) {
       const date = entry.name.slice(0, 10)
-      if (!entry.isDir && /^\d{4}-\d{2}-\d{2}\.json$/.test(entry.name) && date < dailyCutoff) {
+      if (entry.kind !== "directory" && /^\d{4}-\d{2}-\d{2}\.json$/.test(entry.name) && date < dailyCutoff) {
         const path = await runtimePath("data", BEHAVIOR_DIR, DAILY_DIR, entry.name)
-        await invoke("file_remove", { path, recursive: false, force: true })
+        await getHostBridge().request("file_remove", { path, recursive: false, force: true })
       }
     }
     const segmentsPath = await runtimePath("data", BEHAVIOR_DIR, SEGMENTS_DIR)
     try {
-      const segments = await invoke<{ entries: Array<{ name: string; isDir: boolean }> }>("file_list", { path: segmentsPath })
+      const segments = await getHostBridge().request("file_list", { path: segmentsPath })
       const segmentCutoff = cutoff(SEGMENT_RETENTION_DAYS)
-      for (const entry of segments.entries) {
-        if (entry.isDir && /^\d{4}-\d{2}-\d{2}$/.test(entry.name) && entry.name < segmentCutoff) {
+      for (const entry of segments.entries as ListedEntry[]) {
+        if (entry.kind === "directory" && /^\d{4}-\d{2}-\d{2}$/.test(entry.name) && entry.name < segmentCutoff) {
           const path = await runtimePath("data", BEHAVIOR_DIR, SEGMENTS_DIR, entry.name)
-          await invoke("file_remove", { path, recursive: true, force: true })
+          await getHostBridge().request("file_remove", { path, recursive: true, force: true })
         }
       }
-    } catch { /* No segment directory exists before the first completed observation. */ }
+    } catch (error) {
+      if (errorCode(error) !== "PATH_NOT_FOUND") throw error
+    }
   } catch (error) {
-    log.info("尚无可读取的行为日聚合", error instanceof Error ? error.message : "目录尚未创建")
+    if (errorCode(error) === "PATH_NOT_FOUND") {
+      log.debug("尚无可读取的行为日聚合")
+    } else {
+      log.warn("读取行为历史失败:", formatError(error))
+    }
+  } finally {
+    if (epoch === loadEpoch) loaded = true
   }
 }
 
 async function persistSegment(segment: BehaviorSegment): Promise<void> {
   const root = await runtimePath("data", BEHAVIOR_DIR, SEGMENTS_DIR, segment.date)
-  await invoke("dir_create", { path: root, recursive: true })
+  await getHostBridge().request("dir_create", { path: root, recursive: true })
   const indexPath = await runtimePath("data", BEHAVIOR_DIR, SEGMENTS_DIR, segment.date, SEGMENT_INDEX_FILE)
   let index: { shard: number; bytes: number } = { shard: 1, bytes: 0 }
   try {
-    const { content } = await invoke<{ content: string }>("file_read", { path: indexPath, maxBytes: 1024 })
+    const { content } = await getHostBridge().request("file_read", { path: indexPath, maxBytes: 1024 })
     const parsed = JSON.parse(content) as Partial<typeof index>
     if (Number.isSafeInteger(parsed.shard) && Number.isSafeInteger(parsed.bytes)) index = { shard: parsed.shard!, bytes: parsed.bytes! }
-  } catch { /* A missing shard index starts a new day at shard 1. */ }
+  } catch (error) {
+    if (errorCode(error) !== "PATH_NOT_FOUND") throw error
+  }
   const line = `${JSON.stringify(segment)}\n`
   if (index.bytes + new TextEncoder().encode(line).length > SEGMENT_SHARD_LIMIT) index = { shard: index.shard + 1, bytes: 0 }
   const shardName = `${String(index.shard).padStart(4, "0")}.jsonl`
   const shardPath = await runtimePath("data", BEHAVIOR_DIR, SEGMENTS_DIR, segment.date, shardName)
-  await invoke("file_append", { path: shardPath, content: line, maxBytes: SEGMENT_SHARD_LIMIT })
+  await getHostBridge().request("file_append", { path: shardPath, content: line, maxBytes: SEGMENT_SHARD_LIMIT })
   index.bytes += new TextEncoder().encode(line).length
   await writeJson([SEGMENTS_DIR, segment.date, SEGMENT_INDEX_FILE], index)
 }
@@ -294,11 +326,20 @@ async function ingest(observation: WindowObservation): Promise<void> {
 
 export function startBehavior(): void { started = true; void loadDailyHistory() }
 
-export function stopBehavior(): void {
+export function stopBehavior(): Promise<boolean> {
   started = false
   const endAt = previous?.observedAt ?? Date.now()
-  serial = serial.then(() => closeSegment(endAt)).catch((error) => log.error("关闭行为分段失败", error instanceof Error ? error : undefined))
+  let succeeded = true
+  serial = serial.then(async () => {
+    if (historyLoad) await historyLoad
+    await closeSegment(endAt)
+  }).catch((error) => {
+    succeeded = false
+    persistenceFailures += 1
+    log.error("关闭行为分段失败:", formatError(error))
+  })
   previous = null; generation = -1; sequence = 0; lastCheckpointAt = 0
+  return serial.then(() => succeeded && persistenceFailures === 0)
 }
 
 export function observeBehavior(observation: WindowObservation): Promise<void> {
@@ -324,7 +365,10 @@ export function observeBehavior(observation: WindowObservation): Promise<void> {
       idleMs:observation.idleForMs??undefined,sequence:observation.sequence,monitorGeneration:observation.monitorGeneration}))
   }
   pendingObservations++
-  serial = serial.then(() => ingest(observation)).catch((error) => log.error("行为画像写入失败", error instanceof Error ? error : undefined))
+  serial = serial.then(() => ingest(observation)).catch((error) => {
+    persistenceFailures += 1
+    log.error("行为画像写入失败:", formatError(error))
+  })
     .finally(() => { pendingObservations = Math.max(0, pendingObservations - 1) })
   return serial
 }
@@ -354,17 +398,18 @@ async function performClearBehavior(): Promise<void> {
     const { clearSilentUnderstanding } = await import("@/services/observation")
     await clearSilentUnderstanding()
     const path = await runtimePath("data", BEHAVIOR_DIR)
-    const listing = await invoke<{ entries: Array<{ name: string }> }>("file_list", { path })
+    const listing = await getHostBridge().request("file_list", { path })
     for (const entry of listing.entries) {
       // This metadata-only file carries the clear watermark so a busy-inbox scan cannot
       // reintroduce user messages that were committed before the explicit clear.
       if (entry.name === UNDERSTANDING_FILE) continue
       const stalePath = await runtimePath("data", BEHAVIOR_DIR, entry.name)
-      await invoke("file_remove", { path: stalePath, recursive: true, force: true })
+      await getHostBridge().request("file_remove", { path: stalePath, recursive: true, force: true })
     }
     days.clear(); previous = null; currentStart = null; currentCategory = null; currentContinuousMs = 0; currentWorkStartAt = 0; lastCheckpointAt = 0
     loaded = true
     droppedObservations = 0
+    persistenceFailures = 0
     revision++
     publish()
   } finally {

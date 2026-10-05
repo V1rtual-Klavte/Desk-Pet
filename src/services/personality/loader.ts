@@ -5,6 +5,7 @@
 
 import type { PersonalityCard, CardSections, CardVariableDef, VariableScope, VariableType, VariableUpdateBy, VariableResetPolicy } from "./types"
 import { parseMustRules } from "./must-rules"
+import { getHostBridge } from "@/services/host"
 import { createLogger } from "@/services/logger"
 import { formatError, reportError } from "@/services/error"
 
@@ -150,9 +151,12 @@ function parseYamlValue(raw: string): unknown {
   if (t === "true") return true
   if (t === "false") return false
   if (t === "null" || t === "~" || t === "") return null
-  // 方括号数组
+  // 方括号数组：元素与标量同规则解析（数字保持数字），空数组是 [] 而不是 [""]。
+  // 一律字符串化会让 buildVarDef 的数值守卫丢掉 proactiveBands 这类数组声明。
   if (t.startsWith("[") && t.endsWith("]")) {
-    return t.slice(1, -1).split(",").map(s => s.trim().replace(/^["']|["']$/g, ""))
+    const inner = t.slice(1, -1).trim()
+    if (inner === "") return []
+    return inner.split(",").map(part => parseYamlValue(part))
   }
   // 带引号的字符串
   if ((t.startsWith('"') && t.endsWith('"')) || (t.startsWith("'") && t.endsWith("'"))) {
@@ -269,13 +273,12 @@ async function parseCard(raw: string): Promise<PersonalityCard> {
 
 async function loadRuntimeCards(): Promise<PersonalityCard[]> {
   try {
-    const { invoke } = await import("@tauri-apps/api/core")
-    const files = await invoke<string[]>("personality_file_list", { dirPath: "cards" })
+    const files = await getHostBridge().request("personality_file_list", { dirPath: "cards" })
     const result: PersonalityCard[] = []
     for (const file of files.filter(f => f.endsWith(".md") && !f.startsWith("_"))) {
       try {
-        const rawBytes = await invoke<number[]>("personality_file_read", { path: `cards/${file}` })
-        const raw = new TextDecoder().decode(new Uint8Array(rawBytes))
+        const rawBytes = await getHostBridge().request("personality_file_read", { path: `cards/${file}` })
+        const raw = new TextDecoder().decode(rawBytes)
         result.push(await parseCard(raw))
       } catch (e) {
         // 该 Card 会从列表里消失，属用户可见降级 —— 必须留 error 级证据并带卡名
@@ -294,14 +297,24 @@ export async function importUserCard(raw: string): Promise<PersonalityCard> {
   return parseCard(raw)
 }
 
+/**
+ * Card id → 磁盘文件名（不含扩展名）：id 就是文件名，所以清洗规则是**唯一真相源**。
+ *
+ * 新建、重命名、导入、删除都要按同一规则找到同一个文件；第二份复刻会让「判断卡存不存在」
+ * 和「写到哪个文件」分叉——那种错要到用户看不见的地方才炸（写出一张列表里没有的卡）。
+ * 留在 loader 是因为保存路径本来就属于这里，调用方从 `@/services/personality` 取它。
+ */
+export function safeCardFileName(cardId: string): string {
+  return cardId.replace(/[^\w一-鿿-]/g, "_")
+}
+
 export async function saveUserCard(raw: string): Promise<PersonalityCard> {
   const card = await parseCard(raw)
   if (!card.id || card.id === "unknown") throw new Error("Card 缺少有效 id")
-  const safeName = card.id.replace(/[^\w一-鿿-]/g, "_")
-  const { invoke } = await import("@tauri-apps/api/core")
-  await invoke("personality_file_write", {
+  const safeName = safeCardFileName(card.id)
+  await getHostBridge().request("personality_file_write", {
     path: `cards/${safeName}.md`,
-    content: Array.from(new TextEncoder().encode(raw)),
+    content: new TextEncoder().encode(raw),
   })
   return card
 }
@@ -318,10 +331,3 @@ export function getCard(id: string): PersonalityCard | undefined {
 }
 
 initCards()
-
-if (import.meta.hot) {
-  import.meta.hot.accept(async () => {
-    cards = await loadRuntimeCards()
-    log.info("Card HMR:", cards.map(c => c.id).join(", "))
-  })
-}

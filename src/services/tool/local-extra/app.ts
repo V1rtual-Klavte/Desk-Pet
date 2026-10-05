@@ -9,7 +9,7 @@ import type { ToolDef } from "../types"
 import { TOOL_POLICY_VERSION } from "../types"
 import { defineTool } from "../policy"
 import { register } from "../registry"
-import { invoke } from "@tauri-apps/api/core"
+import { getHostBridge } from "@/services/host"
 import { createLogger } from "@/services/logger"
 import { formatError } from "@/services/error"
 
@@ -39,8 +39,10 @@ const appOpenTool: ToolDef = defineTool({
   },
 }, async (params) => {
   try {
-    const result = await invoke<{ success: boolean }>("app_open", {
-      path: params.path,
+    const result = await getHostBridge().request("app_open", {
+      // 参数形态由本工具的 parameters schema 声明（path: string）；非串值不在前端收窄，
+      // 交给 Rust 反序列化如实拒绝。
+      path: params.path as string,
     })
     return {
       success: result.success,

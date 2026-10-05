@@ -1,15 +1,15 @@
 // ==========================================
-// Profile 加载器 — 懒加载 + 精简色彩
+// Profile 加载器 — 懒加载
 // 启动只加载 CONFIG 指定的 profile，设置页才扫描列表
 // ==========================================
 
 import { createLogger } from "@/services/logger";
 import { appearanceConfig, flushConfig, setOverride } from "@/services/config";
 import { DEFAULT_PROFILE } from "@/services/paths";
-import { convertFileSrc, invoke } from "@tauri-apps/api/core";
-import { emit } from "@tauri-apps/api/event";
+// Profile 文本经受控文件命令读取；Node Harness 不负责把本地路径伪装成 UI URL。
+import { getHostBridge } from "@/services/host";
 import { formatError } from "@/services/error";
-import { ref } from "vue";
+import { notifyActiveProfileChanged } from "@/services/native-ui/active-profile-signal";
 
 const log = createLogger("Profile");
 
@@ -21,26 +21,12 @@ export interface ProfileMeta {
   version: number
 }
 
-export interface ProfileThemeColors {
-  背景: string; 卡片背景: string; 聊天背景: string
-  边框: string; 分割线: string; 输入边框: string
-  主文字: string; 亮文字: string; 粉色文字: string; 暗文字: string
-  强调色: string; 强调悬浮: string
-  标题栏渐变起: string; 标题栏渐变止: string; 标题栏文字: string
-  表面色: string; 深表面色: string; 遮罩: string
-  透明背景: string; 模糊度: string
-}
-
 export interface ProfileTheme {
-  colors: ProfileThemeColors
-  shield: { enabled: boolean; image: string }
   parallax: ProfileParallax
-  depthOfField: ProfileDepthOfField
 }
 
 export interface ProfileParallaxLayer {
   enabled: boolean; image: string; sensitivity: number
-  shadow: number; brightness: number; contrast: number; saturate: number
   scale: number
   offsetX: number; offsetY: number; locked: boolean
 }
@@ -49,68 +35,21 @@ export interface ProfileParallax {
   layers: ProfileParallaxLayer[]
 }
 
-/**
- * 景深的焦点区域（椭圆），全部用占画布的百分比表示，换窗口尺寸也不会错位。
- * 缺省 `regions` 为空数组 = 整张图统一模糊，不做焦点。
- */
-export interface ProfileDofRegion {
-  /** 椭圆中心 */
-  x: number; y: number
-  /** 椭圆半径（占画布宽/高） */
-  rx: number; ry: number
-  /** 边缘羽化宽度，占半径的比例 0–1 */
-  feather: number
-  /**
-   * 该焦点层的视差灵敏度。
-   *
-   * 每个焦点区是一个**独立的层**，各自跟随光标移动 —— 给不同焦点区不同的值
-   * 就形成层级：近处动得多、远处动得少。
-   */
-  sensitivity: number
-}
-
-/**
- * 景深：一张素材 + 背景模糊 + 焦点区保持清晰。
- * 渲染时同一张图用两次 —— 底层整体模糊，上层被焦点区遮罩裁出来保持锐利。
- */
-export interface ProfileDepthOfField {
-  image: string
-  /** 背景模糊半径 px */
-  blur: number
-  /** 素材取景缩放：图与画布尺寸不合时放大，超出部分被画布裁掉 */
-  scale: number
-  /** 取景平移，占画布宽/高的百分比。与 scale 一起构成「取景」 */
-  offsetX: number
-  offsetY: number
-  /**
-   * 背景层的视差灵敏度。
-   *
-   * 位移差就是深度感的来源：背景该动得少，焦点层动得多，否则整张图一起平移
-   * 只是「图在滑」，没有立体感。焦点层的灵敏度在各自的 region 上。
-   */
-  bgSensitivity: number
-  /** 焦点区外的背景滤镜，用来压暗/降饱和增强景深感 */
-  brightness: number; contrast: number; saturate: number
-  focus: ProfileDofRegion[]
-}
-
-export interface ProfileCharacter {
-  id: string; name: string; scale: number; scaleMode: "pixelated" | "smooth"
-}
-
 export interface ProfileData {
   id: string; meta: ProfileMeta; theme: ProfileTheme
-  character: ProfileCharacter
-  basePath: string
 }
 
+/**
+ * 五层缺省灵敏度（L0→L4）：与旧壳 `DEFAULT_LAYERS` 同口径，也与宿主
+ * `ui/editor` 单层复位的 `DEFAULT_SENSITIVITY` 一致。
+ * 新建 Profile 的空壳层与「层存在但缺 sensitivity 字段」共用这一张表。
+ */
+export const DEFAULT_LAYER_SENSITIVITIES = [0.2, 0.5, 0.8, 1.2, 1.6] as const
+
 // ── 内部状态 ──
-let profiles = new Map<string, ProfileData>();
+let profiles = new Map<string, ProfileData>()
 let activeId: string | null = null;
-/** 让通过 getActiveProfile() 读取资源的 Vue 模板随 Profile 切换重新计算。 */
-export const activeProfileRevision = ref(0);
 let loaded = false;
-const profileBaseUrls = new Map<string, string>();
 
 // ── YAML 加载 ──
 let jsYamlModule: any = null;
@@ -120,39 +59,21 @@ async function loadYaml(): Promise<any> {
   return jsYamlModule;
 }
 
-async function fetchYaml<T>(url: string): Promise<T> {
-  const resp = await fetch(url);
-  if (!resp.ok) throw new Error(`Failed to fetch ${url}: ${resp.status}`);
-  const text = await resp.text();
+async function readProfileYaml<T>(profileId: string, relativePath: string): Promise<T> {
+  const bytes = await getHostBridge().request("profile_file_read", { profileId, relativePath });
+  const text = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
   const yaml = await loadYaml();
   return yaml.load(text) as T;
-}
-
-async function resolveProfileBaseUrl(id: string): Promise<string> {
-  const cached = profileBaseUrls.get(id)
-  if (cached) return cached
-  const path = await invoke<string>("profile_asset_base", { profileId: id })
-  if (!path) throw new Error(`Profile 不存在: ${id}`)
-  const url = convertFileSrc(path).replace(/\/$/, "")
-  profileBaseUrls.set(id, url)
-  return url
-}
-
-export function resolveProfileAssetUrl(profile: ProfileData, relativePath: string): string {
-  const cleanPath = relativePath.replaceAll("\\", "/").replace(/^\/+/, "")
-  return `${profile.basePath}/${cleanPath}`
 }
 
 /** 导入或复制后清理内存缓存，确保下次加载读取最新文件。 */
 export function invalidateProfileCache(profileId: string): void {
   profiles.delete(profileId)
-  profileBaseUrls.delete(profileId)
 }
 
 /** 清空全部 Profile 缓存（默认资源恢复后调用，让下次读取走磁盘）。 */
 export function invalidateAllProfileCaches(): void {
   profiles.clear()
-  profileBaseUrls.clear()
 }
 
 /** 文件编辑后重新读取运行时 Profile；保留旧接口以供图层编辑器触发刷新。 */
@@ -162,12 +83,6 @@ export async function refreshProfileAssets(profileId: string): Promise<ProfileDa
   const profile = await ensureProfileLoaded(profileId)
   if (profile && wasActive) activateProfile(profileId)
   return profile
-}
-
-export async function getProfileAssetUrl(profileId: string, relativePath: string): Promise<string> {
-  const profile = profiles.get(profileId)
-  if (profile) return resolveProfileAssetUrl(profile, relativePath)
-  return `${await resolveProfileBaseUrl(profileId)}/${relativePath.replace(/^\/+/, "")}`
 }
 
 // ── Profile 加载 ──
@@ -181,18 +96,7 @@ function layerDefault<T>(table: readonly T[], index: number, field: string): T {
 }
 
 async function loadProfile(id: string): Promise<ProfileData> {
-  const basePath = await resolveProfileBaseUrl(id);
-
-  const rawProfile = await fetchYaml<any>(`${basePath}/profile.yaml`);
-
-  // character.yaml 缺失不再跨 Profile 回退：Profile 是自包含闭包，
-  // 缺失时走下面的中立默认，不依赖另一个 Profile 存在。
-  let rawChar: any;
-  try {
-    rawChar = await fetchYaml<any>(`${basePath}/character.yaml`);
-  } catch (e) {
-    log.warn(`character.yaml 缺失，使用中立默认: ${id}`, formatError(e));
-  }
+  const rawProfile = await readProfileYaml<any>(id, "profile.yaml");
 
   return {
     id,
@@ -202,51 +106,18 @@ async function loadProfile(id: string): Promise<ProfileData> {
       version: rawProfile?.meta?.version || 1,
     },
     theme: {
-      colors: rawProfile?.theme?.colors || {},
-      shield: rawProfile?.theme?.shield || { enabled: false, image: "" },
       parallax: {
         layers: (rawProfile?.theme?.parallax?.layers || []).map((l: any, i: number) => ({
           enabled: l?.enabled ?? (i === 2),
           image: l?.image ?? (i === 2 ? "materials/L2/body.png" : ""),
-          sensitivity: l?.sensitivity ?? layerDefault([0.2, 0.5, 0.8, 1.2, 1.6], i, "sensitivity"),
-          shadow: l?.shadow ?? layerDefault([0.25, 0.18, 0.12, 0.06, 0.03], i, "shadow"),
-          brightness: l?.brightness ?? layerDefault([0.93, 0.95, 1.00, 1.02, 1.03], i, "brightness"),
-          contrast: l?.contrast ?? layerDefault([0.96, 0.98, 1.00, 1.02, 1.03], i, "contrast"),
-          saturate: l?.saturate ?? layerDefault([0.92, 0.95, 1.00, 1.05, 1.08], i, "saturate"),
+          sensitivity: l?.sensitivity ?? layerDefault(DEFAULT_LAYER_SENSITIVITIES, i, "sensitivity"),
           scale: l?.scale ?? 1.0,
           offsetX: l?.offsetX ?? 0,
           offsetY: l?.offsetY ?? 0,
           locked: l?.locked ?? false,
         })),
       },
-      depthOfField: {
-        image: rawProfile?.theme?.depthOfField?.image ?? "",
-        blur: rawProfile?.theme?.depthOfField?.blur ?? 8,
-        scale: rawProfile?.theme?.depthOfField?.scale ?? 1.0,
-        offsetX: rawProfile?.theme?.depthOfField?.offsetX ?? 0,
-        offsetY: rawProfile?.theme?.depthOfField?.offsetY ?? 0,
-        bgSensitivity: rawProfile?.theme?.depthOfField?.bgSensitivity ?? 0.35,
-        brightness: rawProfile?.theme?.depthOfField?.brightness ?? 0.95,
-        contrast: rawProfile?.theme?.depthOfField?.contrast ?? 1.0,
-        saturate: rawProfile?.theme?.depthOfField?.saturate ?? 0.9,
-        // 空 focus 数组 = 整张图统一模糊，不做焦点区。
-        focus: (rawProfile?.theme?.depthOfField?.focus || []).map((r: any) => ({
-          x: r?.x ?? 50,
-          y: r?.y ?? 50,
-          rx: r?.rx ?? 25,
-          ry: r?.ry ?? 35,
-          feather: r?.feather ?? 0.35,
-          sensitivity: r?.sensitivity ?? 0.9,
-        })),
-      },
     },
-    character: {
-      id: rawChar?.character?.id || id,
-      name: rawChar?.character?.name || id,
-      scale: rawChar?.character?.scale ?? 1.0,
-      scaleMode: rawChar?.character?.scaleMode || "pixelated",
-    },
-    basePath,
   };
 }
 
@@ -255,19 +126,27 @@ async function loadProfile(id: string): Promise<ProfileData> {
 export async function initProfiles(): Promise<void> {
   if (loaded) return;
   const targetId = appearanceConfig.activeProfile || DEFAULT_PROFILE;
+  let loadFailure: unknown
   try {
     const data = await loadProfile(targetId);
     profiles.set(targetId, data);
     log.info(`Profile 已加载: "${targetId}" (${data.meta.name})`);
   } catch (e) {
+    loadFailure = e
     log.error(`Profile "${targetId}" 加载失败:`, formatError(e));
     if (targetId !== DEFAULT_PROFILE) {
       try {
         const fallback = await loadProfile(DEFAULT_PROFILE);
         profiles.set(DEFAULT_PROFILE, fallback);
         log.warn(`回退到默认 Profile: "${DEFAULT_PROFILE}"`);
-      } catch (e2) { log.error("默认 Profile 也加载失败:", e2); }
+      } catch (e2) {
+        loadFailure = e2
+        log.error("默认 Profile 也加载失败:", formatError(e2))
+      }
     }
+  }
+  if (profiles.size === 0) {
+    throw Object.assign(new Error("激活的 Profile 与默认 Profile 均无法加载"), { cause: loadFailure })
   }
   loaded = true;
   if (profiles.has(targetId)) activateProfile(targetId);
@@ -277,7 +156,7 @@ export async function initProfiles(): Promise<void> {
 export async function discoverAllProfiles(): Promise<string[]> {
   const found = new Set<string>();
   try {
-    const runtimeProfiles: string[] = await invoke("list_profiles");
+    const runtimeProfiles: string[] = await getHostBridge().request("list_profiles", {});
     for (const id of runtimeProfiles) found.add(id);
   } catch (e) {
     log.warn("列举 Profile 失败", formatError(e));
@@ -294,7 +173,6 @@ export async function ensureProfileLoaded(id: string): Promise<ProfileData | nul
     for (const key of [...profiles.keys()]) {
       if (key !== id && key !== activeId) {
         profiles.delete(key);
-        profileBaseUrls.delete(key);
       }
     }
     return data;
@@ -310,20 +188,23 @@ export function activateProfile(id: string): boolean {
   for (const key of [...profiles.keys()]) {
     if (key !== id) {
       profiles.delete(key);
-      profileBaseUrls.delete(key);
     }
   }
-  injectCssVars(p);
-  activeProfileRevision.value++;
+  // 原生 UI 的舞台快照随激活项重推（W9b）：信号走零依赖叶子，避免 loader ↔
+  // 推送模块的循环依赖；未注册消费者（如早期引导）时是 no-op，注册方自行补首推。
+  notifyActiveProfileChanged();
   log.info(`Profile 已激活: "${id}" (${p.meta.name})`);
   return true;
 }
 
 /**
- * 切换活动 Profile 的唯一入口：内存激活 + 持久化 appearance.activeProfile + 通知窗口。
+ * 切换活动 Profile 的唯一入口：内存激活 + 持久化 appearance.activeProfile。
  *
  * 返回 false 时保持原状态：`activateProfile` 失败不会改写 `activeId`，调用方
- * 不要自己再拼 `activateProfile` + `setOverride` + `emit`。
+ * 不要自己再拼 `activateProfile` + `setOverride`。
+ *
+ * 「通知其它窗口刷新」是**纯 UI 的窗口间协调**（原生宿主迁移过程记录 §9.4 第 7 条判据 (b)，不进 Node 图）：
+ * 原生 UI 若需要刷新，由其在内部承接。
  */
 export async function switchActiveProfile(id: string): Promise<boolean> {
   const profile = await ensureProfileLoaded(id)
@@ -331,146 +212,10 @@ export async function switchActiveProfile(id: string): Promise<boolean> {
   if (!activateProfile(id)) return false
   setOverride("appearance.activeProfile", id)
   await flushConfig()
-  await emit("deskpet-profile-updated", { profileId: id })
   return true
 }
 
-// ── CSS 变量注入 ──
-let _cssVarStyleEl: HTMLStyleElement | null = null;
-
-function injectCssVars(profile: ProfileData): void {
-  if (_cssVarStyleEl) _cssVarStyleEl.remove();
-  const c = profile.theme.colors as unknown as Record<string, string>;
-  const v = (key: string, fb: string) => c[key] || fb;
-  const accentLight = v("强调色", "#c4276f").replace(")", ",0.35)").replace("rgb", "rgba");
-  const textPinkLight = v("粉色文字", "#f0a0c0").replace(")", ",0.3)").replace("rgb", "rgba");
-  // 玻璃由数据驱动：模糊度 > 0 即生效，不再按 preset 名做代码特判 —— Profile 只靠 yaml 说话
-  const glassBg = v("透明背景", "rgba(252,228,236,0.25)");
-  const glassBlur = v("模糊度", "0px");
-  const glassActive = glassBlur !== "0px" && glassBlur !== "0";
-
-  const css = `:root {
-  --color-bg: ${v("背景", "#fce4ec")};
-  --color-border: ${v("边框", "#a01a5a")};
-  --color-text: ${v("主文字", "#333")};
-  --color-accent: ${v("强调色", "#c4276f")};
-  --color-accent-hover: ${v("强调悬浮", "#e84a8a")};
-  --color-chat-bg: ${v("聊天背景", "#fce4ec")};
-  --color-divider: ${v("分割线", "#e8a0b0")};
-  --color-settings-bg: ${v("深表面色", "#3e1a2e")};
-  --color-settings-card: ${v("卡片背景", "#2a1020")};
-  --color-text-muted: ${v("暗文字", "#8a6080")};
-  --color-text-bright: ${v("亮文字", "#f0e0f0")};
-  --color-text-pink: ${v("粉色文字", "#f0a0c0")};
-  --color-accent-light: ${accentLight};
-  --color-accent-shadow: ${v("强调色", "#c4276f").replace(")", ",0.15)").replace("rgb", "rgba")};
-  --color-surface-dark: ${v("表面色", "#4a2540")};
-  --color-surface-darker: ${v("深表面色", "#3e1a2e")};
-  --color-surface-deep: ${v("卡片背景", "#2a1020")};
-  --color-surface-deepest: ${v("深表面色", "#3e1a2e")};
-  --color-border-light: ${v("表面色", "#4a2540")};
-  --color-border-input: ${v("输入边框", "#6a4060")};
-  --color-border-gradient: ${v("标题栏渐变起", "#f7a8c4")}, ${v("标题栏渐变止", "#c4276f")};
-  --color-titlebar-gradient-start: ${v("标题栏渐变起", "#f7a8c4")};
-  --color-titlebar-gradient-end: ${v("标题栏渐变止", "#c4276f")};
-  --color-titlebar-border-top: ${v("标题栏渐变起", "#f7a8c4")};
-  --color-titlebar-border-bottom: ${v("边框", "#a01a5a")};
-  --color-titlebar-text: ${v("标题栏文字", "#fff")};
-  --color-titlebar-btn-bg: ${v("标题栏文字", "#fff").replace(")", ",0.2)").replace("rgb", "rgba")};
-  --color-titlebar-btn-border: ${v("标题栏文字", "#fff").replace(")", ",0.3)").replace("rgb", "rgba")};
-  --color-titlebar-btn-hover-bg: ${v("标题栏文字", "#fff").replace(")", ",0.4)").replace("rgb", "rgba")};
-  --color-titlebar-btn-hover-border: ${v("标题栏文字", "#fff").replace(")", ",0.5)").replace("rgb", "rgba")};
-  --color-titlebar-close-hover: #c42b1c;
-  --color-scrollbar-track: rgba(0,0,0,0.15);
-  --color-scrollbar-thumb: ${textPinkLight};
-  --color-scrollbar-thumb-hover: ${v("粉色文字", "#f0a0c0").replace(")", ",0.5)").replace("rgb", "rgba")};
-  --color-scrollbar-thumb-drag: ${v("粉色文字", "#f0a0c0").replace(")", ",0.65)").replace("rgb", "rgba")};
-  --color-dropdown-bg: ${v("卡片背景", "#2a1020")};
-  --color-dropdown-border: ${v("输入边框", "#6a4060")};
-  --color-dropdown-hover-bg: ${v("表面色", "#4a2540")};
-  --color-dropdown-shadow: rgba(0,0,0,0.4);
-  --color-dropdown-desc: ${v("暗文字", "#8a6080")};
-  --color-overlay-bg: ${v("遮罩", "rgba(30,8,16,0.7)")};
-  --color-confirm-bg: ${v("卡片背景", "#2a1020")};
-  --color-confirm-border: ${v("表面色", "#4a2540")};
-  --color-confirm-text: ${v("亮文字", "#f0e0f0")};
-  --color-tool-status-bg: ${v("遮罩", "rgba(30,8,16,0.7)")};
-  --color-tool-status-border: ${v("表面色", "#4a2540")};
-  --color-system-msg-bg: ${v("表面色", "#4a2540").replace(")", ",0.3)").replace("rgb", "rgba")};
-  --color-system-msg-border: ${v("暗文字", "#8a6080").replace(")", ",0.2)").replace("rgb", "rgba")};
-  --color-notif-bg: ${v("深表面色", "#3e1a2e").replace(")", ",0.9)").replace("rgb", "rgba")};
-  --color-notif-border: ${v("强调色", "#c4276f").replace(")", ",0.2)").replace("rgb", "rgba")};
-  --color-notif-hover-bg: ${v("深表面色", "#3e1a2e").replace(")", ",0.95)").replace("rgb", "rgba")};
-  --color-notif-hover-border: ${v("强调色", "#c4276f").replace(")", ",0.45)").replace("rgb", "rgba")};
-  --color-notif-close-hover-bg: ${v("强调色", "#c4276f").replace(")", ",0.35)").replace("rgb", "rgba")};
-  --color-debug-text: ${v("暗文字", "#8a6080")};
-  --color-debug-dim-text: ${v("暗文字", "#8a6080")};
-  --color-debug-dim-hover-text: ${v("亮文字", "#f0e0f0")};
-  --color-debug-tool-text: #a0c0f0; --color-debug-tool-hover-text: #c0e0ff;
-  --color-debug-mcp: #f0c060; --color-debug-skill: #60f0a0;
-  --color-debug-empty: ${v("暗文字", "#8a6080")};
-  --color-contextmenu-bg: ${v("深表面色", "#3e1a2e")};
-  --color-contextmenu-border: ${v("边框", "#a01a5a")};
-  --color-contextmenu-text: ${v("亮文字", "#f0e0f0")};
-  --color-contextmenu-hover-bg: ${v("强调色", "#c4276f")};
-  --color-contextmenu-hover-text: #fff;
-  --color-tab-bar-bg: ${v("深表面色", "#3e1a2e")};
-  --color-tab-bar-border: ${v("表面色", "#4a2540")};
-  --color-tab-inactive-bg: ${v("表面色", "#4a2540")};
-  --color-tab-inactive-text: ${v("暗文字", "#8a6080")};
-  --color-tab-hover-bg: ${v("表面色", "#4a2540")};
-  --color-tab-hover-text: ${v("亮文字", "#f0e0f0")};
-  --color-tab-active-bg: ${v("强调色", "#c4276f")};
-  --color-tab-active-text: #fff;
-  --color-history-bg: ${v("卡片背景", "#2a1020")};
-  --color-history-item-border: ${v("表面色", "#4a2540")};
-  --color-history-item-hover-bg: ${v("表面色", "#4a2540")};
-  --color-history-topic-text: ${v("亮文字", "#f0e0f0")};
-  --color-history-meta-text: ${v("暗文字", "#8a6080")};
-  --color-glass-bg: ${glassBg}; --color-glass-blur: ${glassBlur};
-  --font-mono: "Courier New", monospace; --font-notification: "Microsoft YaHei", sans-serif;
-  --font-line-height: 1.6;
-}`;
-
-  if (glassActive) {
-    // 桌面玻璃只作用于主窗口（#root）：设置窗口是常规窗口，底色由自身主题决定
-    // （实色白底/卡片色），不透出桌面
-    const glassCss = `
-#root { backdrop-filter: blur(${glassBlur}); -webkit-backdrop-filter: blur(${glassBlur}); background: ${glassBg}; }`;
-    _cssVarStyleEl = document.createElement("style");
-    _cssVarStyleEl.textContent = css + glassCss;
-  } else {
-    _cssVarStyleEl = document.createElement("style");
-    _cssVarStyleEl.textContent = css;
-  }
-  document.head.appendChild(_cssVarStyleEl);
-}
-
-// ── 资源 URL ──
-
-/**
- * 1×1 透明 PNG。
- *
- * `<img src="">` 是非法值：浏览器会把它解析成文档地址（dev server 地址，端口取自 `tauri.conf.json` 的 `build.devUrl`），
- * 于是启动阶段每个还没拿到 Profile 的图片都产生一条资源加载失败。
- * 用透明占位代替空串，等 Profile 就绪后 activeProfileRevision 会触发重算。
- */
-const PENDING_IMAGE =
-  "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==";
-
-/**
- * Profile 自带 UI 位图的 URL；Profile 未就绪时返回透明占位图。
- * 一律从 Profile 自身的 ui/ 取 —— 自包含闭包，不再借用默认 Profile 的位图。
- */
-export function getUiUrl(relativePath: string): string {
-  const p = getActiveProfile();
-  if (!p) return PENDING_IMAGE;
-  return resolveProfileAssetUrl(p, `ui/${relativePath}`);
-}
-
 export function getActiveProfile(): ProfileData | null {
-  // 保留函数式读取接口，同时建立 Vue 的响应式依赖。
-  void activeProfileRevision.value;
   if (!activeId) return null;
   return profiles.get(activeId) || null;
 }
@@ -481,25 +226,10 @@ export function getProfile(id: string): ProfileData | undefined {
 
 export function isProfilesLoaded(): boolean { return loaded; }
 
-export function getBodyUrl(profile?: ProfileData): string {
-  const p = profile || getActiveProfile();
-  if (!p) return "";
-  return resolveProfileAssetUrl(p, "materials/L2/body.png");
-}
-
-export function getCharacterScale(): number {
-  return getActiveProfile()?.character.scale ?? 1.0;
-}
-
-export function getCharacterScaleMode(): string {
-  return getActiveProfile()?.character.scaleMode || "pixelated";
-}
-
 /** 轻量读 meta（设置页列 Profile 用）：只取 meta、不进缓存 —— 内存里只留激活 Profile。 */
 export async function readProfileMeta(id: string): Promise<ProfileMeta | null> {
   try {
-    const base = await resolveProfileBaseUrl(id)
-    const raw = await fetchYaml<any>(`${base}/profile.yaml`)
+    const raw = await readProfileYaml<any>(id, "profile.yaml")
     return {
       name: raw?.meta?.name || id,
       description: raw?.meta?.description || "",
@@ -512,10 +242,3 @@ export async function readProfileMeta(id: string): Promise<ProfileMeta | null> {
 }
 
 /** 获取灵动图层素材 URL，从 profile parallax.image 字段解析 */
-export function getParallaxLayerUrl(layerIndex: number, profile?: ProfileData): string | null {
-  const p = profile || getActiveProfile();
-  if (!p) return null;
-  const layer = p.theme.parallax.layers[layerIndex];
-  if (!layer || !layer.image) return null;
-  return resolveProfileAssetUrl(p, layer.image);
-}

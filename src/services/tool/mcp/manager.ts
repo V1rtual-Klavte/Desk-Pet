@@ -1,6 +1,6 @@
 // ==========================================
 // MCP Manager —— 管理 MCP Server 连接
-// MCP stdio/SSE 管理
+// MCP stdio/http 管理
 // ==========================================
 
 import { toolsConfig, setOverride } from "@/services/config"
@@ -13,10 +13,12 @@ const log = createLogger("MCP")
 
 export interface McpServerConfig {
   name: string
-  transport: "stdio" | "sse"
+  transport: "stdio" | "http"
   command?: string
   args?: string[]
   url?: string
+  /** 附加请求头（仅 http）。值里的 `${VAR}` 只从本服务器 env 展开，见 client 的 expandHeaders。 */
+  headers?: Record<string, string>
   env?: Record<string, string>
   /** 仅发现这些原始 MCP 工具名；空数组表示不暴露任何工具。 */
   includeTools?: string[]
@@ -26,12 +28,12 @@ export interface McpServerConfig {
 }
 
 /**
- * 归一化 env：只保留「非空键名 + 非空字符串值」的键值对。
+ * 归一化「字符串键值对」：env 与 headers 共用同一纪律，只保留「非空键名 + 非空字符串值」。
  * - 返回 `undefined` 表示未提供（调用方据此决定是否沿用旧值）
  * - 返回 `{}` 表示显式清空
- * 空值视为「未配置」：CONFIG 里的 `KEY: ""` 占位不应覆盖父进程已导出的同名变量。
+ * 空值视为「未配置」：env 里 CONFIG 的 `KEY: ""` 占位不应覆盖父进程已导出的同名变量。
  */
-function normalizeEnv(raw: unknown): Record<string, string> | undefined {
+function normalizeStringMap(raw: unknown): Record<string, string> | undefined {
   if (!raw || typeof raw !== "object" || Array.isArray(raw)) return undefined
   const out: Record<string, string> = {}
   for (const [k, v] of Object.entries(raw as Record<string, unknown>)) {
@@ -85,12 +87,14 @@ function configServersSource(): string {
 
 function toServerConfig(s: any): McpServerConfig {
   return {
+    // sse 已弃用且不做兼容映射：只有显式 "http" 才是 http，其余一律按 stdio 读。
     name: String(s.name || ""),
-    transport: (s.transport === "sse" ? "sse" : "stdio") as "stdio" | "sse",
+    transport: (s.transport === "http" ? "http" : "stdio") as "stdio" | "http",
     command: s.command ? String(s.command) : undefined,
     args: s.args ? (Array.isArray(s.args) ? s.args.map(String) : [String(s.args)]) : undefined,
     url: s.url ? String(s.url) : undefined,
-    env: normalizeEnv(s.env),
+    headers: normalizeStringMap(s.headers),
+    env: normalizeStringMap(s.env),
     includeTools: Array.isArray(s.includeTools) ? s.includeTools.map(String) : undefined,
     excludeTools: Array.isArray(s.excludeTools) ? s.excludeTools.map(String) : undefined,
     enabled: s.enabled !== false,
@@ -107,54 +111,6 @@ function ensureServersLoaded(): void {
   if (mcpServers.length > 0) log.info("MCP 服务器列表已从 CONFIG 加载:", mcpServers.length, "个")
 }
 
-// ── 内置 MCP 服务器 ──
-
-/** 获取内置 MCP 服务器列表（从 CONFIG 读取） */
-export function getBuiltinServers(): McpServerConfig[] {
-  const raw = toolsConfig.builtinMcpServers
-  if (!raw || typeof raw !== "object") return []
-  return Object.entries(raw).map(([name, def]) => ({
-    name,
-    transport: "stdio" as const,
-    command: def.command || "npx",
-    args: Array.isArray(def.args) ? def.args : [],
-    url: undefined,
-    env: normalizeEnv(def.env),
-    includeTools: Array.isArray((def as any).includeTools) ? (def as any).includeTools.map(String) : undefined,
-    excludeTools: Array.isArray((def as any).excludeTools) ? (def as any).excludeTools.map(String) : undefined,
-    enabled: def.enabled !== false,
-  }))
-}
-
-/** 判断是否为内置 MCP 服务器 */
-export function isBuiltinMcp(name: string): boolean {
-  const raw = toolsConfig.builtinMcpServers
-  return !!(raw && typeof raw === "object" && name in raw)
-}
-
-/** 获取某个内置 MCP 的描述 */
-export function getBuiltinMcpDescription(name: string): string {
-  const raw = toolsConfig.builtinMcpServers
-  if (!raw || typeof raw !== "object") return ""
-  const def = (raw as any)[name]
-  return def?.description ?? ""
-}
-
-/** 同步内置 MCP 配置到 CONFIG 覆盖层 */
-export function setBuiltinMcpConfig(name: string, config: Partial<{ enabled: boolean; args: string[]; env: Record<string, string> }>): void {
-  const raw = toolsConfig.builtinMcpServers
-  if (!raw || typeof raw !== "object") return
-  const current = (raw as any)[name] as Record<string, unknown> | undefined
-  if (!current) return
-  if (isServerBusy(name)) throw new Error(MCP_BUSY_ERROR)
-  // 设置页只编辑 enabled/args/env；其余源字段（尤其 includeTools/excludeTools）必须原样保留。
-  const updated: Record<string, unknown> = { ...current }
-  if (config.enabled !== undefined) updated.enabled = config.enabled
-  if (config.args !== undefined) updated.args = config.args
-  if (config.env !== undefined) updated.env = config.env
-  setOverride("tools.mcp.builtin", { ...raw, [name]: updated })
-}
-
 // ── MCP 服务器动态管理 ──
 
 /** 获取所有 MCP 服务器配置 */
@@ -164,7 +120,7 @@ export function getMcpServers(): McpServerConfig[] {
 }
 
 /**
- * 设置面板未编辑的高级字段要沿用同名服务器，避免常规保存把 filter 静默清掉。
+ * 设置面板未编辑的高级字段要沿用同名服务器，避免常规保存把 env/headers 与 filter 静默清掉。
  */
 function inheritEnv(server: McpServerConfig): McpServerConfig {
   const old = mcpServers.find(s => s.name === server.name)
@@ -172,6 +128,7 @@ function inheritEnv(server: McpServerConfig): McpServerConfig {
   return {
     ...server,
     env: server.env ?? old.env,
+    headers: server.headers ?? old.headers,
     includeTools: server.includeTools ?? old.includeTools,
     excludeTools: server.excludeTools ?? old.excludeTools,
   }
@@ -219,7 +176,7 @@ export async function removeMcpServer(name: string): Promise<boolean> {
   return true
 }
 
-/** 同步服务器列表到 CONFIG 覆盖层（env 为 undefined 时 js-yaml 不落键） */
+/** 同步服务器列表到 CONFIG 覆盖层（env/headers 为 undefined 时 js-yaml 不落键） */
 function syncServersToConfig(): void {
   setOverride("tools.mcp.servers", mcpServers.map(s => ({
     name: s.name,
@@ -227,6 +184,7 @@ function syncServersToConfig(): void {
     command: s.command,
     args: s.args,
     url: s.url,
+    headers: s.headers,
     env: s.env,
     includeTools: s.includeTools,
     excludeTools: s.excludeTools,
@@ -246,13 +204,22 @@ export async function importMcpServersFromJson(json: string): Promise<{ success:
   try {
     const arr = JSON.parse(json)
     if (!Array.isArray(arr)) return { success: false, count: 0, error: "JSON 必须是数组格式" }
+    // transport 认 item.transport 或 item.type（外部客户端导出的 JSON 两种字段都有）。
+    // sse 已弃用：不静默映射，列出条目名拒绝；其余非 http 的值按 stdio 处理（与 CONFIG 读取同一口径）。
+    const sseNames = arr
+      .filter((item: any) => (item?.transport ?? item?.type) === "sse")
+      .map((item: any) => String(item?.name || "") || "（未命名条目）")
+    if (sseNames.length > 0) {
+      return { success: false, count: 0, error: `transport 为 sse 已弃用，请改为 http 并填 url：${sseNames.join("、")}` }
+    }
     const servers = arr.map((item: any) => ({
       name: String(item.name || ""),
-      transport: (item.transport === "sse" ? "sse" : "stdio") as "stdio" | "sse",
+      transport: ((item.transport ?? item.type) === "http" ? "http" : "stdio") as "stdio" | "http",
       command: item.command ? String(item.command) : undefined,
       args: item.args ? (Array.isArray(item.args) ? item.args.map(String) : [String(item.args)]) : undefined,
       url: item.url ? String(item.url) : undefined,
-      env: normalizeEnv(item.env),
+      headers: normalizeStringMap(item.headers),
+      env: normalizeStringMap(item.env),
       includeTools: Array.isArray(item.includeTools) ? item.includeTools.map(String) : undefined,
       excludeTools: Array.isArray(item.excludeTools) ? item.excludeTools.map(String) : undefined,
       enabled: item.enabled !== false,
@@ -307,7 +274,7 @@ function clearPendingOwner(name: string, owner: string): void {
 
 function findServer(name: string): McpServerConfig | undefined {
   ensureServersLoaded()
-  return getBuiltinServers().find(server => server.name === name) ?? mcpServers.find(server => server.name === name)
+  return mcpServers.find(server => server.name === name)
 }
 
 function filterDiscoveredTools<T extends { name: string }>(server: McpServerConfig, tools: T[]): T[] {
@@ -335,11 +302,11 @@ async function connectMcpServerUnlocked(server: McpServerConfig): Promise<McpCon
     if (connectedClients.has(server.name)) await disconnectMcpServerUnlocked(server.name)
     const { McpClient } = await import("./client")
     client = new McpClient(server.name)
-    if (server.transport !== "stdio" || !server.command) {
-      return { success: false, toolCount: 0, error: `不支持的传输方式: ${server.transport}` }
-    }
-    if (!await client.connect(server.command, server.args ?? [], server.env)) {
-      return { success: false, toolCount: 0, error: "连接失败" }
+    const connection = await client.connect(server)
+    if (!connection.success) {
+      // 配置性错误（未知传输 / 缺 command|url / headers 变量缺失）由 connect 给出具体原因；
+      // 其余连接失败统一收成「连接失败」。
+      return { success: false, toolCount: 0, error: connection.error ?? "连接失败" }
     }
     const toolSchemas = filterDiscoveredTools(server, await client.listTools())
     if (toolSchemas.length === 0) return { success: true, toolCount: 0 }
@@ -398,10 +365,12 @@ export async function disconnectMcpServer(name: string): Promise<void> {
 }
 
 // ── 空闲保活 ──
-// 连接跨回合保活：末位 owner 释放后不立刻杀进程，等空闲宽限到点再断开。
-// 连续对话因此复用同一条连接（消除每条消息 1.5–3s 的 npx 启动），空闲或配置撤下后仍然释放；
-// 宽限期是模块常量（实现细节，不进 CONFIG），进程退出由 disconnectAllMcpServers 兜底。
+// 连接跨回合保活：末位 owner 释放后不立刻断开，等空闲宽限到点再回收。
+// 连续对话因此复用同一条连接（stdio 消除每条消息 1.5–3s 的 npx 启动），空闲或配置撤下后仍然释放；
+// 宽限期按传输分级（模块常量，实现细节，不进 CONFIG），进程退出由 disconnectAllMcpServers 兜底。
 const MCP_IDLE_GRACE_MS = 120_000
+/** http 无子进程可回收、重建只是一次 HTTP 握手：宽限用短档，连接结束得更干净。 */
+const MCP_HTTP_IDLE_GRACE_MS = 30_000
 const idleReleaseTimers = new Map<string, ReturnType<typeof setTimeout>>()
 
 function cancelIdleRelease(name: string): void {
@@ -414,13 +383,14 @@ function cancelIdleRelease(name: string): void {
 
 function scheduleIdleRelease(name: string): void {
   cancelIdleRelease(name)
+  const graceMs = findServer(name)?.transport === "http" ? MCP_HTTP_IDLE_GRACE_MS : MCP_IDLE_GRACE_MS
   const timer = setTimeout(() => {
     idleReleaseTimers.delete(name)
     void withServerLock(name, async () => {
       if (hasOwners(name)) return
       await disconnectMcpServerUnlocked(name)
     }).catch(error => log.warn("MCP 空闲释放失败:", name, formatError(error)))
-  }, MCP_IDLE_GRACE_MS)
+  }, graceMs)
   // 浏览器计时器没有 unref：保活只是优化，不能拦住应用退出。
   ;(timer as unknown as { unref?: () => void }).unref?.()
   idleReleaseTimers.set(name, timer)

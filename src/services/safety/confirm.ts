@@ -1,13 +1,14 @@
 // ==========================================
-// 安全确认 UI 状态 —— Agent Loop 与 ChatPanel 的桥接
+// 安全确认 UI 状态 —— Agent Loop 与确认面的桥接
 // PermissionKernel 调用 requestPermissionConfirm() 返回 Promise
-// ChatPanel 监听 confirmState 渲染弹窗
-// 用户点击 → resolveConfirm() → Promise 完成 → Loop 继续
+// 确认面观察 confirmState（原生 UI：native-ui/permission-confirm.ts 投影成
+// deskpet-permission-confirm 事件并回收回执；测试宿主：confirm-channel 的同步 watcher）
+// 用户选择 → resolveConfirm()/resolvePermissionConfirm() → Promise 完成 → Loop 继续
 // ==========================================
 
 import { reactive } from "vue"
 import { createLogger } from "@/services/logger"
-import type { PermissionConfirmation, PermissionRequest } from "./permission"
+import type { EffectClass, PermissionConfirmation, PermissionRequest } from "./permission"
 
 const log = createLogger("SafetyConfirm")
 
@@ -24,10 +25,18 @@ export interface ConfirmRequest {
   id: string
   message: string
   toolName: string
-  sessionId?: string
-  runGeneration?: number
-  parameterSummary?: string
-  expiresAt?: number
+  sessionId: string
+  runGeneration: number
+  parameterSummary: string
+  expiresAt: number
+  /**
+   * 展示用身份（原生 UI 面板的 effect 类别与策略/输入指纹短前缀）。**不做任何判定** ——
+   * 权限终裁仍在 PermissionKernel，这里只是把确认请求的展示字段投影给 UI 观察者。
+   */
+  effectClass: EffectClass
+  inputHash: string
+  policyHash: string
+  toolCallId: string
   resolve: (decision: PermissionConfirmation) => void
 }
 
@@ -78,6 +87,9 @@ export function requestPermissionConfirm(request: PermissionRequest, signal?: Ab
       toolName: request.toolName, sessionId: request.sessionId, runGeneration: request.runGeneration,
       parameterSummary: request.parameterSummary,
       expiresAt: request.expiresAt,
+      // 展示用身份随待确认单槽一起投影（原生 UI 的面板请求从这里读，见 confirm.ts 头注释）。
+      effectClass: request.effectClass, inputHash: request.inputHash,
+      policyHash: request.policyHash, toolCallId: request.toolCallId,
       resolve: complete,
     }
   })

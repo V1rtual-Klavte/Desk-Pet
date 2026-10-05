@@ -14,11 +14,10 @@ import { formatError } from "@/services/error"
 const log = createLogger("Stages")
 
 // ── 加载模板 ──
-let stagesTemplate: string = ""
-const templateModules = import.meta.glob<{ default: string } | string>("./stages-prompt.md", { query: "?raw", eager: true })
-for (const [, mod] of Object.entries(templateModules)) {
-  stagesTemplate = typeof mod === "string" ? mod : (mod as { default: string }).default
-}
+// `?raw` 是两侧共有的文本装载形态：Vite（快层测试 / L4 SSR bundle）原生支持，
+// esbuild 侧由 `--loader:.md=text` 顶替（见 package.json 的 build:harness）。
+// 不再用 `import.meta.glob` —— 那是 Vite 专属形态，Node 领域包里不可求值。
+import stagesTemplate from "./stages-prompt.md?raw"
 
 // ── 类型 ──
 // 文件形态（StagePrompts / StageMap / FallbackReplies）由 stages-file 拥有，

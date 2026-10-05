@@ -4,13 +4,16 @@
 // 设置修改直接回写该 CONFIG 文件，不再使用 localStorage 作为配置层
 // ==========================================
 
-import rawConfig from "../../CONFIG.yaml";
-import { invoke } from "@tauri-apps/api/core";
+// CONFIG.yaml 是**内置默认模板**（运行期真实配置经 read_runtime_config 读数据根）：
+// 两种构建（Vite yaml 插件 / esbuild `--loader:.yaml=text`）统一交付 YAML 文本，
+// 这里用 js-yaml 解析成对象 —— 装载方式只有这一处，不为某个 bundler 保留第二种形状。
+import rawConfigText from "../../CONFIG.yaml";
 import { dump as dumpYaml, load as loadYaml } from "js-yaml";
+import { getHostBridge, getHostEnvironment } from "@/services/host";
 import { DEFAULT_PROFILE } from "@/services/paths";
 // 零依赖叶子：窗口语义的唯一定义点（默认 128k / 下限 64k），config 只做缺省引用。
 import { DEFAULT_CONTEXT_WINDOW } from "./context/budget";
-import { createLogger, LEVELS, LEVEL_ORDER, setLogLevel, type Level } from "@/services/logger";
+import { createLogger, LEVEL_ORDER, setLogLevel, type Level } from "@/services/logger";
 import { formatError, reportError } from "@/services/error";
 
 const log = createLogger("Config");
@@ -27,6 +30,8 @@ interface UserSettings {
   shortcutWinModifiers: string[];
   autoPopupOnMessage: boolean;
   effectMode: EffectMode;
+  /** 界面主题（产品级三套预设，与 Profile 正交） */
+  theme: ThemeId;
   parallaxIntensity: number;
   /** 全局字体家族名（用户系统已安装的字体）；空串 = 跟随系统默认字体栈 */
   fontFamily: string;
@@ -37,18 +42,102 @@ interface UserSettings {
 /**
  * 全局字号（`appearance.font.size`）的取值范围与默认值。
  *
- * 默认 15 与改造前聊天文本的实际渲染一致（旧 `--font-size` 变量没有消费者，
- * 聊天文本由 clamp 上限 15px 决定）；字体服务在配置值非法时也回退到它。
+ * 默认 15 延续聊天文本的实际渲染尺寸（15px；`--font-size` 变量没有消费者，
+ * 文本尺寸由 clamp 上限决定）。字体服务在配置值非法时也回退到它。
  */
 export const MIN_FONT_SIZE = 10
 export const MAX_FONT_SIZE = 24
 export const DEFAULT_FONT_SIZE = 15
 
 /**
- * 角色展示效果。单字段枚举 —— 灵动图层与景深互斥，
- * 用两个 bool 会允许同时为真；off 时按静态立绘渲染。
+ * 角色展示效果。单字段枚举 —— 用两个 bool 会允许同时为真；off 时按静态立绘渲染。
+ * 取值定型为 off | parallax；非法枚举（含已删除的 dof）按读取期规则收拢，见 readEffectMode。
  */
-export type EffectMode = "off" | "parallax" | "dof"
+export type EffectMode = "off" | "parallax"
+
+/** 合法展示模式判定 —— 读取期收拢与设置页诊断共用，不建第二个校验点。 */
+export function isEffectMode(raw: unknown): raw is EffectMode {
+  return raw === "off" || raw === "parallax"
+}
+
+/**
+ * 读取期收拢 `appearance.effectMode`（CONFIG 是用户可手写的 YAML）。
+ *
+ * 与其它字段的读取期规则一致：不把非法值透传给运行内核，也不为某个旧取值（如 dof）
+ * 写专项兼容映射 —— 合法枚举之外一律按保守默认 `off` 读取。非法值只记一条中性诊断
+ * （同一取值只提示一次），修正入口是设置页「外观 → 角色展示效果」。
+ *
+ * 只读：启动/读配置不写盘；最终有效值只在用户经设置页明确保存时由 userConfig.effectMode
+ * 的 setter 写回。
+ */
+let warnedInvalidEffectMode: string | null = null
+function readEffectMode(raw: unknown): EffectMode {
+  if (isEffectMode(raw)) return raw
+  if (raw !== undefined && raw !== null) {
+    const text = String(raw)
+    if (warnedInvalidEffectMode !== text) {
+      warnedInvalidEffectMode = text
+      log.warn(`appearance.effectMode 取值非法（${text}），已按 off 读取；请在设置页「外观 → 角色展示效果」重新选择并保存`)
+    }
+  }
+  return "off"
+}
+
+/**
+ * 界面主题：三套产品级预设，用户只能三选一，不能改值。
+ *
+ * 与 Profile **正交** —— 主题属于产品外观，住在 CONFIG；Profile 只管角色
+ * （灵动图层与素材）。换 Profile 不换主题，换主题不换 Profile。
+ * token 表与绘制实现在 Rust 侧 `crates/native-host/src/ui/theme/`，
+ * 本类型只做「读配置 + 收拢非法值 + 推送宿主」。
+ */
+export type ThemeId = "brushed" | "chrome" | "verdigris" | "nightfall" | "azurite"
+
+/** 主题的合法取值清单（设置页下拉与校验共用，不建第二个校验点）。 */
+export const THEME_IDS: readonly ThemeId[] = [
+  "brushed",
+  "chrome",
+  "verdigris",
+  "nightfall",
+  "azurite",
+]
+
+/** 主题中文显示名（设置页下拉标签）。 */
+export const THEME_LABELS: Record<ThemeId, string> = {
+  brushed: "拉丝金属",
+  chrome: "铬",
+  verdigris: "铜绿",
+  nightfall: "暮蓝",
+  azurite: "青花",
+}
+
+/** 默认主题。与 Rust 侧 `ThemeId::default()` 一致（拉丝金属）。 */
+export const DEFAULT_THEME: ThemeId = "brushed"
+
+/** 合法主题判定 —— 读取期收拢与设置页诊断共用。 */
+export function isThemeId(raw: unknown): raw is ThemeId {
+  return typeof raw === "string" && (THEME_IDS as readonly string[]).includes(raw)
+}
+
+/**
+ * 读取期收拢 `appearance.theme`（CONFIG 是用户可手写的 YAML）。
+ *
+ * 与 `readEffectMode` 同款规则：不把非法值透传给宿主，也不为旧取值写兼容映射 ——
+ * 合法枚举之外一律按默认 `brushed` 读取，不写盘。非法值只记一条中性诊断
+ * （同一取值只提示一次），修正入口是设置页「外观 → 界面主题」。
+ */
+let warnedInvalidTheme: string | null = null
+function readThemeId(raw: unknown): ThemeId {
+  if (isThemeId(raw)) return raw
+  if (raw !== undefined && raw !== null) {
+    const text = String(raw)
+    if (warnedInvalidTheme !== text) {
+      warnedInvalidTheme = text
+      log.warn(`appearance.theme 取值非法（${text}），已按 ${DEFAULT_THEME} 读取；请在设置页「外观 → 界面主题」重新选择并保存`)
+    }
+  }
+  return DEFAULT_THEME
+}
 
 /**
  * 用户可选的投递意图：steer=插话（当前响应及工具批次结束后处理），
@@ -58,16 +147,6 @@ export type DeliveryIntent = "steer" | "followUp"
 
 /** 队列批量策略：all=同一安全边界前积压的补充一起进入下一次请求；one-at-a-time=逐条。 */
 export type QueueMode = "all" | "one-at-a-time"
-
-export interface BuiltinMcpServer {
-  includeTools?: string[]
-  excludeTools?: string[]
-  enabled: boolean
-  command: string
-  args: string[]
-  env?: Record<string, string>
-  description?: string
-}
 
 interface Config {
   general: {
@@ -85,14 +164,6 @@ interface Config {
     }
     logging: { level: "debug" | "info" | "warn" | "error" }
     errors: { overlay: "auto" | "always" | "never" }
-    /**
-     * 已退役：桌面观察改为原生事件驱动，不再有轮询间隔，运行期没有任何消费者。
-     * 键仍随文件读写往返（不提供 UI），待统一批次从 CONFIG.yaml 删除；
-     * 新代码不要读取它，也不要为它建立 getter。
-     */
-    desktop?: {
-      pollingIntervalMs: number
-    }
   }
   ai: {
     provider: string
@@ -171,13 +242,20 @@ interface Config {
     bash: { whitelist: string[] }
     mcp: {
       servers: Record<string, unknown>[]
-      builtin: Record<string, BuiltinMcpServer>
     }
   }
   appearance: {
     activeProfile: string
-    /** 角色展示效果，唯一开关；灵动图层与景深互斥 */
+    /** 角色展示效果，唯一开关：off | parallax（非法值按读取期规则收拢，见 readEffectMode） */
     effectMode?: EffectMode
+    /** 界面主题：brushed | chrome | verdigris | nightfall | azurite（非法值按读取期规则收拢，见 readThemeId） */
+    theme?: ThemeId
+    /**
+     * 聊天图片自动预览：关闭（默认）时历史只显示占位、不读取图片字节；开启时只为
+     * 当前可见消息按需加载内联预览。只影响聊天历史的内联呈现，不影响模型看图、
+     * 图片选择/发送、截图与 JSONL 里的原路径。
+     */
+    chatImagePreview?: boolean
     /** 灵动图层的全局强度；逐层素材与参数在 Profile 的 theme.parallax.layers */
     parallax?: {
       intensity: number
@@ -190,6 +268,9 @@ interface Config {
     soundAssignments?: Record<string, string>
   }
 }
+
+/** 内置默认的 CONFIG.yaml（模块级解析一次；initConfig 前与读取失败时的兜底值）。 */
+const rawConfig = loadYaml(rawConfigText) as Config;
 
 let cfg = structuredClone(rawConfig) as Config;
 let configInitialized = false
@@ -224,12 +305,17 @@ function isConfig(value: unknown): value is Config {
 
 export async function initConfig(): Promise<void> {
   if (configInitialized) return
-  const text = await invoke<string>("read_runtime_config")
+  const text = await getHostBridge().request("read_runtime_config", {})
   const parsed = loadYaml(text)
   if (!isConfig(parsed)) throw new Error("CONFIG 缺少 general/ai/tools/appearance 根节点")
   cfg = parsed
   leadingComments = extractLeadingComments(text)
   configInitialized = true
+  // 开发模式打印一次生效来源（原为模块加载期的 dev 日志；模块加载早于配置读取与
+  // 环境端口注入，移到读取成功点才有真实值）。
+  if (getHostEnvironment().runtimeMode === "development") {
+    log.info("已加载运行时 CONFIG | AI:", aiConfig.provider, "| endpoint:", aiConfig.endpoint)
+  }
 }
 
 export async function reloadConfig(): Promise<void> {
@@ -253,7 +339,7 @@ const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve,
 async function writeConfigFile(content: string): Promise<void> {
   for (let attempt = 0; ; attempt++) {
     try {
-      await invoke<void>("write_runtime_config", { content })
+      await getHostBridge().request("write_runtime_config", { content })
       return
     } catch (error) {
       if (attempt >= WRITE_MAX_RETRIES) throw error
@@ -321,7 +407,8 @@ const USER_DEFAULTS: UserSettings = {
   shortcutMacModifiers: cfg.general?.shortcut?.macModifiers || ["Control", "Command"],
   shortcutWinModifiers: cfg.general?.shortcut?.winModifiers || ["Control", "Alt"],
   autoPopupOnMessage: cfg.general?.popup?.autoPopupOnMessage ?? false,
-  effectMode: cfg.appearance?.effectMode ?? "off",
+  effectMode: readEffectMode(cfg.appearance?.effectMode),
+  theme: readThemeId(cfg.appearance?.theme),
   parallaxIntensity: cfg.appearance?.parallax?.intensity ?? 1.0,
   fontFamily: cfg.appearance?.font?.family ?? "",
   fontSize: cfg.appearance?.font?.size ?? DEFAULT_FONT_SIZE,
@@ -337,7 +424,8 @@ function loadUserOverrides(): UserSettings {
     shortcutMacModifiers: cfg.general?.shortcut?.macModifiers ?? USER_DEFAULTS.shortcutMacModifiers,
     shortcutWinModifiers: cfg.general?.shortcut?.winModifiers ?? USER_DEFAULTS.shortcutWinModifiers,
     autoPopupOnMessage: cfg.general?.popup?.autoPopupOnMessage ?? USER_DEFAULTS.autoPopupOnMessage,
-    effectMode: cfg.appearance?.effectMode ?? USER_DEFAULTS.effectMode,
+    effectMode: readEffectMode(cfg.appearance?.effectMode),
+    theme: readThemeId(cfg.appearance?.theme),
     parallaxIntensity: cfg.appearance?.parallax?.intensity ?? USER_DEFAULTS.parallaxIntensity,
     fontFamily: cfg.appearance?.font?.family ?? USER_DEFAULTS.fontFamily,
     fontSize: cfg.appearance?.font?.size ?? USER_DEFAULTS.fontSize,
@@ -354,6 +442,7 @@ function saveUserOverrides(s: UserSettings): void {
   cfg.general.shortcut.macModifiers = s.shortcutMacModifiers
   cfg.general.shortcut.winModifiers = s.shortcutWinModifiers
   cfg.appearance.effectMode = s.effectMode
+  cfg.appearance.theme = s.theme
   cfg.appearance.parallax = {
     intensity: s.parallaxIntensity,
   }
@@ -393,6 +482,8 @@ export const userConfig = {
   set autoPopupOnMessage(v: boolean) { const u = loadUserOverrides(); u.autoPopupOnMessage = v; saveUserOverrides(u); },
   get effectMode() { return getUser().effectMode; },
   set effectMode(v: EffectMode) { const u = loadUserOverrides(); u.effectMode = v; saveUserOverrides(u); },
+  get theme() { return getUser().theme; },
+  set theme(v: ThemeId) { const u = loadUserOverrides(); u.theme = v; saveUserOverrides(u); },
   get parallaxIntensity() { return getUser().parallaxIntensity; },
   set parallaxIntensity(v: number) { const u = loadUserOverrides(); u.parallaxIntensity = v; saveUserOverrides(u); },
   get fontFamily() { return getUser().fontFamily; },
@@ -437,6 +528,41 @@ export function getAllOverrides(): Record<string, any> {
   return cloneConfig() as unknown as Record<string, any>
 }
 
+/**
+ * 内置默认 CONFIG 的深拷贝（设置窗「↺ 默认」的唯一默认值来源）。
+ *
+ * 默认值只在 `CONFIG.yaml` 模板定义（模块级解析的 `rawConfig`）；调用方不得
+ * 复制默认值、不得改返回值（深拷贝隔离）。
+ */
+export function getBundledDefaults(): Record<string, any> {
+  return structuredClone(rawConfig) as unknown as Record<string, any>
+}
+
+/** 导出当前运行时 CONFIG 的 YAML 文本（含头部注释；设置窗「导出配置」用）。 */
+export function exportConfigYaml(): string {
+  return serializeConfig()
+}
+
+/**
+ * 导入整份 CONFIG（设置窗「导入配置」）：解析 → 校验根节点 → 替换内存配置 →
+ * 原子写盘 → 重应用日志级别。
+ *
+ * 校验失败在替换内存之前抛出（磁盘与内存都不变）；写盘失败如实抛出（内存已替换、
+ * 磁盘未落，与设置保存同口径：错误摆给用户，由用户重试）。导入文件是完整配置
+ * （含嵌套结构），缺键由各 getter 的既有兜底承担，不在这里补默认值。
+ */
+export async function importConfigYaml(text: string): Promise<void> {
+  const parsed = loadYaml(text)
+  if (!isConfig(parsed)) {
+    throw new Error("导入的 CONFIG 缺少 general/ai/tools/appearance 根节点")
+  }
+  cfg = parsed
+  leadingComments = extractLeadingComments(text)
+  queueConfigSave()
+  await flushConfig()
+  applyLogLevel()
+}
+
 function overrideOr<T>(key: string, fallback: T): T {
   const ov = getAtPath(key);
   return ov !== undefined ? (ov as T) : fallback;
@@ -452,9 +578,10 @@ export const generalConfig = {
   get shortcutKey() { return overrideOr("general.shortcut.key", cfg.general?.shortcut?.key ?? "P"); },
   get shortcutMacModifiers() { return overrideOr("general.shortcut.macModifiers", cfg.general?.shortcut?.macModifiers ?? ["Control", "Command"]); },
   get shortcutWinModifiers() { return overrideOr("general.shortcut.winModifiers", cfg.general?.shortcut?.winModifiers ?? ["Control", "Alt"]); },
-  get loggingLevel() { return overrideOr("general.logging.level", cfg.general?.logging?.level ?? (import.meta.env.DEV ? "debug" : "info")) as "debug" | "info" | "warn" | "error"; },
-  // general.desktop.pollingIntervalMs 已退役（原生事件驱动，无轮询间隔）：没有 getter，
-  // 运行期无消费者；键暂留 CONFIG.yaml，待统一批次删除。
+  get loggingLevel() { return overrideOr("general.logging.level", cfg.general?.logging?.level ?? (getHostEnvironment().runtimeMode === "development" ? "debug" : "info")) as "debug" | "info" | "warn" | "error"; },
+  // `general.desktop.pollingIntervalMs` 已随退役批次彻底删除（原生事件驱动，无轮询间隔）：
+  // 没有 getter、无运行期消费者，键与类型块已从 CONFIG.yaml / CONFIG-DEV.yaml.example /
+  // 本文件的类型定义里一并移除，原生设置窗的 schema 字段同批删除。不存在兼容读取。
 };
 
 /**
@@ -465,9 +592,10 @@ export const generalConfig = {
  * 保存任何设置都会把 `level: debug` 静默写进 CONFIG-DEV.yaml。
  */
 export function computeLogLevel(): Level {
-  const env = import.meta.env.VITE_LOG_LEVEL as Level | undefined;
-  if (env && LEVELS.includes(env)) return env;
-  if (import.meta.env.DEV) return "debug";   // dev 全量打印，忽略配置
+  // 开发模式全量打印，忽略配置；生产读 general.logging.level。判据来自宿主运行模式
+  // （ServerWelcome.runtimeMode，见 @/services/host 的 HostEnvironment 端口），
+  // 不再读 import.meta.env。
+  if (getHostEnvironment().runtimeMode === "development") return "debug";
   return generalConfig.loggingLevel;
 }
 
@@ -481,7 +609,7 @@ export function applyLogLevel(): Level {
   // 推给 Rust，保持两端过滤一致；Rust 未就绪时忽略（它有各自的构建默认值）
   // 有意降级不是掩盖：日志级别下发失败时两端过滤级别不一致，Rust 侧会按其构建默认值过滤，
   // 所以留 debug 级并写明后果（T4.41）。
-  invoke("set_log_config", { level: LEVEL_ORDER[level] }).catch(error =>
+  getHostBridge().request("set_log_config", { level: LEVEL_ORDER[level] }).catch((error: unknown) =>
     log.debug("日志级别下发 Rust 失败：两端过滤级别不一致，Rust 侧日志会按其构建默认值过滤", formatError(error)));
   return level;
 }
@@ -511,9 +639,9 @@ export const errorsConfig = {
 // ══════════════════════════════════════════
 const _ai = {
   get provider() { return overrideOr("ai.provider", cfg.ai?.provider ?? "deepseek"); },
-  get endpoint() { return overrideOr("ai.endpoint", cfg.ai?.endpoint || import.meta.env.VITE_API_ENDPOINT || ""); },
-  get apiKey() { return overrideOr("ai.apiKey", cfg.ai?.apiKey || import.meta.env.VITE_API_KEY || ""); },
-  get model() { return overrideOr("ai.model", cfg.ai?.model || import.meta.env.VITE_MODEL || "deepseek-chat"); },
+  get endpoint() { return overrideOr("ai.endpoint", cfg.ai?.endpoint || ""); },
+  get apiKey() { return overrideOr("ai.apiKey", cfg.ai?.apiKey || ""); },
+  get model() { return overrideOr("ai.model", cfg.ai?.model || "deepseek-chat"); },
   get auxModel() { return overrideOr("ai.auxModel", cfg.ai?.auxModel || ""); },
   get contextMaxTokens() { return overrideOr("ai.contextMaxTokens", cfg.ai?.contextMaxTokens ?? DEFAULT_CONTEXT_WINDOW); },
   get thinkingEffort() { return overrideOr("ai.thinking.effort", cfg.ai?.thinking?.effort || "auto") as import("@/services/agent/types").ThinkingEffort; },
@@ -623,8 +751,8 @@ export const planConfig = {
 /**
  * 共享读并行上限（`ai.loop.maxParallelTools`）的取值范围与默认值。
  *
- * Rust 是上限的所有者与默认值来源（src-tauri/src/commands/tool_permit.rs 是宿主侧唯一的
- * 额度定义点）：这里的常量是 UI 校验副本，不构成第二个所有者；两者一致性由
+ * Rust 是上限的所有者与默认值来源（crates/native-host/src/commands/tool_permit.rs 是宿主侧
+ * 唯一的额度定义点）：这里的常量是设置校验副本，不构成第二个所有者；两者一致性由
  * `tool-execution-permit` 场景的可执行边界钉保证（上限原值被接受、两侧越界被拒绝）。
  */
 export const MIN_PARALLEL_TOOLS = 1
@@ -670,7 +798,6 @@ export const safetyConfig = {
 export const toolsConfig = {
   get bashWhitelist() { return overrideOr("tools.bash.whitelist", cfg.tools?.bash?.whitelist || ["ls", "cat", "head", "tail", "grep", "find", "which", "echo", "pwd", "date", "whoami", "uname", "df", "du", "ps"]); },
   get mcpServers() { return overrideOr("tools.mcp.servers", cfg.tools?.mcp?.servers || []); },
-  get builtinMcpServers() { return overrideOr("tools.mcp.builtin", cfg.tools?.mcp?.builtin || {}) as Record<string, BuiltinMcpServer>; },
 };
 
 /** CONFIG 里每服务器条目的最小读面：只取名字与启用位，其余字段由工具层归一化。 */
@@ -682,20 +809,16 @@ function mcpServerEnabled(entry: McpServerEntry | null | undefined): boolean {
 }
 
 /**
- * 启用的 MCP 服务器名（内置在前、自定义在后）。
+ * 启用的 MCP 服务器名（来自 `tools.mcp.servers` 的自定义列表）。
  *
  * 这是「MCP 是否生效」与「本轮该借用哪些服务器」的唯一口径：`computeMcpEnabled()`
  * 与 `init.ts` 的按 run 借用遍历都读本函数，两处不再各自判一遍（决策 8：控制面在
  * 每服务器的 `enabled`，没有总闸；全部关掉即为未启用）。
  */
 export function enabledMcpServerNames(): string[] {
-  const builtin = Object.entries(toolsConfig.builtinMcpServers)
-    .filter(([, def]) => mcpServerEnabled(def))
-    .map(([name]) => name);
-  const custom = (toolsConfig.mcpServers as McpServerEntry[])
+  return (toolsConfig.mcpServers as McpServerEntry[])
     .filter(mcpServerEnabled)
     .map(entry => String(entry.name || ""));
-  return [...builtin, ...custom];
 }
 
 /**
@@ -713,6 +836,15 @@ export function computeMcpEnabled(): boolean {
 // ==========================================
 export const appearanceConfig = {
   get activeProfile() { return overrideOr("appearance.activeProfile", cfg.appearance?.activeProfile ?? DEFAULT_PROFILE); },
+  /**
+   * 聊天图片自动预览开关；默认 false —— **唯一默认值在本 getter**，设置页与消费方都不复制它。
+   *
+   * 关闭（默认）：历史/滚动/切会话/初次加载只显示图片占位（序号/文件名/可用状态），
+   * 不读取图片字节、不解码、不生成缩略图；点击占位仍可打开独立查看器。
+   * 开启：只为当前可见消息按需加载内联预览；离开视口、切会话、收起或关闭聊天视图时
+   * 释放内联资源。两者都不影响模型看图、图片选择/发送、截图与 JSONL 原路径。
+   */
+  get chatImagePreview() { return overrideOr("appearance.chatImagePreview", cfg.appearance?.chatImagePreview ?? false); },
   /** 全局字体家族名；空串 = 跟随系统默认字体栈（由消费方决定具体栈） */
   get fontFamily() { return overrideOr("appearance.font.family", cfg.appearance?.font?.family ?? ""); },
   get fontSize() { return overrideOr("appearance.font.size", cfg.appearance?.font?.size ?? DEFAULT_FONT_SIZE); },
@@ -726,9 +858,4 @@ export function fontSizeError(value: number): string | undefined {
   return undefined
 }
 
-// ══════════════════════════════════════════
-// 开发时日志
-// ══════════════════════════════════════════
-if (import.meta.env.DEV) {
-  log.info("已加载运行时 CONFIG | AI:", aiConfig.provider, "| endpoint:", aiConfig.endpoint);
-}
+// 开发时日志已并入 initConfig()（模块加载早于配置读取；那里才有真实的 endpoint/provider）。

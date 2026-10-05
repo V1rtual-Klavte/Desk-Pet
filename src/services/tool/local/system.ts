@@ -3,7 +3,7 @@
 // 获取 OS / 架构 / CPU 核数 / 内存 / bash 默认工作目录
 //
 // 两类来源分工固定：OS、架构、核数与三个内存口径都来自 Rust `system_info`；
-// bash 默认工作目录来自 TS 侧的 `TauriExecutionEnv.defaultCwd()`（bash 工具本身也取这一处），
+// bash 默认工作目录来自 TS 侧的 `NativeExecutionEnv.defaultCwd()`（bash 工具本身也取这一处），
 // 不往 Rust 载荷里加第二个 cwd 定义点。
 // ==========================================
 
@@ -11,8 +11,8 @@ import type { ToolDef } from "../types"
 import { TOOL_POLICY_VERSION } from "../types"
 import { defineTool } from "../policy"
 import { register } from "../registry"
-import { invoke } from "@tauri-apps/api/core"
-import { TauriExecutionEnv } from "../pi/tauri-execution-env"
+import { getHostBridge } from "@/services/host"
+import { NativeExecutionEnv } from "../pi/native-execution-env"
 import { createLogger } from "@/services/logger"
 import { formatError } from "@/services/error"
 
@@ -41,11 +41,8 @@ const systemTool: ToolDef = defineTool({
   },
 }, async () => {
   try {
-    const info = await invoke<{
-      os: string; arch: string; cpuCount: number;
-      memTotal: number; memUsed: number; memAvailable: number;
-    }>("system_info")
-    const cwd = await TauriExecutionEnv.defaultCwd()
+    const info = await getHostBridge().request("system_info", {})
+    const cwd = await NativeExecutionEnv.defaultCwd()
 
     const gb = (bytes: number) => (bytes / BYTES_PER_GB).toFixed(1)
     const memPercent = info.memTotal > 0

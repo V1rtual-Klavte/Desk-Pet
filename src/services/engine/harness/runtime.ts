@@ -28,10 +28,10 @@ import { formatPoolForPrompt } from "@/services/personality/variable-pool"
 import { getActiveCard } from "@/services/personality/registry"
 import type { PersonalityCard } from "@/services/personality/types"
 import { getPoolSnapshot, applyResetPolicies, refreshVariablePool, updateInteractionVar } from "@/services/personality/variable-pool"
-import { getFallbackReply, getSimpleStage } from "@/services/personality/stages-cache"
+import { getFallbackReply, getSimpleStage, getStagePrompt } from "@/services/personality/stages-cache"
 import type { SimpleStageKey } from "@/services/personality/stages-cache"
 import { releaseTitlebarStatus, setTitlebarStatus } from "@/services/titlebar"
-import { generateReply, parseRuntimeData } from "@/services/reply"
+import { clearRuntimeDataMissing, generateReply, hasLlmWritableCardVars, hasRuntimeDataReminder, markRuntimeDataMissing, parseRuntimeData, RUNTIME_DATA_REMINDER_TEXT } from "@/services/reply"
 import { authorizeToolExecution, freezePermissionPolicy, invalidatePermissionScope } from "@/services/safety"
 import type { PermissionPolicySnapshot } from "@/services/safety"
 import { getActiveSessionId, pushMessageFor } from "@/services/session/store"
@@ -45,7 +45,7 @@ import type { HarnessToolRun, ToolDef } from "@/services/tool"
 import { readScreenshotToolDetails, SCREENSHOT_TOOL_NAME } from "@/services/tool/local/screenshot-details"
 import { humanizerConfig, loopConfig, memoryConfig, planConfig, silentAccessConfig } from "@/services/config"
 import { getUnderstandingPromptBlock } from "@/services/observation"
-import { emit } from "@tauri-apps/api/event"
+import { publishUiEvent, type HostEventMap, type NodeUiEventName } from "@/services/host"
 import { resolvePiAuxModel, resolvePiTurnModel } from "./model-gateway"
 import type { PiModel } from "./model-gateway"
 import { PROVIDER_TIMEOUT_MS } from "./net-guard"
@@ -1194,7 +1194,7 @@ function collectScreenshotResult(state: HarnessRunState, toolName: string, detai
   if (isError || toolName !== SCREENSHOT_TOOL_NAME) return
   const shot = readScreenshotToolDetails(details)
   if (!shot?.showToUser) return
-  ;(state.pendingUserImages ??= []).push(shot.screenshotPath)
+    ; (state.pendingUserImages ??= []).push(shot.screenshotPath)
 }
 
 /**
@@ -1271,6 +1271,7 @@ function createTurnSpec(kernel: TurnKernel, options: {
         return { block: { reason: `工具 ${toolName} 不可用` } }
       }
       emitUiEvent("tool-executing", { toolId: tool.name, toolName: tool.name })
+      emitToolStageTitlebar(kernel.sessionId, kernel.generation, "executing")
       publishRuntimeTrace(kernel.traceContext, "permission_asked", () => ({ toolName: tool.name, source: "authorization_request" }), { toolCallId })
       const permission = await authorizeToolExecution(tool, args as Record<string, unknown>, {
         sessionId: kernel.sessionId ?? kernel.traceContext.runId,
@@ -1436,6 +1437,25 @@ function emitStageHint(sessionId: string | undefined, stage: SimpleStageKey, gen
   else releaseTitlebarStatus(owner)
 }
 
+/**
+ * 工具阶段（executing / done / blocked）的过程文案 → 顶栏，与阶段提示共用同一 owner
+ * 和释放点（首条揭示 / 回合结束）。
+ *
+ * 用户规则（2026-10-05）：过程状态**只在顶栏显示**，聊天窗底部不再占用状态文案 ——
+ * 这里补的正是原先只在聊天窗状态行出现的那半（工具过程文案）。
+ */
+function emitToolStageTitlebar(
+  sessionId: string | undefined,
+  generation: number | undefined,
+  key: "executing" | "done" | "blocked",
+): void {
+  if (!sessionId || generation === undefined || getActiveSessionId() !== sessionId) return
+  const owner = processTitlebarOwner(sessionId, generation)
+  const text = getStagePrompt(key, "")
+  if (text) setTitlebarStatus(owner, text, 20)
+  else releaseTitlebarStatus(owner)
+}
+
 /** 主回合消费点：流式正文按消息落 UI，usage 按请求进统计。 */
 function createTurnSinks(kernel: TurnKernel): HarnessRunSinks {
   let apiRound = 0
@@ -1496,6 +1516,7 @@ function createTurnSinks(kernel: TurnKernel): HarnessRunSinks {
     },
     onToolEnd: (toolName, isError) => {
       emitUiEvent("tool-completed", { toolId: toolName, toolName, success: !isError })
+      emitToolStageTitlebar(sessionId, kernel.generation, isError ? "blocked" : "done")
     },
     onUsage: async row => {
       const previous = kernel.state.usage
@@ -1510,14 +1531,26 @@ function createTurnSinks(kernel: TurnKernel): HarnessRunSinks {
       // 本次请求实际下发的工具面以 payload 采集为准（激活面收窄与回合内渐进披露都会改变它）；
       // 没有 payload 读数时才退回冻结工具面。
       const requestToolNames = kernel.requestToolNames ?? kernel.tools.map(tool => tool.name)
-      updateRequestStats({
-        promptTokens: row.usage.input,
-        completionTokens: row.usage.output,
-        systemTokens: estimateContextTokens(kernel.systemPrompt),
-        conversationTokens: kernel.latestMessages.reduce((n, message) => n + estimateMessageTokens(message), 0),
-        toolCount: requestToolNames.length,
-        toolNames: requestToolNames,
-      })
+      // 「最近一次请求」展示统计只认对话请求：主动表达回合（`transientUserInput`，
+      // 协议上 `tools=[]`，payload 里没有工具面）不刷新这组字段 —— 否则一条主动消息
+      // 会把「工具 无 / 上下文 / 上次 token」全部刷成用户对话之外的样子，用户看到的
+      // 「本次请求未携带工具」分不清是哪一次（用户报告）。
+      // 累计用量不受影响：下方 recordModelUsage 照记 —— 主动消息确实花了 token，
+      // 只是不属于面板里「我的对话请求」这一格。
+      if (!kernel.transientUserInput) {
+        updateRequestStats({
+          // input 只是「缓存未命中」部分（pi-ai 归一口径），真实 prompt 总量要靠 cache 两项补齐
+          // —— 只报 input 会把带缓存命中的请求低估一个数量级（debug.ts 里有详细口径说明）。
+          promptTokens: row.usage.input,
+          cacheReadTokens: row.usage.cacheRead,
+          cacheWriteTokens: row.usage.cacheWrite,
+          completionTokens: row.usage.output,
+          systemTokens: estimateContextTokens(kernel.systemPrompt),
+          conversationTokens: kernel.latestMessages.reduce((n, message) => n + estimateMessageTokens(message), 0),
+          toolCount: requestToolNames.length,
+          toolNames: requestToolNames,
+        })
+      }
       // 主回合逐请求用量记进分列统计；压缩等一次性调用不走这个 sink，
       // 由 completePiText 按自己的 purpose 单独记录。
       recordModelUsage("main", row.usage)
@@ -1541,7 +1574,7 @@ function createTurnSinks(kernel: TurnKernel): HarnessRunSinks {
 /**
  * 对话回合的工具面装配（主回合与恢复续跑共用）：全量冻结（`setTools` 持全量，Pi 会校验
  * 激活集 ⊆ 全量）+ 结果回读工具 + 取用入口；默认激活集由 `defaultActiveToolNames` 唯一判定，
- * MCP 白名单之外的工具由 enable_tools 在本回合按需加入（`addedToolNames` 渐进披露）。
+ * 未默认激活的工具（含全部 MCP 工具）由 enable_tools 在本回合按需加入（`addedToolNames` 渐进披露）。
  */
 function assembleConversationTools(slot: HarnessSlot, windowTokens: number): { tools: ToolDef[]; activeToolNames: string[] } {
   const tools: ToolDef[] = [...listAll()]
@@ -1601,315 +1634,324 @@ export async function runPiAgentTurn(input: PiAgentTurnInput): Promise<PiAgentTu
   const frozenSilentRejectedReply = getFallbackReply("silentRejected")
   const pool = getPoolSnapshot()
   const thinkingEffort = getEffectiveThinkingEffort()
-  const frozenUserContext = { v1rtualInstructions: getV1rtualInstructionsSync(),
-    dynamicPrompt: composeDynamicPrompt(formatPoolForPrompt(pool), thinkingEffort) }
+  const frozenUserContext = {
+    v1rtualInstructions: getV1rtualInstructionsSync(),
+    dynamicPrompt: composeDynamicPrompt(formatPoolForPrompt(pool), thinkingEffort)
+  }
   // 准入是否已成立（用户条目已提交进会话文件）：此后每条退出路径都必须结算那条已接受的操作。
   let admittedOnce = false
   let deferTypingTitlebarRelease = false
   let restoreRetryPolicy: (() => Promise<void>) | undefined
   let stopMemoryRevision: (() => void) | undefined
   try {
-  // 运行态信号：ChatPanel 据此显示/收起停止按钮。真相仍是 harnessSlots 的运行槽，
-  // 事件只是通知通道，UI 不因此持有第二份运行状态。
-  void emitUiEvent("deskpet-run-state", { sessionId: turnSessionId, running: true })
-  assertCurrent()
-  if (!isActiveMessage) {
-    const { prepareRunCapabilities } = await import("@/services/init")
-    await prepareRunCapabilities(requestId, assertCurrent)
-  }
-  // 主回合不使用返回的不可用名单：借用失败已由各自的工具报告；这里只保留取消守卫语义。
-  assertCurrent()
-  // 工具结果回读（请求投影里标注的 eventId 就是 Harness 条目 id，按条目分页读取）与默认激活面
-  // 都在装配函数里；主动表达回合没有工具面（tools=[]），激活集同为空。
-  const { tools: frozenTools, activeToolNames } = isActiveMessage
-    ? { tools: [] as ToolDef[], activeToolNames: [] as string[] }
-    : assembleConversationTools(slot, windowTokens)
-  // 用户正文由 Harness 的 prompt 条目承担落盘（先落盘再投递由 Harness 事务保证）；
-  // 主动消息用 deskpet.active_message 自定义消息投递，来源标记在 details.* 且不成为用户事实。
-  assertCurrent()
-  // 工具运行面与投递正文在准入前装配一次：它们既是准入的入参，也是本回合 spec 的组成部分，
-  // 不因「准入提前」写第二份定义。
-  const toolRun: HarnessToolRun = {
-    sessionId: turnSessionId, runGeneration: generation,
-    ...(input.ingress?.origin === "user" && input.ingress.taint === "trusted_user"
-      ? { trustedUserEventId: inputEventId(input.ingress.requestId) } : {}),
-    ...(input.turnContext ? { proactiveTurnContext: input.turnContext } : {}),
-    isCurrent: () => runIsCurrent(),
-    history: toolCallHistory,
-  }
-  // 投递正文由调用方构造（用户输入走 userInputMessage、主动消息走 createActiveMessage）：
-  // 停止后继续的暂停批次优先，其余按调用方给的 userPrompt 原样投递。
-  // 技能准入支没有宿主正文：那条用户条目由 Pi 在 accept 内按技能文件构造，空串只落在 drive 面的
-  // `spec.prompt`（驱动不读正文，准入时已落盘），不是第二份用户正文。
-  const promptInput: HarnessRunSpec["prompt"] = input.skillAdmission
-    ? ""
-    : input.pausedMessages?.length ? input.pausedMessages : input.userPrompt
-  if (input.activeRequest) {
-    const active = input.activeRequest
-    if (!activeOwner || card?.id !== activeOwner.cardId || card?.hash !== activeOwner.cardHash
-      || !await activeIsCurrent()) {
-      throw new Error("PROACTIVE_OWNER_STALE")
+    // 运行态信号：ChatPanel 据此显示/收起停止按钮。真相仍是 harnessSlots 的运行槽，
+    // 事件只是通知通道，UI 不因此持有第二份运行状态。
+    void emitUiEvent("deskpet-run-state", { sessionId: turnSessionId, running: true })
+    assertCurrent()
+    if (!isActiveMessage) {
+      const { prepareRunCapabilities } = await import("@/services/init")
+      await prepareRunCapabilities(requestId, assertCurrent)
     }
-    restoreRetryPolicy = await slot.useSingleAttemptPolicy()
-  }
-  // ── 输入先落盘（STATE-04）：准入在计划与预检之前 ──
-  // 命中失败（未获准入）时输入没有条目、也没有操作要在之后结算；成功则条目已进会话文件，
-  // 后续无论走到哪条退出路径都保留它（预检失败不丢输入）。
-  // 技能支不给正文：`kind:"skill"` 的请求里没有 prompt 字段（准入形态也用 `never` 钉死），
-  // 那条用户条目由 Pi 在 accept 内按技能文件构造 —— 一条命令只能落一条正文。
-  const admitted = input.skillAdmission
-    ? await slot.admitInput({
+    // 主回合不使用返回的不可用名单：借用失败已由各自的工具报告；这里只保留取消守卫语义。
+    assertCurrent()
+    // 工具结果回读（请求投影里标注的 eventId 就是 Harness 条目 id，按条目分页读取）与默认激活面
+    // 都在装配函数里；主动表达回合没有工具面（tools=[]），激活集同为空。
+    const { tools: frozenTools, activeToolNames } = isActiveMessage
+      ? { tools: [] as ToolDef[], activeToolNames: [] as string[] }
+      : assembleConversationTools(slot, windowTokens)
+    // 用户正文由 Harness 的 prompt 条目承担落盘（先落盘再投递由 Harness 事务保证）；
+    // 主动消息用 deskpet.active_message 自定义消息投递，来源标记在 details.* 且不成为用户事实。
+    assertCurrent()
+    // 工具运行面与投递正文在准入前装配一次：它们既是准入的入参，也是本回合 spec 的组成部分，
+    // 不因「准入提前」写第二份定义。
+    const toolRun: HarnessToolRun = {
+      sessionId: turnSessionId, runGeneration: generation,
+      ...(input.ingress?.origin === "user" && input.ingress.taint === "trusted_user"
+        ? { trustedUserEventId: inputEventId(input.ingress.requestId) } : {}),
+      ...(input.turnContext ? { proactiveTurnContext: input.turnContext } : {}),
+      isCurrent: () => runIsCurrent(),
+      history: toolCallHistory,
+    }
+    // 投递正文由调用方构造（用户输入走 userInputMessage、主动消息走 createActiveMessage）：
+    // 停止后继续的暂停批次优先，其余按调用方给的 userPrompt 原样投递。
+    // 技能准入支没有宿主正文：那条用户条目由 Pi 在 accept 内按技能文件构造，空串只落在 drive 面的
+    // `spec.prompt`（驱动不读正文，准入时已落盘），不是第二份用户正文。
+    const promptInput: HarnessRunSpec["prompt"] = input.skillAdmission
+      ? ""
+      : input.pausedMessages?.length ? input.pausedMessages : input.userPrompt
+    if (input.activeRequest) {
+      const active = input.activeRequest
+      if (!activeOwner || card?.id !== activeOwner.cardId || card?.hash !== activeOwner.cardHash
+        || !await activeIsCurrent()) {
+        throw new Error("PROACTIVE_OWNER_STALE")
+      }
+      restoreRetryPolicy = await slot.useSingleAttemptPolicy()
+    }
+    // ── 输入先落盘（STATE-04）：准入在计划与预检之前 ──
+    // 命中失败（未获准入）时输入没有条目、也没有操作要在之后结算；成功则条目已进会话文件，
+    // 后续无论走到哪条退出路径都保留它（预检失败不丢输入）。
+    // 技能支不给正文：`kind:"skill"` 的请求里没有 prompt 字段（准入形态也用 `never` 钉死），
+    // 那条用户条目由 Pi 在 accept 内按技能文件构造 —— 一条命令只能落一条正文。
+    const admitted = input.skillAdmission
+      ? await slot.admitInput({
         model, thinkingEffort, tools: frozenTools, activeToolNames, toolRun,
         kind: "skill",
         name: input.skillAdmission.name,
         additionalInstructions: input.skillAdmission.additionalInstructions,
       })
-    : await slot.admitInput({ model, thinkingEffort, tools: frozenTools, activeToolNames, toolRun, prompt: promptInput })
-  if (!admitted.ok) {
-    // 技能准入在边界上失败（清单在启动瞬间变化 → UnknownSkill）与前置判定的四态不同：留痕带上技能名，
-    // 不把它混进「技能不存在」的报告里（`failure.kind` 仍是 admission，`failure.message` 带原始 tag）。
-    log.error("输入未获准入，回合未开始:", {
-      sessionId: turnSessionId,
-      status: admitted.result.status,
-      ...(input.skillAdmission ? { skill: input.skillAdmission.name, tag: admitted.result.error } : {}),
-    })
-    const reply = getFallbackReply("llmUnavailable")
-    await slot.appendAssistantMessage(reply).catch(error => log.error("兜底回复落盘失败", formatError(error)))
-    return {
-      reply, toolCallHistory, retriesUsed: 0,
-      failure: { kind: "admission", message: `输入未获准入: ${admitted.result.error ?? admitted.result.status}` },
-    }
-  }
-  admittedOnce = true
-  publishRuntimeTrace(traceContext, "input_accepted", () => ({
-    requestId,
-    status: "committed",
-  }))
-  // 记账晚于落盘（STATE-04 的共同改动）：用户气泡与未回复计数在条目已进会话文件之后才更新。
-  await input.onInputAdmitted?.()
-  let planStepContext = ""
-  let planUserText = userText
-  if (planConfig.enabled && !isActiveMessage) {
-    // 计划判定与生成都发生在 Harness 驱动之前（此时还没有 turn_start 的「思考中」），
-    // 这段等待必须有提示，否则界面在复杂度判定 + 规划调用期间一片空白。
-    emitStageHint(turnSessionId, "planning", generation)
-    const forcePlan = userText.startsWith("--plan")
-    if (forcePlan) planUserText = userText.replace(/^--plan\s*/, "")
-    // 复杂度判定看**原文本**：`--plan` 的强制触发是 `evaluateComplexity` 的 startsWith 分支，
-    // 前缀只从交给规划 prompt 的正文（planUserText）里剥掉。剥早了 force 分支不命中，
-    // 计划在 `complexityEval=keyword` 下就永远不会被强制触发（2026-09-24 W5 整轮实测）。
-    const complexity = await evaluateComplexity(userText, planConfig.keywords, {
-      sessionId: turnSessionId, requestId, derivedFrom: [requestId], traceContext,
-    })
-    assertCurrent()
-    if (complexity.score >= planConfig.complexityThreshold) {
-      // 中断通道先于确认建立：确认等待期与会话切换都要能把它断掉
-      const planAbort = new AbortController()
-      const outcome = await runPlanPhase({
+      : await slot.admitInput({ model, thinkingEffort, tools: frozenTools, activeToolNames, toolRun, prompt: promptInput })
+    if (!admitted.ok) {
+      // 技能准入在边界上失败（清单在启动瞬间变化 → UnknownSkill）与前置判定的四态不同：留痕带上技能名，
+      // 不把它混进「技能不存在」的报告里（`failure.kind` 仍是 admission，`failure.message` 带原始 tag）。
+      log.error("输入未获准入，回合未开始:", {
         sessionId: turnSessionId,
-        planId: `plan-${input.ingress?.requestId ?? crypto.randomUUID()}`,
-        rootTurnId: input.turnId ?? input.ingress?.parentTurnId ?? `turn-${input.ingress?.requestId ?? crypto.randomUUID()}`,
-        requestId,
-        ...(input.ingress?.origin === "user" && input.ingress.taint === "trusted_user"
-          ? { trustedUserEventId: inputEventId(input.ingress.requestId) } : {}),
-        traceContext,
-        confirmSignal: planAbort.signal,
-        parentSlot: slot,
-        planAbort,
-        runIsCurrent,
-        // 规划 prompt 用回合开始时的 Card 快照，与冻结的变量/配置同代
-        planInput: {
-          userText: planUserText,
-          cardId: card?.id ?? "neutral",
-          cardRole: card?.sections.roleSetting ?? "",
-        },
+        status: admitted.result.status,
+        ...(input.skillAdmission ? { skill: input.skillAdmission.name, tag: admitted.result.error } : {}),
       })
-      // 三种归宿都在这里结算（PLAN-15）：completed 进主回合；cancelled / declined 经
-      // finishWithoutTurn 收尾 —— 取消不写兜底失败回复、不标 failure，也不再有绕过结算出口的第二条落盘路径。
-      if (outcome.kind !== "completed") {
-        // 计划不进主回合时，准入时接受的那条操作必须在这里结算：不驱动就 return 会留下
-        // 永不结算的 lane 操作，后续准入恒判忙、收尾的 waitForIdle 也会挂死。
-        await slot.abort("user").catch(error => log.warn("计划未进主回合，结算已接受操作失败:", formatError(error)))
-        if (outcome.kind === "cancelled") publishRuntimeTrace(traceContext, "input_cancelled", () => ({ requestId, reason: outcome.reason }), { requestId })
-        const output = await finishWithoutTurn({
-          sessionId: turnSessionId,
-          slot,
-          reply: outcome.kind === "declined" ? outcome.reply : "",
-        })
-        // declined 是用户看得到的正常收尾（有助手正文），不当成停止 ——
-        // 标 abortedByStop 会让宿主用「已停止本次回复」顶替这条正文，界面与持久正文就分裂了。
-        return outcome.kind === "declined" ? { ...output, abortedByStop: false } : output
+      const reply = getFallbackReply("llmUnavailable")
+      await slot.appendAssistantMessage(reply).catch(error => log.error("兜底回复落盘失败", formatError(error)))
+      return {
+        reply, toolCallHistory, retriesUsed: 0,
+        failure: { kind: "admission", message: `输入未获准入: ${admitted.result.error ?? admitted.result.status}` },
       }
-      // 空计划（模型没给出可执行步骤）与原路径一致：不进 ephemeral 上下文，直接走正常回合
-      if (outcome.result.stepResults.length > 0) planStepContext = formatStepResults(outcome.result)
     }
-  }
-
-  // 记忆召回：一次取数供本回合所有请求复用。核心画像与按需召回同属一块（tier 区分优先级），
-  // 它贴请求尾部而不是 system prompt —— 每回合都可能变的内容留在那里会把缓存断在正文上游。
-  const memoryTokenBudget = memoryConfig.enabled
-    ? (input.activeRequest ? memoryConfig.recallTokenBudget : memoryConfig.coreTokenBudget + memoryConfig.recallTokenBudget)
-    : 0
-  // recall 走槽级取消信号：回合被停止时这次读取随之结束，旧代际的结果不会写进新投影。
-  const memoryRequest: MemoryRecallRequest = {
-    requestId, sessionId: turnSessionId, cardId: card?.id, runGeneration: generation,
-    query: userText, tokenBudget: memoryTokenBudget, signal: slot.runSignal, traceContext,
-    ...(input.activeRequest ? { purpose: "proactive" as const, targets: [...input.activeRequest.memoryTargets] }
-      : input.turnContext?.memoryRefs.length ? { targets: input.turnContext.memoryRefs.map(ref => ({ id: ref.id, version: ref.version })), allowExpiredTargets: true } : {}),
-  }
-  let memoryProjections: MemoryProjection[] = []
-  try {
-    if (memoryTokenBudget > 0 && (!input.activeRequest || input.activeRequest.memoryTargets.length > 0)) memoryProjections = await recallMemory(memoryRequest)
-    else {
-      publishRuntimeTrace(traceContext, "memory_recall_start", () => ({ budget: memoryTokenBudget }))
-      publishRuntimeTrace(traceContext, "memory_recall_end", () => ({
-        status: input.activeRequest && memoryConfig.enabled && input.activeRequest.memoryTargets.length === 0
-          ? "skipped_no_targets" : "skipped_budget",
-        fallback: false,
-      }))
-    }
-  } catch (error) {
-    // 按空召回继续是对的（长期记忆缺席不该让整轮起不来），但它改变了模型看到的上下文：
-    // 除了日志，还要在会话里留一条可查的审计条目。
-    log.warn("MemoryProvider 召回失败，按空召回继续:", { sessionId: turnSessionId, requestId }, formatError(error))
-    harnessSlots.peek(turnSessionId)?.queueAuditEntry(RECALL_FAILED_ENTRY, {
+    admittedOnce = true
+    publishRuntimeTrace(traceContext, "input_accepted", () => ({
       requestId,
-      error: formatError(error),
-      at: Date.now(),
-    } as unknown as JsonValue)
-  }
-  stopMemoryRevision = subscribeMemoryRevision(async revision => {
-    const feedbackHasMemory = Boolean(input.turnContext?.memoryRefs.length)
-    if (!runIsCurrent() || (!memoryProjections.length && !feedbackHasMemory)
-      || (!feedbackHasMemory && memoryProjections.every(item => item.memoryRevision === revision))) return
-    // The UI waits for this closure before reporting the change as applied. Already-sent inputs cannot be recalled.
-    memoryProjections = []
-    await slot.abort("user")
-    await slot.waitForIdle()
-  })
-  /** Reuse only a current DB revision; write-after-read refresh is local and does not repeat reranking. */
-  const memoryRecallForRequest = async (): Promise<MemoryProjection[]> => {
-    if (memoryTokenBudget <= 0 || (input.activeRequest && input.activeRequest.memoryTargets.length === 0)) return []
-    // Injected providers without a Rust revision remain isolated L3 probes.
-    if (memoryRequest.readRevision === undefined) return memoryProjections
+      status: "committed",
+    }))
+    // 记账晚于落盘（STATE-04 的共同改动）：用户气泡与未回复计数在条目已进会话文件之后才更新。
+    await input.onInputAdmitted?.()
+    let planStepContext = ""
+    let planUserText = userText
+    if (planConfig.enabled && !isActiveMessage) {
+      // 计划判定与生成都发生在 Harness 驱动之前（此时还没有 turn_start 的「思考中」），
+      // 这段等待必须有提示，否则界面在复杂度判定 + 规划调用期间一片空白。
+      emitStageHint(turnSessionId, "planning", generation)
+      const forcePlan = userText.startsWith("--plan")
+      if (forcePlan) planUserText = userText.replace(/^--plan\s*/, "")
+      // 复杂度判定看**原文本**：`--plan` 的强制触发是 `evaluateComplexity` 的 startsWith 分支，
+      // 前缀只从交给规划 prompt 的正文（planUserText）里剥掉。剥早了 force 分支不命中，
+      // 计划在 `complexityEval=keyword` 下就永远不会被强制触发（2026-09-24 W5 整轮实测）。
+      const complexity = await evaluateComplexity(userText, planConfig.keywords, {
+        sessionId: turnSessionId, requestId, derivedFrom: [requestId], traceContext,
+      })
+      assertCurrent()
+      if (complexity.score >= planConfig.complexityThreshold) {
+        // 中断通道先于确认建立：确认等待期与会话切换都要能把它断掉
+        const planAbort = new AbortController()
+        const outcome = await runPlanPhase({
+          sessionId: turnSessionId,
+          planId: `plan-${input.ingress?.requestId ?? crypto.randomUUID()}`,
+          rootTurnId: input.turnId ?? input.ingress?.parentTurnId ?? `turn-${input.ingress?.requestId ?? crypto.randomUUID()}`,
+          requestId,
+          ...(input.ingress?.origin === "user" && input.ingress.taint === "trusted_user"
+            ? { trustedUserEventId: inputEventId(input.ingress.requestId) } : {}),
+          traceContext,
+          confirmSignal: planAbort.signal,
+          parentSlot: slot,
+          planAbort,
+          runIsCurrent,
+          // 规划 prompt 用回合开始时的 Card 快照，与冻结的变量/配置同代
+          planInput: {
+            userText: planUserText,
+            cardId: card?.id ?? "neutral",
+            cardRole: card?.sections.roleSetting ?? "",
+          },
+        })
+        // 三种归宿都在这里结算（PLAN-15）：completed 进主回合；cancelled / declined 经
+        // finishWithoutTurn 收尾 —— 取消不写兜底失败回复、不标 failure，也不再有绕过结算出口的第二条落盘路径。
+        if (outcome.kind !== "completed") {
+          // 计划不进主回合时，准入时接受的那条操作必须在这里结算：不驱动就 return 会留下
+          // 永不结算的 lane 操作，后续准入恒判忙、收尾的 waitForIdle 也会挂死。
+          await slot.abort("user").catch(error => log.warn("计划未进主回合，结算已接受操作失败:", formatError(error)))
+          if (outcome.kind === "cancelled") publishRuntimeTrace(traceContext, "input_cancelled", () => ({ requestId, reason: outcome.reason }), { requestId })
+          const output = await finishWithoutTurn({
+            sessionId: turnSessionId,
+            slot,
+            reply: outcome.kind === "declined" ? outcome.reply : "",
+          })
+          // declined 是用户看得到的正常收尾（有助手正文），不当成停止 ——
+          // 标 abortedByStop 会让宿主用「已停止本次回复」顶替这条正文，界面与持久正文就分裂了。
+          return outcome.kind === "declined" ? { ...output, abortedByStop: false } : output
+        }
+        // 空计划（模型没给出可执行步骤）与原路径一致：不进 ephemeral 上下文，直接走正常回合
+        if (outcome.result.stepResults.length > 0) planStepContext = formatStepResults(outcome.result)
+      }
+    }
+
+    // 记忆召回：一次取数供本回合所有请求复用。核心画像与按需召回同属一块（tier 区分优先级），
+    // 它贴请求尾部而不是 system prompt —— 每回合都可能变的内容留在那里会把缓存断在正文上游。
+    const memoryTokenBudget = memoryConfig.enabled
+      ? (input.activeRequest ? memoryConfig.recallTokenBudget : memoryConfig.coreTokenBudget + memoryConfig.recallTokenBudget)
+      : 0
+    // recall 走槽级取消信号：回合被停止时这次读取随之结束，旧代际的结果不会写进新投影。
+    const memoryRequest: MemoryRecallRequest = {
+      requestId, sessionId: turnSessionId, cardId: card?.id, runGeneration: generation,
+      query: userText, tokenBudget: memoryTokenBudget, signal: slot.runSignal, traceContext,
+      ...(input.activeRequest ? { purpose: "proactive" as const, targets: [...input.activeRequest.memoryTargets] }
+        : input.turnContext?.memoryRefs.length ? { targets: input.turnContext.memoryRefs.map(ref => ({ id: ref.id, version: ref.version })), allowExpiredTargets: true } : {}),
+    }
+    let memoryProjections: MemoryProjection[] = []
     try {
-      const currentRevision = (await memoryStatus()).revision
-      if (currentRevision !== memoryRequest.readRevision) {
-        const refreshRequest = { ...memoryRequest, skipRerank: true }
-        memoryProjections = await recallMemory(refreshRequest)
-        memoryRequest.readRevision = refreshRequest.readRevision
+      if (memoryTokenBudget > 0 && (!input.activeRequest || input.activeRequest.memoryTargets.length > 0)) memoryProjections = await recallMemory(memoryRequest)
+      else {
+        publishRuntimeTrace(traceContext, "memory_recall_start", () => ({ budget: memoryTokenBudget }))
+        publishRuntimeTrace(traceContext, "memory_recall_end", () => ({
+          status: input.activeRequest && memoryConfig.enabled && input.activeRequest.memoryTargets.length === 0
+            ? "skipped_no_targets" : "skipped_budget",
+          fallback: false,
+        }))
       }
     } catch (error) {
-      // An unavailable DB cannot prove the eligibility of old facts: fail closed for this optional block.
-      memoryProjections = []
-      memoryRequest.readRevision = undefined
-      log.warn("记忆revision复核失败，本请求放弃记忆投影:", formatError(error))
+      // 按空召回继续是对的（长期记忆缺席不该让整轮起不来），但它改变了模型看到的上下文：
+      // 除了日志，还要在会话里留一条可查的审计条目。
+      log.warn("MemoryProvider 召回失败，按空召回继续:", { sessionId: turnSessionId, requestId }, formatError(error))
+      harnessSlots.peek(turnSessionId)?.queueAuditEntry(RECALL_FAILED_ENTRY, {
+        requestId,
+        error: formatError(error),
+        at: Date.now(),
+      } as unknown as JsonValue)
     }
-    assertCurrent()
-    return memoryProjections
-  }
-  assertCurrent()
-  const frozenContext = { ...frozenUserContext, skillsPromptBlock: isActiveMessage ? "" : getSkillsPromptBlock() }
-  const frozenHumanizerEnabled = humanizerConfig.enabled
-  const frozenUnderstandingBlock = silentAccessConfig.enabled ? getUnderstandingPromptBlock() : undefined
-  const skillCatalogFingerprint = getSkillCatalogFingerprint() ?? undefined
-  // 会话历史由 Harness 条目承担；buildPrompt 只负责静态/动态/记忆块与预算分配记录。
-  const tailContextText = [planStepContext, input.turnContext?.text].filter(Boolean).join("\n\n")
-  const context = buildPrompt({
-    ...frozenContext,
-    unansweredCount, thinkingEffort, isActiveMessage, humanizerEnabled: frozenHumanizerEnabled,
-    contextMaxTokens: windowTokens, maxOutputTokens: model.maxTokens,
-    tools: frozenTools.map(toToolDeclaration),
-    ...(tailContextText ? { ephemeralText: tailContextText, ephemeralOrigin: input.turnContext ? "proactive" as const : "plan" as const } : {}),
-  }, card, pool)
-  const promptTransforms: PromptTransform[] = []
-  if (input.ingress && input.ingress.rawText !== userText) {
-    promptTransforms.push(await createPromptRewrite({
-      transformId: `rewrite-${requestId}`,
-      name: "normalize_user_input",
-      rawText: input.ingress.rawText,
-      derivedText: userText,
-      reason: "input_normalization",
-      derivedFrom: [input.turnId ?? requestId],
-    }))
-  }
-  const kernel = createTurnKernel({
-    traceContext,
-    sessionId: turnSessionId,
-    requestId,
-    turnId: input.turnId,
-    model,
-    thinkingEffort,
-    systemPrompt: context.systemPrompt,
-    tools: frozenTools,
-    blocks: context.blocks,
-    allocations: context.allocations,
-    budgetDrops: context.budgetDrops,
-    promptTransforms,
-    skillCatalogFingerprint,
-    transientUserInput: isActiveMessage === true,
-    persistSnapshots: true,
-    card,
-    toolRun,
-    generation,
-    humanizerEnabled: frozenHumanizerEnabled,
-    taskReply: Boolean(planStepContext),
-    silentRejectedReply: frozenSilentRejectedReply,
-  })
-  const spec = createTurnSpec(kernel, {
-    // 正文在准入时已提交（与 toolRun 一起装配），spec 只承载驱动面。
-    prompt: promptInput,
-    activeToolNames,
-    timeoutMs: loopConfig.turnTimeoutMs,
-    maxToolCalls: loopConfig.maxToolCallsPerTurn,
-    projectToolResults: true,
-    humanizerEnabled: frozenHumanizerEnabled,
-    taskReply: Boolean(planStepContext),
-    ...(frozenUnderstandingBlock ? { understanding: frozenUnderstandingBlock } : {}),
-    runGeneration: generation,
-    ...(input.activeRequest && activeOwner ? { activeRequest: input.activeRequest, activeOwner, activeIsCurrent } : {}),
-    // 投影与压缩共用同一份地址目录 thunk：两路投影对同一条结果逐字相同（槽内有稳定缓存）。
-    addressRefs: () => slot.addressRefs(),
-    // 记忆块与额度一起交给投影 hook：额度是这块的硬上限，实际可用量还要减当前视图已用量。
-    memory: { tokenBudget: memoryTokenBudget, recall: memoryRecallForRequest, traceContext },
-    // 权限确认绑定当前会话：等待确认期间用户切走会话，旧回合不再取得授权。
-    isPermissionCurrent: () => runIsCurrent() && getActiveSessionId() === turnSessionId,
-  })
-  const result = await slot.driveAdmitted(spec, admitted)
-  if (result.status === "aborted" && result.abortReason === "user") {
-    publishRuntimeTrace(traceContext, "input_cancelled", () => ({ requestId, reason: "run_aborted_by_user" }), { requestId })
-  }
-  await slot.waitForIdle()
-  await Promise.allSettled(kernel.snapshotTasks)
-  // 快照任务在 execute 的 finally flush 之后才完成：这里补一次唯一 flush 入口，
-  // 保证本轮证据（transform_context / provider_payload / provider_usage）在结算前已入队并落盘。
-  await slot.flushAudit()
-  const output = await settleMainTurn({ input, kernel, result, toolCallHistory })
-  if (kernel.state.usage) output.usage = { ...kernel.state.usage }
-  if (input.activeRequest) {
-    const record = result.record
-    if (result.status === "completed" && record?.status === "completed" && record.tipId) {
+    stopMemoryRevision = subscribeMemoryRevision(async revision => {
+      const feedbackHasMemory = Boolean(input.turnContext?.memoryRefs.length)
+      if (!runIsCurrent() || (!memoryProjections.length && !feedbackHasMemory)
+        || (!feedbackHasMemory && memoryProjections.every(item => item.memoryRevision === revision))) return
+      // The UI waits for this closure before reporting the change as applied. Already-sent inputs cannot be recalled.
+      memoryProjections = []
+      await slot.abort("user")
+      await slot.waitForIdle()
+    })
+    /** Reuse only a current DB revision; write-after-read refresh is local and does not repeat reranking. */
+    const memoryRecallForRequest = async (): Promise<MemoryProjection[]> => {
+      if (memoryTokenBudget <= 0 || (input.activeRequest && input.activeRequest.memoryTargets.length === 0)) return []
+      // Injected providers without a Rust revision remain isolated L3 probes.
+      if (memoryRequest.readRevision === undefined) return memoryProjections
       try {
-        const evidence = await readActiveAttemptEvidence(turnSessionId, input.activeRequest.attemptId, input.activeRequest.requestId)
-        if (evidence && evidence.operationId === record.operationId && evidence.assistantEntryId === record.tipId) {
-          output.activeCommit = evidence
-          output.reply = evidence.text
-          if (evidence.silent) output.silent = true
-          else publishRuntimeTrace(traceContext, "active_message_delivered", () => ({ requestId, status: "committed" }), { entryId: evidence.assistantEntryId })
+        const currentRevision = (await memoryStatus()).revision
+        if (currentRevision !== memoryRequest.readRevision) {
+          const refreshRequest = { ...memoryRequest, skipRerank: true }
+          memoryProjections = await recallMemory(refreshRequest)
+          memoryRequest.readRevision = refreshRequest.readRevision
         }
       } catch (error) {
-        log.error("主动回复 JSONL 提交核对失败:", { sessionId: turnSessionId, requestId }, formatError(error))
+        // An unavailable DB cannot prove the eligibility of old facts: fail closed for this optional block.
+        memoryProjections = []
+        memoryRequest.readRevision = undefined
+        log.warn("记忆revision复核失败，本请求放弃记忆投影:", formatError(error))
+      }
+      assertCurrent()
+      return memoryProjections
+    }
+    assertCurrent()
+    const frozenContext = { ...frozenUserContext, skillsPromptBlock: isActiveMessage ? "" : getSkillsPromptBlock() }
+    const frozenHumanizerEnabled = humanizerConfig.enabled
+    const frozenUnderstandingBlock = silentAccessConfig.enabled ? getUnderstandingPromptBlock() : undefined
+    const skillCatalogFingerprint = getSkillCatalogFingerprint() ?? undefined
+    // 会话历史由 Harness 条目承担；buildPrompt 只负责静态/动态/记忆块与预算分配记录。
+    const tailContextText = [planStepContext, input.turnContext?.text].filter(Boolean).join("\n\n")
+    // 上一回合结算发现协议违约时补一句提醒，接到既有 ephemeral 块通道（buildPrompt）。
+    // 主动表达回合不注入（它不参与协议检测，见 settleMainTurn），当前 Card 没有可写变量
+    // 也不注入 —— 提醒会指向一个这份 Card 里不存在的格式要求。
+    const runtimeDataReminder = !isActiveMessage && !input.activeRequest
+      && hasLlmWritableCardVars(card) && hasRuntimeDataReminder(turnSessionId)
+      ? RUNTIME_DATA_REMINDER_TEXT : ""
+    const context = buildPrompt({
+      ...frozenContext,
+      unansweredCount, thinkingEffort, isActiveMessage, humanizerEnabled: frozenHumanizerEnabled,
+      contextMaxTokens: windowTokens, maxOutputTokens: model.maxTokens,
+      tools: frozenTools.map(toToolDeclaration),
+      ...(tailContextText ? { ephemeralText: tailContextText, ephemeralOrigin: input.turnContext ? "proactive" as const : "plan" as const } : {}),
+      ...(runtimeDataReminder ? { runtimeDataReminder } : {}),
+    }, card, pool)
+    const promptTransforms: PromptTransform[] = []
+    if (input.ingress && input.ingress.rawText !== userText) {
+      promptTransforms.push(await createPromptRewrite({
+        transformId: `rewrite-${requestId}`,
+        name: "normalize_user_input",
+        rawText: input.ingress.rawText,
+        derivedText: userText,
+        reason: "input_normalization",
+        derivedFrom: [input.turnId ?? requestId],
+      }))
+    }
+    const kernel = createTurnKernel({
+      traceContext,
+      sessionId: turnSessionId,
+      requestId,
+      turnId: input.turnId,
+      model,
+      thinkingEffort,
+      systemPrompt: context.systemPrompt,
+      tools: frozenTools,
+      blocks: context.blocks,
+      allocations: context.allocations,
+      budgetDrops: context.budgetDrops,
+      promptTransforms,
+      skillCatalogFingerprint,
+      transientUserInput: isActiveMessage === true,
+      persistSnapshots: true,
+      card,
+      toolRun,
+      generation,
+      humanizerEnabled: frozenHumanizerEnabled,
+      taskReply: Boolean(planStepContext),
+      silentRejectedReply: frozenSilentRejectedReply,
+    })
+    const spec = createTurnSpec(kernel, {
+      // 正文在准入时已提交（与 toolRun 一起装配），spec 只承载驱动面。
+      prompt: promptInput,
+      activeToolNames,
+      timeoutMs: loopConfig.turnTimeoutMs,
+      maxToolCalls: loopConfig.maxToolCallsPerTurn,
+      projectToolResults: true,
+      humanizerEnabled: frozenHumanizerEnabled,
+      taskReply: Boolean(planStepContext),
+      ...(frozenUnderstandingBlock ? { understanding: frozenUnderstandingBlock } : {}),
+      runGeneration: generation,
+      ...(input.activeRequest && activeOwner ? { activeRequest: input.activeRequest, activeOwner, activeIsCurrent } : {}),
+      // 投影与压缩共用同一份地址目录 thunk：两路投影对同一条结果逐字相同（槽内有稳定缓存）。
+      addressRefs: () => slot.addressRefs(),
+      // 记忆块与额度一起交给投影 hook：额度是这块的硬上限，实际可用量还要减当前视图已用量。
+      memory: { tokenBudget: memoryTokenBudget, recall: memoryRecallForRequest, traceContext },
+      // 权限确认绑定当前会话：等待确认期间用户切走会话，旧回合不再取得授权。
+      isPermissionCurrent: () => runIsCurrent() && getActiveSessionId() === turnSessionId,
+    })
+    const result = await slot.driveAdmitted(spec, admitted)
+    if (result.status === "aborted" && result.abortReason === "user") {
+      publishRuntimeTrace(traceContext, "input_cancelled", () => ({ requestId, reason: "run_aborted_by_user" }), { requestId })
+    }
+    await slot.waitForIdle()
+    await Promise.allSettled(kernel.snapshotTasks)
+    // 快照任务在 execute 的 finally flush 之后才完成：这里补一次唯一 flush 入口，
+    // 保证本轮证据（transform_context / provider_payload / provider_usage）在结算前已入队并落盘。
+    await slot.flushAudit()
+    const output = await settleMainTurn({ input, kernel, result, toolCallHistory })
+    if (kernel.state.usage) output.usage = { ...kernel.state.usage }
+    if (input.activeRequest) {
+      const record = result.record
+      if (result.status === "completed" && record?.status === "completed" && record.tipId) {
+        try {
+          const evidence = await readActiveAttemptEvidence(turnSessionId, input.activeRequest.attemptId, input.activeRequest.requestId)
+          if (evidence && evidence.operationId === record.operationId && evidence.assistantEntryId === record.tipId) {
+            output.activeCommit = evidence
+            output.reply = evidence.text
+            if (evidence.silent) output.silent = true
+            else publishRuntimeTrace(traceContext, "active_message_delivered", () => ({ requestId, status: "committed" }), { entryId: evidence.assistantEntryId })
+          }
+        } catch (error) {
+          log.error("主动回复 JSONL 提交核对失败:", { sessionId: turnSessionId, requestId }, formatError(error))
+        }
+      }
+      if (!output.activeCommit) {
+        output.reply = ""
+        output.failure = { kind: "unknown", message: "主动表达没有可核实的助手提交条目" }
       }
     }
-    if (!output.activeCommit) {
-      output.reply = ""
-      output.failure = { kind: "unknown", message: "主动表达没有可核实的助手提交条目" }
-    }
-  }
-  deferTypingTitlebarRelease = output.humanized === true && output.silent !== true && Boolean(output.reply)
-    && (input.ingress !== undefined || input.activeRequest !== undefined)
-    && getActiveSessionId() === turnSessionId
-  return output
+    deferTypingTitlebarRelease = output.humanized === true && output.silent !== true && Boolean(output.reply)
+      && (input.ingress !== undefined || input.activeRequest !== undefined)
+      && getActiveSessionId() === turnSessionId
+    return output
   } catch (error) {
     // 准入之后、驱动之前失败（计划段抛错、断言失效、装配失败）：已提交的输入条目保留在会话里
     //（预检失败不丢输入），但那条已接受的操作必须结算 —— 否则它永不结算，后续准入恒判忙。
@@ -1978,9 +2020,9 @@ async function runPlanPhase(args: {
   planAbort: AbortController
   runIsCurrent: () => boolean
 } & (
-  | { planId: string; rootTurnId: string; planInput: { userText: string; cardId: string; cardRole: string } }
-  | { existingPlanId: string; approved: boolean }
-)): Promise<PlanPhaseOutcome> {
+    | { planId: string; rootTurnId: string; planInput: { userText: string; cardId: string; cardRole: string } }
+    | { existingPlanId: string; approved: boolean }
+  )): Promise<PlanPhaseOutcome> {
   const { sessionId, planAbort } = args
   // 子运行的代际身份：父槽的当前代际就是本回合的代际（计划段在回合内，槽不会被再次 begin）。
   const parentGeneration = args.parentSlot.generation
@@ -2209,7 +2251,7 @@ async function runPlanPhase(args: {
       sessionId,
       planId,
       reason: result.cancelled.reason,
-        context: `${result.stepResults.length}/${plan.steps.length} 步已执行，${reasonText}`,
+      context: `${result.stepResults.length}/${plan.steps.length} 步已执行，${reasonText}`,
       traceContext: args.traceContext,
     })
   }
@@ -2563,7 +2605,27 @@ async function settleMainTurn(args: {
   const liveCard = getActiveCard()
   // 卡片快照不一致（运行中切换 Card）时只展示文本，不写变量：变量写入必须归属本回合冻结的快照。
   const cardIsCurrent = liveCard?.id === kernel.card?.id && liveCard?.hash === kernel.card?.hash && liveCard?.version === kernel.card?.version
-  const processed = await generateReply(rawReply, kernel.card, { applyRuntimeData: cardIsCurrent && !args.input.activeRequest })
+  // 「本轮具备写入资格」是变量落盘与协议检测共用的前提：主动表达与卡已过期的回合都不参与。
+  const writesEnabled = cardIsCurrent && !args.input.activeRequest
+  const processed = await generateReply(rawReply, kernel.card, { applyRuntimeData: writesEnabled })
+  // RUNTIME_DATA 协议缺失的留痕与补救：只有非主动表达的**完成回合**才推进提醒状态 ——
+  // 取消/中断在更早的分支返回、不经过这里，所以不会留下「提醒状态」污染下一回合。
+  const protocolApplies = writesEnabled && !args.input.isActiveMessage
+  if (protocolApplies) {
+    if (processed.runtimeDataMissing) {
+      markRuntimeDataMissing(turnSessionId)
+      log.warn("结算正文缺少 RUNTIME_DATA 区块，已安排下一回合提醒:", {
+        sessionId: turnSessionId,
+        turnId: kernel.turnId,
+        cardId: kernel.card?.id,
+        requestId: kernel.requestId,
+        entryId: state.finalAssistantEntryId,
+      })
+    } else {
+      // 协议已遵守（或本卡没有可写变量、本轮无需区块）：清掉上一回合挂起的提醒。
+      clearRuntimeDataMissing(turnSessionId)
+    }
+  }
   return {
     reply: humanized?.text ?? processed.text,
     ...(humanized && humanized.parts.length > 1 ? { replyParts: humanized.parts } : {}),
@@ -2790,7 +2852,7 @@ export async function compactActiveSession(sessionId: string): Promise<ManualCom
         // 结构操作没有回合身份：不落 PromptSnapshot，也没有 payload 观测的读者。
         captureSnapshot: async () => undefined,
         snapshotTasks: [],
-        latestMessages: () => {},
+        latestMessages: () => { },
         addressRefs: () => slot.addressRefs(),
       }),
       afterResponse: createRuntimeDataStripHook({}),
@@ -3109,20 +3171,24 @@ function fromPiMessage(message: AgentMessage, id: string): Message | undefined {
     // 与重放路径（读模型）共用 isAssistantEntryVisible 一条判定，不能只改这一处。
     if (!isAssistantEntryVisible(message)) return undefined
     const toolCalls = message.content.filter(part => part.type === "toolCall").map(call => ({ id: call.id, name: call.name, arguments: JSON.stringify(call.arguments) }))
-    return { ...identity, role: "assistant", text: parseRuntimeData(contentText(message.content)).text,
-      ...(toolCalls.length ? { toolCalls } : {}) }
+    return {
+      ...identity, role: "assistant", text: parseRuntimeData(contentText(message.content)).text,
+      ...(toolCalls.length ? { toolCalls } : {})
+    }
   }
-  if (message.role === "toolResult") return { ...identity, role: "tool", text: contentText(message.content),
-    toolCallId: message.toolCallId, isError: message.isError }
+  if (message.role === "toolResult") return {
+    ...identity, role: "tool", text: contentText(message.content),
+    toolCallId: message.toolCallId, isError: message.isError
+  }
   // §4.2 保留：未知角色同样丢弃 —— 只有 user/assistant/toolResult 三种能映射成应用消息。
   return undefined
 }
 
 /**
- * UI 事件（工具状态、流式增量等）统一 best-effort：失败不影响回合，
- * 但保留 best-effort 语义的同时必须留下事件名 —— 界面少刷新一次与「这条事件从没发出」
- * 在日志里要能分清（§4.1 就地留痕）。
+ * UI 事件（工具状态、流式增量等）统一 best-effort：经 UI 事件端口发布（桥的
+ * publishEvent）。失败不影响回合，但保留 best-effort 语义的同时
+ * 必须留下事件名 —— 界面少刷新一次与「这条事件从没发出」在日志里要能分清（§4.1 就地留痕）。
  */
-async function emitUiEvent(event: string, payload: Record<string, unknown>): Promise<void> {
-  try { await emit(event, payload) } catch (error) { log.warn("UI 事件发送失败（best-effort）:", event, formatError(error)) }
+async function emitUiEvent<K extends NodeUiEventName>(event: K, payload: HostEventMap[K]): Promise<void> {
+  try { await publishUiEvent(event, payload) } catch (error) { log.warn("UI 事件发送失败（best-effort）:", event, formatError(error)) }
 }

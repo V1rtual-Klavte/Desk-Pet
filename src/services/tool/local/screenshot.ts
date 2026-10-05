@@ -11,7 +11,7 @@ import type { ToolDef } from "../types"
 import { TOOL_POLICY_VERSION } from "../types"
 import { defineTool } from "../policy"
 import { register } from "../registry"
-import { invoke } from "@tauri-apps/api/core"
+import { getHostBridge } from "@/services/host"
 import { silentAccessConfig } from "@/services/config"
 import { createLogger } from "@/services/logger"
 import { errorCode, formatError } from "@/services/error"
@@ -19,14 +19,16 @@ import { SCREENSHOT_TOOL_NAME } from "./screenshot-details"
 
 const log = createLogger("ToolShot")
 
-interface CaptureScreenshotResult {
+/** `capture_screenshot` 的回执（HostCommandMap 复用本类型，见 @/services/host）。 */
+export interface CaptureScreenshotResult {
   data: string
   mimeType: string
   width: number
   height: number
 }
 
-interface SavedScreenshotResult {
+/** `save_screenshot` 的回执（HostCommandMap 复用本类型，见 @/services/host）。 */
+export interface SavedScreenshotResult {
   path: string
 }
 
@@ -61,8 +63,8 @@ const screenshotTool: ToolDef = defineTool({
   }
   const showToUser = params.show_to_user === true
   try {
-    const shot = await invoke<CaptureScreenshotResult>("capture_screenshot")
-    const saved = await invoke<SavedScreenshotResult>("save_screenshot", { imageBase64: shot.data })
+    const shot = await getHostBridge().request("capture_screenshot", {})
+    const saved = await getHostBridge().request("save_screenshot", { imageBase64: shot.data })
     const text = showToUser
       ? `已截取当前前台窗口画面（${shot.width}×${shot.height}），这张截图会展示在聊天里给用户看。`
       : `已截取当前前台窗口画面（${shot.width}×${shot.height}），仅供你查看。`

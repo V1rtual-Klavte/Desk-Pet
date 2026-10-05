@@ -1,12 +1,12 @@
-import { invoke } from "@tauri-apps/api/core"
+import { getHostBridge } from "@/services/host"
 import { err, FileError, ok } from "@earendil-works/pi-agent-core"
 import type { Context, Result } from "@earendil-works/pi-agent-core"
 import { formatError, errorCode } from "@/services/error"
 import { relativeWithinRoot } from "@/services/paths"
-import { TauriExecutionEnv } from "@/services/tool/pi/tauri-execution-env"
+import { NativeExecutionEnv } from "@/services/tool/pi/native-execution-env"
 
 /** 宿主会话的只读适配；写入和非会话路径继续使用已有文件系统机制。 */
-export class SessionFileSystem extends TauriExecutionEnv {
+export class SessionFileSystem extends NativeExecutionEnv {
   constructor(cwd: string, private readonly sessionRoot: string) { super(cwd) }
 
   private async readSession(path: string, context: Context, maxLines?: number): Promise<Result<string, FileError> | undefined> {
@@ -18,7 +18,7 @@ export class SessionFileSystem extends TauriExecutionEnv {
     if (relative === null) return undefined
     try {
       context.abortSignal?.throwIfAborted()
-      const text = await invoke<string>("session_read_text", {
+      const text = await getHostBridge().request("session_read_text", {
         path: relative, ...(maxLines === undefined ? {} : { maxLines }),
       })
       context.abortSignal?.throwIfAborted()

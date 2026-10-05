@@ -1,6 +1,6 @@
 import { TODO_CONTEXT, type AgentMessage } from "@earendil-works/pi-agent-core"
 import type { ImageContent, TextContent } from "@earendil-works/pi-ai"
-import { invoke } from "@tauri-apps/api/core"
+import { getHostBridge } from "@/services/host"
 import { createLogger } from "@/services/logger"
 import { formatError } from "@/services/error"
 import { CHAT_IMAGE_LIMITS, getMessageImagePaths, imageMime } from "./paths"
@@ -10,7 +10,8 @@ const log = createLogger("ChatImages")
 
 export async function loadRequestImage(path: string, signal?: AbortSignal): Promise<ImageContent> {
   signal?.throwIfAborted()
-  const bytes = new Uint8Array(await invoke<number[]>("file_read_binary", { path, maxBytes: CHAT_IMAGE_LIMITS.maxBytes }))
+  // 桥已统一把 `file_read_binary` 的结果物化为 Uint8Array（BYTE_RESULT_METHODS），不再二次包装。
+  const bytes = await getHostBridge().request("file_read_binary", { path, maxBytes: CHAT_IMAGE_LIMITS.maxBytes })
   signal?.throwIfAborted()
   const mimeType = imageMime(bytes)
   if (!mimeType) throw new Error("选择的文件不是受支持的图片")

@@ -24,9 +24,17 @@ export function getEffectiveThinkingEffort(): ThinkingEffort {
   return _sessionThinkingEffort ?? (aiConfig.thinkingEffort as ThinkingEffort)
 }
 
+/**
+ * 会话级思考强度覆盖的原始读值（null = 无覆盖）。
+ * 与 `getEffectiveThinkingEffort` 分开：调试条投影要同时展示「有没有覆盖」与生效值。
+ */
+export function getSessionThinkingEffortOverride(): ThinkingEffort | null {
+  return _sessionThinkingEffort
+}
+
 // ── 会话级安全策略覆盖 ──
 // null = 使用全局默认 (safety.mode)
-type SafetyMode = "just_do_it" | "tell_me" | "let_me_tk"
+export type SafetyMode = "just_do_it" | "tell_me" | "let_me_tk"
 let _sessionSafetyMode: SafetyMode | null = null
 
 /** 设置当前会话的安全策略覆盖 */
@@ -37,6 +45,14 @@ export function setSessionSafetyMode(mode: SafetyMode | null): void {
 /** 获取当前有效的安全策略：会话覆盖 > 全局默认 */
 export function getEffectiveSafetyMode(): SafetyMode {
   return _sessionSafetyMode ?? (safetyConfig.mode as SafetyMode)
+}
+
+/**
+ * 会话级安全策略覆盖的原始读值（null = 无覆盖）。
+ * 与 `getEffectiveSafetyMode` 分开：调试条投影要同时展示「有没有覆盖」与生效值。
+ */
+export function getSessionSafetyModeOverride(): SafetyMode | null {
+  return _sessionSafetyMode
 }
 
 /** 重置会话思考强度 */
@@ -50,7 +66,7 @@ export function resetSessionSafetyMode(): void {
 }
 
 export interface DebugState {
-  /** 上次请求 prompt tokens */
+  /** 上次请求的真实 prompt tokens = Provider input + cacheRead + cacheWrite（未回报时保留上次值） */
   lastPromptTokens: number
   /** 上次请求 completion tokens */
   lastCompletionTokens: number
@@ -60,7 +76,7 @@ export interface DebugState {
   lastToolCount: number
   /** 上次请求的工具名列表 */
   lastToolNames: string[]
-  /** 上下文利用率 = (system+conversation) / max */
+  /** 上下文利用率（真实 prompt 用量优先；Provider 未回报时退回估算） */
   lastContextUsage: number
   /** 上下文上限 (tokens) */
   contextMaxTokens: number
@@ -151,27 +167,43 @@ export function usageGrandTotal(): PurposeUsage {
   return total
 }
 
-/** 更新上次请求统计（主回合逐请求展示；累计用量走 recordModelUsage） */
+/**
+ * 更新上次请求统计（主回合逐请求展示；累计用量走 recordModelUsage）。
+ *
+ * **真实用量优先、估算兜底**（2026-10-05 修复「token 计算有问题」）：
+ * - Provider 回执的 `input` 是**缓存未命中**部分（pi-ai 归一：`input = prompt_tokens − cached`，
+ *   见 openai-completions `parseChunkUsage`），真实 prompt 总量 = input + cacheRead + cacheWrite。
+ *   只取 input 会把带缓存命中的请求低估一个数量级（实测样本：DeepSeek input=731 / cacheRead=12160）；
+ * - 上下文占比以真实 prompt 总量为分子；Provider 未回报（全 0 行）时才退回
+ *   `lastSystemTokens + conversationTokens` 估算——deepseek 等正常路径恒有点位回报，
+ *   估算只服务失败/未回报行；
+ * - 0 不覆盖好值：未回报行保留上一次的真实 `lastPromptTokens`（覆盖成 0 会让「上次请求」
+ *   这一格与占比一起失真）。
+ */
 export function updateRequestStats(opts: {
   promptTokens?: number
+  cacheReadTokens?: number
+  cacheWriteTokens?: number
   completionTokens?: number
   systemTokens?: number
   toolCount?: number
   toolNames?: string[]
   conversationTokens?: number
 }) {
-  if (opts.promptTokens !== undefined) debug.lastPromptTokens = opts.promptTokens
+  // 真实 prompt 总量（本轮回执）：input + 缓存读 + 缓存写；三者都缺省 = 未回报。
+  const realPrompt = (opts.promptTokens ?? 0) + (opts.cacheReadTokens ?? 0) + (opts.cacheWriteTokens ?? 0)
+  if (realPrompt > 0) debug.lastPromptTokens = realPrompt
   if (opts.completionTokens !== undefined) debug.lastCompletionTokens = opts.completionTokens
   if (opts.systemTokens !== undefined) debug.lastSystemTokens = opts.systemTokens
   if (opts.toolCount !== undefined) {
     debug.lastToolCount = opts.toolCount
     debug.lastToolNames = opts.toolNames ?? []
   }
-  // ★ 上下文占比 = (system + conversation) / max，用最后已知值
-  const conv = opts.conversationTokens ?? 0
   const max = debug.contextMaxTokens > 0 ? debug.contextMaxTokens : aiConfig.contextMaxTokens
-  const total = debug.lastSystemTokens + conv
-  debug.lastContextUsage = Math.round((total / max) * 100)
+  // 占比：真实 prompt 用量优先；拿不到才退回 (system + conversation) 估算。
+  const estimated = debug.lastSystemTokens + (opts.conversationTokens ?? 0)
+  const basis = realPrompt > 0 ? realPrompt : estimated
+  debug.lastContextUsage = Math.round((basis / max) * 100)
 }
 
 /** 刷新已注册工具统计 */

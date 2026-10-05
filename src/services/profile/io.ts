@@ -1,5 +1,5 @@
 // ==========================================
-// Profile IO — 导入 / 导出 / 复制 / 删除
+// Profile IO — 导入 / 导出 / 新建 / 重命名 / 删除
 //
 // 所有 Profile 都从运行时 data_root/profiles 读取和写入。
 // 所有操作返回 ProfileOpResult，由调用方决定怎么提示用户 —— 不在这里弹窗，
@@ -7,15 +7,18 @@
 // ==========================================
 
 import JSZip from "jszip";
-import { invoke } from "@tauri-apps/api/core";
+import { getHostBridge } from "@/services/host";
 import {
+  DEFAULT_LAYER_SENSITIVITIES,
   discoverAllProfiles,
   getActiveProfile,
   invalidateAllProfileCaches,
   invalidateProfileCache,
+  readProfileMeta,
+  refreshProfileAssets,
   switchActiveProfile,
 } from "./loader";
-import { BaseDirs, DEFAULT_PROFILE } from "@/services/paths";
+import { BaseDirs, DEFAULT_PROFILE, runtimePath } from "@/services/paths";
 import { createLogger } from "@/services/logger";
 import { formatError } from "@/services/error";
 
@@ -57,7 +60,7 @@ export function profileDisplayPath(profileId: string): string {
  */
 export async function exportProfileZip(profileId: string): Promise<ProfileOpResult> {
   try {
-    const savedPath = await invoke<string | null>("export_profile_zip", { profileId });
+    const savedPath = await getHostBridge().request("export_profile_zip", { profileId });
     if (!savedPath) return CANCELLED;
     log.info(`已导出 ${profileId} → ${savedPath}`);
     return ok(`${profileId}.zip 已导出`, savedPath);
@@ -67,60 +70,145 @@ export async function exportProfileZip(profileId: string): Promise<ProfileOpResu
   }
 }
 
-// ── 复制 ──
+// ── 新建 ──
 
-/** 取最小的未占用副本名：copy1、copy2…… */
-export function nextCloneId(existingIds: string[]): string {
+/** 取最小的未占用新建 id：profile1、profile2……（id 只允许 ASCII；显示名另取，可重复） */
+export function nextCreateId(existingIds: string[]): string {
   const taken = new Set(existingIds)
   for (let i = 1; ; i++) {
-    const candidate = `copy${i}`
+    const candidate = `profile${i}`
+    if (!taken.has(candidate)) return candidate
+  }
+}
+
+/** 新 Profile 的默认显示名（序号与 id 一致；重名时按（2）（3）后缀避让）。 */
+function defaultProfileName(id: string, takenNames: string[]): string {
+  const base = `新 Profile ${id.replace(/^profile/, "")}`
+  const taken = new Set(takenNames.map(name => name.trim()))
+  if (!taken.has(base)) return base
+  for (let i = 2; ; i++) {
+    const candidate = `${base}（${i}）`
     if (!taken.has(candidate)) return candidate
   }
 }
 
 /**
- * 复制 Profile。副本不再属于预设按钮，后续按普通运行时 Profile 管理。
+ * 新建空 Profile：写带五层空壳的 profile.yaml，并预建五层素材目录。
+ *
+ * 空壳层（`theme.parallax.layers`）不能省：图层编辑器按 profile.yaml 的层列表建层，
+ * 缺 layers 时整窗没有层可编辑，素材也就无处插入。五层目录（`materials/L0`…`L4`）
+ * 让编辑器与用户在新建后立刻有可用的落点；层参数取缺省表，素材为空。
+ *
+ * id 取最小未占用序号（目录名），默认名与序号一致（被占用时加括号序号避让——
+ * 显示名全局唯一，重名在下拉里无法区分）。Profile 文件走 `profile_file_write`
+ * （唯一写入路径），素材目录经 `dir_create` + `runtimePath()`；本函数不碰文件系统、不拼数据根。
  */
-export async function cloneProfile(
-  sourceId: string,
+export async function createProfile(
   existingIds: string[],
+  takenNames: string[] = [],
 ): Promise<ProfileOpResult & { newId?: string }> {
-  const newId = nextCloneId(existingIds)
+  const newId = nextCreateId(existingIds)
+  const name = defaultProfileName(newId, takenNames)
   try {
-    await invoke("profile_clone", {
-      sourceProfileId: sourceId,
-      targetProfileId: newId,
+    const jsYaml = await import("js-yaml")
+    const encoder = new TextEncoder()
+    const layers = DEFAULT_LAYER_SENSITIVITIES.map((sensitivity) => ({
+      enabled: true,
+      image: "",
+      sensitivity,
+      scale: 1.0,
+      offsetX: 0,
+      offsetY: 0,
+      locked: false,
+    }))
+    // 走 js-yaml dump 而不是手写模板：显示名含引号/冒号等字符时转义由库保证。
+    const profileYaml = jsYaml.dump({
+      meta: { name, description: "", version: 1 },
+      theme: { parallax: { layers } },
+    })
+    await getHostBridge().request("profile_file_write", {
+      profileId: newId,
+      relativePath: "profile.yaml",
+      content: encoder.encode(profileYaml),
     })
 
-    const raw = await invoke<number[]>("profile_file_read", {
-      profileId: newId,
+    // 五个素材目录用宿主既有 mkdir 能力（`dir_create`）真建空目录：不带占位文件，
+    // 用户数据与导出包里不留垃圾。绝对路径经 `runtimePath()` 由 Rust 解析与边界校验
+    // （通用文件 API 的唯一取法，TS 不拼数据根，与 observation/behavior 建运行时目录同路）。
+    for (let i = 0; i < layers.length; i++) {
+      const dir = await runtimePath("profiles", newId, "materials", `L${i}`)
+      await getHostBridge().request("dir_create", { path: dir, recursive: true })
+    }
+
+    invalidateProfileCache(newId)
+    log.info(`已新建空 Profile: ${newId}（${name}），已预置五层空壳与素材目录`)
+    return { ...ok(`已新建 ${name}`, profileDisplayPath(newId)), newId }
+  } catch (e) {
+    log.error("新建 Profile 失败", formatError(e))
+    return fail(formatError(e))
+  }
+}
+
+// ── 重命名 ──
+
+/**
+ * 改 Profile 的显示名（`meta.name`）：只动 profile.yaml 的 meta 段，
+ * id（目录名）不变，因此素材与引用不受影响。
+ *
+ * 显示名全局唯一：与其它 Profile 重名时如实拒绝（下拉按名字区分，重名等于无法区分；
+ * 用户报过「两个 yuki 分不清」的问题）。比对按裁剪空白后的精确匹配。
+ */
+export async function renameProfile(profileId: string, rawName: string): Promise<ProfileOpResult> {
+  const name = rawName.trim()
+  if (!name) return fail("Profile 名称不能为空")
+  try {
+    for (const id of await discoverAllProfiles()) {
+      if (id === profileId) continue
+      const meta = await readProfileMeta(id)
+      if (meta && meta.name.trim() === name) {
+        return fail(`已有同名 Profile：「${name}」，请换一个名字`)
+      }
+    }
+
+    const raw = await getHostBridge().request("profile_file_read", {
+      profileId,
       relativePath: "profile.yaml",
     })
     const jsYaml = await import("js-yaml")
-    const doc = jsYaml.load(new TextDecoder().decode(new Uint8Array(raw))) as Record<string, any>
-    doc.meta = { ...(doc.meta || {}) }
-    delete doc.meta.builtin
-    await invoke("profile_file_write", {
-      profileId: newId,
+    const doc = jsYaml.load(new TextDecoder().decode(raw)) as Record<string, any>
+    doc.meta = { ...(doc.meta || {}), name }
+    await getHostBridge().request("profile_file_write", {
+      profileId,
       relativePath: "profile.yaml",
-      content: Array.from(new TextEncoder().encode(jsYaml.dump(doc))),
+      content: new TextEncoder().encode(jsYaml.dump(doc)),
     })
 
-    invalidateProfileCache(newId)
-    log.info(`已复制 Profile: ${sourceId} → ${newId}`)
-    return { ...ok(`已复制为 ${newId}`, profileDisplayPath(newId)), newId }
+    invalidateProfileCache(profileId)
+    // 内存只保留激活 Profile：改的是激活项时同步重载，其余目录本就不在内存。
+    if (getActiveProfile()?.id === profileId) await refreshProfileAssets(profileId)
+    log.info(`已重命名 Profile: ${profileId} → ${name}`)
+    return ok(`已重命名为 ${name}`, profileDisplayPath(profileId))
   } catch (e) {
-    log.error("复制失败", formatError(e))
+    log.error("重命名 Profile 失败", formatError(e))
     return fail(formatError(e))
   }
 }
 
 // ── 导入 ──
 
-/** 从 zip 文件导入 profile */
-export async function importProfileZip(file: File): Promise<ProfileOpResult & { profileId?: string }> {
+/**
+ * 从 zip 导入 profile。
+ *
+ * 参数用结构类型（`name` + `arrayBuffer`）而不是 DOM `File`：导入入口有两个 ——
+ * 旧的网页壳直接给 `File`，原生设置窗（Node 侧）只有路径读出的字节，包一个同形状的
+ * 对象即可；两者都是「有名字、能取字节的 zip」，不需要 DOM File 才能导入。
+ */
+export async function importProfileZip(file: {
+  name: string
+  arrayBuffer(): Promise<ArrayBuffer>
+}): Promise<ProfileOpResult & { profileId?: string }> {
   try {
-    const zip = await JSZip.loadAsync(file)
+    const zip = await JSZip.loadAsync(await file.arrayBuffer())
     if (!zip.file("profile.yaml")) {
       return fail("压缩包缺少 profile.yaml，不是有效的 Profile 导出文件")
     }
@@ -148,10 +236,10 @@ export async function importProfileZip(file: File): Promise<ProfileOpResult & { 
       }
       seen.set(key, path)
       const data = await entry.async("uint8array")
-      await invoke("profile_file_write", {
+      await getHostBridge().request("profile_file_write", {
         profileId,
         relativePath: path,
-        content: Array.from(data as Uint8Array),
+        content: data,
       })
       count++
     }
@@ -193,7 +281,7 @@ export async function deleteProfile(profileId: string): Promise<ProfileOpResult>
   }
   const wasActive = getActiveProfile()?.id === profileId
   try {
-    await invoke("profile_delete", { profileId })
+    await getHostBridge().request("profile_delete", { profileId })
     invalidateProfileCache(profileId)
     log.info(`已删除 Profile: ${profileId}`)
 
@@ -216,8 +304,8 @@ export async function deleteProfile(profileId: string): Promise<ProfileOpResult>
 
 // ── 恢复默认资源 ──
 
-/** Rust 侧 restore_default_resources 的返回 */
-interface RestoreResult {
+/** Rust 侧 restore_default_resources 的返回（HostCommandMap 复用本类型，见 @/services/host）。 */
+export interface RestoreResult {
   profiles: number
   cards: number
   skills: number
@@ -231,7 +319,7 @@ interface RestoreResult {
  */
 export async function restoreDefaultResources(): Promise<ProfileOpResult> {
   try {
-    const r = await invoke<RestoreResult>("restore_default_resources")
+    const r = await getHostBridge().request("restore_default_resources", {})
 
     // 磁盘上的内置资源已被覆盖：Profile 丢弃缓存，Card 与 Skill 重新读盘。
     // Skill 走唯一的指纹核对入口：重种子必然改动 mtime/size，指纹变了就会重载，

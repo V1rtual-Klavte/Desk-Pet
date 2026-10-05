@@ -1,57 +1,67 @@
 // ==========================================
-// 全局环境变量 —— 平台检测 + 运行时配置
-// 引入此文件即完成自动检测，无需手动初始化
+// 全局环境变量 —— 平台检测
 // ==========================================
+//
+// 平台值的**唯一真相源是宿主握手**：`ServerWelcome.platform`（Rust 侧 HostPlatform，
+// 值 `"windows" | "macos"`）→ `HostBridgeRuntime.platform` → `HostEnvironment` 端口
+// （`src/services/host/ports.ts` 的 `platform` 字段）。领域代码不嗅探 navigator/window，
+// 也不按 `process.platform` 等第二来源另判（执行契约「一个真相源，两侧不各存默认值」）。
+//
+// 时序：模块求值可能早于桥接注入（ESM 静态图先于 `connectHostBridge()` 运行），因此
+// 导出值是**活绑定**，由 `refreshHostPlatform()` 在端口装配点（`host/node-ports.ts` 的
+// `installNodeHostPorts`，即 `connectHostBridge()` 构造时）刷新；刷新前为 "unknown"
+// （保守值，避免在握手确认前押注某个平台）。产品路径的读取全部发生在领域引导之后
+// （首批消费是 native-ui 的推送），不存在「刷新前读取」的竞态。
+//
+// 为什么 `env.ts` 直接 import 叶模块 `host/ports.ts` 而不是 `@/services/host` 桶：
+// 装配点是 `host/node-ports.ts` → 本文件 → 端口叶；若走桶会与
+// index → bridge → node-ports → 本文件形成循环。领域代码仍从桶取端口。
+//
+// 构建说明：产品产物（`build:harness` 的 esbuild）保留
+// `--define:navigator=undefined --define:globalThis.navigator=undefined`，该 define
+// **只服务第三方 SDK 的浏览器探测**（openai SDK 的 detect-platform / streaming 分支与
+// Vue 的 devtools 注入探测），**产品代码不再依赖它** —— 保留实证：去掉 define 后产物
+// 残留 5 处 navigator（其中 2 处 `navigator.`，来自上述依赖），构建守卫（产物零命中
+// `navigator.`）不再成立；带 define 时为零命中。
+// 历史教训：`typeof navigator` 类判断会被该 define 折叠为 `if (false)` —— 据此
+// 选平台会恒得 "unknown"、macOS 取到 Windows 修饰键；平台已改走宿主握手，
+// 产品代码不得再以 navigator 作平台来源。
 
-import { createLogger } from "@/services/logger";
+import { getHostEnvironment } from "@/services/host/ports"
 
-const log = createLogger("Env");
+/** 运行平台。宿主握手只披露 Windows/macOS；"linux"/"unknown" 是未刷新/保守取值。 */
+export type Platform = "windows" | "macos" | "linux" | "unknown"
 
-/** 运行平台 */
-export type Platform = "windows" | "macos" | "linux" | "unknown";
+export let platform: Platform = "unknown"
+export let isWindows = false
+export let isMacOS = false
+export let isLinux = false
 
-/** 检测当前 OS 平台 */
-function detectPlatform(): Platform {
-  // Tauri 环境：优先用 window.__TAURI_INTERNALS__ 判断
-  if (typeof window !== "undefined" && (window as any).__TAURI_INTERNALS__) {
-    // 通过 userAgent 检测（Tauri WebView 保留原始 UA）
-    const ua = navigator.userAgent;
-    if (/Windows/i.test(ua)) return "windows";
-    if (/Mac/i.test(ua)) return "macos";
-    if (/Linux/i.test(ua)) return "linux";
-  }
-  // 浏览器 fallback
-  if (typeof navigator !== "undefined") {
-    const p = navigator.platform?.toLowerCase() || "";
-    if (p.includes("win")) return "windows";
-    if (p.includes("mac")) return "macos";
-    if (p.includes("linux")) return "linux";
-  }
-  return "unknown";
+/** 窗口监控是否可用（原生宿主两端都有观察通道）。 */
+export let windowMonitorAvailable = false
+
+/** 跨显示器检测是否可用（原生宿主两端都有观察通道）。 */
+export let crossMonitorAvailable = false
+
+/**
+ * 握手披露值 → 完整平台类型。握手只可能给 windows/macos（HostPlatform 只有两个变体）；
+ * 经函数边界拓宽，保留 "linux" 的完整比较而不把联合窄化成二值。
+ */
+function widenPlatform(disclosed: "windows" | "macos"): Platform {
+  return disclosed
 }
 
-/** 是否为开发环境 */
-function detectDev(): boolean {
-  return import.meta.env.DEV === true;
-}
-
-// ==========================================
-// 导出 —— 模块加载时自动执行一次
-// ==========================================
-
-export const platform: Platform = detectPlatform();
-export const isWindows = platform === "windows";
-export const isMacOS = platform === "macos";
-export const isLinux = platform === "linux";
-export const isDev = detectDev();
-
-/** 窗口监控是否可用（Windows: 原生 API, macOS: osascript） */
-export const windowMonitorAvailable = isWindows || isMacOS;
-
-/** 跨显示器检测是否可用 */
-export const crossMonitorAvailable = isWindows || isMacOS;
-
-// 打印检测结果（开发环境）
-if (isDev) {
-  log.info("平台:", platform, "| 窗口监控:", windowMonitorAvailable);
+/**
+ * 从宿主环境端口刷新平台派生值（`installNodeHostPorts` 在注册端口后调用一次；
+ * 其它环境由各自的端口注入点负责）。未注入端口时显式抛（HostPortUnavailableError），
+ * 不静默保持 "unknown" —— 到点没刷新属于接线错误。
+ */
+export function refreshHostPlatform(): void {
+  const next = widenPlatform(getHostEnvironment().platform)
+  platform = next
+  isWindows = next === "windows"
+  isMacOS = next === "macos"
+  isLinux = next === "linux"
+  windowMonitorAvailable = isWindows || isMacOS
+  crossMonitorAvailable = isWindows || isMacOS
 }

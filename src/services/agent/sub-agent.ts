@@ -141,12 +141,3 @@ function getSafeTools(): ToolDef[] {
   const allTools = listAll()
   return allTools.filter(t => SUB_AGENT_TOOL_IDS.has(t.id))
 }
-
-// ═══════════════════════════════════════════════════════════════
-// HMR
-// ═══════════════════════════════════════════════════════════════
-if (import.meta.hot) {
-  import.meta.hot.accept(() => {
-    log.info("SubAgent HMR 完成")
-  })
-}

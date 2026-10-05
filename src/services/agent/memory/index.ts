@@ -7,17 +7,17 @@
 // 不再有第二份内存数组，也不再有 Markdown 注册表。
 
 import { initPaths } from "@/services/paths"
-import { invoke } from "@tauri-apps/api/core"
+import { getHostBridge } from "@/services/host"
 import { createLogger } from "@/services/logger"
 import { formatError } from "@/services/error"
 import { installMemoryProvider, sqliteMemoryProvider, recallMemory } from "./provider"
 import { memoryList, memoryStatus, applyMemoryChange } from "./ipc"
-import { initMemoryRevisionSync } from "./revision"
 
 export type { TemporalAnchor, ProactiveRecurrence, ProactiveOwner, ProactiveTask, ProactiveSourceRef } from "./protocol"
 
 export { parseRerankIds } from "./rerank"
-export { initMemoryRevisionSync, publishMemoryRevision, subscribeMemoryRevision } from "./revision"
+// revision 同步：这里只保留进程内分发总线（单 Node 架构下所有提交都发生在本进程）。
+export { publishMemoryRevision, subscribeMemoryRevision } from "./revision"
 export {
   emptyMemoryProvider, getMemoryProvider, installMemoryProvider, recallMemory, resetMemoryProvider,
   sqliteMemoryProvider,
@@ -30,12 +30,12 @@ export {
   queryMemory, rebuildMemory, registerMemorySources, restoreMemory, resumeMemoryJob, startMemoryJob,
 } from "./ipc"
 export type {
-  MemoryCandidateDraft, MemoryChangeRequest, MemoryDraft, MemoryHistoryEntry, MemoryItem,
+  MemoryCandidateDraft, MemoryChangeRequest, MemoryDreamingBudget, MemoryDraft, MemoryHistoryEntry, MemoryItem,
   MemoryJob, MemoryJobListItem, MemoryKind, MemoryRecallCandidateSnapshot, MemoryRestorePreview, MemoryScope, MemorySource, MemorySourceAudit, MemoryStatus, MemoryStatusSnapshot, WorkingState,
 } from "./ipc"
 export { collectAllMemorySources, collectMemorySources, trustedSourcesFromEntries } from "./sources"
 export { resolveCurrentTrustedMemorySource } from "./sources"
-export { runDreamingSweep, startIdleDreamingScheduler, stopIdleDreamingScheduler, type DreamingOutcome } from "./dreaming"
+export { runDreamingSweep, startIdleDreamingScheduler, stopIdleDreamingScheduler, stopIdleDreamingSchedulerAndWait, type DreamingOutcome } from "./dreaming"
 
 const log = createLogger("Memory")
 
@@ -54,8 +54,9 @@ async function ensureInit(): Promise<void> {
 
 async function _doInit(): Promise<void> {
   await initPaths()
-  await invoke("init_memory_files")
-  await initMemoryRevisionSync()
+  await getHostBridge().request("init_memory_files", {})
+  // revision 监听不在这里安装：单 Node 架构下所有提交都发生在本进程，
+  // 进程内提交走 ./revision 的本地分发。
   // 记忆库不可用时保留空实现：聊天照常，管理界面会以 MEMORY 错误如实上报。
   installMemoryProvider(sqliteMemoryProvider)
   try {

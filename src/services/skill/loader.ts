@@ -6,14 +6,14 @@
 // 合法性判定与清单来源都是 Pi 的 `loadSkills`（经 store 的指纹核对入口）。
 // ==========================================
 
-import { invoke } from "@tauri-apps/api/core"
+import { getHostBridge } from "@/services/host"
 import {
   BACKGROUND_CONTEXT,
   formatSkillsForSystemPrompt,
   loadSkills,
   type Skill,
 } from "@earendil-works/pi-agent-core"
-import { TauriExecutionEnv } from "@/services/tool/pi/tauri-execution-env"
+import { NativeExecutionEnv } from "@/services/tool/pi/native-execution-env"
 import { runtimePath } from "@/services/paths"
 import { createLogger } from "@/services/logger"
 import {
@@ -59,7 +59,7 @@ export async function upsertSkill(raw: string): Promise<ManagedSkill | null> {
   const filePath = await runtimePath("data", SKILLS_DIR, name, SKILL_FILE)
   // host 服务写入不纳入许可域（借用者身份是页面实例，host 没有该生命周期），
   // 但用原子替换写入消除半写窗口：读者要么看到旧正文，要么看到完整新正文。
-  await invoke("file_write_atomic", { path: filePath, content: raw, maxBytes: MAX_SKILL_BYTES })
+  await getHostBridge().request("file_write_atomic", { path: filePath, content: raw, maxBytes: MAX_SKILL_BYTES })
   await syncSkillCatalog()
   const saved = listSkills().find(skill => skill.relativePath === name)
   if (!saved) {
@@ -79,7 +79,7 @@ export async function upsertSkill(raw: string): Promise<ManagedSkill | null> {
  * 只以「Pi 是否收录」为判据。临时目录用后即删，残留由系统临时目录回收。
  */
 async function validateAsSkill(raw: string): Promise<string | null> {
-  const env = new TauriExecutionEnv(await TauriExecutionEnv.defaultCwd())
+  const env = new NativeExecutionEnv(await NativeExecutionEnv.defaultCwd())
   const dir = await env.createTempDir("deskpet-skill-", BACKGROUND_CONTEXT)
   if (!dir.ok) return `校验用临时目录创建失败: ${dir.error.message}`
   try {
@@ -107,7 +107,7 @@ async function validateAsSkill(raw: string): Promise<string | null> {
  * 按 `name` 索引会删错对象。坐标由 store 的 `relativePath` 给出。
  */
 export async function deleteSkill(relativePath: string): Promise<void> {
-  await invoke("skill_delete", { relativePath })
+  await getHostBridge().request("skill_delete", { relativePath })
   await syncSkillCatalog()
   log.info("Skill 已删除:", relativePath)
 }
@@ -120,13 +120,13 @@ export async function deleteSkill(relativePath: string): Promise<void> {
  */
 export async function setSkillEnabled(relativePath: string, enabled: boolean): Promise<boolean> {
   const filePath = await skillFilePath(relativePath)
-  const result = await invoke<{ content: string }>("file_read", { path: filePath, maxBytes: MAX_SKILL_BYTES })
+  const result = await getHostBridge().request("file_read", { path: filePath, maxBytes: MAX_SKILL_BYTES })
   const updated = applyEnabledFlag(result.content, enabled)
   if (updated === null) {
     log.warn("Skill 开关未写入：文件里没有可用的 frontmatter 块:", filePath)
     return false
   }
-  await invoke("file_write_atomic", { path: filePath, content: updated, maxBytes: MAX_SKILL_BYTES })
+  await getHostBridge().request("file_write_atomic", { path: filePath, content: updated, maxBytes: MAX_SKILL_BYTES })
   await syncSkillCatalog()
   log.info(`Skill 已${enabled ? "启用" : "关闭"}:`, relativePath)
   return true

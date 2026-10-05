@@ -1,13 +1,11 @@
 // ==========================================
-// 全局异常体系 —— 拦截 + 可见
+// 全局异常体系 —— 单一出口 + 可见性
 //
-// 刻意只用原生 DOM，不依赖 Vue / config / paths：
-// 它必须在 mount() 之前就装好，并且能在 initPaths() / initConfig() 失败时
-// 照常弹出 —— 「启动失败白屏」正是它要覆盖的首要场景。
+// `reportError` 是 Node 领域的唯一错误出口：写日志 + 通知宿主落盘 + 按需展示。
+// 覆盖层是 DOM 投影：只在有 DOM 的宿主里渲染，Node 宿主只留内存条目（见 pushEntry）。
 // ==========================================
 
-import type { App } from "vue"
-import { invoke } from "@tauri-apps/api/core"
+import { getHostBridge, getHostEnvironment } from "@/services/host"
 import { createLogger } from "@/services/logger"
 import { errorsConfig } from "@/services/config"
 import { errorDetail, formatError } from "./format"
@@ -15,7 +13,7 @@ import { errorDetail, formatError } from "./format"
 const log = createLogger("Error")
 
 const MAX_ENTRIES = 20
-/** 压过现有最大层级 9999（App.vue 的右键菜单） */
+/** 覆盖层层级取 CSS z-index 上界，压过任何页面内层级 */
 const OVERLAY_Z = "2147483647"
 
 export interface ReportOptions {
@@ -38,23 +36,23 @@ interface Entry {
 }
 
 const entries: Entry[] = []
-/** 显式覆写（如 e2e 传 `overlay: false`）；null = 走配置 */
-let overlayOverride: boolean | null = null
 let overlayEl: HTMLElement | null = null
 
 /**
  * 是否弹覆盖层。
  *
- * 在**报错时**惰性求值，而非安装时：拦截器必须在 initConfig() 之前就装好
- * （否则启动失败就没人接），那时读配置只能拿到内置默认值。等到真正报错时，
- * 配置通常已就绪；即便 initConfig() 失败，cfg 仍持有内置 CONFIG.yaml 的值，不会崩。
+ * 在**报错时**惰性求值，而非安装时：早期报错可能在 initConfig() 之前发生，
+ * 那时读配置只能拿到内置默认值；等到真正报错时，配置通常已就绪；即便 initConfig()
+ * 失败，cfg 仍持有内置 CONFIG.yaml 的值，不会崩。
  */
 function shouldShowOverlay(): boolean {
-  if (overlayOverride !== null) return overlayOverride
   const mode = errorsConfig.overlay
   if (mode === "always") return true
   if (mode === "never") return false
-  return import.meta.env.DEV
+  // auto = 开发模式弹：判据来自宿主运行模式端口（ServerWelcome.runtimeMode），
+  // 不读 import.meta.env。端口未注入时抛错 —— reportError 的外层 try 会兜住，
+  // 覆盖层不弹但日志与上报照走（启动早期的接线错误）。
+  return getHostEnvironment().runtimeMode === "development"
 }
 
 /** 唯一错误出口：写日志 + 通知 Rust 落盘 + 按需展示 */
@@ -71,64 +69,28 @@ export function reportError(source: string, value: unknown, options: ReportOptio
       log.warn(`[${source}] ${kind}:`, detail)
     }
 
-    // Rust 侧再记一份：即使界面全挂，终端与日志文件里也有完整记录
-    invoke("report_frontend_error", {
-      source: `${source}/${kind}`,
-      message,
-      stack: detail,
-    }).catch(() => {
-      // Tauri 未注入（例如纯浏览器调试）时忽略：根因已由上面的 log.error/warn 记录
-      // （统一留痕点：reportError 自身已写 logger；本处再报会递归）[保留已登记 §4.2]
-    })
+    // Rust 侧再记一份：即使界面全挂，终端与日志文件里也有完整记录。
+    // 取用口在桥未注入时**同步抛**，fire-and-forget 的 `.catch()` 接不住；就地捕获，
+    // 不让「上报通道缺失」连累下面的覆盖层展示 —— 用户可见的异常不能因为一份冗余
+    // 记录通道不存在而消失。本次报错已由上面的 log.error/warn 留痕（统一留痕点：
+    // reportError 自身已写 logger；本处再报会递归）[保留已登记 §4.2]
+    try {
+      getHostBridge().request("report_frontend_error", {
+        source: `${source}/${kind}`,
+        message,
+        stack: detail,
+      }).catch(() => {
+        // Tauri 未注入（例如纯浏览器调试）时忽略：根因已由上面的 log.error/warn 记录
+        // （统一留痕点：reportError 自身已写 logger；本处再报会递归）[保留已登记 §4.2]
+      })
+    } catch {
+      // 桥未注入（同步抛）：与上一个分支同因，Rust 副本放弃、覆盖层照走
+    }
 
     if (allowOverlay && shouldShowOverlay()) pushEntry({ time: hms(), source, kind, message, detail })
   } catch {
     // 上报自身失败不能再抛（否则递归）：这里是异常上报链的最后兜底层，
     // 没有更外层的出口可写 [保留已登记 §4.2]
-  }
-}
-
-/** 安装 window 级拦截。4 个窗口入口都应最先调用。 */
-export function installGlobalHandlers(
-  source: string,
-  options: { overlay?: boolean } = {},
-): void {
-  overlayOverride = typeof options.overlay === "boolean" ? options.overlay : null
-
-  // capture=true：资源加载失败（img/script/link）不会冒泡，只能靠捕获阶段拿到
-  window.addEventListener(
-    "error",
-    (event: ErrorEvent) => {
-      const target = event.target
-      if (target && target !== (window as unknown as EventTarget) && !event.error) {
-        const el = target as HTMLElement
-        const url = (el as HTMLImageElement).src || (el as HTMLScriptElement).src || ""
-        // 不弹覆盖层：精简 Profile 缺少可选素材（背景图/音效/预览图）是预期行为，
-        // 每个 Profile 的素材完备度不同，404 属于常态而非故障。
-        reportError(source, new Error(`资源加载失败: <${el.tagName.toLowerCase()}> ${url}`), {
-          kind: "resource",
-          overlay: false,
-        })
-        return
-      }
-      reportError(source, event.error ?? event.message, { kind: "window.onerror" })
-    },
-    true,
-  )
-
-  window.addEventListener("unhandledrejection", (event: PromiseRejectionEvent) => {
-    reportError(source, event.reason, { kind: "unhandledrejection" })
-  })
-}
-
-/**
- * 挂 Vue 组件级错误处理。
- * 注意它接不住 onMounted(async () => {...}) 里 reject 的 Promise，
- * 那类要靠上面的 unhandledrejection 兜底 —— 两者缺一不可。
- */
-export function installVueErrorHandler(app: App, source: string): void {
-  app.config.errorHandler = (err, _instance, info) => {
-    reportError(source, err, { kind: `vue:${info}` })
   }
 }
 
@@ -144,7 +106,9 @@ function pushEntry(entry: Entry): void {
   try {
     entries.push(entry)
     if (entries.length > MAX_ENTRIES) entries.shift()
-    renderOverlay()
+    // 无 DOM 的宿主（Node harness）只留内存条目：覆盖层是 UI 投影，日志与宿主上报
+    // 已在 reportError 完成。
+    if (typeof document !== "undefined") renderOverlay()
   } catch {
     // 渲染失败不能再抛：条目已进 entries、异常原文已留痕，覆盖层只是展示层
     // [保留已登记 §4.2]
@@ -199,10 +163,7 @@ function ensureOverlay(): HTMLElement {
   spacer.style.cssText = "flex:1"
 
   const copyBtn = button("复制详情", () => {
-    const text = entries
-      .map((e) => `[${e.time}] ${e.source} · ${e.kind}\n${e.detail}`)
-      .join("\n\n")
-    void navigator.clipboard?.writeText(text).catch(error => log.warn("复制异常详情失败:", formatError(error)))
+    copyText(entries.map((e) => `[${e.time}] ${e.source} · ${e.kind}\n${e.detail}`).join("\n\n"))
   })
 
   const closeBtn = button("关闭", () => hideOverlay())
@@ -219,6 +180,27 @@ function ensureOverlay(): HTMLElement {
 
   overlayEl = root
   return root
+}
+
+/**
+ * 覆盖层「复制详情」。不用 `navigator.clipboard`：本文件在 Node 领域图的传递闭包里
+ * （error 桶被引导 import），W0/W2 的产物守卫要求闭包中不出现 `navigator.` 字面量。
+ * 临时 textarea + `document.execCommand("copy")` 在 WebView 里由用户点击手势触发、无需权限；
+ * 失败只留痕（复制是便利功能，不阻断覆盖层）。
+ */
+function copyText(text: string): void {
+  try {
+    const area = document.createElement("textarea")
+    area.value = text
+    area.style.cssText = "position:fixed;top:0;left:0;opacity:0;"
+    document.body.appendChild(area)
+    area.select()
+    const copied = document.execCommand("copy")
+    area.remove()
+    if (!copied) log.warn("复制异常详情失败: execCommand(copy) 返回 false")
+  } catch (error) {
+    log.warn("复制异常详情失败:", formatError(error))
+  }
 }
 
 function button(label: string, onClick: () => void): HTMLButtonElement {
@@ -254,7 +236,7 @@ function renderOverlay(): void {
 
     const text = document.createElement("div")
     // dev 给完整 stack；生产只给 message，用户可点「复制详情」发给开发者
-    text.textContent = import.meta.env.DEV ? e.detail : e.message
+    text.textContent = getHostEnvironment().runtimeMode === "development" ? e.detail : e.message
 
     item.append(head, text)
     body.appendChild(item)

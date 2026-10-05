@@ -1,7 +1,13 @@
-import { type Ref } from "vue"
-import { listen } from "@tauri-apps/api/event"
+// ==========================================
+// 窗口观察存储（Node 领域侧）
+// ==========================================
+//
+// 本模块只持「最近一次观察 + 订阅者 + 乱序丢弃」，不 import Tauri/DOM：
+// - 订阅入口在 `monitor.ts` 的 `initWindowObservation()`（领域引导调用一次）：
+//   事件来自桥 `window-observed`（HostEventMap (a) 类，Rust monitor 双投）。
+
 import { silentAccessConfig } from "@/services/config"
-import { observeBehavior, startBehavior } from "@/services/behavior"
+import { observeBehavior } from "@/services/behavior"
 import { createLogger } from "@/services/logger"
 import type { WindowObservation } from "./types"
 
@@ -23,6 +29,11 @@ export function clearLatestWindowObservation(): void {
 export function subscribeWindowObservations(callback: (observation: WindowObservation) => void): () => void {
   subscribers.add(callback)
   return () => subscribers.delete(callback)
+}
+
+/** 卸载观察挂载时清空订阅者（旧 initWindowListener 的收尾语义，由 Node 侧接线复用）。 */
+export function clearWindowObservationSubscribers(): void {
+  subscribers.clear()
 }
 
 export function acceptWindowObservation(value: unknown): boolean {
@@ -49,20 +60,6 @@ export function acceptWindowObservation(value: unknown): boolean {
     catch (error) { log.error("window-observed subscriber failed", error instanceof Error ? error : undefined) }
   }
   return true
-}
-
-export async function initWindowListener(winSize: Ref<{ w: number; h: number }>): Promise<() => void> {
-  const unlisten = await listen<WindowObservation>("window-observed", ({ payload }) => { acceptWindowObservation(payload) })
-  if (silentAccessConfig.enabled) startBehavior()
-  const observer = new ResizeObserver(() => { winSize.value = { w: window.innerWidth, h: window.innerHeight } })
-  observer.observe(document.body)
-  log.info("window-observed listener 已启动")
-  return () => {
-    unlisten()
-    observer.disconnect()
-    clearLatestWindowObservation()
-    subscribers.clear()
-  }
 }
 
 function isWindowObservation(value: unknown): value is WindowObservation {

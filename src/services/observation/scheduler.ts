@@ -1,5 +1,5 @@
-import { invoke } from "@tauri-apps/api/core"
 import type { ImageContent } from "@earendil-works/pi-ai"
+import { getHostBridge } from "@/services/host"
 import { estimateRequestTokens } from "@/services/context"
 import { completePiText, resolvePiAuxModel } from "@/services/engine/harness"
 import { errorCode, formatError } from "@/services/error"
@@ -30,7 +30,8 @@ const OBSERVATION_SYSTEM_PROMPT = [
   "只保存短摘要，不复述私人正文、凭据、密钥、窗口中的对话或无关个人信息。没有稳妥观察时返回空数组。",
 ].join("\n")
 
-interface ScreenCaptureResult { data: string; mimeType: string; width: number; height: number }
+/** `observation_capture_screen` 的回执（HostCommandMap 复用本类型，见 @/services/host）。 */
+export interface ScreenCaptureResult { data: string; mimeType: string; width: number; height: number }
 interface ObservationInput { sourceId: string; kind: ObservationKind; observedAt: number; text?: string; target?: string }
 type TargetReadOutcome = "ok" | "cancelled" | "unavailable"
 
@@ -121,7 +122,7 @@ function decodeObservations(text: string, inputs: ObservationInput[]): Understan
 async function readDecidedTargets(targets: DecidedTarget[], inputs: ObservationInput[], signal: AbortSignal): Promise<TargetReadOutcome> {
   let results: TargetReadResult[]
   try {
-    results = await invoke<TargetReadResult[]>("observation_read_targets", {
+    results = await getHostBridge().request("observation_read_targets", {
       targets: targets.map(({ path, kind }) => ({ path, kind })),
     })
   } catch (error) {
@@ -156,7 +157,7 @@ async function observeBatch(signal: AbortSignal, generation: number): Promise<vo
   let images: ImageContent[] = []
   let screenshotAvailable = false
   try {
-    const capture = await invoke<ScreenCaptureResult>("observation_capture_screen")
+    const capture = await getHostBridge().request("observation_capture_screen", {})
     if (signal.aborted || !silentAccessConfig.enabled) return
     if (capture.mimeType.startsWith("image/")) {
       const sourceId = newSourceId("screenshot")

@@ -40,6 +40,8 @@ const IDLE_TICK_MS = 15_000
 let idleTimer: ReturnType<typeof setInterval> | null = null
 let idleSince = 0
 let lastIdleRunAt = 0
+let idleRunController: AbortController | null = null
+let idleRun: Promise<unknown> | null = null
 function localDate(): string {
   const now = new Date()
   return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(now.getDate()).padStart(2, "0")}`
@@ -343,10 +345,22 @@ export function startIdleDreamingScheduler(): () => void {
     const idleReady = Date.now() - idleSince >= Math.max(30, memoryConfig.dreamingIdleSeconds) * 1000
     const intervalReady = Date.now() - lastIdleRunAt >= Math.max(1, memoryConfig.dreamingMinIntervalMinutes) * 60_000
     if (!idleReady || !intervalReady) return
+    if (idleRun) return
     lastIdleRunAt = Date.now()
     idleSince = Date.now()
-    void idleBudgetAvailable().then(available => available ? runDreamingSweep({ automatic: true }) : undefined)
+    const controller = new AbortController()
+    idleRunController = controller
+    const run = idleBudgetAvailable().then(available => available && !controller.signal.aborted
+      ? runDreamingSweep({ automatic: true, signal: controller.signal })
+      : undefined)
       .catch(error => log.warn("空闲记忆整理失败:", formatError(error)))
+      .finally(() => {
+        if (idleRun === run) {
+          idleRun = null
+          idleRunController = null
+        }
+      })
+    idleRun = run
   }
   idleTimer = setInterval(tick, IDLE_TICK_MS)
   tick()
@@ -357,4 +371,10 @@ export function stopIdleDreamingScheduler(): void {
   if (idleTimer) clearInterval(idleTimer)
   idleTimer = null
   idleSince = 0
+  idleRunController?.abort(new Error("应用正在关停"))
+}
+
+export async function stopIdleDreamingSchedulerAndWait(): Promise<void> {
+  stopIdleDreamingScheduler()
+  await idleRun
 }

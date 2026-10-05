@@ -85,7 +85,7 @@
 import { JSONL_STORAGE_VERSION } from "@earendil-works/pi-agent-core/harness/session"
 import type { Context, FileSystem } from "@earendil-works/pi-agent-core"
 import { sha256Text, stableSerialize } from "@/services/engine/runtime"
-import { MAX_TOOL_FILE_BYTES } from "@/services/tool/pi/tauri-execution-env"
+import { MAX_TOOL_FILE_BYTES } from "@/services/tool/pi/native-execution-env"
 import { formatError } from "@/services/error"
 import { createLogger } from "@/services/logger"
 
@@ -564,8 +564,8 @@ const log = createLogger("SessionFold")
  *   ① 文件本身就超过它 ⇒ 连读都读不回来，折叠无从谈起（先别做无用功）；
  *   ② 折叠结果超过它 ⇒ 单次 `file_write` 必然失败，守卫写全，不靠「折叠只会变小」的推理。
  *
- * 常量本身定义在 `tauri-execution-env.ts`（它是这条上限的物理来源），这里只 import ——
- * 不给它第二个定义点。`engine/harness/session-repo.ts` 也是从同一模块取 `TauriExecutionEnv`。
+ * 常量本身定义在 `native-execution-env.ts`（它是这条上限的物理来源），这里只 import ——
+ * 不给它第二个定义点。`engine/harness/session-repo.ts` 也是从同一模块取 `NativeExecutionEnv`。
  */
 
 /**

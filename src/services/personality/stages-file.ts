@@ -5,6 +5,7 @@
 // ==========================================
 
 import type { VariableState } from "./types"
+import { getHostBridge } from "@/services/host"
 import { createLogger } from "@/services/logger"
 import { errorCode, formatError } from "@/services/error"
 
@@ -147,11 +148,9 @@ function corrupt(cardId: string, detail: string): Error {
  * 路径是**域内相对路径**：base 目录由 Rust 的 AppPaths 持有，不得加 `personality/` 前缀。
  */
 export async function readStagesFile(cardId: string): Promise<StagesFile | null> {
-  const { invoke } = await import("@tauri-apps/api/core")
-
-  let raw: number[]
+  let raw: Uint8Array
   try {
-    raw = await invoke<number[]>("personality_file_read", { path: `stages/${cardId}.json` })
+    raw = await getHostBridge().request("personality_file_read", { path: `stages/${cardId}.json` })
   } catch (e) {
     if (errorCode(e) === "PATH_NOT_FOUND") {
       log.debug("stages 文件不存在:", cardId)
@@ -160,7 +159,7 @@ export async function readStagesFile(cardId: string): Promise<StagesFile | null>
     throw e
   }
 
-  const json = new TextDecoder().decode(new Uint8Array(raw))
+  const json = new TextDecoder().decode(raw)
   let parsed: unknown
   try {
     parsed = JSON.parse(json)
@@ -201,10 +200,9 @@ export async function updateStagesFile(
     variables: patch.variables ?? base.variables,
   }
 
-  const { invoke } = await import("@tauri-apps/api/core")
   const content = new TextEncoder().encode(JSON.stringify(next, null, 2))
-  return await invoke<string>("personality_file_write", {
+  return await getHostBridge().request("personality_file_write", {
     path: `stages/${cardId}.json`,
-    content: Array.from(content),
+    content,
   })
 }

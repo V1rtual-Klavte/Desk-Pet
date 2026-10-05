@@ -33,14 +33,10 @@ const PNG_MIME = "image/png"
 
 type ImageCanvas = OffscreenCanvas | HTMLCanvasElement
 
-/** 离屏画布优先；两者都没有（能力缺失）返回 undefined，由调用方走原图回退。 */
+/** 离屏画布；运行时没有该能力（Node 宿主没有 WebView/DOM）返回 undefined，由调用方走原图回退。 */
 function createCanvas(width: number, height: number): ImageCanvas | undefined {
   if (typeof OffscreenCanvas === "function") return new OffscreenCanvas(width, height)
-  if (typeof document === "undefined") return undefined
-  const canvas = document.createElement("canvas")
-  canvas.width = width
-  canvas.height = height
-  return canvas
+  return undefined
 }
 
 /** 画布取 2d 上下文：离屏画布有 `convertToBlob`，文档画布只有 `toBlob`。

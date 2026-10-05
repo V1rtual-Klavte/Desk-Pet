@@ -29,6 +29,8 @@ import { cancelSessionPlans } from "@/services/engine/plan-confirmation"
 import { cancelSession as cancelHumanizerSession } from "@/services/humanizer"
 import { prepareImagePaths } from "@/services/images"
 import { summarizeUnanswered } from "@/services/interaction"
+// 会话读模型变化信号（零依赖叶子）：原生 UI 推送侧据此重推会话侧投影帧（A2）。
+import { notifySessionChanged } from "@/services/native-ui/session-signal"
 
 const log = createLogger("Session")
 
@@ -211,6 +213,8 @@ export async function switchToSession(sessionId: string): Promise<void> {
   }
 
   await activateSession(sessionId)
+  // 活跃指针变化 = 标签条高亮与正文归属变化：通知推送侧重推投影帧。
+  notifySessionChanged()
 }
 
 /**
@@ -242,6 +246,7 @@ export async function createNewSession(): Promise<SessionMeta> {
   addSessionMeta(meta)
   saveSessionList([...sessions])
   prependSessionHistory(summary)
+  notifySessionChanged()
 
   log.info(`Session: 新会话已创建 ${meta.id} (chatHistory: ${chatHistory.length} 条)`)
   return meta
@@ -265,12 +270,14 @@ export function closeSession(sessionId: string): void {
   void harnessSlots.releaseWhenIdle(sessionId)
   deleteUnanswered(sessionId)
   saveSessionList([...sessions])
+  notifySessionChanged()
 }
 
 /** 从历史面板重新打开一个已有会话（标签栏）。 */
 export function openSession(meta: SessionMeta): void {
   addSessionMeta(meta)
   saveSessionList([...sessions])
+  notifySessionChanged()
 }
 
 /** 删除会话（磁盘文件 + 列表 + UI 状态）；历史面板与标签操作共用。 */
@@ -292,10 +299,16 @@ export async function deleteSession(sessionId: string): Promise<boolean> {
   deleteUnanswered(sessionId)
   if (wasActive) activeSessionId.value = ""
   saveSessionList([...sessions])
+  // 标签列表已经变化，先推一帧（文件删除可能耗时，不让标签条等它）。
+  notifySessionChanged()
 
   try {
     const deleted = await deletePiSession(sessionId)
-    if (deleted) removeSessionHistory(sessionId)
+    if (deleted) {
+      removeSessionHistory(sessionId)
+      // 历史列表也变了：再推一帧（读模型是整帧快照，重复推幂等）。
+      notifySessionChanged()
+    }
     return deleted
   } catch (error) {
     log.warn("Session: 删除会话失败", sessionId, formatError(error))
@@ -310,6 +323,8 @@ export function updateSessionName(sessionId: string, firstUserMsg: string): void
   meta.name = firstUserMsg.substring(0, 20).replace(/[\n\r/\\:*?"<>|]/g, "").trim() || "新会话"
   saveSessionList([...sessions])
   renameSessionHistory(sessionId, meta.name)
+  // 展示名变化 = 标签与历史列表的文字变化：通知推送侧（含首条消息自动命名）。
+  notifySessionChanged()
   // fire-and-forget：失败证据在 repo.persistPiSessionName（该函数不 reject，只返回 false 并留 error 级日志
   // + reportError），这里不加 `.catch` 以免留下永不触发的分支。
   void persistPiSessionName(sessionId, meta.name)
@@ -325,5 +340,7 @@ export function setSessionInterrupted(sessionId: string, interrupted: boolean): 
   if (!meta) return
   if (Boolean(meta.interrupted) === interrupted) return
   meta.interrupted = interrupted
+  // 标签上的中断角标变化：通知推送侧。
+  notifySessionChanged()
   log.info(`Session: 中断标记 ${sessionId} → ${interrupted}`)
 }

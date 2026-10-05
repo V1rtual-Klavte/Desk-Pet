@@ -6,7 +6,7 @@ import type { ToolDef } from "../types"
 import { TOOL_POLICY_VERSION } from "../types"
 import { defineTool } from "../policy"
 import { register } from "../registry"
-import { invoke } from "@tauri-apps/api/core"
+import { getHostBridge } from "@/services/host"
 import { createLogger } from "@/services/logger"
 import { formatError } from "@/services/error"
 
@@ -35,7 +35,7 @@ const clipboardReadTool: ToolDef = defineTool({
   },
 }, async () => {
   try {
-    const result = await invoke<{ text: string }>("clipboard_read")
+    const result = await getHostBridge().request("clipboard_read", {})
     return { success: true, content: result.text || "(剪贴板为空)" }
   } catch (e) {
     const msg = formatError(e)
@@ -66,7 +66,9 @@ const clipboardWriteTool: ToolDef = defineTool({
   },
 }, async (params) => {
   try {
-    await invoke("clipboard_write", { text: params.text })
+    // 参数形态由本工具的 parameters schema 声明（text: string）；非串值不在前端收窄，
+    // 交给 Rust 反序列化如实拒绝。
+    await getHostBridge().request("clipboard_write", { text: params.text as string })
     return { success: true, content: "已写入剪贴板" }
   } catch (e) {
     const msg = formatError(e)

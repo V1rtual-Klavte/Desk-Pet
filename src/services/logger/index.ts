@@ -1,11 +1,11 @@
 // ==========================================
 // 统一日志工具
 // 所有日志同时输出到：
-//   1. Rust 终端 + 日志文件（经 Tauri invoke 批量转发）
-//   2. 浏览器 DevTools Console（开发时备用）
+//   1. Rust 终端 + 日志文件（经 HostBridge 批量转发）
+//   2. 进程控制台 console（开发时备用）
 //
 // 级别策略（优先级由高到低）：
-//   VITE_LOG_LEVEL 显式覆写 > dev 一律 debug > 生产读配置
+//   开发模式一律 debug > 生产读配置（判据来自宿主运行模式端口，见 @/services/host）
 // 实际生效级别由 config.ts 的 computeLogLevel() 算好后 setLogLevel() 注入。
 // 本模块刻意不 import config —— 否则 config 想用 logger 打日志就会成环。
 //
@@ -21,7 +21,7 @@
 // 一律经 createLogger（AGENTS.md 禁止直接 console.*）[保留已登记 §4.2]
 // ==========================================
 
-import { invoke } from "@tauri-apps/api/core"
+import { getHostBridge, type HostBridge } from "@/services/host"
 import { formatError } from "@/services/error/format"
 
 export type Level = "debug" | "info" | "warn" | "error"
@@ -39,14 +39,10 @@ export const LEVEL_ORDER: Record<Level, number> = {
 const FLUSH_MS = 60
 const MAX_BUFFER = 32
 
-const ENV_LEVEL = import.meta.env.VITE_LOG_LEVEL as Level | undefined
-
-let currentLevel: Level =
-  ENV_LEVEL && LEVELS.includes(ENV_LEVEL)
-    ? ENV_LEVEL
-    : import.meta.env.DEV
-      ? "debug"
-      : "info"
+// 初始级别取保守的 info：真实级别由 config.ts 的 computeLogLevel() 在引导期算好后经
+// setLogLevel() 注入（开发模式判据来自宿主运行模式端口）。模块加载早于端口注入与配置
+// 读取，这里不主动查询、也不读 import.meta.env。
+let currentLevel: Level = "info"
 
 /** 由 config.ts 的 computeLogLevel() 计算后注入 */
 export function setLogLevel(level: Level): void {
@@ -57,10 +53,7 @@ export function getLogLevel(): Level {
   return currentLevel
 }
 
-// 开发期挂到 window，便于在 DevTools 里手动切级别验证过滤行为
-if (import.meta.env.DEV && typeof window !== "undefined") {
-  ;(window as unknown as Record<string, unknown>).__logger = { setLogLevel, getLogLevel }
-}
+// logger 模块本身不感知构建环境。
 
 /** 格式化时间戳 HH:MM:SS.mmm */
 function ts(): string {
@@ -101,19 +94,32 @@ function fmtArgs(args: unknown[]): string {
 
 const pending: string[] = []
 let flushTimer: ReturnType<typeof setTimeout> | null = null
+let flushTail: Promise<void> = Promise.resolve()
+let allFlushesSucceeded = true
 
-/** 把队列整批发给 Rust，保持入队顺序。窗口关闭前也会调用，保证不丢尾部日志。 */
-export function flushLogs(): void {
+/** 把队列整批发给宿主，保持入队顺序。进程退出前也会调用，保证不丢尾部日志。 */
+export function flushLogs(): Promise<boolean> {
   if (flushTimer !== null) {
     clearTimeout(flushTimer)
     flushTimer = null
   }
-  if (!pending.length) return
+  if (!pending.length) return flushTail.then(() => allFlushesSucceeded)
   const msgs = pending.splice(0, pending.length)
-  invoke("log_messages", { msgs }).catch((e) => {
-    // 必须用 console：走 logger 会递归 [保留已登记 §4.2]
-    console.warn("[Logger] 转发 Rust 失败 (Tauri 未就绪?)", formatError(e))
+  // 串行发送保住批次 FIFO；resolve boolean 供关停报告使用，普通定时 flush 仍不抛异常。
+  const operation = flushTail.then(async () => {
+    try {
+      const bridge: HostBridge = getHostBridge()
+      await bridge.request("log_messages", { msgs })
+      return true
+    } catch (e) {
+      allFlushesSucceeded = false
+      // 必须用 console：走 logger 会递归 [保留已登记 §4.2]
+      console.warn("[Logger] 转发原生宿主失败", formatError(e))
+      return false
+    }
   })
+  flushTail = operation.then(() => undefined)
+  return operation.then(() => allFlushesSucceeded)
 }
 
 function toRust(level: Level, line: string): void {

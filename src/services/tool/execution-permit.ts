@@ -1,17 +1,17 @@
 // ==========================================
 // 工具执行许可客户端 —— 向 Rust 应用级所有者借用额度
 //
-// 有界并发与效果互斥只有一个所有者（src-tauri/src/commands/tool_permit.rs）：
+// 有界并发与效果互斥只有一个所有者（crates/native-host/src/commands/tool_permit.rs）：
 // shared_read 走有界共享，exclusive_effect 与其他执行互斥，delegate 由子运行
-// 各自取许可、不占父批次额度。前端只负责借用、取消等待与真实结算后释放，
+// 各自取许可、不占父批次额度。调用方只负责借用、取消等待与真实结算后释放，
 // 不自己建第二份锁。
 //
-// 借用者身份（本页面实例）在模块加载时声明上线：Rust 据此回收上一个页面实例留下的
-// 孤儿额度。页面重新加载（Vite 全量热重载、WebView 重建）后旧实例已经无法归还额度，
+// 借用者身份（Node 进程内的模块实例）在模块加载时声明上线：Rust 据此回收上一个
+// 实例留下的孤儿额度。Node 换代（连接重建/崩溃重启）后旧实例已经无法归还额度，
 // 没有这一步，泄漏的额度会让后续工具一直卡在排队上。
 // ==========================================
 
-import { invoke } from "@tauri-apps/api/core"
+import { getHostBridge } from "@/services/host"
 import type { ToolContext, ToolDef } from "./types"
 import { createLogger } from "@/services/logger"
 import { formatError } from "@/services/error"
@@ -37,11 +37,11 @@ export interface PermitReclaim {
 }
 
 /**
- * 借用者身份：本页面实例的 id。窗口标签由 Rust 从调用来源填，前端不复制一份。
+ * 借用者身份：本 Node 进程内的模块实例 id。窗口标签由 Rust 从调用来源填，调用方不复制一份。
  *
- * 存在 globalThis 上是刻意的：同一次页面加载内的模块再求值（HMR 模块热替换）必须复用
- * 同一身份，否则新实例会把仍在运行的额度当成孤儿回收 —— 在飞的 exclusive_effect 不能被
- * 回收。页面重新加载会拿到新 id，上一个实例的额度由 `tool_permit_attach` 一次性回收。
+ * 存在 globalThis 上是刻意的：同一进程内的模块再求值必须复用同一身份，否则新实例会把
+ * 仍在运行的额度当成孤儿回收 —— 在飞的 exclusive_effect 不能被回收。
+ * Node 换代（重启）会拿到新 id，上一个进程的额度由 `tool_permit_attach` 一次性回收。
  */
 const BORROWER_KEY = "__deskpetToolPermitBorrower"
 const borrowerId: string = (() => {
@@ -78,13 +78,13 @@ export async function acquireToolPermit(tool: ToolDef, ctx: ToolContext): Promis
   const signal = ctx.signal
   // 等待期间取消：通知 Rust 移除排队项，acquire 会以未取得额度结束。
   const cancelWait = () => {
-    void invoke<boolean>("tool_permit_cancel", { requestId: id, borrowerId })
+    void getHostBridge().request("tool_permit_cancel", { requestId: id, borrowerId })
       .catch(error => log.warn("取消许可等待失败:", formatError(error)))
   }
   signal?.addEventListener("abort", cancelWait, { once: true })
   let granted = false
   try {
-    granted = await invoke<boolean>("tool_permit_acquire", {
+    granted = await getHostBridge().request("tool_permit_acquire", {
       requestId: id,
       kind,
       borrowerId,
@@ -104,9 +104,15 @@ export async function acquireToolPermit(tool: ToolDef, ctx: ToolContext): Promis
  */
 const pendingReleases = new Set<string>()
 
+export interface PendingReleaseFlushReport {
+  readonly attempted: number
+  readonly released: number
+  readonly pending: number
+}
+
 /**
- * Live Test 注入钩子：只给场景注入释放失败用，不参与生产路径。注入在真实 `invoke` 之前
- * 抛出，走的是与真实失败完全相同的 catch 路径（入队/保留），不旁路补偿逻辑。
+ * Live Test 注入钩子：只给场景注入释放失败用，不参与生产路径。注入在真实 HostBridge 请求
+ * 之前抛出，走的是与真实失败完全相同的 catch 路径（入队/保留），不旁路补偿逻辑。
  */
 let injectedReleaseFailures = 0
 
@@ -127,7 +133,7 @@ function throwInjectedReleaseFailureIfPending(): void {
 export async function releaseToolPermit(lease: ToolPermitLease): Promise<void> {
   try {
     throwInjectedReleaseFailureIfPending()
-    await invoke("tool_permit_release", { requestId: lease.requestId, borrowerId })
+    await getHostBridge().request("tool_permit_release", { requestId: lease.requestId, borrowerId })
     pendingReleases.delete(lease.requestId)
   } catch (error) {
     pendingReleases.add(lease.requestId)
@@ -136,16 +142,21 @@ export async function releaseToolPermit(lease: ToolPermitLease): Promise<void> {
 }
 
 /** 每个 run 开始前的补偿重放：成功删项，失败保留待下次重试（重放幂等，见 pendingReleases 注释）。 */
-export async function flushPendingReleases(): Promise<void> {
+export async function flushPendingReleases(): Promise<PendingReleaseFlushReport> {
+  let attempted = 0
+  let released = 0
   for (const requestId of [...pendingReleases]) {
+    attempted += 1
     try {
       throwInjectedReleaseFailureIfPending()
-      await invoke("tool_permit_release", { requestId, borrowerId })
+      await getHostBridge().request("tool_permit_release", { requestId, borrowerId })
       pendingReleases.delete(requestId)
+      released += 1
     } catch (error) {
       log.warn("补偿释放失败，保留待下次重试:", requestId, formatError(error))
     }
   }
+  return { attempted, released, pending: pendingReleases.size }
 }
 
 export interface PermitSnapshot {
@@ -161,7 +172,7 @@ export interface PermitSnapshot {
  * 调用点是每个 run 开始前，与队列批量策略同一模式。
  */
 export async function setToolPermitLimit(limit: number): Promise<number> {
-  return invoke<number>("tool_permit_set_max_shared_readers", { limit })
+  return getHostBridge().request("tool_permit_set_max_shared_readers", { limit })
 }
 
 /**
@@ -169,7 +180,7 @@ export async function setToolPermitLimit(limit: number): Promise<number> {
  * 并发场景据此断言「等待发生在额度层」而不是靠时序猜测。
  */
 export async function permitSnapshot(): Promise<PermitSnapshot> {
-  return invoke<PermitSnapshot>("tool_permit_snapshot")
+  return getHostBridge().request("tool_permit_snapshot", {})
 }
 
 /**
@@ -178,7 +189,7 @@ export async function permitSnapshot(): Promise<PermitSnapshot> {
  * 仍在运行的 exclusive_effect 不会被回收放开。
  */
 async function attachToolPermitBorrower(): Promise<PermitReclaim> {
-  return invoke<PermitReclaim>("tool_permit_attach", { borrowerId })
+  return getHostBridge().request("tool_permit_attach", { borrowerId })
 }
 
 /** 上线声明是否还欠着一次重试（页面加载时声明失败 → 下一次 run 开始前补偿）。 */
@@ -188,14 +199,16 @@ let attachPending = false
  * 上线声明的补偿：页面加载即声明，失败时（例如 IPC 尚未就绪）记下欠账，
  * 由运行槽在下一次 run 开始前重试。回收本身幂等 —— 同一实例重复上线是空操作。
  */
-export async function retryBorrowerAttachIfPending(): Promise<void> {
-  if (!attachPending) return
+export async function retryBorrowerAttachIfPending(): Promise<boolean> {
+  if (!attachPending) return true
   try {
     const reclaimed = await attachToolPermitBorrower()
     attachPending = false
     if (reclaimed.reclaimedActive > 0 || reclaimed.reclaimedQueued > 0) log.info("回收失效借用者的额度:", reclaimed)
+    return true
   } catch (error) {
     log.warn("借用者上线补偿失败，保留待下次重试:", formatError(error))
+    return false
   }
 }
 

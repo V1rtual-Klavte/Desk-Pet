@@ -41,7 +41,12 @@ export type {
 export {
   abortRunningPlan, bindRunningPlan, cancelSessionPlans, clearRunningPlan,
   notifyPlanEnd, planConfirmState, resolvePlanConfirm, resolvePlanStepDecision,
+  disposePlanConfirmationReceipts,
 } from "./plan-confirmation"
+// Plan checkpoint 单例：面板的「未知副作用步骤处置」（标记已完成 / 重跑此步）经
+// `resolveUnknownSideEffect` 走它 —— 与 runtime 的落盘/恢复同一条记录路径
+// （不另开第二份计划记录读写口）。
+export { planCheckpointStore } from "./plan/checkpoint-store"
 
 // ── Runtime protocol vocabulary ──
 export type {
@@ -98,6 +103,7 @@ export {
   listRecoveredPlans,
   resumePlan,
   runPiAgentTurn,
+  takePausedInputs,
   withdrawQueuedInput,
 } from "./harness"
 export type {

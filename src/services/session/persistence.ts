@@ -5,7 +5,7 @@
 // ==========================================
 
 import type { SessionMeta } from "./store"
-import { invoke } from "@tauri-apps/api/core"
+import { getHostBridge } from "@/services/host"
 import { createLogger } from "@/services/logger"
 import { formatError } from "@/services/error"
 
@@ -20,7 +20,7 @@ let writeQueue: Promise<void> = Promise.resolve()
 
 export async function initSessionPersistence(): Promise<void> {
   if (loaded) return
-  const raw = await invoke<string | null>("read_session_ui_state")
+  const raw = await getHostBridge().request("read_session_ui_state", {})
   if (raw) {
     try {
       const parsed = JSON.parse(raw) as Partial<SessionUiState>
@@ -45,7 +45,7 @@ const WRITE_RETRY_CAP_MS = 1000    // 退避封顶
 async function writeUiState(content: string): Promise<void> {
   for (let attempt = 0; ; attempt++) {
     try {
-      await invoke<void>("write_session_ui_state", { content })
+      await getHostBridge().request("write_session_ui_state", { content })
       return
     } catch (error) {
       if (attempt >= WRITE_MAX_RETRIES) throw error

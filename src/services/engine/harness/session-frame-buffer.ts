@@ -1,5 +1,5 @@
 // ==========================================
-// 会话帧写入缓冲装饰器（T1.01 判别骨架 + T1.02 缓冲状态机）
+// 会话帧写入缓冲装饰器（T1.01 判别骨架 + T1.02 缓冲状态机 + 同键 delta 合并）
 //
 // 帧 = `pi.pending.assistant_frame` 的 `list/append` **单写事务**，每个流式 delta 一行。
 // 它是可丢的进度快照：`seq` 在 prepareCommit 时已写进 JSON 对象，`appendFile` 只负责把
@@ -9,13 +9,37 @@
 // 本文件是「只合并帧」的缓冲层（源方案 §7.2 方案二）：
 //   - 帧 append → 进该文件的缓冲，命中触发条件才落盘（体积达阈值 / 遇到非帧 / 读同一
 //     文件 / 关闭前 flush）；
+//   - 同键 delta 帧在缓冲内**合并成一条记录**（见下「同键 delta 合并」）；
 //   - 其余一切读写逐字节转发，**永远立即落盘** —— entry 的持久性完全不受影响（T-3）。
+//
+// 同键 delta 合并（2026-10-05；用户实测「流式一个 token 一条 JSONL 记录」后的要求：
+// 同类 delta 存成一条）：
+//   · 合并键 = `(namespace, key, value.type, value.contentIndex)`（contentIndex 缺失时
+//     按 undefined 视作同一槽位）。同槽位的 delta 帧只留下一行：`value.delta` 按到达
+//     顺序字符串拼接，写对象与 `seq` 取**最后一条**帧（seq 因此是最后到达那条的 seq）。
+//   · 为什么拼接与逐帧追加等价：重放侧（pi-ai 的 `reduceAssistantMessageFrames`，
+//     `utils/assistant-message-frame.js`）对 text_delta / thinking_delta / toolcall_delta
+//     都是「把 delta 追加进对应内容块的累积器」，同槽位拼接即同一条追加序列。
+//   · 物化（把合并行落进待写行序列）的两条边界，保证绝不跨越语义边界合并：
+//       ① 遇到**非 delta 帧**（同文件）时：先把当前全部合并项按最后 seq 升序物化，再放行
+//          该帧 —— `*_end` 帧是全量覆盖语义（`block.text = frame.content`），绝不允许与它
+//          前后的 delta 合进同一行，否则「覆盖」会被错拼成「追加」；
+//       ② drain（体积阈值 / 读前 / 关闭前 flush）时：先物化再写。
+//     物化后合并项清零；后续同键 delta 重新开一行（边界切分，可接受）。
+//   · 顺序不变量：物化按最后 seq 升序排序，因此整文件写入行的 seq 严格递增（帧的 seq 由
+//     上游提交时分配、只增）。跨槽位（不同 type/contentIndex）合并项之间的相对次序不影响
+//     折叠结果 —— 不同槽位写不同内容块的累积器（text / thinking / toolCall 的 json），
+//     两个槽位的 delta 谁先谁后都得到同一终态；同一槽位的 delta 始终按到达顺序承载在
+//     自己的行里，次序不受这条排序影响。
+//   · 字节计数：delta 进合并项时按 `value.delta` 新增的原始 UTF-8 字节累计（估算，不打包
+//     一行 JSON 的行开销）；物化时按实际序列化行长度校准（`bytes += 实际行字节 - 估算`）。
+//     阈值判定时机不变：仍是**入队后立刻判** `bytes >= maxBufferBytes`。
 //
 // 无定时器：源方案 §7.2 的触发条件都不需要时间维度，本文件不引入任何常驻定时器 API
 // （这也是判据之一：出现 web 定时器的名字就算违规）。
 //
 // 触发语义与 scripts/session-frame-stats.mjs 的 `simulateBuffer()` 逐条一致（那是 O-5
-// 阈值校准与离线校验器；本文件不反向依赖它）：
+// 阈值校准与离线校验器；本文件不反向依赖它；合并规则同步建模，改这里要同步改它）：
 //   阈值判定时机 = **入队后立刻判** `bytes >= maxBufferBytes`；
 //   非帧行只在缓冲非空时产生一次真实 flush（一次底层 `appendFile`）。
 // ==========================================
@@ -37,10 +61,15 @@ const FRAME_NAMESPACE = "pi.pending.assistant_frame"
 /**
  * 帧缓冲体积阈值（字节）。
  *
- * O-5 的裁定值 16 KiB：用参考会话（2056 帧 append / 16.5 s / 基线 124.8 次/秒）按本装饰器
- * 规则复算，落到 1.94 次/秒（64× 下降）；崩溃丢失上界 = 阈值 + 单帧最大行长 ≈ 18 KB 的
- * 进度快照，正文 entry 不受影响。
- * 校准见 scripts/session-frame-stats.mjs --calibrate（模拟规则与本文件 T1.02 的实现一致）。
+ * O-5 的裁定值 16 KiB。**同键 delta 合并（2026-10-05）落地后按新规则复算** —— 校准见
+ * `node scripts/session-frame-stats.mjs --calibrate`（模拟与本文件的缓冲 + 合并规则一致）：
+ *   · 参考会话（622 帧 append / 7.84 s / 基线 79.4 次/秒）：合并后 6 次落盘全部来自各回复
+ *     收尾的非帧提交（体积触发 0 次），0.77 次/秒（104× 下降）、每次 6.5 行、全文件 39 行
+ *     （合并帧/次 103.7）；8/16/32/64 KiB 在这条样本上无差别 —— 收尾提交总是先到。
+ *   · 16 KiB 仍然保留，因为合并后的估算按 `value.delta` 的原始字节累计（物化时按实际行
+ *     字节校准）：只有「一个槽位长时间连续流式、期间没有任何非帧写入」时体积触发才会先到。
+ *   · 崩溃丢失上界 ≈ 阈值 + 每条已打开槽位的一行（载荷已计入估算，未计入的只有单行 JSON
+ *     开销，百字节量级），仍是可丢的进度快照，正文 entry 不受影响（T-2/T-3）。
  */
 export const FRAME_BUFFER_MAX_BYTES = 16 * 1024
 
@@ -64,7 +93,7 @@ function frameByteLength(content: string): number {
 }
 
 /**
- * 判别「这一行 append 的内容是不是帧」。
+ * 判别「这一行 append 的内容是不是帧」，是则返回解析出的写对象（判别与合并共用的唯一解析点）。
  *
  * 上游 `appendFile` 只有一处（`harness/session/jsonl/storage.js`）：传入
  * `${serializeTransaction(writes)}\n` —— 单写事务落成单个 JSON 对象，多写事务落成 JSON 数组。
@@ -79,13 +108,16 @@ function frameByteLength(content: string): number {
  *
  * 其余一切一律按「非帧」处理：`Uint8Array`、不以换行结尾、内容里还有换行、解析失败、
  * JSON 数组（多写事务）、同命名空间的 `list/delete`。判别只能往「更严」走，不许放宽。
+ *
+ * 返回整个解析对象而不是布尔：合并侧要拿 `seq` / `key` / `value` 做结构判断，
+ * 同一行只解析一次（`isFrameAppendTransaction` 是它的布尔投影）。
  */
-export function isFrameAppendTransaction(content: string | Uint8Array): boolean {
-  if (typeof content !== "string") return false
+function parseFrameAppendTransaction(content: string | Uint8Array): Record<string, unknown> | null {
+  if (typeof content !== "string") return null
   // appendFile 的 content 是「一行 JSON + 一个换行」；不满足这个形态的（含多行内容）都不是帧。
-  if (!content.endsWith("\n")) return false
+  if (!content.endsWith("\n")) return null
   const line = content.slice(0, -1)
-  if (line.includes("\n")) return false
+  if (line.includes("\n")) return null
 
   let parsed: unknown
   try {
@@ -94,13 +126,91 @@ export function isFrameAppendTransaction(content: string | Uint8Array): boolean 
     // 解析失败按「非帧」处理。这不是吞掉失败：内容随即原样走直写路径，一个字节都不会丢，
     // 失败（若下游真的失败）由 FileSystem 实现的 Result 上报。分类器没有需要留痕的错误源，
     // 真正的帧写入失败留痕在 drainPath（经 @/services/logger）。
-    return false
+    return null
   }
 
-  if (Array.isArray(parsed)) return false
-  if (parsed === null || typeof parsed !== "object") return false
+  if (Array.isArray(parsed)) return null
+  if (parsed === null || typeof parsed !== "object") return null
   const write = parsed as { kind?: unknown; op?: unknown; namespace?: unknown }
-  return write.kind === "list" && write.op === "append" && write.namespace === FRAME_NAMESPACE
+  if (write.kind !== "list" || write.op !== "append" || write.namespace !== FRAME_NAMESPACE) return null
+  return parsed as Record<string, unknown>
+}
+
+/**
+ * 「这一行 append 的内容是不是帧」的公开判别器（缓冲分流的判据）。
+ * 形状与判别口径见 {@link parseFrameAppendTransaction}；测试与场景以此函数为唯一判据，
+ * 不复制字段清单。
+ */
+export function isFrameAppendTransaction(content: string | Uint8Array): boolean {
+  return parseFrameAppendTransaction(content) !== null
+}
+
+/**
+ * 一条可合并 delta 帧的字段（合并键 + 增量载荷）；形状不合的帧返回 null（按非 delta 帧走）。
+ *
+ * 只认 `value.type` 以 `_delta` 结尾且 `value.delta` 为字符串的帧 —— 上游的 delta 帧恰好是
+ * text_delta / thinking_delta / toolcall_delta 三种（`pi-ai/utils/assistant-message-frame.d.ts`
+ * 的帧联合类型），它们的重放语义都是「追加 `delta`」。带 `content` 的 `*_end`、带
+ * `partial` 的 `start`、带 `json` 的 `toolcall_checkpoint` 都不在这里，绝不能合并。
+ * `seq` 必须是安全整数：它要当物化排序键与新行的 seq（上游提交时分配，落盘必有）。
+ */
+interface DeltaFrameParts {
+  seq: number
+  namespace: string
+  key: string
+  /** 帧类型（text_delta / thinking_delta / toolcall_delta）——合并键的一半，不同槽位不互相合并。 */
+  type: string
+  /** 内容块下标；缺失按 undefined 视作同一槽位（合并键里归一为 null）。 */
+  contentIndex: number | undefined
+  /** 这一帧的增量（该槽位本次到达的增量）。 */
+  delta: string
+}
+
+function deltaFrameParts(write: Record<string, unknown>): DeltaFrameParts | null {
+  const seq = write.seq
+  if (typeof seq !== "number" || !Number.isSafeInteger(seq) || seq < 1) return null
+  const namespace = write.namespace
+  const key = write.key
+  if (typeof namespace !== "string" || typeof key !== "string") return null
+  const value = write.value
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return null
+  const { type, delta, contentIndex } = value as { type?: unknown; delta?: unknown; contentIndex?: unknown }
+  if (typeof type !== "string" || !type.endsWith("_delta")) return null
+  if (typeof delta !== "string") return null
+  if (
+    contentIndex !== undefined &&
+    (typeof contentIndex !== "number" || !Number.isSafeInteger(contentIndex) || contentIndex < 0)
+  ) {
+    return null
+  }
+  return { seq, namespace, key, type, contentIndex, delta }
+}
+
+/**
+ * 合并槽位键 = `(namespace, key, value.type, value.contentIndex)` 的 JSON 元组，四段用
+ * JSON.stringify 整体编码（避免自己拼分隔符：namespace / key 里可能出现任意字符，
+ * 元组编码天然无碰撞；contentIndex 缺失归一为 null，与数字下标不混）。
+ */
+function mergedDeltaSlotKey(parts: DeltaFrameParts): string {
+  return JSON.stringify([parts.namespace, parts.key, parts.type, parts.contentIndex ?? null])
+}
+
+/**
+ * 一个合并中的 delta 槽位。合并行 = **最后一条** delta 帧的写对象副本，只把 `value.delta`
+ * 换成拼接结果（`seq` 已经是最后一条的 seq；写对象上的其余字段原样保留）。估算字节是
+ * 已计入 `PathBuffer.bytes` 的 delta 原始 UTF-8 字节和，物化时校准为实际行字节。
+ */
+interface MergedDeltaEntry {
+  lastWrite: Record<string, unknown>
+  lastSeq: number
+  delta: string
+  estimatedBytes: number
+}
+
+/** 物化一条合并行：单写事务 JSON + 换行（与上游 `serializeTransaction` 的单写形态同形）。 */
+function serializeMergedDelta(entry: MergedDeltaEntry): string {
+  const value = entry.lastWrite.value as Record<string, unknown>
+  return `${JSON.stringify({ ...entry.lastWrite, seq: entry.lastSeq, value: { ...value, delta: entry.delta } })}\n`
 }
 
 /**
@@ -112,7 +222,14 @@ export function isFrameAppendTransaction(content: string | Uint8Array): boolean 
  */
 interface PathBuffer {
   chain: Promise<void>
+  /** 已物化的待写行（合并行 + 非 delta 帧的原始字节）；drain 时拼成一次 `appendFile`。 */
   chunks: string[]
+  /** 合并中的 delta 槽位（合并键 → 条目）；物化前不落进 `chunks`。 */
+  merged: Map<string, MergedDeltaEntry>
+  /**
+   * 估算的待写字节：`chunks` 各行的实际 UTF-8 字节 + `merged` 各条目的 delta 估算字节。
+   * 只服务阈值触发判定；合并项在物化时按实际行长度校准（见 `materializeMergedDeltas`）。
+   */
   bytes: number
 }
 
@@ -121,6 +238,7 @@ interface PathBuffer {
  * 排空后实例自行出集合（见 `drainPath` 尾部），集合不会长期持有已释放的实例。
  */
 const pendingInstances = new Set<FrameBufferingFileSystem>()
+let reportedFrameFlushFailures = 0
 
 /**
  * `FileSystem` 装饰器：只把「帧 append」这一种输入分流出去（进缓冲，按触发条件合并落盘），
@@ -182,30 +300,61 @@ export class FrameBufferingFileSystem implements FileSystem {
   }
 
   /**
-   * 帧 append → 进该路径缓冲；其余一切（含多写事务、`Uint8Array`、解析失败）→ 先 flush
-   * 同路径缓冲，再原样转发，**自身立即落盘且不再进缓冲**（T-3）。
+   * 帧 append → 进该路径缓冲（可合并的 delta 帧进合并槽位，其余帧物化后进待写行）；
+   * 其余一切（含多写事务、`Uint8Array`、解析失败）→ 先 flush 同路径缓冲，再原样转发，
+   * **自身立即落盘且不再进缓冲**（T-3）。
    */
   async appendFile(path: string, content: string | Uint8Array, context: Context): Promise<Result<void, FileError>> {
-    if (typeof content !== "string" || !isFrameAppendTransaction(content)) {
+    const parsed = typeof content === "string" ? parseFrameAppendTransaction(content) : null
+    if (parsed === null) {
       // 触发条件 2（遇到非帧）：这是天然的 flush 点 —— 每次流式都以一次 entry 提交收尾。
       // 转发前先在链上排队 flush：本次 drain 排在更早的帧入队之后，即使并发也先落帧、后落非帧。
+      // drain 内部先物化合并项，因此非帧写入永远不会插到「比它早的 delta」前面。
       await this.flushPath(path, context)
       return this.inner.appendFile(path, content, context)
     }
 
-    const frame = content
+    const frame = content as string
+    const parts = deltaFrameParts(parsed)
     // 入队前先登记实例：即使这条链还没执行到，模块级 flush 也能看见它并把链等空（T-6 的
     // 「关闭前 flush」不漏在飞帧）。字节出缓冲后由 drainPath 移除登记。
     pendingInstances.add(this)
     await this.enqueue(path, async () => {
       const bucket = this.bufferFor(path)
-      bucket.chunks.push(frame)
-      bucket.bytes += frameByteLength(frame)
       // 与上面的登记配对，保证不变量「字节还在内存里 ⇒ 实例在集合里」（出集合后又有新帧时
       // 重新登记，模块级 flush 不会漏掉这批字节）。
       pendingInstances.add(this)
+      if (parts === null) {
+        // 非 delta 帧（start / *_start / *_end / toolcall_checkpoint / 形状不合的帧）：
+        // 合并的天然边界 —— 先物化再入队，合并行因此排在它前面（*_end 的覆盖语义不会被
+        // 拼接吞掉；seq 顺序也因此保持严格递增：合并项的 seq 都小于本帧）。
+        this.materializeMergedDeltas(bucket)
+        bucket.chunks.push(frame)
+        bucket.bytes += frameByteLength(frame)
+      } else {
+        // 同键 delta：并入槽位（delta 按到达顺序拼接，写对象与 seq 取最后一条）。
+        // 估算字节按**新增的 delta 原始 UTF-8 字节**累计（行开销不计）；物化时校准。
+        const addedBytes = frameByteLength(parts.delta)
+        const slotKey = mergedDeltaSlotKey(parts)
+        const entry = bucket.merged.get(slotKey)
+        if (entry === undefined) {
+          bucket.merged.set(slotKey, {
+            lastWrite: parsed,
+            lastSeq: parts.seq,
+            delta: parts.delta,
+            estimatedBytes: addedBytes,
+          })
+        } else {
+          entry.lastWrite = parsed
+          entry.lastSeq = parts.seq
+          entry.delta += parts.delta
+          entry.estimatedBytes += addedBytes
+        }
+        bucket.bytes += addedBytes
+      }
       if (bucket.bytes >= this.maxBufferBytes) {
-        // 触发条件 1（体积达阈值）：入队后立刻判，与 simulateBuffer() 的判定时机一致。
+        // 触发条件 1（体积达阈值）：入队后立刻判，与 simulateBuffer() 的判定时机一致
+        // （合并项按 delta 估算字节计；drain 内部先物化并校准为实际行字节）。
         // 这里直接写盘而不是再走 flushPath —— 已经在链任务里，再入队就是等自己（死锁）。
         await this.drainPath(path, context)
       }
@@ -317,18 +466,41 @@ export class FrameBufferingFileSystem implements FileSystem {
   private bufferFor(path: string): PathBuffer {
     let bucket = this.buffers.get(path)
     if (bucket === undefined) {
-      bucket = { chain: Promise.resolve(), chunks: [], bytes: 0 }
+      bucket = { chain: Promise.resolve(), chunks: [], merged: new Map(), bytes: 0 }
       this.buffers.set(path, bucket)
     }
     return bucket
   }
 
-  /** 该实例是否还有未落盘字节（决定它是否留在模块级 flush 集合里）。 */
+  /**
+   * 该实例是否还有未落盘字节（决定它是否留在模块级 flush 集合里）。
+   * 合并项里的 delta 同样是「还在内存里的字节」，必须一起算 —— 漏算会让集合提前释放实例，
+   * 关闭前的模块级 flush 就会丢最后一段合并中的 delta。
+   */
   private hasPendingBytes(): boolean {
     for (const bucket of this.buffers.values()) {
-      if (bucket.chunks.length > 0) return true
+      if (bucket.chunks.length > 0 || bucket.merged.size > 0) return true
     }
     return false
+  }
+
+  /**
+   * 把当前全部合并项按**最后 seq 升序**物化进待写行，并把它们的估算字节校准为实际行字节。
+   *
+   * 排序的理由与安全论证见文件头「顺序不变量」：整文件写入行的 seq 必须严格递增；
+   * 跨槽位的相对次序不影响重放结果（不同槽位写不同内容块累积器）。
+   * 只有链任务内可以调用（与 chunks / merged 的读写共享同一条串行化链）。
+   */
+  private materializeMergedDeltas(bucket: PathBuffer): void {
+    if (bucket.merged.size === 0) return
+    const entries = [...bucket.merged.values()].sort((left, right) => left.lastSeq - right.lastSeq)
+    for (const entry of entries) {
+      const line = serializeMergedDelta(entry)
+      bucket.chunks.push(line)
+      // 校准：该槽位累计时的估算字节换成这一行的实际字节（行开销、JSON 转义差都在这里补齐）。
+      bucket.bytes += frameByteLength(line) - entry.estimatedBytes
+    }
+    bucket.merged.clear()
   }
 
   /**
@@ -342,8 +514,8 @@ export class FrameBufferingFileSystem implements FileSystem {
   }
 
   /**
-   * 链任务内执行的一次真实落盘：把该路径的缓冲原子取出、拼成一个字符串、**一次**
-   * `inner.appendFile`（FIFO 与合并等价性都由这里保证）。
+   * 链任务内执行的一次真实落盘：先把合并项物化进待写行，再原子取出、拼成一个字符串、
+   * **一次** `inner.appendFile`（FIFO 与合并等价性都由这里保证）。
    *
    * 失败处置（T-5）：留痕**一次**后丢弃这批字节、**不重试**、**绝不向外抛**。
    *   ① 为什么丢弃：帧是进度快照，正文 entry 不在缓冲里（非帧永远立即落盘，T-3），
@@ -352,6 +524,8 @@ export class FrameBufferingFileSystem implements FileSystem {
    *      打乱它与后续写入的先后顺序。丢弃只在 seq 序列上留一个洞 —— **洞是重放安全的**
    *      （执行方案 §0.2：`validateCommittedWrites` 只要求严格递增，重放侧
    *      `nextSeq = write.seq + 1`，见 `commit.js:33-40` / `in-memory-storage-state.js:105`）。
+   *      合并没有改变这点：丢掉的是若干**行**，每行内部自洽（同一槽位的一段连续 delta），
+   *      行与行之间仍然只丢「最近一段」，不产生乱序。
    *   ③ 根因留痕点就是本函数下方那条 error 级日志（本文件唯一一处）：上游 `progress.js:33` 的
    *      `void write.catch(() => {})` 会把帧写失败吞掉，调用方拿不到（`write()` 返回 void，
    *      `drain()` 只 await `latest`），返回的 `Result.err` 也没人看 —— 留痕只能在这里做。
@@ -361,13 +535,18 @@ export class FrameBufferingFileSystem implements FileSystem {
    */
   private async drainPath(path: string, context: Context): Promise<void> {
     const bucket = this.buffers.get(path)
-    if (bucket === undefined || bucket.chunks.length === 0) return
+    if (bucket === undefined) return
+    // 先物化（触发条件里的「drain 时先物化再写」）：合并中的 delta 属于这次落盘。
+    this.materializeMergedDeltas(bucket)
+    if (bucket.chunks.length === 0) return
 
     // 原子取出：先清空缓冲再写盘。取出后新到的帧进新的数组，不会被这次写重复带走；
     // 失败时被丢弃的也正好是这一批（写盘期间链上不会有别的任务碰到它们）。
     const chunks = bucket.chunks
     const bytes = bucket.bytes
-    const frames = chunks.length
+    // 日志口径是**行数**：合并后行数 ≠ 原始帧数，字段因此从 frames 更名为 lines，
+    // 避免读者把合并后的行数误当原始帧数（消费者只按 FRAME_FLUSH_FAILURE_MARK 判失败留痕）。
+    const lines = chunks.length
     bucket.chunks = []
     bucket.bytes = 0
     const joined = chunks.join("")
@@ -386,7 +565,8 @@ export class FrameBufferingFileSystem implements FileSystem {
       failure = error
     }
     if (failed) {
-      log.error(FRAME_FLUSH_FAILURE_MARK, { path, frames, bytes }, formatError(failure))
+      reportedFrameFlushFailures += 1
+      log.error(FRAME_FLUSH_FAILURE_MARK, { path, lines, bytes }, formatError(failure))
     }
 
     // 缓冲已排空（写成功或按上文丢弃）：没有待写字节就退出模块级集合，避免集合持有实例。
@@ -404,8 +584,10 @@ export class FrameBufferingFileSystem implements FileSystem {
  *
  * 只冲登记过的实例（快照；flush 期间新入队的写入属于之后的事件），永不抛出。
  */
-export async function flushSessionFrameWrites(context: Context): Promise<void> {
+export async function flushSessionFrameWrites(context: Context): Promise<number> {
+  const failuresBefore = reportedFrameFlushFailures
   for (const fileSystem of [...pendingInstances]) {
     await fileSystem.flush(context)
   }
+  return reportedFrameFlushFailures - failuresBefore
 }

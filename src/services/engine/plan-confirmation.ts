@@ -1,6 +1,9 @@
-// Plan confirmation is a UI bridge, not part of an agent runtime.
+// Plan confirmation 是 Node 领域与 UI 之间的确认通道（执行契约 §4.1）：提问方向走
+// UI 事件端口（publishUiEvent → HostEventMap 的 deskpet-plan-* 事件），回答方向走
+// UI 回执端口（subscribeUiReceipt），由 `initPlanConfirmationReceipts()` 安装回执
+// 订阅（harness 引导调用）。
 
-import { emit } from "@tauri-apps/api/event"
+import { publishUiEvent, subscribeUiReceipt, type HostEventMap, type NodeUiEventName } from "@/services/host"
 import { reactive } from "vue"
 import { getActiveSessionId } from "@/services/session/store"
 import { pushSystemMessage } from "@/services/session"
@@ -98,12 +101,16 @@ const NON_CONFIRM_NOTICE = {
 // ═══════════════════════════════════════════════════
 
 /**
- * UI 事件发射的唯一出口（§4.1）：发射失败不抛给调用方，记日志 + 上报后返回 false，
+ * UI 事件发射的唯一出口（§4.1）：经 UI 事件端口发布（桥的 publishEvent）。
+ * 发射失败不抛给调用方，记日志 + 上报后返回 false，
  * 由调用方决定归宿 —— 确认方不知道事件没发出去时不能永久悬挂。
  */
-async function emitUiEvent(event: string, payload: Record<string, unknown>): Promise<boolean> {
+async function emitUiEvent<K extends NodeUiEventName>(
+  event: K,
+  payload: HostEventMap[K],
+): Promise<boolean> {
   try {
-    await emit(event, payload)
+    await publishUiEvent(event, payload)
     return true
   } catch (error) {
     log.error(`计划 UI 事件发射失败: ${event}`, formatError(error))
@@ -285,6 +292,49 @@ export function requestPlanStepDecision(step: PlanStep, error: string | undefine
 /** UI 调用：按 planId 结算待裁决步骤门。 */
 export function resolvePlanStepDecision(planId: string, decision: "continue" | "abort"): void {
   settleStepGate(planId, decision)
+}
+
+/**
+ * 安装 UI 回执订阅（UI→Node 反向通道；Node 宿主引导时调用一次，幂等）。
+ *
+ * 结算语义：未知/重复 planId 是 no-op（settle* 只结算一次）；回执迟到不复活结算，
+ * 传输不承诺重放。
+ */
+let receiptsInstalled = false
+let stopReceiptSubscriptions: Array<() => void> = []
+export function initPlanConfirmationReceipts(): void {
+  if (receiptsInstalled) return
+  const stopConfirm = subscribeUiReceipt("deskpet-plan-confirm-resolved", ({ planId, result }) => {
+    settleConfirm(planId, result)
+  })
+  try {
+    const stopStep = subscribeUiReceipt("deskpet-plan-step-decision", ({ planId, decision }) => {
+      settleStepGate(planId, decision)
+    })
+    stopReceiptSubscriptions = [stopConfirm, stopStep]
+    receiptsInstalled = true
+  } catch (error) {
+    stopConfirm()
+    throw error
+  }
+}
+
+/** 进程关停时释放 Native UI 回执订阅；Node 重启会在新 HostBridge 上重新装配。 */
+export function disposePlanConfirmationReceipts(): void {
+  const stops = stopReceiptSubscriptions
+  stopReceiptSubscriptions = []
+  receiptsInstalled = false
+  let failure: unknown
+  for (const stop of stops) {
+    try {
+      stop()
+    } catch (error) {
+      if (failure === undefined) failure = error
+    }
+  }
+  if (failure !== undefined) {
+    throw Object.assign(new Error("Plan 回执订阅清理失败"), { cause: failure })
+  }
 }
 
 // ═══════════════════════════════════════════════════

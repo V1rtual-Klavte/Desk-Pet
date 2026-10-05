@@ -5,7 +5,8 @@ export { start, stop, tick, offer, configureProactive, cancelCurrent, refreshPro
 export { createActiveExpressionAdapter } from "./delivery"
 export { getPresence, subscribePresence, setPresence, clearPresence, requestBriefMotion, stopPresence } from "./presence"
 export type { PresenceState, PresenceSnapshot } from "./presence"
-export { requestProactiveControl, subscribeProactiveControl } from "./control-bridge"
+// 这里只导出主动控制的领域侧入口：处理请求与接状态分发（原生宿主迁移过程记录 §9.4 第 7 条）。
+export { handleProactiveControlRequest, publishProactiveControl, subscribeProactiveControl } from "./control"
 export { reserveAuxiliaryBudget, settleAuxiliaryBudget } from "./auxiliary-budget"
 export { OBSERVATION_MAX_AGE_MS } from "./config"
 import * as ipc from "./ipc"
@@ -24,7 +25,7 @@ import { createLogger } from "@/services/logger"
 import { formatError } from "@/services/error"
 const log=createLogger("ProactiveContext")
 import { createRuntimeTraceContext, trace } from "./trace"
-import { publishProactiveControl } from "./control-bridge"
+import { publishProactiveControl } from "./control"
 
 /** SQLite is authoritative; the session reader never interprets a UI counter as delivery proof. */
 export async function readReceipt(sessionId:string,attemptId:string,assistantEntryId:string):Promise<boolean> {

@@ -8,7 +8,7 @@
 // （mtime/size，不读正文），指纹变了才重新加载 —— 没有 TTL，也不需要重启。
 // ==========================================
 
-import { invoke } from "@tauri-apps/api/core"
+import { getHostBridge } from "@/services/host"
 import yaml from "js-yaml"
 import {
   BACKGROUND_CONTEXT,
@@ -16,7 +16,7 @@ import {
   type Skill,
   type SkillDiagnostic,
 } from "@earendil-works/pi-agent-core"
-import { TauriExecutionEnv } from "@/services/tool/pi/tauri-execution-env"
+import { NativeExecutionEnv } from "@/services/tool/pi/native-execution-env"
 import { relativeWithinRoot, runtimePath } from "@/services/paths"
 import { createLogger } from "@/services/logger"
 import { formatError } from "@/services/error"
@@ -90,7 +90,7 @@ export async function syncSkillCatalog(): Promise<Skill[]> {
 async function runSync(): Promise<Skill[]> {
   let snapshot: SkillCatalogFingerprint
   try {
-    snapshot = await invoke<SkillCatalogFingerprint>("skill_catalog_fingerprint")
+    snapshot = await getHostBridge().request("skill_catalog_fingerprint", {})
   } catch (error) {
     // 核对失败时磁盘可能已变，但「有没有变」无从判定：保留上一份快照并如实记录，
     // 不用空清单覆盖 —— 下一次核对成功前，模型看到的是最近一次已知状态。
@@ -118,7 +118,7 @@ async function runSync(): Promise<Skill[]> {
 
 async function reload(fingerprint: string): Promise<Skill[]> {
   const skillsDir = await runtimePath("data", SKILLS_DIR)
-  const env = new TauriExecutionEnv(await TauriExecutionEnv.defaultCwd())
+  const env = new NativeExecutionEnv(await NativeExecutionEnv.defaultCwd())
   const { skills, diagnostics } = await loadSkills(env, [skillsDir], BACKGROUND_CONTEXT)
   const managed: ManagedSkill[] = []
   for (const skill of skills) {
@@ -142,7 +142,7 @@ async function reload(fingerprint: string): Promise<Skill[]> {
   return enabledSkills()
 }
 
-async function readSkillEnabled(env: TauriExecutionEnv, filePath: string): Promise<boolean> {
+async function readSkillEnabled(env: NativeExecutionEnv, filePath: string): Promise<boolean> {
   const raw = await env.readTextFile(filePath, BACKGROUND_CONTEXT)
   if (!raw.ok) {
     // 读不到原文时按「启用」处理：这是缺省值，也让模型仍能看到这个技能；

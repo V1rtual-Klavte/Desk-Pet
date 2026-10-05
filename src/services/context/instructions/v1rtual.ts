@@ -1,4 +1,4 @@
-import { invoke } from "@tauri-apps/api/core"
+import { getHostBridge } from "@/services/host"
 import { runtimePath } from "@/services/paths"
 import { createLogger } from "@/services/logger"
 import { formatError } from "@/services/error"
@@ -30,7 +30,7 @@ export function getV1rtualInstructionsSync(): string {
 export async function loadV1rtualInstructions(): Promise<string> {
   try {
     const path = await runtimePath("memory", "V1RTUAL.md")
-    const result = await invoke<{ content: string }>("file_read", { path })
+    const result = await getHostBridge().request("file_read", { path })
     v1rtualInstructions = parseV1rtualInstructions(result.content)
   } catch (error) {
     log.warn("V1RTUAL.md 读取失败:", formatError(error))
@@ -47,7 +47,7 @@ export async function updateV1rtualInstructions(instructions: string): Promise<b
   const markdown = `# V1RTUAL.md — 用户系统指令\n\n> 用户手写的系统级陪伴指令。\n\n---\n\n## 指令\n\n${body}\n\n_最后更新: ${new Date().toISOString()}_\n`
   try {
     const path = await runtimePath("memory", "V1RTUAL.md")
-    await invoke("file_write_atomic", { path, content: markdown })
+    await getHostBridge().request("file_write_atomic", { path, content: markdown })
     // 缓存存「重新读一遍会得到的结果」，与 loadV1rtualInstructions 同源，
     // 上面那条相等判断才对得上磁盘实际内容。
     v1rtualInstructions = parseV1rtualInstructions(markdown)

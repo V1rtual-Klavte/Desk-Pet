@@ -193,8 +193,8 @@ export interface HarnessRunSpec {
   /**
    * 本回合默认激活的工具名（⊆ tools）；省略 = tools 全量激活。
    *
-   * 主对话回合传 `defaultActiveToolNames(...)`（MCP 白名单之外的工具由 enable_tools 回合内
-   * 按需加入）；子代理 / 计划步骤保持省略 —— 它们的工具面本来就是显式收窄的，不再打折。
+   * 主对话回合传 `defaultActiveToolNames(...)`（未默认激活的工具——含全部 MCP 工具——由
+   * enable_tools 回合内按需加入）；子代理 / 计划步骤保持省略 —— 它们的工具面本来就是显式收窄的，不再打折。
    * 激活只收窄请求视图，`setTools` 仍持全量（Pi 校验激活集 ⊆ 全量）。
    */
   activeToolNames?: readonly string[]
@@ -443,6 +443,7 @@ export class HarnessSlot {
   private readonly requeuePending: AgentMessage[] = []
   /** 审计条目排队区：hook / 事件处理器只入队，drive 结束后由宿主写入（见 queueAuditEntry）。 */
   private readonly auditPending: Array<{ customType: string; data: JsonValue }> = []
+  private auditFlushPromise: Promise<number> | null = null
   /**
    * 子运行归属（取消域级联）：子槽（计划步骤的子代理）不注册在会话表里，
    * 父槽是它们唯一的可达句柄 —— 父槽 abort/close/dispose 必须级联到它们。
@@ -1372,9 +1373,20 @@ export class HarnessSlot {
   }
 
   /** 唯一的 flush 入口。失败条目不丢弃：重试一次后仍失败就保留在本队列。 */
-  async flushAudit(): Promise<void> {
+  async flushAudit(): Promise<number> {
+    if (this.auditFlushPromise) return this.auditFlushPromise
+    const flushing = this.flushAuditQueue()
+    this.auditFlushPromise = flushing
+    try {
+      return await flushing
+    } finally {
+      if (this.auditFlushPromise === flushing) this.auditFlushPromise = null
+    }
+  }
+
+  private async flushAuditQueue(): Promise<number> {
     const lane = this.lane
-    if (!lane || !this.auditPending.length) return
+    if (!lane || !this.auditPending.length) return this.auditPending.length
     const queue = this.auditPending.splice(0, this.auditPending.length)
     const failed: typeof queue = []
     for (const item of queue) {
@@ -1386,6 +1398,11 @@ export class HarnessSlot {
       this.auditPending.unshift(...failed)
       log.error("审计条目写入失败，保留待下次 flush:", { sessionId: this.sessionId, pending: this.auditPending.length })
     }
+    return this.auditPending.length
+  }
+
+  pendingAuditCount(): number {
+    return this.auditPending.length
   }
 
   /** 写一条审计条目；成功返回 true，失败只 warn（保留由 flushAudit 决定）。 */
@@ -1453,7 +1470,7 @@ export class HarnessSlot {
     await this.lane!.setModel({ provider: spec.model.provider, modelId: spec.model.id }, TODO_CONTEXT)
     await this.lane!.setThinkingLevel(toPiAgentThinkingLevel(spec.thinkingEffort), TODO_CONTEXT)
     // 默认激活面来自调用方的冻结判定（唯一判定在 tool/activation.ts）：主对话回合收窄到
-    // 「基础工具 + 常用白名单」，其余交给 enable_tools 回合内按需加入；省略即全量激活，
+    // 默认激活面（MCP 工具默认不在其中），其余交给 enable_tools 回合内按需加入；省略即全量激活，
     // 子代理 / 计划步骤保持既有行为。`setTools` 仍是全量，这里只改请求视图。
     await this.lane!.setActiveTools(spec.activeToolNames ? [...spec.activeToolNames] : spec.tools.map(tool => tool.name), TODO_CONTEXT)
   }
@@ -1948,6 +1965,38 @@ export class HarnessSlots {
   /** 唯一 flush 入口的两级转发：没有槽时是 no-op（无槽期间条目挂在 orphanAudits 上）。 */
   async flushAudit(sessionId: string): Promise<void> {
     await this.peek(sessionId)?.flushAudit()
+  }
+
+  /** 关停前停止所有回合并 flush 其审计；待审计项和无法结算的运行数返回给宿主报告。 */
+  async prepareForShutdown(): Promise<{ unresolvedRuns: number; pendingAudit: number }> {
+    const roots = [...this.slots.values()]
+    const allSlots = new Set<HarnessSlot>()
+    const collect = (slot: HarnessSlot): void => {
+      if (allSlots.has(slot)) return
+      allSlots.add(slot)
+      for (const child of slot.childSlots()) collect(child)
+    }
+    roots.forEach(collect)
+    const aborts = await Promise.allSettled(roots.map(slot => slot.abort(ABORT_REASON_DISPOSE)))
+    aborts.forEach((result, index) => {
+      if (result.status === "rejected") {
+        log.warn("关停时停止运行失败:", { sessionId: roots[index]!.snapshot().sessionId }, formatError(result.reason))
+      }
+    })
+    const shutdownSlots = [...allSlots]
+    const idleStates = await Promise.all(shutdownSlots.map(slot => slot.waitForIdle()))
+    const unresolvedRuns = idleStates.filter(idle => !idle).length
+    let pendingAudit = [...this.orphanAudits.values()].reduce((sum, items) => sum + items.length, 0)
+    const auditFlushes = await Promise.allSettled(shutdownSlots.map(slot => slot.flushAudit()))
+    auditFlushes.forEach((result, index) => {
+      const slot = shutdownSlots[index]!
+      const remaining = slot.pendingAuditCount()
+      pendingAudit += result.status === "rejected" && remaining === 0 ? 1 : remaining
+      if (result.status === "rejected") {
+        log.error("关停时审计 flush 异常:", { sessionId: slot.snapshot().sessionId }, formatError(result.reason))
+      }
+    })
+    return { unresolvedRuns, pendingAudit }
   }
 
   /** 无槽时把证据条目挂在注册表上（按 sessionId），下次 ensure() 转交给新槽；不丢证据。 */

@@ -1,14 +1,23 @@
 // ==========================================
-// Pi ExecutionEnv 的 Tauri 实现 —— 文件/命令全部经 Rust 命令边界
+// Pi ExecutionEnv 的 Native 宿主实现 —— 文件/命令全部经 HostBridge 边界
 //
 // 本文件里成排的 `try/catch` 都是 `return err(...)`：`ExecutionEnv` 契约要求把失败作为
 // Result 返回，调用方（Harness / 模型）看得到 —— 这是「显式向上抛」的等价形态，
 // 不是静默吞异常。真正需要留痕的分支（拿不到类别的失败）另有日志。
 // [保留已登记 §4.2]
+//
+// 迁移状态（W3b + 解除包）：
+// - 13 处命令全部经 `getHostBridge().request(...)`（HostBridge 是唯一桥接入口，
+//   实现由 Node 引导在 connectHostBridge() 装配）。
+// - 路径运算（homeDir/tempDir/join/resolve/isAbsolute）经 `ExecutionPathKit` 端口取用：
+//   Node 实现走 node:path/node:os —— 本文件不 import `@tauri-apps`，也不自造用户目录
+//   推算（AGENTS.md 禁止 dirs_next() 一类替代）。
+//   home/temp 是否改由宿主 `get_runtime_paths` 告知，待协调者裁定（见交付报告）。
+// - `bash_exec` 取消链保持原样：本文件自己监听 abort → `bash_cancel`，不搬进桥
+//   （桥里再发一遍会成为第二份取消定义）。
 // ==========================================
 
-import { invoke } from "@tauri-apps/api/core"
-import { homeDir, isAbsolute, join, resolve, tempDir } from "@tauri-apps/api/path"
+import { getExecutionPathKit, getHostBridge } from "@/services/host"
 import {
   err,
   ExecutionError,
@@ -36,8 +45,12 @@ export const MAX_TOOL_FILE_BYTES = 5 * 1024 * 1024
 
 const log = createLogger("ToolEnv")
 
-/** `file_list` / `file_info` 的载荷：与 FileSystem 契约的 FileInfo 逐字段一致。 */
-type FileInfoPayload = {
+/**
+ * `file_list` / `file_info` 的载荷：与 FileSystem 契约的 FileInfo 逐字段一致。
+ * 也是 `@/services/host` HostCommandMap 里 `file_list` / `file_info` 结果类型的
+ * import 来源（W3b 清 TODO(W0)：类型只在这里定义一份，矩阵 import 复用）。
+ */
+export type FileInfoPayload = {
   name: string
   path: string
   kind: "file" | "directory" | "symlink"
@@ -45,7 +58,11 @@ type FileInfoPayload = {
   mtimeMs: number
 }
 
-type BashPayload = {
+/**
+ * `bash_exec` 的载荷。也是 HostCommandMap 里 `bash_exec` 结果类型的 import 来源
+ * （W3b 清 TODO(W0)：类型只在这里定义一份，矩阵 import 复用）。
+ */
+export type BashPayload = {
   output: string
   exitCode: number
   totalBytes: number
@@ -90,24 +107,25 @@ function executionFailure(error: unknown): ExecutionError {
 }
 
 function unsupported(operation: string, path?: string): Result<never, FileError> {
-  return err(new FileError("not_supported", `TauriExecutionEnv 不支持 ${operation}`, path))
+  return err(new FileError("not_supported", `NativeExecutionEnv 不支持 ${operation}`, path))
 }
 
 function throwIfAborted(context: Context): void {
   context.abortSignal?.throwIfAborted()
 }
 
-export class TauriExecutionEnv implements ExecutionEnv {
+export class NativeExecutionEnv implements ExecutionEnv {
   constructor(public cwd: string) {}
 
   static async defaultCwd(): Promise<string> {
-    return homeDir()
+    return getExecutionPathKit().homeDir()
   }
 
   async absolutePath(path: string, context: Context): Promise<Result<string, FileError>> {
     try {
       throwIfAborted(context)
-      return ok(await (await isAbsolute(path) ? resolve(path) : resolve(this.cwd, path)))
+      const kit = getExecutionPathKit()
+      return ok(await (await kit.isAbsolute(path) ? kit.resolve(path) : kit.resolve(this.cwd, path)))
     } catch (error) {
       return err(fileFailure(error, path))
     }
@@ -116,7 +134,7 @@ export class TauriExecutionEnv implements ExecutionEnv {
   async joinPath(parts: string[], context: Context): Promise<Result<string, FileError>> {
     try {
       throwIfAborted(context)
-      return ok(await join(...parts))
+      return ok(await getExecutionPathKit().join(...parts))
     } catch (error) {
       return err(fileFailure(error))
     }
@@ -125,7 +143,7 @@ export class TauriExecutionEnv implements ExecutionEnv {
   async readTextFile(path: string, context: Context): Promise<Result<string, FileError>> {
     try {
       throwIfAborted(context)
-      const result = await invoke<{ content: string }>("file_read", { path, maxBytes: MAX_TOOL_FILE_BYTES })
+      const result = await getHostBridge().request("file_read", { path, maxBytes: MAX_TOOL_FILE_BYTES })
       throwIfAborted(context)
       return ok(result.content)
     } catch (error) {
@@ -143,9 +161,11 @@ export class TauriExecutionEnv implements ExecutionEnv {
   async readBinaryFile(path: string, context: Context): Promise<Result<Uint8Array, FileError>> {
     try {
       throwIfAborted(context)
-      const result = await invoke<number[]>("file_read_binary", { path, maxBytes: MAX_TOOL_FILE_BYTES })
+      // 桥对 `file_read_binary` 的结果统一做 number[] → Uint8Array 物化（BYTE_RESULT_METHODS），
+      // 调用点不再重复转换（物化结果与手写 `new Uint8Array(number[])` 逐字节一致）。
+      const bytes = await getHostBridge().request("file_read_binary", { path, maxBytes: MAX_TOOL_FILE_BYTES })
       throwIfAborted(context)
-      return ok(new Uint8Array(result))
+      return ok(bytes)
     } catch (error) {
       return err(fileFailure(error, path))
     }
@@ -155,7 +175,7 @@ export class TauriExecutionEnv implements ExecutionEnv {
     if (content instanceof Uint8Array) return unsupported("二进制写入", path)
     try {
       throwIfAborted(context)
-      await invoke("file_write", { path, content, maxBytes: MAX_TOOL_FILE_BYTES })
+      await getHostBridge().request("file_write", { path, content, maxBytes: MAX_TOOL_FILE_BYTES })
       throwIfAborted(context)
       return ok(undefined)
     } catch (error) {
@@ -167,7 +187,7 @@ export class TauriExecutionEnv implements ExecutionEnv {
     if (content instanceof Uint8Array) return unsupported("二进制追加", path)
     try {
       throwIfAborted(context)
-      await invoke("file_append", { path, content, maxBytes: MAX_TOOL_FILE_BYTES })
+      await getHostBridge().request("file_append", { path, content, maxBytes: MAX_TOOL_FILE_BYTES })
       throwIfAborted(context)
       return ok(undefined)
     } catch (error) {
@@ -178,7 +198,7 @@ export class TauriExecutionEnv implements ExecutionEnv {
   async renameFile(sourcePath: string, destinationPath: string, context: Context): Promise<Result<void, FileError>> {
     try {
       throwIfAborted(context)
-      await invoke("file_rename", { sourcePath, destinationPath })
+      await getHostBridge().request("file_rename", { sourcePath, destinationPath })
       throwIfAborted(context)
       return ok(undefined)
     } catch (error) {
@@ -189,7 +209,7 @@ export class TauriExecutionEnv implements ExecutionEnv {
   async fileInfo(path: string, context: Context): Promise<Result<FileInfo, FileError>> {
     try {
       throwIfAborted(context)
-      return ok(await invoke<FileInfoPayload>("file_info", { path }))
+      return ok(await getHostBridge().request("file_info", { path }))
     } catch (error) {
       return err(fileFailure(error, path))
     }
@@ -199,7 +219,7 @@ export class TauriExecutionEnv implements ExecutionEnv {
   async listDir(path: string, context: Context): Promise<Result<FileInfo[], FileError>> {
     try {
       throwIfAborted(context)
-      const result = await invoke<{ entries: FileInfoPayload[] }>("file_list", { path })
+      const result = await getHostBridge().request("file_list", { path })
       throwIfAborted(context)
       return ok(result.entries)
     } catch (error) {
@@ -210,7 +230,7 @@ export class TauriExecutionEnv implements ExecutionEnv {
   async canonicalPath(path: string, context: Context): Promise<Result<string, FileError>> {
     try {
       throwIfAborted(context)
-      return ok(await invoke<string>("file_canonical_path", { path }))
+      return ok(await getHostBridge().request("file_canonical_path", { path }))
     } catch (error) {
       return err(fileFailure(error, path))
     }
@@ -219,7 +239,7 @@ export class TauriExecutionEnv implements ExecutionEnv {
   async exists(path: string, context: Context): Promise<Result<boolean, FileError>> {
     try {
       throwIfAborted(context)
-      return ok(await invoke<boolean>("file_exists", { path }))
+      return ok(await getHostBridge().request("file_exists", { path }))
     } catch (error) {
       return err(fileFailure(error, path))
     }
@@ -229,7 +249,7 @@ export class TauriExecutionEnv implements ExecutionEnv {
     try {
       throwIfAborted(context)
       // FileSystem 契约：recursive 默认 true
-      await invoke("dir_create", { path, recursive: options?.recursive ?? true })
+      await getHostBridge().request("dir_create", { path, recursive: options?.recursive ?? true })
       throwIfAborted(context)
       return ok(undefined)
     } catch (error) {
@@ -241,7 +261,7 @@ export class TauriExecutionEnv implements ExecutionEnv {
     try {
       throwIfAborted(context)
       // FileSystem 契约：recursive/force 默认 false；force 时缺失路径由 Rust 侧视为成功
-      await invoke("file_remove", {
+      await getHostBridge().request("file_remove", {
         path,
         recursive: options?.recursive ?? false,
         force: options?.force ?? false,
@@ -256,7 +276,8 @@ export class TauriExecutionEnv implements ExecutionEnv {
   async createTempDir(prefix: string | undefined, context: Context): Promise<Result<string, FileError>> {
     try {
       throwIfAborted(context)
-      const path = await join(await tempDir(), `${prefix ?? "deskpet-"}${crypto.randomUUID()}`)
+      const kit = getExecutionPathKit()
+      const path = await kit.join(await kit.tempDir(), `${prefix ?? "deskpet-"}${crypto.randomUUID()}`)
       const result = await this.createDir(path, undefined, context)
       return result.ok ? ok(path) : result
     } catch (error) {
@@ -267,7 +288,8 @@ export class TauriExecutionEnv implements ExecutionEnv {
   async createTempFile(options: { prefix?: string; suffix?: string } | undefined, context: Context): Promise<Result<string, FileError>> {
     try {
       throwIfAborted(context)
-      const path = await join(await tempDir(), `${options?.prefix ?? "deskpet-"}${crypto.randomUUID()}${options?.suffix ?? ""}`)
+      const kit = getExecutionPathKit()
+      const path = await kit.join(await kit.tempDir(), `${options?.prefix ?? "deskpet-"}${crypto.randomUUID()}${options?.suffix ?? ""}`)
       const result = await this.writeFile(path, "", context)
       return result.ok ? ok(path) : result
     } catch (error) {
@@ -282,7 +304,7 @@ export class TauriExecutionEnv implements ExecutionEnv {
     // 没有这个 id 的槽（false，子进程可能已结束）。第二种是取消与 spawn 的竞态，
     // 之前会被静默丢掉：取消先到、exec 随后 spawn，子进程一直跑到超时。
     const cancel = () => {
-      invoke<boolean>("bash_cancel", { executionId })
+      getHostBridge().request("bash_cancel", { executionId })
         .then(cancelled => {
           if (!cancelled) log.debug("bash_cancel 未命中在跑的子进程（可能已结束）:", executionId)
         })
@@ -293,7 +315,7 @@ export class TauriExecutionEnv implements ExecutionEnv {
       throwIfAborted(context)
       const limits = options?.capture?.limits
       const spill = options?.capture?.spill === true
-      const result = await invoke<BashPayload>("bash_exec", {
+      const result = await getHostBridge().request("bash_exec", {
         executionId,
         command,
         cwd: options?.cwd ?? this.cwd,
