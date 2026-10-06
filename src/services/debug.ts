@@ -1,7 +1,8 @@
 // ==========================================
-// Debug 状态 —— 追踪模型用量、上下文利用率、工具注册数
-// 供 ChatPanel 底部状态栏（DebugBar）使用
+// Debug 状态 —— 追踪模型用量、上下文利用率、工具清单
+// 供原生 UI 的调试面板（输入区上拉抽屉）使用
 // 用量取自 Provider 回报的 usage（failure 响应也算一次调用）；不填估算值冒充准确用量
+// 上下文占用可由会话快照恢复（重启后不归零，见 restoreLastRequestStats）
 // ==========================================
 
 import { reactive } from "vue"
@@ -76,19 +77,19 @@ export interface DebugState {
   lastToolCount: number
   /** 上次请求的工具名列表 */
   lastToolNames: string[]
-  /** 上下文利用率（真实 prompt 用量优先；Provider 未回报时退回估算） */
-  lastContextUsage: number
+  /**
+   * 上下文利用率（真实 prompt 用量优先；Provider 未回报时退回估算）；
+   * `null` = **未知**（本进程还没有过对话请求，也没有可从会话快照恢复的真实读数）——
+   * 面板显示「—」，不显示 0%（0% 会谎报「上下文是空的」；重启恢复见 `restoreLastRequestStats`）。
+   */
+  lastContextUsage: number | null
   /** 上下文上限 (tokens) */
   contextMaxTokens: number
   /** 模型用量按 purpose 分列；总量与分项来自同一份累计，不另算旁路 */
   usage: Record<UsagePurpose, PurposeUsage>
 
-  /** 当前已注册工具总数 */
-  registeredToolCount: number
-  /** 当前已注册工具列表 */
+  /** 当前已注册工具列表（面板「注册明细」展开与引导序列判据消费） */
   registeredTools: { name: string; source: string }[]
-  /** 已注册 MCP 工具数 */
-  registeredMcpCount: number
 }
 
 /** 用量分项：主回合（含工具轮）与一次性文本调用。 */
@@ -117,7 +118,7 @@ export const debug = reactive<DebugState>({
   lastSystemTokens: 0,
   lastToolCount: 0,
   lastToolNames: [],
-  lastContextUsage: 0,
+  lastContextUsage: null,
   contextMaxTokens: aiConfig.contextMaxTokens,
   usage: {
     main: emptyPurposeUsage(),
@@ -129,9 +130,7 @@ export const debug = reactive<DebugState>({
     topic: emptyPurposeUsage(),
   },
 
-  registeredToolCount: 0,
   registeredTools: [],
-  registeredMcpCount: 0,
 })
 
 /**
@@ -199,26 +198,62 @@ export function updateRequestStats(opts: {
     debug.lastToolCount = opts.toolCount
     debug.lastToolNames = opts.toolNames ?? []
   }
-  const max = debug.contextMaxTokens > 0 ? debug.contextMaxTokens : aiConfig.contextMaxTokens
   // 占比：真实 prompt 用量优先；拿不到才退回 (system + conversation) 估算。
   const estimated = debug.lastSystemTokens + (opts.conversationTokens ?? 0)
   const basis = realPrompt > 0 ? realPrompt : estimated
-  debug.lastContextUsage = Math.round((basis / max) * 100)
+  debug.lastContextUsage = contextUsagePercent(basis)
+}
+
+/**
+ * 上下文占比的唯一计算点（实时与重启恢复两条路径共用 —— 口径不许有第二份）。
+ * 分母取 contextMaxTokens（读不到好值时回落配置默认）。
+ */
+function contextUsagePercent(basis: number): number {
+  const max = debug.contextMaxTokens > 0 ? debug.contextMaxTokens : aiConfig.contextMaxTokens
+  return Math.round((basis / max) * 100)
+}
+
+/**
+ * 从会话快照恢复「最近一次对话请求」的上下文占用（重启恢复）。
+ *
+ * 背景（用户报告 2026-10-06）：`lastContextUsage` 只由对话请求刷新，重启后进程内存清空 →
+ * 面板显示「上下文 0%」，看起来像当前会话的上下文是空的。真实读数其实持久在会话 JSONL
+ * 的 provider_usage 快照里（证据源与选取纪律见 `readLastConversationPromptTokens`）。
+ *
+ * 新鲜度：恢复的是**最近一次对话请求的真实输入量**（与实时口径同义，不是「此刻」的估算）；
+ * 恢复发生在引导期、中间没有新请求，所以它与重启前面板显示的数字一致。
+ * 读不到真实读数（本会话没有过对话请求 / Provider 从未回报）时**保持 null**，如实显示
+ * 「—」，不拿 0% 冒充。
+ *
+ * 已有本进程读数时不恢复（实时读数更新，不该被旧快照覆盖）。
+ */
+export async function restoreLastRequestStats(): Promise<void> {
+  if (debug.lastContextUsage !== null) return
+  // 动态 import 断开 debug ↔ session / harness 的静态环（runtime.ts 与 session 侧都静态
+  // import 本模块；与 repo.ts 的「动态 import 避免静态环」同一手法）。
+  const [{ readLastConversationPromptTokens }, { getActiveSessionId }] = await Promise.all([
+    import("@/services/engine/harness"),
+    import("@/services/session"),
+  ])
+  const sessionId = getActiveSessionId()
+  if (!sessionId) return
+  const promptTokens = await readLastConversationPromptTokens(sessionId)
+  if (promptTokens === undefined) return
+  debug.lastPromptTokens = promptTokens
+  debug.lastContextUsage = contextUsagePercent(promptTokens)
 }
 
 /** 刷新已注册工具统计 */
 export async function refreshToolStats() {
-  const { listAll, toolCount } = await import("@/services/tool/registry")
-  const all = listAll()
-  debug.registeredToolCount = toolCount()
-  debug.registeredTools = all.map(t => ({ name: t.name, source: t.source }))
-  debug.registeredMcpCount = all.filter(t => t.source === "mcp").length
+  const { listAll } = await import("@/services/tool/registry")
+  debug.registeredTools = listAll().map(t => ({ name: t.name, source: t.source }))
 }
 
-/** 初始化 debug 状态 */
+/** 初始化 debug 状态（工具列表 + 上下文上限 + 重启恢复的上次请求统计） */
 export async function initDebug(): Promise<void> {
   debug.contextMaxTokens = aiConfig.contextMaxTokens
   await refreshToolStats()
+  await restoreLastRequestStats()
 }
 
 if (typeof window !== "undefined") {

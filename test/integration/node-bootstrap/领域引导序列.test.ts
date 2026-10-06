@@ -181,7 +181,7 @@ describe("领域引导序列", () => {
     // 下面每一项效果都只能来自领域引导；前置不成立时不能把「碰巧非零」当通过。
     expect(isPersonalityRuntimeReady(), "前置：人格注册在引导前已就绪").toBe(false)
     expect(listAllSlashCommands().length, "前置：slash 命令表在引导前已注册").toBe(0)
-    expect(debug.registeredToolCount, "前置：工具计数在引导前已非零").toBe(0)
+    expect(debug.registeredTools.length, "前置：工具列表在引导前已非空").toBe(0)
     expect(getActiveSessionId(), "前置：引导前已有活跃会话").toBe("")
 
     // 捕获 console.warn（call-through，不改产品输出）：跳过留痕只在引导运行中出现一次，
@@ -216,7 +216,7 @@ describe("领域引导序列", () => {
     // 引导后的接线逐一可观察
     expect(isPersonalityRuntimeReady(), "人格注册没有完成").toBe(true)
     expect(listAllSlashCommands().length, "slash 命令表为空：引导没有注册命令").toBeGreaterThan(0)
-    expect(debug.registeredToolCount, "工具注册没有先于 Debug 状态刷新").toBeGreaterThan(0)
+    expect(debug.registeredTools.length, "工具注册没有先于 Debug 状态刷新").toBeGreaterThan(0)
 
     // 引导期日志级别：initConfig() 之后即在引导内应用（`init.ts` 的 applyLogLevel()）——
     // 不应用则级别停在 logger 保守默认 info，主动链路（scanner/observation 等）的 debug

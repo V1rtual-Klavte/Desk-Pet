@@ -191,11 +191,16 @@ export async function commitMemoryDreamingJob(jobId: string, baseRevision: numbe
 }
 
 export interface MemoryDreamingBudget { localDate: string; reservedTokens: number; usedTokens: number }
+/** 当日 token 账的快照读取面（reserved/used）；只作观测，不参与准入（见 reserve）。 */
 export async function memoryDreamingBudget(localDate: string): Promise<MemoryDreamingBudget> {
   return getHostBridge().request("memory_dreaming_budget", { localDate })
 }
-export async function reserveMemoryDreamingBudget(reservationId: string, localDate: string, reservedTokens: number, dailyLimit: number): Promise<boolean> {
-  return getHostBridge().request("memory_dreaming_budget_reserve", { reservationId, localDate, reservedTokens, dailyLimit })
+/**
+ * 登记一笔 dreaming token 预留（记账，非门禁）：日 token 上限自 2026-10-06 起撤除，
+ * 预留一律接受并照记；幂等重放（同 reservationId 同昼同额）直接返回。
+ */
+export async function reserveMemoryDreamingBudget(reservationId: string, localDate: string, reservedTokens: number): Promise<void> {
+  return getHostBridge().request("memory_dreaming_budget_reserve", { reservationId, localDate, reservedTokens })
 }
 export async function settleMemoryDreamingBudget(reservationId: string, localDate: string, reservedTokens: number, usedTokens: number | null): Promise<void> {
   return getHostBridge().request("memory_dreaming_budget_settle", { reservationId, localDate, reservedTokens, usedTokens })

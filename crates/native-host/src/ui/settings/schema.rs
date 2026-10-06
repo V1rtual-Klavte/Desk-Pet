@@ -635,7 +635,7 @@ const AI_COMPANION: &[Field] = &[
         key: "ai.memory.dreaming.tier",
         label: "记忆整理档位",
         kind: FieldKind::Enum(FREQUENCY_TIERS),
-        help: "「关」= 不自动整理（面板手动整理按钮保留）；档位越高空闲阈值越低、token 预算越大",
+        help: "「关」= 不自动整理（面板手动整理按钮保留）；档位越高空闲阈值越低、整理间隔越短（token 只记账，不限制整理）",
     },
 ];
 

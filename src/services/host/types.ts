@@ -872,7 +872,9 @@ export type HostCommandMap = {
       command: string
       cwd?: string | null
       executionId?: string | null
-      /** 毫秒；缺省用 Rust 兜底上限。 */
+      /** 毫秒；缺省用 Rust 兜底上限（与 TS 的 bash 档位同值：5 分钟）。
+       *  正常路径由 pi-bash 的 prepareArguments 下传生效值（见 tool/local/bash-timeout.ts），
+       *  null 只出现在不经该工具的直调上。 */
       timeoutMs?: number | null
       maxBytes?: number | null
       maxLines?: number | null
@@ -1145,9 +1147,13 @@ export type HostCommandMap = {
   }
   /** 完成 dreaming job 并在 Rust 事务中自动提交全部合格候选；返回新 revision。 */
   memory_dreaming_commit: { args: { jobId: string; baseRevision: number }; result: number }
+  /**
+   * 登记一笔 dreaming token 预留：只记账（reserved 增量 + 租约行），不作准入；
+   * 日 token 上限自 2026-10-06 起撤除，预留一律接受，幂等重放直接返回。
+   */
   memory_dreaming_budget_reserve: {
-    args: { reservationId: string; localDate: string; reservedTokens: number; dailyLimit: number }
-    result: boolean
+    args: { reservationId: string; localDate: string; reservedTokens: number }
+    result: void
   }
   /** usedTokens 传 null 表示未使用（Rust Option<i64>）。 */
   memory_dreaming_budget_settle: {

@@ -46,8 +46,22 @@
 // （共享意图链在 crates/native-host/src/ui/chat/*.rs，平台挂项在 ui/platform/*_chat.rs；
 // 走既有 HostRequestMap.chat_remember_message 线形状，Node 侧一行未改）—— 菜单手势与渲染
 // 不在本契约范围（平台渲染证据属原生 UI 测试驱动，既有口径），不因此新增 sourceFiles。
-// nui-01..nui-27 逐点核对实现点仍在、覆盖描述与当前实现一致，未修订覆盖点，仅按当前源码
-// 刷新 sourceHash。
+// 2026-10-06 dreaming 日 token 闸撤除批次（本批刷新）：sourceFiles 变化 ——
+// src/services/host/types.ts（HostCommandMap 的 memory_dreaming_budget_reserve：去 dailyLimit、
+// 响应 boolean → void——dreaming 日 token 上限不再作门禁，预留只记账）。本契约覆盖点不在改动
+// 面内，未修订；本批刷新同时包含工作树中其它并发改动的源文件（含并行缩略图线，
+// 非逐行行为审计），sourceHash 按当前源码复算。
+// 2026-10-06 第二轮实测反馈批次（本批验收 analyze→generate）：sourceFiles 变化 ——
+// src/services/native-ui/session-projection.ts（调试条投影随实现同步：lastContextUsage 由
+// number 改 number|null —— null=未知，宿主显示「—」而不是 0%；重启恢复见 debug.ts 的
+// restoreLastRequestStats，恢复读取器 src/services/engine/harness/request-stats.ts 不在本
+// 契约 sourceFiles —— 本契约没有覆盖点描述调试投影字段面，该行为的契约登记属 agent-runtime
+// 覆盖面）、registeredToolCount / registeredMcpCount 两字段删除（「注册明细」仍消费
+// registeredTools）；会话投影帧与既有推送/请求面未动）与 src/services/host/types.ts
+// （HostCommandMap 的 memory_dreaming_budget_reserve 去 dailyLimit、响应 boolean→void；bash
+// 命令 timeoutMs 注释刷新 —— 都不属原生 UI 的请求/推送面）。nui-01..nui-27 逐点核对实现点
+// 仍在、覆盖描述与当前实现一致，未修订覆盖点，sourceHash 按当前工作区源码复算（同时含并行
+// 工作线在非本契约文件上的改动）。
 import type { ModuleContract } from "../host/types"
 
 export const nativeUiContract: ModuleContract = {
@@ -75,7 +89,7 @@ export const nativeUiContract: ModuleContract = {
     // 平台手势与行渲染不在本契约范围，与既有「原生渲染不在这里冒充」的口径一致）。
     "crates/native-host/src/ui/settings/panels.rs",
   ],
-  sourceHash: "c56a778267619dccc3d3307fbbc9139795123d88f1162536120c18839b173d1b",
+  sourceHash: "8005fd323f49209b937c58798aeb585f0cb6f1bee899d3753711fd0ebaef6213",
   coverage: [
     {
       id: "nui-01",

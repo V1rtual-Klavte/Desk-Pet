@@ -8,6 +8,9 @@
 // 资源边界（与《记忆系统运行时契约》§7.2 同源）：
 // - 每批来源数与正文长度都有界，超出的留给下一批，不做「一次全库重算」；
 // - 单条来源过大不截断内容，直接标记 oversized 交给用户挑选片段；
+// - 日 token 上限已撤除（2026-10-06 用户裁决，与主动链同批口径：「一天最多几次」保留、
+//   「一天最多烧多少 token」取消）：空闲调度器不再查 token 账做门禁，批次不再因 token 账
+//   被中止；token 的预留/结算照记进作业账本，只作观测账；
 // - 模型调用走 completePiText(purpose="memory")，与主回合共用认证、取消与用量口径；
 //   模型取辅助模型（ai.auxModel，留空跟随聊天模型）。
 
@@ -21,7 +24,7 @@ import { createRuntimeTraceContext, hasRuntimeTraceSubscribers, publishRuntimeTr
 import { refreshMemoryCount } from "./index"
 import {
   addMemoryCandidates, cancelMemoryJob, checkpointMemoryJob, commitMemoryDreamingJob, memoryJobSources,
-  memoryStatus, memoryDreamingBudget, pendingMemorySourceCount, reserveMemoryDreamingBudget, resumeMemoryJob,
+  memoryStatus, pendingMemorySourceCount, reserveMemoryDreamingBudget, resumeMemoryJob,
   settleMemoryDreamingBudget, startMemoryJob,
 } from "./ipc"
 import type { MemoryCandidateDraft, MemoryDraft, MemorySource } from "./ipc"
@@ -46,22 +49,6 @@ let idleRun: Promise<unknown> | null = null
 function localDate(): string {
   const now = new Date()
   return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(now.getDate()).padStart(2, "0")}`
-}
-
-/**
- * 档位派生的每日 token 预算（`ai.memory.dreaming.tier` 查表；off 按 0 读，自动预留必然失败）。
- * 手动入口 `action.memorySweep` 不走这个门（用户动作不受档位约束，只受同一本持久预算账约束）。
- */
-function dreamingDailyTokens(): number {
-  const tier = dreamingTier()
-  return tier === "off" ? 0 : dreamingTierLimits(tier).dailyTokens
-}
-
-async function idleBudgetAvailable(): Promise<boolean> {
-  const dailyTokens = dreamingDailyTokens()
-  if (dailyTokens <= 0) return false
-  const budget = await memoryDreamingBudget(localDate())
-  return budget.usedTokens + budget.reservedTokens < dailyTokens
 }
 
 export interface DreamingOutcome {
@@ -292,9 +279,10 @@ export async function runDreamingSweep(options: { signal?: AbortSignal; automati
         Math.min(reviewMaxTokens, contextWindow - inputTokens - reserveMargin))
       const reservation = inputTokens + batchMaxTokens
       if (options.automatic) {
+        // 预留只记账（reserved 增量 + 租约行），不再按日 token 总量准入，
+        // 也不再用返回值中止批次（2026-10-06 用户裁决；容量边界靠批数与单批预算）。
         const reservationId = `${jobId}:${resumedBatchOffset + batch}`
-        const granted = await reserveMemoryDreamingBudget(reservationId, today, reservation, dreamingDailyTokens())
-        if (!granted) break
+        await reserveMemoryDreamingBudget(reservationId, today, reservation)
         reservedTokens += reservation
       }
       const result = await completePiText({
@@ -381,9 +369,7 @@ export function startIdleDreamingScheduler(): () => void {
     idleSince = Date.now()
     const controller = new AbortController()
     idleRunController = controller
-    const run = idleBudgetAvailable().then(available => available && !controller.signal.aborted
-      ? runDreamingSweep({ automatic: true, signal: controller.signal })
-      : undefined)
+    const run = runDreamingSweep({ automatic: true, signal: controller.signal })
       .catch(error => log.warn("空闲记忆整理失败:", formatError(error)))
       .finally(() => {
         if (idleRun === run) {

@@ -39,12 +39,22 @@
 // （裁决表、白名单、路径分级、确认身份与失效、授权范围、冻结快照、Rust 终判的符号与描述
 // 一致）、覆盖描述与当前实现一致，未修订覆盖点；本轮为描述与来源核对（非逐行行为审计），
 // sourceHash 按当前源码复算。
+// 2026-10-06 bash 超时档位/进程组回收批次（analyze→刷新）：sourceFiles 变化 ——
+// src/services/safety/checker.ts（BASH_DANGEROUS_PATTERNS 新增 `display dialog` / `display alert`：
+// 等待用户点按的 GUI 弹窗先走确认，只匹配这两个等待式命令、不误伤 osascript 的普通自动化）、
+// src/services/tool/local/pi-tools.ts（bash 5 分钟档位声明 + withBashToolPolicy 接入；档位/夹取
+// 语义的覆盖归 tool-execution 的 te-33/te-34，不在本契约新增覆盖点）、
+// crates/native-host/src/commands/tool_exec/mod.rs（新增 Rust 单测：进程组回收含孙进程探活、
+// stdin 关死、Rust 兜底与 TS 档位同值——被改的实现点在 bash.rs，不在本契约 sourceFiles）。
+// sf-05 描述修订（记录新增模式）；sf-01..sf-23 其余点逐点核对实现点仍在（裁决表、确认/授权、
+// 凭据路径、策略冻结不在改动面内；stdin 关死与组回收不影响 sf-16/sf-18 的「spawn 之前拒绝」
+// 语义）、覆盖描述与当前实现一致；本轮为描述与来源核对（非逐行行为审计），sourceHash 按当前源码复算。
 import type { ModuleContract } from "../host/types"
 
 export const safetyContract: ModuleContract = {
   module: "safety",
   sourceFiles: ["src/services/engine/harness/runtime.ts", "src/services/engine/harness/harness-slot.ts", "src/services/safety/checker.ts", "src/services/safety/permission.ts", "src/services/safety/confirm.ts", "src/services/tool/types.ts", "src/services/tool/policy.ts", "src/services/tool/local/pi-tools.ts", "src/services/tool/local-extra/clipboard.ts", "src/services/tool/local-extra/agent-tool.ts", "src/services/tool/local-extra/app.ts", "src/services/tool/mcp/client.ts", "src/services/session/manager.ts", "crates/native-host/src/paths/mod.rs", "crates/native-host/src/commands/bash_policy.rs", "crates/native-host/src/commands/tool_exec/mod.rs"],
-  sourceHash: "845c7a5d2554efd1f65c39f96e1af6943bccb7c1639404366eebcaaa7af53253",
+  sourceHash: "033d0cfdbff24d4c81b0a0fbcf933f55069029284163842166401812b62eb6ae",
   coverage: [
     { id: "sf-01", feature: "SAFE 级别放行", description: "safetyLevel=SAFE 的工具经生产裁决入口 evaluateToolPermission（标准决策层即 allow）直接放行，不生成确认请求；同一分支现在也接住 NORMAL，会话信任与安全裁决只有 permission.ts 一份实现", why: "安全等级体系基础，且放行结论必须来自唯一裁决点", layer: "integration", depth: "shallow", scenarios: ["safety-safe"] },
     { id: "sf-02", feature: "统一裁决表（SAFE / NORMAL 一律放行）", description: "标准决策是安全等级到裁决结果的唯一映射：NOWAY → deny（最前置，先于安全模式与工具侧策略）；SAFE 与 NORMAL → allow（与安全模式无关，也不看命令是否在白名单里 —— 白名单只决定 NORMAL/DANGER 的归属，是免确认通道而不是拒绝依据）；DANGER → 交给回合冻结的安全模式（let_me_tk → ask、just_do_it → allow、其余含缺省 → ask）。工具与运行模式不再参与裁决：pet/assistant 双模式、lightweightPolicy、`ToolDef.mode`/`ToolContext.mode` 已全链删除，而旧助手下 NORMAL 没有任何 allow 路径、一律 ask —— 这条收紧的消失正是 sf-21 必须逐工具重定级的原因", why: "常规工具需要安全评估，且裁决表必须唯一：NORMAL 的归属翻转后若仍留旧描述，重定级与确认通道的场景会照着已不存在的分支写断言", layer: "integration", depth: "shallow", scenarios: ["safety-normal"] },
@@ -54,7 +64,7 @@ export const safetyContract: ModuleContract = {
     { id: "sf-22", feature: "DANGER 级别按安全模式裁决", description: "safetyLevel=DANGER（含路径分级提上来的敏感路径与危险命令）不在标准决策里直接放行或拒绝，而是交给回合冻结的安全模式：let_me_tk → ask、just_do_it → allow、其余（含缺省）→ ask；**DANGER 没有 deny 归宿** —— 拒绝只来自 NOWAY、工具侧 defaultDecision: 'deny'、不可用身份与「用户拒绝/确认过期」。走到 ask 时生成确认请求（身份 = sessionId + runGeneration + toolCallId，带 inputHash 与 policyHash）。旧机制（lightweightPolicy 的 confirm/deny、助手模式弹窗、轻量模式按策略硬拒）已删，「没有确认通道就拒绝」的语义随之消失，所以 DANGER 在默认安全模式下的结论是 ask 而不是 deny", why: "危险操作需确认：裁决表变了而描述仍写「轻量模式拒绝」，重写场景时会照着已不可达的 deny 分支写断言", layer: "integration", depth: "deep", scenarios: ["safety-danger"] },
     { id: "sf-23", feature: "确认通道（放行方向）", description: "测试宿主按场景声明的策略确定性应答（默认拒绝；声明 approve 时立即放行）：approve 走 resolveConfirm(true) → allow_session 且确认记录标记 approved；用户批准且选 allow_session 时按会话信任开关入账；确认后重新评估参数与策略哈希，任一项变化都不复用旧授权", why: "approve 侧的应答形状（allow_session）是子代理授权复用的那种授权；通道必须能被场景确定性驱动，否则「放行」只能靠产品自证", layer: "unit", depth: "deep", scenarios: ["safety-confirm-approved"] },
     { id: "sf-04", feature: "NOWAY 直接拒绝", description: "safetyLevel=NOWAY 在标准决策最前置的一步被拒绝（先于风险到安全模式的映射与工具侧策略），结论与安全模式、会话信任都无关", why: "绝对不允许的操作", layer: "integration", depth: "shallow", scenarios: ["safety-noway"] },
-    { id: "sf-05", feature: "bash 危险命令匹配", description: "BASH_DANGEROUS_PATTERNS 匹配 rm 递归删除（合并/分开/长选项/多空格）与 sudo 等危险命令", why: "命令注入防护", layer: "integration", depth: "shallow", scenarios: ["safety-danger-pattern"] },
+    { id: "sf-05", feature: "bash 危险命令匹配", description: "BASH_DANGEROUS_PATTERNS 匹配 rm 递归删除（合并/分开/长选项/多空格）、sudo 等危险命令，以及等待用户点按的系统对话框（`display dialog` / `display alert`，2026-10-06 批次加入：弹窗会被工具超时打断并留下孤儿窗口，命中后先走确认；只匹配这两个等待式命令，osascript 的普通自动化不误伤——负对照在 `[safety-danger-pattern]` 里），且不误伤普通 rm", why: "命令注入防护；等待用户的操作不许用命令实现——确认类操作走计划确认面板，命令的 stdin 在 Rust 侧关死后这道 pattern 管的是不读 stdin 的 GUI 等待", layer: "integration", depth: "shallow", scenarios: ["safety-danger-pattern"] },
     { id: "sf-06", feature: "bash NOWAY 匹配", description: "BASH_NOWAY_PATTERNS 匹配 rm -rf /（根目录）与 sudo rm 等硬禁止命令，且不误杀 rm -rf /home/user", why: "系统破坏命令禁止", layer: "integration", depth: "shallow", scenarios: ["safety-noway-pattern"] },
     { id: "sf-07", feature: "文件路径分级", description: "resolveFilePathLevel 按路径分级：私钥凭据一律 NOWAY、.env 与系统目录 DANGER、普通路径 SAFE，Windows 反斜杠先归一，缺失 path 参数不提级；FILE_DANGEROUS_PATTERNS 仍是两个等级（凭据级 NOWAY 与敏感级 DANGER）正则的按子集并集；该分级确实挂在注册过的生产工具上 —— pi-read 按调用参数里的 path 分级，pi-bash 在命令模式匹配之后按同一规则逐个路径 token 取更严者（`cat ~/.ssh/id_rsa` 升为 NOWAY，普通路径不被误提级）", why: "敏感文件泄露防护，且分级必须真正接在生产工具上而不只是被断言", layer: "integration", depth: "shallow", scenarios: ["safety-file-pattern"] },
     { id: "sf-09", feature: "LLM 危险 Bash 调用实际拦截", description: "模型请求 rm -rf / 时，Bash 硬禁止策略在执行前拒绝执行；模型输出由 fake Provider 固定，工具与安全链路真实", why: "端到端安全验证", layer: "integration", depth: "deep", scenarios: ["safety-dangerous-delete"] },

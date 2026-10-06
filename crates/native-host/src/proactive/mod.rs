@@ -11,8 +11,10 @@ use std::sync::Mutex;
 /// 真相源是 CONFIG —— Rust 不读 CONFIG、不回写；这里只保存最近一次通过校验的投影。
 /// 字段与协议定义 `ProactiveLimits` 一一对应（camelCase → snake_case），13 项全必填。
 /// 其中 `wake_min_ms/wake_max_ms/stay_seconds/settle_ms/cooldown_ms/same_page_cooldown_ms`
-/// 的消费者在 Node 侧（随机唤醒与窗口机会节奏）；Rust 侧消费 daily*/间隔/tokens 做终裁，
+/// 的消费者在 Node 侧（随机唤醒与窗口机会节奏）；Rust 侧消费 daily*/间隔做终裁，
 /// 但仍随投影整体下发与校验（单一真相源 = protocol.json 的 `tiers.proactive`）。
+/// `daily_tokens` 是**观测阈值**：token 账（reserved/used/unknown）照记，但不再作为
+/// claim / 辅助预留的拒绝条件 —— 唯一硬边界是次数上限（daily*Attempts / dailySuccess）。
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct ProactiveLimits {
     pub wake_min_ms: i64,

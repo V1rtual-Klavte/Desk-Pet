@@ -84,18 +84,15 @@
       "dreaming": {
         "low": {
           "idleSeconds": 3600,
-          "minIntervalMinutes": 240,
-          "dailyTokens": 24000
+          "minIntervalMinutes": 240
         },
         "medium": {
           "idleSeconds": 1800,
-          "minIntervalMinutes": 60,
-          "dailyTokens": 72000
+          "minIntervalMinutes": 60
         },
         "high": {
           "idleSeconds": 600,
-          "minIntervalMinutes": 30,
-          "dailyTokens": 120000
+          "minIntervalMinutes": 30
         }
       }
     }

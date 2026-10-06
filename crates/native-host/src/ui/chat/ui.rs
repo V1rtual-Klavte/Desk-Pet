@@ -32,6 +32,7 @@ use super::model::{
     ChatModel, ChatRenderUpdate, ChatSnapshot, PendingDraftRelease, Revisions, StatusSnapshot,
 };
 use super::panels::{PanelAction, PanelOutcome, UnknownStepResolution};
+use super::pending_strip::{self, PendingThumbStatus};
 use super::placeholders::{placeholder_for, ImagePlaceholder};
 use super::projection::TranscriptProjection;
 use super::viewer::{self, ViewerRequest, ViewerState};
@@ -111,6 +112,8 @@ pub struct ChatUi {
     viewer: Mutex<ViewerState>,
     /// Native viewport → image refs, grouped by chat surface so the shared manager sees the union.
     inline_visible: Mutex<std::collections::HashMap<String, Vec<InlineVisibleImage>>>,
+    /// 待发送条缩略图（工作线程解码；见 [`super::pending_strip`]）。
+    pending_thumbs: super::pending_strip::PendingThumbCache,
 }
 
 /// One message image intersecting a native chat viewport.
@@ -141,6 +144,7 @@ impl ChatUi {
             viewer_generation: Arc::new(AtomicU64::new(0)),
             viewer: Mutex::new(ViewerState::default()),
             inline_visible: Mutex::new(std::collections::HashMap::new()),
+            pending_thumbs: super::pending_strip::PendingThumbCache::new(),
         }
     }
 
@@ -1082,6 +1086,46 @@ impl ChatUi {
             self.schedule_refresh();
         }
         removed
+    }
+
+    /// 取一张待发送图片的缩略图（平台 `rebuild_pending` 逐条调用）。
+    ///
+    /// 只做一次 `stat` + 缓存查表；未命中时登记在途并派 `deskpet-pending-thumb`
+    /// 工作线程解码（用户粘的图可能几 MB，**绝不在 UI 主线程解码**），完成后回填
+    /// 缓存并重推一次整帧快照 —— 平台层不必轮询，下一帧自然会取到 [`PendingThumbStatus::Ready`]。
+    /// 未就绪的两种状态（Loading / Unavailable）平台层都按既有文字形态显示。
+    pub fn pending_thumb(&self, image: &ImagePlaceholder) -> PendingThumbStatus {
+        let (status, job) = self.pending_thumbs.request(&image.path);
+        if let Some(job) = job {
+            // 句柄 `job` 留给派发失败时的撤销在途位；工作线程持一份克隆（键是
+            // path + 内容指纹，克隆即同一事务）。
+            let worker_job = job.clone();
+            let spawn = std::thread::Builder::new()
+                .name("deskpet-pending-thumb".into())
+                .spawn(move || {
+                    let ui = chat_ui();
+                    let decoded = pending_strip::decode_thumbnail(&worker_job);
+                    if let Err(error) = &decoded {
+                        // 失败留痕（统一日志出口），并记住该键：同内容不反复重解。
+                        rust_warn!("待发送缩略图解码失败 {}: {error}", worker_job.path());
+                    }
+                    ui.pending_thumbs.complete(&worker_job, decoded.ok());
+                    ui.refresh_visible_views();
+                });
+            if let Err(error) = spawn {
+                // 线程建不起来：撤销在途位（下次重建重试），如实留痕不静默。
+                rust_warn!("待发送缩略图线程创建失败：{error}");
+                self.pending_thumbs.abandon(&job);
+            }
+        }
+        status
+    }
+
+    /// 同步待发送条内集合（平台每次重建条时调用）：条外条目的缩略图像素立即下岗，
+    /// 缓存规模恒等于当前待发送区条目数，不随历史粘贴次数增长。
+    pub fn retain_pending_thumbs(&self, images: &[ImagePlaceholder]) {
+        let paths: Vec<String> = images.iter().map(|image| image.path.clone()).collect();
+        self.pending_thumbs.retain_paths(&paths);
     }
 
     /// 退出回滚（执行契约 Part 4.3）：对当前草稿执行**丢弃**语义 —— 粘贴入口的

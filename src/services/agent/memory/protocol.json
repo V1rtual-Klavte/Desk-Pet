@@ -113,7 +113,7 @@
     "memory_job_sources": { "request": { "jobId": { "type": "string" } }, "response": { "type": "array", "items": { "$ref": "#/definitions/MemorySource" } } },
     "memory_candidates_add": { "request": { "jobId": { "type": "string" }, "candidates": { "type": "array", "items": { "$ref": "#/definitions/MemoryCandidateDraft" } } }, "response": { "type": "integer" } },
     "memory_dreaming_commit": { "request": { "jobId": { "type": "string" }, "baseRevision": { "type": "integer" } }, "response": { "type": "integer" } },
-    "memory_dreaming_budget_reserve": { "request": { "reservationId": { "type": "string", "minLength": 1 }, "localDate": { "type": "string" }, "reservedTokens": { "type": "integer", "minimum": 0 }, "dailyLimit": { "type": "integer", "minimum": 0 } }, "response": { "type": "boolean" } },
+    "memory_dreaming_budget_reserve": { "request": { "reservationId": { "type": "string", "minLength": 1 }, "localDate": { "type": "string" }, "reservedTokens": { "type": "integer", "minimum": 0 } }, "response": { "type": "null" } },
     "memory_dreaming_budget_settle": { "request": { "reservationId": { "type": "string", "minLength": 1 }, "localDate": { "type": "string" }, "reservedTokens": { "type": "integer", "minimum": 0 }, "usedTokens": { "type": ["integer", "null"], "minimum": 0 } }, "response": { "type": "null" } },
     "memory_dreaming_budget": { "request": { "localDate": { "type": "string" } }, "response": { "type": "object", "required": ["localDate", "reservedTokens", "usedTokens"], "properties": { "localDate": { "type": "string" }, "reservedTokens": { "type": "integer" }, "usedTokens": { "type": "integer" } } } },
     "memory_export": { "request": {}, "response": { "type": "string" } },

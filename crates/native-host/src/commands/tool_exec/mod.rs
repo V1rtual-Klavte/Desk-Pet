@@ -23,6 +23,7 @@ pub use system::{system_info, SystemInfoResult};
 #[cfg(test)]
 pub(crate) use bash::{
     combine_windows, stats_of, truncate_output, BashSlot, CapturedOutput, TailWindow,
+    DEFAULT_BASH_TIMEOUT_MS,
 };
 #[cfg(test)]
 pub(crate) use fs::read_file_entries;
@@ -778,6 +779,293 @@ mod tests {
                 .get(&id)
                 .is_some_and(|slot| slot.cancel_requested && slot.child.is_none()),
             "取消没有在空槽上立案"
+        );
+    }
+
+    // ── bash 进程组回收 / stdin 关死 / 超时档位对齐（2026-10-06 批次）──
+    //
+    // 三处回收路径（超时 / 取消 / 宿主退出）共用 `kill_process_group`，各自被下面一条用例
+    // 直接驱动；探针形态统一为「后台子壳延迟 touch 文件」：命令活着 → 文件出现，
+    // 组回收生效 → 文件永不出现（只杀直接子进程的旧实现会留下这个孙进程，用例即红）。
+
+    /// 后台子壳延迟写探针 + 前台长睡：杀直接子进程会留下写探针的孙进程。
+    ///
+    /// 与 `delayed_probe` 同款跨平台收窄：Windows 无 `sleep`/`touch`，用 `ping`/`type` 同义形态。
+    fn descendant_probe(seconds: u32, file: &str) -> String {
+        if cfg!(windows) {
+            format!(
+                "start /b cmd /C \"ping -n {} 127.0.0.1 > nul & type nul > {file}\" & ping -n 31 127.0.0.1 > nul",
+                seconds + 1
+            )
+        } else {
+            format!("(sleep {seconds}; touch {file}) & sleep 30")
+        }
+    }
+
+    /// 探针形态的正对照：同一条命令不加任何终止时必须跑完并留下探针。
+    /// 缺了它，「文件不存在」可能只是因为命令/路径根本走不通，而不是因为回收生效。
+    #[test]
+    fn bash_descendant_probe_control_writes_sentinel() {
+        let dir = probe_dir("descendant-control");
+        let pool = BashPool::default();
+        let control = if cfg!(windows) {
+            "start /b cmd /C \"ping -n 2 127.0.0.1 > nul & type nul > control.sentinel\" & ping -n 3 127.0.0.1 > nul"
+        } else {
+            "(sleep 1; touch control.sentinel) & sleep 2"
+        };
+        let result = run_bash(
+            pool.clone(),
+            control.into(),
+            Some(dir.to_string_lossy().to_string()),
+            Some("descendant-control".into()),
+            None,
+            None,
+            None,
+            None,
+        );
+        assert!(
+            result.is_ok(),
+            "正对照命令没有跑通: {:?}",
+            result.as_ref().err()
+        );
+        assert!(
+            dir.join("control.sentinel").exists(),
+            "正对照没有留下探针，后续「探针不存在」的断言会退化成空断言"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 超时回收必须杀整组：直接子进程（sh）与后台孙进程一起结束。
+    /// 只 `Child::kill` 主进程的旧实现会留下孙进程 —— 它对应用户实测的孤儿 osascript 弹窗。
+    #[test]
+    fn bash_timeout_kills_descendants() {
+        let dir = probe_dir("timeout-descendants");
+        let pool = BashPool::default();
+        let result = run_bash(
+            pool.clone(),
+            descendant_probe(1, "sentinel"),
+            Some(dir.to_string_lossy().to_string()),
+            Some("timeout-descendants".into()),
+            Some(300),
+            None,
+            None,
+            None,
+        );
+        match result {
+            Err(AppError::Timeout) => {}
+            Err(other) => panic!("超时应返回 Timeout，实际 {other:?}"),
+            Ok(_) => panic!("超时不应正常返回"),
+        }
+        assert!(slots(&pool).is_empty(), "超时返回在池里留下了残条");
+        // 宽限窗口：探针排在 1s 之后。孙进程真被回收则文件永不出现；
+        // 只杀了直接子进程的话，这里就会看到它。
+        std::thread::sleep(Duration::from_millis(1500));
+        assert!(
+            !dir.join("sentinel").exists(),
+            "超时后孙进程仍在运行：探针文件出现了（进程组回收未生效）"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 取消在跑的命令同样按组回收（与超时共用 kill_process_group，但触发路径独立）。
+    #[test]
+    fn bash_cancel_kills_descendants() {
+        let dir = probe_dir("cancel-descendants");
+        let pool = BashPool::default();
+        let id = "cancel-descendants";
+        let (tx, rx) = std::sync::mpsc::channel();
+        let handle = {
+            let pool = pool.clone();
+            let dir_string = dir.to_string_lossy().to_string();
+            let id_string = id.to_string();
+            std::thread::spawn(move || {
+                let result = run_bash(
+                    pool,
+                    descendant_probe(1, "sentinel"),
+                    Some(dir_string),
+                    Some(id_string),
+                    Some(600_000),
+                    None,
+                    None,
+                    None,
+                );
+                let _ = tx.send(());
+                result
+            })
+        };
+
+        // 等子进程真的 spawn（槽位拿到句柄）再取消 —— 与 spawn 前立案那条用例互补。
+        let deadline = Instant::now() + Duration::from_secs(10);
+        loop {
+            if slots(&pool).get(id).is_some_and(|slot| slot.child.is_some()) {
+                break;
+            }
+            assert!(Instant::now() < deadline, "等待 bash 子进程 spawn 超时");
+            std::thread::sleep(Duration::from_millis(25));
+        }
+        assert!(cancel_in_pool(&pool, id).unwrap(), "取消应命中在跑的槽位");
+        // 取消没生效的话命令会跑满 10 分钟自然时长；用窗口把失败拦成「红」而不是挂死。
+        rx.recv_timeout(Duration::from_secs(10))
+            .expect("取消未生效：命令没有在 10s 窗口内结束");
+        let result = handle.join().expect("run_bash 线程不应 panic");
+        // 被组杀的命令以信号收场（`status.code()` 为 None → -1），正常结算而非 panic。
+        assert!(
+            result.is_ok(),
+            "取消后 run_bash 应正常结算: {:?}",
+            result.as_ref().err()
+        );
+        std::thread::sleep(Duration::from_millis(1500));
+        assert!(
+            !dir.join("sentinel").exists(),
+            "取消后孙进程仍在运行：探针文件出现了（进程组回收未生效）"
+        );
+        assert!(slots(&pool).is_empty(), "取消收尾后池里不该有条目");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 宿主退出回收（`kill_all` → `kill_slot_child`）同样按组回收。
+    #[test]
+    fn bash_kill_all_kills_descendants() {
+        let dir = probe_dir("kill-all-descendants");
+        let pool = BashPool::default();
+        let id = "kill-all-descendants";
+        let (tx, rx) = std::sync::mpsc::channel();
+        let handle = {
+            let pool = pool.clone();
+            let dir_string = dir.to_string_lossy().to_string();
+            let id_string = id.to_string();
+            std::thread::spawn(move || {
+                let result = run_bash(
+                    pool,
+                    descendant_probe(1, "sentinel"),
+                    Some(dir_string),
+                    Some(id_string),
+                    Some(600_000),
+                    None,
+                    None,
+                    None,
+                );
+                let _ = tx.send(());
+                result
+            })
+        };
+
+        let deadline = Instant::now() + Duration::from_secs(10);
+        loop {
+            if slots(&pool).get(id).is_some_and(|slot| slot.child.is_some()) {
+                break;
+            }
+            assert!(Instant::now() < deadline, "等待 bash 子进程 spawn 超时");
+            std::thread::sleep(Duration::from_millis(25));
+        }
+        pool.kill_all();
+        rx.recv_timeout(Duration::from_secs(10))
+            .expect("kill_all 未生效：命令没有在 10s 窗口内结束");
+        let result = handle.join().expect("run_bash 线程不应 panic");
+        assert!(
+            result.is_ok(),
+            "回收后 run_bash 应正常结算: {:?}",
+            result.as_ref().err()
+        );
+        std::thread::sleep(Duration::from_millis(1500));
+        assert!(
+            !dir.join("sentinel").exists(),
+            "宿主退出回收后孙进程仍在运行：探针文件出现了（进程组回收未生效）"
+        );
+        assert!(slots(&pool).is_empty(), "回收后池里不该有条目");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 命令自成进程组（组长 = 自身 pid）：这是 killpg 的前提，也保证组杀**不会打到宿主/测试
+    /// 进程自己所在的组**（进程组不对，killpg 就是自杀）。`process_group(0)` 被删即红。
+    #[cfg(unix)]
+    #[test]
+    fn bash_spawn_creates_own_process_group() {
+        let dir = probe_dir("process-group");
+        let pool = BashPool::default();
+        let result = run_bash(
+            pool.clone(),
+            "ps -o pgid= -p $$".into(),
+            Some(dir.to_string_lossy().to_string()),
+            Some("pgid-probe".into()),
+            None,
+            None,
+            None,
+            None,
+        )
+        .expect("pgid 探针应正常结束");
+        let child_pgid: i64 = result
+            .output
+            .trim()
+            .parse()
+            .unwrap_or_else(|_| panic!("ps 输出应为进程组号: {:?}", result.output));
+        // SAFETY: getpgid 只传本进程 pid 与常量，不涉及内存访问。
+        let own_pgid = unsafe { libc::getpgid(0) } as i64;
+        assert!(child_pgid > 0, "子进程组号必须为正: {child_pgid}");
+        assert_ne!(
+            child_pgid, own_pgid,
+            "命令没有自成进程组：killpg 会打到宿主/测试进程所在的组"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// stdin 关死（`Stdio::null()`）：读 stdin 的命令立即 EOF 失败而不是挂住。
+    /// 回归形态（不关死）：dev 模式继承宿主 stdin，本机跑测试时命令会阻塞到超时。
+    #[test]
+    fn bash_command_stdin_is_closed() {
+        let dir = probe_dir("stdin-null");
+        let pool = BashPool::default();
+        let command = if cfg!(windows) {
+            "findstr . & echo stdin-probe-done"
+        } else {
+            // read 在 EOF 上返回 1；-t 0 为假（不是 tty）。两个标记都要求 stdin 被关死。
+            "read line; echo read_exit=$?; test -t 0; echo tty=$?"
+        };
+        let result = run_bash(
+            pool.clone(),
+            command.into(),
+            Some(dir.to_string_lossy().to_string()),
+            Some("stdin-probe".into()),
+            // 熔断：若 stdin 未关死且继承了交互终端，命令会挂住，用 5s 把它变成可判定的失败。
+            Some(5_000),
+            None,
+            None,
+            None,
+        );
+        match result {
+            Ok(result) => {
+                if cfg!(windows) {
+                    assert!(
+                        result.output.contains("stdin-probe-done"),
+                        "stdin 探针没有走完（可能挂在读 stdin 上）: {}",
+                        result.output
+                    );
+                } else {
+                    assert!(
+                        result.output.contains("read_exit=1"),
+                        "read 没有在 stdin 上立即读到 EOF（stdin 未关死）: {}",
+                        result.output
+                    );
+                    assert!(
+                        result.output.contains("tty=1"),
+                        "stdin 仍是交互终端（stdin 未关死）: {}",
+                        result.output
+                    );
+                }
+            }
+            Err(other) => panic!("读 stdin 的命令应被 EOF 结束，实际 {other:?}"),
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Rust 兜底与 TS 侧 bash 档位（tool/local/bash-timeout.ts 的 BASH_TOOL_TIMEOUT_MS）
+    /// **必须同值**：两侧一旦不同，就复现「策略 5 分钟被 Rust 隐藏天花板掐死」的旧故障。
+    /// 跨语言无法在测试里直接比对，钉住本侧字面值供对账（TS 侧由 L2/L3 用例钉）。
+    #[test]
+    fn default_bash_timeout_matches_tool_band() {
+        assert_eq!(
+            DEFAULT_BASH_TIMEOUT_MS, 300_000,
+            "Rust 兜底与 TS 的 bash 档位不同值（TS 侧见 src/services/tool/local/bash-timeout.ts）"
         );
     }
 }

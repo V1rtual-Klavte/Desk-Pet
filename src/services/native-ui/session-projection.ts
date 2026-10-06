@@ -226,10 +226,13 @@ export interface ProjectedUsageEntryView {
  * 生效值（覆盖 > 全局默认）；两组分开发，宿主据此区分「默认」与「覆盖」的标记。
  */
 export interface ProjectedDebugView {
-  lastContextUsage: number
+  /**
+   * 上下文利用率（Node 已取整；`null` = 未知 —— 本进程没有过对话请求、也没有可从
+   * 会话快照恢复的真实读数，宿主显示「—」而不是 0%）。重启恢复见
+   * `debug.ts::restoreLastRequestStats`。
+   */
+  lastContextUsage: number | null
   lastToolNames: string[]
-  registeredToolCount: number
-  registeredMcpCount: number
   registeredTools: { name: string; source: string }[]
   sessionThinkingEffort: string | null
   thinkingEffortEffective: string
@@ -380,8 +383,6 @@ function collectDebug(): ProjectedDebugView {
   return {
     lastContextUsage: debug.lastContextUsage,
     lastToolNames: [...debug.lastToolNames],
-    registeredToolCount: debug.registeredToolCount,
-    registeredMcpCount: debug.registeredMcpCount,
     registeredTools: debug.registeredTools.map((tool) => ({ name: tool.name, source: tool.source })),
     sessionThinkingEffort: getSessionThinkingEffortOverride(),
     thinkingEffortEffective: getEffectiveThinkingEffort(),

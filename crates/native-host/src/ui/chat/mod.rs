@@ -24,6 +24,8 @@
 //! - [`slash`]：slash 候选匹配（注册表来自 Node 投影，规则镜像 `registry.ts::search`）；
 //! - [`viewer`]：图片查看器 owner/generation（`images::preview::PreviewManager`）；
 //! - `InlinePreviewManager`：原生滚动视口的可见图片 owner 集合；离开视口、隐藏或关闭即释放帧；
+//! - [`pending_strip`]：待发送条的两块共享件 —— 缩略图缓存（工作线程解码 + 内容指纹
+//!   缓存键，未就绪先按文字形态显示）与 chip 宽度/横向滚动几何（超宽时每个 chip 可滚到）；
 //! - [`ui`]：进程级单例与主线程刷新调度；平台层（`ui/platform/*_chat.rs`）从这里取
 //!   快照、把用户动作送回来。
 //!
@@ -36,6 +38,7 @@ pub mod intents;
 pub mod model;
 pub mod panels;
 pub mod paste;
+pub mod pending_strip;
 pub mod placeholders;
 pub mod projection;
 pub mod richtext;
@@ -65,6 +68,7 @@ pub use panels::{
     PanelAction, PanelButton, PanelKind, PanelLineStyle, PanelOutcome, PanelRow, PanelView,
     UnknownStepResolution,
 };
+pub use pending_strip::PendingThumbStatus;
 pub use placeholders::{pending_label, placeholder_label, ImagePlaceholder};
 pub use projection::{
     ProjectedHistorySession, ProjectedQueuedItem, ProjectedQueuedKind, ProjectedRecoveredPlan,
@@ -235,6 +239,21 @@ pub fn pending_image_paths() -> Vec<String> {
 /// 撤选一张待发送图片（待发送条目的点击语义）。
 pub fn remove_pending_image(path: &str) {
     chat_ui().remove_pending_image(path);
+}
+
+/// 平台层取一张待发送图片的缩略图（`rebuild_pending` 逐条调用）。
+///
+/// 命中即返回像素；未命中会在 `deskpet-pending-thumb` 工作线程解码并在完成后
+/// 自动重推快照 —— 平台层不必轮询。未就绪（Loading / Unavailable）时平台层按
+/// 既有文字形态显示（不显示半个图），就绪后随下一帧贴上。
+pub fn pending_thumb(image: &ImagePlaceholder) -> PendingThumbStatus {
+    chat_ui().pending_thumb(image)
+}
+
+/// 平台层在每次重建待发送条时同步条内集合（缩略图缓存的回收口径：
+/// 撤选 / 发送 / 切会话后，条外条目的像素立即下岗）。
+pub fn retain_pending_thumbs(images: &[ImagePlaceholder]) {
+    chat_ui().retain_pending_thumbs(images);
 }
 
 // ==========================================

@@ -78,8 +78,26 @@
 // 现状补注：该尾行是回合级视图独有输入，摘要素材按持久条目重建、不带它——「两路同 level 逐字
 // 相同」因此限定为除该可选尾行外；mm-19 同口径同步一句。其余点不在改动面内、实现点仍在，
 // 未修订；本轮只做描述与来源一致性核对（非逐行行为审计），sourceHash 按当前源码复算。
+// 2026-10-06 dreaming 日 token 闸撤除批次（analyze→generate）：sourceFiles 行为面变化 ——
+// src/services/agent/memory/dreaming.ts（空闲调度器不再查 token 账做门禁；批次不再因预占失败
+// 中止；token 预留/结算照记）、ipc.ts 与 protocol.{json,ts}（reserve 改纯记账：去 dailyLimit 参数、
+// 响应 boolean → null；生成物 memory/protocol.rs 同批更新）、crates/native-host/src/memory/
+// {store.rs,commands.rs}（预留一律接受并照记；档位表 tiers.dreaming 删除 dailyTokens——日上限
+// 不再是门禁，也不留观测阈值）、host/dispatch.rs（分派臂同步）。mm-44 按新口径改写（日 token
+// 上限撤除、idleSeconds / minIntervalMinutes 节奏门禁不变、token 账照记）；mm-43 的实现点仍在、
+// 未修订；其余点不在改动面内。sourceHash 按当前源码复算。
+// 2026-10-06 计划提议工具批次（本批刷新）：sourceFiles 变化 —— src/services/context/builder.ts
+// （工具协议块新增一句中性计划提议指引：只在工具面含 propose_plan 时注入「先调用 propose_plan
+// 请求确认、不要用 osascript/GUI 弹窗等待用户」；块的注入条件与预算口径未变）。mm-11 的
+// systemPromptHash「随静态块内容变化」口径照常成立；其余点不在改动面内，逐点核对实现点仍在、
+// 覆盖描述与当前实现一致，未修订覆盖点。本批刷新同时包含工作树中其它并发改动的源文件
+// （非逐行行为审计），sourceHash 按当前源码复算。
 import type { ModuleContract } from "../host/types"
 
+// 2026-10-06 实测反馈收口（本批刷新）：sourceFiles 变化仅限 context/builder.ts 的计划提议指引
+// 补一句「单个动作需要确认时直接执行（危险动作由确认面板向用户确认），不要用文字先征求同意」——
+// 注入条件（工具面含提议工具）与注入通道未变，属同一行为的文案增补；各覆盖点逐条复核与当前实现
+// 一致，未修订覆盖点，按当前源码刷新 sourceHash。
 export const memoryContract: ModuleContract = {
   module: "memory",
   sourceFiles: [
@@ -120,7 +138,7 @@ export const memoryContract: ModuleContract = {
     "src/services/context/tool-output.ts",
     "src/services/debug.ts",
   ],
-  sourceHash: "3bd6df50a47fb433911e8fb4629ddb9dcba7cc1d9f6de6bda4e7155ab197d261",
+  sourceHash: "63cff837e22006730c0bc37841b2fb9c12acb380f1df80e69032171428aaa69a",
   coverage: [
     { id: "mm-01", feature: "记忆来源准入", description: "只有 origin=user 且 taint=trusted_user 且 eligibleForMemory=true 的已提交条目能成为候选：助手台词、工具结果、压缩摘要、主动搭话、缺来源标记与 custom 控制条目一律出局；投递时刻冻结的 cardId 随来源落盘", why: "「谁说的」是记忆的唯一准入判据：把这些来源放进去，模型的一次措辞就会被当成用户长期事实", layer: "integration", depth: "deep", scenarios: ["memory-source-admission"] },
     { id: "mm-02", feature: "重排结果校验", description: "重排只接受候选白名单内的 id：未知 id、重复 id、非字符串、坏 JSON、散文与对象外形错误一律判无效并回退本地顺序，对象形态取 ids 字段；空数组是合法答案（这次不投影动态记忆），合法非空子集保序通过、不补回未选项", why: "模型只能决定「用哪几条」，不能决定「还有哪些」——白名单外的 id 会让不存在的记忆进入请求", layer: "unit", depth: "deep", scenarios: ["memory-rerank-fallback"] },
@@ -160,7 +178,7 @@ export const memoryContract: ModuleContract = {
     { id: "mm-41", feature: "策略性拒绝的留痕", description: "策略性 decline（`empty_material` / `retained_tool` / `gate_fits`）在 manual / overflow 触发时落 `deskpet.compaction_declined` 条目，带结构化 `decline`（kind、trigger、sessionId、关键数字如 messagesToSummarize / retainedMessages / tokensBefore / keepRecentTokens），并在统一日志里留一条可读原因；`threshold` 只在日志留痕、不落条目（它是每个检查点都会重试的内部优化，落盘会逐回合累积噪音）。用户可见文案不变：`declined` 仍映射 Card 的 `compactDeclined`，**不并进 `failed`**（条目 `error` 字段必须为空），也不并进 `nothing`", why: "拒绝不留痕时，用户与开发都无法回答「为什么没压」——实测一次 44 条会话的手动压缩被判 declined，会话与日志同时零痕迹，只能靠回放 journal 复算才查出是「素材全在保留窗口内」（6,686 token < 20,000）", layer: "integration", depth: "shallow", scenarios: ["memory-compaction-decline-audit"] },
     { id: "mm-42", feature: "压缩失败诊断的可判定性", description: "`describeCompactionFailure` 把摘要素材规划的两条 fatal（`over_cap` 片数超上限、`oversized_unit` 单元超硬限）描述成**可判定的错误码 + 全部数字**（需要片数/上限、单元成本/上限），普通错误与预算错误**不得冒充** overflow 形态", why: "「压不动」和「没得压」是两条完全不同的处置路径：前者要调上限或改分段，后者什么都不用做。描述层含糊会让用户和诊断都分不清该走哪条", layer: "unit", depth: "shallow", scenarios: ["memory-compaction-overflow-diagnostic"] },
     { id: "mm-43", feature: "记忆整理的前置查询（无新来源不开作业）", description: "dreaming 在创建 Review 作业前先查「水位之后还有没有待处理来源」（`memory_pending_source_count`，与 `memory_job_sources` 共用同一段水位判定 SQL）：没有 → 不创建 job、不动预算/租约，以 empty 如实回报（手动入口走同一条前置查询——Review 的输入只有这些来源，空跑与跳过对用户是同一种结果，文案如实说明）；有 → 照常创建 Review 作业；恢复既有作业（resumeJobId）不经前置查询，job 自带游标、水位为空也要能继续", why: "空闲命中即开作业会在没有任何新来源时白耗一次 job 创建与租约；而「水位之后有无来源」的判定必须与批内取数同源——另建一套水位口径会让两处静默漂移，跳过判断就会漏掉或虚报来源", layer: "integration", depth: "shallow", scenarios: ["dreaming-pending-gate-skip", "dreaming-pending-gate-proceed", "dreaming-pending-gate-manual", "dreaming-pending-gate-resume"] },
-    { id: "mm-44", feature: "记忆整理的档位门禁与数值消费", description: "空闲调度器按 ai.memory.dreaming.tier 档位表取值：off = 空闲调度器早退（不查预算、不自动开整理作业；手动入口 runDreamingSweep 不受档位影响，仍受同一本持久预算账约束）；三档决定空闲阈值（3600 / 1800 / 600 秒——差 1 秒不开、达标才开）、最小间隔（高档 30 分钟档位值：1801 秒后可再跑，旧 60 分钟常量会挡住）与每日 token 预算（低档 24000：已用 30000 时不开，旧 72000 常量会开）；数值唯一来源是 proactive tiers 档位表，不是旧 flat 常量", why: "档位若不落到空闲/间隔/预算三个消费点，配置选择形同虚设（off 仍自动跑、低档按旧预算放行、高档被旧间隔挡住）；旧常量残留会让用户选的档位无声失效", layer: "integration", depth: "shallow", scenarios: ["dreaming-tier-off", "dreaming-tier-medium-idle", "dreaming-tier-low-values", "dreaming-tier-high-values"] },
+    { id: "mm-44", feature: "记忆整理的档位门禁与数值消费", description: "空闲调度器按 ai.memory.dreaming.tier 档位表取值：off = 空闲调度器早退（不查 token 账、不自动开整理作业；手动入口 runDreamingSweep 不受档位影响）；三档决定空闲阈值（3600 / 1800 / 600 秒——差 1 秒不开、达标才开）与最小间隔（高档 30 分钟档位值：1801 秒后可再跑，旧 60 分钟常量会挡住）。日 token 上限已按 2026-10-06 用户裁决撤除：当日 token 账烧过旧上限（低档 24000，已用 30000）后作业仍照开，调度层不再读 token 账，批次也不再被 token 账中止；token 的预留/结算照记（账照记、不作准入），档位表中的 dailyTokens 字段整体删除。数值唯一来源是 proactive tiers 档位表，不是旧 flat 常量", why: "档位若不落到空闲/间隔两个消费点，配置选择形同虚设（off 仍自动跑、高档被旧间隔挡住）；而日 token 上限是会与功能相互踩的资源账（烧满即表现为整理莫名不工作），不再是准入条件，档位表若残留该字段会读起来像门禁", layer: "integration", depth: "shallow", scenarios: ["dreaming-tier-off", "dreaming-tier-medium-idle", "dreaming-tier-low-values", "dreaming-tier-high-values"] },
     { id: "mm-45", feature: "估算偏差对账用真实输入量", description: "对账的 actual 取 `totalInputTokens(usage)` = `usage.input` + (`cacheRead` ?? 0) + (`cacheWrite` ?? 0)：`usage.input` 只是未命中缓存的一截，缓存命中记在 `cacheRead`、写入记在 `cacheWrite`，三者相加才是这次请求实际发出去的输入规模 —— 也正是 `estimateRequestTokens` 估算的对象。真机夹具（工具循环回合的一次 provider 回执）逐项钉死：input 387 / cacheRead 14208 / 估算 16679 ⇒ 单比 input ≈43×（曾经把偏差算大几十倍、越过 ESTIMATE_DRIFT_WARN_RATIO 刷告警），相加 14595 ⇒ 比值 ≈1.14×，落在阈值之下；cacheWrite 同样计入、缺省按 0。同一取数点同时服务落盘快照的两个字段：`deskpet.prompt_snapshot` 的 `actualInputTokens` 与 `tokenDrift.actual` 与之同源（主回合经 runtime.ts、一次性摘要经 model-gateway.ts 各自调用，口径一致）", why: "只比 usage.input 会在缓存生效时把偏差放大几十倍：告警刷屏成噪音、落盘对账记录失真，真实的小偏差反而被淹没；把口径收在 context/budget.ts 的唯一纯函数里，两条调用路径不会再分叉出第二份算法", layer: "unit", depth: "shallow", scenarios: ["memory-estimate-drift-total-input"] },
   ],
   // W0–W7 把本契约的场景迁出 L4 后按 L4 侧当前值重标定：门槛=当前 rules 声明值，

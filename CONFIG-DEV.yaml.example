@@ -36,7 +36,8 @@ ai:
     # agent 子代理工具轮上限（无人值守子运行）；主聊天回合已无计数上限，走循环病理检测
     subAgentRounds: 5
     toolTimeoutMs: 30000
-    turnTimeoutMs: 120000
+    # 主回合/恢复的墙钟；必须 ≥ bash 档位（5 分钟）+ 一次模型往返，否则长命令被回合整体 abort。
+    turnTimeoutMs: 600000
     dedupWindowMs: 30000
     maxVisibleMessages: 200
     # 同时执行的只读（shared_read）工具数上限，范围 1–8；每个 run 开始前下发给许可所有者
@@ -57,7 +58,8 @@ ai:
     complexityThreshold: 3
     complexityEval: keyword
     maxSteps: 8
-    stepTimeoutMs: 90000
+    # 单个计划步骤的墙钟；计划由用户在场批准，按 bash 档位（5 分钟）对齐，避免 90s 截断长命令。
+    stepTimeoutMs: 300000
     stepMaxRounds: 5
     thinkingEffort: medium
     stepThinkingEffort: low

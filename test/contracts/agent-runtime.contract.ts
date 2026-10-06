@@ -67,8 +67,37 @@
 // 一致性核对（非逐行行为审计）：本批改动面不落在既有描述的行为面内，实现点仍在，未修订覆盖点；
 // L4 侧本批只改三个 memory 场景的载荷与注释（meta 未动），既有 L4 引用不失效；rules 不动
 // （新增四点均不入 L4 计数）。sourceHash 按当前源码复算。
+// 2026-10-06 证据缺口补漏（本批登记）：ar-29 增补 scenario `tool-loop-subagent-guard`
+// （test/integration/agent-runtime/工具循环治理.test.ts：runPiSubAgent 在 maxRounds=10 下同参
+// 连续第 5 次于调用门硬终止 —— 前 4 次执行、第 5 次不执行且不再发请求；子运行的请求投影关闭，
+// 软提示不附进请求视图，硬终止两条路径照常生效）。ar-30 增补 `ai-lock-resume-pairing` /
+// `ai-lock-resume-error-pairing` / `ai-lock-active-pairing`（test/integration/agent-runtime/
+// 回合入口准入配对.test.ts：resumePausedInputs 与 sendActiveMessage 两入口在受理→交回之间
+// 锁恒为真、交回后归假，含受理之前的提前返回（不触碰锁）、受理之后的提前返回（owner 过期）
+// 与错误结算；dispatchMessage 一侧已由 ai-lock-admission-survives-slot-reset 钉住）。
+// sourceFiles 未增删，sourceHash 按当前源码复算（与上一条一致）。
+// 2026-10-06 详情面板上下文占用重启恢复批次（analyze→generate，验收环节）：sourceFiles 变化 —
+// debug.ts（lastContextUsage 由 number 改 number | null（null = 未知，面板显示「—」，不显示 0%）；
+// 删两段死字段与消费者 registeredToolCount / registeredMcpCount；新增 restoreLastRequestStats ——
+// 从活跃会话的 provider_usage 快照恢复「最近一次对话请求」的真实输入量，已有本进程读数时不覆盖，
+// 占比与实时共用 contextUsagePercent 单一计算点，由 initDebug 接线）、
+// context/builder.ts（计划提议指引按工具面注入 —— 覆盖登记在 tool-execution 的 te-35）、
+// plan-confirmation.ts（PLAN_CONFIRM_TIMEOUT_MS 定义点移居零依赖叶子 plan/limits.ts 并原样转出；
+// NON_CONFIRM_NOTICE 导出、新增 planConfirmDeclineText 供工具结果与系统消息共用同一份「确认未成立」
+// 文案 —— 工具侧断言归 tool-execution 的 te-32 / planner 的 pl-13）。新增 sourceFile
+// engine/harness/request-stats.ts（恢复读取器，语义归属即在列）。新增 ar-31（integration）登记
+// 详情面板批次的三条 L3 caseId（context-usage-restore / context-usage-restore-picks-last-formal /
+// context-usage-unknown-stays-null，此前无覆盖点引用，即快层校验的 integration ORPHAN）。
+// 此前批次注释里「上次请求」一组（lastPromptTokens / lastContextUsage / lastToolNames）的
+// 描述据此补：lastContextUsage 现已可重启恢复、可为 null（未知）。ar-01..ar-30 逐点核对实现
+// 点仍在、覆盖描述与当前实现一致（描述/来源核对，非逐行行为审计）；rules 不动（ar-31 是 L3，
+// 不入 L4 计数）。sourceHash 按当前源码复算。
 import type { ModuleContract } from "../host/types"
 
+// 2026-10-06 实测反馈收口（本批刷新）：sourceFiles 变化仅限 context/builder.ts 的计划提议指引
+// 补一句「单个动作需要确认时直接执行（危险动作由确认面板向用户确认），不要用文字先征求同意」——
+// 注入条件（工具面含提议工具）与注入通道未变，属同一行为的文案增补；各覆盖点逐条复核与当前实现
+// 一致，未修订覆盖点，按当前源码刷新 sourceHash。
 export const agentRuntimeContract: ModuleContract = {
   module: "agent-runtime",
   sourceFiles: [
@@ -82,6 +111,9 @@ export const agentRuntimeContract: ModuleContract = {
     "src/services/engine/harness/runtime.ts",
     "src/services/engine/harness/stream-text.ts",
     "src/services/engine/harness/tool-loop-guard.ts",
+    // 2026-10-06 面板上下文占用重启恢复批次补入：「最近一次对话请求」输入量的恢复读取器
+    // （provider_usage 快照的选取纪律与排除规则的唯一定义点）；ar-31 的来源。
+    "src/services/engine/harness/request-stats.ts",
     "src/services/engine/plan-confirmation.ts",
     "src/services/engine/preprocessor.ts",
     "src/services/engine/runtime/input-identity.ts",
@@ -103,7 +135,7 @@ export const agentRuntimeContract: ModuleContract = {
     "src/services/session/repo.ts",
     "src/services/session/store.ts",
   ],
-  sourceHash: "1055c2ef2eb3497e75995ba23aa7ef43439a7ae1f7f949d9abe0fc3fe8091341",
+  sourceHash: "bb26cb78afd281db3fe7e31fbc2e95cacfeeee0957a23d12b8943f33a8e73745",
   coverage: [
     {
       id: "ar-01",
@@ -361,20 +393,29 @@ export const agentRuntimeContract: ModuleContract = {
     {
       id: "ar-29",
       feature: "病理检测的接线（软提示与两条硬终止路径）",
-      description: "createTurnSpec 每回合新建 guard 与 toolLoopNotices（回合级内存态、不落盘；子运行也吃这套检测）：软档（同参或失败连击第 3 次起）产出的中性提示（非 Card 台词）经投影出口与地址标注同一通道附到该条工具结果正文，跨请求持续存在（后续每一笔请求里的同一结果都带），多 text 块结果整条只拼在最后一个 text 块一次（不逐块重复），阈值之前的结果不带提示；硬档两条路都置同一枚 stoppedByToolGovernance 停止标志，主回合由 settleMainTurn 早退到 Card 的 toolLoopMaxRounds 兜底收尾（子运行收尾走自身出口）：同参连击在调用门 block + terminate（该次调用不执行、历史记 blocked、不再发下一次请求），失败连击在结果侧经 after_tool 的 terminate 立即终止（失败工具照常走到 after_tool；批内全部调用都带该标记时上游在当前批次后结束运行，混批时标志已记下、模型再调工具由下一次调用门拦下，第 5 次失败后不再发请求、历史不出现调用门的 blocked 记录）。每回合重置由新建实例承载：同一会话两个回合各自从零累计，第二回合不继承第一回合的连击",
+      description: "createTurnSpec 每回合新建 guard 与 toolLoopNotices（回合级内存态、不落盘；子运行也吃这套检测）：软档（同参或失败连击第 3 次起）产出的中性提示（非 Card 台词）经投影出口与地址标注同一通道附到该条工具结果正文，跨请求持续存在（后续每一笔请求里的同一结果都带），多 text 块结果整条只拼在最后一个 text 块一次（不逐块重复），阈值之前的结果不带提示；硬档两条路都置同一枚 stoppedByToolGovernance 停止标志，主回合由 settleMainTurn 早退到 Card 的 toolLoopMaxRounds 兜底收尾（子运行收尾走自身出口）：同参连击在调用门 block + terminate（该次调用不执行、历史记 blocked、不再发下一次请求），失败连击在结果侧经 after_tool 的 terminate 立即终止（失败工具照常走到 after_tool；批内全部调用都带该标记时上游在当前批次后结束运行，混批时标志已记下、模型再调工具由下一次调用门拦下，第 5 次失败后不再发请求、历史不出现调用门的 blocked 记录）。每回合重置由新建实例承载：同一会话两个回合各自从零累计，第二回合不继承第一回合的连击。子运行（runPiSubAgent）的请求投影关闭（projectToolResults=false）：软提示不在请求视图里附着（无处可附），但判据与硬终止照常生效 —— maxRounds 封顶够不着时，同参连续第 5 次在调用门被 block + terminate（先于子运行轮数封顶收口）",
       why: "判据之外，提示与终止都由接线承载：提示挂错出口模型看不到、终止漏挂则该停不停（fail-open）、每回合重置若丢则正常会话会被跨回合累计冤枉硬终止；after_tool 的 terminate 是「模型不再调工具时也能收手」的唯一出口",
       layer: "integration",
       depth: "deep",
-      scenarios: ["tool-loop-repeat-hard-termination", "tool-loop-failure-hard-termination", "tool-loop-soft-notice", "tool-loop-notice-multi-block-once", "tool-loop-per-turn-reset"],
+      scenarios: ["tool-loop-repeat-hard-termination", "tool-loop-failure-hard-termination", "tool-loop-soft-notice", "tool-loop-notice-multi-block-once", "tool-loop-per-turn-reset", "tool-loop-subagent-guard"],
     },
     {
       id: "ar-30",
       feature: "AI 生成锁由回合状态推导（无定时器）",
-      description: "isAIGenerating() = HarnessSlots.isTurnActive() = 已受理未交回的回合（admit 计数 > 0）或任一运行槽在飞；没有第二个可写布尔、没有定时器 —— 旧的 ai.lock.safetyTimeoutMs 安全超时强制解锁随 src/services/cooldown.ts 整模块删除。三个回合入口（sendMessage 的 dispatchMessage、resumePausedInputs、sendActiveMessage）在 begin() 成功后、该回路首个 await 之前受理（admit 凭据），同一回路的 finally 交回（endAdmission），提前 return 都发生在受理之前。行为面（L3）：长回合在飞时恒为 true，假时钟跨过旧 30s 时限仍不放行；成功与失败（stopReason:error）回合结束后都归 false（异常路径不泄漏受理）；回合在飞时重置运行槽（reset 清空槽表、isAnyRunning 瞬时为 false）后锁仍为 true —— 受理计数独立支撑「槽已释放/重置、回合尚未交回」的窗口，回合交回后归 false",
+      description: "isAIGenerating() = HarnessSlots.isTurnActive() = 已受理未交回的回合（admit 计数 > 0）或任一运行槽在飞；没有第二个可写布尔、没有定时器 —— 旧的 ai.lock.safetyTimeoutMs 安全超时强制解锁随 src/services/cooldown.ts 整模块删除。三个回合入口（sendMessage 的 dispatchMessage、resumePausedInputs、sendActiveMessage）在 begin() 成功后、该回路首个 await 之前受理（admit 凭据），同一回路的 finally 交回（endAdmission）。行为面（L3）：长回合在飞时恒为 true，假时钟跨过旧 30s 时限仍不放行；成功与失败（stopReason:error）回合结束后都归 false（异常路径不泄漏受理）；回合在飞时重置运行槽（reset 清空槽表、isAnyRunning 瞬时为 false）后锁仍为 true —— 受理计数独立支撑「槽已释放/重置、回合尚未交回」的窗口，回合交回后归 false。另外两个入口同样被钉住：resumePausedInputs（停止后继续，真 Provider 请求被闸门扣住时锁为真；成功与失败结算都归假；无暂停项的提前返回发生在受理之前，不触碰锁）与 sendActiveMessage（主动表达，请求在飞时锁为真；提交、受理之后复核为过期的提前返回（skipped/stale）与 Provider 错误结算都经 finally 归假；不新鲜 owner 在受理之前被拒绝）",
       why: "锁是「不打搅用户」的门禁：定时器强解会打断长回合；只把槽状态当唯一判据会在「槽已释放/重置但回合尚未交回」的窗口误判空闲，让后台任务插进正在生成的回合",
       layer: "integration",
       depth: "deep",
-      scenarios: ["ai-lock-long-turn-holds", "ai-lock-error-turn-releases", "ai-lock-admission-survives-slot-reset"],
+      scenarios: ["ai-lock-long-turn-holds", "ai-lock-error-turn-releases", "ai-lock-admission-survives-slot-reset", "ai-lock-resume-pairing", "ai-lock-resume-error-pairing", "ai-lock-active-pairing"],
+    },
+    {
+      id: "ar-31",
+      feature: "详情面板上下文占用的重启恢复（从会话快照读回）",
+      description: "面板「上下文 X%」的读数跨重启不归零：`restoreLastRequestStats` 从活跃会话读回「最近一次对话请求」的真实输入量并写回 lastPromptTokens / lastContextUsage —— `readLastConversationPromptTokens` 沿会话条目倒序，只认 captureStage=provider_usage、request.purpose=turn、requestId 不以 sub-agent- 开头、agentMessages 无 active origin、actualInputTokens>0 的快照（与实时写入点的选取纪律逐条对齐）；恢复值与实时链路读数一致，且该读数确实以 provider_usage 快照落在会话文件里（测试侧独立解析 JSONL 取证）；取最后一次对话请求（不是第一条），三类同形快照都不参与 —— 主动表达回合（origin 全 active）、计划步骤子运行（requestId 前缀 sub-agent-）、一次性文本调用（purpose one_shot）；读不到真实读数（新会话 / 从未对话 / 全部未回报）时保持 null（面板显示「—」，Dim），不回落成 0。占比与实时共用 contextUsagePercent 单一计算点（分母 contextMaxTokens、读不到好值时回落配置默认）。注：用例直接调用 restoreLastRequestStats ——「引导期由 initDebug 调用」与「已有本进程读数时不覆盖（实时读数更新优先）」两条接线口径、以及宿主侧对 null 的渲染（不显示 0%）不在本点断言（渲染由 Rust 内联单测覆盖，不带契约 caseId）",
+      why: "重启后显示「上下文 0%」是把「未知」谎报成「上下文是空的」（2026-10-06 用户报告的形态）；恢复值必须与实时口径同源同值、选取纪律与实时写入点逐条对齐，否则面板会在重启前后显示两个不同的数字；读不到时必须如实未知，不能拿 0 冒充",
+      layer: "integration",
+      depth: "deep",
+      scenarios: ["context-usage-restore", "context-usage-restore-picks-last-formal", "context-usage-unknown-stays-null"],
     },
   ],
   // W0–W7 把 ar-18 / ar-22 的 memory-retry-policy-sync、runtime-compaction-suspended-settles

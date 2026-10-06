@@ -36,17 +36,24 @@ export type {
 } from "./planner"
 
 // ── Plan 确认桥接（会话键控）──
-// requestPlanConfirm/requestPlanStepDecision 只由 runtime 调用，不经 barrel；
-// 面板与测试替身按 planId 应答，并读 planConfirmState 的只读视图。
+// requestPlanConfirm/requestPlanStepDecision 只由 runtime 与同域的计划提案模块
+// （`plan/proposal.ts`）调用，不经 barrel；面板与测试替身按 planId 应答，
+// 并读 planConfirmState 的只读视图。
 export {
   abortRunningPlan, bindRunningPlan, cancelSessionPlans, clearRunningPlan,
   notifyPlanEnd, planConfirmState, resolvePlanConfirm, resolvePlanStepDecision,
-  disposePlanConfirmationReceipts,
+  disposePlanConfirmationReceipts, planConfirmDeclineText,
 } from "./plan-confirmation"
 // Plan checkpoint 单例：面板的「未知副作用步骤处置」（标记已完成 / 重跑此步）经
 // `resolveUnknownSideEffect` 走它 —— 与 runtime 的落盘/恢复同一条记录路径
 // （不另开第二份计划记录读写口）。
 export { planCheckpointStore } from "./plan/checkpoint-store"
+
+// ── 模型提议计划（propose_plan 工具的执行相位）──
+// 与自动入口（runtime 的 runPlanPhase）共用确认通道、执行器与记录存储；唯一消费者
+// 是 `tool/local-extra/plan.ts`，产物归宿是工具结果而不是主回合上下文。
+export { runProposedPlan } from "./plan/proposal"
+export type { ProposedPlanInput, ProposedPlanOutcome } from "./plan/proposal"
 
 // ── Runtime protocol vocabulary ──
 export type {

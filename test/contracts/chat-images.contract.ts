@@ -69,8 +69,11 @@
 // 注释口径：没有目录级兜底淘汰）。
 // ci-03 描述修订：取消「只保留最新 200 个」、补「私有截图不落盘、details 无 screenshotPath」；
 // ci-07 描述修订：删「200 上限兜底淘汰」，改为「残留不再自动淘汰、由用户手动删除」；
-// ci-07 上方注释补粘贴草稿回滚的 Rust 单测背书口径。ci-01..ci-07 其余点逐点核对实现点仍在、
-// 覆盖描述与当前实现一致（本轮为描述与来源核对，非逐行行为审计）；sourceHash 按当前源码复算。
+// 2026-10-06 dreaming 日 token 闸撤除批次（本批刷新）：sourceFiles 变化 ——
+// crates/native-host/src/host/dispatch.rs（memory_dreaming_budget_reserve 分派臂去 dailyLimit、
+// 响应改 null：dreaming 日 token 上限不再作门禁，预留只记账）。本契约覆盖点不在改动面内，
+// 未修订；本批刷新同时包含工作树中其它并发改动的源文件（非逐行行为审计），sourceHash 按当前
+// 源码复算。
 import type { ModuleContract } from "../host/types"
 export const chatImagesContract: ModuleContract = {
   module: "chat-images",
@@ -96,7 +99,7 @@ export const chatImagesContract: ModuleContract = {
     "crates/native-host/src/ui/chat/model.rs",
     "crates/native-host/src/ui/chat/ui.rs",
   ],
-  sourceHash: "46a34265c36bf1ad4afa4024f87e465a686832c95622872b0ea691aca68b606a",
+  sourceHash: "6ebd9dc595b02ea95cd2e11c9afdff214f482b6d57cf72d86da78d786b9c1f28",
   coverage: [{ id: "ci-01", feature: "用户图片原路径整链", description: "原生常规图片准入最多4张/15MiB，图片-only输入提交后持久JSONL只存路径；模型请求临时读取真实图像，原文件删除后展示投影仍保留路径、请求明确缺失而无图像副本", why: "文本和UI缩略图不能证明模型收到了图像，也不能证明编码未进入JSONL", layer: "e2e", depth: "deep", scenarios: ["chat-image-path-production"] },
     { id: "ci-02", feature: "视觉预算与审计投影", description: "真实用户图像参与主请求与辅助请求的统一保守预算；base64长短不冒充语言token，完整图像内容仍进入仅hash审计投影", why: "图片预算为零会使上下文与主动持久额度准入失真，图像变化也不能得到相同审计内容", layer: "unit", depth: "deep", scenarios: ["chat-image-budget-content-hash"] },
     { id: "ci-03", feature: "截图展示给用户与隐私总闸", description: "screenshot 工具只在 ai.silentAccess.frequency 非 off（低/中/高档）时可用：Rust capture_screenshot 复检同一档位（off 即 Cancelled），前端命中时返回中性说明且不触达采集/落盘；show_to_user=true 时截图先经 save_screenshot 原子落盘（数据根 screenshots/；2026-10-06 取消 200 张保留上限，落盘文件不再被淘汰，回收只有删会话连带清理与用户手动删除）再挂到本回合提交的助手条目 deskpetImagePaths，读模型重载带回、原文件删除后仍保留路径（界面按不可用呈现）；show_to_user 缺省/false 时不落盘（不调用 save_screenshot、数据根不产生文件），工具结果 details 只有 showToUser、不带 screenshotPath，不挂条目、结算不回传；工具结果对模型始终携带 PNG image 块（私有截图模型照常看得见内嵌图片）", why: "「她给你看她看到的画面」要求条目与文件同源（先文件后条目、取消不产生半条消息），且隐私档位为 off 时不能截；私有截图不该在数据根留下用户没要展示的文件", layer: "integration", depth: "deep", scenarios: ["screenshot-show-to-user-attach", "screenshot-default-private", "screenshot-gate-neutral"] },

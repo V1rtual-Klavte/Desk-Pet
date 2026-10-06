@@ -822,7 +822,9 @@ export const planConfig = {
   /** 复杂度评估方式：keyword 只用关键词（未命中直接低分，不发请求）；llm 未命中时再发一次独立请求。 */
   get complexityEval() { return overrideOr("ai.plan.complexityEval", cfg.ai?.plan?.complexityEval || "keyword") as "keyword" | "llm" },
   get maxSteps() { return overrideOr("ai.plan.maxSteps", cfg.ai?.plan?.maxSteps ?? 8); },
-  get stepTimeoutMs() { return overrideOr("ai.plan.stepTimeoutMs", cfg.ai?.plan?.stepTimeoutMs ?? 90000); },
+  /** 单个计划步骤的墙钟（`ai.plan.stepTimeoutMs`）。计划由用户在场批准，步骤里可能出现长命令：
+   *  90s 会在 bash 档位（5 分钟）之下形成隐形截断，2026-10-06 按 bash 档位对齐到 300s。 */
+  get stepTimeoutMs() { return overrideOr("ai.plan.stepTimeoutMs", cfg.ai?.plan?.stepTimeoutMs ?? 300000); },
   get stepMaxRounds() { return overrideOr("ai.plan.stepMaxRounds", cfg.ai?.plan?.stepMaxRounds ?? 5); },
   get thinkingEffort() { return overrideOr("ai.plan.thinkingEffort", cfg.ai?.plan?.thinkingEffort || "medium") as import("@/services/agent/types").ThinkingEffort; },
   get stepThinkingEffort() { return overrideOr("ai.plan.stepThinkingEffort", cfg.ai?.plan?.stepThinkingEffort || "low") as import("@/services/agent/types").ThinkingEffort; },
@@ -863,7 +865,10 @@ export const loopConfig = {
   /** agent 子代理工具轮上限（`ai.loop.subAgentRounds`）；主聊天回合不消费（无计数上限）。 */
   get subAgentRounds() { return overrideOr("ai.loop.subAgentRounds", cfg.ai?.loop?.subAgentRounds ?? 5); },
   get toolTimeoutMs() { return overrideOr("ai.loop.toolTimeoutMs", cfg.ai?.loop?.toolTimeoutMs ?? 30000); },
-  get turnTimeoutMs() { return overrideOr("ai.loop.turnTimeoutMs", cfg.ai?.loop?.turnTimeoutMs ?? 120000); },
+  /** 主回合/恢复的墙钟（`ai.loop.turnTimeoutMs`）。必须 ≥ bash 档位（5 分钟）+ 一次模型往返，
+   *  否则长命令会被回合整体 abort（原 120s 是 bash 5 分钟档失效的直接原因）。
+   *  2026-10-06 由 120s 放宽到 600s：主流主回合不设硬墙钟，这里先放宽、不删。 */
+  get turnTimeoutMs() { return overrideOr("ai.loop.turnTimeoutMs", cfg.ai?.loop?.turnTimeoutMs ?? 600000); },
   get dedupWindowMs() { return overrideOr("ai.loop.dedupWindowMs", cfg.ai?.loop?.dedupWindowMs ?? 30000); },
   get maxVisibleMessages() { return overrideOr("ai.loop.maxVisibleMessages", cfg.ai?.loop?.maxVisibleMessages ?? 200); },
   /** 同时执行的只读工具数（`ai.loop.maxParallelTools`）；每个 run 开始前下发给许可所有者。 */

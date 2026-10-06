@@ -27,6 +27,18 @@
 // up-01 逐条对照当前实现：更新命令形状（update_check / update_download_and_install /
 // app_restart）仍成立，「更新动作不进 Node 请求面」（dispatchHostRequest 对 action.checkUpdate
 // 与 update_check 均以 OTHER 拒绝）仍成立。未修订覆盖点，仅按当前源码刷新 sourceHash。
+// 2026-10-06 dreaming 日 token 闸撤除批次（本批刷新）：sourceFiles 变化 ——
+// src/services/host/types.ts（HostCommandMap 的 memory_dreaming_budget_reserve：去 dailyLimit、
+// 响应 boolean → void——dreaming 日 token 上限不再作门禁，预留只记账）。本契约覆盖点不在改动
+// 面内，未修订；本批刷新同时包含工作树中其它并发改动的源文件（非逐行行为审计），sourceHash
+// 按当前源码复算。
+// 2026-10-06 契约刷新（第二轮验收 · 本批刷新）：sourceFiles 变化 —— src/services/host/types.ts
+// 两处均不在更新路径上：bash_exec.timeoutMs 的注释补充（毫秒直传语义与 bash 档位定义点
+// tool/local/bash-timeout.ts 的关系；bash 超时档位批次）与 memory_dreaming_budget_reserve 的
+// 签名变化（去 dailyLimit、result boolean→void，见上一条批次）。up-01 逐条对照当前实现：
+// 更新命令形状（update_check / update_download_and_install / app_restart）仍成立，
+// 「更新动作不进 Node 请求面」（dispatchHostRequest 对 action.checkUpdate 与 update_check
+// 均走 default 以 OTHER 拒绝）仍成立。未修订覆盖点，仅按当前源码刷新 sourceHash。
 import type { ModuleContract } from "../host/types"
 
 export const updateContract: ModuleContract = {
@@ -37,7 +49,7 @@ export const updateContract: ModuleContract = {
     "src/services/native-ui/index.ts",
     "src/services/native-ui/host-requests.ts",
   ],
-  sourceHash: "1e5bf701869135e4dfc484e812ab817d62483da61beede66d4365b6f4a2ef082",
+  sourceHash: "8bc6069d2298d4dbd536741b956098c6dd44e5d51acf4d3c7a3e5557da6465a0",
   coverage: [
     {
       id: "up-01",

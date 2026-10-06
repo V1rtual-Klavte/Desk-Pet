@@ -1243,14 +1243,14 @@ impl MemoryStore {
         }
         tx.execute("INSERT INTO proactive_budgets(local_date,updated_at) VALUES (?1,?2) ON CONFLICT(local_date) DO NOTHING",params![date,now]).map_err(db)?;
         tx.execute("UPDATE proactive_budgets SET daily_success_limit=CASE WHEN daily_success_limit=0 THEN ?2 ELSE MIN(daily_success_limit,?2) END WHERE local_date=?1",params![date,desired_success_limit]).map_err(db)?;
-        let budget:(i64,i64,i64,i64,i64,i64,Option<i64>,i64)=tx.query_row("SELECT planning_attempts,expression_attempts,successful_messages,reserved_tokens,used_tokens,unknown_tokens,next_success_after,daily_success_limit FROM proactive_budgets WHERE local_date=?1",[&date],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?,r.get(5)?,r.get(6)?,r.get(7)?))).map_err(db)?;
+        let budget:(i64,i64,i64,Option<i64>,i64)=tx.query_row("SELECT planning_attempts,expression_attempts,successful_messages,next_success_after,daily_success_limit FROM proactive_budgets WHERE local_date=?1",[&date],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?))).map_err(db)?;
         if (kind == "planning" && budget.0 >= limits.daily_planning_attempts)
             || (kind == "expression"
-                && (budget.1 >= limits.daily_expression_attempts || budget.2 >= budget.7))
+                && (budget.1 >= limits.daily_expression_attempts || budget.2 >= budget.4))
         {
             return denied_claim(tx, "daily_limit");
         }
-        if respect_random_interval && budget.6.is_some_and(|until| until > now) {
+        if respect_random_interval && budget.3.is_some_and(|until| until > now) {
             return denied_claim(tx, "success_interval");
         }
         // 冷却不受 `respect_random_interval` 约束：所有规则共用「最近一次成功投递之后
@@ -1261,11 +1261,12 @@ impl MemoryStore {
         {
             return denied_claim(tx, "cooldown");
         }
-        // unknown_tokens is an audit subset of reserved_tokens, so it must never be
-        // added a second time when enforcing the daily ceiling.
-        if budget.3 + budget.4 + reserved > limits.daily_tokens {
-            return denied_claim(tx, "token_budget");
-        }
+        // token 账不设准入闸（2026-10-06 用户裁决）：reserved/used/unknown 照常记账、
+        // 结算与快照（面板与诊断要用），但 claim 的拒绝条件只有次数上限（上方 daily_limit）
+        // 与机制门（muted/cooldown/间隔/在飞）。日 token 总量与次数共用同一池时会互相踩
+        // ——规划烧满会饿死表达（实机表现为一整天发不出主动消息）；`dailyTokens` 因此
+        // 降级为观测阈值（见 `ProactiveLimits` 文档），单次请求的可行性由 Node 侧
+        // 上下文护栏（planning_budget / expression_budget）把关。
         if kind == "planning"
             && tx
                 .query_row(
@@ -1345,6 +1346,8 @@ impl MemoryStore {
                 tx.execute("INSERT INTO proactive_attempt_occurrences(attempt_id,occurrence_id) VALUES (?1,?2) ON CONFLICT DO NOTHING",params![attempt,occurrence]).map_err(db)?;
             }
         }
+        // token 账照记（面板与诊断）：领取时预留进 `reserved_tokens`，结算时回冲为
+        // `used_tokens` / 保留未知量；它不参与任何拒绝判定（见上方注释）。
         if kind == "planning" {
             tx.execute("UPDATE proactive_budgets SET planning_attempts=planning_attempts+1,reserved_tokens=reserved_tokens+?2,updated_at=?3 WHERE local_date=?1",params![date,reserved,now]).map_err(db)?;
         } else {
@@ -1687,11 +1690,7 @@ impl MemoryStore {
         conn.query_row("SELECT mute_until,revision FROM proactive_control WHERE id=1",[],|r|Ok(json!({"muteUntil":r.get::<_,Option<i64>>(0)?,"revision":r.get::<_,i64>(1)?}))).map_err(db)
     }
 
-    pub(crate) fn proactive_auxiliary_budget_reserve(
-        &self,
-        request: &Value,
-        limits: &ProactiveLimits,
-    ) -> AppResult<Value> {
+    pub(crate) fn proactive_auxiliary_budget_reserve(&self, request: &Value) -> AppResult<Value> {
         let reservation_id = text(request, "reservationId");
         let request_id = text(request, "requestId");
         let kind = text(request, "kind");
@@ -1757,22 +1756,16 @@ impl MemoryStore {
             return Err(AppError::MemoryConflict);
         }
         tx.execute("INSERT INTO proactive_budgets(local_date,updated_at) VALUES (?1,?2) ON CONFLICT(local_date) DO NOTHING", params![date, now]).map_err(db)?;
-        let (attempts, reserved_total, used_total): (i64, i64, i64) = if kind == "observation" {
-            tx.query_row("SELECT observation_attempts,reserved_tokens,used_tokens FROM proactive_budgets WHERE local_date=?1", [&date], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?))).map_err(db)?
+        let attempts: i64 = if kind == "observation" {
+            tx.query_row("SELECT observation_attempts FROM proactive_budgets WHERE local_date=?1", [&date], |row| row.get(0)).map_err(db)?
         } else {
-            tx.query_row("SELECT topic_attempts,reserved_tokens,used_tokens FROM proactive_budgets WHERE local_date=?1", [&date], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?))).map_err(db)?
+            tx.query_row("SELECT topic_attempts FROM proactive_budgets WHERE local_date=?1", [&date], |row| row.get(0)).map_err(db)?
         };
+        // token 账照记（下方预留增量与 settle 结算），但不再设 token 总量闸（2026-10-06
+        // 用户裁决，与 claim 同口径）：唯一硬边界是次数 —— dailyLimit 与档位天花板。
         if attempts >= limit {
             tx.commit().map_err(db)?;
             return Ok(json!({"reserved":false,"reason":"daily_limit"}));
-        }
-        if reserved_total
-            .checked_add(used_total)
-            .and_then(|value| value.checked_add(reserved))
-            .map_or(true, |total| total > limits.daily_tokens)
-        {
-            tx.commit().map_err(db)?;
-            return Ok(json!({"reserved":false,"reason":"token_budget"}));
         }
         tx.execute("INSERT INTO proactive_auxiliary_reservations(reservation_id,request_id,kind,local_date,status,reserved_tokens,created_at,updated_at) VALUES (?1,?2,?3,?4,'reserved',?5,?6,?6)", params![reservation_id, request_id, kind, date, reserved, now]).map_err(db)?;
         let counter = if kind == "observation" {
@@ -2179,7 +2172,6 @@ mod tests {
             .proactive_auxiliary_budget_reserve(
                 &json!({"reservationId":"bad-date","requestId":"bad-date-request","kind":"topic",
             "localDate":"2026-02-30","reservedTokens":0,"dailyLimit":4,"now":now}),
-                &ProactiveLimits::medium(),
             )
             .is_err());
     }
@@ -2505,35 +2497,42 @@ mod tests {
         assert_eq!(claim["claimed"], json!(true), "清扫不得把冷却推到清扫时刻之后");
     }
 
+    /// 辅助预留：两个 kind 的次数（dailyLimit）各自独立；token 总量不再是门禁
+    /// （2026-10-06 用户裁决，与 claim 同口径 —— 账照记，拒只按次数）。
     #[test]
-    fn auxiliary_budget_shares_daily_tokens_but_keeps_kind_attempt_caps_independent() {
+    fn auxiliary_budget_keeps_kind_attempt_caps_and_no_longer_enforces_token_total() {
         let fixture = Fixture::new();
         let date = "2026-10-03";
         let now = now_ms();
-        let limits = ProactiveLimits::medium();
         for kind in ["observation", "topic"] {
             for index in 0..4 {
                 let result=fixture.1.proactive_auxiliary_budget_reserve(&json!({"reservationId":format!("{kind}-{index}"),"requestId":format!("request-{kind}-{index}"),
-                    "kind":kind,"localDate":date,"reservedTokens":0,"dailyLimit":4,"now":now}),&limits).expect("辅助预留");
+                    "kind":kind,"localDate":date,"reservedTokens":0,"dailyLimit":4,"now":now})).expect("辅助预留");
                 assert_eq!(result["reserved"], json!(true));
             }
             let capped=fixture.1.proactive_auxiliary_budget_reserve(&json!({"reservationId":format!("{kind}-overflow"),"requestId":format!("request-{kind}-overflow"),
-                "kind":kind,"localDate":date,"reservedTokens":0,"dailyLimit":4,"now":now}),&limits).expect("独立kind日限");
+                "kind":kind,"localDate":date,"reservedTokens":0,"dailyLimit":4,"now":now})).expect("独立kind日限");
             assert_eq!(capped["reason"], json!("daily_limit"));
         }
-        let conn = connection(&fixture.1).expect("锁库");
-        conn.execute(
-            "UPDATE proactive_budgets SET reserved_tokens=0 WHERE local_date=?1",
-            [date],
-        )
-        .expect("归零预留以隔离共享token检查");
-        drop(conn);
-        let first=fixture.1.proactive_auxiliary_budget_reserve(&json!({"reservationId":"shared-first","requestId":"request-shared-first","kind":"observation","localDate":"2026-10-04","reservedTokens":20_000,"dailyLimit":4,"now":now}),&limits).expect("共享额度第一笔");
+        // 旧口径：同一自然日上两次预留相加超 medium dailyTokens(24_000) 时第二笔被
+        // `token_budget` 拒；现在必须放行（token 账照记，不做总量闸）。
+        let first=fixture.1.proactive_auxiliary_budget_reserve(&json!({"reservationId":"total-first","requestId":"request-total-first","kind":"observation","localDate":"2026-10-04","reservedTokens":20_000,"dailyLimit":4,"now":now})).expect("总量第一笔");
         assert_eq!(first["reserved"], json!(true));
-        let overflow=fixture.1.proactive_auxiliary_budget_reserve(&json!({"reservationId":"shared-overflow","requestId":"request-shared-overflow","kind":"topic","localDate":"2026-10-04","reservedTokens":5_000,"dailyLimit":4,"now":now}),&limits).expect("共享token上限");
-        assert_eq!(overflow["reason"], json!("token_budget"));
+        let beyond_old_total=fixture.1.proactive_auxiliary_budget_reserve(&json!({"reservationId":"total-overflow","requestId":"request-total-overflow","kind":"topic","localDate":"2026-10-04","reservedTokens":5_000,"dailyLimit":4,"now":now})).expect("旧口径超总量");
+        assert_eq!(beyond_old_total["reserved"], json!(true), "token 总量不再是辅助预留的门禁");
+        assert_eq!(beyond_old_total["reason"], Value::Null);
+        let conn = connection(&fixture.1).expect("检查预留账");
+        let reserved: i64 = conn
+            .query_row(
+                "SELECT reserved_tokens FROM proactive_budgets WHERE local_date='2026-10-04'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("读回预留账");
+        assert_eq!(reserved, 25_000, "放行的预留仍须如实记账");
+        drop(conn);
         let interrupted=fixture.1.proactive_auxiliary_budget_reserve(&json!({"reservationId":"foreground-preempted","requestId":"foreground-request",
-            "kind":"topic","localDate":"2026-10-05","reservedTokens":1_000,"dailyLimit":4,"now":now}),&limits).expect("前台抢占前预留");
+            "kind":"topic","localDate":"2026-10-05","reservedTokens":1_000,"dailyLimit":4,"now":now})).expect("前台抢占前预留");
         assert_eq!(interrupted["reserved"], json!(true));
         fixture.1.proactive_auxiliary_budget_settle(&json!({"reservationId":"foreground-preempted","localDate":"2026-10-05","status":"failed",
             "usage":{"totalTokens":9},"now":now})).expect("取消后仍结算Provider实际用量");
@@ -2547,7 +2546,6 @@ mod tests {
     #[test]
     fn 辅助尝试天花板按kind取档位最大值() {
         let fixture = Fixture::new();
-        let limits = ProactiveLimits::medium();
         let now = now_ms();
         for (kind, date, ceiling) in [
             ("observation", "2026-10-06", 12_i64),
@@ -2559,7 +2557,6 @@ mod tests {
                     .proactive_auxiliary_budget_reserve(
                         &json!({"reservationId":format!("{kind}-{index}"),"requestId":format!("request-{kind}-{index}"),
                         "kind":kind,"localDate":date,"reservedTokens":0,"dailyLimit":12,"now":now}),
-                        &limits,
                     )
                     .expect("辅助预留");
                 assert_eq!(
@@ -2573,7 +2570,6 @@ mod tests {
                 .proactive_auxiliary_budget_reserve(
                     &json!({"reservationId":format!("{kind}-overflow"),"requestId":format!("request-{kind}-overflow"),
                     "kind":kind,"localDate":date,"reservedTokens":0,"dailyLimit":12,"now":now}),
-                    &limits,
                 )
                 .expect("越天花板");
             assert_eq!(capped["reason"], json!("daily_limit"), "{kind}");
@@ -2588,7 +2584,7 @@ mod tests {
         let day_two = "2026-10-04";
         let limits = ProactiveLimits::medium();
         let reserved=fixture.1.proactive_auxiliary_budget_reserve(&json!({"reservationId":"unknown-across-restart","requestId":"unknown-request",
-            "kind":"observation","localDate":day_one,"reservedTokens":100,"dailyLimit":4,"now":now}),&limits).expect("预留辅助调用");
+            "kind":"observation","localDate":day_one,"reservedTokens":100,"dailyLimit":4,"now":now})).expect("预留辅助调用");
         assert_eq!(reserved["reserved"], json!(true));
         let reopened =
             MemoryStore::open_at(&fixture.0.join("memory.sqlite3")).expect("重开SQLite库");
@@ -2600,7 +2596,7 @@ mod tests {
             )
             .expect("下日扫描回收过期租约");
         let duplicate=reopened.proactive_auxiliary_budget_reserve(&json!({"reservationId":"unknown-across-restart","requestId":"unknown-request",
-            "kind":"observation","localDate":day_one,"reservedTokens":100,"dailyLimit":4,"now":expiry}),&limits).expect("未知预留禁止重新生成");
+            "kind":"observation","localDate":day_one,"reservedTokens":100,"dailyLimit":4,"now":expiry})).expect("未知预留禁止重新生成");
         assert_eq!(duplicate["reserved"], json!(false));
         assert_eq!(duplicate["reason"], json!("usage_reconciliation_required"));
         let conn = connection(&reopened).expect("检查租约结算");
@@ -2659,6 +2655,111 @@ mod tests {
             .expect("读取静默槽");
         assert_eq!((success, used, reserved), (0, 7, 0));
         assert_eq!(occurrence, "skipped");
+    }
+
+    /// 2026-10-06 用户裁决：日 token 总量不再作为 claim 的拒绝理由 —— 它与次数共用
+    /// 同一池时只会互相踩：实机证据（一天 4 次规划烧 9481，低档 dailyTokens 8000）里
+    /// 规划先把池子烧掉，表达 claim 全天被 `token_budget` 拒，主动消息一整天发不出。
+    /// 本用例钉住新语义：规划把 token 账烧到远超日上限后，表达 claim 仍必须放行。
+    /// token 账照记（面板与诊断）。若有人改回按 token 总量否决，本用例必红。
+    #[test]
+    fn planning烧满token账后表达claim仍被放行() {
+        let fixture = Fixture::new();
+        let owner = Fixture::owner();
+        let now = now_ms();
+        let date = "2026-10-03";
+        let limits = ProactiveLimits::low();
+        // 规划：单笔预留与结算都按 3 倍日上限记账（旧口径下等价于烧满且超支）。
+        let burn = limits.daily_tokens * 3;
+        let claimed = fixture
+            .1
+            .proactive_claim(
+                &json!({"owner":owner.clone(),"now":now,"localDate":date,"kind":"planning","reservedTokens":burn,"ruleId":"memory_checkin",
+                "sourceRevision":0,"controlRevision":0,"sourceRefs":[Fixture::source_ref()],"occurrenceIds":[],
+                "attemptId":"burn-planning","requestId":"burn-planning-request","sourceFingerprint":"burn-planning-fp"}),
+                &limits,
+            )
+            .expect("规划领取");
+        assert_eq!(claimed["claimed"], json!(true));
+        fixture
+            .1
+            .proactive_settle(
+                &json!({"owner":owner.clone(),"attemptId":"burn-planning","sourceFingerprint":"burn-planning-fp","localDate":date,
+                "status":"failed","usage":{"totalTokens":burn},"decision":null}),
+                &limits,
+            )
+            .expect("规划结算");
+        let conn = connection(&fixture.1).expect("锁库");
+        let used: i64 = conn
+            .query_row(
+                "SELECT used_tokens FROM proactive_budgets WHERE local_date=?1",
+                [date],
+                |row| row.get(0),
+            )
+            .expect("读回 token 账");
+        assert_eq!(used, burn, "token 账照记（面板与诊断）");
+        drop(conn);
+        // 表达：预留同样远超旧上限；旧口径（reserved + used + reserved > daily_tokens）
+        // 必以 token_budget 拒绝，新口径必须放行。
+        let expression = fixture
+            .1
+            .proactive_claim(
+                &json!({"owner":owner,"now":now+1,"localDate":date,"kind":"expression","reservedTokens":burn,"ruleId":"memory_checkin",
+                "sourceRevision":0,"controlRevision":0,"sourceRefs":[Fixture::source_ref()],"occurrenceIds":["burn-expression-occurrence"],
+                "attemptId":"burn-expression","requestId":"burn-expression-request","sourceFingerprint":"burn-expression-fp"}),
+                &limits,
+            )
+            .expect("表达领取");
+        assert_eq!(
+            expression["claimed"],
+            json!(true),
+            "规划烧满 token 账不得再阻断表达（改回按 token 否决必须变红）"
+        );
+        assert_eq!(expression["reason"], Value::Null);
+    }
+
+    /// 反向对称：表达把 token 账烧满后，规划 claim 仍被放行；唯一硬边界是次数上限
+    /// （planning=3 / expression=4，供后续各按其投影档位收紧）。
+    #[test]
+    fn 表达烧满token账后规划claim仍被放行() {
+        let fixture = Fixture::new();
+        let owner = Fixture::owner();
+        let now = now_ms();
+        let date = "2026-10-03";
+        let limits = ProactiveLimits::low();
+        let burn = limits.daily_tokens * 3;
+        let claimed = fixture
+            .1
+            .proactive_claim(
+                &json!({"owner":owner.clone(),"now":now,"localDate":date,"kind":"expression","reservedTokens":burn,"ruleId":"memory_checkin",
+                "sourceRevision":0,"controlRevision":0,"sourceRefs":[Fixture::source_ref()],"occurrenceIds":["burn-planning-occurrence"],
+                "attemptId":"burn-expression-first","requestId":"burn-expression-first-request","sourceFingerprint":"burn-expression-first-fp"}),
+                &limits,
+            )
+            .expect("表达领取");
+        assert_eq!(claimed["claimed"], json!(true));
+        fixture
+            .1
+            .proactive_settle(
+                &json!({"owner":owner.clone(),"attemptId":"burn-expression-first","sourceFingerprint":"burn-expression-first-fp","localDate":date,
+                "status":"failed","usage":{"totalTokens":burn},"decision":null}),
+                &limits,
+            )
+            .expect("表达结算");
+        let planning = fixture
+            .1
+            .proactive_claim(
+                &json!({"owner":owner,"now":now+1,"localDate":date,"kind":"planning","reservedTokens":burn,"ruleId":"memory_checkin",
+                "sourceRevision":0,"controlRevision":0,"sourceRefs":[Fixture::source_ref()],"occurrenceIds":[],
+                "attemptId":"after-burn-planning","requestId":"after-burn-planning-request","sourceFingerprint":"after-burn-planning-fp"}),
+                &limits,
+            )
+            .expect("规划领取");
+        assert_eq!(
+            planning["claimed"],
+            json!(true),
+            "表达烧满 token 账不得再阻断规划（改回按 token 否决必须变红）"
+        );
     }
 
     /// 终裁点的每日尝试上限读投影档位：低档 planning=3 / expression=4，

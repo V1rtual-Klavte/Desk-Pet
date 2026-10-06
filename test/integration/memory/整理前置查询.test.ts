@@ -21,6 +21,7 @@ import { join } from "node:path"
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest"
 
 const ipc = vi.hoisted(() => ({
+  // index.ts 的 barrel 会 re-export 它：替身模块必须提供该名字，否则模块链接期报缺导出。
   memoryDreamingBudget: vi.fn(async () => ({ usedTokens: 0, reservedTokens: 0, localDate: "2026-10-05" })),
   pendingMemorySourceCount: vi.fn(async () => 0),
   startMemoryJob: vi.fn(async () => ({ id: "job-review", revision: 1, phase: "review", processed: 0 })),
@@ -30,7 +31,8 @@ const ipc = vi.hoisted(() => ({
   memoryStatus: vi.fn(async () => ({ revision: 1 })),
   commitMemoryDreamingJob: vi.fn(async () => 1),
   addMemoryCandidates: vi.fn(async () => 0),
-  reserveMemoryDreamingBudget: vi.fn(async () => true),
+  // 预留/结算自 2026-10-06 起是纯记账（不再返回准入布尔）。
+  reserveMemoryDreamingBudget: vi.fn(async () => {}),
   settleMemoryDreamingBudget: vi.fn(async () => {}),
   resumeMemoryJob: vi.fn(async () => ({ id: "job-review", revision: 1, phase: "review", processed: 0 })),
 }))
@@ -85,7 +87,7 @@ async function bootDreaming(tier = "medium") {
   return dreaming
 }
 
-/** 假时钟推进后把异步链（预算查询 → 来源登记 → 水位查询 → 作业启动）冲到稳定。 */
+/** 假时钟推进后把异步链（来源登记 → 水位查询 → 作业启动）冲到稳定。 */
 async function advance(ms: number): Promise<void> {
   await vi.advanceTimersByTimeAsync(ms)
   for (let i = 0; i < 40; i += 1) await Promise.resolve()

@@ -5,6 +5,11 @@
 // createTurnSpec 的 maxToolCalls；它不是重试次数，取值为 loopConfig.subAgentRounds。
 // 主聊天回合已取消计数上限（2026-10-06 起走循环病理检测），这里的封顶保留 ——
 // 子代理无人值守，上限下沉到子运行范围（契约 Part 1）。
+//
+// 时间预算（2026-10-06 裁决）：子运行保留 90s 硬墙钟，不放宽 —— 主流 harness 的墙钟
+// 只出现在无人值守范围（Gemini 子代理、Codex one-shot 之外）。由此得到一个有意的派生
+// 上限：子运行内 bash 的实际上限 = 子运行预算（90s，取 min(工具档位 300s, 子运行预算)），
+// 与主回合（600s）刻意不同档；该口径写在 docs/current/tool-system.md 的「文件、命令与取消」段。
 // ==========================================
 
 import { listAll, type ToolDef } from "@/services/tool"

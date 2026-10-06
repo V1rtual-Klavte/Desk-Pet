@@ -18,11 +18,15 @@ use std::time::{Duration, Instant};
 /// 子进程退出状态的轮询间隔。只影响等待粒度，不影响正确性。
 const BASH_POLL_INTERVAL: Duration = Duration::from_millis(25);
 
-/// `timeout_ms` 缺省时的上限。
+/// `timeout_ms` 缺省时的兜底（5 分钟）。
 ///
-/// 调用方（`native-execution-env.ts`）未指定超时时传 `null`；这里若没有兜底，
-/// 就等于给子进程一个「永不终止」的条件 —— 不退出就一直占着 blocking 线程与池中条目。
-const DEFAULT_BASH_TIMEOUT_MS: u64 = 120_000;
+/// 与 TS 侧 bash 档位（`src/services/tool/local/bash-timeout.ts` 的 `BASH_TOOL_TIMEOUT_MS`）
+/// **必须同值**：正常路径由调用方下传生效值，这里只兜「调用方没传」的深防线（Node 域服务的
+/// 直调、测试）；两侧数值一旦不同，就会复现「策略层 5 分钟被 Rust 2 分钟隐藏天花板掐死」
+/// 的旧故障（2026-10-06 排查，见 .superpowers/sdd/turn-gov/timeout-research.md）。
+/// 这里若没有兜底，`null` 就等于给子进程一个「永不终止」的条件 ——
+/// 不退出就一直占着 blocking 线程与池中条目。
+pub(crate) const DEFAULT_BASH_TIMEOUT_MS: u64 = 300_000;
 
 /// 内联返回给调用方的输出上限；超出部分由调用方按需从 spill 文件读取。
 const DEFAULT_MAX_OUTPUT_BYTES: usize = 50 * 1024;
@@ -106,26 +110,11 @@ impl BashPool {
 
 /// 终止池内一个已 spawn 的 bash 子进程，等待退出上限 2s（与 `McpPool` 的回收同口径）。
 ///
-/// Windows 上 `cmd /C` 启动的命令可能再派生孙进程，`Child::kill` 只结束直接子进程；
-/// 这里与 `mcp_bridge::kill_child` 同样改走 `taskkill /T /F` 递归结束整棵进程树，
-/// taskkill 不可用时退回直接 `kill`。本机（macOS）无法编译验证 Windows 分支，靠 CI。
+/// 终止动作走 `kill_process_group`（超时 / 取消 / 宿主退出三处共用的唯一回收实现）。
 fn kill_slot_child(child: &Arc<Mutex<Child>>) {
     // 执行线程持有同一把 child 锁轮询 try_wait；这里短暂持锁，毒锁同样恢复处理。
     let mut guard = child.lock().unwrap_or_else(|e| e.into_inner());
-    #[cfg(target_os = "windows")]
-    {
-        let pid = guard.id().to_string();
-        let killed = Command::new("taskkill")
-            .args(["/T", "/F", "/PID", &pid])
-            .output()
-            .map(|out| out.status.success())
-            .unwrap_or(false);
-        if !killed {
-            let _ = guard.kill();
-        }
-    }
-    #[cfg(not(target_os = "windows"))]
-    let _ = guard.kill();
+    let _ = kill_process_group(&mut guard);
 
     for _ in 0..20 {
         match guard.try_wait() {
@@ -134,6 +123,46 @@ fn kill_slot_child(child: &Arc<Mutex<Child>>) {
         }
     }
     rust_warn!("Bash 子进程未在 2s 内退出, 已放弃等待");
+}
+
+/// 终止一个 bash 子进程的**整个进程组** —— 超时、取消、宿主退出三处回收的唯一实现。
+///
+/// Unix：命令 spawn 时自成进程组（`process_group(0)`，组长 = 自身 pid），这里用 `killpg`
+/// 一次回收直接子进程与派生的孙进程（osascript 弹窗、`sleep … &`、构建工具链）—— 只
+/// `Child::kill` 主进程会留下孤儿（2026-10-06 用户实测）。`ESRCH`（组已不存在）视为已死，
+/// 其它失败退回单杀并留痕（与 `mcp_bridge::kill_child` 同口径）。
+/// Windows：`taskkill /T /F` 递归结束整棵进程树，taskkill 不可用时退回直接 `kill`
+/// （与 `kill_slot_child` 的原实现同口径）。本机（macOS）无法编译验证 Windows 分支，靠 CI。
+fn kill_process_group(child: &mut Child) -> std::io::Result<()> {
+    #[cfg(target_os = "windows")]
+    {
+        let pid = child.id().to_string();
+        let killed = Command::new("taskkill")
+            .args(["/T", "/F", "/PID", &pid])
+            .output()
+            .map(|out| out.status.success())
+            .unwrap_or(false);
+        if killed {
+            return Ok(());
+        }
+        return child.kill();
+    }
+    #[cfg(unix)]
+    {
+        let pgid = child.id() as libc::pid_t;
+        // SAFETY: killpg 只传数字进程组 id 与信号常量，不涉及内存访问。
+        let result = unsafe { libc::killpg(pgid, libc::SIGKILL) };
+        if result == 0 {
+            return Ok(());
+        }
+        let error = std::io::Error::last_os_error();
+        if error.raw_os_error() == Some(libc::ESRCH) {
+            // 进程组已不存在（成员全部回收）：视为已死，不是失败。
+            return Ok(());
+        }
+        rust_warn!("Bash 进程组回收失败（pgid={pgid}）: {error}");
+        child.kill()
+    }
 }
 
 /// 池条目守卫：`Drop` 时删条目。
@@ -223,6 +252,19 @@ pub fn run_bash(
     let mut cmd = Command::new(shell);
     cmd.arg(shell_arg).arg(&command);
 
+    // stdin 关死：命令的 stdin 不是交互面（主流同款底线：OpenCode `stdin:"ignore"` /
+    // Cline `stdin.end()`）。不关死时 dev 模式会继承宿主 stdin，交互命令可能吃掉输入或挂住；
+    // 关死后交互式命令立即读到 EOF 失败 —— 暴露快、不占超时。需要用户确认/输入的场合走
+    // 计划确认面板（模型向指引的落点见 TS 侧 tool/local/bash-timeout.ts）。
+    cmd.stdin(Stdio::null());
+    // Unix：命令自成进程组（组长 = 自身 pid），超时 / 取消 / 宿主退出统一按组回收
+    // （见 kill_process_group）；Windows 由 taskkill /T 承担同一职责。
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        cmd.process_group(0);
+    }
+
     if let Some(dir) = &cwd {
         let safe_cwd = crate::paths::AppPaths::validate_file_path(Path::new(dir))?;
         if !safe_cwd.is_dir() {
@@ -262,7 +304,9 @@ pub fn run_bash(
         }
     };
     if cancel_requested {
-        let _ = child.lock().map_err(|_| "Bash 进程锁损坏")?.kill();
+        // 取消走进程组回收：只杀直接子进程会留下孙进程（见 kill_process_group）。
+        let mut guard = child.lock().unwrap_or_else(|e| e.into_inner());
+        let _ = kill_process_group(&mut guard);
         return Err(AppError::Cancelled);
     }
 
@@ -278,7 +322,9 @@ pub fn run_bash(
             break status;
         }
         if started.elapsed() >= timeout {
-            let _ = child.lock().map_err(|_| "Bash 进程锁损坏")?.kill();
+            // 超时回收走进程组：只杀直接子进程会留下孙进程（见 kill_process_group）。
+            let mut guard = child.lock().unwrap_or_else(|e| e.into_inner());
+            let _ = kill_process_group(&mut guard);
             // 临时文件交给 `temps` 守卫清理，池条目交给 `_guard`
             return Err(AppError::Timeout);
         }
@@ -351,11 +397,9 @@ pub fn cancel_in_pool(pool: &BashPool, execution_id: &str) -> AppResult<bool> {
     match slots.get_mut(execution_id) {
         Some(slot) => match slot.child.as_ref() {
             Some(child) => {
-                child
-                    .lock()
-                    .map_err(|_| "Bash 进程锁损坏")?
-                    .kill()
-                    .map_err(|e| format!("取消命令失败: {e}"))?;
+                // 取消也走进程组回收：只杀直接子进程会留下孙进程（见 kill_process_group）。
+                let mut guard = child.lock().map_err(|_| "Bash 进程锁损坏")?;
+                kill_process_group(&mut guard).map_err(|e| format!("取消命令失败: {e}"))?;
                 Ok(true)
             }
             // spawn 之前到达：立案。spawn 后的回填点会取走这个标记，

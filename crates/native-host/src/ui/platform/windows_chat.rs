@@ -134,8 +134,9 @@ use windows_sys::Win32::UI::WindowsAndMessaging::{
     SWP_NOMOVE, SWP_NOSIZE, SW_HIDE, SW_SHOW, SW_SHOWNORMAL, TPM_RETURNCMD, TPM_RIGHTBUTTON,
     WM_APP, WM_CLOSE, WM_COMMAND, WM_CONTEXTMENU, WM_COPY, WM_CREATE, WM_CTLCOLORSTATIC,
     WM_DESTROY, WM_DRAWITEM, WM_DROPFILES, WM_ERASEBKGND, WM_GETMINMAXINFO, WM_IME_COMPOSITION,
-    WM_IME_ENDCOMPOSITION, WM_IME_STARTCOMPOSITION, WM_KEYDOWN, WM_LBUTTONDOWN, WM_MOUSEWHEEL,
-    WM_NCDESTROY, WM_NCHITTEST, WM_NOTIFY, WM_PAINT, WM_PASTE, WM_SETFONT, WM_SIZE, WM_TIMER,
+    WM_IME_ENDCOMPOSITION, WM_IME_STARTCOMPOSITION, WM_KEYDOWN, WM_LBUTTONDOWN, WM_MOUSEHWHEEL,
+    WM_MOUSEWHEEL, WM_NCDESTROY, WM_NCHITTEST, WM_NOTIFY, WM_PAINT, WM_PASTE, WM_SETFONT, WM_SIZE,
+    WM_TIMER,
     WM_VSCROLL, WNDCLASSW, WS_CAPTION, WS_CHILD, WS_CLIPCHILDREN, WS_CLIPSIBLINGS,
     WS_EX_CLIENTEDGE, WS_HSCROLL, WS_OVERLAPPEDWINDOW, WS_POPUP, WS_SYSMENU, WS_TABSTOP,
     WS_VISIBLE, WS_VSCROLL,
@@ -282,6 +283,16 @@ const PENDING_CHIP_HEIGHT: i32 = 22;
 const PENDING_PAD_X: i32 = 10;
 const PENDING_ITEM_MIN_WIDTH: i32 = 64;
 const PENDING_ITEM_MAX_WIDTH: i32 = 200;
+
+/// A3 待发送条横向滚动（2026-10-06 用户实测「多张截图不能滚动、点不到」）：
+/// 滚轮一格的横向位移、条内滚动指示条厚度（逻辑像素）。
+///
+/// 指示条画在既有 `PENDING_HEIGHT` 条内（**不新增高度** —— 输入区布局不跳）；
+/// Windows 没有 macOS 的 overlay 滚动条，用条底细指示条代替（见 `paint_shell`）。
+const PENDING_SCROLL_STEP: i32 = 40;
+const PENDING_SCROLLBAR_THICKNESS: i32 = 2;
+/// 缩略图距 chip 左缘的内缩（逻辑像素；图高由共享 `THUMB_BOX_HEIGHT` 定，垂直居中）。
+const PENDING_THUMB_INSET_X: i32 = 4;
 
 // ── 输入行（图片 / 停止 / 发送）与「↓ 新消息」跳转（逻辑像素，按 DPI 缩放）──
 
@@ -725,6 +736,13 @@ struct ChatWinState {
     pending_height: i32,
     /// 待发送条目 ID 下标 → 原路径（每次重建整体替换）。
     pending_targets: Vec<String>,
+    /// 待发送条内容总宽与横向滚动偏移（物理像素；重建/重排共用一套几何）。
+    pending_content_w: i32,
+    pending_scroll_x: i32,
+    /// 上一次重建的条目数（新增条目时自动滚到最右，把刚加的图露出来）。
+    pending_count: usize,
+    /// 「本轮新增了条目」标志：`rebuild_pending` 置位、`layout_panes_for` 消费。
+    pending_reveal_end: bool,
     // ── A1：顶栏与会话标签（仅 pane 模式；独立窗全为 0/空）──
     /// 顶栏品牌字（固定字样 `TITLEBAR_BRAND_TEXT`）与状态位（STATIC；文本来自
     /// `crate::ui::titlebar` 的 Node 快照，见 `rebuild_navigation`）。
@@ -749,6 +767,9 @@ thread_local! {
     static CHAT: RefCell<Option<ChatWinState>> = const { RefCell::new(None) };
     static VIEWER: RefCell<Option<ViewerState>> = const { RefCell::new(None) };
     static DRAW_IMAGES: RefCell<HashMap<HWND, WinImageTarget>> = RefCell::new(HashMap::new());
+    /// 待发送 chip 的缩略图（hwnd → 帧；`draw_themed_button` 的待发送分支读取）。
+    /// 随控件换代：`rebuild_pending` 销毁条目时一并移除（旧句柄不留影）。
+    static PENDING_THUMBS: RefCell<HashMap<HWND, DecodedFrame>> = RefCell::new(HashMap::new());
 }
 
 struct ViewerState {
@@ -993,6 +1014,34 @@ unsafe fn paint_shell(state: &ChatWinState, hdc: HDC) {
                 paint_win::Rect::new(pending.x, pending.bottom() - 1, pending.w, 1),
                 t.bar_edge,
             );
+            // 横向滚动指示（2026-10-06「多张截图不能滚动」的可见性提示）：只在内容
+            // 超宽时画 —— 条底极细的 track + 按滚动比例的 thumb，**画在既有条高之内**
+            //（不新增布局高度，输入区不会因它跳动）。Windows 没有 macOS 的 overlay
+            // 滚动条，这条细指示是「右边还有、可以滚」的用户可见信号。
+            if state.pending_content_w > pending.w {
+                let thickness = scaled(PENDING_SCROLLBAR_THICKNESS, scale).max(1);
+                let track_y = pending.bottom() - thickness - scaled(1, scale);
+                paint_win::fill_color(
+                    hdc,
+                    paint_win::Rect::new(pending.x, track_y, pending.w, thickness),
+                    t.bar_edge,
+                );
+                let ratio = f64::from(pending.w) / f64::from(state.pending_content_w);
+                // 下限兜底：thumb 不小于 4 倍厚度，但不允许超过条宽（极窄条不 panic）。
+                let min_thumb = (thickness * 4).min(pending.w).max(thickness);
+                let thumb_w =
+                    ((f64::from(pending.w) * ratio).round() as i32).clamp(min_thumb, pending.w);
+                let max_scroll = (state.pending_content_w - pending.w).max(1);
+                let progress = (f64::from(state.pending_scroll_x) / f64::from(max_scroll))
+                    .clamp(0.0, 1.0);
+                let travel = (pending.w - thumb_w).max(0);
+                let thumb_x = pending.x + (f64::from(travel) * progress).round() as i32;
+                paint_win::fill_color(
+                    hdc,
+                    paint_win::Rect::new(thumb_x, track_y, thumb_w, thickness),
+                    t.dim,
+                );
+            }
         }
         if !rect_is_empty(&state.paint.input_bar) {
             let input_bar = win_rect_of(&state.paint.input_bar);
@@ -1718,6 +1767,24 @@ unsafe fn draw_themed_button(item: &DrawItemStruct) {
         item.rcItem.right - item.rcItem.left,
         item.rcItem.bottom - item.rcItem.top,
     );
+    // 待发送 chip（有缩略图）：图前文后分区摆放（与 macOS 的 `ImageLeading` 同形）——
+    // 底/边/按下态照常走 `draw_button`，标题由这里手工摆（缩略图占掉左侧一段）。
+    let thumb = PENDING_THUMBS.with(|images| images.borrow().get(&item.hwndItem).cloned());
+    if let Some(frame) = thumb {
+        unsafe {
+            draw_pending_chip(
+                item.hDC,
+                item.hwndItem,
+                rect,
+                &face,
+                &label,
+                &frame,
+                pressed,
+                disabled,
+            )
+        };
+        return;
+    }
     unsafe {
         paint_win::draw_button(
             item.hDC,
@@ -1729,6 +1796,91 @@ unsafe fn draw_themed_button(item: &DrawItemStruct) {
             disabled,
         )
     };
+}
+
+/// 带缩略图的待发送 chip：底/边照 `draw_button`（标题传空），缩略图贴左、文案摆在
+/// 图右侧的剩余宽度里（单行、尾部省略）。整条仍是撤选命中区 —— 只有绘制方式不同。
+///
+/// 待发送 chip 恒可用（点击即撤选），不复制 `draw_button` 的禁用色推导；本函数也
+/// 只由 `PENDING_THUMBS` 注册的待发送条目命中。
+unsafe fn draw_pending_chip(
+    hdc: HDC,
+    hwnd: HWND,
+    rect: paint_win::Rect,
+    face: &paint_win::ButtonFace,
+    label: &str,
+    frame: &DecodedFrame,
+    pressed: bool,
+    disabled: bool,
+) {
+    unsafe {
+        paint_win::draw_button(hdc, hwnd, rect, face, "", pressed, disabled);
+        let scale = dpi_scale(hwnd);
+        let (thumb_w, thumb_h) =
+            crate::ui::chat::pending_strip::thumb_display_size(frame.width, frame.height);
+        let image_w = scaled(thumb_w.max(1) as i32, scale).max(1);
+        let image_h = scaled(thumb_h.max(1) as i32, scale).max(1);
+        let image_x = rect.x + scaled(PENDING_THUMB_INSET_X, scale);
+        let image_y = rect.y + (rect.h - image_h) / 2;
+        // 与 `draw_inline_button` 同一 DIB 口径（自下而上用负高、RGBA 掩码按小端读）。
+        let mut info = RgbaBitmapInfo {
+            header: BITMAPINFOHEADER {
+                biSize: std::mem::size_of::<BITMAPINFOHEADER>() as u32,
+                biWidth: frame.width as i32,
+                biHeight: -(frame.height as i32),
+                biPlanes: 1,
+                biBitCount: 32,
+                biCompression: BI_BITFIELDS_RGBA,
+                biSizeImage: frame.rgba.len() as u32,
+                biXPelsPerMeter: 0,
+                biYPelsPerMeter: 0,
+                biClrUsed: 0,
+                biClrImportant: 0,
+            },
+            masks: [0x0000_00FF, 0x0000_FF00, 0x00FF_0000],
+        };
+        StretchDIBits(
+            hdc,
+            image_x,
+            image_y,
+            image_w,
+            image_h,
+            0,
+            0,
+            frame.width as i32,
+            frame.height as i32,
+            frame.rgba.as_ptr().cast(),
+            (&mut info as *mut RgbaBitmapInfo).cast::<BITMAPINFO>(),
+            DIB_RGB_COLORS,
+            SRCCOPY,
+        );
+        // 文案：缩略图右侧到 chip 右缘之间；字色取按钮面的 ink（与 `draw_button`
+        // 正常态同源）。选中态文字下沉 1px，与 `draw_button` 的 shift 同口径。
+        let text_left = image_x + image_w + scaled(4, scale);
+        let text_right = rect.right() - scaled(4, scale);
+        if text_right > text_left {
+            let mut text_rect = RECT {
+                left: text_left,
+                top: rect.y,
+                right: text_right,
+                bottom: rect.bottom(),
+            };
+            if pressed {
+                text_rect.top += 1;
+                text_rect.bottom += 1;
+            }
+            SetBkMode(hdc, TRANSPARENT);
+            SetTextColor(hdc, paint_win::colorref(face.ink));
+            let text = wide(label);
+            DrawTextW(
+                hdc,
+                text.as_ptr(),
+                -1,
+                &mut text_rect,
+                DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX | DT_END_ELLIPSIS,
+            );
+        }
+    }
 }
 
 /// 卡片底板（`PanelElement::Card` 的自绘 STATIC）绘制：`--fbg` 底 + `--bedge`
@@ -2209,18 +2361,34 @@ unsafe fn apply_full(state: &mut ChatWinState, snapshot: &crate::ui::chat::ChatS
     }
 }
 
-/// A3 待发送条重建（选择后、发送前的预览条；只显示元数据，不解码图片）。
+/// A3 待发送条重建（选择后、发送前的预览条）。
 ///
 /// 发送成功 / 撤选 / 切会话都会让快照里的 `pending_images` 变化并经整帧刷新
 /// 回到这里 —— 条目随快照整体替换，不另存第二份选择态。
+///
+/// 2026-10-06 用户实测两件事落在这里：
+/// - 条目带**缩略图**（粘贴的图要看得见）：像素来自共享 `pending_strip` 缓存，
+///   未就绪先按文字形态显示、就绪后由工作线程重推快照自动补上 —— **本函数不解码**；
+/// - 条目超出条宽时**横向可滚**（子控件按内容坐标建，`layout_panes_for` 统一平移；
+///   滚轮在 `scroll_pending_from_wheel`），新增条目自动滚到最右露出刚加的图。
 unsafe fn rebuild_pending(state: &mut ChatWinState, snapshot: &crate::ui::chat::ChatSnapshot) {
     unsafe {
         for child in state.pending_children.drain(..) {
             DestroyWindow(child.hwnd);
+            // 缩略图注册表随控件换代（owner-draw 按 hwnd 查表，旧句柄不留影）。
+            PENDING_THUMBS.with(|images| {
+                images.borrow_mut().remove(&child.hwnd);
+            });
         }
         state.pending_targets.clear();
+        // 条内集合就是缩略图缓存的保留集：撤选/发送/切会话后，条外像素立即下岗。
+        crate::ui::chat::retain_pending_thumbs(&snapshot.pending_images);
         if snapshot.pending_images.is_empty() {
             state.pending_height = 0;
+            state.pending_content_w = 0;
+            state.pending_scroll_x = 0;
+            state.pending_count = 0;
+            state.pending_reveal_end = false;
             update_send_enabled(state); // 待发送区变化 = 「发送」可用态的输入之一
             return; // 空 = 已释放（控件不必存在）
         }
@@ -2232,11 +2400,31 @@ unsafe fn rebuild_pending(state: &mut ChatWinState, snapshot: &crate::ui::chat::
         // 左起 `PENDING_PAD_X`（`.pend` 的 10px 左右内边距）。
         let chip_y = ((height - chip_h) / 2).max(0);
         let mut x = scaled(PENDING_PAD_X, scale);
+        let mut thumbs: Vec<(HWND, DecodedFrame)> = Vec::new();
         for (index, image) in snapshot.pending_images.iter().enumerate() {
             let label = crate::ui::chat::pending_label(image);
-            let logical =
-                (crate::ui::chat::panels::estimated_text_width(&label, 12.0).ceil() as i32 + 20)
-                    .clamp(PENDING_ITEM_MIN_WIDTH, PENDING_ITEM_MAX_WIDTH);
+            // 缩略图只查缓存/登记任务（解码在 `deskpet-pending-thumb` 工作线程）；
+            // 未就绪（Loading/Unavailable）按纯文案走 —— 不显示半个图。
+            let thumb = match crate::ui::chat::pending_thumb(image) {
+                crate::ui::chat::PendingThumbStatus::Ready(frame) => {
+                    let (thumb_w, thumb_h) =
+                        crate::ui::chat::pending_strip::thumb_display_size(frame.width, frame.height);
+                    Some((frame, thumb_w, thumb_h))
+                }
+                _ => None,
+            };
+            let text_width = crate::ui::chat::panels::estimated_text_width(&label, 12.0);
+            let thumb_width = thumb
+                .as_ref()
+                .map(|(_, width, _)| f64::from(*width))
+                .unwrap_or(0.0);
+            let logical = crate::ui::chat::pending_strip::chip_width(
+                text_width,
+                thumb_width,
+                f64::from(PENDING_ITEM_MIN_WIDTH),
+                f64::from(PENDING_ITEM_MAX_WIDTH),
+            )
+            .round() as i32;
             let width = scaled(logical, scale);
             let hwnd = CreateWindowExW(
                 0,
@@ -2254,6 +2442,9 @@ unsafe fn rebuild_pending(state: &mut ChatWinState, snapshot: &crate::ui::chat::
             );
             if hwnd != 0 {
                 make_themed_button_r(hwnd, ButtonRole::Pending, scale, theme::tokens().radii.sm);
+                if let Some((frame, _, _)) = thumb {
+                    thumbs.push((hwnd, frame));
+                }
                 state.pending_children.push(ChildEntry {
                     hwnd,
                     x,
@@ -2268,8 +2459,88 @@ unsafe fn rebuild_pending(state: &mut ChatWinState, snapshot: &crate::ui::chat::
             state.pending_targets.push(image.path.clone());
             x += width + scaled(6, scale);
         }
+        PENDING_THUMBS.with(|images| {
+            let mut images = images.borrow_mut();
+            for (hwnd, frame) in thumbs {
+                images.insert(hwnd, frame);
+            }
+        });
+        // 内容总宽走共享几何（与 macOS 同一口径；单位 = 物理像素，各输入同单位）。
+        let widths: Vec<f64> = state
+            .pending_children
+            .iter()
+            .map(|child| f64::from(child.w))
+            .collect();
+        state.pending_content_w = crate::ui::chat::pending_strip::strip_content_width(
+            &widths,
+            f64::from(scaled(PENDING_PAD_X, scale)),
+            f64::from(scaled(6, scale)),
+        )
+        .round() as i32;
+        // 新增条目（张数变多）→ 由 layout 滚到最右，把刚加的图露出来。
+        let count = snapshot.pending_images.len();
+        if count > state.pending_count {
+            state.pending_reveal_end = true;
+        }
+        state.pending_count = count;
         state.pending_height = height;
         update_send_enabled(state); // 待发送区变化 = 「发送」可用态的输入之一
+        // 条内容变化（增删条目/滚动偏移）也要重画条底的滚动指示；条目控件自身的
+        // 重绘范围不含那条细线。几何未变时 layout 不会整窗作废，这里显式作废条区
+        //（首次重建时 `paint.pending` 还是空矩形，作废零面积 = no-op，随后 layout
+        // 因条区从无到有整窗作废一次）。
+        InvalidateRect(state.hwnd, &state.paint.pending, 0);
+    }
+}
+
+/// 滚轮 → 待发送条横向滚动；返回是否消费本次滚轮。
+///
+/// 只有「光标在待发送条内」且「内容宽超过条宽」才消费（不抢画布/其它控件的滚轮）。
+/// 判定用 `GetCursorPos` 换算到客户区而不是看焦点：子按钮持焦点时滚轮消息同样转到
+/// 本窗，按光标位置判与「鼠标在哪就滚哪」的直觉一致。滚动量与钳制走共享
+/// `pending_strip::clamp_scroll`，重排复用 `layout_panes_for`（唯一摆放口径）。
+fn scroll_pending_from_wheel(hwnd: HWND, msg: u32, wparam: WPARAM) -> bool {
+    unsafe {
+        let mut point = POINT { x: 0, y: 0 };
+        if GetCursorPos(&mut point) == 0 {
+            return false;
+        }
+        ScreenToClient(hwnd, &mut point);
+        let target = CHAT.with(|cell| {
+            cell.borrow()
+                .as_ref()
+                .filter(|state| !rect_is_empty(&state.paint.pending))
+                .map(|state| (win_rect_of(&state.paint.pending), state.pending_content_w))
+        });
+        let Some((pending, content_w)) = target else {
+            return false;
+        };
+        let max_scroll = (content_w - pending.w).max(0);
+        if max_scroll == 0 || !rect_contains(pending, point.x, point.y) {
+            return false;
+        }
+        // 滚轮增量在**高字**（低字是按键标志）；纵向轮向下 = 往右看（露出右侧条目），
+        // 横向轮向右 = 往右看 —— 与 macOS 触控板横扫/滚轮的方位一致。
+        let delta = i32::from(((wparam >> 16) & 0xFFFF) as u16 as i16);
+        if delta == 0 {
+            return false;
+        }
+        let direction = if msg == WM_MOUSEHWHEEL { delta } else { -delta };
+        let step = scaled(PENDING_SCROLL_STEP, dpi_scale(hwnd)) * direction / 120;
+        // 高分辨率滚轮（±小于一格）至少给 1 像素，避免整格没有反应。
+        let shift = if step == 0 {
+            direction.signum()
+        } else {
+            step.clamp(-max_scroll, max_scroll)
+        };
+        with_chat(|state| {
+            state.pending_scroll_x = (state.pending_scroll_x + shift).clamp(0, max_scroll);
+            // 唯一摆放口径：重排由 `layout_panes_for` 统一做（含偏移钳制与 reveal）。
+            layout_panes_for(state);
+            // 指示条 thumb 位置随滚动变，而它不在条目控件的重绘范围里：显式作废条区。
+            InvalidateRect(state.hwnd, &state.paint.pending, 0);
+        });
+        true
     }
 }
 
@@ -3933,6 +4204,10 @@ unsafe fn build_children(hwnd: HWND) {
             pending_children: Vec::new(),
             pending_height: 0,
             pending_targets: Vec::new(),
+            pending_content_w: 0,
+            pending_scroll_x: 0,
+            pending_count: 0,
+            pending_reveal_end: false,
             titlebar_brand,
             titlebar_status,
             nav_hide,
@@ -4021,10 +4296,29 @@ unsafe fn layout_panes_for(state: &mut ChatWinState) {
             );
         }
         // A3：待发送条（有选择时）在输入行之上、功能面板区之下；无选择时高度为 0。
+        // 2026-10-06 横向可滚：子控件 x 记的是**内容坐标**，这里按滚动偏移平移；
+        // 越界偏移钳回（撤选/变窄后不留空白滚动区），新增条目滚到最右露出刚加的图。
+        let max_scroll = (state.pending_content_w - width).max(0);
+        state.pending_scroll_x = state.pending_scroll_x.clamp(0, max_scroll);
+        if state.pending_reveal_end {
+            state.pending_reveal_end = false;
+            if let Some(last) = state.pending_children.last() {
+                state.pending_scroll_x = crate::ui::chat::pending_strip::clamp_scroll(
+                    crate::ui::chat::pending_strip::reveal_offset(
+                        f64::from(last.x),
+                        f64::from(last.w),
+                        f64::from(width),
+                    ),
+                    f64::from(state.pending_content_w),
+                    f64::from(width),
+                )
+                .round() as i32;
+            }
+        }
         for child in &state.pending_children {
             MoveWindow(
                 child.hwnd,
-                child.x,
+                child.x - state.pending_scroll_x,
                 pending_y + child.y,
                 child.w,
                 child.h,
@@ -4741,7 +5035,17 @@ unsafe extern "system" fn chat_wndproc(
             unsafe { handle_dropped_files(wparam as HDROP) };
             0
         }
-        WM_MOUSEWHEEL => {
+        WM_MOUSEWHEEL | WM_MOUSEHWHEEL => {
+            // 2026-10-06 多张截图可达性：滚轮落在待发送条上时横向滚条（光标在哪就滚
+            // 哪；子按钮持焦点时滚轮消息也会转到本窗）。不在条内/没超宽则不消费，
+            // 落回既有语义。
+            if unsafe { scroll_pending_from_wheel(hwnd, msg, wparam) } {
+                return 0;
+            }
+            if msg == WM_MOUSEHWHEEL {
+                // 横向轮在别的区域没有既有语义：交回默认处理。
+                return unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) };
+            }
             // 焦点在输入区时的滚轮也滚正文：转发为行滚动给画布。
             let canvas = CHAT.with(|cell| cell.borrow().as_ref().map(|state| state.canvas));
             if let Some(canvas) = canvas {
@@ -4792,6 +5096,9 @@ unsafe extern "system" fn chat_wndproc(
                 for child in &state.pending_children {
                     DestroyWindow(child.hwnd);
                 }
+                // 缩略图注册表随控件一起清（窗口重建后 HWND 可能被复用，旧句柄
+                // 留下的帧会挂到新按钮上）。
+                PENDING_THUMBS.with(|images| images.borrow_mut().clear());
                 for child in &state.children {
                     DestroyWindow(child.hwnd);
                 }

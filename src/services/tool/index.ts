@@ -64,3 +64,6 @@ export type { ToolResultEntryReader, ToolResultLookup } from "./session-transcri
 // ── 回合默认激活面与按需取用（唯一判定 + 取用入口）──
 export { defaultActiveToolNames } from "./activation"
 export { createEnableToolsTool, ENABLE_TOOLS_TOOL } from "./enable-tools"
+
+// ── 计划提议工具名（系统提示的工具指引与注册点共用同一命令名）──
+export { PROPOSE_PLAN_TOOL } from "./local-extra/plan"

@@ -8,6 +8,14 @@
 // 此前测试未带 caseId）。hs-02 的「读写都下发 5 MB 硬上限」口径经复核仍成立（写侧不变；
 // 读侧折叠守卫已归 hs-07 的 maxFileBytes，非会话 FileSystem 的 file_read 上限不变）。
 // 其余点不在改动面内、实现点仍在；sourceHash 按当前源码复算。
+// 2026-10-06 契约刷新（第二轮验收 · 本批刷新）：sourceFiles 变化 ——
+// src/services/tool/pi/native-execution-env.ts 只有注释新增（exec 的 timeoutMs 秒→毫秒换算
+// 与 pi-bash 的 prepareArguments 下传、直调 null 由 Rust 同值兜底的关系说明，属 bash 超时
+// 档位批次；换算本身不在本契约覆盖点的行为面内）。hs-01..hs-09 逐点核对：MAX_TOOL_FILE_BYTES
+// = 5 MiB（读侧上限与 file_write/file_append 单次写上限、会话条目写盘的唯一物理上限）与
+// 错误码映射（PATH_NOT_FOUND→not_found、未列出的码保持 unknown）实现点仍在；FOLD_POLICY 的
+// minFileBytes / maxFileBytes（64 MiB，折叠自愿的读上界）/ 结果守卫读 MAX_TOOL_FILE_BYTES
+// 三处与 hs-07 描述一致。未修订覆盖点，仅按当前源码刷新 sourceHash。
 import type { ModuleContract } from "../host/types"
 
 export const harnessStorageContract: ModuleContract = {
@@ -19,7 +27,7 @@ export const harnessStorageContract: ModuleContract = {
     "src/services/tool/pi/native-execution-env.ts",
     "src/services/session/repo.ts",
   ],
-  sourceHash: "569c62f7523452ae751c487493c7aa3b7550e9e4320ff88643f9780e5b697243",
+  sourceHash: "13002c54e83fe1849380b9f58fd1e1418b4798cf6dbeb4b3d9f47386ae434902",
   coverage: [
     {
       id: "hs-01",

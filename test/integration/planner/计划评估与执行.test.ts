@@ -227,7 +227,7 @@ describe("计划评估与执行", () => {
 
     // 指定的工具解析不到就不开工：拿剩下的工具跑等于这一步的权限面既不可信也不可复现。
     // 「解析不到」包含两种名字 —— 根本没注册，以及注册了但到不了子代理（派生型工具，
-    // `isolation=delegate`，现只有 agent_spawn）：后者在 runPiSubAgent 会被剥掉，等同于不存在，
+    // `isolation=delegate`，现为 agent_spawn 与 propose_plan）：后者在 runPiSubAgent 会被剥掉，等同于不存在，
     // 走同一条硬失败（planner.ts:428-443）。这里用的是前一种；后一种（真实的派生型工具名）
     // 在本场景末尾补齐。
     // 「不开工」不等于 onStepStart 不触发 —— 它表示「步骤进入执行、计时开始」（planner.ts:368），

@@ -65,6 +65,20 @@
 // 观察决策、静默了解与话题链路未动）。ob-01..ob-09 逐点核对实现点仍在、覆盖描述与当前实现
 // 一致（ob-09 的档位门禁与 ob-04 的读取名额/决策解析未受本批影响），未修订覆盖点，仅按当前
 // 源码刷新 sourceHash。
+// 2026-10-06 dreaming 日 token 闸撤除批次（本批刷新）：sourceFiles 变化 ——
+// src/services/agent/memory/ipc.ts（reserveMemoryDreamingBudget 去 dailyLimit、返回 void）与
+// crates/native-host/src/host/dispatch.rs（对应分派臂同步）：dreaming 日 token 上限不再作门禁，
+// 预留只记账。本契约覆盖点不在改动面内，未修订；本批刷新同时包含工作树中其它并发改动的
+// 源文件（非逐行行为审计），sourceHash 按当前源码复算。
+// 2026-10-06 第二轮实测反馈批次（本批验收 analyze→generate）：sourceFiles 行为面变化 ——
+// config.ts（回合墙钟 120s→600s、计划步骤 90s→300s：观察/静默了解链不读这两个键）、
+// agent/memory/ipc.ts（dreaming 预留在命令层只记账：去 dailyLimit、返回 void）、
+// proactive/store.rs 与 commands.rs（claim 与辅助预留撤 token 总量闸：辅助侧仍按请求
+// dailyLimit 与档位天花板收紧次数，ob-09 的档位参数预留语义未变）、host/dispatch.rs（对应
+// 分派臂同步）、ui/settings/schema.rs（dreaming 档位 help 文案去 token 预算措辞，非行为面）、
+// engine/harness/index.ts（新增 readLastConversationPromptTokens 导出；ob-07 的负向缺席名
+// 复核仍无命中）。ob-01..ob-09 逐点核对实现点仍在、覆盖描述与当前实现一致，未修订覆盖点，
+// sourceHash 按当前工作区源码复算（同时含并行工作线在非本契约文件上的改动）。
 import type { ModuleContract } from "../host/types"
 
 export const observationContract: ModuleContract = {
@@ -119,7 +133,7 @@ export const observationContract: ModuleContract = {
     "test/integration/observation/了解层与话题来源.test.ts",
     "test/e2e/scenes/observation/静默访问关闭边界.scene.ts",
   ],
-  sourceHash: "671a7f70daabd808d96ead14cf1c3c08cb313113e95d82978e77dfffec6d6f94",
+  sourceHash: "976fb22818645800fcfc59f86b1cdbc926b339550babc42d11a6cff93b5d9396",
   coverage: [
     {
       id: "ob-01",

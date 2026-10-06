@@ -411,34 +411,35 @@ pub struct MemoryStore {
 }
 
 impl MemoryStore {
+    /// 登记一笔 dreaming token 预留 —— **纯记账，不做日 token 总量准入**。
+    ///
+    /// 2026-10-06 用户裁决（与主动链同批口径：「一天最多几次」保留、「一天最多烧多少
+    /// token」取消）：日 token 上限是资源账、不是门禁，预留一律接受并照记；批次容量
+    /// 边界靠 `MAX_BATCHES_PER_RUN` 与单批预算。账的读取面仍是 `dreaming_budget`。
+    /// 参数校验与幂等重放（同 reservationId 同昼同额的原样返回）保持原语义。
     pub fn reserve_dreaming_budget(
         &self,
         reservation_id: &str,
         local_date: &str,
         reserve: i64,
-        limit: i64,
-    ) -> AppResult<bool> {
-        if reservation_id.is_empty() || local_date.len() != 10 || reserve < 0 || limit < 0 {
+    ) -> AppResult<()> {
+        if reservation_id.is_empty() || local_date.len() != 10 || reserve < 0 {
             return Err(AppError::Memory("dreaming 预算参数无效".into()));
         }
         let mut conn = self.lock()?;
         let tx = conn
             .transaction_with_behavior(TransactionBehavior::Immediate)
             .map_err(db_err)?;
-        if let Some((saved_day,saved_amount,status))=tx.query_row("SELECT local_date,reserved_tokens,status FROM memory_dreaming_reservations WHERE reservation_id=?1",[reservation_id],|r|Ok((r.get::<_,String>(0)?,r.get::<_,i64>(1)?,r.get::<_,String>(2)?))).optional().map_err(db_err)? {
+        if let Some((saved_day,saved_amount))=tx.query_row("SELECT local_date,reserved_tokens FROM memory_dreaming_reservations WHERE reservation_id=?1",[reservation_id],|r|Ok((r.get::<_,String>(0)?,r.get::<_,i64>(1)?))).optional().map_err(db_err)? {
             if saved_day!=local_date||saved_amount!=reserve{return Err(AppError::MemoryConflict);}
-            tx.commit().map_err(db_err)?;return Ok(status=="reserved");
+            tx.commit().map_err(db_err)?;return Ok(());
         }
-        tx.execute("INSERT INTO memory_dreaming_budgets(local_date,updated_at) VALUES (?1,?2) ON CONFLICT(local_date) DO NOTHING",params![local_date,now_ms()]).map_err(db_err)?;
-        let (reserved,used):(i64,i64)=tx.query_row("SELECT reserved_tokens,used_tokens FROM memory_dreaming_budgets WHERE local_date=?1",[local_date],|r|Ok((r.get(0)?,r.get(1)?))).map_err(db_err)?;
-        let accepted = limit > 0 && reserved.saturating_add(used).saturating_add(reserve) <= limit;
-        if accepted {
-            let now = now_ms();
-            tx.execute("UPDATE memory_dreaming_budgets SET reserved_tokens=reserved_tokens+?2,updated_at=?3 WHERE local_date=?1",params![local_date,reserve,now]).map_err(db_err)?;
-            tx.execute("INSERT INTO memory_dreaming_reservations(reservation_id,local_date,reserved_tokens,used_tokens,status,created_at,updated_at) VALUES (?1,?2,?3,NULL,'reserved',?4,?4)",params![reservation_id,local_date,reserve,now]).map_err(db_err)?;
-        }
+        let now = now_ms();
+        tx.execute("INSERT INTO memory_dreaming_budgets(local_date,updated_at) VALUES (?1,?2) ON CONFLICT(local_date) DO NOTHING",params![local_date,now]).map_err(db_err)?;
+        tx.execute("UPDATE memory_dreaming_budgets SET reserved_tokens=reserved_tokens+?2,updated_at=?3 WHERE local_date=?1",params![local_date,reserve,now]).map_err(db_err)?;
+        tx.execute("INSERT INTO memory_dreaming_reservations(reservation_id,local_date,reserved_tokens,used_tokens,status,created_at,updated_at) VALUES (?1,?2,?3,NULL,'reserved',?4,?4)",params![reservation_id,local_date,reserve,now]).map_err(db_err)?;
         tx.commit().map_err(db_err)?;
-        Ok(accepted)
+        Ok(())
     }
 
     pub fn settle_dreaming_budget(

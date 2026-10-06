@@ -74,7 +74,8 @@ use objc2_app_kit::{
     NSForegroundColorAttributeName, NSImage, NSImageScaling, NSImageView, NSLineBreakMode,
     NSLinkAttributeName, NSMenu, NSMenuItem, NSMutableParagraphStyle,
     NSParagraphStyleAttributeName, NSPasteboard, NSPasteboardTypeFileURL, NSPasteboardTypePNG,
-    NSPasteboardTypeTIFF, NSScrollView, NSTextBlockLayer, NSTextBlockValueType, NSTextDelegate,
+    NSPasteboardTypeTIFF, NSScrollView, NSScrollerStyle, NSTextBlockLayer, NSTextBlockValueType,
+    NSTextDelegate,
     NSTextField, NSTextInputClient, NSTextList, NSTextListMarkerDecimal, NSTextListMarkerDisc,
     NSTextTable, NSTextTableBlock, NSTextView, NSTextViewDelegate, NSView,
     NSViewBoundsDidChangeNotification, NSWindow, NSWindowDelegate, NSWindowStyleMask, NSWorkspace,
@@ -93,6 +94,7 @@ use crate::ui::chat::panels::{
     role_label_text, PanelFrame, BUBBLE_PAD_X, BUBBLE_PAD_Y, BUBBLE_SIDE_MARGIN,
     HANDLE_ARROW_WIDTH, HANDLE_HEIGHT,
 };
+use crate::ui::chat::pending_strip;
 use crate::ui::chat::placeholders::placeholder_label;
 use crate::ui::chat::richtext::{
     parse_blocks, resolve_link_click, Block, Span, TableRow, INERT_LINK_VALUE,
@@ -668,6 +670,22 @@ fn image_from_rgba(frame: &DecodedFrame) -> Option<Retained<NSImage>> {
     }
 }
 
+/// 待发送缩略图的 NSImage：RGBA→NSImage 依旧走 [`image_from_rgba`]（唯一转换点），
+/// 只把**逻辑尺寸**设成 chip 内的显示尺寸 —— 帧按 3× 像素预算解码，Retina 下以源
+/// 像素缩绘（配 `ScaleProportionallyDown`：不放大，内边区不足时只缩）。
+fn thumbnail_image_from_rgba(
+    frame: &DecodedFrame,
+    width: f64,
+    height: f64,
+) -> Option<Retained<NSImage>> {
+    if width <= 0.0 || height <= 0.0 {
+        return None;
+    }
+    let image = image_from_rgba(frame)?;
+    image.setSize(NSSize::new(width, height));
+    Some(image)
+}
+
 // ==========================================
 // 通用提示对话框（`ui::chat::dialog` 的平台实现）
 // ==========================================
@@ -995,8 +1013,10 @@ fn commit_file_drop(sender: &ProtocolObject<dyn NSDraggingInfo>) -> Bool {
 
 define_class!(
     /// 聊天输入：`NSTextView` 原生 IME（预编辑上屏/候选窗跟随是系统行为），
-    /// 只覆盖 Enter 语义 —— 组合输入（marked text）中一律交还系统，
-    /// 与今天前端 `e.isComposing || keyCode === 229` 的护栏同义。
+    /// 覆盖 Enter 语义 —— 组合输入（marked text）中一律交还系统，
+    /// 与今天前端 `e.isComposing || keyCode === 229` 的护栏同义；
+    /// 另在视图层接住 ⌘V/⌘C/⌘X/⌘A（Accessory 策略无应用菜单，标准编辑键
+    /// 没有 key equivalent，为什么见 `keyDown:` 的注释）。
     ///
     /// A3：同时接管文件拖入（把文件拖进输入区 → 待发送区），不让 NSTextView
     /// 自带的拖放把路径/附件插进正文；非文件拖放一律拒绝（有意取舍：输入区
@@ -1045,6 +1065,43 @@ define_class!(
     impl ChatInputView {
         #[unsafe(method(keyDown:))]
         fn key_down(&self, event: &NSEvent) {
+            // ── 标准编辑快捷键（⌘V / ⌘C / ⌘X / ⌘A）──
+            // 为什么在视图层接：产品用 `NSApplicationActivationPolicy::Accessory`
+            //（桌宠，**刻意不设应用主菜单** —— 不占菜单栏、不进 Cmd+Tab；策略与理由
+            // 见 `macos.rs::run_service`）。没有主菜单就没有 key equivalent，这些标准
+            // 编辑键 AppKit 无处派发，只会响一声 beep（用户实测症状）。补挂菜单会
+            // 推翻上面的产品设计，所以由输入视图自己接住这四个键。
+            // 只接这四个 —— 其余 ⌘ 组合不吞，落回下面的既有逻辑（slash 导航 /
+            // Return / super）。
+            if let Some(key) = command_shortcut_key(event) {
+                match key.as_str() {
+                    // 与 `paste:` 消息共用同一份粘贴实现（图片优先，否则原生文本粘贴）。
+                    "v" => {
+                        self.perform_paste(None);
+                        return;
+                    }
+                    "c" => {
+                        unsafe {
+                            let _: () = msg_send![super(self), copy: None::<&AnyObject>];
+                        }
+                        return;
+                    }
+                    "x" => {
+                        unsafe {
+                            let _: () = msg_send![super(self), cut: None::<&AnyObject>];
+                        }
+                        return;
+                    }
+                    "a" => {
+                        unsafe {
+                            let _: () = msg_send![super(self), selectAll: None::<&AnyObject>];
+                        }
+                        return;
+                    }
+                    _ => {}
+                }
+            }
+
             let key_code = event.keyCode();
             let is_return = key_code == 36 || key_code == 76; // Return / 小键盘 Enter
             let shift = event.modifierFlags().contains(NSEventModifierFlags::Shift);
@@ -1093,19 +1150,13 @@ define_class!(
             }
         }
 
-        /// 输入框 ⌘V（Edit 菜单与 ⌘V 的共同入口，覆写 NSText 的粘贴方法）：
-        /// 剪贴板里是图片（或文件）就接进待发送区，否则原样回落系统文本粘贴。
-        ///
-        /// 平台层只做剪贴板读取；落盘、转码、准入与待发送区全在共享模块
-        /// `ui::chat::paste`（单一实现点，平台不复制规则）。
+        /// 输入框的 `paste:` 消息入口（覆写 NSText 的粘贴方法）：右键系统菜单的
+        /// 「粘贴」项等 target-action 派发走这里；⌘V 在 `keyDown:` 里直接调
+        /// [`ChatInputView::perform_paste`] —— 两条入口共用同一份实现，
+        /// 粘贴规则不复制第二份。
         #[unsafe(method(paste:))]
         fn paste(&self, sender: Option<&AnyObject>) {
-            if paste_clipboard_media() {
-                return;
-            }
-            unsafe {
-                let _: () = msg_send![super(self), paste: sender];
-            }
+            self.perform_paste(sender);
         }
     }
 );
@@ -1208,6 +1259,20 @@ impl ChatInputView {
         unsafe { &*(self as *const ChatInputView as *const NSTextView) }
     }
 
+    /// 粘贴语义的唯一实现（`paste:` 消息与 `keyDown:` 的 ⌘V 分支共用）：
+    /// 剪贴板里是图片（或文件）就接进待发送区，否则原样回落系统文本粘贴。
+    ///
+    /// 平台层只做剪贴板读取；落盘、转码、准入与待发送区全在共享模块
+    /// `ui::chat::paste`（单一实现点，平台不复制规则）。
+    fn perform_paste(&self, sender: Option<&AnyObject>) {
+        if paste_clipboard_media() {
+            return;
+        }
+        unsafe {
+            let _: () = msg_send![super(self), paste: sender];
+        }
+    }
+
     /// 把当前选中的 slash 候选填回输入框（光标移到末尾；不执行命令）。
     fn autofill_selected_slash(&self) {
         let Some(fill) = crate::ui::chat::slash_autofill() else {
@@ -1227,6 +1292,29 @@ impl ChatInputView {
 fn input_has_marked_text(input: &NSTextView) -> bool {
     let client: &ProtocolObject<dyn NSTextInputClient> = ProtocolObject::from_ref(input);
     client.hasMarkedText()
+}
+
+/// 「纯 ⌘ 组合键」的字符（小写化）：含 Command 且**不含** Control / Option 时返回
+/// `charactersIgnoringModifiers()` 的小写形态；其它组合（带 Control/Option 的、
+/// 非 Command 的、取不到字符的）一律 `None`。Shift 允许参与，`⌘⇧V` 与 `⌘V`
+/// 同键（大小写差异由小写化抹平）。
+///
+/// 为什么存在这个函数：产品用 `NSApplicationActivationPolicy::Accessory`
+///（桌宠，刻意不设应用主菜单，见 `macos.rs::run_service`）—— 标准编辑快捷键
+/// 没有 key equivalent 可派发，AppKit 只会 beep。`ChatInputView` 与
+/// `MessageTextView` 都在自己的 `keyDown:` 里经它接住 ⌘V/⌘C/⌘X/⌘A
+///（判据只此一份，两个视图不各写一套修饰键条件）。
+fn command_shortcut_key(event: &NSEvent) -> Option<String> {
+    let flags = event.modifierFlags();
+    if !flags.contains(NSEventModifierFlags::Command)
+        || flags.contains(NSEventModifierFlags::Control)
+        || flags.contains(NSEventModifierFlags::Option)
+    {
+        return None;
+    }
+    event
+        .charactersIgnoringModifiers()
+        .map(|chars| chars.to_string().to_lowercase())
 }
 
 impl ChatInputView {
@@ -1541,14 +1629,21 @@ struct ChatContentIvars {
     jump_latest_revision: Cell<u64>,
     /// 用户最后一次「在底部」时看到的流式尾巴文本（未读判定水位）。
     jump_seen_tail: RefCell<Option<String>>,
-    /// 待发送条容器（有选择时显示）。
-    pending_strip: OnceCell<Retained<NSView>>,
+    /// 待发送条容器（有选择时显示；`NSScrollView` 横向滚动，见 `rebuild_pending`）。
+    pending_strip: OnceCell<Retained<NSScrollView>>,
+    /// 待发送条滚动区的内容容器（条目按钮的父视图；帧宽 = 内容总宽）。
+    pending_content: OnceCell<Retained<NSView>>,
     /// 待发送条目按钮（保持引用直到重建替换）。
     pending_buttons: RefCell<Vec<Retained<NSButton>>>,
     /// 待发送条目 tag → 原路径（每次重建整体替换）。
     pending_targets: RefCell<Vec<String>>,
     /// 待发送条高度（0 = 不显示；relayout_panes 取用）。
     pending_height: Cell<f64>,
+    /// 待发送条内容总宽（逻辑 pt；`rebuild_pending` 写、`relayout_panes` 读 ——
+    /// 文档视图宽与滚动上限都由它推出）。
+    pending_content_width: Cell<f64>,
+    /// 上一次重建的条目数（新增条目时自动滚到最右，把刚加的图露出来）。
+    pending_count: Cell<usize>,
     // ── W8b 面板区 ──
     /// 面板容器（位于正文滚动区与输入区之间；只放流内面板：决策 + 临时）。
     panel_stack: OnceCell<Retained<ChatStackView>>,
@@ -2316,9 +2411,12 @@ impl ChatContentController {
             send_button: OnceCell::new(),
             jump_button: OnceCell::new(),
             pending_strip: OnceCell::new(),
+            pending_content: OnceCell::new(),
             pending_buttons: RefCell::new(Vec::new()),
             pending_targets: RefCell::new(Vec::new()),
             pending_height: Cell::new(0.0),
+            pending_content_width: Cell::new(0.0),
+            pending_count: Cell::new(0),
             panel_stack: OnceCell::new(),
             panel_height: Cell::new(0.0),
             handle_band: OnceCell::new(),
@@ -2640,14 +2738,30 @@ impl ChatContentController {
         let _ = self.ivars().send_button.set(send.clone());
         content.addSubview(&send);
 
-        let pending = NSView::initWithFrame(
+        // A3 待发送条 = **横向滚动区**（2026-10-06 用户实测「多张截图不能滚动」：
+        // 条目超出条宽时旧的纯 NSView 直接裁掉，右端条目露不全也点不到）。
+        // 滚动条取 overlay 样式 + 自动隐藏：浮在条内**不占布局高度**（输入区高度不跳），
+        // 且显式压过系统「始终显示滚动条」偏好 —— legacy 滚动条会吃掉约 15pt 条高，
+        // 32pt 的条里 22pt 的 chip 会被切掉。
+        let pending = NSScrollView::initWithFrame(
+            NSScrollView::alloc(mtm),
+            NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(width, PENDING_HEIGHT)),
+        );
+        pending.setHasHorizontalScroller(true);
+        pending.setHasVerticalScroller(false);
+        pending.setAutohidesScrollers(true);
+        pending.setScrollerStyle(NSScrollerStyle::Overlay);
+        pending.setBorderType(NSBorderType::NoBorder);
+        pending.setDrawsBackground(false); // 条底由主题层画（`.pend` 的 `--fbg2`）
+        // 内容容器（条目按钮的父视图；帧宽 = 内容总宽，由重建/重排写）。
+        let pending_content = NSView::initWithFrame(
             NSView::alloc(mtm),
             NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(width, PENDING_HEIGHT)),
         );
-        // 条目超出窄列宽度时裁切（与标签条同口径；右侧不越界绘制）。
-        pending.setClipsToBounds(true);
+        pending.setDocumentView(Some(&pending_content));
         pending.setHidden(true);
         let _ = self.ivars().pending_strip.set(pending.clone());
+        let _ = self.ivars().pending_content.set(pending_content);
         content.addSubview(&pending);
 
         // ── 浮层 Inspector + 遮罩（脱离布局流；加在最后 = 盖在消息流之上）──
@@ -2972,6 +3086,20 @@ impl ChatContentController {
                 NSPoint::new(band_x, bands.pending_y),
                 NSSize::new(band_w, self.ivars().pending_height.get().max(0.0)),
             ));
+            // 滚动区宽度随窗口变：文档视图宽与滚动量在同一处收口（内容未变的
+            // 窗口缩放不留空白滚动区；越界的旧偏移钳回）。几何走共享 `pending_strip`。
+            if let Some(content) = self.ivars().pending_content.get() {
+                let content_width = self.ivars().pending_content_width.get();
+                content.setFrameSize(NSSize::new(content_width.max(band_w), PENDING_HEIGHT));
+                let clip = pending.contentView();
+                let origin = clip.bounds().origin;
+                let clamped =
+                    pending_strip::clamp_scroll(origin.x, content_width, clip.bounds().size.width);
+                if (origin.x - clamped).abs() > 0.5 {
+                    clip.scrollToPoint(NSPoint::new(clamped, origin.y));
+                    pending.reflectScrolledClipView(&clip);
+                }
+            }
         }
         if let Some(panels) = self.ivars().panel_stack.get() {
             panels.setFrame(NSRect::new(
@@ -3837,18 +3965,29 @@ impl ChatContentController {
         }
     }
 
-    /// 待发送条重建（选择后、发送前的预览条；只显示元数据，不解码图片）。
+    /// 待发送条重建（选择后、发送前的预览条）。
     ///
     /// 发送成功 / 撤选 / 切会话都会让快照里的 `pending_images` 变化并经整帧刷新
     /// 回到这里 —— 条目随快照整体替换，不另存第二份选择态。
+    ///
+    /// 2026-10-06 用户实测两件事落在这里：
+    /// - 条目带**缩略图**（粘贴的图要看得见）：像素来自共享 [`pending_strip`] 缓存，
+    ///   未就绪先按文字形态显示、就绪后由工作线程重推快照自动补上 —— **本函数不解码**；
+    /// - 条目超出条宽时**横向可滚**（`NSScrollView`；宽度/滚动量全走共享几何），
+    ///   新增条目自动滚到最右把刚加的图露出来。
     fn rebuild_pending(&self, mtm: MainThreadMarker, snapshot: &crate::ui::chat::ChatSnapshot) {
         let Some(strip) = self.ivars().pending_strip.get() else {
+            return;
+        };
+        let Some(content) = self.ivars().pending_content.get() else {
             return;
         };
         for button in self.ivars().pending_buttons.borrow_mut().drain(..) {
             button.removeFromSuperview();
         }
         self.ivars().pending_targets.borrow_mut().clear();
+        // 条内集合就是缩略图缓存的保留集：撤选/发送/切会话后，条外像素立即下岗。
+        crate::ui::chat::retain_pending_thumbs(&snapshot.pending_images);
         let height = if snapshot.pending_images.is_empty() {
             0.0
         } else {
@@ -3859,17 +3998,38 @@ impl ChatContentController {
         // 待发送区变化 = 「发送」按钮可用态的输入之一（有图即可发送）。
         self.update_send_enabled();
         if height == 0.0 {
+            self.ivars().pending_content_width.set(0.0);
+            self.ivars().pending_count.set(0);
             return; // 空 = 已释放（控件不必存在）
         }
         let mut x = PENDING_PAD_X;
         let mut targets = Vec::with_capacity(snapshot.pending_images.len());
         let mut buttons = Vec::with_capacity(snapshot.pending_images.len());
+        let mut widths = Vec::with_capacity(snapshot.pending_images.len());
         for (index, image) in snapshot.pending_images.iter().enumerate() {
             // 条目文案带「✕」：点击整条即撤选（设计稿 `.pchip em` 的关闭标记）。
-            let label = format!("{} ✕", crate::ui::chat::pending_label(image));
-            let width = (crate::ui::chat::panels::estimated_text_width(&label, PENDING_TEXT_SIZE)
-                + 20.0)
-                .clamp(PENDING_ITEM_MIN_WIDTH, PENDING_ITEM_MAX_WIDTH);
+            // ✕ 由共享的 `pending_label` 提供（Windows 与单测都吃同一份文案），
+            // 平台层**不再追加** —— 曾经在这里多拼一个，用户会看到两个 ✕。
+            let label = crate::ui::chat::pending_label(image);
+            let text_width =
+                crate::ui::chat::panels::estimated_text_width(&label, PENDING_TEXT_SIZE);
+            // 缩略图只查缓存/登记任务（解码在 `deskpet-pending-thumb` 工作线程）；
+            // 未就绪（Loading/Unavailable）按纯文案走 —— 不显示半个图。
+            let thumb = match crate::ui::chat::pending_thumb(image) {
+                crate::ui::chat::PendingThumbStatus::Ready(frame) => {
+                    let (thumb_w, thumb_h) =
+                        pending_strip::thumb_display_size(frame.width, frame.height);
+                    Some((frame, thumb_w as f64, thumb_h as f64))
+                }
+                _ => None,
+            };
+            let thumb_width = thumb.as_ref().map(|(_, width, _)| *width).unwrap_or(0.0);
+            let width = pending_strip::chip_width(
+                text_width,
+                thumb_width,
+                PENDING_ITEM_MIN_WIDTH,
+                PENDING_ITEM_MAX_WIDTH,
+            );
             let button = unsafe {
                 NSButton::buttonWithTitle_target_action(
                     &NSString::from_str(&label),
@@ -3882,6 +4042,16 @@ impl ChatContentController {
             button.setFont(Some(&crate::ui::platform::macos_widgets::resolve_font(
                 PENDING_TEXT_SIZE,
             )));
+            if let Some((frame, thumb_w, thumb_h)) = &thumb {
+                // 图文走 NSButton 原生布局（图前文后）。缩放用 `ScaleProportionallyDown`：
+                // 按 NSImage 逻辑尺寸（chip 内盒）贴，按钮内边区比预想小时只缩不放
+                // （帧本身已按 3× 像素预算解码，缩下来仍清晰）。
+                if let Some(image) = thumbnail_image_from_rgba(frame, *thumb_w, *thumb_h) {
+                    button.setImage(Some(&image));
+                    button.setImagePosition(NSCellImagePosition::ImageLeading);
+                    button.setImageScaling(NSImageScaling::ScaleProportionallyDown);
+                }
+            }
             // 待发送 chip = 输入框族（设计稿 `.pchip` 的 `--fbg/--fedge/--finner`）。
             paint::style_button(&button, paint::Face::Field);
             button.setTag(index as isize);
@@ -3889,13 +4059,41 @@ impl ChatContentController {
                 NSPoint::new(x, PENDING_PAD_Y),
                 NSSize::new(width, PENDING_CHIP_HEIGHT),
             ));
-            strip.addSubview(&button);
+            content.addSubview(&button);
             x += width + PENDING_CHIP_GAP;
+            widths.push(width);
             targets.push(image.path.clone());
             buttons.push(button);
         }
         *self.ivars().pending_targets.borrow_mut() = targets;
         *self.ivars().pending_buttons.borrow_mut() = buttons;
+        // ── 内容宽与横向滚动（共享几何：宽、偏移、钳制都只有一份口径）──
+        let content_width =
+            pending_strip::strip_content_width(&widths, PENDING_PAD_X, PENDING_CHIP_GAP);
+        self.ivars().pending_content_width.set(content_width);
+        let clip = strip.contentView();
+        let viewport = clip.bounds().size.width;
+        // 文档视图不窄于视口（窄文档不产生滚动区间，也不给 AppKit 任何居中机会）。
+        content.setFrameSize(NSSize::new(content_width.max(viewport), PENDING_HEIGHT));
+        // 新增条目（张数变多）自动滚到最右，把刚加的图露出来；其余情况把越界的旧偏移
+        // 钳回来（撤选/变窄后不留空白滚动区）。
+        let count = snapshot.pending_images.len();
+        let target_offset = if count > self.ivars().pending_count.get() {
+            let last = widths.len() - 1;
+            let last_left = pending_strip::chip_offset(last, &widths, PENDING_PAD_X, PENDING_CHIP_GAP);
+            pending_strip::clamp_scroll(
+                pending_strip::reveal_offset(last_left, widths[last], viewport),
+                content_width,
+                viewport,
+            )
+        } else {
+            pending_strip::clamp_scroll(clip.bounds().origin.x, content_width, viewport)
+        };
+        if (clip.bounds().origin.x - target_offset).abs() > 0.5 {
+            clip.scrollToPoint(NSPoint::new(target_offset, clip.bounds().origin.y));
+            strip.reflectScrolledClipView(&clip);
+        }
+        self.ivars().pending_count.set(count);
         // 条本体全宽由 relayout 定位（设计稿 `.pend` 的底/边线画在条上），这里不设尺寸。
     }
 
@@ -5681,6 +5879,35 @@ define_class!(
                 // 拿不到 MainThreadMarker（正常不可达，本类挂 MainThreadOnly）
                 // 时同样回落系统菜单，不 panic、不吞掉既有项。
                 _ => menu,
+            }
+        }
+
+        /// 键盘编辑键（⌘C / ⌘A）——与输入框同因：Accessory 策略下应用没有主菜单
+        ///（见 [`command_shortcut_key`] 的说明），标准编辑快捷键没有 key equivalent
+        /// 可派发，AppKit 只会 beep（用户实测症状：选中文字按 ⌘C 无反应）。
+        /// 正文视图只接「复制 / 全选」两个键；其余按键（含其它 ⌘ 组合、滚动/翻页/
+        /// 移动插入点）一律落回 super 的 `keyDown:`，既有键行为不变。
+        #[unsafe(method(keyDown:))]
+        fn key_down(&self, event: &NSEvent) {
+            if let Some(key) = command_shortcut_key(event) {
+                match key.as_str() {
+                    "c" => {
+                        unsafe {
+                            let _: () = msg_send![super(self), copy: None::<&AnyObject>];
+                        }
+                        return;
+                    }
+                    "a" => {
+                        unsafe {
+                            let _: () = msg_send![super(self), selectAll: None::<&AnyObject>];
+                        }
+                        return;
+                    }
+                    _ => {}
+                }
+            }
+            unsafe {
+                let _: () = msg_send![super(self), keyDown: event];
             }
         }
     }

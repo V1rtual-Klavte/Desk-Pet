@@ -319,6 +319,9 @@ export class NativeExecutionEnv implements ExecutionEnv {
         executionId,
         command,
         cwd: options?.cwd ?? this.cwd,
+        // Pi 的 timeout 以秒计。pi-bash 的 prepareArguments 已把生效值夹取进参数
+        // （默认 = 上限 = 5 分钟，见 tool/local/bash-timeout.ts），这里只做秒 → 毫秒换算；
+        // null 只会出现在没走 pi-bash 的直调上，由 Rust 的同值兜底接管。
         timeoutMs: options?.timeout === undefined ? null : Math.round(options.timeout * 1000),
         // 上限的真相源是 Rust：这里只在调用方给了 limits 时转发，缺省交给 Rust 的兜底值。
         maxBytes: limits?.maxBytes ?? null,

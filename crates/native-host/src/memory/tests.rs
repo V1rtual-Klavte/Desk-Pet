@@ -983,3 +983,51 @@ fn mcp_credential_rejects_blank_axes() {
     }
     assert_eq!(store.credential_status("github").unwrap(), Vec::<String>::new());
 }
+
+// ── dreaming token 账（只记账，不按日总量准入）──
+
+#[test]
+fn dreaming_budget_records_usage_without_daily_token_gate() {
+    let (_fixture, store) = Fixture::new();
+    // 单笔预留是旧中档上限（72000）的 3 倍：旧口径下这一笔必然被拒。
+    store
+        .reserve_dreaming_budget("job-1:0", "2026-10-05", 216_000)
+        .expect("超出旧日上限的预留被拒绝（日 token 总量门禁又回来了）");
+    assert_eq!(
+        store.dreaming_budget("2026-10-05").unwrap()["reservedTokens"],
+        json!(216_000),
+        "预留没有进账"
+    );
+    // 结算把实际用量（继续超旧上限）记进 used：账照记，不是清零。
+    store
+        .settle_dreaming_budget("job-1:0", "2026-10-05", 216_000, Some(300_000))
+        .expect("结算失败");
+    let budget = store.dreaming_budget("2026-10-05").unwrap();
+    assert_eq!(budget["usedTokens"], json!(300_000), "用量没有记进账");
+    assert_eq!(budget["reservedTokens"], json!(0), "结算没有释放预留");
+    // 当日账已远超旧三档上限（24000 / 72000 / 120000）后，新预留仍被接受并照记。
+    store
+        .reserve_dreaming_budget("job-1:1", "2026-10-05", 90_000)
+        .expect("当日账超旧上限后新预留被拒绝");
+    assert_eq!(
+        store.dreaming_budget("2026-10-05").unwrap()["reservedTokens"],
+        json!(90_000)
+    );
+    // 幂等重放：同 id 同昼同额直接返回原账，不重复累加。
+    store
+        .reserve_dreaming_budget("job-1:1", "2026-10-05", 90_000)
+        .expect("同额重放被拒绝");
+    assert_eq!(
+        store.dreaming_budget("2026-10-05").unwrap()["reservedTokens"],
+        json!(90_000),
+        "重放把同一笔预留记了两次"
+    );
+    // 参数校验与冲突语义保持：空 id / 非法日期 / 负数如实报错，同 id 不同额报冲突。
+    assert!(store.reserve_dreaming_budget("", "2026-10-05", 1).is_err());
+    assert!(store.reserve_dreaming_budget("job-1:2", "2026-10-0", 1).is_err());
+    assert!(store.reserve_dreaming_budget("job-1:2", "2026-10-05", -1).is_err());
+    assert!(matches!(
+        store.reserve_dreaming_budget("job-1:1", "2026-10-05", 91_000),
+        Err(AppError::MemoryConflict)
+    ));
+}

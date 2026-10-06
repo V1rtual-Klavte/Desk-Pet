@@ -5,6 +5,8 @@
 // 档位数值的冻结真相源是 `protocol.json` 的 `tiers` 表；这里按契约 §2.3 / §5.4 的
 // 字面值钉住三域各档（任何被改动的数值都会红），并验证非法档位按读取期规则收拢为
 // medium —— 收拢只发生在读取侧：不改写原值、不写盘。
+// 例外：dreaming 档的 `dailyTokens` 已按 2026-10-06 用户裁决从三域表删除
+// （「一天最多烧多少 token」取消），§5.4 的字面值不再含该字段。
 import { describe, expect, it } from "vitest"
 import {
   dreamingTierLimits,
@@ -23,7 +25,7 @@ describe("档位读取期收拢", () => {
 })
 
 describe("档位值表", () => {
-  it("主动消息三档与契约 §2.3 一致", () => {
+  it("主动消息三档与契约 §2.3 一致 [proactive-tier-table-frozen]", () => {
     expect(proactiveTierLimits("low")).toEqual({
       wakeMinMs: 7_200_000, wakeMaxMs: 18_000_000, dailySuccess: 2, dailyExpressionAttempts: 4,
       dailyPlanningAttempts: 3, dailyAuxiliaryAttempts: 2, minSuccessIntervalMs: 10_800_000,
@@ -48,9 +50,10 @@ describe("档位值表", () => {
     expect(silentTierLimits("medium")).toEqual({ minBatchGapMs: 1_800_000, idleRequiredMs: 3_600_000, dailyBatches: 8, maxReadsPerHour: 8 })
     expect(silentTierLimits("high")).toEqual({ minBatchGapMs: 900_000, idleRequiredMs: 1_800_000, dailyBatches: 12, maxReadsPerHour: 12 })
   })
-  it("记忆整理三档与契约 §5.4 一致", () => {
-    expect(dreamingTierLimits("low")).toEqual({ idleSeconds: 3_600, minIntervalMinutes: 240, dailyTokens: 24_000 })
-    expect(dreamingTierLimits("medium")).toEqual({ idleSeconds: 1_800, minIntervalMinutes: 60, dailyTokens: 72_000 })
-    expect(dreamingTierLimits("high")).toEqual({ idleSeconds: 600, minIntervalMinutes: 30, dailyTokens: 120_000 })
+  it("记忆整理三档只含节奏两项（每日 token 上限已撤，2026-10-06 用户裁决）", () => {
+    // 日 token 上限已从档位表删除（不再是任何门禁或观测阈值）：三档只剩空闲阈值与最小间隔。
+    expect(dreamingTierLimits("low")).toEqual({ idleSeconds: 3_600, minIntervalMinutes: 240 })
+    expect(dreamingTierLimits("medium")).toEqual({ idleSeconds: 1_800, minIntervalMinutes: 60 })
+    expect(dreamingTierLimits("high")).toEqual({ idleSeconds: 600, minIntervalMinutes: 30 })
   })
 })

@@ -9,6 +9,7 @@ import { readImageProcessor } from "@/services/images"
 import { registerAll } from "../registry"
 import { adaptHarnessTool } from "../pi/harness-adapter"
 import { NativeExecutionEnv } from "../pi/native-execution-env"
+import { BASH_TOOL_TIMEOUT_MS, withBashToolPolicy } from "./bash-timeout"
 import { TOOL_POLICY_VERSION } from "../types"
 import type { SafetyLevel } from "../types"
 import { createLogger } from "@/services/logger"
@@ -23,13 +24,27 @@ import {
 
 const log = createLogger("PiTools")
 
+/**
+ * Bash 工具自己的执行超时档位（默认 = 上限 = 5 分钟，模型只可下调）。
+ *
+ * 档位语义与模型可见文案的唯一定义点在 `./bash-timeout`（零依赖叶子）。声明本身只是
+ * 策略层的一半：router 用它做请求视图超时（`policy.execution.timeoutMs`），另一半是
+ * `withBashToolPolicy` 把**生效值**夹取进参数并下传 Rust —— 模型不传 `timeout` 时旧链路
+ * 会吃 Rust 的 120s 兜底，5 分钟档名存实亡（2026-10-06 排查，见
+ * .superpowers/sdd/turn-gov/timeout-research.md 与 timeout-impl-report.md）。
+ *
+ * 施加点唯一：`tool/router.ts` 读 `policy.execution.timeoutMs ?? loopConfig.toolTimeoutMs`
+ * （主回合 / 子运行 / 计划步骤 / 恢复路径共用同一执行入口）。
+ */
+
 export async function registerPiBaseTools(): Promise<void> {
   const cwd = await NativeExecutionEnv.defaultCwd()
   const createEnv = () => new NativeExecutionEnv(cwd)
   const read = createReadTool<{ env: ExecutionEnv }>({ imageProcessor: readImageProcessor, autoResizeImages: true })
   const write = createWriteTool<{ env: ExecutionEnv }>()
   const edit = createEditTool<{ env: ExecutionEnv }>()
-  const bash = createBashTool<{ env: ExecutionEnv }>()
+  // bash 单独套档位策略：模型可见描述/参数说明 + 生效超时夹取（见 ./bash-timeout）。
+  const bash = withBashToolPolicy(createBashTool<{ env: ExecutionEnv }>())
 
   // 写类工具的固有等级是常量 DANGER（写能力恒暴露，不做开关）；路径风险只在此基础上加码，不降级
   const classifyWriteRisk = (params: Record<string, unknown>) =>
@@ -76,7 +91,8 @@ export async function registerPiBaseTools(): Promise<void> {
       policy: {
         version: TOOL_POLICY_VERSION,
         permission: { defaultDecision: "passthrough" },
-        execution: { effect: "process", isolation: "exclusive_effect", replay: "never" },
+        // timeoutMs 见 BASH_TOOL_TIMEOUT_MS：bash 单列 5 分钟档，不吃全局 30s 默认。
+        execution: { effect: "process", isolation: "exclusive_effect", replay: "never", timeoutMs: BASH_TOOL_TIMEOUT_MS },
         context: { resultProjection: "reference", historyCompaction: "summarize" },
       },
     }),

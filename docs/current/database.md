@@ -31,8 +31,8 @@
 | memory_watermarks | 来源消费水位（session → 已处理 seq），水位补扫的判定依据 |
 | memory_tombstones | 遗忘墓碑：稳定事件身份（session+entry+content_hash+effect），拦住索引重建、旧水位补扫与旧批次发布让内容复活 |
 | memory_operations | operation_id 幂等账本：提交结果未知时先查它，不盲重放 |
-| memory_dreaming_budgets | dreaming 每日模型预算（按自然日记录 reserved/used） |
-| memory_dreaming_reservations | 预算租约（reserved/settled） |
+| memory_dreaming_budgets | dreaming 每日 token 账（按自然日记录 reserved/used；只记账观测，不参与准入——2026-10-06 起日上限不再是门禁） |
+| memory_dreaming_reservations | token 预留租约（reserved/settled；只记账） |
 | mcp_credentials | MCP 凭据（主键 server + var → value）：服务器 headers 模板 `${VAR}` 的定向存取；值不写 CONFIG、不回显、不落日志，唯一出口是连接期注入的 `mcp_credential_get`（[commands/mcp_credentials.rs](../../crates/native-host/src/commands/mcp_credentials.rs)）；`ensure` 每次打开执行（未动 schema_version，旧库只多一张表）；与记忆同库，随库备份/恢复一并带出 |
 | memory_fts（+5 张 FTS5 影子表） | 全文索引：正文/摘要/别名，trigram 分词；工具输出与原始 JSON 不建索引 |
 
@@ -49,6 +49,6 @@
 | proactive_attempt_occurrences | 尝试 ↔ 机会实例的关联（随尝试级联删除） |
 | proactive_occurrences | 机会实例（kind/status/retry_after），重试调度依据 |
 | proactive_control | 运行期控制单行表（id=1：mute_until、revision）：暂停与清除来源状态；主动开关已并入 CONFIG `ai.proactive.frequency` 档位，`enabled` 列 2026-10-05 删除 |
-| proactive_budgets | 每日预算与用量（规划/表达尝试、成功消息与上限、token 预留/已用/未知、观察与话题尝试、下一次成功间隔） |
+| proactive_budgets | 每日预算与用量（规划/表达尝试、成功消息与上限、token 预留/已用/未知 —— 只记账观测，不参与准入、观察与话题尝试、下一次成功间隔） |
 | proactive_auxiliary_reservations | 辅助模型（observation/topic）调用租约：reserved/unresolved/committed/failed |
 | proactive_operations | operation_id 幂等账本（提交结果未知时先查，不盲重放） |

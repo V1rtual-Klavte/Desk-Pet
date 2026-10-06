@@ -149,6 +149,23 @@ describe("安全等级边界", () => {
       expect(matchesAnyPattern(command, BASH_DANGEROUS_PATTERNS), `危险命令未命中: ${command}`).toBe(true)
     }
     expect(matchesAnyPattern("rm file.txt", BASH_DANGEROUS_PATTERNS), "普通 rm 被误判为危险命令").toBe(false)
+
+    // 等待用户点按的系统对话框（2026-10-06 用户实测：模型用 bash 嵌 AppleScript 弹窗等用户，
+    // 被工具超时打断后留下孤儿窗口）：命中 DANGER → 先走确认；命令的 stdin 已在 Rust 侧关死，
+    // 这道 pattern 管的是不读 stdin 的 GUI 等待。只匹配 display dialog / display alert 两个
+    // 等待式命令，osascript 的普通自动化不误伤。
+    expect(
+      matchesAnyPattern("osascript -e 'display dialog \"continue?\"'", BASH_DANGEROUS_PATTERNS),
+      "display dialog 未命中危险模式",
+    ).toBe(true)
+    expect(
+      matchesAnyPattern("osascript -e 'display alert \"hi\" buttons {\"ok\"}'", BASH_DANGEROUS_PATTERNS),
+      "display alert 未命中危险模式",
+    ).toBe(true)
+    expect(
+      matchesAnyPattern("osascript -e 'tell application \"Finder\" to get name of front window'", BASH_DANGEROUS_PATTERNS),
+      "osascript 的普通自动化被误判为危险命令",
+    ).toBe(false)
   })
 
   it("硬禁止命令匹配 [safety-noway-pattern]", () => {

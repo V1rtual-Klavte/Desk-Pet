@@ -88,6 +88,8 @@ Rust [AppPaths](../../crates/native-host/src/paths/mod.rs) 依据 `cfg!(debug_as
 | `ai.memory.coreTokenBudget` / `ai.memory.recallTokenBudget` | 核心画像 / 召回预算（tokens） | [memory/provider.ts](../../src/services/agent/memory/provider.ts)、[harness/runtime.ts](../../src/services/engine/harness/runtime.ts) |
 | `ai.memory.maxSessions` | 会话标签保留上限 | [session/store.ts](../../src/services/session/store.ts) |
 
+另有从不提供控件、也不在本表撤下语义内的技术参数：`ai.loop.turnTimeoutMs`（主回合/恢复墙钟，默认 600s）与 `ai.plan.stepTimeoutMs`（计划步骤墙钟，默认 300s）——用途、与 bash 档位的约束关系（回合墙钟必须 ≥ 工具档位 + 一次模型往返）与修改入口见[工具系统](tool-system.md#文件命令与取消)的档位说明，不重复默认值。
+
 ### 复杂度评估字段的语义与生效时机
 
 | 字段 | 取值 | 语义 | 生效 |
@@ -111,7 +113,7 @@ Rust [AppPaths](../../crates/native-host/src/paths/mod.rs) 依据 `cfg!(debug_as
 | `ai.proactive.frequency` | `medium` | 主动消息的**总闸 + 频率**（`off｜low｜medium｜high`），唯一来源是 CONFIG；`off` = 不唤醒、不产生机会、不发送（不另建开关）；用户入口是设置窗「AI → 主动陪伴」与斜杠 `/proactive on`（写回 `medium`，不记忆上次档位）/ `off`（写回 `off`），两者走同一写盘路径（`setOverride` → `flushConfig`），保存后经 `refreshProactive()` 重排随机唤醒并重推 Rust 投影 |
 | `ai.proactive.quietStartHour` / `quietEndHour` | 23 / 9 | 静默时间段（本地小时 0–23 整数），**仅约束主动消息**：该时段不唤醒、不产生机会、不发送。跨夜语义 `start > end`（默认 23 开始、9 结束）；`start == end` = 不静默；白天不设窗口；晚安窗口=静默开始前一小时（派生，不硬编码） |
 | `ai.silentAccess.frequency` | `medium` | 静默了解的总闸 + 频率（同型四档）；`off` = 调度器不启动、不观察、不注入（读取靠手动）；三档决定离开要求（2h / 1h / 30min）、批次间隔（2h / 30min / 15min）、每日批数（4 / 8 / 12）与每小时读取名额（4 / 8 / 12） |
-| `ai.memory.dreaming.tier` | `medium` | 记忆整理档位（同型四档）；`off` = 空闲调度器早退（面板手动整理按钮保留）；三档决定空闲阈值（3600 / 1800 / 600 秒）、最小间隔（240 / 60 / 30 分钟）与每日 token 预算（24000 / 72000 / 120000） |
+| `ai.memory.dreaming.tier` | `medium` | 记忆整理档位（同型四档）；`off` = 空闲调度器早退（面板手动整理按钮保留）；三档决定空闲阈值（3600 / 1800 / 600 秒）与最小间隔（240 / 60 / 30 分钟）；每日 token 上限已撤除（2026-10-06）：token 只记观测账，不阻止/中止整理 |
 | `ai.humanizer.enabled` | true | 设置窗保存 CONFIG，下个回合冻结；关闭不加协议、不变换、不调度，已提交多段历史仍逐泡展示；保存后立即揭示未展示分泡（`revealAll`） |
 
 三处档位的数值表（唤醒区间、每日配额、token、停留/防抖/冷却等）的唯一真相源是 [proactive/protocol.json](../../src/services/proactive/protocol.json) 的 `tiers`（生成器同步到 TS 与 Rust 两侧）；[config.ts](../../src/services/config.ts) 只做读取期收拢（非法档位按 `medium` 读取、不写盘、同一非法值只诊断一次），[proactive/tiers.ts](../../src/services/proactive/tiers.ts) 负责查表。手写静默小时不是 0–23 整数（小数或范围外）时按默认 23/9 读取并 warn（同一非法值只诊断一次），写盘不拦——设置面 Number 控件只做范围收口，整数合规由读侧兜住。删除字段（2026-10-05）：`ai.silentAccess.enabled` 与 `staySeconds/settleMs/cooldownMs/samePageCooldownMs`（并入档位表）、`ai.memory.dreaming.mode/idleSeconds/minIntervalMinutes/maxDailyTokens`（mode 被 tier 取代）；Rust SQLite `proactive_control.enabled` 列同批删除。**`ai.lock` 整节已删除**（2026-10-06 回合治理批）：AI 生成锁改由回合状态推导（harness 受理计数 + 槽运行状态），不再有 `safetyTimeoutMs` 键、getter 与强制解锁路径；该键从未有设置窗控件（`ui/settings/schema.rs` 无对应字段），YAML 里残留该键按未知键忽略。**静默时段只约束主动消息**：静默了解与记忆整理不受它门禁。配置模板、getter、原生设置窗 schema、保存映射与保存后的重应用/推送保持同步；W2 代码已落地（2026-10-05），测试统一留收口波运行；真实 CONFIG-DEV.yaml 与已有运行时数据未在本批同步。

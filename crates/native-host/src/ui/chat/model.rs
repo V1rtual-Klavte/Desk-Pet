@@ -306,11 +306,11 @@ pub struct UsageState {
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct DebugState {
     /// 最近一次**对话请求**的上下文利用率（主动表达回合不刷新，见 `runtime.ts`）。
-    pub last_context_usage: u32,
+    /// `None` = 未知（本进程没有过对话请求，也没有可从会话快照恢复的真实读数）：
+    /// 面板显示「—」，不显示 0%（0% 会谎报「上下文是空的」）。
+    pub last_context_usage: Option<u32>,
     /// 最近一次**对话请求**携带的工具名（投影 `lastToolNames`；主动表达回合不刷新）。
     pub last_tool_names: Vec<String>,
-    pub registered_tool_count: u64,
-    pub registered_mcp_count: u64,
     pub registered_tools: Vec<ProjectedRegisteredTool>,
     pub thinking_effort: Option<String>,
     pub thinking_effort_effective: Option<String>,
@@ -331,8 +331,6 @@ impl DebugState {
         Self {
             last_context_usage: projected.last_context_usage,
             last_tool_names: projected.last_tool_names,
-            registered_tool_count: projected.registered_tool_count,
-            registered_mcp_count: projected.registered_mcp_count,
             registered_tools: projected.registered_tools,
             thinking_effort: projected.session_thinking_effort,
             thinking_effort_effective: projected.thinking_effort_effective,
@@ -1979,8 +1977,8 @@ impl ChatModel {
         out.push(view);
     }
 
-    /// 调试条面板（DebugBar 迁移）：上下文占用 / 主回合消耗 / 工具列表 / 工具注册数 +
-    /// 会话级「思考强度」「安全策略」两个覆盖 + 「压缩」动作。
+    /// 调试条面板（DebugBar 迁移）：上下文占用 / 主回合消耗（含缓存命中率）+
+    /// 会话级「思考强度」「安全策略」两个覆盖 + 「工具明细」「注册明细」「压缩」动作。
     ///
     /// 数据来自投影 `debug`（进程级快照，缺省保持现值）；Node 尚未投影该字段时
     /// 整条不显示（不摆空壳）。两个覆盖用**下拉**（旧壳 `DebugBar.vue` 的
@@ -2002,6 +2000,11 @@ impl ChatModel {
     /// - 「压缩」按钮与输入框发送 `/compact` 同一条入口（`ChatIntent::SlashCommand`），
     ///   忙碌/排队/无可摘要范围的归宿由 Node 命令层如实回复，宿主不预判可用性。
     ///
+    /// 2026-10-06 用户规则「删绿字 + 下行加缓存命中率」：meta 行的「工具 …（最近一次
+    /// 请求携带的工具名）」「注册 N (MCP:N)」两段退场（随投影字段一并删除，不留壳），
+    /// 行内只剩上下文占用；缓存命中率并进消耗行（见 `debug_spend_line`）。
+    /// 「工具明细」「注册明细」两个入口保留：它们是用户显式展开的动作，不是常显文本。
+    ///
     /// 「工具明细」「注册明细」「压缩」点击后的行为各自见按钮声明处；前两者的自有列表
     /// 仍**紧跟各自按钮**（[`PanelView`] 的保序原则）。
     fn push_debug_panel(&self, out: &mut Vec<super::panels::PanelView>) {
@@ -2012,34 +2015,20 @@ impl ChatModel {
         view = view.select(safety_mode_select(debug));
         // 上下文占用与旧 DebugBar 同阈值（≥80 警示、≥50 过渡、其余正常；
         // 面板调色板只有 语义色的四档，50–79 用 Normal 表达「需留意」）。
-        let ctx_style = if debug.last_context_usage >= 80 {
-            PanelLineStyle::Warn
-        } else if debug.last_context_usage >= 50 {
-            PanelLineStyle::Normal
-        } else {
-            PanelLineStyle::Ok
-        };
-        // meta 行：设计稿 `.pmeta` 的「上下文 X% · 工具 X · 注册 X(MCP:X)」口径；
-        // MCP 数为 0 时省略括号段（列窄，无信息量时优先保关键字完整显示）。
-        let mcp_suffix = if debug.registered_mcp_count > 0 {
-            format!(" (MCP:{})", debug.registered_mcp_count)
-        } else {
-            String::new()
+        // 未知（None）不是「0%」：显示「—」并用 Dim（无值态），不参与阈值着色 ——
+        // 0% 会谎报「上下文是空的」，而 None 的语义是「读不到真实占用」。
+        let (ctx_style, ctx_text) = match debug.last_context_usage {
+            Some(usage) if usage >= 80 => (PanelLineStyle::Warn, format!("上下文 {usage}%")),
+            Some(usage) if usage >= 50 => (PanelLineStyle::Normal, format!("上下文 {usage}%")),
+            Some(usage) => (PanelLineStyle::Ok, format!("上下文 {usage}%")),
+            None => (PanelLineStyle::Dim, "上下文 —".to_string()),
         };
         // meta 行独占一行（设计稿 `.pbox.debug` 的 `.pmeta` 同形）：265pt 聊天列里
         // 「信息行 + chip 行」同行放不下——实测信息行被截成「工具 无…」、
         // chip 换行反而多占一行（2026-10-05 复评提出的合并方案经实机验证不可行，
         // 按设计稿原形回滚）；三个 chip 紧随其后自成一行。消耗行同样独立成行
         // （常见值下两行合计约 499pt > 257pt 内宽，见测试 `调试条两行在265列宽内放得下`）。
-        view = view.line(
-            ctx_style,
-            format!(
-                "上下文 {}% · 工具 {} · 注册 {}{mcp_suffix}",
-                debug.last_context_usage,
-                debug_tools_label(&debug.last_tool_names),
-                debug.registered_tool_count,
-            ),
-        );
+        view = view.line(ctx_style, ctx_text);
         // 消耗行（累计口径，单独一行；无已回报用量时不摆空壳——与 `push_usage_panel`
         // 的「Σ 用量为 0 整条不显示」同一理由）。
         if let Some(usage) = &self.usage {
@@ -2167,32 +2156,33 @@ fn display_session_name(name: &str) -> String {
     }
 }
 
-/// 工具列表压缩展示（与旧 DebugBar `toolsLabel` 同口径：≤3 全列，更多取前 3 个 +N）。
-fn debug_tools_label(names: &[String]) -> String {
-    if names.is_empty() {
-        // 「工具 无工具」自相矛盾（复评）；直接给值「无」。
-        return "无".to_string();
-    }
-    if names.len() <= 3 {
-        return names.join(", ");
-    }
-    format!("{} +{}", names[..3].join(", "), names.len() - 3)
-}
+// `debug_tools_label` 删除记录（2026-10-06 用户规则「删绿字」）：meta 行不再压缩展示
+// 最近一次请求的工具名（那段整体的消费者是 meta 行），没有第二个调用方，随字段退场。
+// 完整工具名列表仍在「工具明细」展开里逐条显示（`last_tool_names` 不删）。
 
-/// 调试条的「消耗行」文本（累计口径）：主回合桶的 入 / 出 / 缓存读 / 缓存写。
+/// 调试条的「消耗行」文本（累计口径）：主回合桶的 入 / 出 / 命中率。
 ///
 /// **为什么取累计桶而不是 per-request**：用户问的是「token 花了多少」（消耗），
-/// 而缓存读/写只在分桶里存在（per-request 只存 `lastPromptTokens`，且它是 Provider
+/// 而命中率只在分桶里存在（per-request 只存 `lastPromptTokens`，且它是 Provider
 /// 归一后的**未命中**输入，不含缓存命中——正是旧「Token」一格显得像算错的原因）。
 /// 全用途（含压缩/规划/记忆等一次性调用）的总量另有「Σ 用量」入口，这里只报
 /// **主回合**的消耗，两个口径不混。
 ///
-/// 只列有值的分段：缓存读/写是两个不同的量（DeepSeek 只回报读、Anthropic 两者都有），
-/// 分开写；都没有就整段省略；一个分段都没有（尚无已回报用量）返回 `None` ——
-/// 不摆「入 — / 出 —」的空壳。跨 1000 的量级走 `format_tokens` 缩写。
+/// 2026-10-06 用户裁决（原话「给下面的输入输出 缓存命中率」）：**固定三段 —— 入 / 出 / 命中率**；
+/// 裸的「缓存读/写」段退场（读的信息量已被命中率与入/出覆盖；写是 Anthropic 独有的
+/// 口径，用户未要）。只列有值的分段（出为 0 不写）；一个分段都没有（尚无已回报用量）
+/// 返回 `None` —— 不摆「入 — / 出 —」的空壳。跨 1000 的量级走 `format_tokens` 缩写。
 ///
-/// 宽度：典型值（5 字符内量级缩写）两段合计约 210–250pt，265pt 列（内宽 257pt）放得下；
-/// 极端长值（6 字符以上）由平台行截断兜底，不在这里拍扁文案。
+/// **缓存命中率** = `缓存读 ÷ 输入总量`，输入总量 = 读 + 未命中输入 + 缓存写，与 Node 的
+/// `totalInputTokens`（`context/budget.ts` 的真实输入口径）同源：pi-ai 把 `input`
+/// 归一成**缓存未命中**部分，三者相加才是这次请求真实的输入规模；分母不算缓存写会把
+/// Anthropic 这类「写入占大头」的请求命中率算虚高。DeepSeek 不回报 cacheWrite，
+/// 此式即用户建议的「缓存读 ÷ (输入 + 缓存读)」。
+/// 分母为 0 = 没有任何已回报输入（还没请求过）→ **省略这一段**：不显示 0% 冒充
+/// 「命中率为零」。有输入但没有缓存读时 0% 是真读数，照显示。
+///
+/// 宽度：三段合计实测 209–249pt（含用户样本 275.9k/27.6k 量级），265pt 列
+/// （内宽 257pt）放得下，不依赖平台截断（见测试 `调试条两行在265列宽内放得下`）。
 fn debug_spend_line(entries: &[super::projection::ProjectedUsageEntry]) -> Option<String> {
     use super::panels::format_tokens;
     // 主回合桶恒存在（Node 的 `collectUsage` 固定输出七个 purpose），仍按查找处理：
@@ -2205,15 +2195,12 @@ fn debug_spend_line(entries: &[super::projection::ProjectedUsageEntry]) -> Optio
     if main.output > 0 {
         parts.push(format!("出 {}", format_tokens(main.output)));
     }
-    match (main.cache_read > 0, main.cache_write > 0) {
-        (true, true) => parts.push(format!(
-            "缓存 读{}/写{}",
-            format_tokens(main.cache_read),
-            format_tokens(main.cache_write)
-        )),
-        (true, false) => parts.push(format!("缓存读 {}", format_tokens(main.cache_read))),
-        (false, true) => parts.push(format!("缓存写 {}", format_tokens(main.cache_write))),
-        (false, false) => {}
+    // 命中率分母 = 这次请求的真实输入总量（含不再单列的缓存读/写，见函数文档）；
+    // 0 不显示 0% 冒充读数缺失。
+    let input_total = main.input + main.cache_read + main.cache_write;
+    if input_total > 0 {
+        let hit_rate = (main.cache_read as f64 / input_total as f64 * 100.0).round() as u64;
+        parts.push(format!("命中 {hit_rate}%"));
     }
     if parts.is_empty() {
         return None;
@@ -2681,10 +2668,8 @@ mod tests {
         let mut model = ChatModel::new();
         let mut frame = projection("s1", vec![]);
         frame.debug = Some(ProjectedDebug {
-            last_context_usage: 42,
+            last_context_usage: Some(42),
             last_tool_names: vec!["fs.read".into(), "bash".into()],
-            registered_tool_count: 20,
-            registered_mcp_count: 3,
             registered_tools: vec![],
             session_thinking_effort: None,
             thinking_effort_effective: Some("auto".into()),
@@ -2725,15 +2710,15 @@ mod tests {
             "思考强度与安全策略两个下拉直接可见"
         );
         // 上下文行（2026-10-05 用户规则「token 花了多少，输入输出，缓存也要写」：
-        // 「Token {tokens}」一格退场、消耗另起一行）。防回退：断言精确文本，
-        // 且不再有任何「Token …」行。
+        // 「Token {tokens}」一格退场、消耗另起一行；2026-10-06 用户规则「删绿字」：
+        // 「工具 …」「注册 N (MCP:N)」两段退场，行内只剩上下文占用）。防回退：断言精确
+        // 文本 + 不再有 Token/工具名/注册数段。
         assert!(
             panel.blocks.iter().any(|b| matches!(
                 b,
-                PanelBlock::Line { text, .. }
-                    if text == "上下文 42% · 工具 fs.read, bash · 注册 20 (MCP:3)"
+                PanelBlock::Line { text, .. } if text == "上下文 42%"
             )),
-            "上下文行三要素合一行"
+            "上下文行只余上下文占用"
         );
         assert!(
             !panel.blocks.iter().any(|b| matches!(
@@ -2742,14 +2727,30 @@ mod tests {
             )),
             "Token 段整体退场（不再有 Token 行/段）"
         );
-        // 消耗行：主回合桶的 入/出/缓存读（缓存写为 0 时不写；跨千走量级缩写）。
+        assert!(
+            !panel.blocks.iter().any(|b| matches!(
+                b,
+                PanelBlock::Line { text, .. }
+                    if text.contains("注册") || text.contains("· 工具")
+            )),
+            "绿字行的工具名与注册数两段退场（删字段不留壳）"
+        );
+        // 消耗行：主回合桶的 入/出/命中率 三段（跨千走量级缩写；裸的缓存读/写段已退场）。
+        // 命中率 = 12.3k/(3.5k+12.3k) ≈ 78%（分桶里 input 是未命中部分，见 debug_spend_line）。
         assert!(
             panel.blocks.iter().any(|b| matches!(
                 b,
                 PanelBlock::Line { text, .. }
-                    if text == "主回合 入 3.5k · 出 789 · 缓存读 12.3k"
+                    if text == "主回合 入 3.5k · 出 789 · 命中 78%"
             )),
-            "消耗行取主回合桶且缓存只写有值的一侧"
+            "消耗行取主回合桶、入/出/命中率三段"
+        );
+        assert!(
+            !panel.blocks.iter().any(|b| matches!(
+                b,
+                PanelBlock::Line { text, .. } if text.contains("缓存")
+            )),
+            "裸的缓存读/写段退场（命中率承载缓存信息）"
         );
 
         // 两个会话级覆盖是下拉（旧壳 select 的迁移）：选中态来自投影。
@@ -2785,7 +2786,8 @@ mod tests {
         );
 
         // 「工具明细」「注册明细」「压缩」是 chip（设计稿 `.pbox.debug` 的 `.chip`；紧随
-        // meta 行成一行，点击展开自有列表或派发压缩；数量信息在 meta 行）。
+        // meta 行成一行，点击展开自有列表或派发压缩）。2026-10-06 起数量不再上 meta 行
+        // （「删绿字」规则），明细入口保留 —— 它们是显式展开动作，不是常显文本。
         let chips: Vec<_> = panel
             .blocks
             .iter()
@@ -2815,11 +2817,11 @@ mod tests {
         assert!(panel
             .blocks
             .iter()
-            .any(|b| matches!(b, PanelBlock::Line { text, .. } if text == "上下文 42% · 工具 fs.read, bash · 注册 20 (MCP:3)")), "缺省保持现值");
+            .any(|b| matches!(b, PanelBlock::Line { text, .. } if text == "上下文 42%")), "缺省保持现值");
         assert!(panel
             .blocks
             .iter()
-            .any(|b| matches!(b, PanelBlock::Line { text, .. } if text == "主回合 入 3.5k · 出 789 · 缓存读 12.3k")), "消耗行随用量现值保留");
+            .any(|b| matches!(b, PanelBlock::Line { text, .. } if text == "主回合 入 3.5k · 出 789 · 命中 78%")), "消耗行随用量现值保留");
         assert!(
             panel
                 .blocks
@@ -2850,7 +2852,7 @@ mod tests {
     }
 
     #[test]
-    fn 消耗行按主回合桶且缓存读写分开() {
+    fn 消耗行入出与命中率三段且缓存读写不再单列() {
         use crate::ui::chat::projection::{ProjectedUsage, ProjectedUsageEntry};
         fn usage_of(input: u64, output: u64, cache_read: u64, cache_write: u64) -> ProjectedUsage {
             ProjectedUsage {
@@ -2866,20 +2868,34 @@ mod tests {
                 }],
             }
         }
-        // 读、写都有 → 分开写（合成一个数字会误导；两个都是各自独立的量）。
-        assert_eq!(
-            debug_spend_line(&usage_of(1200, 300, 8000, 4000).entries).as_deref(),
-            Some("主回合 入 1.2k · 出 300 · 缓存 读8.0k/写4.0k")
+        // 读、写都有（Anthropic 形态）：缓存读/写不再单列，只以命中率承载缓存信息。
+        // 命中率 = 8000/(1200+8000+4000) = 60.6% → 61%（分母含缓存写，与 totalInputTokens 同源）。
+        let both = debug_spend_line(&usage_of(1200, 300, 8000, 4000).entries);
+        assert_eq!(both.as_deref(), Some("主回合 入 1.2k · 出 300 · 命中 61%"));
+        assert!(
+            !both.as_deref().unwrap_or_default().contains("缓存"),
+            "裸的缓存读/写段已退场（2026-10-06 用户裁决的三段形态）"
         );
-        // 只有读（DeepSeek 的实际形态，日志样本：in=731 / cacheRead=12160）→ 只写读。
+        // 只有读（DeepSeek 的实际形态，日志样本：in=731 / cacheRead=12160）：
+        // 命中率 = 12160/12891 = 94.3% → 94%。
         assert_eq!(
             debug_spend_line(&usage_of(731, 323, 12160, 0).entries).as_deref(),
-            Some("主回合 入 731 · 出 323 · 缓存读 12.2k")
+            Some("主回合 入 731 · 出 323 · 命中 94%")
         );
-        // 只有写 → 只写写。
+        // 只有写、无读：有输入但零命中是真读数，照显示 0%（不冒充缺失）。
         assert_eq!(
             debug_spend_line(&usage_of(100, 0, 0, 5000).entries).as_deref(),
-            Some("主回合 入 100 · 缓存写 5.0k")
+            Some("主回合 入 100 · 命中 0%")
+        );
+        // 输入全部命中缓存（未命中 input=0）→ 100%，且不写「入 0」空段。
+        assert_eq!(
+            debug_spend_line(&usage_of(0, 500, 8000, 0).entries).as_deref(),
+            Some("主回合 出 500 · 命中 100%")
+        );
+        // 分母为 0（没有任何已回报输入）→ 命中率整段省略：不显示 0% 冒充「命中率为零」。
+        assert_eq!(
+            debug_spend_line(&usage_of(0, 30, 0, 0).entries).as_deref(),
+            Some("主回合 出 30")
         );
         // 一个分段都没有（尚无已回报用量）→ 不摆空壳（与 Σ 用量为 0 整条不显示同旨）。
         assert_eq!(debug_spend_line(&usage_of(0, 0, 0, 0).entries), None);
@@ -2906,10 +2922,8 @@ mod tests {
         let mut model = ChatModel::new();
         let mut frame = projection("s1", vec![]);
         frame.debug = Some(ProjectedDebug {
-            last_context_usage: 5,
+            last_context_usage: Some(5),
             last_tool_names: vec![],
-            registered_tool_count: 3,
-            registered_mcp_count: 0,
             registered_tools: vec![],
             session_thinking_effort: None,
             thinking_effort_effective: None,
@@ -2933,40 +2947,96 @@ mod tests {
         );
     }
 
-    /// 265pt 聊天列（默认值）的布局守门：两行各自都要放得下，别靠缩短关键字硬塞。
+    #[test]
+    fn 上下文未知显示破折号而不是零() {
+        // 2026-10-06（用户报告「重启后 上下文 0%」）：null = 未知必须与真 0% 不同形 ——
+        // 显示「—」且用 Dim（无值态），不落进 Ok 绿；真 0% 是另一条路径（有读数）照常显示。
+        use crate::ui::chat::panels::{PanelBlock, PanelKind, PanelLineStyle};
+        use crate::ui::chat::projection::ProjectedDebug;
+        let mut model = ChatModel::new();
+        let mut frame = projection("s1", vec![]);
+        frame.debug = Some(ProjectedDebug {
+            last_context_usage: None,
+            last_tool_names: vec![],
+            registered_tools: vec![],
+            session_thinking_effort: None,
+            thinking_effort_effective: None,
+            session_safety_mode: None,
+            safety_mode_effective: None,
+        });
+        model.apply_projection(frame);
+        let panel = model
+            .panel_views()
+            .into_iter()
+            .find(|view| view.kind == PanelKind::DebugBar)
+            .expect("调试条应显示");
+        assert!(
+            panel.blocks.iter().any(|b| matches!(
+                b,
+                PanelBlock::Line { text, style, .. }
+                    if text == "上下文 —" && *style == PanelLineStyle::Dim
+            )),
+            "未知读数显示「—」（Dim），不显示 0% 冒充「上下文是空的」"
+        );
+        assert!(
+            !panel
+                .blocks
+                .iter()
+                .any(|b| matches!(b, PanelBlock::Line { text, .. } if text == "上下文 0%")),
+            "不得把未知渲染成 0%（这正是用户报告的重启形态）"
+        );
+    }
+
+    /// 265pt 聊天列（默认值）的布局守门：两行各自都要放得下，不靠平台截断兜底。
     /// 内宽 = 列宽 − 2×`pad_x`；估算字号 11pt（两平台面板行同为小号）。
     ///
-    /// 钉住的是**常见形态**：工具列表长到 `fs.read, bash` 这一档时信息行本来就会
-    /// 超宽（旧行同样超，平台按行截断），不在本测试的断言面里——这里防的是
-    /// 「把更多字段硬塞回一行」的合并回退。
+    /// 2026-10-06（用户规则「删绿字 + 下行加缓存命中率」，随后的用户裁决把消耗行定为
+    /// **三段**：入 / 出 / 命中率，裸的缓存读/写退场）：上下文行只剩一格；
+    /// 消耗行三段在典型值与**用户样本量级**（275.9k / 27.6k / 命中率）下都 ≤ 内宽，
+    /// 这正是三段形态取代「四段 + 平台截断」的理由 —— 若日后又塞回第四段，这条会先红。
     #[test]
     fn 调试条两行在265列宽内放得下() {
         use crate::ui::chat::panels::{estimated_text_width, PANEL_METRICS};
         use crate::ui::chat::projection::{ProjectedUsage, ProjectedUsageEntry};
         let inner = 265.0 - PANEL_METRICS.pad_x * 2.0;
-        let ctx_line = "上下文 12% · 工具 无 · 注册 15 (MCP:3)";
+        let ctx_line = "上下文 12%";
         let ctx_width = estimated_text_width(ctx_line, 11.0);
         assert!(
             ctx_width <= inner,
             "上下文行超宽：{ctx_width:.1} > {inner}"
         );
-        let usage = ProjectedUsage {
-            entries: vec![ProjectedUsageEntry {
-                purpose: "main".into(),
-                calls: 12,
-                reported: 12,
-                input: 30_100,
-                output: 4_200,
-                cache_read: 40_500,
-                cache_write: 0,
-                total: 74_800,
-            }],
-        };
-        let spend = debug_spend_line(&usage.entries).expect("有消耗行");
+        fn usage_of(input: u64, output: u64, cache_read: u64) -> ProjectedUsage {
+            ProjectedUsage {
+                entries: vec![ProjectedUsageEntry {
+                    purpose: "main".into(),
+                    calls: 12,
+                    reported: 12,
+                    input,
+                    output,
+                    cache_read,
+                    cache_write: 0,
+                    total: input + output + cache_read,
+                }],
+            }
+        }
+        // 典型量级（十位千 + 百位）。
+        let spend = debug_spend_line(&usage_of(30_100, 4_200, 40_500).entries).expect("有消耗行");
         let spend_width = estimated_text_width(&spend, 11.0);
         assert!(
             spend_width <= inner,
             "消耗行超宽：{spend_width:.1} > {inner}（{spend}）"
+        );
+        // 用户样本量级（入 275.9k / 出 27.6k / 缓存读 177.0k → 命中 39%）：
+        // 三段形态在最大常规量级下仍放得下（实测 235.4pt ≤ 257pt）。
+        let sample = debug_spend_line(&usage_of(275_900, 27_600, 177_000).entries).expect("有消耗行");
+        assert!(
+            sample.contains("275.9k") && sample.contains("命中 39%"),
+            "用户样本量级形态漂移：{sample}"
+        );
+        let sample_width = estimated_text_width(&sample, 11.0);
+        assert!(
+            sample_width <= inner,
+            "用户样本量级超宽：{sample_width:.1} > {inner}（{sample}）"
         );
         // 一行塞不下（用户提到的「别硬塞」）：占比行 + 消耗行合计明显超过内宽。
         let merged = format!("{ctx_line} · {spend}");

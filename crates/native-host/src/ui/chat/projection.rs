@@ -179,16 +179,15 @@ pub struct ProjectedRegisteredTool {
 #[serde(rename_all = "camelCase")]
 pub struct ProjectedDebug {
     /// 上下文利用率（百分比；Node 已取整，UI 只显示）。只由对话请求刷新
-    /// （主动表达回合在 `runtime.ts` 的 onUsage 里被排除）。
+    /// （主动表达回合在 `runtime.ts` 的 onUsage 里被排除）；重启后由 Node 从
+    /// 会话快照恢复最近一次对话请求的真实输入量。
+    /// `None` = **未知**（本进程没有过对话请求，也没有可恢复的真实读数）——
+    /// 如实显示「—」，不拿 0% 冒充「上下文是空的」。
     #[serde(default)]
-    pub last_context_usage: u32,
+    pub last_context_usage: Option<u32>,
     /// 最近一次**对话请求**携带的工具名（`lastToolNames`；主动表达回合不刷新）。
     #[serde(default)]
     pub last_tool_names: Vec<String>,
-    #[serde(default)]
-    pub registered_tool_count: u64,
-    #[serde(default)]
-    pub registered_mcp_count: u64,
     #[serde(default)]
     pub registered_tools: Vec<ProjectedRegisteredTool>,
     /// 会话级思考强度覆盖；None = 默认（未覆盖）。
@@ -479,7 +478,6 @@ mod tests {
             "debug": {
                 "lastContextUsage": 42,
                 "lastToolNames": ["fs.read", "bash"],
-                "registeredToolCount": 20, "registeredMcpCount": 3,
                 "registeredTools": [{"name":"fs.read","source":"builtin"}],
                 "sessionThinkingEffort": "low", "thinkingEffortEffective": "low",
                 "sessionSafetyMode": null, "safetyModeEffective": "let_me_tk"
@@ -501,7 +499,7 @@ mod tests {
         let usage = projection.usage.expect("用量存在");
         assert_eq!(usage.entries[0].total, 160);
         let debug = projection.debug.expect("调试条存在");
-        assert_eq!(debug.last_context_usage, 42);
+        assert_eq!(debug.last_context_usage, Some(42));
         assert_eq!(debug.last_tool_names, vec!["fs.read", "bash"]);
         assert_eq!(debug.registered_tools[0].source, "builtin");
         assert_eq!(debug.session_thinking_effort.as_deref(), Some("low"));
@@ -514,6 +512,14 @@ mod tests {
             ProjectedRecoveredStepState::UnknownSideEffect
         );
         assert_eq!(projection.default_delivery.as_deref(), Some("followUp"));
+
+        // 上下文利用率未知（Node 显式 null）也是 None：UI 显示「—」而不是 0%
+        // （0% 会谎报「上下文是空的」；两态由 Option 区分，Python 式默认 0 不可回退）。
+        let unknown = TranscriptProjection::from_json(
+            r#"{"sessionId":"s","debug":{"lastContextUsage":null}}"#,
+        )
+        .unwrap();
+        assert_eq!(unknown.debug.expect("调试条存在").last_context_usage, None);
 
         // 解析层只区分「携带/未携带」（None）；None 的消费语义由
         // `ChatModel::apply_projection` 按字段性质解释（会话/视图态缺省即清空、

@@ -431,7 +431,7 @@ async function executeStep(
     for (const name of step.allowedTools) {
       const tool = getToolByName(name)
       // 派生型工具到不了子代理手里（剥离点是 runPiSubAgent，用同一判定：isolation=delegate，
-      // 现只有 agent_spawn），在这一步等同于不存在 —— 与下面的硬失败同一条理由。
+      // 现为 agent_spawn 与 propose_plan），在这一步等同于不存在 —— 与下面的硬失败同一条理由。
       // 判定读工具自己的策略声明，不在这里维护名单（与 planEffectClassFor 同款）。
       if (tool && tool.policy.execution.isolation !== "delegate") tools.push(tool)
       else missing.push(name)

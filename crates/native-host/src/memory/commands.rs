@@ -220,16 +220,16 @@ pub fn memory_candidates_add(
     state.0.candidates_add(&job_id, &candidates)
 }
 
+/// 登记一笔 dreaming token 预留：只记账，不再按日 token 总量准入（2026-10-06 用户裁决）。
 pub fn memory_dreaming_budget_reserve(
     state: &MemoryState,
     reservation_id: String,
     local_date: String,
     reserved_tokens: i64,
-    daily_limit: i64,
-) -> AppResult<bool> {
+) -> AppResult<()> {
     state
         .0
-        .reserve_dreaming_budget(&reservation_id, &local_date, reserved_tokens, daily_limit)
+        .reserve_dreaming_budget(&reservation_id, &local_date, reserved_tokens)
 }
 
 pub fn memory_dreaming_budget_settle(

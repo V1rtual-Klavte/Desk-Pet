@@ -4,6 +4,7 @@
 // 订阅（harness 引导调用）。
 
 import { publishUiEvent, subscribeUiReceipt, type HostEventMap, type NodeUiEventName } from "@/services/host"
+import { PLAN_CONFIRM_TIMEOUT_MS } from "./plan/limits"
 import { reactive } from "vue"
 import { getActiveSessionId } from "@/services/session/store"
 import { pushSystemMessage } from "@/services/session"
@@ -52,8 +53,10 @@ export interface PendingStepGate {
   error?: string
 }
 
-/** 确认/步骤门的等待上限（PLAN-07）：与权限确认 TTL 同量级但**不引用它** —— 两个域各自的生命周期。 */
-export const PLAN_CONFIRM_TIMEOUT_MS = 5 * 60 * 1000
+// 确认/步骤门的等待上限（PLAN-07）：定义点移居零依赖叶子 `plan/limits.ts` ——
+// `propose_plan` 的工具超时预算要按它折算，工具域直接引用叶子以避免 barrel 静态循环。
+// 这里保留同名导出（既有消费点与引擎 barrel 的取用口不变）。
+export { PLAN_CONFIRM_TIMEOUT_MS }
 
 /**
  * 待确认计划与待裁决步骤门的视图（UI 渲染 + 测试替身按它应答；reactive 以便 `flush: "sync"` 应答）。
@@ -89,12 +92,25 @@ const pendingStepGates = new Map<string, StepGateEntry>()
 const runningPlans = new Map<string, RunningPlan>()
 
 /** 非确认归宿的用户可见说明（`user` 由面板文案与收尾文案承担；`ui_unavailable` 由面板上报错误留痕）。 */
-const NON_CONFIRM_NOTICE = {
+export const NON_CONFIRM_NOTICE = {
   timeout: "计划确认等待超时，已取消计划",
   session_switched: "已离开该会话，计划确认已取消",
   not_active: "该会话已不再活跃，计划确认已取消",
   emit_failed: "计划确认未能送达界面，已取消计划",
 } as const
+
+/**
+ * 确认未成立的中性说明（模型可见的工具结果组成件，不是角色台词）。
+ *
+ * 与 `NON_CONFIRM_NOTICE`（系统消息文案）同源互补：后者只覆盖四个由本域写出的归宿，
+ * 工具结果需要覆盖全部六种原因（含 `user` 与由面板上报的 `ui_unavailable`），
+ * 由本函数给出同一份口径 —— 两种渠道的文案不许各写一套。
+ */
+export function planConfirmDeclineText(reason: Extract<PlanConfirmResult, { confirmed: false }>["reason"]): string {
+  if (reason === "user") return "用户取消了计划确认"
+  if (reason === "ui_unavailable") return "计划面板不可用，计划确认已取消"
+  return NON_CONFIRM_NOTICE[reason]
+}
 
 // ═══════════════════════════════════════════════════
 // 内部辅助

@@ -4,7 +4,7 @@
 // ==========================================
 
 import type { ToolDeclaration, ThinkingEffort } from "@/services/agent/types"
-import { listAll, toToolDeclaration } from "@/services/tool"
+import { listAll, toToolDeclaration, PROPOSE_PLAN_TOOL } from "@/services/tool"
 import { getV1rtualInstructionsSync } from "@/services/context/instructions"
 import { aiConfig } from "@/services/config"
 import { getSkillsPromptBlock } from "@/services/skill"
@@ -163,8 +163,18 @@ export function buildPrompt(input: BuildContextInput, card: PersonalityCard | nu
   const budget = contextBudget(contextMaxTokens, input.maxOutputTokens)
   const tools = decideTools(input)
   const v1rtual = input.v1rtualInstructions ?? getV1rtualInstructionsSync()
+  // 计划提议指引：只在提议工具真的在本回合工具面里时注入（子运行/窄工具集不该被告知
+  // 一个不在场的工具）。文案是中性系统说明、不是角色台词 —— GUI 弹窗等待用户会被工具
+  // 超时打断并留下孤儿窗口（2026-10-06 用户实测），确认必须走桌宠自己的计划面板。
+  //
+  // 2026-10-06 补第二句（用户实测：模型在计划步骤里「先打字问要不要删」而不是执行）：
+  // 多步走计划面板，**单个动作直接执行** —— 危险动作由权限面板当场向用户确认，模型用文字
+  // 征求同意只会让用户多打一遍字，还把「做没做」变成一次不必要的往返。
+  const planProposalGuidance = tools.some(tool => tool.function.name === PROPOSE_PLAN_TOOL)
+    ? `需要用户确认的多步操作先调用 ${PROPOSE_PLAN_TOOL} 请求确认；单个动作需要确认时直接执行（危险动作由确认面板向用户确认），不要用文字先征求同意，也不要用 osascript 或 GUI 弹窗命令等待用户。`
+    : ""
   const toolProtocol = tools.length
-    ? "你可以使用工具完成任务。需要工具时只输出工具调用。完成后基于结果简短回复。"
+    ? `你可以使用工具完成任务。需要工具时只输出工具调用。完成后基于结果简短回复。${planProposalGuidance}`
     : "请简短口语化回复。"
   const skillCatalog = tools.length ? (input.skillsPromptBlock ?? getSkillsPromptBlock()) : ""
   const toolSchemaSnapshot = tools.length ? JSON.stringify(tools.map(toolBudgetSchema)) : ""

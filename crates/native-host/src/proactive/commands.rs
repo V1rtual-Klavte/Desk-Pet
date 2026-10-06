@@ -133,14 +133,10 @@ pub fn proactive_reconcile(
     state.0.proactive_reconcile(&request, &limits.resolve())
 }
 
-pub fn proactive_auxiliary_budget_reserve(
-    state: &MemoryState,
-    limits: &ProactiveLimitsState,
-    request: Value,
-) -> AppResult<Value> {
-    state
-        .0
-        .proactive_auxiliary_budget_reserve(&request, &limits.resolve())
+/// 辅助预留不再读档位投影（token 总量闸已撤，见 store.rs；唯一硬边界是请求携带的
+/// `dailyLimit` 与档位天花板常量），签名与 `proactive_query` 同形：不带 limits。
+pub fn proactive_auxiliary_budget_reserve(state: &MemoryState, request: Value) -> AppResult<Value> {
+    state.0.proactive_auxiliary_budget_reserve(&request)
 }
 
 /// `proactive_control`：`patch`（mute/清除行为来源）与 `limits`（档位下发）都可选 ——
@@ -364,8 +360,11 @@ mod tests {
         assert_eq!(state.resolve(), ProactiveLimits::high(), "拒绝不得改动投影现值");
     }
 
+    /// 投影进入终裁的新口径（2026-10-06 用户裁决）：低档下「单笔预留超过旧日 token
+    /// 上限（8000）」也必须放行 —— token 总量不再是 claim 门禁，只照记账；次数上限
+    /// 仍按投影收紧（低档 expression=4，第 5 次起 daily_limit）。
     #[test]
-    fn 投影进入终裁_低档收紧token上限而中档放行() {
+    fn 投影进入终裁_低档不再按token总量拒绝而次数上限仍收紧() {
         let fixture = Fixture::new();
         let low = ProactiveLimitsState::default();
         low.set(ProactiveLimits::low());
@@ -378,12 +377,31 @@ mod tests {
                 "requestId": format!("request-{attempt}"), "sourceFingerprint": format!("fp-{attempt}"),
             })
         };
-        let denied = proactive_claim(&fixture.1, &low, claim("low-tier")).expect("低档领取");
+        for index in 0..ProactiveLimits::low().daily_expression_attempts {
+            let attempt = format!("low-tier-{index}");
+            let claimed = proactive_claim(&fixture.1, &low, claim(&attempt)).expect("低档领取");
+            assert_eq!(
+                claimed["claimed"],
+                json!(true),
+                "低档第 {index} 次表达：单笔预留超旧日上限也不得再按 token 拒绝"
+            );
+            fixture
+                .1
+                .0
+                .proactive_settle(
+                    &json!({"owner": owner(), "attemptId": attempt, "sourceFingerprint": format!("fp-{attempt}"),
+                    "localDate": "2026-10-03", "status": "failed", "usage": {"totalTokens": 8_001}, "decision": null}),
+                    &ProactiveLimits::low(),
+                )
+                .expect("回收表达 attempt");
+        }
+        let denied = proactive_claim(&fixture.1, &low, claim("low-tier-overflow")).expect("低档超限");
         assert_eq!(denied["claimed"], json!(false));
-        assert_eq!(denied["reason"], json!("token_budget"));
-        let medium = ProactiveLimitsState::default();
-        let allowed = proactive_claim(&fixture.1, &medium, claim("medium-tier")).expect("中档领取");
-        assert_eq!(allowed["claimed"], json!(true));
+        assert_eq!(
+            denied["reason"],
+            json!("daily_limit"),
+            "次数上限仍是低档的硬边界"
+        );
     }
 
     fn now_claim_ms() -> i64 {

@@ -24,6 +24,12 @@ export const BASH_DANGEROUS_PATTERNS: RegExp[] = [
   /\bsudo\b/, /\bchmod\s+777\b/,
   />\s*\/dev\//, /\bcurl\b.*\|\s*(ba)?sh\b/,
   /\bmkfs\b/, /\bdd\s+if=/,
+  // 等待用户点按的系统对话框（osascript 的 display dialog / display alert）：命令会阻塞到
+  // 用户操作或工具超时 —— 而命令进程的超时回收会连对话框一起杀掉，用户实测留下孤儿窗口
+  // （2026-10-06）。只匹配这两个等待式命令，不误伤 osascript 的合法自动化；需要用户确认的
+  // 场合走计划确认面板，本模式把弹窗路径降为「确认后放行」。命令的 stdin 在 Rust 侧关死，
+  // 这道 pattern 管的是不读 stdin 的 GUI 等待。
+  /\bdisplay\s+(?:dialog|alert)\b/,
 ]
 
 /** Bash 命令硬禁止模式 — 永不放行 */

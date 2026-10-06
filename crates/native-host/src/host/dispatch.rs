@@ -928,15 +928,15 @@ impl NativeDispatcher {
                 arg_str(args, "jobId")?,
                 arg_i64(args, "baseRevision")?,
             )?)),
-            "memory_dreaming_budget_reserve" => Ok(Value::Bool(
+            "memory_dreaming_budget_reserve" => {
                 memory_commands::memory_dreaming_budget_reserve(
                     self.memory()?,
                     arg_str(args, "reservationId")?,
                     arg_str(args, "localDate")?,
                     arg_i64(args, "reservedTokens")?,
-                    arg_i64(args, "dailyLimit")?,
-                )?,
-            )),
+                )?;
+                Ok(Value::Null)
+            }
             "memory_dreaming_budget_settle" => {
                 memory_commands::memory_dreaming_budget_settle(
                     self.memory()?,
@@ -1036,7 +1036,6 @@ impl NativeDispatcher {
             "proactive_auxiliary_budget_reserve" => {
                 crate::proactive::commands::proactive_auxiliary_budget_reserve(
                     self.memory()?,
-                    &self.proactive_limits,
                     arg_value(args, "request")?,
                 )
             }

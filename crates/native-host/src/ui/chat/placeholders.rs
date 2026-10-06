@@ -155,6 +155,9 @@ mod tests {
         };
         let label = pending_label(&placeholder);
         assert_eq!(label, "照片.png（2.0 KB）✕");
+        // 用户实测回归（2026-10-06「两个 ✕」）：✕ 恰出现一次，且只由本函数提供；
+        // 平台层不得再拼接（源码级守门见 `pending_strip` 的跨平台测试）。
+        assert_eq!(label.matches('✕').count(), 1, "✕ 必须恰出现一次：{label}");
         assert!(!label.contains("点击查看"), "待发送区点击是撤选：{label}");
     }
 

@@ -67,7 +67,8 @@ ai:
     # agent 子代理工具轮上限（无人值守子运行）；主聊天回合已无计数上限，走循环病理检测
     subAgentRounds: 5
     toolTimeoutMs: 30000
-    turnTimeoutMs: 120000
+    # 主回合/恢复的墙钟；必须 ≥ bash 档位（5 分钟）+ 一次模型往返，否则长命令被回合整体 abort。
+    turnTimeoutMs: 600000
     dedupWindowMs: 30000
     maxVisibleMessages: 200
     # 同时执行的只读（shared_read）工具数上限，范围 1–8。效果类工具始终与其它执行互斥，
@@ -83,8 +84,8 @@ ai:
     rerankTimeoutMs: 2500
     dreaming:
       # 记忆整理档位：off(不自动整理，面板手动整理入口保留) | low | medium | high
-      # 档位值（空闲阈值 / 最小间隔 / 每日 token）收进 src/services/proactive/protocol.json 的 tiers，
-      # 越高越勤、token 消耗越大（低→高每日预算 24000 → 120000）。
+      # 档位值（空闲阈值 / 最小间隔）收进 src/services/proactive/protocol.json 的 tiers，越高越勤；
+      # 每日 token 上限已撤除（2026-10-06）：token 只记账，不阻止/中止整理。
       tier: medium
       # reviewMaxTokens：单次 Review 输出上限；留空/删掉 = 按模型输出预算自动推导（窗口×1/8，32k 封顶，且不越过模型目录上限）
       # reviewMaxTokens: 4096
@@ -97,7 +98,8 @@ ai:
     # llm 在未命中关键词时再发一次独立请求自判。--plan 强制触发不受它影响。
     complexityEval: keyword
     maxSteps: 8
-    stepTimeoutMs: 90000
+    # 单个计划步骤的墙钟；计划由用户在场批准，按 bash 档位（5 分钟）对齐，避免 90s 截断长命令。
+    stepTimeoutMs: 300000
     stepMaxRounds: 5
     thinkingEffort: medium
     stepThinkingEffort: low
