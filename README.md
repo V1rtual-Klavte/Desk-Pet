@@ -1,8 +1,120 @@
+<div align="center">
+
 # V1rtual-Desk-Pet
 
-虚拟桌宠（V1rtual-Desk-Pet）是可自定义角色与外观的桌面陪伴应用。角色常驻桌面，能聊天、感知前台窗口并主动搭话，也能调用工具完成文件读写、命令执行与任务编排。
+**可自定义角色与外观的桌面宠物 —— 常驻桌面陪你聊天，感知你在做什么，也能替你干活。**
 
-[![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20macOS-blue)](https://github.com/V1rtual-Klavte/Desk-Pet)
+[![Release](https://img.shields.io/github/v/release/V1rtual-Klavte/Desk-Pet)](https://github.com/V1rtual-Klavte/Desk-Pet/releases/latest)
+[![License](https://img.shields.io/github/license/V1rtual-Klavte/Desk-Pet)](LICENSE)
+[![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20macOS-blue)](#下载安装)
+[![Bundled Node](https://img.shields.io/badge/node-22.22.3_bundled-3c873a)](packaging/node-runtime.json)
+
+<p align="center">
+  <img src="docs/images/theme-1.webp" width="270" alt="桌宠演示 · 主题一（浅色）">
+  <img src="docs/images/theme-2.webp" width="270" alt="桌宠演示 · 主题二（明亮）">
+  <img src="docs/images/theme-3.webp" width="270" alt="桌宠演示 · 主题三（暗色）">
+</p>
+
+</div>
+
+## 这是什么
+
+V1rtual-Desk-Pet 是一款**可自定义 Card / Profile 的桌面宠物**，优先做好轻量陪伴与聊天。
+
+角色以透明置顶窗口常驻桌面：可以陪聊、感知前台窗口并在合适的时候主动搭话，也能调用工具完成文件读写、命令执行与任务编排。整个应用由 Rust 原生宿主（含原生 UI 与平台能力）与一个随包分发的 Node 运行时组成，**没有 WebView**，安装包开箱即用，用户无需自备 Node。
+
+设计方针：轻量、低内存、高性能、节省 token、功能完整。目标平台为 Windows 与 macOS。
+
+## 功能特性
+
+### 陪伴与对话
+
+- **拟人表达**：普通聊天分条出现、显示正在输入；工具任务即时给结果。可在 AI 设置关闭。
+- **插话与排队**：回复生成期间仍可继续发送消息，选择「插话」在当前响应结束后处理，或「稍后继续」等待任务自然收尾；排队中的消息可逐条撤回。
+- **图片消息**：点击聊天框「图片」、拖入原文件，或直接粘贴剪贴板图片（⌘V / Ctrl+V）；也可以让她截取前台画面给你看（需开启静默访问，只有展示给你看的截图才落盘）。
+- **对话连续性**：多会话切换与历史恢复；长会话按预算压缩上下文，完整正文保留在本地。
+
+### 角色与外观
+
+- **Card（角色）**：定义角色设定、语言风格与互动变量，同一桌宠可切换多个角色；默认角色出厂没有名字，由你在对话里给她起。
+- **Profile（外观）**：主题、立绘与素材，支持灵动图层效果；可新建（空 Profile，逐步加素材）、重命名、删除与导入导出。
+- **界面主题**：三套内置主题与全局字体（设置 / 外观）。
+
+### 记忆与主动陪伴
+
+- **静默了解**：截图优先观察前台窗口，读取哪些本地文件或目录由 AI 根据当前窗口判断（整机只读，仍禁凭据、密钥路径与应用数据根）；宿主逐项校验、只读不写，带来源的了解与用户事实分开。
+- **长期记忆**：合格的可信用户来源经整批校验后自动提交；在聊天里右键你自己的消息选「记住这条」，或直接说一句「记住……」。设置页「记忆」可查看来源原话与历史版本、切换核心画像标记、纠正与遗忘（同步失效运行中的旧记忆投影），并可继续或预览整理作业与备份恢复。记忆整理默认按空闲策略与持久预算运行，也可在设置页手动触发。
+- **主动陪伴**：有来源的事项跟进、明确约定、节令、轻话题与有限展示，统一受静默时段、忙碌、未回复档位与每日预算约束。聊天中用 `/proactive on`、`/proactive off`、`/proactive status` 控制总开关，用 `/behavior clear` 清除派生观察画像；拟人表达与静默访问是独立开关，静默访问关闭后独立约定仍可执行。运行边界见[主动陪伴](docs/current/proactive.md)。
+
+### 工具与扩展
+
+- **内置工具**：文件读写、Bash、系统信息、截图、剪贴板、计划与子代理。
+- **Skill**：按需加载，不占用常驻上下文。
+- **MCP**：按服务器在运行期借用（stdio 或 Streamable HTTP），未启用的服务器不连接、不占进程；启动时不连接 MCP。
+- 所有执行受统一权限策略与 Rust 安全基线约束。
+
+### 桌面与平台
+
+- 透明置顶窗口、五层角色渲染、全局快捷键、托盘与音效。
+- 单实例守卫：同一数据根只运行一个宿主，重复启动会明确提示后退出。
+- 应用内自动更新：启动约 30 秒后自动检查一次（设置 → 通用 也可手动检查），确认后自动完成下载、校验、重启与安装。
+
+## 轻量与性能
+
+随包内容与运行占用（macOS Apple Silicon 口径）：
+
+| 项目 | 数值 |
+|---|---|
+| 随包 Node 运行时（磁盘） | 约 121 MB |
+| Harness 产物（单文件 main.mjs） | 2.8 MB |
+| 默认资源（角色卡 / 主题 / 字体素材） | 约 21 MB |
+| Rust 宿主二进制 | 约 1.3 MB |
+| 空闲内存（宿主 + Node 合计） | 待打包版实测 |
+| 空闲 CPU | 待打包版实测 |
+
+常驻的只有两个进程：Rust 宿主 + 唯一 Node Harness（MCP 未启用时不驻留）。磁盘与产物为 2026-10-06 实测基线；运行占用待打包版复测后填入。
+
+## 架构
+
+应用由两个进程组成：**`crates/native-host` —— Rust 原生宿主**（唯一常驻，管界面、观察与执行）与 **`src/` —— 唯一 Node**（业务与模型侧），两者经私有 IPC 互通；界面原生绘制，没有 WebView。
+
+### 项目结构
+
+```text
+Desk-Pet/
+├── crates/native-host/            原生宿主（Rust）：窗口 · 渲染 · 观察 · 执行 · 更新
+│   └── src/
+│       ├── ui/                    主窗 · 设置 · 图层编辑器 · 托盘 · 主题
+│       ├── render/                五层角色舞台（CALayer / Layered Window）
+│       ├── monitor/ window/       前台窗口 · 锁屏 · 截图观察
+│       ├── memory/ proactive/     长期记忆与主动链（SQLite 同库，惰性打开）
+│       ├── commands/              工具执行域：Bash 池 · 文件 · 截图 · MCP 进程桥
+│       ├── host/ ipc/             命令分派 NativeDispatcher · Node 监督器 · 私有通道
+│       └── paths/ update/         路径与安全基线 · 应用内更新
+├── src/
+│   ├── harness/main.ts            Node 唯一入口（bootstrap）
+│   └── services/                  业务层（TypeScript，随包 Node 22.22.3 运行）
+│       ├── engine/                Pi Agent 回合 · 会话 JSONL · 上下文压缩
+│       ├── context/               分层构建与共享预算 · 工具输出投影
+│       ├── tool/ safety/ skill/   工具路由 · 权限策略 · Skill 清单
+│       ├── agent/memory/          记忆召回 · 来源采集 · dreaming 整理
+│       ├── proactive/             机会 · 约定 · 预算 · 消息回执
+│       ├── native-ui/             投影帧组装 · 宿主请求应答
+│       └── personality/ reply/    人格卡 · 互动变量 · 回复元数据
+├── resources/defaults/            出厂资源：角色卡 · 主题 · 字体素材
+├── packaging/                     打包配置与随包 Node 锁定版本
+├── scripts/                       开发与校验脚本：dev 启动 · 版本 · 打包
+├── test/                          三层测试 · 契约 · 评测（规则见 test/AGENTS.md）
+└── docs/                          设计与工程文档（索引见 docs/INDEX.md）
+```
+
+每个目录内部的模块地图、状态所有权与完整调用链见[系统地图](docs/current/system-design.md)。
+
+### 依赖关系
+
+- **运行时零外部依赖**：Node 22.22.3 随包分发、界面原生绘制；MCP 服务器按需借用，未启用不连接、不驻留。
+- **唯一出网口是模型服务**：OpenAI 兼容接口（默认 DeepSeek，也支持 OpenAI / Ollama / LM Studio 等），Provider 调用单点收在 `engine/harness/model-gateway.ts`。
+- **唯一跨进程通道是私有 IPC**（macOS Unix socket / Windows 命名管道）：Node → 宿主命令（`HostCommandMap`，逐条对应 Rust `NativeDispatcher`）、宿主 → Node 请求（`HostRequestMap`，`host_request_result` 回执）、事件（`HostEventMap`）；超限字段自动走 blob 二进制帧。业务层不直接碰窗口，宿主不直接碰模型。
 
 ## 下载安装
 
@@ -19,39 +131,17 @@
 >   `xattr -dr com.apple.quarantine /Applications/v1rtual-desk-pet.app`，再打开。
 > - Windows 弹 SmartScreen「已保护你的电脑」时，点「更多信息 → 仍要运行」。
 
-> **从旧版本（Tauri 壳）升级到当前原生版本不会自动完成** —— 应用的更新通道只在原生
-> 版本之间生效，旧版本不会自动升级，需要按上面的方式手动下载安装一次。
 
 装完之后不用手动追版本：应用启动约 30 秒后会自动检查一次更新，也可以随时到
 设置 → 通用 的「检查更新」手动检查。发现新版本后只需确认一次，应用会自动完成
 下载、校验、重启与安装（安装由退出后的独立 helper 完成，全程无需手动步骤）；
 安装包与临时文件会在新版本首次启动时清理。
 
-## 特性
+## 从源码运行
 
-- **角色与人格**：Card 定义角色设定、语言风格与互动变量，同一桌宠可切换多个角色；默认角色出厂没有名字，由你在对话里给她起。
-- **外观定制**：Profile 包含主题、立绘与素材，支持灵动图层效果，可新建（空 Profile，逐步加素材）、重命名、删除与导入导出；字体在设置/外观里全局选择（系统已安装字体，不随 Profile）。
-- **静默了解**：截图优先观察前台窗口，读取哪些本地文件或目录由 AI 根据当前窗口判断（整机只读；仍禁凭据、密钥路径与应用数据根），宿主逐项校验、只读不写；带来源的了解与用户事实分开。
-- **拟人表达**：普通聊天分条出现、显示正在输入，工具任务即时给结果；可在 AI 设置关闭。
-- **图片消息**：点击聊天框“图片”、拖入原文件，或直接粘贴（⌘V / Ctrl+V）剪贴板里的图片（粘贴的图落盘到数据根 `pasted/`，没发出去就切会话或退出时当场回收）；点击/拖入的图会话只保存原路径，模型请求临时读取图片，原文件移动或删除后显示不可用。聊天历史默认只显示图片占位（点击可独立查看），可在设置「外观 → 聊天图片自动预览」开启内联预览——只为当前可见消息按需加载，离开视口即释放。也可以让她截图给你看：她说“看看你现在在做什么”时截取前台画面并展示在聊天里（需开启静默访问；只有展示给你看的截图才落盘，删除会话时一并清理）。
-- **桌面交互**：透明置顶窗口、全局快捷键、托盘与音效。
-- **工具与扩展**：文件读写、Bash、系统信息、截图、剪贴板、计划与子代理；Skill 按需加载，MCP 按服务器在运行期借用（stdio 或 Streamable HTTP），未启用的服务器不连接、不占进程。所有执行受统一权限策略约束。
-- **对话连续性**：多会话切换与历史恢复；长会话按预算压缩上下文，完整正文保留在本地。
+上面下载的是打包产物；下面是把同一份代码跑起来的方式，两者等价。
 
-启动时不连接 MCP。记忆整理按配置的空闲策略和持久预算运行，也可在设置页手动触发；合格的可信用户来源经整批校验后自动提交，在聊天里右键你自己的消息选「记住这条」，或直接说一句「记住……」（由模型判断是否写入）。设置页「记忆」可查看来源原话与历史版本，切换核心画像标记，继续或预览整理作业与备份恢复，并纠正和忘记；纠正／遗忘会同步失效运行中的旧记忆投影。工具执行仍受权限策略与 Rust 安全基线约束。
-
-主动陪伴支持有来源的事项跟进、明确约定、节令、轻话题与有限展示，统一受静默、忙碌、未回复档位和每日预算约束。主动总开关在聊天中用 `/proactive on`、`/proactive off`、`/proactive status` 控制，用 `/behavior clear` 清除派生观察画像；AI 设置的拟人表达与静默访问是独立开关；静默访问关闭后，独立约定仍可执行。运行边界见[主动陪伴](docs/current/proactive.md)。
-
-## 技术栈
-
-Rust（原生宿主、原生 UI 与平台能力）· TypeScript（Node 22 Harness 与服务层）· Pi Agent Core。
-应用自带锁定版本（22.22.3）的 Node 运行时，用户无需安装 Node。
-
-## 环境要求
-
-安装包没有任何额外的运行时依赖（Node 随包分发，界面为原生绘制）。
-
-从源码构建还需要：
+安装包没有任何额外的运行时依赖（Node 随包分发，界面为原生绘制）。从源码构建还需要：
 
 - Node.js 22（仅开发工具链使用；`build:harness` 的目标是 Node 22）
 - Rust toolchain
@@ -59,10 +149,6 @@ Rust（原生宿主、原生 UI 与平台能力）· TypeScript（Node 22 Harnes
 - Windows：Microsoft C++ 构建工具
 
 pnpm 版本由 [package.json](package.json) 的 `packageManager` 指定。
-
-## 从源码运行
-
-上面下载的是打包产物；下面是把同一份代码跑起来的方式，两者等价。
 
 ```bash
 git clone https://github.com/V1rtual-Klavte/Desk-Pet.git
@@ -122,6 +208,7 @@ macOS 的窗口观察需要在「系统设置 → 隐私与安全性 → 辅助�
 
 - [文档索引](docs/INDEX.md)：完整目录与按任务导航
 - [产品设计](docs/DES.md)：玩法、交互与用户可感知行为
+- [系统地图](docs/current/system-design.md)：模块位置、主链路与状态所有权
 - [工程参考](docs/current/development.md)：日志、异常、IPC 与构建排查
 - [开发约束](AGENTS.md)：代码、文档与提交规范
 
