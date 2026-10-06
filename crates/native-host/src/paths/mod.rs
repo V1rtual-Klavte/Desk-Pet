@@ -503,6 +503,29 @@ mod tests {
         }
     }
 
+    /// 创建**目录**符号链接（链接本体在路径中间、要按目录解析时用）。
+    /// Windows 的 file 链接指向目录时创建会成功，但作为路径中间组件不具备
+    /// 目录解析语义（遍历会失败）——那是另一种错误，不是本用例要断言的逃逸拒绝，
+    /// 所以中间目录场景必须用 `symlink_dir` 建链接（CI windows-latest 实测）。
+    fn symlink_dir(original: &Path, link: &Path) -> std::io::Result<()> {
+        #[cfg(unix)]
+        {
+            std::os::unix::fs::symlink(original, link)
+        }
+        #[cfg(windows)]
+        {
+            std::os::windows::fs::symlink_dir(original, link)
+        }
+        #[cfg(not(any(unix, windows)))]
+        {
+            let _ = (original, link);
+            Err(std::io::Error::new(
+                std::io::ErrorKind::Unsupported,
+                "当前平台不支持符号链接",
+            ))
+        }
+    }
+
     fn symlink_test_root(tag: &str) -> PathBuf {
         let root = std::env::temp_dir().join(format!(
             "deskpet-{tag}-{}-{}",
@@ -582,7 +605,7 @@ mod tests {
         let escape = root.join("escape");
         fs::create_dir_all(&escape).unwrap();
         let link_dir = base.join("link");
-        if symlink_file(&escape, &link_dir).is_ok() {
+        if symlink_dir(&escape, &link_dir).is_ok() {
             assert!(matches!(
                 AppPaths::validate_new_path_within(&link_dir.join("evil.json"), &base),
                 Err(AppError::PathEscape)
