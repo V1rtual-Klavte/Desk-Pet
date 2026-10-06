@@ -416,6 +416,14 @@ impl WinUi {
         }
     }
 
+    /// 主窗聊天列当前是否展开（托盘菜单「聊天」项标签与呼出聚焦共用同一读法）。
+    fn main_chat_visible(&self) -> bool {
+        self.main_layout
+            .as_ref()
+            .map(super::windows_main::chat_visible)
+            .unwrap_or(false)
+    }
+
     fn toggle_chat_panel(&mut self) {
         let main = self.main;
         if let Some(layout) = self.main_layout.as_mut() {
@@ -633,11 +641,7 @@ impl WinUi {
         self.start_frame_timer();
         // 呼出后聚焦聊天输入框（对齐 macOS 与旧壳 handleDockPopup 的 focusInput）；
         // 只在聊天列展开时做，桌宠形态不把面板拉出来。
-        let chat_visible = self
-            .main_layout
-            .as_ref()
-            .map(super::windows_main::chat_visible)
-            .unwrap_or(false);
+        let chat_visible = self.main_chat_visible();
         if chat_visible {
             super::windows_chat::focus_main_pane_input();
         }
@@ -1055,8 +1059,15 @@ unsafe extern "system" fn main_wndproc(
                     unsafe {
                         let menu = CreatePopupMenu();
                         AppendMenuW(menu, MF_STRING, CMD_SHOW, wide("显示").as_ptr());
-                        // W9a：聊天列与设置窗的明确入口（不自动弹窗）。
-                        AppendMenuW(menu, MF_STRING, CMD_CHAT, wide("聊天").as_ptr());
+                        // W9a：聊天列与设置窗的明确入口（不自动弹窗）。标题反映当前状态
+                        // （2026-10-06 用户：从菜单就要能看出聊天是开还是关；菜单每次右键
+                        // 现建，这里现读即可，与 macOS 的 menuNeedsUpdate 同口径）。
+                        let chat_label = if with_ui(|ui| ui.main_chat_visible()).unwrap_or(false) {
+                            "隐藏聊天"
+                        } else {
+                            "显示聊天"
+                        };
+                        AppendMenuW(menu, MF_STRING, CMD_CHAT, wide(chat_label).as_ptr());
                         AppendMenuW(menu, MF_STRING, CMD_SETTINGS, wide("设置").as_ptr());
                         AppendMenuW(menu, MF_STRING, CMD_EDITOR, wide("图层编辑器").as_ptr());
                         AppendMenuW(menu, MF_SEPARATOR, 0, wide("").as_ptr());
@@ -1447,7 +1458,16 @@ pub fn run_service(request: ServiceRequest) -> AppResult<i32> {
     nid.uID = TRAY_ID;
     nid.uFlags = NIF_MESSAGE | NIF_ICON | NIF_TIP;
     nid.uCallbackMessage = WM_TRAY;
-    nid.hIcon = unsafe { LoadIconW(0, IDI_APPLICATION) };
+    // 托盘图标：优先取可执行文件内嵌的应用图标（cargo-packager 按 desktop.json 的
+    // icons 配置嵌入，资源 ID 1；MAKEINTRESOURCE(1) 即把 1 直接当指针传）。开发构建
+    // 没有内嵌图标，回落系统默认，不伪造。
+    let module = unsafe { GetModuleHandleW(std::ptr::null()) };
+    let app_icon = unsafe { LoadIconW(module, 1usize as *const u16) };
+    nid.hIcon = if app_icon != 0 {
+        app_icon
+    } else {
+        unsafe { LoadIconW(0, IDI_APPLICATION) }
+    };
     let tip = wide("Desk-Pet");
     for (index, unit) in tip.iter().take(127).enumerate() {
         nid.szTip[index] = *unit;

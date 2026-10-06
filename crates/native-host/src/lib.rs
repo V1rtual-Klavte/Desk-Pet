@@ -7,7 +7,7 @@
 //! 设计约定（见 `docs/history/implementation/原生宿主轻量化执行契约-2026-10-04基线.md` §2.2）：
 //! - 本 crate 不依赖 Tauri。宿主能力经显式 `HostState` / 端口 trait 注入。
 //! - 模块按域落位：`paths` / `memory` / `proactive` / `monitor` / `commands` /
-//!   `host` / `ipc` / `ui` / `render` / `images`。
+//!   `host` / `ipc` / `ui` / `render` / `images` / `single_instance`。
 //! - 每个域只保留一个定义点。
 
 // objc 0.2 的 msg_send!/class!/sel! 宏内部引用 `cfg(feature = "cargo-clippy")`，
@@ -29,6 +29,8 @@ pub mod monitor;
 pub mod paths;
 pub mod proactive;
 pub mod render;
+// 单实例守卫（2026-10-06）：同一数据根只允许一个宿主进程（`main::run` 早期取锁）。
+pub mod single_instance;
 // W5 原生 UI 域（窗口/托盘/快捷键/呼出收回状态机/音效接口）。
 pub mod ui;
 // W10b 更新域（Native UpdatePort / update.json 契约 / 安装 helper）。

@@ -49,16 +49,18 @@ use crate::{rust_debug, rust_info};
 use super::macos::{as_any, primary_height, with_controller};
 use super::macos_chat;
 
-/// 顶栏按钮宽度（设置；本侧条内只余它一枚按钮）。
+/// 顶栏「设置」按钮宽度（文字按钮；「×」用 [`NAV_CLOSE_WIDTH`]）。
 const NAV_BUTTON_WIDTH: f64 = 34.0;
+/// 顶栏「×」按钮宽度（与 Windows `NAV_CLOSE_WIDTH=22` 同值，两平台对称）。
+const NAV_CLOSE_WIDTH: f64 = 22.0;
 /// 品牌字控件高（扁平标签；条内垂直居中）。
 const BRAND_HEIGHT: f64 = 15.0;
 /// 状态位文字行高。
 const STATUS_LABEL_HEIGHT: f64 = 15.0;
-/// 右侧按钮保留宽度（设置按钮 + 内边距；「图层」入口随 2026-10-05 改版从主顶栏
-/// 退场 —— 挪进设置窗与托盘菜单，这里相应收窄）。条内几何的公共部分
+/// 右侧按钮保留宽度（「×」+「设置」+ 间距与内边距；「图层」入口随 2026-10-05 改版
+/// 从主顶栏退场 —— 挪进设置窗与托盘菜单）。条内几何的公共部分
 /// （条高/品牌槽/锚点/边距）在 `ui::titlebar`，这里只留本侧渲染值。
-const TITLEBAR_RIGHT_RESERVE: f64 = 46.0;
+const TITLEBAR_RIGHT_RESERVE: f64 = 72.0;
 
 /// 分隔条宽度（拖动热区）。
 ///
@@ -160,12 +162,13 @@ impl MainDividerView {
 // ==========================================
 
 define_class!(
-    /// 全窗宽主窗顶栏：品牌 + 状态位 + 设置；空白区整条拖动窗口。
+    /// 全窗宽主窗顶栏：品牌 + 状态位 + 设置 +「×」；空白区整条拖动窗口。
     ///
-    /// **不设「×」**：macOS 的窗口关闭走系统红绿灯按钮与 ⌘W
-    /// （`windowShouldClose` → 收起，不销毁、不退出），自绘关闭按钮是冗余的
-    /// 第二通道；设置窗没有系统入口，才需要自绘（图层编辑器入口在设置窗与托盘
-    /// 菜单，不在此重复；Windows 相反，只保留「×」）。
+    /// 「×」= 收起主窗（`retract_main_window`，不退出、不销毁，与托盘「显示」互为
+    /// 呼出/收回）—— 2026-10-06 起自绘。旧注释「关闭走系统红绿灯/⌘W」与实现不符：
+    /// 主窗是 `Borderless` + Accessory（无红绿灯、无应用菜单、无 ⌘W），系统关闭入口
+    /// 并不存在；Windows 顶栏同样只保留「×」，两平台在这里对齐（差异只剩「设置」
+    /// 按钮：macOS 顶栏有，Windows 走托盘菜单）。
     ///
     /// `hitTest:` / `mouseDownCanMoveWindow` 的做法（旧聊天列顶栏曾用同一处理，
     /// 该类已随旧顶栏删除）：标签不吞命中，非按钮的命中一律判给本视图，
@@ -208,6 +211,15 @@ define_class!(
         #[unsafe(method(openSettings:))]
         fn open_settings_action(&self, _sender: Option<&AnyObject>) {
             crate::ui::settings::settings_ui().open_window();
+        }
+
+        /// 收起主窗（顶栏「×」；与 `windowShouldClose` / Windows 顶栏「×」同一归宿，
+        /// 可见态护栏与收起动画都在 `retract_main_window` 内）。
+        #[unsafe(method(retractMain:))]
+        fn retract_main_action(&self, _sender: Option<&AnyObject>) {
+            if let Err(error) = super::macos::retract_main_window() {
+                rust_debug!("顶栏收起请求失败: {error}");
+            }
         }
     }
 );
@@ -457,11 +469,13 @@ pub(crate) fn install(window: &NSWindow) -> AppResult<MainLayout> {
     );
     status_dot.setWantsLayer(true);
     titlebar.addSubview(&status_dot);
-    // 右侧按钮（从右到左）：设置 —— 「图层」入口已挪进设置窗与托盘菜单
-    // （2026-10-05 用户裁定主顶栏不重复放）；
-    // 不含「×」（macOS 关闭走系统红绿灯/⌘W，理由见 MainTitlebarView 的类注释）。
-    let mut nav_buttons: Vec<Retained<NSButton>> = Vec::with_capacity(1);
-    for (title, action) in [("设置", sel!(openSettings:))] {
+    // 右侧按钮（从右到左）：×（收起，与 Windows 对称）、设置 —— 「图层」入口已挪进
+    // 设置窗与托盘菜单（2026-10-05 用户裁定主顶栏不重复放）。
+    let mut nav_buttons: Vec<Retained<NSButton>> = Vec::with_capacity(2);
+    for (title, action, width) in [
+        ("×", sel!(retractMain:), NAV_CLOSE_WIDTH),
+        ("设置", sel!(openSettings:), NAV_BUTTON_WIDTH),
+    ] {
         let button = unsafe {
             NSButton::buttonWithTitle_target_action(
                 &NSString::from_str(title),
@@ -474,7 +488,7 @@ pub(crate) fn install(window: &NSWindow) -> AppResult<MainLayout> {
         button.setFont(Some(&crate::ui::platform::macos_widgets::resolve_font(
             crate::ui::platform::macos_widgets::HELP_BASE_SIZE,
         )));
-        button.setFrameSize(NSSize::new(NAV_BUTTON_WIDTH, titlebar::CONTROL_HEIGHT));
+        button.setFrameSize(NSSize::new(width, titlebar::CONTROL_HEIGHT));
         titlebar.addSubview(&button);
         nav_buttons.push(button);
     }
@@ -609,14 +623,17 @@ fn relayout(layout: &mut MainLayout, window: &NSWindow) {
             STATUS_LABEL_HEIGHT,
         ),
     ));
-    for (button, x) in layout
+    // 按钮链右到左：nav_buttons[0] 是最右一枚（顺序与 `right_button_x` 的 widths 对齐）
+    let nav_widths = [NAV_CLOSE_WIDTH, NAV_BUTTON_WIDTH];
+    for ((button, button_width), x) in layout
         .nav_buttons
         .iter()
-        .zip(titlebar::right_button_x(width, &[NAV_BUTTON_WIDTH]))
+        .zip(nav_widths)
+        .zip(titlebar::right_button_x(width, &nav_widths))
     {
         button.setFrame(NSRect::new(
             NSPoint::new(x, titlebar::centered_y(titlebar::CONTROL_HEIGHT)),
-            NSSize::new(NAV_BUTTON_WIDTH, titlebar::CONTROL_HEIGHT),
+            NSSize::new(button_width, titlebar::CONTROL_HEIGHT),
         ));
     }
 
@@ -848,9 +865,9 @@ mod tests {
     }
 
     /// 最短窗宽（`MAIN_WINDOW_MIN_WIDTH`）下：状态文字仍有可读宽度，右侧保留区
-    /// 容得下仅剩的设置按钮 —— 删掉「图层」后保留区收窄不得收过头。
+    /// 容得下「×」+「设置」按钮链 —— 按钮链变化时保留区必须同步，压过头即红。
     #[test]
-    fn 最短窗宽下状态位与设置按钮几何相容() {
+    fn 最短窗宽下状态位与按钮链几何相容() {
         let slot = titlebar::status_slot_width(
             crate::window::MAIN_WINDOW_MIN_WIDTH,
             TITLEBAR_RIGHT_RESERVE,
@@ -861,8 +878,9 @@ mod tests {
             "状态位文字在最短窗宽下被压没（余 {available}）"
         );
         assert!(
-            TITLEBAR_RIGHT_RESERVE >= titlebar::RIGHT_MARGIN + NAV_BUTTON_WIDTH,
-            "右侧保留区容不下设置按钮"
+            TITLEBAR_RIGHT_RESERVE
+                >= titlebar::RIGHT_MARGIN + NAV_CLOSE_WIDTH + titlebar::BUTTON_GAP + NAV_BUTTON_WIDTH,
+            "右侧保留区容不下「×」+「设置」按钮链"
         );
     }
 

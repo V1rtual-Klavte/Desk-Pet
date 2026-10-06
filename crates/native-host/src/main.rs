@@ -161,6 +161,31 @@ fn run(mode: Mode) -> AppResult<i32> {
         paths.data_root.display()
     );
 
+    // 单实例守卫（2026-10-06）：同一数据根只允许一个宿主。必须在 update::init 之前 ——
+    // 两个实例并发做更新恢复会互相踩同一份 staging。作用域按数据根：dev 与 release
+    // 数据根不同、可并存；`--smoke` 是短命测试驱动模式（不建窗口），不参与守卫，
+    // E2E 分支在 run() 之前已分流。锁随进程退出由 OS 释放；无法判定（权限/文件系统
+    // 异常）时留痕继续，不把用户锁在门外。
+    let mut _instance_guard: Option<native_host::single_instance::InstanceGuard> = None;
+    if matches!(mode, Mode::Service) {
+        match native_host::single_instance::acquire(&paths.data_root.join(".instance.lock")) {
+            native_host::single_instance::AcquireOutcome::Acquired(guard) => {
+                _instance_guard = Some(guard);
+            }
+            native_host::single_instance::AcquireOutcome::AlreadyRunning => {
+                rust_info!(
+                    "已有实例在运行（data={}），本进程退出",
+                    paths.data_root.display()
+                );
+                native_host::single_instance::notify_already_running();
+                return Ok(0);
+            }
+            native_host::single_instance::AcquireOutcome::Unavailable(reason) => {
+                rust_warn!("单实例锁不可用，继续启动: {reason}");
+            }
+        }
+    }
+
     // W10b 更新域装配（幂等）：解析嵌入的更新元数据、推导安装布局、执行启动恢复
     // （把上次中断的替换收口：回滚到上一完整版本 / 补记完成）。失败只留痕、不阻断
     // 宿主启动；命令面与退出序列随后会如实报「未初始化」而不是静默降级。

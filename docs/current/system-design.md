@@ -31,6 +31,7 @@ Node 的端点与一次性握手值只经环境变量 `DESKPET_HOST_LAUNCH` 传�
 | commands | transport 无关的命令域：Bash 策略与执行池、文件/进程/桌面/系统工具、工具许可、MCP 进程桥、会话文件、人格/Profile/资源/Skill 文件、聊天图片准入、截图与观察、字体、日志、光标 | [commands/](../../crates/native-host/src/commands/) |
 | paths | AppPaths（数据根与各域目录的唯一决定点）、路径安全（允许根/凭据/记忆库保护）、种子与恢复 | [paths/mod.rs](../../crates/native-host/src/paths/mod.rs)、[paths/security.rs](../../crates/native-host/src/paths/security.rs)、[paths/seeding.rs](../../crates/native-host/src/paths/seeding.rs) |
 | update | 应用内更新：`update.json` 校验链（验签/平台架构/完整组件集/版本更高）、staging、独立 helper 替换安装 | [update/mod.rs](../../crates/native-host/src/update/mod.rs) |
+| single_instance | 单实例守卫（2026-10-06）：同一数据根只允许一个宿主（`{data_root}/.instance.lock` 的 OS 独占锁，macOS `O_EXLOCK` / Windows 独占共享打开）；后启动者经 `main::run` 早期检查拒绝，弹窗提示后退出 | [single_instance.rs](../../crates/native-host/src/single_instance.rs) |
 | audio | 宿主音效接口（`AudioPort` 与平台实现位）；当前未接线，`None` 时只记日志、不伪造播放成功 | [audio/mod.rs](../../crates/native-host/src/audio/mod.rs) |
 | e2e_trace | 测试专用 trace 落盘（仅 debug + `is_e2e()`） | [e2e_trace.rs](../../crates/native-host/src/e2e_trace.rs) |
 
@@ -104,7 +105,7 @@ Node 的端点与一次性握手值只经环境变量 `DESKPET_HOST_LAUNCH` 传�
 
 **原生宿主**（[main.rs](../../crates/native-host/src/main.rs)）：解析宿主环境与 `AppPaths`（数据根、随包资源根、开发工作区）→ 日志文件 sink → 更新域装配（幂等，失败只留痕）→ 校验随包 Node 与 harness 产物存在（缺失即启动失败，不回落系统 Node）→ 建主窗/托盘/快捷键（`ui::start_service`；Node 未就绪时窗口显隐与快捷键仍由 Rust 本地完成）→ UI 就绪后由后台线程拉起 Node（监督器握手校验协议版本、Node 版本与一次性握手值）→ 常驻观察退出。
 
-**Node**（[harness/main.ts](../../src/harness/main.ts)）：连端点（hello/welcome）→ `get_runtime_paths`（必要时核对与 welcome 的运行模式口径）→ 校验必需路径字段 → 安装错误出口与生命周期钩子（宿主关停先 flush 并如实回报；宿主断开即退出）→ `initDomainBootstrap()`（[init.ts](../../src/services/init.ts)）：路径与运行时 CONFIG → memory/V1RTUAL/idle 整理 → Profile → Card → proactive/session 接线 → 工具与 slash 命令表 → 会话恢复 + Plan checkpoint 恢复 → 欢迎语 → debug → 原生 UI 桥（宿主请求处理器 + 首帧推送）→ 窗口观察接线 → 主动扫描与静默了解调度启动。任一步失败向上抛给 bootstrap（记录并退出），不做「吞掉继续」。
+**Node**（[harness/main.ts](../../src/harness/main.ts)）：连端点（hello/welcome）→ `get_runtime_paths`（必要时核对与 welcome 的运行模式口径）→ 校验必需路径字段 → 安装错误出口与生命周期钩子（宿主关停先 flush 并如实回报；宿主断开即退出）→ `initDomainBootstrap()`（[init.ts](../../src/services/init.ts)）：路径与运行时 CONFIG → memory/V1RTUAL/记忆整理（定时调度） → Profile → Card → proactive/session 接线 → 工具与 slash 命令表 → 会话恢复 + Plan checkpoint 恢复 → 欢迎语 → debug → 原生 UI 桥（宿主请求处理器 + 首帧推送）→ 窗口观察接线 → 主动扫描与静默了解调度启动。任一步失败向上抛给 bootstrap（记录并退出），不做「吞掉继续」。
 
 **退出序列**（[生命周期契约](../history/implementation/原生宿主轻量化执行契约-2026-10-04基线.md) §4.3 第 5 条）：托盘「退出」/系统终止/命令侧 `app_restart` 经同一个只跑一次的 `HostExitHook`——先回收 MCP 与 Bash 子进程池，再让监督器封新 admission → 请求 Node flush → 等真实报告 → 停 Node；超时如实记中断，不伪报成功；有 staged 更新时由独立 helper 在整套进程退出后替换并重启。
 

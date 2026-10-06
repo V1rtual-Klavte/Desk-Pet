@@ -595,6 +595,8 @@ unsafe fn build_titlebar_children(bar: HWND) {
             )
         };
         // 只建「×」（收起）：设置/图层入口在托盘菜单，Windows 顶栏不重复放。
+        // macOS 顶栏 2026-10-06 起同样自绘「×」（Borderless 无系统关闭入口），
+        // 两平台唯一的按钮链差异只剩「设置」（macOS 顶栏有，Windows 走托盘）。
         let hide = make_button("×", BAR_BTN_HIDE_ID);
         // 关闭键：主题按钮（btn_bg 族 + dim 字；悬浮换 danger，见 paint_win::button_face）。
         paint_win::set_role(hide, ButtonRole::Close);

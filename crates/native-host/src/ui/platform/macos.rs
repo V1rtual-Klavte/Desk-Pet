@@ -21,17 +21,17 @@ use std::sync::Arc;
 use dispatch2::DispatchQueue;
 use objc2::rc::Retained;
 use objc2::runtime::{AnyObject, ProtocolObject};
-use objc2::{define_class, msg_send, sel, DefinedClass, MainThreadOnly, Message};
+use objc2::{define_class, msg_send, sel, AnyThread, DefinedClass, MainThreadOnly, Message};
 use objc2_app_kit::{
     NSApplication, NSApplicationActivationOptions, NSApplicationActivationPolicy,
-    NSApplicationDelegate, NSBackingStoreType, NSColor, NSMenu, NSMenuItem, NSRunningApplication,
-    NSScreen, NSStatusBar, NSStatusItem, NSVariableStatusItemLength, NSWindow, NSWindowDelegate,
-    NSWindowStyleMask, NSWorkspace,
+    NSApplicationDelegate, NSBackingStoreType, NSColor, NSImage, NSMenu, NSMenuDelegate,
+    NSMenuItem, NSRunningApplication, NSScreen, NSStatusBar, NSStatusItem,
+    NSVariableStatusItemLength, NSWindow, NSWindowDelegate, NSWindowStyleMask, NSWorkspace,
 };
 use objc2_core_foundation::{CGAffineTransform, CGPoint, CGRect};
 use objc2_foundation::{
-    ns_string, MainThreadMarker, NSNotification, NSObject, NSObjectProtocol, NSPoint, NSRect,
-    NSSize, NSString, NSTimer,
+    ns_string, MainThreadMarker, NSData, NSNotification, NSObject, NSObjectProtocol, NSPoint,
+    NSRect, NSSize, NSString, NSTimer,
 };
 use objc2_quartz_core::CATransaction;
 
@@ -197,6 +197,18 @@ pub(crate) fn activate_app() {
     let _: () = unsafe { msg_send![&*app, activateIgnoringOtherApps: true] };
 }
 
+/// 托盘模板图：用户素材的黑剪影（44px = 22pt @2x），编译期嵌入。
+///
+/// 不走资源根装配：为一张小图加一条分发链不划算（与主题噪声「能算就别打包」
+/// 同口径的极简版）。模板图（template）由系统按菜单栏明暗模式自动染色。
+fn tray_template_image() -> Option<Retained<NSImage>> {
+    let data = NSData::with_bytes(include_bytes!("../../../../../resources/icons/mascot-tray-44.png"));
+    let image = NSImage::initWithData(NSImage::alloc(), &data)?;
+    image.setSize(NSSize::new(22.0, 22.0));
+    image.setTemplate(true);
+    Some(image)
+}
+
 /// 关闭隐式动画后改 CALayer 属性（逐帧更新必须，原生宿主迁移过程记录 §9.4 第 17 条）。
 fn without_implicit_animation<F: FnOnce()>(f: F) {
     CATransaction::begin();
@@ -268,6 +280,8 @@ pub(crate) struct UiIvars {
     layer_editor: RefCell<Option<Retained<DeskPetWindow>>>,
     viewer: RefCell<Option<Retained<DeskPetWindow>>>,
     status_item: OnceCell<Retained<NSStatusItem>>,
+    /// 托盘菜单「聊天」项：标题在菜单打开时现读状态刷新（见 NSMenuDelegate 实现）。
+    tray_chat_item: OnceCell<Retained<NSMenuItem>>,
     timer: RefCell<Option<Retained<NSTimer>>>,
     /// 主窗一体布局（舞台 + 聊天列；W9a）。
     main_layout: RefCell<Option<macos_main::MainLayout>>,
@@ -306,6 +320,21 @@ define_class!(
     pub(crate) struct UiController;
 
     unsafe impl NSObjectProtocol for UiController {}
+
+    /// 托盘菜单开合前刷新：「聊天」项标题 = 当前状态的下一步动作（可见 → 隐藏聊天；
+    /// 隐藏 → 显示聊天）。菜单每次打开都现读状态，聊天列经其它路径（投影同步等）
+    /// 变化后标签也不会发霉。
+    unsafe impl NSMenuDelegate for UiController {
+        #[unsafe(method(menuNeedsUpdate:))]
+        fn menu_needs_update(&self, _menu: &NSMenu) {
+            let visible = self
+                .with_main_layout(|layout| macos_main::chat_visible(layout))
+                .unwrap_or(false);
+            if let Some(item) = self.ivars().tray_chat_item.get() {
+                item.setTitle(&NSString::from_str(if visible { "隐藏聊天" } else { "显示聊天" }));
+            }
+        }
+    }
 
     unsafe impl NSApplicationDelegate for UiController {
         #[unsafe(method(applicationDidFinishLaunching:))]
@@ -560,6 +589,7 @@ impl UiController {
             layer_editor: RefCell::new(None),
             viewer: RefCell::new(None),
             status_item: OnceCell::new(),
+            tray_chat_item: OnceCell::new(),
             timer: RefCell::new(None),
             main_layout: RefCell::new(None),
             track_timer: RefCell::new(None),
@@ -919,7 +949,12 @@ impl UiController {
         let bar = NSStatusBar::systemStatusBar();
         let item = bar.statusItemWithLength(NSVariableStatusItemLength);
         if let Some(button) = item.button(mtm) {
-            button.setTitle(ns_string!("DP"));
+            // 托盘图 = 用户素材（黑剪影模板图，见 [`tray_template_image`]）；素材缺失
+            // 时回落文字「DP」，托盘仍可被找到。
+            match tray_template_image() {
+                Some(image) => button.setImage(Some(&image)),
+                None => button.setTitle(ns_string!("DP")),
+            }
         }
         let menu = NSMenu::initWithTitle(NSMenu::alloc(mtm), &NSString::from_str("Desk-Pet"));
         // W9a：托盘是主窗聊天列与设置窗的明确入口（不自动弹窗改变产品行为）。
@@ -941,7 +976,13 @@ impl UiController {
             };
             unsafe { menu_item.setTarget(Some(as_any(self))) };
             menu.addItem(&menu_item);
+            if action == sel!(toggleChat:) {
+                let _ = self.ivars().tray_chat_item.set(menu_item);
+            }
         }
+        // 菜单打开前刷新「聊天」项标题（menuNeedsUpdate）：从菜单就能看出聊天列当前
+        // 是开还是关（2026-10-06 用户；静态标题看不出状态）。
+        menu.setDelegate(Some(ProtocolObject::from_ref(self)));
         item.setMenu(Some(&menu));
         let _ = self.ivars().status_item.set(item);
         rust_info!("托盘已创建（NSStatusItem，菜单：显示 / 聊天 / 设置 / 图层编辑器 / 退出）");
@@ -1232,7 +1273,12 @@ impl UiController {
     }
 
     fn show_main(&self) {
-        match self.ivars().machine.borrow().stage() {
+        // 先把阶段读出来再 match（与 begin_toggle 同一纪律）：写成
+        // `match …machine.borrow().stage()` 时只读借用会活到整个 match 作用域，
+        // Hidden 分支里的 begin_toggle → borrow_mut 必 panic「RefCell already borrowed」
+        // （2026-10-06 实机事故：收起后点托盘「显示」整程崩溃；守门测试见本文件 tests）。
+        let stage = self.ivars().machine.borrow().stage();
+        match stage {
             Stage::Hidden => self.begin_toggle(),
             Stage::Visible => {
                 if let Some(window) = self.main_window() {
@@ -2002,4 +2048,36 @@ pub(crate) fn apply_editor_preview_to_stage(
         }
         Ok(())
     })?
+}
+
+#[cfg(test)]
+mod tests {
+    /// 生产段源码（截到测试段之前）：守门断言不扫自己的断言文本。
+    fn production_source() -> &'static str {
+        let src = include_str!("macos.rs");
+        let end = src.find("#[cfg(test)]").expect("必须有测试段");
+        &src[..end]
+    }
+
+    /// 源码级守门：`machine` 的只读借用不得写进 `match` 头。
+    ///
+    /// `match self.ivars().machine.borrow().stage() { … }` 的临时只读借用会活到整个
+    /// match 作用域（Rust 的 match 头部临时值规则），`Stage::Hidden` 分支里的
+    /// begin_toggle → `borrow_mut()` 立刻 panic「RefCell already borrowed」。
+    /// 2026-10-06 实机事故：收起主窗后点托盘「显示」整程崩溃（show_main 漏改；
+    /// begin_toggle / maybe_auto_popup_on_committed 已按纪律写对）。正确写法：
+    /// 先 `let stage = …borrow().stage();` 再 match。注释行不参与扫描。
+    #[test]
+    fn 状态机只读借用不进入match头() {
+        for (index, line) in production_source().lines().enumerate() {
+            let code = line.split("//").next().unwrap_or("");
+            if code.contains("match") && code.contains("machine.borrow()") {
+                panic!(
+                    "macos.rs:{} 把 machine 的只读借用写进了 match 头（借用会活到整个 match，分支内 borrow_mut 必 panic）：{}",
+                    index + 1,
+                    line.trim()
+                );
+            }
+        }
+    }
 }

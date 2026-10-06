@@ -137,4 +137,5 @@ windows-sys = { version = "0.52", features = [
     "Win32_Security",                   # CreateJobObjectW 的 SECURITY_ATTRIBUTES 参数类型（传 null）
     "Win32_System_DataExchange",        # 提示对话框「复制详情」：OpenClipboard / SetClipboardData（W8c）
     "Win32_System_Memory",              # 剪贴板文本内存块：GlobalAlloc / GlobalLock / GlobalUnlock
+    "Win32_Storage_FileSystem",         # 单实例守卫：CreateFileW 独占共享打开（single_instance.rs）
 ] }
