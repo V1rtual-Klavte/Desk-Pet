@@ -2,7 +2,7 @@
   "$schema": "https://raw.githubusercontent.com/crabnebula-dev/cargo-packager/%40crabnebula/packager-v0.11.8/crates/packager/schema.json",
   "name": "v1rtual-desk-pet",
   "productName": "v1rtual-desk-pet",
-  "version": "0.16.0",
+  "version": "0.20.0",
   "identifier": "com.v1rtual.deskpet",
   "description": "V1rtual Desk Pet 原生宿主 + 随包 Node（W0/W2 最小打包试验；cargo-packager 0.11.8）",
   "outDir": "dist",

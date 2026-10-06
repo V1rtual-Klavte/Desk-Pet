@@ -12,7 +12,7 @@ members = ["crates/native-host"]
 #   · packaging/desktop.json（cargo-packager 的 --config 元数据；它不会自动读 Cargo 版本，
 #     不显式同步就会打出版本号错的包）
 [workspace.package]
-version = "0.16.0"
+version = "0.20.0"
 
 # 发布产物体积。只能写在 workspace 根：成员 crate 里的 `[profile]` 会被 Cargo 忽略
 # （带 warning 但不是错误，放错位置会静默不生效）。
