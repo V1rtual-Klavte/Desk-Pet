@@ -15,7 +15,10 @@ use std::path::Path;
 /// 写路径的 `safe_path` 已由 `validate_new_file_path` 解析掉链接叶子，那里取
 /// `symlink_metadata` 只是为了与「叶子是什么就是什么」的语义对齐。链接名可以无害，
 /// 指向 FIFO 时只有真实类型能说明接下来会打开什么。
-fn ensure_regular_file(metadata: &std::fs::Metadata, path: &str) -> AppResult<()> {
+///
+/// `pub(crate)`：`commands/session_fs.rs` 的会话写路径在目标已存在时复用同一份判定，
+/// 不再自建第二份 FIFO/设备/套接字拒绝清单。
+pub(crate) fn ensure_regular_file(metadata: &std::fs::Metadata, path: &str) -> AppResult<()> {
     let file_type = metadata.file_type();
     if file_type.is_file() {
         return Ok(());

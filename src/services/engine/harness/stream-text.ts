@@ -4,8 +4,11 @@
 // - 跨分片识别 <RUNTIME_DATA> 的起始标签，标签之后（含标签本身）不进入瞬时展示；
 // - 缓冲可能是标签前缀的尾部（如 "<RUNTIME"），等后续分片到齐再判定；
 // - 只服务瞬时展示，不提交正文、不写盘。
+//
+// 起始标签取自 reply/protocol.ts 的零依赖叶子（标记唯一定义点；直接 import 该文件，
+// 不拉进 reply 的其余依赖）。
 
-const RUNTIME_DATA_OPEN = "<RUNTIME_DATA>"
+import { RUNTIME_DATA_OPEN } from "@/services/reply/protocol"
 
 /** 逐分片喂入模型正文增量，返回本次可以展示的文本。 */
 export class RuntimeDataStreamFilter {

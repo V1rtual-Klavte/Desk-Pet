@@ -160,8 +160,15 @@ const proposePlanTool: ToolDef = defineTool({
 
   const planId = `plan-${ctx.toolCallId ?? crypto.randomUUID()}`
   try {
-    // 动态导入避免跨域模块循环（与 agent-tool 同一手法）：执行相位与计划链路都在引擎域。
-    const { runProposedPlan, planConfirmDeclineText, formatStepResults } = await import("@/services/engine")
+    // 动态导入避免跨域模块循环：执行相位与计划链路都在引擎域。**指名具体模块、不导桶**——
+    // 动态 import 桶会让 Rollup 为内联单文件生成急切冻结命名空间（含循环网里的
+    // harnessSlots 等绑定），模块排序稍变即在初始化前读取 → bundle TDZ（2026-10-06 验收
+    // 实测：宿主启动即崩、场景一条都跑不到）；守门见 build.mjs 的 assertNoDynamicBarrelImports。
+    const [{ runProposedPlan }, { planConfirmDeclineText }, { formatStepResults }] = await Promise.all([
+      import("@/services/engine/plan/proposal"),
+      import("@/services/engine/plan-confirmation"),
+      import("@/services/engine/planner"),
+    ])
     const outcome = await runProposedPlan({
       sessionId: ctx.sessionId,
       planId,

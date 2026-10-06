@@ -307,6 +307,9 @@ pub struct Tokens {
     pub bar_edge: Rgba,
     /// `--barsh`：顶栏内立体线。
     pub bar_bevel: Bevel,
+    /// `--barsh` 里的 `var(--contact)`：顶栏外投影（设计稿五套里只有铜绿声明，
+    /// 其余四套的 `--barsh` 只有 inset 线 —— 该槽位为空）。
+    pub bar_shadow: Elevation,
 
     // ── 文字 ──
     /// `--ink`：主文字。
@@ -623,6 +626,8 @@ pub static BRUSHED: Tokens = Tokens {
             BevelLine::bottom(InsetLine::hard(Rgba::black_alpha(0.5), 1.0)),
         ],
     },
+    // 设计稿 `--barsh` 只有两条 inset 线，无外投影。
+    bar_shadow: Elevation::NONE,
 
     ink: Rgba::hex(0xE7EAEE),
     dim: Rgba::hex(0x9BA3AD),
@@ -862,6 +867,8 @@ pub static CHROME: Tokens = Tokens {
             )),
         ],
     },
+    // 设计稿 `--barsh` 只有两条 inset 线，无外投影。
+    bar_shadow: Elevation::NONE,
 
     ink: Rgba::hex(0x151A2A),
     dim: Rgba::hex(0x4A5670),
@@ -1077,13 +1084,16 @@ pub static VERDIGRIS: Tokens = Tokens {
 
     bar_bg: Fill::Linear(&[(0.0, Rgba::hex(0x26443B)), (1.0, Rgba::hex(0x1D352E))]),
     bar_edge: Rgba::hex(0x0D1A15),
-    // 设计稿 `--barsh` 另有 `var(--contact)` 外投影；`Tokens` 暂无顶栏投影槽位
-    // （消费点在 platform/，本批不动），已在交付报告登记。
+    // 设计稿 `--barsh` 的第二笔是 `var(--contact)`（唯一一套带顶栏外投影的主题）。
     bar_bevel: Bevel {
         lines: &[BevelLine::top(InsetLine::hard(
             Rgba::rgba(220.0 / 255.0, 1.0, 240.0 / 255.0, 0.08),
             1.0,
         ))],
+    },
+    bar_shadow: Elevation {
+        contact: Some(CONTACT),
+        ambient: None,
     },
 
     ink: Rgba::hex(0xDCEBE4),
@@ -1260,6 +1270,8 @@ pub static NIGHTFALL: Tokens = Tokens {
             1.0,
         ))],
     },
+    // 设计稿 `--barsh` 只有一条 inset 线，无外投影。
+    bar_shadow: Elevation::NONE,
 
     ink: Rgba::hex(0xE6E2F7),
     dim: Rgba::hex(0x948FBE),
@@ -1435,6 +1447,8 @@ pub static AZURITE: Tokens = Tokens {
             )),
         ],
     },
+    // 设计稿 `--barsh` 只有两条 inset 线，无外投影。
+    bar_shadow: Elevation::NONE,
 
     ink: Rgba::hex(0x0E2450),
     dim: Rgba::hex(0x4A5F85),
@@ -2037,14 +2051,13 @@ mod tests {
         }
     }
 
-    /// 阴影/立体线槽位：三套主题的 `--pshadow` / `--tsh` / `--bsh` / `--ssh` /
-    /// `--tabonsh` / `--mesh` 与 token 逐项比对（含 var 展开）。
+    /// 阴影/立体线槽位：五套主题的 `--pshadow` / `--tsh` / `--bsh` / `--ssh` /
+    /// `--tabonsh` / `--mesh` / `--barsh` 与 token 逐项比对（含 var 展开）。
     ///
-    /// 说明两处**刻意不表达**的值：
+    /// 说明一处**刻意不表达**的值：
     /// - 拉丝 `--logsh` 的 `0 1px 0 rgba(255,255,255,.07)` 外白线：在实机承载件上被
     ///   下一条区带盖住或裁掉，设计稿自身也被 `.pstack` 的上边框盖住 —— 不可见，
     ///   不建表达（评估记录在交付报告）。
-    /// - 铜绿 `--barsh` 的 `var(--contact)`：`Tokens` 暂无顶栏投影槽位，登记缺口。
     #[test]
     fn 阴影槽位与设计稿逐字一致() {
         for id in ThemeId::ALL {
@@ -2063,7 +2076,7 @@ mod tests {
             assert_bevel_matches(name, "--mesh", &t.bubble_user_bevel);
             assert_elevation_matches(name, "--mesh", &t.bubble_user_shadow);
             assert_bevel_matches(name, "--barsh", &t.bar_bevel);
-            // --barsh 的非 inset 部分（铜绿有 var(--contact)）没有槽位，见测试注释。
+            assert_elevation_matches(name, "--barsh", &t.bar_shadow);
         }
     }
 

@@ -26,8 +26,13 @@
 
 import { flushConfig, initConfig } from "@/services/config"
 import { formatError } from "@/services/error"
-// MCP 文档的 KEY=VALUE 行格式与 manager 共用同一套解析/渲染（不在这里第二份实现）。
-import { formatEnvText, parseEnvText } from "@/services/tool/mcp"
+// 只取类型（运行时仍走动态 import；`import type` 不加载模块）。
+import type { MemoryJobListItem } from "@/services/agent/memory"
+// 记忆草稿 summary 上限取零依赖叶子（静态常量不加载记忆域，与上面的动态 import 纪律一致）。
+import { DRAFT_SUMMARY_CHARS } from "@/services/agent/memory/draft"
+// MCP 表单的 KEY=VALUE 行格式与 manager 共用同一套解析/渲染（不在这里第二份实现）。
+import { formatEnvText } from "@/services/tool/mcp"
+import type { McpServerFormFields } from "@/services/tool/mcp"
 import { getHostBridge } from "@/services/host"
 import { createLogger } from "@/services/logger"
 import { runtimePath } from "@/services/paths"
@@ -36,7 +41,8 @@ import type {
   CardVariablePoolPayload,
   ManagementRowPayload,
   ManagementRowsPayload,
-  McpEditPayload,
+  McpServerFormPayload,
+  McpServerFormSavePayload,
   MemoryItemChangePayload,
   MemoryItemChangeResult,
   MemoryItemDetailPayload,
@@ -373,10 +379,25 @@ export async function memoryOverview(args: unknown): Promise<MemoryOverviewPaylo
       id: job.id,
       title: `${job.phase} · ${job.status} · ${formatTime(job.updatedAt)}`,
       subtitle: `作业 ${job.id} · revision ${job.revision} · 已处理 ${job.processed} 条`,
-      action: "none",
+      action: jobRowAction(job),
       enabled: false,
     })),
   }
+}
+
+/**
+ * 作业行的动作（值域与 Rust 记忆域的可操作性裁决一致，界面不发明新状态）：
+ * - 进行中（running/queued）→ 可取消（`memory_job_cancel` 的准入集合）；
+ * - 受限的 review 作业（paused/cancelled/failed）→ 可继续（`memory_job_resume` 的准入
+ *   集合：phase=review 且状态在其中，库 revision/forget_epoch 未变，最终由 Rust 裁决）；
+ * - 其余（completed 等终态）→ 只读行。
+ */
+function jobRowAction(job: MemoryJobListItem): "cancel" | "resume" | "none" {
+  if (job.status === "running" || job.status === "queued") return "cancel"
+  if (job.phase === "review" && (job.status === "paused" || job.status === "cancelled" || job.status === "failed")) {
+    return "resume"
+  }
+  return "none"
 }
 
 /** 条目详情 + 历史版本（含来源审计摘要；原话解引用入口不在本批）。 */
@@ -409,7 +430,14 @@ export async function memoryItemDetail(args: unknown): Promise<MemoryItemDetailP
       `事项状态：${draft.workingState ?? "不适用"}`,
     ].join("\n"),
     content: draft.content,
-    sourceIds: draft.sourceIds,
+    // 来源逐条一行（id = sourceId；点行由宿主展开那一条的证据/原话 —— 不再一次拼接多条）。
+    sources: draft.sourceIds.map(sourceId => ({
+      id: sourceId,
+      title: sourceId,
+      subtitle: "",
+      action: "select" as const,
+      enabled: false,
+    })),
     history: history.map(entry => ({
       id: `${entry.item.id}:${entry.item.version}`,
       title: `v${entry.item.version} · ${entry.item.status} · ${formatTime(entry.item.updatedAt)}`,
@@ -461,7 +489,7 @@ export async function memoryItemChange(args: MemoryItemChangePayload): Promise<M
     const contentChanged = content !== null && content !== current.draft.content
     if (contentChanged) {
       draft.content = content
-      draft.summary = content.slice(0, 120)
+      draft.summary = content.slice(0, DRAFT_SUMMARY_CHARS)
     }
     if (pinned !== null) draft.pinned = pinned
     if (!contentChanged && (pinned === null || pinned === current.draft.pinned)) {
@@ -1068,143 +1096,113 @@ export async function soundPreview(args: unknown): Promise<void> {
 // 本批：工具页（MCP 编辑/测试/导入导出、Skill 上传/删除）
 // ==========================================
 
-// ── MCP 行编辑文档（格式定义点只在本模块）──
+// ── MCP 表单编辑（W5-B：字段控件取代整段 markdown 文档）──
 //
-// `## 小节` 行 + 值行：name / transport / command / args（多行）/ url / env（多行
-// KEY=VALUE）/ headers（多行 KEY=VALUE）/ enabled。服务器按 name 增/改。
-// transport 只收 stdio / http；sse 已弃用，显式拒绝并给出迁移指引。
+// 表单字段：name / transport / command / args / url / env / headers / enabled。
+// `args` 每行一个参数；`env` / `headers` 是多行 KEY=VALUE 文本 —— 行格式的解析仍在
+// mcp 域（`serverConfigFromForm` → `parseEnvText`），本模块只组装/回传字段值。
+// transport 只收 stdio / http（控件只有两个选项）；sse 已弃用，校验层点名拒绝。
+//
+// 重名纪律：保存分 create（`originalName` 空）与 update（带原名字，允许改名）。
+// 目标名被别的服务器占用时**明确报错**（CONFIG）—— 不再静默 Object.assign 覆盖。
 
-function parseMcpDoc(text: string): Map<string, string[]> {
-  const sections = new Map<string, string[]>()
-  let current: string | null = null
-  for (const rawLine of text.split(/\r?\n/)) {
-    const header = /^##\s*(.+?)\s*$/.exec(rawLine)
-    if (header) {
-      current = (header[1] ?? "").toLowerCase()
-      if (!sections.has(current)) sections.set(current, [])
-      continue
-    }
-    if (current === null) {
-      if (rawLine.trim().length > 0) {
-        throw Object.assign(new Error("MCP 文档在首个 `## 小节` 之前有内容"), { code: "CONFIG" })
-      }
-      continue
-    }
-    const line = rawLine.trim()
-    if (line.length > 0) sections.get(current)!.push(line)
+/** 取字符串字段（允许空串；类型不符如实拒绝）。表单的空串 = 该字段未填写。 */
+function requireText(args: unknown, key: string, method: string): string {
+  const value = (args as Record<string, unknown> | null)?.[key]
+  if (typeof value !== "string") {
+    throw Object.assign(new Error(`${method} 缺少文本字段 ${key}`), { code: "CONFIG" })
   }
-  return sections
+  return value
 }
 
-function mcpDocValue(sections: Map<string, string[]>, key: string): string {
-  return sections.get(key)?.[0] ?? ""
-}
-
-function renderMcpDoc(server: { name: string; transport: string; command?: string; args?: string[]; url?: string; env?: Record<string, string>; headers?: Record<string, string>; enabled: boolean }): string {
-  const blocks: string[] = []
-  const block = (key: string, lines: readonly string[]) => blocks.push(`## ${key}\n${lines.join("\n")}`)
-  // env/headers 的文本形状复用 manager 的行格式（KEY=VALUE），渲染与解析同源。
-  const mapLines = (map: Record<string, string> | undefined) => {
-    const text = formatEnvText(map)
-    return text ? text.split("\n") : []
-  }
-  block("name", [server.name])
-  block("transport", [server.transport])
-  block("command", server.command ? [server.command] : [])
-  block("args", server.args ?? [])
-  block("url", server.url ? [server.url] : [])
-  block("env", mapLines(server.env))
-  block("headers", mapLines(server.headers))
-  block("enabled", [server.enabled ? "true" : "false"])
-  return blocks.join("\n\n") + "\n"
-}
-
-/** 工具页：MCP 服务器编辑文档（name 缺省 = 新建模板；名不存在如实拒绝）。 */
-export async function mcpServerDoc(args: unknown): Promise<{ text: string }> {
+/** 工具页：MCP 服务器编辑表单（name 缺省 = 新建模板；名不存在如实拒绝）。 */
+export async function mcpServerForm(args: unknown): Promise<McpServerFormPayload> {
   const raw = (args as { name?: unknown } | null)?.name
   if (raw !== undefined && raw !== null && typeof raw !== "string") {
-    throw Object.assign(new Error("mcp_server_doc 的 name 必须是字符串或空"), { code: "CONFIG" })
+    throw Object.assign(new Error("mcp_server_form 的 name 必须是字符串或空"), { code: "CONFIG" })
   }
   await initConfig()
-  const { getMcpServers } = await import("@/services/tool/mcp")
+  const { formatEnvText, getMcpServers } = await import("@/services/tool/mcp")
   if (raw) {
     const server = getMcpServers().find(item => item.name === raw)
     if (!server) throw Object.assign(new Error(`MCP 服务器不存在: ${raw}`), { code: "PATH_NOT_FOUND" })
-    return { text: renderMcpDoc(server) }
+    return {
+      name: server.name,
+      transport: server.transport,
+      command: server.command ?? "",
+      args: (server.args ?? []).join("\n"),
+      url: server.url ?? "",
+      env: formatEnvText(server.env),
+      headers: formatEnvText(server.headers),
+      enabled: server.enabled,
+    }
   }
-  return {
-    text: renderMcpDoc({ name: "", transport: "stdio", command: "", args: [], enabled: true }),
-  }
+  // 新建模板：transport 默认 stdio、enabled 默认启用（与旧文档模板同口径）。
+  return { name: "", transport: "stdio", command: "", args: "", url: "", env: "", headers: "", enabled: true }
 }
 
-/** 工具页：MCP 文本编辑（按 name 增/改）或删除。 */
-export async function mcpEdit(args: unknown): Promise<void> {
-  const payload = args as McpEditPayload | null
-  const op = payload?.op
+/**
+ * 工具页：MCP 表单保存（逐字段校验 → 撞名/改名判定 → 既有 setMcpServers 写回 CONFIG）。
+ *
+ * `originalName` 空 = 新增；非空 = 更新原条目（允许改名）。两种情形撞名都如实拒绝。
+ * includeTools/excludeTools 不在表单字段里：更新时从原条目沿用（改名后 setMcpServers
+ * 的同名合并找不到旧条目，必须在这里显式带上）。
+ */
+export async function mcpSave(args: unknown): Promise<void> {
+  const payload = args as McpServerFormSavePayload | null
+  const originalName = requireText(payload, "originalName", "mcp_save")
+  const fields: McpServerFormFields = {
+    name: requireStringField(payload, "name", "mcp_save"),
+    transport: requireStringField(payload, "transport", "mcp_save"),
+    command: requireText(payload, "command", "mcp_save"),
+    args: requireText(payload, "args", "mcp_save"),
+    url: requireText(payload, "url", "mcp_save"),
+    env: requireText(payload, "env", "mcp_save"),
+    headers: requireText(payload, "headers", "mcp_save"),
+    enabled: requireBool(payload, "enabled", "mcp_save"),
+  }
   await initConfig()
   const mcp = await import("@/services/tool/mcp")
-  if (op === "delete") {
-    const name = requireStringField(payload, "name", "mcp_edit.delete")
-    const removed = await mcp.removeMcpServer(name)
-    if (!removed) throw Object.assign(new Error(`MCP 服务器不存在: ${name}`), { code: "PATH_NOT_FOUND" })
-    await flushConfig()
-    log.info(`MCP 服务器已删除: ${name}`)
-    return
-  }
-  if (op !== "text") {
-    throw Object.assign(new Error(`mcp_edit 未知 op: ${String(op)}`), { code: "CONFIG" })
-  }
-  const text = requireStringField(payload, "text", "mcp_edit")
-  const sections = parseMcpDoc(text)
-  const name = mcpDocValue(sections, "name")
-  if (!name) {
-    throw Object.assign(new Error("MCP 文档缺少 name（## name 小节的第一行）"), { code: "CONFIG" })
-  }
-  const transport = mcpDocValue(sections, "transport") || "stdio"
-  if (transport === "sse") {
-    throw Object.assign(new Error("MCP transport sse 已弃用：请改用 http 并填写 url"), { code: "CONFIG" })
-  }
-  if (transport !== "stdio" && transport !== "http") {
-    throw Object.assign(new Error(`MCP transport 只能是 stdio 或 http: ${transport}`), { code: "CONFIG" })
-  }
-  const command = mcpDocValue(sections, "command")
-  const url = mcpDocValue(sections, "url")
-  const argsLines = sections.get("args") ?? []
-  // env/headers 同一套 KEY=VALUE 行格式：空小节 = 显式清空（与来源过滤字段的沿用语义不同）。
-  const env = parseEnvText((sections.get("env") ?? []).join("\n"))
-  const headers = parseEnvText((sections.get("headers") ?? []).join("\n"))
-  const enabledRaw = mcpDocValue(sections, "enabled") || "true"
-  if (enabledRaw !== "true" && enabledRaw !== "false") {
-    throw Object.assign(new Error(`MCP enabled 只能是 true/false: ${enabledRaw}`), { code: "CONFIG" })
-  }
-  const enabled = enabledRaw === "true"
-
-  if (transport === "stdio" && !command) {
-    throw Object.assign(new Error("stdio 服务器必须有 command"), { code: "CONFIG" })
-  }
-  if (transport === "http" && !url) {
-    throw Object.assign(new Error("http 服务器必须有 url"), { code: "CONFIG" })
-  }
+  const next = mcp.serverConfigFromForm(fields)
   const servers = mcp.getMcpServers()
-  const existing = servers.find(server => server.name === name)
-  const next = {
-    name,
-    transport,
-    ...(command ? { command } : {}),
-    ...(argsLines.length > 0 ? { args: argsLines } : {}),
-    ...(url ? { url } : {}),
-    env,
-    headers,
-    enabled,
-  } as import("@/services/tool/mcp").McpServerConfig
-  if (existing) {
-    Object.assign(existing, next)
+  const originalIndex = originalName
+    ? servers.findIndex(server => server.name === originalName)
+    : -1
+  if (originalName && originalIndex < 0) {
+    throw Object.assign(new Error(`MCP 服务器不存在: ${originalName}`), { code: "PATH_NOT_FOUND" })
+  }
+  // 撞名即拒绝（新增与改名同一判据）：同名保存不覆盖，如实指出被占用的名字。
+  if (servers.some(server => server.name === next.name && server.name !== originalName)) {
+    throw Object.assign(
+      new Error(`MCP 服务器名已被占用：${next.name}（同名保存不会覆盖；请换名或编辑列表里那一条）`),
+      { code: "CONFIG" },
+    )
+  }
+  if (originalIndex >= 0) {
+    const previous = servers[originalIndex]!
+    servers[originalIndex] = {
+      ...next,
+      includeTools: previous.includeTools,
+      excludeTools: previous.excludeTools,
+    }
   } else {
     servers.push(next)
   }
   await mcp.setMcpServers(servers)
   await flushConfig()
-  log.info(`MCP 服务器已${existing ? "更新" : "新增"}: ${name}`)
+  const renamed = originalName && originalName !== next.name ? `（原名 ${originalName}）` : ""
+  log.info(`MCP 服务器已${originalIndex >= 0 ? "更新" : "新增"}: ${next.name}${renamed}`)
+}
+
+/** 工具页：删除 MCP 服务器。 */
+export async function mcpDelete(args: unknown): Promise<void> {
+  const name = requireStringField(args, "name", "mcp_delete")
+  await initConfig()
+  const mcp = await import("@/services/tool/mcp")
+  const removed = await mcp.removeMcpServer(name)
+  if (!removed) throw Object.assign(new Error(`MCP 服务器不存在: ${name}`), { code: "PATH_NOT_FOUND" })
+  await flushConfig()
+  log.info(`MCP 服务器已删除: ${name}`)
 }
 
 /** 工具页：连接测试（借出→归还；连接失败是结果不是异常）。 */
@@ -1354,38 +1352,60 @@ export async function memoryMaintenance(args: unknown): Promise<MemoryMaintenanc
   throw Object.assign(new Error(`memory_maintenance 未知 op: ${String(op)}`), { code: "CONFIG" })
 }
 
-/** 最新的托管备份（memory/backups 下按 mtime 最新的 .sqlite3）。 */
-async function latestManagedBackup(): Promise<string> {
+/** 备份体积的展示文案（局部展示投影；与宿主行投影同批，不跨域 import 工具实现）。 */
+function formatBackupSize(bytes: number): string {
+  if (!Number.isFinite(bytes) || bytes < 0) return "大小未知"
+  if (bytes < 1024) return `${bytes} B`
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`
+}
+
+/**
+ * 记忆页：托管备份列表（`memory/backups` 下的 `.sqlite3`，按 mtime 倒序）。
+ *
+ * 行的 `id` = 备份绝对路径（宿主选中后原样回传，Rust 侧只接受该目录内的路径）；
+ * 目录不存在 = 还没有任何备份（中性空列表）；目录存在但读不了 = 如实抛错
+ * （「读不到」不伪装成「没有」—— 后者会让界面给错指引）。
+ */
+export async function memoryBackupList(): Promise<ManagementRowsPayload> {
   const dir = await runtimePath("memory", "backups")
-  let entries: { name: string; path: string; kind: string; mtimeMs: number }[]
+  const host = getHostBridge()
+  let entries: { name: string; path: string; kind: string; size: number; mtimeMs: number }[]
   try {
-    const listed = (await getHostBridge().request("file_list", { path: dir })) as {
-      entries: { name: string; path: string; kind: string; mtimeMs: number }[]
+    const listed = (await host.request("file_list", { path: dir })) as {
+      entries: { name: string; path: string; kind: string; size: number; mtimeMs: number }[]
     }
     entries = listed.entries
   } catch (error) {
-    // 目录不存在/为空：给「还没有备份」的中性指引，不放行任何恢复路径。
-    log.debug("记忆备份目录不可读:", formatError(error))
-    throw Object.assign(new Error("还没有可恢复的备份：先在「一致性备份」里生成一份"), { code: "PATH_NOT_FOUND" })
+    const exists = (await host.request("file_exists", { path: dir })) as boolean
+    if (exists) throw error
+    log.debug("记忆备份目录尚不存在（还没有备份）:", formatError(error))
+    return { rows: [] }
   }
   const backups = entries
     .filter(entry => entry.kind === "file" && /\.sqlite3$/i.test(entry.name))
     .sort((a, b) => b.mtimeMs - a.mtimeMs)
-  if (backups.length === 0) {
-    throw Object.assign(new Error("还没有可恢复的备份：先在「一致性备份」里生成一份"), { code: "PATH_NOT_FOUND" })
+  return {
+    rows: backups.map(entry => ({
+      id: entry.path,
+      title: formatTime(entry.mtimeMs),
+      subtitle: `${entry.name} · ${formatBackupSize(entry.size)}`,
+      action: "choose" as const,
+      enabled: false,
+    })),
   }
-  return backups[0]!.path
 }
 
 /**
  * 记忆页：恢复预览 / 应用。
  *
- * 备份路径只从**托管备份目录**取（Rust 侧 `memory_restore*` 只接受该目录内的路径）；
- * 选择口径 = mtime 最新的 `.sqlite3`，结果显示实际使用的文件（不隐去对象）。
+ * 作用对象 = 宿主传来的 `backupPath`（用户在备份列表里**选中的那一份**）；
+ * 路径边界由 Rust `memory_restore*` 裁决（只接受托管备份目录内的文件），
+ * 结果显示实际使用的文件（不隐去对象）。
  */
 export async function memoryRestore(args: unknown): Promise<MemoryMaintenanceResult> {
   const op = (args as { op?: unknown } | null)?.op
-  const backupPath = await latestManagedBackup()
+  const backupPath = requireStringField(args, "backupPath", "memory_restore")
   const memory = await import("@/services/agent/memory")
   await memory.MemoryService.init()
   if (op === "preview") {
@@ -1402,4 +1422,57 @@ export async function memoryRestore(args: unknown): Promise<MemoryMaintenanceRes
     return { message: `已从备份恢复：${backupPath}（新 revision ${revision}）`, path: backupPath, revision }
   }
   throw Object.assign(new Error(`memory_restore 未知 op: ${String(op)}`), { code: "CONFIG" })
+}
+
+/**
+ * 记忆页：终止一条整理作业（`memory_job_cancel` 的宿主侧语义：只对进行中的作业生效）。
+ *
+ * 租约属于「memory-dreaming」写者 —— 界面只能以同一 owner 身份请求取消（`ipc.ts` 的
+ * 默认参数即该 owner）；结果以 Rust 返回的作业状态为准：状态没变成 `cancelled`
+ * 就是**没有取消**（终态/属主不符），如实拒绝而不是谎报成功。
+ */
+export async function memoryJobCancel(args: unknown): Promise<{ message: string }> {
+  const jobId = requireStringField(args, "jobId", "memory_job_cancel")
+  const memory = await import("@/services/agent/memory")
+  await memory.MemoryService.init()
+  const job = await memory.cancelMemoryJob(jobId)
+  if (job.status !== "cancelled") {
+    throw Object.assign(
+      new Error(`作业未取消（当前状态 ${job.status}）：只有进行中的作业可以取消`),
+      { code: "CONFIG" },
+    )
+  }
+  log.info(`记忆作业已取消: ${jobId}`)
+  return { message: `作业已取消：${jobId}` }
+}
+
+/**
+ * 记忆页：继续一条受限的整理作业（`runDreamingSweep({ resumeJobId })` 的既有恢复入口）。
+ *
+ * 语义 = 先经 Rust `memory_job_resume` 恢复 review 作业（revision/forget_epoch 或阶段
+ * 不符时 Rust 抛 MEMORY_CONFLICT），再按作业游标跑到收口并自动提交；非 review 作业
+ * 由该入口如实拒绝（不驱动非 Review 作业）。
+ */
+export async function memoryJobResume(args: unknown): Promise<MemoryMaintenanceResult> {
+  const jobId = requireStringField(args, "jobId", "memory_job_resume")
+  const memory = await import("@/services/agent/memory")
+  await memory.MemoryService.init()
+  const outcome = await memory.runDreamingSweep({ resumeJobId: jobId })
+  const detail = `处理 ${outcome.sourcesProcessed} 条来源，新增 ${outcome.candidatesAdded} 条候选，提交 ${outcome.publishedCount} 条`
+  // 失败按原样抛出（含领域文案）；成功侧三种归宿各自如实措辞（empty 会带领域原因，
+  // 如「记忆功能已关闭」——不能被说成一次正常的「已继续」）。
+  if (outcome.status === "failed") {
+    throw Object.assign(new Error(outcome.message ?? `作业继续失败：${detail}`), { code: "OTHER" })
+  }
+  let message: string
+  if (outcome.status === "completed") {
+    message = `作业继续完成：${detail}`
+  } else if (outcome.status === "cancelled") {
+    message = `作业继续已取消：${detail}`
+  } else {
+    message = `作业未继续：${outcome.message ?? "没有新的可处理来源"}`
+  }
+  await memory.publishMemoryRevision((await memory.memoryStatus()).revision)
+  log.info(`记忆作业已继续: ${jobId}`)
+  return { message, path: null, revision: null }
 }

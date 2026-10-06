@@ -18,7 +18,18 @@ export {
   clearMessages,
   addSessionMeta,
   removeSessionMeta,
+  markSessionActivity,
 } from "./store"
+
+// ── 活动时间（列表排序口径：正文最后一条 user 条目；维护类写入不改变）──
+export {
+  compareSessionActivity,
+  lastUserEntryTimestamp,
+  readSessionActivityAt,
+  ACTIVITY_TAIL_INITIAL_BYTES,
+  ACTIVITY_TAIL_MAX_BYTES,
+} from "./activity"
+export type { SessionActivityKey } from "./activity"
 
 // ── Manager ──
 export {

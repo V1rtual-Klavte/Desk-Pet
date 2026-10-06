@@ -7,6 +7,7 @@ import { batchWriteVars, getVariablePoolCardId, savePoolToDisk, savePoolToDiskSt
 import { getActiveCard } from "@/services/personality"
 import type { PersonalityCard } from "@/services/personality/types"
 import { createLogger } from "@/services/logger"
+import { RUNTIME_DATA_CLOSE, RUNTIME_DATA_OPEN, RUNTIME_DATA_TAG } from "./protocol"
 
 const log = createLogger("Reply")
 
@@ -36,7 +37,8 @@ const DEFAULT_MAX_LENGTH = 500
 
 // ── RUNTIME_DATA 解析 ──
 
-const RUNTIME_RE = /<RUNTIME_DATA>\s*([\s\S]*?)\s*<\/RUNTIME_DATA>/i
+// 标记取自 protocol.ts（唯一定义点）：正则与指令/过滤/文案同源，不再逐处对齐字面量。
+const RUNTIME_RE = new RegExp(`${RUNTIME_DATA_OPEN}\\s*([\\s\\S]*?)\\s*${RUNTIME_DATA_CLOSE}`, "i")
 
 interface ParsedRuntime {
   text: string
@@ -101,7 +103,7 @@ export async function generateReply(
   // 2. 变量批量写入
   if (applyRuntimeData && Object.keys(runtime.vars).length > 0) {
     const write = batchWriteVars(runtime.vars)
-    if (write.errors.length > 0) log.warn("RUNTIME_DATA 部分写入被拒:", write.errors.join("; "))
+    if (write.errors.length > 0) log.warn(`${RUNTIME_DATA_TAG} 部分写入被拒:`, write.errors.join("; "))
   }
 
   // 3. 落盘

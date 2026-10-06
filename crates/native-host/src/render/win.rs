@@ -4,6 +4,9 @@
 //! 每帧用 GDI `AlphaBlend`
 //! （AC_SRC_ALPHA，预乘 BGRA）把五层素材按帧计划合成到一块 32bpp DIB，再
 //! `UpdateLayeredWindow` 整帧提交。几何来自同一冻结几何核，不另写数学。
+//! 逐层不透明度经 `SourceConstantAlpha` 施加（文档口径：源含 alpha 先乘 SCA/255，
+//! 再按逐像素 alpha 合成）；整帧提交的窗口级混合保持 255 不变（逐像素 alpha 已
+//! 在 DIB 里，恒定透明度只属于单层合成这一步）。
 //!
 //! 帧计时器挂在本模块自己的消息窗（`HWND_MESSAGE`）上，和 W0 探针把 timer 挂主窗
 //! 不同：这样 W5 的消息循环照常 `DispatchMessage` 即可，不需要认识本模块的定时器 id；
@@ -35,7 +38,7 @@ use windows_sys::Win32::UI::WindowsAndMessaging::{
 
 use crate::error::{AppError, AppResult};
 
-use super::compose::FramePlan;
+use super::compose::{source_constant_alpha, FramePlan};
 use super::surface::{RenderSurface, TickSlot};
 use super::texture::{DecodedTexture, TextureId};
 
@@ -122,6 +125,20 @@ impl Drop for Dib {
             DeleteObject(self.bitmap);
             DeleteDC(self.hdc);
         }
+    }
+}
+
+/// 单层 `AlphaBlend` 的混合函数：整层不透明度进 `SourceConstantAlpha`。
+///
+/// 预乘 BGRA 由 `AC_SRC_ALPHA` 声明；文档口径是「源（含 alpha）先乘 SCA/255，
+/// 再按逐像素 alpha 合成」—— 对预乘缓冲正是整层调暗、颜色不偏。
+/// `opacity = 1.0` 时 SCA = 255，与历史常量逐位一致。
+fn layer_blend(opacity: f64) -> BLENDFUNCTION {
+    BLENDFUNCTION {
+        BlendOp: AC_SRC_OVER as u8,
+        BlendFlags: 0,
+        SourceConstantAlpha: source_constant_alpha(opacity),
+        AlphaFormat: AC_SRC_ALPHA as u8,
     }
 }
 
@@ -288,7 +305,9 @@ impl RenderSurface for WinLayerSurface {
         } else {
             1.0
         };
-        let blend = BLENDFUNCTION {
+        // 窗口级混合：整帧 DIB 已含逐像素 alpha，恒定透明度保持 255（与历史一致；
+        // 逐层不透明度只在上面的单层 AlphaBlend 里施加）。
+        let window_blend = BLENDFUNCTION {
             BlendOp: AC_SRC_OVER as u8,
             BlendFlags: 0,
             SourceConstantAlpha: 255,
@@ -298,6 +317,7 @@ impl RenderSurface for WinLayerSurface {
             let Some(texture) = self.textures.get(&draw.texture) else {
                 continue;
             };
+            let blend = layer_blend(draw.opacity);
             let dest_w = (draw.width * sx).round() as i32;
             let dest_h = (draw.height * sy).round() as i32;
             if dest_w <= 0 || dest_h <= 0 {
@@ -346,7 +366,7 @@ impl RenderSurface for WinLayerSurface {
                 frame.hdc,
                 &src,
                 0,
-                &blend,
+                &window_blend,
                 ULW_ALPHA,
             )
         };
@@ -406,5 +426,30 @@ impl Drop for WinLayerSurface {
         }
         self.frame = None;
         self.textures.clear();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// 单层混合常量按不透明度代入：255 = 历史常量（不透明）。本模块在本机
+    /// （macOS）不编译，本用例由 Windows CI 的 `cargo test --lib` 收口；
+    /// 跨平台侧另有 `compose::source_constant_alpha` 的同口径用例。
+    #[test]
+    fn 单层混合常量按不透明度代入() {
+        let opaque = layer_blend(1.0);
+        assert_eq!(opaque.SourceConstantAlpha, 255, "不透明 = 既有常量");
+        assert_eq!(opaque.BlendOp, AC_SRC_OVER as u8);
+        assert_eq!(opaque.BlendFlags, 0);
+        assert_eq!(opaque.AlphaFormat, AC_SRC_ALPHA as u8);
+        assert_eq!(layer_blend(0.6).SourceConstantAlpha, 153);
+        assert_eq!(layer_blend(0.15).SourceConstantAlpha, 38);
+        assert_eq!(layer_blend(0.0).SourceConstantAlpha, 0);
+        assert_eq!(
+            layer_blend(f64::NAN).SourceConstantAlpha,
+            255,
+            "未设置按不透明"
+        );
     }
 }

@@ -14,12 +14,13 @@ import { MemoryService, recallMemory, memoryStatus, subscribeMemoryRevision } fr
 import type { MemoryProjection, MemoryRecallRequest } from "@/services/agent/memory"
 import type { ProactiveTurnContext } from "@/services/proactive"
 import { planCheckpointStore } from "@/services/engine/plan/checkpoint-store"
+import { createPlanSettlement } from "@/services/engine/plan/settlement"
+import type { PlanCancelReason, PlanConfirmDeclineReason } from "@/services/engine/plan/settlement"
 import type { StructuredSummary } from "@/services/engine/compaction/structured-summary"
 import { getV1rtualInstructionsSync } from "@/services/context/instructions"
 import { buildPrompt, composeDynamicPrompt, currentTimeNote, contextBudget, estimateRequestTokens, estimateContextTokens, estimateMessageTokens, ContextBudgetError, ESTIMATE_DRIFT_WARN_RATIO, estimateDriftRatio, totalInputTokens, planToolResultLadder, projectMessageContent, projectToolResultText, annotateToolResultText, protectedMessageIndexes, toolResultAddress } from "@/services/context"
 import type { ContextBudgetAdjustment, ToolResultLadderEntry, ToolResultLadderPlan, ToolResultLevelMeasure } from "@/services/context"
 import { bindRunningPlan, clearRunningPlan, notifyPlanEnd, requestPlanConfirm, requestPlanStepDecision } from "@/services/engine/plan-confirmation"
-import type { PlanConfirmResult } from "@/services/engine/plan-confirmation"
 import { executePlan, evaluateComplexity, formatStepResults, generatePlan, normalizePlan, planEffectClassFor, planToRecords, recordsToPlan } from "@/services/engine/planner"
 import type { PlanExecutionResult, PlanResult } from "@/services/engine/planner"
 import { getEffectiveSafetyMode, getEffectiveThinkingEffort, recordModelUsage, updateRequestStats } from "@/services/debug"
@@ -31,7 +32,7 @@ import { getPoolSnapshot, applyResetPolicies, refreshVariablePool, updateInterac
 import { getFallbackReply, getSimpleStage, getStagePrompt } from "@/services/personality/stages-cache"
 import type { SimpleStageKey } from "@/services/personality/stages-cache"
 import { releaseTitlebarStatus, setTitlebarStatus } from "@/services/titlebar"
-import { clearRuntimeDataMissing, generateReply, hasLlmWritableCardVars, hasRuntimeDataReminder, markRuntimeDataMissing, parseRuntimeData, RUNTIME_DATA_REMINDER_TEXT } from "@/services/reply"
+import { clearRuntimeDataMissing, generateReply, hasLlmWritableCardVars, hasRuntimeDataReminder, markRuntimeDataMissing, parseRuntimeData, RUNTIME_DATA_REMINDER_TEXT, RUNTIME_DATA_TAG } from "@/services/reply"
 import { authorizeToolExecution, freezePermissionPolicy, invalidatePermissionScope } from "@/services/safety"
 import type { PermissionPolicySnapshot } from "@/services/safety"
 import { getActiveSessionId, pushMessageFor } from "@/services/session/store"
@@ -46,7 +47,18 @@ import { readScreenshotToolDetails, SCREENSHOT_TOOL_NAME } from "@/services/tool
 import { humanizerConfig, loopConfig, memoryConfig, planConfig } from "@/services/config"
 import { silentAccessFrequency } from "@/services/proactive/tiers"
 import { getUnderstandingPromptBlock } from "@/services/observation"
-import { publishUiEvent, type HostEventMap, type NodeUiEventName } from "@/services/host"
+import {
+  publishUiEvent,
+  HOST_EVENT_ASSISTANT_STREAM,
+  HOST_EVENT_ASSISTANT_STREAM_END,
+  HOST_EVENT_PLAN_PROGRESS,
+  HOST_EVENT_RUN_STATE,
+  HOST_EVENT_STAGE_HINT,
+  HOST_EVENT_TOOL_COMPLETED,
+  HOST_EVENT_TOOL_EXECUTING,
+  type HostEventMap,
+  type NodeUiEventName,
+} from "@/services/host"
 import { resolvePiAuxModel, resolvePiTurnModel } from "./model-gateway"
 import type { PiModel } from "./model-gateway"
 import { PROVIDER_TIMEOUT_MS } from "./net-guard"
@@ -1358,7 +1370,7 @@ function createTurnSpec(kernel: TurnKernel, options: {
         kernel.toolRun.history.push({ toolName, status: "error" })
         return { block: { reason: `工具 ${toolName} 不可用` } }
       }
-      emitUiEvent("tool-executing", { toolId: tool.name, toolName: tool.name })
+      emitUiEvent(HOST_EVENT_TOOL_EXECUTING, { toolId: tool.name, toolName: tool.name })
       emitToolStageTitlebar(kernel.sessionId, kernel.generation, "executing")
       publishRuntimeTrace(kernel.traceContext, "permission_asked", () => ({ toolName: tool.name, source: "authorization_request" }), { toolCallId })
       const permission = await authorizeToolExecution(tool, args as Record<string, unknown>, {
@@ -1535,7 +1547,7 @@ setFirstRevealHandler(state => releaseTitlebarStatus(processTitlebarOwner(state.
 
 function emitStageHint(sessionId: string | undefined, stage: SimpleStageKey, generation?: number): void {
   if (!sessionId || getActiveSessionId() !== sessionId) return
-  void emitUiEvent("deskpet-stage-hint", { sessionId, stage })
+  void emitUiEvent(HOST_EVENT_STAGE_HINT, { sessionId, stage })
   if (generation === undefined) return
   const owner = processTitlebarOwner(sessionId, generation)
   const text = getSimpleStage(stage)
@@ -1579,7 +1591,7 @@ function createTurnSinks(kernel: TurnKernel, visible: boolean): HarnessRunSinks 
   let streamFilter: RuntimeDataStreamFilter | undefined
   const publishStreamDelta = (delta: string): void => {
     if (!visible || !delta || !sessionId || getActiveSessionId() !== sessionId) return
-    void emitUiEvent("deskpet-assistant-stream", { sessionId, delta })
+    void emitUiEvent(HOST_EVENT_ASSISTANT_STREAM, { sessionId, delta })
   }
   const taskFlow = (): boolean => Boolean(kernel.taskReply) || kernel.toolRun.history.length > 0
   const suppressCasualStream = (): boolean => kernel.humanizerEnabled === true && !taskFlow()
@@ -1610,14 +1622,14 @@ function createTurnSinks(kernel: TurnKernel, visible: boolean): HarnessRunSinks 
       if (!visible) return
       if (suppressCasualStream()) {
         streamFilter = undefined
-        if (sessionId) void emitUiEvent("deskpet-assistant-stream-end", { sessionId })
+        if (sessionId) void emitUiEvent(HOST_EVENT_ASSISTANT_STREAM_END, { sessionId })
         return
       }
       // 未构成标签的尾部按普通正文归还；随后清空瞬时缓冲，真实消息由提交路径推送。
       const tail = streamFilter?.flush() ?? ""
       streamFilter = undefined
       publishStreamDelta(tail)
-      if (sessionId) void emitUiEvent("deskpet-assistant-stream-end", { sessionId })
+      if (sessionId) void emitUiEvent(HOST_EVENT_ASSISTANT_STREAM_END, { sessionId })
     },
     onAssistantMessage: message => {
       // 子运行不落盘也不可见：过程消息不推进活跃会话的可见列表（见函数头）。
@@ -1634,7 +1646,7 @@ function createTurnSinks(kernel: TurnKernel, visible: boolean): HarnessRunSinks 
       if (appMessage && sessionId && getActiveSessionId() === sessionId) pushMessageFor(sessionId, appMessage)
     },
     onToolEnd: (toolName, isError) => {
-      emitUiEvent("tool-completed", { toolId: toolName, toolName, success: !isError })
+      emitUiEvent(HOST_EVENT_TOOL_COMPLETED, { toolId: toolName, toolName, success: !isError })
       emitToolStageTitlebar(sessionId, kernel.generation, isError ? "blocked" : "done")
     },
     onUsage: async row => {
@@ -1765,7 +1777,7 @@ export async function runPiAgentTurn(input: PiAgentTurnInput): Promise<PiAgentTu
   try {
     // 运行态信号：ChatPanel 据此显示/收起停止按钮。真相仍是 harnessSlots 的运行槽，
     // 事件只是通知通道，UI 不因此持有第二份运行状态。
-    void emitUiEvent("deskpet-run-state", { sessionId: turnSessionId, running: true })
+    void emitUiEvent(HOST_EVENT_RUN_STATE, { sessionId: turnSessionId, running: true })
     assertCurrent()
     if (!isActiveMessage) {
       const { prepareRunCapabilities } = await import("@/services/init")
@@ -2088,7 +2100,7 @@ export async function runPiAgentTurn(input: PiAgentTurnInput): Promise<PiAgentTu
     if (ownedGeneration) harnessSlots.end(turnSessionId, generation)
     invalidatePermissionScope(turnSessionId, generation)
     // 收尾先于释放：运行槽已 end，界面停止按钮据此收敛（排队视图在收尾后刷新）。
-    void emitUiEvent("deskpet-run-state", { sessionId: turnSessionId, running: false })
+    void emitUiEvent(HOST_EVENT_RUN_STATE, { sessionId: turnSessionId, running: false })
     if (!isActiveMessage) {
       const { releaseMcpOwner } = await import("@/services/tool")
       await releaseMcpOwner(requestId)
@@ -2098,17 +2110,19 @@ export async function runPiAgentTurn(input: PiAgentTurnInput): Promise<PiAgentTu
 
 // ── 计划相位与统一收尾（PLAN-15 / PLAN-10 / FIX-34 / FIX-35） ──
 
+/**
+ * 计划结算原语（写盘降级 / 收尾 / 取消与用户拒绝归宿）：与模型提议入口
+ * （`plan/proposal.ts`）共享同一实现，见 `plan/settlement.ts`；两处原先的同形复刻已删除。
+ */
+const planSettlement = createPlanSettlement(log)
+
 /** 确认未成立（不是用户拒绝）的归宿说明：进 `PlanPhaseOutcome.context` 供审计与恢复入口使用，不是给用户看的文案。 */
-type PlanConfirmDeclineReason = Exclude<Extract<PlanConfirmResult, { confirmed: false }>["reason"], "user">
 const NON_CONFIRM_CONTEXT: Record<PlanConfirmDeclineReason, string> = {
   session_switched: "确认时会话已切换",
   not_active: "确认时会话已不再活跃",
   emit_failed: "确认事件发射失败",
   ui_unavailable: "计划面板不可用",
 }
-
-/** 计划取消的原因：用户停止/逐步门、计划级时限，以及确认未成立时由确认域给出的归宿。 */
-type PlanCancelReason = "user" | "session_switched" | "deadline" | "declined" | PlanConfirmDeclineReason
 
 /** 计划段的归宿：三种归宿都回到主路径统一结算，不再各自写一份收尾。 */
 type PlanPhaseOutcome =
@@ -2177,7 +2191,7 @@ async function runPlanPhase(args: {
     })
     if (!args.runIsCurrent()) throw new Error("回合已取消或运行代际已失效")
     // FIX-02(b)：JSON 解析失败时 `generatePlan` 已降级为单步直接执行 —— 这是用户可见的行为变化，
-    // 必须在计划段发出。只发给计划所属会话（与 finishPlan 同口径）：执行期切走后文案不落进别的会话。
+    // 必须在计划段发出。只发给计划所属会话（与 plan/settlement.ts 的收尾同口径）：执行期切走后文案不落进别的会话。
     if (generated.degradedReason === "json_parse_failed" && getActiveSessionId() === sessionId) {
       pushSystemMessage("计划解析失败，已改为单步直接执行", sessionId)
     }
@@ -2215,11 +2229,8 @@ async function runPlanPhase(args: {
       if (args.traceContext) publishRuntimeTrace(args.traceContext, "plan_confirmed", () => ({ planId, decision: decision.confirmed ? decision.mode : decision.reason }))
       if (!decision.confirmed) {
         if (decision.reason === "user") {
-          // 用户拒绝：一步都没跑，步骤全部标 skipped，计划落 failed
-          await withPlanWriteDegrade(sessionId, planId, async () => {
-            for (const step of plan.steps) await planCheckpointStore.transitionStep(planId, String(step.id), "skipped")
-          })
-          await finishPlan({ sessionId, planId, state: "failed", reason: "declined", notify: "cancelled", traceContext: args.traceContext })
+          // 用户拒绝：一步都没跑，步骤全部标 skipped，计划落 failed（归宿机制见 plan/settlement.ts）
+          await planSettlement.failPlanOnUserDecline({ sessionId, planId, steps: plan.steps, traceContext: args.traceContext })
           return { kind: "declined", reply: getFallbackReply("planCancelled") }
         }
         // 其余非确认归宿（会话切换/会话不再活跃/事件发射失败/面板不可用；没有等待超时）都不是用户的选择：
@@ -2239,7 +2250,7 @@ async function runPlanPhase(args: {
     }
   }
 
-  await withPlanWriteDegrade(sessionId, planId, () => planCheckpointStore.transitionPlan(planId, "running"))
+  await planSettlement.withPlanWriteDegrade(sessionId, planId, () => planCheckpointStore.transitionPlan(planId, "running"))
   // 执行期登记中断通道，「终止执行」据此真正停下剩余步骤（按会话键控：只停本会话的计划）；
   // `finally` 保证任何退出路径都会清空登记，不给下一次计划留悬空引用
   bindRunningPlan(sessionId, planId, planAbort)
@@ -2279,12 +2290,12 @@ async function runPlanPhase(args: {
       assertCurrent()
       stepStartedAt = Date.now()
       await planCheckpointStore.transitionStep(planId, String(step.id), "running")
-      void emitUiEvent("deskpet-plan-progress", { sessionId, planId, stepId: String(step.id), total: plan.steps.length, desc: step.description, status: "running" })
+      void emitUiEvent(HOST_EVENT_PLAN_PROGRESS, { sessionId, planId, stepId: String(step.id), total: plan.steps.length, desc: step.description, status: "running" })
     },
     async onStepDone(step, output) {
       assertCurrent()
       await planCheckpointStore.transitionStep(planId, String(step.id), output.success ? "done" : "failed")
-      void emitUiEvent("deskpet-plan-progress", { sessionId, planId, stepId: String(step.id), total: plan.steps.length, desc: step.description, status: output.success ? "done" : "failed" })
+      void emitUiEvent(HOST_EVENT_PLAN_PROGRESS, { sessionId, planId, stepId: String(step.id), total: plan.steps.length, desc: step.description, status: output.success ? "done" : "failed" })
       // PLAN-09②：步骤产出落盘成可回读证据（失败路径同样落，FIX-50 —— 失败原因与工具调用数
       // 不再只活在返回值里）。与 checkpoint 写入同一收口；`index` 是执行列表中的 0 基位置。
       // 写盘失败只降级成「原文未落盘」（`formatStepResults` 会如实标注），不拖垮计划结算。
@@ -2310,7 +2321,7 @@ async function runPlanPhase(args: {
     // 所以文案按子代理实际拿到的集合写，不写成「全部」。
     async onStepNotice(step, notice) {
       const index = plan.steps.findIndex(item => item.id === step.id) + 1
-      void emitUiEvent("deskpet-plan-progress", { sessionId, planId, stepId: String(step.id), total: plan.steps.length, desc: step.description, status: "warning" })
+      void emitUiEvent(HOST_EVENT_PLAN_PROGRESS, { sessionId, planId, stepId: String(step.id), total: plan.steps.length, desc: step.description, status: "warning" })
       if (notice.kind === "missing_tools") {
         pushSystemMessage(`计划第 ${index} 步指定的工具不存在: ${notice.names.join("、")}（该步未执行）`, sessionId)
       } else {
@@ -2362,7 +2373,7 @@ async function runPlanPhase(args: {
 
   if (result.cancelled) {
     // `declined` 由逐步门（含失败询问上的中止）给出：与终止执行/超时走同一条取消通道 ——
-    // 计划落 `interrupted`、剩余步骤保持 `pending`；「停在当前步骤」的系统消息由 finishPlan 的 declined 分支发
+    // 计划落 `interrupted`、剩余步骤保持 `pending`；「停在当前步骤」的系统消息由共享收尾（settlement.ts）的 declined 分支发
     const reasonText = result.cancelled.reason === "user" ? "用户终止执行"
       : result.cancelled.reason === "deadline" ? "超过计划时限" : "按用户选择中止"
     return await cancelPlanRun({
@@ -2377,7 +2388,7 @@ async function runPlanPhase(args: {
   // 放在取消归宿之后是刻意的 —— 取消本身必须把计划如实落 `interrupted`，守卫拦在这里
   // 会让记录永远停在 `running`，回合还会被 runner 当成 LLM 失败。
   assertCurrent()
-  await finishPlan({
+  await planSettlement.finishPlan({
     sessionId,
     planId,
     state: result.overallSuccess ? "done" : "failed",
@@ -2389,9 +2400,9 @@ async function runPlanPhase(args: {
 }
 
 /**
- * 取消归宿的唯一走法（FIX-37 + PLAN-10）：仍在 `running` 的步骤落 `interrupted`，
- * 计划落 `interrupted`，剩余步骤保持 `pending`（用户停止 / 会话切换 / 超时都走这里）。
- * 用户可见文案由 `finishPlan` 按 reason 统一发，不在这里另发一份。
+ * 取消归宿的自动入口适配：机制在 `plan/settlement.ts`（与提议入口共享同一实现），
+ * 这里只把归宿补成 `PlanPhaseOutcome` 的取消分支 —— `context` 是审计与恢复入口的说明，
+ * 不是给用户看的文案（用户可见文案由共享收尾按 reason 统一发）。
  */
 async function cancelPlanRun(args: {
   sessionId: string
@@ -2400,63 +2411,8 @@ async function cancelPlanRun(args: {
   context: string
   traceContext?: RuntimeTraceContext
 }): Promise<PlanPhaseOutcome> {
-  await withPlanWriteDegrade(args.sessionId, args.planId, async () => {
-    for (const step of planCheckpointStore.snapshot(args.planId)?.steps ?? []) {
-      if (step.state === "running") await planCheckpointStore.transitionStep(args.planId, step.stepId, "interrupted")
-    }
-  })
-  await finishPlan({
-    sessionId: args.sessionId,
-    planId: args.planId,
-    state: "interrupted",
-    reason: args.reason,
-    notify: "cancelled",
-    traceContext: args.traceContext,
-  })
+  await planSettlement.cancelPlanRun({ sessionId: args.sessionId, planId: args.planId, reason: args.reason, traceContext: args.traceContext })
   return { kind: "cancelled", reason: args.reason, context: args.context }
-}
-
-/**
- * 计划收尾的唯一出口（FIX-34 / PLAN-15）：写盘 → 收起面板 → 用户可见文案。
- * 四种归宿（completed / cancelled-user / cancelled-other / declined）都经它，不各写一份收尾。
- * 只有 user / completed / failed 不发系统消息：前者是用户自己的动作，后两者由面板与主回复承担。
- */
-async function finishPlan(args: {
-  sessionId: string
-  planId: string
-  state: "done" | "failed" | "interrupted"
-  /** 可见原因（用于系统消息文案；只有 user/completed/failed 不发消息）。 */
-  reason: "completed" | "failed" | PlanCancelReason
-  notify: "done" | "failed" | "cancelled"
-  traceContext?: RuntimeTraceContext
-}): Promise<void> {
-  await withPlanWriteDegrade(args.sessionId, args.planId, () => planCheckpointStore.transitionPlan(args.planId, args.state))
-  if (args.traceContext) publishRuntimeTrace(args.traceContext, "plan_settled", () => ({ planId: args.planId, status: args.state }))
-  // 收起 Plan 面板：没有这个事件时它只在两个按钮里被隐藏，跑完会一直挂着
-  notifyPlanEnd(args.sessionId, args.notify)
-  // 用户可见文案只在这里发「执行期截止」与「用户在逐步门上的选择」两条；
-  // 会话切换/会话关闭的取消文案由 cancelSessionPlans 在切指针之前写出（那时活跃会话才是旧会话），
-  // 会话切换/事件发射失败由 plan-confirmation 在结算处写出 —— 同一桩事不能各发一条。
-  // 消息只写给计划所属会话：执行期切走后回合仍在跑，文案不能落进另一个会话。
-  if (getActiveSessionId() !== args.sessionId) return
-  if (args.reason === "deadline") pushSystemMessage("计划超时，已停在当前步骤，剩余步骤未执行", args.sessionId)
-  if (args.reason === "declined") pushSystemMessage("已按你的选择停在当前步骤，剩余步骤未执行", args.sessionId)
-}
-
-/**
- * 计划写盘失败的降级（PLAN-15 / FIX-63①）：日志 + `deskpet.plan_write_failed` 证据条目 +
- * 用户可见提示，然后继续正常结算 —— 计划本身已经执行/已取消，把它报成模型故障会让用户
- * 以为副作用没发生。证据条目自身写失败只记日志：它是尽力而为，不能再把结算拖住。
- */
-async function withPlanWriteDegrade(sessionId: string, planId: string, write: () => Promise<void>): Promise<void> {
-  try {
-    await write()
-  } catch (error) {
-    log.error("计划执行记录写入失败:", formatError(error))
-    await planCheckpointStore.writeWriteFailure(sessionId, planId, formatError(error))
-      .catch(evidenceError => log.error("计划写盘失败证据条目写入失败:", formatError(evidenceError)))
-    pushSystemMessage("计划执行记录写入失败（计划本身已执行/已取消）", sessionId)
-  }
 }
 
 /**
@@ -2555,7 +2511,7 @@ export async function resumePlan(sessionId: string, planId: string): Promise<PiA
   const planAbort = new AbortController()
   // 恢复没有主回合，但同样是一次真实的运行：界面按运行态通知显示停止入口，
   // 停止经 `bindRunningPlan` 的中断通道（runPlanPhase 内登记）真正停在步骤边界。
-  void emitUiEvent("deskpet-run-state", { sessionId, running: true })
+  void emitUiEvent(HOST_EVENT_RUN_STATE, { sessionId, running: true })
   try {
     // 步骤子代理可能用内置工具与 MCP：按主回合同款准备能力，收尾再释放
     const { prepareConversationCapabilities } = await import("@/services/init")
@@ -2588,7 +2544,7 @@ export async function resumePlan(sessionId: string, planId: string): Promise<PiA
   } finally {
     harnessSlots.end(sessionId, generation)
     invalidatePermissionScope(sessionId, generation)
-    void emitUiEvent("deskpet-run-state", { sessionId, running: false })
+    void emitUiEvent(HOST_EVENT_RUN_STATE, { sessionId, running: false })
     const { releaseMcpOwner } = await import("@/services/tool")
     await releaseMcpOwner(requestId)
   }
@@ -2733,7 +2689,7 @@ async function settleMainTurn(args: {
   if (protocolApplies) {
     if (processed.runtimeDataMissing) {
       markRuntimeDataMissing(turnSessionId)
-      log.warn("结算正文缺少 RUNTIME_DATA 区块，已安排下一回合提醒:", {
+      log.warn(`结算正文缺少 ${RUNTIME_DATA_TAG} 区块，已安排下一回合提醒:`, {
         sessionId: turnSessionId,
         turnId: kernel.turnId,
         cardId: kernel.card?.id,
@@ -3072,7 +3028,7 @@ export async function runPiSubAgent(input: PiSubAgentInput): Promise<PiSubAgentO
       // 只有内核留底的原始正文能与它配对比较（子代理不写变量，所以差异就是「写了却没生效」）。
       const raw = kernel.rawTextForSettledReply(reply)
       if (raw !== reply) {
-        log.warn("子代理回复含被剥离的 RUNTIME_DATA，变量写入不生效（原始正文已随 plan_step_result 留证）:", input.task.substring(0, 40))
+        log.warn(`子代理回复含被剥离的 ${RUNTIME_DATA_TAG}，变量写入不生效（原始正文已随 plan_step_result 留证）:`, input.task.substring(0, 40))
       }
       return {
         // 子代理跑完但没有可见正文时说「无结果」，不是「已完成」：

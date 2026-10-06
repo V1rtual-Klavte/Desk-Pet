@@ -45,6 +45,15 @@ interface FixtureOptions {
   stageNode?: boolean
   /** 创建 packaging/dist/harness 暂存：file = 含 main.mjs；empty = 空目录 */
   stageHarness?: "file" | "empty"
+  /** 写入 packaging/dist/version-set.json（对象按 JSON 序列化） */
+  versionSet?: unknown
+  /** packaging/dist/version-set.json 整份原文（用于构造坏 JSON） */
+  versionSetRaw?: string
+}
+
+/** 校验器期待的 version-set 形状：app / node 与各自锁定值一致，harness 是 64 位小写 hex。 */
+function validVersionSet(): Record<string, unknown> {
+  return { app: BASE_VERSION, node: validNodeRuntime().nodeVersion, harness: "a".repeat(64) }
 }
 
 function validNodeRuntime(): Record<string, unknown> {
@@ -133,6 +142,11 @@ function fixtureRoot(options: FixtureOptions = {}) {
   } else if (options.stageHarness === "empty") {
     mkdirSync(join(root, "packaging", "dist", "harness"), { recursive: true })
   }
+  if (options.versionSet !== undefined || options.versionSetRaw !== undefined) {
+    mkdirSync(join(root, "packaging", "dist"), { recursive: true })
+    const raw = options.versionSetRaw ?? JSON.stringify(options.versionSet ?? validVersionSet(), null, 2)
+    writeFileSync(join(root, "packaging", "dist", "version-set.json"), raw)
+  }
   return root
 }
 
@@ -212,6 +226,41 @@ describe("checkBundleConfig", () => {
       harness: "a".repeat(64),
     }, null, 2))
     expect(checkBundleConfig(root, { requireStaging: true })).toEqual([])
+  })
+
+  it("version-set.json 的 app / node 与各自锁定值不一致时逐项被拦（暂存集漂移不能留到打包）", () => {
+    const appDrift = checkBundleConfig(fixtureRoot({ versionSet: { ...validVersionSet(), app: "0.16.0" } }))
+    expect(
+      appDrift.some(p => p.includes("version-set.json") && p.includes(".app") && p.includes("0.16.0")),
+      `app 与 desktop.json 不一致未被拦: ${JSON.stringify(appDrift)}`,
+    ).toBe(true)
+
+    const nodeDrift = checkBundleConfig(fixtureRoot({ versionSet: { ...validVersionSet(), node: "22.19.9" } }))
+    expect(
+      nodeDrift.some(p => p.includes("version-set.json") && p.includes(".node") && p.includes("22.19.9")),
+      `node 与 node-runtime.json 不一致未被拦: ${JSON.stringify(nodeDrift)}`,
+    ).toBe(true)
+  })
+
+  it("version-set.json 的 harness 必须是 64 位小写十六进制（长度与大小写两种坏形态都拦）", () => {
+    // 长度不足：正则若被放宽成 [a-f0-9]+ 这条立即红
+    const short = checkBundleConfig(fixtureRoot({ versionSet: { ...validVersionSet(), harness: "a".repeat(63) } }))
+    expect(short.some(p => p.includes("version-set.json") && p.includes("harness"))).toBe(true)
+    // 大写 hex：等值文本但不是指纹形态，正则若被改成大小写不敏感这条立即红
+    const upper = checkBundleConfig(fixtureRoot({ versionSet: { ...validVersionSet(), harness: "A".repeat(64) } }))
+    expect(upper.some(p => p.includes("version-set.json") && p.includes("harness"))).toBe(true)
+  })
+
+  it("version-set.json 不是合法 JSON（或顶层不是对象）被拦，其余检查继续而不是整体短路", () => {
+    const root = fixtureRoot({ versionSetRaw: "{ 坏掉的 version-set" })
+    const problems = checkBundleConfig(root)
+    expect(problems.some(p => p.includes("version-set.json") && p.includes("不是合法 JSON"))).toBe(true)
+    // 其余检查仍在跑：desktop.json 等其余文件合规时，version-set 是唯一的报错项
+    expect(problems).toHaveLength(1)
+
+    // 合法 JSON 但不是对象：同一守卫的另一半（数组也算顶层形状错）
+    const array = checkBundleConfig(fixtureRoot({ versionSetRaw: "[]" }))
+    expect(array.some(p => p.includes("version-set.json") && p.includes("顶层必须是对象"))).toBe(true)
   })
 
   it("node-runtime 实测记录与锁定 nodeVersion 分叉被拦", () => {

@@ -75,8 +75,8 @@
 //!   （`input_row_columns` 唯一摆放口径，窄聊天列不把输入框压成一条缝）；
 //!   输入框与占位标签按设计稿贴 `radii.sm` 圆角区域；
 //!   「↓ 新消息」改为**真有未读新消息且不在底部**才显示（不再只是「不在底部」）；
-//!   顶栏品牌字改为产品全名（`TITLEBAR_BRAND_TEXT`），状态位仍是 Node
-//!   `titlebar-status` 通道的文本快照（`crate::ui::titlebar`，不写死、不自拼）；
+//!   顶部顶栏带（品牌/状态位/关闭「×」）归主窗的全窗宽顶栏（`windows_main.rs`；
+//!   条内几何的唯一来源是 `crate::ui::titlebar`），本窗只画标签条与顶栏投影带；
 //! - **与 macOS 的口径差异（就地注明）**：
 //!   * 遮罩：GDI 子窗口之间没有 alpha 合成通路（真半透明要 Win8+ 的分层子窗口，
 //!     与现有窗口层级/焦点易打架），取「`--scrimc` 口径色与面板底预合成的实色」——
@@ -132,14 +132,15 @@ use windows_sys::Win32::UI::WindowsAndMessaging::{
     SB_LINEUP, SB_PAGEDOWN, SB_PAGEUP, SB_THUMBPOSITION, SB_THUMBTRACK, SB_TOP, SB_VERT,
     SCROLLINFO, SIF_ALL, SIF_PAGE, SIF_POS, SIF_RANGE, SM_CXSCREEN, SM_CYSCREEN, SWP_NOACTIVATE,
     SWP_NOMOVE, SWP_NOSIZE, SW_HIDE, SW_SHOW, SW_SHOWNORMAL, TPM_RETURNCMD, TPM_RIGHTBUTTON,
-    WM_APP, WM_CLOSE, WM_COMMAND, WM_CONTEXTMENU, WM_COPY, WM_CREATE, WM_CTLCOLORSTATIC,
+    WM_APP, WM_CLOSE, WM_COMMAND, WM_CONTEXTMENU, WM_COPY, WM_CREATE, WM_CTLCOLOREDIT,
+    WM_CTLCOLORLISTBOX, WM_CTLCOLORSTATIC,
     WM_DESTROY, WM_DRAWITEM, WM_DROPFILES, WM_ERASEBKGND, WM_GETMINMAXINFO, WM_IME_COMPOSITION,
     WM_IME_ENDCOMPOSITION, WM_IME_STARTCOMPOSITION, WM_KEYDOWN, WM_LBUTTONDOWN, WM_MOUSEHWHEEL,
     WM_MOUSEWHEEL, WM_NCDESTROY, WM_NCHITTEST, WM_NOTIFY, WM_PAINT, WM_PASTE, WM_SETFONT, WM_SIZE,
     WM_TIMER,
     WM_VSCROLL, WNDCLASSW, WS_CAPTION, WS_CHILD, WS_CLIPCHILDREN, WS_CLIPSIBLINGS,
     WS_EX_CLIENTEDGE, WS_HSCROLL, WS_OVERLAPPEDWINDOW, WS_POPUP, WS_SYSMENU, WS_TABSTOP,
-    WS_VISIBLE, WS_VSCROLL,
+    WS_VISIBLE, WS_VSCROLL, WindowFromPoint,
 };
 
 use crate::host::WindowId;
@@ -196,13 +197,12 @@ const PANEL_BASE: i32 = 3000;
 /// 开口段（`PENDING_BASE..` 等）之前匹配。
 const PANEL_SELECT_BASE: i32 = 8000;
 
-// ── A1：顶栏与会话标签条（仅主窗聊天面板模式；独立聊天窗保留系统 chrome）──
+// ── A1：会话标签条（仅主窗聊天面板模式；独立聊天窗保留系统 chrome）──
+//
+// 顶部 26px 带（品牌 + 状态位 + 关闭「×」）归主窗的全窗宽顶栏
+// （`windows_main.rs`；条内几何的单一来源是 `ui::titlebar`）。本窗只画/摆标签条，
+// 且它接在顶栏带**下方**（画布顶部预留 = `ui::titlebar::HEIGHT` + 标签条）。
 
-/// 顶栏状态位（品牌字右侧的「配信中」）。
-const TITLEBAR_STATUS_ID: i32 = 1004;
-/// 顶栏固定按钮：仅关闭（收起）——Windows 只保留右上角「×」；
-/// 设置/图层入口在托盘菜单（`windows.rs` 的 Shell_NotifyIcon 菜单），不在条内重复。
-const BTN_HIDE_ID: i32 = 1007;
 /// A3：发图入口按钮（第三波起在输入行；原生多选器）与待发送条目 ID 基址
 /// （第 n 条 = 基址 + n）。
 const BTN_PICK_IMAGES_ID: i32 = 1010;
@@ -217,18 +217,11 @@ const BTN_HISTORY_ID: i32 = 1009;
 /// 两段范围在 `WM_COMMAND` 里排在 `PANEL_BASE..` 之前匹配。
 const SESSION_TAB_BASE: i32 = 4000;
 const SESSION_CLOSE_BASE: i32 = 4600;
-/// 顶栏条与会话标签条高度（逻辑像素，按 DPI 缩放）。
-const TITLEBAR_HEIGHT: i32 = 26;
+/// 会话标签条高度（逻辑像素，按 DPI 缩放）；条内控件高度与按钮宽度。
 const TABS_HEIGHT: i32 = 24;
-/// 条内控件高度与宽度（关闭/新建/历史，与 macOS 同口径）。
 const NAV_CONTROL_HEIGHT: i32 = 18;
-const NAV_CLOSE_WIDTH: i32 = 22;
 const NAV_NEW_WIDTH: i32 = 22;
 const NAV_HISTORY_WIDTH: i32 = 34;
-/// 顶栏品牌字样（固定；2026-10-05 用户规则改为产品全名，与 macOS 同文案）。
-const TITLEBAR_BRAND_TEXT: &str = "V1rtual-Desk-Pet";
-/// 状态位右侧按钮保留宽度（Windows 只保留关闭按钮，故比 macOS 的 80 窄）。
-const TITLEBAR_RIGHT_RESERVE: i32 = 30;
 /// 会话标签宽度上下限、关闭按钮宽度与「名字 | ×」之间的间隙
 /// （2026-10-05：× 落进 pill 内部，间隙防止长名字贴住 ×）。
 const TAB_MIN_WIDTH: i32 = 36;
@@ -339,6 +332,13 @@ const HANDLE_STATUS_TEXT_GAP: i32 = 6;
 /// 悬浮层承载窗口的类名：**浮层 Inspector 与会话历史弹层共用**（同一 wndproc 按
 /// 窗口句柄分派；两者都是「遮罩 + 圆角盒 + 内容子控件」的同一形态）。
 const LAYER_CLASS: &str = "DeskPetChatOverlayLayer";
+/// 浮层**内容滚动裁剪窗**的窗口类名（2026-10-06 抽屉内部滚动）：`WS_VSCROLL` 容器，
+/// 子控件 = 面板元素；窗口画盒底（`panel_bg`），部分可见的内容由客户区自然裁剪。
+/// 与画布（`CANVAS_CLASS`）同属「滚动容器 + 子控件按偏移移动」一族，不共用类：
+/// 画布的绘制/状态与聊天正文绑定，这里只需要盒底填充。系统滚动条（经典外观）落在
+/// 裁剪窗右缘、内容超高时才出现 —— 出现的那些帧里内容最右约一个滚动条宽被它裁掉
+/// （与画布同款口径；可控损失，不为它再收一道内容重排）。
+const INSPECTOR_SCROLL_CLASS: &str = "DeskPetChatInspectorScroll";
 /// 浮层盒与消息流区域边缘的距离（设计稿 `.insp{left:9px;right:9px;bottom:9px}`）。
 const INSPECTOR_PAD: i32 = 9;
 /// 浮层标题行高（设计稿 `.insph`：上下 9px 内边距 + 12px 标题行）。
@@ -347,6 +347,11 @@ const INSPECTOR_HEADER_HEIGHT: i32 = 30;
 const INSPECTOR_BODY_PAD_BOTTOM: i32 = 10;
 /// 关闭「✕」按钮边长。
 const INSPECTOR_CLOSE_SIZE: i32 = 18;
+/// 浮层内容裁剪窗与盒左右边缘的内缩（物理像素基准；让开 1px 盒描边 + 1px 内立体线 ——
+/// 全宽裁剪窗会把这两条主题线在内容区整段盖掉）。
+const INSPECTOR_SCROLL_INSET: i32 = 2;
+/// 浮层滚动的行节距（逻辑 pt；与面板行高同值 —— 行是内容的最小视觉单位）。
+const INSPECTOR_SCROLL_LINE: i32 = crate::ui::chat::panels::PANEL_METRICS.line_height as i32;
 /// 遮罩透明度（设计稿两版口径：深色 `rgba(12,10,30,.44)` / 浅色 `rgba(240,245,252,.5)`）。
 const INSPECTOR_SCRIM_ALPHA_DARK: f32 = 0.44;
 const INSPECTOR_SCRIM_ALPHA_LIGHT: f32 = 0.5;
@@ -696,10 +701,19 @@ struct ChatWinState {
     inspector_layer: HWND,
     /// 浮层关闭「✕」（常驻控件，随浮层窗口显隐）。
     inspector_close: HWND,
-    /// 浮层内容子控件（父 = 浮层窗口；坐标相对浮层盒左上角，y 已含标题行偏移）。
+    /// 浮层内容滚动裁剪窗（`INSPECTOR_SCROLL_CLASS`；常驻、随浮层显隐；
+    /// 内容子控件的父窗口 = 它，滚动靠它裁剪 + 子控件按偏移移动）。
+    inspector_scroll: HWND,
+    /// 浮层内容子控件（父 = 滚动裁剪窗；坐标相对**内容原点**（滚动前），
+    /// 布局时按滚动偏移平移）。
     inspector_children: Vec<ChildEntry>,
-    /// 浮层内容高（物理像素；由 `layout_panels` 的逻辑高换算，布局与绘制共用）。
+    /// 浮层内容**全高**（物理像素；按无上限摆放的 `layout_panels` 逻辑高换算 ——
+    /// 内部滚动保证全部可达，不按上限跳过块）。
     inspector_content_height: i32,
+    /// 浮层内容**可视区**高（物理像素；= min(全高, 上限)，布局时按盒几何夹取）。
+    inspector_viewport_height: i32,
+    /// 浮层内容纵向滚动偏移（物理像素；布局时统一钳制到 [0, 全高 − 可视高]）。
+    inspector_scroll_y: i32,
     /// 浮层盒（浮层窗口客户区坐标；布局写入，绘制与「点盒外关闭」读取）。
     inspector_box: paint_win::Rect,
     /// 浮层是否开着，**直接来自 `ChatSnapshot::inspector_open`**（每次整帧同步；
@@ -743,13 +757,8 @@ struct ChatWinState {
     pending_count: usize,
     /// 「本轮新增了条目」标志：`rebuild_pending` 置位、`layout_panes_for` 消费。
     pending_reveal_end: bool,
-    // ── A1：顶栏与会话标签（仅 pane 模式；独立窗全为 0/空）──
-    /// 顶栏品牌字（固定字样 `TITLEBAR_BRAND_TEXT`）与状态位（STATIC；文本来自
-    /// `crate::ui::titlebar` 的 Node 快照，见 `rebuild_navigation`）。
-    titlebar_brand: HWND,
-    titlebar_status: HWND,
-    /// 顶栏关闭（收起）按钮：Windows 只保留这一个顶栏按钮。
-    nav_hide: HWND,
+    // ── A1：会话标签条（仅 pane 模式；独立窗全为 0/空）──
+    // 顶部顶栏带（品牌/状态位/关闭「×」）不在这里：归主窗的全窗宽顶栏。
     nav_new: HWND,
     nav_history: HWND,
     /// 标签条动态按钮（每次整帧重建时整体替换；y 由 layout 统一给）。
@@ -959,9 +968,30 @@ unsafe fn paint_shell(state: &ChatWinState, hdc: HDC) {
     }
     unsafe {
         let scale = dpi_scale(state.hwnd);
-        // 顶栏条 + 标签条（仅主窗面板模式；独立聊天窗保留系统 chrome）。
+        // 顶栏带（本窗这份 = 投影承载面 + 带底衬）+ 标签条（仅主窗面板模式；
+        // 独立聊天窗保留系统 chrome）。
+        // 标签条先画：顶栏投影（下一条）的露头 1px 要落在它上面（先物后影）。
+        if !rect_is_empty(&state.paint.tabs) {
+            let tabs = win_rect_of(&state.paint.tabs);
+            paint_win::fill_color(hdc, tabs, t.strip_bg);
+            paint_win::fill_color(
+                hdc,
+                paint_win::Rect::new(tabs.x, tabs.bottom() - 1, tabs.w, 1),
+                t.bar_edge,
+            );
+        }
         if !rect_is_empty(&state.paint.bar) {
             let bar = win_rect_of(&state.paint.bar);
+            // 顶栏外投影（`--barsh` 的非 inset 部分；只有铜绿有声明的 `var(--contact)`）。
+            // **画在这里而不是顶栏自己的窗口**：顶栏子窗口不能把 GDI 像素画到客户区外，
+            // 而聊天窗 DC 向下延伸到标签条 —— 投影带落在条下 1px 处、叠在标签条上可见
+            //（先物后影：上面已先画过标签条）。
+            // 条底/立体线/下边线/圆点与投影同为这条带的主题绘制（2026-10-06 接线）：
+            // 顶栏子窗口在最上另画一份同带内容（它盖住本窗这 26px），本窗这份是
+            // 投影的承载面与带底衬；几何/取值都来自 `ui::titlebar` 与主题 token，
+            // 不落第二份定义。
+            // 舞台列那一半（分层渲染表面，不参与 GDI 主题绘制）没有对应画点，如实登记差异。
+            paint_win::draw_elevation(hdc, bar, &t.bar_shadow);
             paint_win::fill_rect(hdc, bar, &t.bar_bg);
             paint_win::draw_bevel(hdc, bar, &t.bar_bevel);
             paint_win::fill_color(
@@ -970,23 +1000,14 @@ unsafe fn paint_shell(state: &ChatWinState, hdc: HDC) {
                 t.bar_edge,
             );
             // 状态位前的强调圆点（`--acc`；设计稿 `.status i` 在状态文字左侧）。
-            // 起点与状态位同源（`titlebar_status_x()`，品牌改全名后跟着右移）。
+            // 起点与状态位锚点同源（`ui::titlebar::status_x`）。
             paint_win::draw_dot(
                 hdc,
-                scaled_f(titlebar_status_x(), scale) - scaled(10, scale),
+                scaled_f(crate::ui::titlebar::status_x(), scale) - scaled(10, scale),
                 bar.y + bar.h / 2,
-                scaled(3, scale),
+                scaled_f(crate::ui::titlebar::DOT_SIZE / 2.0, scale),
                 t.accent,
                 t.bar_bg.base_color(),
-            );
-        }
-        if !rect_is_empty(&state.paint.tabs) {
-            let tabs = win_rect_of(&state.paint.tabs);
-            paint_win::fill_color(hdc, tabs, t.strip_bg);
-            paint_win::fill_color(
-                hdc,
-                paint_win::Rect::new(tabs.x, tabs.bottom() - 1, tabs.w, 1),
-                t.bar_edge,
             );
         }
         if !rect_is_empty(&state.paint.panels) {
@@ -1461,6 +1482,16 @@ unsafe extern "system" fn overlay_layer_wndproc(
             0
         }
         WM_CTLCOLORSTATIC => unsafe { ctlcolor_static(wparam, lparam) },
+        // 编辑类控件（可编辑框/下拉清单）的主题配色：`WM_CTLCOLOREDIT` /
+        // `WM_CTLCOLORLISTBOX` 的消费者是**控件的父窗口**（组合框的展开清单也由
+        // 承载它的父窗接，不随 `WM_COMMAND` 的转发链上走）—— 三处承载容器（流内 =
+        // 聊天窗、浮层 = 滚动裁剪窗、历史 = 本层窗）各接各的，缺一处，对应容器里的
+        // 下拉/输入框就回落系统经典外观。配色统一转给 `windows_settings` 的
+        // `edit_ctlcolor`（唯一实现点，不在本文件另开第二份）；只接这两条消息，
+        // 其余 CTLCOLOR 种类仍走默认处理。
+        WM_CTLCOLOREDIT | WM_CTLCOLORLISTBOX => {
+            super::windows_settings::edit_ctlcolor(wparam, lparam)
+        }
         WM_COMMAND => {
             unsafe { SendMessageW(GetParent(hwnd), WM_COMMAND, wparam, lparam) };
             0
@@ -1669,6 +1700,16 @@ fn overlay_box_rect(
     let h = wanted_h.clamp(1, max_h);
     let y = (layer_h - pad_y - h).max(0);
     paint_win::Rect::new(pad_x, y, w, h)
+}
+
+/// 浮层内容滚动区（裁剪窗）的可视高（物理像素）：盒高扣掉标题行与底部内边距
+/// （下限 1）。**唯一算式**：盒摆放、裁剪窗摆放、滚动条页大小与偏移钳制都读它，
+/// 不各自重算（纯函数，可测）。
+fn inspector_body_view_height(panel_box: paint_win::Rect, scale: f64) -> i32 {
+    (panel_box.h
+        - scaled(INSPECTOR_HEADER_HEIGHT, scale)
+        - scaled(INSPECTOR_BODY_PAD_BOTTOM, scale))
+    .max(1)
 }
 
 /// 把手箭头的朝向文案：浮层收着 = 上拉（▴）、开着 = 可往下收（▾）。
@@ -2208,7 +2249,6 @@ pub(crate) fn apply_theme() {
             (state.pick_images, theme::tokens().radii.btn),
             (state.stop, theme::tokens().radii.btn),
             (state.inspector_close, theme::tokens().radii.sm),
-            (state.nav_hide, theme::tokens().radii.btn),
             (state.nav_new, theme::tokens().radii.sm),
             (state.nav_history, theme::tokens().radii.sm),
         ] {
@@ -2219,9 +2259,6 @@ pub(crate) fn apply_theme() {
         stamp_ink(state.status, theme::tokens().dim);
         stamp_ink(state.input_placeholder, theme::tokens().dim);
         InvalidateRect(state.input_placeholder, std::ptr::null(), 1);
-        // 品牌字取 `ink`（设计稿 `.brand` 继承 `--ink`）；状态位保持 `dim`。
-        stamp_ink(state.titlebar_brand, theme::tokens().ink);
-        stamp_ink(state.titlebar_status, theme::tokens().dim);
         InvalidateRect(state.hwnd, std::ptr::null(), 1);
         InvalidateRect(state.canvas, std::ptr::null(), 1);
         // 悬浮层窗口画的是主题材质（遮罩/盒底/描边），必须重画；重绘直接吃本次
@@ -2297,11 +2334,10 @@ pub(crate) fn apply_chat_font() {
             for child in &state.pending_children {
                 SendMessageW(child.hwnd, WM_SETFONT, small as WPARAM, 1);
             }
-            // A1：顶栏品牌字/状态位/固定按钮与标签条动态按钮跟着全局字体刷新。
+            // A1：标签条固定按钮与动态按钮跟着全局字体刷新（顶栏不在这里：
+            // 全窗宽顶栏子窗口有自己的字体路径，见 windows_main::apply_titlebar_font）。
             if state.pane {
-                SendMessageW(state.titlebar_brand, WM_SETFONT, small as WPARAM, 1);
-                SendMessageW(state.titlebar_status, WM_SETFONT, small as WPARAM, 1);
-                for control in [state.nav_hide, state.nav_new, state.nav_history] {
+                for control in [state.nav_new, state.nav_history] {
                     SendMessageW(control, WM_SETFONT, small as WPARAM, 1);
                 }
                 for child in &state.tab_children {
@@ -2353,7 +2389,7 @@ unsafe fn apply_full(state: &mut ChatWinState, snapshot: &crate::ui::chat::ChatS
             );
         }
         rebuild_panels(state, snapshot);
-        rebuild_navigation(state, snapshot);
+        rebuild_tabs(state, snapshot);
         rebuild_pending(state, snapshot);
         layout_panes_for(state);
         rebuild_canvas(state, snapshot);
@@ -2901,9 +2937,11 @@ unsafe fn rebuild_panels(state: &mut ChatWinState, snapshot: &crate::ui::chat::C
             // 浮层收着（或三块都没内容）：不建内容控件 —— 层窗由
             // `layout_inspector_layer` 隐藏，遮罩也不出现。
             state.inspector_content_height = 0;
+            state.inspector_viewport_height = 0;
+            state.inspector_scroll_y = 0;
         } else {
-            // 浮层内容宽 = 浮层盒宽（窗口宽 − 左右各 9pt）；高度上限与流内面板同口径
-            // （客户区 45%），再扣掉标题行与底部内边距。
+            // 浮层内容宽 = 浮层盒宽（窗口宽 − 左右各 9pt）；**可视高**上限与流内面板
+            // 同口径（客户区 45%），再扣掉标题行与底部内边距。
             let box_width =
                 (f64::from(width) - f64::from(scaled(INSPECTOR_PAD * 2, scale))) / scale;
             let max_content = if height > 0 {
@@ -2913,10 +2951,19 @@ unsafe fn rebuild_panels(state: &mut ChatWinState, snapshot: &crate::ui::chat::C
             } else {
                 f64::INFINITY
             };
-            let layout = layout_panels(&groups.overlay, box_width, max_content);
-            if layout.truncated {
+            // 内容**全量摆放**（不设高度上限）：上限只决定可视区高，其余靠裁剪窗的
+            // 内部滚动到达 —— 旧的「按上限摆放」会把放不下的块按序跳过（超长的
+            // 「注册明细」全展开即触发，内容谁也到不了）。滚动几何走共享
+            // `panel_scroll_geometry`（与 macOS 同一口径）。
+            let layout = layout_panels(&groups.overlay, box_width, f64::INFINITY);
+            let geometry =
+                crate::ui::chat::panels::panel_scroll_geometry(layout.height, max_content);
+            if geometry.max_offset > 0.0 {
+                // 超可视高：内容由内部滚动可达（留痕不静默；这里不再有「丢块」的截断）。
                 rust_debug!(
-                    "浮层空间不足：已跳过部分块（保序摆放；max_height={max_content:.0}pt）"
+                    "浮层内容超可视高：已启用内部滚动（content={:.0} view={:.0}）",
+                    geometry.content_height,
+                    geometry.view_height
                 );
             }
             place_panel_elements(
@@ -2926,7 +2973,9 @@ unsafe fn rebuild_panels(state: &mut ChatWinState, snapshot: &crate::ui::chat::C
                 &mut actions,
                 scale,
             );
-            state.inspector_content_height = scaled_f(layout.height, scale);
+            state.inspector_content_height = scaled_f(geometry.content_height, scale);
+            state.inspector_viewport_height = scaled_f(geometry.view_height, scale);
+            // 滚动偏移保留（投影刷新频繁，不重置到顶）；越界由布局里统一钳制。
         }
         if groups.anchored.is_empty() {
             state.history_height = 0;
@@ -3018,16 +3067,17 @@ unsafe fn place_panel_elements(
     unsafe {
         // 三组的承载窗口与内容坐标系不同（x/y 偏移在重建时算好，布局只做整盒平移）：
         // - Functional：父 = 聊天窗，坐标相对面板区上缘（`layout_panes_for` 平移）；
-        // - Inspector：父 = 浮层窗口，y 让开标题行（x 不加：`layout_panels` 的 pad_x
-        //   已是盒内留白）；
+        // - Inspector：父 = 滚动裁剪窗（锚在盒内标题行之下、左右内缩让开描边），
+        //   坐标相对**内容原点**（滚动前）：x 减掉内缩量、y 不再含标题行偏移，
+        //   纵向滚动偏移在 `apply_inspector_scroll` 里统一平移；
         // - History：父 = 弹层窗口，四周都让开盒内边距（内容按「弹层宽 − 2×pad」
         //   布局，原点在 pad 处）。
         let (parent, content_dx, content_dy) = match group {
             PanelGroup::Functional => (state.hwnd, 0, 0),
             PanelGroup::Inspector => (
-                state.inspector_layer,
+                state.inspector_scroll,
+                -scaled(INSPECTOR_SCROLL_INSET, scale),
                 0,
-                scaled(INSPECTOR_HEADER_HEIGHT, scale),
             ),
             PanelGroup::History => {
                 let pad = scaled(HISTORY_POPOVER_PAD, scale);
@@ -3144,9 +3194,11 @@ unsafe fn place_panel_elements(
                     // **圆角口径差异（就地注明）**：COMBOBOX 是系统控件，给它贴
                     // `SetWindowRgn` 会把展开的清单一起裁掉（清单是组合框的子窗口），
                     // 且开合期动态换区域要额外接 CBN_DROPDOWN/CBN_CLOSEUP。全应用
-                    // 的下拉（流内面板/设置窗/编辑器）都是同一份系统外观，
-                    // 「下拉圆角/主题色」是登记过的跨文件后续项（windows.rs 路由
-                    // WM_CTLCOLOREDIT/WM_CTLCOLORLISTBOX），这里不单独开第二条路径。
+                    // 的下拉（流内面板/设置窗/编辑器）都是同一份系统外观；
+                    // **主题色**已接线：三个承载父窗过程（聊天窗/浮层滚动裁剪窗/层窗）
+                    // 把 `WM_CTLCOLOREDIT`/`WM_CTLCOLORLISTBOX` 转给
+                    // `windows_settings::edit_ctlcolor`，这里不单独开第二条路径；
+                    // 登记过的后续项只剩**圆角**（仍是系统下拉外观）。
                     let base = actions.len() as i32;
                     let combo = create_panel_child(
                         state,
@@ -3203,23 +3255,20 @@ unsafe fn place_panel_elements(
 }
 
 // ==========================================
-// A1：顶栏与会话标签条
+// A1：会话标签条
 // ==========================================
 
 /// 重建标签条动态按钮（会话说整表来自投影；每次都整体替换）。
 ///
 /// 活跃标签用「▸ 」前缀标记（Win32 BUTTON 没有跨版本可靠的按下态；用文字标记
 /// 等价表达高亮语义）；中断标记用「 !」后缀（等价于圆点角标）。
-unsafe fn rebuild_navigation(state: &mut ChatWinState, snapshot: &crate::ui::chat::ChatSnapshot) {
+/// 顶栏（品牌/状态位/关闭「×」）不在这里：它归主窗的全窗宽顶栏（`windows_main.rs`），
+/// 状态位文本由 `windows.rs::refresh_titlebar` 直接推给那一份展示副本。
+unsafe fn rebuild_tabs(state: &mut ChatWinState, snapshot: &crate::ui::chat::ChatSnapshot) {
     unsafe {
         if !state.pane {
             return;
         }
-        // 状态位文本（唯一真值在 Node；原生取内存快照）。
-        SetWindowTextW(
-            state.titlebar_status,
-            wide(&crate::ui::titlebar::current()).as_ptr(),
-        );
         for child in state.tab_children.drain(..) {
             DestroyWindow(child.hwnd);
         }
@@ -3320,7 +3369,7 @@ unsafe fn create_nav_child(
             hinstance,
             std::ptr::null(),
         );
-        // 小号字体（与顶栏其他控件同口径）。
+        // 小号字体（标签条控件同口径）。
         if let Some(font) = state.fonts.get(1) {
             SendMessageW(hwnd, WM_SETFONT, *font as WPARAM, 1);
         }
@@ -3341,17 +3390,6 @@ fn tab_name_width(name: &str, scale: f64) -> i32 {
     let logical = (crate::ui::chat::panels::estimated_text_width(name, 11.0) + 16.0)
         .clamp(f64::from(TAB_MIN_WIDTH), f64::from(TAB_MAX_WIDTH));
     scaled(logical.round() as i32, scale)
-}
-
-/// 顶栏品牌字槽宽（逻辑像素；按 11pt 档位的估算宽 + 余量，随全名长度自适应）。
-/// 布局与状态位圆点共用同一算式（不落第二份宽度常量）。
-fn titlebar_brand_width() -> f64 {
-    crate::ui::chat::panels::estimated_text_width(TITLEBAR_BRAND_TEXT, 11.0) + 14.0
-}
-
-/// 顶栏状态位起点（逻辑像素）：品牌槽 + 8 的间距（设计稿 `.brand` 与 `.status` 的间距）。
-fn titlebar_status_x() -> f64 {
-    8.0 + titlebar_brand_width() + 8.0
 }
 
 /// 派发一个面板动作并按**动作后的新快照**整帧重建。
@@ -3406,52 +3444,6 @@ unsafe fn handle_panel_outcome(result: crate::error::AppResult<PanelOutcome>) {
                 &error.to_string(),
             );
             crate::ui::chat::set_notice(None);
-        }
-    }
-}
-
-/// A1：屏幕坐标是否落在**可见聊天列**的顶栏条内（主窗拖动判定用）。
-///
-/// 两个调用点：聊天窗自身的 `WM_NCHITTEST`（命中条内 → `HTTRANSPARENT`，让主窗接手）
-/// 与主窗的 `WM_NCHITTEST`（命中 → `HTCAPTION`，进入系统拖动）。
-/// **未在 Windows 实机验证**（本机只做离线核对）。
-pub(crate) fn pane_titlebar_screen_hit(screen_x: i32, screen_y: i32) -> bool {
-    let pane = CHAT.with(|cell| {
-        cell.borrow()
-            .as_ref()
-            .filter(|state| state.pane)
-            .map(|state| state.hwnd)
-    });
-    let Some(pane) = pane else { return false };
-    unsafe {
-        if IsWindowVisible(pane) == 0 {
-            return false;
-        }
-        let mut rect: RECT = std::mem::zeroed();
-        if GetWindowRect(pane, &mut rect) == 0 {
-            return false;
-        }
-        let titlebar_h = scaled(TITLEBAR_HEIGHT, dpi_scale(pane));
-        screen_x >= rect.left
-            && screen_x < rect.right
-            && screen_y >= rect.top
-            && screen_y < rect.top + titlebar_h
-    }
-}
-
-/// 顶栏状态位文本刷新（`windows::refresh_titlebar` 调用；A1）。
-///
-/// 主窗面板不在时静默跳过：面板重建时会从 `crate::ui::titlebar::current()` 取最新值。
-pub(crate) fn apply_titlebar_text(text: &str) {
-    let target = CHAT.with(|cell| {
-        cell.borrow()
-            .as_ref()
-            .filter(|state| state.pane)
-            .map(|state| state.titlebar_status)
-    });
-    if let Some(status) = target {
-        unsafe {
-            SetWindowTextW(status, wide(text).as_ptr());
         }
     }
 }
@@ -3668,6 +3660,15 @@ unsafe fn ensure_chat_classes() -> Result<(), String> {
         inspector.lpszClassName = inspector_class.as_ptr();
         if RegisterClassW(&inspector) == 0 {
             return Err("RegisterClassW（浮层 Inspector）失败".into());
+        }
+        // 浮层内容滚动裁剪窗的窗口类（`WS_VSCROLL` 容器；只画盒底）。
+        let scroll_class = wide(INSPECTOR_SCROLL_CLASS);
+        let mut scroll: WNDCLASSW = std::mem::zeroed();
+        scroll.lpfnWndProc = Some(inspector_scroll_wndproc);
+        scroll.hInstance = hinstance;
+        scroll.lpszClassName = scroll_class.as_ptr();
+        if RegisterClassW(&scroll) == 0 {
+            return Err("RegisterClassW（浮层滚动窗）失败".into());
         }
     }
 
@@ -4002,6 +4003,36 @@ unsafe fn build_children(hwnd: HWND) {
         0
     };
 
+    // ── 浮层内容的滚动裁剪窗（2026-10-06 抽屉内部滚动）──
+    // 挂在浮层窗口之下：`WS_VSCROLL` + `WS_CLIPCHILDREN` —— 面板元素是它的子窗口，
+    // 部分滚出可视区的控件由客户区自然裁剪（不再整条藏起），滚动条只在内容超可视高
+    // 时出现（见 `apply_inspector_scroll`）。独立子窗口而不是把元素直接挂浮层窗口的
+    // 原因：浮层窗口盖住整块消息流区域（含盒外的遮罩），内容必须有**自己的**裁剪
+    // 边界；滚动条也必须落在盒内而不是层窗右缘。
+    let inspector_scroll = if inspector_layer != 0 {
+        let scroll = unsafe {
+            CreateWindowExW(
+                0,
+                wide(INSPECTOR_SCROLL_CLASS).as_ptr(),
+                wide("").as_ptr(),
+                WS_CHILD | WS_VISIBLE | WS_CLIPCHILDREN | WS_VSCROLL,
+                0,
+                0,
+                10,
+                10,
+                inspector_layer,
+                0,
+                hinstance,
+                std::ptr::null(),
+            )
+        };
+        // 初始无滚动；内容超可视高时由 `apply_inspector_scroll` 打开。
+        unsafe { ShowScrollBar(scroll, SB_VERT, 0) };
+        scroll
+    } else {
+        0
+    };
+
     // ── 会话历史弹层的承载窗口（同 `LAYER_CLASS`：遮罩 + 圆角盒 + 内容子控件）──
     //
     // 与浮层的关系：两层都盖住消息流区域、互斥性由模型状态决定（历史开合 = 视图在不在
@@ -4024,10 +4055,9 @@ unsafe fn build_children(hwnd: HWND) {
         )
     };
 
-    // ── A1：顶栏与标签条的固定控件（仅主窗面板模式；独立窗全为 0）──
-    let mut titlebar_brand: HWND = 0;
-    let mut titlebar_status: HWND = 0;
-    let mut nav_hide: HWND = 0;
+    // ── A1：标签条的固定控件（仅主窗面板模式；独立窗全为 0）──
+    // 顶部顶栏带（品牌/状态位/关闭「×」）不在这里：归主窗的全窗宽顶栏
+    // （`windows_main.rs::create_titlebar`）。
     let mut nav_new: HWND = 0;
     let mut nav_history: HWND = 0;
     if pane {
@@ -4047,45 +4077,8 @@ unsafe fn build_children(hwnd: HWND) {
                 std::ptr::null(),
             )
         };
-        // 品牌字：固定字样（不随 Profile/编辑；与 macOS 的 .brand 同语义，
-        // 2026-10-05 用户规则改为产品全名 `TITLEBAR_BRAND_TEXT`）。
-        titlebar_brand = unsafe {
-            CreateWindowExW(
-                0,
-                wide("STATIC").as_ptr(),
-                wide(TITLEBAR_BRAND_TEXT).as_ptr(),
-                WS_CHILD | WS_VISIBLE,
-                0,
-                0,
-                10,
-                10,
-                hwnd,
-                0,
-                hinstance,
-                std::ptr::null(),
-            )
-        };
-        titlebar_status = unsafe {
-            CreateWindowExW(
-                0,
-                wide("STATIC").as_ptr(),
-                wide("").as_ptr(),
-                WS_CHILD | WS_VISIBLE,
-                0,
-                0,
-                10,
-                10,
-                hwnd,
-                TITLEBAR_STATUS_ID as HMENU,
-                hinstance,
-                std::ptr::null(),
-            )
-        };
-        // 只建「×」（收起）：设置/图层入口在托盘菜单，Windows 顶栏不重复放。
-        nav_hide = make_nav("×", BTN_HIDE_ID);
         nav_new = make_nav("+", BTN_NEW_SESSION_ID);
         nav_history = make_nav("历史", BTN_HISTORY_ID);
-        make_themed_button(nav_hide, ButtonRole::Close, scale);
         // `.tabadd` / `.tabhist` 用小圆角 `--r1`（与 macOS `Face::Chip` 对称）。
         make_themed_button_r(nav_new, ButtonRole::Normal, scale, theme::tokens().radii.sm);
         make_themed_button_r(
@@ -4145,20 +4138,13 @@ unsafe fn build_children(hwnd: HWND) {
         // 关闭键与把手箭头是小号 chrome（标题行没有标题文字）。
         SendMessageW(inspector_close, WM_SETFONT, small as WPARAM, 1);
         if pane {
-            // A1：品牌字/状态位与条内按钮用小号字体（导航条是次要 chrome）。
-            SendMessageW(titlebar_brand, WM_SETFONT, small as WPARAM, 1);
-            SendMessageW(titlebar_status, WM_SETFONT, small as WPARAM, 1);
-            for control in [nav_hide, nav_new, nav_history] {
+            // A1：标签条按钮用小号字体（导航条是次要 chrome）。
+            for control in [nav_new, nav_history] {
                 SendMessageW(control, WM_SETFONT, small as WPARAM, 1);
             }
         }
-        // 字色：状态文字（把手带左侧）与顶栏品牌/状态位各按自己的语义
-        // （状态是次要文字 dim）。
+        // 字色：状态文字（把手带左侧）是次要文字 dim。
         stamp_ink(status, theme::tokens().dim);
-        if pane {
-            stamp_ink(titlebar_brand, theme::tokens().ink);
-            stamp_ink(titlebar_status, theme::tokens().dim);
-        }
         // 输入区的 Enter 语义（发送/换行/IME 组合）经子类接管。
         SetWindowSubclass(input, Some(input_subclass_proc), 1, 0);
     }
@@ -4196,8 +4182,11 @@ unsafe fn build_children(hwnd: HWND) {
             handle_status_label: String::new(),
             inspector_layer,
             inspector_close,
+            inspector_scroll,
             inspector_children: Vec::new(),
             inspector_content_height: 0,
+            inspector_viewport_height: 0,
+            inspector_scroll_y: 0,
             inspector_box: paint_win::Rect::new(0, 0, 0, 0),
             inspector_open: false,
             history_layer,
@@ -4217,9 +4206,6 @@ unsafe fn build_children(hwnd: HWND) {
             pending_scroll_x: 0,
             pending_count: 0,
             pending_reveal_end: false,
-            titlebar_brand,
-            titlebar_status,
-            nav_hide,
             nav_new,
             nav_history,
             tab_children: Vec::new(),
@@ -4344,8 +4330,8 @@ unsafe fn layout_panes_for(state: &mut ChatWinState) {
                 1,
             );
         }
-        // A1：顶栏条 + 标签条占顶部（仅面板模式）。
-        let nav_h_px = scaled(TITLEBAR_HEIGHT + TABS_HEIGHT, scale);
+        // A1：顶部 26px 顶栏带 + 标签条占顶部（仅面板模式；条高来自共享模块）。
+        let nav_h_px = scaled_f(crate::ui::titlebar::HEIGHT, scale) + scaled(TABS_HEIGHT, scale);
         let canvas_top = if state.pane { nav_h_px } else { 0 };
         MoveWindow(
             state.canvas,
@@ -4450,16 +4436,18 @@ unsafe fn layout_panes_for(state: &mut ChatWinState) {
         unsafe { layout_inspector_layer(state, width, canvas_top, canvas_bottom, scale) };
         unsafe { layout_history_layer(state, width, canvas_top, canvas_bottom, scale) };
         if state.pane {
-            layout_nav(state, width, scale);
+            layout_tabs(state, width, scale);
         }
         // 主题绘制区域（物理像素、客户区坐标；WM_PAINT 逐条读取，空矩形 = 不画）。
         let mut paint = ChatPaintRects::EMPTY;
         if state.pane {
+            // 顶部 26px 带：本窗只在该矩形上画顶栏**外投影**（条底由全窗宽顶栏子窗口
+            // 自己画）；标签条接在它下方。
             paint.bar = RECT {
                 left: 0,
                 top: 0,
                 right: width,
-                bottom: scaled(TITLEBAR_HEIGHT, scale),
+                bottom: scaled_f(crate::ui::titlebar::HEIGHT, scale),
             };
             paint.tabs = RECT {
                 left: 0,
@@ -4571,13 +4559,14 @@ unsafe fn layout_inspector_layer(
             SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE,
         );
         let layer_h = canvas_bottom - canvas_top;
-        let wanted_h = state.inspector_content_height
+        // 盒高按**可视区**高收口（内容全高只决定滚动范围，不再决定盒高；内容超可视
+        // 高的部分由裁剪窗内部滚动到达）。
+        let wanted_h = state.inspector_viewport_height
             + scaled(INSPECTOR_HEADER_HEIGHT, scale)
             + scaled(INSPECTOR_BODY_PAD_BOTTOM, scale);
         let pad = scaled(INSPECTOR_PAD, scale);
         let panel_box = overlay_box_rect(width, layer_h, wanted_h, pad, pad);
-        // 盒内摆放：标题行（标题 + 右侧 ✕）与内容子控件（坐标相对盒原点，
-        // 重建时已把标题行偏移算进 child.y）。
+        // 盒内摆放：标题行（右侧 ✕）与内容滚动裁剪窗（子控件在裁剪窗里按滚动偏移摆）。
         let head_h = scaled(INSPECTOR_HEADER_HEIGHT, scale);
         let close_size = scaled(INSPECTOR_CLOSE_SIZE, scale);
         let close_inset = scaled(6, scale);
@@ -4589,24 +4578,217 @@ unsafe fn layout_inspector_layer(
             close_size,
             1,
         );
-        for child in &state.inspector_children {
-            // 盒被几何夹小（面板/待发送条挤占画布高度）时，伸到盒外的内容整条
-            // 藏起 —— 内容不许画到盒外的遮罩上（宁可少显示，不越界）。
-            let inside = child.y + child.h <= panel_box.h;
-            ShowWindow(child.hwnd, if inside { SW_SHOW } else { SW_HIDE });
+        // 裁剪窗：盒内标题行之下、左右内缩让开盒描边与内立体线；可视高 = 盒内可用高
+        // （盒被几何夹小——面板/待发送条挤占画布高度——时以盒为准，滚动范围随之收紧）。
+        if state.inspector_scroll != 0 {
+            let inset = scaled(INSPECTOR_SCROLL_INSET, scale);
+            let view_h = inspector_body_view_height(panel_box, scale);
             MoveWindow(
-                child.hwnd,
-                panel_box.x + child.x,
-                panel_box.y + child.y,
-                child.w,
-                child.h,
+                state.inspector_scroll,
+                panel_box.x + inset,
+                panel_box.y + head_h,
+                (panel_box.w - inset * 2).max(1),
+                view_h,
                 1,
             );
+            // 钳制偏移 + 子控件随偏移平移 + 滚动条信息（唯一落地）。
+            apply_inspector_scroll(state, view_h);
         }
         if state.inspector_box != panel_box {
             state.inspector_box = panel_box;
             InvalidateRect(state.inspector_layer, std::ptr::null(), 0);
         }
+    }
+}
+
+/// 浮层内容的滚动落地（**唯一实现点**：滚动指令与重排都走它）：钳制偏移、
+/// 按偏移平移内容子控件（部分可见的由裁剪窗客户区自然裁剪，完全在外的藏起免得
+/// 白画）、刷新滚动条信息（范围/页大小/位置；内容不超高时收起滚动条）。
+///
+/// 与画布滚动（`apply_scroll`）同族：子控件坐标记的是**内容坐标**，这里按偏移平移；
+/// 裁剪窗自己的 `WM_PAINT` 只重铺盒底，被移空的区域随之复原。
+unsafe fn apply_inspector_scroll(state: &mut ChatWinState, view_h: i32) {
+    unsafe {
+        let max_scroll = (state.inspector_content_height - view_h).max(0);
+        let scroll_y = state.inspector_scroll_y.clamp(0, max_scroll);
+        state.inspector_scroll_y = scroll_y;
+        for child in &state.inspector_children {
+            // 与可视区相交即显示（部分可见交给裁剪窗的客户区裁剪；完全在外的
+            // 藏起，不让它们白占重绘）。
+            let visible = child.y + child.h > scroll_y && child.y < scroll_y + view_h;
+            ShowWindow(child.hwnd, if visible { SW_SHOW } else { SW_HIDE });
+            if visible {
+                MoveWindow(child.hwnd, child.x, child.y - scroll_y, child.w, child.h, 1);
+            }
+        }
+        let mut info: SCROLLINFO = std::mem::zeroed();
+        info.cbSize = std::mem::size_of::<SCROLLINFO>() as u32;
+        info.fMask = SIF_RANGE | SIF_PAGE | SIF_POS;
+        info.nMin = 0;
+        info.nMax = state.inspector_content_height.max(1);
+        info.nPage = view_h.max(1) as u32;
+        info.nPos = scroll_y;
+        SetScrollInfo(state.inspector_scroll, SB_VERT, &info, 1);
+        ShowScrollBar(state.inspector_scroll, SB_VERT, i32::from(max_scroll > 0));
+        // 子控件移走后的空档归裁剪窗自己重铺（盒底实色、`WS_CLIPCHILDREN` 把子控件
+        // 排除在重绘区外，整块失效最省心且每帧重排重复作废的代价可忽略）。
+        InvalidateRect(state.inspector_scroll, std::ptr::null(), 0);
+    }
+}
+
+/// 浮层滚动条 / 滚轮的行滚动指令入口（`WM_VSCROLL` 到 [`inspector_scroll_command`]）。
+/// 重排收口在 `layout_panes_for`（唯一摆放口径）—— 与待发送条的滚轮路径同款。
+fn inspector_scroll_command(command: i32) {
+    with_chat(|state| unsafe {
+        let scale = dpi_scale(state.hwnd);
+        let line = scaled(INSPECTOR_SCROLL_LINE, scale);
+        let view_h = inspector_body_view_height(state.inspector_box, scale);
+        let page = (view_h - line).max(line);
+        match command {
+            SB_LINEUP => state.inspector_scroll_y -= line,
+            SB_LINEDOWN => state.inspector_scroll_y += line,
+            SB_PAGEUP => state.inspector_scroll_y -= page,
+            SB_PAGEDOWN => state.inspector_scroll_y += page,
+            SB_TOP => state.inspector_scroll_y = 0,
+            SB_BOTTOM => state.inspector_scroll_y = state.inspector_content_height,
+            SB_THUMBTRACK | SB_THUMBPOSITION => {
+                let mut info: SCROLLINFO = std::mem::zeroed();
+                info.cbSize = std::mem::size_of::<SCROLLINFO>() as u32;
+                info.fMask = SIF_ALL;
+                GetScrollInfo(state.inspector_scroll, SB_VERT, &mut info);
+                state.inspector_scroll_y = info.nTrackPos.max(0);
+            }
+            _ => {}
+        }
+        // 唯一摆放口径：钳制 + 子控件平移 + 滚动条信息都在 `layout_panes_for` →
+        // `layout_inspector_layer` → `apply_inspector_scroll` 里完成。
+        layout_panes_for(state);
+    });
+}
+
+/// 滚轮 → 浮层内容纵向滚动；返回是否消费本次滚轮。
+///
+/// 只有「浮层开着、内容超可视高」且「光标命中的窗口是滚动裁剪窗（或其子控件）」
+/// 才消费（不抢画布/待发送条/正文的滚轮；浮层盒盖在消息流之上，光标在盒内时正文
+/// 本来也不该动）。判定用 `GetCursorPos` + `WindowFromPoint`（含父链上溯）—— 与
+/// 待发送条同一条「鼠标在哪就滚哪」口径；用 z 序命中而不是几何包含，是为了让
+/// 压在裁剪窗之上的浮层（历史弹层）与下拉弹窗不被穿透。
+fn scroll_inspector_from_wheel(msg: u32, wparam: WPARAM) -> bool {
+    // 横向轮在浮层没有既有语义：不消费（落回既有路径）。
+    if msg != WM_MOUSEWHEEL {
+        return false;
+    }
+    unsafe {
+        let target = CHAT.with(|cell| {
+            cell.borrow().as_ref().and_then(|state| {
+                let scale = dpi_scale(state.hwnd);
+                let view_h = inspector_body_view_height(state.inspector_box, scale);
+                (state.inspector_open
+                    && state.inspector_scroll != 0
+                    && state.inspector_content_height > view_h)
+                    .then_some(state.inspector_scroll)
+            })
+        });
+        let Some(scroll) = target else { return false };
+        let mut point = POINT { x: 0, y: 0 };
+        if GetCursorPos(&mut point) == 0 {
+            return false;
+        }
+        // 光标命中按**窗口 z 序**判（不是几何包含）：浮层与历史弹层可能重叠、
+        // 下拉弹窗/控件也可能盖在裁剪窗上 —— 那些情况下滚轮不该穿过去滚抽屉。
+        // 从命中窗口沿父链上溯，裁剪窗在链上才消费。
+        let mut hit = WindowFromPoint(point);
+        let mut over_scroll = false;
+        while hit != 0 {
+            if hit == scroll {
+                over_scroll = true;
+                break;
+            }
+            hit = GetParent(hit);
+        }
+        if !over_scroll {
+            return false;
+        }
+        // 滚轮增量在**高字**（低字是按键标志）；一格 = 120，走行指令（与画布同款
+        // 三行一步的粒度）。
+        let delta = i32::from(((wparam >> 16) & 0xFFFF) as u16 as i16);
+        let lines = (delta / 120).clamp(-5, 5) * 3;
+        if lines == 0 {
+            return false;
+        }
+        let command = if lines < 0 { SB_LINEUP } else { SB_LINEDOWN };
+        for _ in 0..lines.abs() {
+            SendMessageW(scroll, WM_VSCROLL, command as WPARAM, 0);
+        }
+        true
+    }
+}
+
+/// 浮层滚动裁剪窗的窗口过程：盒底重铺 + 滚动指令 + 子控件的通知转发回聊天窗。
+///
+/// 与画布 `canvas_wndproc` 同族（滚动容器）：子控件（面板按钮/下拉/行标签）的
+/// `WM_COMMAND`/`WM_DRAWITEM`/`WM_NOTIFY` 先到本窗，转发给父（浮层窗口，再转聊天窗，
+/// 分派段在 `chat_wndproc` 统一收口）；`WM_CTLCOLORSTATIC` 就地按既有口径上色。
+unsafe extern "system" fn inspector_scroll_wndproc(
+    hwnd: HWND,
+    msg: u32,
+    wparam: WPARAM,
+    lparam: LPARAM,
+) -> LRESULT {
+    match msg {
+        WM_ERASEBKGND => {
+            // 底由 WM_PAINT 铺（盒底实色）；吞掉擦除防闪烁。
+            1
+        }
+        WM_PAINT => {
+            unsafe {
+                let mut ps: windows_sys::Win32::Graphics::Gdi::PAINTSTRUCT = std::mem::zeroed();
+                let hdc = BeginPaint(hwnd, &mut ps);
+                let mut client: RECT = std::mem::zeroed();
+                GetClientRect(hwnd, &mut client);
+                paint_win::fill_rect(
+                    hdc,
+                    paint_win::Rect::new(0, 0, rect_w(&client), rect_h(&client)),
+                    &theme::tokens().panel_bg,
+                );
+                EndPaint(hwnd, &ps);
+            }
+            0
+        }
+        WM_VSCROLL => {
+            inspector_scroll_command((wparam & 0xFFFF) as i32);
+            0
+        }
+        WM_MOUSEWHEEL => {
+            // 焦点在子控件时的滚轮消息会转到本窗：按行滚动（与画布同粒度）。
+            // 增量在 **wParam 高字**（低字是按键标志；lParam 是屏幕坐标）—— 与
+            // `windows_editor::on_mouse_wheel` / `scroll_pending_from_wheel` 同口径。
+            let delta = ((wparam >> 16) & 0xFFFF) as u16 as i16;
+            let lines = (i32::from(delta) / 120).clamp(-5, 5);
+            for _ in 0..lines.abs() {
+                inspector_scroll_command(if lines < 0 { SB_LINEUP } else { SB_LINEDOWN });
+            }
+            0
+        }
+        WM_CTLCOLORSTATIC => unsafe { ctlcolor_static(wparam, lparam) },
+        // 同 `overlay_layer_wndproc`：编辑类控件的 CTLCOLOR 消费者是控件父窗
+        // （浮层面板元素挂在本滚动裁剪窗上），就地接住并转给同一实现点。
+        WM_CTLCOLOREDIT | WM_CTLCOLORLISTBOX => {
+            super::windows_settings::edit_ctlcolor(wparam, lparam)
+        }
+        WM_COMMAND => {
+            unsafe { SendMessageW(GetParent(hwnd), WM_COMMAND, wparam, lparam) };
+            0
+        }
+        WM_DRAWITEM => {
+            unsafe { SendMessageW(GetParent(hwnd), WM_DRAWITEM, wparam, lparam) };
+            0
+        }
+        WM_NOTIFY => {
+            unsafe { SendMessageW(GetParent(hwnd), WM_NOTIFY, wparam, lparam) };
+            0
+        }
+        _ => unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) },
     }
 }
 
@@ -4710,39 +4892,16 @@ unsafe fn layout_history_layer(
     }
 }
 
-/// A1：顶栏条与标签条的控件摆放（仅面板模式；标签按钮的 x/w 由
-/// `rebuild_navigation` 给出，y 在这里统一落到条内垂直居中位置）。
-unsafe fn layout_nav(state: &mut ChatWinState, width: i32, scale: f64) {
+/// A1：会话标签条的控件摆放（仅面板模式；标签按钮的 x/w 由 `rebuild_tabs` 给出，
+/// y 在这里统一落到条内垂直居中位置）。
+///
+/// 顶栏（品牌/状态位/关闭「×」）不在这里：它归主窗的全窗宽顶栏子窗口
+/// （`windows_main.rs::layout_titlebar_children`），本窗只在带下方摆标签条。
+unsafe fn layout_tabs(state: &mut ChatWinState, width: i32, scale: f64) {
     unsafe {
-        let titlebar_h = scaled(TITLEBAR_HEIGHT, scale);
+        let titlebar_h = scaled_f(crate::ui::titlebar::HEIGHT, scale);
         let tabs_h = scaled(TABS_HEIGHT, scale);
         let nav_h = scaled(NAV_CONTROL_HEIGHT, scale);
-        let titlebar_y = (titlebar_h - nav_h) / 2;
-        // 品牌字：固定踪迹（x=8 起，与 macOS 同口径）；槽宽按全名估算（`V1rtual-Desk-Pet`
-        // 比旧字样长，状态位起点跟着 `titlebar_status_x()` 走，不再写死 64）。
-        let brand_w = scaled_f(titlebar_brand_width(), scale);
-        let status_x = scaled_f(titlebar_status_x(), scale);
-        MoveWindow(
-            state.titlebar_brand,
-            scaled(8, scale),
-            titlebar_y,
-            brand_w,
-            nav_h,
-            1,
-        );
-        // 状态位：品牌槽（x=8 起）之后，右侧预留给按钮。
-        MoveWindow(
-            state.titlebar_status,
-            status_x,
-            titlebar_y,
-            (width - status_x - scaled(TITLEBAR_RIGHT_RESERVE, scale)).max(24),
-            nav_h,
-            1,
-        );
-        // 顶栏按钮右对齐：仅「×」（设置/图层入口在托盘菜单，Windows 只保留关闭）。
-        let hide_w = scaled(NAV_CLOSE_WIDTH, scale);
-        let hide_x = (width - scaled(4, scale) - hide_w).max(0);
-        MoveWindow(state.nav_hide, hide_x, titlebar_y, hide_w, nav_h, 1);
         // 标签条：动态标签在左（x 已在 rebuild 时算好），「+」「历史」靠右。
         let tab_y = titlebar_h + (tabs_h - nav_h) / 2;
         let history_w = scaled(NAV_HISTORY_WIDTH, scale);
@@ -4782,6 +4941,11 @@ unsafe extern "system" fn chat_wndproc(
             0
         }
         WM_CTLCOLORSTATIC => unsafe { ctlcolor_static(wparam, lparam) },
+        // 同 `overlay_layer_wndproc`：编辑类控件的 CTLCOLOR 消费者是控件父窗
+        // （流内面板元素挂在本窗上），就地接住并转给同一实现点。
+        WM_CTLCOLOREDIT | WM_CTLCOLORLISTBOX => {
+            super::windows_settings::edit_ctlcolor(wparam, lparam)
+        }
         WM_DRAWITEM => {
             if lparam != 0 {
                 let item = unsafe { &*(lparam as *const DrawItemStruct) };
@@ -4806,16 +4970,6 @@ unsafe extern "system" fn chat_wndproc(
             let snapshot = crate::ui::chat::snapshot();
             with_chat(|state| unsafe { apply_full(state, &snapshot) });
             0
-        }
-        WM_NCHITTEST => {
-            // A1：面板模式下顶栏条区域判为「透明」——让主窗把这点当标题区拖动
-            // （子窗口先于父窗口收到命中测试；按钮/输入框有自己的命中，不落到这里）。
-            let sx = (lparam & 0xFFFF) as u16 as i16 as i32;
-            let sy = ((lparam >> 16) & 0xFFFF) as u16 as i16 as i32;
-            if pane_titlebar_screen_hit(sx, sy) {
-                return HTTRANSPARENT as LRESULT;
-            }
-            unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) }
         }
         WM_LBUTTONDOWN => {
             // 把手带**整条可点**（2026-10-05 第三波）：点带内任意位置开合浮层。
@@ -4875,12 +5029,8 @@ unsafe extern "system" fn chat_wndproc(
                 },
                 // 「↓ 新消息」：回正文底部（可见性由 apply_scroll 统一驱动）。
                 BTN_JUMP_ID => canvas_scroll(SB_BOTTOM),
-                // ── A1：顶栏与标签条按钮（两段范围先于 PANEL_BASE 匹配）──
-                BTN_HIDE_ID => {
-                    if let Err(error) = crate::ui::platform::windows::retract_main_window() {
-                        rust_warn!("顶栏收起主窗失败: {error}");
-                    }
-                }
+                // ── A1：标签条按钮（两段范围先于 PANEL_BASE 匹配；顶栏「×」不在这里，
+                // 它归全窗宽顶栏子窗口自己的 WM_COMMAND）──
                 BTN_NEW_SESSION_ID => match crate::ui::chat::dispatch_new_session() {
                     Ok(()) => crate::ui::chat::set_notice(None),
                     Err(error) => {
@@ -5045,6 +5195,11 @@ unsafe extern "system" fn chat_wndproc(
             0
         }
         WM_MOUSEWHEEL | WM_MOUSEHWHEEL => {
+            // 浮层开着、光标在抽屉内容上且内容超高时先滚抽屉（消费本次滚轮；
+            // 与待发送条同一条「鼠标在哪就滚哪」口径，不抢别的区域的滚轮）。
+            if unsafe { scroll_inspector_from_wheel(msg, wparam) } {
+                return 0;
+            }
             // 2026-10-06 多张截图可达性：滚轮落在待发送条上时横向滚条（光标在哪就滚
             // 哪；子按钮持焦点时滚轮消息也会转到本窗）。不在条内/没超宽则不消费，
             // 落回既有语义。
@@ -5058,7 +5213,9 @@ unsafe extern "system" fn chat_wndproc(
             // 焦点在输入区时的滚轮也滚正文：转发为行滚动给画布。
             let canvas = CHAT.with(|cell| cell.borrow().as_ref().map(|state| state.canvas));
             if let Some(canvas) = canvas {
-                let delta = ((lparam >> 16) & 0xFFFF) as u16 as i16;
+                // 滚轮增量在 **wParam 高字**（低字是按键标志；lParam 高字是光标屏幕
+                // y 坐标 —— 2026-10-06 前误读 lParam，步长随窗口在屏幕上的位置漂移）。
+                let delta = ((wparam >> 16) & 0xFFFF) as u16 as i16;
                 let lines = (i32::from(delta) / 120).clamp(-5, 5) * 3;
                 let command = if lines < 0 { SB_LINEUP } else { SB_LINEDOWN };
                 for _ in 0..lines.abs() {
@@ -5528,7 +5685,9 @@ unsafe extern "system" fn canvas_wndproc(
             0
         }
         WM_MOUSEWHEEL => {
-            let delta = ((lparam >> 16) & 0xFFFF) as u16 as i16;
+            // 滚轮增量在 **wParam 高字**（低字是按键标志；lParam 高字是光标屏幕
+            // y 坐标 —— 2026-10-06 前误读 lParam，步长随窗口在屏幕上的位置漂移）。
+            let delta = ((wparam >> 16) & 0xFFFF) as u16 as i16;
             let lines = (i32::from(delta) / 120).clamp(-5, 5);
             for _ in 0..lines.abs() {
                 canvas_scroll(if lines < 0 { SB_LINEUP } else { SB_LINEDOWN });
@@ -5738,6 +5897,8 @@ fn draw_inline_button(item: &DrawItemStruct) -> bool {
 /// 全量重建画布内容（投影整帧；流式更新只换尾巴）。
 unsafe fn rebuild_canvas(state: &mut ChatWinState, snapshot: &crate::ui::chat::ChatSnapshot) {
     unsafe {
+        // 观测计数（dev A/B）：一次整帧重建（与 macOS `rebuild` 对称）。
+        crate::ui::chat::stream_metrics::note_full_rebuild();
         let previous_content = state.content_height;
         let was_at_bottom =
             scroll_at_bottom(state.scroll_y, state.viewport_height, state.content_height);
@@ -6417,6 +6578,9 @@ unsafe fn create_code_control(
 /// 原始计数即可，不需要“末行为空再减一”的绕法。**新增 RTF 生成点时不要让
 /// 正文以追加的 `\par` 收尾**，否则气泡底部会多一条空行。
 unsafe fn rich_edit_height(control: HWND, scale: f64) -> i32 {
+    // 观测计数（dev A/B）：一次 RichEdit 行数查询 = 本平台的「强制文本排版」
+    // （与 macOS `text_layout_extent` 的计数对称）。
+    crate::ui::chat::stream_metrics::note_text_layout();
     let lines: i32 = unsafe { SendMessageW(control, EM_GETLINECOUNT_RICH, 0, 0) } as i32;
     let line_height = scaled(LINE_HEIGHT as i32, scale);
     (lines.max(1) * line_height) + scaled(8, scale)
@@ -6489,6 +6653,8 @@ unsafe fn build_tail_controls(
 /// 增量更新流式尾巴（`StreamOnly`）：只重建尾巴区的控件。
 unsafe fn update_tail(state: &mut ChatWinState, text: Option<&str>) {
     unsafe {
+        // 观测计数（dev A/B）：一次尾巴重建（与 macOS `update_tail` 对称）。
+        crate::ui::chat::stream_metrics::note_tail_rebuild();
         let previous_content = state.content_height;
         let was_at_bottom =
             scroll_at_bottom(state.scroll_y, state.viewport_height, state.content_height);
@@ -7596,13 +7762,33 @@ mod tests {
         assert!(scroll_at_bottom(0, 400, 300));
     }
 
-    /// 顶栏品牌槽（改为全名 `V1rtual-Desk-Pet`）不与状态位重叠、且容得下文本。
+    /// 旧顶栏（被全窗宽顶栏覆盖的聊天列副本）已删除：控件、命中转发、文本刷新
+    /// 路径与条内几何算式都不得回潮；顶部 26px 带仍按共享条高预留（标签条接在
+    /// 全窗宽顶栏下方）。断言词拆开拼接，避免测试文本自己命中扫描。
+    /// 与 macOS `macos_chat.rs` 的同名守卫对称 —— 本文件在 macOS 上不参与编译，
+    /// 由 CI 的 windows job 执行（本机只做离线核对，见模块头）。
     #[test]
-    fn 顶栏品牌槽不与状态位重叠() {
-        let text_w = estimated_text_width(TITLEBAR_BRAND_TEXT, 11.0);
-        assert!(titlebar_brand_width() > text_w, "品牌槽要留余量");
-        assert!(titlebar_status_x() > 8.0 + text_w, "状态位不得压住品牌字");
-        assert!(titlebar_status_x() > titlebar_brand_width());
+    fn 聊天列不再自建顶栏() {
+        let production = production_source();
+        for (name, needle) in [
+            ("状态位控件常量", concat!("const TITLEBAR", "_STATUS_ID")),
+            ("顶栏关闭按钮常量", concat!("const BTN_HIDE", "_ID")),
+            ("品牌槽宽算式", concat!("fn titlebar_brand", "_width")),
+            ("状态位起点算式", concat!("fn titlebar_status", "_x")),
+            ("品牌文案常量", concat!("const TITLEBAR", "_BRAND_TEXT")),
+            ("顶栏文本刷新副本", concat!("fn apply_titlebar", "_text")),
+            ("顶栏命中转发", concat!("pane_titlebar", "_screen_hit")),
+        ] {
+            assert_eq!(
+                production.matches(needle).count(),
+                0,
+                "旧顶栏实现残留「{name}」：{needle}"
+            );
+        }
+        assert!(
+            production.contains(concat!("crate::ui::titlebar::", "HEIGHT")),
+            "顶部预留与标签条必须消费共享条高（顶部带归全窗宽顶栏）"
+        );
     }
 
     /// 输入行弹性（2026-10-05 用户规则；与 macOS `input_row_columns` 同口径）：
@@ -7678,6 +7864,114 @@ mod tests {
             body.contains("layout_inspector_layer(state")
                 && body.contains("layout_history_layer(state"),
             "悬浮层的摆放必须由 layout_panes_for 单向驱动"
+        );
+    }
+
+    /// 浮层内容可视高：盒高扣掉标题行与底部内边距，下限 1（盒被夹小后不为负/零）。
+    #[test]
+    fn 浮层内容可视高按盒几何收口() {
+        let scale = 1.0;
+        let panel = paint_win::Rect::new(9, 100, 382, 30 + 10 + 200);
+        assert_eq!(inspector_body_view_height(panel, scale), 200);
+        // 盒比头+底内边距还矮：下限 1（不产生 0/负的可视高）。
+        let tiny = paint_win::Rect::new(9, 100, 382, 20);
+        assert_eq!(inspector_body_view_height(tiny, scale), 1);
+        // DPI 2：两条内边距随比例放大（不是魔法数）。
+        let hidpi = paint_win::Rect::new(9, 100, 764, (30 + 10 + 200) * 2);
+        assert_eq!(inspector_body_view_height(hidpi, 2.0), 400);
+    }
+
+    /// 抽屉内部滚动（2026-10-06）的源码级守门：内容子控件必须挂在滚动裁剪窗上、
+    /// 抽屉内容必须**全量摆放**（不按上限跳过块）、滚动落地必须收口到唯一函数
+    /// （钳制 + 子控件平移 + 滚动条信息）、聊天窗滚轮分派必须接上「光标在哪滚哪」。
+    /// 改坏任一条会在 CI 直接红。**未在 Windows 实机验证**（本机只做离线核对）。
+    #[test]
+    fn 浮层内部滚动接线_源码守门() {
+        let production = production_source();
+        assert!(
+            production.contains("INSPECTOR_SCROLL_CLASS"),
+            "滚动裁剪窗的窗口类缺失（注册与创建都要有）"
+        );
+        let rebuild =
+            function_body(production, "unsafe fn rebuild_panels").expect("rebuild_panels 必须存在");
+        assert!(
+            rebuild.contains("f64::INFINITY"),
+            "抽屉内容必须全量摆放（不设高度上限；按上限摆放会静默丢块）"
+        );
+        assert!(
+            rebuild.contains("panel_scroll_geometry("),
+            "重建必须按共享滚动几何取可视高（与 macOS 同口径）"
+        );
+        let place = function_body(production, "unsafe fn place_panel_elements")
+            .expect("place_panel_elements 必须存在");
+        assert!(
+            place.contains("state.inspector_scroll"),
+            "面板元素必须挂到滚动裁剪窗（挂在浮层窗口上会缺裁剪边界）"
+        );
+        let layout = function_body(production, "unsafe fn layout_inspector_layer")
+            .expect("layout_inspector_layer 必须存在");
+        assert!(
+            layout.contains("apply_inspector_scroll("),
+            "滚动落地必须收口到 apply_inspector_scroll（钳制/平移/滚动条唯一实现点）"
+        );
+        let wheel = function_body(production, "unsafe extern \"system\" fn chat_wndproc")
+            .expect("chat_wndproc 必须存在");
+        assert!(
+            wheel.contains("scroll_inspector_from_wheel("),
+            "聊天窗滚轮分派必须接上浮层滚动（否则焦点在输入区时光标在抽屉上滚不动）"
+        );
+    }
+
+    /// 正文滚轮增量必须读 **wParam 高字**（低字是按键标志；lParam 高字是光标屏幕
+    /// y 坐标 —— 读错会让步长随窗口在屏幕上的位置漂移）。2026-10-06 修正
+    /// `chat_wndproc` 与 `canvas_wndproc` 两处后立的源码守门：改回 lParam 口径
+    /// CI（Windows）直接红。**未在 Windows 实机验证**（本机只做离线核对）。
+    #[test]
+    fn 正文滚轮增量读wparam高字_源码守门() {
+        let production = production_source();
+        for signature in [
+            "unsafe extern \"system\" fn chat_wndproc",
+            "unsafe extern \"system\" fn canvas_wndproc",
+        ] {
+            let body = function_body(production, signature).expect("窗口过程必须存在");
+            assert!(
+                body.contains("((wparam >> 16) & 0xFFFF) as u16 as i16"),
+                "{signature} 的滚轮增量没读 wParam 高字（lParam 高字是屏幕坐标，会让步长随窗口屏幕位置漂移）"
+            );
+        }
+        assert!(
+            !production.contains("delta = ((lparam >> 16)"),
+            "滚轮增量不得读 lParam 高字（那是光标屏幕坐标，不是轮增量）"
+        );
+    }
+
+    /// 编辑类控件配色（2026-10-06）：`PanelElement::Select` 的系统 COMBOBOX 与
+    /// 可编辑框的 `WM_CTLCOLOREDIT` / `WM_CTLCOLORLISTBOX` 由**控件父窗**消费
+    /// （组合框的展开清单也由承载它的父窗接）—— 三个承载容器（聊天窗 / 浮层滚动
+    /// 裁剪窗 / 层窗）缺一处，那一组的下拉与输入框就回落系统经典外观。配色统一
+    /// 转给 `windows_settings::edit_ctlcolor`（唯一实现点，本文件不得另开第二份）。
+    /// **未在 Windows 实机验证**（本机只做离线核对，见模块头）。
+    #[test]
+    fn 编辑类控件配色三父窗都接_源码守门() {
+        let production = production_source();
+        for signature in [
+            "unsafe extern \"system\" fn chat_wndproc",
+            "unsafe extern \"system\" fn inspector_scroll_wndproc",
+            "unsafe extern \"system\" fn overlay_layer_wndproc",
+        ] {
+            let body = function_body(production, signature).expect("窗口过程必须存在");
+            assert!(
+                body.contains("WM_CTLCOLOREDIT | WM_CTLCOLORLISTBOX =>"),
+                "{signature} 缺编辑类控件 CTLCOLOR 臂（对应容器里的下拉/输入框会回落系统外观）"
+            );
+            assert!(
+                body.contains("super::windows_settings::edit_ctlcolor(wparam, lparam)"),
+                "{signature} 必须把编辑类控件配色转给唯一实现点（windows_settings::edit_ctlcolor）"
+            );
+        }
+        assert!(
+            !production.contains("SetBkColor"),
+            "编辑类控件配色不得在本文件另开第二份实现（SetBkColor 是 edit_ctlcolor 的私有细节）"
         );
     }
 

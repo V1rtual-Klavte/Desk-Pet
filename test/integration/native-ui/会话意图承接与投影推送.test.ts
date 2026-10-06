@@ -29,10 +29,9 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest"
 import { NodeHostBridge } from "../../host/node-host-bridge"
 import { setTestDataRoot } from "../../host/node-ipc"
 import { initConfig } from "@/services/config"
-import { setHostBridge, setUiEventPublisher, setUiReceiptSource } from "@/services/host"
+import { HOST_REQUEST_EVENT, setHostBridge, setUiEventPublisher, setUiReceiptSource } from "@/services/host"
 import type { HostBridge } from "@/services/host"
 import {
-  HOST_REQUEST_EVENT,
   HOST_REQUEST_RESULT_METHOD,
   dispatchHostRequest,
   initNativeUiBridge,
@@ -53,6 +52,7 @@ import {
   initSessions,
   listPiSessionMetadata,
   openSession,
+  pushUserMessage,
   readPiSessionEntriesOnce,
   setSessionInterrupted,
   switchToSession,
@@ -280,7 +280,10 @@ describe("会话意图承接（chat_* 宿主请求）", () => {
 
     const frame = lastFrame()
     expect(frame.sessionId).toBe(getActiveSessionId())
-    expect(frame.sessions.map((session) => session.id)).toEqual(getSessions().map((meta) => meta.id))
+    // 集合相等（顺序由活动时间口径决定，单独在排序用例里断言，这里不重复）。
+    expect([...frame.sessions.map((session) => session.id)].sort()).toEqual(
+      getSessions().map((meta) => meta.id).sort(),
+    )
     expect(
       frame.sessions.every((session) => typeof session.name === "string" && typeof session.createdAt === "number"),
       "标签字段形状不完整（id/name/createdAt/interrupted）",
@@ -310,7 +313,9 @@ describe("会话意图承接（chat_* 宿主请求）", () => {
     await flush()
     const frame = lastFrame()
     expect(frame.sessionId).toBe(created!.id)
-    expect(frame.sessions.map((session) => session.id)).toEqual(getSessions().map((meta) => meta.id))
+    expect([...frame.sessions.map((session) => session.id)].sort()).toEqual(
+      getSessions().map((meta) => meta.id).sort(),
+    )
   })
 
   it("chat_close_session：移除标签但保留会话文件；关非活跃会话不动活跃指针 [native-ui-chat-close-keeps-file]", async () => {
@@ -426,6 +431,24 @@ describe("投影推送的时机与顺序", () => {
       lastFrame().sessions.find((session) => session.id === probe)?.interrupted,
       "中断标记没有随投影回推（标签角标的数据来源）",
     ).toBe(true)
+  })
+
+  it("标签按用户活动时间排序：用户消息把该会话提到标签列表最前 [native-ui-session-activity-order]", async () => {
+    await settleThenReset()
+    const older = await seedTab()
+    const newer = await seedTab()
+    expect(older, "前置：两个探针会话不同").not.toBe(newer)
+    await switchToSession(older)
+    await settleThenReset()
+    // 等一毫秒级间隔：活动时间必须严格晚于已建会话的 createdAt，避免同毫秒并列走 id 兜底。
+    await new Promise((resolve) => setTimeout(resolve, 10))
+
+    // 用户在 older 里说话：投影帧应把 older 排到最前（列表 = 用户活动时间，不是创建时间）。
+    pushUserMessage("活动探针", older)
+    await flush()
+
+    const frame = lastFrame()
+    expect(frame.sessions[0]?.id, "用户消息所在会话应排到标签列表最前").toBe(older)
   })
 
   it("chat_request_session_history：回执先于投影帧，sessionHistory 随帧回推 [native-ui-chat-session-history]", async () => {

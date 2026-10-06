@@ -10,6 +10,9 @@ use super::store::{
 };
 use super::MemoryState;
 use crate::error::{AppError, AppResult};
+// 窗口身份（label 字符串）的唯一定义点在 `host/mod.rs` 的 `WindowId`；这里的
+// window_label 比较一律取 `WindowId::*.label()`，不写第二份字面量。
+use crate::host::WindowId;
 use crate::paths::{AppPaths, MEMORY_BACKUPS_DIR};
 use serde_json::Value;
 
@@ -113,10 +116,10 @@ pub fn memory_apply_change(
     trusted_session_id: Option<String>,
 ) -> AppResult<i64> {
     let store_actor = match actor.as_str() {
-        "current_input" if window_label == "main" => "current_input",
-        "user_ui" if window_label == "settings" => "user_ui",
+        "current_input" if window_label == WindowId::Main.label() => "current_input",
+        "user_ui" if window_label == WindowId::Settings.label() => "user_ui",
         "user_ui"
-            if window_label == "main"
+            if window_label == WindowId::Main.label()
                 && action == "add"
                 && trusted_session_id
                     .as_deref()
@@ -127,7 +130,8 @@ pub fn memory_apply_change(
         // Governance clears and evaluation seeding use the internal actor. Keep it
         // on the real main window or the debug-only E2E window.
         "internal"
-            if window_label == "main" || (cfg!(debug_assertions) && window_label == "e2e") =>
+            if window_label == WindowId::Main.label()
+                || (cfg!(debug_assertions) && window_label == WindowId::E2e.label()) =>
         {
             "internal"
         }

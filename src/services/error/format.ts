@@ -65,8 +65,11 @@ const SECRET_PATTERNS: RegExp[] = [
   /("?(?:api[_-]?key|token|secret|password)"?\s*[:=]\s*"?)[^"\s,}]{8,}/gi,
 ]
 
+/** 摘要默认长度上限（字符）：打码后仍超长的错误摘要在末尾截断并加省略号。 */
+const DEFAULT_SUMMARY_MAX_LENGTH = 120
+
 /** 打码后再截断，用于会落盘/展示给用户的错误摘要 */
-export function summarizeError(value: unknown, maxLength = 120): string {
+export function summarizeError(value: unknown, maxLength = DEFAULT_SUMMARY_MAX_LENGTH): string {
   let text = formatError(value)
   for (const pattern of SECRET_PATTERNS) text = text.replace(pattern, "$1***")
   text = text.replace(/\s+/g, " ").trim()

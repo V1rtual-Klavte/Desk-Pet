@@ -39,7 +39,7 @@ import {
 } from "@/services/tool"
 import type { HarnessToolRun, ToolDef, ToolResultLookup } from "@/services/tool"
 import {
-  ContextBudgetError, contextBudget, isUniqueAddressRef, resolveAddressRef, shortenAddresses, toHarnessEstimateTokens,
+  ContextBudgetError, contextBudget, ESTIMATOR_WORST_CASE_BIAS, isUniqueAddressRef, resolveAddressRef, shortenAddresses, toHarnessEstimateTokens,
 } from "@/services/context"
 import { COMPACTION_DECLINED_ENTRY, PROMPT_REWRITE_ENTRY, hasRuntimeTraceSubscribers, laneMessageText, messageRequestId, publishRuntimeTrace, runtimeTraceContextForRequest, userInputMessage } from "@/services/engine/runtime"
 import type { CompactionAuditSink, InputSourceMark, RuntimeTraceContext } from "@/services/engine/runtime"
@@ -374,15 +374,24 @@ export type HarnessAbortReason = typeof ABORT_REASON_TIMEOUT | typeof ABORT_REAS
  *
  * Harness 的 `shouldCompact` 比的是它自己的 `estimateContextTokens`：有 provider usage 时
  * 前缀按真实 usage 计，本仓预算同样以真实 token 为目标口径，因此换算后阈值正好落在
- * normalInputTarget，保留窗口回到 normalInputTarget 的 40%（换算规则见
- * toHarnessEstimateTokens，不要再按 chars/4 反推因子）。
+ * normalInputTarget（换算规则见 toHarnessEstimateTokens，不要再按 chars/4 反推因子）。
+ *
+ * **保留窗口另受估算器最坏偏差约束**：上游 `findCutPoint` 对每条消息按 chars/4 计，
+ * 保留窗口在上游口径下保住的是 `keepRecentTokens × 4` 个字符 —— 纯非 ASCII（中文按 1 token/
+ * 字符计）下就是 4 × keepRecentTokens 个本仓 token。若它超过 normalInputTarget，压缩切出的
+ * 保留段自身就顶破正常输入目标：阈值压缩的素材明明为空（估算总量越不过保留窗口）却先撞硬预算，
+ * 溢出恢复压完重试仍超限、且每轮可摘要范围恒为空 —— 中文会话到窗口上限后永久无法压缩。
+ * 故再与 `⌊normalInputTarget / ESTIMATOR_WORST_CASE_BIAS⌋` 取小：`4 × (normalInputTarget/4)
+ * = normalInputTarget`，压缩后请求必然缩小、且切点在阈值触发时必然存在（mm-40 的比例不变量
+ * 在最坏内容下的闭环）。偏差下限取 1（纯 ASCII 时与旧口径相同）。
  */
 export function compactionSettingsFor(window: number, maxOutput?: number): CompactionSettings {
   const budget = contextBudget(window, maxOutput)
+  const worstCaseKeep = Math.floor(budget.normalInputTarget / Math.max(1, ESTIMATOR_WORST_CASE_BIAS))
   return {
     enabled: true,
     reserveTokens: Math.max(1, budget.window - toHarnessEstimateTokens(budget.normalInputTarget)),
-    keepRecentTokens: toHarnessEstimateTokens(budget.keepRecentTokens),
+    keepRecentTokens: Math.min(toHarnessEstimateTokens(budget.keepRecentTokens), worstCaseKeep),
   }
 }
 
@@ -472,11 +481,12 @@ export class HarnessSlot {
   /** transient 槽使用内存会话（子代理/一次性驱动），不写聊天目录。 */
   constructor(
     sessionId: string,
-    options: { transient?: boolean; generationSeed?: number; onRunSettled?: (slot: HarnessSlot) => void } = {},
+    options: { transient?: boolean; generationSeed?: number; onRunSettled?: (slot: HarnessSlot) => void; onAuditOrphans?: (items: Array<{ customType: string; data: JsonValue }>) => void } = {},
   ) {
     this.sessionId = sessionId
     this.transient = options.transient === true
     this.onRunSettled = options.onRunSettled
+    this.onAuditOrphans = options.onAuditOrphans
     // 注册表分配代际起点：槽被释放重建后代际不回退，旧 cleanup 不会命中新 run（ABA）。
     this.generation = options.generationSeed ?? 0
   }
@@ -487,6 +497,12 @@ export class HarnessSlot {
    * 回调只做通知 —— 真正释放必须由 `end()`（宿主声明的回合终点）收口，见 HarnessSlots.releaseIfIdle。
    */
   private readonly onRunSettled?: (slot: HarnessSlot) => void
+  /**
+   * 关闭时仍未落盘的审计条目回交注册表（只有注册表建出来的槽有）：挂到孤儿队列，
+   * 下次同会话开槽时转交新槽继续尝试 —— 槽的关闭不成为证据的丢点（故障槽的 lane
+   * 已密封，flush 必然失败；条目不能随槽对象一起消失）。
+   */
+  private readonly onAuditOrphans?: (items: Array<{ customType: string; data: JsonValue }>) => void
 
   // ── 生命周期 ──
 
@@ -796,7 +812,13 @@ export class HarnessSlot {
     this.clearTimer()
     // 关闭前必须 flush：清空 lane 之后排队中的审计条目就没有落盘通道了（迟到快照的兜底）。
     await this.flushAudit()
-    if (this.auditPending.length) log.error("槽关闭前仍有审计条目未写入:", { sessionId: this.sessionId, pending: this.auditPending.length })
+    if (this.auditPending.length) {
+      log.error("槽关闭前仍有审计条目未写入:", { sessionId: this.sessionId, pending: this.auditPending.length })
+      // 写不进去的条目不能随槽的关闭消失（故障槽的 lane 已密封，flush 必然失败）：回交注册表
+      // 挂到孤儿队列，下一次同会话开槽时由 ensure() 转交新槽继续尝试 —— 与「无槽期间入队」
+      // 共用同一条证据保留路径（不丢证据）。transient 子槽没有注册表可达，保持只有 error 留痕。
+      if (this.onAuditOrphans) this.onAuditOrphans(this.auditPending.splice(0))
+    }
     const harness = this.harness
     this.harness = undefined
     this.lane = undefined
@@ -899,6 +921,9 @@ export class HarnessSlot {
    * 投递一条用户输入到 lane 持久 inbox。消息体由 `userInputMessage()` 构造（投递消息的形状
    * 只有一处定义）：带身份时写 `deskpetEventId`（证据链按它关联输入），来源标记随消息落盘；
    * 没有 identity 时不带身份，保持「非投递输入」语义。
+   *
+   * 受理成功（消息真的进了 inbox）即视为「用户在直接用消息作答」：该会话仍未结算的
+   * 提问面板按 `user_replied` 取消 —— 用户不必先点面板上的「其它」才能用输入框说话。
    */
   async steer(text: string, identity?: { eventId: string; mark?: InputSourceMark; imagePaths?: readonly string[] }, kindOverride?: "steer" | "followUp" | "nextRun"): Promise<HarnessDeliveryReceipt | undefined> {
     // 不要求运行已进入驱动：预检阶段的投递也进入 lane 持久 inbox（先 open 再投递），
@@ -923,6 +948,23 @@ export class HarnessSlot {
     if (!result.ok) {
       log.warn("投递补充消息失败:", { kind, error: result.error._tag })
       return undefined
+    }
+    // 消息已进入 lane 持久 inbox = 用户在直接用消息作答：把该会话仍未结算的提问面板
+    // 按 `user_replied` 取消（面板随结算收起，工具结果如实说明「用户没在面板里选、
+    // 直接发来了消息」，不冒充任何点选）。放在投递成功之后：投递未被接受时不取消 ——
+    // 否则工具结果会声称用户回了消息，而这条消息根本没进队列。
+    // 动态导入 choice-confirmation：它静态依赖 session barrel，而 session/manager 静态
+    // 依赖 engine/harness（本模块）—— 静态回边会形成模块环（与 openOnce 的 delivery 同一手法）。
+    try {
+      const { cancelSessionChoices } = await import("@/services/engine/choice-confirmation")
+      const cancelled = cancelSessionChoices(this.sessionId, "user_replied")
+      if (cancelled > 0) {
+        log.info("用户直接发消息，已取消该会话的待答提问:", { sessionId: this.sessionId, cancelled })
+      }
+    } catch (error) {
+      // 消息已经投递成功：取消提问失败只留痕，不把已成立的投递说成失败（面板会在
+      // 切会话/关会话时照常收尾）；留痕点就是下面这条 warn。
+      log.warn("直发消息后取消待答提问失败:", { sessionId: this.sessionId }, formatError(error))
     }
     // nextRun 不进入本次运行：宿主按「已排队，下一次运行处理」上报。
     return kind === "steer" ? "steered" : kind === "followUp" ? "followup" : "deferred"
@@ -2008,14 +2050,20 @@ export class HarnessSlots {
    */
   private readonly turnAdmissions = new Set<HarnessTurnAdmission>()
   private admissionSeq = 0
-  /** 无槽期间排队的审计条目（按 sessionId）：下次 ensure() 转交给新槽，不丢证据。 */
+  /** 无槽期间、以及槽关闭时仍未写入的审计条目（按 sessionId）：下次 ensure() 转交给新槽，不丢证据。 */
   private readonly orphanAudits = new Map<string, Array<{ customType: string; data: JsonValue }>>()
 
   /** 唯一的创建入口；读路径一律用 peek()，不得为了读一次状态而把槽建出来。 */
   ensure(sessionId: string): HarnessSlot {
     let slot = this.slots.get(sessionId)
     if (!slot) {
-      slot = new HarnessSlot(sessionId, { generationSeed: this.generationSeed, onRunSettled: settled => this.releaseIfIdle(settled) })
+      slot = new HarnessSlot(sessionId, {
+        generationSeed: this.generationSeed,
+        onRunSettled: settled => this.releaseIfIdle(settled),
+        onAuditOrphans: items => {
+          for (const item of items) this.queueAuditWithoutSlot(sessionId, item.customType, item.data)
+        },
+      })
       this.slots.set(sessionId, slot)
       // 无槽期间挂起的审计条目在这里转交：证据不因槽被释放而丢。
       const orphans = this.orphanAudits.get(sessionId)
@@ -2086,7 +2134,7 @@ export class HarnessSlots {
     return { unresolvedRuns, pendingAudit }
   }
 
-  /** 无槽时把证据条目挂在注册表上（按 sessionId），下次 ensure() 转交给新槽；不丢证据。 */
+  /** 无槽（以及槽关闭时仍有未写入项）把证据条目挂在注册表上（按 sessionId），下次 ensure() 转交给新槽；不丢证据。 */
   queueAuditWithoutSlot(sessionId: string, customType: string, data: JsonValue): void {
     const pending = this.orphanAudits.get(sessionId) ?? []
     pending.push({ customType, data })

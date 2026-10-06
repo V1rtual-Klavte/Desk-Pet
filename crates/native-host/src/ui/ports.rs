@@ -41,12 +41,13 @@ use serde_json::{json, Value};
 use crate::error::{AppError, AppResult};
 use crate::ui::editor::{EditorLayer, EditorPort, EditorProfile, EditorSave};
 use crate::ui::settings::panels::{
-    self, MemoryChange, MemoryDetail, MemoryOverview, PanelRow, SkillCatalog,
+    self, McpServerForm, McpServerSave, McpTransport, MemoryChange, MemoryDetail, MemoryOverview,
+    PanelRow, SkillCatalog,
 };
 use crate::ui::settings::{
     self, CardManageOp, CardManageOutcome, CardOption, CardStages, CardVariablePool,
-    McpServerDoc, MemoryMaintenanceOp, ProfileManageOp, ProfileManageOutcome, SettingEdit,
-    SettingsPort, SettingsSnapshot, SettingsValue, SoundLibrary,
+    MemoryMaintenanceOp, ProfileManageOp, ProfileManageOutcome, SettingEdit, SettingsPort,
+    SettingsSnapshot, SettingsValue, SoundLibrary,
 };
 use crate::ui::stage::StageProfile;
 use crate::{rust_debug, rust_warn};
@@ -288,6 +289,10 @@ pub fn parse_stage_profile(profiles_root: &Path, args: &Value) -> AppResult<Stag
             scale: required_f64(layer, "scale")?,
             offset_x_percent: required_f64(layer, "offsetXPercent")?,
             offset_y_percent: required_f64(layer, "offsetYPercent")?,
+            // 不透明度不进线协议（不是「缺字段兜底」）：Node 推的是已提交 Profile 的
+            // 显示投影，主窗必须全亮；线索是编辑器预览的宿主内部投影
+            // （`ui::editor::cue_specs`），不经过本解析。
+            opacity: crate::render::LayerSpec::DEFAULT_OPACITY,
         });
     }
     Ok(StageProfile {
@@ -708,34 +713,39 @@ impl SettingsPort for SettingsPortImpl {
         Ok(())
     }
 
-    fn mcp_server_doc(&self, name: Option<&str>) -> AppResult<McpServerDoc> {
+    fn mcp_server_form(&self, name: Option<&str>) -> AppResult<McpServerForm> {
         let args = match name {
             Some(name) => json!({ "name": name }),
             None => json!({ "name": Value::Null }),
         };
         let value = self
             .link
-            .request("mcp_server_doc", args, HOST_REQUEST_TIMEOUT)?;
-        Ok(McpServerDoc {
-            text: required_text(&value, "text", "mcp_server_doc")?,
-        })
+            .request("mcp_server_form", args, HOST_REQUEST_TIMEOUT)?;
+        parse_mcp_server_form(&value)
     }
 
-    fn mcp_edit_text(&self, text: &str) -> AppResult<()> {
+    fn mcp_save(&self, save: &McpServerSave) -> AppResult<()> {
         self.link.request(
-            "mcp_edit",
-            json!({ "op": "text", "text": text }),
+            "mcp_save",
+            json!({
+                "originalName": save.original_name,
+                "name": save.name,
+                "transport": save.transport.as_wire(),
+                "command": save.command,
+                "args": save.args,
+                "url": save.url,
+                "env": save.env,
+                "headers": save.headers,
+                "enabled": save.enabled,
+            }),
             HOST_REQUEST_TIMEOUT,
         )?;
         Ok(())
     }
 
     fn mcp_delete(&self, name: &str) -> AppResult<()> {
-        self.link.request(
-            "mcp_edit",
-            json!({ "op": "delete", "name": name }),
-            HOST_REQUEST_TIMEOUT,
-        )?;
+        self.link
+            .request("mcp_delete", json!({ "name": name }), HOST_REQUEST_TIMEOUT)?;
         Ok(())
     }
 
@@ -872,13 +882,44 @@ impl SettingsPort for SettingsPortImpl {
         required_text(&value, "message", "memory_maintenance")
     }
 
-    fn memory_restore(&self, preview_only: bool) -> AppResult<String> {
+    fn memory_backup_list(&self) -> AppResult<Vec<PanelRow>> {
+        let value =
+            self.link
+                .request("memory_backup_list", json!({}), HOST_REQUEST_TIMEOUT)?;
+        // 行由 Node 投影（id = 备份绝对路径，title/subtitle = 时间/名称与大小）。
+        panels::parse_rows_field(&value)
+    }
+
+    fn memory_restore(&self, preview_only: bool, backup_path: &str) -> AppResult<String> {
         let value = self.link.request(
             "memory_restore",
-            json!({ "op": if preview_only { "preview" } else { "apply" } }),
+            json!({
+                "op": if preview_only { "preview" } else { "apply" },
+                // 作用对象 = 备份列表里选中的那一份（不再由 Node 隐式取「最新」）。
+                "backupPath": backup_path,
+            }),
             Duration::from_secs(120),
         )?;
         required_text(&value, "message", "memory_restore")
+    }
+
+    fn memory_job_cancel(&self, job_id: &str) -> AppResult<String> {
+        let value = self.link.request(
+            "memory_job_cancel",
+            json!({ "jobId": job_id }),
+            HOST_REQUEST_TIMEOUT,
+        )?;
+        required_text(&value, "message", "memory_job_cancel")
+    }
+
+    fn memory_job_resume(&self, job_id: &str) -> AppResult<String> {
+        // 继续 = 恢复 review 作业并跑到收口（含模型调用，可能分钟级）：等待上限按用户尺度。
+        let value = self.link.request(
+            "memory_job_resume",
+            json!({ "jobId": job_id }),
+            USER_INTERACTION_TIMEOUT,
+        )?;
+        required_text(&value, "message", "memory_job_resume")
     }
 }
 
@@ -1028,18 +1069,9 @@ pub fn parse_memory_detail(value: &Value) -> AppResult<MemoryDetail> {
             .ok_or_else(|| AppError::Config("memory_item_detail 回执缺少 pinned".into()))?,
         info: required_text(value, "info", "memory_item_detail")?,
         content: required_text(value, "content", "memory_item_detail")?,
-        // 来源 id 缺省 = 没有可回看的来源（读取时机差异，不是协议违规）。
-        source_ids: value
-            .get("sourceIds")
-            .and_then(Value::as_array)
-            .map(|items| {
-                items
-                    .iter()
-                    .filter_map(Value::as_str)
-                    .map(ToString::to_string)
-                    .collect()
-            })
-            .unwrap_or_default(),
+        // 来源行缺省 = 没有可回看的来源（读取时机差异，不是协议违规）；
+        // 行形状与其它管理面行同一套解析（协议违规如实报错，不静默丢行）。
+        sources: parse_optional_rows(value, "sources")?,
         history: parse_optional_rows(value, "history")?,
     })
 }
@@ -1080,6 +1112,30 @@ fn parse_card_stages(value: &Value) -> AppResult<CardStages> {
             .and_then(Value::as_bool)
             .ok_or_else(|| AppError::Config("card_stages 回执缺少 fallback".into()))?,
         text: required_text(value, "text", "card_stages")?,
+    })
+}
+
+/// `mcp_server_form` 回执 → 表单（逐字段解析；缺字段/非法取值是协议违规，如实报错）。
+fn parse_mcp_server_form(value: &Value) -> AppResult<McpServerForm> {
+    let transport_raw = required_text(value, "transport", "mcp_server_form")?;
+    let transport = McpTransport::parse(&transport_raw).ok_or_else(|| {
+        AppError::Config(format!("mcp_server_form 的 transport 取值非法: {transport_raw}"))
+    })?;
+    // enabled 缺字段静默按 false 会把「启用的服务器」显示成关闭态（表单默认值语义不同），
+    // 与 Node 侧全必填的回执类型对齐：缺了就是协议违规。
+    let enabled = value
+        .get("enabled")
+        .and_then(Value::as_bool)
+        .ok_or_else(|| AppError::Config("mcp_server_form 回执缺少布尔字段 enabled".into()))?;
+    Ok(McpServerForm {
+        name: required_text(value, "name", "mcp_server_form")?,
+        transport,
+        command: required_text(value, "command", "mcp_server_form")?,
+        args: required_text(value, "args", "mcp_server_form")?,
+        url: required_text(value, "url", "mcp_server_form")?,
+        env: required_text(value, "env", "mcp_server_form")?,
+        headers: required_text(value, "headers", "mcp_server_form")?,
+        enabled,
     })
 }
 
@@ -2403,55 +2459,104 @@ mod tests {
     fn mcp编辑与测试端口请求形状() {
         let (link, published, _) = test_link();
 
-        // mcp_server_doc：name 缺省发 null（新建模板）；回执取 text。
-        let doc = call_port(
+        // mcp_server_form：name 缺省发 null（新建模板）；回执逐字段解析。
+        let form = call_port(
             &link,
             &published,
-            "mcp_server_doc",
-            |link| SettingsPortImpl::new(link).mcp_server_doc(None),
+            "mcp_server_form",
+            |link| SettingsPortImpl::new(link).mcp_server_form(None),
             |args| assert_eq!(args, &json!({ "name": Value::Null })),
-            Ok(json!({ "text": "## name\n新服务器" })),
+            Ok(json!({
+                "name": "", "transport": "stdio", "command": "npx", "args": "-y\npkg",
+                "url": "", "env": "KEY=1", "headers": "", "enabled": true
+            })),
         )
         .unwrap();
-        assert_eq!(doc.text, "## name\n新服务器");
-        let doc = call_port(
+        assert_eq!(form.name, "");
+        assert_eq!(form.transport, McpTransport::Stdio);
+        assert_eq!(form.args, "-y\npkg");
+        assert_eq!(form.env, "KEY=1");
+        assert!(form.enabled);
+        let form = call_port(
             &link,
             &published,
-            "mcp_server_doc",
-            |link| SettingsPortImpl::new(link).mcp_server_doc(Some("filesystem")),
+            "mcp_server_form",
+            |link| SettingsPortImpl::new(link).mcp_server_form(Some("filesystem")),
             |args| assert_eq!(args, &json!({ "name": "filesystem" })),
-            Ok(json!({ "text": "## name\nfilesystem" })),
+            Ok(json!({
+                "name": "filesystem", "transport": "http", "command": "", "args": "",
+                "url": "https://example.com/mcp", "env": "", "headers": "A=b", "enabled": false
+            })),
         )
         .unwrap();
-        assert_eq!(doc.text, "## name\nfilesystem");
-        // 缺 text：协议违规，不返回空文档冒充成功。
+        assert_eq!(form.transport, McpTransport::Http);
+        assert!(!form.enabled);
+        // 缺字段 / 非法 transport：协议违规，如实报错（不静默收拢成 stdio 或空表单）。
         let error = call_port(
             &link,
             &published,
-            "mcp_server_doc",
-            |link| SettingsPortImpl::new(link).mcp_server_doc(Some("filesystem")),
+            "mcp_server_form",
+            |link| SettingsPortImpl::new(link).mcp_server_form(Some("filesystem")),
             |args| assert_eq!(args, &json!({ "name": "filesystem" })),
             Ok(json!({})),
         )
         .unwrap_err();
-        assert_missing_field(error, "text");
+        assert_missing_field(error, "transport");
+        let error = call_port(
+            &link,
+            &published,
+            "mcp_server_form",
+            |link| SettingsPortImpl::new(link).mcp_server_form(Some("filesystem")),
+            |args| assert_eq!(args, &json!({ "name": "filesystem" })),
+            Ok(json!({
+                "name": "filesystem", "transport": "sse", "command": "", "args": "",
+                "url": "", "env": "", "headers": "", "enabled": true
+            })),
+        )
+        .unwrap_err();
+        assert!(
+            error.to_string().contains("transport"),
+            "非法 transport 的错误要点名字段: {error}"
+        );
 
-        // mcp_edit：文本保存与删除共用一条方法，op 区分。
+        // mcp_save：表单字段 + originalName 逐字段上线；mcp_delete：按名删除。
+        // （保存载荷在闭包内组装：`call_port` 要求 'static，借用外层变量过不了。）
         call_port(
             &link,
             &published,
-            "mcp_edit",
-            |link| SettingsPortImpl::new(link).mcp_edit_text("## name\nfs"),
-            |args| assert_eq!(args, &json!({ "op": "text", "text": "## name\nfs" })),
+            "mcp_save",
+            |link| {
+                SettingsPortImpl::new(link).mcp_save(&McpServerSave {
+                    original_name: "filesystem".to_string(),
+                    name: "filesystem-2".to_string(),
+                    transport: McpTransport::Http,
+                    command: String::new(),
+                    args: "-y\npkg".to_string(),
+                    url: "https://example.com/mcp".to_string(),
+                    env: "TOKEN=1".to_string(),
+                    headers: "".to_string(),
+                    enabled: false,
+                })
+            },
+            |args| {
+                assert_eq!(
+                    args,
+                    &json!({
+                        "originalName": "filesystem", "name": "filesystem-2", "transport": "http",
+                        "command": "", "args": "-y\npkg", "url": "https://example.com/mcp",
+                        "env": "TOKEN=1", "headers": "", "enabled": false
+                    })
+                )
+            },
             Ok(Value::Null),
         )
         .unwrap();
         call_port(
             &link,
             &published,
-            "mcp_edit",
+            "mcp_delete",
             |link| SettingsPortImpl::new(link).mcp_delete("web"),
-            |args| assert_eq!(args, &json!({ "op": "delete", "name": "web" })),
+            |args| assert_eq!(args, &json!({ "name": "web" })),
             Ok(Value::Null),
         )
         .unwrap();
@@ -2799,13 +2904,74 @@ mod tests {
         )
         .is_err());
 
-        // memory_restore：preview/apply 两种线格式；message 必填。
+        // memory_backup_list：行由 Node 投影（id = 路径），缺 rows 如实报错。
+        let rows = call_port(
+            &link,
+            &published,
+            "memory_backup_list",
+            |link| SettingsPortImpl::new(link).memory_backup_list(),
+            |args| assert_eq!(args, &json!({})),
+            Ok(json!({ "rows": [
+                { "id": "/data/memory/backups/a.sqlite3", "title": "10-06 12:00", "subtitle": "a.sqlite3 · 2.0 MB", "action": "choose" }
+            ] })),
+        )
+        .unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].id, "/data/memory/backups/a.sqlite3");
+        assert_eq!(rows[0].action, crate::ui::settings::panels::RowAction::Choose);
+        assert!(call_port(
+            &link,
+            &published,
+            "memory_backup_list",
+            |link| SettingsPortImpl::new(link).memory_backup_list(),
+            |args| assert_eq!(args, &json!({})),
+            Ok(json!({ "backups": [] })),
+        )
+        .is_err());
+
+        // memory_job_cancel / memory_job_resume：jobId 必填；message 必填。
+        let message = call_port(
+            &link,
+            &published,
+            "memory_job_cancel",
+            |link| SettingsPortImpl::new(link).memory_job_cancel("job-1"),
+            |args| assert_eq!(args, &json!({ "jobId": "job-1" })),
+            Ok(json!({ "message": "作业已取消" })),
+        )
+        .unwrap();
+        assert_eq!(message, "作业已取消");
+        assert!(call_port(
+            &link,
+            &published,
+            "memory_job_cancel",
+            |link| SettingsPortImpl::new(link).memory_job_cancel("job-1"),
+            |args| assert_eq!(args, &json!({ "jobId": "job-1" })),
+            Ok(json!({ "status": "cancelled" })),
+        )
+        .is_err());
+        let message = call_port(
+            &link,
+            &published,
+            "memory_job_resume",
+            |link| SettingsPortImpl::new(link).memory_job_resume("job-2"),
+            |args| assert_eq!(args, &json!({ "jobId": "job-2" })),
+            Ok(json!({ "message": "作业已继续" })),
+        )
+        .unwrap();
+        assert_eq!(message, "作业已继续");
+
+        // memory_restore：preview/apply 两种线格式 + 选中路径逐字回传；message 必填。
         let message = call_port(
             &link,
             &published,
             "memory_restore",
-            |link| SettingsPortImpl::new(link).memory_restore(true),
-            |args| assert_eq!(args, &json!({ "op": "preview" })),
+            |link| SettingsPortImpl::new(link).memory_restore(true, "/data/memory/backups/a.sqlite3"),
+            |args| {
+                assert_eq!(
+                    args,
+                    &json!({ "op": "preview", "backupPath": "/data/memory/backups/a.sqlite3" })
+                )
+            },
             Ok(json!({ "message": "预检通过：3 张表可恢复" })),
         )
         .unwrap();
@@ -2814,8 +2980,13 @@ mod tests {
             &link,
             &published,
             "memory_restore",
-            |link| SettingsPortImpl::new(link).memory_restore(false),
-            |args| assert_eq!(args, &json!({ "op": "apply" })),
+            |link| SettingsPortImpl::new(link).memory_restore(false, "/data/memory/backups/b.sqlite3"),
+            |args| {
+                assert_eq!(
+                    args,
+                    &json!({ "op": "apply", "backupPath": "/data/memory/backups/b.sqlite3" })
+                )
+            },
             Ok(json!({ "message": "恢复完成（revision 13）" })),
         )
         .unwrap();
@@ -2824,8 +2995,8 @@ mod tests {
             &link,
             &published,
             "memory_restore",
-            |link| SettingsPortImpl::new(link).memory_restore(true),
-            |args| assert_eq!(args, &json!({ "op": "preview" })),
+            |link| SettingsPortImpl::new(link).memory_restore(true, "/data/memory/backups/a.sqlite3"),
+            |args| assert!(args.get("backupPath").is_some()),
             Ok(json!({ "revision": 3 })),
         )
         .is_err());

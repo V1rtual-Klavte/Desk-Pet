@@ -8,7 +8,7 @@
 //
 // 权威来源：
 // - 命令清单与参数名：Rust `crates/native-host/src/host/dispatch.rs` 的 `NativeDispatcher`
-//   分派表（129 条，逐条对应本文件的 `HostCommandMap`），实现落在 `crates/native-host/src/`
+//   分派表（136 条，逐条对应本文件的 `HostCommandMap`），实现落在 `crates/native-host/src/`
 //   各域。参数是 camelCase 线格式（Rust `max_bytes` → `maxBytes`）。TS 调用点
 //   （138 处 / 35 文件）只用于核对「谁在用、返回类型被当成什么」，不作为签名依据。
 // - `RunScope` / `HostBlobRef`：`crates/native-host/src/ipc/protocol.rs` 逐字段对齐。
@@ -39,8 +39,8 @@
 // （`appearance.theme` 的 Node → 宿主下发，见「原生 UI 状态推送」分组）。设置页 Card
 // 管理批次再有意扩展 1 条：`personality_file_delete`（人格文件域删除，只删普通文件、
 // 拒绝链接叶子，见「人格文件」分组）。
-// 都不是旧命令的重名兼容，登记后矩阵为 129 条。
-// 对账以「W0 冻结件的现存 107 条逐条对应 + 22 条有意扩展」为准：冻结件已删
+// 都不是旧命令的重名兼容，登记后矩阵为 136 条。
+// 对账以「W0 冻结件的现存 107 条逐条对应 + 29 条有意扩展」为准：冻结件已删
 // `profile_clone`（「新建 Profile」改造）与 `mcp_send`（MCP 桥裸行收发改
 // `mcp_write` / `mcp_read` 两条，本批有意扩展 +2；两者均非旧命令的重名兼容）。
 //
@@ -109,6 +109,27 @@ import type { BashBackgroundFinishedPayload, PermitReclaim, PermitSnapshot } fro
 import type { CaptureScreenshotResult, SavedScreenshotResult } from "@/services/tool/local/screenshot"
 import type { BashPayload, FileInfoPayload } from "@/services/tool/pi/native-execution-env"
 import type { RuntimeActivity, WindowObservation } from "@/services/window"
+// 事件名（线格式字节）的唯一取用点：矩阵键从这些常量计算，不再写第二份字面量。
+import {
+  HOST_EVENT_ASSISTANT_STREAM,
+  HOST_EVENT_ASSISTANT_STREAM_END,
+  HOST_EVENT_BASH_BACKGROUND_FINISHED,
+  HOST_EVENT_CHOICE_END,
+  HOST_EVENT_CHOICE_START,
+  HOST_EVENT_CURSOR_MOVE,
+  HOST_EVENT_PERMISSION_CONFIRM,
+  HOST_EVENT_PLAN_END,
+  HOST_EVENT_PLAN_PROGRESS,
+  HOST_EVENT_PLAN_START,
+  HOST_EVENT_PLAN_STEP_GATE,
+  HOST_EVENT_REVEAL_PROGRESS,
+  HOST_EVENT_RUN_STATE,
+  HOST_EVENT_SEND_OUTCOME,
+  HOST_EVENT_STAGE_HINT,
+  HOST_EVENT_TOOL_COMPLETED,
+  HOST_EVENT_TOOL_EXECUTING,
+  HOST_EVENT_WINDOW_OBSERVED,
+} from "./event-names"
 
 // ==========================================
 // 信封基础类型（与 crates/native-host/src/ipc/protocol.rs 逐字段对齐）
@@ -295,8 +316,13 @@ export interface ManagementRowPayload {
   id: string
   title: string
   subtitle: string
-  /** 行动作：toggle=逐项开关；select=点开详情；preview=试听（音效行）；pick=行内下拉；credential=凭据输入（弹原生输入框写自有存储）；none=只读行。 */
-  action: "toggle" | "select" | "preview" | "pick" | "credential" | "none"
+  /**
+   * 行动作：toggle=逐项开关；select=点开详情（记忆条目/来源行）；
+   * preview=试听（音效行）；pick=行内下拉；credential=凭据输入（弹原生输入框写自有存储）；
+   * cancel=终止记忆整理作业；resume=继续受限的整理作业；choose=选中（备份列表行）；
+   * none=只读行。
+   */
+  action: "toggle" | "select" | "preview" | "pick" | "credential" | "cancel" | "resume" | "choose" | "none"
   /** 次动作（可选渲染第二个按钮）：edit=打开行编辑文档；delete=删除该行资源；preview=试听（下拉行的次动作）。 */
   action2?: "edit" | "delete" | "preview"
   /** 开关类行的当前状态（其它行为 false）。 */
@@ -359,8 +385,11 @@ export interface MemoryItemDetailPayload {
   /** 只读概要（多行文本：类型/范围/状态/来源/重要性与时间）。 */
   info: string
   content: string
-  /** 当前版本的来源 id 列表（原话回看入口按它逐条取证据）。 */
-  sourceIds: string[]
+  /**
+   * 当前版本的来源行（一行一条来源，`id` = sourceId，动作 select）：
+   * 宿主逐条渲染；点某行才展开该条的完整证据/原话（不再一次拼接多条）。
+   */
+  sources: ManagementRowPayload[]
   history: ManagementRowPayload[]
 }
 
@@ -424,14 +453,42 @@ export interface SoundLibraryPayload {
 }
 
 /**
- * `mcp_edit` 的载荷：文本编辑器保存（按 name 增/改）或删除。
+ * `mcp_server_form` 的应答：MCP 表单的逐字段值（原生控件直接用）。
  *
- * `text` 的格式定义只在 Node 的 MCP 域（与 `mcp_export` 的 JSON 不同形：
- * 这是给行编辑器的人读格式）；解析失败如实拒绝。
+ * `name` 空串 = 新建模板；`args` 每行一个参数；`env` / `headers` 是多行 KEY=VALUE
+ * 文本（行格式的解析仍在 Node 的 MCP 域；Rust 只显示与回传）。字段语义与校验在 Node。
  */
-export type McpEditPayload =
-  | { op: "text"; text: string }
-  | { op: "delete"; name: string }
+export interface McpServerFormPayload {
+  /** 目标服务器名（新建时为空串）。 */
+  name: string
+  transport: "stdio" | "http"
+  command: string
+  /** 每行一个参数（多行文本控件）。 */
+  args: string
+  url: string
+  /** KEY=VALUE 每行一条（多行文本控件）。 */
+  env: string
+  headers: string
+  enabled: boolean
+}
+
+/**
+ * `mcp_save` 的载荷：表单字段值 + 原条目坐标。
+ *
+ * `originalName` 空 = 新增（目标名已被占用时 Node 明确报错，不静默覆盖）；
+ * 非空 = 更新原条目（允许改名；改名撞名同样报错）。
+ */
+export interface McpServerFormSavePayload {
+  originalName: string
+  name: string
+  transport: string
+  command: string
+  args: string
+  url: string
+  env: string
+  headers: string
+  enabled: boolean
+}
 
 /**
  * `memory_source_evidence` 的应答：一条来源的原话回看。
@@ -467,7 +524,10 @@ export type ProfileManagePayload =
 export interface ProfileManageResult {
   message: string
   list: ProfileListPayload
-  /** 仅 `create`：新 Profile 的 id（宿主据此把草稿选中项指向新项）。 */
+  /**
+   * 仅 `create`：新 Profile 的 id（宿主的「Profile 列表」据此把**选中行**指向新项；
+   * 选择是界面状态，不改写 `appearance.activeProfile` 的激活草稿）。
+   */
   newId?: string
 }
 
@@ -483,9 +543,15 @@ export type CardManagePayload =
 export interface CardManageResult {
   message: string
   list: { cards: Array<{ id: string; name: string }> }
-  /** 仅 `create`：新卡的 id（宿主据此把草稿选中项指向新卡）。 */
+  /**
+   * 仅 `create`：新卡的 id（宿主的「人格卡列表」据此把**选中行**指向新卡；
+   * 选择是界面状态，不改写 `ai.personality.active` 的激活草稿）。
+   */
   newId?: string
-  /** 操作后仍在激活的卡；空串 = 当前没有激活卡（无活动 Card 的降级态是允许的）。 */
+  /**
+   * 操作后仍在激活的卡；空串 = 当前没有激活卡（无活动 Card 的降级态是允许的）。
+   * 宿主的列表在「选中的卡被删掉」时用它回落选中行（不拿不存在的 id 去操作）。
+   */
   activeId: string
 }
 
@@ -1026,8 +1092,21 @@ export type HostCommandMap = {
   write_session_ui_state: { args: { content: string }; result: void }
 
   // ── 会话文件（crates/native-host/src/commands/session_fs.rs）──
-  /** path 是 sessions 域内相对路径；maxLines 只限制读取行数。 */
-  session_read_text: { args: { path: string; maxLines?: number | null }; result: string }
+  /**
+   * path 是 sessions 域内相对路径；maxLines 只限制读取行数。
+   * tailBytes 是尾部读取模式（只读最后 N 字节、返回从行边界开始的整行文本；窗口起点落在
+   * 行中间时丢弃截断的半行）—— 供会话活动时间扫描使用，与 maxLines 互斥（同时传报 CONFIG）。
+   */
+  session_read_text: {
+    args: { path: string; maxLines?: number | null; tailBytes?: number | null }
+    result: string
+  }
+  /**
+   * path 是 sessions 域内相对路径（同 session_read_text）；maxBytes 必填，是本次 content 的
+   * UTF-8 字节上限，由调用方按会话专用口径下发（`SessionFileSystem` 的 `SESSION_WRITE_MAX_BYTES`，
+   * 比工具面 file_write 的 5 MiB 放宽）—— Rust 只把它当参数执行，边界钉在会话根。
+   */
+  session_write_text: { args: { path: string; content: string; maxBytes: number }; result: void }
 
   // ── Profile（crates/native-host/src/commands/profile_cmd.rs）──
   // Vec<u8> 参数/结果在应用层一律是 Uint8Array（与 file_read_binary 同一口径）。
@@ -1582,8 +1661,8 @@ export type HostRequestMap = {
   sound_reset: { args: Record<string, never>; result: void }
   /** 外观页：试听一条预设（不改配置、不影响事件分配）。 */
   sound_preview: { args: { soundId: string }; result: void }
-  /** 工具页：MCP 服务器编辑文档（`name` 缺省 = 新建模板；行格式定义在 Node）。 */
-  mcp_server_doc: { args: { name?: string | null }; result: { text: string } }
+  /** 工具页：MCP 服务器编辑表单（`name` 缺省 = 新建模板；字段值与校验都在 Node）。 */
+  mcp_server_form: { args: { name?: string | null }; result: McpServerFormPayload }
   /**
    * 工具页：写入一条 MCP 凭据（GitHub 令牌）。
    *
@@ -1592,8 +1671,10 @@ export type HostRequestMap = {
    * 不回显、不进日志**（回执只有 void）。
    */
   mcp_credential_write: { args: { id: string; value: string }; result: void }
-  /** 工具页：MCP 文本编辑（按 name 增/改）或删除。 */
-  mcp_edit: { args: McpEditPayload; result: void }
+  /** 工具页：MCP 表单保存（`originalName` 空 = 新增；非空 = 更新原条目，允许改名）。 */
+  mcp_save: { args: McpServerFormSavePayload; result: void }
+  /** 工具页：删除 MCP 服务器（表单编辑走 `mcp_save`）。 */
+  mcp_delete: { args: { name: string }; result: void }
   /** 工具页：连接测试（借出→归还；连接失败是结果不是异常）。 */
   mcp_test: { args: { name: string }; result: { ok: boolean; message: string } }
   /** 工具页：MCP JSON 导入（打开对话框 → 读取 → 既有 import 入口）。 */
@@ -1613,11 +1694,33 @@ export type HostRequestMap = {
     args: { op: "backup" | "export" | "rebuild_index" }
     result: MemoryMaintenanceResult
   }
-  /** 记忆页：恢复（打开备份文件对话框；preview = 只读预检，apply = 执行恢复）。 */
+  /**
+   * 记忆页：托管备份列表（`memory/backups` 下的 `.sqlite3`，按 mtime 倒序）。
+   *
+   * 行 `id` = 备份绝对路径（宿主选中后经 `memory_restore` 原样回传；路径边界由 Rust
+   * `memory_restore*` 裁决）；行 `action = "choose"`（宿主行按钮显示选中态）。
+   * 目录不存在 = 空列表（还没有备份）；目录存在但读不了 = 如实抛错。
+   */
+  memory_backup_list: { args: Record<string, never>; result: ManagementRowsPayload }
+  /**
+   * 记忆页：恢复预览 / 应用（`backupPath` = 备份列表里**选中的那一份**，不再是
+   * 「最新一份」隐式坐标；preview = 只读预检，apply = 执行恢复）。
+   */
   memory_restore: {
-    args: { op: "preview" | "apply" }
+    args: { op: "preview" | "apply"; backupPath: string }
     result: MemoryMaintenanceResult
   }
+  /**
+   * 记忆页：终止一条整理作业（`memory_job_cancel`，lease owner = 记忆整理的既有写者）。
+   * 只有进行中的作业生效；状态没有变成 cancelled 就如实拒绝（不谎报取消成功）。
+   */
+  memory_job_cancel: { args: { jobId: string }; result: { message: string } }
+  /**
+   * 记忆页：继续一条受限的整理作业（`memory_job_resume` + 既有
+   * `runDreamingSweep({ resumeJobId })`：恢复 review 作业并按游标跑到收口）。
+   * 非 review / revision 或 forget_epoch 已变的作业由领域如实拒绝。
+   */
+  memory_job_resume: { args: { jobId: string }; result: MemoryMaintenanceResult }
 }
 
 // ==========================================
@@ -1625,6 +1728,8 @@ export type HostRequestMap = {
 // ==========================================
 //
 // (a) 类 —— Node/宿主 → UI 的读模型与状态推送。这些进 HostEventMap。
+// 事件名（线格式字节）的定义点在 ./event-names.ts 的事件名区，本矩阵只定义载荷形状，
+// 键从那里的常量计算（`[HOST_EVENT_*]`）。
 // 正式实现中每条事件还要带 producer epoch、单调 eventSeq 与归属 scope（信封由
 // protocol.rs 的 FrameHeader 承载）；旧 Node/旧会话/旧 owner 的事件必须被消费者按
 // scope 丢弃。payload 里不重复这些信封字段。
@@ -1638,7 +1743,7 @@ export type HostEventMap = {
    * window listener（src/services/window/listener.ts:55）。类型复用 @/services/window
    * 的 WindowObservation；消费者必须保留 monitorGeneration/sequence 的乱序丢弃逻辑。
    */
-  "window-observed": WindowObservation
+  [HOST_EVENT_WINDOW_OBSERVED]: WindowObservation
   /**
    * 后台命令结束（Rust `commands/tool_exec/bash.rs` 的等待线程 emit；只投 Node，
    * 原生 UI 不呈现）。前台 bash 超过其预算时**不杀进程**、转后台继续跑；本事件是终点：
@@ -1646,7 +1751,7 @@ export type HostEventMap = {
    * `src/services/tool/background.ts` 的完成通知接线（聊天系统消息，`pushSystemMessage`）。
    * 载荷类型逐字镜像 Rust `crates/native-host/src/host/mod.rs::BackgroundCommandFinished`。
    */
-  "bash-background-finished": BashBackgroundFinishedPayload
+  [HOST_EVENT_BASH_BACKGROUND_FINISHED]: BashBackgroundFinishedPayload
   /**
    * 光标位置推送（Rust commands/cursor.rs，仅坐标变化时发；~60fps）。
    * 消费方是原生 UI 的灵动图层渲染。**不应经 Node 转发** —— 60fps 穿 Node 只会
@@ -1654,7 +1759,7 @@ export type HostEventMap = {
    * 列入本矩阵只为保住契约形状。
    * 载荷与 get_cursor_position 的 result 同形（Rust CursorPosition，snake_case）。
    */
-  "deskpet-cursor-move": {
+  [HOST_EVENT_CURSOR_MOVE]: {
     x: number
     y: number
     screen_x: number
@@ -1672,28 +1777,28 @@ export type HostEventMap = {
    * TODO(W0): 生产者/消费者两侧都只有内联字面量，没有可 import 的命名 payload 类型；
    *   且消费端今天把字段都当可选（防御式）。W4a 应命名并导出，冻结为必填。
    */
-  "deskpet-assistant-stream": { sessionId: string; delta: string }
+  [HOST_EVENT_ASSISTANT_STREAM]: { sessionId: string; delta: string }
   /** 流式收尾（runtime.ts:1477/1484）。TODO(W0): 同上，无命名 payload 类型。 */
-  "deskpet-assistant-stream-end": { sessionId: string }
+  [HOST_EVENT_ASSISTANT_STREAM_END]: { sessionId: string }
   /**
    * 阶段提示（runtime.ts:1430）。只发**语义 key**，文案由 UI 按当前 Card 取
    * （getSimpleStage）—— 事件不携带角色台词；类型 key 复用 @/services/personality 的
    * SimpleStageKey。
    */
-  "deskpet-stage-hint": { sessionId: string; stage: SimpleStageKey }
+  [HOST_EVENT_STAGE_HINT]: { sessionId: string; stage: SimpleStageKey }
   /**
    * 工具开始/结束（runtime.ts）。消费方是原生 UI 聊天域。
    * TODO(W0): 无命名 payload 类型，两侧都是内联字面量；W4b 命名并导出。
    */
-  "tool-executing": { toolId: string; toolName: string }
+  [HOST_EVENT_TOOL_EXECUTING]: { toolId: string; toolName: string }
   /** TODO(W0): 同 tool-executing，无命名 payload 类型。 */
-  "tool-completed": { toolId: string; toolName: string; success: boolean }
+  [HOST_EVENT_TOOL_COMPLETED]: { toolId: string; toolName: string; success: boolean }
   /**
    * 运行态通知（runtime.ts）。原生 UI 聊天域只据此显示/收起停止按钮；
    * 真相源仍是 Node 的运行槽，UI 不因此持有第二份运行状态。
    * TODO(W0): 无命名 payload 类型；W4a 命名并导出。
    */
-  "deskpet-run-state": { sessionId: string; running: boolean }
+  [HOST_EVENT_RUN_STATE]: { sessionId: string; running: boolean }
   /**
    * 发送**投递归宿**（「已排队插话」「稍后继续」这类回执的真相源）。
    *
@@ -1705,7 +1810,7 @@ export type HostEventMap = {
    * `delivery` = `HarnessDeliveryReceipt` 的三值；UI 侧分别对应旧壳
    * `SendMessageResult.delivery` 的三条中性回执文案（不混角色台词）。
    */
-  "deskpet-send-outcome": {
+  [HOST_EVENT_SEND_OUTCOME]: {
     sessionId: string
     requestId: string
     delivery: "steered" | "followup" | "deferred"
@@ -1718,7 +1823,7 @@ export type HostEventMap = {
    * `visible_parts`，不重算节奏；每次发布语义都不同（逐泡推进 / typing 终态），
    * 不做增量合并（节奏本身 ≥400ms 一档）。
    */
-  "deskpet-reveal-progress": {
+  [HOST_EVENT_REVEAL_PROGRESS]: {
     sessionId: string
     messageId: string
     runGeneration: number
@@ -1736,7 +1841,7 @@ export type HostEventMap = {
    * TODO(W0): 信封（sessionId/planId/steps/complexity/forceStepByStep）没有命名类型；
    *   W4a/W8 命名并导出。
    */
-  "deskpet-plan-start": {
+  [HOST_EVENT_PLAN_START]: {
     sessionId: string
     planId: string
     steps: PlanStep[]
@@ -1748,7 +1853,7 @@ export type HostEventMap = {
    * stepId/total/status 消费；desc 是生产端补充说明，一并冻结。
    * TODO(W0): 无命名 payload 类型；status 枚举没有共享类型，W4a 命名并导出。
    */
-  "deskpet-plan-progress": {
+  [HOST_EVENT_PLAN_PROGRESS]: {
     sessionId: string
     planId: string
     stepId: string
@@ -1760,7 +1865,7 @@ export type HostEventMap = {
    * 步骤门/失败询问（plan-confirmation.ts:269）。error 仅在 kind="failed" 时出现。
    * TODO(W0): 无命名 payload 类型；W4a/W8 命名并导出。
    */
-  "deskpet-plan-step-gate": {
+  [HOST_EVENT_PLAN_STEP_GATE]: {
     sessionId: string
     planId: string
     kind: "approval" | "failed"
@@ -1770,7 +1875,7 @@ export type HostEventMap = {
     error?: string
   }
   /** 计划收尾（plan-confirmation.ts:352）。reason 的三种归宿由生产端保证。 */
-  "deskpet-plan-end": { sessionId: string; reason: "done" | "failed" | "cancelled" }
+  [HOST_EVENT_PLAN_END]: { sessionId: string; reason: "done" | "failed" | "cancelled" }
 
   // ── 向用户提问（`ask_user` 工具；Node → UI）──
   /**
@@ -1780,7 +1885,7 @@ export type HostEventMap = {
    * 通道回传）与「取消」两个固定按钮，不需要模型声明。
    * requestId 由工具调用 id 派生：同一会话可并发多条（与计划确认不同，刻意不设单槽）。
    */
-  "deskpet-choice-start": {
+  [HOST_EVENT_CHOICE_START]: {
     sessionId: string
     requestId: string
     question: string
@@ -1791,7 +1896,7 @@ export type HostEventMap = {
    * 收起对应面板。用户点选/「其它」时面板已由回执的本地过渡收起（这条是幂等兜底）；
    * 超时、切会话、会话关闭、发射失败等归宿把面板收起来的就是它。
    */
-  "deskpet-choice-end": { sessionId: string; requestId: string }
+  [HOST_EVENT_CHOICE_END]: { sessionId: string; requestId: string }
 
   // ── 权限确认（Node → UI；回执方向见 `UiReceiptMap`）──
   /**
@@ -1808,7 +1913,7 @@ export type HostEventMap = {
    * **权限终裁仍在 PermissionKernel**：UI 只呈现与回传用户选择，不做任何判定，
    * 也不因此持有第二份授权状态。
    */
-  "deskpet-permission-confirm": {
+  [HOST_EVENT_PERMISSION_CONFIRM]: {
     requestId: string
     message: string
     toolName: string

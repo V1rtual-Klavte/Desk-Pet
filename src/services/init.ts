@@ -93,7 +93,7 @@ async function runDomainBootstrap(): Promise<void> {
   const proactive = await import("@/services/proactive")
   const runner = await import("@/services/agent/runner")
   const session = await import("@/services/session")
-  proactive.configureProactive({expression:proactive.createActiveExpressionAdapter(),runPlanner:(await import("@/services/engine/harness")).runPiSubAgent,
+  proactive.configureProactive({expression:proactive.createActiveExpressionAdapter(),runPlanner:(await import("@/services/engine/harness/runtime")).runPiSubAgent,
     cancelExpression:runner.cancelProactiveRun,reconcileSession:proactive.reconcileSession})
   runner.registerProactiveTurnContextReader(proactive.getTurnContext)
   runner.registerUserIngressObserver(()=>proactive.cancelCurrent("user_input"))

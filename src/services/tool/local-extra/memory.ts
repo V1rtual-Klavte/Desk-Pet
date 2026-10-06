@@ -14,6 +14,7 @@ import { register } from "../registry"
 import { createLogger } from "@/services/logger"
 import { formatError } from "@/services/error"
 import { applyMemoryChange, memoryDetail, memoryStatus, resolveCurrentTrustedMemorySource } from "@/services/agent/memory"
+import { DRAFT_SUMMARY_CHARS } from "@/services/agent/memory/draft"
 import { queryMemoryVisibleToCurrentTurn } from "@/services/agent/memory/visible-query"
 import type { MemoryDraft, MemoryKind, MemoryScope, TemporalAnchor, WorkingState } from "@/services/agent/memory"
 
@@ -186,7 +187,7 @@ const memoryChangeTool: ToolDef = defineTool({
       }
       changeAction = state === "completed" ? "complete" : "cancel"
     }
-    const summary = supplied(params, "content") ? content.slice(0, 120) : target?.draft.summary ?? content.slice(0, 120)
+    const summary = supplied(params, "content") ? content.slice(0, DRAFT_SUMMARY_CHARS) : target?.draft.summary ?? content.slice(0, DRAFT_SUMMARY_CHARS)
     const sourceIds = [...new Set([...(target?.draft.sourceIds ?? []), source.sourceId])]
     const draft: MemoryDraft = {
       content,

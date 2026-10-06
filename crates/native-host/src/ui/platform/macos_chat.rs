@@ -14,7 +14,7 @@
 //!   开 → ▾ 可收起、合 → ▴ 可上拉）。左侧状态文字只显示中性回执 `notice`：过程/阶段
 //!   文案（「试着用这个工具…」这类）归顶栏状态位（取值口径见 `bottom_status_text`，
 //!   2026-10-05 用户裁定）。输入行贴窗口底（用户规则「输入框往下放，贴住下面」）。
-//! - 带类底色（输入区底条 / 待发送条 / 面板区 / 标签条 / 聊天列顶栏）一律
+//! - 带类底色（输入区底条 / 待发送条 / 面板区 / 标签条）一律
 //!   经 `band_span` 左右内缩一个描边宽，**严格落在面板边框以内**（用户规则「填充
 //!   不越出面板边框」；填充是子视图、描边在宿主图层上，不内缩就会把左右边框染色）。
 //! - **composer 是一整块面**（2026-10-05 第二次复验用户规则「不要搞个条出来了」）：
@@ -26,6 +26,10 @@
 //!   既有的 `layout_panels` + `place_panel_elements` 摆放（不另写布局）；✕ 与
 //!   「点浮层外」（只罩消息流的透明遮罩）都派发 `PanelAction::CloseInspector`。
 //!   浮层与遮罩都不参与布局流：开合前后消息流的 frame 不变（验收硬指标）。
+//! - 浮层内容超过可视上限（设计稿 `.insbody{max-height:246px}` 与消息流可用高取小）
+//!   时**内部滚动**（`NSScrollView` 文档视图 = 内容容器；2026-10-06）：内容全量
+//!   摆放（不按上限跳过块），上限只决定可视区高，其余滚动可达；几何走共享
+//!   `panels::panel_scroll_geometry`（Windows 侧用 `WS_VSCROLL` 裁剪窗同口径）。
 //! - 决策面板留在流内；slash 候选（`Transient`）也留在流内、紧贴输入区；
 //!   会话历史归 `PanelSurface::Anchored(HistoryButton)` —— 挂在会话标签行右侧
 //!   「历史」按钮**下方的锚定弹层**里（脱离布局流，点外部/再点「历史」/点面板
@@ -60,6 +64,7 @@
 
 use std::cell::{Cell, OnceCell, RefCell};
 use std::ffi::c_void;
+use std::rc::Rc;
 
 use objc2::rc::Retained;
 use objc2::runtime::{AnyObject, Bool, ProtocolObject};
@@ -75,9 +80,8 @@ use objc2_app_kit::{
     NSLinkAttributeName, NSMenu, NSMenuItem, NSMutableParagraphStyle,
     NSParagraphStyleAttributeName, NSPasteboard, NSPasteboardTypeFileURL, NSPasteboardTypePNG,
     NSPasteboardTypeTIFF, NSScrollView, NSScrollerStyle, NSTextBlockLayer, NSTextBlockValueType,
-    NSTextDelegate,
-    NSTextField, NSTextInputClient, NSTextList, NSTextListMarkerDecimal, NSTextListMarkerDisc,
-    NSTextTable, NSTextTableBlock, NSTextView, NSTextViewDelegate, NSView,
+    NSTextDelegate, NSTextField, NSTextInputClient, NSTextList, NSTextListMarkerDecimal,
+    NSTextListMarkerDisc, NSTextTable, NSTextTableBlock, NSTextView, NSTextViewDelegate, NSView,
     NSViewBoundsDidChangeNotification, NSWindow, NSWindowDelegate, NSWindowStyleMask, NSWorkspace,
 };
 use objc2_foundation::{
@@ -154,7 +158,10 @@ const INSPECTOR_HEADER_PAD_X: f64 = 11.0;
 const INSPECTOR_BODY_PAD_X: f64 = 11.0;
 const INSPECTOR_BODY_PAD_TOP: f64 = 10.0;
 const INSPECTOR_BODY_PAD_BOTTOM: f64 = 12.0;
-/// 浮层内容区高度上限（设计稿 `.insbody{max-height:246px}`）。
+/// 浮层内容区**可视高**上限（设计稿 `.insbody{max-height:246px}`）。
+///
+/// 2026-10-06 起这是「可视区封顶」而不是「内容截断」：内容超上限的部分由内部
+/// 滚动到达（`NSScrollView`），不再按 `layout_panels` 的上限跳过块。
 const INSPECTOR_BODY_MAX_HEIGHT: f64 = 246.0;
 /// 浮层标题行右侧「✕」的尺寸。
 const INSPECTOR_CLOSE_WIDTH: f64 = 24.0;
@@ -179,41 +186,23 @@ const HISTORY_POPOVER_GAP: f64 = 4.0;
 /// 弹层与宿主边缘的最小留白（滚出窗口时夹住）。
 const HISTORY_POPOVER_MARGIN: f64 = 8.0;
 
-// ── A1：顶栏与会话标签条（仅主窗聊天面板模式挂载）──
+// ── A1：会话标签条（仅主窗聊天面板模式挂载）──
+//
+// 顶部 26pt 带（品牌 + 状态位 + 右侧按钮）归主窗的全窗宽顶栏
+// （`macos_main.rs`；条内几何的单一来源是 `ui::titlebar`）。本模块只画/摆标签条，
+// 且它接在顶栏带**下方**（顶部预留 = `ui::titlebar::HEIGHT`）。
 
-/// 顶栏条高度（品牌 + 状态位「配信中」+ 设置/图层按钮）。
-const TITLEBAR_HEIGHT: f64 = 26.0;
 /// 会话标签条高度（会话标签 + 新建 + 历史）。
 const TABS_HEIGHT: f64 = 24.0;
-/// 顶栏/标签条按钮高度（条内垂直居中）。
+/// 标签条按钮高度（条内垂直居中）。
 const NAV_BUTTON_HEIGHT: f64 = 18.0;
-/// 顶栏按钮宽度（设置/图层）与标签条右侧固定按钮宽度。
-const TITLEBAR_BUTTON_WIDTH: f64 = 34.0;
+/// 标签条右侧固定按钮宽度（新建 / 历史）。
 const TABS_NEW_WIDTH: f64 = 22.0;
 const TABS_HISTORY_WIDTH: f64 = 34.0;
 /// 会话标签宽度上下限（名称长度估算后夹取；超出以尾部省略显示）。
 const TAB_MIN_WIDTH: f64 = 36.0;
 const TAB_MAX_WIDTH: f64 = 92.0;
 const TAB_CLOSE_WIDTH: f64 = 16.0;
-/// 顶栏内部布局：品牌字起点、右侧按钮保留宽度（设置 + 间距）。
-/// 品牌文案是固定字样（不随 Profile/编辑，不可自定义）；2026-10-05 用户拍板为
-/// **单个 `V1rtual-Desk-Pet`**（此前是 `V1rtual`）。
-const TITLEBAR_BRAND_TEXT: &str = "V1rtual-Desk-Pet";
-const TITLEBAR_BRAND_X: f64 = 8.0;
-/// 右侧按钮保留宽度（设置 + 内边距；「图层」入口随 2026-10-05 改版从聊天顶栏退场，
-/// 挪进设置窗，这里相应收窄）。
-const TITLEBAR_RIGHT_RESERVE: f64 = 46.0;
-
-/// 品牌字宽度（粗体小字估算 + 余量；`V1rtual-Desk-Pet` 比旧字样长，状态位起点跟随）。
-fn titlebar_brand_width() -> f64 {
-    // +12 余量：粗体比半角估算宽，宁可多留一截也不让品牌字尾部省略号。
-    crate::ui::chat::panels::estimated_text_width(TITLEBAR_BRAND_TEXT, 11.0) + 12.0
-}
-
-/// 状态位起点 = 品牌字右缘 + 8。
-fn titlebar_status_x() -> f64 {
-    TITLEBAR_BRAND_X + titlebar_brand_width() + 8.0
-}
 
 /// 面板最高占宿主视图的比例（超出截断显示；面板永不挤掉输入区）。
 ///
@@ -438,18 +427,6 @@ pub(crate) fn focus_main_pane_input() -> bool {
         };
         controller.focus_input()
     })
-}
-
-/// 顶栏状态位文本刷新（`macos::refresh_titlebar` 调用；A1）。
-///
-/// 主窗面板不在时静默跳过：面板重建时会从 `crate::ui::titlebar::current()` 取最新值，
-/// 不丢状态。
-pub(crate) fn apply_titlebar_text(text: &str) {
-    MAIN_PANE.with(|cell| {
-        if let Some(controller) = cell.borrow().as_ref() {
-            controller.set_titlebar_text(text);
-        }
-    });
 }
 
 /// 界面主题切换（`macos.rs::UiController::apply_theme` 广播）：两个聊天面各按新
@@ -1368,58 +1345,6 @@ impl ChatInputPlaceholder {
 }
 
 // ==========================================
-// A1：顶栏拖拽条（顶栏空白区用于拖动窗口）
-// ==========================================
-
-define_class!(
-    /// 顶栏条：品牌字/状态位之外的区域用于拖动窗口；按钮照常接收点击。
-    ///
-    /// `hitTest:` 把「非按钮」的命中一律判给自己：标签（NSTextField）默认会吃掉
-    /// 命中，其上也拖不动窗口；判给本视图后，窗口的 `movableByWindowBackground`
-    /// （主窗创建时已开）即可整条拖动。
-    #[unsafe(super(NSView))]
-    #[thread_kind = MainThreadOnly]
-    #[ivars = ()]
-    struct TitlebarDragView;
-
-    unsafe impl NSObjectProtocol for TitlebarDragView {}
-
-    impl TitlebarDragView {
-        #[unsafe(method(mouseDownCanMoveWindow))]
-        fn mouse_down_can_move_window(&self) -> bool {
-            true
-        }
-
-        #[unsafe(method(hitTest:))]
-        fn hit_test(&self, point: NSPoint) -> *mut NSView {
-            // AppKit 的 hitTest 结果按借用（+0）处理，原始指针即正确形状
-            // （objc2 方法定义的返回类型需实现 Encode，`Option<Retained<_>>` 不满足）。
-            let hit: *mut NSView = unsafe { msg_send![super(self), hitTest: point] };
-            if hit.is_null() {
-                return std::ptr::null_mut();
-            }
-            let is_button = unsafe {
-                let any: &AnyObject = &*(hit as *const AnyObject);
-                any.downcast_ref::<NSButton>().is_some()
-            };
-            if is_button {
-                hit
-            } else {
-                // 非按钮（标签/空白）→ 拖拽条自身（窗口背景拖动生效）。
-                self as *const Self as *mut NSView
-            }
-        }
-    }
-);
-
-impl TitlebarDragView {
-    fn new(mtm: MainThreadMarker, frame: NSRect) -> Retained<Self> {
-        let this = Self::alloc(mtm).set_ivars(());
-        unsafe { msg_send![super(this), initWithFrame: frame] }
-    }
-}
-
-// ==========================================
 // 脱离布局流的容器视图（浮层 Inspector / 锚定弹层共用）
 // ==========================================
 
@@ -1460,7 +1385,7 @@ define_class!(
         #[unsafe(method(hitTest:))]
         fn hit_test(&self, point: NSPoint) -> *mut NSView {
             // AppKit 的 hitTest 结果按借用（+0）处理，原始指针即正确形状
-            //（与 TitlebarDragView::hit_test 同注释）。
+            //（objc2 方法定义的返回类型需实现 Encode，`Option<Retained<_>>` 不满足）。
             if !self.ivars().active.get() {
                 return std::ptr::null_mut();
             }
@@ -1580,6 +1505,14 @@ fn apply_inspector_change(action: PanelAction) {
 // 内容控制器（窗口 + 全部控件；NSWindowDelegate / NSTextViewDelegate）
 // ==========================================
 
+/// 流式尾巴文本的共享句柄（[`ChatContentIvars::last_tail_text`] 与
+/// [`ChatContentIvars::jump_seen_tail`] 共用一份分配）。
+///
+/// 流式每帧都要把「最近一次文本」与「未读水位」推到同一份新文本：`Rc<str>` 让
+/// 第二次及以后的写入只是引用计数增加，旧实现每帧会做 3–4 次整串克隆
+/// （水位推平的滚动通知路径也在其中）；比较仍走 `as_deref()`，语义不变。
+type TailText = Rc<str>;
+
 struct ChatContentIvars {
     /// 独立窗模式才有窗口；主窗面板模式为 `None`。
     window: RefCell<Option<Retained<DeskPetWindow>>>,
@@ -1608,7 +1541,8 @@ struct ChatContentIvars {
     /// 最近一次渲染的说话人名（流式尾巴复用）。
     speaker: RefCell<String>,
     /// 流式尾巴最近一次的文本（字体变化后的重建复用；`None` = 没有尾巴）。
-    last_tail_text: RefCell<Option<String>>,
+    /// 共享句柄理由见 [`TailText`]。
+    last_tail_text: RefCell<Option<TailText>>,
     // ── 主题外观 ──
     /// 最近一次按主题重绘外观时的宿主尺寸（尺寸没变不重复重画，见 `relayout_panes`）。
     chrome_size: Cell<(f64, f64)>,
@@ -1628,7 +1562,8 @@ struct ChatContentIvars {
     /// 最近一次重建的 transcript revision（滚回底部时把水位推到最新用）。
     jump_latest_revision: Cell<u64>,
     /// 用户最后一次「在底部」时看到的流式尾巴文本（未读判定水位）。
-    jump_seen_tail: RefCell<Option<String>>,
+    /// 共享句柄理由见 [`TailText`]。
+    jump_seen_tail: RefCell<Option<TailText>>,
     /// 待发送条容器（有选择时显示；`NSScrollView` 横向滚动，见 `rebuild_pending`）。
     pending_strip: OnceCell<Retained<NSScrollView>>,
     /// 待发送条滚动区的内容容器（条目按钮的父视图；帧宽 = 内容总宽）。
@@ -1665,10 +1600,18 @@ struct ChatContentIvars {
     inspector_title: OnceCell<Retained<NSTextField>>,
     /// 浮层标题行右侧的关闭按钮（派发 CloseInspector）。
     inspector_close: OnceCell<Retained<NSButton>>,
-    /// 浮层内容容器（`layout_panels` 的元素落在这里）。
+    /// 浮层内容的滚动承载（`NSScrollView`；文档视图 = `inspector_body`）。
+    ///
+    /// 2026-10-06 内部滚动：内容超过可视上限时不再按上限跳过放不下的块
+    /// （超长的「注册明细」全展开会整段丢），改为内容全量摆放 + 滚动可达；
+    /// 几何（可视高/偏移夹取）走共享 `panels::panel_scroll_geometry`。
+    inspector_scroll: OnceCell<Retained<NSScrollView>>,
+    /// 浮层内容容器（`layout_panels` 的元素落在这里；`inspector_scroll` 的文档视图）。
     inspector_body: OnceCell<Retained<ChatStackView>>,
-    /// 浮层内容区高度（relayout 定位用；0 = 无内容）。
+    /// 浮层内容区**可视**高度（relayout 定位用；= min(内容全高, 上限)；0 = 无内容）。
     inspector_body_height: Cell<f64>,
+    /// 浮层内容**全高**（文档视图高；≥ 可视高 —— 超出的部分靠内部滚动到达）。
+    inspector_doc_height: Cell<f64>,
     /// 浮层当前是否呈现（含开合过渡；决定是否播放过渡而不在每次重建重放）。
     inspector_shown: Cell<bool>,
     /// 收起过渡结束后的隐藏定时器（仓里没有 block2，不用 `CATransaction`
@@ -1685,7 +1628,7 @@ struct ChatContentIvars {
     history_body_height: Cell<f64>,
     /// 弹层遮罩（标签行以下、输入行以上的内容区；点击收起）。
     history_scrim: OnceCell<Retained<FloatingScrimView>>,
-    /// 会话标签行的「历史」按钮（锚点；`rebuild_navigation` 每次重建时**整体替换** ——
+    /// 会话标签行的「历史」按钮（锚点；`rebuild_tabs` 每次重建时**整体替换** ——
     /// 标签条子视图每帧重建，用 OnceCell 会留着一个已移出层级的旧按钮、宽度变化后
     /// 锚点坐标随之失真）。
     history_button: RefCell<Option<Retained<NSButton>>>,
@@ -1704,13 +1647,9 @@ struct ChatContentIvars {
     panel_select_options: RefCell<Vec<(isize, Vec<String>)>>,
     /// 面板本地期限的一次性定时器（无期限时为 None）。
     deadline_timer: RefCell<Option<Retained<NSTimer>>>,
-    // ── A1：顶栏与会话标签（仅主窗聊天面板模式挂载）──
-    /// 面板模式（主窗内聊天列）= true：挂顶栏条与标签条；独立聊天窗保留原生窗口 chrome。
+    // ── A1：会话标签条（仅主窗聊天面板模式挂载；顶部顶栏带归全窗宽顶栏）──
+    /// 面板模式（主窗内聊天列）= true：挂标签条；独立聊天窗保留原生窗口 chrome。
     nav_embedded: Cell<bool>,
-    titlebar: OnceCell<Retained<NSView>>,
-    /// 顶栏品牌字（构建期定色；主题切换时由 `repaint_chrome` 重贴 `ink`）。
-    titlebar_brand: OnceCell<Retained<NSTextField>>,
-    titlebar_status: OnceCell<Retained<NSTextField>>,
     tabs_strip: OnceCell<Retained<NSView>>,
     /// 会话按钮 tag → session id（切换与关闭按钮共用同一张表；重建时整体替换）。
     session_targets: RefCell<Vec<String>>,
@@ -2112,9 +2051,9 @@ define_class!(
             self.arm_deadline_timer();
         }
 
-        // ── A1：会话标签 / 顶栏按钮 ──
+        // ── A1：会话标签 ──
 
-        /// 会话标签点击：tag → session id（表在 `rebuild_navigation` 时整体替换）。
+        /// 会话标签点击：tag → session id（表在 `rebuild_tabs` 时整体替换）。
         #[unsafe(method(sessionTab:))]
         fn session_tab(&self, sender: Option<&AnyObject>) {
             let Some(sender) = sender else { return };
@@ -2183,15 +2122,9 @@ define_class!(
             self.dispatch_panel_action(PanelAction::ToggleSessionHistory);
         }
 
-        /// 顶栏「设置」：打开设置窗（经设置域的门禁与拉取；失败在域内留痕）。
-        #[unsafe(method(openSettings:))]
-        fn open_settings_action(&self, _sender: Option<&AnyObject>) {
-            crate::ui::settings::settings_ui().open_window();
-        }
-
-        // `openLayerEditor:` 删除记录（2026-10-05）：聊天顶栏的「图层」入口退场
-        //（用户拍板），编辑器入口保留在托盘菜单，设置窗另加入口；本控制器不再持有
-        // 任何打开编辑器的通道。
+        // 旧聊天顶栏的按钮动作（`openSettings:` / `openLayerEditor:`）随旧顶栏删除：
+        // 设置窗入口归主窗全窗宽顶栏（`macos_main.rs`）与托盘菜单；本控制器不再持有
+        // 任何打开设置窗/编辑器的通道。
     }
 );
 
@@ -2323,6 +2256,16 @@ impl ChatContentController {
             // 在底部 = 已看到最新：未读清零、水位推到最新（滚动事件也会走到这里）。
             self.mark_jump_seen_now();
         }
+        self.apply_jump_button_visibility(button, at_bottom);
+    }
+
+    /// 只按给定「是否在底部」同步按钮显隐（**不推水位**）。
+    ///
+    /// `update_tail` 每帧已经推平过水位（在底部时经 `note_jump_content`；
+    /// `scroll_to_bottom` 触发的同步滚动通知也会走 `mark_jump_seen_now`），再调
+    /// [`Self::update_jump_button`] 是重复推平 —— 每个 delta 多一次 `is_at_bottom`
+    /// 与一次整串克隆。水位推进仍只由 `update_jump_button` 与 `note_jump_content` 负责。
+    fn apply_jump_button_visibility(&self, button: &NSButton, at_bottom: bool) {
         button.setHidden(!jump_button_visible(
             at_bottom,
             self.ivars().jump_unread.get(),
@@ -2331,11 +2274,18 @@ impl ChatContentController {
 
     /// 「↓ 新消息」的内容水位：在底部把水位推平（用户已看到最新）；不在底部时内容
     /// 增长（新提交消息 = transcript revision 前进 / 流式尾巴文本变化）就记一条未读。
-    fn note_jump_content(&self, transcript_revision: u64, streaming: Option<&str>, pinned: bool) {
+    ///
+    /// `streaming` 收共享句柄（[`TailText`]）：水位与「最近一次文本」共用同一份分配。
+    fn note_jump_content(
+        &self,
+        transcript_revision: u64,
+        streaming: Option<TailText>,
+        pinned: bool,
+    ) {
         self.ivars().jump_latest_revision.set(transcript_revision);
         if pinned {
             self.ivars().jump_seen_revision.set(transcript_revision);
-            *self.ivars().jump_seen_tail.borrow_mut() = streaming.map(str::to_string);
+            *self.ivars().jump_seen_tail.borrow_mut() = streaming;
             self.ivars().jump_unread.set(false);
             return;
         }
@@ -2344,7 +2294,7 @@ impl ChatContentController {
             self.ivars().jump_seen_revision.get(),
             transcript_revision,
             seen_tail.as_deref(),
-            streaming,
+            streaming.as_deref(),
         ) {
             self.ivars().jump_unread.set(true);
         }
@@ -2430,8 +2380,10 @@ impl ChatContentController {
             inspector_header: OnceCell::new(),
             inspector_title: OnceCell::new(),
             inspector_close: OnceCell::new(),
+            inspector_scroll: OnceCell::new(),
             inspector_body: OnceCell::new(),
             inspector_body_height: Cell::new(0.0),
+            inspector_doc_height: Cell::new(0.0),
             inspector_shown: Cell::new(false),
             inspector_hide_timer: RefCell::new(None),
             inspector_scrim: OnceCell::new(),
@@ -2445,9 +2397,6 @@ impl ChatContentController {
             panel_select_options: RefCell::new(Vec::new()),
             deadline_timer: RefCell::new(None),
             nav_embedded: Cell::new(false),
-            titlebar: OnceCell::new(),
-            titlebar_brand: OnceCell::new(),
-            titlebar_status: OnceCell::new(),
             tabs_strip: OnceCell::new(),
             session_targets: RefCell::new(Vec::new()),
         });
@@ -2463,7 +2412,7 @@ impl ChatContentController {
 
     /// 主窗聊天面板模式：控件挂在 `container` 上，不建窗口。
     ///
-    /// A1：该模式额外挂顶栏条（品牌/状态位/设置/图层）与会话标签条；
+    /// A1：该模式额外挂会话标签条（顶部 26pt 顶栏带归主窗的全窗宽顶栏）；
     /// 独立聊天窗（能力保留）不挂，保留系统窗口 chrome。
     fn new_embedded(
         mtm: MainThreadMarker,
@@ -2753,7 +2702,7 @@ impl ChatContentController {
         pending.setScrollerStyle(NSScrollerStyle::Overlay);
         pending.setBorderType(NSBorderType::NoBorder);
         pending.setDrawsBackground(false); // 条底由主题层画（`.pend` 的 `--fbg2`）
-        // 内容容器（条目按钮的父视图；帧宽 = 内容总宽，由重建/重排写）。
+                                           // 内容容器（条目按钮的父视图；帧宽 = 内容总宽，由重建/重排写）。
         let pending_content = NSView::initWithFrame(
             NSView::alloc(mtm),
             NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(width, PENDING_HEIGHT)),
@@ -2837,13 +2786,30 @@ impl ChatContentController {
         header.addSubview(&close);
         let _ = self.ivars().inspector_close.set(close);
 
-        // 内容容器（`layout_panels` 的元素落在这里；宽高由重建时按内容设置）。
+        // 内容滚动区（2026-10-06 内部滚动：内容超过可视上限时不再按上限跳过放不下的块
+        // ——超长的「注册明细」全展开会整段丢；现在内容全量摆放、滚动可达）。
+        // 滚动条取 overlay 样式 + 自动隐藏（与待发送条同款）：浮在内容上**不占宽**，
+        // 且压过系统「始终显示滚动条」偏好 —— legacy 滚动条会吃掉约 15pt 内容宽。
+        // 无横向滚动：文档视图宽 = 可视区宽（重建时两者同宽）。
+        let inspector_scroll = NSScrollView::initWithFrame(
+            NSScrollView::alloc(mtm),
+            NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(40.0, 1.0)),
+        );
+        inspector_scroll.setHasVerticalScroller(true);
+        inspector_scroll.setHasHorizontalScroller(false);
+        inspector_scroll.setAutohidesScrollers(true);
+        inspector_scroll.setScrollerStyle(NSScrollerStyle::Overlay);
+        inspector_scroll.setBorderType(NSBorderType::NoBorder);
+        inspector_scroll.setDrawsBackground(false); // 盒底由浮层主题皮画
+                                                    // 内容容器（`layout_panels` 的元素落在这里；宽高由重建/重排按内容设置）。
         let body = ChatStackView::new(
             mtm,
             (width - INSPECTOR_SIDE_MARGIN * 2.0 - INSPECTOR_BODY_PAD_X * 2.0).max(40.0),
         );
-        overlay.addSubview(&body);
+        inspector_scroll.setDocumentView(Some(&body));
+        let _ = self.ivars().inspector_scroll.set(inspector_scroll.clone());
         let _ = self.ivars().inspector_body.set(body);
+        overlay.addSubview(&inspector_scroll);
 
         // ── 会话历史锚定弹层（挂在「历史」按钮下方；脱离布局流；层级最上）──
         let popover = FloatingPanelView::new(
@@ -2863,46 +2829,13 @@ impl ChatContentController {
         popover.addSubview(&history_body);
         let _ = self.ivars().history_body.set(history_body);
 
-        // ── A1：顶栏条 + 会话标签条（仅主窗聊天面板模式；独立聊天窗保留系统 chrome）──
+        // ── A1：会话标签条（仅主窗聊天面板模式；独立聊天窗保留系统 chrome）──
+        // 顶部 26pt 带（品牌/状态位/按钮）不在这里：归主窗的全窗宽顶栏。
         if self.ivars().nav_embedded.get() {
-            let bar: Retained<NSView> = TitlebarDragView::new(
-                mtm,
-                NSRect::new(
-                    NSPoint::new(0.0, height - TITLEBAR_HEIGHT),
-                    NSSize::new(width, TITLEBAR_HEIGHT),
-                ),
-            )
-            .into_super();
-            // 品牌字：固定字样（不随 Profile/编辑，不可自定义）；
-            // 原生无 Libre Bodoni，用系统粗体小字近似。
-            let brand = NSTextField::labelWithString(&NSString::from_str(TITLEBAR_BRAND_TEXT), mtm);
-            brand.setFont(Some(&NSFont::boldSystemFontOfSize(11.0)));
-            // 品牌字取 `ink`（设计稿 `.brand` 继承 `--ink`）。
-            brand.setTextColor(Some(&paint::color(crate::ui::theme::tokens().ink)));
-            brand.setFrame(NSRect::new(
-                NSPoint::new(TITLEBAR_BRAND_X, (TITLEBAR_HEIGHT - 15.0) / 2.0),
-                NSSize::new(titlebar_brand_width(), 15.0),
-            ));
-            bar.addSubview(&brand);
-            // 状态位（「配信中」）：唯一真值在 Node 的 services/titlebar，原生只持文本快照。
-            let status = NSTextField::labelWithString(
-                &NSString::from_str(&crate::ui::titlebar::current()),
-                mtm,
-            );
-            status.setFont(Some(&crate::ui::platform::macos_widgets::resolve_font(
-                crate::ui::platform::macos_widgets::HELP_BASE_SIZE,
-            )));
-            status.setTextColor(Some(&paint::color(crate::ui::theme::tokens().dim)));
-            status.setLineBreakMode(NSLineBreakMode::ByTruncatingTail);
-            bar.addSubview(&status);
-            content.addSubview(&bar);
-            let _ = self.ivars().titlebar.set(bar);
-            let _ = self.ivars().titlebar_status.set(status);
-
             let tabs = NSView::initWithFrame(
                 NSView::alloc(mtm),
                 NSRect::new(
-                    NSPoint::new(0.0, height - TITLEBAR_HEIGHT - TABS_HEIGHT),
+                    NSPoint::new(0.0, height - crate::ui::titlebar::HEIGHT - TABS_HEIGHT),
                     NSSize::new(width, TABS_HEIGHT),
                 ),
             );
@@ -2941,9 +2874,9 @@ impl ChatContentController {
         if width <= 0.0 || height <= 0.0 {
             return;
         }
-        // A1：顶栏条 + 标签条占顶部；正文滚动区在它们之下（面板模式下才预留）。
+        // A1：顶部 26pt 顶栏带 + 标签条占顶部；正文滚动区在它们之下（面板模式下才预留）。
         let top_inset = if self.ivars().nav_embedded.get() {
-            TITLEBAR_HEIGHT + TABS_HEIGHT
+            crate::ui::titlebar::HEIGHT + TABS_HEIGHT
         } else {
             0.0
         };
@@ -3108,26 +3041,14 @@ impl ChatContentController {
             ));
         }
 
-        // A1：顶栏条 + 标签条（嵌入模式）。
+        // A1：标签条接在全窗宽顶栏（顶部 26pt 带）下方（嵌入模式）。
         if self.ivars().nav_embedded.get() {
-            if let Some(bar) = self.ivars().titlebar.get() {
-                // 同一条内缩口径（上缘留一个描边宽）：条的 `bar_bg` 是不透明渐变，
-                // 铺到宿主上沿会染掉面板顶描边。
-                bar.setFrame(NSRect::new(
-                    NSPoint::new(band_x, height - TITLEBAR_HEIGHT),
-                    NSSize::new(band_w, TITLEBAR_HEIGHT - PANEL_STROKE_WIDTH),
-                ));
-            }
-            if let Some(titlebar_status) = self.ivars().titlebar_status.get() {
-                let status_x = titlebar_status_x();
-                titlebar_status.setFrame(NSRect::new(
-                    NSPoint::new(status_x, (TITLEBAR_HEIGHT - 15.0) / 2.0),
-                    NSSize::new((width - status_x - TITLEBAR_RIGHT_RESERVE).max(24.0), 15.0),
-                ));
-            }
             if let Some(tabs) = self.ivars().tabs_strip.get() {
                 tabs.setFrame(NSRect::new(
-                    NSPoint::new(band_x, height - TITLEBAR_HEIGHT - TABS_HEIGHT),
+                    NSPoint::new(
+                        band_x,
+                        height - crate::ui::titlebar::HEIGHT - TABS_HEIGHT,
+                    ),
                     NSSize::new(band_w, TABS_HEIGHT),
                 ));
             }
@@ -3194,12 +3115,21 @@ impl ChatContentController {
                         ));
                     }
                 }
-                if let Some(body) = self.ivars().inspector_body.get() {
+                if let Some(inspector_scroll) = self.ivars().inspector_scroll.get() {
                     let (body_x, body_w) = floating_body_rect(w, INSPECTOR_BODY_PAD_X);
-                    body.setFrame(NSRect::new(
+                    // 滚动区 = 可视区（高 = min(内容全高, 上限)）；文档视图给**全高**，
+                    // 溢出的部分不按上限截断（`rebuild_inspector` 已按无上限摆好），
+                    // 由滚动到达。文档视图宽与可视区同宽（无横向滚动）。
+                    inspector_scroll.setFrame(NSRect::new(
                         NSPoint::new(body_x, inspector_body_offset()),
                         NSSize::new(body_w, self.ivars().inspector_body_height.get().max(1.0)),
                     ));
+                    if let Some(body) = self.ivars().inspector_body.get() {
+                        body.setFrameSize(NSSize::new(
+                            body_w,
+                            self.ivars().inspector_doc_height.get().max(1.0),
+                        ));
+                    }
                 }
             }
         }
@@ -3267,7 +3197,7 @@ impl ChatContentController {
     }
 
     /// 按当前主题重画聊天面的持久外观（面板底/纹理/颗粒、消息流内阴影、输入区、
-    /// 待发送条/面板区/标签条底、顶栏、状态行与持久按钮）。
+    /// 待发送条/面板区/标签条底、状态行与持久按钮）。
     ///
     /// 消息正文、气泡、工具卡与面板行是**构建期**一次性写入的（建视图时按 token 定色），
     /// 换主题时由 [`Self::apply_theme`] 里的整帧重建覆盖；这里只管不随重建替换的控件。
@@ -3418,47 +3348,18 @@ impl ChatContentController {
                 );
             }
         }
-        // ── 嵌入模式的聊天列顶栏（主窗里被全窗宽顶栏覆盖，仍按同一 token 接线）──
-        if let Some(bar) = self.ivars().titlebar.get() {
-            if let Some(layer) = theme_layer(bar) {
-                paint::paint_backdrop(
-                    &layer,
-                    &paint::Backdrop {
-                        fill: tokens.bar_bg,
-                        sheen: None,
-                        grain: None,
-                        stroke: None,
-                        stroke_width: 0.0,
-                        bevel: tokens.bar_bevel,
-                        elevation: Elevation::NONE,
-                        corner_radius: 0.0,
-                        flipped: false,
-                    },
-                );
-                paint::apply_line(
-                    &layer,
-                    paint::EdgeSide::Bottom,
-                    Some(&crate::ui::theme::InsetLine::hard(tokens.bar_edge, 1.0)),
-                    false,
-                );
-            }
-            if let Some(status) = self.ivars().titlebar_status.get() {
-                status.setTextColor(Some(&paint::color(tokens.dim)));
-            }
-        }
-        // ── 输入框文字 / 占位 / 插入符、品牌字（构建期定色，必须随主题刷新）──
+        // ── 输入框文字 / 占位 / 插入符（构建期定色，必须随主题刷新）──
         // 2026-10-05 实机报告「Y2K 铬主题下输入框里的字看不清」的根因：深色主题启动
         // 后再切浅色（铬）主题时，输入框文字与占位仍是旧主题的浅色，落在白色 `--fbg`
         // 上几乎不可见（输入框底/描边在下面已按新 token 重画，这两处漏了）。
+        // 顶栏（品牌/状态位/圆点）的颜色刷新不在这里：全窗宽顶栏是 `macos_main.rs`
+        // 的 `paint_chrome` 负责。
         if let Some(input) = self.ivars().input.get() {
             input.setTextColor(Some(&paint::color(tokens.ink)));
             input.setInsertionPointColor(Some(&paint::color(tokens.ink)));
         }
         if let Some(placeholder) = self.ivars().input_placeholder.get() {
             placeholder.setTextColor(Some(&paint::color(tokens.dim)));
-        }
-        if let Some(brand) = self.ivars().titlebar_brand.get() {
-            brand.setTextColor(Some(&paint::color(tokens.ink)));
         }
         // ── 状态行与持久按钮 ──
         if let Some(status) = self.ivars().status_label.get() {
@@ -3610,7 +3511,7 @@ impl ChatContentController {
     }
 
     /// 主题切换（`macos.rs::UiController::apply_theme` 广播）：持久外观重画 +
-    /// 整帧重建（气泡/工具卡/面板行/标签/顶栏按钮是构建期定色的，必须重建）。
+    /// 整帧重建（气泡/工具卡/面板行/标签是构建期定色的，必须重建）。
     fn apply_theme(&self) {
         self.repaint_chrome();
         self.rebuild_from_model();
@@ -3672,16 +3573,17 @@ impl ChatContentController {
         };
         self.relayout_panes();
         let after = self.ivars().width.get();
-        // 浮层内容按消息流可用高封顶：变矮后旧内容可能越界（可见但点不到），
-        // 同样要重建才能按新上限重新取舍。
-        let inspector_grown = match self.ivars().scroll.get() {
+        // 浮层内容按消息流可用高封顶：变矮后可视高应收紧（旧的按上限截断改为内部
+        // 滚动后，可视高 = min(内容全高, 新上限)）—— 可视高与当前值不一致就重建。
+        let inspector_changed = match self.ivars().scroll.get() {
             Some(scroll) if self.ivars().inspector_shown.get() => {
                 let cap = inspector_body_max_height(scroll.frame().size.height);
-                self.ivars().inspector_body_height.get() > cap + 0.5
+                let want = self.ivars().inspector_doc_height.get().min(cap);
+                (self.ivars().inspector_body_height.get() - want).abs() > 0.5
             }
             _ => false,
         };
-        if (after - before).abs() > 0.5 || cap_shrank || inspector_grown {
+        if (after - before).abs() > 0.5 || cap_shrank || inspector_changed {
             self.rebuild_from_model();
         }
     }
@@ -3736,6 +3638,7 @@ impl ChatContentController {
             }
         }
         self.ivars().inspector_body_height.set(0.0);
+        self.ivars().inspector_doc_height.set(0.0);
         self.ivars().inspector_shown.set(false);
         if let Some(overlay) = self.ivars().inspector_overlay.get() {
             overlay.ivars().active.set(false);
@@ -3761,7 +3664,7 @@ impl ChatContentController {
             scrim.ivars().active.set(false);
             scrim.setHidden(true);
         }
-        // A1：标签条按钮一并释放（展开时按最新投影重建）；顶栏条本体与状态位保留。
+        // A1：标签条按钮一并释放（展开时按最新投影重建）。
         if let Some(strip) = self.ivars().tabs_strip.get() {
             for subview in strip.subviews().iter() {
                 subview.removeFromSuperview();
@@ -3814,6 +3717,8 @@ impl ChatContentController {
         else {
             return;
         };
+        // 观测计数（dev A/B）：一次整帧重建（正文列表 + 面板 + 标签条全量）。
+        crate::ui::chat::stream_metrics::note_full_rebuild();
         let width = self.ivars().width.get().max(self.ivars().min_width.get());
         if *self.ivars().active_session.borrow() != snapshot.active_session {
             *self.ivars().active_session.borrow_mut() = snapshot.active_session.clone();
@@ -3864,7 +3769,9 @@ impl ChatContentController {
             y += height + MESSAGE_SPACING;
         }
         self.ivars().content_height.set(y);
-        *self.ivars().last_tail_text.borrow_mut() = snapshot.streaming.clone();
+        // 尾巴文本转共享句柄（[`TailText`]）：最近一次文本与未读水位共用同一份分配。
+        let tail_text: Option<TailText> = snapshot.streaming.as_deref().map(TailText::from);
+        *self.ivars().last_tail_text.borrow_mut() = tail_text.clone();
         if let Some(tail) =
             self.build_tail_view(mtm, snapshot.streaming.as_deref(), width, &speaker)
         {
@@ -3881,17 +3788,13 @@ impl ChatContentController {
         self.update_status(snapshot.status.clone());
         self.rebuild_pending(mtm, snapshot);
         self.rebuild_panels(mtm, snapshot);
-        self.rebuild_navigation(mtm, snapshot);
+        self.rebuild_tabs(mtm, snapshot);
         self.relayout_panes();
         self.arm_deadline_timer();
         if pinned {
             scroll_to_bottom(stack);
         }
-        self.note_jump_content(
-            snapshot.transcript_revision,
-            snapshot.streaming.as_deref(),
-            pinned,
-        );
+        self.note_jump_content(snapshot.transcript_revision, tail_text, pinned);
         self.update_jump_button();
         self.sync_inline_visible();
     }
@@ -3907,6 +3810,14 @@ impl ChatContentController {
         };
         let width = self.ivars().width.get().max(self.ivars().min_width.get());
         let speaker = self.ivars().speaker.borrow().clone();
+        // 观测计数（dev A/B）：一次尾巴重建。
+        crate::ui::chat::stream_metrics::note_tail_rebuild();
+        // 共享句柄（[`TailText`]）：同一份文本要写进「最近一次文本」与「未读水位」，
+        // 滚动通知（`scroll_to_bottom` 的同步回调）还会再读一次 —— 旧实现每处
+        // `.clone()` 都是整串克隆。
+        let text: Option<TailText> = text.map(TailText::from);
+        // 赋值必须在 build/scroll 之前：`scroll_to_bottom` 触发的同步滚动通知会经
+        // `mark_jump_seen_now` 读它推水位（写进「上一次的可见尾巴」）。
         *self.ivars().last_tail_text.borrow_mut() = text.clone();
         let pinned = is_at_bottom(scroll, stack);
         if let Some(old) = self.ivars().tail.borrow_mut().take() {
@@ -3929,12 +3840,13 @@ impl ChatContentController {
             scroll_to_bottom(stack);
         }
         // 流式增量不改变 transcript revision：未读判定以「尾巴文本变化」为准。
-        self.note_jump_content(
-            self.ivars().jump_latest_revision.get(),
-            text.as_deref(),
-            pinned,
-        );
-        self.update_jump_button();
+        self.note_jump_content(self.ivars().jump_latest_revision.get(), text, pinned);
+        // 按钮显隐用本帧已算好的 `pinned`：水位已由上面（在底部时）与滚动通知
+        // （`scroll_to_bottom` 的同步回调）推平，不再走 `update_jump_button`
+        // 重复推平（每帧多一次 `is_at_bottom` + 一次整串克隆）。
+        if let Some(button) = self.ivars().jump_button.get() {
+            self.apply_jump_button_visibility(button, pinned);
+        }
         self.sync_inline_visible();
     }
 
@@ -4080,7 +3992,8 @@ impl ChatContentController {
         let count = snapshot.pending_images.len();
         let target_offset = if count > self.ivars().pending_count.get() {
             let last = widths.len() - 1;
-            let last_left = pending_strip::chip_offset(last, &widths, PENDING_PAD_X, PENDING_CHIP_GAP);
+            let last_left =
+                pending_strip::chip_offset(last, &widths, PENDING_PAD_X, PENDING_CHIP_GAP);
             pending_strip::clamp_scroll(
                 pending_strip::reveal_offset(last_left, widths[last], viewport),
                 content_width,
@@ -4491,7 +4404,7 @@ impl ChatContentController {
         actions: &mut Vec<PanelAction>,
         select_labels: &mut Vec<(isize, Vec<String>)>,
     ) {
-        use crate::ui::chat::panels::layout_panels;
+        use crate::ui::chat::panels::{layout_panels, panel_scroll_geometry};
         let (Some(body), Some(title)) = (
             self.ivars().inspector_body.get(),
             self.ivars().inspector_title.get(),
@@ -4505,6 +4418,7 @@ impl ChatContentController {
         // 浮层收着、或还没有可显示的面板（还没到投影）：按关闭处理，不留空浮层。
         if !open || inspector_views.is_empty() {
             self.ivars().inspector_body_height.set(0.0);
+            self.ivars().inspector_doc_height.set(0.0);
             self.set_inspector_shown(false, was_shown);
             return;
         }
@@ -4520,12 +4434,17 @@ impl ChatContentController {
             .map(|scroll| scroll.frame().size.height)
             .unwrap_or(0.0);
         let max_body = inspector_body_max_height(scroll_h);
-        let layout = layout_panels(views, body_w, max_body);
-        if layout.truncated {
-            // 内容超上限：`layout_panels` 保序跳过放不下的块（不留半截控件），留痕不静默。
+        // 抽屉内容**全量摆放**（不设高度上限）：上限只决定可视区高，其余靠内部滚动
+        // 到达 —— 旧的「按上限摆放」会把放不下的块按序跳过（超长的「注册明细」全
+        // 展开即触发，内容谁也到不了）；滚动几何走共享 `panel_scroll_geometry`。
+        let layout = layout_panels(views, body_w, f64::INFINITY);
+        let geometry = panel_scroll_geometry(layout.height, max_body);
+        if geometry.max_offset > 0.0 {
+            // 超可视高：内容由内部滚动可达（留痕不静默；这里不再有「丢块」的截断）。
             rust_debug!(
-                "浮层内容超上限：已跳过部分块（blocks={} max_body={max_body:.0}）",
-                views.len()
+                "浮层内容超可视高：已启用内部滚动（content={:.0} view={:.0}）",
+                geometry.content_height,
+                geometry.view_height
             );
         }
         self.place_panel_elements(mtm, &layout.elements, &body, actions, select_labels);
@@ -4540,7 +4459,10 @@ impl ChatContentController {
                 crate::ui::platform::macos_widgets::HELP_BASE_SIZE,
             )));
         }
-        self.ivars().inspector_body_height.set(layout.height);
+        self.ivars()
+            .inspector_doc_height
+            .set(geometry.content_height);
+        self.ivars().inspector_body_height.set(geometry.view_height);
         self.set_inspector_shown(true, was_shown);
     }
 
@@ -4681,52 +4603,17 @@ impl ChatContentController {
         }
     }
 
-    // ── A1：顶栏按钮 + 会话标签条 ──
+    // ── A1：会话标签条 ──
 
-    /// 重建顶栏按钮与标签条（整帧重建时调用；独立聊天窗模式直接跳过）。
+    /// 重建会话标签条（整帧重建时调用；独立聊天窗模式直接跳过）。
     ///
-    /// 状态位文本每次重建都从 [`crate::ui::titlebar`] 取最新值（推送刷新与重建的
-    /// 先后顺序不影响终态）。
-    fn rebuild_navigation(&self, mtm: MainThreadMarker, snapshot: &crate::ui::chat::ChatSnapshot) {
+    /// 顶栏（品牌/状态位/按钮）不在这里：它归主窗的全窗宽顶栏（`macos_main.rs`），
+    /// 状态位文本由 `macos.rs::refresh_titlebar` 直接推给那一份展示副本。
+    fn rebuild_tabs(&self, mtm: MainThreadMarker, snapshot: &crate::ui::chat::ChatSnapshot) {
         if !self.ivars().nav_embedded.get() {
             return;
         }
         let width = self.ivars().width.get().max(self.ivars().min_width.get());
-        if let Some(status) = self.ivars().titlebar_status.get() {
-            status.setStringValue(&NSString::from_str(&crate::ui::titlebar::current()));
-        }
-
-        // ── 顶栏按钮：右对齐（图层、设置）──
-        // 不建「×」：macOS 的窗口关闭走系统红绿灯与 ⌘W（windowShouldClose →
-        // 收起，不销毁），自绘关闭按钮与系统通道重复、徒增右上角字符。
-        if let Some(bar) = self.ivars().titlebar.get() {
-            for subview in bar.subviews().iter() {
-                let is_button = unsafe {
-                    let any: &AnyObject = &*(Retained::as_ptr(&subview) as *const AnyObject);
-                    any.downcast_ref::<NSButton>().is_some()
-                };
-                if is_button {
-                    subview.removeFromSuperview();
-                }
-            }
-            let y = (TITLEBAR_HEIGHT - NAV_BUTTON_HEIGHT) / 2.0;
-            let mut x = width - 4.0;
-            // 2026-10-05：「图层」按钮从聊天顶栏退场（用户拍板），入口保留在托盘菜单，
-            // 设置窗另加入口；聊天顶栏只留「设置」。
-            for (title, action, button_width) in
-                [("设置", sel!(openSettings:), TITLEBAR_BUTTON_WIDTH)]
-            {
-                x -= button_width;
-                let button =
-                    nav_button(mtm, self, title, action, button_width, paint::Face::Normal);
-                bar.addSubview(&button);
-                button.setFrame(NSRect::new(
-                    NSPoint::new(x.max(0.0), y),
-                    NSSize::new(button_width, NAV_BUTTON_HEIGHT),
-                ));
-                x -= 4.0;
-            }
-        }
 
         // ── 标签条：会话标签（左）+ 「+」「历史」（右，优先保留）──
         let Some(strip) = self.ivars().tabs_strip.get() else {
@@ -4897,13 +4784,6 @@ impl ChatContentController {
                 );
                 crate::ui::chat::set_notice(None);
             }
-        }
-    }
-
-    /// 顶栏状态位文本刷新（推送路径；面板不在时静默跳过 —— 重建时会取 `current()`）。
-    fn set_titlebar_text(&self, text: &str) {
-        if let Some(label) = self.ivars().titlebar_status.get() {
-            label.setStringValue(&NSString::from_str(text));
         }
     }
 
@@ -5258,7 +5138,7 @@ fn panel_select(
     control.into_super()
 }
 
-/// A1：顶栏/标签条按钮的构造（tag 由调用方按用途设置；不加入面板动作表）。
+/// A1：标签条按钮的构造（tag 由调用方按用途设置；不加入面板动作表）。
 fn nav_button(
     mtm: MainThreadMarker,
     controller: &ChatContentController,
@@ -5799,6 +5679,9 @@ impl BubbleTheme {
 fn text_layout_extent(view: &NSTextView) -> Option<(f64, f64)> {
     let container = unsafe { view.textContainer() }?;
     let manager = unsafe { view.layoutManager() }?;
+    // dev 观测（A/B 口径）：每次调用 = 一次「强制排版 + 全行片段遍历」。泡构建对
+    // 同一个视图只该来一次 —— 这里计数能直接看出双遍历回潮（见 `stream_metrics`）。
+    crate::ui::chat::stream_metrics::note_text_layout();
     manager.ensureLayoutForTextContainer(&container);
     let storage = unsafe { view.textStorage() }?;
     let length = storage.length();
@@ -5824,14 +5707,6 @@ fn text_layout_extent(view: &NSTextView) -> Option<(f64, f64)> {
     Some((max_width, max_bottom))
 }
 
-/// 散文视图实际排版宽度（拿不到排版组件时返回 0，由 [`bubble_content_width`]
-/// 的下限兜底；语义与坑见 [`text_layout_extent`]）。
-fn prose_used_width(view: &NSTextView) -> f64 {
-    match text_layout_extent(view) {
-        Some((width, _)) => width,
-        None => 0.0,
-    }
-}
 
 // ==========================================
 // 消息正文视图（右键「记住这条」入口）
@@ -6029,7 +5904,7 @@ fn build_bubble_view(
             Block::CodeBlock { lang, lines } => {
                 has_code = true;
                 if !segment.is_empty() {
-                    let prose = build_prose_view(
+                    let (prose, prose_used) = build_prose_view(
                         mtm,
                         &segment,
                         inner_width,
@@ -6038,7 +5913,7 @@ fn build_bubble_view(
                         theme.text_color,
                         remember_event_id,
                     );
-                    used_max = used_max.max(prose_used_width(&prose));
+                    used_max = used_max.max(prose_used);
                     let height = prose.frame().size.height;
                     bubble.addSubview(&prose);
                     prose.setFrame(NSRect::new(
@@ -6068,7 +5943,7 @@ fn build_bubble_view(
         }
     }
     if !segment.is_empty() {
-        let prose = build_prose_view(
+        let (prose, prose_used) = build_prose_view(
             mtm,
             &segment,
             inner_width,
@@ -6077,7 +5952,7 @@ fn build_bubble_view(
             theme.text_color,
             remember_event_id,
         );
-        used_max = used_max.max(prose_used_width(&prose));
+        used_max = used_max.max(prose_used);
         let height = prose.frame().size.height;
         bubble.addSubview(&prose);
         prose.setFrame(NSRect::new(
@@ -6121,6 +5996,9 @@ fn build_bubble_view(
 ///
 /// `remember_event_id` 透传给 [`MessageTextView`]：`Some` 时该视图右键菜单多一项
 /// 「记住这条」（用户消息），`None` 时与系统默认一致。
+///
+/// 返回 `(视图, 最宽行宽)`：宽高同出一次排版量测（见 [`autosize_text_view`]），
+/// 泡宽直接用它，不再二次遍历行片段。
 fn build_prose_view(
     mtm: MainThreadMarker,
     blocks: &[Block],
@@ -6129,7 +6007,7 @@ fn build_prose_view(
     delegate: &ProtocolObject<dyn NSTextViewDelegate>,
     ink: Rgba,
     remember_event_id: Option<&str>,
-) -> Retained<NSTextView> {
+) -> (Retained<NSTextView>, f64) {
     // 正文视图是 [`MessageTextView`]（只在右键菜单上多一项「记住这条」，排版行为
     // 与普通 NSTextView 完全一致）；量测/父调用方仍按 `NSTextView` 使用。
     let view: Retained<NSTextView> = MessageTextView::new(
@@ -6157,17 +6035,24 @@ fn build_prose_view(
     if let Some(storage) = unsafe { view.textStorage() } {
         storage.setAttributedString(&attributed);
     }
-    autosize_text_view(&view, width);
-    view
+    let used_width = autosize_text_view(&view, width);
+    (view, used_width)
 }
 
-fn autosize_text_view(view: &NSTextView, width: f64) {
+/// 排版一次、同时取回**最宽行宽**并按高度定帧（返回 0.0 = 拿不到排版组件，
+/// 由 [`bubble_content_width`] 的下限兜底）。
+///
+/// 宽高来自同一次 [`text_layout_extent`]：旧实现先用 `autosize_text_view` 量高度、
+/// 再用 `prose_used_width` 二次遍历全部行片段量宽度 —— 每个泡（包括**每个 delta
+/// 都重建的流式尾巴**）白跑一遍整行片段遍历。合并后泡宽取值点与旧实现相同
+/// （同一容器、同一文本；定帧只改视图高度、不改变容器宽度与行片段）。
+fn autosize_text_view(view: &NSTextView, width: f64) -> f64 {
     view.setFrame(NSRect::new(
         NSPoint::new(0.0, 0.0),
         NSSize::new(width, 10.0),
     ));
-    let Some((_, bottom)) = text_layout_extent(view) else {
-        return;
+    let Some((used_width, bottom)) = text_layout_extent(view) else {
+        return 0.0;
     };
     let inset = view.textContainerInset();
     let height = (bottom + inset.height * 2.0).ceil().max(1.0);
@@ -6175,6 +6060,7 @@ fn autosize_text_view(view: &NSTextView, width: f64) {
         NSPoint::new(0.0, 0.0),
         NSSize::new(width, height),
     ));
+    used_width
 }
 
 /// 受控块 → attributed string。所有内容都来自 [`Span`]/纯文本，天然不执行
@@ -6936,16 +6822,34 @@ mod tests {
         assert!(jump_has_new_content(7, 7, Some("abc"), None));
     }
 
-    // ── 顶栏品牌文案（用户拍板：单个 V1rtual-Desk-Pet）──
+    // ── 旧顶栏删除守门（顶栏品牌文案与几何测试在 `ui/titlebar.rs`）──
 
     #[test]
-    fn 品牌与状态位坐标跟随新文案() {
-        assert_eq!(TITLEBAR_BRAND_TEXT, "V1rtual-Desk-Pet");
-        let brand_w = titlebar_brand_width();
-        assert!(brand_w > 52.0, "新品牌字比旧 52pt 宽，状态位必须右移");
+    fn 聊天列不再自建顶栏() {
+        // 旧顶栏（被全窗宽顶栏覆盖的聊天列副本）已删除：构建、拖拽视图、文本刷新
+        // 路径与条内几何算式都不得回潮；顶部 26pt 带仍按共享条高预留（标签条接在
+        // 全窗宽顶栏下方）。断言词拆开拼接，避免测试文本自己命中扫描。
+        let source = include_str!("macos_chat.rs");
+        for (name, needle) in [
+            ("旧顶栏拖拽视图", concat!("Titlebar", "DragView")),
+            ("品牌槽宽算式", concat!("fn titlebar_brand", "_width")),
+            ("状态位起点算式", concat!("fn titlebar_status", "_x")),
+            ("品牌文案常量", concat!("const TITLEBAR", "_BRAND_TEXT")),
+            ("顶栏文本刷新副本", concat!("fn apply_titlebar", "_text")),
+        ] {
+            assert_eq!(
+                source.matches(needle).count(),
+                0,
+                "旧顶栏实现残留「{name}」：{needle}"
+            );
+        }
+        let production = {
+            let end = source.find("#[cfg(test)]").expect("必须有测试段");
+            &source[..end]
+        };
         assert!(
-            titlebar_status_x() > TITLEBAR_BRAND_X + brand_w,
-            "状态位在品牌字右缘之后"
+            production.contains(concat!("crate::ui::titlebar::", "HEIGHT")),
+            "标签条与顶部预留必须消费共享条高（顶部带归全窗宽顶栏）"
         );
     }
 
@@ -7098,7 +7002,7 @@ mod tests {
     fn 浮层内容区按上限夹取() {
         // 高窗口：设计稿上限 246。
         assert!((inspector_body_max_height(800.0) - INSPECTOR_BODY_MAX_HEIGHT).abs() < 0.01);
-        // 矮窗口：至少留 24（不塌成 0；超出的内容由 layout_panels 截断并留痕）。
+        // 矮窗口：至少留 24（不塌成 0；这是**可视区**下限，超出的内容由内部滚动到达）。
         assert!(inspector_body_max_height(60.0) >= 24.0);
         // 总高 = 标题 + 上下内边距 + 内容；无内容 = 0（不定位浮层）。
         assert_eq!(inspector_content_height(0.0), 0.0);
@@ -7157,8 +7061,9 @@ mod tests {
     #[test]
     fn 换主题会刷新输入框文字与占位颜色() {
         // 2026-10-05 实机回归（Y2K 铬主题下输入框里的字看不清）：输入框文字/占位/
-        // 插入符与品牌字是**构建期**定色，换主题不重贴就会留旧主题的浅色（深色主题
-        // 切浅色后落在白色 `--fbg` 上几乎不可见）。这里钉住 `repaint_chrome` 的刷新链。
+        // 插入符是**构建期**定色，换主题不重贴就会留旧主题的浅色（深色主题切浅色后
+        // 落在白色 `--fbg` 上几乎不可见）。这里钉住 `repaint_chrome` 的刷新链。
+        // （品牌字/状态位不在本文件：顶栏颜色刷新归 `macos_main.rs::paint_chrome`。）
         let source = include_str!("macos_chat.rs");
         // 带左括号定位：避免先命中 `repaint_chrome_if_resized`。
         let start = source
@@ -7171,7 +7076,6 @@ mod tests {
             ("输入框文字", "input.setTextColor"),
             ("输入框插入符", "setInsertionPointColor"),
             ("输入框占位", "placeholder.setTextColor"),
-            ("品牌字", "brand.setTextColor"),
         ] {
             assert!(
                 body.contains(needle),
@@ -7258,5 +7162,40 @@ mod tests {
                 "上拉抽屉符号「{name}」未删净：{needle}"
             );
         }
+    }
+
+    /// 泡量测保持**单遍**（2026-10-06 流式 delta 减负）：同一个散文视图的宽与高
+    /// 必须来自同一次 [`text_layout_extent`] —— 旧实现先 `autosize_text_view` 量
+    /// 高度、再 `prose_used_width` 二次遍历全部行片段量宽度；流式尾巴每个 delta
+    /// 都重建一个泡，双遍历在流式路径上是每帧成本。AppKit 布局单测走不到（需主
+    /// 线程 + 真视图），这里用源码护栏钉住（本仓既有做法；A/B 钩子的 `text_layouts`
+    /// 计数在双遍历回潮时会翻倍）。
+    #[test]
+    fn 泡量测保持单遍_源码守门() {
+        let source = include_str!("macos_chat.rs");
+        let at = source
+            .find("fn autosize_text_view(")
+            .expect("autosize_text_view 必须存在");
+        let body = &source[at..];
+        // 顶层函数体以列 0 的 `}` 收束（体内没有列 0 的闭括号）。
+        let end = body
+            .find("\n}\n")
+            .map(|index| index + 2)
+            .unwrap_or(body.len());
+        let body = &body[..end];
+        assert_eq!(
+            body.matches("text_layout_extent(").count(),
+            1,
+            "定帧与取宽必须共用同一次 text_layout_extent（二次遍历 = 每帧白跑一遍全行片段）"
+        );
+        assert!(
+            body.contains("used_width"),
+            "量测必须把最宽行宽一并返回（泡宽用它，见 build_bubble_view）"
+        );
+        let production = &source[..source.find("#[cfg(test)]").unwrap_or(source.len())];
+        assert!(
+            !production.contains("fn prose_used_width"),
+            "二次量测函数 prose_used_width 已合并删除，不得回潮"
+        );
     }
 }

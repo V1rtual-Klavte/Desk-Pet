@@ -102,7 +102,6 @@ export {
   chatWithdrawQueued,
 } from "./decision-intents"
 export {
-  HOST_REQUEST_EVENT,
   HOST_REQUEST_RESULT_METHOD,
   collectSettingsSnapshot,
   dispatchHostRequest,

@@ -5,6 +5,10 @@
 // 命令语义。L3 里 IPC 由 test/host/node-ipc.ts 顶替（真实 Rust 命令的 Node 等价实现，
 // 只实现机制，不做路径裁决）；除错误码映射的两条策略探针外，语义与 L4 同源。
 //
+// 另含一条 2026-10-06 折叠批次新增的用例（`harness-session-write-limit`）：会话根写入上限 ——
+// 会话根内走 `session_write_text` 的专用放宽（`SESSION_WRITE_MAX_BYTES`）、根外仍受工具面
+// `MAX_TOOL_FILE_BYTES`（5 MiB）；覆盖 hs-02 的写侧边界（Rust 侧的 base 边界裁决留 L4）。
+//
 // 迁移时的审视修正（对应契约「审计线索」的复核结论）：
 //   · 原 :50 / :94 用 `fileOk` 解包 Result 后**丢弃了布尔值** —— exists 返回 ok(false)
 //     也照样通过（D1 恒真）。迁移后显式断言布尔值：目录存在、拒绝删除后目录仍在。
@@ -26,8 +30,10 @@ import type { FileError, Result } from "@earendil-works/pi-agent-core"
 import { afterAll, beforeAll, describe, expect, it } from "vitest"
 
 import { setTestDataRoot } from "../../host/node-ipc"
+import { SESSION_WRITE_MAX_BYTES } from "@/services/engine/harness"
+import { SessionFileSystem } from "@/services/engine/harness/session-file-system"
 import { BaseDirs, initPaths, runtimePath } from "@/services/paths"
-import { NativeExecutionEnv } from "@/services/tool/pi/native-execution-env"
+import { MAX_TOOL_FILE_BYTES, NativeExecutionEnv } from "@/services/tool/pi/native-execution-env"
 
 /**
  * 解包 Result（夹具解码器，不是断言）：失败时先经 expect 记一条带错误码的失败，再中止本用例
@@ -176,6 +182,57 @@ describe("执行环境文件树", () => {
       } finally {
         expectOk(await env.remove(root, { recursive: true, force: true }, context), "remove(root)")
       }
+    }
+  })
+
+  it("会话根内的写入放宽到会话专用上限，会话根外的写入仍受工具面 5 MiB 上限 [harness-session-write-limit]", async () => {
+    const context = BACKGROUND_CONTEXT
+    const utf8 = new TextEncoder()
+    const sessionsRoot = await runtimePath("sessions")
+    const dataRootPath = await runtimePath("data")
+    // 会话读写的生产形态：边界内走宿主会话命令，边界外回落到通用文件命令。
+    const sessionEnv = new SessionFileSystem(dataRootPath, sessionsRoot)
+
+    /**
+     * >5 MiB 的探针载荷：中英混合，UTF-8 字节数 > 上限而 UTF-16 字符数 < 上限 ——
+     * 按 `String.length` 判上限的实现会被这条钉住（与折叠夹具同一口径）。
+     */
+    const unit = "会话写上限探针x" // 7 CJK + 1 ASCII = 22 UTF-8 字节
+    const payload = unit.repeat(Math.ceil((MAX_TOOL_FILE_BYTES + 1024) / utf8.encode(unit).byteLength))
+    expect(utf8.encode(payload).byteLength, "探针载荷未超过工具面 5 MiB 上限：用例失去区分力").toBeGreaterThan(MAX_TOOL_FILE_BYTES)
+    expect(payload.length, "探针载荷的字符数未低于字节上限：字符口径的实现不会被这条钉住").toBeLessThan(MAX_TOOL_FILE_BYTES)
+
+    const insideDir = `${sessionsRoot}/session-write-limit-${crypto.randomUUID()}`
+    const insidePath = `${insideDir}/--cwd--/probe.jsonl.tmp-1`
+    const outsideDir = `${dataRootPath}/session-write-limit-${crypto.randomUUID()}`
+    const outsidePath = `${outsideDir}/probe.jsonl`
+    try {
+      // ① 会话根内：超过工具面 5 MiB 的写入放行，内容逐字节落在盘上（放宽真实生效）。
+      expectOk(await sessionEnv.writeFile(insidePath, payload, context), "writeFile(会话根内 >5 MiB)")
+      const insideInfo = expectOk(await sessionEnv.fileInfo(insidePath, context), "fileInfo(会话根内)")
+      expect(insideInfo.size, "会话根内写入的字节数 ≠ 载荷字节数").toBe(utf8.encode(payload).byteLength)
+      expect(expectOk(await sessionEnv.readTextFile(insidePath, context), "readTextFile(会话根内)")).toBe(payload)
+
+      // ② 同一实例、同一载荷、会话根外：回落通用 file_write，仍被工具面 5 MiB 上限拒绝，
+      //    且不落盘（Rust 侧在同一条命令上只放大 maxBytes，不改变拒绝语义）。
+      const rejected = await sessionEnv.writeFile(outsidePath, payload, context)
+      expect(rejected.ok, "会话根外的 >5 MiB 写入被放行了：工具面上限被会话路径污染").toBe(false)
+      if (!rejected.ok) {
+        // OTHER（「写入内容过大」）不在 FileError 映射表里，如实保持 unknown（不猜成别的类别）。
+        expect(rejected.error.code, `会话根外超限应报 unknown/OTHER，实际 ${rejected.error.code}: ${rejected.error.message}`).toBe("unknown")
+      }
+      expect(expectOk(await sessionEnv.exists(outsidePath, context), "exists(会话根外)")).toBe(false)
+
+      // ③ 对照：会话根外的小载荷照常成功 —— 上限不是「会话根外一律拒绝」。
+      expectOk(await sessionEnv.writeFile(outsidePath, "小载荷", context), "writeFile(会话根外 小载荷)")
+      expect(expectOk(await sessionEnv.readTextFile(outsidePath, context), "readTextFile(会话根外 小载荷)")).toBe("小载荷")
+
+      // ④ 阈值关系：会话写上限必须 ≥ 折叠读取守卫（折叠只删不增 ⇒ 折叠结果 ≤ 输入），
+      //    否则会出现「能折、写不回去」的区间（结果守卫与读守卫的契约见会话日志折叠用例）。
+      expect(SESSION_WRITE_MAX_BYTES, "会话写上限必须 ≥ 5 MiB 的工具面上限（放宽方向不能反）").toBeGreaterThan(MAX_TOOL_FILE_BYTES)
+    } finally {
+      expectOk(await sessionEnv.remove(insideDir, { recursive: true, force: true }, context), "remove(会话根内)")
+      expectOk(await sessionEnv.remove(outsideDir, { recursive: true, force: true }, context), "remove(会话根外)")
     }
   })
 })

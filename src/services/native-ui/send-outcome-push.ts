@@ -23,14 +23,14 @@
 // 不为一个必然失败的推送挂订阅。
 
 import { formatError } from "@/services/error"
-import { publishUiEvent, type HostEventMap } from "@/services/host"
+import { publishUiEvent, HOST_EVENT_SEND_OUTCOME, type HostEventMap } from "@/services/host"
 import { registerUserIngressObserver, type UserIngressObserverEvent } from "@/services/agent"
 import { createLogger } from "@/services/logger"
 
 const log = createLogger("NativeUi")
 
-/** `deskpet-send-outcome` 的线载荷（形状定义点 = `HostEventMap` 条目）。 */
-export type SendOutcomePayload = HostEventMap["deskpet-send-outcome"]
+/** `deskpet-send-outcome` 的线载荷（形状定义点 = `HostEventMap` 条目；键名取事件名常量）。 */
+export type SendOutcomePayload = HostEventMap[typeof HOST_EVENT_SEND_OUTCOME]
 
 /**
  * ingress 观察事件 → 线载荷：只取 `HostEventMap` 登记的三个字段；
@@ -54,7 +54,7 @@ export function startSendOutcomePush(): void {
     const payload = sendOutcomePayload(event)
     if (!payload) return
     try {
-      void publishUiEvent("deskpet-send-outcome", payload).catch(error => {
+      void publishUiEvent(HOST_EVENT_SEND_OUTCOME, payload).catch(error => {
         log.warn("发送投递归宿推送失败（best-effort，不影响投递）:", formatError(error))
       })
     } catch (error) {

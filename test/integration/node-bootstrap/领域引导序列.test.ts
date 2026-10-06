@@ -4,8 +4,9 @@
 //
 // 归属 L3 的依据：引导本身要求会话 JSONL 真落盘（initSessions 建立活跃会话 →
 // 欢迎语经 appendPiSessionCustomEntry 落盘），断言读的是真实条目
-// （readPiSessionEntriesOnce，会话落盘是 L3 的层签名）；fake 只替换 Provider ——
-// 本用例不跑回合，连 Provider 都不需要。
+// （readPiSessionEntriesOnce，会话落盘是 L3 的层签名）；本用例不跑回合，不需要 Provider。
+// 唯一的夹具替身是主动台账的只读查询（见下方 vi.mock 的说明）：L3 没有该后端，
+// 不打平它，「空会话」前提会被读取失败的提示消息破坏，欢迎语链整条测不到。
 //
 // 被测行为（契约 proactive pr-08 的声明）：
 //   · 引导把 Card/registry、slash 命令表、工具、会话按序接上，欢迎语用激活 Card 的问候语；
@@ -37,12 +38,28 @@ import { debug } from "@/services/debug"
 import { listAll as listAllSlashCommands } from "@/services/engine/slash"
 import { initDomainBootstrap } from "@/services/init"
 import { initPaths } from "@/services/paths"
+import { getActivePersonalityId, pickActiveGreeting } from "@/services/personality"
 import { getCard, initCards } from "@/services/personality/loader"
 import { isPersonalityRuntimeReady } from "@/services/personality/registry"
 import { FALLBACK_STAGES, stageSourceHash } from "@/services/personality/stages-cache"
 import { updateStagesFile } from "@/services/personality/stages-file"
 import { DESKPET_GREETING_ENTRY, chatHistory, getActiveSessionId } from "@/services/session"
 import { readPiSessionEntriesOnce } from "@/services/session/repo"
+
+// 夹具替身（只在**这一条只读查询**上）：L3 宿主没有主动台账（SQLite 归 Rust，
+// `proactive_query` 在 Node 适配层按 unsupported.ts 的分类调用即抛）。领域引导的
+// `initSessions → activateSession → reconcileActiveReceipts` 会查一次台账；查询失败被
+// `loadMessagesFromSession` 如实归到「会话正文读取失败」，并把那条系统提示推进会话视图 ——
+// 「空会话」的前提因此被打破，引导的欢迎语步会被跳过（首跑红点根因，不是欢迎语链本身坏了）。
+// 这里返回本宿主真实的台账状态（空：L3 产生不了任何主动尝试），让夹具回到产品全新安装的
+// 空会话形态；写侧（change/claim/settle/reconcile）不替身，保持「调用即抛」。
+vi.mock("@/services/proactive/ipc", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/services/proactive/ipc")>()
+  return {
+    ...actual,
+    query: async () => ({ tasks: [], attempts: [], revision: 0 }),
+  }
+})
 
 /** 夹具 Profile：引导的 Profile 步要求至少一个可加载的激活/默认 Profile。 */
 const FIXTURE_PROFILE_YAML = `
@@ -226,13 +243,26 @@ describe("领域引导序列", () => {
 
     const sessionId = getActiveSessionId()
     expect(sessionId, "会话初始化没有建立活跃会话").not.toBe("")
-    // 欢迎语的【恰好一次 + 来源为激活 Card 探针】的硬断言由
-    // `test/integration/native-ui/会话意图承接与投影推送.test.ts` 承担（那里的夹具
-    // 显式种卡 + switchPersonality，拾取链完整）。本文件只做防双写的弱校验：引导
-    // 环境下拾取链为空时产品按设计不写欢迎语（无卡不编台词），不算失败。
-    // 待补覆盖：夹具化「带问候语的引导环境」后把硬断言移回本例（已登记）。
+    // 夹具前提（带问候语的引导环境）：引导必须真的激活探针卡，且它的 stages 缓存已装载 ——
+    // 否则下面对「欢迎语来源」的断言会退化成对中性兜底的断言。拾取链不成立就报红，
+    // 而不是像旧版那样把「没写欢迎语」也放行（那会让整条落盘链没有断言）。
+    expect(getActivePersonalityId(), "引导没有激活探针卡，夹具前提（带问候语的引导环境）不成立").toBe(CARD_ID)
+    expect(pickActiveGreeting(), "探针卡的问候语在引导后不可拾取（stages 缓存未装载）").toBe(PROBE_GREETING)
+
+    // 无 run 会话的宿主条目落盘（node-bootstrap 路径的硬断言）：引导建立的活跃会话没有槽、
+    // 没有 run，欢迎语仍必须**真落盘**恰好一条，且正文来自激活 Card 的问候语
+    // （探针串只可能来自激活卡的 stages 缓存，中性兜底表里没有它）。
+    // 旧版按「磁盘或视图」软计数（`<= 1`）——「只在视图、磁盘没有」也算通过，正是要补的洞。
     const greetings = await readPiSessionEntriesOnce(sessionId, { customType: DESKPET_GREETING_ENTRY, order: "asc" })
+    expect(greetings.length, "欢迎语没有落盘恰好一条（无 run 会话的宿主条目也必须持久）").toBe(1)
+    const greetingEntry = greetings[0]
+    expect(greetingEntry?.type, "欢迎语条目不是 custom 条目（落盘形态被改坏）").toBe("custom")
+    expect(
+      greetingEntry?.type === "custom" ? (greetingEntry.data as { text?: string } | undefined)?.text : undefined,
+      "落盘的欢迎语不是激活 Card 的问候语（落到了中性兜底或别的来源）",
+    ).toBe(PROBE_GREETING)
+    // 视图侧不得重复推送同一句（重载由读模型从条目带回；推两次会让用户看到两遍）。
     const inView = chatHistory.filter((message) => (message as { text?: string }).text?.includes(PROBE_GREETING))
-    expect(greetings.length + inView.length, "欢迎语出现双写（磁盘与视图各一份）").toBeLessThanOrEqual(1)
+    expect(inView.length, "欢迎语在会话视图里重复推送").toBeLessThanOrEqual(1)
   })
 })

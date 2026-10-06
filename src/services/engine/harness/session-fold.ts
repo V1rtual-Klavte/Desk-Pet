@@ -20,22 +20,36 @@
 //     「全量折叠」（需要重新生成 seq）。
 //   · 将来若会话规模真的上来，周期状态快照是明确的下一个候选 —— 届时应**另立方案**，不是本执行
 //     的追加任务。
-//   · **尚未被本波规则覆盖的一类可回收对象**（本波只登记、不扩规则）：被反复覆盖但**从未
-//     `delete`** 的 `value/set`（实测参考会话 4 个 key、144 条写入：`pi.lane.config` 43 /
-//     `pi.lane.state` 51 / `pi.branch.tip` 48 / `pi.session.name` 2）。现有规则只回收「最后一次
-//     delete 之前」的写入，碰不到它们 ⇒ 这类会话的可回收量恒小于 `minReclaimBytes`，闸门 2 永远
-//     拒绝折叠，而文件仍会越过 `minFileBytes`，每次 close/open 前都**白做一次 stat**。将来要收时
-//     把规则扩成「同一 key 只保留最后一次写入」，replay 等价性证明与状态摘要校验都不变。
+//   · **规则扩展已落地（2026-10-06，用户拍板方案①「同一 key 只保留最后一次写入」）**：此前只回收
+//     「最后一次 delete 之前」的写入，被反复覆盖但**从未 `delete`** 的 `value/set`（实测参考会话
+//     4 个 key、144 条写入：`pi.lane.config` 43 / `pi.lane.state` 51 / `pi.branch.tip` 48 /
+//     `pi.session.name` 2）碰不到 ⇒ 这类会话的可回收量恒小于 `minReclaimBytes`，闸门 2 永远拒绝
+//     折叠，而文件仍会越过 `minFileBytes`，每次 close/open 前都**白做一次 stat**。现在规则扩成
+//     「同一 **value** key 只保留最后一次 `set`」：行号严格小于该 key 最后一次 `value/set` 的 set
+//     可丢。scalar 是覆盖语义（重放里 `scalarValues.set` 只留最后一个 `{seq, value}`），因此
+//     replay 等价性证明与状态摘要校验都不变；S-2「保留行逐字不变」也不变（仍是整行纯删除）。
+//     实测动机：旧大会话里三条各 2.4 MB 的 `pi.op.preparation`（`value/set`）与保留写入同行被
+//     钉死 7.2 MB —— 同行两侧现在都能作为「非最后一次写入」整行回收。
+//   · **`list/append` 不适用这条扩展**（有意收窄）：list 的 append 在重放里累积成**元素序列**
+//     （`listValues`，元素顺序是语义），丢任何一条都会改变逻辑状态、摘要必然不一致 —— 它不是
+//     「同一 key 只保留最后一次写入」的适用对象；它的回收来源仍是「最后一次 delete 之前的整段」。
 //   · **成功折叠不可逆**：被删行的原字节随 rename 覆盖消失，**不保留 `.bak`、没有回滚路径**；
 //     安全防线只有「提交前的状态摘要比对 + 原子替换」，且这两条只在**失败**时保住原文件。
 //
-// 判定规则（唯一两条；只删 append/set，delete 行本身永远保留）：
+// 判定规则（只删 append/set，delete 行本身永远保留）：
 //   · `list`  key = namespace + U+0000 + key：设 d = 该 key **最后一次** `list/delete` 的行号，
 //     行号 < d 的 `list/append` 可丢；行号 ≥ d 的写入（含 d 自己）一律保留。
-//   · `value` key：同理，候选是 `value/set`，d = 最后一次 `value/delete` 的行号。
+//   · `value` key：设 d = 最后一次 `value/delete` 的行号、s = 最后一次 `value/set` 的行号，
+//     行号 < max(d, s) 的 `value/set` 可丢 —— 即「d 之前」或「s 之前」两者居其一：
+//       · d 之前的写被 delete 抹掉（重放 delete 直接删表项，与它前面写过什么无关）；
+//       · s 之前的写被更后的 set 覆盖（`scalarValues` 是覆盖语义，重放只留最后一个 set）。
+//     seq 在文件里严格递增（上游 validateCommittedWrites 拒绝非递增），被丢的 set 不可能是
+//     seq 最大值 ⇒ `nextSeq` 高水位不受影响（重放取 max(seq)+1）。
+//   · `list/append` **没有**「只保留最后一次写入」形态（理由见文件头）。
 //   ⇒ replay(原日志) === replay(折叠后日志)：对不存在的 key 做 delete 与「append 一堆再 delete」
-//     终态相同；只丢「最后一次 delete 之前」的写入，保证「先 delete 后又被 append/set」的 key
-//     不被误判为死 key（执行方案 §1.9 实测该形态出现 0 次，但折叠器**不假定**它，必须运行时检查）。
+//     终态相同；只丢「最后一次 delete 之前」或「最后一次 set 之前」的写入，保证「先 delete 后
+//     又被 append/set」的 key 不被误判为死 key（执行方案 §1.9 实测该形态出现 0 次，但折叠器
+//     **不假定**它，必须运行时检查）。
 //
 // 三条硬性质（源方案 §8.5）：
 //   S-2 只删不增、保留行逐字不变 —— 构造性成立：输出 = header 原文 + 保留行原文的换行连接，
@@ -85,7 +99,7 @@
 import { JSONL_STORAGE_VERSION } from "@earendil-works/pi-agent-core/harness/session"
 import type { Context, FileSystem } from "@earendil-works/pi-agent-core"
 import { sha256Text, stableSerialize } from "@/services/engine/runtime"
-import { MAX_TOOL_FILE_BYTES } from "@/services/tool/pi/native-execution-env"
+import { SESSION_WRITE_MAX_BYTES } from "./session-file-system"
 import { formatError } from "@/services/error"
 import { createLogger } from "@/services/logger"
 
@@ -103,7 +117,8 @@ export const FOLD_POLICY = {
   /**
    * 读取守卫：文件字节 > 此值不读不折。它是**折叠自愿设的上界**（读全文 + 两次重放 + 两次摘要
    * 都在 Node 里按体积放大），不是读路径的限制 —— 会话读路径没有单次大小上限，依据见
-   * foldSessionFile 步骤 1 的注释。真正的物理约束在写侧：结果超过 MAX_TOOL_FILE_BYTES 就写不出去。
+   * foldSessionFile 步骤 1 的注释。写侧的对应物是会话写路径的 SESSION_WRITE_MAX_BYTES
+   * （session-file-system.ts，与它同值）：折叠只删不增 ⇒ 结果 ≤ 输入 ≤ 本值，读得到就写得回。
    */
   maxFileBytes: 64 * 1024 * 1024,
 } as const
@@ -128,7 +143,7 @@ export type FoldSkipReason =
   | "unknown-format"
   /** 整个文件一行都不可丢；或可回收字节未过闸门 2/2b（阈值判定在 T5.02 的驱动里）。 */
   | "nothing-to-reclaim"
-  /** 原文超过 FOLD_POLICY.maxFileBytes、或折叠结果超过 MAX_TOOL_FILE_BYTES（由 T5.02 的驱动按各自上限产生，纯函数不看文件大小）。 */
+  /** 原文超过 FOLD_POLICY.maxFileBytes、或折叠结果超过会话写上限 SESSION_WRITE_MAX_BYTES（由 T5.02 的驱动按各自上限产生，纯函数不看文件大小）。 */
   | "too-large"
   /** 折叠前后重放出的状态摘要不一致（S-1）：由 T5.02 的驱动产生，**此时不写任何文件**、原文件保持原样。 */
   | "hash-mismatch"
@@ -309,16 +324,22 @@ function parseSupportedHeader(headerLine: string): Record<string, unknown> | nul
 }
 
 /**
- * 一条写是否「确定可丢」：只有 list/append 与 value/set 是候选，且行号必须**严格小于**该 key
- * 最后一次 delete 的行号。行号 ≥ d 的写入（含最后那次 delete 自己）一律保留。
+ * 一条写是否「确定可丢」：只有 list/append 与 value/set 是候选。
  *
- * 这条「只看最后一次 delete 之前」的写死规则就是「先 delete 后又 append」不被误删的全部依据。
+ *   · `append`：行号必须**严格小于**该 key 最后一次 `list/delete` 的行号。
+ *   · `set`：行号必须严格小于 max(最后一次 `value/delete`, 最后一次同 key `value/set`) ——
+ *     delete 之前的写被 delete 抹掉；非最后一次的写被更后的 set 覆盖（scalar 覆盖语义）。
+ *
+ * 「先 delete 后又 append/set」的 key 不被误判为死 key：revive 之后的写入行号必然 ≥ 最后一次
+ * delete（append 因此一律不可丢）；其中 set 若被更晚的同 key set 覆盖，丢的是被覆盖的那条，
+ * 终态仍由最后一条 set 决定（见 replayLogState 的覆盖语义）。
  */
 function isDroppable(
   write: ParsedWrite,
   lineIndex: number,
   lastListDelete: ReadonlyMap<string, number>,
   lastValueDelete: ReadonlyMap<string, number>,
+  lastValueSet: ReadonlyMap<string, number>,
 ): boolean {
   if (write.role === "append") {
     const lastDelete = lastListDelete.get(write.physicalKey)
@@ -326,7 +347,11 @@ function isDroppable(
   }
   if (write.role === "set") {
     const lastDelete = lastValueDelete.get(write.physicalKey)
-    return lastDelete !== undefined && lineIndex < lastDelete
+    const lastSet = lastValueSet.get(write.physicalKey)
+    return (
+      (lastDelete !== undefined && lineIndex < lastDelete) ||
+      (lastSet !== undefined && lineIndex < lastSet)
+    )
   }
   // entry / usage / delete 永远保留（delete 是重放等价的一半，丢它才会真改语义）。
   return false
@@ -351,11 +376,11 @@ export function readFoldLog(text: string): FoldLog {
 /**
  * 计算可丢行并产出折叠文本。
  *
- * 判定（唯一规则，两条）：
- *   · 对 list  key = namespace + U+0000 + key：设 d = 该 key **最后一次** `list/delete` 的行号；
- *     行号 < d 的 `list/append` 可丢；行号 > d 的 append 必须保留。
- *   · 对 value key：设 d = 该 key **最后一次** `value/delete` 的行号；
- *     行号 < d 的 `value/set` 可丢；行号 > d 的 set 必须保留。
+ * 判定（唯一规则，见文件头；d/s 都是**行号**）：
+ *   · 对 list  key = namespace + U+0000 + key：设 d = 该 key 最后一次 `list/delete` 的行号；
+ *     行号 < d 的 `list/append` 可丢；行号 ≥ d 的写入（含 d 自己）必须保留。
+ *   · 对 value key：设 d = 最后一次 `value/delete`、s = 最后一次 `value/set` 的行号；
+ *     行号 < max(d, s) 的 `value/set` 可丢（delete 抹掉 d 之前的、覆盖语义吃掉非最后的）。
  *
  * 行级粒度：**仅当一行里的全部写入都可丢时才删除该行**；一行里只要有一个保留写入，整行原样
  * 保留（不做重序列化、不重排）。header 行永远保留。任一行 JSON.parse 失败、或 kind/op 不在
@@ -375,14 +400,18 @@ export function prepareFold(log: FoldLog): FoldPlan {
     parsed.push(writes)
   }
 
-  // 每个物理 key 最后一次 delete 的行号：顺序遍历、后写覆盖先写，天然得到「最后一次」。
+  // 每个物理 key 最后一次 delete / set 的行号：顺序遍历、后写覆盖先写，天然得到「最后一次」。
   const lastListDelete = new Map<string, number>()
   const lastValueDelete = new Map<string, number>()
+  const lastValueSet = new Map<string, number>()
   for (let index = 0; index < parsed.length; index++) {
     for (const write of parsed[index]) {
-      if (write.role !== "delete") continue
-      const table = write.target === "list" ? lastListDelete : lastValueDelete
-      table.set(write.physicalKey, index)
+      if (write.role === "delete") {
+        const table = write.target === "list" ? lastListDelete : lastValueDelete
+        table.set(write.physicalKey, index)
+      } else if (write.role === "set") {
+        lastValueSet.set(write.physicalKey, index)
+      }
     }
   }
 
@@ -394,7 +423,7 @@ export function prepareFold(log: FoldLog): FoldPlan {
     // 空数组行（`[]`，上游序列化产不出来的形状）不算「全部可丢」：留着它零成本，删它也没有收益。
     if (
       writes.length > 0 &&
-      writes.every((write) => isDroppable(write, index, lastListDelete, lastValueDelete))
+      writes.every((write) => isDroppable(write, index, lastListDelete, lastValueDelete, lastValueSet))
     ) {
       droppedLines += 1
       droppedWrites += writes.length
@@ -565,15 +594,11 @@ export async function logStateDigest(log: FoldLog): Promise<string> {
 
 const log = createLogger("SessionFold")
 
-/**
- * 单次 `file_write` 的字节上限（`native-execution-env.ts`，5 MiB）：折叠结果超过它 ⇒ 折叠结果的
- * 落地写（`file_write`）必然失败，所以只用于「折叠结果仍超它 ⇒ skip("too-large")」这一个守卫。
- * 它**只约束写** —— 会话读路径（会话根内经宿主 `session_read_text`）没有单次大小上限；读侧的
- * 折叠守卫由 `FOLD_POLICY.maxFileBytes` 独立设定（依据见 foldSessionFile 步骤 1 的注释）。
- *
- * 常量本身定义在 `native-execution-env.ts`（它是这条写上限的物理来源），这里只 import ——
- * 不给它第二个定义点。`engine/harness/session-repo.ts` 也是从同一模块取 `NativeExecutionEnv`。
- */
+// 折叠结果经**会话写路径**落地（SessionFileSystem → 宿主 `session_write_text`），守卫按该路径
+// 的上限 SESSION_WRITE_MAX_BYTES（session-file-system.ts，与 FOLD_POLICY.maxFileBytes 同值）判定，
+// 不再按工具面 `file_write` 的 5 MiB（MAX_TOOL_FILE_BYTES）—— 那条上限只约束模型文件工具，
+// 会话写路径是「只限会话根」的专用放宽（2026-10-06 折叠批次）。常量只在 session-file-system.ts
+// 定义一份，这里 import，不给它第二个定义点。
 
 /**
  * 上游 storageVersion 升级绊线（O-8 第一层，唯一「不靠人记得」的一环）：本模块的白名单解析
@@ -695,8 +720,10 @@ function reportUnknownFormat(path: string, headerLine: string): void {
  * **失败一律不抛**：返回 `skipped` 并留痕，调用方照常继续。
  *
  * 顺序即契约（执行方案 T5.02 步骤 2）：闸门 1（一次 stat）→ 读取守卫（maxFileBytes，折叠自愿的
- * 上界）→ 读全文 → 白名单判定 → 闸门 2（可回收量）→ 结果守卫（MAX_TOOL_FILE_BYTES，写侧真实
- * 上限）→ 摘要校验 → **此处之前磁盘上什么都没发生** → 写临时文件 → rename 覆盖。
+ * 上界）→ 读全文 → 白名单判定 → 闸门 2（可回收量）→ 结果守卫（SESSION_WRITE_MAX_BYTES，会话写
+ * 路径的真实上限）→ 摘要校验 → **此处之前磁盘上什么都没发生** → 写临时文件 → rename 覆盖。
+ * 临时文件与覆盖目标的写走调用方 FileSystem 的 `writeFile`（生产里 `SessionFileSystem` 把会话根
+ * 内的写分流到放宽的 `session_write_text`）；本函数不自己认识会话根，路径策略在那一侧。
  */
 export async function foldSessionFile(fileSystem: FileSystem, path: string, context: Context): Promise<FoldOutcome> {
   // 1. 闸门 1：一次 stat 就能判死小文件，不读正文（Read 一次全文比 stat 贵得多）
@@ -712,8 +739,9 @@ export async function foldSessionFile(fileSystem: FileSystem, path: string, cont
   // 会话读路径没有单次大小上限：会话根内的读取经 `session-file-system.ts:33-35` 转到宿主
   // `session_read_text`（`crates/native-host/src/commands/session_fs.rs:10-38`；Rust 单测
   // `reads_large_sessions_and_only_requested_header` 证明 >5 MiB 可整读、按行读不解码尾部）。
-  // MAX_TOOL_FILE_BYTES（5 MiB）只约束写（`native-execution-env.ts:44,178` 的 file_write）——
-  // 旧守卫把写上限误用到读侧，文件一过 5 MiB 就永远折不动。这里改用 FOLD_POLICY.maxFileBytes：
+  // MAX_TOOL_FILE_BYTES（5 MiB）只约束**工具面**写（`native-execution-env.ts:44,178` 的 file_write；
+  // 会话根内的写另有 SESSION_WRITE_MAX_BYTES 专用上限，见步骤 5）——旧守卫把工具面写上限误用到
+  // 读侧，文件一过 5 MiB 就永远折不动。这里改用 FOLD_POLICY.maxFileBytes：
   // 它只是折叠自愿设的读上界（见 FOLD_POLICY 的注释），不是任何读路径的物理限制。
   // 注入自定义非会话 FileSystem 的测试/场景里读仍可能受 5 MiB 限制（那些路径走 `file_read` 的
   // MAX_TOOL_FILE_BYTES）—— 那时 readTextFile 失败，下面的 read-failed 分支如实跳过（不是崩溃、
@@ -754,10 +782,12 @@ export async function foldSessionFile(fileSystem: FileSystem, path: string, cont
     return { kind: "skipped", reason: "nothing-to-reclaim" }
   }
 
-  // 5. 兜底：绝不折叠出一个超过单次写上限的文件 —— 折叠结果经 `file_write` 落地，
-  //    MAX_TOOL_FILE_BYTES 是写侧的真实约束（折叠只会变小，但守卫写全、不靠推理）。
-  if (plan.bytesAfter > MAX_TOOL_FILE_BYTES) {
-    log.warn("折叠跳过：折叠结果仍超过单次写上限:", path, plan.bytesAfter, MAX_TOOL_FILE_BYTES)
+  // 5. 兜底：绝不折叠出一个会话写路径写不出去的文件 —— 结果经 `session_write_text` 落地
+  //    （SessionFileSystem 分流），SESSION_WRITE_MAX_BYTES 是那条路径的真实约束；本仓阈值下
+  //    「结果 ≤ 输入 ≤ FOLD_POLICY.maxFileBytes = 上限」，分支只为把守卫写全、不靠推理。
+  //    注入的非会话 FileSystem 仍按各自上限失败 ⇒ 如实落到下面的 write-failed（不伪装成功）。
+  if (plan.bytesAfter > SESSION_WRITE_MAX_BYTES) {
+    log.warn("折叠跳过：折叠结果仍超过会话写上限:", path, plan.bytesAfter, SESSION_WRITE_MAX_BYTES)
     return { kind: "skipped", reason: "too-large" }
   }
 

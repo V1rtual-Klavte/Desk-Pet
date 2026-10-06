@@ -1,16 +1,16 @@
 // ==========================================
-// Node 适配层 —— 顶替 @tauri-apps/api/path
+// Node 适配层 —— 执行环境路径运算（导出名与历史宿主 API 对齐）
 // ==========================================
 //
-// 导出名必须与 `@tauri-apps/api/path` 的真实导出逐个对齐：这是**模块替换**（vite alias），
-// 产品代码 `import { join } from "@tauri-apps/api/path"` 只要名字对不上，就会在模块加载期
-// 直接报「没有这个导出」。计划 Task 9 里写的 `joinPath` / `resolvePath` 不是真实导出名
-// （真实名字是 `join` / `resolve`，见 node_modules/@tauri-apps/api/path.d.ts），这里按真实名字实现。
+// 导出名沿用历史宿主 API（`@tauri-apps/api/path`）的清单：join / resolve / isAbsolute /
+// normalize / dirname / basename / homeDir / tempDir —— 按真实导出名实现（是 `join` /
+// `resolve`，不是 `joinPath` / `resolvePath`）。vitest 的 `@tauri-apps/*` 别名已删除
+// （2026-10-06），本文件不经别名，由 node-host-bridge.ts（装配执行环境端口）与
+// node-ipc.test.ts（导出名与语义对账）直接 import。
 //
-// 这些函数是纯路径运算，Node 与 Tauri 语义一致，因此没有抛错表；两边都是 async，
+// 这些函数是纯路径运算，Node 与宿主语义一致，因此没有抛错表；两边都是 async，
 // 这里保持 async 形状，连 `.then()` 这类用法也一致。
-// 依赖桌面能力的函数（`resolveResource` 等）一概不实现 —— 被 import 时立刻失败，
-// 不留在假实现下静默通过。
+// 依赖桌面能力的函数（`resolveResource` 等）一概不实现 —— 不做假实现让调用静默通过。
 import { homedir, tmpdir } from "node:os"
 import * as nodePath from "node:path"
 

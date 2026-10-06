@@ -3,8 +3,10 @@
 // 范围：`test/unit/host/ports.test.ts` 与 `test/unit/host/node-ports.test.ts` 的全部
 // caseId 锚点，加上 `test/unit/error/error-code.test.ts` 的 `host-command-error-code`
 // —— HostCommandError 的码保真就是这条远端错误面的一部分（errorCode 的实现文件随
-// 覆盖点一并登记）。原生更新命令的形状与 Node 请求面的边界不在这里，归 update 契约。
-// 全部覆盖点在 L2；宿主桥的真实 transport 行为属真 Rust 边界，不在这里冒充。
+// 覆盖点一并登记）—— 以及 `test/unit/host/事件名单点.test.ts` 的 `host-wire-event-names`
+// （线协议事件名常量的冻结字节）。原生更新命令的形状与 Node 请求面的边界不在这里，
+// 归 update 契约。全部覆盖点在 L2；宿主桥的真实 transport 行为属真 Rust 边界，
+// 不在这里冒充。
 // 2026-10-05 收尾复查（本批刷新）：sourceFiles 变化 —— src/services/host/index.ts（设计契约
 // 引用路径改指 docs/history 归档基线；冻结接口与唯一取用口形状未动）、src/services/error/format.ts
 // （错误码归一化；errorCode 对 HostCommandError 取码、普通 Error 返回 null 的语义未变）。
@@ -16,19 +18,31 @@
 // `deskpet-choice-end`，UiReceiptMap 补 `deskpet-choice-resolved`（提问选择的回执条目），
 // 权限确认载荷的 `expiresAt` 随「选择类弹窗不留超时」退场。端口机制未变（五取用口、退订、
 // 保真转发与失败上抛），各覆盖点逐条核对实现点仍在；sourceHash 按当前源码复算。
+// 2026-10-06 验收 analyze→generate（事件名单点收口批次）：新增覆盖点 hz-04
+// （线协议事件名常量与冻结的线格式字节逐一一致；caseId：host-wire-event-names，L2
+// test/unit/host/事件名单点.test.ts —— 本批为该守门用例补的锚点）。sourceFiles 变化 ——
+// src/services/host/event-names.ts（新增零依赖叶子：HostEventMap 推送键、UiReceiptMap 回执键与
+// HOST_REQUEST_EVENT 的字符串值定义点；types.ts / ui-events.ts 只按常量计算矩阵键，改线名两处
+// 一字不动 —— 不列本文件就是本仓登记过的门禁失明形态）。另核对 src/services/reply/protocol.ts
+// （RUNTIME_DATA 标签叶子，新文件）：不属宿主传输面，未加入本契约 sourceFiles（其行为面归
+// variable-pool 契约，该契约本批已补入）。hz-01..hz-03 逐点核对实现点仍在、覆盖描述与当前
+// 实现一致；sourceHash 随本批统一刷新。
 import type { ModuleContract } from "../host/types"
 
 export const hostContract: ModuleContract = {
   module: "host",
   sourceFiles: [
     "src/services/host/ports.ts",
+    // 2026-10-06 事件名单点收口（hz-04）：事件名的字符串值（线格式字节）定义点从 ui-events.ts /
+    // types.ts 移到这里，两处矩阵只引用常量 —— 不列本文件时，改线名不会让本契约失效（门禁失明）。
+    "src/services/host/event-names.ts",
     "src/services/host/ui-events.ts",
     "src/services/host/node-ports.ts",
     "src/services/host/index.ts",
     "src/services/host/wire.ts",
     "src/services/error/format.ts",
   ],
-  sourceHash: "e2004dca8ce2fe0ca3bdbacc49cca0509c699a4104eecc8c033bd3b3ff9f884b",
+  sourceHash: "9c43c5c21d9a31033815b828a9621918ad9f2b7bff49a6367bcf62baaaf18bf3",
   coverage: [
     {
       id: "hz-01",
@@ -64,6 +78,17 @@ export const hostContract: ModuleContract = {
       layer: "unit",
       depth: "shallow",
       scenarios: ["host-command-error-code"],
+    },
+    // 2026-10-06 验收 analyze→generate：事件名单点收口（新增 hz-04，L2）。
+    {
+      id: "hz-04",
+      feature: "线协议事件名常量与 Rust 分派同名（冻结字节）",
+      description:
+        "三组事件名常量（HostEventMap 的推送键、UiReceiptMap 的回执键、宿主 → Node 请求通道名 HOST_REQUEST_EVENT）的字符串值与冻结的线格式字节逐一一致，期望值在用例表里逐字写死、不从常量互相推导；改名必须同步 Rust 分派（`ui/chat/events.rs` 的 from_wire、`ui/chat/intents.rs` 的 RECEIPT_*、`ui/ports.rs` 的 HOST_REQUEST_EVENT），否则事件静默无人消费",
+      why: "事件名是跨语言线格式的一部分：TS 侧改一处字面量而 Rust 未跟进时，事件与回执会静默丢失 —— 运行期没有错误面能区分「没人监听」与「名字不匹配」",
+      layer: "unit",
+      depth: "shallow",
+      scenarios: ["host-wire-event-names"],
     },
   ],
   // 本契约全部覆盖点在 L2：端口取用面与装配是纯适配层，真实的桥接 I/O 属 L4 的

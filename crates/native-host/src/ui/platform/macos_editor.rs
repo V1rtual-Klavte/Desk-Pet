@@ -4,10 +4,16 @@
 //! 本地图直选）、移除素材、单层复位、拖动、位置、缩放（滑杆与滚轮）、灵敏度、
 //! 强度、**主窗/预览一致**、保存与关闭持久化。
 //!
+//! 参数面板的形态与旧壳对照（2026-10-06）：**位置 X/Y = 数字输入框**（旧壳偏移
+//! 行的 `<input type=number step=0.01>`，可输入任意精确值；锁定层禁用），强度/
+//! 灵敏度/缩放 = 滑杆（旧壳同款）；粗调仍是预览拖动。
+//!
 //! - 预览 = **第二个 `Renderer` + 第二个表面**（`MacLayerSurface` 挂在预览视图上），
-//!   与主窗舞台共用同一份 `LayerSpec` 与同一几何核（W6a，不重写数学）；
+//!   与主窗舞台共用同一份 `LayerSpec` 类型与同一几何核（W6a，不重写数学）；
+//!   预览的层列表经**线索投影**（`editor::cue_specs`：选中 1.0 / 启用 0.6 /
+//!   禁用 0.15，五层恒渲染），主窗舞台用未投影的原 specs —— 线索只回预览；
 //! - 高频操作（拖动/缩放/灵敏度）只改内存草稿并本地重绘（`render_now`），
-//!   同步把同一份草稿投给主窗舞台 —— 这就是「主窗/预览一致」的实现；
+//!   同步把同一份草稿（不含线索）投给主窗舞台 —— 这就是「主窗/预览一致」的实现；
 //! - **隐藏期不调 `render_now`**：窗口不可见（或最小化）时只记草稿，不产帧；
 //! - **窗口可缩放**：尺寸变化（`NSWindowDidResizeNotification`）触发 `relayout`
 //!   —— 按 `editor_layout` 重摆预览/叠层/分隔线/属性面板/顶栏/状态行，并重画
@@ -29,13 +35,13 @@
 use std::cell::{Cell, OnceCell, RefCell};
 
 use objc2::rc::Retained;
-use objc2::runtime::AnyObject;
+use objc2::runtime::{AnyObject, ProtocolObject};
 use objc2::{define_class, msg_send, sel, DefinedClass, MainThreadOnly};
 use objc2_app_kit::{
     NSAlertFirstButtonReturn, NSAlertSecondButtonReturn, NSAppearance, NSBezierPath, NSBorderType,
-    NSButton, NSEvent, NSFont, NSPopUpButton, NSPopover,
-    NSPopoverBehavior, NSScrollView, NSSlider, NSTextField, NSTextView, NSView, NSViewController,
-    NSViewFrameDidChangeNotification, NSWindowDidResizeNotification,
+    NSButton, NSControlTextEditingDelegate, NSEvent, NSFont, NSPopUpButton, NSPopover,
+    NSPopoverBehavior, NSScrollView, NSSlider, NSTextField, NSTextFieldDelegate, NSTextView,
+    NSView, NSViewController, NSViewFrameDidChangeNotification, NSWindowDidResizeNotification,
 };
 use objc2_foundation::{
     MainThreadMarker, NSNotification, NSNotificationCenter, NSObjectProtocol, NSPoint, NSRange,
@@ -46,8 +52,9 @@ use crate::render::geometry::WindowGeometry;
 use crate::render::mac::MacLayerSurface;
 use crate::render::Renderer;
 use crate::ui::editor::{
-    asset_help_bottom_offset, drag_hint, editor_ui, editor_window_title, layer_tab_title,
-    ASSET_HELP_BUTTON, ASSET_HELP_BUTTON_H, ASSET_HELP_CLOSE, ASSET_HELP_COPIED, ASSET_HELP_COPY,
+    asset_help_bottom_offset, drag_hint, editor_ui, editor_window_title, format_number_input,
+    layer_tab_title, offset_input_unchanged, parse_number_input, OffsetAxis, ASSET_HELP_BUTTON,
+    ASSET_HELP_BUTTON_H, ASSET_HELP_CLOSE, ASSET_HELP_COPIED, ASSET_HELP_COPY,
     ASSET_HELP_FONT_SIZE, ASSET_HELP_INTRO, ASSET_HELP_TEXT_H, ASSET_HELP_TEXT_W, ASSET_HELP_TITLE,
     ASSET_PROMPT, SCALE_MAX, SCALE_MIN, SENSITIVITY_MAX, SENSITIVITY_MIN,
 };
@@ -57,8 +64,8 @@ use crate::{rust_debug, rust_info, rust_warn};
 use super::macos::{as_any, main_window_handle, primary_height, DeskPetWindow};
 use super::macos_widgets::{
     apply_window_theme, help_label, label, place, popup, push_button, repaint_rule_line,
-    resolve_font, rule_line, run_modal_alert, slider, standard_appearance_name, BODY_BASE_SIZE,
-    HELP_BASE_SIZE, RULE_LINE_H,
+    resolve_font, rule_line, run_modal_alert, slider, standard_appearance_name, text_field,
+    BODY_BASE_SIZE, HELP_BASE_SIZE, RULE_LINE_H,
 };
 
 // ── 版面常量（逻辑点）──
@@ -78,7 +85,8 @@ const TOP_BUTTON_W: f64 = 76.0;
 const TOP_BUTTON_H: f64 = 26.0;
 /// 预览大区与右侧属性面板之间的水平间距（分隔线贴面板列左缘、预览右缘 = 面板列 − 本值）。
 const PANEL_GAP: f64 = 8.0;
-/// 参数滑杆行数（强度 / 位置 Y / 位置 X / 灵敏度 / 缩放）：版面与建行共用同一口径。
+/// 参数行数（强度 / 位置 Y / 位置 X / 灵敏度 / 缩放）：版面与建行共用同一口径。
+/// 位置两行是数字输入框、其余三行是滑杆（见 `build_param_sliders`）。
 const PARAM_ROWS: usize = 5;
 
 /// 顶部动作按钮槽位（与 [`EditorLayout::top_buttons`] 同序：视觉自右向左）。
@@ -88,14 +96,15 @@ const TOP_SLOT_RESET_LAYER: usize = 2;
 const TOP_SLOT_ENABLE: usize = 3;
 const TOP_SLOT_LOCK: usize = 4;
 
-/// 控件 tag 编码：分层控件 = 层下标 × 10 + 用途；滑杆 = 100 + 用途。
+/// 控件 tag 编码：分层控件 = 层下标 × 10 + 用途；参数行 = 100 + 用途
+///（位置 X/Y 两轴是输入框，其余是滑杆，tag 按「用途」而非控件类型编）。
 const TAG_ENABLED: isize = 1;
 const TAG_LOCKED: isize = 2;
 const TAG_SELECT: isize = 3;
 const TAG_SLIDER_SCALE: isize = 100;
 const TAG_SLIDER_SENSITIVITY: isize = 101;
-const TAG_SLIDER_OFFSET_X: isize = 102;
-const TAG_SLIDER_OFFSET_Y: isize = 103;
+const TAG_OFFSET_X: isize = 102;
+const TAG_OFFSET_Y: isize = 103;
 const TAG_SLIDER_INTENSITY: isize = 104;
 
 // ==========================================
@@ -122,6 +131,19 @@ struct SliderRow {
     name: EditorRect,
     slider: EditorRect,
     value: EditorRect,
+}
+
+impl SliderRow {
+    /// 数值输入行的输入框矩形：横跨滑杆与数值标签两段（输入框自己显示数值，
+    /// 不再需要独立的数值标签）—— 位置 X/Y 行用（旧壳偏移行的数字输入形态）。
+    fn input_rect(&self) -> EditorRect {
+        EditorRect {
+            x: self.slider.x,
+            y: self.slider.y,
+            w: self.value.x + self.value.w - self.slider.x,
+            h: self.slider.h,
+        }
+    }
 }
 
 /// 编辑器窗版面：左预览大区 / 分隔线 / 顶部 tab 行 / 右侧属性面板列 / 底部状态行。
@@ -575,6 +597,30 @@ struct LayerTab {
     button: Retained<NSButton>,
 }
 
+/// 一行参数控件：位置 X/Y = 数字输入框（旧壳偏移行形态），其余 = 滑杆
+///（旧壳的灵敏度/大小同为滑杆）。
+enum ParamControl {
+    Slider(Retained<NSSlider>),
+    /// 偏移数字输入框：提交走领域层 `op_set_offset_input`（提交时机见
+    /// `controlTextDidChange:` / `offsetFieldCommitted:`）。
+    Field(Retained<NSTextField>),
+}
+
+/// 参数行：控件 + 名称标签 + 数值标签（数值标签只有滑杆行需要 —— 输入框行的值
+/// 就在输入框里，没有独立的数值标签）。
+struct ParamRow {
+    control: ParamControl,
+    name: Retained<NSTextField>,
+    value: Option<Retained<NSTextField>>,
+}
+
+/// 参数行的建行定义（标题 + 控件形态；行序即视觉自上而下，与 `editor_layout`
+/// 的 `slider_rows` 逐行对应）。位置行的轴由 tag（`TAG_OFFSET_X/Y`）编码。
+enum ParamKind {
+    Slider { tag: isize, min: f64, max: f64 },
+    Offset { tag: isize },
+}
+
 struct EditorContentIvars {
     window: RefCell<Option<Retained<DeskPetWindow>>>,
     preview: OnceCell<Retained<EditorPreviewView>>,
@@ -582,15 +628,9 @@ struct EditorContentIvars {
     renderer: RefCell<Option<Renderer>>,
     /// 顶部层 tab（按层数重建；选中/角标走 [`EditorContentController::sync_tabs`]）。
     tabs: RefCell<Vec<LayerTab>>,
-    /// 参数滑杆行：（滑杆，名称标签，数值标签）。名称/数值标签持久存在，
-    /// 换主题与换字体都在各自同步路径里按 token/字号重写。
-    sliders: RefCell<
-        Vec<(
-            Retained<NSSlider>,
-            Retained<NSTextField>,
-            Retained<NSTextField>,
-        )>,
-    >,
+    /// 参数行（滑杆或数字输入框 + 名称/数值标签）。控件与标签都持久存在：
+    /// 换主题与换字体在各自同步路径里按 token/字号重写，不随刷新重建。
+    params: RefCell<Vec<ParamRow>>,
     status: OnceCell<Retained<NSTextField>>,
     /// 顶部动作按钮全部持久持有：窗口缩放时按 [`EditorLayout::top_buttons`] 重摆
     /// （槽位序见 `TOP_SLOT_*`）。
@@ -637,6 +677,38 @@ define_class!(
 
     unsafe impl NSObjectProtocol for EditorContentController {}
 
+    /// 偏移输入框的编辑委托：`controlTextDidChange:`（编辑即提交）与
+    /// `controlTextDidEndEditing:`（失焦 = 校验与回显收口）声明在
+    /// `NSControlTextEditingDelegate` **自己的**协议块里 —— 写进子协议块会在类
+    /// 注册期被 objc2 核对成「协议里没有这个方法」（与设置窗同一处理）。
+    unsafe impl NSControlTextEditingDelegate for EditorContentController {
+        #[unsafe(method(controlTextDidChange:))]
+        fn control_text_did_change(&self, notification: &NSNotification) {
+            let Some(object) = notification.object() else {
+                return;
+            };
+            let Some(field) = object.downcast_ref::<NSTextField>() else {
+                return;
+            };
+            self.commit_offset_field(Some(as_any(field)), false);
+        }
+
+        #[unsafe(method(controlTextDidEndEditing:))]
+        fn control_text_did_end_editing(&self, notification: &NSNotification) {
+            let Some(object) = notification.object() else {
+                return;
+            };
+            let Some(field) = object.downcast_ref::<NSTextField>() else {
+                return;
+            };
+            self.commit_offset_field(Some(as_any(field)), true);
+        }
+    }
+
+    /// 委托符合性登记：`NSTextField::setDelegate` 要求本类符合
+    /// `NSTextFieldDelegate`（方法实现在上面的父协议块里）。
+    unsafe impl NSTextFieldDelegate for EditorContentController {}
+
     impl EditorContentController {
         /// 分层控件（启用/锁定/选择）。
         #[unsafe(method(layerAction:))]
@@ -671,7 +743,7 @@ define_class!(
             self.refresh_from_draft();
         }
 
-        /// 参数滑杆（缩放/灵敏度/位置 X,Y/强度）。
+        /// 参数滑杆（缩放/灵敏度/强度）。
         #[unsafe(method(sliderChanged:))]
         fn slider_changed(&self, sender: Option<&AnyObject>) {
             let Some(sender) = sender else { return };
@@ -684,25 +756,6 @@ define_class!(
             let result = match tag {
                 TAG_SLIDER_SCALE => editor_ui().op_set_scale(selected, value),
                 TAG_SLIDER_SENSITIVITY => editor_ui().op_set_sensitivity(selected, value),
-                TAG_SLIDER_OFFSET_X => {
-                    // 另一轴原样透传：拖动产生的超界值不被本轴滑杆顺带夹回。
-                    let current = editor_ui()
-                        .view()
-                        .layers
-                        .get(selected)
-                        .map(|layer| layer.offset_y_percent)
-                        .unwrap_or(0.0);
-                    editor_ui().op_set_offsets(selected, value, current)
-                }
-                TAG_SLIDER_OFFSET_Y => {
-                    let current = editor_ui()
-                        .view()
-                        .layers
-                        .get(selected)
-                        .map(|layer| layer.offset_x_percent)
-                        .unwrap_or(0.0);
-                    editor_ui().op_set_offsets(selected, current, value)
-                }
                 TAG_SLIDER_INTENSITY => {
                     editor_ui().op_set_intensity(value);
                     Ok(())
@@ -713,6 +766,14 @@ define_class!(
                 editor_ui().set_notice(Some(format!("该图层已锁定或参数无效：{error}")));
             }
             self.refresh_from_draft();
+        }
+
+        /// 偏移输入框回车提交：非法输入在此如实报错并把当前真值回显进输入框
+        ///（旧壳的数字输入没有这道校验，NaN 会直接落进配置 —— 不复制这个缺陷）。
+        /// 编辑中途的提交走委托 `controlTextDidChange:`（同一个落点、不报错）。
+        #[unsafe(method(offsetFieldCommitted:))]
+        fn offset_field_committed(&self, sender: Option<&AnyObject>) {
+            self.commit_offset_field(sender, true);
         }
 
         #[unsafe(method(pickAsset:))]
@@ -1101,7 +1162,7 @@ impl EditorContentController {
             preview: OnceCell::new(),
             renderer: RefCell::new(None),
             tabs: RefCell::new(Vec::new()),
-            sliders: RefCell::new(Vec::new()),
+            params: RefCell::new(Vec::new()),
             status: OnceCell::new(),
             close_button: OnceCell::new(),
             save_button: OnceCell::new(),
@@ -1266,9 +1327,13 @@ impl EditorContentController {
         Ok(())
     }
 
-    /// 参数滑杆（强度/位置 Y/位置 X/灵敏度/缩放）与数值标签：右侧面板顶部、
-    /// 自上而下排（视觉顺序与旧版一致：强度在最上；旧壳 `#le-panel` 同分区）。
+    /// 参数行（强度/位置 Y/位置 X/灵敏度/缩放）：右侧面板顶部、自上而下排
+    ///（视觉顺序与旧版一致：强度在最上；旧壳 `#le-panel` 同分区）。
     /// 行序与 `editor_layout` 的 `slider_rows` 逐行对应（重排时按同一下标套矩形）。
+    ///
+    /// 位置 X/Y 是**数字输入框**（旧壳偏移行的形态：`<input type=number step=0.01>`，
+    /// 可输入任意精确值）—— 旧壳没有 ±50 滑杆这道形态，滑杆会把「输入任意值」
+    /// 这件事挡掉（拖动预览仍是粗调入口）。其余行保持滑杆（旧壳灵敏度/大小同为滑杆）。
     fn build_param_sliders(
         &self,
         mtm: MainThreadMarker,
@@ -1281,24 +1346,36 @@ impl EditorContentController {
             return Err("编辑器窗没有 contentView".into());
         };
 
-        // 位置行的 ±50 是**滑杆控件自己的粗调范围**，不是偏移的合法范围：图层可
-        // 拖动到任意位置（`EditorDraft::set_offset` 不夹取，2026-10-05 用户裁决
-        // 「可以到处拖，最终只取框里面的」）。值超界时滑杆贴边显示、数值标签仍报
-        // 真值；再拨该轴滑杆会把该轴收敛回 ±50 以内 —— 控件语义，不是第二次夹取。
-        let rows: [(&str, isize, f64, f64); PARAM_ROWS] = [
-            ("强度", TAG_SLIDER_INTENSITY, 0.0, 2.0),
-            ("位置 Y %", TAG_SLIDER_OFFSET_Y, -50.0, 50.0),
-            ("位置 X %", TAG_SLIDER_OFFSET_X, -50.0, 50.0),
+        let rows: [(&str, ParamKind); PARAM_ROWS] = [
+            (
+                "强度",
+                ParamKind::Slider {
+                    tag: TAG_SLIDER_INTENSITY,
+                    min: 0.0,
+                    max: 2.0,
+                },
+            ),
+            ("位置 Y %", ParamKind::Offset { tag: TAG_OFFSET_Y }),
+            ("位置 X %", ParamKind::Offset { tag: TAG_OFFSET_X }),
             (
                 "灵敏度",
-                TAG_SLIDER_SENSITIVITY,
-                SENSITIVITY_MIN,
-                SENSITIVITY_MAX,
+                ParamKind::Slider {
+                    tag: TAG_SLIDER_SENSITIVITY,
+                    min: SENSITIVITY_MIN,
+                    max: SENSITIVITY_MAX,
+                },
             ),
-            ("缩放", TAG_SLIDER_SCALE, SCALE_MIN, SCALE_MAX),
+            (
+                "缩放",
+                ParamKind::Slider {
+                    tag: TAG_SLIDER_SCALE,
+                    min: SCALE_MIN,
+                    max: SCALE_MAX,
+                },
+            ),
         ];
-        let mut sliders = Vec::new();
-        for (rect, (title, tag, min, max)) in layout.slider_rows.iter().zip(rows) {
+        let mut params = Vec::new();
+        for (rect, (title, kind)) in layout.slider_rows.iter().zip(rows) {
             let name = label(
                 mtm,
                 title,
@@ -1306,19 +1383,40 @@ impl EditorContentController {
                 Some(&paint::color(theme::tokens().ink)),
             );
             place_rect(&content, &*name, rect.name);
-            let control = slider(mtm, min, max, as_any(self), sel!(sliderChanged:));
-            control.setTag(tag);
-            place_rect(&content, &control, rect.slider);
-            let value = label(
-                mtm,
-                "",
-                HELP_BASE_SIZE,
-                Some(&paint::color(theme::tokens().dim)),
-            );
-            place_rect(&content, &*value, rect.value);
-            sliders.push((control, name, value));
+            match kind {
+                ParamKind::Slider { tag, min, max } => {
+                    let control = slider(mtm, min, max, as_any(self), sel!(sliderChanged:));
+                    control.setTag(tag);
+                    place_rect(&content, &control, rect.slider);
+                    let value = label(
+                        mtm,
+                        "",
+                        HELP_BASE_SIZE,
+                        Some(&paint::color(theme::tokens().dim)),
+                    );
+                    place_rect(&content, &*value, rect.value);
+                    params.push(ParamRow {
+                        control: ParamControl::Slider(control),
+                        name,
+                        value: Some(value),
+                    });
+                }
+                ParamKind::Offset { tag } => {
+                    // 输入框用共享的 `macos_widgets::text_field`（系统 bezel，随窗口
+                    // 外观极性 —— 与编辑器里既有的系统滑杆同款）；提交语义在领域层。
+                    let field = text_field(mtm, false, as_any(self), sel!(offsetFieldCommitted:));
+                    field.setTag(tag);
+                    unsafe { field.setDelegate(Some(ProtocolObject::from_ref(self))) };
+                    place_rect(&content, &*field, rect.input_rect());
+                    params.push(ParamRow {
+                        control: ParamControl::Field(field),
+                        name,
+                        value: None,
+                    });
+                }
+            }
         }
-        *self.ivars().sliders.borrow_mut() = sliders;
+        *self.ivars().params.borrow_mut() = params;
         Ok(())
     }
 
@@ -1378,14 +1476,19 @@ impl EditorContentController {
                 button.setFrame(ns_rect(layout.top_buttons[slot]));
             }
         }
-        for (rect, (slider, name, value)) in layout
+        for (rect, row) in layout
             .slider_rows
             .iter()
-            .zip(self.ivars().sliders.borrow().iter())
+            .zip(self.ivars().params.borrow().iter())
         {
-            name.setFrame(ns_rect(rect.name));
-            slider.setFrame(ns_rect(rect.slider));
-            value.setFrame(ns_rect(rect.value));
+            row.name.setFrame(ns_rect(rect.name));
+            if let Some(value) = &row.value {
+                value.setFrame(ns_rect(rect.value));
+            }
+            match &row.control {
+                ParamControl::Slider(slider) => slider.setFrame(ns_rect(rect.slider)),
+                ParamControl::Field(field) => field.setFrame(ns_rect(rect.input_rect())),
+            }
         }
         if let Some(label) = self.ivars().asset_label.get() {
             label.setFrame(ns_rect(layout.asset_label));
@@ -1476,7 +1579,7 @@ impl EditorContentController {
             self.rebuild_tabs();
         }
         self.sync_tabs(&view);
-        self.sync_sliders(&view);
+        self.sync_params(&view);
         self.sync_assets(&view);
         self.update_status(&view);
         self.apply_preview();
@@ -1737,38 +1840,106 @@ impl EditorContentController {
         let _ = self.ivars().asset_popover.borrow_mut().take();
     }
 
-    fn sync_sliders(&self, view: &crate::ui::editor::EditorView) {
-        let selected = view.layers.get(view.selected);
-        let sliders = self.ivars().sliders.borrow();
-        for (slider, _name_label, value_label) in sliders.iter() {
-            let tag: isize = slider.tag();
-            let (value, text) = match tag {
-                TAG_SLIDER_SCALE => (
-                    selected.map(|layer| layer.scale).unwrap_or(1.0),
-                    selected.map(|layer| format!("{:.2}", layer.scale)),
-                ),
-                TAG_SLIDER_SENSITIVITY => (
-                    selected.map(|layer| layer.sensitivity).unwrap_or(0.8),
-                    selected.map(|layer| format!("{:.2}", layer.sensitivity)),
-                ),
-                TAG_SLIDER_OFFSET_X => (
-                    selected.map(|layer| layer.offset_x_percent).unwrap_or(0.0),
-                    selected.map(|layer| format!("{:.0}", layer.offset_x_percent)),
-                ),
-                TAG_SLIDER_OFFSET_Y => (
-                    selected.map(|layer| layer.offset_y_percent).unwrap_or(0.0),
-                    selected.map(|layer| format!("{:.0}", layer.offset_y_percent)),
-                ),
-                TAG_SLIDER_INTENSITY => (view.intensity, Some(format!("{:.2}", view.intensity))),
-                _ => continue,
-            };
-            // 正在拖动的滑杆不回写（避免打断拖动）。
-            if slider.currentEditor().is_none() {
-                slider.setDoubleValue(value);
-            }
-            value_label.setStringValue(&NSString::from_str(text.as_deref().unwrap_or("")));
+    /// 偏移输入框提交（编辑即提交 / 回车 / 失焦三路共用一个落点）。
+    ///
+    /// - 合法且与当前值相同：什么都不做（不把「点进点出」标成有未保存改动）；
+    /// - 合法且不同：写草稿（领域层 `op_set_offset_input`，另一轴保留）；
+    /// - 非法：编辑路径静默跳过；回车/失焦路径报错并**回显当前真值**（旧壳的
+    ///   数字输入会把 NaN 直接写进配置 —— 不复制这个缺陷）。
+    fn commit_offset_field(&self, sender: Option<&AnyObject>, report_invalid: bool) {
+        let Some(field) = sender.and_then(|sender| sender.downcast_ref::<NSTextField>()) else {
+            return;
+        };
+        let axis = match field.tag() {
+            TAG_OFFSET_X => OffsetAxis::X,
+            TAG_OFFSET_Y => OffsetAxis::Y,
+            _ => return,
+        };
+        let selected = editor_ui().view().selected;
+        let current = editor_ui()
+            .view()
+            .layers
+            .get(selected)
+            .map(|layer| match axis {
+                OffsetAxis::X => layer.offset_x_percent,
+                OffsetAxis::Y => layer.offset_y_percent,
+            })
+            .unwrap_or(0.0);
+        let text = field.stringValue().to_string();
+        // 文本 = 我们写入的规范显示 ＝ 用户没动过这一格：不提交（口径与两平台
+        // 共用，见 `offset_input_unchanged` 的注释）。
+        if offset_input_unchanged(&text, current) {
+            return;
         }
-        drop(sliders);
+        match parse_number_input(&text) {
+            Ok(_) => {
+                if let Err(error) = editor_ui().op_set_offset_input(selected, axis, &text) {
+                    editor_ui().set_notice(Some(format!("该图层已锁定或参数无效：{error}")));
+                }
+                self.refresh_from_draft();
+            }
+            Err(error) => {
+                if report_invalid {
+                    editor_ui().set_notice(Some(format!("输入无效：{error}")));
+                    // 非法文本不提交：立即回显当前真值（不等下一次整帧同步）。
+                    field.setStringValue(&NSString::from_str(&format_number_input(current)));
+                    self.refresh_from_draft();
+                }
+            }
+        }
+    }
+
+    fn sync_params(&self, view: &crate::ui::editor::EditorView) {
+        let selected = view.layers.get(view.selected);
+        let locked = selected.map(|layer| layer.locked).unwrap_or(false);
+        let params = self.ivars().params.borrow();
+        for row in params.iter() {
+            let tag: isize = match &row.control {
+                ParamControl::Slider(slider) => slider.tag(),
+                ParamControl::Field(field) => field.tag(),
+            };
+            match &row.control {
+                ParamControl::Slider(slider) => {
+                    let (value, text) = match tag {
+                        TAG_SLIDER_SCALE => (
+                            selected.map(|layer| layer.scale).unwrap_or(1.0),
+                            selected.map(|layer| format!("{:.2}", layer.scale)),
+                        ),
+                        TAG_SLIDER_SENSITIVITY => (
+                            selected.map(|layer| layer.sensitivity).unwrap_or(0.8),
+                            selected.map(|layer| format!("{:.2}", layer.sensitivity)),
+                        ),
+                        TAG_SLIDER_INTENSITY => {
+                            (view.intensity, Some(format!("{:.2}", view.intensity)))
+                        }
+                        _ => continue,
+                    };
+                    // 正在拖动的滑杆不回写（避免打断拖动）。
+                    if slider.currentEditor().is_none() {
+                        slider.setDoubleValue(value);
+                    }
+                    if let Some(label) = &row.value {
+                        label.setStringValue(&NSString::from_str(text.as_deref().unwrap_or("")));
+                    }
+                }
+                ParamControl::Field(field) => {
+                    let value = match tag {
+                        TAG_OFFSET_X => selected.map(|layer| layer.offset_x_percent),
+                        TAG_OFFSET_Y => selected.map(|layer| layer.offset_y_percent),
+                        _ => continue,
+                    }
+                    .unwrap_or(0.0);
+                    // 正在编辑的输入框不回写（避免打断输入；非法文本在失焦提交路径
+                    // 里回显真值）；去尾零口径与提交解析同一份（`format_number_input`）。
+                    if field.currentEditor().is_none() {
+                        field.setStringValue(&NSString::from_str(&format_number_input(value)));
+                    }
+                    // 锁定层不可编辑（旧壳偏移输入框的 disabled 同义）。
+                    field.setEnabled(!locked);
+                }
+            }
+        }
+        drop(params);
         let save_enabled = view.dirty && view.connected;
         if let Some(save) = self.ivars().save_button.get() {
             save.setEnabled(save_enabled);
@@ -1858,11 +2029,14 @@ impl EditorContentController {
         if let Some(rule) = self.ivars().rule.get() {
             repaint_rule_line(rule);
         }
-        // 滑杆的名称（`ink`）与数值标签（`dim`）是持久视图：按新 token 重设。
+        // 参数行的名称（`ink`）与数值标签（`dim`）是持久视图：按新 token 重设
+        //（数字输入框是系统 bezel 控件，文字色随窗口外观极性，不走 token）。
         let tokens = theme::tokens();
-        for (_slider, name_label, value_label) in self.ivars().sliders.borrow().iter() {
-            name_label.setTextColor(Some(&paint::color(tokens.ink)));
-            value_label.setTextColor(Some(&paint::color(tokens.dim)));
+        for row in self.ivars().params.borrow().iter() {
+            row.name.setTextColor(Some(&paint::color(tokens.ink)));
+            if let Some(value) = &row.value {
+                value.setTextColor(Some(&paint::color(tokens.dim)));
+            }
         }
         // 状态行与素材区标题同样持久：`dim` 在三套主题里取值不同，必须重设。
         if let Some(status) = self.ivars().status.get() {
@@ -1915,14 +2089,16 @@ impl EditorContentController {
         );
     }
 
-    /// 把草稿投影应用到编辑器预览与主窗舞台（两者共用同一份 LayerSpec）。
+    /// 把草稿投影应用到编辑器预览与主窗舞台：预览用**线索投影**
+    /// （`editor::cue_specs`），主窗舞台用原 specs —— 线索只回预览。
     fn apply_preview(&self) {
         let preview = editor_ui().preview();
         let Some(window) = self.ivars().window.borrow().clone() else {
             return;
         };
 
-        // ① 编辑器预览渲染器（第二个 Renderer + 第二个表面）。
+        // ① 编辑器预览渲染器（第二个 Renderer + 第二个表面）：层列表是线索投影
+        //    （选中 1.0 / 启用 0.6 / 禁用 0.15，五层恒渲染）；这份投影不得流向主窗。
         if let Some(renderer) = self.ivars().renderer.borrow_mut().as_mut() {
             // 位移归一化基准与舞台同口径（舞台取 `StageProfile.popup_width` =
             // `general.popup.defaultSize.w`；主窗宽是同一事实的活值）。预览光标为
@@ -1932,7 +2108,7 @@ impl EditorContentController {
             }
             renderer.set_intensity(preview.intensity);
             renderer.set_enabled(preview.effect_enabled);
-            let report = renderer.set_layers(preview.layers.clone());
+            let report = renderer.set_layers(preview.cue_layers());
             if !report.failures.is_empty() {
                 rust_warn!("预览层收敛有 {} 个失败项", report.failures.len());
             }
@@ -1957,7 +2133,8 @@ impl EditorContentController {
             }
         }
 
-        // ② 主窗舞台（同一份草稿；保证「主窗/预览一致」）。
+        // ② 主窗舞台（同一份草稿的**原 specs**，不含线索：桌宠本体不得被调暗；
+        //    「主窗/预览一致」指草稿参数一致，不指透明度线索）。
         // 保存成功后 `promote` 让舞台把当前预览提升为新的权威基线。
         let promote = editor_ui().take_promote();
         if let Err(error) =
@@ -1984,9 +2161,11 @@ impl EditorContentController {
                 button.setFont(Some(&resolve_font(HELP_BASE_SIZE)));
             }
         }
-        for (_slider, name_label, value_label) in self.ivars().sliders.borrow().iter() {
-            name_label.setFont(Some(&resolve_font(HELP_BASE_SIZE)));
-            value_label.setFont(Some(&resolve_font(HELP_BASE_SIZE)));
+        for row in self.ivars().params.borrow().iter() {
+            row.name.setFont(Some(&resolve_font(HELP_BASE_SIZE)));
+            if let Some(value) = &row.value {
+                value.setFont(Some(&resolve_font(HELP_BASE_SIZE)));
+            }
         }
         if let Some(status) = self.ivars().status.get() {
             status.setFont(Some(&resolve_font(HELP_BASE_SIZE)));
@@ -2219,6 +2398,48 @@ mod tests {
             "单层操作在素材按钮之下"
         );
         assert!(layout.layer_ops[0].x + layout.layer_ops[0].w <= layout.layer_ops[1].x);
+    }
+
+    /// 位置行的数字输入框矩形（旧壳偏移行形态在版面里的落点）：横跨滑杆与数值
+    /// 标签两段、左缘贴面板列、右缘不越窗口 —— 输入框自己显示数值，所以数值标签
+    /// 那一段也要含进来；只占滑杆段或越出面板列时本用例必须红。
+    #[test]
+    fn 位置输入框横跨滑杆与数值标签两段() {
+        for (width, height) in [(560.0, 420.0), (860.0, 620.0), (1180.0, 760.0)] {
+            let layout = editor_layout(width, height);
+            // 行序固定：强度（滑杆）/ 位置 Y / 位置 X / 灵敏度 / 缩放，位置行取 1、2。
+            for index in [1usize, 2] {
+                let row = layout.slider_rows[index];
+                let field = row.input_rect();
+                assert_eq!(field.x, row.slider.x, "{width}×{height}：左缘对齐滑杆段");
+                assert_eq!(field.y, row.slider.y);
+                assert_eq!(field.h, row.slider.h);
+                assert_eq!(
+                    field.x + field.w,
+                    row.value.x + row.value.w,
+                    "{width}×{height}：右缘取数值标签右缘（输入框自己显示数值）"
+                );
+                assert_eq!(
+                    field.w,
+                    PANEL_W - 68.0,
+                    "{width}×{height}：宽度 = 滑杆段 + 数值段"
+                );
+                assert_eq!(
+                    field.x,
+                    layout.rule.x + 68.0,
+                    "{width}×{height}：名称标签（68）之右、面板列内"
+                );
+                assert_eq!(
+                    field.x + field.w,
+                    layout.rule.x + PANEL_W,
+                    "{width}×{height}：右缘贴面板列右缘"
+                );
+                assert!(
+                    field.x + field.w <= width - MARGIN,
+                    "{width}×{height}：输入框不越右缘"
+                );
+            }
+        }
     }
 
     /// 「没有素材？」按钮在右栏最下方（2026-10-05 用户要求）：整列宽、底边与预览底

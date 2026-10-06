@@ -38,7 +38,16 @@ const FAKE_MODEL: FauxModelDefinition = { id: "deskpet-fake", name: "Desk-Pet Fa
 const WINDOW_TOKENS = Math.min(aiConfig.contextMaxTokens, 200_000)
 const OUTPUT_RESERVE = contextBudget(WINDOW_TOKENS).outputReserve
 const BUDGET = contextBudget(WINDOW_TOKENS, OUTPUT_RESERVE)
-const RETAINED_CHARS = compactionSettingsFor(WINDOW_TOKENS, OUTPUT_RESERVE).keepRecentTokens * 4
+/**
+ * 压缩设置与 harness-slot 同一条表达式：模型解析把 maxTokens 收到 min(窗口推导值, 模型值)，
+ * 保留窗口从这里来。旧写法拿 OUTPUT_RESERVE 当 maxOutput —— 窗口推导值是 25000、模型值是
+ * 16384，两者给不出同一份 normalInputTarget（保留窗口随窗口缩放后数字分家）。
+ */
+const SETTINGS = compactionSettingsFor(WINDOW_TOKENS, FAKE_MODEL.maxTokens)
+/** 上游保留窗口换算回字符（上游按 chars/4 计消息）：切点保住的就是这么多字符。 */
+const RETAINED_CHARS = SETTINGS.keepRecentTokens * 4
+/** 重试视图里「摘要 + 静态前缀」的保守占用（B 的尺寸上界从这里来）。 */
+const RETRY_RESERVE = 8_000
 
 const PAYLOAD_UNIT = "硬预算超限必须先压缩再重试。"
 function payload(chars: number): string {
@@ -50,7 +59,14 @@ const SECOND_PREFIX = "第二段超限输入："
 const THIRD_PREFIX = "第三段恢复用尽载荷："
 const FOURTH_PREFIX = "第四段无摘要范围载荷："
 const FIRST = `${FIRST_PREFIX}${payload(Math.floor(BUDGET.hardInputLimit * .75))}`
-const SECOND = `${SECOND_PREFIX}${payload(Math.max(Math.ceil(RETAINED_CHARS * 1.1), Math.floor(BUDGET.hardInputLimit * .75)))}`
+/**
+ * 第二段 B 必须同时落在两条边界之间（旧公式 `max(1.1×R, 0.75H)` 只保了下界；保留窗口随窗口
+ * 缩放后上界先被击穿：重试视图 = 摘要 + B + 静态 > H，一次性恢复照常耗尽、回合直接失败）：
+ * - 下界：B 单独超过保留窗口（字符数 > R）—— 压缩切点落在它本人身上，恢复只吸收它之前的历史；
+ * - 上界：B + RETRY_RESERVE < H —— 压缩后的重试视图放得进硬预算，回合靠恢复照常完成。
+ */
+const SECOND_CHARS = Math.min(Math.floor(BUDGET.hardInputLimit - RETRY_RESERVE), Math.ceil(RETAINED_CHARS * 1.02))
+const SECOND = `${SECOND_PREFIX}${payload(SECOND_CHARS)}`
 /**
  * 第三段：正文本身就超过硬输入上限（留 4k 余量），压缩只能吸收它之前的历史，
  * 重试视图因此照样超限 —— 恢复只有一次，第二次溢出就落到 providerError。

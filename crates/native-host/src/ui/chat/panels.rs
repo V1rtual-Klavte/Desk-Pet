@@ -608,8 +608,12 @@ pub struct PanelMetrics {
     pub card_gap: f64,
 }
 
-/// 面板最高占宿主视图的比例（超出按 [`layout_panels`] 的规则截断；
+/// 面板最高占宿主视图的比例（流内面板区超出按 [`layout_panels`] 的规则截断；
 /// 面板永不挤掉输入区 —— 两个平台共用同一上限，不各写一份）。
+///
+/// 例外：抽屉（浮层 Inspector 的内容区）**不使用本上限做截断** —— 它按各自的
+/// 可视高上限走[内部滚动](PanelScrollGeometry)（内容全量摆放、滚动全可达，
+/// 见 2026-10-06 的「超长内容如注册明细全展开」修复）。
 pub const PANEL_MAX_FRACTION: f64 = 0.45;
 
 // ── 气泡几何（平台无关；两平台共用同一套「贴合内容宽度」算法） ──
@@ -1318,6 +1322,80 @@ pub fn hit_test_panels(layout: &PanelsLayout, x: f64, y: f64) -> Option<PanelAct
             }
             _ => None,
         })
+}
+
+// ==========================================
+// 抽屉内容区的内部滚动几何（两平台共用的唯一口径）
+// ==========================================
+//
+// 背景（2026-10-06）：抽屉（浮层 Inspector，把手上的「▴」开合）内容超过可视上限时，
+// 旧口径把上限直接喂给 `layout_panels` —— 放不下的块按序跳过、只留一条 `truncated`
+// 留痕，内容谁也到不了（超长的「注册明细」全展开即触发，用户报告的「静默丢块」）。
+// 现在改为**内部滚动**：抽屉内容全量摆放（不设高度上限），上限只决定**可视区高**，
+// 其余靠滚动到达。几何（可视高 / 偏移夹取 / 可达性 / 命中换算）全部收在本节，
+// 两平台只接各自的原生滚动机制（macOS `NSScrollView`、Windows `WS_VSCROLL` 裁剪窗），
+// 不各写一份夹取/换算口径。
+
+/// 抽屉内容区的滚动几何：内容全高、可视高与最大滚动偏移（逻辑单位，左上原点）。
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct PanelScrollGeometry {
+    /// 内容总高（全量摆放 [`layout_panels`] 的结果，与可视高无关；负值收口到 0）。
+    pub content_height: f64,
+    /// 可视区高（= min(内容高, 上限)；内容不超高时等于内容高）。
+    pub view_height: f64,
+    /// 允许的最大滚动偏移（内容不超高时恒 0）。
+    pub max_offset: f64,
+}
+
+/// 由内容高与可视上限算滚动几何（纯函数；负输入收口到 0，不产生负高度）。
+///
+/// 调用方（两平台）必须先以**无上限**（`f64::INFINITY`）跑 [`layout_panels`] 取得
+/// 内容全高 —— 若仍按上限摆放，`content_height` 就是截断后的高度，后半段内容
+/// 不在 layouts 里，滚动再大也到不了。
+pub fn panel_scroll_geometry(content_height: f64, max_view_height: f64) -> PanelScrollGeometry {
+    let content_height = content_height.max(0.0);
+    let view_height = content_height.min(max_view_height.max(0.0));
+    PanelScrollGeometry {
+        content_height,
+        view_height,
+        max_offset: (content_height - view_height).max(0.0),
+    }
+}
+
+/// 滚动偏移夹取到 `[0, max_offset]`（负数与越界都收口；内容不超高时恒 0）。
+///
+/// 与待发送条的 `pending_strip::clamp_scroll` 同义（方向不同：这里管纵向）。
+pub fn clamp_panel_scroll_offset(offset: f64, geometry: &PanelScrollGeometry) -> f64 {
+    offset.clamp(0.0, geometry.max_offset)
+}
+
+/// 让内容区里顶边 `top`、高 `height` 的区间**完整入视**所需的最小滚动偏移
+/// （下限 0、上限 `max_offset`）。
+///
+/// 语义即可达性（与 `pending_strip::reveal_offset` 同款断言）：区间高 ≤ 可视高时，
+/// 滚动量取该值（且夹在上限内）后，区间的上下缘都落在可视区里 —— 平台侧若有
+/// 「滚到某个控件」的需求也从这里取偏移，不各自推导。
+pub fn reveal_panel_offset(top: f64, height: f64, geometry: &PanelScrollGeometry) -> f64 {
+    ((top + height) - geometry.view_height).clamp(0.0, geometry.max_offset)
+}
+
+/// 带滚动偏移的命中判定：点 `(x, y)` 在**可视区坐标系**（左上原点），内部换算为
+/// 内容坐标（`y + offset`）后与 [`hit_test_panels`] 同一实现；可视区外的点一律
+/// 不命中（偏移量不参与「容器外」判定）。
+///
+/// 与 [`hit_test_panels`] 同属布局回归测试的几何证明工具：运行期两平台各由
+/// 原生控件（已被平台滚动到位的 frame）负责命中，本函数证明「滚动换算正确」。
+pub fn hit_test_panels_scrolled(
+    layout: &PanelsLayout,
+    offset: f64,
+    view_height: f64,
+    x: f64,
+    y: f64,
+) -> Option<PanelAction> {
+    if y < 0.0 || y >= view_height {
+        return None;
+    }
+    hit_test_panels(layout, x, y + offset)
 }
 
 /// 哈希短前缀（绑定信息展示用；空串返回 None）。
@@ -2041,6 +2119,186 @@ mod tests {
         assert!(
             second.y >= cards[1].y && second.bottom() <= cards[1].bottom(),
             "「乙」在第二张卡内"
+        );
+    }
+
+    // ── 抽屉（浮层 Inspector）内容区内部滚动的几何回归测试 ──
+    //
+    // 病灶（2026-10-06 登记）：抽屉内容超过可视上限时 `layout_panels` 按序跳过
+    // 放不下的块 —— 超长的「注册明细」全展开后后半段谁也到不了（静默丢块）。
+    // 修法 = 内容全量摆放 + 内部滚动；下面的用例钉住「全量都在 layouts 里、上限只
+    // 夹可视高、每个控件在某偏移下都能完整入视并被命中」。
+
+    /// 抽屉内容样例：顶部两个下拉 + 信息行 + 一排控件（模拟 DebugBar），中间一长段
+    /// 列表（模拟「注册明细」全展开），**尾部再放一个控件** —— 旧的按上限跳过规则会
+    /// 把它和列表后半段一起丢（用户点的是不存在的位置）。
+    fn drawer_view(list_rows: usize) -> PanelView {
+        let mut view = PanelView::new(PanelKind::DebugBar)
+            .select(test_select("思考", 4))
+            .select(test_select("安全", 3))
+            .line(PanelLineStyle::Dim, "上下文 42%")
+            .button("工具明细", PanelAction::ToggleDebugTools)
+            .button("注册明细", PanelAction::ToggleDebugRegistry)
+            .button("压缩", PanelAction::CompactSession);
+        for index in 0..list_rows {
+            view = view.line(PanelLineStyle::Dim, format!("builtin · tool_{index:03}"));
+        }
+        view.button("尾部按钮", PanelAction::ToggleUsage)
+    }
+
+    #[test]
+    fn 滚动几何按上限夹取可视高且偏移收口() {
+        // 内容超上限：可视高 = 上限，滚动量 = 内容 − 可视。
+        let long = panel_scroll_geometry(500.0, 246.0);
+        assert_eq!(long.view_height, 246.0);
+        assert!((long.max_offset - 254.0).abs() < 1e-6);
+        assert_eq!(
+            clamp_panel_scroll_offset(-5.0, &long),
+            0.0,
+            "负偏移收口到 0"
+        );
+        assert_eq!(
+            clamp_panel_scroll_offset(1e6, &long),
+            254.0,
+            "越界夹到最大偏移"
+        );
+        // 内容不超高：可视高 = 内容高，无滚动量（给多少偏移都被收口到 0）。
+        let fits = panel_scroll_geometry(100.0, 246.0);
+        assert_eq!(fits.view_height, 100.0);
+        assert_eq!(fits.max_offset, 0.0);
+        assert_eq!(clamp_panel_scroll_offset(30.0, &fits), 0.0);
+        // 负输入收口：不产生负高度/负内容。
+        let empty = panel_scroll_geometry(-1.0, 246.0);
+        assert_eq!(empty.content_height, 0.0);
+        assert_eq!(empty.view_height, 0.0);
+        // reveal：把包的下缘推入可视区（10 = 240 + 16 − 246）；顶部包取 0；
+        // 越界仍夹在 max_offset 内。
+        assert_eq!(reveal_panel_offset(240.0, 16.0, &long), 10.0);
+        assert_eq!(reveal_panel_offset(0.0, 16.0, &long), 0.0);
+        assert_eq!(reveal_panel_offset(1e6, 16.0, &long), 254.0);
+    }
+
+    #[test]
+    fn 抽屉上限下内容全量可达且命中随偏移换算() {
+        let width = 257.0;
+        let cap = 246.0;
+        let view = drawer_view(40);
+
+        // 病灶锚点：旧的「按上限摆放」确有块放不下（truncated 置位）—— 这正是要修的
+        // 静默丢块。layout_panels 的截断规则被改坏时这里会先红，提醒重审本组用例。
+        let capped = layout_panels(std::slice::from_ref(&view), width, cap);
+        assert!(capped.truncated, "前提：按上限摆放会丢块（静默丢块的病灶）");
+
+        // 新口径：抽屉内容全量摆放（不设高度上限），上限只决定可视区高。
+        let full = layout_panels(std::slice::from_ref(&view), width, f64::INFINITY);
+        assert!(!full.truncated, "全量摆放不得丢任何块");
+        let geometry = panel_scroll_geometry(full.height, cap);
+        assert!(geometry.view_height <= cap + 1e-6);
+        assert!(
+            geometry.max_offset > 0.0,
+            "内容应超过可视高（内部滚动真的启用）"
+        );
+        assert!(
+            (geometry.max_offset + geometry.view_height - geometry.content_height).abs() < 1e-6,
+            "滚到底即内容底（全高可达）"
+        );
+
+        // 列表每一行都在场（旧的按序跳过会从某行起整段消失）。
+        let texts: Vec<String> = full
+            .elements
+            .iter()
+            .filter_map(|element| match element {
+                PanelElement::Line { text, .. } => Some(text.clone()),
+                _ => None,
+            })
+            .collect();
+        for index in 0..40 {
+            let expected = format!("builtin · tool_{index:03}");
+            assert!(
+                texts.contains(&expected),
+                "列表行缺失：{expected}（被静默跳过）"
+            );
+        }
+        assert!(
+            texts.iter().any(|text| text == "上下文 42%"),
+            "顶部信息行不得因列表变长而消失"
+        );
+
+        // 每个按钮在某个滚动偏移下都完整入视，且该偏移下命中自己（偏移不换算会红）。
+        let buttons: Vec<(PanelFrame, PanelAction)> = full
+            .elements
+            .iter()
+            .filter_map(|element| match element {
+                PanelElement::Button { frame, action, .. } => Some((*frame, action.clone())),
+                _ => None,
+            })
+            .collect();
+        assert!(
+            buttons.len() >= 4,
+            "抽屉控件一个都不能少：{}",
+            buttons.len()
+        );
+        for (frame, action) in &buttons {
+            let offset = reveal_panel_offset(frame.y, frame.height, &geometry);
+            assert!(
+                offset >= 0.0 && offset <= geometry.max_offset + 1e-6,
+                "reveal 偏移必须在 [0, max_offset]：{offset}"
+            );
+            assert!(
+                frame.y >= offset - 1e-6 && frame.bottom() <= offset + geometry.view_height + 1e-6,
+                "取 reveal 偏移后按钮应完整落在可视区：{frame:?} offset={offset}"
+            );
+            let center_x = frame.x + frame.width / 2.0;
+            let center_y = frame.y + frame.height / 2.0 - offset; // 可视区坐标
+            assert_eq!(
+                hit_test_panels_scrolled(&full, offset, geometry.view_height, center_x, center_y),
+                Some(action.clone()),
+                "滚动后按钮中心必须命中自己（未叠加偏移会红）：{frame:?} offset={offset}"
+            );
+        }
+        // 可视区外的点不命中（越界判定基于可视区，不受偏移影响）。
+        assert!(
+            hit_test_panels_scrolled(
+                &full,
+                geometry.max_offset,
+                geometry.view_height,
+                4.0,
+                geometry.view_height + 1.0,
+            )
+            .is_none(),
+            "可视区下方的点不命中"
+        );
+    }
+
+    /// 两平台对称（native-host AGENTS §2）：抽屉内部滚动必须在 macOS 与 Windows 两侧
+    /// 都真的接上 —— 本机编不出 Windows 分支（§2），只能靠源码级守门（与「卡片底板
+    /// 两平台都接上」同款的静态检查）。
+    #[test]
+    fn 两平台都接上抽屉内部滚动() {
+        // `include_str!` 让两份平台源码成为编译期依赖：删掉任一侧的滚动接线，
+        // 本用例立刻断言失败，而不是静默只在一半平台退回「按上限丢块」。
+        const MACOS: &str = include_str!("../platform/macos_chat.rs");
+        const WINDOWS: &str = include_str!("../platform/windows_chat.rs");
+        for (name, source) in [("macos_chat.rs", MACOS), ("windows_chat.rs", WINDOWS)] {
+            assert!(
+                source.contains("panel_scroll_geometry("),
+                "{name} 未接入抽屉内部滚动几何（panel_scroll_geometry）"
+            );
+            assert!(
+                source.contains("inspector_scroll"),
+                "{name} 未接入浮层滚动承载（inspector_scroll）"
+            );
+        }
+        // macOS：内容挂 NSScrollView 的文档视图（滚动由 AppKit 承担）。
+        assert!(
+            MACOS.contains("setDocumentView(Some(&body))"),
+            "macos_chat.rs 的抽屉内容没挂进 NSScrollView（滚动不可达）"
+        );
+        // Windows：内容裁剪窗带滚动条与滚动指令入口（裁剪 + 偏移移动）。
+        assert!(
+            WINDOWS.contains("INSPECTOR_SCROLL_CLASS")
+                && WINDOWS.contains("inspector_scroll_command"),
+            "windows_chat.rs 缺滚动裁剪窗（WS_VSCROLL / 滚动指令接线）"
         );
     }
 }

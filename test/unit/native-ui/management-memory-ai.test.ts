@@ -9,18 +9,22 @@
 //
 // 被测行为：
 //   · memory_overview 的 scope 值域校验与 scopeId 补全失败的如实拒绝；行投影
-//     （截断、pinned 标记、派生条目的来源标记、作业行）；
-//   · memory_item_detail 的详情/历史投影与两类来源审计文案（派生条目含来源类别行）；
+//     （截断、pinned 标记、派生条目的来源标记、作业行；作业行动作按状态投影
+//     取消/继续/只读）；
+//   · memory_item_detail 的详情/历史投影与两类来源审计文案（派生条目含来源类别行；
+//     来源逐条成行 = 点行才展开一条）；
 //   · memory_item_change 的 actor 固定 user_ui、update 合并与「没有改动」拒绝、
 //     forget 的提交与 revision 发布；
-//   · memory_source_evidence / memory_maintenance / memory_restore 的成功与拒绝分支
-//     （含备份选择按 mtime 取最新 .sqlite3）；
+//   · memory_source_evidence / memory_maintenance 的成功与拒绝分支；
+//   · memory_backup_list 的过滤/排序/行投影与「目录缺失 ≠ 读不了」的诚实归宿；
+//   · memory_restore 作用于传入的选中路径（不再隐式取最新一份）；
+//   · memory_job_cancel / memory_job_resume 的租约身份、状态判据与领域拒绝；
 //   · V1RTUAL 读取的整份正文回退与写入的既有落盘入口；
 //   · 阶段文案 / 变量池 / 主动开关的形状守卫与无卡时的如实拒绝。
 
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest"
 
-import { initConfig } from "@/services/config"
+import { initConfig, setOverride } from "@/services/config"
 import { DERIVED_PROVENANCE_MARK, subscribeMemoryRevision } from "@/services/agent/memory"
 import { setHostBridge } from "@/services/host"
 import type { HostBridge } from "@/services/host"
@@ -94,11 +98,17 @@ function memoryItem(overrides: Record<string, unknown> = {}) {
 
 const fixtures = {
   fileReadContent: "",
-  backups: [] as Array<{ name: string; path: string; kind: string; mtimeMs: number }>,
+  backups: [] as Array<{ name: string; path: string; kind: string; size: number; mtimeMs: number }>,
+  /** 备份目录 file_list 是否失败（区分「目录不存在」与「目录存在但读不了」）。 */
+  backupsListFails: false,
+  backupsDirExists: false,
   listItems: [] as unknown[],
   detail: memoryItem() as unknown,
   history: [] as unknown[],
   sourceEvidence: null as unknown,
+  jobs: [] as unknown[],
+  jobCancelResult: null as unknown,
+  jobResumeResult: null as unknown,
 }
 
 /** 记录型假桥：`memory_*` 按夹具应答；失败面用「返回 null → 处理器如实拒绝」表达。 */
@@ -134,15 +144,22 @@ function createBridge() {
           fixtures.fileReadContent = String(args.content)
           return null
         case "file_list":
+          if (fixtures.backupsListFails) {
+            throw Object.assign(new Error("读取目录失败: 目录不存在"), { code: "IO" })
+          }
           return { entries: fixtures.backups }
+        case "file_exists":
+          return fixtures.backupsDirExists
         case "memory_status":
           return { revision: 5, forgetEpoch: 0, schemaVersion: 1, itemCount: 2, candidateCount: 0, jobCount: 1 }
         case "memory_list":
           return fixtures.listItems
         case "memory_job_list":
-          return [
-            { id: "job-1", phase: "light", status: "completed", revision: 5, forgetEpoch: 0, leaseUntil: null, processed: 12, createdAt: 0, updatedAt: 0 },
-          ]
+          return fixtures.jobs
+        case "memory_job_cancel":
+          return fixtures.jobCancelResult
+        case "memory_job_resume":
+          return fixtures.jobResumeResult
         case "memory_detail":
           return fixtures.detail
         case "memory_history":
@@ -193,6 +210,8 @@ beforeEach(() => {
   calls.length = 0
   fixtures.fileReadContent = ""
   fixtures.backups = []
+  fixtures.backupsListFails = false
+  fixtures.backupsDirExists = false
   fixtures.listItems = [
     memoryItem(),
     memoryItem({ id: "mem-2", version: 1, draft: { ...memoryItem().draft, summary: "", pinned: false } }),
@@ -200,6 +219,11 @@ beforeEach(() => {
   fixtures.detail = memoryItem()
   fixtures.history = []
   fixtures.sourceEvidence = null
+  fixtures.jobs = [
+    { id: "job-1", phase: "light", status: "completed", revision: 5, forgetEpoch: 0, leaseUntil: null, processed: 12, createdAt: 0, updatedAt: 0 },
+  ]
+  fixtures.jobCancelResult = null
+  fixtures.jobResumeResult = null
 })
 
 afterAll(() => {
@@ -250,6 +274,39 @@ describe("memory_overview（库总览）", () => {
     expect(payload.items[1]!.subtitle).not.toContain("核心画像")
     expect(payload.jobs[0]!.title.startsWith("light · completed · "), "作业行带阶段/状态/时间").toBe(true)
     expect(payload.jobs[0]!.subtitle).toBe("作业 job-1 · revision 5 · 已处理 12 条")
+  })
+
+  it("作业行动作按状态投影：进行中可取消 / 受限的 review 可继续 / 终态只读 [native-ui-memory-job-row-actions]", async () => {
+    const job = (id: string, phase: string, status: string) => ({
+      id,
+      phase,
+      status,
+      revision: 5,
+      forgetEpoch: 0,
+      leaseUntil: null,
+      processed: 3,
+      createdAt: 0,
+      updatedAt: 0,
+    })
+    fixtures.jobs = [
+      job("job-run", "review", "running"),
+      job("job-queued", "review", "queued"),
+      job("job-cancelled", "review", "cancelled"),
+      job("job-failed", "review", "failed"),
+      job("job-light-cancelled", "light", "cancelled"),
+      job("job-done", "review", "completed"),
+    ]
+    const payload = (await dispatchHostRequest("memory_overview", { scope: "user" })) as {
+      jobs: Array<{ id: string; action: string }>
+    }
+    expect(payload.jobs.map(row => row.action)).toEqual([
+      "cancel",
+      "cancel",
+      "resume",
+      "resume",
+      "none",
+      "none",
+    ])
   })
 
   it("派生条目（系统观察）在行副标题带来源标记，用户条目原样 [native-ui-memory-derived-label]", async () => {
@@ -321,14 +378,16 @@ describe("memory_item_detail（条目详情与历史）", () => {
       pinned: boolean
       info: string
       content: string
-      sourceIds: string[]
+      sources: Array<{ id: string; title: string; action: string; enabled: boolean }>
       history: Array<{ id: string; title: string; subtitle: string }>
     }
     expect(payload.itemId).toBe("mem-1")
     expect(payload.version).toBe(3)
     expect(payload.pinned).toBe(true)
     expect(payload.content).toBe("用户喜欢喝美式咖啡")
-    expect(payload.sourceIds).toEqual(["src-1", "src-2"])
+    // 来源逐条一行（点行才展开那一条；不再一次拼接多条文本）。
+    expect(payload.sources.map(row => row.id)).toEqual(["src-1", "src-2"])
+    expect(payload.sources[0]).toMatchObject({ id: "src-1", title: "src-1", action: "select" })
     expect(payload.info).toContain("类型：preference　范围：user　状态：active　版本：3")
     expect(payload.info).toContain("来源：src-1, src-2")
     expect(payload.info).toContain("重要性：7　置信度：0.9")
@@ -523,54 +582,135 @@ describe("memory_maintenance（备份 / 导出 / 重建索引）", () => {
   })
 })
 
-describe("memory_restore（恢复预览 / 应用）", () => {
-  const entry = (name: string, mtimeMs: number, kind = "file") => ({
+describe("memory_backup_list（备份列表）", () => {
+  const entry = (name: string, mtimeMs: number, extra: { kind?: string; size?: number } = {}) => ({
     name,
     path: `/fake/data/memory/backups/${name}`,
-    kind,
+    kind: extra.kind ?? "file",
+    size: extra.size ?? 2048,
     mtimeMs,
   })
 
-  it("没有备份 / 备份目录里没有 .sqlite3 时给中性指引（不静默）", async () => {
-    fixtures.backups = []
-    await expect(dispatchHostRequest("memory_restore", { op: "preview" })).rejects.toMatchObject({
-      code: "PATH_NOT_FOUND",
-    })
-    fixtures.backups = [entry("notes.txt", 999), entry("sub", 999, "dir")]
-    await expect(dispatchHostRequest("memory_restore", { op: "preview" })).rejects.toMatchObject({
-      code: "PATH_NOT_FOUND",
-    })
+  it("只列 .sqlite3、按 mtime 倒序；行 id = 路径、副标题带名称与大小 [native-ui-memory-backup-list]", async () => {
+    fixtures.backups = [
+      entry("old.sqlite3", 100, { size: 512 }),
+      entry("note.txt", 400),
+      entry("new.sqlite3", 300, { size: 3 * 1024 * 1024 }),
+      entry("sub", 500, { kind: "directory" }),
+    ]
+    const payload = (await dispatchHostRequest("memory_backup_list", {})) as {
+      rows: Array<{ id: string; title: string; subtitle: string; action: string }>
+    }
+    // 非 .sqlite3 与目录不进列表；顺序 = mtime 倒序（最新在前）。
+    expect(payload.rows.map(row => row.id)).toEqual([
+      "/fake/data/memory/backups/new.sqlite3",
+      "/fake/data/memory/backups/old.sqlite3",
+    ])
+    expect(payload.rows[0]!.action).toBe("choose")
+    expect(payload.rows[0]!.subtitle).toBe("new.sqlite3 · 3.0 MB")
+    expect(payload.rows[1]!.subtitle).toBe("old.sqlite3 · 512 B")
+    // 列表来自托管备份目录（不经 CONFIG / 别处）。
+    expect(recorded("file_list")[0]!.args.path).toBe("/memory/backups")
   })
 
-  it("预览取 mtime 最新的 .sqlite3，并在结果里显示实际使用的文件", async () => {
-    fixtures.backups = [entry("old.sqlite3", 100), entry("note.txt", 500), entry("new.sqlite3", 300)]
-    const payload = (await dispatchHostRequest("memory_restore", { op: "preview" })) as {
+  it("目录不存在 = 空列表（还没有备份）；目录存在但读不了 = 如实抛错 [native-ui-memory-backup-list-honest]", async () => {
+    fixtures.backupsListFails = true
+    fixtures.backupsDirExists = false
+    const payload = (await dispatchHostRequest("memory_backup_list", {})) as { rows: unknown[] }
+    expect(payload.rows).toEqual([])
+
+    fixtures.backupsDirExists = true
+    await expect(dispatchHostRequest("memory_backup_list", {})).rejects.toMatchObject({ code: "IO" })
+  })
+})
+
+describe("memory_restore（恢复预览 / 应用：作用对象 = 选中的那一份）", () => {
+  it("预览 / 应用都作用于传入的选中路径，并在结果里显示实际使用的文件 [native-ui-memory-restore-selected]", async () => {
+    const selected = "/fake/data/memory/backups/old.sqlite3"
+    const payload = (await dispatchHostRequest("memory_restore", { op: "preview", backupPath: selected })) as {
       message: string
       path: string | null
       revision: number | null
     }
-    expect(payload.path).toBe("/fake/data/memory/backups/new.sqlite3")
-    expect(payload.message).toContain("预检通过（未应用）：/fake/data/memory/backups/new.sqlite3")
+    expect(payload.path).toBe(selected)
+    expect(payload.message).toContain(`预检通过（未应用）：${selected}`)
     expect(payload.message).toContain("schema v2 · revision 9 · 4 条记忆 · 1 个作业")
-    expect(recorded("memory_restore_preview")[0]!.args.backupPath).toBe("/fake/data/memory/backups/new.sqlite3")
+    expect(recorded("memory_restore_preview")[0]!.args.backupPath).toBe(selected)
     expect(payload.revision).toBeNull()
-  })
 
-  it("应用返回新 revision；未知 op 在有备份时仍以 CONFIG 拒绝", async () => {
-    fixtures.backups = [entry("new.sqlite3", 300)]
-    const applied = (await dispatchHostRequest("memory_restore", { op: "apply" })) as {
+    const applied = (await dispatchHostRequest("memory_restore", { op: "apply", backupPath: selected })) as {
       message: string
       path: string | null
       revision: number | null
     }
     expect(applied.revision).toBe(88)
-    expect(applied.path).toBe("/fake/data/memory/backups/new.sqlite3")
+    expect(applied.path).toBe(selected)
     expect(applied.message).toContain("新 revision 88")
-    expect(recorded("memory_restore")[0]!.args.backupPath).toBe("/fake/data/memory/backups/new.sqlite3")
+    expect(recorded("memory_restore")[0]!.args.backupPath).toBe(selected)
+  })
 
-    await expect(dispatchHostRequest("memory_restore", { op: "explode" })).rejects.toMatchObject({
+  it("缺 backupPath 以 CONFIG 拒绝（不再隐式取「最新一份」）；未知 op 在有路径时仍拒绝 [native-ui-memory-restore-requires-path]", async () => {
+    await expect(dispatchHostRequest("memory_restore", { op: "preview" })).rejects.toMatchObject({
       code: "CONFIG",
     })
+    // 缺路径时一条恢复命令都没有发出（不存在隐式选择）。
+    expect(recorded("memory_restore_preview")).toHaveLength(0)
+    await expect(
+      dispatchHostRequest("memory_restore", { op: "explode", backupPath: "/fake/data/memory/backups/a.sqlite3" }),
+    ).rejects.toMatchObject({ code: "CONFIG" })
+  })
+})
+
+describe("memory_job_cancel / memory_job_resume（作业取消 / 继续）", () => {
+  const job = (overrides: Record<string, unknown> = {}) => ({
+    id: "job-1",
+    phase: "review",
+    status: "running",
+    revision: 5,
+    forgetEpoch: 0,
+    leaseOwner: "memory-dreaming",
+    leaseUntil: 1,
+    cursor: "",
+    processed: 3,
+    createdAt: 0,
+    updatedAt: 0,
+    error: null,
+    ...overrides,
+  })
+
+  it("取消以记忆整理写者的租约身份请求；状态未变成 cancelled 时如实拒绝 [native-ui-memory-job-cancel]", async () => {
+    fixtures.jobCancelResult = job({ status: "cancelled", leaseUntil: null })
+    const payload = (await dispatchHostRequest("memory_job_cancel", { jobId: "job-1" })) as { message: string }
+    expect(payload.message).toContain("job-1")
+    // 租约身份 = 记忆整理的既有写者（其它身份在 Rust 侧是 no-op，界面不能谎报取消）。
+    expect(recorded("memory_job_cancel")[0]!.args).toEqual({ jobId: "job-1", leaseOwner: "memory-dreaming" })
+
+    // 状态没有变成 cancelled（终态/属主不符）= 没有取消，如实拒绝。
+    fixtures.jobCancelResult = job({ status: "completed" })
+    await expect(dispatchHostRequest("memory_job_cancel", { jobId: "job-1" })).rejects.toMatchObject({
+      code: "CONFIG",
+    })
+    await expect(dispatchHostRequest("memory_job_cancel", {})).rejects.toMatchObject({ code: "CONFIG" })
+  })
+
+  it("继续走既有恢复入口；非 review 作业由领域拒绝并回手取消（不驱动非 Review 作业） [native-ui-memory-job-resume]", async () => {
+    // memoryConfig.enabled 是恢复入口的启动前提：本用例显式打开（用后还原，不污染其它用例）。
+    setOverride("ai.memory.enabled", true)
+    try {
+      fixtures.jobResumeResult = job({ id: "job-2", phase: "light", status: "running" })
+      fixtures.jobCancelResult = job({ id: "job-2", phase: "light", status: "cancelled" })
+      await expect(dispatchHostRequest("memory_job_resume", { jobId: "job-2" })).rejects.toMatchObject({
+        code: "OTHER",
+      })
+      expect(recorded("memory_job_resume")[0]!.args).toEqual({ jobId: "job-2", leaseOwner: "memory-dreaming" })
+      // 领域入口对非 review 的恢复请求回手取消（既有归宿）：不留「running 僵尸作业」。
+      expect(recorded("memory_job_cancel")).toHaveLength(1)
+      expect(recorded("memory_job_cancel")[0]!.args.jobId).toBe("job-2")
+    } finally {
+      setOverride("ai.memory.enabled", false)
+    }
+
+    await expect(dispatchHostRequest("memory_job_resume", {})).rejects.toMatchObject({ code: "CONFIG" })
   })
 })
 

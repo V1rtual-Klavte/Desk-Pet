@@ -840,12 +840,57 @@ const handlers: Record<string, (args: Args) => unknown> = {
     }
   },
 
-  /** session_fs.rs: Node 只等价读文件，Rust 路径与有界读取由 Rust/L4 验证。 */
+  /** session_fs.rs: Node 只等价读文件（含 tailBytes 尾部模式），Rust 路径与有界读取由 Rust/L4 验证。 */
   session_read_text: (args) => {
     const relative = arg<string>(args, "path")
-    const content = readFileSync(join(paths().sessions, relative), "utf8")
+    const target = join(paths().sessions, relative)
+    const tailBytes = args.tailBytes as number | undefined
+    const maxLinesArg = args.maxLines as number | null | undefined
+    // 两种模式互斥（Rust 侧结构化 CONFIG 拒绝）：Node 等价复现，不静默选一个。
+    if (tailBytes !== undefined && maxLinesArg !== undefined && maxLinesArg !== null) {
+      throw appError("CONFIG", "session_read_text: maxLines 与 tailBytes 不能同时使用")
+    }
+    if (tailBytes !== undefined) {
+      // 与 Rust `read_session_tail` 同语义：最后 tailBytes 字节、从行边界起（起点落在行
+      // 中间时丢弃截断的半行）；窗口覆盖整个文件时不丢行。UTF-8 多字节字符只会被整行丢弃。
+      const buffer = readFileSync(target)
+      const start = Math.max(0, buffer.length - tailBytes)
+      if (start === 0) return buffer.toString("utf8")
+      if (buffer[start - 1] !== 0x0a) {
+        const newline = buffer.indexOf(0x0a, start)
+        if (newline === -1) return ""
+        return buffer.subarray(newline + 1).toString("utf8")
+      }
+      return buffer.subarray(start).toString("utf8")
+    }
+    const content = readFileSync(target, "utf8")
     const maxLines = args.maxLines as number | undefined
     return maxLines === undefined ? content : content.split(/(?<=\n)/).slice(0, maxLines).join("")
+  },
+
+  /**
+   * session_fs.rs `write_session_text(base, relative, content, max_bytes)`：会话根内相对路径 +
+   * 会话专用 maxBytes（必填）。复现解析与大小判定（按 UTF-8 字节数），路径裁决（base 边界 +
+   * canonical 校验）留在 Rust/L4。
+   */
+  session_write_text: (args) => {
+    const relative = arg<string>(args, "path")
+    const content = arg<string>(args, "content")
+    const maxBytes = arg<number>(args, "maxBytes")
+    if (Buffer.byteLength(content, "utf8") > maxBytes) {
+      throw appError("OTHER", `写入内容过大，最多 ${maxBytes} bytes`)
+    }
+    const segments = splitNormalSegments(relative)
+    if (segments.length === 0) throw pathEscape()
+    const target = join(paths().sessions, ...segments)
+    // 与 Rust 的 ensure_regular_file 同口径：已存在的目标只允许常规文件。
+    if (existsSync(target)) ensureRegularFile(target, relative)
+    try {
+      mkdirSync(dirname(target), { recursive: true })
+      writeFileSync(target, content, "utf8")
+    } catch (cause) {
+      fromFsError(relative, "写入失败", cause)
+    }
   },
 
   // ── 记忆与日志（memory_cmd.rs / logging.rs）──

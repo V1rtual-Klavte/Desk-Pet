@@ -179,6 +179,63 @@ mod tests {
     }
 
     #[test]
+    fn 播放入口先校验后派发且重复失败不静默() {
+        let audio = test_audio();
+        // 播放入口与 validate_wav 共用同一道校验，且校验在派发平台闭包**之前**：
+        // 错误码必须是 CONFIG。校验若被挪进平台闭包，macOS 上会先撞「只能在 AppKit
+        // 主线程播放」（Other），测试线程拿不到 CONFIG。
+        assert_eq!(audio.play_wav(&valid_wav()[..43]).unwrap_err().code(), "CONFIG");
+        assert_eq!(audio.play_wav(&[]).unwrap_err().code(), "CONFIG");
+        // 重复的非法播放：每一次都如实报错，不因为「刚失败过」就吞掉后续失败 ——
+        // 失败抑制若有，也只允许出现在上报侧，不允许让播放接口把失败当成功返回。
+        let garbage = vec![0u8; 44];
+        assert_eq!(audio.play_wav(&garbage).unwrap_err().code(), "CONFIG");
+        assert_eq!(audio.play_wav(&garbage).unwrap_err().code(), "CONFIG");
+    }
+
+    #[test]
+    fn wav校验拒绝损坏的声明长度并接受上限边界() {
+        // 声明长度与实际字节不符的两种损坏形态：为 0 与溢出。
+        let mut zero_len = valid_wav();
+        zero_len[4..8].copy_from_slice(&0u32.to_le_bytes());
+        assert!(validate_wav(&zero_len).is_err(), "声明 0 长度的 WAV 也必须被拒");
+        let mut overflow = valid_wav();
+        overflow[4..8].copy_from_slice(&u32::MAX.to_le_bytes());
+        assert!(validate_wav(&overflow).is_err(), "声明长度溢出的 WAV 也必须被拒");
+
+        // 上限边界：恰好 4 MiB 且头部自洽 = 接受；再多一字节即拒。
+        const MAX_WAV_BYTES: usize = 4 * 1024 * 1024;
+        let mut exact = vec![0u8; MAX_WAV_BYTES];
+        exact[..4].copy_from_slice(b"RIFF");
+        exact[8..12].copy_from_slice(b"WAVE");
+        exact[4..8].copy_from_slice(&((MAX_WAV_BYTES - 8) as u32).to_le_bytes());
+        assert!(validate_wav(&exact).is_ok(), "恰好到上限的 WAV 不应被误拒");
+        let mut over = exact;
+        over.push(0);
+        let over_len = (over.len() - 8) as u32;
+        over[4..8].copy_from_slice(&over_len.to_le_bytes());
+        assert!(validate_wav(&over).is_err(), "超过上限一字节必须被拒");
+    }
+
+    /// 未配置 cue 的重复播放：始终静默成功、不合成兜底音、不累积任何槽位状态。
+    ///
+    /// 「连续失败不刷屏」的节流点在 UI 侧（`ui/platform/{macos,windows}.rs` 的 `play_cue`
+    /// 对「未接线」只报告一次，平台 UI 实例无法在单测里构造）；音频端口的职责是重复调用
+    /// 不产生额外副作用 —— 这里把它钉住，节流点本身留人工/集成观察。
+    #[test]
+    fn 未配置cue的重复播放不产生副作用() {
+        let audio = test_audio();
+        for _ in 0..32 {
+            audio.play(AudioCue::Welcome).unwrap();
+            audio.play(AudioCue::Popup).unwrap();
+            audio.play(AudioCue::Retract).unwrap();
+        }
+        assert!(audio.configured(AudioCue::Welcome).is_none());
+        assert!(audio.configured(AudioCue::Popup).is_none());
+        assert!(audio.configured(AudioCue::Retract).is_none());
+    }
+
+    #[test]
     fn 音效配置按cue分槽且校验失败不落半份() {
         let audio = test_audio();
         // 任一声部非法：整体拒绝，且不留下半份配置（三者校验都在写入之前）。

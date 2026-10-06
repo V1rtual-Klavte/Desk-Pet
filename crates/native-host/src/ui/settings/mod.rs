@@ -31,8 +31,8 @@ use crate::ui::MainThreadQueue;
 use crate::{rust_debug, rust_info, rust_warn};
 
 use panels::{
-    ListPanel, MemoryChange, MemoryChangeAction, MemoryDetail, MemoryDetailState, MemoryOverview,
-    PanelRow, RowAction,
+    ListPanel, McpServerForm, McpServerSave, MemoryChange, MemoryChangeAction, MemoryDetail,
+    MemoryDetailState, MemoryEvidenceState, MemoryOverview, PanelRow, RowAction,
 };
 use schema::{field, FieldKind};
 
@@ -126,11 +126,9 @@ pub struct SoundLibrary {
     pub rows: Vec<PanelRow>,
 }
 
-/// MCP 服务器编辑文档（`name` 缺省时是新建模板）。
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct McpServerDoc {
-    pub text: String,
-}
+// MCP 服务器编辑面是**表单**（W5-B）：字段类型与保存载荷在 `panels.rs`
+// （`McpServerForm` / `McpServerSave` / `mcp_form_rows` / `mcp_save_from_values`）；
+// 整段 markdown 文档编辑路径已删除，不保留并存的双轨。
 
 /// Profile 管理动作（新建/重命名/删除/导出/导入/恢复默认资源）。
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -196,28 +194,62 @@ pub enum DocumentTarget {
     V1rtual,
     /// 当前卡阶段文案（可编辑；可重新生成）。
     CardStages,
-    /// 当前卡本体 markdown（可编辑：角色设定、语言风格、输出规则、行为进阶、变量定义）。
-    CardMarkdown,
+    /// 指定 Card 的本体 markdown（可编辑：角色设定、语言风格、输出规则、行为进阶、变量定义）。
+    ///
+    /// 目标 = 卡列表里选中的那一张（行级「编辑」与「人格」小节的编辑入口共用同一坐标）；
+    /// 文档一旦打开就绑定在这个 card_id 上（读到写回同一张卡，不随列表选择漂移）。
+    CardMarkdown { card_id: String },
     /// Card 作者模版（只读：提示词全文，供复制给外部 AI 生成新卡）。
     CardTemplate,
-    /// MCP 服务器编辑（`name` 空 = 新建模板；内置只允许改 args/env）。
+    /// MCP 服务器编辑表单（`name` 空 = 新建模板；非空 = 原服务器名，保存时作撞名/改名坐标）。
     McpServer { name: String },
     /// 变量池只读预览。
     VariablePool,
-    /// 记忆来源原话（只读回看）。
-    MemoryEvidence,
 }
 
 impl DocumentTarget {
     pub fn is_read_only(&self) -> bool {
-        matches!(
-            self,
-            Self::VariablePool | Self::MemoryEvidence | Self::CardTemplate
-        )
+        matches!(self, Self::VariablePool | Self::CardTemplate)
     }
 }
 
-/// 当前打开的文档（标题 + Node 已提交文本 + 加载/只读状态）。
+/// 文档内容：文本目标 = Node 提交的文本；MCP 目标 = 表单字段值（控件逐项渲染）。
+///
+/// 两种形状由目标裁定，不并存：MCP 表单不再有「一段文本」的读法。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DocumentContent {
+    Text(String),
+    McpForm(McpServerForm),
+}
+
+impl DocumentContent {
+    /// 文本目标的正文（表单目标为 `None`：平台层表单控件不读它）。
+    pub fn as_text(&self) -> Option<&str> {
+        match self {
+            Self::Text(text) => Some(text),
+            Self::McpForm(_) => None,
+        }
+    }
+
+    /// 未加载时的占位内容（`loaded=false` 期间；按目标给空文本或空表单）。
+    pub fn empty(target: &DocumentTarget) -> Self {
+        match target {
+            DocumentTarget::McpServer { name } => Self::McpForm(McpServerForm {
+                name: name.clone(),
+                transport: panels::McpTransport::Stdio,
+                command: String::new(),
+                args: String::new(),
+                url: String::new(),
+                env: String::new(),
+                headers: String::new(),
+                enabled: true,
+            }),
+            _ => Self::Text(String::new()),
+        }
+    }
+}
+
+/// 当前打开的文档（标题 + Node 已提交内容 + 加载/只读状态）。
 ///
 /// 未保存编辑由平台控件持有（关闭/切换时丢弃，与设置草稿同一条纪律）；本结构只在
 /// 数据刷新与保存成功时被替换。
@@ -225,8 +257,8 @@ impl DocumentTarget {
 pub struct DocumentState {
     pub title: String,
     pub target: DocumentTarget,
-    /// Node 提供的已提交文本；`loaded=false` 时是空串（界面显示「读取中…」）。
-    pub content: String,
+    /// Node 提供的已提交内容；`loaded=false` 时是空文本 / 空表单（界面显示「读取中…」）。
+    pub content: DocumentContent,
     pub loaded: bool,
 }
 
@@ -418,13 +450,13 @@ pub trait SettingsPort: Send + Sync {
         Err(AppError::Other("音效试听端口未接线".into()))
     }
 
-    /// 工具页：MCP 编辑文档（`name` 缺省 = 新建模板）。
-    fn mcp_server_doc(&self, _name: Option<&str>) -> AppResult<McpServerDoc> {
+    /// 工具页：MCP 编辑表单（`name` 缺省 = 新建模板；返回逐字段值）。
+    fn mcp_server_form(&self, _name: Option<&str>) -> AppResult<McpServerForm> {
         Err(AppError::Other("MCP 编辑端口未接线".into()))
     }
 
-    /// 工具页：MCP 文本编辑保存（内置 args/env、自定义增/改）。
-    fn mcp_edit_text(&self, _text: &str) -> AppResult<()> {
+    /// 工具页：MCP 表单保存（`original_name` 空 = 新增；非空 = 更新/改名）。
+    fn mcp_save(&self, _save: &McpServerSave) -> AppResult<()> {
         Err(AppError::Other("MCP 编辑端口未接线".into()))
     }
 
@@ -473,9 +505,26 @@ pub trait SettingsPort: Send + Sync {
         Err(AppError::Other("记忆维护端口未接线".into()))
     }
 
-    /// 记忆页：恢复（`preview_only=true` 只预检；false = 应用最近一次托管备份）。
-    fn memory_restore(&self, _preview_only: bool) -> AppResult<String> {
+    /// 记忆页：托管备份列表（`id` = 备份绝对路径；行由 Node 投影，点击行 = 选中）。
+    fn memory_backup_list(&self) -> AppResult<Vec<PanelRow>> {
+        Err(AppError::Other("记忆备份列表端口未接线".into()))
+    }
+
+    /// 记忆页：恢复（`preview_only=true` 只预检；false = 应用；`backup_path` = 选中那一份）。
+    ///
+    /// 路径边界由 Rust 记忆命令裁决（只接受托管备份目录内的文件），端口不另外放宽。
+    fn memory_restore(&self, _preview_only: bool, _backup_path: &str) -> AppResult<String> {
         Err(AppError::Other("记忆恢复端口未接线".into()))
+    }
+
+    /// 记忆页：终止一条整理作业（只有进行中的作业可取消；是否生效由记忆域裁决）。
+    fn memory_job_cancel(&self, _job_id: &str) -> AppResult<String> {
+        Err(AppError::Other("记忆作业取消耗口未接线".into()))
+    }
+
+    /// 记忆页：继续一条受限的整理作业（review 阶段恢复并跑到收口；不接受非 review 作业）。
+    fn memory_job_resume(&self, _job_id: &str) -> AppResult<String> {
+        Err(AppError::Other("记忆作业继续端口未接线".into()))
     }
 }
 
@@ -723,17 +772,163 @@ pub fn font_snapshot_from(snapshot: &SettingsSnapshot) -> FontSnapshot {
 
 // ── 本批：行编辑文档的加载/保存分发（端口方法按目标裁定；文本格式由 Node 定义）──
 
-fn document_title(target: &DocumentTarget) -> String {
-    match target {
-        DocumentTarget::V1rtual => "V1RTUAL.md 用户指令".to_string(),
-        DocumentTarget::CardStages => "当前卡阶段文案".to_string(),
-        DocumentTarget::CardMarkdown => "当前 Card".to_string(),
-        DocumentTarget::CardTemplate => "Card 模版（只读）".to_string(),
-        DocumentTarget::McpServer { name } if name.is_empty() => "MCP 服务器（新建）".to_string(),
-        DocumentTarget::McpServer { name } => format!("MCP 服务器：{name}"),
-        DocumentTarget::VariablePool => "变量池预览（只读）".to_string(),
-        DocumentTarget::MemoryEvidence => "记忆来源原话（只读）".to_string(),
+/// 行编辑文档的标题（唯一实现点）。
+///
+/// 是 [`SettingsUi`] 的方法而不是自由函数：`CardMarkdown` 按 card_id 取显示名
+/// （改名后标题跟着新名字走），名字来自人格卡选项缓存 —— 取不到回落 id，
+/// 不猜、不补默认名。
+impl SettingsUi {
+    fn document_title(&self, target: &DocumentTarget) -> String {
+        match target {
+            DocumentTarget::V1rtual => "V1RTUAL.md 用户指令".to_string(),
+            DocumentTarget::CardStages => "当前卡阶段文案".to_string(),
+            DocumentTarget::CardMarkdown { card_id } => {
+                let name = self.card_options().and_then(|options| {
+                    options
+                        .iter()
+                        .find(|card| &card.id == card_id)
+                        .map(|card| card.name.clone())
+                });
+                match name {
+                    Some(name) => format!("Card：{name}"),
+                    None => format!("Card：{card_id}"),
+                }
+            }
+            DocumentTarget::CardTemplate => "Card 模版（只读）".to_string(),
+            DocumentTarget::McpServer { name } if name.is_empty() => {
+                "MCP 服务器（新建）".to_string()
+            }
+            DocumentTarget::McpServer { name } => format!("MCP 服务器：{name}"),
+            DocumentTarget::VariablePool => "变量池预览（只读）".to_string(),
+        }
     }
+}
+
+/// 备份列表的选中归宿（纯函数，可测）：
+/// 选中的那份仍在列表里则保持；已被清理/换目录（找不到）或尚未选过时回退**第一份**
+/// （Node 按 mtime 倒序投影，第一份 = 最新一份）；空列表返回 None（没有可操作对象）。
+pub fn resolve_backup_selection(rows: &[PanelRow], selected: Option<&str>) -> Option<String> {
+    let first = rows.first()?.id.clone();
+    match selected {
+        Some(id) if rows.iter().any(|row| row.id == id) => Some(id.to_string()),
+        _ => Some(first),
+    }
+}
+
+/// 备份列表的提示行（纯函数，可测）。
+///
+/// Rows 由 Node 投影、顺序即展示顺序（最新在前）；提示只报**当前选中的对象**
+/// （预览/应用的作用对象），空列表给「还没有备份」的中性指引 —— 不谎称有可恢复内容。
+pub fn memory_backup_hint(rows: &[PanelRow], selected: Option<&str>) -> String {
+    let Some(resolved) = resolve_backup_selection(rows, selected) else {
+        return "还没有可恢复的备份：点上方「备份现在」生成一份。".to_string();
+    };
+    let title = rows
+        .iter()
+        .find(|row| row.id == resolved)
+        .map(|row| row.title.clone())
+        .unwrap_or(resolved);
+    format!("当前选中：{title}（点行可切换）。用上方「预览选中备份 / 应用选中备份」操作这一份。")
+}
+
+// ── 本批：设置页的行级管理列表（Profile / 人格卡）──
+//
+// 两张列表（外观页「Profile 列表」与 AI 页「人格卡列表」）共用同一套选择语义：
+// **点行 = 选中管理对象**（UI 临时状态，不进 CONFIG、随关窗释放），与**激活**分开 ——
+// 激活仍走「角色展示 / 人格」的下拉 + 保存（`switchActiveProfile` / `switchPersonality`
+// 唯一入口），行选中不触发切换。行数据从既有的选项缓存投影（`profile_list` /
+// `personality_cards` 的同一份数据，不新增请求）；`enabled` 位承载「当前选中」
+// （与备份列表同一手法），激活态写在副标题里。
+
+/// 选择列表的选中归宿（纯函数，可测）：
+/// 选中项仍在列表里 → 保持；否则回退 `preferred`（当前激活项）；再否则回退第一项；
+/// 空列表 → None（没有可操作对象，调用方据此给中性指引）。
+pub fn resolve_option_selection(
+    ids: &[String],
+    selected: Option<&str>,
+    preferred: Option<&str>,
+) -> Option<String> {
+    let first = ids.first()?.clone();
+    let contains = |id: &str| ids.iter().any(|candidate| candidate == id);
+    if let Some(selected) = selected {
+        if contains(selected) {
+            return Some(selected.to_string());
+        }
+    }
+    if let Some(preferred) = preferred {
+        if contains(preferred) {
+            return Some(preferred.to_string());
+        }
+    }
+    Some(first)
+}
+
+/// 选择列表的提示行（纯函数，可测）：报当前选中的对象；空列表给中性指引。
+pub fn choose_list_hint(rows: &[PanelRow], resolved: Option<&str>, empty: &str) -> String {
+    let Some(resolved) = resolved else {
+        return empty.to_string();
+    };
+    let title = rows
+        .iter()
+        .find(|row| row.id == resolved)
+        .map(|row| row.title.clone())
+        .unwrap_or_else(|| resolved.to_string());
+    format!("当前选中：{title}（点行可切换）。")
+}
+
+/// Profile 列表行（纯函数，可测）：行 id = Profile id；`enabled` = 当前选中；
+/// 激活项在副标题里标出（激活与选中是两个位，不挤同一个 `enabled`）。
+pub fn profile_rows(
+    profiles: &[ProfileOption],
+    active: Option<&str>,
+    selected: Option<&str>,
+) -> Vec<PanelRow> {
+    profiles
+        .iter()
+        .map(|profile| {
+            let is_active = active == Some(profile.id.as_str());
+            let description = profile.description.trim();
+            let subtitle = match (is_active, description) {
+                (true, "") => "当前激活".to_string(),
+                (true, description) => format!("当前激活 · {description}"),
+                (false, description) => description.to_string(),
+            };
+            PanelRow {
+                id: profile.id.clone(),
+                title: profile.name.clone(),
+                subtitle,
+                action: RowAction::Choose,
+                secondary: RowAction::None,
+                enabled: selected == Some(profile.id.as_str()),
+                pick: None,
+            }
+        })
+        .collect()
+}
+
+/// Card 列表行（纯函数，可测）：行 id = Card id；`enabled` = 当前选中；激活项在副标题
+/// 标出；次动作「编辑」打开该卡的文档（`card_markdown_read/write` 按行 id 收口）。
+pub fn card_rows(
+    cards: &[CardOption],
+    active: Option<&str>,
+    selected: Option<&str>,
+) -> Vec<PanelRow> {
+    cards
+        .iter()
+        .map(|card| PanelRow {
+            id: card.id.clone(),
+            title: card.name.clone(),
+            subtitle: if active == Some(card.id.as_str()) {
+                "当前激活".to_string()
+            } else {
+                String::new()
+            },
+            action: RowAction::Choose,
+            secondary: RowAction::Edit,
+            enabled: selected == Some(card.id.as_str()),
+            pick: None,
+        })
+        .collect()
 }
 
 /// Card 模版面板的首行引导语。
@@ -745,58 +940,99 @@ const CARD_TEMPLATE_INTRO: &str =
     "可复制下面的模版，扔给 AI 生成。可以说：参照下面的模版，生成一份《明日方舟》里黍的人格卡";
 
 /// 按目标拉取文档内容（端口全部是既有请求面；本函数不解析文本）。
-fn load_document(port: &dyn SettingsPort, target: &DocumentTarget) -> AppResult<String> {
+fn load_document(port: &dyn SettingsPort, target: &DocumentTarget) -> AppResult<DocumentContent> {
     match target {
-        DocumentTarget::V1rtual => port.v1rtual_read(),
-        DocumentTarget::CardStages => Ok(port.card_stages_read(None)?.text),
-        DocumentTarget::CardMarkdown => port.card_markdown_read(None),
-        DocumentTarget::CardTemplate => Ok(format!("{CARD_TEMPLATE_INTRO}\n\n{}", port.card_template()?)),
-        DocumentTarget::McpServer { name } => Ok(port
-            .mcp_server_doc(if name.is_empty() {
+        DocumentTarget::V1rtual => Ok(DocumentContent::Text(port.v1rtual_read()?)),
+        DocumentTarget::CardStages => Ok(DocumentContent::Text(port.card_stages_read(None)?.text)),
+        DocumentTarget::CardMarkdown { card_id } => {
+            Ok(DocumentContent::Text(port.card_markdown_read(Some(card_id))?))
+        }
+        DocumentTarget::CardTemplate => Ok(DocumentContent::Text(format!(
+            "{CARD_TEMPLATE_INTRO}\n\n{}",
+            port.card_template()?
+        ))),
+        DocumentTarget::McpServer { name } => Ok(DocumentContent::McpForm(port.mcp_server_form(
+            if name.is_empty() {
                 None
             } else {
                 Some(name.as_str())
-            })?
-            .text),
-        DocumentTarget::VariablePool => Ok(port.card_variable_pool(None)?.text),
-        // 原话文档由 open_evidence_document 自行组装（需要条目上下文），不走这里。
-        DocumentTarget::MemoryEvidence => {
-            Err(AppError::Other("来源原话文档不支持按目标加载".into()))
-        }
+            },
+        )?)),
+        DocumentTarget::VariablePool => Ok(DocumentContent::Text(port.card_variable_pool(None)?.text)),
     }
 }
 
-/// 按目标提交文档；返回中性成功说明（内容校验失败如实抛出）。
-fn save_document(
+/// 文档保存载荷（文本目标 = 行编辑文本；MCP 目标 = 表单字段值）。
+enum DocumentWrite {
+    Text(String),
+    Mcp(McpServerSave),
+}
+
+/// 保存成功后的新文档坐标 + 中性说明。
+///
+/// MCP 表单保存可能**改掉服务器名**（表单允许改名）：目标要换成新名字，重拉才不会
+/// 去取一个已经不存在的旧名（那会把一次成功保存显示成「读取失败」）。
+struct DocumentSaved {
+    target: DocumentTarget,
+    notice: String,
+}
+
+/// 按目标提交文档（文本目标的保存路径）；返回中性成功说明（内容校验失败如实抛出）。
+fn save_text_document(
     port: &dyn SettingsPort,
     target: &DocumentTarget,
     content: &str,
-) -> AppResult<String> {
-    match target {
+) -> AppResult<DocumentSaved> {
+    let notice = match target {
         DocumentTarget::V1rtual => {
             port.v1rtual_write(content)?;
-            Ok("V1RTUAL 指令已保存（下一个回合生效）".to_string())
+            "V1RTUAL 指令已保存（下一个回合生效）".to_string()
         }
         DocumentTarget::CardStages => {
             port.card_stages_write(None, content)?;
-            Ok("阶段文案已保存（下一个回合生效）".to_string())
+            "阶段文案已保存（下一个回合生效）".to_string()
         }
-        DocumentTarget::McpServer { name } => {
-            port.mcp_edit_text(content)?;
-            Ok(if name.is_empty() {
-                "MCP 服务器已新增".to_string()
-            } else {
-                format!("MCP 服务器已保存：{name}")
-            })
+        DocumentTarget::CardMarkdown { card_id } => {
+            port.card_markdown_write(Some(card_id), content)?;
+            "Card 已保存（下一个回合生效）".to_string()
         }
-        DocumentTarget::CardMarkdown => {
-            port.card_markdown_write(None, content)?;
-            Ok("Card 已保存（下一个回合生效）".to_string())
+        DocumentTarget::McpServer { .. } => {
+            return Err(AppError::Config(
+                "MCP 服务器是表单编辑：文本保存路径已删除（走表单保存）".into(),
+            ));
         }
-        DocumentTarget::VariablePool
-        | DocumentTarget::MemoryEvidence
-        | DocumentTarget::CardTemplate => Err(AppError::Config("只读预览不能保存".into())),
-    }
+        DocumentTarget::VariablePool | DocumentTarget::CardTemplate => {
+            return Err(AppError::Config("只读预览不能保存".into()));
+        }
+    };
+    Ok(DocumentSaved {
+        target: target.clone(),
+        notice,
+    })
+}
+
+/// 按目标提交 MCP 表单（`mcp_save` 端口；逐字段校验在 Node，Rust 侧只保证线协议形状）。
+fn save_mcp_document(
+    port: &dyn SettingsPort,
+    target: &DocumentTarget,
+    save: &McpServerSave,
+) -> AppResult<DocumentSaved> {
+    let DocumentTarget::McpServer { .. } = target else {
+        return Err(AppError::Config("当前文档不是 MCP 服务器表单".into()));
+    };
+    port.mcp_save(save)?;
+    let renamed = !save.original_name.is_empty() && save.original_name != save.name;
+    Ok(DocumentSaved {
+        // 改名后文档跟到新名字（下一段编辑/测试都以新名为坐标）。
+        target: DocumentTarget::McpServer {
+            name: save.name.clone(),
+        },
+        notice: if renamed {
+            format!("MCP 服务器已保存：{}（原名 {}）", save.name, save.original_name)
+        } else {
+            format!("MCP 服务器已保存：{}", save.name)
+        },
+    })
 }
 
 // ── 通用页辅助：只读显示投影 / 快捷键录制 / 尺寸预览 / 重启 ──
@@ -1059,6 +1295,25 @@ struct PanelState {
     detail_error: Option<String>,
     /// 详情文本框里未保存的内容草稿（空串也是有效草稿；保存成功/换条目时清空）。
     content_draft: Option<String>,
+    /// 展开中的来源原话（同时最多一条；换条目时清空）。
+    evidence: Option<panels::MemoryEvidenceState>,
+    /// 托管备份列表（行 = 一份备份；选择态由 UI 叠加）。
+    backups: Vec<PanelRow>,
+    backups_loaded: bool,
+    backups_loading: bool,
+    backups_error: Option<String>,
+    /// 当前选中的备份路径（预览/应用的作用对象；缺省与失效时回退最新一份）。
+    backup_selected: Option<String>,
+
+    /// Profile 列表的读取失败原因（行数据由 `profile_options` 提供）。
+    profiles_error: Option<String>,
+    /// 当前选中的 Profile 行（「Profile 资源」小节管理动作的作用对象；
+    /// 选择是 UI 临时状态，缺省与失效时回退草稿里的激活项 —— 见 `selected_profile_id`）。
+    profile_selected: Option<String>,
+    /// 人格卡列表的读取失败原因（行数据由 `card_options` 提供）。
+    cards_error: Option<String>,
+    /// 当前选中的 Card 行（「人格」小节管理动作的作用对象；缺省与失效时回退激活卡）。
+    card_selected: Option<String>,
 
     generation: u64,
 }
@@ -1331,18 +1586,18 @@ impl SettingsUi {
                 self.open_document(DocumentTarget::CardTemplate);
                 Ok(())
             }
-            "action.cardEdit" => {
-                self.open_document(DocumentTarget::CardMarkdown);
-                Ok(())
-            }
-            "action.cardRename" => self.rename_current_card(),
+            // 「编辑 / 重命名 / 导出 / 删除」的作用对象 = 卡列表里选中的那一行
+            // （点行选中；缺省回退当前激活卡 —— 与旧「当前 Card」口径一致）。
+            "action.cardEdit" => self.open_card_document(),
+            "action.cardRename" => self.rename_selected_card(),
             "action.cardExport" => self.card_manage(CardManageOp::Export(String::new())),
             "action.cardImport" => self.card_manage(CardManageOp::Import),
             "action.cardDelete" => self.card_manage(CardManageOp::Delete(String::new())),
             // ── 本批：外观页 ──
             "action.soundResetDefaults" => self.sound_reset_defaults(),
             "action.profileCreate" => self.profile_manage(ProfileManageOp::Create),
-            "action.profileRename" => self.rename_current_profile(),
+            // 「重命名 / 导出 / 删除」作用于 Profile 列表里选中的那一行（见 schema.rs 同批注释）。
+            "action.profileRename" => self.rename_selected_profile(),
             "action.profileDelete" => self.profile_manage(ProfileManageOp::Delete(String::new())),
             "action.profileExport" => self.profile_manage(ProfileManageOp::Export(String::new())),
             "action.profileImport" => self.profile_manage(ProfileManageOp::Import),
@@ -1375,7 +1630,6 @@ impl SettingsUi {
             }
             "action.memoryRestorePreview" => self.memory_restore(true),
             "action.memoryRestoreApply" => self.memory_restore(false),
-            "action.memorySourceEvidence" => self.open_evidence_document(),
             "action.memoryScopeAll" => {
                 self.set_memory_scope(None);
                 Ok(())
@@ -1488,14 +1742,14 @@ impl SettingsUi {
                             let mut doc = Self::lock(&ui.document);
                             match doc.as_mut() {
                                 Some(state) if state.target == DocumentTarget::CardStages => {
-                                    state.content = stages.text;
+                                    state.content = DocumentContent::Text(stages.text);
                                     state.loaded = true;
                                 }
                                 _ => {
                                     *doc = Some(DocumentState {
-                                        title: document_title(&DocumentTarget::CardStages),
+                                        title: ui.document_title(&DocumentTarget::CardStages),
                                         target: DocumentTarget::CardStages,
-                                        content: stages.text,
+                                        content: DocumentContent::Text(stages.text),
                                         loaded: true,
                                     });
                                 }
@@ -1539,9 +1793,9 @@ impl SettingsUi {
     /// 打开文档并后台拉取内容；失败时关闭文档并给中性说明（不留旧文本冒充新内容）。
     pub fn open_document(&self, target: DocumentTarget) {
         *Self::lock(&self.document) = Some(DocumentState {
-            title: document_title(&target),
+            title: self.document_title(&target),
             target: target.clone(),
-            content: String::new(),
+            content: DocumentContent::empty(&target),
             loaded: false,
         });
         self.note_document_changed();
@@ -1591,7 +1845,7 @@ impl SettingsUi {
         }
     }
 
-    /// 保存文档：后台走端口写入口；成功后重拉（显示的永远是已提交文本）。
+    /// 保存文本文档：后台走端口写入口；成功后重拉（显示的永远是已提交文本）。
     pub fn save_document(&self, content: &str) -> AppResult<()> {
         let Some(state) = self.document() else {
             return Err(AppError::Other("没有打开的文档".into()));
@@ -1599,6 +1853,29 @@ impl SettingsUi {
         if state.target.is_read_only() {
             return Err(AppError::Config("只读预览不能保存".into()));
         }
+        if matches!(state.target, DocumentTarget::McpServer { .. }) {
+            // MCP 目标走表单保存（`save_mcp_form`）：文本入口在这里拒绝，避免
+            // 「平台忘了建表单控件」时把一段文本静默送进表单保存路径。
+            return Err(AppError::Config("MCP 服务器是表单编辑：请用表单保存".into()));
+        }
+        self.spawn_document_save(state.target, DocumentWrite::Text(content.to_string()))
+    }
+
+    /// 保存 MCP 表单：控件读值（key → 值）→ 线协议载荷 → 后台走 `mcp_save` 端口。
+    pub fn save_mcp_form(&self, values: &BTreeMap<String, String>) -> AppResult<()> {
+        let Some(state) = self.document() else {
+            return Err(AppError::Other("没有打开的文档".into()));
+        };
+        let DocumentTarget::McpServer { name } = state.target.clone() else {
+            return Err(AppError::Config("当前文档不是 MCP 服务器表单".into()));
+        };
+        // 线协议形状校验（缺字段/非法取值 → CONFIG）；域校验（重名、必填项）在 Node。
+        let save = panels::mcp_save_from_values(&name, values)?;
+        self.spawn_document_save(state.target, DocumentWrite::Mcp(save))
+    }
+
+    /// 保存文档的公共后台路径：连接/占用检查 → 端口写入 → 重拉权威内容 → 工具面板刷新。
+    fn spawn_document_save(&self, target: DocumentTarget, write: DocumentWrite) -> AppResult<()> {
         if !self.connected.load(Ordering::SeqCst) {
             self.set_error("设置数据未接线，无法保存");
             return Ok(());
@@ -1609,30 +1886,46 @@ impl SettingsUi {
         }
         self.set_notice(Some("正在保存…".into()));
         let port = Self::lock(&self.port).clone();
-        let target = state.target;
-        let content = content.to_string();
         let spawn = std::thread::Builder::new()
             .name("deskpet-settings-doc-save".into())
             .spawn(move || {
                 let ui = settings_ui();
-                match save_document(port.as_ref(), &target, &content) {
-                    Ok(notice) => {
-                        // 重拉权威文本（Node 校验后的落盘内容）；重拉失败保留刚提交的文本。
-                        if let Ok(fresh) = load_document(port.as_ref(), &target) {
+                let result = match &write {
+                    DocumentWrite::Text(content) => save_text_document(port.as_ref(), &target, content),
+                    DocumentWrite::Mcp(save) => save_mcp_document(port.as_ref(), &target, save),
+                };
+                match result {
+                    Ok(saved) => {
+                        // 目标换名后的新标题先取好（不握着文档锁再取选项锁）。
+                        let renamed_title = ui.document_title(&saved.target);
+                        // 重拉权威内容（Node 校验后的落盘值；MCP 改名后按新名字重拉）；
+                        // 重拉失败保留刚提交的内容（文档仍是新目标）。
+                        {
                             let mut doc = Self::lock(&ui.document);
                             if let Some(state) = doc.as_mut() {
-                                if state.target == target {
-                                    state.content = fresh;
-                                    state.loaded = true;
+                                if state.target == saved.target {
+                                    if let Ok(fresh) = load_document(port.as_ref(), &saved.target) {
+                                        state.content = fresh;
+                                        state.loaded = true;
+                                    }
+                                } else if state.target == target {
+                                    // 目标换了（改名）：状态也要跟到新坐标，否则后续保存/
+                                    // 测试仍按旧名字发请求。
+                                    state.title = renamed_title;
+                                    state.target = saved.target.clone();
+                                    if let Ok(fresh) = load_document(port.as_ref(), &saved.target) {
+                                        state.content = fresh;
+                                        state.loaded = true;
+                                    }
                                 }
                             }
                         }
-                        if matches!(target, DocumentTarget::McpServer { .. }) {
+                        if matches!(saved.target, DocumentTarget::McpServer { .. }) {
                             ui.spawn_tools_fetch();
                         }
                         ui.note_document_changed();
                         ui.document_in_flight.store(false, Ordering::SeqCst);
-                        ui.set_notice(Some(notice));
+                        ui.set_notice(Some(saved.notice));
                     }
                     Err(error) => {
                         ui.document_in_flight.store(false, Ordering::SeqCst);
@@ -1682,17 +1975,19 @@ impl SettingsUi {
         }
     }
 
-    // ── 本批：外观页（Profile 管理）──
+    // ── 本批：外观页（Profile 管理：动作作用于列表选中行）──
 
-    /// Profile 管理动作：`id` 由平台在动作触发前填进 op（空 = 用当前选中 Profile）。
-    /// 平台的动作字段不携带参数，这里把空 id 解析成草稿选中项，避免静默操作错对象。
+    /// Profile 管理动作：`id` 由平台在动作触发前填进 op（空 = 用**列表选中的那一行**）。
+    ///
+    /// 平台的动作字段不携带参数，这里把空 id 解析成选中行（未选过时回退草稿里的激活
+    /// Profile，与旧「当前 Profile」口径一致），避免静默操作错对象。
     pub fn profile_manage(&self, op: ProfileManageOp) -> AppResult<()> {
         let op = match op {
             ProfileManageOp::Delete(id) if id.is_empty() => {
-                ProfileManageOp::Delete(self.active_profile_id()?)
+                ProfileManageOp::Delete(self.selected_profile_id()?)
             }
             ProfileManageOp::Export(id) if id.is_empty() => {
-                ProfileManageOp::Export(self.active_profile_id()?)
+                ProfileManageOp::Export(self.selected_profile_id()?)
             }
             other => other,
         };
@@ -1705,13 +2000,15 @@ impl SettingsUi {
                 match port.profile_manage(&op) {
                     Ok(outcome) => {
                         *Self::lock(&ui.profile_options) = Some(Arc::new(outcome.profiles));
-                        // 新建成功后把草稿选中项指向新项：列表立即选定它，用户按保存即切换过去。
-                        if let Some(new_id) = &outcome.new_id {
-                            if let Err(error) = ui
-                                .set_value("appearance.activeProfile", SettingsValue::Text(new_id.clone()))
-                            {
-                                rust_warn!("新建 Profile 后预选中失败（列表仍会刷新）: {error}");
+                        {
+                            let mut state = Self::lock(&ui.panels);
+                            // 新建成功 = 选中新行（后续管理动作接着作用于它）；
+                            // **不改激活草稿**：激活是「当前 Profile」下拉 + 保存的独立动作，
+                            // 管理动作不替用户预选切换（选中与激活分开，见 `profile_panel`）。
+                            if let Some(new_id) = &outcome.new_id {
+                                state.profile_selected = Some(new_id.clone());
                             }
+                            state.generation += 1;
                         }
                         ui.set_notice(Some(outcome.message));
                     }
@@ -1726,12 +2023,12 @@ impl SettingsUi {
         }
     }
 
-    /// 重命名当前选中 Profile：先弹原生输入框取新名（取消 = 不写任何值），再走管理动作。
+    /// 重命名选中的 Profile：先弹原生输入框取新名（取消 = 不写任何值），再走管理动作。
     ///
-    /// 目标 id 与删除/导出同口径（草稿选中项）；预填值从 `profile_options` 缓存取显示名，
+    /// 目标 id 与删除/导出同口径（列表选中行）；预填值从 `profile_options` 缓存取显示名，
     /// 缓存缺失时回落 id（不会猜一个不存在的名字）。
-    fn rename_current_profile(&self) -> AppResult<()> {
-        let profile_id = self.active_profile_id()?;
+    fn rename_selected_profile(&self) -> AppResult<()> {
+        let profile_id = self.selected_profile_id()?;
         let current = Self::lock(&self.profile_options)
             .as_ref()
             .and_then(|options| options.iter().find(|option| option.id == profile_id))
@@ -1748,27 +2045,54 @@ impl SettingsUi {
         self.profile_manage(ProfileManageOp::Rename { profile_id, name })
     }
 
-    /// 当前激活 Profile 的 id（来自快照草稿；没有则如实报错）。
-    fn active_profile_id(&self) -> AppResult<String> {
-        Self::lock(&self.draft)
+    /// 选中的 Profile id：列表选中行 → 回退草稿里的激活 Profile（未选过/选中项已消失）
+    /// → 再回退列表第一项；列表未加载或为空时如实报错（不猜一个不存在的 id）。
+    fn selected_profile_id(&self) -> AppResult<String> {
+        let ids: Vec<String> = Self::lock(&self.profile_options)
+            .as_ref()
+            .map(|options| options.iter().map(|option| option.id.clone()).collect())
+            .unwrap_or_default();
+        let selected = Self::lock(&self.panels).profile_selected.clone();
+        let active = Self::lock(&self.draft)
             .value("appearance.activeProfile")
             .and_then(SettingsValue::as_text)
-            .map(ToString::to_string)
-            .filter(|value| !value.is_empty())
-            .ok_or_else(|| AppError::Other("没有激活的 Profile".into()))
+            .map(ToString::to_string);
+        resolve_option_selection(&ids, selected.as_deref(), active.as_deref())
+            .ok_or_else(|| AppError::Other("没有可操作的 Profile（列表未加载或为空）".into()))
     }
 
-    // ── 本批：AI 页（Card 管理）──
+    /// 选中一个 Profile 行（列表选择的界面状态；只校验该行仍在当前列表里）。
+    ///
+    /// 与激活无关：选中只决定「Profile 资源」小节管理动作的作用对象，
+    /// 切换激活仍走「当前 Profile」下拉 + 保存（`switchActiveProfile` 唯一入口）。
+    pub fn select_profile_row(&self, row_id: &str) -> AppResult<()> {
+        let known = Self::lock(&self.profile_options)
+            .as_ref()
+            .is_some_and(|options| options.iter().any(|option| option.id == row_id));
+        if !known {
+            // 列表在用户点击的间隙被重读过：不猜坐标，要求刷新。
+            return Err(AppError::Other("列表已更新，请刷新后重试".into()));
+        }
+        {
+            let mut state = Self::lock(&self.panels);
+            state.profile_selected = Some(row_id.to_string());
+            state.generation += 1;
+        }
+        self.refresh();
+        Ok(())
+    }
 
-    /// Card 管理动作：`id` 由平台在动作触发前填进 op（空 = 用草稿里选中的卡）。
-    /// 与 Profile 同口径，空 id 解析成当前选中项，避免静默操作错对象。
+    // ── 本批：AI 页（Card 管理：动作作用于列表选中行）──
+
+    /// Card 管理动作：`id` 由平台在动作触发前填进 op（空 = 用**列表选中的那一行**）。
+    /// 与 Profile 同口径，空 id 解析成选中行（未选过时回退激活卡），避免静默操作错对象。
     pub fn card_manage(&self, op: CardManageOp) -> AppResult<()> {
         let op = match op {
             CardManageOp::Delete(id) if id.is_empty() => {
-                CardManageOp::Delete(self.active_card_id()?)
+                CardManageOp::Delete(self.selected_card_id()?)
             }
             CardManageOp::Export(id) if id.is_empty() => {
-                CardManageOp::Export(self.active_card_id()?)
+                CardManageOp::Export(self.selected_card_id()?)
             }
             other => other,
         };
@@ -1785,26 +2109,25 @@ impl SettingsUi {
                         new_id,
                         active_id,
                     }) => {
-                        // 选中项回填：新建指向新卡；否则若草稿选的卡已从返回列表里消失
-                        // （刚被删掉），回落到运行时仍在激活的卡 —— 不回落的话，保存时会拿
-                        // 一个不存在的 id 去切换。先算再搬 `cards`，免得为取一次值多克隆一份列表。
-                        let selected = Self::lock(&ui.draft)
-                            .value("ai.personality.active")
-                            .and_then(SettingsValue::as_text)
-                            .map(ToString::to_string);
-                        let fallback = new_id.clone().or_else(|| {
-                            let gone = selected
-                                .as_deref()
-                                .is_some_and(|id| !cards.iter().any(|card| card.id == id));
-                            (gone && !active_id.is_empty()).then(|| active_id.clone())
-                        });
+                        // 选中项回填：新建指向新卡；选中的卡已从返回列表里消失（刚被删掉）
+                        // 时回落到运行时仍在激活的卡（`active_id`，仍在新列表里才算）——
+                        // 不留陈旧坐标。先算再搬 `cards`，免得为取一次值多克隆一份列表。
+                        let selected = Self::lock(&ui.panels).card_selected.clone();
+                        let gone = selected
+                            .as_deref()
+                            .is_some_and(|id| !cards.iter().any(|card| card.id == id));
+                        let active_still_present =
+                            !active_id.is_empty() && cards.iter().any(|card| card.id == active_id);
                         *Self::lock(&ui.card_options) = Some(Arc::new(cards));
-                        if let Some(id) = fallback {
-                            if let Err(error) =
-                                ui.set_value("ai.personality.active", SettingsValue::Text(id))
-                            {
-                                rust_warn!("Card 操作后回填选中项失败（列表仍会刷新）: {error}");
+                        {
+                            let mut state = Self::lock(&ui.panels);
+                            if let Some(new_id) = &new_id {
+                                state.card_selected = Some(new_id.clone());
+                            } else if gone {
+                                state.card_selected =
+                                    active_still_present.then(|| active_id.clone());
                             }
+                            state.generation += 1;
                         }
                         ui.set_notice(Some(message));
                     }
@@ -1833,11 +2156,11 @@ impl SettingsUi {
         self.card_manage(CardManageOp::Create { name })
     }
 
-    /// 重命名当前选中 Card：弹原生输入框取新显示名（取消 = 不写任何值）。
+    /// 重命名选中的 Card：弹原生输入框取新显示名（取消 = 不写任何值）。
     ///
     /// 只改显示名，文件名与 id 不动 —— 阶段文案与变量状态都挂在 id 上，改名不该牵连它们。
-    fn rename_current_card(&self) -> AppResult<()> {
-        let card_id = self.active_card_id()?;
+    fn rename_selected_card(&self) -> AppResult<()> {
+        let card_id = self.selected_card_id()?;
         let current = Self::lock(&self.card_options)
             .as_ref()
             .and_then(|options| options.iter().find(|option| option.id == card_id))
@@ -1854,14 +2177,46 @@ impl SettingsUi {
         self.card_manage(CardManageOp::Rename { card_id, name })
     }
 
-    /// 草稿里选中的 Card id（没有选中项时如实报错）。
-    fn active_card_id(&self) -> AppResult<String> {
-        Self::lock(&self.draft)
+    /// 选中的 Card id：列表选中行 → 回退草稿里的激活卡（未选过/选中项已消失）
+    /// → 再回退列表第一张；列表未加载或为空时如实报错。
+    fn selected_card_id(&self) -> AppResult<String> {
+        let ids: Vec<String> = self
+            .card_options()
+            .map(|options| options.iter().map(|card| card.id.clone()).collect())
+            .unwrap_or_default();
+        let selected = Self::lock(&self.panels).card_selected.clone();
+        let active = Self::lock(&self.draft)
             .value("ai.personality.active")
             .and_then(SettingsValue::as_text)
-            .map(ToString::to_string)
-            .filter(|value| !value.is_empty())
-            .ok_or_else(|| AppError::Other("没有选中的 Card".into()))
+            .map(ToString::to_string);
+        resolve_option_selection(&ids, selected.as_deref(), active.as_deref())
+            .ok_or_else(|| AppError::Other("没有可操作的 Card（列表未加载或为空）".into()))
+    }
+
+    /// 选中一张 Card 行（列表选择的界面状态；只校验该行仍在当前列表里）。
+    pub fn select_card_row(&self, row_id: &str) -> AppResult<()> {
+        let known = self
+            .card_options()
+            .is_some_and(|options| options.iter().any(|card| card.id == row_id));
+        if !known {
+            return Err(AppError::Other("列表已更新，请刷新后重试".into()));
+        }
+        {
+            let mut state = Self::lock(&self.panels);
+            state.card_selected = Some(row_id.to_string());
+            state.generation += 1;
+        }
+        self.refresh();
+        Ok(())
+    }
+
+    /// 打开选中 Card 的本体文档（行级「编辑」与「人格」小节的编辑入口共用）。
+    ///
+    /// 文档绑定在打开时的 card_id 上：之后列表选择变了也不影响这份文档的读写坐标。
+    fn open_card_document(&self) -> AppResult<()> {
+        let card_id = self.selected_card_id()?;
+        self.open_document(DocumentTarget::CardMarkdown { card_id });
+        Ok(())
     }
 
     // ── 本批：工具页动作 ──
@@ -1983,7 +2338,7 @@ impl SettingsUi {
         }
     }
 
-    /// 管理面行次动作（MCP 编辑/删除、Skill 删除）。
+    /// 管理面行次动作（MCP 编辑/删除、Skill 删除、人格卡编辑）。
     pub fn panel_secondary_action(
         &self,
         panel: &str,
@@ -1994,6 +2349,15 @@ impl SettingsUi {
             (panels::PANEL_MCP, RowAction::Edit) => {
                 self.open_document(DocumentTarget::McpServer {
                     name: row_id.to_string(),
+                });
+                Ok(())
+            }
+            // 人格卡行的「编辑」：先把该行设为选中（后续「重命名/导出/删除」接着作用于
+            // 同一张卡），再打开它的本体文档。
+            (panels::PANEL_CARDS, RowAction::Edit) => {
+                self.select_card_row(row_id)?;
+                self.open_document(DocumentTarget::CardMarkdown {
+                    card_id: row_id.to_string(),
                 });
                 Ok(())
             }
@@ -2073,6 +2437,10 @@ impl SettingsUi {
                     Ok(message) => {
                         ui.set_notice(Some(message));
                         ui.spawn_memory_fetch();
+                        // 新备份要出现在列表里（选中归宿由列表拉取统一收口到最新一份）。
+                        if op == MemoryMaintenanceOp::Backup {
+                            ui.spawn_backup_fetch();
+                        }
                     }
                     Err(error) => ui.set_notice(Some(format!("记忆维护未完成：{error}"))),
                 }
@@ -2083,7 +2451,14 @@ impl SettingsUi {
         }
     }
 
+    /// 恢复预览 / 应用：作用对象 = **当前选中的那份备份**（不是「最新一份」隐式坐标）。
     fn memory_restore(&self, preview_only: bool) -> AppResult<()> {
+        let Some(backup_path) = Self::lock(&self.panels).backup_selected.clone() else {
+            self.set_notice(Some(
+                "还没有可操作的备份：先在「备份列表」里点一份（或点「备份现在」生成一份）".into(),
+            ));
+            return Ok(());
+        };
         self.set_notice(Some(
             if preview_only {
                 "正在预检备份…"
@@ -2097,7 +2472,7 @@ impl SettingsUi {
             .name("deskpet-settings-memory-restore".into())
             .spawn(move || {
                 let ui = settings_ui();
-                match port.memory_restore(preview_only) {
+                match port.memory_restore(preview_only, &backup_path) {
                     Ok(message) => {
                         ui.set_notice(Some(message));
                         if !preview_only {
@@ -2120,77 +2495,126 @@ impl SettingsUi {
         }
     }
 
-    /// 打开「来源原话」只读文档：对当前选中条目的来源逐条取证据（上限 5 条）。
-    fn open_evidence_document(&self) -> AppResult<()> {
-        let source_ids = {
-            let state = Self::lock(&self.panels);
-            state
+    /// 展开/收起一条来源的原话（逐条回看入口）。
+    ///
+    /// 语义（「不无限膨胀」的边界）：**同时最多展开一条** —— 点未展开的行 = 展开该条
+    /// （只取这一条证据，不预取其余）；点已展开的行 = 收起；点另一行 = 直接切换。
+    /// 落地结果按来源坐标核对（Loading 阶段的坐标被换掉时丢弃，防陈旧回填）。
+    pub fn open_memory_source(&self, source_id: &str) -> AppResult<()> {
+        let expanded = {
+            let mut state = Self::lock(&self.panels);
+            let known = state
                 .detail
                 .as_ref()
-                .map(|detail| detail.source_ids.clone())
-                .unwrap_or_default()
+                .is_some_and(|detail| detail.sources.iter().any(|row| row.id == source_id));
+            if !known {
+                return Err(AppError::Other("列表已更新，请刷新后重试".into()));
+            }
+            let collapse = state
+                .evidence
+                .as_ref()
+                .is_some_and(|current| current.source_id() == source_id);
+            state.evidence = if collapse {
+                None
+            } else {
+                Some(MemoryEvidenceState::Loading {
+                    source_id: source_id.to_string(),
+                })
+            };
+            state.generation += 1;
+            !collapse
         };
-        if source_ids.is_empty() {
-            self.set_notice(Some("该条目没有可回看的来源".into()));
-            return Ok(());
-        }
-        let target = DocumentTarget::MemoryEvidence;
-        *Self::lock(&self.document) = Some(DocumentState {
-            title: document_title(&target),
-            target: target.clone(),
-            content: String::new(),
-            loaded: false,
-        });
         self.refresh();
-        if self.document_in_flight.swap(true, Ordering::SeqCst) {
+        if !expanded {
             return Ok(());
         }
         let port = Self::lock(&self.port).clone();
+        let target = source_id.to_string();
         let spawn = std::thread::Builder::new()
             .name("deskpet-settings-evidence".into())
             .spawn(move || {
-                let mut text = String::new();
-                for (index, source_id) in source_ids.iter().take(5).enumerate() {
-                    match port.memory_source_evidence(source_id) {
-                        Ok(entry) => {
-                            if index > 0 {
-                                text.push_str("\n\n────────────────\n\n");
-                            }
-                            text.push_str(&entry);
-                        }
-                        Err(error) => {
-                            if index > 0 {
-                                text.push_str("\n\n────────────────\n\n");
-                            }
-                            text.push_str(&format!("【来源 {source_id}】读取失败：{error}"));
-                        }
-                    }
-                }
-                if source_ids.len() > 5 {
-                    text.push_str(&format!(
-                        "\n\n（其余 {} 条来源未展开：一次最多显示 5 条）",
-                        source_ids.len() - 5
-                    ));
-                }
+                let result = port.memory_source_evidence(&target);
                 let ui = settings_ui();
                 {
-                    let mut doc = Self::lock(&ui.document);
-                    if let Some(state) = doc.as_mut() {
-                        if state.target == target {
-                            state.content = text;
-                            state.loaded = true;
-                        }
+                    let mut state = Self::lock(&ui.panels);
+                    // 只有在途的目标仍是这一条时才落地（用户在途换了行 = 结果作废）。
+                    let still_open = matches!(
+                        &state.evidence,
+                        Some(MemoryEvidenceState::Loading { source_id }) if source_id == &target
+                    );
+                    if still_open {
+                        state.evidence = Some(match result {
+                            Ok(text) => MemoryEvidenceState::Ready {
+                                source_id: target.clone(),
+                                text,
+                            },
+                            Err(error) => MemoryEvidenceState::Error {
+                                source_id: target.clone(),
+                                error: format!("来源原话读取失败：{error}"),
+                            },
+                        });
+                        state.generation += 1;
                     }
                 }
-                ui.note_document_changed();
-                ui.document_in_flight.store(false, Ordering::SeqCst);
                 ui.refresh();
             });
         if let Err(error) = spawn {
-            self.document_in_flight.store(false, Ordering::SeqCst);
             rust_warn!("来源原话线程创建失败: {error}");
+            let mut state = Self::lock(&self.panels);
+            let still_loading = matches!(
+                &state.evidence,
+                Some(MemoryEvidenceState::Loading { source_id: current }) if current.as_str() == source_id
+            );
+            if still_loading {
+                state.evidence = None;
+            }
+            drop(state);
+            self.refresh();
         }
         Ok(())
+    }
+
+    /// 记忆作业行的取消 / 继续（行主按钮；只有 Node 标记了动作的行会出现）。
+    ///
+    /// 语义按记忆域既有原语裁定、界面不发明新状态：
+    /// - 取消 = `memory_job_cancel`（终止进行中的作业；终态与可取消性由 Rust 裁决）；
+    /// - 继续 = `memory_job_resume`（恢复 review 阶段的受限作业并跑到收口，可能分钟级）。
+    pub fn memory_job_action(&self, panel: &str, job_id: &str, action: RowAction) -> AppResult<()> {
+        if panel != panels::PANEL_MEMORY_JOBS {
+            return Err(AppError::Other(format!("面板 {panel} 没有作业动作")));
+        }
+        let (verb, start) = match action {
+            RowAction::Cancel => ("取消", "正在取消作业…"),
+            RowAction::Resume => ("继续", "正在继续作业（可能需要一段时间）…"),
+            _ => return Err(AppError::Other(format!("行 {job_id} 没有作业动作"))),
+        };
+        self.set_notice(Some(start.into()));
+        let port = Self::lock(&self.port).clone();
+        let job_id = job_id.to_string();
+        // 入口已按动作过滤：继续可能跑完整条 Review（模型调用），等待上限在端口内按用户交互档。
+        let resume = matches!(action, RowAction::Resume);
+        let spawn = std::thread::Builder::new()
+            .name("deskpet-settings-memory-job".into())
+            .spawn(move || {
+                let ui = settings_ui();
+                let result = if resume {
+                    port.memory_job_resume(&job_id)
+                } else {
+                    port.memory_job_cancel(&job_id)
+                };
+                match result {
+                    Ok(message) => {
+                        ui.set_notice(Some(message));
+                        // 作业状态列在 Rust 库里：以重拉为准，界面不自行推进行状态。
+                        ui.refresh_memory();
+                    }
+                    Err(error) => ui.set_notice(Some(format!("作业未{verb}：{error}"))),
+                }
+            });
+        match spawn {
+            Ok(_) => Ok(()),
+            Err(error) => Err(AppError::Other(format!("作业动作线程创建失败: {error}"))),
+        }
     }
 
     /// 强制重拉 Profile 列表（外部增删 Profile 后不用重开设置窗）。
@@ -2403,6 +2827,7 @@ impl SettingsUi {
     ///
     /// 选项来自 Node 的人格注册表（`SettingsPort::cards`）；未接线/失败时如实
     /// 通知，不留假列表。工作线程执行（可能要走 IPC），结果经主线程队列回投。
+    /// 结果同时推进管理面代数：AI 页的卡列表与下拉消费同一份选项，界面一起跟上。
     pub fn ensure_cards(&self) {
         if Self::lock(&self.card_options).is_some() {
             self.refresh();
@@ -2419,11 +2844,21 @@ impl SettingsUi {
                 match port.cards() {
                     Ok(options) => {
                         *Self::lock(&ui.card_options) = Some(Arc::new(options));
+                        {
+                            let mut state = Self::lock(&ui.panels);
+                            state.cards_error = None;
+                            state.generation += 1;
+                        }
                         ui.cards_loading.store(false, Ordering::SeqCst);
                         ui.refresh();
                     }
                     Err(error) => {
                         ui.cards_loading.store(false, Ordering::SeqCst);
+                        {
+                            let mut state = Self::lock(&ui.panels);
+                            state.cards_error = Some(format!("人格卡列表读取失败：{error}"));
+                            state.generation += 1;
+                        }
                         ui.set_notice(Some(format!("人格卡列表不可用：{error}")));
                         rust_warn!("人格卡列表拉取失败: {error}");
                     }
@@ -2438,6 +2873,37 @@ impl SettingsUi {
     /// 当前展示用的人格卡列表（平台控件重建选项时取，与 `view()` 同源）。
     pub fn card_options(&self) -> Option<Arc<Vec<CardOption>>> {
         Self::lock(&self.card_options).clone()
+    }
+
+    /// AI 页的人格卡列表面板（行 = 一张卡；点行选中管理对象；「编辑」打开该卡文档）。
+    ///
+    /// 行由本域从 `card_options` 投影（与下拉同一份数据，不新增请求）；`enabled` 位
+    /// 承载「当前选中」，激活态在副标题 —— 激活与选中分开（激活仍走上方下拉 + 保存）。
+    pub fn card_panel(&self) -> ListPanel {
+        let options = self.card_options();
+        let loaded = options.is_some();
+        let cards: Vec<CardOption> = options.map(|list| list.as_ref().clone()).unwrap_or_default();
+        let active = Self::lock(&self.draft)
+            .value("ai.personality.active")
+            .and_then(SettingsValue::as_text)
+            .map(ToString::to_string);
+        let selected = Self::lock(&self.panels).card_selected.clone();
+        let ids: Vec<String> = cards.iter().map(|card| card.id.clone()).collect();
+        let resolved = resolve_option_selection(&ids, selected.as_deref(), active.as_deref());
+        let rows = card_rows(&cards, active.as_deref(), resolved.as_deref());
+        ListPanel {
+            id: panels::PANEL_CARDS,
+            title: "人格卡列表",
+            hint: format!(
+                "点行选中管理对象（选中是界面状态，不切换激活；切换激活走上方「人格卡」下拉并保存）。\
+                 「编辑 / 重命名 / 导出 / 删除」作用于选中行，行内「编辑」直接打开该卡的文档。{}",
+                choose_list_hint(&rows, resolved.as_deref(), "还没有可用的人格卡。")
+            ),
+            error: Self::lock(&self.panels).cards_error.clone(),
+            warning: None,
+            loaded,
+            rows,
+        }
     }
 
     // ── Profile 选项（外观页，W9c 管理面第三步）──
@@ -2463,11 +2929,21 @@ impl SettingsUi {
                 match port.profiles() {
                     Ok(options) => {
                         *Self::lock(&ui.profile_options) = Some(Arc::new(options));
+                        {
+                            let mut state = Self::lock(&ui.panels);
+                            state.profiles_error = None;
+                            state.generation += 1;
+                        }
                         ui.profiles_loading.store(false, Ordering::SeqCst);
                         ui.refresh();
                     }
                     Err(error) => {
                         ui.profiles_loading.store(false, Ordering::SeqCst);
+                        {
+                            let mut state = Self::lock(&ui.panels);
+                            state.profiles_error = Some(format!("Profile 列表读取失败：{error}"));
+                            state.generation += 1;
+                        }
                         ui.set_notice(Some(format!("Profile 列表不可用：{error}")));
                         rust_warn!("Profile 列表拉取失败: {error}");
                     }
@@ -2482,6 +2958,38 @@ impl SettingsUi {
     /// 当前展示用的 Profile 列表（平台控件重建选项时取，与 `view()` 同源）。
     pub fn profile_options(&self) -> Option<Arc<Vec<ProfileOption>>> {
         Self::lock(&self.profile_options).clone()
+    }
+
+    /// 外观页的 Profile 列表面板（行 = 一个 Profile；点行选中管理对象）。
+    ///
+    /// 行由本域从 `profile_options` 投影（与下拉同一份数据，不新增请求）；`enabled` 位
+    /// 承载「当前选中」，激活态写在副标题 —— 选中与激活分开：激活仍走「当前 Profile」
+    /// 下拉 + 保存（`switchActiveProfile` 唯一入口），点行不触发切换。
+    pub fn profile_panel(&self) -> ListPanel {
+        let options = Self::lock(&self.profile_options).clone();
+        let loaded = options.is_some();
+        let profiles: Vec<ProfileOption> = options.map(|list| list.as_ref().clone()).unwrap_or_default();
+        let active = Self::lock(&self.draft)
+            .value("appearance.activeProfile")
+            .and_then(SettingsValue::as_text)
+            .map(ToString::to_string);
+        let selected = Self::lock(&self.panels).profile_selected.clone();
+        let ids: Vec<String> = profiles.iter().map(|profile| profile.id.clone()).collect();
+        let resolved = resolve_option_selection(&ids, selected.as_deref(), active.as_deref());
+        let rows = profile_rows(&profiles, active.as_deref(), resolved.as_deref());
+        ListPanel {
+            id: panels::PANEL_PROFILES,
+            title: "Profile 列表",
+            hint: format!(
+                "点行选中管理对象（选中是界面状态，不切换激活；切换激活走「角色展示」的「当前 Profile」下拉并保存）。\
+                 「重命名 / 导出 / 删除」作用于选中行。{}",
+                choose_list_hint(&rows, resolved.as_deref(), "还没有可用 Profile。")
+            ),
+            error: Self::lock(&self.panels).profiles_error.clone(),
+            warning: None,
+            loaded,
+            rows,
+        }
     }
 
     // ── 管理面（W9d）：工具页 ──
@@ -2857,13 +3365,33 @@ impl SettingsUi {
                 id: panels::PANEL_MEMORY_JOBS,
                 // 面板名对齐旧壳的「自动整理」小节（下面的列表即「历史作业」）。
                 title: "自动整理",
-                hint: "整理由运行期自动触发（空闲或手动入口在聊天侧）；这里只读历史作业状态，冲突、失败或取消都有明确终态。".to_string(),
+                hint: "整理由运行期自动触发（空闲或手动入口在聊天侧）；进行中的作业可在行上取消，受限的 Review 作业可继续，其余为历史终态（只读）。".to_string(),
                 error: state.memory_error.clone(),
                 warning: None,
                 loaded: state.memory_loaded,
                 rows: overview.jobs,
             },
         ]
+    }
+
+    /// 可操作的整理作业行（带动作的行：可取消的进行中 / 可继续的受限作业）。
+    ///
+    /// macOS 记忆页只内联这一份（完整历史仍在「查看记录」弹层，2026-10-05 用户规则）；
+    /// Windows 渲染完整作业面板，行按钮只在有动作的行出现 —— 两侧**动作集合同源**
+    /// （都取 Node 行投影的 `action` 字段），这里只是过滤呈现，不按状态重算。
+    pub fn memory_actionable_jobs(&self) -> Vec<PanelRow> {
+        Self::lock(&self.panels)
+            .memory
+            .as_ref()
+            .map(|overview| {
+                overview
+                    .jobs
+                    .iter()
+                    .filter(|row| row.action != RowAction::None)
+                    .cloned()
+                    .collect()
+            })
+            .unwrap_or_default()
     }
 
     /// 记忆状态行（「库版本 revision N · …」；未读到为 None）。
@@ -2913,8 +3441,98 @@ impl SettingsUi {
         }
     }
 
-    /// 首次进入记忆页：拉取总览（状态 + 条目 + 作业）。
+    /// 记忆详情「来源原话」面板：当前选中条目有来源时才有这一节。
+    ///
+    /// 行 = 一条来源（`id` = sourceId，动作 select；Node 投影）；**不预取任何证据** ——
+    /// 点行才取那一条，同时最多展开一条（见 [`MemoryEvidenceState`]）。
+    pub fn memory_source_panel(&self) -> Option<ListPanel> {
+        let state = Self::lock(&self.panels);
+        let detail = state.detail.as_ref()?;
+        if detail.sources.is_empty() {
+            return None;
+        }
+        Some(ListPanel {
+            id: panels::PANEL_MEMORY_SOURCES,
+            title: "来源原话",
+            hint: "点一行展开那条来源的登记证据与会话原话；再点同一行收起（一次只展开一条）。".to_string(),
+            error: None,
+            warning: None,
+            loaded: true,
+            rows: detail.sources.clone(),
+        })
+    }
+
+    /// 展开中的来源原话（None = 没有展开；平台按三态分支渲染）。
+    pub fn memory_evidence_state(&self) -> Option<MemoryEvidenceState> {
+        Self::lock(&self.panels).evidence.clone()
+    }
+
+    /// 记忆页「备份列表」面板：托管目录里的备份逐份一行（最新在前），点行 = 选中。
+    ///
+    /// 行的 `enabled` 位叠加「当前选中」（选择是 UI 临时状态，不来自 Node 行投影）；
+    /// 提示行报当前选中的对象（空列表给「还没有备份」的中性指引）。
+    pub fn memory_backup_panel(&self) -> ListPanel {
+        let state = Self::lock(&self.panels);
+        let selected = state.backup_selected.clone();
+        let rows: Vec<PanelRow> = state
+            .backups
+            .iter()
+            .cloned()
+            .map(|mut row| {
+                row.enabled = Some(&row.id) == selected.as_ref();
+                row
+            })
+            .collect();
+        ListPanel {
+            id: panels::PANEL_MEMORY_BACKUPS,
+            title: "备份列表",
+            hint: memory_backup_hint(&state.backups, selected.as_deref()),
+            error: state.backups_error.clone(),
+            warning: None,
+            loaded: state.backups_loaded,
+            rows,
+        }
+    }
+
+    /// 选中一份托管备份（预览/应用的作用对象）；未知 id 如实拒绝（列表已更新时不驱动陈旧坐标）。
+    pub fn select_memory_backup(&self, backup_id: &str) -> AppResult<()> {
+        {
+            let mut state = Self::lock(&self.panels);
+            if !state.backups.iter().any(|row| row.id == backup_id) {
+                return Err(AppError::Other("列表已更新，请刷新后重试".into()));
+            }
+            state.backup_selected = Some(backup_id.to_string());
+            state.generation += 1;
+        }
+        self.refresh();
+        Ok(())
+    }
+
+    /// 行选择（`RowAction::Select` / `Choose`）的归宿（按面板分发；平台只回传行坐标，
+    /// 语义在这里）。
+    ///
+    /// - 条目面板 = 打开详情；
+    /// - 来源面板 = 展开/收起该条原话；
+    /// - 备份面板 = 把该行设为当前操作对象；
+    /// - Profile / 人格卡列表 = 把该行设为管理动作的作用对象（选择是 UI 状态，
+    ///   与激活无关）。
+    pub fn panel_row_select(&self, panel: &str, row_id: &str) -> AppResult<()> {
+        match panel {
+            panels::PANEL_MEMORY_ITEMS => {
+                self.open_memory_item(row_id);
+                Ok(())
+            }
+            panels::PANEL_MEMORY_SOURCES => self.open_memory_source(row_id),
+            panels::PANEL_MEMORY_BACKUPS => self.select_memory_backup(row_id),
+            panels::PANEL_PROFILES => self.select_profile_row(row_id),
+            panels::PANEL_CARDS => self.select_card_row(row_id),
+            other => Err(AppError::Other(format!("面板 {other} 没有可选择的行"))),
+        }
+    }
+
+    /// 首次进入记忆页：拉取总览（状态 + 条目 + 作业）与托管备份列表。
     pub fn ensure_memory(&self) {
+        self.ensure_backups();
         {
             let state = Self::lock(&self.panels);
             if state.memory_loaded || state.memory_loading {
@@ -2924,9 +3542,62 @@ impl SettingsUi {
         self.spawn_memory_fetch();
     }
 
-    /// 记忆页「刷新」：强制重拉总览（在途去重）。
+    /// 记忆页「刷新」：强制重拉总览与备份列表（各自在途去重）。
     pub fn refresh_memory(&self) {
         self.spawn_memory_fetch();
+        self.spawn_backup_fetch();
+    }
+
+    /// 首次进入记忆页：拉取备份列表（`refresh_memory` 覆盖的是强制重拉路径）。
+    fn ensure_backups(&self) {
+        {
+            let state = Self::lock(&self.panels);
+            if state.backups_loaded || state.backups_loading {
+                return;
+            }
+        }
+        self.spawn_backup_fetch();
+    }
+
+    fn spawn_backup_fetch(&self) {
+        {
+            let mut state = Self::lock(&self.panels);
+            if state.backups_loading {
+                return;
+            }
+            state.backups_loading = true;
+        }
+        let port = Self::lock(&self.port).clone();
+        let spawn = std::thread::Builder::new()
+            .name("deskpet-settings-memory-backups".into())
+            .spawn(move || {
+                let result = port.memory_backup_list();
+                let ui = settings_ui();
+                {
+                    let mut state = Self::lock(&ui.panels);
+                    match result {
+                        Ok(rows) => {
+                            state.backups = rows;
+                            state.backups_error = None;
+                        }
+                        // 读取失败保留上一次列表（错误独立呈现），不把旧列表清成「没有备份」。
+                        Err(error) => {
+                            state.backups_error = Some(format!("备份列表读取失败：{error}"))
+                        }
+                    }
+                    state.backups_loaded = true;
+                    state.backups_loading = false;
+                    // 选中归宿：选中的一份消失（被清理/换目录）时回退最新一份，空列表清空选中。
+                    state.backup_selected =
+                        resolve_backup_selection(&state.backups, state.backup_selected.as_deref());
+                    state.generation += 1;
+                }
+                ui.refresh();
+            });
+        if let Err(error) = spawn {
+            Self::lock(&self.panels).backups_loading = false;
+            rust_warn!("备份列表拉取线程创建失败: {error}");
+        }
     }
 
     fn spawn_memory_fetch(&self) {
@@ -2976,6 +3647,8 @@ impl SettingsUi {
             state.detail_error = None;
             state.detail_loading = true;
             state.content_draft = None;
+            // 换条目 = 上一份展开的原话不再属于当前上下文（来源坐标已变）。
+            state.evidence = None;
             state.generation += 1;
         }
         self.refresh();
@@ -3343,6 +4016,259 @@ mod tests {
         // 但 2026-10-05 撤掉「当前坐标」后**界面上已没有 Info 字段**（见 schema.rs 的说明），
         // 这条断言暂时没有对应字段可钉 —— 机制本身仍在 `FieldKind::Info` 与
         // `validate_value` 的拒绝分支里，待下个只读展示字段出现时补回来。
+    }
+
+    fn backup_row(id: &str, title: &str) -> PanelRow {
+        PanelRow {
+            id: id.to_string(),
+            title: title.to_string(),
+            subtitle: String::new(),
+            action: RowAction::Choose,
+            secondary: RowAction::None,
+            enabled: false,
+            pick: None,
+        }
+    }
+
+    #[test]
+    fn 备份选中归宿_缺省与失效都回退最新一份() {
+        let rows = vec![
+            backup_row("/b/new.sqlite3", "10-06 12:00"),
+            backup_row("/b/old.sqlite3", "10-01 09:00"),
+        ];
+        // 未选过 = 最新一份（Node 行顺序即 mtime 倒序）。
+        assert_eq!(
+            resolve_backup_selection(&rows, None).as_deref(),
+            Some("/b/new.sqlite3")
+        );
+        // 已选且仍在列表 = 保持（不被「回退最新」覆盖掉用户的选择）。
+        assert_eq!(
+            resolve_backup_selection(&rows, Some("/b/old.sqlite3")).as_deref(),
+            Some("/b/old.sqlite3")
+        );
+        // 选中的那份被清理 = 回退最新一份（不指向不存在的路径）。
+        assert_eq!(
+            resolve_backup_selection(&rows, Some("/b/gone.sqlite3")).as_deref(),
+            Some("/b/new.sqlite3")
+        );
+        // 空列表 = 没有可操作对象（调用方据此给中性指引，而不是拿空路径去恢复）。
+        assert_eq!(resolve_backup_selection(&[], Some("/b/x.sqlite3")), None);
+    }
+
+    #[test]
+    fn 备份提示行报当前选中或中性空指引() {
+        let rows = vec![backup_row("/b/new.sqlite3", "10-06 12:00")];
+        let hint = memory_backup_hint(&rows, Some("/b/new.sqlite3"));
+        assert!(hint.contains("当前选中：10-06 12:00"), "{hint}");
+        // 提示给人看的是展示标题，不是内部路径。
+        assert!(!hint.contains("/b/new.sqlite3"), "{hint}");
+        // 选中的那份失效 = 提示回退后的对象（与 resolve 同一口径，不谎报旧选择）。
+        let fallback = memory_backup_hint(&rows, Some("/b/gone.sqlite3"));
+        assert!(fallback.contains("10-06 12:00"), "{fallback}");
+        let empty = memory_backup_hint(&[], None);
+        assert!(empty.contains("还没有可恢复的备份"), "{empty}");
+    }
+
+    // ── 本批：设置页的行级管理列表（Profile / 人格卡）──
+
+    #[test]
+    fn 选择列表选中归宿按保持_激活_首项回退() {
+        let ids = vec!["a".to_string(), "b".to_string()];
+        // 显式选中仍在列表：保持（不被「回退激活」覆盖掉用户的选择）。
+        assert_eq!(
+            resolve_option_selection(&ids, Some("b"), Some("a")).as_deref(),
+            Some("b")
+        );
+        // 选中项消失：回退当前激活项。
+        assert_eq!(
+            resolve_option_selection(&ids, Some("gone"), Some("a")).as_deref(),
+            Some("a")
+        );
+        // 未选过：直接用激活项（旧「当前 Profile / 当前 Card」口径不变）。
+        assert_eq!(
+            resolve_option_selection(&ids, None, Some("b")).as_deref(),
+            Some("b")
+        );
+        // 激活项也不在列表（如激活卡被外部改动）：回退第一项。
+        assert_eq!(
+            resolve_option_selection(&ids, Some("gone"), Some("gone")).as_deref(),
+            Some("a")
+        );
+        assert_eq!(
+            resolve_option_selection(&ids, None, None).as_deref(),
+            Some("a")
+        );
+        // 空列表 = 没有可操作对象（调用方如实报错，不猜 id）。
+        assert_eq!(resolve_option_selection(&[], Some("a"), Some("a")), None);
+    }
+
+    #[test]
+    fn 提示行报当前选中或中性空指引() {
+        let rows = vec![backup_row("a", "甲"), backup_row("b", "乙")];
+        let hint = choose_list_hint(&rows, Some("a"), "空");
+        assert!(hint.contains("当前选中：甲"), "{hint}");
+        // 选中坐标失效时如实显示坐标本身，不谎报另一行。
+        let stale = choose_list_hint(&rows, Some("gone"), "空");
+        assert!(stale.contains("当前选中：gone"), "{stale}");
+        assert_eq!(choose_list_hint(&[], None, "还没有可用项。"), "还没有可用项。");
+    }
+
+    #[test]
+    fn 卡片行区分激活与选中并带行内编辑() {
+        let cards = vec![
+            CardOption {
+                id: "a".to_string(),
+                name: "甲".to_string(),
+            },
+            CardOption {
+                id: "b".to_string(),
+                name: "乙".to_string(),
+            },
+        ];
+        let rows = card_rows(&cards, Some("a"), Some("b"));
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0].id, "a");
+        assert_eq!(rows[0].title, "甲");
+        assert_eq!(rows[0].subtitle, "当前激活", "激活态写在副标题");
+        assert!(!rows[0].enabled, "激活不等于选中");
+        assert_eq!(rows[1].subtitle, "", "非激活行没有副标题");
+        assert!(rows[1].enabled, "选中位在 enabled 上（与备份列表同一手法）");
+        for row in &rows {
+            assert_eq!(row.action, RowAction::Choose);
+            assert_eq!(row.secondary, RowAction::Edit, "行内「编辑」打开该卡文档");
+            assert!(row.pick.is_none());
+        }
+    }
+
+    #[test]
+    fn profile行区分激活与选中并带激活标记() {
+        let profiles = vec![
+            ProfileOption {
+                id: "sugar-pink".to_string(),
+                name: "糖糖".to_string(),
+                description: "默认".to_string(),
+            },
+            ProfileOption {
+                id: "yuki".to_string(),
+                name: "小雪".to_string(),
+                description: String::new(),
+            },
+            ProfileOption {
+                id: "void".to_string(),
+                name: "void".to_string(),
+                description: String::new(),
+            },
+        ];
+        let rows = profile_rows(&profiles, Some("yuki"), Some("void"));
+        assert_eq!(rows[0].subtitle, "默认", "非激活行只显示描述");
+        assert_eq!(rows[1].subtitle, "当前激活", "激活 + 空描述只留标记");
+        assert!(!rows[1].enabled, "激活不等于选中");
+        assert_eq!(rows[2].title, "void");
+        assert!(rows[2].enabled);
+        for row in &rows {
+            assert_eq!(row.action, RowAction::Choose);
+            assert_eq!(row.secondary, RowAction::None, "Profile 行没有行内动作（编辑器绑定激活项）");
+        }
+        // 激活 + 描述：标记在前，描述跟在后面。
+        let rows = profile_rows(&profiles, Some("sugar-pink"), None);
+        assert_eq!(rows[0].subtitle, "当前激活 · 默认");
+    }
+
+    /// 下拉/列表之外的第三处：行级管理动作的目标解析（缺省回退激活项、空列表如实报错）。
+    #[test]
+    fn 行级管理目标缺省回退激活项_空列表如实报错() {
+        let ui = SettingsUi::new();
+        *SettingsUi::lock(&ui.card_options) = Some(Arc::new(vec![
+            CardOption {
+                id: "a".to_string(),
+                name: "甲".to_string(),
+            },
+            CardOption {
+                id: "b".to_string(),
+                name: "乙".to_string(),
+            },
+        ]));
+        SettingsUi::lock(&ui.draft).load(snapshot(&[(
+            "ai.personality.active",
+            SettingsValue::Text("b".to_string()),
+        )]));
+        // 未点过行：管理动作回退激活卡（旧口径不变）。
+        assert_eq!(ui.selected_card_id().unwrap(), "b");
+        // 点行选中：目标换成选中行；未知行坐标如实拒绝（列表已更新时不驱动陈旧坐标）。
+        ui.select_card_row("a").unwrap();
+        assert_eq!(ui.selected_card_id().unwrap(), "a");
+        assert!(ui.select_card_row("gone").is_err());
+        // 列表重读后选中项消失（被删/外部改动）：回退激活卡。
+        *SettingsUi::lock(&ui.card_options) = Some(Arc::new(vec![CardOption {
+            id: "b".to_string(),
+            name: "乙".to_string(),
+        }]));
+        assert_eq!(ui.selected_card_id().unwrap(), "b");
+        // 空列表与未加载：如实报错，不拿不存在的 id 去操作。
+        *SettingsUi::lock(&ui.card_options) = Some(Arc::new(Vec::new()));
+        assert!(ui.selected_card_id().is_err());
+        *SettingsUi::lock(&ui.card_options) = None;
+        assert!(ui.selected_card_id().is_err());
+    }
+
+    /// Profile 侧的同一口径（选中行 → 激活草稿回退 → 第一项；与 Card 共用纯函数）。
+    #[test]
+    fn profile行级管理目标跟随选中与激活() {
+        let ui = SettingsUi::new();
+        *SettingsUi::lock(&ui.profile_options) = Some(Arc::new(vec![
+            ProfileOption {
+                id: "sugar-pink".to_string(),
+                name: "糖糖".to_string(),
+                description: String::new(),
+            },
+            ProfileOption {
+                id: "yuki".to_string(),
+                name: "小雪".to_string(),
+                description: String::new(),
+            },
+        ]));
+        SettingsUi::lock(&ui.draft).load(snapshot(&[(
+            "appearance.activeProfile",
+            SettingsValue::Text("sugar-pink".to_string()),
+        )]));
+        assert_eq!(ui.selected_profile_id().unwrap(), "sugar-pink");
+        ui.select_profile_row("yuki").unwrap();
+        assert_eq!(ui.selected_profile_id().unwrap(), "yuki");
+        // 选中的 Profile 从列表消失：回退激活项（不是拿陈旧 id 去操作）。
+        *SettingsUi::lock(&ui.profile_options) = Some(Arc::new(vec![ProfileOption {
+            id: "sugar-pink".to_string(),
+            name: "糖糖".to_string(),
+            description: String::new(),
+        }]));
+        assert_eq!(ui.selected_profile_id().unwrap(), "sugar-pink");
+        assert!(ui.select_profile_row("yuki").is_err(), "未知行坐标如实拒绝");
+    }
+
+    #[test]
+    fn card文档标题按显示名回落id() {
+        let ui = SettingsUi::new();
+        *SettingsUi::lock(&ui.card_options) = Some(Arc::new(vec![CardOption {
+            id: "sugar".to_string(),
+            name: "糖糖".to_string(),
+        }]));
+        assert_eq!(
+            ui.document_title(&DocumentTarget::CardMarkdown {
+                card_id: "sugar".to_string(),
+            }),
+            "Card：糖糖",
+            "标题显示卡名（编辑的是哪张卡一眼可见）"
+        );
+        assert_eq!(
+            ui.document_title(&DocumentTarget::CardMarkdown {
+                card_id: "gone".to_string(),
+            }),
+            "Card：gone",
+            "选项缓存里找不到时回落 id，不猜别的名字"
+        );
+        assert_eq!(
+            ui.document_title(&DocumentTarget::CardStages),
+            "当前卡阶段文案"
+        );
     }
 
     #[test]
@@ -3830,6 +4756,32 @@ mod tests {
     }
 
     // ── 记忆页常驻说明的两平台守门 ──
+
+    /// 两平台设置页都渲染行级管理列表（Profile / 人格卡）：漏一侧 = 该平台看不到
+    /// 行级管理入口，而**编译不会报错**（面板渲染只是 match 的一个臂）。
+    ///
+    /// `include_str!` 让两份平台源码成为编译期依赖（删掉任一侧的调用本用例立刻红）；
+    /// 断言用 `concat!` 拆词，避免测试文件自身在外部按整词扫描时自命中。
+    #[test]
+    fn 两平台设置页都渲染行级管理列表() {
+        const MACOS: &str = include_str!("../platform/macos_settings.rs");
+        const WINDOWS: &str = include_str!("../platform/windows_settings.rs");
+        let needles = [
+            concat!("settings_ui().profile", "_panel()"),
+            concat!("settings_ui().card", "_panel()"),
+        ];
+        for (name, source) in [
+            ("macos_settings.rs", MACOS),
+            ("windows_settings.rs", WINDOWS),
+        ] {
+            for needle in needles {
+                assert!(
+                    source.contains(needle),
+                    "{name} 必须渲染 {needle}（行级管理列表的入口）"
+                );
+            }
+        }
+    }
 
     /// 记忆页说明文案加了必须真被渲染（防「常量加了没人渲染」）：
     /// 两平台源码都要引用 [`SettingsUi::MEMORY_TIP`]，且不在平台文件里复制字面量。

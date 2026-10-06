@@ -35,6 +35,15 @@ const ASCII_CHARS_PER_TOKEN = 4
 const NON_ASCII_TOKENS_PER_UNIT = 1
 /** 每个 UTF-16 单元匹配一次；非 ASCII 汉字、假名、全角标点与 emoji 代理对各算一个单元。 */
 const NON_ASCII_UNIT_RE = /[^\x00-\x7F]/g
+/**
+ * 估算器的**最坏内容偏差**（本仓估算 ÷ 上游 findCutPoint 的 chars/4 计数）= 4。
+ *
+ * 两把尺子只在纯 ASCII 下对齐：上游切点对每条消息按 `text.length / 4` 计，本仓对非 ASCII
+ * 按 1 token/UTF-16 单元计 —— 同一段纯中文，本仓读数是上游的 4 倍（`NON_ASCII_TOKENS_PER_UNIT
+ * ÷ (1 / ASCII_CHARS_PER_TOKEN)`）。跨尺子的量（如换算给 Harness 的保留窗口）必须按这个
+ * 偏差留余量，否则纯中文载荷会在上游口径下偷偷放大到 4 倍。
+ */
+export const ESTIMATOR_WORST_CASE_BIAS = NON_ASCII_TOKENS_PER_UNIT / (1 / ASCII_CHARS_PER_TOKEN)
 const MIN_OUTPUT = 1024
 /**
  * 输出预留 = 窗口 × 1/8，上限 32k。

@@ -12,6 +12,9 @@ import type { CardVariableDef, VariableState, VariableType, VariablePrimitive } 
 import { formatError } from "@/services/error"
 import { readStagesFile, updateStagesFile, STAGES_FILE_SCHEMA_VERSION } from "./stages-file"
 import type { StageFileVariables } from "./stages-file"
+// 零依赖叶子（RUNTIME_DATA 标记唯一定义点）：经 reply barrel 引用会与 generator 成环，
+// 这里直接 import 那个叶子文件。
+import { RUNTIME_DATA_TAG } from "@/services/reply/protocol"
 
 const log = createLogger("VarPool")
 
@@ -338,7 +341,7 @@ export function formatPoolForPrompt(snapshot?: VariablePool, defs?: CardVariable
       : ""
     cardParts.push(`${name}=${formatVal((state as VariableState).value)}${meta}`)
   }
-  lines.push(`[Card变量 - 仅允许通过 RUNTIME_DATA 更新]\n${cardParts.join("\n") || "(空)"}`)
+  lines.push(`[Card变量 - 仅允许通过 ${RUNTIME_DATA_TAG} 更新]\n${cardParts.join("\n") || "(空)"}`)
 
   // [互动状态 - 系统维护，只读]
   const intParts = Object.entries(p.interaction)

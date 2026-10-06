@@ -3,7 +3,17 @@
 // UI 回执端口（subscribeUiReceipt），由 `initPlanConfirmationReceipts()` 安装回执
 // 订阅（harness 引导调用）。
 
-import { publishUiEvent, subscribeUiReceipt, type HostEventMap, type NodeUiEventName } from "@/services/host"
+import {
+  publishUiEvent,
+  subscribeUiReceipt,
+  HOST_EVENT_PLAN_END,
+  HOST_EVENT_PLAN_START,
+  HOST_EVENT_PLAN_STEP_GATE,
+  UI_RECEIPT_PLAN_CONFIRM_RESOLVED,
+  UI_RECEIPT_PLAN_STEP_DECISION,
+  type HostEventMap,
+  type NodeUiEventName,
+} from "@/services/host"
 import { beginUserWait } from "./user-wait"
 import { reactive } from "vue"
 import { getActiveSessionId } from "@/services/session/store"
@@ -219,7 +229,7 @@ export function requestPlanConfirm(plan: PlanResult, opts: {
 
     planConfirmState.pending = view
 
-    void emitUiEvent("deskpet-plan-start", {
+    void emitUiEvent(HOST_EVENT_PLAN_START, {
       sessionId,
       planId,
       steps: view.steps,
@@ -285,7 +295,7 @@ export function requestPlanStepDecision(step: PlanStep, error: string | undefine
 
     planConfirmState.stepGate = gate
 
-    void emitUiEvent("deskpet-plan-step-gate", {
+    void emitUiEvent(HOST_EVENT_PLAN_STEP_GATE, {
       sessionId,
       planId,
       kind: gate.kind,
@@ -316,11 +326,11 @@ let receiptsInstalled = false
 let stopReceiptSubscriptions: Array<() => void> = []
 export function initPlanConfirmationReceipts(): void {
   if (receiptsInstalled) return
-  const stopConfirm = subscribeUiReceipt("deskpet-plan-confirm-resolved", ({ planId, result }) => {
+  const stopConfirm = subscribeUiReceipt(UI_RECEIPT_PLAN_CONFIRM_RESOLVED, ({ planId, result }) => {
     settleConfirm(planId, result)
   })
   try {
-    const stopStep = subscribeUiReceipt("deskpet-plan-step-decision", ({ planId, decision }) => {
+    const stopStep = subscribeUiReceipt(UI_RECEIPT_PLAN_STEP_DECISION, ({ planId, decision }) => {
       settleStepGate(planId, decision)
     })
     stopReceiptSubscriptions = [stopConfirm, stopStep]
@@ -411,5 +421,5 @@ export function cancelSessionPlans(sessionId: string, reason: "session_switched"
  * 计划跑完之后面板会一直挂在聊天区。
  */
 export function notifyPlanEnd(sessionId: string, reason: "done" | "failed" | "cancelled"): void {
-  void emitUiEvent("deskpet-plan-end", { sessionId, reason })
+  void emitUiEvent(HOST_EVENT_PLAN_END, { sessionId, reason })
 }

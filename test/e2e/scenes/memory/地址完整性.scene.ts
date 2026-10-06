@@ -70,9 +70,13 @@ const SHORT_ERROR_TEXT = "u".repeat(SHORT_SIDE_CHARS) + SHORT_ERROR_CORE + "v".r
 
 const settings = compactionSettingsFor(WINDOW_TOKENS)
 const KEEP_MARGIN = 1.05
-const UNIT = "地址完整性探针正文必须留在磁盘中。"   // 18 字符
-/** 尾段两段长正文合计 ≈ KEEP_MARGIN 倍保留窗口（上游按 chars/4 计），切点因此落在第二段上。 */
-const LONG = UNIT.repeat(Math.ceil(settings.keepRecentTokens * 4 * KEEP_MARGIN / 2 / UNIT.length))
+/**
+ * 尾段两段长正文合计 ≈ KEEP_MARGIN 倍保留窗口（上游按 chars/4 计），切点因此落在第二段上。
+ * 用 ASCII：本场景另有两条超 L0 阈值的长工具结果占着请求视图预算，而纯中文尾段要越过保留
+ * 窗口就按 1 token/字符计（上游只计 chars/4）—— 两者相加先顶破硬预算；ASCII 下尾段成本
+ * 缩到 1/4，切点与视图预算同时成立（保留窗口的换算按最坏偏差封顶，见 compactionSettingsFor）。
+ */
+const LONG = "x".repeat(Math.ceil(settings.keepRecentTokens * 4 * KEEP_MARGIN / 2))
 const FIRST = "第一轮：依次调用 l0_address_probe、l0_error_probe、l0_short_probe 与 l0_short_error_probe，再回复我。"
 
 const SUMMARY_MARKER = "地址完整性对照压缩"

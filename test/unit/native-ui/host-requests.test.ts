@@ -22,10 +22,9 @@ import { load as loadYaml } from "js-yaml"
 import { afterEach, beforeEach, describe, expect, it } from "vitest"
 
 import { getAllOverrides, reloadConfig, setOverride } from "@/services/config"
-import { setHostBridge } from "@/services/host"
+import { HOST_REQUEST_EVENT, setHostBridge } from "@/services/host"
 import type { HostBridge } from "@/services/host"
 import {
-  HOST_REQUEST_EVENT,
   HOST_REQUEST_RESULT_METHOD,
   collectSettingsSnapshot,
   dispatchHostRequest,

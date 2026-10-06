@@ -20,7 +20,7 @@ Rust 实现细则见 [native-host AGENTS](../../crates/native-host/AGENTS.md)，
 | 变量、阶段提示、回复元数据 | [人格与回复](../../docs/current/personality.md) |
 | 主动陪伴、观察、画像与回执 | [主动陪伴](../../docs/current/proactive.md)、[行为画像](../../docs/current/behavior.md) |
 | IPC、引导、异常与构建 | [工程参考](../../docs/current/development.md) |
-| 迁移剩余工作 | [未完成总表](../../docs/plans/active/未完成工作与已知缺口.md) §9 |
+| 迁移剩余工作 | [未完成总表](../../docs/plans/active/未完成工作与已知缺口.md) §10、§11 |
 
 ## 模块与配置取用
 
@@ -85,7 +85,7 @@ Rust 实现细则见 [native-host AGENTS](../../crates/native-host/AGENTS.md)，
 ## 运行时不变量
 
 - 会话正文以数据根 `sessions/` 的 JSONL 为真相源（JsonlSessionRepo，commit 事务写入）；
-  写入以追加为主，已回收 key 的写入行可被折叠清理，逻辑状态不变；
+  写入以追加为主，已删除或被更晚写入覆盖的 key 的旧写入行可被折叠清理，逻辑状态不变；
   `sessions/index.json` 仅保存可丢弃 UI 状态。
 - 正文条目保存稳定 entryId/seq 与运行关联；用户 ingress 先落盘再投递（lane 持久 inbox）；
   工具调用先落盘再执行，结果落盘后才进入下一次 Provider 请求。
@@ -151,7 +151,7 @@ Rust 实现细则见 [native-host AGENTS](../../crates/native-host/AGENTS.md)，
 | 改动 | 必须核对 |
 |---|---|
 | public barrel / 共享接口 / 模块路径 | 全部 import 与动态引用、Harness bundle、相关 Contract sourceFiles |
-| HostBridge 请求 / 事件 / 回执 / scope / blob | `host/types.ts`、bridge 消费者、`native-ui` 接线与 Rust 对应实现 |
+| HostBridge 请求 / 事件 / 回执 / scope / blob | `host/event-names.ts`（事件名单点）、`host/types.ts`、bridge 消费者、`native-ui` 接线与 Rust 对应实现 |
 | 会话提交、取消、恢复或压缩 | generation 所有权、JSONL 事务、请求视图、相关行为契约与 current |
 | Card 变量、阶段 key 或回复元数据 | 类型、解析/验证、Prompt 模板、缓存过期判定与全部消费点 |
 | 权限、MCP/Skill 或主动来源资格 | 终裁/租约、释放/取消、来源验证与工具/主动 current |

@@ -82,7 +82,7 @@ export async function evaluateComplexity(
 
   // 4. LLM 自判断（轻量 prompt）
   try {
-    const { completePiText } = await import("@/services/engine/harness")
+    const { completePiText } = await import("@/services/engine/harness/model-gateway")
     const resp = await completePiText({
       purpose: "planner",
       systemPrompt: "你是一个复杂度评估器。只回复1-5的数字，不要任何解释。",
@@ -156,7 +156,7 @@ ${toolList}
 - allowedTools 为空表示可用所有工具
 - 只输出 JSON，不要其他内容`
 
-  const { completePiText } = await import("@/services/engine/harness")
+  const { completePiText } = await import("@/services/engine/harness/model-gateway")
 
   const resp = await completePiText({
     purpose: "planner",
@@ -461,7 +461,7 @@ async function executeStep(
     tools.push(...listAll())
   }
 
-  const { runPiSubAgent } = await import("@/services/engine/harness")
+  const { runPiSubAgent } = await import("@/services/engine/harness/runtime")
   const audit = config.sessionId
     ? { sessionId: config.sessionId, ...(config.planId ? { planId: config.planId } : {}), stepId: String(step.id) }
     : undefined

@@ -285,6 +285,66 @@ impl AppPaths {
         Ok(normalized)
     }
 
+    /// 校验一个（可能尚不存在的）路径落在显式 `base` 内 —— 会话写路径专用
+    /// （`session_write_text`：折叠先写同目录 `.tmp-*` 临时文件，写入点必然是新文件，
+    /// 走不了 `validate_path` 的 canonicalize）。
+    ///
+    /// 与 `validate_new_file_path` 同构，只有边界不同：它的边界是 home/temp 允许根，
+    /// 这里的边界是调用方给定的 `base`（会话根）。逐段：
+    ///   ① 词法归一（`./`、`..` 折叠）后必须已落在归一化 `base` 的前缀内；
+    ///   ② 最近的已存在祖先 canonicalize 后必须仍在 **canonical 化的 base** 内 ——
+    ///      base 自身可能是符号链接（macOS 的 `/var` → `/private/var`、Windows 短名），
+    ///      只比词法前缀会误放；
+    ///   ③ 叶子已存在且是符号链接时，解析后的真实目标也必须在 base 内（悬空链接直接拒绝：
+    ///      写入会替调用方在根外新建文件）。
+    pub fn validate_new_path_within(path: &Path, base: &Path) -> AppResult<PathBuf> {
+        let normalized = normalize_absolute(path)?;
+        let normalized_base = normalize_absolute(base)?;
+        if !normalized.starts_with(&normalized_base) {
+            return Err(AppError::PathEscape);
+        }
+        let canonical_base = normalized_base
+            .canonicalize()
+            .map_err(|_| AppError::PathNotFound(base.to_string_lossy().to_string()))?;
+
+        let mut ancestor = normalized
+            .parent()
+            .ok_or_else(|| {
+                AppError::PathNotFound(format!("无效的文件路径: {}", path.to_string_lossy()))
+            })?
+            .to_path_buf();
+        while !ancestor.exists() {
+            ancestor = ancestor
+                .parent()
+                .ok_or_else(|| {
+                    AppError::PathNotFound(format!(
+                        "路径没有可校验的父目录: {}",
+                        path.to_string_lossy()
+                    ))
+                })?
+                .to_path_buf();
+        }
+        let canonical_ancestor = ancestor
+            .canonicalize()
+            .map_err(|_| AppError::PathNotFound(ancestor.to_string_lossy().to_string()))?;
+        if !canonical_ancestor.starts_with(&canonical_base) {
+            return Err(AppError::PathEscape);
+        }
+
+        // 前缀检查都建立在不解析符号链接的词法路径上，而写入会跟随叶子：
+        // 叶子是指向 base 外的链接时，前面全是绿灯、实际数据却落在 base 之外。
+        if let Ok(meta) = fs::symlink_metadata(&normalized) {
+            if meta.file_type().is_symlink() {
+                let resolved = normalized.canonicalize().map_err(|_| AppError::PathEscape)?;
+                if !resolved.starts_with(&canonical_base) {
+                    return Err(AppError::PathEscape);
+                }
+                return Ok(resolved);
+            }
+        }
+        Ok(normalized)
+    }
+
     /// `create_dir_all` 之后重新确认父目录仍解析在允许根内。
     ///
     /// 校验与实际写入之间存在时间窗口，中间某个目录组件可能被换成指向根外的符号链接。
@@ -491,6 +551,61 @@ mod tests {
         let root = symlink_test_root("parent");
         assert!(AppPaths::revalidate_existing_parent(&root.join("ok.json")).is_ok());
         assert!(AppPaths::revalidate_existing_parent(&root.join("missing/ok.json")).is_err());
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn new_path_within_rejects_escapes_and_symlink_destinations() {
+        let root = symlink_test_root("within");
+        let base = root.join("sessions");
+        fs::create_dir_all(base.join("--cwd--")).unwrap();
+
+        // 普通的新文件路径（含不存在的中间目录）放行，返回词法归一后的绝对路径
+        let plain = base.join("--cwd--").join("x.jsonl.tmp-1");
+        assert_eq!(
+            AppPaths::validate_new_path_within(&plain, &base).unwrap(),
+            plain
+        );
+
+        // base 之外的路径（含 `..` 在词法归一后越界的形态）拒绝
+        assert!(matches!(
+            AppPaths::validate_new_path_within(&root.join("outside.json"), &base),
+            Err(AppError::PathEscape)
+        ));
+        assert!(matches!(
+            AppPaths::validate_new_path_within(&base.join("../outside.json"), &base),
+            Err(AppError::PathEscape)
+        ));
+
+        // 中间目录是指向 base 外的符号链接：链接名无害，解析后的去向才是结论。
+        // Windows 未开开发者模式时建目录符号链接会失败，跳过这一段而不是误报。
+        let escape = root.join("escape");
+        fs::create_dir_all(&escape).unwrap();
+        let link_dir = base.join("link");
+        if symlink_file(&escape, &link_dir).is_ok() {
+            assert!(matches!(
+                AppPaths::validate_new_path_within(&link_dir.join("evil.json"), &base),
+                Err(AppError::PathEscape)
+            ));
+        }
+
+        // 叶子是符号链接：指向 base 内放行并返回真实目标；悬空链接拒绝（写入会在根外新建文件）
+        let real = base.join("real.jsonl");
+        fs::write(&real, "x").unwrap();
+        let linked = base.join("linked.jsonl");
+        if symlink_file(&real, &linked).is_ok() {
+            assert_eq!(
+                AppPaths::validate_new_path_within(&linked, &base).unwrap(),
+                real.canonicalize().unwrap()
+            );
+            let dangling = base.join("dangling.jsonl");
+            symlink_file(&base.join("never-created.jsonl"), &dangling).unwrap();
+            assert!(matches!(
+                AppPaths::validate_new_path_within(&dangling, &base),
+                Err(AppError::PathEscape)
+            ));
+        }
+
         fs::remove_dir_all(&root).unwrap();
     }
 

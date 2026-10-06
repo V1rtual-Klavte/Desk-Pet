@@ -7,7 +7,7 @@
 // 把完成结果写进发起会话的聊天系统消息（`pushSystemMessage` —— 唯一既有展示通道，
 // 不新造 UI；会话不活跃时消息落库，切回该会话即可见）。
 
-import { getHostBridge } from "@/services/host"
+import { getHostBridge, HOST_EVENT_BASH_BACKGROUND_FINISHED } from "@/services/host"
 import { isNoEventChannelError } from "@/services/native-ui"
 import { pushSystemMessage } from "@/services/session"
 import { createLogger } from "@/services/logger"
@@ -25,7 +25,7 @@ let unsubscribe: (() => void) | undefined
 export function initBackgroundCommandNotifier(): void {
   if (unsubscribe) return
   try {
-    unsubscribe = getHostBridge().subscribe("bash-background-finished", payload => {
+    unsubscribe = getHostBridge().subscribe(HOST_EVENT_BASH_BACKGROUND_FINISHED, payload => {
       const finished = parseBackgroundFinishedPayload(payload)
       if (!finished) {
         log.warn("丢弃结构无效的 bash-background-finished 载荷")

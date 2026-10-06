@@ -10,6 +10,7 @@
 export {
   parseEnvText,
   formatEnvText,
+  serverConfigFromForm,
   getMcpServers,
   setMcpServers,
   addMcpServer,
@@ -27,7 +28,7 @@ export {
   setMcpConnected,
   isMcpServerConnected,
 } from "./manager"
-export type { McpServerConfig } from "./manager"
+export type { McpServerConfig, McpServerFormFields } from "./manager"
 
 // ── 协议栈（pi-mcp 包装）──
 export { McpClient } from "./client"

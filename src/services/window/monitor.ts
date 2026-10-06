@@ -1,6 +1,6 @@
 import { silentAccessFrequency } from "@/services/proactive/tiers"
 import { formatError } from "@/services/error"
-import { getHostBridge } from "@/services/host"
+import { getHostBridge, HOST_EVENT_WINDOW_OBSERVED } from "@/services/host"
 import { createLogger } from "@/services/logger"
 import { isNoEventChannelError } from "@/services/native-ui"
 import { acceptWindowObservation, clearLatestWindowObservation, clearWindowObservationSubscribers } from "./listener"
@@ -38,7 +38,7 @@ let lastObservationWarnAt: number | null = null
 export async function initWindowObservation(): Promise<() => void> {
   if (!bridgeUnsubscribe) {
     try {
-      const unsubscribe = getHostBridge().subscribe("window-observed", acceptWindowObservation)
+      const unsubscribe = getHostBridge().subscribe(HOST_EVENT_WINDOW_OBSERVED, acceptWindowObservation)
       bridgeUnsubscribe = () => {
         unsubscribe()
         clearLatestWindowObservation()

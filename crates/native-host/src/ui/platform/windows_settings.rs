@@ -34,9 +34,9 @@
 //!   输入面族、清单条目取 `field_bg` + 选中覆盖；真下拉语义保留（键盘 / `CBN_*` /
 //!   `CB_GETCURSEL` 等读写路径零改动）。条目高度用 `CB_SETITEMHEIGHT(-1, h)` 设定
 //!   （`WM_MEASUREITEM` 不在设置窗分派里，见该样式的注释）。
-//! - **可编辑 `EDIT`**：`WM_CTLCOLOREDIT`（底 `field_bg`、字 `ink`、插入符随字色）经
-//!   设置窗的 comctl32 父类链补上（[`settings_subclass_proc`]；`aux_wndproc` 只转发
-//!   STATIC/BTN 两路，而 `windows.rs` 不在本批所有权内）。
+//! - **可编辑 `EDIT`**：`WM_CTLCOLOREDIT`（底 `field_bg`、字 `ink`、插入符随字色）由
+//!   `windows.rs` 的 `aux_wndproc` 按窗口 code 转发到 [`edit_ctlcolor`]（2026-10-06
+//!   路由归位：原先用设置窗父窗子类兜住，是因为当时 `windows.rs` 不在改动范围内）。
 //! - **Bool 开关**：`paint_win::draw_switch` 自绘轨道+滑块；开/关读
 //!   `settings::SwitchStates` 的状态镜像表（键 = 控件句柄整数）。
 //! - **换主题**：GDI 画刷都在 `paint_win` 的主题缓存里，由 `windows.rs` 的广播先
@@ -91,9 +91,9 @@
 //!   绕开设置窗分派未转发的 `WM_MEASUREITEM`。**管理面行内下拉**（`RowAction::Pick`，
 //!   音效事件行）复用同一条（[`build_panel_pick`]）：下拉箭头由系统绘制，不在文案里
 //!   手拼「▾」（列表条目与字段区共用字符串表，拼字形会污染条目）。
-//! - **可编辑 `EDIT` / 下拉清单**：`WM_CTLCOLOREDIT` / `WM_CTLCOLORLISTBOX` 由设置窗的
-//!   comctl32 父类链补上（[`settings_subclass_proc`]）—— 这两条消息的消费者是控件
-//!   父窗，而 `aux_wndproc` 只转发 STATIC/BTN 两路（`windows.rs` 不在本批所有权内）。
+//! - **可编辑 `EDIT` / 下拉清单**：`WM_CTLCOLOREDIT` / `WM_CTLCOLORLISTBOX` 由
+//!   `windows.rs` 的 `aux_wndproc` 转发（这两条消息的消费者是控件父窗 —— 即设置窗
+//!   本身；路由归位后不再需要父窗子类）。
 //! - **换主题广播**：`apply_theme` 覆盖新自绘面（按钮圆角/字色/重绘、弹窗、浮层）；
 //!   组合框与输入框读 tokens 现值 + 失效重绘，不留旧主题色。
 //! - **数值档位分段控件**（`NumberChoice`）：一个 ownerdraw 按钮画一排互斥圆角段
@@ -127,26 +127,26 @@ use windows_sys::Win32::Graphics::Gdi::{
 };
 use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows_sys::Win32::UI::Controls::{
-    EM_GETPASSWORDCHAR, EM_SETPASSWORDCHAR, EM_SETSEL, ODS_COMBOBOXEDIT, ODS_DISABLED, ODS_FOCUS,
-    ODS_GRAYED, ODS_SELECTED, ODT_BUTTON, ODT_COMBOBOX,
+    BST_CHECKED, EM_GETPASSWORDCHAR, EM_SETPASSWORDCHAR, EM_SETSEL, ODS_COMBOBOXEDIT, ODS_DISABLED,
+    ODS_FOCUS, ODS_GRAYED, ODS_SELECTED, ODT_BUTTON, ODT_COMBOBOX,
 };
-// 父窗子类（comctl32；与 `paint_win` 给按钮装子类是同一机制）：
-// 只为截住设置窗分派未转发的 WM_CTLCOLOREDIT / WM_CTLCOLORLISTBOX 两条配色消息。
+// 父窗子类（comctl32）已删除（2026-10-06）：WM_CTLCOLOREDIT / WM_CTLCOLORLISTBOX
+// 的转发路由归位到 `windows.rs` 的 `aux_wndproc`（见该处注释与 `edit_ctlcolor`）。
 use windows_sys::Win32::UI::HiDpi::GetDpiForWindow;
 use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
     EnableWindow, GetAsyncKeyState, GetFocus, IsWindowEnabled, SetFocus, VK_CONTROL, VK_ESCAPE,
     VK_LWIN, VK_MENU, VK_RWIN, VK_SHIFT,
 };
-use windows_sys::Win32::UI::Shell::{DefSubclassProc, SetWindowSubclass};
 use windows_sys::Win32::UI::WindowsAndMessaging::{
     AdjustWindowRectEx, CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW,
     GetClientRect, GetCursorPos, GetDlgItem, GetForegroundWindow, GetMessageW, GetWindowLongPtrW,
     GetWindowRect, GetWindowTextLengthW, GetWindowTextW, IsDialogMessageW, IsWindow, KillTimer,
     MessageBoxW, MoveWindow, PeekMessageW, PostQuitMessage, RegisterClassW, SendMessageW,
     SetForegroundWindow, SetTimer, SetWindowLongPtrW, SetWindowPos, SetWindowTextW, ShowWindow,
-    TranslateMessage, BN_CLICKED, BS_DEFPUSHBUTTON, BS_OWNERDRAW, CBS_DROPDOWNLIST,
-    CBS_OWNERDRAWFIXED, CB_ADDSTRING, CB_GETCURSEL, CB_GETDROPPEDSTATE, CB_SETCURSEL,
-    CB_SETITEMHEIGHT, CBN_SELCHANGE, CBN_SELENDOK, CW_USEDEFAULT,
+    TranslateMessage, BM_GETCHECK, BM_SETCHECK, BN_CLICKED, BS_AUTOCHECKBOX, BS_DEFPUSHBUTTON,
+    BS_OWNERDRAW,
+    CBS_DROPDOWNLIST, CBS_OWNERDRAWFIXED, CB_ADDSTRING, CB_GETCURSEL, CB_GETDROPPEDSTATE,
+    CB_SETCURSEL, CB_SETITEMHEIGHT, CBN_SELCHANGE, CBN_SELENDOK, CW_USEDEFAULT,
     ES_AUTOHSCROLL, ES_MULTILINE, ES_PASSWORD, ES_READONLY, ES_WANTRETURN, GWLP_USERDATA,
     GWL_STYLE, HTTRANSPARENT, HWND_TOP, IDCANCEL, IDOK, IDYES, MB_DEFBUTTON2, MB_ICONERROR,
     MB_ICONWARNING, MB_OK, MB_YESNO, MSG, PM_REMOVE, SB_LINEDOWN, SB_LINEUP, SB_PAGEDOWN,
@@ -158,11 +158,16 @@ use windows_sys::Win32::UI::WindowsAndMessaging::{
     WS_TABSTOP, WS_VISIBLE, WS_VSCROLL,
 };
 
-use crate::ui::settings::panels::{ListPanel, MemoryDetailState, PanelRow, RowAction, RowPick};
+use crate::ui::settings::panels::{
+    mcp_form_rows, mcp_save_from_values, ListPanel, McpFieldControl, McpFieldRow, McpTransport,
+    MemoryDetailState, MemoryEvidenceState, PanelRow, RowAction, RowPick, MCP_FIELD_ARGS,
+    MCP_FIELD_COMMAND, MCP_FIELD_ENABLED, MCP_FIELD_ENV, MCP_FIELD_HEADERS, MCP_FIELD_NAME,
+    MCP_FIELD_TRANSPORT, MCP_FIELD_URL, MCP_FORM_FIELD_COUNT,
+};
 use crate::ui::settings::schema::{Field, FieldKind, TABS};
 use crate::ui::settings::{
-    settings_ui, tab_index_for_tag, DocumentState, DocumentTarget, NoticeLevel, SettingsUi,
-    SettingsValue, SettingsView, ShortcutModifiers, SwitchStates,
+    settings_ui, tab_index_for_tag, DocumentContent, DocumentState, DocumentTarget, NoticeLevel,
+    SettingsUi, SettingsValue, SettingsView, ShortcutModifiers, SwitchStates,
 };
 use crate::ui::theme;
 use crate::ui::theme::paint_win::{self, ButtonRole, TextRole};
@@ -259,6 +264,9 @@ const PANEL_PICK_W: i32 = 100;
 const DETAIL_INFO_H: i32 = 78;
 /// 记忆详情内容编辑框高度。
 const DETAIL_EDIT_H: i32 = 72;
+/// 展开的来源原话高度（只读滚动 EDIT，固定高度）：原话再长也只在框内滚动，
+/// 不把页面撑开 —— 与 macOS `MEMORY_EVIDENCE_H` 同档（140 逻辑点）。
+const MEMORY_EVIDENCE_H: i32 = 140;
 /// 记忆详情动作下标（ID = DETAIL_ID_BASE + 下标）。
 const DETAIL_ACTION_SAVE: i32 = 0;
 const DETAIL_ACTION_PIN: i32 = 1;
@@ -302,8 +310,8 @@ const DANGEROUS_ACTIONS: &[(&str, &str, &str)] = &[
     ),
     (
         "action.memoryRestoreApply",
-        "用最近备份覆盖记忆库",
-        "当前记忆库会被替换为最近一次托管备份的内容；请先用「恢复预览」确认备份版本。",
+        "用选中的备份覆盖记忆库",
+        "当前记忆库会被替换为「备份列表」里选中那一份的内容；请先用「预览选中备份」确认版本。",
     ),
 ];
 
@@ -521,6 +529,8 @@ struct SettingsState {
     /// 上次「保存」提交时留下的草稿（保存失败重开同一文档时优先恢复用户编辑；
     /// 与 macOS `doc_draft` 同语义）。文档关闭即清。
     doc_draft: Option<(DocumentTarget, String)>,
+    /// MCP 表单的保存失败草稿（目标 + 控件值表；与 `doc_draft` 同语义，形状不同）。
+    doc_form_draft: Option<(DocumentTarget, std::collections::BTreeMap<String, String>)>,
     /// 快捷键录制模式进行中（状态行固定显示录制提示；见 [`capture_shortcut`]）。
     capturing_shortcut: bool,
 }
@@ -698,14 +708,10 @@ pub(crate) fn install_settings_content(hwnd: HWND) {
             doc_dialog_content: None,
             doc_presented_this_open: false,
             doc_draft: None,
+            doc_form_draft: None,
             capturing_shortcut: false,
         });
     });
-    // 父窗子类：补上设置窗分派未转发的 WM_CTLCOLOREDIT / WM_CTLCOLORLISTBOX
-    // （可编辑输入框与下拉清单的主题配色；见 `settings_subclass_proc`）。
-    unsafe {
-        SetWindowSubclass(hwnd, Some(settings_subclass_proc), SETTINGS_SUBCLASS_ID, 0);
-    }
     rebuild_tab();
     layout(hwnd);
     refresh_ui();
@@ -768,9 +774,8 @@ pub(crate) fn paint_background(hwnd: HWND, hdc: HDC) {
 /// `WM_CTLCOLORSTATIC` / `WM_CTLCOLORBTN`：字色按控件记录的角色取（未记录 → `ink`；
 /// 禁用控件统一降为 `dim`），文字底透明、控件底回 `field_bg`（窗底色）。
 ///
-/// 注意：可编辑 `EDIT` 走 [`edit_ctlcolor`]（由设置窗父类过程转发，见
-/// [`settings_subclass_proc`]）；只读/禁用 `EDIT` 也发 `WM_CTLCOLORSTATIC`，
-/// 会一并拿到主题字色。
+/// 注意：可编辑 `EDIT` 走 [`edit_ctlcolor`]（由 `windows.rs` 的 `aux_wndproc` 转发）；
+/// 只读/禁用 `EDIT` 也发 `WM_CTLCOLORSTATIC`，会一并拿到主题字色。
 pub(crate) fn on_ctlcolor(wparam: WPARAM, lparam: LPARAM) -> LRESULT {
     let hdc = wparam as HDC;
     let control = lparam as HWND;
@@ -803,29 +808,6 @@ pub(crate) fn edit_ctlcolor(wparam: WPARAM, lparam: LPARAM) -> LRESULT {
         SetBkColor(hdc, paint_win::colorref(base));
     }
     paint_win::solid_brush(base) as LRESULT
-}
-
-/// 设置窗父类过程的子类 id（comctl32 子类链；与 `paint_win` 给按钮装的子类互不冲突）。
-const SETTINGS_SUBCLASS_ID: usize = 0x53_47; // 'SG'
-
-/// 设置窗父类过程（`install_settings_content` 时挂上）：只截两条绘制配色消息，
-/// 其余消息原样交回 `DefSubclassProc`（链到 `windows.rs` 的 `aux_wndproc`）。
-///
-/// `WM_CTLCOLOREDIT` / `WM_CTLCOLORLISTBOX` 的消费者是**控件的父窗口**，而设置窗
-/// 分派只转发 STATIC/BTN 两路（`windows.rs` 不在本批所有权内）—— 用控件库子类链
-/// 补上这一环，机制与 `paint_win` 给按钮装子类完全相同。
-unsafe extern "system" fn settings_subclass_proc(
-    hwnd: HWND,
-    msg: u32,
-    wparam: WPARAM,
-    lparam: LPARAM,
-    _subclass_id: usize,
-    _data: usize,
-) -> LRESULT {
-    match msg {
-        WM_CTLCOLOREDIT | WM_CTLCOLORLISTBOX => edit_ctlcolor(wparam, lparam),
-        _ => unsafe { DefSubclassProc(hwnd, msg, wparam, lparam) },
-    }
 }
 
 /// `WM_DRAWITEM`：ownerdraw 按钮 / 开关 / 组合框条目绘制。
@@ -1683,7 +1665,7 @@ fn rebuild_tab() {
                     font_base: 13,
                     // 字段控件自身不记录字色：ownerdraw 按钮的 GWLP_USERDATA 被角色占用；
                     // STATIC / 只读 EDIT 经 WM_CTLCOLORSTATIC、可编辑 EDIT 经
-                    // WM_CTLCOLOREDIT（父窗子类转发，见 `settings_subclass_proc`）
+                    // WM_CTLCOLOREDIT（`windows.rs` 的 `aux_wndproc` 转发，见 `edit_ctlcolor`）
                     // 按 tokens 现场取色，下拉由 `WM_DRAWITEM` 自绘。
                     role: None,
                 });
@@ -1996,12 +1978,42 @@ fn build_panel_controls(state: &mut SettingsState) {
                 );
             }
             y = build_memory_detail(state, content_w, y, body, small, bold);
+            // 来源原话：逐条一行（点行展开那一条，再点收起），展开块固定高度可滚动。
+            if let Some(sources) = settings_ui().memory_source_panel() {
+                y = build_panel(state, &sources, None, content_w, y, body, small, bold);
+                y = build_memory_evidence(state, content_w, y, small);
+            }
+            // 作业面板整列照旧（行按钮只在 Node 标了动作的行出现：取消 / 继续）；
+            // macOS 只内联「可操作作业」、完整历史在弹层 —— 两边的动作集合同源。
             if let Some(jobs) = panels.get(1) {
                 y = build_panel(state, jobs, None, content_w, y, body, small, bold);
             }
+            // 备份列表：托管目录里的备份逐份一行；点行 = 选中（预览/应用的作用对象，
+            // 按钮在页面顶部的「备份与恢复」小节）。
+            y = build_panel(
+                state,
+                &settings_ui().memory_backup_panel(),
+                None,
+                content_w,
+                y,
+                body,
+                small,
+                bold,
+            );
         }
-        // 本批：外观页的音效试听面板（行按钮 = 试听；分配编辑在文档区）。
+        // 本批：外观页的 Profile 列表（点行选中管理对象；「Profile 资源」小节的动作
+        // 作用于选中行）与音效试听面板（行按钮 = 试听；分配编辑在文档区）。
         "appearance" => {
+            y = build_panel(
+                state,
+                &settings_ui().profile_panel(),
+                None,
+                content_w,
+                y,
+                body,
+                small,
+                bold,
+            );
             for panel in settings_ui().sound_panels().iter() {
                 y = build_panel(
                     state,
@@ -2014,6 +2026,20 @@ fn build_panel_controls(state: &mut SettingsState) {
                     bold,
                 );
             }
+        }
+        // 本批：AI 页的人格卡列表（点行选中管理对象；「人格」小节的动作作用于选中行，
+        // 行内「编辑」直接打开该卡文档）。
+        "ai" => {
+            y = build_panel(
+                state,
+                &settings_ui().card_panel(),
+                None,
+                content_w,
+                y,
+                body,
+                small,
+                bold,
+            );
         }
         _ => {}
     }
@@ -2073,6 +2099,16 @@ const DOC_DIALOG_BTN_W_TEST: i32 = 90;
 const DOC_DIALOG_BTN_W_COPY: i32 = 70;
 const DOC_DIALOG_BTN_H: i32 = 26;
 
+// ── MCP 表单弹窗（W5-B：字段控件取代整段 markdown 文档）──
+
+/// 表单字段控件的 id 基址（按行序 +i；与文档弹窗固定 id 不重叠）。
+const DOC_FORM_FIELD_ID_BASE: i32 = 200;
+/// 表单行尺寸（逻辑像素）：单行行高 / 多行高度 / 标签列宽 / 行间距。
+const DOC_FORM_ROW_H: i32 = 24;
+const DOC_FORM_MULTILINE_H: i32 = 56;
+const DOC_FORM_LABEL_W: i32 = 166;
+const DOC_FORM_ROW_GAP: i32 = 6;
+
 /// 弹窗按钮行（纯函数，逻辑像素）：从右缘往左排（首项贴右缘），返回每项左缘 x。
 ///
 /// 顺序即输入顺序：保存（主操作）→ 关闭 → 次要动作（「重新生成」/「测试连接」）。
@@ -2109,6 +2145,81 @@ fn doc_dialog_layout(
     let buttons_y = (h - MARGIN - DOC_DIALOG_BTN_H).max(edit_y + 46);
     let edit = paint_win::Rect::new(MARGIN, edit_y, content_w, (buttons_y - 6 - edit_y).max(40));
     (title, hint, edit, buttons_y)
+}
+
+/// 表单行的控件高度（纯函数，可测）：多行文本三倍行高，其余单行。
+fn mcp_form_row_h(control: &McpFieldControl) -> i32 {
+    match control {
+        McpFieldControl::Multiline(_) => DOC_FORM_MULTILINE_H,
+        _ => DOC_FORM_ROW_H,
+    }
+}
+
+/// 表单弹窗的客户区高度（纯函数，可测）：全部字段行 + 按钮行 + 边距。
+fn mcp_form_dialog_height(rows: &[McpFieldRow]) -> i32 {
+    let mut y = MARGIN + 24 + 32 + DOC_FORM_ROW_GAP; // 标题 + 说明
+    for row in rows {
+        y += mcp_form_row_h(&row.control) + DOC_FORM_ROW_GAP;
+    }
+    y + DOC_FORM_ROW_GAP + DOC_DIALOG_BTN_H + MARGIN
+}
+
+/// 表单弹窗的行布局（纯函数，可测）：每行（标签矩形, 控件矩形）；返回按钮行 y。
+fn mcp_form_dialog_layout(
+    rows: &[McpFieldRow],
+    client_w: i32,
+) -> (Vec<(paint_win::Rect, paint_win::Rect)>, i32) {
+    let content_x = MARGIN;
+    let control_x = content_x + DOC_FORM_LABEL_W;
+    let control_w = (client_w - MARGIN - control_x).max(80);
+    let mut y = MARGIN + 24 + 32 + DOC_FORM_ROW_GAP;
+    let mut rects = Vec::with_capacity(rows.len());
+    for row in rows {
+        let h = mcp_form_row_h(&row.control);
+        rects.push((
+            paint_win::Rect::new(content_x, y, DOC_FORM_LABEL_W - DOC_FORM_ROW_GAP, h),
+            paint_win::Rect::new(control_x, y, control_w, h),
+        ));
+        y += h + DOC_FORM_ROW_GAP;
+    }
+    (rects, y + DOC_FORM_ROW_GAP)
+}
+
+/// MCP 表单弹窗里一个字段的控件（保存时按形态读值）。
+enum McpDialogInput {
+    Line(HWND),
+    Multiline(HWND),
+    /// 下拉：`options` 是共享层的静态选项表，`CB_GETCURSEL` 下标还原线值。
+    Choice {
+        combo: HWND,
+        options: &'static [(&'static str, &'static str)],
+    },
+    Bool(HWND),
+}
+
+/// 控件读值（字段键 → 线格式字符串；键表来自共享层的 [`McpFieldRow::key`]）。
+///
+/// 缺字段 / 非法取值由共享层 [`mcp_save_from_values`] 统一校验（与 macOS 同源）。
+fn read_mcp_form_values(inputs: &[(&'static str, McpDialogInput)]) -> std::collections::BTreeMap<String, String> {
+    let mut values = std::collections::BTreeMap::new();
+    for (key, input) in inputs {
+        let value = match input {
+            McpDialogInput::Line(hwnd) | McpDialogInput::Multiline(hwnd) => window_text(*hwnd),
+            McpDialogInput::Choice { combo, options } => {
+                let index = unsafe { SendMessageW(*combo, CB_GETCURSEL, 0, 0) } as i32;
+                options
+                    .get(index.max(0) as usize)
+                    .map(|(value, _)| (*value).to_string())
+                    .unwrap_or_default()
+            }
+            McpDialogInput::Bool(hwnd) => {
+                let checked = unsafe { SendMessageW(*hwnd, BM_GETCHECK, 0, 0) } as u32 == BST_CHECKED;
+                checked.to_string()
+            }
+        };
+        values.insert((*key).to_string(), value);
+    }
+    values
 }
 
 /// 弹窗次要动作的计划（纯函数，可测）：目标 →（标签, 控件 id, 按钮语义, 宽度）。
@@ -2157,19 +2268,23 @@ fn sync_open_document_dialog(document: &DocumentState, view: &SettingsView) {
         }
         let dialog = state.doc_dialog;
         // 内容刷新（仅限同一目标；换目标是新一次打开，由呈现门处理）。
+        // MCP 表单弹窗没有文本编辑框：内容刷新只对文本文档走（表单字段由共享层读值，
+        // 没有「服务端文本回来要写回控件」这一路）。
         let needs_content = document.loaded
-            && match &state.doc_dialog_content {
-                Some((target, content)) => {
-                    target == &document.target && content != &document.content
+            && match (&document.content, &state.doc_dialog_content) {
+                (DocumentContent::Text(committed), Some((target, content))) => {
+                    target == &document.target && content != committed
                 }
-                None => false,
+                _ => false,
             };
         if needs_content {
-            state.doc_dialog_content = Some((document.target.clone(), document.content.clone()));
-            unsafe {
-                let edit = GetDlgItem(dialog, DOC_DIALOG_EDIT_ID);
-                if edit != 0 {
-                    SetWindowTextW(edit, wide(&document.content).as_ptr());
+            if let DocumentContent::Text(committed) = &document.content {
+                state.doc_dialog_content = Some((document.target.clone(), committed.clone()));
+                unsafe {
+                    let edit = GetDlgItem(dialog, DOC_DIALOG_EDIT_ID);
+                    if edit != 0 {
+                        SetWindowTextW(edit, wide(committed).as_ptr());
+                    }
                 }
             }
         }
@@ -2202,6 +2317,7 @@ fn sync_document_dialog(view: &SettingsView) {
         with_state(|state| {
             state.doc_presented_this_open = false;
             state.doc_draft = None;
+            state.doc_form_draft = None;
         });
         return;
     };
@@ -2225,15 +2341,30 @@ fn sync_document_dialog(view: &SettingsView) {
     }
     // 先置位再进模态：模态期间到达的刷新（保存回执等）不得重入。
     with_state(|state| state.doc_presented_this_open = true);
-    let draft = with_state(|state| {
-        state
-            .doc_draft
-            .clone()
-            .filter(|(target, _)| target == &document.target)
-            .map(|(_, text)| text)
-    })
-    .flatten();
-    present_document_dialog(&document, draft);
+    match &document.content {
+        DocumentContent::Text(_) => {
+            let draft = with_state(|state| {
+                state
+                    .doc_draft
+                    .clone()
+                    .filter(|(target, _)| target == &document.target)
+                    .map(|(_, text)| text)
+            })
+            .flatten();
+            present_document_dialog(&document, draft);
+        }
+        DocumentContent::McpForm(form) => {
+            let draft = with_state(|state| {
+                state
+                    .doc_form_draft
+                    .clone()
+                    .filter(|(target, _)| target == &document.target)
+                    .map(|(_, values)| values)
+            })
+            .flatten();
+            present_mcp_form_dialog(&document, form, draft);
+        }
+    }
 }
 
 /// 弹窗存活状态（挂在窗口 `GWLP_USERDATA`；循环退出后由调用方收回所有权）。
@@ -2243,6 +2374,12 @@ struct DocDialogState {
     done: bool,
     /// 「保存」为 Some（正文照读）；关闭 / Esc / 标题栏 × 保持 None。
     text: Option<String>,
+    /// MCP 表单「保存」为 Some（控件读值表）；文本弹窗保持 None。
+    form_values: Option<std::collections::BTreeMap<String, String>>,
+    /// MCP 表单的输入控件（按行序的（字段键, 控件）；文本弹窗为空表）。
+    form_inputs: Vec<(&'static str, McpDialogInput)>,
+    /// 表单条目的原坐标（撞名/改名的 `originalName`；文本弹窗为空串）。
+    form_original: String,
 }
 
 /// 弹出文档编辑窗（模态；调用方在 `with_state` 借用之外）。
@@ -2353,7 +2490,8 @@ fn present_document_dialog(document: &DocumentState, draft: Option<String>) {
     };
     let hint = create("STATIC", hint_text, DOC_DIALOG_HINT_ID, small, hint_rect, 0);
     stamp_text(hint, TextRole::Hint);
-    let initial = draft.unwrap_or_else(|| document.content.clone());
+    // 文本弹窗只由文本目标进入（表单目标在 `sync_document_dialog` 分流到表单弹窗）。
+    let initial = draft.unwrap_or_else(|| document.content.as_text().unwrap_or_default().to_string());
     let edit = create(
         "EDIT",
         &initial,
@@ -2415,6 +2553,9 @@ fn present_document_dialog(document: &DocumentState, draft: Option<String>) {
         edit,
         done: false,
         text: None,
+        form_values: None,
+        form_inputs: Vec::new(),
+        form_original: String::new(),
     }));
     unsafe { SetWindowLongPtrW(dialog, GWLP_USERDATA, state as isize) };
     // 模态：属主禁用 + 本线程嵌套消息循环（与输入弹窗同款）。Enter / Esc 由
@@ -2498,6 +2639,343 @@ fn present_document_dialog(document: &DocumentState, draft: Option<String>) {
     }
 }
 
+/// 弹出 MCP 表单编辑窗（模态；与文档弹窗同载体纪律，内容换成字段控件）。
+///
+/// 字段行、标签与线值口径来自共享层（`panels::mcp_form_rows`）—— 与 macOS 表单同源；
+/// 本函数只把行映射成 Win32 控件（EDIT / COMBOBOX / AUTOCHECKBOX），保存时逐控件读回
+/// 并交给共享层 `mcp_save_from_values` 校验（线协议形状）后走 `save_mcp_form` 提交。
+fn present_mcp_form_dialog(
+    document: &DocumentState,
+    form: &crate::ui::settings::panels::McpServerForm,
+    draft: Option<std::collections::BTreeMap<String, String>>,
+) {
+    let Some((owner, scale)) = with_state(|state| (state.hwnd, dpi_scale(state.hwnd))) else {
+        return;
+    };
+    let hinstance = unsafe { GetModuleHandleW(std::ptr::null()) };
+    let class_name = wide(DOC_DIALOG_CLASS);
+    let mut wc: WNDCLASSW = unsafe { std::mem::zeroed() };
+    wc.lpfnWndProc = Some(doc_dialog_wndproc);
+    wc.hInstance = hinstance;
+    wc.lpszClassName = class_name.as_ptr();
+    // 类已存在时 RegisterClassW 返回 0；真实结论由 CreateWindowExW 给出。
+    unsafe { RegisterClassW(&wc) };
+
+    let rows = mcp_form_rows(form, draft.as_ref());
+    let client_w = DOC_DIALOG_W;
+    let client_h = mcp_form_dialog_height(&rows);
+    let style = WS_POPUP | WS_CAPTION | WS_SYSMENU | WS_CLIPCHILDREN;
+    let mut window_rect = RECT {
+        left: 0,
+        top: 0,
+        right: scaled(client_w, scale),
+        bottom: scaled(client_h, scale),
+    };
+    unsafe { AdjustWindowRectEx(&mut window_rect, style, 0, 0) };
+    let window_w = window_rect.right - window_rect.left;
+    let window_h = window_rect.bottom - window_rect.top;
+    let mut owner_rect: RECT = unsafe { std::mem::zeroed() };
+    let (x, y) = if unsafe { GetWindowRect(owner, &mut owner_rect) } != 0 {
+        (
+            owner_rect.left + (owner_rect.right - owner_rect.left - window_w) / 2,
+            owner_rect.top + (owner_rect.bottom - owner_rect.top - window_h) / 2,
+        )
+    } else {
+        (CW_USEDEFAULT, CW_USEDEFAULT)
+    };
+    let dialog = unsafe {
+        CreateWindowExW(
+            0,
+            class_name.as_ptr(),
+            wide(&document.title).as_ptr(),
+            style,
+            x,
+            y,
+            window_w,
+            window_h,
+            owner,
+            0,
+            hinstance,
+            std::ptr::null(),
+        )
+    };
+    if dialog == 0 {
+        rust_warn!("MCP 表单弹窗创建失败（本次没有编辑入口）");
+        return;
+    }
+
+    let body = make_font(scale, 13, false);
+    let small = make_font(scale, 11, false);
+    let bold = make_font(scale, 13, true);
+    let (row_rects, buttons_y) = mcp_form_dialog_layout(&rows, client_w);
+    let create = |class: &str,
+                  text: &str,
+                  id: i32,
+                  font: HFONT,
+                  rect: paint_win::Rect,
+                  extra_style: u32|
+     -> HWND {
+        let hwnd = unsafe {
+            CreateWindowExW(
+                0,
+                wide(class).as_ptr(),
+                wide(text).as_ptr(),
+                WS_CHILD | WS_VISIBLE | extra_style,
+                scaled(rect.x, scale),
+                scaled(rect.y, scale),
+                scaled(rect.w, scale),
+                scaled(rect.h, scale),
+                dialog,
+                id as isize,
+                hinstance,
+                std::ptr::null(),
+            )
+        };
+        if hwnd != 0 && font != 0 {
+            unsafe { SendMessageW(hwnd, WM_SETFONT, font as WPARAM, 1) };
+        }
+        hwnd
+    };
+    let title = create(
+        "STATIC",
+        &document.title,
+        DOC_DIALOG_TITLE_ID,
+        bold,
+        paint_win::Rect::new(MARGIN, MARGIN, client_w - MARGIN * 2, 20),
+        0,
+    );
+    stamp_text(title, TextRole::Body);
+    let hint = create(
+        "STATIC",
+        "字段逐项校验：保存失败会如实说明且不写入；名称撞车时不覆盖（会明确报错）。",
+        DOC_DIALOG_HINT_ID,
+        small,
+        paint_win::Rect::new(MARGIN, MARGIN + 24, client_w - MARGIN * 2, 32),
+        0,
+    );
+    stamp_text(hint, TextRole::Hint);
+
+    let mut inputs: Vec<(&'static str, McpDialogInput)> = Vec::new();
+    let mut first_control: HWND = 0;
+    for (index, (row, (label_rect, control_rect))) in rows.iter().zip(row_rects.iter()).enumerate() {
+        let id = DOC_FORM_FIELD_ID_BASE + index as i32;
+        // 标签用独立 id 段（换主题时按 id 重刷字色，见 `apply_theme_doc_dialog`）。
+        let label = create(
+            "STATIC",
+            row.label,
+            DOC_FORM_FIELD_ID_BASE + 100 + index as i32,
+            small,
+            *label_rect,
+            0,
+        );
+        stamp_text(label, TextRole::Hint);
+        let control = match &row.control {
+            McpFieldControl::Line(initial) => create(
+                "EDIT",
+                initial,
+                id,
+                body,
+                *control_rect,
+                WS_TABSTOP | WS_BORDER | ES_AUTOHSCROLL as u32,
+            ),
+            McpFieldControl::Multiline(initial) => create(
+                "EDIT",
+                initial,
+                id,
+                body,
+                *control_rect,
+                WS_TABSTOP
+                    | WS_BORDER
+                    | WS_VSCROLL
+                    | ES_MULTILINE as u32
+                    | ES_WANTRETURN as u32,
+            ),
+            McpFieldControl::Choice { options, selected } => {
+                let combo = create(
+                    "COMBOBOX",
+                    "",
+                    id,
+                    body,
+                    *control_rect,
+                    WS_TABSTOP | CBS_DROPDOWNLIST as u32,
+                );
+                if combo != 0 {
+                    for (_, option_label) in options.iter() {
+                        let text = wide(option_label);
+                        unsafe {
+                            SendMessageW(combo, CB_ADDSTRING, 0, text.as_ptr() as isize)
+                        };
+                    }
+                    let selected_index = options
+                        .iter()
+                        .position(|(value, _)| value == selected)
+                        .unwrap_or(0);
+                    unsafe {
+                        SendMessageW(combo, CB_SETCURSEL, selected_index as usize, 0)
+                    };
+                }
+                combo
+            }
+            McpFieldControl::Bool(on) => {
+                let check = create(
+                    "BUTTON",
+                    "",
+                    id,
+                    body,
+                    *control_rect,
+                    WS_TABSTOP | BS_AUTOCHECKBOX as u32,
+                );
+                if check != 0 {
+                    unsafe {
+                        SendMessageW(
+                            check,
+                            BM_SETCHECK,
+                            if *on { BST_CHECKED as usize } else { 0 },
+                            0,
+                        )
+                    };
+                }
+                check
+            }
+        };
+        if first_control == 0 {
+            first_control = control;
+        }
+        let input = match &row.control {
+            McpFieldControl::Line(_) => McpDialogInput::Line(control),
+            McpFieldControl::Multiline(_) => McpDialogInput::Multiline(control),
+            McpFieldControl::Choice { options, .. } => {
+                McpDialogInput::Choice { combo: control, options }
+            }
+            McpFieldControl::Bool(_) => McpDialogInput::Bool(control),
+        };
+        inputs.push((row.key, input));
+    }
+
+    // 按钮行（从右往左：保存是主操作、贴右缘；关闭次之；目标的次要动作再往左）。
+    // 次要动作走与文本文档同一门控（`doc_dialog_secondary`）：具名 MCP 条目才有「测试连接」。
+    let secondary = doc_dialog_secondary(&document.target);
+    let mut planned: Vec<(&str, i32, SettingsButton, i32)> = vec![
+        ("保存", IDOK, SettingsButton::SaveDocument, DOC_DIALOG_BTN_W_SAVE),
+        ("关闭", IDCANCEL, SettingsButton::DocumentClose, DOC_DIALOG_BTN_W_CLOSE),
+    ];
+    if let Some(extra) = secondary {
+        planned.push(extra);
+    }
+    let widths: Vec<i32> = planned.iter().map(|(_, _, _, w)| *w).collect();
+    let xs = doc_dialog_button_row(client_w, &widths);
+    let mut close_button = 0;
+    for ((label, id, kind, w), x) in planned.iter().zip(xs.iter()) {
+        let extra_style = if *id == IDOK {
+            WS_TABSTOP | BS_DEFPUSHBUTTON as u32
+        } else {
+            WS_TABSTOP
+        };
+        let button = create(
+            "BUTTON",
+            label,
+            *id,
+            body,
+            paint_win::Rect::new(*x, buttons_y, *w, DOC_DIALOG_BTN_H),
+            extra_style,
+        );
+        style_button(*kind, button, scale);
+        if *id == IDCANCEL {
+            close_button = button;
+        }
+    }
+
+    let form_original = match &document.target {
+        DocumentTarget::McpServer { name } => name.clone(),
+        _ => String::new(),
+    };
+    let state = Box::into_raw(Box::new(DocDialogState {
+        edit: 0,
+        done: false,
+        text: None,
+        form_values: None,
+        form_inputs: inputs,
+        form_original,
+    }));
+    unsafe { SetWindowLongPtrW(dialog, GWLP_USERDATA, state as isize) };
+    // 模态：属主禁用 + 本线程嵌套消息循环（与文档弹窗同款）。
+    with_state(|ui| {
+        ui.doc_dialog = dialog;
+        // 表单弹窗没有文本编辑框：内容同步不登记（`sync_open_document_dialog` 只刷通知行）。
+        ui.doc_dialog_content = None;
+        ui.doc_dialog_up = true;
+        ui.notice_modal_up = true;
+    });
+    unsafe {
+        EnableWindow(owner, 0);
+        ShowWindow(dialog, SW_SHOW);
+        SetForegroundWindow(dialog);
+        if first_control != 0 {
+            SetFocus(first_control);
+        } else if close_button != 0 {
+            SetFocus(close_button);
+        }
+    }
+
+    let mut msg: MSG = unsafe { std::mem::zeroed() };
+    while !unsafe { (*state).done } {
+        let ret = unsafe { GetMessageW(&mut msg, 0, 0, 0) };
+        if ret <= 0 {
+            if ret == 0 {
+                unsafe { PostQuitMessage(msg.wParam as i32) };
+            }
+            break;
+        }
+        if unsafe { IsDialogMessageW(dialog, &msg) } == 0 {
+            unsafe {
+                TranslateMessage(&msg);
+                DispatchMessageW(&msg);
+            }
+        }
+    }
+    if !unsafe { (*state).done } {
+        unsafe {
+            (*state).done = true;
+            DestroyWindow(dialog);
+        }
+    }
+    let state = unsafe { Box::from_raw(state) };
+    with_state(|ui| {
+        ui.doc_dialog = 0;
+        ui.doc_dialog_content = None;
+        ui.doc_dialog_up = false;
+        ui.notice_modal_up = false;
+    });
+    unsafe {
+        if IsWindow(owner) != 0 {
+            EnableWindow(owner, 1);
+            SetForegroundWindow(owner);
+        }
+        if body != 0 {
+            DeleteObject(body);
+        }
+        if small != 0 {
+            DeleteObject(small);
+        }
+        if bold != 0 {
+            DeleteObject(bold);
+        }
+    }
+    // 收尾（与 macOS 同规）：保存 → 留草稿 + 提交；其余（关闭 / Esc / ×）→ 丢弃并关档。
+    match state.form_values {
+        Some(values) => {
+            with_state(|ui| ui.doc_form_draft = Some((document.target.clone(), values.clone())));
+            if let Err(error) = settings_ui().save_mcp_form(&values) {
+                settings_ui().set_error(format!("保存未启动：{error}"));
+            }
+        }
+        None => {
+            with_state(|ui| ui.doc_form_draft = None);
+            settings_ui().close_document();
+        }
+    }
+}
+
 /// 弹窗窗口过程：保存读值、关闭/× 收尾，都在销毁前落进 [`DocDialogState`]。
 unsafe extern "system" fn doc_dialog_wndproc(
     hwnd: HWND,
@@ -2551,7 +3029,28 @@ unsafe extern "system" fn doc_dialog_wndproc(
                     let state = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut DocDialogState;
                     if !state.is_null() {
                         if id == IDOK {
-                            (*state).text = Some(window_text((*state).edit));
+                            if (*state).form_inputs.is_empty() {
+                                // 文本弹窗：正文照读。
+                                (*state).text = Some(window_text((*state).edit));
+                            } else {
+                                // 表单弹窗：读控件值 → 共享层线协议校验。不通过就**不关窗**、
+                                // 就地说明（与 macOS 表单保存前的控件读值校验同源）。
+                                let values = read_mcp_form_values(&(*state).form_inputs);
+                                match mcp_save_from_values(&(*state).form_original, &values) {
+                                    Ok(_) => (*state).form_values = Some(values),
+                                    Err(error) => {
+                                        let message = wide(&format!("{error}"));
+                                        let caption = wide("表单未通过校验");
+                                        MessageBoxW(
+                                            hwnd,
+                                            message.as_ptr(),
+                                            caption.as_ptr(),
+                                            MB_OK | MB_ICONERROR,
+                                        );
+                                        return 0;
+                                    }
+                                }
+                            }
                         }
                         (*state).done = true;
                     }
@@ -2663,6 +3162,19 @@ fn apply_theme_doc_dialog(dialog: HWND, scale: f64) {
         let edit = GetDlgItem(dialog, DOC_DIALOG_EDIT_ID);
         if edit != 0 {
             InvalidateRect(edit, std::ptr::null(), 1);
+        }
+        // MCP 表单弹窗（另一类内容）：字段标签按 id 段重刷字色，字段控件整体重绘
+        // （EDIT 的底/字色由 WM_CTLCOLOREDIT 按当前 token 现取，COMBOBOX 同理）。
+        for index in 0..MCP_FORM_FIELD_COUNT as i32 {
+            let label = GetDlgItem(dialog, DOC_FORM_FIELD_ID_BASE + 100 + index);
+            if label != 0 {
+                paint_win::set_text_color(label, paint_win::text_color(tokens, TextRole::Hint));
+                InvalidateRect(label, std::ptr::null(), 1);
+            }
+            let control = GetDlgItem(dialog, DOC_FORM_FIELD_ID_BASE + index);
+            if control != 0 {
+                InvalidateRect(control, std::ptr::null(), 1);
+            }
         }
         InvalidateRect(dialog, std::ptr::null(), 1);
     }
@@ -2812,9 +3324,13 @@ enum RowMainKind {
 fn row_main_kind(action: RowAction) -> RowMainKind {
     match action {
         RowAction::Pick => RowMainKind::Pick,
-        RowAction::Toggle | RowAction::Select | RowAction::Preview | RowAction::Credential => {
-            RowMainKind::Button
-        }
+        RowAction::Toggle
+        | RowAction::Select
+        | RowAction::Preview
+        | RowAction::Credential
+        | RowAction::Cancel
+        | RowAction::Resume
+        | RowAction::Choose => RowMainKind::Button,
         RowAction::Edit | RowAction::Delete | RowAction::None => RowMainKind::None,
     }
 }
@@ -2834,6 +3350,17 @@ fn row_button_title(action: RowAction, enabled: bool) -> &'static str {
         RowAction::Preview => "试听",
         // 凭据输入行：主按钮打开原生输入框（值写入应用自有存储）。
         RowAction::Credential => "设置",
+        // 记忆作业行：取消 / 继续（行出现哪个动作由 Node 按作业状态投影）。
+        RowAction::Cancel => "取消",
+        RowAction::Resume => "继续",
+        // 备份列表行：选中态由共享层叠加在 `enabled` 上（选择是 UI 状态）。
+        RowAction::Choose => {
+            if enabled {
+                "已选中"
+            } else {
+                "选择"
+            }
+        }
         RowAction::Pick | RowAction::Edit | RowAction::Delete | RowAction::None => "",
     }
 }
@@ -3310,6 +3837,83 @@ fn build_memory_detail(
                 y += 52;
             }
             y + SECTION_GAP
+        }
+    }
+}
+
+/// 展开中的来源原话块（固定高度只读 EDIT；三态由共享层给坐标）；返回新的 y。
+fn build_memory_evidence(state: &mut SettingsState, content_w: i32, mut y: i32, small: HFONT) -> i32 {
+    let Some(evidence) = settings_ui().memory_evidence_state() else {
+        return y;
+    };
+    match evidence {
+        MemoryEvidenceState::Loading { .. } => {
+            create_panel_control(
+                state,
+                "STATIC",
+                "正在读取来源原话…",
+                MARGIN,
+                y,
+                content_w,
+                16,
+                small,
+                11,
+                Some(TextRole::Hint),
+                0,
+                0,
+            );
+            y + 18
+        }
+        MemoryEvidenceState::Error { error, .. } => {
+            // 读取失败是如实展示的错误诊断：取 `danger`。
+            create_panel_control(
+                state,
+                "STATIC",
+                &error,
+                MARGIN,
+                y,
+                content_w,
+                32,
+                small,
+                11,
+                Some(TextRole::Error),
+                0,
+                0,
+            );
+            y + 34
+        }
+        MemoryEvidenceState::Ready { source_id, text } => {
+            create_panel_control(
+                state,
+                "STATIC",
+                &format!("已展开 {source_id} 的原话（再点该行收起）"),
+                MARGIN,
+                y,
+                content_w,
+                16,
+                small,
+                11,
+                Some(TextRole::Hint),
+                0,
+                0,
+            );
+            y += 18;
+            create_panel_control(
+                state,
+                "EDIT",
+                &text,
+                MARGIN,
+                y,
+                content_w,
+                MEMORY_EVIDENCE_H,
+                small,
+                11,
+                None,
+                ES_READONLY as u32 | WS_VSCROLL,
+                // 负数 = 无命令 id（只读展示，不进行槽；与详情 info 块同一约定）。
+                -3,
+            );
+            y + MEMORY_EVIDENCE_H + 6
         }
     }
 }
@@ -3838,9 +4442,14 @@ pub(crate) fn on_command(hwnd: HWND, wparam: WPARAM) -> bool {
                 }
                 let outcome = match action {
                     RowAction::Toggle => settings_ui().toggle_panel_row(panel, &row_id),
-                    RowAction::Select => {
-                        settings_ui().open_memory_item(&row_id);
-                        Ok(())
+                    // 行选择按面板分发（条目 = 详情；来源 = 展开原话；备份 = 选中；
+                    // Profile / 人格卡列表 = 选中管理对象）。
+                    RowAction::Select | RowAction::Choose => {
+                        settings_ui().panel_row_select(panel, &row_id)
+                    }
+                    // 记忆作业行的取消 / 继续（行主按钮；动作集合由 Node 行投影定义）。
+                    RowAction::Cancel | RowAction::Resume => {
+                        settings_ui().memory_job_action(panel, &row_id, action)
                     }
                     // 次动作按钮（MCP「编辑」、Skill「删除」）走本批的专用入口；
                     // 删除前先做原生确认。
@@ -5150,6 +5759,51 @@ mod tests {
         assert!(xs[2] > MARGIN, "次要动作不得压出左缘（弹窗宽度要能容下）");
     }
 
+    /// MCP 表单弹窗几何（纯函数）：每行一个控件、多行字段更高、行自上而下不重叠、
+    /// 控件右缘对齐内容右缘；按钮行在最后一行之下且客户区放得下按钮行。
+    #[test]
+    fn mcp表单弹窗几何按字段行排布() {
+        let form = crate::ui::settings::panels::McpServerForm {
+            name: "demo".to_string(),
+            transport: McpTransport::Http,
+            command: String::new(),
+            args: "-y\npkg".to_string(),
+            url: "https://example.com/mcp".to_string(),
+            env: "TOKEN=1".to_string(),
+            headers: "A=b".to_string(),
+            enabled: false,
+        };
+        let rows = mcp_form_rows(&form, None);
+        assert_eq!(rows.len(), MCP_FORM_FIELD_COUNT, "字段数变了要同批改 id 段遍历");
+        let (rects, buttons_y) = mcp_form_dialog_layout(&rows, DOC_DIALOG_W);
+        assert_eq!(rects.len(), rows.len(), "每行一个标签 + 一个控件");
+        let mut previous_bottom = MARGIN + 24 + 32;
+        for ((label, control), row) in rects.iter().zip(rows.iter()) {
+            assert!(label.y >= previous_bottom, "字段行自上而下不重叠");
+            assert_eq!(label.y, control.y, "同一行的标签与控件同顶");
+            assert_eq!(control.h, mcp_form_row_h(&row.control), "控件高度按形态取");
+            assert!(control.x >= label.x + label.w, "控件在标签右侧");
+            assert_eq!(
+                control.x + control.w,
+                DOC_DIALOG_W - MARGIN,
+                "控件右缘统一对齐内容右缘"
+            );
+            previous_bottom = control.y + control.h;
+        }
+        let last = rects.last().expect("表单至少一行");
+        assert!(buttons_y >= last.1.y + last.1.h, "按钮行在最后一行之下");
+        assert!(
+            mcp_form_dialog_height(&rows) >= buttons_y + DOC_DIALOG_BTN_H,
+            "客户区高度要放得下按钮行"
+        );
+        // 多行字段确实更高（形态映射生效，不是全表同高）。
+        let args_index = rows.iter().position(|row| row.key == MCP_FIELD_ARGS).unwrap();
+        assert!(
+            rects[args_index].1.h > rects[0].1.h,
+            "args 是多行控件高度，name 是单行"
+        );
+    }
+
     /// 撤下的设置键不得再出现在**生产段**（schema 撤项后平台侧残留引用 = 死分支 /
     /// 死夹具 —— 本批点名的同类坑：漏改平台调用点）。名单随共享层撤项同批维护。
     ///
@@ -5259,8 +5913,8 @@ mod tests {
     }
 
     /// 弹窗次要动作计划：目标门控与 macOS `doc_dialog_buttons` 同表 ——
-    /// 「复制」只属只读的 Card 模版，其它只读目标（VariablePool / MemoryEvidence）
-    /// 不得借到；「重新生成 / 测试连接」的既有门控保持原样。
+    /// 「复制」只属只读的 Card 模版，其它只读目标（VariablePool）不得借到；
+    /// 「重新生成 / 测试连接」的既有门控保持原样。
     #[test]
     fn 弹窗次要动作只给匹配目标() {
         assert_eq!(
@@ -5274,10 +5928,7 @@ mod tests {
         assert_eq!(copy.1, DOC_DIALOG_COPY_ID);
         assert_eq!(copy.2, SettingsButton::DocumentCopy);
         // 其它只读目标没有次要动作（不关弹窗的附加动作一个都不给）。
-        for target in [
-            DocumentTarget::VariablePool,
-            DocumentTarget::MemoryEvidence,
-        ] {
+        for target in [DocumentTarget::VariablePool] {
             assert!(
                 doc_dialog_secondary(&target).is_none(),
                 "{target:?} 不应出现次要动作"
@@ -5286,7 +5937,9 @@ mod tests {
         // 可编辑目标里只有既有两处匹配；复制不得借给它们。
         for target in [
             DocumentTarget::V1rtual,
-            DocumentTarget::CardMarkdown,
+            DocumentTarget::CardMarkdown {
+                card_id: "sugar".into(),
+            },
             DocumentTarget::McpServer { name: String::new() },
         ] {
             assert!(
@@ -5657,6 +6310,14 @@ mod tests {
         // 凭据行（MCP「GitHub 令牌」）：主控件是按钮、文案「设置」（不落空按钮）。
         assert_eq!(row_main_kind(RowAction::Credential), RowMainKind::Button);
         assert_eq!(row_button_title(RowAction::Credential, false), "设置");
+        // 记忆作业行（取消 / 继续）与备份行的选中：按钮档、文案固定（选中态按 enabled 两态）。
+        assert_eq!(row_main_kind(RowAction::Cancel), RowMainKind::Button);
+        assert_eq!(row_button_title(RowAction::Cancel, false), "取消");
+        assert_eq!(row_main_kind(RowAction::Resume), RowMainKind::Button);
+        assert_eq!(row_button_title(RowAction::Resume, false), "继续");
+        assert_eq!(row_main_kind(RowAction::Choose), RowMainKind::Button);
+        assert_eq!(row_button_title(RowAction::Choose, true), "已选中");
+        assert_eq!(row_button_title(RowAction::Choose, false), "选择");
         assert_eq!(row_main_kind(RowAction::None), RowMainKind::None);
         // 次按钮文案：音效事件行的 action2 = 试听（次按钮位上的 Preview）。
         assert_eq!(row_secondary_title(RowAction::Preview), "试听");

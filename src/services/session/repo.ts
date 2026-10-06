@@ -10,6 +10,7 @@ import { createPiSessionRepo, flushSessionFrameWrites } from "@/services/engine/
 import type { PiSessionRepo } from "@/services/engine/harness"
 import { createLogger } from "@/services/logger"
 import { formatError, reportError } from "@/services/error"
+import { readSessionActivityAt } from "./activity"
 
 const log = createLogger("PiSession")
 
@@ -22,6 +23,11 @@ export interface PiSessionSummary {
   name: string
   createdAt: number
   messageCount: number
+  /**
+   * 用户活动时间（正文最后一条 user 条目时间戳；null = 没有用户消息，列表按
+   * createdAt 回退）。读取走文件尾部扫描 + mtime 缓存，见 activity.ts。
+   */
+  activityAt: number | null
   modifiedAt: number
   path: string
 }
@@ -69,7 +75,8 @@ const openSessions = new Map<string, Promise<Session<JsonlSessionMetadata>>>()
 const reportedForeignRootIds = new Set<string>()
 
 /**
- * 仓库内的全部会话元数据（创建时间倒序）。
+ * 仓库内的全部会话元数据（上游仓库的列举顺序：创建时间倒序；展示列表按用户活动时间
+ * 重排，见 activity.ts / history.ts）。
  *
  * 归属按**文件头 `cwd`** 判定，不是按 `--<cwd>--` 目录名猜：数据根变更或目录编码碰撞
  * 都会让仓库里出现不属于当前数据根的会话。这类项标注并留一次日志，不清除、不改
@@ -174,18 +181,24 @@ export async function releasePiSession(sessionId: string): Promise<void> {
   }
 }
 
-async function readSummary(session: Session<JsonlSessionMetadata>): Promise<PiSessionSummary> {
+async function readSummary(
+  session: Session<JsonlSessionMetadata>,
+  metadata: JsonlSessionMetadata,
+): Promise<PiSessionSummary> {
   const [name, stats] = await Promise.all([
     session.getName(BACKGROUND_CONTEXT),
     session.getStats(BACKGROUND_CONTEXT),
   ])
+  // metadata 用调用方传入的那份：已打开的句柄上挂的是旧扫描的 metadata（modifiedAt 陈旧），
+  // 活动时间的缓存键必须取新鲜 mtime（缓存语义见 activity.ts）。
   return {
-    id: session.metadata.id,
+    id: metadata.id,
     name: name ?? "",
-    createdAt: session.metadata.createdAt,
+    createdAt: metadata.createdAt,
     messageCount: stats.messageCount,
-    modifiedAt: session.metadata.modifiedAt,
-    path: session.metadata.path,
+    activityAt: await readSessionActivityAt(metadata.path, metadata.modifiedAt),
+    modifiedAt: metadata.modifiedAt,
+    path: metadata.path,
   }
 }
 
@@ -198,7 +211,7 @@ export async function readPiSessionSummary(metadata: JsonlSessionMetadata): Prom
   try {
     const session = await acquirePiSession(metadata.id)
     try {
-      return await readSummary(session)
+      return await readSummary(session, metadata)
     } finally {
       if (!alreadyOpen) await releasePiSession(metadata.id)
     }
@@ -214,7 +227,7 @@ export async function createPiSession(name: string): Promise<PiSessionSummary> {
   const session = await repo.create({}, BACKGROUND_CONTEXT)
   await session.setName(name, BACKGROUND_CONTEXT)
   openSessions.set(session.metadata.id, Promise.resolve(session))
-  const summary = await readSummary(session)
+  const summary = await readSummary(session, session.metadata)
   log.info("已创建会话:", summary.id, name)
   return summary
 }

@@ -7,11 +7,14 @@
 // 由 Harness 在下一回合的请求上下文里补一句极短提醒；检测与补救的接线点见
 // `engine/harness/runtime.ts` 的 settleMainTurn 与 runPiAgentTurn 的 buildPrompt 调用处。
 
+import { RUNTIME_DATA_TAG } from "./protocol"
+
 /**
  * 提醒文案。与 `context/builder.ts` 的 `RUNTIME_DATA_INSTRUCTION` 同协议、不同用途：
  * 指令每轮都在 system prompt 里，提醒只在违约后的下一回合出现一次（完成即清）。
+ * 块名取自 `./protocol`（唯一定义点），文案其余部分逐字冻结。
  */
-export const RUNTIME_DATA_REMINDER_TEXT = "[提醒] 上一轮回复缺少 RUNTIME_DATA 区块；这一轮务必按格式附上，没有变化就留空区块。"
+export const RUNTIME_DATA_REMINDER_TEXT = `[提醒] 上一轮回复缺少 ${RUNTIME_DATA_TAG} 区块；这一轮务必按格式附上，没有变化就留空区块。`
 
 /**
  * 挂起状态只由**完成回合的结算**写入/清除：取消与中断的回合根本走不到结算

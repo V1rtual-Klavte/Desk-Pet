@@ -16,7 +16,8 @@
 //! 走同一几何、同一纹理语义；编辑器由 W9 实现，不需要在这里写死主窗路径。
 //!
 //! 本模块**不实现**景深与滤镜（`shadow` / `brightness` / `contrast` / `saturate`），
-//! 也不为它们保留参数位。
+//! 也不为它们保留参数位。逐层**整体不透明度**（编辑器预览线索的唯一消费面）是例外：
+//! 它以 [`LayerSpec::opacity`] 进入绘制指令（缺省 1.0），不引入任何滤镜语义。
 
 pub mod compose;
 pub mod frame_loop;
@@ -54,9 +55,19 @@ pub struct LayerSpec {
     pub scale: f64,
     pub offset_x_percent: f64,
     pub offset_y_percent: f64,
+    /// 本层整体不透明度（`[0, 1]`，[`compose::normalize_opacity`] 归一化）。
+    ///
+    /// 缺省（[`Self::DEFAULT_OPACITY`]）逐位保持历史行为：主窗舞台与 Profile 推送
+    /// 从不设置它；唯一设置它的是编辑器预览的线索投影
+    /// （[`crate::ui::editor::cue_specs`]），且该投影只喂编辑器自己的渲染器。
+    /// 不透明度只进绘制指令，不参与几何核。
+    pub opacity: f64,
 }
 
 impl LayerSpec {
+    /// 缺省不透明度（不透明）：未设置时与「没有该字段」的历史渲染逐位一致。
+    pub const DEFAULT_OPACITY: f64 = 1.0;
+
     /// 几何核输入（渲染器每帧用它跑 `scene_transforms`）。
     pub fn geometry_input(&self) -> LayerGeometryInput {
         LayerGeometryInput {
@@ -152,6 +163,7 @@ impl RendererCore {
     }
 
     /// 按当前输入组装帧计划：层顺序 = z 序；禁用层与解码失败的层不在计划里。
+    /// 每层的 `opacity` 原样进入绘制指令（归一化在 [`compose`] 内，单一口径）。
     fn build_plan(&self) -> FramePlan {
         let scene = geometry::SceneInput {
             enabled: self.scene.enabled,
@@ -176,7 +188,7 @@ impl RendererCore {
                     } else {
                         None
                     };
-                    (slot as u32, transform, texture)
+                    (slot as u32, transform, texture, layer.opacity)
                 },
             ),
         )
@@ -398,6 +410,7 @@ mod tests {
             scale: 1.0,
             offset_x_percent: 0.0,
             offset_y_percent: 0.0,
+            opacity: LayerSpec::DEFAULT_OPACITY,
         }
     }
 
@@ -415,6 +428,8 @@ mod tests {
         uploads: Vec<(TextureId, u32, u32)>,
         releases: Vec<TextureId>,
         presents: Vec<Vec<TextureId>>,
+        /// 每帧每层的绘制不透明度（与 presents 同序，逐层对应）。
+        presented_opacities: Vec<Vec<f64>>,
         starts: usize,
         stops: usize,
         sink: Option<Box<dyn FnMut() + Send>>,
@@ -440,11 +455,13 @@ mod tests {
         }
 
         fn present(&mut self, plan: &FramePlan) -> AppResult<()> {
-            self.shared
-                .lock()
-                .unwrap()
+            let mut shared = self.shared.lock().unwrap();
+            shared
                 .presents
                 .push(plan.draws.iter().map(|draw| draw.texture).collect());
+            shared
+                .presented_opacities
+                .push(plan.draws.iter().map(|draw| draw.opacity).collect());
             Ok(())
         }
 
@@ -610,6 +627,30 @@ mod tests {
         assert!(!stats.running);
         assert_eq!(shared.lock().unwrap().presents.len(), 1);
         std::fs::remove_dir_all(path.parent().unwrap()).unwrap();
+    }
+
+    /// 缺省不透明度 = 1.0（主窗/未投影路径逐位保持历史行为）；显式线索值原样进入
+    /// 每层绘制指令。禁用层照旧不进计划 —— 预览里「幽灵层可渲染」靠投影把
+    /// `enabled` 置真（见 `ui::editor::cue_specs`），不靠渲染器放宽过滤。
+    #[test]
+    fn 缺省不透明度恒为一_显式线索进入绘制指令() {
+        let solid = temp_png("opacity-solid");
+        let ghost = temp_png("opacity-ghost");
+        let (mut renderer, shared) = renderer();
+        let mut ghost_spec = spec(&ghost, true);
+        ghost_spec.opacity = 0.15;
+        renderer.set_layers(vec![spec(&solid, true), ghost_spec, spec(&ghost, false)]);
+        renderer.set_window_geometry(window());
+        renderer.render_now().unwrap();
+        let shared = shared.lock().unwrap();
+        assert_eq!(
+            shared.presented_opacities[0],
+            vec![1.0, 0.15],
+            "缺省层 1.0、显式 0.15 原样进入指令；禁用层不进计划"
+        );
+        drop(shared);
+        std::fs::remove_dir_all(solid.parent().unwrap()).unwrap();
+        std::fs::remove_dir_all(ghost.parent().unwrap()).unwrap();
     }
 
     #[test]

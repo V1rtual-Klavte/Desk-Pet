@@ -6,7 +6,7 @@ export { buildPrompt, CHAT_THINKING_HINTS, ONE_SHOT_LOW_EFFORT_HINT, composeDyna
 export type { BuildContextInput, BuildContextOutput } from "./builder"
 export { buildPromptBlocks } from "./kernel"
 export type { ContextBlockInput, ContextBudgetAdjustment, PromptBlocks, PromptBlocksOptions } from "./kernel"
-export { contextBudget, estimateContextTokens, estimateValueTokens, estimateMessageTokens, estimateRequestTokens, sliceByTokenBudget, toolBudgetSchema, ContextBudgetError, DEFAULT_CONTEXT_WINDOW, MIN_CONTEXT_WINDOW, contextWindowError, toHarnessEstimateTokens, projectMessageContent, estimateDriftRatio, ESTIMATE_DRIFT_WARN_RATIO, totalInputTokens } from "./budget"
+export { contextBudget, estimateContextTokens, estimateValueTokens, estimateMessageTokens, estimateRequestTokens, sliceByTokenBudget, toolBudgetSchema, ContextBudgetError, DEFAULT_CONTEXT_WINDOW, MIN_CONTEXT_WINDOW, contextWindowError, toHarnessEstimateTokens, projectMessageContent, estimateDriftRatio, ESTIMATE_DRIFT_WARN_RATIO, ESTIMATOR_WORST_CASE_BIAS, totalInputTokens } from "./budget"
 export type { ContextBudget } from "./budget"
 
 export { projectToolResultText, annotateToolResultText, toolResultNotice, toolResultAddress, toolResultTokenBudget, LADDER_PROTECTION_TURNS, protectedMessageIndexes } from "./tool-output"

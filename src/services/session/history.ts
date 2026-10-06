@@ -7,12 +7,13 @@
 import { ref } from "vue"
 import type { PiSessionSummary } from "./repo"
 import { listPiSessionMetadata, readPiSessionSummary } from "./repo"
+import { compareSessionActivity } from "./activity"
 import { createLogger } from "@/services/logger"
 import { formatError } from "@/services/error"
 
 const log = createLogger("SessionHistory")
 
-/** 仓库内的全部会话（创建时间倒序） */
+/** 仓库内的全部会话（用户活动时间倒序；没有用户消息的按创建时间回退，见 activity.ts） */
 export const sessionHistory = ref<PiSessionSummary[]>([])
 
 export const sessionHistoryLoading = ref(false)
@@ -37,6 +38,8 @@ export async function refreshSessionHistory(): Promise<void> {
     } else {
       sessionHistoryError.value = false
     }
+    // 列表口径 = 用户活动时间倒序（缺省回退 createdAt）；不沿用仓库列举的 createdAt 顺序。
+    items.sort(compareSessionActivity)
     sessionHistory.value = items
   } catch (error) {
     // 读取失败不能与「确实没有会话」同形：否则用户会以为历史被清空了。
@@ -48,7 +51,7 @@ export async function refreshSessionHistory(): Promise<void> {
   }
 }
 
-/** 新会话落盘后插入表头（与仓库的创建时间倒序一致）。 */
+/** 新会话落盘后插入表头（还没有用户消息，活动时间回退 createdAt = 最新，排在最前）。 */
 export function prependSessionHistory(summary: PiSessionSummary): void {
   sessionHistory.value = [summary, ...sessionHistory.value.filter(item => item.id !== summary.id)]
 }

@@ -28,20 +28,16 @@ export default defineConfig({
   resolve: {
     alias: {
       "@": resolve(__dirname, "src"),
-      // 宿主桥（test/host/node-host-bridge.ts）已不再经过这里：它直接调用
-      // node-ipc 的命令面。这三条别名只服务于**尚未迁移**的旧说明符直连
-      // （L4 场景 / memory 适配器 / host 观测设施与少量 L2/L3 用例里的
-      // `@tauri-apps/api/*` import，清单见交付报告）。迁移完成前删掉别名会让这些
-      // import 落到真 `@tauri-apps/api`（Node 下不可用；包删除后直接解析失败），
-      // 所以删除别名必须与消费者迁移在同一改动里完成。
+      // `@tauri-apps/api/{core,path,event}` 三条别名已删除（不留死兼容层）：旧说明符的
+      // 消费者迁移已完成，全仓不再有任何 `@tauri-apps/*` import（只剩注释），别名失去
+      // 消费者。适配层文件本身保留、继续被直接 import 消费：宿主桥与 L2/L3 测试直接取
+      // test/host/node-ipc.ts 的命令面与 node-path.ts / node-event.ts 的导出，不经别名。
       //
       // 适配层本身：test/host/node-ipc.ts 按 Rust `#[tauri::command]` 签名逐条复现
-      // IPC 命令的 Node 等价实现，node-path.ts / node-event.ts 分别顶替 path / event。
+      // IPC 命令的 Node 等价实现，node-path.ts / node-event.ts 分别提供路径与事件面的
+      // Node 等价导出（被直接 import 消费，不经任何别名）。
       // 只复现机制、不做策略：路径裁决、Bash 基线与许可配额等 Rust 专有命令命中即抛
       // UnsupportedInNodeError（见 test/host/unsupported.ts），让相应场景明确留在 L4。
-      "@tauri-apps/api/core": resolve(__dirname, "test/host/node-ipc.ts"),
-      "@tauri-apps/api/path": resolve(__dirname, "test/host/node-path.ts"),
-      "@tauri-apps/api/event": resolve(__dirname, "test/host/node-event.ts"),
       // node:assert/strict 的别名已删除：vitest 两个 project 都是 node 环境，内建模块
       // 直接解析，无需 shim；唯一在 vitest 树里的消费者（pi 官方一致性套件）拿到真实
       // 内建实现只会更严格。shim 本体与 vite.config.ts 的别名保留 —— 那是原生 bundle

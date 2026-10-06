@@ -3,13 +3,18 @@
 //! **未在 Windows 实机验证**（本机离线类型核对，见原生宿主迁移过程记录 §9.4 第 19 条）。
 //! 与 macOS 同语义：预览 = 第二个 `Renderer`（`WinLayerSurface` 以编辑器窗口为
 //! 合成目标；窗口需带 `WS_EX_LAYERED`，由 `windows.rs` 的 `open_aux` 设置），
-//! 草稿改动同步投给主窗舞台（主窗/预览一致），保存走 `EditorUi::save`。
+//! 预览层列表经**线索投影**（`editor::cue_specs`：选中 1.0 / 启用 0.6 / 禁用 0.15，
+//! 五层恒渲染），草稿（不含线索）同步投给主窗舞台（主窗/预览一致），
+//! 保存走 `EditorUi::save`。
 //!
 //! 与 macOS 的已登记差异：
-//! - 参数用数值 `EDIT` 输入（macOS 侧是滑杆）；拖动预览在窗口空白区按左键拖动；
-//!   **位置输入不设范围**（任意有限值都接受；macOS 滑杆的 ±50 只是粗调控件范围）——
-//!   两边共享同一条领域规则：偏移可拖到任意位置，框外部分由取景框裁掉
+//! - 参数用数值 `EDIT` 输入（macOS 侧：强度/灵敏度/缩放是滑杆，**位置 X/Y 是数字
+//!   输入框** —— 与旧壳偏移行同形，两平台的偏移输入形态已对齐）；拖动预览在窗口
+//!   空白区按左键拖动；**位置输入不设范围**（任意有限值都接受）—— 两边共享同一条
+//!   领域规则：偏移可拖到任意位置，框外部分由取景框裁掉
 //!   （`ui/editor/mod.rs::EditorDraft::set_offset` 不夹取，2026-10-05 用户裁决）。
+//!   数值解析/显示与提交后的单轴保留走共享纯函数（`parse_number_input` /
+//!   `op_set_offset_input`），两平台不各写一份。
 //! - 素材列表用 `COMBOBOX`（`CBS_DROPDOWNLIST`，macOS 侧是 `NSPopUpButton`）；
 //! - 未保存改动的关闭确认用 `MessageBoxW`（是 = 保存并关闭 / 否 = 放弃 / 取消 = 留下）；
 //!   「没有素材？」素材提示词面板用**非模态**的自建 owned window（`MessageBoxW`
@@ -901,23 +906,52 @@ pub(crate) fn on_command(hwnd: HWND, wparam: WPARAM) -> bool {
             let text = window_text(unsafe {
                 windows_sys::Win32::UI::WindowsAndMessaging::GetDlgItem(hwnd, id)
             });
-            let Some(value) = text.trim().parse::<f64>().ok().filter(|v| v.is_finite()) else {
-                editor_ui().set_notice(Some("输入无效：需要数值".into()));
-                refresh_ui();
-                return true;
-            };
             let selected = editor_ui().view().selected;
+            // 位置两轴：文本 = 我们写入的规范显示 = 没编辑过 —— 不提交（显示是
+            // 四舍五入到两位小数的，提交会把拖动得到的多位小数悄悄收成两位；
+            // 与 macOS 共用 `offset_input_unchanged`）。
+            if let Some(axis) = match index {
+                EDIT_OFFSET_X => Some(crate::ui::editor::OffsetAxis::X),
+                EDIT_OFFSET_Y => Some(crate::ui::editor::OffsetAxis::Y),
+                _ => None,
+            } {
+                let current = editor_ui()
+                    .view()
+                    .layers
+                    .get(selected)
+                    .map(|layer| match axis {
+                        crate::ui::editor::OffsetAxis::X => layer.offset_x_percent,
+                        crate::ui::editor::OffsetAxis::Y => layer.offset_y_percent,
+                    })
+                    .unwrap_or(0.0);
+                if crate::ui::editor::offset_input_unchanged(&text, current) {
+                    return true;
+                }
+            }
+            // 解析口径与 macOS 共用一份（`parse_number_input`）：空串/非数/非有限
+            // 都拒绝，并在状态行如实报错后刷新（回显当前真值）。
+            let value = match crate::ui::editor::parse_number_input(&text) {
+                Ok(value) => value,
+                Err(error) => {
+                    editor_ui().set_notice(Some(format!("输入无效：{error}")));
+                    refresh_ui();
+                    return true;
+                }
+            };
             let result = match index {
                 EDIT_SCALE => editor_ui().op_set_scale(selected, value),
                 EDIT_SENSITIVITY => editor_ui().op_set_sensitivity(selected, value),
-                EDIT_OFFSET_X => {
-                    let current = offset_y_of(selected);
-                    editor_ui().op_set_offsets(selected, value, current)
-                }
-                EDIT_OFFSET_Y => {
-                    let current = offset_x_of(selected);
-                    editor_ui().op_set_offsets(selected, current, value)
-                }
+                // 位置两轴提交走共享的单轴入口（另一轴原样保留；锁定/越界语义同源）。
+                EDIT_OFFSET_X => editor_ui().op_set_offset_input(
+                    selected,
+                    crate::ui::editor::OffsetAxis::X,
+                    &text,
+                ),
+                EDIT_OFFSET_Y => editor_ui().op_set_offset_input(
+                    selected,
+                    crate::ui::editor::OffsetAxis::Y,
+                    &text,
+                ),
                 EDIT_INTENSITY => {
                     editor_ui().op_set_intensity(value);
                     Ok(())
@@ -934,24 +968,6 @@ pub(crate) fn on_command(hwnd: HWND, wparam: WPARAM) -> bool {
     }
     let _ = hwnd;
     false
-}
-
-fn offset_x_of(index: usize) -> f64 {
-    editor_ui()
-        .view()
-        .layers
-        .get(index)
-        .map(|layer| layer.offset_x_percent)
-        .unwrap_or(0.0)
-}
-
-fn offset_y_of(index: usize) -> f64 {
-    editor_ui()
-        .view()
-        .layers
-        .get(index)
-        .map(|layer| layer.offset_y_percent)
-        .unwrap_or(0.0)
 }
 
 /// WM_SIZE：重排 + 预览几何更新。
@@ -1667,7 +1683,14 @@ pub(crate) fn refresh_ui() {
         }
         // 参数输入框（未聚焦时才回写）。
         let selected = view.layers.get(view.selected);
+        let locked = selected.map(|layer| layer.locked).unwrap_or(false);
         for (edit, index) in state.edits.iter() {
+            // 位置两轴即旧壳偏移行的数字输入：锁定层禁用（旧壳 `:disabled` 同义）；
+            // 显示走共享的去尾零口径（与 macOS 输入框、与提交解析同一份函数）。
+            let is_offset = matches!(*index, EDIT_OFFSET_X | EDIT_OFFSET_Y);
+            if is_offset {
+                unsafe { EnableWindow(*edit, if locked { 0 } else { 1 }) };
+            }
             let focused =
                 unsafe { windows_sys::Win32::UI::Input::KeyboardAndMouse::GetFocus() == *edit };
             if focused {
@@ -1681,7 +1704,12 @@ pub(crate) fn refresh_ui() {
                 &EDIT_INTENSITY => view.intensity,
                 _ => 0.0,
             };
-            unsafe { SetWindowTextW(*edit, wide(&format!("{value:.2}")).as_ptr()) };
+            let text = if is_offset {
+                crate::ui::editor::format_number_input(value)
+            } else {
+                format!("{value:.2}")
+            };
+            unsafe { SetWindowTextW(*edit, wide(&text).as_ptr()) };
         }
         // 状态行（素材列表失败不阻断编辑：错误如实展示，本地文件直选仍可用）。
         let status_text = if let Some(notice) = &view.notice {
@@ -1721,7 +1749,7 @@ pub(crate) fn refresh_ui() {
     apply_preview();
 }
 
-/// 草稿 → 编辑器预览渲染器 + 主窗舞台（同一份 LayerSpec）。
+/// 草稿 → 编辑器预览渲染器（线索投影）+ 主窗舞台（原 specs，不含线索）。
 fn apply_preview() {
     let preview = editor_ui().preview();
     with_state(|state| {
@@ -1729,7 +1757,9 @@ fn apply_preview() {
         let scale = dpi_scale(hwnd);
         state.renderer.set_intensity(preview.intensity);
         state.renderer.set_enabled(preview.effect_enabled);
-        let report = state.renderer.set_layers(preview.layers.clone());
+        // 预览渲染器用线索投影（选中 1.0 / 启用 0.6 / 禁用 0.15，五层恒渲染）；
+        // 主窗舞台在下方用 `preview.layers` 原 specs —— 线索只回预览。
+        let report = state.renderer.set_layers(preview.cue_layers());
         if !report.failures.is_empty() {
             rust_warn!("预览层收敛有 {} 个失败项", report.failures.len());
         }
@@ -1762,6 +1792,7 @@ fn apply_preview() {
             }
         }
     });
+    // 主窗舞台：同一份草稿的**原 specs**（不含线索：桌宠本体不得被调暗）。
     let promote = editor_ui().take_promote();
     if let Err(error) =
         super::windows::apply_editor_preview_to_stage(preview.layers, preview.intensity, promote)

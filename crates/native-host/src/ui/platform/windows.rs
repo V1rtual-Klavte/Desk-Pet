@@ -41,12 +41,13 @@ use windows_sys::Win32::UI::WindowsAndMessaging::{
     GetWindowRect, GetWindowThreadProcessId, IsIconic, IsWindow, IsWindowVisible, KillTimer,
     LoadCursorW, LoadIconW, PostMessageW, PostQuitMessage, RegisterClassW, SetCursor,
     SetForegroundWindow, SetTimer, SetWindowLongPtrW, SetWindowPos, ShowWindow, TrackPopupMenu,
-    TranslateMessage, UpdateLayeredWindow, CS_HREDRAW, CS_VREDRAW, GWLP_USERDATA, HTCAPTION,
+    TranslateMessage, UpdateLayeredWindow, CS_HREDRAW, CS_VREDRAW, GWLP_USERDATA,
     HTCLIENT, HWND_TOPMOST, IDC_SIZEWE, IDI_APPLICATION, MF_SEPARATOR, MF_STRING, MSG, SM_CXSCREEN,
     SM_CYSCREEN, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER, SW_HIDE, SW_SHOW,
-    TPM_RIGHTBUTTON, ULW_ALPHA, WM_APP, WM_CLOSE, WM_COMMAND, WM_CTLCOLORBTN, WM_CTLCOLORSTATIC,
+    TPM_RIGHTBUTTON, ULW_ALPHA, WM_APP, WM_CLOSE, WM_COMMAND, WM_CTLCOLORBTN, WM_CTLCOLOREDIT,
+    WM_CTLCOLORLISTBOX, WM_CTLCOLORSTATIC,
     WM_DESTROY, WM_DRAWITEM, WM_ERASEBKGND, WM_EXITSIZEMOVE, WM_GETMINMAXINFO, WM_HOTKEY,
-    WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSEMOVE, WM_MOUSEWHEEL, WM_NCCALCSIZE, WM_NCHITTEST,
+    WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSEMOVE, WM_MOUSEWHEEL, WM_NCCALCSIZE,
     WM_PAINT, WM_RBUTTONUP, WM_SETCURSOR, WM_SIZE, WM_TIMER, WM_VSCROLL, WNDCLASSW,
     WS_CLIPCHILDREN, WS_EX_LAYERED, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_OVERLAPPEDWINDOW, WS_POPUP,
     WS_THICKFRAME, WS_VISIBLE, WS_VSCROLL,
@@ -936,8 +937,9 @@ unsafe extern "system" fn main_wndproc(
         }
         WM_NCCALCSIZE => {
             // A3：无边框可缩放窗口的标准做法 —— 取消非客户区，
-            // 客户区 = 整窗；缩放边框由 DefWindowProc 的默认命中测试提供
-            // （见 WM_NCHITTEST 的兜底分支）。
+            // 客户区 = 整窗；缩放边框与顶栏拖动都由子窗口/DefWindowProc 的默认命中
+            // 测试提供（顶栏子窗口自身 `WM_NCHITTEST → HTCAPTION` 拖动主窗，
+            // 见 `windows_main.rs::titlebar_wndproc`）。
             if wparam != 0 {
                 return 0;
             }
@@ -1078,16 +1080,6 @@ unsafe extern "system" fn main_wndproc(
             }
             0
         }
-        WM_NCHITTEST => {
-            // A1：聊天列顶栏条 → 标题区（系统拖动主窗）；其余点走默认判定，
-            // 分隔条拖动（WM_LBUTTONDOWN 路径）不受影响。
-            let sx = (lparam & 0xFFFF) as u16 as i16 as i32;
-            let sy = ((lparam >> 16) & 0xFFFF) as u16 as i16 as i32;
-            if super::windows_chat::pane_titlebar_screen_hit(sx, sy) {
-                return HTCAPTION as LRESULT;
-            }
-            unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) }
-        }
         WM_CLOSE => {
             // 主窗关闭请求 = 收起（不销毁、不退出）。
             let _ = with_ui(|ui| ui.begin_toggle());
@@ -1161,6 +1153,17 @@ unsafe extern "system" fn aux_wndproc(
             }
             if code == 2 {
                 return super::windows_editor::on_ctlcolor(wparam, lparam);
+            }
+            DefWindowProcW(hwnd, msg, wparam, lparam)
+        }
+        // 可编辑 `EDIT` / 下拉清单的主题配色：这两条消息的消费者是**控件的父窗口**，
+        // 设置窗的输入框与下拉都以设置窗为父窗，所以在附属窗过程里按 code 转发
+        // （原先由 `windows_settings` 自己的父窗子类兜住，路由归位到本文件后子类已删除）。
+        // 只接设置窗（code 1）：编辑器窗的可编辑 `EDIT` 仍走系统配色
+        // （windows_editor 的既有注明），查看器（code 3）不自绘主题。
+        WM_CTLCOLOREDIT | WM_CTLCOLORLISTBOX => {
+            if code == 1 {
+                return super::windows_settings::edit_ctlcolor(wparam, lparam);
             }
             DefWindowProcW(hwnd, msg, wparam, lparam)
         }
@@ -1780,10 +1783,9 @@ pub fn retract_main_window() -> AppResult<()> {
 
 /// 顶栏状态位文本刷新（[`crate::ui::titlebar`] 的文本已由 `UiHandle` 存入）。
 pub fn refresh_titlebar(text: String) -> AppResult<()> {
-    // 全窗宽顶栏（`windows_main`）与聊天列内旧顶栏（`windows_chat`，本批被全窗宽
-    // 顶栏覆盖）都持同一份快照的展示副本；文本唯一真值仍是 `ui/titlebar.rs`。
+    // 全窗宽顶栏是状态位的唯一展示副本（`windows_main`；旧聊天列顶栏副本已随旧
+    // 实现删除）；文本唯一真值仍是 `ui/titlebar.rs`。
     super::windows_main::set_titlebar_text(&text);
-    super::windows_chat::apply_titlebar_text(&text);
     // 顶栏文本变化常与「回复已提交、typing owner 释放」同步到达：这是自动呼出的
     // 第二个触发点（第一个在 `apply_chat_projection` 的落帧处）。两处都只做幂等
     // 检查（判定器按会话内条目 id 去重），先到先算、重复到达无害。

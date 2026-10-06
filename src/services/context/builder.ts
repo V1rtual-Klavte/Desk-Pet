@@ -10,7 +10,7 @@ import { aiConfig } from "@/services/config"
 import { getSkillsPromptBlock } from "@/services/skill"
 import { formatPoolForPrompt } from "@/services/personality/variable-pool"
 import { formatAllRules } from "@/services/personality/must-rules"
-import { hasLlmWritableCardVars } from "@/services/reply"
+import { hasLlmWritableCardVars, RUNTIME_DATA_CLOSE, RUNTIME_DATA_OPEN, RUNTIME_DATA_TAG } from "@/services/reply"
 import type { PersonalityCard } from "@/services/personality/types"
 import type { VariablePool } from "@/services/personality/variable-pool"
 import type { ContextBlock } from "@/services/engine/runtime"
@@ -59,16 +59,17 @@ export interface BuildContextOutput {
 }
 
 /**
- * RUNTIME_DATA 协议说明。解析侧是 `reply/generator.ts` 的 `RUNTIME_RE`，改动时两处必须对齐。
+ * RUNTIME_DATA 协议说明。标记（块名与起止标签）定义在 `reply/protocol.ts`（唯一定义点），
+ * 解析侧 `reply/generator.ts` 的 `RUNTIME_RE` 从同一组常量拼出，不再有两处对齐义务。
  * 只在 Card 声明了可被模型写入的变量时注入：没有可写目标时这段只是白占静态前缀。
  */
 const RUNTIME_DATA_INSTRUCTION = `[回复元数据]
-你的回复末尾必须附加一个 RUNTIME_DATA 区块，系统自动剥离，用户不可见。
+你的回复末尾必须附加一个 ${RUNTIME_DATA_TAG} 区块，系统自动剥离，用户不可见。
 
 格式：
-<RUNTIME_DATA>
+${RUNTIME_DATA_OPEN}
 <变量名>: <值>
-</RUNTIME_DATA>
+${RUNTIME_DATA_CLOSE}
 
 - 每轮都必须附带该区块；Card 变量有变化时逐行写入（变量名: 新值），没有变化则留空区块`
 

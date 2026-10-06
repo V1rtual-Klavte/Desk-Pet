@@ -14,7 +14,7 @@
 //! - 素材列表与跨层复制经 [`assets`] 子模组走 Node 的既有 Profile 通路
 //!   （HostLink 请求面），本域不解析 Profile 文件、不自己枚举目录。
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
 
@@ -68,6 +68,89 @@ pub fn drag_hint(index: usize, name: &str, x_percent: f64, y_percent: f64) -> St
         name.to_string()
     };
     format!("{name} → ({x_percent:.1}%, {y_percent:.1}%)")
+}
+
+// ==========================================
+// 数值输入的解析与显示（偏移行 = 旧壳的数字输入框；两平台共用一份口径）
+// ==========================================
+//
+// 旧壳偏移行的形态是**数字输入**（`<input type="number" step="0.01">`，可输入任意
+// 精确值），不是滑杆 —— 本域把该形态的解析/显示收口在这里，两平台不各写一份，
+// 也不各自定义「什么算合法输入」。
+
+/// 偏移输入的两轴（旧壳偏移行的 X / Y 两个数字输入框）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OffsetAxis {
+    X,
+    Y,
+}
+
+/// 数值输入解析（偏移行与两平台参数行共用）：去首尾空白后必须整串是**有限数**。
+///
+/// **不设范围**：偏移可为任意有限值（「可以到处拖，最终只取框里面的」，2026-10-05
+/// 用户裁决）；缩放/灵敏度的夹取仍在各自 setter 里。旧壳的 `v-model.number` 会把
+/// 空串/非法输入的 `NaN` 直接写进配置，这里入口即拒绝并如实给出原因。
+pub fn parse_number_input(text: &str) -> Result<f64, String> {
+    let trimmed = text.trim();
+    if trimmed.is_empty() {
+        return Err("需要数值".to_string());
+    }
+    trimmed
+        .parse::<f64>()
+        .ok()
+        .filter(|value| value.is_finite())
+        .ok_or_else(|| format!("需要数值：{trimmed}"))
+}
+
+/// 数值输入的显示文本：最多两位小数、去尾零（`1.00` → `1`、`12.50` → `12.5`），
+/// `-0` 归一为 `0`。
+///
+/// 显示只是呈现（提交仍以解析出的数值为准），所以这里不做范围/精度校验；
+/// 超界值照常显示真值（例如拖动产生的 `260.5`）。
+pub fn format_number_input(value: f64) -> String {
+    if !value.is_finite() {
+        return String::new();
+    }
+    let mut text = format!("{value:.2}");
+    if text.contains('.') {
+        text = text.trim_end_matches('0').trim_end_matches('.').to_string();
+    }
+    if text == "-0" {
+        "0".to_string()
+    } else {
+        text
+    }
+}
+
+/// 偏移输入框的提交是否「无变化」：文本等于该轴当前值的规范显示
+///（[`format_number_input`]）＝ 用户没动过这一格，平台不该提交。
+///
+/// **不能用「解析值 == 当前值」代替**：显示是四舍五入到两位小数的，拖动得到的
+/// `12.3456789` 在点进点出时会解析成 `12.35` —— 那会把值悄悄改掉。两平台共用。
+pub fn offset_input_unchanged(text: &str, current: f64) -> bool {
+    text.trim() == format_number_input(current)
+}
+
+/// 换素材的入库目标文件名（旧壳口径，与跨层复制的 `layer_{layer}_{Date.now()}.{ext}`
+/// 同款）：`layer_{层号}_{unix 毫秒}.{ext}`。扩展名沿用源文件（缺失时落 `png`）。
+///
+/// **不复用源文件名**：同层目录里的同名文件会在保存入库时被静默覆盖，而旧壳的上传
+/// 从不覆盖既有文件（时间戳保证新文件）。时间戳由调用方传入，纯函数可测。
+pub fn target_asset_file_name(index: usize, source: &Path, unix_millis: u128) -> String {
+    let ext = source
+        .extension()
+        .map(|ext| ext.to_string_lossy().trim_matches('.').to_string())
+        .filter(|ext| !ext.is_empty())
+        .unwrap_or_else(|| "png".to_string());
+    format!("layer_{index}_{unix_millis}.{ext}")
+}
+
+/// 当前 unix 毫秒（换素材命名的取数点；时钟异常时落 0，不 panic）。
+fn now_unix_millis() -> u128 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_millis())
+        .unwrap_or(0)
 }
 
 // ==========================================
@@ -219,6 +302,8 @@ pub struct EditorLayer {
 
 impl EditorLayer {
     /// 渲染输入（`locked` 不影响绘制；禁用层由 `enabled=false` 交给渲染器跳过）。
+    /// `opacity` 恒为缺省（全亮）：线索不在这里，而是预览专用的投影
+    /// （[`cue_specs`]），主窗舞台永远拿本函数的原样输出。
     pub fn spec(&self) -> LayerSpec {
         LayerSpec {
             path: self.path.clone(),
@@ -227,6 +312,7 @@ impl EditorLayer {
             scale: self.scale,
             offset_x_percent: self.offset_x_percent,
             offset_y_percent: self.offset_y_percent,
+            opacity: LayerSpec::DEFAULT_OPACITY,
         }
     }
 
@@ -475,10 +561,31 @@ impl EditorDraft {
         if !x_percent.is_finite() || !y_percent.is_finite() {
             return Err(AppError::Other("位置数值必须为有限数".into()));
         }
+        // 无变化不标脏：输入框的提交路径包含「点进点出/回车确认同值」，不应因此
+        // 显示「有未保存改动」（与 `zoom_by` / `reset_*` 的同值不标脏同一口径）。
+        if layer.offset_x_percent == x_percent && layer.offset_y_percent == y_percent {
+            return Ok(());
+        }
         layer.offset_x_percent = x_percent;
         layer.offset_y_percent = y_percent;
         self.dirty = true;
         Ok(())
+    }
+
+    /// 单一轴的偏移写入（另一轴**原样保留**）—— 数字输入框的提交语义。
+    ///
+    /// 与拖动一致：不做第二次夹取（拖动产生的超界值不因另一轴被输入框提交而回缩）。
+    pub fn set_offset_axis(&mut self, index: usize, axis: OffsetAxis, value: f64) -> AppResult<()> {
+        let (x, y) = {
+            let Some(layer) = self.current.as_ref().and_then(|p| p.layers.get(index)) else {
+                return Err(AppError::Other("图层序号越界".into()));
+            };
+            (layer.offset_x_percent, layer.offset_y_percent)
+        };
+        match axis {
+            OffsetAxis::X => self.set_offset(index, value, y),
+            OffsetAxis::Y => self.set_offset(index, x, value),
+        }
     }
 
     /// 拖动的增量形式（像素差 → 百分比；窗口尺寸为分母）。
@@ -505,12 +612,21 @@ impl EditorDraft {
         self.set_offset(index, x, y)
     }
 
-    /// 换素材（路径由选中器给出；名称只取文件名，展示用）。
+    /// 换素材（路径由选中器给出）：记下外部来源与 Profile 内的**目标**位置。
     ///
     /// 选中器给的是 **Profile 之外**的任意文件：`path` 记外部绝对路径供保存前立即
     /// 预览，`wire_path` 记它在 Profile 内的**目标**位置，`source_path` 记来源 ——
     /// 保存时由 Node 把来源文件复制到目标位置（入库），`wire_path` 才真正成立。
-    /// 目标固定落在本层素材目录 `materials/L{index}/`，文件名沿用源文件。
+    ///
+    /// **落盘时机（与旧壳对照，2026-10-06）**：旧壳选完文件**立即** `profile_file_write`
+    /// 写进 `materials/L{i}/`，保存只写 profile.yaml；本实现把复制收到**保存**这一次
+    /// 提交里（模块头的草稿模型：关闭即丢、保存才写）。用户可见的正常动线两者一致
+    /// （选择 → 预览立即换成新图 → 保存后持久化）；差异只在「不保存就关闭/放弃」：
+    /// 旧壳会留下已上传的文件（无清理路径），本实现不留残留。故保留保存时入库。
+    ///
+    /// **目标文件名对齐旧壳**：`layer_{i}_{unix 毫秒}.{ext}`（随包 Profile 素材与
+    /// 跨层复制都是同一命名），**不复用源文件名** —— 复用会让同层目录里的同名文件
+    /// 在保存时被静默覆盖，旧壳的上传从不覆盖任何既有文件。
     pub fn swap_asset(&mut self, index: usize, path: PathBuf) -> AppResult<()> {
         let Some(profile_id) = self
             .current
@@ -528,10 +644,7 @@ impl EditorDraft {
                 index + 1
             )));
         }
-        let file_name = path
-            .file_name()
-            .map(|name| name.to_string_lossy().to_string())
-            .unwrap_or_else(|| path.display().to_string());
+        let file_name = target_asset_file_name(index, &path, now_unix_millis());
         layer.wire_path = format!("{profile_id}/materials/L{index}/{file_name}");
         layer.source_path = Some(path.clone());
         layer.name = file_name;
@@ -776,13 +889,62 @@ pub struct EditorView {
     pub assets_generation: u64,
 }
 
-/// 编辑器预览投影（主窗舞台与预览共用）。
+/// 编辑器预览投影。`layers` 是**主窗舞台**用的基准层列表（与草稿一致）；
+/// 编辑器自己的预览渲染器改用 [`EditorPreview::cue_layers`] 的线索投影。
 #[derive(Debug, Clone, Default)]
 pub struct EditorPreview {
     pub layers: Vec<LayerSpec>,
     pub intensity: f64,
     pub effect_enabled: bool,
     pub selected: usize,
+}
+
+/// 预览线索透明度（旧壳 `LayerEditor.vue` 的逐层 `opacity` 三元表达式口径）：
+/// 选中层全亮、其余启用层 60%、禁用层 15% 幽灵 —— 有素材的层恒渲染
+/// （空占位层无物可画，见 [`cue_specs`]）。
+pub const CUE_OPACITY_SELECTED: f64 = 1.0;
+pub const CUE_OPACITY_ENABLED: f64 = 0.6;
+pub const CUE_OPACITY_DISABLED: f64 = 0.15;
+
+/// 预览线索投影：把草稿层列表投成**编辑器预览专用**的 specs。
+///
+/// 两条线索字段：`opacity` 按 `选中 1.0 / 启用 0.6 / 禁用 0.15`（选中优先）；
+/// **有素材**的层 `enabled` 置真 —— 禁用层也要解码与绘制（幽灵线索），渲染器与
+/// 纹理账本对禁用层的既有过滤**不放宽**，靠这一条投影让禁用层可解码。
+/// 空占位层（尚无素材，`path` 为空）保持原 `enabled`：它没有可解码目标，置真只会
+/// 让纹理账本对空路径反复报解码失败（拖动预览逐帧刷新会刷屏），且本来就画不出
+/// 任何东西（旧壳无 `src` 的 `<img>` 同理）。
+///
+/// 其余字段逐位来自原 specs；不就地改写传入列表。
+///
+/// **只喂编辑器自己的 `Renderer`**；主窗舞台继续用 [`EditorPreview::layers`]，
+/// 否则桌宠本体在编辑时会被一起调暗，与旧壳「线索只回预览」的语义相悖。
+pub fn cue_specs(layers: &[LayerSpec], selected: usize) -> Vec<LayerSpec> {
+    layers
+        .iter()
+        .enumerate()
+        .map(|(index, layer)| {
+            let mut spec = layer.clone();
+            if !spec.path.as_os_str().is_empty() {
+                spec.enabled = true;
+            }
+            spec.opacity = if index == selected {
+                CUE_OPACITY_SELECTED
+            } else if layer.enabled {
+                CUE_OPACITY_ENABLED
+            } else {
+                CUE_OPACITY_DISABLED
+            };
+            spec
+        })
+        .collect()
+}
+
+impl EditorPreview {
+    /// 预览专用线索投影（[`cue_specs`] 的载体入口）。主窗舞台不得使用。
+    pub fn cue_layers(&self) -> Vec<LayerSpec> {
+        cue_specs(&self.layers, self.selected)
+    }
 }
 
 pub struct EditorUi {
@@ -958,6 +1120,19 @@ impl EditorUi {
 
     pub fn op_set_offsets(&self, index: usize, x: f64, y: f64) -> AppResult<()> {
         Self::lock(&self.draft).set_offset(index, x, y)
+    }
+
+    /// 偏移输入框提交（两平台共用）：解析文本 → 写对应轴，另一轴保留。
+    ///
+    /// 解析失败按错误返回（平台把文案放进状态行；不静默吞掉非法输入）。
+    pub fn op_set_offset_input(
+        &self,
+        index: usize,
+        axis: OffsetAxis,
+        text: &str,
+    ) -> AppResult<()> {
+        let value = parse_number_input(text).map_err(AppError::Other)?;
+        Self::lock(&self.draft).set_offset_axis(index, axis, value)
     }
 
     /// 拖动增量（预览像素 → 百分比）。
@@ -1316,6 +1491,64 @@ mod tests {
         assert_eq!(drag_hint(0, "", 0.0, 0.0), "L1 → (0.0%, 0.0%)");
     }
 
+    /// 数值输入解析/显示（旧壳偏移行数字输入框的共用口径，两平台同一份）：
+    /// 去空白、整串有限数才算合法，空串/非数如实报错；显示去尾零、`-0` 归一。
+    #[test]
+    fn 数值输入解析与显示口径() {
+        assert_eq!(parse_number_input(" 12.5 "), Ok(12.5));
+        assert_eq!(parse_number_input("-4.56"), Ok(-4.56));
+        assert_eq!(parse_number_input("0"), Ok(0.0));
+        assert_eq!(
+            parse_number_input("260.5"),
+            Ok(260.5),
+            "偏移不设范围：任意有限值合法（旧壳 number 输入同口径）"
+        );
+        assert!(parse_number_input("").is_err(), "空串不提交");
+        assert!(parse_number_input("   ").is_err());
+        assert!(parse_number_input("abc").is_err());
+        assert!(parse_number_input("NaN").is_err(), "非有限值入口即拒绝");
+        assert!(parse_number_input("inf").is_err());
+        assert!(parse_number_input("1,5").is_err(), "小数逗号不合法");
+
+        assert_eq!(format_number_input(0.0), "0");
+        assert_eq!(format_number_input(-0.0), "0", "-0 归一");
+        assert_eq!(format_number_input(1.0), "1");
+        assert_eq!(format_number_input(1.5), "1.5");
+        assert_eq!(format_number_input(12.34), "12.34");
+        assert_eq!(format_number_input(-4.6), "-4.6");
+        assert_eq!(format_number_input(260.5), "260.5");
+    }
+
+    /// 偏移输入框提交只写对应轴：另一轴（含拖动产生的超界值）原样保留；锁定层拒绝。
+    #[test]
+    fn 偏移单轴输入保留另一轴() {
+        let mut draft = EditorDraft::default();
+        draft.load(profile());
+        draft.set_offset(0, 260.5, -140.25).unwrap();
+        draft.set_offset_axis(0, OffsetAxis::X, 12.5).unwrap();
+        {
+            let specs = draft.layer_specs();
+            assert_eq!(specs[0].offset_x_percent, 12.5);
+            assert_eq!(specs[0].offset_y_percent, -140.25, "另一轴原样保留");
+        }
+        draft.set_offset_axis(0, OffsetAxis::Y, 0.0).unwrap();
+        let specs = draft.layer_specs();
+        assert_eq!(specs[0].offset_y_percent, 0.0);
+        assert_eq!(specs[0].offset_x_percent, 12.5, "另一轴仍不动");
+        // 同值提交（点进点出/回车确认）不标脏。
+        draft.mark_saved();
+        draft.set_offset_axis(0, OffsetAxis::X, 12.5).unwrap();
+        assert!(
+            !draft.is_dirty(),
+            "同值提交不产生「有未保存改动」"
+        );
+        draft.toggle_locked(0);
+        assert!(
+            draft.set_offset_axis(0, OffsetAxis::X, 1.0).is_err(),
+            "锁定层拒绝（改参数同规则）"
+        );
+    }
+
     #[test]
     fn 缩放灵敏度仍夹取_位置偏移不再夹取() {
         let mut draft = EditorDraft::default();
@@ -1424,6 +1657,7 @@ mod tests {
             &transform,
             W as u32,
             H as u32,
+            LayerSpec::DEFAULT_OPACITY,
             &window,
         )
         .expect("偏移出框不拒绝绘制");
@@ -1445,6 +1679,7 @@ mod tests {
             &transform,
             W as u32,
             H as u32,
+            LayerSpec::DEFAULT_OPACITY,
             &window,
         )
         .expect("完全出框仍产出绘制指令");
@@ -1515,14 +1750,47 @@ mod tests {
         // 预览走外部绝对路径（入库由 Node 在保存时完成）……
         assert_eq!(specs[0].path, PathBuf::from("/tmp/new/layer9.png"));
         let view_layer = &draft.profile().unwrap().layers[0];
-        assert_eq!(view_layer.name, "layer9.png");
-        // ……但线格式路径必须是 Profile 内的**目标**位置，且来源被记下待入库。
-        assert_eq!(view_layer.wire_path, "sugar-pink/materials/L0/layer9.png");
+        // ……但线格式路径必须是 Profile 内的**目标**位置（旧壳命名：
+        // `layer_{层号}_{时间戳}.{ext}` —— 不复用源文件名，不覆盖同层同名文件），
+        // 且来源被记下待入库。
+        assert!(
+            view_layer
+                .wire_path
+                .starts_with("sugar-pink/materials/L0/layer_0_"),
+            "目标路径走旧壳命名：{}",
+            view_layer.wire_path
+        );
+        assert!(view_layer.wire_path.ends_with(".png"));
+        assert!(
+            view_layer.name.starts_with("layer_0_"),
+            "显示名 = 目标文件名（旧壳 `config.image` 同口径）：{}",
+            view_layer.name
+        );
         assert_eq!(
             view_layer.source_path,
             Some(PathBuf::from("/tmp/new/layer9.png"))
         );
         assert!(draft.is_dirty());
+    }
+
+    /// 入库目标文件名（纯函数）：`layer_{层号}_{毫秒}.{扩展名}`，扩展名沿用源文件、
+    /// 缺失落 `png`；同名不同时间必然不同名（旧壳「上传从不覆盖」的载体）。
+    #[test]
+    fn 入库目标文件名沿用旧壳命名且不覆盖同名() {
+        assert_eq!(
+            target_asset_file_name(2, Path::new("/tmp/x/糖糖.PNG"), 1791184888979),
+            "layer_2_1791184888979.PNG"
+        );
+        assert_eq!(
+            target_asset_file_name(0, Path::new("/tmp/noext"), 42),
+            "layer_0_42.png",
+            "无扩展名落 png"
+        );
+        assert_ne!(
+            target_asset_file_name(1, Path::new("/tmp/a.png"), 1),
+            target_asset_file_name(1, Path::new("/tmp/a.png"), 2),
+            "同一来源两次上传 = 两个文件名（不覆盖既有素材）"
+        );
     }
 
     #[test]
@@ -1950,5 +2218,98 @@ mod tests {
             "文本区与按钮行共用左右边距"
         );
         assert!(layout.copy_x > layout.margin, "复制按钮不越左缘");
+    }
+
+    /// 预览线索投影（旧壳 `LayerEditor.vue`：`选中 ? 1 : 启用 ? 0.6 : 0.15`）：
+    /// 除线索字段（`opacity` / 为解码而置真的 `enabled`）外逐项与主窗 specs 一致；
+    /// 主窗用的原列表不被改写。
+    #[test]
+    fn 预览线索投影只改透明度与可解码性() {
+        let mut draft = EditorDraft::default();
+        draft.load(profile());
+        draft.toggle_enabled(0); // L0 禁用（幽灵档）
+        draft.select(1); // L1 选中（全亮档）
+        let base = draft.layer_specs();
+        let cue = cue_specs(&base, draft.selected());
+
+        assert_eq!(cue.len(), base.len());
+        for (index, (spec, projected)) in base.iter().zip(cue.iter()).enumerate() {
+            assert_eq!(projected.path, spec.path);
+            assert_eq!(projected.sensitivity, spec.sensitivity);
+            assert_eq!(projected.scale, spec.scale);
+            assert_eq!(projected.offset_x_percent, spec.offset_x_percent);
+            assert_eq!(projected.offset_y_percent, spec.offset_y_percent);
+            assert!(projected.enabled, "五层恒渲染：禁用层也要可解码");
+            let expected = match index {
+                0 => CUE_OPACITY_DISABLED,
+                1 => CUE_OPACITY_SELECTED,
+                _ => CUE_OPACITY_ENABLED,
+            };
+            assert_eq!(projected.opacity, expected, "第 {index} 层线索透明度");
+        }
+        // 投影不改写传入列表：主窗舞台继续拿原 specs（旧壳「线索只回预览」）。
+        assert!(!base[0].enabled, "原 specs 的禁用层保持禁用");
+        for spec in &base {
+            assert_eq!(spec.opacity, LayerSpec::DEFAULT_OPACITY, "原 specs 全亮");
+        }
+    }
+
+    /// 选中优先于启用状态（旧壳三元表达式）：选中的禁用层同样全亮；越界选中时
+    /// 无层命中，全部按启用/禁用两档投影。
+    #[test]
+    fn 预览线索选中优先于启用状态() {
+        let mut draft = EditorDraft::default();
+        draft.load(profile());
+        draft.toggle_enabled(2);
+        draft.select(2);
+        let selected_disabled = cue_specs(&draft.layer_specs(), 2);
+        assert_eq!(selected_disabled[2].opacity, CUE_OPACITY_SELECTED);
+        assert!(selected_disabled[2].enabled);
+
+        let out_of_range = cue_specs(&draft.layer_specs(), 99);
+        assert_eq!(out_of_range[2].opacity, CUE_OPACITY_DISABLED);
+        assert_eq!(out_of_range[3].opacity, CUE_OPACITY_ENABLED);
+    }
+
+    /// 空占位层（尚无素材）不被线索投影置真：没有可解码目标，置真会让账本对空
+    /// 路径反复报错（拖动逐帧刷新会刷屏）；素材在位后再恒置真（启用空层照旧
+    /// 与今日一致，本投影不新增这类失败）。
+    #[test]
+    fn 预览线索不激活空占位层() {
+        let mut draft = EditorDraft::default();
+        let mut loaded = profile();
+        loaded.layers[0].path = PathBuf::new();
+        loaded.layers[0].wire_path = String::new();
+        loaded.layers[0].enabled = false;
+        loaded.layers[1].path = PathBuf::new();
+        loaded.layers[1].enabled = true; // 启用空层：原样保留（今日行为）
+        draft.load(loaded);
+        let cue = cue_specs(&draft.layer_specs(), 2);
+        assert!(!cue[0].enabled, "禁用空层的 enabled 保持原状");
+        assert!(cue[1].enabled, "启用空层保持启用（不新增解码尝试）");
+        assert_eq!(cue[0].opacity, CUE_OPACITY_DISABLED, "线索透明度仍按口径代入");
+    }
+
+    /// `EditorPreview::cue_layers` 与实体投影同口径，且不动 `preview.layers`
+    /// （平台侧：预览渲染器拿 `cue_layers()`，主窗舞台拿 `layers`）。
+    #[test]
+    fn 预览对象线索投影与主窗基准互不干扰() {
+        let mut draft = EditorDraft::default();
+        draft.load(profile());
+        let preview = EditorPreview {
+            layers: draft.layer_specs(),
+            intensity: 1.0,
+            effect_enabled: true,
+            selected: 2,
+        };
+        let cue = preview.cue_layers();
+        assert_eq!(cue.len(), preview.layers.len());
+        assert_eq!(cue[2].opacity, CUE_OPACITY_SELECTED);
+        assert_eq!(cue[0].opacity, CUE_OPACITY_ENABLED);
+        assert_eq!(
+            preview.layers[2].opacity,
+            LayerSpec::DEFAULT_OPACITY,
+            "主窗基准列表不被投影改写"
+        );
     }
 }

@@ -12,6 +12,8 @@
 // - 崩溃：`node_epoch` +1，旧权限/owner/确认与 blob 句柄全部失效（注册表按 epoch
 //   回收），按策略自动重启；是否允许重启由 [`CrashRecovery`] 钩子裁定，
 //   **不自动驱动有未知副作用的操作**（恢复只把待处置状态交还新 Node）。
+//   终态（重启耗尽/被拒/被禁用，不再有新代际）与新一代际握手成功经
+//   [`ServiceAvailabilityHook`] 推给装配处（出口只是通知，不是第二个状态位）。
 // - 关停序列（§4.3 第 5 条）：封新 admission → 请求 Node flush → 等已准入写队列
 //   的真实 flush 报告 → 收子进程 → 停 Node → 退出。超时**如实记中断**，不伪报
 //   flush 成功。
@@ -152,6 +154,29 @@ impl CrashRecovery for DefaultRecovery {
     }
 }
 
+/// 服务可用性事件：监督器只在两个**可确知**的时机产生（见 [`ServiceAvailabilityHook`]）。
+///
+/// 这是通知出口，不是第二个状态位 —— 当前状态仍以 [`NodeStatus`] 为唯一真相源。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ServiceAvailability {
+    /// 服务不可用且不会再自动恢复（崩溃重启耗尽 / 恢复钩子拒绝重启 / 自动重启被
+    /// 禁用）：终态 Crashed。`node_epoch` 是崩溃的那一代（与 [`NodeStatus::Crashed`]
+    /// 同口径）；`detail` 是本次判定可确知的原因说明（供日志/诊断原样保留）。
+    Unavailable { node_epoch: u64, detail: String },
+    /// 新一代际握手成功（含首次启动）：服务可用。`node_epoch` 是刚就绪的代际。
+    Available { node_epoch: u64 },
+}
+
+/// 服务可用性出口：宿主装配处订阅（例如把终态推到顶栏提示）。
+///
+/// 只推「终态不可用」与「恢复可用」两个时机，**不推中间态**：崩溃后的重启等待
+/// 窗口不是终态，「正在自动重启」也不构成「服务已不可恢复」这一可确知事实。
+/// 未订阅时为无操作（不 panic、不留日志）。出口在监督器运行时线程上**同步**调用，
+/// 实现应尽快返回（阻塞会占住该线程）。
+pub trait ServiceAvailabilityHook: Send + Sync + 'static {
+    fn on_service_availability(&self, availability: &ServiceAvailability);
+}
+
 /// 一次成功握手的结果。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct HandshakeInfo {
@@ -271,6 +296,8 @@ struct Shared {
     shutting_down: AtomicBool,
     restart_attempts: AtomicU32,
     recovery: RwLock<Option<Arc<dyn CrashRecovery>>>,
+    /// 服务可用性出口（宿主装配处订阅；未订阅时为空 → 无操作）。
+    availability_hook: RwLock<Option<Arc<dyn ServiceAvailabilityHook>>>,
     exit_watch: Arc<ExitWatch>,
     /// 当前代际的强杀信号（oneshot；watcher 任务在 wait/kill 之间选择）。
     kill_tx: StdMutex<Option<tokio::sync::oneshot::Sender<()>>>,
@@ -289,6 +316,19 @@ impl Shared {
 
     fn set_status(&self, status: NodeStatus) {
         *self.status.lock().unwrap_or_else(|e| e.into_inner()) = status;
+    }
+
+    /// 推一次服务可用性事件（未订阅时无操作）。先取出订阅者再调用，不在持锁期间
+    /// 执行订阅方代码（订阅方可能回询本结构的状态）。
+    fn notify_availability(&self, availability: ServiceAvailability) {
+        let hook = self
+            .availability_hook
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone();
+        if let Some(hook) = hook {
+            hook.on_service_availability(&availability);
+        }
     }
 
     fn current_bridge(&self) -> Option<HostBridge> {
@@ -350,6 +390,7 @@ impl NodeSupervisor {
             shutting_down: AtomicBool::new(false),
             restart_attempts: AtomicU32::new(0),
             recovery: RwLock::new(Some(Arc::new(DefaultRecovery))),
+            availability_hook: RwLock::new(None),
             exit_watch: Arc::new(ExitWatch::new()),
             kill_tx: StdMutex::new(None),
             runtime: runtime.handle().clone(),
@@ -370,6 +411,18 @@ impl NodeSupervisor {
             .recovery
             .write()
             .unwrap_or_else(|e| e.into_inner()) = Some(recovery);
+    }
+
+    /// 订阅服务可用性出口（宿主装配处调用；建议在 `start()` 前设置，重复设置即替换）。
+    ///
+    /// 出口只在终态不可用（崩溃重启耗尽等）与新一代际握手成功两个时机被调用；
+    /// 不改变重启策略与状态机语义（见 [`ServiceAvailabilityHook`]）。
+    pub fn set_availability_hook(&self, hook: Arc<dyn ServiceAvailabilityHook>) {
+        *self
+            .shared
+            .availability_hook
+            .write()
+            .unwrap_or_else(|e| e.into_inner()) = Some(hook);
     }
 
     /// 设置引导分派器（必须在 `start()` 前调用；此后每代 Node 沿用同一个）。
@@ -727,6 +780,9 @@ async fn launch_generation_inner(
         "Node 握手完成: nodeEpoch={node_epoch} node={} pid={pid:?}",
         hello.node_version
     );
+    // 服务可用（首次启动或崩溃重启后的新一代际）：订阅方据此把宿主自推的服务
+    // 提示清回缺省；Node 此后推送的最终文本照常整体覆盖。
+    shared.notify_availability(ServiceAvailability::Available { node_epoch });
 
     Ok(HandshakeInfo {
         app_epoch: shared.app_epoch.clone(),
@@ -769,13 +825,36 @@ fn on_child_exit(shared: &Arc<Shared>, report: &NodeExitReport) {
         .lock()
         .unwrap_or_else(|e| e.into_inner())
         .clone();
-    let Some(config) = config else { return };
+    // 以下四条 return 都是**终态**（不会再自动恢复）：推服务可用性出口，供装配处
+    // （如顶栏提示）知道「服务已不可恢复」这一可确知事实。中间态（重启等待窗口）
+    // 不推 —— 重启策略与状态机语义不变，这里只加出口。
+    let Some(config) = config else {
+        shared.notify_availability(ServiceAvailability::Unavailable {
+            node_epoch: rotation.old_node_epoch,
+            detail: format!(
+                "监督器没有重启配置，无法自动重启（attempt={attempt}）：{}",
+                report.detail
+            ),
+        });
+        return;
+    };
     if decision == RestartDecision::Stop {
         rust_warn!("恢复钩子拒绝自动重启（attempt={attempt}）");
+        shared.notify_availability(ServiceAvailability::Unavailable {
+            node_epoch: rotation.old_node_epoch,
+            detail: format!(
+                "恢复钩子拒绝自动重启（attempt={attempt}）：{}",
+                report.detail
+            ),
+        });
         return;
     }
     if !config.restart.enabled {
         rust_debug!("自动重启已禁用");
+        shared.notify_availability(ServiceAvailability::Unavailable {
+            node_epoch: rotation.old_node_epoch,
+            detail: format!("自动重启已禁用（attempt={attempt}）：{}", report.detail),
+        });
         return;
     }
     if attempt > config.restart.max_attempts {
@@ -783,6 +862,13 @@ fn on_child_exit(shared: &Arc<Shared>, report: &NodeExitReport) {
             "Node 连续崩溃超过上限（{} 次），停止自动重启",
             config.restart.max_attempts
         );
+        shared.notify_availability(ServiceAvailability::Unavailable {
+            node_epoch: rotation.old_node_epoch,
+            detail: format!(
+                "连续崩溃 {attempt} 次，超过自动重启上限 {}：{}",
+                config.restart.max_attempts, report.detail
+            ),
+        });
         return;
     }
     let shared = shared.clone();
@@ -1026,8 +1112,10 @@ mod tests {
         let config = supervisor_config("/bin/echo".into(), "/dev/null".into());
         let supervisor = NodeSupervisor::new(config).unwrap();
         supervisor.set_recovery(Arc::new(StopHook));
+        let recorder = Arc::new(AvailabilityRecorder::default());
+        supervisor.set_availability_hook(recorder.clone());
         let shared = supervisor.shared.clone();
-        // 直接触发崩溃路径：无配置的重启（restart_config 为空）→ 不产生新任务。
+        // 直接触发崩溃路径：恢复钩子裁定 Stop → 不派发重启任务（不会拉起真进程）。
         let report = NodeExitReport {
             node_epoch: 0,
             pid: None,
@@ -1044,5 +1132,107 @@ mod tests {
             NodeStatus::Crashed { node_epoch, .. } => assert_eq!(node_epoch, 0),
             other => panic!("期望 Crashed，得到 {other:?}"),
         }
+        // 被拒重启也是终态（不会再有自动恢复）：出口如实推 Unavailable。
+        let events = recorder.take();
+        assert_eq!(events.len(), 1, "终态只推一次出口: {events:?}");
+        match &events[0] {
+            ServiceAvailability::Unavailable { node_epoch, detail } => {
+                assert_eq!(*node_epoch, 0);
+                assert!(detail.contains("恢复钩子拒绝自动重启"), "{detail}");
+            }
+            other => panic!("期望 Unavailable，得到 {other:?}"),
+        }
+    }
+
+    /// 出口记录器（测试用）：记录每次服务可用性事件。
+    #[derive(Default)]
+    struct AvailabilityRecorder {
+        events: StdMutex<Vec<ServiceAvailability>>,
+    }
+
+    impl ServiceAvailabilityHook for AvailabilityRecorder {
+        fn on_service_availability(&self, availability: &ServiceAvailability) {
+            self.events
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .push(availability.clone());
+        }
+    }
+
+    impl AvailabilityRecorder {
+        fn take(&self) -> Vec<ServiceAvailability> {
+            std::mem::take(&mut *self.events.lock().unwrap_or_else(|e| e.into_inner()))
+        }
+    }
+
+    /// 崩溃重启耗尽：出口以终态 Unavailable 被调用一次；重启策略与状态机语义不变。
+    #[test]
+    fn 重启耗尽触发服务不可用出口() {
+        let mut config = supervisor_config("/bin/echo".into(), "/dev/null".into());
+        config.restart.enabled = true;
+        // 上限 0：首次崩溃（attempt=1）即判耗尽，不派发真重启任务（假 Node 无法
+        // 真握手，派发只会拉起一个真进程），纯粹验证终态出口。
+        config.restart.max_attempts = 0;
+        let supervisor = NodeSupervisor::new(config).unwrap();
+        let recorder = Arc::new(AvailabilityRecorder::default());
+        supervisor.set_availability_hook(recorder.clone());
+        let shared = supervisor.shared.clone();
+
+        on_child_exit(
+            &shared,
+            &NodeExitReport {
+                node_epoch: 0,
+                pid: None,
+                detail: "测试崩溃".into(),
+                crash: true,
+            },
+        );
+
+        let events = recorder.take();
+        assert_eq!(events.len(), 1, "终态只推一次出口: {events:?}");
+        match &events[0] {
+            ServiceAvailability::Unavailable { node_epoch, detail } => {
+                assert_eq!(
+                    *node_epoch, 0,
+                    "代际口径与 NodeStatus::Crashed 一致（崩溃的那一代）"
+                );
+                assert!(detail.contains("超过自动重启上限"), "{detail}");
+            }
+            other => panic!("期望 Unavailable，得到 {other:?}"),
+        }
+        // 既有语义不变：耗尽也轮换代际、状态位停在 Crashed。
+        assert_eq!(
+            shared.node_epoch.load(Ordering::SeqCst),
+            1,
+            "耗尽也要换代际"
+        );
+        match shared.status_snapshot() {
+            NodeStatus::Crashed { node_epoch, .. } => assert_eq!(node_epoch, 0),
+            other => panic!("期望 Crashed，得到 {other:?}"),
+        }
+    }
+
+    /// 出口未订阅：终态路径照常走完（无操作、不 panic），状态机语义不变。
+    #[test]
+    fn 未订阅服务出口时终态不panic() {
+        let mut config = supervisor_config("/bin/echo".into(), "/dev/null".into());
+        config.restart.enabled = true;
+        config.restart.max_attempts = 0;
+        let supervisor = NodeSupervisor::new(config).unwrap();
+        let shared = supervisor.shared.clone();
+        on_child_exit(
+            &shared,
+            &NodeExitReport {
+                node_epoch: 0,
+                pid: None,
+                detail: "测试崩溃".into(),
+                crash: true,
+            },
+        );
+        assert_eq!(shared.node_epoch.load(Ordering::SeqCst), 1);
+        assert!(matches!(
+            shared.status_snapshot(),
+            NodeStatus::Crashed { .. }
+        ));
     }
 }

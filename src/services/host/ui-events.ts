@@ -26,6 +26,29 @@ import type { PlanConfirmResult } from "@/services/engine/plan-confirmation"
 import type { ChoiceResolution } from "@/services/engine/choice-confirmation"
 import { HostPortUnavailableError } from "./ports"
 import type { HostEventMap } from "./types"
+// 事件名（线协议字节）的唯一取用点在 ./event-names.ts：本文件只保有端口机制与
+// 回执载荷形状，名字一律从常量计算。
+import {
+  HOST_EVENT_ASSISTANT_STREAM,
+  HOST_EVENT_ASSISTANT_STREAM_END,
+  HOST_EVENT_CHOICE_END,
+  HOST_EVENT_CHOICE_START,
+  HOST_EVENT_PERMISSION_CONFIRM,
+  HOST_EVENT_PLAN_END,
+  HOST_EVENT_PLAN_PROGRESS,
+  HOST_EVENT_PLAN_START,
+  HOST_EVENT_PLAN_STEP_GATE,
+  HOST_EVENT_REVEAL_PROGRESS,
+  HOST_EVENT_RUN_STATE,
+  HOST_EVENT_SEND_OUTCOME,
+  HOST_EVENT_STAGE_HINT,
+  HOST_EVENT_TOOL_COMPLETED,
+  HOST_EVENT_TOOL_EXECUTING,
+  UI_RECEIPT_CHOICE_RESOLVED,
+  UI_RECEIPT_PERMISSION_CONFIRM_RESOLVED,
+  UI_RECEIPT_PLAN_CONFIRM_RESOLVED,
+  UI_RECEIPT_PLAN_STEP_DECISION,
+} from "./event-names"
 
 // ==========================================
 // 发布：Node → UI
@@ -33,21 +56,21 @@ import type { HostEventMap } from "./types"
 
 /** `HostEventMap` 中生产者是 Node 领域的事件子集（宿主系统事件不在此列）。 */
 export type NodeUiEventName =
-  | "deskpet-assistant-stream"
-  | "deskpet-assistant-stream-end"
-  | "deskpet-stage-hint"
-  | "tool-executing"
-  | "tool-completed"
-  | "deskpet-run-state"
-  | "deskpet-send-outcome"
-  | "deskpet-reveal-progress"
-  | "deskpet-plan-start"
-  | "deskpet-plan-progress"
-  | "deskpet-plan-step-gate"
-  | "deskpet-plan-end"
-  | "deskpet-choice-start"
-  | "deskpet-choice-end"
-  | "deskpet-permission-confirm"
+  | typeof HOST_EVENT_ASSISTANT_STREAM
+  | typeof HOST_EVENT_ASSISTANT_STREAM_END
+  | typeof HOST_EVENT_STAGE_HINT
+  | typeof HOST_EVENT_TOOL_EXECUTING
+  | typeof HOST_EVENT_TOOL_COMPLETED
+  | typeof HOST_EVENT_RUN_STATE
+  | typeof HOST_EVENT_SEND_OUTCOME
+  | typeof HOST_EVENT_REVEAL_PROGRESS
+  | typeof HOST_EVENT_PLAN_START
+  | typeof HOST_EVENT_PLAN_PROGRESS
+  | typeof HOST_EVENT_PLAN_STEP_GATE
+  | typeof HOST_EVENT_PLAN_END
+  | typeof HOST_EVENT_CHOICE_START
+  | typeof HOST_EVENT_CHOICE_END
+  | typeof HOST_EVENT_PERMISSION_CONFIRM
 
 export interface UiEventPublisher {
   /** 发布一条 Node→UI 事件；投递失败以 reject 表达（调用方按各自归宿处理，不静默吞）。 */
@@ -88,9 +111,9 @@ export function publishUiEvent<K extends NodeUiEventName>(
  */
 export type UiReceiptMap = {
   /** UI 结算一条待确认计划（面板确认/取消；与 PlanConfirmResult 同一形状定义点）。 */
-  "deskpet-plan-confirm-resolved": { planId: string; result: PlanConfirmResult }
+  [UI_RECEIPT_PLAN_CONFIRM_RESOLVED]: { planId: string; result: PlanConfirmResult }
   /** UI 对步骤门（逐步前置/失败询问）给出裁决。 */
-  "deskpet-plan-step-decision": { planId: string; decision: "continue" | "abort" }
+  [UI_RECEIPT_PLAN_STEP_DECISION]: { planId: string; decision: "continue" | "abort" }
   /**
    * UI 对一条提问（`HostEventMap["deskpet-choice-start"]`）的应答：
    * `picked` 点选了第 index 个选项（Node 侧校验越界即丢弃）、`other` 用户选择用自己的话
@@ -98,14 +121,14 @@ export type UiReceiptMap = {
    * `requestId` 必须与当前待答提问同一身份：不匹配（迟到/重复/未知）一律丢弃，
    * 结算语义由 `choice-confirmation.ts` 拥有（只结算一次）。
    */
-  "deskpet-choice-resolved": { requestId: string; result: ChoiceResolution }
+  [UI_RECEIPT_CHOICE_RESOLVED]: { requestId: string; result: ChoiceResolution }
   /**
    * UI 对一条权限确认请求（`HostEventMap["deskpet-permission-confirm"]`）的应答。
    * `requestId` 必须与当前待确认请求同一身份（`confirmState.pending.id`）：不匹配
    * （迟到/重复/未知）一律丢弃，结算语义由 `safety/confirm.ts` 拥有（只结算一次）。
    * 取值与 `PermissionConfirmation` 同域：`allow_once` / `allow_session` / `deny`。
    */
-  "deskpet-permission-confirm-resolved": {
+  [UI_RECEIPT_PERMISSION_CONFIRM_RESOLVED]: {
     requestId: string
     decision: "allow_once" | "allow_session" | "deny"
   }

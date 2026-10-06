@@ -41,9 +41,9 @@ const WINDOW_TOKENS = Math.min(aiConfig.contextMaxTokens, 131_072)
 const L0_TOKENS = toolResultTokenBudget(WINDOW_TOKENS)
 /**
  * 载荷合计的 token 目标：1.15 倍 L0 阈值，保证 overshoot 后中部标记必定落在被裁区域。
- * 两条结果的合计 ≈ 2.15 × L0_TOKENS（preserve 全量 ≈1.15 阈值、reference 被裁到 ≈1.0 阈值），
- * 再大就会把主请求与摘要素材推向硬输入上限；131072 窗口下复算：L0_TOKENS = 10435、
- * 载荷合计 ≈22.4k tokens，加尾段长正文 84k 与系统前缀后仍低于 hardInputLimit = 124354。
+ * 两条结果的合计 ≈ 2.15 × L0_TOKENS（preserve 全量 ≈1.15 阈值、reference 被裁到 ≈1.0 阈值）；
+ * 尾段长正文用 ASCII（见下），所以「载荷 + 尾段 + 系统前缀」整体仍远低于 hardInputLimit，
+ * 回合内不会被硬预算或阈值压缩抢先。
  */
 const PAYLOAD_TOKENS = Math.ceil(L0_TOKENS * 1.15)
 /** 单段重复长度：结果总长 2 × PAYLOAD_CHARS 字符 ≈ PAYLOAD_TOKENS tokens（ASCII 4 字符 ≈ 1 token）。 */
@@ -53,9 +53,13 @@ const REFERENCE_RESULT = "c".repeat(PAYLOAD_CHARS) + REFERENCE_CORE + "d".repeat
 
 const settings = compactionSettingsFor(WINDOW_TOKENS)
 const KEEP_MARGIN = 1.05
-const UNIT = "摘要投影探针正文必须留在磁盘中。"   // 15 字符
-/** 尾段两段长正文合计 ≈ KEEP_MARGIN 倍保留窗口（上游按 chars/4 计），切点因此落在第二段上。 */
-const LONG = UNIT.repeat(Math.ceil(settings.keepRecentTokens * 4 * KEEP_MARGIN / 2 / UNIT.length))
+/**
+ * 尾段两段长正文合计 ≈ KEEP_MARGIN 倍保留窗口（上游按 chars/4 计），切点因此落在第二段上。
+ * 用 ASCII：本场景的 preserve 结果以全文进视图（不缩短），而纯中文尾段要越过保留窗口就按
+ * 1 token/字符计（上游只计 chars/4）—— 两者相加先顶破硬预算；ASCII 下尾段成本缩到 1/4，
+ * 切点与视图预算同时成立（保留窗口的换算按最坏偏差封顶，见 compactionSettingsFor）。
+ */
+const LONG = "x".repeat(Math.ceil(settings.keepRecentTokens * 4 * KEEP_MARGIN / 2))
 const FIRST = "第一轮：依次调用 summary_preserve_probe 与 summary_reference_probe，再回复我。"
 
 const SUMMARY_MARKER = "摘要投影对照压缩"

@@ -329,6 +329,7 @@ mod tests {
             scale: 1.0,
             offset_x_percent: 0.0,
             offset_y_percent: 0.0,
+            opacity: LayerSpec::DEFAULT_OPACITY,
         }
     }
 

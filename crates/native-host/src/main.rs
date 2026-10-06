@@ -361,7 +361,8 @@ fn run_service_mode(
                 // 写入失败只留痕，不影响启动流程与下方的常驻退出观察。
                 // 此后 Node 一旦推送，其最终文本（唯一真值点仍在 Node 的
                 // `services/titlebar`）会照常整体覆盖这条宿主自推文本。
-                // 本轮只覆盖「首次拉起失败」；崩溃重启耗尽后的提示另案登记。
+                // 崩溃重启耗尽（监督器终态）的提示由服务可用性出口走同一顶栏通道
+                // （见下方 `set_availability_hook`），本分支不重复。
                 let handle = UiHandle::new(ui_queue_for_worker);
                 if let Err(error) = handle
                     .apply_titlebar_status(Some(ui::titlebar::SERVICE_UNAVAILABLE_TEXT.to_string()))
@@ -381,6 +382,15 @@ fn run_service_mode(
             }
         }
     });
+
+    // 服务可用性出口：崩溃重启耗尽（终态）→ 顶栏「服务未连接（后台进程多次崩溃）」；
+    // 新一代际握手成功（恢复）→ 把宿主自推的服务提示清回缺省。复用同一顶栏通道
+    // （`apply_titlebar_status`），不另建提示通道与状态位。只在服务模式装配 ——
+    // `--smoke`/E2E 不建原生 UI，没有可提示对象。出口在监督器运行时线程上同步调用，
+    // 顶栏写入失败只留痕（见 `ui::titlebar::TitlebarAvailabilityHook`）。
+    supervisor.set_availability_hook(Arc::new(
+        native_host::ui::titlebar::TitlebarAvailabilityHook::new(UiHandle::new(ui_queue.clone())),
+    ));
 
     // W9b：宿主 ↔ Node 端口接线（在 UI 启动前完成 —— 设置/编辑器窗打开时端口已就位）。
     {

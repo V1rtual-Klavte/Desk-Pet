@@ -1927,10 +1927,9 @@ pub fn retract_main_window() -> AppResult<()> {
 
 /// 顶栏状态位文本刷新（[`crate::ui::titlebar`] 的文本已由 `UiHandle` 存入）。
 pub fn refresh_titlebar(text: String) -> AppResult<()> {
-    // 全窗宽顶栏（`macos_main`）与聊天列内旧顶栏（`macos_chat`，本批被全窗宽顶栏
-    // 覆盖）都持同一份快照的展示副本；文本唯一真值仍是 `ui/titlebar.rs`。
+    // 全窗宽顶栏是状态位的唯一展示副本（`macos_main`；旧聊天列顶栏副本已随旧实现
+    // 删除）；文本唯一真值仍是 `ui/titlebar.rs`。
     super::macos_main::set_titlebar_text(&text);
-    super::macos_chat::apply_titlebar_text(&text);
     // 顶栏文本变化常与「回复已提交、typing owner 释放」同步到达：这是自动呼出的
     // 第二个触发点（第一个在 `apply_chat_projection` 的落帧处）。两处都只做幂等
     // 检查（判定器按会话内条目 id 去重），先到先算、重复到达无害。

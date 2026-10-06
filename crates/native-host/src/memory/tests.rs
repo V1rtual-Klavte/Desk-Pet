@@ -2,7 +2,7 @@
 
 use super::protocol::{MEMORY_COMMANDS, MEMORY_SCHEMA_VERSION};
 use super::schema::SCHEMA_VERSION;
-use super::store::payload_hash;
+use super::store::{id_suffix, payload_hash, rand_suffix};
 use super::MemoryStore;
 use crate::error::{AppError, AppResult};
 use serde_json::{json, Value};
@@ -67,6 +67,28 @@ fn add(store: &MemoryStore, op: &str, base: i64, draft: &Value) -> i64 {
     store
         .apply_change(op, base, "add", None, None, Some(draft))
         .expect("写入记忆")
+}
+
+/// id 后缀必须扛住「计数器与时钟锁步推进」：旧实现是两数 XOR，
+/// `(c+1) ^ (t+1) == c ^ t` 在两者尾随 1 的个数相同时恒成立（约 1/3），同一毫秒内的
+/// 相邻两次调用会生成逐字相同的 id，撞 `memory_items` 主键
+/// （UNIQUE constraint failed: memory_items.id, memory_items.version）——
+/// 2026-10-06 Windows CI 报的正是这个主键冲突。把后缀改回 XOR 本用例立刻变红。
+#[test]
+fn id_suffix_survives_lockstep_counter_and_clock() {
+    for (counter, tick) in [(0u64, 0u32), (1, 1), (2, 2), (3, 3), (7, 7), (15, 15)] {
+        assert_ne!(
+            id_suffix(counter, tick),
+            id_suffix(counter + 1, tick + 1),
+            "锁步形态（counter={counter}）下后缀重复：相邻两次调用会撞同一个 id"
+        );
+    }
+    // 同一计数器、不同亚毫秒也必须能区分（时间位不是装饰）。
+    assert_ne!(id_suffix(4, 100), id_suffix(4, 101));
+    // 进程内逐次调用的总不变量：后缀互不相同。
+    let generated: std::collections::HashSet<String> =
+        (0..2000).map(|_| rand_suffix()).collect();
+    assert_eq!(generated.len(), 2000, "同进程内 id 后缀出现重复");
 }
 
 #[cfg(debug_assertions)]

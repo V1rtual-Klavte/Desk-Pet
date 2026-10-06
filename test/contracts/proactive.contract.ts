@@ -153,8 +153,19 @@ import type { ModuleContract } from "../host/types"
 // 语义），caseId 未删、未挪层。pr-01..pr-17 逐点核对实现点仍在、覆盖描述与当前实现一致
 // （非逐行行为审计）；pr-04 的 token 账新口径与 pr-16 的生成锁门禁描述按当前实现复核无误。
 // sourceHash 按当前工作区源码复算（同时含并行工作线在非本契约文件上的改动）。
+// 2026-10-06 验收批次（analyze 轻审）：sourceFiles 行为面变化 —— proactive/config.ts 新增
+// QUERY_LIMIT（原三处 `limit:100` 的收单点：reconcileSession / getTurnContext /
+// tool/local-extra/proactive.ts，值 100 与协议上限同量级、取回语义不变）、trace.ts 的调试
+// 预览长度收成 TRACE_PREVIEW_CHARS（值仍 120）、index.ts 与 local-extra/proactive.ts 改引
+// 两个常量；不在主动行为面内的其余触碰：src/services/config.ts（弹窗默认尺寸常量）、
+// personality/variable-pool.ts（RUNTIME_DATA 标记改引零依赖叶子，字面量不变）、
+// session/index.ts 与 session/messages.ts（用户活动时间标记，主动链不消费）、
+// engine/harness/runtime.ts（事件名改引 host/event-names 常量、计划结算原语抽到
+// plan/settlement.ts，均等价）。pr-08 描述按 init-domain-sequence 的加强断言补句；
+// pr-01..pr-17 其余逐点核对实现点仍在、覆盖描述与当前实现一致（非逐行行为审计）。
+// sourceHash 留待主会话统一批量刷（本单不重算）。
 export const proactiveContract:ModuleContract={
-  module:"proactive",sourceHash: "d5f7b87ccdc0376c56591a7a23fea6f54abb84dcee4779e107537ddef61a2322",
+  module:"proactive",sourceHash: "52ebd89e0bbbe7e92bfd30cf92ebfc5976b95da48d6163b51ab5a80f97312e35",
   sourceFiles:["src/services/proactive/config.ts","src/services/proactive/index.ts","src/services/proactive/scanner.ts","src/services/proactive/opportunities.ts","src/services/proactive/time.ts",
     "src/services/proactive/planner.ts","src/services/proactive/delivery.ts","src/services/proactive/ipc.ts","src/services/proactive/auxiliary-budget.ts","src/services/proactive/control.ts","src/services/proactive/protocol.json",
     "src/services/proactive/protocol.ts","src/services/proactive/tiers.ts","src/services/proactive/trace.ts","src/services/proactive/types.ts","src/services/proactive/presence.ts","src/services/proactive/usage.ts",
@@ -178,7 +189,7 @@ export const proactiveContract:ModuleContract={
     {id:"pr-05",feature:"结构化送达提交",description:"真实生产回合无工具主动表达，先核对JSONL终态tip再SQLite回执，回执成功后才投递会话视图（pushCommittedProactiveMessage）；原生 UI 经会话投影/正文推送看到已提交条目",why:"模型文本、message_end、随机UI身份均不能证明送达",layer:"e2e",depth:"deep",scenarios:["proactive-expression-native-commit"]},
     {id:"pr-06",feature:"失效与恢复",description:"失效末端守卫不提交有效消息或变量；精确请求/尝试身份恢复已提交回执，无副作用重放",why:"切换/插话与崩溃均可能使异步结果归属错误",layer:"e2e",depth:"deep",scenarios:["proactive-expression-admission-guard"]},
     {id:"pr-07",feature:"原生提交读模型",description:"真JSONL/native operation tip证明主动助手提交；回执未确认时隐藏，拒绝准入不调用Provider；合法静默保留空tip证据但返回skipped且不投影气泡",why:"不能把UI文本或message_end当作持久送达，guard必须在Provider前生效，静默不能被伪装成送达",layer:"integration",depth:"deep",scenarios:["proactive-expression-commit","proactive-admission-guard","proactive-silent-skip"]},
-    {id:"pr-08",feature:"领域引导拆分与接线",description:"initDomainBootstrap 是唯一 Node 引导序列（src/services/init.ts，src/harness/main.ts 调用）：按序接上路径/CONFIG→记忆与 dreaming→Profile 元数据→Card/registry→主动回执读取器→工具与 slash 命令表→会话恢复与 Plan checkpoint→空会话欢迎语（激活 Card 问候语、恰好落盘一条）→原生 UI 桥→窗口观察→后台命令完成通知接线（bash-background-finished → 聊天系统消息）→主动/了解调度；同一进程重复调用并入同一次运行（含失败结果——失败也锁在单次闩里，修复环境后不重试，向上抛并保留真实错误码，后续步骤不执行）。Node 引导不注册主题消费者、不做 CSS 翻译（旧机制已删）：Profile 激活只经零依赖叶子通知原生 UI 重推舞台，主题样式在原生 UI 侧消费",why:"两套引导会让唯一 Node Harness 的状态初始化两次；失败被吞或允许重试会把半初始化状态当成可恢复（单次闩把失败也锁住）。拆分点必须有行为门禁，不能靠「碰巧没冲突」；主题消费已随 UI 移出 Node 域，不再是本点的验证内容",layer:"integration",depth:"deep",scenarios:["init-domain-sequence","init-domain-failure-visible"]},
+    {id:"pr-08",feature:"领域引导拆分与接线",description:"initDomainBootstrap 是唯一 Node 引导序列（src/services/init.ts，src/harness/main.ts 调用）：按序接上路径/CONFIG→记忆与 dreaming→Profile 元数据→Card/registry→主动回执读取器→工具与 slash 命令表→会话恢复与 Plan checkpoint→空会话欢迎语（激活 Card 问候语、恰好落盘一条；init-domain-sequence 按硬断言核对：引导须真激活探针卡且其 stages 缓存可拾取问候语，JSONL 里欢迎语 custom 条目恰 1 条且正文等于该激活卡问候语 —— 中性兜底或只在视图出现不算通过，视图侧也不重复推送）→原生 UI 桥→窗口观察→后台命令完成通知接线（bash-background-finished → 聊天系统消息）→主动/了解调度；同一进程重复调用并入同一次运行（含失败结果——失败也锁在单次闩里，修复环境后不重试，向上抛并保留真实错误码，后续步骤不执行）。Node 引导不注册主题消费者、不做 CSS 翻译（旧机制已删）：Profile 激活只经零依赖叶子通知原生 UI 重推舞台，主题样式在原生 UI 侧消费",why:"两套引导会让唯一 Node Harness 的状态初始化两次；失败被吞或允许重试会把半初始化状态当成可恢复（单次闩把失败也锁住）。拆分点必须有行为门禁，不能靠「碰巧没冲突」；主题消费已随 UI 移出 Node 域，不再是本点的验证内容",layer:"integration",depth:"deep",scenarios:["init-domain-sequence","init-domain-failure-visible"]},
     {id:"pr-09",feature:"观察门禁资格（screenState 三态）",description:"命令路径 screenState 决定两条链的准入：unavailable（真不可知）时主动机会在准入丢弃并留痕 proactive_skipped(observation_unavailable)，express 不被调用；observed 与 locked（用户离开）同样放行到表达端口。locked 时静默了解批次仍可跑（预算准入与结算照常），但不请求 observation_capture_screen，决策提示改用最后一次窗口快照并注明 observedAt 的陈旧性；窗口类机会仍按当前窗口可用性自然失效（不是额外加严）",why:"锁屏语义修复前该字段恒 unavailable，主动消息与静默了解两条链全停；把 locked 当不可观察会让故障原样保留，而一律跳过截图或对窗口数据放行又会让锁屏批次读不到新鲜证据或假装窗口仍在",layer:"integration",depth:"deep",scenarios:["proactive-observation-gate"]},
     {id:"pr-10",feature:"变量跨档机会的接线",description:"默认卡数值跨过 proactiveBands 档位时，scanner 的变量提交分支形成 variable_change 机会（槽位带跨档后的档位下标）；同一档位内的写入不形成机会。断言落在机会构造槽位而不是回调次数上",why:"proactiveBands 曾被一律解析成字符串数组而整条丢弃，机会恒不产生；这条接线回归只有真实 Card/变量池链路能观测，单元层的档位算术覆盖不到解析接线",layer:"integration",depth:"shallow",scenarios:["proactive-variable-band-opportunity"]},
     {id:"pr-11",feature:"档位门禁、随机唤醒与投影",description:"主动消息档位（CONFIG ai.proactive.frequency）是唯一开关，取代固定 tickMs 节拍：off 时不排唤醒定时器、事件唤醒不扫描（tick 自身也留 proactive_off 跳过痕迹）、不下发档位投影；低/中/高三档各自按 wakeMinMs–wakeMaxMs 区间（[min,max) 左闭右开、向下取整）随机抽下一次唤醒延迟；事件唤醒先取消旧定时器、由 tick 收尾统一重排（无双重调度）；档位变更（refreshProactive）换到新档区间，并把该档一整行 limits 经 proactive_control 投影下发（off 不推，Rust 保持现值/缺省）；档位值表本身的冻结与读取期收拢是同模块的 L2 语义，见 pr-17",why:"固定节拍换成随机唤醒后，档位必须真的决定唤醒区间与门禁：off 若只靠 Rust 终裁拦截，Node 仍会按节拍唤醒并扫描，把「关」变成「只是不发送」；投影行必须与档位表逐字段一致（Rust 按整行精确匹配校验），把中档/高档截在旧上限会静默压掉高频能力",layer:"integration",depth:"deep",scenarios:["proactive-tier-gate-off","proactive-random-wake-schedule","proactive-wake-interval-bounds","proactive-limits-projection"]},

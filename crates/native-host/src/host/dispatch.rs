@@ -1,7 +1,7 @@
 //! 原生宿主完整命令分派器（W4）。
 //!
-//! 覆盖 `src/services/host/types.ts` 的 `HostCommandMap` 全部 135 条（总数以 types.ts
-//! 为准；分项已复核为「107 冻结 + 28 扩展」：冻结件删 `profile_clone`（「新建 Profile」
+//! 覆盖 `src/services/host/types.ts` 的 `HostCommandMap` 全部 136 条（总数以 types.ts
+//! 为准；分项已复核为「107 冻结 + 29 扩展」：冻结件删 `profile_clone`（「新建 Profile」
 //! 改造）与 `mcp_send`，MCP 裸行收发改由 `mcp_write` / `mcp_read` 两条有意扩展承担）。
 //! A2 追加 `apply_chat_projection` / `apply_titlebar_status`，
 //! A3 追加 `set_popup_placement` / `set_popup_size`，管理面批次追加通用文件对话框
@@ -9,7 +9,8 @@
 //! 主题批次追加界面主题下发 `apply_theme`，设置页 Card 管理批次追加人格文件删除
 //! `personality_file_delete`，自带 MCP 批次追加凭据读写 `mcp_credential_set` /
 //! `mcp_credential_delete` / `mcp_credential_status` / `mcp_credential_get`，
-//! 聊天图片批次追加删会话清理 `chat_delete_session_images`）。
+//! 聊天图片批次追加删会话清理 `chat_delete_session_images`，
+//! 折叠批次追加会话根写入 `session_write_text`（会话专用放宽路径，边界钉在会话根）。
 //! 每条：从 JSON 参数解出（**参数名逐字对齐矩阵的 camelCase 线格式**）
 //! → 调用 `commands/**` 或对应域的实现 → 结果按矩阵形状序列化。
 //!
@@ -46,7 +47,7 @@
 //! `e2e_memory_reset` / `e2e_memory_performance` 的域实现自带「debug + is_e2e」
 //! 双闸；`e2e_options` / `e2e_complete` / `e2e_trace` 是宿主级测试协议（需要
 //! `main.rs` 的 E2E 私有通道），由 `E2eDispatcher` 承接 —— 本分派器对这三条给出
-//! 明确错误而不是未知方法，保证 122 条在分派面上「条条有着落」。
+//! 明确错误而不是未知方法，保证 136 条在分派面上「条条有着落」。
 
 use std::collections::HashMap;
 use std::sync::{
@@ -672,7 +673,19 @@ impl NativeDispatcher {
                 &self.paths.sessions,
                 &arg_str(args, "path")?,
                 arg_opt_usize(args, "maxLines")?,
+                arg_opt_usize(args, "tailBytes")?,
             )?)),
+            "session_write_text" => {
+                // maxBytes 是必填（矩阵：u64，不是 Option）：会话写路径不设「不限大小」形态，
+                // 上限由 Node 按会话口径下发。
+                session_fs::write_session_text(
+                    &self.paths.sessions,
+                    &arg_str(args, "path")?,
+                    &arg_str(args, "content")?,
+                    arg_u64(args, "maxBytes")?,
+                )?;
+                Ok(Value::Null)
+            }
 
             // ── Profile（profile_cmd.rs）──
             "profile_file_write" => {
@@ -1101,21 +1114,23 @@ fn memory_change_window_label<'a>(
     trusted_session_id: Option<&str>,
 ) -> AppResult<&'a str> {
     let mismatch = || AppError::Memory("记忆变更调用窗口身份与操作类型不匹配".into());
+    // 返回的标签取自 `WindowId::label()`（窗口身份的唯一定义点，见 host/mod.rs）——
+    // 不在此处写第二份窗口名字面量。
     match caller {
         WindowId::Main => match actor {
-            "current_input" => Ok("main"),
+            "current_input" => Ok(WindowId::Main.label()),
             // add + 可信会话 = 聊天气泡「记住这条」→ user_ui_current。
             "user_ui" if action == "add" && trusted_session_id.is_some_and(|id| !id.is_empty()) => {
-                Ok("main")
+                Ok(WindowId::Main.label())
             }
             // 其余 user_ui（纠正/忘记/核心画像）= 设置面的治理动作。
-            "user_ui" => Ok("settings"),
-            "internal" => Ok("main"),
+            "user_ui" => Ok(WindowId::Settings.label()),
+            "internal" => Ok(WindowId::Main.label()),
             _ => Err(mismatch()),
         },
         // E2E 隔离宿主：只放行 internal。
         WindowId::E2e if cfg!(debug_assertions) => match actor {
-            "internal" => Ok("e2e"),
+            "internal" => Ok(WindowId::E2e.label()),
             _ => Err(mismatch()),
         },
         _ => Err(mismatch()),
@@ -1622,7 +1637,10 @@ mod tests {
         // 本批追加 `chat_delete_session_images`（删会话连带清理托管聊天图片；漏登记会让
         // 删会话的图片清理成为未知方法，僵尸文件只能等 200 上限自然淘汰）—— 分项变为
         // 「107 冻结 + 28 扩展」。
-        assert_eq!(names.len(), 135, "HostCommandMap 条数（以 types.ts 为准）");
+        // 折叠批次追加 `session_write_text`（会话根专用写入路径：折叠结果超工具面 5 MiB
+        // 时由它落地；漏登记会让折叠结果写不出去、`too-large` 无声回归）—— 分项变为
+        // 「107 冻结 + 29 扩展」。
+        assert_eq!(names.len(), 136, "HostCommandMap 条数（以 types.ts 为准）");
         assert!(names.contains(&"init_memory_files".to_string()));
         assert!(names.contains(&"e2e_memory_reset".to_string()));
         // A2 追加的两条必须在分派面上（本测试只对账「有臂」，行为见下方专项测试）。

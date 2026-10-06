@@ -82,10 +82,16 @@
 // 行为审计）；sourceHash 按当前源码复算。
 import type { ModuleContract } from "../host/types"
 
+// 2026-10-06 契约账本批次 systematic sourceFiles 复查补入：`crates/native-host/src/paths/security.rs`
+// —— sf-16 / sf-17 声称的凭据路径**词法判定**（`.ssh` 目录组件、`.pem` / `.key` 后缀、
+// `.sshnotes` 这类前缀不算、大小写同判）的唯一实现点是该文件的 `is_credential_path`
+// （paths/mod.rs 只是调用方）。此前只列 mod.rs：改坏判定会让凭据路径场景红而本契约 hash
+// 不动（同一门禁失明形态）。sourceFiles 只增这一条；**sourceHash 刻意不在本批重算** ——
+// 本批未改任何 src 源码，留待验收环节统一刷。
 export const safetyContract: ModuleContract = {
   module: "safety",
-  sourceFiles: ["src/services/engine/harness/runtime.ts", "src/services/engine/harness/harness-slot.ts", "src/services/safety/checker.ts", "src/services/safety/permission.ts", "src/services/safety/confirm.ts", "src/services/engine/user-wait.ts", "src/services/tool/types.ts", "src/services/tool/policy.ts", "src/services/tool/local/pi-tools.ts", "src/services/tool/local-extra/clipboard.ts", "src/services/tool/local-extra/agent-tool.ts", "src/services/tool/local-extra/app.ts", "src/services/tool/mcp/client.ts", "src/services/session/manager.ts", "crates/native-host/src/paths/mod.rs", "crates/native-host/src/commands/bash_policy.rs", "crates/native-host/src/commands/tool_exec/mod.rs"],
-  sourceHash: "6c04c045dd52a81c10791e63993372619ef435243ae49e1bb12e49363f5ff2f4",
+  sourceFiles: ["src/services/engine/harness/runtime.ts", "src/services/engine/harness/harness-slot.ts", "src/services/safety/checker.ts", "src/services/safety/permission.ts", "src/services/safety/confirm.ts", "src/services/engine/user-wait.ts", "src/services/tool/types.ts", "src/services/tool/policy.ts", "src/services/tool/local/pi-tools.ts", "src/services/tool/local-extra/clipboard.ts", "src/services/tool/local-extra/agent-tool.ts", "src/services/tool/local-extra/app.ts", "src/services/tool/mcp/client.ts", "src/services/session/manager.ts", "crates/native-host/src/paths/mod.rs", "crates/native-host/src/paths/security.rs", "crates/native-host/src/commands/bash_policy.rs", "crates/native-host/src/commands/tool_exec/mod.rs"],
+  sourceHash: "1bfbf604e83966a0f7a37940e8cebb7efaf9e5bf181109a30cd6d0578836d0f6",
   coverage: [
     { id: "sf-01", feature: "SAFE 级别放行", description: "safetyLevel=SAFE 的工具经生产裁决入口 evaluateToolPermission（标准决策层即 allow）直接放行，不生成确认请求；同一分支现在也接住 NORMAL，会话信任与安全裁决只有 permission.ts 一份实现", why: "安全等级体系基础，且放行结论必须来自唯一裁决点", layer: "integration", depth: "shallow", scenarios: ["safety-safe"] },
     { id: "sf-02", feature: "统一裁决表（SAFE / NORMAL 一律放行）", description: "标准决策是安全等级到裁决结果的唯一映射：NOWAY → deny（最前置，先于安全模式与工具侧策略）；SAFE 与 NORMAL → allow（与安全模式无关，也不看命令是否在白名单里 —— 白名单只决定 NORMAL/DANGER 的归属，是免确认通道而不是拒绝依据）；DANGER → 交给回合冻结的安全模式（let_me_tk → ask、just_do_it → allow、其余含缺省 → ask）。工具与运行模式不再参与裁决：pet/assistant 双模式、lightweightPolicy、`ToolDef.mode`/`ToolContext.mode` 已全链删除，而旧助手下 NORMAL 没有任何 allow 路径、一律 ask —— 这条收紧的消失正是 sf-21 必须逐工具重定级的原因", why: "常规工具需要安全评估，且裁决表必须唯一：NORMAL 的归属翻转后若仍留旧描述，重定级与确认通道的场景会照着已不存在的分支写断言", layer: "integration", depth: "shallow", scenarios: ["safety-normal"] },

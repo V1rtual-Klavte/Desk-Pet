@@ -25,14 +25,14 @@
 // 不为一个必然失败的推送挂订阅（那里 publish 会命中 `event.emit` 的 Unsupported）。
 
 import { formatError } from "@/services/error"
-import { publishUiEvent, type HostEventMap } from "@/services/host"
+import { publishUiEvent, HOST_EVENT_REVEAL_PROGRESS, type HostEventMap } from "@/services/host"
 import { subscribe, type HumanizerRevealState } from "@/services/humanizer"
 import { createLogger } from "@/services/logger"
 
 const log = createLogger("NativeUi")
 
-/** `deskpet-reveal-progress` 的线载荷（形状定义点 = `HostEventMap` 条目）。 */
-export type RevealProgressPayload = HostEventMap["deskpet-reveal-progress"]
+/** `deskpet-reveal-progress` 的线载荷（形状定义点 = `HostEventMap` 条目；键名取事件名常量）。 */
+export type RevealProgressPayload = HostEventMap[typeof HOST_EVENT_REVEAL_PROGRESS]
 
 /**
  * 调度器状态 → 线载荷：逐字段取 `HumanizerRevealState` 中线上存在的六个字段。
@@ -62,7 +62,7 @@ export function startRevealPush(): void {
   if (unsubscribe) return
   unsubscribe = subscribe(state => {
     try {
-      void publishUiEvent("deskpet-reveal-progress", revealProgressPayload(state)).catch(error => {
+      void publishUiEvent(HOST_EVENT_REVEAL_PROGRESS, revealProgressPayload(state)).catch(error => {
         log.warn("揭示进度推送失败（best-effort，不影响揭示节奏）:", formatError(error))
       })
     } catch (error) {

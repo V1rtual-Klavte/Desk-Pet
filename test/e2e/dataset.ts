@@ -51,8 +51,19 @@ import { DEFAULT_SCENE_TIMEOUT, UNIT_SCENE_TIMEOUT } from "./scene-runner"
  * 揭示调度与顶栏所有权通道。判据口径变化，故 bump。
  * `2026-10-05.1`：MCP 子系统改造 W2（pi-mcp 协议栈 + 裸行通道）新增 te-29 场景
  * （tool-mcp-real-ipc-bridge，真 IPC 假 server），全波共用这一次 bump。
+ * `2026-10-06.1`：回合治理/实测反馈后的验收批：新增 `runtime-resume-mcp-unavailable`
+ * （FIX-61，受控本地 stdio 假 server 构造「借不到 MCP」，归 ar-11）；10 个压缩/快照族
+ * memory 场景按保留窗口最坏偏差封顶（`ESTIMATOR_WORST_CASE_BIAS`）后的最终口径修订；
+ * `工具结果恢复` 第三窗口改随默认值推导（不再写死 200000）。场景集合与判据口径一起变，
+ * 故 bump。
+ * `2026-10-06.2`：验收首跑红点修复（两条都是夹具前提错，非产品缺陷）：
+ * `runtime-resume-mcp-unavailable` 的假 server 从未拿到标记落点参数（argv[2] 缺失，
+ * 首次 tools/call 即抛错断连），setOverride 的 args 补上 markerPath()；
+ * `proactive-expression-native-commit` 的 repeat 隔离漏了「表达冷却」这条全局时间门
+ * （trial 1 提交成功后 trial 2/3 的 claim 落进 5s 冷却被拒），接入新夹具
+ * `proactive-clock.ts` 的场景时钟。两者都改 setup 前提，不改断言口径。
  */
-export const LIVE_DATASET_VERSION = "2026-10-05.1"
+export const LIVE_DATASET_VERSION = "2026-10-06.2"
 
 export function validateDataset(scenes: SceneDef[], contracts: ModuleContract[]): string[] {
   const errors: string[] = []

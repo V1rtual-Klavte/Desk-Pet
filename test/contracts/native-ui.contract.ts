@@ -85,6 +85,26 @@
 // isDerivedBehaviorSource，措辞复用召回投影的同一枚常量，不写第二份判定/文案）。
 // nui-01..nui-27 逐点核对实现点仍在、覆盖描述与当前实现一致（改动只落在记忆页投影，
 // 描述/来源核对，非逐行行为审计）；sourceHash 按当前源码复算。
+// 2026-10-06 验收 analyze→generate（MCP 表单化 / 记忆面板细粒度 / 设置面行级管理 / 会话活动时间排序）：
+// 新增覆盖点 nui-29（MCP 服务器表单化与条目严格校验，L2 三条 caseId：native-ui-mcp-config-strict /
+// native-ui-mcp-form-save / native-ui-mcp-form-duplicate-name）、nui-30（记忆备份列表与按选中项恢复，
+// L2 四条：native-ui-memory-backup-list / native-ui-memory-backup-list-honest /
+// native-ui-memory-restore-selected / native-ui-memory-restore-requires-path）、nui-31（记忆作业行生命周期动作，L2 三条：
+// native-ui-memory-job-row-actions / native-ui-memory-job-cancel / native-ui-memory-job-resume）与 nui-32
+// （会话标签/历史按用户活动时间排序，L3：native-ui-session-activity-order —— 本批为该用例补的锚点，
+// test/integration/native-ui/会话意图承接与投影推送.test.ts）。nui-19 既有描述已含 activityAt 字段语义
+// （本批复核一致）。sourceFiles 变化 —— src/services/session/activity.ts（新增：活动时间尾部扫描/缓存与
+// 排序比较器 compareSessionActivity）、src/services/session/history.ts（历史列表按同一比较器排序）、
+// src/services/tool/mcp/manager.ts（条目 schema 逐字段严格校验与表单解析：CONFIG 读取 / JSON 导入 /
+// 管理面表单三入口共用，nui-29 的断言点；该文件亦列在 tool-execution 契约的 sourceFiles）、
+// src/services/native-ui/management-intents.ts（MCP 文档编辑替换为表单 mcp_server_form / mcp_save /
+// mcp_delete；记忆面板作业行动作 / 备份列表 / 按选中恢复 / 作业取消与继续；条目详情来源逐条成行）、
+// src/services/native-ui/session-projection.ts（标签排序 + 历史条目 activityAt）与
+// src/services/host/types.ts（mcp_server_form / mcp_save / mcp_delete 请求臂；session_read_text 新增可选
+// tailBytes 尾部读取参数；ProfileManageResult / CardManageResult 的 newId / activeId 语义 —— 设置面
+// 行级管理：点行 = 选中管理对象、与激活草稿分开；Rust 侧行渲染与手势不在本契约范围，沿用既有口径）。
+// nui-01..nui-28 逐点核对实现点仍在、覆盖描述与当前实现一致（描述/来源核对，非逐行行为审计）；
+// sourceHash 随本批统一刷新。
 import type { ModuleContract } from "../host/types"
 
 export const nativeUiContract: ModuleContract = {
@@ -107,12 +127,32 @@ export const nativeUiContract: ModuleContract = {
     "src/services/native-ui/session-projection.ts",
     "src/services/native-ui/session-signal.ts",
     "src/services/native-ui/titlebar-status.ts",
+    // 2026-10-06 契约账本批次 systematic sourceFiles 复查补入：nui-12 声称的是「真值点仲裁后的
+    // 最终文本」—— 高优先级 owner 胜出 / 释放按优先级回落 / 全部释放回缺省（并与真值点初值
+    // 同字面量） —— 这些语义的实现点在 `src/services/titlebar.ts`（titlebarLogo 的 set /
+    // release / 渲染仲裁），titlebar-status.ts 只是把它推给宿主的适配层。此前只列了适配层：
+    // 改坏真值点（例如 release 变 no-op、优先级比较反转）会让 nui-12 的用例变红而本契约 hash
+    // 不动，属门禁失明形态。该文件同时在 behavior 契约（presence owner）与 humanizer 契约
+    // （typing 所有权释放）在列，共享文件多契约并列是既有形态。
+    "src/services/titlebar.ts",
     // 2026-10-05 自带 MCP 批次补入：nui-27 的凭据行从 Node 到原生设置窗走同一根线 ——
     // 行 action 线值 `credential` 由该文件的 RowAction::parse 接收（wire+parse；
     // 平台手势与行渲染不在本契约范围，与既有「原生渲染不在这里冒充」的口径一致）。
     "crates/native-host/src/ui/settings/panels.rs",
+    // 2026-10-06 验收 analyze→generate 补入（nui-29）：条目 schema 的逐字段严格校验与表单解析
+    // （CONFIG 读取 / JSON 导入 / 管理面表单三入口共用）的实现点 —— 只改这份判定而不动 handler 时，
+    // native-ui-mcp-config-strict / -form-save / -form-duplicate-name 会变红而本契约 hash 不动
+    // （本仓登记过的门禁失明形态）。该文件亦列在 tool-execution 契约的 sourceFiles。
+    "src/services/tool/mcp/manager.ts",
+    // 2026-10-06 验收 analyze→generate 补入（nui-32）：活动时间（正文最后一条 user 条目）的尾部
+    // 扫描、缓存与排序比较器 compareSessionActivity 都在这里；排序的消费点分别是
+    // session-projection.ts（标签 + 历史帧）与 session/history.ts（历史刷新）。
+    "src/services/session/activity.ts",
+    // 2026-10-06 验收 analyze→generate 补入（nui-32）：历史列表（sessionHistory）在同一次刷新里
+    // 按同一比较器排序 —— 改坏这里，标签用例不红但历史排序与描述分叉，hash 不算上它就漏判。
+    "src/services/session/history.ts",
   ],
-  sourceHash: "a63a583f275f287fb432f4643b082a0e4b0f995b2a1ebe3b4756038e95cbe851",
+  sourceHash: "d8409cf2b3d8d702e9dcb4f4c411fbc7cdedbd60fa7dcd94b35aa35991ea13fe",
   coverage: [
     {
       id: "nui-01",
@@ -334,7 +374,7 @@ export const nativeUiContract: ModuleContract = {
       id: "nui-19",
       feature: "历史刷新的回执顺序与推送失败归属",
       description:
-        "chat_request_session_history 的回执先于携带 sessionHistory 的投影帧送达（宿主「读取中」只在收到带 sessionHistory 的帧时清除）；帧内 sessionHistory = 已载入 + 无错 + 每条带 messageCount；投影推送失败只留痕，已完成的刷新回执仍是 ok=true（不改写成失败）",
+        "chat_request_session_history 的回执先于携带 sessionHistory 的投影帧送达（宿主「读取中」只在收到带 sessionHistory 的帧时清除）；帧内 sessionHistory = 已载入 + 无错 + 每条带 messageCount 与 activityAt（用户活动时间；宿主历史卡片的日期展示字段）；投影推送失败只留痕，已完成的刷新回执仍是 ok=true（不改写成失败）",
       why: "顺序反了「读取中」会残留到下一次推送；把推送失败改写成刷新失败会让宿主误报一次成功的读取",
       layer: "integration",
       depth: "deep",
@@ -435,6 +475,64 @@ export const nativeUiContract: ModuleContract = {
       layer: "unit",
       depth: "shallow",
       scenarios: ["native-ui-memory-derived-label", "native-ui-memory-derived-detail"],
+    },
+    // 2026-10-06 验收 analyze→generate：MCP 表单化（新增 nui-29，L2）。
+    {
+      id: "nui-29",
+      feature: "MCP 服务器表单化（表单读写 / 重名纪律）与 CONFIG 直改条目的严格校验",
+      description:
+        "`tools_mcp_servers` 读取对 CONFIG 直改条目做逐字段如实校验（schema 校验与 JSON 导入、管理面表单三入口共用，见 tool/mcp/manager.ts）：enabled 非布尔（含字符串 \"false\"）不再被静默收成启用、transport 缺失/非法结构化拒绝、sse 点名拒绝并给迁移指引、stdio 缺 command 与 http 缺 url 拒绝、args 标量不再被包成单元素数组、env 值非字符串拒绝、名字缺失拒绝；错误信息点名条目与字段，修正后读取恢复（不留过期列表缓存）。`mcp_save` 表单保存：新增条目落盘（args 每行一个参数、env 复用 KEY=VALUE 行解析，同列表其余条目原样保留），originalName 指向不存在的条目以 PATH_NOT_FOUND 拒绝；重名保存（新增撞名与改名撞名同一判据）以结构化 CONFIG 拒绝、零写盘，原条目不被静默覆盖。表单渲染 / 逐项校验 / 改名保留过滤字段 / 删除 / 导入导出等相邻分支由同文件（management-tools-appearance.test.ts）不携带 caseId 的用例执行，不在本点 scenarios 记账",
+      why: "静默收拢（`enabled: \"false\"` 读成启用、args 标量包成单元素数组）会让错误配置一直跑在错误语义上，而「列表能显示」本身不会红；同名保存若静默覆盖，一次新增/改名会抹掉列表里另一条条目且没有任何信号",
+      layer: "unit",
+      depth: "deep",
+      scenarios: [
+        "native-ui-mcp-config-strict",
+        "native-ui-mcp-form-save",
+        "native-ui-mcp-form-duplicate-name",
+      ],
+    },
+    // 2026-10-06 验收 analyze→generate：记忆面板细粒度（新增 nui-30 / nui-31，L2）。
+    {
+      id: "nui-30",
+      feature: "记忆备份列表与按选中项的恢复",
+      description:
+        "memory_backup_list 只列托管备份目录（runtimePath memory/backups）里的 .sqlite3 文件（目录与其它文件不进列表）、按 mtime 倒序；行 id = 备份绝对路径（宿主选中后原样回传）、副标题带文件名与大小、action=choose。目录不存在 = 空列表（还没有备份，debug 留痕）；目录存在但读不了 = 如实抛错（IO）——「读不到」不伪装成「没有」。memory_restore 的 preview / apply 都作用于传入的选中路径（不再隐式取「最新一份」；缺 backupPath 以结构化 CONFIG 拒绝且零恢复命令），结果显示实际使用的文件与预检/应用结论；未知 op 同样以 CONFIG 拒绝",
+      why: "把「读不到」画成「没有备份」会让界面给错指引（用户以为备份丢了）；恢复若隐式取最新一份，用户点的那一行与实际恢复的文件可以不是同一份",
+      layer: "unit",
+      depth: "deep",
+      scenarios: [
+        "native-ui-memory-backup-list",
+        "native-ui-memory-backup-list-honest",
+        "native-ui-memory-restore-selected",
+        // 缺 backupPath 的拒绝语义独立成锚（原先与上一条共用同一 caseId，
+        // 会在 unit 全量运行的同层查重里整层报错——2026-10-06 验收首查发现并拆分）。
+        "native-ui-memory-restore-requires-path",
+      ],
+    },
+    {
+      id: "nui-31",
+      feature: "记忆作业行的生命周期动作（投影 / 取消 / 继续）",
+      description:
+        "memory_overview 的作业行按状态投影动作（值域与 Rust 记忆域准入一致）：running/queued → cancel；phase=review 且 paused/cancelled/failed → resume；completed 等其余状态 → 只读 none。memory_job_cancel 以记忆整理写者的租约身份（memory-dreaming）请求，结果以宿主返回的作业状态为准——状态没变成 cancelled（终态/属主不符）就如实 CONFIG 拒绝，不谎报取消；缺 jobId 同样拒绝。memory_job_resume 走既有恢复入口（runDreamingSweep 的 resumeJobId）：非 review 作业由领域拒绝并以 OTHER 回抛（同时回手取消，不留 running 僵尸作业）；缺 jobId 以结构化 CONFIG 拒绝",
+      why: "取消/继续的准入判据若与 Rust 不一致，界面会显示一个按不动的按钮或把未取消画成已取消；非 review 作业被驱动会留下僵尸作业",
+      layer: "unit",
+      depth: "deep",
+      scenarios: [
+        "native-ui-memory-job-row-actions",
+        "native-ui-memory-job-cancel",
+        "native-ui-memory-job-resume",
+      ],
+    },
+    // 2026-10-06 验收 analyze→generate：会话活动时间排序（新增 nui-32，L3）。
+    {
+      id: "nui-32",
+      feature: "会话标签列表与历史按用户活动时间排序",
+      description:
+        "投影帧的 `sessions`（标签列表）与 `sessionHistory` 都按用户活动时间倒序：活动时间 = 正文最后一条 `role:\"user\"` 条目（message.timestamp 优先、回退条目级 timestamp，与读模型展示时间同口径），没有用户消息回退 createdAt，同值按 id 升序（多次刷新顺序稳定）；折叠 / 重命名等维护类写入不产生新的 user 条目、活动时间不变（读取只扫文件尾部、按 (路径, mtime) 键控缓存，读取失败按 createdAt 回退并留痕——读取与比较器见 session/activity.ts）。用户在较早会话里发言后，该会话被提到标签列表最前（覆盖用例断言这一投影结果）",
+      why: "排序键若取文件 mtime，折叠/重命名会把旧会话顶到最前（维护动作被画成用户活动）；列表顺序错会让人找不到刚说过话的会话",
+      layer: "integration",
+      depth: "deep",
+      scenarios: ["native-ui-session-activity-order"],
     },
   ],
   // 本契约全部覆盖点在 L2 / L3：原生 UI 桥的推送与请求面是纯适配层，不需要真 Rust 边界

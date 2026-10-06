@@ -145,7 +145,7 @@ Rust [AppPaths](../../crates/native-host/src/paths/mod.rs) 依据 `cfg!(debug_as
 ```text
 data_root/
 ├── settings/       生产 CONFIG 与默认资源初始化标记
-├── memory/         memory.sqlite3（记忆与主动链状态库）、V1RTUAL.md（人工指令）、exports/ 与 backups/
+├── memory/         memory.sqlite3（记忆与主动链状态库）、V1RTUAL.md（人工指令）、exports/ 与 backups/（托管备份：设置窗「备份列表」逐份列出时间/大小并可选中，恢复只接受本目录内的文件）
 ├── sessions/       聊天正文 JSONL（JsonlSessionRepo，每会话一个文件，归属按文件头 cwd；写入以追加为主，已回收 key 的写入行由折叠清理）与 index.json 可丢弃 UI 状态
 ├── personality/    cards/、stages/{cardId}.json
 ├── profiles/       {profileId}/ 下的 Profile 与素材
@@ -164,13 +164,13 @@ Node 先执行 `initPaths()`（取 `get_runtime_paths`）；`BaseDirs` 只给真
 
 Rust 持有 base 的命令接收域内相对路径，例如 personality 命令接收 `stages/x.json`，不能传 `personality/stages/x.json`。通用文件 API 接收绝对路径时由 runtimePath 生成。写入需校验目标/父目录与符号链接边界，不能在 canonicalize 失败后静默退回原路径。
 
-聊天正文以 `sessions/` 的 JSONL 保存（条目 + commit 事务，JsonlSessionRepo）；启动经会话仓库列出恢复，再用 index.json（宿主命令 `read_session_ui_state`/`write_session_ui_state`）恢复标签和未回复数；丢失 index 不丢正文。会话归属按文件头 `cwd` 判定（不是按 `--<cwd>--` 目录名猜）：数据根变更或目录编码碰撞会产生不属于当前数据根的会话，列举结果里 `cwd` 与当前数据根不同的项由列举方记一次日志（去重）留证，不静默清除 index.json 里的旧 id。格式细节见[当前记忆](memory.md)。
+聊天正文以 `sessions/` 的 JSONL 保存（条目 + commit 事务，JsonlSessionRepo）；启动经会话仓库列出恢复，再用 index.json（宿主命令 `read_session_ui_state`/`write_session_ui_state`）恢复标签和未回复数；丢失 index 不丢正文。会话归属按文件头 `cwd` 判定（不是按 `--<cwd>--` 目录名猜）：数据根变更或目录编码碰撞会产生不属于当前数据根的会话，列举结果里 `cwd` 与当前数据根不同的项由列举方记一次日志（去重）留证，不静默清除 index.json 里的旧 id。标签与历史列表按**用户活动时间**（正文最后一条 `role:"user"` 条目；没有用户消息回退 `createdAt`）倒序展示——该值只扫文件尾部（宿主 `session_read_text` 的 `tailBytes` 模式 + 按路径与 mtime 的缓存，见 [activity.ts](../../src/services/session/activity.ts)），不是文件 mtime；折叠/重命名不改变它。格式细节见[当前记忆](memory.md)。
 
-会话 JSONL 是 append-only 日志：帧（`pi.pending.assistant_frame`）的每次流式增量都追加一行，`list/delete` 与 `value/delete` 只追加一条删除记录，被删 key 的历史写入行不会自动消失。因此会话文件会在安全时机被**纯删除式折叠**（[session-fold.ts](../../src/services/engine/harness/session-fold.ts) 的 `foldSessionFile`）：只回收已被 `list/delete` 与 `value/delete` 删除的 key 在**最后一次 delete 之前**的全部 `list/append` 与 `value/set`；**保留行逐字不变，entryId 与 seq 不变**，entry/usage 行一个不动 —— 折叠不是删除历史。写盘前须**折叠前后重放状态摘要一致**（`sha256Text(stableSerialize(replayLogState(...)))`），不一致就放弃折叠、保留原文件（磁盘未改动）；替换走**同目录临时文件 + `rename` 原子替换**。header 不是当前支持的 v4 格式 + `storageVersion: 1` 时整文件跳过（安全降级：不抛错、不影响会话功能，首次按版本值留一条 warn）。**会话读路径没有单次大小上限**（会话根内的读经宿主 `session_read_text`），5 MiB 的单次读写上限（`MAX_TOOL_FILE_BYTES`）只约束写：折叠结果仍超 5 MiB 的会话保持不折。折叠只解决体积，不改变「打开会话 = 全量读 + 逐行重放」的复杂度；成功折叠不可逆、没有回滚路径，安全防线只有摘要比对与原子替换。
+会话 JSONL 是 append-only 日志：帧（`pi.pending.assistant_frame`）的每次流式增量都追加一行，`list/delete` 与 `value/delete` 只追加一条删除记录，被删 key 的历史写入行不会自动消失。因此会话文件会在安全时机被**纯删除式折叠**（[session-fold.ts](../../src/services/engine/harness/session-fold.ts) 的 `foldSessionFile`）：只回收已被 `list/delete` 与 `value/delete` 删除的 key 在**最后一次 delete 之前**的全部 `list/append` 与 `value/set`，以及被反复覆盖但**从未 delete** 的 value key 中**非最后一次**的 `value/set`（2026-10-06 规则扩展：同一 value key 只保留最后一次写入；`list/append` 是累积语义，不适用这条）；**保留行逐字不变，entryId 与 seq 不变**，entry/usage 行一个不动 —— 折叠不是删除历史。写盘前须**折叠前后重放状态摘要一致**（`sha256Text(stableSerialize(replayLogState(...)))`），不一致就放弃折叠、保留原文件（磁盘未改动）；替换走**同目录临时文件 + `rename` 原子替换**。header 不是当前支持的 v4 格式 + `storageVersion: 1` 时整文件跳过（安全降级：不抛错、不影响会话功能，首次按版本值留一条 warn）。**会话读路径没有单次大小上限**（会话根内的读经宿主 `session_read_text`）；写侧的工具面上限 `MAX_TOOL_FILE_BYTES`（5 MiB）只约束模型文件工具，**会话根内的写**经宿主 `session_write_text` 放宽到 `SESSION_WRITE_MAX_BYTES`（64 MiB，与折叠读取守卫同值，只限会话根）——所以折叠结果超过 5 MiB 的会话现在也会落盘，结果守卫只按会话专用上限判定。折叠只解决体积，不改变「打开会话 = 全量读 + 逐行重放」的复杂度；成功折叠不可逆、没有回滚路径，安全防线只有摘要比对与原子替换。
 
 触发时机：① 会话经 `releasePiSession` 关闭之后（回收主路径；先等 `session.close()` 与帧缓冲 flush 收尾再折叠，失败只留痕）；② `open` 前按需兜底（只针对未被干净关闭的会话），仅当文件超过 `FOLD_POLICY.minFileBytes` 才读全文判定。「压缩提交后」经评估不做（挂点在压缩层，需求已被前两者覆盖）。折叠失败或跳过一律不影响会话功能。
 
-折叠阈值是源码常量 `FOLD_POLICY`（与 `foldSessionFile` 同在 [session-fold.ts](../../src/services/engine/harness/session-fold.ts)，唯一可调点），**不是** YAML 运行时 CONFIG 字段，不适用上面的配置同步清单：`minFileBytes = 512 KiB`（不超过它不探测）、`minReclaimBytes = 128 KiB` 与 `minReclaimRatio = 0.15`（可回收字节须同时达到二者），三者 AND、维持现值（用户 2026-09-28 定稿）；第四个阈值 `maxFileBytes = 64 MiB` 是读取守卫（文件超过它不读不折，是折叠自愿的上界，不是读路径的限制）。
+折叠阈值是源码常量 `FOLD_POLICY`（与 `foldSessionFile` 同在 [session-fold.ts](../../src/services/engine/harness/session-fold.ts)，唯一可调点），**不是** YAML 运行时 CONFIG 字段，不适用上面的配置同步清单：`minFileBytes = 512 KiB`（不超过它不探测）、`minReclaimBytes = 128 KiB` 与 `minReclaimRatio = 0.15`（可回收字节须同时达到二者），三者 AND、维持现值（用户 2026-09-28 定稿）；第四个阈值 `maxFileBytes = 64 MiB` 是读取守卫（文件超过它不读不折，是折叠自愿的上界，不是读路径的限制），与会话写路径的上限 `SESSION_WRITE_MAX_BYTES`（[session-file-system.ts](../../src/services/engine/harness/session-file-system.ts)，同值）成对：折叠只删不增 ⇒ 结果 ≤ 输入 ≤ 读守卫，读得到就写得回；改一个必须核对另一个（测试有断言兜底）。
 
 Live Test 在 debug 且 `DESKPET_E2E=1` 时只接受启动脚本创建的 `test/.tmp/e2e-*` 隔离根（宿主校验真实路径），完整配置复制到该根的 `settings/CONFIG.yaml`，测试读写均走此副本；宿主在启动前还会核对私有测试通道声明的 dataRoot/configPath/结果路径与实际加载环境一致，不一致直接失败，不回退真实开发数据。退出先留存 trace/manifest/结果，再清理。隔离边界与报告位置见[测试 README](../../test/README.md)，不把测试目录当作正常用户数据位置。
 
@@ -208,6 +208,14 @@ Card 管理（设置页「人格」节）走同一条运行时路径：新建以
 Profile 是自包含闭包：图层素材只从 Profile 自身目录读取，不跨 Profile 回退；缺失时对应层停止渲染并在编辑器提示。Profile 不保存颜色或图标：界面主题是产品级三套预设（CONFIG `appearance.theme`，实现在 [ui/theme/](../../crates/native-host/src/ui/theme/)），不随 Profile。内置 Profile 共四个：`sugar-pink`（默认，`appearance.activeProfile`）、`yuki`、`profile1`（黍）与 `profile2`（void）。各自启用哪几层由它自己的 `profile.yaml` 决定，本文件不逐个复述层配置——那些值随用户在编辑器里的调整而变，实际资源与配置以[默认 Profile 目录](../../resources/defaults/profiles/)为准；同一 Profile 的各层素材应保持相同画布与主体位置。
 
 内存只保留当前激活 Profile（含资产目录 URL）：`activateProfile()` 与 `ensureProfileLoaded()` 都会淘汰非激活缓存；设置页列 Profile 用 `readProfileMeta()` 轻量读 meta，不进缓存。
+
+### 设置页的行级管理（Profile / 人格卡）
+
+外观页「Profile 列表」与 AI 页「人格卡列表」是设置窗的行级管理入口（面板 id `appearance.profiles` / `ai.cards`；渲染与选择逻辑在 [ui/settings/mod.rs](../../crates/native-host/src/ui/settings/mod.rs) 的 `profile_panel` / `card_panel`；位置与工具页/记忆页的管理面一致 —— 页面小节之后的管理面区域）：
+
+- **数据复用既有请求**：Profile 行来自 `profile_list`、Card 行来自 `personality_cards`（不新增宿主请求/命令、不新增 Node 接口）；行由设置域从选项投影，title = 显示名，**激活态写在副标题**（「当前激活」）。
+- **点行 = 选中管理对象**（UI 临时状态：不写 CONFIG、不落盘、关窗即弃；行的 `enabled` 位承载选中态，与备份列表同一手法）。管理动作的作用对象 = 选中行：Profile 的「重命名 / 导出 / 删除」、人格卡的「编辑 / 重命名 / 导出 / 删除」（Profile 行只有选择位；卡行另有行内「编辑」，直接打开该卡本体文档，文档绑定打开时的 card_id）。未点过行或选中项已消失时**回退当前激活项**（旧「当前 Profile / 当前 Card」口径不变），列表为空时如实报错、不拿不存在的 id 去操作。
+- **激活仍是独立动作**：Profile / 卡片的激活仍走「角色展示 / 人格」的下拉 + 保存（`switchActiveProfile` / `switchPersonality` 唯一入口）；点行不触发切换，管理动作也不替用户预选切换 —— 新建成功后只把**新行设为选中**，不改写激活草稿。
 
 ## 本地存储边界
 

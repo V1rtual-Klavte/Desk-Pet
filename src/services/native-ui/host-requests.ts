@@ -51,7 +51,7 @@ import {
   userConfig,
 } from "@/services/config"
 import { errorCode, formatError } from "@/services/error"
-import { getHostBridge } from "@/services/host"
+import { getHostBridge, HOST_REQUEST_EVENT } from "@/services/host"
 import { createLogger } from "@/services/logger"
 import { normalizeSeparators, runtimePath } from "@/services/paths"
 import { getActivePersonalityId, getCards, switchPersonality } from "@/services/personality"
@@ -93,15 +93,19 @@ import {
   cardStagesWrite,
   cardTemplate,
   cardVariablePool,
-  mcpEdit,
+  mcpDelete,
   mcpExport,
   mcpImport,
-  mcpServerDoc,
+  mcpSave,
+  mcpServerForm,
   mcpCredentialWrite,
   mcpTest,
+  memoryBackupList,
   memoryDreamingSweep,
   memoryItemChange,
   memoryItemDetail,
+  memoryJobCancel,
+  memoryJobResume,
   memoryMaintenance,
   memoryOverview,
   memoryRestore,
@@ -141,13 +145,9 @@ import { pushNativeUiState, sendStageProfile } from "./pushes"
 
 const log = createLogger("NativeUi")
 
-/**
- * 宿主 → Node 请求的事件名（`HostRequestEnvelope` 经它投递）。
- *
- * 名称是**传输细节**（方法与载荷形状的唯一定义点在 `HostRequestMap`）；改名必须与
- * `crates/native-host/src/ui/ports.rs` 的同一常量同步。
- */
-export const HOST_REQUEST_EVENT = "deskpet-host-request"
+// `HOST_REQUEST_EVENT`（宿主 → Node 请求的事件名）的定义点已收进 host 域的线协议
+// 事件名区（`@/services/host` 的 event-names.ts；Rust 同步点见那里的注释），
+// 本模块只引用，不保留第二份定义。
 
 /** 回执命令名（与 `HostCommandMap` 的 `host_request_result` 同名）。 */
 export const HOST_REQUEST_RESULT_METHOD = "host_request_result"
@@ -367,12 +367,14 @@ export async function dispatchHostRequest(method: string, args: unknown): Promis
       return soundReset()
     case "sound_preview":
       return soundPreview(args)
-    case "mcp_server_doc":
-      return mcpServerDoc(args)
+    case "mcp_server_form":
+      return mcpServerForm(args)
     case "mcp_credential_write":
       return mcpCredentialWrite(args)
-    case "mcp_edit":
-      return mcpEdit(args)
+    case "mcp_save":
+      return mcpSave(args)
+    case "mcp_delete":
+      return mcpDelete(args)
     case "mcp_test":
       return mcpTest(args)
     case "mcp_import":
@@ -389,8 +391,14 @@ export async function dispatchHostRequest(method: string, args: unknown): Promis
       return memoryDreamingSweep()
     case "memory_maintenance":
       return memoryMaintenance(args)
+    case "memory_backup_list":
+      return memoryBackupList()
     case "memory_restore":
       return memoryRestore(args)
+    case "memory_job_cancel":
+      return memoryJobCancel(args)
+    case "memory_job_resume":
+      return memoryJobResume(args)
     default:
       throw Object.assign(new Error(`未知的宿主请求方法: ${method}`), { code: "OTHER" })
   }

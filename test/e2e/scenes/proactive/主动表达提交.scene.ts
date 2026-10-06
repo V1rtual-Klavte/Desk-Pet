@@ -3,6 +3,7 @@ import { captureProactiveOwner, initChat, sendActiveMessage } from "@/services/a
 import { readActiveAttemptEvidence } from "@/services/engine/harness"
 import * as proactiveIpc from "@/services/proactive/ipc"
 import { nextProactiveQuotaDay } from "./quota-day"
+import { nextProactiveNow } from "./proactive-clock"
 import { readReceipt } from "@/services/proactive"
 import { registerActiveReceiptReader } from "@/services/session"
 import { getActiveCard } from "@/services/personality"
@@ -46,10 +47,13 @@ export const 主动表达提交: SceneDef = {
     sessionId = getActiveSessionId()
     const owner = await captureProactiveOwner()
     if (!owner) throw new Error("主动表达没有可用的真实 session/Card owner")
-    const now = Date.now()
-    // 每个 setup 独立记账日（产品每日配额按 localDate 共享防打扰，见 quota-day.ts）；
-    // occurrence 指纹同理用全新值：已 committed 的 occurrence 会被拒绝重复 claim，
-    // 固定值会让 repeat>1 的后续 trial 拿不到 claim 而 ACTIVE_NO_COMMIT。
+    const now = nextProactiveNow()
+    // 三个重复隔离域各自独立（precedent: quota-day.ts / proactive-clock.ts）：
+    // ① 每日配额按 localDate 共享（独立记账日）；
+    // ② 表达冷却是按时间的**全局**窗口（前一个 trial 的 committed 表达会让后一个 trial 的
+    //    claim 被拒 —— 产品行为，不是缺陷），场景时钟每 setup 越过后再 claim；
+    // ③ occurrence 指纹同理用全新值：已 committed 的 occurrence 会被拒绝重复 claim。
+    // 任一域沿用固定值，repeat>1 的后续 trial 都会拿不到 claim 而 ACTIVE_NO_COMMIT。
     const localDate = nextProactiveQuotaDay()
     const fingerprint = `l4-card-expression:${owner.cardId}:${owner.cardHash}:${crypto.randomUUID()}`
     const sourceRefs = [{ kind: "card" as const, id: owner.cardId, version: 1, revision: 1,
@@ -70,7 +74,7 @@ export const 主动表达提交: SceneDef = {
           || budget.estimatedInputTokens + budget.maxOutputTokens > budget.contextWindow) return false
         const claim = await proactiveIpc.claim({ attemptId, requestId, kind: "expression", owner: actualOwner,
           sourceRefs, sourceFingerprint: fingerprint, sourceRevision: scan.sourceRevision,
-          controlRevision: scan.control.revision, occurrenceIds: [fingerprint], now: Date.now(), localDate,
+          controlRevision: scan.control.revision, occurrenceIds: [fingerprint], now, localDate,
           reservedTokens: budget.estimatedInputTokens + budget.maxOutputTokens, ruleId: "l4_card_expression" })
         claimed = claim.claimed
         return claimed
@@ -81,7 +85,8 @@ export const 主动表达提交: SceneDef = {
         && getActiveSessionId() === actualOwner.sessionId
         && getActiveCard()?.id === actualOwner.cardId && getActiveCard()?.hash === actualOwner.cardHash,
       settle: async (actualOwner, proof) => {
-        const validation = await proactiveIpc.validate({ attemptId, owner: actualOwner, now: Date.now() })
+        // 与 claim / scan / validUntil 同一份场景时钟：lease 与有效期核对才不会互相错位。
+        const validation = await proactiveIpc.validate({ attemptId, owner: actualOwner, now })
         if (!validation.valid) return "stale"
         const receipt = await proactiveIpc.settle({ attemptId, owner: actualOwner, sourceFingerprint: fingerprint,
           localDate, status: "committed", assistantEntryId: proof.assistantEntryId,

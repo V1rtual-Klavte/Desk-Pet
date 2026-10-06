@@ -46,8 +46,14 @@ export const humanizerContract: ModuleContract = {
     "src/services/humanizer/scheduler.ts",
     "src/services/agent/runner.ts",
     "src/services/engine/harness/runtime.ts",
+    // 2026-10-06 契约账本批次 systematic sourceFiles 复查补入：hz-04（生产入口分泡与顶栏
+    // 所有权）的 e2e 场景断言顶栏文本的持有与释放 —— 「顶栏所有权」的 set / release 语义
+    // 实现点在 `src/services/titlebar.ts`（runtime 与调度器只调用它）。此前漏列：改坏
+    // set/release（例如释放失效）会让场景红而本契约 hash 不动。仲裁语义的完整断言归
+    // native-ui 的 nui-12；本契约在它是「所有权释放」这一半的来源文件。
+    "src/services/titlebar.ts",
   ],
-  sourceHash: "58cd7b165b0eb940e2f1fe304a6863395e03191fb9d3f4079b89ae387f7d217b",
+  sourceHash: "1ee5f3cea466ba4bbe0265017598e137e8d72839fb48834d4066006f5b2d8958",
   coverage: [
     {
       id: "hz-01",

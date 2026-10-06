@@ -1,4 +1,4 @@
-import type { Context, FauxResponseStep } from "@earendil-works/pi-ai"
+import type { Context, FauxModelDefinition, FauxResponseStep } from "@earendil-works/pi-ai"
 import { compactActiveSession, compactionSettingsFor, harnessSlots, PROMPT_SNAPSHOT_ENTRY, readContextEpoch } from "@/services/engine/harness"
 import { initChat } from "@/services/agent/runner"
 import { getActiveSessionId } from "@/services/session"
@@ -20,11 +20,23 @@ async function usageSnapshots(sessionId: string): Promise<Array<Record<string, u
     : [])
 }
 
-// ── 场景前置：载荷按当前窗口预算推导（与压缩检查点同口径，保证存在可摘要范围） ──
+// ── 场景前置：载荷按**生效窗口**预算推导（配置值与注入模型窗口取小，与 resolvePiTurnModel 一致） ──
+//
+// 先前的旧口径按配置窗口（256k）推导、运行期却跑在 faux 默认模型的 128k 窗口上；保留窗口改为
+// 随窗口缩放后两个窗口的数字分家，载荷直接超过摘要调用的单片上限（oversized_unit）。
+// 现在显式声明注入模型，载荷与运行期取同一份窗口。
+//
+// 长正文用 ASCII：上游 findCutPoint 按 chars/4 计消息，本仓对非 ASCII 按 1 token/字符计 ——
+// 纯中文尾段要越过保留窗口，光按上游口径铺就有 4 倍本仓成本，先顶破硬预算。ASCII 下两把
+// 尺子一致（4 字符 ≈ 1 token），「1.25 倍保留窗口」的余量语义保持逐字不变。
+const FAKE_MODEL: FauxModelDefinition = { id: "deskpet-fake", name: "Desk-Pet Fake", contextWindow: 131_072, maxTokens: 16_384 }
+/** 真正生效的窗口与 resolvePiTurnModel 一致：配置值与注入模型窗口取小。 */
+const WINDOW_TOKENS = Math.min(aiConfig.contextMaxTokens, 131_072)
+const settings = compactionSettingsFor(WINDOW_TOKENS, FAKE_MODEL.maxTokens)
 const KEEP_MARGIN = 1.25
 const UNIT = "压缩候选正文必须保留在磁盘中。"   // 15 字符
-const settings = compactionSettingsFor(aiConfig.contextMaxTokens)
-const LONG = UNIT.repeat(Math.ceil(settings.keepRecentTokens * 4 * KEEP_MARGIN / 2 / UNIT.length))
+/** 尾段长正文（ASCII）：合计 ≈ 1.25 倍保留窗口（上游按 chars/4 计），切点因此落在第二段上。 */
+const LONG = "x".repeat(Math.ceil(settings.keepRecentTokens * 4 * KEEP_MARGIN / 2))
 const FIRST = `用户第一轮：${UNIT.repeat(133)}`
 
 /** 第 4 条脚本响应专供 before_compaction 的摘要请求；被别的请求取走就是脚本错位，立即报错。 */
@@ -63,7 +75,7 @@ export const 上下文换代: SceneDef = {
       () => fakeText("第三轮回复完成。"),
       summaryStep(),
       () => fakeText("第四轮回复完成。"),
-    ])
+    ], FAKE_MODEL)
     await initChat()
   },
   turns: [

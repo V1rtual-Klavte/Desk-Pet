@@ -87,6 +87,15 @@
 // `crates/native-host/src/host/dispatch.rs` 的两个记忆命令分派臂（memory_job_sources /
 // memory_pending_source_count 增可选 origin 参数）。聊天图片链路的实现点与描述未受本批
 // 影响；各覆盖点逐点核对一致；sourceHash 按当前源码复算（同批含另会话在飞改动）。
+// 2026-10-06 验收批次（analyze 轻审；sourceHash 留待主会话统一批量刷新）：sourceFiles 无增删
+// （`crates/native-host/src/ui/chat/ui.rs` 已在列）。本批 ui.rs 的流式减负改动 —— drain_refresh
+// 的 StreamOnly 分支不再标记状态位（防吞同帧 run-state 变化）与 debug_assertions 下的
+// stream_metrics 观测钩子（新文件 ui/chat/stream_metrics.rs，dev-only，release 里整段被剪掉）——
+// 属聊天窗渲染面，不在本契约任何覆盖点的行为面内（原生渲染证据属原生 UI 测试驱动，与既有口径
+// 一致），故 stream_metrics.rs 不补列。ci-01..ci-07 的准入、截图、预览、投影与删会话清理链路
+// 逐点核对实现点仍在、覆盖描述与当前实现一致（描述/来源核对，非逐行行为审计）；压缩按钮派发链
+// 的补记（model.rs 的 chip → PanelAction::CompactSession、ui.rs 的 apply_panel_action → /compact
+// slash 命令，Rust 内联单测背书、无 caseId）前批已在列，核对仍在。
 import type { ModuleContract } from "../host/types"
 export const chatImagesContract: ModuleContract = {
   module: "chat-images",
@@ -108,11 +117,22 @@ export const chatImagesContract: ModuleContract = {
     // model.rs（PendingDraftRelease::{Send,Discard} 参数化清空、remove_pending_image 撤选删单张）、
     // ui.rs（add_managed_pending_images 打标入口、rollback_pending_draft 退出回滚）。
     // 三者行为均由 Rust 内联单测背书（无 caseId，与 paste.rs 同口径）。
+    // 「压缩」按钮的派发链（2026-10-06 契约账本批次补记，只登记不改源码）：面板 chip 与
+    // 输入框发送 `/compact` 复用同一条 slash 派发 —— model.rs 的 chip 必须携带
+    // PanelAction::CompactSession（改坏映射的 Rust 内联单测即红），ui.rs 的
+    // apply_panel_action 把它派发成 ChatIntent::SlashCommand，命令文本逐字为斜杠命令 /compact
+    // （没有活跃会话时如实报错且不伪造压缩完成回执；同文件内联单测背书）。归属取
+    // chat-images 的理由：两个实现文件已在本契约 sourceFiles（既有口径是「文件在列 +
+    // Rust 内联单测背书、不登记覆盖点」）；native-ui 契约自持的边界（「平台手势与渲染不在
+    // 本契约范围」）不因此扩到聊天窗手势。意图→命令的线映射在 ui/chat/intents.rs、Node 侧
+    // 接收面在 native-ui 的 chat-intents.ts（形状守卫在 test/unit/native-ui/
+    // chat-intents-guards.test.ts，均无 caseId）；`/compact` 的可压缩性准入归 agent-runtime
+    // 的 ar-13 / ar-22。
     "crates/native-host/src/ui/chat/placeholders.rs",
     "crates/native-host/src/ui/chat/model.rs",
     "crates/native-host/src/ui/chat/ui.rs",
   ],
-  sourceHash: "5fab16a60c28dd4a838777338c1d10d03b57000a31a9004ecccf7de535a1e53a",
+  sourceHash: "487826888907164022d0e7815f9b6789f15861bd572a0b26269c416d6e1b83ec",
   coverage: [{ id: "ci-01", feature: "用户图片原路径整链", description: "原生常规图片准入最多4张/15MiB，图片-only输入提交后持久JSONL只存路径；模型请求临时读取真实图像，原文件删除后展示投影仍保留路径、请求明确缺失而无图像副本", why: "文本和UI缩略图不能证明模型收到了图像，也不能证明编码未进入JSONL", layer: "e2e", depth: "deep", scenarios: ["chat-image-path-production"] },
     { id: "ci-02", feature: "视觉预算与审计投影", description: "真实用户图像参与主请求与辅助请求的统一保守预算；base64长短不冒充语言token，完整图像内容仍进入仅hash审计投影", why: "图片预算为零会使上下文与主动持久额度准入失真，图像变化也不能得到相同审计内容", layer: "unit", depth: "deep", scenarios: ["chat-image-budget-content-hash"] },
     { id: "ci-03", feature: "截图展示给用户与隐私总闸", description: "screenshot 工具只在 ai.silentAccess.frequency 非 off（低/中/高档）时可用：Rust capture_screenshot 复检同一档位（off 即 Cancelled），前端命中时返回中性说明且不触达采集/落盘；show_to_user=true 时截图先经 save_screenshot 原子落盘（数据根 screenshots/；2026-10-06 取消 200 张保留上限，落盘文件不再被淘汰，回收只有删会话连带清理与用户手动删除）再挂到本回合提交的助手条目 deskpetImagePaths，读模型重载带回、原文件删除后仍保留路径（界面按不可用呈现）；show_to_user 缺省/false 时不落盘（不调用 save_screenshot、数据根不产生文件），工具结果 details 只有 showToUser、不带 screenshotPath，不挂条目、结算不回传；工具结果对模型始终携带 PNG image 块（私有截图模型照常看得见内嵌图片）", why: "「她给你看她看到的画面」要求条目与文件同源（先文件后条目、取消不产生半条消息），且隐私档位为 off 时不能截；私有截图不该在数据根留下用户没要展示的文件", layer: "integration", depth: "deep", scenarios: ["screenshot-show-to-user-attach", "screenshot-default-private", "screenshot-gate-neutral"] },

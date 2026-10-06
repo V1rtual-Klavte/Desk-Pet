@@ -38,9 +38,14 @@ import type { Context } from "@earendil-works/pi-agent-core"
 import { errorCode, formatError } from "@/services/error"
 import { createLogger } from "@/services/logger"
 
+/** 未指定前缀时，临时目录/文件名的默认前缀（两处入口共用；宿主侧临时命名同习惯）。 */
+const DEFAULT_TEMP_PREFIX = "deskpet-"
+
 /**
- * 单次 `file_read` / `file_write` / `file_append` 的字节上限（Rust 侧 `content.len()` 同口径）。
- * 唯一真相源：会话存储的折叠守卫（`engine/harness/session-fold.ts`）也读它，不再各存一份。
+ * 单次 `file_read` / `file_write` / `file_append` 的字节上限（Rust 侧 `content.len()` 同口径），
+ * 只约束**工具面**的通用文件命令。会话根内的写有专用放宽（`SessionFileSystem` →
+ * `session_write_text`，上限 `SESSION_WRITE_MAX_BYTES`），不借用也不放宽这条：
+ * 折叠结果、大会话正文等会话载荷不因模型工具面需要而改变上限口径。
  */
 export const MAX_TOOL_FILE_BYTES = 5 * 1024 * 1024
 
@@ -292,7 +297,7 @@ export class NativeExecutionEnv implements ExecutionEnv {
     try {
       throwIfAborted(context)
       const kit = getExecutionPathKit()
-      const path = await kit.join(await kit.tempDir(), `${prefix ?? "deskpet-"}${crypto.randomUUID()}`)
+      const path = await kit.join(await kit.tempDir(), `${prefix ?? DEFAULT_TEMP_PREFIX}${crypto.randomUUID()}`)
       const result = await this.createDir(path, undefined, context)
       return result.ok ? ok(path) : result
     } catch (error) {
@@ -304,7 +309,7 @@ export class NativeExecutionEnv implements ExecutionEnv {
     try {
       throwIfAborted(context)
       const kit = getExecutionPathKit()
-      const path = await kit.join(await kit.tempDir(), `${options?.prefix ?? "deskpet-"}${crypto.randomUUID()}${options?.suffix ?? ""}`)
+      const path = await kit.join(await kit.tempDir(), `${options?.prefix ?? DEFAULT_TEMP_PREFIX}${crypto.randomUUID()}${options?.suffix ?? ""}`)
       const result = await this.writeFile(path, "", context)
       return result.ok ? ok(path) : result
     } catch (error) {

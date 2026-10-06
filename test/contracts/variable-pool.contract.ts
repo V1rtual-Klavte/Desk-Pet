@@ -36,12 +36,25 @@
 // 2026-10-06 提问选择与去超时批次（本批刷新）：sourceFiles 变化仅限
 // `src/services/engine/harness/runtime.ts` 的注释面（NON_CONFIRM_CONTEXT 去掉确认超时一支）。
 // 各覆盖点逐条核对实现点仍在、描述与当前实现一致；sourceHash 按当前源码复算。
+// 2026-10-06 验收 analyze→generate（RUNTIME_DATA 标记收口批次）：sourceFiles 补入
+// `src/services/reply/protocol.ts`（本批新增的零依赖叶子：RUNTIME_DATA_TAG 与起止标签的唯一定义点 ——
+// generator.ts 的解析正则、stream-text.ts 的流式过滤、builder.ts 的指令注入、reminder.ts 与
+// variable-pool.ts 的表头都从它引用，不再各写字面量；只改标记值而消费文件一字不动时，原来不会失效，
+// 属本仓登记过的门禁失明形态）。vp-23 补登记 caseId `variable-runtime-data-empty-block-fulfills`
+// （空区块算履约的区分断言，本批新增用例）并修订描述：「空区块按存在处理」不再只由实现登记。
+// vp-01..vp-22 逐点核对实现点仍在、描述与当前实现一致（描述/来源核对，非逐行行为审计）；
+// sourceHash 随本批统一刷新。
 import type { ModuleContract } from "../host/types"
 
 export const variablePoolContract: ModuleContract = {
   module: "variable-pool",
-  sourceFiles: ["src/services/engine/harness/runtime.ts", "src/services/personality/variable-pool.ts", "src/services/personality/types.ts", "src/services/personality/stages-file.ts", "src/services/reply/generator.ts", "src/services/session/store.ts"],
-  sourceHash: "84b270ab07afca94efbd6ed5d3186d20e88f6ed7098133a44956447a26e49434",
+  sourceFiles: ["src/services/engine/harness/runtime.ts", "src/services/personality/variable-pool.ts", "src/services/personality/types.ts", "src/services/personality/stages-file.ts", "src/services/reply/generator.ts",
+    // 2026-10-06 验收 analyze→generate 补入：RUNTIME_DATA 标记（块名与起止标签）的唯一定义点。
+    // vp-04 / vp-08 / vp-23 的解析、剥离与缺失检测判据都以它为输入 —— 只改标记值不改 generator.ts
+    // 时用例会变红而本契约 hash 不动（门禁失明形态）；变量池表头也引用同一份标记。
+    "src/services/reply/protocol.ts",
+    "src/services/session/store.ts"],
+  sourceHash: "6ec9ce7e49d6d31eddc76450975b95690f81a74f4dfaa3f07787a3bf17d17899",
   coverage: [
     { id: "vp-01", feature: "系统变量计算", description: "computeSystemVariables(now, activeCardId) 产出 6 个系统变量：5 个由本地时间派生（hour / minute / dayOfWeek / isNightTime / isWeekend）+ activeCardId；isNightTime 的区间随 CONFIG 静默值派生（ai.proactive.quietStartHour/quietEndHour，非硬编码 23–9），覆盖跨夜 / 同日 / start==end（全不静默）三形态，边界值落在同一侧。**没有模式派生变量** —— pet/assistant 双模式与 general.mode 已全链删除，系统变量集合与删除前逐项一致，这是本轮重分析专门核对过的负向结论（含模式字段的注入点只剩 Card 变量与互动状态）", why: "Prompt 注入基础；模式面删除后必须确认系统变量集合没有跟着漂移，否则 Prompt 里会留下已不存在的维度；isNightTime 若留下旧硬编码，用户改静默时段后模型感知的「夜里」与产品的静默边界会互相矛盾", layer: "unit", depth: "shallow", scenarios: ["variable-system-vars", "variable-night-time-config"] },
     { id: "vp-02", feature: "变量池初始化", description: "initVariablePool 从Card variableDefs初始化", why: "Card切换和重启时正确构建", layer: "unit", depth: "deep", scenarios: ["variable-pool-init"] },
@@ -65,7 +78,7 @@ export const variablePoolContract: ModuleContract = {
     { id: "vp-20", feature: "daily 游标跨重启", description: "daily 重置游标随 variables 段落盘：destroy → 重新 init（透传磁盘游标）后同一天不重置、跨日重置一次并把新游标落盘；游标缺失时视为陈旧重置一次；不存在的 Card 由 loadCardVars 返回 null 交给调用方重建", why: "游标只写不读会让 daily 变量每次重启都重新判定一次，跨天的语义整个失效", layer: "unit", depth: "deep", scenarios: ["variable-pool-daily-cursor-restart"] },
     { id: "vp-21", feature: "session 游标按持久化键判定", description: "session 重置只按持久化的 sessionKey 判定：键为 null 不做判定（旧数据缺会话游标时同样什么都不做）、同一键（含跨重启）幂等、换键重置一次并把新键落盘；缺游标但键非 null 按新会话重置一次", why: "没有持久化键时凭空认定「新会话」会让变量被反复清空，键不落盘则重启后判定失去依据", layer: "unit", depth: "deep", scenarios: ["variable-pool-session-cursor"] },
     { id: "vp-22", feature: "Card 变量读取入口", description: "getCardVarValue 读取当前池中的 Card 变量值：未初始化 / 未注册 / destroy 后返回 undefined（回退策略归调用方）；读取依赖池代际（poolRevision），写入（batchWriteVars）与销毁后挂在它上面的 computed 重算而不是缓存旧值", why: "界面侧需要非响应式池的响应式读取点（说话人标签跟随用户起的名字，见 personality-card pc-12）；没有失效信号会一直显示旧名", layer: "unit", depth: "shallow", scenarios: ["variable-card-value-read"] },
-    { id: "vp-23", feature: "RUNTIME_DATA 协议缺失检测", description: "generateReply 回传 runtimeDataMissing 只在三条同时成立时为真：本轮具备写入资格（applyRuntimeData 为真）、结算原始正文没有 <RUNTIME_DATA> 区块、冻结 Card 声明了 scope=card 且 updateBy=llm 的变量。判据用解析出的 hasBlock（不拿 vars 是否为空代替区块存在；「空区块按存在处理」这一区分只由实现登记，用例未断言）。缺区块 + 有可写变量 → true 且本轮没有写入来源、池保持初始值；带区块 → false 且变量照常落池（用例用非空区块，同时验证正文不含协议块）；Card 没有 llm 可写变量（如 updateBy=system）→ false；主动表达或卡已过期（applyRuntimeData=false）→ false。写入资格判据与 context/builder.ts 的指令注入共用 hasLlmWritableCardVars，不各写一份", why: "缺失检测是下一回合提醒的唯一来源：把主动表达或没有可写变量的回合也判违约会让提醒持续骚扰，拿「vars 为空」代替「区块存在」会把写了空区块的履约回合误判成违约；检测与指令注入必须同判据，否则两处静默分叉", layer: "unit", depth: "deep", scenarios: ["variable-runtime-data-missing-detect", "variable-runtime-data-present", "variable-runtime-data-no-llm-vars", "variable-runtime-data-not-applied"] },
+    { id: "vp-23", feature: "RUNTIME_DATA 协议缺失检测", description: "generateReply 回传 runtimeDataMissing 只在三条同时成立时为真：本轮具备写入资格（applyRuntimeData 为真）、结算原始正文没有 <RUNTIME_DATA> 区块、冻结 Card 声明了 scope=card 且 updateBy=llm 的变量。判据用解析出的 hasBlock（不拿 vars 是否为空代替区块存在；「空区块按存在处理」由 caseId `variable-runtime-data-empty-block-fulfills` 断言：空区块 → false 且零写入，同一段正文去掉区块 → true，证明不是恒不判）。缺区块 + 有可写变量 → true 且本轮没有写入来源、池保持初始值；带区块 → false 且变量照常落池（用例用非空区块，同时验证正文不含协议块）；Card 没有 llm 可写变量（如 updateBy=system）→ false；主动表达或卡已过期（applyRuntimeData=false）→ false。写入资格判据与 context/builder.ts 的指令注入共用 hasLlmWritableCardVars，不各写一份", why: "缺失检测是下一回合提醒的唯一来源：把主动表达或没有可写变量的回合也判违约会让提醒持续骚扰，拿「vars 为空」代替「区块存在」会把写了空区块的履约回合误判成违约；检测与指令注入必须同判据，否则两处静默分叉", layer: "unit", depth: "deep", scenarios: ["variable-runtime-data-missing-detect", "variable-runtime-data-present", "variable-runtime-data-empty-block-fulfills", "variable-runtime-data-no-llm-vars", "variable-runtime-data-not-applied"] },
   ],
   // W0–W7 把本契约全部场景迁出 L4 后重标定：L4 侧已无任何 layer=e2e 的覆盖点，
   // 门槛=当前 rules 声明值，只缩不放（数字由 checker 报错提供），不是「放宽」。

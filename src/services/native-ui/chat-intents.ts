@@ -46,6 +46,8 @@
 //     （null = 收回覆盖）；显示收敛由回执后的投影重推承担（见下）。
 
 import { sendMessage, stopActiveRun } from "@/services/agent"
+// 记忆草稿 summary 上限取零依赖叶子（不加载记忆域：barrel 仍只在调用时动态 import）。
+import { DRAFT_SUMMARY_CHARS } from "@/services/agent/memory/draft"
 import { playEventSound } from "@/services/audio"
 import { setSessionSafetyMode, setSessionThinkingEffort } from "@/services/debug"
 import { formatError } from "@/services/error"
@@ -153,6 +155,7 @@ export async function chatRestoreSession(args: unknown): Promise<void> {
     id: summary.id,
     name: summary.name || "新会话",
     createdAt: summary.createdAt,
+    activityAt: summary.activityAt,
     path: summary.path,
   })
   await switchToSession(summary.id)
@@ -332,7 +335,7 @@ export async function chatRememberMessage(args: unknown): Promise<{ revision: nu
     trustedUserEventId: eventId,
     draft: {
       content: evidence,
-      summary: evidence.trim().slice(0, 120),
+      summary: evidence.trim().slice(0, DRAFT_SUMMARY_CHARS),
       kind: "episode",
       scope: "user",
       aliases: [],

@@ -160,6 +160,9 @@ impl Stage {
     }
 
     /// 编辑器预览：用草稿层列表与强度覆盖显示（内存态，不写盘、不改权威快照）。
+    ///
+    /// `layers` 是草稿的**原 specs**（不透明度全为缺省）：预览透明度线索只喂编辑器
+    /// 自己的渲染器（`ui::editor::cue_specs`），主窗舞台不参与。
     pub fn apply_preview(&mut self, layers: Vec<LayerSpec>, intensity: f64) {
         let mut profile = self.pushed.clone();
         profile.layers = layers;
@@ -359,6 +362,7 @@ mod tests {
             scale: 1.0,
             offset_x_percent: 0.0,
             offset_y_percent: 0.0,
+            opacity: LayerSpec::DEFAULT_OPACITY,
         }
     }
 

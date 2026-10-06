@@ -19,6 +19,12 @@ export interface SessionMeta {
   id: string
   name: string
   createdAt: number
+  /**
+   * 用户活动时间（排序键，口径见 activity.ts）：正文最后一条 user 条目时间戳；
+   * undefined/null = 没有用户消息，列表按 createdAt 回退。启动/历史刷新时从磁盘重读，
+   * 运行期由 markSessionActivity 随用户消息即时更新。
+   */
+  activityAt?: number | null
   /** 会话条目文件路径（sessions/ 下） */
   path?: string
   /**
@@ -114,6 +120,19 @@ export function addSessionMeta(meta: SessionMeta): void {
   if (sessions.find(s => s.id === meta.id)) return
   sessions.unshift(meta)
   trimSessions()
+}
+
+/**
+ * 记录会话的用户活动时间（列表排序依据）。
+ * **只在用户消息进入该会话时调用**（助手/主动消息、系统提示、维护类写入都不调用）；
+ * 磁盘真相由启动扫描与历史刷新从正文尾部重读覆盖，这里补的是「本进程运行期」的即时排序。
+ * 时间只前进不后退（乱序投递的旧输入不把会话拉回低位）。
+ */
+export function markSessionActivity(sessionId: string, timestamp: number): void {
+  const meta = sessions.find(item => item.id === sessionId)
+  if (!meta) return
+  if (meta.activityAt != null && timestamp <= meta.activityAt) return
+  meta.activityAt = timestamp
 }
 
 export function removeSessionMeta(id: string): void {

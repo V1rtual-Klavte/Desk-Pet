@@ -86,6 +86,21 @@ describe("RUNTIME_DATA 协议缺失检测", () => {
     expect(result.text).not.toContain("RUNTIME_DATA")
   })
 
+  it("空区块算履约：不判违约也不产生写入 [variable-runtime-data-empty-block-fulfills]", async () => {
+    initVariablePool({ cardId: CARD_ID, variableDefs: LLM_DEFS })
+
+    // 有区块、无内容：实现按「区块存在」处理（hasBlock=true），不能拿 vars 是否为空
+    // 代替区块存在 —— 否则模型照做写了空区块的回合会被误判成违约、提醒持续骚扰。
+    const empty = ["今天也没什么变化。", "<RUNTIME_DATA>", "</RUNTIME_DATA>"].join("\n")
+    const withEmptyBlock = await generateReply(empty, cardWith(LLM_DEFS))
+    expect(withEmptyBlock.runtimeDataMissing, "空区块被当成缺区块").toBe(false)
+    expect(getPoolSnapshot().card["亲密"]?.value, "空区块不该产生写入").toBe(0)
+
+    // 对照：同一份正文的正文部分、去掉空区块才判违约 —— 证明上面的 false 不是「恒不判」。
+    const withoutBlock = await generateReply("今天也没什么变化。", cardWith(LLM_DEFS))
+    expect(withoutBlock.runtimeDataMissing, "同一段正文去掉区块后仍不判违约，空区块用例失去区分力").toBe(true)
+  })
+
   it("Card 没有 llm 可写变量时不判违约 [variable-runtime-data-no-llm-vars]", async () => {
     initVariablePool({ cardId: CARD_ID, variableDefs: READONLY_DEFS })
 

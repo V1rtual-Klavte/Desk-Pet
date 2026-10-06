@@ -54,7 +54,7 @@
 以下只保留归档目录索引，不作为后续任务的阅读入口；不再读取或修改这些文件。当前问题与进度只看未完成总表。
 
 - [回合治理与图片生命周期执行契约 2026-10-06 归档](history/implementation/回合治理与图片生命周期执行契约-2026-10-06归档.md)：四项治理的目标契约与工作包清单——工具循环上限对齐主流（取消计数硬上限、病理检测替代）、AI 生成锁由回合状态推导（删 30s 定时强解与 cooldown 模块）、冷却锁搬进 Rust 账本、截图 200 上限取消与粘贴草稿回滚；**已实施（快层与 Rust 门禁全绿、契约按 analyze→generate 刷新）**，逐项进度与未验证面见未完成总表 §13/§14。
-- [主动陪伴与记忆频率档位执行契约 2026-10-06 归档](history/implementation/主动陪伴与记忆频率档位执行契约-2026-10-06归档.md)：主动消息/静默了解/记忆整理的根因修复（macOS 观察态恒 unavailable）、锁屏语义、三处「关/低/中/高」频率档位、带工具规划器与自带 MCP 的目标契约与 W1–W5 波次；**W1–W4 与 W5-A 已实现后归档**（对照基线 `05bd0c1` + 工作树），W5-B（MCP 编辑面表单化）与两条待定项（server-pdf 自带、node-runtime 闭包）已折入[未完成总表](plans/active/未完成工作与已知缺口.md) §12，Live/e2e 验收锚点属未跑。
+- [主动陪伴与记忆频率档位执行契约 2026-10-06 归档](history/implementation/主动陪伴与记忆频率档位执行契约-2026-10-06归档.md)：主动消息/静默了解/记忆整理的根因修复（macOS 观察态恒 unavailable）、锁屏语义、三处「关/低/中/高」频率档位、带工具规划器与自带 MCP 的目标契约与 W1–W5 波次；**W1–W4 与 W5-A 已实现后归档**（对照基线 `05bd0c1` + 工作树），W5-B（MCP 编辑面表单化）与 server-pdf 待定项已折入[未完成总表](plans/active/未完成工作与已知缺口.md) §12；Live 验收锚点已于 2026-10-06 达成（observed／understanding.json／proactive 表非 0），e2e 严格全量未跑。
 - [主题设计稿（三套预设）](history/design/theme-candidates.html)：三套主题预设（`brushed` / `chrome` / `verdigris`）的视觉基准与 55 个自定义属性取值。**例外说明**：它同时是 `crates/native-host/src/ui/theme/tokens.rs` 的 `include_str!` **编译期依赖**（常量 `DESIGN_DOC`），移动即编译失败；主题逐屏对照收尾前仍作视觉基准使用，改色值须与 `tokens.rs` 两处同改。2026-10-05 由 `docs/plans/active/` 移入，路径引用已全仓同步。
 - [主题设计稿（两款 · 聊天面）](history/design/theme-candidates-2.html)：2026-10-05 聊天面板改版的视觉基准（`.rail` / `.insp` 等结构与尺寸），`macos_chat.rs` 三处注释引用；同批移入归档。
 - [原生宿主轻量化执行契约 2026-10-04 基线](history/implementation/原生宿主轻量化执行契约-2026-10-04基线.md)：用户已定功能边界、最终接口、源码映射与 W0–W11 执行/验收条件；**W0–W9 已实现后归档**，W10/W11 的验收条件、打包定案、L4 重接与资源口径已折入[未完成总表](plans/active/未完成工作与已知缺口.md) §10。

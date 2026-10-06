@@ -25,6 +25,9 @@ pub(crate) use bash::{
     combine_windows, stats_of, truncate_output, BackgroundHandle, BashSlot, CapturedOutput,
     TailWindow, DEFAULT_BASH_TIMEOUT_MS,
 };
+/// 会话写路径（`session_fs.rs`）复用同一份常规文件判定；不在命令面上导出。
+pub(crate) use fs::ensure_regular_file;
+
 #[cfg(test)]
 pub(crate) use fs::read_file_entries;
 
@@ -840,17 +843,54 @@ mod tests {
     // 一条用例直接驱动；探针形态统一为「后台子壳延迟 touch 文件」：命令活着 → 文件出现，
     // 组回收生效 → 文件永不出现（只杀直接子进程的旧实现会留下这个孙进程，用例即红）。
 
+    /// Windows 探针脚本名。以**裸文件名**交给 `cmd /C`：run_bash 把 cwd 落在探针目录，
+    /// 脚本里的相对文件名与探针文件因此都无需拼路径（顺带躲开「目录名带空格」）。
+    const WINDOWS_PROBE_SCRIPT: &str = "deskpet-probe.cmd";
+
+    /// Windows 侧的后台启动片段：落一份零引号探针脚本，再 `start /b cmd /C <裸文件名>`。
+    ///
+    /// Windows 无 `sleep`/`touch`，且这里**不能内嵌引号** —— Rust 给 `Command` 参数的
+    /// 转义是 MSVCRT 风格（内部 `"` → `\"`），而 `cmd /C` 不认 `\"`（`delayed_probe` 的
+    /// 注释里记着同一坑的 2026-09-24 实测）：写成 `start /b cmd /C "ping … & type …"`
+    /// 会被拆坏，孙进程静默不写探针 —— 2026-10-06 CI 上正对照用例
+    /// `bash_descendant_probe_control_writes_sentinel`（探针没出现）与超时后探针断言
+    /// 就是这样红的。把「延迟 + 写文件」整段收进脚本文件后，命令行零引号，
+    /// Rust 的最外层引号恰好命中 `cmd /C "…"` 的正常形态。
+    fn windows_probe_start(dir: &Path, seconds: u32, file: &str) -> String {
+        std::fs::write(
+            dir.join(WINDOWS_PROBE_SCRIPT),
+            format!(
+                "ping -n {} 127.0.0.1 > nul\r\ntype nul > {file}\r\n",
+                seconds + 1
+            ),
+        )
+        .expect("写 Windows 探针脚本");
+        format!("start /b cmd /C {WINDOWS_PROBE_SCRIPT}")
+    }
+
     /// 后台子壳延迟写探针 + 前台长睡：杀直接子进程会留下写探针的孙进程。
     ///
     /// 与 `delayed_probe` 同款跨平台收窄：Windows 无 `sleep`/`touch`，用 `ping`/`type` 同义形态。
-    fn descendant_probe(seconds: u32, file: &str) -> String {
+    fn descendant_probe(dir: &Path, seconds: u32, file: &str) -> String {
         if cfg!(windows) {
             format!(
-                "start /b cmd /C \"ping -n {} 127.0.0.1 > nul & type nul > {file}\" & ping -n 31 127.0.0.1 > nul",
-                seconds + 1
+                "{} & ping -n 31 127.0.0.1 > nul",
+                windows_probe_start(dir, seconds, file)
             )
         } else {
             format!("(sleep {seconds}; touch {file}) & sleep 30")
+        }
+    }
+
+    /// 正对照用的短时长变体（前台约 2s）：同一条探针形态，不去终止时探针必须出现。
+    fn control_probe(dir: &Path, seconds: u32, file: &str) -> String {
+        if cfg!(windows) {
+            format!(
+                "{} & ping -n 3 127.0.0.1 > nul",
+                windows_probe_start(dir, seconds, file)
+            )
+        } else {
+            format!("(sleep {seconds}; touch {file}) & sleep 2")
         }
     }
 
@@ -860,14 +900,10 @@ mod tests {
     fn bash_descendant_probe_control_writes_sentinel() {
         let dir = probe_dir("descendant-control");
         let pool = BashPool::default();
-        let control = if cfg!(windows) {
-            "start /b cmd /C \"ping -n 2 127.0.0.1 > nul & type nul > control.sentinel\" & ping -n 3 127.0.0.1 > nul"
-        } else {
-            "(sleep 1; touch control.sentinel) & sleep 2"
-        };
+        let control = control_probe(&dir, 1, "control.sentinel");
         let result = run_bash(
             pool.clone(),
-            control.into(),
+            control,
             Some(dir.to_string_lossy().to_string()),
             Some("descendant-control".into()),
             None,
@@ -902,9 +938,15 @@ mod tests {
         let pool = BashPool::default();
         // `echo` 先产出可读的输出；后台孙进程延迟写探针，用来证明进程仍然活着。
         let command = if cfg!(windows) {
-            format!("echo timeout-probe-output & {}", descendant_probe(1, "sentinel"))
+            format!(
+                "echo timeout-probe-output & {}",
+                descendant_probe(&dir, 1, "sentinel")
+            )
         } else {
-            format!("echo timeout-probe-output; {}", descendant_probe(1, "sentinel"))
+            format!(
+                "echo timeout-probe-output; {}",
+                descendant_probe(&dir, 1, "sentinel")
+            )
         };
         let result = run_bash(
             pool.clone(),
@@ -1085,6 +1127,8 @@ mod tests {
         let pool = BashPool::default();
         let id = "cancel-descendants";
         let (tx, rx) = std::sync::mpsc::channel();
+        // 探针脚本先落盘（Windows 侧 `descendant_probe` 会写脚本），再交给工作线程执行。
+        let probe = descendant_probe(&dir, 1, "sentinel");
         let handle = {
             let pool = pool.clone();
             let dir_string = dir.to_string_lossy().to_string();
@@ -1092,7 +1136,7 @@ mod tests {
             std::thread::spawn(move || {
                 let result = run_bash(
                     pool,
-                    descendant_probe(1, "sentinel"),
+                    probe,
                     Some(dir_string),
                     Some(id_string),
                     Some(600_000),
@@ -1142,6 +1186,8 @@ mod tests {
         let pool = BashPool::default();
         let id = "kill-all-descendants";
         let (tx, rx) = std::sync::mpsc::channel();
+        // 探针脚本先落盘（Windows 侧 `descendant_probe` 会写脚本），再交给工作线程执行。
+        let probe = descendant_probe(&dir, 1, "sentinel");
         let handle = {
             let pool = pool.clone();
             let dir_string = dir.to_string_lossy().to_string();
@@ -1149,7 +1195,7 @@ mod tests {
             std::thread::spawn(move || {
                 let result = run_bash(
                     pool,
-                    descendant_probe(1, "sentinel"),
+                    probe,
                     Some(dir_string),
                     Some(id_string),
                     Some(600_000),

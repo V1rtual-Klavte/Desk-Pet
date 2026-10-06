@@ -46,6 +46,7 @@ function summaryToMeta(summary: PiSessionSummary): SessionMeta {
     id: summary.id,
     name: summary.name || "新会话",
     createdAt: summary.createdAt,
+    activityAt: summary.activityAt,
     path: summary.path,
   }
 }

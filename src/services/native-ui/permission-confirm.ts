@@ -34,7 +34,12 @@
 import { watch } from "vue"
 
 import { formatError } from "@/services/error"
-import { publishUiEvent, subscribeUiReceipt } from "@/services/host"
+import {
+  publishUiEvent,
+  subscribeUiReceipt,
+  HOST_EVENT_PERMISSION_CONFIRM,
+  UI_RECEIPT_PERMISSION_CONFIRM_RESOLVED,
+} from "@/services/host"
 import type { HostEventMap } from "@/services/host"
 import { createLogger } from "@/services/logger"
 import { confirmState, resolvePermissionConfirm } from "@/services/safety"
@@ -42,8 +47,8 @@ import type { ConfirmRequest } from "@/services/safety"
 
 const log = createLogger("NativeUi")
 
-/** `deskpet-permission-confirm` 的线载荷（形状定义点 = `HostEventMap` 条目）。 */
-export type PermissionConfirmPayload = HostEventMap["deskpet-permission-confirm"]
+/** `deskpet-permission-confirm` 的线载荷（形状定义点 = `HostEventMap` 条目；键名取事件名常量）。 */
+export type PermissionConfirmPayload = HostEventMap[typeof HOST_EVENT_PERMISSION_CONFIRM]
 
 /** 待确认单槽 → 线载荷：逐字段投影，不做任何判定或默认值补齐。 */
 export function permissionConfirmPayload(pending: ConfirmRequest): PermissionConfirmPayload {
@@ -86,7 +91,7 @@ export function startPermissionConfirmBridge(): void {
           if (confirmState.pending?.id === pending.id) resolvePermissionConfirm("deny")
         }
         try {
-          void publishUiEvent("deskpet-permission-confirm", permissionConfirmPayload(pending))
+          void publishUiEvent(HOST_EVENT_PERMISSION_CONFIRM, permissionConfirmPayload(pending))
             .catch(settleDenyOnDeliveryFailure)
         } catch (error) {
           // 端口未注入等同步抛：与异步失败同一归宿 —— 结算后绝不让投影失败反噬确认流程
@@ -101,7 +106,7 @@ export function startPermissionConfirmBridge(): void {
 
   if (!stopReceipts) {
     // 回执回收：身份先于结算校验 —— 不匹配（迟到/重复/未知）一律丢弃。
-    stopReceipts = subscribeUiReceipt("deskpet-permission-confirm-resolved", (payload) => {
+    stopReceipts = subscribeUiReceipt(UI_RECEIPT_PERMISSION_CONFIRM_RESOLVED, (payload) => {
       const decision = payload?.decision
       if (decision !== "allow_once" && decision !== "allow_session" && decision !== "deny") {
         log.warn("权限回执的 decision 取值非法（协议违规），已丢弃:", String(decision))

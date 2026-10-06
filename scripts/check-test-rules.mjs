@@ -60,6 +60,7 @@ const IPC_MODULES = [
   { spec: "@/services/engine/harness/runtime", why: "agent harness 运行时：经宿主端口发布事件" },
   { spec: "@/services/session", why: "会话 barrel 会带出 persistence.ts" },
   { spec: "@/services/session/persistence", why: "会话 UI 状态落盘经 HostBridge（L3 的层签名）" },
+  { spec: "@/services/session/activity", why: "会话活动时间读取经 HostBridge 的 session_read_text 尾部模式（L3 的层签名）" },
   { spec: "@/services/tool", why: "工具 barrel 会带出执行许可" },
   { spec: "@/services/tool/execution-permit", why: "工具执行许可经 HostBridge" },
   { spec: "@/services/tool/pi/native-execution-env", why: "Native 执行环境：文件/命令全经 HostBridge（Rust 专属命令在 L2/L3 命中即抛）" },

@@ -8,7 +8,7 @@ import { query, change, cancelCurrent, createRuntimeTraceContext, proactiveEvent
 import type { ProactiveOwner, ProactiveSourceRef, ProactiveRecurrence, RecurrenceProposal } from "@/services/proactive"
 import { localDayKey, localToInstant, nextSpeakingTime } from "@/services/proactive/time"
 import { formatError } from "@/services/error"
-import { DAY_MS } from "@/services/proactive/config"
+import { DAY_MS, QUERY_LIMIT } from "@/services/proactive/config"
 
 function owner(ctx:ToolContext):ProactiveOwner {
   const card=getActiveCard()
@@ -80,7 +80,7 @@ const changeTool=defineTool({id:"local-proactive-change",name:"proactive_change"
     const user=sources[0]!
     const ref:ProactiveSourceRef={kind:"user_entry",id:user.sourceId,version:1,revision:user.seq,scope:"session",scopeId:frozen.sessionId,
       fingerprint:`${user.sessionId}:${user.entryId}:${user.contentHash}`,validUntil:null}
-    const state=await query({owner:frozen,limit:100}),action=String(params.action)
+    const state=await query({owner:frozen,limit:QUERY_LIMIT}),action=String(params.action)
     const now=Date.now(),timezone=Intl.DateTimeFormat().resolvedOptions().timeZone
     const patch:Record<string,unknown>={}
     let sourceRefs:ProactiveSourceRef[]=[ref]

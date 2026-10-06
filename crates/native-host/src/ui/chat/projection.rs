@@ -224,7 +224,7 @@ pub struct ProjectedSession {
     pub interrupted: bool,
 }
 
-/// 会话历史的一条（`PiSessionSummary` 的展示子集：id/name/createdAt/messageCount）。
+/// 会话历史的一条（`PiSessionSummary` 的展示子集：id/name/createdAt/activityAt/messageCount）。
 ///
 /// 数据来源是 `refreshSessionHistory()` 的读结果（sessions/ 仓库全量扫描）。
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
@@ -235,6 +235,11 @@ pub struct ProjectedHistorySession {
     pub name: String,
     #[serde(default)]
     pub created_at: i64,
+    /// 用户活动时间（正文最后一条 `role:"user"` 条目；epoch 毫秒）。
+    /// 列表已按它倒序（Node 侧排序，宿主只整表接收）；`None` = 没有用户消息 ——
+    /// 历史卡片的日期展示回退 `created_at`（模型侧取 `activity_at.unwrap_or(created_at)`）。
+    #[serde(default)]
+    pub activity_at: Option<i64>,
     #[serde(default)]
     pub message_count: u64,
 }
@@ -545,7 +550,8 @@ mod tests {
                 "loaded": true,
                 "error": false,
                 "sessions": [
-                    {"id":"s2","name":"聊工作","createdAt":1728000000000,"messageCount":12}
+                    {"id":"s2","name":"聊工作","createdAt":1728000000000,"activityAt":1728003600000,"messageCount":12},
+                    {"id":"s3","name":"只有问候","createdAt":1728007200000,"activityAt":null,"messageCount":1}
                 ]
             }
         }"#;
@@ -557,8 +563,11 @@ mod tests {
         let history = projection.session_history.expect("历史存在");
         assert!(history.loaded && !history.error);
         assert_eq!(history.sessions[0].message_count, 12);
+        // 用户活动时间随帧送达（历史卡片的日期展示用）；显式 null = 没有用户消息。
+        assert_eq!(history.sessions[0].activity_at, Some(1728003600000));
+        assert_eq!(history.sessions[1].activity_at, None);
 
-        // 未携带 = None（消费语义：保持现值，不是清空）。
+        // 未携带 = None（消费语义：保持现值，不是清空）；activityAt 缺省 = 没有用户消息。
         let bare = TranscriptProjection::from_json(r#"{"sessionId":"s"}"#).unwrap();
         assert!(bare.sessions.is_none() && bare.session_history.is_none());
     }

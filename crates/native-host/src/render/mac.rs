@@ -3,7 +3,9 @@
 //! 做法照搬 W0 探针的 macOS 渲染原型（**实机跑通**的五层合成，五层几何与 golden
 //! 逐位一致；探针 `crates/ui-probe` 已随迁移完成删除，过程记录见
 //! `docs/history/implementation/原生宿主迁移过程记录-2026-10-04基线.md`）：
-//! - 内容视图 layer-backing 后，每个绘制槽一层，`contents` 直接放 CGImage；
+//! - 内容视图 layer-backing 后，每个绘制槽一层，`contents` 直接放 CGImage；逐帧写入
+//!   几何与**逐层不透明度**（`CALayer.opacity`；未投影路径恒 1.0 = CALayer 默认值，
+//!   即该字段不改变既有行为）；
 //! - **CALayer 属性写入默认带隐式动画**：逐帧更新必须包在 `CATransaction` 里并
 //!   `setDisableActions:`，否则每帧都会叠一层 0.25s 的位置/尺寸动画（原型 A 的实测教训）；
 //! - 帧循环是主线程 run loop 上的 60Hz `NSTimer`；停止 = `invalidate`，隐藏后零回调。
@@ -386,7 +388,8 @@ impl RenderSurface for MacLayerSurface {
                 }
             }
 
-            // 4. 几何：bounds + 锚点居中的 position。
+            // 4. 几何：bounds + 锚点居中的 position；逐层不透明度：CALayer.opacity。
+            //    不透明度值已在 compose 归一化（[0, 1]），这里只做搬运。
             for draw in &plan.draws {
                 if !(draw.width.is_finite() && draw.height.is_finite())
                     || draw.width <= 0.0
@@ -408,6 +411,7 @@ impl RenderSurface for MacLayerSurface {
                     };
                     let _: () = msg_send![*instance.layer, setBounds: bounds];
                     let _: () = msg_send![*instance.layer, setPosition: position];
+                    let _: () = msg_send![*instance.layer, setOpacity: draw.opacity];
                 }
             }
 

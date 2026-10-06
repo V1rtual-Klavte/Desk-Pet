@@ -43,6 +43,7 @@ pub mod placeholders;
 pub mod projection;
 pub mod richtext;
 pub mod slash;
+pub mod stream_metrics;
 pub mod ui;
 pub mod viewer;
 

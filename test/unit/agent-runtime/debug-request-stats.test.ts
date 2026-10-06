@@ -24,7 +24,7 @@ beforeEach(() => {
 })
 
 describe("主回合逐请求统计的真实用量口径", () => {
-  it("真实 prompt 含缓存读写，占比以真实值为分子", () => {
+  it("真实 prompt 含缓存读写，占比以真实值为分子 [debug-request-stats-cache-inclusive]", () => {
     updateRequestStats({
       promptTokens: 1_000,
       cacheReadTokens: 8_000,
@@ -41,7 +41,7 @@ describe("主回合逐请求统计的真实用量口径", () => {
     expect(debug.lastToolNames).toEqual(["bash", "fs.read"])
   })
 
-  it("Provider 未回报时退回估算且不覆盖上次真实值", () => {
+  it("Provider 未回报时退回估算且不覆盖上次真实值 [debug-request-stats-fallback-estimate]", () => {
     updateRequestStats({ promptTokens: 7_500 })
     updateRequestStats({
       promptTokens: 0,
@@ -58,7 +58,7 @@ describe("主回合逐请求统计的真实用量口径", () => {
     expect(debug.lastToolNames).toEqual(["bash"])
   })
 
-  it("缓存写同样计入真实 prompt", () => {
+  it("缓存写同样计入真实 prompt [debug-request-stats-cache-write]", () => {
     updateRequestStats({
       promptTokens: 100,
       cacheReadTokens: 0,

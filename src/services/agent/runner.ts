@@ -243,7 +243,7 @@ export interface SendMessageResult {
   toolCalls: { toolName: string; status: string }[]
   /** 忙碌投递给当前运行的准确回执；空闲回合与直接拒绝不返回。 */
   delivery?: HarnessDeliveryReceipt
-  failure?: import("@/services/engine/harness").TurnFailure
+  failure?: import("@/services/engine/harness/runtime").TurnFailure
   /**
    * 回复在界面显示了但没能写进会话文件：宿主已用系统消息告知用户，
    * 这里透传同样的事实供场景/调用方断言「界面与持久正文不一致」。

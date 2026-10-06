@@ -203,6 +203,8 @@ impl ChatUi {
     /// 不额外发明第二套增量协议。
     fn drain_refresh(&self) {
         self.refresh_pending.store(false, Ordering::SeqCst);
+        #[cfg(debug_assertions)]
+        let render_started = std::time::Instant::now();
         let update = {
             let model = Self::lock(&self.model);
             let revisions = model.revisions();
@@ -221,7 +223,10 @@ impl ChatUi {
                 Some(ChatRenderUpdate::Full(model.snapshot()))
             } else if revisions.stream != rendered.stream {
                 rendered.stream = revisions.stream;
-                rendered.status = revisions.status;
+                // 状态位**不**在本路径吞掉：StreamOnly 只重建尾巴（平台 update_tail 不碰
+                // 状态位），若在此把 rendered.status 标成已渲染，同一 drain 里合并进来的
+                // run-state 变化（如收尾隐藏「停止」）会被静默吞掉，直到下一次状态变化。
+                // 留待下一次 drain 走 StatusOnly/Full 刷新（多一帧、语义正确）。
                 Some(ChatRenderUpdate::StreamOnly {
                     text: model.streaming_text(),
                 })
@@ -233,8 +238,27 @@ impl ChatUi {
             }
         };
         let Some(update) = update else { return };
-        if self.window_open.load(Ordering::SeqCst) || self.main_pane_open.load(Ordering::SeqCst) {
+        // dev A/B 钩子：取键在移交之前（更新随后被移动），计时包裹平台重建整体
+        // —— 数字口径与用法见 `stream_metrics` 模块文档；release 里整段被剪掉。
+        #[cfg(debug_assertions)]
+        let render_key = super::stream_metrics::RenderKey::of(&update);
+        let visible =
+            self.window_open.load(Ordering::SeqCst) || self.main_pane_open.load(Ordering::SeqCst);
+        if visible {
             crate::ui::platform::chat_imp::chat_apply(update);
+        }
+        #[cfg(debug_assertions)]
+        {
+            if visible {
+                super::stream_metrics::note_render(
+                    render_key,
+                    render_started.elapsed().as_micros() as u64,
+                );
+                // 尾巴清空帧 = 一段流式收尾：这里是 A/B 的取样边界（汇总一行并清零）。
+                if render_key.closes_stream() {
+                    super::stream_metrics::flush("收尾");
+                }
+            }
         }
     }
 
@@ -496,6 +520,9 @@ impl ChatUi {
         if switched {
             // 切会话：取消解码/动画并释放当前图片（查看器窗口一并关闭）。
             self.close_viewer(true);
+            // 一段流式被切会话截断：dev A/B 窗口在这里收口，不把两段流混进同一份数字。
+            #[cfg(debug_assertions)]
+            super::stream_metrics::flush("切会话");
         }
         self.schedule_refresh();
     }
@@ -1292,6 +1319,9 @@ impl ChatUi {
         let _ = self.previews.close_all();
         Self::lock(&self.inline_visible).clear();
         crate::ui::ports::inline_preview().release_all();
+        // dev A/B 窗口兜底收口：退出前把最后一段没走完收尾边界的数字带出来。
+        #[cfg(debug_assertions)]
+        super::stream_metrics::flush("退出");
     }
 
     // ==========================================
@@ -2053,5 +2083,78 @@ mod tests {
             .route_wire_event("deskpet-run-state", &serde_json::json!({"sessionId":"s1"}))
             .unwrap_err();
         assert!(error.to_string().contains("解析失败"), "{error}");
+    }
+
+    // ==========================================
+    // 流式渲染 dev 观测钩子（A/B 取数点）
+    // ==========================================
+
+    /// 总表 §8「发消息卡顿余项」的 A/B 取数点必须保持接线：`drain_refresh` 每次真的
+    /// 交付渲染时取观测键并计时，尾巴清空帧做收尾汇总。钩子被挪走 / 摘掉 = 验收阶段
+    /// 拿不到「每次流式更新的耗时与重排次数」，这条先红。
+    ///
+    /// 断言只在生产段（`#[cfg(test)]` 之前）上做：本测试自己的字面量不算证据。
+    #[test]
+    fn 流式渲染观测钩子保持接线_源码守门() {
+        let production = include_str!("ui.rs")
+            .split("#[cfg(test)]")
+            .next()
+            .expect("ui.rs 生产段存在");
+        let body = production
+            .split("fn drain_refresh(&self)")
+            .nth(1)
+            .expect("drain_refresh 必须存在");
+        // 切到下一个方法（`open_window`）为止，避免把别处的 `flush(` 当成证据。
+        let body = body.split("fn open_window").next().unwrap_or(body);
+        assert!(
+            body.contains("RenderKey::of(&update)"),
+            "更新移交平台前必须取观测键（键在移动之后就取不到了）"
+        );
+        assert!(
+            body.contains("note_render(") && body.contains("elapsed()"),
+            "平台返回后必须记一笔耗时"
+        );
+        assert!(
+            body.contains("closes_stream()") && body.contains("flush("),
+            "尾巴清空帧必须做收尾汇总（A/B 的取样边界）"
+        );
+        assert!(
+            body.contains("chat_apply(update)"),
+            "取键与计时不得挤掉真正的渲染交付"
+        );
+    }
+
+    /// `drain_refresh` 的 `StreamOnly` 分支不得吞状态位：该路径只重建尾巴（平台
+    /// `update_tail` 不碰状态位），若在这里把 `rendered.status` 标成已渲染，同一 drain
+    /// 里合并进来的 run-state 变化（如收尾隐藏「停止」）会被静默吞掉、直到下一次状态
+    /// 变化才补上。状态刷新留给下一次 drain 走 StatusOnly/Full（2026-10-06 流式减负
+    /// 批次发现并修复；本守门防止回潮）。
+    #[test]
+    fn 流式分支不吞状态位_源码守门() {
+        let production = include_str!("ui.rs")
+            .split("#[cfg(test)]")
+            .next()
+            .expect("ui.rs 生产段存在");
+        let body = production
+            .split("fn drain_refresh(&self)")
+            .nth(1)
+            .expect("drain_refresh 必须存在");
+        let stream_branch = body
+            .split("} else if revisions.stream != rendered.stream {")
+            .nth(1)
+            .expect("StreamOnly 分支必须存在")
+            .split("} else if revisions.status != rendered.status {")
+            .next()
+            .expect("StatusOnly 分支必须存在");
+        assert!(
+            stream_branch.contains("rendered.stream = revisions.stream;"),
+            "StreamOnly 分支必须推进 stream 已渲染位"
+        );
+        // 只匹配赋值语句本身：说明注释里会提到 `rendered.status`（按字符扫会把注释
+        // 也算成证据，仓库里有过同款教训——判据要精确到代码形态）。
+        assert!(
+            !stream_branch.contains("rendered.status = revisions.status"),
+            "StreamOnly 分支不得标记状态位（会吞掉同帧状态变化）；状态刷新留给下一次 drain"
+        );
     }
 }

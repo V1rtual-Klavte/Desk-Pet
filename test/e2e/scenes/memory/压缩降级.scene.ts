@@ -35,10 +35,14 @@ const FAKE_MODEL: FauxModelDefinition = { id: "deskpet-fake", name: "Desk-Pet Fa
 /** 真正生效的窗口与 resolvePiTurnModel 一致：配置值与注入模型窗口取小。 */
 const WINDOW_TOKENS = Math.min(aiConfig.contextMaxTokens, 131_072)
 const KEEP_MARGIN = 1.05
-const UNIT = "压缩降级探针正文必须留在磁盘中。"   // 16 字符
 const SETTINGS = compactionSettingsFor(WINDOW_TOKENS)
-/** 尾段两段长正文合计 ≈ KEEP_MARGIN 倍保留窗口（上游按 chars/4 计），切点因此落在第二段上。 */
-const LONG = (recent: number) => UNIT.repeat(Math.ceil(recent * 4 * KEEP_MARGIN / 2 / UNIT.length))
+/**
+ * 尾段两段长正文合计 ≈ KEEP_MARGIN 倍保留窗口（上游按 chars/4 计），切点因此落在第二段上。
+ * 用 ASCII：上游按 chars/4 计、本仓对非 ASCII 按 1 token/字符计 —— 纯中文尾段要越过保留窗口
+ * 就得先顶破硬预算（保留窗口的换算按最坏偏差封顶，见 compactionSettingsFor），
+ * 「贴着保留窗口下界」的 1.05 倍余量语义在 ASCII 下保持逐字不变。
+ */
+const LONG = (recent: number) => "x".repeat(Math.ceil(recent * 4 * KEEP_MARGIN / 2))
 const PADDING = LONG(SETTINGS.keepRecentTokens)
 const PAD_USER = (round: string): string => `${round}：${PADDING}`
 const FIRST = "第一轮：记住这句话，之后压缩如果失败原文必须还在。"

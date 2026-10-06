@@ -10,9 +10,9 @@
 // 被测行为：
 //   · settings_defaults / config_export / config_import：默认值取自内置模板（不是运行时
 //     覆写）、取消是正常结果、导入失败如实抛；
-//   · MCP：列表行投影（命令摘要、白名单摘要）、开关写盘、文档渲染与
-//     编辑/删除的分支（按 name 增改删、非法字段逐个拒绝）、
-//     测试的「关闭不连接」短路、导入导出成功与取消；
+//   · MCP：列表行投影（命令摘要、白名单摘要）、开关写盘、CONFIG 直改条目的
+//     逐字段 schema 拒绝、表单读数与保存（字段逐项校验、重名报错、改名换坐标、
+//     删除）、测试的「关闭不连接」短路、导入导出成功与取消；
 //   · Skill：索引不可用时列表为空但如实带 error；开关缺 frontmatter 时拒绝且不写盘；
 //   · Profile：列表跳过 meta 读不到的目录；
 //   · 音效：库/分配行与试听；分配非法事件与非法音效 ID 如实拒绝，合法写入落 CONFIG。
@@ -20,7 +20,7 @@
 import { load as loadYaml } from "js-yaml"
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest"
 
-import { initConfig, setOverride } from "@/services/config"
+import { flushConfig, initConfig, setOverride } from "@/services/config"
 import { soundEvents } from "@/services/audio"
 import { setHostBridge } from "@/services/host"
 import type { HostBridge } from "@/services/host"
@@ -182,13 +182,6 @@ function lastWrittenConfig(): Record<string, any> {
   return loadYaml(String(writes[writes.length - 1]!.args.content)) as Record<string, any>
 }
 
-/** MCP 行编辑文档（与处理器的 `## 小节` 格式同形；测试侧组装输入，非复刻实现）。 */
-function mcpDoc(fields: Record<string, string | string[]>): string {
-  return `${Object.entries(fields)
-    .map(([key, value]) => `## ${key}\n${Array.isArray(value) ? value.join("\n") : value}`)
-    .join("\n\n")}\n`
-}
-
 /** 显式设定自定义服务器表：MCP 用例之间不靠先前的写盘残留互相耦合。 */
 function setCustomServers(servers: Array<Record<string, unknown>>): void {
   setOverride("tools.mcp.servers", servers)
@@ -277,6 +270,46 @@ describe("工具页：MCP 服务器行与开关", () => {
       enabled: true,
     })
     expect(payload.rows[1]).toMatchObject({ title: "off-server", subtitle: "npx -y off-mcp", enabled: false })
+  })
+
+  it("CONFIG 直改条目非法即拒（不再 String()/默认 true 收拢）[native-ui-mcp-config-strict]", async () => {
+    // 「enabled: "false"」是旧实现最危险的一类：字符串被收成 true（静默启用）。现在读取期拒绝。
+    setCustomServers([{ name: "strict", transport: "stdio", command: "npx", enabled: "false" }])
+    await expect(
+      dispatchHostRequest("tools_mcp_servers", {}),
+      "enabled 非布尔必须拒绝，不能静默读成启用",
+    ).rejects.toMatchObject({ code: "CONFIG", message: expect.stringMatching(/enabled/) })
+
+    // transport 缺失 / 非法：不再「非 http 一律按 stdio」，sse 点名拒绝。
+    setCustomServers([{ name: "strict", command: "npx", enabled: true }])
+    await expect(dispatchHostRequest("tools_mcp_servers", {})).rejects.toMatchObject({ code: "CONFIG" })
+    setCustomServers([{ name: "strict", transport: "ws", command: "npx", enabled: true }])
+    await expect(dispatchHostRequest("tools_mcp_servers", {})).rejects.toMatchObject({ code: "CONFIG" })
+    setCustomServers([{ name: "strict", transport: "sse", url: "http://127.0.0.1:9/mcp", enabled: true }])
+    await expect(dispatchHostRequest("tools_mcp_servers", {})).rejects.toThrow(/sse 已弃用/)
+
+    // 跨字段一致性同样在读取期拒绝：stdio 必须有 command、http 必须有 url。
+    setCustomServers([{ name: "strict", transport: "stdio", enabled: true }])
+    await expect(dispatchHostRequest("tools_mcp_servers", {})).rejects.toThrow(/command/)
+    setCustomServers([{ name: "strict", transport: "http", enabled: true }])
+    await expect(dispatchHostRequest("tools_mcp_servers", {})).rejects.toThrow(/url/)
+
+    // 逐字段类型：args 标量不静默包成单元素数组；env 值必须是字符串；名字必填。
+    setCustomServers([{ name: "strict", transport: "stdio", command: "npx", args: "-y pkg", enabled: true }])
+    await expect(dispatchHostRequest("tools_mcp_servers", {})).rejects.toMatchObject({ code: "CONFIG" })
+    setCustomServers([{ name: "strict", transport: "stdio", command: "npx", env: { PORT: 3000 }, enabled: true }])
+    await expect(dispatchHostRequest("tools_mcp_servers", {})).rejects.toMatchObject({ code: "CONFIG" })
+    setCustomServers([{ transport: "stdio", command: "npx", enabled: true }])
+    await expect(dispatchHostRequest("tools_mcp_servers", {})).rejects.toMatchObject({ code: "CONFIG" })
+
+    // 错误信息点名条目与字段（直改 CONFIG 的用户能直接定位）。
+    setCustomServers([{ name: "named-entry", transport: "ws", command: "npx", enabled: true }])
+    await expect(dispatchHostRequest("tools_mcp_servers", {})).rejects.toThrow(/named-entry/)
+
+    // 修正后读取恢复（报错不留「过期列表」缓存）。
+    setCustomServers([{ name: "strict", transport: "stdio", command: "npx", enabled: true }])
+    const fixed = (await dispatchHostRequest("tools_mcp_servers", {})) as { rows: Array<{ id: string }> }
+    expect(fixed.rows.map(row => row.id)).toEqual(["strict"])
   })
 
   it("tools_mcp_toggle：按名改 enabled 并经 setMcpServers 写回 CONFIG；未知 id 以 PATH_NOT_FOUND 拒绝", async () => {
@@ -374,120 +407,235 @@ describe("工具页：MCP 凭据（GitHub 令牌）", () => {
   })
 })
 
-describe("工具页：MCP 文档 / 编辑 / 测试 / 导入导出", () => {
-  it("mcp_server_doc：缺省给新建模板；未知名拒绝；已有服务器按当前配置渲染且回执只有 text", async () => {
-    const template = (await dispatchHostRequest("mcp_server_doc", {})) as { text: string }
-    expect(Object.keys(template), "回执字段集变了（线协议两侧需逐字一致）").toEqual(["text"])
-    expect(template.text).toContain("## name\n")
-    expect(template.text).toContain("## transport\nstdio")
+describe("工具页：MCP 表单 / 测试 / 导入导出", () => {
+  it("mcp_server_form：缺省给新建模板；未知名拒绝；已有服务器逐字段渲染（env/headers 多行 KEY=VALUE）", async () => {
+    const template = await dispatchHostRequest("mcp_server_form", {})
+    expect(template).toEqual({
+      name: "",
+      transport: "stdio",
+      command: "",
+      args: "",
+      url: "",
+      env: "",
+      headers: "",
+      enabled: true,
+    })
 
-    await expect(dispatchHostRequest("mcp_server_doc", { name: "nope" })).rejects.toMatchObject({
+    await expect(dispatchHostRequest("mcp_server_form", { name: "nope" })).rejects.toMatchObject({
       code: "PATH_NOT_FOUND",
     })
-    await expect(dispatchHostRequest("mcp_server_doc", { name: 42 })).rejects.toMatchObject({ code: "CONFIG" })
+    await expect(dispatchHostRequest("mcp_server_form", { name: 42 })).rejects.toMatchObject({ code: "CONFIG" })
 
-    // 本用例自带服务器表：文档渲染不与其他用例留下的 override 状态耦合。
+    // 本用例自带服务器表：表单渲染不与其他用例留下的 override 状态耦合。
     setCustomServers([{
       name: "demo-custom",
       transport: "http",
       url: "http://127.0.0.1:9/mcp",
-      headers: { "X-Api-Key": "demo-token" },
+      args: ["-y", "pkg"],
+      env: { TOKEN: "abc" },
+      headers: { "X-Api-Key": "demo-token", "X-Trace": "on" },
       excludeTools: ["noisy"],
-      enabled: true,
+      enabled: false,
     }])
-    const custom = (await dispatchHostRequest("mcp_server_doc", { name: "demo-custom" })) as { text: string }
-    expect(custom.text).toContain("## name\ndemo-custom")
-    expect(custom.text).toContain("## transport\nhttp")
-    expect(custom.text).toContain("## url\nhttp://127.0.0.1:9/mcp")
-    // headers 与 env 同款 KEY=VALUE 行格式（渲染与解析共用 manager 的 formatEnvText/parseEnvText）。
-    expect(custom.text).toContain("## headers\nX-Api-Key=demo-token")
+    const custom = await dispatchHostRequest("mcp_server_form", { name: "demo-custom" })
+    expect(custom).toEqual({
+      name: "demo-custom",
+      transport: "http",
+      command: "",
+      args: "-y\npkg",
+      url: "http://127.0.0.1:9/mcp",
+      env: "TOKEN=abc",
+      // headers 与 env 同款 KEY=VALUE 行格式（与解析共用 manager 的 formatEnvText/parseEnvText）。
+      headers: "X-Api-Key=demo-token\nX-Trace=on",
+      enabled: false,
+    })
+    // 高级过滤字段不在表单里（表单不展示 includeTools/excludeTools）：渲染面即字段控件面。
+    expect(Object.keys(custom as Record<string, unknown>)).not.toContain("excludeTools")
   })
 
-  it("mcp_edit：文档渲染 → 解析 → 落盘往返保留 headers（同一套 KEY=VALUE 格式）", async () => {
+  it("mcp_save：表单读数原样保存往返一致（含 env/headers）；改名换坐标保留原条目字段", async () => {
     setCustomServers([{
-      name: "roundtrip-headers",
+      name: "roundtrip",
       transport: "http",
       url: "http://127.0.0.1:9/mcp",
       env: { TOKEN: "abc" },
-      headers: { "X-Api-Key": "demo-token", "X-Trace": "on" },
+      headers: { "X-Api-Key": "demo-token" },
+      includeTools: ["read"],
       enabled: true,
     }])
-    const doc = (await dispatchHostRequest("mcp_server_doc", { name: "roundtrip-headers" })) as { text: string }
-    await dispatchHostRequest("mcp_edit", { op: "text", text: doc.text })
-    const servers = lastWrittenConfig().tools.mcp.servers as Array<{
+    const before = (await dispatchHostRequest("mcp_server_form", { name: "roundtrip" })) as {
       name: string
-      env?: Record<string, string>
-      headers?: Record<string, string>
-    }>
-    const saved = servers.find(server => server.name === "roundtrip-headers")
-    expect(saved?.headers).toEqual({ "X-Api-Key": "demo-token", "X-Trace": "on" })
+      transport: string
+      command: string
+      args: string
+      url: string
+      env: string
+      headers: string
+      enabled: boolean
+    }
+    await dispatchHostRequest("mcp_save", {
+      originalName: "roundtrip",
+      name: before.name,
+      transport: before.transport,
+      command: before.command,
+      args: before.args,
+      url: before.url,
+      env: before.env,
+      headers: before.headers,
+      enabled: before.enabled,
+    })
+    const saved = (lastWrittenConfig().tools.mcp.servers as Array<Record<string, unknown>>).find(
+      server => server.name === "roundtrip",
+    )
     expect(saved?.env).toEqual({ TOKEN: "abc" })
+    expect(saved?.headers).toEqual({ "X-Api-Key": "demo-token" })
+    // 表单不覆盖的高级过滤字段在保存后原样保留。
+    expect(saved?.includeTools).toEqual(["read"])
+    // 再读一次：与保存前逐字段一致（导出配置再导入往返语义的读侧对照）。
+    const after = await dispatchHostRequest("mcp_server_form", { name: "roundtrip" })
+    expect(after).toEqual(before)
+
+    // 改名：坐标换成新名字、老名字消失，条目字段（含过滤字段）随行走。
+    await dispatchHostRequest("mcp_save", {
+      originalName: "roundtrip",
+      name: "roundtrip-2",
+      transport: before.transport,
+      command: before.command,
+      args: before.args,
+      url: before.url,
+      env: before.env,
+      headers: before.headers,
+      enabled: before.enabled,
+    })
+    const renamed = lastWrittenConfig().tools.mcp.servers as Array<Record<string, unknown>>
+    expect(renamed.map(server => server.name)).toContain("roundtrip-2")
+    expect(renamed.map(server => server.name)).not.toContain("roundtrip")
+    expect(renamed.find(server => server.name === "roundtrip-2")?.includeTools).toEqual(["read"])
   })
 
-  it("mcp_edit：未知 op / 缺字段 / 非法 transport / 缺 command|url / 非法 enabled 逐个拒绝", async () => {
-    await expect(dispatchHostRequest("mcp_edit", { op: "explode" })).rejects.toMatchObject({ code: "CONFIG" })
-    await expect(dispatchHostRequest("mcp_edit", { op: "delete" })).rejects.toMatchObject({ code: "CONFIG" })
-    await expect(dispatchHostRequest("mcp_edit", { op: "text" })).rejects.toMatchObject({ code: "CONFIG" })
+  it("mcp_save：字段逐项校验（缺字段 / 非法 transport / sse / stdio 缺 command / http 缺 url / 非法 enabled）", async () => {
+    const base = {
+      originalName: "",
+      name: "probe",
+      transport: "stdio",
+      command: "npx",
+      args: "",
+      url: "",
+      env: "",
+      headers: "",
+      enabled: true,
+    }
     await expect(
-      dispatchHostRequest("mcp_edit", { op: "text", text: mcpDoc({ transport: "stdio", command: "npx" }) }),
-      "缺 name 小节",
+      dispatchHostRequest("mcp_save", { ...base, transport: "ws" }),
+      "transport 只认 stdio/http",
     ).rejects.toMatchObject({ code: "CONFIG" })
     await expect(
-      dispatchHostRequest("mcp_edit", { op: "text", text: mcpDoc({ name: "x", transport: "ws", command: "npx" }) }),
-    ).rejects.toMatchObject({ code: "CONFIG" })
-    await expect(
-      dispatchHostRequest("mcp_edit", { op: "text", text: mcpDoc({ name: "x", transport: "stdio" }) }),
-      "stdio 必须有 command",
-    ).rejects.toMatchObject({ code: "CONFIG" })
-    await expect(
-      dispatchHostRequest("mcp_edit", { op: "text", text: mcpDoc({ name: "x", transport: "http" }) }),
-      "http 必须有 url",
-    ).rejects.toThrow(/http 服务器必须有 url/)
-    await expect(
-      dispatchHostRequest("mcp_edit", {
-        op: "text",
-        text: mcpDoc({ name: "x", transport: "sse", url: "http://127.0.0.1:9/mcp" }),
-      }),
-      "sse 已弃用：必须显式拒绝并给迁移指引（不静默映射）",
+      dispatchHostRequest("mcp_save", { ...base, transport: "sse", url: "http://127.0.0.1:9/mcp" }),
+      "sse 已弃用：显式拒绝并给迁移指引",
     ).rejects.toThrow(/sse 已弃用/)
     await expect(
-      dispatchHostRequest("mcp_edit", {
-        op: "text",
-        text: mcpDoc({ name: "x", transport: "stdio", command: "npx", enabled: "yes" }),
-      }),
+      dispatchHostRequest("mcp_save", { ...base, command: "" }),
+      "stdio 必须有 command",
+    ).rejects.toThrow(/stdio 服务器必须提供 command/)
+    await expect(
+      dispatchHostRequest("mcp_save", { ...base, transport: "http", command: "" }),
+      "http 必须有 url",
+    ).rejects.toThrow(/http 服务器必须提供 url/)
+    await expect(
+      dispatchHostRequest("mcp_save", { ...base, name: "   " }),
+      "空名字拒绝",
+    ).rejects.toMatchObject({ code: "CONFIG" })
+    await expect(
+      dispatchHostRequest("mcp_save", { ...base, enabled: "yes" }),
+      "enabled 非布尔拒绝",
+    ).rejects.toMatchObject({ code: "CONFIG" })
+    const { enabled: _enabled, ...withoutEnabled } = base
+    await expect(
+      dispatchHostRequest("mcp_save", withoutEnabled),
+      "缺 enabled 字段拒绝",
+    ).rejects.toMatchObject({ code: "CONFIG" })
+    const { headers: _headers, ...withoutHeaders } = base
+    await expect(
+      dispatchHostRequest("mcp_save", withoutHeaders),
+      "缺 headers 字段拒绝",
     ).rejects.toMatchObject({ code: "CONFIG" })
     // 全部拒绝路径都不得写盘。
     expect(recorded("write_runtime_config")).toHaveLength(0)
   })
 
-  it("mcp_edit：新增/改写/删除都经 setMcpServers 写回 CONFIG", async () => {
-    setCustomServers([
-      { name: "demo-custom", transport: "http", url: "http://127.0.0.1:9/mcp", enabled: true },
-      { name: "off-server", transport: "stdio", command: "npx", enabled: false },
-    ])
-    await dispatchHostRequest("mcp_edit", {
-      op: "text",
-      text: mcpDoc({ name: "new-server", transport: "stdio", command: "npx", args: ["-y", "new-mcp"], enabled: "true" }),
+  it("mcp_save：新增落盘（args 每行一个、env 行格式复用）；原条目不存在 PATH_NOT_FOUND [native-ui-mcp-form-save]", async () => {
+    setCustomServers([{ name: "keep", transport: "stdio", command: "npx", enabled: false }])
+    await dispatchHostRequest("mcp_save", {
+      originalName: "",
+      name: "brand-new",
+      transport: "stdio",
+      command: "npx",
+      args: "-y\nnew-mcp",
+      url: "",
+      env: "A=1\nB=2",
+      headers: "",
+      enabled: true,
     })
-    let servers = lastWrittenConfig().tools.mcp.servers as Array<{ name: string; enabled?: boolean }>
-    expect(servers.map(server => server.name)).toContain("new-server")
+    const servers = lastWrittenConfig().tools.mcp.servers as Array<{
+      name: string
+      args?: string[]
+      env?: Record<string, string>
+      enabled?: boolean
+    }>
+    const added = servers.find(server => server.name === "brand-new")
+    expect(added?.args, "args 每行一个参数").toEqual(["-y", "new-mcp"])
+    expect(added?.env, "env 复用 KEY=VALUE 行解析").toEqual({ A: "1", B: "2" })
+    expect(added?.enabled).toBe(true)
+    // 同一列表的其它条目原样保留。
+    expect(servers.find(server => server.name === "keep")?.enabled).toBe(false)
 
-    await dispatchHostRequest("mcp_edit", {
-      op: "text",
-      text: mcpDoc({ name: "demo-custom", transport: "http", url: "http://127.0.0.1:8/mcp", enabled: "false" }),
-    })
-    servers = lastWrittenConfig().tools.mcp.servers as Array<{ name: string; enabled?: boolean }>
-    expect(servers.find(server => server.name === "demo-custom")?.enabled).toBe(false)
-
-    await dispatchHostRequest("mcp_edit", { op: "delete", name: "off-server" })
-    servers = lastWrittenConfig().tools.mcp.servers as Array<{ name: string; enabled?: boolean }>
-    expect(servers.map(server => server.name)).not.toContain("off-server")
+    await expect(
+      dispatchHostRequest("mcp_save", {
+        originalName: "ghost",
+        name: "whatever",
+        transport: "stdio",
+        command: "npx",
+        args: "",
+        url: "",
+        env: "",
+        headers: "",
+        enabled: true,
+      }),
+    ).rejects.toMatchObject({ code: "PATH_NOT_FOUND" })
   })
 
-  it("mcp_edit.delete：未知名字以 PATH_NOT_FOUND 拒绝；mcp_test：关闭的服务器短路为 ok=false", async () => {
-    await expect(dispatchHostRequest("mcp_edit", { op: "delete", name: "no-such" })).rejects.toMatchObject({
+  it("mcp_save：重名保存明确报错、不静默覆盖（新增撞名与改名撞名同一判据） [native-ui-mcp-form-duplicate-name]", async () => {
+    setCustomServers([
+      { name: "taken", transport: "stdio", command: "npx", args: ["old"], enabled: true },
+      { name: "other", transport: "stdio", command: "npx", enabled: false },
+    ])
+    // 夹具自身的 setOverride 会排队写一次配置（queueConfigSave 的微任务）——先让它落定、
+    // 再把调用记录清零；否则断言会把夹具产物当「拒绝路径写了盘」的证据（首跑即红的原因）。
+    await flushConfig()
+    calls.length = 0
+    const fields = { transport: "stdio", command: "npx", args: "", url: "", env: "", headers: "", enabled: true }
+    await expect(
+      dispatchHostRequest("mcp_save", { originalName: "", name: "taken", ...fields }),
+      "新增撞名：明确报错（旧行为是静默 Object.assign 覆盖）",
+    ).rejects.toMatchObject({
+      code: "CONFIG",
+      message: expect.stringMatching(/已被占用.*taken/),
+    })
+    await expect(
+      dispatchHostRequest("mcp_save", { originalName: "other", name: "taken", ...fields }),
+      "改名撞名：同一判据",
+    ).rejects.toMatchObject({ code: "CONFIG" })
+    // 全部拒绝路径不得写盘；原条目字段保持原样（没有被静默覆盖）。
+    expect(recorded("write_runtime_config")).toHaveLength(0)
+    const untouched = await dispatchHostRequest("mcp_server_form", { name: "taken" })
+    expect((untouched as { args: string }).args).toBe("old")
+  })
+
+  it("mcp_delete：未知名字以 PATH_NOT_FOUND 拒绝、缺 name 拒绝；mcp_test：关闭的服务器短路为 ok=false", async () => {
+    await expect(dispatchHostRequest("mcp_delete", { name: "no-such" })).rejects.toMatchObject({
       code: "PATH_NOT_FOUND",
     })
+    await expect(dispatchHostRequest("mcp_delete", {})).rejects.toMatchObject({ code: "CONFIG" })
 
     await expect(dispatchHostRequest("mcp_test", {})).rejects.toMatchObject({ code: "CONFIG" })
     await expect(dispatchHostRequest("mcp_test", { name: "no-such" })).rejects.toMatchObject({ code: "PATH_NOT_FOUND" })

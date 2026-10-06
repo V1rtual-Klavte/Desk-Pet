@@ -28,6 +28,7 @@ import { memoryConfig } from "@/services/config"
 import { dreamingTier, dreamingTierLimits } from "@/services/proactive/tiers"
 import { createRuntimeTraceContext, hasRuntimeTraceSubscribers, publishRuntimeTrace } from "@/services/engine/runtime/trace"
 import { conclusionSlotOf, isDerivedBehaviorSource } from "./sources"
+import { DRAFT_SUMMARY_CHARS } from "./draft"
 import { refreshMemoryCount } from "./index"
 import {
   addMemoryCandidates, cancelMemoryJob, checkpointMemoryJob, commitMemoryDreamingJob, memoryJobSources,
@@ -47,8 +48,6 @@ const MAX_BATCHES_PER_RUN = 3
 const REVIEW_MAX_TOKENS_FLOOR = 256
 const LEASE_OWNER = "memory-dreaming"
 const IDLE_TICK_MS = 15_000
-/** 候选 summary 上限：用户来源与派生来源共用同一口径。 */
-const CANDIDATE_SUMMARY_CHARS = 120
 
 /**
  * 派生结论（系统观察）的记忆形态：kind=fact 的可复算结论，权重低于用户事实默认值（5），
@@ -169,7 +168,7 @@ export function parseReviewCandidates(
     out.push({
       draft: {
         content,
-        summary: typeof record.summary === "string" && record.summary.trim() ? record.summary.trim() : content.slice(0, 120),
+        summary: typeof record.summary === "string" && record.summary.trim() ? record.summary.trim() : content.slice(0, DRAFT_SUMMARY_CHARS),
         kind: kind as MemoryDraft["kind"],
         scope: scope as MemoryDraft["scope"],
         ...(scope === "card" && cardId ? { scopeId: cardId } : {}),
@@ -224,7 +223,7 @@ export function buildDerivedCandidates(
     const previous = previousBySlot.get(slot)
     drafts.push({
       content,
-      summary: content.slice(0, CANDIDATE_SUMMARY_CHARS),
+      summary: content.slice(0, DRAFT_SUMMARY_CHARS),
       kind: DERIVED_KIND,
       scope: "user",
       aliases: [`${BEHAVIOR_SLOT_ALIAS_PREFIX}${slot}`, `行为画像·${DERIVED_SLOT_LABELS[slot] ?? slot}`],

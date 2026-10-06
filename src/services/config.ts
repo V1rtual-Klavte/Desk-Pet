@@ -452,10 +452,23 @@ function cloneConfig(): Config {
 // ==========================================
 // 运行时用户配置（CONFIG 中的便捷视图）
 // ==========================================
+
+/**
+ * 弹窗默认尺寸（`general.popup.defaultSize` 的缺省与非法值回退）。
+ *
+ * CONFIG 模板给的是 673×444，本值只在字段缺失或读取越界（w/h 不在 50–2000 内）时作回退；
+ * 三处回退（USER_DEFAULTS / userConfig.popupSize / generalConfig.defaultPopupSize）共用它，
+ * 取用处一律展开成新对象，避免调用方拿到共享引用。
+ * 跨语言同值副本（TS/Rust，改动需两侧同步）：
+ *   · `crates/native-host/src/window/mod.rs` 的 MAIN_WINDOW_WIDTH / MAIN_WINDOW_HEIGHT（730/450）；
+ *   · `crates/native-host/src/render/geometry.rs` 的 DEFAULT_POPUP_WIDTH（730，`appearance.popupSize.w` 的缺省）。
+ */
+export const DEFAULT_POPUP_SIZE: { w: number; h: number } = { w: 730, h: 450 }
+
 const USER_DEFAULTS: UserSettings = {
   popupMode: cfg.general?.popup?.mode || "cursor",
   fixedPosition: cfg.general?.popup?.fixedPosition ?? null,
-  popupSize: cfg.general?.popup?.defaultSize || { w: 730, h: 450 },
+  popupSize: cfg.general?.popup?.defaultSize || { ...DEFAULT_POPUP_SIZE },
   chatWidth: cfg.general?.popup?.chatWidth ?? 220,
   shortcutKey: cfg.general?.shortcut?.key || "P",
   shortcutMacModifiers: cfg.general?.shortcut?.macModifiers || ["Control", "Command"],
@@ -522,7 +535,7 @@ export const userConfig = {
   set popupMode(v: "cursor" | "fixed") { const u = loadUserOverrides(); u.popupMode = v; saveUserOverrides(u); },
   get fixedPosition() { const p = getUser().fixedPosition; return (p && Math.abs(p.x) > 5000) ? null : (p && Math.abs(p.y) > 5000) ? null : p; },
   set fixedPosition(v: { x: number; y: number } | null) { const u = loadUserOverrides(); u.fixedPosition = v; saveUserOverrides(u); },
-  get popupSize() { const sz = getUser().popupSize; return (!sz || sz.w > 2000 || sz.h > 2000 || sz.w < 50 || sz.h < 50) ? { w: 730, h: 450 } : sz; },
+  get popupSize() { const sz = getUser().popupSize; return (!sz || sz.w > 2000 || sz.h > 2000 || sz.w < 50 || sz.h < 50) ? { ...DEFAULT_POPUP_SIZE } : sz; },
   set popupSize(v: { w: number; h: number }) { const u = loadUserOverrides(); u.popupSize = v; saveUserOverrides(u); },
   get chatWidth() { return getUser().chatWidth; },
   set chatWidth(v: number) { const u = loadUserOverrides(); u.chatWidth = v; saveUserOverrides(u); },
@@ -664,7 +677,7 @@ function overrideOr<T>(key: string, fallback: T): T {
 export const generalConfig = {
   get popupMode() { return overrideOr("general.popup.mode", cfg.general?.popup?.mode ?? "cursor") as "cursor" | "fixed"; },
   get autoPopupOnMessage() { return overrideOr("general.popup.autoPopupOnMessage", cfg.general?.popup?.autoPopupOnMessage ?? false); },
-  get defaultPopupSize() { return overrideOr("general.popup.defaultSize", cfg.general?.popup?.defaultSize ?? { w: 730, h: 450 }); },
+  get defaultPopupSize() { return overrideOr("general.popup.defaultSize", cfg.general?.popup?.defaultSize ?? { ...DEFAULT_POPUP_SIZE }); },
   get shortcutKey() { return overrideOr("general.shortcut.key", cfg.general?.shortcut?.key ?? "P"); },
   get shortcutMacModifiers() { return overrideOr("general.shortcut.macModifiers", cfg.general?.shortcut?.macModifiers ?? ["Control", "Command"]); },
   get shortcutWinModifiers() { return overrideOr("general.shortcut.winModifiers", cfg.general?.shortcut?.winModifiers ?? ["Control", "Alt"]); },
@@ -891,7 +904,12 @@ export const toolsConfig = {
 /** CONFIG 里每服务器条目的最小读面：只取名字与启用位，其余字段由工具层归一化。 */
 type McpServerEntry = { name?: unknown; enabled?: unknown };
 
-/** 单条 MCP 服务器配置是否启用：缺省即启用，只有显式 `enabled: false` 才算关闭。 */
+/**
+ * 单条 MCP 服务器配置是否启用：缺省即启用，只有显式 `enabled: false` 才算关闭。
+ *
+ * 本函数只读启停名单（派生值面，不抛错）；条目字段的**逐字段 schema 校验**在工具层
+ * （`tool/mcp` 的 `toServerConfig`）：非法条目在那里结构化拒绝，不在本读面静默收拢。
+ */
 function mcpServerEnabled(entry: McpServerEntry | null | undefined): boolean {
   return entry?.enabled !== false;
 }

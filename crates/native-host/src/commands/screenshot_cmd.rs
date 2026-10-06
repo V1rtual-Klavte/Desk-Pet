@@ -273,15 +273,22 @@ mod tests {
         }
     }
 
-    /// 每用例独占的夹具目录（仓库 `test/.tmp`，不落仓库外）。
+    /// 每用例独占的夹具目录（系统临时目录，与 `images::fixtures::temp_dir` 同款）。
+    ///
+    /// 不放仓库 `test/.tmp`：落盘要走 [`AppPaths::validate_new_file_path`] 的允许根校验，
+    /// 而允许根只有 home / temp（外加真实启动时注入的工作区根，单测不经过 `init`）。
+    /// Windows CI 的检出目录在 `D:\a\...`，既不在 home 也不在 temp 下 —— 夹具放仓库内
+    /// 会被路径校验直接拒成 PathEscape（2026-10-06 CI 的 3 条截图落盘用例即此形态）。
     fn temp_root(tag: &str) -> PathBuf {
         let stamp = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .map(|elapsed| elapsed.as_nanos())
             .unwrap_or(0);
-        let root = Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../../test/.tmp")
-            .join(format!("deskpet-image-store-{tag}-{}-{stamp}", std::process::id()));
+        let root = std::env::temp_dir().join(format!(
+            "deskpet-image-store-{tag}-{}-{stamp}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
         std::fs::create_dir_all(&root).unwrap();
         // 落盘实现会 canonicalize（`validate_new_file_path`），夹具根也归一，
         // 否则 `starts_with` 会被 `..` 组件假阴。

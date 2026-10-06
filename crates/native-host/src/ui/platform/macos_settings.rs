@@ -36,11 +36,16 @@ use objc2_foundation::{
     NSRect, NSRectEdge, NSSize, NSString, NSTimer,
 };
 
-use crate::ui::settings::panels::{ListPanel, MemoryDetailState, PanelRow, RowAction, RowOption};
+use crate::ui::settings::panels::{
+    self, mcp_form_rows, ListPanel, McpFieldControl, McpFieldRow, McpTransport, MemoryDetailState,
+    MemoryEvidenceState, PanelRow, RowAction, RowOption, MCP_FIELD_ARGS, MCP_FIELD_COMMAND,
+    MCP_FIELD_ENABLED, MCP_FIELD_ENV, MCP_FIELD_HEADERS, MCP_FIELD_NAME, MCP_FIELD_TRANSPORT,
+    MCP_FIELD_URL,
+};
 use crate::ui::settings::schema::{Field, FieldKind, TABS};
 use crate::ui::settings::{
-    dynamic_field_hint, settings_ui, tab_index_for_tag, DocumentState, DocumentTarget, NoticeLevel,
-    SettingsUi, SettingsValue, SettingsView, ShortcutModifiers,
+    dynamic_field_hint, settings_ui, tab_index_for_tag, DocumentContent, DocumentState,
+    DocumentTarget, NoticeLevel, SettingsUi, SettingsValue, SettingsView, ShortcutModifiers,
 };
 use crate::ui::theme::{self, paint, Rgba, Tokens};
 use crate::{rust_debug, rust_info, rust_warn};
@@ -113,6 +118,9 @@ const PANEL_PICK_W: f64 = 132.0;
 const DETAIL_INFO_H: f64 = 78.0;
 /// 记忆详情内容编辑框高度。
 const DETAIL_EDIT_H: f64 = 72.0;
+/// 展开的来源原话高度（只读滚动视图，固定高度）：原话再长也只在框内滚动，
+/// 不把页面撑开 —— 「逐条展开不无限膨胀」的版面一侧。
+const MEMORY_EVIDENCE_H: f64 = 140.0;
 /// 记忆历史行高（标题 + 正文行）。
 const HISTORY_ROW_H: f64 = 44.0;
 /// 文档预览面板的正文文本区尺寸（逻辑点）：与旧模态弹窗的附件区同值，
@@ -170,8 +178,8 @@ const DANGEROUS_ACTIONS: &[(&str, &str, &str)] = &[
     ),
     (
         "action.memoryRestoreApply",
-        "用最近备份覆盖记忆库？",
-        "当前记忆库会被替换为最近一次托管备份的内容；请先用「恢复预览」确认备份版本。",
+        "用选中的备份覆盖记忆库？",
+        "当前记忆库会被替换为「备份列表」里选中那一份的内容；请先用「预览选中备份」确认版本。",
     ),
 ];
 
@@ -570,7 +578,7 @@ fn jobs_report_text(panel: &ListPanel) -> String {
 /// 「先加的在最右」的排布），所以主操作「保存」在最右、次要动作居中、「关闭」在最左。
 ///
 /// 「复制」只给只读的 CardTemplate（提示词全文供复制给外部 AI 生成新卡）；
-/// 同属只读的 VariablePool / MemoryEvidence 不借到它。
+/// 同属只读的 VariablePool 不借到它。
 fn doc_dialog_buttons(target: &DocumentTarget) -> Vec<DocDialogButton> {
     let mut buttons = Vec::new();
     if !target.is_read_only() {
@@ -666,6 +674,145 @@ fn document_panel_layout(plan: &[DocDialogButton]) -> DocumentPanelLayout {
     }
 }
 
+// ── MCP 表单面板（W5-B：字段控件取代整段 markdown 文档）──
+
+/// 表单单行控件行高。
+const MCP_FORM_ROW_H: f64 = 26.0;
+/// 表单多行控件高度（约 3 行可见；args / env / headers 各有自己的滚动区）。
+const MCP_FORM_MULTILINE_H: f64 = 58.0;
+/// 表单标签列宽（含标签与控件之间的间距；长标签换行由 `wrapped_label` 承载）。
+const MCP_FORM_LABEL_W: f64 = 168.0;
+/// 表单行间距。
+const MCP_FORM_ROW_GAP: f64 = 6.0;
+
+/// MCP 表单面板的版面（纯函数，可测；`SettingsRect` 口径：左上原点、y 从上往下）。
+struct McpFormLayout {
+    width: f64,
+    height: f64,
+    title: SettingsRect,
+    hint: SettingsRect,
+    /// 每行（标签, 控件）矩形，与表单行同序。
+    rows: Vec<(SettingsRect, SettingsRect)>,
+    /// 按钮矩形，与 [`doc_dialog_buttons`] 的计划**同序**（首项在最右）。
+    buttons: Vec<SettingsRect>,
+}
+
+/// 表单行的控件高度（纯函数，可测）：多行文本三倍行高，其余单行。
+fn mcp_form_control_h(control: &McpFieldControl) -> f64 {
+    match control {
+        McpFieldControl::Multiline(_) => MCP_FORM_MULTILINE_H,
+        _ => MCP_FORM_ROW_H,
+    }
+}
+
+/// transport 下拉按钮的标题（纯函数，可测）：选中线值 → 「标签 ▾」；未知值回退第一项。
+fn mcp_transport_title(selected: &str) -> String {
+    let label = McpTransport::OPTIONS
+        .iter()
+        .find(|(value, _)| *value == selected)
+        .or_else(|| McpTransport::OPTIONS.first())
+        .map(|(_, label)| *label)
+        .unwrap_or("—");
+    format!("{label} ▾")
+}
+
+/// 按表单行与按钮计划算面板版面（纯函数，可测）：标题 / 说明 / 字段行 / 按钮行自上而下，
+/// 按钮行右起依次排（计划首项贴内容右缘 = 主操作位，与文档面板同排法）。
+fn mcp_form_layout(rows: &[McpFieldRow], plan: &[DocDialogButton]) -> McpFormLayout {
+    let width = DOC_DIALOG_W + DOC_PANEL_MARGIN * 2.0;
+    let title_y = DOC_PANEL_MARGIN;
+    let hint_y = title_y + DOC_PANEL_TITLE_H + DOC_PANEL_GAP;
+    let mut y = hint_y + DOC_PANEL_HINT_H + DOC_PANEL_GAP;
+    let label_x = DOC_PANEL_MARGIN;
+    let control_x = label_x + MCP_FORM_LABEL_W;
+    let control_w = width - DOC_PANEL_MARGIN - control_x;
+    let mut rects = Vec::with_capacity(rows.len());
+    for row in rows {
+        let h = mcp_form_control_h(&row.control);
+        rects.push((
+            SettingsRect {
+                x: label_x,
+                y,
+                w: MCP_FORM_LABEL_W - DOC_PANEL_GAP,
+                h,
+            },
+            SettingsRect {
+                x: control_x,
+                y,
+                w: control_w,
+                h,
+            },
+        ));
+        y += h + MCP_FORM_ROW_GAP;
+    }
+    let button_y = y + DOC_PANEL_GAP;
+    let height = button_y + DOC_PANEL_BUTTON_H + DOC_PANEL_MARGIN;
+    let mut buttons = Vec::with_capacity(plan.len());
+    let mut right = width - DOC_PANEL_MARGIN;
+    for button in plan {
+        let w = doc_button_width(*button);
+        let x = right - w;
+        buttons.push(SettingsRect {
+            x,
+            y: button_y,
+            w,
+            h: DOC_PANEL_BUTTON_H,
+        });
+        right = x - DOC_PANEL_GAP;
+    }
+    McpFormLayout {
+        width,
+        height,
+        title: SettingsRect {
+            x: DOC_PANEL_MARGIN,
+            y: title_y,
+            w: DOC_DIALOG_W,
+            h: DOC_PANEL_TITLE_H,
+        },
+        hint: SettingsRect {
+            x: DOC_PANEL_MARGIN,
+            y: hint_y,
+            w: DOC_DIALOG_W,
+            h: DOC_PANEL_HINT_H,
+        },
+        rows: rects,
+        buttons,
+    }
+}
+
+/// 在显 MCP 表单的控件引用（保存时逐字段读值；随面板状态一起释放）。
+struct McpFormInputs {
+    name: Retained<NSTextField>,
+    command: Retained<NSTextField>,
+    url: Retained<NSTextField>,
+    args: Retained<NSTextView>,
+    env: Retained<NSTextView>,
+    headers: Retained<NSTextView>,
+    enabled: Retained<NSButton>,
+    /// 当前选中的传输方式（自绘下拉按钮标题是它的投影）。
+    transport: Cell<McpTransport>,
+    transport_button: Retained<NSButton>,
+}
+
+impl McpFormInputs {
+    /// 控件读值（key → 值）→ 保存载荷的输入表（键表来自共享层的 `MCP_FIELD_*`）。
+    fn read_values(&self) -> std::collections::BTreeMap<String, String> {
+        let mut values = std::collections::BTreeMap::new();
+        values.insert(MCP_FIELD_NAME.to_string(), self.name.stringValue().to_string());
+        values.insert(
+            MCP_FIELD_TRANSPORT.to_string(),
+            self.transport.get().as_wire().to_string(),
+        );
+        values.insert(MCP_FIELD_COMMAND.to_string(), self.command.stringValue().to_string());
+        values.insert(MCP_FIELD_ARGS.to_string(), self.args.string().to_string());
+        values.insert(MCP_FIELD_URL.to_string(), self.url.stringValue().to_string());
+        values.insert(MCP_FIELD_ENV.to_string(), self.env.string().to_string());
+        values.insert(MCP_FIELD_HEADERS.to_string(), self.headers.string().to_string());
+        values.insert(MCP_FIELD_ENABLED.to_string(), is_checked(&self.enabled).to_string());
+        values
+    }
+}
+
 /// 在显的文档预览面板（非模态 NSPopover）与它的同代快照。
 ///
 /// 全部字段都是「呈现那一刻」的快照：面板生命周期内的点击分发与关闭收尾都按它走，
@@ -674,7 +821,10 @@ struct DocumentPanelState {
     /// 面板本体（控制器持有；收起后随整个状态一起释放）。
     popover: Retained<NSPopover>,
     /// 正文文本视图（保存 / 复制读值；frame 观察按它的对象身份解除注册）。
-    text_view: Retained<NSTextView>,
+    /// MCP 表单面板没有文本视图（`None`）—— 与 `mcp_inputs` 恰好互斥。
+    text_view: Option<Retained<NSTextView>>,
+    /// MCP 表单的控件引用（`target = McpServer` 时才有；文本面板为 `None`）。
+    mcp_inputs: Option<McpFormInputs>,
     /// 复制按钮（按钮计划里含 `Copy` 的只读文档才有）：复制成功后就地改「已复制」。
     copy_button: Option<Retained<NSButton>>,
     /// 按钮计划快照（tag = 下标）。
@@ -1163,6 +1313,8 @@ struct SettingsContentIvars {
     doc_presented_this_open: Cell<bool>,
     /// 保存未成功的文档草稿（目标 + 文本）：保存失败后重开该文档时优先恢复用户编辑。
     doc_draft: RefCell<Option<(DocumentTarget, String)>>,
+    /// 保存未成功的 MCP 表单草稿（目标 + 控件值表）：与 `doc_draft` 同语义，形状不同。
+    doc_form_draft: RefCell<Option<(DocumentTarget, std::collections::BTreeMap<String, String>)>>,
     /// 「重新生成」已点击、等新文案回填：回填前不按普通规则重弹（避免先弹一次旧文案）。
     doc_regenerate_pending: Cell<bool>,
     /// 点「重新生成」时的旧内容：内容一变即回填完成（失败则保持等下一次打开）。
@@ -1358,9 +1510,14 @@ define_class!(
             };
             let outcome = match action {
                 RowAction::Toggle => settings_ui().toggle_panel_row(panel, &row_id),
-                RowAction::Select => {
-                    settings_ui().open_memory_item(&row_id);
-                    Ok(())
+                // 行选择按面板分发（条目 = 详情；来源 = 展开原话；备份 = 选中；
+                // Profile / 人格卡列表 = 选中管理对象）。
+                RowAction::Select | RowAction::Choose => {
+                    settings_ui().panel_row_select(panel, &row_id)
+                }
+                // 记忆作业行的取消 / 继续（行主按钮；动作集合由 Node 行投影定义）。
+                RowAction::Cancel | RowAction::Resume => {
+                    settings_ui().memory_job_action(panel, &row_id, action)
                 }
                 // 次动作按钮（MCP「编辑」、Skill「删除」）走本批的专用入口。
                 RowAction::Edit | RowAction::Delete => {
@@ -1393,6 +1550,9 @@ define_class!(
 
         /// 文档预览面板的按钮（tag = 按钮计划下标）：动作语义与旧模态逐一对照 ——
         /// 复制不关面板；保存 / 重新生成 / 测试连接收起面板但保持文档打开；关闭关档。
+        ///
+        /// 面板两种形态（文本视图 / MCP 表单控件）互斥：文本面板读文本视图，
+        /// 表单面板按控件读值表（同一把「关闭才收尾」的纪律）。
         #[unsafe(method(documentPanelAction:))]
         fn document_panel_action(&self, sender: Option<&AnyObject>) {
             let Some(sender) = sender else { return };
@@ -1407,12 +1567,13 @@ define_class!(
                 (
                     panel.plan.clone(),
                     panel.target.clone(),
-                    panel.text_view.string().to_string(),
+                    panel.text_view.as_ref().map(|view| view.string().to_string()),
+                    panel.mcp_inputs.as_ref().map(McpFormInputs::read_values),
                     panel.copy_button.clone(),
                     panel.presented_content.clone(),
                 )
             };
-            let (plan, target, text, copy_button, presented) = snapshot;
+            let (plan, target, text, form_values, copy_button, presented) = snapshot;
             let Some(action) = tag
                 .try_into()
                 .ok()
@@ -1424,10 +1585,21 @@ define_class!(
             match action {
                 DocDialogButton::Save => {
                     // 先留草稿再收起：保存失败后重开本档可恢复编辑（旧模态同款）。
-                    *self.ivars().doc_draft.borrow_mut() = Some((target, text.clone()));
-                    self.close_document_panel(DocDialogButton::Save);
-                    if let Err(error) = settings_ui().save_document(&text) {
-                        settings_ui().set_error(format!("保存未启动：{error}"));
+                    if let Some(values) = form_values {
+                        *self.ivars().doc_form_draft.borrow_mut() =
+                            Some((target, values.clone()));
+                        self.close_document_panel(DocDialogButton::Save);
+                        if let Err(error) = settings_ui().save_mcp_form(&values) {
+                            settings_ui().set_error(format!("保存未启动：{error}"));
+                        }
+                    } else if let Some(text) = text {
+                        *self.ivars().doc_draft.borrow_mut() = Some((target, text.clone()));
+                        self.close_document_panel(DocDialogButton::Save);
+                        if let Err(error) = settings_ui().save_document(&text) {
+                            settings_ui().set_error(format!("保存未启动：{error}"));
+                        }
+                    } else {
+                        rust_warn!("文档面板既没有文本也没有表单值，忽略本次保存");
                     }
                 }
                 DocDialogButton::Regenerate => {
@@ -1452,15 +1624,87 @@ define_class!(
                 DocDialogButton::Copy => {
                     // 复制**不关面板**：面板里**当前显示**的文本逐字写系统剪贴板，
                     // 按钮就地变「已复制」（与编辑器素材浮层同款反馈）。
-                    if crate::ui::clipboard::write_text(&text) {
-                        if let Some(button) = &copy_button {
-                            button.setTitle(&NSString::from_str("已复制"));
+                    match text {
+                        Some(text) if crate::ui::clipboard::write_text(&text) => {
+                            if let Some(button) = &copy_button {
+                                button.setTitle(&NSString::from_str("已复制"));
+                            }
                         }
-                    } else {
-                        rust_warn!("复制 Card 模版到剪贴板失败");
+                        _ => rust_warn!("复制 Card 模版到剪贴板失败"),
                     }
                 }
                 DocDialogButton::Close => self.close_document_panel(DocDialogButton::Close),
+            }
+        }
+
+        /// MCP 表单：transport 下拉（与设置页自绘下拉同路子：点击弹**真 NSMenu**）。
+        ///
+        /// 选项表是共享层的静态两张（stdio / http），菜单项 tag 直接是选项下标 ——
+        /// 不需要像自绘下拉那样登记待选表。
+        #[unsafe(method(mcpFormTransportClicked:))]
+        fn mcp_form_transport_clicked(&self, sender: Option<&AnyObject>) {
+            let Some(sender) = sender else { return };
+            let Some(mtm) = MainThreadMarker::new() else { return };
+            let menu = objc2_app_kit::NSMenu::new(mtm);
+            for (index, (_, label)) in McpTransport::OPTIONS.iter().enumerate() {
+                let item = unsafe {
+                    objc2_app_kit::NSMenuItem::initWithTitle_action_keyEquivalent(
+                        objc2_app_kit::NSMenuItem::alloc(mtm),
+                        &NSString::from_str(label),
+                        Some(sel!(mcpFormTransportPicked:)),
+                        &NSString::from_str(""),
+                    )
+                };
+                unsafe { item.setTarget(Some(as_any(self))) };
+                item.setTag(index as isize);
+                menu.addItem(&item);
+            }
+            let Some(view) = sender.downcast_ref::<NSView>() else {
+                return;
+            };
+            let _ = menu.popUpMenuPositioningItem_atLocation_inView(
+                None,
+                NSPoint::new(0.0, -2.0),
+                Some(view),
+            );
+        }
+
+        /// MCP 表单：transport 菜单项选中（tag = [`McpTransport::OPTIONS`] 下标）。
+        #[unsafe(method(mcpFormTransportPicked:))]
+        fn mcp_form_transport_picked(&self, sender: Option<&AnyObject>) {
+            let Some(sender) = sender else { return };
+            let index: isize = unsafe { msg_send![sender, tag] };
+            let Some((wire, _)) = McpTransport::OPTIONS.get(index.max(0) as usize) else {
+                rust_warn!("transport 菜单项下标超出选项表（tag={index}）");
+                return;
+            };
+            let Some(value) = McpTransport::parse(wire) else {
+                rust_warn!("transport 选项表出现非法线值: {wire}");
+                return;
+            };
+            let panel = self.ivars().doc_panel.borrow();
+            let Some(inputs) = panel.as_ref().and_then(|panel| panel.mcp_inputs.as_ref()) else {
+                return;
+            };
+            inputs.transport.set(value);
+            inputs
+                .transport_button
+                .setTitle(&NSString::from_str(&mcp_transport_title(wire)));
+        }
+
+        /// MCP 表单：字段回车的动作落点（值在保存时统一读；这里只结束编辑）。
+        ///
+        /// 单行文本与开关共用这个选择器：文本字段 Enter 到达这里时 downcast 失败、
+        /// 直接返回（不需要中间提交）；开关（`NSButtonType::Switch`）自己翻转 state，
+        /// 自绘轨道是它的投影，点击后要重画一次。
+        #[unsafe(method(mcpFormFieldCommitted:))]
+        fn mcp_form_field_committed(&self, sender: Option<&AnyObject>) {
+            let Some(button) = sender.and_then(|sender| sender.downcast_ref::<NSButton>()) else {
+                return;
+            };
+            button.setWantsLayer(true);
+            if let Some(layer) = button.layer() {
+                paint::apply_switch(&layer, is_checked(button));
             }
         }
 
@@ -2028,6 +2272,7 @@ impl SettingsContentController {
             doc_anchor: RefCell::new(None),
             doc_presented_this_open: Cell::new(false),
             doc_draft: RefCell::new(None),
+            doc_form_draft: RefCell::new(None),
             doc_regenerate_pending: Cell::new(false),
             doc_regenerate_expected: RefCell::new(None),
             select_pending: RefCell::new(None),
@@ -2595,15 +2840,39 @@ impl SettingsContentController {
                     y = self.build_panel(mtm, stack, width, y, items, Some(REFRESH_MEMORY));
                 }
                 y = self.build_memory_detail(mtm, stack, width, y);
-                if let Some(jobs) = panels.get(1) {
-                    y = self.build_memory_jobs_button(mtm, stack, width, y, jobs);
+                // 来源原话：逐条一行（点行展开那一条，再点收起），展开块固定高度可滚动。
+                if let Some(sources) = settings_ui().memory_source_panel() {
+                    y = self.build_panel(mtm, stack, width, y, &sources, None);
+                    y = self.build_memory_evidence(mtm, stack, width, y);
                 }
+                if let Some(jobs) = panels.get(1) {
+                    y = self.build_memory_jobs_section(mtm, stack, width, y, jobs);
+                }
+                // 备份列表：托管目录里的备份逐份一行；点行 = 选中（预览/应用的作用对象，
+                // 按钮在页面顶部的「备份与恢复」小节）。
+                y = self.build_panel(
+                    mtm,
+                    stack,
+                    width,
+                    y,
+                    &settings_ui().memory_backup_panel(),
+                    None,
+                );
             }
-            // 本批：外观页的音效试听面板（行按钮 = 试听；分配编辑在文档区）。
+            // 本批：外观页的 Profile 列表（点行选中管理对象；「Profile 资源」小节的动作
+            // 作用于选中行）与音效试听面板（行按钮 = 试听；分配编辑在文档区）。
             "appearance" => {
+                let profile_panel = settings_ui().profile_panel();
+                y = self.build_panel(mtm, stack, width, y, &profile_panel, None);
                 for panel in settings_ui().sound_panels().iter() {
                     y = self.build_panel(mtm, stack, width, y, panel, Some(REFRESH_SOUNDS));
                 }
+            }
+            // 本批：AI 页的人格卡列表（点行选中管理对象；「人格」小节的动作作用于选中行，
+            // 行内「编辑」直接打开该卡文档）。
+            "ai" => {
+                let card_panel = settings_ui().card_panel();
+                y = self.build_panel(mtm, stack, width, y, &card_panel, None);
             }
             _ => {}
         }
@@ -2645,9 +2914,12 @@ impl SettingsContentController {
         }
     }
 
-    /// 「自动整理」入口（用户规则 2026-10-05）：历史作业不再直接铺开，
-    /// 收成标题 + 「查看记录（N）」按钮，点击弹只读模态层（经 `run_modal_alert` 降级包裹）。
-    fn build_memory_jobs_button(
+    /// 「自动整理」小节：标题 + **可操作作业行**（取消/继续）+ 「查看记录（N）」按钮。
+    ///
+    /// 历史作业仍不直接铺开（2026-10-05 用户规则：完整历史收在只读模态层）；但行级
+    /// 动作需要可点控件、只读文本弹层承载不了 —— 因此内联的只有**带动作的行**
+    /// （Node 按作业状态投影：进行中 = 取消、受限的 review = 继续，通常 0–2 条）。
+    fn build_memory_jobs_section(
         &self,
         mtm: MainThreadMarker,
         stack: &FlippedView,
@@ -2655,10 +2927,32 @@ impl SettingsContentController {
         y: f64,
         panel: &ListPanel,
     ) -> f64 {
+        let mut y = y;
         let title = label(mtm, panel.title, BODY_BASE_SIZE, Some(&ink()));
         title.setFont(Some(&resolve_bold_font(BODY_BASE_SIZE)));
         place(stack, &*title, MARGIN, y, width - MARGIN * 2.0, 20.0);
         self.push_panel_view(&title);
+        y += 24.0;
+        let actionable = settings_ui().memory_actionable_jobs();
+        if !actionable.is_empty() {
+            let hint = wrapped_label(
+                mtm,
+                "可操作的作业（取消 = 终止这条作业；继续 = 恢复受限的 Review 作业并跑到收口）：",
+                HELP_BASE_SIZE,
+                Some(&dim()),
+                2,
+            );
+            place(stack, &*hint, MARGIN, y, width - MARGIN * 2.0, 30.0);
+            self.push_panel_view(&hint);
+            y += 32.0;
+            // 行 y 逐行累加（`panel_rows_span` 纯函数，与 build_panel 同一口径）。
+            let heights: Vec<f64> = actionable.iter().map(panel_row_height).collect();
+            let (row_ys, after_rows) = panel_rows_span(y, &heights);
+            for (row, row_y) in actionable.iter().zip(row_ys) {
+                self.build_panel_row(mtm, stack, width, row_y, panels::PANEL_MEMORY_JOBS, row);
+            }
+            y = after_rows;
+        }
         let button = themed_button(
             mtm,
             &memory_jobs_button_title(panel.rows.len()),
@@ -2666,9 +2960,64 @@ impl SettingsContentController {
             sel!(memoryJobsClicked:),
             ButtonRole::Form,
         );
-        place(stack, &*button, MARGIN, y + 26.0, 150.0, 26.0);
+        place(stack, &*button, MARGIN, y, 150.0, 26.0);
         self.push_panel_view(&button);
-        y + 26.0 + 34.0
+        y + 34.0
+    }
+
+    /// 展开中的来源原话块（固定高度只读滚动视图；三态由共享层给坐标）。
+    fn build_memory_evidence(
+        &self,
+        mtm: MainThreadMarker,
+        stack: &FlippedView,
+        width: f64,
+        mut y: f64,
+    ) -> f64 {
+        let Some(state) = settings_ui().memory_evidence_state() else {
+            return y;
+        };
+        match state {
+            MemoryEvidenceState::Loading { .. } => {
+                let field = help_label(mtm, "正在读取来源原话…");
+                place(stack, &*field, MARGIN, y, width - MARGIN * 2.0, 15.0);
+                self.push_panel_view(&field);
+                y + 18.0
+            }
+            MemoryEvidenceState::Error { error, .. } => {
+                let field = wrapped_label(
+                    mtm,
+                    &error,
+                    HELP_BASE_SIZE,
+                    Some(&paint::color(notice_color(
+                        theme::tokens(),
+                        NoticeKind::Error,
+                    ))),
+                    2,
+                );
+                place(stack, &*field, MARGIN, y, width - MARGIN * 2.0, 30.0);
+                self.push_panel_view(&field);
+                y + 32.0
+            }
+            MemoryEvidenceState::Ready { source_id, text } => {
+                let hint = help_label(mtm, &format!("已展开 {source_id} 的原话（再点该行收起）"));
+                place(stack, &*hint, MARGIN, y, width - MARGIN * 2.0, 15.0);
+                self.push_panel_view(&hint);
+                y += 18.0;
+                let (scroll, view) =
+                    readonly_text_view(mtm, width - MARGIN * 2.0, MEMORY_EVIDENCE_H, HELP_BASE_SIZE);
+                view.setString(&NSString::from_str(&text));
+                place(
+                    stack,
+                    &*scroll,
+                    MARGIN,
+                    y,
+                    width - MARGIN * 2.0,
+                    MEMORY_EVIDENCE_H,
+                );
+                self.push_panel_view(&scroll);
+                y + MEMORY_EVIDENCE_H + 6.0
+            }
+        }
     }
 
     /// 一个管理面板（标题 + 可选刷新 + 说明 + 错误/告警 + 行）；返回新的 y。
@@ -2867,6 +3216,17 @@ impl SettingsContentController {
             RowAction::Preview => "试听",
             // 凭据输入行：主按钮打开原生输入框（值写入应用自有存储）。
             RowAction::Credential => "设置",
+            // 记忆作业行：取消 / 继续（行出现哪个动作由 Node 按作业状态投影）。
+            RowAction::Cancel => "取消",
+            RowAction::Resume => "继续",
+            // 备份列表行：选中态由共享层叠加在 `enabled` 上（选择是 UI 状态）。
+            RowAction::Choose => {
+                if row.enabled {
+                    "已选中"
+                } else {
+                    "选择"
+                }
+            }
             // 主按钮不会由 Edit/Delete 承担（它们渲染在次按钮位）；Pick 走上面的
             // 行内下拉分支 —— 这里兜底为空。
             RowAction::Edit | RowAction::Delete | RowAction::Pick | RowAction::None => "",
@@ -3630,6 +3990,7 @@ impl SettingsContentController {
             // 文档关闭：复位本次打开的呈现标记并清掉失败草稿 / 重生成等待。
             self.ivars().doc_presented_this_open.set(false);
             self.ivars().doc_draft.borrow_mut().take();
+            self.ivars().doc_form_draft.borrow_mut().take();
             self.ivars().doc_regenerate_pending.set(false);
             self.ivars().doc_regenerate_expected.borrow_mut().take();
             return;
@@ -3644,7 +4005,7 @@ impl SettingsContentController {
         // 「重新生成」回填：内容一变就重弹展示新文案；回填前一律不弹（否则先弹旧文案）。
         if self.ivars().doc_regenerate_pending.get() {
             let expected = self.ivars().doc_regenerate_expected.borrow().clone();
-            if expected.as_deref() != Some(document.content.as_str()) {
+            if expected.as_deref() != document.content.as_text() {
                 self.ivars().doc_regenerate_pending.set(false);
                 self.ivars().doc_regenerate_expected.borrow_mut().take();
                 self.present_document_panel(&document);
@@ -3672,12 +4033,17 @@ impl SettingsContentController {
             rust_warn!("文档预览面板没有可用的定位视图（本次跳过）");
             return;
         };
+        // MCP 目标走表单控件（字段逐项），与文本视图路径互斥。
+        let Some(committed) = document.content.as_text().map(ToString::to_string) else {
+            self.present_mcp_form_panel(document, mtm, rect, &view);
+            return;
+        };
         let read_only = document.target.is_read_only();
         // 保存失败会留下草稿：重开同一文档时优先恢复用户编辑（旧页面内编辑框语义）。
         let draft = self.ivars().doc_draft.borrow().clone();
         let initial = match &draft {
             Some((target, text)) if *target == document.target => text.clone(),
-            _ => document.content.clone(),
+            _ => committed.clone(),
         };
         let plan = doc_dialog_buttons(&document.target);
         let layout = document_panel_layout(&plan);
@@ -3762,11 +4128,12 @@ impl SettingsContentController {
         // 状态先登记再 show：在显判据与关闭收尾都依赖它（show 期间到达的刷新不得重入）。
         *self.ivars().doc_panel.borrow_mut() = Some(DocumentPanelState {
             popover: popover.clone(),
-            text_view: text_view.clone(),
+            text_view: Some(text_view.clone()),
+            mcp_inputs: None,
             copy_button,
             plan,
             target: document.target.clone(),
-            presented_content: document.content.clone(),
+            presented_content: committed.clone(),
             close_cause: None,
         });
         // 面板在显期间到达的错误通知不嵌套抢弹（收起后由下一次刷新补呈现；与旧模态同）。
@@ -3811,6 +4178,218 @@ impl SettingsContentController {
         if !read_only {
             if let Some(window) = content.window() {
                 let _ = window.makeFirstResponder(Some(&text_view));
+            }
+        }
+    }
+
+    /// 呈现 MCP 编辑表单（字段控件；载体与收尾纪律与文档预览面板完全一致）。
+    ///
+    /// 字段行、标签与取值口径来自共享层（`panels::mcp_form_rows`）—— 两个平台的表单
+    /// 同源；本方法只负责把行映射成 AppKit 控件并在保存时把控件值读回。
+    fn present_mcp_form_panel(
+        &self,
+        document: &DocumentState,
+        mtm: MainThreadMarker,
+        rect: NSRect,
+        view: &NSView,
+    ) {
+        let DocumentContent::McpForm(form) = &document.content else {
+            rust_warn!("MCP 表单面板收到非表单内容（本次跳过）");
+            return;
+        };
+        // 保存失败会留下草稿：重开同一条目时优先恢复用户编辑（与文本文档同语义）。
+        let draft = self.ivars().doc_form_draft.borrow().clone();
+        let draft_values = match &draft {
+            Some((target, values)) if *target == document.target => Some(values.clone()),
+            _ => None,
+        };
+        let rows = mcp_form_rows(form, draft_values.as_ref());
+        let plan = doc_dialog_buttons(&document.target);
+        let layout = mcp_form_layout(&rows, &plan);
+        let content = FlippedView::new(mtm, layout.width, layout.height);
+        let tokens = theme::tokens();
+        let title = label(
+            mtm,
+            &document.title,
+            BODY_BASE_SIZE,
+            Some(&paint::color(tokens.ink)),
+        );
+        place_rect(&content, &*title, layout.title);
+        let hint = wrapped_label(
+            mtm,
+            "字段逐项校验，保存失败会如实说明且不写入；名称撞车时不覆盖（会明确报错）。",
+            HELP_BASE_SIZE,
+            Some(&paint::color(tokens.dim)),
+            2,
+        );
+        place_rect(&content, &*hint, layout.hint);
+
+        let mut name_field: Option<Retained<NSTextField>> = None;
+        let mut command_field: Option<Retained<NSTextField>> = None;
+        let mut url_field: Option<Retained<NSTextField>> = None;
+        let mut args_view: Option<Retained<NSTextView>> = None;
+        let mut env_view: Option<Retained<NSTextView>> = None;
+        let mut headers_view: Option<Retained<NSTextView>> = None;
+        let mut enabled_button: Option<Retained<NSButton>> = None;
+        let mut transport_button: Option<Retained<NSButton>> = None;
+        let mut transport = McpTransport::Stdio;
+        for (row, (label_rect, control_rect)) in rows.iter().zip(layout.rows.iter()) {
+            let caption = wrapped_label(
+                mtm,
+                row.label,
+                HELP_BASE_SIZE,
+                Some(&paint::color(tokens.dim)),
+                2,
+            );
+            place_rect(&content, &*caption, *label_rect);
+            match &row.control {
+                McpFieldControl::Line(initial) => {
+                    let field = themed_text_field(mtm, as_any(self), sel!(mcpFormFieldCommitted:));
+                    field.setStringValue(&NSString::from_str(initial));
+                    place_rect(&content, &*field, *control_rect);
+                    style_themed_field(&field);
+                    match row.key {
+                        MCP_FIELD_NAME => name_field = Some(field),
+                        MCP_FIELD_COMMAND => command_field = Some(field),
+                        MCP_FIELD_URL => url_field = Some(field),
+                        other => rust_warn!("MCP 表单出现未登记的单行字段: {other}"),
+                    }
+                }
+                McpFieldControl::Multiline(initial) => {
+                    let (scroll, text_view) = multiline_field(mtm, control_rect.w, control_rect.h);
+                    text_view.setString(&NSString::from_str(initial));
+                    place_rect(&content, &*scroll, *control_rect);
+                    match row.key {
+                        MCP_FIELD_ARGS => args_view = Some(text_view),
+                        MCP_FIELD_ENV => env_view = Some(text_view),
+                        MCP_FIELD_HEADERS => headers_view = Some(text_view),
+                        other => rust_warn!("MCP 表单出现未登记的多行字段: {other}"),
+                    }
+                }
+                McpFieldControl::Choice { selected, .. } => {
+                    let button = themed_button(
+                        mtm,
+                        &mcp_transport_title(selected),
+                        as_any(self),
+                        sel!(mcpFormTransportClicked:),
+                        ButtonRole::Form,
+                    );
+                    place_rect(&content, &*button, *control_rect);
+                    transport = McpTransport::parse(selected).unwrap_or(McpTransport::Stdio);
+                    transport_button = Some(button);
+                }
+                McpFieldControl::Bool(on) => {
+                    let button = switch_button(mtm, row.label, as_any(self), sel!(mcpFormFieldCommitted:));
+                    set_checked(&button, *on);
+                    button.setWantsLayer(true);
+                    if let Some(layer) = button.layer() {
+                        paint::apply_switch(&layer, *on);
+                    }
+                    place_rect(&content, &*button, *control_rect);
+                    enabled_button = Some(button);
+                }
+            }
+        }
+        // 控件读取表：任何一行没建出来都是本方法的缺陷，如实留痕并放弃呈现
+        // （宁可不弹面板，也不弹一个保存时读不全值的表单）。
+        let (Some(name), Some(command), Some(url), Some(args), Some(env), Some(headers), Some(enabled), Some(transport_button)) =
+            (
+                name_field,
+                command_field,
+                url_field,
+                args_view,
+                env_view,
+                headers_view,
+                enabled_button,
+                transport_button,
+            )
+        else {
+            rust_warn!("MCP 表单控件不全（字段行与控件映射漂移），本次未呈现");
+            return;
+        };
+        let inputs = McpFormInputs {
+            name,
+            command,
+            url,
+            args,
+            env,
+            headers,
+            enabled,
+            transport: Cell::new(transport),
+            transport_button,
+        };
+
+        // 按钮行与按钮计划同序（首项贴内容右缘 = 主操作位）；tag = 计划下标。
+        for (index, (button, button_rect)) in plan.iter().zip(layout.buttons.iter()).enumerate() {
+            let role = if *button == DocDialogButton::Save {
+                ButtonRole::Save
+            } else {
+                ButtonRole::Form
+            };
+            let control = themed_button(
+                mtm,
+                doc_button_title(*button),
+                as_any(self),
+                sel!(documentPanelAction:),
+                role,
+            );
+            control.setTag(index as isize);
+            if *button == DocDialogButton::Close {
+                control.setKeyEquivalent(&NSString::from_str("\u{1b}"));
+            }
+            place_rect(&content, &*control, *button_rect);
+        }
+
+        let popover = NSPopover::new(mtm);
+        // 载体与交互语义与文档预览面板完全一致（applicationDefined + 点击挡板 +
+        // 统一走 `popoverDidClose:` 收尾）—— 理由见 `present_document_panel` 的注释。
+        popover.setBehavior(NSPopoverBehavior::ApplicationDefined);
+        let view_controller = NSViewController::new(mtm);
+        view_controller.setView(&content);
+        popover.setContentViewController(Some(&view_controller));
+        popover.setContentSize(content.frame().size);
+        let name = NSString::from_str(super::macos_widgets::standard_appearance_name(
+            theme::tokens().dark,
+        ));
+        match NSAppearance::appearanceNamed(&name) {
+            Some(appearance) => popover.setAppearance(Some(&appearance)),
+            None => rust_warn!("AppKit 外观 {name} 不存在，MCP 表单面板保持默认外观"),
+        }
+        popover.setDelegate(Some(ProtocolObject::from_ref(self)));
+        // 状态先登记再 show（在显判据与关闭收尾都依赖它）；`presented_content` 对表单
+        // 没有语义（只有 CardStages 的重生成比对读它），留空串。
+        *self.ivars().doc_panel.borrow_mut() = Some(DocumentPanelState {
+            popover: popover.clone(),
+            text_view: None,
+            mcp_inputs: Some(inputs),
+            copy_button: None,
+            plan,
+            target: document.target.clone(),
+            presented_content: String::new(),
+            close_cause: None,
+        });
+        // 面板在显期间到达的错误通知不嵌套抢弹（与文档面板同规）。
+        self.ivars().notice_modal_up.set(true);
+        // 点击挡板：与文档面板同款（面板在显期间设置窗不可误点）。
+        if let Some(root) = self.ivars().root.get() {
+            let bounds = root.bounds();
+            let shield = ClickShieldView::new(
+                mtm,
+                NSRect::new(NSPoint::new(0.0, 0.0), bounds.size),
+            );
+            root.addSubview(&shield);
+            *self.ivars().doc_shield.borrow_mut() = Some(shield);
+        }
+        popover.showRelativeToRect_ofView_preferredEdge(rect, view, NSRectEdge::MaxY);
+        if !popover.isShown() {
+            rust_warn!("MCP 表单面板未能显示（窗口不在前台或锚点不可用），本次打开已取消");
+            self.finish_document_panel();
+            return;
+        }
+        // 打开即聚焦名称字段（新建时的第一件事是起名字）。
+        if let Some(window) = content.window() {
+            if let Some(inputs) = self.ivars().doc_panel.borrow().as_ref().and_then(|panel| panel.mcp_inputs.as_ref()) {
+                let _ = window.makeFirstResponder(Some(&inputs.name));
             }
         }
     }
@@ -3870,12 +4449,15 @@ impl SettingsContentController {
             return;
         };
         // 先摘 frame 观察（按同一对象身份解除）：迟到的通知不再打进已收起的面板。
-        unsafe {
-            NSNotificationCenter::defaultCenter().removeObserver_name_object(
-                as_any(self),
-                Some(NSViewFrameDidChangeNotification),
-                Some(as_any(&*state.text_view)),
-            );
+        // MCP 表单面板没有文本视图（观察从未注册，跳过）。
+        if let Some(text_view) = &state.text_view {
+            unsafe {
+                NSNotificationCenter::defaultCenter().removeObserver_name_object(
+                    as_any(self),
+                    Some(NSViewFrameDidChangeNotification),
+                    Some(as_any(&**text_view)),
+                );
+            }
         }
         self.ivars().notice_modal_up.set(false);
         // 撤掉点击挡板：设置窗恢复可交互（挡板只在面板在显期间存在）。
@@ -3895,6 +4477,7 @@ impl SettingsContentController {
         );
         if !keeps_document {
             self.ivars().doc_draft.borrow_mut().take();
+            self.ivars().doc_form_draft.borrow_mut().take();
             settings_ui().close_document();
         }
         rust_debug!("文档预览面板已收起（文档保持打开={keeps_document}）");
@@ -4589,15 +5172,8 @@ mod tests {
             vec![DocDialogButton::Close],
             "只读文档只有关闭"
         );
-        assert_eq!(
-            doc_dialog_buttons(&DocumentTarget::MemoryEvidence),
-            vec![DocDialogButton::Close]
-        );
         // 「复制」只属 Card 模版：其它只读目标不得借到它（显式反查，防以后误加）。
-        for target in [
-            DocumentTarget::VariablePool,
-            DocumentTarget::MemoryEvidence,
-        ] {
+        for target in [DocumentTarget::VariablePool] {
             assert!(
                 !doc_dialog_buttons(&target).contains(&DocDialogButton::Copy),
                 "{target:?} 不应出现复制动作"
@@ -4688,6 +5264,87 @@ mod tests {
         }
     }
 
+    fn 表单样例() -> crate::ui::settings::panels::McpServerForm {
+        crate::ui::settings::panels::McpServerForm {
+            name: "demo".to_string(),
+            transport: McpTransport::Http,
+            command: String::new(),
+            args: "-y\npkg".to_string(),
+            url: "https://example.com/mcp".to_string(),
+            env: "TOKEN=1".to_string(),
+            headers: "A=b".to_string(),
+            enabled: false,
+        }
+    }
+
+    /// MCP 表单版面（纯函数）：每行一个控件、控件高度按形态（多行字段更高）、
+    /// 行自上而下不重叠、控件右缘对齐内容右缘、按钮行在最后一行之下。
+    #[test]
+    fn mcp表单几何按字段行排布() {
+        let form = 表单样例();
+        let rows = mcp_form_rows(&form, None);
+        let plan = vec![
+            DocDialogButton::Save,
+            DocDialogButton::TestConnection,
+            DocDialogButton::Close,
+        ];
+        let layout = mcp_form_layout(&rows, &plan);
+        assert_eq!(layout.width, DOC_DIALOG_W + DOC_PANEL_MARGIN * 2.0);
+        assert_eq!(layout.rows.len(), rows.len(), "每行一个标签 + 一个控件");
+        let mut previous_bottom = layout.hint.y + layout.hint.h;
+        for ((label, control), row) in layout.rows.iter().zip(rows.iter()) {
+            assert!(label.y >= previous_bottom - 1e-9, "字段行自上而下不重叠");
+            assert_eq!(label.y, control.y, "同一行的标签与控件同顶");
+            assert_eq!(
+                control.h,
+                mcp_form_control_h(&row.control),
+                "控件高度按形态取（多行文本更高）"
+            );
+            assert!(control.x >= label.x + label.w, "控件在标签右侧");
+            assert_eq!(
+                control.x + control.w,
+                layout.width - DOC_PANEL_MARGIN,
+                "控件右缘统一对齐内容右缘"
+            );
+            previous_bottom = control.y + control.h;
+        }
+        let last = layout.rows.last().expect("表单至少一行");
+        assert!(
+            layout.buttons[0].y >= last.1.y + last.1.h,
+            "按钮行在最后一行之下"
+        );
+        assert_eq!(
+            layout.height,
+            layout.buttons[0].y + DOC_PANEL_BUTTON_H + DOC_PANEL_MARGIN
+        );
+        assert_eq!(layout.buttons.len(), plan.len());
+        assert_eq!(
+            layout.buttons[0].x + layout.buttons[0].w,
+            layout.width - DOC_PANEL_MARGIN,
+            "计划首项贴内容右缘（主操作位与旧弹窗一致）"
+        );
+        // 多行字段确实比单行高（形态映射生效，不是全表同高）。
+        let args_index = rows.iter().position(|row| row.key == MCP_FIELD_ARGS).unwrap();
+        assert!(
+            layout.rows[args_index].1.h > layout.rows[0].1.h,
+            "args 是 4 行文本高度，name 是单行"
+        );
+    }
+
+    /// transport 下拉按钮标题：选中线值 → 「标签 ▾」；未知值回退第一项（与自绘下拉同口径）。
+    #[test]
+    fn mcp传输下拉标题按选项表() {
+        assert!(mcp_transport_title("http").starts_with("http"), "标题带选中项标签");
+        assert!(mcp_transport_title("http").ends_with(" ▾"));
+        assert!(mcp_transport_title("stdio").starts_with("stdio"));
+        assert_eq!(
+            mcp_transport_title("sse"),
+            mcp_transport_title("stdio"),
+            "值不在表里回退第一项（sse 已弃用，不在选项表）"
+        );
+        assert_eq!(McpTransport::OPTIONS.len(), 2);
+    }
+
     /// 按钮文案表与计划一一对应（点击分发 / 布局 / 标题共用同一份表）。
     #[test]
     fn 文档预览面板按钮文案覆盖全部动作() {
@@ -4718,6 +5375,7 @@ mod tests {
         let modal_needle = concat!(".run", "Modal(");
         for signature in [
             "fn present_document_panel",
+            "fn present_mcp_form_panel",
             "fn document_panel_action",
             "fn finish_document_panel",
             "fn close_document_panel",
@@ -4756,6 +5414,16 @@ mod tests {
             presenter.contains("setKeyEquivalent"),
             "关闭按钮兼作 Esc（applicationDefined 下弹出层不自带 Esc 语义）"
         );
+        // MCP 表单面板是同一种载体（换内容不换纪律）：同一份弹出层语义必须原样存在。
+        let form_presenter = function_body(source, "fn present_mcp_form_panel").unwrap();
+        for (needle, why) in [
+            ("NSPopoverBehavior::ApplicationDefined", "表单面板同样不自行收起"),
+            ("ClickShieldView::new", "表单面板同样挂点击挡板"),
+            ("setKeyEquivalent", "表单面板的关闭按钮同样兼作 Esc"),
+            ("showRelativeToRect_ofView_preferredEdge", "表单面板同样贴锚点呈现"),
+        ] {
+            assert!(form_presenter.contains(needle), "MCP 表单面板缺承载语义: {why}");
+        }
         let finish = function_body(source, "fn finish_document_panel").unwrap();
         assert!(
             finish.contains("removeFromSuperview"),

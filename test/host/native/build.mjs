@@ -29,7 +29,7 @@
 // 本文件是开发工具（Node 脚本），直接 console 输出错误；不进产品构建。
 
 import { execFileSync } from "node:child_process"
-import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs"
+import { existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from "node:fs"
 import { join, relative, sep } from "node:path"
 import { fileURLToPath } from "node:url"
 import { build as viteBuild } from "vite"
@@ -230,8 +230,44 @@ export function noTopLevelAwaitGuard() {
  *   启动主流程。
  * - 构建后全量核对 `import.meta.env` 已被替换（见 assertNoViteEnv）。
  */
+/**
+ * 构建期守门：`src/` 里不得**动态** import 引擎/宿主大桶
+ * （`@/services/engine`、`@/services/engine/harness`）。
+ *
+ * 原因（2026-10-06 验收实测，宿主启动即崩、场景一条都跑不到）：
+ * `inlineDynamicImports` 下 Rollup 会为动态导入目标生成**急切求值**的冻结命名空间
+ * （`Object.freeze({...})`）；桶的命名空间里含循环网中的所有绑定（如 `harnessSlots`）。
+ * 模块排序只要变动（本仓环形依赖网很大，加一条边就可能变），该对象就会在
+ * `const harnessSlots = new HarnessSlots()` 之前求值 →
+ * `ReferenceError: Cannot access 'harnessSlots' before initialization`。
+ * 动态导入请**指名具体模块**（`@/services/engine/harness/runtime` 等）：保懒加载语义、
+ * 不生成桶命名空间。新增需要动态导入的桶时，把它加进这里的清单。
+ */
+export function assertNoDynamicBarrelImports() {
+  const banned = ['import("@/services/engine")', 'import("@/services/engine/harness")']
+  const hits = []
+  const scan = dir => {
+    for (const name of readdirSync(dir)) {
+      const p = join(dir, name)
+      if (statSync(p).isDirectory()) scan(p)
+      else if (p.endsWith(".ts")) {
+        const text = readFileSync(p, "utf8")
+        for (const b of banned) if (text.includes(b)) hits.push(`${relative(REPO_ROOT, p)}: ${b}`)
+      }
+    }
+  }
+  scan(join(REPO_ROOT, "src"))
+  if (hits.length > 0) {
+    throw new Error(
+      `禁止动态 import 引擎/宿主大桶（会生成急切命名空间，与循环网叠加触发 bundle TDZ）：\n  ` +
+        `${hits.join("\n  ")}\n改为指名具体模块的动态导入（见本函数注释）。`
+    )
+  }
+}
+
 export async function buildE2eSceneBundle() {
   const entry = generateE2eEntryModule()
+  assertNoDynamicBarrelImports()
   mkdirSync(E2E_BUNDLE_DIR, { recursive: true })
   await viteBuild({
     configFile: join(REPO_ROOT, "vite.config.ts"),

@@ -2547,13 +2547,33 @@ pub(crate) fn forget_derived_behavior_items_tx(tx: &Transaction<'_>) -> AppResul
     Ok(item_ids.len())
 }
 
-fn rand_suffix() -> String {
+/// id 后缀（条目 / 作业 / 候选三类 id 共用）：`计数器-亚毫秒`，两部分都用十六进制。
+///
+/// **不能**写成计数器与时间戳的 XOR：两者同向 +1 时 XOR 会互相抵消 ——
+/// `(c+1) ^ (t+1) == c ^ t` 在 c、t 尾随 1 的个数相同时恒成立（约 1/3 的概率），
+/// 若两次调用落在同一毫秒（id 前缀相同），生成的 id 就逐字相同、撞 `memory_items`
+/// 主键（`UNIQUE constraint failed: memory_items.id, memory_items.version`）。
+/// 2026-10-06 Windows CI 上该用例报的正是这个主键冲突（离线只能复现到「锁步抵消」
+/// 这一形态，实机待 CI 复核）。
+/// 拼接则对计数器是单射：同一进程内逐次调用不可能重复；跨进程由毫秒前缀 +
+/// 亚毫秒时间位分辨。
+pub(crate) fn rand_suffix() -> String {
     use std::sync::atomic::{AtomicU64, Ordering};
     static COUNTER: AtomicU64 = AtomicU64::new(0);
-    format!(
-        "{:x}",
-        COUNTER.fetch_add(1, Ordering::Relaxed) ^ (now_ms() as u64)
-    )
+    let counter = COUNTER.fetch_add(1, Ordering::Relaxed);
+    id_suffix(counter, sub_ms())
+}
+
+/// 后缀的纯函数形态（单测直接驱动「计数器与时钟锁步」这一失败形态）。
+pub(crate) fn id_suffix(counter: u64, tick: u32) -> String {
+    format!("{counter:x}-{tick:x}")
+}
+
+fn sub_ms() -> u32 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .subsec_nanos()
 }
 
 fn hhmmss() -> String {

@@ -18,7 +18,7 @@ import type { ProactiveOwner, ProactiveSourceRef, ProactiveTask } from "./protoc
 import type { ProactiveTurnContext, RecurrenceProposal } from "./types"
 import { contentPool } from "./content/pool"
 import { localDayKey } from "./time"
-import { RECENT_TARGET_LIMIT } from "./config"
+import { QUERY_LIMIT, RECENT_TARGET_LIMIT } from "./config"
 import { createLogger } from "@/services/logger"
 import { formatError } from "@/services/error"
 const log=createLogger("ProactiveContext")
@@ -36,7 +36,7 @@ export async function reconcileSession(sessionId:string):Promise<void> {
   const card=getActiveCard()
   if(!card)return
   const owner:ProactiveOwner={sessionId,cardId:card.id,cardHash:card.hash,runGeneration:0}
-  const result=await ipc.query({owner,sessionId,limit:100})
+  const result=await ipc.query({owner,sessionId,limit:QUERY_LIMIT})
   for(const attempt of result.attempts) {
     if(attempt.status!=="unresolved"&&attempt.status!=="reserved"&&attempt.status!=="generating")continue
     const proof=await readActiveAttemptEvidence(sessionId,attempt.attemptId,attempt.requestId)
@@ -90,7 +90,7 @@ function readRecurrenceProposals(entries: Awaited<ReturnType<typeof readPiSessio
 
 export async function getTurnContext(owner: ProactiveOwner, userText: string): Promise<ProactiveTurnContext | undefined> {
   const [result, delivered, entries] = await Promise.all([
-    ipc.query({owner,limit:100}), ipc.query({owner,recentDelivered:true,limit:RECENT_TARGET_LIMIT}), readPiSessionEntriesOnce(owner.sessionId),
+    ipc.query({owner,limit:QUERY_LIMIT}), ipc.query({owner,recentDelivered:true,limit:RECENT_TARGET_LIMIT}), readPiSessionEntriesOnce(owner.sessionId),
   ])
   const traceContext = createRuntimeTraceContext(owner.sessionId)
   type FeedbackTarget = { key:string; updatedAt:number; task?:ProactiveTask; attemptId?:string; assistantEntryId?:string; refs:ProactiveSourceRef[]; decision?:unknown }

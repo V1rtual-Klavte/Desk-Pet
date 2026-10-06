@@ -27,10 +27,12 @@
 // `releasePiSession` 释放句柄缓存，由会话层重新 open —— 下面读到的条目确实来自折叠后的文件。
 //
 // 载荷三段（全部按当前窗口推导；上游 `findCutPoint` 按每条消息的 chars/4 从尾部累加）：
-//   · 长回复 = 36% 保留窗口、长正文 = 18%：尾部四条消息 = 108%、尾部三条 = 90%
-//     ⇒ 切点稳定落在「倒数第二轮的正文（user）」上，摘要范围 = 第一轮（非空，completed 而非 declined）。
-//   · 长回复同时是折叠唯一的大宗可回收量：每个流式 delta 一行帧 append，回复结束时
-//     `list/delete`（`operationCleanupWrites`）让整段成为死 key ⇒ 整段可回收。
+//   · 长回复按**折叠闸门 2**反推、长正文 = 18% 保留窗口：尾段四条的累计越过保留窗口、
+//     尾段两条不越 ⇒ 切点稳定落在靠后的整轮上，摘要范围非空且涵盖第一轮（completed 而非 declined）。
+//   · 长回复同时是折叠唯一的大宗可回收量：流式 delta 由**帧缓冲合并**落盘（每
+//     `FRAME_BUFFER_MAX_BYTES` 一条合并行，流结束再物化一次 + `*_end` 全量行），回复结束时
+//     `list/delete`（`operationCleanupWrites`）让整段成为死 key ⇒ 整段可回收；
+//     帧行数下界因此由合并阈值反推（旧口径「每个 delta 一行」在帧缓冲合并后不成立）。
 //   · 正文与回复都留在会话文件里，是「折叠不许动原文」比对的对象。
 // `entry: "production"`：回合经 `sendMessage()`，压缩与折叠都走生产入口。
 // ==========================================
@@ -42,6 +44,7 @@ import { aiConfig } from "@/services/config"
 import { initChat } from "@/services/agent/runner"
 import {
   FOLD_POLICY,
+  FRAME_BUFFER_MAX_BYTES,
   compactActiveSession,
   compactionSettingsFor,
   flushSessionFrameWrites,
@@ -84,9 +87,24 @@ const FIRST = `用户第一轮：${UNIT.repeat(133)}`
 const LONG_SHARE = 0.18
 const LONG = UNIT.repeat(Math.ceil((KEEP_TOKENS * CHARS_PER_TOKEN * LONG_SHARE) / UNIT.length))
 
-/** 长回复 = 保留窗口的 36%（chars/4 口径）：尾部「两条长回复 + 一条长正文」= 90% 不越过保留窗口。 */
-const REPLY_SHARE = 0.36
-const REPLY_CHARS = Math.ceil(KEEP_TOKENS * CHARS_PER_TOKEN * REPLY_SHARE)
+/**
+ * 长回复长度按**折叠可回收量**反推（不再按保留窗口分片）：帧缓冲把同一槽位的 delta 合并成
+ * 每 `FRAME_BUFFER_MAX_BYTES` 一条的合并行（流结束再物化一次，`*_end` 行还带全量正文），
+ * 回复正文因此至少随帧落盘两遍 —— 旧「每个 delta 一行」的字节模型会高估约 8 倍。
+ * 保守下界按一遍计（= 回复正文本身）。
+ */
+const FOLD_RECLAIM_MARGIN = 1.05
+/** 「至少两条长回复」即越过闸门 2 并留余量：取该规模作为回复长度（ASCII ⇒ 1 字符 ≈ 1 字节）。 */
+const REPLY_CHARS = Math.ceil((FOLD_POLICY.minReclaimBytes * FOLD_RECLAIM_MARGIN) / 2)
+/** 单条长回复的帧可回收字节保守下界（合并 delta 至少携带全量正文一次）。 */
+const FRAME_BYTES_PER_REPLY_MIN = REPLY_CHARS
+/** 一条长回复至少产生的可回收帧行数：每 `FRAME_BUFFER_MAX_BYTES` 合并落盘一行（流结束再物化一次）。 */
+const FRAME_LINES_PER_REPLY_MIN = Math.ceil(REPLY_CHARS / FRAME_BUFFER_MAX_BYTES)
+/** 需要几条长回复的帧才越过闸门 2（由 FOLD_POLICY 反推）。 */
+const LONG_REPLIES_NEEDED = Math.ceil((FOLD_POLICY.minReclaimBytes * FOLD_RECLAIM_MARGIN) / FRAME_BYTES_PER_REPLY_MIN)
+/** 轮数：压缩切点至少要「两整轮 + 一条更早的历史」；每多一轮就多一条长回复的帧。 */
+const TURNS = Math.max(3, LONG_REPLIES_NEEDED + 1)
+
 const REPLY_PAD = "compaction fold integrity probe payload "   // ASCII 40 字符
 /** 第 index 轮的长回复：长度精确等于 REPLY_CHARS，逐轮可区分（正文序列比对要能看出换位/丢失）。 */
 function longReply(index: number): string {
@@ -94,19 +112,6 @@ function longReply(index: number): string {
   const pad = REPLY_PAD.repeat(Math.ceil((REPLY_CHARS - head.length) / REPLY_PAD.length))
   return `${head}${pad.slice(0, REPLY_CHARS - head.length)}`
 }
-
-/** 一帧增量行的保守字节下界（实测 16 字符 delta ≈ 205 B：固定结构 ≈ 190 B + delta）。 */
-const FRAME_ROW_MIN_BYTES = 160
-/** faux provider 的单帧切片上限（3–5 token × 4 字符/token ⇒ 12–20 字符）。 */
-const FRAME_CHARS_MAX = 20
-/** 一条长回复的帧可回收字节的保守下界（帧行固定结构 + 切片字符）。 */
-const REPLY_FRAME_BYTES_MIN = Math.floor(REPLY_CHARS / FRAME_CHARS_MAX) * FRAME_ROW_MIN_BYTES
-/** 折叠回收量对闸门 2 的余量。 */
-const FOLD_RECLAIM_MARGIN = 2
-/** 需要几条长回复的帧才越过闸门 2（由 FOLD_POLICY 反推）。 */
-const LONG_REPLIES_NEEDED = Math.ceil((FOLD_POLICY.minReclaimBytes * FOLD_RECLAIM_MARGIN) / REPLY_FRAME_BYTES_MIN)
-/** 轮数：压缩切点至少要「两整轮 + 一条更早的历史」；每多一轮就多一条长回复的帧。 */
-const TURNS = Math.max(3, LONG_REPLIES_NEEDED + 1)
 
 function turnUserText(index: number): string {
   return index === 1 ? FIRST : `用户第${NUMERALS[index - 1] ?? index}轮：${LONG}`
@@ -134,31 +139,35 @@ function sizing(): string {
     + `；长回复 ${REPLY_CHARS} 字符（${(REPLY_CHARS / CHARS_PER_TOKEN / KEEP_TOKENS).toFixed(2)} 保留窗口）`
     + `、长正文 ${LONG.length} 字符（${(LONG.length / CHARS_PER_TOKEN / KEEP_TOKENS).toFixed(2)} 保留窗口）`
     + `；共 ${TURNS} 轮 / 长回复 ${TURNS - 1} 条`
-    + `、帧可回收量保守下界 ${(TURNS - 1) * REPLY_FRAME_BYTES_MIN} B（闸门 2 = ${FOLD_POLICY.minReclaimBytes} B）`
+    + `、帧可回收量保守下界 ${(TURNS - 1) * FRAME_BYTES_PER_REPLY_MIN} B（闸门 2 = ${FOLD_POLICY.minReclaimBytes} B）`
 }
 
 /**
- * 载荷前提（常量全部由窗口与 FOLD_POLICY 推导，这里显式复核两条关系）：
+ * 载荷前提（常量全部由窗口与 FOLD_POLICY 推导，这里显式复核三条关系）：
  * 前提不成立时 scene 前置就失败 —— 否则压缩会按 declined 收尾、折叠会按 skipped 收尾，
  * 下面的断言全部退化。放在 setup 里报出真实数字。
  */
 function assertPayloadPremise(): void {
   const replyTokens = Math.ceil(REPLY_CHARS / CHARS_PER_TOKEN)
   const longTokens = Math.ceil(LONG.length / CHARS_PER_TOKEN)
-  // ① 切点关系：尾部 4 条消息越过保留窗口、尾部 3 条不越过 ⇒ 切点落在倒数第二轮的正文（user）上。
-  if (2 * replyTokens + longTokens >= KEEP_TOKENS || 2 * replyTokens + 2 * longTokens < KEEP_TOKENS) {
-    throw new Error(`场景载荷前提不成立：切点关系被打破（2×长回复 ${2 * replyTokens} + 长正文 ${longTokens}`
-      + ` = ${2 * replyTokens + longTokens}、2×长回复 + 2×长正文 = ${2 * replyTokens + 2 * longTokens}`
-      + `，保留窗口 ${KEEP_TOKENS}）｜${sizing()}`)
+  // ① 切点关系：尾段两条不越过保留窗口、尾段四条越过 ⇒ 切点落在靠后的整轮上、
+  //    摘要范围非空且涵盖第一轮（压缩 completed 而非 declined，后续组合断言才成立）。
+  const tailTwo = replyTokens + longTokens
+  const tailFour = 2 * replyTokens + 2 * longTokens
+  if (tailTwo >= KEEP_TOKENS || tailFour < KEEP_TOKENS) {
+    throw new Error(`场景载荷前提不成立：切点关系被打破（尾段两条 = 长回复 ${replyTokens} + 长正文 ${longTokens} = ${tailTwo}`
+      + `、尾段四条 = 2×长回复 + 2×长正文 = ${tailFour}，保留窗口 ${KEEP_TOKENS}）｜${sizing()}`)
   }
   // ② 折叠关系：长回复帧的保守可回收量越过闸门 2 并留 FOLD_RECLAIM_MARGIN 倍余量。
-  if ((TURNS - 1) * REPLY_FRAME_BYTES_MIN < FOLD_POLICY.minReclaimBytes * FOLD_RECLAIM_MARGIN) {
-    throw new Error(`场景载荷前提不成立：长回复帧的可回收量不足（${(TURNS - 1) * REPLY_FRAME_BYTES_MIN} B < `
+  if ((TURNS - 1) * FRAME_BYTES_PER_REPLY_MIN < FOLD_POLICY.minReclaimBytes * FOLD_RECLAIM_MARGIN) {
+    throw new Error(`场景载荷前提不成立：长回复帧的可回收量不足（${(TURNS - 1) * FRAME_BYTES_PER_REPLY_MIN} B < `
       + `${FOLD_POLICY.minReclaimBytes} × ${FOLD_RECLAIM_MARGIN}）｜${sizing()}`)
   }
-  // ③ 闸门 1：保守体积（用户正文 + 回复条目 + 帧）也必须越过 minFileBytes。
-  const bytes = utf8.encode(FIRST).byteLength + (TURNS - 1) * utf8.encode(LONG).byteLength
-    + (TURNS - 1) * REPLY_CHARS + (TURNS - 1) * REPLY_FRAME_BYTES_MIN
+  // ③ 闸门 1：保守体积（用户正文 + 回复条目 + 帧 + 手动压缩的 preparation 素材）也必须越过
+  //    minFileBytes。帧按「合并 delta + `*_end` 全量行各一遍」计（离线复算与实跑都是 ≈2 倍回复正文）。
+  const materialBytes = utf8.encode(FIRST).byteLength + utf8.encode(LONG).byteLength
+  const bytes = utf8.encode(FIRST).byteLength + (TURNS - 1) * (utf8.encode(LONG).byteLength + REPLY_CHARS)
+    + 2 * (TURNS - 1) * FRAME_BYTES_PER_REPLY_MIN + materialBytes
   if (bytes <= FOLD_POLICY.minFileBytes) {
     throw new Error(`场景载荷前提不成立：保守体积 ${bytes} B 未过闸门 1（${FOLD_POLICY.minFileBytes} B）｜${sizing()}`)
   }
@@ -242,8 +251,8 @@ export const 折叠完整性: SceneDef = {
     depth: "deep",
     suite: "regression",
     entry: "production",
-    // 长回复的流式帧按帧落盘（每条回复上千帧）再加一次约 1 MB 的折叠重写，
-    // 比默认 120s 宽一档，避免 WebView 抖动把生产断言记成超时。
+    // 长回复的流式帧合并落盘 + 一次约 1 MB 级的折叠重写，比默认 120s 宽一档，
+    // 避免 WebView 抖动把生产断言记成超时。
     timeout: 180_000,
     tags: ["memory", "compaction", "session-fold"],
   },
@@ -342,8 +351,9 @@ export const 折叠完整性: SceneDef = {
                 + `比例 ${(reclaimed / plan.bytesBefore).toFixed(3)} vs minReclaimRatio=${FOLD_POLICY.minReclaimRatio}）｜${sizing()}`)
             }
             // 可回收量必须来自长回复的流式帧（死 key 的整行 append）：文件够大但一行可丢都没有时是假夹具；
-            // 帧数下界由切片上限反推 —— 真实的流式路径必然给出这么多帧，掉了就说明夹具没走生产链路。
-            const frameFloor = (TURNS - 1) * Math.floor(REPLY_CHARS / FRAME_CHARS_MAX)
+            // 帧数下界由**帧缓冲的合并阈值**反推（每个 delta 一行是合并前的旧口径）—— 真实的流式路径
+            // 每 FRAME_BUFFER_MAX_BYTES 至少物化一条合并行，掉了就说明夹具没走生产链路。
+            const frameFloor = (TURNS - 1) * FRAME_LINES_PER_REPLY_MIN
             if (plan.droppedWrites < frameFloor) {
               throw new Error(`可回收写入 ${plan.droppedWrites} < 帧数下界 ${frameFloor}：可回收量不是来自长回复的流式帧`
                 + `（droppedLines=${plan.droppedLines}）｜${sizing()}`)

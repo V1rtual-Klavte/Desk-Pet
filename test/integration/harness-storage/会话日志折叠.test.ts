@@ -12,6 +12,11 @@
 // 被测规则（`src/services/engine/harness/session-fold.ts` 是唯一真相源）：
 //   · **死 key**：该 key 有 `delete`，且**最后一次 delete 之后没有同 key 的其它写** ——
 //     只有「行号严格小于最后一次 delete 行号」的 `list/append` / `value/set` 可丢。
+//   · **同一 value key 只保留最后一次写入**（2026-10-06 规则扩展）：从未 delete、被反复覆盖的
+//     `value/set`，非最后一次的写入可丢（行号严格小于该 key 最后一次 `value/set`）。夹具的
+//     ⑥ 组覆盖三种形态：被覆盖 key 的中间写入、**两个被覆盖 key 的 set 同行**（实测 7.2 MB
+//     钉死形态的缩小版：两侧都非最后一次 ⇒ 整行回收）、只写过一次的对照 key（不许丢）。
+//     `list/append` 不适用这条 —— append 累积成元素序列，夹具的活 key（K2 末尾）即对照。
 //   · **整行粒度**：仅当一行的**全部**写入都可丢时才删整行 —— 一行里只要有一个保留写入，
 //     整行逐字保留。夹具里的多写行把「可丢的 append」与「保留的 set」放在同一行，专钉这条边界。
 //   · **保留行是原文子串**：输出 = header 原文 + 保留行原文的换行连接，从不重新序列化。
@@ -20,8 +25,9 @@
 //   ② 可回收字节 ≥ `minReclaimBytes`；③ 可回收比例 ≥ `minReclaimRatio`。夹具按 `minReclaimBytes × 4`
 //   反推回收量，并断言这次折叠真的跨过了闸门 2 的两条下界 —— 夹具缩水时宁可让断言炸掉，
 //   也不能把 skip 伪装成通过。
-// 尺寸守卫（`尺寸守卫` 组的两条用例）：文件超过 5 MiB（`MAX_TOOL_FILE_BYTES`，写侧上限）仍必须
-//   折叠成功 —— 会话读路径无单次大小上限；只有折叠结果仍超写上限才 skip("too-large")。
+// 尺寸守卫（`尺寸守卫` 组）：文件超过 5 MiB（`MAX_TOOL_FILE_BYTES`，**工具面**写上限）仍必须
+//   折叠成功 —— 会话读路径无单次大小上限；折叠结果超过工具面 5 MiB 也落得下去（会话写路径
+//   放宽到 `SESSION_WRITE_MAX_BYTES`，只限会话根），结果守卫只按会话专用上限判定。
 //
 // 盘上纪律（`JsonlStorage.open` 重放要求 seq 严格递增）：raw append 的 seq 从「盘上当前最大
 //   seq + 1」起步；raw append 之前先 `session.close()` 再冲一次帧缓冲。
@@ -49,6 +55,7 @@ import {
   entryLabel,
   pendingAssistantFrames,
   setValue,
+  value,
 } from "@earendil-works/pi-agent-core/harness/session"
 import type { Write } from "@earendil-works/pi-agent-core/harness/session"
 import { afterAll, beforeAll, describe, expect, it } from "vitest"
@@ -56,6 +63,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest"
 import { setTestDataRoot } from "../../host/node-ipc"
 import {
   FOLD_POLICY,
+  SESSION_WRITE_MAX_BYTES,
   createPiSessionRepo,
   flushSessionFrameWrites,
   foldSessionFile,
@@ -64,6 +72,8 @@ import {
   readFoldLog,
 } from "@/services/engine/harness"
 import type { FoldOutcome, PiSessionRepo } from "@/services/engine/harness"
+// 会话域读路径（无单次大小上限）：尺寸守卫夹具读超 5 MiB 的折叠结果必须经它，按需直连该模块。
+import { SessionFileSystem } from "@/services/engine/harness/session-file-system"
 import { PI_LANE } from "@/services/session"
 import { initPaths, runtimePath } from "@/services/paths"
 import { MAX_TOOL_FILE_BYTES, NativeExecutionEnv } from "@/services/tool/pi/native-execution-env"
@@ -110,6 +120,19 @@ const PRE_DELETE_APPENDS = 4
 const REVIVED_APPENDS = 2
 /** K3 的 value/set 条数（紧随其后的 value/delete 让它们成为死 key）。 */
 const LABEL_SETS = 2
+/** ⑥a 被覆盖但从未 delete 的 value key 的 set 条数（前 N-1 条可丢、最后一条保留）。 */
+const PREPARATION_SETS = 3
+/**
+ * ⑥b 同行两个 set 的填充字符数：24K 汉字 ≈ 每 set 72 KiB、整行约 144 KiB——「被保留写入钉死的
+ * 大块」在夹具里必须是真大块，否则「规则扩展回收大块」只有分类证据、没有字节证据。
+ */
+const SHARED_LINE_PAD_CHARS = 24 * 1024
+/**
+ * ⑥b 那行必须贡献的回收量下界（字节）。它独占约 144 KiB；其余非突发可回收行（K2/K3/⑥a/
+ * branchTip 初始行）合计 ≤ 2 KiB —— 100 KiB 的门槛只有「同行两个被覆盖 set 整行回收」时才可能
+ * 跨过（旧规则下这一行整行保留，这条断言必红）。
+ */
+const SHARED_LINE_MIN_RECLAIM_BYTES = 100 * 1024
 /**
  * 夹具自检：折叠前的 UTF-8 字节数至少是字符数的这个倍数（守「夹具不能退化成纯 ASCII 载荷」）。
  * 真正的字符口径判据是下面 check 里「折叠前后字节 = 盘上文件字节」那条（精确比对），这里只是
@@ -128,6 +151,18 @@ const FOLD_OP = "op-fold"
 const FOLD_RESP = "resp-fold"
 const REVIVED_OP = "op-fold-revived"
 const REVIVED_RESP = "resp-fold-revived"
+
+/**
+ * ⑥ 组探针地址：namespace/key 与上游 `values.js` 的生产构造器逐字同址 ——
+ * `pi.lane.state`（laneState）/ `pi.lane.config`（laneConfig）/ `pi.op.preparation`（operationPreparation）/ `pi.op.meta`（operationMeta）。
+ * 载荷放宽成探针字符串（`value<string>`）：折叠判定只看 namespace/key/op，不读载荷；
+ * 夹具也从不把这几行喂给上游运行时。
+ */
+const laneStateAddress = (): ReturnType<typeof value<string>> => value<string>("pi.lane.state", PI_LANE)
+const laneConfigAddress = (): ReturnType<typeof value<string>> => value<string>("pi.lane.config", PI_LANE)
+const preparationAddress = (operationId: string, taskId: string): ReturnType<typeof value<string>> =>
+  value<string>("pi.op.preparation", `${operationId}:${taskId}`)
+const operationMetaAddress = (operationId: string): ReturnType<typeof value<string>> => value<string>("pi.op.meta", operationId)
 
 // ── 行构造：形状照抄上游，只有 seq 由测试按盘上高水位分配 ──
 
@@ -193,7 +228,8 @@ interface RawFixture {
 /**
  * 构造盘上追加的整段内容，并按「可回收 / 必须保留」分好类 —— check 的期望值全部来自这份分类，
  * 不另抄一份。结构（顺序即语义）见原场景：① 多写行（可丢帧 + 保留 branch tip set 同行）；
- * ② K1 帧突发；③ K1 的 list/delete；④ K2（先 delete 再 append）；⑤ K3（value 死 key）。
+ * ② K1 帧突发；③ K1 的 list/delete；④ K2（先 delete 再 append）；⑤ K3（value 死 key）；
+ * ⑥ 从未 delete 的 value key（规则扩展：同一 value key 只保留最后一次 set）。
  */
 function buildRawFixture(startSeq: number, lastEntryId: string): RawFixture {
   const timestamp = Date.now()
@@ -261,7 +297,72 @@ function buildRawFixture(startSeq: number, lastEntryId: string): RawFixture {
   }
   keep(rawLine([deleteValue(label)], seq, timestamp), "delete 行永远保留")
 
+  // ⑥ 从未 delete 的 value key（2026-10-06 规则扩展）：同一 value key 只保留最后一次 set。
+  //    a) 单个被覆盖的 key（实测 7.2 MB 快照的 key `pi.op.preparation`）：中间 set 可丢、最后一次保留；
+  const preparation = preparationAddress(FOLD_OP, "task-0")
+  for (let index = 0; index < PREPARATION_SETS - 1; index++) {
+    drop(rawLine([setValue(preparation, `准备快照-${index}`)], seq, timestamp))
+    seq += 1
+  }
+  keep(
+    rawLine([setValue(preparation, "准备快照-最终")], seq, timestamp),
+    "同一 value key 的最后一次 set：覆盖语义只留它，必须逐字保留",
+  )
+  seq += 1
+
+  //    b) 两个被覆盖 key 的 set 同行（实测「2.4 MB 快照与 `pi.lane.state` 同行被钉死 7.2 MB」的
+  //       缩小形态）：两侧都不是各自 key 的最后一次写入 ⇒ 整行可回收（旧规则下这行整行保留）。
+  const sharedPad = "田".repeat(SHARED_LINE_PAD_CHARS)
+  drop(
+    rawLine(
+      [setValue(laneStateAddress(), `旧状态-${sharedPad}`), setValue(laneConfigAddress(), `旧配置-${sharedPad}`)],
+      seq,
+      timestamp,
+    ),
+  )
+  seq += 2
+  keep(rawLine([setValue(laneStateAddress(), "新状态")], seq, timestamp), "被覆盖 key 的最后一次 set：保留")
+  seq += 1
+  keep(rawLine([setValue(laneConfigAddress(), "新配置")], seq, timestamp), "被覆盖 key 的最后一次 set：保留")
+  seq += 1
+
+  //    c) 对照：只写过一次、从未 delete 的 value key —— 没有「更晚的写入」，一行都不许丢。
+  keep(rawLine([setValue(operationMetaAddress(FOLD_OP), "只写一次的元信息")], seq, timestamp), "唯一的 set：不是「非最后一次」，必须保留")
+
   return { text: `${lines.join("\n")}\n`, dropped, kept }
+}
+
+/**
+ * 夹具真实提交部分里**恰好一条**「独立的 branchTip set 行」——`createBranch` 的初始 tip
+ * （值 null）：后续每个 `appendCustomEntry` 提交都会重写同一个 key，因此它在「同一 value key
+ * 只保留最后一次 set」下整行可回收；旧规则（只看 delete）碰不到它。
+ *
+ * 用结构探针把它钉出来而不是重算折叠规则：断言恰好一条，夹具或上游提交形态变化时在这里炸，
+ * 而不是让下面 `droppedLines` 的期望值随实现漂移。
+ */
+function loneBranchTipLine(content: string): string {
+  const candidates = readFoldLog(content).lines.filter(line => {
+    let parsed: unknown
+    try {
+      parsed = JSON.parse(line)
+    } catch {
+      return false
+    }
+    if (Array.isArray(parsed) || parsed === null || typeof parsed !== "object") return false
+    const write = parsed as Record<string, unknown>
+    return (
+      write.kind === "value" &&
+      write.op === "set" &&
+      write.namespace === "pi.branch.tip" &&
+      write.key === PI_LANE &&
+      write.value === null
+    )
+  })
+  expect(
+    candidates.length,
+    `夹具应恰好有一条独立的 branchTip set 行（createBranch 的初始 tip），实际 ${candidates.length} 条`,
+  ).toBe(1)
+  return candidates[0]
 }
 
 // ── 夹具：真仓库提交造条目 + raw append 造帧，然后在静止文件上折叠一次 ──
@@ -330,7 +431,9 @@ async function buildFoldFixture(): Promise<FoldFixture> {
       bytesOnDiskBefore,
       bytesOnDiskAfter,
       outcome,
-      expectDropped: raw.dropped,
+      // 期望的可回收行 = 夹具自己分类的那些 + 真实提交部分的 createBranch 初始 tip 行
+      // （规则扩展后它也被覆盖，见 loneBranchTipLine）。
+      expectDropped: [...raw.dropped, loneBranchTipLine(before)],
       expectKept: raw.kept,
     }
   } catch (error) {
@@ -392,6 +495,12 @@ describe("会话日志折叠", () => {
         expect(reclaimed, `回收 ${reclaimed} B < minReclaimBytes ${FOLD_POLICY.minReclaimBytes} B：夹具没过闸门 2`).toBeGreaterThanOrEqual(
           FOLD_POLICY.minReclaimBytes,
         )
+        // 规则扩展的**字节证据**：除去按目标反推的帧突发量，回收量还必须多出 ⑥b 那行大块
+        // （两个被覆盖 set 同行）——100 KiB 门槛只有它整行回收才跨得过（见常量注释）。
+        expect(
+          reclaimed - RECLAIM_TARGET_BYTES,
+          `突发之外的回收量 ${reclaimed - RECLAIM_TARGET_BYTES} B < ${SHARED_LINE_MIN_RECLAIM_BYTES} B：⑥b 大块没有被回收`,
+        ).toBeGreaterThanOrEqual(SHARED_LINE_MIN_RECLAIM_BYTES)
         expect(reclaimed, `回收比例未过 minReclaimRatio ${FOLD_POLICY.minReclaimRatio}`).toBeGreaterThanOrEqual(
           outcome.bytesBefore * FOLD_POLICY.minReclaimRatio,
         )
@@ -540,7 +649,7 @@ describe("会话日志折叠", () => {
   })
 })
 
-// ── 尺寸守卫：>5 MiB 的会话仍会折叠；只有「折叠结果」超写上限才不折 ──
+// ── 尺寸守卫：>5 MiB 的会话仍会折叠；折叠结果超工具面 5 MiB 也经会话写路径落得下去 ──
 
 /**
  * 主证据用例的文件目标体积：必须真的越过写侧的 5 MiB（`MAX_TOOL_FILE_BYTES`）。
@@ -577,7 +686,10 @@ function largeFramePayload(prefix: string, index: number): { type: "thinking_del
 }
 
 interface SizeGuardFixture {
+  /** **未包装**的真实 IPC env：直读磁盘、也负责收尾删根；受工具面 5 MiB 读上限，读不了大结果。 */
   env: NativeExecutionEnv
+  /** 会话读路径（`session_read_text`，无单次大小上限）：读折叠结果必须经它（结果可超 5 MiB）。 */
+  reader: SessionFileSystem
   root: string
   repo: PiSessionRepo
   metadata: JsonlSessionMetadata
@@ -586,6 +698,8 @@ interface SizeGuardFixture {
   bytesOnDisk: number
   /** 死 key 帧行（折叠的全部回收来源）的行数与总字节（含行尾换行）。 */
   droppedLineCount: number
+  /** createBranch 初始 tip 行（被后续 entry 提交覆盖，规则扩展后同样整行可回收；固定 1 条）。 */
+  branchTipDroppedLines: number
   droppableBytes: number
   /** 可回收行的首尾样本（折叠后必须零命中）与保留行的样本（必须逐字在）。 */
   droppedSample: string[]
@@ -608,6 +722,8 @@ async function buildSizeGuardFixture(options: {
   const context = BACKGROUND_CONTEXT
   const env = new NativeExecutionEnv(await runtimePath("data"))
   const root = await runtimePath("sessions", `fold-size-${crypto.randomUUID()}`)
+  // 会话读路径：结果可超工具面 5 MiB，不经它的读会失败（生产读写都走这一个域根）。
+  const reader = new SessionFileSystem(await runtimePath("data"), await runtimePath("sessions"))
   const repo = await createPiSessionRepo({ sessionsRoot: root })
   try {
     const session = await repo.create({ id: options.id }, context)
@@ -618,6 +734,13 @@ async function buildSizeGuardFixture(options: {
     await flushSessionFrameWrites(context)
 
     const path = session.metadata.path
+    // 真实提交部分的可回收行（createBranch 的初始 branchTip set，见 loneBranchTipLine）在文件
+    // 头部，必须在 raw append **之前**读回：文件一旦超过 5 MiB，未包装的 env 走 file_read
+    // （MAX_TOOL_FILE_BYTES）就读不动了；头两行此后不再变化（append-only）。
+    const head = expectOk(await env.readTextLines(path, { maxLines: 2 }, context), "readTextLines(head)")
+    // readTextLines 返回的行**不带换行**：重拼回完整行文件必须补上尾换行，否则 readFoldLog
+    // 按上游 splitCompleteLines 语义把没有换行收尾的行判成 torn、整行不进 lines。
+    loneBranchTipLine(`${head.join("\n")}\n`)
     let seq = maxSeqOf(expectOk(await env.readTextFile(path, context), "readTextFile(高水位)")) + 1
     const timestamp = Date.now()
     const lines: string[] = []
@@ -673,12 +796,14 @@ async function buildSizeGuardFixture(options: {
     const bytesOnDisk = expectOk(await env.fileInfo(path, context), "fileInfo(before)").size
     return {
       env,
+      reader,
       root,
       repo,
       metadata: session.metadata,
       path,
       bytesOnDisk,
       droppedLineCount,
+      branchTipDroppedLines: 1,
       droppableBytes,
       droppedSample: [deadFirst, deadLast],
       keptSample: [deleteLine, ...(liveFirst === "" ? [] : [liveFirst])],
@@ -717,14 +842,18 @@ describe("会话日志折叠 · 尺寸守卫", () => {
       const outcome = expectFolded(await fixture.repo.foldSession(fixture.metadata, context), ">5 MiB 的会话文件折叠")
 
       expect(outcome.bytesBefore, "折叠前字节与盘上文件不符").toBe(fixture.bytesOnDisk)
-      expect(outcome.droppedLines, "删掉的整行数 ≠ 夹具的死 key 帧行数").toBe(fixture.droppedLineCount)
+      // 整行账目 = 死 key 帧行 + createBranch 初始 tip 行（后者被后续 entry 提交覆盖，规则扩展后
+      // 也整行可回收）—— 少列一条或多丢一条都会在这里炸。
+      expect(outcome.droppedLines, "删掉的整行数 ≠ 期望（死 key 帧行 + branchTip 初始行）").toBe(
+        fixture.droppedLineCount + fixture.branchTipDroppedLines,
+      )
       expect(outcome.bytesAfter, "折叠结果必须落在写上限内").toBeLessThanOrEqual(MAX_TOOL_FILE_BYTES)
 
       const sizeAfter = expectOk(await fixture.env.fileInfo(fixture.path, context), "fileInfo(after)").size
       expect(sizeAfter, "落盘字节 ≠ 折叠结果字节").toBe(outcome.bytesAfter)
 
       // 内容对照（折叠后已低于 5 MiB，可直接读回）：可回收行零命中、delete 行逐字保留。
-      const after = expectOk(await fixture.env.readTextFile(fixture.path, context), "readTextFile(after)")
+      const after = expectOk(await fixture.reader.readTextFile(fixture.path, context), "readTextFile(after)")
       for (const line of fixture.droppedSample) {
         expect(after.includes(line), `可回收的帧行仍在折叠结果里：${line.slice(0, 120)}…`).toBe(false)
       }
@@ -736,16 +865,20 @@ describe("会话日志折叠 · 尺寸守卫", () => {
     }
   })
 
-  it("折叠结果仍超过 5 MiB 写上限时保持不折：skipped(too-large)，磁盘逐字未动 [harness-session-fold-result-guard]", async () => {
+  it("折叠结果超过工具面 5 MiB 写上限但未超会话专用上限时折成功：结果经会话写路径落盘 [harness-session-fold-result-guard]", async () => {
     const context = BACKGROUND_CONTEXT
-    // 死 key 1.5 MiB（过闸门 2 的两条下界）+ 活 key 超过 5 MiB（折叠结果仍超写上限）。
+    // 死 key 1.5 MiB（过闸门 2 的两条下界）+ 活 key 超过 5 MiB：折叠结果落在会话写上限内、
+    // 工具面写上限外 —— 旧实现的结果守卫（按 5 MiB 判）会在这一步 skip("too-large")。
     const fixture = await buildSizeGuardFixture({
       id: "fold-size-still-over",
       droppableTargetBytes: FOLD_POLICY.minReclaimBytes * 12,
       keptTargetBytes: OVER_WRITE_LIMIT_TARGET_BYTES,
     })
     try {
-      expect(fixture.bytesOnDisk, `夹具未超过写上限：${fixture.bytesOnDisk} B`).toBeGreaterThan(MAX_TOOL_FILE_BYTES)
+      // 阈值关系是本用例的立论：会话写上限 ≥ 折叠读取守卫（折叠只删不增 ⇒ 结果 ≤ 输入），
+      // 两者目前同值；将来谁被单独调走，这里的断言先炸，而不是让结果守卫静默变成常态跳过。
+      expect(SESSION_WRITE_MAX_BYTES, "会话写上限必须 ≥ FOLD_POLICY.maxFileBytes").toBeGreaterThanOrEqual(FOLD_POLICY.maxFileBytes)
+      expect(fixture.bytesOnDisk, `夹具未超过工具面写上限：${fixture.bytesOnDisk} B`).toBeGreaterThan(MAX_TOOL_FILE_BYTES)
       expect(
         fixture.bytesOnDisk,
         `夹具必须低于 FOLD_POLICY.maxFileBytes（${FOLD_POLICY.maxFileBytes} B），否则跳过的是读取守卫而不是结果守卫`,
@@ -756,11 +889,30 @@ describe("会话日志折叠 · 尺寸守卫", () => {
         fixture.bytesOnDisk * FOLD_POLICY.minReclaimRatio,
       )
 
-      const outcome = await fixture.repo.foldSession(fixture.metadata, context)
-      expect(outcome, "折叠结果超过写上限时不得落盘（结果守卫必须保留）").toEqual({ kind: "skipped", reason: "too-large" })
+      const outcome = expectFolded(await fixture.repo.foldSession(fixture.metadata, context), "结果超 5 MiB 的折叠")
 
+      // 结果真的超过工具面写上限：旧实现在这里 skip，本条断言就是那次行为变化的出口；
+      // 会话写路径（只限会话根）把上限放宽到 SESSION_WRITE_MAX_BYTES，结果必须落在其内。
+      expect(
+        outcome.bytesAfter,
+        `折叠结果未超过工具面写上限（${outcome.bytesAfter} B ≤ ${MAX_TOOL_FILE_BYTES} B）：用例失去区分力`,
+      ).toBeGreaterThan(MAX_TOOL_FILE_BYTES)
+      expect(outcome.bytesAfter, "折叠结果不得超过会话写上限").toBeLessThanOrEqual(SESSION_WRITE_MAX_BYTES)
+
+      // 放宽路径真的把结果落到了盘上：字节数一致、内容样本逐字可读回。
       const sizeAfter = expectOk(await fixture.env.fileInfo(fixture.path, context), "fileInfo(after)").size
-      expect(sizeAfter, "被跳过时磁盘不应被改动").toBe(fixture.bytesOnDisk)
+      expect(sizeAfter, "落盘字节 ≠ 折叠结果字节（会话写路径未真正落盘）").toBe(outcome.bytesAfter)
+      const after = expectOk(await fixture.reader.readTextFile(fixture.path, context), "readTextFile(after)")
+      for (const line of fixture.droppedSample) {
+        expect(after.includes(line), `可回收的帧行仍在折叠结果里：${line.slice(0, 120)}…`).toBe(false)
+      }
+      for (const line of fixture.keptSample) {
+        expect(after.includes(`${line}\n`), `应逐字保留的行不在折叠结果里：${line.slice(0, 120)}…`).toBe(true)
+      }
+      // 交叉证据：盘上字节重放出的逻辑状态摘要 = 驱动报告给调用方的摘要（写盘内容 ≠ 被校验内容
+      // 时才会红）—— 5 MiB+ 的放宽写入没有截断、没有写坏。
+      const afterDigest = await logStateDigest(readFoldLog(after))
+      expect(afterDigest, "盘上折叠结果的逻辑状态与驱动报告的摘要不一致").toBe(outcome.digest)
     } finally {
       await disposeSizeGuardFixture(fixture)
     }

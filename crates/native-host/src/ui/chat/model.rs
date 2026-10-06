@@ -1681,7 +1681,10 @@ impl ChatModel {
         }
         for session in &self.history_sessions {
             let name = display_session_name(&session.name);
-            let meta = match super::panels::format_session_date(session.created_at) {
+            // 列表按**用户活动时间**倒序（Node 侧排好），卡片日期取同一口径：活动时间缺省
+            // （没有用户消息）回退创建时间 —— 显示与排序不各用一套时间。
+            let displayed_at = session.activity_at.unwrap_or(session.created_at);
+            let meta = match super::panels::format_session_date(displayed_at) {
                 Some(date) => format!("{date} · {} 条", session.message_count),
                 None => format!("{} 条", session.message_count),
             };
@@ -3906,7 +3909,9 @@ mod tests {
             sessions: vec![crate::ui::chat::projection::ProjectedHistorySession {
                 id: "s2".into(),
                 name: "聊工作".into(),
+                // created_at = 0 格式化不出日期：卡片上若出现日期，只可能来自 activity_at。
                 created_at: 0,
+                activity_at: Some(1_700_000_000_000),
                 message_count: 3,
             }],
         });
@@ -3932,6 +3937,15 @@ mod tests {
                 .iter()
                 .any(|(_, text)| *text == "正在读取…"),
             "结果到达后收起读取中"
+        );
+        // 卡片日期取用户活动时间（created_at = 0 无日期可显示，出现日期即证来源）。
+        let activity_date =
+            super::super::panels::format_session_date(1_700_000_000_000).expect("活动时间可格式化");
+        assert!(
+            view_lines(&history)
+                .iter()
+                .any(|(_, text)| *text == format!("{activity_date} · 3 条")),
+            "历史卡片日期应取 activity_at（回退 createdAt）"
         );
 
         // 关闭 = 面板消失（数据保留，重开即见）。
@@ -3996,12 +4010,14 @@ mod tests {
                     id: "s2".into(),
                     name: "一个相当长的历史会话名字".into(),
                     created_at: 0,
+                    activity_at: None,
                     message_count: 12,
                 },
                 ProjectedHistorySession {
                     id: "s3".into(),
                     name: "短名".into(),
                     created_at: 0,
+                    activity_at: None,
                     message_count: 0,
                 },
             ],

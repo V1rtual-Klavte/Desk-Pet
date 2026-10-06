@@ -373,7 +373,7 @@ const APPEARANCE_DISPLAY: &[Field] = &[
         key: "action.openLayerEditor",
         label: "打开图层编辑器",
         kind: FieldKind::Action,
-        help: "打开独立的图层编辑器窗口，调整当前 Profile 的图层顺序、显隐与缩放；内容随当前 Profile 变化，改完在编辑器里保存",
+        help: "打开独立的图层编辑器窗口，调整当前激活 Profile 的图层顺序、显隐与缩放；内容随当前激活 Profile 变化（与列表选中行无关），改完在编辑器里保存",
     },
     Field {
         key: "appearance.effectMode",
@@ -423,8 +423,10 @@ const APPEARANCE_FONT: &[Field] = &[
     },
 ];
 
-/// Profile 资源管理（本批）：动作对象 = 当前选中 Profile（下拉草稿值；删除/导出前平台会再确认）。
-/// 「编辑」类动作打开行编辑文档（内容与校验都在 Node）。
+/// Profile 资源管理（本批）：动作对象 = 外观页「Profile 列表」里**选中的那一行**
+/// （点行选中；未选过时回退「当前 Profile」草稿值 —— 旧口径不变）。
+/// 选中与激活分开：激活仍走上面的「当前 Profile」下拉（保存时 `switchActiveProfile`）；
+/// 删除/导出前平台会再确认。新建/导入/恢复默认资源不绑定行。
 const APPEARANCE_PROFILE: &[Field] = &[
     Field {
         key: "action.profileCreate",
@@ -434,15 +436,15 @@ const APPEARANCE_PROFILE: &[Field] = &[
     },
     Field {
         key: "action.profileRename",
-        label: "重命名当前 Profile",
+        label: "重命名选中 Profile",
         kind: FieldKind::Action,
-        help: "修改当前 Profile 的显示名（立即生效；目录名与素材不受影响）",
+        help: "修改列表里选中 Profile 的显示名（立即生效；目录名与素材不受影响）",
     },
     Field {
         key: "action.profileExport",
-        label: "导出当前 Profile",
+        label: "导出选中 Profile",
         kind: FieldKind::Action,
-        help: "打包为 zip（含 profile.yaml 与素材）",
+        help: "把列表里选中的 Profile 打包为 zip（含 profile.yaml 与素材）",
     },
     Field {
         key: "action.profileImport",
@@ -452,9 +454,9 @@ const APPEARANCE_PROFILE: &[Field] = &[
     },
     Field {
         key: "action.profileDelete",
-        label: "删除当前 Profile",
+        label: "删除选中 Profile",
         kind: FieldKind::Action,
-        help: "删除运行时 profiles 目录下的当前 Profile（默认 Profile 与内置资源拒绝删除）",
+        help: "删除运行时 profiles 目录下选中的 Profile（默认 Profile 与内置资源拒绝删除）",
     },
     Field {
         key: "action.profileRestoreDefaults",
@@ -559,8 +561,10 @@ const AI_SAFETY: &[Field] = &[
 /// Card 是用户可增删的运行时资源；本字段的值仍是 CONFIG 路径（`ai.personality.active`），
 /// 提交时由 Node 走注册表唯一入口 `switchPersonality`。
 ///
-/// 动作对象 = 当前激活 Card（与 Profile 资源同口径）：删除与导入前由平台再确认；
-/// 「编辑」打开文档编辑窗（内容与校验都在 Node），「模版」是只读的提示词面板。
+/// 动作对象 = AI 页「人格卡列表」里**选中的那一行**（点行选中；未选过时回退当前激活卡，
+/// 与 Profile 资源同口径）：删除与导入前由平台再确认；「编辑」打开文档编辑窗
+/// （内容与校验都在 Node），「模版」是只读的提示词面板。选中与激活分开：激活仍走本节的
+/// 「人格卡」下拉（保存时切换），点行不触发切换。新建/导入/模版不绑定行。
 const AI_PERSONALITY: &[Field] = &[
     Field {
         key: "ai.personality.active",
@@ -582,21 +586,21 @@ const AI_PERSONALITY: &[Field] = &[
     },
     Field {
         key: "action.cardEdit",
-        label: "编辑当前 Card",
+        label: "编辑选中 Card",
         kind: FieldKind::Action,
-        help: "编辑当前卡的角色设定、语言风格、输出规则、行为进阶与变量定义",
+        help: "编辑列表里选中卡的角色设定、语言风格、输出规则、行为进阶与变量定义",
     },
     Field {
         key: "action.cardRename",
-        label: "重命名当前 Card",
+        label: "重命名选中 Card",
         kind: FieldKind::Action,
         help: "只改显示名（立即生效；文件名、阶段文案与变量状态不受影响）",
     },
     Field {
         key: "action.cardExport",
-        label: "导出当前 Card",
+        label: "导出选中 Card",
         kind: FieldKind::Action,
-        help: "把当前卡的 markdown 原文导出到文件",
+        help: "把列表里选中卡的 markdown 原文导出到文件",
     },
     Field {
         key: "action.cardImport",
@@ -606,7 +610,7 @@ const AI_PERSONALITY: &[Field] = &[
     },
     Field {
         key: "action.cardDelete",
-        label: "删除当前 Card",
+        label: "删除选中 Card",
         kind: FieldKind::Action,
         help: "删除卡片与它的阶段文案、变量状态；激活中的卡需先切到别的卡",
     },
@@ -746,7 +750,7 @@ const TOOLS_ACTIONS: &[Field] = &[
         key: "action.mcpAddServer",
         label: "新增 MCP 服务器",
         kind: FieldKind::Action,
-        help: "打开编辑文档填写自定义服务器（保存后写 CONFIG 并热重载列表）",
+        help: "打开表单逐字段填写自定义服务器（字段级校验；保存后写 CONFIG 并热重载列表）",
     },
     Field {
         key: "action.mcpImport",
@@ -841,7 +845,8 @@ const MEMORY_MAINTAIN: &[Field] = &[
 /// 记忆页：备份与恢复。
 ///
 /// 顺序按**破坏性递增**排：备份（无破坏）→ 预览（只读）→ 应用（覆盖当前库）。
-/// 「应用最近备份」是**破坏性操作**，平台应给它 `danger` 色系并保留二次确认。
+/// 预览/应用的作用对象 = 「备份列表」里**选中的那一份**（缺省 = 最新一份）；
+/// 「应用选中备份」是**破坏性操作**，平台应给它 `danger` 色系并保留二次确认。
 const MEMORY_BACKUP: &[Field] = &[
     Field {
         key: "action.memoryBackup",
@@ -851,26 +856,17 @@ const MEMORY_BACKUP: &[Field] = &[
     },
     Field {
         key: "action.memoryRestorePreview",
-        label: "预览最近备份",
+        label: "预览选中备份",
         kind: FieldKind::Action,
-        help: "只读校验最近一份备份能不能用，不应用",
+        help: "只读校验选中的备份能不能用，不应用",
     },
     Field {
         key: "action.memoryRestoreApply",
-        label: "应用最近备份",
+        label: "应用选中备份",
         kind: FieldKind::Action,
-        help: "用备份覆盖当前记忆库 —— 不可撤销，请先预览确认版本",
+        help: "用选中的备份覆盖当前记忆库 —— 不可撤销，请先预览确认版本",
     },
 ];
-
-/// 记忆页：**当前选中条目**的来源证据（绑定列表选择，独立成节 ——
-/// 它混在全局操作里时，用户看不出「这按钮作用在哪」）。
-const MEMORY_SOURCE: &[Field] = &[Field {
-    key: "action.memorySourceEvidence",
-    label: "查看来源原话",
-    kind: FieldKind::Action,
-    help: "显示这条记忆的出处与会话里的原话（最多 5 条）",
-}];
 
 /// 全部设置 Tab。顺序即界面顺序（通用 / AI / 记忆 / 工具 / 外观，与旧壳设置页一致）。
 pub const TABS: &[Tab] = &[
@@ -957,10 +953,6 @@ pub const TABS: &[Tab] = &[
             Section {
                 title: "备份与恢复",
                 fields: MEMORY_BACKUP,
-            },
-            Section {
-                title: "当前条目",
-                fields: MEMORY_SOURCE,
             },
         ],
     },
@@ -1174,6 +1166,48 @@ mod tests {
                 "ai.proactive.quietEndHour"
             ]
         );
+    }
+
+    /// 行级管理（本批）：Profile / Card 的管理动作点名作用于**选中行**（列表点行选中，
+    /// 与激活分开）；两个激活字段仍是值字段（下拉 + 保存），不因列表化变成动作。
+    #[test]
+    fn profile与card管理动作点名作用于选中行() {
+        for key in [
+            "action.profileRename",
+            "action.profileExport",
+            "action.profileDelete",
+            "action.cardEdit",
+            "action.cardRename",
+            "action.cardExport",
+            "action.cardDelete",
+        ] {
+            let field = super::field(key).unwrap_or_else(|| panic!("{key} 应在 schema 里"));
+            assert!(field.kind.is_action(), "{key} 是动作入口");
+            assert!(
+                field.label.contains("选中"),
+                "{key} 的文案必须说明作用于选中行，实际：{}",
+                field.label
+            );
+        }
+        // 不绑定行的动作仍在（新建 / 导入 / 模版 / 恢复默认资源），文案不点名选中。
+        for key in [
+            "action.profileCreate",
+            "action.profileImport",
+            "action.profileRestoreDefaults",
+            "action.cardCreate",
+            "action.cardImport",
+            "action.cardTemplate",
+        ] {
+            let field = super::field(key).unwrap_or_else(|| panic!("{key} 应在 schema 里"));
+            assert!(
+                !field.label.contains("选中"),
+                "{key} 不作用于选中行，文案不得点名选中：{}",
+                field.label
+            );
+        }
+        // 激活仍是独立动作（值字段）：切换走下拉 + 保存，不是行点击。
+        assert!(!super::field("appearance.activeProfile").unwrap().kind.is_action());
+        assert!(!super::field("ai.personality.active").unwrap().kind.is_action());
     }
 
     #[test]

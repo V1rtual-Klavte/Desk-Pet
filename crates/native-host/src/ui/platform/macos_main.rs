@@ -20,16 +20,11 @@
 //!
 //! ── 全窗宽顶栏（W9c）──
 //!
-//! 聊天列的旧顶栏（`macos_chat.rs` 的 A1 顶栏，26pt）画在聊天列容器内，只有聊天
-//! 列宽。本模块在窗口层新建一条**全窗宽的顶栏视图**并盖在旧顶栏的同一 26pt 带上
-//! （聊天列容器保持满高，旧顶栏被完全覆盖、不可点；会话标签条在带下方照常显示），
-//! 舞台与分隔条从带下方开始（顶部布局预留）。文本唯一真值仍是
-//! `ui/titlebar.rs`（`macos.rs::refresh_titlebar` 同时刷新两处展示副本）。
-//!
-//! 为什么在这里自建而不是加宽旧顶栏：旧顶栏视图与其布局都是
-//! `macos_chat.rs` 的私有实现、宽度恒等于聊天列容器（面板的正文/输入也吃同一
-//! 个容器宽度，不能只加宽顶栏），本批文件所有权不包含聊天平台文件，无法把旧顶栏
-//! 提出成共享视图（两侧平台同样处理，见 `windows_main.rs` 的对称实现）。
+//! 顶栏是窗口层的一条**全窗宽视图**（W9c 起替代聊天列内只有列宽的旧顶栏；旧顶栏
+//! 实现已随 2026-10-06 的收口从 `macos_chat.rs` 删除）：条高、品牌槽与状态位坐标
+//! 等几何的唯一来源是 `ui/titlebar.rs`，文本唯一真值同样在那里
+//! （`macos.rs::refresh_titlebar` 推给本视图）。聊天列容器保持满高，顶部 26pt 带
+//! 归顶栏、会话标签条在带下方照常显示；舞台与分隔条从带下方开始（顶部布局预留）。
 //!
 //! 线程纪律：本文件全部代码只在 UI 主线程运行（由 `macos.rs` 的主窗路径调用）。
 
@@ -48,49 +43,22 @@ use crate::render::geometry::WindowGeometry;
 use crate::render::mac::MacLayerSurface;
 use crate::ui::stage::Stage;
 use crate::ui::theme::{paint, Bevel, Elevation, Fill, InsetLine};
+use crate::ui::titlebar;
 use crate::{rust_debug, rust_info};
 
 use super::macos::{as_any, primary_height, with_controller};
 use super::macos_chat;
 
-/// 全窗宽顶栏高度（pt）。
-///
-/// 必须与 `macos_chat.rs::TITLEBAR_HEIGHT` **同值**：本顶栏靠精确覆盖那一 26pt 带
-/// 隐藏聊天列旧顶栏；本批文件所有权不含聊天平台文件，无法共享常量，值在此镜像。
-const TITLEBAR_HEIGHT: f64 = 26.0;
-/// 顶栏按钮高度（条内垂直居中；与旧顶栏同口径）。
-const NAV_BUTTON_HEIGHT: f64 = 18.0;
-/// 顶栏按钮宽度（设置；与旧顶栏同值）。
-const TITLEBAR_BUTTON_WIDTH: f64 = 34.0;
-/// 品牌文案（固定字样，不随 Profile/编辑，不可自定义；2026-10-05 用户拍板全名）。
-const TITLEBAR_BRAND_TEXT: &str = "V1rtual-Desk-Pet";
-/// 品牌字位置与高度（与旧顶栏同值；0.x 为条内垂直居中留白）。
-const TITLEBAR_BRAND_X: f64 = 8.0;
-const TITLEBAR_BRAND_HEIGHT: f64 = 15.0;
-
-/// 品牌字宽度（粗体小字估算 + 余量；与聊天列旧顶栏 `macos_chat.rs::titlebar_brand_width`
-/// 同口径 —— 全名比旧字样长，槽宽不再写死，状态位起点跟随）。
-fn titlebar_brand_width() -> f64 {
-    // +12 余量：粗体比半角估算宽，宁可多留一截也不让品牌字尾部省略号。
-    crate::ui::chat::panels::estimated_text_width(TITLEBAR_BRAND_TEXT, 11.0) + 12.0
-}
-
-/// 状态位起点 = 品牌字右缘 + 8（与聊天列旧顶栏 `macos_chat.rs::titlebar_status_x` 同口径）。
-fn titlebar_status_x() -> f64 {
-    TITLEBAR_BRAND_X + titlebar_brand_width() + 8.0
-}
-
-/// 状态位前的强调圆点（设计稿 `.status i`：6pt 圆点、accent 色）。
-const STATUS_DOT_SIZE: f64 = 6.0;
-/// 圆点与状态位文字之间的间距。
-const STATUS_DOT_GAP: f64 = 5.0;
-/// 右侧按钮保留宽度（设置 + 内边距；「图层」入口随 2026-10-05 改版从主顶栏退场 ——
-/// 挪进设置窗与托盘菜单，这里相应收窄）。
+/// 顶栏按钮宽度（设置；本侧条内只余它一枚按钮）。
+const NAV_BUTTON_WIDTH: f64 = 34.0;
+/// 品牌字控件高（扁平标签；条内垂直居中）。
+const BRAND_HEIGHT: f64 = 15.0;
+/// 状态位文字行高。
+const STATUS_LABEL_HEIGHT: f64 = 15.0;
+/// 右侧按钮保留宽度（设置按钮 + 内边距；「图层」入口随 2026-10-05 改版从主顶栏
+/// 退场 —— 挪进设置窗与托盘菜单，这里相应收窄）。条内几何的公共部分
+/// （条高/品牌槽/锚点/边距）在 `ui::titlebar`，这里只留本侧渲染值。
 const TITLEBAR_RIGHT_RESERVE: f64 = 46.0;
-const TITLEBAR_LABEL_HEIGHT: f64 = 15.0;
-/// 右侧按钮与窗口右缘/彼此之间的间距（与旧顶栏同值）。
-const TITLEBAR_RIGHT_MARGIN: f64 = 4.0;
-const TITLEBAR_BUTTON_GAP: f64 = 4.0;
 
 /// 分隔条宽度（拖动热区）。
 ///
@@ -188,19 +156,19 @@ impl MainDividerView {
 }
 
 // ==========================================
-// 全窗宽顶栏（覆盖聊天列内旧顶栏的同一 26pt 带）
+// 全窗宽顶栏（顶部 26pt 带，条内几何来自 `ui::titlebar`）
 // ==========================================
 
 define_class!(
     /// 全窗宽主窗顶栏：品牌 + 状态位 + 设置；空白区整条拖动窗口。
     ///
-    /// 与聊天列旧顶栏同口径**不设「×」**：macOS 的窗口关闭走系统红绿灯按钮与
-    /// ⌘W（`windowShouldClose` → 收起，不销毁、不退出），自绘关闭按钮是冗余的
+    /// **不设「×」**：macOS 的窗口关闭走系统红绿灯按钮与 ⌘W
+    /// （`windowShouldClose` → 收起，不销毁、不退出），自绘关闭按钮是冗余的
     /// 第二通道；设置窗没有系统入口，才需要自绘（图层编辑器入口在设置窗与托盘
     /// 菜单，不在此重复；Windows 相反，只保留「×」）。
     ///
-    /// `hitTest:` / `mouseDownCanMoveWindow` 沿用聊天列旧顶栏（`macos_chat.rs` 的
-    /// `TitlebarDragView`）的做法：标签不吞命中，非按钮的命中一律判给本视图，
+    /// `hitTest:` / `mouseDownCanMoveWindow` 的做法（旧聊天列顶栏曾用同一处理，
+    /// 该类已随旧顶栏删除）：标签不吞命中，非按钮的命中一律判给本视图，
     /// 主窗 `movableByWindowBackground` 生效后整条可拖动（`macos.rs` 的
     /// `geometry_writeback` 写回路径不因此改变）。
     #[unsafe(super(NSView))]
@@ -219,7 +187,7 @@ define_class!(
         #[unsafe(method(hitTest:))]
         fn hit_test(&self, point: NSPoint) -> *mut NSView {
             // AppKit 的 hitTest 结果按借用（+0）处理，原始指针即正确形状
-            // （与 macos_chat::TitlebarDragView 同一处理）。
+            // （objc2 方法定义的返回类型需实现 Encode，`Option<Retained<_>>` 不满足）。
             let hit: *mut NSView = unsafe { msg_send![super(self), hitTest: point] };
             if hit.is_null() {
                 return std::ptr::null_mut();
@@ -250,8 +218,8 @@ impl MainTitlebarView {
         let view: Retained<Self> = unsafe { msg_send![super(this), initWithFrame: frame] };
         view.setWantsLayer(true);
         // 条底与立体线走产品级主题（`ui/theme` 的 `bar_bg` / `bar_bevel` / `bar_edge`）：
-        // 主题底是不透明实色/渐变 —— 这正是「覆盖聊天列旧顶栏」成立的前提（同带下层的
-        // 旧顶栏不能被透出来）。Profile 不承载外观数据，主题是产品级三选一预设。
+        // 主题底是不透明实色/渐变，条下层的聊天列/舞台像素不会被透出来。Profile 不
+        // 承载外观数据，主题是产品级三选一预设。
         paint_bar(&view);
         view
     }
@@ -314,7 +282,12 @@ fn paint_divider(divider: &MainDividerView) {
     );
 }
 
-/// 全窗宽顶栏：条底 `bar_bg` + 内立体线 `bar_bevel` + 下边线 `bar_edge`。
+/// 全窗宽顶栏：条底 `bar_bg` + 内立体线 `bar_bevel` + 下边线 `bar_edge` +
+/// 外投影 `bar_shadow`（设计稿 `--barsh` 的非 inset 部分；五套主题里只有铜绿
+/// 声明的 `var(--contact)`）。
+///
+/// 投影落在顶栏自己的 backing layer 上（CALayer 投影画在层外，天然叠到下方
+/// 舞台/聊天列的像素上）——与设计稿 `.bar{box-shadow:var(--barsh)}` 同一效果。
 fn paint_bar(titlebar: &MainTitlebarView) {
     let Some(layer) = titlebar.layer() else {
         return;
@@ -329,7 +302,7 @@ fn paint_bar(titlebar: &MainTitlebarView) {
             stroke: None,
             stroke_width: 0.0,
             bevel: tokens.bar_bevel,
-            elevation: Elevation::NONE,
+            elevation: tokens.bar_shadow,
             corner_radius: 0.0,
             flipped: false,
         },
@@ -364,7 +337,7 @@ fn paint_chrome(layout: &MainLayout) {
         .setTextColor(Some(&paint::color(tokens.dim)));
     if let Some(layer) = layout.status_dot.layer() {
         paint::apply_fill(&layer, &Fill::Solid(tokens.accent), false);
-        paint::set_corner_radius(&layer, STATUS_DOT_SIZE / 2.0);
+        paint::set_corner_radius(&layer, titlebar::DOT_SIZE / 2.0);
     }
 }
 
@@ -385,7 +358,7 @@ pub(crate) struct MainLayout {
     divider: Retained<MainDividerView>,
     chat_container: Retained<NSView>,
     stage: Stage,
-    /// 全窗宽顶栏与它的内容控件（覆盖聊天列旧顶栏的同一 26pt 带）。
+    /// 全窗宽顶栏与它的内容控件（顶部 26pt 带；条内几何见 `ui::titlebar`）。
     titlebar: Retained<MainTitlebarView>,
     titlebar_brand: Retained<NSTextField>,
     /// 状态位前的强调圆点（accent 色；设计稿 `.status i`）。
@@ -447,18 +420,18 @@ pub(crate) fn install(window: &NSWindow) -> AppResult<MainLayout> {
     // 聊天面板：同一份控件实现挂到主窗容器（独立聊天窗能力保留）。
     macos_chat::mount_main_pane(&chat_container);
 
-    // ── 全窗宽顶栏：最后一个添加 = 覆盖层在最上（盖住聊天列旧顶栏与分隔条顶部）──
+    // ── 全窗宽顶栏：最后一个添加 = 视图层级最上（盖住分隔条顶部）──
     let titlebar = MainTitlebarView::new(
         mtm,
         NSRect::new(
-            NSPoint::new(0.0, height - TITLEBAR_HEIGHT),
-            NSSize::new(width, TITLEBAR_HEIGHT),
+            NSPoint::new(0.0, height - titlebar::HEIGHT),
+            NSSize::new(width, titlebar::HEIGHT),
         ),
     );
     // 品牌字：固定全名（不随 Profile/编辑，不可自定义）；原生无 Libre Bodoni，
-    // 用系统粗体小字近似 —— 与旧顶栏（macos_chat.rs）同字面量、同字号。
+    // 用系统粗体小字近似。
     let titlebar_brand =
-        NSTextField::labelWithString(&NSString::from_str(TITLEBAR_BRAND_TEXT), mtm);
+        NSTextField::labelWithString(&NSString::from_str(titlebar::BRAND_TEXT), mtm);
     titlebar_brand.setFont(Some(&NSFont::boldSystemFontOfSize(11.0)));
     // 品牌字取 `ink`（设计稿 `.brand` 继承 `--ink`）。
     titlebar_brand.setTextColor(Some(&paint::color(crate::ui::theme::tokens().ink)));
@@ -478,17 +451,14 @@ pub(crate) fn install(window: &NSWindow) -> AppResult<MainLayout> {
     let status_dot = NSView::initWithFrame(
         NSView::alloc(mtm),
         NSRect::new(
-            NSPoint::new(
-                titlebar_status_x(),
-                (TITLEBAR_HEIGHT - STATUS_DOT_SIZE) / 2.0,
-            ),
-            NSSize::new(STATUS_DOT_SIZE, STATUS_DOT_SIZE),
+            NSPoint::new(titlebar::status_x(), titlebar::centered_y(titlebar::DOT_SIZE)),
+            NSSize::new(titlebar::DOT_SIZE, titlebar::DOT_SIZE),
         ),
     );
     status_dot.setWantsLayer(true);
     titlebar.addSubview(&status_dot);
     // 右侧按钮（从右到左）：设置 —— 「图层」入口已挪进设置窗与托盘菜单
-    // （2026-10-05 用户裁定主顶栏不重复放）；标签、宽度与动作口径与旧顶栏一致；
+    // （2026-10-05 用户裁定主顶栏不重复放）；
     // 不含「×」（macOS 关闭走系统红绿灯/⌘W，理由见 MainTitlebarView 的类注释）。
     let mut nav_buttons: Vec<Retained<NSButton>> = Vec::with_capacity(1);
     for (title, action) in [("设置", sel!(openSettings:))] {
@@ -504,7 +474,7 @@ pub(crate) fn install(window: &NSWindow) -> AppResult<MainLayout> {
         button.setFont(Some(&crate::ui::platform::macos_widgets::resolve_font(
             crate::ui::platform::macos_widgets::HELP_BASE_SIZE,
         )));
-        button.setFrameSize(NSSize::new(TITLEBAR_BUTTON_WIDTH, NAV_BUTTON_HEIGHT));
+        button.setFrameSize(NSSize::new(NAV_BUTTON_WIDTH, titlebar::CONTROL_HEIGHT));
         titlebar.addSubview(&button);
         nav_buttons.push(button);
     }
@@ -526,7 +496,8 @@ pub(crate) fn install(window: &NSWindow) -> AppResult<MainLayout> {
     };
     relayout(&mut layout, window);
     rust_info!(
-        "主窗一体布局已建立（stage={width:.0}×{height:.0}，全窗宽顶栏 {TITLEBAR_HEIGHT:.0}pt，聊天列默认展开，分隔条 {DIVIDER_WIDTH:.0}px）"
+        "主窗一体布局已建立（stage={width:.0}×{height:.0}，全窗宽顶栏 {:.0}pt，聊天列默认展开，分隔条 {DIVIDER_WIDTH:.0}px）",
+        titlebar::HEIGHT
     );
     Ok(layout)
 }
@@ -545,7 +516,7 @@ fn relayout(layout: &mut MainLayout, window: &NSWindow) {
         return;
     }
     // 顶部布局预留：舞台与分隔条从全窗宽顶栏下方开始（26pt 带归顶栏）。
-    let content_height = (height - TITLEBAR_HEIGHT).max(0.0);
+    let content_height = (height - titlebar::HEIGHT).max(0.0);
     let (chat_width, divider_frame) = if layout.chat_visible {
         let max_chat = (width - STAGE_MIN_WIDTH - DIVIDER_WIDTH).max(CHAT_MIN_WIDTH);
         let desired = layout
@@ -606,8 +577,8 @@ fn relayout(layout: &mut MainLayout, window: &NSWindow) {
     ));
     layout.divider.setFrame(divider_frame);
     layout.divider.setHidden(!layout.chat_visible);
-    // 聊天列容器保持满高：面板内部按「容器顶部 26pt = 旧顶栏」布局，本模块的全窗宽
-    // 顶栏正好盖住那一段；把容器改矮会让旧顶栏滑出覆盖带、与全窗宽顶栏重叠可见。
+    // 聊天列容器保持满高：面板内部按「容器顶部 26pt 归顶栏」布局（标签条接在其
+    // 下方），顶部那一段由全窗宽顶栏占据；把容器改矮会让面板的顶部预留与顶栏错位。
     layout.chat_container.setFrame(NSRect::new(
         NSPoint::new(width - chat_width, 0.0),
         NSSize::new(chat_width, height),
@@ -616,39 +587,37 @@ fn relayout(layout: &mut MainLayout, window: &NSWindow) {
 
     // 全窗宽顶栏与条内控件（品牌 / 状态位 / 右侧按钮）。
     layout.titlebar.setFrame(NSRect::new(
-        NSPoint::new(0.0, height - TITLEBAR_HEIGHT),
-        NSSize::new(width, TITLEBAR_HEIGHT),
+        NSPoint::new(0.0, height - titlebar::HEIGHT),
+        NSSize::new(width, titlebar::HEIGHT),
     ));
     layout.titlebar_brand.setFrame(NSRect::new(
-        NSPoint::new(
-            TITLEBAR_BRAND_X,
-            (TITLEBAR_HEIGHT - TITLEBAR_BRAND_HEIGHT) / 2.0,
-        ),
-        NSSize::new(titlebar_brand_width(), TITLEBAR_BRAND_HEIGHT),
+        NSPoint::new(titlebar::BRAND_X, titlebar::centered_y(BRAND_HEIGHT)),
+        NSSize::new(titlebar::brand_width(), BRAND_HEIGHT),
     ));
     layout.status_dot.setFrame(NSRect::new(
-        NSPoint::new(
-            titlebar_status_x(),
-            (TITLEBAR_HEIGHT - STATUS_DOT_SIZE) / 2.0,
-        ),
-        NSSize::new(STATUS_DOT_SIZE, STATUS_DOT_SIZE),
+        NSPoint::new(titlebar::status_x(), titlebar::centered_y(titlebar::DOT_SIZE)),
+        NSSize::new(titlebar::DOT_SIZE, titlebar::DOT_SIZE),
     ));
-    let status_x = titlebar_status_x() + STATUS_DOT_SIZE + STATUS_DOT_GAP;
+    let status_x = titlebar::status_x() + titlebar::DOT_SIZE + titlebar::DOT_GAP;
     layout.titlebar_status.setFrame(NSRect::new(
-        NSPoint::new(status_x, (TITLEBAR_HEIGHT - TITLEBAR_LABEL_HEIGHT) / 2.0),
+        NSPoint::new(status_x, titlebar::centered_y(STATUS_LABEL_HEIGHT)),
         NSSize::new(
-            (width - status_x - TITLEBAR_RIGHT_RESERVE).max(24.0),
-            TITLEBAR_LABEL_HEIGHT,
+            (titlebar::status_slot_width(width, TITLEBAR_RIGHT_RESERVE)
+                - titlebar::DOT_SIZE
+                - titlebar::DOT_GAP)
+                .max(titlebar::MIN_STATUS_WIDTH),
+            STATUS_LABEL_HEIGHT,
         ),
     ));
-    let mut x = width - TITLEBAR_RIGHT_MARGIN;
-    for button in &layout.nav_buttons {
-        x -= TITLEBAR_BUTTON_WIDTH;
+    for (button, x) in layout
+        .nav_buttons
+        .iter()
+        .zip(titlebar::right_button_x(width, &[NAV_BUTTON_WIDTH]))
+    {
         button.setFrame(NSRect::new(
-            NSPoint::new(x.max(0.0), (TITLEBAR_HEIGHT - NAV_BUTTON_HEIGHT) / 2.0),
-            NSSize::new(TITLEBAR_BUTTON_WIDTH, NAV_BUTTON_HEIGHT),
+            NSPoint::new(x, titlebar::centered_y(titlebar::CONTROL_HEIGHT)),
+            NSSize::new(NAV_BUTTON_WIDTH, titlebar::CONTROL_HEIGHT),
         ));
-        x -= TITLEBAR_BUTTON_GAP;
     }
 
     // 舞台几何（屏幕坐标，逻辑像素，左上原点与光标同坐标系）。
@@ -806,8 +775,8 @@ pub(crate) fn teardown(layout: &mut MainLayout) {
 // 顶栏文本与字体（`macos.rs` 的推送/字体路径调用）
 // ==========================================
 
-/// 顶栏状态位文本刷新（`macos.rs::refresh_titlebar` 调用；聊天列旧顶栏由
-/// `macos_chat::apply_titlebar_text` 另行同步 —— 两处展示副本，一个文本真值源）。
+/// 顶栏状态位文本刷新（`macos.rs::refresh_titlebar` 调用；顶栏是状态位的唯一
+/// 展示副本 —— 旧聊天列顶栏的副本已随旧实现删除）。
 ///
 /// 原生 UI/主窗布局未就绪（如窗口创建失败）时按 debug 留痕跳过：这是展示副本，
 /// 不改变 `UiHandle::apply_titlebar_status` 的成功语义。
@@ -825,7 +794,7 @@ pub(crate) fn set_titlebar_text(text: &str) {
 
 /// 全局字体快照变化：状态位与顶栏按钮按新快照重设字体。
 ///
-/// 品牌字是固定粗体小字（与旧顶栏同口径），不随全局字体。
+/// 品牌字是固定粗体小字，不随全局字体。
 pub(crate) fn apply_titlebar_font(layout: &mut MainLayout) {
     let font = crate::ui::platform::macos_widgets::resolve_font(
         crate::ui::platform::macos_widgets::HELP_BASE_SIZE,
@@ -840,36 +809,59 @@ pub(crate) fn apply_titlebar_font(layout: &mut MainLayout) {
 mod tests {
     use super::*;
 
-    /// 品牌文案为需求拍板的全名；品牌槽容得下它（否则尾部省略号），状态位起点在
-    /// 品牌槽右缘之后（两者不重叠）。
+    /// 生产代码段（`#[cfg(test)]` 之前）——源码级守门断言都在这段上做，
+    /// 否则会命中测试自己的字面量（那种断言永远为真、等于没写）。
+    fn production_source() -> &'static str {
+        let src = include_str!("macos_main.rs");
+        let end = src.find("#[cfg(test)]").expect("必须有测试段");
+        &src[..end]
+    }
+
+    /// 条内几何收口到共享模块：本文件不得再落第二份条高/品牌槽/状态位起点定义
+    /// （旧实现曾在 `macos_chat.rs` 与这里各持一份镜像常量），且必须消费共享面。
     #[test]
-    fn 顶栏品牌槽容得下全名且与状态位不重叠() {
-        assert_eq!(TITLEBAR_BRAND_TEXT, "V1rtual-Desk-Pet");
-        let text_w = crate::ui::chat::panels::estimated_text_width(TITLEBAR_BRAND_TEXT, 11.0);
-        assert!(
-            titlebar_brand_width() > text_w,
-            "品牌槽放不下全名（槽 {}，估算 {text_w}）",
-            titlebar_brand_width()
-        );
-        assert!(
-            titlebar_status_x() >= TITLEBAR_BRAND_X + titlebar_brand_width(),
-            "状态位起点压住了品牌槽"
-        );
+    fn 顶栏几何收口共享模块() {
+        let source = production_source();
+        for (name, needle) in [
+            ("条高常量", concat!("const TITLEBAR", "_HEIGHT")),
+            ("品牌文案常量", concat!("const TITLEBAR", "_BRAND_TEXT")),
+            ("品牌槽宽算式", concat!("fn titlebar_brand", "_width")),
+            ("状态位起点算式", concat!("fn titlebar_status", "_x")),
+        ] {
+            assert_eq!(
+                source.matches(needle).count(),
+                0,
+                "顶栏几何镜像回潮「{name}」：{needle}"
+            );
+        }
+        for (name, needle) in [
+            ("条高", concat!("titlebar::", "HEIGHT")),
+            ("品牌槽宽", concat!("titlebar::brand", "_width")),
+            ("状态位锚点", concat!("titlebar::status", "_x")),
+            ("垂直居中", concat!("titlebar::centered", "_y")),
+        ] {
+            assert!(
+                source.contains(needle),
+                "顶栏几何未消费共享「{name}」：{needle}"
+            );
+        }
     }
 
     /// 最短窗宽（`MAIN_WINDOW_MIN_WIDTH`）下：状态文字仍有可读宽度，右侧保留区
     /// 容得下仅剩的设置按钮 —— 删掉「图层」后保留区收窄不得收过头。
     #[test]
     fn 最短窗宽下状态位与设置按钮几何相容() {
-        let status_text_x = titlebar_status_x() + STATUS_DOT_SIZE + STATUS_DOT_GAP;
-        let available =
-            crate::window::MAIN_WINDOW_MIN_WIDTH - status_text_x - TITLEBAR_RIGHT_RESERVE;
+        let slot = titlebar::status_slot_width(
+            crate::window::MAIN_WINDOW_MIN_WIDTH,
+            TITLEBAR_RIGHT_RESERVE,
+        );
+        let available = slot - titlebar::DOT_SIZE - titlebar::DOT_GAP;
         assert!(
-            available >= 24.0,
+            available >= titlebar::MIN_STATUS_WIDTH,
             "状态位文字在最短窗宽下被压没（余 {available}）"
         );
         assert!(
-            TITLEBAR_RIGHT_RESERVE >= TITLEBAR_RIGHT_MARGIN + TITLEBAR_BUTTON_WIDTH,
+            TITLEBAR_RIGHT_RESERVE >= titlebar::RIGHT_MARGIN + NAV_BUTTON_WIDTH,
             "右侧保留区容不下设置按钮"
         );
     }
@@ -878,11 +870,10 @@ mod tests {
     /// 主顶栏不得再自绘该按钮 —— 源码里不应再有它的 target-action 接线。
     #[test]
     fn 主顶栏不再自绘图层入口() {
-        let source = include_str!("macos_main.rs");
         // 拆开拼接，避免断言文本自己命中扫描。
         let needle = concat!("openLayer", "Editor");
         assert_eq!(
-            source.matches(needle).count(),
+            production_source().matches(needle).count(),
             0,
             "主顶栏不得再自绘图层按钮"
         );

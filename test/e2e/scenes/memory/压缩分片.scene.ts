@@ -69,13 +69,15 @@ import type { SceneDef } from "../../../e2e/types"
 // 切点的真实形态不再由场景自己推导：每次断言前用上游真件 `prepareCompaction` 复核
 // （`preparation()`），它是唯一重建点。
 //
-// ── 会话文件字节账（5 MiB 硬上限；W6 第二次实跑被它击穿）──
+// ── 会话文件字节账（保守仍按 5 MiB 算；2026-10-06 复核后更正常驻描述）──
 //
-// 宿主临时数据根的会话 JSONL 有一条**整文件大小门**（Rust `file_read`：
-// `metadata.len() > MAX_TOOL_FILE_BYTES` 直接报「文件过大」），上游读会话头也走它
-// （`jsonl/repo.js` 的 `readTextLines(path, {maxLines: 1})`）⇒ 文件一旦越过 5 MiB，**整个模块**
-// 的后续场景都会在 setup 失败（隔离重置要读会话头）。这不是本波引入的缺陷，修它不在本方案范围，
-// 场景只能自己适配。逐项字节（每次 trial，按 harness 真实写入形态实测/折算）：
+// **当前机制（2026-10-06 L4 复核）**：会话根内的读取经 `SessionFileSystem` 转宿主
+// `session_read_text`（按行读、**没有整文件大小上限**）；Rust `file_read` 的
+// `MAX_TOOL_FILE_BYTES = 5 MiB` 只约束**工具面**的通用文件命令，不在会话读路径上。
+// 因此旧文「文件越过 5 MiB 会让整个模块 setup 失败（隔离重置读会话头被拒）」的整文件
+// 大小门**已不成立**（W6 当时被击穿的形态对应的是旧读取路径）。本表沿用保守字节预算
+// （不依赖上限假设，也不随上限放宽而放大载荷）：逐项字节（每次 trial，按 harness 真实
+// 写入形态实测/折算）：
 //
 //   探针结果 ×4（两条一批 × 两批）  暂存 payload + 提交条目，各 2 × PROBE_CHARS 字节 ≈ 0.43 MiB
 //   切点承载结果 ×2                  暂存 + 条目，各 HOLD_CHARS 字节                ≈ 0.16 MiB
@@ -170,6 +172,10 @@ const VIEW_SLACK = 4_000
  * 三条前提把取值夹成一个区间，取靠下界的 1/8 处（不取中点，理由在第三条）：
  * - **素材侧下界**：两条探针的素材（各 探针字符数 / 2）+ 承载结果必须**超过硬上限**
  *   ⇒ 探针字符数 > hardInputLimit − HOLD_TOKENS；
+ *   同一侧还有「两批必分家」的下界：两条探针的素材合计要超过单片预算（`SLICE_BUDGET`），
+ *   否则贪心装箱把四个单元合成一片、K 退化成 1（2026-10-06：保留窗口按窗口缩放后
+ *   HOLD_TOKENS 变大，原「下界 + 1/8」的取值落到了分片下界之下，setup 前提直接失败）。
+ *   两条下界取 max，再按 1/8 往上取；
  * - **视图侧上界**：两条探针的视图（各 探针字符数 / 4）+ 承载结果 + 余量必须留在**阈值**
  *   （normalInputTarget）以内 —— 阈值压缩先于硬预算触发，一旦在回合内压过，/compact 面对的是
  *   已被压过的会话（分片前提被破坏）⇒ 探针字符数 ≤ 2 × (normalInputTarget − HOLD_TOKENS − VIEW_SLACK)；
@@ -178,7 +184,7 @@ const VIEW_SLACK = 4_000
  *   是文件里最大的一块（见文件头的「会话文件字节账」）；素材侧是确定性估算（纯 ASCII 引号，
  *   无漂移），所以取值从下界只往上取 1/8，不取中点。
  */
-const PROBE_LOWER_CHARS = BUDGET.hardInputLimit - HOLD_TOKENS
+const PROBE_LOWER_CHARS = Math.max(BUDGET.hardInputLimit - HOLD_TOKENS, SLICE_BUDGET + 1)
 const PROBE_UPPER_CHARS = (BUDGET.normalInputTarget - HOLD_TOKENS - VIEW_SLACK) * 2
 const PROBE_CHARS = PROBE_LOWER_CHARS + Math.floor((PROBE_UPPER_CHARS - PROBE_LOWER_CHARS) / 8)
 /** 单条探针的视图成本（ASCII 4 字符 ≈ 1 token）：断言里按它给载荷下限。 */

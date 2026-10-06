@@ -11,7 +11,8 @@
 // ③ 逐步确认模式 → 每步开工前都过既有步骤裁决面板（step_gate 记录可观测）；
 // ④ 参数准入拒绝（缺 description / 工具名不存在 / 派生型工具 / 超过 maxSteps）：
 //    不开面板、不落计划、工具结果给出点名到步的拒绝理由；
-// ⑤ 计划步骤按 allowedTools 收窄工具面（子运行请求里只有 read，没有 bash）。
+// ⑤ 计划步骤按 allowedTools 收窄工具面（子运行请求里只有 read，没有 bash）；
+// ⑥ just_do_it 跳过确认面板 → 不开面板直接执行，工具结果如实标注「未经面板确认」。
 //
 // 归属 L3（不是 L2）的理由：跑真实 agent loop、真工具执行（propose_plan → executePlan →
 // 子运行）与真 JSONL 落盘，且 import `@/services/engine/harness`（规则 6 的 L2 禁入清单）。
@@ -42,12 +43,14 @@ import { setUiEventPublisher } from "@/services/host"
 import { planCheckpointStore } from "@/services/engine"
 import { planConfig } from "@/services/config"
 import { initPaths } from "@/services/paths"
+import { resetSessionSafetyMode, setSessionSafetyMode } from "@/services/debug"
 
 /** 工具名是线上契约（测试手写见证，不 import 实现常量）。 */
 const TOOL = "propose_plan"
 const PLAN_CALL_ID_ACCEPT = "plan-call-accept"
 const PLAN_CALL_ID_DENY = "plan-call-deny"
 const PLAN_CALL_ID_STEP = "plan-call-step"
+const PLAN_CALL_ID_AUTO = "plan-call-auto"
 
 let root = ""
 /** 本用例内发布的 Node→UI 事件（plan-confirm-channel 只记录确认交互，进度事件由这里记录）。 */
@@ -251,5 +254,38 @@ describe("提议计划", () => {
     expect(results[0], "空 steps 的错误没有指向工具参数校验").toContain(TOOL)
     expect(planRecords(), "空 steps 不应到达确认面板").toEqual([])
     expect(planProgress()).toEqual([])
+  }, 60_000)
+
+  it("just_do_it 跳过确认面板：直接执行、结果如实标注未经面板 [plan-tool-just-do-it]", async () => {
+    await standardSetup("deny", "deny")
+    // just_do_it 是会话级覆盖（优先级高于 standardSetup 钉在 config 基线上的 tell_me）；
+    // 用例结束收回，避免残留影响后续需要确认通道的用例。
+    setSessionSafetyMode("just_do_it")
+    try {
+      const provider = installFakeProvider([
+        fakeToolCall(TOOL, { summary: "两步计划", steps: TWO_STEPS }, PLAN_CALL_ID_AUTO),
+        fakeText("第一步完成：目录已列出"),
+        fakeText("第二步完成：结果已汇总"),
+        fakeText("没弹面板也做完了"),
+      ])
+
+      const output = await runRuntimeTurn("帮我做一件需要确认的事")
+
+      // 策略点：just_do_it 跳过确认面板 —— 没有任何确认请求到达面板通道。
+      expect(planRecords(), "just_do_it 下仍然开了确认面板").toEqual([])
+      // 步骤仍真实执行（请求账：主回合 1 + 两个步骤子运行 + 收尾 1）。
+      expect(provider.state.callCount, `请求账不对（期望 4，实际 ${provider.state.callCount}）`).toBe(4)
+      // 工具结果如实标注「未经面板确认」，并仍是既有计划结果格式。
+      const results = toolResultTexts(provider.payloads[3] as Payload | undefined, TOOL)
+      expect(results.length, "收尾请求里没有 propose_plan 的工具结果").toBe(1)
+      expect(results[0], "结果没有如实标注未经面板确认").toContain("未经面板确认直接执行")
+      expect(results[0], "结果不是既有计划结果格式").toContain("[计划执行结果]")
+      // 记录落完成态、面板收起事件照发（没弹过面板也不留悬挂状态）。
+      expect(planCheckpointStore.snapshot(`plan-${PLAN_CALL_ID_AUTO}`)?.plan.state, "自动模式执行完的计划没有落完成态").toBe("done")
+      expect(planEnds(), "计划收尾事件不对").toEqual(["done"])
+      expect(output.reply, "回合没有以模型正文收尾").toContain("没弹面板也做完了")
+    } finally {
+      resetSessionSafetyMode()
+    }
   }, 60_000)
 })

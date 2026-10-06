@@ -15,9 +15,22 @@
 //     （`{kind:"other"}`），用户的自由原文以**下一条消息**为准到达模型；通道不截留、
 //     不冒充。选择回执的三种取值（picked / other / cancelled）都由 UI 原样给出，
 //     未知取值按协议违规丢弃（与权限回执同口径），绝不代用户选。
+//
+// 「用户直接在输入框发消息、不点面板」不走回执通道：消息侧（ingress，见
+// `HarnessSlot.steer`）在消息进入 lane 持久 inbox 之后把该会话仍未结算的提问按
+// `user_replied` 取消（`cancelSessionChoices` 的第三个归宿）—— 面板随结算收起，
+// 工具结果如实说明「用户没在面板里选、直接发来了消息」，同样不冒充任何点选。
 // ==========================================
 
-import { publishUiEvent, subscribeUiReceipt, type HostEventMap, type NodeUiEventName } from "@/services/host"
+import {
+  publishUiEvent,
+  subscribeUiReceipt,
+  HOST_EVENT_CHOICE_END,
+  HOST_EVENT_CHOICE_START,
+  UI_RECEIPT_CHOICE_RESOLVED,
+  type HostEventMap,
+  type NodeUiEventName,
+} from "@/services/host"
 import { beginUserWait } from "./user-wait"
 import { reactive } from "vue"
 import { getActiveSessionId } from "@/services/session/store"
@@ -34,16 +47,18 @@ export type ChoiceResolution =
   | { kind: "cancelled" }
 
 /**
- * 提问归宿。`answered` 才携带用户答复；非答复的**四种**原因都有明确来源
- * （`user` 用户点了取消；`session_switched` 切会话含 signal abort，用户停止回合走同一条；
- * `not_active` 会话被关闭；`emit_failed` 提问事件发不出去）。
+ * 提问归宿。`answered` 才携带用户答复；非答复的**五种**原因都有明确来源
+ * （`user` 用户点了取消；`user_replied` 用户不回面板、直接在输入框发了一条消息
+ * （ingress 侧投递成功后结算，见 `cancelSessionChoices`）；`session_switched` 切会话
+ * 含 signal abort，用户停止回合走同一条；`not_active` 会话被关闭；`emit_failed`
+ * 提问事件发不出去）。
  * 没有 `timeout`（2026-10-06 用户裁决：选择类弹窗不留超时，`user-wait.ts` 的等待豁免）；
  * 也没有 `ui_unavailable`：选择面板常驻注册、没有「监听注册失败」这条产生路径
  *（与计划确认的六值口径刻意不同 —— 不留走不到的死分支）。
  */
 export type ChoiceOutcome =
   | { answered: true; answer: { kind: "picked"; index: number; option: string } | { kind: "other" } }
-  | { answered: false; reason: "user" | "session_switched" | "not_active" | "emit_failed" }
+  | { answered: false; reason: "user" | "user_replied" | "session_switched" | "not_active" | "emit_failed" }
 
 /** 待答提问的只读视图（面板渲染 + 测试替身按它应答；reactive 以便 `flush: "sync"` 应答）。 */
 export interface PendingChoiceView {
@@ -72,7 +87,8 @@ const pendingChoices = new Map<string, ChoiceEntry>()
 /**
  * 非答复归宿的用户可见说明（系统消息文案，与 `NON_CONFIRM_NOTICE` 同源互补）：
  * 切会话/关闭在 `cancelSessionChoices` 写出、发射失败在结算处写出；
- * `user`（用户自己点了取消）不需要系统消息，`ui_unavailable` 由面板上报错误留痕。
+ * `user`（用户自己点了取消）与 `user_replied`（用户直接发消息、面板随结算收起）不需要
+ * 系统消息 —— 用户自己的动作不需要解释，模型侧的回执由 `choiceDeclineText` 承担。
  * 没有 `timeout` 条目：本域不设等待超时（2026-10-06 用户裁决）。
  */
 export const CHOICE_NON_ANSWER_NOTICE = {
@@ -85,11 +101,18 @@ export const CHOICE_NON_ANSWER_NOTICE = {
  * 未答复的中性说明（模型可见的工具结果组成件，不是角色台词）。
  *
  * 与 `CHOICE_NON_ANSWER_NOTICE`（系统消息文案）同一份口径：后者覆盖三个由本域写出的
- * 归宿，工具结果另外覆盖 `user`（用户自己点了取消，不需要系统消息），两种渠道的文案
+ * 归宿，工具结果另外覆盖 `user`（用户自己点了取消）与 `user_replied`（用户没在面板里选、
+ * 直接发来了一条消息 —— 本条提问随之取消，用户的答复就是那条消息），两种渠道的文案
  * 不许各写一套（与 `planConfirmDeclineText` 同款）。
+ *
+ * `user_replied` 不冒充任何点选：只如实说明「用户直接发了消息」并指向那条消息 ——
+ * ingress 只证明用户发了话，无从知道这句话对应哪个选项（也不能替用户挑一个）。
  */
 export function choiceDeclineText(reason: Extract<ChoiceOutcome, { answered: false }>["reason"]): string {
   if (reason === "user") return "用户取消了本次提问"
+  if (reason === "user_replied") {
+    return "用户没有在面板中选择，而是直接发来了一条消息；本条提问已取消，请以下一条用户消息为准继续，不要重复提问"
+  }
   return CHOICE_NON_ANSWER_NOTICE[reason]
 }
 
@@ -141,9 +164,9 @@ function settleChoice(requestId: string, outcome: ChoiceOutcome): boolean {
   return true
 }
 
-/** 收起 UI 面板的收尾事件（结算后的显式调用点：超时 / signal / 关会话 / 发射失败）。 */
+/** 收起 UI 面板的收尾事件（结算后的显式调用点：signal / 关会话 / 发射失败 / 用户直发消息取消）。 */
 export function notifyChoiceEnd(sessionId: string, requestId: string): void {
-  void emitUiEvent("deskpet-choice-end", { sessionId, requestId })
+  void emitUiEvent(HOST_EVENT_CHOICE_END, { sessionId, requestId })
 }
 
 // ═══════════════════════════════════════════════════
@@ -165,8 +188,9 @@ export interface RequestChoiceInput {
  * 请求用户做一次选择（按 requestId 键控）。**没有等待超时**（2026-10-06 用户裁决：
  * 选择类弹窗不留超时）—— 等待期间该会话的回合墙钟与工具超时停表（`user-wait.ts`），
  * 用户想多久想多久。非答复归宿只来自明确事件：`signal` 的 abort（用户停止回合 /
- * 会话切换）按 `session_switched`、事件发射失败按 `emit_failed`、`user` / `ui_unavailable`
- * 由面板回执 resolve、`not_active` 由会话关闭触发。
+ * 会话切换）按 `session_switched`、事件发射失败按 `emit_failed`、`user` 由面板回执
+ * resolve、`not_active` 由会话关闭触发、`user_replied` 由用户直发消息的 ingress 结算
+ * （消息进入 lane 持久 inbox 之后，见 `HarnessSlot.steer`）。
  */
 export function requestChoice(input: RequestChoiceInput): Promise<ChoiceOutcome> {
   const { sessionId, requestId, question, options, signal } = input
@@ -196,7 +220,7 @@ export function requestChoice(input: RequestChoiceInput): Promise<ChoiceOutcome>
 
     choiceState.pending.push(view)
 
-    void emitUiEvent("deskpet-choice-start", {
+    void emitUiEvent(HOST_EVENT_CHOICE_START, {
       sessionId,
       requestId,
       question,
@@ -240,21 +264,28 @@ export function resolveChoice(requestId: string, resolution: ChoiceResolution): 
 }
 
 // ═══════════════════════════════════════════════════
-// 会话生命周期
+// 会话生命周期与 ingress 结算（用户直发消息）
 // ═══════════════════════════════════════════════════
 
 /**
- * 切会话/会话不再活跃时取消该会话的待答提问；返回取消条数。
- * 调用点必须在会话指针移动**之前**调用（与 `cancelSessionPlans` 同款）：
- * 取消文案写进旧会话，用户也不会再对不可见的提问负责。
+ * 取消该会话的全部待答提问；返回取消条数。三种归宿各有调用点：
+ *   · `session_switched` / `not_active`：切会话/会话不再活跃，必须在会话指针移动**之前**
+ *     调用（与 `cancelSessionPlans` 同款）—— 取消文案写进旧会话，用户也不会再对不可见的
+ *     提问负责；
+ *   · `user_replied`：用户不回面板、直接在输入框发了一条消息（ingress 侧在消息进入
+ *     lane 持久 inbox 之后调用）—— 不写系统消息（用户自己的动作，面板收起即反馈），
+ *     模型侧的回执由 `choiceDeclineText` 的 user_replied 文案如实承担。
  */
-export function cancelSessionChoices(sessionId: string, reason: "session_switched" | "not_active"): number {
+export function cancelSessionChoices(
+  sessionId: string,
+  reason: "session_switched" | "not_active" | "user_replied",
+): number {
   let cancelled = 0
   for (const [requestId, entry] of [...pendingChoices.entries()]) {
     if (entry.view.sessionId !== sessionId) continue
     if (!settleChoice(requestId, { answered: false, reason })) continue
     cancelled++
-    writeNotice(sessionId, reason)
+    if (reason !== "user_replied") writeNotice(sessionId, reason)
     notifyChoiceEnd(sessionId, requestId)
   }
   return cancelled
@@ -270,7 +301,7 @@ let receiptsInstalled = false
 let stopReceiptSubscriptions: Array<() => void> = []
 export function initChoiceConfirmationReceipts(): void {
   if (receiptsInstalled) return
-  const stop = subscribeUiReceipt("deskpet-choice-resolved", ({ requestId, result }) => {
+  const stop = subscribeUiReceipt(UI_RECEIPT_CHOICE_RESOLVED, ({ requestId, result }) => {
     resolveChoice(requestId, result)
   })
   stopReceiptSubscriptions = [stop]

@@ -51,7 +51,9 @@ export const 工具结果恢复: SceneDef = {
 
     // P-1 页预算随窗口单调：页宽是 token 口径（L0 单条结果的同一份额），不再是字符常数
     // （旧实现 64k 以上的所有窗口都得到同一个 8000 字符页宽，窗口完全不参与推导）。
-    const pageBudgets = [MIN_CONTEXT_WINDOW, DEFAULT_CONTEXT_WINDOW, 200_000].map(window => transcriptPageTokens(window))
+    // 第三个窗口随默认值推导（不能写死：DEFAULT_CONTEXT_WINDOW 调大后写死值会低于默认值，
+    // 单调断言按构造必假 —— 2026-10-06 默认值 131_072 → 262_144 时就是这样被打破的）。
+    const pageBudgets = [MIN_CONTEXT_WINDOW, DEFAULT_CONTEXT_WINDOW, DEFAULT_CONTEXT_WINDOW + 100_000].map(window => transcriptPageTokens(window))
     if (!(pageBudgets[0]! < pageBudgets[1]! && pageBudgets[1]! < pageBudgets[2]!)) {
       throw new Error(`页预算不随窗口单调: ${pageBudgets.join(" / ")}`)
     }

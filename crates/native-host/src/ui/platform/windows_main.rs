@@ -9,13 +9,11 @@
 //!   的行为；若不成立，降级方案是「整窗合成 + 聊天列覆盖」，记为已知布局缺口。
 //! - 聊天面板由 `windows_chat::mount_main_pane` 挂进主窗（同一份控件栈）；
 //! - 分隔条拖动由主窗过程转发鼠标事件（`WM_LBUTTONDOWN` 命中分隔条区域时进入拖动）；
-//! - **全窗宽顶栏（W9c）**：主窗层新建一条整窗宽 26px 的子窗口顶栏（品牌/状态位/
-//!   关闭「×」+ 拖动；设置/图层入口在托盘菜单，不在条内），创建顺序在聊天面板
-//!   之后 = 兄弟 z 序在上，正好盖住聊天列旧顶栏的同一 26px 带；舞台子窗口从带
-//!   下方开始（顶部布局预留）。
-//!   自建原因与 macOS 侧相同（旧顶栏是 `windows_chat.rs` 的私有实现、宽度恒等于
-//!   聊天列容器），见 `macos_main.rs` 模块头的说明；文本唯一真值仍是
-//!   `ui/titlebar.rs`。
+//! - **全窗宽顶栏（W9c）**：主窗层的一条整窗宽 26px 子窗口顶栏（品牌/状态位/
+//!   关闭「×」+ 拖动；设置/图层入口在托盘菜单，不在条内）。创建顺序在聊天面板
+//!   之后 = 兄弟 z 序在上，覆盖聊天列顶部的同一 26px 带；舞台子窗口从带下方开始
+//!   （顶部布局预留）。条高、品牌槽与状态位坐标等几何的唯一来源是
+//!   `ui/titlebar.rs`（旧聊天列顶栏副本已随旧实现删除）；文本唯一真值同样在那里。
 //!
 //! 未验证项（交付报告同步登记）：舞台子窗口的分层合成、收起/呼出动画对角色内容的
 //! 作用（W5 的常量 alpha 只作用于主窗自身位图，子窗口内容不随 alpha 淡出）、
@@ -44,6 +42,7 @@ use crate::render::geometry::WindowGeometry;
 use crate::render::win::WinLayerSurface;
 use crate::ui::stage::Stage;
 use crate::ui::theme::paint_win::{self, ButtonRole};
+use crate::ui::titlebar;
 use crate::{rust_debug, rust_info, rust_warn};
 
 use super::windows_chat::{self, DrawItemStruct};
@@ -63,35 +62,14 @@ const STAGE_MIN_WIDTH: f64 = 200.0;
 /// 未收到 CONFIG 推送时的布局兜底：窗口宽的 1/3（布局规则，不是配置默认值）。
 const CHAT_FALLBACK_WIDTH_RATIO: f64 = 1.0 / 3.0;
 
-// ── 全窗宽顶栏（覆盖聊天列旧顶栏的同一 26px 带）──
+// ── 全窗宽顶栏（顶部 26px 带，条内几何来自 `ui::titlebar`）──
 
 /// 顶栏窗口类名。
 const TITLEBAR_CLASS: &str = "DeskPetMainTitlebar";
-/// 顶栏高度（逻辑像素，按 DPI 缩放）。必须与 `windows_chat.rs::TITLEBAR_HEIGHT`
-/// **同值**：本顶栏靠精确覆盖那一 26px 带隐藏聊天列旧顶栏；本批文件所有权不含
-/// 聊天平台文件，无法共享常量，值在此镜像。
-const TITLEBAR_HEIGHT: i32 = 26;
-/// 条内控件高度与宽度（与旧顶栏同口径）。
-const NAV_CONTROL_HEIGHT: i32 = 18;
+/// 关闭「×」按钮宽度（本侧条内只余它一枚按钮）。
 const NAV_CLOSE_WIDTH: i32 = 22;
-/// 品牌文案（固定字样，不随 Profile/编辑，不可自定义；2026-10-05 用户拍板全名）。
-const TITLEBAR_BRAND_TEXT: &str = "V1rtual-Desk-Pet";
-/// 品牌字起点与右侧按钮保留宽度（与旧顶栏同口径；条内只余关闭按钮，故比 macOS 的 46 窄）。
-const TITLEBAR_BRAND_X: i32 = 8;
+/// 右侧按钮保留宽度（条内只余关闭按钮，故比 macOS 的 46 窄）。
 const TITLEBAR_RIGHT_RESERVE: i32 = 30;
-
-/// 品牌字槽宽（逻辑像素；按 11pt 档位的估算宽 + 余量，随全名长度自适应）。
-/// 与聊天列旧顶栏 `windows_chat.rs::titlebar_brand_width` 同口径（+14 余量、同算式）。
-fn titlebar_brand_width() -> f64 {
-    crate::ui::chat::panels::estimated_text_width(TITLEBAR_BRAND_TEXT, 11.0) + 14.0
-}
-
-/// 状态位起点（逻辑像素）：品牌槽 + 8 的间距（与聊天列旧顶栏 `titlebar_status_x` 同口径）。
-fn titlebar_status_x() -> f64 {
-    f64::from(TITLEBAR_BRAND_X) + titlebar_brand_width() + 8.0
-}
-/// 右侧按钮与窗口右缘的间距（与旧顶栏同值）。
-const TITLEBAR_RIGHT_MARGIN: i32 = 4;
 /// 顶栏按钮 ID（只在本顶栏窗口的子控件里使用，与 `windows_chat.rs` 的 ID 命名
 /// 空间天然隔离 —— WM_COMMAND 只到达控件直接父窗口）。
 /// 只保留关闭「×」：Windows 的设置/图层入口在托盘菜单（与 macOS 只保留
@@ -195,7 +173,7 @@ pub(crate) fn install(main: HWND) -> AppResult<MainLayout> {
     // 聊天面板：同一份控件实现挂进主窗（产品形态在主窗内）。
     windows_chat::mount_main_pane(main);
 
-    // 全窗宽顶栏：必须在聊天面板之后创建 —— 兄弟 z 序在上，正好盖住其 26px 旧顶栏带。
+    // 全窗宽顶栏：必须在聊天面板之后创建 —— 兄弟 z 序在上，正好盖住其 26px 顶栏带。
     create_titlebar(main);
 
     let mut layout = MainLayout {
@@ -209,7 +187,8 @@ pub(crate) fn install(main: HWND) -> AppResult<MainLayout> {
     };
     relayout(&mut layout, main);
     rust_info!(
-        "主窗一体布局已建立（Windows：舞台子窗口 {width}×{height} 物理像素，全窗宽顶栏 {TITLEBAR_HEIGHT}px，聊天列默认展开）"
+        "主窗一体布局已建立（Windows：舞台子窗口 {width}×{height} 物理像素，全窗宽顶栏 {:.0}px，聊天列默认展开）",
+        titlebar::HEIGHT
     );
     Ok(layout)
 }
@@ -237,7 +216,7 @@ pub(crate) fn relayout(layout: &mut MainLayout, main: HWND) {
     };
     let stage_w = (width - chat_phys - divider_phys).max(1);
     // 顶部布局预留：舞台子窗口从全窗宽顶栏下方开始（26px 带归顶栏）。
-    let band = scaled(TITLEBAR_HEIGHT, scale);
+    let band = scaled_f(titlebar::HEIGHT, scale);
     let content_height = (height - band).max(1);
     // 舞台子窗口铺满整个舞台区域（2026-10-05 用户规则：与 macOS
     // `macos_main.rs::relayout` 对称，与图层编辑器预览同口径——预览视图=整个
@@ -266,8 +245,9 @@ pub(crate) fn relayout(layout: &mut MainLayout, main: HWND) {
             SWP_NOACTIVATE | SWP_NOZORDER,
         );
         if layout.chat_visible {
-            // 聊天列面板保持满高：面板内部按「容器顶部 26px = 旧顶栏」布局，全窗宽
-            // 顶栏正好盖住那一段；把面板改矮会让旧顶栏滑出覆盖带、与顶栏重叠可见。
+            // 聊天列面板保持满高：面板内部按「容器顶部 26px 归顶栏」布局（标签条接
+            // 在其下方），顶部那一段由全窗宽顶栏占据；把面板改矮会让面板的顶部预留
+            // 与顶栏错位。
             windows_chat::layout_main_pane(main, stage_w + divider_phys, 0, chat_phys, height);
         }
     }
@@ -472,7 +452,7 @@ pub(crate) fn paint_backdrop(hdc: HDC, width: i32, height: i32, layout: Option<&
 }
 
 // ==========================================
-// 全窗宽顶栏（覆盖聊天列内旧顶栏的同一 26px 带）
+// 全窗宽顶栏（顶部 26px 带，条内几何来自 `ui::titlebar`）
 // ==========================================
 
 /// 创建全窗宽顶栏子窗口（主窗内的兄弟窗口；创建顺序在聊天面板之后 = z 序在上）。
@@ -480,7 +460,7 @@ fn create_titlebar(main: HWND) {
     let hinstance = unsafe { GetModuleHandleW(std::ptr::null()) };
     let class_name = wide(TITLEBAR_CLASS);
     let (width, _) = client_size(main);
-    let band = scaled(TITLEBAR_HEIGHT, dpi_scale(main));
+    let band = scaled_f(titlebar::HEIGHT, dpi_scale(main));
     unsafe {
         let mut wc: WNDCLASSW = std::mem::zeroed();
         wc.style = CS_HREDRAW | CS_VREDRAW;
@@ -507,14 +487,21 @@ fn create_titlebar(main: HWND) {
             std::ptr::null(),
         );
         if bar == 0 {
-            // 顶栏失败不中止宿主：主窗 + 旧顶栏仍可用（覆盖缺失只是本项未达成）。
-            rust_warn!("全窗宽顶栏创建失败（主窗仍可用，聊天列旧顶栏保留）");
+            // 顶栏失败不中止宿主：主窗仍可用，但顶部 26px 带露出窗口自身底色
+            //（不回落第二份顶栏实现 —— 旧聊天列顶栏已删除）。
+            rust_warn!("全窗宽顶栏创建失败（主窗仍可用，顶部 26px 带将无顶栏绘制）");
             return;
         }
     }
 }
 
 /// 顶栏底：`bar_bg` + 内立体线 + 下边线（`bar_edge`）。
+///
+/// **顶栏外投影（`--barsh` 的非 inset 部分）不在这里画**：本窗是顶栏自身的子窗口，
+/// GDI 画不出客户区之外的像素；能承载该投影的是下方的聊天列 DC 与舞台表面，实际
+/// 画点取设计稿 `.bar` 的原位 —— `windows_chat.rs::paint_shell` 在聊天列 DC 上画
+/// 投影带（条下 1px 露头在标签条上可见）。舞台列是分层渲染表面、不参与 GDI 主题
+/// 绘制，这一半没有画点（平台差异，如实登记）。
 unsafe fn paint_titlebar(bar: HWND, hdc: HDC) {
     let t = crate::ui::theme::tokens();
     let (width, height) = client_size(bar);
@@ -530,14 +517,14 @@ unsafe fn paint_titlebar(bar: HWND, hdc: HDC) {
             paint_win::Rect::new(0, height - 1, width, 1),
             t.bar_edge,
         );
-        // 状态位前的强调圆点（`--acc`；起点与状态位同源 —— 品牌改全名后跟着右移，
-        // 与聊天列旧顶栏同一画法/位置）。
+        // 状态位前的强调圆点（`--acc`；x 与状态位锚点同源，圆点画在锚点左侧 ——
+        // Windows 的渲染口径与 macOS 不同：那边圆点坐在锚点上、文字右移）。
         let scale = dpi_scale(bar);
         paint_win::draw_dot(
             hdc,
-            scaled_f(titlebar_status_x(), scale) - scaled(10, scale),
+            scaled_f(titlebar::status_x(), scale) - scaled(10, scale),
             height / 2,
-            scaled(3, scale),
+            scaled_f(titlebar::DOT_SIZE / 2.0, scale),
             t.accent,
             t.bar_bg.base_color(),
         );
@@ -563,7 +550,7 @@ unsafe fn build_titlebar_children(bar: HWND) {
         let brand = CreateWindowExW(
             0,
             wide("STATIC").as_ptr(),
-            wide(TITLEBAR_BRAND_TEXT).as_ptr(),
+            wide(titlebar::BRAND_TEXT).as_ptr(),
             WS_CHILD | WS_VISIBLE,
             0,
             0,
@@ -618,7 +605,7 @@ unsafe fn build_titlebar_children(bar: HWND) {
                 dpi_scale(bar),
             ),
         );
-        // 字体：与旧顶栏同口径（全局快照族名 + 小号字；刷新见 apply_titlebar_font）。
+        // 字体：全局快照族名 + 小号字（刷新见 apply_titlebar_font）。
         let font = create_titlebar_font(bar);
         for control in [brand, status, hide] {
             SendMessageW(control, WM_SETFONT, font as WPARAM, 1);
@@ -636,7 +623,7 @@ unsafe fn build_titlebar_children(bar: HWND) {
     }
 }
 
-/// 顶栏条内控件的摆放（WM_SIZE 驱动；与聊天列旧顶栏同一套布局口径）。
+/// 顶栏条内控件的摆放（WM_SIZE 驱动；几何算式来自 `ui::titlebar`，本侧只做 DPI 缩放）。
 unsafe fn layout_titlebar_children(bar: HWND) {
     let ui = TITLEBAR.with(|cell| {
         cell.borrow()
@@ -651,34 +638,43 @@ unsafe fn layout_titlebar_children(bar: HWND) {
         return;
     }
     let scale = dpi_scale(bar);
-    let nav_h = scaled(NAV_CONTROL_HEIGHT, scale);
-    let y = (height - nav_h) / 2;
+    let nav_h = scaled_f(titlebar::CONTROL_HEIGHT, scale);
+    let y = scaled_f(titlebar::centered_y(titlebar::CONTROL_HEIGHT), scale);
     unsafe {
         MoveWindow(
             brand,
-            scaled(TITLEBAR_BRAND_X, scale),
+            scaled_f(titlebar::BRAND_X, scale),
             y,
-            scaled_f(titlebar_brand_width(), scale),
+            scaled_f(titlebar::brand_width(), scale),
             nav_h,
             1,
         );
-        let status_x = scaled_f(titlebar_status_x(), scale);
+        let status_x = scaled_f(titlebar::status_x(), scale);
         MoveWindow(
             status,
             status_x,
             y,
-            (width - status_x - scaled(TITLEBAR_RIGHT_RESERVE, scale)).max(24),
+            scaled_f(
+                titlebar::status_slot_width(
+                    f64::from(width) / scale,
+                    f64::from(TITLEBAR_RIGHT_RESERVE),
+                ),
+                scale,
+            ),
             nav_h,
             1,
         );
         // 右侧按钮右对齐：仅「×」（设置/图层入口在托盘菜单，Windows 只保留关闭）。
         let hide_w = scaled(NAV_CLOSE_WIDTH, scale);
-        let hide_x = (width - scaled(TITLEBAR_RIGHT_MARGIN, scale) - hide_w).max(0);
+        let hide_x = scaled_f(
+            titlebar::right_button_x(f64::from(width) / scale, &[f64::from(NAV_CLOSE_WIDTH)])[0],
+            scale,
+        );
         MoveWindow(hide, hide_x, y, hide_w, nav_h, 1);
     }
 }
 
-/// 顶栏字体（与聊天列旧顶栏同口径：全局快照族名 + 小号字；族名缺省回落既有中文 UI 字体）。
+/// 顶栏字体（全局快照族名 + 小号字；族名缺省回落既有中文 UI 字体）。
 fn create_titlebar_font(bar: HWND) -> HFONT {
     let scale = dpi_scale(bar);
     let snapshot = crate::ui::font::snapshot();
@@ -707,8 +703,8 @@ fn create_titlebar_font(bar: HWND) -> HFONT {
     }
 }
 
-/// 顶栏状态位文本刷新（`windows.rs::refresh_titlebar` 调用；聊天列旧顶栏由
-/// `windows_chat::apply_titlebar_text` 另行同步 —— 两处展示副本，一个文本真值源）。
+/// 顶栏状态位文本刷新（`windows.rs::refresh_titlebar` 调用；顶栏是状态位的唯一
+/// 展示副本 —— 旧聊天列顶栏的副本已随旧实现删除）。
 pub(crate) fn set_titlebar_text(text: &str) {
     let status = TITLEBAR.with(|cell| cell.borrow().as_ref().map(|ui| ui.status));
     match status {
@@ -777,7 +773,7 @@ unsafe fn draw_titlebar_button(item: &DrawItemStruct) {
     };
 }
 
-/// 顶栏窗口过程：控件拖动/点击与覆盖（旧顶栏不可交互）都在这里收口。
+/// 顶栏窗口过程：控件拖动/点击与覆盖都在这里收口。
 unsafe extern "system" fn titlebar_wndproc(
     hwnd: HWND,
     msg: u32,
@@ -867,33 +863,60 @@ unsafe extern "system" fn stage_wndproc(
 mod tests {
     use super::*;
 
-    /// 品牌文案为拍板全名；品牌槽容得下它（否则尾部省略号），状态位起点在品牌槽
-    /// 右缘之后（不重叠）。与 macOS `macos_main.rs` 的同名测试对称 —— 本文件在
-    /// macOS 上不参与编译，由 CI 的 windows job 执行（本机只做离线核对，见模块头）。
+    /// 生产代码段（`#[cfg(test)]` 之前）——源码级守门断言都在这段上做，
+    /// 否则会命中测试自己的字面量（那种断言永远为真、等于没写）。
+    fn production_source() -> &'static str {
+        let src = include_str!("windows_main.rs");
+        let end = src.find("#[cfg(test)]").expect("必须有测试段");
+        &src[..end]
+    }
+
+    /// 条内几何收口到共享模块：本文件不得再落第二份条高/品牌槽/状态位起点定义
+    /// （旧实现曾在 `windows_chat.rs` 与这里各持一份镜像常量），且必须消费共享面。
+    /// 与 macOS `macos_main.rs` 的同名守卫对称 —— 本文件在 macOS 上不参与编译，
+    /// 由 CI 的 windows job 执行（本机只做离线核对，见模块头）。
     #[test]
-    fn 顶栏品牌槽容得下全名且与状态位不重叠() {
-        assert_eq!(TITLEBAR_BRAND_TEXT, "V1rtual-Desk-Pet");
-        let text_w = crate::ui::chat::panels::estimated_text_width(TITLEBAR_BRAND_TEXT, 11.0);
-        assert!(titlebar_brand_width() > text_w, "品牌槽放不下全名");
-        assert!(
-            titlebar_status_x() >= f64::from(TITLEBAR_BRAND_X) + titlebar_brand_width(),
-            "状态位起点压住了品牌槽"
-        );
+    fn 顶栏几何收口共享模块() {
+        let source = production_source();
+        for (name, needle) in [
+            ("条高常量", concat!("const TITLEBAR", "_HEIGHT")),
+            ("品牌文案常量", concat!("const TITLEBAR", "_BRAND_TEXT")),
+            ("品牌槽宽算式", concat!("fn titlebar_brand", "_width")),
+            ("状态位起点算式", concat!("fn titlebar_status", "_x")),
+        ] {
+            assert_eq!(
+                source.matches(needle).count(),
+                0,
+                "顶栏几何镜像回潮「{name}」：{needle}"
+            );
+        }
+        for (name, needle) in [
+            ("条高", concat!("titlebar::", "HEIGHT")),
+            ("品牌槽宽", concat!("titlebar::brand", "_width")),
+            ("状态位锚点", concat!("titlebar::status", "_x")),
+            ("垂直居中", concat!("titlebar::centered", "_y")),
+        ] {
+            assert!(
+                source.contains(needle),
+                "顶栏几何未消费共享「{name}」：{needle}"
+            );
+        }
     }
 
     /// 最短窗宽（`MAIN_WINDOW_MIN_WIDTH`）下：状态文字仍有可读宽度；右侧保留区
     /// 容得下仅剩的关闭「×」（设置/图层入口在托盘菜单，条内不重复放）。
     #[test]
     fn 最短窗宽下状态位与关闭按钮几何相容() {
-        let available = crate::window::MAIN_WINDOW_MIN_WIDTH
-            - titlebar_status_x()
-            - f64::from(TITLEBAR_RIGHT_RESERVE);
-        assert!(
-            available >= 24.0,
-            "状态位文字在最短窗宽下被压没（余 {available}）"
+        let slot = titlebar::status_slot_width(
+            crate::window::MAIN_WINDOW_MIN_WIDTH,
+            f64::from(TITLEBAR_RIGHT_RESERVE),
         );
         assert!(
-            TITLEBAR_RIGHT_RESERVE >= TITLEBAR_RIGHT_MARGIN + NAV_CLOSE_WIDTH,
+            slot >= titlebar::MIN_STATUS_WIDTH,
+            "状态位文字在最短窗宽下被压没（槽 {slot}）"
+        );
+        assert!(
+            TITLEBAR_RIGHT_RESERVE >= NAV_CLOSE_WIDTH,
             "右侧保留区容不下关闭按钮"
         );
     }

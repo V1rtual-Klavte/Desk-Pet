@@ -14,7 +14,11 @@
 //   · 记录 = `planCheckpointStore`（`created`/`step_state`/`terminal` 事件级落盘，
 //     崩溃恢复与「继续/丢弃」面板按同一份记录工作）；
 //   · 步骤产出 = `plan_step_result` 条目（`formatStepResults` 的「原文见 …」回读地址）；
-//   · 收尾 = `notifyPlanEnd` 收起面板 + 与 `runtime.ts::finishPlan` 同文的截止/中止系统消息。
+//   · 收尾 = `notifyPlanEnd` 收起面板 + 与自动入口同文的截止/中止系统消息。
+//
+// 写盘降级 / 收尾 / 取消与用户拒绝归宿原先在本模块与 `runtime.ts` 各存一份同形复刻，
+// 2026-10-06 提取为 `./settlement.ts`：两条入口消费同一实现，对外行为与归宿不变；
+// 差异（日志通道 / traceContext / reason 取值域）都在共享原语的参数里显式表达。
 //
 // 生命周期边界（已登记的差异）：自动入口的确认与执行发生在回合定时器启动**之前**
 // （`runPlanPhase` 在 `driveAdmitted` 之前），本入口运行在回合的**工具调用内** ——
@@ -27,7 +31,7 @@
 // 恢复入口在会话忙碌时已被拒绝，都不与本入口并发。
 // ==========================================
 
-import { publishUiEvent, type HostEventMap, type NodeUiEventName } from "@/services/host"
+import { publishUiEvent, HOST_EVENT_PLAN_PROGRESS, type HostEventMap, type NodeUiEventName } from "@/services/host"
 import { getEffectiveSafetyMode } from "@/services/debug"
 import { getActiveSessionId } from "@/services/session/store"
 import { pushSystemMessage } from "@/services/session"
@@ -38,22 +42,21 @@ import { sha256Text } from "@/services/engine/runtime"
 import { harnessSlots } from "@/services/engine/harness"
 import type { PiSubAgentScope } from "@/services/engine/harness"
 import {
-  bindRunningPlan, clearRunningPlan, notifyPlanEnd, planConfirmState,
+  bindRunningPlan, clearRunningPlan, planConfirmState,
   requestPlanConfirm, requestPlanStepDecision,
 } from "../plan-confirmation"
-import type { PlanConfirmResult } from "../plan-confirmation"
 import {
   executePlan, normalizePlan, planEffectClassFor, planToRecords,
 } from "../planner"
 import type { PlanExecutionResult, PlanResult, PlanStep } from "../planner"
 import { planCheckpointStore } from "./checkpoint-store"
+import { createPlanSettlement } from "./settlement"
+import type { PlanConfirmDeclineReason, PlanExecutionCancelReason } from "./settlement"
 
 const log = createLogger("PlanProposal")
 
-/** 确认未成立（不是用户拒绝）的原因词汇与 `PlanConfirmResult` 同源。 */
-type ConfirmDeclineReason = Exclude<Extract<PlanConfirmResult, { confirmed: false }>["reason"], "user">
-/** 执行期取消的原因：外部终止（user）/ 计划时限（deadline）/ 步骤门与失败询问上的中止（declined）。 */
-type ExecutionCancelReason = "user" | "deadline" | "declined"
+/** 计划结算原语（写盘降级 / 收尾 / 取消与用户拒绝归宿）：与自动入口（runtime.ts::runPlanPhase）共享同一实现。 */
+const planSettlement = createPlanSettlement(log)
 
 export interface ProposedPlanInput {
   sessionId: string
@@ -78,10 +81,10 @@ export type ProposedPlanOutcome =
   | { kind: "completed"; result: PlanExecutionResult; confirmation: "user" | "auto_policy" }
   /** 用户在确认面板选择取消：一步都没跑。 */
   | { kind: "declined" }
-  /** 确认未成立（超时 / 切会话 / 会话关闭 / 事件发射失败 / 面板不可用）：一步都没跑。 */
-  | { kind: "cancelled"; stage: "confirm"; reason: ConfirmDeclineReason }
+  /** 确认未成立（切会话 / 会话关闭 / 事件发射失败 / 面板不可用）：一步都没跑。 */
+  | { kind: "cancelled"; stage: "confirm"; reason: PlanConfirmDeclineReason }
   /** 执行期取消：已跑过的步骤保留在结果与记录里，剩余步骤未执行。 */
-  | { kind: "cancelled"; stage: "execution"; reason: ExecutionCancelReason; context: string }
+  | { kind: "cancelled"; stage: "execution"; reason: PlanExecutionCancelReason; context: string }
   /** 同一会话已有计划在确认或执行中（不另开第二个计划）。 */
   | { kind: "busy" }
   /** 规范化后没有可执行步骤（调用方准入之外的防御分支）。 */
@@ -100,55 +103,6 @@ async function emitPlanUiEvent<K extends NodeUiEventName>(event: K, payload: Hos
   } catch (error) {
     log.warn("计划 UI 事件发送失败（best-effort）:", event, formatError(error))
   }
-}
-
-/**
- * 计划写盘失败的降级（与 `runtime.ts::withPlanWriteDegrade` 同款，PLAN-15 / FIX-63①）：
- * 日志 + `deskpet.plan_write_failed` 证据条目 + 用户可见提示，然后继续正常结算 ——
- * 计划本身已经执行/已取消，把它报成模型故障会让用户以为副作用没发生。
- */
-async function withPlanWriteDegrade(sessionId: string, planId: string, write: () => Promise<void>): Promise<void> {
-  try {
-    await write()
-  } catch (error) {
-    log.error("计划执行记录写入失败:", formatError(error))
-    await planCheckpointStore.writeWriteFailure(sessionId, planId, formatError(error))
-      .catch(evidenceError => log.error("计划写盘失败证据条目写入失败:", formatError(evidenceError)))
-    pushSystemMessage("计划执行记录写入失败（计划本身已执行/已取消）", sessionId)
-  }
-}
-
-/**
- * 收尾的唯一出口（与 `runtime.ts::finishPlan` 同款）：写盘 → 收起面板 → 系统消息。
- * 只有 deadline / declined 发系统消息：用户自己的终止动作与正常完成由面板与主回复承担；
- * 确认未成立的说明由计划确认域在结算处写出（与自动入口同口径，不在本模块重复写）。
- */
-async function finishProposedPlan(args: {
-  sessionId: string
-  planId: string
-  state: "done" | "failed" | "interrupted"
-  reason: "completed" | "failed" | ExecutionCancelReason | ConfirmDeclineReason
-  notify: "done" | "failed" | "cancelled"
-}): Promise<void> {
-  await withPlanWriteDegrade(args.sessionId, args.planId, () => planCheckpointStore.transitionPlan(args.planId, args.state))
-  notifyPlanEnd(args.sessionId, args.notify)
-  if (getActiveSessionId() !== args.sessionId) return
-  if (args.reason === "deadline") pushSystemMessage("计划超时，已停在当前步骤，剩余步骤未执行", args.sessionId)
-  if (args.reason === "declined") pushSystemMessage("已按你的选择停在当前步骤，剩余步骤未执行", args.sessionId)
-}
-
-/** 取消归宿的唯一走法（与 `runtime.ts::cancelPlanRun` 同款）：运行中的步骤与计划落 `interrupted`。 */
-async function cancelProposedPlan(args: {
-  sessionId: string
-  planId: string
-  reason: ExecutionCancelReason | ConfirmDeclineReason
-}): Promise<void> {
-  await withPlanWriteDegrade(args.sessionId, args.planId, async () => {
-    for (const step of planCheckpointStore.snapshot(args.planId)?.steps ?? []) {
-      if (step.state === "running") await planCheckpointStore.transitionStep(args.planId, step.stepId, "interrupted")
-    }
-  })
-  await finishProposedPlan({ sessionId: args.sessionId, planId: args.planId, state: "interrupted", reason: args.reason, notify: "cancelled" })
 }
 
 /**
@@ -202,16 +156,13 @@ export async function runProposedPlan(input: ProposedPlanInput): Promise<Propose
       if (!decision.confirmed) {
         if (decision.reason === "user") {
           // 用户拒绝：一步都没跑，步骤全部标 skipped，计划落 failed（与自动入口同款）。
-          await withPlanWriteDegrade(sessionId, planId, async () => {
-            for (const step of plan.steps) await planCheckpointStore.transitionStep(planId, String(step.id), "skipped")
-          })
-          await finishProposedPlan({ sessionId, planId, state: "failed", reason: "declined", notify: "cancelled" })
+          await planSettlement.failPlanOnUserDecline({ sessionId, planId, steps: plan.steps })
           return { kind: "declined" }
         }
         // 其余非确认归宿都不是用户的选择：计划一次都没跑，按取消归宿收尾。
         // 用户可见说明由确认域就地写出（超时/事件发射失败在结算处、会话切换/关闭在
         // cancelSessionPlans、面板不可用由面板上报），这里不重复写。
-        await cancelProposedPlan({ sessionId, planId, reason: decision.reason })
+        await planSettlement.cancelPlanRun({ sessionId, planId, reason: decision.reason })
         return { kind: "cancelled", stage: "confirm", reason: decision.reason }
       }
       stepMode = decision.mode
@@ -240,7 +191,7 @@ export async function runProposedPlan(input: ProposedPlanInput): Promise<Propose
       ...(parentSlot ? { parentSlot } : {}),
     }
 
-    await withPlanWriteDegrade(sessionId, planId, () => planCheckpointStore.transitionPlan(planId, "running"))
+    await planSettlement.withPlanWriteDegrade(sessionId, planId, () => planCheckpointStore.transitionPlan(planId, "running"))
     bindRunningPlan(sessionId, planId, planAbort)
     // 步骤产出证据（PLAN-09②）与自动入口同一条写盘链：entry id 在 `onStepDone` 里与
     // checkpoint 同一收口落盘，按 stepId 收在这里，执行结束后回填到结果条目。
@@ -263,12 +214,12 @@ export async function runProposedPlan(input: ProposedPlanInput): Promise<Propose
         assertCurrent()
         stepStartedAt = Date.now()
         await planCheckpointStore.transitionStep(planId, String(step.id), "running")
-        void emitPlanUiEvent("deskpet-plan-progress", { sessionId, planId, stepId: String(step.id), total: plan.steps.length, desc: step.description, status: "running" })
+        void emitPlanUiEvent(HOST_EVENT_PLAN_PROGRESS, { sessionId, planId, stepId: String(step.id), total: plan.steps.length, desc: step.description, status: "running" })
       },
       async onStepDone(step, output) {
         assertCurrent()
         await planCheckpointStore.transitionStep(planId, String(step.id), output.success ? "done" : "failed")
-        void emitPlanUiEvent("deskpet-plan-progress", { sessionId, planId, stepId: String(step.id), total: plan.steps.length, desc: step.description, status: output.success ? "done" : "failed" })
+        void emitPlanUiEvent(HOST_EVENT_PLAN_PROGRESS, { sessionId, planId, stepId: String(step.id), total: plan.steps.length, desc: step.description, status: output.success ? "done" : "failed" })
         // 写盘失败只降级成「原文未落盘」（`formatStepResults` 会如实标注），不拖垮计划结算。
         const replyText = output.rawReply ?? output.reply
         const entryId = await planCheckpointStore.writeStepResult(sessionId, {
@@ -288,7 +239,7 @@ export async function runProposedPlan(input: ProposedPlanInput): Promise<Propose
       // `runtime.ts::runPlanPhase` 逐字一致（放大到子代理时派生型工具会被剥离，按实际集合写）。
       async onStepNotice(step, notice) {
         const index = plan.steps.findIndex(item => item.id === step.id) + 1
-        void emitPlanUiEvent("deskpet-plan-progress", { sessionId, planId, stepId: String(step.id), total: plan.steps.length, desc: step.description, status: "warning" })
+        void emitPlanUiEvent(HOST_EVENT_PLAN_PROGRESS, { sessionId, planId, stepId: String(step.id), total: plan.steps.length, desc: step.description, status: "warning" })
         if (notice.kind === "missing_tools") {
           pushSystemMessage(`计划第 ${index} 步指定的工具不存在: ${notice.names.join("、")}（该步未执行）`, sessionId)
         } else {
@@ -338,13 +289,13 @@ export async function runProposedPlan(input: ProposedPlanInput): Promise<Propose
       const reasonText = result.cancelled.reason === "user" ? "用户终止执行"
         : result.cancelled.reason === "deadline" ? "超过计划时限" : "按用户选择中止"
       const context = `${result.stepResults.length}/${plan.steps.length} 步已执行，${reasonText}`
-      await cancelProposedPlan({ sessionId, planId, reason: result.cancelled.reason })
+      await planSettlement.cancelPlanRun({ sessionId, planId, reason: result.cancelled.reason })
       return { kind: "cancelled", stage: "execution", reason: result.cancelled.reason, context }
     }
     // 执行已收尾、写终态之前再核对一次代际（与自动入口同款：放在取消归宿之后，
     // 取消路径必须如实落 interrupted，不被守卫拦成永久 running）。
     assertCurrent()
-    await finishProposedPlan({
+    await planSettlement.finishPlan({
       sessionId,
       planId,
       state: result.overallSuccess ? "done" : "failed",

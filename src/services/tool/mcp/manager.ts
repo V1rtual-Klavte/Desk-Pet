@@ -30,22 +30,210 @@ export interface McpServerConfig {
   enabled: boolean
 }
 
+// ── 条目字段的 schema 校验（CONFIG 直改条目 / JSON 导入 / 管理面表单三个入口共用）──
+//
+// 纪律（W5-B）：**逐字段如实校验，不做静默收拢**。旧实现用 `String()` 与
+// `enabled !== false` 兜底，会把 `enabled: "false"`（字符串）读成「启用」、
+// 把 `args: "a b"` 收成单元素数组 —— 错误配置因此一直跑在错误语义上。
+// 非法的直改条目在这里就结构化拒绝（`code = "CONFIG"`），错误信息点名条目与字段。
+//
+// 边界默认值只保留在**外部格式适配**（JSON 导入）一侧，且是显式注释过的收窄：
+// `transport`/`type` 缺省 = stdio、`enabled` 缺省 = 启用（外部客户端导出的 JSON
+// 两种字段常常都没有）；CONFIG 条目不允许这些缺省。
+
+/** 结构化 CONFIG 错误（管理面/配置读取的统一错误语义，与 host-requests 的入参校验同口径）。 */
+function configError(message: string): Error {
+  return Object.assign(new Error(message), { code: "CONFIG" })
+}
+
+/** 字段级校验错误：`<主体>的 <字段> 非法：<原因>`（主体 = `MCP 服务器「name」` 或 `tools.mcp.servers[i]`）。 */
+function fieldError(subject: string, field: string, detail: string): Error {
+  return configError(`${subject}的 ${field} 非法：${detail}`)
+}
+
+/** 必填非空字符串（name 等；空串按缺字段处理，不做 String() 收拢）。 */
+function requireEntryString(raw: unknown, subject: string, field: string): string {
+  if (typeof raw !== "string" || raw.trim().length === 0) {
+    throw fieldError(subject, field, "必须是非空字符串")
+  }
+  return raw
+}
+
+/** 可选字符串（缺省/空串 = 未提供；给了就必须是字符串）。 */
+function optionalEntryString(raw: unknown, subject: string, field: string): string | undefined {
+  if (raw === undefined || raw === null || raw === "") return undefined
+  if (typeof raw !== "string") throw fieldError(subject, field, "必须是字符串")
+  return raw
+}
+
+/** 可选字符串数组（每项都必须是字符串；标量不再收拢成单元素数组）。 */
+function optionalStringArray(raw: unknown, subject: string, field: string): string[] | undefined {
+  if (raw === undefined || raw === null) return undefined
+  if (!Array.isArray(raw) || raw.some(item => typeof item !== "string")) {
+    throw fieldError(subject, field, "必须是字符串数组")
+  }
+  return raw.map(item => item as string)
+}
+
 /**
- * 归一化「字符串键值对」：env 与 headers 共用同一纪律，只保留「非空键名 + 非空字符串值」。
- * - 返回 `undefined` 表示未提供（调用方据此决定是否沿用旧值）
- * - 返回 `{}` 表示显式清空
- * 空值视为「未配置」：env 里 CONFIG 的 `KEY: ""` 占位不应覆盖父进程已导出的同名变量。
+ * 「字符串键值对」（env / headers）：值必须是字符串；空串值视为「未配置」被丢弃。
+ * 空串占位是既有语义：env 里 CONFIG 的 `KEY: ""` 不应覆盖父进程已导出的同名变量。
  */
-function normalizeStringMap(raw: unknown): Record<string, string> | undefined {
-  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return undefined
+function parseStringMap(raw: unknown, subject: string, field: string): Record<string, string> | undefined {
+  if (raw === undefined || raw === null) return undefined
+  if (typeof raw !== "object" || Array.isArray(raw)) {
+    throw fieldError(subject, field, "必须是键值对对象")
+  }
   const out: Record<string, string> = {}
-  for (const [k, v] of Object.entries(raw as Record<string, unknown>)) {
-    if (!k || v === undefined || v === null) continue
-    const value = String(v)
+  for (const [key, value] of Object.entries(raw as Record<string, unknown>)) {
+    if (!key) throw fieldError(subject, field, "包含空键名")
+    if (typeof value !== "string") throw fieldError(subject, field, `键 ${key} 的值必须是字符串`)
     if (value === "") continue
-    out[k] = value
+    out[key] = value
   }
   return out
+}
+
+/**
+ * 传输方式取值：只有显式 `stdio` / `http` 合法；`sse` 已弃用，点名拒绝并给迁移指引。
+ *
+ * `fallback` 只给 JSON 导入用（外部条目常常没有 transport/type 字段，缺省 = stdio）；
+ * CONFIG 条目与表单不走 fallback —— 缺字段即报错。
+ */
+function parseTransport(raw: unknown, subject: string, fallback?: "stdio"): "stdio" | "http" {
+  if (raw === undefined || raw === null || raw === "") {
+    if (fallback) return fallback
+    throw fieldError(subject, "transport", "缺失（必须显式写 stdio 或 http）")
+  }
+  if (raw === "sse") {
+    throw configError(`${subject}的 transport 为 sse 已弃用：请改用 http 并填写 url`)
+  }
+  if (raw !== "stdio" && raw !== "http") {
+    throw fieldError(subject, "transport", `只能是 stdio 或 http（收到 ${JSON.stringify(raw)}）`)
+  }
+  return raw
+}
+
+/** 已通过逐字段类型校验的条目（CONFIG 读取与 JSON 导入共用的中间形状）。 */
+interface ServerCandidate {
+  name: string
+  transport: "stdio" | "http"
+  command?: string
+  args?: string[]
+  url?: string
+  headers?: Record<string, string>
+  env?: Record<string, string>
+  includeTools?: string[]
+  excludeTools?: string[]
+  enabled: boolean
+}
+
+/**
+ * 跨字段一致性（两个入口共用，单点实现）：stdio 必须有 command、http 必须有 url。
+ *
+ * 非法条目必须在**写入之前**拒绝：放进去会写出一份之后每次读取都报错的 CONFIG。
+ */
+function requireTransportShape(candidate: ServerCandidate, subject: string): McpServerConfig {
+  if (candidate.transport === "stdio" && !candidate.command) {
+    throw fieldError(subject, "command", "stdio 服务器必须提供 command（要改用 http 就显式写 transport: http + url）")
+  }
+  if (candidate.transport === "http" && !candidate.url) {
+    throw fieldError(subject, "url", "http 服务器必须提供 url")
+  }
+  return candidate
+}
+
+/**
+ * 一条 CONFIG 条目 → 服务器配置（**CONFIG 直改条目的逐字段 schema 校验，单点实现**）。
+ *
+ * 与旧行为的差异就是这批修复的本体：不再 `String()` 收拢、不再给 `enabled` 默认 true、
+ * `transport` 不再「非 http 一律按 stdio」—— 任何一项不符合 schema 都如实拒绝
+ * （结构化 `CONFIG`，点名条目与字段），不把错误配置悄悄读成另一种语义。
+ */
+function toServerConfig(raw: unknown, index: number): McpServerConfig {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
+    throw configError(`tools.mcp.servers[${index}] 必须是对象`)
+  }
+  const entry = raw as Record<string, unknown>
+  const subject = `MCP 服务器「${typeof entry.name === "string" && entry.name ? entry.name : `#${index}`}」`
+  const candidate: ServerCandidate = {
+    name: requireEntryString(entry.name, subject, "name"),
+    transport: parseTransport(entry.transport, subject),
+    command: optionalEntryString(entry.command, subject, "command"),
+    args: optionalStringArray(entry.args, subject, "args"),
+    url: optionalEntryString(entry.url, subject, "url"),
+    headers: parseStringMap(entry.headers, subject, "headers"),
+    env: parseStringMap(entry.env, subject, "env"),
+    includeTools: optionalStringArray(entry.includeTools, subject, "includeTools"),
+    excludeTools: optionalStringArray(entry.excludeTools, subject, "excludeTools"),
+    enabled: (() => {
+      if (typeof entry.enabled !== "boolean") {
+        throw fieldError(subject, "enabled", "缺失或不是布尔值（每条服务器都要显式写 enabled）")
+      }
+      return entry.enabled
+    })(),
+  }
+  return requireTransportShape(candidate, subject)
+}
+
+// ── 管理面表单（原生设置窗的字段控件）──
+
+/**
+ * 管理面表单的字段值（原生表单逐项提交；`args`/`env`/`headers` 是多行文本）。
+ *
+ * 与 `toServerConfig` 共用字段级校验；这里是**管理面端口**：缺字段/非法取值
+ * 一律结构化 `CONFIG`。多行文本的还原口径：`args` 每行一个参数（去空行），
+ * `env`/`headers` 复用 [`parseEnvText`]（KEY=VALUE 行格式的单点解析）。
+ */
+export interface McpServerFormFields {
+  name: string
+  transport: string
+  command: string
+  args: string
+  url: string
+  env: string
+  headers: string
+  enabled: boolean
+}
+
+/** 多行文本 → 参数行（去空行；空表 = 未提供 args）。 */
+function linesToArray(text: unknown, subject: string, field: string): string[] | undefined {
+  if (typeof text !== "string") throw fieldError(subject, field, "必须是文本")
+  const lines = text
+    .split(/\r?\n/)
+    .map(line => line.trim())
+    .filter(line => line.length > 0)
+  return lines.length > 0 ? lines : undefined
+}
+
+/** 表单文本字段（类型不符即拒绝；空串是合法输入 = 显式清空，由各字段语义决定后续处理）。 */
+function formText(value: unknown, subject: string, field: string): string {
+  if (typeof value !== "string") throw fieldError(subject, field, "必须是文本")
+  return value
+}
+
+/**
+ * 表单字段 → 服务器配置（表单保存的校验单点入口）。
+ *
+ * 与 CONFIG 直改的区别只在错误上下文：这里是用户刚提交的值，错误信息用
+ * 表单里的 name 点名。跨字段一致性同样走 [`requireTransportShape`]。
+ */
+export function serverConfigFromForm(fields: McpServerFormFields): McpServerConfig {
+  const subject = `MCP 服务器「${typeof fields.name === "string" && fields.name ? fields.name : "（未命名）"}」`
+  if (typeof fields.enabled !== "boolean") {
+    throw fieldError(subject, "enabled", "必须是布尔值")
+  }
+  const candidate: ServerCandidate = {
+    name: requireEntryString(fields.name, subject, "name"),
+    transport: parseTransport(fields.transport, subject),
+    command: optionalEntryString(fields.command, subject, "command"),
+    args: linesToArray(fields.args, subject, "args"),
+    url: optionalEntryString(fields.url, subject, "url"),
+    env: parseEnvText(formText(fields.env, subject, "env")),
+    headers: parseEnvText(formText(fields.headers, subject, "headers")),
+    enabled: fields.enabled,
+  }
+  return requireTransportShape(candidate, subject)
 }
 
 /**
@@ -88,29 +276,20 @@ function configServersSource(): string {
   return JSON.stringify(toolsConfig.mcpServers ?? [])
 }
 
-function toServerConfig(s: any): McpServerConfig {
-  return {
-    // sse 已弃用且不做兼容映射：只有显式 "http" 才是 http，其余一律按 stdio 读。
-    name: String(s.name || ""),
-    transport: (s.transport === "http" ? "http" : "stdio") as "stdio" | "http",
-    command: s.command ? String(s.command) : undefined,
-    args: s.args ? (Array.isArray(s.args) ? s.args.map(String) : [String(s.args)]) : undefined,
-    url: s.url ? String(s.url) : undefined,
-    headers: normalizeStringMap(s.headers),
-    env: normalizeStringMap(s.env),
-    includeTools: Array.isArray(s.includeTools) ? s.includeTools.map(String) : undefined,
-    excludeTools: Array.isArray(s.excludeTools) ? s.excludeTools.map(String) : undefined,
-    enabled: s.enabled !== false,
-  }
-}
-
 function ensureServersLoaded(): void {
   const source = configServersSource()
   if (source === mcpServersSource) return
-  mcpServersSource = source
   const fromConfig = toolsConfig.mcpServers
-  // 空列表是有效状态（自定义服务器被删光）：照实清空，不能沿用上一次的列表
-  mcpServers = Array.isArray(fromConfig) ? fromConfig.map(toServerConfig) : []
+  // 空列表是有效状态（自定义服务器被删光）：照实清空，不能沿用上一次的列表；
+  // 非数组是非法配置（逐字段校验的入口，不静默清空成「没有服务器」）。
+  if (!Array.isArray(fromConfig)) {
+    throw configError(`tools.mcp.servers 必须是数组（收到 ${typeof fromConfig}）`)
+  }
+  const parsed = fromConfig.map(toServerConfig)
+  // 解析全部成功才更新来源快照：非法条目必须**每次读取都重新报错**，
+  // 提前置快照会把错误吞成一份过期列表（列表看起来「正常」，配置其实已非法）。
+  mcpServersSource = source
+  mcpServers = parsed
   if (mcpServers.length > 0) log.info("MCP 服务器列表已从 CONFIG 加载:", mcpServers.length, "个")
 }
 
@@ -198,6 +377,43 @@ function syncServersToConfig(): void {
 }
 
 /**
+ * 一条导入条目 → 服务器配置（外部格式适配：**只在这里**允许两处显式的缺省收窄）。
+ *
+ * 保留的既有兼容行为：`transport` 认 `item.transport` 或 `item.type`；两者都缺省
+ * = stdio（外部客户端导出的 JSON 常常没有传输字段）；`enabled` 缺省 = 启用。
+ * 其余字段与 CONFIG 读取同一把尺子（逐字段类型校验，不 `String()` 收拢），
+ * 并共用跨字段一致性校验 —— 导入写出的条目必须能通过 CONFIG 读取的 schema，
+ * 否则下一次读列表就会炸在刚写进去的条目上（非法条目在写入前拒绝）。
+ */
+function serverConfigFromImportEntry(item: unknown, subject: string): McpServerConfig | null {
+  if (!item || typeof item !== "object" || Array.isArray(item)) {
+    throw configError(`${subject} 必须是对象`)
+  }
+  const entry = item as Record<string, unknown>
+  const name = entry.name === undefined || entry.name === null || entry.name === "" ? null : requireEntryString(entry.name, subject, "name")
+  // 无名条目按既有行为跳过（不是错误）：外部清单里常有只有说明性文字的条目。
+  if (name === null) return null
+  const named = `MCP 服务器「${name}」`
+  let enabled: boolean
+  if (entry.enabled === undefined || entry.enabled === null) enabled = true
+  else if (typeof entry.enabled === "boolean") enabled = entry.enabled
+  else throw fieldError(named, "enabled", "必须是布尔值")
+  const candidate: ServerCandidate = {
+    name,
+    transport: parseTransport(entry.transport ?? entry.type, named, "stdio"),
+    command: optionalEntryString(entry.command, named, "command"),
+    args: optionalStringArray(entry.args, named, "args"),
+    url: optionalEntryString(entry.url, named, "url"),
+    headers: parseStringMap(entry.headers, named, "headers"),
+    env: parseStringMap(entry.env, named, "env"),
+    includeTools: optionalStringArray(entry.includeTools, named, "includeTools"),
+    excludeTools: optionalStringArray(entry.excludeTools, named, "excludeTools"),
+    enabled,
+  }
+  return requireTransportShape(candidate, named)
+}
+
+/**
  * 从 JSON 数组批量导入 MCP 服务器。
  *
  * 必须 `await setMcpServers`：早先同步返回，调用方紧接着 `loadMcpConfig()`
@@ -207,26 +423,18 @@ export async function importMcpServersFromJson(json: string): Promise<{ success:
   try {
     const arr = JSON.parse(json)
     if (!Array.isArray(arr)) return { success: false, count: 0, error: "JSON 必须是数组格式" }
-    // transport 认 item.transport 或 item.type（外部客户端导出的 JSON 两种字段都有）。
-    // sse 已弃用：不静默映射，列出条目名拒绝；其余非 http 的值按 stdio 处理（与 CONFIG 读取同一口径）。
+    // sse 已弃用：不静默映射，列出条目名拒绝（先于逐字段校验，保证错误文案里有名字）。
     const sseNames = arr
       .filter((item: any) => (item?.transport ?? item?.type) === "sse")
-      .map((item: any) => String(item?.name || "") || "（未命名条目）")
+      .map((item: any) => (typeof item?.name === "string" && item.name ? item.name : "（未命名条目）"))
     if (sseNames.length > 0) {
       return { success: false, count: 0, error: `transport 为 sse 已弃用，请改为 http 并填 url：${sseNames.join("、")}` }
     }
-    const servers = arr.map((item: any) => ({
-      name: String(item.name || ""),
-      transport: ((item.transport ?? item.type) === "http" ? "http" : "stdio") as "stdio" | "http",
-      command: item.command ? String(item.command) : undefined,
-      args: item.args ? (Array.isArray(item.args) ? item.args.map(String) : [String(item.args)]) : undefined,
-      url: item.url ? String(item.url) : undefined,
-      headers: normalizeStringMap(item.headers),
-      env: normalizeStringMap(item.env),
-      includeTools: Array.isArray(item.includeTools) ? item.includeTools.map(String) : undefined,
-      excludeTools: Array.isArray(item.excludeTools) ? item.excludeTools.map(String) : undefined,
-      enabled: item.enabled !== false,
-    })).filter((s: McpServerConfig) => s.name)
+    const servers: McpServerConfig[] = []
+    for (const [index, item] of arr.entries()) {
+      const parsed = serverConfigFromImportEntry(item, `导入条目[${index}]`)
+      if (parsed) servers.push(parsed)
+    }
     await setMcpServers(servers)
     return { success: true, count: servers.length }
   } catch (e) {

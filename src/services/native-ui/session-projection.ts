@@ -28,6 +28,10 @@
 //     未读过时缺省即宿主侧的「尚未载入」，不能把「没读过」画成「确实没有历史会话」
 //     （空列表与未读结果不同形）。
 //
+// 列表口径（2026-10-06 用户拍板）：`sessions` 与 `sessionHistory` 都按**用户活动时间**
+// 倒序（正文最后一条 `role:"user"` 条目；没有用户消息回退 `createdAt`）。折叠/重命名等
+// 维护类写入不改变它；活动时间的读取与缓存见 `@/services/session/activity.ts`。
+//
 // 触发时机（调用点）：
 //   - 会话读模型变化（`session-signal` 的通知；新建/关闭/恢复/删除/切换/改名/中断标记）——
 //     切换路径里 `chatHistory` 已装载目标会话正文，帧内正文与 `sessionId` 同源同刻；
@@ -66,6 +70,7 @@ import { createLogger } from "@/services/logger"
 import { activeCardName, getFallbackReply, getSimpleStage, getStagePrompt } from "@/services/personality"
 import {
   chatHistory,
+  compareSessionActivity,
   getActiveSessionId,
   getSessions,
   sessionHistory,
@@ -87,6 +92,8 @@ export interface ProjectedHistorySession {
   id: string
   name: string
   createdAt: number
+  /** 用户活动时间（最后一条 user 条目）；null = 没有用户消息，宿主日期展示回退 createdAt。 */
+  activityAt: number | null
   messageCount: number
 }
 
@@ -426,7 +433,9 @@ export function buildSessionProjection(options: { history?: boolean } = {}): Ses
     defaultDelivery: conversationConfig.defaultDelivery,
     usage: collectUsage(),
     debug: collectDebug(),
-    sessions: getSessions().map((meta) => ({
+    // 标签列表按用户活动时间倒序（缺省回退 createdAt；排序口径见 session/activity.ts）。
+    // 活动时间是领域读模型字段：启动/历史刷新从正文重读，运行期由用户消息即时标记。
+    sessions: getSessions().sort(compareSessionActivity).map((meta) => ({
       id: meta.id,
       name: meta.name,
       createdAt: meta.createdAt,
@@ -437,10 +446,12 @@ export function buildSessionProjection(options: { history?: boolean } = {}): Ses
     payload.sessionHistory = {
       loaded: !sessionHistoryError.value,
       error: sessionHistoryError.value,
+      // sessionHistory 已在刷新时按同一口径排好（history.ts），这里整表搬运不重排。
       sessions: sessionHistory.value.map((item) => ({
         id: item.id,
         name: item.name,
         createdAt: item.createdAt,
+        activityAt: item.activityAt,
         messageCount: item.messageCount,
       })),
     }

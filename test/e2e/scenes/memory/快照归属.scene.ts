@@ -1,4 +1,4 @@
-import type { Context, FauxResponseStep } from "@earendil-works/pi-ai"
+import type { Context, FauxModelDefinition, FauxResponseStep } from "@earendil-works/pi-ai"
 import { compactActiveSession, compactionSettingsFor, harnessSlots, PROMPT_REWRITE_ENTRY, PROMPT_SNAPSHOT_ENTRY } from "@/services/engine/harness"
 import { initChat } from "@/services/agent/runner"
 import { getActiveSessionId } from "@/services/session"
@@ -39,11 +39,21 @@ function stageEntries(entries: SnapshotEntry[], stage: string): SnapshotEntry[] 
   return found
 }
 
-// ── 场景前置：载荷按当前窗口预算推导（与压缩检查点同口径，保证存在可摘要范围） ──
+// ── 场景前置：载荷按**生效窗口**预算推导（与压缩检查点同口径，保证存在可摘要范围） ──
+//
+// 生效窗口 = min(配置窗口, 注入模型窗口)：显式声明注入模型，避免按配置窗口推导的载荷跑在
+// faux 默认模型的 128k 窗口上（保留窗口随窗口缩放后两处数字分家，摘要素材会直接超单片上限）。
+// 长正文用 ASCII：上游 findCutPoint 按 chars/4 计、本仓对非 ASCII 按 1 token/字符计 ——
+// 纯中文尾段要越过保留窗口就会先顶破硬预算；ASCII 下两把尺子一致，「1.25 倍保留窗口」
+// 的余量语义保持逐字不变。
+const FAKE_MODEL: FauxModelDefinition = { id: "deskpet-fake", name: "Desk-Pet Fake", contextWindow: 131_072, maxTokens: 16_384 }
+/** 真正生效的窗口与 resolvePiTurnModel 一致：配置值与注入模型窗口取小。 */
+const WINDOW_TOKENS = Math.min(aiConfig.contextMaxTokens, 131_072)
+const settings = compactionSettingsFor(WINDOW_TOKENS, FAKE_MODEL.maxTokens)
 const KEEP_MARGIN = 1.25
 const UNIT = "压缩候选正文必须保留在磁盘中。"   // 15 字符
-const settings = compactionSettingsFor(aiConfig.contextMaxTokens)
-const LONG = UNIT.repeat(Math.ceil(settings.keepRecentTokens * 4 * KEEP_MARGIN / 2 / UNIT.length))
+/** 尾段长正文（ASCII）：合计 ≈ 1.25 倍保留窗口（上游按 chars/4 计），切点因此落在第二段上。 */
+const LONG = "x".repeat(Math.ceil(settings.keepRecentTokens * 4 * KEEP_MARGIN / 2))
 const FIRST = `用户第一轮：${UNIT.repeat(133)}`
 
 const SUMMARY_MARKER = "继续讨论快照归属的完整证据"
@@ -83,7 +93,7 @@ export const 快照归属: SceneDef = {
       () => fakeText("第二轮回复完成。"),
       () => fakeText("第三轮回复完成。"),
       summaryStep(),
-    ])
+    ], FAKE_MODEL)
     await initChat()
   },
   turns: [

@@ -128,8 +128,9 @@ const askUserTool: ToolDef = defineTool({
 
   const requestId = `choice-${ctx.toolCallId ?? crypto.randomUUID()}`
   try {
-    // 动态导入避免跨域模块循环（与 propose_plan 同一手法）：确认通道在引擎域。
-    const { requestChoice, choiceDeclineText } = await import("@/services/engine")
+    // 动态导入避免跨域模块循环：确认通道在引擎域。指名具体模块、不导桶（理由见
+    // propose_plan 侧注释与 build.mjs 的 assertNoDynamicBarrelImports 守门）。
+    const { requestChoice, choiceDeclineText } = await import("@/services/engine/choice-confirmation")
     const outcome = await requestChoice({
       sessionId: ctx.sessionId,
       requestId,

@@ -57,7 +57,7 @@ export const behaviorContract: ModuleContract = {
     "crates/native-host/src/host/dispatch.rs",
     "test/e2e/scenes/behavior/原生观察边界.scene.ts",
   ],
-  sourceHash: "1be827a4308641713c8f215f8362c23213a2775d31643b9e573c9d2664171b58",
+  sourceHash: "1bc61fd10f0dbd61e894f0c637896f10f4ab2ebccde75adeff3b414bd49bf1fe",
   coverage: [
     { id: "bh-01", feature: "窗口类别与画像指标", description: "应用分类优先稳定appId、未知保持unknown；日历窗口生成近30日画像与真实7日activity/focus，不以最近有数据的天数冒充自然周，未知时长不伪装为已知类别", why: "画像和机会必须有来源可解释，分类错误会伪造习惯与工作结论", layer: "unit", depth: "shallow", scenarios: ["behavior-app-classification", "behavior-metrics-source"] },
     { id: "bh-02", feature: "覆盖率与采样空窗", description: "无有效采集时间时质量为unavailable；至少3个有效观察日且覆盖率达到60%才可靠；原生事件驱动下采样间隔本身不再产生空窗 —— 连续 observed 之间整段回填，分段只被时钟回退与 locked/suspended 边界（锁屏、系统睡眠、显示器睡眠、会话切换）截断：边界之后的时长不再被回填为连续使用（不进入 observed 累计，也不累加 unobservedMs —— 盲区计数只保留给采集链自身缺陷：队列丢弃与时钟回退）", why: "采样中断不能被解释成连续工作或作息规律", layer: "unit", depth: "deep", scenarios: ["behavior-quality-threshold", "behavior-gap-no-fill"] },

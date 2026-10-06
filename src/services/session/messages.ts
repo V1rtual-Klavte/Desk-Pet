@@ -5,7 +5,7 @@
 import type { Message } from "@/services/agent/types"
 import { createUserMessage, createAssistantMessage, createSystemMessage } from "@/services/agent/types"
 import { chatHistory, unansweredCount, activeSessionId } from "./store"
-import { pushMessageFor } from "./store"
+import { pushMessageFor, markSessionActivity } from "./store"
 import { saveUnanswered } from "./persistence"
 import { updateSessionName } from "./manager"
 import { appendPiSessionCustomEntry } from "./repo"
@@ -41,6 +41,9 @@ export function pushUserMessage(text: string, sessionId: string, eventId?: strin
   if (eventId) msg.eventId = eventId
   if (imagePaths?.length) msg.imagePaths = [...imagePaths]
   pushMessageFor(sessionId, msg)
+  // 用户活动时间的运行期标记（列表按它排序）；会话不在标签列表时没有可更新的元数据，
+  // 由 markSessionActivity 内部跳过——它的磁盘真相仍会随下次历史刷新进入列表。
+  markSessionActivity(sessionId, msg.timestamp)
 
   // 改名只在「首条用户消息落进它自己的视图」时发生：跨会话推送不替别人改会话名。
   const userMsgs = chatHistory.filter(m => m.role === "user")

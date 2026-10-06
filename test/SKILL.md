@@ -39,7 +39,7 @@ caseId 的锚定方式随层不同，但同一字母表：L2 / L3 写在 vitest 
 ## `/generate test [module]`
 
 1. 读取目标 Contract、`sourceFiles` 和相关实现，确认每个 coverage point 的输入、输出、状态和副作用。
-2. 先按上面的判定顺序选层，再落文件：L2 → `test/unit/<模块>/<主题>.test.ts`，L3 → `test/integration/<模块>/<主题>.test.ts`（都是朴素 vitest，测试名末尾带 `[caseId]`），L4 → 新建或修改 Scene（`meta.module` 必须等于 Contract module，`meta.contractId` 必须等于 coverage point id，`meta.caseId` 为全局稳定的小写 kebab-case）。L4 落笔前先核实两件事：宿主能力对等（依赖的初始化在 E2E 宿主里是否真实存在）与 repeat 隔离（setup 每 trial 重跑：持久化身份每 setup 全新、消耗型配额用独立记账域），判据见 README「Scene 规范」。
+2. 先按上面的判定顺序选层，再落文件：L2 → `test/unit/<模块>/<主题>.test.ts`，L3 → `test/integration/<模块>/<主题>.test.ts`（都是朴素 vitest，测试名末尾带 `[caseId]`），L4 → 新建或修改 Scene（`meta.module` 必须等于 Contract module，`meta.contractId` 必须等于 coverage point id，`meta.caseId` 为全局稳定的小写 kebab-case）。L4 落笔前先核实两件事：宿主能力对等（依赖的初始化在 E2E 宿主里是否真实存在）与 repeat 隔离（setup 每 trial 重跑：持久化身份每 setup 全新、消耗型配额用独立记账域、冷却等时间窗口用独立时间域），判据见 README「Scene 规范」。
 3. L4 选择入口：完整聊天产品路径使用 `production`；运行时适配层使用 `runtime`。**不再新增 `entry: "unit"` 场景** —— 纯确定性逻辑一律写 L2，存量 unit 场景按迁移批次处理。
 4. 需要可重复模型输出时使用 fake Provider；它仍应经过真实运行时和工具链。需要验证真实模型能力时使用真实 Provider，并把模型不稳定性与产品失败区分开。
 5. 断言用户可见结果之外的真实证据：工具调用状态、确认记录、会话事件、文件回读、变量状态、取消或错误结论。安全场景不执行破坏操作，只验证实际调用被受控拒绝。

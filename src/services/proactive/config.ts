@@ -2,6 +2,14 @@ export { PROACTIVE_LIMITS } from "./protocol"
 /** Frontend bounds, consumed by rules and their deadline/quality guards. */
 export const OPPORTUNITY_LIMIT = 100
 export const RECENT_TARGET_LIMIT = 2
+/**
+ * 主动台账查询（`proactive_query`）的单次取回上限。
+ *
+ * 与协议侧 `PROACTIVE_LIMITS.maxTasks` / `scanBatch`（100）同量级：三个消费点
+ * （reconcileSession / getTurnContext / proactive 治理工具）的意图都是「一次取全量」，
+ * 台账规模不会超过协议上限，因此不设分页。
+ */
+export const QUERY_LIMIT = 100
 export const OBSERVATION_MAX_AGE_MS = 15_000
 export const WORK_SILENCE_MS = 30 * 60_000
 export const FINISH_WORK_DELAY_MS = 10 * 60_000

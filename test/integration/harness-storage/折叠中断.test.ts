@@ -262,7 +262,30 @@ function expectFoldableFixture(text: string, label: string): void {
   expect(reclaimed, `${label}: 可回收量未过闸门 2b（比例）`).toBeGreaterThanOrEqual(plan.bytesBefore * FOLD_POLICY.minReclaimRatio)
   const frameRows = readFoldLog(text).lines.filter(line => isFrameAppendTransaction(`${line}\n`)).length
   expect(frameRows, `${label}: 夹具里应确实有帧行`).toBeGreaterThan(0)
-  expect(plan.droppedWrites, `${label}: 可丢写入数应等于帧行数（合并后行数 ≠ FRAME_COUNT）`).toBe(frameRows)
+  // 规则扩展（同一 value key 只保留最后一次 set）后，`createBranch` 的初始 tip 行也整行可回收：
+  // 它是独立的 `value/set`（值 null），被后续 entry 提交对同一 key 的写入覆盖。它不是帧行，
+  // 期望值必须把它算上 —— 用结构探针取出，不重算折叠规则。
+  const branchTipRows = readFoldLog(text).lines.filter(line => {
+    let parsed: unknown
+    try {
+      parsed = JSON.parse(line)
+    } catch {
+      return false
+    }
+    if (Array.isArray(parsed) || parsed === null || typeof parsed !== "object") return false
+    const write = parsed as Record<string, unknown>
+    return (
+      write.kind === "value" &&
+      write.op === "set" &&
+      write.namespace === "pi.branch.tip" &&
+      write.key === BRANCH &&
+      write.value === null
+    )
+  }).length
+  expect(branchTipRows, `${label}: 夹具应恰好有一条独立的 branchTip 初始行（createBranch）`).toBe(1)
+  expect(plan.droppedWrites, `${label}: 可丢写入数应等于帧行数 + branchTip 初始行（合并后行数 ≠ FRAME_COUNT）`).toBe(
+    frameRows + branchTipRows,
+  )
 }
 
 /**
