@@ -19,7 +19,7 @@
 | 测试执行/验证边界 | [测试边界](current/testing.md) | [测试 README](../test/README.md)；生成契约时再读 [测试 SKILL](../test/SKILL.md) |
 | 推 tag、发版、打包产物、自动更新 | [工作流说明](../.github/workflows/README.md) | [工程参考](current/development.md) 的「打包与发布」、`scripts/check-bundle-config.mjs`、`scripts/set-version.mjs` |
 | 主动陪伴、事项跟进、行为画像 | [主动陪伴](current/proactive.md) | [行为画像](current/behavior.md)、[未完成总表](plans/active/未完成工作与已知缺口.md) §5.1 |
-| 主动消息/静默了解/记忆整理的频率档位、锁屏可用、设置落 CONFIG | [频率档位执行契约](plans/active/主动陪伴与记忆频率档位执行契约.md) | [未完成总表](plans/active/未完成工作与已知缺口.md) §12；对应 current 与目标源码 |
+| 主动消息/静默了解/记忆整理的频率档位与锁屏语义 | [主动陪伴](current/proactive.md) | [行为画像](current/behavior.md)、[运行时数据](current/runtime-data.md)；剩余 W5-B 见[未完成总表](plans/active/未完成工作与已知缺口.md) §12 |
 | 原生宿主（Rust）+ 唯一 Node Harness、私有 IPC 与轻量化收尾 | [未完成总表](plans/active/未完成工作与已知缺口.md) §10 | [系统地图](current/system-design.md) 与目标源码；目标契约已归档（见下方历史入口） |
 | 查看还剩哪些未完成工作、继续记忆重构 | [未完成工作与已知缺口](plans/active/未完成工作与已知缺口.md) | [当前记忆](current/memory.md)及相关源码（B 方案契约已归档） |
 
@@ -48,13 +48,13 @@
 ## 未完成工作
 
 - [未完成工作与已知缺口](plans/active/未完成工作与已知缺口.md)：**唯一未完成工作总表**——Pi 剩余批次、平台与发布、长期记忆 B 方案的剩余验收、活人感与整链陪伴的剩余环境验收、已知代码缺口、验证缺口与已决策的不修边界。
-- [主动陪伴与记忆频率档位执行契约](plans/active/主动陪伴与记忆频率档位执行契约.md)：主动消息/静默了解/记忆整理的根因修复（macOS 观察态恒 unavailable）、锁屏可用、三处「关/低/中/高」频率档位、设置全部落 CONFIG、带工具规划器、自带 MCP 与 Skill；含 8 条**执行前需用户确认**的开放问题与 W1–W5 分波验收。**实施尚未开始**，进度只在总表 §12 维护。
-- [主动陪伴与记忆频率档位执行契约](plans/active/主动陪伴与记忆频率档位执行契约.md)：主动消息/静默了解/记忆整理的根因修复（macOS 观察态恒 unavailable）、锁屏可用、三处「关/低/中/高」频率档位、设置全部落 CONFIG、带工具规划器、自带 MCP 与 Skill；含 8 条**执行前需用户确认**的开放问题与 W1–W5 分波验收。**实施尚未开始**，进度只在总表 §12 维护。
+- [回合治理与图片生命周期执行契约](plans/active/回合治理与图片生命周期执行契约.md)：工具循环上限对齐主流（取消计数硬上限、病理检测替代）、AI 生成锁由回合状态推导、冷却锁搬进 Rust 账本、截图 200 上限取消与粘贴草稿回滚；**设计已批准，W1–W3 待实施**，进度只在总表 §13 维护。
 
 ## 历史入口
 
 以下只保留归档目录索引，不作为后续任务的阅读入口；不再读取或修改这些文件。当前问题与进度只看未完成总表。
 
+- [主动陪伴与记忆频率档位执行契约 2026-10-06 归档](history/implementation/主动陪伴与记忆频率档位执行契约-2026-10-06归档.md)：主动消息/静默了解/记忆整理的根因修复（macOS 观察态恒 unavailable）、锁屏语义、三处「关/低/中/高」频率档位、带工具规划器与自带 MCP 的目标契约与 W1–W5 波次；**W1–W4 与 W5-A 已实现后归档**（对照基线 `05bd0c1` + 工作树），W5-B（MCP 编辑面表单化）与两条待定项（server-pdf 自带、node-runtime 闭包）已折入[未完成总表](plans/active/未完成工作与已知缺口.md) §12，Live/e2e 验收锚点属未跑。
 - [主题设计稿（三套预设）](history/design/theme-candidates.html)：三套主题预设（`brushed` / `chrome` / `verdigris`）的视觉基准与 55 个自定义属性取值。**例外说明**：它同时是 `crates/native-host/src/ui/theme/tokens.rs` 的 `include_str!` **编译期依赖**（常量 `DESIGN_DOC`），移动即编译失败；主题逐屏对照收尾前仍作视觉基准使用，改色值须与 `tokens.rs` 两处同改。2026-10-05 由 `docs/plans/active/` 移入，路径引用已全仓同步。
 - [主题设计稿（两款 · 聊天面）](history/design/theme-candidates-2.html)：2026-10-05 聊天面板改版的视觉基准（`.rail` / `.insp` 等结构与尺寸），`macos_chat.rs` 三处注释引用；同批移入归档。
 - [原生宿主轻量化执行契约 2026-10-04 基线](history/implementation/原生宿主轻量化执行契约-2026-10-04基线.md)：用户已定功能边界、最终接口、源码映射与 W0–W11 执行/验收条件；**W0–W9 已实现后归档**，W10/W11 的验收条件、打包定案、L4 重接与资源口径已折入[未完成总表](plans/active/未完成工作与已知缺口.md) §10。
