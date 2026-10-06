@@ -17,7 +17,7 @@ import { createLogger } from "@/services/logger"
 import { hasRuntimeTraceSubscribers, publishRuntimeTrace, runtimeTraceContextForRequest } from "@/services/engine/runtime/trace"
 import type { RuntimeTraceContext } from "@/services/engine/runtime/trace"
 import { formatError } from "@/services/error"
-import { contextBudget, ContextBudgetError, contextWindowError, estimateDriftRatio, estimateRequestTokens, projectMessageContent, ONE_SHOT_LOW_EFFORT_HINT } from "@/services/context"
+import { contextBudget, ContextBudgetError, contextWindowError, estimateDriftRatio, estimateRequestTokens, totalInputTokens, projectMessageContent, ONE_SHOT_LOW_EFFORT_HINT } from "@/services/context"
 import { PROMPT_SNAPSHOT_ENTRY, createPromptSnapshot, redactText, sha256Text } from "@/services/engine/runtime"
 import type { PromptSnapshot, PromptSnapshotInput } from "@/services/engine/runtime"
 import type { HarnessSlotSnapshot } from "./harness-slot"
@@ -601,15 +601,17 @@ export async function completePiText(input: PiTextCallInput): Promise<PiTextCall
     // 第二档证据（provider_usage）同样在失败响应上采集：估算偏差与实际 usage 的对账不能只在成功路径存在。
     if (audit) {
       const text = contentText(message.content)
-      const ratio = estimateDriftRatio(estimatedInput, message.usage.input)
+      // 真实输入量含缓存命中/写入（只比 usage.input 会在缓存生效时把偏差算大几十倍）。
+      const actualInput = totalInputTokens(message.usage)
+      const ratio = estimateDriftRatio(estimatedInput, actualInput)
       const summaryHash = input.purpose === "compaction" && text.length > 0
         ? await sha256Text(redactText(text).text)
         : undefined
       const usageSnapshot = await createPromptSnapshot(oneShot("provider_usage", {
-        actualInputTokens: message.usage.input,
+        actualInputTokens: actualInput,
         actualOutputTokens: message.usage.output,
         ...(ratio === undefined ? {} : {
-          tokenDrift: { estimated: estimatedInput, actual: message.usage.input, ratio },
+          tokenDrift: { estimated: estimatedInput, actual: actualInput, ratio },
         }),
         cache: {
           sessionId: audit.sessionId,

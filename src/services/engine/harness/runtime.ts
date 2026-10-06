@@ -16,7 +16,7 @@ import type { ProactiveTurnContext } from "@/services/proactive"
 import { planCheckpointStore } from "@/services/engine/plan/checkpoint-store"
 import type { StructuredSummary } from "@/services/engine/compaction/structured-summary"
 import { getV1rtualInstructionsSync } from "@/services/context/instructions"
-import { buildPrompt, composeDynamicPrompt, currentTimeNote, contextBudget, estimateRequestTokens, estimateContextTokens, estimateMessageTokens, ContextBudgetError, ESTIMATE_DRIFT_WARN_RATIO, estimateDriftRatio, planToolResultLadder, projectMessageContent, projectToolResultText, annotateToolResultText, protectedMessageIndexes, toolResultAddress } from "@/services/context"
+import { buildPrompt, composeDynamicPrompt, currentTimeNote, contextBudget, estimateRequestTokens, estimateContextTokens, estimateMessageTokens, ContextBudgetError, ESTIMATE_DRIFT_WARN_RATIO, estimateDriftRatio, totalInputTokens, planToolResultLadder, projectMessageContent, projectToolResultText, annotateToolResultText, protectedMessageIndexes, toolResultAddress } from "@/services/context"
 import type { ContextBudgetAdjustment, ToolResultLadderEntry, ToolResultLadderPlan, ToolResultLevelMeasure } from "@/services/context"
 import { bindRunningPlan, clearRunningPlan, notifyPlanEnd, requestPlanConfirm, requestPlanStepDecision } from "@/services/engine/plan-confirmation"
 import type { PlanConfirmResult } from "@/services/engine/plan-confirmation"
@@ -496,13 +496,16 @@ function createTurnKernel(options: TurnKernelOptions): TurnKernel {
       })))
       // 估算偏差的唯一计算点：这里同时拿到请求视图的估算与 Provider 回执的 usage。
       const estimatedInputTokens = estimateRequestTokens(options.systemPrompt, agentMessages, options.tools)
-      const ratio = usage ? estimateDriftRatio(estimatedInputTokens, usage.input) : undefined
+      // 对账必须用**真实输入量**（input + cacheRead + cacheWrite）：只比 `usage.input`
+      // 会在缓存命中的请求上把偏差算大几十倍（见 totalInputTokens 的注释）。
+      const actualInputTokens = usage ? totalInputTokens(usage) : undefined
+      const ratio = usage ? estimateDriftRatio(estimatedInputTokens, actualInputTokens!) : undefined
       if (ratio !== undefined && ratio > ESTIMATE_DRIFT_WARN_RATIO) {
-        log.warn("估算与实际 usage 偏差超过阈值:", { ratio, estimated: estimatedInputTokens, actual: usage!.input })
+        log.warn("估算与实际 usage 偏差超过阈值:", { ratio, estimated: estimatedInputTokens, actual: actualInputTokens })
       }
       const tokenDrift: PromptTokenDrift | undefined = ratio === undefined
         ? undefined
-        : { estimated: estimatedInputTokens, actual: usage!.input, ratio }
+        : { estimated: estimatedInputTokens, actual: actualInputTokens!, ratio }
       // 换代身份取槽内值（它就是 delivery.readContextEpoch 的产物）；未知时不写 compaction 子结构。
       const sessionEpoch = options.sessionId ? harnessSlots.snapshot(options.sessionId)?.contextEpoch : undefined
       // 最近一条压缩条目只在确实会写 compaction 时取一次：读失败就不写该字段。
@@ -550,7 +553,8 @@ function createTurnKernel(options: TurnKernelOptions): TurnKernel {
         capabilities: kernel.capabilities,
         generation: kernel.generation,
         budgetDrops: kernel.budgetDrops,
-        actualInputTokens: usage?.input, actualOutputTokens: usage?.output,
+        // 真实输入量（含缓存命中/写入），与 tokenDrift.actual 同源 —— 见 totalInputTokens。
+        actualInputTokens, actualOutputTokens: usage?.output,
         ...(tokenDrift ? { tokenDrift } : {}),
         // 请求视图换代身份：本分支已提交的压缩次数。读不到就不写（0 会谎称请求视图未换代）。
         contextEpoch: options.sessionId ? harnessSlots.snapshot(options.sessionId)?.contextEpoch : undefined,
@@ -1277,6 +1281,21 @@ function createTurnSpec(kernel: TurnKernel, options: {
   addressRefs?: () => Promise<ReadonlyMap<string, string>>
   /** 记忆召回块（只有主回合传）：额度与取数 thunk 一起给，投影 hook 在同一处追加。 */
   memory?: { tokenBudget: number; recall: () => Promise<MemoryProjection[]>; traceContext: RuntimeTraceContext }
+  /**
+   * 子运行（规划 / 计划步骤 / 子代理）对聊天界面**不可见**：过程消息、工具结果与流式
+   * 草稿都不进活跃会话的可见列表与瞬时尾巴。子运行槽是内存临时的、什么都不落盘，
+   * 推出去的气泡会在下一次读模型重载时整体消失（2026-10-06 真机的「几条 AI 消息闪一下
+   * 就没了」）；过程可见性由顶栏过程文案承担（阶段提示与工具过程照常发）。
+   */
+  invisible?: boolean
+  /** 调度/规划类子运行：拒绝隐式压缩的模型调用（透传进 spec，由槽在压缩挂点读取）。 */
+  disableAutomaticCompaction?: boolean
+  /**
+   * 子运行的 provider 准入（请求发出前的最后一道）。规划器的 claim 挂在它上面：
+   * 缺这条转发，规划子运行会**每个 tick 真发一次请求**且从不 claim/结算
+   * （2026-10-06 根因取证；参数类型缺字段 + 调用点用 spread ⇒ 静默丢弃）。
+   */
+  providerAdmission?: { beforeProvider: (reservation: ProviderReservation) => Promise<boolean>; maxOutputTokens: number }
 }): HarnessRunSpec {
   const state = kernel.state
   const toolsByName = new Map(kernel.tools.map(tool => [tool.name, tool]))
@@ -1368,6 +1387,8 @@ function createTurnSpec(kernel: TurnKernel, options: {
           maxOutputTokens: kernel.model.maxTokens,
         },
       } : {}),
+      // 子运行的 provider 准入：与 activeAdmission 并列，二者互斥使用（规划器走这条）。
+      ...(options.providerAdmission ? { providerAdmission: options.providerAdmission } : {}),
     }),
     beforeCompaction: createCompactionHook({
       model: kernel.model, tools: kernel.tools,
@@ -1444,11 +1465,13 @@ function createTurnSpec(kernel: TurnKernel, options: {
     prompt: options.prompt,
     timeoutMs: options.timeoutMs,
     hooks,
-    sinks: createTurnSinks(kernel),
+    sinks: createTurnSinks(kernel, options.invisible !== true),
     state,
     traceContext: kernel.traceContext,
     traceRequestInfo: () => kernel.currentRequest,
     ...(options.activeRequest ? { disableAutomaticCompaction: true } : {}),
+    // 调用方声明（子运行）与主回合口径取或：任何一侧要求就压掉隐式压缩调用。
+    ...(options.disableAutomaticCompaction ? { disableAutomaticCompaction: true } : {}),
   }
 }
 
@@ -1496,15 +1519,22 @@ function emitToolStageTitlebar(
   else releaseTitlebarStatus(owner)
 }
 
-/** 主回合消费点：流式正文按消息落 UI，usage 按请求进统计。 */
-function createTurnSinks(kernel: TurnKernel): HarnessRunSinks {
+/**
+ * 回合消费点：流式正文按消息落 UI，usage 按请求进统计。
+ *
+ * `visible=false` 是**子运行**（规划 / 计划步骤 / 子代理）的口径：过程消息、工具结果与
+ * 流式草稿都不进活跃会话的可见列表与瞬时尾巴 —— 子运行槽是内存临时的、什么都不落盘，
+ * 推出去的气泡会在下一次读模型重载时整体消失（2026-10-06 真机「几条 AI 消息闪一下就没」）。
+ * 阶段提示与工具过程文案照常发：过程可见性的显示位是顶栏（用户 2026-10-05 定的口径）。
+ */
+function createTurnSinks(kernel: TurnKernel, visible: boolean): HarnessRunSinks {
   let apiRound = 0
   let typingHintSent = false
   const sessionId = kernel.sessionId
   // 瞬时流式展示：只发正文增量（§6）。RUNTIME_DATA 起止与非活动会话在这里被过滤。
   let streamFilter: RuntimeDataStreamFilter | undefined
   const publishStreamDelta = (delta: string): void => {
-    if (!delta || !sessionId || getActiveSessionId() !== sessionId) return
+    if (!visible || !delta || !sessionId || getActiveSessionId() !== sessionId) return
     void emitUiEvent("deskpet-assistant-stream", { sessionId, delta })
   }
   const taskFlow = (): boolean => Boolean(kernel.taskReply) || kernel.toolRun.history.length > 0
@@ -1532,6 +1562,8 @@ function createTurnSinks(kernel: TurnKernel): HarnessRunSinks {
       publishStreamDelta(streamFilter.push(delta))
     },
     onAssistantStreamEnd: () => {
+      // 子运行从不发增量，这里也不发 stream-end：否则会把**主回合**正在流的尾巴清掉。
+      if (!visible) return
       if (suppressCasualStream()) {
         streamFilter = undefined
         if (sessionId) void emitUiEvent("deskpet-assistant-stream-end", { sessionId })
@@ -1544,6 +1576,8 @@ function createTurnSinks(kernel: TurnKernel): HarnessRunSinks {
       if (sessionId) void emitUiEvent("deskpet-assistant-stream-end", { sessionId })
     },
     onAssistantMessage: message => {
+      // 子运行不落盘也不可见：过程消息不推进活跃会话的可见列表（见函数头）。
+      if (!visible) return
       const appMessage = fromPiMessage(message, `${kernel.traceContext.runId}:${apiRound}:assistant:${createMessageId()}`)
       // 带 toolCall 的过程消息与工具结果进 UI；纯文本回复由入口统一推送。
       if (appMessage && sessionId && getActiveSessionId() === sessionId && (appMessage.role === "tool" || appMessage.toolCalls?.length)) {
@@ -1551,6 +1585,7 @@ function createTurnSinks(kernel: TurnKernel): HarnessRunSinks {
       }
     },
     onToolResultMessage: message => {
+      if (!visible) return
       const appMessage = fromPiMessage(message, `${kernel.traceContext.runId}:${apiRound}:tool:${message.toolCallId}`)
       if (appMessage && sessionId && getActiveSessionId() === sessionId) pushMessageFor(sessionId, appMessage)
     },
@@ -2976,6 +3011,9 @@ export async function runPiSubAgent(input: PiSubAgentInput): Promise<PiSubAgentO
       projectToolResults: false,
       runGeneration: scope?.runGeneration ?? 0,
       isPermissionCurrent: scope?.isCurrent ?? (() => true),
+      // 子运行对聊天界面不可见：过程消息/工具结果/流式草稿都不进活跃会话的可见列表
+      // （子运行不落盘，推出去的气泡会在下一次读模型重载时消失）。过程可见性走顶栏。
+      invisible: true,
       ...(input.beforeProvider ? {
         providerAdmission: { beforeProvider: input.beforeProvider, maxOutputTokens: model.maxTokens },
       } : {}),

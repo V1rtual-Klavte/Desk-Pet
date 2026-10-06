@@ -211,6 +211,20 @@ export function estimateDriftRatio(estimated: number, actual: number): number | 
 }
 export const ESTIMATE_DRIFT_WARN_RATIO = 1.15
 
+/**
+ * Provider 回报里**这次请求真实的输入量** = `input` + `cacheRead` + `cacheWrite`。
+ *
+ * 三个字段必须相加：`usage.input` 只是**未命中缓存**的那一截，缓存命中的部分记在
+ * `cacheRead`（写入记在 `cacheWrite`），三者相加才等于这次请求实际发出去的输入规模 ——
+ * 也是 `estimateRequestTokens` 估算的对象。拿 `input` 单独去比会在缓存生效时把偏差
+ * 算大几十倍（2026-10-06 真机实测：input 387 / cacheRead 14208 / 估算 16679 ⇒ 单比 input
+ * 是 43×，三者相加只有 1.14×，正好在 1.15 阈值之下），把告警变成噪音、并让落盘的对账
+ * 记录（`deskpet.prompt_snapshot` 的 `tokenDrift.actual`）失真。
+ */
+export function totalInputTokens(usage: { input: number; cacheRead?: number; cacheWrite?: number }): number {
+  return usage.input + (usage.cacheRead ?? 0) + (usage.cacheWrite ?? 0)
+}
+
 /** ToolDef, Pi Tool and OpenAI function declarations share one schema projection. */
 export function toolBudgetSchema(value: unknown): { name: unknown; description: unknown; parameters: unknown } {
   const outer = record(value)

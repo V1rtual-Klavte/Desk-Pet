@@ -13,11 +13,14 @@ import { setTestDataRoot } from "../../host/node-ipc"
 import type { ContextBlockInput } from "@/services/context"
 import {
   ContextBudgetError,
+  ESTIMATE_DRIFT_WARN_RATIO,
   buildPromptBlocks,
   contextBudget,
   estimateContextTokens,
+  estimateDriftRatio,
   estimateMessageTokens,
   estimateRequestTokens,
+  totalInputTokens,
 } from "@/services/context"
 
 function staticBlock(blockId: string, source: string, text: string): ContextBlockInput {
@@ -33,6 +36,28 @@ beforeEach(() => {
 
 afterEach(() => {
   rmSync(root, { recursive: true, force: true })
+})
+
+describe("估算偏差对账口径", () => {
+  it("真实输入量 = input + cacheRead + cacheWrite；单比 input 会把偏差放大几十倍 [memory-estimate-drift-total-input]", () => {
+    // 2026-10-06 真机实测的一组数（工具循环回合的一次 provider 回执）：
+    // 该请求实际输入 ≈14595 tokens，其中 14208 命中缓存。
+    const usage = { input: 387, cacheRead: 14208, cacheWrite: 0 }
+    const estimated = 16679
+    expect(totalInputTokens(usage)).toBe(14595)
+
+    // 只比未命中残片：43× —— 这就是当年告警刷屏的来源。
+    expect(Math.round(estimateDriftRatio(estimated, usage.input)!)).toBe(43)
+
+    // 真实比值 1.14，落在阈值之下：不该告警，也不该把 43× 写进落盘对账。
+    const real = estimateDriftRatio(estimated, totalInputTokens(usage))!
+    expect(real).toBeGreaterThan(1.1)
+    expect(real).toBeLessThan(ESTIMATE_DRIFT_WARN_RATIO)
+
+    // 缓存写入同样计入真实输入（缺省两者都按 0 计）。
+    expect(totalInputTokens({ input: 10, cacheWrite: 5 })).toBe(15)
+    expect(totalInputTokens({ input: 10 })).toBe(10)
+  })
 })
 
 describe("保留窗口随窗口长大", () => {

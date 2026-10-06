@@ -267,6 +267,9 @@ export async function tick(now=Date.now()):Promise<void> {
       if(!current(owner)){trace(context,"proactive_skipped",()=>({reason:"owner_changed",ruleId:selected.ruleId}));return}
       const attemptId=crypto.randomUUID(),requestId=crypto.randomUUID()
       let planningClaimed=false
+      // 准入回调是否真的被咨询过。接线断了时回调从不执行、claimed 同样为 false，
+      // 而那条路径没有任何 trace —— 2026-10-06 的接线缺失就是这么被藏住的（见下方 warn）。
+      let admissionConsulted=false
       let ownerSkipTraced=false
       const plannerCurrent=()=>{
         const valid=current(owner)
@@ -274,6 +277,7 @@ export async function tick(now=Date.now()):Promise<void> {
         return valid
       }
       const planned=await plan(input,owner,now,aborter.signal,plannerCurrent,adapters.runPlanner,async reservation=>{
+        admissionConsulted=true
         if(!plannerCurrent())return false
         if(reservation.estimatedInputTokens>reservation.hardInputLimit||reservation.estimatedInputTokens+reservation.maxOutputTokens>reservation.contextWindow) {
           trace(context,"proactive_skipped",()=>({reason:"planning_budget",ruleId:selected.ruleId}),{requestId});return false
@@ -285,7 +289,12 @@ export async function tick(now=Date.now()):Promise<void> {
         trace(context,"proactive_claim",()=>({attemptId,status:receipt.claimed?"claimed":"denied",reason:receipt.reason}),{requestId})
         return receipt.claimed
       })
-      if(!planningClaimed)return
+      if(!planningClaimed){
+        // 未被咨询 = 准入接线缺失（规划器每 tick 白跑一次真实请求，且去重/结算永远不落库）。
+        // 主动链其余拒绝路径都有 trace，只有这一条过去是静默的 —— 必须留痕，不许再静默。
+        if(!admissionConsulted)log.warn("规划子运行的 provider 准入未被咨询（接线缺失？本次规划结果作废）:",selected.ruleId)
+        return
+      }
       decisionKind=planned.kind
       const decision:ProactiveDecision={kind:planned.kind,ruleId:selected.ruleId,opportunityFingerprints:eligible.map(item=>item.fingerprint),topicKey:planned.kind==="speak_now"?null:selected.topicKey??null,
         slot:day,validUntil:Math.min(...eligible.map(item=>item.validUntil))}
