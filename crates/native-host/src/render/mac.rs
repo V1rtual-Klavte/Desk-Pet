@@ -411,7 +411,11 @@ impl RenderSurface for MacLayerSurface {
                     };
                     let _: () = msg_send![*instance.layer, setBounds: bounds];
                     let _: () = msg_send![*instance.layer, setPosition: position];
-                    let _: () = msg_send![*instance.layer, setOpacity: draw.opacity];
+                    // `CALayer.opacity` 是 **float**：必须显式 `as f32`。经裸 `msg_send` 传 f64
+                    // 只在寄存器低 32 位留下 double 的高半位（1.0f64 的低位是 0）→ 图层被写成
+                    // 全透明（2026-10-06 实机事故：舞台与编辑器预览全体不可见）。
+                    // 同文件的既有先例：`ui/platform/macos.rs::apply_visual` 的 setOpacity 也带 `as f32`。
+                    let _: () = msg_send![*instance.layer, setOpacity: draw.opacity as f32];
                 }
             }
 
