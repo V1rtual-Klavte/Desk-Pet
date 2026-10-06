@@ -40,6 +40,11 @@ beforeEach(() => {
   // 变量池本体是内存态；数据根只给 logger 的批量转发与（个别用例的）落盘用。
   root = mkdtempSync(join(tmpdir(), "deskpet-variable-pool-"))
   setTestDataRoot(root)
+  // isNightTime 按静默时段派生（ai.proactive.quietStartHour/quietEndHour）。本文件的边界断言
+  // 按「跨夜 23–9」口径写：出厂默认（2026-10-06 起 0/0 不静默）是会变的产品决策，
+  // 基线在每条用例前显式声明、不继承出厂值。
+  setOverride("ai.proactive.quietStartHour", 23)
+  setOverride("ai.proactive.quietEndHour", 9)
   destroyPool()
 })
 

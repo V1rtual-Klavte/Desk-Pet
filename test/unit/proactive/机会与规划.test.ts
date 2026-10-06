@@ -1,10 +1,23 @@
-import { describe, it, expect } from "vitest"
+import { mkdtempSync, rmSync } from "node:fs"
+import { tmpdir } from "node:os"
+import { join } from "node:path"
+import { afterAll, beforeAll, beforeEach, describe, it, expect } from "vitest"
 import { opportunity, selectOpportunities, collectOpportunities, advanceFinishedWorkTracker, isLeisureOrIdle, qualifiesFinishedWork, source, usesRandomFallbackInterval } from "@/services/proactive/opportunities"
 import { parsePlanningDecision } from "@/services/proactive/planner"
 import { getCalendarEvents } from "@/services/proactive/content/calendar"
 import { emptyDaily, buildSnapshot } from "@/services/behavior"
 import { isQuietTime } from "@/services/proactive/time"
+import { setOverride } from "@/services/config"
+import { setTestDataRoot } from "../../host/node-ipc"
 import type { ProactiveOwner } from "@/services/proactive/protocol"
+
+// 机会窗口按静默时段派生（ai.proactive.quietStartHour/quietEndHour）。本文件的窗口与晚安断言
+// 按「跨夜 23–9」口径写：出厂默认（2026-10-06 起 0/0 不静默）是会变的产品决策，基线因此在
+// beforeEach 显式声明、不继承出厂值。setOverride 会触发配置回写，临时数据根让回写落到可弃目录。
+let quietRoot=""
+beforeAll(()=>{ quietRoot=mkdtempSync(join(tmpdir(),"deskpet-proactive-opportunity-")); setTestDataRoot(quietRoot) })
+beforeEach(()=>{ setOverride("ai.proactive.quietStartHour",23); setOverride("ai.proactive.quietEndHour",9) })
+afterAll(()=>{ rmSync(quietRoot,{recursive:true,force:true}) })
 
 const owner:ProactiveOwner={sessionId:"session-a",cardId:"card-a",cardHash:"hash-a",runGeneration:7}
 const now=Date.parse("2026-10-03T03:00:00Z")

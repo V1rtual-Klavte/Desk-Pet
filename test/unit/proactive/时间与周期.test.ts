@@ -1,9 +1,9 @@
 import { mkdtempSync, rmSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
-import { afterAll, afterEach, beforeAll, describe, it, expect } from "vitest"
+import { afterAll, beforeAll, beforeEach, describe, it, expect } from "vitest"
 import { localToInstant, checkinWindows, isQuietTime, isQuietHour, isNightlyWindow, nextSpeakingTime, calendarAnniversary, localDayKey } from "@/services/proactive/time"
-import { getOverride, setOverride } from "@/services/config"
+import { setOverride } from "@/services/config"
 import { recurrenceSlot } from "@/services/proactive/opportunities"
 import { setTestDataRoot } from "../../host/node-ipc"
 import type { ProactiveTask } from "@/services/proactive/protocol"
@@ -51,13 +51,13 @@ describe("主动事项时间",()=>{
   })
 })
 
-// ── 静默时段改为 CONFIG 派生（ai.proactive.quietStartHour/quietEndHour）后的三形态与派生窗口 ──
+// ── 静默时段是 CONFIG 派生（ai.proactive.quietStartHour/quietEndHour）后的三形态与派生窗口 ──
+// 本文件的断言全部按「跨夜 23–9」口径写：出厂默认（2026-10-06 起 0/0 不静默）是会变的产品决策，
+// 基线因此在 beforeEach 显式声明、不继承出厂值；要别的形态的用例在自己的 it 里覆盖。
 // setOverride 会触发配置回写；给测试宿主一个临时数据根，回写落到可弃目录而不是报错刷屏。
 let quietRoot=""
-const originalQuietStart=getOverride<number>("ai.proactive.quietStartHour")
-const originalQuietEnd=getOverride<number>("ai.proactive.quietEndHour")
 beforeAll(()=>{ quietRoot=mkdtempSync(join(tmpdir(),"deskpet-proactive-time-")); setTestDataRoot(quietRoot) })
-afterEach(()=>{ setOverride("ai.proactive.quietStartHour",originalQuietStart); setOverride("ai.proactive.quietEndHour",originalQuietEnd) })
+beforeEach(()=>{ setOverride("ai.proactive.quietStartHour",23); setOverride("ai.proactive.quietEndHour",9) })
 afterAll(()=>{ rmSync(quietRoot,{recursive:true,force:true}) })
 
 describe("静默时段三形态与派生窗口",()=>{

@@ -186,6 +186,9 @@ describe("档位门禁与随机唤醒调度", () => {
 
   it("事件唤醒先取消旧定时器再重排；档位变更换到新档区间 [proactive-random-wake-schedule]", async () => {
     configureShallowScanner()
+    // 基线档位显式声明：出厂默认（2026-10-06 起「高」）是会变的产品决策，
+    // 本用例的启动断言按「中」档区间（60 分钟）写，不继承出厂值。
+    setOverride("ai.proactive.frequency", "medium")
     start()
     await vi.waitFor(() => expect(wakeDelays(), "启动后没有排出中档唤醒定时器").toContain(3_600_000))
     const mediumSchedules = timeouts.filter(item => item.delay === 3_600_000)
