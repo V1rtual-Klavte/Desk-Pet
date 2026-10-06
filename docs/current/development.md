@@ -54,13 +54,14 @@ dev 与 release 的路径区分：
 - 怎么推、怎么发版、怎么打 tag：看 [工作流说明](../../.github/workflows/README.md)（含轻量标签必须显式推送、预发布冒烟流程、失败排查表）。
 - 流水线：[ci.yml](../../.github/workflows/ci.yml)（双平台验证 + `bundle-config` 配置校验，不做构建）与 [release.yml](../../.github/workflows/release.yml)（tag `v*` 或手动触发的双平台打包发布）。
 - 配置守卫：`pnpm run check:bundle`，失败项逐条给出修法；它在 release 构建之前跑，拦住版本号与 tag 分叉。
-- 产物位置：CI 在 GitHub Release；本地 `pnpm tauri build` 落在仓库根 workspace 的 `target/release/bundle/`。
-- 发布产物三类：macOS `.dmg`（手动安装）与 `.app.tar.gz`（updater）；Windows `x64-setup.exe`（安装版）。
-- 体积控制三个落点：① `[profile.release]` 只认 **workspace 根** `Cargo.toml`（成员 crate 里的 `[profile]` 会被 Cargo 忽略且不报错），本仓开 `strip`/`lto`/`codegen-units = 1`；② Vite `build.rollupOptions.input` 只列产品窗口，`test-e2e.html` 不进产物（release 下 `lib.rs` 的 `cfg!(debug_assertions) && is_e2e()` 恒假，e2e 窗口永不创建）；③ 随包资源只有 `resources/defaults` 种子，Profile 素材才是体积大头。
-- 实测体积（2026-10-03，本机 macOS arm64，`--no-sign --bundles app,dmg`）：`.app` 13.05 MiB、`.dmg` 7.62 MiB、`.app.tar.gz`（updater 包）7.48 MiB。同日改前为 9.5 / 9.3 MiB，Rust 二进制 16.6 → 10.9 MiB（`strip` 回收符号表约 3.6 MiB，`lto` 再缩代码约 1.1 MiB）；更早的 v0.15.0 发布包是 27.1 / 27.2 MiB（还带着随包 zpix）。Windows `x64-setup.exe` 不在本机复测 —— profile 收益两个平台同源，但只有 Windows CI 能给实测值。产物名由 `productName` 决定，**必须是 ASCII**（中文会被 GitHub 剥掉并让 updater 的 `latest.json` 静默缺失）。
-- 发布验收：Release 资产中必须存在 `latest.json`，且其 `platforms` 同时含 `darwin-aarch64` 与 `windows-x86_64`；缺它时 CI 仍是绿的，但客户端检查更新会 404。
-- 本地构建：`createUpdaterArtifacts: true` 要求环境里有 `TAURI_SIGNING_PRIVATE_KEY`；只想要未签名的本地产物时加 `--no-sign`（`pnpm tauri build --no-sign`）。
-- 常见失败：`TAURI_SIGNING_PRIVATE_KEY` 未配置（updater 产物签不出来）；tag 与 `tauri.conf.json` 的 version 不一致（跑 `pnpm run version:set`）。
+- 产物位置：CI 在 GitHub Release；本地打包 `cargo packager --release --config packaging/desktop.json --formats app,dmg`（与 release.yml 同一条链，产物落 `packaging/dist/`）。
+- 发布产物三类：macOS `.dmg`（手动安装）与 `.app.tar.gz`（更新制品，helper 只接受恰好一个顶层 `.app`）；Windows `x64-setup.exe`（NSIS 静默安装）。
+- 体积控制三个落点：① `[profile.release]` 只认 **workspace 根** `Cargo.toml`（成员 crate 里的 `[profile]` 会被 Cargo 忽略且不报错），本仓开 `strip`/`lto`/`codegen-units = 1`；② 打包清单是白名单 `packaging/desktop.json` 的 `resources`（node / harness / version-set / defaults），随包 Node 闭包在 `packaging/node-runtime.json` 锁定并由 `.github/scripts/stage-node.mjs` 裁剪（含 npm 自带 docs/man 与 corepack，2026-10-06 裁撤）；③ 加载期大头是随包 Node 与 `resources/defaults` 素材。
+- 体积参考（2026-10-06 本机 macOS arm64 实测）：随包 Node 闭包约 121 MB（已排除 include/share 约 62 MB、npm docs/man 约 2.5 MB、corepack 约 1.2 MB）；harness `main.mjs` 2.8 MB（esbuild `--minify --keep-names`，未压缩约 5.9 MB；生产栈追踪行号可用性下降，函数名经 `--keep-names` 保留）；`resources/defaults` 约 21 MB；Rust 二进制约 1.3 MB/枚。产物名由 `productName` 决定，**必须是 ASCII**（中文会被 GitHub 剥掉并让更新 feed 静默缺失）。
+- 发布验收：Release 资产中必须存在 `update.json`，且 `macos/aarch64` 与 `windows/x86_64` 两条 component（含 sha256 与 minisign 签名）齐备；缺一 `update-feed.mjs` 不汇总（见[工作流说明](../../.github/workflows/README.md)）。
+- 签名：安装包**未做**代码签名与公证（决策暂缓，首启按 README 的 Gatekeeper/SmartScreen 提示放行）；更新 feed 的制品哈希与 minisign 签名由 CI 现场生成并验签。
+- 图标：`resources/icons/`（`mascot-app-icon-1024.png` 主图 + `mascot-tray-44.png` 托盘模板图）；打包经 `desktop.json` 的 `icons`（cargo-packager 直接收 PNG、自动生成各平台图标），托盘模板图另经 `include_bytes!` 编译期嵌入宿主二进制（`ui/platform/macos.rs` 的 `tray_template_image`）。
+- 常见失败：tag 与三处 version 不一致（先跑 `pnpm run version:set <x.y.z>`）；暂存缺失（`pnpm run check:bundle --require-staging` 在打包前拦）。
 
 ## IPC 与窗口入口
 

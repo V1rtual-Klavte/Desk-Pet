@@ -7,7 +7,7 @@
     "scripts": {
         "dev": "pnpm run dev:prepare && node scripts/dev-run.mjs",
         "dev:prepare": "node scripts/dev-prepare.mjs",
-        "build:harness": "esbuild src/harness/main.ts --bundle --platform=node --format=esm --target=node22.19 --tsconfig=tsconfig.json --loader:.yaml=text --loader:.md=text --define:navigator=undefined --define:globalThis.navigator=undefined '--banner:js=import { createRequire as __deskpetCreateRequire } from \"node:module\";const require = __deskpetCreateRequire(import.meta.url);' --outfile=packaging/dist/harness/main.mjs",
+        "build:harness": "esbuild src/harness/main.ts --bundle --platform=node --format=esm --target=node22.19 --tsconfig=tsconfig.json --loader:.yaml=text --loader:.md=text --define:navigator=undefined --define:globalThis.navigator=undefined --minify --keep-names '--banner:js=import { createRequire as __deskpetCreateRequire } from \"node:module\";const require = __deskpetCreateRequire(import.meta.url);' --outfile=packaging/dist/harness/main.mjs",
         "test": "pnpm run test:unit && pnpm run test:integration",
         "test:types": "tsc --noEmit && cargo check",
         "test:rust": "cargo test --lib -p native-host",

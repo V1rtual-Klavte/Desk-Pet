@@ -7,11 +7,12 @@
  * 用同目录 SHASUMS256.txt 校验 SHA-256 → 按发行闭包 prune → 落 packaging/dist/node
  * （packaging/desktop.json 的 resources 暂存 src）。
  *
- * 闭包口径（node-runtime.json 的 distribution.closure）：保留 bin/node、npm/npx/corepack
- * 与 lib/node_modules 下的 CLI 实现、LICENSE；排除 include/（C 头文件）与 share/（man 等）。
- * 注意 cargo-packager 复制资源时会把 bin/npm|npx|corepack 符号链接**展开**成普通副本、
+ * 闭包口径（node-runtime.json 的 distribution.closure）：保留 bin/node、npm/npx
+ * 与 lib/node_modules 下的 CLI 实现、LICENSE；排除 include/（C 头文件）、share/（man 等）、
+ * npm 自带 docs/man 与 corepack（无消费者，2026-10-06 裁撤）。
+ * 注意 cargo-packager 复制资源时会把 bin/npm|npx 符号链接**展开**成普通副本、
  * 相对 require 失效 —— 调用要走 `node lib/node_modules/npm/bin/npm-cli.js`（W4 按此解析），
- * release.yml 另在打包后的 .app 里恢复这三条符号链接。
+ * release.yml 另在打包后的 .app 里恢复这两条符号链接。
  *
  * 平台映射：darwin→darwin/arm64|x64（.tar.gz），Windows→win/x64（.zip，node.exe 在根部）。
  */
@@ -152,14 +153,33 @@ async function main() {
     rmSync(work, { recursive: true, force: true })
   }
 
-  // prune：闭包排除项（存在才删；Windows zip 本来就没有这两个目录）
+  // prune：闭包排除项（存在才删；Windows zip 布局不同，逐路径 force 删）
   rmSync(join(DEST, "include"), { recursive: true, force: true })
   rmSync(join(DEST, "share"), { recursive: true, force: true })
+  // npm 自带 docs/man（纯文档）与 corepack（yarn/pnpm 的包管理器，本产品无消费者：
+  // MCP stdio server 只经 node + npm/npx CLI 调用），2026-10-06 起一并裁掉。
+  for (const npmDir of [join(DEST, "lib", "node_modules", "npm"), join(DEST, "node_modules", "npm")]) {
+    rmSync(join(npmDir, "docs"), { recursive: true, force: true })
+    rmSync(join(npmDir, "man"), { recursive: true, force: true })
+  }
+  for (const corepackPath of [
+    join(DEST, "bin", "corepack"),
+    join(DEST, "lib", "node_modules", "corepack"),
+    join(DEST, "node_modules", "corepack"),
+  ]) {
+    rmSync(corepackPath, { recursive: true, force: true })
+  }
 
-  if (!existsSync(join(DEST, "lib", "node_modules", "npm")) && !existsSync(join(DEST, "node_modules", "npm"))) {
+  const npmCli = [join(DEST, "lib", "node_modules", "npm", "bin", "npm-cli.js"), join(DEST, "node_modules", "npm", "bin", "npm-cli.js")]
+    .find(existsSync)
+  if (!npmCli) {
     fail("暂存结果里找不到 npm（发行闭包缺组件）")
   }
-  console.log(`stage-node: ${artifact}（sha256 ${actual}）已落 packaging/dist/node`)
+  // 裁剪后实测一次 npm CLI（不只看目录存在）：docs/man/corepack 的删除不得破坏运行。
+  const stagedNode = process.platform === "win32" ? join(DEST, "node.exe") : join(DEST, "bin", "node")
+  const npmVersion = runRuntime(stagedNode, [npmCli, "--version"], "裁剪后随包 npm CLI")
+  if (!/^\d+\.\d+\.\d+$/.test(npmVersion)) fail(`裁剪后随包 npm CLI 返回无效版本：${JSON.stringify(npmVersion)}`)
+  console.log(`stage-node: ${artifact}（sha256 ${actual}）已落 packaging/dist/node；裁剪后 npm ${npmVersion}`)
 }
 
 await main()

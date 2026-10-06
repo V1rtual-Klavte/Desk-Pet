@@ -174,7 +174,7 @@ jobs:
       - run: cargo packager --release --config packaging/desktop.json --formats ${{ matrix.formats }}
 
       # macOS 更新制品 = 单个顶层 .app 的 .tar.gz（update helper 只接受恰好一个顶层 .app）。
-      # 打包前先把 cargo-packager 复制资源时展开掉的 bin/npm|npx|corepack 符号链接恢复
+      # 打包前先把 cargo-packager 复制资源时展开掉的 bin/npm|npx 符号链接恢复
       # （node-runtime.json 记录的坑：展开成普通副本后相对 require 失效）。
       # --no-mac-metadata：macOS 的 bsdtar 默认会把扩展属性写成 ._ 条目，而 ._xxx.app 也以
       # `.app` 结尾，会让 helper 的「恰好一个顶层 .app」判定数出 2 个而拒绝整包。
@@ -187,7 +187,6 @@ jobs:
           NODE_BIN="$APP/Contents/Resources/node/bin"
           ln -sfn ../lib/node_modules/npm/bin/npm-cli.js "$NODE_BIN/npm"
           ln -sfn ../lib/node_modules/npm/bin/npx-cli.js "$NODE_BIN/npx"
-          ln -sfn ../lib/node_modules/corepack/dist/corepack.js "$NODE_BIN/corepack"
           VERSION=$(node -p "require('./packaging/desktop.json').version")
           tar --no-mac-metadata -C packaging/dist -czf "$PWD/packaging/dist/v1rtual-desk-pet_${VERSION}_${{ matrix.arch }}.app.tar.gz" "v1rtual-desk-pet.app"
 

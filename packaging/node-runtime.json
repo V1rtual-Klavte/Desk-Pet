@@ -16,18 +16,19 @@
     "closure": {
       "includes": [
         "bin/node（可执行文件）",
-        "bin/npm、bin/npx、bin/corepack（官方符号链接，指向 lib/node_modules 下的 CLI 入口）",
+        "bin/npm、bin/npx（官方符号链接，指向 lib/node_modules 下的 CLI 入口）",
         "lib/node_modules/npm",
-        "lib/node_modules/corepack",
         "LICENSE"
       ],
       "excludes": [
         "include/（约 62MB C/C++ 头文件）：源码编译原生扩展不在保证范围（执行契约 §4.3），预编译 .node / N-API 二进制不需要头文件",
-        "share/（man 手册与 gdb/lldb 调试脚本）"
+        "share/（man 手册与 gdb/lldb 调试脚本）",
+        "npm 自带的 docs/ 与 man/（纯文档，CLI 运行不需要）",
+        "corepack（yarn/pnpm 的包管理器；本产品无消费者，2026-10-06 裁撤）"
       ],
       "note": "Windows zip 布局不同（node.exe 在根部、npm.cmd/npx.cmd 为包装脚本），main.rs 按平台解析 node 可执行文件。",
       "caveats": [
-        "cargo-packager 对目录资源逐文件复制，bin/npm、bin/npx、bin/corepack 三个官方符号链接会被展开为普通文件副本；展开后其相对 require（如 '../lib/cli.js'）不再成立，直接执行这些副本会失败（macOS 打包产物已实证）。可用调用形式是随包 node + 真实 CLI 脚本：node lib/node_modules/npm/bin/npm-cli.js（npx → npx-cli.js，corepack → dist/corepack.js）。W4 的进程管理域按此解析 node/npm/npx；W10 打包需恢复符号链接或生成等价 shim，避免留下不可执行的陷阱文件。",
+        "cargo-packager 对目录资源逐文件复制，bin/npm、bin/npx 两个官方符号链接会被展开为普通文件副本；展开后其相对 require（如 '../lib/cli.js'）不再成立，直接执行这些副本会失败（macOS 打包产物已实证）。可用调用形式是随包 node + 真实 CLI 脚本：node lib/node_modules/npm/bin/npm-cli.js（npx → npx-cli.js）。W4 的进程管理域按此解析 node/npm/npx；W10 打包需恢复符号链接或生成等价 shim，避免留下不可执行的陷阱文件。",
         "macOS arm64 打包产物验证：node bin/node -v → 22.22.3；node lib/node_modules/npm/bin/npm-cli.js --version → 10.9.8。"
       ]
     },
