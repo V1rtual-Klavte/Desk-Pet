@@ -23,6 +23,15 @@ vi.mock("@/services/proactive/auxiliary-budget", () => ({
   settleAuxiliaryBudget: budget.settle,
 }))
 
+// 清除静默了解现在会联动记忆侧的失效闭包（Rust 专属命令，Node 测试桥不持有）：
+// 本文件的用例只考了解层存储与话题链，替身挂住闭包调用（语义在 memory_apply_change 的
+// forget_understanding 动作、`clearSilentUnderstandingOwned` 的联动用例与 Rust 单测覆盖）。
+const memoryDomain = vi.hoisted(() => ({ forgetUnderstandingDerivedMemory: vi.fn(async () => 0) }))
+vi.mock("@/services/agent/memory", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/services/agent/memory")>()),
+  forgetUnderstandingDerivedMemory: memoryDomain.forgetUnderstandingDerivedMemory,
+}))
+
 let root = ""
 let restoreProvider: (() => void) | undefined
 

@@ -146,7 +146,7 @@ describe("记忆草稿 summary 截断长度单点", () => {
     await expect(
       dispatchHostRequest("memory_item_change", {
         action: "update",
-        id: "mem-1",
+        itemId: "mem-1",
         expectedVersion: 3,
         baseRevision: 5,
         content: LONG,

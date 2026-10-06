@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest"
 import {
   DECISION_CARD_DESCRIPTION_CHARS, DECISION_CARD_NAME_CHARS, DECISION_CARD_ROLE_CHARS,
+  DECISION_SYSTEM_PROMPT,
   boundedCardBrief, isAbsoluteTargetPath, localTimeBrief, parseDecidedTargets, readSlotsAvailable,
 } from "@/services/observation/decide"
 
@@ -42,6 +43,16 @@ describe("了解层决策输出解析", () => {
     expect(isAbsoluteTargetPath("\\\\server\\share")).toBe(true)
     expect(isAbsoluteTargetPath("notes.md")).toBe(false)
     expect(isAbsoluteTargetPath("./notes.md")).toBe(false)
+  })
+})
+
+describe("决策提示词的范围口径（整机只读，2026-10-06 用户裁决）", () => {
+  it("放开系统/应用配置目录，保留凭据与密钥禁令与只读语义 [observation-decision-whole-machine-scope]", () => {
+    expect(DECISION_SYSTEM_PROMPT, "没有写明整机只读范围").toContain("整机只读")
+    expect(DECISION_SYSTEM_PROMPT, "系统或应用配置目录禁令仍在，范围没有放开").not.toContain("系统或应用配置目录")
+    expect(DECISION_SYSTEM_PROMPT, "凭据禁令被一并放开").toContain("凭据")
+    expect(DECISION_SYSTEM_PROMPT, "密钥禁令被一并放开").toContain("密钥")
+    expect(DECISION_SYSTEM_PROMPT, "只读语义没有写明").toContain("只读")
   })
 })
 

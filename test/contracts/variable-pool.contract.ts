@@ -44,6 +44,20 @@
 // （空区块算履约的区分断言，本批新增用例）并修订描述：「空区块按存在处理」不再只由实现登记。
 // vp-01..vp-22 逐点核对实现点仍在、描述与当前实现一致（描述/来源核对，非逐行行为审计）；
 // sourceHash 随本批统一刷新。
+// 2026-10-06 Card 按需加载批次（本批刷新）：sourceFiles 变化仅限
+// `src/services/personality/types.ts`（新增 CardMeta —— 列表用的 frontmatter 元信息类型，
+// 不参与变量池读写）。vp-01..vp-23 逐点核对：变量定义解析、写入闭环、持久化与失效语义
+// 全在 CardSections / variableDefs 路径上，未受影响；未修订覆盖点，仅按当前源码刷新 sourceHash。
+// 2026-10-06 计划报告口径收窄批次（本批刷新）：sourceFiles 变化 ——
+// src/services/engine/harness/runtime.ts（runPlanPhase 的 onStepNotice 收窄：工具名不存在
+// 仍发聊天系统消息；未限定工具只写进度事件与统一日志，不再逐步骤敲系统消息）。vp-* 的变量
+// 写入、RUNTIME_DATA 剥离、持久化与缺失检测路径不在改动面内；逐点核对实现点仍在、覆盖描述
+// 与当前实现一致（描述/来源核对，非逐行行为审计）。未修订覆盖点，sourceHash 按当前源码复算。
+// 2026-10-06 抽屉 CONFIG 写批次（本批刷新）：sourceFiles 变化仅
+// src/services/engine/harness/runtime.ts（会话级思考强度覆盖机制删除后三处消费点直读
+// `aiConfig.thinkingEffort`；变量写入、RUNTIME_DATA 剥离/提醒与持久化路径未动）。
+// vp-01..vp-23 逐点核对实现点仍在、覆盖描述与当前实现一致（描述/来源核对，非逐行行为审计）；
+// sourceHash 按当前源码复算。
 import type { ModuleContract } from "../host/types"
 
 export const variablePoolContract: ModuleContract = {
@@ -54,7 +68,7 @@ export const variablePoolContract: ModuleContract = {
     // 时用例会变红而本契约 hash 不动（门禁失明形态）；变量池表头也引用同一份标记。
     "src/services/reply/protocol.ts",
     "src/services/session/store.ts"],
-  sourceHash: "6ec9ce7e49d6d31eddc76450975b95690f81a74f4dfaa3f07787a3bf17d17899",
+  sourceHash: "fb99e0e9b225385fb3381fb03bf91c10b90b7fd5e29ed3f74b9309f9ce2f6293",
   coverage: [
     { id: "vp-01", feature: "系统变量计算", description: "computeSystemVariables(now, activeCardId) 产出 6 个系统变量：5 个由本地时间派生（hour / minute / dayOfWeek / isNightTime / isWeekend）+ activeCardId；isNightTime 的区间随 CONFIG 静默值派生（ai.proactive.quietStartHour/quietEndHour，非硬编码 23–9），覆盖跨夜 / 同日 / start==end（全不静默）三形态，边界值落在同一侧。**没有模式派生变量** —— pet/assistant 双模式与 general.mode 已全链删除，系统变量集合与删除前逐项一致，这是本轮重分析专门核对过的负向结论（含模式字段的注入点只剩 Card 变量与互动状态）", why: "Prompt 注入基础；模式面删除后必须确认系统变量集合没有跟着漂移，否则 Prompt 里会留下已不存在的维度；isNightTime 若留下旧硬编码，用户改静默时段后模型感知的「夜里」与产品的静默边界会互相矛盾", layer: "unit", depth: "shallow", scenarios: ["variable-system-vars", "variable-night-time-config"] },
     { id: "vp-02", feature: "变量池初始化", description: "initVariablePool 从Card variableDefs初始化", why: "Card切换和重启时正确构建", layer: "unit", depth: "deep", scenarios: ["variable-pool-init"] },

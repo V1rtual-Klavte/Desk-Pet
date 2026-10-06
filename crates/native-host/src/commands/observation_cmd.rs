@@ -15,7 +15,7 @@ use crate::error::{AppError, AppResult};
 use crate::host::WindowPort;
 use crate::images::screenshot::encode_screenshot;
 use crate::monitor::{runtime_activity, MonitorState, RuntimeActivity};
-use crate::paths::{home_dir, is_credential_path, AppPaths};
+use crate::paths::{is_credential_path, AppPaths};
 use crate::rust_debug;
 
 /// 静默了解的空闲地板：档位值由 Node 侧强制、只会更严，Rust 终裁不低于 30 分钟。
@@ -145,27 +145,6 @@ fn skipped(path: &str, kind: &str, detail: impl Into<String>) -> TargetReadResul
     }
 }
 
-/// 主目录内的系统/应用配置一级目录：macOS `~/Library`、Windows `~/AppData`。
-/// 只按相对 home 的顶层组件判定（深层出现同名目录不受影响）；home 本身允许。
-fn is_home_system_dir(canonical: &Path, home: &Path) -> bool {
-    let Ok(relative) = canonical.strip_prefix(home) else {
-        return true;
-    };
-    let Some(component) = relative.components().next() else {
-        return false;
-    };
-    let name = component.as_os_str().to_string_lossy();
-    if cfg!(target_os = "macos") && name.as_ref() == "Library" {
-        return true;
-    }
-    if cfg!(target_os = "windows")
-        && (name.eq_ignore_ascii_case("AppData") || name.eq_ignore_ascii_case("Application Data"))
-    {
-        return true;
-    }
-    false
-}
-
 fn list_directory(requested: &str, canonical: &Path) -> TargetReadResult {
     let metadata = match std::fs::metadata(canonical) {
         Ok(metadata) => metadata,
@@ -230,9 +209,10 @@ fn read_text_file(requested: &str, canonical: &Path) -> TargetReadResult {
     }
 }
 
-/// 单项校验：绝对路径、canonical 解析（失败如实回执，不退回词法路径）、主目录之内、
-/// 数据根之外、非凭据路径、非主目录系统目录；通过后按 kind 读取。
-fn read_one_target(target: &ReadTarget, home: &Path, data_root: &Path) -> TargetReadResult {
+/// 单项校验：绝对路径、canonical 解析（失败如实回执，不退回词法路径）、数据根之外、
+/// 非凭据路径；通过后按 kind 读取。整机只读（2026-10-06 用户裁决）：不再限主目录之内、
+/// 不再排除 home 系统目录；凭据拦截至交付时仍是硬拦截，词法名与 canonical 目标都判。
+fn read_one_target(target: &ReadTarget, data_root: &Path) -> TargetReadResult {
     let requested = target.path.trim();
     let kind = target.kind.as_str();
     if kind != "dir" && kind != "file" {
@@ -245,18 +225,12 @@ fn read_one_target(target: &ReadTarget, home: &Path, data_root: &Path) -> Target
         Ok(path) => path,
         Err(error) => return skipped(requested, kind, format!("路径无法解析（{error}）")),
     };
-    if !canonical.starts_with(home) {
-        return skipped(requested, kind, "只允许读取用户主目录内的路径");
-    }
     if canonical.starts_with(data_root) {
         return skipped(requested, kind, "应用数据目录不允许读取");
     }
     // 词法名与解析结果都判一次：链接名可以无害，真实指向才现形（与 validate_file_path 同口径）。
     if is_credential_path(Path::new(requested)) || is_credential_path(&canonical) {
         return skipped(requested, kind, "凭据路径不允许读取");
-    }
-    if is_home_system_dir(&canonical, home) {
-        return skipped(requested, kind, "系统目录不允许读取");
     }
     if kind == "dir" {
         list_directory(requested, &canonical)
@@ -267,9 +241,9 @@ fn read_one_target(target: &ReadTarget, home: &Path, data_root: &Path) -> Target
 
 /// 读取静默了解批次里模型判断的本地目标。许可与空闲资格沿用 MonitorState 终裁
 /// （关闭/不满足即 CANCELLED 终止整批）；**读什么、读多少由调用方（模型决策）裁断，
-/// 边界由本命令终裁**：绝对路径、canonical 解析、主目录之内、数据根之外、非凭据路径、
-/// 非 home 系统目录。目录全量列名（仍跳隐藏与凭据项），文件整读（UTF-8 失败按既有
-/// skipped 如实回执）；单项边界失败以 skipped 回执，绝不猜测内容或静默回退。
+/// 边界由本命令终裁**：绝对路径、canonical 解析、数据根之外、非凭据路径。
+/// 目录全量列名（仍跳隐藏与凭据项），文件整读（UTF-8 失败按既有 skipped 如实回执）；
+/// 单项边界失败以 skipped 回执，绝不猜测内容或静默回退。
 pub fn observation_read_targets(
     port: &dyn WindowPort,
     monitor: &MonitorState,
@@ -277,10 +251,6 @@ pub fn observation_read_targets(
     targets: Vec<ReadTarget>,
 ) -> AppResult<Vec<TargetReadResult>> {
     require_idle_observation(port, monitor)?;
-    let home = home_dir().ok_or(AppError::NoHomeDir)?;
-    let home = home
-        .canonicalize()
-        .map_err(|error| AppError::Io(format!("无法解析用户主目录: {error}")))?;
     // 数据根必须参与边界判定；解析失败时 fail closed（不放行任何目标），
     // 静默退回「没有数据根」会让会话与记忆目录变成可读。
     let data_root = paths
@@ -290,7 +260,7 @@ pub fn observation_read_targets(
     let mut output = Vec::with_capacity(targets.len());
     for target in &targets {
         require_idle_observation(port, monitor)?;
-        output.push(read_one_target(target, &home, &data_root));
+        output.push(read_one_target(target, &data_root));
     }
     require_idle_observation(port, monitor)?;
     Ok(output)
@@ -304,7 +274,9 @@ mod tests {
 
     static TEST_COUNTER: AtomicUsize = AtomicUsize::new(0);
 
-    /// 建一个临时「主目录 + 数据根」，并 canonicalize（与命令入口同口径）。
+    /// 建一个临时目录树：`home` 只作数据根的宿主目录（整机只读后不再参与边界判定），
+    /// 数据根 canonicalize（与命令入口同口径）。部分用例会在 `home` 的父目录旁写
+    /// 「主目录之外」的文件，验证整机范围。
     fn fixture() -> (PathBuf, PathBuf) {
         let root = std::env::temp_dir().join(format!(
             "deskpet-observation-{}-{}",
@@ -334,36 +306,33 @@ mod tests {
                 path: "notes.txt".into(),
                 kind: "file".into(),
             },
-            &home,
             &data_root,
         );
         assert_eq!(relative.status, "skipped");
         assert!(relative.detail.contains("绝对路径"));
 
-        let unknown = read_one_target(&target(&home.join("a.txt"), "exe"), &home, &data_root);
+        let unknown = read_one_target(&target(&home.join("a.txt"), "exe"), &data_root);
         assert_eq!(unknown.status, "skipped");
 
-        let missing = read_one_target(
-            &target(&home.join("missing.txt"), "file"),
-            &home,
-            &data_root,
-        );
+        let missing = read_one_target(&target(&home.join("missing.txt"), "file"), &data_root);
         assert_eq!(missing.status, "skipped");
         assert!(missing.content.is_none());
     }
 
     #[test]
-    fn rejects_paths_outside_home_and_inside_data_root() {
+    fn reads_paths_outside_home_but_still_protects_data_root() {
+        // 整机只读（2026-10-06 用户裁决）：主目录之外的普通文件可读。
         let (home, data_root) = fixture();
         let outside = home.parent().unwrap().join("outside.txt");
         std::fs::write(&outside, "outside").unwrap();
-        let escaped = read_one_target(&target(&outside, "file"), &home, &data_root);
-        assert_eq!(escaped.status, "skipped");
-        assert!(escaped.detail.contains("主目录"));
+        let read = read_one_target(&target(&outside, "file"), &data_root);
+        assert_eq!(read.status, "read");
+        assert_eq!(read.content.as_deref(), Some("outside"));
 
+        // 应用数据根是记忆与会话的驻地，仍是硬拦截（含指向它的读取）。
         let session = data_root.join("sessions/s.jsonl");
         std::fs::write(&session, "{}").unwrap();
-        let protected = read_one_target(&target(&session, "file"), &home, &data_root);
+        let protected = read_one_target(&target(&session, "file"), &data_root);
         assert_eq!(protected.status, "skipped");
         assert!(protected.detail.contains("数据目录"));
     }
@@ -374,14 +343,45 @@ mod tests {
         let ssh = home.join(".ssh");
         std::fs::create_dir_all(&ssh).unwrap();
         std::fs::write(ssh.join("id_rsa"), "secret").unwrap();
-        let credential = read_one_target(&target(&ssh.join("id_rsa"), "file"), &home, &data_root);
+        let credential = read_one_target(&target(&ssh.join("id_rsa"), "file"), &data_root);
         assert_eq!(credential.status, "skipped");
         assert!(credential.content.is_none());
 
         let pem = home.join("token.pem");
         std::fs::write(&pem, "secret").unwrap();
-        let suffix = read_one_target(&target(&pem, "file"), &home, &data_root);
+        let suffix = read_one_target(&target(&pem, "file"), &data_root);
         assert_eq!(suffix.status, "skipped");
+
+        // 凭据拦截整机有效：主目录之外的 `.ssh` 组件同样被词法规则拦下。
+        let far_ssh = home.parent().unwrap().join("other-user/.ssh");
+        std::fs::create_dir_all(&far_ssh).unwrap();
+        std::fs::write(far_ssh.join("id_rsa"), "secret").unwrap();
+        let far = read_one_target(&target(&far_ssh.join("id_rsa"), "file"), &data_root);
+        assert_eq!(far.status, "skipped");
+        assert!(far.content.is_none());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn symlinks_cannot_escape_into_data_root_or_credentials() {
+        // 符号链接逃逸防护（硬拦截保留）：链接名无害、真实指向现形 —— canonical 目标
+        // 命中数据根或凭据即 skipped。
+        let (home, data_root) = fixture();
+        let secret_json = data_root.join("sessions/s.jsonl");
+        std::fs::write(&secret_json, "{}").unwrap();
+        let link_to_data = home.parent().unwrap().join("innocent-notes.txt");
+        std::os::unix::fs::symlink(&secret_json, &link_to_data).unwrap();
+        let via_data = read_one_target(&target(&link_to_data, "file"), &data_root);
+        assert_eq!(via_data.status, "skipped");
+        assert!(via_data.detail.contains("数据目录"));
+
+        let key = home.parent().unwrap().join("token.pem");
+        std::fs::write(&key, "secret").unwrap();
+        let link_to_key = home.parent().unwrap().join("harmless.md");
+        std::os::unix::fs::symlink(&key, &link_to_key).unwrap();
+        let via_key = read_one_target(&target(&link_to_key, "file"), &data_root);
+        assert_eq!(via_key.status, "skipped");
+        assert!(via_key.content.is_none());
     }
 
     #[test]
@@ -396,7 +396,7 @@ mod tests {
         std::fs::write(dir.join("server.pem"), "x").unwrap();
 
         // 目录全量列举（旧实现 40 条截断已删除）：45 个条目全部回，仍跳隐藏与凭据项。
-        let listed = read_one_target(&target(&dir, "dir"), &home, &data_root);
+        let listed = read_one_target(&target(&dir, "dir"), &data_root);
         assert_eq!(listed.status, "listed");
         let names = listed.names.unwrap();
         assert_eq!(names.len(), 45);
@@ -413,7 +413,7 @@ mod tests {
         let (home, data_root) = fixture();
         let small = home.join("notes.md");
         std::fs::write(&small, "hello").unwrap();
-        let read = read_one_target(&target(&small, "file"), &home, &data_root);
+        let read = read_one_target(&target(&small, "file"), &data_root);
         assert_eq!(read.status, "read");
         assert_eq!(read.content.as_deref(), Some("hello"));
 
@@ -421,22 +421,22 @@ mod tests {
         let big_bytes = 96 * 1024;
         let big = home.join("big.txt");
         std::fs::write(&big, vec![b'a'; big_bytes]).unwrap();
-        let whole = read_one_target(&target(&big, "file"), &home, &data_root);
+        let whole = read_one_target(&target(&big, "file"), &data_root);
         assert_eq!(whole.status, "read");
         assert_eq!(whole.content.map(|content| content.len()), Some(big_bytes));
 
         // 非 UTF-8 文件按既有 skipped 如实回执，不猜测内容。
         let binary = home.join("binary.dat");
         std::fs::write(&binary, [0xff, 0xfe, 0x00]).unwrap();
-        let invalid_utf8 = read_one_target(&target(&binary, "file"), &home, &data_root);
+        let invalid_utf8 = read_one_target(&target(&binary, "file"), &data_root);
         assert_eq!(invalid_utf8.status, "skipped");
         assert!(invalid_utf8.content.is_none());
 
-        let as_dir = read_one_target(&target(&small, "dir"), &home, &data_root);
+        let as_dir = read_one_target(&target(&small, "dir"), &data_root);
         assert_eq!(as_dir.status, "skipped");
         let dir = home.join("folder");
         std::fs::create_dir_all(&dir).unwrap();
-        let as_file = read_one_target(&target(&dir, "file"), &home, &data_root);
+        let as_file = read_one_target(&target(&dir, "file"), &data_root);
         assert_eq!(as_file.status, "skipped");
     }
 
@@ -486,17 +486,19 @@ mod tests {
     }
 
     #[test]
-    fn home_system_dirs_are_skipped_only_on_their_platform() {
+    fn home_system_dirs_are_readable_after_whole_machine_scope() {
+        // 整机只读（2026-10-06 用户裁决）：home 系统/应用配置目录不再被排除
+        // （macOS `~/Library`、Windows `~/AppData` 都按普通目录读取）。
         let (home, data_root) = fixture();
-        let library = home.join("Library/Preferences");
-        std::fs::create_dir_all(&library).unwrap();
-        std::fs::write(library.join("x.plist"), "x").unwrap();
-        let result = read_one_target(&target(&library.join("x.plist"), "file"), &home, &data_root);
-        if cfg!(target_os = "macos") {
-            assert_eq!(result.status, "skipped");
-            assert!(result.detail.contains("系统目录"));
+        let dir = if cfg!(target_os = "windows") {
+            home.join("AppData/Local")
         } else {
-            assert_eq!(result.status, "read");
-        }
+            home.join("Library/Preferences")
+        };
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("x.dat"), "x").unwrap();
+        let result = read_one_target(&target(&dir.join("x.dat"), "file"), &data_root);
+        assert_eq!(result.status, "read");
+        assert_eq!(result.content.as_deref(), Some("x"));
     }
 }

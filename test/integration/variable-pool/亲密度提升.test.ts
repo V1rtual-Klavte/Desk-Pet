@@ -40,7 +40,7 @@ import { flushConfig, setOverrides } from "@/services/config"
 import { runPiAgentTurn } from "@/services/engine/harness"
 import { userInputMessage } from "@/services/engine/runtime"
 import { initPaths } from "@/services/paths"
-import { getCard, initCards } from "@/services/personality/loader"
+import { loadCard } from "@/services/personality/loader"
 import { switchPersonality } from "@/services/personality/registry"
 import { FALLBACK_STAGES, stageSourceHash } from "@/services/personality/stages-cache"
 import { updateStagesFile } from "@/services/personality/stages-file"
@@ -143,8 +143,7 @@ beforeAll(async () => {
   setOverrides({ "ai.plan.enabled": false })
   await flushConfig()
 
-  await initCards()
-  const card = getCard(CARD_ID)
+  const card = await loadCard(CARD_ID)
   expect(card, `夹具卡 ${CARD_ID} 未从临时数据根加载`).toBeDefined()
   if (!card) return
 

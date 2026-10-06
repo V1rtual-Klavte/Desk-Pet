@@ -69,7 +69,7 @@ vi.mock("@/services/proactive/ipc", () => {
 import { setTestDataRoot } from "../../host/node-ipc"
 import { standardSetup } from "../../host/standard-setup"
 import { initPaths } from "@/services/paths"
-import { getCard, initCards } from "@/services/personality/loader"
+import { loadCard } from "@/services/personality/loader"
 import { getActiveCard } from "@/services/personality/registry"
 import { FALLBACK_STAGES, stageSourceHash } from "@/services/personality/stages-cache"
 import { updateStagesFile } from "@/services/personality/stages-file"
@@ -102,8 +102,7 @@ beforeAll(async () => {
     readFileSync(join(process.cwd(), "resources/defaults/personality/cards/default.md"), "utf8"),
     "utf8",
   )
-  await initCards()
-  const card = getCard("default")
+  const card = await loadCard("default")
   if (!card) throw new Error("默认卡未从临时数据根加载")
   await updateStagesFile(card.id, {
     stages: {

@@ -92,7 +92,7 @@ const memoryChangeTool: ToolDef = defineTool({
   id: "local-memory-change",
   name: "memory_change",
   description:
-    "按用户本轮明确指示记住、纠正或忘记长期记忆；不得替用户推测，来源由宿主绑定。",
+    "按用户本轮明确指示记住、纠正或忘记长期记忆；不得替用户推测，来源由宿主绑定。用户明确表达了值得长期保留的内容（称呼、稳定偏好、画像级事实、重要约定）就**当场写入**，不要留给自动整理；一次性请求（查询、看看、猜猜、截图）、测试与调试、临时任务不写；拿不准就不写。记忆种类：fact 事实 / preference 稳定偏好 / episode 经历 / working 待办约定；范围：user 跨会话 / card 当前角色 / session 当前会话。",
   parameters: {
     type: "object",
     properties: {

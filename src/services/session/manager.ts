@@ -295,12 +295,10 @@ export async function deleteSession(sessionId: string): Promise<boolean> {
   if (!(await harnessSlots.dispose(sessionId))) {
     log.warn("Session: 会话运行未在删除前收尾，继续删除:", sessionId)
   }
+  // 删会话不再作废该会话产生的话题来源（2026-10-06 用户裁决）：话题证据独立存活到自身
+  // TTL（TOPIC_EVIDENCE_TTL_MS）自然过期；作废入口只留给显式治理路径（「清除静默了解」
+  // 与记忆遗忘），不要在这里重新接回 invalidateTopicSources。
   const sourceEntries = await readPiSessionEntries(sessionId)
-  const sourceIds = sourceEntries.filter(entry => entry.type === "message" && entry.message.role === "user").map(entry => entry.id)
-  if (sourceIds.length) {
-    const { invalidateTopicSources } = await import("@/services/observation")
-    await invalidateTopicSources(sessionId, sourceIds)
-  }
 
   const wasActive = activeSessionId.value === sessionId
   removeSessionMeta(sessionId)

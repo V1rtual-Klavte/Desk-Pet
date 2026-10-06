@@ -19,13 +19,16 @@ import { PROACTIVE_LIMITS } from "./protocol"
 export type { FrequencyTier }
 export type ActiveTier = Exclude<FrequencyTier, "off">
 /**
- * 档位行类型：键取自生成表，值放宽为 number —— 生成表是 `as const`，三档同名字段的
- * 字面量类型互不相同（如 wakeMinMs 为 7200000/1800000/600000），不放宽就无法用同一
- * 个签名返回三行中的任意一行。
+ * 档位行类型：键取自生成表，数值字段放宽为 number、钟点表（`hours`）放宽为只读数组 ——
+ * 生成表是 `as const`，三档同名字段的字面量类型互不相同（如 wakeMinMs 为
+ * 7200000/1800000/600000，hours 为长度不同的只读元组），不放宽就无法用同一个签名
+ * 返回三行中的任意一行。
  */
-export type ProactiveTierLimits = { readonly [Key in keyof typeof PROACTIVE_LIMITS.tiers.proactive.low]: number }
-export type SilentTierLimits = { readonly [Key in keyof typeof PROACTIVE_LIMITS.tiers.silent.low]: number }
-export type DreamingTierLimits = { readonly [Key in keyof typeof PROACTIVE_LIMITS.tiers.dreaming.low]: number }
+type TierRowValue<Value> = Value extends readonly number[] ? readonly number[] : number
+type TierRow<Row> = { readonly [Key in keyof Row]: TierRowValue<Row[Key]> }
+export type ProactiveTierLimits = TierRow<typeof PROACTIVE_LIMITS.tiers.proactive.low>
+export type SilentTierLimits = TierRow<typeof PROACTIVE_LIMITS.tiers.silent.low>
+export type DreamingTierLimits = TierRow<typeof PROACTIVE_LIMITS.tiers.dreaming.low>
 
 /**
  * 读取期收拢（CONFIG 是用户可手写的 YAML）：合法四值原样返回，其余（含缺失、类型不符）

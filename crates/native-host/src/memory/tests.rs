@@ -1425,3 +1425,387 @@ fn behavior_clear_forgets_derived_items_and_blocks_replay() {
     assert_eq!(before.forget_epoch, after.forget_epoch);
     assert_eq!(before.revision, after.revision);
 }
+
+// ── 静默了解沉淀与库内整理（2026-10-06 用户裁决）──
+
+/// 静默了解来源：与画像结论共用合成会话 `behavior`，条目身份 `understanding:<内容 hash 前 16 位>`
+/// （测试里直接传 16 位身份字面量），证据就是观察摘要正文（逐字沉淀、不经改写）。
+fn understanding_source(identity: &str, seq: i64, summary: &str) -> Value {
+    json!({
+        "sourceId": format!("behavior-understanding:{identity}"),
+        "sessionId": "behavior",
+        "entryId": format!("understanding:{identity}"),
+        "eventId": format!("behavior:understanding:{identity}"),
+        "seq": seq,
+        "contentHash": identity,
+        "evidence": summary,
+        "eligibleForMemory": true,
+        "taint": "derived",
+        "origin": "derived_behavior",
+        "observedAt": 1_700_000_000_000i64,
+    })
+}
+
+/// 了解条目的候选草稿（确定性映射的产物形状：正文 = 来源 evidence 逐字）。
+fn understanding_draft(content: &str, source_id: &str) -> Value {
+    json!({
+        "content": content,
+        "summary": content,
+        "kind": "fact",
+        "scope": "user",
+        "aliases": [format!("behavior-understanding:{}", source_id.trim_start_matches("behavior-understanding:"))],
+        "pinned": false,
+        "importance": 4.0,
+        "confidence": 0.5,
+        "sourceIds": [source_id],
+    })
+}
+
+fn item_id_by_content(items: &[Value], content: &str) -> String {
+    items
+        .iter()
+        .find(|item| item["draft"]["content"] == json!(content))
+        .unwrap_or_else(|| panic!("在库条目里找不到 {content}"))
+        ["id"]
+        .as_str()
+        .unwrap()
+        .to_string()
+}
+
+fn merge_draft(content: &str, source_ids: &[&str], targets: &[String]) -> Value {
+    let mut value = json!({
+        "content": content,
+        "summary": content,
+        "kind": "fact",
+        "scope": "user",
+        "aliases": [],
+        "pinned": false,
+        "importance": 5.0,
+        "confidence": 0.8,
+        "sourceIds": source_ids,
+    });
+    value["supersedesIds"] = json!(targets);
+    value
+}
+
+#[test]
+fn understanding_clear_forgets_only_understanding_scope_and_blocks_replay() {
+    let (_fixture, store) = Fixture::new();
+    // 三区共存：用户事实、画像结论、静默了解观察；后两者同属 derived_behavior 但来源条目不同。
+    store
+        .register_sources(&[
+            source("user-1", "entry-u1", "hash-u1"),
+            derived_source("behavior-conclusion:rhythm:aaaa", "conclusion:rhythm", "hash-r", 100),
+            understanding_source("a1b2c3d4e5f60718", 200, "项目里在做一个 Rust 与 TypeScript 的桌宠"),
+        ])
+        .unwrap();
+    add(&store, "op-u", 0, &draft("用户喜欢喝拿铁", vec!["user-1"]));
+    publish_candidates(
+        &store,
+        &[derived_draft("近一个月的活跃时段：工作日集中在 19–23 时。", "behavior-conclusion:rhythm:aaaa", json!({}))],
+    )
+    .expect("画像结论发布失败");
+    publish_candidates(
+        &store,
+        &[understanding_draft("项目里在做一个 Rust 与 TypeScript 的桌宠", "behavior-understanding:a1b2c3d4e5f60718")],
+    )
+    .expect("了解条目发布失败");
+
+    // 在飞候选：引用另一个了解来源（未发布）；清除后必须连候选一起失效。
+    store
+        .register_sources(&[understanding_source("0011223344556677", 201, "常用 VS Code 与终端")])
+        .unwrap();
+    let job = store.job_start("review", "host").unwrap();
+    let job_id = job["id"].as_str().unwrap().to_string();
+    let inflight = understanding_draft("常用 VS Code 与终端", "behavior-understanding:0011223344556677");
+    store
+        .candidates_add(
+            &job_id,
+            &[json!({"id": "cand-understanding", "draft": inflight, "payloadHash": payload_hash(&inflight)})],
+        )
+        .unwrap();
+    assert_eq!(store.status().unwrap().candidate_count, 1);
+
+    // 非内部 actor 不能触发这个闭包。
+    let before = store.status().unwrap();
+    let wrong_actor = store.apply_change_with_actor(
+        "op-clear-understanding-ui",
+        before.revision,
+        "forget_understanding",
+        None,
+        None,
+        None,
+        "user_ui",
+        None,
+        None,
+    );
+    assert!(wrong_actor.is_err(), "治理 UI actor 触发了了解清除闭包");
+
+    let revision_after_clear = store
+        .apply_change("op-clear-understanding", before.revision, "forget_understanding", None, None, None)
+        .expect("清除静默了解");
+    assert!(revision_after_clear > before.revision, "清除了解没有推进 revision");
+
+    // 正文：了解条目消失；画像结论与用户事实原样保留。
+    let items = store.list(Some("user"), None, 10).unwrap();
+    assert!(
+        items.iter().any(|item| item["draft"]["content"] == json!("用户喜欢喝拿铁")),
+        "清除了解动了用户事实"
+    );
+    assert!(
+        items.iter().any(|item| item["draft"]["content"].as_str().unwrap().contains("活跃时段")),
+        "清除了解动了画像结论"
+    );
+    assert!(
+        !items.iter().any(|item| item["draft"]["content"].as_str().unwrap().contains("桌宠")),
+        "了解条目没有随清除失效"
+    );
+    // 索引与候选：已清正文不可召回；引用了解来源的候选被删。
+    assert_eq!(store.query("桌宠", None, None, None, 10).unwrap().len(), 0);
+    assert_eq!(store.query("活跃时段", None, None, None, 10).unwrap().len(), 1);
+    assert_eq!(store.query("拿铁", None, None, None, 10).unwrap().len(), 1);
+    assert_eq!(
+        store.status().unwrap().candidate_count,
+        0,
+        "清除没有覆盖了解候选"
+    );
+    // 来源证据：已清了解来源不可回看，画像来源照旧。
+    assert!(store
+        .source_evidence("behavior-understanding:a1b2c3d4e5f60718")
+        .unwrap()
+        .is_none());
+    assert!(store
+        .source_evidence("behavior-conclusion:rhythm:aaaa")
+        .unwrap()
+        .is_some());
+    // 墓碑：同一文本重新登记被拦下（已清来源不能迟到回灌）；新文本不受影响。
+    assert_eq!(
+        store
+            .register_sources(&[understanding_source("a1b2c3d4e5f60718", 300, "项目里在做一个 Rust 与 TypeScript 的桌宠")])
+            .unwrap(),
+        0,
+        "已清了解文本被重新登记"
+    );
+    assert_eq!(
+        store
+            .register_sources(&[understanding_source("9988776655443322", 301, "晚上常在 21 点后写代码")])
+            .unwrap(),
+        1,
+        "新了解文本被墓碑误伤"
+    );
+    // 遗忘代推进：跨清除代的在飞作业发布被拦下。
+    let after = store.status().unwrap();
+    assert!(after.forget_epoch > before.forget_epoch, "清除了解没有推进遗忘代");
+    assert!(
+        matches!(store.commit_dreaming_job(&job_id, after.revision), Err(AppError::MemoryConflict)),
+        "跨清除代的作业仍然发布了候选"
+    );
+}
+
+#[test]
+fn behavior_clear_also_forgets_understanding_scope() {
+    let (_fixture, store) = Fixture::new();
+    // 清画像（全量范围）必须把了解沉淀一并带走：与画像结论共用同一闭包，不另开第二条链。
+    store
+        .register_sources(&[
+            derived_source("behavior-conclusion:rhythm:aaaa", "conclusion:rhythm", "hash-r", 100),
+            understanding_source("cafebabecafebabe", 200, "项目里在读设计稿"),
+        ])
+        .unwrap();
+    publish_candidates(
+        &store,
+        &[derived_draft("近一个月的活跃时段：工作日集中在 19–23 时。", "behavior-conclusion:rhythm:aaaa", json!({}))],
+    )
+    .expect("画像结论发布失败");
+    publish_candidates(
+        &store,
+        &[understanding_draft("项目里在读设计稿", "behavior-understanding:cafebabecafebabe")],
+    )
+    .expect("了解条目发布失败");
+
+    clear_behavior_sources(&store);
+    let items = store.list(Some("user"), None, 10).unwrap();
+    assert!(items.is_empty(), "清画像后仍有系统观察条目在库");
+    assert!(
+        store.source_evidence("behavior-understanding:cafebabecafebabe").unwrap().is_none(),
+        "清画像后了解来源证据仍可回看"
+    );
+    assert_eq!(
+        store
+            .register_sources(&[understanding_source("cafebabecafebabe", 300, "项目里在读设计稿")])
+            .unwrap(),
+        0,
+        "已清画像的了解文本被重新登记"
+    );
+}
+
+#[test]
+fn merge_candidates_union_sources_and_supersede_targets() {
+    let (_fixture, store) = Fixture::new();
+    store
+        .register_sources(&[
+            source("user-1", "entry-u1", "hash-u1"),
+            source("user-2", "entry-u2", "hash-u2"),
+        ])
+        .unwrap();
+    let revision = add(&store, "op-a", 0, &draft("用户喜欢喝拿铁", vec!["user-1"]));
+    add(&store, "op-b", revision, &draft("用户早上喝咖啡", vec!["user-2"]));
+    let items = store.list(Some("user"), None, 10).unwrap();
+    let latte_id = item_id_by_content(&items, "用户喜欢喝拿铁");
+    let coffee_id = item_id_by_content(&items, "用户早上喝咖啡");
+
+    // 合并候选：来源只带 user-1，user-2 必须由 Rust 在事务内从被吸收条目并进来；
+    // 旧条目来源一条都不能丢（并集在写入口强制，不依赖调用方自觉）。
+    let merge = merge_draft(
+        "用户早上喝咖啡，也喜欢拿铁",
+        &["user-1"],
+        &[coffee_id.clone(), latte_id.clone()],
+    );
+    let revision = publish_candidates(&store, &[merge]).expect("合并候选没有发布");
+    assert!(revision > 0);
+
+    let active = store.list(Some("user"), None, 10).unwrap();
+    assert_eq!(active.len(), 1, "合并后旧条目仍在库（没有 supersede）");
+    assert_eq!(active[0]["draft"]["content"], json!("用户早上喝咖啡，也喜欢拿铁"));
+    assert_eq!(
+        active[0]["draft"]["sourceIds"],
+        json!(["user-1", "user-2"]),
+        "合并条目的来源不是并集"
+    );
+    assert_eq!(
+        active[0]["draft"]["supersedesId"],
+        json!(coffee_id),
+        "链上代表不是 supersedesIds 的首条"
+    );
+    // 旧条目行与版本链保留（历史/审计不丢）：history 仍可读，状态是 superseded。
+    for id in [&coffee_id, &latte_id] {
+        let history = store.history(id).unwrap();
+        assert!(!history.is_empty(), "被合并的旧条目从历史里消失了");
+        assert_eq!(history[0]["item"]["status"], json!("superseded"));
+        assert!(
+            !history[0]["sourceAudits"].as_array().unwrap().is_empty(),
+            "旧条目的来源审计丢失"
+        );
+    }
+}
+
+#[test]
+fn merge_publish_rejects_pinned_stale_or_cross_pool_targets() {
+    let (_fixture, store) = Fixture::new();
+    store
+        .register_sources(&[
+            source("user-1", "entry-u1", "hash-u1"),
+            source("user-2", "entry-u2", "hash-u2"),
+        ])
+        .unwrap();
+    let revision = add(&store, "op-a", 0, &draft("用户喜欢喝拿铁", vec!["user-1"]));
+    let mut pinned = draft("用户称呼糖糖", vec!["user-2"]);
+    pinned["pinned"] = json!(true);
+    add(&store, "op-pinned", revision, &pinned);
+    let items = store.list(Some("user"), None, 10).unwrap();
+    let latte_id = item_id_by_content(&items, "用户喜欢喝拿铁");
+    let pinned_id = item_id_by_content(&items, "用户称呼糖糖");
+
+    // 置顶（核心画像）目标不参与合并。
+    let pinned_merge = merge_draft("合并请求", &["user-1"], &[latte_id.clone(), pinned_id.clone()]);
+    let result = publish_candidates(&store, &[pinned_merge]);
+    assert!(
+        matches!(&result, Err(AppError::Memory(message)) if message.contains("置顶")),
+        "置顶目标没有被拒绝: {result:?}"
+    );
+
+    // 跨来源类别：派生条目不能并进用户合并（来源并集先因混池在写入口被拒，
+    // 逐目标的来源类别守卫是第二道防线）。
+    store
+        .register_sources(&[derived_source("behavior-conclusion:focus:bbbb", "conclusion:focus", "hash-r", 400)])
+        .unwrap();
+    publish_candidates(
+        &store,
+        &[derived_draft("近一个月的专注习惯：单段专注通常约 25 分钟。", "behavior-conclusion:focus:bbbb", json!({}))],
+    )
+    .expect("派生条目发布失败");
+    let items = store.list(Some("user"), None, 10).unwrap();
+    let derived_id = item_id_by_content(&items, "近一个月的专注习惯：单段专注通常约 25 分钟。");
+    let cross_merge = merge_draft("跨池合并", &["user-1"], &[latte_id.clone(), derived_id.clone()]);
+    let result = publish_candidates(&store, &[cross_merge]);
+    assert!(
+        matches!(&result, Err(AppError::Memory(message)) if message.contains("混池")),
+        "跨来源类别合并没有被拒绝: {result:?}"
+    );
+
+    // 失效目标（已被合并掉）：如实报 MEMORY_CONFLICT，不静默跳过。
+    store.register_sources(&[source("user-4", "entry-u4", "hash-u4")]).unwrap();
+    let revision = store.status().unwrap().revision;
+    add(&store, "op-c", revision, &draft("用户常用 VS Code", vec!["user-4"]));
+    let items = store.list(Some("user"), None, 10).unwrap();
+    let vscode_id = item_id_by_content(&items, "用户常用 VS Code");
+    let first_merge = merge_draft(
+        "用户喜欢拿铁并用 VS Code",
+        &["user-1", "user-4"],
+        &[latte_id.clone(), vscode_id.clone()],
+    );
+    publish_candidates(&store, &[first_merge]).expect("第一次合并失败");
+    let stale = merge_draft("重复合并已消失的条目", &["user-1"], &[latte_id.clone()]);
+    let result = publish_candidates(&store, &[stale]);
+    assert!(
+        matches!(&result, Err(AppError::MemoryConflict)),
+        "已失效目标没有如实报冲突: {result:?}"
+    );
+}
+
+#[test]
+fn merge_draft_shape_is_checked_before_staging_and_governance_writes() {
+    let (_fixture, store) = Fixture::new();
+    store.register_sources(&[source("user-1", "entry-u1", "hash-u1")]).unwrap();
+    let job = store.job_start("review", "host").unwrap();
+    let job_id = job["id"].as_str().unwrap().to_string();
+
+    let cases: Vec<(Value, &str)> = vec![
+        (json!([]), "supersedesIds"),
+        (json!(["a", "b", "c", "d", "e"]), "supersedesIds"),
+        (json!(["a", "a"]), "重复"),
+        (json!(["a"]), "同时"),
+    ];
+    for (index, (supersedes, expected)) in cases.into_iter().enumerate() {
+        let mut candidate = draft("合并产物", vec!["user-1"]);
+        candidate["supersedesIds"] = supersedes;
+        if expected == "同时" {
+            candidate["supersedesId"] = json!("mem-x");
+        }
+        let error = store
+            .candidates_add(
+                &job_id,
+                &[json!({"id": format!("cand-shape-{index}"), "draft": candidate, "payloadHash": payload_hash(&candidate)})],
+            )
+            .unwrap_err();
+        assert!(
+            matches!(&error, AppError::Memory(message) if message.contains(expected)),
+            "形状校验缺失（预期 {expected}）: {error:?}"
+        );
+    }
+    // working 事项不参与合并。
+    let mut working = draft("事项合并", vec!["user-1"]);
+    working["kind"] = json!("working");
+    working["workingState"] = json!("open");
+    working["supersedesIds"] = json!(["mem-x"]);
+    let error = store
+        .candidates_add(
+            &job_id,
+            &[json!({"id": "cand-working-merge", "draft": working, "payloadHash": payload_hash(&working)})],
+        )
+        .unwrap_err();
+    assert!(
+        matches!(&error, AppError::Memory(message) if message.contains("working")),
+        "working 事项参与了合并: {error:?}"
+    );
+    // 治理写入明确拒绝 supersedesIds（不是静默忽略）。
+    let mut governance = draft("治理合并尝试", vec!["user-1"]);
+    governance["supersedesIds"] = json!(["mem-x"]);
+    let error = store
+        .apply_change("op-merge-governance", 0, "add", None, None, Some(&governance))
+        .unwrap_err();
+    assert!(
+        matches!(&error, AppError::Memory(message) if message.contains("dreaming")),
+        "治理写入静默接受了合并字段: {error:?}"
+    );
+}

@@ -4,28 +4,28 @@
 
 ## 频率档位与静默时间段
 
-三处频率统一为「关 / 低 / 中 / 高」四档，**独立启用开关全部并入档位**（档位就是唯一开关）；「关」= 不自动跑，手动入口保留（如记忆面板的手动整理按钮不受档位约束）。三处档位彼此独立：`ai.proactive.frequency`、`ai.silentAccess.frequency`、`ai.memory.dreaming.tier`（默认均 `medium`）。档位数值表（唤醒区间、每日配额、token、停留/防抖/冷却等）的唯一真相源是 [proactive/protocol.json](../../src/services/proactive/protocol.json) 的 `tiers`（生成器同步到 TS 与 Rust 两侧；[tiers.ts](../../src/services/proactive/tiers.ts) 只负责读取收拢与查表）；记忆整理档的三档只含空闲阈值与最小间隔——其每日 token 上限已于 2026-10-06 撤除（与主动链同批口径，token 只记观测账）。
+三处频率统一为「关 / 低 / 中 / 高」四档，**独立启用开关全部并入档位**（档位就是唯一开关）；「关」= 不自动跑，手动入口保留（如记忆面板的手动整理按钮不受档位约束）。三处档位彼此独立：`ai.proactive.frequency`、`ai.silentAccess.frequency`、`ai.memory.dreaming.tier`（默认均 `medium`）。档位数值表（唤醒区间、每日配额、token、停留/防抖/冷却等）的唯一真相源是 [proactive/protocol.json](../../src/services/proactive/protocol.json) 的 `tiers`（生成器同步到 TS 与 Rust 两侧；[tiers.ts](../../src/services/proactive/tiers.ts) 只负责读取收拢与查表）；记忆整理档的三档只含固定钟点表与最小间隔——其每日 token 上限已于 2026-10-06 撤除（与主动链同批口径，token 只记观测账）。
 
 | | 低 | 中 | 高 |
 |---|---|---|---|
 | 主动消息随机唤醒区间 | 2–5 小时 | 30–90 分钟 | 10–30 分钟 |
 | 主动消息每日成功 / 表达 / 规划 / 辅助上限 | 2 / 4 / 3 / 2 | 6 / 12 / 8 / 4 | 10 / 20 / 14 / 8 |
 | 主动消息开口后冷却 / 每日 token（记账阈值，非门禁） | 3–5 小时 / 8000 | 1–3 小时 / 24000 | 30–90 分钟 / 40000 |
-| 静默了解离开要求 / 批次间隔 | 2 小时 / 2 小时 | 1 小时 / 30 分钟 | 30 分钟 / 15 分钟 |
-| 静默了解每日批数 / 每小时读取名额 | 4 / 4 | 8 / 8 | 12 / 12 |
-| 记忆整理空闲阈值 / 最小间隔 / 每日 token | 1 小时 / 4 小时 / 24000 | 30 分钟 / 60 分钟 / 72000 | 10 分钟 / 30 分钟 / 120000 |
+| 静默了解固定钟点 / 批次间隔 | 12:00、20:00 / 2 小时 | 10:00、14:00、18:00、22:00 / 30 分钟 | 09:00、11:00、13:00、15:00、17:00、19:00 / 15 分钟 |
+| 静默了解每日轮数（=钟点表）/ 每小时读取名额 | 2 / 4 | 4 / 8 | 6 / 12 |
+| 记忆整理固定钟点 / 最小间隔 / 每日 token | 同静默了解表 / 4 小时 / 24000 | 同静默了解表 / 60 分钟 / 72000 | 同静默了解表 / 30 分钟 / 120000 |
 
 成本：主动消息低→高约 5 倍 token，设置页「高」档 help 已提示。完整字段与逐值以生成表的 `tiers` 为准。每日 token 总量自 2026-10-06 起只记账、不设闸：唯一硬边界是次数上限（见「规则、预算与送达」）。
 
 **随机唤醒（不形成固定节拍）**：主动消息不再用固定 `tickMs` 节拍——每次唤醒后从档位区间 `[min, max)` 内随机抽下一次检查时刻（一次 `setTimeout` 递归；全模块唯一的「下一次调度点」在 tick 收尾）。事件唤醒保留：前台身份变化、解锁、系统 idle 跨过 5 分钟阈值、变量提交、会话/Card 变化与配置刷新都会立即唤醒一次；事件唤醒先取消未触发的旧定时器，不与随机唤醒叠成双重调度。`tickMs` 不再充当扫描节拍，只作 planner `set_presence` 有效期的短窗（5 分钟）。
 
-**静默时间段（设置项，默认 23:00–09:00）**：仅约束**主动消息**——该时段不唤醒、不产生机会、不发送；静默了解与记忆整理不受它门禁。`quietStartHour`/`quietEndHour` 是本地小时 0–23 整数（AI 设置「主动陪伴」区两个 Number），跨夜语义 `start > end`；`start == end` = 不静默（显式关闭）；白天不设窗口。晚安窗口由静默开始时刻派生：`(quietStartHour + 23) % 24` 那一小时到静默开始为止（默认 22:00–23:00，只保留一次晚安机会）；约期前置窗口下界同样由静默值派生；变量池 `isNightTime` 与主动链共用 `isQuietHour` 同一公式。
+**静默时间段（设置项，默认 23:00–09:00）**：仅约束**主动消息**——该时段不唤醒、不产生机会、不发送；静默了解与记忆整理不受它门禁（两链的固定钟点表本身避开 23–9，不随 quietStartHour/quietEndHour 变化）。`quietStartHour`/`quietEndHour` 是本地小时 0–23 整数（AI 设置「主动陪伴」区两个 Number），跨夜语义 `start > end`；`start == end` = 不静默（显式关闭）；白天不设窗口。晚安窗口由静默开始时刻派生：`(quietStartHour + 23) % 24` 那一小时到静默开始为止（默认 22:00–23:00，只保留一次晚安机会）；约期前置窗口下界同样由静默值派生；变量池 `isNightTime` 与主动链共用 `isQuietHour` 同一公式。
 
 **白天窗口删除**：原写死的 9–12 / 18–22 硬窗口（`SHARE_START_HOUR`/`SHARE_END_HOUR`/`MIDDAY_HOUR`/`EVENING_HOUR`）全部删除，rhythm（晨/晚）、retrospective（周日）、anniversary、calendar、topic_share、curiosity 改为本地整日（00:00–次日 00:00）有效，夜间边界只由静默时间段门禁负责。画像逐小时资格（可靠画像时 `observedHours[hour] > 0`）保留——它是自适应信号而不是硬窗口；画像不可靠时不限小时。
 
 **主动开关从 SQLite 撤出**：Rust `proactive_control` 表删除 `enabled` 列（保留 `mute_until`/`revision`——运行期暂停状态，不是设置；claim 拒绝理由 `muted` 只来自暂停）。`MEMORY_SCHEMA_VERSION` 递增到 3，旧库按既有策略 abort，开发需删 `memory.sqlite3` 三件套（含 `-wal`/`-shm`）重建（旧数据可弃）。
 
-**档位投影到 Rust（终裁）**：Node 在 scanner 启动与每次 `refreshProactive()`（设置保存 / `/proactive on|off` / 配置导入的消费者刷新）把当前档位派生的 13 项 limits 经 `proactive_control` 通道下发；Rust 存为 **dispatcher 级运行期投影**（与 MonitorState 并列，不进 SQLite、不读 CONFIG、不回写），用于 claim 的间隔/配额终裁与辅助尝试天花板；缺省回落中档。校验口径：13 字段全必填且必须与 low/medium/high 任一行逐字段全等，不匹配拒绝整条请求并留痕（拒绝不改投影现值）；`off` 档不推送（Rust 保持现值/缺省）。真相源仍是 CONFIG。辅助尝试天花板按 kind 取档位最大值的静态上限（observation→静默档最高 12、其他→主动档最高 8），不再按旧常量 4 截断。`dailyTokens` 自 2026-10-06 起是**观测阈值**：token 账（reserved/used/unknown）照记，不作 claim 或辅助预留的拒绝条件。
+**档位投影到 Rust（终裁）**：Node 在 scanner 启动与每次 `refreshProactive()`（设置保存 / `/proactive on|off` / 配置导入的消费者刷新）把当前档位派生的 13 项 limits 经 `proactive_control` 通道下发；Rust 存为 **dispatcher 级运行期投影**（与 MonitorState 并列，不进 SQLite、不读 CONFIG、不回写），用于 claim 的间隔/配额终裁与辅助尝试天花板；缺省回落中档。校验口径：13 字段全必填且必须与 low/medium/high 任一行逐字段全等，不匹配拒绝整条请求并留痕（拒绝不改投影现值）；`off` 档不推送（Rust 保持现值/缺省）。真相源仍是 CONFIG。辅助尝试天花板按 kind 取档位最大值的静态上限（observation→静默档钟点表最高 6 轮、其他→主动档最高 8），不再按旧常量 4 截断。`dailyTokens` 自 2026-10-06 起是**观测阈值**：token 账（reserved/used/unknown）照记，不作 claim 或辅助预留的拒绝条件。
 
 **状态**：以上为 W2 代码事实（2026-10-05 落地）；L2/L3 用例已写、**未运行**，统一留收口波；「导出配置再导入，档位与开关往返一致」待验收。
 
@@ -47,21 +47,21 @@
 
 规划子运行与主动表达分别准入、计费，受用户插话、停止、Card/会话切换、来源失效与系统状态约束。**主动规划是带只读工具的有界子运行**（2026-10-05 落地）：工具面在调用时刻从工具注册表按名装配，白名单 `screenshot` / `window_info` / `system_info`；`screenshot` 受模型能力闸——仅当辅助模型声明图像输入（`resolvePiAuxModel().input.includes("image")`，与静默了解链同款判据）才纳入，文本模型或探测失败时白名单退化为另两件（探测失败按不支持处理，不阻塞规划）；`clipboard_read` 因声明 DANGER 级排除（无用户回合时默认安全模式会落 `awaitPermission` 干等确认），全部 MCP 工具同因排除，且 stdio server 需为子运行单独借用/保活、成本不对等——两者恢复均需新裁决。装配时逐件复核 SAFE 且无参数级重定级入口，不符整件跳过并留痕；工具未注册/改名同样按跳过处理，规划降级为纯文本决策、不因工具面缺件整体失败。运行封顶为最多 3 次工具调用（`PLANNING_TOOL_ROUNDS`，其后 Provider 轮数由工具调用数决定）、90s 超时与 800 输出预留不变，实际用量照常经 settle 结算；取消纪律不变（owner 身份与调用方 signal 进 scope，来源/owner 失效随信号级联，以 `planning_cancelled` 收口）。工具执行的过程提示（`tool-executing` 事件与顶栏过程文案，仅当 owner 会话是活跃会话时）与计划步骤同一条路径，产品接受此行为（角色感由卡片阶段文案承担）。**主动表达继续 `tools=[]`**；表达准入的 `planner_tools_present` 是按回调契约保留的防御分支（当前内核把表达 reservation 的 `toolCount` 钉死为 0，生产路径不可达），一旦表达带工具面即在 claim 前整次拒回且不消耗 claim。表达返回 committed/skipped/failed；committed 必须核对主动 custom trigger、原生 completed operation 的 assistant tip，再取得 SQLite 回执。message_end、模型正文和UI随机id都不是提交证明。回执成功后才投递所属会话、统计未回复、提示音与允许的Card patch；主动结果未确认时会话读模型隐藏它。历史回执按 attempt／session／assistant entry 精确核对，切换 Card 或修改其 hash 不隐藏已确认的历史；未知提交立即进入可对账状态并保留预留，等回执或清理后再定论。
 
-崩溃后用 session/request/attempt 身份核对JSONL与SQLite；已提交补回执，不重新生成。读取失败或无法证明的尝试保留未知状态，不当作从未发过。会话正文与SQLite不宣称跨库事务；遗忘不删除原聊天或外部备份。
+崩溃后用 session/request/attempt 身份核对JSONL与SQLite；已提交补回执，不重新生成。读取失败或无法证明的尝试保留未知状态，不当作从未发过。**「在飞」按租约计**：claim 的在飞判定只看「非终态（reserved/generating/unresolved）且租约未过期」——租约过期的 `unresolved` 是审计位（行保留、不收口、不重放），不再堵新 claim（2026-10-06 实机修复：一条 14:11 失败的规划尝试曾把全局 claim 门锁死，curiosity 机会每 tick 被 denied attempt_in_flight、重启不恢复）。会话正文与SQLite不宣称跨库事务；遗忘不删除原聊天或外部备份。
 
 普通话题分享／好奇的成功送达在SQLite持久下一次按档位派生的随机槽（低 3–5 小时、中 1–3 小时、高 30–90 分钟；`now + minSuccessIntervalMs + hash % successIntervalSpreadMs`），重启不连发；明确锚、可靠作息和晚安机会保持自身时间窗口，仍受全局额度、静默、忙碌与统一冷却约束。话题选材80%按可信用户参与标签占比、20%稳定随机，来源不足时沿用Card内容池；标签来源失效与去重账目由各自领域治理。
 
 未回复只统计结构化expectsReply=true且已确认送达的消息；无需回应的自足分享不计。第2条的时间与随后首个可信用户开口从原生历史投影重建：次日额度降为1，本日一旦冻结低档不升，回应后的下一日恢复正常。恢复输入不当作用户开口。已提交的主动SILENT以skipped终态结案，不占成功消息数、不通知、不重放，实际用量照常结算。
 
-观察／话题辅助请求tools=[]，复用同一 SQLite token 账做预留记账与实际用量结算（token 总量不再参与拒绝，2026-10-06；唯一边界是每日批数）；静默了解的每日批数随档位（4/8/12），话题链保持每日 4 批、不受档位治理；未知用量保留预留。零业务依赖公开预算端口是[auxiliary-budget.ts](../../src/services/proactive/auxiliary-budget.ts)，调用方不拉入scanner循环依赖。
+观察／话题辅助请求tools=[]，复用同一 SQLite token 账做预留记账与实际用量结算（token 总量不再参与拒绝，2026-10-06；唯一边界是每日批数）；静默了解的每日轮数随档位（2/4/6，即钟点表轮数），话题链保持每日 4 批、不受档位治理；未知用量保留预留。零业务依赖公开预算端口是[auxiliary-budget.ts](../../src/services/proactive/auxiliary-budget.ts)，调用方不拉入scanner循环依赖。
 
-静默了解的读取数值上限已删除（2026-10-05 用户口径）：单文件 32KB、目录 40 条、单批 ≤3 目标、目录扫描预算 256 都不再设硬顶，读什么由模型裁断；路径边界全部保留并由宿主终裁（绝对路径、canonical 解析、限于用户主目录、排除数据根与凭据路径、home 系统目录）。保留的两个数不是「读取大小上限」：每小时读取名额是防突发闸（随档位 4/8/12，`silentTierLimits(tier).maxReadsPerHour`，`MAX_READS_PER_HOUR` 常量已删），喂给整理调用的单文件字符预算（`MAX_TEXT_CHARS_PER_FILE`）是请求 token 截断。风险如实：大目录或大文件没有硬顶，靠模型裁断。
+静默了解的读取数值上限已删除（2026-10-05 用户口径）：单文件 32KB、目录 40 条、单批 ≤3 目标、目录扫描预算 256 都不再设硬顶，读什么由模型裁断；路径边界全部保留并由宿主终裁（绝对路径、canonical 解析、排除数据根与凭据路径；整机只读——2026-10-06 用户裁决，不再限于用户主目录、不再排除 home 系统目录）。保留的两个数不是「读取大小上限」：每小时读取名额是防突发闸（随档位 4/8/12，`silentTierLimits(tier).maxReadsPerHour`，`MAX_READS_PER_HOUR` 常量已删），喂给整理调用的单文件字符预算（`MAX_TEXT_CHARS_PER_FILE`）是请求 token 截断。风险如实：大目录或大文件没有硬顶，靠模型裁断。
 
 **状态**：以上规划工具面与规划输入补齐为 W4 代码事实（2026-10-05 落地）；新增 L2/L3 用例已写、**未运行**，统一留收口波验证。
 
 ## 观测、表现与控制
 
-行为画像独立存放在 `behavior/`，不进记忆FTS、dreaming或记忆导出。四组指标与质量、存储和清除边界见[行为画像](behavior.md)。macOS 只取前台进程自己的窗口标题（按窗口 owner PID 匹配），匹配不到就返回缺失标题，不拼其它应用的标题；窗口采样由原生事件驱动、空闲按需现采，观察时间不再是窗口机会的新鲜度判据（身份变化会取消在途窗口任务）；监控关闭只关闭观测来源，事项和纯时间规则仍用独立的可见性、锁屏、系统idle入口判定资格。锁屏（`screen_state=locked`）不再判为观察不可用：主动消息照常参与、不额外加严；静默了解在 `screen_state ∈ {observed, locked}` 且 idle 达标时照跑，locked 批跳过截图类（Node 不请求、Rust 终裁拒绝），只用文件/目录与最后一次窗口快照（决策提示注明快照可能陈旧）；只有 `unavailable`（真不可知）才丢弃机会并留跳过原因。窗口类机会在锁屏期间仍会因当前窗口数据陈旧自然失效（`window_unavailable`）——这是既有新鲜度判据而非锁屏加严；非窗口类机会不受影响。观察门禁资格有常驻 L3 用例（caseId `proactive-observation-gate`，契约 pr-09，覆盖三态准入与 locked 跳过截图），测试已写、按用户要求统一留到收口波运行。
+行为画像独立存放在 `behavior/`，不进记忆FTS、dreaming或记忆导出。四组指标与质量、存储和清除边界见[行为画像](behavior.md)。macOS 只取前台进程自己的窗口标题（按窗口 owner PID 匹配），匹配不到就返回缺失标题，不拼其它应用的标题；窗口采样由原生事件驱动、空闲按需现采，观察时间不再是窗口机会的新鲜度判据（身份变化会取消在途窗口任务）；监控关闭只关闭观测来源，事项和纯时间规则仍用独立的可见性、锁屏、系统idle入口判定资格。锁屏（`screen_state=locked`）不再判为观察不可用：主动消息照常参与、不额外加严；静默了解在固定钟点到点即跑（2026-10-06 起不再要求 idle 达标、允许用户在用电脑），仅 `screen_state=unavailable` 跳过本轮；locked 批跳过截图类（Node 不请求、Rust 终裁拒绝），只用文件/目录与最后一次窗口快照（决策提示注明快照可能陈旧）；只有 `unavailable`（真不可知）才丢弃机会并留跳过原因。窗口类机会在锁屏期间仍会因当前窗口数据陈旧自然失效（`window_unavailable`）——这是既有新鲜度判据而非锁屏加严；非窗口类机会不受影响。观察门禁资格有常驻 L3 用例（caseId `proactive-observation-gate`，契约 pr-09，覆盖三态准入与 locked 跳过截图），测试已写、按用户要求统一留到收口波运行。
 
 presence只有 idle/working/resting 和有限短动作，不移动真实窗口或执行外部动作。文案取当前Card的 `StageMap.presence`，通过titlebar所有权写入；短动作每小时最多2次、每次2秒，隐藏、锁屏、减少动态效果或销毁时停止。日历运行期离线，农历节日及节气使用[香港天文台年度历表](https://www.hko.gov.hk/tc/gts/time/conversion.htm)的2026–2035本地数据，覆盖范围外明确 calendar_uncovered，不推算法定调休。
 

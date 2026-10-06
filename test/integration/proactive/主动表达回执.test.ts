@@ -24,7 +24,7 @@ import { registerActiveReceiptReader } from "@/services/session/read-model"
 import { runActiveTurn } from "../memory/回合夹具"
 import { initPaths } from "@/services/paths"
 import { standardSetup } from "../../host/standard-setup"
-import { getCard, initCards } from "@/services/personality/loader"
+import { loadCard } from "@/services/personality/loader"
 import { FALLBACK_STAGES, stageSourceHash } from "@/services/personality/stages-cache"
 import { updateStagesFile } from "@/services/personality/stages-file"
 
@@ -48,8 +48,7 @@ beforeAll(async () => {
     readFileSync(join(process.cwd(), "resources/defaults/personality/cards/angelkawaii.md"), "utf8"),
     "utf8",
   )
-  await initCards()
-  const card = getCard("angelkawaii")
+  const card = await loadCard("angelkawaii")
   if (!card) throw new Error("主动表达夹具 Card 未从临时数据根加载")
   await updateStagesFile(card.id, {
     stages: {

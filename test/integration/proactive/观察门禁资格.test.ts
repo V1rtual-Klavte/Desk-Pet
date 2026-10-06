@@ -35,7 +35,7 @@ const hoisted = vi.hoisted(() => ({
   /** 主动扫描的 owner 布防：未布防时 captureOwner 返回 undefined（start() 的自动 tick 立即退出）。 */
   ownerArmed: false,
   expressCalls: 0,
-  /** 静默了解批次闸：让连续两批不受 MIN_BATCH_GAP_MS 影响（真实计入由 store 负责，本处只放开资格）。 */
+  /** 静默了解批次闸：让连续两批不受防重间隔影响（真实计入由 store 负责，本处只放开资格）。 */
   lastAuxAt: 0,
 }))
 
@@ -62,9 +62,15 @@ vi.mock("@/services/observation/store", async importOriginal => {
   const actual = await importOriginal<typeof import("@/services/observation/store")>()
   return {
     ...actual,
-    // 只放开「两批至少隔 30 分钟」的防抖闸；其余 store 行为（落盘、滚动记账、快照）保持真实。
+    // 只放开「两批至少隔一个档位间隔」的防重闸；其余 store 行为（落盘、滚动记账、快照）保持真实。
     getLastAuxiliaryAttemptAt: () => hoisted.lastAuxAt,
   }
+})
+
+/** 钟点判定桩：本用例考 screenState 三态门禁，到点判定在 L2 单测见证，这里固定为「到点」。 */
+vi.mock("@/services/proactive/schedule", async importOriginal => {
+  const actual = await importOriginal<typeof import("@/services/proactive/schedule")>()
+  return { ...actual, scheduledSlotDue: () => true }
 })
 
 const budget = vi.hoisted(() => ({
@@ -105,7 +111,7 @@ import { standardSetup } from "../../host/standard-setup"
 import { fakeText, installFakeProvider } from "../../host/fake-provider"
 import { initPaths } from "@/services/paths"
 import { getHostBridge } from "@/services/host"
-import { getCard, initCards } from "@/services/personality/loader"
+import { loadCard } from "@/services/personality/loader"
 import { getActiveCard } from "@/services/personality/registry"
 import { FALLBACK_STAGES, stageSourceHash } from "@/services/personality/stages-cache"
 import { updateStagesFile } from "@/services/personality/stages-file"
@@ -136,8 +142,7 @@ beforeAll(async () => {
     readFileSync(join(process.cwd(), "resources/defaults/personality/cards/default.md"), "utf8"),
     "utf8",
   )
-  await initCards()
-  const card = getCard("default")
+  const card = await loadCard("default")
   if (!card) throw new Error("默认卡未从临时数据根加载")
   await updateStagesFile(card.id, {
     stages: {
@@ -270,8 +275,9 @@ describe("观察门禁资格", () => {
     // ── 静默了解链：locked 批次仍可跑，但不请求截图、只用最后一次窗口快照 ──
     await stop()
     const observedAtBeforeLock = fixedNow - 5 * 60_000
-    // 离开时长取 3 小时：高于三档静默了解的 idleRequiredMs（30min/60min/120min），
-    // 让断言不依赖当前档位；档位本身不在本用例的验证面内。
+    // idle 不再参与静默了解的批次资格（2026-10-06 固定钟点裁决，到点即跑）：
+    // 这里保留一个「用户离开 3 小时」的样本值，只说明离开/锁屏不改变批次资格口径，
+    // 档位与到点判定不在本用例的验证面内（钟点判定由 L2 单测见证）。
     hoisted.latestObservation = {
       appId: "com.example.editor", app: "示例编辑器", title: "门禁测试项目", observedAt: observedAtBeforeLock,
       sampleMonoMs: 1, monitorGeneration: 1, sequence: 1, observationState: "locked",

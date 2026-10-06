@@ -59,7 +59,12 @@ export interface MemoryStatusSnapshot {
 export interface MemoryChangeRequest {
   operationId: string
   baseRevision: number
-  action: "add" | "update" | "supersede" | "forget" | "clear" | "complete" | "cancel"
+  /**
+   * `forget_understanding` 是「清除静默了解」的专用闭包动作（actor 固定 internal）：
+   * 只圈定 `understanding:` 来源（静默了解沉淀），墓碑 + 删条目/候选 + 推进遗忘代，
+   * 画像结论与用户事实不在范围内。其余动作语义见 Rust `apply_change_with_actor`。
+   */
+  action: "add" | "update" | "supersede" | "forget" | "clear" | "complete" | "cancel" | "forget_understanding"
   actor: MemoryChangeActor
   trustedUserEventId?: string
   trustedSessionId?: string

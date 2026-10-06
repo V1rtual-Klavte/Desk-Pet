@@ -26,7 +26,6 @@ vi.mock("@/services/proactive/auxiliary-budget", () => ({
 
 /** 窗口观察与运行活动的替身状态：各用例在启动调度器前填好。 */
 const windowState = vi.hoisted(() => ({
-  idleForMs: null as number | null,
   observation: null as Record<string, unknown> | null,
 }))
 vi.mock("@/services/window", async importOriginal => {
@@ -36,9 +35,15 @@ vi.mock("@/services/window", async importOriginal => {
     getLatestWindowObservation: () => windowState.observation,
     getRuntimeActivity: async () => ({
       isPetVisible: true, isPetForeground: false, screenState: "observed" as const,
-      idleForMs: windowState.idleForMs, observedAt: Date.now(),
+      idleForMs: null, observedAt: Date.now(),
     }),
   }
+})
+
+/** 钟点判定桩：本文件考的是决策输入块，到点判定在 L2 单测见证，这里固定为「到点」。 */
+vi.mock("@/services/proactive/schedule", async importOriginal => {
+  const actual = await importOriginal<typeof import("@/services/proactive/schedule")>()
+  return { ...actual, scheduledSlotDue: () => true }
 })
 
 interface CardStub { id: string; name: string; description: string; sections: { roleSetting: string } }
@@ -103,7 +108,6 @@ function observedWindow(): Record<string, unknown> {
 beforeEach(() => {
   budget.reserve.mockClear()
   budget.settle.mockClear()
-  windowState.idleForMs = null
   windowState.observation = null
   cardState.card = null
   behaviorState.quality = "reliable"
@@ -190,7 +194,6 @@ describe("静默了解决策输入补齐", () => {
     const fake = installFakeProvider([fakeText('{"targets":[]}'), fakeText('{"observations":[]}')])
 
     try {
-      windowState.idleForMs = 3_600_000
       observation.startSilentUnderstanding()
       await waitFor(() => fake.payloads.length >= 2)
       await waitFor(() => budget.settle.mock.calls.length > 0)
@@ -240,7 +243,7 @@ describe("静默了解决策输入补齐", () => {
 
       // 预算不越界：预留是有限的正数（上界由各块截断共同保证）
       const reservation = budget.reserve.mock.calls.find(([value]) => value.kind === "observation")?.[0]
-      expect(reservation?.dailyLimit, "每日批数没有取中档的 8").toBe(8)
+      expect(reservation?.dailyLimit, "每日批数没有取中档钟点表的 4 轮").toBe(4)
       expect(Number.isFinite(reservation?.reservedTokens) && (reservation?.reservedTokens ?? 0) > 0, "预留 token 不合法").toBe(true)
     } finally {
       await observation.stopSilentUnderstanding()
@@ -258,7 +261,6 @@ describe("静默了解决策输入补齐", () => {
     const fake = installFakeProvider([fakeText('{"targets":[]}'), fakeText('{"observations":[]}')])
 
     try {
-      windowState.idleForMs = 3_600_000
       observation.startSilentUnderstanding()
       await waitFor(() => fake.payloads.length >= 2)
       await waitFor(() => budget.settle.mock.calls.some(([value]) => value.status === "committed"))
@@ -287,7 +289,6 @@ describe("静默了解决策输入补齐", () => {
     const fake = installFakeProvider([fakeText('{"targets":[]}'), fakeText('{"observations":[]}')])
 
     try {
-      windowState.idleForMs = 3_600_000
       observation.startSilentUnderstanding()
       await waitFor(() => fake.payloads.length >= 2)
       await waitFor(() => budget.settle.mock.calls.some(([value]) => value.status === "committed"))

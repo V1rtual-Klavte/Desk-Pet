@@ -5,9 +5,11 @@
 // 长期记忆只有两类准入来源（2026-10-06 用户裁决「方案 b」）：
 // 1. `origin=user` + `taint=trusted_user`：用户本人的可信输入（识别判断是纯函数，
 //    它同时是自动提取与评测的准入闸门，藏在会话仓库后面就没法在快层单独验证）；
-// 2. `origin=derived_behavior` + `taint=derived`：行为画像层已算出的**稳定结论**
-//    （`sedimentConclusions` 的产出，只在 reliable 档存在）——语义是「系统观察得出的、
-//    可撤销的结论」，与用户事实分区存放、分区召回，永不冒充用户原话。
+// 2. `origin=derived_behavior` + `taint=derived`：系统观察得出的、可撤销的结论，两个子类：
+//    a. 行为画像的**稳定结论**（`sedimentConclusions` 的产出，只在 reliable 档存在）；
+//    b. 静默了解的**观察摘要**（`behavior/understanding.json` 的 observations，模型已生成的
+//       文本原样沉淀，不经 Review 再演绎）。
+//    两者与用户事实分区存放、分区召回，永不冒充用户原话。
 // 读取条目（需要真 JSONL）、哈希与登记 IPC 都留在外层，纯选择器只认已读到的条目。
 
 import { createLogger } from "@/services/logger"
@@ -26,6 +28,26 @@ export const DERIVED_BEHAVIOR_ORIGIN = "derived_behavior" as const
 export const BEHAVIOR_CONCLUSION_SESSION = "behavior"
 /** 派生结论来源的条目身份前缀（`conclusion:<slot>`），槽位即画像组（rhythm/apps/focus/activity）。 */
 export const BEHAVIOR_CONCLUSION_ENTRY_PREFIX = "conclusion:"
+/**
+ * 静默了解观察来源的条目身份前缀（`understanding:<内容 hash 前 16 位>`）。
+ * 「清除静默了解」的记忆闭包就按这个前缀圈定范围（Rust `forget_understanding_items_tx`），
+ * 结论来源（`conclusion:` 前缀）不在其中 —— 清了解不动画像结论。
+ */
+export const UNDERSTANDING_SOURCE_ENTRY_PREFIX = "understanding:"
+/** 静默了解沉淀条目的识别前缀（别名 `behavior-understanding:<hash16>`），同前缀即同一有界池。 */
+export const UNDERSTANDING_ALIAS_PREFIX = "behavior-understanding:"
+/**
+ * 静默了解沉淀的有界窗口：每次登记只取**最新**的 N 条不同文本观察，在库的了解条目同样以
+ * 该数为上限（容量满时最旧的条目由新条目 supersede 覆盖）。取 12 的依据是了解层自己的读取
+ * 窗口——了解块只取最近 12 条（store 的 `slice(-12)`）、决策输入取最近 8 条——长期侧与
+ * 了解层同阶，既不夸大来源面，也不额外稀释两区共用的召回预算。
+ *
+ * 去重口径：按 observation 摘要文本的 sha256 前 16 位做身份（sourceId / entryId 同源），
+ * 同一文本无论观察多少次都是同一个来源（登记幂等、水位不推进）；文本不同才是新来源。
+ */
+export const UNDERSTANDING_MAX_ENTRIES = 12
+/** 静默了解条目的查询关键词别名（了解层在设置面的名字）。 */
+export const UNDERSTANDING_ALIAS_LABEL = "静默了解"
 
 type UnknownRecord = Record<string, unknown>
 
@@ -142,6 +164,14 @@ export function conclusionSlotOf(source: Pick<MemorySource, "origin" | "entryId"
   return slot || undefined
 }
 
+/** 从了解来源的条目身份里取内容 hash 前 16 位（`understanding:<hash16>`）；非了解来源返回 undefined。 */
+export function understandingSourceOf(source: Pick<MemorySource, "origin" | "entryId">): string | undefined {
+  if (!isDerivedBehaviorSource(source)) return undefined
+  if (!source.entryId.startsWith(UNDERSTANDING_SOURCE_ENTRY_PREFIX)) return undefined
+  const identity = source.entryId.slice(UNDERSTANDING_SOURCE_ENTRY_PREFIX.length)
+  return identity || undefined
+}
+
 /**
  * 收集行为画像的稳定结论并登记为 `derived_behavior` 来源。
  *
@@ -176,6 +206,65 @@ export async function collectBehaviorMemorySources(now = Date.now()): Promise<Me
       observedAt: now,
     })
   }
+  await registerMemorySources(sources.map(({ rawText: _rawText, ...source }) => source))
+  return sources.map(({ rawText: _rawText, ...source }) => source)
+}
+
+/**
+ * 收集静默了解的观察摘要，登记为 `derived_behavior` 来源（派生区的第二条来源通道）。
+ *
+ * - 准入闸门：只读 `getUnderstandingSnapshotAsync`（档位 off 时该读取返回 unavailable，
+ *   这里返回空数组、不登记任何来源；过期与窗口裁剪在了解层存储内完成）。
+ * - **文本原样**：摘要逐字登记为 evidence（了解层已按 500 字符上限落盘），沉淀时成为
+ *   候选正文；Review 是确定性映射，不得再演绎、改写或补写观察（见 dreaming 的派生区注释）。
+ * - 幂等与版本：身份 = 摘要文本的 sha256 前 16 位 —— 同一文本重复观察到是同一来源
+ *   （登记只更新 evidence、水位不推进），新文本才是新来源。
+ * - 有界：每次只登记最新的 `UNDERSTANDING_MAX_ENTRIES` 条不同文本观察（数字依据见常量注释）；
+ *   seq 逐条递增（now + 序号），保证跨调用/同批来源不会在水位上互相吞并。
+ */
+export async function collectUnderstandingMemorySources(now = Date.now()): Promise<MemorySource[]> {
+  // 动态 import 防环：observation → memory 的静态引用会成环（memory/ipc 已反向动态引用）。
+  const { getUnderstandingSnapshotAsync } = await import("@/services/observation")
+  const snapshot = await getUnderstandingSnapshotAsync(now)
+  if (snapshot.quality === "unavailable" || snapshot.observations.length === 0) return []
+  // 先按文本去重（同文本保留最新一次观察），再取最新的有界窗口。
+  const byHash = new Map<string, { summary: string; observedAt: number }>()
+  for (const record of snapshot.observations) {
+    const summary = record.summary.trim()
+    if (!summary) continue
+    const hash = await sha256(summary)
+    const previous = byHash.get(hash)
+    if (!previous || record.observedAt >= previous.observedAt) byHash.set(hash, { summary, observedAt: record.observedAt })
+  }
+  // 截取有界窗口（最新 12 条）后再按观察时间从旧到新登记（复习顺序与水位推进方向一致）。
+  const byNewestFirst = (left: [string, { observedAt: number }], right: [string, { observedAt: number }]): number =>
+    right[1].observedAt - left[1].observedAt || left[0].localeCompare(right[0])
+  const byOldestFirst = (left: [string, { observedAt: number }], right: [string, { observedAt: number }]): number =>
+    left[1].observedAt - right[1].observedAt || left[0].localeCompare(right[0])
+  const selected = [...byHash.entries()]
+    .sort(byNewestFirst)
+    .slice(0, UNDERSTANDING_MAX_ENTRIES)
+    .sort(byOldestFirst)
+  const sources: (MemorySource & { rawText: string })[] = []
+  selected.forEach(([hash, entry], index) => {
+    const identity = hash.slice(0, 16)
+    sources.push({
+      sourceId: `${UNDERSTANDING_ALIAS_PREFIX}${identity}`,
+      sessionId: BEHAVIOR_CONCLUSION_SESSION,
+      entryId: `${UNDERSTANDING_SOURCE_ENTRY_PREFIX}${identity}`,
+      eventId: `behavior:${UNDERSTANDING_SOURCE_ENTRY_PREFIX}${identity}`,
+      seq: now + index,
+      contentHash: hash,
+      evidence: entry.summary.slice(0, EVIDENCE_CHARS),
+      sourceLength: entry.summary.length,
+      rawText: entry.summary,
+      eligibleForMemory: true,
+      taint: "derived",
+      origin: DERIVED_BEHAVIOR_ORIGIN,
+      observedAt: entry.observedAt,
+    })
+  })
+  if (sources.length === 0) return []
   await registerMemorySources(sources.map(({ rawText: _rawText, ...source }) => source))
   return sources.map(({ rawText: _rawText, ...source }) => source)
 }

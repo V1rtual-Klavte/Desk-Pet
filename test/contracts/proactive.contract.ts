@@ -14,6 +14,26 @@
 // origin 参数）。pr-* 逐点核对实现点仍在、描述与当前实现一致（主动候选/任务/机会链的按 kind
 // 失效语义未变，新步骤只作用于记忆库里的派生记忆）；sourceHash 按当前源码复算
 //（同批含另会话在飞改动）。
+// 2026-10-06 Card 按需加载批次（本批刷新）：sourceFiles 变化 ——
+// `src/services/personality/loader.ts` / `registry.ts` / `types.ts`（全量加载改按需：
+// 激活卡常驻、列表现读、单卡按需读；新增 CardMeta 类型）与 `src/services/init.ts`
+// （去掉独立的 initCards 步骤，initRegistry 自持激活卡加载）。pr-* 各点核对：主动机会 /
+// 回执 / 规划只消费激活卡的 id/hash/name/sections —— 常驻语义未变，无覆盖点受影响；
+// 未修订覆盖点，仅按当前源码刷新 sourceHash。
+// 2026-10-06 观察判据与计划报告批次（本批刷新）：sourceFiles 变化 ——
+// src/services/observation/topics.ts（TOPIC_SYSTEM_PROMPT 加强：整批都没有值得记的主题返回
+// 空 entries、不硬凑）与 src/services/engine/harness/runtime.ts（runPlanPhase 的 onStepNotice
+// 收窄：工具名不存在仍发聊天系统消息；未限定工具只写进度事件与统一日志）。pr-* 的主动机会、
+// 回执、规划与投影链不在改动面内（话题提示词只影响观察侧整理产出，主动链不消费其文案）；
+// 逐点核对实现点仍在、覆盖描述与当前实现一致（描述/来源核对，非逐行行为审计）。未修订
+// 覆盖点，sourceHash 按当前源码复算。
+// 2026-10-06 主动链在飞判定修复（本批刷新）：sourceFiles 变化 ——
+// crates/native-host/src/proactive/store.rs 的 claim 在飞判定加租约条件
+// （status ∈ reserved/generating/unresolved 且租约未过期才算在飞；租约过期的
+// unresolved 保留审计、不收口、不重放，但不再堵新 claim —— 修复实机事故：一条
+// 14:11 失败的规划尝试把全局 claim 门永久锁死）+ 回归单测
+// 「租约过期的unresolved不堵claim而租约内仍堵」。pr-* 各点核对：claim 的其余门禁
+// （间隔/配额/冷却/未回复阈值）与结算语义未变；未修订覆盖点，sourceHash 按当前源码复算。
 import type { ModuleContract } from "../host/types"
 
 // 2026-10-04 名字变量改造（frontmatter nameVar / activeCardName 跟随 / 池代际读取点）触达
@@ -164,11 +184,58 @@ import type { ModuleContract } from "../host/types"
 // plan/settlement.ts，均等价）。pr-08 描述按 init-domain-sequence 的加强断言补句；
 // pr-01..pr-17 其余逐点核对实现点仍在、覆盖描述与当前实现一致（非逐行行为审计）。
 // sourceHash 留待主会话统一批量刷（本单不重算）。
+// 2026-10-06 固定钟点批次（本批修订描述与 sourceFiles，sourceHash 与 caseId 登记留验收环节
+// analyze→generate）：sourceFiles 行为面变化 —— src/services/proactive/protocol.json 的
+// tiers.silent / tiers.dreaming 删除空闲字段（idleRequiredMs / idleSeconds；dailyBatches 不再
+// 单列，每日上限 = 钟点表轮数）并新增 hours 钟点表（低 12/20、中 10/14/18/22、高 9/11/13/15/17/19），
+// 生成物 protocol.ts 与 crates/native-host/src/memory/protocol.rs 同批重生成（钟点表发射为
+// &[i64] 切片常量；generate-memory-protocol.mjs 补数组叶子支持）；新增
+// src/services/proactive/schedule.ts（钟点判定纯函数，静默了解与记忆整理共用）；
+// crates/native-host/src/proactive/store.rs（辅助预留的 observation 天花板改取钟点表轮数，
+// 静默档最高 12 → 6）。pr-17 描述按新语义改写（两域钟点表冻结；idle 字段已删）。pr-01..pr-16
+// 不在改动面内（主动消息档位与投影 13 项未变）。
+// 2026-10-06 最终波统一刷新（analyze→generate 收口；上两条留待验收的 sourceHash 一并完成）：
+// 本批 sourceFiles 变化为下述三组的合并收口 ——
+// ① store.rs 两处（上两条注记的收口）：claim 的「在飞」= 非终态且租约未过期（租约过期的
+//    unresolved 保留审计、不收口、不重放，但不再堵新 claim——「主动链在飞判定修复」已记）；
+//    辅助预留的 observation 天花板改取静默档钟点表轮数（低/中/高 2/4/6 → 6，原静态值 12），
+//    topic 仍取三档 dailyAuxiliaryAttempts 的最大值；日 token 总量闸已撤，唯一硬边界是次数
+//    （dailyLimit 与档位天花板）。
+// ② D 定时化：`src/services/proactive/protocol.json` 的 silent/dreaming 两域删空闲字段
+//    （idleRequiredMs / idleSeconds；dailyBatches 不再单列——每日上限 = 钟点表轮数）并新增
+//    hours 钟点表（低 12/20、中 10/14/18/22、高 9/11/13/15/17/19），生成物
+//    `src/services/proactive/protocol.ts` 与 `crates/native-host/src/memory/protocol.rs` 同批
+//    重生成（钟点表发射为 &[i64] 切片常量；scripts/generate-memory-protocol.mjs 补数组叶子
+//    支持）、`src/services/proactive/tiers.ts`（档位行类型支持 hours 只读数组）、
+//    `src/services/proactive/schedule.ts`（钟点判定纯函数，静默了解与记忆整理共用——主动消息
+//    链不消费钟点判定，两处消费分别在 observation 与 memory 契约）；
+//    `crates/native-host/src/ui/settings/schema.rs` 的两域档位 help 文案同步（不在本契约
+//    sourceFiles）。上一条「固定钟点批次」注记所记即这一组，本批完成其 hash 收口。
+// ③ F 生成物连带：`src/services/agent/memory/protocol.json` 的候选草稿新增可选 `supersedesIds`
+//    （1–4 条），`src/services/agent/memory/protocol.ts` 与 `crates/native-host/src/memory/
+//    protocol.rs` 随重生成；主动链不消费候选草稿与记忆整理发布面（claim / 预算 / 投影 /
+//    回执均不读该字段）。
+// pr-01..pr-16 逐点核对实现点仍在、覆盖描述与当前实现一致（描述/来源核对，非逐行行为审计）；
+// pr-17 核对：档位值表冻结已按当前表（两域钟点表 + 主动三档剩余字段，dreaming dailyTokens
+// 与两域空闲字段的删除口径均在其描述内），未修订。sourceHash 按当前工作区源码复算。
+// 2026-10-06 抽屉 CONFIG 写批次（本批刷新）：sourceFiles 行为面变化 —— src/services/config.ts
+//（`safetyConfig.mode` getter 增读取期收拢：非法值回落 `tell_me` 并新增导出 SafetyMode 类型；
+// 会话级安全覆盖机制删除后配置是唯一真相源 —— 主动链不读该键）、src/services/agent/runner.ts
+//（繁忙投递意图的显式选择整链删除：resolveDeliveryIntent(text) 只留 slash→nextRun 与 CONFIG
+// `ai.conversation.defaultDelivery` 两档；AI 受理锁语义未动）、
+// src/services/engine/harness/runtime.ts（三处思考强度消费点直读 `aiConfig.thinkingEffort`）。
+// pr-01..pr-17 逐点核对实现点仍在、覆盖描述与当前实现一致（描述/来源核对，非逐行行为审计），
+// 未修订覆盖点；sourceHash 按当前工作区源码复算。
+// 2026-10-06 写队列合并修复（本批刷新）：src/services/config.ts 的 `queueConfigSave` 微任务
+// 补 `saveQueued` 复检 —— `flushConfig()` 接管排队保存（先清标志再原子写）后那条微任务必须
+// 退场，否则同一份内容被重复写盘；纯 setOverride（无 flush）路径不变。所有
+// `setOverride + flushConfig` 组合（抽屉/设置/主动斜杠等）的写盘次数由 2 降为 1（内容不变），
+// 主动链覆盖点行为面不受影响；sourceHash 按当前源码复算。
 export const proactiveContract:ModuleContract={
-  module:"proactive",sourceHash: "52ebd89e0bbbe7e92bfd30cf92ebfc5976b95da48d6163b51ab5a80f97312e35",
+  module:"proactive",sourceHash: "c5a0f520a04f7a90993ce47eb3e7cfe4699fdafcf90056dd361254214fe1d8db",
   sourceFiles:["src/services/proactive/config.ts","src/services/proactive/index.ts","src/services/proactive/scanner.ts","src/services/proactive/opportunities.ts","src/services/proactive/time.ts",
     "src/services/proactive/planner.ts","src/services/proactive/delivery.ts","src/services/proactive/ipc.ts","src/services/proactive/auxiliary-budget.ts","src/services/proactive/control.ts","src/services/proactive/protocol.json",
-    "src/services/proactive/protocol.ts","src/services/proactive/tiers.ts","src/services/proactive/trace.ts","src/services/proactive/types.ts","src/services/proactive/presence.ts","src/services/proactive/usage.ts",
+    "src/services/proactive/protocol.ts","src/services/proactive/tiers.ts","src/services/proactive/schedule.ts","src/services/proactive/trace.ts","src/services/proactive/types.ts","src/services/proactive/presence.ts","src/services/proactive/usage.ts",
     "src/services/proactive/content/pool.ts","src/services/proactive/content/calendar.ts","src/services/proactive/content/calendar.json",
     "src/services/observation/index.ts","src/services/observation/store.ts","src/services/observation/types.ts","src/services/observation/topics.ts",
     "src/services/behavior/index.ts","src/services/behavior/aggregate.ts","src/services/behavior/types.ts",
@@ -198,7 +265,7 @@ export const proactiveContract:ModuleContract={
     {id:"pr-14",feature:"静默时段（CONFIG 派生）与窗口派生",description:"静默时段是 CONFIG 派生（ai.proactive.quietStartHour/quietEndHour，默认 23/9，仅约束主动消息）：isQuietHour/isQuietTime 覆盖跨夜 / 同日 / start==end（不静默）三形态并随 CONFIG 值走（setOverride 后同日静默生效、start==end 全不静默）；nextSpeakingTime 三形态（跨夜顺延次日、同日回到当日结束、相等原样返回）；isNightlyWindow 是静默开始前一小时（start=0 落前一日 23 点）；checkin 的 before 窗口随静默三形态派生且 from 恒早于 until；白天硬窗口（9–12 / 18–22）删除后 rhythm/retrospective 整日有效、只有静默时段是硬边界；晚安窗口收口于静默开始时刻（quietStartHour−1 派生，不硬编码 22）",why:"静默时段是用户可配置的硬边界：窗口派生、晚安收口与 checkin 窗口若仍读旧常量，用户改静默时段后这些机会会按旧时刻静默/放行，感知为「设了没用」",layer:"unit",depth:"deep",scenarios:["proactive-quiet-hour-forms","proactive-quiet-config-driven","proactive-next-speaking-forms","proactive-nightly-window-derived","proactive-checkin-window-derived","proactive-no-daytime-window","proactive-retrospective-goodnight-derived"]},
     {id:"pr-15",feature:"冷却门禁（账本推导 + 快照读取）",description:"全局冷却的起点在宿主账本：scan 的 budget.cooldownUntil = proactive_occurrences 中 kind='expression' 且 status='committed' 的 MAX(updated_at) + 档位 limits.cooldownMs（全表查询、跨日成立；无记录或已过期给 null），claim 在同一窗口内以 denied_claim(\"cooldown\") 拒绝且不受 respect_random_interval 约束。Node scanner 的门禁只读该快照：未过期时机会被跳过并留痕 proactive_skipped(reason:\"cooldown\")、表达端口不被触达；已过期或 null（无 committed 记录）照常放行。Node 不再持有可写冷却状态、不再有强制解锁定时器；unresolved 结算不构成冷却起点，对账补提交后按对账时刻起算",why:"冷却状态留在 Node 内存时重启即丢、多入口各持一份，既可能在窗口内重复发话也可能永久冷却；搬到账本后「窗口内不重复发话」只由已提交投递的记账时间推导，Node 与宿主读同一份快照，冷却起点在记忆治理清扫下也不被改写",layer:"integration",depth:"shallow",scenarios:["proactive-cooldown-gate"]},
     {id:"pr-16",feature:"生成锁门禁（回合在飞不发话）",description:"scanner 在表达前检查 isAIGenerating()（受理计数 + 槽状态推导，真相源在 engine/harness/harness-slot）：回合在飞时该机会在门禁处跳过并留痕 proactive_skipped(reason:\"ai_generating\")、表达端口不被触达。门禁排在 lane_busy 之前 —— 锁与在飞 lane 同时为真时留痕理由必须是 ai_generating 而不是 lane_busy。回合交回（锁归假）后同一机会、同一档位照常放行：唯一变量是回合状态；同一在飞回合的 Provider 请求由闸门扣住，锁为真是在真实回合上验证的，不是另一个可写布尔",why:"回合在飞时主动发话会与用户正在进行的对话抢话；把该分支删掉或排到 lane_busy 之后，留痕会退化成别的理由而表达仍可能被放行 —— 用户会看到角色在生成中途自行插话，而扫描日志里看不出这是生成锁没挡住",layer:"integration",depth:"shallow",scenarios:["proactive-ai-generating-gate"]},
-    {id:"pr-17",feature:"档位值表冻结与读取期收拢",description:"档位值表（tiers.ts 的三域各档数值）按契约 §2.3/§5.4 的字面值冻结：主动消息档由 L2 用例逐字段见证（唤醒区间上下限、每日次数、最小间隔与散布、dailyTokens 观测阈值、停留/结算/冷却各值，改任何一档的数值都会红）；dreaming 档的 dailyTokens 已随 2026-10-06 日 token 闸撤除从表中删除，冻结只覆盖剩余字段（idleSeconds / minIntervalMinutes）；读取期对非法/缺失档位收拢为 medium 且不改写不写盘",why:"档位数值是唤醒节拍、冷却窗口与整行投影下发的唯一真相源：任何一档被改动都会静默改变实际运行节奏；被删的 dreaming dailyTokens 若被加回、或收拢退化成把非法值当合法档位，冻结与收拢断言必须变红",layer:"unit",depth:"shallow",scenarios:["proactive-tier-table-frozen"]},
+    {id:"pr-17",feature:"档位值表冻结与读取期收拢",description:"档位值表（tiers.ts 的三域各档数值）按契约 §2.3/§5.4 的字面值冻结：主动消息档由 L2 用例逐字段见证（唤醒区间上下限、每日次数、最小间隔与散布、dailyTokens 观测阈值、停留/结算/冷却各值，改任何一档的数值都会红）；dreaming 档的 dailyTokens 已随 2026-10-06 日 token 闸撤除从表中删除；同日的固定钟点裁决再删两域空闲字段（silent.idleRequiredMs、dreaming.idleSeconds，dailyBatches 也不再单列——每日上限即钟点表轮数），静默了解与记忆整理两域的钟点表冻结为低 12/20、中 10/14/18/22、高 9/11/13/15/17/19；读取期对非法/缺失档位收拢为 medium 且不改写不写盘",why:"档位数值是唤醒节拍、冷却窗口与整行投影下发的唯一真相源：任何一档被改动都会静默改变实际运行节奏；被删的 dreaming dailyTokens 与两域空闲字段若被加回、或收拢退化成把非法值当合法档位，冻结与收拢断言必须变红",layer:"unit",depth:"shallow",scenarios:["proactive-tier-table-frozen"]},
   ],
   // L4 校验只统计 layer:"e2e" 覆盖点；其余 caseId 在 L2/L3 由跨层校验负责。
   rules:{minScenarios:2,minDeepScenarios:2,requireBoundary:true,requireErrorPath:true},

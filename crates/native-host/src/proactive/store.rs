@@ -1282,7 +1282,25 @@ impl MemoryStore {
         {
             return denied_claim(tx, "task_capacity");
         }
-        if tx.query_row("SELECT EXISTS(SELECT 1 FROM proactive_attempts WHERE status IN ('reserved','generating','unresolved'))",[],|r|r.get::<_,bool>(0)).map_err(db)?{return denied_claim(tx,"attempt_in_flight");}
+        // 「在飞」= 非终态且**租约未过期**（2026-10-06 修复）。租约过期的
+        // reserved/generating 会被租约清收成 `unresolved`，而 `unresolved` 是
+        // 「读取失败/无法证明，保留未知状态、不当作从未发过」的**审计位**——它不是在飞。
+        // 旧判定把任何 unresolved 行都算在飞：一次失败的规划尝试（租约早已过期、
+        // 行按审计口径永久保留）会把全局 claim 门永久锁死（实机：curiosity 机会每
+        // tick 被 denied attempt_in_flight，重启不恢复——状态在库里）。审计保留不变：
+        // 这里只收紧判定，不收口任何行、不重放。lease_until 为 NULL 按未知从严（仍堵）。
+        if tx
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM proactive_attempts \
+                 WHERE status IN ('reserved','generating','unresolved') \
+                 AND (lease_until IS NULL OR lease_until > ?1))",
+                [now],
+                |r| r.get::<_, bool>(0),
+            )
+            .map_err(db)?
+        {
+            return denied_claim(tx, "attempt_in_flight");
+        }
         if kind == "expression" {
             for occurrence in value_array(request, "occurrenceIds")
                 .iter()
@@ -1703,15 +1721,16 @@ impl MemoryStore {
         // 辅助尝试天花板按 kind 取相应字段的**档位最大值**（与请求无关的静态上限）：
         // 静默批次（observation）与主动 aux（topic）是两个量，Node 按各自档位下发
         // dailyLimit，Rust 只保证它不越过生成表的最高档，避免高阶档被旧值截断。
+        // 静默批次的每日上限 = 档位钟点表的轮数（低/中/高 2/4/6），不再另设 dailyBatches。
         let ceiling = if kind == "observation" {
             [
-                crate::memory::protocol::PROACTIVE_TIERS_SILENT_LOW_DAILY_BATCHES,
-                crate::memory::protocol::PROACTIVE_TIERS_SILENT_MEDIUM_DAILY_BATCHES,
-                crate::memory::protocol::PROACTIVE_TIERS_SILENT_HIGH_DAILY_BATCHES,
+                crate::memory::protocol::PROACTIVE_TIERS_SILENT_LOW_HOURS.len(),
+                crate::memory::protocol::PROACTIVE_TIERS_SILENT_MEDIUM_HOURS.len(),
+                crate::memory::protocol::PROACTIVE_TIERS_SILENT_HIGH_HOURS.len(),
             ]
             .into_iter()
             .max()
-            .unwrap_or(0)
+            .unwrap_or(0) as i64
         } else {
             [
                 crate::memory::protocol::PROACTIVE_TIERS_LOW_DAILY_AUXILIARY_ATTEMPTS,
@@ -2202,6 +2221,74 @@ mod tests {
         assert_eq!(unknown, 17);
     }
 
+    /// 回归（2026-10-06 实机必现）：租约过期的 `unresolved` 尝试不得永久堵塞 claim。
+    ///
+    /// `unresolved` 是审计位（保持未知状态，见上方 settle 用例）：一次失败尝试的
+    /// 租约过期后，旧判定仍把它算「在飞」，全局 claim 门从此锁死（实机：curiosity
+    /// 机会每 tick 被 denied attempt_in_flight，重启也不恢复）。判定改为「非终态
+    /// 且租约未过期」；本用例同时核对审计行原样保留（修复不收口任何行）。
+    #[test]
+    fn 租约过期的unresolved不堵claim而租约内仍堵() {
+        let fixture = Fixture::new();
+        let owner = Fixture::owner();
+        let now = now_ms();
+        let conn = connection(&fixture.1).expect("锁库");
+        conn.execute(
+            "INSERT INTO proactive_attempts(attempt_id,request_id,kind,status,owner_json,\
+             source_refs_json,source_fingerprint,source_revision,control_revision,\
+             occurrence_ids_json,session_id,local_date,lease_until,reserved_tokens,\
+             error_code,created_at,updated_at) \
+             VALUES ('attempt-stale','request-stale','planning','unresolved',?1,'[]','fp',0,0,\
+             '[]','s1','2026-10-03',?2,0,'lease_expired',1,?2)",
+            params![stable(&owner), now - 1],
+        )
+        .expect("写租约已过期的 unresolved");
+        drop(conn);
+
+        let claimed = fixture
+            .1
+            .proactive_claim(&json!({"owner":owner.clone(),"now":now,"localDate":"2026-10-03","kind":"expression","reservedTokens":1,"sourceRevision":0,"controlRevision":0,"sourceRefs":[Fixture::source_ref()],"occurrenceIds":["occ-stale-fix"],"attemptId":"attempt-fresh","requestId":"request-fresh","sourceFingerprint":"fp-fresh","ruleId":"memory_checkin"}),&ProactiveLimits::medium())
+            .expect("claim 请求本身应成功返回");
+        assert_eq!(
+            claimed["claimed"],
+            json!(true),
+            "租约过期的 unresolved 不得再堵门：{claimed}"
+        );
+        // 收掉本轮领取，让下一轮 denial 的唯一嫌疑回到陈旧行。
+        fixture
+            .1
+            .proactive_settle(&json!({"owner":owner.clone(),"attemptId":"attempt-fresh","sourceFingerprint":"fp-fresh","localDate":"2026-10-03","status":"failed","usage":{"totalTokens":1},"decision":null}),&ProactiveLimits::medium())
+            .expect("回收本轮领取");
+
+        let conn = connection(&fixture.1).expect("锁库");
+        conn.execute(
+            "UPDATE proactive_attempts SET lease_until=?1 WHERE attempt_id='attempt-stale'",
+            [now + 60_000],
+        )
+        .expect("把陈旧行改成租约未过期");
+        drop(conn);
+        let denied = fixture
+            .1
+            .proactive_claim(&json!({"owner":owner,"now":now + 1,"localDate":"2026-10-03","kind":"expression","reservedTokens":1,"sourceRevision":0,"controlRevision":0,"sourceRefs":[Fixture::source_ref()],"occurrenceIds":["occ-stale-fix-2"],"attemptId":"attempt-fresh-2","requestId":"request-fresh-2","sourceFingerprint":"fp-fresh-2","ruleId":"memory_checkin"}),&ProactiveLimits::medium())
+            .expect("claim 请求本身应成功返回");
+        assert_eq!(denied["claimed"], json!(false));
+        assert_eq!(
+            denied["reason"],
+            json!("attempt_in_flight"),
+            "租约内的 unresolved 仍算在飞：{denied}"
+        );
+        // 审计语义不变：修复不收口任何行。
+        let conn = connection(&fixture.1).expect("锁库");
+        let status: String = conn
+            .query_row(
+                "SELECT status FROM proactive_attempts WHERE attempt_id='attempt-stale'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("回读陈旧行");
+        assert_eq!(status, "unresolved");
+    }
+
     #[test]
     fn unanswered_success_cap_begins_on_the_following_local_day_and_is_claim_enforced() {
         let fixture = Fixture::new();
@@ -2544,14 +2631,14 @@ mod tests {
         assert_eq!((reserved, used), (0, 9));
     }
 
-    /// aux 天花板按 kind 取相应字段的**档位最大值**：observation（静默批次）→ 12，
-    /// 其余（topic）→ 8。旧口径按单一常量截到 4 会把高阶档压在旧值上。
+    /// aux 天花板按 kind 取相应字段的**档位最大值**：observation（静默批次）→ 6
+    /// （档位钟点表的最高档轮数：低/中/高 2/4/6），其余（topic）→ 8。
     #[test]
     fn 辅助尝试天花板按kind取档位最大值() {
         let fixture = Fixture::new();
         let now = now_ms();
         for (kind, date, ceiling) in [
-            ("observation", "2026-10-06", 12_i64),
+            ("observation", "2026-10-06", 6_i64),
             ("topic", "2026-10-07", 8_i64),
         ] {
             for index in 0..ceiling {

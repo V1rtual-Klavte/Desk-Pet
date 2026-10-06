@@ -1,6 +1,6 @@
 import { mkdirSync, mkdtempSync, rmSync } from "node:fs"
 import { join } from "node:path"
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest"
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest"
 import { setTestDataRoot } from "../../host/node-ipc"
 import { initPaths, runtimePath } from "@/services/paths"
 import { getHostBridge } from "@/services/host"
@@ -8,6 +8,15 @@ import { clearSilentUnderstanding } from "@/services/observation"
 import {
   appendUnderstanding, getRecentTargetReadAttempts, getUnderstandingSnapshot, recordTargetReadAttempts,
 } from "@/services/observation/store"
+
+// 清除静默了解现在会联动记忆侧的失效闭包（Rust 专属命令，Node 测试桥不持有）：
+// 本文件的用例只考了解层存储的记账/审计行为，替身挂住闭包调用（语义在
+// `memory_apply_change` 的 forget_understanding 与 Rust 单测覆盖）。
+const memoryDomain = vi.hoisted(() => ({ forgetUnderstandingDerivedMemory: vi.fn(async () => 0) }))
+vi.mock("@/services/agent/memory", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/services/agent/memory")>()),
+  forgetUnderstandingDerivedMemory: memoryDomain.forgetUnderstandingDerivedMemory,
+}))
 
 let root = ""
 

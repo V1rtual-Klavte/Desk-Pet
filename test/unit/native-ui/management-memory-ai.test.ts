@@ -178,6 +178,11 @@ function createBridge() {
           return { schemaVersion: 2, revision: 9, forgetEpoch: 0, itemCount: 4, jobCount: 1 }
         case "memory_restore":
           return 88
+        case "personality_file_read":
+          // 与真宿主同口径：未知卡的卡文件不存在时是 **PATH_NOT_FOUND 错误**，
+          // 不是「成功返回 null」（Card 按需加载后，未知卡经这条命令判定存在性；
+          // 假桥若默认返回 null，TextDecoder.decode(null) 会炸成 TypeError 假失败）。
+          throw Object.assign(new Error(`路径不存在: ${String(args.path)}`), { code: "PATH_NOT_FOUND" })
         default:
           return null
       }
@@ -421,13 +426,19 @@ describe("memory_item_detail（条目详情与历史）", () => {
 describe("memory_item_change（纠正 / 遗忘）", () => {
   it("未知 action / 缺 expectedVersion|baseRevision 以 CONFIG 拒绝", async () => {
     await expect(
-      dispatchHostRequest("memory_item_change", { action: "explode", id: "mem-1", expectedVersion: 3, baseRevision: 5 }),
+      dispatchHostRequest("memory_item_change", { action: "explode", itemId: "mem-1", expectedVersion: 3, baseRevision: 5 }),
     ).rejects.toMatchObject({ code: "CONFIG" })
     await expect(
-      dispatchHostRequest("memory_item_change", { action: "forget", id: "mem-1", baseRevision: 5 }),
+      dispatchHostRequest("memory_item_change", { action: "forget", itemId: "mem-1", baseRevision: 5 }),
     ).rejects.toMatchObject({ code: "CONFIG" })
     await expect(
-      dispatchHostRequest("memory_item_change", { action: "forget", id: "mem-1", expectedVersion: 3 }),
+      dispatchHostRequest("memory_item_change", { action: "forget", itemId: "mem-1", expectedVersion: 3 }),
+    ).rejects.toMatchObject({ code: "CONFIG" })
+    // 线形状钉子（2026-10-06 实机事故）：字段名是 `itemId`；发 `id`（detail 等请求的
+    // 字段）必须被拒绝 —— 处理器曾误读 `id`，Rust 发的 `itemId` 全被拒，遗忘/纠正
+    // 在设置页整条链路上不可用，而当时的单测照错字段名写、没抓住。
+    await expect(
+      dispatchHostRequest("memory_item_change", { action: "forget", id: "mem-1", expectedVersion: 3, baseRevision: 5 }),
     ).rejects.toMatchObject({ code: "CONFIG" })
   })
 
@@ -439,7 +450,7 @@ describe("memory_item_change（纠正 / 遗忘）", () => {
     try {
       const payload = await dispatchHostRequest("memory_item_change", {
         action: "update",
-        id: "mem-1",
+        itemId: "mem-1",
         expectedVersion: 3,
         baseRevision: 5,
         content: "新正文",
@@ -469,7 +480,7 @@ describe("memory_item_change（纠正 / 遗忘）", () => {
     await expect(
       dispatchHostRequest("memory_item_change", {
         action: "update",
-        id: "mem-1",
+        itemId: "mem-1",
         expectedVersion: 3,
         baseRevision: 5,
         pinned: true, // 与当前值相同
@@ -481,14 +492,14 @@ describe("memory_item_change（纠正 / 遗忘）", () => {
   it("update：未知条目以 PATH_NOT_FOUND 拒绝；forget 不需要读取当前草稿", async () => {
     fixtures.detail = null
     await expect(
-      dispatchHostRequest("memory_item_change", { action: "update", id: "no-such", expectedVersion: 1, baseRevision: 5, content: "x" }),
+      dispatchHostRequest("memory_item_change", { action: "update", itemId: "no-such", expectedVersion: 1, baseRevision: 5, content: "x" }),
     ).rejects.toMatchObject({ code: "PATH_NOT_FOUND" })
 
     fixtures.detail = memoryItem()
     fixtures.history = []
     const payload = await dispatchHostRequest("memory_item_change", {
       action: "forget",
-      id: "mem-1",
+      itemId: "mem-1",
       expectedVersion: 3,
       baseRevision: 5,
     })

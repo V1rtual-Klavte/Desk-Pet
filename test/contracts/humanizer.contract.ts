@@ -37,6 +37,17 @@
 // 2026-10-06 提问选择与去超时批次（本批刷新）：sourceFiles 变化仅限
 // `src/services/engine/harness/runtime.ts` 的注释面（NON_CONFIRM_CONTEXT 去掉确认超时一支）。
 // 各覆盖点逐条核对实现点仍在、描述与当前实现一致；sourceHash 按当前源码复算。
+// 2026-10-06 计划报告口径收窄批次（本批刷新）：sourceFiles 变化 ——
+// src/services/engine/harness/runtime.ts（runPlanPhase 的 onStepNotice 收窄：工具名不存在
+// 仍发聊天系统消息；未限定工具只写进度事件与统一日志，不再逐步骤敲系统消息）。hz-01..hz-04
+// 的表达解析、沉默护栏、逐泡揭示与顶栏所有权不在改动面内；逐点核对实现点仍在、覆盖描述与
+// 当前实现一致（描述/来源核对，非逐行行为审计）。未修订覆盖点，sourceHash 按当前源码复算。
+// 2026-10-06 抽屉 CONFIG 写批次（本批刷新）：sourceFiles 变化 —— src/services/agent/runner.ts
+//（繁忙投递意图的显式选择整链删除：resolveDeliveryIntent(text) 只留 slash→nextRun 与 CONFIG
+// `ai.conversation.defaultDelivery`；resolveDeliveryIntent 的签名与调用点改写不改变提交/揭示
+// 链路）、src/services/engine/harness/runtime.ts（思考/安全的会话级覆盖机制删除后直读 CONFIG；
+// hz-01..hz-04 的行为面不含这两条读取路径）。逐点核对实现点仍在、覆盖描述与当前实现一致
+//（描述/来源核对，非逐行行为审计）；sourceHash 按当前源码复算。
 import type { ModuleContract } from "../host/types"
 
 export const humanizerContract: ModuleContract = {
@@ -53,7 +64,7 @@ export const humanizerContract: ModuleContract = {
     // native-ui 的 nui-12；本契约在它是「所有权释放」这一半的来源文件。
     "src/services/titlebar.ts",
   ],
-  sourceHash: "1ee5f3cea466ba4bbe0265017598e137e8d72839fb48834d4066006f5b2d8958",
+  sourceHash: "e2229b767e224d1bc6067ddac1abb9aeb43ce1de743dbb769df54b7ecfbe5825",
   coverage: [
     {
       id: "hz-01",

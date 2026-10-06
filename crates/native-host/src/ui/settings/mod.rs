@@ -824,6 +824,75 @@ pub fn memory_backup_hint(rows: &[PanelRow], selected: Option<&str>) -> String {
     format!("当前选中：{title}（点行可切换）。用上方「预览选中备份 / 应用选中备份」操作这一份。")
 }
 
+// ── 「已记住」列表分页（2026-10-06 用户裁决：「多条记忆翻页或者别的机制，就显示五条一页」）──
+
+/// 「已记住」列表每页条数。
+pub const MEMORY_PAGE_SIZE: usize = 5;
+
+/// 「已记住」的总页数（纯函数）：0 条 = 0 页，N 条 = ceil(N / [`MEMORY_PAGE_SIZE`])。
+pub fn memory_page_count(total: usize) -> usize {
+    total.div_ceil(MEMORY_PAGE_SIZE)
+}
+
+/// 把页码收进当前范围（纯函数）：clamp 到 `[1, 总页数]`；0 条时收成 1
+/// （空列表按空态渲染，不显示分页行）。数据刷新后总页数变小走这里。
+pub fn clamp_memory_page(page: usize, total: usize) -> usize {
+    page.clamp(1, memory_page_count(total).max(1))
+}
+
+/// 第 `page` 页（1 起）在条目表里的切片范围（纯函数，先 clamp，越界页按收进后的页切）。
+pub fn memory_page_bounds(page: usize, total: usize) -> std::ops::Range<usize> {
+    let page = clamp_memory_page(page, total);
+    let start = (page - 1) * MEMORY_PAGE_SIZE;
+    start..(start + MEMORY_PAGE_SIZE).min(total)
+}
+
+/// 「已记住」分页行的渲染数据（页码 + 按钮可用性 + 中间文案）。
+///
+/// 平台只渲染 `prev_enabled` / `next_enabled` / `label`，不自行算页数
+/// （两平台一致的形状由此保证）。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MemoryPager {
+    /// 当前页（1 起，已 clamp）。
+    pub page: usize,
+    /// 总页数 = ceil(N / 5)。
+    pub page_count: usize,
+    /// 总条数。
+    pub total: usize,
+    /// 「上一页」是否可用（首页禁用）。
+    pub prev_enabled: bool,
+    /// 「下一页」是否可用（末页禁用）。
+    pub next_enabled: bool,
+    /// 中间文本（`第 x / y 页 · 共 N 条`）—— 两平台共用同一条格式。
+    pub label: String,
+}
+
+/// 分页行数据（纯函数）：总条数 0 = `None`（空态沿用面板的「（没有条目）」文案，不加分页行）。
+pub fn memory_pager(page: usize, total: usize) -> Option<MemoryPager> {
+    if total == 0 {
+        return None;
+    }
+    let page_count = memory_page_count(total);
+    let page = clamp_memory_page(page, total);
+    Some(MemoryPager {
+        page,
+        page_count,
+        total,
+        prev_enabled: page > 1,
+        next_enabled: page < page_count,
+        label: format!("第 {page} / {page_count} 页 · 共 {total} 条"),
+    })
+}
+
+/// 「已记住」面板的当前页视图（切片后的面板 + 分页行）—— 平台渲染的唯一入口。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MemoryItemsView {
+    /// 切片后的「已记住」面板（行 = 当前页；说明/错误/读取状态与全量面板同源）。
+    pub panel: ListPanel,
+    /// 分页行数据；`None` = 没有条目（空态不显示分页行）。
+    pub pager: Option<MemoryPager>,
+}
+
 /// 管理动作的目标归宿（纯函数，可测）：当前激活项仍在选项列表里 → 用它；
 /// 否则回退第一项；空列表 → None（没有可操作对象，调用方据此如实报错）。
 ///
@@ -1213,6 +1282,9 @@ struct PanelState {
     backups_error: Option<String>,
     /// 当前选中的备份路径（预览/应用的作用对象；缺省与失效时回退最新一份）。
     backup_selected: Option<String>,
+    /// 「已记住」列表现页（1 起；0 = 尚未设置，读取时按第 1 页收口）。
+    /// 范围筛选取值变化回第 1 页；数据刷新后总页数变小则 clamp（保持页、不无脑回第 1 页）。
+    memory_page: usize,
 
     generation: u64,
 }
@@ -2215,9 +2287,28 @@ impl SettingsUi {
 
     /// 记忆范围筛选（None = 全部）；设置后立即重拉条目列表。
     pub fn set_memory_scope(&self, scope: Option<&str>) {
-        *Self::lock(&self.memory_scope) = scope.map(ToString::to_string);
+        self.note_memory_scope_change(scope);
         self.spawn_memory_fetch();
         self.refresh();
+    }
+
+    /// 筛选取值变化点（2026-10-06 分页裁决）：值变了 = 换了一份清单 → 回第 1 页；
+    /// 同值重复点击只重拉，不动页码。返回取值是否变化。
+    fn note_memory_scope_change(&self, scope: Option<&str>) -> bool {
+        let changed = {
+            let mut current = Self::lock(&self.memory_scope);
+            let next = scope.map(ToString::to_string);
+            if *current == next {
+                false
+            } else {
+                *current = next;
+                true
+            }
+        };
+        if changed {
+            Self::lock(&self.panels).memory_page = 1;
+        }
+        changed
     }
 
     fn memory_sweep(&self) -> AppResult<()> {
@@ -3080,19 +3171,16 @@ impl SettingsUi {
     pub const MEMORY_TIP: &str = "要记住一条内容：在聊天里右键你自己的消息选『记住这条』，或直接说一句『记住……』（由模型判断是否写入）。助手与系统消息不能作为记忆来源。";
 
     /// 记忆页两个面板（条目 + 自动整理）。
+    ///
+    /// 「已记住」面板的行 = **当前页切片**（2026-10-06 用户裁决：五条一页）；
+    /// 分页行数据见 [`Self::memory_items_view`]（平台渲染入口），
+    /// 切片与页码 clamp 的唯一点见 `memory_items_page_locked`。
     pub fn memory_panels(&self) -> Vec<ListPanel> {
         let state = Self::lock(&self.panels);
         let overview = state.memory.clone().unwrap_or_else(MemoryOverview::empty);
+        let (rows, _pager) = Self::memory_items_page_locked(&state);
         vec![
-            ListPanel {
-                id: panels::PANEL_MEMORY_ITEMS,
-                title: "已记住",
-                hint: "纠正与遗忘立即提交（不走设置保存），遗忘只清应用管理的记忆与回灌资格：原始聊天、已导出文件与外部备份要另在会话管理或文件系统里处理。".to_string(),
-                error: state.memory_error.clone(),
-                warning: None,
-                loaded: state.memory_loaded,
-                rows: overview.items,
-            },
+            Self::memory_items_panel(&state, rows),
             ListPanel {
                 id: panels::PANEL_MEMORY_JOBS,
                 // 面板名对齐旧壳的「自动整理」小节（下面的列表即「历史作业」）。
@@ -3104,6 +3192,76 @@ impl SettingsUi {
                 rows: overview.jobs,
             },
         ]
+    }
+
+    /// 「已记住」面板组装（行 = 给定切片）：标题/说明/错误状态的唯一定义点。
+    fn memory_items_panel(state: &PanelState, rows: Vec<PanelRow>) -> ListPanel {
+        ListPanel {
+            id: panels::PANEL_MEMORY_ITEMS,
+            title: "已记住",
+            hint: "纠正与遗忘立即提交（不走设置保存），遗忘只清应用管理的记忆与回灌资格：原始聊天、已导出文件与外部备份要另在会话管理或文件系统里处理。".to_string(),
+            error: state.memory_error.clone(),
+            warning: None,
+            loaded: state.memory_loaded,
+            rows,
+        }
+    }
+
+    /// 「已记住」当前页的行与分页行（切片 + 页码 clamp 的唯一实现点；须持 `panels` 锁）。
+    fn memory_items_page_locked(state: &PanelState) -> (Vec<PanelRow>, Option<MemoryPager>) {
+        let total = state
+            .memory
+            .as_ref()
+            .map(|overview| overview.items.len())
+            .unwrap_or(0);
+        let page = clamp_memory_page(state.memory_page, total);
+        let rows = state
+            .memory
+            .as_ref()
+            .map(|overview| overview.items[memory_page_bounds(page, total)].to_vec())
+            .unwrap_or_default();
+        (rows, memory_pager(page, total))
+    }
+
+    /// 「已记住」面板的当前页视图（切片 + 分页行；平台渲染入口）。
+    ///
+    /// 读取时把页码收进当前范围（0 条收成 1）：数据刷新 / 写操作重建列表后，
+    /// 即使别的同步点漏了 clamp，渲染也不会越界（切片先 clamp 过）。
+    pub fn memory_items_view(&self) -> MemoryItemsView {
+        let mut state = Self::lock(&self.panels);
+        let (rows, pager) = Self::memory_items_page_locked(&state);
+        state.memory_page = pager.as_ref().map(|pager| pager.page).unwrap_or(1);
+        MemoryItemsView {
+            panel: Self::memory_items_panel(&state, rows),
+            pager,
+        }
+    }
+
+    /// 「已记住」翻页（`delta` = -1 / +1；平台只回传方向，边界收口在这里）。
+    ///
+    /// 首页再「上一页」、末页再「下一页」是 no-op（不推进代数、不刷新）；
+    /// 实际翻页才推进代数并触发平台重建面板区。
+    pub fn step_memory_page(&self, delta: isize) {
+        let changed = {
+            let mut state = Self::lock(&self.panels);
+            let total = state
+                .memory
+                .as_ref()
+                .map(|overview| overview.items.len())
+                .unwrap_or(0);
+            let current = clamp_memory_page(state.memory_page, total);
+            let next = clamp_memory_page((current as isize + delta).max(1) as usize, total);
+            if next == current {
+                false
+            } else {
+                state.memory_page = next;
+                state.generation += 1;
+                true
+            }
+        };
+        if changed {
+            self.refresh();
+        }
     }
 
     /// 可操作的整理作业行（带动作的行：可取消的进行中 / 可继续的受限作业）。
@@ -3347,6 +3505,10 @@ impl SettingsUi {
                     let mut state = Self::lock(&ui.panels);
                     match result {
                         Ok(overview) => {
+                            // 刷新后条目集可能变小：把当前页收进新范围
+                            // （保持当前页（clamp 后），不无脑回第 1 页）。
+                            state.memory_page =
+                                clamp_memory_page(state.memory_page, overview.items.len());
                             state.memory = Some(overview);
                             state.memory_error = None;
                         }
@@ -4372,10 +4534,16 @@ mod tests {
     ///
     /// 真正建窗的那一刀在平台层（`platform::imp::open_editor_window`）：单元测试进程
     /// 没有 UI 主线程队列，`EditorUi::run_on_ui` 会留痕跳过；这里钉到门禁被拉起为止，
-    /// 实机建窗与渲染留给实机验证。编辑器门禁是进程级单例：本用例是全测试二进制里
-    /// 唯一打开它的用例（编辑器域用例只碰草稿与素材，不看门禁）。
+    /// 实机建窗与渲染留给实机验证。编辑器单例是进程级全局：`open_window` 还会派发
+    /// 载入线程，它在 `NullEditorPort` 上报错后把 notice 改写成「Profile 未接线…」——
+    /// 与素材调度用例的「复制完成通知」共用同一只单值槽，异步改写形成丢失更新
+    /// （全量并行必红）。两用例共用 [`crate::ui::editor::EDITOR_GLOBAL_TEST_LOCK`]
+    /// 串行；本用例在放锁前等载入线程的改写落地，不把异步尾巴带出锁外。
     #[test]
     fn 图层编辑器动作路由到编辑器窗口门禁() {
+        let _guard = crate::ui::editor::EDITOR_GLOBAL_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
         let editor = crate::ui::editor::editor_ui();
         assert!(
             !editor.is_window_open(),
@@ -4392,6 +4560,184 @@ mod tests {
             SettingsUi::new().run_action("action.no_such_action").is_err(),
             "未知动作仍要被拒绝（新入口不得放宽兜底分支）"
         );
+        // 载入线程的错误路径文案是确定性的：全测试二进制里没有用例安装全局编辑器端口
+        // （`未接线端口如实报错` 用的是本地实例），`NullEditorPort` 恒定报错。
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        while !editor
+            .view()
+            .notice
+            .as_deref()
+            .is_some_and(|notice| notice.contains("Profile 未接线"))
+        {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "等待载入线程改写 notice 超时（open_window → schedule_load 的错误路径）"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(2));
+        }
+    }
+
+    // ── 记忆「已记住」列表分页（2026-10-06 用户裁决：五条一页）──
+
+    /// 页数与切片：N = 0/1/5/6/12 条按五条一页切，边界（5/6）不并入相邻页。
+    #[test]
+    fn 记忆分页按五条一页切片() {
+        assert_eq!(memory_page_count(0), 0);
+        assert_eq!(memory_page_count(1), 1);
+        assert_eq!(memory_page_count(5), 1, "正好一页不产生空尾页");
+        assert_eq!(memory_page_count(6), 2, "第 6 条起翻到第 2 页");
+        assert_eq!(memory_page_count(12), 3);
+
+        let items: Vec<usize> = (0..12).collect();
+        assert_eq!(items[memory_page_bounds(1, 12)], [0, 1, 2, 3, 4]);
+        assert_eq!(items[memory_page_bounds(2, 12)], [5, 6, 7, 8, 9]);
+        assert_eq!(items[memory_page_bounds(3, 12)], [10, 11], "末页只取剩余的 2 条");
+        // 6 条：末页 1 条；5 条：单页 5 条。
+        assert_eq!(items[..6][memory_page_bounds(2, 6)], [5]);
+        assert_eq!(items[..5][memory_page_bounds(1, 5)], [0, 1, 2, 3, 4]);
+        // 0 条：空切片，不越界。
+        assert!(items[memory_page_bounds(1, 0)].is_empty());
+        // 越界页先收进范围再切（不会切出空页/全空）。
+        assert_eq!(items[memory_page_bounds(9, 12)], [10, 11]);
+    }
+
+    /// 页码 clamp：数据刷新后总页数变小要收进范围；0 条收成 1。
+    #[test]
+    fn 记忆页码收进范围() {
+        assert_eq!(clamp_memory_page(3, 1), 1, "总页数降到 1 时第 3 页收成第 1 页");
+        assert_eq!(clamp_memory_page(3, 6), 2, "6 条只有 2 页，第 3 页收成第 2 页（不无脑回第 1 页）");
+        assert_eq!(clamp_memory_page(2, 12), 2, "范围内保持不动");
+        assert_eq!(clamp_memory_page(0, 12), 1, "缺省/0 页码收成第 1 页");
+        assert_eq!(clamp_memory_page(1, 0), 1, "空列表页码仍是 1（空态不显示分页行）");
+    }
+
+    /// 分页行文案与按钮可用性：首页禁「上一页」、末页禁「下一页」、单页两枚都禁。
+    #[test]
+    fn 记忆分页行文案与按钮可用性() {
+        assert!(memory_pager(1, 0).is_none(), "空列表不加分页行");
+        let first = memory_pager(1, 12).expect("12 条有分页行");
+        assert_eq!(first.page_count, 3);
+        assert_eq!(first.label, "第 1 / 3 页 · 共 12 条");
+        assert!(!first.prev_enabled && first.next_enabled, "首页：上一页禁用、下一页可用");
+        let middle = memory_pager(2, 12).expect("12 条有分页行");
+        assert!(middle.prev_enabled && middle.next_enabled, "中间页两枚都可用");
+        let last = memory_pager(3, 12).expect("12 条有分页行");
+        assert!(last.prev_enabled && !last.next_enabled, "末页：上一页可用、下一页禁用");
+        let single = memory_pager(1, 5).expect("5 条是单页");
+        assert!(
+            !single.prev_enabled && !single.next_enabled,
+            "单页两枚都禁用（没有可翻的方向）"
+        );
+        // 越界页先 clamp 再给可用性（不出现「第 5 / 2 页」）。
+        let clamped = memory_pager(5, 6).expect("6 条有分页行");
+        assert_eq!(clamped.page, 2);
+        assert_eq!(clamped.label, "第 2 / 2 页 · 共 6 条");
+        assert!(clamped.prev_enabled && !clamped.next_enabled);
+    }
+
+    fn memory_row(id: usize) -> PanelRow {
+        PanelRow {
+            id: format!("m{id}"),
+            title: format!("记忆 {id}"),
+            subtitle: String::new(),
+            action: RowAction::Select,
+            secondary: RowAction::None,
+            enabled: false,
+            pick: None,
+        }
+    }
+
+    fn load_memory(ui: &SettingsUi, total: usize) {
+        let mut state = SettingsUi::lock(&ui.panels);
+        state.memory = Some(MemoryOverview {
+            revision: 1,
+            status_text: String::new(),
+            items: (0..total).map(memory_row).collect(),
+            jobs: Vec::new(),
+        });
+        state.memory_loaded = true;
+    }
+
+    /// 状态走查（本地实例，不触进程级单例）：默认第 1 页 → 翻到末页 → 边界 no-op →
+    /// 数据变小后保持页并 clamp → 关窗重建回第 1 页。
+    #[test]
+    fn 记忆翻页状态随数据收进范围() {
+        let ui = SettingsUi::new();
+        load_memory(&ui, 12);
+
+        let first = ui.memory_items_view();
+        assert_eq!(first.pager.as_ref().map(|pager| pager.page), Some(1), "默认第 1 页");
+        assert_eq!(first.panel.rows.len(), 5, "首页 5 条");
+        assert_eq!(first.panel.rows[0].id, "m0");
+        assert_eq!(
+            first.panel.id,
+            panels::PANEL_MEMORY_ITEMS,
+            "切片面板仍是「已记住」面板（分页没有换面板）"
+        );
+
+        ui.step_memory_page(1);
+        ui.step_memory_page(1);
+        let last = ui.memory_items_view();
+        assert_eq!(last.pager.as_ref().map(|pager| pager.page), Some(3));
+        assert_eq!(
+            last.panel.rows.iter().map(|row| row.id.as_str()).collect::<Vec<_>>(),
+            ["m10", "m11"],
+            "末页 = 12 条里的最后 2 条"
+        );
+        // 末页再「下一页」：no-op（不是报错，也不回绕到第 1 页）。
+        ui.step_memory_page(1);
+        assert_eq!(ui.memory_items_view().pager.map(|pager| pager.page), Some(3));
+        // 首页再「上一页」：同样 no-op。
+        ui.step_memory_page(-1);
+        ui.step_memory_page(-1);
+        assert_eq!(ui.memory_items_view().pager.map(|pager| pager.page), Some(1));
+
+        // 刷新后条目集变小（12 → 6）：保持第 2 页对应的数据（先拨回第 3 页再缩）。
+        ui.step_memory_page(1);
+        ui.step_memory_page(1);
+        load_memory(&ui, 6);
+        let shrunk = ui.memory_items_view();
+        assert_eq!(
+            shrunk.pager.as_ref().map(|pager| pager.page),
+            Some(2),
+            "第 3 页收成第 2 页（保持页、不无脑回第 1 页）"
+        );
+        assert_eq!(shrunk.panel.rows[0].id, "m5", "第 2 页从第 6 条开始");
+        assert_eq!(
+            SettingsUi::lock(&ui.panels).memory_page,
+            2,
+            "读取时把收进范围后的页码写回状态"
+        );
+
+        // 关窗 = 面板状态整体释放：回默认第 1 页。
+        *SettingsUi::lock(&ui.panels) = PanelState::default();
+        load_memory(&ui, 12);
+        assert_eq!(ui.memory_items_view().pager.map(|pager| pager.page), Some(1));
+    }
+
+    /// 筛选取值变化点：值变了回第 1 页；同值重复点击只重拉、不动页码。
+    #[test]
+    fn 记忆筛选变化回第一页_同值不重置() {
+        let ui = SettingsUi::new();
+        load_memory(&ui, 12);
+        ui.step_memory_page(1);
+        ui.step_memory_page(1);
+        assert_eq!(ui.memory_items_view().pager.map(|pager| pager.page), Some(3));
+
+        assert!(!ui.note_memory_scope_change(None), "None → None 不是变化");
+        assert_eq!(
+            ui.memory_items_view().pager.map(|pager| pager.page),
+            Some(3),
+            "同值筛选不动页码"
+        );
+        assert!(ui.note_memory_scope_change(Some("user")), "None → user 是变化");
+        assert_eq!(
+            ui.memory_items_view().pager.map(|pager| pager.page),
+            Some(1),
+            "取值变化 = 换清单 → 回第 1 页"
+        );
+        assert!(!ui.note_memory_scope_change(Some("user")), "user → user 不是变化");
+        assert!(ui.note_memory_scope_change(None), "user → None 是变化");
     }
 
     // ── 记忆页常驻说明的两平台守门 ──
@@ -4414,6 +4760,27 @@ mod tests {
             assert!(
                 source.contains(needle),
                 "{name} 必须引用 {needle}（记忆说明加了没人渲染 = 用户看不到入口说明）"
+            );
+        }
+    }
+
+    // ── 记忆列表分页的两平台守门 ──
+
+    /// 分页加了必须两平台都真渲染（防「一侧加了、另一侧照旧铺全量」）：
+    /// 两平台源码都要引用 [`SettingsUi::memory_items_view`]。
+    /// `include_str!` 与 `concat!` 拆词的理由同上（删掉任一侧引用本用例立刻红）。
+    #[test]
+    fn 两平台设置页都渲染记忆分页视图() {
+        const MACOS: &str = include_str!("../platform/macos_settings.rs");
+        const WINDOWS: &str = include_str!("../platform/windows_settings.rs");
+        let needle = concat!("memory_items", "_view");
+        for (name, source) in [
+            ("macos_settings.rs", MACOS),
+            ("windows_settings.rs", WINDOWS),
+        ] {
+            assert!(
+                source.contains(needle),
+                "{name} 必须引用 {needle}（分页加了不渲染 = 列表被截断在首页且无法翻页）"
             );
         }
     }

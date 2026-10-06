@@ -126,6 +126,9 @@ use windows_sys::Win32::Graphics::Gdi::{
     FW_BOLD, FW_NORMAL, HDC, HFONT, OUT_DEFAULT_PRECIS, PAINTSTRUCT,
 };
 use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
+// `SS_CENTER`（STATIC 水平居中样式）：windows-sys 0.52 把 `SS_*` 放在
+// `Win32::System::SystemServices`（该 feature 已为本文件的其它符号开启）。
+use windows_sys::Win32::System::SystemServices::SS_CENTER;
 use windows_sys::Win32::UI::Controls::{
     BST_CHECKED, EM_GETPASSWORDCHAR, EM_SETPASSWORDCHAR, EM_SETSEL, ODS_COMBOBOXEDIT, ODS_DISABLED,
     ODS_FOCUS, ODS_GRAYED, ODS_SELECTED, ODT_BUTTON, ODT_COMBOBOX,
@@ -166,8 +169,8 @@ use crate::ui::settings::panels::{
 };
 use crate::ui::settings::schema::{Field, FieldKind, TABS};
 use crate::ui::settings::{
-    settings_ui, tab_index_for_tag, DocumentContent, DocumentState, DocumentTarget, NoticeLevel,
-    SettingsUi, SettingsValue, SettingsView, ShortcutModifiers, SwitchStates,
+    settings_ui, tab_index_for_tag, DocumentContent, DocumentState, DocumentTarget, MemoryPager,
+    NoticeLevel, SettingsUi, SettingsValue, SettingsView, ShortcutModifiers, SwitchStates,
 };
 use crate::ui::theme;
 use crate::ui::theme::paint_win::{self, ButtonRole, TextRole};
@@ -200,6 +203,13 @@ const ROW_ID_BASE: i32 = 3000;
 const DETAIL_ID_BASE: i32 = 3500;
 /// 管理面「刷新」按钮 ID 段（`PANEL_REFRESH_ID_BASE + 页面下标`）。
 const PANEL_REFRESH_ID_BASE: i32 = 3600;
+/// 「已记住」分页按钮 ID 段（`MEMORY_PAGE_ID_BASE + 动作下标`）。
+/// 必须落在行按钮段（`ROW_ID_BASE..ROW_ID_BASE + 4096` = 3000..7096）之外
+/// （口径同 `SECRET_ID_BASE` 的说明：分页按钮不走 `row_slots`，不占行下标空间）。
+const MEMORY_PAGE_ID_BASE: i32 = 7500;
+/// 记忆分页动作下标（ID = MEMORY_PAGE_ID_BASE + 下标）。
+const MEMORY_PAGE_PREV: i32 = 0;
+const MEMORY_PAGE_NEXT: i32 = 1;
 /// 密钥揭示按钮 ID 段（`SECRET_ID_BASE + 双控件组下标`）。
 /// 必须落在行按钮段（`ROW_ID_BASE..ROW_ID_BASE + 4096` = 3000..7096）之外，
 /// 且在 `on_command` 里先于 `id >= FIELD_BASE` 兜底分支命中。
@@ -374,6 +384,8 @@ enum SettingsButton {
     RowPrimary,
     /// 管理面行次按钮（编辑 / 删除）。
     RowSecondary,
+    /// 「已记住」翻页（上一页 / 下一页）。
+    MemoryPager,
 }
 
 /// 按钮语义 → ownerdraw 角色（分档口径的单一实现点）。
@@ -396,7 +408,8 @@ fn button_role(button: SettingsButton) -> ButtonRole {
         | SettingsButton::MemoryPin
         | SettingsButton::MemoryForget
         | SettingsButton::RowPrimary
-        | SettingsButton::RowSecondary => ButtonRole::Normal,
+        | SettingsButton::RowSecondary
+        | SettingsButton::MemoryPager => ButtonRole::Normal,
     }
 }
 
@@ -1965,17 +1978,21 @@ fn build_panel_controls(state: &mut SettingsState) {
                 y += 20;
             }
             let panels = settings_ui().memory_panels();
-            if let Some(items) = panels.first() {
-                y = build_panel(
-                    state,
-                    items,
-                    Some(REFRESH_MEMORY),
-                    content_w,
-                    y,
-                    body,
-                    small,
-                    bold,
-                );
+            // 「已记住」的行 = 当前页切片（2026-10-06 分页裁决）；分页行只在
+            // 列表非空时出现（空态沿用面板的「（没有条目）」文案）。
+            let items_view = settings_ui().memory_items_view();
+            y = build_panel(
+                state,
+                &items_view.panel,
+                Some(REFRESH_MEMORY),
+                content_w,
+                y,
+                body,
+                small,
+                bold,
+            );
+            if let Some(pager) = &items_view.pager {
+                y = build_memory_pager(state, content_w, y, pager, body, small);
             }
             y = build_memory_detail(state, content_w, y, body, small, bold);
             // 来源原话：逐条一行（点行展开那一条，再点收起），展开块固定高度可滚动。
@@ -3287,6 +3304,74 @@ fn build_panel(
     y + SECTION_GAP
 }
 
+/// 「已记住」分页行（`上一页` / `第 x / y 页 · 共 N 条` / `下一页`）。
+///
+/// 只在列表非空时由调用方渲染（空态沿用面板的「（没有条目）」文案）；页码与
+/// 两枚按钮的可用性来自共享层的 [`MemoryPager`]（平台不自行算页数）。
+/// 首页/末页对应按钮 `EnableWindow(0)`：ownerdraw 面在 `WM_DRAWITEM` 里按
+/// `ODS_DISABLED` 画禁用档（见 `on_drawitem`），不需要另贴一次面。
+/// **未实机验证**（本机编不出 Windows 分支，见 native-host AGENTS §2）。
+fn build_memory_pager(
+    state: &mut SettingsState,
+    content_w: i32,
+    y: i32,
+    pager: &MemoryPager,
+    body: HFONT,
+    small: HFONT,
+) -> i32 {
+    let scale = dpi_scale(state.hwnd);
+    let prev = create_panel_control(
+        state,
+        "BUTTON",
+        "上一页",
+        MARGIN,
+        y,
+        PANEL_BTN_W,
+        26,
+        body,
+        13,
+        None,
+        0,
+        MEMORY_PAGE_ID_BASE + MEMORY_PAGE_PREV,
+    );
+    let next = create_panel_control(
+        state,
+        "BUTTON",
+        "下一页",
+        MARGIN + content_w - PANEL_BTN_W,
+        y,
+        PANEL_BTN_W,
+        26,
+        body,
+        13,
+        None,
+        0,
+        MEMORY_PAGE_ID_BASE + MEMORY_PAGE_NEXT,
+    );
+    style_button(SettingsButton::MemoryPager, prev, scale);
+    style_button(SettingsButton::MemoryPager, next, scale);
+    unsafe {
+        EnableWindow(prev, pager.prev_enabled as i32);
+        EnableWindow(next, pager.next_enabled as i32);
+    }
+    // 中间文本水平居中（SS_CENTER），横向吃两枚按钮之间的剩余宽度。
+    create_panel_control(
+        state,
+        "STATIC",
+        &pager.label,
+        MARGIN + PANEL_BTN_W + 8,
+        y + 5,
+        (content_w - (PANEL_BTN_W + 8) * 2).max(60),
+        18,
+        small,
+        11,
+        Some(TextRole::Hint),
+        SS_CENTER,
+        0,
+    );
+    y + 34
+}
+
 /// 行主控件的渲染形态（纯函数，可测）：下拉行出组合框；开关/查看/试听出按钮；
 /// Edit/Delete 在次按钮位、只读行没有主控件。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -3358,7 +3443,8 @@ fn panel_row_advance(subtitle: &str) -> i32 {
     if subtitle.trim().is_empty() {
         PANEL_ROW_H
     } else {
-        PANEL_ROW_H + 30
+        // 2026-10-06 与 macOS `panel_row_height` 同口径收紧：副标题两行档（38+18）。
+        PANEL_ROW_H + 18
     }
 }
 
@@ -3438,8 +3524,10 @@ fn build_panel_row(
         0,
     );
     if !row.subtitle.is_empty() {
-        // 副标题最多三行（框高 45 = 3×行高；STATIC 自动换行，超高裁切）——
-        // 与 macOS `build_panel_row` 的 `wrapped_label(..., 3)` 同规格。
+        // 副标题最多两行（框高 30 = 2×行高；STATIC 自动换行，超高裁切）——
+        // 与 macOS `build_panel_row` 的 `wrapped_label(..., 2)` 同规格（2026-10-06 收紧）。
+        // 该平台的**行底色**待补：需镜像表 + 实机迭代（macOS 已用 `strip_bg` 上底色，
+        // 本侧绘制期不能进 `with_state`，不盲修，见未完成总表）。
         create_panel_control(
             state,
             "STATIC",
@@ -3447,7 +3535,7 @@ fn build_panel_row(
             MARGIN,
             y + 19,
             text_w,
-            45,
+            30,
             small,
             11,
             Some(TextRole::Hint),
@@ -4342,6 +4430,16 @@ pub(crate) fn on_command(hwnd: HWND, wparam: WPARAM) -> bool {
                 REFRESH_MEMORY => settings_ui().refresh_memory(),
                 REFRESH_SOUNDS => settings_ui().refresh_sound_panel(),
                 _ => rust_warn!("管理面刷新没有对应页面（id={id}）"),
+            }
+            refresh_ui();
+            return true;
+        }
+        // ── 记忆「已记住」翻页（2026-10-06）：页码收口在设置域，这里只回传方向 ──
+        _ if (MEMORY_PAGE_ID_BASE..MEMORY_PAGE_ID_BASE + 16).contains(&id) => {
+            match id - MEMORY_PAGE_ID_BASE {
+                MEMORY_PAGE_PREV => settings_ui().step_memory_page(-1),
+                MEMORY_PAGE_NEXT => settings_ui().step_memory_page(1),
+                _ => rust_warn!("记忆分页没有对应按钮（id={id}）"),
             }
             refresh_ui();
             return true;
@@ -5650,6 +5748,7 @@ mod tests {
             SettingsButton::MemoryForget,
             SettingsButton::RowPrimary,
             SettingsButton::RowSecondary,
+            SettingsButton::MemoryPager,
         ] {
             assert_eq!(
                 button_role(kind),
@@ -6351,7 +6450,7 @@ mod tests {
         use crate::ui::settings::panels::RowOption;
         assert_eq!(panel_row_advance(""), PANEL_ROW_H);
         assert_eq!(panel_row_advance("  "), PANEL_ROW_H, "空白副标题同空串口径");
-        assert_eq!(panel_row_advance("说明"), PANEL_ROW_H + 30);
+        assert_eq!(panel_row_advance("说明"), PANEL_ROW_H + 18);
         let pick_row = PanelRow {
             id: "reply".into(),
             title: "收到回复".into(),

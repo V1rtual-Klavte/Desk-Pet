@@ -2,7 +2,8 @@
 // 记忆整理（dreaming）的「无新来源不开作业」前置查询 —— L3
 // ==========================================
 //
-// 契约 §5.5 缺陷 1：空闲命中就开 Review 作业，哪怕水位之后一条新来源都没有。
+// 契约 §5.5 缺陷 1：调度命中就开 Review 作业，哪怕水位之后一条新来源都没有
+// （2026-10-06 固定钟点裁决后「命中」= 到点；本文件只考前置查询门禁，不考钟点判定）。
 // 现在开作业前先查「水位之后还有没有待处理来源」（Rust `memory_pending_source_count`，
 // 与 `memory_job_sources` 同一水位判定；2026-10-06 起按来源类别分开查——用户事实与
 // 画像稳定结论各自成作业）：
@@ -15,7 +16,7 @@
 //
 // 边界替换：memory ipc（Rust 专属命令）、来源收集（真 JSONL 扫描）与 engine/harness 用替身
 // 挂住；假时钟推进 15s 轮询；不触真 Provider、不触真 SQLite。
-// 每个用例 vi.resetModules() + 重装宿主桥：调度器的 lastIdleRunAt/idleSince 是模块状态，
+// 每个用例 vi.resetModules() + 重装宿主桥：调度器的 lastSweepRunAt 是模块状态，
 // reset 才能给每个场景干净的前提。
 import { mkdirSync, mkdtempSync, rmSync } from "node:fs"
 import { join } from "node:path"
@@ -41,15 +42,19 @@ const ipc = vi.hoisted(() => ({
 }))
 vi.mock("@/services/agent/memory/ipc", () => ipc)
 
-// 前置登记分两区：用户来源（真 JSONL 扫描）与画像稳定结论（真画像读模型）都用替身挂住。
+// 前置登记分两区（用户来源 / 画像结论 / 静默了解摘要三个采集器）都用替身挂住：
+// 本文件只验证「前置查询闸门」的调用序，采集器本体各有自己的用例；真实现经
+// importOriginal 展开会在替身场景里读到未初始化的观察存储而抛错。
 const sources = vi.hoisted(() => ({
   collectAllMemorySources: vi.fn(async () => []),
   collectBehaviorMemorySources: vi.fn(async () => []),
+  collectUnderstandingMemorySources: vi.fn(async () => []),
 }))
 vi.mock("@/services/agent/memory/sources", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@/services/agent/memory/sources")>()),
   collectAllMemorySources: sources.collectAllMemorySources,
   collectBehaviorMemorySources: sources.collectBehaviorMemorySources,
+  collectUnderstandingMemorySources: sources.collectUnderstandingMemorySources,
 }))
 
 vi.mock("@/services/engine/harness", () => ({
@@ -80,10 +85,11 @@ beforeEach(() => {
   vi.clearAllMocks()
 })
 
-/** 干净的模块世界 + 假时钟 + 档位覆盖（中档：空闲阈值 30 分钟）。 */
+/** 干净的模块世界 + 假时钟 + 档位覆盖（中档；系统时间钉在 10:00 = 中档钟点，让定时调度器到点）。 */
 async function bootDreaming(tier = "medium") {
   vi.resetModules()
   vi.useFakeTimers()
+  vi.setSystemTime(new Date(2026, 9, 5, 10, 0, 0))
   const { installNodeHostBridge } = await import("../../host/install-node-bridge")
   installNodeHostBridge()
   const nodeIpc = await import("../../host/node-ipc")
@@ -105,7 +111,7 @@ async function advance(ms: number): Promise<void> {
 }
 
 describe("记忆整理的前置查询", () => {
-  it("水位之后没有待处理来源：空闲命中也不开作业、不预留预算 [dreaming-pending-gate-skip]", async () => {
+  it("水位之后没有待处理来源：钟点命中也不开作业、不预留预算 [dreaming-pending-gate-skip]", async () => {
     const dreaming = await bootDreaming()
     ipc.pendingMemorySourceCount.mockResolvedValue(0)
     dreaming.startIdleDreamingScheduler()

@@ -76,6 +76,10 @@ const QUERY_TERM_LIMIT: usize = 16;
 const DEFAULT_IMPORTANCE: f64 = 5.0;
 const DEFAULT_CONFIDENCE: f64 = 0.5;
 
+/// 单条合并候选最多吸收的旧条目数：与 protocol.json 的 `maxItems` 及 Node 侧分组上限同值
+/// （同一口径的三处消费点，改值要三处一起改）。
+const SUPERSEDES_MAX: usize = 4;
+
 fn now_ms() -> i64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -391,6 +395,38 @@ fn validate_draft(draft: &Value) -> AppResult<()> {
             if !valid {
                 return Err(AppError::Memory(format!("{key} 的 day/minute 时间锚无效")));
             }
+        }
+    }
+    // 合并候选的目标列表（dreaming 整理专属）：形状在此校验；范围/kind/来源类别与来源并集
+    // 在发布事务里逐条复核（`apply_change` 会在写入前明确拒绝这一字段，不给静默忽略的机会）。
+    if draft.get("supersedesIds").is_some_and(|value| !value.is_null()) {
+        let shape_ok = draft
+            .get("supersedesIds")
+            .and_then(Value::as_array)
+            .is_some_and(|items| {
+                !items.is_empty()
+                    && items.len() <= SUPERSEDES_MAX
+                    && items
+                        .iter()
+                        .all(|item| item.as_str().is_some_and(|id| !id.is_empty()))
+            });
+        if !shape_ok {
+            return Err(AppError::Memory(format!(
+                "supersedesIds 必须是非空、至多 {SUPERSEDES_MAX} 条的字符串数组"
+            )));
+        }
+        let ids = strings(draft, "supersedesIds");
+        let mut unique = std::collections::HashSet::new();
+        if ids.iter().any(|id| !unique.insert(id.as_str())) {
+            return Err(AppError::Memory("supersedesIds 不能包含重复条目".into()));
+        }
+        if draft.get("supersedesId").is_some_and(|value| !value.is_null()) {
+            return Err(AppError::Memory(
+                "合并候选不能同时携带 supersedesId 与 supersedesIds".into(),
+            ));
+        }
+        if kind == "working" {
+            return Err(AppError::Memory("working 事项不参与合并".into()));
         }
     }
     Ok(())
@@ -756,6 +792,42 @@ impl MemoryStore {
             }
         }
         Ok(origin)
+    }
+
+    /// 合并候选的目标解析（dreaming 发布专用）：逐个复核「仍在库、同 scope、同 kind、
+    /// 未置顶」，返回 (条目 id, 其 active 版本)。来源类别与来源并集由调用处在同一事务里继续
+    /// 校验 —— 目标失效（已被删除/覆盖）时如实报 MEMORY_CONFLICT，不做静默跳过。
+    fn merge_supersede_targets(
+        conn: &Connection,
+        draft: &Value,
+        scope: &str,
+        scope_id: Option<&str>,
+        kind: &str,
+    ) -> AppResult<Vec<(String, i64)>> {
+        let mut targets = Vec::new();
+        for id in strings(draft, "supersedesIds") {
+            let row: Option<(String, String, Option<String>, i64, i64)> = conn
+                .query_row(
+                    "SELECT kind,scope,scope_id,pinned,version FROM memory_items WHERE id=?1 AND status='active'",
+                    [&id],
+                    |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?)),
+                )
+                .optional()
+                .map_err(db_err)?;
+            let (target_kind, target_scope, target_scope_id, target_pinned, target_version) =
+                row.ok_or(AppError::MemoryConflict)?;
+            if target_kind != kind
+                || target_scope != scope
+                || target_scope_id.as_deref() != scope_id
+                || target_pinned != 0
+            {
+                return Err(AppError::Memory(
+                    "合并候选的目标条目与候选不同范围或类型（或处于置顶状态）".into(),
+                ));
+            }
+            targets.push((id, target_version));
+        }
+        Ok(targets)
     }
 
     /// 读某条在库条目（指定版本）的来源类别归属：用于「不跨来源类别改写」的守卫。
@@ -1473,8 +1545,25 @@ impl MemoryStore {
                 ).map_err(db_err)?;
                 Self::bump(&transaction, "forget_epoch")?;
             }
+            "forget_understanding" => {
+                // 「清除静默了解」的专用闭包：只圈定 `understanding:` 来源（静默了解沉淀），
+                // 画像结论与用户事实不在范围内；只接受内部治理 actor（Node 观察域入口）。
+                if actor != "internal" {
+                    return Err(AppError::Memory(
+                        "清除静默了解只接受内部治理 actor".into(),
+                    ));
+                }
+                forget_understanding_items_tx(&transaction)?;
+            }
             "add" | "update" | "supersede" | "complete" | "cancel" => {
                 let draft = draft.ok_or_else(|| AppError::Memory("缺少记忆内容".into()))?;
+                // 合并候选只走 dreaming 的发布事务（memory_dreaming_commit）；治理写入不接受
+                // supersedesIds —— 明确拒绝而不是静默忽略，避免调用方以为合并已生效。
+                if draft.get("supersedesIds").is_some_and(|value| !value.is_null()) {
+                    return Err(AppError::Memory(
+                        "合并候选只接受 dreaming 整理作业的发布路径".into(),
+                    ));
+                }
                 validate_draft(draft)?;
                 if actor == "current_input" || actor == "user_ui_current" {
                     let event_id = trusted_user_event_id
@@ -1996,27 +2085,68 @@ impl MemoryStore {
             if payload_hash(&draft) != expected_hash {
                 return Err(AppError::MemoryConflict);
             }
+            // 合并候选（dreaming 发布专属）：先解析被吸收条目并复核「仍在库、同 scope/kind、
+            // 未置顶」，再把它们的来源并入本候选的来源集合 —— 来源并集在事务内强制，
+            // 不依赖调用方自觉（旧条目自己的来源一条都不能丢）。
+            let merge_targets = Self::merge_supersede_targets(
+                &transaction,
+                &draft,
+                &s(&draft, "scope"),
+                opt_s(&draft, "scopeId").as_deref(),
+                &s(&draft, "kind"),
+            )?;
+            let mut source_ids = strings(&draft, "sourceIds");
+            for (target_id, target_version) in &merge_targets {
+                let mut statement = transaction
+                    .prepare(
+                        "SELECT source_id FROM memory_item_sources WHERE item_id=?1 AND item_version=?2",
+                    )
+                    .map_err(db_err)?;
+                let rows = statement
+                    .query_map(params![target_id, target_version], |row| row.get::<_, String>(0))
+                    .map_err(db_err)?;
+                for row in rows {
+                    let source_id = row.map_err(db_err)?;
+                    if !source_ids.contains(&source_id) {
+                        source_ids.push(source_id);
+                    }
+                }
+            }
             // 发布前重新检查来源墓碑：评审期间可能发生了 forget/clear，旧候选不能复活事实。
-            for source_id in strings(&draft, "sourceIds") {
+            // 合并候选按并集后的来源集合检查（旧条目自己的来源同样算数）。
+            for source_id in &source_ids {
                 let blocked: Option<i64> = transaction.query_row(
                     "SELECT 1 FROM memory_sources s \
                      WHERE s.source_id=?1 AND EXISTS (SELECT 1 FROM memory_tombstones t WHERE t.session_id=s.session_id AND t.entry_id=s.entry_id AND t.content_hash=s.content_hash AND t.effect='block_extraction') LIMIT 1",
-                    [&source_id], |row| row.get(0)).optional().map_err(db_err)?;
+                    [source_id], |row| row.get(0)).optional().map_err(db_err)?;
                 if blocked.is_some() {
                     return Err(AppError::MemoryConflict);
                 }
             }
             // 来源分池：条目类别由来源类别唯一派生；混用与越界（核心画像 / working）拒绝。
-            let source_ids = strings(&draft, "sourceIds");
             let item_origin = Self::validate_source_pool(
                 &transaction,
                 &source_ids,
                 b(&draft, "pinned"),
                 &s(&draft, "kind"),
             )?;
+            // 合并只允许同来源类别（user 区只与 user 区、派生区只与派生区）。
+            for (target_id, target_version) in &merge_targets {
+                if Self::item_origin(&transaction, target_id, *target_version)? != item_origin {
+                    return Err(AppError::Memory(
+                        "记忆条目不能跨来源类别合并（系统观察与用户事实分池）".into(),
+                    ));
+                }
+            }
             let scope = s(&draft, "scope");
             let scope_id = opt_s(&draft, "scopeId");
             let id = format!("mem-{}-{}", now_ms(), rand_suffix());
+            // supersedes_id 列：单条覆盖取 supersedesId；合并取列表首条做链上代表
+            // （完整列表的失效语义由下方 merge_targets 循环执行，旧条目行与版本链全部保留）。
+            let column_supersedes = draft
+                .get("supersedesId")
+                .and_then(Value::as_str)
+                .or_else(|| merge_targets.first().map(|(target, _)| target.as_str()));
             let aliases = serde_json::to_string(draft.get("aliases").unwrap_or(&json!([])))
                 .map_err(|e| AppError::Memory(e.to_string()))?;
             transaction
@@ -2038,7 +2168,7 @@ impl MemoryStore {
                         draft.get("validFrom").and_then(Value::as_i64),
                         draft.get("validTo").and_then(Value::as_i64),
                         draft.get("expiresAt").and_then(Value::as_i64),
-                        draft.get("supersedesId").and_then(Value::as_str),
+                        column_supersedes,
                         now_ms(),
                         draft.get("eventAt").filter(|value| !value.is_null()).map(Value::to_string),
                         draft.get("dueAt").filter(|value| !value.is_null()).map(Value::to_string),
@@ -2046,7 +2176,7 @@ impl MemoryStore {
                     ],
                 )
                 .map_err(db_err)?;
-            for source_id in strings(&draft, "sourceIds") {
+            for source_id in &source_ids {
                 transaction
                     .execute(
                         "INSERT INTO memory_item_sources(item_id,item_version,source_id) VALUES (?1,1,?2) ON CONFLICT DO NOTHING",
@@ -2060,6 +2190,21 @@ impl MemoryStore {
                     params![id, s(&draft, "content"), s(&draft, "summary"), aliases],
                 )
                 .map_err(db_err)?;
+            // 合并候选：被吸收的旧条目逐个失效（插入前已复核仍在库、同范围同类别；行与
+            // 版本链保留为 superseded，历史/审计不丢）。先写状态再失效主动侧引用，
+            // 与下面的版本收敛同一口径。
+            for (target_id, _) in &merge_targets {
+                let changed = transaction
+                    .execute(
+                        "UPDATE memory_items SET status='superseded',valid_to=?2,updated_at=?2 WHERE id=?1 AND status='active'",
+                        params![target_id, now_ms()],
+                    )
+                    .map_err(db_err)?;
+                if changed == 0 {
+                    return Err(AppError::MemoryConflict);
+                }
+                crate::proactive::store::invalidate_memory_closure_tx(&transaction, target_id)?;
+            }
             // 系统观察的版本收敛：同槽位新结论带 supersedesId 时，旧条目立即失效
             // （与 apply_change 的 update 同语义：先失效引用，再让新版本成为唯一在库结论）。
             if item_origin == "derived_behavior" {
@@ -2462,32 +2607,57 @@ impl MemoryStore {
 
 }
 
-/// 清除行为画像时一并失效「系统观察」沉淀的记忆（与遗忘同一闭包口径）。
+/// 派生来源清除的范围：全量（清行为画像）或只收静默了解沉淀（清静默了解）。
+#[derive(Clone, Copy)]
+enum DerivedForgetScope {
+    All,
+    Understanding,
+}
+
+/// 清除派生来源沉淀的记忆（与遗忘同一闭包口径）。`scope` 决定圈定的来源子集：
+/// `All` = 全部 `origin='derived_behavior'` 来源（画像结论 + 静默了解观察）；
+/// `Understanding` = 其中的 `entry_id` 以 `understanding:` 开头的来源（静默了解沉淀），
+/// 画像结论（`conclusion:` 前缀）不在范围内。
 ///
 /// 顺序固定为「先失效引用、再删数据」：
-/// 1. 收集全部派生条目（含已 supersede 的历史版本）→ 失效主动侧对它们的引用；
-/// 2. 对**全部** derived_behavior 来源写提取墓碑（不只被在库条目引用的那些）：
-///    挡住评审期间 in-flight 候选的发布，也挡住同一结论文本的迟到回灌；
-/// 3. 删引用派生来源的 prepared 候选（与遗忘的候选口径一致）；
+/// 1. 收集范围内的派生条目（含已 supersede 的历史版本）→ 失效主动侧对它们的引用；
+/// 2. 对**范围内全部**派生来源写提取墓碑（不只被在库条目引用的那些）：
+///    挡住评审期间 in-flight 候选的发布，也挡住同一文本的迟到回灌；
+/// 3. 删引用范围内来源的 prepared 候选（与遗忘的候选口径一致）；
 /// 4. 删条目（全版本）、来源关联与 FTS 行；
 /// 5. 删已无引用的墓碑来源行；
 /// 6. 推进 forget_epoch（在飞作业的发布复核因此拒绝）与 revision（运行侧刷新记忆投影）。
 ///
-/// 返回失效的条目数；库里没有任何派生数据时不动 epoch/revision（不做空转）。
-/// 由主动侧 `proactive_change` 的 `clearBehaviorSources` 事务调用（与任务/机会/尝试
-/// 的按 kind 失效同一时刻发生），不在 Node 侧另造第二套清除链。
-pub(crate) fn forget_derived_behavior_items_tx(tx: &Transaction<'_>) -> AppResult<usize> {
+/// 返回失效的条目数；范围内没有任何数据时不动 epoch/revision（不做空转）。
+/// `All` 由主动侧 `proactive_change` 的 `clearBehaviorSources` 事务调用（与任务/机会/尝试
+/// 的按 kind 失效同一时刻发生）；`Understanding` 由 `memory_apply_change` 的
+/// `forget_understanding` 动作调用（清除静默了解）——两条入口共用这一份闭包实现，
+/// 不在 Node 侧另造第二套清除链。
+fn forget_derived_items_scoped_tx(tx: &Transaction<'_>, scope: DerivedForgetScope) -> AppResult<usize> {
+    // 同一段圈定条件按使用处补别名前缀；reason 逐范围区分，便于墓碑溯源（过滤只看 effect）。
+    let (source_filter, final_filter, reason) = match scope {
+        DerivedForgetScope::All => (
+            "s.origin='derived_behavior'",
+            "origin='derived_behavior'",
+            "behavior_clear",
+        ),
+        DerivedForgetScope::Understanding => (
+            "s.origin='derived_behavior' AND s.entry_id LIKE 'understanding:%'",
+            "origin='derived_behavior' AND entry_id LIKE 'understanding:%'",
+            "understanding_clear",
+        ),
+    };
     let now = now_ms();
     let epoch = MemoryStore::meta(tx, "forget_epoch")? + 1;
-    // 1. 在库派生条目（active 与历史版本都算）：先失效主动侧引用。
+    // 1. 范围内在库条目（active 与历史版本都算）：先失效主动侧引用。
     let mut item_ids: Vec<String> = Vec::new();
     {
         let mut statement = tx
-            .prepare(
+            .prepare(&format!(
                 "SELECT DISTINCT i.id FROM memory_items i WHERE EXISTS (\
                    SELECT 1 FROM memory_item_sources l JOIN memory_sources s ON s.source_id=l.source_id \
-                   WHERE l.item_id=i.id AND s.origin='derived_behavior')",
-            )
+                   WHERE l.item_id=i.id AND {source_filter})",
+            ))
             .map_err(db_err)?;
         let rows = statement
             .query_map([], |row| row.get::<_, String>(0))
@@ -2499,17 +2669,19 @@ pub(crate) fn forget_derived_behavior_items_tx(tx: &Transaction<'_>) -> AppResul
     for item_id in &item_ids {
         crate::proactive::store::invalidate_memory_closure_tx(tx, item_id)?;
     }
-    // 2. 墓碑：覆盖全部派生来源，发布复核与重新登记都会被拦下。
+    // 2. 墓碑：覆盖范围内全部来源，发布复核与重新登记都会被拦下。
     tx.execute(
-        "INSERT INTO memory_tombstones(session_id,entry_id,content_hash,effect,reason,forget_epoch,created_at) \
-         SELECT s.session_id,s.entry_id,s.content_hash,'block_extraction','behavior_clear',?1,?2 FROM memory_sources s \
-         WHERE s.origin='derived_behavior' ON CONFLICT DO NOTHING",
-        params![epoch, now],
+        &format!(
+            "INSERT INTO memory_tombstones(session_id,entry_id,content_hash,effect,reason,forget_epoch,created_at) \
+             SELECT s.session_id,s.entry_id,s.content_hash,'block_extraction',?3,?1,?2 FROM memory_sources s \
+             WHERE {source_filter} ON CONFLICT DO NOTHING",
+        ),
+        params![epoch, now, reason],
     )
     .map_err(db_err)?;
     let remaining: i64 = tx
         .query_row(
-            "SELECT COUNT(*) FROM memory_sources WHERE origin='derived_behavior'",
+            &format!("SELECT COUNT(*) FROM memory_sources WHERE {final_filter}"),
             [],
             |row| row.get(0),
         )
@@ -2517,11 +2689,13 @@ pub(crate) fn forget_derived_behavior_items_tx(tx: &Transaction<'_>) -> AppResul
     if remaining == 0 && item_ids.is_empty() {
         return Ok(0);
     }
-    // 3. 候选：引用派生来源的评审产物一并删除。
+    // 3. 候选：引用范围内来源的评审产物一并删除。
     tx.execute(
-        "DELETE FROM memory_candidates WHERE status='prepared' AND EXISTS (\
-           SELECT 1 FROM json_each(memory_candidates.source_ids_json) c JOIN memory_sources s ON s.source_id=c.value \
-           WHERE s.origin='derived_behavior')",
+        &format!(
+            "DELETE FROM memory_candidates WHERE status='prepared' AND EXISTS (\
+               SELECT 1 FROM json_each(memory_candidates.source_ids_json) c JOIN memory_sources s ON s.source_id=c.value \
+               WHERE {source_filter})",
+        ),
         [],
     )
     .map_err(db_err)?;
@@ -2536,8 +2710,10 @@ pub(crate) fn forget_derived_behavior_items_tx(tx: &Transaction<'_>) -> AppResul
     }
     // 5. 来源行：墓碑已写、且不再被任何条目引用时删除。
     tx.execute(
-        "DELETE FROM memory_sources WHERE origin='derived_behavior' AND NOT EXISTS(\
-           SELECT 1 FROM memory_item_sources keep WHERE keep.source_id=memory_sources.source_id)",
+        &format!(
+            "DELETE FROM memory_sources WHERE {final_filter} AND NOT EXISTS(\
+               SELECT 1 FROM memory_item_sources keep WHERE keep.source_id=memory_sources.source_id)",
+        ),
         [],
     )
     .map_err(db_err)?;
@@ -2545,6 +2721,16 @@ pub(crate) fn forget_derived_behavior_items_tx(tx: &Transaction<'_>) -> AppResul
     MemoryStore::bump(tx, "forget_epoch")?;
     MemoryStore::bump(tx, "revision")?;
     Ok(item_ids.len())
+}
+
+/// 清除行为画像时一并失效「系统观察」沉淀的记忆（画像结论 + 静默了解观察，全量范围）。
+pub(crate) fn forget_derived_behavior_items_tx(tx: &Transaction<'_>) -> AppResult<usize> {
+    forget_derived_items_scoped_tx(tx, DerivedForgetScope::All)
+}
+
+/// 清除静默了解时失效「了解观察」沉淀的记忆（画像结论不受影响；与清画像共用同一闭包实现）。
+pub(crate) fn forget_understanding_items_tx(tx: &Transaction<'_>) -> AppResult<usize> {
+    forget_derived_items_scoped_tx(tx, DerivedForgetScope::Understanding)
 }
 
 /// id 后缀（条目 / 作业 / 候选三类 id 共用）：`计数器-亚毫秒`，两部分都用十六进制。

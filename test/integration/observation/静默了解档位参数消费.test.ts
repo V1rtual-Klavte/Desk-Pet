@@ -2,15 +2,18 @@
 // 静默了解档位参数消费（ai.silentAccess.frequency）
 // ==========================================
 //
-// 调度器不再使用模块常量（旧：两批至少隔 30min / 空闲要求 30min / 每小时 6 次读取 /
-// 每日 4 批），四个参数改从档位表取 `silentTierLimits(tier)` 的
-// minBatchGapMs / idleRequiredMs / maxReadsPerHour / dailyBatches。
-// 本文件用真实调度器验证这四个参数确实被消费：
-//   · 中档：空闲差 1ms 不开批，达标后开批并按中档每日 8 批预留（旧常量 30min + 4 批会红）；
-//   · 低档：每小时 4 个读取名额被占满 → 跳过决策调用只做整理（旧常量 6 会多出决策调用）；
-//   · 高档：距上次尝试 16 分钟即可再开批、按 12 批预留；同一 16 分钟时间戳在中档被
+// 2026-10-06 固定钟点裁决后：调度器按档位钟点表触发（低 12/20、中 10/14/18/22、
+// 高 9/11/13/15/17/19），不再要求系统空闲；每日批数上限 = 钟点表轮数（2/4/6），
+// 防重间隔仍取档位表（低 2h / 中 30min / 高 15min）。
+// 本文件用真实调度器验证档位参数确实被消费：
+//   · 中档：钟点判定为假时不开批；判定为真后开批并按中档 4 轮预留（旧 8 批会红）；
+//   · 低档：每小时读取名额（4）占满 → 跳过决策调用只做整理；每日 2 轮预留；
+//   · 高档：距上次尝试 16 分钟即可再开批、按 6 轮预留；同一 16 分钟时间戳在中档被
 //     30 分钟间隔挡住（两个档位的间隔值各自被消费）；
 //   · off：调度器不启动、话题入口不开启。
+// 钟点判定本身（到点/未到点/同钟点不重复/静默时段排除/三档表）由 L2 单测
+// `test/unit/observation/钟点调度判定.test.ts` 见证；这里把 `@/services/proactive/schedule`
+// 的判定替换为可切换的桩，让本文件的断言不依赖测试运行时的真实钟点。
 //
 // 归属 L3：调度器链经 engine/harness 的 completePiText 与真 store 落盘。
 // 窗口观察与运行活动用替身注入（get_runtime_activity 在 Node 宿主是 Rust 专属命令），
@@ -29,9 +32,15 @@ vi.mock("@/services/proactive/auxiliary-budget", () => ({
   settleAuxiliaryBudget: budget.settle,
 }))
 
+/** 钟点判定桩：真实判定由 L2 单测见证，这里只切换「到点 / 未到点」两态。 */
+const schedule = vi.hoisted(() => ({ due: true }))
+vi.mock("@/services/proactive/schedule", async importOriginal => {
+  const actual = await importOriginal<typeof import("@/services/proactive/schedule")>()
+  return { ...actual, scheduledSlotDue: () => schedule.due }
+})
+
 /** 窗口观察与运行活动的替身状态：各用例在启动调度器前填好。 */
 const windowState = vi.hoisted(() => ({
-  idleForMs: null as number | null,
   observation: null as Record<string, unknown> | null,
 }))
 vi.mock("@/services/window", async importOriginal => {
@@ -41,7 +50,7 @@ vi.mock("@/services/window", async importOriginal => {
     getLatestWindowObservation: () => windowState.observation,
     getRuntimeActivity: async () => ({
       isPetVisible: true, isPetForeground: false, screenState: "observed" as const,
-      idleForMs: windowState.idleForMs, observedAt: Date.now(),
+      idleForMs: null, observedAt: Date.now(),
     }),
   }
 })
@@ -118,12 +127,11 @@ async function installBatchResponses() {
 beforeEach(() => {
   budget.reserve.mockClear()
   budget.settle.mockClear()
-  windowState.idleForMs = null
+  schedule.due = true
 })
 
 describe("静默了解档位参数消费", () => {
   it("off 档：调度器不启动、话题入口不开启 [silent-tier-off]", async () => {
-    windowState.idleForMs = 24 * 3600_000
     const { observation } = await bootObservation("off")
     observation.startSilentUnderstanding()
     await sleep(50)
@@ -138,23 +146,23 @@ describe("静默了解档位参数消费", () => {
     await observation.stopSilentUnderstanding()
   })
 
-  it("中档：空闲差 1ms 不开批，达标后按中档名额（每日 8 批）预留 [silent-tier-medium-limits]", async () => {
-    const below = await bootObservation("medium")
-    windowState.idleForMs = 3_600_000 - 1
-    below.observation.startSilentUnderstanding()
+  it("中档：未到点不开批；到点后按钟点表轮数（4）预留 [silent-tier-medium-limits]", async () => {
+    const notDue = await bootObservation("medium")
+    schedule.due = false
+    notDue.observation.startSilentUnderstanding()
     await sleep(60)
-    expect(budget.reserve, "差 1ms 达标仍开批（空闲要求没有按档位取）").not.toHaveBeenCalled()
-    await below.observation.stopSilentUnderstanding()
+    expect(budget.reserve, "钟点判定未命中仍开批（到点判定没有生效）").not.toHaveBeenCalled()
+    await notDue.observation.stopSilentUnderstanding()
 
-    const ready = await bootObservation("medium")
+    const due = await bootObservation("medium")
     const provider = await installBatchResponses()
-    windowState.idleForMs = 3_600_000
-    ready.observation.startSilentUnderstanding()
+    schedule.due = true
+    due.observation.startSilentUnderstanding()
     await waitFor(() => budget.reserve.mock.calls.length > 0)
-    expect(budget.reserve.mock.calls[0]?.[0], "每日批数没有取中档的 8").toMatchObject({ kind: "observation", dailyLimit: 8 })
+    expect(budget.reserve.mock.calls[0]?.[0], "每日批数没有取中档钟点表的 4 轮").toMatchObject({ kind: "observation", dailyLimit: 4 })
     await waitFor(() => provider.payloads.length >= 2)
     expect(provider.payloads.length, "一批 = 决策 + 整理两次辅助调用").toBe(2)
-    await ready.observation.stopSilentUnderstanding()
+    await due.observation.stopSilentUnderstanding()
     provider.restore()
   })
 
@@ -162,10 +170,9 @@ describe("静默了解档位参数消费", () => {
     const now = Date.now()
     const { observation } = await bootObservation("low", { readAttempts: [now - 1, now - 2, now - 3, now - 4] })
     const provider = await installBatchResponses()
-    windowState.idleForMs = 7_200_000
     observation.startSilentUnderstanding()
     await waitFor(() => budget.reserve.mock.calls.length > 0)
-    expect(budget.reserve.mock.calls[0]?.[0], "每日批数没有取低档的 4").toMatchObject({ kind: "observation", dailyLimit: 4 })
+    expect(budget.reserve.mock.calls[0]?.[0], "每日批数没有取低档钟点表的 2 轮").toMatchObject({ kind: "observation", dailyLimit: 2 })
     await waitFor(() => provider.payloads.length >= 1)
     // 本批的模型调用全部发生在结算之前：以结算为稳定哨兵替代定睡，
     // 批次收尾后才做「不多不少一次」的负断言，不再赌错误路径晚于定睡窗口到达。
@@ -178,17 +185,16 @@ describe("静默了解档位参数消费", () => {
   it("高档：16 分钟前有尝试即可再开批；同一时间戳在中档被间隔挡住 [silent-tier-gap]", async () => {
     const high = await bootObservation("high", { lastAttemptAt: Date.now() - 16 * 60_000 })
     const provider = await installBatchResponses()
-    windowState.idleForMs = 1_800_000
     high.observation.startSilentUnderstanding()
     await waitFor(() => budget.reserve.mock.calls.length > 0)
-    expect(budget.reserve.mock.calls[0]?.[0], "每日批数没有取高档的 12").toMatchObject({ kind: "observation", dailyLimit: 12 })
+    expect(budget.reserve.mock.calls[0]?.[0], "每日批数没有取高档钟点表的 6 轮").toMatchObject({ kind: "observation", dailyLimit: 6 })
     await high.observation.stopSilentUnderstanding()
     provider.restore()
 
-    // 同样的「16 分钟前尝试」在中档（间隔 30 分钟）必须被挡住：证明间隔值来自档位而非常量。
+    // 同样的「16 分钟前尝试」在中档（间隔 30 分钟）必须被挡住：证明间隔值来自档位而非常量
+    //（高档那批已占掉一次 reserve 调用）。
     const medium = await bootObservation("medium", { lastAttemptAt: Date.now() - 16 * 60_000 })
     const mediumProvider = await installBatchResponses()
-    windowState.idleForMs = 3_600_000
     medium.observation.startSilentUnderstanding()
     await sleep(80)
     expect(budget.reserve, "中档在 30 分钟间隔内开了新批").toHaveBeenCalledTimes(1)

@@ -23,7 +23,8 @@ import { initConfig } from "@/services/config"
 import { setHostBridge } from "@/services/host"
 import type { HostBridge, HostCommandMap } from "@/services/host"
 import { initPaths } from "@/services/paths"
-import { PI_LANE, acquirePiSession, createPiSession, deleteSession, initSessions, resetPiSessionLayerForTest } from "@/services/session"
+import { PI_LANE, acquirePiSession, createPiSession, deleteSession, initSessions, readPiSessionEntries, resetPiSessionLayerForTest } from "@/services/session"
+import { appendTopicEvidence, hasTopicSource } from "@/services/observation/store"
 
 const HOISTED = vi.hoisted(() => ({
   calls: [] as Array<{ paths: string[] }>,
@@ -202,5 +203,25 @@ describe("deleteSession 与托管聊天图片清理", () => {
     await expect(deleteSession(sessionId)).resolves.toBe(true)
 
     expect(HOISTED.calls).toHaveLength(0)
+  })
+
+  it("删会话不再作废该会话产生的话题来源（证据独立存活到 TTL）[session-delete-keeps-topics]", async () => {
+    // 2026-10-06 用户裁决：删会话不再触发 invalidateTopicSources —— 话题证据只由显式治理
+    // （清除静默了解 / 记忆遗忘）与自身 TTL 决定去留。旧实现的删除路径会把该会话用户条目
+    // 派生的话题来源全部作废（实机：删测试会话 → 话题来源全灭），本用例锚定这一行为。
+    const sessionId = await seedSession("话题会话", [[]])
+    const entries = await readPiSessionEntries(sessionId)
+    const userEntry = entries.find(entry => entry.type === "message" && entry.message.role === "user")
+    expect(userEntry, "会话里没有可用于话题来源的用户条目").toBeDefined()
+
+    // 与 @/services/observation/topics 的 sourceIdFor 同算法：来源身份 = SHA-256(sessionId 换行 entryId) 前 16 字节。
+    const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(`${sessionId}\n${userEntry!.id}`))
+    const sourceId = `topic-${[...new Uint8Array(digest)].slice(0, 16).map(value => value.toString(16).padStart(2, "0")).join("")}`
+    await appendTopicEvidence([{ topic: "rust", weight: 1, sourceId, observedAt: Date.now() }])
+    expect(hasTopicSource(sourceId), "话题证据未写入（夹具失效）").toBe(true)
+
+    await expect(deleteSession(sessionId)).resolves.toBe(true)
+
+    expect(hasTopicSource(sourceId), "删会话把该会话产生的话题来源一并作废了").toBe(true)
   })
 })

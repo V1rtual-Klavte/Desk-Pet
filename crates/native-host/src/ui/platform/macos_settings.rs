@@ -45,7 +45,8 @@ use crate::ui::settings::panels::{
 use crate::ui::settings::schema::{Field, FieldKind, TABS};
 use crate::ui::settings::{
     dynamic_field_hint, settings_ui, tab_index_for_tag, DocumentContent, DocumentState,
-    DocumentTarget, NoticeLevel, SettingsUi, SettingsValue, SettingsView, ShortcutModifiers,
+    DocumentTarget, MemoryPager, NoticeLevel, SettingsUi, SettingsValue, SettingsView,
+    ShortcutModifiers,
 };
 use crate::ui::theme::{self, paint, Rgba, Tokens};
 use crate::{rust_debug, rust_info, rust_warn};
@@ -149,6 +150,11 @@ const ROW_TAG_BASE: isize = 10_000;
 const DETAIL_TAG_BASE: isize = 20_000;
 /// 管理面「刷新」按钮 tag 段：`REFRESH_TAG_BASE + 页面下标`。
 const REFRESH_TAG_BASE: isize = 30_000;
+/// 「已记住」分页按钮 tag 段：`PAGER_TAG_BASE + 动作下标`（与其它 tag 段不重叠）。
+const PAGER_TAG_BASE: isize = 40_000;
+/// 记忆分页动作下标（tag = PAGER_TAG_BASE + 下标）。
+const PAGER_PREV: isize = 0;
+const PAGER_NEXT: isize = 1;
 /// 记忆详情动作下标（tag = DETAIL_TAG_BASE + 下标）。
 const DETAIL_ACTION_SAVE: isize = 0;
 const DETAIL_ACTION_PIN: isize = 1;
@@ -268,14 +274,15 @@ fn settings_layout(width: f64, height: f64) -> SettingsLayout {
 }
 
 /// 管理面行的 y 序列与行区结束 y（纯函数，可测）：首行 = `start_y`，
-/// 单个管理面行的行高：副标题框是「标题下 19 起、高 45（最多三行）」，
-/// 有副标题时行高加 30 容纳三行（否则长副标题被截、行与行会压到一起；
-/// 设计稿 `.srow` 是自适应高度，这里用「有/无副标题」两档近似）。
+/// 单个管理面行的行高：副标题框是「标题下 19 起、高 30（最多两行）」，有副标题时
+/// 行高加 18。2026-10-06 用户裁决收紧：原三行档（68）在单行副标题的列表里留下大片
+/// 空底、观感「散」，现按两行档（56），超两行的长副标题截断 —— 列表副标题是元信息，
+/// 两行足够（行底色见 [`Self::build_panel_row`]）。
 fn panel_row_height(row: &PanelRow) -> f64 {
     if row.subtitle.trim().is_empty() {
         PANEL_ROW_H
     } else {
-        PANEL_ROW_H + 30.0
+        PANEL_ROW_H + 18.0
     }
 }
 
@@ -1930,6 +1937,18 @@ define_class!(
             }
         }
 
+        /// 「已记住」翻页：上一页 / 下一页（页码收口在设置域；这里只回传方向）。
+        #[unsafe(method(memoryPagerClicked:))]
+        fn memory_pager_clicked(&self, sender: Option<&AnyObject>) {
+            let Some(sender) = sender else { return };
+            let tag: isize = unsafe { msg_send![sender, tag] };
+            match tag - PAGER_TAG_BASE {
+                PAGER_PREV => settings_ui().step_memory_page(-1),
+                PAGER_NEXT => settings_ui().step_memory_page(1),
+                other => rust_warn!("记忆分页没有对应按钮（tag={other}）"),
+            }
+        }
+
         /// 记忆详情按钮：保存纠正 / 核心画像标记 / 遗忘（遗忘先走原生确认）。
         #[unsafe(method(detailClicked:))]
         fn detail_clicked(&self, sender: Option<&AnyObject>) {
@@ -2835,8 +2854,12 @@ impl SettingsContentController {
                     y += 18.0;
                 }
                 let panels = settings_ui().memory_panels();
-                if let Some(items) = panels.first() {
-                    y = self.build_panel(mtm, stack, width, y, items, Some(REFRESH_MEMORY));
+                // 「已记住」的行 = 当前页切片（2026-10-06 分页裁决）；分页行只在
+                // 列表非空时出现（空态沿用面板的「（没有条目）」文案）。
+                let items_view = settings_ui().memory_items_view();
+                y = self.build_panel(mtm, stack, width, y, &items_view.panel, Some(REFRESH_MEMORY));
+                if let Some(pager) = &items_view.pager {
+                    y = self.build_memory_pager(mtm, stack, width, y, pager);
                 }
                 y = self.build_memory_detail(mtm, stack, width, y);
                 // 来源原话：逐条一行（点行展开那一条，再点收起），展开块固定高度可滚动。
@@ -2952,6 +2975,67 @@ impl SettingsContentController {
         );
         place(stack, &*button, MARGIN, y, 150.0, 26.0);
         self.push_panel_view(&button);
+        y + 34.0
+    }
+
+    /// 「已记住」分页行（`上一页` / `第 x / y 页 · 共 N 条` / `下一页`）。
+    ///
+    /// 只在列表非空时由调用方渲染（空态不加分页行，见记忆页分支）；页码与
+    /// 两枚按钮的可用性来自共享层的 [`MemoryPager`]（平台不自行算页数）。
+    /// 自绘面没有系统 bezel 的自动变灰：`setEnabled` 后按同一份面重贴一次
+    /// （`paint::style_button` 的禁用口径，同底部「保存」按钮的刷法）。
+    fn build_memory_pager(
+        &self,
+        mtm: MainThreadMarker,
+        stack: &FlippedView,
+        width: f64,
+        y: f64,
+        pager: &MemoryPager,
+    ) -> f64 {
+        let prev = themed_button(
+            mtm,
+            "上一页",
+            as_any(self),
+            sel!(memoryPagerClicked:),
+            ButtonRole::Form,
+        );
+        let next = themed_button(
+            mtm,
+            "下一页",
+            as_any(self),
+            sel!(memoryPagerClicked:),
+            ButtonRole::Form,
+        );
+        prev.setTag(PAGER_TAG_BASE + PAGER_PREV);
+        next.setTag(PAGER_TAG_BASE + PAGER_NEXT);
+        for (button, enabled) in [(&prev, pager.prev_enabled), (&next, pager.next_enabled)] {
+            button.setEnabled(enabled);
+            if let Some(face) = button_face(ButtonRole::Form) {
+                set_button_face(button, face);
+            }
+        }
+        place(stack, &*prev, MARGIN, y, PANEL_BTN_W, 26.0);
+        place(
+            stack,
+            &*next,
+            width - MARGIN - PANEL_BTN_W,
+            y,
+            PANEL_BTN_W,
+            26.0,
+        );
+        self.push_panel_view(&prev);
+        self.push_panel_view(&next);
+        let label = label(mtm, &pager.label, HELP_BASE_SIZE, Some(&dim()));
+        label.setAlignment(NSTextAlignment::Center);
+        place(
+            stack,
+            &*label,
+            MARGIN + PANEL_BTN_W + 8.0,
+            y + 5.0,
+            (width - MARGIN * 2.0 - (PANEL_BTN_W + 8.0) * 2.0).max(60.0),
+            16.0,
+        );
+        self.push_panel_view(&label);
         y + 34.0
     }
 
@@ -3123,12 +3207,26 @@ impl SettingsContentController {
             main_w
         };
         let text_width = (width - MARGIN * 2.0 - buttons_w - 8.0).max(120.0);
+        // 行底（2026-10-06 用户裁决）：`--fbg2` 族（`strip_bg`，标签行/状态行的浅底）
+        // 把相邻行分隔开 —— 原实现行间无底色，单行副标题的行看起来「散」。先推入，
+        // 后推的标题/副标题/按钮叠在其上。
+        let row_h = panel_row_height(row);
+        let bg = FlippedView::new(mtm, width - MARGIN * 2.0, row_h - 6.0);
+        bg.setWantsLayer(true);
+        if let Some(layer) = bg.layer() {
+            without_implicit_animation(|| {
+                paint::apply_fill(&layer, &theme::Fill::Solid(theme::tokens().strip_bg), true);
+                paint::set_corner_radius(&layer, f64::from(theme::tokens().radii.sm));
+            });
+        }
+        place(stack, &*bg, MARGIN, y + 3.0, width - MARGIN * 2.0, row_h - 6.0);
+        self.push_panel_view(&bg);
         let title = label(mtm, &row.title, BODY_BASE_SIZE, Some(&ink()));
         place(stack, &*title, MARGIN, y + 1.0, text_width, 18.0);
         self.push_panel_view(&title);
         if !row.subtitle.is_empty() {
-            let subtitle = wrapped_label(mtm, &row.subtitle, HELP_BASE_SIZE, Some(&dim()), 3);
-            place(stack, &*subtitle, MARGIN, y + 19.0, text_width, 45.0);
+            let subtitle = wrapped_label(mtm, &row.subtitle, HELP_BASE_SIZE, Some(&dim()), 2);
+            place(stack, &*subtitle, MARGIN, y + 19.0, text_width, 30.0);
             self.push_panel_view(&subtitle);
         }
         let mut button_x = width - MARGIN - main_w;
@@ -5000,9 +5098,9 @@ mod tests {
         let h1 = panel_row_height(&with_subtitle);
         let h0 = panel_row_height(&without);
         assert_eq!(h0, PANEL_ROW_H, "无副标题用基础行高");
-        assert_eq!(h1, PANEL_ROW_H + 30.0, "有副标题加高两行（三行上限）");
-        // 副标题内容底 = 行顶 + 19 + 45 = +64；下一行 y = 行高 68 → 不重叠。
-        assert!(h1 >= 64.0 + 4.0, "行高必须盖过三行副标题（64）且留行距");
+        assert_eq!(h1, PANEL_ROW_H + 18.0, "有副标题加高两行（两行上限，2026-10-06 收紧）");
+        // 副标题内容底 = 行顶 + 19 + 30 = +49；下一行 y = 行高 56 → 不重叠。
+        assert!(h1 >= 49.0 + 4.0, "行高必须盖过两行副标题（49）且留行距");
     }
 
     // ── ① 通知分档 / 底部状态行 ──

@@ -2,17 +2,18 @@
 // 记忆整理（dreaming）档位门禁与数值消费（ai.memory.dreaming.tier）
 // ==========================================
 //
-// 空闲调度器按档位表取值：
+// 定时调度器按档位表取值（2026-10-06 固定钟点裁决：不再要求系统空闲）：
 //   · off = 早退（不自动跑）；手动入口 `runDreamingSweep()` 不受档位影响；
-//   · idleSeconds：低 3600 / 中 1800 / 高 600 —— 差 1 秒不开、达标才开；
-//   · minIntervalMinutes：高档 30 分钟（1801 秒后可再跑；旧的 60 分钟常量会挡住）；
+//   · 钟点表：低 12/20、中 10/14/18/22、高 9/11/13/15/17/19 —— 到点才跑、
+//     同一钟点只跑一轮（追赶窗口 15 分钟）、表外钟点不跑、23–9 静默时段不跑；
+//   · minIntervalMinutes（240 / 60 / 30 分钟）保留为最小间隔防重；
 //   · 日 token 上限已撤除（2026-10-06 用户裁决，与主动链同批口径）：
 //     当日账烧过旧上限（低档 24000）后仍开作业，批次不再被 token 账中止；
 //     调度层不再读 token 账，token 的预留/结算照记（账照记、不作准入）。
 //
 // 边界替换：memory ipc（Rust 专属命令）与 engine/harness（模型调用）用替身挂住；
 // 假时钟推进 15s 轮询、固定本地日期；不触真 Provider、不触真 SQLite。
-// 每个用例 vi.resetModules() + 重装宿主桥：调度器的 lastIdleRunAt/idleSince 是模块状态，
+// 每个用例 vi.resetModules() + 重装宿主桥：调度器的 lastSweepRunAt 是模块状态，
 // reset 才能给每个档位场景干净的前提。
 import { mkdirSync, mkdtempSync, rmSync } from "node:fs"
 import { join } from "node:path"
@@ -59,9 +60,7 @@ const harness = vi.hoisted(() => ({
   resolvePiAuxModel: vi.fn((): { id: string; contextWindow: number; maxTokens: number } => {
     throw new Error("未进入 Review 的档位用例不应解析模型")
   }),
-  // AI 生成锁的真相源已从 `@/services/cooldown` 移居 harness（回合状态推导）；
-  // 桩必须跟着模块边界走，否则 dreaming 的 tick 会在 mock 上取不到导出而整体失败。
-  // false = 没有在飞的回合，正是本文件「空闲可跑」用例的前提。
+  // 调度器的固定钟点裁决已去掉「AI 生成中」排除；该名字供同模块图的其它链接期消费者保留。
   isAIGenerating: vi.fn(() => false),
 }))
 vi.mock("@/services/engine/harness", () => harness)
@@ -89,15 +88,15 @@ beforeEach(() => {
 })
 
 /**
- * 干净的模块世界 + 假时钟（固定本地日期 2026-10-05）+ 档位覆盖；
+ * 干净的模块世界 + 假时钟（默认固定本地 2026-10-05 12:00——低档的午间钟点）+ 档位覆盖；
  * budget 是 memory_dreaming_budget 快照的当日账（已被撤的门禁若回归，会从这里读到它）。
  * startMemoryJob 默认返回非 review 阶段：runDreamingSweep 会在阶段检查处干净早退，
  * 需要走 Review 的用例自己替换实现。
  */
-async function bootDreaming(tier: string, budget: { usedTokens: number; reservedTokens: number }) {
+async function bootDreaming(tier: string, budget: { usedTokens: number; reservedTokens: number }, at = new Date(2026, 9, 5, 12, 0, 0)) {
   vi.resetModules()
   vi.useFakeTimers()
-  vi.setSystemTime(new Date(2026, 9, 5, 12, 0, 0))
+  vi.setSystemTime(at)
   const { installNodeHostBridge } = await import("../../host/install-node-bridge")
   installNodeHostBridge()
   const nodeIpc = await import("../../host/node-ipc")
@@ -138,7 +137,7 @@ async function advance(ms: number): Promise<void> {
 }
 
 describe("记忆整理档位门禁", () => {
-  it("off 档：空闲调度器早退；手动入口不受档位影响 [dreaming-tier-off]", async () => {
+  it("off 档：定时调度器早退；手动入口不受档位影响 [dreaming-tier-off]", async () => {
     const dreaming = await bootDreaming("off", { usedTokens: 0, reservedTokens: 0 })
     dreaming.startIdleDreamingScheduler()
     await advance(2 * 3600_000)
@@ -152,18 +151,30 @@ describe("记忆整理档位门禁", () => {
     expect(outcome.status).toBe("failed")
   })
 
-  it("中档：空闲差 1 秒不开作业，满 30 分钟才开 [dreaming-tier-medium-idle]", async () => {
-    const dreaming = await bootDreaming("medium", { usedTokens: 0, reservedTokens: 0 })
+  it("中档：到点才开作业，同一钟点只跑一轮，下一钟点再跑 [dreaming-tier-medium-slots]", async () => {
+    // 09:00 起：中档钟点是 10/14/18/22——09:00 不在表内。
+    const dreaming = await bootDreaming("medium", { usedTokens: 0, reservedTokens: 0 }, new Date(2026, 9, 5, 9, 0, 0))
     dreaming.startIdleDreamingScheduler()
-    await advance(1_799_000)
-    expect(ipc.startMemoryJob, "未满空闲阈值仍开了作业（旧 120 秒常量会放过）").not.toHaveBeenCalled()
-    await advance(2_000)
-    expect(ipc.startMemoryJob, "空闲达标后没有开作业").toHaveBeenCalledTimes(1)
+    await advance(3_599_250) // 09:59:59.250：未到 10:00 钟点
+    expect(ipc.startMemoryJob, "未到钟点仍开了作业").not.toHaveBeenCalled()
+    await advance(1_000) // 越过 10:00 钟点（追赶窗口内）
+    expect(ipc.startMemoryJob, "到点后没有开作业").toHaveBeenCalledTimes(1)
     expect(ipc.startMemoryJob).toHaveBeenCalledWith("review")
+    await advance(800_000) // 10:13:20：同一钟点窗口内不再开第二轮
+    expect(ipc.startMemoryJob, "同一钟点开了第二轮").toHaveBeenCalledTimes(1)
+    await advance(13_599_750) // 14:00：下一个钟点
+    expect(ipc.startMemoryJob, "下一个钟点没有开第二轮").toHaveBeenCalledTimes(2)
+  })
+
+  it("静默时段（23–9）不开作业 [dreaming-tier-quiet-hours]", async () => {
+    const dreaming = await bootDreaming("medium", { usedTokens: 0, reservedTokens: 0 }, new Date(2026, 9, 5, 3, 0, 0))
+    dreaming.startIdleDreamingScheduler()
+    await advance(2 * 3600_000) // 03:00 → 05:00 全在静默时段
+    expect(ipc.startMemoryJob, "静默时段仍开了作业").not.toHaveBeenCalled()
   })
 
   it("低档：当日账已烧过旧上限（30000 > 24000）仍开作业，token 账照记 [dreaming-tier-low-values]", async () => {
-    const dreaming = await bootDreaming("low", { usedTokens: 30_000, reservedTokens: 0 })
+    const dreaming = await bootDreaming("low", { usedTokens: 30_000, reservedTokens: 0 }) // 12:00 = 低档钟点
     // 让本次作业真正开进 Review：旧实现会在调度门禁处因 token 账超限直接不开。
     ipc.startMemoryJob.mockImplementation(async () => ({ id: "job-review", revision: 1, phase: "review", processed: 0 }))
     ipc.memoryJobSources.mockResolvedValue([{
@@ -189,15 +200,14 @@ describe("记忆整理档位门禁", () => {
     expect(ipc.commitMemoryDreamingJob, "作业没有走完提交（批次被 token 账中止了）").toHaveBeenCalledTimes(1)
   })
 
-  it("高档：10 分钟空闲即可跑，且 1801 秒后可再跑（间隔 30 分钟档位值）[dreaming-tier-high-values]", async () => {
-    const dreaming = await bootDreaming("high", { usedTokens: 0, reservedTokens: 0 })
+  it("高档：09:00 到点开跑，表外钟点（10:00）不跑，11:00 再跑 [dreaming-tier-high-slots]", async () => {
+    const dreaming = await bootDreaming("high", { usedTokens: 0, reservedTokens: 0 }, new Date(2026, 9, 5, 9, 0, 0))
     dreaming.startIdleDreamingScheduler()
-    await advance(601_000)
-    expect(ipc.startMemoryJob, "高档 10 分钟空闲没有开第一次作业").toHaveBeenCalledTimes(1)
-    // 第一次在 t=600s 触发；到 t=2385s（距上次 1785 秒 < 1800）不得开第二次。
-    await advance(1_785_000)
-    expect(ipc.startMemoryJob, "高档在 30 分钟间隔未满时开了第二次作业").toHaveBeenCalledTimes(1)
-    await advance(15_000) // t=2400s：距上次 1800 秒，满档位间隔
-    expect(ipc.startMemoryJob, "高档 30 分钟间隔已满仍没有第二次作业（旧 60 分钟常量会挡住）").toHaveBeenCalledTimes(2)
+    await advance(15_000) // 启动即 tick：09:00 是高档钟点
+    expect(ipc.startMemoryJob, "高档 09:00 没有开第一次作业").toHaveBeenCalledTimes(1)
+    await advance(3_585_000) // 10:00：表外钟点
+    expect(ipc.startMemoryJob, "高档在表外钟点（10:00）开了作业").toHaveBeenCalledTimes(1)
+    await advance(3_600_000) // 11:00：下一个钟点
+    expect(ipc.startMemoryJob, "高档 11:00 没有开第二次作业").toHaveBeenCalledTimes(2)
   })
 })

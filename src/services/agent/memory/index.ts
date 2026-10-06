@@ -9,7 +9,7 @@
 import { initPaths } from "@/services/paths"
 import { getHostBridge } from "@/services/host"
 import { createLogger } from "@/services/logger"
-import { formatError } from "@/services/error"
+import { errorCode, formatError } from "@/services/error"
 import { installMemoryProvider, sqliteMemoryProvider, recallMemory } from "./provider"
 import { memoryList, memoryStatus, applyMemoryChange } from "./ipc"
 
@@ -34,9 +34,9 @@ export type {
   MemoryCandidateDraft, MemoryChangeRequest, MemoryDreamingBudget, MemoryDraft, MemoryHistoryEntry, MemoryItem,
   MemoryJob, MemoryJobListItem, MemoryKind, MemoryOrigin, MemoryRecallCandidateSnapshot, MemoryRestorePreview, MemoryScope, MemorySource, MemorySourceAudit, MemoryStatus, MemoryStatusSnapshot, WorkingState,
 } from "./ipc"
-export { collectAllMemorySources, collectBehaviorMemorySources, collectMemorySources, trustedSourcesFromEntries } from "./sources"
+export { collectAllMemorySources, collectBehaviorMemorySources, collectUnderstandingMemorySources, collectMemorySources, trustedSourcesFromEntries } from "./sources"
 export { resolveCurrentTrustedMemorySource } from "./sources"
-export { DERIVED_BEHAVIOR_ORIGIN, isDerivedBehaviorSource } from "./sources"
+export { DERIVED_BEHAVIOR_ORIGIN, isDerivedBehaviorSource, UNDERSTANDING_ALIAS_PREFIX, UNDERSTANDING_MAX_ENTRIES } from "./sources"
 export { buildDerivedCandidates, runDreamingSweep, startIdleDreamingScheduler, stopIdleDreamingScheduler, stopIdleDreamingSchedulerAndWait, type DreamingOutcome } from "./dreaming"
 
 const log = createLogger("Memory")
@@ -113,6 +113,47 @@ export const MemoryService = {
   },
 
   refreshCount: refreshMemoryCount,
+}
+
+/**
+ * 「清除静默了解」的记忆闭包（Rust 单事务；没有了解数据时零写、不动遗忘代）：
+ * 给全部了解来源写提取墓碑（挡住迟到回灌与在飞候选发布）、删除对应条目/候选/索引、
+ * 推进 forget_epoch 与 revision —— 与清行为画像复用同一闭包口径，只是范围收在
+ * `understanding:` 来源（画像结论不受影响）。
+ *
+ * 基准版本冲突按既有 MEMORY_CONFLICT 语义处理：用最新 revision 重试一次，
+ * 仍冲突就如实抛出（不静默吞掉、不谎报清除成功）。
+ */
+export async function forgetUnderstandingDerivedMemory(): Promise<number> {
+  try {
+    await ensureInit()
+    let lastError: unknown
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      const { revision } = await memoryStatus()
+      try {
+        return await applyMemoryChange({
+          operationId: `forget-understanding-${crypto.randomUUID()}`,
+          baseRevision: revision,
+          action: "forget_understanding",
+          actor: "internal",
+        })
+      } catch (error) {
+        lastError = error
+        if (errorCode(error) !== "MEMORY_CONFLICT") throw error
+      }
+    }
+    throw lastError
+  } catch (error) {
+    // L3 的 Node 适配层没有记忆后端（memory_status 等 Rust-only 命令不可复现）：
+    // 此宿主没有可清的记忆，跳过是准确结论而非放行 —— 与 standard-setup
+    // 「无记忆后端时跳过清空」同一口径（错误识别同 native-ui 的 name 判定）。
+    // 其余错误照旧如实抛出：不静默吞掉、不谎报清除成功。
+    if ((error as { name?: string } | null)?.name === "UnsupportedInNodeError") {
+      log.info("此宿主没有记忆后端，跳过了解记忆闭包（L3 Node 适配层）")
+      return 0
+    }
+    throw error
+  }
 }
 
 if (typeof window !== "undefined") {
