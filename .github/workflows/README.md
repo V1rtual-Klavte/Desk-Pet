@@ -78,7 +78,8 @@ Actions 页面选 `Release` → Run workflow → 填一个**已存在**的 tag�
 |---|---|
 | `check:bundle` 报 tag 与 version 不一致 | 跑 `pnpm run version:set <tag 的版本>`，重新提交后再打 tag |
 | `check:bundle` 报 `productName` 不是 ASCII | 产物文件名会带中文，GitHub 上传时**静默剥掉非 ASCII 字符**，发布侧随即匹配不上自己的产物名、**`update.json` 的组件条目被跳过** —— CI 全绿但用户永远收不到更新。`productName` 保持 ASCII，界面里的中文名来自 UI 资源，不受影响 |
-| `update.json` 签名失败（update-feed: … 验签失败 / signer 报错） | 缺仓库 Secrets `TAURI_SIGNING_PRIVATE_KEY` / `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`（release.yml 映射给 cargo-packager 的 minisign signer），或密钥与 `packaging/update.json` 内嵌公钥不是一对。私钥与口令只在仓库 Secrets 里，不写入任何文件 |
+| `update.json` 签名失败（update-feed: … 验签失败 / signer 报错） | 缺仓库 Secrets `TAURI_SIGNING_PRIVATE_KEY` / `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`（release.yml 映射给 cargo-packager 的 minisign signer），或密钥与 `packaging/update.json` 内嵌公钥不是一对。私钥与口令只在仓库 Secrets 里，不写入任何文件。失败信息附**定位指纹**（`数据 <n> 字节 sha256=… · alg=… · keynum 与公钥一致/不一致`），据此分档：keynum **不一致** → 密钥不是一对（核对 Secret 与内嵌公钥）；keynum **一致**而主签名仍不过 → 签的不是那份字节，先查签名用的 cargo-packager 是不是 0.11.8（`Ensure cargo-packager 0.11.8` 步骤会在版本不符时重装，缓存里的旧二进制曾经绕过这条） |
+| macOS 打包报 `ERROR No matching IconType` | `desktop.json` 的 `icons` 里没有 `.icns`，而主图是 1024×1024 PNG：它是 2 的整数幂、不进缩小分支，于是按 density=1 去 `tauri-icns` 找 1024 槽位——该槽位不存在。补 `resources/icons/mascot-app-icon.icns`（`iconutil -c icns` 由 1024 主图生成）并保留 PNG（Windows 的 `find_ico()` 要回落取它） |
 | Release 没建出来 / 只有部分平台产物 | `publish` 只在两个平台都成功后跑（不会发半份 `update.json`）；看挂掉那个 build job 的日志 |
 | 打包报 create-dmg / DMG 相关错误 | macOS 侧预置的 create-dmg 校验失败或失效（固定 commit URL + sha256 在 release.yml 里；上游不可达时失败是刻意的） |
 | 本机想验一次打包 | 依次跑 `pnpm run build:harness`、`node .github/scripts/stage-node.mjs`、`cargo build --release -p native-host --bin native-host --bin deskpet-update-helper`、`cargo packager --release --config packaging/desktop.json`（需先 `cargo install cargo-packager --version 0.11.8 --locked`）；产物在 `packaging/dist/` |

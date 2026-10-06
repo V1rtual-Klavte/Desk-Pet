@@ -143,8 +143,19 @@ jobs:
           path: ~/.cargo/bin/cargo-packager*
           key: cargo-packager-0.11.8-${{ runner.os }}
 
-      - run: command -v cargo-packager >/dev/null 2>&1 || cargo install cargo-packager --version 0.11.8 --locked
+      # 版本必须核对，不能只查「有没有」：签名与验签口径都押在 0.11.8 与它 `--locked` 钉住的
+      # minisign 上。缓存里若躺着别的二进制（旧缓存命中、runner 预装），签名行为会与 CI 自己的
+      # 验签口径悄悄分叉——症状是「同一把钥匙、主签名却验不过」。版本不符就 --force 重装。
+      - name: Ensure cargo-packager 0.11.8
         shell: bash
+        run: |
+          set -euo pipefail
+          HAVE=$(cargo packager --version 2>/dev/null | awk '{print $2}' || true)
+          if [ "$HAVE" != "0.11.8" ]; then
+            echo "cargo-packager 版本为 ${HAVE:-未安装}，重装 0.11.8"
+            cargo install cargo-packager --version 0.11.8 --locked --force
+          fi
+          cargo packager --version
 
       # create-dmg 是 cargo-packager 生成 .dmg 的运行时依赖（首次使用会联网下载到
       # ~/Library/Caches/.cargo-packager）。这里以固定 commit 的 URL 预置并校验 sha256，

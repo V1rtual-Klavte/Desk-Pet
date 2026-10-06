@@ -111,12 +111,26 @@ function parseSignatureBlock(text) {
   }
 }
 
-/** 验签成功返回，失败即 fail closed（失败信息直接进 CI 日志）。 */
+/**
+ * 验签成功返回，失败即 fail closed（失败信息直接进 CI 日志）。
+ *
+ * 失败信息附**定位指纹**：数据长度与 sha256、签名算法、keynum 与公钥是否一致。三项合起来
+ * 足以把「密钥不是这把」「签的不是这份字节」「签名块形状不对」分开——只回一句「验签失败」，
+ * 远端 CI 上就只能靠重跑猜。指纹不含密钥材料：keynum 只报是否一致，不打印其值。
+ */
 function verifyOrFail(publicKeyB64, data, signatureBlock, context) {
   try {
     verifyMinisign(publicKeyB64, data, signatureBlock)
   } catch (error) {
-    fail(`${context} 验签失败: ${error.message}`)
+    const parts = [`数据 ${data.length} 字节 sha256=${sha256Hex(data)}`]
+    try {
+      const sig = parseSignatureBlock(signatureBlock)
+      const pub = parsePublicKey(publicKeyB64)
+      parts.push(`alg=${JSON.stringify(sig.alg)}`, `keynum 与公钥${sig.keynum.equals(pub.keynum) ? "一致" : "不一致"}`)
+    } catch {
+      // 有意静默：形状问题本身已由 error.message 说明，指纹能算多少算多少，没有第二留痕点。
+    }
+    fail(`${context} 验签失败: ${error.message}（${parts.join(" · ")}）`)
   }
 }
 
@@ -193,7 +207,14 @@ function runFragment(args) {
   const decoded = Buffer.from(raw, "base64").toString("utf8")
   const signature = decoded.startsWith("untrusted comment: ") ? decoded.trim() : raw
 
-  verifyOrFail(config.releasePublicKey, Buffer.from(envelopeBytes, "utf8"), signature, "新签名")
+  // 验签对象取**磁盘上那份字节**：签名覆盖的是文件，不是内存里的字符串。读回来验才是
+  // 「签了什么就验什么」，两者若因编码或换行处理分叉，这里当场就能说清而不只是「验签失败」。
+  const signedBytes = readFileSync(envelopePath)
+  const inMemoryBytes = Buffer.from(envelopeBytes, "utf8")
+  if (!signedBytes.equals(inMemoryBytes)) {
+    fail(`写盘 envelope 与内存字节不一致（${signedBytes.length} vs ${inMemoryBytes.length} 字节）：签名对象不可信`)
+  }
+  verifyOrFail(config.releasePublicKey, signedBytes, signature, "新签名")
 
   writeFileSync(outPath, JSON.stringify({ envelope: envelopeBytes, signature }, null, 2))
   rmSync(envelopePath, { force: true })

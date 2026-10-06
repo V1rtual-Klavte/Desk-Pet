@@ -7,7 +7,10 @@
   "description": "V1rtual Desk Pet 原生宿主 + 随包 Node（W0/W2 最小打包试验；cargo-packager 0.11.8）",
   "outDir": "dist",
   "binariesDir": "../target/release",
-  "icons": ["../resources/icons/mascot-app-icon-1024.png"],
+  "icons": [
+    "../resources/icons/mascot-app-icon.icns",
+    "../resources/icons/mascot-app-icon-1024.png"
+  ],
   "binaries": [
     {
       "path": "native-host",

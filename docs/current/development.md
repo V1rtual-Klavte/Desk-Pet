@@ -60,7 +60,9 @@ dev 与 release 的路径区分：
 - 体积参考（2026-10-06 本机 macOS arm64 实测）：随包 Node 闭包约 121 MB（已排除 include/share 约 62 MB、npm docs/man 约 2.5 MB、corepack 约 1.2 MB）；harness `main.mjs` 2.8 MB（esbuild `--minify --keep-names`，未压缩约 5.9 MB；生产栈追踪行号可用性下降，函数名经 `--keep-names` 保留）；`resources/defaults` 约 21 MB；Rust 二进制约 1.3 MB/枚。产物名由 `productName` 决定，**必须是 ASCII**（中文会被 GitHub 剥掉并让更新 feed 静默缺失）。
 - 发布验收：Release 资产中必须存在 `update.json`，且 `macos/aarch64` 与 `windows/x86_64` 两条 component（含 sha256 与 minisign 签名）齐备；缺一 `update-feed.mjs` 不汇总（见[工作流说明](../../.github/workflows/README.md)）。
 - 签名：安装包**未做**代码签名与公证（决策暂缓，首启按 README 的 Gatekeeper/SmartScreen 提示放行）；更新 feed 的制品哈希与 minisign 签名由 CI 现场生成并验签。
-- 图标：`resources/icons/`（`mascot-app-icon-1024.png` 主图 + `mascot-tray-44.png` 托盘模板图）；打包经 `desktop.json` 的 `icons`（cargo-packager 直接收 PNG、自动生成各平台图标），托盘模板图另经 `include_bytes!` 编译期嵌入宿主二进制（`ui/platform/macos.rs` 的 `tray_template_image`）。
+- 图标：`resources/icons/`（`mascot-app-icon.icns` 与 `mascot-app-icon-1024.png` 同一主图的两个形状 + `mascot-tray-44.png` 托盘模板图）；打包经 `desktop.json` 的 `icons`，托盘模板图另经 `include_bytes!` 编译期嵌入宿主二进制（`ui/platform/macos.rs` 的 `tray_template_image`）。
+  - **macOS 必须给 `.icns`、不能只给 1024 PNG**：cargo-packager 对单个 1024×1024 PNG 会直接报 `No matching IconType`（它是 2 的整数幂、不进入缩小分支，于是按 density=1 去 `tauri-icns` 找 1024 槽位——该槽位不存在）。`.icns` 走**原样复制**分支，不经过这套启发式；`.icns` 由 `iconutil -c icns` 从 1024 主图生成（本机 `cargo packager` 已 A/B 实测：只给 PNG 复现报错，加上 `.icns` 打包通过）。
+  - **Windows 仍取 PNG**：`find_ico()` 先找 `.ico`、回落到列表里的 `.png`，`.icns` 被跳过——所以列表里两者都要留。
 - 常见失败：tag 与三处 version 不一致（先跑 `pnpm run version:set <x.y.z>`）；暂存缺失（`pnpm run check:bundle --require-staging` 在打包前拦）。
 
 ## IPC 与窗口入口
