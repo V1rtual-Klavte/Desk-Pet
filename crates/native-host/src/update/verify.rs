@@ -137,8 +137,11 @@ QtKMXWyYcwdpZAlPF7tE2ENJkRd1ujvKjlj1m9RtHTBnZPa5WKU5uWRs5GoP5M/VqE81QFuMKI5k/SfN
     #[test]
     fn 另一把公钥的签名不被接受() {
         // 只有信任锚匹配才通过：换成别的（结构合法）公钥后同一签名必须失败。
+        // 用的是本应用真值那把公钥（packaging/update.json 的同值）：与本用例无关的
+        // 「另一把」身份只要求结构合法；不要用历史里那份 pk 体抄错一个字符的变体，
+        // 免得再被谁抄走。
         let other =
-            MinisignVerifier::new("RWQBS1lrNG3Ji1IlxfcL37gSCZAgz8ZqxCOIGuWMYKoCKFgNpaW2uAWE")
+            MinisignVerifier::new("RWQBS1lrNG3Ji1IlxfcL37gSCZAgz8ZqxCOIGuXMYKoCKFgNpaW2uAWE")
                 .unwrap();
         assert!(other.verify(b"test", VECTOR_SIGNATURE).is_err());
     }
