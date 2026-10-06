@@ -9,6 +9,10 @@
 // 画像、presence 与原生观察协议不相交，覆盖描述与当前实现一致。本批刷新同时包含另一会话
 // 的改动；本轮只做 coverage 描述与当前实现一致性核对（非逐行行为审计），未修订覆盖点，
 // 仅按当前源码刷新 sourceHash。
+// 2026-10-06 聊天图片批次（本批刷新）：sourceFiles 变化 —— crates/native-host/src/host/dispatch.rs
+// 新增一条 `chat_delete_session_images` 分派臂（命令矩阵 134→135），不在窗口采集、画像、
+// presence 与原生观察协议的路径上。bh-01..bh-06 逐点核对实现点仍在、覆盖描述与当前实现一致，
+// 未修订覆盖点，仅按当前源码刷新 sourceHash。
 import type { ModuleContract } from "../host/types"
 
 export const behaviorContract: ModuleContract = {
@@ -36,7 +40,7 @@ export const behaviorContract: ModuleContract = {
     "crates/native-host/src/host/dispatch.rs",
     "test/e2e/scenes/behavior/原生观察边界.scene.ts",
   ],
-  sourceHash: "6ddf565aef5679929dc2ba95f0cb7e426074f01911da4c1d702eb53d81fff451",
+  sourceHash: "6580a7803e3ee39c04c1c1e3cf9384c3e1b848e106251c177a24390376b6eb9f",
   coverage: [
     { id: "bh-01", feature: "窗口类别与画像指标", description: "应用分类优先稳定appId、未知保持unknown；日历窗口生成近30日画像与真实7日activity/focus，不以最近有数据的天数冒充自然周，未知时长不伪装为已知类别", why: "画像和机会必须有来源可解释，分类错误会伪造习惯与工作结论", layer: "unit", depth: "shallow", scenarios: ["behavior-app-classification", "behavior-metrics-source"] },
     { id: "bh-02", feature: "覆盖率与采样空窗", description: "无有效采集时间时质量为unavailable；至少3个有效观察日且覆盖率达到60%才可靠；原生事件驱动下采样间隔本身不再产生空窗 —— 连续 observed 之间整段回填，分段只被时钟回退与 locked/suspended 边界（锁屏、系统睡眠、显示器睡眠、会话切换）截断：边界之后的时长不再被回填为连续使用（不进入 observed 累计，也不累加 unobservedMs —— 盲区计数只保留给采集链自身缺陷：队列丢弃与时钟回退）", why: "采样中断不能被解释成连续工作或作息规律", layer: "unit", depth: "deep", scenarios: ["behavior-quality-threshold", "behavior-gap-no-fill"] },

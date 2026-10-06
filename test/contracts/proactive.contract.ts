@@ -65,8 +65,26 @@ import type { ModuleContract } from "../host/types"
 // 新增 pr-14（unit）登记静默时段三形态与派生窗口的 7 个 L2 caseId（W2-M1 清单）；pr-12 / pr-13
 // 的既有登记经对账通过（caseId 与 test/unit/proactive/规划子运行与输入.test.ts、test/integration/
 // proactive/规划子运行门禁.test.ts 逐一对应）。sourceHash 按当前源码复算。
+// 2026-10-06 上下文窗口默认值批次（analyze→刷新）：sourceFiles 变化 —— src/services/config.ts
+// （2f32519：所引 DEFAULT_CONTEXT_WINDOW 的值 131_072→262_144，config.ts 自身只改了引用注释，
+// getter 形状与读取键未动）。pr-01..pr-14 逐点核对：没有任何覆盖点描述上下文窗口默认值 /
+// contextMaxTokens（pr-04 的用量账本与 pr-12 的 token 封顶都不读该缺省），主动链行为面未变、
+// 描述经核对仍准确，未修订覆盖点；sourceFiles 无需增删（config.ts 已在列；budget.ts 不在列且
+// 主动链不直接消费它）。本契约此前被 config 批次留在 STALE，本批一并收口，sourceHash 按当前
+// 源码复算。
+// 2026-10-06 子运行接线修复批次（本批刷新）：sourceFiles 变化 ——
+// src/services/engine/harness/runtime.ts（规划子运行的 provider 准入经 createTurnSpec 转发后
+// 才真正被咨询；子运行 invisible sinks）与 src/services/proactive/scanner.ts（规划准入从未被
+// 咨询的路径新增 log.warn 留痕，此前完全静默）。pr-01..pr-14 逐点核对：pr-12 的规划输入/工具
+// 面与 pr-13 的表达侧 claim 门禁语义未变（修的是规划侧准入接线与静默路径留痕；该接线本身的
+// L3 覆盖登记在 agent-runtime 的 ar-26），其余点不在改动面内、实现点仍在，未修订覆盖点，
+// 仅按当前源码刷新 sourceHash。
+// 2026-10-06 估算偏差口径修正批次（本批刷新）：sourceFiles 变化 ——
+// src/services/engine/harness/runtime.ts（估算偏差对账口径；主动链机会、调度与投影未动）。
+// pr-01..pr-14 逐点核对实现点仍在、覆盖描述与当前实现一致，未修订覆盖点，仅按当前源码
+// 刷新 sourceHash。
 export const proactiveContract:ModuleContract={
-  module:"proactive",sourceHash: "1ada964328a88614e61b03c2529b15e718d95f5bd3c6b56a2d055ec993ba2312",
+  module:"proactive",sourceHash: "49c7c32c88410c59a8e8c284f75a3879a2987c0ff942d2d10e19ff328196a38d",
   sourceFiles:["src/services/proactive/config.ts","src/services/proactive/index.ts","src/services/proactive/scanner.ts","src/services/proactive/opportunities.ts","src/services/proactive/time.ts",
     "src/services/proactive/planner.ts","src/services/proactive/delivery.ts","src/services/proactive/ipc.ts","src/services/proactive/auxiliary-budget.ts","src/services/proactive/control.ts","src/services/proactive/protocol.json",
     "src/services/proactive/protocol.ts","src/services/proactive/tiers.ts","src/services/proactive/trace.ts","src/services/proactive/types.ts","src/services/proactive/presence.ts","src/services/proactive/usage.ts",

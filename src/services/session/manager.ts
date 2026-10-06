@@ -4,6 +4,7 @@ import { invalidatePermissionScope } from "@/services/safety"
 // 会话列表与正文以 sessions/ 下的 JSONL 仓库为真相源；index.json 只承载 UI 状态。
 // ==========================================
 
+import type { Entry } from "@earendil-works/pi-agent-core"
 import type { Message } from "@/services/agent/types"
 import type { SessionMeta } from "./store"
 import {
@@ -27,7 +28,8 @@ import { formatError, reportError } from "@/services/error"
 import { harnessSlots, readActiveAttemptAssociations } from "@/services/engine/harness"
 import { cancelSessionPlans } from "@/services/engine/plan-confirmation"
 import { cancelSession as cancelHumanizerSession } from "@/services/humanizer"
-import { prepareImagePaths } from "@/services/images"
+import { getMessageImagePaths, prepareImagePaths } from "@/services/images"
+import { getHostBridge } from "@/services/host"
 import { summarizeUnanswered } from "@/services/interaction"
 // 会话读模型变化信号（零依赖叶子）：原生 UI 推送侧据此重推会话侧投影帧（A2）。
 import { notifySessionChanged } from "@/services/native-ui/session-signal"
@@ -308,11 +310,44 @@ export async function deleteSession(sessionId: string): Promise<boolean> {
       removeSessionHistory(sessionId)
       // 历史列表也变了：再推一帧（读模型是整帧快照，重复推幂等）。
       notifySessionChanged()
+      // 文件确实删掉之后再清理该会话的托管聊天图片（不出「文件没删掉却清了图」）。
+      await deleteSessionChatImages(sessionId, sourceEntries)
     }
     return deleted
   } catch (error) {
     log.warn("Session: 删除会话失败", sessionId, formatError(error))
     return false
+  }
+}
+
+/**
+ * 删会话的成功收尾：清理该会话引用过的**托管聊天图片**（AI 截图 `screenshots/`、
+ * 粘贴落盘 `pasted/`），把条目里收集到的图片路径交给宿主裁决。
+ *
+ * 边界判定在 Rust（`chat_delete_session_images`）：只删「托管聊天图片根」之内的
+ * 常规文件 —— 条目里的**用户原图只存路径**（桌面/图片目录里的文件），一律 skipped、
+ * 永不删除；TS 侧不复制第二份目录清单。
+ *
+ * 已知边界（开放 fork 前必须先补）：会话 fork 会复制条目、从而**共享**图片引用；
+ * 当前无生产调用者（`engine/harness/session-repo.ts:126` 的 `fork` 只是包装，全仓
+ * 没有 `.fork(` 消费点），所以这里直接按「本会话条目」收集；将来开放 fork 前，这里
+ * 必须先加跨会话引用检查（另一个会话可能仍引用同一张托管图片）。
+ *
+ * 失败只留痕：这是删会话的附带清理，不改变 `deleteSession` 的既有返回语义；
+ * 残留的托管图片由目录的 200 个保留上限自然淘汰兜底。
+ */
+async function deleteSessionChatImages(sessionId: string, sourceEntries: Entry[]): Promise<void> {
+  const paths = new Set<string>()
+  for (const entry of sourceEntries) {
+    if (entry.type !== "message") continue
+    for (const path of getMessageImagePaths(entry.message)) paths.add(path)
+  }
+  // 空集不调用宿主命令（不产生空请求）。
+  if (paths.size === 0) return
+  try {
+    await getHostBridge().request("chat_delete_session_images", { paths: [...paths] })
+  } catch (error) {
+    log.warn("Session: 会话托管图片清理失败（不改变删除结果）:", sessionId, formatError(error))
   }
 }
 

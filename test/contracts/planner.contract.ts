@@ -14,6 +14,14 @@
 // 拒绝留痕：四个 decline 结局结构化 + 统一日志；计划判定、生成、执行、确认与逐步门路径不受
 // 影响）。pl-01..pl-12 逐点核对实现点仍在、覆盖描述与当前实现一致，未修订覆盖点，
 // 仅按当前源码刷新 sourceHash。
+// 2026-10-06 子运行接线修复批次（本批刷新）：sourceFiles 变化 ——
+// src/services/engine/harness/runtime.ts（计划步骤子运行同样走 invisible sinks 与准入转发
+// 修复；pl-06 的步骤顺序/记账/onStepNotice 口径未动）。pl-01..pl-12 逐点核对实现点仍在、
+// 覆盖描述与当前实现一致，未修订覆盖点，仅按当前源码刷新 sourceHash。
+// 2026-10-06 估算偏差口径修正批次（本批刷新）：sourceFiles 变化 ——
+// src/services/engine/harness/runtime.ts（估算偏差对账口径；计划生成/执行口径未动）。
+// pl-01..pl-12 逐点核对实现点仍在、覆盖描述与当前实现一致，未修订覆盖点，仅按当前源码
+// 刷新 sourceHash。
 import type { ModuleContract } from "../host/types"
 
 export const plannerContract: ModuleContract = {
@@ -25,7 +33,7 @@ export const plannerContract: ModuleContract = {
   // 计划条目本身的写入机制归 agent-runtime 契约（engine/plan/checkpoint-store.ts 在它的 sourceFiles 里），
   // 这里只从计划域的相位与通道出发断言它们落成的结果。
   sourceFiles: ["src/services/engine/harness/runtime.ts", "src/services/engine/planner.ts", "src/services/engine/plan-confirmation.ts"],
-  sourceHash: "d7e4f8706c3d8a2c1b32cb8a473d6d38a1f7463d3a91f7458399f13a22b49cd9",
+  sourceHash: "6feea8aafd617e2d8ad0bfd1ca866709088f8910dcf848f0285dbc432d80f752",
   coverage: [
     { id: "pl-01", feature: "evaluateComplexity force触发", description: "--plan 前缀强制触发评分=5；判定是 startsWith，行首之外的 --plan 不命中 force 分支", why: "用户手动触发 Plan", layer: "integration", depth: "shallow", scenarios: ["plan-force-trigger"] },
     { id: "pl-02", feature: "evaluateComplexity 关键词匹配", description: "关键词列表匹配 → 评分 3、原因里带回命中的词；默认 complexityEval=keyword 时未命中关键词直接给低分，不为它单独发一次模型请求（判据用没有任何响应的 Provider：真发了请求就只能是 llm 分支或超时）", why: "自动检测复杂任务，同时不让每条助手消息都付一次判定请求的成本", layer: "integration", depth: "shallow", scenarios: ["plan-keyword-trigger"] },

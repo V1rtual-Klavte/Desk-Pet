@@ -83,11 +83,13 @@
 //! 处理器与注册由契约同步落地）。都是 Node 内存态的即时写、请求周期内有确定结果，
 //! 与决策类同款有界阻塞。
 //!
-//! 消息行动作增补（记住这条）：`RememberMessage` 经**有界 `request`**
-//! （[`remember_request`]）映射到 `chat_remember_message`。可信来源复核（origin /
-//! taint / eligibleForMemory 与 user_ui_current 二次门禁）由 Node 记忆域裁定，
-//! 宿主只提供入口、不复刻判定；不可信/来源失效由 Node 结构化拒绝，平台层以
-//! 中性通知呈现（不是角色台词）。
+//! 消息行动作（记住这条）：入口 = **聊天消息右键菜单**（气泡上的按钮已于 2026-10-05
+//! 按用户规则退场，入口改由右键承接；平台层只对用户消息挂项，判据 =
+//! `model.rs::MessageSnapshot::remember_event_id`，不在平台层复刻）。`RememberMessage`
+//! 经**有界 `request`**（[`remember_request`]）映射到 `chat_remember_message`。
+//! 可信来源复核（origin / taint / eligibleForMemory 与 user_ui_current 二次门禁）
+//! 由 Node 记忆域裁定，宿主只提供入口、不复刻判定；不可信/来源失效由 Node
+//! 结构化拒绝，平台层以中性通知呈现（不是角色台词）。
 //!
 //! 热路径为什么非阻塞（Send / SlashCommand / Stop + ResumePlan / ResumePausedInputs /
 //! ContinueInterruptedRun）：入口都在 UI 主线程的平台回调里（Enter 发送 / 停止/继续
@@ -334,9 +336,12 @@ pub enum ChatIntent {
     ContinueInterruptedRun { session_id: String },
     /// 崩溃恢复：丢弃中断运行（归还的输入按暂停处理）。
     DiscardInterruptedRun { session_id: String },
-    // `RememberMessage` 删除记录（2026-10-05 用户规则「我的消息去掉『记住这条』按钮，
-    // 要么我叫他记住，要么自动」）：气泡入口撤掉后两端都不再生产该意图，
-    // `remember-message` 这条 Node 命令随之退场。记忆能力本身不动。
+    /// 把一条已提交的**用户消息**原文写入长期记忆（入口 = 消息右键菜单；
+    /// 可信来源复核与提交由 Node 记忆域承接）。
+    RememberMessage {
+        session_id: String,
+        event_id: String,
+    },
     // ── 调试条（DebugBar 迁移）：会话级运行期覆盖 ──
     /// 会话级思考强度覆盖（`None` = 恢复默认，即全局 `ai.thinkingEffort`）。
     SetThinkingEffort { effort: Option<String> },
@@ -376,6 +381,7 @@ impl ChatIntent {
             ChatIntent::DiscardPausedInputs { .. } => "discard-paused-inputs",
             ChatIntent::ContinueInterruptedRun { .. } => "continue-interrupted-run",
             ChatIntent::DiscardInterruptedRun { .. } => "discard-interrupted-run",
+            ChatIntent::RememberMessage { .. } => "remember-message",
             ChatIntent::SetThinkingEffort { .. } => "set-thinking-effort",
             ChatIntent::SetSafetyMode { .. } => "set-safety-mode",
             ChatIntent::NewSession => "new-session",
@@ -571,12 +577,23 @@ fn runtime_request(intent: &ChatIntent) -> Option<(&'static str, serde_json::Val
     })
 }
 
-/// 消息行动作（记住这条）→ 有界 `request`（方法名与 args 逐字对齐 types.ts 的
-/// 「记住这条」条目）。Node 侧的可信来源复核与记忆提交在请求周期内有确定结果
-/// （回执带 revision；本层只取「提交成功」这一事实，revision 不回显），
-/// 与决策类同款有界阻塞。不可信/来源失效由 Node 结构化拒绝，平台层以中性通知呈现。
-// `remember_request` 删除记录（2026-10-05）：气泡入口撤掉后 两端都不再生产
-// `ChatIntent::RememberMessage`，这条 `chat_remember_message` 承载者随之退场。
+/// 消息行动作（记住这条；入口 = 消息右键菜单）→ 有界 `request`（方法名与 args
+/// 逐字对齐 types.ts 的 `chat_remember_message`）。Node 侧的可信来源复核与记忆提交
+/// 在请求周期内有确定结果（回执带 revision；本层只取「提交成功」这一事实，revision
+/// 不回显），与决策类同款有界阻塞。不可信/来源失效由 Node 结构化拒绝，平台层以
+/// 中性通知呈现。
+fn remember_request(intent: &ChatIntent) -> Option<(&'static str, serde_json::Value)> {
+    Some(match intent {
+        ChatIntent::RememberMessage {
+            session_id,
+            event_id,
+        } => (
+            "chat_remember_message",
+            serde_json::json!({ "sessionId": session_id, "eventId": event_id }),
+        ),
+        _ => return None,
+    })
+}
 
 /// 决策类里结算点在「整段计划 / 整个回合跑完」的三条 → 非阻塞 `notify`（方法名与 args
 /// 逐字对齐 types.ts；留痕文案不含用户正文）。与热路径同一条理由：`resumePlan` /
@@ -638,9 +655,9 @@ fn unwired_intent_error(intent: &ChatIntent) -> AppError {
 ///   - 决策类六条（abort-running-plan / discard-plan / resolve-unknown-side-effect /
 ///     withdraw-queued / discard-paused-inputs / discard-interrupted-run）：同组有界
 ///     `request`；
-///   - 消息行动作一条（remember-message）与调试条两条（set-thinking-effort /
-///     set-safety-mode）：同组有界 `request`（记忆提交 / 内存态写，请求周期内有
-///     确定结果）；
+///   - 消息行动作一条（remember-message，入口 = 消息右键菜单）与调试条两条
+///     （set-thinking-effort / set-safety-mode）：同组有界 `request`
+///     （记忆提交 / 内存态写，请求周期内有确定结果）；
 ///   - 热路径三条（send/slash/stop）与决策类三条（resume-plan / resume-paused-inputs /
 ///     continue-interrupted-run）：非阻塞 `notify`（提交即成功；传输失败如实报错），
 ///     迟到的领域回执只留痕；
@@ -677,6 +694,12 @@ impl ChatIntentPort for HostLinkChatIntentPort {
         }
         if let Some((method, args)) = runtime_request(&intent) {
             // 调试条的会话级覆盖：Node 内存态即时写，同款有界阻塞。
+            self.link.request(method, args, HOST_REQUEST_TIMEOUT)?;
+            return Ok(());
+        }
+        if let Some((method, args)) = remember_request(&intent) {
+            // 消息右键动作（记住这条）：记忆提交在请求周期内有确定结果（回执带
+            // revision），与决策类同款有界阻塞。
             self.link.request(method, args, HOST_REQUEST_TIMEOUT)?;
             return Ok(());
         }
@@ -1098,8 +1121,84 @@ mod tests {
         .is_none());
     }
 
-    // `记住这条映射到chat方法且带会话与事件身份` 删除记录（2026-10-05）：
-    // 该意图随气泡入口一并退场，测试对象不存在了。
+    #[test]
+    fn 记住这条映射到chat方法且带会话与事件身份() {
+        let intent = ChatIntent::RememberMessage {
+            session_id: "s1".into(),
+            event_id: "req-1:user".into(),
+        };
+        let (method, args) = remember_request(&intent)
+            .unwrap_or_else(|| panic!("{} 必须有消息行动作承载者", intent.name()));
+        assert_eq!(method, "chat_remember_message");
+        assert_eq!(
+            args,
+            serde_json::json!({ "sessionId": "s1", "eventId": "req-1:user" })
+        );
+        assert_eq!(intent.name(), "remember-message");
+
+        // 非本组的意图不伪造方法名（调试条 / 决策类 / 热路径）。
+        assert!(remember_request(&ChatIntent::SetSafetyMode { mode: None }).is_none());
+        assert!(remember_request(&ChatIntent::Stop {
+            session_id: "s".into(),
+        })
+        .is_none());
+        assert!(remember_request(&ChatIntent::WithdrawQueued {
+            session_id: "s".into(),
+            entry_id: "e".into(),
+        })
+        .is_none());
+    }
+
+    /// 消息右键动作走**有界请求**组（与 `runtime_request` 同级）：经端口投出
+    /// `chat_remember_message` 请求并等回执 —— 分支若掉出 `dispatch` 的接线链，
+    /// 这里会收不到请求（红），而不是静默落到「尚未接线」错误上。
+    #[test]
+    fn 记住这条经端口走有界请求并等回执() {
+        let link = Arc::new(HostLink::new());
+        let published: Arc<std::sync::Mutex<Vec<serde_json::Value>>> =
+            Arc::new(std::sync::Mutex::new(Vec::new()));
+        let sink = published.clone();
+        link.install_sender(Arc::new(move |_event: &str, payload: serde_json::Value| {
+            sink.lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .push(payload);
+            Ok(())
+        }));
+
+        let port = HostLinkChatIntentPort::new(link.clone());
+        let waiting = std::thread::spawn(move || {
+            port.dispatch(ChatIntent::RememberMessage {
+                session_id: "s1".into(),
+                event_id: "req-1:user".into(),
+            })
+        });
+        // 等请求投出（有界轮询：分支缺失时不会永远空转，直接红）。
+        let mut request_id = None;
+        for _ in 0..2_000 {
+            let last = published
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .last()
+                .cloned();
+            if let Some(payload) = last {
+                assert_eq!(
+                    payload["method"],
+                    serde_json::json!("chat_remember_message")
+                );
+                assert_eq!(
+                    payload["args"],
+                    serde_json::json!({ "sessionId": "s1", "eventId": "req-1:user" })
+                );
+                request_id = payload["requestId"].as_u64();
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(2));
+        }
+        let request_id = request_id.expect("请求必须已投出（有界等待内）");
+        // 回执结算（带 revision 的结果形状，本层只关心成功）后 dispatch 返回。
+        assert!(link.complete(request_id, Ok(serde_json::json!({ "revision": 7 }))));
+        assert!(waiting.join().unwrap().is_ok());
+    }
 
     #[test]
     fn 决策提交不等待回执() {

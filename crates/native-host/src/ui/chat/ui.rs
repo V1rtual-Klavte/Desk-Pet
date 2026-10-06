@@ -68,6 +68,7 @@ fn success_notice(action: &PanelAction) -> Option<&'static str> {
         PanelAction::PlanDiscard { .. } => notices::NOTICE_DISCARD_PLAN,
         PanelAction::PlanStepAlreadyApplied { .. } => notices::NOTICE_STEP_ALREADY_APPLIED,
         PanelAction::PlanStepRetry { .. } => notices::NOTICE_STEP_RETRY,
+        PanelAction::RememberMessage { .. } => notices::NOTICE_REMEMBER_MESSAGE,
         _ => return None,
     })
 }
@@ -812,9 +813,16 @@ impl ChatUi {
                 },
                 PanelTransition::None,
             ),
-            // `RememberMessage` 删除记录（2026-10-05）：气泡上的入口撤掉后两端都不再
-            // 生产该动作，整条 `PanelAction → ChatIntent → Node remember-message` 链退场
-            // （记忆的显式路径改由用户直接说，走模型；自动路径本就有）。
+            // 「记住这条」（入口 = 消息右键菜单）：`event_id` 是被右键消息的 ingress
+            // 事件身份（平台层经 `MessageSnapshot::remember_event_id` 判据挂项，不在
+            // 平台层复刻角色判定）。没有活跃会话时如实报错，不伪造成功。
+            PanelAction::RememberMessage { event_id } => (
+                ChatIntent::RememberMessage {
+                    session_id: active_session()?,
+                    event_id: event_id.clone(),
+                },
+                PanelTransition::None,
+            ),
             // ── 调试条：会话级覆盖（有界请求；Node 侧更新后重推投影，显示随帧收敛）──
             PanelAction::SetThinkingEffort { effort } => (
                 ChatIntent::SetThinkingEffort {
@@ -1186,7 +1194,8 @@ mod tests {
             speaker_name: None,
             messages: vec![ProjectedMessage {
                 id: "e1".into(),
-                // 「记住这条」入口以 eventId 为准；本测试不覆盖该动作，按缺席构造。
+                // 「记住这条」的入口判据是投影 eventId（`remember_event_id` 有专门用例）；
+                // 本帧条目按无事件身份构造，不影响其余用例。
                 event_id: None,
                 role: ProjectedRole::User,
                 text: text.into(),
@@ -1273,6 +1282,56 @@ mod tests {
         let empty = ChatUi::new();
         let error = empty
             .apply_panel_action(PanelAction::CompactSession)
+            .unwrap_err();
+        assert!(
+            error.to_string().contains("没有活跃会话"),
+            "错误文案：{error}"
+        );
+    }
+
+    /// 「记住这条」（入口 = 消息右键菜单）：动作携带的 eventId 必须逐字进意图、
+    /// 会话取当前活跃会话，成功后走 notice 通道回中性回执；没有活跃会话时如实
+    /// 报错（不伪造成功、不做乐观变更）。
+    #[test]
+    fn 记住这条经消息右键派发并回中性回执() {
+        use crate::ui::chat::panels::NOTICE_REMEMBER_MESSAGE;
+
+        let (ui, recorder) = instrumented_ui();
+        // 回执映射与常量同源（改坏映射这条立即红）。
+        assert_eq!(
+            success_notice(&PanelAction::RememberMessage {
+                event_id: "req-1:user".into(),
+            }),
+            Some(NOTICE_REMEMBER_MESSAGE)
+        );
+
+        let outcome = ui
+            .apply_panel_action(PanelAction::RememberMessage {
+                event_id: "req-1:user".into(),
+            })
+            .expect("有活跃会话时派发成功");
+        assert_eq!(
+            outcome,
+            PanelOutcome::Notice(NOTICE_REMEMBER_MESSAGE.to_string()),
+            "成功回执走 notice 通道（不是角色台词）"
+        );
+        match recorder.last() {
+            ChatIntent::RememberMessage {
+                session_id,
+                event_id,
+            } => {
+                assert_eq!(session_id, "s1", "会话取当前活跃会话");
+                assert_eq!(event_id, "req-1:user", "事件身份必须逐字传递");
+            }
+            other => panic!("应为 RememberMessage，得到 {other:?}"),
+        }
+
+        // 没有活跃会话：不派发、如实报错。
+        let empty = ChatUi::new();
+        let error = empty
+            .apply_panel_action(PanelAction::RememberMessage {
+                event_id: "req-1:user".into(),
+            })
             .unwrap_err();
         assert!(
             error.to_string().contains("没有活跃会话"),

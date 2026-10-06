@@ -57,10 +57,12 @@ tokio = { version = "1.52", features = [
 ] }
 # 端点名、一次性握手值、blob id 的随机字节（系统熵源；不引入 rand 全家族）。
 getrandom = "0.3"
-# 统一图片域（images/）：解码/缩放/编码。与 xcap 同一版本口径；显式只开五种准入格式的
-# feature，不拉默认全集（avif/tiff/exr/ico/pnm/qoi/tga/dds/hdr 都不需要）。
+# 统一图片域（images/）：解码/缩放/编码。与 xcap 同一版本口径；显式只开需要的 feature，
+# 不拉默认全集（avif/exr/ico/pnm/qoi/tga/dds/hdr 都不需要）。
 # GIF/WebP 仍需开启：动画文件只解首帧、不播放（2026-10-04 用户指令），格式准入与静态解码不变。
-image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif", "webp", "bmp"] }
+# tiff 只为剪贴板粘贴转码开（TIFF 不在聊天准入白名单，粘贴入口先解码再编码为 PNG 落盘；
+# 见 ui/chat/paste.rs 与 images/format.rs 的 sniff_paste）。
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif", "webp", "bmp", "tiff"] }
 # 更新域（update/，W10b）：
 # - ureq：feed / 制品 HTTPS 拉取。rustls + ring + webpki-roots（锁内 rustls 0.23 同一
 #   provider，不引入 aws-lc-rs）；阻塞式，调用点在 IPC 的 spawn_blocking 与退出序列，

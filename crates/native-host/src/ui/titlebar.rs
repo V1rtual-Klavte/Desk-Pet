@@ -8,6 +8,10 @@
 //! - Node 侧在 `renderOwner()` 渲染出结果处把**最终文本**推给宿主
 //!   （`UiHandle::apply_titlebar_status`；推送命令名由接线代理登记，见执行契约的
 //!   推送面）；未收到任何推送时保持缺省 [`DEFAULT_TEXT`] —— 与 Node 初值一致；
+//! - 唯一例外是 **Node 从未拉起成功**：此时没有推送者，由宿主在启动失败处直接写
+//!   [`SERVICE_UNAVAILABLE_TEXT`]（`main.rs` 的 `on_ui_ready` Err 分支——宿主可
+//!   确知的事实「本进程没拉起 Node」，中性陈述、非角色口吻）；此后 Node 一旦推送，
+//!   其最终文本即整体覆盖这一条；
 //! - 文本为空/空白与 `None` 同义：回到缺省（Node 的 `renderOwner` 在无 owner 时
 //!   回落 `DEFAULT_TEXT`，空文本只在 owner 携带空串时出现，而生产端
 //!   `emitStageHint` 对空文案走的是 release 分支）；
@@ -22,6 +26,14 @@ use std::sync::{Mutex, OnceLock};
 
 /// 缺省文案（与 `src/services/titlebar.ts` 的初值 `text: DEFAULT_TEXT` 同字面量）。
 pub const DEFAULT_TEXT: &str = "就绪";
+
+/// 宿主自推的「服务未连接」文案：**只用于「Node 从未拉起成功」这一宿主自推场景**。
+///
+/// 正常路径下本模块只持 Node 推送的最终文本快照（唯一真值点在 Node 的
+/// `src/services/titlebar.ts`）；Node 不在时没有推送者，由宿主在启动失败处
+/// （`main.rs` 的 `on_ui_ready` Err 分支）直接写这一条。文案中性、非角色口吻，
+/// 只陈述宿主可确知的事实，不谎报在线/在播；Node 此后一旦推送即被其文本覆盖。
+pub const SERVICE_UNAVAILABLE_TEXT: &str = "服务未连接（后台进程启动失败）";
 
 fn slot() -> &'static Mutex<Option<String>> {
     static SLOT: OnceLock<Mutex<Option<String>>> = OnceLock::new();
@@ -59,6 +71,21 @@ mod tests {
         // 把空闲显示成在播/在线，2026-10-05 用户报告）。
         assert_eq!(DEFAULT_TEXT, "就绪", "缺省文案是中性空闲态");
         assert_ne!(DEFAULT_TEXT, "配信中", "缺省不得回落成「配信中」");
+
+        // 宿主自推的「服务未连接」（Node 从未拉起成功时由 main.rs 直接写入）：
+        // 非空、且必须区别于中性缺省 —— 否则故障会被显示成「就绪」，用户以为服务可用。
+        assert!(
+            !SERVICE_UNAVAILABLE_TEXT.trim().is_empty(),
+            "服务未连接文案不得为空白（空白等价于未写入）"
+        );
+        assert_ne!(
+            SERVICE_UNAVAILABLE_TEXT, DEFAULT_TEXT,
+            "故障文案不得与缺省同字面量"
+        );
+        let applied = store(Some(SERVICE_UNAVAILABLE_TEXT.into()));
+        assert_eq!(applied, SERVICE_UNAVAILABLE_TEXT, "写入后生效的就是它");
+        assert_eq!(current(), SERVICE_UNAVAILABLE_TEXT, "写入后可原样取回");
+        assert_ne!(current(), "就绪", "服务未连接不得回落成缺省文案");
 
         let applied = store(Some("正在输入…".into()));
         assert_eq!(applied, "正在输入…");

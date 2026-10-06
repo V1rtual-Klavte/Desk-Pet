@@ -2,12 +2,13 @@
 //!
 //! 解码器必须能被 fixture 字节驱动，而不是被「用编码 API 绕过解码」驱动：
 //! - PNG/GIF 使用内联字节（仓库先例：L4 场景 `原路径图片输入.scene.ts` 的 1x1 PNG base64）；
-//! - JPEG/WebP 没有可靠的极小内联字面量，用同一 `image` 栈的编码器现造字节再走完整解码；
+//! - JPEG/WebP/TIFF 没有可靠的极小内联字面量，用同一 `image` 栈的编码器现造字节再走完整解码；
 //! - BMP 由本文件手工拼字节（格式足够简单，可逐字段核对）。
 //!
 //! 动画 WebP 没有可用的编码器（`image` 的 WebP 编码只有单帧无损），本仓不伪造
 //! 动画 WebP fixture；多帧 GIF fixture 用于首帧解码与头部探测测试（动画不播放）。
 
+use std::io::Cursor;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -15,6 +16,7 @@ use base64::{engine::general_purpose::STANDARD, Engine as _};
 use image::codecs::gif::{GifEncoder, Repeat};
 use image::codecs::jpeg::JpegEncoder;
 use image::codecs::png::PngEncoder;
+use image::codecs::tiff::TiffEncoder;
 use image::codecs::webp::WebPEncoder;
 use image::{Delay, ExtendedColorType, Frame, ImageEncoder, Rgba, RgbaImage};
 
@@ -100,6 +102,17 @@ pub(crate) fn bmp_2x2() -> Vec<u8> {
     // 文件中的第二行 = 图像顶行：左蓝（BGR FF 00 00）右绿（BGR 00 FF 00）+ 2 字节行填充
     out.extend_from_slice(&[0xFF, 0x00, 0x00, 0x00, 0xFF, 0x00, 0x00, 0x00]);
     out
+}
+
+/// 纯色 TIFF（RGBA8、无压缩；编码器现造字节，走完整 TIFF 解码链）。
+/// 剪贴板粘贴转码路径的 fixture：TIFF 不在聊天准入集合，只经 `decode_transcode_source`。
+pub(crate) fn tiff_solid(width: u32, height: u32, color: [u8; 4]) -> Vec<u8> {
+    let image = rgba_solid(width, height, color);
+    let mut cursor = Cursor::new(Vec::new());
+    TiffEncoder::new(&mut cursor)
+        .write_image(image.as_raw(), width, height, ExtendedColorType::Rgba8)
+        .unwrap();
+    cursor.into_inner()
 }
 
 /// 经典 43 字节 1x1 透明 GIF89a（带 0 延迟的图形控制扩展）。

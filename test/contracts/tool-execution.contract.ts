@@ -26,6 +26,22 @@
 // 放行）；sourceFiles 补入 `crates/native-host/src/commands/mcp_credentials.rs`（te-30 凭据链
 // 的 Rust 命令实现，此前不在任何契约的 hash 覆盖内）。te-30 的 caseId 登记与 te-08..te-29
 // 逐点复核在本波完成；sourceHash 按当前源码复算。
+// 2026-10-06 上下文窗口默认值批次（analyze→刷新）：sourceFiles 变化 ——
+// src/services/context/budget.ts（2f32519：DEFAULT_CONTEXT_WINDOW 131_072→262_144，窗口语义
+// 唯一定义点的值变化；函数与其余常量未动）。te-13 / te-17 的页预算与结果预算都按运行时窗口
+// 参数化（transcriptPageTokens(window) / toolResultTokenBudget(window)，随窗口单调），不钉
+// 默认值；te-08..te-29 无覆盖点描述默认窗口或 keepRecentTokens（已逐点核对），描述经核对
+// 仍准确，未修订覆盖点。sourceFiles 无需增删（budget.ts 已在列）。本契约此前被 config 批次
+// 留在 STALE，本批一并收口，sourceHash 按当前源码复算。
+// 2026-10-06 子运行接线修复批次（本批刷新）：sourceFiles 变化 ——
+// src/services/engine/harness/runtime.ts（子运行 provider 准入转发与 invisible sinks）。
+// te-23 的子代理工具面剥离口径未变；te-13 回读链、te-17 投影与 MCP 路径不在改动面内、
+// 实现点仍在，覆盖描述与当前实现一致，未修订覆盖点，仅按当前源码刷新 sourceHash。
+// 2026-10-06 估算偏差口径修正批次（本批刷新）：sourceFiles 变化 ——
+// src/services/context/budget.ts（新增 totalInputTokens）、
+// src/services/engine/harness/{runtime,model-gateway}.ts（偏差对账 actual 改用真实输入量）。
+// te-13/te-17 的页预算与投影、MCP 路径不在改动面内、实现点仍在，覆盖描述与当前实现一致，
+// 未修订覆盖点，仅按当前源码刷新 sourceHash。
 import type { ModuleContract } from "../host/types"
 
 export const toolExecutionContract: ModuleContract = {
@@ -72,7 +88,7 @@ export const toolExecutionContract: ModuleContract = {
     // 按服务器取名单、status 不返回值；业务规则在 memory/store.rs），不补则改它不判 STALE。
     "crates/native-host/src/commands/mcp_credentials.rs",
   ],
-  sourceHash: "6b44a95aa6b225eda5c70b6b5b617a025316b3e28596aa2f0542c0d3885ff42e",
+  sourceHash: "255316a53835227b29b4bb95aae3dbc65b4ee320deb58eb30580854c1c5c629a",
   coverage: [
     { id: "te-13", feature: "工具结果持久化与回读", description: "生产工具配对作为会话条目持久化，完整工具文本保留（L0 只改请求视图；Router 不做内联截断，旧 L1 截断已删），read_session_event 按条目 id 或其**最短唯一前缀**分页回读（前缀不唯一时返回明确错误、绝不任选；完整 id 恒可读），页大小由 `transcriptPageTokens(window)`（= `toolResultTokenBudget(window)`，与 L0 单条结果同一份额）的 **token 口径**限定并随窗口单调（旧的固定字符页宽常量已删除），单页正文由 `sliceByTokenBudget` 切出、`estimateContextTokens(正文) <= pageTokens` 恒成立，`offset` 仍是字符下标；读取限定当前 session（reader 是槽上的 readToolResult，工具只认地址引用）；超上限边界上条目仍为全文、请求视图带真地址（前缀形态）、bash 截断带 spill 回读路径（实际生效上限由 Rust 回传）。MCP 结果与内置工具走同一条回读链，**一次性截断已删**（旧 MAX_MCP_RESULT_CHARS 的「正文里如实标记不保留全文、不写假 eventId」前提随决策 11 反转）：全文原样落会话条目，缩短只由 L0 投影按 details.deskpetEntryId 完成，模型随后用 read_session_event 取回 —— 因此超过旧 50,000 字符的结果仍可回读。无地址的条目（取不到 `details.deskpetEntryId`）不写假 eventId：未缩短形态不追加任何行、缩短形态在占位串里如实说明「中间段不可恢复」，留痕按内容指纹键（`noAddressWarnKey` = `长度:首 NO_ADDRESS_WARN_KEY_CHARS=32 字符`）去重、同键只报一次，键集合有界（`NO_ADDRESS_WARN_KEYS=64`，满员按插入序 FIFO 淘汰最旧键）—— 指纹分键与去重由 memory 的 mm-27 场景断言，有界淘汰未由场景断言。唯一的物理上限在条目写盘链上（native-execution-env 的 MAX_TOOL_FILE_BYTES，5 MB）：超过时写盘如实失败，**不做静默截断**（§8.8 的裁定，边界本身未由本点场景断言，见 harness-storage 的 hs-02）", why: "短请求不能以丢失工具证据为代价；删掉截断后「大结果仍能取回」正是这条链唯一的可观测结论", layer: "e2e", depth: "deep", scenarios: ["tool-transcript-recovery", "tool-archive-beyond-inline-limit", "tool-mcp-large-result-readback"] },
     { id: "te-08", feature: "真 LLM 多工具调用", description: "真实 LLM 对话中先后调用多个工具。场景点名的 system_info 已按决策 13 改写为「运行环境」：五行输出（操作系统、架构、CPU 核心数、内存「已用 / 总 (百分比)，可用」、bash 默认工作目录），其中三个内存口径来自 Rust system_info（新增 memAvailable 字段，used 与 available 是各自独立的计数口径、不是互补关系），bash 默认 cwd 由 TS 侧 NativeExecutionEnv.defaultCwd() 提供而不是 Rust 返回值，因此不重复永不变的信息（旧实现里的「永不变」条目已删）。注：场景只断言工具调用成功与非空回复、不绑字段名，所以这五行的字段级形状未由本点断言（Rust 侧 SystemInfoResult 由单测覆盖）", why: "端到端工具链验证", layer: "e2e", depth: "deep", scenarios: ["tool-system-info"] },

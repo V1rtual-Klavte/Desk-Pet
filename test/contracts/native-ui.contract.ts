@@ -40,6 +40,14 @@
 // 原生侧由 RowAction::parse 接收 —— nui-27 声称的「action = credential」在这根线上，只改
 // handler 不改线形状时会漏判）。nui-01..nui-26 逐点复核实现点仍在、语义未变；sourceHash 按
 // 当前源码复算。
+// 2026-10-06 聊天图片批次（本批刷新）：sourceFiles 变化 —— src/services/host/types.ts 新增
+// HostCommandMap.chat_delete_session_images 一条（Node→宿主命令：删会话清理托管聊天图片；
+// 不是原生 UI 的请求/推送面）。另核对：聊天消息右键菜单恢复「记住这条」意图
+// （共享意图链在 crates/native-host/src/ui/chat/*.rs，平台挂项在 ui/platform/*_chat.rs；
+// 走既有 HostRequestMap.chat_remember_message 线形状，Node 侧一行未改）—— 菜单手势与渲染
+// 不在本契约范围（平台渲染证据属原生 UI 测试驱动，既有口径），不因此新增 sourceFiles。
+// nui-01..nui-27 逐点核对实现点仍在、覆盖描述与当前实现一致，未修订覆盖点，仅按当前源码
+// 刷新 sourceHash。
 import type { ModuleContract } from "../host/types"
 
 export const nativeUiContract: ModuleContract = {
@@ -67,7 +75,7 @@ export const nativeUiContract: ModuleContract = {
     // 平台手势与行渲染不在本契约范围，与既有「原生渲染不在这里冒充」的口径一致）。
     "crates/native-host/src/ui/settings/panels.rs",
   ],
-  sourceHash: "666f28a879f8152b13e5415ed8970d4de2ec734001d8395caae2baa6228cafb4",
+  sourceHash: "c56a778267619dccc3d3307fbbc9139795123d88f1162536120c18839b173d1b",
   coverage: [
     {
       id: "nui-01",

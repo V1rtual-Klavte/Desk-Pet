@@ -15,12 +15,25 @@
 // deskpet.compaction_declined 条目的条件扩到 decline）。两处都不触达许可内核、确认/放行通道
 // 与凭据路径。sf-01..sf-23（共 22 点）逐点核对实现点仍在、覆盖描述与当前实现一致，未修订
 // 覆盖点，仅按当前源码刷新 sourceHash。
+// 2026-10-06 聊天图片批次（本批刷新）：sourceFiles 变化 —— src/services/session/manager.ts
+// （deleteSession 成功后新增托管聊天图片清理：去重收集条目图片路径交宿主命令、
+// 失败只留痕不改返回语义）。删除会话前既有的 invalidatePermissionScope(sessionId) 路径未动，
+// 图片清理不触达许可内核、确认/放行通道与凭据路径。sf-01..sf-23（共 22 点）逐点核对实现点
+// 仍在、覆盖描述与当前实现一致，未修订覆盖点，仅按当前源码刷新 sourceHash。
+// 2026-10-06 子运行接线修复批次（本批刷新）：sourceFiles 变化 ——
+// src/services/engine/harness/runtime.ts（子运行 provider 准入与 invisible sinks 的接线修复；
+// 主回合 activeAdmission、许可内核、确认与放行通道路径未动）。sf-01..sf-23（共 22 点）逐点
+// 核对实现点仍在、覆盖描述与当前实现一致，未修订覆盖点，仅按当前源码刷新 sourceHash。
+// 2026-10-06 估算偏差口径修正批次（本批刷新）：sourceFiles 变化 ——
+// src/services/engine/harness/runtime.ts（估算偏差对账口径；许可内核、确认/放行通道与凭据
+// 路径未动）。sf-01..sf-23（共 22 点）逐点核对实现点仍在、覆盖描述与当前实现一致，未修订
+// 覆盖点，仅按当前源码刷新 sourceHash。
 import type { ModuleContract } from "../host/types"
 
 export const safetyContract: ModuleContract = {
   module: "safety",
   sourceFiles: ["src/services/engine/harness/runtime.ts", "src/services/engine/harness/harness-slot.ts", "src/services/safety/checker.ts", "src/services/safety/permission.ts", "src/services/safety/confirm.ts", "src/services/tool/types.ts", "src/services/tool/policy.ts", "src/services/tool/local/pi-tools.ts", "src/services/tool/local-extra/clipboard.ts", "src/services/tool/local-extra/agent-tool.ts", "src/services/tool/local-extra/app.ts", "src/services/tool/mcp/client.ts", "src/services/session/manager.ts", "crates/native-host/src/paths/mod.rs", "crates/native-host/src/commands/bash_policy.rs", "crates/native-host/src/commands/tool_exec/mod.rs"],
-  sourceHash: "ddd7bfc9397b77fc099059da797064ea9b9ac8d83f2a8262f9105cec715c226e",
+  sourceHash: "72d8aa845e4a1db68e880077fc548f14bdc60f820d5fefe8f44e5398ca554031",
   coverage: [
     { id: "sf-01", feature: "SAFE 级别放行", description: "safetyLevel=SAFE 的工具经生产裁决入口 evaluateToolPermission（标准决策层即 allow）直接放行，不生成确认请求；同一分支现在也接住 NORMAL，会话信任与安全裁决只有 permission.ts 一份实现", why: "安全等级体系基础，且放行结论必须来自唯一裁决点", layer: "integration", depth: "shallow", scenarios: ["safety-safe"] },
     { id: "sf-02", feature: "统一裁决表（SAFE / NORMAL 一律放行）", description: "标准决策是安全等级到裁决结果的唯一映射：NOWAY → deny（最前置，先于安全模式与工具侧策略）；SAFE 与 NORMAL → allow（与安全模式无关，也不看命令是否在白名单里 —— 白名单只决定 NORMAL/DANGER 的归属，是免确认通道而不是拒绝依据）；DANGER → 交给回合冻结的安全模式（let_me_tk → ask、just_do_it → allow、其余含缺省 → ask）。工具与运行模式不再参与裁决：pet/assistant 双模式、lightweightPolicy、`ToolDef.mode`/`ToolContext.mode` 已全链删除，而旧助手下 NORMAL 没有任何 allow 路径、一律 ask —— 这条收紧的消失正是 sf-21 必须逐工具重定级的原因", why: "常规工具需要安全评估，且裁决表必须唯一：NORMAL 的归属翻转后若仍留旧描述，重定级与确认通道的场景会照着已不存在的分支写断言", layer: "integration", depth: "shallow", scenarios: ["safety-normal"] },

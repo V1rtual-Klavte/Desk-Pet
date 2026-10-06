@@ -149,11 +149,14 @@ data_root/
 ├── profiles/       {profileId}/ 下的 Profile 与素材
 ├── skills/         {name}/SKILL.md（per-skill `enabled` 开关；Pi 递归遍历、根级 `.md` 也算技能、name 可缺省取父目录名）
 ├── screenshots/    桌宠截图（`<时间戳>.png`，用户可直接查看/删除；只保留最新 200 个，按 mtime 淘汰，无长期留存）
+├── pasted/         从剪贴板粘贴进聊天的图片（`<时间戳>.<真实扩展名>`；白名单外的 PNG 可转码格式落为 `.png`；同样只保留最新 200 个，按 mtime 淘汰）
 ├── updates/        应用内更新的 staging 与安装状态（不替换数据根）
 └── logs/           运行日志
 ```
 
 开发构建的**运行时 CONFIG 不在数据根内**（见上表的五维区分），其余目录布局与生产一致。
+
+`screenshots/` 与 `pasted/` 是**托管聊天图片根**（枚举点 `commands/screenshot_cmd.rs` 的 `managed_chat_image_dirs`）：删除会话时，该会话条目引用到的根内文件由宿主命令 `chat_delete_session_images` 一并删除——**包含判定在 Rust**，根外的任何路径（用户自己磁盘上的原图）一律不删。两个目录都只保留最新 200 个（按 mtime、不看引用），超限会打断老会话的预览；这是与截图一致的既有取舍（`screenshots/` 由截图工具落盘，`pasted/` 由聊天输入框的粘贴入口落盘，两者共用同一套原子写 + 预览授权 + 淘汰实现）。
 
 Node 先执行 `initPaths()`（取 `get_runtime_paths`）；`BaseDirs` 只给真正被外部读取的目录，需要完整路径时用 `runtimePath(scope, ...segments)` 交给宿主拼接和校验。业务文件名由所属模块管理。
 
@@ -161,11 +164,11 @@ Rust 持有 base 的命令接收域内相对路径，例如 personality 命令�
 
 聊天正文以 `sessions/` 的 JSONL 保存（条目 + commit 事务，JsonlSessionRepo）；启动经会话仓库列出恢复，再用 index.json（宿主命令 `read_session_ui_state`/`write_session_ui_state`）恢复标签和未回复数；丢失 index 不丢正文。会话归属按文件头 `cwd` 判定（不是按 `--<cwd>--` 目录名猜）：数据根变更或目录编码碰撞会产生不属于当前数据根的会话，列举结果里 `cwd` 与当前数据根不同的项由列举方记一次日志（去重）留证，不静默清除 index.json 里的旧 id。格式细节见[当前记忆](memory.md)。
 
-会话 JSONL 是 append-only 日志：帧（`pi.pending.assistant_frame`）的每次流式增量都追加一行，`list/delete` 与 `value/delete` 只追加一条删除记录，被删 key 的历史写入行不会自动消失。因此会话文件会在安全时机被**纯删除式折叠**（[session-fold.ts](../../src/services/engine/harness/session-fold.ts) 的 `foldSessionFile`）：只回收已被 `list/delete` 与 `value/delete` 删除的 key 在**最后一次 delete 之前**的全部 `list/append` 与 `value/set`；**保留行逐字不变，entryId 与 seq 不变**，entry/usage 行一个不动 —— 折叠不是删除历史。写盘前须**折叠前后重放状态摘要一致**（`sha256Text(stableSerialize(replayLogState(...)))`），不一致就放弃折叠、保留原文件（磁盘未改动）；替换走**同目录临时文件 + `rename` 原子替换**。header 不是当前支持的 v4 格式 + `storageVersion: 1` 时整文件跳过（安全降级：不抛错、不影响会话功能，首次按版本值留一条 warn）。折叠只解决体积，不改变「打开会话 = 全量读 + 逐行重放」的复杂度；成功折叠不可逆、没有回滚路径，安全防线只有摘要比对与原子替换。
+会话 JSONL 是 append-only 日志：帧（`pi.pending.assistant_frame`）的每次流式增量都追加一行，`list/delete` 与 `value/delete` 只追加一条删除记录，被删 key 的历史写入行不会自动消失。因此会话文件会在安全时机被**纯删除式折叠**（[session-fold.ts](../../src/services/engine/harness/session-fold.ts) 的 `foldSessionFile`）：只回收已被 `list/delete` 与 `value/delete` 删除的 key 在**最后一次 delete 之前**的全部 `list/append` 与 `value/set`；**保留行逐字不变，entryId 与 seq 不变**，entry/usage 行一个不动 —— 折叠不是删除历史。写盘前须**折叠前后重放状态摘要一致**（`sha256Text(stableSerialize(replayLogState(...)))`），不一致就放弃折叠、保留原文件（磁盘未改动）；替换走**同目录临时文件 + `rename` 原子替换**。header 不是当前支持的 v4 格式 + `storageVersion: 1` 时整文件跳过（安全降级：不抛错、不影响会话功能，首次按版本值留一条 warn）。**会话读路径没有单次大小上限**（会话根内的读经宿主 `session_read_text`），5 MiB 的单次读写上限（`MAX_TOOL_FILE_BYTES`）只约束写：折叠结果仍超 5 MiB 的会话保持不折。折叠只解决体积，不改变「打开会话 = 全量读 + 逐行重放」的复杂度；成功折叠不可逆、没有回滚路径，安全防线只有摘要比对与原子替换。
 
 触发时机：① 会话经 `releasePiSession` 关闭之后（回收主路径；先等 `session.close()` 与帧缓冲 flush 收尾再折叠，失败只留痕）；② `open` 前按需兜底（只针对未被干净关闭的会话），仅当文件超过 `FOLD_POLICY.minFileBytes` 才读全文判定。「压缩提交后」经评估不做（挂点在压缩层，需求已被前两者覆盖）。折叠失败或跳过一律不影响会话功能。
 
-折叠阈值是源码常量 `FOLD_POLICY`（与 `foldSessionFile` 同在 [session-fold.ts](../../src/services/engine/harness/session-fold.ts)，唯一可调点），**不是** YAML 运行时 CONFIG 字段，不适用上面的配置同步清单：`minFileBytes = 512 KiB`（不超过它不探测）、`minReclaimBytes = 128 KiB` 与 `minReclaimRatio = 0.15`（可回收字节须同时达到二者），三者 AND，维持现值（用户 2026-09-28 定稿）。
+折叠阈值是源码常量 `FOLD_POLICY`（与 `foldSessionFile` 同在 [session-fold.ts](../../src/services/engine/harness/session-fold.ts)，唯一可调点），**不是** YAML 运行时 CONFIG 字段，不适用上面的配置同步清单：`minFileBytes = 512 KiB`（不超过它不探测）、`minReclaimBytes = 128 KiB` 与 `minReclaimRatio = 0.15`（可回收字节须同时达到二者），三者 AND、维持现值（用户 2026-09-28 定稿）；第四个阈值 `maxFileBytes = 64 MiB` 是读取守卫（文件超过它不读不折，是折叠自愿的上界，不是读路径的限制）。
 
 Live Test 在 debug 且 `DESKPET_E2E=1` 时只接受启动脚本创建的 `test/.tmp/e2e-*` 隔离根（宿主校验真实路径），完整配置复制到该根的 `settings/CONFIG.yaml`，测试读写均走此副本；宿主在启动前还会核对私有测试通道声明的 dataRoot/configPath/结果路径与实际加载环境一致，不一致直接失败，不回退真实开发数据。退出先留存 trace/manifest/结果，再清理。隔离边界与报告位置见[测试 README](../../test/README.md)，不把测试目录当作正常用户数据位置。
 

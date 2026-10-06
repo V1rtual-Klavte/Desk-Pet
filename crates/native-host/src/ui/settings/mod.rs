@@ -2830,6 +2830,15 @@ impl SettingsUi {
 
     // ── 管理面（W9d）：记忆页 ──
 
+    /// 记忆页顶部的常驻说明（两条显式写入路径 + 来源边界）。
+    ///
+    /// 中性界面语言、非角色口吻；**两平台的唯一文案来源** ——
+    /// `platform/{macos,windows}_settings.rs` 的「memory」分支都渲染这一份，
+    /// 平台文件不复制字面量（源码守门见本文件测试）。刻意不进 `schema.rs`：
+    /// 该文件在 observation 契约 sourceFiles 里，一条静态说明不值得翻契约 hash，
+    /// 它也不随 CONFIG 变化。
+    pub const MEMORY_TIP: &str = "要记住一条内容：在聊天里右键你自己的消息选『记住这条』，或直接说一句『记住……』（由模型判断是否写入）。助手与系统消息不能作为记忆来源。";
+
     /// 记忆页两个面板（条目 + 自动整理）。
     pub fn memory_panels(&self) -> Vec<ListPanel> {
         let state = Self::lock(&self.panels);
@@ -3818,5 +3827,29 @@ mod tests {
             SettingsUi::new().run_action("action.no_such_action").is_err(),
             "未知动作仍要被拒绝（新入口不得放宽兜底分支）"
         );
+    }
+
+    // ── 记忆页常驻说明的两平台守门 ──
+
+    /// 记忆页说明文案加了必须真被渲染（防「常量加了没人渲染」）：
+    /// 两平台源码都要引用 [`SettingsUi::MEMORY_TIP`]，且不在平台文件里复制字面量。
+    ///
+    /// `include_str!` 让两份平台源码成为编译期依赖（要的就是这个：删掉任一侧的
+    /// 引用本用例立刻红）；本用例可在任意平台编译（只读源码文本，不调用平台 API）。
+    /// 断言用 `concat!` 拆词，避免测试文件自身在外部按整词扫描时自命中。
+    #[test]
+    fn 两平台设置页都渲染记忆说明常量() {
+        const MACOS: &str = include_str!("../platform/macos_settings.rs");
+        const WINDOWS: &str = include_str!("../platform/windows_settings.rs");
+        let needle = concat!("MEMORY", "_TIP");
+        for (name, source) in [
+            ("macos_settings.rs", MACOS),
+            ("windows_settings.rs", WINDOWS),
+        ] {
+            assert!(
+                source.contains(needle),
+                "{name} 必须引用 {needle}（记忆说明加了没人渲染 = 用户看不到入口说明）"
+            );
+        }
     }
 }

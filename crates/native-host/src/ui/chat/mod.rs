@@ -35,6 +35,7 @@ pub mod events;
 pub mod intents;
 pub mod model;
 pub mod panels;
+pub mod paste;
 pub mod placeholders;
 pub mod projection;
 pub mod richtext;

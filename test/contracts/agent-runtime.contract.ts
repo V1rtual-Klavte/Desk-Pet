@@ -28,6 +28,27 @@
 // ar-07 的 purpose 分列（压缩走同一通道）记账路径未动；ar-15 的手动压缩准入/续跑收口在压缩
 // 之前判定，拒绝面不受 decline 留痕影响；ar-22 的挂起结算与其余点不在改动面内、实现点仍在，
 // 覆盖描述与当前实现一致。未修订覆盖点，仅按当前源码刷新 sourceHash。
+// 2026-10-06 聊天图片批次（本批刷新）：sourceFiles 变化 —— src/services/session/manager.ts
+// （deleteSession 成功后新增删会话清理：从该会话条目去重收集图片路径交宿主命令
+// chat_delete_session_images 清理托管聊天图片；空集不调用、失败只留痕、不改变删除返回语义，
+// 且只读删会话前已加载的条目，不改回合驱动/槽代际/投递/取消链路）。该行为的覆盖登记在
+// chat-images 的 ci-07（L3）。ar-01..ar-25 逐点核对实现点仍在、覆盖描述与当前实现一致，
+// 未修订覆盖点，仅按当前源码刷新 sourceHash。
+// 2026-10-06 子运行接线修复批次（analyze→generate）：sourceFiles 变化 ——
+// src/services/engine/harness/runtime.ts（真机根因修复：createTurnSpec 的参数类型补
+// providerAdmission / disableAutomaticCompaction / invisible 三个字段并分别转发进请求视图
+// hook 与 spec —— 类型缺字段 + 调用点 spread 会静默丢弃；createTurnSinks 增 visible 形参，
+// 子运行不外推过程消息/工具结果/流式草稿与 stream-end；runPiSubAgent 传 invisible: true）。
+// 新增 ar-26（integration）登记两条 L3 caseId（subagent-provider-admission /
+// subagent-chat-invisible，均已做退回修复看红的区分力验证）。ar-01..ar-25 逐点核对：
+// ar-16/ar-17/ar-19/ar-23 等子运行相关点语义未变（步骤子代理不写变量、停止级联、主回合流式
+// 过滤器重置、辅助模型路由各自口径未动），其余点不在改动面内、实现点仍在；rules 不动
+// （ar-26 是 L3，不入 L4 计数）。sourceHash 按当前源码复算。
+// 2026-10-06 估算偏差口径修正批次（本批刷新）：sourceFiles 变化 ——
+// src/services/engine/harness/runtime.ts 与 model-gateway.ts（估算偏差对账的 actual 与快照
+// actualInputTokens / tokenDrift.actual 改用 totalInputTokens = input + cacheRead + cacheWrite；
+// 预算判定不变）。ar-07 的 usage 按 purpose 分列口径未变，其余点不在改动面内、实现点仍在，
+// 覆盖描述与当前实现一致，未修订覆盖点，仅按当前源码刷新 sourceHash。
 import type { ModuleContract } from "../host/types"
 
 export const agentRuntimeContract: ModuleContract = {
@@ -62,7 +83,7 @@ export const agentRuntimeContract: ModuleContract = {
     "src/services/session/repo.ts",
     "src/services/session/store.ts",
   ],
-  sourceHash: "c863d1fe0aff769a2dbc620b5e9e7d55d070cfde9b45adb90ee3a986afc02f0b",
+  sourceHash: "90c25d7113c0b5639c9bd26113a5bf7ef5f10b71c333b47581674ce804068329",
   coverage: [
     {
       id: "ar-01",
@@ -289,6 +310,15 @@ export const agentRuntimeContract: ModuleContract = {
       layer: "unit",
       depth: "deep",
       scenarios: ["variable-runtime-data-reminder-state", "variable-runtime-data-reminder-text", "variable-runtime-data-reminder-block"],
+    },
+    {
+      id: "ar-26",
+      feature: "子运行的 provider 准入与聊天不可见",
+      description: "runPiSubAgent（规划 / 计划步骤 / 子代理的共同出口）的两条接线契约：① provider 准入必被咨询 —— beforeProvider 经 createTurnSpec 的 providerAdmission 转发进请求视图 hook（与主回合的 activeAdmission 并列、互斥使用），在请求发出前恰好咨询一次；回调拒绝时一个真实 provider 请求都不发（fake provider 的 payloads 为空、运行以失败收口）。根因（2026-10-06 真机）：参数类型缺 providerAdmission / disableAutomaticCompaction 字段而调用点用 spread 传参 —— 对象字面量的 spread 不参与多余属性检查 ⇒ 字段被静默丢弃 ⇒ 规划器的 claim 从不发生（去重表永远为空、每个 tick 白发一次真实请求）、disableAutomaticCompaction 也没生效；两者由同一处转发修复收口（隐式压缩开关本身未由本点断言）。② 子运行对聊天界面不可见 —— createTurnSinks(visible=false) 下带工具调用的过程消息、工具结果与流式草稿 / stream-end 都不进活跃会话的可见列表与瞬时尾巴（子运行槽不落盘，推出去的气泡会在读模型重载时整体消失），断言子运行跑完「工具轮 + 收尾轮」后可见列表仍为空；阶段提示与工具过程文案照常发（过程可见性的显示位是顶栏）。两条 caseId 均已做「退回修复看它红」的区分力验证（改前分别红在 consulted=0 与「多出恰好 2 条消息」）",
+      why: "接线断了不会抛错：spread 丢字段是静默的（每个 tick 真花一次 provider token、claim 与两层去重表永不落库，且旧路径连 trace 都没有），子运行共用主回合 sinks 则把不可持久的过程气泡推给用户再整体消失（真机「几条 AI 消息闪一下就没」）—— 两条都是「不报错但行为全错」的形态，只能在真实子运行出口上用「请求数为零」「可见列表为空」这类反向判据钉住",
+      layer: "integration",
+      depth: "deep",
+      scenarios: ["subagent-provider-admission", "subagent-chat-invisible"],
     },
   ],
   // W0–W7 把 ar-18 / ar-22 的 memory-retry-policy-sync、runtime-compaction-suspended-settles

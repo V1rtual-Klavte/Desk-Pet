@@ -73,16 +73,16 @@ use objc2_app_kit::{
     NSEvent, NSEventModifierFlags, NSFont, NSFontAttributeName, NSFontManager, NSFontTraitMask,
     NSForegroundColorAttributeName, NSImage, NSImageScaling, NSImageView, NSLineBreakMode,
     NSLinkAttributeName, NSMenu, NSMenuItem, NSMutableParagraphStyle,
-    NSParagraphStyleAttributeName, NSPasteboard, NSPasteboardTypeFileURL,
-    NSScrollView, NSTextBlockLayer, NSTextBlockValueType, NSTextDelegate, NSTextField,
-    NSTextInputClient, NSTextList, NSTextListMarkerDecimal, NSTextListMarkerDisc, NSTextTable,
-    NSTextTableBlock, NSTextView, NSTextViewDelegate, NSView, NSViewBoundsDidChangeNotification,
-    NSWindow, NSWindowDelegate, NSWindowStyleMask, NSWorkspace,
+    NSParagraphStyleAttributeName, NSPasteboard, NSPasteboardTypeFileURL, NSPasteboardTypePNG,
+    NSPasteboardTypeTIFF, NSScrollView, NSTextBlockLayer, NSTextBlockValueType, NSTextDelegate,
+    NSTextField, NSTextInputClient, NSTextList, NSTextListMarkerDecimal, NSTextListMarkerDisc,
+    NSTextTable, NSTextTableBlock, NSTextView, NSTextViewDelegate, NSView,
+    NSViewBoundsDidChangeNotification, NSWindow, NSWindowDelegate, NSWindowStyleMask, NSWorkspace,
 };
 use objc2_foundation::{
-    MainThreadMarker, NSArray, NSAttributedString, NSMutableAttributedString, NSNotification,
-    NSNotificationCenter, NSObject, NSObjectProtocol, NSPoint, NSRange, NSRect, NSSize, NSString,
-    NSTimer, NSUInteger, NSURL,
+    MainThreadMarker, NSArray, NSAttributedString, NSCopying, NSMutableAttributedString,
+    NSNotification, NSNotificationCenter, NSObject, NSObjectProtocol, NSPoint, NSRange, NSRect,
+    NSSize, NSString, NSTimer, NSUInteger, NSURL,
 };
 use objc2_quartz_core::{CALayer, CATransaction, CATransform3D};
 
@@ -937,12 +937,12 @@ impl HandleBandView {
 // 文件拖入（A3：拖进输入区/聊天窗 → 待发送区）
 // ==========================================
 
-/// 拖放会话里的文件路径（只认文件 URL；其它拖放返回空表）。
+/// 粘贴板里的文件路径（只认文件 URL；其它内容返回空表）。
 ///
-/// 用 `NSPasteboard::readObjectsForClasses` 读 `NSURL` 对象（现代文件拖放通道），
-/// 不解析旧式 propertyList，不联网、不读文件字节。
-fn dragged_file_paths(sender: &ProtocolObject<dyn NSDraggingInfo>) -> Vec<String> {
-    let pasteboard: Retained<NSPasteboard> = sender.draggingPasteboard();
+/// 用 `NSPasteboard::readObjectsForClasses` 读 `NSURL` 对象 —— 拖入与输入框粘贴
+/// 共用同一条文件读取通道（`public.file-url` 的文件拷贝形态由 NSURL 的粘贴板读取
+/// 适配器接住）；不解析 propertyList、不联网、不读文件字节。
+fn pasteboard_file_paths(pasteboard: &NSPasteboard) -> Vec<String> {
     let classes = NSArray::from_slice(&[NSURL::class()]);
     let objects = unsafe { pasteboard.readObjectsForClasses_options(&classes, None) };
     let Some(objects) = objects else {
@@ -958,6 +958,11 @@ fn dragged_file_paths(sender: &ProtocolObject<dyn NSDraggingInfo>) -> Vec<String
         }
     }
     paths
+}
+
+/// 拖放会话里的文件路径（只认文件 URL；其它拖放返回空表）。
+fn dragged_file_paths(sender: &ProtocolObject<dyn NSDraggingInfo>) -> Vec<String> {
+    pasteboard_file_paths(&sender.draggingPasteboard())
 }
 
 /// 拖入光标反馈：只认文件（其余类型返回 None，拒绝插入）。
@@ -1087,8 +1092,71 @@ define_class!(
                 let _: () = msg_send![super(self), keyDown: event];
             }
         }
+
+        /// 输入框 ⌘V（Edit 菜单与 ⌘V 的共同入口，覆写 NSText 的粘贴方法）：
+        /// 剪贴板里是图片（或文件）就接进待发送区，否则原样回落系统文本粘贴。
+        ///
+        /// 平台层只做剪贴板读取；落盘、转码、准入与待发送区全在共享模块
+        /// `ui::chat::paste`（单一实现点，平台不复制规则）。
+        #[unsafe(method(paste:))]
+        fn paste(&self, sender: Option<&AnyObject>) {
+            if paste_clipboard_media() {
+                return;
+            }
+            unsafe {
+                let _: () = msg_send![super(self), paste: sender];
+            }
+        }
     }
 );
+
+/// 输入框粘贴的媒体分支：剪贴板里有图片（PNG/TIFF）或文件 URL 时接进待发送区；
+/// 返回 `true` = 这次粘贴已被图片通路接住（调用方不要再走文本粘贴）。
+///
+/// 顺序与口径：
+/// 1. 先取 PNG、再取 TIFF（浏览器/系统截图各写其一）；
+/// 2. 都不是 → 文件 URL（Finder 里拷贝的图片文件）按**文件拖入**同一通路处理
+///    （`add_dropped_images`：与拖入同一条准入，工作线程执行，不阻塞主线程）；
+/// 3. 其它内容（纯文本等）返回 `false`，由 super 的原生粘贴兜底 ——
+///    输入框仍是纯文本视图（`setRichText(false)`），文本粘贴行为一个字都不变。
+///
+/// 为什么不静默吞掉失败：共享入口返回的 `Err` 是给用户看的**廉价拒绝**
+/// （空数据/超大/超张数/宿主未就绪），必须经 `set_notice` 呈现；转码与落盘的
+/// 晚到失败由工作线程自己报（这里不重复提示）。「没有图片数据」不算失败 ——
+/// 剪贴板本来就可能只有文本，照常回落文本粘贴。
+fn paste_clipboard_media() -> bool {
+    let pasteboard = NSPasteboard::generalPasteboard();
+    // SAFETY: NSPasteboardTypePNG / NSPasteboardTypeTIFF 是 AppKit 的常量 extern
+    // static（系统提供，只读）。
+    let png_type = unsafe { NSPasteboardTypePNG };
+    let tiff_type = unsafe { NSPasteboardTypeTIFF };
+    let image = pasteboard
+        .dataForType(png_type)
+        .or_else(|| pasteboard.dataForType(tiff_type))
+        .map(|data| data.to_vec());
+    if let Some(bytes) = image {
+        match crate::ui::chat::paste::add_pasted_image(bytes) {
+            // 已交给工作线程：成功/晚到失败都由它经 `set_notice` 呈现。
+            Ok(()) => {}
+            Err(text) => crate::ui::chat::set_notice(Some(text)),
+        }
+        // 图片数据在场的粘贴由图片通路独占：不再回落文本 —— 同一份剪贴板再走
+        // super 的粘贴只会把文本表示一起塞进输入框，与刚给的提示互相矛盾。
+        return true;
+    }
+    let paths = pasteboard_file_paths(&pasteboard);
+    if paths.is_empty() {
+        return false;
+    }
+    match crate::ui::chat::add_dropped_images(paths) {
+        Ok(()) => true,
+        Err(error) => {
+            // 与文件拖入同一失败文案（`commit_file_drop`）。
+            crate::ui::chat::set_notice(Some(format!("图片未添加：{error}")));
+            true
+        }
+    }
+}
 
 /// 输入区发送出口（Enter 与「发送」按钮共用，行为与旧壳 `send()` 一致）：
 /// 空文本且无待发送图片时不派发、也不插换行；成功清空输入，发送失败保留
@@ -3868,9 +3936,11 @@ impl ChatContentController {
         let indent = BUBBLE_SIDE_MARGIN;
         let available = bubble_cap(width);
 
-        // 「记住这条」按钮删除记录（2026-10-05 用户规则：「我的消息去掉『记住这条』
-        // 按钮，要么我叫他记住，要么自动」）：用户气泡不再挂该入口；记忆能力本身
-        // （显式指令 / 自动两条路）不变，`MessageSnapshot.event_id` 仍由投影携带。
+        // 「记住这条」的入口形态（2026-10-05 用户规则：「我的消息去掉『记住这条』
+        // 按钮，要么我叫他记住，要么自动」）：气泡按钮退场，入口改由**消息右键菜单**
+        // 承接 —— 目标身份只问 `remember_event_id`（只有用户消息拿得到 Some），
+        // 记忆能力本身（显式指令 / 自动两条路）不变。
+        let remember_event_id = message.remember_event_id();
         for part in message.visible_parts.iter() {
             if part.trim().is_empty() {
                 continue;
@@ -3887,6 +3957,7 @@ impl ChatContentController {
                     &BubbleTheme::for_message(message.role, failed_tool),
                     available,
                     ProtocolObject::from_ref(self),
+                    remember_event_id,
                 );
                 let size = bubble.frame().size;
                 let x = if message.role == Role::User {
@@ -4047,6 +4118,8 @@ impl ChatContentController {
             &BubbleTheme::for_message(Role::Assistant, false),
             available,
             ProtocolObject::from_ref(self),
+            // 流式尾巴不是提交条目，没有事件身份（也无记忆来源资格）：按无 eventId 处理。
+            None,
         );
         let size = bubble.frame().size;
         container.addSubview(&bubble);
@@ -5557,6 +5630,141 @@ fn prose_used_width(view: &NSTextView) -> f64 {
     }
 }
 
+// ==========================================
+// 消息正文视图（右键「记住这条」入口）
+// ==========================================
+
+/// 消息正文视图的 ivars：只带「这条消息」的记忆目标身份。
+struct MessageTextViewIvars {
+    /// 记住目标（`None` = 本消息没有记忆来源资格，右键不给入口）。
+    event_id: RefCell<Option<String>>,
+}
+
+define_class!(
+    /// 消息正文视图（散文段与代码块正文共用的 `NSTextView` 子类）：只承接
+    /// 「记住这条」右键菜单，**不覆写任何布局/量测/首次响应者行为** ——
+    /// 换子类不改变既有排版路径（`autosize_text_view` / `usedRect` 等原样）。
+    ///
+    /// `event_id` 由构建方按 [`MessageSnapshot::remember_event_id`] 判据传入
+    /// （只有用户消息拿得到 `Some`），平台层不在菜单里复刻角色判定。
+    #[unsafe(super(NSTextView))]
+    #[thread_kind = MainThreadOnly]
+    #[ivars = MessageTextViewIvars]
+    struct MessageTextView;
+
+    unsafe impl NSObjectProtocol for MessageTextView {}
+
+    impl MessageTextView {
+        /// 右键菜单：系统默认菜单（复制/全选等）原样保留，有记忆目标才追加
+        /// 分隔线 + 「记住这条」；没有目标时把 super 的结果原样返回
+        /// （不加灰项、不造空菜单）。
+        ///
+        /// 用 `method_id` 而非 `method`：返回 `Option<Retained<NSMenu>>` 的
+        /// define_class 方法必须走 objc2 的 retained-return 包装（`method` 只接受
+        /// `EncodeReturn` 类型，`Retained` 不是；`method_id` 会把结果按 none-family
+        /// 的 +0 约定 autorelease 后返回指针）。**body 里也没有 `return` 早退** ——
+        /// 包装函数自己持有返回值，早退会绕开转换。
+        #[unsafe(method_id(menuForEvent:))]
+        fn menu_for_event(&self, event: &NSEvent) -> Option<Retained<NSMenu>> {
+            // 先让系统默认菜单成形（super 的项一个不丢）。实机核对（macOS 27 最小
+            // AppKit 探针）：程序化 NSTextView 自带标准文本菜单 —— Cut / Copy /
+            // Paste / Paste and Match Style / Font / Spelling / … 共 14 项，
+            // `menuForEvent:` 返回的就是它，所以这里拿到的通常是非空菜单。
+            let menu: Option<Retained<NSMenu>> =
+                unsafe { msg_send![super(self), menuForEvent: event] };
+            // 借用单条语句内结束（RefCell 不得重入，AGENTS §5.1）：这里只要
+            // 「有没有目标」这一个事实，事件身份留在 ivar 里给动作方法读。
+            let has_target = self.ivars().event_id.borrow().is_some();
+            match MainThreadMarker::new() {
+                Some(mtm) if has_target => self.menu_with_remember_item(menu, mtm),
+                // 没有记忆目标：super 的菜单原样返回（不加灰项、不造空菜单）；
+                // 拿不到 MainThreadMarker（正常不可达，本类挂 MainThreadOnly）
+                // 时同样回落系统菜单，不 panic、不吞掉既有项。
+                _ => menu,
+            }
+        }
+    }
+
+    /// 裸 impl：承载**不属于任何协议**的自定义 target-action（写进协议块会在类
+    /// 注册期 panic —— 见 `ChatContentController` 同款说明）。
+    impl MessageTextView {
+        /// 菜单项动作：只做「取 ivar 里的 event_id → 交自由函数派发」。
+        #[unsafe(method(rememberMessage:))]
+        fn remember_message(&self, _sender: Option<&AnyObject>) {
+            let event_id = self.ivars().event_id.borrow().clone();
+            let Some(event_id) = event_id else {
+                return;
+            };
+            dispatch_remember_message(event_id);
+        }
+    }
+);
+
+impl MessageTextView {
+    /// 构建（`event_id` 为 `None` = 本消息不给入口；视图本身与普通 NSTextView 等价）。
+    fn new(mtm: MainThreadMarker, frame: NSRect, event_id: Option<&str>) -> Retained<Self> {
+        let this = Self::alloc(mtm).set_ivars(MessageTextViewIvars {
+            event_id: RefCell::new(event_id.map(str::to_string)),
+        });
+        unsafe { msg_send![super(this), initWithFrame: frame] }
+    }
+
+    /// 给系统菜单追加分隔线 + 「记住这条」并返回（原菜单可能为 `None`，这时新建）。
+    ///
+    /// **先复制再追加**（实机核对，不是保守估计）：NSTextView 的默认菜单是**跨视图
+    /// 共享的同一个实例**（两个程序化 NSTextView 的 `menu` 指针相同），直接追加会让
+    /// 菜单项串台（target 指向别的消息）且每次右键都在共享实例上越积越多；
+    /// `NSMenu.copy` 深拷贝项与子菜单（Cut/Copy/Paste 的 action、Font/拼写子菜单、
+    /// `autoenablesItems` 都保留），复制后共享实例保持干净、外带菜单只带本次的项。
+    fn menu_with_remember_item(
+        &self,
+        menu: Option<Retained<NSMenu>>,
+        mtm: MainThreadMarker,
+    ) -> Option<Retained<NSMenu>> {
+        let menu = match menu {
+            Some(menu) => menu.copy(),
+            // 系统没给默认菜单时仍给出这一项（否则未选中文本的右键没有入口）。
+            None => NSMenu::initWithTitle(NSMenu::alloc(mtm), &NSString::from_str("")),
+        };
+        // 空菜单不摆前导分隔线（只有一个菜单项的菜单不需要分割）。
+        if menu.numberOfItems() > 0 {
+            menu.addItem(&NSMenuItem::separatorItem(mtm));
+        }
+        let item = unsafe {
+            NSMenuItem::initWithTitle_action_keyEquivalent(
+                NSMenuItem::alloc(mtm),
+                // 文案唯一来源（共享层常量），平台文件里不写第二份字面量。
+                &NSString::from_str(crate::ui::chat::panels::REMEMBER_MENU_ITEM_LABEL),
+                Some(sel!(rememberMessage:)),
+                &NSString::from_str(""),
+            )
+        };
+        unsafe { item.setTarget(Some(as_any(self))) };
+        menu.addItem(&item);
+        Some(menu)
+    }
+}
+
+/// 「记住这条」的统一派发出口（消息右键菜单的唯一去向）。
+///
+/// 与 [`ChatContentController::dispatch_panel_action`] 同一形态：成功走中性瞬时
+/// 回执（`PanelOutcome::Notice`）或清空回执；失败走模态失败对话框（详情可复制）、
+/// 不做乐观 UI 变更。来源资格与身份复核在 Node 侧，平台层不做第二份判定。
+fn dispatch_remember_message(event_id: String) {
+    match crate::ui::chat::apply_panel_action(PanelAction::RememberMessage { event_id }) {
+        Ok(PanelOutcome::Notice(text)) => crate::ui::chat::set_notice(Some(text)),
+        Ok(_) => crate::ui::chat::set_notice(None),
+        Err(error) => {
+            crate::ui::chat::dialog::show_failure(
+                "操作未送达",
+                "本次操作没有送达，界面未做改动。",
+                &error.to_string(),
+            );
+            crate::ui::chat::set_notice(None);
+        }
+    }
+}
+
 /// 一个泡：解析为受控块；连续散文块进一个 NSTextView，每个代码块各自独立横向滚动。
 ///
 /// **宽度贴合内容**：`max_width` 只是上限（气泡列宽），实际泡宽取正文自然宽
@@ -5565,12 +5773,16 @@ fn prose_used_width(view: &NSTextView) -> f64 {
 ///
 /// `delegate` 只透传给散文视图（`build_prose_view`）：代码块是纯文本
 /// （`setRichText(false)`、内容不带任何属性），不承载链接，AppKit 没有可打开的形态。
+///
+/// `remember_event_id` 是这条消息的「记住这条」右键目标（透传给散文段与代码块
+/// 的正文视图；`None` = 不给入口，见 [`MessageSnapshot::remember_event_id`]）。
 fn build_bubble_view(
     mtm: MainThreadMarker,
     text: &str,
     theme: &BubbleTheme,
     max_width: f64,
     delegate: &ProtocolObject<dyn NSTextViewDelegate>,
+    remember_event_id: Option<&str>,
 ) -> Retained<ChatStackView> {
     let bubble = ChatStackView::new(mtm, max_width);
     let inner_width = (max_width - BUBBLE_PAD_X * 2.0).max(40.0);
@@ -5592,6 +5804,7 @@ fn build_bubble_view(
                         &fonts,
                         delegate,
                         theme.text_color,
+                        remember_event_id,
                     );
                     used_max = used_max.max(prose_used_width(&prose));
                     let height = prose.frame().size.height;
@@ -5603,7 +5816,14 @@ fn build_bubble_view(
                     y += height + 4.0;
                     segment.clear();
                 }
-                let code = build_code_block_view(mtm, &lang, &lines, inner_width, &fonts);
+                let code = build_code_block_view(
+                    mtm,
+                    &lang,
+                    &lines,
+                    inner_width,
+                    &fonts,
+                    remember_event_id,
+                );
                 let height = code.frame().size.height;
                 bubble.addSubview(&code);
                 code.setFrame(NSRect::new(
@@ -5623,6 +5843,7 @@ fn build_bubble_view(
             &fonts,
             delegate,
             theme.text_color,
+            remember_event_id,
         );
         used_max = used_max.max(prose_used_width(&prose));
         let height = prose.frame().size.height;
@@ -5634,7 +5855,8 @@ fn build_bubble_view(
         y += height;
     }
 
-    // 「记住这条」撤下后泡内不再有底部入口（footer 机制整体删除）。
+    // 泡内没有底部入口（旧「记住这条」按钮的 footer 机制已整体删除）；入口改由
+    // 正文视图的右键菜单承接（见 [`MessageTextView`]），不占泡内布局。
     let content_width = bubble_content_width(used_max, has_code, 0.0, max_width);
     y += BUBBLE_PAD_Y;
     bubble.setFrameSize(NSSize::new(content_width, y.max(1.0)));
@@ -5664,6 +5886,9 @@ fn build_bubble_view(
 /// AppKit 默认处理。delegate 是**弱引用**：控制器由 `WINDOW_CONTROLLER` /
 /// `MAIN_PANE` 线程局部持有，生命周期覆盖全部消息视图（视图本身归控制器/窗口所有），
 /// 不会出现「设了立刻被释放的 delegate」。
+///
+/// `remember_event_id` 透传给 [`MessageTextView`]：`Some` 时该视图右键菜单多一项
+/// 「记住这条」（用户消息），`None` 时与系统默认一致。
 fn build_prose_view(
     mtm: MainThreadMarker,
     blocks: &[Block],
@@ -5671,11 +5896,16 @@ fn build_prose_view(
     fonts: &Fonts,
     delegate: &ProtocolObject<dyn NSTextViewDelegate>,
     ink: Rgba,
+    remember_event_id: Option<&str>,
 ) -> Retained<NSTextView> {
-    let view = NSTextView::initWithFrame(
-        NSTextView::alloc(mtm),
+    // 正文视图是 [`MessageTextView`]（只在右键菜单上多一项「记住这条」，排版行为
+    // 与普通 NSTextView 完全一致）；量测/父调用方仍按 `NSTextView` 使用。
+    let view: Retained<NSTextView> = MessageTextView::new(
+        mtm,
         NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(width, 10.0)),
-    );
+        remember_event_id,
+    )
+    .into_super();
     view.setEditable(false);
     view.setSelectable(true); // 选择/复制
     view.setRichText(true);
@@ -5953,12 +6183,16 @@ fn append_table(
 }
 
 /// 代码块视图：等宽字体、不折行、独立横向滚动（§6.3）。
+///
+/// `remember_event_id` 与散文段同口径：透传给代码块正文视图的右键菜单
+/// （用户消息的代码块右键也给「记住这条」）。
 fn build_code_block_view(
     mtm: MainThreadMarker,
     lang: &Option<String>,
     lines: &[String],
     width: f64,
     fonts: &Fonts,
+    remember_event_id: Option<&str>,
 ) -> Retained<NSScrollView> {
     let scroll = NSScrollView::initWithFrame(
         NSScrollView::alloc(mtm),
@@ -5967,10 +6201,12 @@ fn build_code_block_view(
     scroll.setBorderType(NSBorderType::NoBorder);
     scroll.setDrawsBackground(false);
     scroll.setAutohidesScrollers(true);
-    let text_view = NSTextView::initWithFrame(
-        NSTextView::alloc(mtm),
+    let text_view: Retained<NSTextView> = MessageTextView::new(
+        mtm,
         NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(CODE_INFINITE, 40.0)),
-    );
+        remember_event_id,
+    )
+    .into_super();
     text_view.setEditable(false);
     text_view.setSelectable(true);
     text_view.setRichText(false);
@@ -6713,19 +6949,59 @@ mod tests {
     }
 
     #[test]
-    fn 记住这条入口已整体删除() {
-        // 平台侧不再有该按钮：target-action、tag 表与泡内底部入口机制都删净
-        //（拆开拼接，避免断言文本自己命中扫描）。
+    fn 记住这条入口是消息右键菜单() {
+        // 2026-10-05 用户规则：气泡按钮退场，入口改由**消息右键菜单**承接
+        // （旧形态 = 泡内按钮 + tag 表 + 底部入口结构；新形态 = 正文视图的
+        // 右键菜单覆写 + 菜单项动作 + 共享文案常量）。正向断言新形态在场、
+        // 反向继续禁旧形态回潮；断言词拆开拼接，避免测试文本自己命中扫描
+        //（本注释与断言字符串里都不出现拼接后的完整词）。
         let source = include_str!("macos_chat.rs");
         for (name, needle) in [
-            ("按钮动作", concat!("remember", "Message:")),
-            ("tag 表", concat!("remember", "_targets")),
-            ("底部入口结构", concat!("Bubble", "Footer")),
+            ("右键菜单覆写", concat!("menuFor", "Event:")),
+            ("菜单项动作", concat!("remember", "Message:")),
+            ("共享文案常量引用", concat!("REMEMBER_MENU_ITEM", "_LABEL")),
+        ] {
+            assert!(
+                source.contains(needle),
+                "「记住这条」右键入口缺「{name}」：{needle}"
+            );
+        }
+        for (name, needle) in [
+            ("按钮 tag 表", concat!("remember", "_targets")),
+            ("泡内底部入口结构", concat!("Bubble", "Footer")),
         ] {
             assert_eq!(
                 source.matches(needle).count(),
                 0,
-                "「记住这条」残留「{name}」：{needle}"
+                "「记住这条」旧按钮形态回潮「{name}」：{needle}"
+            );
+        }
+    }
+
+    #[test]
+    fn 输入框粘贴图片只接共享入口() {
+        // 粘贴接线守门：平台层只做剪贴板读取（覆写 NSText 的粘贴方法）并交给
+        // 共享入口（`ui/chat/paste.rs`）；落盘目录等路径常量归 Rust 命令域，
+        // 平台文件里出现就是第二份定义点。断言词拆开拼接，避免测试文本自己
+        // 命中扫描（正反两个方向都要求实现里真的在场/真的没有）。
+        let source = include_str!("macos_chat.rs");
+        for (name, needle) in [
+            ("粘贴覆写", concat!("past", "e:")),
+            ("共享入口引用", concat!("add_pasted", "_image")),
+        ] {
+            assert!(
+                source.contains(needle),
+                "输入框粘贴接线缺「{name}」：{needle}"
+            );
+        }
+        for (name, needle) in [
+            ("托管目录常量", concat!("PASTED", "_DIR")),
+            ("截图目录常量", concat!("SCREENSHOT", "_DIR")),
+        ] {
+            assert_eq!(
+                source.matches(needle).count(),
+                0,
+                "平台文件不该出现「{name}」（路径归 Rust 命令域）：{needle}"
             );
         }
     }

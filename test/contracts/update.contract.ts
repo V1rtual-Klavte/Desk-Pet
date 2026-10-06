@@ -22,6 +22,11 @@
 // app_restart）仍成立，「更新动作不进 Node 请求面」（dispatchHostRequest 对 action.checkUpdate
 // 与 update_check 均以 OTHER 拒绝）仍成立。本批刷新同时包含另一会话的改动；本轮只做 coverage
 // 描述与当前实现一致性核对（非逐行行为审计），未修订覆盖点，仅按当前源码刷新 sourceHash。
+// 2026-10-06 聊天图片批次（本批刷新）：sourceFiles 变化 —— src/services/host/types.ts 新增
+// HostCommandMap.chat_delete_session_images 一条（删会话清理托管聊天图片，不在更新路径上）。
+// up-01 逐条对照当前实现：更新命令形状（update_check / update_download_and_install /
+// app_restart）仍成立，「更新动作不进 Node 请求面」（dispatchHostRequest 对 action.checkUpdate
+// 与 update_check 均以 OTHER 拒绝）仍成立。未修订覆盖点，仅按当前源码刷新 sourceHash。
 import type { ModuleContract } from "../host/types"
 
 export const updateContract: ModuleContract = {
@@ -32,7 +37,7 @@ export const updateContract: ModuleContract = {
     "src/services/native-ui/index.ts",
     "src/services/native-ui/host-requests.ts",
   ],
-  sourceHash: "52116d4daa7bdcb2100ddd2a2fa012578d45f8b3643bd411465addbf2cf77d91",
+  sourceHash: "1e5bf701869135e4dfc484e812ab817d62483da61beede66d4365b6f4a2ef082",
   coverage: [
     {
       id: "up-01",

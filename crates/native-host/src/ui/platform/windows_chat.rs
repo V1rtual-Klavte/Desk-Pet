@@ -34,6 +34,15 @@
 //! 待发送条（元数据预览条，只读文件名/大小）在输入区之上、面板区之下占一行；
 //! 撤选走条目按钮，发送/撤选/切会话的释放由聊天模型的 `pending_images` 快照驱动。
 //!
+//! A3 第二批（2026-10-05 图片通路批）：剪贴板粘贴图片 —— 输入框 `WM_PASTE` 由既有
+//! 输入子类接管，`CF_DIBV5`/`CF_DIB`/`CF_BITMAP` 补 14 字节 BMP 容器头后交共享入口
+//! `ui::chat::paste::add_pasted_image`（落盘/准入/待发送区都在共享层），`CF_HDROP`
+//! （复制的文件）按拖入处理，其余交还 RichEdit 原生粘贴。「记住这条」第二形态
+//! （同批）：**消息右键菜单** —— 有事件身份（仅用户消息）的正文/代码块 RichEdit 挂
+//! `message_menu_subclass_proc`，`WM_CONTEXTMENU` 弹「复制 / 全选 / 分隔线 /
+//! 记住这条」，派发仍走既有 `dispatch_panel_action` 唯一出口。
+//! **以上两段与全文件一样：未在 Windows 编译/运行（本机 macOS 只做离线符号核对）。**
+//!
 //! 第二波镜像（2026-10-05，与 macOS 同批，**输入区结构已被第三波取代**——保留的
 //! 是与第三波无关的条目）：
 //! - 历史消息按空行拆成多条气泡（共享 `split_paragraphs`）；图片占位 chip
@@ -79,15 +88,20 @@ use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::ffi::c_void;
 
-use windows_sys::Win32::Foundation::{HWND, LPARAM, LRESULT, POINT, RECT, WPARAM};
+use windows_sys::Win32::Foundation::{HGLOBAL, HWND, LPARAM, LRESULT, POINT, RECT, WPARAM};
 use windows_sys::Win32::Graphics::Gdi::{
-    BeginPaint, ClientToScreen, CombineRgn, CreateFontW, CreateRectRgn, CreateRoundRectRgn,
-    DeleteObject, DrawTextW, EndPaint, FillRgn, FrameRgn, InvalidateRect, ScreenToClient,
-    SelectClipRgn, SetBkMode, SetTextColor, SetWindowRgn, StretchDIBits, BITMAPINFO,
-    BITMAPINFOHEADER, BI_RGB, CLIP_DEFAULT_PRECIS, DEFAULT_CHARSET, DIB_RGB_COLORS, FW_BOLD,
-    FW_NORMAL, HDC, HFONT, OUT_DEFAULT_PRECIS, RGN_DIFF, SRCCOPY,
+    BeginPaint, ClientToScreen, CombineRgn, CreateCompatibleDC, CreateFontW, CreateRectRgn,
+    CreateRoundRectRgn, DeleteDC, DeleteObject, DrawTextW, EndPaint, FillRgn, FrameRgn, GetDIBits,
+    InvalidateRect, ScreenToClient, SelectClipRgn, SetBkMode, SetTextColor, SetWindowRgn,
+    StretchDIBits, BITMAPINFO, BITMAPINFOHEADER, BI_BITFIELDS, BI_RGB, CLIP_DEFAULT_PRECIS,
+    DEFAULT_CHARSET, DIB_RGB_COLORS, FW_BOLD, FW_NORMAL, HBITMAP, HDC, HFONT, OUT_DEFAULT_PRECIS,
+    RGN_DIFF, SRCCOPY,
+};
+use windows_sys::Win32::System::DataExchange::{
+    CloseClipboard, GetClipboardData, IsClipboardFormatAvailable, OpenClipboard,
 };
 use windows_sys::Win32::System::LibraryLoader::{GetModuleHandleW, LoadLibraryW};
+use windows_sys::Win32::System::Memory::{GlobalLock, GlobalSize, GlobalUnlock};
 use windows_sys::Win32::UI::Controls::{
     SetScrollInfo, ShowScrollBar, ODS_DISABLED, ODS_GRAYED, ODS_SELECTED,
 };
@@ -105,23 +119,26 @@ use windows_sys::Win32::UI::Shell::{
     SetWindowSubclass, ShellExecuteW, HDROP,
 };
 use windows_sys::Win32::UI::WindowsAndMessaging::{
-    AdjustWindowRectEx, CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW,
-    GetCaretPos, GetClientRect, GetMessageW, GetParent, GetScrollInfo, GetSystemMetrics,
-    GetWindowLongPtrW, GetWindowRect, GetWindowTextLengthW, GetWindowTextW, IsDialogMessageW,
-    IsWindow, IsWindowVisible, KillTimer, MoveWindow, PostMessageW, PostQuitMessage,
-    RegisterClassW, SendMessageW, SetForegroundWindow, SetTimer, SetWindowLongPtrW, SetWindowPos,
-    SetWindowTextW, ShowWindow, TranslateMessage, BS_DEFPUSHBUTTON, CBN_SELENDOK, CBS_DROPDOWNLIST,
-    CB_ADDSTRING, CB_GETCURSEL, CB_SETCURSEL, CS_HREDRAW, CS_VREDRAW, ES_AUTOHSCROLL,
-    ES_AUTOVSCROLL, ES_MULTILINE, ES_READONLY, ES_WANTRETURN, GWLP_USERDATA, GWL_STYLE, HMENU,
-    HTTRANSPARENT, HWND_BOTTOM, HWND_TOP, IDCANCEL, IDOK, MSG, SB_BOTTOM, SB_LINEDOWN, SB_LINEUP,
-    SB_PAGEDOWN, SB_PAGEUP, SB_THUMBPOSITION, SB_THUMBTRACK, SB_TOP, SB_VERT, SCROLLINFO, SIF_ALL,
-    SIF_PAGE, SIF_POS, SIF_RANGE, SM_CXSCREEN, SM_CYSCREEN, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE,
-    SW_HIDE, SW_SHOW, SW_SHOWNORMAL, WM_APP, WM_CLOSE, WM_COMMAND, WM_CREATE, WM_CTLCOLORSTATIC,
+    AdjustWindowRectEx, AppendMenuW, CreatePopupMenu, CreateWindowExW, DefWindowProcW, DestroyMenu,
+    DestroyWindow, DispatchMessageW, GetAncestor, GetCaretPos, GetClientRect, GetCursorPos,
+    GetMessageW, GetParent, GetScrollInfo, GetSystemMetrics, GetWindowLongPtrW, GetWindowRect,
+    GetWindowTextLengthW, GetWindowTextW, IsDialogMessageW, IsWindow, IsWindowVisible, KillTimer,
+    MoveWindow, PostMessageW, PostQuitMessage, RegisterClassW, SendMessageW, SetForegroundWindow,
+    SetTimer, SetWindowLongPtrW, SetWindowPos, SetWindowTextW, ShowWindow, TrackPopupMenu,
+    TranslateMessage, BS_DEFPUSHBUTTON, CBN_SELENDOK, CBS_DROPDOWNLIST, CB_ADDSTRING, CB_GETCURSEL,
+    CB_SETCURSEL, CS_HREDRAW, CS_VREDRAW, ES_AUTOHSCROLL, ES_AUTOVSCROLL, ES_MULTILINE,
+    ES_READONLY, ES_WANTRETURN, GA_ROOT, GWLP_USERDATA, GWL_STYLE, HMENU, HTTRANSPARENT,
+    HWND_BOTTOM, HWND_TOP, IDCANCEL, IDOK, MF_SEPARATOR, MF_STRING, MSG, SB_BOTTOM, SB_LINEDOWN,
+    SB_LINEUP, SB_PAGEDOWN, SB_PAGEUP, SB_THUMBPOSITION, SB_THUMBTRACK, SB_TOP, SB_VERT,
+    SCROLLINFO, SIF_ALL, SIF_PAGE, SIF_POS, SIF_RANGE, SM_CXSCREEN, SM_CYSCREEN, SWP_NOACTIVATE,
+    SWP_NOMOVE, SWP_NOSIZE, SW_HIDE, SW_SHOW, SW_SHOWNORMAL, TPM_RETURNCMD, TPM_RIGHTBUTTON,
+    WM_APP, WM_CLOSE, WM_COMMAND, WM_CONTEXTMENU, WM_COPY, WM_CREATE, WM_CTLCOLORSTATIC,
     WM_DESTROY, WM_DRAWITEM, WM_DROPFILES, WM_ERASEBKGND, WM_GETMINMAXINFO, WM_IME_COMPOSITION,
     WM_IME_ENDCOMPOSITION, WM_IME_STARTCOMPOSITION, WM_KEYDOWN, WM_LBUTTONDOWN, WM_MOUSEWHEEL,
-    WM_NCDESTROY, WM_NCHITTEST, WM_NOTIFY, WM_PAINT, WM_SETFONT, WM_SIZE, WM_TIMER, WM_VSCROLL,
-    WNDCLASSW, WS_CAPTION, WS_CHILD, WS_CLIPCHILDREN, WS_CLIPSIBLINGS, WS_EX_CLIENTEDGE,
-    WS_HSCROLL, WS_OVERLAPPEDWINDOW, WS_POPUP, WS_SYSMENU, WS_TABSTOP, WS_VISIBLE, WS_VSCROLL,
+    WM_NCDESTROY, WM_NCHITTEST, WM_NOTIFY, WM_PAINT, WM_PASTE, WM_SETFONT, WM_SIZE, WM_TIMER,
+    WM_VSCROLL, WNDCLASSW, WS_CAPTION, WS_CHILD, WS_CLIPCHILDREN, WS_CLIPSIBLINGS,
+    WS_EX_CLIENTEDGE, WS_HSCROLL, WS_OVERLAPPEDWINDOW, WS_POPUP, WS_SYSMENU, WS_TABSTOP,
+    WS_VISIBLE, WS_VSCROLL,
 };
 
 use crate::host::WindowId;
@@ -129,6 +146,7 @@ use crate::images::DecodedFrame;
 use crate::ui::chat::panels::{
     bubble_cap, bubble_content_width, estimated_text_width, handle_arrow_frame,
     handle_status_width, role_label_text, BUBBLE_PAD_X, BUBBLE_PAD_Y, BUBBLE_SIDE_MARGIN,
+    REMEMBER_MENU_ITEM_LABEL,
 };
 use crate::ui::chat::placeholders::placeholder_label;
 use crate::ui::chat::richtext::{parse_blocks, resolve_link_click, Block, Span, TableRow};
@@ -228,6 +246,34 @@ const TIMER_DEADLINE: usize = 1;
 const EN_CHANGE: u16 = 0x0300;
 /// RichEdit 选择范围（把光标移到末尾；windows-sys 0.52 未登记 RichEdit 取值）。
 const EM_SETSEL: u32 = 0x00B1;
+
+// ── 消息右键菜单（「记住这条」入口；气泡按钮退场后的第二形态）──
+
+/// 菜单项命令 ID（只在本次弹出菜单生命周期内与 `TrackPopupMenu` 的返回值比对；
+/// 不进 `WM_COMMAND`，与托盘菜单的 `CMD_*` 是两套，从 1 起 —— 0 是「未选中」）。
+const MENU_COPY: usize = 1;
+const MENU_SELECT_ALL: usize = 2;
+const MENU_REMEMBER: usize = 3;
+/// 菜单本地项文案（RichEdit 自带菜单「复制 / 全选」的等价物）。
+/// 「记住这条」不在此定义：文案唯一来源是共享常量 [`REMEMBER_MENU_ITEM_LABEL`]。
+const MENU_LABEL_COPY: &str = "复制";
+const MENU_LABEL_SELECT_ALL: &str = "全选";
+
+// ── 剪贴板粘贴图片（A3 图片通路第三条）──
+
+/// 剪贴板格式取值（WinUser.h：`CF_BITMAP` 2 / `CF_DIB` 8 / `CF_HDROP` 15 /
+/// `CF_DIBV5` 17；`CF_HDROP` 实际在 ShellApi.h）。windows-sys 0.52 只把它们登记在
+/// `Win32_System_Ole` 面（feature 未开），与 `ui/clipboard.rs` 的 `CF_UNICODETEXT`
+/// 本地定义同一理由：按公开取值本地定义并注明（值已对注册表源码逐条核对）。
+const CF_BITMAP: u32 = 2;
+const CF_DIB: u32 = 8;
+const CF_HDROP: u32 = 15;
+const CF_DIBV5: u32 = 17;
+
+/// 剪贴板内存块拷贝的**防御上限**（不是图片准入 —— 准入与文案在共享层
+/// `ui/chat/paste.rs`，单张 15 MiB）：只防止畸形/恶意的剪贴板内存块把 UI 主线程
+/// 拖进一次超大分配。超过即视为「该格式不可用」，依次尝试其余格式。
+const CLIPBOARD_COPY_LIMIT: usize = 64 * 1024 * 1024;
 
 /// A3：待发送条几何（逻辑像素，按 DPI 缩放；2026-10-05 第三波按设计稿 `.pend`
 /// 对齐「5px 上下内边距 + 10px 左右内边距」）。
@@ -602,6 +648,10 @@ struct ChatWinState {
     tail: Option<HWND>,
     /// RichEdit 超链接表：控件 → (显示文本, URL)。
     links: HashMap<isize, Vec<(String, String)>>,
+    /// 消息 RichEdit 控件 → 该条消息的记忆事件身份（右键菜单「记住这条」的唯一判据
+    /// 来源 = `MessageSnapshot::remember_event_id`，不在这里判角色）。只有用户消息会
+    /// 登记；与 `links` 同族，随 `rebuild_canvas` 一并清理（旧句柄不得留影）。
+    message_menu_targets: HashMap<HWND, String>,
     /// 占位按钮 → (entryId, imageIndex)。
     image_targets: Vec<WinImageTarget>,
     active_session: Option<String>,
@@ -2223,10 +2273,10 @@ unsafe fn rebuild_pending(state: &mut ChatWinState, snapshot: &crate::ui::chat::
     }
 }
 
-/// A3：读取一次 `WM_DROPFILES` 的文件路径并交待发送区（准入在工作线程）。
-///
-/// `hdrop` 必须在消息处理内消费（`DragFinish` 归还）；只取路径，不读文件内容。
-unsafe fn handle_dropped_files(hdrop: HDROP) {
+/// A3：读一次 HDROP 里的全部文件路径（**不释放** HDROP —— 释放责任归调用方：
+/// `WM_DROPFILES` 的句柄必须由 `DragFinish` 归还，剪贴板 `CF_HDROP` 的句柄归
+/// 剪贴板所有、不能 `DragFinish`）。只取路径，不读文件内容。
+unsafe fn read_hdrop_paths(hdrop: HDROP) -> Vec<String> {
     unsafe {
         let count = DragQueryFileW(hdrop, u32::MAX, std::ptr::null_mut(), 0);
         let mut paths = Vec::with_capacity(count as usize);
@@ -2242,11 +2292,250 @@ unsafe fn handle_dropped_files(hdrop: HDROP) {
             }
             paths.push(String::from_utf16_lossy(&buffer[..written as usize]));
         }
+        paths
+    }
+}
+
+/// 拖入/粘贴文件路径的统一归宿（准入与图像域判定在工作线程；失败走中性通知，
+/// 与既有拖入行为同一条）。
+fn enqueue_dropped_paths(paths: Vec<String>) {
+    if let Err(error) = crate::ui::chat::add_dropped_images(paths) {
+        crate::ui::chat::set_notice(Some(format!("图片未添加：{error}")));
+    }
+}
+
+/// A3：读取一次 `WM_DROPFILES` 的文件路径并交待发送区（准入在工作线程）。
+///
+/// `hdrop` 必须在消息处理内消费（`DragFinish` 归还）；只取路径，不读文件内容。
+unsafe fn handle_dropped_files(hdrop: HDROP) {
+    unsafe {
+        let paths = read_hdrop_paths(hdrop);
         DragFinish(hdrop);
-        if let Err(error) = crate::ui::chat::add_dropped_images(paths) {
-            crate::ui::chat::set_notice(Some(format!("图片未添加：{error}")));
+        enqueue_dropped_paths(paths);
+    }
+}
+
+// ══════════ 剪贴板粘贴图片（A3 图片通路第三条：选择器 / 拖入 / 粘贴）══════════
+
+/// 剪贴板读取结果（**必须在 `OpenClipboard` 期间取完**：句柄随关闭失效）。
+enum ClipboardPayload {
+    /// 已是可解码图片字节（DIB 系已补 14 字节 BMP 容器头）。
+    Image(Vec<u8>),
+    /// 复制的文件路径（与拖入同一条准入/待发送区通路）。
+    Files(Vec<String>),
+    /// 没有图片也没有文件：交还 RichEdit 原生粘贴。
+    None,
+}
+
+/// 处理一次输入框粘贴（`WM_PASTE`）：返回 `true` = 已消费（调用方吞掉消息），
+/// `false` = 交还 RichEdit 原生粘贴。
+///
+/// `OpenClipboard` / `CloseClipboard` 严格配对：打开到关闭之间没有提前 return，
+/// 读取的中间失败都以 [`ClipboardPayload::None`] 汇合到同一条关闭路径。
+unsafe fn paste_clipboard_payload(owner: HWND) -> bool {
+    unsafe {
+        if OpenClipboard(owner) == 0 {
+            // 剪贴板正被别的进程占用：不拦，交还 RichEdit 自己再试（原生路径）。
+            return false;
+        }
+        let payload = read_clipboard_payload();
+        CloseClipboard();
+        match payload {
+            ClipboardPayload::Image(bytes) => {
+                match crate::ui::chat::paste::add_pasted_image(bytes) {
+                    Ok(()) => {}
+                    // 廉价拒绝（空/超大/格式/张数/端口未就绪）：中性文案就地展示；
+                    // 转码/落盘/授权与晚到失败由粘贴工作线程经 set_notice 回报
+                    // （不在平台层起线程，也不在这里做重活）。
+                    Err(text) => crate::ui::chat::set_notice(Some(text)),
+                }
+                true
+            }
+            ClipboardPayload::Files(paths) => {
+                enqueue_dropped_paths(paths);
+                true
+            }
+            ClipboardPayload::None => false,
         }
     }
+}
+
+/// 读一次剪贴板（调用方已完成 `OpenClipboard`）：图片优先
+/// （`CF_DIBV5` → `CF_DIB` → `CF_BITMAP`），其次复制的文件（`CF_HDROP`）。
+unsafe fn read_clipboard_payload() -> ClipboardPayload {
+    unsafe {
+        if let Some(bytes) = clipboard_image_bytes() {
+            return ClipboardPayload::Image(bytes);
+        }
+        if IsClipboardFormatAvailable(CF_HDROP) != 0 {
+            let handle = GetClipboardData(CF_HDROP);
+            if handle != 0 {
+                // CF_HDROP 的句柄就是 HDROP：DragQueryFileW 直接读（不 DragFinish）。
+                let paths = read_hdrop_paths(handle as HDROP);
+                if !paths.is_empty() {
+                    return ClipboardPayload::Files(paths);
+                }
+            }
+        }
+        ClipboardPayload::None
+    }
+}
+
+/// 剪贴板里的图片 → 可解码的 BMP 文件字节（无图片给 `None`）。
+/// 调用方必须已 `OpenClipboard`（句柄只在剪贴板打开期间有效）。
+unsafe fn clipboard_image_bytes() -> Option<Vec<u8>> {
+    unsafe {
+        // 顺序即优先级：DIBV5（带 alpha 的现代格式）→ DIB（40 字节头最常见）。
+        for format in [CF_DIBV5, CF_DIB] {
+            if IsClipboardFormatAvailable(format) == 0 {
+                continue;
+            }
+            let handle = GetClipboardData(format);
+            if handle == 0 {
+                continue;
+            }
+            let block = handle as HGLOBAL;
+            let pointer = GlobalLock(block);
+            if pointer.is_null() {
+                continue;
+            }
+            let size = GlobalSize(block);
+            if size > CLIPBOARD_COPY_LIMIT {
+                // 畸大内存块：解锁后换下一个格式（准入在共享层，这里只兜分配）。
+                GlobalUnlock(block);
+                continue;
+            }
+            // 拷出为 Rust 字节（真正的解码在粘贴工作线程，不占 UI 主线程）。
+            let bytes = std::slice::from_raw_parts(pointer as *const u8, size).to_vec();
+            // 只读快照、不改剪贴板归属；`GlobalUnlock` 对可移动内存成功时同样返回 0
+            // （要配 GetLastError 才能区分），这里如实忽略返回值。
+            GlobalUnlock(block);
+            if let Some(bmp) = bmp_container_from_dib(&bytes) {
+                return Some(bmp);
+            }
+        }
+        // CF_BITMAP：句柄是 HBITMAP（不是内存块），经 GetDIBits 取回 DIB。
+        if IsClipboardFormatAvailable(CF_BITMAP) != 0 {
+            let handle = GetClipboardData(CF_BITMAP);
+            if handle != 0 {
+                return bitmap_handle_to_bmp(handle as HBITMAP);
+            }
+        }
+        None
+    }
+}
+
+/// `CF_BITMAP` 的 HBITMAP → 32bpp BI_RGB 的 DIB → BMP 字节（与 DIB 路径共用补头）。
+unsafe fn bitmap_handle_to_bmp(hbm: HBITMAP) -> Option<Vec<u8>> {
+    unsafe {
+        let dc = CreateCompatibleDC(0);
+        if dc == 0 {
+            return None;
+        }
+        // 第一步只查尺寸：`biSize` 预填、`lpvBits = NULL`、`cLines = 0` 时 GetDIBits
+        // 把宽高写回 `BITMAPINFOHEADER`（MSDN GetDIBits 备注的查询用法）。
+        let mut info: BITMAPINFO = std::mem::zeroed();
+        info.bmiHeader.biSize = std::mem::size_of::<BITMAPINFOHEADER>() as u32;
+        GetDIBits(
+            dc,
+            hbm,
+            0,
+            0,
+            std::ptr::null_mut(),
+            &mut info,
+            DIB_RGB_COLORS,
+        );
+        let width = info.bmiHeader.biWidth;
+        let height = info.bmiHeader.biHeight;
+        if width <= 0 || height <= 0 {
+            // 负高 = 顶置（downward）DIB；CF_BITMAP 不是该形态，如实拒绝。
+            DeleteDC(dc);
+            return None;
+        }
+        // 统一请求 32bpp BI_RGB：GetDIBits 自行做格式转换（含调色板位图），
+        // 输出无色表 —— 补 BMP 头时不必再算色表字节数。
+        info.bmiHeader.biPlanes = 1;
+        info.bmiHeader.biBitCount = 32;
+        info.bmiHeader.biCompression = BI_RGB;
+        info.bmiHeader.biSizeImage = 0;
+        let pixel_bytes = width as usize * height as usize * 4;
+        let mut pixels = vec![0u8; pixel_bytes];
+        let copied = GetDIBits(
+            dc,
+            hbm,
+            0,
+            height as u32,
+            pixels.as_mut_ptr() as *mut c_void,
+            &mut info,
+            DIB_RGB_COLORS,
+        );
+        DeleteDC(dc);
+        if copied == 0 {
+            return None;
+        }
+        // 40 字节头 + 像素 = DIB 块；与 CF_DIB 路径共用同一个容器补头。
+        let header = std::slice::from_raw_parts(
+            std::ptr::addr_of!(info.bmiHeader) as *const u8,
+            std::mem::size_of::<BITMAPINFOHEADER>(),
+        );
+        let mut dib = Vec::with_capacity(header.len() + pixel_bytes);
+        dib.extend_from_slice(header);
+        dib.extend_from_slice(&pixels);
+        bmp_container_from_dib(&dib)
+    }
+}
+
+/// DIB 内存块 → BMP 文件字节：补 14 字节 `BITMAPFILEHEADER`。
+///
+/// 结构依据：剪贴板给的是「设备无关位图」（`BITMAPINFOHEADER` / `BITMAPV4HEADER` /
+/// `BITMAPV5HEADER` + 可选色表 + 像素），而 BMP 文件在 14 字节文件头之后就是同一份
+/// DIB —— 补头只需写两处字段、其余清零：
+/// - 偏移 0..2 = `"BM"`；偏移 2..6 `bfSize` = 14 + DIB 全长；偏移 6..10 两个保留
+///   字段 = 0；偏移 10..14 `bfOffBits` = 14 + `biSize` + 色表字节数。
+/// - `biSize` = DIB 内存块的前 4 字节（40/108/124 对应 V3/V4/V5；解码端
+///   image crate 0.25 三种头都认）。
+/// - `BITMAPINFOHEADER` 的固定偏移（V4/V5 是它的扩展，字段偏移相同）：`biBitCount`
+///   14..16、`biCompression` 16..20、`biClrUsed` 32..36。色表字节数：bpp ≤ 8 时
+///   项数 = `biClrUsed` 非 0 取它、否则 `1 << bpp`（每项 4 字节）；40 字节头 +
+///   `BI_BITFIELDS` 时头后跟 3 个掩码 DWORD（12 字节）；V4/V5 的掩码含在头内，不算。
+///
+/// 返回 `None` = 头不合法（`biSize` < 40 或色表越过缓冲）：调用方按「不是可解码
+/// 图片」处理，绝不拼一个解码必然失败的假文件去骗准入。
+fn bmp_container_from_dib(dib: &[u8]) -> Option<Vec<u8>> {
+    if dib.len() < 4 {
+        return None;
+    }
+    let bi_size = u32::from_le_bytes([dib[0], dib[1], dib[2], dib[3]]);
+    if bi_size < 40 || bi_size as usize > dib.len() {
+        return None;
+    }
+    let bit_count = u16::from_le_bytes([dib[14], dib[15]]);
+    let compression = u32::from_le_bytes([dib[16], dib[17], dib[18], dib[19]]);
+    let clr_used = u32::from_le_bytes([dib[32], dib[33], dib[34], dib[35]]);
+    let palette_bytes = if bit_count <= 8 {
+        let entries = if clr_used != 0 {
+            clr_used.min(256)
+        } else {
+            1u32 << bit_count
+        };
+        entries as usize * 4
+    } else if compression == BI_BITFIELDS && bi_size == 40 {
+        12
+    } else {
+        0
+    };
+    let off_bits = 14 + bi_size as usize + palette_bytes;
+    if off_bits > 14 + dib.len() {
+        return None;
+    }
+    let file_size = 14 + dib.len();
+    let mut bmp = Vec::with_capacity(file_size);
+    bmp.extend_from_slice(b"BM");
+    bmp.extend_from_slice(&(file_size as u32).to_le_bytes());
+    bmp.extend_from_slice(&[0, 0, 0, 0]); // bfReserved1 / bfReserved2
+    bmp.extend_from_slice(&(off_bits as u32).to_le_bytes());
+    bmp.extend_from_slice(dib);
+    Some(bmp)
 }
 
 /// 按当前最早的面板期限布一次一次性定时器（无期限时停表）。
@@ -3611,6 +3900,7 @@ unsafe fn build_children(hwnd: HWND) {
             base_height: 0,
             tail: None,
             links: HashMap::new(),
+            message_menu_targets: HashMap::new(),
             image_targets: Vec::new(),
             active_session: None,
             view_generation: 0,
@@ -4725,6 +5015,14 @@ unsafe extern "system" fn input_subclass_proc(
             unsafe { handle_dropped_files(wparam as HDROP) };
             return 0;
         }
+        WM_PASTE => {
+            // A3 第三条（2026-10-05 图片通路批）：剪贴板里有图片或复制的文件就接管
+            // （Ctrl+V 经 RichEdit 生成 WM_PASTE），其余交还 RichEdit 原生粘贴 ——
+            // 文本粘贴行为不变。复用本子类，不挂第二个（守门测试断言）。
+            if unsafe { paste_clipboard_payload(hwnd) } {
+                return 0;
+            }
+        }
         WM_NCDESTROY => unsafe {
             RemoveWindowSubclass(hwnd, Some(input_subclass_proc), 1);
         },
@@ -4749,6 +5047,124 @@ unsafe fn position_candidate_window(input: HWND) {
         form.ptCurrentPos = point;
         ImmSetCandidateWindow(himc, &form);
         ImmReleaseContext(input, himc);
+    }
+}
+
+// ==========================================
+// 消息右键菜单（「记住这条」入口；气泡按钮退场后的第二形态）
+// ==========================================
+
+/// 消息 RichEdit 的右键子类（散文泡与代码块同挂；无身份的控制不挂 —— 右键仍是
+/// RichEdit 自带菜单）。`WM_CONTEXTMENU` 的处理顺序是硬要求：**先在闭包里把事件
+/// 身份克隆出来、结束 `CHAT` 借用，再弹菜单** —— `TrackPopupMenu` 内部有嵌套消息
+/// 泵，跨它持借用会让随后的整帧重建（`with_chat` 是 `try_borrow_mut`）悄悄不发生。
+unsafe extern "system" fn message_menu_subclass_proc(
+    hwnd: HWND,
+    msg: u32,
+    wparam: WPARAM,
+    lparam: LPARAM,
+    _uidsubclass: usize,
+    _dwrefdata: usize,
+) -> LRESULT {
+    match msg {
+        WM_CONTEXTMENU => {
+            let event_id = CHAT.with(|cell| {
+                cell.borrow()
+                    .as_ref()
+                    .and_then(|state| state.message_menu_targets.get(&hwnd).cloned())
+            });
+            if let Some(event_id) = event_id {
+                unsafe { show_message_menu(hwnd, lparam, &event_id) };
+                return 0;
+            }
+            unsafe { DefSubclassProc(hwnd, msg, wparam, lparam) }
+        }
+        WM_NCDESTROY => unsafe {
+            RemoveWindowSubclass(hwnd, Some(message_menu_subclass_proc), 3);
+            DefSubclassProc(hwnd, msg, wparam, lparam)
+        },
+        _ => unsafe { DefSubclassProc(hwnd, msg, wparam, lparam) },
+    }
+}
+
+/// 弹一次消息右键菜单并执行选中项（只在有记忆身份时调用；无身份的控制走
+/// RichEdit 自带菜单，见 [`message_menu_subclass_proc`]）。
+///
+/// - 菜单 = 复制 / 全选 / 分隔线 / [`REMEMBER_MENU_ITEM_LABEL`]（「记住这条」的
+///   文案唯一来源是共享常量，平台文件不写字面量）；
+/// - `lparam == -1` 是键盘（Shift+F10 / 菜单键）唤出、没有鼠标点，用控件矩形
+///   左上角兜底定位；其余取低 16 位 x / 高 16 位 y（有符号，按 WinUser.h 的
+///   `GET_X_LPARAM` 口径）；
+/// - 派发复用 [`dispatch_panel_action`]（内置「派发后立即整帧重建」；该出口在
+///   production 里必须恰好一处 —— 守门测试断言）。
+unsafe fn show_message_menu(hwnd: HWND, lparam: LPARAM, event_id: &str) {
+    unsafe {
+        let menu = CreatePopupMenu();
+        if menu == 0 {
+            return;
+        }
+        // `AppendMenuW` 复制字符串（临时 `wide` 即可；与托盘菜单的写法一致）。
+        AppendMenuW(menu, MF_STRING, MENU_COPY, wide(MENU_LABEL_COPY).as_ptr());
+        AppendMenuW(
+            menu,
+            MF_STRING,
+            MENU_SELECT_ALL,
+            wide(MENU_LABEL_SELECT_ALL).as_ptr(),
+        );
+        AppendMenuW(menu, MF_SEPARATOR, 0, std::ptr::null());
+        AppendMenuW(
+            menu,
+            MF_STRING,
+            MENU_REMEMBER,
+            wide(REMEMBER_MENU_ITEM_LABEL).as_ptr(),
+        );
+        let (x, y) = if lparam == -1 {
+            let mut rect: RECT = std::mem::zeroed();
+            if GetWindowRect(hwnd, &mut rect) != 0 {
+                (rect.left, rect.top)
+            } else {
+                (0, 0)
+            }
+        } else {
+            let raw = lparam as i32;
+            (
+                (raw & 0xFFFF) as u16 as i16 as i32,
+                ((raw >> 16) & 0xFFFF) as u16 as i16 as i32,
+            )
+        };
+        // 先置前台再弹菜单（点击别处菜单才会收起；与托盘菜单同款）。菜单挂在控件
+        // 所在窗口链的顶层窗口上（面板模式 / 独立聊天窗都取根祖先）。
+        SetForegroundWindow(GetAncestor(hwnd, GA_ROOT));
+        let command = TrackPopupMenu(
+            menu,
+            TPM_RETURNCMD | TPM_RIGHTBUTTON,
+            x,
+            y,
+            0,
+            hwnd,
+            std::ptr::null(),
+        );
+        DestroyMenu(menu);
+        // 嵌套消息泵期间可能发生整帧重建（本控件被销毁）：菜单收起后先核对控件
+        // 还在，免得把复制/全选发给死句柄（event_id 已克隆，不依赖控件）。
+        if IsWindow(hwnd) == 0 {
+            return;
+        }
+        match command as usize {
+            MENU_COPY => {
+                SendMessageW(hwnd, WM_COPY, 0, 0);
+            }
+            MENU_SELECT_ALL => {
+                // 标准 EDIT/RichEdit 全选：wParam = 0、lParam = -1（全选到末尾）。
+                SendMessageW(hwnd, EM_SETSEL, 0, -1);
+            }
+            MENU_REMEMBER => {
+                dispatch_panel_action(PanelAction::RememberMessage {
+                    event_id: event_id.to_string(),
+                });
+            }
+            _ => {} // 0 = 取消（点空白 / ESC）；其余 ID 不存在。
+        }
     }
 }
 
@@ -5014,6 +5430,8 @@ unsafe fn rebuild_canvas(state: &mut ChatWinState, snapshot: &crate::ui::chat::C
         }
         state.children.clear();
         state.links.clear();
+        // 消息菜单目标表随控件一起清理（查表的是活控件；旧句柄不得留影）。
+        state.message_menu_targets.clear();
         DRAW_IMAGES.with(|images| {
             let mut images = images.borrow_mut();
             for target in &state.image_targets {
@@ -5085,6 +5503,9 @@ unsafe fn build_message_controls(
         }
         // 工具失败结果：中性系统行（标签加「失败」后缀 + 弱提示底色），不伪装角色台词。
         let failed_tool = message.is_failed_tool_result();
+        // 「记住这条」右键菜单的事件身份：只有用户消息有（共享判据，平台层不判角色）；
+        // 同一条消息的多个控件（各段气泡、代码块）共用同一个身份。
+        let remember = message.remember_event_id();
         // 说话人标签：用户条目不摆「你」（右对齐气泡自明身份）、助手无角色名时不摆
         // 空标签 —— 与 macOS 共用 `role_label_text`（两平台同一口径）。
         if let Some(label_text) = role_label_text(message.role, speaker, failed_tool) {
@@ -5115,8 +5536,9 @@ unsafe fn build_message_controls(
         // 气泡列：留白/上限/下限/内边距与宽度算法是两平台共用的 `panels` 口径
         // （2026-10-05 起用户泡右对齐、助手泡左对齐，最宽 86%）；本模块只做
         // 平台侧的量测（估宽）与构建。代码块与气泡同列。
-        // 「记住这条」入口已按 2026-10-05 用户规则删除（记忆能力本身保留：
-        // 显式路径由用户/命令触发，自动路径在 Node 记忆域，与展示层无关）。
+        // 「记住这条」入口的当前形态（2026-10-05 二改）：泡内按钮已删除，入口改由
+        // **消息右键菜单**承接（`message_menu_subclass_proc`，只对用户消息挂项；
+        // 自动路径仍在 Node 记忆域，与展示层无关）。
         let margin = scaled_f(BUBBLE_SIDE_MARGIN, scale);
         let cap = scaled_f(bubble_cap(f64::from(canvas_width) / scale), scale);
         let column_x = margin;
@@ -5152,6 +5574,7 @@ unsafe fn build_message_controls(
                                 column_x,
                                 cap,
                                 has_code,
+                                remember,
                                 scale,
                             );
                             // 代码块与气泡同列（含代码时泡宽 = 上限，代码块撑满该列）；
@@ -5161,8 +5584,9 @@ unsafe fn build_message_controls(
                             } else {
                                 column_x
                             };
-                            let (_, height) =
-                                create_code_control(state, &lang, &lines, code_x, y, cap, scale);
+                            let (_, height) = create_code_control(
+                                state, &lang, &lines, code_x, y, cap, remember, scale,
+                            );
                             y += height + scaled(4, scale);
                         }
                         other => segment.push(other),
@@ -5178,6 +5602,7 @@ unsafe fn build_message_controls(
                     column_x,
                     cap,
                     has_code,
+                    remember,
                     scale,
                 );
                 y += scaled(4, scale);
@@ -5283,7 +5708,10 @@ unsafe fn build_message_controls(
 // `remember_targets` 事件表与 `draw_themed_button` 的泡内配色分支一并删除；
 // 记忆能力本身不动 —— `PanelAction::RememberMessage` → `ChatIntent::RememberMessage`
 // → Node 的 "remember-message" 通道保留（显式路径由用户/命令触发，自动路径在 Node
-// 记忆域）；`MessageSnapshot.event_id` 仍是投影数据（平台不再消费它）。
+// 记忆域）；`MessageSnapshot.event_id` 仍是投影数据。
+// 二改（2026-10-05 图片通路批收尾）：入口以**消息右键菜单**形态恢复 ——
+// `MessageSnapshot::remember_event_id` 判据 + `message_menu_subclass_proc` 菜单，
+// 泡内文字按钮与动作段不恢复（守门测试继续禁）。
 
 // `build_thinking_controls` 删除记录（2026-10-05）：思考块（折叠 chip/展开正文）
 // 随用户规则「别把工具和思考放到展示层，展示只放真正的聊天记录」整体退场，
@@ -5302,7 +5730,8 @@ unsafe fn build_message_controls(
 ///
 /// 2026-10-05 用户规则「我的消息去掉『记住这条』按钮，要么我叫他记住，要么自动」：
 /// 入口宽度参数给 `bubble_content_width` 的 footer 位传 0（共享算法的「无入口」值），
-/// 泡底不再留入口高度，平台侧的入口按钮与事件表已整体删除。
+/// 泡底不再留入口高度，平台侧的入口按钮与事件表已整体删除（二改：入口改由消息
+/// 右键菜单承接，见 `show_message_menu`；`remember` 参数就是给子类挂项用的）。
 #[allow(clippy::too_many_arguments)]
 unsafe fn flush_prose(
     state: &mut ChatWinState,
@@ -5314,6 +5743,9 @@ unsafe fn flush_prose(
     column_x: i32,
     cap: i32,
     has_code: bool,
+    // 「记住这条」右键菜单的事件身份（仅用户消息有；控件挂子类用，见
+    // `message_menu_subclass_proc`）。
+    remember: Option<&str>,
     scale: f64,
 ) {
     if segment.is_empty() {
@@ -5363,8 +5795,11 @@ unsafe fn flush_prose(
     };
     let (rtf, links) = prose_to_rtf_colored(segment, ink);
     segment.clear();
-    let (control, height) =
-        unsafe { create_rtf_control(state, &rtf, x, *y, bubble_w, background, card, scale, false) };
+    let (control, height) = unsafe {
+        create_rtf_control(
+            state, &rtf, x, *y, bubble_w, background, card, remember, scale, false,
+        )
+    };
     if control != 0 && !links.is_empty() {
         // EN_LINK 是**控件级事件掩码**：不设掩码时点击链接不会发任何通知，也不会有
         // 任何默认打开行为（RichEdit 没有 AppKit 那样的「控件自己打开」回落）；
@@ -5506,6 +5941,10 @@ fn send_font(state: &ChatWinState, hwnd: HWND, font_index: usize) {
 ///
 /// 它计入外框（气泡）高度：有外框时返回「控件高 + 上下内缩」作为气泡高，
 /// 没有外框（系统/失败条目）时就是控件自身的高度。
+///
+/// `remember` = 该条消息的「记住这条」事件身份（仅用户消息有）：有值时给控件挂
+/// [`message_menu_subclass_proc`] 并登记右键菜单目标表；无值（助手/系统/流式
+/// 尾巴）不挂 —— 右键照走 RichEdit 自带菜单。
 #[allow(clippy::too_many_arguments)]
 unsafe fn create_rtf_control(
     state: &mut ChatWinState,
@@ -5515,6 +5954,7 @@ unsafe fn create_rtf_control(
     width: i32,
     background: u32,
     card: Option<CardKind>,
+    remember: Option<&str>,
     scale: f64,
     code: bool,
 ) -> (HWND, i32) {
@@ -5550,6 +5990,14 @@ unsafe fn create_rtf_control(
         );
         if control == 0 {
             return (0, scaled(28, scale));
+        }
+        if let Some(event_id) = remember {
+            // 有事件身份的消息 RichEdit 挂右键子类（子类 id = 3，与输入区 1、
+            // 命中穿透 2 同族；每个控件各自登记——同一消息的多个控件共用身份）。
+            SetWindowSubclass(control, Some(message_menu_subclass_proc), 3, 0);
+            state
+                .message_menu_targets
+                .insert(control, event_id.to_string());
         }
         send_font(state, control, if code { 3 } else { 0 });
         SendMessageW(control, EM_SETBKGNDCOLOR, 0, background as LPARAM);
@@ -5591,6 +6039,7 @@ unsafe fn create_code_control(
     x: i32,
     y: i32,
     width: i32,
+    remember: Option<&str>,
     scale: f64,
 ) -> (HWND, i32) {
     let mut text = String::new();
@@ -5616,6 +6065,7 @@ unsafe fn create_code_control(
             width,
             rich_bg(&theme::tokens().field_bg),
             None,
+            remember,
             scale,
             true,
         )
@@ -5710,6 +6160,8 @@ unsafe fn build_tail_controls(
             bubble_w,
             rich_bg(&theme::tokens().bubble_ai_bg),
             Some(CardKind::AssistantBubble),
+            // 流式尾巴不是已提交的消息，没有事件身份：不挂右键菜单。
+            None,
             scale,
             false,
         );
@@ -6944,6 +7396,12 @@ mod tests {
     /// 第二版改版的删净守门：底部那排 chip / 轨段 / 原生投递菜单的**符号一个都不许
     /// 留在生产代码里**（共享层已物理删除这些类型；留下会编译不过或有 unused 告警）。
     /// 断言在 production 段上做（测试自己的字面量不算）。
+    ///
+    /// 变更记录（2026-10-05 图片通路批收尾）：禁用表**移除**了 `TrackPopupMenu` /
+    /// `CreatePopupMenu` —— 二者不再是旧轨菜单的专属符号：消息右键菜单（「记住这条」
+    /// 的第二形态）按计划使用同一组菜单 API。禁的是**旧轨**（`RAIL_*`、
+    /// `open_rail_menu`、`MenuTarget` 等）而不是菜单 API 本身；菜单 API 的新用法由
+    /// 下一条「消息右键菜单接线_源码守门」正向钉住（旧轨的删净部分一条未放宽）。
     #[test]
     fn 旧轨与菜单代码已删净_源码守门() {
         let production = production_source();
@@ -6960,8 +7418,6 @@ mod tests {
             "open_rail_menu",
             "menu_item_id",
             "menu_index_for_command",
-            "TrackPopupMenu",
-            "CreatePopupMenu",
             "rail_entries_from",
             "delivery_label_rail",
             "RailTarget",
@@ -6987,5 +7443,160 @@ mod tests {
             rebuild.contains("snapshot.inspector_open"),
             "浮层显隐必须吃快照的 inspector_open"
         );
+    }
+
+    /// 「记住这条」右键菜单接线守门（第二形态：气泡按钮退场后入口由消息右键承接）。
+    /// Windows 形态 = 消息 RichEdit 挂子类接管 `WM_CONTEXTMENU` + 自建弹出菜单 +
+    /// 经唯一出口 `dispatch_panel_action` 派发；文案必须引用共享常量
+    /// `REMEMBER_MENU_ITEM_LABEL`（平台文件不许硬编码字面量）；事件身份表必须随
+    /// `rebuild_canvas` 的 `links` 一并清理（旧控件句柄不得留影成死菜单）。
+    #[test]
+    fn 消息右键菜单接线_源码守门() {
+        let production = production_source();
+        for needle in [
+            "WM_CONTEXTMENU",
+            "message_menu_subclass_proc",
+            "SetWindowSubclass(control, Some(message_menu_subclass_proc), 3, 0)",
+            "CreatePopupMenu",
+            "AppendMenuW",
+            "TrackPopupMenu",
+            "TPM_RETURNCMD",
+            "PanelAction::RememberMessage",
+        ] {
+            assert!(
+                production.contains(needle),
+                "消息右键菜单接线缺失：{needle}"
+            );
+        }
+        assert!(
+            production.contains("wide(REMEMBER_MENU_ITEM_LABEL)"),
+            "菜单项文案必须来自共享常量 REMEMBER_MENU_ITEM_LABEL（唯一来源）"
+        );
+        assert!(
+            !production.contains("\"记住这条\""),
+            "平台文件不许硬编码「记住这条」字符串字面量（唯一来源见共享常量）"
+        );
+        let rebuild =
+            function_body(production, "unsafe fn rebuild_canvas").expect("rebuild_canvas 必须存在");
+        assert!(
+            rebuild.contains("state.message_menu_targets.clear()"),
+            "重建画布必须随 links 清理消息菜单目标表（旧控件句柄不得留影）"
+        );
+        assert_eq!(
+            production
+                .matches("handle_panel_outcome(crate::ui::chat::apply_panel_action")
+                .count(),
+            1,
+            "记忆动作不许绕过 dispatch_panel_action（出口必须唯一，见上一条守门）"
+        );
+    }
+
+    /// 输入框粘贴图片接线守门（A3 图片通路第三条：选择器 / 拖入 / 粘贴）：
+    /// `WM_PASTE` 必须由**既有输入子类**接管（不挂第二个子类）、图片字节必须走共享
+    /// 入口 `add_pasted_image`（落盘/准入/路径都不在平台层）、剪贴板严格配对关闭。
+    /// 反向：平台文件不许出现托管目录常量（路径归 Rust 命令域）。
+    #[test]
+    fn 粘贴接线_源码守门() {
+        let production = production_source();
+        for needle in [
+            "WM_PASTE",
+            "OpenClipboard",
+            "CloseClipboard",
+            "GetClipboardData",
+            "add_pasted_image",
+            "bmp_container_from_dib",
+        ] {
+            assert!(production.contains(needle), "粘贴接线缺失：{needle}");
+        }
+        // CF_* 是本地定义（windows-sys 0.52 只在未启用的 System_Ole 面登记它们）：
+        // 值逐条钉住，防止手滑改错格式号（错号 = 静默取不到数据）。
+        for needle in [
+            "const CF_BITMAP: u32 = 2",
+            "const CF_DIB: u32 = 8",
+            "const CF_HDROP: u32 = 15",
+            "const CF_DIBV5: u32 = 17",
+        ] {
+            assert!(
+                production.contains(needle),
+                "剪贴板格式常量被改坏：{needle}"
+            );
+        }
+        let input_proc = function_body(
+            production,
+            "unsafe extern \"system\" fn input_subclass_proc",
+        )
+        .expect("input_subclass_proc 必须存在");
+        assert!(
+            input_proc.contains("WM_PASTE"),
+            "粘贴必须由既有输入子类接管（不挂第二个子类）"
+        );
+        assert_eq!(
+            production
+                .matches("SetWindowSubclass(input, Some(input_subclass_proc)")
+                .count(),
+            1,
+            "输入控件不许挂第二个子类"
+        );
+        // 路径归 Rust 命令域：平台文件不出现托管目录常量。
+        for needle in ["PASTED_DIR", "SCREENSHOT_DIR", "screenshots/"] {
+            assert!(
+                !production.contains(needle),
+                "平台文件出现托管路径常量（路径归 Rust 命令域）：{needle}"
+            );
+        }
+        assert!(
+            !production.contains("\"记住这条\""),
+            "平台文件不许硬编码菜单文案字面量（唯一来源 = 共享常量）"
+        );
+    }
+
+    /// DIB → BMP 容器补头的偏移口径（纯逻辑，Windows CI 上跑）：`bfOffBits` =
+    /// 14 + `biSize` + 色表字节数；40 字节头 + `BI_BITFIELDS` 另加 3 个掩码 DWORD；
+    /// 头不合法必须拒绝（不拼一个解码必然失败的假文件去骗准入）。
+    #[test]
+    fn dib补BMP容器头的偏移() {
+        // 造一个「头字段可摆、缓冲足够」的 DIB：长度 = 头 + 2 KiB 余量。
+        fn dib(bit_count: u16, compression: u32, clr_used: u32, bi_size: u32) -> Vec<u8> {
+            let mut data = vec![0u8; bi_size.max(40) as usize + 2048];
+            data[0..4].copy_from_slice(&bi_size.to_le_bytes());
+            data[14..16].copy_from_slice(&bit_count.to_le_bytes());
+            data[16..20].copy_from_slice(&compression.to_le_bytes());
+            data[32..36].copy_from_slice(&clr_used.to_le_bytes());
+            data
+        }
+        let off = |b: &[u8]| u32::from_le_bytes([b[10], b[11], b[12], b[13]]) as usize;
+        let size = |b: &[u8]| u32::from_le_bytes([b[2], b[3], b[4], b[5]]) as usize;
+
+        let source = dib(24, 0, 0, 40);
+        let bmp = bmp_container_from_dib(&source).unwrap();
+        assert_eq!(off(&bmp), 14 + 40, "24bpp 无色表");
+        assert_eq!(size(&bmp), 14 + source.len(), "bfSize = 14 + DIB 全长");
+        assert_eq!(&bmp[..2], b"BM");
+        assert_eq!(&bmp[14..], &source[..], "DIB 原样跟在 14 字节文件头后");
+
+        // ≤8bpp：biClrUsed = 0 → 1<<bpp 项、每项 4 字节；非 0 用它。
+        assert_eq!(
+            off(&bmp_container_from_dib(&dib(8, 0, 0, 40)).unwrap()),
+            14 + 40 + 1024
+        );
+        assert_eq!(
+            off(&bmp_container_from_dib(&dib(8, 0, 16, 40)).unwrap()),
+            14 + 40 + 64
+        );
+        // 40 字节头 + BI_BITFIELDS：掩码 3×DWORD 紧随头后（V4/V5 在头内，不再加）。
+        assert_eq!(
+            off(&bmp_container_from_dib(&dib(32, 3, 0, 40)).unwrap()),
+            14 + 40 + 12
+        );
+        assert_eq!(
+            off(&bmp_container_from_dib(&dib(32, 3, 0, 124)).unwrap()),
+            14 + 124
+        );
+        // 头不合法：biSize < 40 或超出缓冲 → 拒绝。
+        assert!(bmp_container_from_dib(&[]).is_none());
+        assert!(bmp_container_from_dib(&[0, 0, 0, 0]).is_none());
+        let full = dib(24, 0, 0, 40);
+        let truncated = &full[..20];
+        assert!(bmp_container_from_dib(truncated).is_none());
     }
 }

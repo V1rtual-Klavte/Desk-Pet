@@ -40,7 +40,7 @@ use crate::ui::settings::panels::{ListPanel, MemoryDetailState, PanelRow, RowAct
 use crate::ui::settings::schema::{Field, FieldKind, TABS};
 use crate::ui::settings::{
     dynamic_field_hint, settings_ui, tab_index_for_tag, DocumentState, DocumentTarget, NoticeLevel,
-    SettingsValue, SettingsView, ShortcutModifiers,
+    SettingsUi, SettingsValue, SettingsView, ShortcutModifiers,
 };
 use crate::ui::theme::{self, paint, Rgba, Tokens};
 use crate::{rust_debug, rust_info, rust_warn};
@@ -2574,6 +2574,16 @@ impl SettingsContentController {
                 }
             }
             "memory" => {
+                // 常驻说明（入口两条路径 + 来源边界；文案唯一来源 = 设置层共享常量，
+                // 与 Windows 同一条 —— 不在平台文件里复制字面量）：排在页面最前面，
+                // 随内容滚动。用多行盒（`wrapped_label`，与 ListPanel hint / 行副标题
+                // 同款手法）而不是 16pt 单行 `help_label`：这条说明在默认窗宽下要折到
+                // 3 行（68 全角字 ≈ 748pt ÷ 内容宽 372pt），单行或两行盒都会截尾。
+                let tip =
+                    wrapped_label(mtm, SettingsUi::MEMORY_TIP, HELP_BASE_SIZE, Some(&dim()), 3);
+                place(stack, &*tip, MARGIN, y, width - MARGIN * 2.0, 45.0);
+                self.push_panel_view(&tip);
+                y += 47.0;
                 if let Some(status) = settings_ui().memory_status_text() {
                     let field = help_label(mtm, &status);
                     place(stack, &*field, MARGIN, y, width - MARGIN * 2.0, 16.0);

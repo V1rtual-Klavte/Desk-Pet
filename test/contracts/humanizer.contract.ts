@@ -17,6 +17,14 @@
 // 拒绝留痕：四个 decline 结局结构化 + 统一日志；与拟人表达的解析、沉默护栏、逐泡揭示与标题栏
 // 调度不相交）。hz-01..hz-04 逐点核对实现点仍在、覆盖描述与当前实现一致，未修订覆盖点，
 // 仅按当前源码刷新 sourceHash。
+// 2026-10-06 子运行接线修复批次（本批刷新）：sourceFiles 变化 ——
+// src/services/engine/harness/runtime.ts（子运行 invisible sinks：子运行的流式草稿与过程消息
+// 不外推；主回合的逐泡揭示与 stream-end 口径未动）。hz-01..hz-04 逐点核对实现点仍在、覆盖
+// 描述与当前实现一致，未修订覆盖点，仅按当前源码刷新 sourceHash。
+// 2026-10-06 估算偏差口径修正批次（本批刷新）：sourceFiles 变化 ——
+// src/services/engine/harness/runtime.ts（估算偏差对账口径；逐泡揭示与瞬态状态口径未动）。
+// hz-01..hz-04 逐点核对实现点仍在、覆盖描述与当前实现一致，未修订覆盖点，仅按当前源码
+// 刷新 sourceHash。
 import type { ModuleContract } from "../host/types"
 
 export const humanizerContract: ModuleContract = {
@@ -27,7 +35,7 @@ export const humanizerContract: ModuleContract = {
     "src/services/agent/runner.ts",
     "src/services/engine/harness/runtime.ts",
   ],
-  sourceHash: "1b14f44ded1081eed1c984aa5b24fe736712d6c3eac5a28d5335d28490b5e060",
+  sourceHash: "9d294deab05ac66d4032d2986194a738e326d28bbeeffaebdb08d39db52b94f2",
   coverage: [
     {
       id: "hz-01",

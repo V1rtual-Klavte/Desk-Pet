@@ -926,6 +926,13 @@ export type HostCommandMap = {
   pick_chat_images: { args: Record<string, never>; result: string[] }
   /** 按 images/limits.json 的格式/数量/大小边界校验；返回通过的路径。 */
   validate_chat_images: { args: { paths: string[] }; result: string[] }
+  /**
+   * 删会话连带清理「托管聊天图片」（截图 `screenshots/`、粘贴 `pasted/`）。
+   * 只删托管根内的常规文件：根外路径（用户原图）、目录、符号链接与已不存在的文件
+   * 一律计入 skipped，绝不删除；单条失败不影响其它项。形状与 Rust
+   * `commands/chat_images.rs::chat_delete_session_images` 逐字对齐。
+   */
+  chat_delete_session_images: { args: { paths: string[] }; result: { deleted: number; skipped: number } }
 
   // ── 静默观察与截图（observation_cmd.rs / screenshot_cmd.rs）──
   observation_capture_screen: {

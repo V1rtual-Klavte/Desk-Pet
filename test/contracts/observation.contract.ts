@@ -42,6 +42,20 @@
 // 文件实际只携带 parse / read-quota / card-brief / local-time 四个。新增 ob-09（integration）
 // 登记 静默了解档位参数消费.test.ts 的 4 个 caseId。ob-01..ob-07 其余点按当前源码复核未变；
 // sourceHash 按当前源码复算。
+// 2026-10-06 聊天图片批次（本批刷新）：sourceFiles 变化 —— crates/native-host/Cargo.toml 与
+// Cargo.lock（image 依赖新增 tiff feature：只为剪贴板粘贴转码开，聊天准入白名单（sniff）不变、
+// 截图/观察链路不受影响；注释同步改写）、crates/native-host/src/host/dispatch.rs 新增一条
+// chat_delete_session_images 分派臂（命令矩阵 134→135）。ob-01..ob-09 逐点核对实现点仍在、
+// 覆盖描述与当前实现一致，未修订覆盖点，仅按当前源码刷新 sourceHash。
+// 2026-10-06 子运行接线修复批次（本批刷新）：sourceFiles 变化 ——
+// src/services/engine/harness/runtime.ts（子运行 provider 准入转发与 invisible sinks；观察
+// 决策、静默了解与话题链路未动）。ob-01..ob-09 逐点核对实现点仍在、覆盖描述与当前实现一致，
+// 未修订覆盖点，仅按当前源码刷新 sourceHash。
+// 2026-10-06 估算偏差口径修正批次（本批刷新）：sourceFiles 变化 ——
+// src/services/context/budget.ts（新增 totalInputTokens）、
+// src/services/engine/harness/{runtime,model-gateway}.ts（偏差对账口径；观察决策与静默了解
+// 链路未动）。ob-01..ob-09 逐点核对实现点仍在、覆盖描述与当前实现一致，未修订覆盖点，
+// 仅按当前源码刷新 sourceHash。
 import type { ModuleContract } from "../host/types"
 
 export const observationContract: ModuleContract = {
@@ -96,7 +110,7 @@ export const observationContract: ModuleContract = {
     "test/integration/observation/了解层与话题来源.test.ts",
     "test/e2e/scenes/observation/静默访问关闭边界.scene.ts",
   ],
-  sourceHash: "df2dbc3427f156aa70fa8259955e1a8a0bb357c59b1e6243bb288bdaad1763b8",
+  sourceHash: "c167fe7d7a349e5870fdedba3bb4863469bb2c2e04c4280a1a868434679fb926",
   coverage: [
     {
       id: "ob-01",

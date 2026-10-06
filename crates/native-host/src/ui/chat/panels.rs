@@ -293,11 +293,16 @@ pub enum PanelAction {
     DeleteSessionFromHistory {
         session_id: String,
     },
-    // `RememberMessage` 删除记录（2026-10-05 用户规则「我的消息去掉『记住这条』按钮，
-    // 要么我叫他记住，要么自动」）：气泡上的入口按钮撤掉后，这个变体**两个平台都不再
-    // 生产**，`build_panel_intent` 的分支与 `ChatIntent::RememberMessage` → Node
-    // `remember-message` 整条链一并退场。记忆能力本身不动 —— 显式路径改由用户直接说
-    // （走模型），自动路径本就有。
+    /// 「记住这条」：把这条**用户消息**的原文写入长期记忆。
+    ///
+    /// 入口 = **消息右键菜单**（气泡上的按钮已于 2026-10-05 按用户规则退场，
+    /// 入口改由右键承接）；平台层只对用户消息挂项，判据 =
+    /// `model.rs::MessageSnapshot::remember_event_id`（不在平台层复刻）。
+    /// `event_id` 是被右键消息的 ingress 事件身份，Node 侧复核可信来源后提交
+    /// （回执带 revision），失败如实拒绝、以中性通知呈现。
+    RememberMessage {
+        event_id: String,
+    },
     // ── 调试条（DebugBar 迁移）──
     /// 会话级思考强度覆盖：`None` = 恢复默认（全局 `ai.thinkingEffort`）。
     SetThinkingEffort {
@@ -403,7 +408,11 @@ pub const NOTICE_DISCARD_PLAN: &str = "已丢弃待处置计划";
 pub const NOTICE_STEP_ALREADY_APPLIED: &str = "已将步骤标记为已完成";
 /// 未知副作用步骤：重跑此步（有界请求）。
 pub const NOTICE_STEP_RETRY: &str = "已提交重跑该步骤";
-/// 「记住这条」提交成功（有界请求：Node 侧记忆提交完成才回执；revision 不回显）。
+/// 「记住这条」的菜单项文案（消息右键菜单；平台层文案的**唯一来源** ——
+/// macOS / Windows 都引用这里，不各自复制字面量）。
+pub const REMEMBER_MENU_ITEM_LABEL: &str = "记住这条";
+/// 「记住这条」提交成功（入口 = 消息右键菜单；有界请求：Node 侧记忆提交完成才回执；
+/// revision 不回显）。
 pub const NOTICE_REMEMBER_MESSAGE: &str = "已记住这条用户原文";
 
 // ── 发送投递归宿（`deskpet-send-outcome`；旧壳 `DELIVERY_NOTES` 同文）──

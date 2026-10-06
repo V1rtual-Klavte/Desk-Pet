@@ -1,3 +1,13 @@
+// 2026-10-06 聊天图片与折叠守卫批次（analyze→generate）：sourceFiles 变化 ——
+// `src/services/engine/harness/session-fold.ts`：FOLD_POLICY 新增第四个阈值 maxFileBytes
+// （64 MiB，读取守卫 = 折叠自愿设的读上界），旧守卫「文件 > MAX_TOOL_FILE_BYTES（5 MiB）
+// 就不读」被替换 —— 会话读路径没有单次大小上限（session_read_text），MAX_TOOL_FILE_BYTES
+// 只约束写（file_write）；结果守卫（折叠结果 > 5 MiB → skip("too-large")）保留。
+// hs-07 描述按当前判定顺序订正（读守卫 / 结果守卫各按其上限），并把尺寸守卫的两条 L3
+// 用例登记进 scenarios（harness-session-fold-read-guard / harness-session-fold-result-guard，
+// 此前测试未带 caseId）。hs-02 的「读写都下发 5 MB 硬上限」口径经复核仍成立（写侧不变；
+// 读侧折叠守卫已归 hs-07 的 maxFileBytes，非会话 FileSystem 的 file_read 上限不变）。
+// 其余点不在改动面内、实现点仍在；sourceHash 按当前源码复算。
 import type { ModuleContract } from "../host/types"
 
 export const harnessStorageContract: ModuleContract = {
@@ -9,7 +19,7 @@ export const harnessStorageContract: ModuleContract = {
     "src/services/tool/pi/native-execution-env.ts",
     "src/services/session/repo.ts",
   ],
-  sourceHash: "ebd29cb9caa237007004f591700715a3f629b19b64383d1b9b22450a3b613e46",
+  sourceHash: "569c62f7523452ae751c487493c7aa3b7550e9e4320ff88643f9780e5b697243",
   coverage: [
     {
       id: "hs-01",
@@ -23,7 +33,7 @@ export const harnessStorageContract: ModuleContract = {
     {
       id: "hs-02",
       feature: "NativeExecutionEnv FileSystem 补全",
-      description: "readTextFile/writeFile/appendFile/renameFile/createDir/remove/createTempDir/listDir 经真实 Rust 命令完成且不 throw（失败以 Result 返回）；失败按 Rust 结构化错误码归类而不是拿 message 猜，但**本点（L3 用例）背书的只有两条**：PATH_NOT_FOUND→not_found 与未列出的码（以 TOOL 实测）如实保持 unknown —— **SENSITIVE_PATH / PATH_ESCAPE→permission_denied 与 NOT_ABSOLUTE→invalid 依赖 Rust 侧路径裁决**，`test/host/node-ipc.ts` 按设计只实现机制、不做路径裁决（实测 `.ssh/probe` 落成 not_found、相对路径写入直接成功），Node 侧无法复现，**这 2 条属 L4**（production 批次另立出口），本点不声称覆盖；rename 原子替换已存在目标；remove 遵守 recursive/force（force 时缺失算成功，目录需 recursive）；createDir 默认递归；listDir 直接返回绝对 path、size、mtimeMs 与 file/directory/symlink 三值 kind。构造签名是 new NativeExecutionEnv(cwd)（模式参数已删，决策 5）。所有读写都下发 MAX_TOOL_FILE_BYTES = 5 MB 的硬上限（readTextFile/readBinaryFile 的读上限，writeFile/file_append 的单次写上限）—— 它是会话条目写盘的**唯一物理上限**，MCP 的一次性截断删除后大结果全靠它兜底：超限时 Rust 如实报错、**不做静默截断**（§8.8 的裁定。注：正好超限被拒这条边界未由本点的场景断言）。该常量的唯一定义点就在 `tool/pi/native-execution-env.ts`，`engine/harness/session-fold.ts` 的折叠尺寸守卫读同一份，不另存一份",
+      description: "readTextFile/writeFile/appendFile/renameFile/createDir/remove/createTempDir/listDir 经真实 Rust 命令完成且不 throw（失败以 Result 返回）；失败按 Rust 结构化错误码归类而不是拿 message 猜，但**本点（L3 用例）背书的只有两条**：PATH_NOT_FOUND→not_found 与未列出的码（以 TOOL 实测）如实保持 unknown —— **SENSITIVE_PATH / PATH_ESCAPE→permission_denied 与 NOT_ABSOLUTE→invalid 依赖 Rust 侧路径裁决**，`test/host/node-ipc.ts` 按设计只实现机制、不做路径裁决（实测 `.ssh/probe` 落成 not_found、相对路径写入直接成功），Node 侧无法复现，**这 2 条属 L4**（production 批次另立出口），本点不声称覆盖；rename 原子替换已存在目标；remove 遵守 recursive/force（force 时缺失算成功，目录需 recursive）；createDir 默认递归；listDir 直接返回绝对 path、size、mtimeMs 与 file/directory/symlink 三值 kind。构造签名是 new NativeExecutionEnv(cwd)（模式参数已删，决策 5）。所有读写都下发 MAX_TOOL_FILE_BYTES = 5 MB 的硬上限（readTextFile/readBinaryFile 的读上限，writeFile/file_append 的单次写上限）—— 它是会话条目写盘的**唯一物理上限**，MCP 的一次性截断删除后大结果全靠它兜底：超限时 Rust 如实报错、**不做静默截断**（§8.8 的裁定。注：正好超限被拒这条边界未由本点的场景断言）。该常量的唯一定义点就在 `tool/pi/native-execution-env.ts`，`engine/harness/session-fold.ts` 的**结果守卫**（折叠结果超限不落盘）读同一份，不另存一份；折叠的**读取守卫**是 `FOLD_POLICY.maxFileBytes`（64 MiB，见 hs-07）—— 它不是这个写上限的复制，会话读路径本身没有 5 MiB 限制",
       why: "JsonlSessionRepo 的原子发布依赖 append+rename，list 依赖完整 FileInfo 字段，能力缺口会让会话无法落盘或无法恢复；错误码是调用方唯一的分类依据，文案随实现漂移",
       layer: "integration",
       depth: "deep",
@@ -84,11 +94,15 @@ export const harnessStorageContract: ModuleContract = {
     {
       id: "hs-07",
       feature: "会话日志折叠的正确性（纯删除式回收）",
-      description: "在临时会话根上跑一次**真实折叠**（真仓库提交造条目 + raw append 造帧的夹具），逐条钉住：① 已 delete 的 key 的全部 append/set 行被删（`list/append` 与 `value/set`，行号**严格小于**该 key 最后一次对应 `delete` 的行号；delete 行自身与其后的写入一律保留）；② **保留行必须是原文子串**（折叠只做行级纯删除，不重编号、不重写任何保留行、不重新序列化，且整行粒度 —— 一行里只要有一个保留写入就整行原样留下）；③ 折叠前后 `logStateDigest()` **逐字相同**（= `sha256Text(stableSerialize(replayLogState(log)))`；S-1：摘要只依赖逻辑状态，不含行序/字节数/时间戳）；④ 折叠后文件仍可被上游重放读回；⑤ **幂等**——折叠结果再折叠不再有可回收行；⑥ **版本白名单降级（S-6）**——header 不是 v4 + `storageVersion: 1`（`JSONL_STORAGE_VERSION`）时 `skip(\"unknown-format\")`、原文件逐字未动，`storageVersion` 变值与 `v: 3` 两个变体各验一遍（探针文件必须先超闸门 1，否则断言会退化成闸门 1）。夹具的字节/字符比经离线实跑量测（1.809）后定阈值，不按估算写。折叠驱动 `foldSessionFile` 的判定顺序写死（**先判定后动盘**）：闸门 1（`fileInfo().size <= minFileBytes`，只看不读）→ 尺寸守卫（超 `MAX_TOOL_FILE_BYTES` 不读）→ 读一次全文 → 白名单判定 → 闸门 2（`minReclaimBytes` 与 `minReclaimRatio` 字节口径 AND）→ 结果尺寸守卫 → 先算两侧摘要再写。触发挂点（**未由本点场景断言**——本点直接驱动 `foldSession`）：`releasePiSession` 的 `try/catch/finally` **整体之后**（主路径：先 `close`、再冲帧缓冲、最后折叠）与 `open` 前按需兜底（`maybeFoldBeforeOpen`，仅当文件超 `minFileBytes` 才真的折叠，常态只花一次 stat）；两处失败都只留痕，不影响会话功能。**未覆盖**：中断安全与地址交界属 hs-08；上游 `JsonlStorage.open` 的正面确认属 hs-01 —— 本点对 raw 行的上游合法性只有「seq 严格递增 + 重放不抛」两条侧证",
+      description: "在临时会话根上跑一次**真实折叠**（真仓库提交造条目 + raw append 造帧的夹具），逐条钉住：① 已 delete 的 key 的全部 append/set 行被删（`list/append` 与 `value/set`，行号**严格小于**该 key 最后一次对应 `delete` 的行号；delete 行自身与其后的写入一律保留）；② **保留行必须是原文子串**（折叠只做行级纯删除，不重编号、不重写任何保留行、不重新序列化，且整行粒度 —— 一行里只要有一个保留写入就整行原样留下）；③ 折叠前后 `logStateDigest()` **逐字相同**（= `sha256Text(stableSerialize(replayLogState(log)))`；S-1：摘要只依赖逻辑状态，不含行序/字节数/时间戳）；④ 折叠后文件仍可被上游重放读回；⑤ **幂等**——折叠结果再折叠不再有可回收行；⑥ **版本白名单降级（S-6）**——header 不是 v4 + `storageVersion: 1`（`JSONL_STORAGE_VERSION`）时 `skip(\"unknown-format\")`、原文件逐字未动，`storageVersion` 变值与 `v: 3` 两个变体各验一遍（探针文件必须先超闸门 1，否则断言会退化成闸门 1）。夹具的字节/字符比经离线实跑量测（1.809）后定阈值，不按估算写。折叠驱动 `foldSessionFile` 的判定顺序写死（**先判定后动盘**）：闸门 1（`fileInfo().size <= minFileBytes`，只看不读）→ 读取守卫（超 `FOLD_POLICY.maxFileBytes` = 64 MiB 不读不折 —— 它是折叠自愿设的读上界，会话读路径本身没有单次大小上限）→ 读一次全文 → 白名单判定 → 闸门 2（`minReclaimBytes` 与 `minReclaimRatio` 字节口径 AND）→ 结果守卫（折叠结果仍超 `MAX_TOOL_FILE_BYTES` = 5 MiB 写侧真实上限 → `skip(\"too-large\")`，磁盘逐字未动）→ 先算两侧摘要再写。两条尺寸守卫各有 L3 用例实测：读守卫侧「文件超 5 MiB 写入上限仍折成功」（`harness-session-fold-read-guard`，旧守卫把写上限误用到读侧时这条会红）；结果守卫侧「折叠结果仍超写上限 → skipped(too-large)」（`harness-session-fold-result-guard`）。触发挂点（**未由本点场景断言**——本点直接驱动 `foldSession`）：`releasePiSession` 的 `try/catch/finally` **整体之后**（主路径：先 `close`、再冲帧缓冲、最后折叠）与 `open` 前按需兜底（`maybeFoldBeforeOpen`，仅当文件超 `minFileBytes` 才真的折叠，常态只花一次 stat）；两处失败都只留痕，不影响会话功能。**未覆盖**：中断安全与地址交界属 hs-08；上游 `JsonlStorage.open` 的正面确认属 hs-01 —— 本点对 raw 行的上游合法性只有「seq 严格递增 + 重放不抛」两条侧证",
       why: "折叠是这个批次里唯一**重写用户文件**的动作，一旦保留行被重写或逻辑状态被改动，损害是不可逆的（会话历史被静默篡改）。本覆盖点是 S-1..S-4/S-6 的唯一出口：它同时证明「回收真的发生」与「除了该删的行，一个字节都没动」",
       layer: "integration",
       depth: "deep",
-      scenarios: ["harness-session-log-fold"],
+      scenarios: [
+        "harness-session-log-fold",
+        "harness-session-fold-read-guard",
+        "harness-session-fold-result-guard",
+      ],
     },
     {
       id: "hs-08",

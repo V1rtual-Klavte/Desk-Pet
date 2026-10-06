@@ -38,6 +38,24 @@ pub struct StaticImage {
 /// —— 重编码产物必须保持视觉直立（与画布路径的既定口径一致）。
 pub fn decode_static(bytes: &[u8]) -> AppResult<StaticImage> {
     let format = format::sniff(bytes).ok_or_else(format::unsupported_error)?;
+    decode_as(bytes, format)
+}
+
+/// 以显式格式解码的转码源入口（剪贴板粘贴专用：BMP 与 TIFF）。
+///
+/// 与 [`decode_static`] 同一解码器栈与 EXIF 方向口径；**只放行转码所需的两种格式**
+/// —— TIFF 不在聊天准入集合（[`format::sniff`] 仍拒绝它），本入口是它唯一的解码点，
+/// 产物在粘贴链路立即编码为 PNG，不扩大任何其它入口的格式集合。
+pub fn decode_transcode_source(bytes: &[u8], format: ImageFormat) -> AppResult<StaticImage> {
+    if !matches!(format, ImageFormat::Bmp | ImageFormat::Tiff) {
+        return Err(AppError::Other(format!(
+            "粘贴转码只支持 BMP/TIFF（收到 {format:?}）"
+        )));
+    }
+    decode_as(bytes, format)
+}
+
+fn decode_as(bytes: &[u8], format: ImageFormat) -> AppResult<StaticImage> {
     let reader = ImageReader::with_format(Cursor::new(bytes), format);
     let mut decoder = reader.into_decoder().map_err(decode_failed)?;
     let orientation = decoder
@@ -146,6 +164,23 @@ mod tests {
         ))
         .unwrap();
         assert_eq!((width, height), (2, 2));
+    }
+
+    #[test]
+    fn transcode_source_decodes_tiff_and_bmp_and_rejects_whitelist_formats() {
+        let tiff = fixtures::tiff_solid(3, 2, [10, 20, 30, 255]);
+        let decoded = decode_transcode_source(&tiff, ImageFormat::Tiff).expect("TIFF 必须可解");
+        assert_eq!(decoded.format, ImageFormat::Tiff);
+        assert_eq!(decoded.image.dimensions(), (3, 2));
+        assert_eq!(decoded.image.get_pixel(1, 1).0, [10, 20, 30, 255]);
+
+        let bmp = fixtures::bmp_2x2();
+        let decoded_bmp = decode_transcode_source(&bmp, ImageFormat::Bmp).expect("BMP 必须可解");
+        assert_eq!(decoded_bmp.image.get_pixel(0, 0).0, [0, 0, 255, 255]);
+
+        // 白名单格式不走本入口（它们的解码在 decode_static，不在这里开第二扇门）。
+        let error = decode_transcode_source(&fixtures::png_1x1(), ImageFormat::Png).unwrap_err();
+        assert!(error.to_string().contains("只支持 BMP/TIFF"), "文案：{error}");
     }
 
     #[test]

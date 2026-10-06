@@ -118,6 +118,20 @@ impl MessageSnapshot {
     pub fn is_failed_tool_result(&self) -> bool {
         self.role == Role::Tool && self.is_error
     }
+
+    /// 「记住这条」入口的事件身份（消息右键菜单的唯一判据）。
+    ///
+    /// **两个平台（macOS / Windows）的消息右键菜单只问这里**，不各自复刻角色判定：
+    /// 仅 `role == User` 且 `event_id` 非空白才给 `Some`。助手、系统与工具条目没有
+    /// 记忆来源资格（准入只认 `origin=user + trusted_user`），不提供入口；
+    /// 空白串与缺失同义（投影没有给这条消息带事件身份）。返回原串，不改写身份。
+    pub fn remember_event_id(&self) -> Option<&str> {
+        let event_id = self.event_id.as_deref()?;
+        if self.role != Role::User || event_id.trim().is_empty() {
+            return None;
+        }
+        Some(event_id)
+    }
 }
 
 /// 分泡揭示进度（humanizer 调度器的投影；节奏逻辑不在本模型）。
@@ -2447,6 +2461,47 @@ mod tests {
         assert!(snapshot.messages[1].is_failed_tool_result());
         assert!(!snapshot.messages[2].is_failed_tool_result());
         assert!(!snapshot.messages[0].is_failed_tool_result());
+    }
+
+    /// 「记住这条」入口的唯一判据（两平台右键菜单共用；平台层不各自复刻角色判定）。
+    #[test]
+    fn 记住这条入口只认用户条目且事件身份非空白() {
+        let mut user_ok = message("e1", ProjectedRole::User, "好");
+        user_ok.event_id = Some("req-1:user".into());
+        let user_none = message("e2", ProjectedRole::User, "没有事件身份");
+        let mut user_blank = message("e3", ProjectedRole::User, "空白身份");
+        user_blank.event_id = Some("  ".into());
+        let mut assistant = message("e4", ProjectedRole::Assistant, "在");
+        assistant.event_id = Some("req-1:user".into());
+        let mut system = message("e5", ProjectedRole::System, "系统");
+        system.event_id = Some("req-1:user".into());
+        let mut tool = message("e6", ProjectedRole::Tool, "工具");
+        tool.event_id = Some("req-1:user".into());
+        let mut model = ChatModel::new();
+        model.apply_projection(projection(
+            "s1",
+            vec![user_ok, user_none, user_blank, assistant, system, tool],
+        ));
+        let messages = model.snapshot().messages;
+        assert_eq!(messages[0].remember_event_id(), Some("req-1:user"));
+        assert_eq!(
+            messages[1].remember_event_id(),
+            None,
+            "缺事件身份 = 不提供入口"
+        );
+        assert_eq!(
+            messages[2].remember_event_id(),
+            None,
+            "空白身份与缺失同义（菜单不得出现）"
+        );
+        for message in &messages[3..] {
+            assert_eq!(
+                message.remember_event_id(),
+                None,
+                "非用户条目没有记忆来源资格：{:?}",
+                message.role
+            );
+        }
     }
 
     #[test]

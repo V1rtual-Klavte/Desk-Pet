@@ -161,8 +161,8 @@ use windows_sys::Win32::UI::WindowsAndMessaging::{
 use crate::ui::settings::panels::{ListPanel, MemoryDetailState, PanelRow, RowAction, RowPick};
 use crate::ui::settings::schema::{Field, FieldKind, TABS};
 use crate::ui::settings::{
-    settings_ui, tab_index_for_tag, DocumentState, DocumentTarget, NoticeLevel, SettingsValue,
-    SettingsView, ShortcutModifiers, SwitchStates,
+    settings_ui, tab_index_for_tag, DocumentState, DocumentTarget, NoticeLevel, SettingsUi,
+    SettingsValue, SettingsView, ShortcutModifiers, SwitchStates,
 };
 use crate::ui::theme;
 use crate::ui::theme::paint_win::{self, ButtonRole, TextRole};
@@ -1946,6 +1946,25 @@ fn build_panel_controls(state: &mut SettingsState) {
             }
         }
         "memory" => {
+            // 常驻说明（入口两条路径 + 来源边界；文案唯一来源 = 设置层共享常量，
+            // 与 macOS 同一条 —— 不在平台文件里复制字面量）：排在页面最前面，
+            // 随内容滚动。三行盒（h=45，与行副标题的三行档同高）—— 这条说明在
+            // 默认窗宽下要折到 3 行，18pt 单行盒会把折行后的后半截截掉。
+            create_panel_control(
+                state,
+                "STATIC",
+                SettingsUi::MEMORY_TIP,
+                MARGIN,
+                y,
+                content_w,
+                45,
+                small,
+                11,
+                Some(TextRole::Hint),
+                0,
+                0,
+            );
+            y += 47;
             if let Some(status) = settings_ui().memory_status_text() {
                 create_panel_control(
                     state,

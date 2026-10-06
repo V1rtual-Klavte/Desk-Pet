@@ -230,6 +230,14 @@ fn run(mode: Mode) -> AppResult<i32> {
     assets
         .allow_directory(&profiles_root, true)
         .map_err(|error| AppError::Other(format!("profiles 资源目录授权失败: {error}")))?;
+    // 粘贴落盘的进程级端口（数据根 + 预览授权表）：聊天输入框的粘贴入口
+    // （`ui/chat/paste.rs` 的 `add_pasted_image`）经它取用。授权表与上面
+    // `assets` 是同一个实例，落盘后的预览授权与截图走同一张表。
+    // E2E / `--smoke` 宿主不建原生 UI、粘贴不可达，故只在服务模式装配。
+    native_host::ui::chat::paste::install_paste_ports(native_host::ui::chat::paste::PastePorts {
+        data_root: paths.data_root.clone(),
+        assets: assets.clone(),
+    });
     let dialogs = Arc::new(NativeFileDialog::new(ui_handle.clone()));
     let lifecycle = Arc::new(NativeLifecycle::new(ui_handle.clone(), exit_once.clone()));
     native_host::ui::settings::updates::install(ui_handle.clone(), lifecycle.clone());
@@ -313,6 +321,9 @@ fn run_service_mode(
     native_host::ui::settings::updates::schedule_startup();
 
     let supervisor_for_worker = supervisor.clone();
+    // 首次拉起失败时由宿主直接写顶栏「服务未连接」（Err 分支；理由见该处注释）。
+    // `ui_queue` 稍后要移进 `ServiceRequest`，这里先克隆一份给 hook。
+    let ui_queue_for_worker = ui_queue.clone();
     let on_ui_ready: Box<dyn FnOnce() + Send> = Box::new(move || {
         match supervisor_for_worker.start() {
             Ok(handshake) => rust_info!(
@@ -322,7 +333,27 @@ fn run_service_mode(
                 handshake.app_epoch,
                 handshake.pid
             ),
-            Err(error) => rust_error!("Node 启动失败: {error}"),
+            Err(error) => {
+                rust_error!("Node 启动失败: {error}");
+                // 首次拉起失败：Node 不在则没有推送者，顶栏会停在缺省「就绪」而实际
+                // 服务不可用（本轮排查发现的可见性缺口），由宿主直接写一条中性文案
+                // （`SERVICE_UNAVAILABLE_TEXT`：只陈述「本进程没拉起 Node」这一可确知
+                // 的事实，非角色口吻、不谎报在线）。
+                //
+                // 本 hook 跑在 `deskpet-node-start` 专用线程（`platform/macos.rs` /
+                // `platform/windows.rs` 的 `ready_hook` spawn）；`build_ui` 早期已安装
+                // 主线程队列唤醒器，故 `run_on_main` 可用（UiHandle 只持队列、可跨线程）。
+                // 写入失败只留痕，不影响启动流程与下方的常驻退出观察。
+                // 此后 Node 一旦推送，其最终文本（唯一真值点仍在 Node 的
+                // `services/titlebar`）会照常整体覆盖这条宿主自推文本。
+                // 本轮只覆盖「首次拉起失败」；崩溃重启耗尽后的提示另案登记。
+                let handle = UiHandle::new(ui_queue_for_worker);
+                if let Err(error) = handle
+                    .apply_titlebar_status(Some(ui::titlebar::SERVICE_UNAVAILABLE_TEXT.to_string()))
+                {
+                    rust_warn!("顶栏「服务未连接」文案写入失败: {error}");
+                }
+            }
         }
         // 常驻观察退出/重启事件（崩溃重启由监督器按策略接管）；退出序列由 UI 侧
         // 的 `ServiceExitHook` 调 `shutdown()`，本线程随进程退出结束。

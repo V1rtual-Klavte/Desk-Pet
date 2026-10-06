@@ -1,14 +1,15 @@
 //! 原生宿主完整命令分派器（W4）。
 //!
-//! 覆盖 `src/services/host/types.ts` 的 `HostCommandMap` 全部 134 条（总数以 types.ts
-//! 为准；分项已复核为「107 冻结 + 27 扩展」：冻结件删 `profile_clone`（「新建 Profile」
+//! 覆盖 `src/services/host/types.ts` 的 `HostCommandMap` 全部 135 条（总数以 types.ts
+//! 为准；分项已复核为「107 冻结 + 28 扩展」：冻结件删 `profile_clone`（「新建 Profile」
 //! 改造）与 `mcp_send`，MCP 裸行收发改由 `mcp_write` / `mcp_read` 两条有意扩展承担）。
 //! A2 追加 `apply_chat_projection` / `apply_titlebar_status`，
 //! A3 追加 `set_popup_placement` / `set_popup_size`，管理面批次追加通用文件对话框
 //! `pick_file_open` / `pick_file_save` 与自动呼出开关 `set_popup_auto_show`，
 //! 主题批次追加界面主题下发 `apply_theme`，设置页 Card 管理批次追加人格文件删除
 //! `personality_file_delete`，自带 MCP 批次追加凭据读写 `mcp_credential_set` /
-//! `mcp_credential_delete` / `mcp_credential_status` / `mcp_credential_get`）。
+//! `mcp_credential_delete` / `mcp_credential_status` / `mcp_credential_get`，
+//! 聊天图片批次追加删会话清理 `chat_delete_session_images`）。
 //! 每条：从 JSON 参数解出（**参数名逐字对齐矩阵的 camelCase 线格式**）
 //! → 调用 `commands/**` 或对应域的实现 → 结果按矩阵形状序列化。
 //!
@@ -566,6 +567,12 @@ impl NativeDispatcher {
             )?),
             "validate_chat_images" => ser(chat_images::validate_chat_images(
                 self.assets.as_ref(),
+                arg_strings(args, "paths")?,
+            )?),
+            // 删会话连带清理托管聊天图片：包含判定在 chat_images.rs（只删托管根内的
+            // 常规文件，根外/目录/符号链接/已消失一律 skipped）。
+            "chat_delete_session_images" => ser(chat_images::chat_delete_session_images(
+                &self.paths,
                 arg_strings(args, "paths")?,
             )?),
 
@@ -1607,7 +1614,10 @@ mod tests {
         // 自带 MCP 批次追加凭据读写四条（`mcp_credential_set` / `_delete` / `_status` / `_get`：
         // 令牌存自有 SQLite、不写 CONFIG；漏登记会让「设置面写不进令牌」变成未知方法）
         // —— 分项随之变为「107 冻结 + 27 扩展」。
-        assert_eq!(names.len(), 134, "HostCommandMap 条数（以 types.ts 为准）");
+        // 本批追加 `chat_delete_session_images`（删会话连带清理托管聊天图片；漏登记会让
+        // 删会话的图片清理成为未知方法，僵尸文件只能等 200 上限自然淘汰）—— 分项变为
+        // 「107 冻结 + 28 扩展」。
+        assert_eq!(names.len(), 135, "HostCommandMap 条数（以 types.ts 为准）");
         assert!(names.contains(&"init_memory_files".to_string()));
         assert!(names.contains(&"e2e_memory_reset".to_string()));
         // A2 追加的两条必须在分派面上（本测试只对账「有臂」，行为见下方专项测试）。

@@ -48,6 +48,26 @@
 // 2026-10-05 频率档位收口波（analyze→generate）：新增 mm-44（记忆整理的档位门禁与数值消费，
 // L3 记忆整理档位门禁.test.ts 的 4 个 caseId——W2-M1 登记转正）；mm-43 的 4 个 caseId 登记经
 // 对账通过；其余 mm-* 实现点按当前源码复核仍在、语义未变。sourceHash 按当前源码复算。
+// 2026-10-06 聊天图片批次（本批刷新）：sourceFiles 变化 —— crates/native-host/src/host/dispatch.rs
+// 新增一条 chat_delete_session_images 分派臂（命令矩阵 134→135），memory_* 命令的既有接线与
+// 错误语义未改，与记忆存储、召回与整理链路不相交。另核对：聊天消息右键菜单恢复「记住这条」
+// 入口（crates/native-host/src/ui/chat/*.rs 的 UI 层意图链；chat_remember_message 的 Node 侧
+// 处理体与线形状一行未改）—— 不在本契约覆盖面（记忆来源准入/提交）内，平台手势与菜单渲染
+// 不在这里冒充。mm-* 逐点核对实现点仍在、覆盖描述与当前实现一致，未修订覆盖点，仅按当前
+// 源码刷新 sourceHash。
+// 2026-10-06 子运行接线修复批次（本批刷新）：sourceFiles 变化 ——
+// src/services/engine/harness/runtime.ts（子运行 provider 准入转发；createTurnSpec 现在也把
+// 调用方声明的 disableAutomaticCompaction（规划子运行）转发进 spec，子运行的隐式压缩开关
+// 真正生效；主回合压缩/摘要/快照链路未动）。mm-* 逐点核对：压缩阈值、摘要内核、审计与保留
+// 口径不在改动面内、实现点仍在，覆盖描述与当前实现一致，未修订覆盖点，仅按当前源码刷新 sourceHash。
+// 2026-10-06 估算偏差口径修正批次（analyze→generate）：sourceFiles 变化 ——
+// src/services/context/budget.ts（新增纯函数 totalInputTokens = input + cacheRead + cacheWrite）、
+// src/services/engine/harness/{runtime,model-gateway}.ts（estimateDriftRatio 的 actual 与快照
+// actualInputTokens / tokenDrift.actual 从 usage.input 改为 totalInputTokens —— usage.input
+// 只是未命中缓存的一截；真机实测单比 input 43×、三者相加 1.14×，落在 1.15 阈值之下）。
+// 新增 mm-45（unit，caseId memory-estimate-drift-total-input）；mm-26 描述订正（tokenDrift.actual
+// 的定义按新口径写清，指向 mm-45）。mm-19/mm-34/mm-40 的 usage 记账、快照保留与窗口预算语义
+// 未变，其余点不在改动面内、实现点仍在；sourceHash 按当前源码复算。
 import type { ModuleContract } from "../host/types"
 
 export const memoryContract: ModuleContract = {
@@ -90,7 +110,7 @@ export const memoryContract: ModuleContract = {
     "src/services/context/tool-output.ts",
     "src/services/debug.ts",
   ],
-  sourceHash: "009ca58e73860262b222c6a13466f2ff18dc12463f06f55d12d8456d4524bf43",
+  sourceHash: "9d222d2b919e698dac0d87675cec2c067c30d2c8c57c6fab17c8d86459420f59",
   coverage: [
     { id: "mm-01", feature: "记忆来源准入", description: "只有 origin=user 且 taint=trusted_user 且 eligibleForMemory=true 的已提交条目能成为候选：助手台词、工具结果、压缩摘要、主动搭话、缺来源标记与 custom 控制条目一律出局；投递时刻冻结的 cardId 随来源落盘", why: "「谁说的」是记忆的唯一准入判据：把这些来源放进去，模型的一次措辞就会被当成用户长期事实", layer: "integration", depth: "deep", scenarios: ["memory-source-admission"] },
     { id: "mm-02", feature: "重排结果校验", description: "重排只接受候选白名单内的 id：未知 id、重复 id、非字符串、坏 JSON、散文与对象外形错误一律判无效并回退本地顺序，对象形态取 ids 字段；空数组是合法答案（这次不投影动态记忆），合法非空子集保序通过、不补回未选项", why: "模型只能决定「用哪几条」，不能决定「还有哪些」——白名单外的 id 会让不存在的记忆进入请求", layer: "unit", depth: "deep", scenarios: ["memory-rerank-fallback"] },
@@ -114,7 +134,7 @@ export const memoryContract: ModuleContract = {
     // mm-22 原把「恢复 + 分类」合成一点（跨层混搭）；按层拆开：分类侧为 mm-35（L3），恢复侧留在 mm-22（L4）。
     { id: "mm-35", feature: "硬预算拒绝的上报形状与失败分类", description: "本地硬预算拒绝以「上游认得出」的响应上报（length 停止 + 输出 0，命中 isRecoverableLength/isContextOverflow），普通投影错误不算溢出；失败分类只由「它是本地判定」决定，不随判定文案里估算数字的形态漂移（长数字串里的 5xx/401/429 片段不算状态码，真正的状态码仍命中对应分桶）——分类实现收敛在 src/services/error/failure-kind.ts 一处（生产回合结算与场景共用同一份正则表）", why: "本地拒绝先于请求发生，没有真实 provider 文案可命中上游溢出判据，上报形状是让一次性恢复轮得到的前提；分类不得把本地失败记成 Provider/认证/限流故障", layer: "integration", depth: "deep", scenarios: ["memory-budget-overflow-classification"] },
     { id: "mm-23", feature: "retain 保留守卫", description: "摘要范围覆盖声明 historyCompaction=retain 的工具调用配对时，宿主 before_compaction 内核 decline：不向模型发出摘要请求、不提交 compaction 条目、不推进换代身份，原文条目保持完整；注销 retain 声明后同一会话与同一载荷照常压缩。retain 是有意保留的能力（O-1 裁定 B）：生产工具目前全部声明 summarize，本覆盖点由测试场景驱动、字段不删", why: "宁可不压缩也不能把必须保留原文的调用配对静默摘要掉：覆盖边界一旦越过它，未覆盖历史就被模型输出的摘要顶替", layer: "e2e", depth: "deep", scenarios: ["memory-retain-guard"] },
-    { id: "mm-26", feature: "估算器角色覆盖与偏差对账", description: "内容投影按角色表覆盖 compactionSummary/branchSummary/bashExecution/custom（摘要只计 summary 正文、excludeFromContext 的 bash 执行计 0），未知角色按整条估算并留痕；provider_usage 快照记录 tokenDrift（estimated/actual/ratio），超 ESTIMATE_DRIFT_WARN_RATIO 只 warn 与 trace 带 driftRatio，不改变预算判定", why: "估算器系统性漏算某类消息会让硬预算与压缩触发点整体漂移，估算与真实 usage 的偏差必须可见才能定位", layer: "integration", depth: "deep", scenarios: ["memory-estimator-role-coverage"] },
+    { id: "mm-26", feature: "估算器角色覆盖与偏差对账", description: "内容投影按角色表覆盖 compactionSummary/branchSummary/bashExecution/custom（摘要只计 summary 正文、excludeFromContext 的 bash 执行计 0），未知角色按整条估算并留痕；provider_usage 快照记录 tokenDrift（estimated/actual/ratio），actual 取**真实输入量** totalInputTokens(usage) = input + cacheRead + cacheWrite（2026-10-06 口径修正：只比 usage.input 会把缓存命中请求的偏差算大几十倍，定义与真机夹具见 mm-45），超 ESTIMATE_DRIFT_WARN_RATIO 只 warn 与 trace 带 driftRatio，不改变预算判定", why: "估算器系统性漏算某类消息会让硬预算与压缩触发点整体漂移，估算与真实 usage 的偏差必须可见才能定位", layer: "integration", depth: "deep", scenarios: ["memory-estimator-role-coverage"] },
     { id: "mm-27", feature: "L0 地址完整性", description: "工具结果的回读地址是条目 id 的唯一前缀（shortenAddresses 在当次 id 全集上取最短唯一，下界 MIN_ADDRESS_PREFIX=8；槽级缓存已发出的地址，仍唯一就复用、失效才重算 —— D-W2-8，故长度不是契约；读取端 resolveAddressRef 给 exact/unique/ambiguous/none 判别联合，完整条目 id 永远 exact 命中，前缀命中多条绝不任选）；地址无条件标注 —— 超阈值与否都带 `[回读地址 eventId=<前缀>，可用 read_session_event 分页读取]` 尾行，未缩短的结果同样带，preserve 的结果只挡缩短/清空、照带地址；无地址的结果不写假 eventId（缩短形态标「不可回读」占位串，未缩短形态不追加任何行）；无地址留痕按内容指纹（长度 + 首 NO_ADDRESS_WARN_KEY_CHARS=32 字符）分键去重、同键只报一次，集合有界（NO_ADDRESS_WARN_KEYS=64，满员按插入序 FIFO 淘汰最旧；淘汰分支当前无场景断言，按实现事实记录）；主请求与摘要素材共用同一份地址目录与投影实现，同一 level 下逐字相同、素材级别 ≤ 视图级别（素材升档判据 hardInputLimit、视图 normalInputTarget）", why: "回读地址是模型从缩短结果回到真相源的唯一通道，假地址会让模型读到「当前会话没有此工具结果」", layer: "e2e", depth: "deep", scenarios: ["memory-l0-address-integrity"] },
     { id: "mm-24", feature: "审计落盘闭环", description: "审计条目只入队、由唯一 flush 入口在 lane 空闲时写入；失败条目保留并重试一次；槽关闭前 flush 且残留非空记 error；transform_context/provider_payload/provider_usage 三档快照在一轮 production 回合里各至少一条且释放槽后集合不变", why: "证据链的组成项不能在槽生命周期结束时静默消失，否则「请求发过什么」这件事在重启后不可查", layer: "e2e", depth: "deep", scenarios: ["memory-snapshot-audit-closure"] },
     { id: "mm-25", feature: "摘要降级显式 decline", description: "宿主摘要内核失败时钩子返回 decline 而非抛出：/compact 报 failed 并在用户可见文案里给出原因；不提交 compaction 条目、不推进换代身份（readContextEpoch 与槽快照同为 0 —— decline 不是提交）；回合路径写 deskpet.compaction_declined 审计条目 —— 内核失败带 error 字段（原因文案；manual/overflow 触发的条目另带 decline.failure：错误码 + over_cap/oversized_unit 数字，经 describeCompactionFailure 映射），策略性拒绝（empty_material / retained_tool / gate_fits）在 manual/overflow 触发时同样落条目并带结构化 decline（kind/trigger/sessionId/关键数字），threshold 是每个检查点都会重试的内部优化、只留统一日志不落盘；decline 与 failure 语义分离（策略性拒绝不写 error、不翻用户文案），decline 记录用过即清；四个结局各自留一条统一日志（empty_material 此前完全静默）；失败路径不产生任何宿主之外的摘要正文 —— 助手正文序列逐字不变、provider 请求增量恰好等于内核摘要请求数（直接区分「钩子 decline」与「钩子抛错被上游回退通用英文摘要」两个世界：后者会多发一次请求并提交一条不可回滚的摘要）", why: "上游通用英文摘要一旦提交就成为后续所有回合唯一的历史视图且不可回滚，宁可不压缩也不落违反协议的历史；decline 也不能顺手推进请求视图的换代身份；策略性拒绝同样没有用户可见原因（上游 declined 终态不带 error），审计条目与统一日志是它唯一的留痕出口 —— 不写就无从区分「素材为空」「保留守卫」「闸门装得下」与「超上限失败」", layer: "e2e", depth: "deep", scenarios: ["memory-compaction-degrade-declines"] },
@@ -131,6 +151,7 @@ export const memoryContract: ModuleContract = {
     { id: "mm-42", feature: "压缩失败诊断的可判定性", description: "`describeCompactionFailure` 把摘要素材规划的两条 fatal（`over_cap` 片数超上限、`oversized_unit` 单元超硬限）描述成**可判定的错误码 + 全部数字**（需要片数/上限、单元成本/上限），普通错误与预算错误**不得冒充** overflow 形态", why: "「压不动」和「没得压」是两条完全不同的处置路径：前者要调上限或改分段，后者什么都不用做。描述层含糊会让用户和诊断都分不清该走哪条", layer: "unit", depth: "shallow", scenarios: ["memory-compaction-overflow-diagnostic"] },
     { id: "mm-43", feature: "记忆整理的前置查询（无新来源不开作业）", description: "dreaming 在创建 Review 作业前先查「水位之后还有没有待处理来源」（`memory_pending_source_count`，与 `memory_job_sources` 共用同一段水位判定 SQL）：没有 → 不创建 job、不动预算/租约，以 empty 如实回报（手动入口走同一条前置查询——Review 的输入只有这些来源，空跑与跳过对用户是同一种结果，文案如实说明）；有 → 照常创建 Review 作业；恢复既有作业（resumeJobId）不经前置查询，job 自带游标、水位为空也要能继续", why: "空闲命中即开作业会在没有任何新来源时白耗一次 job 创建与租约；而「水位之后有无来源」的判定必须与批内取数同源——另建一套水位口径会让两处静默漂移，跳过判断就会漏掉或虚报来源", layer: "integration", depth: "shallow", scenarios: ["dreaming-pending-gate-skip", "dreaming-pending-gate-proceed", "dreaming-pending-gate-manual", "dreaming-pending-gate-resume"] },
     { id: "mm-44", feature: "记忆整理的档位门禁与数值消费", description: "空闲调度器按 ai.memory.dreaming.tier 档位表取值：off = 空闲调度器早退（不查预算、不自动开整理作业；手动入口 runDreamingSweep 不受档位影响，仍受同一本持久预算账约束）；三档决定空闲阈值（3600 / 1800 / 600 秒——差 1 秒不开、达标才开）、最小间隔（高档 30 分钟档位值：1801 秒后可再跑，旧 60 分钟常量会挡住）与每日 token 预算（低档 24000：已用 30000 时不开，旧 72000 常量会开）；数值唯一来源是 proactive tiers 档位表，不是旧 flat 常量", why: "档位若不落到空闲/间隔/预算三个消费点，配置选择形同虚设（off 仍自动跑、低档按旧预算放行、高档被旧间隔挡住）；旧常量残留会让用户选的档位无声失效", layer: "integration", depth: "shallow", scenarios: ["dreaming-tier-off", "dreaming-tier-medium-idle", "dreaming-tier-low-values", "dreaming-tier-high-values"] },
+    { id: "mm-45", feature: "估算偏差对账用真实输入量", description: "对账的 actual 取 `totalInputTokens(usage)` = `usage.input` + (`cacheRead` ?? 0) + (`cacheWrite` ?? 0)：`usage.input` 只是未命中缓存的一截，缓存命中记在 `cacheRead`、写入记在 `cacheWrite`，三者相加才是这次请求实际发出去的输入规模 —— 也正是 `estimateRequestTokens` 估算的对象。真机夹具（工具循环回合的一次 provider 回执）逐项钉死：input 387 / cacheRead 14208 / 估算 16679 ⇒ 单比 input ≈43×（曾经把偏差算大几十倍、越过 ESTIMATE_DRIFT_WARN_RATIO 刷告警），相加 14595 ⇒ 比值 ≈1.14×，落在阈值之下；cacheWrite 同样计入、缺省按 0。同一取数点同时服务落盘快照的两个字段：`deskpet.prompt_snapshot` 的 `actualInputTokens` 与 `tokenDrift.actual` 与之同源（主回合经 runtime.ts、一次性摘要经 model-gateway.ts 各自调用，口径一致）", why: "只比 usage.input 会在缓存生效时把偏差放大几十倍：告警刷屏成噪音、落盘对账记录失真，真实的小偏差反而被淹没；把口径收在 context/budget.ts 的唯一纯函数里，两条调用路径不会再分叉出第二份算法", layer: "unit", depth: "shallow", scenarios: ["memory-estimate-drift-total-input"] },
   ],
   // W0–W7 把本契约的场景迁出 L4 后按 L4 侧当前值重标定：门槛=当前 rules 声明值，
   // 只缩不放（数字由 checker 报错提供）；跨层完整性由 checkLayerCoverage 负责。
