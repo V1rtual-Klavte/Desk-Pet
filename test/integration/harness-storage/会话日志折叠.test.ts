@@ -16,10 +16,12 @@
 //     整行逐字保留。夹具里的多写行把「可丢的 append」与「保留的 set」放在同一行，专钉这条边界。
 //   · **保留行是原文子串**：输出 = header 原文 + 保留行原文的换行连接，从不重新序列化。
 //
-// 闸门（`FOLD_POLICY`，三者的**与**；字节口径一律 UTF-8）：① 文件字节 > `minFileBytes`；
+// 闸门（`FOLD_POLICY`，前三个阈值的**与**；字节口径一律 UTF-8）：① 文件字节 > `minFileBytes`；
 //   ② 可回收字节 ≥ `minReclaimBytes`；③ 可回收比例 ≥ `minReclaimRatio`。夹具按 `minReclaimBytes × 4`
 //   反推回收量，并断言这次折叠真的跨过了闸门 2 的两条下界 —— 夹具缩水时宁可让断言炸掉，
 //   也不能把 skip 伪装成通过。
+// 尺寸守卫（`尺寸守卫` 组的两条用例）：文件超过 5 MiB（`MAX_TOOL_FILE_BYTES`，写侧上限）仍必须
+//   折叠成功 —— 会话读路径无单次大小上限；只有折叠结果仍超写上限才 skip("too-large")。
 //
 // 盘上纪律（`JsonlStorage.open` 重放要求 seq 严格递增）：raw append 的 seq 从「盘上当前最大
 //   seq + 1」起步；raw append 之前先 `session.close()` 再冲一次帧缓冲。
@@ -64,7 +66,7 @@ import {
 import type { FoldOutcome, PiSessionRepo } from "@/services/engine/harness"
 import { PI_LANE } from "@/services/session"
 import { initPaths, runtimePath } from "@/services/paths"
-import { NativeExecutionEnv } from "@/services/tool/pi/native-execution-env"
+import { MAX_TOOL_FILE_BYTES, NativeExecutionEnv } from "@/services/tool/pi/native-execution-env"
 
 const textEncoder = new TextEncoder()
 
@@ -534,6 +536,233 @@ describe("会话日志折叠", () => {
       }
     } finally {
       await disposeFoldFixture(fixture)
+    }
+  })
+})
+
+// ── 尺寸守卫：>5 MiB 的会话仍会折叠；只有「折叠结果」超写上限才不折 ──
+
+/**
+ * 主证据用例的文件目标体积：必须真的越过写侧的 5 MiB（`MAX_TOOL_FILE_BYTES`）。
+ * 旧实现把这个写上限误用作读上限 —— 文件一超 5 MiB 就 skip("too-large")、永远折不动；
+ * 修好后同一条夹具必须折成功（红 → 绿）。
+ */
+const OVER_WRITE_LIMIT_TARGET_BYTES = MAX_TOOL_FILE_BYTES + 512 * 1024
+
+/**
+ * 大体积夹具一帧的填充字符数：约 24 KiB UTF-8 / 行，5 MiB 量级只需数百行 ——
+ * 主夹具的 120 字符/帧是为「字符数相同、字节数分叉」服务的，不适用于这里。
+ */
+const LARGE_FRAME_PAD_CHARS = 8 * 1024
+
+/** 分段 append 的每段上限：低于单次 `file_append` 的 5 MiB 上限，并保证任一行独占一段时不越界。 */
+const APPEND_CHUNK_BYTES = 4 * 1024 * 1024
+
+/**
+ * 解包 folded 结果（夹具解码器，与 `expectOk` 同类，不是第二层断言）：skipped 时先经 expect 记一条
+ * 带 reason 的失败，再中止本用例 —— 没有折叠就没有后面的字节账目可言。
+ */
+function expectFolded(outcome: FoldOutcome, label: string): Extract<FoldOutcome, { kind: "folded" }> {
+  expect(
+    outcome.kind,
+    `${label}: ${outcome.kind === "skipped" ? `skipped(${outcome.reason})` : outcome.kind}`,
+  ).toBe("folded")
+  if (outcome.kind !== "folded") throw new Error(`${label}: 期望 folded`)
+  return outcome
+}
+
+/** 大体积夹具一帧的载荷：形状与 `framePayload` 相同（thinking_delta），只有填充长度可调。 */
+function largeFramePayload(prefix: string, index: number): { type: "thinking_delta"; contentIndex: number; delta: string } {
+  return { type: "thinking_delta", contentIndex: 0, delta: `帧-${prefix}-${index}-${"田".repeat(LARGE_FRAME_PAD_CHARS)}` }
+}
+
+interface SizeGuardFixture {
+  env: NativeExecutionEnv
+  root: string
+  repo: PiSessionRepo
+  metadata: JsonlSessionMetadata
+  path: string
+  /** 折叠前的盘上真实字节（`fileInfo`）。 */
+  bytesOnDisk: number
+  /** 死 key 帧行（折叠的全部回收来源）的行数与总字节（含行尾换行）。 */
+  droppedLineCount: number
+  droppableBytes: number
+  /** 可回收行的首尾样本（折叠后必须零命中）与保留行的样本（必须逐字在）。 */
+  droppedSample: string[]
+  keptSample: string[]
+}
+
+/**
+ * 尺寸守卫夹具：真仓库造条目 + raw append 造「死 key 帧段（+ delete）与活 key 帧段」。
+ *
+ * 与主夹具同一套行构造手法（`rawLine` + 上游构造器 + 盘上高水位 seq），只有两点是「必须超过
+ * 5 MiB」逼出来的：① 夹具根放在 `sessions/` 域内 —— 会话根内的读走宿主 `session_read_text`
+ * （无单次大小上限），与生产一致；放在域外会退回 `file_read`（MAX_TOOL_FILE_BYTES 上限），
+ * 夹具阶段就读不动了；② 整段按 APPEND_CHUNK_BYTES 分段 append（单次 file_append 写不下 5 MiB）。
+ */
+async function buildSizeGuardFixture(options: {
+  id: string
+  droppableTargetBytes: number
+  keptTargetBytes: number
+}): Promise<SizeGuardFixture> {
+  const context = BACKGROUND_CONTEXT
+  const env = new NativeExecutionEnv(await runtimePath("data"))
+  const root = await runtimePath("sessions", `fold-size-${crypto.randomUUID()}`)
+  const repo = await createPiSessionRepo({ sessionsRoot: root })
+  try {
+    const session = await repo.create({ id: options.id }, context)
+    const lane = (await session.branch(PI_LANE, context)) ?? (await session.createBranch(PI_LANE, null, context))
+    await lane.appendCustomEntry("fold-size-guard", { id: options.id }, context)
+    await session.close(context)
+    // 先关句柄、再冲帧缓冲（与主夹具同序）：折叠的前置条件之一是「没有写入者」。
+    await flushSessionFrameWrites(context)
+
+    const path = session.metadata.path
+    let seq = maxSeqOf(expectOk(await env.readTextFile(path, context), "readTextFile(高水位)")) + 1
+    const timestamp = Date.now()
+    const lines: string[] = []
+
+    // ① 死 key：整段帧 append + 一条 list/delete ⇒ 全部帧行「确定可丢」（折叠的主回收来源）。
+    const dead = pendingAssistantFrames("op-fold-size-dead", "resp-fold-size-dead")
+    let droppedLineCount = 0
+    let droppableBytes = 0
+    let deadFirst = ""
+    let deadLast = ""
+    for (let index = 0; droppableBytes < options.droppableTargetBytes; index++) {
+      const line = rawLine([appendList(dead, largeFramePayload("op-fold-size-dead", index))], seq, timestamp)
+      lines.push(line)
+      if (droppedLineCount === 0) deadFirst = line
+      deadLast = line
+      droppedLineCount += 1
+      droppableBytes += byteLength(line) + 1
+      seq += 1
+    }
+    const deleteLine = rawLine([deleteList(dead)], seq, timestamp)
+    lines.push(deleteLine)
+    seq += 1
+
+    // ② 活 key（主证据用例传 0）：从未 delete ⇒ 行行保留，用来把「折叠结果」撑过写上限。
+    const live = pendingAssistantFrames("op-fold-size-live", "resp-fold-size-live")
+    let keptBytes = 0
+    let liveFirst = ""
+    for (let index = 0; keptBytes < options.keptTargetBytes; index++) {
+      const line = rawLine([appendList(live, largeFramePayload("op-fold-size-live", index))], seq, timestamp)
+      lines.push(line)
+      if (liveFirst === "") liveFirst = line
+      keptBytes += byteLength(line) + 1
+      seq += 1
+    }
+
+    // ③ 分段 append：单次 file_append 的上限是 MAX_TOOL_FILE_BYTES（5 MiB），整段一次写不下。
+    let pending: string[] = []
+    let pendingBytes = 0
+    const flushChunk = async (): Promise<void> => {
+      if (pending.length === 0) return
+      expectOk(await env.appendFile(path, `${pending.join("\n")}\n`, context), "appendFile(夹具分段)")
+      pending = []
+      pendingBytes = 0
+    }
+    for (const line of lines) {
+      const lineBytes = byteLength(line) + 1
+      if (pendingBytes + lineBytes > APPEND_CHUNK_BYTES) await flushChunk()
+      pending.push(line)
+      pendingBytes += lineBytes
+    }
+    await flushChunk()
+
+    const bytesOnDisk = expectOk(await env.fileInfo(path, context), "fileInfo(before)").size
+    return {
+      env,
+      root,
+      repo,
+      metadata: session.metadata,
+      path,
+      bytesOnDisk,
+      droppedLineCount,
+      droppableBytes,
+      droppedSample: [deadFirst, deadLast],
+      keptSample: [deleteLine, ...(liveFirst === "" ? [] : [liveFirst])],
+    }
+  } catch (error) {
+    // 建夹失败也要把临时根收掉：根因是这里抛出的那个，收尾失败不再叠加一层。
+    await repo.close(context).catch(() => undefined)
+    await env.remove(root, { recursive: true, force: true }, context).catch(() => undefined)
+    throw error
+  }
+}
+
+async function disposeSizeGuardFixture(fixture: SizeGuardFixture): Promise<void> {
+  const context = BACKGROUND_CONTEXT
+  // 收尾失败不掩盖调用方的失败：这里只是把临时根删掉，根因留痕在用例失败报告。
+  await fixture.repo.close(context).catch(() => undefined)
+  await fixture.env.remove(fixture.root, { recursive: true, force: true }, context).catch(() => undefined)
+}
+
+describe("会话日志折叠 · 尺寸守卫", () => {
+  it("会话文件超过 5 MiB 写上限仍会折叠：读路径无单次大小上限，折叠结果落在写上限内即落盘 [harness-session-fold-read-guard]", async () => {
+    const context = BACKGROUND_CONTEXT
+    const fixture = await buildSizeGuardFixture({
+      id: "fold-size-over",
+      droppableTargetBytes: OVER_WRITE_LIMIT_TARGET_BYTES,
+      keptTargetBytes: 0,
+    })
+    try {
+      // 主证据：文件真的超过 5 MiB。旧守卫（写上限误用于读侧）在这一步就 skip("too-large")，
+      // 下面的 folded 断言会红；修好后同一条夹具必须折成功。
+      expect(
+        fixture.bytesOnDisk,
+        `夹具未超过 MAX_TOOL_FILE_BYTES（${MAX_TOOL_FILE_BYTES} B，实际 ${fixture.bytesOnDisk} B）：本用例失去区分力`,
+      ).toBeGreaterThan(MAX_TOOL_FILE_BYTES)
+
+      const outcome = expectFolded(await fixture.repo.foldSession(fixture.metadata, context), ">5 MiB 的会话文件折叠")
+
+      expect(outcome.bytesBefore, "折叠前字节与盘上文件不符").toBe(fixture.bytesOnDisk)
+      expect(outcome.droppedLines, "删掉的整行数 ≠ 夹具的死 key 帧行数").toBe(fixture.droppedLineCount)
+      expect(outcome.bytesAfter, "折叠结果必须落在写上限内").toBeLessThanOrEqual(MAX_TOOL_FILE_BYTES)
+
+      const sizeAfter = expectOk(await fixture.env.fileInfo(fixture.path, context), "fileInfo(after)").size
+      expect(sizeAfter, "落盘字节 ≠ 折叠结果字节").toBe(outcome.bytesAfter)
+
+      // 内容对照（折叠后已低于 5 MiB，可直接读回）：可回收行零命中、delete 行逐字保留。
+      const after = expectOk(await fixture.env.readTextFile(fixture.path, context), "readTextFile(after)")
+      for (const line of fixture.droppedSample) {
+        expect(after.includes(line), `可回收的帧行仍在折叠结果里：${line.slice(0, 120)}…`).toBe(false)
+      }
+      for (const line of fixture.keptSample) {
+        expect(after.includes(`${line}\n`), `应逐字保留的行不在折叠结果里：${line.slice(0, 120)}…`).toBe(true)
+      }
+    } finally {
+      await disposeSizeGuardFixture(fixture)
+    }
+  })
+
+  it("折叠结果仍超过 5 MiB 写上限时保持不折：skipped(too-large)，磁盘逐字未动 [harness-session-fold-result-guard]", async () => {
+    const context = BACKGROUND_CONTEXT
+    // 死 key 1.5 MiB（过闸门 2 的两条下界）+ 活 key 超过 5 MiB（折叠结果仍超写上限）。
+    const fixture = await buildSizeGuardFixture({
+      id: "fold-size-still-over",
+      droppableTargetBytes: FOLD_POLICY.minReclaimBytes * 12,
+      keptTargetBytes: OVER_WRITE_LIMIT_TARGET_BYTES,
+    })
+    try {
+      expect(fixture.bytesOnDisk, `夹具未超过写上限：${fixture.bytesOnDisk} B`).toBeGreaterThan(MAX_TOOL_FILE_BYTES)
+      expect(
+        fixture.bytesOnDisk,
+        `夹具必须低于 FOLD_POLICY.maxFileBytes（${FOLD_POLICY.maxFileBytes} B），否则跳过的是读取守卫而不是结果守卫`,
+      ).toBeLessThan(FOLD_POLICY.maxFileBytes)
+      // 回收量确实过闸门 2 —— 否则 skip 的原因会是 nothing-to-reclaim，这条用例就证不到结果守卫。
+      expect(fixture.droppableBytes, "夹具可回收量未过闸门 2（绝对值）").toBeGreaterThanOrEqual(FOLD_POLICY.minReclaimBytes)
+      expect(fixture.droppableBytes, "夹具可回收量未过闸门 2b（比例）").toBeGreaterThanOrEqual(
+        fixture.bytesOnDisk * FOLD_POLICY.minReclaimRatio,
+      )
+
+      const outcome = await fixture.repo.foldSession(fixture.metadata, context)
+      expect(outcome, "折叠结果超过写上限时不得落盘（结果守卫必须保留）").toEqual({ kind: "skipped", reason: "too-large" })
+
+      const sizeAfter = expectOk(await fixture.env.fileInfo(fixture.path, context), "fileInfo(after)").size
+      expect(sizeAfter, "被跳过时磁盘不应被改动").toBe(fixture.bytesOnDisk)
+    } finally {
+      await disposeSizeGuardFixture(fixture)
     }
   })
 })

@@ -90,7 +90,7 @@ import { formatError } from "@/services/error"
 import { createLogger } from "@/services/logger"
 
 /**
- * 折叠策略（O-6 的裁定口径；本模块是这三个阈值的**唯一**定义点，不建大一统 constants 文件）。
+ * 折叠策略（O-6 的裁定口径；本模块是这四个阈值的**唯一**定义点，不建大一统 constants 文件）。
  * 纯函数只负责算「可回收多少」，闸门由 T5.02 的 foldSessionFile 按文件大小与回收量施加。
  */
 export const FOLD_POLICY = {
@@ -100,6 +100,12 @@ export const FOLD_POLICY = {
   minReclaimBytes: 128 * 1024,
   /** 闸门 2b：可回收比例低于此值不重写。 */
   minReclaimRatio: 0.15,
+  /**
+   * 读取守卫：文件字节 > 此值不读不折。它是**折叠自愿设的上界**（读全文 + 两次重放 + 两次摘要
+   * 都在 Node 里按体积放大），不是读路径的限制 —— 会话读路径没有单次大小上限，依据见
+   * foldSessionFile 步骤 1 的注释。真正的物理约束在写侧：结果超过 MAX_TOOL_FILE_BYTES 就写不出去。
+   */
+  maxFileBytes: 64 * 1024 * 1024,
 } as const
 
 /**
@@ -122,7 +128,7 @@ export type FoldSkipReason =
   | "unknown-format"
   /** 整个文件一行都不可丢；或可回收字节未过闸门 2/2b（阈值判定在 T5.02 的驱动里）。 */
   | "nothing-to-reclaim"
-  /** 原文或折叠结果超过 MAX_TOOL_FILE_BYTES（由 T5.02 的驱动按文件上限产生，纯函数不看文件大小）。 */
+  /** 原文超过 FOLD_POLICY.maxFileBytes、或折叠结果超过 MAX_TOOL_FILE_BYTES（由 T5.02 的驱动按各自上限产生，纯函数不看文件大小）。 */
   | "too-large"
   /** 折叠前后重放出的状态摘要不一致（S-1）：由 T5.02 的驱动产生，**此时不写任何文件**、原文件保持原样。 */
   | "hash-mismatch"
@@ -560,11 +566,12 @@ export async function logStateDigest(log: FoldLog): Promise<string> {
 const log = createLogger("SessionFold")
 
 /**
- * 单次 `file_read` / `file_write` 的字节上限，用于两个「动手前就判死」的守卫：
- *   ① 文件本身就超过它 ⇒ 连读都读不回来，折叠无从谈起（先别做无用功）；
- *   ② 折叠结果超过它 ⇒ 单次 `file_write` 必然失败，守卫写全，不靠「折叠只会变小」的推理。
+ * 单次 `file_write` 的字节上限（`native-execution-env.ts`，5 MiB）：折叠结果超过它 ⇒ 折叠结果的
+ * 落地写（`file_write`）必然失败，所以只用于「折叠结果仍超它 ⇒ skip("too-large")」这一个守卫。
+ * 它**只约束写** —— 会话读路径（会话根内经宿主 `session_read_text`）没有单次大小上限；读侧的
+ * 折叠守卫由 `FOLD_POLICY.maxFileBytes` 独立设定（依据见 foldSessionFile 步骤 1 的注释）。
  *
- * 常量本身定义在 `native-execution-env.ts`（它是这条上限的物理来源），这里只 import ——
+ * 常量本身定义在 `native-execution-env.ts`（它是这条写上限的物理来源），这里只 import ——
  * 不给它第二个定义点。`engine/harness/session-repo.ts` 也是从同一模块取 `NativeExecutionEnv`。
  */
 
@@ -687,9 +694,9 @@ function reportUnknownFormat(path: string, headerLine: string): void {
  * （W5 接口约定第 2 条）。`context` 只向 FileSystem 转发，本函数不读它的任何字段。
  * **失败一律不抛**：返回 `skipped` 并留痕，调用方照常继续。
  *
- * 顺序即契约（执行方案 T5.02 步骤 2）：闸门 1（一次 stat）→ 尺寸守卫 → 读全文 → 白名单判定
- * → 闸门 2（可回收量）→ 尺寸守卫 → 摘要校验 → **此处之前磁盘上什么都没发生** → 写临时文件
- * → rename 覆盖。
+ * 顺序即契约（执行方案 T5.02 步骤 2）：闸门 1（一次 stat）→ 读取守卫（maxFileBytes，折叠自愿的
+ * 上界）→ 读全文 → 白名单判定 → 闸门 2（可回收量）→ 结果守卫（MAX_TOOL_FILE_BYTES，写侧真实
+ * 上限）→ 摘要校验 → **此处之前磁盘上什么都没发生** → 写临时文件 → rename 覆盖。
  */
 export async function foldSessionFile(fileSystem: FileSystem, path: string, context: Context): Promise<FoldOutcome> {
   // 1. 闸门 1：一次 stat 就能判死小文件，不读正文（Read 一次全文比 stat 贵得多）
@@ -702,8 +709,17 @@ export async function foldSessionFile(fileSystem: FileSystem, path: string, cont
     log.debug("折叠跳过：文件未过闸门 1（体积 ≤ minFileBytes）:", path, probe.value.size)
     return { kind: "skipped", reason: "probe-too-small" }
   }
-  if (probe.value.size > MAX_TOOL_FILE_BYTES) {
-    log.warn("折叠跳过：文件超过单次读写上限，读都读不回来:", path, probe.value.size, MAX_TOOL_FILE_BYTES)
+  // 会话读路径没有单次大小上限：会话根内的读取经 `session-file-system.ts:33-35` 转到宿主
+  // `session_read_text`（`crates/native-host/src/commands/session_fs.rs:10-38`；Rust 单测
+  // `reads_large_sessions_and_only_requested_header` 证明 >5 MiB 可整读、按行读不解码尾部）。
+  // MAX_TOOL_FILE_BYTES（5 MiB）只约束写（`native-execution-env.ts:44,178` 的 file_write）——
+  // 旧守卫把写上限误用到读侧，文件一过 5 MiB 就永远折不动。这里改用 FOLD_POLICY.maxFileBytes：
+  // 它只是折叠自愿设的读上界（见 FOLD_POLICY 的注释），不是任何读路径的物理限制。
+  // 注入自定义非会话 FileSystem 的测试/场景里读仍可能受 5 MiB 限制（那些路径走 `file_read` 的
+  // MAX_TOOL_FILE_BYTES）—— 那时 readTextFile 失败，下面的 read-failed 分支如实跳过（不是崩溃、
+  // 不影响会话功能）。
+  if (probe.value.size > FOLD_POLICY.maxFileBytes) {
+    log.warn("折叠跳过：文件超过折叠读取守卫 FOLD_POLICY.maxFileBytes，不读不折:", path, probe.value.size, FOLD_POLICY.maxFileBytes)
     return { kind: "skipped", reason: "too-large" }
   }
 
@@ -738,7 +754,8 @@ export async function foldSessionFile(fileSystem: FileSystem, path: string, cont
     return { kind: "skipped", reason: "nothing-to-reclaim" }
   }
 
-  // 5. 兜底：绝不折叠出一个超过单次写上限的文件（折叠只会变小，但守卫写全、不靠推理）
+  // 5. 兜底：绝不折叠出一个超过单次写上限的文件 —— 折叠结果经 `file_write` 落地，
+  //    MAX_TOOL_FILE_BYTES 是写侧的真实约束（折叠只会变小，但守卫写全、不靠推理）。
   if (plan.bytesAfter > MAX_TOOL_FILE_BYTES) {
     log.warn("折叠跳过：折叠结果仍超过单次写上限:", path, plan.bytesAfter, MAX_TOOL_FILE_BYTES)
     return { kind: "skipped", reason: "too-large" }
