@@ -11,9 +11,8 @@ import { deleteAllPiSessionsForTest } from "@/services/session/repo"
 import { getActiveCard, initRegistry } from "@/services/personality/registry"
 import { initCards } from "@/services/personality/loader"
 import { registerDefaultTools } from "@/services/tool/registry"
-import { resetCooldown, setAIGenerating } from "@/services/cooldown"
 import { resetSessionSafetyMode } from "@/services/debug"
-import { resetPiRuntimeProviderForTest } from "@/services/engine/harness"
+import { harnessSlots, resetPiRuntimeProviderForTest } from "@/services/engine/harness"
 import { initSlashCommands } from "@/services/engine"
 import { resetAgentRuntimeForTest } from "@/services/agent/runner"
 import { flushConfig, getAllOverrides, setOverrides } from "@/services/config"
@@ -205,8 +204,8 @@ export async function standardSetup(
   sessions.splice(0, sessions.length)
   activeSessionId.value = ""
   unansweredCount.value = 0
-  resetCooldown()
-  setAIGenerating(false)
+  // AI 生成锁由回合状态推导：场景之间把受理计数清空（槽状态随上面的运行槽重置收敛）。
+  harnessSlots.resetTurnAdmissionsForTest()
   resetPiRuntimeProviderForTest()
   resetMemoryProvider()
   await resetAgentRuntimeForTest()

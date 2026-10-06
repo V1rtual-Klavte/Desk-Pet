@@ -42,6 +42,8 @@ vi.mock("@/services/agent/memory/sources", () => sources)
 vi.mock("@/services/engine/harness", () => ({
   completePiText: vi.fn(async () => { throw new Error("前置查询用例不应触达模型调用") }),
   resolvePiAuxModel: vi.fn(() => ({ id: "aux-test", contextWindow: 128_000, maxTokens: 4_096 })),
+  // AI 生成锁的真相源已从 `@/services/cooldown` 移居 harness；桩跟着模块边界走。
+  isAIGenerating: vi.fn(() => false),
 }))
 
 let root = ""

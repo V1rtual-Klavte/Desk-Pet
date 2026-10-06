@@ -64,7 +64,8 @@ ai:
 
   loop:
     maxRetry: 3
-    maxToolCallsPerTurn: 5
+    # agent 子代理工具轮上限（无人值守子运行）；主聊天回合已无计数上限，走循环病理检测
+    subAgentRounds: 5
     toolTimeoutMs: 30000
     turnTimeoutMs: 120000
     dedupWindowMs: 30000
@@ -111,9 +112,6 @@ ai:
       - 总结
       - 生成
       - 创建项目
-
-  lock:
-    safetyTimeoutMs: 30000
 
   humanizer:
     enabled: true

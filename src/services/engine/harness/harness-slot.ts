@@ -65,7 +65,12 @@ export const COMPACTION_CONTINUATION_ENTRY = "deskpet.compaction_continuation"
 
 /** 回合内共享的聚合状态：由宿主创建，槽在事件处理中填充。 */
 export interface HarnessRunState {
-  stoppedAtToolLimit: boolean
+  /**
+   * 本回合是否被工具循环治理终止（三种出口共用此一枚标志，结算据此走 `toolLoopMaxRounds`
+   * 兜底而不是当成模型未产出正文）：① 子运行计数封顶（`maxToolCalls`）；② 同参连击硬阈值
+   * （调用门 `block + terminate`）；③ 失败连击硬阈值（结果侧 `after_tool` 的 `terminate`）。
+   */
+  stoppedByToolGovernance: boolean
   toolCallsMade: number
   retriesUsed: number
   /** transform_context 记录的当次请求判定；由网关在下一次请求取走（取走即清空）。 */
@@ -98,7 +103,7 @@ export interface HarnessRunState {
 }
 
 export function createHarnessRunState(): HarnessRunState {
-  return { stoppedAtToolLimit: false, toolCallsMade: 0, retriesUsed: 0, undelivered: [] }
+  return { stoppedByToolGovernance: false, toolCallsMade: 0, retriesUsed: 0, undelivered: [] }
 }
 
 /** 宿主注入的行为：权限、结果元数据、投影与观测。 */
@@ -109,6 +114,11 @@ export interface HarnessRunHooks {
     args: Record<string, JsonValue>
     signal?: AbortSignal
   }) => Promise<{ block: { reason: string; terminate?: boolean } } | undefined> | { block: { reason: string; terminate?: boolean } } | undefined
+  /**
+   * `terminate: true` 经上游 `after_tool` 的结果合流进工具结果：本批工具全部带该标记时，
+   * Harness 在当前批次后结束运行、不再发起下一次请求（`includeFinalAssistant: false`，
+   * 运行以 completed 收口，由结算的治理兜底文案收尾）。单个批次里有未终止的调用时不生效。
+   */
   afterTool?: (input: {
     toolCallId: string
     toolName: string
@@ -116,7 +126,7 @@ export interface HarnessRunHooks {
     content: AgentToolResult<unknown>["content"]
     details?: JsonValue
     isError: boolean
-  }) => { details?: JsonValue; isError?: boolean } | undefined
+  }) => { details?: JsonValue; isError?: boolean; terminate?: boolean } | undefined
   transformContext?: (input: {
     messages: AgentMessage[]
     systemPrompt: string
@@ -1940,12 +1950,29 @@ const EMPTY_SLOT_USAGE: Usage = {
 // ── 槽注册表 ──
 
 /**
+ * 回合受理凭据：`admit()` 的唯一产物、`endAdmission()` 的唯一入参。
+ * 不透明句柄（调用方不解释字段），配对由类型与 Set 语义共同承载。
+ */
+export interface HarnessTurnAdmission {
+  readonly admissionId: number
+}
+
+/**
  * 每会话一个槽：运行所有权、投递与 drain 代际的唯一宿主定义点（H-4 起 RuntimeQueue/AgentSlot 已删除）。
  */
 export class HarnessSlots {
   private readonly slots = new Map<string, HarnessSlot>()
   /** 已分配过的最大代际：新槽（含释放重建）从这里继续，保证单调不回退。 */
   private generationSeed = 0
+  /**
+   * 已受理、尚未交回的回合凭据：AI 生成锁的另一半真相源。
+   *
+   * 覆盖「槽判空闲但回合仍在途」的窗口 —— 槽在回合收尾前被释放/重建（dispose、空闲回收、
+   * 测试重置）或已不在运行态时 `isAnyRunning()` 为 false，光看槽状态会让在途回合被当成
+   * 空闲放行主动扫描。释放与回合的 finally 同流（`endAdmission`），没有定时器，结构上不会卡死。
+   */
+  private readonly turnAdmissions = new Set<HarnessTurnAdmission>()
+  private admissionSeq = 0
   /** 无槽期间排队的审计条目（按 sessionId）：下次 ensure() 转交给新槽，不丢证据。 */
   private readonly orphanAudits = new Map<string, Array<{ customType: string; data: JsonValue }>>()
 
@@ -2057,6 +2084,39 @@ export class HarnessSlots {
     return [...this.slots.values()].some(slot => slot.isRunning())
   }
 
+  /**
+   * 受理一个回合：返回的凭据必须在同一回路的 finally 里交回 `endAdmission`。
+   *
+   * 调用点是三个 runner 入口（`sendMessage` / `resumePausedInputs` / `sendActiveMessage`）
+   * 在 `begin()` 成功之后、该回路的首个 `await` 之前 —— 提前 return 的分支都发生在受理之前，
+   * 因此不存在「受理了却没人交回」的路径。
+   */
+  admit(): HarnessTurnAdmission {
+    const token: HarnessTurnAdmission = { admissionId: ++this.admissionSeq }
+    this.turnAdmissions.add(token)
+    return token
+  }
+
+  /** 交回受理凭据；重复或未知凭据是无操作（Set 语义），不会误伤别的回合的锁。 */
+  endAdmission(token: HarnessTurnAdmission): void {
+    this.turnAdmissions.delete(token)
+  }
+
+  /**
+   * 是否有回合在途（AI 生成锁的唯一判据，`isAIGenerating()` 据此计算）：
+   * 有已受理未交回的回合，或任一槽在运行。
+   *
+   * 长回合期间恒为 true —— 不清锁靠定时器，而靠回合自己的 finally（不再有安全超时强解）。
+   */
+  isTurnActive(): boolean {
+    return this.turnAdmissions.size > 0 || this.isAnyRunning()
+  }
+
+  /** Test isolation hook：清空受理计数（场景之间不留上一个回合的锁）。 */
+  resetTurnAdmissionsForTest(): void {
+    this.turnAdmissions.clear()
+  }
+
   snapshot(sessionId: string): HarnessSlotSnapshot | undefined {
     return this.peek(sessionId)?.snapshot()
   }
@@ -2150,3 +2210,13 @@ export class HarnessSlots {
 }
 
 export const harnessSlots = new HarnessSlots()
+
+/**
+ * AI 生成锁：是否正在生成（主动扫描 / 观察 / 记忆整理据此不打搅）。
+ *
+ * 真相源是回合状态本身（受理计数 + 槽运行状态），不是另一个可被写坏的布尔：
+ * 谁受理谁在 finally 交回，没有定时器、没有强制解锁，锁的寿命与回合严格同流。
+ */
+export function isAIGenerating(): boolean {
+  return harnessSlots.isTurnActive()
+}

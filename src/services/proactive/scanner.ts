@@ -4,8 +4,7 @@ import { getActiveCard, getActivePersonalityId, subscribeVariableCommits, getPoo
 import { getBehaviorSnapshot, IDLE_ACTIVE_LIMIT_MS } from "@/services/behavior"
 import { subscribeWindowObservations, getRuntimeActivity, getLatestWindowObservation } from "@/services/window"
 import { memoryConfig } from "@/services/config"
-import { isAIGenerating, isCoolingDown, triggerCooldown, setCooldown } from "@/services/cooldown"
-import { harnessSlots } from "@/services/engine/harness"
+import { harnessSlots, isAIGenerating } from "@/services/engine/harness"
 import { sha256Text } from "@/services/engine/runtime"
 import { createLogger } from "@/services/logger"
 import { formatError, errorCode } from "@/services/error"
@@ -92,8 +91,6 @@ export function start():void {
   if(started)return
   if(!adapters)throw new Error("proactive adapters not configured")
   started=true;seedVariables()
-  const tier=proactiveFrequency()
-  if(tier!=="off")setCooldown(proactiveTierLimits(tier).cooldownMs)
   cleanups.push(watch(activeSessionId,()=>{cancelCurrent("session_changed");offered.clear();enqueueTick()}))
   cleanups.push(watch(()=>getActivePersonalityId(),(value,previous)=>{cancelCurrent("card_changed");if(previous)stopPresence(`planner:${previous}`);offered.clear();discardDerivedSources();wasWorking=false;lastReliableActive=0;lastWindowState=null;wasSystemIdle=false;seedVariables();enqueueTick()}))
   cleanups.push(subscribeWindowObservations(observation=>{
@@ -177,8 +174,9 @@ export async function stop():Promise<void> {
 }
 export function discardDerivedSources():void {for(const [key,value] of offered)if(value.sourceRefs.some(ref=>ref.kind==="behavior"||ref.kind==="variable"))offered.delete(key);windowIdentity="";windowSince=0;lastWindowOfferAt=0;workEndedAt=0;restingSince=0;lastRestObservationAt=0;reunionAt=0;hadObservationGap=true;stopPresence("window-observation")}
 /**
- * 配置（档位 / 静默时段）变更后的统一收口：取消在飞运行 → 重算冷却与随机唤醒 →
- * 下发档位投影 → 立即扫描。关档位时清机会并停 presence，不再调度、不再推送。
+ * 配置（档位 / 静默时段）变更后的统一收口：取消在飞运行 → 下发档位投影（含冷却时长）→
+ * 立即扫描。关档位时清机会并停 presence，不再调度、不再推送。
+ * 冷却本身不在这里重算：起点与截止时间都由 Rust 账本记账，Node 只读 scan 快照。
  */
 export function refreshProactive():void {
   cancelCurrent("configuration_changed")
@@ -190,7 +188,6 @@ export function refreshProactive():void {
     clearWakeTimer()
     return
   }
-  setCooldown(proactiveTierLimits(tier).cooldownMs)
   void pushProactiveLimits()
   enqueueTick()
 }
@@ -251,7 +248,7 @@ export async function tick(now=Date.now()):Promise<void> {
     const screenUsable=activity.screenState==="observed"||activity.screenState==="locked"
     const guardReason=muted?"muted":isQuietTime(now,timezone)?"quiet_time":!activity.isPetVisible?"pet_hidden"
       :!screenUsable?"observation_unavailable":now-activity.observedAt>OBSERVATION_MAX_AGE_MS?"stale_observation"
-      :isCoolingDown()?"cooldown":isAIGenerating()?"ai_generating":laneBusy?"lane_busy"
+      :typeof scan.budget.cooldownUntil==="number"&&scan.budget.cooldownUntil>now?"cooldown":isAIGenerating()?"ai_generating":laneBusy?"lane_busy"
       :scan.budget.successfulMessages>=successLimit?"daily_quota"
       :respectRandomInterval&&typeof scan.budget.nextSuccessAfter==="number"&&scan.budget.nextSuccessAfter>now?"success_interval":null
     if(guardReason){trace(context,"proactive_skipped",()=>({reason:guardReason,ruleId:eligible[0]?.ruleId,opportunityIds:eligible.map(item=>item.id)}));return}
@@ -363,7 +360,8 @@ export async function tick(now=Date.now()):Promise<void> {
         catch(error){log.warn("主动送达回执待对账:",formatError(error));return "unresolved"}
       }})
     if(result.status==="committed") {
-      triggerCooldown();for(const item of eligible)offered.delete(item.fingerprint)
+      // 冷却起点不在这里：Rust 账本按最近一条 committed 表达 occurrence 的 updated_at（正常路径即 settle 时刻）+ 档位 cooldownMs 推导进 scan.budget。
+      for(const item of eligible)offered.delete(item.fingerprint)
       trace(context,"proactive_settled",()=>({attemptId:expressionAttempt,status:"committed",assistantEntryId:result.assistantEntryId}),{requestId})
     } else if(claimed) {
       const silentSkip=result.status==="skipped"&&result.reason==="silent"

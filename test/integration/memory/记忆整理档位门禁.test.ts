@@ -39,6 +39,10 @@ vi.mock("@/services/agent/memory/sources", () => sources)
 vi.mock("@/services/engine/harness", () => ({
   completePiText: vi.fn(async () => { throw new Error("本期门禁用例不应触达模型调用") }),
   resolvePiAuxModel: vi.fn(() => { throw new Error("本期门禁用例不应解析模型") }),
+  // AI 生成锁的真相源已从 `@/services/cooldown` 移居 harness（回合状态推导）；
+  // 桩必须跟着模块边界走，否则 dreaming 的 tick 会在 mock 上取不到导出而整体失败。
+  // false = 没有在飞的回合，正是本文件「空闲可跑」用例的前提。
+  isAIGenerating: vi.fn(() => false),
 }))
 
 let root = ""

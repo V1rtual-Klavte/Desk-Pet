@@ -23,7 +23,6 @@ import {
   pushCommittedProactiveMessage,
   readPiSessionEntriesOnce,
 } from "@/services/session"
-import { setAIGenerating } from "@/services/cooldown"
 import { createLogger } from "@/services/logger"
 import { formatError, summarizeError } from "@/services/error"
 import { reportError } from "@/services/error"
@@ -393,7 +392,7 @@ export async function resumePausedInputs(sessionId: string = getActiveSessionId(
     await returnPausedInputs(sessionId, pausedMessages)
     return { reply: "", toolCallsMade: 0, retriesUsed: 0, outcome: "failed", toolCalls: [], failure: { kind: "admission", message: "会话已有运行中的运行槽" } }
   }
-  setAIGenerating(true)
+  const admission = harnessSlots.admit()
 
   try {
     const result = await performTurn({
@@ -435,7 +434,7 @@ export async function resumePausedInputs(sessionId: string = getActiveSessionId(
     return { reply: fallback, toolCallsMade: 0, retriesUsed: 0, outcome: "failed", toolCalls: [], failure: { kind: "unknown", message: summarizeError(e) } }
   } finally {
     harnessSlots.end(sessionId, runGeneration)
-    setAIGenerating(harnessSlots.isAnyRunning())
+    harnessSlots.endAdmission(admission)
   }
 }
 
@@ -596,7 +595,7 @@ async function dispatchMessage(text: string, options: SendMessageOptions = {}): 
       failure: { kind: "admission", message: "会话已有运行中的运行槽" },
     }
   }
-  setAIGenerating(true)
+  const admission = harnessSlots.admit()
   let turnContext: ProactiveTurnContext | undefined
   const turnCard = getActiveCard()
   if (!preResult.skillAdmission && turnCard && proactiveTurnContextReader) {
@@ -704,7 +703,7 @@ async function dispatchMessage(text: string, options: SendMessageOptions = {}): 
     }
   } finally {
     harnessSlots.end(originSessionId, runGeneration)
-    setAIGenerating(harnessSlots.isAnyRunning())
+    harnessSlots.endAdmission(admission)
   }
 }
 
@@ -735,7 +734,7 @@ export async function sendActiveMessage(request: ActiveMessageRequest): Promise<
   const actualOwner: ProactiveOwner = { sessionId, cardId: owner.cardId, cardHash: owner.cardHash, runGeneration }
   activeRunOwners.set(sessionId, actualOwner)
   const activeRequest: ActiveMessageRequest = { ...request, owner: actualOwner }
-  setAIGenerating(true)
+  const admission = harnessSlots.admit()
   harnessSlots.bindRun(sessionId, runGeneration, { requestId: request.requestId })
   try {
     if (!await activeRequest.isCurrent(actualOwner)) return { status: "skipped", reason: "stale" }
@@ -839,7 +838,7 @@ export async function sendActiveMessage(request: ActiveMessageRequest): Promise<
   } finally {
     if (activeRunOwners.get(sessionId)?.runGeneration === runGeneration) activeRunOwners.delete(sessionId)
     harnessSlots.end(sessionId, runGeneration)
-    setAIGenerating(harnessSlots.isAnyRunning())
+    harnessSlots.endAdmission(admission)
   }
 }
 

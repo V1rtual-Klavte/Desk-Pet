@@ -59,7 +59,7 @@ Node 的端点与一次性握手值只经环境变量 `DESKPET_HOST_LAUNCH` 传�
 | tool / safety | 工具注册和路由、Pi 文件工具、MCP；权限与确认 | [tool/](../../src/services/tool/)、[safety/](../../src/services/safety/) |
 | skill | Pi 原生 Skill 清单（目录指纹驱动刷新）与披露块 | [skill/](../../src/services/skill/) |
 | profile / audio | 外观资源与导入导出；音效事件/预设与设置分配，Node 将音效图编译为 WAV，通过 HostBridge 交给原生宿主播放 | [profile/](../../src/services/profile/)、[audio/](../../src/services/audio/) |
-| window / cooldown | 窗口观察的 Node 侧订阅与观察总闸、共享冷却（发话由 proactive 持有） | [window/](../../src/services/window/)、[cooldown.ts](../../src/services/cooldown.ts) |
+| window | 窗口观察的 Node 侧订阅与观察总闸（AI 生成锁与主动冷却已不在此域：锁由 engine/harness 的回合状态推导，主动冷却的真相源在 Rust 账本） | [window/](../../src/services/window/) |
 | config / paths | 类型化配置（唯一 getter 面）；路径初始化与 `runtimePath` | [config.ts](../../src/services/config.ts)、[paths.ts](../../src/services/paths.ts) |
 | logger / error | 统一日志（经桥批量落盘）与异常单一出口；原生交互提示由宿主 UI 承接 | [logger/](../../src/services/logger/)、[error/](../../src/services/error/) |
 

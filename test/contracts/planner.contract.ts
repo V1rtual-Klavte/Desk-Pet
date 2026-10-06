@@ -22,6 +22,15 @@
 // src/services/engine/harness/runtime.ts（估算偏差对账口径；计划生成/执行口径未动）。
 // pl-01..pl-12 逐点核对实现点仍在、覆盖描述与当前实现一致，未修订覆盖点，仅按当前源码
 // 刷新 sourceHash。
+// 2026-10-06 工具循环治理批次（本批刷新）：sourceFiles 变化 ——
+// src/services/engine/harness/runtime.ts（createTurnSpec 的 maxToolCalls 可选化只影响主回合：
+// runPiAgentTurn / 续跑不再传计数上限，runPiSubAgent 仍按 `input.maxRounds ?? 3` 封顶；
+// 计划步骤经 planner.ts:461 传 `maxRounds: config.stepMaxRounds`，封顶数值未动；
+// 病理检测主回合与子运行同吃（子运行比计数封顶更早收口属收紧），计划的相位、确认、进度与
+// 逐步门通道未动）。pl-01..pl-12 逐点核对实现点仍在（evaluateComplexity / generatePlan /
+// executePlan / formatStepResults / plan-confirmation 与 stepMaxRounds 消费点均在）、
+// 覆盖描述与当前实现一致，未修订覆盖点；本轮为描述与来源核对（非逐行行为审计），
+// sourceHash 按当前源码复算。
 import type { ModuleContract } from "../host/types"
 
 export const plannerContract: ModuleContract = {
@@ -33,7 +42,7 @@ export const plannerContract: ModuleContract = {
   // 计划条目本身的写入机制归 agent-runtime 契约（engine/plan/checkpoint-store.ts 在它的 sourceFiles 里），
   // 这里只从计划域的相位与通道出发断言它们落成的结果。
   sourceFiles: ["src/services/engine/harness/runtime.ts", "src/services/engine/planner.ts", "src/services/engine/plan-confirmation.ts"],
-  sourceHash: "6feea8aafd617e2d8ad0bfd1ca866709088f8910dcf848f0285dbc432d80f752",
+  sourceHash: "c64574555a457ceda6e2df28e8d383f5255ec9f5925967aac4b22ed0c1e58ef2",
   coverage: [
     { id: "pl-01", feature: "evaluateComplexity force触发", description: "--plan 前缀强制触发评分=5；判定是 startsWith，行首之外的 --plan 不命中 force 分支", why: "用户手动触发 Plan", layer: "integration", depth: "shallow", scenarios: ["plan-force-trigger"] },
     { id: "pl-02", feature: "evaluateComplexity 关键词匹配", description: "关键词列表匹配 → 评分 3、原因里带回命中的词；默认 complexityEval=keyword 时未命中关键词直接给低分，不为它单独发一次模型请求（判据用没有任何响应的 Provider：真发了请求就只能是 llm 分支或超时）", why: "自动检测复杂任务，同时不让每条助手消息都付一次判定请求的成本", layer: "integration", depth: "shallow", scenarios: ["plan-keyword-trigger"] },

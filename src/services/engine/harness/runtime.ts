@@ -51,6 +51,7 @@ import { resolvePiAuxModel, resolvePiTurnModel } from "./model-gateway"
 import type { PiModel } from "./model-gateway"
 import { PROVIDER_TIMEOUT_MS } from "./net-guard"
 import { RuntimeDataStreamFilter } from "./stream-text"
+import { ToolLoopGuard, toolLoopBlockReason, toolLoopNotice } from "./tool-loop-guard"
 import { hydrateImageMessages } from "@/services/images"
 import { humanizerSilenceGuard, setFirstRevealHandler, transformHumanizerText } from "@/services/humanizer"
 import type { HumanizerFlow, HumanizedText } from "@/services/humanizer"
@@ -661,10 +662,12 @@ function createLadderMeasure(args: {
   preserveToolNames: ReadonlySet<string>
   tools: readonly ToolDef[]
   addressRefs?: ReadonlyMap<string, string>
+  /** 与投影同一份循环软提示：读数才有权声称「恒等于最终请求视图」。 */
+  toolLoopNotices?: ReadonlyMap<string, string>
 }): ToolResultLevelMeasure {
   return levels => estimateRequestTokens(
     args.systemPrompt,
-    applyLevels(args.view, levels, args.model.contextWindow, args.preserveToolNames, args.addressRefs),
+    applyLevels(args.view, levels, args.model.contextWindow, args.preserveToolNames, args.addressRefs, args.toolLoopNotices),
     args.tools,
   )
 }
@@ -680,12 +683,14 @@ function createLadderGateBuilder(args: {
   model: PiModel
   tools: readonly ToolDef[]
   preserveToolNames: ReadonlySet<string>
+  toolLoopNotices?: ReadonlyMap<string, string>
 }): (view: PiView, addressRefs?: ReadonlyMap<string, string>) => LadderGateInput {
   return (view, addressRefs) => ({
     entries: toolResultLadderEntries(view, addressRefs),
     measure: createLadderMeasure({
       systemPrompt: args.systemPrompt, view, model: args.model,
       preserveToolNames: args.preserveToolNames, tools: args.tools, addressRefs,
+      toolLoopNotices: args.toolLoopNotices,
     }),
     window: args.model.contextWindow,
     preserveToolNames: args.preserveToolNames,
@@ -1031,6 +1036,8 @@ function createRequestViewHook(args: {
   supportsImages?: boolean
   understanding?: { text: string; sourceId: string; revision: number }
   silenceGuardSessionId?: string
+  /** 工具循环软提示（toolCallId → 附加行）：投影期读出并附到对应结果的正文尾。 */
+  toolLoopNotices?: ReadonlyMap<string, string>
 }): NonNullable<HarnessRunHooks["transformContext"]> {
   const tools = [...args.toolsByName.values()]
   let activeAdmissionChecked = false
@@ -1055,13 +1062,13 @@ function createRequestViewHook(args: {
         const plan: ToolResultLadderPlan = planToolResultLadder({
           entries: toolResultLadderEntries(view, refs),
           // measure 与级 3 闸门同一个实现（`createLadderMeasure`）：读数恒等于投影后的视图。
-          measure: createLadderMeasure({ systemPrompt, view, model: args.model, preserveToolNames: args.preserveToolNames, tools, addressRefs: refs }),
+          measure: createLadderMeasure({ systemPrompt, view, model: args.model, preserveToolNames: args.preserveToolNames, tools, addressRefs: refs, toolLoopNotices: args.toolLoopNotices }),
           window: args.model.contextWindow,
           preserveToolNames: args.preserveToolNames,
           // 保护区是阶梯的输入（口径 B：只挡级 2），不是投影后的第二道过滤。
           protectedIndexes: protectedMessageIndexes(view),
         })
-        prepared = applyLevels(view, plan.levels, args.model.contextWindow, args.preserveToolNames, refs)
+        prepared = applyLevels(view, plan.levels, args.model.contextWindow, args.preserveToolNames, refs, args.toolLoopNotices)
         // 级 2 未生效时规划器的两次读数完全相同，取实际生效的那次；这就是硬预算判定的唯一读数。
         used = plan.level === 2 ? plan.tokensAfterLevel2 : plan.tokensAfterLevel1
       } else {
@@ -1264,7 +1271,12 @@ function createTurnSpec(kernel: TurnKernel, options: {
   /** 默认激活面（⊆ kernel.tools）：主对话回合收窄，省略 = 全量（子代理 / 计划步骤）。 */
   activeToolNames?: readonly string[]
   timeoutMs: number
-  maxToolCalls: number
+  /**
+   * 工具调用次数硬上限；**只给无人值守的子运行**（计划步骤 / 主动规划 / agent 子代理）。
+   * 主聊天回合不传：自然出口 = 模型不再调工具，兜底防线是 `ToolLoopGuard` 的病理检测
+   * （同参重复 / 连续失败），另有上下文预算、用户取消与 `maxRetry`（契约 Part 1）。
+   */
+  maxToolCalls?: number
   projectToolResults: boolean
   humanizerEnabled?: boolean
   taskReply?: boolean
@@ -1304,6 +1316,13 @@ function createTurnSpec(kernel: TurnKernel, options: {
   // 压缩审计槽：摘要内核的成败写在这里，由槽在 compaction_end 收口成 deskpet.* 条目。
   const compactionAudit: CompactionAuditSink = {}
   let toolCallsUsed = 0
+  // 病理检测：每回合新建（重置点就是这里），喂入工具调用与结果，产出软提示 / 硬终止判据。
+  const loopGuard = new ToolLoopGuard()
+  /**
+   * 已判定的循环软提示（toolCallId → 附加行）；投影期由 `applyLevels` 读出、附到该结果的正文。
+   * 回合级内存态：不落盘、不进会话条目（提示只存在于请求视图）。
+   */
+  const toolLoopNotices = new Map<string, string>()
   const stripReply = createRuntimeDataStripHook({
     recordSettledReply: (raw, stripped, humanized) => kernel.recordSettledReply(raw, stripped, humanized),
     humanizer: {
@@ -1318,11 +1337,21 @@ function createTurnSpec(kernel: TurnKernel, options: {
   const hooks: HarnessRunHooks = {
     beforeTool: async ({ toolCallId, toolName, args, signal }) => {
       const tool = toolsByName.get(toolName)
-      if (toolCallsUsed >= options.maxToolCalls) {
-        state.stoppedAtToolLimit = true
+      // 计数硬上限只服务无人值守的子运行（主回合不传 maxToolCalls）。
+      if (options.maxToolCalls !== undefined && toolCallsUsed >= options.maxToolCalls) {
+        state.stoppedByToolGovernance = true
         kernel.toolRun.history.push({ toolName, status: "blocked" })
         return { block: { reason: `工具调用次数达到上限 (${options.maxToolCalls})`, terminate: true } }
       }
+      // 病理检测在调用门（权限之前）：同参连击到硬阈值就整回合优雅终止；失败连击的硬阈值
+      // 在结果侧已经终止（afterTool 的 terminate），这里兜住「本批未整体终止仍有后续调用」的窗口。
+      const loop = loopGuard.noteCall(toolName, args)
+      if (loop.level === "hard") {
+        state.stoppedByToolGovernance = true
+        kernel.toolRun.history.push({ toolName, status: "blocked" })
+        return { block: { reason: toolLoopBlockReason(loop.reason), terminate: true } }
+      }
+      if (loop.level === "soft") toolLoopNotices.set(toolCallId, toolLoopNotice(loop.reason))
       toolCallsUsed++
       state.toolCallsMade = toolCallsUsed
       if (!tool) {
@@ -1355,16 +1384,29 @@ function createTurnSpec(kernel: TurnKernel, options: {
       }
       return undefined
     },
-    afterTool: ({ toolName, details, isError }) => {
+    afterTool: ({ toolCallId, toolName, details, isError }) => {
       // show_to_user 的截图路径在这里进入回合状态，由提交链并入最终助手条目。
       collectScreenshotResult(state, toolName, details, isError)
-      return {
-        details: {
-          ...(details && typeof details === "object" ? details as Record<string, unknown> : {}),
-          origin: "tool", taint: "untrusted_external", isError,
-        },
-        isError,
+      // 连续失败入账（成功清零连击）；命中软/硬阈值时把中性提示附到本条结果上。
+      const loop = loopGuard.noteResult(isError)
+      if (loop.level !== "none") {
+        const notice = toolLoopNotice(loop.reason)
+        const pending = toolLoopNotices.get(toolCallId)
+        toolLoopNotices.set(toolCallId, pending ? `${pending}\n${notice}` : notice)
       }
+      const detailsPatch = {
+        ...(details && typeof details === "object" ? details as Record<string, unknown> : {}),
+        origin: "tool", taint: "untrusted_external", isError,
+      }
+      // 失败连击到硬阈值：结果侧经 `after_tool` 的 `terminate` 立即终止 —— 本批工具全部带该
+      // 标记时上游在当前批次后结束运行、不再发下一次请求（运行仍以 completed 收口，但没有
+      // 收尾助手消息）。治理标志与同参连击共用一枚：结算按它早退到 `toolLoopMaxRounds` 兜底，
+      // 不把治理终止错报成「模型未产出正文」。
+      if (loop.level === "hard") {
+        state.stoppedByToolGovernance = true
+        return { details: detailsPatch, isError, terminate: true }
+      }
+      return { details: detailsPatch, isError }
     },
     transformContext: createRequestViewHook({
       projectToolResults: options.projectToolResults,
@@ -1389,6 +1431,8 @@ function createTurnSpec(kernel: TurnKernel, options: {
       } : {}),
       // 子运行的 provider 准入：与 activeAdmission 并列，二者互斥使用（规划器走这条）。
       ...(options.providerAdmission ? { providerAdmission: options.providerAdmission } : {}),
+      // 循环软提示与投影同一份（回合级），读数/闸门与最终视图保持一致。
+      toolLoopNotices,
     }),
     beforeCompaction: createCompactionHook({
       model: kernel.model, tools: kernel.tools,
@@ -1400,7 +1444,7 @@ function createTurnSpec(kernel: TurnKernel, options: {
         // 与投影 hook 同一个 measure（`createLadderGateBuilder` 内部走 `createLadderMeasure`）。
         buildGate: createLadderGateBuilder({
           systemPrompt: kernel.systemPrompt, model: kernel.model,
-          tools: kernel.tools, preserveToolNames,
+          tools: kernel.tools, preserveToolNames, toolLoopNotices,
         }),
       } : {}),
       ...(options.addressRefs ? { addressRefs: options.addressRefs } : {}),
@@ -1978,7 +2022,7 @@ export async function runPiAgentTurn(input: PiAgentTurnInput): Promise<PiAgentTu
       prompt: promptInput,
       activeToolNames,
       timeoutMs: loopConfig.turnTimeoutMs,
-      maxToolCalls: loopConfig.maxToolCallsPerTurn,
+      // 主聊天回合不传 maxToolCalls：自然出口 = 模型不再调工具，兜底走循环病理检测（契约 Part 1）。
       projectToolResults: true,
       humanizerEnabled: frozenHumanizerEnabled,
       taskReply: Boolean(planStepContext),
@@ -2655,11 +2699,12 @@ async function settleMainTurn(args: {
     const failed = await failTurn(reason, result.timedOut ? "timeout" : "unknown")
     return { ...failed, undelivered: result.undelivered, abortedByStop: false }
   }
-  // 停止晚于工具上限时，停止是更晚、更可见的事实，按停止结算：反过来先判上限早退，会把
-  // 「用户已经点了停止」说成「工具轮超限」，还丢掉归还的未消费输入。
+  // 停止晚于工具循环治理终止（子运行计数上限或主回合病理硬终止）时，停止是更晚、更可见的事实，
+  // 按停止结算：反过来先判治理终止早退，会把「用户已经点了停止」说成「工具轮超限」，
+  // 还丢掉归还的未消费输入。
   // 这条早退也不补 abortedByStop —— 那会让宿主丢弃 reply，「工具轮超限」文案再也看不到；
-  // 停止与上限同时发生的情形已由上面的 aborted 分支覆盖。
-  if (state.stoppedAtToolLimit) {
+  // 停止与治理终止同时发生的情形已由上面的 aborted 分支覆盖。
+  if (state.stoppedByToolGovernance) {
     return { reply: getFallbackReply("toolLoopMaxRounds"), toolCallHistory, retriesUsed: state.retriesUsed }
   }
   if (result.status !== "completed") {
@@ -2834,7 +2879,7 @@ export async function continueInterruptedRun(sessionId: string): Promise<PiAgent
       prompt: recoveryInput,
       activeToolNames,
       timeoutMs: loopConfig.turnTimeoutMs,
-      maxToolCalls: loopConfig.maxToolCallsPerTurn,
+      // 中断续跑仍是主聊天回合：不传计数上限（与 driveAdmitted 同口径）。
       projectToolResults: true,
       runGeneration: generation,
       // 续跑与主回合同口径：同一份地址目录 thunk 同时供给投影与压缩。
@@ -3007,6 +3052,7 @@ export async function runPiSubAgent(input: PiSubAgentInput): Promise<PiSubAgentO
     const spec = createTurnSpec(kernel, {
       prompt: input.task,
       timeoutMs: input.timeoutMs ?? 60000,
+      // 无人值守子运行保留计数封顶（计划步骤 / 主动规划 / agent 子代理；主回合已不传）。
       maxToolCalls: input.maxRounds ?? 3,
       projectToolResults: false,
       runGeneration: scope?.runGeneration ?? 0,
@@ -3111,6 +3157,10 @@ function toolResultLadderEntries(
  * 改写只作用于 text 块：图片等非 text 块按原顺序留在原位（整块重建会丢掉 `pi-read` 的
  * 图片结果，且回读也救不回）。纯函数：不改入参，未改动的消息原样返回；判据的 `measure`
  * 也走本函数，估算因此恒等于最终请求视图，不存在第二份投影口径。
+ *
+ * `toolLoopNotices` 按 toolCallId 取该结果的循环软提示（`tool-loop-guard` 的产出，回合级内存态）：
+ * 与地址通知同一出口、同一档位规则附着，不在投影之外另加消息。**每条结果只附一次** ——
+ * 多 text 块的结果只在最后一个 text 块上拼软提示（逐块拼会重复 N 次）；没有 text 块则无处可附。
  */
 function applyLevels(
   messages: readonly AgentMessage[],
@@ -3118,18 +3168,23 @@ function applyLevels(
   windowTokens: number,
   preserveToolNames: ReadonlySet<string>,
   addressRefs?: ReadonlyMap<string, string>,
+  toolLoopNotices?: ReadonlyMap<string, string>,
 ): AgentMessage[] {
   return messages.map((message, index) => {
     if (message.role !== "toolResult") return message
     const level = levels.get(index) ?? 0
     const preserve = preserveToolNames.has(message.toolName)
     const address = resolveToolResultAddress(message, addressRefs)
+    const loopNotice = toolLoopNotices?.get(message.toolCallId)
+    let lastTextIndex = -1
+    message.content.forEach((part, partIndex) => { if (part.type === "text") lastTextIndex = partIndex })
     let changed = false
-    const content = message.content.map(part => {
+    const content = message.content.map((part, partIndex) => {
       if (part.type !== "text") return part
+      const notice = partIndex === lastTextIndex ? loopNotice : undefined
       const text = preserve || level === 0
-        ? annotateToolResultText(part.text, address, SESSION_TRANSCRIPT_TOOL)
-        : projectToolResultText(part.text, address, windowTokens, SESSION_TRANSCRIPT_TOOL, level)
+        ? annotateToolResultText(part.text, address, SESSION_TRANSCRIPT_TOOL, notice)
+        : projectToolResultText(part.text, address, windowTokens, SESSION_TRANSCRIPT_TOOL, level, notice)
       if (text === part.text) return part
       changed = true
       return { ...part, text }

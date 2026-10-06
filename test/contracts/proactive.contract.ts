@@ -83,15 +83,34 @@ import type { ModuleContract } from "../host/types"
 // src/services/engine/harness/runtime.ts（估算偏差对账口径；主动链机会、调度与投影未动）。
 // pr-01..pr-14 逐点核对实现点仍在、覆盖描述与当前实现一致，未修订覆盖点，仅按当前源码
 // 刷新 sourceHash。
+// 2026-10-06 回合治理与图片生命周期批次（analyze→generate）：sourceFiles 删
+// `src/services/cooldown.ts`（整模块删除——冷却真相源搬进 Rust 账本，AI 生成锁搬进
+// engine/harness），其余条目为行为面变化 —— scanner.ts（门禁改读 scan.budget.cooldownUntil，
+// 冷却不再由 Node 持有；`isAIGenerating` 改从 harness 取）、config.ts（ai.lock 整节删除，主动链
+// 不读该键）、agent/runner.ts 与 harness/runtime.ts（受理计数接管 AI 锁）、
+// proactive/store.rs（cooldownUntil 快照 + claim 门禁 denied_claim("cooldown")）、
+// agent/memory/protocol.{json,ts}（ProactiveBudget.cooldownUntil）。新增 pr-15（integration）
+// 登记 `proactive-cooldown-gate`（test/integration/proactive/冷却门禁.test.ts）。AI 生成锁的
+// 真相源迁到 `engine/harness/harness-slot.ts`，但锁本身不由本契约覆盖点断言（其 L3 覆盖登记在
+// agent-runtime），故 sourceFiles 未增列该文件。前几批留待收口的登记一并收口：W1-T3 的
+// pr-09/pr-10、W2-B1 的 pr-11、W4-A 的 pr-12/pr-13 与 pr-14 的实现点逐点核对仍在（scanner 的
+// screenState 准入与表达侧 toolCount 门禁、scheduler/decide 的 locked 批次、tiers/control 的
+// 档位查表与投影、planner 的白名单与 maxRounds、time.ts 的静默派生），覆盖描述与当前实现一致；
+// pr-01..pr-08 对照实现点与 caseId 载体逐点核对（time.ts / opportunities.ts / planner.ts /
+// usage.ts 实现点仍在，L4 场景与 L3 用例的 caseId 均存在），未发现需修订项。除新增 pr-15 外
+// 未修订覆盖点；本轮只做描述与来源一致性核对（非逐行行为审计），sourceHash 按当前源码复算。
+// 2026-10-06 验收收口（本批刷新）：sourceFiles 变化仅限 scanner.ts 的**注释**（冷却起点口径改指
+// occurrence 的 `updated_at`，与 Part 3 的 B 方案裁定对齐）；pr-01..pr-15 逐点核对实现点与覆盖
+// 描述仍一致，未修订覆盖点，按当前源码刷新 sourceHash。
 export const proactiveContract:ModuleContract={
-  module:"proactive",sourceHash: "49c7c32c88410c59a8e8c284f75a3879a2987c0ff942d2d10e19ff328196a38d",
+  module:"proactive",sourceHash: "4d55c5b957a977e7bf43f49f8fe4fa858ce2b2254a81affbf00503d91cad1f96",
   sourceFiles:["src/services/proactive/config.ts","src/services/proactive/index.ts","src/services/proactive/scanner.ts","src/services/proactive/opportunities.ts","src/services/proactive/time.ts",
     "src/services/proactive/planner.ts","src/services/proactive/delivery.ts","src/services/proactive/ipc.ts","src/services/proactive/auxiliary-budget.ts","src/services/proactive/control.ts","src/services/proactive/protocol.json",
     "src/services/proactive/protocol.ts","src/services/proactive/tiers.ts","src/services/proactive/trace.ts","src/services/proactive/types.ts","src/services/proactive/presence.ts","src/services/proactive/usage.ts",
     "src/services/proactive/content/pool.ts","src/services/proactive/content/calendar.ts","src/services/proactive/content/calendar.json",
     "src/services/observation/index.ts","src/services/observation/store.ts","src/services/observation/types.ts","src/services/observation/topics.ts",
     "src/services/behavior/index.ts","src/services/behavior/aggregate.ts","src/services/behavior/types.ts",
-    "src/services/config.ts","src/services/cooldown.ts","src/services/personality/types.ts","src/services/personality/loader.ts","src/services/personality/registry.ts","src/services/personality/variable-pool.ts",
+    "src/services/config.ts","src/services/personality/types.ts","src/services/personality/loader.ts","src/services/personality/registry.ts","src/services/personality/variable-pool.ts",
     "src/services/tool/local-extra/proactive.ts","src/services/tool/registry.ts","src/services/engine/slash/commands/proactive.ts",
     // 原 src/App.vue（scanner start/stop/refresh 引导接线 + UI 投影）随 WebView 删壳退役：
     // 原生 UI 的控制入口尚未接线到领域处理器（见 proactive/control.ts 头注），此处不指向替代物。
@@ -115,6 +134,7 @@ export const proactiveContract:ModuleContract={
     {id:"pr-12",feature:"规划子运行的有界工具面与输入补齐",description:"规划子运行按注册名从工具注册表装配白名单工具（screenshot / window_info / system_info）：名单外工具与声明非 SAFE 的工具都不进场；注入 run 的 maxRounds=3、timeout 与输出预留封顶、scope 携带会话与取消信号；owner 失效、取消或工具用尽后没有合法 JSON 时都以 decline 收口（planning_cancelled / planner_invalid_decision）。规划输入 task 补入 Card 人设摘要（token 预算截断）、presence 快照与判定时刻、变量池只读摘要（system 原始值与 card/interaction 当前值，不含写入指令与 VariableState 元数据）、行为画像质量与就近三小时的活跃毫秒、带时区的可读本地时间；目标记忆召回受 ai.memory.enabled 总闸门禁，关闭时 evidence 按空降级而不是报错",why:"规划器升级为带工具的有界 agent 后，工具面必须只含无用户回合也能执行的只读工具（DANGER 级会落到 awaitPermission 干等用户确认），且轮数/超时/token 都必须有封顶；输入补齐是「把决定权真正交给 LLM」的另一半，没有人物、画像与变量的规划只能靠窗口与记忆片段做决定",layer:"unit",depth:"deep",scenarios:["proactive-planner-tool-whitelist","proactive-planner-tool-level-guard","proactive-planner-screenshot-model-gate","proactive-planner-run-bounds","proactive-planner-cancel-decline","proactive-planner-tool-exhausted-decline","proactive-planner-input-context","proactive-planner-input-weekend","proactive-planner-input-degraded","proactive-planner-memory-gate"]},
     {id:"pr-13",feature:"表达准入的工具门禁",description:"表达 attempt 的准入回调在 reservation.toolCount!==0 时在 claim 之前整次拒回并留痕 proactive_skipped(planner_tools_present)；toolCount=0 的当前形态照常进入 claim。规划子运行带工具不改变表达侧 tools=[] 的口径",why:"规划子运行放开工具后，表达侧必须继续无工具：表达是用户可见的最终输出，工具面会改变主动消息的生成路径与计费面；门禁必须在 claim 之前生效，不能让被拒的表达消耗当日配额",layer:"integration",depth:"shallow",scenarios:["proactive-expression-tool-gate"]},
     {id:"pr-14",feature:"静默时段（CONFIG 派生）与窗口派生",description:"静默时段是 CONFIG 派生（ai.proactive.quietStartHour/quietEndHour，默认 23/9，仅约束主动消息）：isQuietHour/isQuietTime 覆盖跨夜 / 同日 / start==end（不静默）三形态并随 CONFIG 值走（setOverride 后同日静默生效、start==end 全不静默）；nextSpeakingTime 三形态（跨夜顺延次日、同日回到当日结束、相等原样返回）；isNightlyWindow 是静默开始前一小时（start=0 落前一日 23 点）；checkin 的 before 窗口随静默三形态派生且 from 恒早于 until；白天硬窗口（9–12 / 18–22）删除后 rhythm/retrospective 整日有效、只有静默时段是硬边界；晚安窗口收口于静默开始时刻（quietStartHour−1 派生，不硬编码 22）",why:"静默时段是用户可配置的硬边界：窗口派生、晚安收口与 checkin 窗口若仍读旧常量，用户改静默时段后这些机会会按旧时刻静默/放行，感知为「设了没用」",layer:"unit",depth:"deep",scenarios:["proactive-quiet-hour-forms","proactive-quiet-config-driven","proactive-next-speaking-forms","proactive-nightly-window-derived","proactive-checkin-window-derived","proactive-no-daytime-window","proactive-retrospective-goodnight-derived"]},
+    {id:"pr-15",feature:"冷却门禁（账本推导 + 快照读取）",description:"全局冷却的起点在宿主账本：scan 的 budget.cooldownUntil = proactive_occurrences 中 kind='expression' 且 status='committed' 的 MAX(updated_at) + 档位 limits.cooldownMs（全表查询、跨日成立；无记录或已过期给 null），claim 在同一窗口内以 denied_claim(\"cooldown\") 拒绝且不受 respect_random_interval 约束。Node scanner 的门禁只读该快照：未过期时机会被跳过并留痕 proactive_skipped(reason:\"cooldown\")、表达端口不被触达；已过期或 null（无 committed 记录）照常放行。Node 不再持有可写冷却状态、不再有强制解锁定时器；unresolved 结算不构成冷却起点，对账补提交后按对账时刻起算",why:"冷却状态留在 Node 内存时重启即丢、多入口各持一份，既可能在窗口内重复发话也可能永久冷却；搬到账本后「窗口内不重复发话」只由已提交投递的记账时间推导，Node 与宿主读同一份快照，冷却起点在记忆治理清扫下也不被改写",layer:"integration",depth:"shallow",scenarios:["proactive-cooldown-gate"]},
   ],
   // L4 校验只统计 layer:"e2e" 覆盖点；其余 caseId 在 L2/L3 由跨层校验负责。
   rules:{minScenarios:2,minDeepScenarios:2,requireBoundary:true,requireErrorPath:true},

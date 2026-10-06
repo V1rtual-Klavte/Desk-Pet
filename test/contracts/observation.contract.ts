@@ -56,6 +56,15 @@
 // src/services/engine/harness/{runtime,model-gateway}.ts（偏差对账口径；观察决策与静默了解
 // 链路未动）。ob-01..ob-09 逐点核对实现点仍在、覆盖描述与当前实现一致，未修订覆盖点，
 // 仅按当前源码刷新 sourceHash。
+// 2026-10-06 回合治理与图片生命周期批次（analyze→刷新）：sourceFiles 变化 ——
+// observation/scheduler.ts（isAIGenerating 改从 engine/harness 取：AI 生成锁真相源随
+// `src/services/cooldown.ts` 删除移居 harness 的回合受理状态，调度门禁语义不变）、
+// config.ts（ai.lock 配置整节删除，调度器不读该键）、engine/harness/index.ts（barrel 透出
+// isAIGenerating 与 HarnessTurnAdmission；ob-07 负向断言的四个缺席名复核仍无命中）、
+// engine/harness/runtime.ts、agent/runner.ts 与 proactive/store.rs（受理计数落点与冷却快照；
+// 观察决策、静默了解与话题链路未动）。ob-01..ob-09 逐点核对实现点仍在、覆盖描述与当前实现
+// 一致（ob-09 的档位门禁与 ob-04 的读取名额/决策解析未受本批影响），未修订覆盖点，仅按当前
+// 源码刷新 sourceHash。
 import type { ModuleContract } from "../host/types"
 
 export const observationContract: ModuleContract = {
@@ -110,7 +119,7 @@ export const observationContract: ModuleContract = {
     "test/integration/observation/了解层与话题来源.test.ts",
     "test/e2e/scenes/observation/静默访问关闭边界.scene.ts",
   ],
-  sourceHash: "c167fe7d7a349e5870fdedba3bb4863469bb2c2e04c4280a1a868434679fb926",
+  sourceHash: "671a7f70daabd808d96ead14cf1c3c08cb313113e95d82978e77dfffec6d6f94",
   coverage: [
     {
       id: "ob-01",

@@ -334,7 +334,8 @@ export async function deleteSession(sessionId: string): Promise<boolean> {
  * 必须先加跨会话引用检查（另一个会话可能仍引用同一张托管图片）。
  *
  * 失败只留痕：这是删会话的附带清理，不改变 `deleteSession` 的既有返回语义；
- * 残留的托管图片由目录的 200 个保留上限自然淘汰兜底。
+ * 托管图片没有目录级兜底淘汰（保留上限已按用户定夺取消），残留只由本清理路径与
+ * 草稿回滚回收，因此这里失败时只留痕、不重试也不谎报成功。
  */
 async function deleteSessionChatImages(sessionId: string, sourceEntries: Entry[]): Promise<void> {
   const paths = new Set<string>()

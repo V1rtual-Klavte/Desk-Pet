@@ -69,7 +69,7 @@ ai:
   contextMaxTokens: 131072
   thinking: { effort: auto }
   conversation: { defaultDelivery: steer, steeringMode: all, followUpMode: all }
-  loop: { maxRetry: 3, maxToolCallsPerTurn: 5, maxParallelTools: 2 }
+  loop: { maxRetry: 3, subAgentRounds: 5, maxParallelTools: 2 }
   safety: { mode: tell_me, sessionTrustEnabled: true }
   # 与 CARD_ID 一致（硬编码重复：SYNTHETIC 常量定义于 CARD_ID 之前，模板不跨 TDZ 引用）
   personality: { active: boot-seq-probe }

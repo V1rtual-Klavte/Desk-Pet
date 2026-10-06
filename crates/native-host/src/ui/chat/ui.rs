@@ -28,11 +28,22 @@ use super::intents::{
     ChatIntent, ChatIntentPort, NullChatIntentPort, PermissionConfirmation, PlanConfirmMode,
     PlanConfirmResult, PlanStepDecision,
 };
-use super::model::{ChatModel, ChatRenderUpdate, ChatSnapshot, Revisions, StatusSnapshot};
+use super::model::{
+    ChatModel, ChatRenderUpdate, ChatSnapshot, PendingDraftRelease, Revisions, StatusSnapshot,
+};
 use super::panels::{PanelAction, PanelOutcome, UnknownStepResolution};
 use super::placeholders::{placeholder_for, ImagePlaceholder};
 use super::projection::TranscriptProjection;
 use super::viewer::{self, ViewerRequest, ViewerState};
+
+/// 待发送图片的来源（决定 `managed` 标记：丢弃草稿时是否删除落盘文件）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PendingImageOrigin {
+    /// 粘贴入口落进数据根 `pasted/` 的托管文件。
+    Managed,
+    /// 文件选择器 / 拖入的用户自有文件（永不删）。
+    UserFile,
+}
 
 /// 面板动作派发成功后的本地过渡（失败不做任何乐观变更）。
 enum PanelTransition {
@@ -958,7 +969,9 @@ impl ChatUi {
             })?;
             // 发送成功 = 待发送区释放（§5.3：发送/撤选/切会话后释放）。失败保留选择：
             // 待发送区不做乐观清空，平台层保留输入并给中性通知。
-            if Self::lock(&self.model).clear_pending_images() {
+            // Part 4.3：发送是**所有权转移**（路径已进 `deskpetImagePaths` 条目），
+            // 只清列表、不删文件。
+            if Self::lock(&self.model).clear_pending_images(PendingDraftRelease::Send) {
                 self.schedule_refresh();
             }
             Ok(())
@@ -994,6 +1007,10 @@ impl ChatUi {
 
     /// 准入并追加待发送图片（原生选择器与拖入共用；可在工作线程调用）。
     ///
+    /// 来源是**用户自有文件**：丢弃草稿（撤选 / 切会话 / 退出）时只移除引用，
+    /// 永不删除用户磁盘上的原文件。粘贴入口的托管草稿走
+    /// [`Self::add_managed_pending_images`]。
+    ///
     /// 准入走统一图片域，不建第二份规则：
     /// - 数量上限与每图字节上限取自 [`limits`]（`images/limits.json` 是唯一数值源）；
     /// - 路径规则/常规文件/字节上限/格式头复核走 [`ValidatedImagePath`]；
@@ -1002,6 +1019,21 @@ impl ChatUi {
     /// 任一路径被拒时整批不添加（与命令层 `validate_chat_images` 的整批语义一致），
     /// 错误文案直接复用统一图片域产出；调用方（平台层）以中性通知呈现。
     pub fn add_pending_images(&self, paths: Vec<String>) -> AppResult<usize> {
+        self.admit_pending_images(paths, PendingImageOrigin::UserFile)
+    }
+
+    /// 粘贴入口的托管草稿准入：与 [`Self::add_pending_images`] 同一份准入实现，
+    /// 只把条目标记为 `managed`（丢弃时删除数据根 `pasted/` 里的文件）。
+    pub fn add_managed_pending_images(&self, paths: Vec<String>) -> AppResult<usize> {
+        self.admit_pending_images(paths, PendingImageOrigin::Managed)
+    }
+
+    /// 准入与追加的唯一实现（来源只影响 `managed` 标记，不影响准入规则）。
+    fn admit_pending_images(
+        &self,
+        paths: Vec<String>,
+        origin: PendingImageOrigin,
+    ) -> AppResult<usize> {
         if paths.is_empty() {
             return Ok(0); // 用户取消是正常结果
         }
@@ -1023,7 +1055,9 @@ impl ChatUi {
                 continue;
             }
             // 占位元数据只读文件元信息（不读字节、不解码；§5.3 的预览按需从简）。
-            fresh.push(placeholder_for(&path));
+            let mut placeholder = placeholder_for(&path);
+            placeholder.managed = origin == PendingImageOrigin::Managed;
+            fresh.push(placeholder);
         }
         if model.pending_images().len() + fresh.len() > limits.max_images {
             // 与命令层 `commands/chat_images.rs::validate_chat_images` 同一条用户文案
@@ -1041,13 +1075,21 @@ impl ChatUi {
         Ok(added)
     }
 
-    /// 撤选一张待发送图片（返回是否确实移除）。
+    /// 撤选一张待发送图片（返回是否确实移除）。撤选即丢弃：托管草稿当场删文件。
     pub fn remove_pending_image(&self, path: &str) -> bool {
         let removed = Self::lock(&self.model).remove_pending_image(path);
         if removed {
             self.schedule_refresh();
         }
         removed
+    }
+
+    /// 退出回滚（执行契约 Part 4.3）：对当前草稿执行**丢弃**语义 —— 粘贴入口的
+    /// 托管草稿删文件（`managed` 项），文件选择器/拖入的用户文件不动；失败只留痕，
+    /// 不阻塞退出。由宿主退出序列（`main.rs` 的 `ServiceExitHook::run`）在 UI teardown
+    /// 之前调用；已发送/已撤选/已随切会话释放过的草稿不会重复删除。
+    pub fn rollback_pending_draft(&self) -> bool {
+        Self::lock(&self.model).clear_pending_images(PendingDraftRelease::Discard)
     }
 
     /// 停止当前运行（运行态由 `deskpet-run-state` 回推收起按钮）。
@@ -1358,9 +1400,10 @@ mod tests {
         );
         assert!(!ui.has_pending_images(), "整批被拒时不留下半批");
 
-        // 合法图片：进入待发送区；重复添加按路径去重。
-        assert_eq!(ui.add_pending_images(vec![good.clone()]).unwrap(), 1);
-        assert_eq!(ui.add_pending_images(vec![good.clone()]).unwrap(), 0);
+        // 合法图片：进入待发送区；重复添加按路径去重。用**托管**条目（粘贴入口同款）：
+        // 发送若误走 Discard 语义会删掉这个文件，下面的「文件必须保留」才真能变红。
+        assert_eq!(ui.add_managed_pending_images(vec![good.clone()]).unwrap(), 1);
+        assert_eq!(ui.add_managed_pending_images(vec![good.clone()]).unwrap(), 0);
         assert_eq!(ui.pending_image_paths().len(), 1);
 
         // 发送成功 = 释放（§5.3）；发送失败保留由 dispatch 的错误路径保证（这里验证成功路径）。
@@ -1371,6 +1414,10 @@ mod tests {
             other => panic!("应为 Send，得到 {other:?}"),
         }
         assert!(!ui.has_pending_images(), "发送成功释放待发送区");
+        assert!(
+            std::path::Path::new(&good).exists(),
+            "发送是所有权转移，托管文件也必须保留（Part 4.3；误走 Discard 时本断言变红）"
+        );
 
         // 数量上限：每消息最多 4 张（值来自 limits.json 单一源）。
         let mut five = Vec::new();
@@ -1381,6 +1428,35 @@ mod tests {
         }
         let error = ui.add_pending_images(five).unwrap_err();
         assert!(error.to_string().contains("最多 4 张"), "文案：{error}");
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    /// 粘贴入口的托管草稿：退出回滚删除落盘文件；选择器/拖入的用户自有文件任何
+    /// 清空路径都不删（`managed` 判断反转或回滚改走 `Send` 时本用例变红）。
+    #[test]
+    fn 托管草稿退出回滚删文件而用户文件不删() {
+        let dir = crate::images::fixtures::temp_dir("chat-ui-draft-rollback");
+        let pasted = dir.join("pasted.png");
+        let user_file = dir.join("user.png");
+        std::fs::write(&pasted, crate::images::fixtures::png_1x1()).unwrap();
+        std::fs::write(&user_file, crate::images::fixtures::png_1x1()).unwrap();
+
+        let ui = ChatUi::new();
+        assert_eq!(
+            ui.add_managed_pending_images(vec![pasted.to_string_lossy().into_owned()])
+                .unwrap(),
+            1
+        );
+        assert_eq!(
+            ui.add_pending_images(vec![user_file.to_string_lossy().into_owned()])
+                .unwrap(),
+            1
+        );
+        assert!(ui.rollback_pending_draft(), "退出回滚必须释放草稿");
+
+        assert!(!ui.has_pending_images());
+        assert!(!pasted.exists(), "托管草稿随退出回滚删除");
+        assert!(user_file.exists(), "用户自有文件不随任何清空删除");
         std::fs::remove_dir_all(dir).unwrap();
     }
 

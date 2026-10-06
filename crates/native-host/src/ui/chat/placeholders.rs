@@ -11,6 +11,8 @@
 
 use std::path::Path;
 
+use crate::rust_warn;
+
 /// 一张历史图片的占位元数据。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ImagePlaceholder {
@@ -22,9 +24,16 @@ pub struct ImagePlaceholder {
     pub size_bytes: Option<u64>,
     /// 文件当前是否可用（仅凭元数据判定；内容失效留给点击时复核）。
     pub available: bool,
+    /// 托管草稿标记（执行契约 Part 4.3）：仅粘贴入口落盘的文件为 `true`，
+    /// 丢弃草稿（撤选 / 切会话 / 退出）时删除；文件选择器 / 拖入是用户自己的文件、
+    /// 历史消息图片是已提交条目的引用，都是 `false` —— 任何路径都不删。
+    pub managed: bool,
 }
 
 /// 由原路径构造占位。只调用 `metadata()`，不触碰文件内容。
+///
+/// `managed` 一律为 `false`：本构造函数服务于历史消息图片与用户自有文件这两个
+/// 非托管来源；粘贴入口的托管草稿由 `ChatUi::add_managed_pending_images` 就地打标。
 pub fn placeholder_for(path: &str) -> ImagePlaceholder {
     let file_name = Path::new(path)
         .file_name()
@@ -36,13 +45,31 @@ pub fn placeholder_for(path: &str) -> ImagePlaceholder {
             file_name,
             size_bytes: Some(metadata.len()),
             available: true,
+            managed: false,
         },
         _ => ImagePlaceholder {
             path: path.to_string(),
             file_name,
             size_bytes: None,
             available: false,
+            managed: false,
         },
+    }
+}
+
+/// 丢弃草稿：删除 `managed` 项在磁盘上的文件（非托管项一律不动）。
+///
+/// 唯一实现点：撤选单张、切会话与退出回滚都汇到这里（发送走 `PendingDraftRelease::Send`，
+/// 只清列表、不经过本函数）。失败只留痕（统一留痕点：`rust_warn!` → 宿主日志），
+/// **不 panic、不上报错误** —— 一次删除失败不允许阻塞切会话或退出；文件不存在同样只留痕。
+pub(super) fn discard_managed_files(images: &[ImagePlaceholder]) {
+    for image in images {
+        if !image.managed {
+            continue;
+        }
+        if let Err(error) = std::fs::remove_file(&image.path) {
+            rust_warn!("草稿图片回滚失败 {}: {error}", image.path);
+        }
     }
 }
 
@@ -124,9 +151,59 @@ mod tests {
             file_name: "照片.png".into(),
             size_bytes: Some(2048),
             available: true,
+            managed: true,
         };
         let label = pending_label(&placeholder);
         assert_eq!(label, "照片.png（2.0 KB）✕");
         assert!(!label.contains("点击查看"), "待发送区点击是撤选：{label}");
+    }
+
+    fn draft(path: &Path, managed: bool) -> ImagePlaceholder {
+        ImagePlaceholder {
+            path: path.to_string_lossy().into_owned(),
+            file_name: path.file_name().unwrap().to_string_lossy().into_owned(),
+            size_bytes: Some(4),
+            available: true,
+            managed,
+        }
+    }
+
+    /// 丢弃语义的唯一实现点：managed 删文件，非 managed（用户自有文件）一律不动。
+    /// 把 managed 判断反转或去掉，本用例必须变红。
+    #[test]
+    fn 丢弃只删托管草稿且非托管文件一律不动() {
+        let dir = crate::images::fixtures::temp_dir("chat-draft-discard");
+        let pasted = dir.join("pasted.png");
+        let user_file = dir.join("user.png");
+        std::fs::write(&pasted, b"png").unwrap();
+        std::fs::write(&user_file, b"png").unwrap();
+
+        discard_managed_files(&[draft(&pasted, true), draft(&user_file, false)]);
+
+        assert!(!pasted.exists(), "托管草稿必须被删除");
+        assert!(user_file.exists(), "用户自有文件永不删除");
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    /// 删除失败（文件不存在 / 目标是目录）只留痕：不 panic、不中断同一批里的其它删除。
+    #[test]
+    fn 丢弃失败只留痕且不阻塞其它条目() {
+        let dir = crate::images::fixtures::temp_dir("chat-draft-failure");
+        let missing = dir.join("already-gone.png");
+        let directory = dir.join("not-a-file");
+        std::fs::create_dir_all(&directory).unwrap();
+        let ok = dir.join("ok.png");
+        std::fs::write(&ok, b"png").unwrap();
+
+        // 两个必然失败的条目都排在成功条目之前：失败若中断循环，ok 不会被删。
+        discard_managed_files(&[
+            draft(&missing, true),
+            draft(&directory, true),
+            draft(&ok, true),
+        ]);
+
+        assert!(!ok.exists(), "单条失败不得阻塞后续删除");
+        assert!(directory.is_dir(), "目录不是删除对象");
+        std::fs::remove_dir_all(dir).unwrap();
     }
 }

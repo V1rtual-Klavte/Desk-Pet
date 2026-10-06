@@ -1,11 +1,14 @@
 // ==========================================
 // 本地工具：截图 (SAFE)
 //
-// 采集走 Rust 的 capture_screenshot（前台窗口、长边 ≤1280），落盘走 save_screenshot
-// （数据根 screenshots/，原子写 + 只保留最新 200 个）。隐私总闸是静默了解档位
-// （ai.silentAccess.frequency = off）：关闭时返回中性说明而不是报错（与 window_info
-// 同一口径），Rust 侧还复检一次同一个总闸（set_monitor_enabled 下发的观察许可）。
-// show_to_user=true 时把落盘路径放进 details，由运行内核并入本回合提交的助手条目。
+// 采集走 Rust 的 capture_screenshot（前台窗口、长边 ≤1280）。落盘只发生在
+// 展示型截图（show_to_user=true）：经 save_screenshot 写入数据根 screenshots/
+// （原子写）。私有截图（show_to_user 缺省/false）**不落盘** —— 模型仍通过
+// contentParts 的内嵌图片块查看，但磁盘上不产生任何文件（2026-10-06 契约 Part 4.2）。
+// 隐私总闸是静默了解档位（ai.silentAccess.frequency = off）：关闭时返回中性说明
+// 而不是报错（与 window_info 同一口径），Rust 侧还复检一次同一个总闸
+// （set_monitor_enabled 下发的观察许可）。show_to_user=true 时把落盘路径放进
+// details，由运行内核并入本回合提交的助手条目。
 // ==========================================
 
 import type { ToolDef } from "../types"
@@ -51,7 +54,8 @@ const screenshotTool: ToolDef = defineTool({
   source: "local",
   sourceId: "",
   actionCategory: "os.info",
-  // 写出一份 PNG（本地变更），与其它效果操作互斥；不重放。
+  // 展示型截图（show_to_user=true）写出一份 PNG（本地变更），与其它效果操作互斥；
+  // 私有截图不落盘。两种形态都不重放。
   policy: {
     version: TOOL_POLICY_VERSION,
     permission: { defaultDecision: "allow" },
@@ -65,7 +69,10 @@ const screenshotTool: ToolDef = defineTool({
   const showToUser = params.show_to_user === true
   try {
     const shot = await getHostBridge().request("capture_screenshot", {})
-    const saved = await getHostBridge().request("save_screenshot", { imageBase64: shot.data })
+    // 私有截图跳过 save_screenshot：模型仍拿得到内嵌图片块，但磁盘不留文件。
+    const saved = showToUser
+      ? await getHostBridge().request("save_screenshot", { imageBase64: shot.data })
+      : undefined
     const text = showToUser
       ? `已截取当前前台窗口画面（${shot.width}×${shot.height}），这张截图会展示在聊天里给用户看。`
       : `已截取当前前台窗口画面（${shot.width}×${shot.height}），仅供你查看。`
@@ -77,7 +84,8 @@ const screenshotTool: ToolDef = defineTool({
         { type: "text", text },
         { type: "image", data: shot.data, mimeType: shot.mimeType },
       ],
-      details: { screenshotPath: saved.path, showToUser },
+      // 展示型才带落盘路径（供运行内核并入助手条目）；私有型只有冻结的 showToUser。
+      details: saved ? { screenshotPath: saved.path, showToUser } : { showToUser },
     }
   } catch (error) {
     if (errorCode(error) === "CANCELLED") {

@@ -118,15 +118,28 @@ export function toolResultNotice(address: string | undefined, readToolName: stri
 }
 
 /**
+ * 工具结果正文的尾行附加点：病理检测软提示与地址通知共用这一处，
+ * 不给工具结果正文另开第二条出口（`tool-loop-guard` 的软提示由调用方生成，这里只管拼接）。
+ */
+function withToolLoopNotice(text: string, toolLoopNotice?: string): string {
+  return toolLoopNotice ? `${text}\n${toolLoopNotice}` : text
+}
+
+/**
  * 未缩短结果的地址标注：正文 + 尾行地址通知（无地址时正文原样返回）。
  *
  * A-1 的落点：地址不再等「超阈值」才给 —— 未缩短的结果同样要能被回读，
  * preserve 的写入回执（`pi-write` / `pi-edit` / `app` / `clipboard_write`）也走这里
  * （D-W2-5 的 2026-09-27 裁定：preserve 只挡升档处理，不挡地址标注）。
+ *
+ * `toolLoopNotice` 是可选尾行（`tool-loop-guard` 的软提示，中性系统文案）：与地址标注同一通道，
+ * 三个投影档位（未缩短 / 缩短 / 清空）都不丢 —— 循环病态的提示不该被预算缓解措施挤掉。
  */
-export function annotateToolResultText(text: string, address: string | undefined, readToolName = DEFAULT_READ_TOOL_NAME): string {
+export function annotateToolResultText(
+  text: string, address: string | undefined, readToolName = DEFAULT_READ_TOOL_NAME, toolLoopNotice?: string,
+): string {
   const notice = toolResultNotice(address, readToolName)
-  return notice ? `${text}\n${notice}` : text
+  return withToolLoopNotice(notice ? `${text}\n${notice}` : text, toolLoopNotice)
 }
 
 /**
@@ -142,23 +155,26 @@ export function annotateToolResultText(text: string, address: string | undefined
  *
  * 未超阈值时不再原样返回，而走同一份未缩短形态（`annotateToolResultText`，A-1）；
  * 级 2 是显式请求的清空，不重复判阈值 —— 单条上限的判定归规划器（`toolResultTokenBudget` 仍是唯一阈值）。
+ *
+ * `toolLoopNotice` 与 `annotateToolResultText` 的同一份可选尾行：三个档位（未缩短 / 缩短 / 清空）
+ * 都不丢，长度不计入单条上限的判定（它与模型自己的调用病理同源，不因预算缓解被裁掉）。
  */
 export function projectToolResultText(
   text: string, address: string | undefined, window: number,
-  readToolName = DEFAULT_READ_TOOL_NAME, level: 1 | 2 = 1,
+  readToolName = DEFAULT_READ_TOOL_NAME, level: 1 | 2 = 1, toolLoopNotice?: string,
 ): string {
   // 级 2 且**有地址**：正文整体换成清空占位串，地址行仍是同一份模板的 `cleared` 变体。
-  if (level === 2 && address) return toolResultNotice(address, readToolName, "cleared")
+  if (level === 2 && address) return withToolLoopNotice(toolResultNotice(address, readToolName, "cleared"), toolLoopNotice)
 
   const budget = toolResultTokenBudget(window)
-  if (estimateContextTokens(text) <= budget) return annotateToolResultText(text, address, readToolName)
+  if (estimateContextTokens(text) <= budget) return annotateToolResultText(text, address, readToolName, toolLoopNotice)
   if (!address) {
     const key = noAddressWarnKey(text)
     if (shouldWarnNoAddress(key)) log.warn("工具结果没有回读地址，按不可回读标记投影:", { chars: text.length })
   }
   const half = Math.floor(budget / 2)
   const notice = toolResultNotice(address, readToolName, "shortened")
-  return `${sliceByTokenBudget(text, half, false)}\n${notice}\n${sliceByTokenBudget(text, half, true)}`
+  return withToolLoopNotice(`${sliceByTokenBudget(text, half, false)}\n${notice}\n${sliceByTokenBudget(text, half, true)}`, toolLoopNotice)
 }
 
 // ==========================================

@@ -6,7 +6,7 @@ import {
   toolResultNotice, toolResultTokenBudget,
 } from "@/services/context"
 import type { ToolResultLadderEntry, ToolResultLadderPlan, ToolResultLevelMeasure } from "@/services/context"
-import { aiConfig, loopConfig } from "@/services/config"
+import { aiConfig } from "@/services/config"
 import { initChat } from "@/services/agent/runner"
 import { getActiveSessionId } from "@/services/session"
 import {
@@ -65,8 +65,10 @@ import type { SceneDef } from "../../../e2e/types"
 // - `ladder_short_probe`（第 3 轮，`reference`，短结果）：未超阈 ⇒ 级 0 不动；
 // - `ladder_load_probe`（第 4 轮，`preserve`，尺寸由第 3 轮的实测读数决定）：只提供越线载荷。
 //
-// 每轮的工具调用都在 `loopConfig.maxToolCallsPerTurn` 之内（第 1 轮 5 次、第 3 轮 2 次、
-// 第 4 轮按校准块数，超出即报「载荷不足」而不是静默判过）。
+// 每轮的工具调用不再受计数上限约束（2026-10-06 起主回合取消 `ai.loop` 的计数封顶，
+// 改走循环病理检测）：第 1 轮 5 次、第 3 轮 2 次都照常执行。第 4 轮的校准载荷逐块带不同
+// 参数（`{ chunk: N }`）—— 同参重复连击会在第 5 次被 tool-loop-guard 硬终止，校准块必须是
+// 不同签名的调用（探针 handler 不读参数，语义不变）。
 const ADDRESS_TOOL_ID = "ladder-address-probe"
 const ADDRESS_TOOL_NAME = "ladder_address_probe"
 const ERROR_TOOL_ID = "ladder-error-probe"
@@ -556,12 +558,9 @@ export const 阶梯投影: SceneDef = {
     calibratedChunks = []
     calibratedFrame = 0
     calibratedNeeded = 0
-    // 前置：第 1 轮要一次调完全部长探针（三个地址 + 无地址错误 + preserve），
-    // 配置的工具调用上限低到放不下时，这里直接报出来，不让后面的断言去猜缺了哪条。
-    const round1Calls = ADDRESS_CALL_TAGS.length + 2
-    if (loopConfig.maxToolCallsPerTurn < round1Calls) {
-      throw new Error(`第 1 轮需要 ${round1Calls} 次工具调用，ai.loop.maxToolCallsPerTurn=${loopConfig.maxToolCallsPerTurn} 放不下｜${sizing()}`)
-    }
+    // 前置：第 1 轮要一次调完全部长探针（三个地址 + 无地址错误 + preserve）。
+    // 旧实现的「配置计数上限放得下」检查已随主回合取消计数上限（2026-10-06）删除：
+    // 主回合的工具调用数不再受配置约束；次数与同参连击无关（探针参数各异）。
     for (const [id] of PROBE_TOOLS) unregister(id)
     for (const [, tool] of PROBE_TOOLS) register(tool)
     provider = installFakeProvider([
@@ -716,15 +715,14 @@ export const 阶梯投影: SceneDef = {
         if (calibratedNeeded <= 0) {
           throw new Error(`载荷不足：第 3 轮视图已到 ${frame}（越线点 ${TARGET_TOKENS + MARGIN_TOKENS}），无法再由校准载荷越线｜${sizing()}`)
         }
+        // 主回合取消计数上限后，块数不再受配置约束；每块带不同参数避开循环病理检测的同参连击
+        // （见文件头载荷口径注释）。
         const chunks = splitLoad(calibratedNeeded)
-        if (chunks.length > loopConfig.maxToolCallsPerTurn) {
-          throw new Error(`校准载荷需要 ${chunks.length} 次调用，超过单轮上限 ${loopConfig.maxToolCallsPerTurn}：越线量 ${calibratedNeeded} tokens 超出可加载范围｜${sizing()}`)
-        }
         loadChunks = chunks
         // 断言期读这份快照：`loadChunks` 会被校准探针的 handler 逐次 `shift()` 消费到空。
         calibratedChunks = [...chunks]
         provider?.appendResponses([
-          ...chunks.map((_, at) => step(fakeToolCall(LOAD_TOOL_NAME, {}, `ladder-load-call-${at + 1}`), expectRoundText(ROUND4_TEXT))),
+          ...chunks.map((_, at) => step(fakeToolCall(LOAD_TOOL_NAME, { chunk: at + 1 }, `ladder-load-call-${at + 1}`), expectRoundText(ROUND4_TEXT))),
           step(fakeText(ROUND4_REPLY_TEXT), expectRoundText(ROUND4_TEXT)),
         ])
       } }],

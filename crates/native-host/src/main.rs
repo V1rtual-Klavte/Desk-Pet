@@ -424,6 +424,16 @@ struct ServiceExitHook {
 
 impl HostExitHook for ServiceExitHook {
     fn run(&self) {
+        // ⓪ 粘贴草稿回滚（执行契约 Part 4.3「粘了没发的当场回滚」）：对当前待发送区
+        //    执行丢弃语义 —— 粘贴入口的托管草稿删文件，用户自有文件不动；失败只留痕，
+        //    不阻塞退出。挂点依据：两端 quit() 都先 `run_exit_once()`（本 hook）再
+        //    `macos_main::teardown` / `windows_main::teardown`
+        //    （ui/platform/macos.rs:1653-1665、ui/platform/windows.rs:870-884），
+        //    即本 hook 执行时 UI 主线程与窗口尚未拆除、聊天模型仍完整；且聊天模型是
+        //    进程级 `chat_ui()` 单例，命令侧 `app_restart` 从工作线程到达同一钩子时
+        //    也照常可写。关窗不等于退出（本文件 :19 注释：关主窗只收起），收起时
+        //    草稿保留、不经过这里。
+        native_host::ui::chat::chat_ui().rollback_pending_draft();
         // ① 宿主管理的子进程先回收：MCP 与 Bash 池（执行契约 §4.3 第 5 条）。
         // Bash 池的 `kill_all` 自带「先封新执行、再杀」竞态策略（见 bash.rs）：
         // 封闸后到达的执行请求被拒绝，不会在 Node 停机期间产生孤儿；封闸前已登记的

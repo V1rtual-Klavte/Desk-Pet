@@ -11,13 +11,12 @@
 // - 模型调用走 completePiText(purpose="memory")，与主回合共用认证、取消与用量口径；
 //   模型取辅助模型（ai.auxModel，留空跟随聊天模型）。
 
-import { completePiText, resolvePiAuxModel } from "@/services/engine/harness"
+import { completePiText, isAIGenerating, resolvePiAuxModel } from "@/services/engine/harness"
 import { estimateContextTokens } from "@/services/context/budget"
 import { createLogger } from "@/services/logger"
 import { formatError } from "@/services/error"
 import { memoryConfig } from "@/services/config"
 import { dreamingTier, dreamingTierLimits } from "@/services/proactive/tiers"
-import { isAIGenerating } from "@/services/cooldown"
 import { createRuntimeTraceContext, hasRuntimeTraceSubscribers, publishRuntimeTrace } from "@/services/engine/runtime/trace"
 import { refreshMemoryCount } from "./index"
 import {

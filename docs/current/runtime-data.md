@@ -83,7 +83,7 @@ Rust [AppPaths](../../crates/native-host/src/paths/mod.rs) 依据 `cfg!(debug_as
 | `ai.contextMaxTokens` | 上下文窗口（低于 65536 在模型解析处报错，压缩按同一预算规划） | [context/builder.ts](../../src/services/context/builder.ts)、[compactor.ts](../../src/services/engine/compactor.ts)、[model-gateway.ts](../../src/services/engine/harness/model-gateway.ts) |
 | `ai.thinking.effort` | 思考强度默认值（会话级覆盖走聊天侧 `chat_set_thinking_effort`） | [debug.ts](../../src/services/debug.ts) 的思考强度解析 |
 | `ai.loop.maxRetry` | 生成级重试次数（0 = 关闭重试） | [harness-slot.ts](../../src/services/engine/harness/harness-slot.ts) 的 RetryPolicy 下发 |
-| `ai.loop.maxToolCallsPerTurn` | 单回合工具调用上限（子代理回合规格） | [sub-agent.ts](../../src/services/agent/sub-agent.ts) |
+| `ai.loop.subAgentRounds` | agent 子代理工具轮上限（无人值守子运行；主聊天回合已无计数上限，走循环病理检测） | [sub-agent.ts](../../src/services/agent/sub-agent.ts) |
 | `ai.loop.maxParallelTools` | 只读并行上限 | 见上一节（宿主许可所有者） |
 | `ai.memory.coreTokenBudget` / `ai.memory.recallTokenBudget` | 核心画像 / 召回预算（tokens） | [memory/provider.ts](../../src/services/agent/memory/provider.ts)、[harness/runtime.ts](../../src/services/engine/harness/runtime.ts) |
 | `ai.memory.maxSessions` | 会话标签保留上限 | [session/store.ts](../../src/services/session/store.ts) |
@@ -114,7 +114,7 @@ Rust [AppPaths](../../crates/native-host/src/paths/mod.rs) 依据 `cfg!(debug_as
 | `ai.memory.dreaming.tier` | `medium` | 记忆整理档位（同型四档）；`off` = 空闲调度器早退（面板手动整理按钮保留）；三档决定空闲阈值（3600 / 1800 / 600 秒）、最小间隔（240 / 60 / 30 分钟）与每日 token 预算（24000 / 72000 / 120000） |
 | `ai.humanizer.enabled` | true | 设置窗保存 CONFIG，下个回合冻结；关闭不加协议、不变换、不调度，已提交多段历史仍逐泡展示；保存后立即揭示未展示分泡（`revealAll`） |
 
-三处档位的数值表（唤醒区间、每日配额、token、停留/防抖/冷却等）的唯一真相源是 [proactive/protocol.json](../../src/services/proactive/protocol.json) 的 `tiers`（生成器同步到 TS 与 Rust 两侧）；[config.ts](../../src/services/config.ts) 只做读取期收拢（非法档位按 `medium` 读取、不写盘、同一非法值只诊断一次），[proactive/tiers.ts](../../src/services/proactive/tiers.ts) 负责查表。手写静默小时不是 0–23 整数（小数或范围外）时按默认 23/9 读取并 warn（同一非法值只诊断一次），写盘不拦——设置面 Number 控件只做范围收口，整数合规由读侧兜住。删除字段（2026-10-05）：`ai.silentAccess.enabled` 与 `staySeconds/settleMs/cooldownMs/samePageCooldownMs`（并入档位表）、`ai.memory.dreaming.mode/idleSeconds/minIntervalMinutes/maxDailyTokens`（mode 被 tier 取代）；Rust SQLite `proactive_control.enabled` 列同批删除。**静默时段只约束主动消息**：静默了解与记忆整理不受它门禁。配置模板、getter、原生设置窗 schema、保存映射与保存后的重应用/推送保持同步；W2 代码已落地（2026-10-05），测试统一留收口波运行；真实 CONFIG-DEV.yaml 与已有运行时数据未在本批同步。
+三处档位的数值表（唤醒区间、每日配额、token、停留/防抖/冷却等）的唯一真相源是 [proactive/protocol.json](../../src/services/proactive/protocol.json) 的 `tiers`（生成器同步到 TS 与 Rust 两侧）；[config.ts](../../src/services/config.ts) 只做读取期收拢（非法档位按 `medium` 读取、不写盘、同一非法值只诊断一次），[proactive/tiers.ts](../../src/services/proactive/tiers.ts) 负责查表。手写静默小时不是 0–23 整数（小数或范围外）时按默认 23/9 读取并 warn（同一非法值只诊断一次），写盘不拦——设置面 Number 控件只做范围收口，整数合规由读侧兜住。删除字段（2026-10-05）：`ai.silentAccess.enabled` 与 `staySeconds/settleMs/cooldownMs/samePageCooldownMs`（并入档位表）、`ai.memory.dreaming.mode/idleSeconds/minIntervalMinutes/maxDailyTokens`（mode 被 tier 取代）；Rust SQLite `proactive_control.enabled` 列同批删除。**`ai.lock` 整节已删除**（2026-10-06 回合治理批）：AI 生成锁改由回合状态推导（harness 受理计数 + 槽运行状态），不再有 `safetyTimeoutMs` 键、getter 与强制解锁路径；该键从未有设置窗控件（`ui/settings/schema.rs` 无对应字段），YAML 里残留该键按未知键忽略。**静默时段只约束主动消息**：静默了解与记忆整理不受它门禁。配置模板、getter、原生设置窗 schema、保存映射与保存后的重应用/推送保持同步；W2 代码已落地（2026-10-05），测试统一留收口波运行；真实 CONFIG-DEV.yaml 与已有运行时数据未在本批同步。
 
 图片条目只保存 `deskpetImagePaths` 原路径：用户发图与 `screenshot` 工具 `show_to_user` 的截图共用这一字段（用户图片的请求视图临时读取、经当前图片处理链处理，见[工具系统](tool-system.md)的 read 边界；截图是工具结果本身带图片块、原图另存 `screenshots/`，两者都不写 CONFIG、不建图片副本）。原文件变化即体现为下一次读取的内容；路径失效明确显示不可用，不从缓存恢复副本。
 
@@ -148,15 +148,15 @@ data_root/
 ├── personality/    cards/、stages/{cardId}.json
 ├── profiles/       {profileId}/ 下的 Profile 与素材
 ├── skills/         {name}/SKILL.md（per-skill `enabled` 开关；Pi 递归遍历、根级 `.md` 也算技能、name 可缺省取父目录名）
-├── screenshots/    桌宠截图（`<时间戳>.png`，用户可直接查看/删除；只保留最新 200 个，按 mtime 淘汰，无长期留存）
-├── pasted/         从剪贴板粘贴进聊天的图片（`<时间戳>.<真实扩展名>`；白名单外的 PNG 可转码格式落为 `.png`；同样只保留最新 200 个，按 mtime 淘汰）
+├── screenshots/    桌宠截图（`<时间戳>.png`，用户可直接查看/删除；只有展示型截图（`show_to_user=true`）落盘，无数量/时间上限）
+├── pasted/         从剪贴板粘贴进聊天的图片（`<时间戳>.<真实扩展名>`；白名单外的 PNG 可转码格式落为 `.png`；无数量/时间上限；未发送的草稿在撤选/切会话/退出时当场删除）
 ├── updates/        应用内更新的 staging 与安装状态（不替换数据根）
 └── logs/           运行日志
 ```
 
 开发构建的**运行时 CONFIG 不在数据根内**（见上表的五维区分），其余目录布局与生产一致。
 
-`screenshots/` 与 `pasted/` 是**托管聊天图片根**（枚举点 `commands/screenshot_cmd.rs` 的 `managed_chat_image_dirs`）：删除会话时，该会话条目引用到的根内文件由宿主命令 `chat_delete_session_images` 一并删除——**包含判定在 Rust**，根外的任何路径（用户自己磁盘上的原图）一律不删。两个目录都只保留最新 200 个（按 mtime、不看引用），超限会打断老会话的预览；这是与截图一致的既有取舍（`screenshots/` 由截图工具落盘，`pasted/` 由聊天输入框的粘贴入口落盘，两者共用同一套原子写 + 预览授权 + 淘汰实现）。
+`screenshots/` 与 `pasted/` 是**托管聊天图片根**（枚举点 `commands/screenshot_cmd.rs` 的 `managed_chat_image_dirs`）：删除会话时，该会话条目引用到的根内文件由宿主命令 `chat_delete_session_images` 一并删除——**包含判定在 Rust**，根外的任何路径（用户自己磁盘上的原图）一律不删。两个目录都**不再有数量/时间上限**（2026-10-06 取消 200 上限，只保留「删会话自动删」）；托管文件的其余回收点：粘贴草稿未发送即丢弃（撤选/切会话/退出，见 `ui/chat/model.rs` 的 `PendingDraftRelease`）与用户手动删除；崩溃/强杀不回收（接受残量）。`screenshots/` 由截图工具落盘（只有展示型，`show_to_user=false` 不写文件），`pasted/` 由聊天输入框的粘贴入口落盘，两者共用同一套原子写 + 预览授权实现。
 
 Node 先执行 `initPaths()`（取 `get_runtime_paths`）；`BaseDirs` 只给真正被外部读取的目录，需要完整路径时用 `runtimePath(scope, ...segments)` 交给宿主拼接和校验。业务文件名由所属模块管理。
 

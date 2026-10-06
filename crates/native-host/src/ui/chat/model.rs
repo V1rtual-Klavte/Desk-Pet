@@ -18,7 +18,7 @@
 use std::collections::HashMap;
 
 use super::events::SimpleStageKey;
-use super::placeholders::{placeholder_for, ImagePlaceholder};
+use super::placeholders::{discard_managed_files, placeholder_for, ImagePlaceholder};
 use super::projection::{
     ProjectedDebug, ProjectedHistorySession, ProjectedMessage, ProjectedRegisteredTool,
     ProjectedRole, ProjectedSession, ProjectedToolCall, TranscriptProjection,
@@ -442,6 +442,16 @@ pub struct Revisions {
     pub pending: u64,
 }
 
+/// 待发送区的释放语义（执行契约 Part 4.3：「发送」与「丢弃」在类型上可区分，
+/// 不靠调用点约定）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PendingDraftRelease {
+    /// 发送成功：路径所有权已转移给消息条目（`deskpetImagePaths`），只清列表、保留文件。
+    Send,
+    /// 丢弃草稿（切会话 / 退出 / 撤选）：`managed` 项删除磁盘文件，失败只留痕。
+    Discard,
+}
+
 /// 聊天窗显示模型。
 #[derive(Debug, Default)]
 pub struct ChatModel {
@@ -582,7 +592,8 @@ impl ChatModel {
             // 活跃指针变化 = 标签条高亮变化（A1）。
             self.tabs_revision += 1;
             // §5.3：待发送区是用户主动选择后的临时状态，不跨会话（切会话即释放）。
-            self.clear_pending_images();
+            // Part 4.3：释放即丢弃 —— 粘贴入口的托管草稿当场删文件（用户自有文件不删）。
+            self.clear_pending_images(PendingDraftRelease::Discard);
         }
         if let Some(speaker) = projection.speaker_name {
             self.speaker = Some(speaker);
@@ -1227,23 +1238,31 @@ impl ChatModel {
         added
     }
 
-    /// 撤选一张（返回是否确实移除）。
+    /// 撤选一张（返回是否确实移除）。撤选即丢弃：`managed` 草稿项当场删文件
+    /// （失败只留痕，见 [`discard_managed_files`]），用户自有文件不动。
     pub fn remove_pending_image(&mut self, path: &str) -> bool {
-        let before = self.pending_images.len();
-        self.pending_images.retain(|image| image.path != path);
-        let removed = self.pending_images.len() != before;
-        if removed {
-            self.pending_revision += 1;
-        }
-        removed
+        let Some(index) = self.pending_images.iter().position(|image| image.path == path) else {
+            return false;
+        };
+        let removed = self.pending_images.remove(index);
+        self.pending_revision += 1;
+        discard_managed_files(std::slice::from_ref(&removed));
+        true
     }
 
-    /// 清空待发送区（发送成功 / 切会话的释放点；返回是否有变化）。
-    pub fn clear_pending_images(&mut self) -> bool {
+    /// 清空待发送区（发送成功 / 切会话 / 退出的释放点；返回是否有变化）。
+    ///
+    /// 释放语义由 [`PendingDraftRelease`] 在类型上区分：发送是所有权转移（文件保留），
+    /// 丢弃是回收托管草稿（`managed` 项删文件、失败只留痕）。逐张撤选走
+    /// [`Self::remove_pending_image`]。
+    pub fn clear_pending_images(&mut self, release: PendingDraftRelease) -> bool {
         if self.pending_images.is_empty() {
             return false;
         }
-        self.pending_images.clear();
+        let drafts = std::mem::take(&mut self.pending_images);
+        if release == PendingDraftRelease::Discard {
+            discard_managed_files(&drafts);
+        }
         self.pending_revision += 1;
         true
     }
@@ -3019,6 +3038,7 @@ mod tests {
                 file_name: path.rsplit('/').next().unwrap_or(path).into(),
                 size_bytes: Some(1024),
                 available: true,
+                managed: false,
             }
         }
         let mut model = ChatModel::new();
@@ -3044,7 +3064,104 @@ mod tests {
 
         model.apply_projection(projection("s2", vec![]));
         assert!(model.pending_images().is_empty(), "切会话释放待发送区");
-        assert!(!model.clear_pending_images(), "已空时清空是 no-op");
+        assert!(
+            !model.clear_pending_images(PendingDraftRelease::Discard),
+            "已空时清空是 no-op"
+        );
+    }
+
+    // ==========================================
+    // Part 4.3：粘贴草稿的丢弃语义（真建真删，夹具在系统临时目录）
+    // ==========================================
+
+    /// 待发送区条目（`managed` 决定丢弃时是否删文件）。
+    fn pending_item(path: &std::path::Path, managed: bool) -> ImagePlaceholder {
+        ImagePlaceholder {
+            path: path.to_string_lossy().into_owned(),
+            file_name: path.file_name().unwrap().to_string_lossy().into_owned(),
+            size_bytes: Some(4),
+            available: true,
+            managed,
+        }
+    }
+
+    /// 丢弃草稿（切会话走同一 `Discard` 分支）：managed 删文件，非 managed 不删。
+    #[test]
+    fn 丢弃草稿删托管文件但保留用户自有文件() {
+        let dir = crate::images::fixtures::temp_dir("chat-model-discard");
+        let pasted = dir.join("pasted.png");
+        let user_file = dir.join("user.png");
+        std::fs::write(&pasted, b"png").unwrap();
+        std::fs::write(&user_file, b"png").unwrap();
+
+        let mut model = ChatModel::new();
+        model.apply_projection(projection("s1", vec![]));
+        model.add_pending_images(vec![pending_item(&pasted, true), pending_item(&user_file, false)]);
+        model.apply_projection(projection("s2", vec![]));
+
+        assert!(model.pending_images().is_empty(), "切会话必须释放待发送区");
+        assert!(!pasted.exists(), "托管草稿必须随丢弃删除");
+        assert!(user_file.exists(), "文件选择器/拖入的用户文件永不删除");
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    /// 发送释放 = 所有权转移：清列表但**不删文件**（路径已进消息条目）。
+    #[test]
+    fn 发送释放只清空不删文件() {
+        let dir = crate::images::fixtures::temp_dir("chat-model-send");
+        let pasted = dir.join("pasted.png");
+        std::fs::write(&pasted, b"png").unwrap();
+
+        let mut model = ChatModel::new();
+        model.add_pending_images(vec![pending_item(&pasted, true)]);
+        assert!(model.clear_pending_images(PendingDraftRelease::Send));
+
+        assert!(model.pending_images().is_empty());
+        assert!(pasted.exists(), "发送是所有权转移，文件必须保留");
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    /// 撤选删单张：只删被撤选的托管文件，同批其它草稿不动。
+    #[test]
+    fn 撤选删除单张托管草稿且不碰其它草稿() {
+        let dir = crate::images::fixtures::temp_dir("chat-model-remove");
+        let first = dir.join("first.png");
+        let second = dir.join("second.png");
+        std::fs::write(&first, b"png").unwrap();
+        std::fs::write(&second, b"png").unwrap();
+
+        let mut model = ChatModel::new();
+        model.add_pending_images(vec![
+            pending_item(&first, true),
+            pending_item(&second, true),
+        ]);
+        assert!(model.remove_pending_image(&first.to_string_lossy()));
+
+        assert!(!first.exists(), "被撤选的托管草稿必须删除");
+        assert!(second.exists(), "未被撤选的草稿不得误删");
+        assert_eq!(model.pending_paths().len(), 1);
+
+        // 非托管项撤选只移除，不删用户文件。
+        let user_file = dir.join("user.png");
+        std::fs::write(&user_file, b"png").unwrap();
+        model.add_pending_images(vec![pending_item(&user_file, false)]);
+        assert!(model.remove_pending_image(&user_file.to_string_lossy()));
+        assert!(user_file.exists(), "用户自有文件撤选后原样保留");
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    /// 丢弃时文件已不存在（或删除失败）只留痕：清理照常完成、不 panic、列表照样清空。
+    #[test]
+    fn 丢弃失败不阻塞释放() {
+        let dir = crate::images::fixtures::temp_dir("chat-model-missing");
+        let missing = dir.join("already-gone.png");
+
+        let mut model = ChatModel::new();
+        model.add_pending_images(vec![pending_item(&missing, true)]);
+        assert!(model.clear_pending_images(PendingDraftRelease::Discard));
+
+        assert!(model.pending_images().is_empty(), "删除失败不阻塞释放");
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     // ==========================================

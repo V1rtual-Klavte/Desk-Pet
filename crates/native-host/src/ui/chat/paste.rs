@@ -5,7 +5,7 @@
 //! 待发送区都在这一个实现点里，平台层不复制任何规则。
 //!
 //! 落盘目录是数据根 `pasted/`（与 `screenshots/` 同属「托管聊天图片根」，
-//! 写盘/授权/保留三步复用 `commands/screenshot_cmd.rs::save_managed_image`）；
+//! 写盘/授权两步复用 `commands/screenshot_cmd.rs::save_managed_image`）；
 //! 格式口径：白名单（PNG/JPEG/GIF/WebP）原样保存，BMP/TIFF（剪贴板常见的
 //! DIB 由平台层补 BMP 容器头后进来）先解码再编码为 PNG，**不缩放** ——
 //! 大小由聊天图片上限（`images/limits.json`，Rust 侧 `images/limits.rs`）把关。
@@ -57,7 +57,7 @@ pub fn install_paste_ports(ports: PastePorts) {
 ///
 /// 补充（实现口径，不改签名）：
 /// - 同步段只做廉价判定（空/超大/格式/张数/端口就绪），返回的 `Err` 文案可直接展示；
-/// - 转码、写盘、授权、保留清理在 `deskpet-chat-paste` 工作线程执行（不阻塞 UI
+/// - 转码、写盘、授权在 `deskpet-chat-paste` 工作线程执行（不阻塞 UI
 ///   主线程），晚到失败经 [`set_notice`] 以同前缀的中性文案呈现；
 /// - 写入成功但没能进入待发送区（例如并发把张数顶满）时删除刚落盘的文件，不留孤儿。
 pub fn add_pasted_image(bytes: Vec<u8>) -> Result<(), String> {
@@ -136,7 +136,7 @@ fn admit_paste_count(pending: usize, max_images: usize) -> Result<(), String> {
     Ok(())
 }
 
-/// 工作线程执行段：转码 → 写盘/授权/保留清理 → 加入待发送区。
+/// 工作线程执行段：转码 → 写盘/授权 → 加入待发送区（托管草稿标记）。
 fn store_and_enqueue(bytes: Vec<u8>, max_bytes: u64) -> Result<(), String> {
     let ports = PORTS
         .get()
@@ -152,16 +152,15 @@ fn store_and_enqueue(bytes: Vec<u8>, max_bytes: u64) -> Result<(), String> {
     .map_err(|error| format!("图片未添加：{error}"))?;
 
     let path_text = path.to_string_lossy().into_owned();
-    match chat_ui().add_pending_images(vec![path_text]) {
+    // 托管草稿入口（`managed=true`）：草稿丢弃（撤选/切会话/退出）时回收文件，
+    // 与文件选择器/拖入的用户自有文件区分。
+    match chat_ui().add_managed_pending_images(vec![path_text]) {
         Ok(_) => Ok(()),
         Err(error) => {
-            // 没能进入待发送区：删除刚落盘的文件，不留没人引用的孤儿（保留上限之外的就地清理）。
-            // 删除失败只留痕 —— 主错误（未添加）必须如实上报。
+            // 没能进入待发送区：删除刚落盘的文件，不留没人引用的孤儿（还没进待发送区，
+            // 不归草稿回滚管）。删除失败只留痕 —— 主错误（未添加）必须如实上报。
             if let Err(remove_error) = std::fs::remove_file(&path) {
-                rust_debug!(
-                    "粘贴图片回滚失败（文件由保留上限兜底） {}: {remove_error}",
-                    path.display()
-                );
+                rust_debug!("粘贴图片未入区回滚失败 {}: {remove_error}", path.display());
             }
             Err(format!("图片未添加：{error}"))
         }

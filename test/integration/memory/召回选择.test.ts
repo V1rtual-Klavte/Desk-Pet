@@ -11,7 +11,12 @@ vi.mock("@/services/config", () => ({ memoryConfig: mocks.memoryConfig }))
 vi.mock("@/services/agent/memory/ipc", () => ({
   getMemoryRecallCandidates: mocks.recallCandidates,
 }))
-vi.mock("@/services/engine/harness", () => ({ completePiText: mocks.completePiText }))
+// `isAIGenerating` 的真相源已从 `@/services/cooldown` 移居 harness：本文件的导入链
+// 目前不触达那条分支，但工厂桩必须覆盖消费到的公开导出，否则路径一变就整片红。
+vi.mock("@/services/engine/harness", () => ({
+  completePiText: mocks.completePiText,
+  isAIGenerating: vi.fn(() => false),
+}))
 vi.mock("@/services/engine/runtime", () => ({ publishRuntimeTrace: vi.fn() }))
 vi.mock("@/services/logger", () => ({ createLogger: () => ({ warn: vi.fn() }) }))
 vi.mock("@/services/error", () => ({ formatError: (error: unknown) => String(error) }))

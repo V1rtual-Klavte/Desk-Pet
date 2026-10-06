@@ -122,6 +122,19 @@ fn next_success_after(attempt: &str, now: i64, limits: &ProactiveLimits) -> i64 
     });
     now + limits.min_success_interval_ms + i64::from(hash) % limits.success_interval_spread_ms
 }
+/// 冷却起点：最近一次**成功投递**的表达时刻 —— occurrence 被置为 `committed` 时的
+/// `updated_at`（settle 与 reconcile 两条提交路径都在同一事务内写入）。
+/// 全表查询、不按 `local_date` 分行：跨日的最后一次成功投递同样要冷却。
+/// 不读 `proactive_attempts.updated_at` —— 记忆治理操作（invalidate / clear / restore）
+/// 会重写 committed attempt 行的 updated_at，而 occurrences 不受这些路径触碰。
+fn last_committed_expression_at(tx: &Transaction<'_>) -> AppResult<Option<i64>> {
+    tx.query_row(
+        "SELECT MAX(updated_at) FROM proactive_occurrences WHERE kind='expression' AND status='committed'",
+        [],
+        |row| row.get::<_, Option<i64>>(0),
+    )
+    .map_err(db)
+}
 fn prune_tx(tx: &Transaction<'_>, now: i64) -> AppResult<()> {
     tx.execute(
         "DELETE FROM proactive_evaluations WHERE created_at<?1",
@@ -773,7 +786,12 @@ impl MemoryStore {
             out
         };
         let control=tx.query_row("SELECT mute_until,revision FROM proactive_control WHERE id=1",[],|row|Ok(json!({"muteUntil":row.get::<_,Option<i64>>(0)?,"revision":row.get::<_,i64>(1)?}))).map_err(db)?;
-        let budget=tx.query_row("SELECT local_date,planning_attempts,expression_attempts,successful_messages,reserved_tokens,used_tokens,unknown_tokens,observation_attempts,topic_attempts,next_success_after,daily_success_limit FROM proactive_budgets WHERE local_date=?1",[local_date],|row|Ok(json!({"localDate":row.get::<_,String>(0)?,"planningAttempts":row.get::<_,i64>(1)?,"expressionAttempts":row.get::<_,i64>(2)?,"successfulMessages":row.get::<_,i64>(3)?,"reservedTokens":row.get::<_,i64>(4)?,"usedTokens":row.get::<_,i64>(5)?,"unknownTokens":row.get::<_,i64>(6)?,"observationAttempts":row.get::<_,i64>(7)?,"topicAttempts":row.get::<_,i64>(8)?,"nextSuccessAfter":row.get::<_,Option<i64>>(9)?,"dailySuccessLimit":row.get::<_,i64>(10)?}))).map_err(db)?;
+        // 冷却快照（只读给节点侧门禁用；权威拒绝仍在 claim）：最近一次成功投递 +
+        // 档位 cooldownMs；无记录或已过期给 null。
+        let cooldown_until = last_committed_expression_at(&tx)?
+            .map(|at| at + limits.cooldown_ms)
+            .filter(|until| *until > now);
+        let budget=tx.query_row("SELECT local_date,planning_attempts,expression_attempts,successful_messages,reserved_tokens,used_tokens,unknown_tokens,observation_attempts,topic_attempts,next_success_after,daily_success_limit FROM proactive_budgets WHERE local_date=?1",[local_date],|row|Ok(json!({"localDate":row.get::<_,String>(0)?,"planningAttempts":row.get::<_,i64>(1)?,"expressionAttempts":row.get::<_,i64>(2)?,"successfulMessages":row.get::<_,i64>(3)?,"reservedTokens":row.get::<_,i64>(4)?,"usedTokens":row.get::<_,i64>(5)?,"unknownTokens":row.get::<_,i64>(6)?,"observationAttempts":row.get::<_,i64>(7)?,"topicAttempts":row.get::<_,i64>(8)?,"nextSuccessAfter":row.get::<_,Option<i64>>(9)?,"dailySuccessLimit":row.get::<_,i64>(10)?,"cooldownUntil":cooldown_until}))).map_err(db)?;
         let source_revision = tx
             .query_row(
                 "SELECT CAST(value AS INTEGER) FROM memory_meta WHERE key='revision'",
@@ -1234,6 +1252,14 @@ impl MemoryStore {
         }
         if respect_random_interval && budget.6.is_some_and(|until| until > now) {
             return denied_claim(tx, "success_interval");
+        }
+        // 冷却不受 `respect_random_interval` 约束：所有规则共用「最近一次成功投递之后
+        // cooldownMs」的全局最小间隔（旧 Node `isCoolingDown()` 门禁同款，无开关）。
+        if last_committed_expression_at(&tx)?
+            .map(|at| at + limits.cooldown_ms)
+            .is_some_and(|until| until > now)
+        {
+            return denied_claim(tx, "cooldown");
         }
         // unknown_tokens is an audit subset of reserved_tokens, so it must never be
         // added a second time when enforcing the daily ceiling.
@@ -2274,10 +2300,11 @@ mod tests {
             "sourceRevision":0,"controlRevision":0,"sourceRefs":[Fixture::source_ref()],"occurrenceIds":["ordinary-next"],
             "attemptId":"random-next","requestId":"random-next-request","sourceFingerprint":"random-next-fingerprint"}),&limits).expect("普通选材尊重持久随机间隔");
         assert_eq!(random_retry["reason"], json!("success_interval"));
-        let anchored=reopened.proactive_claim(&json!({"owner":Fixture::owner(),"now":now+1,"localDate":date,"kind":"expression","reservedTokens":20,"ruleId":"scheduled_task",
+        // 明确约定绕过的是随机间隔；新账本的全局冷却对所有规则生效，因此取冷却窗口之后验证。
+        let anchored=reopened.proactive_claim(&json!({"owner":Fixture::owner(),"now":now+limits.cooldown_ms+1,"localDate":date,"kind":"expression","reservedTokens":20,"ruleId":"scheduled_task",
             "sourceRevision":0,"controlRevision":0,"sourceRefs":[Fixture::source_ref()],"occurrenceIds":["explicit-anchor"],
             "attemptId":"anchor-next","requestId":"anchor-next-request","sourceFingerprint":"anchor-next-fingerprint"}),&limits).expect("明确约定不被随机间隔阻断");
-        assert_eq!(anchored["claimed"], json!(true));
+        assert_eq!(anchored["claimed"], json!(true), "冷却窗口外的明确约定不应被随机间隔阻断");
     }
 
     /// 随机成功间隔与每日成功上限取**投影档位**（低档：3h + 0–2h，上限 2）。
@@ -2315,6 +2342,167 @@ mod tests {
             )
             .expect("低档读预算");
         assert_eq!(after["budget"]["nextSuccessAfter"], json!(expected));
+    }
+
+    /// 冷却快照 = 最近一次成功投递（occurrence 置 committed）的**结算时刻** +
+    /// 档位 cooldownMs；全表查询、不受 local_date 限制（跨日仍在窗口内）；
+    /// 无记录 / 已过期（until ≤ now）给 null。结算时刻与领取时刻不同，二者不可互换。
+    #[test]
+    fn 冷却快照取最近成功投递的结算时刻且跨日生效() {
+        let fixture = Fixture::new();
+        let owner = Fixture::owner();
+        let limits = ProactiveLimits::medium();
+        let claim_at = 1_791_003_600_000_i64;
+        let settle_at = claim_at + 1_000;
+        let initial = fixture
+            .1
+            .proactive_scan(
+                &json!({"owner":owner.clone(),"now":claim_at,"localDate":"2026-10-03","limit":1}),
+                &limits,
+            )
+            .expect("无记录扫描");
+        assert_eq!(
+            initial["budget"]["cooldownUntil"],
+            Value::Null,
+            "没有任何成功投递时冷却快照必须是 null"
+        );
+        fixture.1.proactive_claim(&json!({"owner":owner.clone(),"now":claim_at,"localDate":"2026-10-03","kind":"expression","reservedTokens":20,"ruleId":"memory_checkin","sourceRevision":0,"controlRevision":0,"sourceRefs":[Fixture::source_ref()],"occurrenceIds":["cooldown-occurrence"],"attemptId":"cooldown-attempt","requestId":"cooldown-request","sourceFingerprint":"cooldown-fingerprint"}),&limits).expect("领取表达");
+        fixture.1.proactive_settle(&json!({"owner":owner.clone(),"attemptId":"cooldown-attempt","sourceFingerprint":"cooldown-fingerprint","localDate":"2026-10-03","status":"committed","now":settle_at,"assistantEntryId":"cooldown-assistant","usage":{"totalTokens":12},"decision":null}),&limits).expect("结算成功投递");
+        let in_window = fixture
+            .1
+            .proactive_scan(
+                &json!({"owner":owner.clone(),"now":settle_at+1,"localDate":"2026-10-04","limit":1}),
+                &limits,
+            )
+            .expect("跨日扫描");
+        assert_eq!(
+            in_window["budget"]["cooldownUntil"],
+            json!(settle_at + limits.cooldown_ms),
+            "起点是结算时刻（不是领取时刻），且跨日沿用同一起点"
+        );
+        let expired = fixture
+            .1
+            .proactive_scan(
+                &json!({"owner":owner,"now":settle_at+limits.cooldown_ms,"localDate":"2026-10-04","limit":1}),
+                &limits,
+            )
+            .expect("窗口边界扫描");
+        assert_eq!(
+            expired["budget"]["cooldownUntil"],
+            Value::Null,
+            "窗口边界（until ≤ now）应给 null"
+        );
+    }
+
+    /// 终裁冷却门禁：成功投递之后 cooldownMs 内 claim 被 `denied_claim("cooldown")`；
+    /// 不受 `respect_random_interval` 约束（scheduled_task 也照挡）；窗口外放行。
+    #[test]
+    fn claim在冷却窗口内被cooldown拒绝且不受随机间隔开关影响() {
+        let fixture = Fixture::new();
+        let owner = Fixture::owner();
+        let limits = ProactiveLimits::medium();
+        let claim_at = 1_791_003_600_000_i64;
+        let settle_at = claim_at + 1_000;
+        let claim = |attempt: &str, now: i64| {
+            fixture.1.proactive_claim(&json!({"owner":owner.clone(),"now":now,"localDate":"2026-10-03","kind":"expression","reservedTokens":20,"ruleId":"scheduled_task","sourceRevision":0,"controlRevision":0,"sourceRefs":[Fixture::source_ref()],"occurrenceIds":[format!("occ-{attempt}")],"attemptId":attempt,"requestId":format!("request-{attempt}"),"sourceFingerprint":format!("fp-{attempt}")}),&limits)
+        };
+        let first = claim("cooldown-settled", claim_at).expect("首条领取");
+        assert_eq!(first["claimed"], json!(true));
+        fixture.1.proactive_settle(&json!({"owner":owner.clone(),"attemptId":"cooldown-settled","sourceFingerprint":"fp-cooldown-settled","localDate":"2026-10-03","status":"committed","now":settle_at,"assistantEntryId":"cooldown-assistant","usage":{"totalTokens":12},"decision":null}),&limits).expect("结算成功投递");
+        let denied = claim("cooldown-too-soon", settle_at + 1).expect("窗口内领取查询");
+        assert_eq!(denied["claimed"], json!(false));
+        assert_eq!(
+            denied["reason"],
+            json!("cooldown"),
+            "scheduled_task 不受随机间隔约束，但冷却对所有规则生效"
+        );
+        let allowed = claim("cooldown-after", settle_at + limits.cooldown_ms + 1).expect("窗口外领取");
+        assert_eq!(allowed["claimed"], json!(true));
+    }
+
+    /// claim 的 occurrence upsert 只在非终态行上生效：已 committed 的 occurrence 不会被
+    /// 后续 claim 重置为 reserved，也不会被改写 updated_at（冷却起点因此保持稳定）。
+    #[test]
+    fn 已提交occurrence不会被后续claim重置() {
+        let fixture = Fixture::new();
+        let owner = Fixture::owner();
+        let limits = ProactiveLimits::medium();
+        let claim_at = 1_791_003_600_000_i64;
+        let settle_at = claim_at + 1_000;
+        fixture.1.proactive_claim(&json!({"owner":owner.clone(),"now":claim_at,"localDate":"2026-10-03","kind":"expression","reservedTokens":20,"ruleId":"memory_checkin","sourceRevision":0,"controlRevision":0,"sourceRefs":[Fixture::source_ref()],"occurrenceIds":["steady-occurrence"],"attemptId":"steady-attempt","requestId":"steady-request","sourceFingerprint":"steady-fingerprint"}),&limits).expect("首次领取");
+        fixture.1.proactive_settle(&json!({"owner":owner.clone(),"attemptId":"steady-attempt","sourceFingerprint":"steady-fingerprint","localDate":"2026-10-03","status":"committed","now":settle_at,"assistantEntryId":"steady-assistant","usage":{"totalTokens":9},"decision":null}),&limits).expect("结算成功投递");
+        let replay = fixture.1.proactive_claim(&json!({"owner":owner,"now":settle_at+limits.cooldown_ms+1,"localDate":"2026-10-03","kind":"expression","reservedTokens":20,"ruleId":"memory_checkin","sourceRevision":0,"controlRevision":0,"sourceRefs":[Fixture::source_ref()],"occurrenceIds":["steady-occurrence"],"attemptId":"steady-replay","requestId":"steady-replay-request","sourceFingerprint":"steady-fingerprint"}),&limits).expect("重复机会必须被挡住");
+        assert_eq!(replay["claimed"], json!(false));
+        assert_eq!(replay["reason"], json!("occurrence_already_settled_or_cooling"));
+        let conn = connection(&fixture.1).expect("锁库");
+        let settled: (String, i64) = conn
+            .query_row("SELECT status,updated_at FROM proactive_occurrences WHERE occurrence_id='steady-occurrence'",[],|row|Ok((row.get(0)?,row.get(1)?)))
+            .expect("回读提交槽");
+        assert_eq!(
+            settled,
+            ("committed".to_string(), settle_at),
+            "committed 槽不得被重置状态或改写结算时刻"
+        );
+    }
+
+    /// 回执对账把 unresolved 补成 committed 时同样起冷却：unresolved 不是成功投递，
+    /// 补提交之后才按对账时刻计算冷却。
+    #[test]
+    fn 回执对账补提交后才起冷却() {
+        let fixture = Fixture::new();
+        let owner = Fixture::owner();
+        let limits = ProactiveLimits::medium();
+        let now = now_ms();
+        fixture.1.proactive_claim(&json!({"owner":owner.clone(),"now":now,"localDate":"2026-10-03","kind":"expression","reservedTokens":20,"ruleId":"memory_checkin","sourceRevision":0,"controlRevision":0,"sourceRefs":[Fixture::source_ref()],"occurrenceIds":["receipt-occurrence"],"attemptId":"receipt-attempt","requestId":"receipt-request","sourceFingerprint":"receipt-fingerprint"}),&limits).expect("领取表达");
+        let settled = fixture.1.proactive_settle(&json!({"owner":owner.clone(),"attemptId":"receipt-attempt","sourceFingerprint":"receipt-fingerprint","localDate":"2026-10-03","status":"committed","now":now,"assistantEntryId":"receipt-assistant","usage":null,"decision":null}),&limits).expect("未知用量结算");
+        assert_eq!(settled["status"], json!("unresolved"));
+        let before = fixture
+            .1
+            .proactive_scan(&json!({"owner":owner.clone(),"now":now+1,"localDate":"2026-10-03","limit":1}),&limits)
+            .expect("补提交前扫描");
+        assert_eq!(before["budget"]["cooldownUntil"], Value::Null, "unresolved 不构成成功投递");
+        let reconcile_started = now_ms();
+        fixture.1.proactive_reconcile(&json!({"owner":owner.clone(),"attemptId":"receipt-attempt","sourceFingerprint":"receipt-fingerprint","localDate":"2026-10-03","committed":true,"assistantEntryId":"receipt-assistant","usage":{"totalTokens":7}}),&limits).expect("回执补提交");
+        let reconcile_finished = now_ms();
+        let after = fixture
+            .1
+            .proactive_scan(&json!({"owner":owner,"now":now_ms()+1,"localDate":"2026-10-03","limit":1}),&limits)
+            .expect("补提交后扫描");
+        let until = after["budget"]["cooldownUntil"].as_i64().expect("补提交后应有冷却快照");
+        assert!(
+            until >= reconcile_started + limits.cooldown_ms && until <= reconcile_finished + limits.cooldown_ms,
+            "冷却起点必须是对账提交时刻：{until} 不在 [{reconcile_started}, {reconcile_finished}] + cooldownMs 内"
+        );
+    }
+
+    /// 记忆治理清扫（clear/restore 会重写 attempt 行的 updated_at）不得影响冷却起点：
+    /// 起点读 occurrence，清扫后快照与门禁都按原结算时刻计算。
+    #[test]
+    fn 记忆治理清扫不改写冷却起点() {
+        let fixture = Fixture::new();
+        let owner = Fixture::owner();
+        let limits = ProactiveLimits::medium();
+        let claim_at = 1_791_003_600_000_i64;
+        let settle_at = claim_at + 1_000;
+        fixture.1.proactive_claim(&json!({"owner":owner.clone(),"now":claim_at,"localDate":"2026-10-03","kind":"expression","reservedTokens":20,"ruleId":"memory_checkin","sourceRevision":0,"controlRevision":0,"sourceRefs":[Fixture::source_ref()],"occurrenceIds":["cleared-occurrence"],"attemptId":"cleared-attempt","requestId":"cleared-request","sourceFingerprint":"cleared-fingerprint"}),&limits).expect("领取表达");
+        fixture.1.proactive_settle(&json!({"owner":owner.clone(),"attemptId":"cleared-attempt","sourceFingerprint":"cleared-fingerprint","localDate":"2026-10-03","status":"committed","now":settle_at,"assistantEntryId":"cleared-assistant","usage":{"totalTokens":5},"decision":null}),&limits).expect("结算成功投递");
+        {
+            let conn = connection(&fixture.1).expect("锁库");
+            let tx = conn.unchecked_transaction().expect("开治理事务");
+            clear_memory_closure_tx(&tx).expect("模拟记忆清空清扫");
+            tx.commit().expect("提交清扫");
+        }
+        let snapshot = fixture
+            .1
+            .proactive_scan(&json!({"owner":owner.clone(),"now":settle_at+1,"localDate":"2026-10-04","limit":1}),&limits)
+            .expect("清扫后扫描");
+        assert_eq!(
+            snapshot["budget"]["cooldownUntil"],
+            json!(settle_at + limits.cooldown_ms),
+            "清扫重写了 attempt 行，但冷却起点读 occurrence、不受影响"
+        );
+        let claim = fixture.1.proactive_claim(&json!({"owner":owner,"now":settle_at+limits.cooldown_ms+1,"localDate":"2026-10-03","kind":"expression","reservedTokens":20,"ruleId":"memory_checkin","sourceRevision":0,"controlRevision":0,"sourceRefs":[Fixture::source_ref()],"occurrenceIds":["cleared-next"],"attemptId":"cleared-next","requestId":"cleared-next-request","sourceFingerprint":"cleared-next-fingerprint"}),&limits).expect("清扫后窗口外领取");
+        assert_eq!(claim["claimed"], json!(true), "清扫不得把冷却推到清扫时刻之后");
     }
 
     #[test]

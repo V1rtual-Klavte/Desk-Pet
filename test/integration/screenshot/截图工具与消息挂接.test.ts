@@ -158,6 +158,16 @@ describe("截图工具与助手消息挂接", () => {
     expect(HOISTED.saveCalls, "截图工具没有执行落盘").toBe(1)
     expect(HOISTED.saveArgs[0]?.imageBase64, "落盘命令没有拿到实际采集的 base64").toBe(HOISTED.pngBase64)
 
+    // ①b 工具结果层（契约 §4.2）：展示型的 details 带落盘路径（条目挂接链的来源就是它），
+    // 结果同时带图片块；直接经执行入口再取一次，与上面经由回合链路的观测互补。
+    const shotTool = getToolByName("screenshot")
+    expect(shotTool, "截图工具未注册，断言没有前提").toBeDefined()
+    const shownResult = await executeToolDefinition(shotTool!, { show_to_user: true }, {})
+    expect((shownResult.details as { screenshotPath?: unknown } | undefined)?.screenshotPath,
+      "展示型截图的 details 丢失了落盘路径").toBe(HOISTED.savedPath)
+    expect(shownResult.contentParts?.some(part => part.type === "image"),
+      "展示型截图的结果没有图片块").toBe(true)
+
     // ② 模型收到图片结果块（她自己看得见）。
     const toolResultMessage = provider.payloads[1]?.messages.find(message =>
       message.role === "toolResult" && (message as { toolName?: string }).toolName === "screenshot")
@@ -219,5 +229,17 @@ describe("截图工具与助手消息挂接", () => {
     const entries = await sessionEntries()
     const attached = entries.filter(entry => entry.type === "message" && entry.message.role === "assistant" && entryImagePaths(entry)?.length)
     expect(attached.length, "缺省 show_to_user 的截图被挂进了聊天条目").toBe(0)
+
+    // ① 工具结果层（契约 §4.2）：私有型**跳过 save_screenshot**（不落盘），但仍带图片块给模型；
+    // details 不带 screenshotPath —— 条目挂接链因此从源头拿不到可挂路径。
+    const tool = getToolByName("screenshot")
+    expect(tool, "截图工具未注册，断言没有前提").toBeDefined()
+    const privateResult = await executeToolDefinition(tool!, {}, {})
+    expect(privateResult.success, "私有型执行失败（应正常返回结果）").toBe(true)
+    expect(HOISTED.saveCalls, "私有截图落盘了（整条用例里 save_screenshot 都不得被调用）").toBe(0)
+    expect(privateResult.contentParts?.some(part => part.type === "image"),
+      "私有截图的结果没有图片块（模型应照常看得见）").toBe(true)
+    expect((privateResult.details as { screenshotPath?: unknown } | undefined)?.screenshotPath,
+      "私有截图的 details 不该带落盘路径").toBeUndefined()
   }, 60_000)
 })

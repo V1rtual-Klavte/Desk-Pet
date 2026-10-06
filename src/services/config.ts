@@ -242,7 +242,8 @@ interface Config {
     }
     loop: {
       maxRetry: number
-      maxToolCallsPerTurn: number
+      /** agent 子代理的工具轮上限（无人值守子运行；主聊天回合已无计数上限） */
+      subAgentRounds: number
       toolTimeoutMs: number
       turnTimeoutMs: number
       dedupWindowMs: number
@@ -277,7 +278,6 @@ interface Config {
       onStepFailure: string
       keywords: string[]
     }
-    lock: { safetyTimeoutMs: number }
     humanizer: { enabled: boolean }
     /** 主动消息：总闸 + 频率 + 静默时间段（静默时段仅约束主动消息） */
     proactive: {
@@ -802,10 +802,6 @@ export const silentAccessConfig = {
   get frequency() { return readFrequencyTier(overrideOr("ai.silentAccess.frequency", cfg.ai?.silentAccess?.frequency), "ai.silentAccess.frequency"); },
 };
 
-export const aiLockConfig = {
-  get safetyTimeoutMs() { return overrideOr("ai.lock.safetyTimeoutMs", cfg.ai?.lock?.safetyTimeoutMs || 30000); },
-};
-
 export const memoryConfig = {
   get enabled() { return overrideOr("ai.memory.enabled", cfg.ai?.memory?.enabled ?? true); },
   get coreTokenBudget() { return overrideOr("ai.memory.coreTokenBudget", cfg.ai?.memory?.coreTokenBudget ?? 320); },
@@ -864,7 +860,8 @@ export function parallelToolsError(value: number): string | undefined {
 
 export const loopConfig = {
   get maxRetry() { return overrideOr("ai.loop.maxRetry", cfg.ai?.loop?.maxRetry ?? 3); },
-  get maxToolCallsPerTurn() { return overrideOr("ai.loop.maxToolCallsPerTurn", cfg.ai?.loop?.maxToolCallsPerTurn ?? 5); },
+  /** agent 子代理工具轮上限（`ai.loop.subAgentRounds`）；主聊天回合不消费（无计数上限）。 */
+  get subAgentRounds() { return overrideOr("ai.loop.subAgentRounds", cfg.ai?.loop?.subAgentRounds ?? 5); },
   get toolTimeoutMs() { return overrideOr("ai.loop.toolTimeoutMs", cfg.ai?.loop?.toolTimeoutMs ?? 30000); },
   get turnTimeoutMs() { return overrideOr("ai.loop.turnTimeoutMs", cfg.ai?.loop?.turnTimeoutMs ?? 120000); },
   get dedupWindowMs() { return overrideOr("ai.loop.dedupWindowMs", cfg.ai?.loop?.dedupWindowMs ?? 30000); },

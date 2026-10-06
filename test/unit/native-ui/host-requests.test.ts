@@ -57,7 +57,7 @@ ai:
   contextMaxTokens: 131072
   thinking: { effort: auto }
   conversation: { defaultDelivery: steer, steeringMode: all, followUpMode: all }
-  loop: { maxRetry: 3, maxToolCallsPerTurn: 5, maxParallelTools: 2 }
+  loop: { maxRetry: 3, subAgentRounds: 5, maxParallelTools: 2 }
   safety: { mode: tell_me, sessionTrustEnabled: true }
   plan: { enabled: false }
   humanizer: { enabled: false }

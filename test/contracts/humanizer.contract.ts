@@ -25,6 +25,15 @@
 // src/services/engine/harness/runtime.ts（估算偏差对账口径；逐泡揭示与瞬态状态口径未动）。
 // hz-01..hz-04 逐点核对实现点仍在、覆盖描述与当前实现一致，未修订覆盖点，仅按当前源码
 // 刷新 sourceHash。
+// 2026-10-06 工具循环治理与锁迁移批次（本批刷新）：sourceFiles 变化 ——
+// src/services/agent/runner.ts（三个运行入口的 AI 生成锁由 setAIGenerating 布尔改为
+// harnessSlots.admit()/endAdmission()，锁的真相源迁到回合状态；提交/揭示链路未动）、
+// src/services/engine/harness/runtime.ts（工具循环治理：beforeTool/afterTool 的病理判据、
+// maxToolCalls 可选化、applyLevels 增加可选软提示尾参 —— 尾参只作用于工具结果正文，
+// 与人拟表达的解析、沉默护栏、逐泡揭示与标题栏所有权不相交）。
+// hz-01..hz-04 逐点核对实现点仍在（transformHumanizerText / humanizerSilenceGuard /
+// setFirstRevealHandler 与调度器行为未变）、覆盖描述与当前实现一致，未修订覆盖点；
+// 本轮为描述与来源核对（非逐行行为审计），sourceHash 按当前源码复算。
 import type { ModuleContract } from "../host/types"
 
 export const humanizerContract: ModuleContract = {
@@ -35,7 +44,7 @@ export const humanizerContract: ModuleContract = {
     "src/services/agent/runner.ts",
     "src/services/engine/harness/runtime.ts",
   ],
-  sourceHash: "9d294deab05ac66d4032d2986194a738e326d28bbeeffaebdb08d39db52b94f2",
+  sourceHash: "67cd9acc3f6a44fcfbdc08e10f62ac712b55ceb99080394c8949454b26dfd94e",
   coverage: [
     {
       id: "hz-01",

@@ -1094,7 +1094,7 @@ mod tests {
             "ai.contextMaxTokens",
             "ai.thinking.effort",
             "ai.loop.maxRetry",
-            "ai.loop.maxToolCallsPerTurn",
+            "ai.loop.subAgentRounds",
             "ai.loop.maxParallelTools",
             "ai.memory.coreTokenBudget",
             "ai.memory.recallTokenBudget",

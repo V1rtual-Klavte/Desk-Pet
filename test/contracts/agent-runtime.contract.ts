@@ -49,6 +49,24 @@
 // actualInputTokens / tokenDrift.actual 改用 totalInputTokens = input + cacheRead + cacheWrite；
 // 预算判定不变）。ar-07 的 usage 按 purpose 分列口径未变，其余点不在改动面内、实现点仍在，
 // 覆盖描述与当前实现一致，未修订覆盖点，仅按当前源码刷新 sourceHash。
+// 2026-10-06 回合治理与图片生命周期批次 · Part 1–3 的 Node 半边（analyze→generate，验收环节）：
+// sourceFiles 变化 —— engine/harness/tool-loop-guard.ts（新文件：ToolLoopGuard 病理检测纯逻辑，
+// 同参重复/连续失败各 3 软 5 硬、每回合新建实例、软提示与 block 原因文案）与
+// context/tool-output.ts（软提示经 annotateToolResultText / projectToolResultText 的可选尾参
+// 附着，与地址标注同一出口）加入 sourceFiles；runtime.ts（createTurnSpec 的 maxToolCalls 改
+// 可选、只给无人值守子运行；beforeTool 接同参连击的 block+terminate、afterTool 经 terminate
+// 在结果侧硬终止失败连击、toolLoopNotices 经投影出口附软提示、settleMainTurn 按
+// stoppedByToolGovernance 早退到 toolLoopMaxRounds 兜底）、harness-slot.ts（admit/endAdmission
+// 受理计数与 isTurnActive / isAIGenerating 推导，无定时器；stoppedAtToolLimit 改名
+// stoppedByToolGovernance；afterTool 返回类型增 terminate）、agent/runner.ts（三个回合入口在
+// begin() 成功后受理、三处 finally 交回；src/services/cooldown.ts 整模块删除）；
+// 子代理轮数映射在 agent/sub-agent.ts（ai.loop.subAgentRounds），不在本契约 sourceFiles。
+// 新增 ar-27（unit：病理检测阈值与重置）、ar-28（integration：计数上限口径 = 主回合无、子运行
+// 保留）、ar-29（integration：软提示与两条硬终止路径的接线）、ar-30（integration：AI 生成锁由
+// 回合状态推导），共登记 14 条新 caseId（unit 4 / integration 10）。ar-01..ar-26 为描述与来源
+// 一致性核对（非逐行行为审计）：本批改动面不落在既有描述的行为面内，实现点仍在，未修订覆盖点；
+// L4 侧本批只改三个 memory 场景的载荷与注释（meta 未动），既有 L4 引用不失效；rules 不动
+// （新增四点均不入 L4 计数）。sourceHash 按当前源码复算。
 import type { ModuleContract } from "../host/types"
 
 export const agentRuntimeContract: ModuleContract = {
@@ -63,6 +81,7 @@ export const agentRuntimeContract: ModuleContract = {
     "src/services/engine/harness/model-gateway.ts",
     "src/services/engine/harness/runtime.ts",
     "src/services/engine/harness/stream-text.ts",
+    "src/services/engine/harness/tool-loop-guard.ts",
     "src/services/engine/plan-confirmation.ts",
     "src/services/engine/preprocessor.ts",
     "src/services/engine/runtime/input-identity.ts",
@@ -73,6 +92,7 @@ export const agentRuntimeContract: ModuleContract = {
     "src/services/humanizer/index.ts",
     "src/services/context/builder.ts",
     "src/services/context/kernel.ts",
+    "src/services/context/tool-output.ts",
     "src/services/reply/reminder.ts",
     "src/services/images/request.ts",
     "src/services/images/paths.ts",
@@ -83,7 +103,7 @@ export const agentRuntimeContract: ModuleContract = {
     "src/services/session/repo.ts",
     "src/services/session/store.ts",
   ],
-  sourceHash: "90c25d7113c0b5639c9bd26113a5bf7ef5f10b71c333b47581674ce804068329",
+  sourceHash: "1055c2ef2eb3497e75995ba23aa7ef43439a7ae1f7f949d9abe0fc3fe8091341",
   coverage: [
     {
       id: "ar-01",
@@ -319,6 +339,42 @@ export const agentRuntimeContract: ModuleContract = {
       layer: "integration",
       depth: "deep",
       scenarios: ["subagent-provider-admission", "subagent-chat-invisible"],
+    },
+    {
+      id: "ar-27",
+      feature: "工具循环病理检测的阈值与重置（纯逻辑）",
+      description: "ToolLoopGuard 的判据（零依赖叶子，只产出判据与中性文案，不投递、不持有回合状态）：同参重复 = 同工具 + 键排序 JSON 参数签名（对象键序不影响签名，不同工具或不同参数即不同签名）的连续调用，第 3 次软、第 5 次硬，出现不同签名即重置连击；连续失败 = 工具结果 isError 的连续次数，第 3 次软、第 5 次硬，一次成功清零。noteCall（调用门）返回整回合判据：两条连击取更强的一档，同级时取失败连击；noteResult（结果侧）只报失败连击、不合并同参连击（同参账在调用门记，不在结果侧重复入账）。每回合重置 = 新建实例：新实例不继承上一回合的同参与失败连击。阈值 3/5 是具名常量（来源 Cline 默认值），L2 用例按契约手写期望、不 import 实现常量",
+      why: "计数上限取消后死循环只剩这道防线：阈值或重置点被改坏（3→2、5→4、漏掉成功清零、签名退化成只比工具名）会让硬终止要么早早误伤正常回合、要么永远不来，而两种偏差都不报错",
+      layer: "unit",
+      depth: "deep",
+      scenarios: ["tool-loop-guard-failures", "tool-loop-guard-repeats", "tool-loop-guard-mixed", "tool-loop-guard-reset"],
+    },
+    {
+      id: "ar-28",
+      feature: "工具调用计数上限的口径（主回合无 / 子运行保留）",
+      description: "主聊天回合不再有工具调用计数硬上限：回合驱动（`runPiAgentTurn` 的回合 spec）与中断续跑（`continueInterruptedRun`）都不给 createTurnSpec 传 maxToolCalls，超过旧默认值（5）的连续调用全部真实执行、以模型正文自然收尾（不是 toolLoopMaxRounds 兜底文案）、工具历史没有 blocked —— 自然出口 = 模型不再调工具，兜底防线是 ar-27 / ar-29 的病理检测。无人值守子运行保留计数封顶：runPiSubAgent（计划步骤 / 主动规划 / fork·team 的共同出口）仍传 maxToolCalls = input.maxRounds ?? 3，达到上限的那次调用在调用门被拦下（记 blocked）、不再发起下一次请求，运行按 completed 收口（子运行自身收尾走无结果兜底；toolLoopMaxRounds 是主回合的治理文案）。agent 子代理的轮数映射在 `agent/sub-agent.ts`（取 `ai.loop.subAgentRounds`，原 `ai.loop.maxToolCallsPerTurn` 改名、默认值 5 不变），不在本契约 sourceFiles",
+      why: "上限口径从「所有回合的计数封顶」改成「只给无人值守子运行封顶」是行为反转：主回合误留封顶会把长任务掐断（旧默认 5 次），子运行误删封顶则让无人值守的调用失去上界",
+      layer: "integration",
+      depth: "deep",
+      scenarios: ["tool-loop-main-no-count-cap", "tool-loop-subagent-cap-kept"],
+    },
+    {
+      id: "ar-29",
+      feature: "病理检测的接线（软提示与两条硬终止路径）",
+      description: "createTurnSpec 每回合新建 guard 与 toolLoopNotices（回合级内存态、不落盘；子运行也吃这套检测）：软档（同参或失败连击第 3 次起）产出的中性提示（非 Card 台词）经投影出口与地址标注同一通道附到该条工具结果正文，跨请求持续存在（后续每一笔请求里的同一结果都带），多 text 块结果整条只拼在最后一个 text 块一次（不逐块重复），阈值之前的结果不带提示；硬档两条路都置同一枚 stoppedByToolGovernance 停止标志，主回合由 settleMainTurn 早退到 Card 的 toolLoopMaxRounds 兜底收尾（子运行收尾走自身出口）：同参连击在调用门 block + terminate（该次调用不执行、历史记 blocked、不再发下一次请求），失败连击在结果侧经 after_tool 的 terminate 立即终止（失败工具照常走到 after_tool；批内全部调用都带该标记时上游在当前批次后结束运行，混批时标志已记下、模型再调工具由下一次调用门拦下，第 5 次失败后不再发请求、历史不出现调用门的 blocked 记录）。每回合重置由新建实例承载：同一会话两个回合各自从零累计，第二回合不继承第一回合的连击",
+      why: "判据之外，提示与终止都由接线承载：提示挂错出口模型看不到、终止漏挂则该停不停（fail-open）、每回合重置若丢则正常会话会被跨回合累计冤枉硬终止；after_tool 的 terminate 是「模型不再调工具时也能收手」的唯一出口",
+      layer: "integration",
+      depth: "deep",
+      scenarios: ["tool-loop-repeat-hard-termination", "tool-loop-failure-hard-termination", "tool-loop-soft-notice", "tool-loop-notice-multi-block-once", "tool-loop-per-turn-reset"],
+    },
+    {
+      id: "ar-30",
+      feature: "AI 生成锁由回合状态推导（无定时器）",
+      description: "isAIGenerating() = HarnessSlots.isTurnActive() = 已受理未交回的回合（admit 计数 > 0）或任一运行槽在飞；没有第二个可写布尔、没有定时器 —— 旧的 ai.lock.safetyTimeoutMs 安全超时强制解锁随 src/services/cooldown.ts 整模块删除。三个回合入口（sendMessage 的 dispatchMessage、resumePausedInputs、sendActiveMessage）在 begin() 成功后、该回路首个 await 之前受理（admit 凭据），同一回路的 finally 交回（endAdmission），提前 return 都发生在受理之前。行为面（L3）：长回合在飞时恒为 true，假时钟跨过旧 30s 时限仍不放行；成功与失败（stopReason:error）回合结束后都归 false（异常路径不泄漏受理）；回合在飞时重置运行槽（reset 清空槽表、isAnyRunning 瞬时为 false）后锁仍为 true —— 受理计数独立支撑「槽已释放/重置、回合尚未交回」的窗口，回合交回后归 false",
+      why: "锁是「不打搅用户」的门禁：定时器强解会打断长回合；只把槽状态当唯一判据会在「槽已释放/重置但回合尚未交回」的窗口误判空闲，让后台任务插进正在生成的回合",
+      layer: "integration",
+      depth: "deep",
+      scenarios: ["ai-lock-long-turn-holds", "ai-lock-error-turn-releases", "ai-lock-admission-survives-slot-reset"],
     },
   ],
   // W0–W7 把 ar-18 / ar-22 的 memory-retry-policy-sync、runtime-compaction-suspended-settles

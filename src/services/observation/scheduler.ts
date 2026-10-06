@@ -1,7 +1,7 @@
 import type { ImageContent } from "@earendil-works/pi-ai"
 import { getHostBridge } from "@/services/host"
 import { estimateRequestTokens } from "@/services/context"
-import { completePiText, resolvePiAuxModel } from "@/services/engine/harness"
+import { completePiText, isAIGenerating, resolvePiAuxModel } from "@/services/engine/harness"
 import { errorCode, formatError } from "@/services/error"
 import { createLogger } from "@/services/logger"
 import { memoryConfig } from "@/services/config"
@@ -15,7 +15,6 @@ import { getLatestWindowObservation, getRuntimeActivity } from "@/services/windo
 import type { RuntimeActivity } from "@/services/window"
 import { getActiveSessionId } from "@/services/session"
 import { isSessionBusy } from "@/services/engine/harness"
-import { isAIGenerating } from "@/services/cooldown"
 import {
   DECISION_MEMORY_TOKEN_BUDGET, DECISION_OUTPUT_TOKENS, DECISION_SYSTEM_PROMPT, boundedCardBrief, localTimeBrief,
   parseDecidedTargets, readSlotsAvailable, type DecidedTarget,

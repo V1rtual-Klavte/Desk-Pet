@@ -101,6 +101,7 @@ export interface ProactiveBudget {
   topicAttempts: number
   nextSuccessAfter: number | null
   dailySuccessLimit: number
+  cooldownUntil: number | null
 }
 
 export interface ProactiveControl {

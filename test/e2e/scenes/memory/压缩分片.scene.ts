@@ -37,7 +37,8 @@ import type { SceneDef } from "../../../e2e/types"
 // 上限（≈10.4k tokens），第一层就消化掉了，永远到不了第二层 —— 这正是
 // `expectPreserveGatesFirstLayer` 的一对断言。
 //
-// 用户轮 1 连续调用 preserve 探针两次（`maxToolCallsPerTurn` 默认 5，够）：
+// 用户轮 1 连续调用 preserve 探针两次（同参重复的软阈值是 3 次，两次不触发循环病理检测；
+// 主回合已无计数上限）：
 // 视图 ≈ 2 × PROBE_VIEW_TOKENS、素材 ≈ PROBE_CHARS > hardInputLimit，而每个工具批次
 // （assistant + 其 toolResult）的素材只有 PROBE_CHARS / 2、低于单片预算 ⇒ 可分片、不是
 // oversized_unit；两批合起来 PROBE_CHARS > 单片预算 ⇒ K ≥ 2 是构造性的。探针大小夹在

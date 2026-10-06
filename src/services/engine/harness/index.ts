@@ -70,6 +70,7 @@ export {
   compactionSettingsFor,
   createHarnessRunState,
   harnessSlots,
+  isAIGenerating,
   retryPolicyFromConfig,
 } from "./harness-slot"
 export type {
@@ -89,6 +90,7 @@ export type {
   HarnessSlotSnapshot,
   HarnessSlotState,
   HarnessStructuralHost,
+  HarnessTurnAdmission,
 } from "./harness-slot"
 
 export { toAgentHarnessTools } from "@/services/tool"
