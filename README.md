@@ -2,6 +2,8 @@
 
 # V1rtual-Desk-Pet
 
+<sub>虚拟桌宠</sub>
+
 **可自定义角色与外观的桌面宠物 —— 常驻桌面陪你聊天，感知你在做什么，也能替你干点小活。**
 
 [![Release](https://img.shields.io/github/v/release/V1rtual-Klavte/Desk-Pet)](https://github.com/V1rtual-Klavte/Desk-Pet/releases/latest)
