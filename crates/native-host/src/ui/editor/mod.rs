@@ -1707,8 +1707,10 @@ mod tests {
     }
 
     /// 等某个方法的宿主请求落地（按方法名过滤；有界等待）。
+    /// 2s 在 CI 慢机上会被线程调度抖超（macOS runner 实测偶发）；放宽到 10s——
+    /// 通过路径轮询到即返回、无感，真失败仍会红，只是稍晚。
     fn wait_request(sink: &Arc<Mutex<Vec<(String, Value)>>>, method: &str) -> (u64, Value) {
-        let deadline = Instant::now() + Duration::from_secs(2);
+        let deadline = Instant::now() + Duration::from_secs(10);
         loop {
             {
                 let list = sink.lock().unwrap_or_else(|error| error.into_inner());
@@ -1731,7 +1733,8 @@ mod tests {
     }
 
     fn wait_until(mut condition: impl FnMut() -> bool, what: &str) {
-        let deadline = Instant::now() + Duration::from_secs(2);
+        // 同 wait_request：CI 慢机调度余量，2s → 10s。
+        let deadline = Instant::now() + Duration::from_secs(10);
         while !condition() {
             assert!(Instant::now() < deadline, "等待超时：{what}");
             std::thread::sleep(Duration::from_millis(2));
