@@ -60,7 +60,7 @@ ai:
     followUpMode: one-at-a-time
 
   personality:
-    active: yuki
+    active: default
 
   loop:
     maxRetry: 3
@@ -86,7 +86,7 @@ ai:
       # 记忆整理档位：off(不自动整理，面板手动整理入口保留) | low | medium | high
       # 档位值（空闲阈值 / 最小间隔）收进 src/services/proactive/protocol.json 的 tiers，越高越勤；
       # 每日 token 上限已撤除（2026-10-06）：token 只记账，不阻止/中止整理。
-      tier: medium
+      tier: high
       # reviewMaxTokens：单次 Review 输出上限；留空/删掉 = 按模型输出预算自动推导（窗口×1/8，32k 封顶，且不越过模型目录上限）
       # reviewMaxTokens: 4096
     maxSessions: 20
@@ -123,17 +123,17 @@ ai:
     # off(不唤醒 / 不产生机会 / 不发送) | low | medium | high
     # 随机唤醒（不形成固定节拍）：低每 2–5 小时、中每 30–90 分钟、高每 10–30 分钟一次；
     # 体感 低≈1–2 条/天、中≈2–4 条/天、高≈4–8 条/天；「高」档 token 约 5 倍。
-    frequency: medium
+    frequency: high
     # 静默时间段（本地小时，0–23 整数）：该时段不唤醒 / 不产生机会 / 不发送。
-    # 跨夜语义 start > end（默认 23 开始、9 结束）；start == end = 不静默；白天不设窗口。
-    quietStartHour: 23
-    quietEndHour: 9
+    # 跨夜语义 start > end（如 23 开始、9 结束）；start == end = 不静默（出厂默认 0/0）；白天不设窗口。
+    quietStartHour: 0
+    quietEndHour: 0
 
   silentAccess:
     # 静默了解总闸 + 频率：off(不自动跑，读取靠手动) | low | medium | high
     # （原 enabled 与四个数值字段 staySeconds/settleMs/cooldownMs/samePageCooldownMs 已删：
     #   四个数值属主动消息节奏，收进 proactive/protocol.json 的 tiers。）
-    frequency: medium
+    frequency: high
 
   safety:
     mode: tell_me
@@ -175,11 +175,19 @@ tools:
 # 主题/角色/音效配置位于运行时 data_root/profiles/ 目录
 # 每个 profile 是一个自包含文件夹，拖入即用
 appearance:
-  activeProfile: "yuki"           # 当前激活的 Profile ID
+  activeProfile: "profile2"       # 当前激活的 Profile ID
   effectMode: "parallax"          # 角色展示效果: off(静态) | parallax(灵动图层)，互斥
-  theme: "nightfall"              # 界面主题（产品级预设，与 Profile 正交）: brushed(拉丝金属) | chrome(铬) | verdigris(铜绿) | nightfall(暮蓝) | azurite(青花)
-  chatImagePreview: true          # 聊天图片自动预览: false(默认，历史只显示占位，点击占位仍可打开查看器) | true(只为可见消息按需加载内联预览)
-  soundAssignments: {}
+  theme: "chrome"                 # 界面主题（产品级预设，与 Profile 正交）: brushed(拉丝金属) | chrome(铬) | verdigris(铜绿) | nightfall(暮蓝) | azurite(青花)
+  chatImagePreview: true          # 聊天图片自动预览: false(历史只显示占位，点击占位仍可打开查看器) | true(只为可见消息按需加载内联预览)
+  soundAssignments:
+    welcome: welcome_chord
+    send: send_short
+    reply: reply_ding
+    popup: popup_up
+    retract: retract_down
+    surface: surface_light
+    middle: middle_tremolo
+    deep: deep_noise
   parallax:
     intensity: 1.0                # 灵动图层的全局强度；逐层参数在 Profile 的 theme.parallax.layers
   font:

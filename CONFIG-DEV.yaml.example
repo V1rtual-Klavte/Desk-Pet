@@ -30,7 +30,7 @@ ai:
     # 稍后继续的批量策略：one-at-a-time=逐条保留话题边界 | all=集中处理
     followUpMode: one-at-a-time
   personality:
-    active: yuki
+    active: default
   loop:
     maxRetry: 3
     # agent 子代理工具轮上限（无人值守子运行）；主聊天回合已无计数上限，走循环病理检测
@@ -51,7 +51,7 @@ ai:
     rerankTimeoutMs: 2500
     # 整理档位：off(不自动跑，手动整理按钮保留) | low | medium | high；档位值收进协议表 tiers
     # reviewMaxTokens：单次 Review 输出上限；缺省 = 按模型输出预算自动推导（窗口×1/8，32k 封顶）
-    dreaming: { tier: medium }
+    dreaming: { tier: high }
     maxSessions: 20
   plan:
     enabled: true
@@ -69,10 +69,10 @@ ai:
     enabled: true
 
   # 主动消息档位 + 静默时间段（仅约束主动消息；跨夜 start > end，start == end = 不静默）
-  proactive: { frequency: medium, quietStartHour: 23, quietEndHour: 9 }
+  proactive: { frequency: high, quietStartHour: 0, quietEndHour: 0 }
   # 静默了解总闸 + 频率：off(不自动跑，读取靠手动) | low | medium | high
   # （原 enabled 与四个节奏数值字段已删，数值收进 proactive/protocol.json 的 tiers。）
-  silentAccess: { frequency: medium }
+  silentAccess: { frequency: high }
   safety: { mode: tell_me, sessionTrustEnabled: true }
 
 tools:
@@ -99,11 +99,20 @@ tools:
         enabled: false
 
 appearance:
-  activeProfile: "yuki"
+  activeProfile: "profile2"
   effectMode: "parallax"          # off(静态) | parallax(灵动图层)，互斥
-  theme: "nightfall"              # 界面主题（产品级预设，与 Profile 正交）: brushed(拉丝金属) | chrome(铬) | verdigris(铜绿) | nightfall(暮蓝) | azurite(青花)
-  chatImagePreview: true          # 聊天图片自动预览: false(默认，历史只显示占位，点击占位仍可打开查看器) | true(只为可见消息按需加载内联预览)
-  soundAssignments: {}            # 事件 → 音效 ID；空表示全走内置默认，设置页可改
+  theme: "chrome"                 # 界面主题（产品级预设，与 Profile 正交）: brushed(拉丝金属) | chrome(铬) | verdigris(铜绿) | nightfall(暮蓝) | azurite(青花)
+  chatImagePreview: true          # 聊天图片自动预览: false(历史只显示占位，点击占位仍可打开查看器) | true(只为可见消息按需加载内联预览)
+  # 事件 → 音效 ID；设置页可改
+  soundAssignments:
+    welcome: welcome_chord
+    send: send_short
+    reply: reply_ding
+    popup: popup_up
+    retract: retract_down
+    surface: surface_light
+    middle: middle_tremolo
+    deep: deep_noise
   parallax:
     intensity: 1.0
   font:

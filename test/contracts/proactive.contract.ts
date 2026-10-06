@@ -1,3 +1,6 @@
+// 2026-10-06 出厂默认对齐批次（本批登记，未跑 analyze→generate）：sourceFiles 变化 ——
+// `src/services/engine/slash/commands/proactive.ts`（`/proactive on` 恢复档位 medium→high，
+// description 与头注释同步；出厂值同步点写在头注释）。sourceHash 留待收口波统一刷新。
 // 2026-10-06 提问选择批次（本批刷新）：sourceFiles 变化 —— `src/services/tool/registry.ts`
 //（registerDefaultTools 增注册 ask_user 一行；主动规划子运行的白名单只收 SAFE 工具，ask_user
 // 声明 NORMAL 且 delegate，不进入主动子运行）与 `src/services/engine/harness/runtime.ts`
