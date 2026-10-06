@@ -48,6 +48,8 @@ import { getSkillCatalogFingerprint, listEnabledSkills, syncSkillCatalog } from 
 import { PI_LANE } from "@/services/session/repo"
 import { createLogger } from "@/services/logger"
 import { formatError } from "@/services/error"
+// 用户等待的回合预算豁免（零依赖叶子）：等待期间挂起回合墙钟，见类字段与 executeDrive。
+import { createPausableDeadline, isUserWaiting, onUserWaitChange } from "@/services/engine/user-wait"
 import { createHarnessModels, resolvePiTurnModel, toPiAgentThinkingLevel } from "./model-gateway"
 import type { PiModel } from "./model-gateway"
 
@@ -406,7 +408,14 @@ export class HarnessSlot {
   private activeRun?: ActiveRun
   private lastRunResult?: OperationResultRecord
   private interruptedInfo?: { operationId: string; kind: "run" | "compaction" | "navigation"; startedAt: number; aborting: boolean }
-  private timer?: ReturnType<typeof setTimeout>
+  /**
+   * 回合墙钟（可忙暂停的一次性计时器，见 `engine/user-wait.ts`）。用户在做决定
+   *（确认 / 裁决 / 权限 / 提问）期间挂起，结束后按剩余预算续算 —— 「用户想多久想多久」
+   * 必须贯穿到预算层，否则等待超时删了也还会被墙钟掐断。
+   */
+  private readonly turnDeadline = createPausableDeadline(() => { void this.abort(ABORT_REASON_TIMEOUT) })
+  /** 该槽当前是否处于用户等待挂起态（起表时决定「以挂起态起步」；见 `setUserWaitHeld`）。 */
+  private userWaitHeld = false
   private abortReason?: HarnessAbortReason
   private runAbortController = new AbortController()
 
@@ -1499,7 +1508,10 @@ export class HarnessSlot {
     this.lastSystemPrompt = spec.systemPrompt
     this.abortReason = undefined
     this.clearTimer()
-    this.timer = setTimeout(() => { void this.abort(ABORT_REASON_TIMEOUT) }, Math.max(1, spec.timeoutMs))
+    this.turnDeadline.start(Math.max(1, spec.timeoutMs))
+    // 起表时该会话已在等用户（罕见：上一相位遗留的等待，或本轮等待先于本条 run 起表）：
+    // 以挂起态起步，用户思考期间不计入墙钟。
+    if (this.userWaitHeld || isUserWaiting(this.sessionId)) this.turnDeadline.hold()
     try {
       await this.assembleLane(spec)
       if (spec.disableAutomaticCompaction) {
@@ -1638,11 +1650,25 @@ export class HarnessSlot {
       state.firstTextGenerated = true
       emit("first_text_generated", { length: delta.length }, event.runId)
     })
-    on("tool_start", event => emit("tool_execution_start", { toolName: event.toolName }, event.runId, { turnId: event.turnId, toolCallId: event.toolCallId }))
+    // 工具耗时的观测起点（per run 闭包，随本桥一起回收）：tool_end 里算 durationMs。
+    const toolStartedAt = new Map<string, number>()
+    on("tool_start", event => {
+      toolStartedAt.set(event.toolCallId, Date.now())
+      emit("tool_execution_start", { toolName: event.toolName }, event.runId, { turnId: event.turnId, toolCallId: event.toolCallId })
+    })
     on("tool_end", event => {
+      const startedAt = toolStartedAt.get(event.toolCallId)
+      toolStartedAt.delete(event.toolCallId)
       const resultTextChars = event.result.content.reduce((count, item) => count + (item.type === "text" ? item.text.length : 0), 0)
+      // 失败详情前缀（首段文本，trace 侧再做脱敏与 300 字截断）：超时/取消/下游失败的
+      // 第一手文案 —— 此前 trace 只有 isError，看不出「真超时还是别的」（体检报告 §5.2-4）。
+      const firstText = event.isError
+        ? event.result.content.find(item => item.type === "text")?.text
+        : undefined
       emit("tool_execution_end", { toolName: event.toolName, isError: event.isError, resultTextChars,
-        resultPartCount: event.result.content.length }, event.runId, { turnId: event.turnId, toolCallId: event.toolCallId })
+        resultPartCount: event.result.content.length,
+        ...(startedAt === undefined ? {} : { durationMs: Date.now() - startedAt }),
+        ...(firstText ? { detailPrefix: firstText.slice(0, 300) } : {}) }, event.runId, { turnId: event.turnId, toolCallId: event.toolCallId })
     })
     on("retry_start", event => emit("retry_start", { attempt: event.attempt, step: event.step }, event.runId))
     on("retry_end", event => emit("retry_end", { attempt: event.attempt, step: event.step, success: event.success }, event.runId))
@@ -1726,10 +1752,19 @@ export class HarnessSlot {
   }
 
   private clearTimer(): void {
-    if (this.timer) {
-      clearTimeout(this.timer)
-      this.timer = undefined
-    }
+    this.turnDeadline.cancel()
+  }
+
+  /**
+   * 用户等待开合（`HarnessSlots` 按 `user-wait.ts` 的登记转发；见 `executeDrive` 的起表）：
+   * 等待期间挂起回合墙钟，等待结束按剩余预算续算。没有在飞 run 时只记状态 —— 下一次
+   * `executeDrive` 起表时以挂起态起步。
+   */
+  setUserWaitHeld(waiting: boolean): void {
+    this.userWaitHeld = waiting
+    if (!this.activeRun) return
+    if (waiting) this.turnDeadline.hold()
+    else this.turnDeadline.resume()
   }
 
   /** 转发一条可展示的正文增量；只更新瞬时展示（§6），不落盘、不触发副作用。 */
@@ -1997,6 +2032,23 @@ export class HarnessSlots {
     return this.slots.get(sessionId)
   }
 
+  /**
+   * 用户等待的回合预算豁免（`user-wait.ts` 的登记经模块级监听转发到这里）：把该会话的槽
+   * 与挂在它下面的子运行（计划步骤的子代理 / 带父槽归属的子运行）一起挂起回合墙钟 ——
+   * 主回合与它正阻塞等待的那些子运行，都不该被用户思考的时间掐断。没有槽（该会话没在跑）
+   * 时是 no-op；没有父槽归属的独立子运行（fork/team、主动规划）不在豁免范围 —— 它们不面向
+   * 主对话的等待，各自的预算继续有效。
+   */
+  applyUserWait(sessionId: string, waiting: boolean): void {
+    const slot = this.slots.get(sessionId)
+    if (!slot) return
+    const apply = (node: HarnessSlot): void => {
+      node.setUserWaitHeld(waiting)
+      for (const child of node.childSlots()) apply(child)
+    }
+    apply(slot)
+  }
+
   /** 唯一 flush 入口的两级转发：没有槽时是 no-op（无槽期间条目挂在 orphanAudits 上）。 */
   async flushAudit(sessionId: string): Promise<void> {
     await this.peek(sessionId)?.flushAudit()
@@ -2210,6 +2262,10 @@ export class HarnessSlots {
 }
 
 export const harnessSlots = new HarnessSlots()
+
+// 用户等待的回合预算豁免（唯一接线点）：`user-wait.ts` 的登记每次开合都转发到相关槽。
+// 模块级挂一次即可（单例常驻），不随 run 生命周期增删。
+onUserWaitChange((sessionId, waiting) => { harnessSlots.applyUserWait(sessionId, waiting) })
 
 /**
  * AI 生成锁：是否正在生成（主动扫描 / 观察 / 记忆整理据此不打搅）。

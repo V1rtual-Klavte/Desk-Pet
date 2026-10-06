@@ -19,6 +19,15 @@ export type ConfirmPolicy = "deny" | "approve"
 export type PlanPolicy = "auto" | "stepByStep" | "deny"
 
 /**
+ * 测试宿主对提问选择（`ask_user`）的应答策略；默认 "cancel"（确定性优先）。
+ *
+ * - `cancel`：每条提问按 `{kind:"cancelled"}` 结算（没有面板就当作没问过，
+ *   不假装用户选了任何一项）
+ * - `hold`：宿主不代答 —— 用例自己接管（提问没有等待超时，`hold` 下由用例负责结算）
+ */
+export type ChoicePolicy = "cancel" | "hold"
+
+/**
  * 一次权限确认请求的记录（`confirm-channel` 生产、报告与场景消费）。
  *
  * `sessionId`/`runGeneration` 是内核写入 `PermissionRequest` 的身份（`safety/confirm.ts` 的

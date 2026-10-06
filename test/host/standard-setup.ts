@@ -16,9 +16,10 @@ import { harnessSlots, resetPiRuntimeProviderForTest } from "@/services/engine/h
 import { initSlashCommands } from "@/services/engine"
 import { resetAgentRuntimeForTest } from "@/services/agent/runner"
 import { flushConfig, getAllOverrides, setOverrides } from "@/services/config"
+import { resetChoiceChannel } from "./choice-channel"
 import { resetConfirmChannel } from "./confirm-channel"
 import { resetPlanConfirmChannel } from "./plan-confirm-channel"
-import type { ConfirmPolicy, PlanPolicy } from "./types"
+import type { ChoicePolicy, ConfirmPolicy, PlanPolicy } from "./types"
 
 let bootstrapped = false
 
@@ -148,13 +149,15 @@ async function restoreConfigBaseline(): Promise<void> {
 /**
  * 场景隔离入口。
  *
- * `confirmPolicy` 与 `planPolicy` 由场景声明（`meta.confirmPolicy` / `meta.planPolicy`），
- * 在隔离点一起重置：确认通道与计划通道都是典型跨场景状态，一个场景留下的 pending
- * 必须在这里被收尾，不能等下一个场景的请求把它覆盖掉。
+ * `confirmPolicy` / `planPolicy` / `choicePolicy` 由场景声明（`meta.confirmPolicy` 等），
+ * 在隔离点一起重置：确认、计划与提问三条通道都是典型跨场景状态，一个场景留下的
+ * pending 必须在这里被收尾，不能等下一个场景的请求把它覆盖掉。提问通道默认
+ * "cancel"（提问没有等待超时，留给下一场景会永远挂着）。
  */
 export async function standardSetup(
   confirmPolicy: ConfirmPolicy = "deny",
   planPolicy: PlanPolicy = "deny",
+  choicePolicy: ChoicePolicy = "cancel",
 ): Promise<void> {
   // 安全裁决输入的第二条轴：会话级覆盖优先级高于 `ai.safety.mode` 钉位
   // （`getEffectiveSafetyMode()` = 会话覆盖 ?? 配置），却只挂在场景自己的清理上 ——
@@ -168,6 +171,7 @@ export async function standardSetup(
   await bootstrapOnce()
   resetConfirmChannel(confirmPolicy)
   resetPlanConfirmChannel(planPolicy)
+  resetChoiceChannel(choicePolicy)
 
   // 上一场景的异步 session 写入必须先完成，之后才能清空模块状态。
   await MemoryService.init()

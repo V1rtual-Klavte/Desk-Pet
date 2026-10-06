@@ -119,8 +119,9 @@ pub trait EventSink: Send + Sync {
 
 /// 宿主事件的业务形状。
 ///
-/// 这里只登记**由 Rust 侧产生**的事件（`deskpet-cursor-move` 与 `window-observed`
-/// 两个出口）；Node 领域的事件走 HostBridge 的 `HostEventMap`，不在这里重复。
+/// 这里只登记**由 Rust 侧产生**的事件（`deskpet-cursor-move`、`window-observed` 与
+/// `bash-background-finished` 三个出口）；Node 领域的事件走 HostBridge 的 `HostEventMap`，
+/// 不在这里重复。
 #[derive(Debug, Clone, PartialEq)]
 pub enum HostEvent {
     /// 全局光标位置变化（灵动图层的输入）。
@@ -129,6 +130,54 @@ pub enum HostEvent {
     CursorMoved(CursorPosition),
     /// 窗口观察采样（前台应用、空闲时长、桌宠自身可见/前台）。
     WindowObserved(WindowObservation),
+    /// 后台 bash 命令结束（前台超时转入后台的任务走到终点）。
+    ///
+    /// 只投 Node（原生 UI 不呈现）：消费方是 `src/services/tool/background.ts` 的
+    /// 完成通知接线（系统消息）。
+    BackgroundCommandFinished(BackgroundCommandFinished),
+}
+
+/// 后台命令的结束方式。
+///
+/// 线载荷字段（serde `camelCase`）与 TS 侧 `BashBackgroundFinishedPayload` 的
+/// `reason` 联合逐字对齐：`"exited"`（自行结束，退出码如实）/ `"capReached"`（后台时限到点被终止）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum BackgroundCommandEnd {
+    /// 命令自行结束（退出码可能非零）。
+    Exited,
+    /// 后台时限到点，进程组被回收。
+    CapReached,
+}
+
+/// 后台 bash 命令的最终归宿（`HostEvent::BackgroundCommandFinished` 的载荷）。
+///
+/// 这是「超时不杀、转后台」路径唯一的完成通知载荷：输出只带尾部窗口（与前台路径同口径），
+/// 截断时另带全量输出文件路径；`silentMs` / `producedBytes` 是 L1 进展证据（超时现场与
+/// 完成通知共用），消费方只用于展示与诊断，不参与任何判定。
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BackgroundCommandFinished {
+    /// 工具调用侧的执行 ID（登记/取消用的键）。
+    pub execution_id: String,
+    /// 发起该命令的会话（bash_exec 入参的回传）；`None` 表示调用方未归属会话。
+    pub session_id: Option<String>,
+    /// 命令预览（截断到固定上限，只用于展示）。
+    pub command_preview: String,
+    /// 退出码；被信号终止（含时限回收）时为 `None`，消费方不得当 0 用。
+    pub exit_code: Option<i32>,
+    /// 从启动到结束的时长（毫秒）。
+    pub duration_ms: u64,
+    /// 结束方式（见 [`BackgroundCommandEnd`]）。
+    pub reason: BackgroundCommandEnd,
+    /// 结束前最后一次观察到输出增长距今的静默时长（毫秒）。
+    pub silent_ms: u64,
+    /// 结束时两路输出的原始总字节数。
+    pub produced_bytes: u64,
+    /// 输出尾部窗口（前台路径同一上限，超出截断）。
+    pub output_tail: String,
+    /// 输出被截断时保留的全量输出文件路径；未截断为 `None`。
+    pub spill_path: Option<String>,
 }
 
 /// 全局光标位置（web 坐标系：左上原点，逻辑像素）。

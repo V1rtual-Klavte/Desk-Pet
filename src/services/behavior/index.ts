@@ -1,6 +1,8 @@
 export { clearBehavior, getBehaviorSnapshot, observeBehavior, startBehavior, stopBehavior, subscribeBehavior } from "./collector"
 export { BEHAVIOR_DIR, DAILY_DIR, SEGMENT_INDEX_FILE, SEGMENTS_DIR, UNDERSTANDING_FILE } from "./paths"
 export { buildSnapshot, coveredInterval, emptyDaily, qualityFor } from "./aggregate"
+export { sedimentConclusions } from "./conclusions"
+export type { BehaviorConclusion, BehaviorConclusionSlot } from "./conclusions"
 export { classifyApp } from "./classifier"
 export { IDLE_ACTIVE_LIMIT_MS } from "./types"
 export type { BehaviorDaily, BehaviorQuality, BehaviorSegment, BehaviorSnapshot } from "./types"

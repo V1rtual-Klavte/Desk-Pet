@@ -39,6 +39,16 @@
 // 更新命令形状（update_check / update_download_and_install / app_restart）仍成立，
 // 「更新动作不进 Node 请求面」（dispatchHostRequest 对 action.checkUpdate 与 update_check
 // 均走 default 以 OTHER 拒绝）仍成立。未修订覆盖点，仅按当前源码刷新 sourceHash。
+// 2026-10-06 提问选择与去超时批次（本批刷新）：sourceFiles 变化仅限
+// `src/services/host/types.ts`（新增 deskpet-choice-start/end 推送与 deskpet-choice-resolved
+// 回执；权限确认载荷去掉 expiresAt）。不在更新器行为面内；各覆盖点逐条核对实现点仍在、
+// 描述与当前实现一致；sourceHash 按当前源码复算。
+// 2026-10-06 超时后台化批次（本批刷新）：host/types.ts —— bash_exec 增可选入参 sessionId
+//与 HostEventMap 增事件 bash-background-finished；更新域的消费面未动。各覆盖点逐点核对
+//一致；sourceHash 按当前源码复算。
+// 2026-10-06 派生行为结论沉淀批次（本批刷新）：host/types.ts —— memory_job_sources /
+// memory_pending_source_count 入参增可选 origin（整理按来源类别取批）；更新域的消费面未动。
+// 各覆盖点逐点核对一致；sourceHash 按当前源码复算（同批含另会话在飞改动）。
 import type { ModuleContract } from "../host/types"
 
 export const updateContract: ModuleContract = {
@@ -49,7 +59,7 @@ export const updateContract: ModuleContract = {
     "src/services/native-ui/index.ts",
     "src/services/native-ui/host-requests.ts",
   ],
-  sourceHash: "8bc6069d2298d4dbd536741b956098c6dd44e5d51acf4d3c7a3e5557da6465a0",
+  sourceHash: "ccf347ca2a2d119a7986dbb3a66cd96bd5b6160178f232d6a718ef764170a348",
   coverage: [
     {
       id: "up-01",

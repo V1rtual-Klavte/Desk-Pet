@@ -360,6 +360,9 @@ export async function memoryOverview(args: unknown): Promise<MemoryOverviewPaylo
       subtitle: [
         `${item.draft.kind} · ${item.draft.scope}${item.draft.scopeId ? `/${item.draft.scopeId}` : ""} · v${item.version}`,
         item.draft.pinned ? "核心画像" : "",
+        // 派生条目（系统观察）复用召回投影的同一枚标记与同一判据（isDerivedBehaviorSource）：
+        // 面板与提示侧不各写一份判定/措辞，避免两边随改动漂移；用户条目不标记。
+        memory.isDerivedBehaviorSource(item) ? memory.DERIVED_PROVENANCE_MARK : "",
       ]
         .filter(Boolean)
         .join(" · "),
@@ -398,6 +401,8 @@ export async function memoryItemDetail(args: unknown): Promise<MemoryItemDetailP
     info: [
       `类型：${draft.kind}　范围：${draft.scope}${draft.scopeId ? `/${draft.scopeId}` : ""}　状态：${detail.status}　版本：${detail.version}`,
       `来源：${draft.sourceIds.join(", ") || "无"}`,
+      // 与列表投影同源（同一判据 + 同一枚标记）：派生条目在详情里也看不出「用户说过的」歧义。
+      ...(memory.isDerivedBehaviorSource(detail) ? [`来源类别：${memory.DERIVED_PROVENANCE_MARK}`] : []),
       `重要性：${draft.importance}　置信度：${draft.confidence}`,
       `发生时间：${draft.eventAt ? JSON.stringify(draft.eventAt) : "未记录"}`,
       `提醒时间：${draft.dueAt ? JSON.stringify(draft.dueAt) : "未记录"}`,

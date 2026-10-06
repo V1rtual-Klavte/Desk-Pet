@@ -22,8 +22,8 @@ pub use system::{system_info, SystemInfoResult};
 
 #[cfg(test)]
 pub(crate) use bash::{
-    combine_windows, stats_of, truncate_output, BashSlot, CapturedOutput, TailWindow,
-    DEFAULT_BASH_TIMEOUT_MS,
+    combine_windows, stats_of, truncate_output, BackgroundHandle, BashSlot, CapturedOutput,
+    TailWindow, DEFAULT_BASH_TIMEOUT_MS,
 };
 #[cfg(test)]
 pub(crate) use fs::read_file_entries;
@@ -35,6 +35,7 @@ mod tests {
     use std::collections::HashMap;
     use std::path::{Path, PathBuf};
     use std::process::{Command, Stdio};
+    use std::sync::Arc;
     use std::time::{Duration, Instant};
 
     /// 改成尾部窗口读取之前的实现：对全量文本直接截断。
@@ -612,7 +613,54 @@ mod tests {
 
     /// 池条目的直接视图。锁中毒也恢复出来：断言不该因为别的用例 panic 而误报。
     fn slots(pool: &BashPool) -> std::sync::MutexGuard<'_, HashMap<String, BashSlot>> {
-        pool.0.lock().unwrap_or_else(|e| e.into_inner())
+        pool.slots.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// 后台任务表的直接视图（超时转后台后的登记）。
+    fn background_tasks(
+        pool: &BashPool,
+    ) -> std::sync::MutexGuard<'_, HashMap<String, BackgroundHandle>> {
+        pool.background.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// 记录宿主事件出口收到的后台完成事件（测试替代 `HostEventRouter`）。
+    #[derive(Default)]
+    struct RecordingEvents {
+        finished: std::sync::Mutex<Vec<crate::host::BackgroundCommandFinished>>,
+    }
+
+    impl crate::host::EventSink for RecordingEvents {
+        fn emit(&self, event: crate::host::HostEvent) {
+            if let crate::host::HostEvent::BackgroundCommandFinished(finished) = event {
+                self.finished
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .push(finished);
+            }
+        }
+    }
+
+    /// 等一条后台完成事件（窗口内没等到即失败；等到了就从记录里取走）。
+    fn wait_for_background_event(
+        events: &RecordingEvents,
+        window: Duration,
+    ) -> crate::host::BackgroundCommandFinished {
+        let deadline = Instant::now() + window;
+        loop {
+            if let Some(finished) = events
+                .finished
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .pop()
+            {
+                return finished;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "等待后台完成事件超时（等待线程没有投递）"
+            );
+            std::thread::sleep(Duration::from_millis(25));
+        }
     }
 
     /// 「先等一段时间、再留下探针文件」的命令：给「spawn 后立即终止」留出可判定的窗口。
@@ -654,6 +702,7 @@ mod tests {
             None,
             None,
             None,
+            None,
         );
         assert!(control_result.is_ok(), "正对照命令没有跑通");
         assert!(
@@ -677,6 +726,7 @@ mod tests {
             delayed_probe(1, "sentinel"),
             Some(dir.to_string_lossy().to_string()),
             Some(id),
+            None,
             None,
             None,
             None,
@@ -708,6 +758,7 @@ mod tests {
             None,
             None,
             None,
+            None,
         );
         match result {
             Err(AppError::Tool(message)) => assert!(!message.is_empty(), "策略拒绝应带原因"),
@@ -730,6 +781,7 @@ mod tests {
             "echo probe".into(),
             Some(plain.to_string_lossy().into_owned()),
             Some("invalid-cwd".into()),
+            None,
             None,
             None,
             None,
@@ -784,8 +836,8 @@ mod tests {
 
     // ── bash 进程组回收 / stdin 关死 / 超时档位对齐（2026-10-06 批次）──
     //
-    // 三处回收路径（超时 / 取消 / 宿主退出）共用 `kill_process_group`，各自被下面一条用例
-    // 直接驱动；探针形态统一为「后台子壳延迟 touch 文件」：命令活着 → 文件出现，
+    // 三处回收路径（取消 / 宿主退出 / 后台时限到点）共用 `kill_process_group`，各自被下面
+    // 一条用例直接驱动；探针形态统一为「后台子壳延迟 touch 文件」：命令活着 → 文件出现，
     // 组回收生效 → 文件永不出现（只杀直接子进程的旧实现会留下这个孙进程，用例即红）。
 
     /// 后台子壳延迟写探针 + 前台长睡：杀直接子进程会留下写探针的孙进程。
@@ -822,6 +874,7 @@ mod tests {
             None,
             None,
             None,
+            None,
         );
         assert!(
             result.is_ok(),
@@ -835,35 +888,193 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// 超时回收必须杀整组：直接子进程（sh）与后台孙进程一起结束。
-    /// 只 `Child::kill` 主进程的旧实现会留下孙进程 —— 它对应用户实测的孤儿 osascript 弹窗。
+    // ── 超时转后台（2026-10-06 后台化批次）──
+    //
+    // 超时不再杀进程：转后台继续跑、完成经事件通知（旧「超时即组杀」的用例被本组取代 ——
+    // 组杀路径仍由取消 / kill_all 两条用例覆盖；后台时限到点的组杀由
+    // `bash_background_cap_reached_kills_and_reports` 覆盖）。
+
+    /// 超时转后台：返回结构化结果（背景标记 + 现场证据 + 输出尾部），进程继续活着。
+    /// 断言「探针出现」证明进程未被杀 —— 旧「超时即杀」实现在这里必红。
     #[test]
-    fn bash_timeout_kills_descendants() {
-        let dir = probe_dir("timeout-descendants");
+    fn bash_timeout_backgrounds_with_evidence_and_output() {
+        let dir = probe_dir("timeout-backgrounds");
         let pool = BashPool::default();
+        // `echo` 先产出可读的输出；后台孙进程延迟写探针，用来证明进程仍然活着。
+        let command = if cfg!(windows) {
+            format!("echo timeout-probe-output & {}", descendant_probe(1, "sentinel"))
+        } else {
+            format!("echo timeout-probe-output; {}", descendant_probe(1, "sentinel"))
+        };
         let result = run_bash(
             pool.clone(),
-            descendant_probe(1, "sentinel"),
+            command,
             Some(dir.to_string_lossy().to_string()),
-            Some("timeout-descendants".into()),
+            Some("timeout-backgrounds".into()),
             Some(300),
             None,
             None,
             None,
+            None,
+        )
+        .expect("超时应转后台正常返回，而不是 Err");
+        assert!(result.timed_out, "超时结果必须带 timed_out 标记");
+        assert!(result.backgrounded, "超时结果必须带 backgrounded 标记");
+        assert!(
+            result.output.contains("timeout-probe-output"),
+            "超时现场必须保留已产生的输出: {:?}",
+            result.output
         );
-        match result {
-            Err(AppError::Timeout) => {}
-            Err(other) => panic!("超时应返回 Timeout，实际 {other:?}"),
-            Ok(_) => panic!("超时不应正常返回"),
-        }
-        assert!(slots(&pool).is_empty(), "超时返回在池里留下了残条");
-        // 宽限窗口：探针排在 1s 之后。孙进程真被回收则文件永不出现；
-        // 只杀了直接子进程的话，这里就会看到它。
+        assert!(
+            result.produced_bytes > 0,
+            "产出字节数必须被记录: {}",
+            result.produced_bytes
+        );
+        assert!(
+            result.elapsed_ms >= 300,
+            "实际耗时至少覆盖超时预算: {}",
+            result.elapsed_ms
+        );
+        // 前台表已清、后台表已登记。
+        assert!(slots(&pool).is_empty(), "转后台后前台表不该有条目");
+        assert!(
+            background_tasks(&pool).contains_key("timeout-backgrounds"),
+            "后台表没有登记转后台的任务"
+        );
+        // 宽限窗口：探针排在 1s 之后。进程仍活着 → 文件出现（超时未杀）。
         std::thread::sleep(Duration::from_millis(1500));
         assert!(
-            !dir.join("sentinel").exists(),
-            "超时后孙进程仍在运行：探针文件出现了（进程组回收未生效）"
+            dir.join("sentinel").exists(),
+            "超时后进程已被杀死：探针文件没有出现（旧「超时即杀」语义回归）"
         );
+        // 收尾：kill_all 按组回收后台任务（退出路径），不留 30s 的长睡进程。
+        pool.kill_all();
+        assert!(background_tasks(&pool).is_empty(), "kill_all 后后台表应清空");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 静默证据：从未产出的命令 `silentMs ≈ elapsedMs`、`producedBytes == 0`。
+    /// 与上一条「有输出」的用例合成一组，证明证据不是常量。
+    #[test]
+    fn bash_timeout_records_silence_evidence() {
+        let dir = probe_dir("timeout-silence");
+        let pool = BashPool::default();
+        let command = if cfg!(windows) {
+            "ping -n 31 127.0.0.1 > nul".to_string()
+        } else {
+            "sleep 30".to_string()
+        };
+        let result = run_bash(
+            pool.clone(),
+            command,
+            Some(dir.to_string_lossy().to_string()),
+            Some("timeout-silence".into()),
+            Some(300),
+            None,
+            None,
+            None,
+            None,
+        )
+        .expect("超时应转后台正常返回");
+        assert_eq!(result.produced_bytes, 0, "静默命令不该有产出字节");
+        assert!(
+            result.silent_ms >= 300,
+            "静默时长应从启动算起（至少覆盖超时预算）: {}",
+            result.silent_ms
+        );
+        pool.kill_all();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 后台自然结束：等待线程投递完成事件（退出码 / 时长 / 输出尾部），并清掉后台登记。
+    #[test]
+    fn bash_background_completion_emits_event() {
+        let dir = probe_dir("background-completion");
+        let events = Arc::new(RecordingEvents::default());
+        let pool = BashPool::with_events(events.clone());
+        let command = if cfg!(windows) {
+            "echo bg-done-marker & ping -n 3 127.0.0.1 > nul".to_string()
+        } else {
+            "echo bg-done-marker; sleep 1".to_string()
+        };
+        let result = run_bash(
+            pool.clone(),
+            command,
+            Some(dir.to_string_lossy().to_string()),
+            Some("bg-completion".into()),
+            Some(200),
+            None,
+            None,
+            None,
+            Some("session-bg-test".into()),
+        )
+        .expect("超时应转后台正常返回");
+        assert!(result.backgrounded, "前置条件：必须已转后台");
+        let finished = wait_for_background_event(&events, Duration::from_secs(15));
+        assert_eq!(finished.execution_id, "bg-completion");
+        assert_eq!(
+            finished.session_id.as_deref(),
+            Some("session-bg-test"),
+            "完成事件必须回传发起会话（缺省会导致通知落错会话）"
+        );
+        assert_eq!(finished.reason, crate::host::BackgroundCommandEnd::Exited);
+        assert_eq!(finished.exit_code, Some(0), "命令应正常退出");
+        assert!(
+            finished.output_tail.contains("bg-done-marker"),
+            "完成事件必须带输出尾部: {:?}",
+            finished.output_tail
+        );
+        assert!(
+            finished.duration_ms >= 1000,
+            "时长应覆盖命令实际运行: {}",
+            finished.duration_ms
+        );
+        assert!(
+            background_tasks(&pool).is_empty(),
+            "完成收尾后后台表应清空"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 后台时限到点：进程组被回收、事件如实标记 capReached（不是 completed）。
+    #[test]
+    fn bash_background_cap_reached_kills_and_reports() {
+        let dir = probe_dir("background-cap");
+        let events = Arc::new(RecordingEvents::default());
+        let pool = BashPool::with_events(events.clone() as Arc<dyn crate::host::EventSink>)
+            .with_test_timing(Duration::from_millis(700), Duration::from_millis(50));
+        let command = if cfg!(windows) {
+            "ping -n 31 127.0.0.1 > nul".to_string()
+        } else {
+            "sleep 30".to_string()
+        };
+        let result = run_bash(
+            pool.clone(),
+            command,
+            Some(dir.to_string_lossy().to_string()),
+            Some("bg-cap".into()),
+            Some(150),
+            None,
+            None,
+            None,
+            None,
+        )
+        .expect("超时应转后台正常返回");
+        assert!(result.backgrounded, "前置条件：必须已转后台");
+        let finished = wait_for_background_event(&events, Duration::from_secs(15));
+        assert_eq!(finished.execution_id, "bg-cap");
+        assert_eq!(
+            finished.reason,
+            crate::host::BackgroundCommandEnd::CapReached,
+            "到点被回收必须如实标记，不能报成自然结束"
+        );
+        assert_eq!(finished.exit_code, None, "被信号终止的命令没有退出码");
+        assert!(
+            finished.duration_ms >= 700,
+            "时长至少覆盖后台时限: {}",
+            finished.duration_ms
+        );
+        assert!(background_tasks(&pool).is_empty(), "回收收尾后后台表应清空");
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -885,6 +1096,7 @@ mod tests {
                     Some(dir_string),
                     Some(id_string),
                     Some(600_000),
+                    None,
                     None,
                     None,
                     None,
@@ -944,6 +1156,7 @@ mod tests {
                     None,
                     None,
                     None,
+                    None,
                 );
                 let _ = tx.send(());
                 result
@@ -992,6 +1205,7 @@ mod tests {
             None,
             None,
             None,
+            None,
         )
         .expect("pgid 探针应正常结束");
         let child_pgid: i64 = result
@@ -1028,6 +1242,7 @@ mod tests {
             Some("stdin-probe".into()),
             // 熔断：若 stdin 未关死且继承了交互终端，命令会挂住，用 5s 把它变成可判定的失败。
             Some(5_000),
+            None,
             None,
             None,
             None,

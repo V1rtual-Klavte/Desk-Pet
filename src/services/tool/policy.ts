@@ -40,7 +40,11 @@ export function validateToolPolicy(policy: ToolPolicy | undefined, toolId: strin
   if (!EFFECTS.has(execution.effect)) fail(toolId, `execution.effect 无效: ${String(execution.effect)}`)
   if (!ISOLATIONS.has(execution.isolation)) fail(toolId, `execution.isolation 无效: ${String(execution.isolation)}`)
   if (!REPLAYS.has(execution.replay)) fail(toolId, `execution.replay 无效: ${String(execution.replay)}`)
-  if (execution.timeoutMs !== undefined && !(Number.isFinite(execution.timeoutMs) && execution.timeoutMs > 0)) {
+  // `null` 是**显式声明**的「本计时器不设执行超时」（等用户做决定的交互工具，或执行
+  // 死线由执行端承载、到点转后台的工具——见 types.ts 的 timeoutMs 语义），不是缺省；
+  // 其余取值必须是正的有限毫秒数。
+  if (execution.timeoutMs !== undefined && execution.timeoutMs !== null
+    && !(Number.isFinite(execution.timeoutMs) && execution.timeoutMs > 0)) {
     fail(toolId, `execution.timeoutMs 无效: ${String(execution.timeoutMs)}`)
   }
   if (!PROJECTIONS.has(context.resultProjection)) fail(toolId, `context.resultProjection 无效: ${String(context.resultProjection)}`)

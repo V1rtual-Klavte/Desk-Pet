@@ -25,8 +25,8 @@ use crate::{rust_debug, rust_info, rust_warn};
 
 use super::events::ChatEvent;
 use super::intents::{
-    ChatIntent, ChatIntentPort, NullChatIntentPort, PermissionConfirmation, PlanConfirmMode,
-    PlanConfirmResult, PlanStepDecision,
+    ChatIntent, ChatIntentPort, NullChatIntentPort, ChoiceResolution, PermissionConfirmation,
+    PlanConfirmMode, PlanConfirmResult, PlanStepDecision,
 };
 use super::model::{
     ChatModel, ChatRenderUpdate, ChatSnapshot, PendingDraftRelease, Revisions, StatusSnapshot,
@@ -59,6 +59,10 @@ enum PanelTransition {
     PermissionResolved {
         request_id: String,
     },
+    /// 提问答复已送出：收起该提问面板。
+    ChoiceResolved {
+        request_id: String,
+    },
 }
 
 /// 决策类面板动作成功后的中性瞬时回执（旧壳 `showDeliveryNote` 的迁移）。
@@ -85,14 +89,8 @@ fn success_notice(action: &PanelAction) -> Option<&'static str> {
     })
 }
 
-/// 墙钟毫秒（epoch；与 Node `Date.now()` 同口径，用于换算确认请求的有效期）。
-fn wall_now_ms() -> i64 {
-    use std::time::{SystemTime, UNIX_EPOCH};
-    match SystemTime::now().duration_since(UNIX_EPOCH) {
-        Ok(duration) => duration.as_millis() as i64,
-        Err(_) => 0,
-    }
-}
+// `wall_now_ms` 删除记录（2026-10-06）：唯一消费者是权限确认的 `expiresAt` → 本地面板
+// 期限换算；选择类弹窗不留超时后该换算与函数一并退场。
 
 /// 进程级聊天 UI 单例。
 pub struct ChatUi {
@@ -417,14 +415,8 @@ impl ChatUi {
                     complexity,
                     force_step_by_step,
                 } => {
-                    model.plan_start(
-                        session_id,
-                        plan_id,
-                        steps,
-                        complexity,
-                        force_step_by_step,
-                        now_mono,
-                    );
+                    // 没有本地期限：面板一直等用户拍板（2026-10-06 用户裁决）。
+                    model.plan_start(session_id, plan_id, steps, complexity, force_step_by_step);
                 }
                 ChatEvent::PlanProgress {
                     session_id,
@@ -459,23 +451,29 @@ impl ChatUi {
                 ChatEvent::PlanEnd { session_id, .. } => {
                     model.plan_end(&session_id);
                 }
-                ChatEvent::PermissionConfirm(request) => {
-                    // 有效期换算：`expiresAt` 是 Node 墙钟（epoch 毫秒），本地期限用单调时钟。
-                    let remaining = request.expires_at.map(|expires| expires - wall_now_ms());
-                    match remaining {
-                        Some(ms) if ms <= 0 => {
-                            // 已过期的确认请求（晚到/时钟偏差）：Node 侧 TTL 已按拒绝结算，
-                            // 这条事件不再呈现面板（丢弃并留痕，不静默吞成成功）。
-                            rust_debug!(
-                                "权限确认请求已过期（expiresAt={:?}），按晚到事件丢弃",
-                                request.expires_at
-                            );
-                        }
-                        other => {
-                            let deadline = other.map(|ms| now_mono + ms.max(0) as u64);
-                            model.permission_request(request, deadline);
-                        }
+                ChatEvent::ChoiceStart {
+                    session_id,
+                    request_id,
+                    question,
+                    options,
+                } => {
+                    // 只接受当前会话的载荷（与计划确认同款）；没有本地期限。
+                    if !model.choice_start(session_id, request_id, question, options) {
+                        rust_debug!("提问事件不属于当前会话，已忽略");
                     }
+                }
+                ChatEvent::ChoiceEnd {
+                    session_id,
+                    request_id,
+                } => {
+                    if !model.choice_end(&session_id, &request_id) {
+                        rust_debug!("提问收尾事件没有对应面板（已收起或迟到），已忽略");
+                    }
+                }
+                ChatEvent::PermissionConfirm(request) => {
+                    // 没有有效期换算与本地期限（2026-10-06 用户裁决：选择类弹窗不留超时）：
+                    // 面板一直等用户答复，「送不到」由 Node 按拒绝立即结算。
+                    model.permission_request(request);
                 }
             }
         }
@@ -647,17 +645,33 @@ impl ChatUi {
                 PanelTransition::PermissionResolved { request_id } => {
                     model.permission_decided(&request_id)
                 }
+                PanelTransition::ChoiceResolved { request_id } => {
+                    model.choice_remove(&request_id)
+                }
                 PanelTransition::None => false,
             }
         };
         if changed {
             self.schedule_refresh();
         }
-        // 决策类动作成功后的中性瞬时回执（旧壳 showDeliveryNote 的迁移）。
-        Ok(match success_notice(&action) {
-            Some(text) => PanelOutcome::Notice(text.to_string()),
-            None => PanelOutcome::None,
+        // 决策类动作成功后的中性瞬时回执（旧壳 showDeliveryNote 的迁移）；「其它」额外把
+        // 焦点交回输入框（用户下一条消息就是自己的回答，见 `PanelOutcome::FocusInput`）。
+        Ok(match &action {
+            PanelAction::ChoiceOther { .. } => PanelOutcome::FocusInput,
+            action => match success_notice(action) {
+                Some(text) => PanelOutcome::Notice(text.to_string()),
+                None => PanelOutcome::None,
+            },
         })
+    }
+
+    /// 提问答复的身份核对：该 requestId 必须仍在待答表里（迟到的点击如实报错、不派发，
+    /// 与计划/权限动作的「没有待确认的 X」同一口径）。
+    fn require_pending_choice(&self, request_id: &str) -> AppResult<()> {
+        if Self::lock(&self.model).choice_pending(request_id) {
+            return Ok(());
+        }
+        Err(AppError::Other("当前没有待答复的提问".into()))
     }
 
     /// 面板动作 → 意图与本地过渡（派发成功后才应用过渡）。
@@ -782,6 +796,37 @@ impl ChatUi {
                         decision,
                     },
                     PanelTransition::PermissionResolved { request_id },
+                )
+            }
+            // ── 向用户提问（ask_user）：三种答复各自一条回执；身份必须在场（迟到点击如实报错）──
+            PanelAction::ChoicePick { request_id, index } => {
+                self.require_pending_choice(request_id)?;
+                (
+                    ChatIntent::ChoiceResolved {
+                        request_id: request_id.clone(),
+                        result: ChoiceResolution::Picked { index: *index },
+                    },
+                    PanelTransition::ChoiceResolved { request_id: request_id.clone() },
+                )
+            }
+            PanelAction::ChoiceOther { request_id } => {
+                self.require_pending_choice(request_id)?;
+                (
+                    ChatIntent::ChoiceResolved {
+                        request_id: request_id.clone(),
+                        result: ChoiceResolution::Other,
+                    },
+                    PanelTransition::ChoiceResolved { request_id: request_id.clone() },
+                )
+            }
+            PanelAction::ChoiceCancel { request_id } => {
+                self.require_pending_choice(request_id)?;
+                (
+                    ChatIntent::ChoiceResolved {
+                        request_id: request_id.clone(),
+                        result: ChoiceResolution::Cancelled,
+                    },
+                    PanelTransition::ChoiceResolved { request_id: request_id.clone() },
                 )
             }
             PanelAction::WithdrawQueued { entry_id } => (
@@ -1613,6 +1658,15 @@ mod tests {
         (ui, recorder)
     }
 
+    /// 快照里的提问面板数（提问用例共用）。
+    fn choice_panel_count(ui: &ChatUi) -> usize {
+        ui.snapshot()
+            .panels
+            .iter()
+            .filter(|view| view.kind == crate::ui::chat::panels::PanelKind::Choice)
+            .count()
+    }
+
     #[test]
     fn 计划确认面板动作派发回执并进入执行态() {
         let (ui, recorder) = instrumented_ui();
@@ -1679,8 +1733,6 @@ mod tests {
                 input_hash: None,
                 policy_hash: None,
                 tool_call_id: None,
-                // 远未到期（避免测试机器时钟偏差导致装配时就被判过期）。
-                expires_at: Some(wall_now_ms() + 60_000),
             },
         ));
         assert!(ui.snapshot().permission.is_some());
@@ -1693,6 +1745,143 @@ mod tests {
             serde_json::json!({"requestId":"r1","decision":"allow_session"})
         );
         assert!(ui.snapshot().permission.is_none());
+    }
+
+    #[test]
+    fn 提问点选派发所选项回执并收起面板() {
+        let (ui, recorder) = instrumented_ui();
+        ui.apply_event(ChatEvent::ChoiceStart {
+            session_id: "s1".into(),
+            request_id: "choice-c1".into(),
+            question: "喝什么？".into(),
+            options: vec!["咖啡".into(), "茶".into()],
+        });
+        assert_eq!(choice_panel_count(&ui), 1, "提问面板没有进快照");
+
+        let outcome = ui
+            .apply_panel_action(PanelAction::ChoicePick {
+                request_id: "choice-c1".into(),
+                index: 1,
+            })
+            .unwrap();
+        assert_eq!(outcome, PanelOutcome::None, "点选不产生本地通知");
+        let event = recorder.last().receipt_event().expect("点选是回执");
+        assert_eq!(event.name, "deskpet-choice-resolved");
+        assert_eq!(
+            event.payload,
+            serde_json::json!({"requestId":"choice-c1","result":{"kind":"picked","index":1}})
+        );
+        assert_eq!(choice_panel_count(&ui), 0, "点选成功后收起该提问面板");
+    }
+
+    #[test]
+    fn 提问其它与取消分别回执其它与取消并收起面板() {
+        let (ui, recorder) = instrumented_ui();
+        for (request_id, action, expected) in [
+            (
+                "choice-other",
+                PanelAction::ChoiceOther { request_id: "choice-other".into() },
+                serde_json::json!({"requestId":"choice-other","result":{"kind":"other"}}),
+            ),
+            (
+                "choice-cancel",
+                PanelAction::ChoiceCancel { request_id: "choice-cancel".into() },
+                serde_json::json!({"requestId":"choice-cancel","result":{"kind":"cancelled"}}),
+            ),
+        ] {
+            ui.apply_event(ChatEvent::ChoiceStart {
+                session_id: "s1".into(),
+                request_id: request_id.into(),
+                question: "继续吗？".into(),
+                options: vec!["继续".into(), "停".into()],
+            });
+            let outcome = ui.apply_panel_action(action).unwrap();
+            let event = recorder.last().receipt_event().expect("两个动作都是回执");
+            assert_eq!(event.payload, expected);
+            assert_eq!(choice_panel_count(&ui), 0, "{request_id} 派发成功后应收起");
+            if request_id == "choice-other" {
+                // 「其它」要把焦点交回输入框（用户下一条消息就是自由回答）——
+                // 平台层据此调用聚焦；这里钉住动作结果的形态。
+                assert_eq!(outcome, PanelOutcome::FocusInput, "「其它」没有请求聚焦输入框");
+            }
+        }
+    }
+
+    #[test]
+    fn 提问面板不在时点选如实报错且不派发() {
+        let (ui, recorder) = instrumented_ui();
+        let error = ui
+            .apply_panel_action(PanelAction::ChoicePick {
+                request_id: "choice-gone".into(),
+                index: 0,
+            })
+            .unwrap_err();
+        assert!(error.to_string().contains("没有待答复的提问"), "文案：{error}");
+        assert!(recorder.seen.lock().unwrap().is_empty(), "失败的派发不得送出回执");
+    }
+
+    #[test]
+    fn 提问收尾事件按requestid收起且迟到幂等() {
+        let (ui, _recorder) = instrumented_ui();
+        ui.apply_event(ChatEvent::ChoiceStart {
+            session_id: "s1".into(),
+            request_id: "choice-end".into(),
+            question: "在吗？".into(),
+            options: vec!["在".into(), "不在".into()],
+        });
+        assert_eq!(choice_panel_count(&ui), 1);
+        ui.apply_event(ChatEvent::ChoiceEnd {
+            session_id: "s1".into(),
+            request_id: "choice-end".into(),
+        });
+        assert_eq!(choice_panel_count(&ui), 0, "收尾事件没有收起面板");
+        // 迟到的重复收尾是 no-op（不 panic、不改动别的面板）。
+        ui.apply_event(ChatEvent::ChoiceEnd {
+            session_id: "s1".into(),
+            request_id: "choice-end".into(),
+        });
+        assert_eq!(choice_panel_count(&ui), 0);
+    }
+
+    #[test]
+    fn 决策面板不会被本地期限收起() {
+        // 2026-10-06 用户裁决：选择类弹窗不留超时。假想时钟推进 10 分钟后面板必须还在
+        // —— 若本地期限被重新引入，这条立即红。
+        let (ui, _recorder) = instrumented_ui();
+        ui.apply_event(ChatEvent::PlanStart {
+            session_id: "s1".into(),
+            plan_id: "p1".into(),
+            steps: vec![],
+            complexity: 1,
+            force_step_by_step: false,
+        });
+        ui.apply_event(ChatEvent::ChoiceStart {
+            session_id: "s1".into(),
+            request_id: "choice-hold".into(),
+            question: "等很久？".into(),
+            options: vec!["甲".into(), "乙".into()],
+        });
+        ui.apply_event(ChatEvent::PermissionConfirm(
+            crate::ui::chat::events::PermissionConfirmRequest {
+                request_id: "perm-hold".into(),
+                message: "需要确认".into(),
+                tool_name: "bash".into(),
+                session_id: Some("s1".into()),
+                run_generation: Some(1),
+                parameter_summary: None,
+                effect_class: None,
+                input_hash: None,
+                policy_hash: None,
+                tool_call_id: None,
+            },
+        ));
+
+        ChatUi::lock(&ui.model).expire_deadlines(10 * 60 * 1000);
+
+        let snapshot = ui.snapshot();
+        assert!(snapshot.plan.is_some(), "计划确认面板被本地期限收起了");
+        assert_eq!(choice_panel_count(&ui), 1, "提问面板被本地期限收起了");
+        assert!(snapshot.permission.is_some(), "权限面板被本地期限收起了");
     }
 
     #[test]

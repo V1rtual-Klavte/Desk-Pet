@@ -1155,6 +1155,9 @@ impl MemoryStore {
                     tx.execute("DELETE FROM proactive_evaluations WHERE EXISTS(SELECT 1 FROM json_each(source_refs_json) s WHERE json_extract(s.value,'$.kind') IN ('behavior','variable','calendar','card'))",[]).map_err(db)?;
                     tx.execute("UPDATE proactive_attempts SET status='failed',source_refs_json='[]',decision_json=NULL,summary=NULL,error_code='source_cleared',updated_at=?1 WHERE status IN ('reserved','generating','unresolved') AND EXISTS(SELECT 1 FROM json_each(source_refs_json) s WHERE json_extract(s.value,'$.kind') IN ('behavior','variable','calendar','card'))",[now_ms()]).map_err(db)?;
                     tx.execute("DELETE FROM proactive_source_registry WHERE kind IN ('behavior','variable','calendar','card')",[]).map_err(db)?;
+                    // 派生（系统观察）沉淀的记忆与画像同生共死：在同一事务里先失效引用
+                    // （主动侧 memory 闭包）再写墓碑、删正文/索引/候选（记忆域单一实现点）。
+                    crate::memory::forget_derived_behavior_items_tx(&tx)?;
                 }
                 None
             }

@@ -13,7 +13,7 @@
 ## 建表点与版本策略
 
 - 生产建表点只有两个：记忆侧 [memory/schema.rs](../../crates/native-host/src/memory/schema.rs)、主动链侧 [proactive/schema.rs](../../crates/native-host/src/proactive/schema.rs)；记忆侧 `ensure` 建完自己的表后调用主动链侧的 `ensure`（`proactive/store.rs` 里的建表语句属于 `#[cfg(test)]` 夹具，不是生产路径）。
-- 版本：`MEMORY_SCHEMA_VERSION`（当前 3；2026-10-05 频率档位批随 `proactive_control.enabled` 列删除从 2 递增）存于 `memory_meta.schema_version`；打开时校验，**不一致拒绝以旧格式继续**（报错而非静默重建空库）。常量的生成链是单向的：源定义在 [src/services/agent/memory/protocol.json](../../src/services/agent/memory/protocol.json)，由 [scripts/generate-memory-protocol.mjs](../../scripts/generate-memory-protocol.mjs) 生成到 [memory/protocol.rs](../../crates/native-host/src/memory/protocol.rs)（该文件头注明 Generated，不手改）。开发阶段不做数据迁移、不建兼容层——处理方式是删掉 `memory.sqlite3` 连同 `-wal` / `-shm` 后重建（旧数据可弃）。
+- 版本：`MEMORY_SCHEMA_VERSION`（当前 3；2026-10-05 频率档位批随 `proactive_control.enabled` 列删除从 2 递增）存于 `memory_meta.schema_version`；打开时校验，**不一致拒绝以旧格式继续**（报错而非静默重建空库）。常量的生成链是单向的：源定义在 [src/services/agent/memory/protocol.json](../../src/services/agent/memory/protocol.json)，由 [scripts/generate-memory-protocol.mjs](../../scripts/generate-memory-protocol.mjs) 生成到 [memory/protocol.rs](../../crates/native-host/src/memory/protocol.rs)（该文件头注明 Generated，不手改）。开发阶段不做数据迁移、不建兼容层——处理方式是删掉 `memory.sqlite3` 连同 `-wal` / `-shm` 后重建（旧数据可弃）。**派生结论批（2026-10-06）不涉版本变更**：条目/来源类别 `origin` 不落额外列（由来源类别派生），旧库照常打开，无需重建。
 - 同一版本内的结构演进用「检测缺列 → `ALTER TABLE` 补列（带默认值）」，不重置既有行（主动链的 `proactive_budgets` 增列即此模式）。
 
 ## 表清单
@@ -23,8 +23,8 @@
 | 表 | 职责 |
 |---|---|
 | memory_meta | 库级元数据（key-value）：schema_version、revision、forget_epoch |
-| memory_items | 已接受记忆事实，召回的唯一条目来源；行按 id+version 版本化，带 status/kind/scope、正文/摘要/别名、pinned（核心画像标记）/importance/confidence、有效期与 supersedes 链 |
-| memory_sources | 来源登记：候选与事实引用的会话条目身份（session/entry/event/seq/content_hash/taint/origin/card_id），同一事件按 (session, entry, hash) 唯一 |
+| memory_items | 已接受记忆事实，召回的唯一条目来源；行按 id+version 版本化，带 status/kind/scope、正文/摘要/别名、pinned（核心画像标记）/importance/confidence、有效期与 supersedes 链；**不存 origin 列**——条目类别由来源类别唯一派生（user / derived_behavior） |
+| memory_sources | 来源登记：候选与事实引用的会话条目身份（session/entry/event/seq/content_hash/taint/origin/card_id），同一事件按 (session, entry, hash) 唯一；origin 按成对约束分两类：`user` + `trusted_user`（用户可信输入）、`derived_behavior` + `derived`（画像稳定结论，合成会话 `behavior`），错配拒收，两类不混池 |
 | memory_item_sources | 事实 ↔ 来源关联（随 item 版本级联删除） |
 | memory_candidates | Review 产出的 staging 候选：提交事务前只存在这里，不进 FTS、不进召回 |
 | memory_jobs | dreaming 作业账本：phase/status/revision/forget_epoch、租约、cursor 与当日用量 |

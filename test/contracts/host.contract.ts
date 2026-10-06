@@ -11,6 +11,11 @@
 // hz-01..hz-03 逐点核对：五个端口的 fail-fast 与转发保真、Node 端口装配、错误码保真实现点仍在、
 // 覆盖描述与当前实现一致。本批刷新同时包含另一会话的改动；本轮只做 coverage 描述与当前实现
 // 一致性核对（非逐行行为审计），未修订覆盖点，仅按当前源码刷新 sourceHash。
+// 2026-10-06 提问选择与去超时批次（本批刷新）：sourceFiles 变化仅限
+// `src/services/host/ui-events.ts`：NodeUiEventName 补 `deskpet-choice-start` /
+// `deskpet-choice-end`，UiReceiptMap 补 `deskpet-choice-resolved`（提问选择的回执条目），
+// 权限确认载荷的 `expiresAt` 随「选择类弹窗不留超时」退场。端口机制未变（五取用口、退订、
+// 保真转发与失败上抛），各覆盖点逐条核对实现点仍在；sourceHash 按当前源码复算。
 import type { ModuleContract } from "../host/types"
 
 export const hostContract: ModuleContract = {
@@ -23,7 +28,7 @@ export const hostContract: ModuleContract = {
     "src/services/host/wire.ts",
     "src/services/error/format.ts",
   ],
-  sourceHash: "0ef1fb221d9d38687d9dfc9efd3e376d2e58b6bb5140ac36fbd80b4f5d42f445",
+  sourceHash: "e2004dca8ce2fe0ca3bdbacc49cca0509c699a4104eecc8c033bd3b3ff9f884b",
   coverage: [
     {
       id: "hz-01",

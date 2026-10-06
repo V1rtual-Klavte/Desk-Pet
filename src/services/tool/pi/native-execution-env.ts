@@ -18,6 +18,7 @@
 // ==========================================
 
 import { getExecutionPathKit, getHostBridge } from "@/services/host"
+import { formatBackgroundedBashNotice } from "../local/bash-timeout"
 import {
   err,
   ExecutionError,
@@ -77,6 +78,16 @@ export type BashPayload = {
   /** 本次实际生效的输出上限（Rust 的兜底值也在这里回传）：前端不复制第二份默认值。 */
   maxBytes: number
   maxLines: number
+  /** 前台预算到点：命令超过 timeoutMs 并已转入后台（**未终止**，见 backgrounded）。 */
+  timedOut: boolean
+  /** 已转入后台继续执行（结果返回时进程仍在跑）。 */
+  backgrounded: boolean
+  /** 从启动到本次结果的耗时（毫秒）。L1 现场证据。 */
+  elapsedMs: number
+  /** 距最近一次输出增长（从未有输出时从启动算起）的静默时长（毫秒）。L1 现场证据。 */
+  silentMs: number
+  /** 两路输出的原始总字节数（不合成、不截断）。 */
+  producedBytes: number
 }
 
 /** Rust 错误码 → FileErrorCode；未列出的码保持 unknown（不猜类别）。 */
@@ -115,7 +126,11 @@ function throwIfAborted(context: Context): void {
 }
 
 export class NativeExecutionEnv implements ExecutionEnv {
-  constructor(public cwd: string) {}
+  /**
+   * `sessionId`：发起会话（工具上下文给的稳定归属），只随 `bash_exec` 下传 ——
+   * 前台超时转后台后，Rust 的完成事件按它把「完成通知」回投到正确会话。
+   */
+  constructor(public cwd: string, private sessionId?: string) {}
 
   static async defaultCwd(): Promise<string> {
     return getExecutionPathKit().homeDir()
@@ -322,11 +337,14 @@ export class NativeExecutionEnv implements ExecutionEnv {
         // Pi 的 timeout 以秒计。pi-bash 的 prepareArguments 已把生效值夹取进参数
         // （默认 = 上限 = 5 分钟，见 tool/local/bash-timeout.ts），这里只做秒 → 毫秒换算；
         // null 只会出现在没走 pi-bash 的直调上，由 Rust 的同值兜底接管。
+        // 到点后的语义（2026-10-06 后台化批次）：**不杀进程**，转后台继续跑，见下方 backgrounded 分支。
         timeoutMs: options?.timeout === undefined ? null : Math.round(options.timeout * 1000),
         // 上限的真相源是 Rust：这里只在调用方给了 limits 时转发，缺省交给 Rust 的兜底值。
         maxBytes: limits?.maxBytes ?? null,
         maxLines: limits?.maxLines ?? null,
         spill,
+        // 完成通知的归属：前台转后台后，Rust 的完成事件按它回投聊天系统消息。
+        sessionId: this.sessionId ?? null,
       })
       throwIfAborted(context)
       const truncation = {
@@ -341,6 +359,22 @@ export class NativeExecutionEnv implements ExecutionEnv {
         // 生效值来自 Rust 的回传：前端不再复制一份 2000 / 50*1024 的默认值。
         maxLines: result.maxLines,
         maxBytes: result.maxBytes,
+      }
+      if (result.backgrounded) {
+        // 前台预算到点、命令已转入后台（**未终止**）：本次调用按「未完成」如实结算 ——
+        // 模型拿到转后台说明（含 L1 现场证据：静默时长 / 产出字节）+ 输出尾部，据此判断
+        // 「慢但在动」还是「疑似挂死」，而不是把它当成失败重跑。终局由宿主的
+        // `bash-background-finished` 事件经聊天系统消息告知用户（见 tool/background.ts）。
+        const timeoutMs = options?.timeout === undefined ? 0 : Math.round(options.timeout * 1000)
+        const notice = formatBackgroundedBashNotice({
+          timeoutMs,
+          elapsedMs: result.elapsedMs,
+          silentMs: result.silentMs,
+          producedBytes: result.producedBytes,
+        })
+        const text = result.output ? `${notice}\n\n--- 输出尾部 ---\n${result.output}` : notice
+        options?.onUpdate?.({ kind: "replace", output: { text, truncation, spillPath: undefined } }, context)
+        return err(new ExecutionError("timeout", notice))
       }
       // bash 工具会把 spillPath 拼进给模型的文本（「Full output: <path>」），
       // 所以它必须同时出现在流式更新和最终结果里，缺一个模型都会看到字面量 undefined。

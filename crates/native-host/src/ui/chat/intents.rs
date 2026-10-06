@@ -156,15 +156,14 @@ impl PlanConfirmMode {
     }
 }
 
-/// 非确认归宿的原因（`PlanConfirmResult.confirmed=false` 的 `reason`；六种各有明确来源，
-/// 与 `plan-confirmation.ts` 的联合类型逐字对齐）。
+/// 非确认归宿的原因（`PlanConfirmResult.confirmed=false` 的 `reason`；五种各有明确来源，
+/// 与 `plan-confirmation.ts` 的联合类型逐字对齐）。2026-10-06 起没有 `timeout`：
+/// 选择类弹窗不留超时（用户裁决），归宿只在取消 / 会话生命周期 / 发射失败上产生。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PlanConfirmCancelReason {
     /// 用户在面板上取消。
     User,
-    /// 确认等待超时（Node 侧结算）。
-    Timeout,
-    /// 切会话（含 signal abort）。
+    /// 切会话（含 signal abort：用户停止回合走同一条）。
     SessionSwitched,
     /// 会话被关闭。
     NotActive,
@@ -178,7 +177,6 @@ impl PlanConfirmCancelReason {
     fn as_str(self) -> &'static str {
         match self {
             PlanConfirmCancelReason::User => "user",
-            PlanConfirmCancelReason::Timeout => "timeout",
             PlanConfirmCancelReason::SessionSwitched => "session_switched",
             PlanConfirmCancelReason::NotActive => "not_active",
             PlanConfirmCancelReason::EmitFailed => "emit_failed",
@@ -263,10 +261,48 @@ impl PermissionConfirmation {
     }
 }
 
+/// 提问（`ask_user`）的答复（与 `choice-confirmation.ts::ChoiceResolution` 同形状）。
+///
+/// `picked` = 点选了第 index 个选项（Node 侧校验越界即丢弃）；`other` = 用户选择用自己的
+/// 话回答（自由原文以下一条消息到达，**不在这里回传**）；`cancelled` = 用户点了取消。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ChoiceResolution {
+    Picked { index: usize },
+    Other,
+    Cancelled,
+}
+
+impl serde::Serialize for ChoiceResolution {
+    /// 手写序列化：与 TS 联合类型逐字对齐（`{kind:"picked", index}` / `{kind:"other"}` /
+    /// `{kind:"cancelled"}`），不做 `untagged` 的字段歧义推断。
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        use serde::ser::SerializeMap;
+        match self {
+            ChoiceResolution::Picked { index } => {
+                let mut map = serializer.serialize_map(Some(2))?;
+                map.serialize_entry("kind", "picked")?;
+                map.serialize_entry("index", index)?;
+                map.end()
+            }
+            ChoiceResolution::Other => {
+                let mut map = serializer.serialize_map(Some(1))?;
+                map.serialize_entry("kind", "other")?;
+                map.end()
+            }
+            ChoiceResolution::Cancelled => {
+                let mut map = serializer.serialize_map(Some(1))?;
+                map.serialize_entry("kind", "cancelled")?;
+                map.end()
+            }
+        }
+    }
+}
+
 /// 权限确认轮询与回执的线上事件名（回执方向；见文件头）。
 pub const RECEIPT_PLAN_CONFIRM_RESOLVED: &str = "deskpet-plan-confirm-resolved";
 pub const RECEIPT_PLAN_STEP_DECISION: &str = "deskpet-plan-step-decision";
 pub const RECEIPT_PERMISSION_CONFIRM_RESOLVED: &str = "deskpet-permission-confirm-resolved";
+pub const RECEIPT_CHOICE_RESOLVED: &str = "deskpet-choice-resolved";
 
 /// 一条 UI 回执：事件名 + 已序列化的 JSON 载荷（`HostBridge::publish_event` 直接可用）。
 #[derive(Debug, Clone, PartialEq)]
@@ -310,6 +346,11 @@ pub enum ChatIntent {
     PermissionDecision {
         request_id: String,
         decision: PermissionConfirmation,
+    },
+    /// 面板回执：提问（`ask_user`）答复（回执名见 [`RECEIPT_CHOICE_RESOLVED`]）。
+    ChoiceResolved {
+        request_id: String,
+        result: ChoiceResolution,
     },
     /// 终止该会话在执行中的计划（Node `abortRunningPlan`；未在执行时 Node 按用户取消收尾）。
     AbortRunningPlan { session_id: String, plan_id: String },
@@ -372,6 +413,7 @@ impl ChatIntent {
             ChatIntent::PlanConfirmResolved { .. } => "plan-confirm-resolved",
             ChatIntent::PlanStepDecision { .. } => "plan-step-decision",
             ChatIntent::PermissionDecision { .. } => "permission-decision",
+            ChatIntent::ChoiceResolved { .. } => "choice-resolved",
             ChatIntent::AbortRunningPlan { .. } => "abort-running-plan",
             ChatIntent::ResumePlan { .. } => "resume-plan",
             ChatIntent::DiscardPlan { .. } => "discard-plan",
@@ -415,6 +457,10 @@ impl ChatIntent {
                     "requestId": request_id,
                     "decision": decision.as_str(),
                 }),
+            }),
+            ChatIntent::ChoiceResolved { request_id, result } => Some(UiReceiptEvent {
+                name: RECEIPT_CHOICE_RESOLVED,
+                payload: serde_json::json!({ "requestId": request_id, "result": result }),
             }),
             _ => None,
         }
@@ -623,13 +669,15 @@ fn decision_submit(intent: &ChatIntent) -> Option<(&'static str, serde_json::Val
     })
 }
 
-/// 已可投递的回执：计划确认 / 步骤裁决 / 权限确认 —— 三条的 Node 侧
-/// `UiReceiptMap` 条目与订阅都已登记（权限确认见 `native-ui/permission-confirm.ts`）。
+/// 已可投递的回执：计划确认 / 步骤裁决 / 权限确认 / 提问选择 —— 四条的 Node 侧
+/// `UiReceiptMap` 条目与订阅都已登记（权限确认见 `native-ui/permission-confirm.ts`，
+/// 提问选择见 `engine/choice-confirmation.ts` 的 `initChoiceConfirmationReceipts()`）。
 fn publishable_receipt(intent: &ChatIntent) -> Option<UiReceiptEvent> {
     match intent {
         ChatIntent::PlanConfirmResolved { .. }
         | ChatIntent::PlanStepDecision { .. }
-        | ChatIntent::PermissionDecision { .. } => intent.receipt_event(),
+        | ChatIntent::PermissionDecision { .. }
+        | ChatIntent::ChoiceResolved { .. } => intent.receipt_event(),
         _ => None,
     }
 }
@@ -764,7 +812,6 @@ mod tests {
 
         for (reason, literal) in [
             (PlanConfirmCancelReason::User, "user"),
-            (PlanConfirmCancelReason::Timeout, "timeout"),
             (PlanConfirmCancelReason::SessionSwitched, "session_switched"),
             (PlanConfirmCancelReason::NotActive, "not_active"),
             (PlanConfirmCancelReason::EmitFailed, "emit_failed"),
@@ -789,6 +836,24 @@ mod tests {
             receipt.payload,
             serde_json::json!({"planId":"p1","decision":"abort"})
         );
+    }
+
+    #[test]
+    fn 提问回执形状与uireceiptmap逐字对齐() {
+        // 三种取值逐一钉住线上形状（与 `choice-confirmation.ts::ChoiceResolution` 同形）。
+        for (result, expected) in [
+            (ChoiceResolution::Picked { index: 2 }, serde_json::json!({"kind":"picked","index":2})),
+            (ChoiceResolution::Other, serde_json::json!({"kind":"other"})),
+            (ChoiceResolution::Cancelled, serde_json::json!({"kind":"cancelled"})),
+        ] {
+            let intent = ChatIntent::ChoiceResolved {
+                request_id: "choice-c1".into(),
+                result,
+            };
+            let receipt = intent.receipt_event().expect("提问答复是回执");
+            assert_eq!(receipt.name, "deskpet-choice-resolved");
+            assert_eq!(receipt.payload, serde_json::json!({"requestId":"choice-c1","result":expected}));
+        }
     }
 
     #[test]

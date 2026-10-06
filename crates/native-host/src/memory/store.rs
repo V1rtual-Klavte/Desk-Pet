@@ -9,7 +9,7 @@
 use super::schema;
 use crate::error::{AppError, AppResult};
 use crate::paths::AppPaths;
-use rusqlite::{backup, params, Connection, OpenFlags, OptionalExtension, TransactionBehavior};
+use rusqlite::{backup, params, Connection, OpenFlags, OptionalExtension, Transaction, TransactionBehavior};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use std::path::{Path, PathBuf};
@@ -20,17 +20,19 @@ pub const WATERMARK_RULE_VERSION: i64 = 1;
 /// 单批 Light 抽取的来源上限：批大小是资源边界，不是调优旋钮。
 const JOB_SOURCE_BATCH: i64 = 64;
 
-/// 待处理来源的判定（水位之后 + 未命中提取墓碑 + 可信用户来源）。
+/// 待处理来源的判定（水位之后 + 未命中提取墓碑 + 两类准入来源）。
 /// `job_sources`（批内取数）与 `pending_source_count`（开作业前的前置查询）共用这两段：
 /// 水位判定只有一份实现，两处不会各自漂移（`memory_watermarks` 是唯一水位）。
-/// 参数：?1 = 游标 session_id（NULL 表示不限）、?2 = 游标 seq。
+/// 参数：?1 = 游标 session_id（NULL 表示不限）、?2 = 游标 seq、?3 = 来源类别过滤
+/// （NULL = 两类都取；整理按类别开作业，用户事实与系统观察不混池）。
 const PENDING_SOURCE_COLUMNS: &str = "s.source_id,s.session_id,s.entry_id,s.event_id,s.seq,s.content_hash,s.evidence,s.card_id,s.taint,s.origin,s.observed_at";
 const PENDING_SOURCE_FROM: &str = "FROM memory_sources s LEFT JOIN memory_watermarks w ON w.session_id=s.session_id \
-     WHERE s.origin='user' AND s.taint='trusted_user' \
+     WHERE ((s.origin='user' AND s.taint='trusted_user') OR (s.origin='derived_behavior' AND s.taint='derived')) \
        AND NOT EXISTS(SELECT 1 FROM memory_tombstones t WHERE t.session_id=s.session_id AND t.entry_id=s.entry_id \
          AND t.content_hash=s.content_hash AND t.effect='block_extraction') \
        AND (w.seq IS NULL OR s.seq > w.seq) \
-       AND (?1 IS NULL OR s.session_id > ?1 OR (s.session_id = ?1 AND s.seq > ?2))";
+       AND (?1 IS NULL OR s.session_id > ?1 OR (s.session_id = ?1 AND s.seq > ?2)) \
+       AND (?3 IS NULL OR s.origin = ?3)";
 
 /// SQLite 忙等待：记忆库连接是进程内唯一写者，维护命令跨连接短暂争用时最多等 750ms。
 const DB_BUSY_TIMEOUT_MS: u64 = 750;
@@ -698,7 +700,84 @@ impl MemoryStore {
         i.aliases_json,i.pinned,i.importance,i.confidence,i.observed_at,i.valid_from,i.valid_to,i.expires_at,\
         i.supersedes_id,i.created_at,i.updated_at,i.event_at_json,i.due_at_json,i.working_state";
 
-    /// 补齐每个条目的来源清单：来源是「这条记忆从哪来」的唯一答案，详情与列表都要带。
+    /// 条目来源类别：全部来源都是系统观察结论 → `derived_behavior`，否则 `user`。
+    /// 混用（两类同一条目）在写入处已被拒绝，这里取保守值不掩盖问题。
+    fn origin_from_source_origins(origins: &[String]) -> &'static str {
+        if !origins.is_empty() && origins.iter().all(|origin| origin == "derived_behavior") {
+            "derived_behavior"
+        } else {
+            "user"
+        }
+    }
+
+    /// 读一组来源的类别（(含用户来源, 含系统观察来源)）；未登记来源如实报错——
+    /// 候选/草稿的 provenance 只能来自已登记来源，不能凭空声明。
+    fn source_classes(conn: &Connection, source_ids: &[String]) -> AppResult<(bool, bool)> {
+        let mut has_user = false;
+        let mut has_derived = false;
+        for source_id in source_ids {
+            let origin: Option<String> = conn
+                .query_row(
+                    "SELECT origin FROM memory_sources WHERE source_id=?1",
+                    [source_id],
+                    |row| row.get(0),
+                )
+                .optional()
+                .map_err(db_err)?;
+            match origin.as_deref() {
+                Some("user") => has_user = true,
+                Some("derived_behavior") => has_derived = true,
+                Some(other) => {
+                    return Err(AppError::Memory(format!(
+                        "来源 {source_id} 的类别 {other} 不具备记忆资格"
+                    )))
+                }
+                None => return Err(AppError::Memory(format!("来源未登记: {source_id}"))),
+            }
+        }
+        Ok((has_user, has_derived))
+    }
+
+    /// 写入前的分池校验：两类来源不得混用；系统观察不进核心画像、不做 working 事项。
+    fn validate_source_pool(conn: &Connection, source_ids: &[String], pinned: bool, kind: &str) -> AppResult<&'static str> {
+        let (has_user, has_derived) = Self::source_classes(conn, source_ids)?;
+        if has_user && has_derived {
+            return Err(AppError::Memory(
+                "候选来源混用用户事实与系统观察：两类分区存放，不混池".into(),
+            ));
+        }
+        let origin = if has_derived { "derived_behavior" } else { "user" };
+        if origin == "derived_behavior" {
+            if pinned {
+                return Err(AppError::Memory("系统观察结论不进入核心画像".into()));
+            }
+            if kind == "working" {
+                return Err(AppError::Memory("系统观察结论不能作为 working 事项".into()));
+            }
+        }
+        Ok(origin)
+    }
+
+    /// 读某条在库条目（指定版本）的来源类别归属：用于「不跨来源类别改写」的守卫。
+    fn item_origin(conn: &Connection, item_id: &str, version: i64) -> AppResult<String> {
+        let mut statement = conn
+            .prepare(
+                "SELECT s.origin FROM memory_item_sources l JOIN memory_sources s ON s.source_id=l.source_id \
+                 WHERE l.item_id=?1 AND l.item_version=?2",
+            )
+            .map_err(db_err)?;
+        let rows = statement
+            .query_map(params![item_id, version], |row| row.get::<_, String>(0))
+            .map_err(db_err)?;
+        let mut origins = Vec::new();
+        for row in rows {
+            origins.push(row.map_err(db_err)?);
+        }
+        Ok(Self::origin_from_source_origins(&origins).to_string())
+    }
+
+    /// 补齐每个条目的来源清单与来源类别：来源是「这条记忆从哪来」的唯一答案，
+    /// 详情与列表都要带；类别（origin）由来源类别唯一派生，没有第二个存储位。
     fn attach_sources(conn: &Connection, mut items: Vec<Value>) -> AppResult<Vec<Value>> {
         for item in &mut items {
             let id = item
@@ -708,17 +787,31 @@ impl MemoryStore {
                 .to_string();
             let version = item.get("version").and_then(Value::as_i64).unwrap_or(1);
             let mut statement = conn
-                .prepare("SELECT source_id FROM memory_item_sources WHERE item_id=?1 AND item_version=?2 ORDER BY source_id")
+                .prepare(
+                    "SELECT l.source_id,s.origin FROM memory_item_sources l JOIN memory_sources s ON s.source_id=l.source_id \
+                     WHERE l.item_id=?1 AND l.item_version=?2 ORDER BY l.source_id",
+                )
                 .map_err(db_err)?;
             let rows = statement
-                .query_map(params![id, version], |row| row.get::<_, String>(0))
+                .query_map(params![id, version], |row| {
+                    Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+                })
                 .map_err(db_err)?;
             let mut sources = Vec::new();
+            let mut origins = Vec::new();
             for row in rows {
-                sources.push(row.map_err(db_err)?);
+                let (source_id, origin) = row.map_err(db_err)?;
+                sources.push(source_id);
+                origins.push(origin);
             }
             if let Some(draft) = item.get_mut("draft").and_then(Value::as_object_mut) {
                 draft.insert("sourceIds".into(), json!(sources));
+            }
+            if let Some(object) = item.as_object_mut() {
+                object.insert(
+                    "origin".into(),
+                    json!(Self::origin_from_source_origins(&origins)),
+                );
             }
         }
         Ok(items)
@@ -846,18 +939,20 @@ impl MemoryStore {
         Ok(history)
     }
 
-    /// 登记来源：只接受「用户本人可信输入」，并且命中墓碑的事件直接拒收。
-    /// 重复登记是幂等的（同一 source_id 重复出现不新增行）。
+    /// 登记来源：只接受两类准入来源（用户本人可信输入 / 系统观察结论），
+    /// 并且命中墓碑的事件直接拒收。重复登记是幂等的（同一 source_id 重复出现不新增行）。
     pub fn register_sources(&self, sources: &[Value]) -> AppResult<usize> {
         let conn = self.lock()?;
         let mut written = 0usize;
         for source in sources {
             let source_id = s(source, "sourceId");
-            if source_id.is_empty()
-                || !b(source, "eligibleForMemory")
-                || s(source, "taint") != "trusted_user"
-                || s(source, "origin") != "user"
-            {
+            let origin = s(source, "origin");
+            let taint = s(source, "taint");
+            // 类别与 taint 必须成对：错配（例如 derived_behavior + trusted_user）不是
+            // 「换个标签的用户事实」，直接拒收，不给静默归一化的机会。
+            let admissible = (origin == "user" && taint == "trusted_user")
+                || (origin == "derived_behavior" && taint == "derived");
+            if source_id.is_empty() || !b(source, "eligibleForMemory") || !admissible {
                 continue;
             }
             let session_id = s(source, "sessionId");
@@ -1430,6 +1525,14 @@ impl MemoryStore {
                         return Err(AppError::Memory(format!("来源未登记: {source_id}")));
                     }
                 }
+                // 来源分池：条目类别由来源类别唯一派生；混用与越界（核心画像 / working）拒绝。
+                let source_ids = strings(draft, "sourceIds");
+                let item_origin = Self::validate_source_pool(
+                    &transaction,
+                    &source_ids,
+                    b(draft, "pinned"),
+                    &s(draft, "kind"),
+                )?;
 
                 let id = touched_item
                     .clone()
@@ -1455,6 +1558,13 @@ impl MemoryStore {
                             || current_scope_id.as_deref() != scope_id.as_deref()
                         {
                             return Err(AppError::Memory("更正的记忆不能跨范围改归属".into()));
+                        }
+                        // 不跨来源类别改写：系统观察不能被用户事实「顺手升级」，反之亦然。
+                        let current_origin = Self::item_origin(&transaction, &id, current)?;
+                        if current_origin != item_origin {
+                            return Err(AppError::Memory(
+                                "记忆条目不能跨来源类别改写（系统观察与用户事实分池）".into(),
+                            ));
                         }
                         transaction
                             .execute(
@@ -1677,8 +1787,9 @@ impl MemoryStore {
         Self::read_job(&conn, job_id)
     }
 
-    /// Light 的输入：尚未被水位覆盖的可信来源，按会话与序号稳定排序。
-    pub fn job_sources(&self, job_id: &str) -> AppResult<Vec<Value>> {
+    /// Light 的输入：尚未被水位覆盖的准入来源，按会话与序号稳定排序。
+    /// `origin` 过滤来源类别（整理按类别开作业：用户事实与系统观察不混池）。
+    pub fn job_sources(&self, job_id: &str, origin: Option<&str>) -> AppResult<Vec<Value>> {
         let conn = self.lock()?;
         let cursor: String = conn
             .query_row(
@@ -1702,7 +1813,7 @@ impl MemoryStore {
         };
         let mut statement = conn
             .prepare(&format!(
-                "SELECT {PENDING_SOURCE_COLUMNS} {PENDING_SOURCE_FROM} ORDER BY s.session_id, s.seq LIMIT ?3"
+                "SELECT {PENDING_SOURCE_COLUMNS} {PENDING_SOURCE_FROM} ORDER BY s.session_id, s.seq LIMIT ?4"
             ))
             .map_err(db_err)?;
         let rows = statement
@@ -1710,6 +1821,7 @@ impl MemoryStore {
                 params![
                     cursor_position.as_ref().map(|position| position.0.clone()),
                     cursor_position.as_ref().map(|position| position.1),
+                    origin,
                     JOB_SOURCE_BATCH
                 ],
                 |row| {
@@ -1740,23 +1852,26 @@ impl MemoryStore {
     /// 开作业前的只读前置查询：水位之后已有多少待处理来源。
     /// 作业只在有输入时才值得开（水位之上一条来源都没有 = Review 必然空跑）；
     /// 判定条件与 `job_sources` 共用同一段 SQL（新作业的游标恒为空，故不传游标）。
-    pub fn pending_source_count(&self) -> AppResult<i64> {
+    /// `origin` 过滤来源类别（NULL = 两类合计）。
+    pub fn pending_source_count(&self, origin: Option<&str>) -> AppResult<i64> {
         let conn = self.lock()?;
         conn.query_row(
             &format!("SELECT COUNT(*) {PENDING_SOURCE_FROM}"),
-            params![None::<String>, None::<i64>],
+            params![None::<String>, None::<i64>, origin],
             |row| row.get(0),
         )
         .map_err(db_err)
     }
 
-    /// Return only the bounded, originally registered evidence for a still-eligible source.
+    /// Return only the bounded, originally registered evidence for a still-eligible source
+    /// (either admission class: trusted user input or a derived behavior conclusion).
     /// Tombstoned (forgotten or otherwise suppressed) evidence is never reconstructed here.
     pub fn source_evidence(&self, source_id: &str) -> AppResult<Option<Value>> {
         let conn = self.lock()?;
         conn.query_row(
             "SELECT s.source_id,s.session_id,s.entry_id,s.event_id,s.seq,s.content_hash,s.evidence,s.card_id,s.taint,s.origin,s.observed_at \
-             FROM memory_sources s WHERE s.source_id=?1 AND s.origin='user' AND s.taint='trusted_user' \
+             FROM memory_sources s WHERE s.source_id=?1 \
+             AND ((s.origin='user' AND s.taint='trusted_user') OR (s.origin='derived_behavior' AND s.taint='derived')) \
              AND NOT EXISTS(SELECT 1 FROM memory_tombstones t WHERE t.session_id=s.session_id AND t.entry_id=s.entry_id \
                AND t.content_hash=s.content_hash AND t.effect='block_extraction')",
             [source_id],
@@ -1891,6 +2006,14 @@ impl MemoryStore {
                     return Err(AppError::MemoryConflict);
                 }
             }
+            // 来源分池：条目类别由来源类别唯一派生；混用与越界（核心画像 / working）拒绝。
+            let source_ids = strings(&draft, "sourceIds");
+            let item_origin = Self::validate_source_pool(
+                &transaction,
+                &source_ids,
+                b(&draft, "pinned"),
+                &s(&draft, "kind"),
+            )?;
             let scope = s(&draft, "scope");
             let scope_id = opt_s(&draft, "scopeId");
             let id = format!("mem-{}-{}", now_ms(), rand_suffix());
@@ -1937,6 +2060,21 @@ impl MemoryStore {
                     params![id, s(&draft, "content"), s(&draft, "summary"), aliases],
                 )
                 .map_err(db_err)?;
+            // 系统观察的版本收敛：同槽位新结论带 supersedesId 时，旧条目立即失效
+            // （与 apply_change 的 update 同语义：先失效引用，再让新版本成为唯一在库结论）。
+            if item_origin == "derived_behavior" {
+                if let Some(previous) = opt_s(&draft, "supersedesId")
+                    .filter(|value| !value.is_empty() && value != &id)
+                {
+                    transaction
+                        .execute(
+                            "UPDATE memory_items SET status='superseded',valid_to=?2,updated_at=?2 WHERE id=?1 AND status='active'",
+                            params![previous, now_ms()],
+                        )
+                        .map_err(db_err)?;
+                    crate::proactive::store::invalidate_memory_closure_tx(&transaction, &previous)?;
+                }
+            }
             transaction
                 .execute(
                     "UPDATE memory_candidates SET status='accepted',decided_at=?2 WHERE id=?1",
@@ -2321,6 +2459,92 @@ impl MemoryStore {
             .map_err(db_err)?;
         Ok(restored)
     }
+
+}
+
+/// 清除行为画像时一并失效「系统观察」沉淀的记忆（与遗忘同一闭包口径）。
+///
+/// 顺序固定为「先失效引用、再删数据」：
+/// 1. 收集全部派生条目（含已 supersede 的历史版本）→ 失效主动侧对它们的引用；
+/// 2. 对**全部** derived_behavior 来源写提取墓碑（不只被在库条目引用的那些）：
+///    挡住评审期间 in-flight 候选的发布，也挡住同一结论文本的迟到回灌；
+/// 3. 删引用派生来源的 prepared 候选（与遗忘的候选口径一致）；
+/// 4. 删条目（全版本）、来源关联与 FTS 行；
+/// 5. 删已无引用的墓碑来源行；
+/// 6. 推进 forget_epoch（在飞作业的发布复核因此拒绝）与 revision（运行侧刷新记忆投影）。
+///
+/// 返回失效的条目数；库里没有任何派生数据时不动 epoch/revision（不做空转）。
+/// 由主动侧 `proactive_change` 的 `clearBehaviorSources` 事务调用（与任务/机会/尝试
+/// 的按 kind 失效同一时刻发生），不在 Node 侧另造第二套清除链。
+pub(crate) fn forget_derived_behavior_items_tx(tx: &Transaction<'_>) -> AppResult<usize> {
+    let now = now_ms();
+    let epoch = MemoryStore::meta(tx, "forget_epoch")? + 1;
+    // 1. 在库派生条目（active 与历史版本都算）：先失效主动侧引用。
+    let mut item_ids: Vec<String> = Vec::new();
+    {
+        let mut statement = tx
+            .prepare(
+                "SELECT DISTINCT i.id FROM memory_items i WHERE EXISTS (\
+                   SELECT 1 FROM memory_item_sources l JOIN memory_sources s ON s.source_id=l.source_id \
+                   WHERE l.item_id=i.id AND s.origin='derived_behavior')",
+            )
+            .map_err(db_err)?;
+        let rows = statement
+            .query_map([], |row| row.get::<_, String>(0))
+            .map_err(db_err)?;
+        for row in rows {
+            item_ids.push(row.map_err(db_err)?);
+        }
+    }
+    for item_id in &item_ids {
+        crate::proactive::store::invalidate_memory_closure_tx(tx, item_id)?;
+    }
+    // 2. 墓碑：覆盖全部派生来源，发布复核与重新登记都会被拦下。
+    tx.execute(
+        "INSERT INTO memory_tombstones(session_id,entry_id,content_hash,effect,reason,forget_epoch,created_at) \
+         SELECT s.session_id,s.entry_id,s.content_hash,'block_extraction','behavior_clear',?1,?2 FROM memory_sources s \
+         WHERE s.origin='derived_behavior' ON CONFLICT DO NOTHING",
+        params![epoch, now],
+    )
+    .map_err(db_err)?;
+    let remaining: i64 = tx
+        .query_row(
+            "SELECT COUNT(*) FROM memory_sources WHERE origin='derived_behavior'",
+            [],
+            |row| row.get(0),
+        )
+        .map_err(db_err)?;
+    if remaining == 0 && item_ids.is_empty() {
+        return Ok(0);
+    }
+    // 3. 候选：引用派生来源的评审产物一并删除。
+    tx.execute(
+        "DELETE FROM memory_candidates WHERE status='prepared' AND EXISTS (\
+           SELECT 1 FROM json_each(memory_candidates.source_ids_json) c JOIN memory_sources s ON s.source_id=c.value \
+           WHERE s.origin='derived_behavior')",
+        [],
+    )
+    .map_err(db_err)?;
+    // 4. 正文/关联/索引：条目连全部版本链删除。
+    for item_id in &item_ids {
+        tx.execute("DELETE FROM memory_item_sources WHERE item_id=?1", [item_id])
+            .map_err(db_err)?;
+        tx.execute("DELETE FROM memory_items WHERE id=?1", [item_id])
+            .map_err(db_err)?;
+        tx.execute("DELETE FROM memory_fts WHERE item_id=?1", [item_id])
+            .map_err(db_err)?;
+    }
+    // 5. 来源行：墓碑已写、且不再被任何条目引用时删除。
+    tx.execute(
+        "DELETE FROM memory_sources WHERE origin='derived_behavior' AND NOT EXISTS(\
+           SELECT 1 FROM memory_item_sources keep WHERE keep.source_id=memory_sources.source_id)",
+        [],
+    )
+    .map_err(db_err)?;
+    // 6. 代际与版本。
+    MemoryStore::bump(tx, "forget_epoch")?;
+    MemoryStore::bump(tx, "revision")?;
+    Ok(item_ids.len())
 }
 
 fn rand_suffix() -> String {

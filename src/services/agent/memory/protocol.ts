@@ -4,6 +4,8 @@ export type MemoryScope = "user" | "card" | "session"
 
 export type MemoryKind = "fact" | "preference" | "episode" | "working"
 
+export type MemoryOrigin = "user" | "derived_behavior"
+
 export type MemoryStatus = "active" | "superseded" | "expired" | "forgotten"
 
 export type WorkingState = "open" | "completed" | "cancelled"
@@ -368,7 +370,7 @@ export interface MemorySource {
   cardId?: string
   eligibleForMemory: boolean
   taint: "trusted_user" | "derived" | "untrusted" | "system"
-  origin: "user" | "assistant" | "tool" | "system" | "import"
+  origin: "user" | "assistant" | "tool" | "system" | "import" | "derived_behavior"
   observedAt: number
 }
 
@@ -417,6 +419,7 @@ export interface MemoryItem {
   draft: MemoryDraft
   createdAt: number
   updatedAt: number
+  origin: MemoryOrigin
 }
 
 export interface MemoryJob {

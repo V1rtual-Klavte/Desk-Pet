@@ -19,6 +19,7 @@ export { parseRerankIds } from "./rerank"
 // revision 同步：这里只保留进程内分发总线（单 Node 架构下所有提交都发生在本进程）。
 export { publishMemoryRevision, subscribeMemoryRevision } from "./revision"
 export {
+  DERIVED_PROVENANCE_MARK,
   emptyMemoryProvider, getMemoryProvider, installMemoryProvider, recallMemory, resetMemoryProvider,
   sqliteMemoryProvider,
 } from "./provider"
@@ -31,11 +32,12 @@ export {
 } from "./ipc"
 export type {
   MemoryCandidateDraft, MemoryChangeRequest, MemoryDreamingBudget, MemoryDraft, MemoryHistoryEntry, MemoryItem,
-  MemoryJob, MemoryJobListItem, MemoryKind, MemoryRecallCandidateSnapshot, MemoryRestorePreview, MemoryScope, MemorySource, MemorySourceAudit, MemoryStatus, MemoryStatusSnapshot, WorkingState,
+  MemoryJob, MemoryJobListItem, MemoryKind, MemoryOrigin, MemoryRecallCandidateSnapshot, MemoryRestorePreview, MemoryScope, MemorySource, MemorySourceAudit, MemoryStatus, MemoryStatusSnapshot, WorkingState,
 } from "./ipc"
-export { collectAllMemorySources, collectMemorySources, trustedSourcesFromEntries } from "./sources"
+export { collectAllMemorySources, collectBehaviorMemorySources, collectMemorySources, trustedSourcesFromEntries } from "./sources"
 export { resolveCurrentTrustedMemorySource } from "./sources"
-export { runDreamingSweep, startIdleDreamingScheduler, stopIdleDreamingScheduler, stopIdleDreamingSchedulerAndWait, type DreamingOutcome } from "./dreaming"
+export { DERIVED_BEHAVIOR_ORIGIN, isDerivedBehaviorSource } from "./sources"
+export { buildDerivedCandidates, runDreamingSweep, startIdleDreamingScheduler, stopIdleDreamingScheduler, stopIdleDreamingSchedulerAndWait, type DreamingOutcome } from "./dreaming"
 
 const log = createLogger("Memory")
 

@@ -48,15 +48,18 @@ impl HostEventRouter {
     /// `window-observed` → Node：解析**当前**桥，适配负载后投递。
     ///
     /// 每代际即时解析的理由见模块头；`BridgeEventSink` 只在本次投递内存在。
-    fn forward_to_node(&self, observation: WindowObservation) {
+    /// `bash-background-finished`（前台超时转后台的命令结束）同走这条路径，同样不重放：
+    /// 无活动桥时按「一次性事实、无消费者」丢弃并留痕（与观察采样的差别：
+    /// 观察是当前状态读模型、等下一次采样即可，后台结束是终点事件，丢了就是丢了）。
+    fn forward_to_node(&self, event: HostEvent) {
         let Some(bridge) = self.supervisor.current_bridge() else {
             rust_debug!(
-                "window-observed 未投 Node：当前没有活动桥（Node 未就绪或代际轮换窗口内），按不重放处理"
+                "宿主事件未投 Node：当前没有活动桥（Node 未就绪或代际轮换窗口内），按不重放处理"
             );
             return;
         };
         let scope = bridge.default_scope();
-        BridgeEventSink::new(bridge, scope).emit(HostEvent::WindowObserved(observation));
+        BridgeEventSink::new(bridge, scope).emit(event);
     }
 }
 
@@ -68,7 +71,11 @@ impl EventSink for HostEventRouter {
             // 原生宿主迁移过程记录 §9.4 第 2 条：窗口观察双投（原生 UI + 当前代际 Node）。
             HostEvent::WindowObserved(observation) => {
                 self.native.window_observed(&observation);
-                self.forward_to_node(observation);
+                self.forward_to_node(HostEvent::WindowObserved(observation));
+            }
+            // 后台命令结束只有 Node 侧消费者（完成通知走聊天系统消息），单投。
+            finished @ HostEvent::BackgroundCommandFinished(_) => {
+                self.forward_to_node(finished)
             }
         }
     }

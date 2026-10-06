@@ -67,3 +67,18 @@ export { createEnableToolsTool, ENABLE_TOOLS_TOOL } from "./enable-tools"
 
 // ── 计划提议工具名（系统提示的工具指引与注册点共用同一命令名）──
 export { PROPOSE_PLAN_TOOL } from "./local-extra/plan"
+
+// ── 向用户提问工具名（系统提示的工具指引与注册点共用同一命令名）──
+export { ASK_USER_TOOL } from "./local-extra/ask"
+
+// ── 后台命令完成通知（前台超时转后台的任务终点交代；领域引导接一次）──
+// 载荷/校验/文案在零依赖叶子（L2 直测），订阅与投递在接线半边。
+export {
+  formatBackgroundFinishedNotice,
+  parseBackgroundFinishedPayload,
+} from "./background-notice"
+export type { BashBackgroundFinishedPayload } from "./background-notice"
+export {
+  disconnectBackgroundCommandNotifier,
+  initBackgroundCommandNotifier,
+} from "./background"

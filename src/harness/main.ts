@@ -48,6 +48,7 @@ import {
 } from "@/services/host"
 import { initDomainBootstrap } from "@/services/init"
 import { disposePlanConfirmationReceipts, initPlanConfirmationReceipts } from "@/services/engine/plan-confirmation"
+import { disposeChoiceConfirmationReceipts, initChoiceConfirmationReceipts } from "@/services/engine/choice-confirmation"
 import { BACKGROUND_CONTEXT } from "@earendil-works/pi-agent-core"
 import { flushSessionFrameWrites, harnessSlots } from "@/services/engine/harness"
 import { flushLogs } from "@/services/logger"
@@ -216,6 +217,7 @@ async function flushForShutdown(_context: HarnessContext): Promise<FlushReport> 
   await attempt("UI subscriptions", async () => {
     stopNativeUiBridge()
     disposePlanConfirmationReceipts()
+    disposeChoiceConfirmationReceipts()
   }, undefined)
   await attempt("MCP disconnect", disconnectAllMcpServers, undefined)
   const frameFailures = await attempt("session frame flush", () => flushSessionFrameWrites(BACKGROUND_CONTEXT), 0)
@@ -246,14 +248,16 @@ async function flushForShutdown(_context: HarnessContext): Promise<FlushReport> 
  * 会话/人格/工具/主动业务；域模块图不含任何 `@tauri-apps`/`import.meta.env`/`navigator.`
  * （端口化见 `@/services/host` 的 ports/ui-events；构建守卫见 package.json 的 build:harness）。
  *
- * UI 回执（计划确认/步骤裁决）在领域引导前订阅：Node 领域永远没有 in-process 面板，
- * 回执来自原生 UI（扣在桥的 subscribe 上；HostEventMap 的 deskpet-plan-* 是提问方向）。
+ * UI 回执（计划确认/步骤裁决/提问选择）在领域引导前订阅：Node 领域永远没有 in-process
+ * 面板，回执来自原生 UI（扣在桥的 subscribe 上；HostEventMap 的 deskpet-plan-* 与
+ * deskpet-choice-* 是提问方向）。
  */
 export async function initDomainServices(context: HarnessContext): Promise<void> {
   // 引导上下文已备好：运行模式与平台只来自握手（领域初始化只准消费它们）。
   void context.runtimeMode
   void context.platform
   initPlanConfirmationReceipts()
+  initChoiceConfirmationReceipts()
   await initDomainBootstrap()
 }
 

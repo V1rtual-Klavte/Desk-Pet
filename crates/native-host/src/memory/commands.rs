@@ -199,13 +199,23 @@ pub fn memory_job_resume(
     state.0.job_resume(&job_id, &lease_owner)
 }
 
-pub fn memory_job_sources(state: &MemoryState, job_id: String) -> AppResult<Vec<Value>> {
-    state.0.job_sources(&job_id)
+/// `origin` 过滤来源类别（用户事实 / 系统观察）：整理按类别开作业，不混池；
+/// 缺省（None）= 两类都取（恢复旧作业用）。
+pub fn memory_job_sources(
+    state: &MemoryState,
+    job_id: String,
+    origin: Option<String>,
+) -> AppResult<Vec<Value>> {
+    state.0.job_sources(&job_id, origin.as_deref())
 }
 
-/// 开作业前的只读前置查询：水位之后是否已有待处理来源（与 `memory_job_sources` 同一水位判定）。
-pub fn memory_pending_source_count(state: &MemoryState) -> AppResult<i64> {
-    state.0.pending_source_count()
+/// 开作业前的只读前置查询：水位之后是否已有待处理来源（与 `memory_job_sources` 同一水位判定）；
+/// `origin` 过滤来源类别，缺省 = 两类合计。
+pub fn memory_pending_source_count(
+    state: &MemoryState,
+    origin: Option<String>,
+) -> AppResult<i64> {
+    state.0.pending_source_count(origin.as_deref())
 }
 
 pub fn memory_source_evidence(state: &MemoryState, source_id: String) -> AppResult<Option<Value>> {

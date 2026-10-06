@@ -9,11 +9,12 @@
 //    生产者子集（`NodeUiEventName`），不新造第二份结构。
 //    Node 实现走 `HostBridgeRuntime.publishEvent`（W2 运行时扩展面，原生宿主迁移过程记录 §9.4 第 23 条）。
 //
-// 2. **回执（UI → Node）**：UI 对 Node 提问的应答（计划确认/步骤裁决/权限确认）。这是**反向通道**，
+// 2. **回执（UI → Node）**：UI 对 Node 提问的应答（计划确认/步骤裁决/权限确认/提问选择）。这是**反向通道**，
 //    不进 `HostEventMap`（那是 Node/宿主 → UI 的读模型矩阵）。回执在 Node 领域按 key 结算，
 //    未知或重复的 key 一律 no-op —— 结算入口本身只结算一次（plan-confirmation 的 settle*）。
-//    可靠性语义：UI 侧的提问有超时归宿（PLAN_CONFIRM_TIMEOUT_MS），回执迟到不复活结算；
-//    传输不承诺重放（宿主与 Node 都不得为「可能没送达」的回执补发第二次裁决）。
+//    可靠性语义：提问本身**没有等待超时**（2026-10-06 用户裁决），归宿只来自明确事件
+//    （回执、取消信号、会话生命周期、下发失败）；回执迟到不复活结算；传输不承诺重放
+//    （宿主与 Node 都不得为「可能没送达」的回执补发第二次裁决）。
 //    回执源是 **Node 侧专属**（connectHostBridge 注册）。TODO(W5)：原生宿主需把原生 UI
 //    发来的回执按同名事件投给 Node；线协议按事件名分发，领域侧订阅点已经就位。
 //
@@ -22,6 +23,7 @@
 //    这类协调若仍需存在，由原生 UI 在其内部承接，不进 Node 事件矩阵。
 
 import type { PlanConfirmResult } from "@/services/engine/plan-confirmation"
+import type { ChoiceResolution } from "@/services/engine/choice-confirmation"
 import { HostPortUnavailableError } from "./ports"
 import type { HostEventMap } from "./types"
 
@@ -43,6 +45,8 @@ export type NodeUiEventName =
   | "deskpet-plan-progress"
   | "deskpet-plan-step-gate"
   | "deskpet-plan-end"
+  | "deskpet-choice-start"
+  | "deskpet-choice-end"
   | "deskpet-permission-confirm"
 
 export interface UiEventPublisher {
@@ -87,6 +91,14 @@ export type UiReceiptMap = {
   "deskpet-plan-confirm-resolved": { planId: string; result: PlanConfirmResult }
   /** UI 对步骤门（逐步前置/失败询问）给出裁决。 */
   "deskpet-plan-step-decision": { planId: string; decision: "continue" | "abort" }
+  /**
+   * UI 对一条提问（`HostEventMap["deskpet-choice-start"]`）的应答：
+   * `picked` 点选了第 index 个选项（Node 侧校验越界即丢弃）、`other` 用户选择用自己的话
+   * 回答（自由原文以下一条消息到达，不在这里回传）、`cancelled` 用户点了取消。
+   * `requestId` 必须与当前待答提问同一身份：不匹配（迟到/重复/未知）一律丢弃，
+   * 结算语义由 `choice-confirmation.ts` 拥有（只结算一次）。
+   */
+  "deskpet-choice-resolved": { requestId: string; result: ChoiceResolution }
   /**
    * UI 对一条权限确认请求（`HostEventMap["deskpet-permission-confirm"]`）的应答。
    * `requestId` 必须与当前待确认请求同一身份（`confirmState.pending.id`）：不匹配

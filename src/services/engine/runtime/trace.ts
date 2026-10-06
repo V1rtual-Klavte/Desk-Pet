@@ -156,7 +156,10 @@ const SAFE_FIELDS: Readonly<Record<RuntimeTraceKind, readonly string[]>> = {
   agent_start: ["status"], agent_end: ["status", "reason"], turn_start: ["turnNumber"], turn_end: ["hasToolCalls", "status"],
   message_start: ["role"], message_update: ["frameType"], message_end: ["role", "entryId"],
   first_text_generated: ["length"], first_visible_text: ["delivery"], entry_added: ["entryType", "role", "customType"], run_linked: ["sessionId"],
-  tool_execution_start: ["toolName"], tool_execution_update: ["toolName"], tool_execution_end: ["toolName", "isError", "resultTextChars", "resultPartCount"],
+  tool_execution_start: ["toolName"], tool_execution_update: ["toolName"],
+  // durationMs / detailPrefix（2026-10-06 后台化批次）：失败结果的首段文案前缀（经
+  // runtimeTracePreview 脱敏 + 300 字截断）与实际耗时 —— 超时/转后台/取消的归因证据。
+  tool_execution_end: ["toolName", "isError", "resultTextChars", "resultPartCount", "durationMs", "detailPrefix"],
   retry_start: ["attempt", "step"], retry_end: ["attempt", "step", "success"],
   compaction_start: ["reason"], compaction_end: ["reason", "status"], compaction_requested: ["reason"],
   provider_request_start: ["purpose", "step", "attempt", "model", "api"], provider_request_end: ["purpose", "step", "attempt", "model", "api", "status", "durationMs", "inputTokens", "outputTokens", "cacheRead", "cacheWrite"],

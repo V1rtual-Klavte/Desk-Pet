@@ -27,8 +27,22 @@ const log = createLogger("MCPClient")
  */
 const CLIENT_INFO_VERSION = "0.16.0"
 
-/** 单次 MCP 请求（initialize / tools/list / tools/call）的超时。 */
+/** 单次 MCP 请求（initialize / tools/list / tools/call）的传输层超时。 */
 const MCP_REQUEST_TIMEOUT_MS = 60_000
+
+/**
+ * MCP 工具的执行预算（`policy.execution.timeoutMs` 声明值）。
+ *
+ * 与传输层的关系是刻意的「传输先到、路由兜底」：正常路径由传输层在
+ * `MCP_REQUEST_TIMEOUT_MS` 到点 reject（pi-mcp 以 McpError 如实报错，且会发
+ * `notifications/cancelled` 取消服务端请求）；router 的计时器必须**严格大于**它，
+ * 否则会先 abort —— 旧值吃全局 30s 默认（`router.ts` 缺省档），把 30–60s 内能完成的
+ * 调用提前斩断、且传输层的结构化错误永远没机会产生（2026-10-06 体检报告 R2）。
+ * +15s 的余量留给「传输超时后取消确认与响应回投」；这不是工具正常干活的耗时上限，
+ * 正常 MCP 往返是亚秒到几秒、大结果/远端限流可到几十秒，60s 传输档才是正常工作的
+ * 尺度（对齐口径：以工具正常干活需要多久为准，见 tool-timeout-audit.md §2/§7b）。
+ */
+const MCP_TOOL_TIMEOUT_MS = MCP_REQUEST_TIMEOUT_MS + 15_000
 
 /**
  * MCP 结果不做一次性截断。
@@ -220,10 +234,14 @@ export class McpClient {
    *
    * 协议错误由 pi-mcp 以 McpError reject、连接关闭以 McpConnectionClosedError reject；
    * `toToolDefs` 的执行闭包负责把这些异常收成 `{ success: false }`。
+   *
+   * `options.signal`：调用方（工具执行）的取消信号透传给 pi-mcp —— 它支持在途请求取消
+   * （发 `notifications/cancelled` 并让 request reject，见 pi-mcp client 的 signal 分支）。
+   * 没有这条链时，router 超时/用户取消都打不断 MCP 请求，晚到的成功结果只会静默丢弃。
    */
-  async callTool(name: string, params: Record<string, unknown>): Promise<unknown> {
+  async callTool(name: string, params: Record<string, unknown>, options: { signal?: AbortSignal } = {}): Promise<unknown> {
     if (!this.pi) throw new Error("未连接")
-    return this.pi.request("tools/call", { name, arguments: params }, { timeoutMs: MCP_REQUEST_TIMEOUT_MS })
+    return this.pi.request("tools/call", { name, arguments: params }, { timeoutMs: MCP_REQUEST_TIMEOUT_MS, signal: options.signal })
   }
 
   /**
@@ -257,18 +275,20 @@ export class McpClient {
         policy: {
           version: TOOL_POLICY_VERSION,
           permission: { defaultDecision: "passthrough" },
-          execution: { effect: "external_side_effect", isolation: "exclusive_effect", replay: "never" },
+          // timeoutMs 见 MCP_TOOL_TIMEOUT_MS：必须严格大于传输层超时，让结构化错误先产生。
+          execution: { effect: "external_side_effect", isolation: "exclusive_effect", replay: "never", timeoutMs: MCP_TOOL_TIMEOUT_MS },
           context: { resultProjection: "reference", historyCompaction: "summarize" },
         },
         source: "mcp" as const,
         sourceId: serverId,
         actionCategory: "_default",
-      }, async (params: Record<string, unknown>) => {
+      }, async (params: Record<string, unknown>, ctx) => {
         try {
           if (containsManagedMemoryPath(params)) {
             return { success: false, content: "", error: "MEMORY_PROTECTED_PATH" }
           }
-          const result = await client.callTool(t.name, params)
+          // 取消链：把工具执行信号透传给 pi-mcp（在途请求可取消，晚到结果不再静默丢弃）。
+          const result = await client.callTool(t.name, params, { signal: ctx.signal })
           if (result && typeof result === "object" && "error" in (result as any)) {
             return { success: false, content: "", error: String((result as any).error) }
           }

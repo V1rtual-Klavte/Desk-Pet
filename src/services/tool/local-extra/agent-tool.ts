@@ -8,7 +8,7 @@ import type { ToolDef } from "../types"
 import { TOOL_POLICY_VERSION } from "../types"
 import { defineTool } from "../policy"
 import { register } from "../registry"
-import { loopConfig } from "@/services/config"
+import { AGENT_SPAWN_TOOL_TIMEOUT_MS } from "@/services/agent/timeouts"
 import { createLogger } from "@/services/logger"
 import { formatError } from "@/services/error"
 
@@ -39,10 +39,14 @@ const agentSpawnTool: ToolDef = defineTool({
   policy: {
     version: TOOL_POLICY_VERSION,
     permission: { defaultDecision: "passthrough" },
-    execution: { effect: "external_side_effect", isolation: "delegate", replay: "never", timeoutMs: loopConfig.toolTimeoutMs * 4 },
+    // timeoutMs 见 AGENT_SPAWN_TOOL_TIMEOUT_MS（= 两段子运行墙钟 + 编排余量）：取 team 模式
+    // 的最坏时长。旧值 `loopConfig.toolTimeoutMs × 4`（120s）在模块加载时求值一次，既小于
+    // team 的 ~180s 内部耗时、又不随配置变化 —— 声明比实际短会把仍在跑的团队判成超时
+    // （2026-10-06 体检报告 R3）。
+    execution: { effect: "external_side_effect", isolation: "delegate", replay: "never", timeoutMs: AGENT_SPAWN_TOOL_TIMEOUT_MS },
     context: { resultProjection: "reference", historyCompaction: "summarize" },
   },
-}, async (params) => {
+}, async (params, ctx) => {
     const task = String(params.task ?? "")
     const mode = String(params.mode ?? "fork")
 
@@ -52,14 +56,24 @@ const agentSpawnTool: ToolDef = defineTool({
 
     try {
       const { runForkAgent, runTeamAgent } = await import("@/services/agent/sub-agent")
+      // 取消级联（与计划步骤同形）：父回合停止 / 切会话时子运行立刻停，不再跑满自己的
+      // 90s 上限；没有会话归属（ctx 缺 sessionId）时不构造 scope，保持旧语义。
+      const scope = ctx.sessionId
+        ? {
+            sessionId: ctx.sessionId,
+            runGeneration: ctx.runGeneration ?? 0,
+            isCurrent: ctx.isCurrent ?? (() => true),
+            ...(ctx.signal ? { signal: ctx.signal } : {}),
+          }
+        : undefined
 
       if (mode === "team") {
-        const result = await runTeamAgent({ task, memberCount: 2 })
+        const result = await runTeamAgent({ task, memberCount: 2, ...(scope ? { scope } : {}) })
         return { success: true, content: result }
       }
 
       // fork (默认)
-      const result = await runForkAgent({ task })
+      const result = await runForkAgent({ task, ...(scope ? { scope } : {}) })
       if (result.success) {
         return { success: true, content: result.reply }
       }

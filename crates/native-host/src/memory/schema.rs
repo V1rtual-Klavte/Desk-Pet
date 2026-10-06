@@ -24,6 +24,10 @@ pub fn ensure(conn: &Connection) -> AppResult<()> {
           value TEXT NOT NULL
         ) STRICT;
 
+        -- 来源行按 origin 分两类且成对约束：user + trusted_user（用户可信输入）、
+        -- derived_behavior + derived（系统观察结论，2026-10-06 方案 b；条目类别由来源类别
+        -- 唯一派生，不另存列，因此本表结构无需版本变更）。两类不混池，且同一事件按
+        -- (session, entry, hash) 唯一。
         CREATE TABLE IF NOT EXISTS memory_sources (
           source_id TEXT PRIMARY KEY NOT NULL,
           session_id TEXT NOT NULL,

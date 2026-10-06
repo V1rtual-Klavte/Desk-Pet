@@ -30,7 +30,7 @@ describe("确认放行", () => {
     const decision = await requestPermissionConfirm({
       requestId: "channel-probe", sessionId: "probe-session", runGeneration: 0,
       toolCallId: "probe_tool", toolName: "probe_tool", inputHash: "probe", policyHash: "probe",
-      expiresAt: Date.now() + 60_000, message: "通道自检", parameterSummary: "", effectClass: "external_side_effect",
+      message: "通道自检", parameterSummary: "", effectClass: "external_side_effect",
     })
     // 应答形状也要钉住：宿主 approve 走的是 `resolveConfirm(true)` → `allow_session`，
     // 正是子代理授权场景要复用的那种授权（sf-20）。

@@ -18,6 +18,7 @@ import type {
   MemoryJob,
   MemoryKind,
   MemoryJobListItem,
+  MemoryOrigin,
   MemoryScope,
   MemoryRestorePreview,
   MemoryRecallCandidateSnapshot,
@@ -36,6 +37,7 @@ export type {
   MemoryJob,
   MemoryJobListItem,
   MemoryKind,
+  MemoryOrigin,
   MemoryRecallCandidateSnapshot,
   MemoryRestorePreview,
   MemoryScope,
@@ -163,16 +165,17 @@ export async function resumeMemoryJob(jobId: string, leaseOwner: string): Promis
   return getHostBridge().request("memory_job_resume", { jobId, leaseOwner })
 }
 
-export async function memoryJobSources(jobId: string): Promise<MemorySource[]> {
-  return getHostBridge().request("memory_job_sources", { jobId })
+/** 按来源类别取批（`origin` 省略 = 两类都取；整理按类别开作业，不混池）。 */
+export async function memoryJobSources(jobId: string, origin?: MemoryOrigin): Promise<MemorySource[]> {
+  return getHostBridge().request("memory_job_sources", { jobId, origin: origin ?? null })
 }
 
 /**
  * 开作业前的只读前置查询：水位之后待处理来源数（与 `memory_job_sources` 同一水位判定）。
- * 返回 0 = 没有新来源，调用方据此跳过整理、不创建 job。
+ * 返回 0 = 没有新来源，调用方据此跳过整理、不创建 job；`origin` 省略 = 两类合计。
  */
-export async function pendingMemorySourceCount(): Promise<number> {
-  return getHostBridge().request("memory_pending_source_count", {})
+export async function pendingMemorySourceCount(origin?: MemoryOrigin): Promise<number> {
+  return getHostBridge().request("memory_pending_source_count", { origin: origin ?? null })
 }
 
 /** UI-only readback of bounded evidence; forgotten or suppressed sources return null. */

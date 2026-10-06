@@ -29,7 +29,27 @@ export const BASH_TOOL_TIMEOUT_SECONDS = BASH_TOOL_TIMEOUT_MS / 1000
 
 /** 追加到 bash 工具描述尾部的档位与交互口径（模型可见；中性系统说明，不是角色台词）。 */
 export const BASH_TOOL_DESCRIPTION_NOTE =
-  ` 超时：timeout 参数单位为秒，默认 ${BASH_TOOL_TIMEOUT_SECONDS}、上限 ${BASH_TOOL_TIMEOUT_SECONDS}（只可下调）；不提供时按 ${BASH_TOOL_TIMEOUT_SECONDS} 秒执行，提供超过上限的值按上限执行。命令的 stdin 已关闭，交互式命令会立即读到 EOF；需要用户点按、输入或确认的操作不要用命令阻塞等待 —— 走应用的确认/计划确认通道。`
+  ` 超时：timeout 参数单位为秒，默认 ${BASH_TOOL_TIMEOUT_SECONDS}、上限 ${BASH_TOOL_TIMEOUT_SECONDS}（只可下调）；不提供时按 ${BASH_TOOL_TIMEOUT_SECONDS} 秒执行，提供超过上限的值按上限执行。到达超时不会终止命令：命令转入后台继续执行，结果完成时会在聊天里通知用户 —— 不要因为超时重复发起同一命令。命令的 stdin 已关闭，交互式命令会立即读到 EOF；需要用户点按、输入或确认的操作不要用命令阻塞等待 —— 走应用的确认/计划确认通道。`
+
+/**
+ * 超时转后台时给模型的说明（中性系统说明，不是角色台词）。
+ *
+ * 数字来自 Rust 超时结果回传的 L1 现场证据（`elapsedMs` / `silentMs` / `producedBytes`）：
+ * 模型第一次能区分「一直在输出、只是慢」与「很久没有任何输出」，并据此决定下一步
+ * （继续等通知 / 换做法），而不是把一次无证据的「超时」当成失败重跑。
+ */
+export function formatBackgroundedBashNotice(evidence: {
+  timeoutMs: number
+  elapsedMs: number
+  silentMs: number
+  producedBytes: number
+}): string {
+  const seconds = Math.max(1, Math.round(evidence.timeoutMs / 1000))
+  const silence = evidence.silentMs < 1000
+    ? "最近 1 秒内仍有输出"
+    : `已 ${(evidence.silentMs / 1000).toFixed(1)} 秒没有新输出`
+  return `命令运行 ${seconds} 秒仍未结束（${silence}；累计产出 ${evidence.producedBytes} 字节），已转入后台继续执行、未终止；结果完成时会在聊天里通知用户。`
+}
 
 /** `timeout` 参数在 schema 里的说明（覆盖上游「no default timeout」的过时口径）。 */
 export const BASH_TIMEOUT_PARAMETER_DESCRIPTION =

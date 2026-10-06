@@ -119,7 +119,7 @@ Rust 实现细则见 [native-host AGENTS](../../crates/native-host/AGENTS.md)，
 
 - 使用 Pi AgentHarness 原生 hook（`before_tool` / `after_tool` / `transform_context` / `before_compaction` 等）；不重建无消费者的 HookBus。
 - PermissionKernel 终裁 allow/ask/deny；passthrough 只能继续策略链，不能直接执行。MCP 走 passthrough。
-- deny-first；确认与授权绑定会话、代际、精确参数、策略和有效期，变更后重审；摘要不能恢复授权。
+- deny-first；确认与授权绑定会话、代际、精确参数与策略，变更后重审（「会话内允许」的授权保鲜期另计，等待确认本身没有超时）；摘要不能恢复授权。
 - 执行端的路径与 Bash 基线不得由 TS 绕过；取用端口与边界见
   [native-host AGENTS](../../crates/native-host/AGENTS.md#4-路径与安全边界)。
 - Skill 清单由 Pi loader 维护：每回合核对一次目录指纹（不读正文），指纹变了才重载（重载时读入

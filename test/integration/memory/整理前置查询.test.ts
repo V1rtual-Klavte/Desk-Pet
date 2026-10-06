@@ -4,9 +4,10 @@
 //
 // 契约 §5.5 缺陷 1：空闲命中就开 Review 作业，哪怕水位之后一条新来源都没有。
 // 现在开作业前先查「水位之后还有没有待处理来源」（Rust `memory_pending_source_count`，
-// 与 `memory_job_sources` 同一水位判定）：
+// 与 `memory_job_sources` 同一水位判定；2026-10-06 起按来源类别分开查——用户事实与
+// 画像稳定结论各自成作业）：
 //   · 没有 → 跳过本次整理：不创建 job、不动预算/租约，以 empty 如实收场；
-//   · 有 → 照常创建 Review 作业；
+//   · 有 → 该类来源照常创建 Review 作业；
 //   · 手动入口（runDreamingSweep() 无 automatic）走同一条前置查询：Review 的输入只有
 //     水位之后的来源，没有输入时开作业必然空跑（提交也只提交本 job 的候选），
 //     文案如实说明「水位之后没有新的可整理来源」；
@@ -23,11 +24,13 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } 
 const ipc = vi.hoisted(() => ({
   // index.ts 的 barrel 会 re-export 它：替身模块必须提供该名字，否则模块链接期报缺导出。
   memoryDreamingBudget: vi.fn(async () => ({ usedTokens: 0, reservedTokens: 0, localDate: "2026-10-05" })),
-  pendingMemorySourceCount: vi.fn(async () => 0),
+  pendingMemorySourceCount: vi.fn(async (_origin?: string | null) => 0),
   startMemoryJob: vi.fn(async () => ({ id: "job-review", revision: 1, phase: "review", processed: 0 })),
   cancelMemoryJob: vi.fn(async () => ({})),
   checkpointMemoryJob: vi.fn(async () => ({ revision: 1 })),
   memoryJobSources: vi.fn(async () => []),
+  // 派生批次按槽位找回旧条目用；本文件不产生派生批次，桩只需在链接期存在。
+  memoryList: vi.fn(async () => []),
   memoryStatus: vi.fn(async () => ({ revision: 1 })),
   commitMemoryDreamingJob: vi.fn(async () => 1),
   addMemoryCandidates: vi.fn(async () => 0),
@@ -38,8 +41,16 @@ const ipc = vi.hoisted(() => ({
 }))
 vi.mock("@/services/agent/memory/ipc", () => ipc)
 
-const sources = vi.hoisted(() => ({ collectAllMemorySources: vi.fn(async () => []) }))
-vi.mock("@/services/agent/memory/sources", () => sources)
+// 前置登记分两区：用户来源（真 JSONL 扫描）与画像稳定结论（真画像读模型）都用替身挂住。
+const sources = vi.hoisted(() => ({
+  collectAllMemorySources: vi.fn(async () => []),
+  collectBehaviorMemorySources: vi.fn(async () => []),
+}))
+vi.mock("@/services/agent/memory/sources", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/services/agent/memory/sources")>()),
+  collectAllMemorySources: sources.collectAllMemorySources,
+  collectBehaviorMemorySources: sources.collectBehaviorMemorySources,
+}))
 
 vi.mock("@/services/engine/harness", () => ({
   completePiText: vi.fn(async () => { throw new Error("前置查询用例不应触达模型调用") }),
@@ -101,6 +112,7 @@ describe("记忆整理的前置查询", () => {
     await advance(1_800_000)
 
     expect(sources.collectAllMemorySources, "前置查询之前没有先登记来源（水位判定无从谈起）").toHaveBeenCalled()
+    expect(sources.collectBehaviorMemorySources, "前置查询之前没有登记画像稳定结论（派生区水位无从判定）").toHaveBeenCalled()
     expect(ipc.pendingMemorySourceCount, "空闲命中后没有查水位之后有无来源").toHaveBeenCalled()
     expect(ipc.startMemoryJob, "水位之后无来源仍创建了 Review 作业").not.toHaveBeenCalled()
     expect(ipc.reserveMemoryDreamingBudget, "跳过本次整理时仍预留了 token 预算").not.toHaveBeenCalled()
@@ -110,7 +122,8 @@ describe("记忆整理的前置查询", () => {
 
   it("水位之后有来源：照常创建 Review 作业 [dreaming-pending-gate-proceed]", async () => {
     const dreaming = await bootDreaming()
-    ipc.pendingMemorySourceCount.mockResolvedValue(2)
+    // 前置查询按来源类别分开；本用例只喂用户区来源。
+    ipc.pendingMemorySourceCount.mockImplementation(async origin => (origin === "user" ? 2 : 0))
     const outcome = await dreaming.runDreamingSweep({ automatic: true })
 
     expect(ipc.startMemoryJob, "水位之后有来源却没有开 Review 作业").toHaveBeenCalledTimes(1)

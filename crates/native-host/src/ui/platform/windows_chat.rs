@@ -3385,6 +3385,15 @@ unsafe fn handle_panel_outcome(result: crate::error::AppResult<PanelOutcome>) {
             }
             crate::ui::chat::set_notice(None);
         }
+        // 提问「其它」：不改文本，只把焦点交回输入框（用户下一条消息就是自由回答）。
+        // 复用呼出路径的聚焦实现（可见性判断与留痕都在它内部；未在 Windows 实机验证）。
+        Ok(PanelOutcome::FocusInput) => {
+            let focused = focus_main_pane_input();
+            if !focused {
+                rust_debug!("提问「其它」后聚焦跳过：聊天面板未挂载或当前不可见");
+            }
+            crate::ui::chat::set_notice(None);
+        }
         Ok(PanelOutcome::None) => crate::ui::chat::set_notice(None),
         // 动作成功的中性瞬时回执（旧壳 showDeliveryNote 的迁移）。
         Ok(PanelOutcome::Notice(text)) => crate::ui::chat::set_notice(Some(text)),

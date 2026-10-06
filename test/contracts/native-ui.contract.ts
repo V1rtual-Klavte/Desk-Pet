@@ -62,6 +62,29 @@
 // 命令 timeoutMs 注释刷新 —— 都不属原生 UI 的请求/推送面）。nui-01..nui-27 逐点核对实现点
 // 仍在、覆盖描述与当前实现一致，未修订覆盖点，sourceHash 按当前工作区源码复算（同时含并行
 // 工作线在非本契约文件上的改动）。
+// 2026-10-06 提问选择与去超时批次（analyze→刷 hash）：sourceFiles 变化 ——
+// `src/services/host/types.ts`（新增 `deskpet-choice-start` / `deskpet-choice-end` 两条推送与
+// `UiReceiptMap.deskpet-choice-resolved` 一条回执；权限确认载荷去掉 `expiresAt` 字段——等待
+// 没有超时，nui-25 描述按当前载荷修订）与 `src/services/native-ui/permission-confirm.ts`
+//（下发失败从「只留痕、等 TTL 结算」改为**立即按拒绝结算**的逃生口：等待本身没有超时之后，
+// 「面板没送到」必须有显式归宿；nui-25 补 caseId native-ui-permission-confirm-emit-failure）。
+// nui-01..nui-27 逐点核对实现点仍在、覆盖描述与当前实现一致（描述/来源核对，非逐行行为审计）；
+// sourceHash 按当前源码复算。
+// 2026-10-06 超时后台化批次（本批刷新）：host/types.ts —— bash_exec 增可选入参 sessionId
+//（完成通知归属回传）与 HostEventMap 增事件 bash-background-finished（Rust 只投 Node、
+//原生 UI 不呈现）。nui-* 逐点核对实现点仍在、描述与当前实现一致；sourceHash 按当前源码复算。
+// 2026-10-06 派生行为结论沉淀批次（本批刷新）：host/types.ts —— memory_job_sources /
+// memory_pending_source_count 入参增可选 origin（MemoryOrigin|null；整理按来源类别取批）。
+// 原生 UI 的消费面未动；nui-* 逐点核对实现点仍在、描述与当前实现一致；sourceHash 按当前
+// 源码复算（同批含另会话在飞改动）。
+// 2026-10-06 记忆面板来源标签批次（analyze→generate）：新增覆盖点 nui-28（记忆面板对派生
+// 条目的来源标注，caseId：native-ui-memory-derived-label / native-ui-memory-derived-detail，
+// L2 test/unit/native-ui/management-memory-ai.test.ts）。sourceFiles 变化 ——
+// src/services/native-ui/management-intents.ts（memory_overview 行副标题与 memory_item_detail
+// 的 info 对 origin=derived_behavior 条目追加 DERIVED_PROVENANCE_MARK；判据复用记忆域的
+// isDerivedBehaviorSource，措辞复用召回投影的同一枚常量，不写第二份判定/文案）。
+// nui-01..nui-27 逐点核对实现点仍在、覆盖描述与当前实现一致（改动只落在记忆页投影，
+// 描述/来源核对，非逐行行为审计）；sourceHash 按当前源码复算。
 import type { ModuleContract } from "../host/types"
 
 export const nativeUiContract: ModuleContract = {
@@ -89,7 +112,7 @@ export const nativeUiContract: ModuleContract = {
     // 平台手势与行渲染不在本契约范围，与既有「原生渲染不在这里冒充」的口径一致）。
     "crates/native-host/src/ui/settings/panels.rs",
   ],
-  sourceHash: "8005fd323f49209b937c58798aeb585f0cb6f1bee899d3753711fd0ebaef6213",
+  sourceHash: "a63a583f275f287fb432f4643b082a0e4b0f995b2a1ebe3b4756038e95cbe851",
   coverage: [
     {
       id: "nui-01",
@@ -368,13 +391,13 @@ export const nativeUiContract: ModuleContract = {
     },
     {
       id: "nui-25",
-      feature: "权限确认桥（请求投影 + 回执身份结算）",
+      feature: "权限确认桥（请求投影 + 回执身份结算 + 下发失败逃生口）",
       description:
-        "confirmState.pending 变化投影成一条 deskpet-permission-confirm（requestId/toolName/sessionId/runGeneration/parameterSummary/effectClass/inputHash/policyHash/toolCallId/expiresAt 逐字段）；deskpet-permission-confirm-resolved 回执按 requestId 身份结算：未知身份丢弃、非法 decision 丢弃（fail-closed，不让非法取值把待确认请求结算成非拒绝决定）、同一身份结算一次且重复回执不复活结算",
-      why: "权限结算必须 fail-closed 且身份精确：迟到/非法回执若能结算，等于放行一次确认",
+        "confirmState.pending 变化投影成一条 deskpet-permission-confirm（requestId/toolName/sessionId/runGeneration/parameterSummary/effectClass/inputHash/policyHash/toolCallId 逐字段；**没有 expiresAt** —— 等待没有超时，面板也没有「有效期至」可展示）；deskpet-permission-confirm-resolved 回执按 requestId 身份结算：未知身份丢弃、非法 decision 丢弃（fail-closed，不让非法取值把待确认请求结算成非拒绝决定）、同一身份结算一次且重复回执不复活结算。下发失败 = 面板根本没送到：立即按拒绝结算（fail-closed）并清掉单槽，不把回合悬挂在一个谁也没看见的请求上 —— 等待本身没有超时，这是「送不到」的归宿（等待侧的另一半在 safety 的 sf-24）",
+      why: "权限结算必须 fail-closed 且身份精确：迟到/非法回执若能结算，等于放行一次确认；没有等待超时之后，下发失败若不立即结算就等于永久悬挂",
       layer: "integration",
       depth: "deep",
-      scenarios: ["native-ui-permission-confirm-bridge"],
+      scenarios: ["native-ui-permission-confirm-bridge", "native-ui-permission-confirm-emit-failure"],
     },
     // nui-26 描述修订（2026-10-05 设置页音效行内下拉改造）：旧实现 sound_assign（整表文本
     // 写回、空文本=恢复默认）已删除，caseId `native-ui-sound-reset-defaults` 仍在
@@ -401,6 +424,17 @@ export const nativeUiContract: ModuleContract = {
       layer: "unit",
       depth: "shallow",
       scenarios: ["native-ui-mcp-credential-row", "native-ui-mcp-credential-write"],
+    },
+    // 2026-10-06 记忆面板来源标签批次（analyze→generate）：新增 nui-28（L2）。
+    {
+      id: "nui-28",
+      feature: "记忆面板的派生条目来源标注（列表与详情同源）",
+      description:
+        "记忆列表的行投影与条目的详情信息对 `origin=derived_behavior` 的条目标注来源：行副标题在 `kind · scope · vN`（与可选的「核心画像」）之后追加 `DERIVED_PROVENANCE_MARK`（「系统观察·可撤销的推断（非用户原话）」），详情 info 在「来源：」行之后追加 `来源类别：<同一标记>` 一行；用户条目（`origin=user` 或类别缺失）保持原样、两处都不加标记。标记的判据与措辞分别复用记忆域的 `isDerivedBehaviorSource` 与 `DERIVED_PROVENANCE_MARK`（与召回投影同一份，不写第二份判定/文案）；列表副标题与详情 info 均由 Node 组装，原生宿主两侧逐字渲染（Rust 无需改动）",
+      why: "派生结论与用户事实共库同列：面板不区分来源时，用户会把系统观察当成自己说过的话（或反过来不敢纠正一条其实可撤销的推断）；面板若另写一份判据/措辞，与提示侧会随每次改动漂移",
+      layer: "unit",
+      depth: "shallow",
+      scenarios: ["native-ui-memory-derived-label", "native-ui-memory-derived-detail"],
     },
   ],
   // 本契约全部覆盖点在 L2 / L3：原生 UI 桥的推送与请求面是纯适配层，不需要真 Rust 边界

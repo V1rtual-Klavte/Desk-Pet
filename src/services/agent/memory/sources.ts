@@ -2,18 +2,30 @@
 // 记忆来源收集
 // ==========================================
 //
-// 只有「用户本人的可信输入」能成为长期事实的候选。这个判断必须是纯函数：
-// 它同时是自动提取与评测的准入闸门，藏在会话仓库后面就没法在快层单独验证。
+// 长期记忆只有两类准入来源（2026-10-06 用户裁决「方案 b」）：
+// 1. `origin=user` + `taint=trusted_user`：用户本人的可信输入（识别判断是纯函数，
+//    它同时是自动提取与评测的准入闸门，藏在会话仓库后面就没法在快层单独验证）；
+// 2. `origin=derived_behavior` + `taint=derived`：行为画像层已算出的**稳定结论**
+//    （`sedimentConclusions` 的产出，只在 reliable 档存在）——语义是「系统观察得出的、
+//    可撤销的结论」，与用户事实分区存放、分区召回，永不冒充用户原话。
 // 读取条目（需要真 JSONL）、哈希与登记 IPC 都留在外层，纯选择器只认已读到的条目。
 
 import { createLogger } from "@/services/logger"
 import { formatError } from "@/services/error"
+import { getBehaviorSnapshot, sedimentConclusions } from "@/services/behavior"
 import { listPiSessionMetadata, readPiSessionEntriesOnce } from "@/services/session/repo"
 import { inputSourceOf, laneMessageText, messageEventId } from "@/services/engine/runtime"
 import { registerMemorySources } from "./ipc"
 import type { MemorySource } from "./ipc"
 
 const log = createLogger("MemorySources")
+
+/** 派生来源类别（与 protocol.json 的 MemoryOrigin 同词汇）。 */
+export const DERIVED_BEHAVIOR_ORIGIN = "derived_behavior" as const
+/** 派生结论来源的合成会话身份：与真实 sessionId 空间不相交，水位独立记账。 */
+export const BEHAVIOR_CONCLUSION_SESSION = "behavior"
+/** 派生结论来源的条目身份前缀（`conclusion:<slot>`），槽位即画像组（rhythm/apps/focus/activity）。 */
+export const BEHAVIOR_CONCLUSION_ENTRY_PREFIX = "conclusion:"
 
 type UnknownRecord = Record<string, unknown>
 
@@ -115,4 +127,55 @@ export async function collectAllMemorySources(): Promise<MemorySource[]> {
     }
   }
   return all
+}
+
+/** 派生来源判定：统一从 origin 读，不在调用点各写一份字符串比较。 */
+export function isDerivedBehaviorSource(source: Pick<MemorySource, "origin">): boolean {
+  return source.origin === DERIVED_BEHAVIOR_ORIGIN
+}
+
+/** 从派生来源的条目身份里取结论槽位（`conclusion:<slot>`）；非派生来源返回 undefined。 */
+export function conclusionSlotOf(source: Pick<MemorySource, "origin" | "entryId">): string | undefined {
+  if (!isDerivedBehaviorSource(source)) return undefined
+  if (!source.entryId.startsWith(BEHAVIOR_CONCLUSION_ENTRY_PREFIX)) return undefined
+  const slot = source.entryId.slice(BEHAVIOR_CONCLUSION_ENTRY_PREFIX.length)
+  return slot || undefined
+}
+
+/**
+ * 收集行为画像的稳定结论并登记为 `derived_behavior` 来源。
+ *
+ * - 准入闸门只有一个：`sedimentConclusions` 只在 reliable 档产出结论 ——
+ *   非 reliable（unavailable/insufficient）时这里返回空数组、**不登记任何来源**，
+ *   原始观察不可能经由本函数进入记忆。
+ * - 身份与版本：sourceId / eventId 含结论文本的 hash —— 同一份结论重复登记是幂等的；
+ *   文本变化（新数据推翻 / 修正旧结论）就是新的来源版本，由整理覆盖旧条目。
+ * - seq 取登记时刻（毫秒，跨重启单调）：水位按（会话 = `behavior`，seq）推进。
+ * - 内容变化时旧来源行保留（旧条目版本仍引用它），与用户来源同一口径。
+ */
+export async function collectBehaviorMemorySources(now = Date.now()): Promise<MemorySource[]> {
+  const conclusions = sedimentConclusions(getBehaviorSnapshot(now))
+  if (conclusions.length === 0) return []
+  const sources: (MemorySource & { rawText: string })[] = []
+  for (const conclusion of conclusions) {
+    const hash = await sha256(conclusion.text)
+    const identity = `${conclusion.slot}:${hash.slice(0, 16)}`
+    sources.push({
+      sourceId: `behavior-conclusion:${identity}`,
+      sessionId: BEHAVIOR_CONCLUSION_SESSION,
+      entryId: `${BEHAVIOR_CONCLUSION_ENTRY_PREFIX}${conclusion.slot}`,
+      eventId: `behavior:${identity}`,
+      seq: now,
+      contentHash: hash,
+      evidence: conclusion.text.slice(0, EVIDENCE_CHARS),
+      sourceLength: conclusion.text.length,
+      rawText: conclusion.text,
+      eligibleForMemory: true,
+      taint: "derived",
+      origin: DERIVED_BEHAVIOR_ORIGIN,
+      observedAt: now,
+    })
+  }
+  await registerMemorySources(sources.map(({ rawText: _rawText, ...source }) => source))
+  return sources.map(({ rawText: _rawText, ...source }) => source)
 }

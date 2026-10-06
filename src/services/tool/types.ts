@@ -58,8 +58,21 @@ export interface ToolPolicy {
     effect: EffectClass
     isolation: ToolIsolation
     replay: ToolReplay
-    /** 未声明时统一取现有 loopConfig.toolTimeoutMs。 */
-    timeoutMs?: number
+    /**
+     * 未声明时统一取现有 loopConfig.toolTimeoutMs。
+     *
+     * `null` = **本计时器不设该工具的执行超时**，且只在两种明确声明的语义下使用：
+     * 1. 等用户做决定的交互工具（handler 的相位就是等待，没有有限预算能覆盖——
+     *    2026-10-06 用户裁决选择类弹窗不留超时）；
+     * 2. 执行死线由执行端承载的工具（`pi-bash`：档位经 prepareArguments 下传 Rust，
+     *    到点转后台而非取消——router 若再设同值计时器会先 abort 杀掉进程、后台化失效，
+     *    见 `tool/local/pi-bash` 注册点的注释与 `.superpowers/sdd/turn-gov/tool-timeout-impl-report.md`）。
+     *
+     * 适用 null 的工具，其归宿只来自用户动作、取消信号、执行端结算与会话生命周期，
+     * 外层由回合墙钟兜底（等待期已被 `engine/user-wait.ts` 豁免）。任何工具的等待期都
+     * 不会被这个计时器打断：等待期间计时器挂起、结束后按剩余预算续算。
+     */
+    timeoutMs?: number | null
   }
   context: {
     resultProjection: ResultProjection

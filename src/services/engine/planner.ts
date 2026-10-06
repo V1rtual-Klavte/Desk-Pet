@@ -10,6 +10,8 @@ import type { PlanEffectClass, PlanRecord, PlanStepRecord } from "@/services/eng
 import { planConfig } from "@/services/config"
 import { createLogger } from "@/services/logger"
 import { formatError } from "@/services/error"
+// 用户等待的预算豁免（零依赖叶子）：计划时限（deadlineAt）扣除用户等待时长，见 executePlan。
+import { userWaitTotalMs } from "./user-wait"
 
 const log = createLogger("Planner")
 
@@ -313,6 +315,9 @@ export interface ExecutePlanConfig {
   /**
    * 计划级时限（FIX-34）：由调用方派生（`stepTimeoutMs × maxSteps`，§7 #33），
    * 在每步开始前与 `onStepDone` 之后各检查一次，命中按 `deadline` 中止。
+   * **用户等待期不计入**（2026-10-06 用户裁决）：逐步门 / 失败询问上等用户决定的
+   * 时长从时钟里扣除（`user-wait.ts` 的累计等待），用户思考不该把计划推向「超过计划时限」。
+   * 扣除只对 `sessionId` 在场的调用生效（提不出会话就没有等待可扣）。
    */
   deadlineAt?: number
   /** 逐步门：`each` 时每步执行前经 `onStepGate` 取得继续/中止；`none` 或缺该回调时不做门。 */
@@ -330,6 +335,11 @@ export async function executePlan(
   callbacks: ExecutePlanCallbacks,
 ): Promise<PlanExecutionResult> {
   const startTime = Date.now()
+  // 计划时限的用户等待豁免：计时基线取本次执行开始时的累计等待，检查时把增量扣除。
+  const waitBaseline = config.sessionId === undefined ? 0 : userWaitTotalMs(config.sessionId)
+  const planClockNow = () => config.sessionId === undefined
+    ? Date.now()
+    : Date.now() - (userWaitTotalMs(config.sessionId) - waitBaseline)
   const stepResults: PlanExecutionResult["stepResults"] = []
   let overallSuccess = true
   let cancelled: PlanExecutionResult["cancelled"]
@@ -347,8 +357,9 @@ export async function executePlan(
       cancelled = { reason: "user" }
       break
     }
-    // 计划级时限（FIX-34 的第一处检查）：剩余步骤整体超时就不再开工。
-    if (config.deadlineAt !== undefined && Date.now() > config.deadlineAt) {
+    // 计划级时限（FIX-34 的第一处检查）：剩余步骤整体超时就不再开工
+    //（比较用 `planClockNow`：用户等待期已扣除，见 ExecutePlanConfig.deadlineAt）。
+    if (config.deadlineAt !== undefined && planClockNow() > config.deadlineAt) {
       overallSuccess = false
       cancelled = { reason: "deadline" }
       log.error("计划超过时限，已停在当前步骤:", step.id)
@@ -374,8 +385,8 @@ export async function executePlan(
       const durationMs = Date.now() - stepStart
       stepResults.push({ step, output, durationMs })
       await callbacks.onStepDone(step, output)
-      // FIX-34 的第二处检查：这一步已记账完毕，再对一次时钟
-      if (config.deadlineAt !== undefined && Date.now() > config.deadlineAt) {
+      // FIX-34 的第二处检查：这一步已记账完毕，再对一次时钟（等待期同样已扣除）
+      if (config.deadlineAt !== undefined && planClockNow() > config.deadlineAt) {
         overallSuccess = false
         cancelled = { reason: "deadline" }
         log.error("计划超过时限，已停在当前步骤:", step.id)

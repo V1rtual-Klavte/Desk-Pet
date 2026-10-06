@@ -6,7 +6,8 @@
 // 背景（2026-10-06 用户实测）：需要确认的多步任务里，模型曾用 bash 嵌 AppleScript
 // （osascript display dialog）硬弹窗等用户 —— 用户不点就被工具超时打断，弹窗变成
 // 孤儿进程。本工具把「提议 → 确认 → 执行」接回既有计划机制：
-//   · 确认走 `requestPlanConfirm`（既有计划确认面板，含超时/切会话/面板不可用归宿）；
+//   · 确认走 `requestPlanConfirm`（既有计划确认面板；等待无超时 —— 2026-10-06 用户裁决，
+//     归宿只来自面板回执 / 取消信号 / 发射失败 / 会话生命周期）；
 //   · 执行走 `executePlan`（步骤超时、计划时限、失败裁决、逐步门都在既有执行器内）；
 //   · 结果按 `formatStepResults` 的既有格式作为工具结果返回模型。
 // 执行相位在 `engine/plan/proposal.ts`（与自动计划入口共用确认通道、执行器与记录存储），
@@ -24,9 +25,6 @@ import { planConfig } from "@/services/config"
 import { createLogger } from "@/services/logger"
 import { formatError } from "@/services/error"
 import type { PlanStep } from "@/services/engine"
-// 动态导入（引擎域）之外的唯一静态引擎引用：零依赖叶子（定义点见文件头注释），
-// 直接引用它是为了避免 `engine barrel → harness → tool barrel → 本文件` 的静态循环。
-import { PROPOSE_PLAN_TOOL_TIMEOUT_MS } from "@/services/engine/plan/limits"
 
 const log = createLogger("ToolPlan")
 
@@ -105,7 +103,7 @@ const proposePlanTool: ToolDef = defineTool({
   id: "local-propose-plan",
   name: PROPOSE_PLAN_TOOL,
   description:
-    "向用户提议一个多步骤执行计划并请求确认：用户在你的计划面板点「开始」后，系统逐步执行（每步由子代理完成）并按步骤返回执行结果；用户取消、确认等待超时或计划面板不可用时不执行任何步骤，结果会如实说明。需要用户确认的多步操作必须用本工具请求确认，不要用 osascript / display dialog 等 GUI 弹窗命令等待用户输入（弹窗会因工具超时而变成孤儿窗口，确认也到不了用户面前）。",
+    "向用户提议一个多步骤执行计划并请求确认：用户在你的计划面板点「开始」后，系统逐步执行（每步由子代理完成）并按步骤返回执行结果；用户取消或计划面板不可用时不执行任何步骤，结果会如实说明。需要用户确认的多步操作必须用本工具请求确认，不要用 osascript / display dialog 等 GUI 弹窗命令等待用户输入（弹窗会因工具超时而变成孤儿窗口，确认也到不了用户面前）。",
   parameters: {
     type: "object",
     properties: {
@@ -135,10 +133,13 @@ const proposePlanTool: ToolDef = defineTool({
   // delegate：子运行各自取执行许可，父批次（本工具调用）不占额度，也不与在跑的效果互斥 ——
   // 计划执行期间子代理的写类工具必须能正常借用许可（独占许可会在此死等）。重放资格 never：
   // 计划有外部副作用，崩溃后不自动重放（恢复走 planCheckpointStore 的显式「继续」入口）。
+  // 执行超时 `null`（不设本工具的执行预算）：handler 的相位由「用户确认（想多久想多久，
+  // 2026-10-06 用户裁决不留超时）+ 计划执行（executePlan 自带 `deadlineAt` 时限）」组成，
+  // 没有有限的预算能覆盖两段；外层兜底是回合墙钟（等待期已豁免，见 engine/user-wait.ts）。
   policy: {
     version: TOOL_POLICY_VERSION,
     permission: { defaultDecision: "passthrough" },
-    execution: { effect: "external_side_effect", isolation: "delegate", replay: "never", timeoutMs: PROPOSE_PLAN_TOOL_TIMEOUT_MS },
+    execution: { effect: "external_side_effect", isolation: "delegate", replay: "never", timeoutMs: null },
     // preserve：执行结果是模型据以收尾的直接证据，请求视图不得二次缩短/清空；
     // 步骤原文另有 plan_step_result 条目与回读地址（与自动计划入口同一产出）。
     context: { resultProjection: "preserve", historyCompaction: "summarize" },

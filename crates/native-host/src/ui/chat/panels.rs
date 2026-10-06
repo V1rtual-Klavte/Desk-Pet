@@ -115,6 +115,8 @@ pub enum PanelKind {
     RecoveredPlan,
     /// 权限确认。
     Permission,
+    /// 向用户提问（`ask_user`）：问题 + 选项 +「其它」/「取消」。
+    Choice,
     /// 中断运行决策条。
     Interrupted,
     /// 排队与暂停项。
@@ -256,6 +258,21 @@ pub enum PanelAction {
     PermissionAllowSession,
     /// 「拒绝」（deny）。
     PermissionDeny,
+    // ── 向用户提问（ask_user；选择面板）──
+    /// 点选第 `index` 个选项（0 基；Node 侧校验越界即丢弃，不代用户选）。
+    ChoicePick {
+        request_id: String,
+        index: usize,
+    },
+    /// 「其它」：用户选择用自己的话回答。面板收起、焦点回输入框；自由原文以用户的
+    /// **下一条消息**到达模型（不在回执里回传，宿主不截留、不冒充）。
+    ChoiceOther {
+        request_id: String,
+    },
+    /// 「取消」：用户不回答。按取消如实收尾（Node 侧不假装用户选了任何一项）。
+    ChoiceCancel {
+        request_id: String,
+    },
     // ── 排队与中断 ──
     WithdrawQueued {
         entry_id: String,
@@ -337,6 +354,9 @@ pub enum PanelOutcome {
     None,
     /// 请把这段文本填回输入框（slash 补全；光标移到末尾）。
     FillInput(String),
+    /// 请把焦点交回输入框（**不改文本、不触发送**）：提问面板的「其它」点下去后，
+    /// 用户直接在输入框里写自己的回答 —— 下一条消息就是答复（自由原文不经面板回传）。
+    FocusInput,
     /// 动作成功后的中性瞬时回执（旧壳 `showDeliveryNote` 的迁移）：
     /// 平台层经既有 notice 通道呈现，由模型按 [`NOTICE_TTL_MS`] 自动收起。
     Notice(String),
@@ -363,13 +383,13 @@ impl UnknownStepResolution {
 // 中性文案常量（界面语言，不是 Card 台词）
 // ==========================================
 
-/// 计划确认等待上限的本地收纳文案（与 Node `NON_CONFIRM_NOTICE.timeout` 同义）。
-pub const NOTICE_PLAN_CONFIRM_TIMEOUT: &str = "计划确认等待超时，已取消计划";
+// 决策类面板（计划确认 / 权限确认 / 提问）**没有本地等待超时**（2026-10-06 用户裁决：
+// 选择类弹窗不留超时，用户想多久想多久）。原先的三条本地收纳文案
+//（计划确认等待超时 / 权限确认已超时 / 提问等待超时）与对应的本地期限一起删除 ——
+// 归宿只来自 Node 的结算事件（回执 / 取消 / 会话切换 / 发射失败），面板不会被倒计时收起。
 /// 执行期计划长时间没有收尾事件时的本地收纳文案（计划状态以会话为准）。
 pub const NOTICE_PLAN_EXECUTION_STALE: &str =
     "计划长时间没有新进度，已收起计划面板（计划状态以会话为准）";
-/// 权限确认到期文案（Node 侧超时按拒绝结算）。
-pub const NOTICE_PERMISSION_EXPIRED: &str = "权限确认已超时，已按拒绝处理";
 /// 恢复计划条目在投影缺失中断提示时的中性兜底（不是角色台词）。
 pub const INTERRUPTED_FALLBACK_TEXT: &str = "上次运行未完成，需要你决定继续或丢弃";
 
@@ -767,6 +787,7 @@ impl PanelKind {
             PanelKind::Plan
             | PanelKind::RecoveredPlan
             | PanelKind::Permission
+            | PanelKind::Choice
             | PanelKind::Interrupted
             | PanelKind::Queue => PanelSurface::Decision,
         }
@@ -1308,13 +1329,8 @@ pub fn short_hash(hash: Option<&str>) -> Option<String> {
     Some(hash.chars().take(6).collect())
 }
 
-/// 有效期到点（epoch 毫秒）→ 本地 `HH:MM:SS`；缺失或非法返回 None。
-pub fn format_expiry(expires_at_ms: Option<i64>) -> Option<String> {
-    use chrono::TimeZone;
-    let ms = expires_at_ms?;
-    let at = chrono::Local.timestamp_millis_opt(ms).single()?;
-    Some(at.format("%H:%M:%S").to_string())
-}
+// `format_expiry` 删除记录（2026-10-06）：权限确认不再有有效期（选择类弹窗不留超时，
+// 面板上的「有效期至」随之退场），唯一消费者消失后函数一并删除。
 
 /// 会话创建时间（epoch 毫秒）→ `MM月DD日 HH:MM`；缺失或非法返回 None。
 ///
@@ -1707,11 +1723,39 @@ mod tests {
             PanelKind::Plan,
             PanelKind::RecoveredPlan,
             PanelKind::Permission,
+            PanelKind::Choice,
             PanelKind::Interrupted,
             PanelKind::Queue,
         ] {
             assert_eq!(kind.surface(), PanelSurface::Decision, "{kind:?}");
         }
+    }
+
+    /// 两平台对称（native-host AGENTS §2）：「其它」点击后要把焦点交回输入框
+    /// （用户下一条消息就是自由回答）—— 新 `PanelOutcome::FocusInput` 必须在
+    /// macOS 与 Windows 两侧都真的接上。本机编不出 Windows 分支（§2），
+    /// 只能靠源码级守门（与「两平台都接上卡片底板绘制」同款的静态检查）。
+    #[test]
+    fn 两平台都接上提问面板的聚焦回填() {
+        // `include_str!` 让两份平台源码成为编译期依赖：删掉任一侧的处理分支，
+        // 本用例立刻断言失败，而不是静默只在一半平台生效。
+        const MACOS: &str = include_str!("../platform/macos_chat.rs");
+        const WINDOWS: &str = include_str!("../platform/windows_chat.rs");
+        for (name, source) in [("macos_chat.rs", MACOS), ("windows_chat.rs", WINDOWS)] {
+            assert!(
+                source.contains("PanelOutcome::FocusInput"),
+                "{name} 必须处理 PanelOutcome::FocusInput（否则「其它」只在一半平台把焦点交回输入框）"
+            );
+        }
+        // macOS 的聚焦走既有 `focus_input`（不改文本）；Windows 走既有 `focus_main_pane_input`。
+        assert!(
+            MACOS.contains("self.focus_input()"),
+            "macos_chat.rs 没有调用既有的输入框聚焦函数"
+        );
+        assert!(
+            WINDOWS.contains("focus_main_pane_input()"),
+            "windows_chat.rs 没有调用既有的输入框聚焦函数"
+        );
     }
 
     #[test]

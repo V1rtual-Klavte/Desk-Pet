@@ -9,9 +9,9 @@ import { readImageProcessor } from "@/services/images"
 import { registerAll } from "../registry"
 import { adaptHarnessTool } from "../pi/harness-adapter"
 import { NativeExecutionEnv } from "../pi/native-execution-env"
-import { BASH_TOOL_TIMEOUT_MS, withBashToolPolicy } from "./bash-timeout"
+import { withBashToolPolicy } from "./bash-timeout"
 import { TOOL_POLICY_VERSION } from "../types"
-import type { SafetyLevel } from "../types"
+import type { SafetyLevel, ToolContext } from "../types"
 import { createLogger } from "@/services/logger"
 import { toolsConfig } from "@/services/config"
 import {
@@ -39,7 +39,8 @@ const log = createLogger("PiTools")
 
 export async function registerPiBaseTools(): Promise<void> {
   const cwd = await NativeExecutionEnv.defaultCwd()
-  const createEnv = () => new NativeExecutionEnv(cwd)
+  // 会话归属随环境实例下传：前台超时转后台后的完成通知按它回投正确会话（见 native-execution-env）。
+  const createEnv = (ctx: ToolContext) => new NativeExecutionEnv(cwd, ctx.sessionId)
   const read = createReadTool<{ env: ExecutionEnv }>({ imageProcessor: readImageProcessor, autoResizeImages: true })
   const write = createWriteTool<{ env: ExecutionEnv }>()
   const edit = createEditTool<{ env: ExecutionEnv }>()
@@ -91,8 +92,13 @@ export async function registerPiBaseTools(): Promise<void> {
       policy: {
         version: TOOL_POLICY_VERSION,
         permission: { defaultDecision: "passthrough" },
-        // timeoutMs 见 BASH_TOOL_TIMEOUT_MS：bash 单列 5 分钟档，不吃全局 30s 默认。
-        execution: { effect: "process", isolation: "exclusive_effect", replay: "never", timeoutMs: BASH_TOOL_TIMEOUT_MS },
+        // timeoutMs 显式 null（2026-10-06 后台化批次）：bash 的执行死线**不在 router 计时器**，
+        // 而在执行端 —— 档位（默认 = 上限 = 300s，见 ./bash-timeout）经 prepareArguments
+        // 夹取后下传 Rust，由 Rust 按同一值执行：到点**不杀进程**、转后台继续跑，完成经
+        // `bash-background-finished` 事件通知（tool/background.ts）。若这里再设一个同值计时器，
+        // router 会先到点 abort → 取消链把命令杀掉，后台化失效；若设更大值，则多一个与
+        // Rust 死线竞速的第二定义点。用户取消 / 回合墙钟仍经 ctx.signal 走取消链（不受本字段影响）。
+        execution: { effect: "process", isolation: "exclusive_effect", replay: "never", timeoutMs: null },
         context: { resultProjection: "reference", historyCompaction: "summarize" },
       },
     }),

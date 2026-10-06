@@ -23,7 +23,7 @@ const ipc = vi.hoisted(() => ({
   memoryDreamingBudget: vi.fn(async (_localDate: string) => ({ usedTokens: 0, reservedTokens: 0, localDate: "2026-10-05" })),
   // 前置查询（「水位之后有无待处理来源」）默认给 1 条：本文件考的是档位门禁，
   // 不能让它被「无来源跳过」提前挡住（跳过行为由 整理前置查询.test.ts 覆盖）。
-  pendingMemorySourceCount: vi.fn(async () => 1),
+  pendingMemorySourceCount: vi.fn(async (_origin?: string | null): Promise<number> => 1),
   // 预留/结算是纯记账（2026-10-06 起不再返回准入布尔）；参数逐个显式标注，
   // 供低档用例断言预留身份 / 日期 / 额度与结算用量。
   reserveMemoryDreamingBudget: vi.fn(async (_reservationId: string, _localDate: string, _reservedTokens: number) => {}),
@@ -31,16 +31,25 @@ const ipc = vi.hoisted(() => ({
   startMemoryJob: vi.fn(async (_phase: string) => ({ id: "job-review", revision: 1, phase: "review", processed: 0 })),
   cancelMemoryJob: vi.fn(async () => ({})),
   checkpointMemoryJob: vi.fn(async () => ({ revision: 1 })),
-  memoryJobSources: vi.fn(async (_jobId: string): Promise<Array<Record<string, unknown>>> => []),
+  memoryJobSources: vi.fn(async (_jobId: string, _origin?: string | null): Promise<Array<Record<string, unknown>>> => []),
+  // 派生批次按槽位找回旧条目用；本文件按 origin 只喂用户区，桩只需在链接期存在。
+  memoryList: vi.fn(async (): Promise<Array<Record<string, unknown>>> => []),
   memoryStatus: vi.fn(async () => ({ revision: 1 })),
   commitMemoryDreamingJob: vi.fn(async () => 1),
   addMemoryCandidates: vi.fn(async () => 0),
   resumeMemoryJob: vi.fn(async () => ({ id: "job-review", revision: 1, phase: "review", processed: 0 })),
 }))
 vi.mock("@/services/agent/memory/ipc", () => ipc)
-// 来源登记（真 JSONL 扫描）用替身挂住：本文件只考档位与前置查询之间的门禁次序。
-const sources = vi.hoisted(() => ({ collectAllMemorySources: vi.fn(async () => []) }))
-vi.mock("@/services/agent/memory/sources", () => sources)
+// 来源登记（真 JSONL 扫描与画像稳定结论）用替身挂住：本文件只考档位与前置查询之间的门禁次序。
+const sources = vi.hoisted(() => ({
+  collectAllMemorySources: vi.fn(async () => []),
+  collectBehaviorMemorySources: vi.fn(async () => []),
+}))
+vi.mock("@/services/agent/memory/sources", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/services/agent/memory/sources")>()),
+  collectAllMemorySources: sources.collectAllMemorySources,
+  collectBehaviorMemorySources: sources.collectBehaviorMemorySources,
+}))
 // 默认实现故意抛错：不进入 Review 的用例一旦触达模型调用就立刻现形。
 // 只有低档记账用例会按需改成可响应的替身（见该用例）；返回类型显式标注供 mockResolvedValue 使用。
 const harness = vi.hoisted(() => ({
@@ -99,7 +108,8 @@ async function bootDreaming(tier: string, budget: { usedTokens: number; reserved
   config.setOverride("ai.memory.enabled", true)
   config.setOverride("ai.memory.dreaming.tier", tier)
   ipc.memoryDreamingBudget.mockResolvedValue({ usedTokens: budget.usedTokens, reservedTokens: budget.reservedTokens, localDate: "2026-10-05" })
-  ipc.pendingMemorySourceCount.mockResolvedValue(1)
+  // 前置查询按来源类别分开；本文件只喂用户区来源（派生区由 派生结论整理.test.ts 覆盖）。
+  ipc.pendingMemorySourceCount.mockImplementation(async origin => (origin === "user" ? 1 : 0))
   ipc.reserveMemoryDreamingBudget.mockResolvedValue(undefined)
   ipc.settleMemoryDreamingBudget.mockResolvedValue(undefined)
   ipc.memoryJobSources.mockResolvedValue([])

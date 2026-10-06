@@ -17,7 +17,8 @@ import { memoryConfig } from "@/services/config"
 import { createLogger } from "@/services/logger"
 import { formatError } from "@/services/error"
 import { getMemoryRecallCandidates } from "./ipc"
-import type { MemoryItem } from "./ipc"
+import type { MemoryItem, MemoryOrigin } from "./ipc"
+import { DERIVED_BEHAVIOR_ORIGIN } from "./sources"
 import { parseRerankSelection } from "./rerank"
 
 export { parseRerankIds } from "./rerank"
@@ -54,6 +55,11 @@ export interface MemoryProjection {
   text: string
   tokenBudget: number
   tier: "core" | "recall"
+  /**
+   * 条目来源类别（`MemoryOrigin`）：`derived_behavior` = 系统观察得出的、可撤销的结论。
+   * 渲染记忆块时必须可区分（不许让模型把观察说成用户原话）；省略按 `user` 处理。
+   */
+  origin?: MemoryOrigin
   memoryRevision?: number
 }
 
@@ -71,15 +77,25 @@ export const emptyMemoryProvider: MemoryProvider = {
   async recall() { return [] },
 }
 
+/**
+ * 派生条目的呈现标记：记忆块按「[标签 | provenance] 正文」渲染，系统观察必须在
+ * 提示里逐行可区分——模型不得把观察说成「你告诉过我」。
+ */
+export const DERIVED_PROVENANCE_MARK = "系统观察·可撤销的推断（非用户原话）"
+
 function projection(item: MemoryItem, tokenBudget: number, memoryRevision?: number): MemoryProjection {
+  const derived = item.origin === DERIVED_BEHAVIOR_ORIGIN
   return {
     sourceId: `${item.id}@${item.version}`,
     memoryVersion: `${item.id}:${item.version}`,
-    provenance: `memory:${item.draft.scope}${item.draft.sourceIds.length ? `:${item.draft.sourceIds.join(",")}` : ""}`,
+    provenance: derived
+      ? DERIVED_PROVENANCE_MARK
+      : `memory:${item.draft.scope}${item.draft.sourceIds.length ? `:${item.draft.sourceIds.join(",")}` : ""}`,
     taint: "derived" as MessageTaint,
     text: item.draft.content,
     tokenBudget,
     tier: item.draft.pinned ? "core" : "recall",
+    origin: item.origin,
     ...(memoryRevision === undefined ? {} : { memoryRevision }),
   }
 }

@@ -4,7 +4,7 @@ use super::protocol::{MEMORY_COMMANDS, MEMORY_SCHEMA_VERSION};
 use super::schema::SCHEMA_VERSION;
 use super::store::payload_hash;
 use super::MemoryStore;
-use crate::error::AppError;
+use crate::error::{AppError, AppResult};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use std::path::PathBuf;
@@ -769,7 +769,7 @@ fn pending_source_count_follows_watermark_and_tombstones() {
         .register_sources(&[first, second])
         .expect("登记两条来源");
     assert_eq!(
-        store.pending_source_count().unwrap(),
+        store.pending_source_count(None).unwrap(),
         2,
         "新库的两条来源都应待处理"
     );
@@ -781,7 +781,7 @@ fn pending_source_count_follows_watermark_and_tombstones() {
         .job_checkpoint(&job_id, "src-1", "host", 60_000)
         .expect("推进水位");
     assert_eq!(
-        store.pending_source_count().unwrap(),
+        store.pending_source_count(None).unwrap(),
         1,
         "水位之后仍应只剩未处理的一条"
     );
@@ -821,7 +821,7 @@ fn pending_source_count_follows_watermark_and_tombstones() {
         )
         .expect("遗忘条目");
     assert_eq!(
-        store.pending_source_count().unwrap(),
+        store.pending_source_count(None).unwrap(),
         0,
         "被遗忘的来源仍被计入待处理（墓碑过滤失效）"
     );
@@ -1030,4 +1030,376 @@ fn dreaming_budget_records_usage_without_daily_token_gate() {
         store.reserve_dreaming_budget("job-1:1", "2026-10-05", 91_000),
         Err(AppError::MemoryConflict)
     ));
+}
+
+// ── 派生行为结论（系统观察，2026-10-06 方案 b）──
+
+/// 派生来源：合成会话身份 `behavior`，与真实会话空间不相交；taint 必须与 origin 成对。
+fn derived_source(id: &str, entry: &str, hash: &str, seq: i64) -> Value {
+    json!({
+        "sourceId": id,
+        "sessionId": "behavior",
+        "entryId": entry,
+        "eventId": format!("behavior:{hash}"),
+        "seq": seq,
+        "contentHash": hash,
+        "evidence": "近一个月的活跃时段：工作日集中在 19–23 时。（判据：近30日画像窗口的最强 4 小时活跃带）",
+        "eligibleForMemory": true,
+        "taint": "derived",
+        "origin": "derived_behavior",
+        "observedAt": 1_700_000_000_000i64,
+    })
+}
+
+fn derived_draft(content: &str, source_id: &str, extra: Value) -> Value {
+    let mut value = json!({
+        "content": content,
+        "summary": content,
+        "kind": "fact",
+        "scope": "user",
+        "aliases": ["behavior-slot:rhythm"],
+        "pinned": false,
+        "importance": 4.0,
+        "confidence": 0.5,
+        "sourceIds": [source_id],
+    });
+    if let (Some(base), Some(extra)) = (value.as_object_mut(), extra.as_object()) {
+        for (key, item) in extra {
+            base.insert(key.clone(), item.clone());
+        }
+    }
+    value
+}
+
+fn publish_candidates(store: &MemoryStore, drafts: &[Value]) -> AppResult<i64> {
+    let job = store.job_start("review", "host").unwrap();
+    let job_id = job["id"].as_str().unwrap().to_string();
+    let payloads: Vec<Value> = drafts
+        .iter()
+        .enumerate()
+        .map(|(index, draft)| {
+            json!({
+                "id": format!("cand-test-{index}-{}", payload_hash(draft)),
+                "draft": draft,
+                "payloadHash": payload_hash(draft),
+            })
+        })
+        .collect();
+    store.candidates_add(&job_id, &payloads).expect("候选落 staging");
+    let revision = store.status().unwrap().revision;
+    store.commit_dreaming_job(&job_id, revision)
+}
+
+fn proactive_revision(store: &MemoryStore) -> i64 {
+    let owner = json!({"sessionId":"s1","cardId":"card-a","cardHash":"hash-a","runGeneration":1});
+    store
+        .proactive_query(&json!({"owner":owner,"sessionId":"s1"}))
+        .unwrap()["revision"]
+        .as_i64()
+        .unwrap()
+}
+
+fn clear_behavior_sources(store: &MemoryStore) {
+    let owner = json!({"sessionId":"s1","cardId":"card-a","cardHash":"hash-a","runGeneration":1});
+    store
+        .proactive_change(&json!({
+            "operationId": "op-clear-behavior",
+            "baseRevision": proactive_revision(store),
+            "action": "control",
+            "owner": owner,
+            "controlPatch": {"clearBehaviorSources": true},
+        }))
+        .expect("清除画像来源");
+}
+
+#[test]
+fn derived_sources_are_admitted_in_their_own_class_and_keep_user_rejections() {
+    let (_fixture, store) = Fixture::new();
+    // 错配不受理：derived_behavior 必须配 taint=derived —— 不是「换个标签的用户事实」。
+    let mut mismatched = derived_source("bad-source", "conclusion:rhythm", "hash-bad", 10);
+    mismatched["taint"] = json!("trusted_user");
+    assert_eq!(
+        store.register_sources(&[mismatched]).unwrap(),
+        0,
+        "错配的来源类别被登记成了准入来源"
+    );
+    // 工具来源照旧拒收：派生准入的放宽没有顺手放行其它类别。
+    let mut tool = source("tool-source", "entry-tool", "hash-tool");
+    tool["origin"] = json!("tool");
+    tool["taint"] = json!("untrusted");
+    tool["eligibleForMemory"] = json!(false);
+    assert_eq!(store.register_sources(&[tool]).unwrap(), 0);
+
+    assert_eq!(
+        store
+            .register_sources(&[
+                source("user-1", "entry-u1", "hash-u1"),
+                derived_source("behavior-conclusion:rhythm:aaaa", "conclusion:rhythm", "hash-r", 100),
+            ])
+            .unwrap(),
+        2,
+        "两类准入来源没有各自登记"
+    );
+    // 前置查询与作业取数按类别分区：两处共用同一段水位判定。
+    assert_eq!(store.pending_source_count(Some("user")).unwrap(), 1);
+    assert_eq!(
+        store.pending_source_count(Some("derived_behavior")).unwrap(),
+        1
+    );
+    assert_eq!(store.pending_source_count(None).unwrap(), 2);
+    let job = store.job_start("review", "host").unwrap();
+    let job_id = job["id"].as_str().unwrap().to_string();
+    let user_sources = store.job_sources(&job_id, Some("user")).unwrap();
+    assert_eq!(user_sources.len(), 1);
+    assert_eq!(user_sources[0]["origin"], json!("user"));
+    let derived_sources = store.job_sources(&job_id, Some("derived_behavior")).unwrap();
+    assert_eq!(derived_sources.len(), 1, "派生来源没有按类别取到");
+    assert_eq!(derived_sources[0]["origin"], json!("derived_behavior"));
+    assert_eq!(derived_sources[0]["taint"], json!("derived"));
+    assert_eq!(
+        store.job_sources(&job_id, None).unwrap().len(),
+        2,
+        "缺省取数应当两类都可见（恢复旧作业路径）"
+    );
+}
+
+#[test]
+fn mixed_pools_and_core_or_working_flags_are_rejected_at_publish() {
+    let (_fixture, store) = Fixture::new();
+    store
+        .register_sources(&[
+            source("user-1", "entry-u1", "hash-u1"),
+            derived_source("behavior-conclusion:rhythm:aaaa", "conclusion:rhythm", "hash-r", 100),
+        ])
+        .unwrap();
+    // 混池候选：同时引用用户来源与派生来源 —— 整批拒绝，不静默二选一。
+    let mixed = derived_draft("混池结论", "user-1", json!({"sourceIds": ["user-1", "behavior-conclusion:rhythm:aaaa"]}));
+    let mixed_result = publish_candidates(&store, &[mixed]);
+    assert!(
+        matches!(&mixed_result, Err(AppError::Memory(message)) if message.contains("混池")),
+        "混池候选没有被拒绝: {mixed_result:?}"
+    );
+    // 派生 + pinned（核心画像）拒绝。
+    let pinned = derived_draft("核心画象结论", "behavior-conclusion:rhythm:aaaa", json!({"pinned": true}));
+    let pinned_result = publish_candidates(&store, &[pinned]);
+    assert!(
+        matches!(&pinned_result, Err(AppError::Memory(message)) if message.contains("核心画像")),
+        "派生结论进入了核心画像: {pinned_result:?}"
+    );
+    // 派生 + working 拒绝。
+    let working = derived_draft(
+        "事项化的结论",
+        "behavior-conclusion:rhythm:aaaa",
+        json!({"kind": "working", "workingState": "open"}),
+    );
+    let working_result = publish_candidates(&store, &[working]);
+    assert!(
+        matches!(&working_result, Err(AppError::Memory(message)) if message.contains("working")),
+        "派生结论被写成了 working 事项: {working_result:?}"
+    );
+    // 纯派生候选照常发布，条目 origin 由来源类别派生。
+    let revision = publish_candidates(
+        &store,
+        &[derived_draft("近一个月的活跃时段：工作日集中在 19–23 时。", "behavior-conclusion:rhythm:aaaa", json!({}))],
+    )
+    .expect("纯派生候选没有发布");
+    assert!(revision > 0);
+    let items = store.list(Some("user"), None, 10).unwrap();
+    assert_eq!(items.len(), 1);
+    assert_eq!(items[0]["origin"], json!("derived_behavior"));
+    assert_eq!(
+        store
+            .source_evidence("behavior-conclusion:rhythm:aaaa")
+            .unwrap()
+            .is_some(),
+        true,
+        "派生来源的证据不可回看"
+    );
+}
+
+#[test]
+fn new_derived_version_supersedes_previous_slot_and_leaves_user_facts_alone() {
+    let (_fixture, store) = Fixture::new();
+    store
+        .register_sources(&[source("user-1", "entry-u1", "hash-u1")])
+        .unwrap();
+    add(&store, "op-u", 0, &draft("用户喜欢喝拿铁", vec!["user-1"]));
+
+    store
+        .register_sources(&[derived_source("behavior-conclusion:rhythm:aaaa", "conclusion:rhythm", "hash-r1", 100)])
+        .unwrap();
+    publish_candidates(
+        &store,
+        &[derived_draft("近一个月的活跃时段：工作日集中在 19–23 时。", "behavior-conclusion:rhythm:aaaa", json!({}))],
+    )
+    .expect("第一版结论发布失败");
+    let first = store
+        .list(Some("user"), None, 10)
+        .unwrap()
+        .into_iter()
+        .find(|item| item["origin"] == json!("derived_behavior"))
+        .expect("第一版结论条目");
+    let first_id = first["id"].as_str().unwrap().to_string();
+
+    // 新数据推翻旧结论：新版本带 supersedesId → 旧条目退出召回（版本 + 覆盖收敛）。
+    store
+        .register_sources(&[derived_source("behavior-conclusion:rhythm:bbbb", "conclusion:rhythm", "hash-r2", 200)])
+        .unwrap();
+    publish_candidates(
+        &store,
+        &[derived_draft(
+            "近一个月的活跃时段：工作日集中在 9–13 时。",
+            "behavior-conclusion:rhythm:bbbb",
+            json!({"supersedesId": first_id}),
+        )],
+    )
+    .expect("第二版结论发布失败");
+    let active = store.list(Some("user"), None, 10).unwrap();
+    let derived: Vec<&Value> = active
+        .iter()
+        .filter(|item| item["origin"] == json!("derived_behavior"))
+        .collect();
+    assert_eq!(derived.len(), 1, "旧结论没有被新版本覆盖");
+    assert!(
+        derived[0]["draft"]["content"]
+            .as_str()
+            .unwrap()
+            .contains("9–13"),
+        "在库的不是新版本结论"
+    );
+    assert!(
+        active.iter().any(|item| item["draft"]["content"] == json!("用户喜欢喝拿铁")),
+        "覆盖派生结论时动了用户事实"
+    );
+}
+
+#[test]
+fn apply_change_cannot_cross_source_classes() {
+    let (_fixture, store) = Fixture::new();
+    store
+        .register_sources(&[derived_source("behavior-conclusion:rhythm:aaaa", "conclusion:rhythm", "hash-r", 100)])
+        .unwrap();
+    // 派生来源 + working / pinned 在写入入口同样被拒绝（不只是整理发布口）。
+    let working = derived_draft(
+        "事项化的结论",
+        "behavior-conclusion:rhythm:aaaa",
+        json!({"kind": "working", "workingState": "open"}),
+    );
+    assert!(store.apply_change("op-w", 0, "add", None, None, Some(&working)).is_err());
+    let pinned = derived_draft("核心画象结论", "behavior-conclusion:rhythm:aaaa", json!({"pinned": true}));
+    assert!(store.apply_change("op-p", 0, "add", None, None, Some(&pinned)).is_err());
+    // 合法派生条目（internal 入口）可以落库，但用户来源草稿不能把它「改写」成用户事实。
+    let revision = store
+        .apply_change(
+            "op-d",
+            0,
+            "add",
+            None,
+            None,
+            Some(&derived_draft("第一条观察结论", "behavior-conclusion:rhythm:aaaa", json!({}))),
+        )
+        .expect("派生条目写入失败");
+    let item_id = store.list(Some("user"), None, 10).unwrap()[0]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    store
+        .register_sources(&[source("user-1", "entry-u1", "hash-u1")])
+        .unwrap();
+    let rewrite = store.apply_change(
+        "op-rewrite",
+        revision,
+        "update",
+        Some(&item_id),
+        None,
+        Some(&draft("用户说他作息规律", vec!["user-1"])),
+    );
+    assert!(
+        matches!(&rewrite, Err(AppError::Memory(message)) if message.contains("跨来源类别")),
+        "系统观察被改写成了用户事实: {rewrite:?}"
+    );
+}
+
+#[test]
+fn behavior_clear_forgets_derived_items_and_blocks_replay() {
+    let (_fixture, store) = Fixture::new();
+    // 用户事实与派生条目共存：清除只动派生一侧。
+    store
+        .register_sources(&[source("user-1", "entry-u1", "hash-u1")])
+        .unwrap();
+    add(&store, "op-u", 0, &draft("用户喜欢喝拿铁", vec!["user-1"]));
+    store
+        .register_sources(&[derived_source("behavior-conclusion:rhythm:aaaa", "conclusion:rhythm", "hash-r", 100)])
+        .unwrap();
+    publish_candidates(
+        &store,
+        &[derived_draft("近一个月的活跃时段：工作日集中在 19–23 时。", "behavior-conclusion:rhythm:aaaa", json!({}))],
+    )
+    .expect("派生条目发布失败");
+
+    // 在飞候选：一个引用派生来源、一个引用用户来源；清除后只留后者（前者连候选一起失效）。
+    store
+        .register_sources(&[derived_source("behavior-conclusion:apps:cccc", "conclusion:apps", "hash-r2", 200)])
+        .unwrap();
+    let job = store.job_start("review", "host").unwrap();
+    let job_id = job["id"].as_str().unwrap().to_string();
+    let inflight_derived = derived_draft("在飞派生候选", "behavior-conclusion:apps:cccc", json!({}));
+    let inflight_user = draft("在飞用户候选", vec!["user-1"]);
+    store
+        .candidates_add(
+            &job_id,
+            &[
+                json!({"id": "cand-inflight-d", "draft": inflight_derived, "payloadHash": payload_hash(&inflight_derived)}),
+                json!({"id": "cand-inflight-u", "draft": inflight_user, "payloadHash": payload_hash(&inflight_user)}),
+            ],
+        )
+        .expect("在飞候选落 staging");
+    assert_eq!(store.status().unwrap().candidate_count, 2);
+
+    let revision_before = store.status().unwrap().revision;
+    clear_behavior_sources(&store);
+
+    // 正文：派生条目消失，用户事实保留。
+    let items = store.list(Some("user"), None, 10).unwrap();
+    assert!(
+        items.iter().all(|item| item["origin"] == json!("user")),
+        "清除画像后仍有派生条目在库"
+    );
+    assert!(items.iter().any(|item| item["draft"]["content"] == json!("用户喜欢喝拿铁")));
+    // 索引：FTS 不再命中已清正文。
+    assert_eq!(store.query("活跃时段", None, None, None, 10).unwrap().len(), 0);
+    assert_eq!(store.query("拿铁", None, None, None, 10).unwrap().len(), 1);
+    // 候选：引用派生来源的候选被删，用户候选保留。
+    assert_eq!(
+        store.status().unwrap().candidate_count,
+        1,
+        "清除没有覆盖候选（引用派生来源的候选仍在）"
+    );
+    // 来源证据：已清来源不可回看，用户来源照旧。
+    assert!(store
+        .source_evidence("behavior-conclusion:rhythm:aaaa")
+        .unwrap()
+        .is_none());
+    assert!(store.source_evidence("user-1").unwrap().is_some());
+    // 失效：同一结论文本重新登记被墓碑拦下（已清的来源不能迟到回灌）。
+    assert_eq!(
+        store
+            .register_sources(&[derived_source("behavior-conclusion:rhythm:aaaa", "conclusion:rhythm", "hash-r", 100)])
+            .unwrap(),
+        0,
+        "已清画像的结论文本被重新登记"
+    );
+    // 在飞作业的发布复核被 forget_epoch 拦下（不是靠候选恰好被删）。
+    let revision_after = store.status().unwrap().revision;
+    assert!(revision_after > revision_before, "清除没有推进记忆 revision");
+    assert!(
+        matches!(store.commit_dreaming_job(&job_id, revision_after), Err(AppError::MemoryConflict)),
+        "跨清除代的作业仍然发布了候选"
+    );
+    // 空转保护：库里已无派生数据，再清一次不动 epoch/revision。
+    let before = store.status().unwrap();
+    clear_behavior_sources(&store);
+    let after = store.status().unwrap();
+    assert_eq!(before.forget_epoch, after.forget_epoch);
+    assert_eq!(before.revision, after.revision);
 }

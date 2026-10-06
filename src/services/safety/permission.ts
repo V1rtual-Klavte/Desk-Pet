@@ -45,7 +45,6 @@ export interface PermissionRequest {
   toolName: string
   inputHash: string
   policyHash: string
-  expiresAt: number
   message: string
   parameterSummary: string
   effectClass: EffectClass
@@ -66,7 +65,12 @@ interface PermissionGrant {
   expiresAt: number
 }
 
-const CONFIRM_TTL_MS = 5 * 60 * 1000
+/**
+ * 会话内授权的保鲜期（**不是等待超时**）：一次「会话内允许」在授权当刻起 5 分钟内有效，
+ * 过期后同参调用重新走确认。确认请求本身不设有效期（2026-10-06 用户裁决：选择类弹窗
+ * 不留超时，用户想多久想多久）—— 授权与确认是两个生命周期，别把这条当成倒计时。
+ */
+const GRANT_TTL_MS = 5 * 60 * 1000
 let grants = new Map<string, PermissionGrant>()
 
 function grantKey(grant: Pick<PermissionGrant, "sessionId" | "runGeneration" | "toolName" | "inputHash" | "policyHash">): string {
@@ -160,7 +164,6 @@ export async function evaluateToolPermission(
     toolName: tool.name,
     inputHash,
     policyHash: currentPolicyHash,
-    expiresAt: Date.now() + CONFIRM_TTL_MS,
     message: `“${tool.name}” 将执行 ${effectClass(tool)} 操作，需要你的确认。`,
     parameterSummary: parameterSummary(params),
     effectClass: effectClass(tool),
@@ -169,9 +172,13 @@ export async function evaluateToolPermission(
   return { decision: "ask", reason: base.reason, request }
 }
 
-/** 等待一次确认；取消、过期、关闭或旧代际一律返回 deny。 */
+/**
+ * 等待一次确认；取消、关闭或旧代际一律返回 deny。
+ * 等待本身不设超时（2026-10-06 用户裁决）：用户想多久想多久，归宿只来自用户动作、
+ * 取消信号、会话切换/关闭与发射失败（各条见 `confirm.ts` 的入口注释）。
+ */
 export async function awaitPermission(request: PermissionRequest, ctx: PermissionContext): Promise<PermissionConfirmation> {
-  if (!isUsableContext(ctx) || request.expiresAt <= Date.now()) return "deny"
+  if (!isUsableContext(ctx)) return "deny"
   return requestPermissionConfirm(request, ctx.signal)
 }
 
@@ -196,7 +203,9 @@ export async function authorizeToolExecution(
     const grant: PermissionGrant = {
       sessionId: first.request.sessionId, runGeneration: first.request.runGeneration,
       toolName: first.request.toolName, inputHash: first.request.inputHash,
-      policyHash: first.request.policyHash, expiresAt: first.request.expiresAt,
+      policyHash: first.request.policyHash,
+      // 授权保鲜期从**用户按下允许**的时刻起算（确认请求本身没有有效期，见 GRANT_TTL_MS）。
+      expiresAt: Date.now() + GRANT_TTL_MS,
     }
     grants.set(grantKey(grant), grant)
   }

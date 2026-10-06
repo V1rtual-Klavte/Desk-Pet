@@ -2103,7 +2103,6 @@ type PlanConfirmDeclineReason = Exclude<Extract<PlanConfirmResult, { confirmed: 
 const NON_CONFIRM_CONTEXT: Record<PlanConfirmDeclineReason, string> = {
   session_switched: "确认时会话已切换",
   not_active: "确认时会话已不再活跃",
-  timeout: "确认等待超时",
   emit_failed: "确认事件发射失败",
   ui_unavailable: "计划面板不可用",
 }
@@ -2223,10 +2222,10 @@ async function runPlanPhase(args: {
           await finishPlan({ sessionId, planId, state: "failed", reason: "declined", notify: "cancelled", traceContext: args.traceContext })
           return { kind: "declined", reply: getFallbackReply("planCancelled") }
         }
-        // 其余非确认归宿（会话切换/会话不再活跃/确认超时/事件发射失败/面板不可用）都不是用户的选择：
+        // 其余非确认归宿（会话切换/会话不再活跃/事件发射失败/面板不可用；没有等待超时）都不是用户的选择：
         // 计划一次都没跑，按取消归宿收尾 —— 不写「已取消计划～」的模型回复，也不记成用户拒绝。
         // 用户可见说明由确认域就地写出：会话切换/关闭在 cancelSessionPlans（那时指针还指向旧会话），
-        // 确认超时/事件发射失败在 plan-confirmation 的结算处；面板不可用由面板 reportError 留痕。
+        // 会话切换/事件发射失败在 plan-confirmation 的结算处；面板不可用由面板 reportError 留痕。
         return await cancelPlanRun({
           sessionId,
           planId,
@@ -2437,7 +2436,7 @@ async function finishPlan(args: {
   notifyPlanEnd(args.sessionId, args.notify)
   // 用户可见文案只在这里发「执行期截止」与「用户在逐步门上的选择」两条；
   // 会话切换/会话关闭的取消文案由 cancelSessionPlans 在切指针之前写出（那时活跃会话才是旧会话），
-  // 确认超时/事件发射失败由 plan-confirmation 在结算处写出 —— 同一桩事不能各发一条。
+  // 会话切换/事件发射失败由 plan-confirmation 在结算处写出 —— 同一桩事不能各发一条。
   // 消息只写给计划所属会话：执行期切走后回合仍在跑，文案不能落进另一个会话。
   if (getActiveSessionId() !== args.sessionId) return
   if (args.reason === "deadline") pushSystemMessage("计划超时，已停在当前步骤，剩余步骤未执行", args.sessionId)

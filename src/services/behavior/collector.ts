@@ -13,8 +13,21 @@ import type { AppCategory, BehaviorDaily, BehaviorSegment, BehaviorSnapshot, Win
 const log = createLogger("Behavior")
 const behaviorTraceContext = createRuntimeTraceContext()
 const SEGMENT_SHARD_LIMIT = 512 * 1024
-const SEGMENT_RETENTION_DAYS = 30
-const DAILY_RETENTION_DAYS = 180
+/**
+ * 原始观察数据的保留期（2026-10-06 用户裁决，与「画像结论长期化」联动）。
+ *
+ * 结论（`derived_behavior` 记忆）承担长期回看之后，原始账降级为**滚动工作缓冲**：
+ * `segments/` 只用来重算当日聚合与最近几天的诊断，`daily/` 只需覆盖 30 天画像窗口
+ * 加一点余量（结论也必须能在该窗口内被重新验证/推翻）。
+ */
+const SEGMENT_RETENTION_DAYS = 7
+const DAILY_RETENTION_DAYS = 40
+/**
+ * 启动时读回的日聚合份数：画像只用最近 30 天（`aggregate.ts` 的 last30/last7），
+ * 留 5 天余量给跨日与时钟回退。**小于保留期**——保留期是「盘上留多少」，
+ * 这里是「启动读多少」，两者不必相等（曾经按 180 份读，其中 150 份没人用）。
+ */
+const DAILY_READ_DAYS = 35
 const WORK_PRESENCE_THRESHOLD_MS = 30 * 60_000
 const MAX_DAILY_READ_BYTES = 2 * 1024 * 1024
 const MAX_APP_IDS_PER_DAY = 64
@@ -107,7 +120,7 @@ async function loadDailyHistoryOnce(epoch: number): Promise<void> {
     const listing = await getHostBridge().request("file_list", { path: dailyPath })
     const entries = listing.entries as ListedEntry[]
     const names = entries.filter((entry) => entry.kind !== "directory" && /^\d{4}-\d{2}-\d{2}\.json$/.test(entry.name))
-      .sort((a, b) => b.name.localeCompare(a.name)).slice(0, DAILY_RETENTION_DAYS)
+      .sort((a, b) => b.name.localeCompare(a.name)).slice(0, DAILY_READ_DAYS)
     for (const entry of names) {
       const path = await runtimePath("data", BEHAVIOR_DIR, DAILY_DIR, entry.name)
       const { content } = await getHostBridge().request("file_read", { path, maxBytes: MAX_DAILY_READ_BYTES })

@@ -4,7 +4,7 @@
 // ==========================================
 
 import type { ToolDeclaration, ThinkingEffort } from "@/services/agent/types"
-import { listAll, toToolDeclaration, PROPOSE_PLAN_TOOL } from "@/services/tool"
+import { listAll, toToolDeclaration, PROPOSE_PLAN_TOOL, ASK_USER_TOOL } from "@/services/tool"
 import { getV1rtualInstructionsSync } from "@/services/context/instructions"
 import { aiConfig } from "@/services/config"
 import { getSkillsPromptBlock } from "@/services/skill"
@@ -163,18 +163,29 @@ export function buildPrompt(input: BuildContextInput, card: PersonalityCard | nu
   const budget = contextBudget(contextMaxTokens, input.maxOutputTokens)
   const tools = decideTools(input)
   const v1rtual = input.v1rtualInstructions ?? getV1rtualInstructionsSync()
-  // 计划提议指引：只在提议工具真的在本回合工具面里时注入（子运行/窄工具集不该被告知
-  // 一个不在场的工具）。文案是中性系统说明、不是角色台词 —— GUI 弹窗等待用户会被工具
-  // 超时打断并留下孤儿窗口（2026-10-06 用户实测），确认必须走桌宠自己的计划面板。
+  // 工具指引：每个句子只在**它点名的工具真的在本回合工具面里**时注入（子运行/窄工具集
+  // 不该被告知一个不在场的工具）。文案是中性系统说明、不是角色台词 —— GUI 弹窗等待用户
+  // 会被工具超时打断并留下孤儿窗口（2026-10-06 用户实测），咨询必须走桌宠自己的面板。
   //
-  // 2026-10-06 补第二句（用户实测：模型在计划步骤里「先打字问要不要删」而不是执行）：
-  // 多步走计划面板，**单个动作直接执行** —— 危险动作由权限面板当场向用户确认，模型用文字
-  // 征求同意只会让用户多打一遍字，还把「做没做」变成一次不必要的往返。
-  const planProposalGuidance = tools.some(tool => tool.function.name === PROPOSE_PLAN_TOOL)
-    ? `需要用户确认的多步操作先调用 ${PROPOSE_PLAN_TOOL} 请求确认；单个动作需要确认时直接执行（危险动作由确认面板向用户确认），不要用文字先征求同意，也不要用 osascript 或 GUI 弹窗命令等待用户。`
-    : ""
+  // 2026-10-06 二次实测订正（用户裁决：需要用户拍板时要「问」，不是闷头做）：旧句
+  // 「单个动作需要确认时直接执行」方向是错的 —— 需要用户做决定时必须用 ask_user 给出
+  // 问题与选项（用户也能选「其它」用自己的话回答），不要用文字在回复里先征求同意；
+  // **权限类**动作仍照现状：直接执行，由确认面板在动作发生时当场向用户确认（这条保留）。
+  const toolNames = new Set(tools.map(tool => tool.function.name))
+  const consultToolsPresent = toolNames.has(PROPOSE_PLAN_TOOL) || toolNames.has(ASK_USER_TOOL)
+  const guidance: string[] = []
+  if (toolNames.has(PROPOSE_PLAN_TOOL)) {
+    guidance.push(`需要用户确认的多步操作先调用 ${PROPOSE_PLAN_TOOL} 请求确认`)
+  }
+  if (toolNames.has(ASK_USER_TOOL)) {
+    guidance.push(`需要用户做决定时用 ${ASK_USER_TOOL} 给出问题和选项（用户也能选「其它」用自己的话回答），不要用文字先征求同意；权限类动作照常直接执行，由确认面板当场向用户确认`)
+  }
+  if (consultToolsPresent) {
+    guidance.push("不要用 osascript 或 GUI 弹窗命令等待用户")
+  }
+  const consultGuidance = guidance.length ? `${guidance.join("。")}。` : ""
   const toolProtocol = tools.length
-    ? `你可以使用工具完成任务。需要工具时只输出工具调用。完成后基于结果简短回复。${planProposalGuidance}`
+    ? `你可以使用工具完成任务。需要工具时只输出工具调用。完成后基于结果简短回复。${consultGuidance}`
     : "请简短口语化回复。"
   const skillCatalog = tools.length ? (input.skillsPromptBlock ?? getSkillsPromptBlock()) : ""
   const toolSchemaSnapshot = tools.length ? JSON.stringify(tools.map(toolBudgetSchema)) : ""

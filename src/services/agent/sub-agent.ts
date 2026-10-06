@@ -10,12 +10,15 @@
 // 只出现在无人值守范围（Gemini 子代理、Codex one-shot 之外）。由此得到一个有意的派生
 // 上限：子运行内 bash 的实际上限 = 子运行预算（90s，取 min(工具档位 300s, 子运行预算)），
 // 与主回合（600s）刻意不同档；该口径写在 docs/current/tool-system.md 的「文件、命令与取消」段。
+// 运行墙钟的唯一定义点是 `./timeouts.ts`（`SUB_AGENT_RUN_TIMEOUT_MS`），执行侧与
+// `agent_spawn` 的声明侧共用同一值，不在两处各写一个字面量。
 // ==========================================
 
 import { listAll, type ToolDef } from "@/services/tool"
 import { runPiSubAgent } from "@/services/engine/harness"
-import type { PiSubAgentOutput } from "@/services/engine/harness"
+import type { PiSubAgentOutput, PiSubAgentScope } from "@/services/engine/harness"
 import { loopConfig } from "@/services/config"
+import { SUB_AGENT_RUN_TIMEOUT_MS } from "./timeouts"
 import { createLogger } from "@/services/logger"
 
 const log = createLogger("SubAgent")
@@ -28,6 +31,8 @@ export interface ForkAgentInput {
   task: string
   /** 可选的角色提示（如 "代码审查员"），用于定制 systemPrompt */
   role?: string
+  /** 父回合的取消域（agent_spawn 从工具上下文构造）：父取消/切会话立刻级联到子运行。 */
+  scope?: PiSubAgentScope
 }
 
 /**
@@ -36,7 +41,7 @@ export interface ForkAgentInput {
  * 独立上下文，不干扰主 Agent 状态。
  */
 export async function runForkAgent(input: ForkAgentInput): Promise<PiSubAgentOutput> {
-  const { task, role } = input
+  const { task, role, scope } = input
 
   const tools = getSafeTools()
   const systemPrompt = role
@@ -50,7 +55,8 @@ export async function runForkAgent(input: ForkAgentInput): Promise<PiSubAgentOut
     tools,
     systemPrompt,
     maxRounds: loopConfig.subAgentRounds,
-    timeoutMs: 90000,
+    timeoutMs: SUB_AGENT_RUN_TIMEOUT_MS,
+    ...(scope ? { scope } : {}),
   })
 }
 
@@ -62,6 +68,8 @@ export interface TeamAgentInput {
   task: string
   /** 并行子代理数量，默认 2 */
   memberCount?: number
+  /** 父回合的取消域；成员段与 lead 段共用（任一段被父取消即整体停止）。 */
+  scope?: PiSubAgentScope
 }
 
 /** 团队角色定义 */
@@ -76,7 +84,7 @@ const TEAM_ROLES = [
  * 多角色并行执行各自的分析，最后由 lead 代理汇总。
  */
 export async function runTeamAgent(input: TeamAgentInput): Promise<string> {
-  const { task, memberCount = 2 } = input
+  const { task, memberCount = 2, scope } = input
 
   const roles = TEAM_ROLES.slice(0, Math.min(memberCount, TEAM_ROLES.length))
 
@@ -88,6 +96,7 @@ export async function runTeamAgent(input: TeamAgentInput): Promise<string> {
       runForkAgent({
         task: `${role.prompt}\n\n任务: ${task}`,
         role: role.label,
+        ...(scope ? { scope } : {}),
       })
     )
   )
@@ -120,6 +129,7 @@ export async function runTeamAgent(input: TeamAgentInput): Promise<string> {
   const leadResult = await runForkAgent({
     task: leadPrompt,
     role: "团队负责人",
+    ...(scope ? { scope } : {}),
   })
 
   const header = `Team 结果 (${reports.length} 位成员)\n`

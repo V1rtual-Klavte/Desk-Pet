@@ -92,6 +92,32 @@
 // 描述据此补：lastContextUsage 现已可重启恢复、可为 null（未知）。ar-01..ar-30 逐点核对实现
 // 点仍在、覆盖描述与当前实现一致（描述/来源核对，非逐行行为审计）；rules 不动（ar-31 是 L3，
 // 不入 L4 计数）。sourceHash 按当前源码复算。
+// 2026-10-06 提问选择与去超时批次（analyze→刷 hash）：sourceFiles 变化 —— 新增
+// `src/services/engine/choice-confirmation.ts`（提问选择的会话键控回执通道，ar-32）与
+// `src/services/engine/user-wait.ts`（等待期预算豁免的唯一登记点，ar-33）；`plan-confirmation.ts`
+//（等待不再有本地超时：timer、`timeout` 归宿与「计划确认等待超时」文案随 2026-10-06 用户裁决
+// 删除；`PLAN_CONFIRM_TIMEOUT_MS` 及其零依赖叶子 plan/limits.ts 无剩余消费者、整文件删除）、
+// `harness-slot.ts`（回合墙钟改为可暂停的一次性计时器：用户等待期间挂起、结算后按剩余预算续算）、
+// `runtime.ts`（NON_CONFIRM_CONTEXT 去掉 timeout 一支）、`context/builder.ts`（工具协议段重写，
+// 覆盖登记在 tool-execution 的 te-37）与 `session/manager.ts`（切会话/关标签在指针移动前同时
+// 取消该会话的待答提问）随同一批改动。新增 ar-32（提问回执通道的身份校验与逃生口）与 ar-33
+//（决策类弹窗不留等待超时 + 等待期回合预算豁免：假时钟 10 分钟仍待答 ×3 通道 + 「回合墙钟 1.5s、
+// 用户停留 2.2s 仍完成」的行为证据）。ar-01..ar-31 逐点核对实现点仍在、覆盖描述与当前实现一致
+//（描述/来源核对，非逐行行为审计）；rules 不动（ar-32/ar-33 是 L3，不入 L4 计数）；
+// sourceHash 按当前源码复算。
+// 2026-10-06 超时后台化批次（本批刷新）：harness-slot.ts（tool_execution_end trace 增
+//durationMs / detailPrefix，观测附加、不改回合与取消语义）与 runtime/trace.ts（SAFE_FIELDS
+//白名单增两字段）。ar-* 逐点核对实现点仍在、覆盖描述与当前实现一致；sourceHash 按当前
+//源码复算（同批含另会话在飞改动）。
+// 2026-10-06 第三轮收口（analyze→刷 hash）：本批 sourceFiles 变化 —— `harness-slot.ts`
+//（回合墙钟改可暂停的一次性计时器 + 受理态字段）、`runtime.ts`（NON_CONFIRM_CONTEXT 去掉
+// timeout 一支）、`plan-confirmation.ts`（等待去超时）、`choice-confirmation.ts`（提问回执
+// 通道）、`engine/user-wait.ts`（等待期预算豁免的唯一登记点）、`engine/runtime/trace.ts`、
+// `context/builder.ts`（工具协议段重写，覆盖归 tool-execution 的 te-35/te-37）与
+// `session/manager.ts`（切会话/关标签在指针移动前取消待答提问）—— 均已由第三轮各任务登记
+// ar-31..ar-33 与注释留痕，本轮逐点复核描述与当前实现一致，未修订。ar-01..ar-33 逐点核对
+// 实现点仍在、覆盖描述与当前实现一致（描述/来源核对，非逐行行为审计）；rules 不动
+//（ar-32/ar-33 是 L3，不入 L4 计数）；sourceHash 按当前源码复算。
 import type { ModuleContract } from "../host/types"
 
 // 2026-10-06 实测反馈收口（本批刷新）：sourceFiles 变化仅限 context/builder.ts 的计划提议指引
@@ -115,6 +141,9 @@ export const agentRuntimeContract: ModuleContract = {
     // （provider_usage 快照的选取纪律与排除规则的唯一定义点）；ar-31 的来源。
     "src/services/engine/harness/request-stats.ts",
     "src/services/engine/plan-confirmation.ts",
+    // 2026-10-06 提问选择批次补入：提问的回执通道（ar-32）与等待期预算豁免的唯一登记点（ar-33）。
+    "src/services/engine/choice-confirmation.ts",
+    "src/services/engine/user-wait.ts",
     "src/services/engine/preprocessor.ts",
     "src/services/engine/runtime/input-identity.ts",
     "src/services/engine/runtime/trace.ts",
@@ -135,7 +164,7 @@ export const agentRuntimeContract: ModuleContract = {
     "src/services/session/repo.ts",
     "src/services/session/store.ts",
   ],
-  sourceHash: "bb26cb78afd281db3fe7e31fbc2e95cacfeeee0957a23d12b8943f33a8e73745",
+  sourceHash: "24ea74cf4a05d2c37ca5068cfe6fce48ac58a12f22c2c43d0dc5ceda6b3a2790",
   coverage: [
     {
       id: "ar-01",
@@ -416,6 +445,24 @@ export const agentRuntimeContract: ModuleContract = {
       layer: "integration",
       depth: "deep",
       scenarios: ["context-usage-restore", "context-usage-restore-picks-last-formal", "context-usage-unknown-stays-null"],
+    },
+    {
+      id: "ar-32",
+      feature: "提问选择的回执通道与归宿（ask_user 的 UI 桥）",
+      description: "choice-confirmation.ts 是提问的会话键控通道（与 plan-confirmation 同构、按 requestId 键控且**可并发多条**，刻意不设单槽）：提问经 deskpet-choice-start 原样发出（sessionId/requestId/question/options）；回执 deskpet-choice-resolved 三种取值各有归宿 —— picked 结算出**所选项原文**（索引在域内校验，越界回执按协议违规丢弃、不结算）、other 结算为「用户用自己的话回答」（自由原文不经通道回传、以下一条消息到达主回合）、cancelled 结算为用户取消；未知 requestId 是 no-op，同 requestId 重入把旧的那份按 session_switched 结算掉（不悬挂）。逃生口（面板没送到/用户离开）：发布失败立即按 emit_failed 结算并发收尾事件；signal abort（用户停止回合/回合失效）按 session_switched 结算；cancelSessionChoices 只取消目标会话的待答、逐条发 deskpet-choice-end（别的会话不受影响）",
+      why: "提问是模型据以继续的直接输入：回执若不校验身份/下标就会把非法值当成用户选择；「其它」的自由原文若被通道截留或编造，模型与用户会看到两个不同的事实；没有等待超时（ar-33）之后，逃生口是唯一的悬挂保险，必须逐条可证",
+      layer: "integration",
+      depth: "deep",
+      scenarios: ["choice-receipt-start-picked", "choice-receipt-other-cancel", "choice-receipt-invalid-dropped", "choice-emit-failure-settles", "choice-signal-abort-settles", "choice-session-cancel", "choice-same-id-reentry"],
+    },
+    {
+      id: "ar-33",
+      feature: "决策类弹窗不留等待超时，等待期豁免回合预算",
+      description: "「等用户做决定」的面板（计划确认 / 步骤裁决 / 权限确认 / 提问）一律**没有等待超时**（2026-10-06 用户裁决：用户想多久想多久）：假时钟推进 10 分钟，四种等待仍是 pending（本点覆盖计划确认与步骤门、提问两条通道，权限确认通道的同形对照归 safety 的 sf-24），本地视图不被计时器清掉；等待期间该会话的**回合墙钟与工具超时一起停表**（engine/user-wait.ts 是唯一登记点：等待方 begin/release 引用计数，HarnessSlot 的墙钟与 ToolRouter 的超时按会话挂起、结算后按剩余预算续算），计划时限按累计等待扣除。行为证据：回合墙钟压到 1.5s、用户停留 2.2s 后作答，回合仍以模型正文正常完成（去掉停表即红）。归宿只来自明确事件 —— 回执、取消信号、会话切换/关闭、下发失败；面板被新决策顶掉按拒绝/取消结算",
+      why: "删掉面板超时后仍有两条倒计时会打断用户（回合墙钟与工具超时），它们必须一起豁免，否则「想多久想多久」只是表面成立；反过来豁免不能把「面板没送到」也豁免掉 —— 逃生口由 ar-32 与权限桥的下发失败归宿承接，两条一起才是完整的可用性契约",
+      layer: "integration",
+      depth: "deep",
+      scenarios: ["plan-confirm-no-wait-timeout", "choice-no-wait-timeout", "ask-tool-wait-exempts-turn-budget"],
     },
   ],
   // W0–W7 把 ar-18 / ar-22 的 memory-retry-policy-sync、runtime-compaction-suspended-settles

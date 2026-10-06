@@ -37,12 +37,25 @@
 // （dreaming 日 token 上限不再作门禁：空闲调度与批内预留都不再按 token 账拒绝/中止，账照记；
 // 预留命令去 dailyLimit）。评测、trace、保留与性能路径不在改动面内，本契约覆盖点未修订；
 // 本批刷新同时包含工作树中其它并发改动的源文件（非逐行行为审计），sourceHash 按当前源码复算。
+// 2026-10-06 提问选择与去超时批次（本批刷新）：sourceFiles 变化 —— `test/host/standard-setup.ts`
+//（新增提问通道复位 resetChoiceChannel：默认按取消结算，L4 宿主没有选择面板时不悬挂）与
+// `harness-slot.ts` / `runtime.ts`（等待期回合墙钟可暂停，注释面）。各覆盖点逐条核对实现点
+// 仍在、描述与当前实现一致；sourceHash 按当前源码复算。
+// 2026-10-06 超时后台化批次（本批刷新）：harness-slot.ts（tool_execution_end trace 增
+//durationMs / detailPrefix）与 runtime/trace.ts（白名单增两字段）—— 观测面附加，评估链路
+//的产出与判定未动。各覆盖点逐点核对一致；sourceHash 按当前源码复算。
+// 2026-10-06 派生行为结论沉淀批次（本批刷新）：sourceFiles 变化 —— memory/{store,commands,
+// provider,dreaming}.ts 与 protocol.{json,ts}（第二类准入来源 derived_behavior：整理来源分
+// 两区、用户区批次的模型调用与 token 账口径未变、系统观察区不过模型；记忆条目 JSON 增必填
+// origin 字段）与 dispatch.rs（两个记忆命令增可选 origin 参数）。评估/基准链路的消费面
+//（dreaming 产出计数、memoryJobSources / memoryList 形状）按新增可选字段兼容；各覆盖点逐点
+// 核对一致；sourceHash 按当前源码复算（同批含另会话在飞改动）。
 import type { ModuleContract } from "../host/types"
 
 export const evaluationContract: ModuleContract = {
   module: "evaluation",
   sourceFiles: ["test/host/standard-setup.ts", "vite.config.ts", "src/services/engine/runtime/trace.ts", "src/services/engine/harness/harness-slot.ts", "src/services/engine/harness/runtime.ts", "src/services/engine/harness/model-gateway.ts", "src/services/agent/memory/provider.ts", "src/services/agent/memory/dreaming.ts", "crates/native-host/src/e2e_trace.rs", "crates/native-host/src/memory/benchmark.rs", "crates/native-host/src/memory/store.rs", "crates/native-host/src/paths/mod.rs", "crates/native-host/src/host/dispatch.rs", "test/host/trace-observer.ts", "test/trace/evidence.ts", "scripts/report-retention.mjs", "scripts/trace-evidence.mjs", "scripts/contract-layers.mjs", "scripts/e2e-test.mjs", "test/memory-quality/dataset.mjs", "test/memory-quality/index.mjs", "test/memory-quality/live-adapter.ts", "scripts/memory-quality-review.mjs", "scripts/memory-performance.mjs", "test/e2e/eval-models.ts", "test/eval-models.json", "test/e2e/memory-performance.ts", "test/host/performance.ts", "test/e2e/native-main.ts", "test/e2e/scene-runner.ts"],
-  sourceHash: "4be478f6c44c75faebb6950d58ec192ba28525b9200c50a541e40b9836a1ad8a",
+  sourceHash: "6367b90ed47b7e49ffc9b9b74864b180855438ee01c48b4812d9d758cac7c922",
   coverage: [
     {"id": "eval-01", "feature": "生产 trace 提交线路", "description": "真实 sendMessage 经过 Rust IPC：输入、host/Pi关联、Provider span、首文本生成与 JSONL assistant entry commit 一致；消息结束不冒充提交或UI首显", "why": "评测证据本身必须能区分真实通过、未完成和错误产物，防止自动修复循环获得假成功", "layer": "e2e", "depth": "deep", "scenarios": ["trace-production-commit"]},
     {"id": "eval-02", "feature": "惰性与隔离观测", "description": "无订阅者不计算payload；listener异常隔离、event冻结、spread context共享单调序号；正文与工具参数结果不进入允许字段，主动/行为事件只保留结构字段（应用身份、标题与任务正文被白名单挡下）", "why": "评测证据本身必须能区分真实通过、未完成和错误产物，防止自动修复循环获得假成功", "layer": "unit", "depth": "deep", "scenarios": ["trace-lazy-off", "trace-listener-isolation", "trace-sequence-redaction", "trace-preview", "trace-scope-candidates", "trace-memory-rendered-schema", "trace-proactive-behavior-schema"]},

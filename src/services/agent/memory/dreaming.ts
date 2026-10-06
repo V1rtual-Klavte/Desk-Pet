@@ -5,6 +5,12 @@
 // Review 的产物只在 Rust 事务提交前落成 prepared staging 候选；
 // 作业完成时由 memory_dreaming_commit 复核并自动写进 active，面板只做事后治理。
 //
+// 来源分两区（2026-10-06 用户裁决「方案 b」），同一批只处理一类、互不混池：
+// - 用户事实：来源 origin=user（会话 JSONL 的可信用户输入），Review 走模型、产出候选；
+// - 系统观察：来源 origin=derived_behavior（行为画像的稳定结论，reliable 档才有），
+//   Review 是**确定性映射**——结论文本原样成为正文，模型不参与改写或演绎观察，
+//   token 预算不参与这一区；同一结论槽位的新版本带 supersedesId 覆盖旧条目。
+//
 // 资源边界（与《记忆系统运行时契约》§7.2 同源）：
 // - 每批来源数与正文长度都有界，超出的留给下一批，不做「一次全库重算」；
 // - 单条来源过大不截断内容，直接标记 oversized 交给用户挑选片段；
@@ -21,13 +27,14 @@ import { formatError } from "@/services/error"
 import { memoryConfig } from "@/services/config"
 import { dreamingTier, dreamingTierLimits } from "@/services/proactive/tiers"
 import { createRuntimeTraceContext, hasRuntimeTraceSubscribers, publishRuntimeTrace } from "@/services/engine/runtime/trace"
+import { conclusionSlotOf, isDerivedBehaviorSource } from "./sources"
 import { refreshMemoryCount } from "./index"
 import {
   addMemoryCandidates, cancelMemoryJob, checkpointMemoryJob, commitMemoryDreamingJob, memoryJobSources,
-  memoryStatus, pendingMemorySourceCount, reserveMemoryDreamingBudget, resumeMemoryJob,
+  memoryList, memoryStatus, pendingMemorySourceCount, reserveMemoryDreamingBudget, resumeMemoryJob,
   settleMemoryDreamingBudget, startMemoryJob,
 } from "./ipc"
-import type { MemoryCandidateDraft, MemoryDraft, MemorySource } from "./ipc"
+import type { MemoryCandidateDraft, MemoryDraft, MemoryJob, MemorySource } from "./ipc"
 
 const log = createLogger("MemoryDreaming")
 
@@ -40,6 +47,25 @@ const MAX_BATCHES_PER_RUN = 3
 const REVIEW_MAX_TOKENS_FLOOR = 256
 const LEASE_OWNER = "memory-dreaming"
 const IDLE_TICK_MS = 15_000
+/** 候选 summary 上限：用户来源与派生来源共用同一口径。 */
+const CANDIDATE_SUMMARY_CHARS = 120
+
+/**
+ * 派生结论（系统观察）的记忆形态：kind=fact 的可复算结论，权重低于用户事实默认值（5），
+ * 永不 pinned（Rust 侧同样拒绝带 pinned 的派生候选，双保险）。
+ */
+const DERIVED_KIND = "fact" as const
+const DERIVED_IMPORTANCE = 4
+const DERIVED_CONFIDENCE = 0.5
+/** 槽位别名前缀：下一版结论靠它找回同槽位在库条目（冲突收敛 = 版本 + supersede 覆盖）。 */
+export const BEHAVIOR_SLOT_ALIAS_PREFIX = "behavior-slot:"
+/** 槽位的中文别名（memory_query 的关键词面）。 */
+const DERIVED_SLOT_LABELS: Record<string, string> = {
+  rhythm: "作息节律",
+  apps: "常用应用",
+  focus: "专注习惯",
+  activity: "使用节奏",
+}
 
 let idleTimer: ReturnType<typeof setInterval> | null = null
 let idleSince = 0
@@ -180,45 +206,88 @@ function buildReviewPrompt(batch: readonly MemorySource[]): string {
 }
 
 /**
- * 一次整理：Light（登记来源）→ Review（产出 staging 候选）→ 自动 Publish。
- * 返回已提交计数，用于面板展示与报告。
+ * 派生批次的确定性 Review：结论文本原样沉淀，不经模型。
+ *
+ * 「系统观察」允许被读写的是画像层已经算好的结论本身；把这个文本再交给模型改写或演绎，
+ * 等于让模型替观察下结论。判据（窗口、画像字段、取整口径）由行为画像域写进结论正文，
+ * 这里只做形状映射与同槽位覆盖。
  */
-export async function runDreamingSweep(options: { signal?: AbortSignal; automatic?: boolean; resumeJobId?: string } = {}): Promise<DreamingOutcome> {
-  if (!memoryConfig.enabled) {
-    return { status: "empty", sourcesProcessed: 0, candidatesAdded: 0, publishedCount: 0, oversized: [], message: "记忆功能已关闭" }
+export function buildDerivedCandidates(
+  batch: readonly MemorySource[],
+  previousBySlot: ReadonlyMap<string, string>,
+): MemoryDraft[] {
+  const drafts: MemoryDraft[] = []
+  for (const source of batch) {
+    const slot = conclusionSlotOf(source)
+    const content = (source.evidence ?? "").trim()
+    if (!slot || !content) continue
+    const previous = previousBySlot.get(slot)
+    drafts.push({
+      content,
+      summary: content.slice(0, CANDIDATE_SUMMARY_CHARS),
+      kind: DERIVED_KIND,
+      scope: "user",
+      aliases: [`${BEHAVIOR_SLOT_ALIAS_PREFIX}${slot}`, `行为画像·${DERIVED_SLOT_LABELS[slot] ?? slot}`],
+      pinned: false,
+      importance: DERIVED_IMPORTANCE,
+      confidence: DERIVED_CONFIDENCE,
+      observedAt: source.observedAt,
+      sourceIds: [source.sourceId],
+      ...(previous ? { supersedesId: previous } : {}),
+    })
   }
-  if (!options.resumeJobId) {
-    // 前置查询在开作业之前：Light 先登记来源（新来源没登记，水位判定永远为「无」），
-    // 再问 Rust「水位之后还有没有待处理来源」。没有 → 整段跳过：不创建 job、不动预算/租约，
-    // 只留一条 debug（按既有空闲粒度，最多一个间隔一次，不刷屏）。
-    // 手动入口走同一条前置查询：Review 的输入只有这些来源，没有输入时开作业必然空跑
-    // （提交也只会提交本 job 的候选，见 memory_dreaming_commit 的 job 归属），
-    // outcome 仍是 empty，只是不再产生垃圾作业行；回报文案如实说明。
-    let pending = 0
-    try {
-      const { collectAllMemorySources } = await import("./sources")
-      await collectAllMemorySources()
-      pending = await pendingMemorySourceCount()
-    } catch (error) {
-      log.error("整理前的来源收集失败:", formatError(error))
-      return { status: "failed", sourcesProcessed: 0, candidatesAdded: 0, publishedCount: 0, oversized: [], message: formatError(error) }
-    }
-    if (pending === 0) {
-      log.debug("水位之后没有待处理来源，跳过本次整理")
-      return { status: "empty", sourcesProcessed: 0, candidatesAdded: 0, publishedCount: 0, oversized: [], message: "水位之后没有新的可整理来源" }
+  return drafts
+}
+
+/** 在库派生条目按槽位索引：正文只读一次；同槽位多条时取列表序第一条（版本覆盖应保证唯一）。 */
+async function derivedSlotOwners(): Promise<Map<string, string>> {
+  const owners = new Map<string, string>()
+  for (const item of await memoryList("user", undefined, 500)) {
+    if (!isDerivedBehaviorSource(item)) continue
+    for (const alias of item.draft.aliases) {
+      if (!alias.startsWith(BEHAVIOR_SLOT_ALIAS_PREFIX)) continue
+      const slot = alias.slice(BEHAVIOR_SLOT_ALIAS_PREFIX.length)
+      if (slot && !owners.has(slot)) owners.set(slot, item.id)
     }
   }
-  const started = options.resumeJobId
-    ? await resumeMemoryJob(options.resumeJobId, LEASE_OWNER)
-    : await startMemoryJob("review")
-  if (started.phase !== "review") {
-    if (options.resumeJobId) {
-      await cancelMemoryJob(options.resumeJobId, LEASE_OWNER)
-        .catch(error => log.warn("继续非 Review 作业后取消失败:", formatError(error)))
-    }
-    return { status: "failed", jobId: started.id, sourcesProcessed: 0, candidatesAdded: 0, publishedCount: 0, oversized: [], message: "只能继续 Review 阶段的记忆作业" }
+  return owners
+}
+
+/** 候选指纹即 id：同一条提案重跑时原地更新，不会堆积重复候选；两类来源共用这一处。 */
+async function candidatePayloads(
+  entries: readonly { draft: MemoryDraft; reason?: string }[],
+): Promise<MemoryCandidateDraft[]> {
+  const payloads: MemoryCandidateDraft[] = []
+  for (const entry of entries) {
+    const payloadHash = await sha256(stable({ draft: entry.draft }))
+    payloads.push({
+      id: `cand-${payloadHash.slice(0, 24)}`,
+      draft: entry.draft,
+      payloadHash,
+      ...(entry.reason ? { reason: entry.reason } : {}),
+    })
   }
-  const resumedBatchOffset = options.resumeJobId ? (started.processed ?? 0) : 0
+  return payloads
+}
+
+/** 两区来源类别：用户事实 / 系统观察（派生）。新作业一次只驱动一类，互不混池。 */
+type SourceClass = "user" | "derived_behavior"
+
+interface ReviewJobInput {
+  options: { signal?: AbortSignal; automatic?: boolean; resumeJobId?: string }
+  /** 驱动哪一区来源；`null` = 恢复的旧作业不分类（水位按会话隔离，两区互不吞并）。 */
+  sourceClass: SourceClass | null
+  started: MemoryJob
+  resumedBatchOffset: number
+}
+
+function emptyOutcome(message: string): DreamingOutcome {
+  return { status: "empty", sourcesProcessed: 0, candidatesAdded: 0, publishedCount: 0, oversized: [], message }
+}
+
+/** 一次 Review 作业（单类来源）：Light 已在作业外登记，这里产出 staging 候选并自动 Publish。 */
+async function runReviewJob(input: ReviewJobInput): Promise<DreamingOutcome> {
+  const { options, sourceClass, started } = input
   const jobId = started.id
   const traceContext = hasRuntimeTraceSubscribers() ? createRuntimeTraceContext(undefined, jobId) : undefined
   const traceStartedAt = traceContext ? (typeof performance === "undefined" ? Date.now() : performance.now()) : 0
@@ -233,7 +302,7 @@ export async function runDreamingSweep(options: { signal?: AbortSignal; automati
   const processedSourceIds: string[] = []
   const oversized: string[] = []
 
-  if (traceContext) publishRuntimeTrace(traceContext, "memory_extraction_start", () => ({ jobId, revision, phase: started.phase }))
+  if (traceContext) publishRuntimeTrace(traceContext, "memory_extraction_start", () => ({ jobId, revision, phase: started.phase, sourceClass: sourceClass ?? "mixed" }))
   const finish = (status: DreamingOutcome["status"], outcome: Omit<DreamingOutcome, "status" | "jobId">, reason?: string): DreamingOutcome => {
     if (traceContext) publishRuntimeTrace(traceContext, "memory_extraction_end", () => ({
       jobId, revision, status, candidateCount, sourceIds: processedSourceIds,
@@ -247,20 +316,24 @@ export async function runDreamingSweep(options: { signal?: AbortSignal; automati
   try {
     // 输出预算按模型窗口推导一次快照（reasoning 的 thinking 也计入），显式配置只作更小的上限；
     // 同一轮内预留与调用共用同一个模型与预算，避免中途改配置造成账目口径不一致。
-    const auxModel = resolvePiAuxModel()
-    const { contextWindow, maxTokens: outputBudget } = auxModel
-    const configuredReviewMaxTokens = memoryConfig.dreamingReviewMaxTokens
-    const reviewMaxTokens = Math.max(REVIEW_MAX_TOKENS_FLOOR,
-      Math.min(configuredReviewMaxTokens ?? outputBudget, outputBudget))
+    // 模型按需解析：纯系统观察批次不过模型，没有可用模型时也不应被它拖住。
+    let auxModel: ReturnType<typeof resolvePiAuxModel> | undefined
 
     for (let batch = 0; batch < MAX_BATCHES_PER_RUN; batch += 1) {
       if (options.signal?.aborted) {
         await cancelMemoryJob(jobId).catch(error => log.warn("取消整理作业失败:", formatError(error)))
         return finish("cancelled", { sourcesProcessed, candidatesAdded, publishedCount, oversized }, "signal_aborted")
       }
-      const pending = await memoryJobSources(jobId)
+      const pending = await memoryJobSources(jobId, sourceClass ?? undefined)
       if (pending.length === 0) break
-      const batchSources = pending.slice(0, MAX_SOURCES_PER_BATCH)
+      // 分区：同一批只处理一类来源（用户事实 / 系统观察）。新作业由 sourceClass 冻结；
+      // 恢复的旧作业没有类别记录，按首条来源的类别成批处理（水位按会话隔离）。
+      const derivedBatch = sourceClass === "derived_behavior"
+        || (sourceClass === null && isDerivedBehaviorSource(pending[0]!))
+      const pool = sourceClass === null
+        ? pending.filter(source => isDerivedBehaviorSource(source) === derivedBatch)
+        : pending
+      const batchSources = pool.slice(0, MAX_SOURCES_PER_BATCH)
       const usable = batchSources.filter(source => {
         const text = source.evidence ?? ""
         if ((source.sourceLength ?? text.length) > MAX_SOURCE_CHARS * 4) {
@@ -271,58 +344,61 @@ export async function runDreamingSweep(options: { signal?: AbortSignal; automati
       })
       if (usable.length === 0) break
 
-      const userText = buildReviewPrompt(usable)
-      // 单批再按真实剩余窗口收紧：输入 + 输出 + 余量必须留在窗口内，避免大输入把输出逼到截断。
-      const inputTokens = estimateContextTokens(userText)
-      const reserveMargin = Math.max(512, Math.floor(contextWindow * .02))
-      const batchMaxTokens = Math.max(REVIEW_MAX_TOKENS_FLOOR,
-        Math.min(reviewMaxTokens, contextWindow - inputTokens - reserveMargin))
-      const reservation = inputTokens + batchMaxTokens
-      if (options.automatic) {
-        // 预留只记账（reserved 增量 + 租约行），不再按日 token 总量准入，
-        // 也不再用返回值中止批次（2026-10-06 用户裁决；容量边界靠批数与单批预算）。
-        const reservationId = `${jobId}:${resumedBatchOffset + batch}`
-        await reserveMemoryDreamingBudget(reservationId, today, reservation)
-        reservedTokens += reservation
-      }
-      const result = await completePiText({
-        purpose: "memory",
-        // 辅助模型在这里冻结（ai.auxModel；留空即聊天模型）：整理作业与子代理同款模型。
-        model: auxModel,
-        systemPrompt: REVIEW_SYSTEM_PROMPT,
-        userText,
-        maxTokens: batchMaxTokens,
-        timeoutMs: reviewTimeoutMs(batchMaxTokens),
-        ...(options.signal ? { signal: options.signal } : {}),
-        ...(traceContext ? { traceContext } : {}),
-      })
-      const actualUsage = result.usage.input + result.usage.output
-      usedTokens += actualUsage
-      if (options.automatic) {
-        await settleMemoryDreamingBudget(`${jobId}:${resumedBatchOffset + batch}`, today, reservation, actualUsage)
-        reservedTokens -= reservation
-      }
-      const parsed = parseReviewCandidates(result.text, usable)
-      candidateCount += parsed.length
-      if (parsed.length > 0) {
-        const payloads: MemoryCandidateDraft[] = []
-        for (const candidate of parsed) {
-          const payloadHash = await sha256(stable({ draft: candidate.draft }))
-          payloads.push({
-            // 指纹即 id：同一条提案重跑时原地更新，不会堆积重复候选。
-            id: `cand-${payloadHash.slice(0, 24)}`,
-            draft: candidate.draft,
-            payloadHash,
-        ...(candidate.reason ? { reason: candidate.reason } : {}),
-          })
+      if (derivedBatch) {
+        // 确定性 Review：结论原样沉淀、不经模型改写，也不占 token 预算/预留。
+        const drafts = buildDerivedCandidates(usable, await derivedSlotOwners())
+        candidateCount += drafts.length
+        if (drafts.length > 0) {
+          candidatesAdded += await addMemoryCandidates(jobId, await candidatePayloads(drafts.map(draft => ({ draft }))))
         }
-        candidatesAdded += await addMemoryCandidates(jobId, payloads)
+      } else {
+        auxModel ??= resolvePiAuxModel()
+        const { contextWindow, maxTokens: outputBudget } = auxModel
+        const configuredReviewMaxTokens = memoryConfig.dreamingReviewMaxTokens
+        const reviewMaxTokens = Math.max(REVIEW_MAX_TOKENS_FLOOR,
+          Math.min(configuredReviewMaxTokens ?? outputBudget, outputBudget))
+        const userText = buildReviewPrompt(usable)
+        // 单批再按真实剩余窗口收紧：输入 + 输出 + 余量必须留在窗口内，避免大输入把输出逼到截断。
+        const inputTokens = estimateContextTokens(userText)
+        const reserveMargin = Math.max(512, Math.floor(contextWindow * .02))
+        const batchMaxTokens = Math.max(REVIEW_MAX_TOKENS_FLOOR,
+          Math.min(reviewMaxTokens, contextWindow - inputTokens - reserveMargin))
+        const reservation = inputTokens + batchMaxTokens
+        if (options.automatic) {
+          // 预留只记账（reserved 增量 + 租约行），不再按日 token 总量准入，
+          // 也不再用返回值中止批次（2026-10-06 用户裁决；容量边界靠批数与单批预算）。
+          const reservationId = `${jobId}:${input.resumedBatchOffset + batch}`
+          await reserveMemoryDreamingBudget(reservationId, today, reservation)
+          reservedTokens += reservation
+        }
+        const result = await completePiText({
+          purpose: "memory",
+          // 辅助模型在这里冻结（ai.auxModel；留空即聊天模型）：整理作业与子代理同款模型。
+          model: auxModel,
+          systemPrompt: REVIEW_SYSTEM_PROMPT,
+          userText,
+          maxTokens: batchMaxTokens,
+          timeoutMs: reviewTimeoutMs(batchMaxTokens),
+          ...(options.signal ? { signal: options.signal } : {}),
+          ...(traceContext ? { traceContext } : {}),
+        })
+        const actualUsage = result.usage.input + result.usage.output
+        usedTokens += actualUsage
+        if (options.automatic) {
+          await settleMemoryDreamingBudget(`${jobId}:${input.resumedBatchOffset + batch}`, today, reservation, actualUsage)
+          reservedTokens -= reservation
+        }
+        const parsed = parseReviewCandidates(result.text, usable)
+        candidateCount += parsed.length
+        if (parsed.length > 0) {
+          candidatesAdded += await addMemoryCandidates(jobId, await candidatePayloads(parsed))
+        }
       }
       sourcesProcessed += usable.length
       processedSourceIds.push(...usable.map(source => source.sourceId))
       const checkpoint = await checkpointMemoryJob(jobId, usable[usable.length - 1]!.sourceId, LEASE_OWNER)
       revision = checkpoint.revision
-      if (batchSources.length < MAX_SOURCES_PER_BATCH) break
+      if (pool.length <= MAX_SOURCES_PER_BATCH) break
     }
 
     // Candidate rows are only an internal, hash-checked staging area. There is no
@@ -340,6 +416,107 @@ export async function runDreamingSweep(options: { signal?: AbortSignal; automati
     await cancelMemoryJob(jobId).catch(cancelError => log.warn("失败后取消作业也失败:", formatError(cancelError)))
     return finish("failed", { sourcesProcessed, candidatesAdded, publishedCount, oversized, message: formatError(error) }, "operation_failed")
   }
+}
+
+/** 两相（用户事实 / 系统观察）的结果合并：状态取最坏，计数求和。 */
+function mergeDreamingOutcomes(outcomes: readonly DreamingOutcome[]): DreamingOutcome {
+  const rank: Record<DreamingOutcome["status"], number> = { empty: 0, completed: 1, cancelled: 2, failed: 3 }
+  let status: DreamingOutcome["status"] = "empty"
+  let sourcesProcessed = 0
+  let candidatesAdded = 0
+  let publishedCount = 0
+  let reservedTokens = 0
+  let usedTokens = 0
+  const oversized: string[] = []
+  const messages: string[] = []
+  let jobId: string | undefined
+  let localDate: string | undefined
+  for (const outcome of outcomes) {
+    if (rank[outcome.status] > rank[status]) status = outcome.status
+    sourcesProcessed += outcome.sourcesProcessed
+    candidatesAdded += outcome.candidatesAdded
+    publishedCount += outcome.publishedCount
+    oversized.push(...outcome.oversized)
+    if (outcome.message) messages.push(outcome.message)
+    jobId ??= outcome.jobId
+    if (outcome.budget) {
+      reservedTokens += outcome.budget.reservedTokens
+      usedTokens += outcome.budget.usedTokens
+      localDate ??= outcome.budget.localDate
+    }
+  }
+  return {
+    status,
+    ...(jobId ? { jobId } : {}),
+    sourcesProcessed,
+    candidatesAdded,
+    publishedCount,
+    oversized,
+    ...(localDate ? { budget: { localDate, reservedTokens, usedTokens } } : {}),
+    ...(messages.length ? { message: messages.join("；") } : {}),
+  }
+}
+
+/** 开一个 Review 作业并跑到收口（新作业阶段恒为 review，`job_start` 只接受 light|review）。 */
+async function runClassSweep(sourceClass: SourceClass, options: ReviewJobInput["options"]): Promise<DreamingOutcome> {
+  const started = await startMemoryJob("review")
+  if (started.phase !== "review") {
+    // 生产路径不会到这里（phase 是我们传的）；留一条如实失败，不驱动非 Review 作业。
+    await cancelMemoryJob(started.id, LEASE_OWNER)
+      .catch(error => log.warn("非 Review 作业取消失败:", formatError(error)))
+    return { status: "failed", jobId: started.id, sourcesProcessed: 0, candidatesAdded: 0, publishedCount: 0, oversized: [], message: "只能继续 Review 阶段的记忆作业" }
+  }
+  return runReviewJob({ options, sourceClass, started, resumedBatchOffset: 0 })
+}
+
+/**
+ * 一次整理：Light（登记来源）→ Review（产出 staging 候选）→ 自动 Publish。
+ *
+ * 两区来源各自成作业（用户事实 / 系统观察）：前置查询按类别分开（`memory_pending_source_count`
+ * 的 origin 参数），有输入的类别才开作业；恢复既有作业（resumeJobId）不经前置查询。
+ * 返回合并后的计数，用于面板展示与报告。
+ */
+export async function runDreamingSweep(options: { signal?: AbortSignal; automatic?: boolean; resumeJobId?: string } = {}): Promise<DreamingOutcome> {
+  if (!memoryConfig.enabled) return emptyOutcome("记忆功能已关闭")
+
+  if (options.resumeJobId) {
+    const started = await resumeMemoryJob(options.resumeJobId, LEASE_OWNER)
+    if (started.phase !== "review") {
+      await cancelMemoryJob(options.resumeJobId, LEASE_OWNER)
+        .catch(error => log.warn("继续非 Review 作业后取消失败:", formatError(error)))
+      return { status: "failed", jobId: started.id, sourcesProcessed: 0, candidatesAdded: 0, publishedCount: 0, oversized: [], message: "只能继续 Review 阶段的记忆作业" }
+    }
+    return runReviewJob({ options, sourceClass: null, started, resumedBatchOffset: started.processed ?? 0 })
+  }
+
+  // 前置查询在开作业之前：Light 先登记来源（新来源没登记，水位判定永远为「无」），
+  // 再按类别问 Rust「水位之后还有没有待处理来源」。两区都没有 → 整段跳过：
+  // 不创建 job、不动预算/租约，只留一条 debug（按既有空闲粒度，最多一个间隔一次，不刷屏）。
+  // 手动入口走同一条前置查询：Review 的输入只有这些来源，没有输入时开作业必然空跑
+  // （提交也只会提交本 job 的候选，见 memory_dreaming_commit 的 job 归属），
+  // outcome 仍是 empty，只是不再产生垃圾作业行；回报文案如实说明。
+  let userPending = 0
+  let derivedPending = 0
+  try {
+    const { collectAllMemorySources, collectBehaviorMemorySources } = await import("./sources")
+    await collectAllMemorySources()
+    // 稳定结论与用户来源同批登记；非 reliable 档返回空、不登记任何来源。
+    await collectBehaviorMemorySources()
+    userPending = await pendingMemorySourceCount("user")
+    derivedPending = await pendingMemorySourceCount("derived_behavior")
+  } catch (error) {
+    log.error("整理前的来源收集失败:", formatError(error))
+    return { status: "failed", sourcesProcessed: 0, candidatesAdded: 0, publishedCount: 0, oversized: [], message: formatError(error) }
+  }
+
+  const outcomes: DreamingOutcome[] = []
+  if (userPending > 0) outcomes.push(await runClassSweep("user", options))
+  if (derivedPending > 0) outcomes.push(await runClassSweep("derived_behavior", options))
+  if (outcomes.length === 0) {
+    log.debug("水位之后没有待处理来源，跳过本次整理")
+    return emptyOutcome("水位之后没有新的可整理来源")
+  }
+  return mergeDreamingOutcomes(outcomes)
 }
 
 /**

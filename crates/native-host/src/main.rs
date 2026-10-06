@@ -198,7 +198,6 @@ fn run(mode: Mode) -> AppResult<i32> {
         )
         .with_data_dir(paths.data_root.clone()),
     );
-    let bash_pool = Arc::new(BashPool::default());
     let permit_pool = Arc::new(ToolPermitPool::default());
 
     let launch = LaunchInfo {
@@ -215,6 +214,20 @@ fn run(mode: Mode) -> AppResult<i32> {
         locked_node_version()?,
     );
     let supervisor = Arc::new(NodeSupervisor::new(config)?);
+
+    // W4 缺口：宿主事件生产者。两条线程共用唯一事件出口（`EventSink`）：
+    // - monitor：`set_monitor_enabled` 的开闸/关闸现在真的驱动这条线程（同一
+    //   `MonitorState`）；平台事件源注册必须在 UI 主线程（macOS 的 NSWorkspace
+    //   通知只在主线程投递），本函数在 `ui::start_service` 之前仍在主线程上执行；
+    // - cursor：16ms 轮询、仅坐标变化时派发（含首帧）的既有语义原样保留。
+    // 出口按 原生宿主迁移过程记录 §9.4 路由：光标只直投原生 UI（不进 Node），窗口观察双投
+    // （原生 UI + 当前代际 Node），后台命令结束只投 Node（完成通知）。
+    // 装配提前到分派器之前：Bash 池的后台完成事件经同一出口投递（`BashPool::with_events`）。
+    let events: Arc<dyn EventSink> = Arc::new(HostEventRouter::new(
+        supervisor.clone(),
+        Arc::new(native_host::ui::stage::StageNativeEvents),
+    ));
+    let bash_pool = Arc::new(BashPool::with_events(events.clone()));
 
     // 统一退出序列（执行契约 §4.3 第 5 条）：托盘/系统终止经 UI 的 HostExitHook，
     // 命令侧 `app_restart` 经 LifecyclePort —— 两条路径都到这里，只收尾一次。
@@ -290,6 +303,7 @@ fn run(mode: Mode) -> AppResult<i32> {
             exit_once,
             monitor,
             windows,
+            events,
             dialogs,
             audio,
         ),
@@ -311,6 +325,7 @@ fn run_service_mode(
     exit_once: Arc<ExitOnceHook>,
     monitor: Arc<MonitorState>,
     windows: Arc<dyn WindowPort>,
+    events: Arc<dyn EventSink>,
     dialogs: Arc<dyn FileDialogPort>,
     audio: Arc<dyn native_host::audio::AudioPort>,
 ) -> AppResult<i32> {
@@ -388,17 +403,7 @@ fn run_service_mode(
         dialogs,
     )));
 
-    // W4 缺口：宿主事件生产者。两条线程共用唯一事件出口（`EventSink`）：
-    // - monitor：`set_monitor_enabled` 的开闸/关闸现在真的驱动这条线程（同一
-    //   `MonitorState`）；平台事件源注册必须在 UI 主线程（macOS 的 NSWorkspace
-    //   通知只在主线程投递），本函数在 `ui::start_service` 之前仍在主线程上执行；
-    // - cursor：16ms 轮询、仅坐标变化时派发（含首帧）的既有语义原样保留。
-    // 出口按 原生宿主迁移过程记录 §9.4 路由：光标只直投原生 UI（不进 Node），窗口观察双投
-    // （原生 UI + 当前代际 Node）。
-    let events: Arc<dyn EventSink> = Arc::new(HostEventRouter::new(
-        supervisor.clone(),
-        Arc::new(native_host::ui::stage::StageNativeEvents),
-    ));
+    // 事件出口已在本函数前段装配（Bash 池的后台完成事件与两条生产者线程共用同一实例）。
     native_host::monitor::spawn_monitor_thread(events.clone(), windows, monitor);
     native_host::commands::cursor::spawn_cursor_tracker(events);
 
@@ -895,7 +900,13 @@ fn run_e2e() -> AppResult<i32> {
         )
         .with_data_dir(paths.data_root.clone()),
     );
-    let bash_pool = Arc::new(BashPool::default());
+    // E2E 宿主同样装配唯一事件出口（同产品路径的路由）：后台命令完成事件要能投给
+    // E2E 的 Node（场景可观测完成通知）；E2E 不建原生 UI，事件的原生腿不会被触发。
+    let events: Arc<dyn EventSink> = Arc::new(HostEventRouter::new(
+        supervisor.clone(),
+        Arc::new(native_host::ui::stage::StageNativeEvents),
+    ));
+    let bash_pool = Arc::new(BashPool::with_events(events));
     let exit_once = Arc::new(ExitOnceHook::new(Arc::new(ServiceExitHook {
         supervisor: supervisor.clone(),
         mcp: mcp_pool.clone(),

@@ -16,6 +16,9 @@
 // 错误码映射（PATH_NOT_FOUND→not_found、未列出的码保持 unknown）实现点仍在；FOLD_POLICY 的
 // minFileBytes / maxFileBytes（64 MiB，折叠自愿的读上界）/ 结果守卫读 MAX_TOOL_FILE_BYTES
 // 三处与 hs-07 描述一致。未修订覆盖点，仅按当前源码刷新 sourceHash。
+// 2026-10-06 超时后台化批次（本批刷新）：native-execution-env.ts —— 构造增可选 sessionId
+//（完成通知归属）、exec 增加 backgrounded 回执映射（hs-01 的构造签名一句已同步）；
+//MAX_TOOL_FILE_BYTES 与折叠链未动。hs-01..hs-09 逐点核对一致；sourceHash 按当前源码复算。
 import type { ModuleContract } from "../host/types"
 
 export const harnessStorageContract: ModuleContract = {
@@ -27,7 +30,7 @@ export const harnessStorageContract: ModuleContract = {
     "src/services/tool/pi/native-execution-env.ts",
     "src/services/session/repo.ts",
   ],
-  sourceHash: "13002c54e83fe1849380b9f58fd1e1418b4798cf6dbeb4b3d9f47386ae434902",
+  sourceHash: "387e08906076910ab6d477bfac3faa30165e4bf5edf1c1d112ee2e5a915a745c",
   coverage: [
     {
       id: "hs-01",
@@ -41,7 +44,7 @@ export const harnessStorageContract: ModuleContract = {
     {
       id: "hs-02",
       feature: "NativeExecutionEnv FileSystem 补全",
-      description: "readTextFile/writeFile/appendFile/renameFile/createDir/remove/createTempDir/listDir 经真实 Rust 命令完成且不 throw（失败以 Result 返回）；失败按 Rust 结构化错误码归类而不是拿 message 猜，但**本点（L3 用例）背书的只有两条**：PATH_NOT_FOUND→not_found 与未列出的码（以 TOOL 实测）如实保持 unknown —— **SENSITIVE_PATH / PATH_ESCAPE→permission_denied 与 NOT_ABSOLUTE→invalid 依赖 Rust 侧路径裁决**，`test/host/node-ipc.ts` 按设计只实现机制、不做路径裁决（实测 `.ssh/probe` 落成 not_found、相对路径写入直接成功），Node 侧无法复现，**这 2 条属 L4**（production 批次另立出口），本点不声称覆盖；rename 原子替换已存在目标；remove 遵守 recursive/force（force 时缺失算成功，目录需 recursive）；createDir 默认递归；listDir 直接返回绝对 path、size、mtimeMs 与 file/directory/symlink 三值 kind。构造签名是 new NativeExecutionEnv(cwd)（模式参数已删，决策 5）。所有读写都下发 MAX_TOOL_FILE_BYTES = 5 MB 的硬上限（readTextFile/readBinaryFile 的读上限，writeFile/file_append 的单次写上限）—— 它是会话条目写盘的**唯一物理上限**，MCP 的一次性截断删除后大结果全靠它兜底：超限时 Rust 如实报错、**不做静默截断**（§8.8 的裁定。注：正好超限被拒这条边界未由本点的场景断言）。该常量的唯一定义点就在 `tool/pi/native-execution-env.ts`，`engine/harness/session-fold.ts` 的**结果守卫**（折叠结果超限不落盘）读同一份，不另存一份；折叠的**读取守卫**是 `FOLD_POLICY.maxFileBytes`（64 MiB，见 hs-07）—— 它不是这个写上限的复制，会话读路径本身没有 5 MiB 限制",
+      description: "readTextFile/writeFile/appendFile/renameFile/createDir/remove/createTempDir/listDir 经真实 Rust 命令完成且不 throw（失败以 Result 返回）；失败按 Rust 结构化错误码归类而不是拿 message 猜，但**本点（L3 用例）背书的只有两条**：PATH_NOT_FOUND→not_found 与未列出的码（以 TOOL 实测）如实保持 unknown —— **SENSITIVE_PATH / PATH_ESCAPE→permission_denied 与 NOT_ABSOLUTE→invalid 依赖 Rust 侧路径裁决**，`test/host/node-ipc.ts` 按设计只实现机制、不做路径裁决（实测 `.ssh/probe` 落成 not_found、相对路径写入直接成功），Node 侧无法复现，**这 2 条属 L4**（production 批次另立出口），本点不声称覆盖；rename 原子替换已存在目标；remove 遵守 recursive/force（force 时缺失算成功，目录需 recursive）；createDir 默认递归；listDir 直接返回绝对 path、size、mtimeMs 与 file/directory/symlink 三值 kind。构造签名是 new NativeExecutionEnv(cwd, sessionId?)（模式参数已删，决策 5；可选 sessionId 是 2026-10-06 后台化批次加入的完成通知归属，只随 bash_exec 下传，不在本契约行为面内）。所有读写都下发 MAX_TOOL_FILE_BYTES = 5 MB 的硬上限（readTextFile/readBinaryFile 的读上限，writeFile/file_append 的单次写上限）—— 它是会话条目写盘的**唯一物理上限**，MCP 的一次性截断删除后大结果全靠它兜底：超限时 Rust 如实报错、**不做静默截断**（§8.8 的裁定。注：正好超限被拒这条边界未由本点的场景断言）。该常量的唯一定义点就在 `tool/pi/native-execution-env.ts`，`engine/harness/session-fold.ts` 的**结果守卫**（折叠结果超限不落盘）读同一份，不另存一份；折叠的**读取守卫**是 `FOLD_POLICY.maxFileBytes`（64 MiB，见 hs-07）—— 它不是这个写上限的复制，会话读路径本身没有 5 MiB 限制",
       why: "JsonlSessionRepo 的原子发布依赖 append+rename，list 依赖完整 FileInfo 字段，能力缺口会让会话无法落盘或无法恢复；错误码是调用方唯一的分类依据，文案随实现漂移",
       layer: "integration",
       depth: "deep",

@@ -49,6 +49,15 @@ export {
 // （不另开第二份计划记录读写口）。
 export { planCheckpointStore } from "./plan/checkpoint-store"
 
+// ── 提问选择（ask_user 的确认通道）──
+// 与 plan-confirmation 同一分区方式：requestChoice 是工具域经 barrel 动态导入的唯一
+// 提问入口；面板与测试替身按 requestId 应答，并读 choiceState 的只读视图。
+export {
+  cancelSessionChoices, choiceDeclineText, choiceState, disposeChoiceConfirmationReceipts,
+  notifyChoiceEnd, requestChoice, resolveChoice,
+} from "./choice-confirmation"
+export type { ChoiceOutcome, ChoiceResolution } from "./choice-confirmation"
+
 // ── 模型提议计划（propose_plan 工具的执行相位）──
 // 与自动入口（runtime 的 runPlanPhase）共用确认通道、执行器与记录存储；唯一消费者
 // 是 `tool/local-extra/plan.ts`，产物归宿是工具结果而不是主回合上下文。

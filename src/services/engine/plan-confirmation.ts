@@ -4,7 +4,7 @@
 // 订阅（harness 引导调用）。
 
 import { publishUiEvent, subscribeUiReceipt, type HostEventMap, type NodeUiEventName } from "@/services/host"
-import { PLAN_CONFIRM_TIMEOUT_MS } from "./plan/limits"
+import { beginUserWait } from "./user-wait"
 import { reactive } from "vue"
 import { getActiveSessionId } from "@/services/session/store"
 import { pushSystemMessage } from "@/services/session"
@@ -15,13 +15,15 @@ import type { PlanResult, PlanStep } from "./planner"
 const log = createLogger("PlanConfirm")
 
 /**
- * 确认归结。`confirmed: false` 的六种原因各有明确来源（PLAN-04 / PLAN-07）：
- * `user` 面板取消；`timeout` 确认等待超时；`session_switched` 切会话（含 `signal` 的 abort）；
- * `not_active` 会话被关闭；`emit_failed` 确认事件发射失败；`ui_unavailable` 面板监听注册失败。
+ * 确认归结。`confirmed: false` 的**五种**原因各有明确来源（PLAN-04 / PLAN-07；
+ * 2026-10-06 起不再有 `timeout` —— 用户裁决选择类弹窗不留超时，等待期豁免回合墙钟，
+ * 见 `user-wait.ts`）：`user` 面板取消；`session_switched` 切会话（含 `signal` 的 abort，
+ * 用户停止回合走同一条）；`not_active` 会话被关闭；`emit_failed` 确认事件发射失败；
+ * `ui_unavailable` 面板监听注册失败。
  */
 export type PlanConfirmResult =
   | { confirmed: true; mode: "auto" | "stepByStep" }
-  | { confirmed: false; reason: "user" | "timeout" | "session_switched" | "not_active" | "emit_failed" | "ui_unavailable" }
+  | { confirmed: false; reason: "user" | "session_switched" | "not_active" | "emit_failed" | "ui_unavailable" }
 
 /** 当前待确认计划的只读视图（只在确认等待期间有效）。 */
 export interface PendingPlanConfirm {
@@ -53,11 +55,6 @@ export interface PendingStepGate {
   error?: string
 }
 
-// 确认/步骤门的等待上限（PLAN-07）：定义点移居零依赖叶子 `plan/limits.ts` ——
-// `propose_plan` 的工具超时预算要按它折算，工具域直接引用叶子以避免 barrel 静态循环。
-// 这里保留同名导出（既有消费点与引擎 barrel 的取用口不变）。
-export { PLAN_CONFIRM_TIMEOUT_MS }
-
 /**
  * 待确认计划与待裁决步骤门的视图（UI 渲染 + 测试替身按它应答；reactive 以便 `flush: "sync"` 应答）。
  * 真相源是下面的 `pendingConfirms` / `pendingStepGates` 两张表，不得反向从视图派生行为。
@@ -67,19 +64,23 @@ export const planConfirmState = reactive<{
   stepGate: PendingStepGate | null
 }>({ pending: null, stepGate: null })
 
-/** 待确认计划：planId → 结算句柄。跨会话可并发；同一会话同一时刻只允许一个计划。 */
+/**
+ * 待确认计划：planId → 结算句柄。跨会话可并发；同一会话同一时刻只允许一个计划。
+ * `releaseWait` 是回合预算豁免的等待登记（`user-wait.ts`）：等用户拍板期间挂起该会话的
+ * 回合墙钟与工具超时计时器，结算（任何原因）即 release。
+ */
 interface ConfirmEntry {
   view: PendingPlanConfirm
   resolve: (result: PlanConfirmResult) => void
-  timer: ReturnType<typeof setTimeout>
+  releaseWait: () => void
   signalCleanup?: () => void
 }
 const pendingConfirms = new Map<string, ConfirmEntry>()
 
-/** 待裁决步骤门：planId → 结算句柄。 */
+/** 待裁决步骤门：planId → 结算句柄（等待登记同上）。 */
 interface StepGateEntry {
   resolve: (decision: "continue" | "abort") => void
-  timer: ReturnType<typeof setTimeout>
+  releaseWait: () => void
   signalCleanup?: () => void
 }
 const pendingStepGates = new Map<string, StepGateEntry>()
@@ -93,7 +94,6 @@ const runningPlans = new Map<string, RunningPlan>()
 
 /** 非确认归宿的用户可见说明（`user` 由面板文案与收尾文案承担；`ui_unavailable` 由面板上报错误留痕）。 */
 export const NON_CONFIRM_NOTICE = {
-  timeout: "计划确认等待超时，已取消计划",
   session_switched: "已离开该会话，计划确认已取消",
   not_active: "该会话已不再活跃，计划确认已取消",
   emit_failed: "计划确认未能送达界面，已取消计划",
@@ -102,8 +102,8 @@ export const NON_CONFIRM_NOTICE = {
 /**
  * 确认未成立的中性说明（模型可见的工具结果组成件，不是角色台词）。
  *
- * 与 `NON_CONFIRM_NOTICE`（系统消息文案）同源互补：后者只覆盖四个由本域写出的归宿，
- * 工具结果需要覆盖全部六种原因（含 `user` 与由面板上报的 `ui_unavailable`），
+ * 与 `NON_CONFIRM_NOTICE`（系统消息文案）同源互补：后者只覆盖三个由本域写出的归宿，
+ * 工具结果需要覆盖全部五种原因（含 `user` 与由面板上报的 `ui_unavailable`），
  * 由本函数给出同一份口径 —— 两种渠道的文案不许各写一套。
  */
 export function planConfirmDeclineText(reason: Extract<PlanConfirmResult, { confirmed: false }>["reason"]): string {
@@ -146,14 +146,14 @@ function writeNotice(sessionId: string, reason: keyof typeof NON_CONFIRM_NOTICE)
 }
 
 /**
- * 结算一个待确认计划：清 timer、摘 signal 监听、resolve、清视图（若指向该 planId）。
+ * 结算一个待确认计划：摘等待登记、摘 signal 监听、resolve、清视图（若指向该 planId）。
  * 返回是否真的结算了 —— 任何路径只结算一次，带副作用的调用方据此判断自己是不是那次。
  */
 function settleConfirm(planId: string, result: PlanConfirmResult): boolean {
   const entry = pendingConfirms.get(planId)
   if (!entry) return false
   pendingConfirms.delete(planId)
-  clearTimeout(entry.timer)
+  entry.releaseWait()
   entry.signalCleanup?.()
   if (planConfirmState.pending?.planId === planId) planConfirmState.pending = null
   entry.resolve(result)
@@ -165,7 +165,7 @@ function settleStepGate(planId: string, decision: "continue" | "abort"): boolean
   const entry = pendingStepGates.get(planId)
   if (!entry) return false
   pendingStepGates.delete(planId)
-  clearTimeout(entry.timer)
+  entry.releaseWait()
   entry.signalCleanup?.()
   if (planConfirmState.stepGate?.planId === planId) planConfirmState.stepGate = null
   entry.resolve(decision)
@@ -177,9 +177,11 @@ function settleStepGate(planId: string, decision: "continue" | "abort"): boolean
 // ═══════════════════════════════════════════════════
 
 /**
- * 请求用户确认计划（会话键控）。四种非确认归宿都在这里结算，确认方不必永久等待：
- * 已达上限按 `timeout`、`signal` 的 abort（会话切换/回合失效）按 `session_switched`、
- * 事件发射失败按 `emit_failed`；`user`/`ui_unavailable` 由面板 resolve；`not_active` 由会话关闭触发。
+ * 请求用户确认计划（会话键控）。**没有等待超时**（2026-10-06 用户裁决：选择类弹窗
+ * 不留超时）—— 等待期间该会话的回合墙钟与工具超时停表（`user-wait.ts`），用户想多久
+ * 想多久。非确认归宿只来自明确事件：`signal` 的 abort（用户停止回合 / 会话切换 / 回合
+ * 失效）按 `session_switched`、事件发射失败按 `emit_failed`、`user` / `ui_unavailable`
+ * 由面板 resolve、`not_active` 由会话关闭触发 —— 每一条都是显式可判定的逃生口。
  */
 export function requestPlanConfirm(plan: PlanResult, opts: {
   sessionId: string
@@ -188,7 +190,7 @@ export function requestPlanConfirm(plan: PlanResult, opts: {
   signal?: AbortSignal
 }): Promise<PlanConfirmResult> {
   const { sessionId, planId, signal } = opts
-  // 不同调用点不共用 planId；真重入时先把旧的那份结算掉，不给它留悬挂的 promise 与 timer
+  // 不同调用点不共用 planId；真重入时先把旧的那份结算掉，不给它留悬挂的 promise 与等待登记。
   settleConfirm(planId, { confirmed: false, reason: "session_switched" })
   return new Promise<PlanConfirmResult>(resolve => {
     const view: PendingPlanConfirm = {
@@ -201,12 +203,8 @@ export function requestPlanConfirm(plan: PlanResult, opts: {
     const entry: ConfirmEntry = {
       view,
       resolve,
-      // 确认等待上限（PLAN-07）：到期按 timeout 结算并写一条系统消息，调用方照常收尾
-      timer: setTimeout(() => {
-        if (!settleConfirm(planId, { confirmed: false, reason: "timeout" })) return
-        log.warn("计划确认等待超时:", planId, sessionId)
-        writeNotice(sessionId, "timeout")
-      }, PLAN_CONFIRM_TIMEOUT_MS),
+      // 等用户拍板：登记等待，挂起该会话的回合墙钟与工具超时（任何结算路径都会 release）。
+      releaseWait: beginUserWait(sessionId),
     }
     pendingConfirms.set(planId, entry)
 
@@ -243,14 +241,14 @@ export function resolvePlanConfirm(planId: string, result: PlanConfirmResult): v
 }
 
 /**
- * 步骤门/失败询问的用户裁决（会话键控）。
+ * 步骤门/失败询问的用户裁决（会话键控）。**没有等待超时**（与计划确认同一条用户裁决）：
+ * 等待期间该会话的回合墙钟与工具超时停表，用户想多久想多久。
  *
  * 裁决请求经 `deskpet-plan-step-gate` 事件交给面板（`kind` 决定按钮语义）；返回 `"abort"` 时
  * 调用方在 planner 侧按下一个归宿停下（`cancelled.reason = "declined"`），不复用失败标记路径。
  *
- * `signal` 的 abort 结算为 `"abort"`：调用方已经不再有资格等用户答复（会话切换/回合已失效），
- * 继续往下跑会把计划带进错误的会话。超时与事件发射失败同样按 `"abort"` 结算 —— 问不到用户时
- * 不能把没有答复的门当成放行。
+ * `signal` 的 abort 与事件发射失败都按 `"abort"` 结算：调用方已经不再有资格等用户答复
+ *（会话切换/回合已失效），或答复根本送不到 —— 问不到用户时不能把没有答复的门当成放行。
  */
 export function requestPlanStepDecision(step: PlanStep, error: string | undefined, opts: {
   sessionId: string
@@ -273,10 +271,8 @@ export function requestPlanStepDecision(step: PlanStep, error: string | undefine
     }
     const entry: StepGateEntry = {
       resolve,
-      timer: setTimeout(() => {
-        if (!settleStepGate(planId, "abort")) return
-        log.warn("步骤裁决等待超时，按中止结算:", planId, sessionId, step.id)
-      }, PLAN_CONFIRM_TIMEOUT_MS),
+      // 等用户裁决：登记等待，挂起该会话的回合墙钟与工具超时（任何结算路径都会 release）。
+      releaseWait: beginUserWait(sessionId),
     }
     pendingStepGates.set(planId, entry)
 

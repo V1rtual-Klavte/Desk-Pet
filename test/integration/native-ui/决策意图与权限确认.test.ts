@@ -19,7 +19,7 @@
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
-import { afterAll, beforeAll, describe, expect, it } from "vitest"
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest"
 
 import { NodeHostBridge } from "../../host/node-host-bridge"
 import { setTestDataRoot } from "../../host/node-ipc"
@@ -28,7 +28,7 @@ import { setHostBridge, setUiEventPublisher, setUiReceiptSource } from "@/servic
 import type { HostBridge } from "@/services/host"
 import { dispatchHostRequest, initNativeUiBridge } from "@/services/native-ui"
 import { initPaths } from "@/services/paths"
-import { confirmState, requestPermissionConfirm } from "@/services/safety"
+import { confirmState, requestPermissionConfirm, resolvePermissionConfirm } from "@/services/safety"
 import type { PermissionRequest } from "@/services/safety"
 import {
   DESKPET_SYSTEM_MESSAGE_ENTRY,
@@ -122,6 +122,16 @@ let recorder: ReturnType<typeof createRecordingBridge>
 /** 等 fire-and-forget 的异步（发布 / 落盘）落地。 */
 async function flush(): Promise<void> {
   await new Promise((resolve) => setTimeout(resolve, 0))
+}
+
+/**
+ * 「通道关闭」的发布器夹具（模块级，不是断言）：模拟 UI 收不到事件的宿主。
+ * 测试纪律 4 只禁「测试体里手写 throw 充当断言」，夹具与断言分开定义。
+ */
+function failingUiPublisher(): void {
+  setUiEventPublisher({
+    publish: async () => { throw new Error("UI 通道已关闭") },
+  })
 }
 
 /** 轮询等待条件成立（超时用 expect 报红；断言驱动，不用手写 throw）。 */
@@ -278,7 +288,6 @@ describe("决策类面板动作（HostRequestMap 承接）", () => {
 describe("权限确认桥（请求下发 + 回执回收）", () => {
   it("待确认请求投影成 deskpet-permission-confirm；回执按 requestId 身份结算，迟到/非法一律丢弃 [native-ui-permission-confirm-bridge]", async () => {
     const sessionId = getActiveSessionId()
-    const expiresAt = Date.now() + 60_000
     const request: PermissionRequest = {
       requestId: "perm-probe-1",
       sessionId,
@@ -287,7 +296,6 @@ describe("权限确认桥（请求下发 + 回执回收）", () => {
       toolName: "probe_tool",
       inputHash: "input-hash",
       policyHash: "policy-hash",
-      expiresAt,
       message: "通道自检",
       parameterSummary: "command=ls",
       effectClass: "external_side_effect",
@@ -308,8 +316,10 @@ describe("权限确认桥（请求下发 + 回执回收）", () => {
       inputHash: "input-hash",
       policyHash: "policy-hash",
       toolCallId: "call-probe",
-      expiresAt,
     })
+    // 载荷不带有效期字段：等待本身没有超时（选择类弹窗不留超时，2026-10-06 用户裁决）。
+    expect(published[0].payload, "权限确认载荷仍在携带有效期（等待是无限的）")
+      .not.toHaveProperty("expiresAt")
 
     const receipt = recorder.listeners.get("deskpet-permission-confirm-resolved")
     expect(receipt, "回执订阅没有注册").toBeDefined()
@@ -327,5 +337,68 @@ describe("权限确认桥（请求下发 + 回执回收）", () => {
     expect(confirmState.pending).toBeNull()
     receipt!({ requestId: "perm-probe-1", decision: "deny" })
     expect(confirmState.pending).toBeNull()
+  })
+
+  it("权限确认不设等待超时：十分钟后仍待答，归宿只来自用户/取消 [native-ui-permission-confirm-no-wait-timeout]", async () => {
+    // 假时钟推进 10 分钟：旧实现的 5 分钟超时会在这一步把请求按拒绝结算，
+    // 本断言因此具有区分力（重加计时器即红）。
+    vi.useFakeTimers()
+    try {
+      const request: PermissionRequest = {
+        requestId: "perm-probe-hold",
+        sessionId: getActiveSessionId(),
+        runGeneration: 0,
+        toolCallId: "call-hold",
+        toolName: "probe_tool",
+        inputHash: "input-hash",
+        policyHash: "policy-hash",
+        message: "等待自检",
+        parameterSummary: "",
+        effectClass: "external_side_effect",
+      }
+      let settled: string = "pending"
+      const pending = requestPermissionConfirm(request)
+      void pending.then((decision) => { settled = decision })
+
+      await vi.advanceTimersByTimeAsync(10 * 60 * 1000)
+
+      expect(settled, "权限确认在 10 分钟后被任何计时器结算了").toBe("pending")
+      expect(confirmState.pending?.id, "等待中的确认被计时器收起/清槽了").toBe("perm-probe-hold")
+
+      // 收尾（逃生口之一：显式拒绝结算），不留悬挂等待。
+      resolvePermissionConfirm("deny")
+      await expect(pending).resolves.toBe("deny")
+      expect(confirmState.pending).toBeNull()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it("权限确认下发失败：立即按拒绝结算（逃生口），不把回合悬挂在没送达的请求上 [native-ui-permission-confirm-emit-failure]", async () => {
+    // 夹具：通道关闭的发布器（产品路径的失败归宿由本用例断言）。
+    failingUiPublisher()
+    try {
+      const request: PermissionRequest = {
+        requestId: "perm-probe-fail",
+        sessionId: getActiveSessionId(),
+        runGeneration: 0,
+        toolCallId: "call-fail",
+        toolName: "probe_tool",
+        inputHash: "input-hash",
+        policyHash: "policy-hash",
+        message: "通道关闭自检",
+        parameterSummary: "",
+        effectClass: "external_side_effect",
+      }
+      // 面板根本没送到 → 立即按拒绝 settle（fail-closed），请求不得悬挂。
+      await expect(requestPermissionConfirm(request)).resolves.toBe("deny")
+      expect(confirmState.pending, "下发失败后单槽未清（请求已结算）").toBeNull()
+    } finally {
+      setUiEventPublisher({
+        publish: async (event, payload) => {
+          recorder.published.push({ event, payload })
+        },
+      })
+    }
   })
 })

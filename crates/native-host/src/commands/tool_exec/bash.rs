@@ -5,6 +5,7 @@
 
 use crate::commands::bash_policy::enforce_bash_policy;
 use crate::error::{err, AppError, AppResult};
+use crate::host::{BackgroundCommandEnd, BackgroundCommandFinished, EventSink, HostEvent};
 use crate::{rust_debug, rust_info, rust_warn};
 use std::collections::HashMap;
 use std::fs::{File, OpenOptions};
@@ -17,6 +18,20 @@ use std::time::{Duration, Instant};
 
 /// 子进程退出状态的轮询间隔。只影响等待粒度，不影响正确性。
 const BASH_POLL_INTERVAL: Duration = Duration::from_millis(25);
+
+/// 前台等待期「进展证据」的探测间隔（L1）：每拍 stat 两路输出文件的长度，
+/// 得到 `silentMs` / `producedBytes` 两个现场数字。代价是一次 stat/秒，不引线程、不加依赖。
+const OUTPUT_PROBE_INTERVAL: Duration = Duration::from_millis(1000);
+
+/// 后台任务的等待轮询间隔。后台通知对延迟不敏感，放缓轮询省 CPU。
+const BACKGROUND_POLL_INTERVAL: Duration = Duration::from_millis(250);
+
+/// 后台任务时限（30 分钟，对齐 Claude Code 的形状）：到点仍活着的后台进程按进程组回收，
+/// 并就「被时限终止」如实告知。这是后台任务唯一的时间界线；宿主退出走 `kill_all` 兜底。
+const BACKGROUND_TASK_MAX_LIFETIME: Duration = Duration::from_secs(30 * 60);
+
+/// 完成通知里回传的命令预览长度上限（只用于展示；命令正文不进事件载荷的无界字段）。
+const BACKGROUND_COMMAND_PREVIEW_CHARS: usize = 300;
 
 /// `timeout_ms` 缺省时的兜底（5 分钟）。
 ///
@@ -49,24 +64,74 @@ pub(crate) struct BashSlot {
     pub(crate) cancel_requested: bool,
 }
 
-/// 运行中的 bash 子进程表。
+/// 后台任务表条目：等待线程与退出回收共享的**子进程句柄**。
+///
+/// 只放句柄（命令、输出路径、起始时刻等归等待线程私有）：`kill_all` 只需要能杀，
+/// 等待线程需要能等 —— 两者共用同一个 `Arc<Mutex<Child>>` 即可，不复制第二份任务描述。
+pub(crate) struct BackgroundHandle {
+    pub(crate) child: Arc<Mutex<Child>>,
+}
+
+/// 运行中的 bash 子进程表（前台）与后台任务表。
 ///
 /// 内层 `Arc` 让执行入口能把池句柄 clone 进工作线程（阻塞执行不占用调用线程）：
 /// 传输层的借用撑不到任务结束。
 ///
-/// 第二个字段是**退出闸门**：`kill_all` 先封闸再清池，封闸后 `run_bash` 拒绝新登记。
-/// 闸门与登记在同一把锁（字段 0 的 `Mutex`）下检查/置位，竞态边界见 `kill_all`。
-#[derive(Default, Clone)]
-pub struct BashPool(
-    pub(crate) Arc<Mutex<HashMap<String, BashSlot>>>,
-    Arc<AtomicBool>,
-);
+/// **门闸**：`kill_all` 先封闸再清池，封闸后 `run_bash` 拒绝新登记，超时迁移同样按
+/// 封闸状态拒绝（已封闸 = 正在退出，不再产生后台任务）。闸门与登记在同一把锁下检查/置位，
+/// 竞态边界见 `kill_all`。
+///
+/// **锁顺序**：凡同时需要两把表的临界区（超时迁移）一律「前台 → 后台」取锁；
+/// `kill_all` 的两次 drain 各自独立成临界区，不跨表持锁，因此不存在反向等待。
+#[derive(Clone)]
+pub struct BashPool {
+    pub(crate) slots: Arc<Mutex<HashMap<String, BashSlot>>>,
+    sealed: Arc<AtomicBool>,
+    pub(crate) background: Arc<Mutex<HashMap<String, BackgroundHandle>>>,
+    /// 后台结束事件的出口。宿主装配时注入（`with_events`）；缺省（测试宿主 / 直调）
+    /// 表示无消费者：等待线程照常收尾，只在结束时留一条 warn。
+    events: Option<Arc<dyn EventSink>>,
+    /// 后台任务时限（缺省 30 分钟；测试用 `with_test_timing` 缩短）。
+    background_max_lifetime: Duration,
+    /// 后台等待轮询间隔（缺省 250ms；测试用 `with_test_timing` 缩短）。
+    background_poll_interval: Duration,
+}
+
+impl Default for BashPool {
+    fn default() -> Self {
+        Self {
+            slots: Arc::new(Mutex::new(HashMap::new())),
+            sealed: Arc::new(AtomicBool::new(false)),
+            background: Arc::new(Mutex::new(HashMap::new())),
+            events: None,
+            background_max_lifetime: BACKGROUND_TASK_MAX_LIFETIME,
+            background_poll_interval: BACKGROUND_POLL_INTERVAL,
+        }
+    }
+}
 
 impl BashPool {
+    /// 装配事件出口（生产宿主在 `main.rs` 用唯一事件出口 `HostEventRouter` 构造）。
+    /// 事件出口为 `None` 的池只能跑测试：超时仍会转后台，但完成通知没有投递面。
+    pub fn with_events(events: Arc<dyn EventSink>) -> Self {
+        Self {
+            events: Some(events),
+            ..Self::default()
+        }
+    }
+
+    /// 测试专用：收紧后台时限与轮询间隔，让「到点回收」可以在秒级内断言。
+    #[cfg(test)]
+    pub(crate) fn with_test_timing(mut self, max_lifetime: Duration, poll: Duration) -> Self {
+        self.background_max_lifetime = max_lifetime;
+        self.background_poll_interval = poll;
+        self
+    }
+
     /// 池级回收：封闸（拒绝新执行）→ 清空池表 → 终止全部已 spawn 的子进程。
     ///
-    /// 与 `McpPool::kill_all` 同职：托盘「退出」不经过任何前端钩子，只靠运行结束/超时的
-    /// 自清理会留下一批仍在执行的 shell 子进程；退出序列在停 Node 之前调用
+    /// 与 `McpPool::kill_all` 同职：托盘「退出」不经过任何前端钩子，只靠运行结束/后台等待的
+    /// 自清理会留下一批仍在执行的 shell 子进程（含前台超时转入的后台任务）；退出序列在停 Node 之前调用
     /// （执行契约 §4.3 第 5 条）。可重复调用：封闸保持置位，空池上是 no-op。
     ///
     /// 竞态策略是「**先封新执行，再杀**」—— 闸门置位与池表清空在同一临界区完成，
@@ -82,12 +147,22 @@ impl BashPool {
     pub fn kill_all(&self) {
         // 锁中毒也要取出数据：退出收尾不能因为中毒放弃回收（与 McpPool::kill_all 同口径）。
         let drained: Vec<BashSlot> = {
-            let mut slots = self.0.lock().unwrap_or_else(|e| e.into_inner());
+            let mut slots = self.slots.lock().unwrap_or_else(|e| e.into_inner());
             // 先封闸、后清池，两个动作同锁；`run_bash` 的登记临界区要么整体在前
-            // （条目会被下面的 drain 带走并回收），要么整体在后（看到闸门拒绝执行）。
-            self.1.store(true, Ordering::SeqCst);
+            // （条目会被下面的 drain 带走并回收），要么整体在后（看到闸门拒绝执行）；
+            // 超时迁移在同一临界区检查闸门，不会在封闸后再产生后台任务。
+            self.sealed.store(true, Ordering::SeqCst);
             slots.drain().map(|(_, slot)| slot).collect()
         };
+        // 后台表同样 drain：它们仍是活着的子进程，退出序列必须一并回收
+        //（等待线程会看到进程结束并收尾自己的登记；无活动桥时结束事件按不重放丢弃）。
+        let background: Vec<BackgroundHandle> = self
+            .background
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .drain()
+            .map(|(_, handle)| handle)
+            .collect();
         // 在池锁之外逐个终止：每个最多等 2s，不该把池锁也占住（执行线程的守卫收尾要锁池）。
         let mut killed = 0usize;
         for slot in &drained {
@@ -96,21 +171,25 @@ impl BashPool {
                 killed += 1;
             }
         }
+        for handle in &background {
+            kill_slot_child(&handle.child);
+            killed += 1;
+        }
         if killed > 0 {
             rust_info!("应用退出: 已回收 {} 个 Bash 子进程", killed);
         }
     }
 
-    /// 退出闸门是否已封。只在持有池锁（字段 0）的临界区里读取：与 `kill_all` 的置位
+    /// 退出闸门是否已封。只在持有池锁的临界区里读取：与 `kill_all` 的置位
     /// 构成明确先后顺序（锁本身已提供同步，`SeqCst` 只是让这一点不依赖推理）。
     fn is_sealed(&self) -> bool {
-        self.1.load(Ordering::SeqCst)
+        self.sealed.load(Ordering::SeqCst)
     }
 }
 
 /// 终止池内一个已 spawn 的 bash 子进程，等待退出上限 2s（与 `McpPool` 的回收同口径）。
 ///
-/// 终止动作走 `kill_process_group`（超时 / 取消 / 宿主退出三处共用的唯一回收实现）。
+/// 终止动作走 `kill_process_group`（取消 / 宿主退出 / 后台时限到点三处共用的唯一回收实现）。
 fn kill_slot_child(child: &Arc<Mutex<Child>>) {
     // 执行线程持有同一把 child 锁轮询 try_wait；这里短暂持锁，毒锁同样恢复处理。
     let mut guard = child.lock().unwrap_or_else(|e| e.into_inner());
@@ -125,7 +204,7 @@ fn kill_slot_child(child: &Arc<Mutex<Child>>) {
     rust_warn!("Bash 子进程未在 2s 内退出, 已放弃等待");
 }
 
-/// 终止一个 bash 子进程的**整个进程组** —— 超时、取消、宿主退出三处回收的唯一实现。
+/// 终止一个 bash 子进程的**整个进程组** —— 取消、宿主退出与后台时限到点三处回收的唯一实现。
 ///
 /// Unix：命令 spawn 时自成进程组（`process_group(0)`，组长 = 自身 pid），这里用 `killpg`
 /// 一次回收直接子进程与派生的孙进程（osascript 弹窗、`sleep … &`、构建工具链）—— 只
@@ -167,8 +246,8 @@ fn kill_process_group(child: &mut Child) -> std::io::Result<()> {
 
 /// 池条目守卫：`Drop` 时删条目。
 ///
-/// `run_bash` 有多条 `?` 提前返回（cwd 校验、临时文件创建、spawn、超时、读取输出、
-/// spill 构建）——只在成功与超时路径上显式 `remove` 一定会漏，而残条会让后续同 id 的
+/// `run_bash` 有多条提前返回（cwd 校验、临时文件创建、spawn、取消、读取输出、
+/// spill 构建）——只在成功与转后台路径上显式 `remove` 一定会漏，而残条会让后续同 id 的
 /// `bash_exec` 被误判成「已取消」。交给守卫后，条目何时消失只由函数作用域决定。
 struct PoolGuard {
     pool: BashPool,
@@ -179,7 +258,7 @@ impl Drop for PoolGuard {
     fn drop(&mut self) {
         // 守卫不能失败：锁中毒也要恢复出来把条目删掉，否则残条会一直留在池里。
         self.pool
-            .0
+            .slots
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .remove(&self.execution_id);
@@ -207,6 +286,7 @@ pub fn run_bash(
     max_bytes: Option<usize>,
     max_lines: Option<usize>,
     spill: Option<bool>,
+    session_id: Option<String>,
 ) -> AppResult<BashResult> {
     enforce_bash_policy(&command)?;
     // 调用方未提供执行 ID 时按进程号生成一个临时 ID（仅用于进程表登记与临时文件名）。
@@ -225,7 +305,7 @@ pub fn run_bash(
     // 已存在的同 id 槽不覆盖（`or_insert`）：槽上可能已经压着一次取消立案，
     // 覆盖它就是把这枚取消丢回静默状态 —— 正是本任务要消除的失败形态。
     {
-        let mut slots = pool.0.lock().map_err(|_| "Bash 状态锁损坏")?;
+        let mut slots = pool.slots.lock().map_err(|_| "Bash 状态锁损坏")?;
         // 退出闸门与登记同锁检查：`kill_all` 在同一把锁内封闸并清空池表。
         // 本临界区先到 → 条目会被回收的 drain 取走（未 spawn 的由回填点按
         // 「条目消失 ⇒ 已取消」收口）；闸门先到 → 这里直接拒绝。
@@ -257,7 +337,7 @@ pub fn run_bash(
     // 关死后交互式命令立即读到 EOF 失败 —— 暴露快、不占超时。需要用户确认/输入的场合走
     // 计划确认面板（模型向指引的落点见 TS 侧 tool/local/bash-timeout.ts）。
     cmd.stdin(Stdio::null());
-    // Unix：命令自成进程组（组长 = 自身 pid），超时 / 取消 / 宿主退出统一按组回收
+    // Unix：命令自成进程组（组长 = 自身 pid），取消 / 宿主退出 / 后台时限到点统一按组回收
     // （见 kill_process_group）；Windows 由 taskkill /T 承担同一职责。
     #[cfg(unix)]
     {
@@ -292,7 +372,7 @@ pub fn run_bash(
     ));
     // 回填句柄并取回取消标记：spawn 前到达的取消在这里收口。
     let cancel_requested = {
-        let mut slots = pool.0.lock().map_err(|_| "Bash 状态锁损坏")?;
+        let mut slots = pool.slots.lock().map_err(|_| "Bash 状态锁损坏")?;
         match slots.get_mut(&execution_id) {
             Some(slot) => {
                 slot.child = Some(Arc::clone(&child));
@@ -311,7 +391,14 @@ pub fn run_bash(
     }
 
     let timeout = Duration::from_millis(timeout_ms.unwrap_or(DEFAULT_BASH_TIMEOUT_MS));
+    let effective_max_bytes = max_bytes.unwrap_or(DEFAULT_MAX_OUTPUT_BYTES);
+    let effective_max_lines = max_lines.unwrap_or(DEFAULT_MAX_OUTPUT_LINES);
     let started = Instant::now();
+    // L1 进展证据（体检报告 §4.2）：每 ~1s 探一次两路输出长度；`last_output_at` 只在长度
+    // 真的变化时推进 —— 「静默」是证据不是判据，合法的长静默命令客观存在。
+    let mut last_output_at = started;
+    let mut produced_bytes = 0usize;
+    let mut last_probe = started;
     let status = loop {
         let status = child
             .lock()
@@ -321,49 +408,130 @@ pub fn run_bash(
         if let Some(status) = status {
             break status;
         }
+        let now = Instant::now();
+        if now.duration_since(last_probe) >= OUTPUT_PROBE_INTERVAL {
+            last_probe = now;
+            if let Some(total) = output_probe(&stdout_path, &stderr_path) {
+                if total != produced_bytes {
+                    produced_bytes = total;
+                    last_output_at = now;
+                }
+            }
+        }
         if started.elapsed() >= timeout {
-            // 超时回收走进程组：只杀直接子进程会留下孙进程（见 kill_process_group）。
-            let mut guard = child.lock().unwrap_or_else(|e| e.into_inner());
-            let _ = kill_process_group(&mut guard);
-            // 临时文件交给 `temps` 守卫清理，池条目交给 `_guard`
-            return Err(AppError::Timeout);
+            // 超时**不再杀进程**（2026-10-06 用户裁决）：转后台继续跑，完成时经宿主事件
+            // 通知（见 run_background_waiter）；本次结果带上现场证据与输出尾部返回，
+            // 不再出现「超时后什么都拿不到」。
+            //
+            // 进程可能恰好在到达这里前结束：按正常完成走（读到真实退出码），不转后台。
+            let exited = child
+                .lock()
+                .map_err(|_| "Bash 进程锁损坏")?
+                .try_wait()
+                .map_err(|e| format!("等待命令失败: {e}"))?;
+            if let Some(status) = exited {
+                break status;
+            }
+            let elapsed_ms = now.duration_since(started).as_millis() as u64;
+            let silent_ms = now.duration_since(last_output_at).as_millis() as u64;
+            // 超时现场先读尾部窗口（读失败按空输出继续转后台：不能因为读不到现场就把进程丢下）。
+            let collected = match collect_captured_output(
+                &stdout_path,
+                &stderr_path,
+                &execution_id,
+                effective_max_bytes,
+                effective_max_lines,
+                false,
+            ) {
+                Ok(collected) => collected,
+                Err(error) => {
+                    rust_warn!("bash 超时现场读取输出失败（按空输出继续转后台）: {error}");
+                    CollectedOutput::empty()
+                }
+            };
+            let produced_bytes = produced_bytes.max(collected.raw_bytes) as u64;
+            // 迁移到后台表：与退出闸门同临界区检查（已封闸 = 正在退出，不再产生后台任务）。
+            // 锁顺序固定「前台 → 后台」（见 BashPool 注释）。
+            let migrated = {
+                let mut slots = pool.slots.lock().map_err(|_| "Bash 状态锁损坏")?;
+                if pool.is_sealed() {
+                    false
+                } else {
+                    slots.remove(&execution_id);
+                    pool.background
+                        .lock()
+                        .map_err(|_| "Bash 状态锁损坏")?
+                        .insert(
+                            execution_id.clone(),
+                            BackgroundHandle {
+                                child: Arc::clone(&child),
+                            },
+                        );
+                    true
+                }
+            };
+            if !migrated {
+                // 宿主正在退出：进程已由（或即将由）kill_all 回收，按取消如实结束。
+                let mut guard = child.lock().unwrap_or_else(|e| e.into_inner());
+                let _ = kill_process_group(&mut guard);
+                return Err(AppError::Cancelled);
+            }
+            // 输出文件归等待线程所有：解除守卫，不再随本函数作用域删除。
+            temps.disarm();
+            let task = BackgroundTask {
+                child: Arc::clone(&child),
+                command,
+                execution_id: execution_id.clone(),
+                session_id,
+                stdout_path: stdout_path.clone(),
+                stderr_path: stderr_path.clone(),
+                started,
+                max_bytes: effective_max_bytes,
+                max_lines: effective_max_lines,
+            };
+            let waiter_pool = pool.clone();
+            std::thread::spawn(move || run_background_waiter(waiter_pool, task));
+            let captured = collected.captured;
+            return Ok(BashResult {
+                exit_code: -1,
+                output: captured.output,
+                total_bytes: captured.total_bytes,
+                total_lines: captured.total_lines,
+                output_bytes: captured.output_bytes,
+                output_lines: captured.output_lines,
+                truncated: captured.truncated,
+                truncated_by: captured.truncated_by,
+                last_line_partial: captured.last_line_partial,
+                spill_path: None,
+                max_bytes: effective_max_bytes,
+                max_lines: effective_max_lines,
+                timed_out: true,
+                backgrounded: true,
+                elapsed_ms,
+                silent_ms,
+                produced_bytes,
+            });
         }
         std::thread::sleep(BASH_POLL_INTERVAL);
     };
 
-    let max_bytes = max_bytes.unwrap_or(DEFAULT_MAX_OUTPUT_BYTES);
-    let max_lines = max_lines.unwrap_or(DEFAULT_MAX_OUTPUT_LINES);
-    let stdout_window = read_tail_window(&stdout_path, max_bytes)?;
-    let stderr_window = read_tail_window(&stderr_path, max_bytes)?;
-    let (stdout_bytes, stderr_bytes) = (stdout_window.stats.bytes, stderr_window.stats.bytes);
-    let (text, stats, starts_at_line_start, window_clipped) =
-        combine_windows(stdout_window, stderr_window);
-    let captured = truncate_output(
-        &text,
-        &stats,
-        starts_at_line_start,
-        window_clipped,
-        max_bytes,
-        max_lines,
-    );
-
-    // 只在「确实截断了」且调用方要求 spill 时才留全量文件：
-    // 没有截断时留一份与 output 完全相同的副本，纯属占地方。
-    let spill_path = if captured.truncated && spill.unwrap_or(false) {
-        let path = build_spill(
-            &stdout_path,
-            &stderr_path,
-            &execution_id,
-            stdout_bytes,
-            stderr_bytes,
-        )?;
+    let elapsed_ms = started.elapsed().as_millis() as u64;
+    let silent_ms = Instant::now()
+        .duration_since(last_output_at)
+        .as_millis() as u64;
+    let collected = collect_captured_output(
+        &stdout_path,
+        &stderr_path,
+        &execution_id,
+        effective_max_bytes,
+        effective_max_lines,
+        spill.unwrap_or(false),
+    )?;
+    if collected.spill_path.is_some() {
+        // 全量输出已搬进 spill 文件，原临时文件不该再删（与旧实现的 disarm 条件一致）。
         temps.disarm();
-        evict_old_spills();
-        Some(path.to_string_lossy().into_owned())
-    } else {
-        None
-    };
-
+    }
+    let captured = collected.captured;
     Ok(BashResult {
         exit_code: status.code().unwrap_or(-1),
         output: captured.output,
@@ -374,10 +542,195 @@ pub fn run_bash(
         truncated: captured.truncated,
         truncated_by: captured.truncated_by,
         last_line_partial: captured.last_line_partial,
-        spill_path,
+        spill_path: collected
+            .spill_path
+            .map(|path| path.to_string_lossy().into_owned()),
+        max_bytes: effective_max_bytes,
+        max_lines: effective_max_lines,
+        timed_out: false,
+        backgrounded: false,
+        elapsed_ms,
+        silent_ms,
+        produced_bytes: collected.raw_bytes as u64,
+    })
+}
+
+/// 探测两路输出文件的当前长度之和；任一 stat 失败返回 `None` —— 保留上一次的进度记录，
+/// 不把「读不到」误报成「没有输出」。只用于证据，不参与任何判定。
+fn output_probe(stdout: &Path, stderr: &Path) -> Option<usize> {
+    let stdout_len = std::fs::metadata(stdout).ok()?.len() as usize;
+    let stderr_len = std::fs::metadata(stderr).ok()?.len() as usize;
+    Some(stdout_len + stderr_len)
+}
+
+/// 一次输出的完整收集（前台结算与后台通知共用）：尾部窗口 → 合成 → 内联片段；
+/// `allow_spill` 且确实截断时把全量输出搬进 spill 文件并返回路径。
+struct CollectedOutput {
+    captured: CapturedOutput,
+    spill_path: Option<PathBuf>,
+    /// 两路输出的原始总字节数（与探针同口径：不合成、不加上拼接换行）。
+    raw_bytes: usize,
+}
+
+impl CollectedOutput {
+    /// 现场读取失败时的诚实空值（转后台路径不能因为读不到输出就丢下进程）。
+    fn empty() -> Self {
+        Self {
+            captured: CapturedOutput::default(),
+            spill_path: None,
+            raw_bytes: 0,
+        }
+    }
+}
+
+fn collect_captured_output(
+    stdout_path: &Path,
+    stderr_path: &Path,
+    execution_id: &str,
+    max_bytes: usize,
+    max_lines: usize,
+    allow_spill: bool,
+) -> AppResult<CollectedOutput> {
+    let stdout_window = read_tail_window(stdout_path, max_bytes)?;
+    let stderr_window = read_tail_window(stderr_path, max_bytes)?;
+    let (stdout_bytes, stderr_bytes) = (stdout_window.stats.bytes, stderr_window.stats.bytes);
+    let raw_bytes = stdout_bytes + stderr_bytes;
+    let (text, stats, starts_at_line_start, window_clipped) =
+        combine_windows(stdout_window, stderr_window);
+    let captured = truncate_output(
+        &text,
+        &stats,
+        starts_at_line_start,
+        window_clipped,
         max_bytes,
         max_lines,
+    );
+    // 只在「确实截断了」且调用方要求 spill 时才留全量文件：
+    // 没有截断时留一份与 output 完全相同的副本，纯属占地方。
+    let spill_path = if captured.truncated && allow_spill {
+        let path = build_spill(stdout_path, stderr_path, execution_id, stdout_bytes, stderr_bytes)?;
+        evict_old_spills();
+        Some(path)
+    } else {
+        None
+    };
+    Ok(CollectedOutput {
+        captured,
+        spill_path,
+        raw_bytes,
     })
+}
+
+/// 前台超时后接管的任务描述（等待线程私有；池里只登记子进程句柄，见 `BackgroundHandle`）。
+struct BackgroundTask {
+    child: Arc<Mutex<Child>>,
+    command: String,
+    execution_id: String,
+    session_id: Option<String>,
+    stdout_path: PathBuf,
+    stderr_path: PathBuf,
+    started: Instant,
+    max_bytes: usize,
+    max_lines: usize,
+}
+
+/// 后台等待线程：进程退出（或到后台时限被回收）→ 收集输出与证据 → 投递结束事件 → 清账。
+///
+/// 每个后台任务一条线程（超时是低频事件），随任务结束自然回收。宿主退出由 `kill_all`
+/// 杀进程组；等待线程看到进程结束照常收尾（此时无活动桥，结束事件按「不重放」丢弃并留痕）。
+fn run_background_waiter(pool: BashPool, task: BackgroundTask) {
+    let mut last_output_at = task.started;
+    let mut produced_bytes = 0usize;
+    let mut last_probe = task.started;
+    let (end, exit_code) = loop {
+        let waited = task
+            .child
+            .lock()
+            .map(|mut child| child.try_wait())
+            .unwrap_or_else(|e| e.into_inner().try_wait());
+        match waited {
+            Ok(Some(status)) => break (BackgroundCommandEnd::Exited, status.code()),
+            Ok(None) => {}
+            Err(error) => {
+                // 观测通道坏了：继续轮询也拿不到结论，按已结束如实收尾（exitCode 未知）。
+                rust_warn!("后台 bash 等待失败（按已结束收尾）: {error}");
+                break (BackgroundCommandEnd::Exited, None);
+            }
+        }
+        let now = Instant::now();
+        if now.duration_since(last_probe) >= OUTPUT_PROBE_INTERVAL {
+            last_probe = now;
+            if let Some(total) = output_probe(&task.stdout_path, &task.stderr_path) {
+                if total != produced_bytes {
+                    produced_bytes = total;
+                    last_output_at = now;
+                }
+            }
+        }
+        if task.started.elapsed() >= pool.background_max_lifetime {
+            let mut guard = task.child.lock().unwrap_or_else(|e| e.into_inner());
+            let _ = kill_process_group(&mut guard);
+            rust_warn!(
+                "后台 bash 到达时限（{:?}），已按进程组回收: {}",
+                pool.background_max_lifetime,
+                task.execution_id
+            );
+            break (BackgroundCommandEnd::CapReached, None);
+        }
+        std::thread::sleep(pool.background_poll_interval);
+    };
+    let finished_at = Instant::now();
+    let duration_ms = finished_at.duration_since(task.started).as_millis() as u64;
+    let silent_ms = finished_at.duration_since(last_output_at).as_millis() as u64;
+    // 输出收集与前台路径同口径；后台任务始终允许 spill —— 完成通知只带尾部窗口，
+    // 截断时留全量文件是用户取回完整输出的唯一通道。
+    let collected = match collect_captured_output(
+        &task.stdout_path,
+        &task.stderr_path,
+        &task.execution_id,
+        task.max_bytes,
+        task.max_lines,
+        true,
+    ) {
+        Ok(collected) => collected,
+        Err(error) => {
+            rust_warn!("后台 bash 输出收集失败（按空输出通知）: {error}");
+            CollectedOutput::empty()
+        }
+    };
+    // spill 已把 stdout 搬走（rename），这里的清理只对残留文件生效；无文件时是 no-op。
+    cleanup_temp_outputs(&task.stdout_path, &task.stderr_path);
+    let produced_bytes = produced_bytes.max(collected.raw_bytes) as u64;
+    pool.background
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .remove(&task.execution_id);
+    let finished = BackgroundCommandFinished {
+        execution_id: task.execution_id.clone(),
+        session_id: task.session_id.clone(),
+        command_preview: task
+            .command
+            .chars()
+            .take(BACKGROUND_COMMAND_PREVIEW_CHARS)
+            .collect(),
+        exit_code,
+        duration_ms,
+        reason: end,
+        silent_ms,
+        produced_bytes,
+        output_tail: collected.captured.output,
+        spill_path: collected
+            .spill_path
+            .map(|path| path.to_string_lossy().into_owned()),
+    };
+    match &pool.events {
+        Some(sink) => sink.emit(HostEvent::BackgroundCommandFinished(finished)),
+        // 无出口 = 没有消费者（测试宿主或不经宿主的直调）：照常收尾，如实留痕。
+        None => rust_warn!(
+            "后台 bash 已结束，但池未装配事件出口，完成通知无处投递: {}",
+            task.execution_id
+        ),
+    }
 }
 
 // 旧的内联策略已移入 bash_policy.rs：
@@ -393,7 +746,7 @@ pub fn run_bash(
 /// `false` = 池里没有这个 id 的槽 —— 子进程可能已经结束，调用方据此区分
 /// 「取消成功」与「取消来晚了」，不再把两者混成一个静默的 `Ok(())`。
 pub fn cancel_in_pool(pool: &BashPool, execution_id: &str) -> AppResult<bool> {
-    let mut slots = pool.0.lock().map_err(|_| "Bash 状态锁损坏")?;
+    let mut slots = pool.slots.lock().map_err(|_| "Bash 状态锁损坏")?;
     match slots.get_mut(execution_id) {
         Some(slot) => match slot.child.as_ref() {
             Some(child) => {
@@ -423,7 +776,7 @@ fn cleanup_temp_outputs(stdout: &Path, stderr: &Path) {
 
 /// 临时输出文件的清理守卫。
 ///
-/// 提前返回的路径（超时、读取失败、`?` 传播）如果只靠显式调用，很容易漏掉清理；
+/// 提前返回的路径（取消、读取失败、`?` 传播）如果只靠显式调用，很容易漏掉清理；
 /// 交给 `Drop` 之后，成功与失败都走同一条收尾逻辑。
 struct TempOutputs<'a> {
     stdout: &'a Path,
@@ -525,6 +878,7 @@ fn evict_old_spills() {
     }
 }
 
+#[derive(Default)]
 pub(crate) struct CapturedOutput {
     pub(crate) output: String,
     pub(crate) total_bytes: usize,
@@ -764,4 +1118,16 @@ pub struct BashResult {
     /// 让「上限是多少」只有 Rust 一处定义，前端不复制第二份默认值。
     max_bytes: usize,
     max_lines: usize,
+    /// 是否以前台预算收尾：`true` 表示命令超过调用方给的 `timeoutMs`、已转入后台
+    /// （**未终止**，见 `backgrounded`），本次结果带上现场证据。
+    pub(crate) timed_out: bool,
+    /// 是否已转入后台继续执行（结果返回时进程仍在跑；`timed_out` 为 true 的子集）。
+    pub(crate) backgrounded: bool,
+    /// 从启动到本次结果的时长（毫秒）。
+    pub(crate) elapsed_ms: u64,
+    /// 本次结果产生时距最近一次输出增长（从未有输出时从启动算起）的静默时长（毫秒）。
+    /// L1 证据：用于区分「慢但在动」与「疑似挂死」，不参与任何判定。
+    pub(crate) silent_ms: u64,
+    /// 两路输出的原始总字节数（不合成、不截断）。
+    pub(crate) produced_bytes: u64,
 }

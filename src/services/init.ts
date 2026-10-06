@@ -149,9 +149,17 @@ async function runDomainBootstrap(): Promise<void> {
   // （setMonitorEnabled 是既有开关入口，内含行为采集启停，不另建第二入口）。
   const { initWindowObservation } = await import("@/services/window")
   await initWindowObservation()
-  log.info("10/11 窗口观察就绪")
+  log.info("10/12 窗口观察就绪")
 
-  // ── 11. 主动陪伴与静默了解调度启动 ──
+  // ── 11. 后台命令完成通知（前台超时转后台的任务终点）──
+  // 宿主在后台任务结束 / 到点回收后投 `bash-background-finished`；这里接线：订阅 +
+  // 完成通知写聊天系统消息（`session/messages.ts` 的 pushSystemMessage —— 唯一展示
+  // 通道，不新造 UI）。没有事件通道的宿主由接线内部识别并跳过留痕（与窗口观察同判据）。
+  const { initBackgroundCommandNotifier } = await import("@/services/tool")
+  initBackgroundCommandNotifier()
+  log.info("11/12 后台命令完成通知就绪")
+
+  // ── 12. 主动陪伴与静默了解调度启动 ──
   // 顺序是刻意的：setMonitorEnabled(...) → startProactive() → startSilentUnderstanding()
   // （紧邻两次同步 start；窗口观察/观察总闸在其前，快捷键注册等 UI 接线在其后）。
   // 这两次 start 全仓只有本调用点：scanner.start() 是唯一置 started 并订阅窗口观察的
@@ -163,7 +171,7 @@ async function runDomainBootstrap(): Promise<void> {
   const { startSilentUnderstanding } = await import("@/services/observation")
   // 静默了解内部按 ai.silentAccess.frequency 判定（off 档不启动也不报错）。
   startSilentUnderstanding()
-  log.info("11/11 主动陪伴与静默了解调度就绪")
+  log.info("12/12 主动陪伴与静默了解调度就绪")
 
   log.info("──── 初始化完成 ────")
 }

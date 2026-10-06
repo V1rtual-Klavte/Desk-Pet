@@ -9,8 +9,8 @@
 //
 // 被测行为：
 //   · memory_overview 的 scope 值域校验与 scopeId 补全失败的如实拒绝；行投影
-//     （截断、pinned 标记、作业行）；
-//   · memory_item_detail 的详情/历史投影与两类来源审计文案；
+//     （截断、pinned 标记、派生条目的来源标记、作业行）；
+//   · memory_item_detail 的详情/历史投影与两类来源审计文案（派生条目含来源类别行）；
 //   · memory_item_change 的 actor 固定 user_ui、update 合并与「没有改动」拒绝、
 //     forget 的提交与 revision 发布；
 //   · memory_source_evidence / memory_maintenance / memory_restore 的成功与拒绝分支
@@ -21,7 +21,7 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest"
 
 import { initConfig } from "@/services/config"
-import { subscribeMemoryRevision } from "@/services/agent/memory"
+import { DERIVED_PROVENANCE_MARK, subscribeMemoryRevision } from "@/services/agent/memory"
 import { setHostBridge } from "@/services/host"
 import type { HostBridge } from "@/services/host"
 import { dispatchHostRequest } from "@/services/native-ui"
@@ -252,6 +252,23 @@ describe("memory_overview（库总览）", () => {
     expect(payload.jobs[0]!.subtitle).toBe("作业 job-1 · revision 5 · 已处理 12 条")
   })
 
+  it("派生条目（系统观察）在行副标题带来源标记，用户条目原样 [native-ui-memory-derived-label]", async () => {
+    fixtures.listItems = [
+      memoryItem({
+        id: "mem-derived",
+        version: 1,
+        origin: "derived_behavior",
+        draft: { ...memoryItem().draft, kind: "fact", summary: "常在深夜活跃", pinned: false },
+      }),
+      memoryItem({ id: "mem-user", origin: "user" }),
+    ]
+    const payload = (await dispatchHostRequest("memory_overview", { scope: "user" })) as {
+      items: Array<{ id: string; subtitle: string }>
+    }
+    expect(payload.items[0]!.subtitle).toBe(`fact · user · v1 · ${DERIVED_PROVENANCE_MARK}`)
+    expect(payload.items[1]!.subtitle).toBe("preference · user · v3 · 核心画像")
+  })
+
   it("标题截断：超长摘要截到 160 字符带省略号，空白折叠；短文本原样", async () => {
     const longSummary = "长".repeat(200)
     fixtures.listItems = [
@@ -324,6 +341,21 @@ describe("memory_item_detail（条目详情与历史）", () => {
     expect(payload.history[0]!.subtitle).toContain("user/trusted_user · event ev-1 · session s-1 · entry e-1 · seq 4")
     expect(payload.history[0]!.subtitle).toContain("sha256 abc123")
     expect(payload.history[1]!.subtitle).toContain("来源审计已不可用。")
+  })
+
+  it("派生条目（系统观察）详情带来源类别行，用户条目不带 [native-ui-memory-derived-detail]", async () => {
+    fixtures.detail = memoryItem({
+      id: "mem-1",
+      version: 1,
+      origin: "derived_behavior",
+      draft: { ...memoryItem().draft, kind: "fact", content: "常在深夜活跃", summary: "常在深夜活跃", pinned: false },
+    })
+    const derived = (await dispatchHostRequest("memory_item_detail", { id: "mem-1" })) as { info: string }
+    expect(derived.info.split("\n")).toContain(`来源类别：${DERIVED_PROVENANCE_MARK}`)
+
+    fixtures.detail = memoryItem({ origin: "user" })
+    const user = (await dispatchHostRequest("memory_item_detail", { id: "mem-1" })) as { info: string }
+    expect(user.info).not.toContain("来源类别")
   })
 })
 

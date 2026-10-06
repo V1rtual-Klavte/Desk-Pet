@@ -210,10 +210,10 @@ pub struct StatusSnapshot {
 // 面板状态（W8b）
 // ==========================================
 
-/// 计划确认等待上限（毫秒）。与 Node `plan-confirmation.ts::PLAN_CONFIRM_TIMEOUT_MS`
-/// 同值：Node 是结算的真相源，这里仅用于**本地收起**卡住的确认面板
-/// （超时结算与系统消息由 Node 自己写；UI 超时不发回执，见 `expire_deadlines`）。
-pub const PLAN_CONFIRM_TIMEOUT_MS: u64 = 5 * 60 * 1000;
+// 决策类面板（计划确认 / 权限确认 / 提问）**没有本地等待期限**（2026-10-06 用户裁决：
+// 选择类弹窗不留超时，用户想多久想多久）。原先的 `PLAN_CONFIRM_TIMEOUT_MS` 本地期限与
+// 权限请求 `expiresAt` 换算的期限随本轮删除 —— 面板只在收到 Node 的结算（回执 / 收起
+// 事件 / 会话切换）时才消失，本地不替用户做决定。
 
 /// 计划步骤显示态（`status=None` = 尚未收到进度 = 待执行）。
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -242,6 +242,16 @@ pub struct StepGateView {
     pub error: Option<String>,
 }
 
+/// 提问（`ask_user`）面板显示态：问题 + 选项。「其它」/「取消」是面板的固定按钮，
+/// 不进入本结构（不是模型给的选项，语义也不同）。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ChoiceView {
+    pub request_id: String,
+    pub session_id: String,
+    pub question: String,
+    pub options: Vec<String>,
+}
+
 /// 计划确认/执行面板显示态。
 #[derive(Debug, Clone, PartialEq)]
 pub struct PlanView {
@@ -259,7 +269,8 @@ pub struct PlanView {
     pub gate: Option<StepGateView>,
 }
 
-/// 权限确认显示态（只呈现与回传，不做任何判定）。
+/// 权限确认显示态（只呈现与回传，不做任何判定）。没有有效期字段：等待本身没有超时
+///（2026-10-06 用户裁决：选择类弹窗不留超时），「有效期至」一行随 `format_expiry` 退场。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PermissionView {
     pub request_id: String,
@@ -271,7 +282,6 @@ pub struct PermissionView {
     pub effect_class: Option<String>,
     pub input_hash: Option<String>,
     pub policy_hash: Option<String>,
-    pub expires_at: Option<i64>,
 }
 
 /// 队列显示态（整帧来自 `TranscriptProjection.queue`；不在 UI 侧记账）。
@@ -468,14 +478,15 @@ pub struct ChatModel {
     stream_revision: u64,
     status_revision: u64,
     // ── W8b 面板状态 ──
-    /// 计划确认/执行面板（`deskpet-plan-*` 事件驱动）。
+    /// 计划确认/执行面板（`deskpet-plan-*` 事件驱动）。没有本地期限：收起只由
+    /// `deskpet-plan-end` / 面板动作的本地过渡 / 会话切换驱动。
     plan: Option<PlanView>,
-    /// 确认阶段的收纳期限（单调毫秒；执行阶段不设本地期限，见 `expire_deadlines`）。
-    plan_deadline: Option<u64>,
-    /// 权限确认面板（`deskpet-permission-confirm` 事件驱动）。
+    /// 权限确认面板（`deskpet-permission-confirm` 事件驱动）。没有本地期限
+    /// （2026-10-06 用户裁决：选择类弹窗不留超时）。
     permission: Option<PermissionView>,
-    /// 权限请求的本地收纳期限（由请求的 `expiresAt` 换算成单调毫秒）。
-    permission_deadline: Option<u64>,
+    /// 待答提问面板（`deskpet-choice-*` 事件驱动）。按 requestId 键控的**多条**
+    /// 待答（同一工具批次可并发多个提问，刻意不设单槽）；没有本地期限。
+    choices: Vec<ChoiceView>,
     /// 待处置计划（投影整帧提供）。
     recovered_plans: Vec<super::projection::ProjectedRecoveredPlan>,
     queue: QueueState,
@@ -578,9 +589,10 @@ impl ChatModel {
             // 队列/中断/待处置计划的收口不在这里重复：它们是随帧权威字段，
             // 由下方「缺省即清空」的分支统一处理。
             self.plan = None;
-            self.plan_deadline = None;
             self.permission = None;
-            self.permission_deadline = None;
+            // 提问面板同口径：切会话即收起（Node 侧已按 session_switched 结算，
+            // `deskpet-choice-end` 是它的兜底；UI 不回执、不复活结算）。
+            self.choices.clear();
             self.slash.partial = None;
             self.slash.selected = 0;
             self.delivery = None;
@@ -781,8 +793,9 @@ impl ChatModel {
             // - 同一会话的权限确认随回合 signal abort 在 Node 侧按 deny 结算，UI 收起；
             // - 执行中的计划本应收到 `deskpet-plan-end`，这里只兜底收起「计划已随回合
             //   结束但结束事件丢失」的执行面板（计划状态以会话为准，不影响任何后续动作）。
-            //   确认阶段（未执行）不在这里收起：它的归宿是本地等待期限（见 `expire_deadlines`），
-            //   提前收起会在「上一回合收尾与新计划确认几乎同时到达」的竞态里误伤新面板。
+            //   确认阶段（未执行）不在这里收起：它是「等用户拍板」的面板，归宿是 Node 的
+            //   结算事件（没有本地期限）；提前收起会在「上一回合收尾与新计划确认几乎同时
+            //   到达」的竞态里误伤新面板。
             let _ = self.drop_stale_permission_for(session_id);
             let _ = self.drop_stale_executing_plan_for(session_id);
         }
@@ -798,13 +811,12 @@ impl ChatModel {
             .unwrap_or(false);
         if stale {
             self.plan = None;
-            self.plan_deadline = None;
             self.panel_revision += 1;
         }
         stale
     }
 
-    /// 回合收尾兜底：收起属于该会话的权限确认（Node 已按 signal abort / TTL 拒绝）。
+    /// 回合收尾兜底：收起属于该会话的权限确认（Node 已按 signal abort 拒绝结算）。
     fn drop_stale_permission_for(&mut self, session_id: &str) -> bool {
         let stale = self
             .permission
@@ -813,7 +825,6 @@ impl ChatModel {
             .unwrap_or(false);
         if stale {
             self.permission = None;
-            self.permission_deadline = None;
             self.panel_revision += 1;
         }
         stale
@@ -921,7 +932,8 @@ impl ChatModel {
     // ==========================================
 
     /// `deskpet-plan-start`：装填待确认计划（只接受当前会话的载荷，与 PlanConfirm
-    /// 面板的 `sessionId !== getActiveSessionId()` 过滤同义）。
+    /// 面板的 `sessionId !== getActiveSessionId()` 过滤同义）。没有本地期限：
+    /// 面板一直等用户拍板，归宿只来自 Node 的结算事件（2026-10-06 用户裁决）。
     pub fn plan_start(
         &mut self,
         session_id: String,
@@ -929,7 +941,6 @@ impl ChatModel {
         steps: Vec<super::events::PlanStepWire>,
         complexity: u32,
         force_step_by_step: bool,
-        now_ms: u64,
     ) -> bool {
         if self.active_session.as_deref() != Some(session_id.as_str()) {
             return false;
@@ -954,8 +965,6 @@ impl ChatModel {
             current_index: 0,
             gate: None,
         });
-        // 确认阶段的本地等待期限（Node 侧结算超时；这里只保证面板不永久卡住）。
-        self.plan_deadline = Some(now_ms + PLAN_CONFIRM_TIMEOUT_MS);
         self.panel_revision += 1;
         true
     }
@@ -1029,19 +1038,17 @@ impl ChatModel {
             .unwrap_or(false);
         if matches {
             self.plan = None;
-            self.plan_deadline = None;
             self.panel_revision += 1;
         }
         matches
     }
 
-    /// 确认回执派发成功后进入执行态（面板继续显示进度；确认阶段的期限撤下）。
+    /// 确认回执派发成功后进入执行态（面板继续显示进度）。
     pub fn plan_begin_executing(&mut self) -> bool {
         let Some(plan) = self.plan.as_mut() else {
             return false;
         };
         plan.executing = true;
-        self.plan_deadline = None;
         self.panel_revision += 1;
         true
     }
@@ -1052,7 +1059,6 @@ impl ChatModel {
             return false;
         }
         self.plan = None;
-        self.plan_deadline = None;
         self.panel_revision += 1;
         true
     }
@@ -1092,14 +1098,10 @@ impl ChatModel {
     // 权限确认面板
     // ==========================================
 
-    /// 装填一条权限确认请求。`deadline_ms` 是由请求 `expiresAt` 换算的单调毫秒
-    /// （None = 请求未给出有效期，只按会话切换/回合收尾/用户答复收口）。
+    /// 装填一条权限确认请求。**没有本地期限**：面板一直等用户答复，归宿只来自
+    /// Node 的结算（回执派发的本地过渡 / 会话切换 / 投影驱动的收起）。
     /// 同一时刻只保留一条（与 `confirmState` 的单槽语义一致）：新请求替换旧请求。
-    pub fn permission_request(
-        &mut self,
-        request: super::events::PermissionConfirmRequest,
-        deadline_ms: Option<u64>,
-    ) -> bool {
+    pub fn permission_request(&mut self, request: super::events::PermissionConfirmRequest) -> bool {
         self.permission = Some(PermissionView {
             request_id: request.request_id,
             message: request.message,
@@ -1110,9 +1112,7 @@ impl ChatModel {
             effect_class: request.effect_class,
             input_hash: request.input_hash,
             policy_hash: request.policy_hash,
-            expires_at: request.expires_at,
         });
-        self.permission_deadline = deadline_ms;
         self.panel_revision += 1;
         true
     }
@@ -1126,7 +1126,6 @@ impl ChatModel {
             .unwrap_or(false);
         if matches {
             self.permission = None;
-            self.permission_deadline = None;
             self.panel_revision += 1;
         }
         matches
@@ -1135,6 +1134,68 @@ impl ChatModel {
     /// 当前权限面板的只读视图。
     pub fn permission(&self) -> Option<&PermissionView> {
         self.permission.as_ref()
+    }
+
+    // ==========================================
+    // 提问（ask_user）面板
+    // ==========================================
+
+    /// `deskpet-choice-start`：装填一条待答提问（只接受当前会话的载荷，与计划确认
+    /// 面板同款过滤）。同 requestId 重入按替换处理（结算真相源在 Node）。没有本地期限：
+    /// 面板一直等用户回答，归宿只来自 Node 的结算事件（2026-10-06 用户裁决）。
+    pub fn choice_start(
+        &mut self,
+        session_id: String,
+        request_id: String,
+        question: String,
+        options: Vec<String>,
+    ) -> bool {
+        if self.active_session.as_deref() != Some(session_id.as_str()) {
+            return false;
+        }
+        self.choices.retain(|choice| choice.request_id != request_id);
+        self.choices.push(ChoiceView {
+            request_id,
+            session_id,
+            question,
+            options,
+        });
+        self.panel_revision += 1;
+        true
+    }
+
+    /// `deskpet-choice-end`：按 requestId 收起提问面板（校验会话归属；幂等）。
+    pub fn choice_end(&mut self, session_id: &str, request_id: &str) -> bool {
+        let matches = self
+            .choices
+            .iter()
+            .any(|choice| choice.request_id == request_id && choice.session_id == session_id);
+        if !matches {
+            return false;
+        }
+        self.choice_remove(request_id)
+    }
+
+    /// 按 requestId 收起一条提问面板（回执派发成功后的本地过渡 / `choice_end` 共用；
+    /// 幂等 —— 重复的收起不产生显示变化）。
+    pub fn choice_remove(&mut self, request_id: &str) -> bool {
+        let before = self.choices.len();
+        self.choices.retain(|choice| choice.request_id != request_id);
+        if self.choices.len() == before {
+            return false;
+        }
+        self.panel_revision += 1;
+        true
+    }
+
+    /// 该 requestId 是否仍待答（面板动作派发前的身份核对）。
+    pub fn choice_pending(&self, request_id: &str) -> bool {
+        self.choices.iter().any(|choice| choice.request_id == request_id)
+    }
+
+    /// 当前待答提问的只读视图（测试与平台断言用）。
+    pub fn choices(&self) -> &[ChoiceView] {
+        &self.choices
     }
 
     // ==========================================
@@ -1461,54 +1522,23 @@ impl ChatModel {
 
     /// 最早到期的本地期限（单调毫秒；平台层据此布一次定时器）。
     ///
-    /// 三个期限同类：计划确认、权限确认与中性通知的自动收起。
+    /// 只剩**中性通知的自动收起**一个期限：计划确认 / 权限确认 / 待答提问都没有本地
+    /// 期限（2026-10-06 用户裁决：选择类弹窗不留超时，用户想多久想多久；归宿只来自
+    /// Node 的结算事件）。`expire_deadlines` 因此只会收起通知。
     pub fn next_deadline_ms(&self) -> Option<u64> {
-        [
-            self.plan_deadline,
-            self.permission_deadline,
-            self.notice_deadline,
-        ]
-        .into_iter()
-        .flatten()
-        .min()
+        self.notice_deadline
     }
 
-    /// 到点收纳：计划确认面板按超时收起（Node 自行按 timeout 结算，UI **不回执**）；
-    /// 权限确认面板按到期收起（Node 侧 TTL 按拒绝结算，UI **不回执**）；
-    /// 中性通知到点自动隐藏（旧壳 4 秒隐藏同义）。
+    /// 到点收纳：中性通知到点自动隐藏（旧壳 4 秒隐藏同义）。决策类面板不在这里收起
+    /// —— 它们只由 Node 的结算事件/面板动作的本地过渡/会话切换驱动。
     /// 返回是否需要一次刷新（可能只是状态位变化）。
     pub fn expire_deadlines(&mut self, now_ms: u64) -> bool {
         let mut changed = false;
-        let mut panels_changed = false;
-        if matches!(self.plan_deadline, Some(deadline) if now_ms >= deadline) {
-            // 只有仍在确认阶段的面板才有本地期限（执行阶段的期限在开始执行时撤下）。
-            self.plan = None;
-            self.plan_deadline = None;
-            self.write_notice(
-                Some(super::panels::NOTICE_PLAN_CONFIRM_TIMEOUT.to_string()),
-                now_ms,
-            );
-            changed = true;
-            panels_changed = true;
-        }
-        if matches!(self.permission_deadline, Some(deadline) if now_ms >= deadline) {
-            self.permission = None;
-            self.permission_deadline = None;
-            self.write_notice(
-                Some(super::panels::NOTICE_PERMISSION_EXPIRED.to_string()),
-                now_ms,
-            );
-            changed = true;
-            panels_changed = true;
-        }
         if matches!(self.notice_deadline, Some(deadline) if now_ms >= deadline) {
             self.notice_deadline = None;
             self.status.notice = None;
             self.status_revision += 1;
             changed = true;
-        }
-        if panels_changed {
-            self.panel_revision += 1;
         }
         changed
     }
@@ -1602,12 +1632,13 @@ impl ChatModel {
 // ==========================================
 
 impl ChatModel {
-    /// 当前应显示的全部面板（按自上而下的顺序：会话历史 → 权限 → 计划 → 待处置 →
+    /// 当前应显示的全部面板（按自上而下的顺序：会话历史 → 权限 → 提问 → 计划 → 待处置 →
     /// 中断 → 队列 → 用量 → 调试条 → 投递 → slash 候选；slash 候选紧挨输入区）。
     pub fn panel_views(&self) -> Vec<super::panels::PanelView> {
         let mut views = Vec::new();
         self.push_session_history_panel(&mut views);
         self.push_permission_panel(&mut views);
+        self.push_choice_panels(&mut views);
         self.push_plan_panel(&mut views);
         self.push_recovered_plan_panels(&mut views);
         self.push_interrupted_panel(&mut views);
@@ -1834,16 +1865,14 @@ impl ChatModel {
                 text: params.to_string(),
             });
         }
-        // 绑定信息：会话 / 代际 / 有效期 / 策略与参数指纹（精确参数/策略/有效期/会话/代际）。
+        // 绑定信息：会话 / 代际 / 策略与参数指纹（精确参数/策略/会话/代际）。
+        // 没有「有效期」一项：等待本身没有超时（2026-10-06 用户裁决）。
         let mut parts: Vec<String> = Vec::new();
         if let Some(session) = permission.session_id.as_deref() {
             parts.push(format!("会话 {session}"));
         }
         if let Some(generation) = permission.run_generation {
             parts.push(format!("代际 {generation}"));
-        }
-        if let Some(expiry) = super::panels::format_expiry(permission.expires_at) {
-            parts.push(format!("有效期至 {expiry}"));
         }
         if let Some(policy) = super::panels::short_hash(permission.policy_hash.as_deref()) {
             parts.push(format!("策略 #{policy}"));
@@ -1864,6 +1893,48 @@ impl ChatModel {
         ]));
         view = view.card(blocks);
         out.push(view);
+    }
+
+    /// 提问（`ask_user`）面板：问题 + 选项 +「其它」/「取消」。
+    ///
+    /// 「其它」与「取消」是面板的固定按钮（不来自模型参数）：前者收起面板、焦点回
+    /// 输入框，用户下一条消息就是自由回答；后者按用户取消如实收尾。选项、「其它」、
+    /// 「取消」共用一个按钮流（连续声明聚成并排一组、放不下自动换行）：选项与「其它」
+    /// 是 chip，「取消」是文字链 —— 点「选项」与点「放弃回答」在视觉上区分得开。
+    fn push_choice_panels(&self, out: &mut Vec<super::panels::PanelView>) {
+        use super::panels::{PanelAction, PanelKind, PanelLineStyle, PanelView};
+        for choice in &self.choices {
+            let mut view = PanelView::new(PanelKind::Choice);
+            // 问题按显式换行逐行摆放：面板行是单行控件，长问题里的换行不该被压成一行
+            // （空行跳过，全空文本由调用方保证不出现——准入要求 question 非空）。
+            for line in choice.question.split('\n') {
+                if !line.trim().is_empty() {
+                    view = view.line(PanelLineStyle::Normal, line.trim());
+                }
+            }
+            for (index, option) in choice.options.iter().enumerate() {
+                view = view.button(
+                    option.clone(),
+                    PanelAction::ChoicePick {
+                        request_id: choice.request_id.clone(),
+                        index,
+                    },
+                );
+            }
+            view = view.button(
+                "其它（自己回答）",
+                PanelAction::ChoiceOther {
+                    request_id: choice.request_id.clone(),
+                },
+            );
+            view = view.link_button(
+                "取消",
+                PanelAction::ChoiceCancel {
+                    request_id: choice.request_id.clone(),
+                },
+            );
+            out.push(view);
+        }
     }
 
     fn push_interrupted_panel(&self, out: &mut Vec<super::panels::PanelView>) {
@@ -3257,17 +3328,14 @@ mod tests {
             vec![plan_step(1, "第一步"), plan_step(2, "第二步")],
             3,
             false,
-            1_000,
         ));
         let plan = model.plan().expect("计划面板已装填");
         assert!(!plan.executing);
         assert_eq!(plan.total, 2);
-        assert_eq!(
-            model.next_deadline_ms(),
-            Some(1_000 + PLAN_CONFIRM_TIMEOUT_MS)
-        );
+        // 没有本地期限（2026-10-06 用户裁决：选择类弹窗不留超时）。
+        assert_eq!(model.next_deadline_ms(), None);
 
-        // 确认 → 执行态；确认阶段期限撤下。
+        // 确认 → 执行态。
         assert!(model.plan_begin_executing());
         assert_eq!(model.next_deadline_ms(), None);
 
@@ -3309,14 +3377,13 @@ mod tests {
     fn 非当前会话与不匹配计划的事件被丢弃() {
         let mut model = ChatModel::new();
         model.apply_projection(projection("s1", vec![]));
-        assert!(!model.plan_start("s2".into(), "p".into(), vec![], 1, false, 0));
+        assert!(!model.plan_start("s2".into(), "p".into(), vec![], 1, false));
         assert!(model.plan_start(
             "s1".into(),
             "p1".into(),
             vec![plan_step(1, "一")],
             1,
             false,
-            0,
         ));
         // 另一个 planId 的进度不改本面板。
         assert!(!model.plan_progress(
@@ -3332,29 +3399,19 @@ mod tests {
     }
 
     #[test]
-    fn 确认阶段到期收起且不回执() {
+    fn 确认阶段没有本地期限久等不收起() {
+        // 2026-10-06 用户裁决：选择类弹窗不留超时。时钟推进 10 分钟（远超旧的 5 分钟
+        // 本地期限）后面板仍在 —— 重新引入本地期限这条立即红。
         let mut model = ChatModel::new();
         model.apply_projection(projection("s1", vec![]));
-        model.plan_start(
-            "s1".into(),
-            "p1".into(),
-            vec![plan_step(1, "一")],
-            1,
-            false,
-            10_000,
-        );
-        assert!(!model.expire_deadlines(10_000 + PLAN_CONFIRM_TIMEOUT_MS - 1));
-        assert!(model.plan().is_some(), "未到期不收起");
-        assert!(model.expire_deadlines(10_000 + PLAN_CONFIRM_TIMEOUT_MS));
-        assert!(model.plan().is_none());
-        assert_eq!(
-            model.status_snapshot().notice.as_deref(),
-            Some(super::super::panels::NOTICE_PLAN_CONFIRM_TIMEOUT)
-        );
+        model.plan_start("s1".into(), "p1".into(), vec![plan_step(1, "一")], 1, false);
+        assert!(!model.expire_deadlines(10 * 60 * 1000));
+        assert!(model.plan().is_some(), "计划确认面板被本地期限收起了");
+        assert_eq!(model.next_deadline_ms(), None, "计划确认不该再有本地期限");
     }
 
     #[test]
-    fn 权限面板装填答复与到期() {
+    fn 权限面板装填答复且没有本地期限() {
         let mut model = ChatModel::new();
         model.apply_projection(projection("s1", vec![]));
         let request = super::super::events::PermissionConfirmRequest {
@@ -3368,37 +3425,17 @@ mod tests {
             input_hash: Some("abcdef123456".into()),
             policy_hash: Some("123456abcdef".into()),
             tool_call_id: Some("tc1".into()),
-            expires_at: Some(2_000),
         };
-        assert!(model.permission_request(request, Some(500)));
-        assert_eq!(model.next_deadline_ms(), Some(500));
+        assert!(model.permission_request(request));
+        assert_eq!(model.next_deadline_ms(), None, "权限面板不该再有本地期限");
 
-        // 用户答复派发成功 → 面板收起。
+        // 久等不收起（10 分钟；旧实现在 5 分钟本地期限处收起并写超时通知）。
+        assert!(!model.expire_deadlines(10 * 60 * 1000));
+        assert!(model.permission().is_some(), "权限面板被本地期限收起了");
+
+        // 用户答复派发成功 → 面板收起（归宿只在结算事件上）。
         assert!(model.permission_decided("r1"));
         assert!(model.permission().is_none());
-        assert_eq!(model.next_deadline_ms(), None);
-
-        // 到期收纳（第二条请求）。
-        let request = super::super::events::PermissionConfirmRequest {
-            request_id: "r2".into(),
-            message: "再确认".into(),
-            tool_name: "bash".into(),
-            session_id: Some("s1".into()),
-            run_generation: Some(3),
-            parameter_summary: None,
-            effect_class: None,
-            input_hash: None,
-            policy_hash: None,
-            tool_call_id: None,
-            expires_at: Some(9_999),
-        };
-        model.permission_request(request, Some(700));
-        assert!(model.expire_deadlines(700));
-        assert!(model.permission().is_none());
-        assert_eq!(
-            model.status_snapshot().notice.as_deref(),
-            Some(super::super::panels::NOTICE_PERMISSION_EXPIRED)
-        );
     }
 
     #[test]
@@ -3416,9 +3453,8 @@ mod tests {
             input_hash: Some("abcdef123456".into()),
             policy_hash: Some("123456abcdef".into()),
             tool_call_id: Some("tc1".into()),
-            expires_at: Some(2_000),
         };
-        assert!(model.permission_request(request, Some(500)));
+        assert!(model.permission_request(request));
         let views = model.panel_views();
         let view = views
             .iter()
@@ -3444,6 +3480,57 @@ mod tests {
     }
 
     #[test]
+    fn 提问面板生命周期与按钮构成() {
+        let mut model = ChatModel::new();
+        model.apply_projection(projection("s1", vec![]));
+        // 非当前会话的载荷被丢弃（与计划确认同款过滤）。
+        assert!(!model.choice_start("s2".into(), "choice-x".into(), "问题".into(), vec!["甲".into()]));
+        assert!(model.choice_start(
+            "s1".into(),
+            "choice-c1".into(),
+            "喝什么？\n选一个".into(),
+            vec!["咖啡".into(), "茶".into()],
+        ));
+
+        let views = model.panel_views();
+        let choice = views
+            .iter()
+            .find(|view| view.kind == super::super::panels::PanelKind::Choice)
+            .expect("提问面板存在");
+        // 选项 + 「其它」 + 「取消」三个按钮都在（其它/取消是面板固定件，不来自模型参数）。
+        let labels: Vec<&str> = view_buttons(&choice).iter().map(|b| b.label.as_str()).collect();
+        assert_eq!(labels, vec!["咖啡", "茶", "其它（自己回答）", "取消"]);
+        // 问题按显式换行逐行摆放。
+        let lines: Vec<&str> = choice
+            .blocks
+            .iter()
+            .filter_map(|block| match block {
+                super::super::panels::PanelBlock::Line { text, .. } => Some(text.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(lines, vec!["喝什么？", "选一个"]);
+
+        // 并发多条：两条待答并存，逐条收起；面板按 requestId 定位。
+        assert!(model.choice_start(
+            "s1".into(),
+            "choice-c2".into(),
+            "第二个问题".into(),
+            vec!["A".into(), "B".into()],
+        ));
+        assert_eq!(model.choices().len(), 2, "并发提问应逐条并存（刻意不设单槽）");
+        assert!(model.choice_remove("choice-c1"));
+        assert_eq!(model.choices().len(), 1);
+        assert!(model.choice_pending("choice-c2"));
+
+        // end 事件按会话 + requestId 收起；重复/迟到是幂等 no-op。
+        assert!(!model.choice_end("s2", "choice-c2"), "别的会话的收尾不动作");
+        assert!(model.choice_end("s1", "choice-c2"));
+        assert!(!model.choice_end("s1", "choice-c2"), "迟到的重复收尾是 no-op");
+        assert!(!model.choice_pending("choice-c2"));
+    }
+
+    #[test]
     fn 切会话清空计划与权限并对齐队列() {
         let mut model = ChatModel::new();
         model.apply_projection(projection("s1", vec![]));
@@ -3453,7 +3540,6 @@ mod tests {
             vec![plan_step(1, "一")],
             1,
             false,
-            0,
         );
         let request = super::super::events::PermissionConfirmRequest {
             request_id: "r1".into(),
@@ -3466,9 +3552,8 @@ mod tests {
             input_hash: None,
             policy_hash: None,
             tool_call_id: None,
-            expires_at: None,
         };
-        model.permission_request(request, None);
+        model.permission_request(request);
 
         let mut frame = projection("s2", vec![]);
         frame.queue = Some(super::super::projection::ProjectedQueue {
@@ -3495,9 +3580,9 @@ mod tests {
             vec![plan_step(1, "一")],
             1,
             false,
-            0,
         );
-        // 确认阶段的计划不因回合收尾被误收（期限在管）。
+        // 确认阶段的计划不因回合收尾被误收（它是「等用户拍板」的面板，没有本地期限，
+        // 也不随「运行结束」消失 —— Node 的结算事件才是它的归宿）。
         model.set_run_state("s1", false);
         assert!(model.plan().is_some());
         // 执行中的计划在回合收尾时兜底收起。
@@ -3653,7 +3738,6 @@ mod tests {
             vec![plan_step(1, "一")],
             3,
             false,
-            0,
         );
         let views = model.panel_views();
         let plan = views
@@ -3668,7 +3752,7 @@ mod tests {
 
         // 强制逐步：没有「全部执行」。
         model.plan_dismiss();
-        model.plan_start("s1".into(), "p2".into(), vec![], 1, true, 0);
+        model.plan_start("s1".into(), "p2".into(), vec![], 1, true);
         let views = model.panel_views();
         let plan = views
             .iter()

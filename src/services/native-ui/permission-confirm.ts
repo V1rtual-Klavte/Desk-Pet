@@ -20,8 +20,9 @@
 // `resolvePermissionConfirm` 也只结算既有单槽（身份不匹配即丢弃，结算域只结算一次）。
 //
 // 失败语义：
-//   · 请求下发失败（UI 收不到本次确认）→ 只留痕，不阻断确认流程：本次确认由
-//     Node 侧 TTL 到期按拒绝结算（fail-closed，既有语义）；
+//   · 请求下发失败（UI 收不到本次确认）→ 立即按拒绝结算（fail-closed）：等待本身没有
+//     超时（2026-10-06 用户裁决），「送不到」是显式逃生口 —— 不能让回合悬挂在一个
+//     谁也没看见的请求上；
 //   · 回执的 decision 取值非法（协议违规）→ 丢弃并留痕，不结算（不让非法取值
 //     有把待确认请求结算成非拒绝决定的机会）；
 //   · 回执与当前待确认请求身份不匹配（迟到/重复/未知）→ 丢弃（no-op），
@@ -53,7 +54,6 @@ export function permissionConfirmPayload(pending: ConfirmRequest): PermissionCon
     sessionId: pending.sessionId,
     runGeneration: pending.runGeneration,
     parameterSummary: pending.parameterSummary,
-    expiresAt: pending.expiresAt,
     effectClass: pending.effectClass,
     inputHash: pending.inputHash,
     policyHash: pending.policyHash,
@@ -77,19 +77,22 @@ export function startPermissionConfirmBridge(): void {
       () => confirmState.pending,
       (pending) => {
         if (!pending) return
+        // 下发失败 = 面板根本没送到：按拒绝立即结算（fail-closed）—— 确认的等待本身没有
+        // 超时（2026-10-06 用户裁决），「送不到」就必须有显式归宿，不能把回合悬挂在
+        // 一个谁也没看见的请求上。身份先核对：等待期间确认可能已被替换/结算，
+        // 结算域只结算一次，不误伤新请求。
+        const settleDenyOnDeliveryFailure = (error: unknown) => {
+          log.warn("权限确认请求下发失败（等不到界面应答），按拒绝结算:", formatError(error))
+          if (confirmState.pending?.id === pending.id) resolvePermissionConfirm("deny")
+        }
         try {
-          void publishUiEvent("deskpet-permission-confirm", permissionConfirmPayload(pending)).catch(
-            (error) => {
-              // UI 收不到本次确认：Node 侧 TTL 到期按拒绝结算（fail-closed，既有语义）。
-              // 留痕但不阻断确认流程 —— 确认方仍可由进程内路径（测试宿主通道）应答。
-              log.warn("权限确认请求下发失败（UI 可能收不到本次确认）:", formatError(error))
-            },
-          )
+          void publishUiEvent("deskpet-permission-confirm", permissionConfirmPayload(pending))
+            .catch(settleDenyOnDeliveryFailure)
         } catch (error) {
-          // 端口未注入等同步抛：与异步失败同一归宿 —— 只留痕，绝不让投影失败反噬确认流程
+          // 端口未注入等同步抛：与异步失败同一归宿 —— 结算后绝不让投影失败反噬确认流程
           //（watch 是同步 flush，同步抛会沿着 confirmState 赋值把 requestPermissionConfirm
-          // 的 Promise 一起炸掉）。
-          log.warn("权限确认请求下发失败（UI 可能收不到本次确认）:", formatError(error))
+          // 的 Promise 一起炸掉；这里先结算掉再返回，异常不出这个回调）。
+          settleDenyOnDeliveryFailure(error)
         }
       },
       { flush: "sync", immediate: true },

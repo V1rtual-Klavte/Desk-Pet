@@ -1504,6 +1504,12 @@ impl crate::host::EventSink for BridgeEventSink {
                     serde_json::to_value(payload).unwrap_or(Value::Null),
                 )
             }
+            // 后台命令结束：载荷本身即线形状（host/mod.rs 的 serde 属性是唯一定义点；
+            // TS 侧 `BashBackgroundFinishedPayload` 与它逐字对齐）。
+            crate::host::HostEvent::BackgroundCommandFinished(finished) => (
+                "bash-background-finished",
+                serde_json::to_value(finished).unwrap_or(Value::Null),
+            ),
         };
         if let Err(err) = self.bridge.publish_event(name, payload, self.scope.clone()) {
             crate::rust_warn!("{name} 事件投递失败: {err}");

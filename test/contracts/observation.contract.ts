@@ -79,6 +79,20 @@
 // engine/harness/index.ts（新增 readLastConversationPromptTokens 导出；ob-07 的负向缺席名
 // 复核仍无命中）。ob-01..ob-09 逐点核对实现点仍在、覆盖描述与当前实现一致，未修订覆盖点，
 // sourceHash 按当前工作区源码复算（同时含并行工作线在非本契约文件上的改动）。
+// 2026-10-06 提问选择与去超时批次（本批刷新）：sourceFiles 变化仅限
+// `src/services/engine/harness/runtime.ts` 的注释面（NON_CONFIRM_CONTEXT 去掉确认超时一支）。
+// 各覆盖点逐条核对实现点仍在、描述与当前实现一致；sourceHash 按当前源码复算。
+// 2026-10-06 派生行为结论沉淀批次（本批刷新）：sourceFiles 变化 —— memory/ipc.ts（两个记忆
+// 命令的可选 origin 参数与 MemoryOrigin 类型导出；派生来源的登记与整理按类别分池）与
+// proactive/store.rs（清画像事务追加派生记忆失效）。了解层与话题链的读取、写入、降级与清除
+// 水位语义未动；各覆盖点逐条核对实现点仍在、描述与当前实现一致；sourceHash 按当前源码复算
+//（同批含另会话在飞改动）。
+// 2026-10-06 记忆面板来源标签批次（本批刷新）：sourceFiles 变化仅限
+// src/services/agent/memory/index.ts —— 导出面 barrel 转出 DERIVED_PROVENANCE_MARK（原生 UI
+// 记忆面板复用召回投影的同一枚呈现标记，不新增跨窗口协调入口）。ob-07 的负向缺席名
+// （initMemoryRevisionSync / requestProactiveControl / initObservationGovernance /
+// stopObservationGovernance / initWindowListener）复核仍无命中（对应测试文件已实跑绿）；
+// 其余 ob-* 逐点核对实现点仍在、描述与当前实现一致；sourceHash 按当前源码复算。
 import type { ModuleContract } from "../host/types"
 
 export const observationContract: ModuleContract = {
@@ -133,7 +147,7 @@ export const observationContract: ModuleContract = {
     "test/integration/observation/了解层与话题来源.test.ts",
     "test/e2e/scenes/observation/静默访问关闭边界.scene.ts",
   ],
-  sourceHash: "976fb22818645800fcfc59f86b1cdbc926b339550babc42d11a6cff93b5d9396",
+  sourceHash: "5269441dee43fe99f8033f7f2d9bd0fe3347eedc1e91080fa2f3b734ad8a67c0",
   coverage: [
     {
       id: "ob-01",

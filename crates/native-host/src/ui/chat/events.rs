@@ -228,12 +228,40 @@ struct PlanEndPayload {
 }
 
 // ==========================================
+// 向用户提问（`deskpet-choice-*`；`ask_user` 工具）
+// ==========================================
+
+/// 一次待答提问（镜像 `HostEventMap["deskpet-choice-start"]`；生产者
+/// `engine/choice-confirmation.ts::requestChoice`）。`requestId` 由工具调用 id 派生：
+/// 同一会话可并发多条（刻意不设单槽，与计划确认不同）。
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+struct ChoiceStartPayload {
+    session_id: String,
+    request_id: String,
+    question: String,
+    options: Vec<String>,
+}
+
+/// 提问收尾（镜像 `HostEventMap["deskpet-choice-end"]`；生产者 `notifyChoiceEnd`）：
+/// UI 按 `requestId` 收起对应面板（幂等；用户点选时面板已由回执的本地过渡收起）。
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+struct ChoiceEndPayload {
+    session_id: String,
+    request_id: String,
+}
+
+// ==========================================
 // 权限确认请求（`deskpet-permission-confirm`；见文件头说明）
 // ==========================================
 
 /// 权限确认请求（镜像 `src/services/safety/permission.ts::PermissionRequest` 的
 /// 展示子集 + `confirm.ts::ConfirmRequest` 的应答键）。UI 只呈现与回传用户选择，
 /// **不做任何权限判定** —— `PermissionKernel` 终裁在 Node。
+///
+/// **没有 `expiresAt`**（2026-10-06 用户裁决：选择类弹窗不留超时）：面板等用户想多久
+/// 想多久，「面板没送到」由 Node 按拒绝立即结算（`native-ui/permission-confirm.ts`）。
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct PermissionConfirmRequest {
@@ -260,9 +288,6 @@ pub struct PermissionConfirmRequest {
     pub policy_hash: Option<String>,
     #[serde(default)]
     pub tool_call_id: Option<String>,
-    /// 确认到期的绝对时间（epoch 毫秒；Node 侧 TTL）。
-    #[serde(default)]
-    pub expires_at: Option<i64>,
 }
 
 /// 聊天窗消费的宿主/领域事件（子弹式枚举，直接可用）。
@@ -327,6 +352,18 @@ pub enum ChatEvent {
     PlanEnd {
         session_id: String,
         reason: PlanEndReason,
+    },
+    /// `deskpet-choice-start`：待答提问（面板另配「其它」/「取消」两个固定按钮）。
+    ChoiceStart {
+        session_id: String,
+        request_id: String,
+        question: String,
+        options: Vec<String>,
+    },
+    /// `deskpet-choice-end`：提问收尾（面板按 requestId 收起；幂等）。
+    ChoiceEnd {
+        session_id: String,
+        request_id: String,
     },
     /// `deskpet-permission-confirm`：权限确认请求（送达通道见文件头）。
     PermissionConfirm(PermissionConfirmRequest),
@@ -429,6 +466,22 @@ impl ChatEvent {
                 ChatEvent::PlanEnd {
                     session_id: payload.session_id,
                     reason: payload.reason,
+                }
+            }
+            "deskpet-choice-start" => {
+                let payload: ChoiceStartPayload = parse(payload, name)?;
+                ChatEvent::ChoiceStart {
+                    session_id: payload.session_id,
+                    request_id: payload.request_id,
+                    question: payload.question,
+                    options: payload.options,
+                }
+            }
+            "deskpet-choice-end" => {
+                let payload: ChoiceEndPayload = parse(payload, name)?;
+                ChatEvent::ChoiceEnd {
+                    session_id: payload.session_id,
+                    request_id: payload.request_id,
                 }
             }
             "deskpet-permission-confirm" => {
@@ -678,7 +731,7 @@ mod tests {
     fn 权限确认请求解析且缺省字段容忍() {
         let event = ChatEvent::from_wire(
             "deskpet-permission-confirm",
-            r#"{"requestId":"r1","message":"“bash” 将执行 external_side_effect 操作","toolName":"bash","parameterSummary":"command=ls","expiresAt":1234}"#,
+            r#"{"requestId":"r1","message":"“bash” 将执行 external_side_effect 操作","toolName":"bash","parameterSummary":"command=ls"}"#,
         )
         .unwrap()
         .unwrap();
@@ -688,11 +741,48 @@ mod tests {
         assert_eq!(request.request_id, "r1");
         assert_eq!(request.tool_name, "bash");
         assert_eq!(request.parameter_summary.as_deref(), Some("command=ls"));
-        assert_eq!(request.expires_at, Some(1234));
         assert!(request.session_id.is_none());
 
         let error =
             ChatEvent::from_wire("deskpet-permission-confirm", r#"{"message":"x"}"#).unwrap_err();
+        assert!(error.to_string().contains("解析失败"), "文案：{error}");
+    }
+
+    #[test]
+    fn 提问事件按冻结载荷解析() {
+        let event = ChatEvent::from_wire(
+            "deskpet-choice-start",
+            r#"{"sessionId":"s1","requestId":"choice-c1","question":"喝什么？","options":["咖啡","茶"]}"#,
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(
+            event,
+            ChatEvent::ChoiceStart {
+                session_id: "s1".into(),
+                request_id: "choice-c1".into(),
+                question: "喝什么？".into(),
+                options: vec!["咖啡".into(), "茶".into()],
+            }
+        );
+
+        let event = ChatEvent::from_wire(
+            "deskpet-choice-end",
+            r#"{"sessionId":"s1","requestId":"choice-c1"}"#,
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(
+            event,
+            ChatEvent::ChoiceEnd {
+                session_id: "s1".into(),
+                request_id: "choice-c1".into(),
+            }
+        );
+
+        // 缺字段如实报错（与其它事件同口径，不静默补默认值）。
+        let error =
+            ChatEvent::from_wire("deskpet-choice-start", r#"{"sessionId":"s1"}"#).unwrap_err();
         assert!(error.to_string().contains("解析失败"), "文案：{error}");
     }
 }

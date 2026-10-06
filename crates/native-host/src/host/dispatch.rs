@@ -492,6 +492,8 @@ impl NativeDispatcher {
                     arg_opt_usize(args, "maxBytes")?,
                     arg_opt_usize(args, "maxLines")?,
                     arg_opt_bool(args, "spill")?,
+                    // 发起会话（回传到后台完成事件、供完成通知落进正确会话）；缺省表示无归属。
+                    arg_opt_str(args, "sessionId")?,
                 )?;
                 ser(result)
             }
@@ -905,9 +907,13 @@ impl NativeDispatcher {
             "memory_job_sources" => ser(memory_commands::memory_job_sources(
                 self.memory()?,
                 arg_str(args, "jobId")?,
+                arg_opt_str(args, "origin")?,
             )?),
             "memory_pending_source_count" => Ok(Value::from(
-                memory_commands::memory_pending_source_count(self.memory()?)?,
+                memory_commands::memory_pending_source_count(
+                    self.memory()?,
+                    arg_opt_str(args, "origin")?,
+                )?,
             )),
             "memory_source_evidence" => ser(memory_commands::memory_source_evidence(
                 self.memory()?,

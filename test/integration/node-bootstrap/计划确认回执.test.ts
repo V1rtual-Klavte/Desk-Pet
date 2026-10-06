@@ -11,7 +11,7 @@
 //   · 回执方向按 planId 结算待确认计划；未知 planId 是 no-op（不误伤他人、不抛）；
 //   · 发布失败按 emit_failed 立即结算 —— UI 不可达不得伪装成「继续等待」。
 
-import { beforeAll, describe, expect, it } from "vitest"
+import { beforeAll, describe, expect, it, vi } from "vitest"
 
 import { setUiEventPublisher, setUiReceiptSource } from "@/services/host"
 import {
@@ -103,5 +103,35 @@ describe("计划确认回执", () => {
     expect(result).toEqual({ confirmed: false, reason: "emit_failed" })
     expect(planConfirmState.pending).toBeNull()
     installRecordingPublisher()
+  })
+
+  it("确认与步骤门都没有等待超时：假时钟推进十分钟仍待答 [plan-confirm-no-wait-timeout]", async () => {
+    // 2026-10-06 用户裁决：选择类弹窗不留超时。旧实现在 5 分钟处按 timeout 结算
+    //（并写「计划确认等待超时」系统消息），这条断言因此有区分力。
+    installRecordingPublisher()
+    vi.useFakeTimers()
+    try {
+      const confirm = requestPlanConfirm(PLAN, { sessionId: "s-receipt", planId: "p-hold" })
+      const gate = requestPlanStepDecision(STEP, undefined, { sessionId: "s-receipt", planId: "p-hold" })
+      let confirmSettled: unknown = "pending"
+      let gateSettled: unknown = "pending"
+      void confirm.then(value => { confirmSettled = value })
+      void gate.then(value => { gateSettled = value })
+
+      await vi.advanceTimersByTimeAsync(10 * 60 * 1000)
+
+      expect(confirmSettled, "计划确认在 10 分钟后被超时结算了").toBe("pending")
+      expect(gateSettled, "步骤门在 10 分钟后被超时结算了").toBe("pending")
+      expect(planConfirmState.pending?.planId, "待确认视图被超时清掉了").toBe("p-hold")
+      expect(planConfirmState.stepGate?.planId, "步骤门视图被超时清掉了").toBe("p-hold")
+
+      // 收尾：用回执结算，不留悬挂的确认与门。
+      receiveReceipt("deskpet-plan-confirm-resolved", { planId: "p-hold", result: { confirmed: false, reason: "user" } })
+      receiveReceipt("deskpet-plan-step-decision", { planId: "p-hold", decision: "abort" })
+      await expect(confirm).resolves.toEqual({ confirmed: false, reason: "user" })
+      await expect(gate).resolves.toBe("abort")
+    } finally {
+      vi.useRealTimers()
+    }
   })
 })

@@ -27,6 +27,7 @@ import { createLogger } from "@/services/logger"
 import { formatError, reportError } from "@/services/error"
 import { harnessSlots, readActiveAttemptAssociations } from "@/services/engine/harness"
 import { cancelSessionPlans } from "@/services/engine/plan-confirmation"
+import { cancelSessionChoices } from "@/services/engine/choice-confirmation"
 import { cancelSession as cancelHumanizerSession } from "@/services/humanizer"
 import { getMessageImagePaths, prepareImagePaths } from "@/services/images"
 import { getHostBridge } from "@/services/host"
@@ -206,7 +207,9 @@ export async function switchToSession(sessionId: string): Promise<void> {
   if (previousSessionId) {
     // 先取消旧会话的待确认计划（PLAN-04/FIX-32）：指针移动之前取消，文案才写进旧会话，
     // 用户也不会再对不可见的确认负责。执行期计划不受影响（计划继续跑，只是面板移出视图）。
+    // 待答提问（ask_user）同一口径：切走就不能再对不可见的提问负责。
     cancelSessionPlans(previousSessionId, "session_switched")
+    cancelSessionChoices(previousSessionId, "session_switched")
     invalidatePermissionScope(previousSessionId)
     saveUnanswered(previousSessionId, unansweredCount.value)
     // 释放是异步的（空闲回收器要读 lane 真相、可能真的关掉 Harness）：等它收口再切指针，
@@ -227,8 +230,9 @@ export async function createNewSession(): Promise<SessionMeta> {
   // 保存并归档当前
   const oldId = activeSessionId.value
   if (oldId) {
-    // 与 switchToSession 同款：新会话接管之前先取消旧会话的待确认计划
+    // 与 switchToSession 同款：新会话接管之前先取消旧会话的待确认计划与待答提问
     cancelSessionPlans(oldId, "session_switched")
+    cancelSessionChoices(oldId, "session_switched")
     invalidatePermissionScope(oldId)
     saveUnanswered(oldId, unansweredCount.value)
     // 同 switchToSession：等释放收口再建新会话，忙时请求登记在槽上由运行收尾回收。
@@ -256,8 +260,9 @@ export async function createNewSession(): Promise<SessionMeta> {
 
 /** 关闭标签（从列表移除，保留会话文件） */
 export function closeSession(sessionId: string): void {
-  // 会话不再活跃：它的待确认计划按 not_active 取消（不是「切会话」语义，文案与归宿都不同）
+  // 会话不再活跃：它的待确认计划与待答提问按 not_active 取消（不是「切会话」语义，文案与归宿都不同）
   cancelSessionPlans(sessionId, "not_active")
+  cancelSessionChoices(sessionId, "not_active")
   invalidatePermissionScope(sessionId)
   const idx = sessions.findIndex(item => item.id === sessionId)
   if (idx === -1) return

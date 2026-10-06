@@ -66,6 +66,7 @@ import type {
   MemoryItem,
   MemoryJob,
   MemoryJobListItem,
+  MemoryOrigin,
   MemoryRecallCandidateSnapshot,
   MemoryRestorePreview,
   MemoryScope,
@@ -104,7 +105,7 @@ import type { RuntimePathScope, RuntimePathsPayload } from "@/services/paths"
 import type { SimpleStageKey } from "@/services/personality"
 import type { RestoreResult } from "@/services/profile"
 import type { SkillCatalogFingerprint } from "@/services/skill"
-import type { PermitReclaim, PermitSnapshot } from "@/services/tool"
+import type { BashBackgroundFinishedPayload, PermitReclaim, PermitSnapshot } from "@/services/tool"
 import type { CaptureScreenshotResult, SavedScreenshotResult } from "@/services/tool/local/screenshot"
 import type { BashPayload, FileInfoPayload } from "@/services/tool/pi/native-execution-env"
 import type { RuntimeActivity, WindowObservation } from "@/services/window"
@@ -880,6 +881,9 @@ export type HostCommandMap = {
       maxLines?: number | null
       /** 截断时保留完整输出到文件并回传 spillPath。 */
       spill?: boolean | null
+      /** 发起会话（前台超时转后台后，完成事件按它回投「完成通知」落进正确会话）；
+       *  缺省 = 无会话归属，完成通知无展示位（Rust 侧如实留痕跳过）。 */
+      sessionId?: string | null
     }
     // W3b 清 TODO(W0)：BashPayload 已由 tool/pi/native-execution-env.ts 导出，矩阵 import 复用，
     //   不再冻结第二份同形结构。
@@ -1133,12 +1137,14 @@ export type HostCommandMap = {
   }
   memory_job_cancel: { args: { jobId: string; leaseOwner: string }; result: MemoryJob }
   memory_job_resume: { args: { jobId: string; leaseOwner: string }; result: MemoryJob }
-  memory_job_sources: { args: { jobId: string }; result: MemorySource[] }
+  /** origin 省略（null）= 两类来源都取；整理按类别开作业，不混池。 */
+  memory_job_sources: { args: { jobId: string; origin?: MemoryOrigin | null }; result: MemorySource[] }
   /**
    * 开作业前的只读前置查询：水位之后待处理来源数（与 `memory_job_sources` 同一水位判定）。
-   * 返回 0 时 dreaming 直接跳过本次整理，不创建 job、不动预算与租约。
+   * 返回 0 时 dreaming 直接跳过本次整理，不创建 job、不动预算与租约；
+   * origin 省略（null）= 两类来源合计。
    */
-  memory_pending_source_count: { args: Record<string, never>; result: number }
+  memory_pending_source_count: { args: { origin?: MemoryOrigin | null }; result: number }
   memory_source_evidence: { args: { sourceId: string }; result: MemorySource | null }
   /** 返回接受的候选条数。 */
   memory_candidates_add: {
@@ -1634,6 +1640,14 @@ export type HostEventMap = {
    */
   "window-observed": WindowObservation
   /**
+   * 后台命令结束（Rust `commands/tool_exec/bash.rs` 的等待线程 emit；只投 Node，
+   * 原生 UI 不呈现）。前台 bash 超过其预算时**不杀进程**、转后台继续跑；本事件是终点：
+   * 进程自行结束或到 30 分钟后台时限被进程组回收。消费方是
+   * `src/services/tool/background.ts` 的完成通知接线（聊天系统消息，`pushSystemMessage`）。
+   * 载荷类型逐字镜像 Rust `crates/native-host/src/host/mod.rs::BackgroundCommandFinished`。
+   */
+  "bash-background-finished": BashBackgroundFinishedPayload
+  /**
    * 光标位置推送（Rust commands/cursor.rs，仅坐标变化时发；~60fps）。
    * 消费方是原生 UI 的灵动图层渲染。**不应经 Node 转发** —— 60fps 穿 Node 只会
    * 加延迟；宿主侧只直投原生 UI（crates/native-host/src/host/events.rs），
@@ -1758,6 +1772,27 @@ export type HostEventMap = {
   /** 计划收尾（plan-confirmation.ts:352）。reason 的三种归宿由生产端保证。 */
   "deskpet-plan-end": { sessionId: string; reason: "done" | "failed" | "cancelled" }
 
+  // ── 向用户提问（`ask_user` 工具；Node → UI）──
+  /**
+   * 一次待答提问（生产者 `engine/choice-confirmation.ts::requestChoice`）。面板显示
+   * question 与 options，用户经回执 `UiReceiptMap["deskpet-choice-resolved"]` 作答；
+   * 面板额外提供「其它」（用户用自己的话回答 —— 自由原文以下一条消息到达，不随本
+   * 通道回传）与「取消」两个固定按钮，不需要模型声明。
+   * requestId 由工具调用 id 派生：同一会话可并发多条（与计划确认不同，刻意不设单槽）。
+   */
+  "deskpet-choice-start": {
+    sessionId: string
+    requestId: string
+    question: string
+    options: string[]
+  }
+  /**
+   * 提问收尾（生产者 `choice-confirmation.ts::notifyChoiceEnd`）：UI 按 requestId
+   * 收起对应面板。用户点选/「其它」时面板已由回执的本地过渡收起（这条是幂等兜底）；
+   * 超时、切会话、会话关闭、发射失败等归宿把面板收起来的就是它。
+   */
+  "deskpet-choice-end": { sessionId: string; requestId: string }
+
   // ── 权限确认（Node → UI；回执方向见 `UiReceiptMap`）──
   /**
    * 权限确认请求。生产者 = `src/services/native-ui/permission-confirm.ts` 对
@@ -1767,9 +1802,11 @@ export type HostEventMap = {
    * `"deskpet-permission-confirm-resolved"`。
    *
    * 字段是 `PermissionRequest` 的展示子集（camelCase，Rust `PermissionConfirmRequest`
-   * 逐字段同名）；`expiresAt` 是 Node 墙钟（epoch 毫秒），宿主换成本地面板期限，
-   * 已过期的晚到事件按丢弃处理。**权限终裁仍在 PermissionKernel**：UI 只呈现与回传
-   * 用户选择，不做任何判定，也不因此持有第二份授权状态。
+   * 逐字段同名）。**没有有效期字段**（2026-10-06 用户裁决：选择类弹窗不留超时）：
+   * 面板等用户想多久想多久，归宿只来自用户动作 / 取消信号 / 会话切换 / 下发失败
+   *（下发失败由桥按拒绝立即结算，见 `native-ui/permission-confirm.ts`）。
+   * **权限终裁仍在 PermissionKernel**：UI 只呈现与回传用户选择，不做任何判定，
+   * 也不因此持有第二份授权状态。
    */
   "deskpet-permission-confirm": {
     requestId: string
@@ -1782,7 +1819,6 @@ export type HostEventMap = {
     inputHash: string
     policyHash: string
     toolCallId: string
-    expiresAt: number
   }
 }
 

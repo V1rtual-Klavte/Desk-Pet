@@ -34,6 +34,9 @@
 // hz-01..hz-04 逐点核对实现点仍在（transformHumanizerText / humanizerSilenceGuard /
 // setFirstRevealHandler 与调度器行为未变）、覆盖描述与当前实现一致，未修订覆盖点；
 // 本轮为描述与来源核对（非逐行行为审计），sourceHash 按当前源码复算。
+// 2026-10-06 提问选择与去超时批次（本批刷新）：sourceFiles 变化仅限
+// `src/services/engine/harness/runtime.ts` 的注释面（NON_CONFIRM_CONTEXT 去掉确认超时一支）。
+// 各覆盖点逐条核对实现点仍在、描述与当前实现一致；sourceHash 按当前源码复算。
 import type { ModuleContract } from "../host/types"
 
 export const humanizerContract: ModuleContract = {
@@ -44,7 +47,7 @@ export const humanizerContract: ModuleContract = {
     "src/services/agent/runner.ts",
     "src/services/engine/harness/runtime.ts",
   ],
-  sourceHash: "67cd9acc3f6a44fcfbdc08e10f62ac712b55ceb99080394c8949454b26dfd94e",
+  sourceHash: "58cd7b165b0eb940e2f1fe304a6863395e03191fb9d3f4079b89ae387f7d217b",
   coverage: [
     {
       id: "hz-01",

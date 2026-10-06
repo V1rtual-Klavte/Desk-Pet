@@ -21,13 +21,14 @@ vi.mock("@/services/engine/runtime", () => ({ publishRuntimeTrace: vi.fn() }))
 vi.mock("@/services/logger", () => ({ createLogger: () => ({ warn: vi.fn() }) }))
 vi.mock("@/services/error", () => ({ formatError: (error: unknown) => String(error) }))
 
-import { sqliteMemoryProvider } from "@/services/agent/memory/provider"
+import { DERIVED_PROVENANCE_MARK, sqliteMemoryProvider } from "@/services/agent/memory/provider"
 import type { MemoryRecallRequest } from "@/services/agent/memory/provider"
-import type { MemoryItem } from "@/services/agent/memory/ipc"
+import type { MemoryItem, MemoryOrigin } from "@/services/agent/memory/ipc"
 
-function item(id: string, pinned = false, summary = `摘要${id}`): MemoryItem {
+function item(id: string, pinned = false, summary = `摘要${id}`, origin: MemoryOrigin = "user"): MemoryItem {
   return {
     id, version: 1, status: "active", createdAt: 1, updatedAt: 1,
+    origin,
     draft: {
       content: `完整事实${id}`, summary, kind: "fact", scope: "user", aliases: [], pinned,
       importance: 5, confidence: 1, observedAt: 1, sourceIds: [],
@@ -110,5 +111,14 @@ describe("本地与adaptive召回选择", () => {
     expect(mocks.completePiText).not.toHaveBeenCalled()
     expect(rows.map(row => row.sourceId)).toEqual(["expired-target@1"])
     expect(input.readRevision).toBe(10)
+  })
+
+  it("系统观察在投影里逐行可区分，不冒充用户事实 [derived-behavior-provenance-mark]", async () => {
+    configure([item("derived-1", false, "近一个月的活跃时段", "derived_behavior"), item("user-1")])
+    const rows = await sqliteMemoryProvider.recall(request())
+    const bySource = new Map(rows.map(row => [row.sourceId, row]))
+    expect(bySource.get("derived-1@1")!.origin, "投影丢了来源类别").toBe("derived_behavior")
+    expect(bySource.get("derived-1@1")!.provenance, "系统观察没有可区分的呈现标记").toBe(DERIVED_PROVENANCE_MARK)
+    expect(bySource.get("user-1@1")!.provenance, "用户事实被套上了系统观察标记").toMatch(/^memory:user/)
   })
 })

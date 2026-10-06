@@ -4874,6 +4874,11 @@ impl ChatContentController {
                 self.fill_input(&text);
                 crate::ui::chat::set_notice(None);
             }
+            // 提问「其它」：不改文本，只把焦点交回输入框（用户下一条消息就是自由回答）。
+            Ok(PanelOutcome::FocusInput) => {
+                self.focus_input();
+                crate::ui::chat::set_notice(None);
+            }
             Ok(PanelOutcome::None) => {
                 if local_display {
                     self.rebuild_from_model();

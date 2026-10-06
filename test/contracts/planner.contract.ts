@@ -42,8 +42,21 @@
 // caseId；pl-01..pl-12 逐点核对实现点仍在、覆盖描述与当前实现一致（自动入口的相位与通道
 // 未被改写），未修订覆盖点；sourceHash 按当前源码复算（含 plan-confirmation.ts 的导出与
 // 注释变化）。
+// 2026-10-06 提问选择与去超时批次（analyze→刷 hash）：sourceFiles 变化 —— 移出
+// `src/services/engine/plan/limits.ts`（PLAN_CONFIRM_TIMEOUT_MS 与 PROPOSE_PLAN_TOOL_TIMEOUT_MS
+// 随「选择类弹窗不留超时」（2026-10-06 用户裁决）失去全部消费者，整文件删除；
+// propose_plan 的执行超时改为显式 `null`（等用户做决定的工具没有有限预算，te-36 在列）），
+// 补入 `src/services/engine/user-wait.ts`（等待期预算豁免的唯一登记点：计划时限按累计等待
+// 扣除、回合墙钟与工具超时停表）；`planner.ts` 的 `deadlineAt` 比较改为用户等待期扣除后的
+// 有效时钟（逐步门 / 失败询问上等用户的时长不计入计划时限）；`plan-confirmation.ts` 等待不再
+// 有本地超时。**pl-12 描述修订**（去掉「卡到超时」与超时归宿，补「没有等待超时」与逃生口），
+// scenarios 补 `plan-confirm-no-wait-timeout`；pl-01..pl-13 逐点核对实现点仍在、覆盖描述与当前
+// 实现一致（描述/来源核对，非逐行行为审计）；sourceHash 按当前源码复算。
 import type { ModuleContract } from "../host/types"
 
+// 2026-10-06 提问/选择工具批次（本批刷新）：pl-06 的派生型工具枚举补入 `ask_user`
+// （它按交互工具声明 isolation=delegate，到不了子代理；判据走声明字段、执行路径未变）。
+// 其余覆盖点逐条复核与当前实现一致，未修订。sourceHash 按当前源码复算。
 export const plannerContract: ModuleContract = {
   module: "planner",
   // `plan-confirmation.ts` 是计划域的确认/逐步门通道（会话键控的待确认表、执行期中断登记、
@@ -53,22 +66,24 @@ export const plannerContract: ModuleContract = {
   // 计划条目本身的写入机制归 agent-runtime 契约（engine/plan/checkpoint-store.ts 在它的 sourceFiles 里），
   // 这里只从计划域的相位与通道出发断言它们落成的结果。
   sourceFiles: ["src/services/engine/harness/runtime.ts", "src/services/engine/planner.ts", "src/services/engine/plan-confirmation.ts",
-    // 2026-10-06 提议入口批次补入：模型提议计划的执行相位与计划时限常量的零依赖叶子。
-    "src/services/engine/plan/proposal.ts", "src/services/engine/plan/limits.ts"],
-  sourceHash: "c8c3d6d6eccc8fd33ab087192ee2d3e5ab0d131bd264d6f80f175ff0b4f11f09",
+    // 2026-10-06 提议入口批次补入：模型提议计划的执行相位（相位与自动入口共用确认/执行机制）。
+    // 2026-10-06 去超时批次：plan/limits.ts 整文件删除（常量无消费者）；等待期预算豁免的
+    // 唯一登记点补入（计划时限按累计等待扣除）。
+    "src/services/engine/plan/proposal.ts", "src/services/engine/user-wait.ts"],
+  sourceHash: "8e9151052fd8618545c6dc38eb688ac88f73a38a28c4d4c90ecc298bc63d7d4d",
   coverage: [
     { id: "pl-01", feature: "evaluateComplexity force触发", description: "--plan 前缀强制触发评分=5；判定是 startsWith，行首之外的 --plan 不命中 force 分支", why: "用户手动触发 Plan", layer: "integration", depth: "shallow", scenarios: ["plan-force-trigger"] },
     { id: "pl-02", feature: "evaluateComplexity 关键词匹配", description: "关键词列表匹配 → 评分 3、原因里带回命中的词；默认 complexityEval=keyword 时未命中关键词直接给低分，不为它单独发一次模型请求（判据用没有任何响应的 Provider：真发了请求就只能是 llm 分支或超时）", why: "自动检测复杂任务，同时不让每条助手消息都付一次判定请求的成本", layer: "integration", depth: "shallow", scenarios: ["plan-keyword-trigger"] },
     { id: "pl-03", feature: "evaluateComplexity 简单消息", description: "complexityEval=llm 时普通问候经 LLM 自判断 → 低评分 < 3", why: "避免简单对话触发 Plan", layer: "integration", depth: "shallow", scenarios: ["plan-simple-text"] },
     { id: "pl-04", feature: "evaluateComplexity LLM 失败回退", description: "complexityEval=llm 且 LLM 评估失败（Provider 以 error 结束流）→ 评分1、原因里带回 Provider 错误，跳过 Plan；评分超出 1–5 被夹回", why: "Plan 容错，且失败原因不能在回退时丢失", layer: "integration", depth: "shallow", scenarios: ["plan-eval-fallback"] },
     { id: "pl-05", feature: "generatePlan 步骤生成", description: "复杂度达标 → LLM 生成分步计划：解析模型返回的围栏 JSON，步骤描述、summary 与 estimatedComplexity 逐项落地（裸 JSON 的兜底正则未由本场景断言）", why: "Plan 核心能力", layer: "integration", depth: "deep", scenarios: ["plan-generate"] },
-    { id: "pl-06", feature: "executePlan 步骤执行", description: "按计划逐步执行：步骤顺序与 onStepStart/onStepDone 回调顺序都是计划顺序，逐条记账成功/失败，全成功才判 overallSuccess；步骤未限定 allowedTools 时经 onStepNotice 如实报告工具面放大（宿主按「除派生型工具外的全部已注册工具」写进度与系统消息，派生型工具在子代理入口还会再被剥掉），指定了不存在的工具、或指定了到不了子代理的派生型工具（isolation=delegate，现为 agent_spawn 与 propose_plan）走同一条硬失败：不开工、步骤判失败、产出带工具名的错误、不是取消归宿。两种「解析不到」都由本覆盖点的 unit 场景断言 —— 派生型工具那段用 agent_spawn 这个名字（getToolByName 按 AI 调用的函数名解析，不是工具 id）：恰一条带工具名的 missing_tools 通知、零 Provider 请求、overallSuccess=false、产出 error 带工具名、reply 为空且 toolCallsMade=0（快照归属那一半仍未由 unit 场景断言，production 证据见 mm-11）", why: "Plan 执行闭环，且步骤的权限面变化不能只留在日志里", layer: "integration", depth: "deep", scenarios: ["plan-execute-loop"] },
+    { id: "pl-06", feature: "executePlan 步骤执行", description: "按计划逐步执行：步骤顺序与 onStepStart/onStepDone 回调顺序都是计划顺序，逐条记账成功/失败，全成功才判 overallSuccess；步骤未限定 allowedTools 时经 onStepNotice 如实报告工具面放大（宿主按「除派生型工具外的全部已注册工具」写进度与系统消息，派生型工具在子代理入口还会再被剥掉），指定了不存在的工具、或指定了到不了子代理的派生型工具（isolation=delegate，现为 agent_spawn、propose_plan 与 ask_user）走同一条硬失败：不开工、步骤判失败、产出带工具名的错误、不是取消归宿。两种「解析不到」都由本覆盖点的 unit 场景断言 —— 派生型工具那段用 agent_spawn 这个名字（getToolByName 按 AI 调用的函数名解析，不是工具 id）：恰一条带工具名的 missing_tools 通知、零 Provider 请求、overallSuccess=false、产出 error 带工具名、reply 为空且 toolCallsMade=0（快照归属那一半仍未由 unit 场景断言，production 证据见 mm-11）", why: "Plan 执行闭环，且步骤的权限面变化不能只留在日志里", layer: "integration", depth: "deep", scenarios: ["plan-execute-loop"] },
     { id: "pl-07", feature: "formatStepResults 格式化", description: "执行结果格式化为可读文本：步骤描述与产出逐条落进正文，已落盘的步骤结果带上可回读地址（plan_step_result 条目 id），没落盘时如实标注「原文未落盘」而不假称可回读；结果末尾带收尾指令", why: "Plan 结果展示，回读地址是模型从缩短结果回到真相源的唯一通道", layer: "integration", depth: "shallow", scenarios: ["plan-format-steps"] },
     { id: "pl-08", feature: "Plan 解析降级", description: "generatePlan 在模型没返回可解析 JSON 时降级为单步计划（复杂度 1、描述回落到原文、带 degradedReason=json_parse_failed），而不是抛错或产出空计划；降级在生产段的可见提示由 runtime 按 degradedReason 发系统消息，该出口未由本 unit 场景覆盖", why: "模型输出格式不可控，Plan 必须有一条不依赖模型配合的降级路径", layer: "integration", depth: "deep", scenarios: ["plan-generate-fallback"] },
     { id: "pl-09", feature: "生产入口的计划确认与进度", description: "生产入口跑完整计划闭环：确认视图与进度事件的步数都是截断后（maxSteps 生效后）的步数，终态同时落在 checkpoint 条目（terminal 快照 done、全量步骤基线两步都 done）与终态事件（done）上，步骤结果条目恰为计划步数；确认经会话键控的测试通道确定性应答（mode=auto）并带会话身份。计划段由 `planConfig.enabled` 单独把守（模式已删除、该开关出厂为 true；Live 基线把它钉在 false，本场景在 setup 里显式打开）", why: "计划入口此前只有判定与解析的 unit 覆盖，确认视图、进度 total 与终态证据这些真正的运行时接线没有任何生产入口证据", layer: "e2e", depth: "deep", scenarios: ["plan-production-loop"] },
     { id: "pl-10", feature: "计划执行期取消的结算", description: "生产入口（sendMessage）执行期停止：停止命中在跑的计划（planAborted）后，计划终态落 interrupted、剩余步骤在终态快照里保持 pending 且没有第 2 步的结果条目，终态事件 cancelled；用户主动停止不按失败结算 —— 生产结果不带 failure、outcome 是正常收尾、不写助手正文，宿主另写「已停止本次回复」的系统提示", why: "停止必须真的停住剩余步骤，且不能把用户自己的动作记成模型故障 —— 这条账只能在真实运行里核对", layer: "e2e", depth: "deep", scenarios: ["plan-execution-stop-settlement"] },
     { id: "pl-11", feature: "逐步确认的真前置门", description: "用户以 `--plan` 强制触发进入计划段（生产入口的 force 路径，`complexityEval=keyword` 下同样生效）且确认给出的 mode=stepByStep 传进计划段：2 步计划每步开工前各问一次步骤门（恰好 2 次 kind=step_gate 的 continue 裁决），门没有把计划卡住 —— 每步都执行、终态与终态事件都是 done、进度 total 是计划步数；门选择中止的 declined 归宿不在本场景（宿主通道对确认与门共用一套 planPolicy，给不出「确认自动 + 门中止」）", why: "逐步门此前没有任何运行时证据：它是否真的成为每步的前置门、确认的 mode 是否被采纳，只能在运行时接线里看", layer: "e2e", depth: "deep", scenarios: ["plan-step-gate-each-step"] },
-    { id: "pl-12", feature: "计划确认回执通道的结算", description: "计划确认与步骤门共用 UI 回执反向通道（L3）：提问经 deskpet-plan-start 发出后，确认回执按 planId 结算待确认计划并清空待确认表，步骤门回执同按 planId 结算裁决；未知 planId 的回执是 no-op —— 不结算、不误伤他人的待确认项、不抛，随后正确 planId 仍可正常结算；发布失败（UI 通道关闭）以 emit_failed 立即结算，不把 UI 不可达伪装成「继续等待」", why: "回执是 UI→Node 反向通道的唯一结算入口：未知/迟到回执若误结算会替用户作答；吞掉发布失败则每次确认都只能卡到超时", layer: "integration", depth: "deep", scenarios: ["plan-confirm-receipt-settles", "plan-confirm-receipt-unknown-noop", "plan-confirm-receipt-step-decision", "plan-confirm-emit-failure-settles"] },
+    { id: "pl-12", feature: "计划确认回执通道的结算", description: "计划确认与步骤门共用 UI 回执反向通道（L3）：提问经 deskpet-plan-start 发出后，确认回执按 planId 结算待确认计划并清空待确认表，步骤门回执同按 planId 结算裁决；未知 planId 的回执是 no-op —— 不结算、不误伤他人的待确认项、不抛，随后正确 planId 仍可正常结算；发布失败（UI 通道关闭）以 emit_failed 立即结算，不把 UI 不可达伪装成「继续等待」。**没有等待超时**（2026-10-06 用户裁决：选择类弹窗不留超时）：确认与步骤门的等待不设本地期限（假时钟推进 10 分钟仍待答、待确认视图不被计时器清掉），归宿只来自回执 / 取消信号 / 会话生命周期 / 发布失败", why: "回执是 UI→Node 反向通道的唯一结算入口：未知/迟到回执若误结算会替用户作答；超时结算等于把「用户还没想好」当成拒绝（已删）—— 替代它的是逐条显式逃生口（发布失败、取消信号、会话切换/关闭），吞掉任何一条都会让确认方悬挂", layer: "integration", depth: "deep", scenarios: ["plan-confirm-receipt-settles", "plan-confirm-receipt-unknown-noop", "plan-confirm-receipt-step-decision", "plan-confirm-emit-failure-settles", "plan-confirm-no-wait-timeout"] },
     // 2026-10-06 提议入口批次新增：模型给出的步骤经既有确认/执行/记录链跑完整相位。
     { id: "pl-13", feature: "模型提议计划的执行相位（propose_plan）", description: "模型在回合中调用 propose_plan（`engine/plan/proposal.ts` 复用既有机制，不另建确认通道或执行器）：确认走 requestPlanConfirm（确认记录里的步骤数就是模型给出的步骤数）；用户确认后步骤由 executePlan 的子运行真实执行 —— 子运行请求里拿到的正是模型给的步骤文本，工具面按该步 allowedTools 收窄（只 read 时没有 bash），进度事件按步骤 running/done 顺序发布、终态事件 done、计划记录落 done；逐步确认模式（stepByStep）下每步开工前各问一次既有步骤裁决面板（恰两条 continue 裁决），结果按 formatStepResults 既有格式（含 plan_step_result 回读地址）作为工具结果返回模型。并发守卫（同一会话同一时刻只允许一个计划）与用户取消/面板不可用/发射失败的如实归宿归 tool-execution 契约的 te-32", why: "模型侧此前没有任何「提议计划」的工具，需要确认时只能自己用 bash 弹 GUI 对话框 —— 用户实测被工具超时打断并留下孤儿窗口；这条入口必须证明它挂的是既有链路（同确认通道、同执行器、同记录、同步进门），而不是一条绕过确认的旁路", layer: "integration", depth: "deep", scenarios: ["plan-tool-confirm-accept", "plan-tool-step-gate"] },
   ],
