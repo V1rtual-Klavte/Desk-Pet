@@ -28,7 +28,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest"
 import { installFakeProvider, fakeText } from "../../host/fake-provider"
 import { setTestDataRoot } from "../../host/node-ipc"
 import { installPiRuntimeProviderForTest } from "@/services/engine/harness"
-import { getCard, initCards } from "@/services/personality/loader"
+import { loadCard } from "@/services/personality/loader"
 import {
   getActiveCard,
   getActivePersonalityId,
@@ -38,6 +38,7 @@ import {
 import { FALLBACK_STAGES, clearStagesCache, stageSourceHash } from "@/services/personality/stages-cache"
 import { updateStagesFile } from "@/services/personality/stages-file"
 import { destroyPool, getPoolSnapshot, getVariableRegistry } from "@/services/personality/variable-pool"
+import type { PersonalityCard } from "@/services/personality/types"
 
 /** 两张变量定义不同的 Card：目标卡的 schema 一旦泄漏进注册表，名字比对立刻红 */
 function cardMarkdown(id: string, varName: string): string {
@@ -99,8 +100,7 @@ beforeEach(async () => {
   writeFileSync(join(cardsDir, "card-a.md"), cardMarkdown("card-a", "只属于A"))
   writeFileSync(join(cardsDir, "card-b.md"), cardMarkdown("card-b", "只属于B"))
 
-  await initCards()
-  const active = getCard("card-a")
+  const active = await loadCard("card-a")
   if (!active) throw new Error("夹具卡 card-a 未从临时数据根加载")
 
   // 激活卡的阶段文案缓存预先写好：夹具的激活不该去调模型（失败点留给目标卡）
@@ -127,7 +127,13 @@ describe("切换失败回滚", () => {
     expect(active, "夹具激活后必须有激活的 Card").not.toBeNull()
     if (!active) return
 
-    const others = listPersonalities().filter(card => card.id !== active.id)
+    // 列表只有 meta（非激活卡不驻留）：逐张按需读全文再比变量定义
+    const others: PersonalityCard[] = []
+    for (const meta of await listPersonalities()) {
+      if (meta.id === active.id) continue
+      const card = await loadCard(meta.id)
+      if (card) others.push(card)
+    }
     const target = others.find(card =>
       JSON.stringify(card.sections.variableDefs) !== JSON.stringify(active.sections.variableDefs))
     expect(target, "没有变量定义不同的第二张 Card，注册表断言失去区分度").toBeDefined()

@@ -323,12 +323,12 @@ export async function restoreDefaultResources(): Promise<ProfileOpResult> {
   try {
     const r = await getHostBridge().request("restore_default_resources", {})
 
-    // 磁盘上的内置资源已被覆盖：Profile 丢弃缓存，Card 与 Skill 重新读盘。
-    // Skill 走唯一的指纹核对入口：重种子必然改动 mtime/size，指纹变了就会重载，
-    // 不另开一条「强制刷新」路径，也不在两处各存一份缓存。
+    // 磁盘上的内置资源已被覆盖：Profile 丢弃缓存、激活卡重读常驻副本（其余 Card
+    // 无缓存、列表按需现读，无需处理）。Skill 走唯一的指纹核对入口：重种子必然改动
+    // mtime/size，指纹变了就会重载，不另开一条「强制刷新」路径，也不在两处各存一份缓存。
     invalidateAllProfileCaches()
-    const { initCards } = await import("@/services/personality")
-    await initCards()
+    const { reloadActiveCard } = await import("@/services/personality")
+    await reloadActiveCard()
     const { syncSkillCatalog } = await import("@/services/skill")
     await syncSkillCatalog()
 

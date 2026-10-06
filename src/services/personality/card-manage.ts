@@ -8,8 +8,8 @@
 // ==========================================
 
 import type { PersonalityCard } from "./types"
-import { getCard, importUserCard, initCards, safeCardFileName, saveUserCard } from "./loader"
-import { getActiveCard, getActivePersonalityId } from "./registry"
+import { importUserCard, loadCard, readCardMeta, safeCardFileName, saveUserCard } from "./loader"
+import { getActiveCard, getActivePersonalityId, reloadActiveCard } from "./registry"
 import { getHostBridge } from "@/services/host"
 import { createLogger } from "@/services/logger"
 import { errorCode, formatError } from "@/services/error"
@@ -24,6 +24,14 @@ function ok(message: string, newId?: string): CardOpResult {
   return newId === undefined ? { ok: true, message } : { ok: true, message, newId }
 }
 function fail(message: string): CardOpResult { return { ok: false, message } }
+
+/**
+ * 写后刷新：只有激活卡常驻内存（registry），命中才重读常驻副本；
+ * 非激活卡没有缓存、列表按需现读 —— 旧实现的「全量重载」不再需要。
+ */
+async function refreshActiveIfTouched(cardId: string): Promise<void> {
+  if (getActivePersonalityId() === cardId) await reloadActiveCard()
+}
 
 // ── 内部工具 ──
 
@@ -128,7 +136,6 @@ export async function createCard(displayName: string, existingIds: string[]): Pr
     log.error("新建 Card 落盘失败:", newId, formatError(e))
     return fail(`新建 Card 失败：${formatError(e)}`)
   }
-  await initCards()
   log.info(`已新建 Card: ${newId}（${name}）`)
   return ok(`已新建「${name}」`, newId)
 }
@@ -146,7 +153,7 @@ export async function renameCard(cardId: string, displayName: string): Promise<C
   const invalid = invalidNameMessage(name)
   if (invalid) return fail(invalid)
 
-  const card = getCard(cardId)
+  const card = await loadCard(cardId)
   if (!card) return fail(`Card 不存在：${cardId}`)
 
   const raw = replaceFrontmatterKey(card.rawContent, "name", name)
@@ -161,7 +168,7 @@ export async function renameCard(cardId: string, displayName: string): Promise<C
     log.error("重命名 Card 落盘失败:", cardId, formatError(e))
     return fail(`重命名失败：${formatError(e)}`)
   }
-  await initCards()
+  await refreshActiveIfTouched(cardId)
   log.info(`已重命名 Card: ${cardId} → ${name}`)
   return ok(`已重命名为「${name}」`)
 }
@@ -177,7 +184,7 @@ export async function renameCard(cardId: string, displayName: string): Promise<C
  * `cardId` 为 null 表示当前激活卡。
  */
 export async function saveCardText(cardId: string | null, text: string): Promise<CardOpResult> {
-  const target = cardId === null ? getActiveCard() : getCard(cardId) ?? null
+  const target = cardId === null ? getActiveCard() : await loadCard(cardId)
   if (!target) {
     return fail(cardId === null ? "当前没有激活的 Card，无法保存" : `Card 不存在：${cardId}`)
   }
@@ -210,7 +217,7 @@ export async function saveCardText(cardId: string | null, text: string): Promise
     log.error("保存 Card 失败：落盘异常:", target.id, formatError(e))
     return fail(`保存失败：${formatError(e)}`)
   }
-  await initCards()
+  await refreshActiveIfTouched(target.id)
   log.info(`已保存 Card: ${target.id}`)
   // 运行中的回合已冻结当轮 Card，改动从下一轮装配起生效；文案中性，不假装即时重载
   return ok("已保存（下一个回合生效）")
@@ -228,7 +235,8 @@ export async function saveCardText(cardId: string | null, text: string): Promise
  * 「卡还在但文案缓存没了」，不会出现「卡没了却报失败」的不可逆中间态。
  */
 export async function deleteCard(cardId: string): Promise<CardOpResult> {
-  const label = getCard(cardId)?.name || cardId
+  const meta = await readCardMeta(cardId)
+  const label = meta?.name || cardId
 
   if (getActivePersonalityId() === cardId) {
     return fail(`「${label}」是当前正在使用的 Card，请先切换到别的 Card 再删除`)
@@ -251,7 +259,7 @@ export async function deleteCard(cardId: string): Promise<CardOpResult> {
     return fail(`删除 Card 文件失败：${formatError(e)}`)
   }
 
-  await initCards()
+  // 激活卡拒删（上方已拦）；非激活卡无常驻副本，删除后无需刷新内存。
   log.info(`已删除 Card: ${cardId}`)
   return ok(`已删除「${label}」`)
 }
@@ -261,7 +269,7 @@ export async function deleteCard(cardId: string): Promise<CardOpResult> {
 /** 返回 Card 的 markdown 原文（导出用；落盘到用户选的位置由 UI 层负责）。
  *  未注册的 id 返回 null，不抛错 —— 「卡不存在」是调用方要处理的正常分支。 */
 export async function exportCardText(cardId: string): Promise<string | null> {
-  const card = getCard(cardId)
+  const card = await loadCard(cardId)
   return card ? card.rawContent : null
 }
 
@@ -294,7 +302,7 @@ export async function importCardText(raw: string, existingIds: string[]): Promis
     log.error("导入 Card 落盘失败:", id, formatError(e))
     return fail(`导入失败：${formatError(e)}`)
   }
-  await initCards()
+  await refreshActiveIfTouched(card.id)
 
   const label = card.name || id
   log.info(`已导入 Card: ${id}${existed ? "（覆盖同名）" : ""}`)

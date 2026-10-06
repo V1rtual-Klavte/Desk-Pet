@@ -39,7 +39,7 @@ import { listAll as listAllSlashCommands } from "@/services/engine/slash"
 import { initDomainBootstrap } from "@/services/init"
 import { initPaths } from "@/services/paths"
 import { getActivePersonalityId, pickActiveGreeting } from "@/services/personality"
-import { getCard, initCards } from "@/services/personality/loader"
+import { loadCard } from "@/services/personality/loader"
 import { isPersonalityRuntimeReady } from "@/services/personality/registry"
 import { FALLBACK_STAGES, stageSourceHash } from "@/services/personality/stages-cache"
 import { updateStagesFile } from "@/services/personality/stages-file"
@@ -162,8 +162,7 @@ beforeAll(async () => {
   mkdirSync(cardsDir, { recursive: true })
   writeFileSync(join(cardsDir, `${CARD_ID}.md`), cardMarkdown())
 
-  await initCards()
-  const card = getCard(CARD_ID)
+  const card = await loadCard(CARD_ID)
   expect(card, `夹具卡 ${CARD_ID} 未从临时数据根加载`).toBeDefined()
   if (!card) return
 

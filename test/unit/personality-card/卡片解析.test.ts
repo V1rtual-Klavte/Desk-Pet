@@ -80,7 +80,7 @@ unansweredCount:
 let root = ""
 
 beforeEach(() => {
-  // 数据根只给 logger 的批量转发与 loader 的模块级 initCards 用；
+  // 数据根只给 logger 的批量转发用；
   // 解析类断言本身不落盘（importUserCard 是纯解析入口）
   root = mkdtempSync(join(tmpdir(), "deskpet-personality-card-"))
   setTestDataRoot(root)

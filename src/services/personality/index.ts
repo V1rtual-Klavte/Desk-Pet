@@ -3,10 +3,10 @@
 // ==========================================
 
 // ── 类型 ──
-export type { PersonalityCard, PersonalityState, CardSections, CardVariableDef, VariableState, VariableScope, VariableType, VariableUpdateBy, VariableResetPolicy, VariablePrimitive } from "./types"
+export type { CardMeta, PersonalityCard, PersonalityState, CardSections, CardVariableDef, VariableState, VariableScope, VariableType, VariableUpdateBy, VariableResetPolicy, VariablePrimitive } from "./types"
 
-// ── 加载器 ──
-export { getCards, getCard, initCards, importUserCard, safeCardFileName, saveUserCard } from "./loader"
+// ── 加载器（按需：列表读 meta、单卡读全文）──
+export { listCardMetas, readCardMeta, loadCard, importUserCard, safeCardFileName, saveUserCard } from "./loader"
 
 // ── Card 管理（新建 / 重命名 / 编辑保存 / 删除 / 导出 / 导入）──
 export { createCard, renameCard, saveCardText, deleteCard, exportCardText, importCardText, readCardTemplate } from "./card-manage"
@@ -15,7 +15,7 @@ export type { CardOpResult } from "./card-manage"
 // ── 注册表 ──
 export {
   initRegistry, listPersonalities, getActiveCard, getActivePersonalityId,
-  switchPersonality, activeCardName,
+  switchPersonality, activeCardName, reloadActiveCard,
   isPersonalityRuntimeReady, getSystemPrompt,
 } from "./registry"
 export type { SwitchResult } from "./registry"

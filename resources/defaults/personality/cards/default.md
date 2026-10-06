@@ -1,6 +1,6 @@
 ---
 id: default
-name: 默认
+name: void
 nameVar: 名字
 description: 有自己的喜好、安静也接得住话的日常陪伴
 version: 1

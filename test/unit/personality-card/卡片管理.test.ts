@@ -15,8 +15,9 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest"
 
 import { setTestDataRoot } from "../../host/node-ipc"
 import { installNodeHostBridge } from "../../host/install-node-bridge"
-import { getCard, getCards, importUserCard, initCards } from "@/services/personality/loader"
-import { getActivePersonalityId, initRegistry, switchPersonality } from "@/services/personality/registry"
+import { getHostBridge } from "@/services/host"
+import { importUserCard, listCardMetas, loadCard } from "@/services/personality/loader"
+import { getActiveCard, getActivePersonalityId, initRegistry, switchPersonality } from "@/services/personality/registry"
 import { FALLBACK_STAGES, clearStagesCache, stageSourceHash } from "@/services/personality/stages-cache"
 import { updateStagesFile } from "@/services/personality/stages-file"
 import { destroyPool } from "@/services/personality/variable-pool"
@@ -67,13 +68,14 @@ function cardFilePath(fileName: string): string { return join(cardsDir(), fileNa
 function stagesFilePath(fileName: string): string { return join(root, "personality", "stages", fileName) }
 /** 读回磁盘上的卡文件原文（断言落盘事实，不读内存注册表） */
 function readCardFile(fileName: string): string { return readFileSync(cardFilePath(fileName), "utf8") }
-function currentIds(): string[] { return getCards().map(card => card.id) }
+async function currentIds(): Promise<string[]> { return (await listCardMetas()).map(meta => meta.id) }
 /** frontmatter 之后的正文；用于断言「除 frontmatter 外一字未动」 */
 function cardBody(raw: string): string { return raw.slice(raw.indexOf("\n---\n") + 5) }
 
 /** 真的激活一张卡（走产品同路：先落阶段文案，再 switchPersonality）；失败即测试前置失败 */
 async function activate(cardId: string): Promise<void> {
-  const card = getCard(cardId)!
+  const card = await loadCard(cardId)
+  if (!card) throw new Error(`夹具卡 ${cardId} 未从临时数据根读取`)
   await updateStagesFile(cardId, {
     stages: {
       cardId, cardVersion: card.version, sourceHash: await stageSourceHash(card),
@@ -91,9 +93,8 @@ beforeEach(async () => {
   installNodeHostBridge()
 
   // 注册表的 activeId 是模块级状态，会在同一文件的用例之间残留。空 cards 目录下
-  // initCards + initRegistry 会把 activeId 归 null，让每个用例都从「没有激活卡」
+  // initRegistry 会把 activeId 归 null，让每个用例都从「没有激活卡」
   // 的确定状态出发（无激活时的拒绝分支才可断言，不依赖用例声明顺序）。
-  await initCards()
   await initRegistry()
 
   mkdirSync(cardsDir(), { recursive: true })
@@ -103,7 +104,6 @@ beforeEach(async () => {
   writeFileSync(cardFilePath("重名.md"), cardMarkdown("重名", "重名卡", "重名角色"))
   writeFileSync(cardFilePath("doomed.md"), cardMarkdown("doomed", "待删卡", "待删角色"))
   writeFileSync(stagesFilePath("doomed.json"), "{}")
-  await initCards()
 })
 
 afterEach(() => {
@@ -114,7 +114,7 @@ afterEach(() => {
 
 describe("Card 管理", () => {
   it("新建：骨架取运行时模板，只改 frontmatter 的 id/name [card-manage-create]", async () => {
-    const result = await createCard("新伙伴", currentIds())
+    const result = await createCard("新伙伴", await currentIds())
 
     expect(result.ok).toBe(true)
     expect(result.newId).toBe("新伙伴")
@@ -126,36 +126,36 @@ describe("Card 管理", () => {
     const created = await importUserCard(raw)
     expect(created.id).toBe("新伙伴")
     expect(created.name).toBe("新伙伴")
-    expect(getCard("新伙伴")?.name).toBe("新伙伴")
-    expect(getCard("新伙伴")?.id).toBe("新伙伴")
+    expect((await loadCard("新伙伴"))?.name).toBe("新伙伴")
+    expect((await loadCard("新伙伴"))?.id).toBe("新伙伴")
   })
 
   it("新建：名字清洗成空回落 card，撞名加后缀且不覆盖已有卡 [card-manage-create-collision]", async () => {
-    const fallback = await createCard("!!!", currentIds())
+    const fallback = await createCard("!!!", await currentIds())
     expect(fallback.ok).toBe(true)
     expect(fallback.newId).toBe("card")
 
     const takenBefore = readCardFile("重名.md")
 
-    const second = await createCard("重名", currentIds())
+    const second = await createCard("重名", await currentIds())
     expect(second.ok).toBe(true)
     expect(second.newId).toBe("重名-2")
 
-    const third = await createCard("重名", currentIds())
+    const third = await createCard("重名", await currentIds())
     expect(third.ok).toBe(true)
     expect(third.newId).toBe("重名-3")
 
     // 已有卡一个字节没动：撞名只许加后缀，不许覆盖
     expect(readCardFile("重名.md")).toBe(takenBefore)
-    expect(getCard("重名")?.name).toBe("重名卡")
-    expect(getCard("重名-2")?.name).toBe("重名")
-    expect(getCard("重名-3")?.name).toBe("重名")
+    expect((await loadCard("重名"))?.name).toBe("重名卡")
+    expect((await loadCard("重名-2"))?.name).toBe("重名")
+    expect((await loadCard("重名-3"))?.name).toBe("重名")
   })
 
   it("新建：模板缺失时如实失败并指向恢复默认资源 [card-manage-create-no-template]", async () => {
     rmSync(cardFilePath("_template.md"))
 
-    const result = await createCard("无模板卡", currentIds())
+    const result = await createCard("无模板卡", await currentIds())
 
     expect(result.ok).toBe(false)
     expect(result.message).toContain("恢复默认资源")
@@ -174,8 +174,8 @@ describe("Card 管理", () => {
     expect(cardBody(after)).toBe(cardBody(before))
     // id 与文件名不跟随显示名
     expect(existsSync(cardFilePath("改过名的卡.md"))).toBe(false)
-    expect(getCard("doomed")?.id).toBe("doomed")
-    expect(getCard("doomed")?.name).toBe("改过名的卡")
+    expect((await loadCard("doomed"))?.id).toBe("doomed")
+    expect((await loadCard("doomed"))?.name).toBe("改过名的卡")
   })
 
   it("重命名：空白名拒绝且文件不动 [card-manage-rename-blank]", async () => {
@@ -187,7 +187,7 @@ describe("Card 管理", () => {
     expect(readCardFile("doomed.md")).toBe(before)
   })
 
-  it("删除：卡文件与 stages 文件一起删，注册表同步移除 [card-manage-delete]", async () => {
+  it("删除：卡文件与 stages 文件一起删，列表随之移除 [card-manage-delete]", async () => {
     await activate("existing")
 
     const result = await deleteCard("doomed")
@@ -195,8 +195,8 @@ describe("Card 管理", () => {
     expect(result.ok).toBe(true)
     expect(existsSync(cardFilePath("doomed.md"))).toBe(false)
     expect(existsSync(stagesFilePath("doomed.json"))).toBe(false)
-    expect(getCard("doomed")).toBeUndefined()
-    expect(currentIds()).not.toContain("doomed")
+    expect(await loadCard("doomed")).toBeNull()
+    expect(await currentIds()).not.toContain("doomed")
     // 删的不是激活卡，激活状态不受影响
     expect(getActivePersonalityId()).toBe("existing")
   })
@@ -212,7 +212,7 @@ describe("Card 管理", () => {
     expect(readCardFile("existing.md")).toBe(cardBefore)
     expect(existsSync(stagesFilePath("existing.json"))).toBe(true)
     expect(getActivePersonalityId()).toBe("existing")
-    expect(getCard("existing")?.id).toBe("existing")
+    expect((await loadCard("existing"))?.id).toBe("existing")
   })
 
   it("删除：stages 缺失视为已清理；卡文件缺失如实失败 [card-manage-delete-missing]", async () => {
@@ -236,36 +236,36 @@ describe("Card 管理", () => {
   it("导入：合法内容落盘，同名覆盖在回执里说清 [card-manage-import]", async () => {
     const raw = cardMarkdown("imported", "导入卡", "导入角色")
 
-    const created = await importCardText(raw, currentIds())
+    const created = await importCardText(raw, await currentIds())
     expect(created.ok).toBe(true)
     expect(created.newId).toBe("imported")
     expect(created.message).not.toContain("覆盖")
     expect(readCardFile("imported.md")).toBe(raw)
-    expect(getCard("imported")?.name).toBe("导入卡")
+    expect((await loadCard("imported"))?.name).toBe("导入卡")
 
     // 同名再导入 = 以这份内容为准（允许覆盖），但回执必须说清是覆盖
     const updated = cardMarkdown("imported", "导入卡改", "导入角色改")
-    const overwritten = await importCardText(updated, currentIds())
+    const overwritten = await importCardText(updated, await currentIds())
     expect(overwritten.ok).toBe(true)
     expect(overwritten.message).toContain("覆盖")
     expect(readCardFile("imported.md")).toBe(updated)
-    expect(getCard("imported")?.name).toBe("导入卡改")
+    expect((await loadCard("imported"))?.name).toBe("导入卡改")
   })
 
   it("导入：解析不出有效 id 的内容被拒且不落盘 [card-manage-import-invalid]", async () => {
     const filesBefore = readdirSync(cardsDir())
-    const idsBefore = currentIds()
+    const idsBefore = await currentIds()
 
     const noFrontmatter = "# 只是一段 markdown，没有 frontmatter"
     const emptyId = `---\nid: \nname: 空 id 卡\nversion: 1\n---\n\n# 角色设定\nx\n`
     for (const raw of [noFrontmatter, emptyId]) {
-      const result = await importCardText(raw, currentIds())
+      const result = await importCardText(raw, await currentIds())
       expect(result.ok).toBe(false)
       expect(result.message).toContain("id")
     }
 
     expect(readdirSync(cardsDir())).toEqual(filesBefore)
-    expect(currentIds()).toEqual(idsBefore)
+    expect(await currentIds()).toEqual(idsBefore)
   })
 
   it("导入：id 含空格按落盘命名规则清洗，正文原样保存 [card-manage-import-safe-name]", async () => {
@@ -276,7 +276,7 @@ describe("Card 管理", () => {
     expect(result.ok).toBe(true)
     expect(existsSync(cardFilePath("a_b.md"))).toBe(true)
     expect(existsSync(cardFilePath("a b.md"))).toBe(false)
-    expect(getCard("a b")?.rawContent).toBe(raw)
+    expect((await loadCard("a b"))?.rawContent).toBe(raw)
   })
 
   it("读取模板：返回运行时模板全文，而不是随仓副本 [card-manage-template-read]", async () => {
@@ -293,7 +293,7 @@ describe("Card 管理", () => {
     await expect(readCardTemplate()).rejects.toThrow("恢复默认资源")
   })
 
-  it("保存 Card：正文写回原文件并重载注册表 [card-manage-save]", async () => {
+  it("保存 Card：正文写回原文件 [card-manage-save]", async () => {
     const edited = readCardFile("doomed.md").replace("你是待删角色。", "你是改过正文的待删角色。")
 
     const result = await saveCardText("doomed", edited)
@@ -301,7 +301,7 @@ describe("Card 管理", () => {
     expect(result.ok).toBe(true)
     expect(result.message).toContain("下一个回合生效")
     expect(readCardFile("doomed.md")).toBe(edited)
-    expect(getCard("doomed")?.sections.roleSetting).toBe("你是改过正文的待删角色。")
+    expect((await loadCard("doomed"))?.sections.roleSetting).toBe("你是改过正文的待删角色。")
   })
 
   it("保存 Card：id 被改或内容解析失败时拒绝，文件一个字节没动 [card-manage-save-reject]", async () => {
@@ -332,8 +332,60 @@ describe("Card 管理", () => {
 
     expect(result.ok).toBe(true)
     expect(readCardFile("existing.md")).toBe(edited)
-    expect(getCard("existing")?.sections.roleSetting).toBe("你是被编辑过的现有角色。")
+    // 写的是激活卡：断言常驻副本已重载（不重读的话下一回合仍用旧正文）
+    expect(getActiveCard()?.sections.roleSetting).toBe("你是被编辑过的现有角色。")
     // 写回的是原文件，没有因编辑凭空多出/改名出别的卡文件
     expect(readdirSync(cardsDir())).toEqual(filesBefore)
+  })
+})
+
+// ==========================================
+// 按需加载（2026-10-06）：激活卡常驻 + 非激活卡单文件按需读
+// ==========================================
+
+describe("按需加载", () => {
+  it("切换只读目标卡一张：不列目录、不碰其他卡文件 [card-registry-lazy-load]", async () => {
+    const card = await loadCard("existing")
+    expect(card, "夹具卡 existing 未从临时数据根读取").toBeDefined()
+    if (!card) return
+    // 目标卡阶段文案预先落盘：切换命中磁盘缓存，不触发生成
+    await updateStagesFile(card.id, {
+      stages: {
+        cardId: card.id, cardVersion: card.version, sourceHash: await stageSourceHash(card),
+        generatedAt: Date.now(), isFallback: false, stages: FALLBACK_STAGES,
+      },
+    })
+
+    // 只记录读盘面、不改行为：包装桥的 request，原样透传
+    const bridge = getHostBridge()
+    const original = bridge.request
+    const cardReads: string[] = []
+    let listCalls = 0
+    bridge.request = (async (method: string, args?: unknown) => {
+      if (method === "personality_file_read") {
+        cardReads.push(String((args as { path?: string } | null)?.path ?? ""))
+      }
+      if (method === "personality_file_list") listCalls += 1
+      return (original as unknown as (m: string, a?: unknown) => Promise<unknown>).call(bridge, method, args)
+    }) as unknown as typeof bridge.request
+    try {
+      const result = await switchPersonality("existing")
+      expect(result.ok, `切换失败: ${result.error ?? "(无原因)"}`).toBe(true)
+      // 读盘面只允许有激活卡自己的卡文件；逐张全量读或列目录都会在这里现形
+      expect(cardReads.filter(path => path.startsWith("cards/"))).toEqual(["cards/existing.md"])
+      expect(listCalls).toBe(0)
+    } finally {
+      bridge.request = original
+    }
+  })
+
+  it("重命名：激活卡同步重载常驻副本 [card-manage-rename-active]", async () => {
+    await activate("existing")
+
+    const result = await renameCard("existing", "改名激活卡")
+
+    expect(result.ok).toBe(true)
+    // 激活卡常驻内存：写后不重读的话，下一回合仍会用旧显示名
+    expect(getActiveCard()?.name).toBe("改名激活卡")
   })
 })

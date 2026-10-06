@@ -6,6 +6,14 @@
 // `src/services/tool/registry.ts`（registerDefaultTools 增注册 ask_user 一行；与上一批
 // propose_plan 注册同一位置，非人格域行为变化）。各覆盖点逐条核对实现点仍在、描述与当前
 // 实现一致；sourceHash 按当前源码复算。
+// 2026-10-06 Card 按需加载批次（本批刷新）：Card 加载改为「激活卡常驻 + 非激活卡按需单文件读」
+// （loader 的 listCardMetas / readCardMeta / loadCard 取代全量 initCards / getCards / getCard；
+// 顶层全量加载与「启动读两遍」一并移除）。行为审查：pc-01–pc-04 / pc-06 / pc-09–pc-14 不变；
+// pc-02 / pc-11 的切换与回滚语义不变（目标卡由内存查改为现读单文件；读取失败与不存在统一按
+// not_found 分类，驱动启动期「配置卡回退第一张」—— 与旧实现里读失败的卡不在注册表的归宿一致）；
+// pc-15 / pc-16 / pc-17 的磁盘语义不变，写后刷新口径修订为「命中激活卡才重载常驻副本」，
+// 描述相应修订（pc-15 增场景 card-manage-rename-active）；新增 pc-20 登记按需加载读盘面
+// （新用例 card-registry-lazy-load 钉住：切换只读目标卡一张卡文件、不列目录）。sourceHash 复算。
 import type { ModuleContract } from "../host/types"
 
 export const personalityCardContract: ModuleContract = {
@@ -24,7 +32,7 @@ export const personalityCardContract: ModuleContract = {
   // stages-prompt.md 是生成侧的另一半契约：它决定模型输出哪些键，validateStages 决定哪些键算齐。
   // 两边漂移会让新 key 永远取不到 Card 文案，所以提示词纳入 sourceFiles，改动必须触发重审。
   sourceFiles: ["src/services/personality/registry.ts", "src/services/personality/loader.ts", "src/services/personality/card-manage.ts", "src/services/personality/stages-cache.ts", "src/services/personality/stages-file.ts", "src/services/personality/stages-prompt.md", "src/services/tool/registry.ts"],
-  sourceHash: "4a1bd43d4f2916687d7f02487fba6413371c35b4b1ca64c2fd01b1bb35e486b9",
+  sourceHash: "956c9c8daaaaa2770c0f8459a6a762b69eeebf4c73d50f7387fb8007925362b3",
   coverage: [
     { id: "pc-01", feature: "Card 解析", description: "importUserCard 把 Card markdown 解析成 PersonalityCard：frontmatter 的 id/name/version 与各区块的 sections 都要落到字段上，source 恒为 runtime，hash 非空", why: "人格卡系统基础", layer: "unit", depth: "shallow", scenarios: ["card-parse"] },
     { id: "pc-02", feature: "注册表的非法切换守卫", description: "switchPersonality(null) 与切换到不存在的人格都返回 ok:false 并给出原因，且失败的切换不得改动 activeId（拒绝必须原子）", why: "人格切换失败回滚是运行时核心约束", layer: "unit", depth: "shallow", scenarios: ["card-registry-guard"] },
@@ -43,11 +51,12 @@ export const personalityCardContract: ModuleContract = {
     { id: "pc-12", feature: "用户给角色起的名字", description: "Card 以 frontmatter nameVar 声明承载用户起的名字的 Card 变量：声明解析进 PersonalityCard.nameVar；registry.activeCardName 优先显示该变量值（起名 / 改名后跟随），变量为空时返回空串交界面兜底而不回落卡标签；未声明 nameVar 的 Card 仍显示卡标签；名字随卡持久化 —— 切走再切回原卡后名字仍在", why: "名字由用户指定是本体卡的设计（理想 trace 第 2 条）：回落卡标签会把产品标签「默认」演成她的名字；名字只进 Card 变量，不进用户记忆", layer: "unit", depth: "deep", scenarios: ["card-name-display", "card-name-var"] },
     { id: "pc-13", feature: "新建 Card", description: "createCard 以运行时 cards/_template.md 为骨架新建卡：除 frontmatter 的 id/name 两行外骨架正文与其余字段逐字保留（不内置硬编码骨架）；id 由显示名经 safeCardFileName 清洗推导，清洗后为空回落 `card`，与已有 id 撞名时加 -2 / -3 后缀避让、绝不覆盖已有卡文件；模板缺失时如实失败并指向「恢复默认资源」，磁盘上不得凭空出现新卡", why: "新建是用户创造角色的入口，骨架必须取用户可编辑的运行时模板而不是内嵌副本；撞名覆盖会静默毁掉用户已有的卡", layer: "unit", depth: "shallow", scenarios: ["card-manage-create", "card-manage-create-collision", "card-manage-create-no-template"] },
     { id: "pc-14", feature: "新建模板读取", description: "readCardTemplate 返回运行时 cards/_template.md 的全文（用户改过就读改动后的那份，不是随仓副本），新建与「恢复模板」入口共用这一份唯一正文来源；模板缺失时如实抛错，错误文案带「恢复默认资源」的找回入口", why: "内嵌副本或读取随仓副本会让用户对模板的编辑静默失效，模板面板展示什么就必须是新建真正用的什么", layer: "unit", depth: "shallow", scenarios: ["card-manage-template-read", "card-manage-template-missing"] },
-    { id: "pc-15", feature: "重命名 Card", description: "renameCard 只替换 frontmatter 块内的 name 行：id、文件名与正文（含正文里以 `name:` 开头的同名行）一字不动，显示名更新后注册表同步；显示名 trim 后为空则拒绝且文件一个字节不动 —— 改名不换身份，stages 与变量归属都挂在 id 上", why: "改名牵连文件名 / 阶段文案 / 变量任何一处错位都会丢用户的既有状态；正文里的同名行被顺手改掉是静默的正文损坏", layer: "unit", depth: "shallow", scenarios: ["card-manage-rename", "card-manage-rename-blank"] },
-    { id: "pc-16", feature: "编辑保存 Card 正文", description: "saveCardText 校验先行、落盘在后：解析不出有效 id、或解析出的 id 与目标卡不一致（id 就是文件名，改 id 等于换卡，阶段文案与变量会按 id 全部错位）都拒绝且文件一个字节不动；合法内容按原文件名写回并重载注册表，回执说明「下一个回合生效」；cardId 为 null 表示当前激活卡，无激活卡时拒绝而不是猜一张来写", why: "id 是阶段文案与变量状态的归属键；写坏一张卡等于用户丢失角色定义，拒绝路径必须保证磁盘零改动", layer: "unit", depth: "shallow", scenarios: ["card-manage-save", "card-manage-save-reject", "card-manage-save-active"] },
-    { id: "pc-17", feature: "删除 Card", description: "deleteCard 把卡文件与 stages 文件两份一起删：激活卡拒删（须先切换），拒绝时两份文件与注册表原封不动；stages 文件不存在（从未激活过）视为已清理不是失败，卡文件不存在则如实失败、不把「什么都没删」伪装成成功；删除成功后注册表移除该卡、激活状态不受影响", why: "删卡必须连阶段文案缓存一起清理，留下孤儿 stages 会让同 id 的下一张卡继承旧文案；删掉激活卡会让 activeId 悬空", layer: "unit", depth: "deep", scenarios: ["card-manage-delete", "card-manage-delete-active", "card-manage-delete-missing"] },
+    { id: "pc-15", feature: "重命名 Card", description: "renameCard 只替换 frontmatter 块内的 name 行：id、文件名与正文（含正文里以 `name:` 开头的同名行）一字不动，显示名更新后激活卡常驻副本同步重载（非激活卡无缓存、列表按需现读）；显示名 trim 后为空则拒绝且文件一个字节不动 —— 改名不换身份，stages 与变量归属都挂在 id 上", why: "改名牵连文件名 / 阶段文案 / 变量任何一处错位都会丢用户的既有状态；正文里的同名行被顺手改掉是静默的正文损坏", layer: "unit", depth: "shallow", scenarios: ["card-manage-rename", "card-manage-rename-blank", "card-manage-rename-active"] },
+    { id: "pc-16", feature: "编辑保存 Card 正文", description: "saveCardText 校验先行、落盘在后：解析不出有效 id、或解析出的 id 与目标卡不一致（id 就是文件名，改 id 等于换卡，阶段文案与变量会按 id 全部错位）都拒绝且文件一个字节不动；合法内容按原文件名写回（写的是激活卡时同步重载常驻副本），回执说明「下一个回合生效」；cardId 为 null 表示当前激活卡，无激活卡时拒绝而不是猜一张来写", why: "id 是阶段文案与变量状态的归属键；写坏一张卡等于用户丢失角色定义，拒绝路径必须保证磁盘零改动", layer: "unit", depth: "shallow", scenarios: ["card-manage-save", "card-manage-save-reject", "card-manage-save-active"] },
+    { id: "pc-17", feature: "删除 Card", description: "deleteCard 把卡文件与 stages 文件两份一起删：激活卡拒删（须先切换），拒绝时两份文件与列表原封不动；stages 文件不存在（从未激活过）视为已清理不是失败，卡文件不存在则如实失败、不把「什么都没删」伪装成成功；删除成功后列表随现读移除该卡（非激活卡无缓存）、激活状态不受影响", why: "删卡必须连阶段文案缓存一起清理，留下孤儿 stages 会让同 id 的下一张卡继承旧文案；删掉激活卡会让 activeId 悬空", layer: "unit", depth: "deep", scenarios: ["card-manage-delete", "card-manage-delete-active", "card-manage-delete-missing"] },
     { id: "pc-18", feature: "导出 Card", description: "exportCardText 返回 Card 的 markdown 原文（与落盘内容逐字一致），未知 id 返回 null 而不抛错 —— 「卡不存在」是调用方要处理的正常分支", why: "导出必须是可再导入的原样文本；对未知 id 抛错会把界面的正常分支演成故障", layer: "unit", depth: "shallow", scenarios: ["card-manage-export"] },
-    { id: "pc-19", feature: "导入 Card", description: "importCardText 以「能解析出有效 id」为唯一准入门槛：无 frontmatter 或 id 为空的内容整份拒绝且不落盘（目录与注册表逐项不变）；合法内容按 safeCardFileName 落 cards/{safeName(id)}.md、正文原样保存，id 含空格一类字符按命名规则清洗到文件名；同名导入按「以这份内容为准」覆盖，回执必须说清是覆盖而不是新增", why: "导入是外部内容进入 Card 目录的唯一入口，校验先行才能不写坏磁盘；覆盖不说清会让用户不知道自己的卡被换掉了", layer: "unit", depth: "shallow", scenarios: ["card-manage-import", "card-manage-import-invalid", "card-manage-import-safe-name"] },
+    { id: "pc-19", feature: "导入 Card", description: "importCardText 以「能解析出有效 id」为唯一准入门槛：无 frontmatter 或 id 为空的内容整份拒绝且不落盘（目录与列表逐项不变）；合法内容按 safeCardFileName 落 cards/{safeName(id)}.md、正文原样保存，id 含空格一类字符按命名规则清洗到文件名；同名导入按「以这份内容为准」覆盖，回执必须说清是覆盖而不是新增", why: "导入是外部内容进入 Card 目录的唯一入口，校验先行才能不写坏磁盘；覆盖不说清会让用户不知道自己的卡被换掉了", layer: "unit", depth: "shallow", scenarios: ["card-manage-import", "card-manage-import-invalid", "card-manage-import-safe-name"] },
+    { id: "pc-20", feature: "Card 按需加载读盘面", description: "启动与切换只读需要的卡：switchPersonality 的读盘面只有目标卡一张卡文件 —— 不列 cards 目录、不读其他卡文件（激活卡常驻内存后，回合冻结/结算同步取它）；卡管理写后刷新只在命中激活卡时重载常驻副本（pc-15 的 card-manage-rename-active 钉住重命名路径）", why: "全量加载会在启动与每次管理动作后重读整目录；按需化的读盘面若被某条路径破坏（例如又加回目录全扫），启动成本会与卡规模线性绑定，而没有别的断言会红", layer: "unit", depth: "deep", scenarios: ["card-registry-lazy-load"] },
   ],
   // W0–W7 把本契约迁出 L4 的场景按 L4 侧当前值重标定：门槛=当前 rules 声明值
   // （pc-08 `card-production-turn` 留在 L4），只缩不放（数字由 checker 报错提供）；

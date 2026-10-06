@@ -47,6 +47,21 @@ export interface CardSections {
   variableDefs: CardVariableDef[]
 }
 
+/**
+ * 人格卡元信息（列表 / 设置页下拉用）。
+ *
+ * 只含 frontmatter 级字段：正文、sections 与 hash 属 `loadCard` 的按需职责，
+ * 列表路径不读它们（2026-10-06 按需化）。
+ */
+export interface CardMeta {
+  id: string
+  name: string
+  /** 见 [`PersonalityCard.nameVar`]。 */
+  nameVar?: string
+  description: string
+  version: number
+}
+
 /** 人格卡元数据 */
 export interface PersonalityCard {
   id: string

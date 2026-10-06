@@ -66,7 +66,7 @@ const OTHER_STYLE = cardMarkdown("e2e-staleness", ROLE, "热情、爱用语气�
 let root = ""
 
 beforeEach(() => {
-  // 数据根只给 logger 的批量转发与 loader 的模块级 initCards 用；本用例的断言全在纯函数上
+  // 数据根只给 logger 的批量转发用；本用例的断言全在纯函数上
   root = mkdtempSync(join(tmpdir(), "deskpet-personality-card-"))
   setTestDataRoot(root)
 })

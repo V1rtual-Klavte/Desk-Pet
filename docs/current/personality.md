@@ -16,7 +16,7 @@ card/interaction 状态保存在 `personality/stages/{cardId}.json` 的变量区
 
 ## Card 加载与切换
 
-[loader.ts](../../src/services/personality/loader.ts) 从运行时 cards 目录读取和解析 Card，包内 defaults 只作首次初始化种子。[registry.ts](../../src/services/personality/registry.ts) 的 `switchPersonality()` 先准备阶段文案与变量池，成功后改变活动 Card；失败恢复旧 Card、变量池（含变量注册表）与阶段缓存。设置页展开 Card 只构建局部预览快照，不改动全局变量池所有权。
+[loader.ts](../../src/services/personality/loader.ts) 从运行时 cards 目录**按需**读取和解析 Card，包内 defaults 只作首次初始化种子。加载口径（2026-10-06）：只有激活卡常驻内存（[registry.ts](../../src/services/personality/registry.ts) 的 `activeCard`，回合冻结/结算同步取它）；列表（设置页下拉、撞名判定）经 `listCardMetas()` 逐文件只读 frontmatter、**现读现算不缓存**——撞名检查必须看到全部卡；单卡正文一律 `loadCard(id)` 现读单文件（编辑读取、导出、重命名、非激活卡阶段面板）。启动只加载配置指定的激活卡，读不到才列目录回退第一张。`switchPersonality()` 先读目标卡、准备阶段文案与变量池，成功后改变活动 Card；失败恢复旧 Card、变量池（含变量注册表）与阶段缓存。写后刷新只重载激活卡副本（`reloadActiveCard()`：编辑保存/重命名/导入覆盖/恢复默认资源）。设置页展开 Card 只构建局部预览快照，不改动全局变量池所有权。
 
 设置页「人格」节的 Card 管理面（新建/编辑/重命名/导入/导出/删除/模版）与切换同属一条链：动作对象是**草稿里选中的卡**，不是「当前已激活的卡」；新建与重命名先经原生输入框取名字，id 由 Node 从显示名推导（沿用 `saveUserCard` 的清洗规则，撞名加后缀，绝不覆盖已有卡）。**重命名只改 frontmatter 的 `name`** —— 文件名、`stages/{id}.json` 与变量归属都挂在 id 上，改名不该牵连它们；**删除连带删掉该卡的 stages 文件**，激活中的卡拒删（先切到别的卡）；**导入以「能解析出有效 id」为唯一准入**（解析不出就整份拒绝，不写坏文件），同名即覆盖。列表刷新后若草稿选中项已消失（刚被删），宿主回落到运行时仍在激活的卡，避免保存时拿一个不存在的 id 去切换。`_template.md` 是模版面板的**唯一正文来源**（运行时文件，可被「恢复默认资源」覆盖），面板首行引导语由宿主定义、与正文拼成同一段文本 —— 面板显示什么，复制就是什么。
 

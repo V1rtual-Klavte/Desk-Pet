@@ -16,7 +16,7 @@ import { join } from "node:path"
 import { afterEach, beforeEach, describe, expect, it } from "vitest"
 
 import { setTestDataRoot } from "../../host/node-ipc"
-import { getCard, initCards } from "@/services/personality/loader"
+import { loadCard } from "@/services/personality/loader"
 import { activeCardName, switchPersonality } from "@/services/personality/registry"
 import { FALLBACK_STAGES, clearStagesCache, stageSourceHash } from "@/services/personality/stages-cache"
 import { updateStagesFile } from "@/services/personality/stages-file"
@@ -93,10 +93,10 @@ beforeEach(async () => {
   mkdirSync(join(root, "personality", "cards"), { recursive: true })
   writeFileSync(join(root, "personality", "cards", "probe-named.md"), NAMED_CARD)
   writeFileSync(join(root, "personality", "cards", "probe-plain.md"), PLAIN_CARD)
-  await initCards()
   // 阶段文案预先落盘：sourceHash 由卡正文现算，命中后 switchPersonality 不触发生成调用
   for (const id of ["probe-named", "probe-plain"]) {
-    const card = getCard(id)!
+    const card = await loadCard(id)
+    if (!card) throw new Error(`夹具卡 ${id} 未从临时数据根读取`)
     await updateStagesFile(id, {
       stages: {
         cardId: id, cardVersion: 1, sourceHash: await stageSourceHash(card),

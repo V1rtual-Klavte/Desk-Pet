@@ -17,7 +17,7 @@
 
 import { MemoryService, startIdleDreamingScheduler } from "@/services/agent/memory"
 import { loadV1rtualInstructions } from "@/services/context/instructions"
-import { initRegistry, initCards } from "@/services/personality"
+import { initRegistry } from "@/services/personality"
 import { registerDefaultTools } from "@/services/tool"
 import { initDebug } from "@/services/debug"
 import { initSlashCommands } from "@/services/engine/slash"
@@ -84,8 +84,7 @@ async function runDomainBootstrap(): Promise<void> {
   const p = getActiveProfile()
   log.info(`3/11 Profile 就绪: "${p?.meta.name}"`)
 
-  // ── 4. 人格模块 ──
-  await initCards()
+  // ── 4. 人格模块（激活卡按需加载 → registry）──
   await initRegistry()
   log.info("4/11 人格模块就绪")
 

@@ -3,11 +3,11 @@
 // 默认 Card 会在首次启动时复制到 data_root/personality/cards，之后不再区分来源。
 // ==========================================
 
-import type { PersonalityCard, CardSections, CardVariableDef, VariableScope, VariableType, VariableUpdateBy, VariableResetPolicy } from "./types"
+import type { CardMeta, PersonalityCard, CardSections, CardVariableDef, VariableScope, VariableType, VariableUpdateBy, VariableResetPolicy } from "./types"
 import { parseMustRules } from "./must-rules"
 import { getHostBridge } from "@/services/host"
 import { createLogger } from "@/services/logger"
-import { formatError, reportError } from "@/services/error"
+import { errorCode, formatError, reportError } from "@/services/error"
 
 const log = createLogger("Persona")
 
@@ -262,9 +262,22 @@ export async function hashCardText(text: string): Promise<string> {
   return Array.from(new Uint8Array(buf)).map(b => b.toString(16).padStart(2, "0")).join("")
 }
 
-// ── 加载 ──
+// ── 加载（按需：列表读 meta、单卡读全文）──
+//
+// 2026-10-06 按需化：不再启动全量读卡。激活卡由 registry 常驻内存（回合冻结/结算
+// 依赖同步可取）；列表与单卡正文都按需现读 —— 列表函数**刻意不缓存**：撞名检查
+// 必须看到全部卡，缓存残缺会让新建/导入静默覆盖同名文件（写坏/丢卡）。
 
-let cards: PersonalityCard[] = []
+/** 读单卡原文；文件不存在返回 null（其余 IO 失败如实抛出）。 */
+async function readCardFile(fileName: string): Promise<string | null> {
+  try {
+    const rawBytes = await getHostBridge().request("personality_file_read", { path: `cards/${fileName}` })
+    return new TextDecoder().decode(rawBytes)
+  } catch (e) {
+    if (errorCode(e) === "PATH_NOT_FOUND") return null
+    throw e
+  }
+}
 
 async function parseCard(raw: string): Promise<PersonalityCard> {
   const { meta, body } = parseFrontmatter(raw)
@@ -273,15 +286,29 @@ async function parseCard(raw: string): Promise<PersonalityCard> {
   return { id: meta.id, name: meta.name || meta.id, nameVar: meta.nameVar, description: meta.description, version: meta.version, rawContent: raw, sections, hash, source: "runtime" }
 }
 
-async function loadRuntimeCards(): Promise<PersonalityCard[]> {
+/** 只解析 frontmatter 的轻量 meta（列表/下拉用，不建 sections、不算 hash）。 */
+function parseCardMeta(raw: string): CardMeta {
+  const { meta } = parseFrontmatter(raw)
+  return { id: meta.id, name: meta.name || meta.id, nameVar: meta.nameVar, description: meta.description, version: meta.version }
+}
+
+/**
+ * 列出全部运行时 Card 的 meta（目录 + 逐文件只读 frontmatter，**不缓存**）。
+ *
+ * 每次调用都重新读盘：调用方（设置页下拉、撞名判定）依赖它看到「全部卡」。
+ */
+export async function listCardMetas(): Promise<CardMeta[]> {
   try {
     const files = await getHostBridge().request("personality_file_list", { dirPath: "cards" })
-    const result: PersonalityCard[] = []
+    const result: CardMeta[] = []
     for (const file of files.filter(f => f.endsWith(".md") && !f.startsWith("_"))) {
       try {
-        const rawBytes = await getHostBridge().request("personality_file_read", { path: `cards/${file}` })
-        const raw = new TextDecoder().decode(rawBytes)
-        result.push(await parseCard(raw))
+        const raw = await readCardFile(file)
+        if (raw === null) {
+          log.debug("Card 文件在列举后被移除，跳过:", file)
+          continue
+        }
+        result.push(parseCardMeta(raw))
       } catch (e) {
         // 该 Card 会从列表里消失，属用户可见降级 —— 必须留 error 级证据并带卡名
         log.error("用户 Card 读取失败:", file, formatError(e))
@@ -293,6 +320,19 @@ async function loadRuntimeCards(): Promise<PersonalityCard[]> {
     reportError("Personality", e, { kind: "Card 目录不可用", overlay: false })
     return []
   }
+}
+
+/** 按 id 读单卡 meta（frontmatter）；不存在返回 null（删除提示名等只需要显示名的路径用）。 */
+export async function readCardMeta(id: string): Promise<CardMeta | null> {
+  const raw = await readCardFile(`${safeCardFileName(id)}.md`)
+  return raw === null ? null : parseCardMeta(raw)
+}
+
+/** 按 id 读单卡全文；不存在返回 null（调用方按「卡不存在」分支处理），其余读/解析失败如实抛出。 */
+export async function loadCard(id: string): Promise<PersonalityCard | null> {
+  const raw = await readCardFile(`${safeCardFileName(id)}.md`)
+  if (raw === null) return null
+  return parseCard(raw)
 }
 
 export async function importUserCard(raw: string): Promise<PersonalityCard> {
@@ -320,16 +360,3 @@ export async function saveUserCard(raw: string): Promise<PersonalityCard> {
   })
   return card
 }
-
-export async function initCards(): Promise<void> {
-  cards = await loadRuntimeCards()
-  log.info(`已加载 ${cards.length} 个运行时 Card:`, cards.map(c => c.id).join(", "))
-}
-
-export function getCards(): PersonalityCard[] { return cards }
-
-export function getCard(id: string): PersonalityCard | undefined {
-  return cards.find(c => c.id === id)
-}
-
-initCards()
