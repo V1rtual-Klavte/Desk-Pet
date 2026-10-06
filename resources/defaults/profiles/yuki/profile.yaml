@@ -1,34 +1,9 @@
 meta:
   name: yuki
-  description: 结城理 · 雨夜蓝与门户白卡
+  description: 结城理
   version: 1
 theme:
-  colors:
-    背景: rgba(6, 16, 31, 0.45)
-    卡片背景: '#ffffff'
-    聊天背景: '#ffffff'
-    边框: rgba(79, 195, 247, 0.8)
-    分割线: '#b9c4cc'
-    输入边框: '#b9c4cc'
-    主文字: '#2f3b47'
-    亮文字: rgb(1, 87, 155)
-    粉色文字: rgb(194, 24, 91)
-    暗文字: rgb(95, 114, 133)
-    强调色: rgb(2, 119, 189)
-    强调悬浮: '#01579b'
-    标题栏渐变起: '#4fc3f7'
-    标题栏渐变止: '#0277bd'
-    标题栏文字: rgb(255, 255, 255)
-    表面色: rgb(226, 237, 246)
-    深表面色: rgb(206, 224, 240)
-    遮罩: rgba(6, 16, 31, 0.72)
-    透明背景: rgba(255, 255, 255, 0.85)
-    模糊度: 14px
-  shield:
-    enabled: false
-    image: ''
   parallax:
-    intensity: 1
     layers:
       - enabled: true
         image: materials/L0/layer_0_1791083948671.png
@@ -65,26 +40,3 @@ theme:
         offsetX: -7.179465868794322
         offsetY: 3.158291903409087
         locked: false
-  depthOfField:
-    image: materials/dof/dof_1789274506827.jpeg
-    blur: 1.5
-    scale: 2.58
-    offsetX: -1.1100260416666572
-    offsetY: -22.354307432432428
-    bgSensitivity: 0.35
-    brightness: 0.95
-    contrast: 1
-    saturate: 0.9
-    focus:
-      - x: 49.8802675189394
-        'y': 59.375287929975435
-        rx: 13
-        ry: 18.5
-        feather: 0.35
-        sensitivity: 0.9
-      - x: 53.56654756136951
-        'y': 70.38321024512885
-        rx: 14.5
-        ry: 24
-        feather: 0.35
-        sensitivity: 0.8

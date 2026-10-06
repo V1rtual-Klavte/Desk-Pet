@@ -105,6 +105,14 @@
 // 行级管理：点行 = 选中管理对象、与激活草稿分开；Rust 侧行渲染与手势不在本契约范围，沿用既有口径）。
 // nui-01..nui-28 逐点核对实现点仍在、覆盖描述与当前实现一致（描述/来源核对，非逐行行为审计）；
 // sourceHash 随本批统一刷新。
+// 2026-10-06 设置页列表面板删除批次（analyze→generate）：sourceFiles 变化 ——
+// crates/native-host/src/ui/settings/panels.rs（删除 PANEL_PROFILES / PANEL_CARDS 两个面板 id
+// 常量）、src/services/native-ui/management-intents.ts（card_manage / profile_manage 回执不再携带
+// newId / activeId —— 这两个字段只服务于已删除的行级列表「新建后把选中行指向新项」，线形状随面板
+// 一并退场；新建仍要求服务层给出推导 id，缺 id 照旧如实失败）与 src/services/host/types.ts
+// （ProfileManageResult / CardManageResult 同步删字段）。nui-01..nui-32 逐点核对实现点仍在、
+// 覆盖描述与当前实现一致：nui-10（人格卡列表读注册表）与 nui-27（凭据行 action 线值 credential）
+// 的请求/线值面未动，无覆盖点描述被删面板或 newId/activeId，未修订覆盖点；sourceHash 按当前源码复算。
 import type { ModuleContract } from "../host/types"
 
 export const nativeUiContract: ModuleContract = {
@@ -152,7 +160,7 @@ export const nativeUiContract: ModuleContract = {
     // 按同一比较器排序 —— 改坏这里，标签用例不红但历史排序与描述分叉，hash 不算上它就漏判。
     "src/services/session/history.ts",
   ],
-  sourceHash: "d8409cf2b3d8d702e9dcb4f4c411fbc7cdedbd60fa7dcd94b35aa35991ea13fe",
+  sourceHash: "2403f5cbe7049133de63292863edc3a9c5c646f8e4d9090093c97fff22fb04d4",
   coverage: [
     {
       id: "nui-01",

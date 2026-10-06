@@ -598,17 +598,6 @@ impl SettingsPort for SettingsPortImpl {
         Ok(CardManageOutcome {
             message: required_text(&value, "message", "card_manage")?,
             cards: parse_card_options(&json!({ "cards": cards }))?,
-            // 仅新建回执带 newId；其余操作缺省即「没有新项」，不是协议违规（见字段注释）。
-            new_id: value
-                .get("newId")
-                .and_then(Value::as_str)
-                .map(ToString::to_string),
-            // 激活卡缺字段按空串处理 = 没有激活卡（无活动 Card 允许降级运行），不是协议违规。
-            active_id: value
-                .get("activeId")
-                .and_then(Value::as_str)
-                .unwrap_or_default()
-                .to_string(),
         })
     }
 
@@ -668,11 +657,6 @@ impl SettingsPort for SettingsPortImpl {
         Ok(ProfileManageOutcome {
             message: required_text(&value, "message", "profile_manage")?,
             profiles: parse_profile_options(&json!({ "profiles": profiles }))?,
-            // 仅新建回执带 newId；其余操作缺省即「没有新项」，不是协议违规（见调用方字段注释）。
-            new_id: value
-                .get("newId")
-                .and_then(Value::as_str)
-                .map(ToString::to_string),
         })
     }
 
@@ -2238,14 +2222,13 @@ mod tests {
         let (link, published, _) = test_link();
         let outcome_reply = json!({
             "message": "已新建 新 Profile 1",
-            "newId": "profile1",
             "list": {
                 "active": "sugar-pink",
                 "profiles": [{ "id": "sugar-pink", "name": "Sugar Pink", "description": "粉糖" }]
             }
         });
 
-        // 新建：不带 profileId；回执的 newId 进 Outcome（宿主据此预选中新项）。
+        // 新建：不带 profileId；回执的列表进 Outcome（宿主据此刷新下拉选项）。
         let outcome = call_port(
             &link,
             &published,
@@ -2261,7 +2244,6 @@ mod tests {
         assert_eq!(outcome.message, "已新建 新 Profile 1");
         assert_eq!(outcome.profiles.len(), 1);
         assert_eq!(outcome.profiles[0].id, "sugar-pink");
-        assert_eq!(outcome.new_id.as_deref(), Some("profile1"));
 
         // 重命名：id + 名字逐字上线。
         let renamed = call_port(
@@ -2287,8 +2269,6 @@ mod tests {
         )
         .unwrap();
         assert_eq!(renamed.message, "已重命名为 小雨");
-        // 非新建回执没有 newId：解析为 None，不冒充「新建了某一项」。
-        assert_eq!(renamed.new_id, None);
 
         call_port(
             &link,

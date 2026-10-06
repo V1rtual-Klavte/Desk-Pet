@@ -29,10 +29,6 @@ pub const PANEL_MEMORY_SOURCES: &str = "memory.sources";
 pub const PANEL_MEMORY_BACKUPS: &str = "memory.backups";
 /// 外观页的音效试听面板（行按钮 = 试听该事件当前分配的音效）。
 pub const PANEL_SOUNDS: &str = "appearance.sounds";
-/// 外观页的 Profile 列表（点行 = 选中管理对象；与激活态分开）。
-pub const PANEL_PROFILES: &str = "appearance.profiles";
-/// AI 页的人格卡列表（点行 = 选中管理对象；行内「编辑」打开该卡文档）。
-pub const PANEL_CARDS: &str = "ai.cards";
 
 /// 一行的动作形状（平台层按钮的点击归宿）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

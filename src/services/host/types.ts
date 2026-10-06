@@ -524,11 +524,6 @@ export type ProfileManagePayload =
 export interface ProfileManageResult {
   message: string
   list: ProfileListPayload
-  /**
-   * 仅 `create`：新 Profile 的 id（宿主的「Profile 列表」据此把**选中行**指向新项；
-   * 选择是界面状态，不改写 `appearance.activeProfile` 的激活草稿）。
-   */
-  newId?: string
 }
 
 /** `card_manage` 的载荷（新建 / 重命名 / 删除 / 导出 / 导入）。 */
@@ -539,20 +534,10 @@ export type CardManagePayload =
   | { op: "export"; cardId: string }
   | { op: "import" }
 
-/** `card_manage` 的应答：中性结果说明 + 操作后的可用 Card 列表 + 操作后仍在激活的卡。 */
+/** `card_manage` 的应答：中性结果说明 + 操作后的可用 Card 列表。 */
 export interface CardManageResult {
   message: string
   list: { cards: Array<{ id: string; name: string }> }
-  /**
-   * 仅 `create`：新卡的 id（宿主的「人格卡列表」据此把**选中行**指向新卡；
-   * 选择是界面状态，不改写 `ai.personality.active` 的激活草稿）。
-   */
-  newId?: string
-  /**
-   * 操作后仍在激活的卡；空串 = 当前没有激活卡（无活动 Card 的降级态是允许的）。
-   * 宿主的列表在「选中的卡被删掉」时用它回落选中行（不拿不存在的 id 去操作）。
-   */
-  activeId: string
 }
 
 /** 宿主 → Node 请求的线信封（宿主经 `HOST_REQUEST_EVENT` 事件投递；`requestId` 配对回执）。 */

@@ -209,13 +209,12 @@ Profile 是自包含闭包：图层素材只从 Profile 自身目录读取，不
 
 内存只保留当前激活 Profile（含资产目录 URL）：`activateProfile()` 与 `ensureProfileLoaded()` 都会淘汰非激活缓存；设置页列 Profile 用 `readProfileMeta()` 轻量读 meta，不进缓存。
 
-### 设置页的行级管理（Profile / 人格卡）
+### 设置页的 Profile / 人格卡管理（无独立列表）
 
-外观页「Profile 列表」与 AI 页「人格卡列表」是设置窗的行级管理入口（面板 id `appearance.profiles` / `ai.cards`；渲染与选择逻辑在 [ui/settings/mod.rs](../../crates/native-host/src/ui/settings/mod.rs) 的 `profile_panel` / `card_panel`；位置与工具页/记忆页的管理面一致 —— 页面小节之后的管理面区域）：
+设置窗不再有独立的 Profile / 人格卡行级列表（2026-10-06 用户裁决：与上方下拉功能重复，整面板删除）。选项数据仍复用既有请求：`profile_list` 供外观页「当前 Profile」下拉与「刷新 Profile 列表」，`personality_cards` 供 AI 页「人格卡」下拉（不新增宿主请求/命令、不新增 Node 接口）。
 
-- **数据复用既有请求**：Profile 行来自 `profile_list`、Card 行来自 `personality_cards`（不新增宿主请求/命令、不新增 Node 接口）；行由设置域从选项投影，title = 显示名，**激活态写在副标题**（「当前激活」）。
-- **点行 = 选中管理对象**（UI 临时状态：不写 CONFIG、不落盘、关窗即弃；行的 `enabled` 位承载选中态，与备份列表同一手法）。管理动作的作用对象 = 选中行：Profile 的「重命名 / 导出 / 删除」、人格卡的「编辑 / 重命名 / 导出 / 删除」（Profile 行只有选择位；卡行另有行内「编辑」，直接打开该卡本体文档，文档绑定打开时的 card_id）。未点过行或选中项已消失时**回退当前激活项**（旧「当前 Profile / 当前 Card」口径不变），列表为空时如实报错、不拿不存在的 id 去操作。
-- **激活仍是独立动作**：Profile / 卡片的激活仍走「角色展示 / 人格」的下拉 + 保存（`switchActiveProfile` / `switchPersonality` 唯一入口）；点行不触发切换，管理动作也不替用户预选切换 —— 新建成功后只把**新行设为选中**，不改写激活草稿。
+- **管理动作的作用对象 = 当前激活项**：Profile 的「重命名 / 导出 / 删除」与 Card 的「编辑 / 重命名 / 导出 / 删除」作用于「当前 Profile / 人格卡」下拉的草稿值（`ui/settings/mod.rs` 的 `selected_profile_id` / `selected_card_id` 解析，按钮文案沿用旧口径、保留「选中」字样）；激活值不在选项列表（外部改动）时回退列表第一项，列表未加载或为空时如实报错、不拿不存在的 id 去操作。
+- **激活仍是独立动作**：Profile / 卡片的激活仍走「角色展示 / 人格」的下拉 + 保存（`switchActiveProfile` / `switchPersonality` 唯一入口），管理动作不触发切换。
 
 ## 本地存储边界
 

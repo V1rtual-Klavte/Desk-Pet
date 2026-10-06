@@ -1510,8 +1510,7 @@ define_class!(
             };
             let outcome = match action {
                 RowAction::Toggle => settings_ui().toggle_panel_row(panel, &row_id),
-                // 行选择按面板分发（条目 = 详情；来源 = 展开原话；备份 = 选中；
-                // Profile / 人格卡列表 = 选中管理对象）。
+                // 行选择按面板分发（条目 = 详情；来源 = 展开原话；备份 = 选中）。
                 RowAction::Select | RowAction::Choose => {
                     settings_ui().panel_row_select(panel, &row_id)
                 }
@@ -2859,20 +2858,11 @@ impl SettingsContentController {
                     None,
                 );
             }
-            // 本批：外观页的 Profile 列表（点行选中管理对象；「Profile 资源」小节的动作
-            // 作用于选中行）与音效试听面板（行按钮 = 试听；分配编辑在文档区）。
+            // 本批：音效试听面板（行按钮 = 试听；分配编辑在文档区）。
             "appearance" => {
-                let profile_panel = settings_ui().profile_panel();
-                y = self.build_panel(mtm, stack, width, y, &profile_panel, None);
                 for panel in settings_ui().sound_panels().iter() {
                     y = self.build_panel(mtm, stack, width, y, panel, Some(REFRESH_SOUNDS));
                 }
-            }
-            // 本批：AI 页的人格卡列表（点行选中管理对象；「人格」小节的动作作用于选中行，
-            // 行内「编辑」直接打开该卡文档）。
-            "ai" => {
-                let card_panel = settings_ui().card_panel();
-                y = self.build_panel(mtm, stack, width, y, &card_panel, None);
             }
             _ => {}
         }

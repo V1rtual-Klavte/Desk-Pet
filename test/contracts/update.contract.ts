@@ -49,6 +49,11 @@
 // 2026-10-06 派生行为结论沉淀批次（本批刷新）：host/types.ts —— memory_job_sources /
 // memory_pending_source_count 入参增可选 origin（整理按来源类别取批）；更新域的消费面未动。
 // 各覆盖点逐点核对一致；sourceHash 按当前源码复算（同批含另会话在飞改动）。
+// 2026-10-06 设置页列表面板删除批次（本批刷新）：sourceFiles 变化仅限
+// `src/services/host/types.ts`（ProfileManageResult / CardManageResult 删除 newId / activeId ——
+// 只服务于已删除的设置页行级列表；属设置面管理孔，不在更新路径上）。up-01 逐条对照当前实现：
+// 更新命令形状（update_check / update_download_and_install / app_restart）仍成立、
+// 「更新动作不进 Node 请求面」仍成立。未修订覆盖点，仅按当前源码刷新 sourceHash。
 import type { ModuleContract } from "../host/types"
 
 export const updateContract: ModuleContract = {
@@ -59,7 +64,7 @@ export const updateContract: ModuleContract = {
     "src/services/native-ui/index.ts",
     "src/services/native-ui/host-requests.ts",
   ],
-  sourceHash: "34ac612c8f27e78c9e185978232132a53fbf0b015268f702e04a9984d784aa54",
+  sourceHash: "32b371bf23240ebcee997e44f823f31bbb45a8f2d8c82cc9e1b3aeaf6d643020",
   coverage: [
     {
       id: "up-01",

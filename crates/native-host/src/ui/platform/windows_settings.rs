@@ -2001,19 +2001,8 @@ fn build_panel_controls(state: &mut SettingsState) {
                 bold,
             );
         }
-        // 本批：外观页的 Profile 列表（点行选中管理对象；「Profile 资源」小节的动作
-        // 作用于选中行）与音效试听面板（行按钮 = 试听；分配编辑在文档区）。
+        // 本批：音效试听面板（行按钮 = 试听；分配编辑在文档区）。
         "appearance" => {
-            y = build_panel(
-                state,
-                &settings_ui().profile_panel(),
-                None,
-                content_w,
-                y,
-                body,
-                small,
-                bold,
-            );
             for panel in settings_ui().sound_panels().iter() {
                 y = build_panel(
                     state,
@@ -2026,20 +2015,6 @@ fn build_panel_controls(state: &mut SettingsState) {
                     bold,
                 );
             }
-        }
-        // 本批：AI 页的人格卡列表（点行选中管理对象；「人格」小节的动作作用于选中行，
-        // 行内「编辑」直接打开该卡文档）。
-        "ai" => {
-            y = build_panel(
-                state,
-                &settings_ui().card_panel(),
-                None,
-                content_w,
-                y,
-                body,
-                small,
-                bold,
-            );
         }
         _ => {}
     }
@@ -4442,8 +4417,7 @@ pub(crate) fn on_command(hwnd: HWND, wparam: WPARAM) -> bool {
                 }
                 let outcome = match action {
                     RowAction::Toggle => settings_ui().toggle_panel_row(panel, &row_id),
-                    // 行选择按面板分发（条目 = 详情；来源 = 展开原话；备份 = 选中；
-                    // Profile / 人格卡列表 = 选中管理对象）。
+                    // 行选择按面板分发（条目 = 详情；来源 = 展开原话；备份 = 选中）。
                     RowAction::Select | RowAction::Choose => {
                         settings_ui().panel_row_select(panel, &row_id)
                     }

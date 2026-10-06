@@ -93,6 +93,10 @@
 // （initMemoryRevisionSync / requestProactiveControl / initObservationGovernance /
 // stopObservationGovernance / initWindowListener）复核仍无命中（对应测试文件已实跑绿）；
 // 其余 ob-* 逐点核对实现点仍在、描述与当前实现一致；sourceHash 按当前源码复算。
+// 2026-10-06 设置页列表面板删除批次（本批刷新）：sourceFiles 变化仅限
+// `crates/native-host/src/ui/settings/schema.rs` 的注释面（Profile 资源管理 / 人格（Card）管理面
+// 文档注释按当前实现改写：管理动作作用于当前激活项，设置页行级列表面板已删除；字段与文案未动）。
+// ob-01..ob-09 逐点核对实现点仍在、描述与当前实现一致；sourceHash 按当前源码复算。
 import type { ModuleContract } from "../host/types"
 
 export const observationContract: ModuleContract = {
@@ -147,7 +151,7 @@ export const observationContract: ModuleContract = {
     "test/integration/observation/了解层与话题来源.test.ts",
     "test/e2e/scenes/observation/静默访问关闭边界.scene.ts",
   ],
-  sourceHash: "2b88a4e90633a34908cadc246c4a848fc91f37b7ecd36b327bd320f018f5a1d0",
+  sourceHash: "5f3e7b9e2eb02170633f02c1d8ea1d97702a6a6c667b3c30ddcc20942799387b",
   coverage: [
     {
       id: "ob-01",

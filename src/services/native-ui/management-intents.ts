@@ -793,7 +793,7 @@ function cardListProjection(
   return { cards: cards.map(card => ({ id: card.id, name: card.name })) }
 }
 
-/** AI 页：Card 管理动作（判别字段 `op`），结果附最新卡列表与操作后仍在激活的卡。 */
+/** AI 页：Card 管理动作（判别字段 `op`），结果附最新卡列表。 */
 export async function cardManage(args: unknown): Promise<CardManageResult> {
   const payload = args as CardManagePayload | null
   const op = payload?.op
@@ -802,14 +802,13 @@ export async function cardManage(args: unknown): Promise<CardManageResult> {
   // 撞名判定吃当前注册表：与设置页下拉看到的是同一份权威列表。
   const existingIds = () => personality.getCards().map(card => card.id)
   let message: string
-  let newId: string | undefined
   switch (op) {
     case "create": {
       const name = requireStringField(payload, "name", "card_manage.create")
       const result = await cards.createCard(name, existingIds())
+      // 新建必须给出推导出的新 id（CardOpResult 的既有语义）；缺 id 是服务层故障，不静默放过。
       if (!result.ok || !result.newId) throw new Error(result.message || "新建 Card 失败")
       message = result.message
-      newId = result.newId
       break
     }
     case "rename": {
@@ -861,8 +860,6 @@ export async function cardManage(args: unknown): Promise<CardManageResult> {
   return {
     message,
     list: cardListProjection(personality.getCards()),
-    ...(newId ? { newId } : {}),
-    activeId: personality.getActivePersonalityId() ?? "",
   }
 }
 
@@ -941,7 +938,6 @@ export async function profileManage(args: unknown): Promise<ProfileManageResult>
   const op = payload?.op
   const io = await import("@/services/profile")
   let message: string
-  let newId: string | undefined
   switch (op) {
     case "create": {
       const ids = await io.discoverAllProfiles()
@@ -952,9 +948,9 @@ export async function profileManage(args: unknown): Promise<ProfileManageResult>
         if (meta) names.push(meta.name)
       }
       const result = await io.createProfile(ids, names)
+      // 新建必须给出分配的新 id（ProfileOpResult 的既有语义）；缺 id 是服务层故障，不静默放过。
       if (!result.ok || !result.newId) throw new Error(result.message || "新建 Profile 失败")
       message = result.message
-      newId = result.newId
       break
     }
     case "rename": {

@@ -423,10 +423,10 @@ const APPEARANCE_FONT: &[Field] = &[
     },
 ];
 
-/// Profile 资源管理（本批）：动作对象 = 外观页「Profile 列表」里**选中的那一行**
-/// （点行选中；未选过时回退「当前 Profile」草稿值 —— 旧口径不变）。
-/// 选中与激活分开：激活仍走上面的「当前 Profile」下拉（保存时 `switchActiveProfile`）；
-/// 删除/导出前平台会再确认。新建/导入/恢复默认资源不绑定行。
+/// Profile 资源管理：动作对象 = 当前激活 Profile（「当前 Profile」下拉的草稿值；
+/// 按钮文案保留「选中」字样，按旧口径不变）。切换激活走上面的「当前 Profile」下拉
+/// （保存时 `switchActiveProfile`）；删除/导出前平台会再确认。
+/// 新建/导入/恢复默认资源不绑定目标。
 const APPEARANCE_PROFILE: &[Field] = &[
     Field {
         key: "action.profileCreate",
@@ -561,10 +561,10 @@ const AI_SAFETY: &[Field] = &[
 /// Card 是用户可增删的运行时资源；本字段的值仍是 CONFIG 路径（`ai.personality.active`），
 /// 提交时由 Node 走注册表唯一入口 `switchPersonality`。
 ///
-/// 动作对象 = AI 页「人格卡列表」里**选中的那一行**（点行选中；未选过时回退当前激活卡，
-/// 与 Profile 资源同口径）：删除与导入前由平台再确认；「编辑」打开文档编辑窗
-/// （内容与校验都在 Node），「模版」是只读的提示词面板。选中与激活分开：激活仍走本节的
-/// 「人格卡」下拉（保存时切换），点行不触发切换。新建/导入/模版不绑定行。
+/// 动作对象 = 当前激活卡（`ai.personality.active` 草稿值；按钮文案保留「选中」字样，
+/// 按旧口径不变）：删除与导入前由平台再确认；「编辑」打开文档编辑窗
+/// （内容与校验都在 Node），「模版」是只读的提示词面板。切换激活走本节的
+/// 「人格卡」下拉（保存时切换）。新建/导入/模版不绑定目标。
 const AI_PERSONALITY: &[Field] = &[
     Field {
         key: "ai.personality.active",
@@ -1168,8 +1168,8 @@ mod tests {
         );
     }
 
-    /// 行级管理（本批）：Profile / Card 的管理动作点名作用于**选中行**（列表点行选中，
-    /// 与激活分开）；两个激活字段仍是值字段（下拉 + 保存），不因列表化变成动作。
+    /// Profile / Card 的管理动作文案点名「选中」（沿用旧口径，实际作用于当前激活项）；
+    /// 两个激活字段仍是值字段（下拉 + 保存），不是动作。
     #[test]
     fn profile与card管理动作点名作用于选中行() {
         for key in [
