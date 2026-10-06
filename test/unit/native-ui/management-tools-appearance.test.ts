@@ -222,11 +222,11 @@ describe("通用页：默认值 / 导入导出", () => {
   it("settings_defaults 取内置模板而不是运行时覆写（默认值与现值分开）", async () => {
     setOverride("general.popup.chatWidth", 333)
     const payload = (await dispatchHostRequest("settings_defaults", {})) as { values: Record<string, unknown> }
-    // 模板里 chatWidth=220；现值已被覆写成 333 —— 默认值面必须仍报模板值。
-    expect(payload.values["general.popup.chatWidth"]).toBe(220)
+    // 模板里 chatWidth=266；现值已被覆写成 333 —— 默认值面必须仍报模板值。
+    expect(payload.values["general.popup.chatWidth"]).toBe(266)
     expect(payload.values["ai.conversation.defaultDelivery"]).toBe("steer")
     // 键 = CONFIG 路径（嵌套展开），与 settings_read 同形。
-    expect(payload.values["general.popup.defaultSize.w"]).toBe(730)
+    expect(payload.values["general.popup.defaultSize.w"]).toBe(673)
   })
 
   it("config_export：保存取消是正常结果（saved=false），不写文件", async () => {

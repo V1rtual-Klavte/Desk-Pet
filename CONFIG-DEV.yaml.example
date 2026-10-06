@@ -3,7 +3,7 @@
 # ==========================================
 
 general:
-  popup: { mode: cursor, autoPopupOnMessage: false, defaultSize: { w: 448, h: 272 }, fixedPosition: null, chatWidth: 220 }
+  popup: { mode: fixed, autoPopupOnMessage: false, defaultSize: { w: 673, h: 444 }, fixedPosition: { x: 252, y: 285 }, chatWidth: 266 }
   shortcut: { key: "P", macModifiers: ["Control", "Command"], winModifiers: ["Control", "Alt"] }
   logging: { level: debug }
   # 错误覆盖层：auto(dev 弹/生产不弹) | always | never
@@ -11,10 +11,10 @@ general:
 
 ai:
   provider: deepseek
-  endpoint: ""
+  endpoint: https://api.deepseek.com
   apiKey: ""
   requireApiKey: true
-  model: deepseek-chat
+  model: deepseek-flash
   # 辅助模型：子代理（agent_spawn 工具、计划步骤）、主动扫描规划与记忆整理（dreaming）使用；
   # 留空跟随聊天模型（同一 provider/endpoint/apiKey）
   auxModel: ""
@@ -30,7 +30,7 @@ ai:
     # 稍后继续的批量策略：one-at-a-time=逐条保留话题边界 | all=集中处理
     followUpMode: one-at-a-time
   personality:
-    active: default
+    active: yuki
   loop:
     maxRetry: 3
     maxToolCallsPerTurn: 5
@@ -97,10 +97,10 @@ tools:
         enabled: false
 
 appearance:
-  activeProfile: "sugar-pink"
-  effectMode: "off"               # off(静态) | parallax(灵动图层)，互斥
-  theme: "brushed"                # 界面主题（产品级预设，与 Profile 正交）: brushed(拉丝金属) | chrome(铬) | verdigris(铜绿) | nightfall(暮蓝) | azurite(青花)
-  chatImagePreview: false         # 聊天图片自动预览: false(默认，历史只显示占位，点击占位仍可打开查看器) | true(只为可见消息按需加载内联预览)
+  activeProfile: "yuki"
+  effectMode: "parallax"          # off(静态) | parallax(灵动图层)，互斥
+  theme: "nightfall"              # 界面主题（产品级预设，与 Profile 正交）: brushed(拉丝金属) | chrome(铬) | verdigris(铜绿) | nightfall(暮蓝) | azurite(青花)
+  chatImagePreview: true          # 聊天图片自动预览: false(默认，历史只显示占位，点击占位仍可打开查看器) | true(只为可见消息按需加载内联预览)
   soundAssignments: {}            # 事件 → 音效 ID；空表示全走内置默认，设置页可改
   parallax:
     intensity: 1.0
