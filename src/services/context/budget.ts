@@ -6,8 +6,8 @@ import { imageInputTokens } from "@/services/images/budget"
 const log = createLogger("ContextBudget")
 
 /** All request budgets, including one-shot summaries, use the same units. */
-/** 上下文窗口默认值（tokens）：CONFIG 与设置页的缺省都取它（128k）。 */
-export const DEFAULT_CONTEXT_WINDOW = 131_072
+/** 上下文窗口默认值（tokens）：CONFIG 与设置页的缺省都取它（256k）。 */
+export const DEFAULT_CONTEXT_WINDOW = 262_144
 /**
  * 支持的最低上下文窗口（64k）。静态提示词与工具 schema 已占掉硬输入预算的大头，
  * 再低时留给消息的空间小于上游切点所需的保留窗口，压缩永远找不到可摘要范围。

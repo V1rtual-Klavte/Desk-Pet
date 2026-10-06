@@ -11,7 +11,7 @@ import rawConfigText from "../../CONFIG.yaml";
 import { dump as dumpYaml, load as loadYaml } from "js-yaml";
 import { getHostBridge, getHostEnvironment } from "@/services/host";
 import { DEFAULT_PROFILE } from "@/services/paths";
-// 零依赖叶子：窗口语义的唯一定义点（默认 128k / 下限 64k），config 只做缺省引用。
+// 零依赖叶子：窗口语义的唯一定义点（默认 256k / 下限 64k），config 只做缺省引用。
 import { DEFAULT_CONTEXT_WINDOW } from "./context/budget";
 import { createLogger, LEVEL_ORDER, setLogLevel, type Level } from "@/services/logger";
 import { formatError, reportError } from "@/services/error";
